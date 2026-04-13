@@ -10,39 +10,7 @@ A living second brain that connects everything you think with — your AI agents
 
 ---
 
-```mermaid
-graph LR
-    subgraph Input["🔌 Connect"]
-        A1["🤖 AI Agents"]
-        A2["📝 Notes"]
-        A3["··· More"]
-    end
-
-    subgraph Core["🧠 Active Graph"]
-        B1[Nodes & Links]
-        B2[4D Maturity]
-        B3[Metabolism]
-        B1 --- B2
-        B2 --- B3
-    end
-
-    subgraph Value["✨ Emerge"]
-        C1[Shared Memory]
-        C2[Pattern Discovery]
-        C3[Crystallization]
-    end
-
-    A1 -->|MCP| Core
-    A2 -->|File Sync| Core
-    A3 -.->|Open Protocol| Core
-    Core --> C1
-    Core --> C2
-    Core --> C3
-
-    style Input fill:#1a1a2e,stroke:#7c3aed,color:#e0e0e0
-    style Core fill:#1a1a2e,stroke:#3b82f6,color:#e0e0e0
-    style Value fill:#1a1a2e,stroke:#10b981,color:#e0e0e0
-```
+![TideMind Concept](docs/assets/concept-banner.png)
 
 ---
 
