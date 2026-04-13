@@ -1,53 +1,46 @@
-<p align="center">
-  <img src="docs/assets/banner.png" alt="TideMind" width="100%" />
-</p>
+# TideMind
 
-<p align="center">一个活的第二大脑，连接你用来思考的一切——你的 AI 助手、你的笔记、以及未来更多的东西。</p>
+一个活的第二大脑，连接你用来思考的一切——你的 AI 助手、你的笔记、以及未来更多的东西。
 
-<p align="center">
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node.js >= 18](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)](https://nodejs.org/)
+[![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-purple.svg)](https://modelcontextprotocol.io/)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-6C5CE7?style=for-the-badge&logoColor=white)](LICENSE)
-[![Node.js >= 18](https://img.shields.io/badge/Node.js-%3E%3D18-4B3F8F?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
-[![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-8B7FD4?style=for-the-badge&logoColor=white)](https://modelcontextprotocol.io/)
-[![Docs](https://img.shields.io/badge/Docs-Read%20the%20Docs-5B4FCF?style=for-the-badge&logo=readthedocs&logoColor=white)](docs/)
-[![GitHub Discussions](https://img.shields.io/badge/Community-Discussions-7C6DD8?style=for-the-badge&logo=github&logoColor=white)](https://github.com/SawyerHan-AI/TideMind/discussions)
+[English](README.md) | **中文**
 
-</p>
+---
 
-<p align="center">
-  <a href="README.md">English</a> | <strong>中文</strong>
-</p>
+![TideMind 概念图](docs/assets/concept-banner.png)
 
-<p align="center">
-  <img src="docs/assets/concept-banner.png" alt="TideMind 概念图" width="100%" />
-</p>
+---
 
 ## 为什么需要 TideMind
 
 **你的记忆散落在十几个工具里，互相不通。**
 
-Claude 记得你喜欢简洁的代码风格，但 Cursor 不知道。你在 Obsidian 里整理了一周的设计思路，但下次和 AI 讨论时它一无所知。你和一个 Agent 建立的默契，换一个又要重新来过。每个工具都在各自积累对你的了解，却没有任何东西把它们连起来。
+Claude 记得你喜欢简洁的代码风格，但 Cursor 不知道。你在笔记里整理了一周的设计思路，但和 AI 讨论时它一无所知。每个工具都在各自积累对你的了解，却没有任何东西把它们连起来。
 
-更根本的问题是：现有的 AI 记忆只是在存储事实。它不会把你三个月前的一个决策和今天遇到的问题联系起来，不会遗忘不再重要的细节，不会在你的想法之间发现你自己都没注意到的模式。
-
-现有的记忆工具——包括开源方案——本质上是向量数据库：存进去什么，取出来什么。它们解决了"跨会话记忆"，但没有解决"记忆应该是活的"。不会遗忘过时的信息，不会在你检索时更新记忆，不会主动发现你没搜索过的关联。
+更根本的问题是：现有的 AI 记忆只是在罗列和存储事实。它不会把记忆之间联系起来，不会在你的想法之间发现你自己都没注意到的共性，更不会生成关于你完整的用户画像。
 
 TideMind 是一个跨越所有工具的记忆层——一张活的知识图谱，让你的 AI、你的笔记、你的思考真正连接在一起。
 
 ## TideMind 是什么
 
-**所有 AI 工具共享同一份持久记忆。** 通过 MCP 协议接入，不需要换工具、不需要改习惯——装上就用。
+**所有记忆，汇聚一处。** TideMind 把你的 AI 工具、你的笔记、以及未来可能的一切连接到同一张知识图谱中。和各个 AI 的对话，各个软件的笔记——不再散落各处，而是交织在一起，互相激发。
 
-**不是数据库，是一个活的系统。** 不被使用的记忆自然衰减——信号留下，噪音消退。每次检索都在强化和更新被触及的记忆——读即写。在后台，系统还会主动发现你从未意识到的想法之间的联系。
+**让每一个 AI 都完整了解你。** 每次对话开始时，TideMind 会把从所有历史交互中提炼出的用户画像以及关键记忆提供给 AI——你是谁、你怎么思考、你关注什么。当 AI 需要更多上下文时，它不只靠关键词/向量搜索，还可以沿着记忆之间的链接顺藤摸瓜——从一个决策出发，跳到当时的讨论背景，再跳到后来的变更。不需要加载全部记忆，也不会遗漏间接相关的信息。先返回少量高相关节点，需要更多上下文时沿链接展开——按需探索。
 
-**AI 在知识图谱里导航，而不是在搜索框里猜关键词。** AI 可以沿着记忆之间的链接顺藤摸瓜——从一个决策出发，跳到当时的讨论背景，再跳到后来的变更。不需要加载全部记忆，也不会遗漏间接相关的信息。先返回少量高相关节点，需要更多上下文时沿链接展开——按需探索。
+**不是数据库，是一个活的系统。** 记忆之间会自动产生关联。不重要的细节自然衰减，重要的记忆被强化更新。TideMind 还主动发现你没有注意到的共性——把三个月前的一个决策和你今天面临的问题联系起来。信息不是存了就完，它在被消化、被连接、被遗忘。这就是"活"的含义。
 
-**你的笔记接入图谱，你的数据留在本地。** Logseq、Obsidian、Apple Notes 的内容和 AI 对话一起进入同一张图，互相连接、互相激发。所有数据存在你电脑上的一个 SQLite 文件里，随时可以导出为 Markdown。LLM 和向量模型由你选择——Ollama 全本地、Claude/GPT 云端、或混合使用。你的数据，你做主。
+**入门简单。** AI 工具通过 MCP 协议接入，一条配置搞定，不改变任何使用习惯。笔记支持一键导入与同步。
+
+**你的记忆，完整属于你。** 所有数据存在你电脑上的一个 SQLite 文件里，随时可导出为 Markdown。没有云端，没有锁定。追求隐私就用 Ollama 全本地运行，追求效果就接入云端模型，也可以混合搭配。
 
 ## 和其他方案有什么不同
 
 |  | 典型 AI 记忆 | TideMind |
 |---|---|---|
+| **第一句话** | AI 从零开始 | AI 收到你的画像——开口就了解你 |
 | **存储** | 扁平的事实列表 | 活的知识图谱，带类型化链接 |
 | **检索** | 关键词 / 向量 top-K | 图谱导航——沿链接探索，按需展开 |
 | **遗忘** | 永不遗忘（或手动删除） | 自动衰减——信号留下，噪音消退 |
@@ -148,24 +141,11 @@ TideMind 在后台持续维护这张图，就像大脑在睡眠时整理白天�
 
 ## 桌面客户端
 
+<!-- 截图占位 -->
+
 TideMind 自带桌面客户端，用于浏览你的知识图谱、查看系统代谢动态、调整参数。它是一个审视工具——用来观察你的外脑在想什么、发现了什么、遗忘了什么。
 
 TideMind 的主界面不是这个 App，而是你正在用的 AI 工具本身。
-
-<p align="center">
-  <img src="docs/assets/screenshot-dashboard.jpg" alt="仪表盘 — 指标、活动流、结晶发现和标签概览" width="100%" />
-</p>
-<p align="center"><em>仪表盘 — 你的第二大脑的实时脉搏</em></p>
-
-<p align="center">
-  <img src="docs/assets/screenshot-graph.jpg" alt="脑图探索 — 交互式知识图谱，展示跨领域连接" width="100%" />
-</p>
-<p align="center"><em>脑图探索 — 可视化记忆之间的跨领域关联</em></p>
-
-<p align="center">
-  <img src="docs/assets/screenshot-list.jpg" alt="记忆详情 — 成熟度雷达图、证据链和关联节点" width="100%" />
-</p>
-<p align="center"><em>记忆详情 — 四维成熟度模型与证据链</em></p>
 
 ## 深入了解
 

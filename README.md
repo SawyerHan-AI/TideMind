@@ -1,53 +1,46 @@
-<p align="center">
-  <img src="docs/assets/banner.png" alt="TideMind" width="100%" />
-</p>
+# TideMind
 
-<p align="center">A living second brain that connects everything you think with — your AI agents, your notes, and whatever comes next.</p>
+A living second brain that connects everything you think with — your AI agents, your notes, and whatever comes next.
 
-<p align="center">
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node.js >= 18](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)](https://nodejs.org/)
+[![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-purple.svg)](https://modelcontextprotocol.io/)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-6C5CE7?style=for-the-badge&logoColor=white)](LICENSE)
-[![Node.js >= 18](https://img.shields.io/badge/Node.js-%3E%3D18-4B3F8F?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
-[![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-8B7FD4?style=for-the-badge&logoColor=white)](https://modelcontextprotocol.io/)
-[![Docs](https://img.shields.io/badge/Docs-Read%20the%20Docs-5B4FCF?style=for-the-badge&logo=readthedocs&logoColor=white)](docs/)
-[![GitHub Discussions](https://img.shields.io/badge/Community-Discussions-7C6DD8?style=for-the-badge&logo=github&logoColor=white)](https://github.com/SawyerHan-AI/TideMind/discussions)
+[English](README.md) | [中文](README_CN.md)
 
-</p>
+---
 
-<p align="center">
-  <a href="README.md">English</a> | <a href="README_CN.md">中文</a>
-</p>
+![TideMind Concept](docs/assets/concept-banner.png)
 
-<p align="center">
-  <img src="docs/assets/concept-banner.png" alt="TideMind Concept" width="100%" />
-</p>
+---
 
 ## Why TideMind
 
 **Your memory is scattered across a dozen tools, and none of them talk to each other.**
 
-Claude remembers you like concise code, but Cursor has no idea. You spent a week organizing design thinking in Obsidian, but the next time you discuss it with an AI, it knows nothing. The rapport you built with one agent vanishes the moment you switch to another. Every tool quietly accumulates its own understanding of you, yet nothing connects them.
+Claude remembers you like concise code, but Cursor has no idea. You spent a week organizing design thinking in your notes, but the next time you discuss it with an AI, it knows nothing. Every tool quietly accumulates its own understanding of you, yet nothing connects them.
 
-The deeper problem: even AIs that have built-in memory are just storing flat facts. They won't link a decision you made three months ago to the problem you're facing today. They won't let go of details that no longer matter. They won't discover patterns across your ideas that you haven't noticed yourself.
-
-Existing memory tools — including open-source ones — are essentially vector databases. Store in, retrieve out. They've solved "cross-session memory," but not "memory should be alive." They never forget outdated information, never update memories when you retrieve them, never discover connections you didn't search for.
+The deeper problem: existing AI memory is just listing and storing facts. It won't link memories together, won't discover commonalities across your ideas that you haven't noticed yourself, and certainly won't build a complete profile of who you are.
 
 TideMind is a memory layer that spans all your tools — a living knowledge graph that connects your AI, your notes, and your thinking.
 
 ## What is TideMind
 
-**All your AI tools share one persistent memory.** Connect through the MCP protocol — no tool switching, no habit changes. Install and go.
+**All your memory, in one place.** TideMind connects your AI tools, your notes, and whatever comes next into a single knowledge graph. Conversations across different AIs, notes across different apps — no longer scattered in silos, but woven together, cross-pollinating.
 
-**A living system, not a database.** Memories naturally decay when unused — signal stays, noise fades. Every recall strengthens and updates the memory it touches — reading is writing. And in the background, the system actively discovers connections between ideas you never realized were related.
+**Every AI knows you completely.** At the start of each conversation, TideMind provides your AI with a profile and key memories distilled from all past interactions — who you are, how you think, what you care about. When your AI needs more context, it doesn't just rely on keyword/vector search — it can follow links between memories, navigating from one decision to the discussion behind it, then to later changes it triggered. No need to load everything; no risk of missing what matters. It starts with a few highly relevant nodes and explores along links when more context is needed — on-demand exploration.
 
-**Your AI navigates a knowledge graph, not a search index.** Instead of guessing the right keywords for a top-K search, AI can follow links between memories — from a decision to the discussion behind it, to later changes it influenced. It starts with a few relevant nodes and explores deeper on demand. No need to load everything; no risk of missing what matters.
+**Not a database — a living system.** Memories form connections automatically. Unimportant details naturally fade; important ones are reinforced and updated. TideMind actively discovers commonalities you haven't noticed — linking a decision from three months ago to the problem you're facing today. Information isn't just stored. It's digested, connected, and sometimes forgotten. That's what "living" means.
 
-**Your notes join the graph, your data stays local.** Logseq, Obsidian, and Apple Notes content enters the same graph alongside your AI conversations — connecting and cross-pollinating. Everything is stored in a single SQLite file on your machine, exportable to Markdown anytime. You choose the LLM and embedding models — fully local with Ollama, cloud with Claude or GPT, or mix both. Your data, your call.
+**Simple to start.** Connect your AI tools through the MCP protocol — one config, no habit changes. Import and sync notes with a single click.
+
+**Your memory belongs to you.** All data lives in a single SQLite file on your machine, exportable to Markdown anytime. No cloud, no vendor lock-in. Go fully local with Ollama for privacy, use cloud models for quality, or mix both.
 
 ## How it's different
 
 |  | Typical AI Memory | TideMind |
 |---|---|---|
+| **First message** | AI starts from zero | AI receives your profile — knows you from the start |
 | **Storage** | Flat list of facts | Living knowledge graph with typed links |
 | **Recall** | Keyword / vector top-K | Graph navigation — follow links, explore on demand |
 | **Forget** | Never (or manual delete) | Automatic decay — signal stays, noise fades |
@@ -148,24 +141,11 @@ Information isn't just stored. It's digested, organized, connected, and sometime
 
 ## Desktop Client
 
+<!-- Screenshot placeholder -->
+
 TideMind ships with a desktop client for browsing your knowledge graph, monitoring system metabolism, and tuning parameters. It's an inspection tool — for observing what your external brain is thinking, discovering, and forgetting.
 
 The main interface of TideMind isn't this app. It's whatever AI tool you're already using.
-
-<p align="center">
-  <img src="docs/assets/screenshot-dashboard.jpg" alt="Dashboard — metrics, activity feed, crystal discoveries, and tag overview" width="100%" />
-</p>
-<p align="center"><em>Dashboard — real-time pulse of your second brain</em></p>
-
-<p align="center">
-  <img src="docs/assets/screenshot-graph.jpg" alt="Brain Explorer — interactive knowledge graph with cross-domain connections" width="100%" />
-</p>
-<p align="center"><em>Brain Explorer — visualize how your memories connect across domains</em></p>
-
-<p align="center">
-  <img src="docs/assets/screenshot-list.jpg" alt="Memory detail — maturity radar, evidence chains, and linked nodes" width="100%" />
-</p>
-<p align="center"><em>Memory detail — four-dimensional maturity model and evidence chains</em></p>
 
 ## Documentation
 
