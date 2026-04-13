@@ -1,6 +1,10 @@
-# TideMind
+<p align="center">
+  <img src="docs/assets/banner.png" alt="TideMind" width="100%" />
+</p>
 
-一个活的第二大脑，连接你用来思考的一切——你的 AI 助手、你的笔记、以及未来更多的东西。
+<p align="center">一个活的第二大脑，连接你用来思考的一切——你的 AI 助手、你的笔记、以及未来更多的东西。</p>
+
+<p align="center">
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-6C5CE7?style=for-the-badge&logoColor=white)](LICENSE)
 [![Node.js >= 18](https://img.shields.io/badge/Node.js-%3E%3D18-4B3F8F?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
@@ -8,10 +12,14 @@
 [![Docs](https://img.shields.io/badge/Docs-Read%20the%20Docs-5B4FCF?style=for-the-badge&logo=readthedocs&logoColor=white)](docs/)
 [![GitHub Discussions](https://img.shields.io/badge/Community-Discussions-7C6DD8?style=for-the-badge&logo=github&logoColor=white)](https://github.com/SawyerHan-AI/TideMind/discussions)
 
-[English](README.md) | **中文**
+</p>
 
 <p align="center">
-  <img src="docs/assets/banner.png" alt="TideMind" width="100%" />
+  <a href="README.md">English</a> | <strong>中文</strong>
+</p>
+
+<p align="center">
+  <img src="docs/assets/concept-banner.png" alt="TideMind 概念图" width="100%" />
 </p>
 
 ## 为什么需要 TideMind
