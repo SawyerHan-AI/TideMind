@@ -2,25 +2,27 @@
 
 一个活的第二大脑，连接你用来思考的一切——你的 AI 助手、你的笔记、以及未来更多的东西。
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node.js >= 18](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)](https://nodejs.org/)
-[![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-purple.svg)](https://modelcontextprotocol.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-6C5CE7?style=for-the-badge&logoColor=white)](LICENSE)
+[![Node.js >= 18](https://img.shields.io/badge/Node.js-%3E%3D18-4B3F8F?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
+[![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-8B7FD4?style=for-the-badge&logoColor=white)](https://modelcontextprotocol.io/)
+[![Docs](https://img.shields.io/badge/Docs-Read%20the%20Docs-5B4FCF?style=for-the-badge&logo=readthedocs&logoColor=white)](docs/)
+[![GitHub Discussions](https://img.shields.io/badge/Community-Discussions-7C6DD8?style=for-the-badge&logo=github&logoColor=white)](https://github.com/SawyerHan-AI/TideMind/discussions)
 
 [English](README.md) | **中文**
 
----
-
-![TideMind 概念图](docs/assets/concept-banner.png)
-
----
+<p align="center">
+  <img src="docs/assets/banner.png" alt="TideMind" width="100%" />
+</p>
 
 ## 为什么需要 TideMind
 
 **你的记忆散落在十几个工具里，互相不通。**
 
-Claude 记得你喜欢简洁的代码风格，但 Cursor 不知道。你在 Logseq 里整理了一周的设计思路，但下次和 AI 讨论时它一无所知。你和一个 Agent 建立的默契，换一个又要重新来过。每个工具都在各自积累对你的了解，却没有任何东西把它们连起来。
+Claude 记得你喜欢简洁的代码风格，但 Cursor 不知道。你在 Obsidian 里整理了一周的设计思路，但下次和 AI 讨论时它一无所知。你和一个 Agent 建立的默契，换一个又要重新来过。每个工具都在各自积累对你的了解，却没有任何东西把它们连起来。
 
 更根本的问题是：现有的 AI 记忆只是在存储事实。它不会把你三个月前的一个决策和今天遇到的问题联系起来，不会遗忘不再重要的细节，不会在你的想法之间发现你自己都没注意到的模式。
+
+现有的记忆工具——包括开源方案——本质上是向量数据库：存进去什么，取出来什么。它们解决了"跨会话记忆"，但没有解决"记忆应该是活的"。不会遗忘过时的信息，不会在你检索时更新记忆，不会主动发现你没搜索过的关联。
 
 TideMind 是一个跨越所有工具的记忆层——一张活的知识图谱，让你的 AI、你的笔记、你的思考真正连接在一起。
 
@@ -28,11 +30,22 @@ TideMind 是一个跨越所有工具的记忆层——一张活的知识图谱�
 
 **所有 AI 工具共享同一份持久记忆。** 通过 MCP 协议接入，不需要换工具、不需要改习惯——装上就用。
 
-**不是数据库，是一张活的知识图谱。** 信息会自动产生关联，重要的记忆留下，不重要的自然衰减消失。系统会主动发现你从未意识到的想法之间的联系——就像一个真正了解你的思维伙伴，偶尔会说"你有没有想过，你三个月前在那个项目里做的决策，和你现在面临的问题是同一个模式？"
+**不是数据库，是一个活的系统。** 不被使用的记忆自然衰减——信号留下，噪音消退。每次检索都在强化和更新被触及的记忆——读即写。在后台，系统还会主动发现你从未意识到的想法之间的联系。
 
-**你的笔记也能接入。** Logseq、Obsidian、Apple Notes 的内容和 AI 对话一起进入同一张图，互相连接、互相激发。你在笔记里写下的一个想法，可能在下次和 AI 对话时被自动召回，成为解决当前问题的线索。
+**AI 在知识图谱里导航，而不是在搜索框里猜关键词。** AI 可以沿着记忆之间的链接顺藤摸瓜——从一个决策出发，跳到当时的讨论背景，再跳到后来的变更。不需要加载全部记忆，也不会遗漏间接相关的信息。先返回少量高相关节点，需要更多上下文时沿链接展开——按需探索。
 
-**所有数据留在你自己的电脑上。** 存在一个 SQLite 文件里，随时可以导出为 Markdown。没有云端，没有锁定。LLM 和向量模型也由你选择——在乎隐私就全部用本地模型（Ollama）；追求效果就接入 Claude、GPT 等云端模型；也可以混用，比如向量嵌入走本地，信息提取走云端。一切取决于你。
+**你的笔记接入图谱，你的数据留在本地。** Logseq、Obsidian、Apple Notes 的内容和 AI 对话一起进入同一张图，互相连接、互相激发。所有数据存在你电脑上的一个 SQLite 文件里，随时可以导出为 Markdown。LLM 和向量模型由你选择——Ollama 全本地、Claude/GPT 云端、或混合使用。你的数据，你做主。
+
+## 和其他方案有什么不同
+
+|  | 典型 AI 记忆 | TideMind |
+|---|---|---|
+| **存储** | 扁平的事实列表 | 活的知识图谱，带类型化链接 |
+| **检索** | 关键词 / 向量 top-K | 图谱导航——沿链接探索，按需展开 |
+| **遗忘** | 永不遗忘（或手动删除） | 自动衰减——信号留下，噪音消退 |
+| **读取时** | 返回结果 | 再巩固——记忆在使用中进化 |
+| **发现** | 只能找到你搜索过的 | 发散扫描——发现你遗漏的关联 |
+| **数据** | 云端 / 供应商锁定 | 本地 SQLite 文件，随时导出 Markdown |
 
 ## 快速开始
 
@@ -69,7 +82,7 @@ npm start
 
 就这些。下次打开对话，你的 AI 就能记住你了。
 
-## 核心概念
+## 工作原理
 
 ### 活性图（Active Graph）
 
@@ -84,10 +97,12 @@ TideMind 通过 MCP 协议暴露三个工具，对应三个认知操作：
 | 工具 | 做什么 | 什么时候用 |
 |------|--------|-----------|
 | `brain_prepare` | 加载记忆上下文 | 每次对话开始 |
-| `brain_recall` | 检索相关记忆 | 需要历史信息时 |
+| `brain_recall` | 导航和检索记忆 | 需要历史信息时 |
 | `brain_digest` | 存入新信息 | 产生值得记住的内容时 |
 
 这不是 CRUD。Prepare 像打开一张记忆地图，Recall 像回忆（而且每次回忆都会强化记忆），Digest 像消化吸收——信息进入后会被拆解、连接、融入已有的知识网络。
+
+`brain_recall` 不只是搜索。AI 可以沿着记忆之间的链接探索——从一个架构决策出发，跳到当时的讨论背景，再跳到后来的变更。像在知识网络里散步，而不是在搜索框里猜关键词。初始只返回少量高相关节点，需要更多上下文时沿链接展开——按需探索，不预加载全部记忆。
 
 [了解三工具的完整参数和行为](docs/api.md)
 
@@ -125,11 +140,24 @@ TideMind 在后台持续维护这张图，就像大脑在睡眠时整理白天�
 
 ## 桌面客户端
 
-<!-- 截图占位 -->
-
 TideMind 自带桌面客户端，用于浏览你的知识图谱、查看系统代谢动态、调整参数。它是一个审视工具——用来观察你的外脑在想什么、发现了什么、遗忘了什么。
 
 TideMind 的主界面不是这个 App，而是你正在用的 AI 工具本身。
+
+<p align="center">
+  <img src="docs/assets/screenshot-dashboard.jpg" alt="仪表盘 — 指标、活动流、结晶发现和标签概览" width="100%" />
+</p>
+<p align="center"><em>仪表盘 — 你的第二大脑的实时脉搏</em></p>
+
+<p align="center">
+  <img src="docs/assets/screenshot-graph.jpg" alt="脑图探索 — 交互式知识图谱，展示跨领域连接" width="100%" />
+</p>
+<p align="center"><em>脑图探索 — 可视化记忆之间的跨领域关联</em></p>
+
+<p align="center">
+  <img src="docs/assets/screenshot-list.jpg" alt="记忆详情 — 成熟度雷达图、证据链和关联节点" width="100%" />
+</p>
+<p align="center"><em>记忆详情 — 四维成熟度模型与证据链</em></p>
 
 ## 深入了解
 
