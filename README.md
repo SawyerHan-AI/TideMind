@@ -24,7 +24,7 @@
 
 Claude remembers you like concise code, but Cursor has no idea. You spent a week organizing design thinking in your notes, but the next time you discuss it with an AI, it knows nothing. Every tool quietly accumulates its own understanding of you, yet nothing connects them.
 
-The deeper problem: existing AI memory is just listing and storing facts. It won't link memories together, won't discover commonalities across your ideas that you haven't noticed yourself, and certainly won't build a complete profile of who you are.
+The deeper problem: existing AI memory is just listing and storing facts. It won't link memories together, won't discover commonalities across your ideas that you haven't noticed yourself, and certainly won't build a complete profile of who you are. And as memories pile up, the data grows increasingly redundant and harder to retrieve.
 
 TideMind is a memory layer that spans all your tools — a living knowledge graph that connects your AI, your notes, and your thinking.
 
