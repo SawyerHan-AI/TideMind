@@ -10,39 +10,7 @@
 
 ---
 
-```mermaid
-graph LR
-    subgraph Input["🔌 接入"]
-        A1["🤖 AI Agents"]
-        A2["📝 笔记"]
-        A3["··· 更多"]
-    end
-
-    subgraph Core["🧠 活性图"]
-        B1[节点与链接]
-        B2[四维成熟度]
-        B3[代谢系统]
-        B1 --- B2
-        B2 --- B3
-    end
-
-    subgraph Value["✨ 涌现"]
-        C1[共享记忆]
-        C2[模式发现]
-        C3[结晶]
-    end
-
-    A1 -->|MCP| Core
-    A2 -->|文件同步| Core
-    A3 -.->|开放协议| Core
-    Core --> C1
-    Core --> C2
-    Core --> C3
-
-    style Input fill:#1a1a2e,stroke:#7c3aed,color:#e0e0e0
-    style Core fill:#1a1a2e,stroke:#3b82f6,color:#e0e0e0
-    style Value fill:#1a1a2e,stroke:#10b981,color:#e0e0e0
-```
+![TideMind 概念图](docs/assets/concept-banner.png)
 
 ---
 
