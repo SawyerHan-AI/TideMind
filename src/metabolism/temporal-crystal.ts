@@ -166,13 +166,14 @@ async function findTopicEvolution(db: Database.Database): Promise<{ analyzed: nu
       // 创建结晶节点
       const crystalId = generateId();
       const crystalContent = `[时间演变] ${topic.tag}: ${result.insight}`;
+      const crystalTitle = result.title || `[时间结晶] ${topic.tag}`;
 
       db.prepare(`
-        INSERT INTO nodes (id, type, content, heat, refinement, connectivity, independence,
+        INSERT INTO nodes (id, type, content, title, heat, refinement, connectivity, independence,
           maturity_score, is_crystal, specificity, subjectivity, actuality,
           tags, created, version)
-        VALUES (?, 'fact', ?, 1.0, 0.8, 0.0, 0.8, 0.5, 1, 0.2, 0.5, 0.8, ?, ?, 1)
-      `).run(crystalId, crystalContent, JSON.stringify(['时间结晶', topic.tag]), now());
+        VALUES (?, 'fact', ?, ?, 1.0, 0.8, 0.0, 0.8, 0.5, 1, 0.2, 0.5, 0.8, ?, ?, 1)
+      `).run(crystalId, crystalContent, crystalTitle, JSON.stringify(['时间结晶', topic.tag]), now());
 
       // 链接到关键节点
       const keyNodes = result.key_node_ids?.filter(id => nodes.some(n => n.id === id)) ?? [];
@@ -286,13 +287,14 @@ async function findCrossTopicResonance(db: Database.Database): Promise<{ analyze
       // 创建结晶
       const crystalId = generateId();
       const crystalContent = `[跨主题共振] ${week.week}: ${result.insight}`;
+      const crystalTitle = result.title || `[跨主题共振] ${week.week}`;
 
       db.prepare(`
-        INSERT INTO nodes (id, type, content, heat, refinement, connectivity, independence,
+        INSERT INTO nodes (id, type, content, title, heat, refinement, connectivity, independence,
           maturity_score, is_crystal, specificity, subjectivity, actuality,
           tags, created, version)
-        VALUES (?, 'fact', ?, 1.0, 0.8, 0.0, 0.8, 0.5, 1, 0.2, 0.5, 0.8, '["时间结晶","跨主题"]', ?, 1)
-      `).run(crystalId, crystalContent, now());
+        VALUES (?, 'fact', ?, ?, 1.0, 0.8, 0.0, 0.8, 0.5, 1, 0.2, 0.5, 0.8, '["时间结晶","跨主题"]', ?, 1)
+      `).run(crystalId, crystalContent, crystalTitle, now());
 
       // 链接到涉及的节点
       const allNodes = [...new Map(nodes.map(n => [n.id, n])).values()];

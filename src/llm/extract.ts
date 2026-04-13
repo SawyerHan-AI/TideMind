@@ -16,6 +16,7 @@ export async function generateCrystal(
   nodeContents: string[],
   existingCrystals?: string[],
 ): Promise<{
+  title?: string;
   content: string;
   tags: string[];
   confidence: number;
@@ -80,6 +81,7 @@ export async function generateBridgeInsight(
   sharedContext: string[],
 ): Promise<{
   has_insight: boolean;
+  title?: string;
   content?: string;
   tags?: string[];
   confidence?: number;
@@ -96,7 +98,7 @@ export async function generateBridgeInsight(
 不要强行建立联系。如果没有真正有价值的关联，直接返回 has_insight: false。
 
 输出 JSON:
-有洞察: { "has_insight": true, "content": "桥接洞察内容", "tags": ["标签"], "confidence": 0.0-1.0 }
+有洞察: { "has_insight": true, "title": "一句话标题", "content": "桥接洞察内容", "tags": ["标签"], "confidence": 0.0-1.0 }
 无洞察: { "has_insight": false }
 
 只输出 JSON，不要其他内容。`;

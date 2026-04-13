@@ -26,7 +26,7 @@
 # 输出格式
 
 输出 JSON:
-有洞察: { "has_insight": true, "content": "桥接洞察内容", "tags": ["标签"], "confidence": 0.0-1.0 }
+有洞察: { "has_insight": true, "title": "一句话标题", "content": "桥接洞察内容", "tags": ["标签"], "confidence": 0.0-1.0 }
 无洞察: { "has_insight": false }
 
 只输出 JSON，不要其他内容。

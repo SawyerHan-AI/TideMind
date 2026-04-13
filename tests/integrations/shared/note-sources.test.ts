@@ -328,3 +328,75 @@ describe('getNoteSourceStats', () => {
     expect(stats2.nodeCount).toBe(2);
   });
 });
+
+// ===== 初始化状态机相关测试 =====
+
+describe('初始化状态分层', () => {
+  it('新建的笔记源 initialized = 0', () => {
+    const src = createNoteSource(db, { name: 'New', toolType: 'logseq', path: '/p' });
+    expect(src.initialized).toBe(0);
+  });
+
+  it('markInitialized 后可以区分已初始化和未初始化的源', () => {
+    const s1 = createNoteSource(db, { name: 'Done', toolType: 'logseq', path: '/a' });
+    const s2 = createNoteSource(db, { name: 'Partial', toolType: 'obsidian', path: '/b' });
+    markInitialized(db, s1.id);
+
+    const all = listNoteSources(db, true);
+    const initialized = all.filter(s => s.initialized);
+    const uninitialized = all.filter(s => !s.initialized);
+
+    expect(initialized).toHaveLength(1);
+    expect(initialized[0].name).toBe('Done');
+    expect(uninitialized).toHaveLength(1);
+    expect(uninitialized[0].name).toBe('Partial');
+  });
+
+  it('startAllNoteSources 的 SQL 只选 initialized=1 且 archived=0', () => {
+    // 模拟 startAllNoteSources 的查询逻辑
+    const s1 = createNoteSource(db, { name: 'Ready', toolType: 'logseq', path: '/a' });
+    const s2 = createNoteSource(db, { name: 'Partial', toolType: 'logseq', path: '/b' });
+    const s3 = createNoteSource(db, { name: 'Archived', toolType: 'logseq', path: '/c' });
+    markInitialized(db, s1.id);
+    markInitialized(db, s3.id);
+    archiveNoteSource(db, s3.id);
+
+    const startable = db.prepare(
+      'SELECT * FROM note_sources WHERE archived = 0 AND initialized = 1',
+    ).all() as Array<{ id: string; name: string }>;
+
+    expect(startable).toHaveLength(1);
+    expect(startable[0].name).toBe('Ready');
+  });
+
+  it('未初始化的源有部分 sync 数据时仍能获取 stats', () => {
+    const src = createNoteSource(db, { name: 'Partial', toolType: 'logseq', path: '/p' });
+    // 不调 markInitialized —— 模拟中断
+    db.prepare(`
+      INSERT INTO logseq_sync (file_path, content_hash, mtime, size, last_synced, node_ids, source_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('/file1.md', 'h1', 100, 50, '2024-01-01', JSON.stringify(['n1', 'n2']), src.id);
+    db.prepare(`
+      INSERT INTO logseq_sync (file_path, content_hash, mtime, size, last_synced, node_ids, source_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('/file2.md', 'h2', 200, 80, '2024-01-02', JSON.stringify(['n3']), src.id);
+
+    expect(src.initialized).toBe(0);
+    const stats = getNoteSourceStats(db, src.id);
+    expect(stats.fileCount).toBe(2);
+    expect(stats.nodeCount).toBe(3);
+  });
+
+  it('对 obsidian 类型的未初始化源同样能获取 stats', () => {
+    const src = createNoteSource(db, { name: 'Partial Obs', toolType: 'obsidian', path: '/vault' });
+    db.prepare(`
+      INSERT INTO obsidian_sync (file_path, content_hash, mtime, size, last_synced, node_ids, source_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('/note.md', 'h1', 100, 50, '2024-01-01', JSON.stringify(['n1']), src.id);
+
+    expect(src.initialized).toBe(0);
+    const stats = getNoteSourceStats(db, src.id);
+    expect(stats.fileCount).toBe(1);
+    expect(stats.nodeCount).toBe(1);
+  });
+});
