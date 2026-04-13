@@ -226,6 +226,15 @@
       "paused": "已暫停",
       "unconfigured": "未設定"
     },
+    "init": {
+      "interrupted": "初始化中斷",
+      "inProgress": "初始化進行中",
+      "complete": "對接完成",
+      "continueInit": "繼續初始化",
+      "discard": "放棄並刪除",
+      "discardConfirm": "確認放棄？已匯入的資料將被回退刪除。",
+      "processedFiles": "已處理 {{current}} / {{total}} 個檔案"
+    },
     "table": {
       "name": "名稱",
       "type": "類型",

@@ -4,7 +4,7 @@ import {
   Plus, ChevronRight, FolderOpen, Check, Loader2,
   RefreshCw, Archive, RotateCcw, Pencil, X,
   MoreHorizontal, FileText, Zap, BookOpen, AlertCircle, CheckCircle,
-  StickyNote, ShieldCheck, ShieldAlert,
+  StickyNote, ShieldCheck, ShieldAlert, Play, Trash2,
 } from 'lucide-react'
 import { useIPC } from '../../hooks/useIPC'
 import { Section, NumberField } from './shared'
@@ -86,14 +86,13 @@ function getToolIcon(toolType: string): React.ReactNode {
 
 // --- 状态指示 ---
 
-function StatusDot({ status }: { status: 'online' | 'syncing' | 'offline' | 'paused' | 'unconfigured' }) {
+function StatusDot({ status }: { status: 'online' | 'syncing' | 'offline' | 'paused' }) {
   const { t } = useTranslation('settings')
   const cfg = {
     online: { cls: 'bg-emerald-400 shadow-emerald-400/40 shadow-sm', label: t('noteSync.status.online') },
     syncing: { cls: 'bg-blue-400 shadow-blue-400/40 shadow-sm animate-pulse', label: t('noteSync.status.syncing') },
     offline: { cls: 'bg-red-400 shadow-red-400/40 shadow-sm', label: t('noteSync.status.offline') },
     paused: { cls: 'bg-gray-500', label: t('noteSync.status.paused') },
-    unconfigured: { cls: 'bg-gray-500', label: t('noteSync.status.unconfigured') },
   }
   const { cls, label } = cfg[status]
   return (
@@ -275,10 +274,248 @@ function NoteSourceDetailPanel({
 }
 
 // ============================================================
-// 添加向导（Modal）
+// 初始化中/中断 卡片
 // ============================================================
 
 const PHASE_NAMES = ['扫描分类', '预处理', '入库', '显式链接', '节点标注', 'Landing 连接', '链接评估', 'Keystone 标记', '涌现']
+
+type InitCardState = 'interrupted' | 'running' | 'complete' | 'error'
+
+function InitializingSourceCard({
+  source,
+  onRefetch,
+}: {
+  source: NoteSource
+  onRefetch: () => void
+}) {
+  const { t } = useTranslation('settings')
+  const [state, setState] = useState<InitCardState>('interrupted')
+  const [totalFiles, setTotalFiles] = useState<number | null>(null)
+  const [syncedFiles, setSyncedFiles] = useState<number>(0)
+  const [initProgress, setInitProgress] = useState<{
+    phase: number; phaseName: string; current: number; total: number; status: string
+  } | null>(null)
+  const [initReport, setInitReport] = useState<any>(null)
+  const [initError, setInitError] = useState<string | null>(null)
+  const [aborting, setAborting] = useState(false)
+  const [discarding, setDiscarding] = useState(false)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // mount 时获取总文件数和已同步数
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const testResult = await (window as any).api.noteSources.test(source.tool_type, source.path)
+        if (!cancelled) setTotalFiles(testResult?.fileCount ?? null)
+      } catch { /* ignore */ }
+      try {
+        const stats = await (window as any).api.noteSources.stats(source.id)
+        if (!cancelled) setSyncedFiles(stats?.fileCount ?? 0)
+      } catch { /* ignore */ }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [source.id])
+
+  // 清理轮询
+  useEffect(() => {
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [])
+
+  const handleContinue = async () => {
+    setState('running')
+    setInitError(null)
+    setInitProgress({ phase: 0, phaseName: t('noteSync.wizard.starting'), current: 0, total: 0, status: 'running' })
+
+    // 开始轮询进度
+    pollRef.current = setInterval(async () => {
+      try {
+        const prog = await (window as any).api.noteSources.initProgress(source.id)
+        if (prog && prog.status !== 'idle') {
+          setInitProgress(prog)
+          if (prog.status === 'error') {
+            if (pollRef.current) clearInterval(pollRef.current)
+          }
+        }
+      } catch { /* ignore */ }
+    }, 2000)
+
+    try {
+      const res = await (window as any).api.noteSources.initStart(source.id)
+      if (pollRef.current) clearInterval(pollRef.current)
+      if (res?.success) {
+        setState('complete')
+        setInitReport(res.data)
+        setTimeout(() => onRefetch(), 3000)
+      } else {
+        setState('error')
+        setInitError(res?.error ?? t('noteSync.wizard.unknownError'))
+      }
+    } catch (err) {
+      if (pollRef.current) clearInterval(pollRef.current)
+      setState('error')
+      setInitError((err as Error).message)
+    }
+  }
+
+  const handleAbort = async () => {
+    setAborting(true)
+    await (window as any).api.noteSources.initAbort(source.id)
+  }
+
+  const handleDiscard = async () => {
+    if (!confirm(t('noteSync.init.discardConfirm'))) return
+    setDiscarding(true)
+    try {
+      await (window as any).api.noteSources.rollback(source.id)
+    } catch { /* ignore */ }
+    onRefetch()
+  }
+
+  const pct = totalFiles && totalFiles > 0
+    ? Math.round((syncedFiles / totalFiles) * 100)
+    : 0
+
+  return (
+    <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] p-4 space-y-3">
+      {/* 中断态 */}
+      {state === 'interrupted' && (
+        <>
+          <div className="flex items-center gap-2">
+            <AlertCircle size={14} className="text-amber-400 flex-shrink-0" />
+            <span className="text-xs text-white font-medium">{source.name}</span>
+            <span className="text-[10px] text-amber-400">{t('noteSync.init.interrupted')}</span>
+          </div>
+          {totalFiles !== null && (
+            <>
+              <div className="text-[11px] text-gray-400">
+                {t('noteSync.init.processedFiles', { current: syncedFiles, total: totalFiles })}
+              </div>
+              <div className="w-full bg-white/[0.06] rounded-full h-1.5">
+                <div
+                  className="bg-amber-400 h-1.5 rounded-full transition-all"
+                  style={{ width: `${Math.max(2, pct)}%` }}
+                />
+              </div>
+            </>
+          )}
+          <div className="flex items-center gap-3 pt-1">
+            <button
+              onClick={handleContinue}
+              className="flex items-center gap-2 px-4 py-2 text-xs bg-indigo-500 hover:bg-indigo-400 text-white rounded-lg transition-colors"
+            >
+              <Play size={12} />
+              {t('noteSync.init.continueInit')}
+            </button>
+            <button
+              onClick={handleDiscard}
+              disabled={discarding}
+              className="flex items-center gap-2 px-3 py-2 text-xs text-gray-500 hover:text-red-400 transition-colors disabled:opacity-50"
+            >
+              <Trash2 size={12} />
+              {t('noteSync.init.discard')}
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* 进行中 */}
+      {state === 'running' && initProgress && (
+        <>
+          <div className="flex items-center gap-2">
+            <Loader2 size={14} className="text-indigo-400 animate-spin flex-shrink-0" />
+            <span className="text-xs text-white font-medium">{source.name}</span>
+            <span className="text-[10px] text-indigo-400">{t('noteSync.init.inProgress')}</span>
+          </div>
+          <div className="text-xs text-gray-400">
+            Phase {initProgress.phase}/8: {initProgress.phaseName}
+          </div>
+          <div className="w-full bg-white/[0.06] rounded-full h-2">
+            <div
+              className="bg-indigo-400 h-2 rounded-full transition-all duration-500"
+              style={{ width: `${initProgress.total > 0 ? Math.max(5, Math.round((initProgress.current / initProgress.total) * 100)) : 5}%` }}
+            />
+          </div>
+          <div className="text-xs text-gray-500 text-center">
+            {initProgress.current} / {initProgress.total}
+          </div>
+          <div className="flex gap-0.5">
+            {PHASE_NAMES.map((pname, i) => (
+              <div
+                key={i}
+                className={`h-1 flex-1 rounded-full transition-colors ${
+                  i < initProgress.phase ? 'bg-green-500'
+                  : i === initProgress.phase ? 'bg-indigo-400'
+                  : 'bg-white/[0.06]'
+                }`}
+                title={`Phase ${i}: ${pname}`}
+              />
+            ))}
+          </div>
+          <button
+            onClick={handleAbort}
+            disabled={aborting}
+            className="w-full py-1.5 bg-red-600/20 hover:bg-red-600/30 text-red-400 text-xs rounded-lg transition-colors disabled:opacity-50"
+          >
+            {aborting ? t('noteSync.wizard.aborting') : t('noteSync.wizard.abort')}
+          </button>
+        </>
+      )}
+
+      {/* 完成 */}
+      {state === 'complete' && (
+        <>
+          <div className="flex items-center gap-2">
+            <CheckCircle size={14} className="text-emerald-400 flex-shrink-0" />
+            <span className="text-xs text-white font-medium">{source.name}</span>
+            <span className="text-[10px] text-emerald-400">{t('noteSync.init.complete')}</span>
+          </div>
+          {initReport && (
+            <div className="grid grid-cols-4 gap-2 text-xs">
+              {[
+                [t('noteSync.wizard.reportNodes'), initReport.nodesCreated],
+                [t('noteSync.wizard.reportLinks'), initReport.linksCreated],
+                [t('noteSync.wizard.reportCrystals'), initReport.crystalsCreated],
+                [t('noteSync.wizard.reportDuration'), `${Math.round((initReport.durationMs ?? 0) / 1000)}s`],
+              ].map(([label, value]) => (
+                <div key={label as string} className="bg-white/[0.04] rounded-lg p-2 text-center">
+                  <div className="text-gray-500 text-[10px]">{label}</div>
+                  <div className="text-white font-medium">{value}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* 错误 */}
+      {state === 'error' && (
+        <>
+          <div className="flex items-center gap-2">
+            <AlertCircle size={14} className="text-red-400 flex-shrink-0" />
+            <span className="text-xs text-white font-medium">{source.name}</span>
+            <span className="text-[10px] text-red-400">{t('noteSync.wizard.initFailed')}</span>
+          </div>
+          {initError && <div className="text-xs text-red-300">{initError}</div>}
+          <div className="flex items-center gap-3 pt-1">
+            <button
+              onClick={() => { setState('interrupted'); setInitError(null) }}
+              className="flex items-center gap-2 px-3 py-1.5 text-xs bg-white/5 hover:bg-white/10 rounded-lg text-gray-300 transition-colors"
+            >
+              <RefreshCw size={12} />
+              {t('noteSync.init.continueInit')}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ============================================================
+// 添加向导（Modal）
+// ============================================================
 
 function AddNoteSourceWizard({
   onClose,
@@ -875,11 +1112,16 @@ export function NoteSync() {
 
   const allSources = (sources ?? []) as NoteSource[]
   const activeSources = allSources.filter(s => !s.archived)
+  const initializedSources = activeSources.filter(s => s.initialized)
+  const uninitializedSources = activeSources.filter(s => !s.initialized)
   const archivedSources = allSources.filter(s => s.archived)
 
-  // Load stats for active sources
+  // Load stats for active sources (poll every 3s while any source is syncing)
   useEffect(() => {
     if (activeSources.length === 0) return
+    let timer: ReturnType<typeof setInterval> | null = null
+    let cancelled = false
+
     const loadStats = async () => {
       const map: Record<string, NoteSourceStat> = {}
       for (const s of activeSources) {
@@ -889,13 +1131,29 @@ export function NoteSync() {
           console.error(`加载笔记源统计失败 (${s.id}):`, err)
         }
       }
-      setStatsMap(map)
+      if (!cancelled) {
+        setStatsMap(map)
+        // 有正在同步的源时持续轮询
+        const anySyncing = Object.values(map).some(s => s.syncing)
+        if (anySyncing && !timer) {
+          timer = setInterval(loadStats, 3000)
+        } else if (!anySyncing && timer) {
+          clearInterval(timer)
+          timer = null
+        }
+      }
     }
     loadStats()
+    // 首次也启动轮询，确保能捕获到进行中的同步
+    timer = setInterval(loadStats, 3000)
+
+    return () => {
+      cancelled = true
+      if (timer) clearInterval(timer)
+    }
   }, [sources])
 
-  const getStatus = (source: NoteSource): 'online' | 'syncing' | 'offline' | 'paused' | 'unconfigured' => {
-    if (!source.initialized) return 'unconfigured'
+  const getStatus = (source: NoteSource): 'online' | 'syncing' | 'offline' | 'paused' => {
     if (source.archived) return 'paused'
     const stats = statsMap[source.id]
     if (stats?.syncing) return 'syncing'
@@ -910,13 +1168,13 @@ export function NoteSync() {
           {t('noteSync.description')}
         </p>
 
-        {activeSources.length === 0 && !wizardOpen && (
+        {initializedSources.length === 0 && uninitializedSources.length === 0 && !wizardOpen && (
           <div className="py-8 text-center text-xs text-gray-500">
             {t('noteSync.empty')}
           </div>
         )}
 
-        {activeSources.length > 0 && (
+        {initializedSources.length > 0 && (
           <div className="space-y-0.5">
             {/* Table header */}
             <div className="flex items-center gap-4 px-3 py-2 text-[11px] text-gray-500 font-medium border-b border-white/5">
@@ -928,7 +1186,7 @@ export function NoteSync() {
               <span className="w-8"></span>
             </div>
 
-            {activeSources.map(source => {
+            {initializedSources.map(source => {
               const status = getStatus(source)
               const stats = statsMap[source.id]
               const isExpanded = expandedSource === source.id
@@ -1004,22 +1262,33 @@ export function NoteSync() {
         )}
       </Section>
 
-      {/* 对接新笔记 — 内联展开 */}
-      {!wizardOpen ? (
-        <button
-          onClick={() => setWizardOpen(true)}
-          className="flex items-center gap-2 px-4 py-2.5 bg-white/5 hover:bg-white/10 rounded-xl text-xs text-gray-300 transition-colors border border-white/5"
-        >
-          <Plus size={14} />
-          {t('noteSync.wizard.title')}
-        </button>
-      ) : (
-        <AddNoteSourceWizard
-          onClose={() => {
-            setWizardOpen(false)
-            refetch()
-          }}
+      {/* 初始化中/中断的笔记源 */}
+      {uninitializedSources.map(source => (
+        <InitializingSourceCard
+          key={source.id}
+          source={source}
+          onRefetch={refetch}
         />
+      ))}
+
+      {/* 对接新笔记 — 有未完成初始化时隐藏（同一时刻只能初始化一个） */}
+      {uninitializedSources.length === 0 && (
+        !wizardOpen ? (
+          <button
+            onClick={() => setWizardOpen(true)}
+            className="flex items-center gap-2 px-4 py-2.5 bg-white/5 hover:bg-white/10 rounded-xl text-xs text-gray-300 transition-colors border border-white/5"
+          >
+            <Plus size={14} />
+            {t('noteSync.wizard.title')}
+          </button>
+        ) : (
+          <AddNoteSourceWizard
+            onClose={() => {
+              setWizardOpen(false)
+              refetch()
+            }}
+          />
+        )
       )}
     </div>
   )

@@ -226,6 +226,15 @@
       "paused": "一時停止",
       "unconfigured": "未設定"
     },
+    "init": {
+      "interrupted": "初期化が中断されました",
+      "inProgress": "初期化中",
+      "complete": "接続完了",
+      "continueInit": "初期化を続行",
+      "discard": "破棄して削除",
+      "discardConfirm": "破棄しますか？インポートされたデータはロールバックされます。",
+      "processedFiles": "処理済み {{current}} / {{total}} ファイル"
+    },
     "table": {
       "name": "名前",
       "type": "タイプ",

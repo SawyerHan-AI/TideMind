@@ -226,6 +226,15 @@
       "paused": "일시 중지",
       "unconfigured": "미설정"
     },
+    "init": {
+      "interrupted": "초기화 중단됨",
+      "inProgress": "초기화 진행 중",
+      "complete": "연결 완료",
+      "continueInit": "초기화 계속",
+      "discard": "삭제 및 폐기",
+      "discardConfirm": "폐기하시겠습니까? 가져온 데이터가 롤백됩니다.",
+      "processedFiles": "처리됨 {{current}} / {{total}} 파일"
+    },
     "table": {
       "name": "이름",
       "type": "유형",

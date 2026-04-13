@@ -226,6 +226,15 @@
       "paused": "En pause",
       "unconfigured": "Non configure"
     },
+    "init": {
+      "interrupted": "Initialisation interrompue",
+      "inProgress": "Initialisation en cours",
+      "complete": "Connexion terminée",
+      "continueInit": "Continuer l'initialisation",
+      "discard": "Abandonner et supprimer",
+      "discardConfirm": "Abandonner ? Les données importées seront annulées et supprimées.",
+      "processedFiles": "Traités {{current}} / {{total}} fichiers"
+    },
     "table": {
       "name": "Nom",
       "type": "Type",

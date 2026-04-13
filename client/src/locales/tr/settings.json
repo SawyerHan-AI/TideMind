@@ -226,6 +226,15 @@
       "paused": "Duraklatildi",
       "unconfigured": "Yapilandirilmamis"
     },
+    "init": {
+      "interrupted": "Başlatma kesintiye uğradı",
+      "inProgress": "Başlatılıyor",
+      "complete": "Bağlantı tamamlandı",
+      "continueInit": "Başlatmaya devam et",
+      "discard": "Vazgeç ve sil",
+      "discardConfirm": "Vazgeçilsin mi? İçe aktarılan veriler geri alınacak ve silinecektir.",
+      "processedFiles": "İşlenen {{current}} / {{total}} dosya"
+    },
     "table": {
       "name": "Ad",
       "type": "Tur",

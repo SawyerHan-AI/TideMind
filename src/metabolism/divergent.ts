@@ -121,12 +121,13 @@ export async function runDivergentScan(
       // 创建桥接洞察节点（crystal 类型）
       const bridgeId = generateId();
       const bridgeMaturity = computeMaturityScore(1.0, 0.7, 0.0, 0.8);
+      const bridgeTitle = result.title || result.content.slice(0, 50);
       db.prepare(`
-        INSERT INTO nodes (id, type, content, heat, refinement, connectivity, independence,
+        INSERT INTO nodes (id, type, content, title, heat, refinement, connectivity, independence,
           maturity_score, is_crystal, specificity, subjectivity, actuality,
           tags, created, version)
-        VALUES (?, 'fact', ?, 1.0, 0.7, 0.0, 0.8, ?, 1, 0.3, 0.5, 0.7, ?, datetime('now'), 1)
-      `).run(bridgeId, result.content, bridgeMaturity, JSON.stringify(result.tags ?? []));
+        VALUES (?, 'fact', ?, ?, 1.0, 0.7, 0.0, 0.8, ?, 1, 0.3, 0.5, 0.7, ?, datetime('now'), 1)
+      `).run(bridgeId, result.content, bridgeTitle, bridgeMaturity, JSON.stringify(result.tags ?? []));
 
       // 从桥接节点到两个源节点创建 pending 链接
       createLink(db, {
@@ -262,12 +263,13 @@ export async function runCrystalEmergence(
         if (crystal) {
           const crystalId = generateId();
           const crystalMaturity = computeMaturityScore(1.0, 0.8, 0.0, 0.8);
+          const crystalTitle = crystal.title || crystal.content.slice(0, 50);
           db.prepare(`
-            INSERT INTO nodes (id, type, content, heat, refinement, connectivity, independence,
+            INSERT INTO nodes (id, type, content, title, heat, refinement, connectivity, independence,
               maturity_score, is_crystal, specificity, subjectivity, actuality,
               tags, created, version)
-            VALUES (?, 'fact', ?, 1.0, 0.8, 0.0, 0.8, ?, 1, 0.2, 0.5, 0.8, ?, datetime('now'), 1)
-          `).run(crystalId, crystal.content, crystalMaturity, JSON.stringify(crystal.tags ?? []));
+            VALUES (?, 'fact', ?, ?, 1.0, 0.8, 0.0, 0.8, ?, 1, 0.2, 0.5, 0.8, ?, datetime('now'), 1)
+          `).run(crystalId, crystal.content, crystalTitle, crystalMaturity, JSON.stringify(crystal.tags ?? []));
 
           // 链接到枢纽及其邻居
           const sourceNodes = [{ id: hub.id }, ...neighborRows];
@@ -302,12 +304,13 @@ export async function runCrystalEmergence(
     if (crystal) {
       const crystalId = generateId();
       const crystalMaturity = computeMaturityScore(1.0, 0.8, 0.0, 0.8);
+      const crystalTitle = crystal.title || crystal.content.slice(0, 50);
       db.prepare(`
-        INSERT INTO nodes (id, type, content, heat, refinement, connectivity, independence,
+        INSERT INTO nodes (id, type, content, title, heat, refinement, connectivity, independence,
           maturity_score, is_crystal, specificity, subjectivity, actuality,
           tags, created, version)
-        VALUES (?, 'fact', ?, 1.0, 0.8, 0.0, 0.8, ?, 1, 0.2, 0.5, 0.8, ?, datetime('now'), 1)
-      `).run(crystalId, crystal.content, crystalMaturity, JSON.stringify(crystal.tags ?? []));
+        VALUES (?, 'fact', ?, ?, 1.0, 0.8, 0.0, 0.8, ?, 1, 0.2, 0.5, 0.8, ?, datetime('now'), 1)
+      `).run(crystalId, crystal.content, crystalTitle, crystalMaturity, JSON.stringify(crystal.tags ?? []));
 
       for (const node of pathBPool.slice(0, 10)) {
         createLink(db, {

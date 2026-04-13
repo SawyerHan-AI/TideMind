@@ -23,6 +23,7 @@ confidence 校准:
 
 输出 JSON:
 {
+  "title": "一句话标题（10-30字，概括核心洞察）",
   "content": "结晶内容（Markdown 格式；首段点明核心洞察，后续段展开论据或推论）",
   "tags": ["标签"],
   "confidence": 0.0-1.0
