@@ -1,14 +1,22 @@
-# TideMind
+<p align="center">
+  <img src="docs/assets/banner.png" alt="TideMind" width="100%" />
+</p>
 
-一个活的第二大脑，连接你用来思考的一切——你的 AI 助手、你的笔记、以及未来更多的东西。
+<p align="center">一个活的第二大脑，连接你用来思考的一切——你的 AI 助手、你的笔记、以及未来更多的东西。</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node.js >= 18](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)](https://nodejs.org/)
-[![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-purple.svg)](https://modelcontextprotocol.io/)
+<p align="center">
 
-[English](README.md) | **中文**
+[![License: MIT](https://img.shields.io/badge/License-MIT-6C5CE7?style=for-the-badge&logoColor=white)](LICENSE)
+[![Node.js >= 18](https://img.shields.io/badge/Node.js-%3E%3D18-4B3F8F?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
+[![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-8B7FD4?style=for-the-badge&logoColor=white)](https://modelcontextprotocol.io/)
+[![Docs](https://img.shields.io/badge/Docs-Read%20the%20Docs-5B4FCF?style=for-the-badge&logo=readthedocs&logoColor=white)](docs/)
+[![GitHub Discussions](https://img.shields.io/badge/Community-Discussions-7C6DD8?style=for-the-badge&logo=github&logoColor=white)](https://github.com/SawyerHan-AI/TideMind/discussions)
 
----
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> | <strong>中文</strong>
+</p>
 
 ## 为什么需要 TideMind
 
@@ -141,11 +149,24 @@ TideMind 在后台持续维护这张图，就像大脑在睡眠时整理白天�
 
 ## 桌面客户端
 
-<!-- 截图占位 -->
-
 TideMind 自带桌面客户端，用于浏览你的知识图谱、查看系统代谢动态、调整参数。它是一个审视工具——用来观察你的外脑在想什么、发现了什么、遗忘了什么。
 
 TideMind 的主界面不是这个 App，而是你正在用的 AI 工具本身。
+
+<p align="center">
+  <img src="docs/assets/screenshot-dashboard.jpg" alt="Dashboard — 指标概览、活动动态、结晶发现、标签分布" width="100%" />
+</p>
+<p align="center"><em>Dashboard — 你的第二大脑的实时脉搏</em></p>
+
+<p align="center">
+  <img src="docs/assets/screenshot-graph.jpg" alt="Brain Explorer — 交互式知识图谱，跨领域关联可视化" width="100%" />
+</p>
+<p align="center"><em>Brain Explorer — 可视化你的记忆如何跨领域连接</em></p>
+
+<p align="center">
+  <img src="docs/assets/screenshot-list.jpg" alt="记忆详情 — 四维成熟度雷达图、证据链、关联节点" width="100%" />
+</p>
+<p align="center"><em>记忆详情 — 四维成熟度模型与证据链</em></p>
 
 ## 深入了解
 
