@@ -28,9 +28,11 @@ TideMind is a memory layer that spans all your tools — a living knowledge grap
 
 **All your memory, in one place.** TideMind connects your AI tools, your notes, and whatever comes next into a single knowledge graph. Conversations across different AIs, notes across different apps — no longer scattered in silos, but woven together, cross-pollinating.
 
-**Every AI knows you completely.** At the start of each conversation, TideMind provides your AI with a profile and key memories distilled from all past interactions — who you are, how you think, what you care about. When your AI needs more context, it doesn't just rely on keyword/vector search — it can follow links between memories, navigating from one decision to the discussion behind it, then to later changes it triggered. No need to load everything; no risk of missing what matters. It starts with a few highly relevant nodes and explores along links when more context is needed — on-demand exploration.
+**Every AI knows you completely.** At the start of each conversation, TideMind provides your AI with a profile and key memories distilled from all past interactions — who you are, how you think, what you care about.
 
-**Not a database — a living system.** Memories form connections automatically. Unimportant details naturally fade; important ones are reinforced and updated. TideMind actively discovers commonalities you haven't noticed — linking a decision from three months ago to the problem you're facing today. Information isn't just stored. It's digested, connected, and sometimes forgotten. That's what "living" means.
+**More precise, more complete recall.** When your AI needs more context, it doesn't just rely on keyword/vector search — it can follow links between memories, navigating from one decision to the discussion behind it, then to later changes it triggered. No need to load everything; no risk of missing what matters. It starts with a few highly relevant nodes and explores along links when more context is needed — on-demand exploration.
+
+**More than a database — a living system.** Memories form connections automatically. Unimportant details naturally fade; important ones are reinforced and updated. TideMind actively discovers commonalities you haven't noticed — linking a decision from three months ago to the problem you're facing today. Information doesn't end at storage. It's digested, connected, distilled, and sometimes forgotten. That's what "living" means.
 
 **Simple to start.** Connect your AI tools through the MCP protocol — one config, no habit changes. Import and sync notes with a single click.
 
