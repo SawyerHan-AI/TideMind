@@ -301,7 +301,7 @@ function InitializingSourceCard({
   const [discarding, setDiscarding] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // mount 时获取总文件数和已同步数
+  // mount 时获取总文件数、已同步数，并检查是否有正在进行的初始化
   useEffect(() => {
     let cancelled = false
     const load = async () => {
@@ -312,6 +312,37 @@ function InitializingSourceCard({
       try {
         const stats = await (window as any).api.noteSources.stats(source.id)
         if (!cancelled) setSyncedFiles(stats?.fileCount ?? 0)
+      } catch { /* ignore */ }
+      // 检查是否有正在进行的初始化（如从概览页跳转过来）
+      try {
+        const prog = await (window as any).api.noteSources.initProgress(source.id)
+        if (!cancelled && prog && prog.status === 'running') {
+          setState('running')
+          setInitProgress(prog)
+          // 启动轮询（与 handleContinue 中的轮询共享完成/错误检测逻辑）
+          pollRef.current = setInterval(async () => {
+            try {
+              const p = await (window as any).api.noteSources.initProgress(source.id)
+              if (p && p.status !== 'idle') {
+                setInitProgress(p)
+                if (p.status === 'done' && pollRef.current) {
+                  clearInterval(pollRef.current)
+                  // 初始化已完成，刷新列表
+                  onRefetch()
+                }
+                if (p.status === 'error' && pollRef.current) {
+                  clearInterval(pollRef.current)
+                  setState('error')
+                  setInitError(p.error ?? '')
+                }
+              } else if (p && p.status === 'idle') {
+                // 进度已 reset 为 idle，说明初始化结束了，刷新
+                if (pollRef.current) clearInterval(pollRef.current)
+                onRefetch()
+              }
+            } catch { /* ignore */ }
+          }, 2000)
+        }
       } catch { /* ignore */ }
     }
     load()
@@ -335,6 +366,9 @@ function InitializingSourceCard({
         if (prog && prog.status !== 'idle') {
           setInitProgress(prog)
           if (prog.status === 'error') {
+            if (pollRef.current) clearInterval(pollRef.current)
+          }
+          if (prog.status === 'done') {
             if (pollRef.current) clearInterval(pollRef.current)
           }
         }
