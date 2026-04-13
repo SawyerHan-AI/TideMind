@@ -48,12 +48,10 @@ TideMind is a memory layer that spans all your tools — a living knowledge grap
 
 |  | Typical AI Memory | TideMind |
 |---|---|---|
-| **First message** | AI starts from zero | AI receives your profile — knows you from the start |
-| **Storage** | Flat list of facts | Living knowledge graph with typed links |
-| **Recall** | Keyword / vector top-K | Graph navigation — follow links, explore on demand |
-| **Forget** | Never (or manual delete) | Automatic decay — signal stays, noise fades |
-| **On read** | Return results | Reconsolidate — memories evolve as you use them |
-| **Discover** | Only what you search for | Divergent scanning — finds connections you missed |
+| **Profile** | No profile, or siloed within a single AI | Complete profile built from all your data, delivered to AI at the start of every conversation |
+| **Storage** | Flat list of facts | Knowledge graph where memories dynamically evolve across multiple dimensions over time and use |
+| **Recall** | Keyword / vector top-K | Starts from the most relevant memories, follows links to explore, expands on demand |
+| **Emerge** | Stored memories stay frozen | A living system that surfaces new cognition |
 | **Data** | Cloud / vendor-locked | Local SQLite file, export to Markdown anytime |
 
 ## Quick Start
