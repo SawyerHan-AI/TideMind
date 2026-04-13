@@ -1,0 +1,981 @@
+import type Database from 'better-sqlite3';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
+import { createLogger } from '../utils/logger.js';
+
+const log = createLogger('schema');
+
+function generateSourceId(): string {
+  return 'ns_' + crypto.randomBytes(4).toString('hex');
+}
+
+/**
+ * 当前 schema 版本。每次新增 migration 时递增。
+ */
+const CURRENT_SCHEMA_VERSION = 10;
+
+/**
+ * 完整建表 SQL — 包含所有字段，新数据库直接创建最新结构。
+ */
+const SCHEMA_SQL = `
+-- 节点表
+CREATE TABLE IF NOT EXISTS nodes (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL CHECK(type IN ('fact','context','preference','idea','crystal','meta')),
+    content TEXT NOT NULL,
+    title TEXT,
+
+    -- 四维成熟度
+    heat REAL DEFAULT 1.0,
+    refinement REAL DEFAULT 0.0,
+    connectivity REAL DEFAULT 0.0,
+    independence REAL DEFAULT 0.0,
+
+    -- 三维内容性质
+    specificity REAL DEFAULT 0.5,
+    subjectivity REAL DEFAULT 0.5,
+    actuality REAL DEFAULT 0.5,
+
+    -- 结构角色 flags
+    is_crystal INTEGER DEFAULT 0,
+    is_tag INTEGER DEFAULT 0,
+    is_meta INTEGER DEFAULT 0,
+
+    -- 来源追溯
+    source_tool TEXT,
+    source_session TEXT,
+    source_stream TEXT,
+    source_timestamp TEXT,
+
+    -- 上下文
+    tags TEXT,
+
+    -- 生命周期
+    created TEXT NOT NULL,
+    last_reconsolidated TEXT,
+    version INTEGER DEFAULT 1,
+    archived INTEGER DEFAULT 0,
+    is_keystone INTEGER DEFAULT 0,
+    is_superseded INTEGER DEFAULT 0,
+
+    -- 汇总分
+    maturity_score REAL DEFAULT 0.0
+);
+
+-- 链接表（relation 存储为 JSON 数组 [{type, confidence}]）
+CREATE TABLE IF NOT EXISTS links (
+    id TEXT PRIMARY KEY,
+    from_id TEXT NOT NULL REFERENCES nodes(id),
+    to_id TEXT NOT NULL REFERENCES nodes(id),
+    relation TEXT NOT NULL,
+    strength REAL DEFAULT 0.5,
+    note TEXT,
+    auto INTEGER DEFAULT 1,
+    status TEXT DEFAULT 'confirmed' CHECK(status IN ('confirmed','pending')),
+    created TEXT NOT NULL
+);
+
+-- 节点版本历史
+CREATE TABLE IF NOT EXISTS node_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id TEXT NOT NULL REFERENCES nodes(id),
+    version INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    change_reason TEXT,
+    changed_at TEXT NOT NULL
+);
+
+-- MCP 操作日志
+CREATE TABLE IF NOT EXISTS operation_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation TEXT NOT NULL,
+    input_summary TEXT,
+    context TEXT,
+    output_node_ids TEXT,
+    tool TEXT,
+    session TEXT,
+    agent_id TEXT,
+    created TEXT NOT NULL
+);
+
+-- 策略评估数据
+CREATE TABLE IF NOT EXISTS strategy_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_name TEXT NOT NULL,
+    operation_id INTEGER REFERENCES operation_log(id),
+    node_id TEXT REFERENCES nodes(id),
+    was_used INTEGER,
+    feedback_signal REAL,
+    created TEXT NOT NULL
+);
+
+-- 策略版本历史
+CREATE TABLE IF NOT EXISTS strategy_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_name TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    change_reason TEXT,
+    changed_by TEXT DEFAULT 'user',
+    created TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_versions_name ON strategy_versions(strategy_name);
+
+-- 源码→运行时同步哈希（替代文件内 > 版本: N 机制）
+CREATE TABLE IF NOT EXISTS sync_hashes (
+    file_name TEXT PRIMARY KEY,
+    source_hash TEXT NOT NULL,
+    synced_at TEXT NOT NULL
+);
+
+-- 系统元数据（维护时间戳、schema 版本等）
+CREATE TABLE IF NOT EXISTS metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- 图遍历索引
+CREATE INDEX IF NOT EXISTS idx_links_from ON links(from_id);
+CREATE INDEX IF NOT EXISTS idx_links_to ON links(to_id);
+CREATE INDEX IF NOT EXISTS idx_links_status ON links(status);
+
+-- 常用查询索引
+CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);
+CREATE INDEX IF NOT EXISTS idx_nodes_archived ON nodes(archived);
+CREATE INDEX IF NOT EXISTS idx_nodes_heat ON nodes(heat);
+CREATE INDEX IF NOT EXISTS idx_nodes_keystone ON nodes(is_keystone);
+CREATE INDEX IF NOT EXISTS idx_nodes_is_crystal ON nodes(is_crystal);
+CREATE INDEX IF NOT EXISTS idx_nodes_is_tag ON nodes(is_tag);
+CREATE INDEX IF NOT EXISTS idx_nodes_is_meta ON nodes(is_meta);
+
+-- Agent 身份表
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    tool_type TEXT NOT NULL,
+    archived INTEGER DEFAULT 0,
+    last_active TEXT,
+    created TEXT NOT NULL
+);
+
+-- 笔记源表（多实例支持）
+CREATE TABLE IF NOT EXISTS note_sources (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    tool_type TEXT NOT NULL,
+    path TEXT NOT NULL,
+    poll_interval INTEGER DEFAULT 60,
+    archived INTEGER DEFAULT 0,
+    initialized INTEGER DEFAULT 0,
+    created TEXT NOT NULL,
+    last_synced TEXT
+);
+
+-- LLM 用量日志
+CREATE TABLE IF NOT EXISTS llm_usage_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    model TEXT NOT NULL,
+    operation TEXT,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    thinking_tokens INTEGER DEFAULT 0,
+    estimated_cost REAL DEFAULT 0,
+    created TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_created ON llm_usage_log(created);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage_log(model);
+
+-- 时间线事件表
+CREATE TABLE IF NOT EXISTS timeline_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    subtype TEXT NOT NULL,
+    title TEXT NOT NULL,
+    detail TEXT,
+    node_ids TEXT,
+    important INTEGER DEFAULT 0,
+    actor TEXT DEFAULT 'brain',
+    created TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_timeline_created ON timeline_events(created);
+CREATE INDEX IF NOT EXISTS idx_timeline_type ON timeline_events(type);
+
+-- 多段 embedding 支持
+CREATE TABLE IF NOT EXISTS node_segments (
+    segment_id TEXT PRIMARY KEY,
+    node_id TEXT NOT NULL,
+    segment_index INTEGER NOT NULL,
+    UNIQUE(node_id, segment_index)
+);
+
+-- Learning II 参数反馈信号
+CREATE TABLE IF NOT EXISTS param_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_name TEXT NOT NULL,
+    param_name TEXT,
+    signal_type TEXT NOT NULL,
+    signal_value REAL NOT NULL,
+    context TEXT,
+    created TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_param_feedback_strategy ON param_feedback(strategy_name, created);
+
+-- Learning II 参数调整记录
+CREATE TABLE IF NOT EXISTS param_adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_name TEXT NOT NULL,
+    param_name TEXT NOT NULL,
+    signal_type TEXT,
+    old_value REAL NOT NULL,
+    new_value REAL NOT NULL,
+    reason TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    pre_avg REAL,
+    post_avg REAL,
+    monitoring_start TEXT,
+    monitoring_end TEXT,
+    created TEXT NOT NULL
+);
+
+-- 模型连接表（多实例）
+CREATE TABLE IF NOT EXISTS model_connections (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    provider_type TEXT NOT NULL,
+    credentials TEXT NOT NULL DEFAULT '{}',
+    status TEXT DEFAULT 'unconfigured',
+    available_models TEXT,
+    last_checked TEXT,
+    archived INTEGER DEFAULT 0,
+    created TEXT NOT NULL
+);
+
+-- Digest 重试队列
+CREATE TABLE IF NOT EXISTS pending_digests (
+    id TEXT PRIMARY KEY,
+    trace_id TEXT NOT NULL,
+    input_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','failed')),
+    error_message TEXT,
+    retry_count INTEGER DEFAULT 0,
+    created TEXT NOT NULL,
+    next_retry_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pending_digests_status ON pending_digests(status, next_retry_at);
+`;
+
+const FTS_SQL = `
+-- 全文搜索（FTS5 外部内容表）
+CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
+    content,
+    tags,
+    content=nodes,
+    content_rowid=rowid
+);
+`;
+
+const FTS_TRIGGERS_SQL = `
+-- FTS 同步触发器
+CREATE TRIGGER IF NOT EXISTS nodes_ai AFTER INSERT ON nodes BEGIN
+    INSERT INTO nodes_fts(rowid, content, tags)
+    VALUES (new.rowid, new.content, new.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS nodes_ad AFTER DELETE ON nodes BEGIN
+    INSERT INTO nodes_fts(nodes_fts, rowid, content, tags)
+    VALUES('delete', old.rowid, old.content, old.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE ON nodes BEGIN
+    INSERT INTO nodes_fts(nodes_fts, rowid, content, tags)
+    VALUES('delete', old.rowid, old.content, old.tags);
+    INSERT INTO nodes_fts(rowid, content, tags)
+    VALUES (new.rowid, new.content, new.tags);
+END;
+`;
+
+// ── Migration 系统 ──────────────────────────────────────────────
+
+type Migration = {
+  version: number;
+  description: string;
+  up: (db: Database.Database) => void;
+};
+
+/**
+ * 从 config.toml 迁移旧的单实例笔记源配置到 note_sources 表。
+ * 仅在 note_sources 表为空时执行（避免重复迁移）。
+ */
+function migrateLegacyNoteSources(db: Database.Database): void {
+  // 检查是否已有数据（避免重复迁移）
+  const count = (db.prepare('SELECT COUNT(*) as cnt FROM note_sources').get() as { cnt: number }).cnt;
+  if (count > 0) return;
+
+  // 直接读 config.toml 文件（不依赖 config 模块，避免 ESM 循环依赖）
+  const defaultDir = path.join(os.homedir(), '.tidemind');
+  const configPath = path.join(defaultDir, 'config.toml');
+  if (!fs.existsSync(configPath)) {
+    log.info('迁移 v7: config.toml 不存在，跳过旧配置迁移');
+    return;
+  }
+
+  let config: Record<string, unknown>;
+  try {
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    config = parseToml(raw) as Record<string, unknown>;
+  } catch (err) {
+    log.warn('迁移 v7: 解析 config.toml 失败:', (err as Error).message);
+    return;
+  }
+
+  const sources = config.sources as Record<string, Record<string, unknown>> | undefined;
+  if (!sources) return;
+
+  const now = new Date().toISOString();
+  const insertStmt = db.prepare(
+    'INSERT INTO note_sources (id, name, tool_type, path, poll_interval, initialized, created) VALUES (?, ?, ?, ?, ?, 1, ?)'
+  );
+
+  const tableExists = (name: string) => {
+    const row = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
+    return !!row;
+  };
+
+  // 迁移 Logseq
+  if (sources.logseq?.path) {
+    const id = generateSourceId();
+    const pollInterval = (sources.logseq.poll_interval as number) ?? 60;
+    insertStmt.run(id, 'Logseq', 'logseq', sources.logseq.path as string, pollInterval, now);
+    if (tableExists('logseq_sync')) {
+      db.prepare("UPDATE logseq_sync SET source_id = ? WHERE source_id = ''").run(id);
+    }
+    log.info(`迁移 v7: Logseq 笔记源已迁移 → ${id}`);
+  }
+
+  // 迁移 Obsidian
+  if (sources.obsidian?.path) {
+    const id = generateSourceId();
+    insertStmt.run(id, 'Obsidian', 'obsidian', sources.obsidian.path as string, 60, now);
+    if (tableExists('obsidian_sync')) {
+      db.prepare("UPDATE obsidian_sync SET source_id = ? WHERE source_id = ''").run(id);
+    }
+    log.info(`迁移 v7: Obsidian 笔记源已迁移 → ${id}`);
+  }
+}
+
+/**
+ * 从 config.toml 迁移旧的单实例模型服务配置到 model_connections 表。
+ * 仅在 model_connections 表为空时执行。
+ */
+function migrateModelConnections(db: Database.Database): void {
+  const count = (db.prepare('SELECT COUNT(*) as cnt FROM model_connections').get() as { cnt: number }).cnt;
+  if (count > 0) return;
+
+  const defaultDir = path.join(os.homedir(), '.tidemind');
+  const configPath = path.join(defaultDir, 'config.toml');
+  if (!fs.existsSync(configPath)) {
+    log.info('迁移 v9: config.toml 不存在，跳过旧模型配置迁移');
+    return;
+  }
+
+  let config: Record<string, unknown>;
+  try {
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    config = parseToml(raw) as Record<string, unknown>;
+  } catch (err) {
+    log.warn('迁移 v9: 解析 config.toml 失败:', (err as Error).message);
+    return;
+  }
+
+  const nowStr = new Date().toISOString();
+  const insertStmt = db.prepare(
+    'INSERT INTO model_connections (id, name, provider_type, credentials, status, created) VALUES (?, ?, ?, ?, ?, ?)',
+  );
+
+  const connectionIdMap: Record<string, string> = {}; // provider → connection_id
+
+  // Anthropic
+  const anthropic = config.anthropic as Record<string, unknown> | undefined;
+  if (anthropic?.api_key) {
+    const id = 'mc_' + crypto.randomBytes(4).toString('hex');
+    insertStmt.run(id, 'Anthropic', 'anthropic', JSON.stringify({ api_key: anthropic.api_key }), 'unconfigured', nowStr);
+    connectionIdMap.anthropic = id;
+    log.info(`迁移 v9: Anthropic 配置已迁移 → ${id}`);
+  }
+
+  // Vertex AI
+  const vertex = config.vertex as Record<string, unknown> | undefined;
+  if (vertex?.project_id) {
+    const id = 'mc_' + crypto.randomBytes(4).toString('hex');
+    insertStmt.run(id, 'Vertex AI', 'vertex', JSON.stringify({ project_id: vertex.project_id, region: vertex.region ?? 'us-central1' }), 'unconfigured', nowStr);
+    connectionIdMap.vertex = id;
+    log.info(`迁移 v9: Vertex AI 配置已迁移 → ${id}`);
+  }
+
+  // Gemini
+  const gemini = config.gemini as Record<string, unknown> | undefined;
+  if (gemini?.api_key) {
+    const id = 'mc_' + crypto.randomBytes(4).toString('hex');
+    insertStmt.run(id, 'Gemini API', 'gemini', JSON.stringify({ api_key: gemini.api_key }), 'unconfigured', nowStr);
+    connectionIdMap.gemini = id;
+    log.info(`迁移 v9: Gemini 配置已迁移 → ${id}`);
+  }
+
+  // Ollama
+  const ollama = config.ollama as Record<string, unknown> | undefined;
+  if (ollama?.url && ollama.url !== 'http://localhost:11434') {
+    // 只迁移非默认配置的 Ollama
+    const id = 'mc_' + crypto.randomBytes(4).toString('hex');
+    insertStmt.run(id, 'Ollama', 'ollama', JSON.stringify({ url: ollama.url }), 'unconfigured', nowStr);
+    connectionIdMap.ollama = id;
+    log.info(`迁移 v9: Ollama 配置已迁移 → ${id}`);
+  }
+
+  // 更新 config.toml 中的 llm/embedding 段，把 provider 引用改为 connection_id
+  if (Object.keys(connectionIdMap).length > 0) {
+    try {
+      const llm = config.llm as Record<string, unknown> | undefined;
+      const embedding = config.embedding as Record<string, unknown> | undefined;
+
+      if (llm) {
+        const defaultProvider = (llm.provider as string) ?? 'anthropic';
+        const lightProv = (llm.light_provider as string) ?? defaultProvider;
+        const stdProv = (llm.standard_provider as string) ?? defaultProvider;
+        const heavyProv = (llm.heavy_provider as string) ?? defaultProvider;
+
+        if (connectionIdMap[lightProv]) llm.light_connection = connectionIdMap[lightProv];
+        if (connectionIdMap[stdProv]) llm.standard_connection = connectionIdMap[stdProv];
+        if (connectionIdMap[heavyProv]) llm.heavy_connection = connectionIdMap[heavyProv];
+      }
+
+      if (embedding) {
+        const embProv = (embedding.provider as string) ?? 'vertex';
+        if (connectionIdMap[embProv]) embedding.connection = connectionIdMap[embProv];
+      }
+
+      fs.writeFileSync(configPath, stringifyToml(config), 'utf-8');
+      log.info('迁移 v9: config.toml 已更新 connection 引用');
+    } catch (err) {
+      // config.toml 更新失败不阻塞迁移
+      log.warn('迁移 v9: 更新 config.toml 失败（不影响数据库迁移）:', (err as Error).message);
+    }
+  }
+}
+
+/**
+ * 迁移列表。每个 migration 将 DB 从 version-1 升级到 version。
+ *
+ * 注意：这些迁移是为了升级已有数据库。新数据库通过 SCHEMA_SQL 直接创建最新结构，
+ * 不需要走 migration 路径。
+ */
+const MIGRATIONS: Migration[] = [
+  {
+    version: 1,
+    description: '整合历史迁移：agent_id, refined, 节点维度化, actor, node_segments',
+    up: (db) => {
+      // 这些是之前用 try-catch 做的迁移，整合到 v1
+      // 对于已有数据库，这些列可能已存在（仅忽略 "duplicate column" 错误）
+      const addColumnSafe = (sql: string) => {
+        try { db.exec(sql); } catch (e) {
+          const msg = (e as Error).message ?? '';
+          if (!msg.includes('duplicate column')) throw e;
+        }
+      };
+      addColumnSafe('ALTER TABLE operation_log ADD COLUMN agent_id TEXT');
+      addColumnSafe('ALTER TABLE links ADD COLUMN refined INTEGER DEFAULT 0');
+      addColumnSafe('ALTER TABLE nodes ADD COLUMN specificity REAL DEFAULT 0.5');
+      addColumnSafe('ALTER TABLE nodes ADD COLUMN subjectivity REAL DEFAULT 0.5');
+      addColumnSafe('ALTER TABLE nodes ADD COLUMN actuality REAL DEFAULT 0.5');
+      addColumnSafe('ALTER TABLE nodes ADD COLUMN is_crystal INTEGER DEFAULT 0');
+      addColumnSafe('ALTER TABLE nodes ADD COLUMN is_tag INTEGER DEFAULT 0');
+      addColumnSafe('ALTER TABLE nodes ADD COLUMN is_meta INTEGER DEFAULT 0');
+      addColumnSafe("ALTER TABLE timeline_events ADD COLUMN actor TEXT DEFAULT 'brain'");
+
+      // 回填结构角色 flags
+      db.exec(`UPDATE nodes SET is_crystal = 1 WHERE type = 'crystal' AND is_crystal = 0`);
+      db.exec(`UPDATE nodes SET is_meta = 1 WHERE type = 'meta' AND is_meta = 0`);
+      try { db.exec(`UPDATE nodes SET is_tag = 1 WHERE type = 'tag' AND is_tag = 0`); } catch { /* type may not exist */ }
+
+      // 回填维度
+      db.exec(`UPDATE nodes SET specificity=0.5, subjectivity=0.1, actuality=0.9 WHERE type='fact' AND specificity=0.5 AND subjectivity=0.5 AND actuality=0.5`);
+      db.exec(`UPDATE nodes SET specificity=0.3, subjectivity=0.2, actuality=0.8 WHERE type='context' AND specificity=0.5 AND subjectivity=0.5 AND actuality=0.5`);
+      db.exec(`UPDATE nodes SET specificity=0.3, subjectivity=0.8, actuality=0.8 WHERE type='preference' AND specificity=0.5 AND subjectivity=0.5 AND actuality=0.5`);
+      db.exec(`UPDATE nodes SET specificity=0.5, subjectivity=0.5, actuality=0.2 WHERE type='idea' AND specificity=0.5 AND subjectivity=0.5 AND actuality=0.5`);
+      db.exec(`UPDATE nodes SET specificity=0.2, subjectivity=0.5, actuality=0.8 WHERE type='crystal' AND specificity=0.5 AND subjectivity=0.5 AND actuality=0.5`);
+      db.exec(`UPDATE nodes SET specificity=0.5, subjectivity=0.1, actuality=0.9 WHERE type='meta' AND specificity=0.5 AND subjectivity=0.5 AND actuality=0.5`);
+
+      // 维度索引
+      db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_is_crystal ON nodes(is_crystal)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_is_tag ON nodes(is_tag)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_is_meta ON nodes(is_meta)');
+
+      // node_segments 表
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS node_segments (
+          segment_id TEXT PRIMARY KEY,
+          node_id TEXT NOT NULL,
+          segment_index INTEGER NOT NULL,
+          UNIQUE(node_id, segment_index)
+        )
+      `);
+    },
+  },
+  {
+    version: 2,
+    description: 'llm_usage_log 新增 estimated_cost 列 + 历史数据回填',
+    up: (db) => {
+      try { db.exec('ALTER TABLE llm_usage_log ADD COLUMN estimated_cost REAL DEFAULT 0'); } catch (e) {
+        const msg = (e as Error).message ?? '';
+        if (!msg.includes('duplicate column')) throw e;
+      }
+
+      // 回填历史数据的预估费用
+      // 动态导入 pricing 会增加复杂度，这里用内联的简化定价表回填
+      const pricingRules: Array<{ pattern: string; input: number; output: number; thinking: number }> = [
+        { pattern: 'claude-opus-4-6',   input: 5.00,  output: 25.00, thinking: 25.00 },
+        { pattern: 'claude-opus-4-5',   input: 5.00,  output: 25.00, thinking: 25.00 },
+        { pattern: 'claude-opus-4-1',   input: 15.00, output: 75.00, thinking: 75.00 },
+        { pattern: 'claude-sonnet-4-6', input: 3.00,  output: 15.00, thinking: 15.00 },
+        { pattern: 'claude-sonnet-4-5', input: 3.00,  output: 15.00, thinking: 15.00 },
+        { pattern: 'claude-haiku-4-5',  input: 1.00,  output: 5.00,  thinking: 5.00 },
+        { pattern: 'claude-3-5-sonnet', input: 3.00,  output: 15.00, thinking: 15.00 },
+        { pattern: 'claude-3-5-haiku',  input: 0.80,  output: 4.00,  thinking: 4.00 },
+        { pattern: 'claude-3-opus',     input: 15.00, output: 75.00, thinking: 75.00 },
+        { pattern: 'claude-3-haiku',    input: 0.25,  output: 1.25,  thinking: 1.25 },
+      ];
+      for (const rule of pricingRules) {
+        db.prepare(`
+          UPDATE llm_usage_log SET estimated_cost = (
+            input_tokens * ? + output_tokens * ? + thinking_tokens * ?
+          ) / 1000000.0
+          WHERE LOWER(model) LIKE ? AND estimated_cost = 0
+        `).run(rule.input, rule.output, rule.thinking, `%${rule.pattern}%`);
+      }
+    },
+  },
+  {
+    version: 3,
+    description: '链接模型重设计：relation 改为 JSON 数组，移除 semtype/refined 列，关系类型映射',
+    up: (db) => {
+      // 1. 关系类型映射表
+      const RELATION_MAP: Record<string, string | null> = {
+        same_project: null,       // 删除（项目归属改为节点属性）
+        reminds: 'analogous',     // 模糊类比 → analogous
+        branches: 'part_of',     // 分支从属 → part_of
+      };
+
+      // 2. 重建 links 表（SQLite 不支持 DROP COLUMN）
+      db.exec(`
+        CREATE TABLE links_new (
+          id TEXT PRIMARY KEY,
+          from_id TEXT NOT NULL REFERENCES nodes(id),
+          to_id TEXT NOT NULL REFERENCES nodes(id),
+          relation TEXT NOT NULL,
+          strength REAL DEFAULT 0.5,
+          note TEXT,
+          auto INTEGER DEFAULT 1,
+          status TEXT DEFAULT 'confirmed' CHECK(status IN ('confirmed','pending')),
+          created TEXT NOT NULL
+        )
+      `);
+
+      // 3. 迁移数据：逐行转换 relation 为 JSON 格式
+      const oldLinks = db.prepare('SELECT * FROM links').all() as Array<{
+        id: string; from_id: string; to_id: string;
+        relation: string; semtype: string | null;
+        strength: number; note: string | null;
+        auto: number; status: string; refined: number; created: string;
+      }>;
+
+      const insertStmt = db.prepare(`
+        INSERT INTO links_new (id, from_id, to_id, relation, strength, note, auto, status, created)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const link of oldLinks) {
+        const oldRelation = link.relation;
+
+        // 映射旧关系类型
+        if (oldRelation in RELATION_MAP) {
+          const mapped = RELATION_MAP[oldRelation];
+          if (mapped === null) continue; // same_project → 删除该链接
+          // reminds/branches → 映射到新类型
+          const jsonRelation = JSON.stringify([{ type: mapped, confidence: 0.7 }]);
+          insertStmt.run(link.id, link.from_id, link.to_id, jsonRelation, link.strength, link.note, link.auto, link.status, link.created);
+        } else {
+          // 保留的关系类型，包装为 JSON 数组
+          const jsonRelation = JSON.stringify([{ type: oldRelation, confidence: 0.7 }]);
+          insertStmt.run(link.id, link.from_id, link.to_id, jsonRelation, link.strength, link.note, link.auto, link.status, link.created);
+        }
+      }
+
+      // 4. 替换旧表
+      db.exec('DROP TABLE links');
+      db.exec('ALTER TABLE links_new RENAME TO links');
+
+      // 5. 重建索引
+      db.exec('CREATE INDEX IF NOT EXISTS idx_links_from ON links(from_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_links_to ON links(to_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_links_status ON links(status)');
+
+      // 6. archived 节点 → heat 降低（不再使用 archived 字段）
+      db.exec('UPDATE nodes SET heat = 0.02 WHERE archived = 1');
+
+      log.info(`迁移 v3 完成: ${oldLinks.length} 条链接已转换`);
+    },
+  },
+  {
+    version: 4,
+    description: 'Learning II 重设计：新增 param_feedback 和 param_adjustments 表',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS param_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy_name TEXT NOT NULL,
+            param_name TEXT,
+            signal_type TEXT NOT NULL,
+            signal_value REAL NOT NULL,
+            context TEXT,
+            created TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_param_feedback_strategy ON param_feedback(strategy_name, created);
+
+        CREATE TABLE IF NOT EXISTS param_adjustments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy_name TEXT NOT NULL,
+            param_name TEXT NOT NULL,
+            signal_type TEXT,
+            old_value REAL NOT NULL,
+            new_value REAL NOT NULL,
+            reason TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            pre_avg REAL,
+            post_avg REAL,
+            monitoring_start TEXT,
+            monitoring_end TEXT,
+            created TEXT NOT NULL
+        );
+      `);
+    },
+  },
+  {
+    version: 5,
+    description: 'Digest 重试队列：新增 pending_digests 表',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS pending_digests (
+            id TEXT PRIMARY KEY,
+            trace_id TEXT NOT NULL,
+            input_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','failed')),
+            error_message TEXT,
+            retry_count INTEGER DEFAULT 0,
+            created TEXT NOT NULL,
+            next_retry_at TEXT NOT NULL,
+            completed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_pending_digests_status ON pending_digests(status, next_retry_at);
+      `);
+    },
+  },
+  {
+    version: 6,
+    description: '移除 project 字段：数据迁移到 tags，重建表和 FTS',
+    up: (db) => {
+      // 1. 将 project 值迁移到 tags 数组
+      const nodesWithProject = db.prepare(
+        "SELECT id, project, tags FROM nodes WHERE project IS NOT NULL"
+      ).all() as Array<{ id: string; project: string; tags: string | null }>;
+
+      const updateTags = db.prepare('UPDATE nodes SET tags = ? WHERE id = ?');
+      for (const node of nodesWithProject) {
+        let tags: string[] = [];
+        if (node.tags) {
+          try { tags = JSON.parse(node.tags); } catch { tags = []; }
+        }
+        if (!tags.includes(node.project)) {
+          tags.push(node.project);
+          updateTags.run(JSON.stringify(tags), node.id);
+        }
+      }
+      log.info(`迁移 v6: ${nodesWithProject.length} 个节点的 project 值已迁移到 tags`);
+
+      // 2. 重建 nodes 表（去掉 project 列）
+      // 临时关闭外键检查以允许 DROP TABLE（links 引用 nodes）
+      db.pragma('foreign_keys = OFF');
+      db.exec(`
+        CREATE TABLE nodes_new (
+            id TEXT PRIMARY KEY,
+            type TEXT NOT NULL CHECK(type IN ('fact','context','preference','idea','crystal','meta')),
+            content TEXT NOT NULL,
+            heat REAL DEFAULT 1.0,
+            refinement REAL DEFAULT 0.0,
+            connectivity REAL DEFAULT 0.0,
+            independence REAL DEFAULT 0.0,
+            specificity REAL DEFAULT 0.5,
+            subjectivity REAL DEFAULT 0.5,
+            actuality REAL DEFAULT 0.5,
+            is_crystal INTEGER DEFAULT 0,
+            is_tag INTEGER DEFAULT 0,
+            is_meta INTEGER DEFAULT 0,
+            source_tool TEXT,
+            source_session TEXT,
+            source_stream TEXT,
+            source_timestamp TEXT,
+            tags TEXT,
+            created TEXT NOT NULL,
+            last_reconsolidated TEXT,
+            version INTEGER DEFAULT 1,
+            archived INTEGER DEFAULT 0,
+            is_keystone INTEGER DEFAULT 0,
+            maturity_score REAL DEFAULT 0.0
+        )
+      `);
+
+      db.exec(`
+        INSERT INTO nodes_new SELECT
+            id, type, content,
+            heat, refinement, connectivity, independence,
+            specificity, subjectivity, actuality,
+            is_crystal, is_tag, is_meta,
+            source_tool, source_session, source_stream, source_timestamp,
+            tags,
+            created, last_reconsolidated, version, archived, is_keystone,
+            maturity_score
+        FROM nodes
+      `);
+
+      db.exec('DROP TABLE nodes');
+      db.exec('ALTER TABLE nodes_new RENAME TO nodes');
+
+      // 3. 重建索引
+      db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_archived ON nodes(archived)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_heat ON nodes(heat)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_keystone ON nodes(is_keystone)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_is_crystal ON nodes(is_crystal)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_is_tag ON nodes(is_tag)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_is_meta ON nodes(is_meta)');
+
+      // 4. 重建 FTS（删除旧 FTS 及触发器，重建不含 project 列的版本）
+      db.exec('DROP TRIGGER IF EXISTS nodes_ai');
+      db.exec('DROP TRIGGER IF EXISTS nodes_ad');
+      db.exec('DROP TRIGGER IF EXISTS nodes_au');
+      db.exec('DROP TABLE IF EXISTS nodes_fts');
+
+      db.exec(`
+        CREATE VIRTUAL TABLE nodes_fts USING fts5(
+            content, tags,
+            content=nodes, content_rowid=rowid
+        )
+      `);
+
+      db.exec(`
+        CREATE TRIGGER nodes_ai AFTER INSERT ON nodes BEGIN
+            INSERT INTO nodes_fts(rowid, content, tags) VALUES (new.rowid, new.content, new.tags);
+        END
+      `);
+      db.exec(`
+        CREATE TRIGGER nodes_ad AFTER DELETE ON nodes BEGIN
+            INSERT INTO nodes_fts(nodes_fts, rowid, content, tags) VALUES('delete', old.rowid, old.content, old.tags);
+        END
+      `);
+      db.exec(`
+        CREATE TRIGGER nodes_au AFTER UPDATE ON nodes BEGIN
+            INSERT INTO nodes_fts(nodes_fts, rowid, content, tags) VALUES('delete', old.rowid, old.content, old.tags);
+            INSERT INTO nodes_fts(rowid, content, tags) VALUES (new.rowid, new.content, new.tags);
+        END
+      `);
+
+      // 5. 回填 FTS 索引
+      db.exec("INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')");
+
+      // 6. 恢复外键检查并验证完整性
+      db.pragma('foreign_keys = ON');
+      const fkErrors = db.pragma('foreign_key_check') as unknown[];
+      if (fkErrors.length > 0) {
+        log.warn(`外键检查发现 ${fkErrors.length} 个问题，但不影响迁移`);
+      }
+
+      log.info('迁移 v6 完成: project 列已移除，FTS 已重建');
+    },
+  },
+  {
+    version: 7,
+    description: '新增 is_superseded 字段（被取代的旧版本节点标记）',
+    up(db: Database.Database) {
+      const cols = db.prepare("PRAGMA table_info('nodes')").all() as Array<{ name: string }>;
+      if (!cols.some(c => c.name === 'is_superseded')) {
+        db.exec('ALTER TABLE nodes ADD COLUMN is_superseded INTEGER DEFAULT 0');
+      }
+    },
+  },
+  {
+    version: 8,
+    description: '笔记源多实例：新增 note_sources 表，logseq_sync/obsidian_sync 添加 source_id 列',
+    up: (db) => {
+      // 1. 创建 note_sources 表
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS note_sources (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            tool_type TEXT NOT NULL,
+            path TEXT NOT NULL,
+            poll_interval INTEGER DEFAULT 60,
+            archived INTEGER DEFAULT 0,
+            initialized INTEGER DEFAULT 0,
+            created TEXT NOT NULL,
+            last_synced TEXT
+        )
+      `);
+
+      // 2. 为 logseq_sync 和 obsidian_sync 添加 source_id 列（表可能不存在，跳过即可）
+      const addColumnSafe = (sql: string) => {
+        try { db.exec(sql); } catch (e) {
+          const msg = (e as Error).message ?? '';
+          if (!msg.includes('duplicate column') && !msg.includes('no such table')) throw e;
+        }
+      };
+      addColumnSafe("ALTER TABLE logseq_sync ADD COLUMN source_id TEXT DEFAULT ''");
+      addColumnSafe("ALTER TABLE obsidian_sync ADD COLUMN source_id TEXT DEFAULT ''");
+
+      // 3. 迁移旧配置：从 config.toml 读取已有笔记源并创建记录
+      migrateLegacyNoteSources(db);
+
+      log.info('迁移 v8 完成: note_sources 表已创建，旧配置已迁移');
+    },
+  },
+  {
+    version: 9,
+    description: '模型连接多实例：新增 model_connections 表，迁移 config.toml 中的已有服务配置',
+    up: (db) => {
+      // 1. 建表
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS model_connections (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            provider_type TEXT NOT NULL,
+            credentials TEXT NOT NULL DEFAULT '{}',
+            status TEXT DEFAULT 'unconfigured',
+            available_models TEXT,
+            last_checked TEXT,
+            archived INTEGER DEFAULT 0,
+            created TEXT NOT NULL
+        )
+      `);
+
+      // 2. 从 config.toml 迁移已有的服务配置
+      migrateModelConnections(db);
+
+      log.info('迁移 v9 完成: model_connections 表已创建');
+    },
+  },
+  {
+    version: 10,
+    description: '节点标题字段：新增 title 列',
+    up: (db) => {
+      try {
+        db.exec("ALTER TABLE nodes ADD COLUMN title TEXT");
+      } catch (e) {
+        const msg = (e as Error).message ?? '';
+        if (!msg.includes('duplicate column')) throw e;
+      }
+      log.info('迁移 v10 完成: nodes.title 列已添加');
+    },
+  },
+];
+
+/**
+ * 读取当前 schema 版本。返回 -1 表示 metadata 表不存在或无版本记录。
+ */
+function getSchemaVersion(db: Database.Database): number {
+  try {
+    const row = db.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get() as { value: string } | undefined;
+    return row ? parseInt(row.value, 10) : -1;
+  } catch {
+    return -1; // metadata 表不存在
+  }
+}
+
+function setSchemaVersion(db: Database.Database, version: number): void {
+  db.prepare(
+    "INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', ?)"
+  ).run(String(version));
+}
+
+/**
+ * 执行待运行的 migrations。每个 migration 在事务中执行。
+ */
+function runMigrations(db: Database.Database, fromVersion: number): void {
+  const pending = MIGRATIONS.filter(m => m.version > fromVersion)
+    .sort((a, b) => a.version - b.version);
+
+  for (const migration of pending) {
+    log.info(`执行迁移 v${migration.version}: ${migration.description}`);
+    if (migration.version === 6) {
+      // v6 需要 PRAGMA foreign_keys = OFF，不能在事务中执行
+      migration.up(db);
+      setSchemaVersion(db, migration.version);
+    } else {
+      const txn = db.transaction(() => {
+        migration.up(db);
+        setSchemaVersion(db, migration.version);
+      });
+      txn();
+    }
+    log.info(`迁移 v${migration.version} 完成`);
+  }
+}
+
+// ── 公开 API ────────────────────────────────────────────────────
+
+export function ensureSchema(db: Database.Database): void {
+  db.exec('PRAGMA journal_mode = WAL;');
+  db.exec('PRAGMA foreign_keys = ON;');
+
+  // 建表（IF NOT EXISTS 保证幂等）
+  db.exec(SCHEMA_SQL);
+
+  // FTS5
+  db.exec(FTS_SQL);
+  db.exec(FTS_TRIGGERS_SQL);
+
+  // 检查 schema 版本并执行迁移
+  const currentVersion = getSchemaVersion(db);
+
+  if (currentVersion === -1) {
+    // 两种情况：
+    // 1. 全新数据库 → SCHEMA_SQL 已创建最新结构，直接标记为最新版本
+    // 2. 旧数据库（没有 schema_version）→ 需要跑所有 migration
+    // 通过检查 nodes 表是否有数据来区分
+    const hasData = (db.prepare('SELECT COUNT(*) as cnt FROM nodes').get() as { cnt: number }).cnt > 0;
+
+    if (hasData) {
+      // 旧数据库，从 v0 开始跑 migration
+      log.info('检测到旧数据库，开始执行迁移...');
+      runMigrations(db, 0);
+    } else {
+      // 全新数据库，直接标记最新版本
+      setSchemaVersion(db, CURRENT_SCHEMA_VERSION);
+      log.info(`新数据库，schema 版本: v${CURRENT_SCHEMA_VERSION}`);
+    }
+  } else if (currentVersion < CURRENT_SCHEMA_VERSION) {
+    // 需要升级
+    log.info(`数据库 schema v${currentVersion} → v${CURRENT_SCHEMA_VERSION}，执行迁移...`);
+    runMigrations(db, currentVersion);
+  }
+  // else: 已是最新版本，无需操作
+}
+
+export function ensureVectorTable(db: Database.Database, dimensions: number = 3072): void {
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS nodes_vec USING vec0(
+        id TEXT PRIMARY KEY,
+        embedding FLOAT[${dimensions}]
+    );
+  `);
+}

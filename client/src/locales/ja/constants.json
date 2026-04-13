@@ -1,0 +1,120 @@
+{
+  "derivedCategory": {
+    "record": "記録",
+    "knowledge": "知識",
+    "belief": "信念",
+    "hypothesis": "仮説",
+    "intention": "意図"
+  },
+  "role": {
+    "crystal": "クリスタル",
+    "keystone": "キーストーン",
+    "tag": "タグ",
+    "meta": "システム"
+  },
+  "nodeType": {
+    "fact": "事実",
+    "context": "コンテキスト",
+    "preference": "好み",
+    "idea": "アイデア",
+    "crystal": "クリスタル",
+    "meta": "メタデータ"
+  },
+  "relation": {
+    "caused_by": "因果",
+    "continues": "継続",
+    "updates": "更新",
+    "supports": "支持",
+    "contradicts": "矛盾",
+    "summarizes": "要約",
+    "part_of": "部分",
+    "analogous": "類似",
+    "tagged": "タグ付き"
+  },
+  "gate": {
+    "basic_digest": "基本ダイジェスト",
+    "bm25_search": "BM25 検索",
+    "vector_search": "ベクトル検索",
+    "graph_expansion": "グラフ探索",
+    "crystal_generation": "クリスタル生成",
+    "divergent_scan": "ダイバージェントスキャン"
+  },
+  "eventType": {
+    "memory": "メモリ",
+    "think_associate": "思考（連想）",
+    "think_emerge": "思考（創発）",
+    "output": "出力",
+    "evolution": "進化",
+    "config": "設定"
+  },
+  "eventSubtype": {
+    "digest": "ダイジェスト",
+    "correction": "修正",
+    "archive": "アーカイブ",
+    "landing_connection": "ランディング接続",
+    "annotate": "ノード注釈",
+    "dedup": "重複検出",
+    "dedup_merge": "重複マージ",
+    "synaptic_scaling": "シナプス減衰",
+    "link_classify": "リンク評価",
+    "refine_links": "リンク再検証",
+    "link_discover": "リンク発見",
+    "pending_link_review": "保留リンクレビュー",
+    "keystone_identification": "キーストーン分析",
+    "tag_promote": "タグ創発",
+    "divergent_scan": "ダイバージェントスキャン",
+    "crystal_update": "クリスタル生成",
+    "split_merge": "分割/マージ",
+    "recall": "リコール",
+    "prepare": "認知プリパレーション",
+    "reconsolidation": "再固定化",
+    "profile_synthesize": "プロファイル統合",
+    "learning2": "Learning II",
+    "learning3": "Learning III",
+    "strategy_rollback": "戦略ロールバック",
+    "settings_change": "設定変更",
+    "strategy_update": "戦略更新",
+    "gate_unlock": "ゲート解除",
+    "logseq_sync": "ノート同期",
+    "logseq_file_change": "ノート変更",
+    "obsidian_sync": "Obsidian 同期",
+    "obsidian_file_change": "Obsidian ファイル変更",
+    "apple_notes_sync": "メモ同期",
+    "daemon_start": "起動",
+    "daemon_stop": "停止"
+  },
+  "actor": {
+    "user": "ユーザー",
+    "agent": "Agent",
+    "brain": "外部ブレイン"
+  },
+  "operation": {
+    "digest": "ダイジェスト",
+    "annotate": "ノード注釈",
+    "dedup": "重複検出",
+    "synaptic": "シナプス減衰",
+    "link-evaluate": "リンク評価",
+    "link-discover": "リンク発見",
+    "link-revalidate": "リンク再検証",
+    "link-judge": "リンク判定",
+    "layer2-link-refine": "リンク精化",
+    "contradiction": "矛盾検出",
+    "assess": "評価",
+    "temporal-crystal": "時間クリスタル",
+    "keystone": "キーストーン分析",
+    "divergent": "ダイバージェントスキャン",
+    "crystal": "クリスタル生成",
+    "prepare": "認知プリパレーション",
+    "reconsolidate": "再固定化",
+    "learning2": "Learning II",
+    "learning3": "Learning III",
+    "tag-define": "タグ定義"
+  },
+  "sourceTool": {
+    "cursor": "Cursor",
+    "claude-code": "Claude Code",
+    "codex": "Codex",
+    "logseq": "Logseq",
+    "client": "クライアント"
+  }
+}

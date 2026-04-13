@@ -1,0 +1,82 @@
+{
+  "view": {
+    "list": "Lista",
+    "graph": "Grafo"
+  },
+  "filter": {
+    "searchPlaceholder": "Buscar memorias...",
+    "all": "Todo",
+    "allTags": "Todas las etiquetas",
+    "allTypes": "Todos los tipos"
+  },
+  "list": {
+    "noResults": "No se encontraron memorias coincidentes",
+    "total": "{{count}} en total"
+  },
+  "sort": {
+    "newest": "Newest",
+    "hottest": "Hottest",
+    "maturity": "Maturity",
+    "connectivity": "Connectivity"
+  },
+  "heat": {
+    "minLabel": "Min heat: {{value}}",
+    "nodeHeat": "Heat: {{value}}"
+  },
+  "detail": {
+    "selectNode": "Selecciona un nodo para ver detalles",
+    "nodeNotFound": "Nodo no encontrado",
+    "manualEdit": "Edición manual",
+    "editReasonPlaceholder": "Razón de la modificación (opcional)",
+    "titlePlaceholder": "Título",
+    "editVersionNote": "Los cambios se registrarán en el historial de versiones",
+    "saving": "Guardando...",
+    "save": "Guardar",
+    "cancel": "Cancelar",
+    "edit": "Editar",
+    "heat": "Calor",
+    "refinement": "Refinamiento",
+    "connectivity": "Conectividad",
+    "independence": "Independencia",
+    "keystoneNode": "Nodo clave",
+    "links": "Enlaces",
+    "pending": "pendiente",
+    "versionHistory": "Historial de versiones ({{count}} actualizaciones)",
+    "reconsolidation": "Reconsolidación",
+    "collapse": "Contraer",
+    "expandAll": "Expandir las {{count}} versiones",
+    "sourceTracing": "Rastreo de fuentes",
+    "tool": "Herramienta:",
+    "session": "Sesión:",
+    "time": "Hora:",
+    "viewTimeline": "Ver línea de tiempo",
+    "evidenceChain": "Cadena de evidencia",
+    "metaInfo": "Meta información",
+    "created": "Creado:",
+    "tags": "Etiquetas:",
+    "strength": "Fuerza:",
+    "linksTip": "Enlaces entre nodos. La banda de color indica el tipo semantico.",
+    "versionTip": "Historial de reconsolidacion: las memorias evolucionan con el uso.",
+    "evidenceTip": "Lista de nodos fuente resumidos por este cristal.",
+    "pendingClassify": "Pendiente",
+    "unknown": "Desconocido"
+  },
+  "graph": {
+    "loading": "Cargando datos del grafo...",
+    "noData": "Sin datos de nodos"
+  },
+  "toolbar": {
+    "all": "Todo",
+    "hop1": "1 salto",
+    "hop2": "2 saltos",
+    "hop3": "3 saltos",
+    "zoomIn": "Acercar",
+    "zoomOut": "Alejar",
+    "fitAll": "Ajustar",
+    "pathDiscovery": "Descubrimiento de rutas",
+    "structureHoles": "Agujeros estructurales",
+    "connectivityLabel": "Conectividad",
+    "clickSecondNode": "Haz clic en el segundo nodo para ver la ruta",
+    "clickStartNode": "Haz clic en el nodo de inicio"
+  }
+}

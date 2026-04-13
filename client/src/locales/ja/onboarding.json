@@ -1,0 +1,52 @@
+{
+  "welcome": {
+    "title": "TideMind へようこそ",
+    "subtitle": "あなたの思考のすべてをつなぐ、生きたセカンドブレイン——AIエージェント、ノート、そしてこれから先のすべてを。",
+    "description": "",
+    "start": "はじめる"
+  },
+  "preferences": {
+    "title": "体験をカスタマイズ",
+    "description": "お好みの言語とテーマを選択してください。"
+  },
+  "model": {
+    "title": "言語モデルを接続",
+    "description": "TideMind は記憶の理解・関連付け・発展のために LLM が必要です。フル機能を有効にするには、少なくとも1つのモデル接続を設定してください。",
+    "skipWarning": "モデルを接続しない場合、記憶の消化や関連性の発見などのコア機能が利用できません。後から設定画面で構成できます。",
+    "skip": "あとで設定する"
+  },
+  "agent": {
+    "title": "開発ツールを接続",
+    "description": "開発ツール（Claude Code や Cursor など）を連携して、コーディング中の記憶パートナーとして TideMind を活用しましょう。",
+    "skip": "あとで設定する"
+  },
+  "noteSource": {
+    "title": "ノートをインポート",
+    "description": "Logseq、Obsidian、Apple Notes をお使いの場合、既存のノートを TideMind のナレッジグラフにインポートできます。",
+    "skip": "あとで設定する"
+  },
+  "complete": {
+    "title": "準備完了",
+    "subtitle": "セットアップの概要：",
+    "configured": "設定済み",
+    "skipped": "スキップ",
+    "modelLabel": "モデル接続",
+    "agentLabel": "開発ツール",
+    "noteSourceLabel": "ノートインポート",
+    "preferencesLabel": "言語とテーマ",
+    "enter": "TideMind を開く"
+  },
+  "steps": {
+    "welcome": "ようこそ",
+    "preferences": "設定",
+    "model": "モデル",
+    "agent": "開発ツール",
+    "noteSource": "ノート",
+    "complete": "完了"
+  },
+  "nav": {
+    "next": "次へ",
+    "back": "戻る",
+    "skip": "スキップ"
+  }
+}

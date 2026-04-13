@@ -1,0 +1,82 @@
+{
+  "view": {
+    "list": "Liste",
+    "graph": "Graphe"
+  },
+  "filter": {
+    "searchPlaceholder": "Rechercher des memoires...",
+    "all": "Tout",
+    "allTags": "Tous les tags",
+    "allTypes": "Tous les types"
+  },
+  "list": {
+    "noResults": "Aucune memoire correspondante trouvee",
+    "total": "{{count}} au total"
+  },
+  "sort": {
+    "newest": "Newest",
+    "hottest": "Hottest",
+    "maturity": "Maturity",
+    "connectivity": "Connectivity"
+  },
+  "heat": {
+    "minLabel": "Min heat: {{value}}",
+    "nodeHeat": "Heat: {{value}}"
+  },
+  "detail": {
+    "selectNode": "Sélectionnez un nœud pour voir les détails",
+    "nodeNotFound": "Nœud introuvable",
+    "manualEdit": "Modification manuelle",
+    "editReasonPlaceholder": "Raison de la modification (optionnel)",
+    "titlePlaceholder": "Titre",
+    "editVersionNote": "Les modifications seront enregistrées dans l'historique des versions",
+    "saving": "Enregistrement...",
+    "save": "Enregistrer",
+    "cancel": "Annuler",
+    "edit": "Modifier",
+    "heat": "Chaleur",
+    "refinement": "Raffinement",
+    "connectivity": "Connectivité",
+    "independence": "Indépendance",
+    "keystoneNode": "Nœud clé de voûte",
+    "links": "Liens",
+    "pending": "en attente",
+    "versionHistory": "Historique des versions ({{count}} mises à jour)",
+    "reconsolidation": "Reconsolidation",
+    "collapse": "Réduire",
+    "expandAll": "Développer les {{count}} versions",
+    "sourceTracing": "Traçabilité des sources",
+    "tool": "Outil :",
+    "session": "Session :",
+    "time": "Heure :",
+    "viewTimeline": "Voir la chronologie",
+    "evidenceChain": "Chaîne de preuves",
+    "metaInfo": "Méta-informations",
+    "created": "Créé :",
+    "tags": "Tags :",
+    "strength": "Force :",
+    "linksTip": "Liens entre les noeuds. La bande coloree indique le type semantique.",
+    "versionTip": "Historique de reconsolidation : les memoires evoluent par usage.",
+    "evidenceTip": "Liste des noeuds source resumes par ce cristal.",
+    "pendingClassify": "En attente",
+    "unknown": "Inconnu"
+  },
+  "graph": {
+    "loading": "Chargement des données du graphe...",
+    "noData": "Aucune donnée de nœud"
+  },
+  "toolbar": {
+    "all": "Tout",
+    "hop1": "1 saut",
+    "hop2": "2 sauts",
+    "hop3": "3 sauts",
+    "zoomIn": "Zoom avant",
+    "zoomOut": "Zoom arrière",
+    "fitAll": "Ajuster",
+    "pathDiscovery": "Découverte de chemin",
+    "structureHoles": "Trous structurels",
+    "connectivityLabel": "Connectivité",
+    "clickSecondNode": "Cliquez sur le deuxième nœud pour voir le chemin",
+    "clickStartNode": "Cliquez sur le nœud de départ"
+  }
+}

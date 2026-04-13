@@ -1,0 +1,52 @@
+{
+  "welcome": {
+    "title": "欢迎使用 TideMind",
+    "subtitle": "一个活的第二大脑，连接你思考的一切——你的 AI 助手、你的笔记，以及未来的一切。",
+    "description": "",
+    "start": "开始设置"
+  },
+  "preferences": {
+    "title": "个性化设置",
+    "description": "选择你偏好的语言和主题。"
+  },
+  "model": {
+    "title": "连接语言模型",
+    "description": "TideMind 需要 LLM 来理解、关联和演化你的记忆。配置至少一个模型连接以启用完整功能。",
+    "skipWarning": "跳过后，记忆消化、关联发现等核心功能将不可用。你可以稍后在设置中配置。",
+    "skip": "暂时跳过"
+  },
+  "agent": {
+    "title": "连接开发工具",
+    "description": "将你的开发工具（如 Claude Code、Cursor）与 TideMind 连接，让它成为你编码时的记忆伙伴。",
+    "skip": "暂时跳过"
+  },
+  "noteSource": {
+    "title": "导入你的笔记",
+    "description": "如果你使用 Logseq、Obsidian 或 Apple Notes，可以将已有笔记导入 TideMind 的知识图谱。",
+    "skip": "暂时跳过"
+  },
+  "complete": {
+    "title": "设置完成",
+    "subtitle": "以下是你的配置概要：",
+    "configured": "已配置",
+    "skipped": "已跳过",
+    "modelLabel": "模型连接",
+    "agentLabel": "开发工具",
+    "noteSourceLabel": "笔记导入",
+    "preferencesLabel": "语言与主题",
+    "enter": "进入 TideMind"
+  },
+  "steps": {
+    "welcome": "欢迎",
+    "preferences": "偏好",
+    "model": "模型",
+    "agent": "工具",
+    "noteSource": "笔记",
+    "complete": "完成"
+  },
+  "nav": {
+    "next": "下一步",
+    "back": "上一步",
+    "skip": "跳过"
+  }
+}

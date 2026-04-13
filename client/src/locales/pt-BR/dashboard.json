@@ -1,0 +1,48 @@
+{
+  "init": {
+    "phases": {
+      "0": "Varredura e Classificação",
+      "1": "Pré-processamento",
+      "2": "Ingestão",
+      "3": "Links Explícitos",
+      "4": "Anotação de Nós",
+      "5": "Conexões de Entrada",
+      "6": "Avaliação de Links",
+      "7": "Marcação de Pilares",
+      "8": "Emergência"
+    },
+    "noteSource": "Notas",
+    "complete": "Inicialização Concluída",
+    "progress": "Inicializando — Fase {{phase}}/8: {{phaseName}}",
+    "clickDetails": "Clique para detalhes"
+  },
+  "recentActivity": {
+    "title": "Atividade Recente",
+    "brainNotStarted": "O cérebro ainda não foi iniciado"
+  },
+  "discoveries": {
+    "title": "Descobertas",
+    "brewing": "O cérebro está processando...",
+    "liked": "Curtido",
+    "disliked": "Não curtido"
+  },
+  "recentTags": {
+    "title": "Tags Recentes",
+    "coreOnly": "Mostrando apenas tags principais (tags de alta frequência auto-promovidas a nós do grafo)"
+  },
+  "systemPulse": {
+    "totalMemories": "Total de Memórias",
+    "todayDigests": "Digestões de Hoje",
+    "todayLinks": "Links de Hoje",
+    "todayRecalls": "Recuperações de Hoje"
+  },
+  "empty": {
+    "title": "Seu cérebro é uma tela em branco",
+    "description": "Comece a usar o TideMind com suas ferramentas de desenvolvimento — suas memórias, insights e conexões crescerão aqui.",
+    "settings": "Ir para Configurações"
+  },
+  "modelWarning": {
+    "message": "Nenhuma conexão de modelo configurada. Funcionalidades essenciais como digestão de memória e descoberta de associações estão indisponíveis.",
+    "action": "Configurar Modelo"
+  }
+}

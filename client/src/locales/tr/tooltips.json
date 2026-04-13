@@ -1,0 +1,81 @@
+{
+  "derivedCategory": {
+    "record": "Kayıt: Belirli zaman ve mekanlara bağlı olaylar, gözlemler ve eylemler. Hızla zayıflar — bilgiye dönüştürülecek ham malzeme.",
+    "knowledge": "Bilgi: Belirli bağlamlardan bağımsız genel anlayış — olgular, örüntüler, kavramlar. Yavaş zayıflar, temel geri çağırma kaynağı.",
+    "belief": "İnanç: Kararlı kişisel anlayış — tercihler, değerler, izlenimler, öz farkındalık. Kullanıcı profilleri oluşturmak için kullanılır.",
+    "hypothesis": "Hipotez: Dünya hakkında belirsiz yargılar — spekülasyonlar, tahminler, doğrulanmamış teoriler. Sonraki kanıtlarla doğrulanabilir veya çürütülebilir.",
+    "intention": "Niyet: Kararsız kişisel yönelimler — planlar, istekler, hedefler. Uygulandığında Kayıt, içselleştirildiğinde İnanç olur."
+  },
+  "role": {
+    "crystal": "Kristal: Birçok düğümden ortaya çıkan üst düzey bilişsel ürünler — kullanıcı profilleri, davranış örüntüleri, karar ilkeleri. Grafta yüksek bağlantılı merkez noktalar.",
+    "keystone": "Kilit Taşı: En çok bağlantılı düğümlerin ilk %5'i. Ekolojideki kilit türler gibi — kaldırılmaları bilgi ağını parçalayabilir.",
+    "tag": "Etiket: Yüksek frekanslı etiketler otomatik olarak graf düğümlerine yükseltilir ve graf yapısına katılır."
+  },
+  "nodeType": {
+    "fact": "Gerçek: Kararlar, sonuçlar, kesinleşmiş olgular. Yüksek yapılandırılmış; bağlantılar daha yüksek güven gerektirir.",
+    "context": "Bağlam: Proje bilgileri, ilişkiler, mevcut durumlar — arka plan bilgisi.",
+    "preference": "Tercih: Kodlama stili, iletişim tercihleri, araç yapılandırmaları — kişisel eğilimler.",
+    "idea": "Fikir: İlhamlar, hipotezler, doğrulanacak fikirler. Bağlantılar daha serbest olabilir ve daha düşük eşikler uygulanır.",
+    "crystal": "Kristal: Birçok düğümden ortaya çıkan üst düzey bilişsel ürünler — kullanıcı profilleri, davranış örüntüleri, karar ilkeleri. Grafta yüksek bağlantılı merkez düğümler.",
+    "meta": "Üst Veri: Sistem işlem kayıtları (MCP çağrı günlükleri, strateji değişiklikleri vb.). Varsayılan olarak gizlidir, iç yansıtma için kullanılır."
+  },
+  "maturity": {
+    "heat": "Isı: Kısa vadeli etkinlik göstergesi. Yakın zamanda oluşturulan, geri çağrılan veya kullanılan düğümler yüksek ısıya sahiptir. Hızla zayıflar (günlük), ancak zayıflama hızı bağlantılılıkla düzenlenir — daha fazla bağlantı daha yavaş zayıflama anlamına gelir. Yakın zamandaki nöral ateşleme sıklığına benzer.",
+    "refinement": "İncelik: İçeriğin kaç kez işlendiği. Ham parçalar düşük başlar, LLM tarafından işlendikten sonra artar ve yeniden konsolidasyon yoluyla daha da büyür. Yavaş büyüme, yalnızca yeniden konsolidasyon sırasında artar. Bulanık olan anıların netleşmesi gibi.",
+    "connectivity": "Bağlantılılık: Kaç tane diğer düğümün bu düğüme etkili bağlantıları olduğu. Sadece miktar değil — bağlantı çeşitliliği de önemlidir. Yüksek bağlantılı düğümler bilgi ağının merkez noktalarıdır. Hipokampusta zengin bağlantılı anıların daha kolay hatırlanması gibi.",
+    "independence": "Bağımsızlık: Düğümün orijinal bağlamı olmadan ne kadar iyi anlaşılabildiği. \"20.03.2026'da Cursor'da SQLite kullanmaya karar verildi\" düşük bağımsızlığa sahiptir; \"Kişisel araçlar için bakım gerektirmeyen çözümleri tercih eder\" yüksek bağımsızlığa sahiptir. Yeniden konsolidasyon yoluyla gelişir.",
+    "maturity_score": "Olgunluk Puanı: Isı, incelik, bağlantılılık ve bağımsızlığın ağırlıklı bileşimi. Arama sıralaması ve görüntüleme için kullanılır."
+  },
+  "nodeAttr": {
+    "keystone": "Kilit Taşı: En çok bağlantılı düğümlerin ilk %5'i. Ekolojideki kilit türler gibi — kaldırılmaları bilgi ağını parçalayabilir. Daha düşük zayıflama hızı.",
+    "version": "Sürüm: Her yeniden konsolidasyonda artırılır (içerik gözden geçirilir ve güncellenir). Yeniden konsolidasyon, beynin bellek güncelleme mekanizmasıdır — anılar kullanım yoluyla evrilir, değişmez değildir.",
+    "source_stream": "Akış Kaynağı: Akış günlüğündeki orijinal parçaya işaret eder. Akış ham, işlenmemiş kayıtlar içerir; graf düğümleri işlenmiştir. \"Tam olarak ne olduğunu\" izlemeniz gerektiğinde bu işaretçiyi kullanın."
+  },
+  "link": {
+    "caused_by": "Nedensel: A, B'nin nedeni veya sonucudur.",
+    "continues": "Devam: A, B'nin sonraki bir gelişmesidir.",
+    "updates": "Güncelleme: A, B'nin güncellenmiş sürümüdür, yeni bilgi eskisinin yerini alır.",
+    "supports": "Destek: A, B için kanıt veya argümanlar sağlar.",
+    "contradicts": "Çelişki: A ve B çelişen içeriğe sahiptir.",
+    "summarizes": "Özet: A, B'nin üst düzey bir genel görünümüdür. Genellikle kristal düğümler ile kaynakları arasındadır.",
+    "part_of": "Parçası: A, B'nin bir parçası veya alt ögesidir.",
+    "analogous": "Analoji: A ve B yapısal olarak benzerdir — farklı alanlarda paralel örüntüler.",
+    "tagged": "Etiketli: Ortak etiketler aracılığıyla gruplandırılmıştır.",
+    "confirmed": "Onaylandı: Sistem veya kullanıcı bu bağlantının anlamlı olduğunu doğrulamıştır.",
+    "pending": "Beklemede: Otomatik olarak oluşturuldu ancak henüz doğrulanmadı. Bağlantı değerlendirmesi sırasında incelenecektir — onaylanacak veya kaldırılacaktır.",
+    "strength": "Bağlantı Gücü: 0-1 arası güven puanı. Giriş sırasında vektör benzerliği ile belirlenir, zamanla Hebbian zayıflamaya tabidir."
+  },
+  "operation": {
+    "prepare": "prepare (Bilişsel Hazırlık): Her yeni konuşmanın başında çağrılır. Kullanıcı profili özeti + bellek dizini + davranış rehberliği döndürür. Beynin \"aktif katılımı\" için giriş noktası.",
+    "recall": "recall (İsteğe Bağlı Geri Çağırma): Konuşma sırasında geçmiş bağlam gerektiğinde çağrılır. Karma arama (BM25 + vektör + graf dolaşımı); her geri çağırma \"okuma-yazma-demektir\" yeniden konsolidasyonunu tetikler.",
+    "digest": "digest (Bilgi Yükleme): Yeni bilgileri olduğu gibi beyne kaydeder, otomatik olarak embedding hesaplar ve giriş bağlantıları oluşturur. Ardından asenkron tür ve etiket açıklaması gelir. Düzeltmeler ve soğutma için de kullanılır."
+  },
+  "gate": {
+    "basic_digest": "Temel Sindirme: Her zaman kullanılabilir. İçerik doğrudan bir düğüm olarak kaydedilir.",
+    "bm25_search": "BM25 Arama: Her zaman kullanılabilir. Anahtar kelime tabanlı tam metin arama — hızlı ancak anlam bilgisini anlamaz.",
+    "vector_search": "Vektör Arama: 50+ düğüm gerektirir. Benzer ifadeleri anlayan embedding tabanlı anlamsal arama. BM25 ile birleştirildiğinde en iyi sonucu verir.",
+    "graph_expansion": "Graf Dolaşımı: 100+ düğüm ve 50+ bağlantı gerektirir. Arama sonuçlarını bağlantılar boyunca bir adım genişletir — \"farklı anahtar kelimeler ama mantıksal olarak ilişkili\" anıları keşfeder.",
+    "crystal_generation": "Kristal Üretimi: 200+ düğüm gerektirir. Yüksek bağlantılı düğüm kümelerinden üst düzey içgörüler çıkarır (kullanıcı profilleri, davranış örüntüleri, karar ilkeleri).",
+    "divergent_scan": "Bağlantı Keşfi: 500+ düğüm gerektirir. Var olması gereken ancak olmayan bağlantıları bulmak için çoklu stratejiler — vektör komşuları, ortak komşular, çelişki tespiti."
+  },
+  "searchWeight": {
+    "alpha": "BM25 Ağırlığı (α): Tam anahtar kelime eşleşmesi için ağırlık. Daha yüksek değerler kesin anahtar kelimelere daha çok güvenir — belirli terimleri bulmak için idealdir.",
+    "beta": "Vektör Ağırlığı (β): Anlamsal benzerlik için ağırlık. Daha yüksek değerler anlama daha çok güvenir — belirsiz sorgular ve çok dilli geri çağırma için idealdir.",
+    "gamma": "Isı Takviyesi (γ): Yakın zamanda aktif düğümler için sıralama takviyesi. Daha yüksek değerler yakın zamanda kullanılan anıları daha belirgin şekilde öne çıkarır.",
+    "delta": "Olgunluk Takviyesi (δ): Olgun düğümler için sıralama takviyesi. Daha yüksek değerler iyi konsolide edilmiş, yüksek kaliteli anıları daha belirgin şekilde öne çıkarır."
+  },
+  "metabolism": {
+    "decay_base": "Düğüm Zayıflama Temel Hızı: Bağlantılılık=0 olduğunda günlük ısı zayıflama katsayısı. Daha yüksek bağlantılılık daha yavaş zayıflama anlamına gelir.",
+    "link_decay_base": "Bağlantı Zayıflama Temel Hızı: Günlük bağlantı gücü zayıflama oranı. Her iki uç aktif = neredeyse hiç zayıflama yok; her ikisi soğuk = hızlı zayıflama (Hebbian öğrenme).",
+    "link_delete_threshold": "Bağlantı Silme Eşiği: Gücü bu değerin altındaki bağlantılar otomatik olarak kaldırılır.",
+    "dedup_threshold": "Tekilleştirme Eşiği: Vektör benzerliği bu değeri aştığında, yeni bir tane oluşturmak yerine mevcut düğüm yeniden konsolide edilir. Yinelenen anıları önler.",
+    "landing_threshold": "Giriş Eşiği: Yeni bir düğüm grafa girdiğinde, bu değerin üzerindeki benzerlikler mevcut düğümlerle onaylanmış bağlantılar oluşturur.",
+    "pending_threshold": "Bekleme Eşiği: Bu değer ile giriş eşiği arasındaki benzerlikler, bağlantı değerlendirmesinin onaylaması için bekleyen bağlantılar oluşturur.",
+    "landing_top_k": "Giriş Top-K: Her yeni düğüm için oluşturulan maksimum onaylanmış bağlantı sayısı."
+  },
+  "strategySkill": {
+    "strategy": "Strateji Dosyaları: Beynin \"nasıl\" çalıştığını kontrol eden evrimleşebilir talimatlar. LLM istem şablonları ve sayısal parametreler içerir. Temel mantık (graf yapısı, arayüzler) kararlı DNA'dır; stratejiler değişebilir gen ifadesidir. Sistem davranışını ayarlamak için bu dosyaları doğrudan düzenleyebilirsiniz.",
+    "skill": "Beceri Dosyaları: Harici yapay zekaya (Cursor/Claude Code vb.) beyni nasıl kullanacağını öğreten kılavuzlar. Yapay zekaya prepare/recall/digest'i ne zaman çağıracağını ve iyi bağlam sağlamayı anlatır. Beceriler olmadan, yapay zeka beyni hiç kullanmayabilir."
+  },
+  "gateOverview": "Soğuk Başlangıç Kapıları (Bilişsel Ardışıklık): Beynin ilk günden mükemmel çalışması gerekmez. Veriler biriktikçe özellikler otomatik olarak açılır — her aşama bir sonraki için koşulları oluşturur. Ekolojik ardışıklıktaki öncü türler gibi: optimal olması gerekmez, veri biriktirmek için yeterince iyi olması yeterlidir."
+}

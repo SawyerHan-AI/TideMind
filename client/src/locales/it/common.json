@@ -1,0 +1,29 @@
+{
+  "nav": {
+    "dashboard": "Pannello",
+    "timeline": "Cronologia",
+    "explorer": "Esploratore Cerebrale",
+    "settings": "Impostazioni"
+  },
+  "search": {
+    "placeholder": "Cerca..."
+  },
+  "actions": {
+    "save": "Salva",
+    "saved": "Salvato",
+    "cancel": "Annulla",
+    "confirm": "Conferma",
+    "delete": "Elimina",
+    "edit": "Modifica",
+    "close": "Chiudi",
+    "export": "Esporta",
+    "copy": "Copia negli Appunti",
+    "comingSoon": "Prossimamente"
+  },
+  "units": {
+    "nodes": "nodi",
+    "items": "elementi",
+    "memories": "memorie"
+  },
+  "total": "{{count}} in totale"
+}

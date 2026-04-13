@@ -1,0 +1,52 @@
+{
+  "welcome": {
+    "title": "Willkommen bei TideMind",
+    "subtitle": "Ein lebendiges zweites Gehirn, das alles verbindet, womit du denkst — deine KI-Agenten, deine Notizen und was auch immer als Nächstes kommt.",
+    "description": "",
+    "start": "Loslegen"
+  },
+  "preferences": {
+    "title": "Erlebnis anpassen",
+    "description": "Wähle deine bevorzugte Sprache und dein Farbschema."
+  },
+  "model": {
+    "title": "Sprachmodell verbinden",
+    "description": "TideMind benötigt ein LLM, um deine Erinnerungen zu verstehen, zu verknüpfen und weiterzuentwickeln. Richte mindestens eine Modellverbindung ein, um alle Funktionen zu aktivieren.",
+    "skipWarning": "Ohne Modellverbindung sind Kernfunktionen wie die Verarbeitung von Erinnerungen und das Entdecken von Zusammenhängen nicht verfügbar. Du kannst dies später in den Einstellungen konfigurieren.",
+    "skip": "Vorerst überspringen"
+  },
+  "agent": {
+    "title": "Entwicklungstools verbinden",
+    "description": "Verbinde deine Entwicklungstools (wie Claude Code oder Cursor), damit TideMind beim Programmieren dein Gedächtnis-Begleiter wird.",
+    "skip": "Vorerst überspringen"
+  },
+  "noteSource": {
+    "title": "Notizen importieren",
+    "description": "Wenn du Logseq, Obsidian oder Apple Notes verwendest, kannst du deine bestehenden Notizen in den Wissensgraphen von TideMind importieren.",
+    "skip": "Vorerst überspringen"
+  },
+  "complete": {
+    "title": "Alles bereit",
+    "subtitle": "Zusammenfassung deiner Einrichtung:",
+    "configured": "Konfiguriert",
+    "skipped": "Übersprungen",
+    "modelLabel": "Modellverbindung",
+    "agentLabel": "Entwicklungstools",
+    "noteSourceLabel": "Notizen-Import",
+    "preferencesLabel": "Sprache & Design",
+    "enter": "TideMind öffnen"
+  },
+  "steps": {
+    "welcome": "Willkommen",
+    "preferences": "Einstellungen",
+    "model": "Modell",
+    "agent": "Dev-Tools",
+    "noteSource": "Notizen",
+    "complete": "Fertig"
+  },
+  "nav": {
+    "next": "Weiter",
+    "back": "Zurück",
+    "skip": "Überspringen"
+  }
+}

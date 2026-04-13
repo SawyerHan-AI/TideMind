@@ -1,0 +1,519 @@
+/**
+ * 启动时扫描已生成的 plugin 配置，做两件事：
+ *   1. 【常规】把过期的 command/script 路径修正为当前的 shim 和 bundled 脚本位置
+ *   2. 【一次性过渡清理】删除 External Brain → Tide Mind 改名前遗留的 `external-brain-*`
+ *      配置条目，以及 Claude Code 插件 `.mcp.json` 里的 `external-brain` key
+ *
+ * 设计背景：
+ *   Plugin 配置是生成时冷冻的绝对路径 + 标识符。当 Tide Mind 升级/迁移/改名时，
+ *   外部 Agent（Claude Code / Cursor / Codex / Windsurf / OpenClaw / Cowork）的配置
+ *   文件里仍保留着旧的 shim 路径和旧的 `external-brain` key。这个模块负责兜底。
+ *
+ * 常规修正场景：
+ *   1) 用户从 dev 模式切到 packaged（.app），plugin 里的路径还指向 repo/dist/
+ *   2) Electron 升级，process.execPath 变了——shim 通过 runtime-path 吸收了这个变化
+ *   3) 用户从 ~/.external-brain 迁移/重装 Tide Mind
+ *
+ * 一次性清理场景：
+ *   旧版本 Tide Mind（品牌名还是 External Brain 时）生成的 plugin 配置里，
+ *   MCP server key 形如 `external-brain` / `external-brain-<agentId>`，
+ *   Shim 路径在 `~/.external-brain/bin/tm-node`。
+ *   升级到新版本后：
+ *     - 数据目录已被 migrate-data-dir 重命名为 ~/.tidemind/
+ *     - 旧 shim 路径不再存在，旧 key 对应的 MCP server 无法启动
+ *   因此 self-heal 会主动把所有旧 key 从外部配置中删除，用户随后通过客户端
+ *   重新生成 plugin 即可得到新的 `tidemind-*` key。
+ *
+ * 自愈不负责创建新的 plugin，只修正/清理已有配置的条目。
+ */
+
+import fs from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
+import type Database from 'better-sqlite3'
+import { createLogger } from '@server/utils/logger.js'
+import { repairMarketplaceJson, repairClaudeSettings } from '@server/utils/marketplace-repair.js'
+import { getShimPath, getHookScriptPath, getMcpServerScriptPath } from './runtime-paths'
+import { listAgents } from '@server/db/agents.js'
+
+const log = createLogger('plugin-self-heal')
+
+interface HealResult {
+  scanned: number
+  patched: number
+  errors: { file: string; error: string }[]
+}
+
+function safeReadJson(filePath: string): any | null {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+  } catch {
+    return null
+  }
+}
+
+function safeWriteJson(filePath: string, obj: any): void {
+  fs.writeFileSync(filePath, JSON.stringify(obj, null, 2))
+}
+
+/**
+ * 判断 mcpServers 条目是否需要修正。
+ * 条件：command 不等于当前 shim，或 args[0] 指向的脚本名是 mcp-server.cjs 但路径过期。
+ */
+function mcpEntryNeedsPatch(entry: any, shimPath: string, mcpServerPath: string): boolean {
+  if (!entry || typeof entry !== 'object') return false
+  if (entry.command !== shimPath) return true
+  if (!Array.isArray(entry.args) || entry.args[0] !== mcpServerPath) return true
+  return false
+}
+
+function patchMcpEntry(entry: any, shimPath: string, mcpServerPath: string): void {
+  entry.command = shimPath
+  if (!Array.isArray(entry.args) || entry.args.length === 0) {
+    entry.args = [mcpServerPath]
+  } else {
+    entry.args[0] = mcpServerPath
+  }
+}
+
+/**
+ * 判断 hooks.json 里的 hook command 字符串是否需要修正。
+ * 识别特征：包含 `--agent-id <agentId>` 但 command 开头不是当前 shim 路径（带双引号）。
+ */
+function hookCommandNeedsPatch(command: string, shimPath: string, hookScriptPath: string, agentId: string): boolean {
+  if (!command.includes(`--agent-id`)) return false
+  if (!command.includes(agentId)) return false
+  const expectedPrefix = `${JSON.stringify(shimPath)} ${JSON.stringify(hookScriptPath)}`
+  return !command.startsWith(expectedPrefix)
+}
+
+function rebuildHookCommand(shimPath: string, hookScriptPath: string, agentId: string, skillPath: string, tool: string): string {
+  return [
+    JSON.stringify(shimPath),
+    JSON.stringify(hookScriptPath),
+    '--agent-id', JSON.stringify(agentId),
+    '--skill-path', JSON.stringify(skillPath),
+    '--tool', JSON.stringify(tool),
+  ].join(' ')
+}
+
+/**
+ * 从已有 hook command 中尽力提取 agent-id / skill-path / tool，以便重建。
+ * 正则匹配带双引号或不带的参数值。
+ */
+function parseHookCommand(command: string): { agentId?: string; skillPath?: string; tool?: string } {
+  const extract = (flag: string): string | undefined => {
+    const re = new RegExp(`--${flag}\\s+(?:"([^"]+)"|(\\S+))`)
+    const m = command.match(re)
+    return m ? (m[1] ?? m[2]) : undefined
+  }
+  return {
+    agentId: extract('agent-id'),
+    skillPath: extract('skill-path'),
+    tool: extract('tool'),
+  }
+}
+
+// ----------------------------------------------------------
+// 每类配置文件的修正逻辑
+// ----------------------------------------------------------
+
+/** Claude Code plugin 目录下的 .mcp.json 和 hooks.json */
+function healClaudeCodePlugins(pluginsRoot: string, shimPath: string, mcpServerPath: string, hookScriptPath: string, result: HealResult): void {
+  if (!fs.existsSync(pluginsRoot)) return
+  let entries: string[] = []
+  try {
+    entries = fs.readdirSync(pluginsRoot)
+  } catch { return }
+
+  for (const name of entries) {
+    if (!name.startsWith('claude-code-')) continue
+    const pluginDir = path.join(pluginsRoot, name)
+    if (!fs.statSync(pluginDir).isDirectory()) continue
+
+    // .mcp.json
+    const mcpPath = path.join(pluginDir, '.mcp.json')
+    if (fs.existsSync(mcpPath)) {
+      result.scanned++
+      const cfg = safeReadJson(mcpPath)
+      let changed = false
+
+      // 一次性过渡清理：删除遗留的 'external-brain' key
+      if (cfg?.mcpServers && 'external-brain' in cfg.mcpServers) {
+        delete cfg.mcpServers['external-brain']
+        changed = true
+        log.info(`cleanup legacy key 'external-brain' in: ${mcpPath}`)
+      }
+
+      // 常规修正：patch 新的 'tidemind' key 的路径
+      if (cfg?.mcpServers?.['tidemind']) {
+        if (mcpEntryNeedsPatch(cfg.mcpServers['tidemind'], shimPath, mcpServerPath)) {
+          patchMcpEntry(cfg.mcpServers['tidemind'], shimPath, mcpServerPath)
+          changed = true
+        }
+      }
+
+      if (changed) {
+        try {
+          safeWriteJson(mcpPath, cfg)
+          result.patched++
+          log.info(`patched: ${mcpPath}`)
+        } catch (err: any) {
+          result.errors.push({ file: mcpPath, error: err.message })
+        }
+      }
+    }
+
+    // hooks/hooks.json
+    const hooksPath = path.join(pluginDir, 'hooks', 'hooks.json')
+    if (fs.existsSync(hooksPath)) {
+      result.scanned++
+      const cfg = safeReadJson(hooksPath)
+      if (cfg?.hooks?.SessionStart) {
+        let changed = false
+        for (const group of cfg.hooks.SessionStart) {
+          if (!Array.isArray(group?.hooks)) continue
+          for (const h of group.hooks) {
+            if (typeof h?.command !== 'string') continue
+            const parsed = parseHookCommand(h.command)
+            if (!parsed.agentId || !parsed.skillPath || !parsed.tool) continue
+            if (hookCommandNeedsPatch(h.command, shimPath, hookScriptPath, parsed.agentId)) {
+              h.command = rebuildHookCommand(shimPath, hookScriptPath, parsed.agentId, parsed.skillPath, parsed.tool)
+              changed = true
+            }
+          }
+        }
+        if (changed) {
+          try {
+            safeWriteJson(hooksPath, cfg)
+            result.patched++
+            log.info(`patched: ${hooksPath}`)
+          } catch (err: any) {
+            result.errors.push({ file: hooksPath, error: err.message })
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Cursor / Windsurf / Cowork 共通的 mcp config 修正（扁平 mcpServers 结构）。
+ *
+ * @param expectedAgentIds 应该存在于此配置文件中的 agent ID 列表。
+ *   如果传入且非空，当配置文件中缺少对应的 `tidemind-{agentId}` 条目时会重建。
+ *   这解决了 Claude Desktop 覆写配置导致 mcpServers 整段丢失的问题。
+ */
+function healMcpServersFile(filePath: string, shimPath: string, mcpServerPath: string, result: HealResult, expectedAgentIds?: string[]): void {
+  if (!fs.existsSync(filePath)) return
+  result.scanned++
+  const cfg = safeReadJson(filePath)
+  if (!cfg) return
+  let changed = false
+
+  // 确保 mcpServers 字段存在（可能被外部程序覆写丢失）
+  if (!cfg.mcpServers) {
+    // 没有 expectedAgentIds 需要重建时，保持原有行为——直接跳过
+    if (!expectedAgentIds || expectedAgentIds.length === 0) return
+    cfg.mcpServers = {}
+  }
+
+  // 一次性过渡清理：删除 external-brain-* 旧条目
+  for (const name of Object.keys(cfg.mcpServers)) {
+    if (name.startsWith('external-brain-')) {
+      delete cfg.mcpServers[name]
+      changed = true
+      log.info(`cleanup legacy key '${name}' in: ${filePath}`)
+    }
+  }
+
+  // 常规修正：patch tidemind-* 已有条目的路径
+  for (const [name, entry] of Object.entries<any>(cfg.mcpServers)) {
+    if (!name.startsWith('tidemind-')) continue
+    if (mcpEntryNeedsPatch(entry, shimPath, mcpServerPath)) {
+      patchMcpEntry(entry, shimPath, mcpServerPath)
+      changed = true
+    }
+  }
+
+  // 重建丢失的条目：expectedAgentIds 中存在但 mcpServers 中缺失的
+  if (expectedAgentIds) {
+    for (const agentId of expectedAgentIds) {
+      const key = `tidemind-${agentId}`
+      if (!cfg.mcpServers[key]) {
+        cfg.mcpServers[key] = {
+          command: shimPath,
+          args: [mcpServerPath],
+          env: { EB_AGENT_ID: agentId },
+        }
+        changed = true
+        log.info(`rebuilt missing entry '${key}' in: ${filePath}`)
+      }
+    }
+  }
+
+  if (changed) {
+    try {
+      safeWriteJson(filePath, cfg)
+      result.patched++
+      log.info(`patched: ${filePath}`)
+    } catch (err: any) {
+      result.errors.push({ file: filePath, error: err.message })
+    }
+  }
+}
+
+/** OpenClaw 配置：mcp.servers 嵌套一层 */
+function healOpenclawConfig(filePath: string, shimPath: string, mcpServerPath: string, result: HealResult): void {
+  if (!fs.existsSync(filePath)) return
+  result.scanned++
+  const cfg = safeReadJson(filePath)
+  if (!cfg?.mcp?.servers) return
+  let changed = false
+
+  // 一次性过渡清理：删除 external-brain-* 旧条目
+  for (const name of Object.keys(cfg.mcp.servers)) {
+    if (name.startsWith('external-brain-')) {
+      delete cfg.mcp.servers[name]
+      changed = true
+      log.info(`cleanup legacy key '${name}' in: ${filePath}`)
+    }
+  }
+
+  // 常规修正：patch tidemind-* 新条目
+  for (const [name, entry] of Object.entries<any>(cfg.mcp.servers)) {
+    if (!name.startsWith('tidemind-')) continue
+    if (mcpEntryNeedsPatch(entry, shimPath, mcpServerPath)) {
+      patchMcpEntry(entry, shimPath, mcpServerPath)
+      changed = true
+    }
+  }
+
+  if (changed) {
+    try {
+      safeWriteJson(filePath, cfg)
+      result.patched++
+      log.info(`patched: ${filePath}`)
+    } catch (err: any) {
+      result.errors.push({ file: filePath, error: err.message })
+    }
+  }
+}
+
+/** Codex hooks.json（结构和 Claude Code 的 hooks.json 几乎一样，复用逻辑） */
+function healCodexHooks(filePath: string, shimPath: string, hookScriptPath: string, result: HealResult): void {
+  if (!fs.existsSync(filePath)) return
+  result.scanned++
+  const cfg = safeReadJson(filePath)
+  if (!cfg?.hooks?.SessionStart) return
+  let changed = false
+  for (const group of cfg.hooks.SessionStart) {
+    if (!Array.isArray(group?.hooks)) continue
+    for (const h of group.hooks) {
+      if (typeof h?.command !== 'string') continue
+      if (!h.command.includes('--agent-id')) continue
+      const parsed = parseHookCommand(h.command)
+      if (!parsed.agentId || !parsed.skillPath || !parsed.tool) continue
+      if (hookCommandNeedsPatch(h.command, shimPath, hookScriptPath, parsed.agentId)) {
+        h.command = rebuildHookCommand(shimPath, hookScriptPath, parsed.agentId, parsed.skillPath, parsed.tool)
+        changed = true
+      }
+    }
+  }
+  if (changed) {
+    try {
+      safeWriteJson(filePath, cfg)
+      result.patched++
+      log.info(`patched: ${filePath}`)
+    } catch (err: any) {
+      result.errors.push({ file: filePath, error: err.message })
+    }
+  }
+}
+
+/**
+ * Codex TOML config 中的 [mcp_servers.tidemind-*] 段落路径修正，
+ * 以及 [mcp_servers.external-brain-*] 旧段落的一次性清理。
+ * 用字符串替换：找到 `command = "..."` 和 `args = [...]` 行并替换。
+ * 简单粗暴但够用——toml-utils 的 appendTomlMcpSection 会在 self-heal 场景下重复追加段落，不合适。
+ */
+function healCodexTomlConfig(filePath: string, shimPath: string, mcpServerPath: string, result: HealResult): void {
+  if (!fs.existsSync(filePath)) return
+  result.scanned++
+  let content: string
+  try { content = fs.readFileSync(filePath, 'utf-8') } catch { return }
+
+  let changed = false
+
+  // 一次性过渡清理：移除 [mcp_servers.external-brain-*] 段落
+  // 匹配从段落标题开始到下一个段落或文件结尾
+  const legacySectionRe = /(?:^|\n)\[mcp_servers\.external-brain-[\w-]+\][\s\S]*?(?=\n\[|$)/g
+  const withoutLegacy = content.replace(legacySectionRe, '')
+  if (withoutLegacy !== content) {
+    content = withoutLegacy
+    changed = true
+    log.info(`cleanup legacy [mcp_servers.external-brain-*] sections in: ${filePath}`)
+  }
+
+  // 常规修正：patch [mcp_servers.tidemind-*] 段落的路径
+  const sectionRe = /\[mcp_servers\.(tidemind-[\w-]+)\]([\s\S]*?)(?=\n\[|\n*$)/g
+  const patched = content.replace(sectionRe, (whole: string, _name: string, body: string) => {
+    let newBody = body
+    // command = "..."
+    const cmdRe = /^(\s*)command\s*=\s*"[^"]*"/m
+    if (cmdRe.test(newBody)) {
+      const replacement = `$1command = ${JSON.stringify(shimPath)}`
+      const updated = newBody.replace(cmdRe, replacement)
+      if (updated !== newBody) { newBody = updated; changed = true }
+    }
+    // args = [ "..." ] 只改第一个元素
+    const argsRe = /^(\s*)args\s*=\s*\[\s*"[^"]*"([\s\S]*?)\]/m
+    if (argsRe.test(newBody)) {
+      const replacement = `$1args = [${JSON.stringify(mcpServerPath)}$2]`
+      const updated = newBody.replace(argsRe, replacement)
+      if (updated !== newBody) { newBody = updated; changed = true }
+    }
+    return whole.replace(body, newBody)
+  })
+
+  if (changed) {
+    try {
+      fs.writeFileSync(filePath, patched)
+      result.patched++
+      log.info(`patched: ${filePath}`)
+    } catch (err: any) {
+      result.errors.push({ file: filePath, error: err.message })
+    }
+  }
+}
+
+// ----------------------------------------------------------
+// marketplace.json 过渡清理
+// ----------------------------------------------------------
+
+/**
+ * 修复 Tide Mind 自己的 local marketplace.json：
+ *   - 顶层 name/description/owner 强制改为新品牌
+ *   - plugins 列表里的 external-brain-* 旧条目删掉
+ * 只处理这一个文件，不触碰 Claude Code 真正的 plugin 安装位置。
+ *
+ * 纯转换逻辑在 src/utils/marketplace-repair.ts，方便单元测试。
+ */
+function healLocalMarketplace(pluginsRoot: string, result: HealResult): void {
+  const mpPath = path.join(pluginsRoot, '.claude-plugin', 'marketplace.json')
+  if (!fs.existsSync(mpPath)) return
+  result.scanned++
+  const cfg = safeReadJson(mpPath)
+  if (!cfg || typeof cfg !== 'object') return
+
+  const { output, changed, removedLegacyPlugins } = repairMarketplaceJson(cfg)
+  if (!changed) return
+
+  if (removedLegacyPlugins > 0) {
+    log.info(`removed ${removedLegacyPlugins} legacy external-brain-* entries from: ${mpPath}`)
+  }
+  try {
+    safeWriteJson(mpPath, output)
+    result.patched++
+    log.info(`patched marketplace: ${mpPath}`)
+  } catch (err: any) {
+    result.errors.push({ file: mpPath, error: err.message })
+  }
+}
+
+/**
+ * 修复 Claude Code settings.json 里的 extraKnownMarketplaces：
+ *   - 删除遗留的 external-brain-local 条目
+ *   - 这不会影响 Claude Code 真正的内部 marketplace 状态（那是独立的），
+ *     但至少让 settings.json 自身保持干净。
+ *     真正的内部状态要在 install-plugin handler 里通过 CLI 命令 remove。
+ */
+function healClaudeSettings(result: HealResult): void {
+  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json')
+  if (!fs.existsSync(settingsPath)) return
+  result.scanned++
+  const cfg = safeReadJson(settingsPath)
+  if (!cfg || typeof cfg !== 'object') return
+
+  const { output, changed, removedKeys } = repairClaudeSettings(cfg)
+  if (!changed) return
+
+  log.info(`removed legacy extraKnownMarketplaces keys [${removedKeys.join(', ')}] from: ${settingsPath}`)
+  try {
+    safeWriteJson(settingsPath, output)
+    result.patched++
+  } catch (err: any) {
+    result.errors.push({ file: settingsPath, error: err.message })
+  }
+}
+
+// ----------------------------------------------------------
+// 主入口
+// ----------------------------------------------------------
+
+/**
+ * 按 tool_type 分组获取活跃 agent ID 列表。
+ * 这些 ID 用于判断哪些配置文件中应该有对应的 MCP 条目——
+ * 如果条目丢失（比如被外部程序覆写），自愈会重建它们。
+ */
+function getExpectedAgentIdsByType(db?: Database.Database): Record<string, string[]> {
+  if (!db) return {}
+  try {
+    const agents = listAgents(db, false) // 只取未归档的
+    const byType: Record<string, string[]> = {}
+    for (const agent of agents) {
+      if (!byType[agent.tool_type]) byType[agent.tool_type] = []
+      byType[agent.tool_type].push(agent.id)
+    }
+    return byType
+  } catch (err: any) {
+    log.warn(`failed to query agents for self-heal: ${err.message}`)
+    return {}
+  }
+}
+
+export function selfHealPlugins(dataDir: string, db?: Database.Database): HealResult {
+  const shimPath = getShimPath()
+  const mcpServerPath = getMcpServerScriptPath()
+  const hookScriptPath = getHookScriptPath()
+  const result: HealResult = { scanned: 0, patched: 0, errors: [] }
+
+  const agentsByType = getExpectedAgentIdsByType(db)
+
+  // Claude Code
+  healClaudeCodePlugins(path.join(dataDir, 'plugins'), shimPath, mcpServerPath, hookScriptPath, result)
+
+  // Tide Mind 自己的 local marketplace.json（过渡清理）
+  healLocalMarketplace(path.join(dataDir, 'plugins'), result)
+
+  // Claude Code settings.json 里的 extraKnownMarketplaces 遗留条目
+  healClaudeSettings(result)
+
+  // Cursor
+  healMcpServersFile(path.join(os.homedir(), '.cursor', 'mcp.json'), shimPath, mcpServerPath, result, agentsByType['cursor'])
+
+  // Windsurf
+  healMcpServersFile(path.join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json'), shimPath, mcpServerPath, result, agentsByType['windsurf'])
+
+  // Claude Cowork (Desktop)
+  healMcpServersFile(
+    path.join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'),
+    shimPath,
+    mcpServerPath,
+    result,
+    agentsByType['cowork'],
+  )
+
+  // OpenClaw
+  healOpenclawConfig(path.join(os.homedir(), '.openclaw', 'openclaw.json'), shimPath, mcpServerPath, result)
+
+  // Codex
+  healCodexHooks(path.join(os.homedir(), '.codex', 'hooks.json'), shimPath, hookScriptPath, result)
+  healCodexTomlConfig(path.join(os.homedir(), '.codex', 'config.toml'), shimPath, mcpServerPath, result)
+
+  log.info(`self-heal done: scanned=${result.scanned} patched=${result.patched} errors=${result.errors.length}`)
+  if (result.errors.length > 0) {
+    for (const e of result.errors) log.warn(`self-heal error: ${e.file} — ${e.error}`)
+  }
+  return result
+}

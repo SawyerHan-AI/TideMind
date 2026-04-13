@@ -1,0 +1,120 @@
+{
+  "derivedCategory": {
+    "record": "記錄",
+    "knowledge": "知識",
+    "belief": "認知",
+    "hypothesis": "假設",
+    "intention": "意願"
+  },
+  "role": {
+    "crystal": "結晶",
+    "keystone": "樞紐",
+    "tag": "標籤",
+    "meta": "系統"
+  },
+  "nodeType": {
+    "fact": "事實",
+    "context": "上下文",
+    "preference": "偏好",
+    "idea": "想法",
+    "crystal": "結晶",
+    "meta": "後設資料"
+  },
+  "relation": {
+    "caused_by": "因果",
+    "continues": "延續",
+    "updates": "更新",
+    "supports": "支持",
+    "contradicts": "矛盾",
+    "summarizes": "總結",
+    "part_of": "部分",
+    "analogous": "類比",
+    "tagged": "標籤"
+  },
+  "gate": {
+    "basic_digest": "基礎消化",
+    "bm25_search": "BM25 搜尋",
+    "vector_search": "向量搜尋",
+    "graph_expansion": "圖遍歷擴展",
+    "crystal_generation": "結晶生成",
+    "divergent_scan": "發散掃描"
+  },
+  "eventType": {
+    "memory": "記憶",
+    "think_associate": "思考（關聯）",
+    "think_emerge": "思考（湧現）",
+    "output": "輸出",
+    "evolution": "進化",
+    "config": "設定"
+  },
+  "eventSubtype": {
+    "digest": "消化",
+    "correction": "糾正",
+    "archive": "歸檔",
+    "landing_connection": "著陸連接",
+    "annotate": "節點標註",
+    "dedup": "去重偵測",
+    "dedup_merge": "去重融合",
+    "synaptic_scaling": "突觸衰減",
+    "link_classify": "連結評估",
+    "refine_links": "連結重新驗證",
+    "link_discover": "連結發現",
+    "pending_link_review": "待確認連結",
+    "keystone_identification": "樞紐分析",
+    "tag_promote": "標籤湧現",
+    "divergent_scan": "發散掃描",
+    "crystal_update": "結晶生成",
+    "split_merge": "分裂/合併",
+    "recall": "檢索",
+    "prepare": "認知包組裝",
+    "reconsolidation": "再鞏固",
+    "profile_synthesize": "畫像綜合",
+    "learning2": "Learning II",
+    "learning3": "Learning III",
+    "strategy_rollback": "策略回滾",
+    "settings_change": "設定變更",
+    "strategy_update": "策略修改",
+    "gate_unlock": "門控解鎖",
+    "logseq_sync": "筆記同步",
+    "logseq_file_change": "筆記變更",
+    "obsidian_sync": "Obsidian 同步",
+    "obsidian_file_change": "Obsidian 檔案變更",
+    "apple_notes_sync": "備忘錄同步",
+    "daemon_start": "啟動",
+    "daemon_stop": "停止"
+  },
+  "actor": {
+    "user": "使用者",
+    "agent": "Agent",
+    "brain": "外腦"
+  },
+  "operation": {
+    "digest": "消化",
+    "annotate": "節點標註",
+    "dedup": "去重偵測",
+    "synaptic": "突觸衰減",
+    "link-evaluate": "連結評估",
+    "link-discover": "連結發現",
+    "link-revalidate": "連結重新驗證",
+    "link-judge": "連結判斷",
+    "layer2-link-refine": "連結精化",
+    "contradiction": "矛盾偵測",
+    "assess": "評估",
+    "temporal-crystal": "時間結晶",
+    "keystone": "樞紐分析",
+    "divergent": "發散掃描",
+    "crystal": "結晶生成",
+    "prepare": "認知包組裝",
+    "reconsolidate": "再鞏固",
+    "learning2": "Learning II",
+    "learning3": "Learning III",
+    "tag-define": "標籤定義"
+  },
+  "sourceTool": {
+    "cursor": "Cursor",
+    "claude-code": "Claude Code",
+    "codex": "Codex",
+    "logseq": "Logseq",
+    "client": "用戶端"
+  }
+}

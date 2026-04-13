@@ -1,0 +1,29 @@
+{
+  "nav": {
+    "dashboard": "概览",
+    "timeline": "时间线",
+    "explorer": "外脑浏览",
+    "settings": "设置"
+  },
+  "search": {
+    "placeholder": "搜索..."
+  },
+  "actions": {
+    "save": "保存",
+    "saved": "已保存",
+    "cancel": "取消",
+    "confirm": "确认",
+    "delete": "删除",
+    "edit": "编辑",
+    "close": "关闭",
+    "export": "导出",
+    "copy": "复制到剪贴板",
+    "comingSoon": "即将支持"
+  },
+  "units": {
+    "nodes": "节点",
+    "items": "条",
+    "memories": "条记忆"
+  },
+  "total": "共 {{count}} 条"
+}

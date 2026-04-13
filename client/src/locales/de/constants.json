@@ -1,0 +1,120 @@
+{
+  "derivedCategory": {
+    "record": "Aufzeichnung",
+    "knowledge": "Wissen",
+    "belief": "Ueberzeugung",
+    "hypothesis": "Hypothese",
+    "intention": "Absicht"
+  },
+  "role": {
+    "crystal": "Crystal",
+    "keystone": "Keystone",
+    "tag": "Tag",
+    "meta": "System"
+  },
+  "nodeType": {
+    "fact": "Fakt",
+    "context": "Kontext",
+    "preference": "Praeferenz",
+    "idea": "Idee",
+    "crystal": "Crystal",
+    "meta": "Metadaten"
+  },
+  "relation": {
+    "caused_by": "Kausal",
+    "continues": "Fortsetzung",
+    "updates": "Aktualisierung",
+    "supports": "Unterstuetzung",
+    "contradicts": "Widerspruch",
+    "summarizes": "Zusammenfassung",
+    "part_of": "Teil von",
+    "analogous": "Analogie",
+    "tagged": "Getaggt"
+  },
+  "gate": {
+    "basic_digest": "Basis-Digest",
+    "bm25_search": "BM25-Suche",
+    "vector_search": "Vektorsuche",
+    "graph_expansion": "Graph-Traversierung",
+    "crystal_generation": "Crystal-Generierung",
+    "divergent_scan": "Divergenter Scan"
+  },
+  "eventType": {
+    "memory": "Erinnerung",
+    "think_associate": "Denken (Assoziation)",
+    "think_emerge": "Denken (Emergenz)",
+    "output": "Ausgabe",
+    "evolution": "Evolution",
+    "config": "Konfiguration"
+  },
+  "eventSubtype": {
+    "digest": "Digest",
+    "correction": "Korrektur",
+    "archive": "Archiv",
+    "landing_connection": "Anker-Verbindung",
+    "annotate": "Annotation",
+    "dedup": "Deduplizierung",
+    "dedup_merge": "Duplikat-Zusammenfuehrung",
+    "synaptic_scaling": "Synaptische Skalierung",
+    "link_classify": "Link-Bewertung",
+    "refine_links": "Link-Revalidierung",
+    "link_discover": "Link-Entdeckung",
+    "pending_link_review": "Ausstehende Link-Pruefung",
+    "keystone_identification": "Keystone-Analyse",
+    "tag_promote": "Tag-Emergenz",
+    "divergent_scan": "Divergenter Scan",
+    "crystal_update": "Crystal-Generierung",
+    "split_merge": "Aufteilen/Zusammenfuehren",
+    "recall": "Abruf",
+    "prepare": "Kognitive Vorbereitung",
+    "reconsolidation": "Rekonsolidierung",
+    "profile_synthesize": "Profilsynthese",
+    "learning2": "Lernen II",
+    "learning3": "Lernen III",
+    "strategy_rollback": "Strategie-Rollback",
+    "settings_change": "Einstellungsaenderung",
+    "strategy_update": "Strategie-Aktualisierung",
+    "gate_unlock": "Gate-Freischaltung",
+    "logseq_sync": "Notiz-Synchronisation",
+    "logseq_file_change": "Notizaenderung",
+    "obsidian_sync": "Obsidian-Synchronisation",
+    "obsidian_file_change": "Obsidian-Dateiaenderung",
+    "apple_notes_sync": "Notizen-Synchronisation",
+    "daemon_start": "Start",
+    "daemon_stop": "Stopp"
+  },
+  "actor": {
+    "user": "Benutzer",
+    "agent": "Agent",
+    "brain": "Gehirn"
+  },
+  "operation": {
+    "digest": "Digest",
+    "annotate": "Annotation",
+    "dedup": "Deduplizierung",
+    "synaptic": "Synaptische Skalierung",
+    "link-evaluate": "Link-Bewertung",
+    "link-discover": "Link-Entdeckung",
+    "link-revalidate": "Link-Revalidierung",
+    "link-judge": "Link-Beurteilung",
+    "layer2-link-refine": "Link-Verfeinerung",
+    "contradiction": "Widerspruchserkennung",
+    "assess": "Bewertung",
+    "temporal-crystal": "Temporales Crystal",
+    "keystone": "Keystone-Analyse",
+    "divergent": "Divergenter Scan",
+    "crystal": "Crystal-Generierung",
+    "prepare": "Kognitive Vorbereitung",
+    "reconsolidate": "Rekonsolidierung",
+    "learning2": "Lernen II",
+    "learning3": "Lernen III",
+    "tag-define": "Tag-Definition"
+  },
+  "sourceTool": {
+    "cursor": "Cursor",
+    "claude-code": "Claude Code",
+    "codex": "Codex",
+    "logseq": "Logseq",
+    "client": "Client"
+  }
+}

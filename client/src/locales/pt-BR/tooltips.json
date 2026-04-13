@@ -1,0 +1,81 @@
+{
+  "derivedCategory": {
+    "record": "Registro: Eventos, observações e ações vinculados a tempos e locais específicos. Decai rapidamente — matéria-prima a ser refinada em conhecimento.",
+    "knowledge": "Conhecimento: Compreensão geral desvinculada de contextos específicos — fatos, padrões, conceitos. Decai lentamente, principal recurso de recuperação.",
+    "belief": "Crença: Compreensão pessoal estável — preferências, valores, impressões, autoconsciência. Usada para construir perfis de usuário.",
+    "hypothesis": "Hipótese: Julgamentos incertos sobre o mundo — especulações, previsões, teorias não verificadas. Pode ser confirmada ou refutada por evidências posteriores.",
+    "intention": "Intenção: Direções pessoais não decididas — planos, desejos, aspirações. Torna-se um Registro quando executada, ou uma Crença quando internalizada."
+  },
+  "role": {
+    "crystal": "Cristal: Produtos cognitivos de alto nível que emergem de muitos nós — perfis de usuário, padrões comportamentais, princípios de decisão. Hubs altamente conectados no grafo.",
+    "keystone": "Pilar: Os 5% de nós mais conectados. Como espécies-chave na ecologia — removê-los fragmentaria a rede de conhecimento.",
+    "tag": "Tag: Tags de alta frequência são auto-promovidas a nós do grafo, participando da estrutura do grafo."
+  },
+  "nodeType": {
+    "fact": "Fato: Decisões, conclusões, fatos estabelecidos. Altamente estruturado; links requerem maior confiança.",
+    "context": "Contexto: Informações de projeto, relacionamentos, estados atuais — informações de fundo.",
+    "preference": "Preferência: Estilo de codificação, preferências de comunicação, configurações de ferramentas — inclinações pessoais.",
+    "idea": "Ideia: Inspirações, hipóteses, ideias a verificar. Links podem ser mais livres com limites mais baixos.",
+    "crystal": "Cristal: Produtos cognitivos de alto nível que emergem de muitos nós — perfis de usuário, padrões comportamentais, princípios de decisão. Nós hub altamente conectados no grafo.",
+    "meta": "Metadados: Registros de operação do sistema (logs de chamadas MCP, alterações de estratégia, etc.). Ocultos por padrão, usados para reflexão interna."
+  },
+  "maturity": {
+    "heat": "Calor: Indicador de atividade de curto prazo. Nós recém-criados, recuperados ou usados têm alto calor. Decai rapidamente (diariamente), mas a taxa de decaimento é modulada pela conectividade — mais conexões significam decaimento mais lento. Análogo à frequência recente de disparos neurais.",
+    "refinement": "Refinamento: Quantas vezes o conteúdo foi processado. Fragmentos brutos começam baixos, aumentam após refinamento por LLM e crescem ainda mais através da reconsolidação. Crescimento lento, aumenta apenas durante a reconsolidação. Como memórias passando de turvas a claras.",
+    "connectivity": "Conectividade: Quantos outros nós têm links efetivos para este. Não é apenas quantidade — a diversidade dos links também importa. Nós altamente conectados são hubs da rede de conhecimento. Como memórias ricamente conectadas no hipocampo sendo mais fáceis de recuperar.",
+    "independence": "Independência: Quão bem o nó pode ser compreendido sem seu contexto original. \"Decidiu usar SQLite no Cursor em 20/03/2026\" tem baixa independência; \"Prefere soluções de manutenção zero para ferramentas pessoais\" tem alta independência. Melhora através da reconsolidação.",
+    "maturity_score": "Pontuação de Maturidade: Composto ponderado de calor, refinamento, conectividade e independência. Usado para classificação de busca e exibição."
+  },
+  "nodeAttr": {
+    "keystone": "Pilar: Os 5% de nós mais conectados. Como espécies-chave na ecologia — removê-los fragmentaria a rede de conhecimento. Taxa de decaimento mais baixa.",
+    "version": "Versão: Incrementada a cada reconsolidação (conteúdo revisado e atualizado). A reconsolidação é o mecanismo de atualização de memória do cérebro — memórias evoluem através do uso, não são imutáveis.",
+    "source_stream": "Fonte do Fluxo: Aponta para o fragmento original no registro de fluxo. O fluxo contém registros brutos e não processados; nós do grafo foram refinados. Use este ponteiro quando precisar rastrear \"o que exatamente aconteceu.\""
+  },
+  "link": {
+    "caused_by": "Causal: A é a causa ou consequência de B.",
+    "continues": "Continuação: A é um desenvolvimento subsequente de B.",
+    "updates": "Atualização: A é uma versão atualizada de B, nova informação substituindo a antiga.",
+    "supports": "Suporte: A fornece evidências ou argumentos para B.",
+    "contradicts": "Contradição: A e B têm conteúdo conflitante.",
+    "summarizes": "Resumo: A é uma visão geral de alto nível de B. Tipicamente entre nós cristal e suas fontes.",
+    "part_of": "Parte De: A é parte ou subordinado a B.",
+    "analogous": "Analogia: A e B são estruturalmente similares — padrões paralelos em domínios diferentes.",
+    "tagged": "Marcado: Agrupados através de tags compartilhadas.",
+    "confirmed": "Confirmado: O sistema ou o usuário verificou que este link é significativo.",
+    "pending": "Pendente: Criado automaticamente mas ainda não verificado. Será revisado durante a avaliação de links — confirmado ou removido.",
+    "strength": "Força do Link: Pontuação de confiança de 0 a 1. Determinada pela similaridade vetorial durante o pouso, sujeita a decaimento hebbiano ao longo do tempo."
+  },
+  "operation": {
+    "prepare": "prepare (Preparação Cognitiva): Chamado no início de cada nova conversa. Retorna resumo do perfil do usuário + índice de memória + orientações comportamentais. O ponto de entrada para a \"participação ativa\" do cérebro.",
+    "recall": "recall (Recuperação Sob Demanda): Chamado quando contexto histórico é necessário durante a conversa. Busca híbrida (BM25 + vetorial + travessia do grafo); cada recuperação aciona reconsolidação do tipo \"ler-é-escrever\".",
+    "digest": "digest (Ingestão de Informação): Armazena novas informações literalmente no cérebro, calcula embeddings automaticamente e cria conexões de entrada. Anotação assíncrona de tipos e tags segue. Também usado para correções e resfriamento."
+  },
+  "gate": {
+    "basic_digest": "Digestão Básica: Sempre disponível. O conteúdo é armazenado diretamente como um nó.",
+    "bm25_search": "Busca BM25: Sempre disponível. Busca de texto completo baseada em palavras-chave — rápida mas não entende semântica.",
+    "vector_search": "Busca Vetorial: Requer mais de 50 nós. Busca semântica baseada em embedding que entende expressões similares. Melhor quando combinada com BM25.",
+    "graph_expansion": "Travessia do Grafo: Requer mais de 100 nós e mais de 50 links. Expande resultados de busca em um salto ao longo dos links — descobre memórias \"com palavras-chave diferentes mas logicamente relacionadas\".",
+    "crystal_generation": "Geração de Cristal: Requer mais de 200 nós. Destila insights de alto nível de clusters de nós altamente conectados (perfis de usuário, padrões comportamentais, princípios de decisão).",
+    "divergent_scan": "Descoberta de Links: Requer mais de 500 nós. Múltiplas estratégias para encontrar links que deveriam existir mas não existem — vizinhos vetoriais, vizinhos comuns, detecção de contradições."
+  },
+  "searchWeight": {
+    "alpha": "Peso BM25 (α): Peso para correspondência exata de palavras-chave. Valores mais altos confiam mais em palavras-chave precisas — bom para encontrar termos específicos.",
+    "beta": "Peso Vetorial (β): Peso para similaridade semântica. Valores mais altos confiam mais no significado — bom para consultas difusas e recuperação multilíngue.",
+    "gamma": "Impulso de Calor (γ): Impulso de classificação para nós recentemente ativos. Valores mais altos destacam memórias usadas recentemente de forma mais proeminente.",
+    "delta": "Impulso de Maturidade (δ): Impulso de classificação para nós maduros. Valores mais altos destacam memórias bem consolidadas e de alta qualidade."
+  },
+  "metabolism": {
+    "decay_base": "Taxa Base de Decaimento do Nó: Coeficiente diário de decaimento de calor quando conectividade=0. Maior conectividade significa decaimento mais lento.",
+    "link_decay_base": "Taxa Base de Decaimento do Link: Taxa diária de decaimento de força do link. Ambos os pontos ativos = quase sem decaimento; ambos frios = decaimento rápido (aprendizado hebbiano).",
+    "link_delete_threshold": "Limiar de Exclusão de Link: Links com força abaixo deste valor são removidos automaticamente.",
+    "dedup_threshold": "Limiar de Deduplicação: Quando a similaridade vetorial excede este valor, reconsolida o nó existente em vez de criar um novo. Previne memórias duplicadas.",
+    "landing_threshold": "Limiar de Entrada: Quando um novo nó entra no grafo, similaridades acima deste valor criam links confirmados com nós existentes.",
+    "pending_threshold": "Limiar Pendente: Similaridades entre este e o limiar de entrada criam links pendentes, deixados para a avaliação de links confirmar.",
+    "landing_top_k": "Top-K de Entrada: Número máximo de links confirmados criados por novo nó."
+  },
+  "strategySkill": {
+    "strategy": "Arquivos de Estratégia: Instruções evolutivas que controlam \"como\" o cérebro opera. Contém templates de prompts para LLM e parâmetros numéricos. A lógica central (estrutura do grafo, interfaces) é DNA estável; estratégias são expressão gênica mutável. Você pode editar diretamente esses arquivos para ajustar o comportamento do sistema.",
+    "skill": "Arquivos de Skill: Guias que ensinam IAs externas (Cursor/Claude Code, etc.) a usar o cérebro. Diz à IA quando chamar prepare/recall/digest e como fornecer bom contexto. Sem Skills, a IA pode nem usar o cérebro."
+  },
+  "gateOverview": "Portas de Partida Fria (Sucessão Cognitiva): O cérebro não precisa funcionar perfeitamente desde o primeiro dia. Funcionalidades são desbloqueadas automaticamente conforme os dados se acumulam — cada estágio cria condições para o próximo. Como espécies pioneiras na sucessão ecológica: não precisa ser ótimo, apenas bom o suficiente para acumular dados."
+}

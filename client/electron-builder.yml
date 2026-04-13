@@ -1,0 +1,50 @@
+appId: com.tidemind.app
+productName: Tide Mind
+directories:
+  buildResources: resources
+  output: release
+
+mac:
+  category: public.app-category.productivity
+  icon: resources/icon.icns
+  target: dmg
+  hardenedRuntime: false
+
+dmg:
+  title: Tide Mind
+  iconSize: 80
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+asar: true
+asarUnpack:
+  - "**/*.node"
+  - "**/*.dylib"
+  - "**/better-sqlite3/**"
+  - "**/sqlite-vec*/**"
+  # bundled 的 hook-session-start.cjs / mcp-server.cjs 必须 unpack：
+  # 外部 Agent 通过 /bin/sh 启动 hook 时，shell 看不到 asar 内部，
+  # 需要真实的 OS 文件路径。
+  - "out/bin/**"
+
+extraResources:
+  - from: "../data"
+    to: "data"
+    filter:
+      - "**/*"
+      - "!*.sqlite"
+      - "!*.sqlite-wal"
+      - "!*.sqlite-shm"
+      - "!*.sqlite-journal"
+
+files:
+  - "out/**/*"
+  - "resources/**/*"
+  - "!node_modules/**/{test,tests,__tests__,__mocks__}/**"
+  - "!node_modules/**/*.{md,ts,map}"
+  - "!node_modules/**/{example,examples,demo,docs}/**"

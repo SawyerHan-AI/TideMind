@@ -1,0 +1,120 @@
+{
+  "derivedCategory": {
+    "record": "Registrazione",
+    "knowledge": "Conoscenza",
+    "belief": "Convinzione",
+    "hypothesis": "Ipotesi",
+    "intention": "Intenzione"
+  },
+  "role": {
+    "crystal": "Cristallo",
+    "keystone": "Cardine",
+    "tag": "Tag",
+    "meta": "Sistema"
+  },
+  "nodeType": {
+    "fact": "Fatto",
+    "context": "Contesto",
+    "preference": "Preferenza",
+    "idea": "Idea",
+    "crystal": "Cristallo",
+    "meta": "Metadati"
+  },
+  "relation": {
+    "caused_by": "Causale",
+    "continues": "Continuazione",
+    "updates": "Aggiornamento",
+    "supports": "Supporto",
+    "contradicts": "Contraddizione",
+    "summarizes": "Riepilogo",
+    "part_of": "Parte Di",
+    "analogous": "Analogia",
+    "tagged": "Taggato"
+  },
+  "gate": {
+    "basic_digest": "Digestione Base",
+    "bm25_search": "Ricerca BM25",
+    "vector_search": "Ricerca Vettoriale",
+    "graph_expansion": "Attraversamento Grafo",
+    "crystal_generation": "Generazione Cristalli",
+    "divergent_scan": "Scansione Divergente"
+  },
+  "eventType": {
+    "memory": "Memoria",
+    "think_associate": "Pensiero (Associazione)",
+    "think_emerge": "Pensiero (Emergenza)",
+    "output": "Output",
+    "evolution": "Evoluzione",
+    "config": "Configurazione"
+  },
+  "eventSubtype": {
+    "digest": "Digestione",
+    "correction": "Correzione",
+    "archive": "Archiviazione",
+    "landing_connection": "Connessione di Ingresso",
+    "annotate": "Annotazione",
+    "dedup": "Deduplicazione",
+    "dedup_merge": "Unione Duplicati",
+    "synaptic_scaling": "Scalatura Sinaptica",
+    "link_classify": "Valutazione Collegamenti",
+    "refine_links": "Rivalidazione Collegamenti",
+    "link_discover": "Scoperta Collegamenti",
+    "pending_link_review": "Revisione Collegamenti in Attesa",
+    "keystone_identification": "Analisi Cardini",
+    "tag_promote": "Emergenza Tag",
+    "divergent_scan": "Scansione Divergente",
+    "crystal_update": "Generazione Cristalli",
+    "split_merge": "Divisione/Unione",
+    "recall": "Recupero",
+    "prepare": "Preparazione Cognitiva",
+    "reconsolidation": "Riconsolidamento",
+    "profile_synthesize": "Sintesi Profilo",
+    "learning2": "Apprendimento II",
+    "learning3": "Apprendimento III",
+    "strategy_rollback": "Ripristino Strategia",
+    "settings_change": "Modifica Impostazioni",
+    "strategy_update": "Aggiornamento Strategia",
+    "gate_unlock": "Sblocco Porta",
+    "logseq_sync": "Sincronizzazione Note",
+    "logseq_file_change": "Modifica Note",
+    "obsidian_sync": "Sincronizzazione Obsidian",
+    "obsidian_file_change": "Modifica File Obsidian",
+    "apple_notes_sync": "Sincronizzazione Note Apple",
+    "daemon_start": "Avvio",
+    "daemon_stop": "Arresto"
+  },
+  "actor": {
+    "user": "Utente",
+    "agent": "Agente",
+    "brain": "Cervello"
+  },
+  "operation": {
+    "digest": "Digestione",
+    "annotate": "Annotazione",
+    "dedup": "Deduplicazione",
+    "synaptic": "Scalatura Sinaptica",
+    "link-evaluate": "Valutazione Collegamenti",
+    "link-discover": "Scoperta Collegamenti",
+    "link-revalidate": "Rivalidazione Collegamenti",
+    "link-judge": "Giudizio Collegamenti",
+    "layer2-link-refine": "Raffinamento Collegamenti",
+    "contradiction": "Rilevamento Contraddizioni",
+    "assess": "Valutazione",
+    "temporal-crystal": "Cristallo Temporale",
+    "keystone": "Analisi Cardini",
+    "divergent": "Scansione Divergente",
+    "crystal": "Generazione Cristalli",
+    "prepare": "Preparazione Cognitiva",
+    "reconsolidate": "Riconsolidamento",
+    "learning2": "Apprendimento II",
+    "learning3": "Apprendimento III",
+    "tag-define": "Definizione tag"
+  },
+  "sourceTool": {
+    "cursor": "Cursor",
+    "claude-code": "Claude Code",
+    "codex": "Codex",
+    "logseq": "Logseq",
+    "client": "Client"
+  }
+}

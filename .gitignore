@@ -1,0 +1,26 @@
+node_modules/
+dist/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+# 例外：Apple Notes 集成测试 fixture 数据库（来自 RhetTbull/apple-notes-parser MIT）
+!tests/fixtures/apple-notes/*.sqlite
+.DS_Store
+.claude/
+.oss-blocked-patterns
+.env*
+
+# 测试数据原始备份（含个人信息，不同步）
+tests/prompts/backup-original/
+
+# MCP Server 编译产物（src/ 下的 .js/.d.ts）
+/src/**/*.js
+/src/**/*.d.ts
+/src/**/*.js.map
+
+# Client 编译产物
+/client/out/
+/client/dist/
+/client/release/
+/client/tsconfig.*.tsbuildinfo

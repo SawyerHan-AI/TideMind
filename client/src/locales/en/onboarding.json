@@ -1,0 +1,52 @@
+{
+  "welcome": {
+    "title": "Welcome to TideMind",
+    "subtitle": "A living second brain that connects everything you think with — your AI agents, your notes, and whatever comes next.",
+    "description": "",
+    "start": "Get Started"
+  },
+  "preferences": {
+    "title": "Personalize Your Experience",
+    "description": "Choose your preferred language and theme."
+  },
+  "model": {
+    "title": "Connect a Language Model",
+    "description": "TideMind needs an LLM to understand, connect, and evolve your memories. Configure at least one model connection to enable full functionality.",
+    "skipWarning": "Without a model connection, core features like memory digestion and association discovery will be unavailable. You can configure this later in Settings.",
+    "skip": "Skip for now"
+  },
+  "agent": {
+    "title": "Connect Your Dev Tools",
+    "description": "Link your development tools (like Claude Code or Cursor) so TideMind becomes your memory companion while coding.",
+    "skip": "Skip for now"
+  },
+  "noteSource": {
+    "title": "Import Your Notes",
+    "description": "If you use Logseq, Obsidian, or Apple Notes, you can import your existing notes into TideMind's knowledge graph.",
+    "skip": "Skip for now"
+  },
+  "complete": {
+    "title": "You're All Set",
+    "subtitle": "Here's a summary of your setup:",
+    "configured": "Configured",
+    "skipped": "Skipped",
+    "modelLabel": "Model Connection",
+    "agentLabel": "Dev Tools",
+    "noteSourceLabel": "Notes Import",
+    "preferencesLabel": "Language & Theme",
+    "enter": "Enter TideMind"
+  },
+  "steps": {
+    "welcome": "Welcome",
+    "preferences": "Preferences",
+    "model": "Model",
+    "agent": "Dev Tools",
+    "noteSource": "Notes",
+    "complete": "Done"
+  },
+  "nav": {
+    "next": "Next",
+    "back": "Back",
+    "skip": "Skip"
+  }
+}

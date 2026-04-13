@@ -1,0 +1,815 @@
+// ============================================================
+// Logseq Markdown 预处理器
+//
+// 将原始 Logseq markdown 清洗为干净文本 + 结构化元数据。
+// 核心设计：纯函数（除 block reference 解析需要外部索引）。
+// ============================================================
+
+import fs from 'node:fs';
+import path from 'node:path';
+import type { PreprocessedPage, PageMetadata, BlockRefAssociation } from './types.js';
+import { SYSTEM_PROPERTIES, EXCLUDED_DIRS } from './types.js';
+
+// --- Block UUID 索引 ---
+
+/** UUID → block 原始内容 */
+const blockIndex = new Map<string, string>();
+
+/**
+ * 构建 block UUID 索引
+ * 扫描所有 .md 文件，提取带 `id:: <uuid>` 的 block 内容
+ */
+export function buildBlockIndex(graphRoot: string): void {
+  blockIndex.clear();
+  const files = walkMdFiles(graphRoot);
+  for (const filePath of files) {
+    indexFileBlocks(filePath);
+  }
+}
+
+/**
+ * 增量更新：重新索引单个文件的 blocks
+ */
+export function updateBlockIndexForFile(filePath: string): void {
+  // 移除该文件旧的索引条目
+  // 由于我们没有追踪 uuid→file 映射，全量重建该文件即可
+  // 删除旧条目的代价可忽略（重复 set 覆盖即可）
+  indexFileBlocks(filePath);
+}
+
+function indexFileBlocks(filePath: string): void {
+  let content: string;
+  try {
+    content = fs.readFileSync(filePath, 'utf-8');
+  } catch {
+    return;
+  }
+
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const idMatch = lines[i].match(/^\s*id:: ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s*$/);
+    if (!idMatch) continue;
+
+    const uuid = idMatch[1];
+    // 向上查找该 block 的内容行（同缩进级别的 `- ` 开头行）
+    const idIndent = lines[i].search(/\S/);
+    let blockContent = '';
+
+    for (let j = i - 1; j >= 0; j--) {
+      const line = lines[j];
+      if (line.trim() === '') continue;
+
+      const lineIndent = line.search(/\S/);
+      // 找到了同级或更低缩进的 `- ` 行，这就是 block 开始
+      if (lineIndent <= idIndent && /^\s*- /.test(line)) {
+        // 收集从这行到 id:: 行之间的所有内容（不含 id:: 本身和其他 properties）
+        const contentLines: string[] = [];
+        for (let k = j; k < i; k++) {
+          const cl = lines[k];
+          // 跳过 property 行
+          if (/^\s*\w[\w-]*:: /.test(cl)) continue;
+          contentLines.push(cl);
+        }
+        blockContent = contentLines
+          .map(l => l.replace(/^\s*- /, '').replace(/^\s+/, ''))
+          .join(' ')
+          .trim();
+        break;
+      }
+    }
+
+    if (blockContent) {
+      blockIndex.set(uuid, blockContent);
+    }
+  }
+}
+
+/** 查询 block 索引 */
+export function lookupBlock(uuid: string): string | undefined {
+  return blockIndex.get(uuid);
+}
+
+/** 获取索引大小（用于进度报告） */
+export function getBlockIndexSize(): number {
+  return blockIndex.size;
+}
+
+// --- 目录/文件过滤 ---
+
+/**
+ * 遍历 graph 目录下的所有 .md 文件（排除系统目录）
+ */
+export function walkMdFiles(graphRoot: string): string[] {
+  const results: string[] = [];
+
+  function walk(dir: string, relDir: string): void {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') && entry.isDirectory()) continue;
+
+      const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
+
+      if (entry.isDirectory()) {
+        if (isExcludedDir(relPath)) continue;
+        walk(path.join(dir, entry.name), relPath);
+      } else if (entry.name.endsWith('.md')) {
+        results.push(path.join(dir, entry.name));
+      }
+    }
+  }
+
+  walk(graphRoot, '');
+  return results;
+}
+
+/**
+ * 检查路径是否在排除目录中
+ */
+export function isExcludedDir(relPath: string): boolean {
+  const normalized = relPath.replace(/\\/g, '/');
+  return EXCLUDED_DIRS.some(
+    excluded => normalized === excluded || normalized.startsWith(excluded + '/'),
+  );
+}
+
+/**
+ * 检查文件路径是否应该被处理
+ */
+export function shouldProcessFile(relPath: string): boolean {
+  if (!relPath.endsWith('.md')) return false;
+  const normalized = relPath.replace(/\\/g, '/');
+  return !EXCLUDED_DIRS.some(
+    excluded => normalized === excluded || normalized.startsWith(excluded + '/'),
+  );
+}
+
+// --- 核心预处理 ---
+
+/**
+ * 预处理 Logseq markdown 文件
+ */
+export function preprocessFile(
+  filePath: string,
+  graphRoot: string,
+): PreprocessedPage | null {
+  let rawContent: string;
+  try {
+    rawContent = fs.readFileSync(filePath, 'utf-8');
+  } catch {
+    return null;
+  }
+
+  if (rawContent.trim().length < 10) return null;
+
+  const relPath = path.relative(graphRoot, filePath).replace(/\\/g, '/');
+  const isJournal = relPath.startsWith('journals/');
+  const basename = path.basename(relPath, '.md');
+
+  // hls__*.md PDF 标注文件走专门分支
+  if (basename.startsWith('hls__')) {
+    return preprocessAnnotationFile(rawContent, relPath);
+  }
+
+  const title = inferTitle(relPath, isJournal);
+  const metadata: PageMetadata = {
+    aliases: [],
+    tags: [],
+    pageRefs: [],
+    blockRefAssociations: [],
+    properties: {},
+    isJournal,
+    filePath: relPath,
+  };
+
+  let content = rawContent;
+
+  // Step 1: 提取页面级 properties
+  content = extractPageProperties(content, metadata);
+
+  // Step 2: 处理 block 级 properties（系统属性删除，自定义属性提取到 metadata）
+  content = extractBlockProperties(content, metadata);
+
+  // Step 3: 移除 :LOGBOOK: 块，提取总耗时
+  content = removeLogbook(content, metadata);
+
+  // Step 4: 解析 [[page references]]
+  content = resolvePageRefs(content, metadata);
+
+  // Step 5: 解析 ((block references))
+  content = resolveBlockRefs(content, metadata);
+
+  // Step 6: 解析 #tag 和 #[[multi word tag]]
+  content = resolveTags(content, metadata);
+
+  // Step 7: 处理任务标记
+  content = handleTaskMarkers(content);
+
+  // Step 8: 处理 Logseq 宏（{{query}}, {{embed}} 等）
+  content = handleLogseqMacros(content, metadata);
+
+  // Step 9: 处理资源引用（图片、文件）
+  content = handleAssetRefs(content);
+
+  // Step 10: 去除 outliner `- ` 前缀（保留缩进）
+  content = stripOutlinerPrefix(content);
+
+  // Step 11: 清理（含 Hiccup 兜底）
+  content = cleanUp(content);
+
+  if (content.trim().length < 5) return null;
+
+  return { title, cleanContent: content, metadata };
+}
+
+// --- PDF 标注文件解析 ---
+
+interface Annotation {
+  text: string;
+  page: number;
+  isArea: boolean;
+}
+
+/**
+ * 解析 hls__*.md PDF 标注文件
+ *
+ * 文件结构：
+ * - 头部 properties：file-path::, file::, title::
+ * - 文本标注：`- 高亮文本\n  ls-type:: annotation\n  hl-page:: N`
+ * - 区域标注：`- [:span]\n  ls-type:: annotation\n  hl-type:: area` （无文本，跳过）
+ */
+function preprocessAnnotationFile(
+  rawContent: string,
+  relPath: string,
+): PreprocessedPage | null {
+  const metadata: PageMetadata = {
+    aliases: [],
+    tags: [],
+    pageRefs: [],
+    blockRefAssociations: [],
+    properties: {},
+    isJournal: false,
+    filePath: relPath,
+  };
+
+  const lines = rawContent.split('\n');
+
+  // 提取源 PDF 文件名
+  let sourcePdf = '';
+  for (const line of lines) {
+    const filePathMatch = line.match(/^file-path::\s*(.+)$/);
+    if (filePathMatch) {
+      // ../assets/讲给大家的中国历史1-6_1667967586558_0.pdf → 讲给大家的中国历史1-6.pdf
+      const raw = filePathMatch[1].trim();
+      sourcePdf = cleanAssetFilename(path.basename(raw));
+      break;
+    }
+    const fileMatch = line.match(/^file::\s*\[([^\]]+)\]/);
+    if (fileMatch && !sourcePdf) {
+      sourcePdf = cleanAssetFilename(fileMatch[1]);
+    }
+  }
+
+  if (sourcePdf) {
+    metadata.properties['source_pdf'] = sourcePdf;
+  }
+
+  // 解析标注块
+  const annotations: Annotation[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // 查找列表项开头
+    if (/^\s*- /.test(line)) {
+      const blockText = line.replace(/^\s*- /, '').trim();
+
+      // 收集后续属性行
+      const props: Record<string, string> = {};
+      let j = i + 1;
+      while (j < lines.length) {
+        const propMatch = lines[j].match(/^\s+([\w-]+)::\s*(.*)$/);
+        if (propMatch) {
+          props[propMatch[1]] = propMatch[2].trim();
+          j++;
+        } else if (lines[j].trim() === '') {
+          j++;
+        } else {
+          break;
+        }
+      }
+
+      // 只处理标注块（有 ls-type:: annotation）
+      if (props['ls-type'] === 'annotation') {
+        const isArea = props['hl-type'] === 'area';
+        const page = parseInt(props['hl-page'] || '0', 10);
+
+        if (!isArea && blockText && blockText !== '[:span]') {
+          annotations.push({ text: blockText, page, isArea: false });
+        }
+        // 区域标注（[:span]）跳过，无可提取的文本
+      }
+
+      i = j;
+    } else {
+      i++;
+    }
+  }
+
+  if (annotations.length === 0) return null;
+
+  // 按页码分组输出
+  const title = sourcePdf
+    ? `PDF 标注: ${sourcePdf}`
+    : `PDF 标注: ${path.basename(relPath, '.md').replace(/^hls__/, '')}`;
+
+  const pageGroups = new Map<number, string[]>();
+  for (const ann of annotations) {
+    const group = pageGroups.get(ann.page) || [];
+    group.push(ann.text);
+    pageGroups.set(ann.page, group);
+  }
+
+  const contentParts: string[] = [];
+  const sortedPages = [...pageGroups.keys()].sort((a, b) => a - b);
+  for (const page of sortedPages) {
+    const texts = pageGroups.get(page)!;
+    if (texts.length === 1) {
+      contentParts.push(`p.${page}: ${texts[0]}`);
+    } else {
+      contentParts.push(`p.${page}:\n${texts.join('\n')}`);
+    }
+  }
+
+  const content = contentParts.join('\n\n');
+  if (content.trim().length < 5) return null;
+
+  return { title, cleanContent: content, metadata };
+}
+
+/**
+ * 清理 Logseq 资源文件名中的时间戳后缀
+ * 例：讲给大家的中国历史1-6_1667967586558_0.pdf → 讲给大家的中国历史1-6.pdf
+ */
+function cleanAssetFilename(filename: string): string {
+  // 匹配 _数字13位时间戳_序号.扩展名
+  return filename.replace(/_\d{13}_\d+(\.\w+)$/, '$1');
+}
+
+// --- LOGBOOK 块移除 ---
+
+/**
+ * 移除 :LOGBOOK: ... :END: 块
+ * 解析 CLOCK 行中的耗时并累加，存入 metadata.properties['time_spent']
+ *
+ * CLOCK 格式：CLOCK: [2022-03-04 Fri 10:44:23]--[2022-03-05 Sat 15:12:40] => 28:28:17
+ */
+function removeLogbook(content: string, metadata: PageMetadata): string {
+  const logbookRegex = /^:LOGBOOK:\s*$([\s\S]*?)^:END:\s*$/gm;
+
+  let totalSeconds = 0;
+  let found = false;
+
+  content = content.replace(logbookRegex, (_match, body: string) => {
+    found = true;
+    // 提取所有 CLOCK 行的耗时
+    const clockRegex = /=>\s*(\d+):(\d{2}):(\d{2})/g;
+    let clockMatch;
+    while ((clockMatch = clockRegex.exec(body)) !== null) {
+      const hours = parseInt(clockMatch[1], 10);
+      const minutes = parseInt(clockMatch[2], 10);
+      const seconds = parseInt(clockMatch[3], 10);
+      totalSeconds += hours * 3600 + minutes * 60 + seconds;
+    }
+    return '';
+  });
+
+  if (found && totalSeconds > 0) {
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+    metadata.properties['time_spent'] =
+      `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+
+  return content;
+}
+
+// --- Logseq 宏处理 ---
+
+/**
+ * 处理 Logseq 宏语法：{{query}}, {{embed}} 等
+ *
+ * - {{query (property 类型 Book)}} → 解析查询意图，存入 metadata，从内容中移除
+ * - {{embed ...}} → 移除（嵌入内容在预处理时不可展开）
+ * - 其他 {{...}} → 移除
+ */
+function handleLogseqMacros(content: string, metadata: PageMetadata): string {
+  // 处理 {{query ...}} — 提取查询意图
+  content = content.replace(/\{\{query\s+(.*?)\}\}/g, (_match, queryExpr: string) => {
+    const desc = parseQueryDescription(queryExpr.trim());
+    if (desc) {
+      // 多个 query 用分号分隔
+      const existing = metadata.properties['query_desc'];
+      metadata.properties['query_desc'] = existing ? `${existing}; ${desc}` : desc;
+    }
+    return '';
+  });
+
+  // 特定宏：保留 URL 或内容
+  content = content.replace(/\{\{tweet\s+(https?:\/\/\S+)\}\}/g, '[推文: $1]');
+  content = content.replace(/\{\{youtube\s+(https?:\/\/\S+)\}\}/g, '[视频: $1]');
+  content = content.replace(/\{\{video\s+(https?:\/\/\S+)\}\}/g, '[视频: $1]');
+  content = content.replace(/\{\{renderer\s+:linkpreview,\s*(https?:\/\/\S+)\}\}/g, '[链接: $1]');
+  content = content.replace(/\{\{embed\s+\[\[([^\]]+)\]\]\}\}/g, '[嵌入: $1]');
+  content = content.replace(/\{\{embed\s+\(\(([^)]+)\)\)\}\}/g, '[嵌入: $1]');
+  content = content.replace(/\{\{cloze\s+(.+?)\}\}/g, '$1');
+
+  // 移除其他 {{...}} 宏
+  content = content.replace(/\{\{[^}]*\}\}/g, '');
+
+  return content;
+}
+
+/**
+ * 将 Logseq query 表达式解析为可读描述
+ *
+ * (property 类型 Book) → "查询: 类型=Book"
+ * (and (property 类型 Book) (property 状态 已读)) → "查询: 类型=Book, 状态=已读"
+ */
+function parseQueryDescription(expr: string): string {
+  const props: string[] = [];
+
+  // 匹配 (property key value) 模式
+  const propRegex = /\(property\s+(\S+)\s+(\S+)\)/g;
+  let match;
+  while ((match = propRegex.exec(expr)) !== null) {
+    props.push(`${match[1]}=${match[2]}`);
+  }
+
+  if (props.length > 0) {
+    return `查询: ${props.join(', ')}`;
+  }
+
+  // 无法解析的 query，返回原始表达式截断
+  return `查询: ${expr.slice(0, 50)}`;
+}
+
+// --- 资源引用处理 ---
+
+/**
+ * 处理图片和文件引用，保留文件名去除路径
+ *
+ * ![alt](../assets/xxx_123456_0.png) → [图片: xxx.png]
+ * ![alt](../assets/xxx.pdf) → [文件: xxx.pdf]
+ * [filename.pdf](../assets/xxx.pdf) → [文件: filename.pdf]
+ */
+function handleAssetRefs(content: string): string {
+  // 图片引用 ![alt](path)
+  content = content.replace(
+    /!\[[^\]]*\]\(([^)]+)\)/g,
+    (_match, url: string) => {
+      const filename = cleanAssetFilename(path.basename(url));
+      const ext = path.extname(filename).toLowerCase();
+      const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'].includes(ext);
+      return isImage ? `[图片: ${filename}]` : `[文件: ${filename}]`;
+    },
+  );
+
+  // 链接引用 [text](../assets/path) — 仅处理 assets 路径
+  content = content.replace(
+    /\[([^\]]+)\]\((\.\.\/assets\/[^)]+)\)/g,
+    (_match, text: string, _url: string) => {
+      const filename = cleanAssetFilename(text);
+      return `[文件: ${filename}]`;
+    },
+  );
+
+  return content;
+}
+
+// --- 各处理步骤 ---
+
+/**
+ * 提取文件头部的页面级 properties（在第一个 `- ` 之前）
+ */
+function extractPageProperties(content: string, metadata: PageMetadata): string {
+  const lines = content.split('\n');
+  const propertyLines: number[] = [];
+  let foundNonProperty = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line === '') continue;
+
+    // 第一个 `- ` 开头的行标志着 block 内容开始
+    if (line.startsWith('- ')) {
+      foundNonProperty = true;
+      break;
+    }
+
+    const propMatch = line.match(/^([\w][\w-]*)::\s*(.*)$/);
+    if (propMatch) {
+      const [, key, value] = propMatch;
+      const lowerKey = key.toLowerCase();
+
+      // 提取时间戳 epoch（在过滤系统属性之前）
+      if (lowerKey === 'created-at' && value.trim()) {
+        metadata.properties['_created_at_epoch'] = value.trim();
+      }
+      if (lowerKey === 'updated-at' && value.trim()) {
+        metadata.properties['_updated_at_epoch'] = value.trim();
+      }
+
+      if (lowerKey === 'alias' || lowerKey === 'aliases') {
+        metadata.aliases = value.split(',').map(s => s.trim()).filter(Boolean);
+      } else if (lowerKey === 'tags') {
+        metadata.tags = value
+          .split(/[,\s]+/)
+          .map(s => s.replace(/^#/, '').trim())
+          .filter(Boolean);
+      } else if (!SYSTEM_PROPERTIES.includes(lowerKey)) {
+        metadata.properties[key] = value;
+      }
+      propertyLines.push(i);
+    } else {
+      // 非 property 行且非空，停止查找
+      foundNonProperty = true;
+      break;
+    }
+  }
+
+  // 移除 property 行
+  if (propertyLines.length > 0) {
+    const result = lines.filter((_, i) => !propertyLines.includes(i));
+    return result.join('\n');
+  }
+  return content;
+}
+
+/**
+ * 处理 block 级 properties
+ *
+ * - 系统属性（id::, collapsed:: 等）：直接删除
+ * - 自定义属性（rating::, source:: 等）：提取到 metadata.properties，从内容中移除
+ *
+ * 这样自定义属性作为结构化元数据保留，不以 `key:: value` 原始格式留在内容中干扰 LLM。
+ */
+function extractBlockProperties(content: string, metadata: PageMetadata): string {
+  return content.replace(
+    /^([ \t]*)([\w][\w-]*):: (.*)$/gm,
+    (_match, indent: string, key: string, value: string) => {
+      const lowerKey = key.toLowerCase();
+
+      // 提取时间戳 epoch（在过滤系统属性之前）
+      if (lowerKey === 'created-at' && value.trim()) {
+        metadata.properties['_created_at_epoch'] = value.trim();
+      }
+      if (lowerKey === 'updated-at' && value.trim()) {
+        metadata.properties['_updated_at_epoch'] = value.trim();
+      }
+
+      // 系统属性：直接删除
+      if (SYSTEM_PROPERTIES.includes(lowerKey)) {
+        return '';
+      }
+
+      // 页面级已处理的特殊属性（alias/tags），跳过重复提取
+      if (lowerKey === 'alias' || lowerKey === 'aliases' || lowerKey === 'tags') {
+        return '';
+      }
+
+      // 自定义属性：提取到 metadata，不重复写入
+      const trimmedValue = value.trim();
+      if (trimmedValue) {
+        // 同 key 多次出现时用逗号拼接
+        if (metadata.properties[key]) {
+          metadata.properties[key] += `, ${trimmedValue}`;
+        } else {
+          metadata.properties[key] = trimmedValue;
+        }
+      }
+
+      return '';
+    },
+  );
+}
+
+/**
+ * 解析 [[page references]] → 纯文本，收集引用
+ * 跳过代码块内的内容
+ */
+function resolvePageRefs(content: string, metadata: PageMetadata): string {
+  const codeLines = codeRegionsToLineSet(content, findCodeRegions(content));
+  if (codeLines.size === 0) {
+    return content.replace(/\[\[([^\]]+)\]\]/g, (_match, pageName: string) => {
+      if (!metadata.pageRefs.includes(pageName)) {
+        metadata.pageRefs.push(pageName);
+      }
+      return pageName;
+    });
+  }
+
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (codeLines.has(i)) continue;
+    lines[i] = lines[i].replace(/\[\[([^\]]+)\]\]/g, (_match, pageName: string) => {
+      if (!metadata.pageRefs.includes(pageName)) {
+        metadata.pageRefs.push(pageName);
+      }
+      return pageName;
+    });
+  }
+  return lines.join('\n');
+}
+
+/**
+ * 解析 ((block-uuid)) → 查找索引替换为实际内容
+ */
+function resolveBlockRefs(content: string, metadata: PageMetadata): string {
+  return content.replace(
+    /\(\(([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\)\)/g,
+    (_match, uuid: string) => {
+      const resolved = lookupBlock(uuid);
+      if (resolved) {
+        metadata.blockRefAssociations.push({
+          refId: uuid,
+          resolvedContent: resolved,
+        });
+        return `[引用: ${resolved}]`;
+      }
+      // 未找到，移除无意义的 UUID
+      return '[引用: 未知]';
+    },
+  );
+}
+
+/**
+ * 解析 #tag 和 #[[multi word tag]]
+ */
+function resolveTags(content: string, metadata: PageMetadata): string {
+  // #[[multi word tag]]
+  content = content.replace(/#\[\[([^\]]+)\]\]/g, (_match, tag: string) => {
+    if (!metadata.tags.includes(tag)) {
+      metadata.tags.push(tag);
+    }
+    return tag;
+  });
+
+  // #single-word-tag（排除 markdown 标题 ## ）
+  content = content.replace(/(?<!\w)#([\w\u4e00-\u9fff][\w\u4e00-\u9fff/-]*)/g, (_match, tag: string) => {
+    // 排除纯数字（如 #1, #123）
+    if (/^\d+$/.test(tag)) return _match;
+    if (!metadata.tags.includes(tag)) {
+      metadata.tags.push(tag);
+    }
+    return tag;
+  });
+
+  return content;
+}
+
+/**
+ * 处理任务标记
+ */
+function handleTaskMarkers(content: string): string {
+  return content.replace(
+    /^(\s*- )(TODO|DOING|DONE|LATER|NOW|WAITING|CANCELLED|CANCELED)\s+/gm,
+    (_match, prefix: string, marker: string) => {
+      const isDone = marker === 'DONE' || marker === 'CANCELLED' || marker === 'CANCELED';
+      const isDoing = marker === 'DOING';
+      if (isDone) return `${prefix}[已完成] `;
+      if (isDoing) return `${prefix}[进行中] `;
+      return `${prefix}`;
+    },
+  );
+}
+
+/**
+ * 去除 outliner `- ` 前缀，保留缩进信息
+ * 跳过代码块内的内容
+ *
+ * 输入:  "  - 内容"
+ * 输出:  "  内容"（保留两个空格缩进，segmenter 会用到）
+ */
+function stripOutlinerPrefix(content: string): string {
+  const codeLines = codeRegionsToLineSet(content, findCodeRegions(content));
+  if (codeLines.size === 0) {
+    return content.replace(/^(\s*)- /gm, '$1');
+  }
+
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (codeLines.has(i)) continue;
+    lines[i] = lines[i].replace(/^(\s*)- /, '$1');
+  }
+  return lines.join('\n');
+}
+
+/**
+ * 最终清理
+ */
+function cleanUp(content: string): string {
+  return content
+    // ^^highlight^^ → 纯文本
+    .replace(/\^\^([^^]+)\^\^/g, '$1')
+    // [#A] [#B] [#C] 优先级标记
+    .replace(/\[#([ABC])\]/g, '[优先级$1]')
+    // Hiccup 语法兜底：[:span], [:div ...] 等 ClojureScript 标记
+    .replace(/\[:\w+[^\]\n]*\]/g, '')
+    // 移除连续空行（保留单个）
+    .replace(/\n{3,}/g, '\n\n')
+    // 移除行尾空白
+    .replace(/[ \t]+$/gm, '')
+    // 移除开头空行
+    .replace(/^\n+/, '')
+    // 移除结尾空行
+    .replace(/\n+$/, '');
+}
+
+// --- 代码块保护 ---
+
+/**
+ * 查找所有 fenced code block 区域（``` 或 ~~~）的字符位置范围
+ * 未闭合的 fence 不算代码块
+ */
+function findCodeRegions(content: string): Array<[number, number]> {
+  const regions: Array<[number, number]> = [];
+  const fenceRegex = /^(```|~~~)/gm;
+  let openStart: number | null = null;
+
+  let match;
+  while ((match = fenceRegex.exec(content)) !== null) {
+    if (openStart === null) {
+      openStart = match.index;
+    } else {
+      regions.push([openStart, match.index + match[0].length]);
+      openStart = null;
+    }
+  }
+  // 未闭合的 fence 不作为代码块
+  return regions;
+}
+
+/**
+ * 将字符位置范围转换为行号集合（0-based）
+ */
+function codeRegionsToLineSet(content: string, regions: Array<[number, number]>): Set<number> {
+  if (regions.length === 0) return new Set();
+
+  const lineSet = new Set<number>();
+  // 构建行起始偏移表
+  const lineStarts: number[] = [0];
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === '\n') {
+      lineStarts.push(i + 1);
+    }
+  }
+
+  for (const [start, end] of regions) {
+    // 找到 start 所在行
+    let startLine = 0;
+    for (let i = lineStarts.length - 1; i >= 0; i--) {
+      if (lineStarts[i] <= start) { startLine = i; break; }
+    }
+    // 找到 end 所在行
+    let endLine = startLine;
+    for (let i = lineStarts.length - 1; i >= 0; i--) {
+      if (lineStarts[i] <= end) { endLine = i; break; }
+    }
+    for (let l = startLine; l <= endLine; l++) {
+      lineSet.add(l);
+    }
+  }
+  return lineSet;
+}
+
+// --- 工具函数 ---
+
+/**
+ * 从文件路径推断标题
+ */
+function inferTitle(relPath: string, isJournal: boolean): string {
+  const basename = path.basename(relPath, '.md');
+
+  if (isJournal) {
+    // journals/2024_01_15.md → 2024-01-15
+    // journals/2024-01-15.md → 2024-01-15
+    return basename.replace(/_/g, '-');
+  }
+
+  // pages/some%2Ftopic.md → some/topic
+  // pages/namespace___topic.md → namespace/topic
+  // pages/topic.md → topic
+  try {
+    return decodeURIComponent(basename.replace(/___/g, '/').replace(/%2F/gi, '/'));
+  } catch {
+    return basename;
+  }
+}

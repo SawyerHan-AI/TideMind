@@ -1,0 +1,120 @@
+{
+  "derivedCategory": {
+    "record": "记录",
+    "knowledge": "知识",
+    "belief": "认知",
+    "hypothesis": "假设",
+    "intention": "意愿"
+  },
+  "role": {
+    "crystal": "结晶",
+    "keystone": "枢纽",
+    "tag": "标签",
+    "meta": "系统"
+  },
+  "nodeType": {
+    "fact": "事实",
+    "context": "上下文",
+    "preference": "偏好",
+    "idea": "想法",
+    "crystal": "结晶",
+    "meta": "元数据"
+  },
+  "relation": {
+    "caused_by": "因果",
+    "continues": "延续",
+    "updates": "更新",
+    "supports": "支持",
+    "contradicts": "矛盾",
+    "summarizes": "总结",
+    "part_of": "部分",
+    "analogous": "类比",
+    "tagged": "标签"
+  },
+  "gate": {
+    "basic_digest": "基础消化",
+    "bm25_search": "BM25 搜索",
+    "vector_search": "向量搜索",
+    "graph_expansion": "图遍历扩展",
+    "crystal_generation": "结晶生成",
+    "divergent_scan": "发散扫描"
+  },
+  "eventType": {
+    "memory": "记忆",
+    "think_associate": "思考（关联）",
+    "think_emerge": "思考（涌现）",
+    "output": "输出",
+    "evolution": "进化",
+    "config": "配置"
+  },
+  "eventSubtype": {
+    "digest": "消化",
+    "correction": "纠正",
+    "archive": "归档",
+    "landing_connection": "着陆连接",
+    "annotate": "节点标注",
+    "dedup": "去重检测",
+    "dedup_merge": "去重融合",
+    "synaptic_scaling": "突触衰减",
+    "link_classify": "链接评估",
+    "refine_links": "链接重新验证",
+    "link_discover": "链接发现",
+    "pending_link_review": "待确认链接",
+    "keystone_identification": "枢纽分析",
+    "tag_promote": "标签涌现",
+    "divergent_scan": "发散扫描",
+    "crystal_update": "结晶生成",
+    "split_merge": "分裂/合并",
+    "recall": "检索",
+    "prepare": "认知包组装",
+    "reconsolidation": "再巩固",
+    "profile_synthesize": "画像综合",
+    "learning2": "Learning II",
+    "learning3": "Learning III",
+    "strategy_rollback": "策略回滚",
+    "settings_change": "设置变更",
+    "strategy_update": "策略修改",
+    "gate_unlock": "门控解锁",
+    "logseq_sync": "笔记同步",
+    "logseq_file_change": "笔记变更",
+    "obsidian_sync": "Obsidian 同步",
+    "obsidian_file_change": "Obsidian 文件变更",
+    "apple_notes_sync": "备忘录同步",
+    "daemon_start": "启动",
+    "daemon_stop": "停止"
+  },
+  "actor": {
+    "user": "用户",
+    "agent": "Agent",
+    "brain": "外脑"
+  },
+  "operation": {
+    "digest": "消化",
+    "annotate": "节点标注",
+    "dedup": "去重检测",
+    "synaptic": "突触衰减",
+    "link-evaluate": "链接评估",
+    "link-discover": "链接发现",
+    "link-revalidate": "链接重新验证",
+    "link-judge": "链接判断",
+    "layer2-link-refine": "链接精化",
+    "contradiction": "矛盾检测",
+    "assess": "评估",
+    "temporal-crystal": "时间结晶",
+    "keystone": "枢纽分析",
+    "divergent": "发散扫描",
+    "crystal": "结晶生成",
+    "prepare": "认知包组装",
+    "reconsolidate": "再巩固",
+    "learning2": "Learning II",
+    "learning3": "Learning III",
+    "tag-define": "标签定义"
+  },
+  "sourceTool": {
+    "cursor": "Cursor",
+    "claude-code": "Claude Code",
+    "codex": "Codex",
+    "logseq": "Logseq",
+    "client": "客户端"
+  }
+}

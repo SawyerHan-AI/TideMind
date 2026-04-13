@@ -1,0 +1,29 @@
+{
+  "nav": {
+    "dashboard": "總覽",
+    "timeline": "時間線",
+    "explorer": "外腦瀏覽",
+    "settings": "設定"
+  },
+  "search": {
+    "placeholder": "搜尋..."
+  },
+  "actions": {
+    "save": "儲存",
+    "saved": "已儲存",
+    "cancel": "取消",
+    "confirm": "確認",
+    "delete": "刪除",
+    "edit": "編輯",
+    "close": "關閉",
+    "export": "匯出",
+    "copy": "複製到剪貼簿",
+    "comingSoon": "即將支援"
+  },
+  "units": {
+    "nodes": "節點",
+    "items": "筆",
+    "memories": "筆記憶"
+  },
+  "total": "共 {{count}} 筆"
+}

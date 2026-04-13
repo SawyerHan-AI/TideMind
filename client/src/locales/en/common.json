@@ -1,0 +1,29 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "timeline": "Timeline",
+    "explorer": "Brain Explorer",
+    "settings": "Settings"
+  },
+  "search": {
+    "placeholder": "Search..."
+  },
+  "actions": {
+    "save": "Save",
+    "saved": "Saved",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "delete": "Delete",
+    "edit": "Edit",
+    "close": "Close",
+    "export": "Export",
+    "copy": "Copy to Clipboard",
+    "comingSoon": "Coming Soon"
+  },
+  "units": {
+    "nodes": "nodes",
+    "items": "items",
+    "memories": "memories"
+  },
+  "total": "{{count}} total"
+}

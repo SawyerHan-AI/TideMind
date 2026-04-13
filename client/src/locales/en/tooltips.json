@@ -1,0 +1,81 @@
+{
+  "derivedCategory": {
+    "record": "Record: Events, observations, and actions tied to specific times and places. Decays quickly — raw material to be refined into knowledge.",
+    "knowledge": "Knowledge: General understanding detached from specific contexts — facts, patterns, concepts. Decays slowly, the main retrieval workhorse.",
+    "belief": "Belief: Stable personal understanding — preferences, values, impressions, self-awareness. Used to build user profiles.",
+    "hypothesis": "Hypothesis: Uncertain judgments about the world — speculations, predictions, unverified theories. Can be confirmed or refuted by later evidence.",
+    "intention": "Intention: Undecided personal directions — plans, wishes, aspirations. Becomes a Record once executed, or a Belief once internalized."
+  },
+  "role": {
+    "crystal": "Crystal: High-level cognitive products that emerge from many nodes — user profiles, behavioral patterns, decision principles. Highly connected hubs in the graph.",
+    "keystone": "Keystone: The top 5% most connected nodes. Like keystone species in ecology — removing them would fragment the knowledge network.",
+    "tag": "Tag: High-frequency tags are auto-promoted to graph nodes, participating in graph structure."
+  },
+  "nodeType": {
+    "fact": "Fact: Decisions, conclusions, established facts. Highly structured; links require higher confidence.",
+    "context": "Context: Project info, relationships, current states — background information.",
+    "preference": "Preference: Coding style, communication preferences, tool configurations — personal inclinations.",
+    "idea": "Idea: Inspirations, hypotheses, ideas to verify. Links can be more free-form with lower thresholds.",
+    "crystal": "Crystal: High-level cognitive products emerging from many nodes — user profiles, behavioral patterns, decision principles. Highly connected hub nodes in the graph.",
+    "meta": "Metadata: System operation records (MCP call logs, strategy changes, etc.). Hidden by default, used for internal reflection."
+  },
+  "maturity": {
+    "heat": "Heat: Short-term activity indicator. Recently created, recalled, or used nodes have high heat. Decays quickly (daily), but decay rate is modulated by connectivity — more connections mean slower decay. Analogous to recent neural firing frequency.",
+    "refinement": "Refinement: How many times the content has been processed. Raw fragments start low, increase after LLM refinement, and grow further through reconsolidation. Slow growth, only increases during reconsolidation. Like memories going from fuzzy to clear.",
+    "connectivity": "Connectivity: How many other nodes have effective links to this one. Not just quantity — link diversity matters too. Highly connected nodes are knowledge network hubs. Like richly connected memories in the hippocampus being easier to recall.",
+    "independence": "Independence: How well the node can be understood without its original context. \"Decided to use SQLite in Cursor on 2026-03-20\" has low independence; \"Prefer zero-maintenance solutions for personal tools\" has high independence. Improves through reconsolidation.",
+    "maturity_score": "Maturity Score: Weighted composite of heat, refinement, connectivity, and independence. Used for search ranking and display."
+  },
+  "nodeAttr": {
+    "keystone": "Keystone: The top 5% most connected nodes. Like keystone species in ecology — removing them would fragment the knowledge network. Lower decay rate.",
+    "version": "Version: Incremented on each reconsolidation (content reviewed and updated). Reconsolidation is the brain's memory update mechanism — memories evolve through use, they're not immutable.",
+    "source_stream": "Stream Source: Points to the original fragment in the stream log. The stream contains raw, unprocessed records; graph nodes have been refined. Use this pointer when you need to trace back to \"what exactly happened.\""
+  },
+  "link": {
+    "caused_by": "Causal: A is the cause or consequence of B.",
+    "continues": "Continuation: A is a subsequent development of B.",
+    "updates": "Update: A is an updated version of B, new information replacing old.",
+    "supports": "Support: A provides evidence or arguments for B.",
+    "contradicts": "Contradiction: A and B have conflicting content.",
+    "summarizes": "Summary: A is a high-level overview of B. Typically between crystal nodes and their sources.",
+    "part_of": "Part Of: A is part of or subordinate to B.",
+    "analogous": "Analogy: A and B are structurally similar — parallel patterns across different domains.",
+    "tagged": "Tagged: Grouped together through shared tags.",
+    "confirmed": "Confirmed: The system or user has verified this link is meaningful.",
+    "pending": "Pending: Auto-created but not yet verified. Will be reviewed during link evaluation — confirmed or removed.",
+    "strength": "Link Strength: 0-1 confidence score. Determined by vector similarity during landing, subject to Hebbian decay over time."
+  },
+  "operation": {
+    "prepare": "prepare (Cognitive Prep): Called at the start of each new conversation. Returns user profile summary + memory index + behavioral guidance. The entry point for the brain's \"active participation.\"",
+    "recall": "recall (On-demand Retrieval): Called when historical context is needed during conversation. Hybrid search (BM25 + vector + graph traversal); each retrieval triggers \"read-is-write\" reconsolidation.",
+    "digest": "digest (Ingest Information): Stores new information verbatim into the brain, auto-computes embeddings and creates landing connections. Async annotation of types and tags follows. Also used for corrections and cooling."
+  },
+  "gate": {
+    "basic_digest": "Basic Digest: Always available. Content is stored directly as a node.",
+    "bm25_search": "BM25 Search: Always available. Keyword-based full-text search — fast but doesn't understand semantics.",
+    "vector_search": "Vector Search: Requires 50+ nodes. Embedding-based semantic search that understands similar expressions. Best when combined with BM25.",
+    "graph_expansion": "Graph Traversal: Requires 100+ nodes and 50+ links. Expands search results by one hop along links — discovers \"different keywords but logically related\" memories.",
+    "crystal_generation": "Crystal Generation: Requires 200+ nodes. Distills high-level insights from highly connected node clusters (user profiles, behavioral patterns, decision principles).",
+    "divergent_scan": "Link Discovery: Requires 500+ nodes. Multiple strategies to find links that should exist but don't — vector neighbors, common neighbors, contradiction detection."
+  },
+  "searchWeight": {
+    "alpha": "BM25 Weight (α): Weight for exact keyword matching. Higher values rely more on precise keywords — good for finding specific terms.",
+    "beta": "Vector Weight (β): Weight for semantic similarity. Higher values rely more on meaning — good for fuzzy queries and cross-language retrieval.",
+    "gamma": "Heat Boost (γ): Ranking boost for recently active nodes. Higher values surface recently used memories more prominently.",
+    "delta": "Maturity Boost (δ): Ranking boost for mature nodes. Higher values surface well-consolidated, high-quality memories."
+  },
+  "metabolism": {
+    "decay_base": "Node Decay Base Rate: Daily heat decay coefficient when connectivity=0. Higher connectivity means slower decay.",
+    "link_decay_base": "Link Decay Base Rate: Daily link strength decay rate. Both endpoints active = nearly no decay; both cold = rapid decay (Hebbian learning).",
+    "link_delete_threshold": "Link Delete Threshold: Links with strength below this value are automatically removed.",
+    "dedup_threshold": "Dedup Threshold: When vector similarity exceeds this, reconsolidate the existing node instead of creating a new one. Prevents duplicate memories.",
+    "landing_threshold": "Landing Threshold: When a new node enters the graph, similarities above this create confirmed links to existing nodes.",
+    "pending_threshold": "Pending Threshold: Similarities between this and the landing threshold create pending links, left for link evaluation to confirm.",
+    "landing_top_k": "Landing Top-K: Maximum number of confirmed links created per new node."
+  },
+  "strategySkill": {
+    "strategy": "Strategy Files: Evolvable instructions controlling \"how\" the brain operates. Contains LLM prompt templates and numeric parameters. Core logic (graph structure, interfaces) is stable DNA; strategies are mutable gene expression. You can directly edit these files to adjust system behavior.",
+    "skill": "Skill Files: Guides teaching external AI (Cursor/Claude Code, etc.) how to use the brain. Tells AI when to call prepare/recall/digest and how to provide good context. Without Skills, AI may not use the brain at all."
+  },
+  "gateOverview": "Cold-Start Gates (Cognitive Succession): The brain doesn't need to work perfectly from day one. Features auto-unlock as data accumulates — each stage creates conditions for the next. Like pioneer species in ecological succession: doesn't need to be optimal, just good enough to accumulate data."
+}

@@ -1,0 +1,209 @@
+/**
+ * synaptic.ts 单元测试 — 突触衰减、归档、待确认链接处理
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// ---- Mock strategy loader ----
+vi.mock('../../src/strategy/loader.js', () => ({
+  getParam: (_strategy: string, _param: string, fallback: number) => fallback,
+  getPrompt: () => '',
+  loadStrategies: () => {},
+  getStrategy: () => null,
+}));
+
+// ---- Mock config ----
+vi.mock('../../src/config.js', () => ({
+  getConfig: () => ({
+    general: { data_dir: '/tmp/test', user_name: 'test' },
+    anthropic: { api_key: '' },
+    vertex: { project_id: '', region: 'us-central1' },
+    ollama: { url: 'http://localhost:11434' },
+    gemini: { api_key: '' },
+    llm: { provider: 'anthropic', standard_model: '', heavy_model: '' },
+    embedding: { provider: 'vertex', model: 'gemini-embedding-001', dimensions: 3072 },
+    search: { alpha: 0.3, beta: 0.5, gamma: 0.1, delta: 0.1 },
+    gates: {
+      vector_search: 50,
+      graph_expansion: 100,
+      graph_expansion_links: 50,
+      crystal_generation: 200,
+      divergent_scan: 500,
+      learning_2_min_nodes: 500,
+      learning_2_min_recall_ops: 200,
+    },
+    metabolism: { daily_check_hours: 24, weekly_check_days: 7 },
+  }),
+  isLlmConfigured: () => false,
+}));
+
+// ---- Mock LLM client ----
+vi.mock('../../src/llm/client.js', () => ({
+  callLLM: vi.fn().mockResolvedValue('no'),
+}));
+
+// ---- Mock maturity (used by nodes.ts createNode) ----
+vi.mock('../../src/graph/maturity.js', () => ({
+  refreshMaturityScore: vi.fn(),
+  computeMaturityScore: (heat: number, refinement: number, connectivity: number, independence: number) => {
+    return 0.2 * Math.min(heat, 1) + 0.3 * refinement + 0.3 * connectivity + 0.2 * independence;
+  },
+}));
+
+import type Database from 'better-sqlite3';
+import { setupTestDb, seedNode } from '../helpers/test-db.js';
+import { runSynapticScaling, claimMaintenance } from '../../src/metabolism/synaptic.js';
+
+let db: Database.Database;
+
+beforeEach(() => {
+  db = setupTestDb();
+  vi.clearAllMocks();
+});
+
+// ===== runSynapticScaling — decay formula =====
+
+describe('runSynapticScaling', () => {
+  it('should decay heat with connectivity=0 by multiplying ~0.95', () => {
+    const node = seedNode(db, { heat: 1.0 });
+    db.prepare('UPDATE nodes SET connectivity = 0, refinement = 0 WHERE id = ?').run(node.id);
+
+    runSynapticScaling(db);
+
+    const after = db.prepare('SELECT heat FROM nodes WHERE id = ?').get(node.id) as { heat: number };
+    // decayRate = 1 - 0.05 * (1 - 0.8 * 0) = 1 - 0.05 = 0.95
+    expect(after.heat).toBeCloseTo(0.95, 5);
+  });
+
+  it('should decay heat with connectivity=0.5 (slower but still decaying)', () => {
+    const node = seedNode(db, { heat: 1.0 });
+    db.prepare('UPDATE nodes SET connectivity = 0.5, refinement = 0 WHERE id = ?').run(node.id);
+
+    runSynapticScaling(db);
+
+    const after = db.prepare('SELECT heat FROM nodes WHERE id = ?').get(node.id) as { heat: number };
+    // decayRate = 1 - 0.05 * (1 - 0.8 * 0.5) = 1 - 0.05 * 0.6 = 0.97
+    expect(after.heat).toBeCloseTo(0.97, 5);
+    expect(after.heat).toBeLessThan(1.0); // 严格衰减
+  });
+
+  it('should decay heat with connectivity=1.0 (slowest but still decaying)', () => {
+    const node = seedNode(db, { heat: 1.0 });
+    db.prepare('UPDATE nodes SET connectivity = 1.0, refinement = 0 WHERE id = ?').run(node.id);
+
+    runSynapticScaling(db);
+
+    const after = db.prepare('SELECT heat FROM nodes WHERE id = ?').get(node.id) as { heat: number };
+    // decayRate = 1 - 0.05 * (1 - 0.8 * 1.0) = 1 - 0.05 * 0.2 = 0.99
+    expect(after.heat).toBeCloseTo(0.99, 5);
+    expect(after.heat).toBeLessThan(1.0); // 严格衰减
+  });
+
+  it('should always decay (decay_rate < 1.0) for any connectivity value', () => {
+    // 测试多个 connectivity 值，全部必须严格衰减
+    for (const conn of [0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0]) {
+      const node = seedNode(db, { heat: 1.0 });
+      db.prepare('UPDATE nodes SET connectivity = ?, refinement = 0 WHERE id = ?').run(conn, node.id);
+    }
+
+    runSynapticScaling(db);
+
+    const allNodes = db.prepare('SELECT heat FROM nodes WHERE heat > 0.01').all() as Array<{ heat: number }>;
+    for (const n of allNodes) {
+      expect(n.heat).toBeLessThan(1.0);
+    }
+  });
+
+  it('should return correct decayed count', () => {
+    seedNode(db, { heat: 1.0 });
+    seedNode(db, { heat: 0.5 });
+
+    const result = runSynapticScaling(db);
+    expect(result.decayed).toBe(2);
+  });
+
+  it('should not process nodes with heat <= 0.01', () => {
+    const node = seedNode(db, { heat: 1.0 });
+    db.prepare('UPDATE nodes SET heat = 0.005 WHERE id = ?').run(node.id);
+
+    const result = runSynapticScaling(db);
+    expect(result.decayed).toBe(0);
+  });
+
+  // ===== maturity_score atomicity =====
+
+  it('should update maturity_score atomically with heat', () => {
+    const node = seedNode(db, { heat: 2.0 });
+    db.prepare('UPDATE nodes SET connectivity = 0.0, refinement = 0.4, independence = 0.3 WHERE id = ?').run(node.id);
+
+    runSynapticScaling(db);
+
+    const after = db.prepare('SELECT heat, maturity_score, refinement, connectivity, independence FROM nodes WHERE id = ?').get(node.id) as {
+      heat: number;
+      maturity_score: number;
+      refinement: number;
+      connectivity: number;
+      independence: number;
+    };
+
+    // decayRate = 1 - 0.05 * (1 - 0) = 0.95, newHeat = 2.0 * 0.95 = 1.9
+    // min(1.9, 1.0) = 1.0 for maturity calc
+    // maturity = 0.2 * 1.0 + 0.3 * 0.4 + 0.3 * 0.0 + 0.2 * 0.3 = 0.2 + 0.12 + 0 + 0.06 = 0.38
+    expect(after.heat).toBeCloseTo(1.9, 5);
+    expect(after.maturity_score).toBeCloseTo(0.38, 5);
+  });
+
+  // ===== metadata timestamp — 由 claimMaintenance 在入口处记录 =====
+
+  it('should NOT write maintenance timestamp (delegated to claimMaintenance)', () => {
+    seedNode(db);
+    runSynapticScaling(db);
+
+    const row = db.prepare("SELECT value FROM metadata WHERE key = 'last_daily_maintenance'").get() as { value: string } | undefined;
+    // runSynapticScaling 不再写 metadata，由 claimMaintenance 负责
+    expect(row).toBeUndefined();
+  });
+});
+
+// ===== claimMaintenance =====
+
+describe('claimMaintenance', () => {
+  it('should succeed on first call (no prior maintenance)', () => {
+    const result = claimMaintenance(db, 'daily');
+    expect(result).toBe(true);
+  });
+
+  it('should fail on second consecutive call (already claimed)', () => {
+    const first = claimMaintenance(db, 'daily');
+    const second = claimMaintenance(db, 'daily');
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+  });
+
+  it('should succeed after interval has passed', () => {
+    // 写入一个 25 小时前的时间戳
+    const oldTime = (Date.now() - 25 * 60 * 60 * 1000).toString();
+    db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('last_daily_maintenance', ?)").run(oldTime);
+
+    const result = claimMaintenance(db, 'daily');
+    expect(result).toBe(true);
+  });
+
+  it('should fail when interval has not passed', () => {
+    // 写入当前时间
+    db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('last_daily_maintenance', ?)").run(Date.now().toString());
+
+    const result = claimMaintenance(db, 'daily');
+    expect(result).toBe(false);
+  });
+
+  it('should work independently for daily and weekly', () => {
+    const daily = claimMaintenance(db, 'daily');
+    const weekly = claimMaintenance(db, 'weekly');
+    expect(daily).toBe(true);
+    expect(weekly).toBe(true);
+
+    // 都已声明，再次应该失败
+    expect(claimMaintenance(db, 'daily')).toBe(false);
+    expect(claimMaintenance(db, 'weekly')).toBe(false);
+  });
+});

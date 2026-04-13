@@ -1,0 +1,48 @@
+{
+  "init": {
+    "phases": {
+      "0": "Analyse et classification",
+      "1": "Pretraitement",
+      "2": "Ingestion",
+      "3": "Liens explicites",
+      "4": "Annotation des noeuds",
+      "5": "Connexions d'ancrage",
+      "6": "Evaluation des liens",
+      "7": "Marquage Keystone",
+      "8": "Emergence"
+    },
+    "noteSource": "Notes",
+    "complete": "Initialisation terminee",
+    "progress": "Initialisation - Phase {{phase}}/8 : {{phaseName}}",
+    "clickDetails": "Cliquez pour les details"
+  },
+  "recentActivity": {
+    "title": "Activite recente",
+    "brainNotStarted": "Le cerveau n'a pas encore demarre"
+  },
+  "discoveries": {
+    "title": "Decouvertes",
+    "brewing": "Le cerveau reflechit...",
+    "liked": "Aime",
+    "disliked": "Non aime"
+  },
+  "recentTags": {
+    "title": "Tags recents",
+    "coreOnly": "Affichage des tags principaux uniquement (tags haute frequence auto-promus en noeuds du graphe)"
+  },
+  "systemPulse": {
+    "totalMemories": "Memoires totales",
+    "todayDigests": "Digests du jour",
+    "todayLinks": "Liens du jour",
+    "todayRecalls": "Rappels du jour"
+  },
+  "empty": {
+    "title": "Votre cerveau est une toile vierge",
+    "description": "Commencez a utiliser TideMind avec vos outils de developpement — vos souvenirs, idees et connexions se developperont ici.",
+    "settings": "Aller aux parametres"
+  },
+  "modelWarning": {
+    "message": "Aucune connexion de modele configuree. Les fonctionnalites essentielles comme la digestion de memoire et la decouverte d'associations sont indisponibles.",
+    "action": "Configurer le modele"
+  }
+}

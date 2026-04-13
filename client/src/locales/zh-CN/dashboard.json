@@ -1,0 +1,48 @@
+{
+  "init": {
+    "phases": {
+      "0": "扫描分类",
+      "1": "预处理",
+      "2": "入库",
+      "3": "显式链接",
+      "4": "节点标注",
+      "5": "Landing 连接",
+      "6": "链接评估",
+      "7": "Keystone 标记",
+      "8": "涌现"
+    },
+    "noteSource": "笔记",
+    "complete": "初始化完成",
+    "progress": "初始化中 — Phase {{phase}}/8: {{phaseName}}",
+    "clickDetails": "点击查看详情"
+  },
+  "recentActivity": {
+    "title": "近期动态",
+    "brainNotStarted": "外脑尚未启动"
+  },
+  "discoveries": {
+    "title": "意外发现",
+    "brewing": "外脑正在酝酿...",
+    "liked": "已赞",
+    "disliked": "已踩"
+  },
+  "recentTags": {
+    "title": "近期标签",
+    "coreOnly": "仅展示核心标签（高频标签自动晋升为图节点）"
+  },
+  "systemPulse": {
+    "totalMemories": "记忆总量",
+    "todayDigests": "今日消化",
+    "todayLinks": "今日关联",
+    "todayRecalls": "今日回忆"
+  },
+  "empty": {
+    "title": "你的外脑还是一片空白",
+    "description": "开始在开发工具中使用 TideMind——你的记忆、洞察和关联会逐渐在这里生长。",
+    "settings": "前往设置"
+  },
+  "modelWarning": {
+    "message": "尚未配置模型连接，记忆消化、关联发现等核心功能不可用。",
+    "action": "前往配置"
+  }
+}

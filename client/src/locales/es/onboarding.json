@@ -1,0 +1,52 @@
+{
+  "welcome": {
+    "title": "Bienvenido a TideMind",
+    "subtitle": "Un segundo cerebro viviente que conecta todo con lo que piensas — tus agentes de IA, tus notas y lo que venga después.",
+    "description": "",
+    "start": "Comenzar"
+  },
+  "preferences": {
+    "title": "Personaliza tu experiencia",
+    "description": "Elige tu idioma y tema preferidos."
+  },
+  "model": {
+    "title": "Conectar un modelo de lenguaje",
+    "description": "TideMind necesita un LLM para comprender, conectar y desarrollar tus recuerdos. Configura al menos una conexión de modelo para habilitar todas las funcionalidades.",
+    "skipWarning": "Sin una conexión de modelo, funciones esenciales como la digestión de recuerdos y el descubrimiento de asociaciones no estarán disponibles. Puedes configurarlo más tarde en Ajustes.",
+    "skip": "Omitir por ahora"
+  },
+  "agent": {
+    "title": "Conectar tus herramientas de desarrollo",
+    "description": "Vincula tus herramientas de desarrollo (como Claude Code o Cursor) para que TideMind sea tu compañero de memoria mientras programas.",
+    "skip": "Omitir por ahora"
+  },
+  "noteSource": {
+    "title": "Importar tus notas",
+    "description": "Si usas Logseq, Obsidian o Apple Notes, puedes importar tus notas existentes al grafo de conocimiento de TideMind.",
+    "skip": "Omitir por ahora"
+  },
+  "complete": {
+    "title": "Todo listo",
+    "subtitle": "Resumen de tu configuración:",
+    "configured": "Configurado",
+    "skipped": "Omitido",
+    "modelLabel": "Conexión de modelo",
+    "agentLabel": "Herramientas de desarrollo",
+    "noteSourceLabel": "Importación de notas",
+    "preferencesLabel": "Idioma y tema",
+    "enter": "Entrar a TideMind"
+  },
+  "steps": {
+    "welcome": "Bienvenida",
+    "preferences": "Preferencias",
+    "model": "Modelo",
+    "agent": "Herramientas",
+    "noteSource": "Notas",
+    "complete": "Listo"
+  },
+  "nav": {
+    "next": "Siguiente",
+    "back": "Atrás",
+    "skip": "Omitir"
+  }
+}

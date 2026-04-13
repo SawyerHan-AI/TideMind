@@ -1,0 +1,48 @@
+{
+  "init": {
+    "phases": {
+      "0": "掃描分類",
+      "1": "預處理",
+      "2": "入庫",
+      "3": "顯式連結",
+      "4": "節點標註",
+      "5": "Landing 連接",
+      "6": "連結評估",
+      "7": "Keystone 標記",
+      "8": "湧現"
+    },
+    "noteSource": "筆記",
+    "complete": "初始化完成",
+    "progress": "初始化中 — Phase {{phase}}/8: {{phaseName}}",
+    "clickDetails": "點擊檢視詳情"
+  },
+  "recentActivity": {
+    "title": "近期動態",
+    "brainNotStarted": "外腦尚未啟動"
+  },
+  "discoveries": {
+    "title": "意外發現",
+    "brewing": "外腦正在醞釀...",
+    "liked": "已讚",
+    "disliked": "已踩"
+  },
+  "recentTags": {
+    "title": "近期標籤",
+    "coreOnly": "僅顯示核心標籤（高頻標籤自動晉升為圖節點）"
+  },
+  "systemPulse": {
+    "totalMemories": "記憶總量",
+    "todayDigests": "今日消化",
+    "todayLinks": "今日關聯",
+    "todayRecalls": "今日回憶"
+  },
+  "empty": {
+    "title": "你的大腦是一張空白畫布",
+    "description": "開始在你的開發工具中使用 TideMind — 你的記憶、洞察和關聯將在這裡成長。",
+    "settings": "前往設定"
+  },
+  "modelWarning": {
+    "message": "尚未設定模型連線。記憶消化、關聯發現等核心功能無法使用。",
+    "action": "設定模型"
+  }
+}

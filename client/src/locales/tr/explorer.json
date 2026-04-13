@@ -1,0 +1,82 @@
+{
+  "view": {
+    "list": "Liste",
+    "graph": "Graf"
+  },
+  "filter": {
+    "searchPlaceholder": "Anılarda ara...",
+    "all": "Tümü",
+    "allTags": "Tüm etiketler",
+    "allTypes": "Tüm türler"
+  },
+  "list": {
+    "noResults": "Eşleşen anı bulunamadı",
+    "total": "toplam {{count}}"
+  },
+  "sort": {
+    "newest": "Newest",
+    "hottest": "Hottest",
+    "maturity": "Maturity",
+    "connectivity": "Connectivity"
+  },
+  "heat": {
+    "minLabel": "Min heat: {{value}}",
+    "nodeHeat": "Heat: {{value}}"
+  },
+  "detail": {
+    "selectNode": "Ayrıntıları görüntülemek için bir düğüm seçin",
+    "nodeNotFound": "Düğüm bulunamadı",
+    "manualEdit": "Manuel düzenleme",
+    "editReasonPlaceholder": "Değişiklik nedeni (isteğe bağlı)",
+    "titlePlaceholder": "Başlık",
+    "editVersionNote": "Değişiklikler sürüm geçmişine kaydedilecektir",
+    "saving": "Kaydediliyor...",
+    "save": "Kaydet",
+    "cancel": "İptal",
+    "edit": "Düzenle",
+    "heat": "Isı",
+    "refinement": "İncelik",
+    "connectivity": "Bağlantılılık",
+    "independence": "Bağımsızlık",
+    "keystoneNode": "Kilit taşı düğüm",
+    "links": "Bağlantılar",
+    "pending": "beklemede",
+    "versionHistory": "Sürüm Geçmişi ({{count}} güncelleme)",
+    "reconsolidation": "Yeniden pekiştirme",
+    "collapse": "Daralt",
+    "expandAll": "Tüm {{count}} sürümü genişlet",
+    "sourceTracing": "Kaynak İzleme",
+    "tool": "Araç:",
+    "session": "Oturum:",
+    "time": "Zaman:",
+    "viewTimeline": "Zaman çizelgesini görüntüle",
+    "evidenceChain": "Kanıt Zinciri",
+    "metaInfo": "Meta Bilgi",
+    "created": "Oluşturulma:",
+    "tags": "Etiketler:",
+    "strength": "Güç:",
+    "linksTip": "Dugumler arasi iliski baglantilari. Renkli serit anlamsal turu gosterir.",
+    "versionTip": "Yeniden konsolidasyon gecmisi: anilar kullanimla gelisir.",
+    "evidenceTip": "Bu kristalin ozetledigi kaynak dugumler listesi.",
+    "pendingClassify": "Beklemede",
+    "unknown": "Bilinmiyor"
+  },
+  "graph": {
+    "loading": "Graf verileri yükleniyor...",
+    "noData": "Düğüm verisi yok"
+  },
+  "toolbar": {
+    "all": "Tümü",
+    "hop1": "1 atlama",
+    "hop2": "2 atlama",
+    "hop3": "3 atlama",
+    "zoomIn": "Yakınlaştır",
+    "zoomOut": "Uzaklaştır",
+    "fitAll": "Sığdır",
+    "pathDiscovery": "Yol Keşfi",
+    "structureHoles": "Yapısal Boşluklar",
+    "connectivityLabel": "Bağlantılılık",
+    "clickSecondNode": "Yolu görmek için ikinci düğüme tıklayın",
+    "clickStartNode": "Başlangıç düğümüne tıklayın"
+  }
+}

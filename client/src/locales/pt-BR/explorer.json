@@ -1,0 +1,82 @@
+{
+  "view": {
+    "list": "Lista",
+    "graph": "Grafo"
+  },
+  "filter": {
+    "searchPlaceholder": "Pesquisar memórias...",
+    "all": "Todas",
+    "allTags": "Todas as tags",
+    "allTypes": "Todos os tipos"
+  },
+  "list": {
+    "noResults": "Nenhuma memória correspondente encontrada",
+    "total": "{{count}} no total"
+  },
+  "sort": {
+    "newest": "Newest",
+    "hottest": "Hottest",
+    "maturity": "Maturity",
+    "connectivity": "Connectivity"
+  },
+  "heat": {
+    "minLabel": "Min heat: {{value}}",
+    "nodeHeat": "Heat: {{value}}"
+  },
+  "detail": {
+    "selectNode": "Selecione um nó para ver detalhes",
+    "nodeNotFound": "Nó não encontrado",
+    "manualEdit": "Edição manual",
+    "editReasonPlaceholder": "Motivo da alteração (opcional)",
+    "titlePlaceholder": "Título",
+    "editVersionNote": "As alterações serão registradas no histórico de versões",
+    "saving": "Salvando...",
+    "save": "Salvar",
+    "cancel": "Cancelar",
+    "edit": "Editar",
+    "heat": "Calor",
+    "refinement": "Refinamento",
+    "connectivity": "Conectividade",
+    "independence": "Independência",
+    "keystoneNode": "Nó-chave",
+    "links": "Links",
+    "pending": "pendente",
+    "versionHistory": "Histórico de versões ({{count}} atualizações)",
+    "reconsolidation": "Reconsolidação",
+    "collapse": "Recolher",
+    "expandAll": "Expandir todas as {{count}} versões",
+    "sourceTracing": "Rastreamento de fontes",
+    "tool": "Ferramenta:",
+    "session": "Sessão:",
+    "time": "Hora:",
+    "viewTimeline": "Ver linha do tempo",
+    "evidenceChain": "Cadeia de evidências",
+    "metaInfo": "Meta informações",
+    "created": "Criado:",
+    "tags": "Tags:",
+    "strength": "Força:",
+    "linksTip": "Links de relacionamento entre nos. A faixa colorida indica o tipo semantico.",
+    "versionTip": "Historico de reconsolidacao: memorias evoluem com o uso.",
+    "evidenceTip": "Lista de nos fonte resumidos por este cristal.",
+    "pendingClassify": "Pendente",
+    "unknown": "Desconhecido"
+  },
+  "graph": {
+    "loading": "Carregando dados do grafo...",
+    "noData": "Sem dados de nós"
+  },
+  "toolbar": {
+    "all": "Todos",
+    "hop1": "1 salto",
+    "hop2": "2 saltos",
+    "hop3": "3 saltos",
+    "zoomIn": "Ampliar",
+    "zoomOut": "Reduzir",
+    "fitAll": "Ajustar",
+    "pathDiscovery": "Descoberta de caminhos",
+    "structureHoles": "Buracos estruturais",
+    "connectivityLabel": "Conectividade",
+    "clickSecondNode": "Clique no segundo nó para ver o caminho",
+    "clickStartNode": "Clique no nó inicial"
+  }
+}
