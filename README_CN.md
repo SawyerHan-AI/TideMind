@@ -10,10 +10,6 @@
 
 ---
 
-![TideMind 概念图](docs/assets/concept-banner.png)
-
----
-
 ## 为什么需要 TideMind
 
 **你的记忆散落在十几个工具里，互相不通。**
@@ -25,6 +21,8 @@ Claude 记得你喜欢简洁的代码风格，但 Cursor 不知道。你在笔�
 TideMind 是一个跨越所有工具的记忆层——一张活的知识图谱，让你的 AI、你的笔记、你的思考真正连接在一起。
 
 ## TideMind 是什么
+
+![TideMind 概念图](docs/assets/concept-banner.png)
 
 **所有记忆，汇聚一处。** TideMind 把你的 AI 工具、你的笔记、以及未来可能的一切连接到同一张知识图谱中。和各个 AI 的对话，各个软件的笔记——不再散落各处，而是交织在一起，互相激发。
 

@@ -10,10 +10,6 @@ A living second brain that connects everything you think with — your AI agents
 
 ---
 
-![TideMind Concept](docs/assets/concept-banner.png)
-
----
-
 ## Why TideMind
 
 **Your memory is scattered across a dozen tools, and none of them talk to each other.**
@@ -25,6 +21,8 @@ The deeper problem: existing AI memory is just listing and storing facts. It won
 TideMind is a memory layer that spans all your tools — a living knowledge graph that connects your AI, your notes, and your thinking.
 
 ## What is TideMind
+
+![TideMind Concept](docs/assets/concept-banner.png)
 
 **All your memory, in one place.** TideMind connects your AI tools, your notes, and whatever comes next into a single knowledge graph. Conversations across different AIs, notes across different apps — no longer scattered in silos, but woven together, cross-pollinating.
 
