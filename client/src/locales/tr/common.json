@@ -1,0 +1,29 @@
+{
+  "nav": {
+    "dashboard": "Pano",
+    "timeline": "Zaman Çizelgesi",
+    "explorer": "Beyin Gezgini",
+    "settings": "Ayarlar"
+  },
+  "search": {
+    "placeholder": "Ara..."
+  },
+  "actions": {
+    "save": "Kaydet",
+    "saved": "Kaydedildi",
+    "cancel": "İptal",
+    "confirm": "Onayla",
+    "delete": "Sil",
+    "edit": "Düzenle",
+    "close": "Kapat",
+    "export": "Dışa Aktar",
+    "copy": "Panoya Kopyala",
+    "comingSoon": "Yakında"
+  },
+  "units": {
+    "nodes": "düğüm",
+    "items": "öğe",
+    "memories": "anı"
+  },
+  "total": "toplam {{count}}"
+}

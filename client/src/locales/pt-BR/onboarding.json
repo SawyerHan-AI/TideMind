@@ -1,0 +1,52 @@
+{
+  "welcome": {
+    "title": "Bem-vindo ao TideMind",
+    "subtitle": "Um segundo cérebro vivo que conecta tudo com o que você pensa — seus agentes de IA, suas notas e o que vier a seguir.",
+    "description": "",
+    "start": "Começar"
+  },
+  "preferences": {
+    "title": "Personalize sua experiência",
+    "description": "Escolha seu idioma e tema preferidos."
+  },
+  "model": {
+    "title": "Conectar um modelo de linguagem",
+    "description": "O TideMind precisa de um LLM para entender, conectar e evoluir suas memórias. Configure pelo menos uma conexão de modelo para habilitar todas as funcionalidades.",
+    "skipWarning": "Sem uma conexão de modelo, recursos essenciais como digestão de memórias e descoberta de associações ficarão indisponíveis. Você pode configurar isso depois em Configurações.",
+    "skip": "Pular por enquanto"
+  },
+  "agent": {
+    "title": "Conectar suas ferramentas de desenvolvimento",
+    "description": "Vincule suas ferramentas de desenvolvimento (como Claude Code ou Cursor) para que o TideMind se torne seu companheiro de memória enquanto programa.",
+    "skip": "Pular por enquanto"
+  },
+  "noteSource": {
+    "title": "Importar suas notas",
+    "description": "Se você usa Logseq, Obsidian ou Apple Notes, pode importar suas notas existentes para o grafo de conhecimento do TideMind.",
+    "skip": "Pular por enquanto"
+  },
+  "complete": {
+    "title": "Tudo pronto",
+    "subtitle": "Resumo da sua configuração:",
+    "configured": "Configurado",
+    "skipped": "Pulado",
+    "modelLabel": "Conexão de modelo",
+    "agentLabel": "Ferramentas de desenvolvimento",
+    "noteSourceLabel": "Importação de notas",
+    "preferencesLabel": "Idioma e tema",
+    "enter": "Entrar no TideMind"
+  },
+  "steps": {
+    "welcome": "Boas-vindas",
+    "preferences": "Preferências",
+    "model": "Modelo",
+    "agent": "Ferramentas",
+    "noteSource": "Notas",
+    "complete": "Concluído"
+  },
+  "nav": {
+    "next": "Próximo",
+    "back": "Voltar",
+    "skip": "Pular"
+  }
+}

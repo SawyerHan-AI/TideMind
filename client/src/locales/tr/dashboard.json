@@ -1,0 +1,48 @@
+{
+  "init": {
+    "phases": {
+      "0": "Tarama ve Sınıflandırma",
+      "1": "Ön İşleme",
+      "2": "Yükleme",
+      "3": "Açık Bağlantılar",
+      "4": "Düğüm Açıklaması",
+      "5": "Giriş Bağlantıları",
+      "6": "Bağlantı Değerlendirmesi",
+      "7": "Kilit Taşı İşaretleme",
+      "8": "Ortaya Çıkış"
+    },
+    "noteSource": "Notlar",
+    "complete": "Başlatma Tamamlandı",
+    "progress": "Başlatılıyor — Aşama {{phase}}/8: {{phaseName}}",
+    "clickDetails": "Ayrıntılar için tıklayın"
+  },
+  "recentActivity": {
+    "title": "Son Etkinlik",
+    "brainNotStarted": "Beyin henüz başlatılmadı"
+  },
+  "discoveries": {
+    "title": "Keşifler",
+    "brewing": "Beyin işliyor...",
+    "liked": "Beğenildi",
+    "disliked": "Beğenilmedi"
+  },
+  "recentTags": {
+    "title": "Son Etiketler",
+    "coreOnly": "Yalnızca temel etiketler gösteriliyor (yüksek frekanslı etiketler otomatik olarak graf düğümlerine yükseltilir)"
+  },
+  "systemPulse": {
+    "totalMemories": "Toplam Anılar",
+    "todayDigests": "Bugünkü Sindirmeler",
+    "todayLinks": "Bugünkü Bağlantılar",
+    "todayRecalls": "Bugünkü Geri Çağırmalar"
+  },
+  "empty": {
+    "title": "Beyniniz boş bir tuval",
+    "description": "Geliştirme araçlarınızla TideMind'ı kullanmaya başlayın — anılarınız, içgörüleriniz ve bağlantılarınız burada büyüyecek.",
+    "settings": "Ayarlara Git"
+  },
+  "modelWarning": {
+    "message": "Model bağlantısı yapılandırılmamış. Bellek sindirimi ve ilişki keşfi gibi temel özellikler kullanılamıyor.",
+    "action": "Modeli Yapılandır"
+  }
+}

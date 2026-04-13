@@ -1,0 +1,48 @@
+{
+  "init": {
+    "phases": {
+      "0": "Scansione e Classificazione",
+      "1": "Pre-elaborazione",
+      "2": "Ingestione",
+      "3": "Collegamenti Espliciti",
+      "4": "Annotazione Nodi",
+      "5": "Connessioni di Ingresso",
+      "6": "Valutazione Collegamenti",
+      "7": "Marcatura Cardini",
+      "8": "Emergenza"
+    },
+    "noteSource": "Note",
+    "complete": "Inizializzazione Completata",
+    "progress": "Inizializzazione — Fase {{phase}}/8: {{phaseName}}",
+    "clickDetails": "Clicca per i dettagli"
+  },
+  "recentActivity": {
+    "title": "Attività Recente",
+    "brainNotStarted": "Il cervello non è ancora stato avviato"
+  },
+  "discoveries": {
+    "title": "Scoperte",
+    "brewing": "Il cervello sta elaborando...",
+    "liked": "Apprezzato",
+    "disliked": "Non apprezzato"
+  },
+  "recentTags": {
+    "title": "Tag Recenti",
+    "coreOnly": "Mostrati solo i tag principali (tag ad alta frequenza auto-promossi a nodi del grafo)"
+  },
+  "systemPulse": {
+    "totalMemories": "Memorie Totali",
+    "todayDigests": "Digestioni di Oggi",
+    "todayLinks": "Collegamenti di Oggi",
+    "todayRecalls": "Recuperi di Oggi"
+  },
+  "empty": {
+    "title": "Il tuo cervello è una tela bianca",
+    "description": "Inizia a usare TideMind con i tuoi strumenti di sviluppo — i tuoi ricordi, intuizioni e connessioni cresceranno qui.",
+    "settings": "Vai alle Impostazioni"
+  },
+  "modelWarning": {
+    "message": "Nessuna connessione al modello configurata. Le funzionalità principali come la digestione della memoria e la scoperta delle associazioni non sono disponibili.",
+    "action": "Configura Modello"
+  }
+}

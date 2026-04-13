@@ -1,0 +1,82 @@
+{
+  "view": {
+    "list": "リスト",
+    "graph": "グラフ"
+  },
+  "filter": {
+    "searchPlaceholder": "メモリを検索...",
+    "all": "すべて",
+    "allTags": "すべてのタグ",
+    "allTypes": "すべてのタイプ"
+  },
+  "list": {
+    "noResults": "一致するメモリが見つかりません",
+    "total": "合計 {{count}} 件"
+  },
+  "sort": {
+    "newest": "Newest",
+    "hottest": "Hottest",
+    "maturity": "Maturity",
+    "connectivity": "Connectivity"
+  },
+  "heat": {
+    "minLabel": "Min heat: {{value}}",
+    "nodeHeat": "Heat: {{value}}"
+  },
+  "detail": {
+    "selectNode": "ノードを選択して詳細を表示",
+    "nodeNotFound": "ノードが見つかりません",
+    "manualEdit": "手動編集",
+    "editReasonPlaceholder": "変更理由（任意）",
+    "titlePlaceholder": "タイトル",
+    "editVersionNote": "変更はバージョン履歴に記録されます",
+    "saving": "保存中...",
+    "save": "保存",
+    "cancel": "キャンセル",
+    "edit": "編集",
+    "heat": "ヒート",
+    "refinement": "精錬度",
+    "connectivity": "接続度",
+    "independence": "独立度",
+    "keystoneNode": "キーストーンノード",
+    "links": "リンク",
+    "pending": "確認待ち",
+    "versionHistory": "バージョン履歴 ({{count}} 回更新)",
+    "reconsolidation": "再固定化",
+    "collapse": "折りたたむ",
+    "expandAll": "全 {{count}} バージョンを展開",
+    "sourceTracing": "ソース追跡",
+    "tool": "ツール:",
+    "session": "セッション:",
+    "time": "時刻:",
+    "viewTimeline": "タイムラインを表示",
+    "evidenceChain": "エビデンスチェーン",
+    "metaInfo": "メタ情報",
+    "created": "作成:",
+    "tags": "タグ:",
+    "strength": "強度:",
+    "linksTip": "ノード間の関係リンク。左のカラーバンドはセマンティックタイプを示します。破線はペンディングリンクです。",
+    "versionTip": "再統合記録：メモリは使用により進化します。コンテンツが更新されるたびにバージョン番号が増加します。",
+    "evidenceTip": "このクリスタルが要約したソースノードの一覧です。",
+    "pendingClassify": "未分類",
+    "unknown": "不明"
+  },
+  "graph": {
+    "loading": "グラフデータを読み込み中...",
+    "noData": "ノードデータなし"
+  },
+  "toolbar": {
+    "all": "全て",
+    "hop1": "1ホップ",
+    "hop2": "2ホップ",
+    "hop3": "3ホップ",
+    "zoomIn": "拡大",
+    "zoomOut": "縮小",
+    "fitAll": "全体表示",
+    "pathDiscovery": "パス探索",
+    "structureHoles": "構造的空隙",
+    "connectivityLabel": "接続度",
+    "clickSecondNode": "2番目のノードをクリックしてパスを表示",
+    "clickStartNode": "開始ノードをクリック"
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "view": {
+    "list": "Список",
+    "graph": "Граф"
+  },
+  "filter": {
+    "searchPlaceholder": "Поиск воспоминаний...",
+    "all": "Все",
+    "allTags": "Все теги",
+    "allTypes": "Все типы"
+  },
+  "list": {
+    "noResults": "Совпадающие воспоминания не найдены",
+    "total": "{{count}} всего"
+  },
+  "sort": {
+    "newest": "Newest",
+    "hottest": "Hottest",
+    "maturity": "Maturity",
+    "connectivity": "Connectivity"
+  },
+  "heat": {
+    "minLabel": "Min heat: {{value}}",
+    "nodeHeat": "Heat: {{value}}"
+  },
+  "detail": {
+    "selectNode": "Выберите узел для просмотра деталей",
+    "nodeNotFound": "Узел не найден",
+    "manualEdit": "Ручное редактирование",
+    "editReasonPlaceholder": "Причина изменения (необязательно)",
+    "titlePlaceholder": "Заголовок",
+    "editVersionNote": "Изменения будут записаны в историю версий",
+    "saving": "Сохранение...",
+    "save": "Сохранить",
+    "cancel": "Отмена",
+    "edit": "Редактировать",
+    "heat": "Жар",
+    "refinement": "Утончённость",
+    "connectivity": "Связность",
+    "independence": "Независимость",
+    "keystoneNode": "Ключевой узел",
+    "links": "Связи",
+    "pending": "ожидание",
+    "versionHistory": "История версий ({{count}} обновлений)",
+    "reconsolidation": "Реконсолидация",
+    "collapse": "Свернуть",
+    "expandAll": "Развернуть все {{count}} версий",
+    "sourceTracing": "Отслеживание источников",
+    "tool": "Инструмент:",
+    "session": "Сессия:",
+    "time": "Время:",
+    "viewTimeline": "Посмотреть хронологию",
+    "evidenceChain": "Цепочка доказательств",
+    "metaInfo": "Мета-информация",
+    "created": "Создан:",
+    "tags": "Теги:",
+    "strength": "Сила:",
+    "linksTip": "Связи между узлами. Цветная полоса указывает семантический тип.",
+    "versionTip": "История реконсолидации: воспоминания эволюционируют при использовании.",
+    "evidenceTip": "Список исходных узлов, обобщённых этим кристаллом.",
+    "pendingClassify": "Ожидание",
+    "unknown": "Неизвестно"
+  },
+  "graph": {
+    "loading": "Загрузка данных графа...",
+    "noData": "Нет данных об узлах"
+  },
+  "toolbar": {
+    "all": "Все",
+    "hop1": "1 шаг",
+    "hop2": "2 шага",
+    "hop3": "3 шага",
+    "zoomIn": "Увеличить",
+    "zoomOut": "Уменьшить",
+    "fitAll": "Подогнать",
+    "pathDiscovery": "Поиск пути",
+    "structureHoles": "Структурные дыры",
+    "connectivityLabel": "Связность",
+    "clickSecondNode": "Нажмите на второй узел для просмотра пути",
+    "clickStartNode": "Нажмите на начальный узел"
+  }
+}

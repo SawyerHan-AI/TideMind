@@ -1,0 +1,48 @@
+{
+  "init": {
+    "phases": {
+      "0": "스캔 및 분류",
+      "1": "전처리",
+      "2": "수집",
+      "3": "명시적 링크",
+      "4": "노드 주석",
+      "5": "랜딩 연결",
+      "6": "링크 평가",
+      "7": "키스톤 마킹",
+      "8": "창발"
+    },
+    "noteSource": "노트",
+    "complete": "초기화 완료",
+    "progress": "초기화 중 — Phase {{phase}}/8: {{phaseName}}",
+    "clickDetails": "클릭하여 상세 보기"
+  },
+  "recentActivity": {
+    "title": "최근 활동",
+    "brainNotStarted": "브레인이 아직 시작되지 않았습니다"
+  },
+  "discoveries": {
+    "title": "발견",
+    "brewing": "브레인이 준비 중...",
+    "liked": "좋아요",
+    "disliked": "별로예요"
+  },
+  "recentTags": {
+    "title": "최근 태그",
+    "coreOnly": "핵심 태그만 표시 (고빈도 태그는 그래프 노드로 자동 승격)"
+  },
+  "systemPulse": {
+    "totalMemories": "전체 메모리",
+    "todayDigests": "오늘의 다이제스트",
+    "todayLinks": "오늘의 링크",
+    "todayRecalls": "오늘의 리콜"
+  },
+  "empty": {
+    "title": "당신의 브레인은 빈 캔버스입니다",
+    "description": "개발 도구에서 TideMind를 사용하세요 — 기억, 인사이트, 연결이 여기서 자라납니다.",
+    "settings": "설정으로 이동"
+  },
+  "modelWarning": {
+    "message": "모델 연결이 설정되지 않았습니다. 메모리 소화 및 연관 발견 등 핵심 기능을 사용할 수 없습니다.",
+    "action": "모델 설정"
+  }
+}

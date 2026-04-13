@@ -1,0 +1,48 @@
+{
+  "init": {
+    "phases": {
+      "0": "Analyse und Klassifikation",
+      "1": "Vorverarbeitung",
+      "2": "Aufnahme",
+      "3": "Explizite Verknuepfungen",
+      "4": "Knoten-Annotation",
+      "5": "Anker-Verbindungen",
+      "6": "Link-Bewertung",
+      "7": "Keystone-Markierung",
+      "8": "Emergenz"
+    },
+    "noteSource": "Notizen",
+    "complete": "Initialisierung abgeschlossen",
+    "progress": "Initialisierung - Phase {{phase}}/8: {{phaseName}}",
+    "clickDetails": "Klicken fuer Details"
+  },
+  "recentActivity": {
+    "title": "Letzte Aktivitaet",
+    "brainNotStarted": "Das Gehirn wurde noch nicht gestartet"
+  },
+  "discoveries": {
+    "title": "Entdeckungen",
+    "brewing": "Das Gehirn verarbeitet...",
+    "liked": "Gefaellt mir",
+    "disliked": "Gefaellt mir nicht"
+  },
+  "recentTags": {
+    "title": "Aktuelle Tags",
+    "coreOnly": "Nur Kern-Tags angezeigt (haeufige Tags automatisch zu Graph-Knoten befoerdert)"
+  },
+  "systemPulse": {
+    "totalMemories": "Erinnerungen gesamt",
+    "todayDigests": "Heutige Digests",
+    "todayLinks": "Heutige Links",
+    "todayRecalls": "Heutige Abrufe"
+  },
+  "empty": {
+    "title": "Dein Gehirn ist eine leere Leinwand",
+    "description": "Beginne TideMind mit deinen Entwicklungswerkzeugen zu nutzen — deine Erinnerungen, Erkenntnisse und Verbindungen werden hier wachsen.",
+    "settings": "Zu den Einstellungen"
+  },
+  "modelWarning": {
+    "message": "Keine Modellverbindung konfiguriert. Kernfunktionen wie Erinnerungsverarbeitung und Assoziationserkennung sind nicht verfuegbar.",
+    "action": "Modell konfigurieren"
+  }
+}

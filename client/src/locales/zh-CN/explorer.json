@@ -1,0 +1,82 @@
+{
+  "view": {
+    "list": "列表",
+    "graph": "图谱"
+  },
+  "filter": {
+    "searchPlaceholder": "搜索记忆...",
+    "all": "全部",
+    "allTags": "所有标签",
+    "allTypes": "所有类型"
+  },
+  "sort": {
+    "newest": "最新",
+    "hottest": "最热",
+    "maturity": "成熟度",
+    "connectivity": "连通度"
+  },
+  "heat": {
+    "minLabel": "最低 heat: {{value}}",
+    "nodeHeat": "热度: {{value}}"
+  },
+  "list": {
+    "noResults": "没有找到匹配的记忆",
+    "total": "共 {{count}} 条"
+  },
+  "detail": {
+    "selectNode": "选择一个节点查看详情",
+    "nodeNotFound": "节点未找到",
+    "manualEdit": "手动编辑",
+    "editReasonPlaceholder": "修改原因（可选）",
+    "titlePlaceholder": "标题",
+    "editVersionNote": "修改将记录在版本历史中",
+    "saving": "保存中...",
+    "save": "保存",
+    "cancel": "取消",
+    "edit": "编辑",
+    "heat": "热度",
+    "refinement": "精炼度",
+    "connectivity": "连通度",
+    "independence": "独立度",
+    "keystoneNode": "关键种节点",
+    "links": "链接",
+    "pending": "待确认",
+    "versionHistory": "版本历史 ({{count}} 次更新)",
+    "reconsolidation": "再巩固",
+    "collapse": "收起",
+    "expandAll": "展开全部 {{count}} 个版本",
+    "sourceTracing": "来源追踪",
+    "tool": "工具:",
+    "session": "会话:",
+    "time": "时间:",
+    "viewTimeline": "查看时间线",
+    "evidenceChain": "证据链",
+    "metaInfo": "元信息",
+    "created": "创建:",
+    "tags": "标签:",
+    "strength": "强度:",
+    "linksTip": "节点之间的关系连接。左侧色带表示语义类型。虚线边框表示待确认链接。",
+    "versionTip": "再巩固记录：记忆在使用中进化。每次内容被更新时版本号递增，旧版本保留在历史中。",
+    "evidenceTip": "结晶节点所总结的源节点列表。这些节点共同支撑了该结晶的生成。",
+    "pendingClassify": "待分类",
+    "unknown": "未知"
+  },
+  "graph": {
+    "loading": "加载图数据...",
+    "noData": "无节点数据"
+  },
+  "toolbar": {
+    "all": "全部",
+    "hop1": "1跳",
+    "hop2": "2跳",
+    "hop3": "3跳",
+    "zoomIn": "放大",
+    "zoomOut": "缩小",
+    "fitAll": "适应",
+    "pathDiscovery": "路径发现",
+    "structureHoles": "结构洞",
+    "connectivityLabel": "连接度",
+    "clickSecondNode": "点击第二个节点查看路径",
+    "clickStartNode": "点击起始节点"
+  }
+}

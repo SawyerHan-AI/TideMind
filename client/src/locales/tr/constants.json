@@ -1,0 +1,120 @@
+{
+  "derivedCategory": {
+    "record": "Kayıt",
+    "knowledge": "Bilgi",
+    "belief": "İnanç",
+    "hypothesis": "Hipotez",
+    "intention": "Niyet"
+  },
+  "role": {
+    "crystal": "Kristal",
+    "keystone": "Kilit Taşı",
+    "tag": "Etiket",
+    "meta": "Sistem"
+  },
+  "nodeType": {
+    "fact": "Gerçek",
+    "context": "Bağlam",
+    "preference": "Tercih",
+    "idea": "Fikir",
+    "crystal": "Kristal",
+    "meta": "Üst Veri"
+  },
+  "relation": {
+    "caused_by": "Nedensel",
+    "continues": "Devam",
+    "updates": "Güncelleme",
+    "supports": "Destek",
+    "contradicts": "Çelişki",
+    "summarizes": "Özet",
+    "part_of": "Parçası",
+    "analogous": "Analoji",
+    "tagged": "Etiketli"
+  },
+  "gate": {
+    "basic_digest": "Temel Sindirme",
+    "bm25_search": "BM25 Arama",
+    "vector_search": "Vektör Arama",
+    "graph_expansion": "Graf Dolaşımı",
+    "crystal_generation": "Kristal Üretimi",
+    "divergent_scan": "Iraksak Tarama"
+  },
+  "eventType": {
+    "memory": "Bellek",
+    "think_associate": "Düşünme (İlişkilendirme)",
+    "think_emerge": "Düşünme (Ortaya Çıkış)",
+    "output": "Çıktı",
+    "evolution": "Evrim",
+    "config": "Yapılandırma"
+  },
+  "eventSubtype": {
+    "digest": "Sindirme",
+    "correction": "Düzeltme",
+    "archive": "Arşivleme",
+    "landing_connection": "Giriş Bağlantısı",
+    "annotate": "Açıklama",
+    "dedup": "Tekilleştirme",
+    "dedup_merge": "Tekilleştirme Birleştirme",
+    "synaptic_scaling": "Sinaptik Ölçekleme",
+    "link_classify": "Bağlantı Değerlendirmesi",
+    "refine_links": "Bağlantı Yeniden Doğrulama",
+    "link_discover": "Bağlantı Keşfi",
+    "pending_link_review": "Bekleyen Bağlantı İncelemesi",
+    "keystone_identification": "Kilit Taşı Analizi",
+    "tag_promote": "Etiket Ortaya Çıkışı",
+    "divergent_scan": "Iraksak Tarama",
+    "crystal_update": "Kristal Üretimi",
+    "split_merge": "Bölme/Birleştirme",
+    "recall": "Geri Çağırma",
+    "prepare": "Bilişsel Hazırlık",
+    "reconsolidation": "Yeniden Konsolidasyon",
+    "profile_synthesize": "Profil Sentezi",
+    "learning2": "Öğrenme II",
+    "learning3": "Öğrenme III",
+    "strategy_rollback": "Strateji Geri Alma",
+    "settings_change": "Ayar Değişikliği",
+    "strategy_update": "Strateji Güncelleme",
+    "gate_unlock": "Kapı Kilit Açma",
+    "logseq_sync": "Not Senkronizasyonu",
+    "logseq_file_change": "Not Değişikliği",
+    "obsidian_sync": "Obsidian Senkronizasyonu",
+    "obsidian_file_change": "Obsidian Dosya Değişikliği",
+    "apple_notes_sync": "Apple Notlar Senkronizasyonu",
+    "daemon_start": "Başlat",
+    "daemon_stop": "Durdur"
+  },
+  "actor": {
+    "user": "Kullanıcı",
+    "agent": "Ajan",
+    "brain": "Beyin"
+  },
+  "operation": {
+    "digest": "Sindirme",
+    "annotate": "Açıklama",
+    "dedup": "Tekilleştirme",
+    "synaptic": "Sinaptik Ölçekleme",
+    "link-evaluate": "Bağlantı Değerlendirmesi",
+    "link-discover": "Bağlantı Keşfi",
+    "link-revalidate": "Bağlantı Yeniden Doğrulama",
+    "link-judge": "Bağlantı Kararı",
+    "layer2-link-refine": "Bağlantı İyileştirme",
+    "contradiction": "Çelişki Tespiti",
+    "assess": "Değerlendirme",
+    "temporal-crystal": "Zamansal Kristal",
+    "keystone": "Kilit Taşı Analizi",
+    "divergent": "Iraksak Tarama",
+    "crystal": "Kristal Üretimi",
+    "prepare": "Bilişsel Hazırlık",
+    "reconsolidate": "Yeniden Konsolidasyon",
+    "learning2": "Öğrenme II",
+    "learning3": "Öğrenme III",
+    "tag-define": "Etiket Tanımı"
+  },
+  "sourceTool": {
+    "cursor": "Cursor",
+    "claude-code": "Claude Code",
+    "codex": "Codex",
+    "logseq": "Logseq",
+    "client": "İstemci"
+  }
+}

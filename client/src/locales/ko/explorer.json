@@ -1,0 +1,82 @@
+{
+  "view": {
+    "list": "목록",
+    "graph": "그래프"
+  },
+  "filter": {
+    "searchPlaceholder": "메모리 검색...",
+    "all": "전체",
+    "allTags": "모든 태그",
+    "allTypes": "모든 유형"
+  },
+  "list": {
+    "noResults": "일치하는 메모리를 찾을 수 없습니다",
+    "total": "총 {{count}} 건"
+  },
+  "sort": {
+    "newest": "Newest",
+    "hottest": "Hottest",
+    "maturity": "Maturity",
+    "connectivity": "Connectivity"
+  },
+  "heat": {
+    "minLabel": "Min heat: {{value}}",
+    "nodeHeat": "Heat: {{value}}"
+  },
+  "detail": {
+    "selectNode": "노드를 선택하여 상세 정보 보기",
+    "nodeNotFound": "노드를 찾을 수 없습니다",
+    "manualEdit": "수동 편집",
+    "editReasonPlaceholder": "수정 사유 (선택사항)",
+    "titlePlaceholder": "제목",
+    "editVersionNote": "수정 사항은 버전 기록에 저장됩니다",
+    "saving": "저장 중...",
+    "save": "저장",
+    "cancel": "취소",
+    "edit": "편집",
+    "heat": "열도",
+    "refinement": "정제도",
+    "connectivity": "연결도",
+    "independence": "독립도",
+    "keystoneNode": "핵심 노드",
+    "links": "링크",
+    "pending": "확인 대기",
+    "versionHistory": "버전 기록 ({{count}}회 업데이트)",
+    "reconsolidation": "재공고화",
+    "collapse": "접기",
+    "expandAll": "전체 {{count}}개 버전 펼치기",
+    "sourceTracing": "출처 추적",
+    "tool": "도구:",
+    "session": "세션:",
+    "time": "시간:",
+    "viewTimeline": "타임라인 보기",
+    "evidenceChain": "증거 체인",
+    "metaInfo": "메타 정보",
+    "created": "생성:",
+    "tags": "태그:",
+    "strength": "강도:",
+    "linksTip": "노드 간의 관계 링크입니다. 왼쪽 색상 띠는 의미 유형을 나타냅니다.",
+    "versionTip": "재통합 기록: 기억은 사용을 통해 진화합니다.",
+    "evidenceTip": "이 크리스탈이 요약한 소스 노드 목록입니다.",
+    "pendingClassify": "미분류",
+    "unknown": "알 수 없음"
+  },
+  "graph": {
+    "loading": "그래프 데이터 로딩 중...",
+    "noData": "노드 데이터 없음"
+  },
+  "toolbar": {
+    "all": "전체",
+    "hop1": "1홉",
+    "hop2": "2홉",
+    "hop3": "3홉",
+    "zoomIn": "확대",
+    "zoomOut": "축소",
+    "fitAll": "전체 맞춤",
+    "pathDiscovery": "경로 탐색",
+    "structureHoles": "구조적 공백",
+    "connectivityLabel": "연결도",
+    "clickSecondNode": "두 번째 노드를 클릭하여 경로 보기",
+    "clickStartNode": "시작 노드 클릭"
+  }
+}

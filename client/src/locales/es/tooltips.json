@@ -1,0 +1,81 @@
+{
+  "derivedCategory": {
+    "record": "Registro: Eventos, observaciones y acciones vinculados a momentos y lugares especificos. Se degrada rapidamente: materia prima a refinar en conocimiento.",
+    "knowledge": "Conocimiento: Comprension general desvinculada de contextos especificos: hechos, patrones, conceptos. Se degrada lentamente, el pilar principal de la busqueda.",
+    "belief": "Creencia: Comprension personal estable: preferencias, valores, impresiones, autoconciencia. Usada para construir perfiles de usuario.",
+    "hypothesis": "Hipotesis: Juicios inciertos sobre el mundo: especulaciones, predicciones, teorias no verificadas. Puede ser confirmada o refutada por evidencia posterior.",
+    "intention": "Intencion: Direcciones personales indecisas: planes, deseos, aspiraciones. Se convierte en registro una vez ejecutada, o en creencia una vez internalizada."
+  },
+  "role": {
+    "crystal": "Crystal: Productos cognitivos de alto nivel que emergen de muchos nodos: perfiles de usuario, patrones de comportamiento, principios de decision. Nodos altamente conectados en el grafo.",
+    "keystone": "Keystone: El 5% de nodos mas conectados. Como las especies clave en ecologia: eliminarlos fragmentaria la red de conocimiento.",
+    "tag": "Etiqueta: Las etiquetas de alta frecuencia se promueven automaticamente a nodos del grafo, participando en la estructura del mismo."
+  },
+  "nodeType": {
+    "fact": "Hecho: Decisiones, conclusiones, hechos establecidos. Altamente estructurado; los enlaces requieren mayor confianza.",
+    "context": "Contexto: Informacion de proyecto, relaciones, estados actuales: informacion de fondo.",
+    "preference": "Preferencia: Estilo de codificacion, preferencias de comunicacion, configuraciones de herramientas: inclinaciones personales.",
+    "idea": "Idea: Inspiraciones, hipotesis, ideas por verificar. Los enlaces pueden ser mas libres con umbrales mas bajos.",
+    "crystal": "Crystal: Productos cognitivos de alto nivel que emergen de muchos nodos: perfiles de usuario, patrones de comportamiento, principios de decision. Nodos altamente conectados en el grafo.",
+    "meta": "Metadatos: Registros de operaciones del sistema (registros de llamadas MCP, cambios de estrategia, etc.). Ocultos por defecto, usados para reflexion interna."
+  },
+  "maturity": {
+    "heat": "Calor: Indicador de actividad a corto plazo. Los nodos recientemente creados, recordados o usados tienen alto calor. Se degrada rapidamente (diariamente), pero la tasa se modula por la conectividad: mas conexiones significan degradacion mas lenta. Analogo a la frecuencia de disparo neuronal reciente.",
+    "refinement": "Refinamiento: Cuantas veces se ha procesado el contenido. Los fragmentos brutos empiezan bajo, aumentan tras el refinamiento por LLM y crecen mas durante la reconsolidacion. Crecimiento lento, solo aumenta durante la reconsolidacion. Como recuerdos pasando de borrosos a claros.",
+    "connectivity": "Conectividad: Cuantos otros nodos tienen enlaces efectivos hacia este. No solo cantidad: la diversidad de enlaces tambien importa. Los nodos altamente conectados son centros de la red de conocimiento. Como los recuerdos ricamente conectados en el hipocampo, mas faciles de recordar.",
+    "independence": "Independencia: Que tan bien se puede entender el nodo sin su contexto original. \"Decidi usar SQLite en Cursor el 20/03/2026\" tiene baja independencia; \"Prefiero soluciones sin mantenimiento para herramientas personales\" tiene alta independencia. Mejora mediante la reconsolidacion.",
+    "maturity_score": "Puntuacion de madurez: Compuesto ponderado de calor, refinamiento, conectividad e independencia. Usado para el ranking de busqueda y la visualizacion."
+  },
+  "nodeAttr": {
+    "keystone": "Keystone: El 5% de nodos mas conectados. Como las especies clave en ecologia: eliminarlos fragmentaria la red de conocimiento. Tasa de degradacion mas baja.",
+    "version": "Version: Se incrementa en cada reconsolidacion (contenido revisado y actualizado). La reconsolidacion es el mecanismo de actualizacion de memoria: los recuerdos evolucionan con el uso, no son inmutables.",
+    "source_stream": "Fuente del flujo: Apunta al fragmento original en el registro de flujo. El flujo contiene registros brutos sin procesar; los nodos del grafo han sido refinados. Use este puntero cuando necesite rastrear \"que paso exactamente\"."
+  },
+  "link": {
+    "caused_by": "Causal: A es la causa o consecuencia de B.",
+    "continues": "Continuacion: A es un desarrollo posterior de B.",
+    "updates": "Actualizacion: A es una version actualizada de B, informacion nueva reemplazando la antigua.",
+    "supports": "Soporte: A proporciona evidencia o argumentos a favor de B.",
+    "contradicts": "Contradiccion: A y B tienen contenido conflictivo.",
+    "summarizes": "Resumen: A es una vision general de alto nivel de B. Tipicamente entre nodos Crystal y sus fuentes.",
+    "part_of": "Parte de: A es parte de B o esta subordinado a el.",
+    "analogous": "Analogia: A y B son estructuralmente similares: patrones paralelos en dominios diferentes.",
+    "tagged": "Etiquetado: Agrupados mediante etiquetas compartidas.",
+    "confirmed": "Confirmado: El sistema o el usuario ha verificado que este enlace es significativo.",
+    "pending": "Pendiente: Creado automaticamente pero aun no verificado. Sera revisado durante la evaluacion de enlaces: confirmado o eliminado.",
+    "strength": "Fuerza del enlace: Puntuacion de confianza de 0 a 1. Determinada por la similitud vectorial durante el anclaje, sujeta a degradacion hebbiana con el tiempo."
+  },
+  "operation": {
+    "prepare": "prepare (Preparacion cognitiva): Se llama al inicio de cada nueva conversacion. Devuelve resumen del perfil de usuario + indice de memoria + guia de comportamiento. El punto de entrada de la \"participacion activa\" del cerebro.",
+    "recall": "recall (Busqueda bajo demanda): Se llama cuando se necesita contexto historico durante la conversacion. Busqueda hibrida (BM25 + vectorial + recorrido de grafo); cada busqueda activa una reconsolidacion de \"leer es escribir\".",
+    "digest": "digest (Ingestion de informacion): Almacena nueva informacion tal cual en el cerebro, calcula automaticamente embeddings y crea conexiones de anclaje. La anotacion asincrona de tipos y etiquetas sigue. Tambien se usa para correcciones y enfriamiento."
+  },
+  "gate": {
+    "basic_digest": "Digest basico: Siempre disponible. El contenido se almacena directamente como nodo.",
+    "bm25_search": "Busqueda BM25: Siempre disponible. Busqueda de texto completo por palabras clave: rapida pero no entiende la semantica.",
+    "vector_search": "Busqueda vectorial: Requiere 50+ nodos. Busqueda semantica basada en embeddings que entiende expresiones similares. Mejor cuando se combina con BM25.",
+    "graph_expansion": "Recorrido del grafo: Requiere 100+ nodos y 50+ enlaces. Expande los resultados de busqueda un salto a lo largo de los enlaces: descubre memorias \"palabras clave diferentes pero logicamente relacionadas\".",
+    "crystal_generation": "Generacion de Crystal: Requiere 200+ nodos. Destila conocimientos de alto nivel de clusters de nodos altamente conectados (perfiles de usuario, patrones de comportamiento, principios de decision).",
+    "divergent_scan": "Descubrimiento de enlaces: Requiere 500+ nodos. Multiples estrategias para encontrar enlaces que deberian existir pero no existen: vecinos vectoriales, vecinos comunes, deteccion de contradicciones."
+  },
+  "searchWeight": {
+    "alpha": "Peso BM25 (alfa): Peso de la coincidencia exacta por palabras clave. Valores mas altos dependen mas de palabras clave precisas: ideal para encontrar terminos especificos.",
+    "beta": "Peso vectorial (beta): Peso de la similitud semantica. Valores mas altos dependen mas del significado: ideal para consultas difusas y busqueda multilingue.",
+    "gamma": "Impulso de calor (gamma): Bonificacion de ranking para nodos recientemente activos. Valores mas altos hacen subir las memorias usadas recientemente.",
+    "delta": "Impulso de madurez (delta): Bonificacion de ranking para nodos maduros. Valores mas altos hacen subir las memorias bien consolidadas y de alta calidad."
+  },
+  "metabolism": {
+    "decay_base": "Tasa base de degradacion de nodos: Coeficiente de degradacion diaria del calor cuando la conectividad es 0. Mayor conectividad significa degradacion mas lenta.",
+    "link_decay_base": "Tasa base de degradacion de enlaces: Tasa de degradacion diaria de la fuerza de los enlaces. Ambos extremos activos = casi sin degradacion; ambos frios = degradacion rapida (aprendizaje hebbiano).",
+    "link_delete_threshold": "Umbral de eliminacion de enlaces: Los enlaces con fuerza inferior a este valor se eliminan automaticamente.",
+    "dedup_threshold": "Umbral de deduplicacion: Cuando la similitud vectorial supera este valor, reconsolida el nodo existente en lugar de crear uno nuevo. Evita memorias duplicadas.",
+    "landing_threshold": "Umbral de anclaje: Cuando un nuevo nodo entra en el grafo, las similitudes por encima de este umbral crean enlaces confirmados hacia nodos existentes.",
+    "pending_threshold": "Umbral de pendiente: Las similitudes entre este umbral y el umbral de anclaje crean enlaces pendientes, dejados para la evaluacion de enlaces.",
+    "landing_top_k": "Top-K de anclaje: Numero maximo de enlaces confirmados creados por cada nuevo nodo."
+  },
+  "strategySkill": {
+    "strategy": "Archivos de estrategia: Instrucciones evolucionables que controlan \"como\" opera el cerebro. Contiene plantillas de prompts LLM y parametros numericos. La logica base (estructura del grafo, interfaces) es ADN estable; las estrategias son expresion genica mutable. Puede editar directamente estos archivos para ajustar el comportamiento del sistema.",
+    "skill": "Archivos Skill: Guias que ensenan a las IA externas (Cursor/Claude Code, etc.) como usar el cerebro. Indica a la IA cuando llamar a prepare/recall/digest y como proporcionar buen contexto. Sin los Skills, la IA podria no usar el cerebro en absoluto."
+  },
+  "gateOverview": "Puertas de arranque en frio (sucesion cognitiva): El cerebro no necesita funcionar perfectamente desde el primer dia. Las funcionalidades se desbloquean automaticamente a medida que se acumulan datos: cada etapa crea las condiciones para la siguiente. Como las especies pioneras en la sucesion ecologica: no necesita ser optimo, solo lo suficientemente bueno para acumular datos."
+}

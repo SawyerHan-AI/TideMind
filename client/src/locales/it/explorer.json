@@ -1,0 +1,82 @@
+{
+  "view": {
+    "list": "Lista",
+    "graph": "Grafo"
+  },
+  "filter": {
+    "searchPlaceholder": "Cerca memorie...",
+    "all": "Tutte",
+    "allTags": "Tutti i tag",
+    "allTypes": "Tutti i tipi"
+  },
+  "list": {
+    "noResults": "Nessuna memoria corrispondente trovata",
+    "total": "{{count}} in totale"
+  },
+  "sort": {
+    "newest": "Newest",
+    "hottest": "Hottest",
+    "maturity": "Maturity",
+    "connectivity": "Connectivity"
+  },
+  "heat": {
+    "minLabel": "Min heat: {{value}}",
+    "nodeHeat": "Heat: {{value}}"
+  },
+  "detail": {
+    "selectNode": "Seleziona un nodo per visualizzare i dettagli",
+    "nodeNotFound": "Nodo non trovato",
+    "manualEdit": "Modifica manuale",
+    "editReasonPlaceholder": "Motivo della modifica (opzionale)",
+    "titlePlaceholder": "Titolo",
+    "editVersionNote": "Le modifiche saranno registrate nella cronologia delle versioni",
+    "saving": "Salvataggio...",
+    "save": "Salva",
+    "cancel": "Annulla",
+    "edit": "Modifica",
+    "heat": "Calore",
+    "refinement": "Raffinamento",
+    "connectivity": "Connettività",
+    "independence": "Indipendenza",
+    "keystoneNode": "Nodo chiave di volta",
+    "links": "Collegamento",
+    "pending": "in attesa",
+    "versionHistory": "Cronologia versioni ({{count}} aggiornamenti)",
+    "reconsolidation": "Riconsolidamento",
+    "collapse": "Comprimi",
+    "expandAll": "Espandi tutte le {{count}} versioni",
+    "sourceTracing": "Tracciamento delle fonti",
+    "tool": "Strumento:",
+    "session": "Sessione:",
+    "time": "Ora:",
+    "viewTimeline": "Visualizza cronologia",
+    "evidenceChain": "Catena delle prove",
+    "metaInfo": "Meta informazioni",
+    "created": "Creato:",
+    "tags": "Tag:",
+    "strength": "Forza:",
+    "linksTip": "Collegamenti tra nodi. La banda colorata indica il tipo semantico.",
+    "versionTip": "Cronologia di riconsolidamento: le memorie evolvono con uso.",
+    "evidenceTip": "Lista dei nodi sorgente riassunti da questo cristallo.",
+    "pendingClassify": "In attesa",
+    "unknown": "Sconosciuto"
+  },
+  "graph": {
+    "loading": "Caricamento dati del grafo...",
+    "noData": "Nessun dato sui nodi"
+  },
+  "toolbar": {
+    "all": "Tutti",
+    "hop1": "1 salto",
+    "hop2": "2 salti",
+    "hop3": "3 salti",
+    "zoomIn": "Ingrandisci",
+    "zoomOut": "Riduci",
+    "fitAll": "Adatta",
+    "pathDiscovery": "Scoperta percorsi",
+    "structureHoles": "Buchi strutturali",
+    "connectivityLabel": "Connettività",
+    "clickSecondNode": "Clicca sul secondo nodo per vedere il percorso",
+    "clickStartNode": "Clicca sul nodo di partenza"
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "welcome": {
+    "title": "TideMind'a Hoş Geldiniz",
+    "subtitle": "Düşündüğünüz her şeyi birbirine bağlayan canlı bir ikinci beyin — yapay zeka ajanlarınız, notlarınız ve bundan sonra ne gelirse.",
+    "description": "",
+    "start": "Başla"
+  },
+  "preferences": {
+    "title": "Deneyiminizi Kişiselleştirin",
+    "description": "Tercih ettiğiniz dili ve temayı seçin."
+  },
+  "model": {
+    "title": "Bir Dil Modeli Bağlayın",
+    "description": "TideMind, anılarınızı anlamak, ilişkilendirmek ve geliştirmek için bir LLM'e ihtiyaç duyar. Tüm özellikleri etkinleştirmek için en az bir model bağlantısı yapılandırın.",
+    "skipWarning": "Model bağlantısı olmadan anı sindirme ve ilişki keşfi gibi temel özellikler kullanılamaz. Bunu daha sonra Ayarlar'dan yapılandırabilirsiniz.",
+    "skip": "Şimdilik atla"
+  },
+  "agent": {
+    "title": "Geliştirme Araçlarınızı Bağlayın",
+    "description": "Geliştirme araçlarınızı (Claude Code veya Cursor gibi) bağlayarak TideMind'ı kodlama sırasında hafıza yoldaşınız yapın.",
+    "skip": "Şimdilik atla"
+  },
+  "noteSource": {
+    "title": "Notlarınızı İçe Aktarın",
+    "description": "Logseq, Obsidian veya Apple Notes kullanıyorsanız, mevcut notlarınızı TideMind'ın bilgi grafiğine aktarabilirsiniz.",
+    "skip": "Şimdilik atla"
+  },
+  "complete": {
+    "title": "Her Şey Hazır",
+    "subtitle": "Kurulum özetiniz:",
+    "configured": "Yapılandırıldı",
+    "skipped": "Atlandı",
+    "modelLabel": "Model Bağlantısı",
+    "agentLabel": "Geliştirme Araçları",
+    "noteSourceLabel": "Not İçe Aktarımı",
+    "preferencesLabel": "Dil ve Tema",
+    "enter": "TideMind'a Gir"
+  },
+  "steps": {
+    "welcome": "Hoş Geldin",
+    "preferences": "Tercihler",
+    "model": "Model",
+    "agent": "Araçlar",
+    "noteSource": "Notlar",
+    "complete": "Tamam"
+  },
+  "nav": {
+    "next": "İleri",
+    "back": "Geri",
+    "skip": "Atla"
+  }
+}

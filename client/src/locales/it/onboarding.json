@@ -1,0 +1,52 @@
+{
+  "welcome": {
+    "title": "Benvenuto in TideMind",
+    "subtitle": "Un secondo cervello vivente che collega tutto ciò con cui pensi — i tuoi agenti IA, i tuoi appunti e qualunque cosa verrà dopo.",
+    "description": "",
+    "start": "Inizia"
+  },
+  "preferences": {
+    "title": "Personalizza la tua esperienza",
+    "description": "Scegli la lingua e il tema che preferisci."
+  },
+  "model": {
+    "title": "Collega un modello linguistico",
+    "description": "TideMind ha bisogno di un LLM per comprendere, collegare e sviluppare i tuoi ricordi. Configura almeno una connessione a un modello per attivare tutte le funzionalità.",
+    "skipWarning": "Senza una connessione a un modello, le funzionalità principali come la digestione dei ricordi e la scoperta di associazioni non saranno disponibili. Potrai configurarlo in seguito nelle Impostazioni.",
+    "skip": "Salta per ora"
+  },
+  "agent": {
+    "title": "Collega i tuoi strumenti di sviluppo",
+    "description": "Connetti i tuoi strumenti di sviluppo (come Claude Code o Cursor) per fare di TideMind il tuo compagno di memoria durante la programmazione.",
+    "skip": "Salta per ora"
+  },
+  "noteSource": {
+    "title": "Importa le tue note",
+    "description": "Se usi Logseq, Obsidian o Apple Notes, puoi importare le tue note esistenti nel grafo di conoscenza di TideMind.",
+    "skip": "Salta per ora"
+  },
+  "complete": {
+    "title": "Tutto pronto",
+    "subtitle": "Riepilogo della configurazione:",
+    "configured": "Configurato",
+    "skipped": "Saltato",
+    "modelLabel": "Connessione al modello",
+    "agentLabel": "Strumenti di sviluppo",
+    "noteSourceLabel": "Importazione note",
+    "preferencesLabel": "Lingua e tema",
+    "enter": "Entra in TideMind"
+  },
+  "steps": {
+    "welcome": "Benvenuto",
+    "preferences": "Preferenze",
+    "model": "Modello",
+    "agent": "Strumenti",
+    "noteSource": "Note",
+    "complete": "Fatto"
+  },
+  "nav": {
+    "next": "Avanti",
+    "back": "Indietro",
+    "skip": "Salta"
+  }
+}

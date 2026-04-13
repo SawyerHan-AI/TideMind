@@ -1,0 +1,29 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "timeline": "Zeitleiste",
+    "explorer": "Explorer",
+    "settings": "Einstellungen"
+  },
+  "search": {
+    "placeholder": "Suchen..."
+  },
+  "actions": {
+    "save": "Speichern",
+    "saved": "Gespeichert",
+    "cancel": "Abbrechen",
+    "confirm": "Bestaetigen",
+    "delete": "Loeschen",
+    "edit": "Bearbeiten",
+    "close": "Schliessen",
+    "export": "Exportieren",
+    "copy": "In Zwischenablage kopieren",
+    "comingSoon": "Demnachst verfuegbar"
+  },
+  "units": {
+    "nodes": "Knoten",
+    "items": "Elemente",
+    "memories": "Erinnerungen"
+  },
+  "total": "{{count}} insgesamt"
+}

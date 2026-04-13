@@ -1,0 +1,120 @@
+{
+  "derivedCategory": {
+    "record": "기록",
+    "knowledge": "지식",
+    "belief": "인식",
+    "hypothesis": "가설",
+    "intention": "의도"
+  },
+  "role": {
+    "crystal": "크리스탈",
+    "keystone": "키스톤",
+    "tag": "태그",
+    "meta": "시스템"
+  },
+  "nodeType": {
+    "fact": "사실",
+    "context": "컨텍스트",
+    "preference": "선호",
+    "idea": "아이디어",
+    "crystal": "크리스탈",
+    "meta": "메타데이터"
+  },
+  "relation": {
+    "caused_by": "인과",
+    "continues": "연속",
+    "updates": "업데이트",
+    "supports": "지지",
+    "contradicts": "모순",
+    "summarizes": "요약",
+    "part_of": "부분",
+    "analogous": "유사",
+    "tagged": "태그"
+  },
+  "gate": {
+    "basic_digest": "기본 다이제스트",
+    "bm25_search": "BM25 검색",
+    "vector_search": "벡터 검색",
+    "graph_expansion": "그래프 탐색",
+    "crystal_generation": "크리스탈 생성",
+    "divergent_scan": "발산 스캔"
+  },
+  "eventType": {
+    "memory": "메모리",
+    "think_associate": "사고 (연상)",
+    "think_emerge": "사고 (창발)",
+    "output": "출력",
+    "evolution": "진화",
+    "config": "설정"
+  },
+  "eventSubtype": {
+    "digest": "다이제스트",
+    "correction": "수정",
+    "archive": "아카이브",
+    "landing_connection": "랜딩 연결",
+    "annotate": "노드 주석",
+    "dedup": "중복 감지",
+    "dedup_merge": "중복 병합",
+    "synaptic_scaling": "시냅스 감쇠",
+    "link_classify": "링크 평가",
+    "refine_links": "링크 재검증",
+    "link_discover": "링크 발견",
+    "pending_link_review": "보류 링크 검토",
+    "keystone_identification": "키스톤 분석",
+    "tag_promote": "태그 창발",
+    "divergent_scan": "발산 스캔",
+    "crystal_update": "크리스탈 생성",
+    "split_merge": "분할/병합",
+    "recall": "리콜",
+    "prepare": "인지 준비",
+    "reconsolidation": "재고정화",
+    "profile_synthesize": "프로필 합성",
+    "learning2": "Learning II",
+    "learning3": "Learning III",
+    "strategy_rollback": "전략 롤백",
+    "settings_change": "설정 변경",
+    "strategy_update": "전략 수정",
+    "gate_unlock": "게이트 해제",
+    "logseq_sync": "노트 동기화",
+    "logseq_file_change": "노트 변경",
+    "obsidian_sync": "Obsidian 동기화",
+    "obsidian_file_change": "Obsidian 파일 변경",
+    "apple_notes_sync": "메모 동기화",
+    "daemon_start": "시작",
+    "daemon_stop": "중지"
+  },
+  "actor": {
+    "user": "사용자",
+    "agent": "Agent",
+    "brain": "외부 브레인"
+  },
+  "operation": {
+    "digest": "다이제스트",
+    "annotate": "노드 주석",
+    "dedup": "중복 감지",
+    "synaptic": "시냅스 감쇠",
+    "link-evaluate": "링크 평가",
+    "link-discover": "링크 발견",
+    "link-revalidate": "링크 재검증",
+    "link-judge": "링크 판정",
+    "layer2-link-refine": "링크 정제",
+    "contradiction": "모순 감지",
+    "assess": "평가",
+    "temporal-crystal": "시간 크리스탈",
+    "keystone": "키스톤 분석",
+    "divergent": "발산 스캔",
+    "crystal": "크리스탈 생성",
+    "prepare": "인지 준비",
+    "reconsolidate": "재고정화",
+    "learning2": "Learning II",
+    "learning3": "Learning III",
+    "tag-define": "태그 정의"
+  },
+  "sourceTool": {
+    "cursor": "Cursor",
+    "claude-code": "Claude Code",
+    "codex": "Codex",
+    "logseq": "Logseq",
+    "client": "클라이언트"
+  }
+}

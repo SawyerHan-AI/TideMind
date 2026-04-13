@@ -1,0 +1,29 @@
+{
+  "nav": {
+    "dashboard": "대시보드",
+    "timeline": "타임라인",
+    "explorer": "브레인 탐색",
+    "settings": "설정"
+  },
+  "search": {
+    "placeholder": "검색..."
+  },
+  "actions": {
+    "save": "저장",
+    "saved": "저장됨",
+    "cancel": "취소",
+    "confirm": "확인",
+    "delete": "삭제",
+    "edit": "편집",
+    "close": "닫기",
+    "export": "내보내기",
+    "copy": "클립보드에 복사",
+    "comingSoon": "곧 지원 예정"
+  },
+  "units": {
+    "nodes": "노드",
+    "items": "건",
+    "memories": "건의 메모리"
+  },
+  "total": "총 {{count}} 건"
+}

@@ -1,0 +1,29 @@
+{
+  "nav": {
+    "dashboard": "ダッシュボード",
+    "timeline": "タイムライン",
+    "explorer": "ブレイン エクスプローラー",
+    "settings": "設定"
+  },
+  "search": {
+    "placeholder": "検索..."
+  },
+  "actions": {
+    "save": "保存",
+    "saved": "保存済み",
+    "cancel": "キャンセル",
+    "confirm": "確認",
+    "delete": "削除",
+    "edit": "編集",
+    "close": "閉じる",
+    "export": "エクスポート",
+    "copy": "クリップボードにコピー",
+    "comingSoon": "近日公開"
+  },
+  "units": {
+    "nodes": "ノード",
+    "items": "件",
+    "memories": "件のメモリ"
+  },
+  "total": "合計 {{count}} 件"
+}

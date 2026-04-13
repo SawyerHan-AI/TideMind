@@ -1,0 +1,45 @@
+{
+  "name": "tidemind",
+  "version": "0.1.0",
+  "description": "Tide Mind — 基于活图的认知系统，通过 MCP 协议为 AI 工具提供记忆服务",
+  "type": "module",
+  "bin": {
+    "tidemind": "./dist/index.js",
+    "tidemind-daemon": "./dist/daemon.js",
+    "tidemind-hook": "./dist/hook-session-start.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "daemon": "tsx src/daemon.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src/"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.80.0",
+    "@anthropic-ai/vertex-sdk": "^0.14.4",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@types/js-yaml": "^4.0.9",
+    "better-sqlite3": "^11.8.0",
+    "js-yaml": "^4.1.1",
+    "nanoid": "^5.1.0",
+    "protobufjs": "^7.5.4",
+    "smol-toml": "^1.3.0",
+    "sqlite-vec": "^0.1.7",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
+    "eslint": "^10.2.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.58.1",
+    "vitest": "^3.0.0"
+  }
+}

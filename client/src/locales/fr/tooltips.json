@@ -1,0 +1,81 @@
+{
+  "derivedCategory": {
+    "record": "Enregistrement : Evenements, observations et actions lies a des moments et lieux precis. Se degrade rapidement -- matiere premiere a raffiner en connaissance.",
+    "knowledge": "Connaissance : Comprehension generale detachee de contextes specifiques -- faits, schemas, concepts. Se degrade lentement, pilier principal de la recherche.",
+    "belief": "Conviction : Comprehension personnelle stable -- preferences, valeurs, impressions, conscience de soi. Utilisee pour construire les profils utilisateur.",
+    "hypothesis": "Hypothese : Jugements incertains sur le monde -- speculations, predictions, theories non verifiees. Peut etre confirmee ou refutee par des preuves ulterieures.",
+    "intention": "Intention : Directions personnelles indecises -- plans, souhaits, aspirations. Devient un enregistrement une fois executee, ou une conviction une fois internalisee."
+  },
+  "role": {
+    "crystal": "Crystal : Produits cognitifs de haut niveau qui emergent de nombreux noeuds -- profils utilisateur, schemas comportementaux, principes de decision. Noeuds fortement connectes dans le graphe.",
+    "keystone": "Keystone : Les 5 % de noeuds les plus connectes. Comme les especes cles en ecologie -- les supprimer fragmenterait le reseau de connaissances.",
+    "tag": "Tag : Les tags haute frequence sont automatiquement promus en noeuds du graphe, participant a la structure du graphe."
+  },
+  "nodeType": {
+    "fact": "Fait : Decisions, conclusions, faits etablis. Tres structure ; les liens necessitent une confiance elevee.",
+    "context": "Contexte : Informations de projet, relations, etats actuels -- informations de fond.",
+    "preference": "Preference : Style de codage, preferences de communication, configurations d'outils -- inclinations personnelles.",
+    "idea": "Idee : Inspirations, hypotheses, idees a verifier. Les liens peuvent etre plus libres avec des seuils plus bas.",
+    "crystal": "Crystal : Produits cognitifs de haut niveau emergant de nombreux noeuds -- profils utilisateur, schemas comportementaux, principes de decision. Noeuds fortement connectes dans le graphe.",
+    "meta": "Metadonnees : Enregistrements d'operations systeme (journaux d'appels MCP, changements de strategie, etc.). Masquees par defaut, utilisees pour la reflexion interne."
+  },
+  "maturity": {
+    "heat": "Chaleur : Indicateur d'activite a court terme. Les noeuds recemment crees, rappeles ou utilises ont une chaleur elevee. Se degrade rapidement (quotidiennement), mais le taux est module par la connectivite -- plus de connexions signifie une degradation plus lente. Analogue a la frequence de decharge neuronale recente.",
+    "refinement": "Raffinement : Nombre de fois que le contenu a ete traite. Les fragments bruts commencent bas, augmentent apres le raffinement par LLM, et croissent encore lors de la reconsolidation. Croissance lente, n'augmente que lors de la reconsolidation. Comme des souvenirs passant du flou au clair.",
+    "connectivity": "Connectivite : Nombre d'autres noeuds ayant des liens effectifs vers celui-ci. Pas seulement la quantite -- la diversite des liens compte aussi. Les noeuds fortement connectes sont des carrefours du reseau de connaissances. Comme les souvenirs richement connectes dans l'hippocampe, plus faciles a rappeler.",
+    "independence": "Independance : Capacite du noeud a etre compris sans son contexte d'origine. \"J'ai decide d'utiliser SQLite dans Cursor le 20/03/2026\" a une faible independance ; \"Prefere les solutions sans maintenance pour les outils personnels\" a une forte independance. S'ameliore par la reconsolidation.",
+    "maturity_score": "Score de maturite : Composite pondere de la chaleur, du raffinement, de la connectivite et de l'independance. Utilise pour le classement des recherches et l'affichage."
+  },
+  "nodeAttr": {
+    "keystone": "Keystone : Les 5 % de noeuds les plus connectes. Comme les especes cles en ecologie -- les supprimer fragmenterait le reseau de connaissances. Taux de degradation plus faible.",
+    "version": "Version : Incrementee a chaque reconsolidation (contenu revu et mis a jour). La reconsolidation est le mecanisme de mise a jour de la memoire -- les souvenirs evoluent par l'usage, ils ne sont pas immuables.",
+    "source_stream": "Source du flux : Pointe vers le fragment original dans le journal de flux. Le flux contient des enregistrements bruts non traites ; les noeuds du graphe ont ete raffines. Utilisez ce pointeur pour remonter a \"ce qui s'est exactement passe\"."
+  },
+  "link": {
+    "caused_by": "Causal : A est la cause ou la consequence de B.",
+    "continues": "Continuation : A est un developpement ulterieur de B.",
+    "updates": "Mise a jour : A est une version actualisee de B, des informations nouvelles remplacant les anciennes.",
+    "supports": "Support : A fournit des preuves ou des arguments en faveur de B.",
+    "contradicts": "Contradiction : A et B ont un contenu conflictuel.",
+    "summarizes": "Resume : A est une synthese de haut niveau de B. Typiquement entre les noeuds Crystal et leurs sources.",
+    "part_of": "Partie de : A fait partie de B ou lui est subordonne.",
+    "analogous": "Analogie : A et B sont structurellement similaires -- schemas paralleles dans des domaines differents.",
+    "tagged": "Etiquete : Regroupes par des tags partages.",
+    "confirmed": "Confirme : Le systeme ou l'utilisateur a verifie que ce lien est pertinent.",
+    "pending": "En attente : Cree automatiquement mais pas encore verifie. Sera revu lors de l'evaluation des liens -- confirme ou supprime.",
+    "strength": "Force du lien : Score de confiance de 0 a 1. Determine par la similarite vectorielle lors de l'ancrage, soumis a la degradation hebbienne au fil du temps."
+  },
+  "operation": {
+    "prepare": "prepare (Preparation cognitive) : Appelee au debut de chaque nouvelle conversation. Retourne un resume du profil utilisateur + index memoire + guide comportemental. Le point d'entree de la \"participation active\" du cerveau.",
+    "recall": "recall (Recherche a la demande) : Appelee lorsque le contexte historique est necessaire pendant la conversation. Recherche hybride (BM25 + vectorielle + parcours de graphe) ; chaque recherche declenche une reconsolidation \"lire c'est ecrire\".",
+    "digest": "digest (Ingestion d'informations) : Stocke les nouvelles informations telles quelles dans le cerveau, calcule automatiquement les embeddings et cree les connexions d'ancrage. L'annotation asynchrone des types et tags suit. Egalement utilise pour les corrections et le refroidissement."
+  },
+  "gate": {
+    "basic_digest": "Digest de base : Toujours disponible. Le contenu est stocke directement comme noeud.",
+    "bm25_search": "Recherche BM25 : Toujours disponible. Recherche plein texte par mots-cles -- rapide mais ne comprend pas la semantique.",
+    "vector_search": "Recherche vectorielle : Necessite 50+ noeuds. Recherche semantique basee sur les embeddings qui comprend les expressions similaires. Meilleure combinee avec BM25.",
+    "graph_expansion": "Parcours du graphe : Necessite 100+ noeuds et 50+ liens. Etend les resultats de recherche d'un saut le long des liens -- decouvre les memoires \"mots-cles differents mais logiquement liees\".",
+    "crystal_generation": "Generation de Crystal : Necessite 200+ noeuds. Distille des insights de haut niveau a partir de clusters de noeuds fortement connectes (profils utilisateur, schemas comportementaux, principes de decision).",
+    "divergent_scan": "Decouverte de liens : Necessite 500+ noeuds. Strategies multiples pour trouver des liens qui devraient exister mais n'existent pas -- voisins vectoriels, voisins communs, detection de contradictions."
+  },
+  "searchWeight": {
+    "alpha": "Poids BM25 (alpha) : Poids de la correspondance exacte par mots-cles. Des valeurs plus elevees s'appuient davantage sur les mots-cles precis -- ideal pour trouver des termes specifiques.",
+    "beta": "Poids vectoriel (beta) : Poids de la similarite semantique. Des valeurs plus elevees s'appuient davantage sur le sens -- ideal pour les requetes floues et la recherche multilingue.",
+    "gamma": "Boost de chaleur (gamma) : Bonus de classement pour les noeuds recemment actifs. Des valeurs plus elevees font remonter les memoires recemment utilisees.",
+    "delta": "Boost de maturite (delta) : Bonus de classement pour les noeuds matures. Des valeurs plus elevees font remonter les memoires bien consolidees et de haute qualite."
+  },
+  "metabolism": {
+    "decay_base": "Taux de base de degradation des noeuds : Coefficient de degradation quotidienne de la chaleur quand la connectivite est 0. Une connectivite plus elevee signifie une degradation plus lente.",
+    "link_decay_base": "Taux de base de degradation des liens : Taux de degradation quotidienne de la force des liens. Les deux extremites actives = quasi aucune degradation ; les deux froides = degradation rapide (apprentissage hebbien).",
+    "link_delete_threshold": "Seuil de suppression des liens : Les liens dont la force est inferieure a cette valeur sont automatiquement supprimes.",
+    "dedup_threshold": "Seuil de deduplication : Lorsque la similarite vectorielle depasse cette valeur, reconsolide le noeud existant au lieu d'en creer un nouveau. Empeche les memoires en double.",
+    "landing_threshold": "Seuil d'ancrage : Lorsqu'un nouveau noeud entre dans le graphe, les similarites au-dessus de ce seuil creent des liens confirmes vers les noeuds existants.",
+    "pending_threshold": "Seuil d'attente : Les similarites entre ce seuil et le seuil d'ancrage creent des liens en attente, laisses a l'evaluation des liens pour confirmation.",
+    "landing_top_k": "Top-K d'ancrage : Nombre maximum de liens confirmes crees par nouveau noeud."
+  },
+  "strategySkill": {
+    "strategy": "Fichiers de strategie : Instructions evoluables controlant \"comment\" le cerveau fonctionne. Contient des modeles de prompts LLM et des parametres numeriques. La logique de base (structure du graphe, interfaces) est de l'ADN stable ; les strategies sont de l'expression genique mutable. Vous pouvez modifier directement ces fichiers pour ajuster le comportement du systeme.",
+    "skill": "Fichiers Skill : Guides enseignant aux IA externes (Cursor/Claude Code, etc.) comment utiliser le cerveau. Indique a l'IA quand appeler prepare/recall/digest et comment fournir un bon contexte. Sans les Skills, l'IA pourrait ne pas utiliser le cerveau du tout."
+  },
+  "gateOverview": "Portes de demarrage a froid (succession cognitive) : Le cerveau n'a pas besoin de fonctionner parfaitement des le premier jour. Les fonctionnalites se deverrouillent automatiquement a mesure que les donnees s'accumulent -- chaque etape cree les conditions pour la suivante. Comme les especes pionnieres dans la succession ecologique : pas besoin d'etre optimal, juste assez bon pour accumuler des donnees."
+}

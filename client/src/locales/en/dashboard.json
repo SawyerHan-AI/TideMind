@@ -1,0 +1,48 @@
+{
+  "init": {
+    "phases": {
+      "0": "Scan & Classify",
+      "1": "Preprocess",
+      "2": "Ingest",
+      "3": "Explicit Links",
+      "4": "Node Annotation",
+      "5": "Landing Connections",
+      "6": "Link Evaluation",
+      "7": "Keystone Marking",
+      "8": "Emergence"
+    },
+    "noteSource": "Notes",
+    "complete": "Initialization Complete",
+    "progress": "Initializing — Phase {{phase}}/8: {{phaseName}}",
+    "clickDetails": "Click for details"
+  },
+  "recentActivity": {
+    "title": "Recent Activity",
+    "brainNotStarted": "Brain not started yet"
+  },
+  "discoveries": {
+    "title": "Discoveries",
+    "brewing": "Brain is brewing...",
+    "liked": "Liked",
+    "disliked": "Disliked"
+  },
+  "recentTags": {
+    "title": "Recent Tags",
+    "coreOnly": "Showing core tags only (high-frequency tags auto-promoted to graph nodes)"
+  },
+  "systemPulse": {
+    "totalMemories": "Total Memories",
+    "todayDigests": "Today's Digests",
+    "todayLinks": "Today's Links",
+    "todayRecalls": "Today's Recalls"
+  },
+  "empty": {
+    "title": "Your brain is a blank canvas",
+    "description": "Start using TideMind with your dev tools — your memories, insights, and connections will grow here.",
+    "settings": "Go to Settings"
+  },
+  "modelWarning": {
+    "message": "No model connection configured. Core features like memory digestion and association discovery are unavailable.",
+    "action": "Configure Model"
+  }
+}

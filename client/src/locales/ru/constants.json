@@ -1,0 +1,120 @@
+{
+  "derivedCategory": {
+    "record": "Запись",
+    "knowledge": "Знание",
+    "belief": "Убеждение",
+    "hypothesis": "Гипотеза",
+    "intention": "Намерение"
+  },
+  "role": {
+    "crystal": "Кристалл",
+    "keystone": "Опора",
+    "tag": "Тег",
+    "meta": "Система"
+  },
+  "nodeType": {
+    "fact": "Факт",
+    "context": "Контекст",
+    "preference": "Предпочтение",
+    "idea": "Идея",
+    "crystal": "Кристалл",
+    "meta": "Метаданные"
+  },
+  "relation": {
+    "caused_by": "Причинная",
+    "continues": "Продолжение",
+    "updates": "Обновление",
+    "supports": "Поддержка",
+    "contradicts": "Противоречие",
+    "summarizes": "Обобщение",
+    "part_of": "Часть",
+    "analogous": "Аналогия",
+    "tagged": "Помечено"
+  },
+  "gate": {
+    "basic_digest": "Базовое усвоение",
+    "bm25_search": "Поиск BM25",
+    "vector_search": "Векторный поиск",
+    "graph_expansion": "Обход графа",
+    "crystal_generation": "Генерация кристаллов",
+    "divergent_scan": "Дивергентное сканирование"
+  },
+  "eventType": {
+    "memory": "Память",
+    "think_associate": "Мышление (ассоциация)",
+    "think_emerge": "Мышление (эмерджентность)",
+    "output": "Вывод",
+    "evolution": "Эволюция",
+    "config": "Конфигурация"
+  },
+  "eventSubtype": {
+    "digest": "Усвоение",
+    "correction": "Коррекция",
+    "archive": "Архивация",
+    "landing_connection": "Входное соединение",
+    "annotate": "Аннотация",
+    "dedup": "Дедупликация",
+    "dedup_merge": "Слияние дубликатов",
+    "synaptic_scaling": "Синаптическое масштабирование",
+    "link_classify": "Оценка связей",
+    "refine_links": "Ревалидация связей",
+    "link_discover": "Обнаружение связей",
+    "pending_link_review": "Проверка ожидающих связей",
+    "keystone_identification": "Анализ опор",
+    "tag_promote": "Продвижение тега",
+    "divergent_scan": "Дивергентное сканирование",
+    "crystal_update": "Генерация кристаллов",
+    "split_merge": "Разделение/слияние",
+    "recall": "Извлечение",
+    "prepare": "Когнитивная подготовка",
+    "reconsolidation": "Реконсолидация",
+    "profile_synthesize": "Синтез профиля",
+    "learning2": "Обучение II",
+    "learning3": "Обучение III",
+    "strategy_rollback": "Откат стратегии",
+    "settings_change": "Изменение настроек",
+    "strategy_update": "Обновление стратегии",
+    "gate_unlock": "Разблокировка шлюза",
+    "logseq_sync": "Синхронизация заметок",
+    "logseq_file_change": "Изменение заметок",
+    "obsidian_sync": "Синхронизация Obsidian",
+    "obsidian_file_change": "Изменение файла Obsidian",
+    "apple_notes_sync": "Синхронизация заметок Apple",
+    "daemon_start": "Запуск",
+    "daemon_stop": "Остановка"
+  },
+  "actor": {
+    "user": "Пользователь",
+    "agent": "Агент",
+    "brain": "Мозг"
+  },
+  "operation": {
+    "digest": "Усвоение",
+    "annotate": "Аннотация",
+    "dedup": "Дедупликация",
+    "synaptic": "Синаптическое масштабирование",
+    "link-evaluate": "Оценка связей",
+    "link-discover": "Обнаружение связей",
+    "link-revalidate": "Ревалидация связей",
+    "link-judge": "Оценка связей",
+    "layer2-link-refine": "Уточнение связей",
+    "contradiction": "Обнаружение противоречий",
+    "assess": "Оценка",
+    "temporal-crystal": "Временной кристалл",
+    "keystone": "Анализ опор",
+    "divergent": "Дивергентное сканирование",
+    "crystal": "Генерация кристаллов",
+    "prepare": "Когнитивная подготовка",
+    "reconsolidate": "Реконсолидация",
+    "learning2": "Обучение II",
+    "learning3": "Обучение III",
+    "tag-define": "Определение тега"
+  },
+  "sourceTool": {
+    "cursor": "Cursor",
+    "claude-code": "Claude Code",
+    "codex": "Codex",
+    "logseq": "Logseq",
+    "client": "Клиент"
+  }
+}

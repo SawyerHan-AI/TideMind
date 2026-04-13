@@ -1,0 +1,586 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   CSS Custom Properties — 深色（默认）& 浅色主题
+   ============================================================ */
+
+:root {
+  /* ── 前景色层级 ── */
+  --fg-primary:   rgba(255, 255, 255, 0.85);  /* 主文字 / 激活图标 */
+  --fg-secondary: rgba(255, 255, 255, 0.60);  /* 板块标题 / 次要文字 */
+  --fg-tertiary:  rgba(255, 255, 255, 0.35);  /* 非激活图标 */
+  --fg-disabled:  rgba(255, 255, 255, 0.20);  /* 极低强调 */
+  --fg-muted:     rgba(255, 255, 255, 0.18);  /* 版本号 / hints */
+
+  /* ── 交互激活态 ── */
+  --active-bg:     rgba(255, 255, 255, 0.07);            /* 导航 hover/active 背景 */
+  --active-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08); /* 导航 active 顶部高光 */
+
+  --selected-bg:     rgba(255, 255, 255, 0.08);               /* 子 tab / 工具按钮选中 */
+  --selected-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10); /* 子 tab 选中顶部高光 */
+
+  /* ── 图标容器 ── */
+  --icon-bg-active:       rgba(255, 255, 255, 0.10);
+  --icon-bg-inactive:     rgba(255, 255, 255, 0.04);
+  --icon-border-active:   rgba(255, 255, 255, 0.15);
+  --icon-border-inactive: rgba(255, 255, 255, 0.06);
+
+  /* ── 分隔线 / 边框 ── */
+  --border-faint:  rgba(255, 255, 255, 0.06);   /* 侧边栏边框、极淡分隔 */
+  --border-subtle: rgba(255, 255, 255, 0.10);   /* tooltip 边框 */
+
+  /* ── 指示器（tab 下划线 / 导航竖线）── */
+  --indicator: rgba(129, 140, 248, 0.70);
+
+  /* 基底背景 — 暗紫黑（半透明，桌面隐约可见） */
+  --theme-bg: rgba(10, 10, 16, 0.82);
+  /* 背景深度渐变（蓝紫调） */
+  --theme-glow-1: rgba(60, 50, 120, 0.18);
+  --theme-glow-2: rgba(30, 25, 80, 0.14);
+
+  /* 玻璃卡片 — 磨砂玻璃 */
+  --theme-glass-bg: rgba(255, 255, 255, 0.05);
+  --theme-glass-bg-elevated: rgba(255, 255, 255, 0.08);
+  --theme-glass-border: rgba(160, 160, 220, 0.08);
+  --theme-glass-border-elevated: rgba(160, 160, 220, 0.12);
+  --theme-glass-shadow: inset 0 1px 0 rgba(200, 200, 255, 0.08), 0 4px 24px rgba(0, 0, 10, 0.5), 0 1px 2px rgba(0, 0, 10, 0.6);
+  --theme-glass-shadow-elevated: inset 0 1px 0 rgba(200, 200, 255, 0.12), 0 8px 32px rgba(0, 0, 10, 0.5), 0 2px 4px rgba(0, 0, 10, 0.6);
+
+  /* 侧边栏 */
+  --theme-sidebar-bg: rgba(10, 10, 16, 0.95);
+
+  /* Popup / tooltip */
+  --theme-popup-bg: rgba(22, 22, 26, 0.97);
+  --theme-popup-border: rgba(255, 255, 255, 0.10);
+  --theme-popup-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), 0 8px 32px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4);
+
+  /* 面板 header (sticky) */
+  --theme-panel-header: rgba(9, 9, 11, 0.90);
+  --theme-panel-border: rgba(255, 255, 255, 0.07);
+
+  /* 滚动条 */
+  --theme-scrollbar: rgba(255, 255, 255, 0.08);
+  --theme-scrollbar-hover: rgba(255, 255, 255, 0.16);
+
+  /* Skeleton shimmer */
+  --theme-shimmer-from: rgba(130, 140, 248, 0.04);
+  --theme-shimmer-via: rgba(220, 215, 255, 0.08);
+  --theme-shimmer-to: rgba(130, 140, 248, 0.04);
+
+  /* ── 品牌色（与 tokens.ts 同步，供 CSS 中引用）── */
+  --brand-primary: #818cf8;
+  --brand-secondary: #a78bfa;
+
+  /* ── 图表 UI 色（深色主题值）── */
+  --chart-tick: #6b7280;
+  --chart-tooltip-bg: #1f2937;
+  --chart-tooltip-text: #e5e7eb;
+  --chart-grid: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="light"] {
+  /* ── 前景色层级 ── */
+  --fg-primary:   rgba(17, 24, 39, 0.90);
+  --fg-secondary: rgba(55, 65, 81, 0.80);
+  --fg-tertiary:  rgba(107, 114, 128, 0.70);
+  --fg-disabled:  rgba(0, 0, 0, 0.22);
+  --fg-muted:     rgba(0, 0, 0, 0.28);
+
+  /* ── 交互激活态 ── */
+  --active-bg:     rgba(0, 0, 0, 0.05);
+  --active-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.70);
+
+  --selected-bg:     rgba(0, 0, 0, 0.055);
+  --selected-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+
+  /* ── 图标容器 ── */
+  --icon-bg-active:       rgba(0, 0, 0, 0.07);
+  --icon-bg-inactive:     rgba(0, 0, 0, 0.04);
+  --icon-border-active:   rgba(0, 0, 0, 0.12);
+  --icon-border-inactive: rgba(0, 0, 0, 0.07);
+
+  /* ── 分隔线 / 边框 ── */
+  --border-faint:  rgba(0, 0, 0, 0.07);
+  --border-subtle: rgba(0, 0, 0, 0.10);
+
+  /* ── 指示器 ── */
+  --indicator: rgba(0, 0, 0, 0.35);
+
+  /* 基底背景 — 淡薰衣草紫（半透明） */
+  --theme-bg: rgba(238, 235, 245, 0.75);
+  /* 背景深度渐变（淡紫调） */
+  --theme-glow-1: rgba(120, 100, 200, 0.08);
+  --theme-glow-2: rgba(80, 60, 160, 0.05);
+
+  /* 玻璃卡片 — 白色磨砂玻璃（降低不透明度让背景透过来） */
+  --theme-glass-bg: rgba(255, 255, 255, 0.50);
+  --theme-glass-bg-elevated: rgba(255, 255, 255, 0.65);
+  --theme-glass-border: rgba(130, 120, 180, 0.10);
+  --theme-glass-border-elevated: rgba(130, 120, 180, 0.14);
+  --theme-glass-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.90), 0 4px 16px rgba(80, 60, 120, 0.06), 0 1px 3px rgba(0, 0, 0, 0.06);
+  --theme-glass-shadow-elevated: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 8px 24px rgba(80, 60, 120, 0.08), 0 2px 4px rgba(0, 0, 0, 0.05);
+
+  /* 侧边栏 */
+  --theme-sidebar-bg: rgba(220, 216, 235, 0.92);
+
+  /* Popup / tooltip */
+  --theme-popup-bg: rgba(250, 249, 254, 0.97);
+  --theme-popup-border: rgba(0, 0, 0, 0.08);
+  --theme-popup-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.07);
+
+  /* 面板 header */
+  --theme-panel-header: rgba(215, 210, 230, 0.85);
+  --theme-panel-border: rgba(0, 0, 0, 0.07);
+
+  /* 滚动条 */
+  --theme-scrollbar: rgba(0, 0, 0, 0.12);
+  --theme-scrollbar-hover: rgba(0, 0, 0, 0.22);
+
+  /* Skeleton shimmer */
+  --theme-shimmer-from: rgba(0, 0, 80, 0.03);
+  --theme-shimmer-via: rgba(0, 0, 0, 0.07);
+  --theme-shimmer-to: rgba(0, 0, 80, 0.03);
+
+  /* ── 图表 UI 色（浅色主题值）── */
+  --chart-tick: #9ca3af;
+  --chart-tooltip-bg: rgba(250, 249, 254, 0.97);
+  --chart-tooltip-text: #1f2937;
+  --chart-grid: rgba(0, 0, 0, 0.08);
+}
+
+/* ============================================================
+   macOS 交通灯区域留白
+   ============================================================ */
+
+.drag-region {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* ============================================================
+   自定义滚动条
+   ============================================================ */
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--theme-scrollbar);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--theme-scrollbar-hover);
+}
+
+/* ============================================================
+   骨架屏 shimmer
+   ============================================================ */
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--theme-shimmer-from) 25%,
+    var(--theme-shimmer-via) 50%,
+    var(--theme-shimmer-to) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* ============================================================
+   基底背景 — 毛玻璃质感（噪声纹理 + 轻微色调渐变）
+   ============================================================ */
+
+body {
+  overflow: hidden;
+}
+
+/* ============================================================
+   玻璃材质系统
+   ============================================================ */
+
+/* 颗粒噪声 data URI（SVG feTurbulence） */
+
+/* 标准玻璃卡片 */
+.glass-card {
+  position: relative;
+  background: var(--theme-glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--theme-glass-border);
+  box-shadow: var(--theme-glass-shadow);
+  overflow: hidden;
+}
+
+/* 磨砂玻璃颗粒纹理层 */
+.glass-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23noise)'/%3E%3C/svg%3E");
+  opacity: 0.07;
+  pointer-events: none;
+  mix-blend-mode: overlay;
+  z-index: 0;
+}
+
+/* 卡片内容在噪声层之上 */
+.glass-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* 悬浮态（更亮一档）*/
+.glass-card-elevated {
+  position: relative;
+  background: var(--theme-glass-bg-elevated);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--theme-glass-border-elevated);
+  box-shadow: var(--theme-glass-shadow-elevated);
+  overflow: hidden;
+}
+
+.glass-card-elevated::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23noise)'/%3E%3C/svg%3E");
+  opacity: 0.08;
+  pointer-events: none;
+  mix-blend-mode: overlay;
+  z-index: 0;
+}
+
+.glass-card-elevated > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* 侧边栏玻璃 */
+.glass-sidebar {
+  position: relative;
+  background: var(--theme-sidebar-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  overflow: hidden;
+}
+
+.glass-sidebar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23noise)'/%3E%3C/svg%3E");
+  opacity: 0.05;
+  pointer-events: none;
+  mix-blend-mode: overlay;
+  z-index: 0;
+}
+
+.glass-sidebar > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Tooltip / popup 玻璃（最高层级）*/
+.glass-popup {
+  position: relative;
+  background: var(--theme-popup-bg);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid var(--theme-popup-border);
+  box-shadow: var(--theme-popup-shadow);
+  overflow: hidden;
+}
+
+.glass-popup > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* 面板 sticky header */
+.panel-header {
+  background: var(--theme-panel-header);
+  border-color: var(--theme-panel-border);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+/* ============================================================
+   Glow 工具类（语义色自发光）
+   ============================================================ */
+
+.glow-blue    { box-shadow: 0 0 12px rgba(129, 140, 248, 0.3); }
+.glow-teal    { box-shadow: none; }
+.glow-purple  { box-shadow: none; }
+.glow-amber   { box-shadow: 0 0 12px rgba(245, 158, 11, 0.3); }
+.glow-emerald { box-shadow: none; }
+
+.glow-sm-blue    { box-shadow: 0 0 8px rgba(129, 140, 248, 0.2); }
+.glow-sm-teal    { box-shadow: none; }
+.glow-sm-purple  { box-shadow: none; }
+.glow-sm-amber   { box-shadow: 0 0 8px rgba(245, 158, 11, 0.2); }
+.glow-sm-emerald { box-shadow: none; }
+
+/* ============================================================
+   侧边栏导航激活竖线
+   ============================================================ */
+
+.nav-active-indicator {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 60%;
+  border-radius: 0 2px 2px 0;
+  background: currentColor;
+  opacity: 0.8;
+}
+
+/* ============================================================
+   浅色主题 — Tailwind 颜色覆写
+   ============================================================ */
+
+/* 文字颜色 */
+[data-theme="light"] .text-white { color: #111827 !important; }
+/* 彩色背景按钮上保持白色文字 */
+[data-theme="light"] .bg-blue-600.text-white,
+[data-theme="light"] .bg-blue-500.text-white,
+[data-theme="light"] .bg-red-600.text-white,
+[data-theme="light"] .bg-red-500.text-white,
+[data-theme="light"] .bg-green-600.text-white,
+[data-theme="light"] .bg-green-500.text-white,
+[data-theme="light"] .bg-amber-600.text-white,
+[data-theme="light"] .bg-violet-600.text-white,
+[data-theme="light"] .bg-indigo-500.text-white,
+[data-theme="light"] .bg-indigo-400.text-white,
+[data-theme="light"] .bg-emerald-600.text-white,
+[data-theme="light"] .bg-emerald-500.text-white { color: #ffffff !important; }
+[data-theme="light"] .text-gray-100 { color: #111827 !important; }
+[data-theme="light"] .text-gray-200 { color: #1f2937 !important; }
+[data-theme="light"] .text-gray-300 { color: #374151 !important; }
+[data-theme="light"] .text-gray-400 { color: #4b5563 !important; }
+[data-theme="light"] .text-gray-500 { color: #6b7280 !important; }
+[data-theme="light"] .text-gray-600 { color: #6b7280 !important; }
+
+/* 纯色背景覆写 */
+[data-theme="light"] .bg-surface { background: rgba(255,255,255,0.65) !important; }
+[data-theme="light"] .bg-surface-dark { background: #edeaf3 !important; }
+[data-theme="light"] .bg-surface-light { background: rgba(255,255,255,0.80) !important; }
+[data-theme="light"] .bg-gray-800 { background: rgba(248, 247, 252, 0.97) !important; }
+[data-theme="light"] .bg-gray-900 { background: rgba(245, 244, 250, 0.97) !important; }
+
+/* 半透明白色背景 → 半透明黑色背景 */
+[data-theme="light"] .bg-white\/5,
+[data-theme="light"] .bg-white\/\[0\.03\],
+[data-theme="light"] .bg-white\/\[0\.04\],
+[data-theme="light"] .bg-white\/\[0\.05\] {
+  background-color: rgba(0, 0, 0, 0.03) !important;
+}
+[data-theme="light"] .bg-white\/\[0\.06\],
+[data-theme="light"] .bg-white\/\[0\.07\],
+[data-theme="light"] .bg-white\/\[0\.08\] {
+  background-color: rgba(0, 0, 0, 0.05) !important;
+}
+[data-theme="light"] .bg-white\/10 { background-color: rgba(0, 0, 0, 0.12) !important; }
+
+/* hover 状态 */
+[data-theme="light"] .hover\:bg-white\/\[0\.03\]:hover,
+[data-theme="light"] .hover\:bg-white\/\[0\.04\]:hover,
+[data-theme="light"] .hover\:bg-white\/\[0\.05\]:hover,
+[data-theme="light"] .hover\:bg-white\/5:hover {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+}
+[data-theme="light"] .hover\:bg-white\/\[0\.06\]:hover,
+[data-theme="light"] .hover\:bg-white\/\[0\.07\]:hover {
+  background-color: rgba(0, 0, 0, 0.06) !important;
+}
+
+/* 边框颜色 */
+[data-theme="light"] .border-white\/5 { border-color: rgba(0, 0, 0, 0.07) !important; }
+[data-theme="light"] .border-white\/\[0\.05\] { border-color: rgba(0, 0, 0, 0.07) !important; }
+[data-theme="light"] .border-white\/\[0\.08\] { border-color: rgba(0, 0, 0, 0.08) !important; }
+[data-theme="light"] .border-white\/10 { border-color: rgba(0, 0, 0, 0.10) !important; }
+[data-theme="light"] .border-white\/\[0\.10\] { border-color: rgba(0, 0, 0, 0.10) !important; }
+[data-theme="light"] .border-white\/15 { border-color: rgba(0, 0, 0, 0.14) !important; }
+[data-theme="light"] .border-white\/\[0\.15\] { border-color: rgba(0, 0, 0, 0.14) !important; }
+
+/* 分隔线 */
+[data-theme="light"] .divide-white\/5 > :not([hidden]) ~ :not([hidden]) {
+  border-color: rgba(0, 0, 0, 0.06) !important;
+}
+
+/* input / textarea / select 背景 */
+[data-theme="light"] input[type="text"],
+[data-theme="light"] input[type="number"],
+[data-theme="light"] input[type="date"],
+[data-theme="light"] input[type="password"],
+[data-theme="light"] textarea,
+[data-theme="light"] select {
+  background: rgba(0, 0, 0, 0.04) !important;
+  color: #1f2937 !important;
+  border-color: rgba(0, 0, 0, 0.10) !important;
+}
+[data-theme="light"] input::placeholder,
+[data-theme="light"] textarea::placeholder {
+  color: rgba(107, 114, 128, 0.8) !important;
+}
+[data-theme="light"] select option {
+  background: #f0eff6;
+  color: #1f2937;
+}
+
+/* accent 颜色（radio/checkbox）— 使用品牌色 */
+input[type="radio"],
+input[type="checkbox"] {
+  accent-color: var(--brand-primary);
+}
+
+/* 彩色徽章文字（300级 → 600级，提升对比度） */
+[data-theme="light"] .text-blue-300 { color: #2563eb !important; }
+[data-theme="light"] .text-blue-400 { color: #2563eb !important; }
+[data-theme="light"] .text-teal-300 { color: #0d9488 !important; }
+[data-theme="light"] .text-purple-300 { color: #7c3aed !important; }
+[data-theme="light"] .text-purple-400 { color: #7c3aed !important; }
+[data-theme="light"] .text-emerald-300 { color: #059669 !important; }
+[data-theme="light"] .text-amber-300 { color: #d97706 !important; }
+[data-theme="light"] .text-amber-400 { color: #d97706 !important; }
+[data-theme="light"] .text-sky-300 { color: #0284c7 !important; }
+[data-theme="light"] .text-violet-300 { color: #7c3aed !important; }
+[data-theme="light"] .text-slate-300 { color: #475569 !important; }
+[data-theme="light"] .text-green-300 { color: #16a34a !important; }
+[data-theme="light"] .text-green-400 { color: #16a34a !important; }
+[data-theme="light"] .text-red-300 { color: #dc2626 !important; }
+[data-theme="light"] .text-red-400 { color: #dc2626 !important; }
+[data-theme="light"] .text-cyan-300 { color: #0891b2 !important; }
+[data-theme="light"] .text-indigo-300 { color: #4f46e5 !important; }
+[data-theme="light"] .text-indigo-400 { color: #4f46e5 !important; }
+
+/* 彩色徽章背景（提升可见度） */
+[data-theme="light"] .bg-blue-500\/10 { background-color: rgba(37, 99, 235, 0.08) !important; }
+[data-theme="light"] .bg-teal-500\/10 { background-color: rgba(13, 148, 136, 0.08) !important; }
+[data-theme="light"] .bg-purple-500\/10 { background-color: rgba(124, 58, 237, 0.08) !important; }
+[data-theme="light"] .bg-emerald-500\/10 { background-color: rgba(5, 150, 105, 0.08) !important; }
+[data-theme="light"] .bg-amber-500\/10 { background-color: rgba(217, 119, 6, 0.08) !important; }
+[data-theme="light"] .bg-sky-500\/10 { background-color: rgba(2, 132, 199, 0.08) !important; }
+[data-theme="light"] .bg-violet-500\/10 { background-color: rgba(124, 58, 237, 0.08) !important; }
+[data-theme="light"] .bg-violet-500\/15 { background-color: rgba(124, 58, 237, 0.10) !important; }
+[data-theme="light"] .bg-slate-500\/10 { background-color: rgba(71, 85, 105, 0.08) !important; }
+[data-theme="light"] .bg-gray-500\/10 { background-color: rgba(107, 114, 128, 0.08) !important; }
+[data-theme="light"] .bg-gray-500\/20 { background-color: rgba(107, 114, 128, 0.12) !important; }
+[data-theme="light"] .bg-blue-500\/10 { background-color: rgba(37, 99, 235, 0.08) !important; }
+[data-theme="light"] .bg-green-500\/10 { background-color: rgba(22, 163, 74, 0.08) !important; }
+[data-theme="light"] .bg-red-500\/10 { background-color: rgba(220, 38, 38, 0.08) !important; }
+[data-theme="light"] .bg-amber-500\/20 { background-color: rgba(217, 119, 6, 0.12) !important; }
+[data-theme="light"] .bg-indigo-400\/10 { background-color: rgba(79, 70, 229, 0.08) !important; }
+[data-theme="light"] .bg-indigo-400\/15 { background-color: rgba(79, 70, 229, 0.10) !important; }
+[data-theme="light"] .bg-indigo-400\/20 { background-color: rgba(79, 70, 229, 0.12) !important; }
+
+/* 彩色徽章边框 */
+[data-theme="light"] .border-blue-500\/30 { border-color: rgba(37, 99, 235, 0.25) !important; }
+[data-theme="light"] .border-teal-500\/30 { border-color: rgba(13, 148, 136, 0.25) !important; }
+[data-theme="light"] .border-purple-500\/30 { border-color: rgba(124, 58, 237, 0.25) !important; }
+[data-theme="light"] .border-emerald-500\/30 { border-color: rgba(5, 150, 105, 0.25) !important; }
+[data-theme="light"] .border-amber-500\/30 { border-color: rgba(217, 119, 6, 0.25) !important; }
+[data-theme="light"] .border-sky-500\/30 { border-color: rgba(2, 132, 199, 0.25) !important; }
+[data-theme="light"] .border-violet-500\/30 { border-color: rgba(124, 58, 237, 0.25) !important; }
+[data-theme="light"] .border-slate-500\/25 { border-color: rgba(71, 85, 105, 0.20) !important; }
+[data-theme="light"] .border-gray-500\/20 { border-color: rgba(107, 114, 128, 0.18) !important; }
+[data-theme="light"] .border-amber-500\/20 { border-color: rgba(217, 119, 6, 0.20) !important; }
+[data-theme="light"] .border-indigo-400\/25 { border-color: rgba(79, 70, 229, 0.20) !important; }
+[data-theme="light"] .border-indigo-400\/30 { border-color: rgba(79, 70, 229, 0.25) !important; }
+[data-theme="light"] .border-indigo-400\/40 { border-color: rgba(79, 70, 229, 0.30) !important; }
+[data-theme="light"] .border-indigo-400\/50 { border-color: rgba(79, 70, 229, 0.35) !important; }
+
+/* hover 文字颜色 */
+[data-theme="light"] .hover\:text-gray-200:hover { color: #111827 !important; }
+[data-theme="light"] .hover\:text-gray-300:hover { color: #1f2937 !important; }
+[data-theme="light"] .hover\:text-white:hover { color: #111827 !important; }
+[data-theme="light"] .hover\:text-amber-300:hover { color: #b45309 !important; }
+[data-theme="light"] .group-hover\/card\:text-gray-300 { color: #1f2937 !important; }
+
+/* group-hover 状态 */
+[data-theme="light"] .group-hover\:text-gray-300:is(:where(.group):hover *) { color: #1f2937 !important; }
+
+/* 筛选器选中态 */
+[data-theme="light"] .bg-white\/\[0\.12\] { background-color: rgba(0, 0, 0, 0.08) !important; }
+[data-theme="light"] .ring-white\/20 { --tw-ring-color: rgba(0, 0, 0, 0.12) !important; }
+[data-theme="light"] .ring-white\/15 { --tw-ring-color: rgba(0, 0, 0, 0.10) !important; }
+
+/* recharts 图表颜色 — 已通过 --chart-* CSS 变量处理，不再需要 !important 覆写 */
+
+/* ============================================================
+   Markdown 渲染 — 紧凑标题 + 紧凑间距
+   标题从最小级（h3+）和正文同号只加粗，逐级递增
+
+   颜色走项目的 --fg-* / --brand-* / --border-* 变量，自动随
+   data-theme 切换；不再使用 prose-invert（那会把字色硬编码成白）。
+   ============================================================ */
+
+.markdown-content {
+  /* 覆盖 Tailwind Typography 的 prose 变量，对齐项目设计令牌 */
+  --tw-prose-body: var(--fg-primary);
+  --tw-prose-headings: var(--fg-primary);
+  --tw-prose-lead: var(--fg-secondary);
+  --tw-prose-links: var(--brand-primary);
+  --tw-prose-bold: var(--fg-primary);
+  --tw-prose-counters: var(--fg-secondary);
+  --tw-prose-bullets: var(--fg-tertiary);
+  --tw-prose-hr: var(--border-subtle);
+  --tw-prose-quotes: var(--fg-secondary);
+  --tw-prose-quote-borders: var(--border-subtle);
+  --tw-prose-captions: var(--fg-secondary);
+  --tw-prose-kbd: var(--fg-primary);
+  --tw-prose-kbd-shadows: 0 0 0 transparent;
+  --tw-prose-code: var(--fg-primary);
+  --tw-prose-pre-code: var(--fg-primary);
+  --tw-prose-pre-bg: rgba(0, 0, 0, 0.35);
+  --tw-prose-th-borders: var(--border-subtle);
+  --tw-prose-td-borders: var(--border-faint);
+  color: var(--fg-primary);
+}
+
+[data-theme="light"] .markdown-content {
+  --tw-prose-pre-bg: rgba(0, 0, 0, 0.05);
+}
+
+.markdown-content h1 { font-size: 1rem; font-weight: 600; margin: 0.75em 0 0.25em; }
+.markdown-content h2 { font-size: 0.9rem; font-weight: 600; margin: 0.6em 0 0.2em; }
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 { font-size: 0.875rem; font-weight: 600; margin: 0.5em 0 0.15em; }
+
+.markdown-content p { margin: 0.35em 0; }
+.markdown-content ul,
+.markdown-content ol { margin: 0.35em 0; padding-left: 1.25em; }
+.markdown-content li { margin: 0.15em 0; }
+.markdown-content blockquote { margin: 0.5em 0; padding-left: 0.75em; border-left-width: 2px; }
+.markdown-content pre { margin: 0.5em 0; padding: 0.5em 0.75em; border-radius: 0.375rem; font-size: 0.8rem; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+.markdown-content pre code { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+.markdown-content code:not(pre code) { font-size: 0.8rem; padding: 0.1em 0.3em; border-radius: 0.25rem; background: rgba(255,255,255,0.06); overflow-wrap: anywhere; word-break: break-word; }
+.markdown-content p,
+.markdown-content li,
+.markdown-content blockquote { overflow-wrap: anywhere; word-break: break-word; }
+.markdown-content table { display: block; max-width: 100%; overflow-x: auto; }
+.markdown-content hr { margin: 0.75em 0; }
+.markdown-content table { font-size: 0.8rem; }
+
+/* 浅色主题下的 inline code 背景 */
+[data-theme="light"] .markdown-content code:not(pre code) { background: rgba(0,0,0,0.06); }

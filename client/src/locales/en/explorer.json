@@ -1,0 +1,81 @@
+{
+  "view": {
+    "list": "List",
+    "graph": "Graph"
+  },
+  "filter": {
+    "searchPlaceholder": "Search memories...",
+    "all": "All",
+    "allTags": "All Tags",
+    "allTypes": "All Types"
+  },
+  "sort": {
+    "newest": "Newest",
+    "hottest": "Hottest",
+    "maturity": "Maturity",
+    "connectivity": "Connectivity"
+  },
+  "heat": {
+    "minLabel": "Min heat: {{value}}",
+    "nodeHeat": "Heat: {{value}}"
+  },
+  "list": {
+    "noResults": "No matching memories found",
+    "total": "{{count}} total"
+  },
+  "detail": {
+    "selectNode": "Select a node to view details",
+    "nodeNotFound": "Node not found",
+    "manualEdit": "Manual edit",
+    "editReasonPlaceholder": "Edit reason (optional)",
+    "editVersionNote": "Changes will be recorded in version history",
+    "saving": "Saving...",
+    "save": "Save",
+    "cancel": "Cancel",
+    "edit": "Edit",
+    "heat": "Heat",
+    "refinement": "Refinement",
+    "connectivity": "Connectivity",
+    "independence": "Independence",
+    "keystoneNode": "Keystone node",
+    "links": "Links",
+    "pending": "pending",
+    "versionHistory": "Version History ({{count}} updates)",
+    "reconsolidation": "Reconsolidation",
+    "collapse": "Collapse",
+    "expandAll": "Expand all {{count}} versions",
+    "sourceTracing": "Source Tracing",
+    "tool": "Tool:",
+    "session": "Session:",
+    "time": "Time:",
+    "viewTimeline": "View timeline",
+    "evidenceChain": "Evidence Chain",
+    "metaInfo": "Meta Info",
+    "created": "Created:",
+    "tags": "Tags:",
+    "strength": "Strength:",
+    "linksTip": "Relationship links between nodes. Left color band indicates semantic type. Dashed border indicates pending links.",
+    "versionTip": "Reconsolidation history: memories evolve through use. Version number increments each time content is updated.",
+    "evidenceTip": "Source nodes that this crystal summarizes. These nodes collectively support the crystal generation.",
+    "pendingClassify": "Pending",
+    "unknown": "Unknown"
+  },
+  "graph": {
+    "loading": "Loading graph data...",
+    "noData": "No node data"
+  },
+  "toolbar": {
+    "all": "All",
+    "hop1": "1-hop",
+    "hop2": "2-hop",
+    "hop3": "3-hop",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "fitAll": "Fit all",
+    "pathDiscovery": "Path Discovery",
+    "structureHoles": "Structure Holes",
+    "connectivityLabel": "Connectivity",
+    "clickSecondNode": "Click second node to view path",
+    "clickStartNode": "Click start node"
+  }
+}

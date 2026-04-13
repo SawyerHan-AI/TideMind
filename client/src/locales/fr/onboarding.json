@@ -1,0 +1,52 @@
+{
+  "welcome": {
+    "title": "Bienvenue sur TideMind",
+    "subtitle": "Un second cerveau vivant qui connecte tout ce avec quoi vous pensez — vos agents IA, vos notes, et tout ce qui viendra ensuite.",
+    "description": "",
+    "start": "Commencer"
+  },
+  "preferences": {
+    "title": "Personnalisez votre expérience",
+    "description": "Choisissez votre langue et votre thème préférés."
+  },
+  "model": {
+    "title": "Connecter un modèle de langage",
+    "description": "TideMind a besoin d'un LLM pour comprendre, relier et faire évoluer vos souvenirs. Configurez au moins une connexion de modèle pour activer toutes les fonctionnalités.",
+    "skipWarning": "Sans connexion à un modèle, les fonctionnalités essentielles comme la digestion des souvenirs et la découverte d'associations seront indisponibles. Vous pourrez configurer cela plus tard dans les Paramètres.",
+    "skip": "Passer pour l'instant"
+  },
+  "agent": {
+    "title": "Connecter vos outils de développement",
+    "description": "Reliez vos outils de développement (comme Claude Code ou Cursor) pour que TideMind devienne votre compagnon de mémoire pendant le codage.",
+    "skip": "Passer pour l'instant"
+  },
+  "noteSource": {
+    "title": "Importer vos notes",
+    "description": "Si vous utilisez Logseq, Obsidian ou Apple Notes, vous pouvez importer vos notes existantes dans le graphe de connaissances de TideMind.",
+    "skip": "Passer pour l'instant"
+  },
+  "complete": {
+    "title": "Tout est prêt",
+    "subtitle": "Voici un résumé de votre configuration :",
+    "configured": "Configuré",
+    "skipped": "Ignoré",
+    "modelLabel": "Connexion au modèle",
+    "agentLabel": "Outils de développement",
+    "noteSourceLabel": "Import de notes",
+    "preferencesLabel": "Langue et thème",
+    "enter": "Accéder à TideMind"
+  },
+  "steps": {
+    "welcome": "Bienvenue",
+    "preferences": "Préférences",
+    "model": "Modèle",
+    "agent": "Outils de dev",
+    "noteSource": "Notes",
+    "complete": "Terminé"
+  },
+  "nav": {
+    "next": "Suivant",
+    "back": "Retour",
+    "skip": "Passer"
+  }
+}

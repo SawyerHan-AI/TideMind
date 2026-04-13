@@ -1,0 +1,81 @@
+{
+  "derivedCategory": {
+    "record": "Aufzeichnung: Ereignisse, Beobachtungen und Handlungen, die an bestimmte Zeiten und Orte gebunden sind. Zerfaellt schnell -- Rohmaterial, das zu Wissen veredelt werden soll.",
+    "knowledge": "Wissen: Allgemeines Verstaendnis, losgeloest von spezifischen Kontexten -- Fakten, Muster, Konzepte. Zerfaellt langsam, die wichtigste Saeule der Suche.",
+    "belief": "Ueberzeugung: Stabiles persoenliches Verstaendnis -- Praeferenzen, Werte, Eindruecke, Selbsterkenntnis. Wird zum Aufbau von Benutzerprofilen verwendet.",
+    "hypothesis": "Hypothese: Unsichere Urteile ueber die Welt -- Spekulationen, Vorhersagen, unueberpruefte Theorien. Kann durch spaetere Beweise bestaetigt oder widerlegt werden.",
+    "intention": "Absicht: Unentschiedene persoenliche Richtungen -- Plaene, Wuensche, Bestrebungen. Wird zur Aufzeichnung, sobald ausgefuehrt, oder zur Ueberzeugung, sobald verinnerlicht."
+  },
+  "role": {
+    "crystal": "Crystal: Kognitive Produkte hoher Ordnung, die aus vielen Knoten emergieren -- Benutzerprofile, Verhaltensmuster, Entscheidungsprinzipien. Stark vernetzte Knotenpunkte im Graphen.",
+    "keystone": "Keystone: Die am staerksten vernetzten 5% der Knoten. Wie Schluesselarten in der Oekologie -- ihre Entfernung wuerde das Wissensnetzwerk fragmentieren.",
+    "tag": "Tag: Haeufige Tags werden automatisch zu Graph-Knoten befoerdert und nehmen an der Graph-Struktur teil."
+  },
+  "nodeType": {
+    "fact": "Fakt: Entscheidungen, Schlussfolgerungen, feststehende Fakten. Hochstrukturiert; Verknuepfungen erfordern hoeheres Vertrauen.",
+    "context": "Kontext: Projektinformationen, Beziehungen, aktuelle Zustaende -- Hintergrundinformationen.",
+    "preference": "Praeferenz: Programmierstil, Kommunikationspraeferenzen, Tool-Konfigurationen -- persoenliche Neigungen.",
+    "idea": "Idee: Inspirationen, Hypothesen, zu ueberpruefende Ideen. Verknuepfungen koennen freier sein mit niedrigeren Schwellenwerten.",
+    "crystal": "Crystal: Kognitive Produkte hoher Ordnung, die aus vielen Knoten emergieren -- Benutzerprofile, Verhaltensmuster, Entscheidungsprinzipien. Stark vernetzte Knotenpunkte im Graphen.",
+    "meta": "Metadaten: Systemoperationsaufzeichnungen (MCP-Aufrufprotokolle, Strategieaenderungen usw.). Standardmaessig ausgeblendet, fuer interne Reflexion verwendet."
+  },
+  "maturity": {
+    "heat": "Hitze: Kurzzeit-Aktivitaetsindikator. Kuerzlich erstellte, abgerufene oder verwendete Knoten haben hohe Hitze. Zerfaellt schnell (taeglich), aber die Rate wird durch die Konnektivitaet moduliert -- mehr Verbindungen bedeuten langsameren Zerfall. Analog zur juengsten neuronalen Feuerrate.",
+    "refinement": "Verfeinerung: Wie oft der Inhalt verarbeitet wurde. Rohe Fragmente starten niedrig, steigen nach LLM-Verfeinerung und wachsen weiter durch Rekonsolidierung. Langsames Wachstum, steigt nur waehrend der Rekonsolidierung. Wie Erinnerungen, die von unscharf zu klar werden.",
+    "connectivity": "Konnektivitaet: Wie viele andere Knoten effektive Verknuepfungen zu diesem haben. Nicht nur die Menge -- die Diversitaet der Verknuepfungen zaehlt auch. Stark vernetzte Knoten sind Knotenpunkte des Wissensnetzwerks. Wie reichhaltig vernetzte Erinnerungen im Hippocampus, die leichter abrufbar sind.",
+    "independence": "Unabhaengigkeit: Wie gut der Knoten ohne seinen urspruenglichen Kontext verstanden werden kann. \"Habe am 20.03.2026 in Cursor SQLite gewaehlt\" hat geringe Unabhaengigkeit; \"Bevorzuge wartungsfreie Loesungen fuer persoenliche Tools\" hat hohe Unabhaengigkeit. Verbessert sich durch Rekonsolidierung.",
+    "maturity_score": "Reifepunktzahl: Gewichteter Verbund aus Hitze, Verfeinerung, Konnektivitaet und Unabhaengigkeit. Wird fuer Such-Ranking und Anzeige verwendet."
+  },
+  "nodeAttr": {
+    "keystone": "Keystone: Die am staerksten vernetzten 5% der Knoten. Wie Schluesselarten in der Oekologie -- ihre Entfernung wuerde das Wissensnetzwerk fragmentieren. Niedrigere Zerfallsrate.",
+    "version": "Version: Wird bei jeder Rekonsolidierung erhoeht (Inhalt ueberprueft und aktualisiert). Rekonsolidierung ist der Gedaechtnis-Aktualisierungsmechanismus -- Erinnerungen entwickeln sich durch Nutzung, sie sind nicht unveraenderlich.",
+    "source_stream": "Stream-Quelle: Verweist auf das urspruengliche Fragment im Stream-Protokoll. Der Stream enthaelt rohe, unverarbeitete Aufzeichnungen; Graph-Knoten wurden verfeinert. Verwenden Sie diesen Verweis, wenn Sie zurueckverfolgen muessen, \"was genau passiert ist\"."
+  },
+  "link": {
+    "caused_by": "Kausal: A ist die Ursache oder Folge von B.",
+    "continues": "Fortsetzung: A ist eine nachfolgende Entwicklung von B.",
+    "updates": "Aktualisierung: A ist eine aktualisierte Version von B, neue Informationen ersetzen alte.",
+    "supports": "Unterstuetzung: A liefert Beweise oder Argumente fuer B.",
+    "contradicts": "Widerspruch: A und B haben widerspruechlichen Inhalt.",
+    "summarizes": "Zusammenfassung: A ist ein uebergeordneter Ueberblick ueber B. Typischerweise zwischen Crystal-Knoten und ihren Quellen.",
+    "part_of": "Teil von: A ist Teil von B oder B untergeordnet.",
+    "analogous": "Analogie: A und B sind strukturell aehnlich -- parallele Muster in verschiedenen Domaenen.",
+    "tagged": "Getaggt: Durch gemeinsame Tags gruppiert.",
+    "confirmed": "Bestaetigt: Das System oder der Benutzer hat verifiziert, dass diese Verknuepfung bedeutsam ist.",
+    "pending": "Ausstehend: Automatisch erstellt, aber noch nicht verifiziert. Wird waehrend der Link-Bewertung ueberprueft -- bestaetigt oder entfernt.",
+    "strength": "Verknuepfungsstaerke: Vertrauenswert von 0 bis 1. Bestimmt durch Vektoraehnlichkeit beim Ankern, unterliegt hebbischem Zerfall ueber die Zeit."
+  },
+  "operation": {
+    "prepare": "prepare (Kognitive Vorbereitung): Wird zu Beginn jeder neuen Konversation aufgerufen. Gibt Benutzerprofil-Zusammenfassung + Gedaechtnisindex + Verhaltensanleitung zurueck. Der Einstiegspunkt fuer die \"aktive Teilnahme\" des Gehirns.",
+    "recall": "recall (Bedarfsabruf): Wird aufgerufen, wenn waehrend der Konversation historischer Kontext benoetigt wird. Hybridsuche (BM25 + Vektor + Graph-Traversierung); jeder Abruf loest eine \"Lesen-ist-Schreiben\"-Rekonsolidierung aus.",
+    "digest": "digest (Informationsaufnahme): Speichert neue Informationen woertlich im Gehirn, berechnet automatisch Embeddings und erstellt Anker-Verbindungen. Asynchrone Annotation von Typen und Tags folgt. Wird auch fuer Korrekturen und Abkuehlung verwendet."
+  },
+  "gate": {
+    "basic_digest": "Basis-Digest: Immer verfuegbar. Der Inhalt wird direkt als Knoten gespeichert.",
+    "bm25_search": "BM25-Suche: Immer verfuegbar. Schluesselwortbasierte Volltextsuche -- schnell, aber versteht keine Semantik.",
+    "vector_search": "Vektorsuche: Erfordert 50+ Knoten. Embedding-basierte semantische Suche, die aehnliche Ausdruecke versteht. Am besten in Kombination mit BM25.",
+    "graph_expansion": "Graph-Traversierung: Erfordert 100+ Knoten und 50+ Links. Erweitert Suchergebnisse um einen Sprung entlang der Verknuepfungen -- entdeckt \"unterschiedliche Schluesselwoerter, aber logisch verwandte\" Erinnerungen.",
+    "crystal_generation": "Crystal-Generierung: Erfordert 200+ Knoten. Destilliert uebergeordnete Erkenntnisse aus stark vernetzten Knoten-Clustern (Benutzerprofile, Verhaltensmuster, Entscheidungsprinzipien).",
+    "divergent_scan": "Link-Entdeckung: Erfordert 500+ Knoten. Mehrere Strategien, um Links zu finden, die existieren sollten, aber nicht existieren -- Vektor-Nachbarn, gemeinsame Nachbarn, Widerspruchserkennung."
+  },
+  "searchWeight": {
+    "alpha": "BM25-Gewicht (Alpha): Gewicht fuer exakte Schluesselwort-Uebereinstimmung. Hoehere Werte vertrauen mehr auf praezise Schluesselwoerter -- gut zum Finden spezifischer Begriffe.",
+    "beta": "Vektor-Gewicht (Beta): Gewicht fuer semantische Aehnlichkeit. Hoehere Werte vertrauen mehr auf Bedeutung -- gut fuer unscharfe Abfragen und sprachuebergreifende Suche.",
+    "gamma": "Hitze-Boost (Gamma): Ranking-Bonus fuer kuerzlich aktive Knoten. Hoehere Werte bringen kuerzlich verwendete Erinnerungen weiter nach oben.",
+    "delta": "Reife-Boost (Delta): Ranking-Bonus fuer reife Knoten. Hoehere Werte bringen gut konsolidierte, hochwertige Erinnerungen weiter nach oben."
+  },
+  "metabolism": {
+    "decay_base": "Knoten-Zerfallsbasisrate: Taeglicher Hitze-Zerfallskoeffizient bei Konnektivitaet = 0. Hoehere Konnektivitaet bedeutet langsameren Zerfall.",
+    "link_decay_base": "Link-Zerfallsbasisrate: Taegliche Zerfallsrate der Verknuepfungsstaerke. Beide Endpunkte aktiv = fast kein Zerfall; beide kalt = schneller Zerfall (hebbisches Lernen).",
+    "link_delete_threshold": "Link-Loeschschwelle: Verknuepfungen mit einer Staerke unter diesem Wert werden automatisch entfernt.",
+    "dedup_threshold": "Deduplizierungsschwelle: Wenn die Vektoraehnlichkeit diesen Wert ueberschreitet, wird der vorhandene Knoten rekonsolidiert statt einen neuen zu erstellen. Verhindert doppelte Erinnerungen.",
+    "landing_threshold": "Anker-Schwelle: Wenn ein neuer Knoten in den Graphen eintritt, erstellen Aehnlichkeiten ueber diesem Wert bestaetigte Verknuepfungen zu vorhandenen Knoten.",
+    "pending_threshold": "Ausstehend-Schwelle: Aehnlichkeiten zwischen diesem Wert und der Anker-Schwelle erstellen ausstehende Verknuepfungen, die der Link-Bewertung zur Bestaetigung ueberlassen werden.",
+    "landing_top_k": "Anker-Top-K: Maximale Anzahl bestaetigter Verknuepfungen, die pro neuem Knoten erstellt werden."
+  },
+  "strategySkill": {
+    "strategy": "Strategiedateien: Entwicklungsfaehige Anweisungen, die steuern, \"wie\" das Gehirn arbeitet. Enthaelt LLM-Prompt-Vorlagen und numerische Parameter. Die Kernlogik (Graph-Struktur, Schnittstellen) ist stabile DNA; Strategien sind veraenderbare Genexpression. Sie koennen diese Dateien direkt bearbeiten, um das Systemverhalten anzupassen.",
+    "skill": "Skill-Dateien: Anleitungen, die externen KIs (Cursor/Claude Code usw.) beibringen, wie das Gehirn verwendet wird. Teilt der KI mit, wann prepare/recall/digest aufgerufen werden soll und wie guter Kontext bereitgestellt wird. Ohne Skills nutzt die KI das Gehirn moeglicherweise gar nicht."
+  },
+  "gateOverview": "Kaltstart-Gates (kognitive Sukzession): Das Gehirn muss nicht vom ersten Tag an perfekt funktionieren. Funktionen werden automatisch freigeschaltet, wenn sich Daten ansammeln -- jede Stufe schafft die Voraussetzungen fuer die naechste. Wie Pionierarten in der oekologischen Sukzession: muss nicht optimal sein, nur gut genug, um Daten anzusammeln."
+}

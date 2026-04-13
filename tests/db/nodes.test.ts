@@ -1,0 +1,296 @@
+/**
+ * nodes.ts CRUD 单元测试
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// ---- Mock strategy loader（在所有 import 之前） ----
+vi.mock('../../src/strategy/loader.js', () => ({
+  getParam: (_strategy: string, param: string, fallback: number) => {
+    const defaults: Record<string, number> = {
+      heat_weight: 0.2,
+      refinement_weight: 0.3,
+      connectivity_weight: 0.3,
+      independence_weight: 0.2,
+    };
+    return defaults[param] ?? fallback;
+  },
+  getPrompt: () => '',
+  loadStrategies: () => {},
+  getStrategy: () => null,
+}));
+
+import type Database from 'better-sqlite3';
+import { setupTestDb, seedNode } from '../helpers/test-db.js';
+import {
+  createNode,
+  getNode,
+  updateNode,
+  archiveNode,
+  listNodes,
+  getNodeCount,
+  bumpHeat,
+} from '../../src/db/nodes.js';
+
+let db: Database.Database;
+
+beforeEach(() => {
+  db = setupTestDb();
+});
+
+// ===== createNode =====
+
+describe('createNode', () => {
+  it('should create a node and return it with an id', () => {
+    const node = createNode(db, { type: 'fact', content: 'hello world' });
+    expect(node.id).toBeTruthy();
+    expect(node.content).toBe('hello world');
+    expect(node.type).toBe('fact');
+  });
+
+  it('should compute maturity_score on creation', () => {
+    const node = createNode(db, {
+      type: 'idea',
+      content: 'test maturity',
+      heat: 1.0,
+      refinement: 0.5,
+      independence: 0.5,
+    });
+    // maturity = 0.2 * min(1,1) + 0.3 * 0.5 + 0.3 * 0 + 0.2 * 0.5 = 0.2 + 0.15 + 0 + 0.1 = 0.45
+    expect(node.maturity_score).toBeCloseTo(0.45, 5);
+  });
+
+  it('should use default values for optional fields', () => {
+    const node = createNode(db, { type: 'fact', content: 'defaults' });
+    expect(node.heat).toBe(1.0);
+    expect(node.refinement).toBe(0.0);
+    expect(node.independence).toBe(0.0);
+    expect(node.connectivity).toBe(0.0);
+    expect(node.version).toBe(1);
+    expect(node.archived).toBe(0);
+    expect(node.is_keystone).toBe(0);
+    expect(node.tags).toBeNull();
+  });
+
+  it('should store tags as JSON string', () => {
+    const node = createNode(db, {
+      type: 'fact',
+      content: 'tagged',
+      tags: ['alpha', 'beta'],
+    });
+    expect(node.tags).toBe(JSON.stringify(['alpha', 'beta']));
+  });
+
+  it('should set source fields when provided', () => {
+    const node = createNode(db, {
+      type: 'context',
+      content: 'sourced',
+      source_tool: 'cursor',
+      source_session: 'sess-1',
+    });
+    expect(node.source_tool).toBe('cursor');
+    expect(node.source_session).toBe('sess-1');
+  });
+
+  it('should set tags when provided', () => {
+    const node = createNode(db, {
+      type: 'fact',
+      content: 'tagged node',
+      tags: ['my-proj', 'important'],
+    });
+    expect(node.tags).toBe(JSON.stringify(['my-proj', 'important']));
+  });
+});
+
+// ===== getNode =====
+
+describe('getNode', () => {
+  it('should return null for nonexistent id', () => {
+    // better-sqlite3 .get() returns undefined when no row found
+    expect(getNode(db, 'nonexistent-id')).toBeFalsy();
+  });
+
+  it('should return the correct node for a valid id', () => {
+    const created = seedNode(db, { content: 'find me' });
+    const found = getNode(db, created.id);
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(created.id);
+    expect(found!.content).toBe('find me');
+  });
+});
+
+// ===== updateNode =====
+
+describe('updateNode', () => {
+  it('should create version history when content changes', () => {
+    const node = seedNode(db, { content: 'original content' });
+    updateNode(db, node.id, { content: 'updated content' }, 'test change');
+
+    const versions = db
+      .prepare('SELECT * FROM node_versions WHERE node_id = ?')
+      .all(node.id) as Array<{ node_id: string; version: number; content: string; change_reason: string | null }>;
+    expect(versions).toHaveLength(1);
+    expect(versions[0].content).toBe('original content');
+    expect(versions[0].version).toBe(1);
+    expect(versions[0].change_reason).toBe('test change');
+
+    const updated = getNode(db, node.id)!;
+    expect(updated.content).toBe('updated content');
+    expect(updated.version).toBe(2);
+  });
+
+  it('should not create version history for non-content changes', () => {
+    const node = seedNode(db, { content: 'stable content' });
+    updateNode(db, node.id, { heat: 5.0 });
+
+    const versions = db
+      .prepare('SELECT * FROM node_versions WHERE node_id = ?')
+      .all(node.id);
+    expect(versions).toHaveLength(0);
+
+    const updated = getNode(db, node.id)!;
+    expect(updated.heat).toBe(5.0);
+    expect(updated.version).toBe(1);
+  });
+
+  it('should be a no-op for nonexistent node', () => {
+    // Should not throw
+    updateNode(db, 'nonexistent', { content: 'ghost' });
+  });
+
+  it('should be a no-op for empty patch', () => {
+    const node = seedNode(db, { content: 'unchanged' });
+    updateNode(db, node.id, {});
+    const after = getNode(db, node.id)!;
+    expect(after.content).toBe('unchanged');
+    expect(after.version).toBe(1);
+  });
+});
+
+// ===== archiveNode =====
+
+describe('archiveNode', () => {
+  it('should cooldown node heat to 0.02', () => {
+    const node = seedNode(db);
+    expect(node.heat).toBe(1.0);
+
+    archiveNode(db, node.id);
+    const after = getNode(db, node.id)!;
+    expect(after.heat).toBeCloseTo(0.02);
+  });
+});
+
+// ===== listNodes =====
+
+describe('listNodes', () => {
+  it('should filter by type', () => {
+    seedNode(db, { type: 'fact', content: 'fact-1' });
+    seedNode(db, { type: 'idea', content: 'idea-1' });
+    seedNode(db, { type: 'fact', content: 'fact-2' });
+
+    const facts = listNodes(db, { type: 'fact' });
+    expect(facts).toHaveLength(2);
+    expect(facts.every(n => n.type === 'fact')).toBe(true);
+  });
+
+  it('should filter by type', () => {
+    seedNode(db, { type: 'idea', content: 'idea-a' });
+    seedNode(db, { type: 'fact', content: 'fact-b' });
+    seedNode(db, { type: 'idea', content: 'idea-c' });
+
+    const ideas = listNodes(db, { type: 'idea' });
+    expect(ideas).toHaveLength(2);
+    expect(ideas.every(n => n.type === 'idea')).toBe(true);
+  });
+
+  it('should filter out archived nodes', () => {
+    const n1 = seedNode(db, { content: 'active' });
+    const n2 = seedNode(db, { content: 'archived' });
+    // 标记为归档
+    db.prepare('UPDATE nodes SET archived = 1 WHERE id = ?').run(n2.id);
+
+    const active = listNodes(db, { archived: false });
+    expect(active).toHaveLength(1);
+    expect(active[0].id).toBe(n1.id);
+  });
+
+  it('should support limit and offset', () => {
+    for (let i = 0; i < 5; i++) {
+      seedNode(db, { content: `node-${i}` });
+    }
+    const page = listNodes(db, { limit: 2, offset: 1 });
+    expect(page).toHaveLength(2);
+  });
+
+  it('should reject invalid orderBy and fall back to created DESC', () => {
+    seedNode(db, { content: 'first' });
+    seedNode(db, { content: 'second' });
+
+    // Should not throw with SQL injection attempt
+    const result = listNodes(db, { orderBy: 'id; DROP TABLE nodes;--' });
+    expect(result).toHaveLength(2);
+  });
+
+  it('should accept valid orderBy values', () => {
+    seedNode(db, { content: 'low heat', heat: 0.1 });
+    seedNode(db, { content: 'high heat', heat: 5.0 });
+
+    const result = listNodes(db, { orderBy: 'heat DESC' });
+    expect(result[0].heat).toBeGreaterThanOrEqual(result[1].heat);
+  });
+});
+
+// ===== getNodeCount =====
+
+describe('getNodeCount', () => {
+  it('should count all nodes without filter', () => {
+    seedNode(db);
+    seedNode(db);
+    seedNode(db);
+    expect(getNodeCount(db)).toBe(3);
+  });
+
+  it('should count only non-archived nodes when filtered', () => {
+    const n1 = seedNode(db);
+    seedNode(db);
+    db.prepare('UPDATE nodes SET archived = 1 WHERE id = ?').run(n1.id);
+
+    expect(getNodeCount(db, false)).toBe(1);
+  });
+});
+
+// ===== bumpHeat =====
+
+describe('bumpHeat', () => {
+  it('should increase heat by delta', () => {
+    const node = seedNode(db, { heat: 1.0 });
+    bumpHeat(db, node.id, 0.5);
+    const after = getNode(db, node.id)!;
+    expect(after.heat).toBeCloseTo(1.5, 5);
+  });
+
+  it('should cap heat at 10.0', () => {
+    const node = seedNode(db, { heat: 9.8 });
+    bumpHeat(db, node.id, 0.5);
+    const after = getNode(db, node.id)!;
+    expect(after.heat).toBe(10.0);
+  });
+
+  it('should update maturity_score atomically', () => {
+    const node = seedNode(db, { heat: 0.5, refinement: 0.4, independence: 0.3 });
+    const before = getNode(db, node.id)!;
+    bumpHeat(db, node.id, 0.3);
+    const after = getNode(db, node.id)!;
+
+    // heat went from 0.5 to 0.8; min(0.8, 1) = 0.8
+    // expected maturity = 0.2 * 0.8 + 0.3 * 0.4 + 0.3 * 0 + 0.2 * 0.3 = 0.16 + 0.12 + 0 + 0.06 = 0.34
+    expect(after.maturity_score).toBeCloseTo(0.34, 5);
+    expect(after.maturity_score).not.toBe(before.maturity_score);
+  });
+
+  it('should use default delta of 0.1', () => {
+    const node = seedNode(db, { heat: 1.0 });
+    bumpHeat(db, node.id);
+    const after = getNode(db, node.id)!;
+    expect(after.heat).toBeCloseTo(1.1, 5);
+  });
+});

@@ -1,0 +1,82 @@
+{
+  "view": {
+    "list": "Liste",
+    "graph": "Graph"
+  },
+  "filter": {
+    "searchPlaceholder": "Erinnerungen suchen...",
+    "all": "Alle",
+    "allTags": "Alle Tags",
+    "allTypes": "Alle Typen"
+  },
+  "list": {
+    "noResults": "Keine passenden Erinnerungen gefunden",
+    "total": "{{count}} insgesamt"
+  },
+  "sort": {
+    "newest": "Newest",
+    "hottest": "Hottest",
+    "maturity": "Maturity",
+    "connectivity": "Connectivity"
+  },
+  "heat": {
+    "minLabel": "Min heat: {{value}}",
+    "nodeHeat": "Heat: {{value}}"
+  },
+  "detail": {
+    "selectNode": "Knoten auswählen für Details",
+    "nodeNotFound": "Knoten nicht gefunden",
+    "manualEdit": "Manuelle Bearbeitung",
+    "editReasonPlaceholder": "Änderungsgrund (optional)",
+    "titlePlaceholder": "Titel",
+    "editVersionNote": "Änderungen werden in der Versionshistorie gespeichert",
+    "saving": "Speichern...",
+    "save": "Speichern",
+    "cancel": "Abbrechen",
+    "edit": "Bearbeiten",
+    "heat": "Wärme",
+    "refinement": "Verfeinerung",
+    "connectivity": "Konnektivität",
+    "independence": "Unabhängigkeit",
+    "keystoneNode": "Schlüsselknoten",
+    "links": "Verbindungen",
+    "pending": "ausstehend",
+    "versionHistory": "Versionshistorie ({{count}} Aktualisierungen)",
+    "reconsolidation": "Rekonsolidierung",
+    "collapse": "Einklappen",
+    "expandAll": "Alle {{count}} Versionen anzeigen",
+    "sourceTracing": "Quellenrückverfolgung",
+    "tool": "Werkzeug:",
+    "session": "Sitzung:",
+    "time": "Zeit:",
+    "viewTimeline": "Zeitleiste anzeigen",
+    "evidenceChain": "Beweiskette",
+    "metaInfo": "Meta-Informationen",
+    "created": "Erstellt:",
+    "tags": "Tags:",
+    "strength": "Stärke:",
+    "linksTip": "Beziehungslinks zwischen Knoten. Das Farbband zeigt den semantischen Typ.",
+    "versionTip": "Rekonsolidierungshistorie: Erinnerungen entwickeln sich durch Nutzung.",
+    "evidenceTip": "Quellknoten, die von diesem Kristall zusammengefasst werden.",
+    "pendingClassify": "Ausstehend",
+    "unknown": "Unbekannt"
+  },
+  "graph": {
+    "loading": "Graphdaten werden geladen...",
+    "noData": "Keine Knotendaten"
+  },
+  "toolbar": {
+    "all": "Alle",
+    "hop1": "1 Hop",
+    "hop2": "2 Hops",
+    "hop3": "3 Hops",
+    "zoomIn": "Vergrößern",
+    "zoomOut": "Verkleinern",
+    "fitAll": "Anpassen",
+    "pathDiscovery": "Pfadsuche",
+    "structureHoles": "Strukturlücken",
+    "connectivityLabel": "Konnektivität",
+    "clickSecondNode": "Zweiten Knoten anklicken um Pfad zu sehen",
+    "clickStartNode": "Startknoten anklicken"
+  }
+}

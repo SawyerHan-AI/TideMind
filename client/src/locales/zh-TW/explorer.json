@@ -1,0 +1,82 @@
+{
+  "view": {
+    "list": "列表",
+    "graph": "圖譜"
+  },
+  "filter": {
+    "searchPlaceholder": "搜尋記憶...",
+    "all": "全部",
+    "allTags": "所有標籤",
+    "allTypes": "所有類型"
+  },
+  "list": {
+    "noResults": "沒有找到符合的記憶",
+    "total": "共 {{count}} 筆"
+  },
+  "sort": {
+    "newest": "Newest",
+    "hottest": "Hottest",
+    "maturity": "Maturity",
+    "connectivity": "Connectivity"
+  },
+  "heat": {
+    "minLabel": "Min heat: {{value}}",
+    "nodeHeat": "Heat: {{value}}"
+  },
+  "detail": {
+    "selectNode": "選擇一個節點檢視詳情",
+    "nodeNotFound": "節點未找到",
+    "manualEdit": "手動編輯",
+    "editReasonPlaceholder": "修改原因（可選）",
+    "titlePlaceholder": "標題",
+    "editVersionNote": "修改將記錄在版本歷史中",
+    "saving": "儲存中...",
+    "save": "儲存",
+    "cancel": "取消",
+    "edit": "編輯",
+    "heat": "熱度",
+    "refinement": "精煉度",
+    "connectivity": "連通度",
+    "independence": "獨立度",
+    "keystoneNode": "關鍵種節點",
+    "links": "連結",
+    "pending": "待確認",
+    "versionHistory": "版本歷史 ({{count}} 次更新)",
+    "reconsolidation": "再鞏固",
+    "collapse": "收起",
+    "expandAll": "展開全部 {{count}} 個版本",
+    "sourceTracing": "來源追蹤",
+    "tool": "工具:",
+    "session": "會話:",
+    "time": "時間:",
+    "viewTimeline": "檢視時間線",
+    "evidenceChain": "證據鏈",
+    "metaInfo": "元資訊",
+    "created": "建立:",
+    "tags": "標籤:",
+    "strength": "強度:",
+    "linksTip": "節點之間的關係連接。左側色帶表示語義類型。虛線邊框表示待確認連結。",
+    "versionTip": "再鞏固記錄：記憶在使用中演化。每次內容被更新時版本號遞增。",
+    "evidenceTip": "結晶節點所總結的來源節點列表。這些節點共同支撐了該結晶的生成。",
+    "pendingClassify": "待分類",
+    "unknown": "未知"
+  },
+  "graph": {
+    "loading": "載入圖資料...",
+    "noData": "無節點資料"
+  },
+  "toolbar": {
+    "all": "全部",
+    "hop1": "1跳",
+    "hop2": "2跳",
+    "hop3": "3跳",
+    "zoomIn": "放大",
+    "zoomOut": "縮小",
+    "fitAll": "適應",
+    "pathDiscovery": "路徑發現",
+    "structureHoles": "結構洞",
+    "connectivityLabel": "連接度",
+    "clickSecondNode": "點擊第二個節點檢視路徑",
+    "clickStartNode": "點擊起始節點"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "nav": {
+    "dashboard": "Tableau de bord",
+    "timeline": "Chronologie",
+    "explorer": "Explorateur",
+    "settings": "Parametres"
+  },
+  "search": {
+    "placeholder": "Rechercher..."
+  },
+  "actions": {
+    "save": "Enregistrer",
+    "saved": "Enregistre",
+    "cancel": "Annuler",
+    "confirm": "Confirmer",
+    "delete": "Supprimer",
+    "edit": "Modifier",
+    "close": "Fermer",
+    "export": "Exporter",
+    "copy": "Copier dans le presse-papiers",
+    "comingSoon": "Bientot disponible"
+  },
+  "units": {
+    "nodes": "noeuds",
+    "items": "elements",
+    "memories": "memoires"
+  },
+  "total": "{{count}} au total"
+}
