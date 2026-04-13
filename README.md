@@ -1,6 +1,10 @@
-# TideMind
+<p align="center">
+  <img src="docs/assets/banner.png" alt="TideMind" width="100%" />
+</p>
 
-A living second brain that connects everything you think with — your AI agents, your notes, and whatever comes next.
+<p align="center">A living second brain that connects everything you think with — your AI agents, your notes, and whatever comes next.</p>
+
+<p align="center">
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-6C5CE7?style=for-the-badge&logoColor=white)](LICENSE)
 [![Node.js >= 18](https://img.shields.io/badge/Node.js-%3E%3D18-4B3F8F?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
@@ -8,10 +12,14 @@ A living second brain that connects everything you think with — your AI agents
 [![Docs](https://img.shields.io/badge/Docs-Read%20the%20Docs-5B4FCF?style=for-the-badge&logo=readthedocs&logoColor=white)](docs/)
 [![GitHub Discussions](https://img.shields.io/badge/Community-Discussions-7C6DD8?style=for-the-badge&logo=github&logoColor=white)](https://github.com/SawyerHan-AI/TideMind/discussions)
 
-[English](README.md) | [中文](README_CN.md)
+</p>
 
 <p align="center">
-  <img src="docs/assets/banner.png" alt="TideMind" width="100%" />
+  <a href="README.md">English</a> | <a href="README_CN.md">中文</a>
+</p>
+
+<p align="center">
+  <img src="docs/assets/concept-banner.png" alt="TideMind Concept" width="100%" />
 </p>
 
 ## Why TideMind
