@@ -1,14 +1,22 @@
-# TideMind
+<p align="center">
+  <img src="docs/assets/banner.png" alt="TideMind" width="100%" />
+</p>
 
-A living second brain that connects everything you think with — your AI agents, your notes, and whatever comes next.
+<p align="center">A living second brain that connects everything you think with — your AI agents, your notes, and whatever comes next.</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node.js >= 18](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)](https://nodejs.org/)
-[![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-purple.svg)](https://modelcontextprotocol.io/)
+<p align="center">
 
-[English](README.md) | [中文](README_CN.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-6C5CE7?style=for-the-badge&logoColor=white)](LICENSE)
+[![Node.js >= 18](https://img.shields.io/badge/Node.js-%3E%3D18-4B3F8F?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
+[![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-8B7FD4?style=for-the-badge&logoColor=white)](https://modelcontextprotocol.io/)
+[![Docs](https://img.shields.io/badge/Docs-Read%20the%20Docs-5B4FCF?style=for-the-badge&logo=readthedocs&logoColor=white)](docs/)
+[![GitHub Discussions](https://img.shields.io/badge/Community-Discussions-7C6DD8?style=for-the-badge&logo=github&logoColor=white)](https://github.com/SawyerHan-AI/TideMind/discussions)
 
----
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> | <a href="README_CN.md">中文</a>
+</p>
 
 ## Why TideMind
 
@@ -141,11 +149,24 @@ Information isn't just stored. It's digested, organized, connected, and sometime
 
 ## Desktop Client
 
-<!-- Screenshot placeholder -->
-
 TideMind ships with a desktop client for browsing your knowledge graph, monitoring system metabolism, and tuning parameters. It's an inspection tool — for observing what your external brain is thinking, discovering, and forgetting.
 
 The main interface of TideMind isn't this app. It's whatever AI tool you're already using.
+
+<p align="center">
+  <img src="docs/assets/screenshot-dashboard.jpg" alt="Dashboard — metrics, activity feed, crystal discoveries, and tag overview" width="100%" />
+</p>
+<p align="center"><em>Dashboard — real-time pulse of your second brain</em></p>
+
+<p align="center">
+  <img src="docs/assets/screenshot-graph.jpg" alt="Brain Explorer — interactive knowledge graph with cross-domain connections" width="100%" />
+</p>
+<p align="center"><em>Brain Explorer — visualize how your memories connect across domains</em></p>
+
+<p align="center">
+  <img src="docs/assets/screenshot-list.jpg" alt="Memory detail — maturity radar, evidence chains, and linked nodes" width="100%" />
+</p>
+<p align="center"><em>Memory detail — four-dimensional maturity model and evidence chains</em></p>
 
 ## Documentation
 
