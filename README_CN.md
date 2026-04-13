@@ -2,13 +2,47 @@
 
 一个活的第二大脑，连接你用来思考的一切——你的 AI 助手、你的笔记、以及未来更多的东西。
 
-`[MIT License]` `[Build]` `[Version]`
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node.js >= 18](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)](https://nodejs.org/)
+[![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-purple.svg)](https://modelcontextprotocol.io/)
 
 [English](README.md) | **中文**
 
 ---
 
-<!-- 概念图占位：多源输入 → 活性图 → 用户感知价值 -->
+```mermaid
+graph LR
+    subgraph Input["🔌 接入"]
+        A1["🤖 AI Agents"]
+        A2["📝 笔记"]
+        A3["··· 更多"]
+    end
+
+    subgraph Core["🧠 活性图"]
+        B1[节点与链接]
+        B2[四维成熟度]
+        B3[代谢系统]
+        B1 --- B2
+        B2 --- B3
+    end
+
+    subgraph Value["✨ 涌现"]
+        C1[共享记忆]
+        C2[模式发现]
+        C3[结晶]
+    end
+
+    A1 -->|MCP| Core
+    A2 -->|文件同步| Core
+    A3 -.->|开放协议| Core
+    Core --> C1
+    Core --> C2
+    Core --> C3
+
+    style Input fill:#1a1a2e,stroke:#7c3aed,color:#e0e0e0
+    style Core fill:#1a1a2e,stroke:#3b82f6,color:#e0e0e0
+    style Value fill:#1a1a2e,stroke:#10b981,color:#e0e0e0
+```
 
 ---
 
