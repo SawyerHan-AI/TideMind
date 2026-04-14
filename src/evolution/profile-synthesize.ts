@@ -141,6 +141,113 @@ function renderProfileFields(fieldsJson: string): string {
   }
 }
 
+/**
+ * 解析 LLM 的画像响应。
+ * LLM 经常在 profile_text 值中输出未转义的引号导致 JSON 无法 parse，
+ * 因此采用分段提取策略：先尝试整体 JSON parse，失败后用正则分别提取
+ * profile_text 和 structured 部分。
+ */
+function parseProfileResponse(response: string): {
+  profileText: string;
+  structured: Record<string, unknown>;
+} {
+  // 跳过 markdown code fence
+  const fenceMatch = response.match(/```json\s*\n([\s\S]*?)\n```/);
+  const jsonStr = fenceMatch ? fenceMatch[1] : response.match(/\{[\s\S]*\}/)?.[0];
+
+  if (!jsonStr) {
+    return { profileText: response.trim(), structured: {} };
+  }
+
+  // 快路径：直接 JSON parse
+  try {
+    const parsed = JSON.parse(jsonStr);
+    return {
+      profileText: parsed.profile_text ?? response.trim(),
+      structured: parsed.structured ?? {},
+    };
+  } catch {
+    // pass — 尝试分段提取
+  }
+
+  // 慢路径：profile_text 中包含未转义引号导致整体 JSON 无法 parse
+  // 策略：用 "structured" key 的位置把 JSON 切成两段
+  let profileText = response.trim();
+  let structured: Record<string, unknown> = {};
+
+  try {
+    // 定位 "structured" 的起始位置（从后往前找，因为 profile_text 里可能包含该词）
+    const structuredKeyIdx = jsonStr.lastIndexOf('"structured"');
+    if (structuredKeyIdx > 0) {
+      // 从 "structured": 后面提取它的值对象
+      const afterKey = jsonStr.slice(structuredKeyIdx + '"structured"'.length);
+      const colonIdx = afterKey.indexOf(':');
+      if (colonIdx >= 0) {
+        const valueStart = afterKey.slice(colonIdx + 1);
+        // 找到这个对象的开头 {
+        const objStart = valueStart.indexOf('{');
+        if (objStart >= 0) {
+          // 用括号配对找到完整的 {} 块
+          let depth = 0;
+          let end = -1;
+          for (let i = objStart; i < valueStart.length; i++) {
+            if (valueStart[i] === '{') depth++;
+            else if (valueStart[i] === '}') {
+              depth--;
+              if (depth === 0) { end = i; break; }
+            }
+          }
+          if (end > 0) {
+            const structuredJson = valueStart.slice(objStart, end + 1);
+            try {
+              structured = JSON.parse(structuredJson);
+            } catch {
+              log.warn('structured 块也无法 parse，跳过');
+            }
+          }
+        }
+      }
+    }
+
+    // 提取 profile_text：找到 "profile_text" key 后的值
+    const ptKeyIdx = jsonStr.indexOf('"profile_text"');
+    if (ptKeyIdx >= 0) {
+      const afterPtKey = jsonStr.slice(ptKeyIdx + '"profile_text"'.length);
+      const ptColonIdx = afterPtKey.indexOf(':');
+      if (ptColonIdx >= 0) {
+        const afterColon = afterPtKey.slice(ptColonIdx + 1).trimStart();
+        if (afterColon.startsWith('"')) {
+          // 找到 profile_text 值的结尾——从 "structured" key 的位置往回找
+          const endSearch = structuredKeyIdx > 0
+            ? jsonStr.slice(0, structuredKeyIdx)
+            : jsonStr;
+          // profile_text 值在第一个 " 开始，到 "structured" 前最后一个 " 结束
+          const ptValueStart = ptKeyIdx + '"profile_text"'.length + ptColonIdx + 1;
+          const ptContent = endSearch.slice(ptValueStart).trimStart();
+          // 去掉开头的引号和末尾的逗号+引号
+          const cleaned = ptContent.replace(/^"/, '').replace(/"\s*,?\s*$/, '');
+          // 将 JSON 转义还原
+          profileText = cleaned
+            .replace(/\\n/g, '\n')
+            .replace(/\\"/g, '"')
+            .replace(/\\\\/g, '\\')
+            .trim();
+        }
+      }
+    }
+  } catch (err) {
+    log.warn(`分段提取画像失败: ${(err as Error).message}`);
+  }
+
+  if (Object.keys(structured).length > 0) {
+    log.info('JSON 整体 parse 失败，但分段提取 structured 成功');
+  } else {
+    log.warn('JSON parse 失败且无法提取 structured，画像仅保留 profile_text');
+  }
+
+  return { profileText, structured };
+}
+
 export async function runProfileSynthesize(db: Database.Database): Promise<void> {
   if (!isLlmConfigured()) {
     log.debug('LLM 未配置，跳过');
@@ -236,7 +343,7 @@ export async function runProfileSynthesize(db: Database.Database): Promise<void>
     prompt: renderUserPrompt(STRATEGY_NAME, variables, fallbackUserPrompt),
     system: getPrompt(STRATEGY_NAME, FALLBACK_SYSTEM),
     ...getLLMOptions(STRATEGY_NAME),
-    maxTokens: 2000,
+    maxTokens: 10000,
     operationName: STRATEGY_NAME,
   });
 
@@ -246,22 +353,7 @@ export async function runProfileSynthesize(db: Database.Database): Promise<void>
   }
 
   // 9. 解析输出
-  let profileText: string;
-  let structured: Record<string, unknown> = {};
-  try {
-    // 尝试从 response 中提取 JSON
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      // 如果没有 JSON，把整个响应当做 profile_text
-      profileText = response.trim();
-    } else {
-      const parsed = JSON.parse(jsonMatch[0]);
-      profileText = parsed.profile_text ?? response.trim();
-      structured = parsed.structured ?? {};
-    }
-  } catch {
-    profileText = response.trim();
-  }
+  const { profileText, structured } = parseProfileResponse(response);
 
   // 10. 组装存储内容（profile_text + structured 合并存入 content）
   const contentParts = [profileText];
