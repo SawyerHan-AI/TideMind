@@ -27,6 +27,8 @@ export function ensureSyncSchema(db: Database.Database): void {
   `);
   // 兼容：为已有表添加 source_id 列
   try { db.exec("ALTER TABLE logseq_sync ADD COLUMN source_id TEXT DEFAULT ''"); } catch { /* already exists */ }
+  // 兼容：为已有表添加 segment_hashes 列（段级去重）
+  try { db.exec("ALTER TABLE logseq_sync ADD COLUMN segment_hashes TEXT DEFAULT '[]'"); } catch { /* already exists */ }
 }
 
 /**
@@ -50,6 +52,7 @@ export function getFileState(
     size: row.size as number,
     last_synced: row.last_synced as string,
     node_ids: row.node_ids ? JSON.parse(row.node_ids as string) : [],
+    segment_hashes: row.segment_hashes ? JSON.parse(row.segment_hashes as string) : [],
   };
 }
 
@@ -73,6 +76,7 @@ export function getAllFileStates(
       size: row.size as number,
       last_synced: row.last_synced as string,
       node_ids: row.node_ids ? JSON.parse(row.node_ids as string) : [],
+      segment_hashes: row.segment_hashes ? JSON.parse(row.segment_hashes as string) : [],
     });
   }
 
@@ -89,8 +93,8 @@ export function setFileState(
 ): void {
   db.prepare(`
     INSERT OR REPLACE INTO logseq_sync
-    (file_path, content_hash, mtime, size, last_synced, node_ids, source_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    (file_path, content_hash, mtime, size, last_synced, node_ids, source_id, segment_hashes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     state.file_path,
     state.content_hash,
@@ -99,6 +103,7 @@ export function setFileState(
     state.last_synced,
     JSON.stringify(state.node_ids),
     sourceId ?? '',
+    JSON.stringify(state.segment_hashes),
   );
 }
 
@@ -207,6 +212,13 @@ export function isFileChanged(
   // Step 2: hash 比较（处理 mtime 漂移但内容未变的情况）
   const hash = computeFileHash(filePath);
   return hash !== syncState.content_hash;
+}
+
+/**
+ * 计算单个 segment 的 content hash（段级去重）
+ */
+export function computeSegmentHash(content: string): string {
+  return crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
 }
 
 /**

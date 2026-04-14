@@ -41,6 +41,7 @@ import {
   resetFullScanState,
   isFileChanged,
   computeFileHash,
+  computeSegmentHash,
 } from '../../../src/integrations/logseq/sync-state.js';
 
 let db: Database.Database;
@@ -71,11 +72,24 @@ describe('sync state CRUD', () => {
       size: 1024,
       last_synced: '2024-01-01T00:00:00Z',
       node_ids: ['node-1', 'node-2'],
+      segment_hashes: ['hash-1', 'hash-2'],
     };
 
     setFileState(db, state);
     const got = getFileState(db, '/test/page.md');
     expect(got).toEqual(state);
+  });
+
+  it('segment_hashes 缺失时回退为空数组', () => {
+    // 模拟旧数据（无 segment_hashes 列值）
+    db.prepare(`
+      INSERT INTO logseq_sync (file_path, content_hash, mtime, size, last_synced, node_ids, source_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('/old/page.md', 'abc', 123, 100, '2024-01-01', '["n1"]', '');
+
+    const got = getFileState(db, '/old/page.md');
+    expect(got).not.toBeNull();
+    expect(got!.segment_hashes).toEqual([]);
   });
 
   it('removeFileState 删除记录', () => {
@@ -86,6 +100,7 @@ describe('sync state CRUD', () => {
       size: 100,
       last_synced: '2024-01-01',
       node_ids: [],
+      segment_hashes: [],
     });
 
     removeFileState(db, '/test/page.md');
@@ -93,8 +108,8 @@ describe('sync state CRUD', () => {
   });
 
   it('getAllFileStates 返回所有记录', () => {
-    setFileState(db, { file_path: '/a', content_hash: 'h1', mtime: 1, size: 10, last_synced: 't', node_ids: [] });
-    setFileState(db, { file_path: '/b', content_hash: 'h2', mtime: 2, size: 20, last_synced: 't', node_ids: [] });
+    setFileState(db, { file_path: '/a', content_hash: 'h1', mtime: 1, size: 10, last_synced: 't', node_ids: [], segment_hashes: [] });
+    setFileState(db, { file_path: '/b', content_hash: 'h2', mtime: 2, size: 20, last_synced: 't', node_ids: [], segment_hashes: [] });
 
     const all = getAllFileStates(db);
     expect(all.size).toBe(2);
@@ -107,8 +122,8 @@ describe('sync state CRUD', () => {
 
 describe('removeStaleFiles', () => {
   it('清理不在当前文件集中的记录', () => {
-    setFileState(db, { file_path: '/existing', content_hash: 'h', mtime: 1, size: 10, last_synced: 't', node_ids: [] });
-    setFileState(db, { file_path: '/deleted', content_hash: 'h', mtime: 1, size: 10, last_synced: 't', node_ids: [] });
+    setFileState(db, { file_path: '/existing', content_hash: 'h', mtime: 1, size: 10, last_synced: 't', node_ids: [], segment_hashes: [] });
+    setFileState(db, { file_path: '/deleted', content_hash: 'h', mtime: 1, size: 10, last_synced: 't', node_ids: [], segment_hashes: [] });
 
     const result = removeStaleFiles(db, new Set(['/existing']));
     expect(result.removed).toBe(1);
@@ -117,14 +132,14 @@ describe('removeStaleFiles', () => {
   });
 
   it('无过期记录时返回 0', () => {
-    setFileState(db, { file_path: '/a', content_hash: 'h', mtime: 1, size: 10, last_synced: 't', node_ids: [] });
+    setFileState(db, { file_path: '/a', content_hash: 'h', mtime: 1, size: 10, last_synced: 't', node_ids: [], segment_hashes: [] });
     const result = removeStaleFiles(db, new Set(['/a']));
     expect(result.removed).toBe(0);
   });
 
   it('返回被清理文件的 orphanNodeIds', () => {
-    setFileState(db, { file_path: '/keep', content_hash: 'h', mtime: 1, size: 10, last_synced: 't', node_ids: ['n1'] });
-    setFileState(db, { file_path: '/gone', content_hash: 'h', mtime: 1, size: 10, last_synced: 't', node_ids: ['n2', 'n3'] });
+    setFileState(db, { file_path: '/keep', content_hash: 'h', mtime: 1, size: 10, last_synced: 't', node_ids: ['n1'], segment_hashes: ['sh1'] });
+    setFileState(db, { file_path: '/gone', content_hash: 'h', mtime: 1, size: 10, last_synced: 't', node_ids: ['n2', 'n3'], segment_hashes: ['sh2', 'sh3'] });
 
     const result = removeStaleFiles(db, new Set(['/keep']));
     expect(result.removed).toBe(1);
@@ -169,6 +184,7 @@ describe('isFileChanged', () => {
       size: 10,
       last_synced: 't',
       node_ids: [],
+      segment_hashes: [],
     })).toBe(false);
   });
 
@@ -184,6 +200,7 @@ describe('isFileChanged', () => {
       size: stat.size,
       last_synced: 't',
       node_ids: [],
+      segment_hashes: [],
     };
 
     expect(isFileChanged(filePath, syncState)).toBe(false);
@@ -201,6 +218,7 @@ describe('isFileChanged', () => {
       size: 999, // 故意不同
       last_synced: 't',
       node_ids: [],
+      segment_hashes: [],
     };
 
     expect(isFileChanged(filePath, syncState)).toBe(false);
@@ -221,6 +239,7 @@ describe('isFileChanged', () => {
       size: 0,
       last_synced: 't',
       node_ids: [],
+      segment_hashes: [],
     };
 
     expect(isFileChanged(filePath, syncState)).toBe(true);
@@ -255,5 +274,23 @@ describe('computeFileHash', () => {
     fs.writeFileSync(file2, 'world');
 
     expect(computeFileHash(file1)).not.toBe(computeFileHash(file2));
+  });
+});
+
+// ===== computeSegmentHash =====
+
+describe('computeSegmentHash', () => {
+  it('返回 16 字符的 hex 字符串', () => {
+    const hash = computeSegmentHash('test content');
+    expect(hash).toHaveLength(16);
+    expect(hash).toMatch(/^[a-f0-9]+$/);
+  });
+
+  it('相同内容产生相同 hash', () => {
+    expect(computeSegmentHash('hello')).toBe(computeSegmentHash('hello'));
+  });
+
+  it('不同内容产生不同 hash', () => {
+    expect(computeSegmentHash('hello')).not.toBe(computeSegmentHash('world'));
   });
 });
