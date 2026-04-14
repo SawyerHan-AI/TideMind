@@ -50,7 +50,7 @@ const TOOL_TYPES: ToolTypeDef[] = [
   { id: 'logseq', label: 'Logseq', icon: <BookOpen size={14} /> },
   { id: 'obsidian', label: 'Obsidian', icon: <FileText size={14} /> },
   { id: 'apple-notes', label: 'Apple Notes', icon: <StickyNote size={14} />, comingSoon: !IS_MAC },
-  { id: 'notion', label: 'Notion', icon: <FileText size={14} />, comingSoon: true },
+  { id: 'notion', label: 'Notion', icon: <FileText size={14} /> },
 ]
 
 // Apple Notes 账户类型
@@ -200,9 +200,13 @@ function NoteSourceDetailPanel({
         <label className="text-[10px] text-gray-500 mb-1 block">{t('noteSync.detail.watchPath')}</label>
         <div className="flex gap-2">
           <div className="flex-1 px-3 py-2 rounded-lg text-xs text-gray-300 bg-white/[0.04] border border-white/[0.06] truncate">
-            {source.tool_type === 'apple-notes' ? source.path.split('?')[0] : source.path}
+            {source.tool_type === 'apple-notes'
+              ? source.path.split('?')[0]
+              : source.tool_type === 'notion'
+                ? `ntn_${'*'.repeat(8)}`
+                : source.path}
           </div>
-          {source.tool_type !== 'apple-notes' && (
+          {source.tool_type !== 'apple-notes' && source.tool_type !== 'notion' && (
             <button
               onClick={async () => {
                 const folder = await (window as any).api.config.selectFolder()
@@ -805,8 +809,65 @@ function AddNoteSourceWizard({
             </div>
           )}
 
-          {/* Step 2: 选路径 + 验证（Logseq/Obsidian）或 权限检测 + 账户选择（Apple Notes） */}
-          {step === 1 && toolType !== 'apple-notes' && (
+          {/* Step 2 for Notion: Token 输入 */}
+          {step === 1 && toolType === 'notion' && (
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs text-gray-400 mb-2 block">
+                  {t('noteSync.wizard.notionTokenLabel')}
+                </label>
+                <div className="text-[11px] text-gray-500 mb-3 leading-relaxed">
+                  {t('noteSync.wizard.notionTokenHint')}
+                </div>
+                <input
+                  type="password"
+                  value={selectedPath}
+                  onChange={(e) => {
+                    const val = e.target.value.trim()
+                    setSelectedPath(val.startsWith('notion://') ? val : `notion://${val}`)
+                    setTestResult(null)
+                  }}
+                  placeholder={t('noteSync.wizard.notionTokenPlaceholder')}
+                  className="w-full px-3 py-2 rounded-lg text-xs text-gray-200 bg-white/[0.06] border border-white/[0.08] placeholder:text-gray-600 focus:outline-none focus:border-white/[0.15]"
+                />
+              </div>
+
+              {selectedPath && (
+                <button
+                  onClick={async () => {
+                    setTesting(true)
+                    setTestResult(null)
+                    try {
+                      const result = await (window as any).api.noteSources.test('notion', selectedPath)
+                      setTestResult(result)
+                    } finally {
+                      setTesting(false)
+                    }
+                  }}
+                  disabled={testing}
+                  className="flex items-center gap-1.5 px-3 py-2 text-xs bg-white/[0.06] hover:bg-white/[0.10] border border-white/[0.08] rounded-lg text-gray-300 transition-colors"
+                >
+                  {testing ? <Loader2 size={12} className="animate-spin" /> : null}
+                  {t('noteSync.detail.testConnection')}
+                </button>
+              )}
+
+              {testResult && (
+                <div className={`text-xs ${testResult.accessible ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {testResult.accessible
+                    ? t('noteSync.wizard.notionConnected')
+                    : t('noteSync.wizard.notionFailed')}
+                </div>
+              )}
+
+              <div className="text-[11px] text-gray-600 leading-relaxed">
+                {t('noteSync.wizard.notionScopeHint')}
+              </div>
+            </div>
+          )}
+
+          {/* Step 2: 选路径 + 验证（Logseq/Obsidian） */}
+          {step === 1 && toolType !== 'apple-notes' && toolType !== 'notion' && (
             <div className="space-y-4">
               <div>
                 <label className="text-xs text-gray-400 mb-2 block">

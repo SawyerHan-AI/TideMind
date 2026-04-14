@@ -322,7 +322,13 @@
       "appleNotesSelectAccounts": "동기화할 계정 선택",
       "appleNotesLoadingAccounts": "계정 로드 중...",
       "appleNotesNoAccounts": "Apple Notes 계정을 찾을 수 없습니다",
-      "appleNotesNoteCount": "노트 {{count}}개"
+      "appleNotesNoteCount": "노트 {{count}}개",
+      "notionTokenLabel": "Notion 통합 토큰",
+      "notionTokenPlaceholder": "토큰을 붙여넣기 (ntn_으로 시작)",
+      "notionTokenHint": "notion.so/profile/integrations에서 통합을 만들고 동기화할 페이지를 공유하세요.",
+      "notionScopeHint": "TideMind는 통합에 공유된 모든 페이지를 동기화합니다. 범위를 조정하려면 Notion에서 공유 설정을 변경하세요.",
+      "notionConnected": "토큰 인증 성공, 연결 완료",
+      "notionFailed": "토큰이 유효하지 않거나 연결 실패"
     }
   },
   "usage": {

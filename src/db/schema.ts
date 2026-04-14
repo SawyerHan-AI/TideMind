@@ -15,7 +15,7 @@ function generateSourceId(): string {
 /**
  * 当前 schema 版本。每次新增 migration 时递增。
  */
-const CURRENT_SCHEMA_VERSION = 10;
+const CURRENT_SCHEMA_VERSION = 11;
 
 /**
  * 完整建表 SQL — 包含所有字段，新数据库直接创建最新结构。
@@ -885,6 +885,38 @@ const MIGRATIONS: Migration[] = [
         if (!msg.includes('duplicate column')) throw e;
       }
       log.info('迁移 v10 完成: nodes.title 列已添加');
+    },
+  },
+  {
+    version: 11,
+    description: 'Notion 集成：添加 notion_sync 和 notion_pending_relations 表',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS notion_sync (
+          page_id TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          last_edited_time TEXT NOT NULL,
+          page_type TEXT NOT NULL DEFAULT 'page',
+          last_synced TEXT NOT NULL,
+          node_ids TEXT,
+          source_id TEXT DEFAULT '',
+          PRIMARY KEY (page_id, source_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS notion_pending_relations (
+          source_page_id TEXT NOT NULL,
+          target_page_id TEXT NOT NULL,
+          source_node_id TEXT NOT NULL,
+          property_name TEXT NOT NULL,
+          source_id TEXT NOT NULL DEFAULT '',
+          created TEXT NOT NULL,
+          PRIMARY KEY (source_page_id, target_page_id, property_name, source_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_notion_pending_target
+          ON notion_pending_relations(target_page_id, source_id);
+      `);
+      log.info('迁移 v11 完成: Notion 集成表已创建');
     },
   },
 ];

@@ -322,7 +322,13 @@
       "appleNotesSelectAccounts": "Выберите учётные записи для синхронизации",
       "appleNotesLoadingAccounts": "Загрузка учётных записей...",
       "appleNotesNoAccounts": "Учётные записи Apple Notes не найдены",
-      "appleNotesNoteCount": "{{count}} заметок"
+      "appleNotesNoteCount": "{{count}} заметок",
+      "notionTokenLabel": "Токен интеграции Notion",
+      "notionTokenPlaceholder": "Вставьте ваш токен (начинается с ntn_)",
+      "notionTokenHint": "Создайте интеграцию на notion.so/profile/integrations и поделитесь страницами для синхронизации.",
+      "notionScopeHint": "TideMind будет синхронизировать все страницы, доступные интеграции. Чтобы изменить область, измените настройки доступа в Notion.",
+      "notionConnected": "Токен проверен, подключение успешно",
+      "notionFailed": "Токен недействителен или ошибка подключения"
     }
   },
   "usage": {

@@ -189,6 +189,40 @@ TideMind 的主界面不是这个 App，而是你正在用的 AI 工具本身。
 | [集成指南](docs/integrations.md) | 各 AI 工具和笔记系统的详细配置 |
 | [API 参考](docs/api.md) | prepare / recall / digest 完整参数说明 |
 
+## 常见问题
+
+**Q: TideMind 和 Obsidian / Notion / Mem 有什么区别？**
+
+TideMind 不是笔记工具——它是一个位于你所有工具*之间*的记忆层。Obsidian 和 Notion 是你写东西的地方，TideMind 是你所有思考相互连接的地方。它从 Obsidian、Logseq、Apple Notes 导入笔记，从你的 AI 工具中获取对话，然后把它们编织进一张活的知识图谱。你继续用你喜欢的工具——TideMind 在幕后把它们连起来。
+
+**Q: 我已经有笔记系统了，为什么还需要 TideMind？**
+
+笔记只是你思考的一个切面。其他切面——AI 对话中做出的决策、随口表达的偏好、散落在不同工具里的想法——是割裂的。TideMind 把它们全部捕获，并建立你手动不会去建立的连接。它还会自动把这些上下文交给你的 AI，让每次对话都从完整的"了解你"开始，而不是从零开始。
+
+**Q: 数据存在哪里？安全吗？**
+
+所有数据存在你电脑上的一个 SQLite 文件里。没有云端，没有第三方服务器，不需要注册账号。你可以随时把全部数据导出为 Markdown。如果你需要完全隐私，可以通过 Ollama 用本地模型运行 TideMind——没有任何 API 请求会离开你的电脑。
+
+**Q: 需要 API key 吗？支持哪些模型？**
+
+不需要 API key 也能用——基础的文本搜索（BM25）和存储功能开箱即用。如果想使用高级功能（自动提取、记忆再巩固、发散扫描、结晶涌现），需要接入一个 LLM 提供商：Anthropic、Google Vertex AI 或 Gemini。语义搜索方面，可以用 Ollama（本地、免费）、Vertex AI 或 Gemini 生成 embedding。可以自由组合——比如本地 Ollama 做 embedding + Anthropic 做 LLM。
+
+**Q: 支持哪些 AI 工具和笔记系统？**
+
+任何支持 [MCP 协议](https://modelcontextprotocol.io/) 的工具都能接入 TideMind——包括 Claude Code、Cursor、Windsurf、Codex 等。笔记方面，目前支持 Logseq、Obsidian 和 Apple Notes，更多正在开发中。详见[集成指南](docs/integrations_CN.md)。
+
+**Q: 怎么安装？需要技术背景吗？**
+
+两种方式：**桌面客户端**（下载安装即用，不需要终端操作）或**从源码构建**（面向开发者：`git clone` → `npm install` → `npm start`）。桌面客户端通过可视化设置面板完成所有配置。
+
+**Q: "记忆会自然遗忘"——我的数据会被删掉吗？**
+
+不会。原始数据始终保留。改变的是*检索优先级*：长期未被回顾的记忆会逐渐降低在检索结果中的排位，就像真实大脑一样。重要的、高度关联的记忆受到保护，不会衰减。而任何已衰减的记忆，在你或你的 AI 再次回忆时会立即被重新强化。这是优先级排序，不是删除。
+
+**Q: TideMind 开源版和 TideMind Cloud 有什么区别？**
+
+开源版功能完整，本地使用没有任何限制。TideMind Cloud（即将推出）增加跨设备同步、移动端访问和托管账号系统，面向不想自己部署的用户。部分需要云服务支撑的功能（如浏览器扩展对接）可能仅在 Cloud 版本提供。核心引擎完全相同。
+
 ## 参与贡献
 
 欢迎各种形式的贡献。请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 了解如何参与。

@@ -50,6 +50,9 @@ export function registerNoteSourceHandlers(): void {
       } else if (source.tool_type === 'apple-notes') {
         const { stopAppleNotesSource } = await import('@server/integrations/apple-notes/index.js')
         stopAppleNotesSource(id)
+      } else if (source.tool_type === 'notion') {
+        const { stopNotionSource } = await import('@server/integrations/notion/index.js')
+        stopNotionSource(id)
       }
     } catch { /* ignore */ }
   })
@@ -71,6 +74,9 @@ export function registerNoteSourceHandlers(): void {
       } else if (source.tool_type === 'apple-notes') {
         const { startAppleNotesSource } = await import('@server/integrations/apple-notes/index.js')
         await startAppleNotesSource(getDb(), id, source.path, source.poll_interval)
+      } else if (source.tool_type === 'notion') {
+        const { startNotionSource } = await import('@server/integrations/notion/index.js')
+        await startNotionSource(getDb(), id, source.path, source.poll_interval)
       }
     } catch { /* ignore */ }
   })
@@ -87,6 +93,9 @@ export function registerNoteSourceHandlers(): void {
       // Apple Notes 路径含 query params，只检查数据库文件
       const dbPath = source.path.split('?')[0]
       accessible = fs.existsSync(dbPath)
+    } else if (source.tool_type === 'notion') {
+      // Notion 是云端 API，accessible = token 格式有效
+      accessible = source.path.startsWith('notion://') || source.path.startsWith('ntn_') || source.path.startsWith('secret_')
     } else {
       accessible = fs.existsSync(source.path)
     }
@@ -104,6 +113,10 @@ export function registerNoteSourceHandlers(): void {
         syncing = prog.phase !== 'idle' && prog.phase !== 'done'
       } else if (source.tool_type === 'apple-notes') {
         const { getImportProgress } = await import('@server/integrations/apple-notes/index.js')
+        const prog = getImportProgress(id)
+        syncing = prog.phase !== 'idle' && prog.phase !== 'done'
+      } else if (source.tool_type === 'notion') {
+        const { getImportProgress } = await import('@server/integrations/notion/queue.js')
         const prog = getImportProgress(id)
         syncing = prog.phase !== 'idle' && prog.phase !== 'done'
       }
@@ -144,7 +157,19 @@ export function registerNoteSourceHandlers(): void {
   })
 
   // 测试路径可访问性（不需要 sourceId，直接测试给定路径）
-  ipcMain.handle('note-sources:test', (_e, toolType: string, testPath: string) => {
+  ipcMain.handle('note-sources:test', async (_e, toolType: string, testPath: string) => {
+    // Notion: 验证 token 而非检查文件系统
+    if (toolType === 'notion') {
+      try {
+        const { validateToken } = await import('@server/integrations/notion/api-client.js')
+        const token = testPath.startsWith('notion://') ? testPath.slice('notion://'.length) : testPath
+        const result = await validateToken(token)
+        return { accessible: result.valid, fileCount: result.pageCount, path: testPath }
+      } catch (err) {
+        return { accessible: false, fileCount: 0, path: testPath }
+      }
+    }
+
     const resolved = testPath.replace('~', os.homedir())
     if (!fs.existsSync(resolved)) {
       return { accessible: false, fileCount: 0, path: resolved }
@@ -199,6 +224,11 @@ export function registerNoteSourceHandlers(): void {
         const { previewInit } = await import('@server/integrations/apple-notes/initialization.js')
         const preview = previewInit(getDb(), id, source.path)
         return { success: true, data: preview }
+      } else if (source.tool_type === 'notion') {
+        const { previewInit } = await import('@server/integrations/notion/initialization.js')
+        const token = source.path.startsWith('notion://') ? source.path.slice('notion://'.length) : source.path
+        const preview = await previewInit(token)
+        return { success: true, data: preview }
       }
       return { success: false, error: `不支持的工具类型: ${source.tool_type}` }
     } catch (err) {
@@ -227,6 +257,10 @@ export function registerNoteSourceHandlers(): void {
       } else if (source.tool_type === 'apple-notes') {
         const { runInitialization } = await import('@server/integrations/apple-notes/initialization.js')
         report = await runInitialization(getDb(), id, source.path)
+      } else if (source.tool_type === 'notion') {
+        const { runInitialization } = await import('@server/integrations/notion/initialization.js')
+        const token = source.path.startsWith('notion://') ? source.path.slice('notion://'.length) : source.path
+        report = await runInitialization(getDb(), token, id)
       } else {
         return { success: false, error: `不支持的工具类型: ${source.tool_type}` }
       }
@@ -255,6 +289,9 @@ export function registerNoteSourceHandlers(): void {
       } else if (source.tool_type === 'apple-notes') {
         const { getInitProgress } = await import('@server/integrations/apple-notes/initialization.js')
         return getInitProgress(id)
+      } else if (source.tool_type === 'notion') {
+        const { getInitProgress } = await import('@server/integrations/notion/initialization.js')
+        return getInitProgress(id)
       }
     } catch { /* ignore */ }
     return null
@@ -273,6 +310,9 @@ export function registerNoteSourceHandlers(): void {
         abortInit(id)
       } else if (source.tool_type === 'apple-notes') {
         const { abortInit } = await import('@server/integrations/apple-notes/initialization.js')
+        abortInit(id)
+      } else if (source.tool_type === 'notion') {
+        const { abortInit } = await import('@server/integrations/notion/initialization.js')
         abortInit(id)
       }
     } catch { /* ignore */ }
@@ -309,6 +349,9 @@ export function registerNoteSourceHandlers(): void {
       } else if (source.tool_type === 'apple-notes') {
         const { getImportProgress } = await import('@server/integrations/apple-notes/index.js')
         return getImportProgress(id)
+      } else if (source.tool_type === 'notion') {
+        const { getImportProgress } = await import('@server/integrations/notion/queue.js')
+        return getImportProgress(id)
       }
     } catch { /* ignore */ }
     return null
@@ -327,6 +370,9 @@ export function registerNoteSourceHandlers(): void {
         await triggerFullRescan(getDb(), id, source.path)
       } else if (source.tool_type === 'apple-notes') {
         const { triggerFullRescan } = await import('@server/integrations/apple-notes/index.js')
+        await triggerFullRescan(getDb(), id, source.path)
+      } else if (source.tool_type === 'notion') {
+        const { triggerFullRescan } = await import('@server/integrations/notion/index.js')
         await triggerFullRescan(getDb(), id, source.path)
       }
       return { success: true }

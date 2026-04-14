@@ -322,7 +322,13 @@
       "appleNotesSelectAccounts": "選擇要同步的帳戶",
       "appleNotesLoadingAccounts": "正在載入帳戶...",
       "appleNotesNoAccounts": "找不到任何 Apple Notes 帳戶",
-      "appleNotesNoteCount": "{{count}} 則筆記"
+      "appleNotesNoteCount": "{{count}} 則筆記",
+      "notionTokenLabel": "Notion 整合 Token",
+      "notionTokenPlaceholder": "貼上你的 Token（以 ntn_ 開頭）",
+      "notionTokenHint": "請先在 notion.so/profile/integrations 建立整合，然後將要同步的頁面分享給該整合。",
+      "notionScopeHint": "TideMind 將同步所有分享給整合的頁面。如需調整範圍，請在 Notion 中修改頁面分享設定。",
+      "notionConnected": "Token 驗證通過，連線成功",
+      "notionFailed": "Token 無效或連線失敗"
     }
   },
   "usage": {

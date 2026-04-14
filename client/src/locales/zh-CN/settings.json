@@ -322,7 +322,13 @@
       "appleNotesSelectAccounts": "选择要同步的账户",
       "appleNotesLoadingAccounts": "正在加载账户...",
       "appleNotesNoAccounts": "未找到任何 Apple Notes 账户",
-      "appleNotesNoteCount": "{{count}} 条笔记"
+      "appleNotesNoteCount": "{{count}} 条笔记",
+      "notionTokenLabel": "Notion 集成 Token",
+      "notionTokenPlaceholder": "粘贴你的 Token（以 ntn_ 开头）",
+      "notionTokenHint": "请先在 notion.so/profile/integrations 创建集成，然后将要同步的页面共享给该集成。",
+      "notionScopeHint": "TideMind 将同步所有共享给集成的页面。如需调整范围，请在 Notion 中修改页面共享设置。",
+      "notionConnected": "Token 验证通过，连接成功",
+      "notionFailed": "Token 无效或连接失败"
     }
   },
   "usage": {
