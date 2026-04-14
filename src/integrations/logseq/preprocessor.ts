@@ -602,29 +602,26 @@ function extractBlockProperties(content: string, metadata: PageMetadata): string
 }
 
 /**
- * 解析 [[page references]] → 纯文本，收集引用
+ * 收集 [[page references]] 到 metadata，保留原文中的 [[]] 标记
  * 跳过代码块内的内容
  */
 function resolvePageRefs(content: string, metadata: PageMetadata): string {
+  const collect = (_match: string, pageName: string) => {
+    if (!metadata.pageRefs.includes(pageName)) {
+      metadata.pageRefs.push(pageName);
+    }
+    return _match; // 保留 [[]] 原文
+  };
+
   const codeLines = codeRegionsToLineSet(content, findCodeRegions(content));
   if (codeLines.size === 0) {
-    return content.replace(/\[\[([^\]]+)\]\]/g, (_match, pageName: string) => {
-      if (!metadata.pageRefs.includes(pageName)) {
-        metadata.pageRefs.push(pageName);
-      }
-      return pageName;
-    });
+    return content.replace(/\[\[([^\]]+)\]\]/g, collect);
   }
 
   const lines = content.split('\n');
   for (let i = 0; i < lines.length; i++) {
     if (codeLines.has(i)) continue;
-    lines[i] = lines[i].replace(/\[\[([^\]]+)\]\]/g, (_match, pageName: string) => {
-      if (!metadata.pageRefs.includes(pageName)) {
-        metadata.pageRefs.push(pageName);
-      }
-      return pageName;
-    });
+    lines[i] = lines[i].replace(/\[\[([^\]]+)\]\]/g, collect);
   }
   return lines.join('\n');
 }
@@ -651,15 +648,15 @@ function resolveBlockRefs(content: string, metadata: PageMetadata): string {
 }
 
 /**
- * 解析 #tag 和 #[[multi word tag]]
+ * 收集 #tag 和 #[[multi word tag]] 到 metadata，保留原文中的 # 标记
  */
 function resolveTags(content: string, metadata: PageMetadata): string {
-  // #[[multi word tag]]
+  // #[[multi word tag]] — 提取标签，保留原文
   content = content.replace(/#\[\[([^\]]+)\]\]/g, (_match, tag: string) => {
     if (!metadata.tags.includes(tag)) {
       metadata.tags.push(tag);
     }
-    return tag;
+    return _match; // 保留 #[[]] 原文
   });
 
   // #single-word-tag（排除 markdown 标题 ## ）
@@ -669,7 +666,7 @@ function resolveTags(content: string, metadata: PageMetadata): string {
     if (!metadata.tags.includes(tag)) {
       metadata.tags.push(tag);
     }
-    return tag;
+    return _match; // 保留 #tag 原文
   });
 
   return content;
@@ -692,24 +689,13 @@ function handleTaskMarkers(content: string): string {
 }
 
 /**
- * 去除 outliner `- ` 前缀，保留缩进信息
- * 跳过代码块内的内容
+ * 保留 outliner `- ` 前缀和缩进信息
+ * Logseq 的大纲结构（`- ` + 缩进）是内容层级的骨架，去掉会丢失结构语义
  *
- * 输入:  "  - 内容"
- * 输出:  "  内容"（保留两个空格缩进，segmenter 会用到）
+ * 此函数现在是 no-op，保留函数签名以维持管线接口一致性
  */
 function stripOutlinerPrefix(content: string): string {
-  const codeLines = codeRegionsToLineSet(content, findCodeRegions(content));
-  if (codeLines.size === 0) {
-    return content.replace(/^(\s*)- /gm, '$1');
-  }
-
-  const lines = content.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    if (codeLines.has(i)) continue;
-    lines[i] = lines[i].replace(/^(\s*)- /, '$1');
-  }
-  return lines.join('\n');
+  return content;
 }
 
 /**

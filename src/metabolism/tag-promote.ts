@@ -79,7 +79,11 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
 
   // 2.5 加载手动降级黑名单（被用户降级的标签不再自动晋升）
   const demotedRaw = db.prepare("SELECT value FROM metadata WHERE key = 'demoted_tags'").get() as { value: string } | undefined;
-  const demotedTags = new Set<string>(demotedRaw ? JSON.parse(demotedRaw.value) : []);
+  let demotedTags = new Set<string>();
+  if (demotedRaw) {
+    try { demotedTags = new Set<string>(JSON.parse(demotedRaw.value)); }
+    catch { log.warn('demoted_tags 元数据 JSON 解析失败，忽略黑名单'); }
+  }
 
   let promoted = 0;
   let linksCreated = 0;
@@ -94,6 +98,20 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
     let tagNodeId = existingTagNodes.get(tag);
 
     if (!tagNodeId) {
+      // 标签节点的创建时间 = 引用它的最早节点的创建时间（概念首次出现的时间）
+      // 分批查询避免 SQLite 参数数量限制
+      let earliestCreated: string | undefined;
+      const BATCH = 500;
+      for (let i = 0; i < nodeIds.length; i += BATCH) {
+        const batch = nodeIds.slice(i, i + BATCH);
+        const row = db.prepare(
+          `SELECT MIN(created) as earliest FROM nodes WHERE id IN (${batch.map(() => '?').join(',')})`,
+        ).get(...batch) as { earliest: string | null } | undefined;
+        if (row?.earliest && (!earliestCreated || row.earliest < earliestCreated)) {
+          earliestCreated = row.earliest;
+        }
+      }
+
       // 创建新 tag 节点：标签名作为 title，content 由 LLM 补充定义
       const tagNode = createNode(db, {
         is_tag: 1,
@@ -103,6 +121,7 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
         specificity: 0.1,
         subjectivity: 0.1,
         actuality: 0.9,
+        created: earliestCreated ?? undefined,
       });
       tagNodeId = tagNode.id;
       promoted++;

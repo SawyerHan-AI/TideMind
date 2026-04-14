@@ -32,6 +32,7 @@ import { runAnnotation } from '../../metabolism/annotate.js';
 import { runLinkEvaluate } from '../../metabolism/link-evaluate.js';
 import { runKeystoneIdentification, runCrystalEmergence } from '../../metabolism/divergent.js';
 import { runTemporalCrystal } from '../../metabolism/temporal-crystal.js';
+import { promoteFrequentTags } from '../../metabolism/tag-promote.js';
 import { findLandingConnections } from '../../graph/landing.js';
 
 // 复用 Logseq 的 initial-heat 计算（纯函数，无 Logseq 依赖）
@@ -318,6 +319,20 @@ export async function runInitialization(db: Database.Database, sourceId?: string
     log.info(`Phase 3 完成: ${explicitResult.created} 条链接, ${danglingRefs} 个悬空引用`);
     if (isAborted(sourceId)) throw new Error('初始化已中断');
 
+    // === Phase 3.5: 标签提升 ===
+    log.info('Phase 3.5: 标签提升');
+    try {
+      const tagResult = await promoteFrequentTags(db);
+      if (tagResult.promoted > 0) {
+        nodesCreated += tagResult.promoted;
+        linksCreated += tagResult.linksCreated;
+        log.info(`Phase 3.5 完成: ${tagResult.promoted} 个标签晋升, ${tagResult.linksCreated} 条链接`);
+      }
+    } catch (err) {
+      log.warn(`标签提升失败（不影响初始化）: ${(err as Error).message}`);
+    }
+    if (isAborted(sourceId)) throw new Error('初始化已中断');
+
     // === Phase 4-8: 通用管线（与 Logseq 相同） ===
 
     // Phase 4: 批量标注
@@ -491,7 +506,7 @@ async function processFileForInit(
       async: false, initialHeat, created: originalCreated,
     });
     const nodeIds = result.created_nodes?.map(n => n.id) ?? [];
-    for (const id of nodeIds) updateNode(db, id, { is_tag: 1 });
+    // 不直接标记 is_tag，由 promoteFrequentTags 按阈值判断
     updateSyncState(db, file, nodeIds, sourceId);
     return nodeIds;
   }
@@ -705,8 +720,8 @@ async function createDanglingTagNode(db: Database.Database, name: string): Promi
   if (danglingTagCache.has(normalized)) return danglingTagCache.get(normalized)!;
 
   const existing = db.prepare(
-    "SELECT id FROM nodes WHERE is_tag = 1 AND content = ? AND archived = 0 AND is_superseded = 0",
-  ).get(name) as { id: string } | undefined;
+    "SELECT id FROM nodes WHERE is_tag = 1 AND (content = ? OR title = ?) AND archived = 0 AND is_superseded = 0 LIMIT 1",
+  ).get(name, name) as { id: string } | undefined;
 
   if (existing) {
     danglingTagCache.set(normalized, existing.id);

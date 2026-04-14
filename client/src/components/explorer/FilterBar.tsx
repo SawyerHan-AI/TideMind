@@ -78,7 +78,7 @@ export function FilterBar({ filter, onFilterChange, viewMode, onViewModeChange }
           <select
             value={filter.tags ?? ''}
             onChange={e => onFilterChange({ tags: e.target.value || undefined })}
-            className={selectClass}
+            className={`${selectClass} max-w-[180px]`}
           >
             <option value="">{t('filter.allTags')}</option>
             {coreTags.map(item => <option key={item.tag} value={item.tag}>{item.tag} ({item.count})</option>)}

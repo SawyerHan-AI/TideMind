@@ -161,8 +161,9 @@ export function registerNodeHandlers(db: Database.Database): void {
     }
 
     // Check which tags have is_tag=1 nodes (core tags)
-    const coreTagRows = db.prepare('SELECT content FROM nodes WHERE is_tag = 1 AND heat > 0.01').all() as Array<{ content: string }>
-    const coreTags = new Set(coreTagRows.map(r => r.content.trim()))
+    // tag-promote 把标签名存在 title，content 是 LLM 生成的定义；兼容两种情况
+    const coreTagRows = db.prepare('SELECT title, content FROM nodes WHERE is_tag = 1 AND heat > 0.01').all() as Array<{ title: string | null; content: string }>
+    const coreTags = new Set(coreTagRows.map(r => (r.title ?? r.content).trim()))
 
     const result = Array.from(tagCounts.entries())
       .map(([tag, count]) => ({ tag, count, isCore: coreTags.has(tag) }))
@@ -172,7 +173,6 @@ export function registerNodeHandlers(db: Database.Database): void {
   })
 
   ipcMain.handle('nodes:promoteTag', (_e, tag: string) => {
-    // computeTagLinkStrength logic inline (from src/metabolism/tag-promote.ts)
     function computeTagLinkStrength(nodeContent: string, tagText: string, nodeTags: string[]): number {
       const contentMention = nodeContent.toLowerCase().includes(tagText.toLowerCase()) ? 0.7 : 0.4
       const concentrationBonus = nodeTags.length === 1 ? 0.1 : 0
@@ -181,62 +181,66 @@ export function registerNodeHandlers(db: Database.Database): void {
 
     const { nanoid } = require('nanoid') as { nanoid: () => string }
 
-    // Create the tag node (type='fact' with is_tag=1, matching tag-promote.ts pattern)
-    const tagNodeId = nanoid()
-    db.prepare(`
-      INSERT INTO nodes (id, type, content, heat, refinement, connectivity, independence,
-        specificity, subjectivity, actuality, is_tag, created, version, archived, maturity_score)
-      VALUES (?, 'fact', ?, 1.0, 0, 0, 0, 0.1, 0.1, 0.9, 1, datetime('now'), 1, 0, 0)
-    `).run(tagNodeId, tag)
+    db.transaction(() => {
+      // 标签名存 title，content 留空（与 tag-promote.ts 一致）
+      const tagNodeId = nanoid()
+      db.prepare(`
+        INSERT INTO nodes (id, type, content, title, heat, refinement, connectivity, independence,
+          specificity, subjectivity, actuality, is_tag, created, version, archived, maturity_score)
+        VALUES (?, 'fact', '', ?, 1.0, 0, 0, 0, 0.1, 0.1, 0.9, 1, datetime('now'), 1, 0, 0)
+      `).run(tagNodeId, tag)
 
-    // Find all nodes that have this tag and create tagged links
-    const rows = db.prepare('SELECT id, content, tags FROM nodes WHERE tags IS NOT NULL AND heat > 0.01 AND is_tag = 0').all() as Array<{ id: string; content: string; tags: string }>
-    for (const row of rows) {
-      try {
-        const parsed = JSON.parse(row.tags)
-        if (Array.isArray(parsed) && parsed.includes(tag)) {
-          const strength = computeTagLinkStrength(row.content, tag, parsed)
-          const linkId = nanoid()
-          db.prepare(`
-            INSERT INTO links (id, from_id, to_id, relation, strength, auto, status, created)
-            VALUES (?, ?, ?, ?, ?, 1, 'confirmed', datetime('now'))
-          `).run(linkId, tagNodeId, row.id, JSON.stringify([{ type: 'tagged', confidence: 1.0 }]), strength)
-        }
-      } catch { /* skip */ }
-    }
+      // 链接方向：content_node → tag_node（与 tag-promote.ts 一致）
+      const rows = db.prepare('SELECT id, content, tags FROM nodes WHERE tags IS NOT NULL AND heat > 0.01 AND is_tag = 0').all() as Array<{ id: string; content: string; tags: string }>
+      for (const row of rows) {
+        try {
+          const parsed = JSON.parse(row.tags)
+          if (Array.isArray(parsed) && parsed.includes(tag)) {
+            const strength = computeTagLinkStrength(row.content, tag, parsed)
+            const linkId = nanoid()
+            db.prepare(`
+              INSERT INTO links (id, from_id, to_id, relation, strength, auto, status, created)
+              VALUES (?, ?, ?, ?, ?, 1, 'confirmed', datetime('now'))
+            `).run(linkId, row.id, tagNodeId, JSON.stringify([{ type: 'tagged', confidence: 1.0 }]), strength)
+          }
+        } catch { /* skip malformed tags JSON */ }
+      }
 
-    // Remove from demoted_tags blacklist if present
-    const raw = db.prepare("SELECT value FROM metadata WHERE key = 'demoted_tags'").get() as { value: string } | undefined
-    if (raw) {
-      const demoted: string[] = JSON.parse(raw.value).filter((t: string) => t !== tag)
-      db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('demoted_tags', ?)").run(JSON.stringify(demoted))
-    }
+      // 从降级黑名单移除
+      const raw = db.prepare("SELECT value FROM metadata WHERE key = 'demoted_tags'").get() as { value: string } | undefined
+      if (raw) {
+        try {
+          const demoted: string[] = JSON.parse(raw.value).filter((t: string) => t !== tag)
+          db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('demoted_tags', ?)").run(JSON.stringify(demoted))
+        } catch { /* skip corrupted blacklist */ }
+      }
+    })()
   })
 
   ipcMain.handle('nodes:demoteTag', (_e, tag: string) => {
-    // Find the tag node
-    const tagNode = db.prepare(
-      "SELECT id FROM nodes WHERE is_tag = 1 AND content = ? AND heat > 0.01"
-    ).get(tag) as { id: string } | undefined
-    if (!tagNode) return
+    db.transaction(() => {
+      // 兼容新旧格式：新格式标签名在 title，旧格式在 content
+      const tagNode = db.prepare(
+        "SELECT id FROM nodes WHERE is_tag = 1 AND (title = ? OR content = ?) AND heat > 0.01 LIMIT 1"
+      ).get(tag, tag) as { id: string } | undefined
+      if (!tagNode) return
 
-    // 1. Delete all links to/from this tag node
-    db.prepare('DELETE FROM links WHERE from_id = ? OR to_id = ?').run(tagNode.id, tagNode.id)
+      db.prepare('DELETE FROM links WHERE from_id = ? OR to_id = ?').run(tagNode.id, tagNode.id)
+      db.prepare('DELETE FROM node_versions WHERE node_id = ?').run(tagNode.id)
+      db.prepare('DELETE FROM node_segments WHERE node_id = ?').run(tagNode.id)
+      db.prepare('DELETE FROM nodes WHERE id = ?').run(tagNode.id)
 
-    // 2. Clean up version history and segments
-    db.prepare('DELETE FROM node_versions WHERE node_id = ?').run(tagNode.id)
-    db.prepare('DELETE FROM node_segments WHERE node_id = ?').run(tagNode.id)
-
-    // 3. Delete the tag node itself (FTS auto-cleaned by trigger)
-    db.prepare('DELETE FROM nodes WHERE id = ?').run(tagNode.id)
-
-    // 4. Add to demoted_tags blacklist to prevent tag-promote from re-promoting
-    const raw = db.prepare("SELECT value FROM metadata WHERE key = 'demoted_tags'").get() as { value: string } | undefined
-    const demoted: string[] = raw ? JSON.parse(raw.value) : []
-    if (!demoted.includes(tag)) {
-      demoted.push(tag)
-      db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('demoted_tags', ?)").run(JSON.stringify(demoted))
-    }
+      // 加入降级黑名单
+      const raw = db.prepare("SELECT value FROM metadata WHERE key = 'demoted_tags'").get() as { value: string } | undefined
+      let demoted: string[] = []
+      if (raw) {
+        try { demoted = JSON.parse(raw.value) } catch { /* reset if corrupted */ }
+      }
+      if (!demoted.includes(tag)) {
+        demoted.push(tag)
+        db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('demoted_tags', ?)").run(JSON.stringify(demoted))
+      }
+    })()
   })
 
   ipcMain.handle('nodes:graph', (_e, filter: {

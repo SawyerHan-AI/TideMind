@@ -22,7 +22,7 @@ import {
 } from './sync-state.js';
 import { OBSIDIAN_EXCLUDED_DIRS } from './types.js';
 import { digest } from '../../tools/digest.js';
-import { updateNode, getNode } from '../../db/nodes.js';
+import { updateNode } from '../../db/nodes.js';
 import { createLink, linkExists } from '../../db/links.js';
 import { supersedeNode } from '../shared/version.js';
 import { now } from '../../utils/time.js';
@@ -174,17 +174,14 @@ async function processOneFile(
     // 空白 / 元数据文件 → tag 节点
     if (segments.length === 0 || category === 'empty_tag' || category === 'metadata_only') {
       const result = await digest(db, {
-        title: preprocessed.title,
-        content: '',
+        content: preprocessed.title,
         source: { tool: 'obsidian', files: [relPath] },
         context: `Obsidian 标签页: ${preprocessed.title}`,
         tags: [preprocessed.title],
         async: false,
       });
       const nodeIds = result.created_nodes?.map(n => n.id) ?? [];
-      for (const id of nodeIds) {
-        updateNode(db, id, { is_tag: 1 });
-      }
+      // 不直接标记 is_tag，由 promoteFrequentTags 按阈值判断
       updateSyncState(db, relPath, filePath, nodeIds, sourceId);
       progress.processedFiles++;
       return;
