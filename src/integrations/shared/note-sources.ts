@@ -111,7 +111,9 @@ export function getNoteSourceStats(db: Database.Database, id: string): NoteSourc
     ? 'logseq_sync'
     : source.tool_type === 'obsidian'
       ? 'obsidian_sync'
-      : 'apple_notes_sync';
+      : source.tool_type === 'notion'
+        ? 'notion_sync'
+        : 'apple_notes_sync';
 
   try {
     // 文件数
@@ -175,6 +177,9 @@ export async function startAllNoteSources(db: Database.Database): Promise<void> 
       } else if (source.tool_type === 'apple-notes') {
         const { startAppleNotesSource } = await import('../apple-notes/index.js');
         await startAppleNotesSource(db, source.id, source.path, source.poll_interval);
+      } else if (source.tool_type === 'notion') {
+        const { startNotionSource } = await import('../notion/index.js');
+        await startNotionSource(db, source.id, source.path, source.poll_interval);
       }
       log.info(`笔记源已启动: ${source.name} (${source.tool_type})`);
     } catch (err) {
@@ -197,5 +202,8 @@ export function stopAllNoteSources(): void {
     .catch(() => {});
   import('../apple-notes/index.js')
     .then(mod => mod.stopAppleNotesIntegration())
+    .catch(() => {});
+  import('../notion/index.js')
+    .then(mod => mod.stopNotionIntegration())
     .catch(() => {});
 }

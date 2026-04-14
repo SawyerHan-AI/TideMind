@@ -189,6 +189,40 @@ The main interface of TideMind isn't this app. It's whatever AI tool you're alre
 | [Integration Guide](docs/integrations.md) | Detailed setup for each AI tool and note system |
 | [API Reference](docs/api.md) | Full parameter documentation for prepare / recall / digest |
 
+## FAQ
+
+**Q: How is TideMind different from Obsidian / Notion / Mem?**
+
+TideMind is not a note-taking app — it's a memory layer that sits *between* your tools. Obsidian and Notion are where you write; TideMind is where all your thinking connects. It ingests notes from Obsidian, Logseq, Apple Notes, and conversations from your AI tools, then weaves them into a single living knowledge graph. You keep using whatever tools you prefer — TideMind connects them behind the scenes.
+
+**Q: I already have a note system. Why do I need TideMind?**
+
+Your notes are one slice of your thinking. The other slices — AI conversations, decisions made in passing, preferences expressed across tools — are scattered and siloed. TideMind captures all of them and builds connections you wouldn't make manually. It also delivers this context to your AI automatically, so every conversation starts with full awareness of who you are, not a blank slate.
+
+**Q: Where is my data stored? Is it secure?**
+
+Everything lives in a single SQLite file on your machine. No cloud, no third-party servers, no accounts. You can export all your data to Markdown at any time. If you want full privacy, run TideMind entirely offline with local models via Ollama — no API calls leave your machine.
+
+**Q: Do I need an API key? Which models are supported?**
+
+TideMind works out of the box with zero API keys — basic text search (BM25) and storage are fully functional. For advanced features (automatic extraction, memory reconsolidation, divergent scanning, crystal emergence), you'll need an LLM provider: Anthropic, Google Vertex AI, or Gemini. For semantic search, you can use Ollama (local, free), Vertex AI, or Gemini for embeddings. Mix and match freely — e.g., Ollama locally for embeddings + Anthropic for LLM.
+
+**Q: What AI tools and note systems does TideMind support?**
+
+Any tool that supports the [MCP protocol](https://modelcontextprotocol.io/) works with TideMind — including Claude Code, Cursor, Windsurf, and Codex. For notes, TideMind currently supports Logseq, Obsidian, and Apple Notes, with more coming. See the full [Integration Guide](docs/integrations.md).
+
+**Q: How do I install it? Do I need a technical background?**
+
+Two options: **Desktop App** (download, install, done — no terminal needed) or **From Source** (for developers: `git clone` → `npm install` → `npm start`). The desktop app handles all configuration through a visual settings panel.
+
+**Q: "Memories naturally fade" — does that mean my data gets deleted?**
+
+No. The raw data is always preserved. What changes is *relevance*: memories you haven't revisited gradually lose prominence in retrieval, just like in a real brain. Important, highly-connected memories are protected from decay. And any faded memory is instantly reinforced the moment you or your AI recall it. Think of it as prioritization, not deletion.
+
+**Q: What's the difference between TideMind (open source) and TideMind Cloud?**
+
+The open-source version is fully functional for local use — all core features, no limitations. TideMind Cloud (coming soon) adds cross-device sync, mobile access, and a managed account system for users who prefer not to self-host. Some features requiring cloud infrastructure (such as browser extension integration) may only be available in the Cloud version. The core engine is identical.
+
 ## Contributing
 
 Contributions of all kinds are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.

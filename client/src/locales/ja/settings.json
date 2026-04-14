@@ -322,7 +322,13 @@
       "appleNotesSelectAccounts": "同期するアカウントを選択",
       "appleNotesLoadingAccounts": "アカウントを読み込み中...",
       "appleNotesNoAccounts": "Apple Notes アカウントが見つかりません",
-      "appleNotesNoteCount": "{{count}} 件のノート"
+      "appleNotesNoteCount": "{{count}} 件のノート",
+      "notionTokenLabel": "Notion インテグレーション トークン",
+      "notionTokenPlaceholder": "トークンを貼り付け（ntn_ で始まります）",
+      "notionTokenHint": "notion.so/profile/integrations でインテグレーションを作成し、同期したいページを共有してください。",
+      "notionScopeHint": "TideMind はインテグレーションと共有されたすべてのページを同期します。範囲を調整するには、Notion の共有設定を変更してください。",
+      "notionConnected": "トークン検証成功、接続完了",
+      "notionFailed": "トークンが無効か接続に失敗しました"
     }
   },
   "usage": {

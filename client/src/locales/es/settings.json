@@ -322,7 +322,13 @@
       "appleNotesSelectAccounts": "Selecciona las cuentas a sincronizar",
       "appleNotesLoadingAccounts": "Cargando cuentas...",
       "appleNotesNoAccounts": "No se encontraron cuentas de Apple Notes",
-      "appleNotesNoteCount": "{{count}} notas"
+      "appleNotesNoteCount": "{{count}} notas",
+      "notionTokenLabel": "Token de integración de Notion",
+      "notionTokenPlaceholder": "Pega tu token (comienza con ntn_)",
+      "notionTokenHint": "Crea una integración en notion.so/profile/integrations y comparte las páginas que deseas sincronizar.",
+      "notionScopeHint": "TideMind sincronizará todas las páginas compartidas con tu integración. Para ajustar el alcance, modifica la configuración de uso compartido en Notion.",
+      "notionConnected": "Token verificado, conexión exitosa",
+      "notionFailed": "Token inválido o error de conexión"
     }
   },
   "usage": {

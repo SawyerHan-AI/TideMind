@@ -322,7 +322,13 @@
       "appleNotesSelectAccounts": "Select accounts to sync",
       "appleNotesLoadingAccounts": "Loading accounts...",
       "appleNotesNoAccounts": "No Apple Notes accounts found",
-      "appleNotesNoteCount": "{{count}} notes"
+      "appleNotesNoteCount": "{{count}} notes",
+      "notionTokenLabel": "Notion Integration Token",
+      "notionTokenPlaceholder": "Paste your token (starts with ntn_)",
+      "notionTokenHint": "Create an integration at notion.so/profile/integrations, then share the pages you want to sync with it.",
+      "notionScopeHint": "TideMind will sync all pages shared with your integration. To adjust scope, change sharing settings in Notion.",
+      "notionConnected": "Token verified, connection successful",
+      "notionFailed": "Token invalid or connection failed"
     }
   },
   "usage": {

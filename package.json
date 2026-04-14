@@ -23,6 +23,7 @@
     "@anthropic-ai/sdk": "^0.80.0",
     "@anthropic-ai/vertex-sdk": "^0.14.4",
     "@modelcontextprotocol/sdk": "^1.12.0",
+    "@notionhq/client": "^2.2.14",
     "@types/js-yaml": "^4.0.9",
     "better-sqlite3": "^11.8.0",
     "js-yaml": "^4.1.1",

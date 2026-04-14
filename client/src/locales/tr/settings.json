@@ -322,7 +322,13 @@
       "appleNotesSelectAccounts": "Senkronize edilecek hesapları seçin",
       "appleNotesLoadingAccounts": "Hesaplar yükleniyor...",
       "appleNotesNoAccounts": "Apple Notes hesabı bulunamadı",
-      "appleNotesNoteCount": "{{count}} not"
+      "appleNotesNoteCount": "{{count}} not",
+      "notionTokenLabel": "Notion Entegrasyon Tokeni",
+      "notionTokenPlaceholder": "Tokeninizi yapıştırın (ntn_ ile başlar)",
+      "notionTokenHint": "notion.so/profile/integrations adresinde bir entegrasyon oluşturun ve senkronize etmek istediğiniz sayfaları paylaşın.",
+      "notionScopeHint": "TideMind, entegrasyonla paylaşılan tüm sayfaları senkronize edecektir. Kapsamı ayarlamak için Notion'daki paylaşım ayarlarını değiştirin.",
+      "notionConnected": "Token doğrulandı, bağlantı başarılı",
+      "notionFailed": "Token geçersiz veya bağlantı başarısız"
     }
   },
   "usage": {
