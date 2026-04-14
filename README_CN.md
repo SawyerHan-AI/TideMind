@@ -6,6 +6,7 @@
 
 <p align="center">
 
+[![Website](https://img.shields.io/badge/Website-tidemind.ai-6C5CE7?style=for-the-badge&logo=safari&logoColor=white)](https://tidemind.ai/zh/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-6C5CE7?style=for-the-badge&logoColor=white)](LICENSE)
 [![Node.js >= 18](https://img.shields.io/badge/Node.js-%3E%3D18-4B3F8F?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-8B7FD4?style=for-the-badge&logoColor=white)](https://modelcontextprotocol.io/)
@@ -56,7 +57,19 @@ TideMind 是一个跨越所有工具的记忆层——一张活的知识图谱�
 
 ## 快速开始
 
-### 前置条件
+### 方式一：下载桌面客户端
+
+最简单的方式。下载、安装、开始使用。
+
+**[下载 macOS 版（Apple Silicon）— 测试版](https://github.com/SawyerHan-AI/TideMind/releases/tag/v0.1.0)**
+
+打开应用后，在「设置」中一键对接你的 AI 工具和笔记系统。
+
+### 方式二：从源码安装
+
+适合希望从源码构建的开发者。
+
+#### 前置条件
 
 - Node.js >= 18
 
@@ -68,7 +81,7 @@ TideMind 是一个跨越所有工具的记忆层——一张活的知识图谱�
 - **向量嵌入服务**（Ollama、Vertex AI 或 Gemini）——启用语义向量搜索。没有配置时，搜索退化为关键词匹配，不影响其他功能。
 - 可以混合搭配：比如本地 Ollama 做嵌入 + Anthropic 做 LLM，或全部本地，或全部云端。详见[集成指南](docs/integrations.md)。
 
-### 安装
+#### 安装
 
 ```bash
 git clone https://github.com/SawyerHan-AI/tidemind.git
@@ -77,7 +90,7 @@ npm install
 npm run build
 ```
 
-### 启动并连接
+#### 启动并连接
 
 ```bash
 npm start
