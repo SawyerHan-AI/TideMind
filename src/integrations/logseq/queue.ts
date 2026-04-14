@@ -226,6 +226,23 @@ async function processOneFile(
       }
     }
 
+    // 多段 part_of 关系串联（与 initialization.ts 一致）
+    if (allNodeIds.length > 1) {
+      for (let i = 1; i < allNodeIds.length; i++) {
+        if (!linkExists(db, allNodeIds[i], allNodeIds[i - 1])) {
+          createLink(db, {
+            from_id: allNodeIds[i],
+            to_id: allNodeIds[i - 1],
+            relation: [{ type: 'part_of', confidence: 0.95 }],
+            strength: 0.9,
+            note: `页面分段 ${i + 1}/${allNodeIds.length}: ${preprocessed.title}`,
+            auto: true,
+            status: 'confirmed',
+          });
+        }
+      }
+    }
+
     // 属性值提升为 tag 节点
     if (Object.keys(preprocessed.metadata.properties).length > 0) {
       await promotePropertyValues(

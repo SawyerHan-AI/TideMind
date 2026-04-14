@@ -25,13 +25,14 @@ import { importVersionHistory, scanVersionFiles, deduplicateVersions } from './v
 import { ensureSyncSchema, setFileState, getFileState, computeFileHash, getFileStat } from './sync-state.js';
 import { digest } from '../../tools/digest.js';
 import { createLink, linkExists } from '../../db/links.js';
-import { getNode, updateNode } from '../../db/nodes.js';
+import { getNode } from '../../db/nodes.js';
 import { promotePropertyValues, getOrCreateTagNode } from '../shared/property-promote.js';
 import { runAnnotation } from '../../metabolism/annotate.js';
 import { runLinkEvaluate } from '../../metabolism/link-evaluate.js';
 import { runKeystoneIdentification } from '../../metabolism/divergent.js';
 import { runCrystalEmergence } from '../../metabolism/divergent.js';
 import { runTemporalCrystal } from '../../metabolism/temporal-crystal.js';
+import { promoteFrequentTags } from '../../metabolism/tag-promote.js';
 import { markFullScanCompleted } from './sync-state.js';
 import { findLandingConnections } from '../../graph/landing.js';
 import { getEmbedding } from '../../llm/embedding.js';
@@ -304,7 +305,7 @@ export async function runInitialization(db: Database.Database, sourceId?: string
       if (isAborted(sourceId)) throw new Error('初始化已中断');
 
       // 断点恢复：跳过已入库的文件
-      const existingState = getFileState(db, file.relPath);
+      const existingState = getFileState(db, file.relPath, sourceId);
       if (existingState && existingState.node_ids.length > 0) {
         fileToNodeIds.set(file.title, existingState.node_ids);
         nodesCreated += existingState.node_ids.length;
@@ -354,6 +355,22 @@ export async function runInitialization(db: Database.Database, sourceId?: string
     contentCache.clear();
 
     log.info(`Phase 3 完成: ${explicitResult.created} 条显式链接, ${danglingRefs} 个悬空引用`);
+    if (isAborted(sourceId)) throw new Error('初始化已中断');
+
+    // === Phase 3.5: 标签提升 ===
+    // 所有节点和基本链接已建立，标签引用计数准确
+    // 此时提升标签，使其参与后续的标注、Landing Connections 等流程
+    log.info('Phase 3.5: 标签提升');
+    try {
+      const tagResult = await promoteFrequentTags(db);
+      if (tagResult.promoted > 0) {
+        nodesCreated += tagResult.promoted;
+        linksCreated += tagResult.linksCreated;
+        log.info(`Phase 3.5 完成: ${tagResult.promoted} 个标签晋升, ${tagResult.linksCreated} 条链接`);
+      }
+    } catch (err) {
+      log.warn(`标签提升失败（不影响初始化）: ${(err as Error).message}`);
+    }
     if (isAborted(sourceId)) throw new Error('初始化已中断');
 
     // === Phase 4: 节点标注 ===
@@ -520,7 +537,7 @@ async function processFileForInit(
     ? `${dateInfo.date}T00:00:00.000Z`
     : undefined;
 
-  // 空白页 → 创建 tag 节点
+  // 空白页 → 创建普通节点（不直接标记 is_tag，由 promoteFrequentTags 按阈值判断）
   if (file.category === 'empty_tag') {
     const result = await digest(db, {
       content: file.title,
@@ -532,10 +549,6 @@ async function processFileForInit(
       created: originalCreated,
     });
     const nodeIds = result.created_nodes?.map(n => n.id) ?? [];
-    // 标记为 tag 节点
-    for (const id of nodeIds) {
-      updateNode(db, id, { is_tag: 1 });
-    }
     // 更新同步状态
     updateSyncState(db, file, nodeIds, sourceId);
     return nodeIds;
@@ -615,7 +628,7 @@ async function processFileForInit(
   if (propEntries.length > 0) {
     await promotePropertyValues(
       db, preprocessed.metadata.properties, nodeIds,
-      'logseq', SYSTEM_PROPERTIES,
+      'logseq', SYSTEM_PROPERTIES, originalCreated,
     );
   }
 
@@ -623,15 +636,6 @@ async function processFileForInit(
   updateSyncState(db, file, nodeIds, sourceId);
 
   return nodeIds;
-}
-
-/**
- * 检查文件是否已完整入库（断点恢复用）
- * 返回已有的 nodeIds（空数组表示未入库）
- */
-function getExistingNodeIds(db: Database.Database, relPath: string, sourceId?: string): string[] {
-  const state = getFileState(db, relPath, sourceId);
-  return state?.node_ids ?? [];
 }
 
 function updateSyncState(db: Database.Database, file: ClassifiedFile, nodeIds: string[] = [], sourceId?: string): void {

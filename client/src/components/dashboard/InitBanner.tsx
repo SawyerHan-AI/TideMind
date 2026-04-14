@@ -18,10 +18,14 @@ export function InitBanner() {
   const [visible, setVisible] = useState(false)
   const pollRef = useRef<NodeJS.Timeout | null>(null)
   const hideTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const doneHandledRef = useRef(false)
   const navigate = useNavigate()
 
   useEffect(() => {
     const poll = async () => {
+      // done 已处理过，不再轮询
+      if (doneHandledRef.current) return
+
       try {
         // 查询所有笔记源，找到正在初始化的
         const sources = await (window as any).api.noteSources.list(false)
@@ -35,7 +39,14 @@ export function InitBanner() {
             setVisible(true)
             found = true
             if (prog.status === 'done') {
-              hideTimerRef.current = setTimeout(() => setVisible(false), 10_000)
+              doneHandledRef.current = true
+              if (pollRef.current) clearInterval(pollRef.current)
+              hideTimerRef.current = setTimeout(() => {
+                setVisible(false)
+                // 隐藏后恢复轮询，以便检测新的初始化
+                doneHandledRef.current = false
+                pollRef.current = setInterval(poll, 3000)
+              }, 10_000)
             }
             break // 同一时刻只有一个在初始化
           }
@@ -67,7 +78,7 @@ export function InitBanner() {
           ? 'bg-emerald-500/10 border border-emerald-500/20 hover:bg-emerald-500/15'
           : 'bg-indigo-400/10 border border-indigo-400/20 hover:bg-indigo-400/15'
       }`}
-      onClick={() => navigate('/settings')}
+      onClick={() => navigate('/settings?tab=external&sub=note')}
     >
       {isDone
         ? <CheckCircle size={14} className="text-emerald-400 flex-shrink-0" />

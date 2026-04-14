@@ -33,29 +33,31 @@ export async function getOrCreateTagNode(
   db: Database.Database,
   tagName: string,
   source: string = 'brain',
+  created?: string,
 ): Promise<string> {
   const normalized = tagName.trim().toLowerCase();
   if (tagNodeCache.has(normalized)) {
     return tagNodeCache.get(normalized)!;
   }
 
-  // 查找已存在的 tag 节点（精确匹配内容）
+  // 查找已存在的 tag 节点（is_tag=1，精确匹配 content 或 title）
   const existing = db.prepare(
-    "SELECT id FROM nodes WHERE is_tag = 1 AND content = ? AND archived = 0 AND is_superseded = 0",
-  ).get(tagName) as { id: string } | undefined;
+    "SELECT id FROM nodes WHERE is_tag = 1 AND (content = ? OR title = ?) AND archived = 0 AND is_superseded = 0 LIMIT 1",
+  ).get(tagName, tagName) as { id: string } | undefined;
 
   if (existing) {
     tagNodeCache.set(normalized, existing.id);
     return existing.id;
   }
 
-  // 创建新 tag 节点
+  // 创建普通节点（不直接标记 is_tag，由 promoteFrequentTags 按阈值判断）
   const result = await digest(db, {
     content: tagName,
     source: { tool: source },
-    context: `属性值 tag 节点: ${tagName}`,
+    context: `属性值节点: ${tagName}`,
     tags: [tagName],
     async: false,
+    created,
   });
 
   const nodeId = result.created_nodes?.[0]?.id;
@@ -116,6 +118,7 @@ export async function promotePropertyValues(
   nodeIds: string[],
   source: string,
   systemProperties: string[],
+  created?: string,
 ): Promise<void> {
   if (nodeIds.length === 0) return;
 
@@ -125,7 +128,7 @@ export async function promotePropertyValues(
     if (!shouldPromotePropertyValue(key, value, systemProperties)) continue;
 
     try {
-      const tagNodeId = await getOrCreateTagNode(db, value, source);
+      const tagNodeId = await getOrCreateTagNode(db, value, source, created);
       if (tagNodeId === firstNodeId) continue;
       if (linkExists(db, firstNodeId, tagNodeId)) continue;
 

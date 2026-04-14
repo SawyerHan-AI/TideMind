@@ -238,7 +238,7 @@ export function registerStatsHandlers(db: Database.Database): void {
     `).all()
 
     // --- 近期标签（核心标签 + 使用频率） ---
-    const coreTagRows = db.prepare('SELECT id, content, created FROM nodes WHERE is_tag = 1 AND heat > 0.01').all() as Array<{ id: string; content: string; created: string }>
+    const coreTagRows = db.prepare('SELECT id, title, content, created FROM nodes WHERE is_tag = 1 AND heat > 0.01').all() as Array<{ id: string; title: string | null; content: string; created: string }>
 
     // Aggregate tag usage from nodes.tags JSON
     const allTagRows = db.prepare('SELECT tags, created FROM nodes WHERE tags IS NOT NULL AND heat > 0.01').all() as Array<{ tags: string; created: string }>
@@ -262,7 +262,7 @@ export function registerStatsHandlers(db: Database.Database): void {
       } catch { /* skip */ }
     }
 
-    const coreTagSet = new Set(coreTagRows.map(r => r.content.trim()))
+    const coreTagSet = new Set(coreTagRows.map(r => (r.title ?? r.content).trim()))
 
     // 确保所有核心标签都包含在结果中（即使 count 不在 top N）
     const recentTags = Array.from(tagStats.entries())
