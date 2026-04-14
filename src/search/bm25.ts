@@ -1,5 +1,7 @@
-import type { SearchResult } from '../types.js';
-import type { IRepository } from '../db/repository.js';
+import type Database from 'better-sqlite3';
+import type { BrainNode, SearchResult } from '../types.js';
+import { searchFTS } from '../db/fts.js';
+import { getNodesByIds } from '../db/nodes.js';
 import { createLogger } from '../utils/logger.js';
 
 const log = createLogger('bm25');
@@ -8,7 +10,7 @@ const log = createLogger('bm25');
  * BM25 搜索，返回归一化评分的节点列表
  */
 export function searchBM25(
-  repo: IRepository,
+  db: Database.Database,
   query: string,
   options: {
     limit?: number;
@@ -19,7 +21,7 @@ export function searchBM25(
   } = {},
 ): SearchResult[] {
   const limit = options.limit ?? 20;
-  const ftsResults = repo.fts.search(query, limit * 2); // 多取一些，后续过滤
+  const ftsResults = searchFTS(db, query, limit * 2); // 多取一些，后续过滤
 
   if (ftsResults.length === 0) return [];
 
@@ -32,7 +34,7 @@ export function searchBM25(
   const results: SearchResult[] = [];
 
   // 批量获取所有 FTS 结果对应的节点，避免 N+1 查询
-  const nodeMap = repo.nodes.getNodesByIds(ftsResults.map(f => f.id));
+  const nodeMap = getNodesByIds(db, ftsResults.map(f => f.id));
 
   for (const fts of ftsResults) {
     const node = nodeMap.get(fts.id);
