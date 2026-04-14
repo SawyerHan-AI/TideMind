@@ -45,6 +45,7 @@ export interface FileSyncState {
   size: number;
   last_synced: string;
   node_ids: string[];
+  segment_hashes?: string[];  // 与 node_ids 平行，每段的 content hash（Logseq 段级去重）
 }
 
 /** 导入进度 */

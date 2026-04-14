@@ -115,6 +115,7 @@ let tmpDir: string;
 function createTempGraph(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-queue-test-'));
   fs.mkdirSync(path.join(dir, 'pages'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'journals'), { recursive: true });
   return dir;
 }
 
@@ -123,6 +124,15 @@ function createTempGraph(): string {
  */
 function writePage(graphRoot: string, name: string, content: string): string {
   const filePath = path.join(graphRoot, 'pages', `${name}.md`);
+  fs.writeFileSync(filePath, content, 'utf-8');
+  return filePath;
+}
+
+/**
+ * 在 graph 的 journals/ 下写入测试 .md 文件
+ */
+function writeJournal(graphRoot: string, name: string, content: string): string {
+  const filePath = path.join(graphRoot, 'journals', `${name}.md`);
   fs.writeFileSync(filePath, content, 'utf-8');
   return filePath;
 }
@@ -335,6 +345,107 @@ describe('processFileChange', () => {
       if (oldNode) {
         expect(oldNode.is_superseded).toBe(1);
       }
+    }
+  });
+});
+
+// ============================================================
+// 段级去重
+// ============================================================
+
+describe('segment-level dedup', () => {
+  it('首次导入时存储 segment_hashes', async () => {
+    // journal 文件中有子节点的 block 不会被合并
+    const file = writeJournal(tmpDir, '2026_03_31', '- Block A with content\n  - Sub block A\n- Block B with content\n  - Sub block B');
+
+    await processFileChange(db, file, tmpDir);
+
+    const state = getFileState(db, 'journals/2026_03_31.md');
+    expect(state).not.toBeNull();
+    expect(state!.segment_hashes!.length).toBeGreaterThan(0);
+    expect(state!.segment_hashes!.length).toBe(state!.node_ids.length);
+  });
+
+  it('文件更新时未变化的段保留原节点 ID', async () => {
+    // journal 中每个有子节点的 block 独立成段
+    const filePath = path.join(tmpDir, 'journals', '2026_03_30.md');
+    fs.writeFileSync(filePath, '- First block stays the same\n  - Detail A\n- Second block will change\n  - Detail B', 'utf-8');
+
+    await processFileChange(db, filePath, tmpDir);
+    const firstState = getFileState(db, 'journals/2026_03_30.md');
+    expect(firstState).not.toBeNull();
+    expect(firstState!.node_ids.length).toBe(2);
+
+    const firstNodeId = firstState!.node_ids[0];
+
+    // 只修改第二个 block
+    fs.writeFileSync(filePath, '- First block stays the same\n  - Detail A\n- Second block has been modified\n  - Detail C', 'utf-8');
+
+    await processFileChange(db, filePath, tmpDir);
+    const secondState = getFileState(db, 'journals/2026_03_30.md');
+    expect(secondState).not.toBeNull();
+
+    // 第一个段未变化 → 保留原节点 ID
+    expect(secondState!.node_ids[0]).toBe(firstNodeId);
+    // 第二个段变化 → 新节点 ID
+    expect(secondState!.node_ids[1]).not.toBe(firstState!.node_ids[1]);
+  });
+
+  it('尾部追加新段时旧段不变', async () => {
+    const filePath = path.join(tmpDir, 'journals', '2026_03_29.md');
+    fs.writeFileSync(filePath, '- Existing block\n  - Detail', 'utf-8');
+
+    await processFileChange(db, filePath, tmpDir);
+    const firstState = getFileState(db, 'journals/2026_03_29.md');
+    const originalNodeId = firstState!.node_ids[0];
+
+    // 追加新 block
+    fs.writeFileSync(filePath, '- Existing block\n  - Detail\n- New block added\n  - New detail', 'utf-8');
+
+    await processFileChange(db, filePath, tmpDir);
+    const secondState = getFileState(db, 'journals/2026_03_29.md');
+
+    // 原有段保留
+    expect(secondState!.node_ids[0]).toBe(originalNodeId);
+    // 新段被添加
+    expect(secondState!.node_ids.length).toBe(2);
+  });
+
+  it('删除段时多余旧节点标记 superseded', async () => {
+    const filePath = path.join(tmpDir, 'journals', '2026_03_28.md');
+    fs.writeFileSync(filePath, '- Block A\n  - Detail A\n- Block B\n  - Detail B\n- Block C\n  - Detail C', 'utf-8');
+
+    await processFileChange(db, filePath, tmpDir);
+    const firstState = getFileState(db, 'journals/2026_03_28.md');
+    expect(firstState!.node_ids.length).toBe(3);
+    const removedNodeId = firstState!.node_ids[2];
+
+    // 删除最后一个 block
+    fs.writeFileSync(filePath, '- Block A\n  - Detail A\n- Block B\n  - Detail B', 'utf-8');
+
+    await processFileChange(db, filePath, tmpDir);
+    const secondState = getFileState(db, 'journals/2026_03_28.md');
+    expect(secondState!.node_ids.length).toBe(2);
+
+    // 被删除的节点应标记为 superseded
+    const removedNode = getNode(db, removedNodeId);
+    if (removedNode) {
+      expect(removedNode.is_superseded).toBe(1);
+    }
+  });
+
+  it('空段不产生节点', async () => {
+    const file = writeJournal(tmpDir, '2026_03_27', '- \n- Real content here\n  - With detail');
+
+    await processFileChange(db, file, tmpDir);
+
+    const state = getFileState(db, 'journals/2026_03_27.md');
+    expect(state).not.toBeNull();
+    // 空 block 应被过滤，只有有内容的段产生节点
+    for (const nodeId of state!.node_ids) {
+      const node = getNode(db, nodeId);
+      expect(node).not.toBeNull();
+      expect(node!.content.trim().length).toBeGreaterThan(0);
     }
   });
 });

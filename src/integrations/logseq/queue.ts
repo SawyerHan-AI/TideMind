@@ -15,7 +15,7 @@ import { preprocessFile, updateBlockIndexForFile } from './preprocessor.js';
 import { segmentContent } from './segmenter.js';
 import {
   getFileState, setFileState, isFileChanged,
-  computeFileHash, getFileStat,
+  computeFileHash, computeSegmentHash, getFileStat,
 } from './sync-state.js';
 import { digest } from '../../tools/digest.js';
 import { updateNode } from '../../db/nodes.js';
@@ -147,31 +147,53 @@ async function processOneFile(
       return;
     }
 
-    // 分段
+    // 分段 + 过滤空段
     const segments = segmentContent(
       preprocessed.cleanContent,
       preprocessed.title,
       preprocessed.metadata.isJournal,
-    );
+    ).filter(s => s.content.trim().length > 0);
 
     if (segments.length === 0) {
       progress.skippedFiles++;
       return;
     }
 
-    // 记录旧版本节点 ID（用于后续 supersede）
+    // 旧版本状态
     const oldNodeIds = syncState?.node_ids ?? [];
+    const oldHashes = syncState?.segment_hashes ?? [];
 
-    // 逐段 digest（同步模式，收集 node IDs）
+    // 预计算公共上下文参数（所有段共享）
+    const propEntries = Object.entries(preprocessed.metadata.properties);
+    const propsStr = propEntries.length > 0
+      ? propEntries.slice(0, 10).map(([k, v]) => `${k}: ${v}`).join(', ')
+      : '';
+    const combinedTags = [
+      ...new Set([
+        ...preprocessed.metadata.tags,
+        ...preprocessed.metadata.pageRefs,
+      ]),
+    ];
+    if (relPath.includes('hls__')) {
+      if (!combinedTags.includes('PDF标注')) combinedTags.push('PDF标注');
+    }
+
+    // 逐段比对 + 增量 digest
     const allNodeIds: string[] = [];
+    const allHashes: string[] = [];
 
-    for (const segment of segments) {
-      // 自定义属性（如 rating:: 5, source:: url）拼入上下文
-      const propEntries = Object.entries(preprocessed.metadata.properties);
-      const propsStr = propEntries.length > 0
-        ? propEntries.slice(0, 10).map(([k, v]) => `${k}: ${v}`).join(', ')
-        : '';
+    for (let i = 0; i < segments.length; i++) {
+      const segment = segments[i];
+      const newHash = computeSegmentHash(segment.content);
+      allHashes.push(newHash);
 
+      // 段内容未变且有对应旧节点 → 保留原节点 ID
+      if (i < oldHashes.length && oldHashes[i] === newHash && i < oldNodeIds.length) {
+        allNodeIds.push(oldNodeIds[i]);
+        continue;
+      }
+
+      // 段内容变化或新增段 → digest 新节点
       const contextParts = [
         `Logseq: ${preprocessed.title}`,
         segment.context !== preprocessed.title ? segment.context : '',
@@ -183,18 +205,6 @@ async function processOneFile(
           ? `关联页面: ${preprocessed.metadata.pageRefs.slice(0, 5).join(', ')}`
           : '',
       ].filter(Boolean).join(' | ');
-
-      // 合并 tags + pageRefs 作为标签（去重）
-      const combinedTags = [
-        ...new Set([
-          ...preprocessed.metadata.tags,
-          ...preprocessed.metadata.pageRefs,
-        ]),
-      ];
-      // PDF 标注文件追加标签
-      if (relPath.includes('hls__')) {
-        if (!combinedTags.includes('PDF标注')) combinedTags.push('PDF标注');
-      }
 
       const result = await digest(db, {
         content: segment.content,
@@ -208,22 +218,21 @@ async function processOneFile(
         async: false,
       });
 
-      if (result.created_nodes) {
-        allNodeIds.push(...result.created_nodes.map(n => n.id));
+      if (result.created_nodes && result.created_nodes.length > 0) {
+        const newNodeId = result.created_nodes[0].id;
+        allNodeIds.push(newNodeId);
+
+        // 有对应旧节点 → supersede
+        if (i < oldNodeIds.length) {
+          supersedeNode(db, oldNodeIds[i], newNodeId);
+        }
       }
     }
 
-    // 版本替代：旧节点链接迁移到新节点，旧节点标记为 superseded
-    if (oldNodeIds.length > 0 && allNodeIds.length > 0) {
-      const pairs = Math.min(oldNodeIds.length, allNodeIds.length);
-      for (let i = 0; i < pairs; i++) {
-        supersedeNode(db, oldNodeIds[i], allNodeIds[i]);
-      }
-      // 多出来的旧节点直接标记 superseded
-      for (let i = pairs; i < oldNodeIds.length; i++) {
-        db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(oldNodeIds[i]);
-        db.prepare('DELETE FROM links WHERE from_id = ? OR to_id = ?').run(oldNodeIds[i], oldNodeIds[i]);
-      }
+    // 多余旧段：标记 superseded
+    for (let i = segments.length; i < oldNodeIds.length; i++) {
+      db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(oldNodeIds[i]);
+      db.prepare('DELETE FROM links WHERE from_id = ? OR to_id = ?').run(oldNodeIds[i], oldNodeIds[i]);
     }
 
     // 多段 part_of 关系串联（与 initialization.ts 一致）
@@ -260,6 +269,7 @@ async function processOneFile(
       size: fileStat?.size ?? 0,
       last_synced: now(),
       node_ids: allNodeIds,
+      segment_hashes: allHashes,
     };
     setFileState(db, fileState, sourceId);
 
