@@ -6,6 +6,7 @@
 
 <p align="center">
 
+[![Website](https://img.shields.io/badge/Website-tidemind.ai-6C5CE7?style=for-the-badge&logo=safari&logoColor=white)](https://tidemind.ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-6C5CE7?style=for-the-badge&logoColor=white)](LICENSE)
 [![Node.js >= 18](https://img.shields.io/badge/Node.js-%3E%3D18-4B3F8F?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-8B7FD4?style=for-the-badge&logoColor=white)](https://modelcontextprotocol.io/)
@@ -56,7 +57,19 @@ TideMind is a memory layer that spans all your tools — a living knowledge grap
 
 ## Quick Start
 
-### Prerequisites
+### Option 1: Download the Desktop App
+
+The easiest way to get started. Download, install, and you're ready to go.
+
+**[Download for macOS (Apple Silicon) — Beta](https://github.com/SawyerHan-AI/TideMind/releases/tag/v0.1.0)**
+
+Open the app, then head to **Settings** to connect your AI tools and note systems with one click.
+
+### Option 2: From Source
+
+For developers who prefer building from source.
+
+#### Prerequisites
 
 - Node.js >= 18
 
@@ -68,7 +81,7 @@ That's the only hard requirement. TideMind runs out of the box with text search 
 - **An embedding provider** (Ollama, Vertex AI, or Gemini) — enables semantic vector search alongside BM25. Without it, search falls back to keyword matching.
 - You can mix and match: e.g., Ollama locally for embeddings + Anthropic for LLM, or go fully local, or fully cloud. See the [Integration Guide](docs/integrations.md) for details.
 
-### Install
+#### Install
 
 ```bash
 git clone https://github.com/SawyerHan-AI/tidemind.git
@@ -77,7 +90,7 @@ npm install
 npm run build
 ```
 
-### Launch and Connect
+#### Launch and Connect
 
 ```bash
 npm start
