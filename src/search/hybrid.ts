@@ -1,20 +1,22 @@
-import type Database from 'better-sqlite3';
 import type { SearchResult, HybridWeights, Intent, BrainNode, RelationType, BrainLink } from '../types.js';
+import type { IRepository } from '../db/repository.js';
 import { searchBM25 } from './bm25.js';
 import { searchVector } from './vector.js';
 import { getParam } from '../strategy/loader.js';
 import { getGateStatus } from '../db/stats.js';
-import { getLinksForNodes } from '../db/links.js';
-import { getNodesByIds } from '../db/nodes.js';
 import { createLogger } from '../utils/logger.js';
 
 const log = createLogger('search');
 
 /**
  * 混合搜索：BM25 + 向量 + 热度 + 成熟度
+ *
+ * @param repo - Repository 接口
+ * @param db - 仅用于 getGateStatus（待 stats 模块迁移后移除）
  */
 export async function searchHybrid(
-  db: Database.Database,
+  repo: IRepository,
+  db: import('better-sqlite3').Database,
   query: string,
   options: {
     limit?: number;
@@ -32,7 +34,7 @@ export async function searchHybrid(
   log.debug(`hybrid query="${query.slice(0, 60)}" intent=${options.intent ?? 'default'} vectorEnabled=${gates.features.vector_search}`);
 
   // BM25 搜索（始终可用）
-  const bm25Results = searchBM25(db, query, {
+  const bm25Results = searchBM25(repo, query, {
     limit: 20,
     type: options.type,
     createdAfter: options.createdAfter,
@@ -43,7 +45,7 @@ export async function searchHybrid(
   // 向量搜索（需要门控通过）
   let vectorResults: SearchResult[] = [];
   if (gates.features.vector_search) {
-    vectorResults = await searchVector(db, query, {
+    vectorResults = await searchVector(repo, query, {
       limit: 20,
       type: options.type,
       context: options.context,
@@ -111,7 +113,7 @@ export async function searchHybrid(
   const topIds = topForExpansion.map(r => r.node.id);
 
   // 批量获取所有 top 结果的链接，避免 N+1
-  const allLinks = getLinksForNodes(db, topIds, { minStrength: expansionConfig.minStrength, statusFilter: 'confirmed' });
+  const allLinks = repo.links.getLinksForNodes(topIds, { minStrength: expansionConfig.minStrength, statusFilter: 'confirmed' });
 
   // 收集所有邻居 ID
   const neighborIdSet = new Set<string>();
@@ -123,7 +125,7 @@ export async function searchHybrid(
   for (const id of resultIds) neighborIdSet.delete(id);
 
   // 批量获取所有邻居节点
-  const neighborNodeMap = getNodesByIds(db, [...neighborIdSet]);
+  const neighborNodeMap = repo.nodes.getNodesByIds([...neighborIdSet]);
 
   // 按 top 结果遍历链接，计算邻居分数
   for (const result of topForExpansion) {

@@ -1,7 +1,5 @@
-import type Database from 'better-sqlite3';
-import type { BrainNode, SearchResult } from '../types.js';
-import { searchVectors } from '../db/vectors.js';
-import { getNodesByIds } from '../db/nodes.js';
+import type { SearchResult } from '../types.js';
+import type { IRepository } from '../db/repository.js';
 import { getEmbedding } from '../llm/embedding.js';
 import { l2DistanceToSimilarity } from '../utils/similarity.js';
 import { createLogger } from '../utils/logger.js';
@@ -13,7 +11,7 @@ const log = createLogger('vector');
  * 将 distance 转换为 similarity (0-1)
  */
 export async function searchVector(
-  db: Database.Database,
+  repo: IRepository,
   query: string,
   options: {
     limit?: number;
@@ -36,13 +34,13 @@ export async function searchVector(
     return [];
   }
 
-  const vecResults = searchVectors(db, queryEmbedding, limit * 2);
+  const vecResults = repo.vectors.searchVectors(queryEmbedding, limit * 2);
   if (vecResults.length === 0) return [];
 
   const results: SearchResult[] = [];
 
   // 批量获取所有向量结果对应的节点，避免 N+1 查询
-  const nodeMap = getNodesByIds(db, vecResults.map(v => v.id));
+  const nodeMap = repo.nodes.getNodesByIds(vecResults.map(v => v.id));
 
   for (const vr of vecResults) {
     const node = nodeMap.get(vr.id);
