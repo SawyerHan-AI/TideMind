@@ -265,6 +265,80 @@ describe('rollbackNoteSource 批量节点', () => {
   });
 });
 
+// ===== Notion 类型回退 =====
+
+describe('rollbackNoteSource notion 类型', () => {
+  it('notion 类型使用 notion_sync 表', () => {
+    // 创建 notion_sync 表（模拟 schema migration）
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS notion_sync (
+        page_id TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        last_edited_time TEXT NOT NULL,
+        page_type TEXT NOT NULL DEFAULT 'page',
+        last_synced TEXT NOT NULL,
+        node_ids TEXT,
+        source_id TEXT DEFAULT '',
+        PRIMARY KEY (page_id, source_id)
+      )
+    `);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS notion_pending_relations (
+        source_page_id TEXT NOT NULL,
+        target_page_id TEXT NOT NULL,
+        source_node_id TEXT NOT NULL,
+        property_name TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        created TEXT NOT NULL,
+        PRIMARY KEY (source_page_id, target_page_id, source_id)
+      )
+    `);
+
+    const src = createNoteSource(db, { name: 'N', toolType: 'notion', path: '' });
+    const node = seedNode(db);
+
+    // 插入 notion_sync 记录
+    db.prepare(`
+      INSERT INTO notion_sync (page_id, content_hash, last_edited_time, page_type, last_synced, node_ids, source_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('page-1', 'hash', '2024-01-01', 'page', '2024-01-01', JSON.stringify([node.id]), src.id);
+
+    // 插入 pending relation
+    db.prepare(`
+      INSERT INTO notion_pending_relations (source_page_id, target_page_id, source_node_id, property_name, source_id, created)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run('page-1', 'page-2', node.id, 'Related', src.id, '2024-01-01');
+
+    // 插入 full_scan 标记
+    db.prepare('INSERT INTO metadata (key, value) VALUES (?, ?)').run(
+      `notion_full_scan_completed_${src.id}`,
+      'true',
+    );
+
+    rollbackNoteSource(db, src.id, 'notion');
+
+    // 节点被删除
+    const nodeCount = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE id = ?').get(node.id) as { cnt: number }).cnt;
+    expect(nodeCount).toBe(0);
+
+    // notion_sync 被清理
+    const syncCount = (db.prepare('SELECT COUNT(*) as cnt FROM notion_sync WHERE source_id = ?').get(src.id) as { cnt: number }).cnt;
+    expect(syncCount).toBe(0);
+
+    // notion_pending_relations 被清理
+    const relCount = (db.prepare('SELECT COUNT(*) as cnt FROM notion_pending_relations WHERE source_id = ?').get(src.id) as { cnt: number }).cnt;
+    expect(relCount).toBe(0);
+
+    // note_sources 被清理
+    const nsCount = (db.prepare('SELECT COUNT(*) as cnt FROM note_sources WHERE id = ?').get(src.id) as { cnt: number }).cnt;
+    expect(nsCount).toBe(0);
+
+    // metadata 被清理
+    const metaCount = (db.prepare('SELECT COUNT(*) as cnt FROM metadata WHERE key = ?').get(`notion_full_scan_completed_${src.id}`) as { cnt: number }).cnt;
+    expect(metaCount).toBe(0);
+  });
+});
+
 // ===== 多文件记录回退 =====
 
 describe('rollbackNoteSource 多文件记录', () => {

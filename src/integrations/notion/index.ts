@@ -19,6 +19,7 @@ const log = createLogger('notion');
 
 const pollingTimers = new Map<string, ReturnType<typeof setInterval>>();
 const syncCounters = new Map<string, number>(); // 用于周期性删除检测
+const syncingSources = new Set<string>(); // 并发防护
 
 // ── 公开 API ──────────────────────────────────────────────────
 
@@ -120,6 +121,23 @@ async function runSync(
   token: string,
   sourceId: string,
 ): Promise<void> {
+  if (syncingSources.has(sourceId)) {
+    log.info(`全量同步已在进行中，跳过: ${sourceId}`);
+    return;
+  }
+  syncingSources.add(sourceId);
+  try {
+    await runSyncInner(db, token, sourceId);
+  } finally {
+    syncingSources.delete(sourceId);
+  }
+}
+
+async function runSyncInner(
+  db: Database.Database,
+  token: string,
+  sourceId: string,
+): Promise<void> {
   clearTagNodeCache();
 
   log.info('开始全量同步...');
@@ -181,6 +199,23 @@ async function runSync(
 // ── 增量同步 ──────────────────────────────────────────────────
 
 async function runIncrementalSync(
+  db: Database.Database,
+  token: string,
+  sourceId: string,
+): Promise<void> {
+  if (syncingSources.has(sourceId)) {
+    log.debug(`增量同步已在进行中，跳过: ${sourceId}`);
+    return;
+  }
+  syncingSources.add(sourceId);
+  try {
+    await runIncrementalSyncInner(db, token, sourceId);
+  } finally {
+    syncingSources.delete(sourceId);
+  }
+}
+
+async function runIncrementalSyncInner(
   db: Database.Database,
   token: string,
   sourceId: string,

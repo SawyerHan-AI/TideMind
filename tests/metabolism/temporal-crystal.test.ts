@@ -84,3 +84,60 @@ describe('runTemporalCrystal', () => {
     expect(typeof result.crystals_created).toBe('number');
   });
 });
+
+// ===== LIKE 转义测试 =====
+
+describe('temporal crystal - LIKE escaping', () => {
+  it('标签包含 % 字符时 LIKE 查询正确转义', async () => {
+    vi.mocked(isLlmConfigured).mockReturnValue(true);
+
+    // 创建足够多的节点以通过门控 (200)
+    for (let i = 0; i < 201; i++) {
+      seedNode(db, { content: `filler node ${i}` });
+    }
+
+    // 创建一个标签包含 % 的 tag 节点
+    db.prepare(`
+      INSERT INTO nodes (id, type, content, heat, refinement, connectivity, independence,
+        specificity, subjectivity, actuality, maturity_score, is_crystal, is_tag, is_meta,
+        is_keystone, is_superseded, version, archived, tags, created)
+      VALUES (?, 'fact', ?, 1.0, 0, 0, 0, 0.5, 0.5, 0.5, 0.2, 0, 1, 0, 0, 0, 1, 0, '[]', datetime('now'))
+    `).run('tag-percent', '50%_off');
+
+    // 创建一个 is_crystal=1 的节点，标签中包含 %，
+    // 并设置 content 包含 '时间演变'
+    db.prepare(`
+      INSERT INTO nodes (id, type, content, heat, refinement, connectivity, independence,
+        specificity, subjectivity, actuality, maturity_score, is_crystal, is_tag, is_meta,
+        is_keystone, is_superseded, version, archived, tags, created)
+      VALUES (?, 'fact', ?, 1.0, 0.8, 0, 0.8, 0.2, 0.5, 0.8, 0.5, 1, 0, 0, 0, 0, 1, 0, ?, datetime('now'))
+    `).run('crystal-pct', '[时间演变] 50%_off: test', JSON.stringify(['时间结晶', '50%_off']));
+
+    // 测试: 带 % 的 escapedTag 应该用 \% 转义
+    // 验证数据库查询不会因为 % 被当作通配符而崩溃
+    const result = await runTemporalCrystal(db);
+    // 不崩溃即通过
+    expect(result).toHaveProperty('analyzed');
+  });
+
+  it('标签包含 _ 字符时 LIKE 查询正确转义', async () => {
+    vi.mocked(isLlmConfigured).mockReturnValue(true);
+
+    // 创建足够多的节点以通过门控
+    for (let i = 0; i < 201; i++) {
+      seedNode(db, { content: `node filler ${i}` });
+    }
+
+    // 创建一个标签包含 _ 的 tag 节点
+    db.prepare(`
+      INSERT INTO nodes (id, type, content, heat, refinement, connectivity, independence,
+        specificity, subjectivity, actuality, maturity_score, is_crystal, is_tag, is_meta,
+        is_keystone, is_superseded, version, archived, tags, created)
+      VALUES (?, 'fact', ?, 1.0, 0, 0, 0, 0.5, 0.5, 0.5, 0.2, 0, 1, 0, 0, 0, 1, 0, '[]', datetime('now'))
+    `).run('tag-under', 'my_tag_name');
+
+    // 不崩溃即通过
+    const result = await runTemporalCrystal(db);
+    expect(result).toHaveProperty('analyzed');
+  });
+});

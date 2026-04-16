@@ -255,3 +255,64 @@ describe('searchHybrid - neighbor expansion', () => {
     expect(ids).not.toContain(nodeB.id);
   });
 });
+
+// ===== getLinkRelationBoost with non-array relation data =====
+
+describe('searchHybrid - link relation boost edge cases', () => {
+  it('should handle links with non-array relation data gracefully in neighbor expansion', async () => {
+    const nodeA = seedNode(db, { content: 'quantum mechanics particles' });
+    const nodeB = seedNode(db, { content: 'unrelated neighbor music theory' });
+
+    // Create a confirmed link, then manually corrupt the relation to non-array
+    const link = seedLink(db, nodeA.id, nodeB.id, {
+      relation: [{ type: 'supports', confidence: 0.7 }],
+      strength: 0.8,
+      status: 'confirmed',
+    });
+
+    // Corrupt the relation field to a non-array value
+    if (link) {
+      db.prepare('UPDATE links SET relation = ? WHERE id = ?').run('"not-an-array"', link.id);
+    }
+
+    // Should not throw, and nodeB should still appear (with boost = 1.0 fallback)
+    const results = await searchHybrid(repo, 'quantum', { limit: 20 });
+    const ids = results.map(r => r.node.id);
+    expect(ids).toContain(nodeA.id);
+    // nodeB may or may not appear depending on score, but no crash
+  });
+
+  it('should boost analogous links with creative intent', async () => {
+    const nodeA = seedNode(db, { content: 'neural network architecture deep learning' });
+    const nodeB = seedNode(db, { content: 'unrelated neighbor analogous biology', heat: 3.0 });
+
+    seedLink(db, nodeA.id, nodeB.id, {
+      relation: [{ type: 'analogous', confidence: 0.8 }],
+      strength: 0.6,
+      status: 'confirmed',
+    });
+
+    const results = await searchHybrid(repo, 'neural network', { intent: 'creative', limit: 20 });
+    const ids = results.map(r => r.node.id);
+    expect(ids).toContain(nodeA.id);
+    // With creative intent, analogous links get 1.5x boost AND minStrength is 0.3
+    // so nodeB should appear
+    expect(ids).toContain(nodeB.id);
+  });
+
+  it('should exclude meta nodes from expansion when excludeMeta is true', async () => {
+    const nodeA = seedNode(db, { content: 'statistics regression correlation' });
+    const metaNode = seedNode(db, { type: 'meta', content: 'meta neighbor about system' });
+
+    seedLink(db, nodeA.id, metaNode.id, {
+      relation: [{ type: 'supports', confidence: 0.7 }],
+      strength: 0.8,
+      status: 'confirmed',
+    });
+
+    const results = await searchHybrid(repo, 'statistics', { limit: 20, excludeMeta: true });
+    const ids = results.map(r => r.node.id);
+    expect(ids).toContain(nodeA.id);
+    expect(ids).not.toContain(metaNode.id);
+  });
+});

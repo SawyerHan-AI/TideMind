@@ -134,7 +134,7 @@ function NoteSourceDetailPanel({
       await (window as any).api.noteSources.update(source.id, { pollInterval })
     }, 500)
     return () => clearTimeout(timer)
-  }, [pollInterval])
+  }, [pollInterval, source.id])
 
   const handleRename = async () => {
     if (newName.trim() && newName !== source.name) {
@@ -350,7 +350,10 @@ function InitializingSourceCard({
       } catch { /* ignore */ }
     }
     load()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      if (pollRef.current) clearInterval(pollRef.current)
+    }
   }, [source.id])
 
   // 清理轮询

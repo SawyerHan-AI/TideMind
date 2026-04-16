@@ -262,11 +262,12 @@ async function callOpenAICompatibleLLM(options: {
   // 提取 <think>...</think> 标签中的思考内容（DeepSeek-R1、QwQ 等推理模型的通用约定）
   let text = rawText;
   let thinkingTokens = 0;
-  const thinkMatch = rawText.match(/^<think>([\s\S]*?)<\/think>\s*/);
-  if (thinkMatch) {
-    text = rawText.slice(thinkMatch[0].length);
+  const thinkRegex = /^\s*<think>([\s\S]*?)<\/think>\s*/;
+  let thinkMatch: RegExpMatchArray | null;
+  while ((thinkMatch = text.match(thinkRegex)) !== null) {
     // 粗略估算：4 字符 ≈ 1 token
-    thinkingTokens = Math.ceil(thinkMatch[1].length / 4);
+    thinkingTokens += Math.ceil(thinkMatch[1].length / 4);
+    text = text.slice(thinkMatch[0].length);
   }
 
   return { text, inputTokens, outputTokens, thinkingTokens };

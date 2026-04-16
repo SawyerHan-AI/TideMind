@@ -25,6 +25,13 @@ function backupDbIfNeeded(dbPath: string): void {
   const backupPath = path.join(dir, `brain.backup-${timestamp}.sqlite`);
 
   try {
+    // 先将 WAL 内容合并到主数据库文件，确保备份包含所有已提交数据
+    const tmpDb = new Database(dbPath);
+    try {
+      tmpDb.pragma('wal_checkpoint(TRUNCATE)');
+    } finally {
+      tmpDb.close();
+    }
     fs.copyFileSync(dbPath, backupPath);
     log.info(`数据库已备份: ${backupPath}`);
 

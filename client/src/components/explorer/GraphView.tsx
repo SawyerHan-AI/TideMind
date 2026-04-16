@@ -346,6 +346,13 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
     rafRef.current = requestAnimationFrame(() => renderRef.current())
   }, []) // empty deps: stable reference forever
 
+  // Cancel any pending RAF on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    }
+  }, [])
+
   // Re-render when visual state changes
   useEffect(() => {
     scheduleRender()

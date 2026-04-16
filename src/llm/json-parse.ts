@@ -19,15 +19,31 @@ export function parseLLMJson<T>(raw: string): T | null {
     return JSON.parse(cleaned) as T;
   } catch { /* continue */ }
 
-  // 3. 提取 JSON 对象或数组（贪婪匹配到最后一个闭合符号，处理嵌套结构）
+  // 3. 提取 JSON 对象或数组（括号深度计数，精确定位匹配的闭合符号）
   const firstBrace = cleaned.indexOf('{');
   const firstBracket = cleaned.indexOf('[');
   const starts = [firstBrace, firstBracket].filter(i => i >= 0);
   for (const start of starts.sort((a, b) => a - b)) {
-    const closeChar = cleaned[start] === '{' ? '}' : ']';
-    const lastClose = cleaned.lastIndexOf(closeChar);
-    if (lastClose > start) {
-      try { return JSON.parse(cleaned.slice(start, lastClose + 1)) as T; } catch { /* continue */ }
+    const openChar = cleaned[start] as '{' | '[';
+    const closeChar = openChar === '{' ? '}' : ']';
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let end = -1;
+    for (let i = start; i < cleaned.length; i++) {
+      const ch = cleaned[i];
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\' && inString) { escaped = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === openChar) depth++;
+      else if (ch === closeChar) {
+        depth--;
+        if (depth === 0) { end = i; break; }
+      }
+    }
+    if (end > start) {
+      try { return JSON.parse(cleaned.slice(start, end + 1)) as T; } catch { /* continue */ }
     }
   }
 

@@ -23,7 +23,9 @@ export function rollbackNoteSource(
     ? 'logseq_sync'
     : toolType === 'obsidian'
       ? 'obsidian_sync'
-      : 'apple_notes_sync';
+      : toolType === 'notion'
+        ? 'notion_sync'
+        : 'apple_notes_sync';
 
   // 1. 收集所有 node_ids
   const rows = db.prepare(
@@ -88,6 +90,13 @@ export function rollbackNoteSource(
 
     // 删除 sync state
     db.prepare(`DELETE FROM ${syncTable} WHERE source_id = ?`).run(sourceId);
+
+    // 清理 Notion pending relations（如果存在）
+    if (toolType === 'notion') {
+      try {
+        db.prepare('DELETE FROM notion_pending_relations WHERE source_id = ?').run(sourceId);
+      } catch { /* table may not exist */ }
+    }
 
     // 删除 note_sources 记录
     db.prepare('DELETE FROM note_sources WHERE id = ?').run(sourceId);

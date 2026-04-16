@@ -922,8 +922,8 @@
     "logout": "退出登录",
     "deleteAccount": "注销账户",
     "deleteAccountTitle": "确认注销账户？",
-    "deleteAccountDesc": "云端所有数据将在 30 天后永久删除。本地数据不受影响。此操作不可撤销。",
-    "deleteAccountConfirm": "确认注销",
+    "deleteAccountDesc": "这将退出登录。如需永久删除账号和所有云端数据，请联系 support@tidemind.ai。本地数据不受影响。",
+    "deleteAccountConfirm": "退出并申请删除",
     "registerButton": "创建账号",
     "browserHint": "将在浏览器中打开，进行安全认证。"
   },

@@ -19,6 +19,7 @@ import { runKeystoneIdentification, runCrystalEmergence } from '../../metabolism
 import { runTemporalCrystal } from '../../metabolism/temporal-crystal.js';
 import { promoteFrequentTags } from '../../metabolism/tag-promote.js';
 import { clearTagNodeCache } from '../shared/property-promote.js';
+import { isLlmConfigured } from '../../config.js';
 
 const log = createLogger('notion:init');
 const DEFAULT_SOURCE = '__default__';
@@ -61,7 +62,7 @@ function getProgress(sourceId?: string): InitProgress {
 }
 
 export function getInitProgress(sourceId?: string): InitProgress {
-  return getProgress(sourceId);
+  return { ...getProgress(sourceId) };
 }
 
 export function abortInit(sourceId?: string): void {
@@ -165,14 +166,18 @@ export async function runInitialization(
     setPhase(4, '批量标注', pendingAnnotateCount, sourceId);
     log.info(`Phase 4: 标注 ${pendingAnnotateCount} 个节点...`);
 
-    let annotateRound = 0;
-    while (true) {
-      if (isAborted(sourceId)) throw new Error('初始化已中断');
-      const result = await runAnnotation(db);
-      if (result.annotated === 0) break;
-      advanceProgress(result.annotated, sourceId);
-      annotateRound++;
-      if (annotateRound % 10 === 0) log.info(`Phase 4: 第 ${annotateRound} 轮`);
+    if (isLlmConfigured()) {
+      // 安全上限：直接用待标注数量，确保即使每轮只处理 1 个也不会提前截断
+      const maxAnnotateRounds = Math.max(200, pendingAnnotateCount);
+      let annotateRound = 0;
+      while (annotateRound < maxAnnotateRounds) {
+        if (isAborted(sourceId)) throw new Error('初始化已中断');
+        const result = await runAnnotation(db);
+        if (result.annotated === 0) break;
+        advanceProgress(result.annotated, sourceId);
+        annotateRound++;
+        if (annotateRound % 10 === 0) log.info(`Phase 4: 第 ${annotateRound} 轮`);
+      }
     }
 
     // ── Phase 5: Landing 连接 ──
@@ -208,14 +213,17 @@ export async function runInitialization(
     setPhase(6, '链接评估', pendingLinkCount, sourceId);
     log.info(`Phase 6: 评估 ${pendingLinkCount} 条链接...`);
 
-    let evalRound = 0;
-    while (true) {
-      if (isAborted(sourceId)) throw new Error('初始化已中断');
-      const result = await runLinkEvaluate(db);
-      if (result.evaluated === 0) break;
-      advanceProgress(result.evaluated, sourceId);
-      evalRound++;
-      if (evalRound % 10 === 0) log.info(`Phase 6: 第 ${evalRound} 轮`);
+    if (isLlmConfigured()) {
+      const maxEvalRounds = Math.max(200, pendingLinkCount);
+      let evalRound = 0;
+      while (evalRound < maxEvalRounds) {
+        if (isAborted(sourceId)) throw new Error('初始化已中断');
+        const result = await runLinkEvaluate(db);
+        if (result.evaluated === 0) break;
+        advanceProgress(result.evaluated, sourceId);
+        evalRound++;
+        if (evalRound % 10 === 0) log.info(`Phase 6: 第 ${evalRound} 轮`);
+      }
     }
 
     // ── Phase 7: Keystone 标记 ──

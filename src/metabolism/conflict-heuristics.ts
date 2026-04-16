@@ -10,7 +10,7 @@ export interface ConflictSignal {
 }
 
 /** 中文否定标记 */
-const NEGATION_ZH = ['不再', '取消', '废弃', '放弃', '停用', '替换', '改为', '改用', '迁移到', '从.*换成', '不用'];
+const NEGATION_ZH = ['不再', '取消', '废弃', '放弃', '停用', '替换', '改为', '改用', '迁移到', '从\\S+换成', '不用'];
 /** 英文否定标记 */
 const NEGATION_EN = ['no longer', 'deprecated', 'removed', 'replaced', 'stopped', 'abandoned', 'switched from', 'migrated to', 'instead of'];
 

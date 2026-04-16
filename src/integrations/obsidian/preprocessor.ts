@@ -188,7 +188,7 @@ export function walkMdFiles(vaultRoot: string, excludedDirs: string[]): string[]
       if (entry.isDirectory()) {
         if (isExcludedDir(relPath, excludedDirs)) continue;
         walk(path.join(dir, entry.name), relPath);
-      } else if (entry.name.endsWith('.md')) {
+      } else if (entry.name.endsWith('.md') || entry.name.endsWith('.canvas')) {
         results.push(path.join(dir, entry.name));
       }
     }
@@ -202,7 +202,7 @@ export function walkMdFiles(vaultRoot: string, excludedDirs: string[]): string[]
  * 检查文件是否应该被处理
  */
 export function shouldProcessFile(filename: string, excludedDirs: string[]): boolean {
-  if (!filename.endsWith('.md')) return false;
+  if (!filename.endsWith('.md') && !filename.endsWith('.canvas')) return false;
   const normalized = filename.replace(/\\/g, '/');
   return !excludedDirs.some(
     excluded => normalized.startsWith(excluded + '/') || normalized === excluded,

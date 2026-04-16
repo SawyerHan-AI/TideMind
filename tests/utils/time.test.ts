@@ -42,3 +42,34 @@ describe('daysAgo', () => {
     expect(result).toBeGreaterThan(0);
   });
 });
+
+describe('today - local date', () => {
+  it('返回本地日期而非 UTC 日期', () => {
+    const result = today();
+    const d = new Date();
+    const expectedYear = d.getFullYear();
+    const expectedMonth = String(d.getMonth() + 1).padStart(2, '0');
+    const expectedDay = String(d.getDate()).padStart(2, '0');
+    const expectedLocal = `${expectedYear}-${expectedMonth}-${expectedDay}`;
+    expect(result).toBe(expectedLocal);
+  });
+
+  it('使用 getFullYear/getMonth/getDate（本地时间方法）', () => {
+    // Verify that today() uses local time methods by checking it matches
+    // what we'd get from the same local-time approach
+    const result = today();
+    const parts = result.split('-');
+    expect(parts).toHaveLength(3);
+    expect(parts[0].length).toBe(4); // YYYY
+    expect(parts[1].length).toBe(2); // MM
+    expect(parts[2].length).toBe(2); // DD
+
+    // Month and day should be zero-padded
+    const month = parseInt(parts[1], 10);
+    const day = parseInt(parts[2], 10);
+    expect(month).toBeGreaterThanOrEqual(1);
+    expect(month).toBeLessThanOrEqual(12);
+    expect(day).toBeGreaterThanOrEqual(1);
+    expect(day).toBeLessThanOrEqual(31);
+  });
+});

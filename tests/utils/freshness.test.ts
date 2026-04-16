@@ -158,4 +158,36 @@ describe('computeFreshness', () => {
     expect(result).toContain('较旧记忆');
     expect(result).toContain('999天前');
   });
+
+  // ===== heat=0 daysSinceUpdate=0 边界 =====
+
+  it('heat=0 daysSinceUpdate=0 (当天创建) → 无需标注', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const node = makeNode({
+      heat: 0,
+      created: new Date(NOW - 1000).toISOString(), // 1 秒前
+    });
+    // daysSinceUpdate < 1, so "新节点" branch → undefined
+    expect(computeFreshness(node)).toBeUndefined();
+  });
+
+  it('heat=0 daysSinceUpdate=1 → "较旧记忆"', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const node = makeNode({
+      heat: 0,
+      created: new Date(NOW - 2 * 86_400_000).toISOString(), // 2 天前
+    });
+    // heat=0 < 0.1 and daysSinceUpdate=2 > 1 → 走 "很冷或很旧" 分支
+    const result = computeFreshness(node);
+    expect(result).toContain('较旧记忆');
+  });
+
+  it('heat=0.09 daysSinceUpdate=0 (当天创建) → 无需标注', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const node = makeNode({
+      heat: 0.09,
+      created: new Date(NOW - 3600_000).toISOString(), // 1 小时前
+    });
+    expect(computeFreshness(node)).toBeUndefined();
+  });
 });

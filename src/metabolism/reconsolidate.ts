@@ -18,6 +18,8 @@ import { parseLLMJson } from '../llm/json-parse.js';
 
 const log = createLogger('reconsolidate');
 
+let reconsolidateInFlight = false;
+
 /**
  * 读即写再巩固
  *
@@ -37,6 +39,8 @@ export function reconsolidateOnRecall(
   context?: string,
   avgSearchScore?: number,
 ): void {
+  if (reconsolidateInFlight) return;
+  reconsolidateInFlight = true;
   const minNodes = getParam('metabolism-params', 'reconsolidate_min_nodes', 3);
 
   // --- 感知读 ---
@@ -136,7 +140,9 @@ export function reconsolidateOnRecall(
       if (nodes.length >= 2 || context) {
         try { await detectAndReconsolidateAsync(db, nodes, context); } catch (err) { log.error('冲突检测失败:', (err as Error).message); }
       }
-    })();
+    })().catch(err => log.warn('再巩固 IIFE 未捕获异常:', (err as Error).message)).finally(() => { reconsolidateInFlight = false; });
+  } else {
+    reconsolidateInFlight = false;
   }
 }
 
@@ -271,8 +277,9 @@ async function deepReconsolidate(
     return;
   }
 
-  if (result.needs_update && result.updated_content) {
-    updateNode(db, node.id, { content: result.updated_content, refinement: 0 }, 'deep reconsolidation');
+  const contentWasUpdated = !!(result.needs_update && result.updated_content);
+  if (contentWasUpdated) {
+    updateNode(db, node.id, { content: result.updated_content!, refinement: 0 }, 'deep reconsolidation');
   }
 
   if (result.conflict_detected) {
@@ -302,13 +309,22 @@ async function deepReconsolidate(
     ? Math.max(0, Math.min(1, result.new_independence))
     : node.independence;
 
-  db.prepare(`
-    UPDATE nodes SET
-      refinement = MIN(refinement + 0.15, 1.0),
-      independence = ?,
-      last_reconsolidated = datetime('now')
-    WHERE id = ?
-  `).run(newIndependence, node.id);
+  if (!contentWasUpdated) {
+    db.prepare(`
+      UPDATE nodes SET
+        refinement = MIN(refinement + 0.15, 1.0),
+        independence = ?,
+        last_reconsolidated = datetime('now')
+      WHERE id = ?
+    `).run(newIndependence, node.id);
+  } else {
+    db.prepare(`
+      UPDATE nodes SET
+        independence = ?,
+        last_reconsolidated = datetime('now')
+      WHERE id = ?
+    `).run(newIndependence, node.id);
+  }
   refreshMaturityScore(db, node.id);
 }
 

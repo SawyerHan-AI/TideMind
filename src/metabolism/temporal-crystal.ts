@@ -129,11 +129,12 @@ async function findTopicEvolution(db: Database.Database): Promise<{ analyzed: nu
     analyzed++;
 
     // 检查是否已有该标签的时间结晶
+    const escapedTag = topic.tag.replace(/%/g, '\\%').replace(/_/g, '\\_');
     const existingCrystal = db.prepare(`
       SELECT 1 FROM nodes
-      WHERE is_crystal = 1 AND tags LIKE ? AND content LIKE '%时间演变%' AND is_superseded = 0
+      WHERE is_crystal = 1 AND tags LIKE ? ESCAPE '\\' AND content LIKE '%时间演变%' AND is_superseded = 0
       LIMIT 1
-    `).get(`%"${topic.tag}"%`);
+    `).get(`%"${escapedTag}"%`);
 
     if (existingCrystal) continue;
 

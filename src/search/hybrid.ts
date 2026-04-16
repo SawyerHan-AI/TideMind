@@ -271,6 +271,7 @@ function getExpansionConfig(intent?: Intent): ExpansionConfig {
  * - boostRelations 中的链接分数 ×1.5
  */
 function getLinkRelationBoost(link: BrainLink, config: ExpansionConfig): number {
+  if (!Array.isArray(link.relation)) return 1.0;
   const linkTypes = link.relation.map(r => r.type);
   let boost = 1.0;
 

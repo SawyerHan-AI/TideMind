@@ -277,6 +277,117 @@ describe('computeFileHash', () => {
   });
 });
 
+// ===== composite PK: multiple source IDs =====
+
+describe('composite PK (file_path, source_id)', () => {
+  it('同一文件路径不同 source_id 互相独立', () => {
+    setFileState(db, {
+      file_path: '/shared/page.md',
+      content_hash: 'hash-A',
+      mtime: 100,
+      size: 50,
+      last_synced: '2024-01-01',
+      node_ids: ['n1'],
+      segment_hashes: [],
+    }, 'source-A');
+
+    setFileState(db, {
+      file_path: '/shared/page.md',
+      content_hash: 'hash-B',
+      mtime: 200,
+      size: 60,
+      last_synced: '2024-02-01',
+      node_ids: ['n2'],
+      segment_hashes: [],
+    }, 'source-B');
+
+    const stateA = getFileState(db, '/shared/page.md', 'source-A');
+    const stateB = getFileState(db, '/shared/page.md', 'source-B');
+
+    expect(stateA).not.toBeNull();
+    expect(stateB).not.toBeNull();
+    expect(stateA!.content_hash).toBe('hash-A');
+    expect(stateB!.content_hash).toBe('hash-B');
+    expect(stateA!.node_ids).toEqual(['n1']);
+    expect(stateB!.node_ids).toEqual(['n2']);
+  });
+
+  it('getAllFileStates 按 source_id 过滤', () => {
+    setFileState(db, {
+      file_path: '/a.md', content_hash: 'h1', mtime: 1, size: 10,
+      last_synced: 't', node_ids: [], segment_hashes: [],
+    }, 'src-1');
+    setFileState(db, {
+      file_path: '/b.md', content_hash: 'h2', mtime: 2, size: 20,
+      last_synced: 't', node_ids: [], segment_hashes: [],
+    }, 'src-2');
+    setFileState(db, {
+      file_path: '/c.md', content_hash: 'h3', mtime: 3, size: 30,
+      last_synced: 't', node_ids: [], segment_hashes: [],
+    }, 'src-1');
+
+    const src1States = getAllFileStates(db, 'src-1');
+    const src2States = getAllFileStates(db, 'src-2');
+
+    expect(src1States.size).toBe(2);
+    expect(src2States.size).toBe(1);
+    expect(src1States.has('/a.md')).toBe(true);
+    expect(src1States.has('/c.md')).toBe(true);
+    expect(src2States.has('/b.md')).toBe(true);
+  });
+
+  it('removeFileState 按 source_id 精确删除', () => {
+    setFileState(db, {
+      file_path: '/x.md', content_hash: 'h', mtime: 1, size: 10,
+      last_synced: 't', node_ids: [], segment_hashes: [],
+    }, 'src-keep');
+    setFileState(db, {
+      file_path: '/x.md', content_hash: 'h', mtime: 1, size: 10,
+      last_synced: 't', node_ids: [], segment_hashes: [],
+    }, 'src-remove');
+
+    removeFileState(db, '/x.md', 'src-remove');
+
+    expect(getFileState(db, '/x.md', 'src-keep')).not.toBeNull();
+    expect(getFileState(db, '/x.md', 'src-remove')).toBeNull();
+  });
+
+  it('removeStaleFiles 按 source_id 独立清理', () => {
+    setFileState(db, {
+      file_path: '/keep.md', content_hash: 'h', mtime: 1, size: 10,
+      last_synced: 't', node_ids: [], segment_hashes: [],
+    }, 'src-1');
+    setFileState(db, {
+      file_path: '/stale.md', content_hash: 'h', mtime: 1, size: 10,
+      last_synced: 't', node_ids: ['n99'], segment_hashes: [],
+    }, 'src-1');
+    setFileState(db, {
+      file_path: '/stale.md', content_hash: 'h', mtime: 1, size: 10,
+      last_synced: 't', node_ids: ['n100'], segment_hashes: [],
+    }, 'src-2');
+
+    const result = removeStaleFiles(db, new Set(['/keep.md']), 'src-1');
+    expect(result.removed).toBe(1);
+    expect(result.orphanNodeIds).toEqual(['n99']);
+
+    // src-2 的记录不受影响
+    expect(getFileState(db, '/stale.md', 'src-2')).not.toBeNull();
+  });
+
+  it('fullScan 状态按 source_id 独立', () => {
+    markFullScanCompleted(db, 'src-A');
+    expect(hasCompletedFullScan(db, 'src-A')).toBe(true);
+    expect(hasCompletedFullScan(db, 'src-B')).toBe(false);
+
+    markFullScanCompleted(db, 'src-B');
+    expect(hasCompletedFullScan(db, 'src-B')).toBe(true);
+
+    resetFullScanState(db, 'src-A');
+    expect(hasCompletedFullScan(db, 'src-A')).toBe(false);
+    expect(hasCompletedFullScan(db, 'src-B')).toBe(true);
+  });
+});
+
 // ===== computeSegmentHash =====
 
 describe('computeSegmentHash', () => {

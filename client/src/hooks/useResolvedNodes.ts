@@ -15,14 +15,16 @@ export function useResolvedNodes(
   const [nodeMap, setNodeMap] = useState<NodeMap | null>(null)
   const [loading, setLoading] = useState(false)
   const prevKey = useRef('')
+  const loadedKey = useRef('')
 
   useEffect(() => {
     if (!enabled || nodeIds.length === 0) return
 
     const key = nodeIds.slice().sort().join(',')
-    if (key === prevKey.current && nodeMap) return
+    if (key === loadedKey.current) return
 
     prevKey.current = key
+    loadedKey.current = key
     setLoading(true)
 
     window.api.timeline

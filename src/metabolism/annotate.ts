@@ -130,6 +130,7 @@ export async function runAnnotation(db: Database.Database): Promise<{
         if (ann.index != null) annByIndex.set(ann.index, ann);
       }
 
+      const { dimensionsToLegacyType } = await import('../utils/dimensions.js');
       let annotated = 0;
       for (let i = 0; i < batch.length; i++) {
         const node = batch[i];
@@ -159,7 +160,6 @@ export async function runAnnotation(db: Database.Database): Promise<{
         if (subjectivity !== undefined) patch.subjectivity = subjectivity;
         if (actuality !== undefined) patch.actuality = actuality;
         if (specificity !== undefined && subjectivity !== undefined && actuality !== undefined) {
-          const { dimensionsToLegacyType } = await import('../utils/dimensions.js');
           patch.type = dimensionsToLegacyType({ specificity, subjectivity, actuality });
         }
 

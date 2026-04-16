@@ -43,14 +43,17 @@ export function useDataRevision(scopes?: string[]): number {
   const { revision, lastScopes } = useContext(DataChangeContext)
   const stableRevision = useRef(0)
 
-  // 无 scope 过滤 → 任何变更都触发
+  // 有 scope 过滤 → 只在相关范围变化时更新稳定值；无 scope 过滤时每次变更都更新
+  const relevant = !scopes || lastScopes.length === 0 || lastScopes.some(s => scopes.includes(s))
+
+  useEffect(() => {
+    if (relevant) {
+      stableRevision.current = revision
+    }
+  }, [relevant, revision])
+
+  // 无 scope 过滤 → 直接返回原始 revision（始终最新）
+  // 有 scope 过滤 → 返回稳定值（仅在相关范围变化时递增）
   if (!scopes) return revision
-
-  // 有 scope 过滤 → 只在相关范围变化时递增稳定值
-  const relevant = lastScopes.length === 0 || lastScopes.some(s => scopes.includes(s))
-  if (relevant) {
-    stableRevision.current = revision
-  }
-
   return stableRevision.current
 }

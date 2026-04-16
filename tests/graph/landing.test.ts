@@ -236,4 +236,60 @@ describe('findLandingConnections', () => {
     expect(result.confirmedLinks).toHaveLength(0);
     expect(result.pendingLinks).toHaveLength(0);
   });
+
+  // ===== pending links upper bound (pendingTopK = topK * 3) =====
+
+  it('should limit pending links to pendingTopK (topK * 3 = 6)', () => {
+    const node = seedNode(db, { content: 'source' });
+    const targets: ReturnType<typeof seedNode>[] = [];
+    for (let i = 0; i < 10; i++) {
+      targets.push(seedNode(db, { content: `target ${i}` }));
+    }
+
+    // All candidates at similarity 0.70: between pending (0.60) and landing (0.80)
+    const d = Math.sqrt(2 * (1 - 0.70));
+    vi.mocked(searchVectors).mockReturnValue(
+      targets.map(t => ({ id: t.id, distance: d })),
+    );
+
+    const result = findLandingConnections(db, node.id, new Float32Array(3072));
+    // topK=2, pendingTopK=6, so max 6 pending links
+    expect(result.pendingLinks.length).toBeLessThanOrEqual(6);
+    expect(result.confirmedLinks).toHaveLength(0);
+  });
+
+  it('should return empty result for empty embedding', () => {
+    const node = seedNode(db, { content: 'node with empty embedding' });
+    const result = findLandingConnections(db, node.id, new Float32Array(0));
+    expect(result.action).toBe('new');
+    expect(result.confirmedLinks).toHaveLength(0);
+    expect(result.pendingLinks).toHaveLength(0);
+  });
+
+  it('should call updateConnectivity for confirmed links but not pending', async () => {
+    const { updateConnectivity } = await import('../../src/graph/maturity.js');
+    vi.mocked(updateConnectivity).mockClear();
+
+    const node = seedNode(db, { content: 'source' });
+    const t1 = seedNode(db, { content: 'target 1' });
+    const t2 = seedNode(db, { content: 'pending target' });
+
+    // t1 above landing threshold, t2 in pending range
+    const dConfirmed = Math.sqrt(2 * (1 - 0.88));
+    const dPending = Math.sqrt(2 * (1 - 0.70));
+    vi.mocked(searchVectors).mockReturnValue([
+      { id: t1.id, distance: dConfirmed },
+      { id: t2.id, distance: dPending },
+    ]);
+
+    const result = findLandingConnections(db, node.id, new Float32Array(3072));
+    expect(result.confirmedLinks).toHaveLength(1);
+    expect(result.pendingLinks).toHaveLength(1);
+
+    // updateConnectivity should be called for source node + confirmed target, NOT for pending
+    expect(updateConnectivity).toHaveBeenCalledWith(db, node.id);
+    expect(updateConnectivity).toHaveBeenCalledWith(db, t1.id);
+    // Total calls = 1 (source) + 1 (confirmed target) = 2
+    expect(updateConnectivity).toHaveBeenCalledTimes(2);
+  });
 });

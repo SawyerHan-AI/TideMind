@@ -270,8 +270,9 @@ export async function runInitialization(
     log.info(`Phase 2: 节点标注 (${pendingAnnotateCount} 个待标注)`);
 
     if (isLlmConfigured()) {
+      const maxAnnotateRounds = Math.max(200, Math.ceil(pendingAnnotateCount / 10));
       let annotateRound = 0;
-      while (annotateRound < 200) {
+      while (annotateRound < maxAnnotateRounds) {
         const result = await runAnnotation(db);
         if (!result || (result as any).annotated === 0) break;
         annotateRound++;

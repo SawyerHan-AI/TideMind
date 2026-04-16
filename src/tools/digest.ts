@@ -162,9 +162,25 @@ export async function digest(repo: IRepository, input: DigestInput): Promise<Dig
 
   // 异步模式（默认）：stream 已写入，后台处理其余部分
   if (input.async !== false) {
+    // 先写入 pending_digests 条目（同步），确保即使进程崩溃也能重试
+    try {
+      enqueuePendingDigest(db, traceId, JSON.stringify(input), 'pre-processing');
+    } catch (enqueueErr) {
+      log.error('Failed to pre-enqueue digest:', (enqueueErr as Error).message);
+    }
     Promise.resolve().then(async () => {
       try {
         await processDigestContent(repo, input, streamRef, traceId, qualityHeat);
+        // 处理成功，删除 pending 条目
+        try {
+          const { completePendingDigest } = await import('../db/pending-digests.js');
+          const pending = db.prepare(
+            "SELECT id FROM pending_digests WHERE trace_id = ? AND status = 'pending'"
+          ).get(traceId) as { id: string } | undefined;
+          if (pending) {
+            completePendingDigest(db, pending.id);
+          }
+        } catch { /* 清理失败不影响主流程 */ }
       } catch (err) {
         log.error('异步 digest 处理失败:', (err as Error).message);
         repo.log.logOperation({
@@ -175,10 +191,17 @@ export async function digest(repo: IRepository, input: DigestInput): Promise<Dig
           session: input.source?.session,
           agent_id: input.agent_id,
         });
+        // pending 条目已存在，更新错误信息以供重试
         try {
-          enqueuePendingDigest(db, traceId, JSON.stringify(input), (err as Error).message);
-        } catch (enqueueErr) {
-          log.error('Failed to enqueue digest for retry:', (enqueueErr as Error).message);
+          const pending = db.prepare(
+            "SELECT id FROM pending_digests WHERE trace_id = ?"
+          ).get(traceId) as { id: string } | undefined;
+          if (pending) {
+            const { failPendingDigest } = await import('../db/pending-digests.js');
+            failPendingDigest(db, pending.id, (err as Error).message);
+          }
+        } catch (updateErr) {
+          log.error('Failed to update pending digest status:', (updateErr as Error).message);
         }
       }
     });
@@ -319,6 +342,11 @@ async function generateAndStoreEmbedding(
       newTags: srcTags.length > 0 ? srcTags : undefined,
     });
     repo.nodes.archiveNode(nodeId);
+    // 清理被归档节点的向量数据和分段数据，避免残留占用空间和干扰搜索
+    try {
+      db.prepare('DELETE FROM nodes_vec WHERE id = ?').run(nodeId);
+    } catch { /* nodes_vec 可能未加载 */ }
+    db.prepare('DELETE FROM node_segments WHERE node_id = ?').run(nodeId);
     repo.log.logTimelineEvent({
       type: 'memory',
       subtype: 'dedup_merge',

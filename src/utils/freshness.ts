@@ -39,6 +39,9 @@ function computeAgeLabel(node: BrainNode): string | undefined {
 
   const daysSinceUpdate = getDaysSinceUpdate(node);
 
+  // 新节点（当天创建）：无论热度如何，都无需旧记忆标注
+  if (daysSinceUpdate < 1) return undefined;
+
   // 中等热度 + 近期更新：无需标注
   if (node.heat >= 0.2 && daysSinceUpdate <= 7) return undefined;
 

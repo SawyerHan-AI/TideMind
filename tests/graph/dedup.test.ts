@@ -64,12 +64,12 @@ describe('reconsolidateNode', () => {
     expect(after.content).toBe('a much longer new content');
   });
 
-  it('should keep original content if it is longer in fallback merge', async () => {
+  it('should prefer newer content in fallback merge even if shorter', async () => {
     const node = seedNode(db, { content: 'the original much longer content here' });
 
     await reconsolidateNode(db, node.id, 'short');
     const after = getNode(db, node.id)!;
-    expect(after.content).toBe('the original much longer content here');
+    expect(after.content).toBe('short');
   });
 
   it('should bump heat by 0.3 capped at 10.0', async () => {

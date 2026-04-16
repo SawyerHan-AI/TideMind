@@ -82,10 +82,11 @@ export function reconsolidatePrompt(
   meta?: { created?: string; version?: number },
 ): string {
   let header = '待评估记忆';
-  if (meta?.created) header += `（创建于 ${meta.created}`;
-  if (meta?.version) header += `，版本 ${meta.version}`;
-  if (meta?.created) header += '）';
-  header += `: ${nodeContent}`;
+  const metaParts = [];
+  if (meta?.created) metaParts.push(`创建于 ${meta.created}`);
+  if (meta?.version) metaParts.push(`版本 ${meta.version}`);
+  const metaSuffix = metaParts.length > 0 ? `（${metaParts.join('，')}）` : '';
+  header += metaSuffix + `: ${nodeContent}`;
 
   const context = contextContents.map((c, i) => `${i + 1}. ${c}`).join('\n');
   return `${header}\n\n当前上下文中的其他记忆:\n${context}\n\n这条记忆是否需要更新？`;
