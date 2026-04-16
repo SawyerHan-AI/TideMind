@@ -73,12 +73,16 @@ export function stopDaemon(): void {
     clearInterval(timer)
     timer = null
   }
-  logTimelineEvent(getDb(), {
-    type: 'memory',
-    subtype: 'daemon_stop',
-    title: JSON.stringify({ key: 'daemon_stop' }),
-    actor: 'brain',
-  })
+  try {
+    logTimelineEvent(getDb(), {
+      type: 'memory',
+      subtype: 'daemon_stop',
+      title: JSON.stringify({ key: 'daemon_stop' }),
+      actor: 'brain',
+    })
+  } catch (err) {
+    log.warn(`could not log daemon_stop event (DB may not be initialized): ${(err as Error).message}`)
+  }
 
   stopAllNoteSources()
   closeDb()

@@ -194,6 +194,92 @@ describe('fullScan 状态', () => {
   });
 });
 
+// ===== composite PK: multiple source IDs =====
+
+describe('composite PK (file_path, source_id)', () => {
+  it('同一文件路径不同 source_id 互相独立', () => {
+    setFileState(db, {
+      file_path: '/shared/note.md',
+      content_hash: 'hash-A',
+      mtime: 100,
+      size: 50,
+      last_synced: '2024-01-01',
+      node_ids: ['n1'],
+    }, 'vault-A');
+
+    setFileState(db, {
+      file_path: '/shared/note.md',
+      content_hash: 'hash-B',
+      mtime: 200,
+      size: 60,
+      last_synced: '2024-02-01',
+      node_ids: ['n2'],
+    }, 'vault-B');
+
+    const stateA = getFileState(db, '/shared/note.md', 'vault-A');
+    const stateB = getFileState(db, '/shared/note.md', 'vault-B');
+
+    expect(stateA).not.toBeNull();
+    expect(stateB).not.toBeNull();
+    expect(stateA!.content_hash).toBe('hash-A');
+    expect(stateB!.content_hash).toBe('hash-B');
+    expect(stateA!.node_ids).toEqual(['n1']);
+    expect(stateB!.node_ids).toEqual(['n2']);
+  });
+
+  it('getAllFileStates 按 source_id 过滤', () => {
+    setFileState(db, {
+      file_path: '/a.md', content_hash: 'h1', mtime: 1, size: 10,
+      last_synced: 't', node_ids: [],
+    }, 'vault-1');
+    setFileState(db, {
+      file_path: '/b.md', content_hash: 'h2', mtime: 2, size: 20,
+      last_synced: 't', node_ids: [],
+    }, 'vault-2');
+    setFileState(db, {
+      file_path: '/c.md', content_hash: 'h3', mtime: 3, size: 30,
+      last_synced: 't', node_ids: [],
+    }, 'vault-1');
+
+    const v1 = getAllFileStates(db, 'vault-1');
+    const v2 = getAllFileStates(db, 'vault-2');
+
+    expect(v1.size).toBe(2);
+    expect(v2.size).toBe(1);
+  });
+
+  it('removeStaleFiles 按 source_id 独立清理', () => {
+    setFileState(db, {
+      file_path: '/keep.md', content_hash: 'h', mtime: 1, size: 10,
+      last_synced: 't', node_ids: [],
+    }, 'vault-1');
+    setFileState(db, {
+      file_path: '/stale.md', content_hash: 'h', mtime: 1, size: 10,
+      last_synced: 't', node_ids: ['orphan-1'],
+    }, 'vault-1');
+    setFileState(db, {
+      file_path: '/stale.md', content_hash: 'h', mtime: 1, size: 10,
+      last_synced: 't', node_ids: ['safe-1'],
+    }, 'vault-2');
+
+    const result = removeStaleFiles(db, new Set(['/keep.md']), 'vault-1');
+    expect(result.removed).toBe(1);
+    expect(result.orphanNodeIds).toEqual(['orphan-1']);
+
+    // vault-2 的记录不受影响
+    expect(getFileState(db, '/stale.md', 'vault-2')).not.toBeNull();
+  });
+
+  it('fullScan 状态按 source_id 独立', () => {
+    markFullScanCompleted(db, 'vault-X');
+    expect(hasCompletedFullScan(db, 'vault-X')).toBe(true);
+    expect(hasCompletedFullScan(db, 'vault-Y')).toBe(false);
+
+    resetFullScanState(db, 'vault-X');
+    expect(hasCompletedFullScan(db, 'vault-X')).toBe(false);
+  });
+});
+
 // ===== computeFileHash =====
 
 describe('computeFileHash', () => {

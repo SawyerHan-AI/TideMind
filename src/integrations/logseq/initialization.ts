@@ -383,8 +383,10 @@ export async function runInitialization(db: Database.Database, sourceId?: string
 
     if (isLlmConfigured()) {
       // 多轮标注直到没有未标注节点
+      // 安全上限：直接用待标注数量，确保即使每轮只处理 1 个也不会提前截断
+      const maxAnnotateRounds = Math.max(200, pendingAnnotateCount);
       let annotateRound = 0;
-      while (annotateRound < 200) { // 安全上限
+      while (annotateRound < maxAnnotateRounds) {
         const result = await runAnnotation(db);
         if (!result || (result as any).annotated === 0) break;
         annotateRound++;
@@ -418,8 +420,9 @@ export async function runInitialization(db: Database.Database, sourceId?: string
     log.info(`Phase 6: 链接评估 (${pendingLinkCount} 条待评估链接)`);
 
     if (isLlmConfigured()) {
+      const maxEvalRounds = Math.max(200, pendingLinkCount);
       let evalRound = 0;
-      while (evalRound < 500) { // 安全上限
+      while (evalRound < maxEvalRounds) {
         const result = await runLinkEvaluate(db);
         if (result.evaluated === 0) break;
         evalRound++;

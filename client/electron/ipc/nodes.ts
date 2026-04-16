@@ -68,8 +68,9 @@ export function registerNodeHandlers(db: Database.Database): void {
       const tagList = Array.isArray(filter.tags) ? filter.tags : [filter.tags]
       for (const tag of tagList) {
         if (tag) {
-          conditions.push('tags LIKE ?')
-          params.push(`%"${tag}"%`)
+          const escapedTag = tag.replace(/%/g, '\\%').replace(/_/g, '\\_')
+          conditions.push('tags LIKE ? ESCAPE \'\\\'')
+          params.push(`%"${escapedTag}"%`)
         }
       }
     }
@@ -136,9 +137,10 @@ export function registerNodeHandlers(db: Database.Database): void {
       return { nodes, total: nodes.length }
     } catch {
       // fallback LIKE
+      const escapedQuery = query.replace(/%/g, '\\%').replace(/_/g, '\\_')
       const nodes = db.prepare(
-        'SELECT * FROM nodes WHERE content LIKE ? AND heat > 0.01 ORDER BY heat DESC LIMIT ?'
-      ).all(`%${query}%`, safeLimit)
+        "SELECT * FROM nodes WHERE content LIKE ? ESCAPE '\\' AND heat > 0.01 AND is_superseded = 0 ORDER BY heat DESC LIMIT ?"
+      ).all(`%${escapedQuery}%`, safeLimit)
       return { nodes, total: nodes.length }
     }
   })
@@ -285,8 +287,9 @@ export function registerNodeHandlers(db: Database.Database): void {
       const tagList = Array.isArray(filter.tags) ? filter.tags : [filter.tags]
       for (const tag of tagList) {
         if (tag) {
-          conditions.push('tags LIKE ?')
-          params.push(`%"${tag}"%`)
+          const escapedTag = tag.replace(/%/g, '\\%').replace(/_/g, '\\_')
+          conditions.push('tags LIKE ? ESCAPE \'\\\'')
+          params.push(`%"${escapedTag}"%`)
         }
       }
     }

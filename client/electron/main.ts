@@ -98,7 +98,10 @@ app.on('open-url', (event, url) => {
 /** 处理 tidemind:// 协议链接 */
 async function handleProtocolUrl(url: string): Promise<void> {
   const log = createLogger('protocol')
-  log.info(`handling protocol URL: ${url.replace(/access_token=[^&]+/, 'access_token=***')}`)
+  log.info(`handling protocol URL: ${url
+    .replace(/access_token=([^&]{4})[^&]*/g, 'access_token=$1...')
+    .replace(/refresh_token=([^&]{4})[^&]*/g, 'refresh_token=$1...')}`)
+
 
   try {
     const parsed = new URL(url)
@@ -259,6 +262,7 @@ app.on('before-quit', () => {
   isQuitting = true
   stopDataWatcher()
   stopDaemon()
+  closeClientDb()
 })
 
 app.on('window-all-closed', () => {

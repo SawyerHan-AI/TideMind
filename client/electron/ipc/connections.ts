@@ -16,15 +16,17 @@ function now(): string {
 export function registerConnectionHandlers(dataDir: string): void {
   ipcMain.handle('connections:list', (_e, includeArchived?: boolean) => {
     const db = getClientDb()
-    if (includeArchived) {
-      return db.prepare('SELECT * FROM model_connections ORDER BY archived ASC, created DESC').all()
-    }
-    return db.prepare('SELECT * FROM model_connections WHERE archived = 0 ORDER BY created DESC').all()
+    const rows = includeArchived
+      ? db.prepare('SELECT * FROM model_connections ORDER BY archived ASC, created DESC').all() as any[]
+      : db.prepare('SELECT * FROM model_connections WHERE archived = 0 ORDER BY created DESC').all() as any[]
+    return rows.map(r => ({ ...r, credentials: undefined, hasCredentials: !!r.credentials }))
   })
 
   ipcMain.handle('connections:get', (_e, id: string) => {
     const db = getClientDb()
-    return db.prepare('SELECT * FROM model_connections WHERE id = ?').get(id)
+    const row = db.prepare('SELECT * FROM model_connections WHERE id = ?').get(id) as any
+    if (!row) return null
+    return { ...row, credentials: undefined, hasCredentials: !!row.credentials }
   })
 
   ipcMain.handle('connections:create', (_e, params: { name: string; provider_type: string; credentials?: Record<string, unknown> }) => {

@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { safeStorage } from 'electron';
 import { createLogger } from '../../../src/utils/logger.js';
 import { getConfig, getDataDir } from '../../../src/config.js';
 
@@ -16,6 +18,7 @@ export interface CloudAuth {
 }
 
 let cachedAuth: CloudAuth | null = null;
+let pendingOAuthState: string | null = null;
 
 // ---- Persistent storage ----
 
@@ -29,7 +32,13 @@ function saveAuthToDisk(): void {
     return;
   }
   try {
-    fs.writeFileSync(getTokenPath(), JSON.stringify(cachedAuth), { mode: 0o600 });
+    const json = JSON.stringify(cachedAuth);
+    if (safeStorage.isEncryptionAvailable()) {
+      const encrypted = safeStorage.encryptString(json);
+      fs.writeFileSync(getTokenPath(), encrypted, { mode: 0o600 });
+    } else {
+      fs.writeFileSync(getTokenPath(), json, { mode: 0o600 });
+    }
   } catch (err) {
     log.warn(`failed to persist auth: ${(err as Error).message}`);
   }
@@ -37,8 +46,31 @@ function saveAuthToDisk(): void {
 
 function loadAuthFromDisk(): void {
   try {
-    const raw = fs.readFileSync(getTokenPath(), 'utf-8');
-    cachedAuth = JSON.parse(raw);
+    const filePath = getTokenPath();
+    const raw = fs.readFileSync(filePath);
+    let json: string;
+    if (safeStorage.isEncryptionAvailable()) {
+      try {
+        // Try decrypting (new encrypted format)
+        json = safeStorage.decryptString(raw);
+      } catch {
+        // Fall back to plaintext (migration from old format)
+        json = raw.toString('utf-8');
+        // Re-save in encrypted format
+        try {
+          cachedAuth = JSON.parse(json);
+          saveAuthToDisk();
+          log.info('migrated auth to encrypted storage');
+          return;
+        } catch {
+          cachedAuth = null;
+          return;
+        }
+      }
+    } else {
+      json = raw.toString('utf-8');
+    }
+    cachedAuth = JSON.parse(json);
     log.info('restored auth session from disk');
   } catch {
     cachedAuth = null;
@@ -63,14 +95,16 @@ export function getCloudAuth(): CloudAuth | null { return cachedAuth; }
 export function getLoginUrl(): string {
   const base = getCloudBaseUrl();
   const redirect = 'tidemind://auth/callback';
-  return `${base}/auth/login?redirect=${encodeURIComponent(redirect)}`;
+  pendingOAuthState = crypto.randomBytes(16).toString('hex');
+  return `${base}/auth/login?redirect=${encodeURIComponent(redirect)}&state=${pendingOAuthState}`;
 }
 
 /** Get the URL to open in the browser for registration */
 export function getRegisterUrl(): string {
   const base = getCloudBaseUrl();
   const redirect = 'tidemind://auth/callback';
-  return `${base}/auth/register?redirect=${encodeURIComponent(redirect)}`;
+  pendingOAuthState = crypto.randomBytes(16).toString('hex');
+  return `${base}/auth/register?redirect=${encodeURIComponent(redirect)}&state=${pendingOAuthState}`;
 }
 
 /**
@@ -79,6 +113,16 @@ export function getRegisterUrl(): string {
  */
 export async function handleOAuthCallback(url: string): Promise<CloudAuth> {
   const parsed = new URL(url);
+
+  // CSRF validation: verify state parameter matches what we sent
+  const callbackState = parsed.searchParams.get('state');
+  if (pendingOAuthState === null || callbackState !== pendingOAuthState) {
+    pendingOAuthState = null;
+    log.error('OAuth state mismatch — possible CSRF attack, ignoring callback');
+    throw new Error('OAuth state mismatch');
+  }
+  pendingOAuthState = null;
+
   const accessToken = parsed.searchParams.get('access_token');
   const refreshToken = parsed.searchParams.get('refresh_token');
   const expiresIn = parseInt(parsed.searchParams.get('expires_in') || '3600', 10);

@@ -230,22 +230,37 @@ export async function reembedAllNodes(db: Database.Database): Promise<void> {
   reembedLock = true;
 
   try {
-    const nodes = db.prepare("SELECT id, content FROM nodes WHERE heat > 0.01 AND is_superseded = 0").all() as Array<{ id: string; content: string }>;
-    reembedProgress = { running: true, done: 0, total: nodes.length };
+    const totalRow = db.prepare(
+      "SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01 AND is_superseded = 0",
+    ).get() as { cnt: number };
+    reembedProgress = { running: true, done: 0, total: totalRow.cnt };
 
+    const PAGE_SIZE = 100;
     const BATCH_SIZE = 5;
-    for (let i = 0; i < nodes.length; i += BATCH_SIZE) {
-      const batch = nodes.slice(i, i + BATCH_SIZE);
-      await Promise.all(
-        batch.map(async (node) => {
-          try {
-            await insertSegmentVectors(db, node.id, node.content);
-          } catch (err) {
-            log.error(`重算 embedding 失败 (${node.id}):`, (err as Error).message);
-          }
-          reembedProgress.done++;
-        }),
-      );
+    let offset = 0;
+
+    while (true) {
+      const page = db.prepare(
+        "SELECT id, content FROM nodes WHERE heat > 0.01 AND is_superseded = 0 LIMIT ? OFFSET ?",
+      ).all(PAGE_SIZE, offset) as Array<{ id: string; content: string }>;
+
+      if (page.length === 0) break;
+
+      for (let i = 0; i < page.length; i += BATCH_SIZE) {
+        const batch = page.slice(i, i + BATCH_SIZE);
+        await Promise.all(
+          batch.map(async (node) => {
+            try {
+              await insertSegmentVectors(db, node.id, node.content);
+            } catch (err) {
+              log.error(`重算 embedding 失败 (${node.id}):`, (err as Error).message);
+            }
+            reembedProgress.done++;
+          }),
+        );
+      }
+
+      offset += PAGE_SIZE;
     }
 
     clearReembedFlag();

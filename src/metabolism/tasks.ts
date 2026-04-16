@@ -56,6 +56,7 @@ export const ALL_TASKS: TaskDefinition[] = [
     },
     intervalStrategy: 'metabolism-params',
     defaultIntervalMinutes: 3,
+    requiresLLM: true,
   },
 
   // ── 记忆：标注 ─────────────────────────────────

@@ -24,8 +24,9 @@ function buildNodeQuery(scope: ExportScope): { where: string; params: unknown[] 
   const params: unknown[] = []
 
   if (scope.tag) {
-    conditions.push('tags LIKE ?')
-    params.push(`%"${scope.tag}"%`)
+    const escapedTag = scope.tag.replace(/%/g, '\\%').replace(/_/g, '\\_')
+    conditions.push('tags LIKE ? ESCAPE \'\\\'')
+    params.push(`%"${escapedTag}"%`)
   }
   if (scope.after) {
     conditions.push('created > ?')
@@ -39,6 +40,14 @@ function buildNodeQuery(scope: ExportScope): { where: string; params: unknown[] 
   return {
     where: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
     params,
+  }
+}
+
+function safeQuery(db: Database.Database, sql: string): unknown[] {
+  try {
+    return db.prepare(sql).all();
+  } catch {
+    return [];
   }
 }
 
@@ -158,8 +167,8 @@ export function registerExportHandlers(db: Database.Database, _dataDir: string):
       result.strategyFeedback = db.prepare('SELECT * FROM strategy_feedback ORDER BY created DESC').all()
       result.strategyVersions = db.prepare('SELECT * FROM strategy_versions ORDER BY created DESC').all()
       result.llmUsageLog = db.prepare('SELECT * FROM llm_usage_log ORDER BY created DESC').all()
-      result.paramFeedback = db.prepare('SELECT * FROM param_feedback ORDER BY created DESC').all()
-      result.paramAdjustments = db.prepare('SELECT * FROM param_adjustments ORDER BY created DESC').all()
+      result.paramFeedback = safeQuery(db, 'SELECT * FROM param_feedback ORDER BY created DESC')
+      result.paramAdjustments = safeQuery(db, 'SELECT * FROM param_adjustments ORDER BY created DESC')
     }
 
     return result

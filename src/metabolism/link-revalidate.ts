@@ -63,13 +63,16 @@ export async function revalidateLinks(
   const maxLinksPerRun = getParam('link-revalidate', 'max_links_per_run', 10);
   const minLinkAge = getParam('link-revalidate', 'min_link_age_hours', 24);
 
-  // 收集这些节点的所有链接
+  // 收集这些节点的所有链接（去重：双端都在 nodeIds 中时链接只处理一次）
   const linksToCheck: Array<{ linkId: string; fromId: string; toId: string; relation: LinkRelation[]; strength: number }> = [];
+  const seenLinkIds = new Set<string>();
 
   for (const nodeId of nodeIds) {
     const links = getLinksForNode(db, nodeId);
     for (const link of links) {
       if (link.status !== 'confirmed') continue;
+      if (seenLinkIds.has(link.id)) continue;
+      seenLinkIds.add(link.id);
       // 只检查存在一段时间的链接（刚创建的不需要重新验证）
       const ageHours = (Date.now() - new Date(link.created).getTime()) / (1000 * 60 * 60);
       if (ageHours < minLinkAge) continue;

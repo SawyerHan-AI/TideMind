@@ -164,12 +164,14 @@ export function getClientDb(): Database.Database {
     const newDb = new Database(dbPath)
     newDb.pragma('journal_mode = WAL')
     newDb.pragma('foreign_keys = ON')
-    // 创建最基本的表结构，让客户端能正常读取
+    // 创建完整表结构（与 daemon 的 SCHEMA_SQL 保持一致）
+    // 若客户端先建库，daemon 启动时会检测到已有 schema 并跳过迁移
     newDb.exec(`
       CREATE TABLE IF NOT EXISTS nodes (
         id TEXT PRIMARY KEY,
         type TEXT NOT NULL CHECK(type IN ('fact','context','preference','idea','crystal','meta')),
         content TEXT NOT NULL,
+        title TEXT,
         heat REAL DEFAULT 1.0,
         refinement REAL DEFAULT 0.0,
         connectivity REAL DEFAULT 0.0,
@@ -187,12 +189,14 @@ export function getClientDb(): Database.Database {
         version INTEGER DEFAULT 1,
         archived INTEGER DEFAULT 0,
         is_keystone INTEGER DEFAULT 0,
+        is_superseded INTEGER DEFAULT 0,
+        source_device TEXT DEFAULT 'local',
         maturity_score REAL DEFAULT 0.0
       );
       CREATE TABLE IF NOT EXISTS links (
         id TEXT PRIMARY KEY,
-        from_id TEXT NOT NULL,
-        to_id TEXT NOT NULL,
+        from_id TEXT NOT NULL REFERENCES nodes(id),
+        to_id TEXT NOT NULL REFERENCES nodes(id),
         relation TEXT NOT NULL,
         strength REAL DEFAULT 0.5,
         note TEXT,
@@ -202,7 +206,7 @@ export function getClientDb(): Database.Database {
       );
       CREATE TABLE IF NOT EXISTS node_versions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        node_id TEXT NOT NULL,
+        node_id TEXT NOT NULL REFERENCES nodes(id),
         version INTEGER NOT NULL,
         content TEXT NOT NULL,
         change_reason TEXT,
@@ -218,8 +222,8 @@ export function getClientDb(): Database.Database {
       CREATE TABLE IF NOT EXISTS strategy_feedback (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         strategy_name TEXT NOT NULL,
-        operation_id INTEGER,
-        node_id TEXT,
+        operation_id INTEGER REFERENCES operation_log(id),
+        node_id TEXT REFERENCES nodes(id),
         was_used INTEGER,
         feedback_signal REAL,
         created TEXT NOT NULL
@@ -238,6 +242,52 @@ export function getClientDb(): Database.Database {
         created TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_strategy_versions_name ON strategy_versions(strategy_name);
+      CREATE TABLE IF NOT EXISTS sync_hashes (
+        file_name TEXT PRIMARY KEY,
+        source_hash TEXT NOT NULL,
+        synced_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_links_from ON links(from_id);
+      CREATE INDEX IF NOT EXISTS idx_links_to ON links(to_id);
+      CREATE INDEX IF NOT EXISTS idx_links_status ON links(status);
+      CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);
+      CREATE INDEX IF NOT EXISTS idx_nodes_archived ON nodes(archived);
+      CREATE INDEX IF NOT EXISTS idx_nodes_heat ON nodes(heat);
+      CREATE INDEX IF NOT EXISTS idx_nodes_keystone ON nodes(is_keystone);
+      CREATE INDEX IF NOT EXISTS idx_nodes_is_crystal ON nodes(is_crystal);
+      CREATE INDEX IF NOT EXISTS idx_nodes_is_tag ON nodes(is_tag);
+      CREATE INDEX IF NOT EXISTS idx_nodes_is_meta ON nodes(is_meta);
+      CREATE TABLE IF NOT EXISTS agents (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        tool_type TEXT NOT NULL,
+        archived INTEGER DEFAULT 0,
+        last_active TEXT,
+        created TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS note_sources (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        tool_type TEXT NOT NULL,
+        path TEXT NOT NULL,
+        poll_interval INTEGER DEFAULT 60,
+        archived INTEGER DEFAULT 0,
+        initialized INTEGER DEFAULT 0,
+        created TEXT NOT NULL,
+        last_synced TEXT
+      );
+      CREATE TABLE IF NOT EXISTS llm_usage_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        model TEXT NOT NULL,
+        operation TEXT,
+        input_tokens INTEGER DEFAULT 0,
+        output_tokens INTEGER DEFAULT 0,
+        thinking_tokens INTEGER DEFAULT 0,
+        estimated_cost REAL DEFAULT 0,
+        created TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_llm_usage_created ON llm_usage_log(created);
+      CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage_log(model);
       CREATE TABLE IF NOT EXISTS timeline_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         type TEXT NOT NULL,
@@ -251,6 +301,60 @@ export function getClientDb(): Database.Database {
       );
       CREATE INDEX IF NOT EXISTS idx_timeline_created ON timeline_events(created);
       CREATE INDEX IF NOT EXISTS idx_timeline_type ON timeline_events(type);
+      CREATE TABLE IF NOT EXISTS node_segments (
+        segment_id TEXT PRIMARY KEY,
+        node_id TEXT NOT NULL,
+        segment_index INTEGER NOT NULL,
+        UNIQUE(node_id, segment_index)
+      );
+      CREATE TABLE IF NOT EXISTS param_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_name TEXT NOT NULL,
+        param_name TEXT,
+        signal_type TEXT NOT NULL,
+        signal_value REAL NOT NULL,
+        context TEXT,
+        created TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_param_feedback_strategy ON param_feedback(strategy_name, created);
+      CREATE TABLE IF NOT EXISTS param_adjustments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_name TEXT NOT NULL,
+        param_name TEXT NOT NULL,
+        signal_type TEXT,
+        old_value REAL NOT NULL,
+        new_value REAL NOT NULL,
+        reason TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        pre_avg REAL,
+        post_avg REAL,
+        monitoring_start TEXT,
+        monitoring_end TEXT,
+        created TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS model_connections (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        provider_type TEXT NOT NULL,
+        credentials TEXT NOT NULL DEFAULT '{}',
+        status TEXT DEFAULT 'unconfigured',
+        available_models TEXT,
+        last_checked TEXT,
+        archived INTEGER DEFAULT 0,
+        created TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS pending_digests (
+        id TEXT PRIMARY KEY,
+        trace_id TEXT NOT NULL,
+        input_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','failed')),
+        error_message TEXT,
+        retry_count INTEGER DEFAULT 0,
+        created TEXT NOT NULL,
+        next_retry_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pending_digests_status ON pending_digests(status, next_retry_at);
     `)
     newDb.close()
   }
@@ -258,9 +362,10 @@ export function getClientDb(): Database.Database {
   // 复制默认文件
   copyDefaultFiles(dataDir)
 
-  // 确保 timeline_events 表在已有数据库上也存在
+  // 确保所有表在已有数据库上也存在（与 daemon SCHEMA_SQL 保持一致）
   const tmpDb = new Database(dbPath)
   tmpDb.pragma('journal_mode = WAL')
+  tmpDb.pragma('busy_timeout = 5000')
   tmpDb.pragma('foreign_keys = ON')
   tmpDb.exec(`
     CREATE TABLE IF NOT EXISTS timeline_events (
@@ -284,6 +389,7 @@ export function getClientDb(): Database.Database {
       input_tokens INTEGER DEFAULT 0,
       output_tokens INTEGER DEFAULT 0,
       thinking_tokens INTEGER DEFAULT 0,
+      estimated_cost REAL DEFAULT 0,
       created TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_llm_usage_created ON llm_usage_log(created);
@@ -299,6 +405,12 @@ export function getClientDb(): Database.Database {
       created TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_strategy_versions_name ON strategy_versions(strategy_name);
+
+    CREATE TABLE IF NOT EXISTS sync_hashes (
+      file_name TEXT PRIMARY KEY,
+      source_hash TEXT NOT NULL,
+      synced_at TEXT NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS agents (
       id TEXT PRIMARY KEY,
@@ -320,17 +432,80 @@ export function getClientDb(): Database.Database {
       created TEXT NOT NULL,
       last_synced TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS node_segments (
+      segment_id TEXT PRIMARY KEY,
+      node_id TEXT NOT NULL,
+      segment_index INTEGER NOT NULL,
+      UNIQUE(node_id, segment_index)
+    );
+
+    CREATE TABLE IF NOT EXISTS param_feedback (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      strategy_name TEXT NOT NULL,
+      param_name TEXT,
+      signal_type TEXT NOT NULL,
+      signal_value REAL NOT NULL,
+      context TEXT,
+      created TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_param_feedback_strategy ON param_feedback(strategy_name, created);
+
+    CREATE TABLE IF NOT EXISTS param_adjustments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      strategy_name TEXT NOT NULL,
+      param_name TEXT NOT NULL,
+      signal_type TEXT,
+      old_value REAL NOT NULL,
+      new_value REAL NOT NULL,
+      reason TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      pre_avg REAL,
+      post_avg REAL,
+      monitoring_start TEXT,
+      monitoring_end TEXT,
+      created TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS model_connections (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      provider_type TEXT NOT NULL,
+      credentials TEXT NOT NULL DEFAULT '{}',
+      status TEXT DEFAULT 'unconfigured',
+      available_models TEXT,
+      last_checked TEXT,
+      archived INTEGER DEFAULT 0,
+      created TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS pending_digests (
+      id TEXT PRIMARY KEY,
+      trace_id TEXT NOT NULL,
+      input_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','failed')),
+      error_message TEXT,
+      retry_count INTEGER DEFAULT 0,
+      created TEXT NOT NULL,
+      next_retry_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_pending_digests_status ON pending_digests(status, next_retry_at);
   `)
   // 迁移：补齐可能缺失的列（幂等，已存在则忽略）
   try { tmpDb.exec('ALTER TABLE operation_log ADD COLUMN agent_id TEXT') } catch {}
   try { tmpDb.exec("ALTER TABLE timeline_events ADD COLUMN actor TEXT DEFAULT 'brain'") } catch {}
+  try { tmpDb.exec('ALTER TABLE nodes ADD COLUMN title TEXT') } catch {}
   try { tmpDb.exec('ALTER TABLE nodes ADD COLUMN specificity REAL DEFAULT 0.5') } catch {}
   try { tmpDb.exec('ALTER TABLE nodes ADD COLUMN subjectivity REAL DEFAULT 0.5') } catch {}
   try { tmpDb.exec('ALTER TABLE nodes ADD COLUMN actuality REAL DEFAULT 0.5') } catch {}
   try { tmpDb.exec('ALTER TABLE nodes ADD COLUMN is_crystal INTEGER DEFAULT 0') } catch {}
   try { tmpDb.exec('ALTER TABLE nodes ADD COLUMN is_tag INTEGER DEFAULT 0') } catch {}
   try { tmpDb.exec('ALTER TABLE nodes ADD COLUMN is_meta INTEGER DEFAULT 0') } catch {}
+  try { tmpDb.exec('ALTER TABLE nodes ADD COLUMN is_superseded INTEGER DEFAULT 0') } catch {}
+  try { tmpDb.exec("ALTER TABLE nodes ADD COLUMN source_device TEXT DEFAULT 'local'") } catch {}
   try { tmpDb.exec('ALTER TABLE links ADD COLUMN refined INTEGER DEFAULT 0') } catch {}
+  try { tmpDb.exec('ALTER TABLE llm_usage_log ADD COLUMN estimated_cost REAL DEFAULT 0') } catch {}
   tmpDb.close()
 
   // 统一的读写连接

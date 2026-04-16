@@ -14,7 +14,7 @@ const coreNavKeys = [
 ]
 
 function useAppVersion(): string {
-  const [version, setVersion] = useState('0.2.0')
+  const [version, setVersion] = useState('')
   useEffect(() => {
     window.api.app.getVersion().then(setVersion).catch(() => {})
   }, [])
@@ -86,9 +86,11 @@ export function Sidebar() {
       <CloudStatus />
 
       {/* 底部版本号 */}
-      <div className="px-4 py-3 text-[10px]" style={{ color: 'var(--fg-muted)' }}>
-        v{appVersion}
-      </div>
+      {appVersion && (
+        <div className="px-4 py-3 text-[10px]" style={{ color: 'var(--fg-muted)' }}>
+          v{appVersion}
+        </div>
+      )}
     </aside>
   )
 }

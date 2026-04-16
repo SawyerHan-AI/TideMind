@@ -10,6 +10,11 @@ publish:
   owner: SawyerHan-AI
   repo: TideMind
 
+protocols:
+  - name: TideMind
+    schemes:
+      - tidemind
+
 mac:
   category: public.app-category.productivity
   icon: resources/icon.icns

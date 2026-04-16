@@ -39,6 +39,9 @@ export function BrainExplorer() {
   const debouncedSearch = useDebounce(filter.search ?? '', 300)
   const useSearchMode = debouncedSearch.length > 0
 
+  // Reset to first page whenever the search query changes
+  useEffect(() => { setPage(0) }, [debouncedSearch])
+
   const { data: listData, loading } = useIPC(
     () => useSearchMode
       ? window.api.nodes.search(debouncedSearch, 30)

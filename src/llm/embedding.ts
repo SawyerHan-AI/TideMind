@@ -25,7 +25,8 @@ async function getVertexToken(): Promise<string> {
   });
   const client = await auth.getClient();
   const token = await client.getAccessToken();
-  cachedToken = token.token!;
+  if (!token.token) throw new Error('Failed to get Vertex access token');
+  cachedToken = token.token;
   const credentials = (client as any).credentials;
   tokenExpiry = credentials?.expiry_date ?? (now + 3500_000);
   return cachedToken;

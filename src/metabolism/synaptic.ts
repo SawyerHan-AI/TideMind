@@ -95,7 +95,16 @@ export function runSynapticScaling(db: Database.Database): {
       for (const link of batch) {
         // tagged 链接跳过赫布衰减：标签归属是结构性分类关系，
         // 其生命周期跟随 tag 节点的 heat，不受赫布学习影响
-        if (link.relation && link.relation.includes('"tagged"')) continue;
+        if (link.relation) {
+          try {
+            const relations: Array<{ type?: string }> = typeof link.relation === 'string'
+              ? JSON.parse(link.relation)
+              : link.relation;
+            if (Array.isArray(relations) && relations.some(r => r?.type === 'tagged')) continue;
+          } catch {
+            // 解析失败时不跳过，继续衰减
+          }
+        }
 
         const heatA = heatCache.get(link.from_id) ?? 0;
         const heatB = heatCache.get(link.to_id) ?? 0;

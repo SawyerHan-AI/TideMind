@@ -89,7 +89,9 @@ export function findLandingConnections(
   }
 
   // 着陆连接：top-K with similarity > landingThreshold → confirmed
+  const pendingTopK = topK * 3;
   let confirmedCount = 0;
+  let pendingCount = 0;
   for (const c of candidates) {
     if (c.similarity < adjustedPendingThreshold) break;
 
@@ -113,12 +115,8 @@ export function findLandingConnections(
         if (!link) continue;
         result.confirmedLinks.push(link);
         confirmedCount++;
-
-        // 更新双方的 connectivity
-        updateConnectivity(db, nodeId);
-        updateConnectivity(db, c.id);
       }
-    } else if (c.similarity >= adjustedPendingThreshold) {
+    } else if (c.similarity >= adjustedPendingThreshold && pendingCount < pendingTopK) {
       // pending 候选
       if (!linkExists(db, nodeId, c.id)) {
         const targetNode = getNode(db, c.id);
@@ -137,7 +135,16 @@ export function findLandingConnections(
         });
         if (!link) continue;
         result.pendingLinks.push(link);
+        pendingCount++;
       }
+    }
+  }
+
+  // 更新双方的 connectivity（在所有 confirmed 链接创建完成后统一调用）
+  if (confirmedCount > 0) {
+    updateConnectivity(db, nodeId);
+    for (const link of result.confirmedLinks) {
+      updateConnectivity(db, link.to_id);
     }
   }
 

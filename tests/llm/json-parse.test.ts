@@ -110,4 +110,78 @@ describe('parseLLMJson', () => {
     const result = parseLLMJson<{ content: string; tags: string[] }>(raw);
     expect(result).toEqual({ content: '中文内容', tags: ['标签'] });
   });
+
+  // ===== 括号深度 JSON 提取 - 复杂边界 =====
+
+  it('JSON 值中包含转义引号', () => {
+    const raw = 'result: {"text": "he said \\"hello\\"", "ok": true}';
+    const result = parseLLMJson<{ text: string; ok: boolean }>(raw);
+    expect(result).toEqual({ text: 'he said "hello"', ok: true });
+  });
+
+  it('JSON 值中包含花括号（在字符串内）', () => {
+    const raw = 'output: {"code": "function() { return {}; }", "lang": "js"}';
+    const result = parseLLMJson<{ code: string; lang: string }>(raw);
+    expect(result).toEqual({ code: 'function() { return {}; }', lang: 'js' });
+  });
+
+  it('JSON 值中包含方括号（在字符串内）', () => {
+    const raw = 'data: {"expr": "arr[0] + arr[1]", "val": 3}';
+    const result = parseLLMJson<{ expr: string; val: number }>(raw);
+    expect(result).toEqual({ expr: 'arr[0] + arr[1]', val: 3 });
+  });
+
+  it('多层嵌套括号', () => {
+    const raw = 'here: {"a": {"b": {"c": [1, [2, 3]]}}}';
+    const result = parseLLMJson<{ a: { b: { c: (number | number[])[] } } }>(raw);
+    expect(result).toEqual({ a: { b: { c: [1, [2, 3]] } } });
+  });
+
+  it('JSON 前有大量无关文本', () => {
+    const raw = '让我分析一下这个问题。首先我们需要考虑多个因素。经过深入思考，我的结论是：\n\n{"conclusion": "yes", "confidence": 0.9}';
+    const result = parseLLMJson<{ conclusion: string; confidence: number }>(raw);
+    expect(result).toEqual({ conclusion: 'yes', confidence: 0.9 });
+  });
+
+  it('JSON 后有大量无关文本', () => {
+    const raw = '{"result": true} 以上就是我的分析。希望对你有帮助。如果还有问题请随时提问。';
+    const result = parseLLMJson<{ result: boolean }>(raw);
+    expect(result).toEqual({ result: true });
+  });
+
+  it('JSON 中包含反斜杠转义', () => {
+    const raw = '{"path": "C:\\\\Users\\\\test\\\\file.txt"}';
+    const result = parseLLMJson<{ path: string }>(raw);
+    expect(result).toEqual({ path: 'C:\\Users\\test\\file.txt' });
+  });
+
+  it('不闭合的 JSON 花括号返回 null', () => {
+    const raw = 'result: {"a": 1, "b": ';
+    const result = parseLLMJson(raw);
+    expect(result).toBeNull();
+  });
+
+  it('不闭合的 JSON 方括号返回 null', () => {
+    const raw = 'items: [1, 2, 3, ';
+    const result = parseLLMJson(raw);
+    expect(result).toBeNull();
+  });
+
+  it('优先提取花括号而非方括号（当花括号在前）', () => {
+    const raw = '{"obj": true} [1, 2, 3]';
+    const result = parseLLMJson<{ obj: boolean }>(raw);
+    expect(result).toEqual({ obj: true });
+  });
+
+  it('优先提取方括号（当方括号在前且花括号不存在）', () => {
+    const raw = 'list: [1, 2, 3] and more text';
+    const result = parseLLMJson<number[]>(raw);
+    expect(result).toEqual([1, 2, 3]);
+  });
+
+  it('字符串内的换行符不破坏解析', () => {
+    const raw = '{"text": "line1\\nline2\\nline3"}';
+    const result = parseLLMJson<{ text: string }>(raw);
+    expect(result).toEqual({ text: 'line1\nline2\nline3' });
+  });
 });

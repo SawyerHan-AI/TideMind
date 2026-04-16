@@ -220,7 +220,9 @@ export class CloudSyncClient {
 
   private emitDataChanged(): void {
     for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send('data-changed', { scopes: ['cloud', 'nodes', 'links'] });
+      if (!win.isDestroyed()) {
+        win.webContents.send('data-changed', { scopes: ['cloud', 'nodes', 'links'] });
+      }
     }
   }
 }

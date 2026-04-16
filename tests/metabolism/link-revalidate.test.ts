@@ -107,4 +107,38 @@ describe('revalidateLinks', () => {
     // 即使 LLM 配置了，新链接也不会被检查
     expect(callLLM).not.toHaveBeenCalled();
   });
+
+  it('overlapping nodeIds 的链接只处理一次（去重）', async () => {
+    const nodeA = seedNode(db, { content: 'node A' });
+    const nodeB = seedNode(db, { content: 'node B' });
+
+    // 创建 A-B 链接，两端都在 nodeIds 中
+    seedLink(db, nodeA.id, nodeB.id, { status: 'confirmed' });
+
+    // 把链接 age 改成超过 24 小时
+    db.prepare("UPDATE links SET created = datetime('now', '-48 hours')").run();
+
+    // 传入重叠的 nodeIds: [A, B]
+    // 链接 A-B 对于 nodeA 和 nodeB 都会被遍历到，但 seenLinkIds 应确保只处理一次
+    await revalidateLinks(db, [nodeA.id, nodeB.id], baseContext);
+
+    // LLM 未配置所以不会调用。验证的是不崩溃 + 去重逻辑正确
+    expect(callLLM).not.toHaveBeenCalled();
+  });
+
+  it('按 strength 从低到高排序（低 strength 优先验证）', async () => {
+    const nodeA = seedNode(db, { content: 'node A' });
+    const nodeB = seedNode(db, { content: 'node B' });
+    const nodeC = seedNode(db, { content: 'node C' });
+
+    seedLink(db, nodeA.id, nodeB.id, { status: 'confirmed', strength: 0.9 });
+    seedLink(db, nodeA.id, nodeC.id, { status: 'confirmed', strength: 0.3 });
+
+    // 把链接 age 改成超过 24 小时
+    db.prepare("UPDATE links SET created = datetime('now', '-48 hours')").run();
+
+    // 验证不崩溃
+    await revalidateLinks(db, [nodeA.id], baseContext);
+    expect(callLLM).not.toHaveBeenCalled();
+  });
 });

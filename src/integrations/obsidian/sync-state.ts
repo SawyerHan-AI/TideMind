@@ -32,6 +32,35 @@ export function ensureSyncSchema(db: Database.Database): void {
   `);
   // 兼容：为已有表添加 source_id 列
   try { db.exec("ALTER TABLE obsidian_sync ADD COLUMN source_id TEXT DEFAULT ''"); } catch { /* already exists */ }
+
+  // 迁移到复合主键 (file_path, source_id)，支持多实例
+  try {
+    const tableInfo = db.prepare("PRAGMA table_info(obsidian_sync)").all() as Array<{ name: string; pk: number }>;
+    const pkColumns = tableInfo.filter(c => c.pk > 0).map(c => c.name);
+    // 仅当主键只有 file_path 时才迁移
+    if (pkColumns.length === 1 && pkColumns[0] === 'file_path') {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS obsidian_sync_v2 (
+          file_path TEXT NOT NULL,
+          source_id TEXT NOT NULL DEFAULT '__default__',
+          content_hash TEXT,
+          mtime INTEGER,
+          size INTEGER,
+          last_synced TEXT,
+          node_ids TEXT DEFAULT '[]',
+          PRIMARY KEY (file_path, source_id)
+        )
+      `);
+      db.exec(`
+        INSERT OR IGNORE INTO obsidian_sync_v2 (file_path, source_id, content_hash, mtime, size, last_synced, node_ids)
+        SELECT file_path, COALESCE(NULLIF(source_id, ''), '__default__'), content_hash, mtime, size, last_synced, node_ids
+        FROM obsidian_sync
+      `);
+      db.exec('DROP TABLE obsidian_sync');
+      db.exec('ALTER TABLE obsidian_sync_v2 RENAME TO obsidian_sync');
+    }
+  } catch { /* migration already done or not needed */ }
+
   log.debug('同步表 obsidian_sync 已就绪');
 }
 
@@ -104,7 +133,7 @@ export function setFileState(
     state.size,
     state.last_synced,
     JSON.stringify(state.node_ids),
-    sourceId ?? '',
+    sourceId ?? '__default__',
   );
 }
 

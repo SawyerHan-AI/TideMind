@@ -62,13 +62,20 @@ export async function runDivergentScan(
   const nodeIds = activeNodes.map(n => n.id);
 
   // 预加载所有候选节点间的链接到 Set，避免 O(n²) 次 linkExists 查询
-  const placeholders = nodeIds.map(() => '?').join(',');
-  const existingLinks = db.prepare(`
-    SELECT from_id, to_id FROM links
-    WHERE from_id IN (${placeholders}) AND to_id IN (${placeholders})
-  `).all(...nodeIds, ...nodeIds) as Array<{ from_id: string; to_id: string }>;
+  // SQLite 参数上限 999：每批最多 400 个 id（两侧各一份 → 最多 800 个参数）
+  const existingLinksAll: Array<{ from_id: string; to_id: string }> = [];
+  const BATCH_ID_SIZE = 400;
+  for (let bi = 0; bi < nodeIds.length; bi += BATCH_ID_SIZE) {
+    const batchIds = nodeIds.slice(bi, bi + BATCH_ID_SIZE);
+    const placeholders = batchIds.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT from_id, to_id FROM links
+      WHERE from_id IN (${placeholders}) AND to_id IN (${placeholders})
+    `).all(...batchIds, ...batchIds) as Array<{ from_id: string; to_id: string }>;
+    existingLinksAll.push(...rows);
+  }
   const linkSet = new Set<string>();
-  for (const l of existingLinks) {
+  for (const l of existingLinksAll) {
     linkSet.add(`${l.from_id}|${l.to_id}`);
     linkSet.add(`${l.to_id}|${l.from_id}`);
   }
@@ -229,6 +236,7 @@ export async function runCrystalEmergence(
   // Path A: 满足条件的枢纽节点 → 从枢纽+邻居生成全新结晶节点
   // Path A 和 Path B 统一使用 generateCrystal，区别在于 Path A 输入中标记枢纽
   const pathBPool: Array<{ id: string; content: string }> = [];
+  const pathACrystalIds = new Set<string>();
   let pathACount = 0;
 
   const vocab = getGraphVocabulary(db);
@@ -289,6 +297,7 @@ export async function runCrystalEmergence(
 
           syncCrystalToMarkdown(crystalId, crystal.content, crystal.tags ?? [], false);
           promotedIds.push(crystalId);
+          pathACrystalIds.add(crystalId);
           pathACount++;
         }
       } catch { /* crystal generation is optional */ }
@@ -340,7 +349,7 @@ export async function runCrystalEmergence(
       subtype: 'crystal_update',
       title: JSON.stringify({ key: 'crystal_generated' }),
       detail: {
-        action: hubCandidates.some(h => h.id === crystalId) ? 'promoted' : 'generated',
+        action: pathACrystalIds.has(crystalId) ? 'promoted' : 'generated',
         crystal_id: crystalId,
         summary: node?.content.slice(0, 80) ?? '',
       },

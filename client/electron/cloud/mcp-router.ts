@@ -89,7 +89,10 @@ export class CloudMcpRouter {
     }
 
     // For prepare and recall, delegate to local repo (already handled by index.ts localHandler)
-    // Return null to signal "use local handler"
-    return null as any;
+    // Return a structured error so callers can detect and fall back to the local handler.
+    return {
+      error: 'offline',
+      message: 'Cloud sync is offline. Please check your connection.',
+    };
   }
 }

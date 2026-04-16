@@ -2,6 +2,8 @@ import type Database from 'better-sqlite3';
 import { createLogger } from '../../utils/logger.js';
 import { createLink, linkExists } from '../../db/links.js';
 
+interface LinkRow { id: string; from_id: string; to_id: string; strength: number; }
+
 const log = createLogger('version');
 
 /**
@@ -21,32 +23,41 @@ export function supersedeNode(
   // Step 1: Find all links connected to oldNode (both directions), excluding links to newNode
   const outLinks = db.prepare(
     'SELECT * FROM links WHERE from_id = ? AND to_id != ?',
-  ).all(oldNodeId, newNodeId) as Array<{ id: string; from_id: string; to_id: string }>;
+  ).all(oldNodeId, newNodeId) as LinkRow[];
 
   const inLinks = db.prepare(
     'SELECT * FROM links WHERE to_id = ? AND from_id != ?',
-  ).all(oldNodeId, newNodeId) as Array<{ id: string; from_id: string; to_id: string }>;
+  ).all(oldNodeId, newNodeId) as LinkRow[];
 
   // Step 2: Migrate outgoing links (from=old -> from=new)
   for (const link of outLinks) {
-    const exists = db.prepare(
-      'SELECT 1 FROM links WHERE from_id = ? AND to_id = ?',
-    ).get(newNodeId, link.to_id);
+    const existingLinkOnNew = db.prepare(
+      'SELECT id, strength FROM links WHERE from_id = ? AND to_id = ?',
+    ).get(newNodeId, link.to_id) as Pick<LinkRow, 'id' | 'strength'> | undefined;
 
-    if (!exists) {
+    if (!existingLinkOnNew) {
       db.prepare('UPDATE links SET from_id = ? WHERE id = ?').run(newNodeId, link.id);
+    } else {
+      // Duplicate exists: merge strength (keep the max) before the old link is removed in step 5
+      if (link.strength > existingLinkOnNew.strength) {
+        db.prepare('UPDATE links SET strength = ? WHERE id = ?').run(link.strength, existingLinkOnNew.id);
+      }
     }
-    // If duplicate exists, the old link will be deleted in step 5
   }
 
   // Step 3: Migrate incoming links (to=old -> to=new)
   for (const link of inLinks) {
-    const exists = db.prepare(
-      'SELECT 1 FROM links WHERE from_id = ? AND to_id = ?',
-    ).get(link.from_id, newNodeId);
+    const existingLinkOnNew = db.prepare(
+      'SELECT id, strength FROM links WHERE from_id = ? AND to_id = ?',
+    ).get(link.from_id, newNodeId) as Pick<LinkRow, 'id' | 'strength'> | undefined;
 
-    if (!exists) {
+    if (!existingLinkOnNew) {
       db.prepare('UPDATE links SET to_id = ? WHERE id = ?').run(newNodeId, link.id);
+    } else {
+      // Duplicate exists: merge strength (keep the max) before the old link is removed in step 5
+      if (link.strength > existingLinkOnNew.strength) {
+        db.prepare('UPDATE links SET strength = ? WHERE id = ?').run(link.strength, existingLinkOnNew.id);
+      }
     }
   }
 

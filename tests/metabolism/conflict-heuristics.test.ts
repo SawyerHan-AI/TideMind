@@ -135,4 +135,43 @@ describe('detectConflictSignals', () => {
     const signals = detectConflictSignals([nodeA, nodeB]);
     expect(signals.every(s => s.type === 'cross_node')).toBe(true);
   });
+
+  // ===== regex 特殊字符 =====
+
+  it('内容包含正则特殊字符 (.*+?) 不崩溃', () => {
+    const nodeA = makeNode({ content: '使用 regex pattern .* 和 [a-z]+ 匹配文本' });
+    const nodeB = makeNode({ content: '不再使用 regex pattern .* 和 [a-z]+ 匹配文本' });
+    // 不应抛出异常
+    const signals = detectConflictSignals([nodeA, nodeB]);
+    // 即使内容有 regex 特殊字符，也应该能正常检测
+    expect(Array.isArray(signals)).toBe(true);
+  });
+
+  it('内容包含括号 () 和方括号 [] 不崩溃', () => {
+    const node = makeNode({ content: 'function(a, b) { return a[0] + b[1]; }' });
+    const context = '不再使用 function(a, b) 这个函数来处理数据';
+    const signals = detectConflictSignals([node], context);
+    expect(Array.isArray(signals)).toBe(true);
+  });
+
+  it('内容包含反斜杠不崩溃', () => {
+    const nodeA = makeNode({ content: '路径 C:\\Users\\test\\file 存在问题' });
+    const nodeB = makeNode({ content: '不再使用路径 C:\\Users\\test\\file 这个目录' });
+    const signals = detectConflictSignals([nodeA, nodeB]);
+    expect(Array.isArray(signals)).toBe(true);
+  });
+
+  it('内容包含 $ ^ | 等 regex 元字符不崩溃', () => {
+    const nodeA = makeNode({ content: '使用 $HOME 和 ^prefix$ 以及 A|B 模式' });
+    const nodeB = makeNode({ content: '不再使用 $HOME 和 ^prefix$ 以及 A|B 模式' });
+    const signals = detectConflictSignals([nodeA, nodeB]);
+    expect(Array.isArray(signals)).toBe(true);
+  });
+
+  it('内容包含花括号和问号不崩溃', () => {
+    const nodeA = makeNode({ content: '使用 template{key} 和 value? 语法来编写代码' });
+    const nodeB = makeNode({ content: '不再使用 template{key} 和 value? 语法来编写代码' });
+    const signals = detectConflictSignals([nodeA, nodeB]);
+    expect(Array.isArray(signals)).toBe(true);
+  });
 });

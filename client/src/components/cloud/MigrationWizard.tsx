@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Cloud, CheckCircle, X, ArrowRight } from 'lucide-react'
+import { Cloud, CheckCircle, AlertCircle, X, ArrowRight } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { brand, btnText } from '../../lib/tokens'
 
-type Step = 'detect' | 'uploading' | 'done'
+type Step = 'detect' | 'uploading' | 'done' | 'error'
 
 interface MigrationWizardProps {
   onClose: () => void
@@ -13,7 +13,7 @@ export function MigrationWizard({ onClose }: MigrationWizardProps) {
   const { t } = useTranslation('settings')
   const [step, setStep] = useState<Step>('detect')
   const [nodeCount, setNodeCount] = useState(0)
-  const [uploadedCount, setUploadedCount] = useState(0)
+  const [syncError, setSyncError] = useState<string | null>(null)
 
   // Detect local node count on mount
   useEffect(() => {
@@ -29,38 +29,17 @@ export function MigrationWizard({ onClose }: MigrationWizardProps) {
     return () => { cancelled = true }
   }, [])
 
-  // Simulate upload progress when in uploading step
-  useEffect(() => {
-    if (step !== 'uploading' || nodeCount === 0) return
-
-    let cancelled = false
-    const total = nodeCount
-    let current = 0
-    const interval = setInterval(() => {
-      if (cancelled) return
-      // Simulate batch progress
-      const batch = Math.max(1, Math.floor(total * 0.05))
-      current = Math.min(current + batch, total)
-      setUploadedCount(current)
-      if (current >= total) {
-        clearInterval(interval)
-        setStep('done')
-      }
-    }, 200)
-
-    return () => { cancelled = true; clearInterval(interval) }
-  }, [step, nodeCount])
-
   const handleSync = useCallback(async () => {
     setStep('uploading')
+    setSyncError(null)
     try {
       await window.api.cloud.triggerSync()
-    } catch {
-      // sync trigger error — progress simulation will still complete
+      setStep('done')
+    } catch (err) {
+      setSyncError((err as Error).message ?? 'Sync failed')
+      setStep('error')
     }
   }, [])
-
-  const progress = nodeCount > 0 ? Math.round((uploadedCount / nodeCount) * 100) : 0
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -135,23 +114,56 @@ export function MigrationWizard({ onClose }: MigrationWizardProps) {
               <h2 className="text-lg font-semibold text-white mb-2">
                 {t('cloud.migration.uploadingTitle', 'Uploading...')}
               </h2>
-              <p className="text-sm text-gray-400 font-mono">
-                {uploadedCount.toLocaleString()} / {nodeCount.toLocaleString()} {t('cloud.migration.nodes', 'nodes')}
+              <p className="text-sm text-gray-400">
+                {t('cloud.migration.uploadingDesc', 'Syncing {{count}} nodes to the cloud…', { count: nodeCount.toLocaleString() })}
               </p>
             </div>
 
-            {/* Progress bar */}
+            {/* Indeterminate progress bar */}
             <div className="w-full h-2 bg-white/[0.06] rounded-full overflow-hidden">
               <div
-                className="h-full rounded-full transition-all duration-200"
-                style={{
-                  width: `${progress}%`,
-                  background: brand.gradient,
-                }}
+                className="h-full rounded-full animate-pulse"
+                style={{ background: brand.gradient, width: '100%' }}
               />
             </div>
+          </div>
+        )}
 
-            <p className="text-xs text-gray-500">{progress}%</p>
+        {/* Step: Error */}
+        {step === 'error' && (
+          <div className="text-center space-y-5">
+            <div className="mx-auto w-14 h-14 rounded-2xl flex items-center justify-center bg-red-500/15">
+              <AlertCircle size={24} className="text-red-400" />
+            </div>
+
+            <div>
+              <h2 className="text-lg font-semibold text-white mb-2">
+                {t('cloud.migration.errorTitle', 'Sync Failed')}
+              </h2>
+              {syncError && (
+                <p className="text-sm text-red-300 leading-relaxed">{syncError}</p>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3 justify-center pt-2">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 text-sm text-gray-400 hover:text-white transition-colors"
+              >
+                {t('cloud.migration.later', 'Later')}
+              </button>
+              <button
+                onClick={handleSync}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium transition-all hover:brightness-110"
+                style={{
+                  background: brand.gradientAlpha,
+                  border: `1px solid ${brand.secondary}4d`,
+                  color: btnText.onBrand,
+                }}
+              >
+                {t('cloud.migration.retry', 'Retry')}
+              </button>
+            </div>
           </div>
         )}
 

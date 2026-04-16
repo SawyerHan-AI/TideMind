@@ -38,12 +38,12 @@ export async function reconsolidateNode(
         maxTokens: 500,
         operationName: 'dedup',
       });
-      merged = result.trim() || (node.content.length >= newContent.length ? node.content : newContent);
+      merged = result.trim() || newContent;
     } catch {
-      merged = node.content.length >= newContent.length ? node.content : newContent;
+      merged = newContent;
     }
   } else {
-    merged = node.content.length >= newContent.length ? node.content : newContent;
+    merged = newContent;
   }
 
   // 合并内容 + 标签

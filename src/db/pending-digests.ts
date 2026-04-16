@@ -32,6 +32,15 @@ export function enqueuePendingDigest(
 export function claimNextPendingDigest(
   db: Database.Database,
 ): { id: string; trace_id: string; input_json: string; retry_count: number } | null {
+  // 回收卡在 processing 状态超过 10 分钟的条目（进程崩溃等场景）
+  const staleReset = db.prepare(`
+    UPDATE pending_digests SET status = 'pending', retry_count = retry_count + 1
+    WHERE status = 'processing' AND next_retry_at < datetime('now', '-10 minutes')
+  `).run();
+  if (staleReset.changes > 0) {
+    log.warn(`Recovered ${staleReset.changes} stale processing digest(s)`);
+  }
+
   const currentTime = now();
   const row = db.prepare(`
     SELECT id, trace_id, input_json, retry_count FROM pending_digests
