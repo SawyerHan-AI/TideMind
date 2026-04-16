@@ -41,9 +41,10 @@ vi.mock('../../src/config.js', () => ({
   isLlmConfigured: () => true,
 }));
 
+const mockGetDb = vi.fn();
 vi.mock('../../src/db/connection.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/db/connection.js')>();
-  return { ...actual, isVecLoaded: () => false };
+  return { ...actual, isVecLoaded: () => false, getDb: () => mockGetDb() };
 });
 
 vi.mock('../../src/llm/embedding.js', () => ({
@@ -76,21 +77,25 @@ import { digest } from '../../src/tools/digest.js';
 import { getNode } from '../../src/db/nodes.js';
 import { appendToStream } from '../../src/stream/writer.js';
 import { invalidateGateCache } from '../../src/db/stats.js';
+import { SqliteRepository } from '../../src/db/sqlite-repository.js';
 import type { DigestInput } from '../../src/types.js';
 
 let db: Database.Database;
+let repo: InstanceType<typeof SqliteRepository>;
 
 beforeEach(() => {
-  db = setupTestDb();
-  invalidateGateCache();
   vi.clearAllMocks();
+  db = setupTestDb();
+  repo = new SqliteRepository(db);
+  mockGetDb.mockReturnValue(db);
+  invalidateGateCache();
 });
 
 // ===== 常规消化 =====
 
 describe('digest - normal (sync)', () => {
   it('should create nodes and return processed status in sync mode', async () => {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: 'This is a test fact about software architecture patterns and best practices',
       async: false,
     });
@@ -103,7 +108,7 @@ describe('digest - normal (sync)', () => {
 
   it('should store original content without LLM rewriting (Layer 0)', async () => {
     const content = 'This is a long enough content that previously triggered LLM extraction';
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content,
       async: false,
     });
@@ -115,7 +120,7 @@ describe('digest - normal (sync)', () => {
   });
 
   it('should inherit tags from input', async () => {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: 'Content with inherited tags from Logseq preprocessing step',
       tags: ['AI', 'architecture'],
       async: false,
@@ -127,7 +132,7 @@ describe('digest - normal (sync)', () => {
   });
 
   it('should log operation after digest', async () => {
-    await digest(db, {
+    await digest(repo, {
       content: 'Something worth storing in the Tide Mind system for later use',
       async: false,
     });
@@ -137,7 +142,7 @@ describe('digest - normal (sync)', () => {
   });
 
   it('should write to stream before processing', async () => {
-    await digest(db, {
+    await digest(repo, {
       content: 'Stream content test that is long enough for LLM extraction process',
       async: false,
     });
@@ -146,7 +151,7 @@ describe('digest - normal (sync)', () => {
   });
 
   it('should propagate source metadata (tool, session, files)', async () => {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: 'Content with source metadata for tracing through the system completely',
       source: { tool: 'cursor', session: 'sess-42', files: ['main.ts'] },
       async: false,
@@ -159,7 +164,7 @@ describe('digest - normal (sync)', () => {
   });
 
   it('should pass source info to appendToStream', async () => {
-    await digest(db, {
+    await digest(repo, {
       content: 'Content that goes to stream with source information attached to it',
       source: { tool: 'vscode', session: 'sess-1', files: ['a.ts'] },
       async: false,
@@ -175,7 +180,7 @@ describe('digest - normal (sync)', () => {
   });
 
   it('should set source_stream on created node', async () => {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: 'Content for stream ref test to verify source_stream is set correctly',
       async: false,
     });
@@ -187,7 +192,7 @@ describe('digest - normal (sync)', () => {
 
   it('should always store original content (no LLM rewriting)', async () => {
     const content = 'Content that is stored as-is regardless of length';
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content,
       async: false,
     });
@@ -199,7 +204,7 @@ describe('digest - normal (sync)', () => {
   });
 
   it('should store short content directly', async () => {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: 'short',
       async: false,
     });
@@ -209,7 +214,7 @@ describe('digest - normal (sync)', () => {
   });
 
   it('should infer project from context', async () => {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: 'Something about architecture that is long enough for extraction by LLM',
       context: 'project: my-app',
       async: false,
@@ -222,7 +227,7 @@ describe('digest - normal (sync)', () => {
   });
 
   it('should record strategy feedback', async () => {
-    await digest(db, {
+    await digest(repo, {
       content: 'Content for strategy feedback test that is long enough for the system',
       async: false,
     });
@@ -238,7 +243,7 @@ describe('digest - normal (sync)', () => {
 
 describe('digest - async mode', () => {
   it('should return accepted status immediately', async () => {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: 'Async content that should be accepted immediately without waiting for processing',
       // async defaults to true
     });
@@ -249,7 +254,7 @@ describe('digest - async mode', () => {
   });
 
   it('should still write to stream before returning', async () => {
-    await digest(db, {
+    await digest(repo, {
       content: 'Async stream write test content that should be written before returning result',
     });
 
@@ -263,7 +268,7 @@ describe('digest - correction mode', () => {
   it('should update existing node content when correcting', async () => {
     const existing = seedNode(db, { content: 'old content' });
 
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: 'corrected content',
       intent: 'correction',
       target_node: existing.id,
@@ -281,7 +286,7 @@ describe('digest - correction mode', () => {
   it('should create meta node recording the correction', async () => {
     const existing = seedNode(db, { content: 'original fact' });
 
-    await digest(db, {
+    await digest(repo, {
       content: 'corrected fact',
       intent: 'correction',
       target_node: existing.id,
@@ -295,7 +300,7 @@ describe('digest - correction mode', () => {
   });
 
   it('should return rejected with reason when target_node does not exist', async () => {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: 'correction for nonexistent',
       intent: 'correction',
       target_node: 'nonexistent-id',
@@ -311,7 +316,7 @@ describe('digest - correction mode', () => {
     const n2 = seedNode(db, { content: 'node B' });
     seedLink(db, n1.id, n2.id);
 
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: 'unlink these nodes',
       intent: 'correction',
       target_link: { from: n1.id, to: n2.id },
@@ -332,7 +337,7 @@ describe('digest - archive mode', () => {
   it('should archive the target node', async () => {
     const node = seedNode(db, { content: 'to be archived' });
 
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: '',
       intent: 'archive',
       target_node: node.id,
@@ -348,7 +353,7 @@ describe('digest - archive mode', () => {
   it('should log archive operation', async () => {
     const node = seedNode(db, { content: 'archive log test' });
 
-    await digest(db, {
+    await digest(repo, {
       content: '',
       intent: 'archive',
       target_node: node.id,
@@ -366,7 +371,7 @@ describe('digest - archive mode', () => {
 describe('digest - type inference (fallback mode)', () => {
   it('should infer fact type for decision content', async () => {
     // Short content to skip LLM
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: '决定用 React',
       async: false,
     });
@@ -376,7 +381,7 @@ describe('digest - type inference (fallback mode)', () => {
   });
 
   it('should infer preference type for preference content', async () => {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: '偏好暗色主题',
       async: false,
     });
@@ -386,7 +391,7 @@ describe('digest - type inference (fallback mode)', () => {
   });
 
   it('should infer idea type for hypothesis content', async () => {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: '也许可以试试',
       async: false,
     });
@@ -396,7 +401,7 @@ describe('digest - type inference (fallback mode)', () => {
   });
 
   it('should default to fact for generic content', async () => {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: 'hello world',
       async: false,
     });
@@ -410,7 +415,7 @@ describe('digest - type inference (fallback mode)', () => {
 
 describe('content quality gates', () => {
   it('should reject empty content (hard reject)', async () => {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: '',
       async: false,
     });
@@ -421,7 +426,7 @@ describe('content quality gates', () => {
   });
 
   it('should reject very short content < 5 chars (hard reject)', async () => {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: 'abc',
       async: false,
     });
@@ -432,7 +437,7 @@ describe('content quality gates', () => {
   });
 
   it('should reject whitespace-only content (hard reject)', async () => {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: '   \n\t  ',
       async: false,
     });
@@ -443,7 +448,7 @@ describe('content quality gates', () => {
   });
 
   it('should accept short content (5-10 chars) with reduced heat', async () => {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: '短内容测试',
       async: false,
     });
@@ -457,7 +462,7 @@ describe('content quality gates', () => {
 
   it('should accept pure URL with reduced heat (fallback path)', async () => {
     // 短 URL（< 30 字符）走 fallback 路径
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: 'https://example.com',
       async: false,
     });
@@ -469,7 +474,7 @@ describe('content quality gates', () => {
 
   it('should accept normal content with full heat (fallback path)', async () => {
     // 20+ 个中文字符，走 fallback 路径（中文按字数算 effectiveLength）
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: '这是一段有足够长度的正常内容包含有意义的知识信息',
       async: false,
     });

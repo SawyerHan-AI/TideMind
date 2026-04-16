@@ -221,7 +221,8 @@ function startFilteredWatcher(
       if (!fs.existsSync(filePath)) return; // 文件被删除
 
       processFileChange(db, filePath, graphRoot, sourceId)
-        .then(() => {
+        .then(changed => {
+          if (!changed) return; // 内容未变（hash 相同），不写时间线
           logTimelineEvent(db, {
             type: 'memory',
             subtype: 'logseq_file_change',

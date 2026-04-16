@@ -15,11 +15,14 @@ vi.mock('../../src/strategy/loader.js', () => ({
 import type Database from 'better-sqlite3';
 import { setupTestDb, seedNode } from '../helpers/test-db.js';
 import { searchBM25 } from '../../src/search/bm25.js';
+import { SqliteRepository } from '../../src/db/sqlite-repository.js';
 
 let db: Database.Database;
+let repo: InstanceType<typeof SqliteRepository>;
 
 beforeEach(() => {
   db = setupTestDb();
+  repo = new SqliteRepository(db);
 });
 
 // ===== 基本搜索 =====
@@ -29,7 +32,7 @@ describe('searchBM25', () => {
     seedNode(db, { content: 'quantum physics breakthrough discovery' });
     seedNode(db, { content: 'classical music composition theory' });
 
-    const results = searchBM25(db, 'quantum');
+    const results = searchBM25(repo, 'quantum');
     expect(results.length).toBeGreaterThanOrEqual(1);
     expect(results[0].node.content).toContain('quantum');
     expect(results[0].source).toBe('bm25');
@@ -40,7 +43,7 @@ describe('searchBM25', () => {
     seedNode(db, { content: 'algorithm design patterns' });
     seedNode(db, { content: 'unrelated gardening tips' });
 
-    const results = searchBM25(db, 'algorithm');
+    const results = searchBM25(repo, 'algorithm');
     expect(results.length).toBeGreaterThanOrEqual(2);
 
     // Best result should have score 1.0
@@ -56,7 +59,7 @@ describe('searchBM25', () => {
   it('should return score 1.0 when only one result exists', () => {
     seedNode(db, { content: 'zygomorphic flower symmetry' });
 
-    const results = searchBM25(db, 'zygomorphic');
+    const results = searchBM25(repo, 'zygomorphic');
     expect(results).toHaveLength(1);
     // range === 0 => score = 1.0
     expect(results[0].score).toBe(1.0);
@@ -66,7 +69,7 @@ describe('searchBM25', () => {
     seedNode(db, { content: 'serverless deployment strategy', type: 'fact' });
     seedNode(db, { content: 'serverless architecture overview', type: 'idea' });
 
-    const results = searchBM25(db, 'serverless', { type: 'fact' });
+    const results = searchBM25(repo, 'serverless', { type: 'fact' });
     expect(results).toHaveLength(1);
     expect(results[0].node.type).toBe('fact');
   });
@@ -75,7 +78,7 @@ describe('searchBM25', () => {
     seedNode(db, { content: 'refactoring methodology guide', type: 'fact' });
     seedNode(db, { content: 'refactoring improvement idea', type: 'idea' });
 
-    const results = searchBM25(db, 'refactoring', { type: 'idea' });
+    const results = searchBM25(repo, 'refactoring', { type: 'idea' });
     expect(results).toHaveLength(1);
     expect(results[0].node.type).toBe('idea');
   });
@@ -87,7 +90,7 @@ describe('searchBM25', () => {
     // Archive the first node directly
     db.prepare('UPDATE nodes SET heat = 0.005 WHERE id = ?').run(node.id);
 
-    const results = searchBM25(db, 'ephemeral');
+    const results = searchBM25(repo, 'ephemeral');
     expect(results).toHaveLength(1);
     expect(results[0].node.id).not.toBe(node.id);
   });
@@ -97,14 +100,14 @@ describe('searchBM25', () => {
       seedNode(db, { content: `concurrent processing worker ${i}` });
     }
 
-    const results = searchBM25(db, 'concurrent', { limit: 3 });
+    const results = searchBM25(repo, 'concurrent', { limit: 3 });
     expect(results.length).toBeLessThanOrEqual(3);
   });
 
   it('should return empty array when no results match', () => {
     seedNode(db, { content: 'hello world programming' });
 
-    const results = searchBM25(db, 'xylophone');
+    const results = searchBM25(repo, 'xylophone');
     expect(results).toEqual([]);
   });
 
@@ -112,12 +115,12 @@ describe('searchBM25', () => {
     seedNode(db, { content: 'normal content here' });
 
     // FTS5 special characters should be safely escaped
-    expect(() => searchBM25(db, '(foo) AND "bar" [baz]')).not.toThrow();
-    expect(() => searchBM25(db, '***')).not.toThrow();
-    expect(() => searchBM25(db, 'hello:world^2~3')).not.toThrow();
-    expect(() => searchBM25(db, '')).not.toThrow();
+    expect(() => searchBM25(repo, '(foo) AND "bar" [baz]')).not.toThrow();
+    expect(() => searchBM25(repo, '***')).not.toThrow();
+    expect(() => searchBM25(repo, 'hello:world^2~3')).not.toThrow();
+    expect(() => searchBM25(repo, '')).not.toThrow();
 
-    const empty = searchBM25(db, '');
+    const empty = searchBM25(repo, '');
     expect(empty).toEqual([]);
   });
 
@@ -126,7 +129,7 @@ describe('searchBM25', () => {
     seedNode(db, { content: 'kubernetes deployment idea', type: 'idea' });
     seedNode(db, { content: 'kubernetes meta info', type: 'meta' });
 
-    const results = searchBM25(db, 'kubernetes', { type: 'fact', excludeMeta: true });
+    const results = searchBM25(repo, 'kubernetes', { type: 'fact', excludeMeta: true });
     expect(results).toHaveLength(1);
     expect(results[0].node.type).toBe('fact');
   });

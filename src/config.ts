@@ -87,6 +87,13 @@ const DEFAULT_CONFIG: AppConfig = {
     daily_check_hours: 24,
     weekly_check_days: 7,
   },
+  // cloud.server_url: 客户端连接云服务器的地址。
+  // 对应服务端 pro/cloud-server/src/config.ts 中的 baseUrl（从 BASE_URL 环境变量加载）。
+  // 两者应指向同一个域名，只是读取方式不同：客户端从 config.toml，服务端从环境变量。
+  cloud: {
+    enabled: false,
+    server_url: 'https://cloud.tidemind.ai',
+  },
 };
 
 let cachedConfig: AppConfig | null = null;

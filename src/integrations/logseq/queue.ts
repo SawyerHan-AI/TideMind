@@ -17,6 +17,7 @@ import {
   getFileState, setFileState, isFileChanged,
   computeFileHash, computeSegmentHash, getFileStat,
 } from './sync-state.js';
+import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { digest } from '../../tools/digest.js';
 import { updateNode } from '../../db/nodes.js';
 import { createLink, linkExists } from '../../db/links.js';
@@ -121,13 +122,21 @@ export async function processFileQueue(
 
 /**
  * 处理单个文件
+ *
+ * Cloud mode 说明：watcher 始终在本地运行（检测文件变化），并通过 digest() 写入本地 SQLite。
+ * 在 cloud mode 下，MCP router 会拦截 MCP 调用并路由到云端，但 watcher 直接调用 digest()
+ * 不经过 MCP，因此绕过了 router。当前这是可接受的，因为：
+ *   1. 本地 digest 创建的节点存储在本地 SQLite
+ *   2. 迁移向导会在首次同步时将所有本地数据上传到云端
+ *   3. TODO(cloud): 未来 watcher 应改为入队 outbox，直接推送到云端
  */
 async function processOneFile(
   db: Database.Database,
   filePath: string,
   graphRoot: string,
   sourceId?: string,
-): Promise<void> {
+): Promise<boolean> {
+  const repo = new SqliteRepository(db);
   const relPath = path.relative(graphRoot, filePath).replace(/\\/g, '/');
   const progress = getProgress(sourceId);
   progress.currentFile = relPath;
@@ -137,14 +146,14 @@ async function processOneFile(
     const syncState = getFileState(db, relPath, sourceId);
     if (!isFileChanged(filePath, syncState)) {
       progress.skippedFiles++;
-      return;
+      return false;
     }
 
     // 预处理
     const preprocessed = preprocessFile(filePath, graphRoot);
     if (!preprocessed) {
       progress.skippedFiles++;
-      return;
+      return false;
     }
 
     // 分段 + 过滤空段
@@ -156,7 +165,7 @@ async function processOneFile(
 
     if (segments.length === 0) {
       progress.skippedFiles++;
-      return;
+      return false;
     }
 
     // 旧版本状态
@@ -206,9 +215,22 @@ async function processOneFile(
           : '',
       ].filter(Boolean).join(' | ');
 
-      const result = await digest(db, {
+      // 合并 tags + pageRefs 作为标签（去重）
+      const combinedTags = [
+        ...new Set([
+          ...preprocessed.metadata.tags,
+          ...preprocessed.metadata.pageRefs,
+        ]),
+      ];
+      // PDF 标注文件追加标签
+      if (relPath.includes('hls__')) {
+        if (!combinedTags.includes('PDF标注')) combinedTags.push('PDF标注');
+      }
+
+      const result = await digest(repo, {
         content: segment.content,
-        title: preprocessed.title,
+        // 日记页子节点不设 title——日期标题对多个 segment 都一样，不如让 annotate 生成有意义的标题
+        title: preprocessed.metadata.isJournal ? undefined : preprocessed.title,
         source: {
           tool: 'logseq',
           files: [relPath],
@@ -277,9 +299,11 @@ async function processOneFile(
     updateBlockIndexForFile(filePath);
 
     progress.processedFiles++;
+    return true;
   } catch (err) {
     log.error(`文件处理失败 (${relPath}):`, (err as Error).message);
     progress.failedFiles++;
+    return false;
   }
 }
 
@@ -291,8 +315,8 @@ export async function processFileChange(
   filePath: string,
   graphRoot: string,
   sourceId?: string,
-): Promise<void> {
-  await processOneFile(db, filePath, graphRoot, sourceId);
+): Promise<boolean> {
+  return processOneFile(db, filePath, graphRoot, sourceId);
 }
 
 // --- 工具 ---

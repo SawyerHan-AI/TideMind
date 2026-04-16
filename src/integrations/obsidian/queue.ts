@@ -14,6 +14,7 @@ import { createLogger } from '../../utils/logger.js';
 const log = createLogger('obsidian');
 import { preprocessFile } from './preprocessor.js';
 import { segmentContent } from './segmenter.js';
+import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { parseCanvas } from './canvas-parser.js';
 import { readVaultConfig, getExcludedDirs } from './vault-config.js';
 import {
@@ -124,6 +125,13 @@ export async function processFileQueue(
 
 /**
  * 处理单个文件
+ *
+ * Cloud mode 说明：watcher 始终在本地运行（检测文件变化），并通过 digest() 写入本地 SQLite。
+ * 在 cloud mode 下，MCP router 会拦截 MCP 调用并路由到云端，但 watcher 直接调用 digest()
+ * 不经过 MCP，因此绕过了 router。当前这是可接受的，因为：
+ *   1. 本地 digest 创建的节点存储在本地 SQLite
+ *   2. 迁移向导会在首次同步时将所有本地数据上传到云端
+ *   3. TODO(cloud): 未来 watcher 应改为入队 outbox，直接推送到云端
  */
 async function processOneFile(
   db: Database.Database,
@@ -131,6 +139,7 @@ async function processOneFile(
   vaultRoot: string,
   sourceId?: string,
 ): Promise<void> {
+  const repo = new SqliteRepository(db);
   const relPath = path.relative(vaultRoot, filePath).replace(/\\/g, '/');
   const progress = getProgress(sourceId);
   progress.currentFile = relPath;
@@ -173,7 +182,7 @@ async function processOneFile(
 
     // 空白 / 元数据文件 → tag 节点
     if (segments.length === 0 || category === 'empty_tag' || category === 'metadata_only') {
-      const result = await digest(db, {
+      const result = await digest(repo, {
         content: preprocessed.title,
         source: { tool: 'obsidian', files: [relPath] },
         context: `Obsidian 标签页: ${preprocessed.title}`,
@@ -215,7 +224,7 @@ async function processOneFile(
         ]),
       ];
 
-      const result = await digest(db, {
+      const result = await digest(repo, {
         content: segment.content,
         title: preprocessed.title,
         source: { tool: 'obsidian', files: [relPath] },
@@ -283,6 +292,7 @@ async function processCanvasFile(
   syncState: FileSyncState | null,
   sourceId?: string,
 ): Promise<void> {
+  const repo = new SqliteRepository(db);
   const parsed = parseCanvas(filePath);
   if (!parsed) return;
 
@@ -295,7 +305,7 @@ async function processCanvasFile(
     if (!textNode.text.trim()) continue;
 
     const tags = [...textNode.groupLabels];
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: textNode.text,
       source: { tool: 'obsidian', files: [relPath] },
       context: `Obsidian Canvas: ${path.basename(filePath, '.canvas')}`,
@@ -311,7 +321,7 @@ async function processCanvasFile(
 
   // Link 节点 → digest（含 URL）
   for (const linkNode of parsed.linkNodes) {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: `外部链接: ${linkNode.url}`,
       source: { tool: 'obsidian', files: [relPath] },
       context: `Obsidian Canvas: ${path.basename(filePath, '.canvas')} | url: ${linkNode.url}`,

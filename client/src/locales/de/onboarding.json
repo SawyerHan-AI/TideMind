@@ -42,11 +42,20 @@
     "model": "Modell",
     "agent": "Dev-Tools",
     "noteSource": "Notizen",
-    "complete": "Fertig"
+    "complete": "Fertig",
+    "cloudSync": "Cloud"
   },
   "nav": {
     "next": "Weiter",
     "back": "Zurück",
     "skip": "Überspringen"
+  },
+  "cloudSync": {
+    "title": "Mit TideMind Cloud verbinden",
+    "description": "Synchronisiere dein Gehirn optional in die Cloud für geräteübergreifenden Zugriff und weitere Integrationen.",
+    "benefitDevices": "Über alle Geräte synchronisieren",
+    "benefitChatGPT": "ChatGPT-Integration über Browser-Erweiterung",
+    "benefitMetabolism": "Ununterbrochener Hintergrund-Metabolismus",
+    "info": "Cloud-Synchronisation ist optional. Dein lokales Gehirn funktioniert allein perfekt. Du kannst dich jederzeit in den Einstellungen mit der Cloud verbinden."
   }
 }

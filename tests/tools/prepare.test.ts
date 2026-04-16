@@ -56,11 +56,14 @@ import { setupTestDb, seedNode, seedLink } from '../helpers/test-db.js';
 import { prepare } from '../../src/tools/prepare.js';
 import { maybeRunMaintenance } from '../../src/metabolism/scheduler.js';
 import { invalidateGateCache } from '../../src/db/stats.js';
+import { SqliteRepository } from '../../src/db/sqlite-repository.js';
 
 let db: Database.Database;
+let repo: InstanceType<typeof SqliteRepository>;
 
 beforeEach(() => {
   db = setupTestDb();
+  repo = new SqliteRepository(db);
   invalidateGateCache();
   vi.clearAllMocks();
 });
@@ -69,13 +72,13 @@ beforeEach(() => {
 
 describe('prepare - empty database', () => {
   it('should return profile indicating no memories', async () => {
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.profile.text).toContain('刚刚启动');
   });
 
   it('should return empty arrays for empty database', async () => {
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.keystones).toEqual([]);
     expect(result.tags).toEqual([]);
@@ -85,7 +88,7 @@ describe('prepare - empty database', () => {
   });
 
   it('should include guidance for empty brain', async () => {
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.guidance).toContain('brain_digest');
   });
@@ -99,7 +102,7 @@ describe('prepare - database with nodes', () => {
     seedNode(db, { type: 'idea', content: 'idea 1' });
     seedNode(db, { type: 'fact', content: 'fact 2' });
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     // 画像尚未生成时，显示基础统计
     expect(result.profile.text).toContain('3');
@@ -112,7 +115,7 @@ describe('prepare - database with nodes', () => {
       VALUES ('prof-1', 'meta', '这是一个开发者画像', 'user-profile', 1.0, 0, 0, 0, 0.2, 1, datetime('now'))
     `).run();
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.profile.text).toBe('这是一个开发者画像');
   });
@@ -127,7 +130,7 @@ describe('prepare - keystones', () => {
       VALUES ('ks-1', 'fact', 'hub content', 'Hub Node', 1.0, 0, 0, 0, 0.5, 1, datetime('now'))
     `).run();
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.keystones.length).toBe(1);
     expect(result.keystones[0].title).toBe('Hub Node');
@@ -144,7 +147,7 @@ describe('prepare - keystones', () => {
     seedLink(db, 'ks-hub', n1.id, { relation: [{ type: 'supports', confidence: 0.8 }] });
     seedLink(db, 'ks-hub', n2.id, { relation: [{ type: 'supports', confidence: 0.8 }] });
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.keystones[0].link_count).toBe(2);
   });
@@ -155,7 +158,7 @@ describe('prepare - keystones', () => {
       VALUES ('ks-old', 'fact', 'old hub', 'Old', 1.0, 0, 0, 0, 0.5, 1, 1, datetime('now'))
     `).run();
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.keystones.length).toBe(0);
   });
@@ -170,7 +173,7 @@ describe('prepare - tags', () => {
       VALUES ('tag-alpha', 'fact', 'alpha', 'alpha', 1.0, 0, 0, 0, 0.2, 1, datetime('now'))
     `).run();
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.tags.length).toBeGreaterThanOrEqual(1);
     expect(result.tags[0].title).toBe('alpha');
@@ -183,7 +186,7 @@ describe('prepare - tags', () => {
       VALUES ('tag-2', 'fact', 'beta', NULL, 1.0, 0, 0, 0, 0.2, 1, datetime('now'))
     `).run();
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.tags[0].title).toBe('beta');
   });
@@ -203,7 +206,7 @@ describe('prepare - tags', () => {
     seedLink(db, 'tag-popular', n1.id, { relation: [{ type: 'tagged', confidence: 0.8 }] });
     seedLink(db, 'tag-popular', n2.id, { relation: [{ type: 'tagged', confidence: 0.8 }] });
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.tags[0].title).toBe('popular');
     expect(result.tags[0].link_count).toBe(2);
@@ -216,7 +219,7 @@ describe('prepare - crystals', () => {
   it('should include crystal nodes with snippets in highlighted', async () => {
     seedNode(db, { type: 'crystal', content: 'user prefers concise code and TDD approach', heat: 5.0 });
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.crystals.highlighted.length).toBe(1);
     expect(result.crystals.highlighted[0].snippet).toContain('user prefers concise code');
@@ -228,7 +231,7 @@ describe('prepare - crystals', () => {
       seedNode(db, { type: 'crystal', content: `crystal insight ${i}`, heat: 10 - i });
     }
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.crystals.highlighted.length).toBe(8);
     expect(result.crystals.others.length).toBe(2);
@@ -240,7 +243,7 @@ describe('prepare - crystals', () => {
     const longContent = 'crystal: ' + 'a'.repeat(200);
     seedNode(db, { type: 'crystal', content: longContent, heat: 5.0 });
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     // Default crystal_snippet_length is 80
     expect(result.crystals.highlighted[0].snippet.length).toBeLessThanOrEqual(80);
@@ -250,7 +253,7 @@ describe('prepare - crystals', () => {
     seedNode(db, { type: 'crystal', content: 'cold insight', heat: 1.0 });
     seedNode(db, { type: 'crystal', content: 'hot insight', heat: 9.0 });
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.crystals.highlighted[0].snippet).toContain('hot insight');
   });
@@ -261,7 +264,7 @@ describe('prepare - crystals', () => {
       VALUES ('c-old', 'crystal', 'old crystal', 1.0, 0, 0, 0, 0.2, 1, 1, datetime('now'))
     `).run();
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.crystals.highlighted.length).toBe(0);
     expect(result.crystals.others.length).toBe(0);
@@ -278,7 +281,7 @@ describe('prepare - profile content parsing', () => {
       VALUES ('prof', 'meta', ?, 'user-profile', 1.0, 0, 0, 0, 0.2, 1, datetime('now'))
     `).run(content);
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.profile.text).toBe('用户是一个开发者');
     expect(result.profile.structured).toEqual({ role: 'dev', expertise: ['ts'] });
@@ -290,7 +293,7 @@ describe('prepare - profile content parsing', () => {
       VALUES ('prof', 'meta', '只有纯文本画像', 'user-profile', 1.0, 0, 0, 0, 0.2, 1, datetime('now'))
     `).run();
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.profile.text).toBe('只有纯文本画像');
     expect(result.profile.structured).toBeUndefined();
@@ -306,7 +309,7 @@ describe('prepare - profile content parsing', () => {
       VALUES ('new-prof', 'meta', '新画像', 'user-profile', 1.0, 0, 0, 0, 0.2, 1, datetime('now'))
     `).run();
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.profile.text).toBe('新画像');
   });
@@ -317,7 +320,7 @@ describe('prepare - profile content parsing', () => {
       VALUES ('prof', 'meta', '画像', 'user-profile', 1.0, 0, 0, 0, 0.2, 1, datetime('now'))
     `).run();
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.profile.generated_at).toBeTruthy();
   });
@@ -329,7 +332,7 @@ describe('prepare - recent', () => {
   it('should include recently created nodes', async () => {
     seedNode(db, { content: 'just created', heat: 1.0 });
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.recent.length).toBeGreaterThan(0);
   });
@@ -341,7 +344,7 @@ describe('prepare - recent', () => {
     `).run();
     seedNode(db, { content: 'regular node' });
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.recent.every(r => r.type !== 'meta')).toBe(true);
     expect(result.recent.length).toBe(1);
@@ -354,7 +357,7 @@ describe('prepare - recent', () => {
       VALUES ('old-1', 'fact', 'old content', 1.0, 0, 0, 0, 0.2, datetime('now', '-5 days'))
     `).run();
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.recent.find(r => r.id === 'old-1')).toBeUndefined();
   });
@@ -369,7 +372,7 @@ describe('prepare - recent', () => {
       VALUES ('n-late', 'fact', 'late', 1.0, 0, 0, 0, 0.2, datetime('now'))
     `).run();
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     const lateIdx = result.recent.findIndex(r => r.id === 'n-late');
     const earlyIdx = result.recent.findIndex(r => r.id === 'n-early');
@@ -383,7 +386,7 @@ describe('prepare - guidance', () => {
   it('should include recall guidance when nodes exist', async () => {
     seedNode(db, { content: 'existing node' });
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.guidance).toContain('brain_recall');
   });
@@ -391,7 +394,7 @@ describe('prepare - guidance', () => {
   it('should note low memory count', async () => {
     seedNode(db, { content: 'single node' });
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.guidance).toContain('记忆较少');
   });
@@ -399,7 +402,7 @@ describe('prepare - guidance', () => {
   it('should mention recall mode feature', async () => {
     seedNode(db, { content: 'existing node' });
 
-    const result = await prepare(db, { tool: 'cursor' });
+    const result = await prepare(repo, { tool: 'cursor' });
 
     expect(result.guidance).toContain('mode');
   });
@@ -409,7 +412,7 @@ describe('prepare - guidance', () => {
 
 describe('prepare - maintenance', () => {
   it('should trigger maybeRunMaintenance (fire-and-forget)', async () => {
-    await prepare(db, { tool: 'cursor' });
+    await prepare(repo, { tool: 'cursor' });
 
     expect(maybeRunMaintenance).toHaveBeenCalledWith(db, expect.anything());
   });
@@ -419,7 +422,7 @@ describe('prepare - maintenance', () => {
 
 describe('prepare - operation log', () => {
   it('should log prepare operation', async () => {
-    await prepare(db, { tool: 'vscode' });
+    await prepare(repo, { tool: 'vscode' });
 
     const ops = db.prepare("SELECT * FROM operation_log WHERE operation = 'prepare'").all() as Array<{ operation: string; input_summary: string }>;
     expect(ops.length).toBe(1);
@@ -427,7 +430,7 @@ describe('prepare - operation log', () => {
   });
 
   it('should record strategy feedback', async () => {
-    await prepare(db, { tool: 'cursor' });
+    await prepare(repo, { tool: 'cursor' });
 
     const feedback = db.prepare(
       "SELECT * FROM strategy_feedback WHERE strategy_name = 'prepare-assemble'",

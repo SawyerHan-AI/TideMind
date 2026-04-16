@@ -20,6 +20,7 @@ import type Database from 'better-sqlite3';
 import { createLogger } from '../../utils/logger.js';
 import { preprocessFile } from './preprocessor.js';
 import { segmentContent } from './segmenter.js';
+import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { digest } from '../../tools/digest.js';
 import { createLink, linkExists } from '../../db/links.js';
 
@@ -143,6 +144,7 @@ export async function importVersionHistory(
   graphRoot: string,
   fileToNodeIds: Map<string, string[]>,
 ): Promise<number> {
+  const repo = new SqliteRepository(db);
   const groups = scanVersionFiles(graphRoot);
   if (groups.size === 0) return 0;
 
@@ -184,8 +186,9 @@ export async function importVersionHistory(
         if (segments.length === 0) continue;
 
         // 只 digest 第一个 segment（历史版本不需要完整分段）
-        const result = await digest(db, {
+        const result = await digest(repo, {
           content: segments[0].content,
+          title,
           source: { tool: 'logseq', files: [`version-files/${key}`] },
           context: `Logseq 历史版本: ${title} @ ${v.timestamp}`,
           async: false,

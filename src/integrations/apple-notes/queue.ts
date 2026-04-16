@@ -7,6 +7,7 @@
 import crypto from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { createLogger } from '../../utils/logger.js';
+import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { digest } from '../../tools/digest.js';
 import { supersedeNode } from '../shared/version.js';
 import { getOrCreateTagNode } from '../shared/property-promote.js';
@@ -143,6 +144,7 @@ async function processOneNote(
   note: AppleNote,
 ): Promise<void> {
   const { db, folderPathMap, tagsByNote, attachTextsByNote, sourceId, result } = ctx;
+  const repo = new SqliteRepository(db);
   const progress = getProgress(sourceId);
   progress.currentNote = note.title ?? note.uuid;
 
@@ -205,7 +207,7 @@ async function processOneNote(
     const newNodeIds: string[] = [];
 
     for (const segment of segments) {
-      const digestResult = await digest(db, {
+      const digestResult = await digest(repo, {
         content: segment.content,
         title,
         source: { tool: 'apple-notes', files: [note.uuid] },

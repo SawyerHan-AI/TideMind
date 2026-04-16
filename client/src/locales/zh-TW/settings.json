@@ -3,8 +3,10 @@
     "general": "一般",
     "external": "外部對接",
     "model": "模型設定",
-    "strategy": "內部策略",
+    "strategy": "代謝策略",
     "data": "資料管理",
+    "account": "帳號",
+    "cloud": "雲端",
     "about": "關於"
   },
   "general": {
@@ -210,8 +212,20 @@
     }
   },
   "about": {
-    "version": "版本:",
-    "user": "使用者:"
+    "version": "版本",
+    "user": "使用者",
+    "checkUpdate": "檢查更新",
+    "checking": "檢查中…",
+    "upToDate": "已是最新版本。",
+    "newVersion": "有新版本可用",
+    "downloadUpdate": "下載",
+    "checkFailed": "檢查失敗，請稍後再試。",
+    "retry": "重試",
+    "links": "連結",
+    "website": "官方網站",
+    "feedback": "意見回饋",
+    "docs": "使用文件",
+    "license": "授權條款"
   },
   "noteSync": {
     "title": "已對接筆記",
@@ -797,7 +811,7 @@
       "verify": "Verify",
       "selectToolHint": "Select a tool type to see configuration steps",
       "comingSoon": "Coming Soon",
-      "other": "Other",
+      "other": "Manual MCP",
       "pluginSupportHint": "Supports plugin installation with automatic MCP, Skill and Hooks configuration",
       "agentName": "Agent Name",
       "agentNamePlaceholder": "e.g. Work Cursor",
@@ -895,6 +909,87 @@
         "skillFile": "Skill file (brain usage guide)",
         "hooks": "Hooks (SessionStart auto-load context, PreCompact auto-save memory)"
       }
+    }
+  },
+  "account": {
+    "loginTitle": "登入",
+    "loginDesc": "跨裝置同步你的外部大腦，永不停止思考。",
+    "email": "電子郵件",
+    "password": "密碼",
+    "loggingIn": "正在登入…",
+    "loginButton": "登入",
+    "basicInfo": "基本資訊",
+    "devices": "裝置",
+    "devicesComingSoon": "裝置管理功能即將推出。",
+    "subscription": "訂閱",
+    "currentPlan": "目前方案",
+    "upgradeHint": "升級至 Pro 即可享有無限雲端記憶、5 台裝置、全天候雲端代謝等功能。",
+    "viewPricing": "查看方案與定價",
+    "manageSubscription": "管理訂閱",
+    "billing": "帳單",
+    "noBilling": "免費方案無帳單記錄。",
+    "billingComingSoon": "帳單記錄功能即將推出。",
+    "logout": "登出",
+    "deleteAccount": "刪除帳號",
+    "deleteAccountTitle": "確定要刪除帳號嗎？",
+    "deleteAccountDesc": "所有雲端資料將在 30 天後永久刪除。本機資料不受影響。此操作無法復原。",
+    "deleteAccountConfirm": "刪除帳號",
+    "comingSoon": "即將推出",
+    "subscriptionComingSoon": "Pro 和 Pro+ 方案即將推出。敬請期待雲端同步、7×24 代謝引擎等更多功能。",
+    "registerButton": "建立帳號",
+    "browserHint": "將在瀏覽器中開啟，進行安全認證。"
+  },
+  "cloud": {
+    "loginRequired": "請登入 TideMind Cloud 以使用雲端功能。",
+    "goLogin": "登入",
+    "offlineNotice": "離線中 — 雲端設定不可用。",
+    "betaNotice": "雲端功能目前處於內測階段",
+    "betaDesc": "您的帳戶已註冊。雲端功能對您開放時，我們會通知您。",
+    "never": "從未同步",
+    "dataSync": {
+      "title": "資料雲端同步",
+      "desc": "將記憶同步至 TideMind Cloud，實現多裝置存取。本機資料會成為雲端的唯讀快取。",
+      "syncStatus": "同步狀態",
+      "syncNow": "立即同步",
+      "connected": "已連線",
+      "offline": "離線",
+      "lastSynced": "上次同步",
+      "pending": "待同步變更",
+      "syncing": "同步中…",
+      "cloudStorage": "雲端儲存空間",
+      "memories": "記憶",
+      "strategies": "策略",
+      "synced": "已同步",
+      "enableTitle": "啟用資料雲端同步？",
+      "enableDesc": "你的記憶將上傳至 TideMind Cloud。雲端將成為主要副本；本機資料變為唯讀快取。所有已登入的裝置都會同步。",
+      "enableConfirm": "啟用同步",
+      "disableTitle": "停用資料雲端同步？",
+      "disableDesc": "本機資料將成為主要副本。其他裝置也會退出雲端同步。雲端資料將保留 30 天。雲端代謝將自動停用。",
+      "disableConfirm": "停用同步"
+    },
+    "metabolism": {
+      "title": "雲端代謝",
+      "freeDesc": "雲端代謝適用於 Pro 及以上方案。你的記憶將在雲端全天候被標註、連結與結晶化。",
+      "upgrade": "升級至 Pro",
+      "proDesc": "代謝任務在雲端全天候運行，不受裝置限制。",
+      "proPlusDesc": "由 TideMind 託管 LLM 驅動，無需 API 金鑰。代謝在雲端全天候運行。",
+      "keyWarning": "雲端代謝需要上傳你的 LLM API 金鑰（AES-256-GCM 加密）。如有安全顧慮，請關閉此功能並使用本機代謝。",
+      "requiresSync": "需要先啟用資料雲端同步。",
+      "tokenUsage": "Token 用量",
+      "enableTitle": "啟用雲端代謝？",
+      "enableDescByok": "你的 LLM API 金鑰將被加密並上傳至 TideMind Cloud，僅用於執行你的代謝任務。停用雲端代謝時金鑰將被刪除。",
+      "enableDescManaged": "TideMind 託管 LLM 將執行你的代謝。每月包含 300 萬 Token。你也可以在模型設定中配置自己的金鑰以獲得更高品質。",
+      "enableConfirm": "啟用",
+      "disableTitle": "停用雲端代謝？",
+      "disableDescByok": "你的雲端 API 金鑰將被刪除。代謝將切換回本機模式。裝置關閉時會暫停。",
+      "disableDescManaged": "託管 LLM 的使用將暫停。代謝將切換回本機模式。裝置關閉時會暫停。",
+      "disableConfirm": "停用"
+    },
+    "managedLlm": {
+      "title": "TideMind LLM 服務",
+      "comingSoon": "即將推出",
+      "desc": "無需註冊自己的 API 金鑰，即可使用 TideMind 提供的 LLM 服務。包含在 Pro+ 訂閱中。",
+      "learnMore": "了解更多"
     }
   }
 }

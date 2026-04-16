@@ -28,6 +28,7 @@
     "nodeNotFound": "Node not found",
     "manualEdit": "Manual edit",
     "editReasonPlaceholder": "Edit reason (optional)",
+    "titlePlaceholder": "Title",
     "editVersionNote": "Changes will be recorded in version history",
     "saving": "Saving...",
     "save": "Save",

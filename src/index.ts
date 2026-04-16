@@ -8,6 +8,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, ensureDataDirs, getConfig } from './config.js';
 import { getDb, closeDb, initVec } from './db/connection.js';
+import { SqliteRepository } from './db/sqlite-repository.js';
 import { digest } from './tools/digest.js';
 import { recall } from './tools/recall.js';
 import { prepare } from './tools/prepare.js';
@@ -89,6 +90,7 @@ server.tool(
   async (params) => {
     try {
       const db = getDb();
+      const repo = new SqliteRepository(db);
       if (agentId) touchAgent(db, agentId);
       const input: PrepareInput = {
         tool: params.tool,
@@ -97,7 +99,7 @@ server.tool(
         detail_level: params.detail_level as DetailLevel | undefined,
         agent_id: agentId ?? undefined,
       };
-      const result = await prepare(db, input);
+      const result = await prepare(repo, input);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
@@ -136,6 +138,7 @@ server.tool(
   async (params) => {
     try {
       const db = getDb();
+      const repo = new SqliteRepository(db);
       if (agentId) touchAgent(db, agentId);
       // 推导 source_tool：从 agentId 查 tool_type
       let sourceTool: string | undefined;
@@ -163,7 +166,7 @@ server.tool(
         agent_id: agentId ?? undefined,
         source_tool: sourceTool,
       };
-      const result = await recall(db, input);
+      const result = await recall(repo, input);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
@@ -202,6 +205,7 @@ server.tool(
   async (params) => {
     try {
       const db = getDb();
+      const repo = new SqliteRepository(db);
       if (agentId) touchAgent(db, agentId);
       const input: DigestInput = {
         content: params.content,
@@ -215,7 +219,7 @@ server.tool(
         async: params.async,
         agent_id: agentId ?? undefined,
       };
-      const result = await digest(db, input);
+      const result = await digest(repo, input);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };

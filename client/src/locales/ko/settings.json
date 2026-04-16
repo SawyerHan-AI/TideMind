@@ -3,8 +3,10 @@
     "general": "일반",
     "external": "외부 연동",
     "model": "모델 설정",
-    "strategy": "내부 전략",
+    "strategy": "대사 전략",
     "data": "데이터 관리",
+    "account": "계정",
+    "cloud": "클라우드",
     "about": "정보"
   },
   "general": {
@@ -210,8 +212,20 @@
     }
   },
   "about": {
-    "version": "버전:",
-    "user": "사용자:"
+    "version": "버전",
+    "user": "사용자",
+    "checkUpdate": "업데이트 확인",
+    "checking": "확인 중…",
+    "upToDate": "최신 버전을 사용 중입니다.",
+    "newVersion": "새 버전 사용 가능",
+    "downloadUpdate": "다운로드",
+    "checkFailed": "확인에 실패했습니다. 나중에 다시 시도해 주세요.",
+    "retry": "재시도",
+    "links": "링크",
+    "website": "웹사이트",
+    "feedback": "피드백",
+    "docs": "문서",
+    "license": "라이선스"
   },
   "noteSync": {
     "title": "연동된 노트",
@@ -797,7 +811,7 @@
       "verify": "Verify",
       "selectToolHint": "Select a tool type to see configuration steps",
       "comingSoon": "Coming Soon",
-      "other": "Other",
+      "other": "Manual MCP",
       "pluginSupportHint": "Supports plugin installation with automatic MCP, Skill and Hooks configuration",
       "agentName": "Agent Name",
       "agentNamePlaceholder": "e.g. Work Cursor",
@@ -895,6 +909,87 @@
         "skillFile": "Skill file (brain usage guide)",
         "hooks": "Hooks (SessionStart auto-load context, PreCompact auto-save memory)"
       }
+    }
+  },
+  "account": {
+    "loginTitle": "로그인",
+    "loginDesc": "기기 간에 외부 뇌를 동기화하세요. 사고를 멈추지 마세요.",
+    "email": "이메일",
+    "password": "비밀번호",
+    "loggingIn": "로그인 중…",
+    "loginButton": "로그인",
+    "basicInfo": "기본 정보",
+    "devices": "기기",
+    "devicesComingSoon": "기기 관리 기능이 곧 출시됩니다.",
+    "subscription": "구독",
+    "currentPlan": "현재 플랜",
+    "upgradeHint": "Pro로 업그레이드하여 무제한 클라우드 메모리, 5대 기기, 24시간 클라우드 대사 등을 이용하세요.",
+    "viewPricing": "요금제 보기",
+    "manageSubscription": "구독 관리",
+    "billing": "결제",
+    "noBilling": "무료 플랜에는 결제 내역이 없습니다.",
+    "billingComingSoon": "결제 내역 기능이 곧 출시됩니다.",
+    "logout": "로그아웃",
+    "deleteAccount": "계정 삭제",
+    "deleteAccountTitle": "계정을 삭제하시겠습니까?",
+    "deleteAccountDesc": "모든 클라우드 데이터는 30일 후 영구 삭제됩니다. 로컬 데이터에는 영향이 없습니다. 이 작업은 되돌릴 수 없습니다.",
+    "deleteAccountConfirm": "계정 삭제",
+    "comingSoon": "출시 예정",
+    "subscriptionComingSoon": "Pro 및 Pro+ 플랜이 곧 출시됩니다. 클라우드 동기화, 7×24 대사 엔진 등을 기대해 주세요.",
+    "registerButton": "계정 만들기",
+    "browserHint": "안전한 인증을 위해 브라우저에서 열립니다."
+  },
+  "cloud": {
+    "loginRequired": "클라우드 기능을 사용하려면 TideMind Cloud에 로그인하세요.",
+    "goLogin": "로그인",
+    "offlineNotice": "오프라인 — 클라우드 설정을 사용할 수 없습니다.",
+    "betaNotice": "클라우드 기능은 비공개 베타 중입니다",
+    "betaDesc": "계정이 등록되었습니다. 클라우드 기능을 사용할 수 있게 되면 알려드리겠습니다.",
+    "never": "동기화 없음",
+    "dataSync": {
+      "title": "데이터 클라우드 동기화",
+      "desc": "TideMind Cloud에 메모리를 동기화하여 멀티 기기에서 접근하세요. 로컬 데이터는 클라우드의 읽기 전용 캐시가 됩니다.",
+      "syncStatus": "동기화 상태",
+      "syncNow": "지금 동기화",
+      "connected": "연결됨",
+      "offline": "오프라인",
+      "lastSynced": "마지막 동기화",
+      "pending": "대기 중인 변경사항",
+      "syncing": "동기화 중…",
+      "cloudStorage": "클라우드 스토리지",
+      "memories": "메모리",
+      "strategies": "전략",
+      "synced": "동기화됨",
+      "enableTitle": "데이터 클라우드 동기화를 활성화하시겠습니까?",
+      "enableDesc": "메모리가 TideMind Cloud에 업로드됩니다. 클라우드가 기본 사본이 되고, 로컬 데이터는 읽기 전용 캐시가 됩니다. 로그인된 모든 기기가 동기화됩니다.",
+      "enableConfirm": "동기화 활성화",
+      "disableTitle": "데이터 클라우드 동기화를 비활성화하시겠습니까?",
+      "disableDesc": "로컬 데이터가 기본 사본이 됩니다. 다른 기기도 클라우드 동기화에서 나갑니다. 클라우드 데이터는 30일간 보관됩니다. 클라우드 대사가 자동으로 비활성화됩니다.",
+      "disableConfirm": "동기화 비활성화"
+    },
+    "metabolism": {
+      "title": "클라우드 대사",
+      "freeDesc": "클라우드 대사는 Pro 이상에서 사용 가능합니다. 메모리가 24시간 클라우드에서 주석, 연결, 결정화됩니다.",
+      "upgrade": "Pro로 업그레이드",
+      "proDesc": "대사 작업이 기기와 독립적으로 24시간 클라우드에서 실행됩니다.",
+      "proPlusDesc": "TideMind 관리형 LLM으로 구동됩니다. API 키가 필요 없습니다. 대사가 24시간 클라우드에서 실행됩니다.",
+      "keyWarning": "클라우드 대사에는 LLM API 키 업로드가 필요합니다(AES-256-GCM 암호화). 보안이 걱정되면 이 기능을 끄고 로컬 대사를 사용하세요.",
+      "requiresSync": "데이터 클라우드 동기화가 활성화되어 있어야 합니다.",
+      "tokenUsage": "토큰 사용량",
+      "enableTitle": "클라우드 대사를 활성화하시겠습니까?",
+      "enableDescByok": "LLM API 키가 암호화되어 TideMind Cloud에 업로드됩니다. 대사 작업 실행에만 사용됩니다. 클라우드 대사를 비활성화하면 키가 삭제됩니다.",
+      "enableDescManaged": "TideMind 관리형 LLM이 대사를 실행합니다. 월 300만 토큰 포함. 모델 설정에서 자체 키를 구성하여 더 높은 품질을 얻을 수도 있습니다.",
+      "enableConfirm": "활성화",
+      "disableTitle": "클라우드 대사를 비활성화하시겠습니까?",
+      "disableDescByok": "클라우드 API 키가 삭제됩니다. 대사가 로컬로 전환됩니다. 기기가 꺼져 있으면 일시 중지됩니다.",
+      "disableDescManaged": "관리형 LLM 사용이 일시 중지됩니다. 대사가 로컬로 전환됩니다. 기기가 꺼져 있으면 일시 중지됩니다.",
+      "disableConfirm": "비활성화"
+    },
+    "managedLlm": {
+      "title": "TideMind LLM 서비스",
+      "comingSoon": "곧 출시",
+      "desc": "자체 API 키를 등록하지 않고 TideMind 제공 LLM 서비스를 사용하세요. Pro+ 구독에 포함됩니다.",
+      "learnMore": "자세히 보기"
     }
   }
 }

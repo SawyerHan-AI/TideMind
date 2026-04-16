@@ -6,6 +6,7 @@ import { PreferencesStep } from './steps/PreferencesStep'
 import { ModelStep } from './steps/ModelStep'
 import { AgentStep } from './steps/AgentStep'
 import { NoteSourceStep } from './steps/NoteSourceStep'
+import { CloudSyncStep } from './steps/CloudSyncStep'
 import { CompleteStep } from './steps/CompleteStep'
 
 const STEP_COMPONENTS = {
@@ -14,6 +15,7 @@ const STEP_COMPONENTS = {
   model: ModelStep,
   agent: AgentStep,
   noteSource: NoteSourceStep,
+  cloudSync: CloudSyncStep,
   complete: CompleteStep,
 } as const
 

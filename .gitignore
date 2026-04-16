@@ -24,3 +24,5 @@ tests/prompts/backup-original/
 /client/dist/
 /client/release/
 /client/tsconfig.*.tsbuildinfo
+# 包含真实数据的私有测试（不同步到开源仓库）
+tests/private/llm-benchmark-results.json

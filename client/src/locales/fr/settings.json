@@ -3,8 +3,10 @@
     "general": "General",
     "external": "Integrations",
     "model": "Modeles",
-    "strategy": "Strategies",
+    "strategy": "Métabolisme",
     "data": "Donnees",
+    "account": "Compte",
+    "cloud": "Cloud",
     "about": "A propos"
   },
   "general": {
@@ -210,8 +212,20 @@
     }
   },
   "about": {
-    "version": "Version :",
-    "user": "Utilisateur :"
+    "version": "Version",
+    "user": "Utilisateur",
+    "checkUpdate": "Vérifier les mises à jour",
+    "checking": "Vérification…",
+    "upToDate": "Vous disposez de la dernière version.",
+    "newVersion": "Nouvelle version disponible",
+    "downloadUpdate": "Télécharger",
+    "checkFailed": "Vérification échouée. Veuillez réessayer plus tard.",
+    "retry": "Réessayer",
+    "links": "Liens",
+    "website": "Site web",
+    "feedback": "Commentaires",
+    "docs": "Documentation",
+    "license": "Licence"
   },
   "noteSync": {
     "title": "Notes connectees",
@@ -797,7 +811,7 @@
       "verify": "Verify",
       "selectToolHint": "Select a tool type to see configuration steps",
       "comingSoon": "Coming Soon",
-      "other": "Other",
+      "other": "Manual MCP",
       "pluginSupportHint": "Supports plugin installation with automatic MCP, Skill and Hooks configuration",
       "agentName": "Agent Name",
       "agentNamePlaceholder": "e.g. Work Cursor",
@@ -895,6 +909,87 @@
         "skillFile": "Skill file (brain usage guide)",
         "hooks": "Hooks (SessionStart auto-load context, PreCompact auto-save memory)"
       }
+    }
+  },
+  "account": {
+    "loginTitle": "Se connecter",
+    "loginDesc": "Synchronisez votre cerveau externe entre vos appareils. Ne cessez jamais de penser.",
+    "email": "E-mail",
+    "password": "Mot de passe",
+    "loggingIn": "Connexion en cours…",
+    "loginButton": "Se connecter",
+    "basicInfo": "Informations de base",
+    "devices": "Appareils",
+    "devicesComingSoon": "Gestion des appareils bientôt disponible.",
+    "subscription": "Abonnement",
+    "currentPlan": "Forfait actuel",
+    "upgradeHint": "Passez à Pro pour des souvenirs cloud illimités, 5 appareils, un métabolisme cloud 24h/24 et plus encore.",
+    "viewPricing": "Voir les forfaits et tarifs",
+    "manageSubscription": "Gérer l'abonnement",
+    "billing": "Facturation",
+    "noBilling": "Aucun historique de facturation pour le forfait gratuit.",
+    "billingComingSoon": "Historique de facturation bientôt disponible.",
+    "logout": "Se déconnecter",
+    "deleteAccount": "Supprimer le compte",
+    "deleteAccountTitle": "Supprimer le compte ?",
+    "deleteAccountDesc": "Toutes les données cloud seront définitivement supprimées après 30 jours. Les données locales ne sont pas affectées. Cette action est irréversible.",
+    "deleteAccountConfirm": "Supprimer le compte",
+    "comingSoon": "Bientôt",
+    "subscriptionComingSoon": "Les plans Pro et Pro+ arrivent bientôt. Restez à l'écoute pour la synchronisation cloud, le métabolisme 7×24, et plus encore.",
+    "registerButton": "Créer un compte",
+    "browserHint": "S'ouvre dans votre navigateur pour une authentification sécurisée."
+  },
+  "cloud": {
+    "loginRequired": "Connectez-vous à TideMind Cloud pour utiliser les fonctionnalités cloud.",
+    "goLogin": "Se connecter",
+    "offlineNotice": "Hors ligne — les paramètres cloud ne sont pas disponibles.",
+    "betaNotice": "Les fonctionnalités cloud sont en bêta privée",
+    "betaDesc": "Votre compte est enregistré. Vous serez notifié lorsque les fonctionnalités cloud seront disponibles pour votre compte.",
+    "never": "Jamais",
+    "dataSync": {
+      "title": "Synchronisation des données cloud",
+      "desc": "Synchronisez vos souvenirs avec TideMind Cloud pour un accès multi-appareils. Les données locales deviennent un cache en lecture seule du cloud.",
+      "syncStatus": "État de la synchronisation",
+      "syncNow": "Synchroniser maintenant",
+      "connected": "Connecté",
+      "offline": "Hors ligne",
+      "lastSynced": "Dernière synchronisation",
+      "pending": "Modifications en attente",
+      "syncing": "Synchronisation…",
+      "cloudStorage": "Stockage cloud",
+      "memories": "Souvenirs",
+      "strategies": "Stratégies",
+      "synced": "Synchronisé",
+      "enableTitle": "Activer la synchronisation des données cloud ?",
+      "enableDesc": "Vos souvenirs seront téléchargés vers TideMind Cloud. Le cloud devient la copie principale ; les données locales deviennent un cache en lecture seule. Tous les appareils connectés seront synchronisés.",
+      "enableConfirm": "Activer la synchronisation",
+      "disableTitle": "Désactiver la synchronisation des données cloud ?",
+      "disableDesc": "Les données locales redeviendront la copie principale. Les autres appareils quitteront également la synchronisation cloud. Les données cloud seront conservées pendant 30 jours. Le métabolisme cloud sera automatiquement désactivé.",
+      "disableConfirm": "Désactiver la synchronisation"
+    },
+    "metabolism": {
+      "title": "Métabolisme cloud",
+      "freeDesc": "Le métabolisme cloud est disponible à partir de Pro. Vos souvenirs seront annotés, liés et cristallisés 24h/24 dans le cloud.",
+      "upgrade": "Passer à Pro",
+      "proDesc": "Les tâches de métabolisme fonctionnent 24h/24 dans le cloud, indépendamment de votre appareil.",
+      "proPlusDesc": "Propulsé par TideMind Managed LLM. Aucune clé API nécessaire. Le métabolisme fonctionne 24h/24 dans le cloud.",
+      "keyWarning": "Le métabolisme cloud nécessite le téléchargement de votre clé API LLM (chiffrement AES-256-GCM). En cas de préoccupations de sécurité, désactivez cette option et utilisez le métabolisme local.",
+      "requiresSync": "La synchronisation des données cloud doit être activée.",
+      "tokenUsage": "Utilisation des tokens",
+      "enableTitle": "Activer le métabolisme cloud ?",
+      "enableDescByok": "Votre clé API LLM sera chiffrée et téléchargée vers TideMind Cloud. Elle ne sera utilisée que pour exécuter vos tâches de métabolisme. La clé sera supprimée lorsque vous désactiverez le métabolisme cloud.",
+      "enableDescManaged": "TideMind Managed LLM alimentera votre métabolisme. 3M tokens/mois inclus. Vous pouvez également configurer votre propre clé dans les paramètres de modèles pour une qualité supérieure.",
+      "enableConfirm": "Activer",
+      "disableTitle": "Désactiver le métabolisme cloud ?",
+      "disableDescByok": "Votre clé API cloud sera supprimée. Le métabolisme repassera en local. Il sera mis en pause lorsque votre appareil sera éteint.",
+      "disableDescManaged": "L'utilisation du LLM géré sera mise en pause. Le métabolisme repassera en local. Il sera mis en pause lorsque votre appareil sera éteint.",
+      "disableConfirm": "Désactiver"
+    },
+    "managedLlm": {
+      "title": "Service LLM TideMind",
+      "comingSoon": "Bientôt disponible",
+      "desc": "Utilisez le service LLM fourni par TideMind sans enregistrer vos propres clés API. Inclus dans l'abonnement Pro+.",
+      "learnMore": "En savoir plus"
     }
   }
 }

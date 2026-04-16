@@ -45,9 +45,10 @@ vi.mock('../../../src/config.js', () => ({
   isLlmConfigured: () => true,
 }));
 
+const mockGetDb = vi.fn();
 vi.mock('../../../src/db/connection.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/db/connection.js')>();
-  return { ...actual, isVecLoaded: () => false };
+  return { ...actual, isVecLoaded: () => false, getDb: () => mockGetDb() };
 });
 
 vi.mock('../../../src/llm/embedding.js', () => ({
@@ -104,6 +105,7 @@ let db: Database.Database;
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-obsidian-queue-'));
   db = setupTestDb();
+  mockGetDb.mockReturnValue(db);
   ensureSyncSchema(db);
   resetProgress();
   clearTagNodeCache();

@@ -1,15 +1,12 @@
-import type Database from 'better-sqlite3';
 import type { DigestInput, DigestOutput, NodeType } from '../types.js';
+import type { IRepository } from '../db/repository.js';
 import { inferDimensions } from '../utils/dimensions.js';
-import { createNode, getNode, updateNode, archiveNode, parseTags } from '../db/nodes.js';
-import { deleteLink } from '../db/links.js';
-import { logOperation, logStrategyFeedback, logTimelineEvent, logParamFeedback } from '../db/log.js';
+import { parseTags } from '../db/nodes.js';
 import { appendToStream } from '../stream/writer.js';
 import { generateId } from '../utils/id.js';
 import { now } from '../utils/time.js';
 
-import { insertSegmentVectors, getVectorForNode } from '../db/vectors.js';
-import { isVecLoaded } from '../db/connection.js';
+import { isVecLoaded, getDb } from '../db/connection.js';
 import { findLandingConnections } from '../graph/landing.js';
 import { reconsolidateNode } from '../graph/dedup.js';
 import { enqueuePendingDigest } from '../db/pending-digests.js';
@@ -22,21 +19,24 @@ const log = createLogger('digest');
  *
  * 基础版：content 直接存为单个节点（后续 Step 7 加 LLM 提取）
  */
-export async function digest(db: Database.Database, input: DigestInput): Promise<DigestOutput> {
+export async function digest(repo: IRepository, input: DigestInput): Promise<DigestOutput> {
   const traceId = generateId();
   log.info(`intent=${input.intent ?? 'new'} contentLen=${input.content.length} async=${input.async !== false} trace=${traceId}`);
 
+  // Legacy db handle for modules not yet refactored
+  const db = getDb();
+
   // --- 纠正已有节点 ---
   if (input.intent === 'correction' && input.target_node) {
-    const existing = getNode(db, input.target_node);
+    const existing = repo.nodes.getNode(input.target_node);
     if (!existing) {
       log.warn(`correction 目标节点不存在: ${input.target_node}`);
       return { status: 'rejected', trace_id: traceId, reject_reason: `目标节点 ${input.target_node} 不存在` };
     }
 
-    updateNode(db, input.target_node, { content: input.content }, 'correction');
+    repo.nodes.updateNode(input.target_node, { content: input.content }, 'correction');
     log.info(`correction target=${input.target_node}`);
-    const updated = getNode(db, input.target_node)!;
+    const updated = repo.nodes.getNode(input.target_node)!;
 
     // Stream 先写（获取锚点引用）
     const corrStreamRef = appendToStream({
@@ -46,7 +46,7 @@ export async function digest(db: Database.Database, input: DigestInput): Promise
     });
 
     // 纠正记录：完整保留修改前后内容
-    const correctionNode = createNode(db, {
+    const correctionNode = repo.nodes.createNode({
       type: 'meta',
       is_meta: 1,
       content: [
@@ -66,7 +66,7 @@ export async function digest(db: Database.Database, input: DigestInput): Promise
       heat: 0.3,
     });
 
-    logOperation(db, {
+    repo.log.logOperation({
       operation: 'digest',
       input_summary: `correction: ${input.target_node}`,
       context: input.context,
@@ -77,7 +77,7 @@ export async function digest(db: Database.Database, input: DigestInput): Promise
     });
 
     // Learning II 实时信号：correction = 标注质量负反馈
-    logParamFeedback(db, {
+    repo.log.logParamFeedback({
       strategy_name: 'annotate',
       signal_type: 'correction',
       signal_value: -1.0,
@@ -99,10 +99,10 @@ export async function digest(db: Database.Database, input: DigestInput): Promise
     ).get(input.target_link.from, input.target_link.to, input.target_link.to, input.target_link.from) as { id: string } | undefined;
 
     if (link) {
-      deleteLink(db, link.id);
+      repo.links.deleteLink(link.id);
     }
 
-    logOperation(db, {
+    repo.log.logOperation({
       operation: 'digest',
       input_summary: `unlink: ${input.target_link.from} → ${input.target_link.to}`,
       context: input.context,
@@ -117,9 +117,9 @@ export async function digest(db: Database.Database, input: DigestInput): Promise
   // --- 归档 ---
   if (input.intent === 'archive' && input.target_node) {
     log.info(`archive target=${input.target_node}`);
-    archiveNode(db, input.target_node);
+    repo.nodes.archiveNode(input.target_node);
 
-    logOperation(db, {
+    repo.log.logOperation({
       operation: 'digest',
       input_summary: `archive: ${input.target_node}`,
       context: input.context,
@@ -164,10 +164,10 @@ export async function digest(db: Database.Database, input: DigestInput): Promise
   if (input.async !== false) {
     Promise.resolve().then(async () => {
       try {
-        await processDigestContent(db, input, streamRef, traceId, qualityHeat);
+        await processDigestContent(repo, input, streamRef, traceId, qualityHeat);
       } catch (err) {
         log.error('异步 digest 处理失败:', (err as Error).message);
-        logOperation(db, {
+        repo.log.logOperation({
           operation: 'digest',
           input_summary: `[FAILED] ${input.content.slice(0, 80)}`,
           context: `Error: ${(err as Error).message}`,
@@ -186,7 +186,7 @@ export async function digest(db: Database.Database, input: DigestInput): Promise
   }
 
   // 同步模式（async === false）：完整处理后返回
-  const result = await processDigestContent(db, input, streamRef, traceId, qualityHeat);
+  const result = await processDigestContent(repo, input, streamRef, traceId, qualityHeat);
 
   return {
     status: 'processed',
@@ -203,7 +203,7 @@ export async function digest(db: Database.Database, input: DigestInput): Promise
  * LLM 标注（维度评分、补充标签）由节点标注任务近实时处理完成。
  */
 async function processDigestContent(
-  db: Database.Database,
+  repo: IRepository,
   input: DigestInput,
   streamRef: string,
   traceId: string,
@@ -213,7 +213,7 @@ async function processDigestContent(
   links: Array<{ from_id: string; to_id: string; relation: string }>;
 }> {
   const dims = inferDimensions(input.content);
-  const node = createNode(db, {
+  const node = repo.nodes.createNode({
     content: input.content.trim(),
     title: input.title,
     specificity: dims.specificity,
@@ -235,13 +235,13 @@ async function processDigestContent(
     const embeddingText = node.title
       ? `${node.title}\n\n${node.content}`
       : node.content;
-    const links = await generateAndStoreEmbedding(db, node.id, embeddingText);
+    const links = await generateAndStoreEmbedding(repo, node.id, embeddingText);
     createdLinks.push(...links);
   }
 
   log.info(`创建节点 id=${node.id} type=${node.type} dims=[${dims.specificity.toFixed(1)},${dims.subjectivity.toFixed(1)},${dims.actuality.toFixed(1)}] links=${createdLinks.length}`);
 
-  const opId = logOperation(db, {
+  const opId = repo.log.logOperation({
     operation: 'digest',
     input_summary: input.content.slice(0, 100),
     context: input.context,
@@ -251,7 +251,7 @@ async function processDigestContent(
     agent_id: input.agent_id,
   });
 
-  logStrategyFeedback(db, {
+  repo.log.logStrategyFeedback({
     strategy_name: 'digest-extract',
     operation_id: opId,
     node_id: createdNodes[0]?.id,
@@ -290,19 +290,22 @@ function assessContentQuality(content: string): number {
  * 异步生成 embedding + 存储 + 着陆连接
  */
 async function generateAndStoreEmbedding(
-  db: Database.Database,
+  repo: IRepository,
   nodeId: string,
   content: string,
 ): Promise<Array<{ from_id: string; to_id: string; relation: string }>> {
+  // Legacy db handle for modules not yet refactored
+  const db = getDb();
+
   // 多段 embedding：长内容自动拆分为多个 segment
-  const inserted = await insertSegmentVectors(db, nodeId, content);
+  const inserted = await repo.vectors.insertSegmentVectors(nodeId, content);
   if (inserted === 0) {
     log.debug(`embedding 插入失败 node=${nodeId}`);
     return [];
   }
 
   // 用第一个 segment 的 embedding 做着陆连接
-  const embedding = getVectorForNode(db, nodeId);
+  const embedding = repo.vectors.getVectorForNode(nodeId);
   if (!embedding) return [];
 
   const landing = findLandingConnections(db, nodeId, embedding);
@@ -310,13 +313,13 @@ async function generateAndStoreEmbedding(
   if (landing.action === 'merge' && landing.mergeTarget) {
     log.info(`去重合并 node=${nodeId} → target=${landing.mergeTarget}`);
     // 读取刚创建的源节点的 tags，合并到目标节点
-    const sourceNode = getNode(db, nodeId);
+    const sourceNode = repo.nodes.getNode(nodeId);
     const srcTags = parseTags(sourceNode?.tags ?? null);
     await reconsolidateNode(db, landing.mergeTarget, content, '去重合并', {
       newTags: srcTags.length > 0 ? srcTags : undefined,
     });
-    archiveNode(db, nodeId);
-    logTimelineEvent(db, {
+    repo.nodes.archiveNode(nodeId);
+    repo.log.logTimelineEvent({
       type: 'memory',
       subtype: 'dedup_merge',
       title: JSON.stringify({ key: 'dedup_merged' }),
@@ -327,7 +330,7 @@ async function generateAndStoreEmbedding(
   }
 
   if (landing.confirmedLinks.length > 0 || landing.pendingLinks.length > 0) {
-    logTimelineEvent(db, {
+    repo.log.logTimelineEvent({
       type: 'memory',
       subtype: 'landing_connection',
       title: JSON.stringify({ key: 'landing_connections', params: { count: landing.confirmedLinks.length + landing.pendingLinks.length } }),
@@ -354,12 +357,12 @@ async function generateAndStoreEmbedding(
  * 重新执行 processDigestContent，使用原始 input 和 traceId。
  */
 export async function processDigestRetry(
-  db: Database.Database,
+  repo: IRepository,
   input: DigestInput,
   traceId: string,
 ): Promise<void> {
   const qualityHeat = assessContentQuality(input.content.trim());
   // retry 不重复写 stream，复用原始 traceId 作为引用
-  await processDigestContent(db, input, `retry:${traceId}`, traceId, qualityHeat);
+  await processDigestContent(repo, input, `retry:${traceId}`, traceId, qualityHeat);
   log.info(`Digest retry succeeded: trace=${traceId}`);
 }

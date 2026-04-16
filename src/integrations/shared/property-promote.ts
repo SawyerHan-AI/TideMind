@@ -6,6 +6,7 @@
 // ============================================================
 
 import type Database from 'better-sqlite3';
+import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { createLogger } from '../../utils/logger.js';
 import { digest } from '../../tools/digest.js';
 import { updateNode } from '../../db/nodes.js';
@@ -51,7 +52,8 @@ export async function getOrCreateTagNode(
   }
 
   // 创建普通节点（不直接标记 is_tag，由 promoteFrequentTags 按阈值判断）
-  const result = await digest(db, {
+  const repo = new SqliteRepository(db);
+  const result = await digest(repo, {
     content: tagName,
     source: { tool: source },
     context: `属性值节点: ${tagName}`,

@@ -1228,7 +1228,7 @@ function EmbeddedStrategyPanel({ name, type = 'system', locked }: { name: string
 
   useEffect(() => {
     setLoaded(false)
-    Promise.all([loadContent(), loadVersions()]).then(() => setLoaded(true))
+    Promise.all([loadContent(), loadVersions()]).then(() => setLoaded(true)).catch(() => setLoaded(true))
     setSelectedVersion(null)
     setPromptExpanded(false)
   }, [name, isUser])

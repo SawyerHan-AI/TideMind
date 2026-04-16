@@ -56,6 +56,64 @@ let tray: Tray | null = null
 /** 是否真正退出（区分关闭窗口 vs 退出应用） */
 let isQuitting = false
 
+// ── tidemind:// 协议注册 ────────────────────────────────
+// 在 macOS 上，第二次打开链接不会启动新进程，而是发送 open-url 事件。
+// 在 Windows/Linux 上，会启动新进程，需要通过 second-instance 事件处理。
+
+const PROTOCOL = 'tidemind'
+
+if (process.defaultApp) {
+  // 开发模式：需要传递 Electron 路径
+  if (process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])])
+  }
+} else {
+  app.setAsDefaultProtocolClient(PROTOCOL)
+}
+
+// 确保单实例
+const gotTheLock = app.requestSingleInstanceLock()
+if (!gotTheLock) {
+  app.quit()
+} else {
+  app.on('second-instance', (_event, argv) => {
+    // Windows/Linux: 第二个实例启动时，URL 在 argv 中
+    const url = argv.find(arg => arg.startsWith(`${PROTOCOL}://`))
+    if (url) handleProtocolUrl(url)
+    // 聚焦主窗口
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  })
+}
+
+// macOS: open-url 事件
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+  handleProtocolUrl(url)
+})
+
+/** 处理 tidemind:// 协议链接 */
+async function handleProtocolUrl(url: string): Promise<void> {
+  const log = createLogger('protocol')
+  log.info(`handling protocol URL: ${url.replace(/access_token=[^&]+/, 'access_token=***')}`)
+
+  try {
+    const parsed = new URL(url)
+    if (parsed.pathname === '//auth/callback' || parsed.pathname === '/auth/callback') {
+      // OAuth 回调
+      const { handleOAuthCallback } = await import('./cloud/auth-client.js')
+      await handleOAuthCallback(url)
+      // 通知渲染进程刷新状态
+      mainWindow?.webContents.send('data-changed', { scopes: ['cloud'] })
+    }
+  } catch (err) {
+    log.error(`protocol handler error: ${(err as Error).message}`)
+  }
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -136,7 +194,7 @@ function createTray(): void {
   })
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // ⚠️ 数据目录迁移必须是第一步！shim-writer 会创建 ~/.tidemind/bin/，
   // 一旦 ~/.tidemind/ 被任何子进程提前创建，迁移逻辑就会认为"已存在"而跳过，
   // 导致用户的 ~/.external-brain/ 数据孤立。
@@ -173,6 +231,14 @@ app.whenReady().then(() => {
     }
   } catch (err) {
     console.error('数据库初始化失败:', err)
+  }
+
+  // 恢复上次的云登录会话
+  try {
+    const { initAuth } = await import('./cloud/auth-client.js')
+    initAuth()
+  } catch (err) {
+    console.error('[eb:main] cloud auth init failed:', err)
   }
 
   createWindow()
