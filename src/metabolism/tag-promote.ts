@@ -98,36 +98,51 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
     let tagNodeId = existingTagNodes.get(tag);
 
     if (!tagNodeId) {
-      // 标签节点的创建时间 = 引用它的最早节点的创建时间（概念首次出现的时间）
-      // 分批查询避免 SQLite 参数数量限制
-      let earliestCreated: string | undefined;
-      const BATCH = 500;
-      for (let i = 0; i < nodeIds.length; i += BATCH) {
-        const batch = nodeIds.slice(i, i + BATCH);
-        const row = db.prepare(
-          `SELECT MIN(created) as earliest FROM nodes WHERE id IN (${batch.map(() => '?').join(',')})`,
-        ).get(...batch) as { earliest: string | null } | undefined;
-        if (row?.earliest && (!earliestCreated || row.earliest < earliestCreated)) {
-          earliestCreated = row.earliest;
+      // 检查是否有同名内容节点可以复用（如 Logseq 页面节点）
+      // 优先复用而不是创建空节点，避免同一概念产生两个节点
+      const existingContent = db.prepare(
+        "SELECT id FROM nodes WHERE (title = ? OR (title IS NULL AND content = ?)) AND is_tag = 0 AND is_superseded = 0 AND heat > 0.01 LIMIT 1",
+      ).get(tag, tag) as { id: string } | undefined;
+
+      if (existingContent) {
+        // 直接升级现有内容节点为 tag 节点
+        updateNode(db, existingContent.id, { is_tag: 1, title: tag });
+        tagNodeId = existingContent.id;
+        promoted++;
+        log.info(`复用已有内容节点 ${existingContent.id} 作为标签「${tag}」`);
+      } else {
+        // 标签节点的创建时间 = 引用它的最早节点的创建时间（概念首次出现的时间）
+        // 分批查询避免 SQLite 参数数量限制
+        let earliestCreated: string | undefined;
+        const BATCH = 500;
+        for (let i = 0; i < nodeIds.length; i += BATCH) {
+          const batch = nodeIds.slice(i, i + BATCH);
+          const row = db.prepare(
+            `SELECT MIN(created) as earliest FROM nodes WHERE id IN (${batch.map(() => '?').join(',')})`,
+          ).get(...batch) as { earliest: string | null } | undefined;
+          if (row?.earliest && (!earliestCreated || row.earliest < earliestCreated)) {
+            earliestCreated = row.earliest;
+          }
         }
+
+        // 创建新 tag 节点：标签名作为 title，content 由 LLM 补充定义
+        const tagNode = createNode(db, {
+          is_tag: 1,
+          title: tag,
+          content: '',
+          heat: 1.0,
+          specificity: 0.1,
+          subjectivity: 0.1,
+          actuality: 0.9,
+          created: earliestCreated ?? undefined,
+        });
+        tagNodeId = tagNode.id;
+        promoted++;
       }
 
-      // 创建新 tag 节点：标签名作为 title，content 由 LLM 补充定义
-      const tagNode = createNode(db, {
-        is_tag: 1,
-        title: tag,
-        content: '',
-        heat: 1.0,
-        specificity: 0.1,
-        subjectivity: 0.1,
-        actuality: 0.9,
-        created: earliestCreated ?? undefined,
-      });
-      tagNodeId = tagNode.id;
-      promoted++;
-
-      // LLM 生成定义性描述（失败不阻塞）
-      if (isLlmConfigured()) {
+      // LLM 生成定义性描述（仅对内容为空的新建 tag 节点，复用的节点已有内容）
+      const tagContent = getNode(db, tagNodeId)?.content ?? '';
+      if (isLlmConfigured() && tagContent.trim().length === 0) {
         try {
           const contextNodes = nodeIds
             .map(id => nodeCache.get(id))
