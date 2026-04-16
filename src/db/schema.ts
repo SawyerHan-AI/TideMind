@@ -274,6 +274,7 @@ CREATE INDEX IF NOT EXISTS idx_pending_digests_status ON pending_digests(status,
 const FTS_SQL = `
 -- 全文搜索（FTS5 外部内容表）
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
+    title,
     content,
     tags,
     content=nodes,
@@ -284,20 +285,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
 const FTS_TRIGGERS_SQL = `
 -- FTS 同步触发器
 CREATE TRIGGER IF NOT EXISTS nodes_ai AFTER INSERT ON nodes BEGIN
-    INSERT INTO nodes_fts(rowid, content, tags)
-    VALUES (new.rowid, new.content, new.tags);
+    INSERT INTO nodes_fts(rowid, title, content, tags)
+    VALUES (new.rowid, new.title, new.content, new.tags);
 END;
 
 CREATE TRIGGER IF NOT EXISTS nodes_ad AFTER DELETE ON nodes BEGIN
-    INSERT INTO nodes_fts(nodes_fts, rowid, content, tags)
-    VALUES('delete', old.rowid, old.content, old.tags);
+    INSERT INTO nodes_fts(nodes_fts, rowid, title, content, tags)
+    VALUES('delete', old.rowid, old.title, old.content, old.tags);
 END;
 
 CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE ON nodes BEGIN
-    INSERT INTO nodes_fts(nodes_fts, rowid, content, tags)
-    VALUES('delete', old.rowid, old.content, old.tags);
-    INSERT INTO nodes_fts(rowid, content, tags)
-    VALUES (new.rowid, new.content, new.tags);
+    INSERT INTO nodes_fts(nodes_fts, rowid, title, content, tags)
+    VALUES('delete', old.rowid, old.title, old.content, old.tags);
+    INSERT INTO nodes_fts(rowid, title, content, tags)
+    VALUES (new.rowid, new.title, new.content, new.tags);
 END;
 `;
 
@@ -1060,6 +1061,53 @@ const MIGRATIONS: Migration[] = [
       } catch { /* 忽略 */ }
 
       log.info(`迁移 v13 完成: 回填标题 logseq=${backfilledLogseq} obsidian=${backfilledObsidian}`);
+    },
+  },
+  {
+    version: 14,
+    description: 'FTS 索引加入 title 字段，重建索引和触发器',
+    up: (db) => {
+      // 删除旧的 FTS 表和触发器
+      db.exec("DROP TRIGGER IF EXISTS nodes_ai");
+      db.exec("DROP TRIGGER IF EXISTS nodes_ad");
+      db.exec("DROP TRIGGER IF EXISTS nodes_au");
+      db.exec("DROP TABLE IF EXISTS nodes_fts");
+
+      // 重建包含 title 的 FTS 表
+      db.exec(`
+        CREATE VIRTUAL TABLE nodes_fts USING fts5(
+          title,
+          content,
+          tags,
+          content=nodes,
+          content_rowid=rowid
+        )
+      `);
+
+      // 重建触发器
+      db.exec(`
+        CREATE TRIGGER nodes_ai AFTER INSERT ON nodes BEGIN
+          INSERT INTO nodes_fts(rowid, title, content, tags)
+          VALUES (new.rowid, new.title, new.content, new.tags);
+        END;
+
+        CREATE TRIGGER nodes_ad AFTER DELETE ON nodes BEGIN
+          INSERT INTO nodes_fts(nodes_fts, rowid, title, content, tags)
+          VALUES('delete', old.rowid, old.title, old.content, old.tags);
+        END;
+
+        CREATE TRIGGER nodes_au AFTER UPDATE ON nodes BEGIN
+          INSERT INTO nodes_fts(nodes_fts, rowid, title, content, tags)
+          VALUES('delete', old.rowid, old.title, old.content, old.tags);
+          INSERT INTO nodes_fts(rowid, title, content, tags)
+          VALUES (new.rowid, new.title, new.content, new.tags);
+        END;
+      `);
+
+      // 全量重建索引
+      db.exec("INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')");
+
+      log.info('迁移 v14 完成: FTS 索引已加入 title 字段并重建');
     },
   },
 ];

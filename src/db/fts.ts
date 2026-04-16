@@ -31,7 +31,7 @@ export function searchFTS(
       WHERE nodes_fts MATCH ?
         AND nodes.heat > 0.01
         AND nodes.is_superseded = 0
-      ORDER BY nodes_fts.rank
+      ORDER BY bm25(nodes_fts, 5.0, 1.0, 2.0)
       LIMIT ?
     `).all(safeQuery, limit) as FtsResult[];
   } catch (err) {

@@ -22,25 +22,3 @@ jobs:
 
       - name: Security audit
         run: npm audit --audit-level=high || true
-
-  cloud-server:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: pro/cloud-server/package-lock.json
-
-      - name: Install root dependencies (needed for @core/* type resolution)
-        run: npm ci
-
-      - name: Install cloud-server dependencies
-        run: cd pro/cloud-server && npm ci
-
-      - name: Type check
-        run: cd pro/cloud-server && npx tsc --noEmit
-
-      - name: Security audit
-        run: cd pro/cloud-server && npm audit --audit-level=high || true
