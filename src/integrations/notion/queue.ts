@@ -3,6 +3,7 @@
 // ============================================================
 
 import type Database from 'better-sqlite3';
+import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { createLogger } from '../../utils/logger.js';
 import { digest } from '../../tools/digest.js';
 import { supersedeNode } from '../shared/version.js';
@@ -122,7 +123,7 @@ async function processOnePage(
   const segments = segmentContent(preprocessed.cleanContent, preprocessed.title);
   if (segments.length === 0) {
     // 无实质内容但有属性 → 创建标题节点
-    const result = await digest(db, {
+    const result = await digest(new SqliteRepository(db), {
       content: preprocessed.title,
       title: preprocessed.title,
       source: { tool: 'notion', files: [pageId] },
@@ -144,7 +145,7 @@ async function processOnePage(
       ? `${preprocessed.title} > ${segment.context}`
       : preprocessed.title;
 
-    const result = await digest(db, {
+    const result = await digest(new SqliteRepository(db), {
       content: segment.content,
       title: preprocessed.title,
       source: { tool: 'notion', files: [pageId] },

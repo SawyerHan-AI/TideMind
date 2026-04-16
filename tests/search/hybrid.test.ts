@@ -40,11 +40,14 @@ vi.mock('../../src/db/stats.js', () => ({
 import type Database from 'better-sqlite3';
 import { setupTestDb, seedNode, seedLink } from '../helpers/test-db.js';
 import { searchHybrid } from '../../src/search/hybrid.js';
+import { SqliteRepository } from '../../src/db/sqlite-repository.js';
 
 let db: Database.Database;
+let repo: InstanceType<typeof SqliteRepository>;
 
 beforeEach(() => {
   db = setupTestDb();
+  repo = new SqliteRepository(db);
 });
 
 // ===== BM25-only 模式（vec 未加载） =====
@@ -54,7 +57,7 @@ describe('searchHybrid - BM25-only fallback', () => {
     seedNode(db, { content: 'photosynthesis chloroplast mechanism' });
     seedNode(db, { content: 'unrelated database indexing' });
 
-    const results = await searchHybrid(db, 'photosynthesis');
+    const results = await searchHybrid(repo, 'photosynthesis');
     expect(results.length).toBeGreaterThanOrEqual(1);
     expect(results[0].node.content).toContain('photosynthesis');
     expect(results[0].source).toBe('hybrid');
@@ -63,7 +66,7 @@ describe('searchHybrid - BM25-only fallback', () => {
   it('should return empty array when nothing matches', async () => {
     seedNode(db, { content: 'simple content here' });
 
-    const results = await searchHybrid(db, 'xylophone');
+    const results = await searchHybrid(repo, 'xylophone');
     expect(results).toEqual([]);
   });
 
@@ -73,7 +76,7 @@ describe('searchHybrid - BM25-only fallback', () => {
     seedNode(db, { content: 'fibonacci number golden ratio fibonacci' });
     seedNode(db, { content: 'unrelated cooking recipe' });
 
-    const results = await searchHybrid(db, 'fibonacci');
+    const results = await searchHybrid(repo, 'fibonacci');
     expect(results.length).toBeGreaterThanOrEqual(2);
 
     for (let i = 0; i < results.length - 1; i++) {
@@ -86,7 +89,7 @@ describe('searchHybrid - BM25-only fallback', () => {
       seedNode(db, { content: `distributed computing worker node ${i}` });
     }
 
-    const results = await searchHybrid(db, 'distributed', { limit: 3 });
+    const results = await searchHybrid(repo, 'distributed', { limit: 3 });
     expect(results.length).toBeLessThanOrEqual(3);
   });
 
@@ -94,7 +97,7 @@ describe('searchHybrid - BM25-only fallback', () => {
     seedNode(db, { content: 'encryption algorithm standard', type: 'fact' });
     seedNode(db, { content: 'encryption protocol design', type: 'idea' });
 
-    const results = await searchHybrid(db, 'encryption', { type: 'fact' });
+    const results = await searchHybrid(repo, 'encryption', { type: 'fact' });
     expect(results).toHaveLength(1);
     expect(results[0].node.type).toBe('fact');
   });
@@ -103,7 +106,7 @@ describe('searchHybrid - BM25-only fallback', () => {
     seedNode(db, { content: 'compiler optimization technique', type: 'fact' });
     seedNode(db, { content: 'compiler improvement idea', type: 'idea' });
 
-    const results = await searchHybrid(db, 'compiler', { type: 'fact' });
+    const results = await searchHybrid(repo, 'compiler', { type: 'fact' });
     expect(results).toHaveLength(1);
     expect(results[0].node.type).toBe('fact');
   });
@@ -115,21 +118,21 @@ describe('searchHybrid - intent weights', () => {
   it('should return results with creative intent', async () => {
     seedNode(db, { content: 'paradigm divergent thinking brainstorm' });
 
-    const results = await searchHybrid(db, 'paradigm', { intent: 'creative' });
+    const results = await searchHybrid(repo, 'paradigm', { intent: 'creative' });
     expect(results.length).toBeGreaterThanOrEqual(1);
   });
 
   it('should return results with factual intent', async () => {
     seedNode(db, { content: 'thermodynamics entropy calculation' });
 
-    const results = await searchHybrid(db, 'thermodynamics', { intent: 'factual' });
+    const results = await searchHybrid(repo, 'thermodynamics', { intent: 'factual' });
     expect(results.length).toBeGreaterThanOrEqual(1);
   });
 
   it('should return results with exploratory intent', async () => {
     seedNode(db, { content: 'topology manifold differential geometry' });
 
-    const results = await searchHybrid(db, 'topology', { intent: 'exploratory' });
+    const results = await searchHybrid(repo, 'topology', { intent: 'exploratory' });
     expect(results.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -142,8 +145,8 @@ describe('searchHybrid - intent weights', () => {
       independence: 0.9,
     });
 
-    const factual = await searchHybrid(db, 'metamorphosis', { intent: 'factual' });
-    const creative = await searchHybrid(db, 'metamorphosis', { intent: 'creative' });
+    const factual = await searchHybrid(repo, 'metamorphosis', { intent: 'factual' });
+    const creative = await searchHybrid(repo, 'metamorphosis', { intent: 'creative' });
 
     expect(factual.length).toBeGreaterThanOrEqual(1);
     expect(creative.length).toBeGreaterThanOrEqual(1);
@@ -169,7 +172,7 @@ describe('searchHybrid - neighbor expansion', () => {
       status: 'confirmed',
     });
 
-    const results = await searchHybrid(db, 'blockchain', { limit: 20 });
+    const results = await searchHybrid(repo, 'blockchain', { limit: 20 });
 
     // nodeA should be found via BM25, nodeB should be expanded as neighbor
     const ids = results.map(r => r.node.id);
@@ -193,7 +196,7 @@ describe('searchHybrid - neighbor expansion', () => {
       status: 'confirmed',
     });
 
-    const results = await searchHybrid(db, 'heuristic', { limit: 20 });
+    const results = await searchHybrid(repo, 'heuristic', { limit: 20 });
 
     const mainResult = results.find(r => r.node.id === nodeA.id);
     const neighborResult = results.find(r => r.node.id === nodeB.id);
@@ -224,7 +227,7 @@ describe('searchHybrid - neighbor expansion', () => {
       status: 'confirmed',
     });
 
-    const results = await searchHybrid(db, 'cryptography', { limit: 20 });
+    const results = await searchHybrid(repo, 'cryptography', { limit: 20 });
 
     const ids = results.map(r => r.node.id);
     expect(ids).toContain(nodeA.id);
@@ -245,7 +248,7 @@ describe('searchHybrid - neighbor expansion', () => {
     // Archive the neighbor
     db.prepare('UPDATE nodes SET heat = 0.005 WHERE id = ?').run(nodeB.id);
 
-    const results = await searchHybrid(db, 'polynomial', { limit: 20 });
+    const results = await searchHybrid(repo, 'polynomial', { limit: 20 });
 
     const ids = results.map(r => r.node.id);
     expect(ids).toContain(nodeA.id);

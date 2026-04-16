@@ -337,6 +337,10 @@ export interface AppConfig {
     daily_check_hours: number;
     weekly_check_days: number;
   };
+  cloud?: {
+    enabled: boolean;
+    server_url: string;
+  };
   sources?: {
     logseq?: {
       path: string;

@@ -14,6 +14,8 @@ import { registerAgentHandlers } from './agents'
 import { registerPluginGeneratorHandlers } from './plugin-generator'
 import { registerNoteSourceHandlers } from './note-sources'
 import { registerConnectionHandlers } from './connections'
+import { registerCloudHandlers } from './cloud'
+import { registerAppHandlers } from './app'
 
 export function registerAllHandlers(db: Database.Database, dataDir: string): void {
   registerNodeHandlers(db)
@@ -31,4 +33,6 @@ export function registerAllHandlers(db: Database.Database, dataDir: string): voi
   registerPluginGeneratorHandlers(dataDir)
   registerNoteSourceHandlers()
   registerConnectionHandlers(dataDir)
+  registerCloudHandlers()
+  registerAppHandlers()
 }

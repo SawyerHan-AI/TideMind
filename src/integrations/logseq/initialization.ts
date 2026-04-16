@@ -15,6 +15,7 @@ import { logTimelineEvent } from '../../db/log.js';
 import { now } from '../../utils/time.js';
 import { generateId } from '../../utils/id.js';
 
+import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { walkMdFiles, buildBlockIndex, preprocessFile } from './preprocessor.js';
 import { SYSTEM_PROPERTIES } from './types.js';
 import { segmentContent } from './segmenter.js';
@@ -529,6 +530,7 @@ async function processFileForInit(
   importDate: string,
   sourceId?: string,
 ): Promise<string[]> {
+  const repo = new SqliteRepository(db);
   // 计算初始 heat 和原始创建时间
   const dateInfo = inferredDates.get(file.title);
   const inDegree = inDegreeMap.get(file.title) ?? 0;
@@ -539,7 +541,7 @@ async function processFileForInit(
 
   // 空白页 → 创建普通节点（不直接标记 is_tag，由 promoteFrequentTags 按阈值判断）
   if (file.category === 'empty_tag') {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: file.title,
       source: { tool: 'logseq', files: [file.relPath] },
       context: `Logseq 标签页: ${file.title}`,
@@ -594,8 +596,10 @@ async function processFileForInit(
       ]),
     ];
 
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: segment.content,
+      // 日记页子节点不设 title——日期标题对多个 segment 都一样，不如让 annotate 生成有意义的标题
+      title: file.category === 'journal' ? undefined : preprocessed.title,
       source: { tool: 'logseq', files: [file.relPath] },
       context: contextParts,
       tags: combinedTags.length > 0 ? combinedTags : undefined,
@@ -811,6 +815,7 @@ async function createLandingConnections(
  * 将初始化报告作为节点存入图谱（走 digest 流程，获得 embedding + landing）
  */
 async function saveReportAsNode(db: Database.Database, report: InitReport): Promise<void> {
+  const repo = new SqliteRepository(db);
   const reportContent = [
     `Logseq 初始化报告`,
     ``,
@@ -824,7 +829,7 @@ async function saveReportAsNode(db: Database.Database, report: InitReport): Prom
     `- 耗时: ${Math.round(report.durationMs / 1000)}s`,
   ].join('\n');
 
-  await digest(db, {
+  await digest(repo, {
     content: reportContent,
     source: { tool: 'logseq' },
     tags: ['初始化'],

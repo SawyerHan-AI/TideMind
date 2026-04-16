@@ -3,8 +3,10 @@
     "general": "一般",
     "external": "外部連携",
     "model": "モデル設定",
-    "strategy": "内部戦略",
+    "strategy": "代謝戦略",
     "data": "データ管理",
+    "account": "アカウント",
+    "cloud": "クラウド",
     "about": "情報"
   },
   "general": {
@@ -210,8 +212,20 @@
     }
   },
   "about": {
-    "version": "バージョン:",
-    "user": "ユーザー:"
+    "version": "バージョン",
+    "user": "ユーザー",
+    "checkUpdate": "アップデートを確認",
+    "checking": "確認中…",
+    "upToDate": "最新バージョンです。",
+    "newVersion": "新しいバージョンがあります",
+    "downloadUpdate": "ダウンロード",
+    "checkFailed": "確認に失敗しました。後でもう一度お試しください。",
+    "retry": "再試行",
+    "links": "リンク",
+    "website": "ウェブサイト",
+    "feedback": "フィードバック",
+    "docs": "ドキュメント",
+    "license": "ライセンス"
   },
   "noteSync": {
     "title": "連携済みノート",
@@ -797,7 +811,7 @@
       "verify": "Verify",
       "selectToolHint": "Select a tool type to see configuration steps",
       "comingSoon": "Coming Soon",
-      "other": "Other",
+      "other": "Manual MCP",
       "pluginSupportHint": "Supports plugin installation with automatic MCP, Skill and Hooks configuration",
       "agentName": "Agent Name",
       "agentNamePlaceholder": "e.g. Work Cursor",
@@ -895,6 +909,87 @@
         "skillFile": "Skill file (brain usage guide)",
         "hooks": "Hooks (SessionStart auto-load context, PreCompact auto-save memory)"
       }
+    }
+  },
+  "account": {
+    "loginTitle": "サインイン",
+    "loginDesc": "デバイス間で外部脳を同期しましょう。思考を止めないために。",
+    "email": "メールアドレス",
+    "password": "パスワード",
+    "loggingIn": "サインイン中…",
+    "loginButton": "サインイン",
+    "basicInfo": "基本情報",
+    "devices": "デバイス",
+    "devicesComingSoon": "デバイス管理は近日公開予定です。",
+    "subscription": "サブスクリプション",
+    "currentPlan": "現在のプラン",
+    "upgradeHint": "Pro にアップグレードすると、無制限のクラウドメモリ、5台のデバイス、24時間クラウド代謝などが利用できます。",
+    "viewPricing": "プランと料金を見る",
+    "manageSubscription": "サブスクリプションを管理",
+    "billing": "請求",
+    "noBilling": "無料プランには請求履歴がありません。",
+    "billingComingSoon": "請求履歴は近日公開予定です。",
+    "logout": "サインアウト",
+    "deleteAccount": "アカウントを削除",
+    "deleteAccountTitle": "アカウントを削除しますか？",
+    "deleteAccountDesc": "すべてのクラウドデータは30日後に完全に削除されます。ローカルデータには影響しません。この操作は取り消せません。",
+    "deleteAccountConfirm": "アカウントを削除",
+    "comingSoon": "近日公開",
+    "subscriptionComingSoon": "Pro および Pro+ プランは近日公開予定です。クラウド同期、7×24メタボリズムなどの機能をお楽しみに。",
+    "registerButton": "アカウント作成",
+    "browserHint": "ブラウザで開いて安全に認証します。"
+  },
+  "cloud": {
+    "loginRequired": "クラウド機能を使用するには、TideMind Cloud にサインインしてください。",
+    "goLogin": "サインイン",
+    "offlineNotice": "オフライン — クラウド設定は利用できません。",
+    "betaNotice": "クラウド機能はプライベートベータ版です",
+    "betaDesc": "アカウントは登録済みです。クラウド機能が利用可能になり次第、お知らせします。",
+    "never": "未同期",
+    "dataSync": {
+      "title": "データクラウド同期",
+      "desc": "TideMind Cloud にメモリを同期して、マルチデバイスでアクセスできるようにします。ローカルデータはクラウドの読み取り専用キャッシュになります。",
+      "syncStatus": "同期状態",
+      "syncNow": "今すぐ同期",
+      "connected": "接続済み",
+      "offline": "オフライン",
+      "lastSynced": "最終同期",
+      "pending": "保留中の変更",
+      "syncing": "同期中…",
+      "cloudStorage": "クラウドストレージ",
+      "memories": "メモリ",
+      "strategies": "ストラテジー",
+      "synced": "同期済み",
+      "enableTitle": "データクラウド同期を有効にしますか？",
+      "enableDesc": "メモリが TideMind Cloud にアップロードされます。クラウドがプライマリコピーになり、ローカルデータは読み取り専用キャッシュになります。ログイン中のすべてのデバイスが同期されます。",
+      "enableConfirm": "同期を有効にする",
+      "disableTitle": "データクラウド同期を無効にしますか？",
+      "disableDesc": "ローカルデータがプライマリコピーになります。他のデバイスもクラウド同期を終了します。クラウドデータは30日間保持されます。クラウド代謝は自動的に無効になります。",
+      "disableConfirm": "同期を無効にする"
+    },
+    "metabolism": {
+      "title": "クラウド代謝",
+      "freeDesc": "クラウド代謝は Pro 以上で利用可能です。メモリが24時間クラウドで注釈、リンク、結晶化されます。",
+      "upgrade": "Pro にアップグレード",
+      "proDesc": "代謝タスクはデバイスに依存せず、24時間クラウドで実行されます。",
+      "proPlusDesc": "TideMind マネージド LLM で動作。API キー不要。代謝は24時間クラウドで実行されます。",
+      "keyWarning": "クラウド代謝には LLM API キーのアップロードが必要です（AES-256-GCM 暗号化）。セキュリティに懸念がある場合は、この機能をオフにしてローカル代謝を使用してください。",
+      "requiresSync": "データクラウド同期の有効化が必要です。",
+      "tokenUsage": "トークン使用量",
+      "enableTitle": "クラウド代謝を有効にしますか？",
+      "enableDescByok": "LLM API キーが暗号化されて TideMind Cloud にアップロードされます。代謝タスクの実行にのみ使用されます。クラウド代謝を無効にするとキーは削除されます。",
+      "enableDescManaged": "TideMind マネージド LLM が代謝を実行します。月300万トークン付き。モデル設定で独自のキーを設定すれば、より高品質にすることもできます。",
+      "enableConfirm": "有効にする",
+      "disableTitle": "クラウド代謝を無効にしますか？",
+      "disableDescByok": "クラウド API キーが削除されます。代謝はローカルに戻ります。デバイスの電源がオフの場合は一時停止します。",
+      "disableDescManaged": "マネージド LLM の使用が一時停止されます。代謝はローカルに戻ります。デバイスの電源がオフの場合は一時停止します。",
+      "disableConfirm": "無効にする"
+    },
+    "managedLlm": {
+      "title": "TideMind LLM サービス",
+      "comingSoon": "近日公開",
+      "desc": "独自の API キーを登録せずに、TideMind 提供の LLM サービスを使用できます。Pro+ サブスクリプションに含まれています。",
+      "learnMore": "詳しく見る"
     }
   }
 }

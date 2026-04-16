@@ -3,8 +3,10 @@
     "general": "Genel",
     "external": "Entegrasyonlar",
     "model": "Modeller",
-    "strategy": "Stratejiler",
+    "strategy": "Metabolizma",
     "data": "Veriler",
+    "account": "Hesap",
+    "cloud": "Bulut",
     "about": "Hakkında"
   },
   "general": {
@@ -210,8 +212,20 @@
     }
   },
   "about": {
-    "version": "Sürüm:",
-    "user": "Kullanıcı:"
+    "version": "Sürüm",
+    "user": "Kullanıcı",
+    "checkUpdate": "Güncellemeleri kontrol et",
+    "checking": "Kontrol ediliyor…",
+    "upToDate": "En son sürümü kullanıyorsunuz.",
+    "newVersion": "Yeni sürüm mevcut",
+    "downloadUpdate": "İndir",
+    "checkFailed": "Kontrol başarısız. Lütfen daha sonra tekrar deneyin.",
+    "retry": "Tekrar dene",
+    "links": "Bağlantılar",
+    "website": "Web sitesi",
+    "feedback": "Geri bildirim",
+    "docs": "Belgeler",
+    "license": "Lisans"
   },
   "noteSync": {
     "title": "Bagli Notlar",
@@ -797,7 +811,7 @@
       "verify": "Verify",
       "selectToolHint": "Select a tool type to see configuration steps",
       "comingSoon": "Coming Soon",
-      "other": "Other",
+      "other": "Manual MCP",
       "pluginSupportHint": "Supports plugin installation with automatic MCP, Skill and Hooks configuration",
       "agentName": "Agent Name",
       "agentNamePlaceholder": "e.g. Work Cursor",
@@ -895,6 +909,87 @@
         "skillFile": "Skill file (brain usage guide)",
         "hooks": "Hooks (SessionStart auto-load context, PreCompact auto-save memory)"
       }
+    }
+  },
+  "account": {
+    "loginTitle": "Giriş Yap",
+    "loginDesc": "Harici beyninizi cihazlar arasında senkronize edin. Düşünmeyi asla bırakmayın.",
+    "email": "E-posta",
+    "password": "Şifre",
+    "loggingIn": "Giriş yapılıyor…",
+    "loginButton": "Giriş Yap",
+    "basicInfo": "Temel Bilgiler",
+    "devices": "Cihazlar",
+    "devicesComingSoon": "Cihaz yönetimi yakında geliyor.",
+    "subscription": "Abonelik",
+    "currentPlan": "Mevcut Plan",
+    "upgradeHint": "Sınırsız bulut anılar, 5 cihaz, 7/24 bulut metabolizması ve daha fazlası için Pro'ya yükseltin.",
+    "viewPricing": "Planları ve Fiyatları Gör",
+    "manageSubscription": "Aboneliği Yönet",
+    "billing": "Faturalama",
+    "noBilling": "Ücretsiz plan için fatura geçmişi bulunmuyor.",
+    "billingComingSoon": "Fatura geçmişi yakında geliyor.",
+    "logout": "Çıkış Yap",
+    "deleteAccount": "Hesabı Sil",
+    "deleteAccountTitle": "Hesap silinsin mi?",
+    "deleteAccountDesc": "Tüm bulut verileri 30 gün sonra kalıcı olarak silinecektir. Yerel veriler etkilenmez. Bu işlem geri alınamaz.",
+    "deleteAccountConfirm": "Hesabı Sil",
+    "comingSoon": "Yakında",
+    "subscriptionComingSoon": "Pro ve Pro+ planları yakında geliyor. Bulut senkronizasyonu, 7/24 metabolizma ve daha fazlası için takipte kalın.",
+    "registerButton": "Hesap oluştur",
+    "browserHint": "Güvenli kimlik doğrulama için tarayıcınızda açılır."
+  },
+  "cloud": {
+    "loginRequired": "Bulut özelliklerini kullanmak için TideMind Cloud'a giriş yapın.",
+    "goLogin": "Giriş Yap",
+    "offlineNotice": "Çevrimdışı — bulut ayarları kullanılamıyor.",
+    "betaNotice": "Bulut özellikleri özel beta aşamasındadır",
+    "betaDesc": "Hesabınız kayıtlı. Bulut özellikleri hesabınız için kullanılabilir olduğunda bilgilendirileceksiniz.",
+    "never": "Hiçbir zaman",
+    "dataSync": {
+      "title": "Veri Bulut Senkronizasyonu",
+      "desc": "Anılarınızı çoklu cihaz erişimi için TideMind Cloud ile senkronize edin. Yerel veriler bulutun salt okunur önbelleği olur.",
+      "syncStatus": "Senkronizasyon Durumu",
+      "syncNow": "Şimdi Senkronize Et",
+      "connected": "Bağlı",
+      "offline": "Çevrimdışı",
+      "lastSynced": "Son senkronizasyon",
+      "pending": "Bekleyen değişiklikler",
+      "syncing": "Senkronize ediliyor…",
+      "cloudStorage": "Bulut Depolama",
+      "memories": "Anılar",
+      "strategies": "Stratejiler",
+      "synced": "Senkronize edildi",
+      "enableTitle": "Veri bulut senkronizasyonu etkinleştirilsin mi?",
+      "enableDesc": "Anılarınız TideMind Cloud'a yüklenecek. Bulut birincil kopya olur; yerel veriler salt okunur önbelleğe dönüşür. Giriş yapılmış tüm cihazlar senkronize edilir.",
+      "enableConfirm": "Senkronizasyonu Etkinleştir",
+      "disableTitle": "Veri bulut senkronizasyonu devre dışı bırakılsın mı?",
+      "disableDesc": "Yerel veriler birincil kopya olur. Diğer cihazlar da bulut senkronizasyonundan çıkar. Bulut verileri 30 gün boyunca saklanır. Bulut metabolizması otomatik olarak devre dışı bırakılır.",
+      "disableConfirm": "Senkronizasyonu Devre Dışı Bırak"
+    },
+    "metabolism": {
+      "title": "Bulut Metabolizması",
+      "freeDesc": "Bulut metabolizması Pro ve üzeri planlarda kullanılabilir. Anılarınız bulutta 7/24 açıklanır, bağlanır ve kristalize edilir.",
+      "upgrade": "Pro'ya Yükselt",
+      "proDesc": "Metabolizma görevleri cihazınızdan bağımsız olarak bulutta 7/24 çalışır.",
+      "proPlusDesc": "TideMind Yönetilen LLM ile çalışır. API anahtarı gerekmez. Metabolizma bulutta 7/24 çalışır.",
+      "keyWarning": "Bulut metabolizması, LLM API anahtarınızın yüklenmesini gerektirir (AES-256-GCM şifreli). Güvenlik endişeleriniz varsa bu özelliği kapalı tutun ve yerel metabolizmayı kullanın.",
+      "requiresSync": "Veri bulut senkronizasyonunun etkin olması gerekir.",
+      "tokenUsage": "Token Kullanımı",
+      "enableTitle": "Bulut metabolizması etkinleştirilsin mi?",
+      "enableDescByok": "LLM API anahtarınız şifrelenerek TideMind Cloud'a yüklenecek. Yalnızca metabolizma görevlerinizi çalıştırmak için kullanılacaktır. Bulut metabolizmasını devre dışı bıraktığınızda anahtar silinir.",
+      "enableDescManaged": "TideMind Yönetilen LLM metabolizmanızı çalıştıracak. Aylık 3M token dahil. Daha yüksek kalite için Model Ayarlarında kendi anahtarınızı da yapılandırabilirsiniz.",
+      "enableConfirm": "Etkinleştir",
+      "disableTitle": "Bulut metabolizması devre dışı bırakılsın mı?",
+      "disableDescByok": "Bulut API anahtarınız silinecek. Metabolizma yerel moda geçer. Cihazınız kapalıyken duraklatılır.",
+      "disableDescManaged": "Yönetilen LLM kullanımı duraklatılacak. Metabolizma yerel moda geçer. Cihazınız kapalıyken duraklatılır.",
+      "disableConfirm": "Devre Dışı Bırak"
+    },
+    "managedLlm": {
+      "title": "TideMind LLM Hizmeti",
+      "comingSoon": "Yakında",
+      "desc": "Kendi API anahtarlarınızı kaydetmeden TideMind tarafından sağlanan LLM hizmetini kullanın. Pro+ aboneliğine dahildir.",
+      "learnMore": "Daha fazla bilgi"
     }
   }
 }

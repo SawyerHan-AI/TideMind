@@ -14,6 +14,7 @@ import { createLogger } from '../../utils/logger.js';
 import { logTimelineEvent } from '../../db/log.js';
 import { now } from '../../utils/time.js';
 
+import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { walkMdFiles, preprocessFile, buildFileIndex } from './preprocessor.js';
 import { segmentContent } from './segmenter.js';
 import { classifyFiles, buildInDegreeMap } from './classifier.js';
@@ -470,6 +471,7 @@ async function processFileForInit(
   headingToNodeId: Map<string, string>,
   sourceId?: string,
 ): Promise<string[]> {
+  const repo = new SqliteRepository(db);
   const title = path.basename(file.relPath, path.extname(file.relPath));
   const dateInfo = inferredDates.get(file.relPath) ?? inferredDates.get(title);
   const inDegree = inDegreeMap.get(title) ?? 0;
@@ -483,7 +485,7 @@ async function processFileForInit(
     const nodeIds: string[] = [];
     for (const textNode of parsed.textNodes) {
       if (!textNode.text.trim()) continue;
-      const result = await digest(db, {
+      const result = await digest(repo, {
         content: textNode.text,
         source: { tool: 'obsidian', files: [file.relPath] },
         context: `Obsidian Canvas: ${title}`,
@@ -498,7 +500,7 @@ async function processFileForInit(
 
   // 空白 / 元数据 → tag 节点
   if (file.category === 'empty_tag' || file.category === 'metadata_only') {
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: title,
       source: { tool: 'obsidian', files: [file.relPath] },
       context: `Obsidian 标签页: ${title}`,
@@ -537,8 +539,9 @@ async function processFileForInit(
 
     const combinedTags = [...new Set([...preprocessed.metadata.tags, ...preprocessed.metadata.pageRefs])];
 
-    const result = await digest(db, {
+    const result = await digest(repo, {
       content: segment.content,
+      title: preprocessed.title,
       source: { tool: 'obsidian', files: [file.relPath] },
       context: contextParts,
       tags: combinedTags.length > 0 ? combinedTags : undefined,
@@ -716,6 +719,7 @@ async function createExplicitLinks(
 const danglingTagCache = new Map<string, string>();
 
 async function createDanglingTagNode(db: Database.Database, name: string): Promise<string | null> {
+  const repo = new SqliteRepository(db);
   const normalized = name.trim().toLowerCase();
   if (danglingTagCache.has(normalized)) return danglingTagCache.get(normalized)!;
 
@@ -728,7 +732,7 @@ async function createDanglingTagNode(db: Database.Database, name: string): Promi
     return existing.id;
   }
 
-  const result = await digest(db, {
+  const result = await digest(repo, {
     content: name,
     source: { tool: 'obsidian' },
     context: `Obsidian 悬空引用 tag: ${name}`,
@@ -800,7 +804,8 @@ async function createLandingConnections(
 }
 
 async function saveReportAsNode(db: Database.Database, report: InitReport): Promise<void> {
-  await digest(db, {
+  const repo = new SqliteRepository(db);
+  await digest(repo, {
     content: [
       `Obsidian 初始化报告`,
       ``,

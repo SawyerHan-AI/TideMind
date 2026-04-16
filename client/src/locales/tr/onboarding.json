@@ -42,11 +42,20 @@
     "model": "Model",
     "agent": "Araçlar",
     "noteSource": "Notlar",
-    "complete": "Tamam"
+    "complete": "Tamam",
+    "cloudSync": "Bulut"
   },
   "nav": {
     "next": "İleri",
     "back": "Geri",
     "skip": "Atla"
+  },
+  "cloudSync": {
+    "title": "TideMind Cloud'a Bağlan",
+    "description": "İsteğe bağlı olarak beyninizi buluta senkronize edin, çoklu cihaz erişimi ve daha fazla entegrasyon için.",
+    "benefitDevices": "Tüm cihazlarınızda senkronize edin",
+    "benefitChatGPT": "Tarayıcı eklentisi ile ChatGPT entegrasyonu",
+    "benefitMetabolism": "Durmayan arka plan metabolizması",
+    "info": "Bulut senkronizasyonu isteğe bağlıdır. Yerel beyniniz tek başına mükemmel çalışır. Ayarlar'dan istediğiniz zaman buluta bağlanabilirsiniz."
   }
 }

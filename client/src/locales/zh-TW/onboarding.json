@@ -42,11 +42,20 @@
     "model": "模型",
     "agent": "開發工具",
     "noteSource": "筆記",
-    "complete": "完成"
+    "complete": "完成",
+    "cloudSync": "雲端"
   },
   "nav": {
     "next": "下一步",
     "back": "上一步",
     "skip": "跳過"
+  },
+  "cloudSync": {
+    "title": "連接 TideMind 雲端",
+    "description": "可選將你的大腦同步到雲端，實現多裝置存取和更多整合。",
+    "benefitDevices": "跨裝置同步",
+    "benefitChatGPT": "透過瀏覽器擴充整合 ChatGPT",
+    "benefitMetabolism": "不間斷的背景代謝",
+    "info": "雲端同步是可選的。你的本地大腦可以獨立完美運行。你可以隨時在設定中連接雲端。"
   }
 }

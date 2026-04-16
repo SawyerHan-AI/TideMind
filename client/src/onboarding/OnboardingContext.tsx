@@ -21,7 +21,7 @@ interface OnboardingContextValue extends OnboardingState {
 
 const OnboardingCtx = createContext<OnboardingContextValue | null>(null)
 
-export const STEP_KEYS = ['welcome', 'preferences', 'model', 'agent', 'noteSource', 'complete'] as const
+export const STEP_KEYS = ['welcome', 'preferences', 'model', 'agent', 'noteSource', 'cloudSync', 'complete'] as const
 export type StepKey = (typeof STEP_KEYS)[number]
 
 export function OnboardingProvider({ children, onFinish }: { children: ReactNode; onFinish: () => void }) {

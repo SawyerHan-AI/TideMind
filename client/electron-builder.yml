@@ -4,11 +4,19 @@ directories:
   buildResources: resources
   output: release
 
+# Auto-update: GitHub Releases（签名后启用 electron-updater）
+publish:
+  provider: github
+  owner: SawyerHan-AI
+  repo: TideMind
+
 mac:
   category: public.app-category.productivity
   icon: resources/icon.icns
-  target: dmg
-  hardenedRuntime: false
+  target:
+    - dmg
+    - zip
+  hardenedRuntime: true
 
 dmg:
   title: Tide Mind

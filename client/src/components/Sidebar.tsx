@@ -1,8 +1,10 @@
+import { useState, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
 import { LayoutDashboard, Brain, Clock, Settings } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import logoSrc from '../assets/logo.png'
 import { getProFeatures } from '../feature-registry'
+import { CloudStatus } from './sidebar/CloudStatus'
 
 const coreNavKeys = [
   { to: '/', icon: LayoutDashboard, labelKey: 'nav.dashboard' },
@@ -11,8 +13,17 @@ const coreNavKeys = [
   { to: '/settings', icon: Settings, labelKey: 'nav.settings' },
 ]
 
+function useAppVersion(): string {
+  const [version, setVersion] = useState('0.2.0')
+  useEffect(() => {
+    window.api.app.getVersion().then(setVersion).catch(() => {})
+  }, [])
+  return version
+}
+
 export function Sidebar() {
   const { t } = useTranslation()
+  const appVersion = useAppVersion()
   return (
     <aside className="glass-sidebar w-56 flex-shrink-0 flex flex-col" style={{
       borderRight: '1px solid var(--border-faint)',
@@ -71,9 +82,12 @@ export function Sidebar() {
         background: 'linear-gradient(90deg, transparent, var(--border-faint) 30%, var(--border-faint) 70%, transparent)',
       }} />
 
+      {/* Cloud 状态 */}
+      <CloudStatus />
+
       {/* 底部版本号 */}
       <div className="px-4 py-3 text-[10px]" style={{ color: 'var(--fg-muted)' }}>
-        v0.1.0
+        v{appVersion}
       </div>
     </aside>
   )

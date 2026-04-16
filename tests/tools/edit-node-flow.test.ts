@@ -41,9 +41,10 @@ vi.mock('../../src/config.js', () => ({
   isLlmConfigured: () => true,
 }));
 
+const mockGetDb = vi.fn();
 vi.mock('../../src/db/connection.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/db/connection.js')>();
-  return { ...actual, isVecLoaded: () => false };
+  return { ...actual, isVecLoaded: () => false, getDb: () => mockGetDb() };
 });
 
 vi.mock('../../src/llm/client.js', () => ({
@@ -60,12 +61,16 @@ import { digest } from '../../src/tools/digest.js';
 import { getNode } from '../../src/db/nodes.js';
 import { getLinksFrom, getLinksTo } from '../../src/db/links.js';
 import { supersedeNode } from '../../src/integrations/shared/version.js';
+import { SqliteRepository } from '../../src/db/sqlite-repository.js';
 
 let db: Database.Database;
+let repo: InstanceType<typeof SqliteRepository>;
 
 beforeEach(() => {
-  db = setupTestDb();
   vi.clearAllMocks();
+  db = setupTestDb();
+  repo = new SqliteRepository(db);
+  mockGetDb.mockReturnValue(db);
 });
 
 /**
@@ -81,7 +86,7 @@ async function simulateEditNode(
   const oldNode = getNode(db, nodeId);
   if (!oldNode) return { success: false, error: `节点 ${nodeId} 不存在` };
 
-  const result = await digest(db, {
+  const result = await digest(repo, {
     content: newContent,
     title: newTitle ?? undefined,
     source: { tool: 'client' },

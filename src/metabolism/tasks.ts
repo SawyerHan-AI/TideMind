@@ -17,6 +17,7 @@ import { runProfileSynthesize } from '../evolution/profile-synthesize.js';
 import { runLearning2, canRunLearning2 } from '../evolution/learning2.js';
 import { runLearning3, canRunLearning3 } from '../evolution/learning3.js';
 import { claimNextPendingDigest, completePendingDigest, failPendingDigest } from '../db/pending-digests.js';
+import { SqliteRepository } from '../db/sqlite-repository.js';
 import { createLogger } from '../utils/logger.js';
 
 const log = createLogger('tasks');
@@ -46,7 +47,8 @@ export const ALL_TASKS: TaskDefinition[] = [
       try {
         const input = JSON.parse(item.input_json);
         const { processDigestRetry } = await import('../tools/digest.js');
-        await processDigestRetry(db, input, item.trace_id);
+        const repo = new SqliteRepository(db);
+        await processDigestRetry(repo, input, item.trace_id);
         completePendingDigest(db, item.id);
       } catch (err) {
         failPendingDigest(db, item.id, (err as Error).message);

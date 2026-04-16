@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # 安装根目录依赖（核心引擎）
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Build core engine
+        run: npm run build
+
+      # 安装客户端依赖
+      - name: Install client dependencies
+        run: cd client && npm ci
+
+      # 构建客户端
+      - name: Build client
+        run: cd client && npm run build
+
+      # 打包 macOS（无签名版本）
+      - name: Package macOS
+        run: cd client && npx electron-builder --mac --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 上传到 GitHub Release
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            client/release/*.dmg
+            client/release/*.zip
+            client/release/*.blockmap
+            client/release/latest-mac.yml
+          draft: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # macOS with signing (当 Apple Developer 账号通过后启用)
+  # build-mac-signed:
+  #   runs-on: macos-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-node@v4
+  #       with:
+  #         node-version: '22'
+  #         cache: 'npm'
+  #     - run: npm ci
+  #     - run: npm run build
+  #     - run: cd client && npm ci
+  #     - run: cd client && npm run build
+  #     - name: Package macOS (signed)
+  #       run: cd client && npx electron-builder --mac --publish never
+  #       env:
+  #         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #         CSC_LINK: ${{ secrets.MAC_CERTIFICATE }}
+  #         CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+  #         APPLE_ID: ${{ secrets.APPLE_ID }}
+  #         APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+  #         APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}

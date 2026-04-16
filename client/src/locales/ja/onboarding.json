@@ -42,11 +42,20 @@
     "model": "モデル",
     "agent": "開発ツール",
     "noteSource": "ノート",
-    "complete": "完了"
+    "complete": "完了",
+    "cloudSync": "クラウド"
   },
   "nav": {
     "next": "次へ",
     "back": "戻る",
     "skip": "スキップ"
+  },
+  "cloudSync": {
+    "title": "TideMind Cloud に接続",
+    "description": "クラウドにブレインを同期して、マルチデバイスアクセスやさらなる統合を利用できます（オプション）。",
+    "benefitDevices": "すべてのデバイスで同期",
+    "benefitChatGPT": "ブラウザ拡張機能による ChatGPT 統合",
+    "benefitMetabolism": "ノンストップのバックグラウンド代謝",
+    "info": "クラウド同期はオプションです。ローカルブレインは単独で完全に動作します。設定からいつでもクラウドに接続できます。"
   }
 }

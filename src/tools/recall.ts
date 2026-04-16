@@ -1,20 +1,18 @@
-import type Database from 'better-sqlite3';
 import type { RecallInput, RecallOutput, RecallNode, RecallNodeLink, RecallIndexItem, BrainNode } from '../types.js';
+import type { IRepository } from '../db/repository.js';
 import { getParam } from '../strategy/loader.js';
-import { getNode, bumpHeat, listNodes, parseTags } from '../db/nodes.js';
-import { getLinksForNode } from '../db/links.js';
-import { logOperation, logStrategyFeedback, logParamFeedback } from '../db/log.js';
+import { parseTags } from '../db/nodes.js';
 import { searchHybrid } from '../search/hybrid.js';
 import { reconsolidateOnRecall } from '../metabolism/reconsolidate.js';
 import { revalidateLinks } from '../metabolism/link-revalidate.js';
 import { expandFromNode } from '../graph/expansion.js';
 import { getGateStatus } from '../db/stats.js';
 import { getEmbedding } from '../llm/embedding.js';
-import { getVectorForNode } from '../db/vectors.js';
 import { l2DistanceToSimilarity } from '../utils/similarity.js';
 import { computeFreshness } from '../utils/freshness.js';
 import { createLogger } from '../utils/logger.js';
 import { pickDisplayTitle } from '../utils/display-title.js';
+import { getDb } from '../db/connection.js';
 
 const log = createLogger('recall');
 
@@ -24,7 +22,7 @@ const log = createLogger('recall');
  * 基础版：BM25 搜索 + 直接 ID 查询
  * Step 6 后加入混合搜索，Step 11 后加入读即写再巩固
  */
-export async function recall(db: Database.Database, input: RecallInput): Promise<RecallOutput> {
+export async function recall(repo: IRepository, input: RecallInput): Promise<RecallOutput> {
   const startTime = Date.now();
   const recallModeHint = input.mode ?? 'detail';
   const defaultLimit = recallModeHint === 'index'
@@ -41,9 +39,12 @@ export async function recall(db: Database.Database, input: RecallInput): Promise
   // 是否需要排除 meta 节点（用户显式查 meta 时不排除）
   const excludeMeta = input.type !== 'meta';
 
+  // Legacy db handle for modules not yet refactored
+  const db = getDb();
+
   // --- 按 ID 直接获取 ---
   if (input.node_id) {
-    const node = getNode(db, input.node_id);
+    const node = repo.nodes.getNode(input.node_id);
     if (node && node.heat > 0.01) {
       nodes = [node];
     }
@@ -80,7 +81,7 @@ export async function recall(db: Database.Database, input: RecallInput): Promise
         `SELECT * FROM nodes WHERE ${conditions.join(' AND ')} ORDER BY heat DESC LIMIT ?`,
       ).all(...params, limit) as BrainNode[];
     } else if (refType === 'node') {
-      const node = getNode(db, refValue)
+      const node = repo.nodes.getNode(refValue)
       if (node && node.heat > 0.01) nodes = [node]
     }
   }
@@ -94,7 +95,7 @@ export async function recall(db: Database.Database, input: RecallInput): Promise
     });
     // 按关系类型过滤
     if (input.relation) {
-      const startLinks = getLinksForNode(db, input.from_node);
+      const startLinks = repo.links.getLinksForNode(input.from_node);
       const validTargets = new Set(
         startLinks
           .filter(l => Array.isArray(l.relation) && l.relation.some(r => r.type === input.relation))
@@ -105,14 +106,14 @@ export async function recall(db: Database.Database, input: RecallInput): Promise
     // P2-1: 如果同时有 query，用向量相似度 rerank
     if (input.query && nodes.length > 1) {
       log.debug(`rerank ${nodes.length} nodes by query`);
-      nodes = await rerankByQuery(db, nodes, input.query);
+      nodes = await rerankByQuery(repo, nodes, input.query);
     }
     if (excludeMeta) nodes = nodes.filter(n => !n.is_meta);
   }
   // --- 语义搜索（混合：BM25 + 向量） ---
   else if (input.query) {
     usedHybridSearch = true;
-    const results = await searchHybrid(db, input.query, {
+    const results = await searchHybrid(repo, input.query, {
       limit,
       type: input.type,
       intent: input.intent,
@@ -135,7 +136,7 @@ export async function recall(db: Database.Database, input: RecallInput): Promise
   }
   // --- 默认：返回最近的活跃节点 ---
   else {
-    nodes = listNodes(db, {
+    nodes = repo.nodes.listNodes({
       limit,
       orderBy: 'heat DESC',
       createdAfter: input.created_after,
@@ -170,7 +171,7 @@ export async function recall(db: Database.Database, input: RecallInput): Promise
   // 精确查找路径（node_id、index_ref 单节点）维持固定 +0.1
   const isRankedResult = usedHybridSearch || (input.from_node != null) || (input.source_file != null) || (!input.node_id && !input.index_ref);
   let awakenedCount = 0;
-  db.transaction(() => {
+  repo.transaction(() => {
     for (let i = 0; i < nodes.length; i++) {
       // Learning II 实时信号：接近休眠的节点被唤醒 → 衰减可能太快
       if (nodes[i].heat < 0.1) {
@@ -179,11 +180,11 @@ export async function recall(db: Database.Database, input: RecallInput): Promise
       const delta = isRankedResult && nodes.length > 1
         ? Math.max(0.01, 0.1 * (1 - i / nodes.length))
         : 0.1;
-      bumpHeat(db, nodes[i].id, delta);
+      repo.nodes.bumpHeat(nodes[i].id, delta);
     }
-  })();
+  });
   if (awakenedCount > 0) {
-    logParamFeedback(db, {
+    repo.log.logParamFeedback({
       strategy_name: 'metabolism-params',
       signal_type: 'node_awakening',
       signal_value: -1.0 * (awakenedCount / nodes.length), // 唤醒比例越高 → 衰减可能太快
@@ -205,7 +206,7 @@ export async function recall(db: Database.Database, input: RecallInput): Promise
     const resultIds = new Set(nodes.map(n => n.id))
     const candidateIds = new Set<string>()
     for (const node of nodes.slice(0, 3)) {
-      const links = getLinksForNode(db, node.id)
+      const links = repo.links.getLinksForNode(node.id)
       for (const link of links) {
         const targetId = link.from_id === node.id ? link.to_id : link.from_id
         if (!resultIds.has(targetId)) candidateIds.add(targetId)
@@ -213,7 +214,8 @@ export async function recall(db: Database.Database, input: RecallInput): Promise
     }
     // Pick the hottest non-result neighbor as a "surprise"
     if (candidateIds.size > 0) {
-      const candidates = [...candidateIds].slice(0, 5).map(id => getNode(db, id)).filter(n => n && n.heat > 0.01) as BrainNode[]
+      const candidateMap = repo.nodes.getNodesByIds([...candidateIds].slice(0, 5));
+      const candidates = [...candidateMap.values()].filter(n => n.heat > 0.01);
       candidates.sort((a, b) => b.heat - a.heat)
       if (candidates.length > 0) {
         surprises = [{
@@ -250,11 +252,11 @@ export async function recall(db: Database.Database, input: RecallInput): Promise
   } else {
     // 详情模式：完整内容 + 链接（不含 content_preview）
     resultNodes = nodes.map(node => {
-      const links = getLinksForNode(db, node.id);
+      const links = repo.links.getLinksForNode(node.id);
       const recallLinks: RecallNodeLink[] = [];
       for (const link of links.slice(0, maxLinksPerNode)) {
         const targetId = link.from_id === node.id ? link.to_id : link.from_id;
-        const target = getNode(db, targetId);
+        const target = repo.nodes.getNode(targetId);
         if (!target) continue; // 跳过指向已删除节点的悬空链接
         recallLinks.push({
           to_id: targetId,
@@ -291,7 +293,7 @@ export async function recall(db: Database.Database, input: RecallInput): Promise
   }
 
   // 记录操作
-  const opId = logOperation(db, {
+  const opId = repo.log.logOperation({
     operation: 'recall',
     input_summary: input.query ?? input.node_id ?? input.from_node ?? 'browse',
     context: input.context,
@@ -301,7 +303,7 @@ export async function recall(db: Database.Database, input: RecallInput): Promise
   });
 
   // 策略反馈记录
-  logStrategyFeedback(db, {
+  repo.log.logStrategyFeedback({
     strategy_name: 'recall-search',
     operation_id: opId,
     was_used: nodes.length > 0,
@@ -360,13 +362,13 @@ function generateRecallSummary(nodes: RecallNode[]): string {
  * 用 query 的向量相似度对候选节点 rerank
  * 用于 from_node + query 组合路径
  */
-async function rerankByQuery(db: Database.Database, nodes: BrainNode[], query: string): Promise<BrainNode[]> {
+async function rerankByQuery(repo: IRepository, nodes: BrainNode[], query: string): Promise<BrainNode[]> {
   const queryEmbedding = await getEmbedding(query);
   if (!queryEmbedding) return nodes; // embedding 不可用，保持原序
 
   const scored: Array<{ node: BrainNode; similarity: number }> = [];
   for (const node of nodes) {
-    const nodeEmbedding = getVectorForNode(db, node.id);
+    const nodeEmbedding = repo.vectors.getVectorForNode(node.id);
     if (!nodeEmbedding) {
       // 没有 embedding 的节点放到末尾，给一个低分
       scored.push({ node, similarity: -1 });

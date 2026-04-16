@@ -1,11 +1,10 @@
-import type Database from 'better-sqlite3';
 import type {
   PrepareInput, PrepareOutput, PrepareProfile,
   PrepareKeystone, PrepareTag, PrepareCrystalHighlighted,
   PrepareCrystalOther, PrepareRecent,
 } from '../types.js';
+import type { IRepository } from '../db/repository.js';
 import { getGateStatus } from '../db/stats.js';
-import { logOperation, logStrategyFeedback } from '../db/log.js';
 import { getParam } from '../strategy/loader.js';
 import { maybeRunMaintenance } from '../metabolism/scheduler.js';
 import { ALL_TASKS } from '../metabolism/tasks.js';
@@ -20,28 +19,29 @@ const log = createLogger('prepare');
  *
  * 返回：用户画像 + 枢纽节点 + 标签索引 + 结晶 + 最近活跃 + 行为指导
  */
-export async function prepare(db: Database.Database, input: PrepareInput): Promise<PrepareOutput> {
+export async function prepare(repo: IRepository, input: PrepareInput): Promise<PrepareOutput> {
   log.info(`tool=${input.tool} detail=${input.detail_level ?? 'standard'}`);
 
+  const db = repo.rawDb; // 过渡期：未迁移的外部函数仍需 raw db
   const gates = getGateStatus(db);
 
   // --- 用户画像（读取预生成的 meta 节点）---
-  const profile = buildProfile(db);
+  const profile = buildProfile(repo);
 
   // --- 枢纽节点 ---
-  const keystones = buildKeystones(db);
+  const keystones = buildKeystones(repo);
 
   // --- 标签索引 ---
-  const tags = buildTags(db);
+  const tags = buildTags(repo);
 
   // --- 结晶 ---
-  const crystals = buildCrystals(db);
+  const crystals = buildCrystals(repo);
 
   // --- 最近活跃 ---
-  const recent = buildRecent(db);
+  const recent = buildRecent(repo);
 
   // --- 行为指导 ---
-  let guidance = buildGuidance(db, gates);
+  let guidance = buildGuidance(gates);
 
   // --- Digest 重试状态 ---
   const digestStatus = getPendingDigestCount(db);
@@ -55,7 +55,7 @@ export async function prepare(db: Database.Database, input: PrepareInput): Promi
   }
 
   // 记录操作
-  const opId = logOperation(db, {
+  const opId = repo.log.logOperation({
     operation: 'prepare',
     input_summary: `tool=${input.tool}`,
     context: input.hint,
@@ -63,7 +63,7 @@ export async function prepare(db: Database.Database, input: PrepareInput): Promi
     agent_id: input.agent_id,
   });
 
-  logStrategyFeedback(db, {
+  repo.log.logStrategyFeedback({
     strategy_name: 'prepare-assemble',
     operation_id: opId,
     feedback_signal: 0.5,
@@ -77,8 +77,9 @@ export async function prepare(db: Database.Database, input: PrepareInput): Promi
 }
 
 /** 读取预生成的画像 meta 节点 */
-function buildProfile(db: Database.Database): PrepareProfile {
-  const row = db.prepare(
+function buildProfile(repo: IRepository): PrepareProfile {
+  // 复杂查询暂用 rawDb，待 repo 接口扩展后迁移
+  const row = repo.rawDb.prepare(
     `SELECT content, created FROM nodes
      WHERE type = 'meta' AND title = 'user-profile' AND is_superseded = 0 AND archived = 0
      ORDER BY created DESC LIMIT 1`,
@@ -99,7 +100,7 @@ function buildProfile(db: Database.Database): PrepareProfile {
   }
 
   // 画像尚未生成——临时拼一个基础统计
-  const typeCounts = db.prepare(`
+  const typeCounts = repo.rawDb.prepare(`
     SELECT type, COUNT(*) as cnt FROM nodes WHERE heat > 0.01 AND is_meta = 0 GROUP BY type
   `).all() as Array<{ type: string; cnt: number }>;
 
@@ -113,10 +114,10 @@ function buildProfile(db: Database.Database): PrepareProfile {
 }
 
 /** 枢纽节点——每个知识簇的代表 */
-function buildKeystones(db: Database.Database): PrepareKeystone[] {
+function buildKeystones(repo: IRepository): PrepareKeystone[] {
   const maxKeystones = getParam('prepare-assemble', 'max_keystones', 15);
 
-  const rows = db.prepare(`
+  const rows = repo.rawDb.prepare(`
     SELECT n.id, n.title, n.content, n.type, COUNT(l.id) as link_count FROM nodes n
     LEFT JOIN links l ON (l.from_id = n.id OR l.to_id = n.id)
     WHERE n.is_keystone = 1 AND n.is_superseded = 0 AND n.archived = 0 AND n.heat > 0.01
@@ -134,10 +135,10 @@ function buildKeystones(db: Database.Database): PrepareKeystone[] {
 }
 
 /** 标签索引——覆盖知识领域 */
-function buildTags(db: Database.Database): PrepareTag[] {
+function buildTags(repo: IRepository): PrepareTag[] {
   const maxTags = getParam('prepare-assemble', 'max_tags', 30);
 
-  const rows = db.prepare(`
+  const rows = repo.rawDb.prepare(`
     SELECT n.id, n.title, n.content, COUNT(l.id) as link_count FROM nodes n
     LEFT JOIN links l ON (l.from_id = n.id OR l.to_id = n.id)
     WHERE n.is_tag = 1 AND n.is_superseded = 0 AND n.archived = 0 AND n.heat > 0.01
@@ -154,12 +155,12 @@ function buildTags(db: Database.Database): PrepareTag[] {
 }
 
 /** 结晶——高阶认知 */
-function buildCrystals(db: Database.Database): PrepareOutput['crystals'] {
+function buildCrystals(repo: IRepository): PrepareOutput['crystals'] {
   const maxHighlighted = getParam('prepare-assemble', 'max_crystals_highlighted', 8);
   const maxTotal = getParam('prepare-assemble', 'max_crystals_total', 20);
   const snippetLength = getParam('prepare-assemble', 'crystal_snippet_length', 80);
 
-  const allCrystals = db.prepare(`
+  const allCrystals = repo.rawDb.prepare(`
     SELECT id, title, content, heat FROM nodes
     WHERE is_crystal = 1 AND is_superseded = 0 AND archived = 0 AND heat > 0.01
     ORDER BY heat DESC
@@ -182,7 +183,7 @@ function buildCrystals(db: Database.Database): PrepareOutput['crystals'] {
 }
 
 /** 最近活跃——时序补充 */
-function buildRecent(db: Database.Database): PrepareRecent[] {
+function buildRecent(repo: IRepository): PrepareRecent[] {
   const maxRecent = getParam('prepare-assemble', 'max_recent', 15);
   const windowHours = getParam('prepare-assemble', 'recent_window_hours', 48);
 
@@ -190,7 +191,7 @@ function buildRecent(db: Database.Database): PrepareRecent[] {
 
   // 最近创建 + 最近被 recall 过的节点，合并去重
   // 用 last_reconsolidated 作为"最近活跃"的代理（recall 会触发 bumpHeat，但更可靠的信号是 last_reconsolidated）
-  const rows = db.prepare(`
+  const rows = repo.rawDb.prepare(`
     SELECT id, title, content, type,
       CASE
         WHEN last_reconsolidated IS NOT NULL AND last_reconsolidated > created
@@ -215,7 +216,7 @@ function buildRecent(db: Database.Database): PrepareRecent[] {
   }));
 }
 
-function buildGuidance(_db: Database.Database, gates: ReturnType<typeof getGateStatus>): string {
+function buildGuidance(gates: ReturnType<typeof getGateStatus>): string {
   const parts: string[] = [];
 
   if (gates.node_count === 0) {

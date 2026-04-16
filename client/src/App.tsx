@@ -28,12 +28,12 @@ export function App() {
 
   useEffect(() => {
     Promise.all([
-      loadProFeatures().then(setProFeatures),
+      loadProFeatures().then(setProFeatures).catch(() => null),
       window.api.config.get().then((config: any) => {
         if (!config?.onboarding_completed) {
           setNeedsOnboarding(true)
         }
-      }),
+      }).catch(() => null),
     ]).finally(() => setReady(true))
   }, [])
 

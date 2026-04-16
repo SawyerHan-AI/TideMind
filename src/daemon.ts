@@ -27,6 +27,12 @@ import { loadProModules } from './plugin-loader.js';
 migrateDataDirIfNeeded(migrationLog);
 loadConfig();
 ensureDataDirs();
+
+// Cloud mode: when enabled, local metabolism is disabled (cloud handles it)
+const cloudEnabled = getConfig().cloud?.enabled ?? false;
+if (cloudEnabled) {
+  log.info('cloud mode enabled — local metabolism tasks will be skipped');
+}
 getDb();
 backfillSyncHashes(); // DB 初始化后补填同步哈希
 await initVec();
@@ -41,10 +47,12 @@ startAllNoteSources(getDb()).catch(err =>
   log.error('笔记源启动失败:', err instanceof Error ? err.stack : String(err)),
 );
 
-// 启动时立刻执行一轮
-runSchedulerTick(getDb(), ALL_TASKS).catch(err =>
-  log.error('初始调度失败:', err instanceof Error ? err.stack : String(err)),
-);
+// 启动时立刻执行一轮（cloud mode 下跳过本地代谢）
+if (!cloudEnabled) {
+  runSchedulerTick(getDb(), ALL_TASKS).catch(err =>
+    log.error('初始调度失败:', err instanceof Error ? err.stack : String(err)),
+  );
+}
 
 // 定时调度：每分钟 tick，每个任务独立判断是否到期
 // 防重入：上一轮未完成时跳过，避免长任务（LLM 调用）导致堆叠
@@ -66,6 +74,12 @@ setInterval(() => {
   // 定期从源码同步策略文件，无需重启 daemon
   if (tickCount % STRATEGY_SYNC_EVERY_N_TICKS === 0) {
     try { syncStrategiesFromSource(); reloadStrategies(); } catch { /* */ }
+  }
+
+  if (cloudEnabled) {
+    // Cloud mode: skip local metabolism, only run file watchers / strategy sync above
+    tickRunning = false;
+    return;
   }
 
   runSchedulerTick(getDb(), ALL_TASKS)

@@ -25,6 +25,14 @@
     "description": "If you use Logseq, Obsidian, or Apple Notes, you can import your existing notes into TideMind's knowledge graph.",
     "skip": "Skip for now"
   },
+  "cloudSync": {
+    "title": "Connect to TideMind Cloud",
+    "description": "Optionally sync your brain to the cloud for multi-device access and more integrations.",
+    "benefitDevices": "Sync across all your devices",
+    "benefitChatGPT": "ChatGPT integration via browser extension",
+    "benefitMetabolism": "Never-stop background metabolism",
+    "info": "Cloud sync is optional. Your local brain works perfectly on its own. You can connect to the cloud anytime in Settings."
+  },
   "complete": {
     "title": "You're All Set",
     "subtitle": "Here's a summary of your setup:",
@@ -42,6 +50,7 @@
     "model": "Model",
     "agent": "Dev Tools",
     "noteSource": "Notes",
+    "cloudSync": "Cloud",
     "complete": "Done"
   },
   "nav": {

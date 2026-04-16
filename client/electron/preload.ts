@@ -131,6 +131,20 @@ const api = {
     pickVertexFile: (connectionId: string) => ipcRenderer.invoke('connections:pick-vertex-file', connectionId),
     vertexCredStatus: (connectionId: string) => ipcRenderer.invoke('connections:vertex-cred-status', connectionId),
   },
+  cloud: {
+    login: (email: string, password: string) => ipcRenderer.invoke('cloud:login', email, password),
+    logout: () => ipcRenderer.invoke('cloud:logout'),
+    status: () => ipcRenderer.invoke('cloud:status'),
+    triggerSync: () => ipcRenderer.invoke('cloud:trigger-sync'),
+    outboxCount: () => ipcRenderer.invoke('cloud:outbox-count'),
+    loginUrl: () => ipcRenderer.invoke('cloud:login-url'),
+    registerUrl: () => ipcRenderer.invoke('cloud:register-url'),
+  },
+  app: {
+    getVersion: () => ipcRenderer.invoke('app:get-version'),
+    openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
+    checkUpdate: () => ipcRenderer.invoke('app:check-update'),
+  },
   agents: {
     list: (includeArchived?: boolean) => ipcRenderer.invoke('agents:list', includeArchived),
     create: (params: { name: string; tool_type: string }) => ipcRenderer.invoke('agents:create', params),

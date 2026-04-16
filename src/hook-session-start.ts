@@ -13,6 +13,7 @@
 
 import { loadConfig, ensureDataDirs } from './config.js';
 import { getDb, closeDb } from './db/connection.js';
+import { SqliteRepository } from './db/sqlite-repository.js';
 import { touchAgent } from './db/agents.js';
 import { prepare } from './tools/prepare.js';
 import { readFileSync } from 'node:fs';
@@ -144,10 +145,11 @@ async function main(): Promise<void> {
     loadConfig();
     ensureDataDirs();
     const db = getDb();
+    const repo = new SqliteRepository(db);
 
     touchAgent(db, agentId);
 
-    const result = await prepare(db, {
+    const result = await prepare(repo, {
       tool,
       agent_id: agentId,
       detail_level: 'standard',

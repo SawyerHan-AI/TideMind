@@ -37,9 +37,10 @@ vi.mock('../../src/config.js', () => ({
   isLlmConfigured: () => false,
 }));
 
+const mockGetDb = vi.fn();
 vi.mock('../../src/db/connection.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/db/connection.js')>();
-  return { ...actual, isVecLoaded: () => false };
+  return { ...actual, isVecLoaded: () => false, getDb: () => mockGetDb() };
 });
 
 vi.mock('../../src/llm/embedding.js', () => ({
@@ -70,14 +71,18 @@ import { searchHybrid } from '../../src/search/hybrid.js';
 import { reconsolidateOnRecall } from '../../src/metabolism/reconsolidate.js';
 import { expandFromNode } from '../../src/graph/expansion.js';
 import { invalidateGateCache } from '../../src/db/stats.js';
+import { SqliteRepository } from '../../src/db/sqlite-repository.js';
 import type { BrainNode } from '../../src/types.js';
 
 let db: Database.Database;
+let repo: InstanceType<typeof SqliteRepository>;
 
 beforeEach(() => {
-  db = setupTestDb();
-  invalidateGateCache();
   vi.clearAllMocks();
+  db = setupTestDb();
+  repo = new SqliteRepository(db);
+  mockGetDb.mockReturnValue(db);
+  invalidateGateCache();
 });
 
 // ===== query 模式 =====
@@ -89,10 +94,10 @@ describe('recall - query mode', () => {
       { node, score: 0.9, source: 'hybrid' },
     ]);
 
-    const result = await recall(db, { query: 'TypeScript' });
+    const result = await recall(repo, { query: 'TypeScript' });
 
     expect(searchHybrid).toHaveBeenCalledWith(
-      db,
+      repo,
       'TypeScript',
       expect.objectContaining({ limit: 8 }),
     );
@@ -103,10 +108,10 @@ describe('recall - query mode', () => {
   it('should respect limit parameter', async () => {
     vi.mocked(searchHybrid).mockResolvedValueOnce([]);
 
-    await recall(db, { query: 'test', limit: 5 });
+    await recall(repo, { query: 'test', limit: 5 });
 
     expect(searchHybrid).toHaveBeenCalledWith(
-      db,
+      repo,
       'test',
       expect.objectContaining({ limit: 5 }),
     );
@@ -121,7 +126,7 @@ describe('recall - query mode', () => {
       { node: nodeWithout, score: 0.8, source: 'hybrid' },
     ]);
 
-    const result = await recall(db, { query: 'test', scope: 'project:my-app' });
+    const result = await recall(repo, { query: 'test', scope: 'project:my-app' });
 
     // 只保留 tags 中包含 'my-app' 的节点
     expect(result.nodes.length).toBe(1);
@@ -131,7 +136,7 @@ describe('recall - query mode', () => {
   it('should return summary for empty results', async () => {
     vi.mocked(searchHybrid).mockResolvedValueOnce([]);
 
-    const result = await recall(db, { query: 'nonexistent' });
+    const result = await recall(repo, { query: 'nonexistent' });
 
     expect(result.nodes).toHaveLength(0);
     expect(result.summary).toBe('未找到相关记忆');
@@ -145,7 +150,7 @@ describe('recall - query mode', () => {
       { node: n2, score: 0.8, source: 'hybrid' },
     ]);
 
-    const result = await recall(db, { query: 'test' });
+    const result = await recall(repo, { query: 'test' });
 
     expect(result.summary).toContain('2');
     expect(result.summary).toContain('fact');
@@ -159,7 +164,7 @@ describe('recall - node_id mode', () => {
   it('should return specific node by ID', async () => {
     const node = seedNode(db, { content: 'specific node lookup' });
 
-    const result = await recall(db, { node_id: node.id });
+    const result = await recall(repo, { node_id: node.id });
 
     expect(result.nodes.length).toBe(1);
     expect(result.nodes[0].id).toBe(node.id);
@@ -167,7 +172,7 @@ describe('recall - node_id mode', () => {
   });
 
   it('should return empty for nonexistent node_id', async () => {
-    const result = await recall(db, { node_id: 'nonexistent-id' });
+    const result = await recall(repo, { node_id: 'nonexistent-id' });
 
     expect(result.nodes).toHaveLength(0);
   });
@@ -176,7 +181,7 @@ describe('recall - node_id mode', () => {
     const node = seedNode(db, { content: 'archived node' });
     db.prepare('UPDATE nodes SET heat = 0.005 WHERE id = ?').run(node.id);
 
-    const result = await recall(db, { node_id: node.id });
+    const result = await recall(repo, { node_id: node.id });
 
     expect(result.nodes).toHaveLength(0);
   });
@@ -184,7 +189,7 @@ describe('recall - node_id mode', () => {
   it('should include maturity info in response', async () => {
     const node = seedNode(db, { content: 'maturity test', heat: 2.0, refinement: 0.5 });
 
-    const result = await recall(db, { node_id: node.id });
+    const result = await recall(repo, { node_id: node.id });
 
     expect(result.nodes[0].maturity).toBeDefined();
     // Response uses the in-memory node object (pre-bump value), DB is bumped separately
@@ -202,7 +207,7 @@ describe('recall - heat bump side effect', () => {
   it('should bump heat on recalled nodes', async () => {
     const node = seedNode(db, { content: 'heat bump test', heat: 1.0 });
 
-    await recall(db, { node_id: node.id });
+    await recall(repo, { node_id: node.id });
 
     const after = getNode(db, node.id);
     expect(after!.heat).toBeCloseTo(1.1, 5);
@@ -216,7 +221,7 @@ describe('recall - heat bump side effect', () => {
       { node: n2, score: 0.8, source: 'hybrid' },
     ]);
 
-    await recall(db, { query: 'test' });
+    await recall(repo, { query: 'test' });
 
     const a1 = getNode(db, n1.id);
     const a2 = getNode(db, n2.id);
@@ -232,7 +237,7 @@ describe('recall - reconsolidation', () => {
   it('should call reconsolidateOnRecall with returned nodes', async () => {
     const node = seedNode(db, { content: 'reconsolidate test' });
 
-    await recall(db, { node_id: node.id });
+    await recall(repo, { node_id: node.id });
 
     expect(reconsolidateOnRecall).toHaveBeenCalledWith(
       db,
@@ -245,7 +250,7 @@ describe('recall - reconsolidation', () => {
   it('should pass context to reconsolidateOnRecall', async () => {
     const node = seedNode(db, { content: 'context reconsolidate' });
 
-    await recall(db, { node_id: node.id, context: 'user is debugging' });
+    await recall(repo, { node_id: node.id, context: 'user is debugging' });
 
     expect(reconsolidateOnRecall).toHaveBeenCalledWith(
       db,
@@ -265,10 +270,10 @@ describe('recall - meta node filtering', () => {
       { node: factNode, score: 0.9, source: 'hybrid' },
     ]);
 
-    await recall(db, { query: 'test' });
+    await recall(repo, { query: 'test' });
 
     expect(searchHybrid).toHaveBeenCalledWith(
-      db, 'test',
+      repo, 'test',
       expect.objectContaining({ excludeMeta: true }),
     );
   });
@@ -279,10 +284,10 @@ describe('recall - meta node filtering', () => {
       { node: metaNode, score: 0.9, source: 'hybrid' },
     ]);
 
-    const result = await recall(db, { query: 'test', type: 'meta' });
+    const result = await recall(repo, { query: 'test', type: 'meta' });
 
     expect(searchHybrid).toHaveBeenCalledWith(
-      db, 'test',
+      repo, 'test',
       expect.objectContaining({ excludeMeta: false }),
     );
     expect(result.nodes.length).toBe(1);
@@ -294,7 +299,7 @@ describe('recall - meta node filtering', () => {
     seedNode(db, { type: 'meta', content: 'source meta' });
     db.prepare("UPDATE nodes SET source_stream = 'stream:test.ts' WHERE content LIKE 'source%'").run();
 
-    const result = await recall(db, { source_file: 'test.ts' });
+    const result = await recall(repo, { source_file: 'test.ts' });
 
     expect(result.nodes.every(n => n.type !== 'meta')).toBe(true);
   });
@@ -307,14 +312,14 @@ describe('recall - source_file mode', () => {
     seedNode(db, { content: 'source file node' });
     db.prepare("UPDATE nodes SET source_stream = 'stream:2026:main.ts:1' WHERE content = 'source file node'").run();
 
-    const result = await recall(db, { source_file: 'main.ts' });
+    const result = await recall(repo, { source_file: 'main.ts' });
 
     expect(result.nodes.length).toBe(1);
     expect(result.nodes[0].content).toBe('source file node');
   });
 
   it('should return empty when no matching source_file', async () => {
-    const result = await recall(db, { source_file: 'nonexistent.ts' });
+    const result = await recall(repo, { source_file: 'nonexistent.ts' });
 
     expect(result.nodes).toHaveLength(0);
   });
@@ -329,7 +334,7 @@ describe('recall - index_ref mode', () => {
     seedNode(db, { content: 'tagged node B', tags: ['my-app'] });
     seedNode(db, { content: 'other tag', tags: ['other'] });
 
-    const result = await recall(db, { index_ref: 'project:my-app' });
+    const result = await recall(repo, { index_ref: 'project:my-app' });
 
     expect(result.nodes.length).toBe(2);
   });
@@ -337,14 +342,14 @@ describe('recall - index_ref mode', () => {
   it('should handle node: ref type', async () => {
     const node = seedNode(db, { content: 'specific ref node' });
 
-    const result = await recall(db, { index_ref: `node:${node.id}` });
+    const result = await recall(repo, { index_ref: `node:${node.id}` });
 
     expect(result.nodes.length).toBe(1);
     expect(result.nodes[0].id).toBe(node.id);
   });
 
   it('should return empty for invalid index_ref format', async () => {
-    const result = await recall(db, { index_ref: 'invalid' });
+    const result = await recall(repo, { index_ref: 'invalid' });
 
     expect(result.nodes).toHaveLength(0);
   });
@@ -357,7 +362,7 @@ describe('recall - from_node mode', () => {
     const node = seedNode(db, { content: 'start node' });
     vi.mocked(expandFromNode).mockReturnValueOnce([]);
 
-    await recall(db, { from_node: node.id, depth: 2, limit: 5 });
+    await recall(repo, { from_node: node.id, depth: 2, limit: 5 });
 
     expect(expandFromNode).toHaveBeenCalledWith(
       db,
@@ -383,7 +388,7 @@ describe('recall - from_node mode', () => {
       getNode(db, unrelated.id)!,
     ]);
 
-    const result = await recall(db, {
+    const result = await recall(repo, {
       from_node: start.id,
       relation: 'supports',
     });
@@ -400,7 +405,7 @@ describe('recall - default mode', () => {
     seedNode(db, { content: 'active node 1', heat: 3.0 });
     seedNode(db, { content: 'active node 2', heat: 1.0 });
 
-    const result = await recall(db, {});
+    const result = await recall(repo, {});
 
     expect(result.nodes.length).toBe(2);
   });
@@ -411,14 +416,14 @@ describe('recall - default mode', () => {
 describe('recall - operation log', () => {
   it('should log recall operation', async () => {
     const node = seedNode(db, { content: 'log test' });
-    await recall(db, { node_id: node.id });
+    await recall(repo, { node_id: node.id });
 
     const ops = db.prepare("SELECT * FROM operation_log WHERE operation = 'recall'").all() as Array<{ operation: string; input_summary: string }>;
     expect(ops.length).toBe(1);
   });
 
   it('should record strategy feedback', async () => {
-    await recall(db, { query: 'test' });
+    await recall(repo, { query: 'test' });
 
     const feedback = db.prepare(
       "SELECT * FROM strategy_feedback WHERE strategy_name = 'recall-search'",
@@ -435,7 +440,7 @@ describe('recall - response format', () => {
     const n2 = seedNode(db, { content: 'linked target' });
     seedLink(db, n1.id, n2.id, { relation: [{ type: 'supports', confidence: 0.7 }], strength: 0.8 });
 
-    const result = await recall(db, { node_id: n1.id });
+    const result = await recall(repo, { node_id: n1.id });
 
     expect(result.nodes[0].links.length).toBe(1);
     expect(result.nodes[0].links[0].relation).toEqual([{ type: 'supports', confidence: 0.7 }]);
@@ -445,7 +450,7 @@ describe('recall - response format', () => {
   it('should include tags when present', async () => {
     const node = seedNode(db, { content: 'tagged node', tags: ['alpha', 'beta'] });
 
-    const result = await recall(db, { node_id: node.id });
+    const result = await recall(repo, { node_id: node.id });
 
     expect(result.nodes[0].tags).toEqual(['alpha', 'beta']);
   });
@@ -453,7 +458,7 @@ describe('recall - response format', () => {
   it('should include tags when present (project field removed)', async () => {
     const node = seedNode(db, { content: 'tagged node', tags: ['my-proj'] });
 
-    const result = await recall(db, { node_id: node.id });
+    const result = await recall(repo, { node_id: node.id });
 
     // project 字段已移除，数据通过 tags 传递
     expect(result.nodes[0].tags).toContain('my-proj');
@@ -461,7 +466,7 @@ describe('recall - response format', () => {
 
   it('should default to detail mode and include mode field in output', async () => {
     const node = seedNode(db, { content: 'test' });
-    const result = await recall(db, { node_id: node.id });
+    const result = await recall(repo, { node_id: node.id });
     expect(result.mode).toBe('detail');
     // detail 模式包含完整 content
     expect((result.nodes[0] as any).content).toBe('test');
@@ -478,7 +483,7 @@ describe('recall - response format', () => {
     db.prepare('DELETE FROM nodes WHERE id = ?').run(target.id);
     db.pragma('foreign_keys = ON');
 
-    const result = await recall(db, { node_id: node.id });
+    const result = await recall(repo, { node_id: node.id });
 
     // 悬空链接应被过滤
     expect((result.nodes[0] as any).links).toEqual([]);
@@ -489,7 +494,7 @@ describe('recall - response format', () => {
     const n2 = seedNode(db, { content: 'target', type: 'idea' });
     seedLink(db, n1.id, n2.id, { relation: [{ type: 'supports', confidence: 0.7 }] });
 
-    const result = await recall(db, { node_id: n1.id });
+    const result = await recall(repo, { node_id: n1.id });
 
     const link = (result.nodes[0] as any).links[0];
     expect(link.to_type).toBe('idea');
@@ -507,7 +512,7 @@ describe('recall - index mode', () => {
       heat: 2.5,
     });
 
-    const result = await recall(db, { node_id: node.id, mode: 'index' });
+    const result = await recall(repo, { node_id: node.id, mode: 'index' });
 
     expect(result.mode).toBe('index');
     expect(result.nodes.length).toBe(1);
@@ -526,7 +531,7 @@ describe('recall - index mode', () => {
     const longContent = 'a'.repeat(200);
     const node = seedNode(db, { content: longContent });
 
-    const result = await recall(db, { node_id: node.id, mode: 'index' });
+    const result = await recall(repo, { node_id: node.id, mode: 'index' });
 
     const item = result.nodes[0] as any;
     // 默认 snippet 长度 80
@@ -536,7 +541,7 @@ describe('recall - index mode', () => {
   it('should normalize newlines to spaces in snippet', async () => {
     const node = seedNode(db, { content: 'line 1\nline 2\nline 3' });
 
-    const result = await recall(db, { node_id: node.id, mode: 'index' });
+    const result = await recall(repo, { node_id: node.id, mode: 'index' });
 
     const item = result.nodes[0] as any;
     expect(item.snippet).not.toContain('\n');
@@ -546,11 +551,11 @@ describe('recall - index mode', () => {
   it('should use index_max_results as default limit in index mode', async () => {
     vi.mocked(searchHybrid).mockResolvedValueOnce([]);
 
-    await recall(db, { query: 'test', mode: 'index' });
+    await recall(repo, { query: 'test', mode: 'index' });
 
     // 索引模式默认 limit 为 30（从 getParam fallback）
     expect(searchHybrid).toHaveBeenCalledWith(
-      db,
+      repo,
       'test',
       expect.objectContaining({ limit: 30 }),
     );
@@ -559,11 +564,11 @@ describe('recall - index mode', () => {
   it('should use detail_max_results as default limit in detail mode', async () => {
     vi.mocked(searchHybrid).mockResolvedValueOnce([]);
 
-    await recall(db, { query: 'test' });
+    await recall(repo, { query: 'test' });
 
     // 详情模式默认 limit 为 8
     expect(searchHybrid).toHaveBeenCalledWith(
-      db,
+      repo,
       'test',
       expect.objectContaining({ limit: 8 }),
     );
@@ -572,10 +577,10 @@ describe('recall - index mode', () => {
   it('should respect explicit limit over mode default', async () => {
     vi.mocked(searchHybrid).mockResolvedValueOnce([]);
 
-    await recall(db, { query: 'test', mode: 'index', limit: 10 });
+    await recall(repo, { query: 'test', mode: 'index', limit: 10 });
 
     expect(searchHybrid).toHaveBeenCalledWith(
-      db,
+      repo,
       'test',
       expect.objectContaining({ limit: 10 }),
     );
@@ -584,7 +589,7 @@ describe('recall - index mode', () => {
   it('should still bump heat in index mode', async () => {
     const node = seedNode(db, { content: 'index heat test', heat: 1.0 });
 
-    await recall(db, { node_id: node.id, mode: 'index' });
+    await recall(repo, { node_id: node.id, mode: 'index' });
 
     const after = getNode(db, node.id);
     expect(after!.heat).toBeCloseTo(1.1, 5);

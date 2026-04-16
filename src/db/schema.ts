@@ -15,7 +15,7 @@ function generateSourceId(): string {
 /**
  * 当前 schema 版本。每次新增 migration 时递增。
  */
-const CURRENT_SCHEMA_VERSION = 11;
+const CURRENT_SCHEMA_VERSION = 12;
 
 /**
  * 完整建表 SQL — 包含所有字段，新数据库直接创建最新结构。
@@ -60,6 +60,9 @@ CREATE TABLE IF NOT EXISTS nodes (
     archived INTEGER DEFAULT 0,
     is_keystone INTEGER DEFAULT 0,
     is_superseded INTEGER DEFAULT 0,
+
+    -- 来源设备（云同步用）
+    source_device TEXT DEFAULT 'local',
 
     -- 汇总分
     maturity_score REAL DEFAULT 0.0
@@ -917,6 +920,146 @@ const MIGRATIONS: Migration[] = [
           ON notion_pending_relations(target_page_id, source_id);
       `);
       log.info('迁移 v11 完成: Notion 集成表已创建');
+    },
+  },
+  {
+    version: 12,
+    description: '云同步准备：新增 source_device 列',
+    up: (db) => {
+      try {
+        db.exec("ALTER TABLE nodes ADD COLUMN source_device TEXT DEFAULT 'local'");
+      } catch (e) {
+        const msg = (e as Error).message ?? '';
+        if (!msg.includes('duplicate column')) throw e;
+      }
+      log.info('迁移 v12 完成: nodes.source_device 列已添加');
+    },
+  },
+  {
+    version: 13,
+    description: '回填标题：从同步表反推 Logseq/Obsidian 节点的真实标题',
+    up: (db) => {
+      // 从文件路径推导标题（与 preprocessor.ts inferTitle 逻辑一致）
+      function inferTitleFromPath(filePath: string): string | null {
+        const parts = filePath.split('/');
+        const basename = parts[parts.length - 1]?.replace(/\.md$/, '');
+        if (!basename) return null;
+        const isJournal = filePath.startsWith('journals/');
+        if (isJournal) return basename.replace(/_/g, '-'); // 日记页标题是日期
+        try {
+          return decodeURIComponent(basename.replace(/___/g, '/').replace(/%2F/gi, '/'));
+        } catch {
+          return basename;
+        }
+      }
+
+      let backfilledLogseq = 0;
+      let backfilledObsidian = 0;
+
+      // ---- Logseq 回填 ----
+      try {
+        const logseqRows = db.prepare(
+          "SELECT file_path, node_ids FROM logseq_sync WHERE node_ids IS NOT NULL",
+        ).all() as Array<{ file_path: string; node_ids: string }>;
+
+        const updateStmt = db.prepare(
+          "UPDATE nodes SET title = ? WHERE id = ? AND title IS NULL",
+        );
+
+        for (const row of logseqRows) {
+          // 跳过日记页——日记子节点标题都是同一个日期，不如留 NULL 让 annotate 生成有意义标题
+          if (row.file_path.startsWith('journals/')) continue;
+          const title = inferTitleFromPath(row.file_path);
+          if (!title) continue;
+          let nodeIds: string[];
+          try { nodeIds = JSON.parse(row.node_ids); } catch { continue; }
+          if (!Array.isArray(nodeIds)) continue;
+          for (const nid of nodeIds) {
+            const changes = updateStmt.run(title, nid);
+            if (changes.changes > 0) backfilledLogseq++;
+          }
+        }
+      } catch { /* logseq_sync 表可能不存在 */ }
+
+      // ---- Obsidian 回填 ----
+      try {
+        const obsidianRows = db.prepare(
+          "SELECT file_path, node_ids FROM obsidian_sync WHERE node_ids IS NOT NULL",
+        ).all() as Array<{ file_path: string; node_ids: string }>;
+
+        const updateStmt = db.prepare(
+          "UPDATE nodes SET title = ? WHERE id = ? AND title IS NULL",
+        );
+
+        for (const row of obsidianRows) {
+          const title = inferTitleFromPath(row.file_path);
+          if (!title) continue;
+          let nodeIds: string[];
+          try { nodeIds = JSON.parse(row.node_ids); } catch { continue; }
+          if (!Array.isArray(nodeIds)) continue;
+          for (const nid of nodeIds) {
+            const changes = updateStmt.run(title, nid);
+            if (changes.changes > 0) backfilledObsidian++;
+          }
+        }
+      } catch { /* obsidian_sync 表可能不存在 */ }
+
+      // ---- 修复被 annotate 覆盖的标题 ----
+      // 对 refinement = 0.1（恰好被标注过一次）且 title 看起来是 AI 生成的节点，
+      // 用同步表的真实标题覆盖回去
+      try {
+        const logseqRows = db.prepare(
+          "SELECT file_path, node_ids FROM logseq_sync WHERE node_ids IS NOT NULL",
+        ).all() as Array<{ file_path: string; node_ids: string }>;
+
+        const overwriteStmt = db.prepare(
+          "UPDATE nodes SET title = ? WHERE id = ? AND source_tool = 'logseq' AND title IS NOT NULL AND refinement > 0",
+        );
+
+        for (const row of logseqRows) {
+          const title = inferTitleFromPath(row.file_path);
+          if (!title) continue;
+          // 跳过日记页——日记的标题是日期，不如 AI 标题有意义
+          if (row.file_path.startsWith('journals/')) continue;
+          let nodeIds: string[];
+          try { nodeIds = JSON.parse(row.node_ids); } catch { continue; }
+          if (!Array.isArray(nodeIds)) continue;
+          for (const nid of nodeIds) {
+            // 只有当节点当前标题与真实标题不同时才覆盖
+            const node = db.prepare("SELECT title FROM nodes WHERE id = ?").get(nid) as { title: string | null } | undefined;
+            if (node?.title && node.title !== title) {
+              overwriteStmt.run(title, nid);
+            }
+          }
+        }
+      } catch { /* 忽略 */ }
+
+      // 同样处理 Obsidian
+      try {
+        const obsidianRows = db.prepare(
+          "SELECT file_path, node_ids FROM obsidian_sync WHERE node_ids IS NOT NULL",
+        ).all() as Array<{ file_path: string; node_ids: string }>;
+
+        const overwriteStmt = db.prepare(
+          "UPDATE nodes SET title = ? WHERE id = ? AND source_tool = 'obsidian' AND title IS NOT NULL AND refinement > 0",
+        );
+
+        for (const row of obsidianRows) {
+          const title = inferTitleFromPath(row.file_path);
+          if (!title) continue;
+          let nodeIds: string[];
+          try { nodeIds = JSON.parse(row.node_ids); } catch { continue; }
+          if (!Array.isArray(nodeIds)) continue;
+          for (const nid of nodeIds) {
+            const node = db.prepare("SELECT title FROM nodes WHERE id = ?").get(nid) as { title: string | null } | undefined;
+            if (node?.title && node.title !== title) {
+              overwriteStmt.run(title, nid);
+            }
+          }
+        }
+      } catch { /* 忽略 */ }
+
+      log.info(`迁移 v13 完成: 回填标题 logseq=${backfilledLogseq} obsidian=${backfilledObsidian}`);
     },
   },
 ];
