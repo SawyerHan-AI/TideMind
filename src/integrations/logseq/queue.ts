@@ -152,6 +152,8 @@ async function processOneFile(
     // 预处理
     const preprocessed = preprocessFile(filePath, graphRoot);
     if (!preprocessed) {
+      // 空文件/短文件也记录 sync state，避免每次重启重复检查
+      markFileAsProcessed(db, filePath, relPath, sourceId);
       progress.skippedFiles++;
       return false;
     }
@@ -164,6 +166,7 @@ async function processOneFile(
     ).filter(s => s.content.trim().length > 0);
 
     if (segments.length === 0) {
+      markFileAsProcessed(db, filePath, relPath, sourceId);
       progress.skippedFiles++;
       return false;
     }
@@ -320,6 +323,29 @@ export async function processFileChange(
 }
 
 // --- 工具 ---
+
+/**
+ * 对空文件/短文件/无内容段的文件也写入 sync state，
+ * 避免每次重启因 !syncState 而重复判定为"新文件"。
+ */
+function markFileAsProcessed(
+  db: Database.Database,
+  filePath: string,
+  relPath: string,
+  sourceId?: string,
+): void {
+  const fileStat = getFileStat(filePath);
+  const fileState: FileSyncState = {
+    file_path: relPath,
+    content_hash: computeFileHash(filePath),
+    mtime: fileStat?.mtime ?? 0,
+    size: fileStat?.size ?? 0,
+    last_synced: now(),
+    node_ids: [],
+    segment_hashes: [],
+  };
+  setFileState(db, fileState, sourceId);
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));

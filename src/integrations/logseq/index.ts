@@ -161,24 +161,26 @@ async function runSync(
     batchSize: config.sources?.logseq?.import_batch_size,
   }, sourceId);
 
-  // 记录同步事件到时间线
+  // 记录同步事件到时间线（仅当有实际处理或失败时）
   const prog = getImportProgress(sourceId);
 
-  logTimelineEvent(db, {
-    type: 'memory',
-    subtype: 'logseq_sync',
-    title: JSON.stringify({ key: isFirstRun ? 'logseq_first_import' : 'logseq_incremental_sync', params: { total: filesToProcess.length, processed: prog.processedFiles, skipped: prog.skippedFiles, failed: prog.failedFiles } }),
-    detail: {
-      is_first_run: isFirstRun,
-      total: filesToProcess.length,
-      processed: prog.processedFiles,
-      skipped: prog.skippedFiles,
-      failed: prog.failedFiles,
-      source_id: sourceId,
-    },
-    important: isFirstRun ? 1 : 0,
-    actor: 'brain',
-  });
+  if (prog.processedFiles > 0 || prog.failedFiles > 0) {
+    logTimelineEvent(db, {
+      type: 'memory',
+      subtype: 'logseq_sync',
+      title: JSON.stringify({ key: isFirstRun ? 'logseq_first_import' : 'logseq_incremental_sync', params: { total: filesToProcess.length, processed: prog.processedFiles, skipped: prog.skippedFiles, failed: prog.failedFiles } }),
+      detail: {
+        is_first_run: isFirstRun,
+        total: filesToProcess.length,
+        processed: prog.processedFiles,
+        skipped: prog.skippedFiles,
+        failed: prog.failedFiles,
+        source_id: sourceId,
+      },
+      important: isFirstRun ? 1 : 0,
+      actor: 'brain',
+    });
+  }
 
   // 标记全量扫描完成
   if (isFirstRun) {
