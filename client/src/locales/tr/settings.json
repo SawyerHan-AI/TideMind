@@ -965,7 +965,8 @@
       "enableConfirm": "Senkronizasyonu Etkinleştir",
       "disableTitle": "Veri bulut senkronizasyonu devre dışı bırakılsın mı?",
       "disableDesc": "Yerel veriler birincil kopya olur. Diğer cihazlar da bulut senkronizasyonundan çıkar. Bulut verileri 30 gün boyunca saklanır. Bulut metabolizması otomatik olarak devre dışı bırakılır.",
-      "disableConfirm": "Senkronizasyonu Devre Dışı Bırak"
+      "disableConfirm": "Senkronizasyonu Devre Dışı Bırak",
+      "syncNotReady": "Bulut senkronizasyon hizmeti dağıtılıyor. Takipte kalın."
     },
     "metabolism": {
       "title": "Bulut Metabolizması",

@@ -92,6 +92,7 @@ const DEFAULT_CONFIG: AppConfig = {
   // 两者应指向同一个域名，只是读取方式不同：客户端从 config.toml，服务端从环境变量。
   cloud: {
     enabled: false,
+    sync_enabled: false,
     server_url: 'https://cloud.tidemind.ai',
   },
 };

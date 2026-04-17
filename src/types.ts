@@ -339,6 +339,7 @@ export interface AppConfig {
   };
   cloud?: {
     enabled: boolean;
+    sync_enabled: boolean;
     server_url: string;
   };
   sources?: {

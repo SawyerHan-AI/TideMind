@@ -965,7 +965,8 @@
       "enableConfirm": "Attiva sincronizzazione",
       "disableTitle": "Disattivare la sincronizzazione dati cloud?",
       "disableDesc": "I dati locali diventeranno la copia principale. Anche gli altri dispositivi usciranno dalla sincronizzazione cloud. I dati cloud verranno conservati per 30 giorni. Il metabolismo cloud verrà disattivato automaticamente.",
-      "disableConfirm": "Disattiva sincronizzazione"
+      "disableConfirm": "Disattiva sincronizzazione",
+      "syncNotReady": "Il servizio di sincronizzazione cloud è in fase di distribuzione. Restate sintonizzati."
     },
     "metabolism": {
       "title": "Metabolismo cloud",

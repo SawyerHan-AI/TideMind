@@ -965,7 +965,8 @@
       "enableConfirm": "동기화 활성화",
       "disableTitle": "데이터 클라우드 동기화를 비활성화하시겠습니까?",
       "disableDesc": "로컬 데이터가 기본 사본이 됩니다. 다른 기기도 클라우드 동기화에서 나갑니다. 클라우드 데이터는 30일간 보관됩니다. 클라우드 대사가 자동으로 비활성화됩니다.",
-      "disableConfirm": "동기화 비활성화"
+      "disableConfirm": "동기화 비활성화",
+      "syncNotReady": "클라우드 동기화 서비스가 배포 중입니다. 기대해 주세요."
     },
     "metabolism": {
       "title": "클라우드 대사",

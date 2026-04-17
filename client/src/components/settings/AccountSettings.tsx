@@ -1,10 +1,21 @@
 import { useState } from 'react'
-import { Cloud, Mail, LogOut, Trash2, ExternalLink } from 'lucide-react'
+import { Cloud, Mail, LogOut, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useCloudStatus } from '../../hooks/useCloudStatus'
 import { Section } from './shared'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { brand, btnText } from '../../lib/tokens'
+
+function ComingSoonTag() {
+  const { t } = useTranslation()
+  return (
+    <span className="text-[10px] font-medium px-2 py-0.5 rounded-full"
+      style={{ background: 'rgba(234,179,8,0.12)', color: '#facc15', border: '1px solid rgba(234,179,8,0.2)' }}
+    >
+      {t('settings:account.comingSoon', 'Coming Soon')}
+    </span>
+  )
+}
 
 export function AccountSettings() {
   const { t } = useTranslation()
@@ -84,12 +95,14 @@ function LoggedOutView() {
 
 function LoggedInView({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
   const { t } = useTranslation()
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
   const handleLogout = async () => {
     try {
       await window.api.cloud.logout()
     } catch { /* ignore */ }
+    setShowLogoutConfirm(false)
   }
 
   const handleDeleteAccount = async () => {
@@ -103,6 +116,7 @@ function LoggedInView({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
     window.api.app.openExternal('https://tidemind.ai/pricing')
   }
 
+  const isFree = !cloud.plan || cloud.plan === 'free'
   const planLabel = cloud.plan === 'pro_plus' ? 'Pro+' : cloud.plan === 'pro' ? 'Pro' : 'Free'
 
   return (
@@ -133,36 +147,39 @@ function LoggedInView({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
       </Section>
 
       {/* Devices — placeholder */}
-      <Section title={t('settings:account.devices', 'Devices')}>
+      <Section
+        title={t('settings:account.devices', 'Devices')}
+        action={<ComingSoonTag />}
+      >
         <p className="text-xs text-gray-500">
           {t('settings:account.devicesComingSoon', 'Device management coming soon.')}
         </p>
       </Section>
 
       {/* Subscription */}
-      <Section title={t('settings:account.subscription', 'Subscription')}>
+      <Section
+        title={t('settings:account.subscription', 'Subscription')}
+        action={isFree ? <ComingSoonTag /> : undefined}
+      >
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-xs text-gray-500">{t('settings:account.currentPlan', 'Current Plan')}</span>
             <span className="text-xs text-gray-200 font-medium">{planLabel}</span>
           </div>
 
-              <div className="p-3 rounded-lg border border-white/[0.06]" style={{ background: 'rgba(234,179,8,0.04)' }}>
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-[10px] font-medium px-2 py-0.5 rounded-full"
-                style={{ background: 'rgba(234,179,8,0.12)', color: '#facc15', border: '1px solid rgba(234,179,8,0.2)' }}>
-                {t('settings:account.comingSoon', 'Coming Soon')}
-              </span>
-            </div>
+          {isFree && (
             <p className="text-xs text-gray-500">
               {t('settings:account.subscriptionComingSoon', 'Pro and Pro+ plans are coming soon. Stay tuned for cloud sync, 7×24 metabolism, and more.')}
             </p>
-          </div>
+          )}
         </div>
       </Section>
 
       {/* Billing — placeholder */}
-      <Section title={t('settings:account.billing', 'Billing')}>
+      <Section
+        title={t('settings:account.billing', 'Billing')}
+        action={<ComingSoonTag />}
+      >
         <p className="text-xs text-gray-500">
           {cloud.plan === 'free'
             ? t('settings:account.noBilling', 'No billing history for Free plan.')
@@ -173,7 +190,7 @@ function LoggedInView({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
       {/* Danger Zone */}
       <div className="space-y-3 pt-2">
         <button
-          onClick={handleLogout}
+          onClick={() => setShowLogoutConfirm(true)}
           className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium text-gray-400 border border-white/10 hover:border-white/20 hover:text-white transition-all"
         >
           <LogOut size={12} />
@@ -188,6 +205,16 @@ function LoggedInView({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
           {t('settings:account.deleteAccount', 'Delete Account')}
         </button>
       </div>
+
+      <ConfirmDialog
+        open={showLogoutConfirm}
+        onCancel={() => setShowLogoutConfirm(false)}
+        onConfirm={handleLogout}
+        title={t('settings:account.logoutTitle', 'Sign Out?')}
+        description={t('settings:account.logoutDesc', 'You will be signed out of TideMind Cloud. Local data is not affected.')}
+        confirmText={t('settings:account.logout', 'Sign Out')}
+        cancelText={t('common:cancel', 'Cancel')}
+      />
 
       <ConfirmDialog
         open={showDeleteConfirm}

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, Menu, Tray, nativeImage, shell, dialog } from 'electron'
 import path from 'node:path'
 import { exec } from 'node:child_process'
 import { getClientDb, closeClientDb, getDataDir } from './db'
@@ -89,10 +89,17 @@ if (!gotTheLock) {
   })
 }
 
-// macOS: open-url 事件
+// macOS: open-url 事件（可能在 app.whenReady() 之前触发，需缓存）
+let pendingProtocolUrl: string | null = null
+
 app.on('open-url', (event, url) => {
   event.preventDefault()
-  handleProtocolUrl(url)
+  if (!app.isReady() || !mainWindow) {
+    // app 还没 ready 或窗口还没创建，缓存 URL 稍后处理
+    pendingProtocolUrl = url
+  } else {
+    handleProtocolUrl(url)
+  }
 })
 
 /** 处理 tidemind:// 协议链接 */
@@ -102,18 +109,37 @@ async function handleProtocolUrl(url: string): Promise<void> {
     .replace(/access_token=([^&]{4})[^&]*/g, 'access_token=$1...')
     .replace(/refresh_token=([^&]{4})[^&]*/g, 'refresh_token=$1...')}`)
 
-
   try {
     const parsed = new URL(url)
-    if (parsed.pathname === '//auth/callback' || parsed.pathname === '/auth/callback') {
+    // tidemind://auth/callback → WHATWG URL 解析为 hostname='auth', pathname='/callback'
+    // 不能直接检查 pathname === '/auth/callback'
+    const isAuthCallback =
+      (parsed.hostname === 'auth' && parsed.pathname === '/callback') ||
+      parsed.pathname === '/auth/callback'
+    if (isAuthCallback) {
       // OAuth 回调
       const { handleOAuthCallback } = await import('./cloud/auth-client.js')
-      await handleOAuthCallback(url)
+      const auth = await handleOAuthCallback(url)
       // 通知渲染进程刷新状态
       mainWindow?.webContents.send('data-changed', { scopes: ['cloud'] })
+      log.info(`OAuth login success: ${auth.email}`)
+    } else {
+      log.warn(`unrecognized protocol path: hostname=${parsed.hostname}, pathname=${parsed.pathname}`)
     }
   } catch (err) {
-    log.error(`protocol handler error: ${(err as Error).message}`)
+    const msg = (err as Error).message
+    log.error(`protocol handler error: ${msg}`)
+    // 显示错误对话框以便排查
+    dialog.showErrorBox('TideMind Login Error', msg)
+  }
+}
+
+/** 处理 app ready 之前缓存的协议 URL */
+function flushPendingProtocolUrl(): void {
+  if (pendingProtocolUrl) {
+    const url = pendingProtocolUrl
+    pendingProtocolUrl = null
+    handleProtocolUrl(url)
   }
 }
 
@@ -220,8 +246,9 @@ app.whenReady().then(async () => {
   }
 
   // 初始化数据库和 IPC
+  let db: ReturnType<typeof getClientDb> | null = null
   try {
-    const db = getClientDb()
+    db = getClientDb()
     const dataDir = getDataDir()
     registerAllHandlers(db, dataDir)
     startDataWatcher(db)
@@ -236,16 +263,29 @@ app.whenReady().then(async () => {
     console.error('数据库初始化失败:', err)
   }
 
-  // 恢复上次的云登录会话
+  // 恢复上次的云登录会话 + 条件性启动 sync client
   try {
-    const { initAuth } = await import('./cloud/auth-client.js')
+    const { initAuth, isLoggedIn } = await import('./cloud/auth-client.js')
     initAuth()
+
+    if (isLoggedIn() && db) {
+      const { getConfig: getAppConfig } = await import('../../src/config.js')
+      const config = getAppConfig()
+      if (config.cloud?.sync_enabled) {
+        const { createCloudSyncClient } = await import('./cloud/sync-client.js')
+        const syncClient = createCloudSyncClient(db)
+        syncClient.start().catch(err => console.error('[eb:main] sync client start failed:', err))
+      }
+    }
   } catch (err) {
     console.error('[eb:main] cloud auth init failed:', err)
   }
 
   createWindow()
   createTray()
+
+  // 处理 app ready 之前收到的协议 URL（如从浏览器冷启动 app 的场景）
+  flushPendingProtocolUrl()
 
   // 后台确保 Ollama 运行，不阻塞应用启动
   ensureOllama()

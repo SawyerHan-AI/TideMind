@@ -9,6 +9,18 @@ import { brand } from '../../lib/tokens'
 
 // Toggle and ConfirmDialog are still used by MetabolismSection
 
+/** 统一的"即将推出"标签，放在 Section 右上角 */
+function ComingSoonTag() {
+  const { t } = useTranslation()
+  return (
+    <span className="text-[10px] font-medium px-2 py-0.5 rounded-full"
+      style={{ background: 'rgba(234,179,8,0.12)', color: '#facc15', border: '1px solid rgba(234,179,8,0.2)' }}
+    >
+      {t('settings:cloud.managedLlm.comingSoon', 'Coming Soon')}
+    </span>
+  )
+}
+
 export function CloudSyncSettings() {
   const { t } = useTranslation()
   const cloud = useCloudStatus()
@@ -48,6 +60,7 @@ export function CloudSyncSettings() {
   }
 
   // Cloud not available (user not on whitelist)
+  // DataSyncSection 保持可交互（让用户能关闭 toggle），其余置灰
   if (cloud.cloudNotAvailable) {
     return (
       <div className="space-y-6 max-w-xl">
@@ -63,8 +76,10 @@ export function CloudSyncSettings() {
           </div>
         </div>
 
+        {/* DataSyncSection 不置灰：用户需要能关闭 toggle 以停止重试 */}
+        <DataSyncSection cloud={cloud} />
+
         <div className="opacity-40 pointer-events-none space-y-6">
-          <DataSyncSection cloud={cloud} />
           <MetabolismSection cloud={cloud} />
           <ManagedLlmSection />
         </div>
@@ -107,7 +122,24 @@ export function CloudSyncSettings() {
 
 function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
   const { t } = useTranslation()
+  const [showEnableConfirm, setShowEnableConfirm] = useState(false)
+  const [showDisableConfirm, setShowDisableConfirm] = useState(false)
   const [syncing, setSyncing] = useState(false)
+
+  const handleToggle = useCallback((enabled: boolean) => {
+    if (enabled) setShowEnableConfirm(true)
+    else setShowDisableConfirm(true)
+  }, [])
+
+  const confirmEnable = async () => {
+    await window.api.cloud.setSyncEnabled(true)
+    setShowEnableConfirm(false)
+  }
+
+  const confirmDisable = async () => {
+    await window.api.cloud.setSyncEnabled(false)
+    setShowDisableConfirm(false)
+  }
 
   const handleSync = async () => {
     setSyncing(true)
@@ -123,65 +155,107 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
   }
 
   return (
-    <Section
-      title={t('settings:cloud.dataSync.title', 'Data Cloud Sync')}
-    >
-      <div className="space-y-4">
-        <p className="text-xs text-gray-500">
-          {t('settings:cloud.dataSync.desc', 'Sync your memories to TideMind Cloud for multi-device access. Local data becomes a read-only cache of the cloud.')}
-        </p>
+    <>
+      <Section
+        title={t('settings:cloud.dataSync.title', 'Data Cloud Sync')}
+        action={
+          <Toggle
+            enabled={cloud.syncEnabled}
+            onChange={handleToggle}
+            label={t('settings:cloud.dataSync.title', 'Data Cloud Sync')}
+          />
+        }
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-gray-500">
+            {t('settings:cloud.dataSync.desc', 'Sync your memories to TideMind Cloud for multi-device access. Local data becomes a read-only cache of the cloud.')}
+          </p>
 
-        {/* Sync Status */}
-        <div className="pt-2 border-t border-white/[0.06]">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-[10px] uppercase tracking-wider text-gray-600">
-              {t('settings:cloud.dataSync.syncStatus', 'Sync Status')}
-            </span>
-            <button
-              onClick={handleSync}
-              disabled={syncing || cloud.syncing || !cloud.online}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium text-gray-400 border border-white/10 hover:border-white/20 hover:text-white transition-all disabled:opacity-40"
-            >
-              <RefreshCw size={10} className={(syncing || cloud.syncing) ? 'animate-spin' : ''} />
-              {t('settings:cloud.dataSync.syncNow', 'Sync Now')}
-            </button>
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <div className={`w-2 h-2 rounded-full ${cloud.online ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]' : 'bg-gray-500'}`} />
-              <span className="text-xs text-gray-300">
-                {cloud.online
-                  ? t('settings:cloud.dataSync.connected', 'Connected')
-                  : t('settings:cloud.dataSync.offline', 'Offline')}
-              </span>
-              {cloud.online
-                ? <Wifi size={11} className="text-emerald-400" />
-                : <WifiOff size={11} className="text-gray-500" />}
+          {/* syncNotReady 提示 */}
+          {cloud.syncEnabled && cloud.syncNotReady && (
+            <div className="flex items-center gap-2 p-2.5 rounded-lg border border-amber-500/15" style={{ background: 'rgba(245,158,11,0.04)' }}>
+              <AlertTriangle size={12} className="text-amber-400 flex-shrink-0" />
+              <p className="text-[10px] text-amber-300/80">
+                {t('settings:cloud.dataSync.syncNotReady', 'Cloud sync service is being deployed. Stay tuned.')}
+              </p>
             </div>
+          )}
 
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-gray-500">{t('settings:cloud.dataSync.lastSynced', 'Last synced')}</span>
-              <span className="text-xs text-gray-400 font-mono">{formatTime(cloud.lastSyncedAt)}</span>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-gray-500">{t('settings:cloud.dataSync.pending', 'Pending changes')}</span>
-              <span className={`text-xs font-mono ${cloud.outboxCount > 0 ? 'text-amber-400' : 'text-gray-500'}`}>
-                {cloud.outboxCount}
-              </span>
-            </div>
-
-            {cloud.syncing && (
-              <div className="flex items-center gap-2 pt-1">
-                <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-                <span className="text-[10px] text-blue-400">{t('settings:cloud.dataSync.syncing', 'Syncing...')}</span>
+          {/* Sync Status — only visible when sync is enabled and service is ready */}
+          {cloud.syncEnabled && !cloud.syncNotReady && (
+            <div className="pt-2 border-t border-white/[0.06]">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-[10px] uppercase tracking-wider text-gray-600">
+                  {t('settings:cloud.dataSync.syncStatus', 'Sync Status')}
+                </span>
+                <button
+                  onClick={handleSync}
+                  disabled={syncing || cloud.syncing || !cloud.online}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium text-gray-400 border border-white/10 hover:border-white/20 hover:text-white transition-all disabled:opacity-40"
+                >
+                  <RefreshCw size={10} className={(syncing || cloud.syncing) ? 'animate-spin' : ''} />
+                  {t('settings:cloud.dataSync.syncNow', 'Sync Now')}
+                </button>
               </div>
-            )}
-          </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${cloud.online ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]' : 'bg-gray-500'}`} />
+                  <span className="text-xs text-gray-300">
+                    {cloud.online
+                      ? t('settings:cloud.dataSync.connected', 'Connected')
+                      : t('settings:cloud.dataSync.offline', 'Offline')}
+                  </span>
+                  {cloud.online
+                    ? <Wifi size={11} className="text-emerald-400" />
+                    : <WifiOff size={11} className="text-gray-500" />}
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-500">{t('settings:cloud.dataSync.lastSynced', 'Last synced')}</span>
+                  <span className="text-xs text-gray-400 font-mono">{formatTime(cloud.lastSyncedAt)}</span>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-500">{t('settings:cloud.dataSync.pending', 'Pending changes')}</span>
+                  <span className={`text-xs font-mono ${cloud.outboxCount > 0 ? 'text-amber-400' : 'text-gray-500'}`}>
+                    {cloud.outboxCount}
+                  </span>
+                </div>
+
+                {cloud.syncing && (
+                  <div className="flex items-center gap-2 pt-1">
+                    <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                    <span className="text-[10px] text-blue-400">{t('settings:cloud.dataSync.syncing', 'Syncing...')}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
-      </div>
-    </Section>
+      </Section>
+
+      <ConfirmDialog
+        open={showEnableConfirm}
+        onCancel={() => setShowEnableConfirm(false)}
+        onConfirm={confirmEnable}
+        title={t('settings:cloud.dataSync.enableTitle', 'Enable Data Cloud Sync?')}
+        description={t('settings:cloud.dataSync.enableDesc', 'Your memories will be uploaded to TideMind Cloud. The cloud becomes the primary copy, and local data becomes a read-only cache. All logged-in devices will sync.')}
+        confirmText={t('settings:cloud.dataSync.enableConfirm', 'Enable')}
+        cancelText={t('common:cancel', 'Cancel')}
+      />
+
+      <ConfirmDialog
+        open={showDisableConfirm}
+        onCancel={() => setShowDisableConfirm(false)}
+        onConfirm={confirmDisable}
+        title={t('settings:cloud.dataSync.disableTitle', 'Disable Data Cloud Sync?')}
+        description={t('settings:cloud.dataSync.disableDesc', 'Local data will become the primary copy. Cloud metabolism will be disabled. Cloud data is retained for 30 days.')}
+        confirmText={t('settings:cloud.dataSync.disableConfirm', 'Disable')}
+        cancelText={t('common:cancel', 'Cancel')}
+        danger
+      />
+    </>
   )
 }
 
@@ -197,8 +271,8 @@ function MetabolismSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus>
 
   const isFree = !cloud.plan || cloud.plan === 'free'
   const isProPlus = cloud.plan === 'pro_plus'
-  // Cloud metabolism requires data sync to be enabled (for now, always disabled since sync toggle is local state)
-  const dataSyncOff = !cloud.loggedIn || !cloud.online
+  // 云代谢依赖数据同步：未登录、离线、或同步未开启时均不可用
+  const dataSyncOff = !cloud.loggedIn || !cloud.online || !cloud.syncEnabled
 
   const handleToggle = useCallback((enabled: boolean) => {
     if (enabled) setShowEnableConfirm(true)
@@ -208,7 +282,10 @@ function MetabolismSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus>
   // Free users: locked section
   if (isFree) {
     return (
-      <Section title={t('settings:cloud.metabolism.title', 'Cloud Metabolism')}>
+      <Section
+        title={t('settings:cloud.metabolism.title', 'Cloud Metabolism')}
+        action={<ComingSoonTag />}
+      >
         <div className="space-y-3">
           <p className="text-xs text-gray-500">
             {t('settings:cloud.metabolism.freeDesc', 'Cloud metabolism is available on Pro and above. Your memories will be annotated, linked, and crystallized 24/7 in the cloud.')}
@@ -334,13 +411,7 @@ function ManagedLlmSection() {
   return (
     <Section
       title={t('settings:cloud.managedLlm.title', 'TideMind LLM Service')}
-      action={
-        <span className="text-[10px] font-medium px-2 py-0.5 rounded-full"
-          style={{ background: 'rgba(234,179,8,0.12)', color: '#facc15', border: '1px solid rgba(234,179,8,0.2)' }}
-        >
-          {t('settings:cloud.managedLlm.comingSoon', 'Coming Soon')}
-        </span>
-      }
+      action={<ComingSoonTag />}
     >
       <div className="space-y-3">
         <p className="text-xs text-gray-500">

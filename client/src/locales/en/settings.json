@@ -953,7 +953,8 @@
       "enableConfirm": "Enable Sync",
       "disableTitle": "Disable Data Cloud Sync?",
       "disableDesc": "Local data will become the primary copy. Other devices will also exit cloud sync. Cloud data will be retained for 30 days. Cloud metabolism will be automatically disabled.",
-      "disableConfirm": "Disable Sync"
+      "disableConfirm": "Disable Sync",
+      "syncNotReady": "Cloud sync service is being deployed. Stay tuned."
     },
     "metabolism": {
       "title": "Cloud Metabolism",
