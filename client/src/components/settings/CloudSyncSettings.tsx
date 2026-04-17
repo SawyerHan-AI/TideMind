@@ -87,7 +87,7 @@ export function CloudSyncSettings() {
     )
   }
 
-  // Offline: show all sections disabled
+  // Offline: DataSyncSection 保持可交互（让用户能开启/关闭 toggle），其余置灰
   if (!cloud.online) {
     return (
       <div className="space-y-6 max-w-xl">
@@ -98,8 +98,10 @@ export function CloudSyncSettings() {
           </p>
         </div>
 
+        {/* DataSyncSection 不置灰：用户需要能开启 toggle 以启动同步 */}
+        <DataSyncSection cloud={cloud} />
+
         <div className="opacity-60 pointer-events-none space-y-6">
-          <DataSyncSection cloud={cloud} />
           <MetabolismSection cloud={cloud} />
           <ManagedLlmSection />
         </div>
