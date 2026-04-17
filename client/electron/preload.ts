@@ -135,6 +135,7 @@ const api = {
     login: (email: string, password: string) => ipcRenderer.invoke('cloud:login', email, password),
     logout: () => ipcRenderer.invoke('cloud:logout'),
     status: () => ipcRenderer.invoke('cloud:status'),
+    setSyncEnabled: (enabled: boolean) => ipcRenderer.invoke('cloud:set-sync-enabled', enabled),
     triggerSync: () => ipcRenderer.invoke('cloud:trigger-sync'),
     outboxCount: () => ipcRenderer.invoke('cloud:outbox-count'),
     loginUrl: () => ipcRenderer.invoke('cloud:login-url'),

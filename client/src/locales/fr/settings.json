@@ -965,7 +965,8 @@
       "enableConfirm": "Activer la synchronisation",
       "disableTitle": "Désactiver la synchronisation des données cloud ?",
       "disableDesc": "Les données locales redeviendront la copie principale. Les autres appareils quitteront également la synchronisation cloud. Les données cloud seront conservées pendant 30 jours. Le métabolisme cloud sera automatiquement désactivé.",
-      "disableConfirm": "Désactiver la synchronisation"
+      "disableConfirm": "Désactiver la synchronisation",
+      "syncNotReady": "Le service de synchronisation cloud est en cours de déploiement. Restez à l'écoute."
     },
     "metabolism": {
       "title": "Métabolisme cloud",

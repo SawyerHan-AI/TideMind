@@ -965,7 +965,8 @@
       "enableConfirm": "Activar sincronización",
       "disableTitle": "¿Desactivar sincronización de datos en la nube?",
       "disableDesc": "Los datos locales se convertirán en la copia principal. Otros dispositivos también saldrán de la sincronización en la nube. Los datos en la nube se conservarán durante 30 días. El metabolismo en la nube se desactivará automáticamente.",
-      "disableConfirm": "Desactivar sincronización"
+      "disableConfirm": "Desactivar sincronización",
+      "syncNotReady": "El servicio de sincronización en la nube se está implementando. Estén atentos."
     },
     "metabolism": {
       "title": "Metabolismo en la nube",

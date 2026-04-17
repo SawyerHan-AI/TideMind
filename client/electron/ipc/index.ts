@@ -33,6 +33,6 @@ export function registerAllHandlers(db: Database.Database, dataDir: string): voi
   registerPluginGeneratorHandlers(dataDir)
   registerNoteSourceHandlers()
   registerConnectionHandlers(dataDir)
-  registerCloudHandlers()
+  registerCloudHandlers(db)
   registerAppHandlers()
 }

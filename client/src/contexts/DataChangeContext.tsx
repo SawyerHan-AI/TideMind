@@ -5,7 +5,7 @@
  * 提供 useDataRevision() hook 让页面组件自动感知后端数据变更。
  */
 
-import { createContext, useContext, useEffect, useState, useRef } from 'react'
+import { createContext, useContext, useEffect, useState } from 'react'
 
 interface DataChangeState {
   /** 每次后端数据变更时递增 */
@@ -41,19 +41,19 @@ export function DataChangeProvider({ children }: { children: React.ReactNode }) 
  */
 export function useDataRevision(scopes?: string[]): number {
   const { revision, lastScopes } = useContext(DataChangeContext)
-  const stableRevision = useRef(0)
+  const [stableRevision, setStableRevision] = useState(0)
 
   // 有 scope 过滤 → 只在相关范围变化时更新稳定值；无 scope 过滤时每次变更都更新
   const relevant = !scopes || lastScopes.length === 0 || lastScopes.some(s => scopes.includes(s))
 
   useEffect(() => {
     if (relevant) {
-      stableRevision.current = revision
+      setStableRevision(revision)
     }
   }, [relevant, revision])
 
   // 无 scope 过滤 → 直接返回原始 revision（始终最新）
   // 有 scope 过滤 → 返回稳定值（仅在相关范围变化时递增）
   if (!scopes) return revision
-  return stableRevision.current
+  return stableRevision
 }

@@ -953,7 +953,8 @@
       "enableConfirm": "确认开启",
       "disableTitle": "关闭数据云同步？",
       "disableDesc": "本地数据将成为主副本。其他设备将同时退出云同步。云端数据保留 30 天。云代谢将自动关闭。",
-      "disableConfirm": "确认关闭"
+      "disableConfirm": "确认关闭",
+      "syncNotReady": "云同步服务正在部署中，敬请期待。"
     },
     "metabolism": {
       "title": "云代谢",

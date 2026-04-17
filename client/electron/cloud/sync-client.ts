@@ -30,6 +30,8 @@ export class CloudSyncClient {
 
   /** 用户未在白名单中，云端返回 403 cloud_not_available */
   cloudNotAvailable = false;
+  /** 服务端同步接口尚未就绪（404） */
+  syncNotReady = false;
 
   constructor(private db: Database.Database) {
     const baseUrl = getCloudBaseUrl();
@@ -157,6 +159,9 @@ export class CloudSyncClient {
       await this.pushOutbox(token);
       await this.pullChanges(token);
       this.status = 'idle';
+      // 同步成功 → 重置错误标志（可能是之前的瞬时故障）
+      this.syncNotReady = false;
+      this.cloudNotAvailable = false;
 
       // Update lastSyncedAt on auth
       const auth = getCloudAuth();
@@ -168,6 +173,11 @@ export class CloudSyncClient {
       if (msg === 'cloud_not_available') {
         this.cloudNotAvailable = true;
         this.status = 'offline';
+        // 非白名单用户：停止轮询和 WebSocket，避免持续 403
+        this.stop();
+      } else if (msg.includes('404')) {
+        this.syncNotReady = true;
+        this.status = 'error';
       } else {
         this.status = 'error';
       }
@@ -232,9 +242,22 @@ let instance: CloudSyncClient | null = null;
 
 export function getCloudSyncClient(): CloudSyncClient | null { return instance; }
 
+export function isSyncClientRunning(): boolean {
+  return instance !== null && instance.getStatus() !== 'offline';
+}
+
 export function createCloudSyncClient(db: Database.Database): CloudSyncClient {
+  if (instance) instance.stop();
   instance = new CloudSyncClient(db);
   return instance;
+}
+
+export function destroySyncClient(): void {
+  if (instance) {
+    instance.stop();
+    instance = null;
+    log.info('sync client destroyed');
+  }
 }
 
 /**

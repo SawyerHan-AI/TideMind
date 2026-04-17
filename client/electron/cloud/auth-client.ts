@@ -94,17 +94,19 @@ export function getCloudAuth(): CloudAuth | null { return cachedAuth; }
 /** Get the URL to open in the browser for login */
 export function getLoginUrl(): string {
   const base = getCloudBaseUrl();
-  const redirect = 'tidemind://auth/callback';
   pendingOAuthState = crypto.randomBytes(16).toString('hex');
-  return `${base}/auth/login?redirect=${encodeURIComponent(redirect)}&state=${pendingOAuthState}`;
+  // state 必须嵌入 redirect URL 本身，而非作为登录页面的独立 query 参数——
+  // 服务器只会把 redirect URL 原样传回，不会提取并转发外部的 state 参数
+  const redirect = `tidemind://auth/callback?state=${pendingOAuthState}`;
+  return `${base}/auth/login?redirect=${encodeURIComponent(redirect)}`;
 }
 
 /** Get the URL to open in the browser for registration */
 export function getRegisterUrl(): string {
   const base = getCloudBaseUrl();
-  const redirect = 'tidemind://auth/callback';
   pendingOAuthState = crypto.randomBytes(16).toString('hex');
-  return `${base}/auth/register?redirect=${encodeURIComponent(redirect)}&state=${pendingOAuthState}`;
+  const redirect = `tidemind://auth/callback?state=${pendingOAuthState}`;
+  return `${base}/auth/register?redirect=${encodeURIComponent(redirect)}`;
 }
 
 /**
@@ -149,12 +151,16 @@ export async function handleOAuthCallback(url: string): Promise<CloudAuth> {
       headers: { 'Authorization': `Bearer ${accessToken}` },
     });
     if (meRes.ok) {
-      const me = await meRes.json() as { id: string; email: string; plan?: string };
-      cachedAuth.userId = me.id;
-      cachedAuth.email = me.email;
-      if (me.plan) cachedAuth.plan = me.plan;
+      const body = await meRes.json() as { user: { id: string; email: string; plan?: string } };
+      cachedAuth.userId = body.user.id;
+      cachedAuth.email = body.user.email;
+      if (body.user.plan) cachedAuth.plan = body.user.plan;
+    } else {
+      log.warn(`/auth/me returned ${meRes.status}: ${await meRes.text().catch(() => '')}`);
     }
-  } catch { /* ignore */ }
+  } catch (err) {
+    log.warn(`/auth/me fetch failed: ${(err as Error).message}`);
+  }
 
   saveAuthToDisk();
   log.info(`logged in via OAuth callback as ${cachedAuth.email}`);
