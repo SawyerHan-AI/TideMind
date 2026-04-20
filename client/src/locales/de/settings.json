@@ -966,7 +966,15 @@
       "disableTitle": "Daten-Cloud-Synchronisierung deaktivieren?",
       "disableDesc": "Lokale Daten werden zur primären Kopie. Andere Geräte verlassen ebenfalls die Cloud-Synchronisierung. Cloud-Daten werden 30 Tage aufbewahrt. Cloud-Metabolismus wird automatisch deaktiviert.",
       "disableConfirm": "Synchronisierung deaktivieren",
-      "syncNotReady": "Cloud-Synchronisierungsdienst wird bereitgestellt. Bleiben Sie dran."
+      "syncNotReady": "Cloud-Synchronisierungsdienst wird bereitgestellt. Bleiben Sie dran.",
+      "errors": {
+        "notLoggedIn": "Sie müssen sich zuerst anmelden.",
+        "cloudNotAvailable": "Ihr Konto ist noch nicht für Cloud-Funktionen freigeschaltet. Bewerben Sie sich auf cloud.tidemind.ai/apply.",
+        "syncNotReady": "Der Cloud-Synchronisierungsdienst wird gerade bereitgestellt. Bitte versuchen Sie es später erneut.",
+        "offline": "Die Cloud konnte nicht erreicht werden. Überprüfen Sie Ihre Netzwerkverbindung und versuchen Sie es erneut.",
+        "syncError": "Die Synchronisierung ist aufgrund eines unerwarteten Fehlers fehlgeschlagen. Details finden Sie in den Protokollen.",
+        "notInitialized": "Die Synchronisierung wurde noch nicht gestartet."
+      }
     },
     "metabolism": {
       "title": "Cloud-Metabolismus",

@@ -122,33 +122,81 @@ export function CloudSyncSettings() {
 // Section 1: Data Cloud Sync
 // ============================================================
 
+// Map backend error codes to translated messages. Unknown codes fall back to the raw string,
+// which is better than swallowing silently even though it may be English-only.
+function useSyncErrorMessage() {
+  const { t } = useTranslation()
+  return (code: string | null | undefined): string | null => {
+    if (!code) return null
+    switch (code) {
+      case 'not_logged_in':
+        return t('settings:cloud.dataSync.errors.notLoggedIn', 'You need to sign in first.')
+      case 'cloud_not_available':
+        return t('settings:cloud.dataSync.errors.cloudNotAvailable', 'Your account is not yet enabled for cloud features. Apply at cloud.tidemind.ai/apply.')
+      case 'sync_not_ready':
+        return t('settings:cloud.dataSync.errors.syncNotReady', 'Cloud sync service is being deployed. Please try again later.')
+      case 'offline':
+        return t('settings:cloud.dataSync.errors.offline', 'Could not reach the cloud. Check your network and try again.')
+      case 'sync_error':
+        return t('settings:cloud.dataSync.errors.syncError', 'Sync failed due to an unexpected error. Check logs for details.')
+      case 'Sync client not initialized':
+        return t('settings:cloud.dataSync.errors.notInitialized', 'Sync has not been started yet.')
+      default:
+        return code
+    }
+  }
+}
+
 function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
   const { t } = useTranslation()
+  const translateError = useSyncErrorMessage()
   const [showEnableConfirm, setShowEnableConfirm] = useState(false)
   const [showDisableConfirm, setShowDisableConfirm] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  // Last error from setSyncEnabled/triggerSync. Displayed inline; cleared on next action.
+  const [lastError, setLastError] = useState<string | null>(null)
 
   const handleToggle = useCallback((enabled: boolean) => {
+    setLastError(null)
     if (enabled) setShowEnableConfirm(true)
     else setShowDisableConfirm(true)
   }, [])
 
   const confirmEnable = async () => {
-    await window.api.cloud.setSyncEnabled(true)
     setShowEnableConfirm(false)
+    try {
+      const result = await window.api.cloud.setSyncEnabled(true)
+      if (result && result.success === false && result.error) {
+        setLastError(result.error)
+      }
+    } catch (e) {
+      setLastError((e as Error).message)
+    }
   }
 
   const confirmDisable = async () => {
-    await window.api.cloud.setSyncEnabled(false)
     setShowDisableConfirm(false)
+    setLastError(null)
+    try {
+      await window.api.cloud.setSyncEnabled(false)
+    } catch (e) {
+      setLastError((e as Error).message)
+    }
   }
 
   const handleSync = async () => {
     setSyncing(true)
+    setLastError(null)
     try {
-      await window.api.cloud.triggerSync()
-    } catch { /* ignore */ }
-    finally { setSyncing(false) }
+      const result = await window.api.cloud.triggerSync()
+      if (result && result.success === false && result.error) {
+        setLastError(result.error)
+      }
+    } catch (e) {
+      setLastError((e as Error).message)
+    } finally {
+      setSyncing(false)
+    }
   }
 
   const formatTime = (iso?: string) => {
@@ -172,6 +220,25 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
           <p className="text-xs text-gray-500">
             {t('settings:cloud.dataSync.desc', 'Sync your memories to TideMind Cloud for multi-device access. Local data becomes a read-only cache of the cloud.')}
           </p>
+
+          {/* Inline error — 最后一次 setSyncEnabled / triggerSync 失败的原因 */}
+          {lastError && (
+            <div className="flex items-start gap-2 p-2.5 rounded-lg border border-red-500/20" style={{ background: 'rgba(239,68,68,0.06)' }}>
+              <AlertTriangle size={12} className="text-red-400 mt-0.5 flex-shrink-0" />
+              <div className="flex-1">
+                <p className="text-[10px] text-red-300/90 leading-relaxed">
+                  {translateError(lastError)}
+                </p>
+              </div>
+              <button
+                onClick={() => setLastError(null)}
+                className="text-[10px] text-red-300/60 hover:text-red-300 transition-colors"
+                aria-label={t('common:close', 'Close')}
+              >
+                ×
+              </button>
+            </div>
+          )}
 
           {/* syncNotReady 提示 */}
           {cloud.syncEnabled && cloud.syncNotReady && (

@@ -954,7 +954,15 @@
       "disableTitle": "Disable Data Cloud Sync?",
       "disableDesc": "Local data will become the primary copy. Other devices will also exit cloud sync. Cloud data will be retained for 30 days. Cloud metabolism will be automatically disabled.",
       "disableConfirm": "Disable Sync",
-      "syncNotReady": "Cloud sync service is being deployed. Stay tuned."
+      "syncNotReady": "Cloud sync service is being deployed. Stay tuned.",
+      "errors": {
+        "notLoggedIn": "You need to sign in first.",
+        "cloudNotAvailable": "Your account is not yet enabled for cloud features. Apply at cloud.tidemind.ai/apply.",
+        "syncNotReady": "Cloud sync service is being deployed. Please try again later.",
+        "offline": "Could not reach the cloud. Check your network and try again.",
+        "syncError": "Sync failed due to an unexpected error. Check logs for details.",
+        "notInitialized": "Sync has not been started yet."
+      }
     },
     "metabolism": {
       "title": "Cloud Metabolism",

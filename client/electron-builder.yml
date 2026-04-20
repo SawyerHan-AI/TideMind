@@ -40,6 +40,14 @@ asarUnpack:
   - "**/*.dylib"
   - "**/better-sqlite3/**"
   - "**/sqlite-vec*/**"
+  # better-sqlite3 的 transitive 运行时依赖。native module 加载链路：
+  #   better-sqlite3/lib/database.js → require('bindings')('better_sqlite3.node')
+  #   bindings → require('file-uri-to-path')
+  # mcp-server.cjs 是通过 /bin/sh 启动的普通 node 进程（非 Electron），
+  # 看不到 asar 虚拟文件系统，必须把这条依赖链全部 unpack 到真实文件。
+  # 漏掉任何一个都会让打包后的 MCP server 在首次访问数据库时崩溃。
+  - "**/bindings/**"
+  - "**/file-uri-to-path/**"
   # bundled 的 hook-session-start.cjs / mcp-server.cjs 必须 unpack：
   # 外部 Agent 通过 /bin/sh 启动 hook 时，shell 看不到 asar 内部，
   # 需要真实的 OS 文件路径。

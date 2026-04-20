@@ -966,7 +966,15 @@
       "disableTitle": "Disattivare la sincronizzazione dati cloud?",
       "disableDesc": "I dati locali diventeranno la copia principale. Anche gli altri dispositivi usciranno dalla sincronizzazione cloud. I dati cloud verranno conservati per 30 giorni. Il metabolismo cloud verrà disattivato automaticamente.",
       "disableConfirm": "Disattiva sincronizzazione",
-      "syncNotReady": "Il servizio di sincronizzazione cloud è in fase di distribuzione. Restate sintonizzati."
+      "syncNotReady": "Il servizio di sincronizzazione cloud è in fase di distribuzione. Restate sintonizzati.",
+      "errors": {
+        "notLoggedIn": "Devi prima accedere.",
+        "cloudNotAvailable": "Il tuo account non è ancora abilitato per le funzionalità cloud. Richiedilo su cloud.tidemind.ai/apply.",
+        "syncNotReady": "Il servizio di sincronizzazione cloud è in fase di distribuzione. Riprova più tardi.",
+        "offline": "Impossibile raggiungere il cloud. Controlla la rete e riprova.",
+        "syncError": "Sincronizzazione fallita a causa di un errore imprevisto. Controlla i log per i dettagli.",
+        "notInitialized": "La sincronizzazione non è ancora stata avviata."
+      }
     },
     "metabolism": {
       "title": "Metabolismo cloud",

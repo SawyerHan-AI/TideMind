@@ -966,7 +966,15 @@
       "disableTitle": "¿Desactivar sincronización de datos en la nube?",
       "disableDesc": "Los datos locales se convertirán en la copia principal. Otros dispositivos también saldrán de la sincronización en la nube. Los datos en la nube se conservarán durante 30 días. El metabolismo en la nube se desactivará automáticamente.",
       "disableConfirm": "Desactivar sincronización",
-      "syncNotReady": "El servicio de sincronización en la nube se está implementando. Estén atentos."
+      "syncNotReady": "El servicio de sincronización en la nube se está implementando. Estén atentos.",
+      "errors": {
+        "notLoggedIn": "Primero debes iniciar sesión.",
+        "cloudNotAvailable": "Tu cuenta aún no está habilitada para las funciones en la nube. Solicítalo en cloud.tidemind.ai/apply.",
+        "syncNotReady": "El servicio de sincronización en la nube se está implementando. Inténtalo más tarde.",
+        "offline": "No se pudo conectar con la nube. Verifica tu red e inténtalo de nuevo.",
+        "syncError": "La sincronización falló debido a un error inesperado. Revisa los registros para más detalles.",
+        "notInitialized": "La sincronización aún no se ha iniciado."
+      }
     },
     "metabolism": {
       "title": "Metabolismo en la nube",

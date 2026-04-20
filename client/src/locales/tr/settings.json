@@ -966,7 +966,15 @@
       "disableTitle": "Veri bulut senkronizasyonu devre dışı bırakılsın mı?",
       "disableDesc": "Yerel veriler birincil kopya olur. Diğer cihazlar da bulut senkronizasyonundan çıkar. Bulut verileri 30 gün boyunca saklanır. Bulut metabolizması otomatik olarak devre dışı bırakılır.",
       "disableConfirm": "Senkronizasyonu Devre Dışı Bırak",
-      "syncNotReady": "Bulut senkronizasyon hizmeti dağıtılıyor. Takipte kalın."
+      "syncNotReady": "Bulut senkronizasyon hizmeti dağıtılıyor. Takipte kalın.",
+      "errors": {
+        "notLoggedIn": "Önce giriş yapmalısınız.",
+        "cloudNotAvailable": "Hesabınız bulut özellikleri için henüz etkinleştirilmemiş. cloud.tidemind.ai/apply adresinden başvurun.",
+        "syncNotReady": "Bulut senkronizasyon hizmeti dağıtım aşamasında. Lütfen daha sonra tekrar deneyin.",
+        "offline": "Buluta ulaşılamadı. Ağınızı kontrol edip tekrar deneyin.",
+        "syncError": "Beklenmeyen bir hata nedeniyle senkronizasyon başarısız oldu. Ayrıntılar için günlükleri kontrol edin.",
+        "notInitialized": "Senkronizasyon henüz başlatılmadı."
+      }
     },
     "metabolism": {
       "title": "Bulut Metabolizması",

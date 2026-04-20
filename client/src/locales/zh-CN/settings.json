@@ -954,7 +954,15 @@
       "disableTitle": "关闭数据云同步？",
       "disableDesc": "本地数据将成为主副本。其他设备将同时退出云同步。云端数据保留 30 天。云代谢将自动关闭。",
       "disableConfirm": "确认关闭",
-      "syncNotReady": "云同步服务正在部署中，敬请期待。"
+      "syncNotReady": "云同步服务正在部署中，敬请期待。",
+      "errors": {
+        "notLoggedIn": "请先登录。",
+        "cloudNotAvailable": "你的账号暂未开通云功能。请在 cloud.tidemind.ai/apply 申请内测。",
+        "syncNotReady": "云同步服务正在部署中，请稍后重试。",
+        "offline": "无法连接到云服务，请检查网络后重试。",
+        "syncError": "同步失败，请查看日志了解详情。",
+        "notInitialized": "同步尚未启动。"
+      }
     },
     "metabolism": {
       "title": "云代谢",

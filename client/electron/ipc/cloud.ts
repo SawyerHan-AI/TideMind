@@ -96,19 +96,41 @@ export function registerCloudHandlers(db?: Database.Database): void {
     reloadConfig();
     log.info(`cloud sync ${enabled ? 'enabled' : 'disabled'}`);
 
+    let startError: string | undefined;
     if (enabled && db) {
       const { isLoggedIn } = await import('../cloud/auth-client.js');
-      if (isLoggedIn()) {
+      if (!isLoggedIn()) {
+        startError = 'not_logged_in';
+      } else {
         const { createCloudSyncClient } = await import('../cloud/sync-client.js');
         const client = createCloudSyncClient(db);
-        client.start().catch(e => log.error('sync start failed:', (e as Error).message));
+        // 等待首次 syncOnce 完成后检查客户端状态,把失败反馈给前端。
+        // 历史上这里是 fire-and-forget,导致 token 失效 / 白名单未过 / 404 等失败
+        // 只写到日志,UI 看到"开启成功"假象,之后"立即同步"按钮又因 online=false 灰掉,
+        // 用户体验是"打开了但不同步也点不动"。
+        //
+        // 注意:CloudSyncClient.start() 内部已对 syncOnce 做 try/catch(用 status 和
+        // cloudNotAvailable/syncNotReady 标志表达错误),不会向外抛。因此这里不用包 try,
+        // 而是 await 后读 client 的状态字段来判断首次同步结果。
+        await client.start();
+        if (client.cloudNotAvailable) {
+          startError = 'cloud_not_available';
+        } else if (client.syncNotReady) {
+          startError = 'sync_not_ready';
+        } else if (client.getStatus() === 'offline') {
+          startError = 'offline'; // 多半是 token 刷新失败
+        } else if (client.getStatus() === 'error') {
+          startError = 'sync_error';
+        }
+        if (startError) log.warn(`sync start reported: ${startError}`);
       }
-    } else {
+    } else if (!enabled) {
       const { destroySyncClient } = await import('../cloud/sync-client.js');
       destroySyncClient();
     }
 
     emitCloudChanged();
+    if (startError) return { success: false, error: startError };
     return { success: true };
   });
 
