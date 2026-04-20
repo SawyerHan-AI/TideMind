@@ -966,7 +966,15 @@
       "disableTitle": "停用資料雲端同步？",
       "disableDesc": "本機資料將成為主要副本。其他裝置也會退出雲端同步。雲端資料將保留 30 天。雲端代謝將自動停用。",
       "disableConfirm": "停用同步",
-      "syncNotReady": "雲端同步服務正在部署中，敬請期待。"
+      "syncNotReady": "雲端同步服務正在部署中，敬請期待。",
+      "errors": {
+        "notLoggedIn": "請先登入。",
+        "cloudNotAvailable": "你的帳戶尚未開通雲端功能。請在 cloud.tidemind.ai/apply 申請內測。",
+        "syncNotReady": "雲端同步服務正在部署中，請稍後再試。",
+        "offline": "無法連線到雲端，請檢查網路後重試。",
+        "syncError": "同步失敗，請查看日誌了解詳情。",
+        "notInitialized": "同步尚未啟動。"
+      }
     },
     "metabolism": {
       "title": "雲端代謝",
