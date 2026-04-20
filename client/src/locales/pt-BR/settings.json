@@ -974,7 +974,14 @@
         "offline": "Não foi possível alcançar a nuvem. Verifique sua rede e tente novamente.",
         "syncError": "A sincronização falhou devido a um erro inesperado. Verifique os logs para mais detalhes.",
         "notInitialized": "A sincronização ainda não foi iniciada."
-      }
+      },
+      "forceReconcile": "Alinhamento forçado",
+      "forceReconcileHint": "Alinhamento bidirecional completo. Use se a nuvem e o local estiverem desincronizados.",
+      "lastReconciled": "Último alinhamento",
+      "neverReconciled": "Nunca",
+      "reconciling": "Alinhando {{table}} ({{phase}})",
+      "reconcileDone": "Alinhado",
+      "reconcileFailed": "Alinhamento falhou"
     },
     "metabolism": {
       "title": "Metabolismo na nuvem",

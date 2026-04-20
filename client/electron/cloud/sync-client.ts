@@ -73,22 +73,28 @@ export class CloudSyncClient {
   }
 
   /**
-   * 判断是否需要跑 reconcile:首次(metadata 无记录)或距上次 > 7 天。
-   * 运行过程异步,不阻塞增量同步;失败写状态但不抛。
-   *
-   * 手动触发从 IPC 走,见 `ipcMain.handle('cloud:force-reconcile')`(待 UI 接)。
+   * 判断是否需要跑 reconcile。条件(任一成立触发):
+   *   - nodes 或 links 的 last_reconcile_at_{table} 为空
+   *   - 其中任一距上次 > 7 天
+   * 只检查 nodes 是个老 bug — 如果 nodes 跑完但 links 失败,下次不会重试 links,
+   * 用户数据永远对不齐。
    */
   private async maybeTriggerReconcile(): Promise<void> {
-    const last = this.readMetadata('cloud.last_reconcile_at_nodes');
-    const isInitial = !last;
-    if (!isInitial) {
-      const lastTime = new Date(last).getTime();
-      if (!isNaN(lastTime) && Date.now() - lastTime < 7 * 24 * 60 * 60 * 1000) {
-        return; // 7 天内跑过,跳过
-      }
-    }
+    const lastNodes = this.readMetadata('cloud.last_reconcile_at_nodes');
+    const lastLinks = this.readMetadata('cloud.last_reconcile_at_links');
 
-    log.info(`triggering reconcile (isInitial=${isInitial})`);
+    const stale = (ts: string | null): boolean => {
+      if (!ts) return true;
+      const t = new Date(ts).getTime();
+      if (isNaN(t)) return true;
+      return Date.now() - t > 7 * 24 * 60 * 60 * 1000;
+    };
+
+    if (!stale(lastNodes) && !stale(lastLinks)) return; // 两张表都新,跳过
+
+    const isInitial = !lastNodes && !lastLinks; // 只有"两个都从未跑过"才算首次
+
+    log.info(`triggering reconcile (isInitial=${isInitial}, nodes_stale=${stale(lastNodes)}, links_stale=${stale(lastLinks)})`);
     const { Reconciler } = await import('./reconciler.js');
     const reconciler = new Reconciler(this.db);
     const results = await reconciler.runAll(isInitial);

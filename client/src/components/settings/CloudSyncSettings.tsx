@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { RefreshCw, Wifi, WifiOff, AlertTriangle, ArrowRight, Sparkles, Cloud } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useCloudStatus } from '../../hooks/useCloudStatus'
@@ -147,17 +147,41 @@ function useSyncErrorMessage() {
   }
 }
 
+interface ReconcileProgress {
+  table: 'nodes' | 'links'
+  phase: 'idle' | 'manifest' | 'diff' | 'upload' | 'download' | 'done' | 'failed'
+  total: number
+  processed: number
+  errorMessage?: string
+}
+
 function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
   const { t } = useTranslation()
   const translateError = useSyncErrorMessage()
   const [showEnableConfirm, setShowEnableConfirm] = useState(false)
   const [showDisableConfirm, setShowDisableConfirm] = useState(false)
   const [syncing, setSyncing] = useState(false)
+  const [reconciling, setReconciling] = useState(false)
+  const [reconcileProgress, setReconcileProgress] = useState<ReconcileProgress | null>(null)
   // Local override from the most recent user action (setSyncEnabled/triggerSync).
   // Set when a manual action returns an error or is explicitly dismissed by user.
   // When null, fall through to cloud.lastErrorCode (server-side persistent state).
   const [localError, setLocalError] = useState<{ code: string; detail?: string } | null>(null)
   const [dismissed, setDismissed] = useState(false)
+
+  // 订阅 reconcile 进度
+  useEffect(() => {
+    const api = window.api.cloud as { onReconcileProgress?: (cb: (p: unknown) => void) => () => void }
+    if (!api.onReconcileProgress) return
+    const off = api.onReconcileProgress((p) => {
+      const prog = p as ReconcileProgress
+      setReconcileProgress(prog)
+      if (prog.phase === 'done' || prog.phase === 'failed') {
+        setTimeout(() => setReconcileProgress(null), 3000)
+      }
+    })
+    return off
+  }, [])
 
   // 最终显示的错误:优先 localError(刚触发的操作),其次 cloud 持久化状态,dismiss 后隐藏
   const displayError = dismissed
@@ -210,6 +234,27 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
       setLocalError({ code: (e as Error).message })
     } finally {
       setSyncing(false)
+    }
+  }
+
+  const handleForceReconcile = async () => {
+    setReconciling(true)
+    setLocalError(null)
+    setDismissed(false)
+    try {
+      const api = window.api.cloud as { forceReconcile?: () => Promise<{ success: boolean; error?: string }> }
+      if (!api.forceReconcile) {
+        setLocalError({ code: 'not_supported' })
+        return
+      }
+      const result = await api.forceReconcile()
+      if (!result?.success && result?.error) {
+        setLocalError({ code: result.error })
+      }
+    } catch (e) {
+      setLocalError({ code: (e as Error).message })
+    } finally {
+      setReconciling(false)
     }
   }
 
@@ -278,19 +323,25 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
                 <span className="text-[10px] uppercase tracking-wider text-gray-600">
                   {t('settings:cloud.dataSync.syncStatus', 'Sync Status')}
                 </span>
-                <button
-                  onClick={handleSync}
-                  disabled={syncing || cloud.syncing}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium text-gray-400 border border-white/10 hover:border-white/20 hover:text-white transition-all disabled:opacity-40"
-                >
-                  {/* "立即同步"按钮在 cloud.online=false 时也保持可点击——
-                      用户点这个按钮的目的就是在 offline 状态下强制重试连接,
-                      禁用它等于把唯一的自救入口堵死。triggerSync 内部会重新
-                      refreshTokenIfNeeded + syncOnce,失败时 handleSync 会把
-                      错误码写到 lastError,UI 上方的红色错误条会展示出来。 */}
-                  <RefreshCw size={10} className={(syncing || cloud.syncing) ? 'animate-spin' : ''} />
-                  {t('settings:cloud.dataSync.syncNow', 'Sync Now')}
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={handleForceReconcile}
+                    disabled={reconciling || reconcileProgress !== null}
+                    title={t('settings:cloud.dataSync.forceReconcileHint', 'Full bidirectional diff + push/pull. Use if cloud and local got out of sync.')}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium text-gray-400 border border-white/10 hover:border-white/20 hover:text-white transition-all disabled:opacity-40"
+                  >
+                    <RefreshCw size={10} className={reconciling || reconcileProgress !== null ? 'animate-spin' : ''} />
+                    {t('settings:cloud.dataSync.forceReconcile', 'Force Align')}
+                  </button>
+                  <button
+                    onClick={handleSync}
+                    disabled={syncing || cloud.syncing}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium text-gray-400 border border-white/10 hover:border-white/20 hover:text-white transition-all disabled:opacity-40"
+                  >
+                    <RefreshCw size={10} className={(syncing || cloud.syncing) ? 'animate-spin' : ''} />
+                    {t('settings:cloud.dataSync.syncNow', 'Sync Now')}
+                  </button>
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -312,6 +363,15 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
                 </div>
 
                 <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-500">{t('settings:cloud.dataSync.lastReconciled', 'Last full align')}</span>
+                  <span className="text-xs text-gray-400 font-mono">
+                    {cloud.lastReconcileAt
+                      ? formatTime(cloud.lastReconcileAt)
+                      : t('settings:cloud.dataSync.neverReconciled', 'Never')}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between">
                   <span className="text-xs text-gray-500">{t('settings:cloud.dataSync.pending', 'Pending changes')}</span>
                   <span className={`text-xs font-mono ${cloud.outboxCount > 0 ? 'text-amber-400' : 'text-gray-500'}`}>
                     {cloud.outboxCount}
@@ -322,6 +382,48 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
                   <div className="flex items-center gap-2 pt-1">
                     <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
                     <span className="text-[10px] text-blue-400">{t('settings:cloud.dataSync.syncing', 'Syncing...')}</span>
+                  </div>
+                )}
+
+                {/* Reconcile 进度条 */}
+                {reconcileProgress && reconcileProgress.phase !== 'idle' && (
+                  <div className="pt-2 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-blue-400 uppercase tracking-wider">
+                        {reconcileProgress.phase === 'done'
+                          ? t('settings:cloud.dataSync.reconcileDone', 'Aligned')
+                          : reconcileProgress.phase === 'failed'
+                            ? t('settings:cloud.dataSync.reconcileFailed', 'Align failed')
+                            : t('settings:cloud.dataSync.reconciling', 'Aligning {{table}} ({{phase}})', {
+                                table: reconcileProgress.table,
+                                phase: reconcileProgress.phase,
+                              })}
+                      </span>
+                      {reconcileProgress.total > 0 && reconcileProgress.phase !== 'done' && reconcileProgress.phase !== 'failed' && (
+                        <span className="text-[10px] font-mono text-gray-500">
+                          {reconcileProgress.processed}/{reconcileProgress.total}
+                        </span>
+                      )}
+                    </div>
+                    {reconcileProgress.total > 0 && (
+                      <div className="w-full h-1 rounded-full bg-white/[0.06] overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-300 ${
+                            reconcileProgress.phase === 'failed' ? 'bg-red-400'
+                              : reconcileProgress.phase === 'done' ? 'bg-emerald-400'
+                                : 'bg-blue-400'
+                          }`}
+                          style={{
+                            width: `${Math.min(100, Math.round((reconcileProgress.processed / Math.max(1, reconcileProgress.total)) * 100))}%`,
+                          }}
+                        />
+                      </div>
+                    )}
+                    {reconcileProgress.errorMessage && (
+                      <p className="text-[10px] text-red-300/80 font-mono break-all">
+                        {reconcileProgress.errorMessage}
+                      </p>
+                    )}
                   </div>
                 )}
               </div>

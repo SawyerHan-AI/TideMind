@@ -974,7 +974,14 @@
         "offline": "Die Cloud konnte nicht erreicht werden. Überprüfen Sie Ihre Netzwerkverbindung und versuchen Sie es erneut.",
         "syncError": "Die Synchronisierung ist aufgrund eines unerwarteten Fehlers fehlgeschlagen. Details finden Sie in den Protokollen.",
         "notInitialized": "Die Synchronisierung wurde noch nicht gestartet."
-      }
+      },
+      "forceReconcile": "Erzwungene Synchronisation",
+      "forceReconcileHint": "Vollständiger bidirektionaler Abgleich. Verwenden, wenn Cloud und lokal nicht übereinstimmen.",
+      "lastReconciled": "Letzter Abgleich",
+      "neverReconciled": "Nie",
+      "reconciling": "Gleiche {{table}} ab ({{phase}})",
+      "reconcileDone": "Abgeglichen",
+      "reconcileFailed": "Abgleich fehlgeschlagen"
     },
     "metabolism": {
       "title": "Cloud-Metabolismus",

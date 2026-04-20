@@ -5,6 +5,15 @@ import { createLogger } from '../../../src/utils/logger.js'
 
 const log = createLogger('ipc-cloud')
 
+/**
+ * 取两个 ISO 时间戳中较早的那个(null 视为"未跑过",最早)。
+ * 用于计算 "最近对齐" 展示 — 两张表都跑完才算真的对齐。
+ */
+function oldestReconcile(a: string | null, b: string | null): string | null {
+  if (!a || !b) return null; // 任一为空 → 没真的对齐过
+  return new Date(a).getTime() < new Date(b).getTime() ? a : b;
+}
+
 function emitCloudChanged(): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
@@ -48,6 +57,24 @@ export function registerCloudHandlers(db?: Database.Database): void {
       const syncEnabled = config.cloud?.sync_enabled ?? false;
       const metabolismEnabled = config.cloud?.metabolism_enabled ?? false;
 
+      // 从 metadata 读 reconcile 状态(给 UI 展示"最近对齐"/"失败")
+      let lastReconcileAtNodes: string | null = null;
+      let lastReconcileAtLinks: string | null = null;
+      let lastReconcileStatus: string | null = null;
+      let lastReconcileError: string | null = null;
+      if (db) {
+        try {
+          const readMeta = (key: string): string | null => {
+            const row = db!.prepare('SELECT value FROM metadata WHERE key = ?').get(key) as { value: string } | undefined;
+            return row?.value ?? null;
+          };
+          lastReconcileAtNodes = readMeta('cloud.last_reconcile_at_nodes');
+          lastReconcileAtLinks = readMeta('cloud.last_reconcile_at_links');
+          lastReconcileStatus = readMeta('cloud.last_reconcile_status');
+          lastReconcileError = readMeta('cloud.last_reconcile_error');
+        } catch { /* metadata 表或列缺失,忽略 */ }
+      }
+
       const { getCloudSyncClient, getOutboxCount } = await import('../cloud/sync-client.js');
       const syncClient = getCloudSyncClient();
 
@@ -78,6 +105,10 @@ export function registerCloudHandlers(db?: Database.Database): void {
         lastErrorCode,
         lastErrorMessage: syncClient?.lastErrorMessage ?? null,
         metabolismEnabled,
+        // reconcile 状态(取 nodes / links 中更早的那个作为"最近对齐"展示)
+        lastReconcileAt: oldestReconcile(lastReconcileAtNodes, lastReconcileAtLinks),
+        lastReconcileStatus,
+        lastReconcileError,
       };
     } catch {
       return fallback;

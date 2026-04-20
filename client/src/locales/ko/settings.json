@@ -974,7 +974,14 @@
         "offline": "클라우드에 연결할 수 없습니다. 네트워크를 확인한 후 다시 시도해주세요.",
         "syncError": "예기치 않은 오류로 동기화에 실패했습니다. 자세한 내용은 로그를 확인하세요.",
         "notInitialized": "동기화가 아직 시작되지 않았습니다."
-      }
+      },
+      "forceReconcile": "강제 정렬",
+      "forceReconcileHint": "로컬과 클라우드를 양방향으로 완전 동기화합니다. 데이터가 어긋났을 때 사용하세요。",
+      "lastReconciled": "최근 정렬",
+      "neverReconciled": "없음",
+      "reconciling": "{{table}} 정렬 중({{phase}})",
+      "reconcileDone": "정렬 완료",
+      "reconcileFailed": "정렬 실패"
     },
     "metabolism": {
       "title": "클라우드 대사",

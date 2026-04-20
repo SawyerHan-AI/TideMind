@@ -974,7 +974,14 @@
         "offline": "Impossibile raggiungere il cloud. Controlla la rete e riprova.",
         "syncError": "Sincronizzazione fallita a causa di un errore imprevisto. Controlla i log per i dettagli.",
         "notInitialized": "La sincronizzazione non è ancora stata avviata."
-      }
+      },
+      "forceReconcile": "Allineamento forzato",
+      "forceReconcileHint": "Allineamento bidirezionale completo. Usa se cloud e locale sono fuori sincrono.",
+      "lastReconciled": "Ultimo allineamento",
+      "neverReconciled": "Mai",
+      "reconciling": "Allineamento di {{table}} ({{phase}})",
+      "reconcileDone": "Allineato",
+      "reconcileFailed": "Allineamento fallito"
     },
     "metabolism": {
       "title": "Metabolismo cloud",
