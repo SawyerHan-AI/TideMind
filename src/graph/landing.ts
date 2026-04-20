@@ -32,6 +32,17 @@ export function findLandingConnections(
     landingThreshold?: number;
     pendingThreshold?: number;
     topK?: number;
+    /**
+     * 跳过去重合并分支（仅建立连接，不执行 merge）。
+     *
+     * 适用于"调用方已持有外部身份"的场景：logseq/obsidian 等外部笔记
+     * 同步路径下，节点身份由 file+segment hash / block UUID 决定，
+     * 编辑历史由 supersede 链表达——不需要也不应该用向量相似度猜归属。
+     *
+     * 为 true 时，即使最近邻相似度 ≥ dedupThreshold，也返回 action='new'
+     * 并继续走链接建立流程。
+     */
+    skipDedupMerge?: boolean;
   } = {},
 ): LandingResult {
   const {
@@ -39,6 +50,7 @@ export function findLandingConnections(
     landingThreshold = getParam('metabolism-params', 'landing_link_threshold', 0.80),
     pendingThreshold = getParam('metabolism-params', 'pending_link_threshold', 0.60),
     topK = getParam('metabolism-params', 'landing_link_top_k', 2),
+    skipDedupMerge = false,
   } = options;
 
   const result: LandingResult = {
@@ -67,7 +79,8 @@ export function findLandingConnections(
   if (candidates.length === 0) return result;
 
   // 检查去重：最高相似度 > 0.92
-  if (candidates[0].similarity >= dedupThreshold) {
+  // skipDedupMerge: 调用方已有外部身份机制（如 logseq file+segment），不走向量归并
+  if (!skipDedupMerge && candidates[0].similarity >= dedupThreshold) {
     result.action = 'merge';
     result.mergeTarget = candidates[0].id;
     return result;

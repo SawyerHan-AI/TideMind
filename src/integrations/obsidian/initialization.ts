@@ -494,6 +494,7 @@ async function processFileForInit(
         context: `Obsidian Canvas: ${title}`,
         tags: textNode.groupLabels.length > 0 ? textNode.groupLabels : undefined,
         async: false, initialHeat, created: originalCreated,
+        skipDedupMerge: true,
       });
       if (result.created_nodes) nodeIds.push(...result.created_nodes.map(n => n.id));
     }
@@ -509,6 +510,7 @@ async function processFileForInit(
       context: `Obsidian 标签页: ${title}`,
       tags: [title],
       async: false, initialHeat, created: originalCreated,
+      skipDedupMerge: true,
     });
     const nodeIds = result.created_nodes?.map(n => n.id) ?? [];
     // 不直接标记 is_tag，由 promoteFrequentTags 按阈值判断
@@ -549,6 +551,7 @@ async function processFileForInit(
       context: contextParts,
       tags: combinedTags.length > 0 ? combinedTags : undefined,
       async: false, initialHeat, created: originalCreated,
+      skipDedupMerge: true,
     });
 
     if (result.created_nodes) {
@@ -741,6 +744,8 @@ async function createDanglingTagNode(db: Database.Database, name: string): Promi
     context: `Obsidian 悬空引用 tag: ${name}`,
     tags: [name],
     async: false,
+    // 身份由精确匹配 + 缓存负责（上方已查过 existing）
+    skipDedupMerge: true,
   });
 
   const nodeId = result.created_nodes?.[0]?.id;
@@ -774,7 +779,8 @@ async function createLandingConnections(
     const vecRow = db.prepare('SELECT embedding FROM nodes_vec WHERE id = ?').get(id) as { embedding: Buffer } | undefined;
     if (!vecRow) return 0;
     const embedding = new Float32Array(vecRow.embedding.buffer, vecRow.embedding.byteOffset, vecRow.embedding.byteLength / 4);
-    const result = findLandingConnections(db, id, embedding);
+    // 初始化的批量 landing 只建连接，不归并——节点已经入库且各自有外部身份
+    const result = findLandingConnections(db, id, embedding, { skipDedupMerge: true });
     return result.confirmedLinks.length + result.pendingLinks.length;
   };
 
@@ -823,5 +829,6 @@ async function saveReportAsNode(db: Database.Database, report: InitReport): Prom
     source: { tool: 'obsidian' },
     tags: ['初始化'],
     async: false,
+    skipDedupMerge: true,
   });
 }

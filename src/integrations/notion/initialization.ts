@@ -199,7 +199,8 @@ export async function runInitialization(
           const vecRow = db.prepare('SELECT embedding FROM nodes_vec WHERE id = ?').get(id) as { embedding: Buffer } | undefined;
           if (!vecRow) continue;
           const embedding = new Float32Array(vecRow.embedding.buffer, vecRow.embedding.byteOffset, vecRow.embedding.byteLength / 4);
-          findLandingConnections(db, id, embedding);
+          // 初始化的批量 landing 只建连接，不归并——节点已经入库且各自有外部身份
+          findLandingConnections(db, id, embedding, { skipDedupMerge: true });
         } catch { /* skip individual node errors */ }
         advanceProgress(1, sourceId);
       }

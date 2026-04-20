@@ -293,3 +293,67 @@ describe('findLandingConnections', () => {
     expect(updateConnectivity).toHaveBeenCalledTimes(2);
   });
 });
+
+// ===== skipDedupMerge 选项（外部身份来源场景） =====
+
+describe('findLandingConnections skipDedupMerge', () => {
+  it('should NOT merge when skipDedupMerge=true, even with similarity >= 0.92', () => {
+    const node = seedNode(db, { content: 'new node' });
+    const existing = seedNode(db, { content: 'existing very similar' });
+
+    // similarity = 0.95 > dedupThreshold (0.92)
+    const d = Math.sqrt(2 * (1 - 0.95));
+    vi.mocked(searchVectors).mockReturnValue([
+      { id: existing.id, distance: d },
+    ]);
+
+    const result = findLandingConnections(db, node.id, new Float32Array(3072), {
+      skipDedupMerge: true,
+    });
+
+    // Should go down the link branch instead of merge
+    expect(result.action).toBe('new');
+    expect(result.mergeTarget).toBeUndefined();
+    // similarity=0.95 is above landing threshold → becomes confirmed link
+    expect(result.confirmedLinks).toHaveLength(1);
+    expect(result.confirmedLinks[0].to_id).toBe(existing.id);
+  });
+
+  it('should still merge when skipDedupMerge=false (default behaviour)', () => {
+    const node = seedNode(db, { content: 'new node' });
+    const existing = seedNode(db, { content: 'existing very similar' });
+
+    const d = Math.sqrt(2 * (1 - 0.95));
+    vi.mocked(searchVectors).mockReturnValue([
+      { id: existing.id, distance: d },
+    ]);
+
+    // No option passed → default skipDedupMerge=false
+    const result = findLandingConnections(db, node.id, new Float32Array(3072));
+
+    expect(result.action).toBe('merge');
+    expect(result.mergeTarget).toBe(existing.id);
+  });
+
+  it('should still build confirmed/pending links normally when skipDedupMerge=true', () => {
+    const node = seedNode(db, { content: 'source' });
+    const t1 = seedNode(db, { content: 'landing candidate' });
+    const t2 = seedNode(db, { content: 'pending candidate' });
+
+    // t1 at 0.88 (confirmed), t2 at 0.70 (pending)
+    const d1 = Math.sqrt(2 * (1 - 0.88));
+    const d2 = Math.sqrt(2 * (1 - 0.70));
+    vi.mocked(searchVectors).mockReturnValue([
+      { id: t1.id, distance: d1 },
+      { id: t2.id, distance: d2 },
+    ]);
+
+    const result = findLandingConnections(db, node.id, new Float32Array(3072), {
+      skipDedupMerge: true,
+    });
+
+    expect(result.action).toBe('new');
+    expect(result.confirmedLinks).toHaveLength(1);
+    expect(result.pendingLinks).toHaveLength(1);
+  });
+});

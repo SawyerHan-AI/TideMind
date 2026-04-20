@@ -193,6 +193,8 @@ export async function importVersionHistory(
           context: `Logseq 历史版本: ${title} @ ${v.timestamp}`,
           async: false,
           created: `${v.date}T00:00:00.000Z`,
+          // 历史版本快照：每个版本都是独立节点，不应被向量归并
+          skipDedupMerge: true,
         });
 
         const nodeId = result.created_nodes?.[0]?.id;

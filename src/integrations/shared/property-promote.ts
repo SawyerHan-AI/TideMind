@@ -60,6 +60,8 @@ export async function getOrCreateTagNode(
     tags: [tagName],
     async: false,
     created,
+    // 身份由 tag 名称精确匹配 + 缓存负责（上方已查过 existing）
+    skipDedupMerge: true,
   });
 
   const nodeId = result.created_nodes?.[0]?.id;

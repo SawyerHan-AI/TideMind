@@ -20,6 +20,8 @@ export function BrainExplorer() {
     limit: 30,
     offset: 0,
     tags: searchParams.get('tag') || undefined,
+    // 与 FilterBar 滑块默认显示值保持一致，避免首次加载时后端不加热度过滤
+    heatMin: 0.05,
   }))
   const [selectedId, setSelectedId] = useState<string | null>(
     searchParams.get('node') || null,

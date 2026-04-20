@@ -552,6 +552,8 @@ async function processFileForInit(
       async: false,
       initialHeat,
       created: originalCreated,
+      // 身份由 file.relPath 负责
+      skipDedupMerge: true,
     });
     const nodeIds = result.created_nodes?.map(n => n.id) ?? [];
     // 更新同步状态
@@ -609,6 +611,8 @@ async function processFileForInit(
       async: false,
       initialHeat,
       created: originalCreated,
+      // 身份由 file.relPath + segment 顺序负责
+      skipDedupMerge: true,
     });
 
     if (result.created_nodes) {
@@ -761,7 +765,8 @@ async function createLandingConnections(
     const vecRow = db.prepare('SELECT embedding FROM nodes_vec WHERE id = ?').get(id) as { embedding: Buffer } | undefined;
     if (!vecRow) return 0;
     const embedding = new Float32Array(vecRow.embedding.buffer, vecRow.embedding.byteOffset, vecRow.embedding.byteLength / 4);
-    const result = findLandingConnections(db, id, embedding);
+    // 初始化的批量 landing 只建连接，不归并——节点已经入库且各自有外部身份
+    const result = findLandingConnections(db, id, embedding, { skipDedupMerge: true });
     return result.confirmedLinks.length + result.pendingLinks.length;
   };
 
@@ -837,5 +842,7 @@ async function saveReportAsNode(db: Database.Database, report: InitReport): Prom
     source: { tool: 'logseq' },
     tags: ['初始化'],
     async: false,
+    // 初始化报告每次都是独立事件，不应被向量归并
+    skipDedupMerge: true,
   });
 }

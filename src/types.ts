@@ -256,6 +256,21 @@ export interface DigestInput {
   initialHeat?: number;
   /** 导入场景：覆盖 now() 的原始创建时间（ISO 8601） */
   created?: string;
+  /**
+   * 跳过 landing 的**去重合并**分支（仅建立连接，不执行 merge）。
+   *
+   * 适用于调用方已持有自己的身份/去重机制的场景：
+   * - 外部笔记同步（logseq/obsidian/notion/apple-notes）：身份由 file+segment
+   *   hash 或 block UUID 决定，编辑历史走 supersede 链
+   * - 属性值提升（property-promote）：已做字符串精确匹配+缓存去重
+   *
+   * 为 true 时，即使新节点与某个历史节点向量相似度 ≥ 0.92，也不会归并，
+   * 仍然作为独立新节点存在。landing 的**链接分支**（confirmed/pending）
+   * 正常执行，新节点仍会与历史相关节点建立认知连接。
+   *
+   * 默认 false：brain_digest 等"无身份源"入口应保留向量归并作为兜底。
+   */
+  skipDedupMerge?: boolean;
 }
 
 export interface DigestOutput {
