@@ -18,6 +18,12 @@ export interface CloudStatus {
   lastErrorMessage?: string | null
   /** 云代谢开关(和本地代谢互斥)。开启后本地 scheduler 停跑。 */
   metabolismEnabled?: boolean
+  /** 最近完整对齐时间(nodes 和 links 都跑完了才记)。null 表示从未对齐过。 */
+  lastReconcileAt?: string | null
+  /** 'ok' | 'partial' | 'failed' | null */
+  lastReconcileStatus?: string | null
+  /** 上一次对齐失败的原因 */
+  lastReconcileError?: string | null
 }
 
 export function useCloudStatus(): CloudStatus {

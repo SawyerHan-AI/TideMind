@@ -974,7 +974,14 @@
         "offline": "無法連線到雲端，請檢查網路後重試。",
         "syncError": "同步失敗，請查看日誌了解詳情。",
         "notInitialized": "同步尚未啟動。"
-      }
+      },
+      "forceReconcile": "強制對齊",
+      "forceReconcileHint": "完整雙向對齊,推送/拉取本地與雲端的差異。兩邊嚴重不一致時使用。",
+      "lastReconciled": "最近對齊",
+      "neverReconciled": "從未",
+      "reconciling": "對齊 {{table}} 中({{phase}})",
+      "reconcileDone": "已對齊",
+      "reconcileFailed": "對齊失敗"
     },
     "metabolism": {
       "title": "雲端代謝",

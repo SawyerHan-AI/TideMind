@@ -212,8 +212,20 @@
     }
   },
   "about": {
-    "version": "Version:",
-    "user": "User:"
+    "version": "Version",
+    "user": "User",
+    "checkUpdate": "Check for Updates",
+    "checking": "Checking...",
+    "upToDate": "You are on the latest version.",
+    "newVersion": "New version available",
+    "downloadUpdate": "Download",
+    "checkFailed": "Check failed. Please try again later.",
+    "retry": "Retry",
+    "links": "Links",
+    "website": "Website",
+    "feedback": "Feedback",
+    "docs": "Documentation",
+    "license": "License"
   },
   "noteSync": {
     "title": "Connected Notes",
@@ -962,7 +974,14 @@
         "offline": "Could not reach the cloud. Check your network and try again.",
         "syncError": "Sync failed due to an unexpected error. Check logs for details.",
         "notInitialized": "Sync has not been started yet."
-      }
+      },
+      "forceReconcile": "Force Align",
+      "forceReconcileHint": "Full bidirectional diff + push/pull. Use if cloud and local got out of sync.",
+      "lastReconciled": "Last full align",
+      "neverReconciled": "Never",
+      "reconciling": "Aligning {{table}} ({{phase}})",
+      "reconcileDone": "Aligned",
+      "reconcileFailed": "Align failed"
     },
     "metabolism": {
       "title": "Cloud Metabolism",
@@ -988,21 +1007,5 @@
       "desc": "Use TideMind-provided LLM service without registering your own API keys. Included in Pro+ subscription.",
       "learnMore": "Learn more"
     }
-  },
-  "about": {
-    "version": "Version",
-    "user": "User",
-    "checkUpdate": "Check for Updates",
-    "checking": "Checking...",
-    "upToDate": "You are on the latest version.",
-    "newVersion": "New version available",
-    "downloadUpdate": "Download",
-    "checkFailed": "Check failed. Please try again later.",
-    "retry": "Retry",
-    "links": "Links",
-    "website": "Website",
-    "feedback": "Feedback",
-    "docs": "Documentation",
-    "license": "License"
   }
 }

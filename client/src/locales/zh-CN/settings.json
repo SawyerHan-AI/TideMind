@@ -212,8 +212,20 @@
     }
   },
   "about": {
-    "version": "版本:",
-    "user": "用户:"
+    "version": "版本",
+    "user": "用户",
+    "checkUpdate": "检查更新",
+    "checking": "正在检查…",
+    "upToDate": "已是最新版本。",
+    "newVersion": "发现新版本",
+    "downloadUpdate": "下载",
+    "checkFailed": "检查失败，请稍后重试。",
+    "retry": "重试",
+    "links": "链接",
+    "website": "官网",
+    "feedback": "反馈",
+    "docs": "文档",
+    "license": "许可证"
   },
   "noteSync": {
     "title": "已对接笔记",
@@ -962,7 +974,14 @@
         "offline": "无法连接到云服务，请检查网络后重试。",
         "syncError": "同步失败，请查看日志了解详情。",
         "notInitialized": "同步尚未启动。"
-      }
+      },
+      "forceReconcile": "强制对齐",
+      "forceReconcileHint": "完整双向对齐,把本地和云端的差异全部推送/拉取。本地与云端严重不一致时使用。",
+      "lastReconciled": "最近对齐",
+      "neverReconciled": "从未",
+      "reconciling": "对齐 {{table}} 中({{phase}})",
+      "reconcileDone": "已对齐",
+      "reconcileFailed": "对齐失败"
     },
     "metabolism": {
       "title": "云代谢",
@@ -988,21 +1007,5 @@
       "desc": "无需自己注册 API Key，直接使用 TideMind 提供的 LLM 服务。包含在 Pro+ 订阅中。",
       "learnMore": "了解更多"
     }
-  },
-  "about": {
-    "version": "版本",
-    "user": "用户",
-    "checkUpdate": "检查更新",
-    "checking": "正在检查…",
-    "upToDate": "已是最新版本。",
-    "newVersion": "发现新版本",
-    "downloadUpdate": "下载",
-    "checkFailed": "检查失败，请稍后重试。",
-    "retry": "重试",
-    "links": "链接",
-    "website": "官网",
-    "feedback": "反馈",
-    "docs": "文档",
-    "license": "许可证"
   }
 }

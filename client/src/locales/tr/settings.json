@@ -974,7 +974,14 @@
         "offline": "Buluta ulaşılamadı. Ağınızı kontrol edip tekrar deneyin.",
         "syncError": "Beklenmeyen bir hata nedeniyle senkronizasyon başarısız oldu. Ayrıntılar için günlükleri kontrol edin.",
         "notInitialized": "Senkronizasyon henüz başlatılmadı."
-      }
+      },
+      "forceReconcile": "Zorunlu hizalama",
+      "forceReconcileHint": "Tam çift yönlü hizalama. Bulut ve yerel senkronize değilse kullanın.",
+      "lastReconciled": "Son hizalama",
+      "neverReconciled": "Hiç",
+      "reconciling": "{{table}} hizalanıyor ({{phase}})",
+      "reconcileDone": "Hizalandı",
+      "reconcileFailed": "Hizalama başarısız"
     },
     "metabolism": {
       "title": "Bulut Metabolizması",

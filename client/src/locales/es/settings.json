@@ -974,7 +974,14 @@
         "offline": "No se pudo conectar con la nube. Verifica tu red e inténtalo de nuevo.",
         "syncError": "La sincronización falló debido a un error inesperado. Revisa los registros para más detalles.",
         "notInitialized": "La sincronización aún no se ha iniciado."
-      }
+      },
+      "forceReconcile": "Alineación forzada",
+      "forceReconcileHint": "Alineación bidireccional completa. Úsalo si la nube y el local están desincronizados.",
+      "lastReconciled": "Última alineación",
+      "neverReconciled": "Nunca",
+      "reconciling": "Alineando {{table}} ({{phase}})",
+      "reconcileDone": "Alineado",
+      "reconcileFailed": "Alineación fallida"
     },
     "metabolism": {
       "title": "Metabolismo en la nube",

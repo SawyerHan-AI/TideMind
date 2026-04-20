@@ -974,7 +974,14 @@
         "offline": "Impossible de joindre le cloud. Vérifiez votre réseau et réessayez.",
         "syncError": "La synchronisation a échoué en raison d'une erreur inattendue. Consultez les journaux pour plus de détails.",
         "notInitialized": "La synchronisation n'a pas encore été démarrée."
-      }
+      },
+      "forceReconcile": "Alignement forcé",
+      "forceReconcileHint": "Synchronisation bidirectionnelle complète. À utiliser si le cloud et le local divergent.",
+      "lastReconciled": "Dernier alignement",
+      "neverReconciled": "Jamais",
+      "reconciling": "Alignement de {{table}} ({{phase}})",
+      "reconcileDone": "Aligné",
+      "reconcileFailed": "Échec de l'alignement"
     },
     "metabolism": {
       "title": "Métabolisme cloud",

@@ -139,6 +139,12 @@ const api = {
     setMetabolismEnabled: (enabled: boolean) => ipcRenderer.invoke('cloud:set-metabolism-enabled', enabled),
     forceReconcile: () => ipcRenderer.invoke('cloud:force-reconcile'),
     triggerSync: () => ipcRenderer.invoke('cloud:trigger-sync'),
+    // reconcile 进度事件订阅
+    onReconcileProgress: (cb: (p: unknown) => void) => {
+      const listener = (_ev: unknown, p: unknown) => cb(p);
+      ipcRenderer.on('reconcile-progress', listener);
+      return () => ipcRenderer.off('reconcile-progress', listener);
+    },
     outboxCount: () => ipcRenderer.invoke('cloud:outbox-count'),
     loginUrl: () => ipcRenderer.invoke('cloud:login-url'),
     registerUrl: () => ipcRenderer.invoke('cloud:register-url'),
