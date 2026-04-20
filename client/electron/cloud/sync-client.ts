@@ -343,12 +343,17 @@ export class CloudSyncClient {
 
     // 解析服务端 per-item 结果。旧版服务端只返 { processed },新版还返 results。
     // 没有 results 字段时回退为"全部删除"(旧行为) —— 服务端升级后自动启用精确删除。
-    type ItemResult = { index: number; status: 'ok' | 'skipped' | 'failed'; error?: string };
+    //
+    // v0.2.25 新增 'quota_exhausted':item 保留在 outbox 但**不增加 retry_count**。
+    // 避免配额耗尽的合法记忆在 5 次推送后被 dead-letter。用户升级 Pro 后
+    // 这些 items 仍可被重新推上去。
+    type ItemResult = { index: number; status: 'ok' | 'skipped' | 'failed' | 'quota_exhausted'; error?: string };
     const data = await res.json().catch(() => ({ processed: 0 })) as { processed: number; results?: ItemResult[] };
 
     let removed = 0;
     let failed = 0;
     let deadLettered = 0;
+    let quotaExhausted = 0;
 
     if (Array.isArray(data.results)) {
       for (const r of data.results) {
@@ -357,6 +362,9 @@ export class CloudSyncClient {
         if (r.status === 'ok' || r.status === 'skipped') {
           removeOutboxItem(this.db, item.id);
           removed++;
+        } else if (r.status === 'quota_exhausted') {
+          // 保留,不算失败,不累计 retry。用户升额度后下次 push 自动重试。
+          quotaExhausted++;
         } else {
           const { deadLettered: dl } = markOutboxFailed(this.db, item.id, r.error ?? 'server failed');
           if (dl) deadLettered++;
@@ -371,7 +379,7 @@ export class CloudSyncClient {
       }
     }
 
-    log.info(`pushed ${items.length} outbox items: removed=${removed} failed=${failed} deadLettered=${deadLettered}`);
+    log.info(`pushed ${items.length} outbox items: removed=${removed} failed=${failed} deadLettered=${deadLettered} quotaExhausted=${quotaExhausted}`);
     return removed;
   }
 

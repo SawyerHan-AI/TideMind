@@ -7,7 +7,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { normalizeTs, timestampsEqual } from '../../client/electron/cloud/reconciler.js';
+// 从 reconciler-utils 导入(不触发 electron import)。v0.2.25 把工具抽离
+// 之前从 reconciler.ts 直接 import,会在 CI 干净环境下 MODULE_NOT_FOUND。
+import { normalizeTs, timestampsEqual } from '../../client/electron/cloud/reconciler-utils.js';
 
 describe('normalizeTs', () => {
   it('解析 SQLite datetime(no T, no TZ, UTC)', () => {

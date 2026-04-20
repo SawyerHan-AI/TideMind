@@ -27,41 +27,12 @@ const log = createLogger('reconciler');
 
 const BATCH_SIZE = 100;
 const MANIFEST_PAGE_LIMIT = 5000;
-// 时间戳相等容差(毫秒)。SQLite datetime('now') 无毫秒、PG now() 带毫秒,
-// 同一次写入双方时间戳可能有 1s 以内抖动。超过该容差才认为是真正不同的版本。
-const TS_EQUAL_TOLERANCE_MS = 1000;
 
-/**
- * 把 SQLite / PG / JS 三种格式的时间戳字符串规范化为毫秒数。
- *  - SQLite `datetime('now')`: '2026-04-20 10:30:00'(无 T、无时区,UTC)
- *  - PG JSONB ISO:            '2026-04-20T10:30:00.123+00:00' 或 '...Z'
- *  - JS Date.toISOString():   '2026-04-20T10:30:00.123Z'
- * 无效输入返回 0。
- */
-export function normalizeTs(ts: string | null | undefined): number {
-  if (!ts) return 0;
-  let s = String(ts).trim();
-  if (!s) return 0;
-  // SQLite 'YYYY-MM-DD HH:MM:SS[.fff]' → ISO 'YYYY-MM-DDTHH:MM:SS[.fff]'
-  if (!s.includes('T') && s.length >= 10 && s[10] === ' ') {
-    s = s.slice(0, 10) + 'T' + s.slice(11);
-  }
-  // SQLite 默认 UTC 但不带时区后缀;若只有 T 没有 Z/+/- 时区,补 Z
-  const hasTz = /[Zz]$/.test(s) || /[+-]\d{2}:?\d{2}$/.test(s);
-  if (s.includes('T') && !hasTz) {
-    s += 'Z';
-  }
-  const ms = new Date(s).getTime();
-  return Number.isFinite(ms) ? ms : 0;
-}
-
-/** 两个时间戳是否"实质相等"(容忍 1s 抖动)。 */
-export function timestampsEqual(a: string | null | undefined, b: string | null | undefined): boolean {
-  const da = normalizeTs(a);
-  const db = normalizeTs(b);
-  if (da === 0 && db === 0) return true;
-  return Math.abs(da - db) < TS_EQUAL_TOLERANCE_MS;
-}
+// 时间戳工具抽到独立文件(reconciler-utils.ts),以便测试在根目录 vitest
+// 环境下导入不会触发本文件顶部的 'electron' import 链(CI runner 干净环境
+// 没装 client/ 的 electron 依赖)。re-export 供本文件内部和外部调用者使用。
+export { normalizeTs, timestampsEqual, TS_EQUAL_TOLERANCE_MS } from './reconciler-utils.js';
+import { normalizeTs, timestampsEqual } from './reconciler-utils.js';
 
 export type Table = 'nodes' | 'links';
 export type ReconcilePhase = 'idle' | 'manifest' | 'diff' | 'upload' | 'download' | 'done' | 'failed';
