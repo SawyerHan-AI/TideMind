@@ -937,7 +937,8 @@
     "comingSoon": "近日公開",
     "subscriptionComingSoon": "Pro および Pro+ プランは近日公開予定です。クラウド同期、7×24メタボリズムなどの機能をお楽しみに。",
     "registerButton": "アカウント作成",
-    "browserHint": "ブラウザで開いて安全に認証します。"
+    "browserHint": "ブラウザで開いて安全に認証します。",
+    "requestAccountDeletion": "アカウント削除をリクエスト"
   },
   "cloud": {
     "loginRequired": "クラウド機能を使用するには、TideMind Cloud にサインインしてください。",

@@ -937,7 +937,8 @@
     "comingSoon": "Yakında",
     "subscriptionComingSoon": "Pro ve Pro+ planları yakında geliyor. Bulut senkronizasyonu, 7/24 metabolizma ve daha fazlası için takipte kalın.",
     "registerButton": "Hesap oluştur",
-    "browserHint": "Güvenli kimlik doğrulama için tarayıcınızda açılır."
+    "browserHint": "Güvenli kimlik doğrulama için tarayıcınızda açılır.",
+    "requestAccountDeletion": "Hesap silme talebi"
   },
   "cloud": {
     "loginRequired": "Bulut özelliklerini kullanmak için TideMind Cloud'a giriş yapın.",

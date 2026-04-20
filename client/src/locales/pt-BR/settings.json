@@ -937,7 +937,8 @@
     "comingSoon": "Em breve",
     "subscriptionComingSoon": "Os planos Pro e Pro+ estão chegando. Fique atento à sincronização na nuvem, metabolismo 24/7 e muito mais.",
     "registerButton": "Criar conta",
-    "browserHint": "Abre no seu navegador para autenticação segura."
+    "browserHint": "Abre no seu navegador para autenticação segura.",
+    "requestAccountDeletion": "Solicitar exclusão da conta"
   },
   "cloud": {
     "loginRequired": "Entre no TideMind Cloud para usar os recursos da nuvem.",

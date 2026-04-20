@@ -106,7 +106,7 @@ server.tool(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('brain_prepare 失败:', msg);
-      return { content: [{ type: 'text' as const, text: `Error: ${msg}` }] };
+      return { isError: true, content: [{ type: 'text' as const, text: `Error: ${msg}` }] };
     }
   },
 );
@@ -173,7 +173,7 @@ server.tool(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('brain_recall 失败:', msg);
-      return { content: [{ type: 'text' as const, text: `Error: ${msg}` }] };
+      return { isError: true, content: [{ type: 'text' as const, text: `Error: ${msg}` }] };
     }
   },
 );
@@ -226,7 +226,7 @@ server.tool(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error('brain_digest 失败:', msg);
-      return { content: [{ type: 'text' as const, text: `Error: ${msg}` }] };
+      return { isError: true, content: [{ type: 'text' as const, text: `Error: ${msg}` }] };
     }
   },
 );

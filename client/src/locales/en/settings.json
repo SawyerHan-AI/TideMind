@@ -937,7 +937,8 @@
     "deleteAccountDesc": "This will sign you out. To permanently delete your account and all cloud data, please contact support@tidemind.ai. Local data is not affected.",
     "deleteAccountConfirm": "Sign Out & Request Deletion",
     "registerButton": "Create Account",
-    "browserHint": "Opens in your browser for secure authentication."
+    "browserHint": "Opens in your browser for secure authentication.",
+    "requestAccountDeletion": "Request Account Deletion"
   },
   "cloud": {
     "loginRequired": "Sign in to TideMind Cloud to use cloud features.",

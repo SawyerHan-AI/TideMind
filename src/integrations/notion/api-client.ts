@@ -77,16 +77,24 @@ export async function validateToken(token: string): Promise<{
 }> {
   try {
     const client = createClient(token);
+    // retryWithBackoff 处理 429 / 502 等瞬时故障 — 老代码单次调用,偶发
+    // 网络抖动会让用户看到 "token 无效",用户会去撤销/重建 token 然后
+    // 发现没用。走 retry 路径和其他调用点一致。
     await rateLimiter.acquire();
-    const response = await client.search({
-      page_size: 1,
-    });
+    const response = await retryWithBackoff(() => client.search({ page_size: 1 }));
     return {
       valid: true,
       pageCount: response.results.length > 0 ? -1 : 0, // -1 表示有页面但数量未知
     };
   } catch (e) {
-    log.error('Token 验证失败');
+    // 区分真正 401 和网络错误:401 才说 token 无效
+    const msg = (e as Error).message || '';
+    const isAuth = /401|unauthor|invalid.*token/i.test(msg);
+    if (isAuth) {
+      log.warn('Notion token invalid (401)');
+    } else {
+      log.warn(`Notion token validation failed transiently: ${msg.slice(0, 200)}`);
+    }
     return { valid: false, pageCount: 0 };
   }
 }
