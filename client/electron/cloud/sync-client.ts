@@ -277,10 +277,11 @@ export class CloudSyncClient {
       clearInterval(this.intervalId);
       this.intervalId = null;
     }
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
+    // 必须走 disconnectWebSocket 而不是裸 ws.close() — close 会触发
+    // on('close') → scheduleReconnect() 设 wsReconnectTimer,导致"慢重试"
+    // 和"ws 重连"两条线并行跑 cloudNotAvailable 路径下 ws 会每几秒
+    // 试一次被服务端持续拒绝,刷日志 + 占资源。
+    this.disconnectWebSocket();
     if (this.slowRetryTimer) return; // 已经在慢重试
     const ONE_HOUR = 60 * 60 * 1000;
     this.slowRetryTimer = setInterval(() => {
@@ -294,11 +295,14 @@ export class CloudSyncClient {
             this.slowRetryTimer = null;
           }
           if (!this.intervalId) {
-            this.intervalId = setInterval(() => this.syncOnce(), POLL_INTERVAL_MS);
+            this.intervalId = setInterval(
+              () => this.syncOnce().catch(e => log.error('resumed sync error:', (e as Error).message)),
+              POLL_INTERVAL_MS,
+            );
           }
           log.info('cloud_not_available recovered, resumed normal sync');
         }
-      }).catch(() => { /* 继续慢重试 */ });
+      }).catch((e) => log.warn(`slow-retry probe failed: ${(e as Error).message}`));
     }, ONE_HOUR);
   }
 

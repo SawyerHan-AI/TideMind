@@ -166,7 +166,10 @@ export function registerNoteSourceHandlers(): void {
         const result = await validateToken(token)
         return { accessible: result.valid, fileCount: result.pageCount, path: testPath }
       } catch (err) {
-        return { accessible: false, fileCount: 0, path: testPath }
+        // validateToken 在 401 情况返 valid:false 不 throw。throw 代表瞬时
+        // 错误(网络/DNS/502),这里应该回馈"可重试"而不是"token 无效"。
+        // UI 侧渲染时可用 `transient` 标识提示用户。
+        return { accessible: false, fileCount: 0, path: testPath, transient: true, error: (err as Error).message }
       }
     }
 

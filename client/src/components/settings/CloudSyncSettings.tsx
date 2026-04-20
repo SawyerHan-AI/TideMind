@@ -439,7 +439,7 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
         title={t('settings:cloud.dataSync.enableTitle', 'Enable Data Cloud Sync?')}
         description={t('settings:cloud.dataSync.enableDesc', 'Your memories will be uploaded to TideMind Cloud. The cloud becomes the primary copy, and local data becomes a read-only cache. All logged-in devices will sync.')}
         confirmText={t('settings:cloud.dataSync.enableConfirm', 'Enable')}
-        cancelText={t('common:cancel', 'Cancel')}
+        cancelText={t('common:actions.cancel', 'Cancel')}
       />
 
       <ConfirmDialog
@@ -449,7 +449,7 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
         title={t('settings:cloud.dataSync.disableTitle', 'Disable Data Cloud Sync?')}
         description={t('settings:cloud.dataSync.disableDesc', 'Local data will become the primary copy. Cloud metabolism will be disabled. Cloud data is retained for 30 days.')}
         confirmText={t('settings:cloud.dataSync.disableConfirm', 'Disable')}
-        cancelText={t('common:cancel', 'Cancel')}
+        cancelText={t('common:actions.cancel', 'Cancel')}
         danger
       />
     </>
@@ -583,7 +583,7 @@ function MetabolismSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus>
           title={t('settings:cloud.metabolism.enableTitle', 'Enable Cloud Metabolism?')}
           description={t('settings:cloud.metabolism.enableDescByok', 'Your LLM API key will be encrypted and uploaded to TideMind Cloud. It will only be used to run your metabolism tasks. The key will be deleted when you disable cloud metabolism.')}
           confirmText={t('settings:cloud.metabolism.enableConfirm', 'Enable')}
-          cancelText={t('common:cancel', 'Cancel')}
+          cancelText={t('common:actions.cancel', 'Cancel')}
         />
       )}
 
@@ -596,7 +596,7 @@ function MetabolismSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus>
           title={t('settings:cloud.metabolism.enableTitle', 'Enable Cloud Metabolism?')}
           description={t('settings:cloud.metabolism.enableDescManaged', 'TideMind managed LLM will power your metabolism. 3M tokens/month included. You can also configure your own key in Model Settings for higher quality.')}
           confirmText={t('settings:cloud.metabolism.enableConfirm', 'Enable')}
-          cancelText={t('common:cancel', 'Cancel')}
+          cancelText={t('common:actions.cancel', 'Cancel')}
         />
       )}
 
@@ -610,7 +610,7 @@ function MetabolismSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus>
           ? t('settings:cloud.metabolism.disableDescManaged', 'Managed LLM usage will be paused. Metabolism will switch back to local. It will pause when your device is off.')
           : t('settings:cloud.metabolism.disableDescByok', 'Your cloud API key will be deleted. Metabolism will switch back to local. It will pause when your device is off.')}
         confirmText={t('settings:cloud.metabolism.disableConfirm', 'Disable')}
-        cancelText={t('common:cancel', 'Cancel')}
+        cancelText={t('common:actions.cancel', 'Cancel')}
         danger
       />
     </>

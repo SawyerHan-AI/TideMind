@@ -930,15 +930,14 @@
     "noBilling": "Ücretsiz plan için fatura geçmişi bulunmuyor.",
     "billingComingSoon": "Fatura geçmişi yakında geliyor.",
     "logout": "Çıkış Yap",
-    "deleteAccount": "Hesabı Sil",
-    "deleteAccountTitle": "Hesap silinsin mi?",
-    "deleteAccountDesc": "Çıkış yapılacaktır. Hesabınızı ve tüm bulut verilerini kalıcı olarak silmek için support@tidemind.ai ile iletişime geçin. Yerel veriler etkilenmez.",
-    "deleteAccountConfirm": "Çıkış Yap ve Silme Talep Et",
     "comingSoon": "Yakında",
     "subscriptionComingSoon": "Pro ve Pro+ planları yakında geliyor. Bulut senkronizasyonu, 7/24 metabolizma ve daha fazlası için takipte kalın.",
     "registerButton": "Hesap oluştur",
     "browserHint": "Güvenli kimlik doğrulama için tarayıcınızda açılır.",
-    "requestAccountDeletion": "Hesap silme talebi"
+    "requestAccountDeletion": "Hesap silme talebi",
+    "requestDeletionTitle": "Hesap silme talebi?",
+    "requestDeletionDesc": "Onayla tıklayınca oturumunuz kapanacak. Hesabınızı ve tüm bulut verilerinizi kalıcı olarak silmek için oturumu kapattıktan sonra support@tidemind.ai adresine e-posta gönderin. Bu cihazdaki yerel veriler etkilenmez.",
+    "requestDeletionConfirm": "Oturumu kapat — destek ekibine yazacağım"
   },
   "cloud": {
     "loginRequired": "Bulut özelliklerini kullanmak için TideMind Cloud'a giriş yapın.",

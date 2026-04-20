@@ -87,15 +87,22 @@ export async function validateToken(token: string): Promise<{
       pageCount: response.results.length > 0 ? -1 : 0, // -1 表示有页面但数量未知
     };
   } catch (e) {
-    // 区分真正 401 和网络错误:401 才说 token 无效
+    // 区分真正 401 和网络错误:401 才说 token 无效。
+    //
+    // v0.2.22 修正:老代码所有错误都 return valid:false → 调用方看不出是
+    // token 真的过期还是网络抖动,用户会去重建 token 发现没用。
+    // 现在:
+    //   - 401 / Unauthorized → valid:false (token 真坏)
+    //   - 其他 (502, timeout, DNS 等) → throw,让上游决定"先启动再重试"
+    //     而不是直接给用户"token 无效"的错误提示
     const msg = (e as Error).message || '';
     const isAuth = /401|unauthor|invalid.*token/i.test(msg);
     if (isAuth) {
       log.warn('Notion token invalid (401)');
-    } else {
-      log.warn(`Notion token validation failed transiently: ${msg.slice(0, 200)}`);
+      return { valid: false, pageCount: 0 };
     }
-    return { valid: false, pageCount: 0 };
+    log.warn(`Notion token validation transient failure: ${msg.slice(0, 200)}`);
+    throw new Error(`Notion validation transient: ${msg}`);
   }
 }
 
