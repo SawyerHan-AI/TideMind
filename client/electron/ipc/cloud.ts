@@ -155,7 +155,28 @@ export function registerCloudHandlers(db?: Database.Database): void {
   // Trigger manual sync
   ipcMain.handle('cloud:trigger-sync', async () => {
     try {
-      const { triggerSync } = await import('../cloud/sync-client.js');
+      const { triggerSync, getCloudSyncClient, createCloudSyncClient } = await import('../cloud/sync-client.js');
+
+      // 自救路径:如果 syncClient 不存在但条件都满足(sync 开启 + 已登录 + db 就绪),
+      // 现场创建一个再触发同步。这样即使 main.ts 启动时序有问题没把 client 建起来,
+      // 用户点"立即同步"也能一键自救,不用去折腾关开 toggle。
+      if (!getCloudSyncClient() && db) {
+        const { isLoggedIn } = await import('../cloud/auth-client.js');
+        const config = getConfig();
+        if (config.cloud?.sync_enabled && isLoggedIn()) {
+          log.info('trigger-sync: syncClient missing, creating on demand');
+          const client = createCloudSyncClient(db);
+          await client.start();
+          emitCloudChanged();
+          // start() 已经跑过一次 syncOnce,不用再 triggerSync——直接根据 client 状态回报
+          if (client.cloudNotAvailable) return { success: false, error: 'cloud_not_available', errorDetail: client.lastErrorMessage ?? undefined };
+          if (client.syncNotReady) return { success: false, error: 'sync_not_ready', errorDetail: client.lastErrorMessage ?? undefined };
+          if (client.getStatus() === 'offline') return { success: false, error: 'offline', errorDetail: client.lastErrorMessage ?? undefined };
+          if (client.getStatus() === 'error') return { success: false, error: 'sync_error', errorDetail: client.lastErrorMessage ?? undefined };
+          return { success: true };
+        }
+      }
+
       return triggerSync();
     } catch (err) {
       return { success: false, error: (err as Error).message };
