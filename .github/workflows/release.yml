@@ -34,13 +34,18 @@ jobs:
       - name: Build client
         run: cd client && npm run build
 
-      # 打包 macOS（无签名版本）
+      # 打包 macOS(无签名版本,x64 + arm64 双架构)
       - name: Package macOS
-        run: cd client && npx electron-builder --mac --publish never
+        run: cd client && npx electron-builder --mac --x64 --arm64 --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # 上传到 GitHub Release
+      #
+      # generate_release_notes 必须是 false:release-checklist 要求手写
+      # Release Notes,防 auto-generated 把 sync commit message 里意外泄露
+      # 闭源信息(pro/ 下的内容)发布出去。发版后由人(或 Claude)用
+      # `gh release edit --notes-file` 写正式 notes。
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
         with:
@@ -50,7 +55,7 @@ jobs:
             client/release/*.blockmap
             client/release/latest-mac.yml
           draft: true
-          generate_release_notes: true
+          generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

@@ -3,7 +3,7 @@ import { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
 import { createLogger } from '../../../src/utils/logger.js';
 import { CacheManager } from './cache-manager.js';
-import { getOutboxItems, removeOutboxItem, getOutboxCount as _getOutboxCount } from './outbox.js';
+import { getOutboxItems, removeOutboxItem, markOutboxFailed, getOutboxCount as _getOutboxCount } from './outbox.js';
 import { getCloudAuth, getCloudBaseUrl, refreshTokenIfNeeded } from './auth-client.js';
 
 const log = createLogger('cloud-sync');
@@ -281,12 +281,38 @@ export class CloudSyncClient {
     });
     if (!res.ok) throw new Error(`Outbox push failed: ${res.status}`);
 
-    // Remove successfully pushed items
-    for (const item of items) {
-      removeOutboxItem(this.db, item.id);
+    // 解析服务端 per-item 结果。旧版服务端只返 { processed },新版还返 results。
+    // 没有 results 字段时回退为"全部删除"(旧行为) —— 服务端升级后自动启用精确删除。
+    type ItemResult = { index: number; status: 'ok' | 'skipped' | 'failed'; error?: string };
+    const data = await res.json().catch(() => ({ processed: 0 })) as { processed: number; results?: ItemResult[] };
+
+    let removed = 0;
+    let failed = 0;
+    let deadLettered = 0;
+
+    if (Array.isArray(data.results)) {
+      for (const r of data.results) {
+        const item = items[r.index];
+        if (!item) continue;
+        if (r.status === 'ok' || r.status === 'skipped') {
+          removeOutboxItem(this.db, item.id);
+          removed++;
+        } else {
+          const { deadLettered: dl } = markOutboxFailed(this.db, item.id, r.error ?? 'server failed');
+          if (dl) deadLettered++;
+          else failed++;
+        }
+      }
+    } else {
+      // 老服务端:假设全部成功,保持原行为
+      for (const item of items) {
+        removeOutboxItem(this.db, item.id);
+        removed++;
+      }
     }
-    log.info(`pushed ${items.length} outbox items`);
-    return items.length;
+
+    log.info(`pushed ${items.length} outbox items: removed=${removed} failed=${failed} deadLettered=${deadLettered}`);
+    return removed;
   }
 
   private emitDataChanged(): void {

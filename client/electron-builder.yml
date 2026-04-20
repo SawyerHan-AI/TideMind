@@ -24,9 +24,14 @@ protocols:
 mac:
   category: public.app-category.productivity
   icon: resources/icon.icns
+  # 显式声明双架构:Intel(x64) + Apple Silicon(arm64)。
+  # 不写 arch 时 electron-builder 只打 host arch(macos-latest runner 是 arm64),
+  # Intel Mac 用户从 Release 下到的 DMG 会启动失败。
   target:
-    - dmg
-    - zip
+    - target: dmg
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
   hardenedRuntime: true
 
 dmg:
@@ -68,6 +73,9 @@ extraResources:
       - "!*.sqlite-wal"
       - "!*.sqlite-shm"
       - "!*.sqlite-journal"
+      # 手动备份文件和通用 .bak 不应进 DMG(历史踩坑:曾漏过滤)
+      - "!*.sqlite.bak*"
+      - "!*.bak*"
 
 files:
   - "out/**/*"
