@@ -129,6 +129,8 @@ async function processOnePage(
       source: { tool: 'notion', files: [pageId] },
       tags: preprocessed.metadata.tags.length > 0 ? preprocessed.metadata.tags : undefined,
       async: false,
+      // 身份由 notion pageId 负责
+      skipDedupMerge: true,
     });
     const nodeIds = result.created_nodes?.map(n => n.id) ?? [];
     updatePageState(db, pageId, contentHash, pageSummary.lastEditedTime, pageType, nodeIds, sourceId);
@@ -152,6 +154,8 @@ async function processOnePage(
       context: contextParts,
       tags: i === 0 && combinedTags.length > 0 ? combinedTags : undefined,
       async: false,
+      // 身份由 notion pageId + segment 顺序负责
+      skipDedupMerge: true,
     });
 
     if (result.created_nodes) {

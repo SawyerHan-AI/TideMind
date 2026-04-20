@@ -15,7 +15,7 @@ function generateSourceId(): string {
 /**
  * 当前 schema 版本。每次新增 migration 时递增。
  */
-const CURRENT_SCHEMA_VERSION = 14;
+const CURRENT_SCHEMA_VERSION = 15;
 
 /**
  * 完整建表 SQL — 包含所有字段，新数据库直接创建最新结构。
@@ -1108,6 +1108,71 @@ const MIGRATIONS: Migration[] = [
       db.exec("INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')");
 
       log.info('迁移 v14 完成: FTS 索引已加入 title 字段并重建');
+    },
+  },
+  {
+    version: 15,
+    description: '清理外部笔记来源节点被错误向量归并的历史数据',
+    up: (db) => {
+      // 背景：在早期版本中，logseq/obsidian/notion/apple-notes 同步路径上
+      // 的 digest 调用会走 landing merge 分支——相似度 ≥ 0.92 时把新段内
+      // 容合并进某个历史相似节点，导致 target 被反复覆盖、heat 虚高、版本
+      // 历史畸形堆积。修复已将这些路径改为 skipDedupMerge: true，但历史
+      // 脏数据需要单独清理。
+      //
+      // 识别条件：
+      //   - 来源是外部笔记工具
+      //   - node_versions 里至少有一条 change_reason 包含"去重合并"
+      //   - 仍然活跃（archived = 0, is_superseded = 0）
+      //
+      // 处理：archive 掉（heat=0.02），清掉 nodes_vec 和 node_segments，
+      // 避免继续污染搜索和 landing 结果。保留 node_versions 做历史审计，
+      // 用户如有需要可通过"已归档节点"界面恢复（unarchiveNode）。
+      //
+      // 下次外部笔记同步该文件时，因为 oldNodeIds 里的这些节点仍然存在
+      // （只是 archived），supersedeNode 仍可正常迁移链接；但如果脏节点
+      // 对应的文件用户不再编辑，它们就永久 archived，符合预期。
+
+      const victims = db.prepare(`
+        SELECT DISTINCT n.id
+        FROM nodes n
+        WHERE n.source_tool IN ('logseq', 'obsidian', 'notion', 'apple-notes')
+          AND n.archived = 0
+          AND n.is_superseded = 0
+          AND EXISTS (
+            SELECT 1 FROM node_versions v
+            WHERE v.node_id = n.id AND v.change_reason LIKE '%去重合并%'
+          )
+      `).all() as Array<{ id: string }>;
+
+      if (victims.length === 0) {
+        log.info('迁移 v15: 无需清理，未检测到错误归并节点');
+        return;
+      }
+
+      log.info(`迁移 v15: 检测到 ${victims.length} 个外部笔记来源的错误归并节点，开始归档`);
+
+      const archiveStmt = db.prepare(
+        'UPDATE nodes SET archived = 1, heat = 0.02 WHERE id = ? AND archived = 0',
+      );
+      const delSegStmt = db.prepare('DELETE FROM node_segments WHERE node_id = ?');
+      // nodes_vec 依赖 sqlite-vec 扩展，在某些环境下可能未加载，单独 try
+      let delVecStmt: ReturnType<typeof db.prepare> | null = null;
+      try {
+        delVecStmt = db.prepare('DELETE FROM nodes_vec WHERE id = ?');
+      } catch { /* nodes_vec 未加载，跳过向量清理 */ }
+
+      let archivedCount = 0;
+      for (const { id } of victims) {
+        const res = archiveStmt.run(id);
+        if (res.changes > 0) archivedCount++;
+        delSegStmt.run(id);
+        if (delVecStmt) {
+          try { delVecStmt.run(id); } catch { /* skip */ }
+        }
+      }
+
+      log.info(`迁移 v15 完成: 已归档 ${archivedCount} 个错误归并节点（可在"已归档节点"中恢复）`);
     },
   },
 ];

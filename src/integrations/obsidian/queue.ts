@@ -188,6 +188,8 @@ async function processOneFile(
         context: `Obsidian 标签页: ${preprocessed.title}`,
         tags: [preprocessed.title],
         async: false,
+        // 身份由 file relPath 负责，不走向量归并
+        skipDedupMerge: true,
       });
       const nodeIds = result.created_nodes?.map(n => n.id) ?? [];
       // 不直接标记 is_tag，由 promoteFrequentTags 按阈值判断
@@ -231,6 +233,8 @@ async function processOneFile(
         context: contextParts,
         tags: combinedTags.length > 0 ? combinedTags : undefined,
         async: false,
+        // 身份由 relPath + segment 顺序负责，走 supersede 链
+        skipDedupMerge: true,
       });
 
       if (result.created_nodes) {
@@ -311,6 +315,8 @@ async function processCanvasFile(
       context: `Obsidian Canvas: ${path.basename(filePath, '.canvas')}`,
       tags: tags.length > 0 ? tags : undefined,
       async: false,
+      // Canvas 节点身份由 canvas file + textNode.id 负责
+      skipDedupMerge: true,
     });
     if (result.created_nodes?.[0]) {
       const brainNodeId = result.created_nodes[0].id;
@@ -326,6 +332,8 @@ async function processCanvasFile(
       source: { tool: 'obsidian', files: [relPath] },
       context: `Obsidian Canvas: ${path.basename(filePath, '.canvas')} | url: ${linkNode.url}`,
       async: false,
+      // Canvas link 节点身份由 canvas file + linkNode.id 负责
+      skipDedupMerge: true,
     });
     if (result.created_nodes) {
       nodeIds.push(...result.created_nodes.map(n => n.id));

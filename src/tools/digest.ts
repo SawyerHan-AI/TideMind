@@ -258,7 +258,12 @@ async function processDigestContent(
     const embeddingText = node.title
       ? `${node.title}\n\n${node.content}`
       : node.content;
-    const links = await generateAndStoreEmbedding(repo, node.id, embeddingText);
+    // skipDedupMerge: 调用方持有自己的身份/去重机制（logseq/obsidian/notion
+    // /apple-notes 的 file+segment，property-promote 的精确匹配）。
+    // 只建 landing 链接，不做向量归并——避免不同段落因相似度被误并。
+    const links = await generateAndStoreEmbedding(
+      repo, node.id, embeddingText, input.skipDedupMerge === true,
+    );
     createdLinks.push(...links);
   }
 
@@ -311,11 +316,15 @@ function assessContentQuality(content: string): number {
 
 /**
  * 异步生成 embedding + 存储 + 着陆连接
+ *
+ * @param skipDedupMerge 调用方持有外部身份（logseq/obsidian 等），跳过向量归并。
+ *   landing 的链接分支（confirmed/pending）仍会正常执行。
  */
 async function generateAndStoreEmbedding(
   repo: IRepository,
   nodeId: string,
   content: string,
+  skipDedupMerge: boolean = false,
 ): Promise<Array<{ from_id: string; to_id: string; relation: string }>> {
   // Legacy db handle for modules not yet refactored
   const db = getDb();
@@ -331,7 +340,7 @@ async function generateAndStoreEmbedding(
   const embedding = repo.vectors.getVectorForNode(nodeId);
   if (!embedding) return [];
 
-  const landing = findLandingConnections(db, nodeId, embedding);
+  const landing = findLandingConnections(db, nodeId, embedding, { skipDedupMerge });
   log.debug(`着陆结果 node=${nodeId} action=${landing.action} confirmed=${landing.confirmedLinks.length} pending=${landing.pendingLinks.length}`);
   if (landing.action === 'merge' && landing.mergeTarget) {
     log.info(`去重合并 node=${nodeId} → target=${landing.mergeTarget}`);

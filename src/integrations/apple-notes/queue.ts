@@ -215,6 +215,8 @@ async function processOneNote(
         tags: allTags.length > 0 ? allTags : undefined,
         async: false,
         created: coreDataToISO(note.creationDate),
+        // 身份由 note.uuid + segment hash 负责
+        skipDedupMerge: true,
       });
 
       if (digestResult.status === 'processed' && digestResult.created_nodes) {

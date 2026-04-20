@@ -241,6 +241,9 @@ async function processOneFile(
         context: contextParts,
         tags: combinedTags.length > 0 ? combinedTags : undefined,
         async: false,
+        // 身份由 FileSyncState.node_ids + segment hash 负责，走 supersede 链
+        // 跳过 landing 的向量归并，避免不同段落之间因相似度误并
+        skipDedupMerge: true,
       });
 
       if (result.created_nodes && result.created_nodes.length > 0) {
