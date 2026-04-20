@@ -36,6 +36,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
       syncEnabled: false, online: false, syncing: false,
       outboxCount: 0, lastSyncedAt: null,
       cloudNotAvailable: false, syncNotReady: false,
+      lastErrorCode: null, lastErrorMessage: null,
     };
     try {
       const { isLoggedIn, getCloudAuth } = await import('../cloud/auth-client.js');
@@ -48,6 +49,17 @@ export function registerCloudHandlers(db?: Database.Database): void {
 
       const { getCloudSyncClient, getOutboxCount } = await import('../cloud/sync-client.js');
       const syncClient = getCloudSyncClient();
+
+      // 根据 syncClient 的状态字段派生一个错误码,持久化到 UI。
+      // 这样 DataSyncSection 的红色错误条在页面切换后重新挂载时仍能读到
+      // 当前持续存在的错误,而不是只依赖瞬时的 lastError state。
+      let lastErrorCode: string | null = null;
+      if (syncClient) {
+        if (syncClient.cloudNotAvailable) lastErrorCode = 'cloud_not_available';
+        else if (syncClient.syncNotReady) lastErrorCode = 'sync_not_ready';
+        else if (syncClient.getStatus() === 'offline') lastErrorCode = 'offline';
+        else if (syncClient.getStatus() === 'error') lastErrorCode = 'sync_error';
+      }
 
       return {
         loggedIn: true,
@@ -62,6 +74,8 @@ export function registerCloudHandlers(db?: Database.Database): void {
         lastSyncedAt: auth.lastSyncedAt ?? null,
         cloudNotAvailable: syncClient?.cloudNotAvailable ?? false,
         syncNotReady: syncClient?.syncNotReady ?? false,
+        lastErrorCode,
+        lastErrorMessage: syncClient?.lastErrorMessage ?? null,
       };
     } catch {
       return fallback;
@@ -97,6 +111,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
     log.info(`cloud sync ${enabled ? 'enabled' : 'disabled'}`);
 
     let startError: string | undefined;
+    let startErrorDetail: string | undefined;
     if (enabled && db) {
       const { isLoggedIn } = await import('../cloud/auth-client.js');
       if (!isLoggedIn()) {
@@ -122,7 +137,10 @@ export function registerCloudHandlers(db?: Database.Database): void {
         } else if (client.getStatus() === 'error') {
           startError = 'sync_error';
         }
-        if (startError) log.warn(`sync start reported: ${startError}`);
+        if (startError) {
+          startErrorDetail = client.lastErrorMessage ?? undefined;
+          log.warn(`sync start reported: ${startError}${startErrorDetail ? ' — ' + startErrorDetail : ''}`);
+        }
       }
     } else if (!enabled) {
       const { destroySyncClient } = await import('../cloud/sync-client.js');
@@ -130,7 +148,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
     }
 
     emitCloudChanged();
-    if (startError) return { success: false, error: startError };
+    if (startError) return { success: false, error: startError, errorDetail: startErrorDetail };
     return { success: true };
   });
 

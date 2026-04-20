@@ -139,7 +139,7 @@ function useSyncErrorMessage() {
         return t('settings:cloud.dataSync.errors.offline', 'Could not reach the cloud. Check your network and try again.')
       case 'sync_error':
         return t('settings:cloud.dataSync.errors.syncError', 'Sync failed due to an unexpected error. Check logs for details.')
-      case 'Sync client not initialized':
+      case 'not_initialized':
         return t('settings:cloud.dataSync.errors.notInitialized', 'Sync has not been started yet.')
       default:
         return code
@@ -153,47 +153,61 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
   const [showEnableConfirm, setShowEnableConfirm] = useState(false)
   const [showDisableConfirm, setShowDisableConfirm] = useState(false)
   const [syncing, setSyncing] = useState(false)
-  // Last error from setSyncEnabled/triggerSync. Displayed inline; cleared on next action.
-  const [lastError, setLastError] = useState<string | null>(null)
+  // Local override from the most recent user action (setSyncEnabled/triggerSync).
+  // Set when a manual action returns an error or is explicitly dismissed by user.
+  // When null, fall through to cloud.lastErrorCode (server-side persistent state).
+  const [localError, setLocalError] = useState<{ code: string; detail?: string } | null>(null)
+  const [dismissed, setDismissed] = useState(false)
+
+  // 最终显示的错误:优先 localError(刚触发的操作),其次 cloud 持久化状态,dismiss 后隐藏
+  const displayError = dismissed
+    ? null
+    : (localError ?? (cloud.lastErrorCode ? { code: cloud.lastErrorCode, detail: cloud.lastErrorMessage ?? undefined } : null))
 
   const handleToggle = useCallback((enabled: boolean) => {
-    setLastError(null)
+    setLocalError(null)
+    setDismissed(false)
     if (enabled) setShowEnableConfirm(true)
     else setShowDisableConfirm(true)
   }, [])
 
   const confirmEnable = async () => {
     setShowEnableConfirm(false)
+    setDismissed(false)
     try {
       const result = await window.api.cloud.setSyncEnabled(true)
       if (result && result.success === false && result.error) {
-        setLastError(result.error)
+        setLocalError({ code: result.error, detail: result.errorDetail })
+      } else {
+        setLocalError(null)
       }
     } catch (e) {
-      setLastError((e as Error).message)
+      setLocalError({ code: (e as Error).message })
     }
   }
 
   const confirmDisable = async () => {
     setShowDisableConfirm(false)
-    setLastError(null)
+    setLocalError(null)
+    setDismissed(false)
     try {
       await window.api.cloud.setSyncEnabled(false)
     } catch (e) {
-      setLastError((e as Error).message)
+      setLocalError({ code: (e as Error).message })
     }
   }
 
   const handleSync = async () => {
     setSyncing(true)
-    setLastError(null)
+    setLocalError(null)
+    setDismissed(false)
     try {
       const result = await window.api.cloud.triggerSync()
       if (result && result.success === false && result.error) {
-        setLastError(result.error)
+        setLocalError({ code: result.error, detail: result.errorDetail })
       }
     } catch (e) {
-      setLastError((e as Error).message)
+      setLocalError({ code: (e as Error).message })
     } finally {
       setSyncing(false)
     }
@@ -221,17 +235,24 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
             {t('settings:cloud.dataSync.desc', 'Sync your memories to TideMind Cloud for multi-device access. Local data becomes a read-only cache of the cloud.')}
           </p>
 
-          {/* Inline error — 最后一次 setSyncEnabled / triggerSync 失败的原因 */}
-          {lastError && (
+          {/* Inline error — 最后一次 setSyncEnabled / triggerSync 失败的原因,
+              以及从 cloud status 持久化过来的错误(页面切换不会丢)。
+              detail 是原始 message(如 HTTP 500 / fetch failed),帮助定位。*/}
+          {displayError && (
             <div className="flex items-start gap-2 p-2.5 rounded-lg border border-red-500/20" style={{ background: 'rgba(239,68,68,0.06)' }}>
               <AlertTriangle size={12} className="text-red-400 mt-0.5 flex-shrink-0" />
-              <div className="flex-1">
+              <div className="flex-1 min-w-0">
                 <p className="text-[10px] text-red-300/90 leading-relaxed">
-                  {translateError(lastError)}
+                  {translateError(displayError.code)}
                 </p>
+                {displayError.detail && (
+                  <p className="text-[10px] text-red-300/50 leading-relaxed mt-1 font-mono break-all">
+                    {displayError.detail}
+                  </p>
+                )}
               </div>
               <button
-                onClick={() => setLastError(null)}
+                onClick={() => { setLocalError(null); setDismissed(true) }}
                 className="text-[10px] text-red-300/60 hover:text-red-300 transition-colors"
                 aria-label={t('common:close', 'Close')}
               >

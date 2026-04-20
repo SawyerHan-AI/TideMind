@@ -32,6 +32,12 @@ export class CloudSyncClient {
   cloudNotAvailable = false;
   /** 服务端同步接口尚未就绪（404） */
   syncNotReady = false;
+  /**
+   * 上一次 syncOnce 的原始错误 message。成功时清空,失败时保留。
+   * UI 通过 cloud.status IPC 读取这个字段,配合错误码展示更具体的原因
+   * (如 `HTTP 500`、`fetch failed` 等),方便用户定位真实故障点。
+   */
+  lastErrorMessage: string | null = null;
 
   constructor(private db: Database.Database) {
     const baseUrl = getCloudBaseUrl();
@@ -162,6 +168,7 @@ export class CloudSyncClient {
       // 同步成功 → 重置错误标志（可能是之前的瞬时故障）
       this.syncNotReady = false;
       this.cloudNotAvailable = false;
+      this.lastErrorMessage = null;
 
       // Update lastSyncedAt on auth
       const auth = getCloudAuth();
@@ -170,6 +177,7 @@ export class CloudSyncClient {
       this.emitDataChanged();
     } catch (e) {
       const msg = (e as Error).message;
+      this.lastErrorMessage = msg;
       if (msg === 'cloud_not_available') {
         this.cloudNotAvailable = true;
         this.status = 'offline';
@@ -265,15 +273,30 @@ export function destroySyncClient(): void {
 
 /**
  * Trigger a manual sync cycle. Called by IPC handler cloud:trigger-sync.
+ *
+ * 重要：syncOnce 内部用 try/catch 自己吞掉了错误(只写状态字段,不向外抛),
+ * 所以这里 await 之后必须读 instance 的状态字段来判断成败,不能依赖
+ * try/catch 接到异常——这正是 v0.2.6 之前"点立即同步毫无反应"的
+ * 根因:triggerSync silent-success 了。
  */
-export async function triggerSync(): Promise<{ success: boolean; error?: string }> {
-  if (!instance) return { success: false, error: 'Sync client not initialized' };
-  try {
-    await instance.syncOnce();
-    return { success: true };
-  } catch (e) {
-    return { success: false, error: (e as Error).message };
+export async function triggerSync(): Promise<{ success: boolean; error?: string; errorDetail?: string }> {
+  if (!instance) return { success: false, error: 'not_initialized' };
+  await instance.syncOnce();
+
+  if (instance.cloudNotAvailable) {
+    return { success: false, error: 'cloud_not_available', errorDetail: instance.lastErrorMessage ?? undefined };
   }
+  if (instance.syncNotReady) {
+    return { success: false, error: 'sync_not_ready', errorDetail: instance.lastErrorMessage ?? undefined };
+  }
+  const status = instance.getStatus();
+  if (status === 'offline') {
+    return { success: false, error: 'offline', errorDetail: instance.lastErrorMessage ?? undefined };
+  }
+  if (status === 'error') {
+    return { success: false, error: 'sync_error', errorDetail: instance.lastErrorMessage ?? undefined };
+  }
+  return { success: true };
 }
 
 /**
