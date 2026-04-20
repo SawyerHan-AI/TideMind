@@ -191,7 +191,8 @@ export function getClientDb(): Database.Database {
         is_keystone INTEGER DEFAULT 0,
         is_superseded INTEGER DEFAULT 0,
         source_device TEXT DEFAULT 'local',
-        maturity_score REAL DEFAULT 0.0
+        maturity_score REAL DEFAULT 0.0,
+        updated TEXT
       );
       CREATE TABLE IF NOT EXISTS links (
         id TEXT PRIMARY KEY,
@@ -202,7 +203,8 @@ export function getClientDb(): Database.Database {
         note TEXT,
         auto INTEGER DEFAULT 1,
         status TEXT DEFAULT 'confirmed' CHECK(status IN ('confirmed','pending')),
-        created TEXT NOT NULL
+        created TEXT NOT NULL,
+        updated TEXT
       );
       CREATE TABLE IF NOT EXISTS node_versions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -506,6 +508,14 @@ export function getClientDb(): Database.Database {
   try { tmpDb.exec("ALTER TABLE nodes ADD COLUMN source_device TEXT DEFAULT 'local'") } catch {}
   try { tmpDb.exec('ALTER TABLE links ADD COLUMN refined INTEGER DEFAULT 0') } catch {}
   try { tmpDb.exec('ALTER TABLE llm_usage_log ADD COLUMN estimated_cost REAL DEFAULT 0') } catch {}
+
+  // Reconcile LWW: nodes/links 加 `updated` 时间戳(两端都有,冲突时 LWW)。
+  // 老数据默认 updated = created(表示从未修改过),backfill 一次。
+  try { tmpDb.exec("ALTER TABLE nodes ADD COLUMN updated TEXT") } catch {}
+  try { tmpDb.exec("UPDATE nodes SET updated = created WHERE updated IS NULL") } catch {}
+  try { tmpDb.exec("ALTER TABLE links ADD COLUMN updated TEXT") } catch {}
+  try { tmpDb.exec("UPDATE links SET updated = created WHERE updated IS NULL") } catch {}
+
   tmpDb.close()
 
   // 统一的读写连接

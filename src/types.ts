@@ -355,6 +355,8 @@ export interface AppConfig {
   cloud?: {
     enabled: boolean;
     sync_enabled: boolean;
+    /** 本地/云代谢互斥: true 时本地 scheduler 停跑,服务端代谢接管 */
+    metabolism_enabled?: boolean;
     server_url: string;
   };
   sources?: {

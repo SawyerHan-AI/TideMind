@@ -15,7 +15,7 @@ function generateSourceId(): string {
 /**
  * 当前 schema 版本。每次新增 migration 时递增。
  */
-const CURRENT_SCHEMA_VERSION = 16;
+const CURRENT_SCHEMA_VERSION = 17;
 
 /**
  * 完整建表 SQL — 包含所有字段，新数据库直接创建最新结构。
@@ -65,7 +65,10 @@ CREATE TABLE IF NOT EXISTS nodes (
     source_device TEXT DEFAULT 'local',
 
     -- 汇总分
-    maturity_score REAL DEFAULT 0.0
+    maturity_score REAL DEFAULT 0.0,
+
+    -- Reconcile LWW 用(和 created 一样是 TEXT ISO 字符串,migration 对齐 v15)
+    updated TEXT
 );
 
 -- 链接表（relation 存储为 JSON 数组 [{type, confidence}]）
@@ -78,7 +81,8 @@ CREATE TABLE IF NOT EXISTS links (
     note TEXT,
     auto INTEGER DEFAULT 1,
     status TEXT DEFAULT 'confirmed' CHECK(status IN ('confirmed','pending')),
-    created TEXT NOT NULL
+    created TEXT NOT NULL,
+    updated TEXT
 );
 
 -- 节点版本历史
@@ -1228,6 +1232,28 @@ const MIGRATIONS: Migration[] = [
       }
 
       log.info(`迁移 v16 完成: 已归档 ${archivedCount} 个 v15 遗漏的错误归并节点`);
+    },
+  },
+  {
+    version: 17,
+    description: 'Reconcile LWW: nodes/links 加 updated 字段(双端 LWW 冲突检测)',
+    up: (db) => {
+      // nodes 表
+      const nodesCols = db.prepare("PRAGMA table_info(nodes)").all() as Array<{ name: string }>;
+      if (!nodesCols.some(c => c.name === 'updated')) {
+        db.exec('ALTER TABLE nodes ADD COLUMN updated TEXT');
+        // Backfill: 老节点从未修改过,updated = created
+        db.exec('UPDATE nodes SET updated = created WHERE updated IS NULL');
+      }
+
+      // links 表
+      const linksCols = db.prepare("PRAGMA table_info(links)").all() as Array<{ name: string }>;
+      if (!linksCols.some(c => c.name === 'updated')) {
+        db.exec('ALTER TABLE links ADD COLUMN updated TEXT');
+        db.exec('UPDATE links SET updated = created WHERE updated IS NULL');
+      }
+
+      log.info('迁移 v17 完成: nodes/links.updated 字段已添加并 backfill');
     },
   },
 ];
