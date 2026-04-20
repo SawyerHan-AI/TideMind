@@ -712,9 +712,17 @@ const MIGRATIONS: Migration[] = [
       }
       log.info(`迁移 v6: ${nodesWithProject.length} 个节点的 project 值已迁移到 tags`);
 
-      // 2. 重建 nodes 表（去掉 project 列）
-      // 临时关闭外键检查以允许 DROP TABLE（links 引用 nodes）
+      // 2. 重建 nodes 表(去掉 project 列)
+      //
+      // 临时关闭外键检查以允许 DROP TABLE(links 引用 nodes)。注意这整段
+      // 不能放在事务里(PRAGMA foreign_keys 在事务中无效),所以 migration
+      // runner 对 v6 单独走非事务路径。
+      //
+      // 幂等性:如果 setSchemaVersion 前崩溃再启动,v6 会被重跑。老代码
+      // `CREATE TABLE nodes_new` 就会报 "table nodes_new already exists"。
+      // 先 DROP IF EXISTS 兜底,让重跑也能完成。
       db.pragma('foreign_keys = OFF');
+      db.exec('DROP TABLE IF EXISTS nodes_new');
       db.exec(`
         CREATE TABLE nodes_new (
             id TEXT PRIMARY KEY,
@@ -782,18 +790,20 @@ const MIGRATIONS: Migration[] = [
         )
       `);
 
+      // 同样加 IF NOT EXISTS — 避免 setSchemaVersion 前崩溃再重跑时撞上
+      // "trigger already exists"
       db.exec(`
-        CREATE TRIGGER nodes_ai AFTER INSERT ON nodes BEGIN
+        CREATE TRIGGER IF NOT EXISTS nodes_ai AFTER INSERT ON nodes BEGIN
             INSERT INTO nodes_fts(rowid, content, tags) VALUES (new.rowid, new.content, new.tags);
         END
       `);
       db.exec(`
-        CREATE TRIGGER nodes_ad AFTER DELETE ON nodes BEGIN
+        CREATE TRIGGER IF NOT EXISTS nodes_ad AFTER DELETE ON nodes BEGIN
             INSERT INTO nodes_fts(nodes_fts, rowid, content, tags) VALUES('delete', old.rowid, old.content, old.tags);
         END
       `);
       db.exec(`
-        CREATE TRIGGER nodes_au AFTER UPDATE ON nodes BEGIN
+        CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE ON nodes BEGIN
             INSERT INTO nodes_fts(nodes_fts, rowid, content, tags) VALUES('delete', old.rowid, old.content, old.tags);
             INSERT INTO nodes_fts(rowid, content, tags) VALUES (new.rowid, new.content, new.tags);
         END
@@ -1088,19 +1098,23 @@ const MIGRATIONS: Migration[] = [
         )
       `);
 
-      // 重建触发器
+      // 重建触发器。**必须用 IF NOT EXISTS** — ensureSchema 每次启动先
+      // `db.exec(FTS_TRIGGERS_SQL)`(同样 IF NOT EXISTS 创建),再跑 migrations。
+      // 如果 v14 的 CREATE TRIGGER 不加 IF NOT EXISTS,schema_version 没写就
+      // 重启时,触发器在前一步已建过 → v14 migration 会 "trigger already exists"
+      // 抛异常 → daemon 启动失败。事务回滚能救,但错误干扰排查。
       db.exec(`
-        CREATE TRIGGER nodes_ai AFTER INSERT ON nodes BEGIN
+        CREATE TRIGGER IF NOT EXISTS nodes_ai AFTER INSERT ON nodes BEGIN
           INSERT INTO nodes_fts(rowid, title, content, tags)
           VALUES (new.rowid, new.title, new.content, new.tags);
         END;
 
-        CREATE TRIGGER nodes_ad AFTER DELETE ON nodes BEGIN
+        CREATE TRIGGER IF NOT EXISTS nodes_ad AFTER DELETE ON nodes BEGIN
           INSERT INTO nodes_fts(nodes_fts, rowid, title, content, tags)
           VALUES('delete', old.rowid, old.title, old.content, old.tags);
         END;
 
-        CREATE TRIGGER nodes_au AFTER UPDATE ON nodes BEGIN
+        CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE ON nodes BEGIN
           INSERT INTO nodes_fts(nodes_fts, rowid, title, content, tags)
           VALUES('delete', old.rowid, old.title, old.content, old.tags);
           INSERT INTO nodes_fts(rowid, title, content, tags)
