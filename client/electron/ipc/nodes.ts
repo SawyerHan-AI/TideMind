@@ -42,8 +42,14 @@ export function registerNodeHandlers(db: Database.Database): void {
     if (filter.type) {
       applyTypeFilter(filter.type, conditions, params)
     }
-    // 默认过滤极低 heat 的节点（替代旧的 archived 过滤）
-    conditions.push('heat > 0.01')
+    // 默认只显示"当前活跃"的节点：未归档、未被 supersede。
+    // 调用方传 filter.archived=true 时，走"已归档节点"视图。
+    if (filter.archived === true) {
+      conditions.push('archived = 1')
+    } else {
+      conditions.push('archived = 0')
+      conditions.push('is_superseded = 0')
+    }
     if (filter.search) {
       conditions.push('content LIKE ?')
       params.push(`%${filter.search}%`)
@@ -129,7 +135,7 @@ export function registerNodeHandlers(db: Database.Database): void {
       const nodes = db.prepare(`
         SELECT nodes.* FROM nodes_fts
         JOIN nodes ON nodes.rowid = nodes_fts.rowid
-        WHERE nodes_fts MATCH ? AND nodes.heat > 0.01 AND nodes.is_superseded = 0
+        WHERE nodes_fts MATCH ? AND nodes.archived = 0 AND nodes.is_superseded = 0
         ORDER BY bm25(nodes_fts, 5.0, 1.0, 2.0)
         LIMIT ?
       `).all(ftsQuery, safeLimit)
@@ -139,7 +145,7 @@ export function registerNodeHandlers(db: Database.Database): void {
       // fallback LIKE
       const escapedQuery = query.replace(/%/g, '\\%').replace(/_/g, '\\_')
       const nodes = db.prepare(
-        "SELECT * FROM nodes WHERE content LIKE ? ESCAPE '\\' AND heat > 0.01 AND is_superseded = 0 ORDER BY heat DESC LIMIT ?"
+        "SELECT * FROM nodes WHERE content LIKE ? ESCAPE '\\' AND archived = 0 AND is_superseded = 0 ORDER BY heat DESC LIMIT ?"
       ).all(`%${escapedQuery}%`, safeLimit)
       return { nodes, total: nodes.length }
     }
@@ -261,8 +267,13 @@ export function registerNodeHandlers(db: Database.Database): void {
     if (filter.type) {
       applyTypeFilter(filter.type, conditions, params)
     }
-    // 默认过滤极低 heat 的节点（替代旧的 archived 过滤）
-    conditions.push('heat > 0.01')
+    // graph 视图也只展示"当前活跃"的节点
+    if (filter.archived === true) {
+      conditions.push('archived = 1')
+    } else {
+      conditions.push('archived = 0')
+      conditions.push('is_superseded = 0')
+    }
     if (filter.search) {
       conditions.push('content LIKE ?')
       params.push(`%${filter.search}%`)

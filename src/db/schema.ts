@@ -15,7 +15,7 @@ function generateSourceId(): string {
 /**
  * 当前 schema 版本。每次新增 migration 时递增。
  */
-const CURRENT_SCHEMA_VERSION = 15;
+const CURRENT_SCHEMA_VERSION = 16;
 
 /**
  * 完整建表 SQL — 包含所有字段，新数据库直接创建最新结构。
@@ -1173,6 +1173,61 @@ const MIGRATIONS: Migration[] = [
       }
 
       log.info(`迁移 v15 完成: 已归档 ${archivedCount} 个错误归并节点（可在"已归档节点"中恢复）`);
+    },
+  },
+  {
+    version: 16,
+    description: '补漏 v15：清理已被 supersede 但仍有错误归并历史的外部笔记节点',
+    up: (db) => {
+      // v15 的条件 is_superseded = 0 漏掉了一类节点：节点本身是脏的（有"去重合并"
+      // 版本历史），但在 v15 跑之前已经被某次 logseq watcher 同步 supersede 过，
+      // `is_superseded = 1` 使 v15 的 WHERE 跳过它们。这些节点：
+      //   - archived = 0 → 仍出现在默认 UI 查询里（尤其当 heat 没降到 0.01）
+      //   - content 仍是被反复覆盖的脏内容
+      //   - heat 可能因 dedup 累加到 2.x
+      //
+      // v16 对 v15 用同样的归档操作，条件反过来（is_superseded = 1）。新用户
+      // 从 v0-v14 升上来会依次跑 v15 + v16，合计等价于一次性全覆盖。
+
+      const victims = db.prepare(`
+        SELECT DISTINCT n.id
+        FROM nodes n
+        WHERE n.source_tool IN ('logseq', 'obsidian', 'notion', 'apple-notes')
+          AND n.archived = 0
+          AND n.is_superseded = 1
+          AND EXISTS (
+            SELECT 1 FROM node_versions v
+            WHERE v.node_id = n.id AND v.change_reason LIKE '%去重合并%'
+          )
+      `).all() as Array<{ id: string }>;
+
+      if (victims.length === 0) {
+        log.info('迁移 v16: 无需清理，未检测到 v15 遗漏的节点');
+        return;
+      }
+
+      log.info(`迁移 v16: 检测到 ${victims.length} 个 v15 遗漏的错误归并节点（已被 supersede），开始归档`);
+
+      const archiveStmt = db.prepare(
+        'UPDATE nodes SET archived = 1, heat = 0.02 WHERE id = ? AND archived = 0',
+      );
+      const delSegStmt = db.prepare('DELETE FROM node_segments WHERE node_id = ?');
+      let delVecStmt: ReturnType<typeof db.prepare> | null = null;
+      try {
+        delVecStmt = db.prepare('DELETE FROM nodes_vec WHERE id = ?');
+      } catch { /* nodes_vec 未加载，跳过向量清理 */ }
+
+      let archivedCount = 0;
+      for (const { id } of victims) {
+        const res = archiveStmt.run(id);
+        if (res.changes > 0) archivedCount++;
+        delSegStmt.run(id);
+        if (delVecStmt) {
+          try { delVecStmt.run(id); } catch { /* skip */ }
+        }
+      }
+
+      log.info(`迁移 v16 完成: 已归档 ${archivedCount} 个 v15 遗漏的错误归并节点`);
     },
   },
 ];

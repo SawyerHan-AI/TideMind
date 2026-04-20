@@ -169,13 +169,23 @@ describe('updateNode', () => {
 // ===== archiveNode =====
 
 describe('archiveNode', () => {
-  it('should cooldown node heat to 0.02', () => {
+  it('should set archived=1 and cooldown heat to 0.02', () => {
     const node = seedNode(db);
     expect(node.heat).toBe(1.0);
+    expect(node.archived).toBe(0);
 
     archiveNode(db, node.id);
     const after = getNode(db, node.id)!;
+    expect(after.archived).toBe(1);
     expect(after.heat).toBeCloseTo(0.02);
+  });
+
+  it('should make archived node disappear from default UI filters (archived=0 gate)', () => {
+    const node = seedNode(db);
+    archiveNode(db, node.id);
+    // listNodes 的 archived=false 过滤应该排除已归档
+    const visible = listNodes(db, { archived: false });
+    expect(visible.find(n => n.id === node.id)).toBeUndefined();
   });
 });
 
