@@ -38,11 +38,17 @@ export async function startNotionSource(
     return;
   }
 
-  // 验证 token
-  const validation = await validateToken(token);
-  if (!validation.valid) {
-    log.error(`Notion token 验证失败，sourceId: ${sourceId}`);
-    return;
+  // 验证 token。validateToken 在网络错误时会 throw,不代表 token 无效 —
+  // 启动路径不阻塞:先启动轮询,首次同步自己会再试。只有明确 401 才终止。
+  try {
+    const validation = await validateToken(token);
+    if (!validation.valid) {
+      log.error(`Notion token 验证失败(401),sourceId: ${sourceId}`);
+      return;
+    }
+  } catch (err) {
+    log.warn(`Notion token 瞬时验证失败,稍后首轮扫描会再试: ${(err as Error).message}`);
+    // 继续启动 — 不能因网络抖动阻塞用户集成
   }
 
   log.info(`启动 Notion 笔记源: ${sourceId}`);

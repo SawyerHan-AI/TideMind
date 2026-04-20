@@ -930,15 +930,14 @@
     "noBilling": "無料プランには請求履歴がありません。",
     "billingComingSoon": "請求履歴は近日公開予定です。",
     "logout": "サインアウト",
-    "deleteAccount": "アカウントを削除",
-    "deleteAccountTitle": "アカウントを削除しますか？",
-    "deleteAccountDesc": "サインアウトします。アカウントとすべてのクラウドデータを完全に削除するには、support@tidemind.ai にお問い合わせください。ローカルデータには影響しません。",
-    "deleteAccountConfirm": "サインアウトして削除を申請",
     "comingSoon": "近日公開",
     "subscriptionComingSoon": "Pro および Pro+ プランは近日公開予定です。クラウド同期、7×24メタボリズムなどの機能をお楽しみに。",
     "registerButton": "アカウント作成",
     "browserHint": "ブラウザで開いて安全に認証します。",
-    "requestAccountDeletion": "アカウント削除をリクエスト"
+    "requestAccountDeletion": "アカウント削除をリクエスト",
+    "requestDeletionTitle": "アカウント削除をリクエスト?",
+    "requestDeletionDesc": "確認をクリックするとサインアウトします。アカウントとすべてのクラウドデータを完全に削除するには、サインアウト後に support@tidemind.ai までご連絡ください。このデバイスのローカルデータは影響を受けません。",
+    "requestDeletionConfirm": "サインアウト — サポートに連絡します"
   },
   "cloud": {
     "loginRequired": "クラウド機能を使用するには、TideMind Cloud にサインインしてください。",

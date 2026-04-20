@@ -932,13 +932,12 @@
     "noBilling": "No billing history for Free plan.",
     "billingComingSoon": "Billing history coming soon.",
     "logout": "Sign Out",
-    "deleteAccount": "Delete Account",
-    "deleteAccountTitle": "Delete Account?",
-    "deleteAccountDesc": "This will sign you out. To permanently delete your account and all cloud data, please contact support@tidemind.ai. Local data is not affected.",
-    "deleteAccountConfirm": "Sign Out & Request Deletion",
     "registerButton": "Create Account",
     "browserHint": "Opens in your browser for secure authentication.",
-    "requestAccountDeletion": "Request Account Deletion"
+    "requestAccountDeletion": "Request Account Deletion",
+    "requestDeletionTitle": "Request Account Deletion?",
+    "requestDeletionDesc": "Clicking confirm will sign you out. To permanently delete your account and all cloud data, please email support@tidemind.ai after signing out. Local data on this device is not affected.",
+    "requestDeletionConfirm": "Sign Out — I will email support"
   },
   "cloud": {
     "loginRequired": "Sign in to TideMind Cloud to use cloud features.",

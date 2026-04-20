@@ -197,12 +197,19 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
     });
   }
 
-  // 再巩固（感知读 + 深度读判定）
+  // 再巩固(感知读 + 深度读判定)
   // 传入搜索分数用于感知读质量门槛
   const avgScore = searchScores && searchScores.size > 0
     ? [...searchScores.values()].reduce((a, b) => a + b, 0) / searchScores.size
     : undefined;
-  reconsolidateOnRecall(db, nodes, input.context, avgScore);
+  // 套 try/catch:reconsolidate v0.2.15 起同步异常会 re-throw,如果让它冒到
+  // recall 调用方会让整个 MCP tool call 返回错误。再巩固是尽力而为的增强
+  // 逻辑,失败不应影响 recall 的主要返回。log 出来便于排查。
+  try {
+    reconsolidateOnRecall(db, nodes, input.context, avgScore);
+  } catch (err) {
+    log.error(`reconsolidateOnRecall failed (recall continues): ${(err as Error).message}`);
+  }
 
   // 轻量发散：找一个与结果集语义相关但不在结果中的节点
   let surprises: RecallOutput['surprises'] = undefined

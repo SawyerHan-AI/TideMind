@@ -930,15 +930,14 @@
     "noBilling": "Sin historial de facturación para el plan gratuito.",
     "billingComingSoon": "Historial de facturación próximamente.",
     "logout": "Cerrar sesión",
-    "deleteAccount": "Eliminar cuenta",
-    "deleteAccountTitle": "¿Eliminar cuenta?",
-    "deleteAccountDesc": "Se cerrará la sesión. Para eliminar permanentemente su cuenta y todos los datos en la nube, contacte a support@tidemind.ai. Los datos locales no se verán afectados.",
-    "deleteAccountConfirm": "Cerrar sesión y solicitar eliminación",
     "comingSoon": "Próximamente",
     "subscriptionComingSoon": "Los planes Pro y Pro+ estarán disponibles pronto. Mantente atento a la sincronización en la nube, metabolismo 24/7 y más.",
     "registerButton": "Crear cuenta",
     "browserHint": "Se abre en tu navegador para autenticación segura.",
-    "requestAccountDeletion": "Solicitar eliminación de cuenta"
+    "requestAccountDeletion": "Solicitar eliminación de cuenta",
+    "requestDeletionTitle": "¿Solicitar eliminación de cuenta?",
+    "requestDeletionDesc": "Al confirmar, se cerrará la sesión. Para eliminar permanentemente tu cuenta y todos los datos en la nube, envía un correo a support@tidemind.ai después de cerrar sesión. Los datos locales de este dispositivo no se ven afectados.",
+    "requestDeletionConfirm": "Cerrar sesión — contactaré a soporte"
   },
   "cloud": {
     "loginRequired": "Inicia sesión en TideMind Cloud para usar las funciones en la nube.",

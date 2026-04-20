@@ -213,17 +213,17 @@ function LoggedInView({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
         title={t('settings:account.logoutTitle', 'Sign Out?')}
         description={t('settings:account.logoutDesc', 'You will be signed out of TideMind Cloud. Local data is not affected.')}
         confirmText={t('settings:account.logout', 'Sign Out')}
-        cancelText={t('common:cancel', 'Cancel')}
+        cancelText={t('common:actions.cancel', 'Cancel')}
       />
 
       <ConfirmDialog
         open={showDeleteConfirm}
         onCancel={() => setShowDeleteConfirm(false)}
         onConfirm={handleDeleteAccount}
-        title={t('settings:account.deleteAccountTitle', 'Delete Account?')}
-        description={t('settings:account.deleteAccountDesc', 'This will sign you out. To permanently delete your account and all cloud data, please contact support@tidemind.ai. Local data is not affected.')}
-        confirmText={t('settings:account.deleteAccountConfirm', 'Sign Out & Request Deletion')}
-        cancelText={t('common:cancel', 'Cancel')}
+        title={t('settings:account.requestDeletionTitle', 'Request Account Deletion?')}
+        description={t('settings:account.requestDeletionDesc', 'Clicking confirm will sign you out. To permanently delete your account and all cloud data, please email support@tidemind.ai after signing out. Local data on this device is not affected.')}
+        confirmText={t('settings:account.requestDeletionConfirm', 'Sign Out — I will email support')}
+        cancelText={t('common:actions.cancel', 'Cancel')}
         danger
       />
     </div>

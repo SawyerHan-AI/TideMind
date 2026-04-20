@@ -930,15 +930,14 @@
     "noBilling": "무료 플랜에는 결제 내역이 없습니다.",
     "billingComingSoon": "결제 내역 기능이 곧 출시됩니다.",
     "logout": "로그아웃",
-    "deleteAccount": "계정 삭제",
-    "deleteAccountTitle": "계정을 삭제하시겠습니까?",
-    "deleteAccountDesc": "로그아웃됩니다. 계정과 모든 클라우드 데이터를 영구 삭제하려면 support@tidemind.ai로 문의하세요. 로컬 데이터에는 영향이 없습니다.",
-    "deleteAccountConfirm": "로그아웃 및 삭제 요청",
     "comingSoon": "출시 예정",
     "subscriptionComingSoon": "Pro 및 Pro+ 플랜이 곧 출시됩니다. 클라우드 동기화, 7×24 대사 엔진 등을 기대해 주세요.",
     "registerButton": "계정 만들기",
     "browserHint": "안전한 인증을 위해 브라우저에서 열립니다.",
-    "requestAccountDeletion": "계정 삭제 요청"
+    "requestAccountDeletion": "계정 삭제 요청",
+    "requestDeletionTitle": "계정 삭제 요청?",
+    "requestDeletionDesc": "확인을 클릭하면 로그아웃됩니다. 계정과 모든 클라우드 데이터를 영구적으로 삭제하려면 로그아웃 후 support@tidemind.ai 로 이메일을 보내주세요. 이 기기의 로컬 데이터는 영향받지 않습니다.",
+    "requestDeletionConfirm": "로그아웃 — 지원팀에 이메일 보내기"
   },
   "cloud": {
     "loginRequired": "클라우드 기능을 사용하려면 TideMind Cloud에 로그인하세요.",

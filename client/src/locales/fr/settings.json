@@ -930,15 +930,14 @@
     "noBilling": "Aucun historique de facturation pour le forfait gratuit.",
     "billingComingSoon": "Historique de facturation bientôt disponible.",
     "logout": "Se déconnecter",
-    "deleteAccount": "Supprimer le compte",
-    "deleteAccountTitle": "Supprimer le compte ?",
-    "deleteAccountDesc": "Vous serez déconnecté. Pour supprimer définitivement votre compte et toutes les données cloud, veuillez contacter support@tidemind.ai. Les données locales ne sont pas affectées.",
-    "deleteAccountConfirm": "Se déconnecter et demander la suppression",
     "comingSoon": "Bientôt",
     "subscriptionComingSoon": "Les plans Pro et Pro+ arrivent bientôt. Restez à l'écoute pour la synchronisation cloud, le métabolisme 7×24, et plus encore.",
     "registerButton": "Créer un compte",
     "browserHint": "S'ouvre dans votre navigateur pour une authentification sécurisée.",
-    "requestAccountDeletion": "Demander la suppression du compte"
+    "requestAccountDeletion": "Demander la suppression du compte",
+    "requestDeletionTitle": "Demander la suppression du compte ?",
+    "requestDeletionDesc": "Cliquer sur confirmer vous déconnectera. Pour supprimer définitivement votre compte et toutes les données cloud, veuillez envoyer un e-mail à support@tidemind.ai après vous être déconnecté. Les données locales de cet appareil ne sont pas affectées.",
+    "requestDeletionConfirm": "Se déconnecter — je contacterai le support"
   },
   "cloud": {
     "loginRequired": "Connectez-vous à TideMind Cloud pour utiliser les fonctionnalités cloud.",

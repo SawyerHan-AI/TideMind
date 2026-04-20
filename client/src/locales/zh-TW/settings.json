@@ -930,15 +930,14 @@
     "noBilling": "免費方案無帳單記錄。",
     "billingComingSoon": "帳單記錄功能即將推出。",
     "logout": "登出",
-    "deleteAccount": "刪除帳號",
-    "deleteAccountTitle": "確定要刪除帳號嗎？",
-    "deleteAccountDesc": "這將登出。如需永久刪除帳號和所有雲端資料，請聯絡 support@tidemind.ai。本機資料不受影響。",
-    "deleteAccountConfirm": "登出並申請刪除",
     "comingSoon": "即將推出",
     "subscriptionComingSoon": "Pro 和 Pro+ 方案即將推出。敬請期待雲端同步、7×24 代謝引擎等更多功能。",
     "registerButton": "建立帳號",
     "browserHint": "將在瀏覽器中開啟，進行安全認證。",
-    "requestAccountDeletion": "申請刪除帳戶"
+    "requestAccountDeletion": "申請刪除帳戶",
+    "requestDeletionTitle": "申請刪除帳戶?",
+    "requestDeletionDesc": "點擊確認將登出。如需永久刪除帳戶及所有雲端資料,請在登出後寄信至 support@tidemind.ai。本裝置的本機資料不受影響。",
+    "requestDeletionConfirm": "登出 — 我會寄信給客服"
   },
   "cloud": {
     "loginRequired": "請登入 TideMind Cloud 以使用雲端功能。",
