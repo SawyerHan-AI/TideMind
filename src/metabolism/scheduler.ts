@@ -215,6 +215,18 @@ export async function runSchedulerTick(
 ): Promise<string[]> {
   const executed: string[] = [];
 
+  // 本地/云代谢互斥: 用户开启 cloud.metabolism_enabled 后,服务端 worker 接管
+  // 所有代谢任务,本地 scheduler 停跑以避免双端跑同样策略导致数据抖动。
+  // 注: 即便本地停跑,WebSocket 仍会从云端推回代谢结果,本地 UI 数据始终最新。
+  try {
+    const { getConfig } = await import('../config.js');
+    const config = getConfig();
+    if (config.cloud?.metabolism_enabled) {
+      log.debug('本地代谢已暂停 — cloud.metabolism_enabled=true,服务端接管');
+      return executed;
+    }
+  } catch { /* 配置读取失败 → 保持本地代谢行为,安全兜底 */ }
+
   const circuit = getCircuitState(db);
   let llmAvailable = circuit.state !== 'open';
   let halfOpenProbed = false; // 半开状态是否已放行一个探测任务

@@ -93,6 +93,8 @@ const DEFAULT_CONFIG: AppConfig = {
   cloud: {
     enabled: false,
     sync_enabled: false,
+    // 本地/云代谢互斥开关。true 时本地 scheduler 跳过所有任务,服务端代谢接管。
+    metabolism_enabled: false,
     server_url: 'https://cloud.tidemind.ai',
   },
 };

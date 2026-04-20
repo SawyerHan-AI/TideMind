@@ -50,6 +50,16 @@ export class CloudSyncClient {
   async start(): Promise<void> {
     log.info('starting sync client');
     this.stopped = false;
+
+    // 注册/刷新设备(fire-and-forget)。历史遗留 bug:之前从未调用,devices 表永远空。
+    // 服务端已改为幂等(按 user_id + name 去重),重复调用安全。
+    import('./device.js')
+      .then(m => m.registerDevice())
+      .catch(e => log.warn('device register failed:', (e as Error).message));
+
+    // 首次同步 / 距上次 > 7 天 → 触发 reconcile(fire-and-forget,不阻塞增量同步)
+    this.maybeTriggerReconcile().catch(e => log.warn('reconcile trigger failed:', (e as Error).message));
+
     await this.syncOnce();
 
     // 启动 WebSocket 实时通知
@@ -60,6 +70,40 @@ export class CloudSyncClient {
       () => this.syncOnce().catch(e => log.error('sync error:', (e as Error).message)),
       POLL_INTERVAL_MS,
     );
+  }
+
+  /**
+   * 判断是否需要跑 reconcile:首次(metadata 无记录)或距上次 > 7 天。
+   * 运行过程异步,不阻塞增量同步;失败写状态但不抛。
+   *
+   * 手动触发从 IPC 走,见 `ipcMain.handle('cloud:force-reconcile')`(待 UI 接)。
+   */
+  private async maybeTriggerReconcile(): Promise<void> {
+    const last = this.readMetadata('cloud.last_reconcile_at_nodes');
+    const isInitial = !last;
+    if (!isInitial) {
+      const lastTime = new Date(last).getTime();
+      if (!isNaN(lastTime) && Date.now() - lastTime < 7 * 24 * 60 * 60 * 1000) {
+        return; // 7 天内跑过,跳过
+      }
+    }
+
+    log.info(`triggering reconcile (isInitial=${isInitial})`);
+    const { Reconciler } = await import('./reconciler.js');
+    const reconciler = new Reconciler(this.db);
+    const results = await reconciler.runAll(isInitial);
+    for (const r of results) {
+      log.info(`reconcile ${r.table}: uploaded=${r.uploaded} downloaded=${r.downloaded} conflicts=${r.conflicts} errors=${r.errors.length}`);
+    }
+  }
+
+  private readMetadata(key: string): string | null {
+    try {
+      const row = this.db.prepare('SELECT value FROM metadata WHERE key = ?').get(key) as { value: string } | undefined;
+      return row?.value ?? null;
+    } catch {
+      return null;
+    }
   }
 
   stop(): void {

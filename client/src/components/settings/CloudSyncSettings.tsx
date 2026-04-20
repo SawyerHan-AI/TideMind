@@ -360,7 +360,8 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
 
 function MetabolismSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
   const { t } = useTranslation()
-  const [metabolismEnabled, setMetabolismEnabled] = useState(false)
+  // 状态来源: cloud.metabolismEnabled(持久化)。本地 toggle 只做"意图 → IPC 调用"
+  const metabolismEnabled = cloud.metabolismEnabled ?? false
   const [showEnableConfirm, setShowEnableConfirm] = useState(false)
   const [showDisableConfirm, setShowDisableConfirm] = useState(false)
 
@@ -373,6 +374,24 @@ function MetabolismSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus>
     if (enabled) setShowEnableConfirm(true)
     else setShowDisableConfirm(true)
   }, [])
+
+  const confirmMetabolismEnable = async () => {
+    setShowEnableConfirm(false)
+    try {
+      await window.api.cloud.setMetabolismEnabled(true)
+    } catch (e) {
+      console.error('set metabolism enabled failed:', (e as Error).message)
+    }
+  }
+
+  const confirmMetabolismDisable = async () => {
+    setShowDisableConfirm(false)
+    try {
+      await window.api.cloud.setMetabolismEnabled(false)
+    } catch (e) {
+      console.error('set metabolism disabled failed:', (e as Error).message)
+    }
+  }
 
   // Free users: locked section
   if (isFree) {
@@ -458,7 +477,7 @@ function MetabolismSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus>
         <ConfirmDialog
           open={showEnableConfirm}
           onCancel={() => setShowEnableConfirm(false)}
-          onConfirm={() => { setMetabolismEnabled(true); setShowEnableConfirm(false) }}
+          onConfirm={confirmMetabolismEnable}
           title={t('settings:cloud.metabolism.enableTitle', 'Enable Cloud Metabolism?')}
           description={t('settings:cloud.metabolism.enableDescByok', 'Your LLM API key will be encrypted and uploaded to TideMind Cloud. It will only be used to run your metabolism tasks. The key will be deleted when you disable cloud metabolism.')}
           confirmText={t('settings:cloud.metabolism.enableConfirm', 'Enable')}
@@ -471,7 +490,7 @@ function MetabolismSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus>
         <ConfirmDialog
           open={showEnableConfirm}
           onCancel={() => setShowEnableConfirm(false)}
-          onConfirm={() => { setMetabolismEnabled(true); setShowEnableConfirm(false) }}
+          onConfirm={confirmMetabolismEnable}
           title={t('settings:cloud.metabolism.enableTitle', 'Enable Cloud Metabolism?')}
           description={t('settings:cloud.metabolism.enableDescManaged', 'TideMind managed LLM will power your metabolism. 3M tokens/month included. You can also configure your own key in Model Settings for higher quality.')}
           confirmText={t('settings:cloud.metabolism.enableConfirm', 'Enable')}
@@ -483,7 +502,7 @@ function MetabolismSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus>
       <ConfirmDialog
         open={showDisableConfirm}
         onCancel={() => setShowDisableConfirm(false)}
-        onConfirm={() => { setMetabolismEnabled(false); setShowDisableConfirm(false) }}
+        onConfirm={confirmMetabolismDisable}
         title={t('settings:cloud.metabolism.disableTitle', 'Disable Cloud Metabolism?')}
         description={isProPlus
           ? t('settings:cloud.metabolism.disableDescManaged', 'Managed LLM usage will be paused. Metabolism will switch back to local. It will pause when your device is off.')

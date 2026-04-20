@@ -46,6 +46,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
 
       const config = getConfig();
       const syncEnabled = config.cloud?.sync_enabled ?? false;
+      const metabolismEnabled = config.cloud?.metabolism_enabled ?? false;
 
       const { getCloudSyncClient, getOutboxCount } = await import('../cloud/sync-client.js');
       const syncClient = getCloudSyncClient();
@@ -76,6 +77,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
         syncNotReady: syncClient?.syncNotReady ?? false,
         lastErrorCode,
         lastErrorMessage: syncClient?.lastErrorMessage ?? null,
+        metabolismEnabled,
       };
     } catch {
       return fallback;
@@ -178,6 +180,46 @@ export function registerCloudHandlers(db?: Database.Database): void {
       }
 
       return triggerSync();
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // 开关云代谢(本地/云互斥开关)
+  ipcMain.handle('cloud:set-metabolism-enabled', async (_event, enabled: boolean) => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { parse: parseToml, stringify: stringifyToml } = await import('smol-toml');
+    const { getDataDir } = await import('../../../src/config.js');
+
+    const configPath = path.join(getDataDir(), 'config.toml');
+    let current: Record<string, unknown> = {};
+    if (fs.existsSync(configPath)) {
+      try {
+        current = parseToml(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+      } catch { /* ignore */ }
+    }
+    const cloud = (current.cloud ?? {}) as Record<string, unknown>;
+    cloud.metabolism_enabled = enabled;
+    current.cloud = cloud;
+    fs.writeFileSync(configPath, stringifyToml(current as any));
+    reloadConfig();
+    log.info(`cloud metabolism ${enabled ? 'enabled' : 'disabled'}`);
+    emitCloudChanged();
+    return { success: true };
+  });
+
+  // 用户主动触发 reconcile(设置页"强制对齐"按钮)
+  ipcMain.handle('cloud:force-reconcile', async () => {
+    if (!db) return { success: false, error: 'db_not_ready' };
+    try {
+      const { isLoggedIn } = await import('../cloud/auth-client.js');
+      if (!isLoggedIn()) return { success: false, error: 'not_logged_in' };
+      const { Reconciler } = await import('../cloud/reconciler.js');
+      const reconciler = new Reconciler(db);
+      // 强制对齐不是首次:用户手动触发,派生字段不接受覆盖(和日常同步保持一致)
+      const results = await reconciler.runAll(false);
+      return { success: true, results };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

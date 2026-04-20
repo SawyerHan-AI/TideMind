@@ -16,6 +16,8 @@ export interface CloudStatus {
   lastErrorCode?: string | null
   /** 错误的原始 message(如 `HTTP 500` / `fetch failed` 等),用于辅助诊断。 */
   lastErrorMessage?: string | null
+  /** 云代谢开关(和本地代谢互斥)。开启后本地 scheduler 停跑。 */
+  metabolismEnabled?: boolean
 }
 
 export function useCloudStatus(): CloudStatus {
