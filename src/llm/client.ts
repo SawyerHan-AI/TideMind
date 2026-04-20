@@ -311,16 +311,33 @@ function isRetryable(err: unknown): boolean {
 }
 
 /**
- * 判断错误是否是 LLM 服务级错误（比 isRetryable 范围更广，包含 401/403）
+ * 判断错误是否是 LLM 服务级错误(比 isRetryable 范围更广,包含 401/403)。
+ *
+ * **明确排除 context_length_exceeded / "maximum context length"** — 这是
+ * 输入侧的错误(prompt 太长),不是服务不可用。老代码把这种 400 也归为
+ * 服务错误 → scheduler 把它当作 LLM 服务失败累计到熔断器,多次触发后
+ * 冷静期内所有 LLM 任务跳过。实际 context overflow 是"换个输入就能跑",
+ * 不应该打熔断器。
  */
 function isServiceError(err: unknown): boolean {
-  if (err instanceof Anthropic.APIError) return true; // 所有 API 错误都算
   if (err instanceof Error) {
     const msg = err.message;
+    // 优先排除 — context overflow / 内容策略违规 / 输入格式错误等非服务错误
+    if (/context[_ ]length|maximum context|context window/i.test(msg)) return false;
+    if (/content[_ ]policy|safety|harm/i.test(msg)) return false;
+    if (/invalid[_ ]request|invalid[_ ]param|bad request/i.test(msg) && !/\b(429|5\d{2})\b/.test(msg)) {
+      return false;
+    }
+
     if (msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT') || msg.includes('fetch failed')) return true;
     if (msg.includes('API error') || msg.includes('API key')) return true;
-    // Gemini HTTP 错误
-    if (/\b(401|403|429|500|502|503)\b/.test(msg)) return true;
+    // 显式服务故障 HTTP 状态码
+    if (/\b(401|403|429|5\d{2})\b/.test(msg)) return true;
+  }
+  if (err instanceof Anthropic.APIError) {
+    // Anthropic 400 含 context overflow 按状态码判断
+    if (err.status === 400) return false;
+    return true;
   }
   return false;
 }

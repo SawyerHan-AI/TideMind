@@ -169,12 +169,22 @@ export class CloudSyncClient {
         }
       });
 
-      this.ws.on('close', (code, reason) => {
+      this.ws.on('close', async (code, reason) => {
         log.info(`ws closed: code=${code} reason=${reason.toString()}`);
         this.ws = null;
-        if (!this.stopped) {
-          this.scheduleReconnect();
+        if (this.stopped) return;
+        // code 4401(服务端自定义)= token 过期,先强制刷新再重连。
+        // 不刷新直接重连会立刻再被拒,进入指数退避空转。
+        if (code === 4401) {
+          try {
+            await refreshTokenIfNeeded();
+            // 刷新后立即重连,不走指数退避(普通断开才要退避)
+            this.wsReconnectAttempts = 0;
+          } catch (err) {
+            log.warn(`ws close 4401 but refresh failed: ${(err as Error).message}`);
+          }
         }
+        this.scheduleReconnect();
       });
 
       this.ws.on('error', (err) => {

@@ -56,13 +56,33 @@ function ensureLogStream(): fs.WriteStream | null {
     if (logStream) {
       logStream.end();
     }
-    fs.mkdirSync(logDir, { recursive: true });
-    const logPath = path.join(logDir, `${today}.log`);
-    logStream = fs.createWriteStream(logPath, { flags: 'a' });
-    currentLogDate = today;
+    try {
+      fs.mkdirSync(logDir, { recursive: true });
+      const logPath = path.join(logDir, `${today}.log`);
+      logStream = fs.createWriteStream(logPath, { flags: 'a' });
+      currentLogDate = today;
 
-    // 清理超过 7 天的日志
-    cleanOldLogs();
+      // 必须监听 'error' 事件 — WriteStream 在目录只读、磁盘满、权限问题
+      // 时会 emit 'error';没 listener 会把异常冒到 uncaughtException 崩溃进程。
+      // 降级为:关掉 stream(后续只走 stderr),不影响 daemon 继续运行。
+      logStream.on('error', (err) => {
+        // eslint-disable-next-line no-console
+        console.error(`[logger] file stream error: ${err.message} — continuing with stderr-only`);
+        try { logStream?.end(); } catch { /* ignore */ }
+        logStream = null;
+        // 置空 logDir 避免下次 ensureLogStream 又尝试(目录只读问题会持续)
+        logDir = null;
+      });
+    } catch (err) {
+      // mkdir / createWriteStream 同步抛(非 fs-async) — 一样降级
+      // eslint-disable-next-line no-console
+      console.error(`[logger] failed to init file stream: ${(err as Error).message}`);
+      logStream = null;
+      return null;
+    }
+
+    // 清理超过 7 天的日志(失败无关紧要)
+    try { cleanOldLogs(); } catch { /* ignore */ }
   }
   return logStream;
 }
