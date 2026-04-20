@@ -142,11 +142,20 @@ export function updateNode(
 }
 
 /**
- * 冷却节点：将 heat 降至极低值，替代旧的二元归档。
- * 节点不会从查询中彻底消失，但 heat 极低意味着自然沉底。
+ * 归档节点：archived=1 + heat=0.02。
+ *
+ * archived=1 使节点在默认 UI 查询和搜索里消失，但仍可从"已归档节点"入口
+ * 看到、通过 unarchiveNode 恢复；heat=0.02 是额外的自然沉底兜底。
+ *
+ * 之前的实现只 set heat=0.02 不 set archived，名字和行为不符——很多查询
+ * 过滤 archived=1 但不看 heat（或过滤 heat > 0.01 却保留 0.02）——导致
+ * "archive 了但节点还出现在 UI 里"。见 docs/backlog.md 已记的语义不一致
+ * 条目。
  */
 export function archiveNode(db: Database.Database, id: string): void {
-  updateNode(db, id, { heat: 0.02 }, 'cooldown');
+  db.prepare(
+    'UPDATE nodes SET archived = 1, heat = 0.02 WHERE id = ?',
+  ).run(id);
 }
 
 /**

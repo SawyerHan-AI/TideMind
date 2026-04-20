@@ -129,20 +129,18 @@ describe('Migration v15 — 清理外部笔记错误归并节点', () => {
     expect(state?.archived).toBe(0);
   });
 
-  it('不影响已 archived 或 is_superseded 的节点', () => {
+  it('已 archived 的节点不重复处理（archived=0 守卫）', () => {
     insertNode(db, 'already-archived', { source_tool: 'logseq', archived: 1, heat: 0.02 });
     insertDedupVersion(db, 'already-archived');
-    insertNode(db, 'already-superseded', { source_tool: 'logseq', is_superseded: 1, heat: 0.01 });
-    insertDedupVersion(db, 'already-superseded');
 
     downgradeToV14(db);
     ensureSchema(db);
 
-    // archived 的保持 archived=1，但 heat 不会被强行改（条件里有 archived = 0 守卫）
     expect(getNodeState(db, 'already-archived')?.archived).toBe(1);
-    // superseded 的 archived 保持 0（我们不 archive superseded，它自己已经失效）
-    expect(getNodeState(db, 'already-superseded')?.archived).toBe(0);
   });
+
+  // 注：is_superseded=1 的节点由 v16 migration 处理（v15 当初漏了），详见
+  // migration-v16.test.ts
 
   it('幂等：对同一个数据库再跑一次 migration 不改变状态', () => {
     insertNode(db, 'victim-2', { source_tool: 'logseq', heat: 2.0 });
