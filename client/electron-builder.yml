@@ -4,6 +4,12 @@ directories:
   buildResources: resources
   output: release
 
+# 显式指定 artifact 名字，解决 electron-builder 对带空格的 productName 处理
+# 不一致的老 bug：上传到 GitHub Releases 的 asset 用 "Tide.Mind-"（点号），
+# 但自动生成的 latest-mac.yml 里的 url 用 "Tide-Mind-"（横线），导致
+# electron-updater 按 yml 去拉时 404。写死 artifactName 让两边永远一致。
+artifactName: Tide.Mind-${version}-${arch}.${ext}
+
 # Auto-update: GitHub Releases（签名后启用 electron-updater）
 publish:
   provider: github
