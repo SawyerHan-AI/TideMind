@@ -942,7 +942,7 @@
   "cloud": {
     "loginRequired": "請登入 TideMind Cloud 以使用雲端功能。",
     "goLogin": "登入",
-    "offlineNotice": "離線中 — 雲端設定不可用。",
+    "offlineNotice": "網路已中斷，同步已暫停。恢復連線後將自動繼續。",
     "betaNotice": "雲端功能目前處於內測階段",
     "betaDesc": "您的帳戶已註冊。雲端功能對您開放時，我們會通知您。",
     "never": "從未同步",

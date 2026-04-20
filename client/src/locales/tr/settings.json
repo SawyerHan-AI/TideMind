@@ -942,7 +942,7 @@
   "cloud": {
     "loginRequired": "Bulut özelliklerini kullanmak için TideMind Cloud'a giriş yapın.",
     "goLogin": "Giriş Yap",
-    "offlineNotice": "Çevrimdışı — bulut ayarları kullanılamıyor.",
+    "offlineNotice": "Çevrimdışı — senkronizasyon duraklatıldı. Yeniden çevrimiçi olduğunuzda otomatik olarak devam edecek.",
     "betaNotice": "Bulut özellikleri özel beta aşamasındadır",
     "betaDesc": "Hesabınız kayıtlı. Bulut özellikleri hesabınız için kullanılabilir olduğunda bilgilendirileceksiniz.",
     "never": "Hiçbir zaman",

@@ -54,7 +54,9 @@ export function registerCloudHandlers(db?: Database.Database): void {
         email: auth.email ?? null,
         plan: auth.plan ?? null,
         syncEnabled,
-        online: syncClient ? syncClient.getStatus() !== 'offline' : false,
+        // 已登录默认视为在线；仅当 syncClient 明确汇报 'offline'（token 失效 / 网络不可达 / 403 白名单拒绝）时才置为 false
+        // 旧逻辑把"无 syncClient"也当 offline,导致未开启同步的用户被错误地显示为"离线"
+        online: syncClient ? syncClient.getStatus() !== 'offline' : true,
         syncing: syncClient ? syncClient.getStatus() === 'syncing' : false,
         outboxCount: syncClient ? getOutboxCount() : 0,
         lastSyncedAt: auth.lastSyncedAt ?? null,

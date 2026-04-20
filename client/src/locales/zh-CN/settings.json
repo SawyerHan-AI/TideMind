@@ -930,7 +930,7 @@
   "cloud": {
     "loginRequired": "请先登录 TideMind Cloud 账号以使用云服务。",
     "goLogin": "去登录",
-    "offlineNotice": "当前处于离线状态，云服务设置暂不可操作。",
+    "offlineNotice": "网络已断开，同步已暂停。恢复联网后将自动继续。",
     "betaNotice": "云功能目前处于内测阶段",
     "betaDesc": "您的账户已注册。云功能对您开放时，我们会通知您。",
     "never": "从未同步",
