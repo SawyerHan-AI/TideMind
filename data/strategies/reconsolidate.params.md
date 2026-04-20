@@ -4,7 +4,7 @@
 | 参数 | 值 | 说明 |
 |------|-----|------|
 | max_context_nodes | 5 | 传入上下文的最大节点数 |
-| independence_boost | 0.15 | 再巩固后精炼度提升量 |
+| refinement_boost | 0.15 | 再巩固后精炼度提升量(老名 `independence_boost` 为历史遗留,v0.2.23 已更名;代码按新名读,老名通过 strategy-loader 回退兼容) |
 | llm_tier | standard | 模型档位: light/standard/heavy |
 | thinking | true | 是否开启扩展思考 |
 | thinking_budget | 1024 | 思考 token 预算 |
