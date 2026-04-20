@@ -135,13 +135,24 @@ export function coreDataToUnixMs(coreDataTs: number): number {
 
 // ======== 查询函数 ========
 
-/** 获取所有账户 */
+/**
+ * 获取所有账户(ICAccount 实体)。
+ *
+ * ZICCLOUDSYNCINGOBJECT 是单表多实体(账户/文件夹/笔记/附件),老版本用
+ * `WHERE ZNAME IS NOT NULL` 筛账户会把任何有 ZNAME 的行当账户(文件夹、
+ * 共享 smart folder 等),后续 listNotes(accountZpks=[folderZpk]) 用错误 FK
+ * 查不到任何笔记。
+ *
+ * 正确做法:Join Z_PRIMARYKEY 按 Z_NAME = 'ICAccount' 过滤 Z_ENT。
+ */
 export function listAccounts(db: Database.Database): AppleAccount[] {
   const rows = db.prepare(`
-    SELECT Z_PK, ZNAME, ZIDENTIFIER, ZUSERRECORDNAME
-    FROM ZICCLOUDSYNCINGOBJECT
-    WHERE ZNAME IS NOT NULL
-    ORDER BY ZNAME
+    SELECT c.Z_PK, c.ZNAME, c.ZIDENTIFIER, c.ZUSERRECORDNAME
+    FROM ZICCLOUDSYNCINGOBJECT c
+    JOIN Z_PRIMARYKEY zp ON c.Z_ENT = zp.Z_ENT
+    WHERE zp.Z_NAME = 'ICAccount'
+      AND c.ZNAME IS NOT NULL
+    ORDER BY c.ZNAME
   `).all() as Array<{ Z_PK: number; ZNAME: string; ZIDENTIFIER: string; ZUSERRECORDNAME: string | null }>;
 
   return rows.map(r => ({

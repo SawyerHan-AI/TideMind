@@ -134,11 +134,16 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
       });
     }
   }
-  // --- 默认：返回最近的活跃节点 ---
+  // --- 默认:返回最近的活跃节点 ---
   else {
+    // archived: false 必须显式传 — listNodes 默认不过滤 archived/is_superseded,
+    // 浏览路径会混入已归档、已被取代的脏节点(用户反复看到"删除后又出现
+    // 的幽灵节点"一种来源)。listNodes 在 archived===false 时同时过滤
+    // is_superseded=0,所以一个 flag 解决两种脏状态。
     nodes = repo.nodes.listNodes({
       limit,
       orderBy: 'heat DESC',
+      archived: false,
       createdAfter: input.created_after,
       createdBefore: input.created_before,
     });

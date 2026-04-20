@@ -41,6 +41,14 @@ export function reconsolidateOnRecall(
 ): void {
   if (reconsolidateInFlight) return;
   reconsolidateInFlight = true;
+
+  // 整个函数体包 try/catch/finally — 感知读/深度判定阶段任一异常(createLink
+  // 抛错、SQL 错、策略配置坏等)会让模块级 flag 永远卡 true,此后本进程的
+  // recall 永远跳过深度/感知读,直到重启。async IIFE 的 .finally 有自己的
+  // 复位路径,但前面同步代码挂掉就漏了。
+  let spawnedAsync = false;
+  try {
+
   const minNodes = getParam('metabolism-params', 'reconsolidate_min_nodes', 3);
 
   // --- 感知读 ---
@@ -131,6 +139,7 @@ export function reconsolidateOnRecall(
 
   // 异步串行执行深度再巩固 + 冲突检测，避免不可控的并发 LLM 调用
   if (deepTargets.length > 0 || nodes.length >= 2 || context) {
+    spawnedAsync = true;
     (async () => {
       for (const node of deepTargets) {
         log.info(`深度再巩固触发 node=${node.id} reason=时间`);
@@ -141,8 +150,16 @@ export function reconsolidateOnRecall(
         try { await detectAndReconsolidateAsync(db, nodes, context); } catch (err) { log.error('冲突检测失败:', (err as Error).message); }
       }
     })().catch(err => log.warn('再巩固 IIFE 未捕获异常:', (err as Error).message)).finally(() => { reconsolidateInFlight = false; });
-  } else {
+  }
+
+  } catch (err) {
+    // 同步路径任何异常都立刻复位 flag
+    log.error(`reconsolidateOnRecall 同步异常: ${(err as Error).message}`);
     reconsolidateInFlight = false;
+    throw err;
+  } finally {
+    // 如果没进入 async IIFE,同步路径跑完也要复位
+    if (!spawnedAsync) reconsolidateInFlight = false;
   }
 }
 
