@@ -12,6 +12,10 @@ export interface CloudStatus {
   lastSyncedAt?: string
   cloudNotAvailable?: boolean
   syncNotReady?: boolean
+  /** 持久化的错误码(从 syncClient 状态派生),页面切换后仍可见。 */
+  lastErrorCode?: string | null
+  /** 错误的原始 message(如 `HTTP 500` / `fetch failed` 等),用于辅助诊断。 */
+  lastErrorMessage?: string | null
 }
 
 export function useCloudStatus(): CloudStatus {
