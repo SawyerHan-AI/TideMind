@@ -937,7 +937,8 @@
     "deleteAccountDesc": "这将退出登录。如需永久删除账号和所有云端数据，请联系 support@tidemind.ai。本地数据不受影响。",
     "deleteAccountConfirm": "退出并申请删除",
     "registerButton": "创建账号",
-    "browserHint": "将在浏览器中打开，进行安全认证。"
+    "browserHint": "将在浏览器中打开，进行安全认证。",
+    "requestAccountDeletion": "申请删除账户"
   },
   "cloud": {
     "loginRequired": "请先登录 TideMind Cloud 账号以使用云服务。",

@@ -937,7 +937,8 @@
     "comingSoon": "即將推出",
     "subscriptionComingSoon": "Pro 和 Pro+ 方案即將推出。敬請期待雲端同步、7×24 代謝引擎等更多功能。",
     "registerButton": "建立帳號",
-    "browserHint": "將在瀏覽器中開啟，進行安全認證。"
+    "browserHint": "將在瀏覽器中開啟，進行安全認證。",
+    "requestAccountDeletion": "申請刪除帳戶"
   },
   "cloud": {
     "loginRequired": "請登入 TideMind Cloud 以使用雲端功能。",

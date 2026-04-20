@@ -28,6 +28,12 @@ export class CloudSyncClient {
   private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
 
+  /**
+   * cloud_not_available 时的慢速探测 timer。周期 1 小时,用于用户被加入
+   * 白名单后能自动恢复,无需重启 app。
+   */
+  private slowRetryTimer: ReturnType<typeof setInterval> | null = null;
+
   /** 用户未在白名单中，云端返回 403 cloud_not_available */
   cloudNotAvailable = false;
   /** 服务端同步接口尚未就绪（404） */
@@ -117,6 +123,10 @@ export class CloudSyncClient {
     if (this.intervalId) {
       clearInterval(this.intervalId);
       this.intervalId = null;
+    }
+    if (this.slowRetryTimer) {
+      clearInterval(this.slowRetryTimer);
+      this.slowRetryTimer = null;
     }
     this.disconnectWebSocket();
     log.info('sync client stopped');
@@ -231,8 +241,9 @@ export class CloudSyncClient {
       if (msg === 'cloud_not_available') {
         this.cloudNotAvailable = true;
         this.status = 'offline';
-        // 非白名单用户：停止轮询和 WebSocket，避免持续 403
-        this.stop();
+        // 非白名单用户:暂停高频轮询,但保留周期性探测 — 否则用户被加入白名单
+        // 后不重启 app 永不重连。改成每小时试一次(而不是 stop() 永久死亡)。
+        this.startSlowRetry();
       } else if (msg.includes('404')) {
         this.syncNotReady = true;
         this.status = 'error';
@@ -244,6 +255,41 @@ export class CloudSyncClient {
       // 误以为 sync 已成功开启(尤其是 start() fire-and-forget 之后)
       this.emitDataChanged();
     }
+  }
+
+  /**
+   * cloud_not_available 时进入慢重试模式:每 1 小时试一次 syncOnce。
+   * 一旦成功就恢复正常轮询。
+   */
+  private startSlowRetry(): void {
+    // 停当前的高频轮询,但不彻底 stop(保留 slow retry timer)
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    if (this.slowRetryTimer) return; // 已经在慢重试
+    const ONE_HOUR = 60 * 60 * 1000;
+    this.slowRetryTimer = setInterval(() => {
+      if (this.stopped) return;
+      log.info('cloud_not_available slow-retry: probing...');
+      this.syncOnce().then(() => {
+        // 如果这次成功(cloudNotAvailable 被置 false),恢复正常轮询
+        if (!this.cloudNotAvailable) {
+          if (this.slowRetryTimer) {
+            clearInterval(this.slowRetryTimer);
+            this.slowRetryTimer = null;
+          }
+          if (!this.intervalId) {
+            this.intervalId = setInterval(() => this.syncOnce(), POLL_INTERVAL_MS);
+          }
+          log.info('cloud_not_available recovered, resumed normal sync');
+        }
+      }).catch(() => { /* 继续慢重试 */ });
+    }, ONE_HOUR);
   }
 
   async pullChanges(token: string): Promise<number> {

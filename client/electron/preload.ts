@@ -138,6 +138,7 @@ const api = {
     setSyncEnabled: (enabled: boolean) => ipcRenderer.invoke('cloud:set-sync-enabled', enabled),
     setMetabolismEnabled: (enabled: boolean) => ipcRenderer.invoke('cloud:set-metabolism-enabled', enabled),
     forceReconcile: () => ipcRenderer.invoke('cloud:force-reconcile'),
+    abortReconcile: () => ipcRenderer.invoke('cloud:abort-reconcile'),
     triggerSync: () => ipcRenderer.invoke('cloud:trigger-sync'),
     // reconcile 进度事件订阅
     onReconcileProgress: (cb: (p: unknown) => void) => {

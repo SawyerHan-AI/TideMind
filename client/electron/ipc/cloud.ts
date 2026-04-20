@@ -1,9 +1,19 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import type Database from 'better-sqlite3'
+import type { Reconciler as ReconcilerType } from '../cloud/reconciler.js'
 import { getConfig, reloadConfig } from '../../../src/config.js'
 import { createLogger } from '../../../src/utils/logger.js'
 
 const log = createLogger('ipc-cloud')
+
+/**
+ * 当前正在运行的 Reconciler 实例,全局唯一。
+ *
+ * - force-reconcile 检查它防重复触发
+ * - abort-reconcile 通过它中止
+ * 必须在 reconcile 结束(成功或失败)时清空。
+ */
+let activeReconciler: ReconcilerType | null = null;
 
 /**
  * 取两个 ISO 时间戳中较早的那个(null 视为"未跑过",最早)。
@@ -240,20 +250,37 @@ export function registerCloudHandlers(db?: Database.Database): void {
     return { success: true };
   });
 
-  // 用户主动触发 reconcile(设置页"强制对齐"按钮)
+  // 用户主动触发 reconcile(设置页"强制对齐"按钮)。
+  //
+  // 互斥锁 + abort IPC:
+  //  - activeReconciler 全局唯一,重复点击直接返 already_running 而不是
+  //    并发跑两个 reconciler 互相覆盖 metadata
+  //  - cloud:abort-reconcile 手动中止正在跑的 reconcile
+  //    (reconciler.abort() 只会在当前 batch 结束后退出,非立即生效)
   ipcMain.handle('cloud:force-reconcile', async () => {
     if (!db) return { success: false, error: 'db_not_ready' };
+    if (activeReconciler) return { success: false, error: 'already_running' };
     try {
       const { isLoggedIn } = await import('../cloud/auth-client.js');
       if (!isLoggedIn()) return { success: false, error: 'not_logged_in' };
       const { Reconciler } = await import('../cloud/reconciler.js');
-      const reconciler = new Reconciler(db);
-      // 强制对齐不是首次:用户手动触发,派生字段不接受覆盖(和日常同步保持一致)
-      const results = await reconciler.runAll(false);
-      return { success: true, results };
+      activeReconciler = new Reconciler(db);
+      try {
+        const results = await activeReconciler.runAll(false);
+        return { success: true, results };
+      } finally {
+        activeReconciler = null;
+      }
     } catch (err) {
+      activeReconciler = null;
       return { success: false, error: (err as Error).message };
     }
+  });
+
+  ipcMain.handle('cloud:abort-reconcile', async () => {
+    if (!activeReconciler) return { success: false, error: 'not_running' };
+    activeReconciler.abort();
+    return { success: true };
   });
 
   // Get outbox count

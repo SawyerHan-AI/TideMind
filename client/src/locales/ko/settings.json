@@ -937,7 +937,8 @@
     "comingSoon": "출시 예정",
     "subscriptionComingSoon": "Pro 및 Pro+ 플랜이 곧 출시됩니다. 클라우드 동기화, 7×24 대사 엔진 등을 기대해 주세요.",
     "registerButton": "계정 만들기",
-    "browserHint": "안전한 인증을 위해 브라우저에서 열립니다."
+    "browserHint": "안전한 인증을 위해 브라우저에서 열립니다.",
+    "requestAccountDeletion": "계정 삭제 요청"
   },
   "cloud": {
     "loginRequired": "클라우드 기능을 사용하려면 TideMind Cloud에 로그인하세요.",

@@ -224,6 +224,14 @@ async function runIncrementalSyncInner(
   const source = db.prepare('SELECT last_synced FROM note_sources WHERE id = ?').get(sourceId) as { last_synced: string | null } | undefined;
   const lastSynced = source?.last_synced ?? '1970-01-01T00:00:00.000Z';
 
+  // **在开始扫描前**记录 scanStartedAt,用作下次的 last_synced。
+  //
+  // 老代码在 processNotionPages 完成后才 `new Date().toISOString()`,处理
+  // 期间(可能 2 分钟+)被编辑的页面 lastEditedTime < 这个时间 → 下轮
+  // `page.lastEditedTime > lastSynced` 判不中,要等用户再次编辑才会被
+  // 同步。用 scanStartedAt 可保证不漏:所有被跳过的页面都不会晚于扫描起点。
+  const scanStartedAt = new Date().toISOString();
+
   // 搜索最近变更的页面
   // 注意：Search API 排序不保证严格有序，不能用 break 提前终止
   // 遍历所有结果，过滤出 lastEditedTime > lastSynced 的页面
@@ -236,6 +244,11 @@ async function runIncrementalSyncInner(
   }
 
   if (changedPages.length === 0) {
+    // 即便没有变更,也推进 last_synced 到 scanStartedAt,下次查询范围收窄,
+    // 避免每次都拿历史所有页面做比较
+    db.prepare('UPDATE note_sources SET last_synced = ? WHERE id = ?')
+      .run(scanStartedAt, sourceId);
+
     // 周期性删除检测
     const counter = (syncCounters.get(sourceId) ?? 0) + 1;
     syncCounters.set(sourceId, counter);
@@ -248,9 +261,9 @@ async function runIncrementalSyncInner(
   log.info(`增量同步: ${changedPages.length} 个页面变更`);
   await processNotionPages(db, token, changedPages, sourceId);
 
-  // 更新 last_synced
+  // 用扫描开始时间作为 last_synced,下次不漏处理期间被编辑的页面
   db.prepare('UPDATE note_sources SET last_synced = ? WHERE id = ?')
-    .run(new Date().toISOString(), sourceId);
+    .run(scanStartedAt, sourceId);
 }
 
 // ── 删除检测 ──────────────────────────────────────────────────
