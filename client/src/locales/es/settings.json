@@ -942,7 +942,7 @@
   "cloud": {
     "loginRequired": "Inicia sesión en TideMind Cloud para usar las funciones en la nube.",
     "goLogin": "Iniciar sesión",
-    "offlineNotice": "Sin conexión — la configuración de la nube no está disponible.",
+    "offlineNotice": "Sin conexión — la sincronización está en pausa. Se reanudará automáticamente cuando vuelvas a estar en línea.",
     "betaNotice": "Las funciones en la nube están en beta privada",
     "betaDesc": "Tu cuenta está registrada. Te notificaremos cuando las funciones en la nube estén disponibles para tu cuenta.",
     "never": "Nunca",

@@ -942,7 +942,7 @@
   "cloud": {
     "loginRequired": "Melde dich bei TideMind Cloud an, um Cloud-Funktionen zu nutzen.",
     "goLogin": "Anmelden",
-    "offlineNotice": "Offline — Cloud-Einstellungen sind nicht verfügbar.",
+    "offlineNotice": "Offline — Synchronisierung pausiert. Sie wird automatisch fortgesetzt, sobald Sie wieder online sind.",
     "betaNotice": "Cloud-Funktionen befinden sich in der privaten Beta",
     "betaDesc": "Ihr Konto ist registriert. Sie werden benachrichtigt, sobald Cloud-Funktionen für Ihr Konto verfügbar sind.",
     "never": "Nie",

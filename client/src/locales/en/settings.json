@@ -930,7 +930,7 @@
   "cloud": {
     "loginRequired": "Sign in to TideMind Cloud to use cloud features.",
     "goLogin": "Sign In",
-    "offlineNotice": "Offline — cloud settings are not available.",
+    "offlineNotice": "Offline — sync is paused. It will resume automatically when you're back online.",
     "betaNotice": "Cloud features are in private beta",
     "betaDesc": "Your account is registered. You'll be notified when cloud features are available for your account.",
     "never": "Never",

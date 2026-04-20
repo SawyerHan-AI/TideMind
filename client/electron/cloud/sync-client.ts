@@ -182,6 +182,9 @@ export class CloudSyncClient {
         this.status = 'error';
       }
       log.error('sync failed:', msg);
+      // 失败路径也需要通知 UI,否则 renderer 只能看到 syncClient 被创建时的 'idle' 初始值,
+      // 误以为 sync 已成功开启(尤其是 start() fire-and-forget 之后)
+      this.emitDataChanged();
     }
   }
 

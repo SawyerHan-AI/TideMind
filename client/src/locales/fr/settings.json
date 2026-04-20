@@ -942,7 +942,7 @@
   "cloud": {
     "loginRequired": "Connectez-vous à TideMind Cloud pour utiliser les fonctionnalités cloud.",
     "goLogin": "Se connecter",
-    "offlineNotice": "Hors ligne — les paramètres cloud ne sont pas disponibles.",
+    "offlineNotice": "Hors ligne — la synchronisation est en pause. Elle reprendra automatiquement lorsque vous serez de nouveau en ligne.",
     "betaNotice": "Les fonctionnalités cloud sont en bêta privée",
     "betaDesc": "Votre compte est enregistré. Vous serez notifié lorsque les fonctionnalités cloud seront disponibles pour votre compte.",
     "never": "Jamais",
