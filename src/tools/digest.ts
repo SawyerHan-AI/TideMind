@@ -351,11 +351,16 @@ async function generateAndStoreEmbedding(
       newTags: srcTags.length > 0 ? srcTags : undefined,
     });
     repo.nodes.archiveNode(nodeId);
-    // 清理被归档节点的向量数据和分段数据，避免残留占用空间和干扰搜索
+    // 清理被归档节点的向量数据和分段数据,避免残留占用空间和干扰搜索。
+    //
+    // 必须走 repo.vectors.deleteVector() 而非直接 `DELETE FROM nodes_vec
+    // WHERE id = ?` — nodes_vec.id 存的是 `${nodeId}#${segmentIndex}`,
+    // 用裸 nodeId 永远删不到,归档节点的 embedding 会残留,搜索中再次出现
+    // "归档幽灵"。repo.vectors.deleteVector 内部通过 node_segments 找到所有
+    // segmentId 再精确删除。
     try {
-      db.prepare('DELETE FROM nodes_vec WHERE id = ?').run(nodeId);
+      repo.vectors.deleteVector(nodeId);
     } catch { /* nodes_vec 可能未加载 */ }
-    db.prepare('DELETE FROM node_segments WHERE node_id = ?').run(nodeId);
     repo.log.logTimelineEvent({
       type: 'memory',
       subtype: 'dedup_merge',

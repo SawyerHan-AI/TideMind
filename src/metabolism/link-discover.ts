@@ -12,7 +12,7 @@
 import type Database from 'better-sqlite3';
 import { getNode } from '../db/nodes.js';
 import { createLink, linkExists } from '../db/links.js';
-import { searchVectors } from '../db/vectors.js';
+import { searchVectors, getVectorForNode } from '../db/vectors.js';
 import { isVecLoaded } from '../db/connection.js';
 import { inferLinkType } from '../llm/link-judge.js';
 import { l2DistanceToSimilarity } from '../utils/similarity.js';
@@ -74,10 +74,14 @@ function discoverByVectorNeighbors(db: Database.Database): { scanned: number; di
   let discovered = 0;
 
   for (const { id: nodeId } of recentNodes) {
-    const vecRow = db.prepare('SELECT embedding FROM nodes_vec WHERE id = ?').get(nodeId) as any;
-    if (!vecRow) continue;
+    // 必须用 getVectorForNode 而非直接 `SELECT FROM nodes_vec WHERE id = ?` —
+    // nodes_vec.id 存的是 `${nodeId}#${segmentIndex}`,用裸 nodeId 查永远
+    // 返回 undefined,整个向量邻居分支从未真正生效过。getVectorForNode
+    // 正确地取第一段 embedding。
+    const embedding = getVectorForNode(db, nodeId);
+    if (!embedding) continue;
 
-    const neighbors = searchVectors(db, vecRow.embedding, 10);
+    const neighbors = searchVectors(db, embedding, 10);
     const candidates = neighbors
       .filter(n => n.id !== nodeId)
       .map(n => ({ id: n.id, similarity: l2DistanceToSimilarity(n.distance) }))
