@@ -396,7 +396,7 @@ export function DetailPanel({ nodeId, onNavigate }: {
                     className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-white/[0.03] hover:bg-white/[0.06] transition-colors text-left"
                   >
                     <TypeBadge type={link.target_type ?? undefined} />
-                    <span className="text-xs text-gray-300 truncate flex-1">{link.target_content_preview}</span>
+                    <span className="text-xs text-gray-300 truncate flex-1">{link.target_title?.trim() || link.target_content_preview}</span>
                   </button>
                 )
               })}
@@ -465,7 +465,7 @@ function LinkRow({ link, nodeId, onNavigate, isPending }: {
             style={{ backgroundColor: '#fff', opacity: Math.max(0.15, link.strength) }}
             title={`${t('explorer:detail.strength')} ${link.strength.toFixed(2)}`}
           />
-          <span className="text-xs text-gray-300 truncate">{link.target_content_preview}</span>
+          <span className="text-xs text-gray-300 truncate">{link.target_title?.trim() || link.target_content_preview}</span>
         </div>
         {link.note && (
           <p className="text-[10px] text-gray-500 mt-0.5 ml-5 truncate">{link.note}</p>

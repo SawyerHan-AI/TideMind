@@ -106,7 +106,7 @@ export function registerNodeHandlers(db: Database.Database): void {
     // 获取链接目标节点的预览
     const enrichedLinks = (links as Array<Record<string, unknown>>).map(link => {
       const targetId = link.from_id === id ? link.to_id : link.from_id
-      const target = db.prepare('SELECT id, content, type FROM nodes WHERE id = ?').get(targetId as string) as { id: string; content: string; type: string } | undefined
+      const target = db.prepare('SELECT id, content, title, type FROM nodes WHERE id = ?').get(targetId as string) as { id: string; content: string; title: string | null; type: string } | undefined
       // 解析 relation JSON（DB 存储为 JSON 字符串）
       let parsedRelation = link.relation
       if (typeof link.relation === 'string') {
@@ -116,6 +116,7 @@ export function registerNodeHandlers(db: Database.Database): void {
         ...link,
         relation: parsedRelation,
         target_content_preview: target?.content?.slice(0, 80) ?? '',
+        target_title: target?.title ?? null,
         target_type: target?.type ?? '',
         direction: link.from_id === id ? 'outgoing' : 'incoming',
       }

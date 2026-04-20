@@ -52,6 +52,7 @@ export interface LinkData {
   status: string
   created: string
   target_content_preview: string
+  target_title: string | null
   target_type: string
   direction: 'outgoing' | 'incoming'
 }
