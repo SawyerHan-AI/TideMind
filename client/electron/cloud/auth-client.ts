@@ -212,29 +212,65 @@ export async function logout(): Promise<void> {
   log.info('logged out');
 }
 
+/**
+ * 按需刷新 access token。
+ *
+ * 返回值语义:
+ *  - string:拿到可用 token(旧的或刚刷的)
+ *  - null:**永久性失败**,已清除登录态。常见于:refresh token 真的过期/被撤销(400/401),
+ *    或本地根本没登录过。调用方应提示用户重新登录。
+ *
+ * 抛异常:**临时性失败**(网络错误、5xx、超时)。登录态保留,调用方可以选择稍后重试
+ * 而不是把用户"无声登出"——否则网络一抖用户的 outbox 就永久卡住。
+ *
+ * 额外:5xx 有一次短暂退避重试,避开边缘波动。
+ */
 export async function refreshTokenIfNeeded(): Promise<string | null> {
   if (!cachedAuth) return null;
   if (Date.now() < cachedAuth.expiresAt - 5 * 60 * 1000) {
     return cachedAuth.accessToken; // Still valid
   }
-  // Refresh
   const base = getCloudBaseUrl();
+  const body = JSON.stringify({ grant_type: 'refresh_token', refresh_token: cachedAuth.refreshToken });
+
+  const attempt = async (): Promise<Response> => fetch(`${base}/auth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+  });
+
+  let res: Response;
   try {
-    const res = await fetch(`${base}/auth/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: cachedAuth.refreshToken }),
-    });
-    if (!res.ok) { cachedAuth = null; saveAuthToDisk(); return null; }
+    res = await attempt();
+    // 5xx 给一次短退避重试
+    if (res.status >= 500 && res.status < 600) {
+      await new Promise(r => setTimeout(r, 500));
+      res = await attempt();
+    }
+  } catch (err) {
+    // 网络层错误 = 临时失败,保留登录态
+    log.warn(`refreshToken network failure: ${(err as Error).message} — keeping session`);
+    throw new Error(`refresh_token transient: ${(err as Error).message}`);
+  }
+
+  if (res.ok) {
     const data = await res.json() as { access_token: string; refresh_token: string; expires_in: number };
     cachedAuth.accessToken = data.access_token;
     cachedAuth.refreshToken = data.refresh_token;
     cachedAuth.expiresAt = Date.now() + (data.expires_in * 1000);
     saveAuthToDisk();
     return cachedAuth.accessToken;
-  } catch {
+  }
+
+  // 400 / 401 / 403 = 凭据真的坏了,清除。其他非 2xx(包括重试后仍 5xx)保留并抛异常。
+  if (res.status === 400 || res.status === 401 || res.status === 403) {
+    log.error(`refreshToken permanent failure: ${res.status} — logging out`);
     cachedAuth = null;
     saveAuthToDisk();
     return null;
   }
+
+  const bodyText = await res.text().catch(() => '');
+  log.warn(`refreshToken unexpected status ${res.status}: ${bodyText.slice(0, 200)} — keeping session`);
+  throw new Error(`refresh_token transient: HTTP ${res.status}`);
 }
