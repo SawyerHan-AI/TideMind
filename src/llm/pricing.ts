@@ -66,7 +66,10 @@ export function estimateCost(
   const id = modelId.toLowerCase()
   const pricing = PRICING_TABLE.find(p => id.includes(p.pattern))
   if (!pricing) {
-    log.warn(`Unknown model ID in cost estimation: ${modelId}`);
+    // error 级别而非 warn:返 0 会导致计费遗漏(Pro+ 托管 LLM 场景下
+    // 直接让我们没收到钱)。上线新模型时必须把 pattern 加到 PRICING_TABLE,
+    // 否则整个月的该模型调用都是 0 成本。
+    log.error(`[pricing] Unknown model ID: ${modelId} — returning 0 cost, billing may be inaccurate. Add pattern to PRICING_TABLE.`);
     return 0;
   }
 

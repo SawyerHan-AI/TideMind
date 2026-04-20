@@ -326,14 +326,20 @@ async function deepReconsolidate(
     ? Math.max(0, Math.min(1, result.new_independence))
     : node.independence;
 
+  // 读 params:优先新名 refinement_boost,向后兼容老 independence_boost 名字
+  // (老 params 文件里写的 independence_boost 但代码一直是 hardcode 0.15 + 加到
+  // refinement 列,v0.2.23 归一。getParam 读不到新名时自然回落 default)
+  const refinementBoost = getParam<number>('reconsolidate', 'refinement_boost',
+    getParam<number>('reconsolidate', 'independence_boost', 0.15));
+
   if (!contentWasUpdated) {
     db.prepare(`
       UPDATE nodes SET
-        refinement = MIN(refinement + 0.15, 1.0),
+        refinement = MIN(refinement + ?, 1.0),
         independence = ?,
         last_reconsolidated = datetime('now')
       WHERE id = ?
-    `).run(newIndependence, node.id);
+    `).run(refinementBoost, newIndependence, node.id);
   } else {
     db.prepare(`
       UPDATE nodes SET
