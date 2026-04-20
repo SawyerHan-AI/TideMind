@@ -259,9 +259,14 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
                 </span>
                 <button
                   onClick={handleSync}
-                  disabled={syncing || cloud.syncing || !cloud.online}
+                  disabled={syncing || cloud.syncing}
                   className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium text-gray-400 border border-white/10 hover:border-white/20 hover:text-white transition-all disabled:opacity-40"
                 >
+                  {/* "立即同步"按钮在 cloud.online=false 时也保持可点击——
+                      用户点这个按钮的目的就是在 offline 状态下强制重试连接,
+                      禁用它等于把唯一的自救入口堵死。triggerSync 内部会重新
+                      refreshTokenIfNeeded + syncOnce,失败时 handleSync 会把
+                      错误码写到 lastError,UI 上方的红色错误条会展示出来。 */}
                   <RefreshCw size={10} className={(syncing || cloud.syncing) ? 'animate-spin' : ''} />
                   {t('settings:cloud.dataSync.syncNow', 'Sync Now')}
                 </button>
