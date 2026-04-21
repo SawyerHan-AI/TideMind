@@ -15,7 +15,7 @@ function generateSourceId(): string {
 /**
  * 当前 schema 版本。每次新增 migration 时递增。
  */
-const CURRENT_SCHEMA_VERSION = 18;
+const CURRENT_SCHEMA_VERSION = 19;
 
 /**
  * 完整建表 SQL — 包含所有字段，新数据库直接创建最新结构。
@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS links (
     strength REAL DEFAULT 0.5,
     note TEXT,
     auto INTEGER DEFAULT 1,
-    status TEXT DEFAULT 'confirmed' CHECK(status IN ('confirmed','pending')),
+    status TEXT DEFAULT 'confirmed' CHECK(status IN ('confirmed','pending','rejected_by_user')),
     created TEXT NOT NULL,
     updated TEXT
 );
@@ -1324,6 +1324,53 @@ const MIGRATIONS: Migration[] = [
       log.info(
         `迁移 v18 完成: cleaned ${vecCleaned} rows from nodes_vec, ${segCleaned} rows from node_segments for archived nodes`,
       );
+    },
+  },
+  {
+    version: 19,
+    description: 'links.status 扩展 CHECK 约束，允许 rejected_by_user（标签纠错反馈循环）',
+    up: (db) => {
+      // 幂等检查：读 sqlite_master 里的原始建表 SQL，看 CHECK 是否已包含新值
+      const row = db.prepare(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='links'",
+      ).get() as { sql: string } | undefined;
+      if (row?.sql && row.sql.includes("'rejected_by_user'")) {
+        log.info('迁移 v19 跳过: links CHECK 已支持 rejected_by_user');
+        return;
+      }
+
+      // 重建 links 表（SQLite 不支持 ALTER CHECK）。
+      // 沿用 v3 的 pattern：不需 FK OFF，因为 links 不被其他表引用。
+      db.exec('DROP TABLE IF EXISTS links_new');
+      db.exec(`
+        CREATE TABLE links_new (
+            id TEXT PRIMARY KEY,
+            from_id TEXT NOT NULL REFERENCES nodes(id),
+            to_id TEXT NOT NULL REFERENCES nodes(id),
+            relation TEXT NOT NULL,
+            strength REAL DEFAULT 0.5,
+            note TEXT,
+            auto INTEGER DEFAULT 1,
+            status TEXT DEFAULT 'confirmed' CHECK(status IN ('confirmed','pending','rejected_by_user')),
+            created TEXT NOT NULL,
+            updated TEXT
+        )
+      `);
+
+      db.exec(`
+        INSERT INTO links_new (id, from_id, to_id, relation, strength, note, auto, status, created, updated)
+        SELECT id, from_id, to_id, relation, strength, note, auto, status, created, updated FROM links
+      `);
+
+      db.exec('DROP TABLE links');
+      db.exec('ALTER TABLE links_new RENAME TO links');
+
+      // 重建索引
+      db.exec('CREATE INDEX IF NOT EXISTS idx_links_from ON links(from_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_links_to ON links(to_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_links_status ON links(status)');
+
+      log.info('迁移 v19 完成: links.status CHECK 已扩展为支持 rejected_by_user');
     },
   },
 ];

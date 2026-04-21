@@ -59,7 +59,11 @@
     "versionTip": "再統合記録：メモリは使用により進化します。コンテンツが更新されるたびにバージョン番号が増加します。",
     "evidenceTip": "このクリスタルが要約したソースノードの一覧です。",
     "pendingClassify": "未分類",
-    "unknown": "不明"
+    "unknown": "不明",
+    "rejectTag": "このタグを削除",
+    "rejectTagAria": "タグ削除ボタン",
+    "rejectTagSuccess": "「{{tag}}」を削除しました",
+    "undo": "元に戻す"
   },
   "graph": {
     "loading": "グラフデータを読み込み中...",

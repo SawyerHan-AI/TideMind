@@ -66,6 +66,7 @@
     "crystal_generated": "Novo cristal gerado",
     "keystones_identified": "{{count}} nós-chave identificados",
     "tags_promoted": "{{count}} tags emergiram",
+    "tag_rejected": "Tag \"{{tag}}\" removida",
     "temporal_crystal": "Cristal temporal gerou {{count}} novos insights",
     "circuit_breaker_on": "Disjuntor LLM ativado (resfriamento {{minutes}} min)",
     "circuit_breaker_off": "Disjuntor LLM desativado (serviço restaurado)",

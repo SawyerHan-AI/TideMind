@@ -59,7 +59,11 @@
     "versionTip": "Historial de reconsolidacion: las memorias evolucionan con el uso.",
     "evidenceTip": "Lista de nodos fuente resumidos por este cristal.",
     "pendingClassify": "Pendiente",
-    "unknown": "Desconocido"
+    "unknown": "Desconocido",
+    "rejectTag": "Eliminar esta etiqueta",
+    "rejectTagAria": "Botón eliminar etiqueta",
+    "rejectTagSuccess": "«{{tag}}» eliminada",
+    "undo": "Deshacer"
   },
   "graph": {
     "loading": "Cargando datos del grafo...",

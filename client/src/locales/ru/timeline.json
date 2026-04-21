@@ -66,6 +66,7 @@
     "crystal_generated": "Создан новый кристалл",
     "keystones_identified": "Определено {{count}} ключевых узлов",
     "tags_promoted": "Проявилось {{count}} тегов",
+    "tag_rejected": "Тег «{{tag}}» удалён",
     "temporal_crystal": "Временной кристалл создал {{count}} новых инсайтов",
     "circuit_breaker_on": "Автовыключатель LLM включён (охлаждение {{minutes}} мин)",
     "circuit_breaker_off": "Автовыключатель LLM выключен (сервис восстановлен)",

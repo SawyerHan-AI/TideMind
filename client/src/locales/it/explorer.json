@@ -59,7 +59,11 @@
     "versionTip": "Cronologia di riconsolidamento: le memorie evolvono con uso.",
     "evidenceTip": "Lista dei nodi sorgente riassunti da questo cristallo.",
     "pendingClassify": "In attesa",
-    "unknown": "Sconosciuto"
+    "unknown": "Sconosciuto",
+    "rejectTag": "Rimuovi questo tag",
+    "rejectTagAria": "Pulsante rimuovi tag",
+    "rejectTagSuccess": "«{{tag}}» rimosso",
+    "undo": "Annulla"
   },
   "graph": {
     "loading": "Caricamento dati del grafo...",

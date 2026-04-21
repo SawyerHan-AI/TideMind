@@ -59,7 +59,11 @@
     "versionTip": "再巩固记录：记忆在使用中进化。每次内容被更新时版本号递增，旧版本保留在历史中。",
     "evidenceTip": "结晶节点所总结的源节点列表。这些节点共同支撑了该结晶的生成。",
     "pendingClassify": "待分类",
-    "unknown": "未知"
+    "unknown": "未知",
+    "rejectTag": "移除此标签",
+    "rejectTagAria": "移除标签按钮",
+    "rejectTagSuccess": "已移除 \"{{tag}}\"",
+    "undo": "撤销"
   },
   "graph": {
     "loading": "加载图数据...",

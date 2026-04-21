@@ -99,17 +99,36 @@ export function createLink(
   return row ? hydrateLink(row) : null;
 }
 
-export function getLinksFrom(db: Database.Database, nodeId: string): BrainLink[] {
-  return (db.prepare('SELECT * FROM links WHERE from_id = ?').all(nodeId) as RawLinkRow[]).map(hydrateLink);
+/**
+ * 默认排除 status='rejected_by_user' 的链接（用户纠错的反馈痕迹，对大多数读取路径应不可见）。
+ * 调用方若确实需要看到 rejected（如 tag-promote 的守卫、undo 恢复、管理后台导出），显式传 includeRejected: true。
+ */
+export function getLinksFrom(
+  db: Database.Database,
+  nodeId: string,
+  options?: { includeRejected?: boolean },
+): BrainLink[] {
+  const extra = options?.includeRejected ? '' : " AND status != 'rejected_by_user'";
+  return (db.prepare(`SELECT * FROM links WHERE from_id = ?${extra}`).all(nodeId) as RawLinkRow[]).map(hydrateLink);
 }
 
-export function getLinksTo(db: Database.Database, nodeId: string): BrainLink[] {
-  return (db.prepare('SELECT * FROM links WHERE to_id = ?').all(nodeId) as RawLinkRow[]).map(hydrateLink);
+export function getLinksTo(
+  db: Database.Database,
+  nodeId: string,
+  options?: { includeRejected?: boolean },
+): BrainLink[] {
+  const extra = options?.includeRejected ? '' : " AND status != 'rejected_by_user'";
+  return (db.prepare(`SELECT * FROM links WHERE to_id = ?${extra}`).all(nodeId) as RawLinkRow[]).map(hydrateLink);
 }
 
-export function getLinksForNode(db: Database.Database, nodeId: string): BrainLink[] {
+export function getLinksForNode(
+  db: Database.Database,
+  nodeId: string,
+  options?: { includeRejected?: boolean },
+): BrainLink[] {
+  const extra = options?.includeRejected ? '' : " AND status != 'rejected_by_user'";
   return (db.prepare(
-    'SELECT * FROM links WHERE from_id = ? OR to_id = ?',
+    `SELECT * FROM links WHERE (from_id = ? OR to_id = ?)${extra}`,
   ).all(nodeId, nodeId) as RawLinkRow[]).map(hydrateLink);
 }
 
@@ -162,4 +181,59 @@ export function linkExists(db: Database.Database, fromId: string, toId: string):
     'SELECT 1 FROM links WHERE (from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?) LIMIT 1',
   ).get(fromId, toId, toId, fromId);
   return !!row;
+}
+
+/**
+ * 查询某节点所有被用户拒绝的 tagged 链接对端（= 被拒标签的 node id）
+ * 用于 annotate 阶段过滤掉这些标签，防止 LLM 重复打上。
+ */
+export function getRejectedTagIdsForNode(db: Database.Database, nodeId: string): string[] {
+  const rows = db.prepare(`
+    SELECT to_id FROM links
+    WHERE from_id = ?
+      AND status = 'rejected_by_user'
+      AND relation LIKE '%"tagged"%'
+  `).all(nodeId) as Array<{ to_id: string }>;
+  return rows.map(r => r.to_id);
+}
+
+/**
+ * 查询某节点所有被用户拒绝的 tag 节点的显示名（title 优先、fallback content）。
+ * LLM 返回的是标签名字符串，用这个列表过滤 ann.tags 防止被拒标签被重新打上。
+ */
+export function getRejectedTagNamesForNode(db: Database.Database, nodeId: string): string[] {
+  const rows = db.prepare(`
+    SELECT COALESCE(NULLIF(tag.title, ''), tag.content) as tag_name
+    FROM links l
+    JOIN nodes tag ON tag.id = l.to_id
+    WHERE l.from_id = ?
+      AND l.status = 'rejected_by_user'
+      AND l.relation LIKE '%"tagged"%'
+  `).all(nodeId) as Array<{ tag_name: string | null }>;
+  return rows.map(r => (r.tag_name ?? '').trim()).filter(n => n.length > 0);
+}
+
+/**
+ * 跨标签查最近 N 条被用户拒绝的 tagged 链接样本，作为 annotate prompt 的全局反例。
+ * 返回结构包含标签名和被拒节点的 content preview，用于构造"错误打标案例"提示块。
+ */
+export function getRecentRejectedNodesAcrossTags(
+  db: Database.Database,
+  limit: number = 5,
+): Array<{ tag_id: string; tag_name: string; node_id: string; node_content: string; node_title: string | null }> {
+  return db.prepare(`
+    SELECT
+      l.to_id as tag_id,
+      COALESCE(NULLIF(tag.title, ''), tag.content) as tag_name,
+      l.from_id as node_id,
+      n.content as node_content,
+      n.title as node_title
+    FROM links l
+    JOIN nodes tag ON tag.id = l.to_id
+    JOIN nodes n ON n.id = l.from_id
+    WHERE l.status = 'rejected_by_user'
+      AND l.relation LIKE '%"tagged"%'
+    ORDER BY COALESCE(l.updated, l.created) DESC
+    LIMIT ?
+  `).all(limit) as Array<{ tag_id: string; tag_name: string; node_id: string; node_content: string; node_title: string | null }>;
 }

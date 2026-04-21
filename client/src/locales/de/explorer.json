@@ -59,7 +59,11 @@
     "versionTip": "Rekonsolidierungshistorie: Erinnerungen entwickeln sich durch Nutzung.",
     "evidenceTip": "Quellknoten, die von diesem Kristall zusammengefasst werden.",
     "pendingClassify": "Ausstehend",
-    "unknown": "Unbekannt"
+    "unknown": "Unbekannt",
+    "rejectTag": "Tag entfernen",
+    "rejectTagAria": "Tag entfernen Schaltfläche",
+    "rejectTagSuccess": "„{{tag}}\" entfernt",
+    "undo": "Rückgängig"
   },
   "graph": {
     "loading": "Graphdaten werden geladen...",

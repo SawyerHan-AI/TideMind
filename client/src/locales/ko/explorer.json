@@ -59,7 +59,11 @@
     "versionTip": "재통합 기록: 기억은 사용을 통해 진화합니다.",
     "evidenceTip": "이 크리스탈이 요약한 소스 노드 목록입니다.",
     "pendingClassify": "미분류",
-    "unknown": "알 수 없음"
+    "unknown": "알 수 없음",
+    "rejectTag": "이 태그 제거",
+    "rejectTagAria": "태그 제거 버튼",
+    "rejectTagSuccess": "\"{{tag}}\" 제거됨",
+    "undo": "실행 취소"
   },
   "graph": {
     "loading": "그래프 데이터 로딩 중...",

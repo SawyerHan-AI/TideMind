@@ -38,6 +38,32 @@ export function DetailPanel({ nodeId, onNavigate }: {
   const [editReason, setEditReason] = useState('')
   const [expandedVersion, setExpandedVersion] = useState<number | null>(null)
   const [showAllVersions, setShowAllVersions] = useState(false)
+  // 标签解除 toast（5s 后自动消失，支持撤销）
+  const [rejectToast, setRejectToast] = useState<{ linkId: string; tagName: string } | null>(null)
+
+
+  // 解除标签：调 IPC、用后端返回的权威 tagName 显示 toast、触发 refetch
+  const handleRejectTag = async (link: LinkData) => {
+    const fallbackName = (link.target_title?.trim() || link.target_content_preview || '').trim()
+    const res = await window.api.links.rejectTag(link.id)
+    if (!res.success) return
+    setRejectToast({ linkId: link.id, tagName: res.tagName || fallbackName })
+    refetch()
+  }
+
+  const handleUndoReject = async () => {
+    if (!rejectToast) return
+    await window.api.links.undoRejectTag(rejectToast.linkId)
+    setRejectToast(null)
+    refetch()
+  }
+
+  // Toast 自动消失
+  useEffect(() => {
+    if (!rejectToast) return
+    const timer = setTimeout(() => setRejectToast(null), 5000)
+    return () => clearTimeout(timer)
+  }, [rejectToast])
 
   // Reset edit state when node changes
   useEffect(() => {
@@ -148,7 +174,27 @@ export function DetailPanel({ nodeId, onNavigate }: {
   }
 
   return (
-    <div className="h-full overflow-auto">
+    <div className="h-full overflow-auto relative">
+      {/* Reject toast（标签解除成功 + 5s 撤销） */}
+      <AnimatePresence>
+        {rejectToast && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 px-3 py-2 rounded-lg bg-black/80 text-xs text-gray-200 border border-white/10 shadow-lg"
+          >
+            <span>{t('explorer:detail.rejectTagSuccess', { tag: rejectToast.tagName })}</span>
+            <button
+              onClick={handleUndoReject}
+              className="text-amber-400 hover:text-amber-300 font-medium"
+            >
+              {t('explorer:detail.undo')}
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Header */}
       <div className="sticky top-0 panel-header border-b px-5 py-3 flex items-center gap-2 z-10">
         <TypeBadge specificity={node.specificity} subjectivity={node.subjectivity} actuality={node.actuality} refinement={node.refinement} is_crystal={node.is_crystal} is_keystone={node.is_keystone} is_tag={node.is_tag} is_meta={node.is_meta} />
@@ -272,10 +318,10 @@ export function DetailPanel({ nodeId, onNavigate }: {
             </h4>
             <div className="space-y-1.5">
               {confirmed.map((link: LinkData) => (
-                <LinkRow key={link.id} link={link} nodeId={nodeId!} onNavigate={onNavigate} isPending={false} />
+                <LinkRow key={link.id} link={link} nodeId={nodeId!} onNavigate={onNavigate} isPending={false} onReject={handleRejectTag} />
               ))}
               {pending.map((link: LinkData) => (
-                <LinkRow key={link.id} link={link} nodeId={nodeId!} onNavigate={onNavigate} isPending={true} />
+                <LinkRow key={link.id} link={link} nodeId={nodeId!} onNavigate={onNavigate} isPending={true} onReject={handleRejectTag} />
               ))}
             </div>
           </div>
@@ -426,19 +472,20 @@ export function DetailPanel({ nodeId, onNavigate }: {
 }
 
 /** Single link row, reusable for confirmed & pending */
-function LinkRow({ link, nodeId, onNavigate, isPending }: {
+function LinkRow({ link, nodeId, onNavigate, isPending, onReject }: {
   link: LinkData
   nodeId: string
   onNavigate: (id: string) => void
   isPending: boolean
+  onReject?: (link: LinkData) => void
 }) {
   const { t } = useTranslation('explorer')
   const targetId = link.from_id === nodeId ? link.to_id : link.from_id
+  const isTagged = Array.isArray(link.relation) && link.relation.some(r => r.type === 'tagged')
 
   return (
-    <button
-      onClick={() => onNavigate(targetId)}
-      className={`w-full flex items-start gap-0 rounded-lg hover:bg-white/[0.06] transition-colors text-left overflow-hidden ${
+    <div
+      className={`group w-full flex items-stretch gap-0 rounded-lg hover:bg-white/[0.06] transition-colors overflow-hidden ${
         isPending ? 'border border-dashed border-white/10 bg-white/[0.01]' : 'bg-white/[0.03]'
       }`}
     >
@@ -447,7 +494,10 @@ function LinkRow({ link, nodeId, onNavigate, isPending }: {
         className="w-[3px] self-stretch flex-shrink-0 rounded-l"
         style={{ backgroundColor: RELATION_COLORS[Array.isArray(link.relation) && link.relation.length > 0 ? link.relation[0].type : 'analogous'] ?? RELATION_COLORS.analogous }}
       />
-      <div className="flex-1 px-3 py-2 min-w-0">
+      <button
+        onClick={() => onNavigate(targetId)}
+        className="flex-1 min-w-0 px-3 py-2 text-left"
+      >
         <div className="flex items-center gap-2">
           {link.direction === 'outgoing'
             ? <ArrowRight size={12} className="text-gray-400 flex-shrink-0" />
@@ -470,7 +520,17 @@ function LinkRow({ link, nodeId, onNavigate, isPending }: {
         {link.note && (
           <p className="text-[10px] text-gray-500 mt-0.5 ml-5 truncate">{link.note}</p>
         )}
-      </div>
-    </button>
+      </button>
+      {isTagged && onReject && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onReject(link) }}
+          className="px-2 self-stretch flex items-center text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+          title={t('explorer:detail.rejectTag')}
+          aria-label={t('explorer:detail.rejectTagAria')}
+        >
+          <X size={14} />
+        </button>
+      )}
+    </div>
   )
 }

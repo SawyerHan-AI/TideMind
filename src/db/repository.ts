@@ -88,9 +88,10 @@ export interface LinkQueryOptions {
 
 export interface ILinkRepository {
   createLink(params: LinkCreateParams): BrainLink | null;
-  getLinksFrom(nodeId: string): BrainLink[];
-  getLinksTo(nodeId: string): BrainLink[];
-  getLinksForNode(nodeId: string): BrainLink[];
+  /** 默认排除 status='rejected_by_user'；传 includeRejected:true 可读全部 */
+  getLinksFrom(nodeId: string, options?: { includeRejected?: boolean }): BrainLink[];
+  getLinksTo(nodeId: string, options?: { includeRejected?: boolean }): BrainLink[];
+  getLinksForNode(nodeId: string, options?: { includeRejected?: boolean }): BrainLink[];
   getLinksForNodes(nodeIds: string[], options?: LinkQueryOptions): BrainLink[];
   updateLinkStatus(id: string, status: LinkStatus): void;
   updateLinkStrength(id: string, strength: number): void;

@@ -59,7 +59,11 @@
     "versionTip": "Yeniden konsolidasyon gecmisi: anilar kullanimla gelisir.",
     "evidenceTip": "Bu kristalin ozetledigi kaynak dugumler listesi.",
     "pendingClassify": "Beklemede",
-    "unknown": "Bilinmiyor"
+    "unknown": "Bilinmiyor",
+    "rejectTag": "Bu etiketi kaldır",
+    "rejectTagAria": "Etiket kaldır düğmesi",
+    "rejectTagSuccess": "\"{{tag}}\" kaldırıldı",
+    "undo": "Geri al"
   },
   "graph": {
     "loading": "Graf verileri yükleniyor...",

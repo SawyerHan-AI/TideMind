@@ -59,7 +59,11 @@
     "versionTip": "Historique de reconsolidation : les memoires evoluent par usage.",
     "evidenceTip": "Liste des noeuds source resumes par ce cristal.",
     "pendingClassify": "En attente",
-    "unknown": "Inconnu"
+    "unknown": "Inconnu",
+    "rejectTag": "Retirer cette étiquette",
+    "rejectTagAria": "Bouton retirer l'étiquette",
+    "rejectTagSuccess": "« {{tag}} » retiré",
+    "undo": "Annuler"
   },
   "graph": {
     "loading": "Chargement des données du graphe...",

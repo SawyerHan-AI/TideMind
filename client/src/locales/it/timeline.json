@@ -66,6 +66,7 @@
     "crystal_generated": "Nuovo cristallo generato",
     "keystones_identified": "{{count}} nodi chiave identificati",
     "tags_promoted": "{{count}} tag emersi",
+    "tag_rejected": "Tag «{{tag}}» rimosso",
     "temporal_crystal": "Il cristallo temporale ha generato {{count}} nuovi insight",
     "circuit_breaker_on": "Interruttore LLM attivato (raffreddamento {{minutes}} min)",
     "circuit_breaker_off": "Interruttore LLM disattivato (servizio ripristinato)",
