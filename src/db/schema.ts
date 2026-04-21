@@ -15,7 +15,7 @@ function generateSourceId(): string {
 /**
  * 当前 schema 版本。每次新增 migration 时递增。
  */
-const CURRENT_SCHEMA_VERSION = 17;
+const CURRENT_SCHEMA_VERSION = 18;
 
 /**
  * 完整建表 SQL — 包含所有字段，新数据库直接创建最新结构。
@@ -1175,6 +1175,10 @@ const MIGRATIONS: Migration[] = [
       );
       const delSegStmt = db.prepare('DELETE FROM node_segments WHERE node_id = ?');
       // nodes_vec 依赖 sqlite-vec 扩展，在某些环境下可能未加载，单独 try
+      // WARN: v15/v16 的 DELETE 条件错误（id vs segment_id），v18 做补救清理
+      // nodes_vec.id 存的是 `${nodeId}#${index}`（见 src/db/vectors.ts:85），
+      // 这里传 node_id 永远匹配不到，等于没删。v18 通过 node_segments 查出
+      // 真正的 segment_id 再删，全量兜底清理所有已归档节点的残留向量。
       let delVecStmt: ReturnType<typeof db.prepare> | null = null;
       try {
         delVecStmt = db.prepare('DELETE FROM nodes_vec WHERE id = ?');
@@ -1230,6 +1234,8 @@ const MIGRATIONS: Migration[] = [
         'UPDATE nodes SET archived = 1, heat = 0.02 WHERE id = ? AND archived = 0',
       );
       const delSegStmt = db.prepare('DELETE FROM node_segments WHERE node_id = ?');
+      // WARN: v15/v16 的 DELETE 条件错误（id vs segment_id），v18 做补救清理
+      // （原意清 nodes_vec 残留向量，但传的是 node_id 而非 segment_id，一行没删）
       let delVecStmt: ReturnType<typeof db.prepare> | null = null;
       try {
         delVecStmt = db.prepare('DELETE FROM nodes_vec WHERE id = ?');
@@ -1268,6 +1274,56 @@ const MIGRATIONS: Migration[] = [
       }
 
       log.info('迁移 v17 完成: nodes/links.updated 字段已添加并 backfill');
+    },
+  },
+  {
+    version: 18,
+    description: '补救 v15/v16 的向量清理 bug：兜底清除所有已归档节点的 nodes_vec + node_segments 残留',
+    up: (db) => {
+      // 背景：v15/v16 本意是归档错误归并节点后清掉 nodes_vec 与 node_segments，
+      // 但写成了 `DELETE FROM nodes_vec WHERE id = ?` 并传 node_id；而
+      // nodes_vec.id 实际存的是 segment_id（格式 `${nodeId}#${index}`，
+      // 见 src/db/vectors.ts:85）。结果 v15/v16 一行 nodes_vec 都没删。
+      //
+      // 另外 archiveNode / 各 integration 的归档路径（src/db/nodes.ts:155
+      // 及 src/integrations/{apple-notes,notion,logseq,obsidian}）都不清
+      // 向量索引，凡是历史上被归档过的节点，其 embedding 都还在 nodes_vec
+      // 里继续被 landing/recall 返回。
+      //
+      // v18 做一次性全量兜底：对**所有** nodes.archived = 1 的节点，用
+      // node_segments.segment_id 作为正确 key，清掉 nodes_vec 行，再清
+      // node_segments 自身。新安装数据库此时 nodes 表为空，查询返回 0 行，
+      // 不受影响。
+      //
+      // 幂等：重复执行无副作用——被清过的节点在 node_segments 里已查不到
+      // segment_id，SELECT ... IN (...) 子查询就返回空集，DELETE 不会误伤
+      // 任何活跃节点的向量数据。
+
+      // nodes_vec 依赖 sqlite-vec 扩展（initVec 在 ensureSchema 之后才跑）。
+      // ensureSchema 阶段 nodes_vec 可能还不存在，prepare 会抛。单独 try。
+      let vecCleaned = 0;
+      try {
+        const delVecRes = db.prepare(`
+          DELETE FROM nodes_vec
+          WHERE id IN (
+            SELECT segment_id FROM node_segments
+            WHERE node_id IN (SELECT id FROM nodes WHERE archived = 1)
+          )
+        `).run();
+        vecCleaned = delVecRes.changes;
+      } catch {
+        // nodes_vec 未加载或不存在，跳过向量清理；下次 reembed 兜底
+      }
+
+      const delSegRes = db.prepare(`
+        DELETE FROM node_segments
+        WHERE node_id IN (SELECT id FROM nodes WHERE archived = 1)
+      `).run();
+      const segCleaned = delSegRes.changes;
+
+      log.info(
+        `迁移 v18 完成: cleaned ${vecCleaned} rows from nodes_vec, ${segCleaned} rows from node_segments for archived nodes`,
+      );
     },
   },
 ];

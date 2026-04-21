@@ -626,8 +626,8 @@ async function createExplicitLinks(
       catch { continue; }
     }
 
-    // 提取 [[refs]]
-    const refs = [...content.matchAll(/\[\[([^\]]+)\]\]/g)].map(m => m[1]);
+    // 提取 [[refs]]（排除 ![[...]] 嵌入引用 —— 那些通常是图片/PDF/音频附件，不是笔记间的引用）
+    const refs = [...content.matchAll(/(?<!!)\[\[([^\]]+)\]\]/g)].map(m => m[1]);
     const uniqueRefs = [...new Set(refs)];
 
     for (const ref of uniqueRefs) {
@@ -651,6 +651,11 @@ async function createExplicitLinks(
       // 处理路径
       if (pageName.includes('/')) {
         pageName = pageName.split('/').pop() ?? pageName;
+      }
+
+      // 过滤附件类扩展名（即便没有 ! 前缀，[[image.png]] / [[file.pdf]] 也不应进入笔记图谱）
+      if (/\.(png|jpe?g|gif|webp|svg|pdf|mp3|mp4|webm|mov|wav)$/i.test(pageName)) {
+        continue;
       }
 
       // 尝试段级链接

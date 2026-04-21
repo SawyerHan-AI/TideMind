@@ -17,7 +17,10 @@ export function appendToStream(entry: {
   const now = new Date();
   const time = now.toTimeString().slice(0, 8);
   const ms = String(now.getMilliseconds()).padStart(3, '0');
-  const anchorId = `s-${time.replace(/:/g, '')}${ms}-${nanoid(4)}`;
+  // nanoid 长度 12：64^12 ≈ 4.7e21，同毫秒并发 1000 条的碰撞概率 ~1e-16，可忽略。
+  // 原长度 4（~1677 万）在高频 digest（importer 批量 / 多进程并发）下会碰撞，导致
+  // readStreamEntry 的 indexOf 永远命中第一条，后续条目数据错位。
+  const anchorId = `s-${time.replace(/:/g, '')}${ms}-${nanoid(12)}`;
 
   const header = [
     `## ${time}`,

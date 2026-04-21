@@ -57,9 +57,35 @@ export interface ClaimResult {
 }
 
 /**
+ * 毫秒时间戳下界：2020-01-01 00:00:00 UTC。
+ *
+ * 用于校验 metadata.value 是否为合法的毫秒时间戳字符串。
+ * 若 value 被其他路径（旧迁移、云端同步、手工写入）写成 ISO 字符串如
+ * '2025-01-01T00:00:00Z'，SQLite `CAST(value AS REAL)` 会截断前导数字得到
+ * 2025，恒小于 `Date.now() - interval`（约 1.7e12），导致每次 tick 都被
+ * "立即"认领而重复执行。
+ */
+const MIN_VALID_TIMESTAMP_MS = 1577836800000;
+
+/**
+ * 严格校验 value 是否为合法的毫秒时间戳字符串。
+ * 要求：非空、纯数字（避免被 CAST 截断的 ISO 字符串）、数值 >= 下界。
+ */
+function isValidTimestampString(value: string): boolean {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return false;
+  const n = Number(trimmed);
+  return Number.isFinite(n) && n >= MIN_VALID_TIMESTAMP_MS;
+}
+
+/**
  * 原子声明某个任务的执行权。
  * 利用 SQLite UPDATE 的原子性，确保多进程中只有一个能执行。
  * 返回 ClaimResult，失败时可用 priorValue 回滚。
+ *
+ * 防御：若 metadata 中已有同名 key 的 value 不是合法毫秒时间戳（例如被其他
+ * 路径写成 ISO 字符串），拒绝声明且不改写原值——保持向后兼容，由调用方
+ * 在下一 tick 重新评估（此时应由写入方负责把格式修正回来）。
  */
 export function tryClaimTask(
   db: Database.Database,
@@ -75,6 +101,17 @@ export function tryClaimTask(
   const row = db.prepare(
     'SELECT value FROM metadata WHERE key = ?',
   ).get(key) as { value: string } | undefined;
+
+  // 行存在但 value 格式不合法 → 拒绝 claim，不改写原值（向后兼容）。
+  // 最常见原因：ISO 字符串被 CAST(value AS REAL) 截断为前导数字，导致
+  // 恒满足 `< threshold` 而每 tick 重复认领。
+  if (row && !isValidTimestampString(row.value)) {
+    log.warn(
+      `tryClaimTask: metadata[${key}] 的 value 不是合法毫秒时间戳 ("${row.value}")，跳过本次 claim 以避免重复执行`,
+    );
+    return { claimed: false, priorValue: row.value };
+  }
+
   const priorValue = row?.value ?? null;
 
   const result = db.prepare(
