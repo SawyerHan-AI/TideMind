@@ -21,9 +21,12 @@ function applyTheme(theme: Theme) {
   document.documentElement.setAttribute('data-theme', effective)
 }
 
+const VALID_THEMES: Theme[] = ['dark', 'light', 'system']
+
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(() => {
-    return (localStorage.getItem('eb-theme') as Theme) ?? 'dark'
+    const v = localStorage.getItem('eb-theme')
+    return (v && VALID_THEMES.includes(v as Theme) ? v as Theme : 'dark')
   })
 
   // Apply on mount and when theme changes

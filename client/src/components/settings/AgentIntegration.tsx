@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Plug, Plus, ChevronRight, ChevronLeft, Copy, Check,
   CheckCircle, XCircle, Loader2, X, Archive, RotateCcw,
@@ -269,6 +269,7 @@ function AgentDetailPanel({ agent, onRefetch }: { agent: Agent; onRefetch: () =>
   const [name, setName] = useState(agent.name)
   const [mcpSnippet, setMcpSnippet] = useState('')
   const [copied, setCopied] = useState<string | null>(null)
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [skillContent, setSkillContent] = useState('')
   const [skillLoaded, setSkillLoaded] = useState(false)
   const [pluginDir, setPluginDir] = useState<string | null>(null)
@@ -309,10 +310,17 @@ function AgentDetailPanel({ agent, onRefetch }: { agent: Agent; onRefetch: () =>
     }
   }, [agent.tool_type, isPlugin])
 
+  useEffect(() => {
+    return () => {
+      if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current)
+    }
+  }, [])
+
   const handleCopy = async (text: string, key: string) => {
     await navigator.clipboard.writeText(text)
     setCopied(key)
-    setTimeout(() => setCopied(null), 2000)
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current)
+    copiedTimerRef.current = setTimeout(() => setCopied(null), 2000)
   }
 
   const handleRename = async () => {
@@ -627,6 +635,7 @@ function AgentWizard({ onClose }: { onClose: () => void }) {
   const [usingBaseFallback, setUsingBaseFallback] = useState(false)
   const [createdAgent, setCreatedAgent] = useState<Agent | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
+  const wizardCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // 手动流程用的状态
   const [mcpSnippet, setMcpSnippet] = useState('')
@@ -771,10 +780,17 @@ function AgentWizard({ onClose }: { onClose: () => void }) {
     }
   }, [step, skillLoaded, effectiveToolType, usePlugin])
 
+  useEffect(() => {
+    return () => {
+      if (wizardCopiedTimerRef.current) clearTimeout(wizardCopiedTimerRef.current)
+    }
+  }, [])
+
   const handleCopy = async (text: string, key: string) => {
     await navigator.clipboard.writeText(text)
     setCopied(key)
-    setTimeout(() => setCopied(null), 2000)
+    if (wizardCopiedTimerRef.current) clearTimeout(wizardCopiedTimerRef.current)
+    wizardCopiedTimerRef.current = setTimeout(() => setCopied(null), 2000)
   }
 
   // 验证步骤的 index

@@ -160,7 +160,9 @@ export async function runInitialization(
     setPhase(2, '预处理与入库', allPages.length, sourceId);
     log.info(`Phase 1-2: 预处理并入库 ${allPages.length} 个页面...`);
 
-    await processNotionPages(db, token, allPages, sourceId);
+    await processNotionPages(db, token, allPages, sourceId, () => {
+      advanceProgress(1, sourceId);
+    });
 
     // 统计
     const nodeCountRow = db.prepare(

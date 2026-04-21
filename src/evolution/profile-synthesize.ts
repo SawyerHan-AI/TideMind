@@ -14,6 +14,7 @@ import { isLlmConfigured } from '../config.js';
 import { getParam, getPrompt, getLLMOptions, renderUserPrompt } from '../strategy/loader.js';
 import { logTimelineEvent } from '../db/log.js';
 import { supersedeNode } from '../integrations/shared/version.js';
+import { parseLLMJson } from '../llm/json-parse.js';
 
 const log = createLogger('profile-synthesize');
 
@@ -151,23 +152,25 @@ function parseProfileResponse(response: string): {
   profileText: string;
   structured: Record<string, unknown>;
 } {
-  // 跳过 markdown code fence
+  // 快路径:先用 parseLLMJson 做健壮解析(括号深度计数,能正确定位
+  // 配对的 { },比贪婪正则 /\{[\s\S]*\}/ 更可靠——贪婪正则会在
+  // "结尾有多余文本或多个对象"时抓到越界 span 导致 JSON.parse 失败)。
+  const fastParsed = parseLLMJson<{ profile_text?: string; structured?: Record<string, unknown> }>(response);
+  if (fastParsed) {
+    return {
+      profileText: fastParsed.profile_text ?? response.trim(),
+      structured: fastParsed.structured ?? {},
+    };
+  }
+
+  // 慢路径前置:fast path 失败说明 profile_text 里有未转义引号之类的脏内容,
+  // 仍然需要拿到一个"最宽的 JSON 样本"做分段提取。复用原来的 markdown
+  // code fence / 贪婪正则作为候选样本,不把 null 当致命错误。
   const fenceMatch = response.match(/```json\s*\n([\s\S]*?)\n```/);
   const jsonStr = fenceMatch ? fenceMatch[1] : response.match(/\{[\s\S]*\}/)?.[0];
 
   if (!jsonStr) {
     return { profileText: response.trim(), structured: {} };
-  }
-
-  // 快路径：直接 JSON parse
-  try {
-    const parsed = JSON.parse(jsonStr);
-    return {
-      profileText: parsed.profile_text ?? response.trim(),
-      structured: parsed.structured ?? {},
-    };
-  } catch {
-    // pass — 尝试分段提取
   }
 
   // 慢路径：profile_text 中包含未转义引号导致整体 JSON 无法 parse

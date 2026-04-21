@@ -136,6 +136,7 @@ export function ModelSelection() {
   const [saved, setSaved] = useState(false)
   const [reembedding, setReembedding] = useState(false)
   const initialized = useRef(false)
+  const saveNowRef = useRef<((lv: string, sv: string, hv: string, ev: string) => void) | null>(null)
 
   // 构建 connectionId 到 name 的映射
   const connMap = useMemo(() => {
@@ -328,6 +329,9 @@ export function ModelSelection() {
     refetchConfig()
   }, [refetchConfig, connMap])
 
+  // 始终指向最新的 saveNow（避免 effect deps 循环）
+  saveNowRef.current = saveNow
+
   // debounce 自动保存
   useEffect(() => {
     if (!initialized.current) {
@@ -335,7 +339,7 @@ export function ModelSelection() {
       return
     }
     const timer = setTimeout(() => {
-      saveNow(lightValue, standardValue, heavyValue, embValue)
+      saveNowRef.current?.(lightValue, standardValue, heavyValue, embValue)
     }, 300)
     return () => clearTimeout(timer)
   }, [lightValue, standardValue, heavyValue, embValue])

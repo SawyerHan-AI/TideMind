@@ -106,7 +106,7 @@ export async function runDivergentScan(
 
   // 用 LLM 生成桥接洞察
   const minConfidence = getParam('scan-divergent', 'min_confidence', 0.5);
-  const bridgeIds: string[] = [];
+  const bridges: Array<{ bridgeId: string; nodeA: string; nodeB: string; insight: string }> = [];
 
   for (const candidate of candidates.slice(0, maxPairs)) {
     const nodeA = getNode(db, candidate.a);
@@ -166,22 +166,27 @@ export async function runDivergentScan(
       updateConnectivity(db, candidate.b);
 
       syncCrystalToMarkdown(bridgeId, result.content, result.tags ?? [], false);
-      bridgeIds.push(bridgeId);
+      bridges.push({
+        bridgeId,
+        nodeA: candidate.a,
+        nodeB: candidate.b,
+        insight: result.content,
+      });
     }
   }
 
-  log.info(`发散扫描: 候选对=${candidates.length} 桥接洞察=${bridgeIds.length}`);
+  log.info(`发散扫描: 候选对=${candidates.length} 桥接洞察=${bridges.length}`);
 
-  if (bridgeIds.length > 0) {
+  if (bridges.length > 0) {
     logTimelineEvent(db, {
       type: 'think_emerge',
       subtype: 'divergent_scan',
-      title: JSON.stringify({ key: 'bridge_insights', params: { count: bridgeIds.length } }),
+      title: JSON.stringify({ key: 'bridge_insights', params: { count: bridges.length } }),
       detail: {
         candidates_evaluated: Math.min(candidates.length, maxPairs),
-        bridges_created: bridgeIds.length,
+        bridges_created: bridges.length,
       },
-      node_ids: bridgeIds,
+      node_ids: bridges.map(b => b.bridgeId),
       important: 1,
     });
   }
@@ -189,20 +194,17 @@ export async function runDivergentScan(
   logStrategyFeedback(db, {
     strategy_name: 'scan-divergent',
     feedback_signal: candidates.length > 0
-      ? bridgeIds.length / Math.min(candidates.length, maxPairs)
+      ? bridges.length / Math.min(candidates.length, maxPairs)
       : 0,
   });
 
   // 发散扫描会创建 is_crystal=1 的 bridge 节点,crystal gate 依赖 crystal 计数,
   // 新增后必须让下一次 getGateStatus 读到最新值。
-  if (bridgeIds.length > 0) {
+  if (bridges.length > 0) {
     invalidateGateCache();
   }
 
-  return bridgeIds.map(id => {
-    const node = getNode(db, id);
-    return { nodeA: '', nodeB: '', insight: node?.content ?? '' };
-  });
+  return bridges.map(b => ({ nodeA: b.nodeA, nodeB: b.nodeB, insight: b.insight }));
 }
 
 /**

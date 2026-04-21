@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { RefreshCw, Wifi, WifiOff, AlertTriangle, ArrowRight, Sparkles, Cloud } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useCloudStatus } from '../../hooks/useCloudStatus'
@@ -168,6 +168,7 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
   // When null, fall through to cloud.lastErrorCode (server-side persistent state).
   const [localError, setLocalError] = useState<{ code: string; detail?: string } | null>(null)
   const [dismissed, setDismissed] = useState(false)
+  const reconcileClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // 订阅 reconcile 进度
   useEffect(() => {
@@ -177,10 +178,14 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
       const prog = p as ReconcileProgress
       setReconcileProgress(prog)
       if (prog.phase === 'done' || prog.phase === 'failed') {
-        setTimeout(() => setReconcileProgress(null), 3000)
+        if (reconcileClearTimer.current) clearTimeout(reconcileClearTimer.current)
+        reconcileClearTimer.current = setTimeout(() => setReconcileProgress(null), 3000)
       }
     })
-    return off
+    return () => {
+      off()
+      if (reconcileClearTimer.current) clearTimeout(reconcileClearTimer.current)
+    }
   }, [])
 
   // 最终显示的错误:优先 localError(刚触发的操作),其次 cloud 持久化状态,dismiss 后隐藏

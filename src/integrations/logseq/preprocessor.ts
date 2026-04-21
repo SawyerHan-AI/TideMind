@@ -143,24 +143,42 @@ export function walkMdFiles(graphRoot: string): string[] {
 }
 
 /**
- * 检查路径是否在排除目录中
+ * 检查路径是否在排除目录中。
+ *
+ * 规则：
+ * - 含斜杠的规则（如 `logseq/bak`）：按完整 relPath 精确前缀匹配；
+ * - 不含斜杠的规则（如 `assets`、`draws`、`.git`）：只在 graph 根目录的一层
+ *   （depth 1）匹配，避免用户在深层目录里叫 `assets` 的笔记夹被误排除。
  */
 export function isExcludedDir(relPath: string): boolean {
   const normalized = relPath.replace(/\\/g, '/');
-  return EXCLUDED_DIRS.some(
-    excluded => normalized === excluded || normalized.startsWith(excluded + '/'),
-  );
+  return EXCLUDED_DIRS.some(excluded => {
+    if (excluded.includes('/')) {
+      return normalized === excluded || normalized.startsWith(excluded + '/');
+    }
+    // depth 1：basename 等于 excluded 且 relPath 不含斜杠
+    return normalized === excluded;
+  });
 }
 
 /**
  * 检查文件路径是否应该被处理
+ *
+ * relPath 是文件相对 graph 根的路径，比如 `pages/foo.md`、`assets/bar.md`。
+ * 规则与 isExcludedDir 一致：不含斜杠的 excluded 只在文件的第一段目录匹配，
+ * 避免深层子目录里的同名文件夹被误排除。
  */
 export function shouldProcessFile(relPath: string): boolean {
   if (!relPath.endsWith('.md')) return false;
   const normalized = relPath.replace(/\\/g, '/');
-  return !EXCLUDED_DIRS.some(
-    excluded => normalized === excluded || normalized.startsWith(excluded + '/'),
-  );
+  const firstSegment = normalized.includes('/') ? normalized.split('/')[0] : '';
+  return !EXCLUDED_DIRS.some(excluded => {
+    if (excluded.includes('/')) {
+      return normalized === excluded || normalized.startsWith(excluded + '/');
+    }
+    // depth 1：只在文件挂在 graph 根下的某个 excluded 目录里时才匹配
+    return firstSegment === excluded;
+  });
 }
 
 // --- 核心预处理 ---
@@ -178,6 +196,10 @@ export function preprocessFile(
   } catch {
     return null;
   }
+
+  // 统一换行为 LF：LOGBOOK/properties 等正则用 `$` 锚点，CRLF 会在值里留下 \r
+  // 与 Obsidian preprocessor 保持一致
+  rawContent = rawContent.replace(/\r\n/g, '\n');
 
   if (rawContent.trim().length < 10) return null;
 
@@ -812,6 +834,8 @@ function inferTitle(relPath: string, isJournal: boolean): string {
   try {
     return decodeURIComponent(basename.replace(/___/g, '/').replace(/%2F/gi, '/'));
   } catch {
-    return basename;
+    // decodeURIComponent 抛错（URI malformed）时保留 ___ → / 的替换，
+    // 避免把 namespace 塞进标题里。
+    return basename.replace(/___/g, '/');
   }
 }

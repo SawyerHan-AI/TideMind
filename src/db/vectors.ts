@@ -78,6 +78,14 @@ export async function insertSegmentVectors(
     embeddings.push({ index: i, embedding });
   }
 
+  // 全部 embedding 都失败时,不能走 transaction 的 deleteVector——否则把旧的
+  // 有效向量也抹掉,搜索直接丢失该节点。此时保留旧 vector,让下次重试有机会
+  // 覆盖。调用方看到 0 即 "embedding 不可用,未改动"。
+  if (embeddings.length === 0) {
+    log.warn(`node=${nodeId} 所有 segment embedding 均失败,保留旧 vector`);
+    return 0;
+  }
+
   // 原子写入：删除旧数据 + 插入所有新 segments
   const inserted = db.transaction(() => {
     deleteVector(db, nodeId);

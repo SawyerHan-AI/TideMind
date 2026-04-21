@@ -146,11 +146,19 @@ export async function revalidateLinks(
       if (!parsed) continue;
 
       if (!parsed.still_valid) {
-        // 链接不再成立 → 降低 strength（不直接删除，让自然衰减处理）
-        const newStrength = Math.max(0.05, item.strength * 0.3);
-        updateLinkStrength(db, item.linkId, newStrength);
-        removed++;
-        log.debug(`链接降级 ${item.linkId}: strength ${item.strength.toFixed(2)} → ${newStrength.toFixed(2)}`);
+        // 链接不再成立:若原 strength 已经极低(< 0.05),再做 max(0.05, x*0.3)
+        // 等于把本该衰减至近乎 0 的链接反弹回 0.05 地板,永远无法被
+        // synaptic 清掉。此时直接删除,跳过不必要的"降级→再衰减"循环。
+        if (item.strength < 0.05) {
+          deleteLink(db, item.linkId);
+          removed++;
+          log.debug(`链接删除 ${item.linkId}: strength ${item.strength.toFixed(3)} 已极低且不再成立`);
+        } else {
+          const newStrength = Math.max(0.05, item.strength * 0.3);
+          updateLinkStrength(db, item.linkId, newStrength);
+          removed++;
+          log.debug(`链接降级 ${item.linkId}: strength ${item.strength.toFixed(2)} → ${newStrength.toFixed(2)}`);
+        }
       } else if (parsed.relation && VALID_RELATIONS.has(parsed.relation) && parsed.relation !== primaryRelation) {
         // 关系类型需要调整
         const confidence = parsed.confidence ?? 0.7;

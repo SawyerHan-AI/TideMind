@@ -8,6 +8,9 @@ const log = createLogger('embedding');
 let available: boolean | null = null;
 let availableCheckTime = 0;
 const CHECK_TTL_MS = 60_000;
+// 并发探测去重:多个调用者同时命中过期 TTL 时,只发一次真实探测,
+// 其余等待同一个 Promise,避免打出 N 次 'test' embedding 请求。
+let inflightAvailabilityCheck: Promise<boolean> | null = null;
 
 // Vertex AI token 缓存
 let cachedToken: string | null = null;
@@ -186,12 +189,21 @@ export async function isEmbeddingAvailable(): Promise<boolean> {
     return available;
   }
 
-  try {
-    const result = await getEmbedding('test');
-    available = result !== null;
-  } catch {
-    available = false;
-  }
-  availableCheckTime = Date.now(); // Set after async operation completes
-  return available;
+  // 已有正在进行的探测 → 复用同一个 Promise,避免竞态下重复打 'test' 请求
+  if (inflightAvailabilityCheck) return inflightAvailabilityCheck;
+
+  inflightAvailabilityCheck = (async () => {
+    try {
+      const result = await getEmbedding('test');
+      available = result !== null;
+    } catch {
+      available = false;
+    }
+    availableCheckTime = Date.now(); // Set after async operation completes
+    return available!;
+  })().finally(() => {
+    inflightAvailabilityCheck = null;
+  });
+
+  return inflightAvailabilityCheck;
 }
