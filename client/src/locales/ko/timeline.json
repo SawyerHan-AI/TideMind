@@ -66,6 +66,7 @@
     "crystal_generated": "새 결정체 생성",
     "keystones_identified": "{{count}}개의 핵심 노드 식별",
     "tags_promoted": "{{count}}개의 태그 출현",
+    "tag_rejected": "태그 \"{{tag}}\" 제거됨",
     "temporal_crystal": "시간 결정체가 {{count}}개의 새 인사이트 생성",
     "circuit_breaker_on": "LLM 서킷 브레이커 작동 (쿨다운 {{minutes}}분)",
     "circuit_breaker_off": "LLM 서킷 브레이커 해제 (서비스 복구)",

@@ -66,6 +66,7 @@
     "crystal_generated": "Yeni kristal üretildi",
     "keystones_identified": "{{count}} kilit düğüm belirlendi",
     "tags_promoted": "{{count}} etiket ortaya çıktı",
+    "tag_rejected": "\"{{tag}}\" etiketi kaldırıldı",
     "temporal_crystal": "Zaman kristali {{count}} yeni içgörü üretti",
     "circuit_breaker_on": "LLM devre kesici devrede (soğuma {{minutes}} dk)",
     "circuit_breaker_off": "LLM devre kesici kapatıldı (hizmet geri yüklendi)",

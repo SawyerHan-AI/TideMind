@@ -60,7 +60,9 @@ export function reconsolidateOnRecall(
     const nodeIds = new Set(nodes.map(n => n.id));
     let existingLinkCount = 0;
     for (const node of nodes) {
-      const links = getLinksForNode(db, node.id);
+      // rejected_by_user 链接天然被过滤（getLinksForNode 默认排除），
+      // 这里只统计 confirmed/pending 的真实邻接
+      const links = getLinksForNode(db, node.id).filter(l => l.status === 'confirmed');
       for (const link of links) {
         const otherId = link.from_id === node.id ? link.to_id : link.from_id;
         if (nodeIds.has(otherId)) existingLinkCount++;

@@ -66,6 +66,7 @@
     "crystal_generated": "生成了新結晶",
     "keystones_identified": "識別了 {{count}} 個樞紐節點",
     "tags_promoted": "湧現了 {{count}} 個標籤",
+    "tag_rejected": "標籤「{{tag}}」已移除",
     "temporal_crystal": "時間結晶生成了 {{count}} 個新洞察",
     "circuit_breaker_on": "LLM 熔斷器開啟（冷卻 {{minutes}} 分鐘）",
     "circuit_breaker_off": "LLM 熔斷器關閉（服務恢復）",

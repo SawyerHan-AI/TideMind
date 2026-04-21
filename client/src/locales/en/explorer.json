@@ -59,7 +59,11 @@
     "versionTip": "Reconsolidation history: memories evolve through use. Version number increments each time content is updated.",
     "evidenceTip": "Source nodes that this crystal summarizes. These nodes collectively support the crystal generation.",
     "pendingClassify": "Pending",
-    "unknown": "Unknown"
+    "unknown": "Unknown",
+    "rejectTag": "Remove this tag",
+    "rejectTagAria": "Remove tag button",
+    "rejectTagSuccess": "Removed \"{{tag}}\"",
+    "undo": "Undo"
   },
   "graph": {
     "loading": "Loading graph data...",

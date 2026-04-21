@@ -100,7 +100,10 @@ export function registerNodeHandlers(db: Database.Database): void {
     const node = db.prepare('SELECT * FROM nodes WHERE id = ?').get(id)
     if (!node) return null
 
-    const links = db.prepare('SELECT * FROM links WHERE from_id = ? OR to_id = ?').all(id, id)
+    // 过滤掉用户已拒绝的 tagged 链接（rejected_by_user 状态保留在 DB 作反馈痕迹，但不再展示）
+    const links = db.prepare(
+      "SELECT * FROM links WHERE (from_id = ? OR to_id = ?) AND status != 'rejected_by_user'"
+    ).all(id, id)
     const versions = db.prepare('SELECT * FROM node_versions WHERE node_id = ? ORDER BY version DESC').all(id)
 
     // 获取链接目标节点的预览
@@ -321,7 +324,7 @@ export function registerNodeHandlers(db: Database.Database): void {
       const placeholders = filteredIds.map(() => '?').join(', ')
       const neighborLinks = db.prepare(
         `SELECT DISTINCT CASE WHEN from_id IN (${placeholders}) THEN to_id ELSE from_id END as neighbor_id
-         FROM links WHERE from_id IN (${placeholders}) OR to_id IN (${placeholders})`
+         FROM links WHERE (from_id IN (${placeholders}) OR to_id IN (${placeholders})) AND status != 'rejected_by_user'`
       ).all(...filteredIds, ...filteredIds, ...filteredIds) as any[]
 
       const neighborIds = neighborLinks.map(r => r.neighbor_id).filter((id: string) => !nodeMap.has(id))
@@ -340,7 +343,7 @@ export function registerNodeHandlers(db: Database.Database): void {
     if (allIds.length > 0) {
       const placeholders = allIds.map(() => '?').join(', ')
       links = db.prepare(
-        `SELECT * FROM links WHERE from_id IN (${placeholders}) AND to_id IN (${placeholders})`
+        `SELECT * FROM links WHERE from_id IN (${placeholders}) AND to_id IN (${placeholders}) AND status != 'rejected_by_user'`
       ).all(...allIds, ...allIds)
     }
 
@@ -374,7 +377,7 @@ export function registerNodeHandlers(db: Database.Database): void {
       for (let i = 0; i < levelSize; i++) {
         const current = queue.shift()!
         const neighbors = db.prepare(
-          'SELECT from_id, to_id FROM links WHERE from_id = ? OR to_id = ?'
+          "SELECT from_id, to_id FROM links WHERE (from_id = ? OR to_id = ?) AND status != 'rejected_by_user'"
         ).all(current, current) as any[]
 
         for (const link of neighbors) {
@@ -414,9 +417,9 @@ export function registerNodeHandlers(db: Database.Database): void {
     // neighbors CTE gives (node, neighbor) for every link in both directions
     const holes = db.prepare(`
       WITH neighbors AS (
-        SELECT from_id AS node, to_id AS neighbor FROM links
+        SELECT from_id AS node, to_id AS neighbor FROM links WHERE status != 'rejected_by_user'
         UNION ALL
-        SELECT to_id AS node, from_id AS neighbor FROM links
+        SELECT to_id AS node, from_id AS neighbor FROM links WHERE status != 'rejected_by_user'
       ),
       -- Find node pairs sharing 2+ neighbors but with no direct link
       shared AS (
@@ -428,8 +431,8 @@ export function registerNodeHandlers(db: Database.Database): void {
       )
       SELECT s.node_a, s.node_b, s.shared
       FROM shared s
-      LEFT JOIN links d1 ON d1.from_id = s.node_a AND d1.to_id = s.node_b
-      LEFT JOIN links d2 ON d2.from_id = s.node_b AND d2.to_id = s.node_a
+      LEFT JOIN links d1 ON d1.from_id = s.node_a AND d1.to_id = s.node_b AND d1.status != 'rejected_by_user'
+      LEFT JOIN links d2 ON d2.from_id = s.node_b AND d2.to_id = s.node_a AND d2.status != 'rejected_by_user'
       WHERE d1.id IS NULL AND d2.id IS NULL
       ORDER BY s.shared DESC
       LIMIT ?
@@ -446,5 +449,124 @@ export function registerNodeHandlers(db: Database.Database): void {
         nodeBPreview: nodeB?.content?.slice(0, 80) ?? '',
       }
     })
+  })
+
+  // ────── 标签纠错（用户解除错误标签）──────
+  //
+  // 语义：不 DELETE 链接，而是改 status 作"用户拒绝"痕迹。tag-promote 感知该状态
+  // 不再重建；annotate 过滤掉该标签避免 LLM 重新打上。同时同步清理 node.tags
+  // JSON 中的标签名，保持 UI 一致（详情页元信息区的标签 pill 也应消失）。
+  // timeline 事件仅记录，不进 recall/dashboard，只用于审计与撤销。
+
+  ipcMain.handle('links:rejectTag', (_e, linkId: string) => {
+    let resolvedTagName = ''
+    let ok = false
+    db.transaction(() => {
+      const link = db.prepare(
+        'SELECT id, from_id, to_id, strength, relation, status FROM links WHERE id = ?',
+      ).get(linkId) as { id: string; from_id: string; to_id: string; strength: number; relation: string; status: string } | undefined
+      if (!link) return
+      // 已是 rejected 状态就不重复处理（也不重复写 timeline）
+      if (link.status === 'rejected_by_user') { ok = true; return }
+
+      // 取标签名（title 优先、fallback content），用于同步清理 node.tags 和撤销时回填
+      const tag = db.prepare(
+        'SELECT title, content FROM nodes WHERE id = ?',
+      ).get(link.to_id) as { title: string | null; content: string } | undefined
+      const tagName = ((tag?.title && tag.title.trim().length > 0) ? tag.title : tag?.content ?? '').trim()
+      resolvedTagName = tagName
+
+      // 1) UPDATE link 状态与强度
+      db.prepare(
+        "UPDATE links SET status = 'rejected_by_user', strength = 0, updated = datetime('now') WHERE id = ?",
+      ).run(linkId)
+
+      // 2) 从 node.tags JSON 里移除标签名（若存在），保持 UI 元信息区一致
+      let tagRemovedFromNode = false
+      if (tagName.length > 0) {
+        const node = db.prepare('SELECT tags FROM nodes WHERE id = ?').get(link.from_id) as { tags: string | null } | undefined
+        if (node?.tags) {
+          try {
+            const tags: string[] = JSON.parse(node.tags)
+            if (Array.isArray(tags) && tags.includes(tagName)) {
+              const filtered = tags.filter(t => t !== tagName)
+              db.prepare('UPDATE nodes SET tags = ? WHERE id = ?').run(JSON.stringify(filtered), link.from_id)
+              tagRemovedFromNode = true
+            }
+          } catch { /* 解析失败不阻塞主流程 */ }
+        }
+      }
+
+      // 3) timeline 事件（type='memory' subtype='tag_rejected'），detail 里记录 prev_strength 供撤销使用
+      db.prepare(`
+        INSERT INTO timeline_events (type, subtype, title, detail, node_ids, important, actor, created)
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `).run(
+        'memory',
+        'tag_rejected',
+        JSON.stringify({ key: 'tag_rejected', params: { tag: tagName } }),
+        JSON.stringify({
+          link_id: linkId,
+          from_id: link.from_id,
+          to_id: link.to_id,
+          prev_strength: link.strength,
+          tag_name: tagName,
+          tag_removed_from_node: tagRemovedFromNode,
+        }),
+        JSON.stringify([link.from_id, link.to_id]),
+        0,
+        'user',
+      )
+      ok = true
+    })()
+    return { success: ok, tagName: resolvedTagName }
+  })
+
+  ipcMain.handle('links:undoRejectTag', (_e, linkId: string) => {
+    let changed = false
+    db.transaction(() => {
+      // 读最新一条 tag_rejected 事件恢复 strength 和 tag_name
+      const event = db.prepare(`
+        SELECT detail FROM timeline_events
+        WHERE subtype = 'tag_rejected' AND json_extract(detail, '$.link_id') = ?
+        ORDER BY created DESC LIMIT 1
+      `).get(linkId) as { detail: string } | undefined
+
+      let prevStrength = 0.5
+      let tagName = ''
+      let tagRemovedFromNode = false
+      let fromId: string | undefined
+      if (event?.detail) {
+        try {
+          const d = JSON.parse(event.detail)
+          if (typeof d.prev_strength === 'number') prevStrength = d.prev_strength
+          if (typeof d.tag_name === 'string') tagName = d.tag_name
+          if (typeof d.tag_removed_from_node === 'boolean') tagRemovedFromNode = d.tag_removed_from_node
+          if (typeof d.from_id === 'string') fromId = d.from_id
+        } catch { /* 事件 detail 解析失败，按默认值恢复 */ }
+      }
+
+      // 1) 恢复 link — 只对当前 status='rejected_by_user' 的链接生效
+      // 守卫防御：对 confirmed / pending 链接误调用不会覆盖其数据。
+      const result = db.prepare(
+        "UPDATE links SET status = 'confirmed', strength = ?, updated = datetime('now') WHERE id = ? AND status = 'rejected_by_user'",
+      ).run(prevStrength, linkId)
+      if (result.changes === 0) return
+      changed = true
+
+      // 2) 把标签名加回 node.tags（仅当之前确实移除过、且目前不存在）
+      if (tagRemovedFromNode && tagName.length > 0 && fromId) {
+        const node = db.prepare('SELECT tags FROM nodes WHERE id = ?').get(fromId) as { tags: string | null } | undefined
+        let tags: string[] = []
+        if (node?.tags) {
+          try { tags = JSON.parse(node.tags); if (!Array.isArray(tags)) tags = [] } catch { tags = [] }
+        }
+        if (!tags.includes(tagName)) {
+          tags.push(tagName)
+          db.prepare('UPDATE nodes SET tags = ? WHERE id = ?').run(JSON.stringify(tags), fromId)
+        }
+      }
+    })()
+    return { success: changed }
   })
 }

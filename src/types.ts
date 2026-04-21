@@ -4,7 +4,7 @@
 
 // --- 节点类型 ---
 export type NodeType = 'fact' | 'context' | 'preference' | 'idea' | 'crystal' | 'meta' | 'tag';
-export type LinkStatus = 'confirmed' | 'pending';
+export type LinkStatus = 'confirmed' | 'pending' | 'rejected_by_user';
 export type RelationType =
   | 'caused_by' | 'continues' | 'updates' | 'supports' | 'contradicts'
   | 'summarizes' | 'part_of' | 'analogous' | 'tagged';

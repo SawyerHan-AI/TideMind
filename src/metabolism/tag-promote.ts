@@ -188,6 +188,8 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
           const primaryType = Array.isArray(link.relation) && link.relation.length > 0
             ? link.relation[0].type : null;
           if (primaryType !== 'tagged') continue;
+          // 用户主动拒绝的标签链接不重新评估 strength、不删除（保留 rejected_by_user 状态作为反馈痕迹）
+          if (link.status === 'rejected_by_user') continue;
 
           if (strength < minStrength) {
             // 低于阈值，删除

@@ -18,6 +18,10 @@ const api = {
     path: (fromId: string, toId: string) => ipcRenderer.invoke('nodes:path', fromId, toId),
     structureHoles: (limit?: number) => ipcRenderer.invoke('nodes:structureHoles', limit),
   },
+  links: {
+    rejectTag: (linkId: string) => ipcRenderer.invoke('links:rejectTag', linkId),
+    undoRejectTag: (linkId: string) => ipcRenderer.invoke('links:undoRejectTag', linkId),
+  },
   stats: {
     overview: () => ipcRenderer.invoke('stats:overview'),
     gates: () => ipcRenderer.invoke('stats:gates'),

@@ -92,14 +92,14 @@ class SqliteLinkRepository implements ILinkRepository {
   createLink(params: LinkCreateParams): BrainLink | null {
     return createLink(this.db, params);
   }
-  getLinksFrom(nodeId: string): BrainLink[] {
-    return getLinksFrom(this.db, nodeId);
+  getLinksFrom(nodeId: string, options?: { includeRejected?: boolean }): BrainLink[] {
+    return getLinksFrom(this.db, nodeId, options);
   }
-  getLinksTo(nodeId: string): BrainLink[] {
-    return getLinksTo(this.db, nodeId);
+  getLinksTo(nodeId: string, options?: { includeRejected?: boolean }): BrainLink[] {
+    return getLinksTo(this.db, nodeId, options);
   }
-  getLinksForNode(nodeId: string): BrainLink[] {
-    return getLinksForNode(this.db, nodeId);
+  getLinksForNode(nodeId: string, options?: { includeRejected?: boolean }): BrainLink[] {
+    return getLinksForNode(this.db, nodeId, options);
   }
   getLinksForNodes(nodeIds: string[], options?: LinkQueryOptions): BrainLink[] {
     return getLinksForNodes(this.db, nodeIds, options);

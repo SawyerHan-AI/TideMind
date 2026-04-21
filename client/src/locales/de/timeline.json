@@ -66,6 +66,7 @@
     "crystal_generated": "Neuer Kristall generiert",
     "keystones_identified": "{{count}} Schlüsselknoten identifiziert",
     "tags_promoted": "{{count}} Tags aufgestiegen",
+    "tag_rejected": "Tag „{{tag}}\" entfernt",
     "temporal_crystal": "Zeitkristall hat {{count}} neue Insights generiert",
     "circuit_breaker_on": "LLM-Schutzschalter aktiviert (Abkühlung {{minutes}} Min.)",
     "circuit_breaker_off": "LLM-Schutzschalter deaktiviert (Dienst wiederhergestellt)",

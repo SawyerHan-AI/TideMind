@@ -66,6 +66,7 @@
     "crystal_generated": "新しいクリスタルを生成",
     "keystones_identified": "{{count}} 件のキーストーンノードを識別",
     "tags_promoted": "{{count}} 件のタグが出現",
+    "tag_rejected": "タグ「{{tag}}」を削除",
     "temporal_crystal": "時間結晶が {{count}} 件の新しいインサイトを生成",
     "circuit_breaker_on": "LLM サーキットブレーカー作動（クールダウン {{minutes}} 分）",
     "circuit_breaker_off": "LLM サーキットブレーカー解除（サービス復旧）",

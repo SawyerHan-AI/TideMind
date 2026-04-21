@@ -10,7 +10,7 @@ import type Database from 'better-sqlite3';
 import type { BrainNode, NodeType } from '../types.js';
 import { updateNode, getNode, parseTags } from '../db/nodes.js';
 import { getVectorForNode, searchVectors } from '../db/vectors.js';
-import { createLink, linkExists } from '../db/links.js';
+import { createLink, linkExists, getRejectedTagNamesForNode, getRecentRejectedNodesAcrossTags } from '../db/links.js';
 import { isVecLoaded } from '../db/connection.js';
 import { callLLM } from '../llm/client.js';
 import { isLlmConfigured } from '../config.js';
@@ -90,24 +90,30 @@ export async function runAnnotation(db: Database.Database): Promise<{
   // 获取图谱词汇表（标签，所有批次共用）
   const vocab = getGraphVocabulary(db);
 
+  // 获取全局反例（跨标签最近 N 条 rejected_by_user 链接），用于提醒 LLM 不要重复犯过的错误
+  const rejectionSamples = getRecentRejectedNodesAcrossTags(db, 5);
+  const rejectionExamplesBlock = buildRejectionExamplesBlock(rejectionSamples);
+
   let totalAnnotated = 0;
   let totalSkipped = 0;
 
   for (const batch of batches) {
-    // 为每个节点获取向量邻居
+    // 为每个节点获取向量邻居 + 用户已拒绝的标签名
     const nodesWithContext = batch.map(node => ({
       node,
       neighbors: isVecLoaded() ? getTopNeighbors(db, node.id, NEIGHBOR_COUNT()) : [],
       existingTags: parseTags(node.tags),
+      rejectedTagNames: getRejectedTagNamesForNode(db, node.id),
     }));
 
-    const fallbackPrompt = buildAnnotatePrompt(nodesWithContext, vocab.tags);
+    const fallbackPrompt = buildAnnotatePrompt(nodesWithContext, vocab.tags, rejectionExamplesBlock);
     const system = getPrompt('annotate', ANNOTATE_SYSTEM);
 
     try {
       const response = await callLLM({
         prompt: renderUserPrompt('annotate', {
           frequent_tags: vocab.tags.join(', '),
+          rejection_examples: rejectionExamplesBlock,
           nodes_with_context: nodesWithContext.map(({ node, neighbors, existingTags }, i) => {
             const titleHint = node.title ? `（已有标题: ${node.title}）` : '（需要标题）';
             const parts = [`记忆 ${i + 1}${titleHint}: ${node.content.slice(0, MAX_CONTENT_PER_NODE())}`];
@@ -137,9 +143,11 @@ export async function runAnnotation(db: Database.Database): Promise<{
         const ann = annByIndex.get(i + 1); // prompt 中编号从 1 开始
         if (!ann) continue;
 
-        // 合并标签：保留已有 + LLM 补充
+        // 合并标签：保留已有 + LLM 补充；过滤掉用户已拒绝的标签名（防止重新打上）
         const currentTags = parseTags(node.tags);
-        const mergedTags = [...new Set([...currentTags, ...(ann.tags ?? [])])];
+        const rejectedNames = nodesWithContext[i].rejectedTagNames;
+        const filteredAnnTags = (ann.tags ?? []).filter(t => !rejectedNames.includes(t));
+        const mergedTags = [...new Set([...currentTags, ...filteredAnnTags])];
 
         // 校验维度分数在 0-1 范围
         const clamp = (v: number) => Math.max(0, Math.min(1, v));
@@ -301,6 +309,28 @@ function getTopNeighbors(
 
 // ---- Prompt 构建 ----
 
+/**
+ * 构造"错误打标案例"反例块。空数组返回空串（不占 prompt 空间）。
+ * 注入到 annotate user prompt 的 frequent_tags 之后，作为全局纪律提醒。
+ */
+function buildRejectionExamplesBlock(
+  samples: Array<{ tag_name: string; node_content: string; node_title: string | null }>,
+): string {
+  if (samples.length === 0) return '';
+  const lines = samples.map(s => {
+    const title = s.node_title?.trim();
+    const preview = title && title.length > 0
+      ? title
+      : s.node_content.slice(0, 60).replace(/\s+/g, ' ').trim();
+    return `- 记忆「${preview}」 误被打上「${s.tag_name}」，已被用户修正`;
+  });
+  return [
+    '# 错误打标案例（禁止重复这些错误 — 下列是全局历史错误，不代表当前记忆已被拒绝）',
+    ...lines,
+    '',
+  ].join('\n');
+}
+
 function buildAnnotatePrompt(
   nodesWithContext: Array<{
     node: BrainNode;
@@ -308,12 +338,17 @@ function buildAnnotatePrompt(
     existingTags: string[];
   }>,
   frequentTags: string[],
+  rejectionExamplesBlock: string = '',
 ): string {
   const parts: string[] = [];
 
   if (frequentTags.length > 0) {
     parts.push(`已有标签（必须优先复用已有写法）: ${frequentTags.join(', ')}`);
     parts.push('');
+  }
+
+  if (rejectionExamplesBlock) {
+    parts.push(rejectionExamplesBlock);
   }
 
   for (let i = 0; i < nodesWithContext.length; i++) {

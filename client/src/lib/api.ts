@@ -231,6 +231,10 @@ declare global {
         path: (fromId: string, toId: string) => Promise<{ path: string[] }>
         structureHoles: (limit?: number) => Promise<StructureHole[]>
       }
+      links: {
+        rejectTag: (linkId: string) => Promise<{ success: boolean; tagName: string }>
+        undoRejectTag: (linkId: string) => Promise<{ success: boolean }>
+      }
       stats: {
         overview: () => Promise<{
           totalNodes: number

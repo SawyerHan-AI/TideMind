@@ -59,7 +59,11 @@
     "versionTip": "Historico de reconsolidacao: memorias evoluem com o uso.",
     "evidenceTip": "Lista de nos fonte resumidos por este cristal.",
     "pendingClassify": "Pendente",
-    "unknown": "Desconhecido"
+    "unknown": "Desconhecido",
+    "rejectTag": "Remover esta tag",
+    "rejectTagAria": "Botão remover tag",
+    "rejectTagSuccess": "\"{{tag}}\" removida",
+    "undo": "Desfazer"
   },
   "graph": {
     "loading": "Carregando dados do grafo...",
