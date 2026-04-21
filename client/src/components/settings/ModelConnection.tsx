@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { useIPC } from '../../hooks/useIPC'
 import { Section, Field, inputClass, ComingSoonBadge } from './shared'
+import { safeJsonParse } from '../../lib/json'
 
 // ============================================================
 // Provider 类型定义
@@ -15,16 +16,15 @@ import { Section, Field, inputClass, ComingSoonBadge } from './shared'
 interface ProviderTypeDef {
   id: string
   label: string
-  description: string
   comingSoon?: boolean
 }
 
 const PROVIDER_TYPES: ProviderTypeDef[] = [
-  { id: 'anthropic', label: 'Anthropic', description: 'Claude 模型直连（API Key）' },
-  { id: 'vertex', label: 'Google Vertex AI', description: '通过 GCP Service Account 访问 Claude 和 Gemini' },
-  { id: 'gemini', label: 'Google Gemini API', description: '直接使用 Gemini API（免费层额度）' },
-  { id: 'ollama', label: 'Ollama', description: '本地推理服务（Embedding & LLM）' },
-  { id: 'openai-compatible', label: 'OpenAI Compatible', description: 'OpenAI 兼容 API' },
+  { id: 'anthropic', label: 'Anthropic' },
+  { id: 'vertex', label: 'Google Vertex AI' },
+  { id: 'gemini', label: 'Google Gemini API' },
+  { id: 'ollama', label: 'Ollama' },
+  { id: 'openai-compatible', label: 'OpenAI Compatible' },
 ]
 
 const VERTEX_REGIONS = [
@@ -71,7 +71,7 @@ interface Connection {
 
 function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefresh: () => void }) {
   const { t } = useTranslation('settings')
-  const creds = JSON.parse(conn.credentials || '{}')
+  const creds = safeJsonParse<Record<string, string>>(conn.credentials || '{}', {})
 
   const [editing, setEditing] = useState(false)
   const [editName, setEditName] = useState(conn.name)
@@ -436,7 +436,7 @@ export function ModelConnection() {
 
             {activeConns.map((conn: Connection) => {
               const status = getStatusInfo(conn)
-              const models = conn.available_models ? JSON.parse(conn.available_models) as string[] : []
+              const models = safeJsonParse<string[]>(conn.available_models, [])
               const usages = getUsages(conn.id)
               const isExpanded = expandedId === conn.id
 

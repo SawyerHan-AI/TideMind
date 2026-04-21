@@ -24,6 +24,14 @@ import {
 
 const log = createLogger('obsidian:preprocess');
 
+/**
+ * 预处理结果（Obsidian 扩展版）：附带原始文件内容，
+ * 供调用方在同一 snapshot 内计算 content_hash，避免 TOCTOU。
+ */
+export interface ObsidianPreprocessedPage extends PreprocessedPage {
+  rawContent: string;
+}
+
 // ============================================================
 // 公共 API
 // ============================================================
@@ -40,7 +48,7 @@ export function preprocessFile(
   filePath: string,
   vaultRoot: string,
   fileIndex?: Map<string, string>,
-): PreprocessedPage | null {
+): ObsidianPreprocessedPage | null {
   let rawContent: string;
   try {
     rawContent = fs.readFileSync(filePath, 'utf-8');
@@ -48,6 +56,10 @@ export function preprocessFile(
     log.warn('文件读取失败: %s', filePath);
     return null;
   }
+
+  // 统一换行为 LF：frontmatter 边界匹配（'\n---'）与后续步骤都只处理 LF，
+  // 否则 CRLF 文件会错乱（找不到 frontmatter 结束、body 残留 \r）
+  rawContent = rawContent.replace(/\r\n/g, '\n');
 
   if (rawContent.trim().length < 10) return null;
 
@@ -124,7 +136,7 @@ export function preprocessFile(
   // 推断标题
   const title = inferTitle(metadata);
 
-  return { title, cleanContent: content, metadata };
+  return { title, cleanContent: content, metadata, rawContent };
 }
 
 /**
@@ -170,11 +182,26 @@ export function buildFileIndex(
 
 /**
  * 遍历 vault 目录下的所有 .md 文件（排除指定目录）
+ *
+ * 目录 symlink 防护：
+ * - 跳过 symlink 类型的 entry（不跟随目录 symlink）
+ * - 额外用 realpath 规范化路径维护 visited Set，防御 symlink 环
  */
 export function walkMdFiles(vaultRoot: string, excludedDirs: string[]): string[] {
   const results: string[] = [];
+  const visited = new Set<string>();
 
   function walk(dir: string, relDir: string): void {
+    // realpath 规范化 + visited 兜底防环
+    let real: string;
+    try {
+      real = fs.realpathSync(dir);
+    } catch {
+      return;
+    }
+    if (visited.has(real)) return;
+    visited.add(real);
+
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -185,10 +212,13 @@ export function walkMdFiles(vaultRoot: string, excludedDirs: string[]): string[]
     for (const entry of entries) {
       const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
 
+      // 跳过 symlink（包括目录 symlink 和文件 symlink），避免环形引用
+      if (entry.isSymbolicLink()) continue;
+
       if (entry.isDirectory()) {
         if (isExcludedDir(relPath, excludedDirs)) continue;
         walk(path.join(dir, entry.name), relPath);
-      } else if (entry.name.endsWith('.md') || entry.name.endsWith('.canvas')) {
+      } else if (entry.isFile() && (entry.name.endsWith('.md') || entry.name.endsWith('.canvas'))) {
         results.push(path.join(dir, entry.name));
       }
     }
@@ -1150,12 +1180,14 @@ function normalizeFileName(name: string): string {
  * 快速从文件内容提取 frontmatter aliases（不做完整解析）
  */
 function extractAliasesQuick(content: string): string[] {
-  if (!content.startsWith('---')) return [];
+  // 统一换行，避免 CRLF 文件找不到 frontmatter 结束标记
+  const normalized = content.replace(/\r\n/g, '\n');
+  if (!normalized.startsWith('---')) return [];
 
-  const endIndex = content.indexOf('\n---', 3);
+  const endIndex = normalized.indexOf('\n---', 3);
   if (endIndex === -1) return [];
 
-  const fmRaw = content.slice(4, endIndex);
+  const fmRaw = normalized.slice(4, endIndex);
   const parsed = tryParseYaml(fmRaw);
   if (!parsed || typeof parsed !== 'object') return [];
 

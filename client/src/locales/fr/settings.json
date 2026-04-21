@@ -169,7 +169,8 @@
       "truncated": "Tronque",
       "saveToFile": "Enregistrer dans un fichier",
       "saved": "Enregistré",
-      "fullExportNote": "Exporte toutes les données utilisateur, y compris l'historique, la chronologie, les journaux, etc."
+      "fullExportNote": "Exporte toutes les données utilisateur, y compris l'historique, la chronologie, les journaux, etc.",
+      "exportFailed": "Exportation échouée : {{message}}"
     },
     "logs": {
       "title": "Navigateur de journaux de flux",
@@ -247,7 +248,18 @@
       "continueInit": "Continuer l'initialisation",
       "discard": "Abandonner et supprimer",
       "discardConfirm": "Abandonner ? Les données importées seront annulées et supprimées.",
-      "processedFiles": "Traités {{current}} / {{total}} fichiers"
+      "processedFiles": "Traités {{current}} / {{total}} fichiers",
+      "phase": {
+        "scan": "Scan & Classification",
+        "preprocess": "Prétraitement",
+        "digest": "Ingestion",
+        "explicitLinks": "Liens explicites",
+        "annotate": "Annotation de nœuds",
+        "landing": "Liens Landing",
+        "linkEval": "Évaluation des liens",
+        "keystone": "Marquage Keystone",
+        "emergence": "Émergence"
+      }
     },
     "table": {
       "name": "Nom",
@@ -418,6 +430,7 @@
     "saved": "Enregistré",
     "confirmSave": "Confirmer",
     "save": "Enregistrer",
+    "userPromptPlaceholder": "Entrez le modèle User Prompt, utilisez {{nomVar}} comme espace réservé pour les paramètres dynamiques",
     "returnToEdit": "Retour à l'édition",
     "changeReason": "Raison du changement (facultatif)",
     "rollbackToVersion": "Revenir à cette version",

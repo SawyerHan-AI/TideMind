@@ -281,7 +281,7 @@ function NoteSourceDetailPanel({
 // 初始化中/中断 卡片
 // ============================================================
 
-const PHASE_NAMES = ['扫描分类', '预处理', '入库', '显式链接', '节点标注', 'Landing 连接', '链接评估', 'Keystone 标记', '涌现']
+const PHASE_KEYS = ['scan', 'preprocess', 'digest', 'explicitLinks', 'annotate', 'landing', 'linkEval', 'keystone', 'emergence'] as const
 
 type InitCardState = 'interrupted' | 'running' | 'complete' | 'error'
 
@@ -320,32 +320,38 @@ function InitializingSourceCard({
       // 检查是否有正在进行的初始化（如从概览页跳转过来）
       try {
         const prog = await (window as any).api.noteSources.initProgress(source.id)
-        if (!cancelled && prog && prog.status === 'running') {
+        if (cancelled) return
+        if (prog && prog.status === 'running') {
           setState('running')
           setInitProgress(prog)
           // 启动轮询（与 handleContinue 中的轮询共享完成/错误检测逻辑）
-          pollRef.current = setInterval(async () => {
+          // 注意：await 之后再检查 cancelled，避免卸载后赋值泄漏
+          const timer = setInterval(async () => {
             try {
               const p = await (window as any).api.noteSources.initProgress(source.id)
               if (p && p.status !== 'idle') {
                 setInitProgress(p)
-                if (p.status === 'done' && pollRef.current) {
-                  clearInterval(pollRef.current)
+                if (p.status === 'done') {
+                  clearInterval(timer)
+                  pollRef.current = null
                   // 初始化已完成，刷新列表
                   onRefetch()
                 }
-                if (p.status === 'error' && pollRef.current) {
-                  clearInterval(pollRef.current)
+                if (p.status === 'error') {
+                  clearInterval(timer)
+                  pollRef.current = null
                   setState('error')
                   setInitError(p.error ?? '')
                 }
               } else if (p && p.status === 'idle') {
                 // 进度已 reset 为 idle，说明初始化结束了，刷新
-                if (pollRef.current) clearInterval(pollRef.current)
+                clearInterval(timer)
+                pollRef.current = null
                 onRefetch()
               }
             } catch { /* ignore */ }
           }, 2000)
+          pollRef.current = timer
         }
       } catch { /* ignore */ }
     }
@@ -482,7 +488,7 @@ function InitializingSourceCard({
             {initProgress.current} / {initProgress.total}
           </div>
           <div className="flex gap-0.5">
-            {PHASE_NAMES.map((pname, i) => (
+            {PHASE_KEYS.map((key, i) => (
               <div
                 key={i}
                 className={`h-1 flex-1 rounded-full transition-colors ${
@@ -490,7 +496,7 @@ function InitializingSourceCard({
                   : i === initProgress.phase ? 'bg-indigo-400'
                   : 'bg-white/[0.06]'
                 }`}
-                title={`Phase ${i}: ${pname}`}
+                title={`Phase ${i}: ${t(`noteSync.init.phase.${key}`)}`}
               />
             ))}
           </div>

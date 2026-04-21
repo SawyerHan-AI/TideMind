@@ -49,6 +49,8 @@
     "tool": "Werkzeug:",
     "session": "Sitzung:",
     "time": "Zeit:",
+    "stream": "Stream",
+    "id": "ID:",
     "viewTimeline": "Zeitleiste anzeigen",
     "evidenceChain": "Beweiskette",
     "metaInfo": "Meta-Informationen",

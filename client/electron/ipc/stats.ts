@@ -81,16 +81,34 @@ export function registerStatsHandlers(db: Database.Database): void {
   })
 
   ipcMain.handle('stats:maintenance', () => {
-    const daily = db.prepare("SELECT value FROM metadata WHERE key = 'last_daily_maintenance'").get() as { value: string } | undefined
-    const weekly = db.prepare("SELECT value FROM metadata WHERE key = 'last_weekly_maintenance'").get() as { value: string } | undefined
-    const l2 = db.prepare("SELECT value FROM metadata WHERE key = 'last_learning2_run'").get() as { value: string } | undefined
-    const l3 = db.prepare("SELECT value FROM metadata WHERE key = 'last_learning3_run'").get() as { value: string } | undefined
+    // 对齐 scheduler.ts 统一 key: `last_task_{id}`,毫秒数字字符串
+    // (不再读旧的 last_{daily|weekly}_maintenance —— 后者自 2026-04-21 起
+    //  无人写入, claimMaintenance / needsWeeklyMaintenance 已删除)。
+    //
+    // 旧 daily 概念 → synaptic-decay (每日衰减,24h interval)
+    // 旧 weekly 概念 → divergent-scan (每周发散扫描,7d interval,最具代表性)
+    //
+    // API 形状保持为 ISO 字符串以兼容 preload 类型,存储的毫秒值在这里转换。
+    const toIso = (row: { value: string } | undefined): string | null => {
+      if (!row?.value) return null
+      // 毫秒数字字符串 → ISO (新格式)
+      if (/^\d+$/.test(row.value)) {
+        const ms = Number(row.value)
+        return Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : null
+      }
+      // 兼容旧 ISO 字符串(历史 learning2/3 若还是旧格式,不强制迁移)
+      return row.value
+    }
+    const daily = db.prepare("SELECT value FROM metadata WHERE key = 'last_task_synaptic-decay'").get() as { value: string } | undefined
+    const weekly = db.prepare("SELECT value FROM metadata WHERE key = 'last_task_divergent-scan'").get() as { value: string } | undefined
+    const l2 = db.prepare("SELECT value FROM metadata WHERE key = 'last_task_learning2'").get() as { value: string } | undefined
+    const l3 = db.prepare("SELECT value FROM metadata WHERE key = 'last_task_learning3'").get() as { value: string } | undefined
     const l3Report = db.prepare("SELECT value FROM metadata WHERE key = 'last_learning3_report'").get() as { value: string } | undefined
     return {
-      lastDaily: daily?.value ?? null,
-      lastWeekly: weekly?.value ?? null,
-      lastLearning2: l2?.value ?? null,
-      lastLearning3: l3?.value ?? null,
+      lastDaily: toIso(daily),
+      lastWeekly: toIso(weekly),
+      lastLearning2: toIso(l2),
+      lastLearning3: toIso(l3),
       lastL3ReportId: l3Report?.value ?? null,
     }
   })

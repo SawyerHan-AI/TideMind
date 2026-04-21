@@ -169,7 +169,8 @@
       "truncated": "Gekuerzt",
       "saveToFile": "Als Datei speichern",
       "saved": "Gespeichert",
-      "fullExportNote": "Exportiert alle Benutzerdaten einschließlich Verlauf, Zeitleiste, Protokolle usw."
+      "fullExportNote": "Exportiert alle Benutzerdaten einschließlich Verlauf, Zeitleiste, Protokolle usw.",
+      "exportFailed": "Export fehlgeschlagen: {{message}}"
     },
     "logs": {
       "title": "Stream-Protokoll-Browser",
@@ -247,7 +248,18 @@
       "continueInit": "Initialisierung fortsetzen",
       "discard": "Verwerfen und löschen",
       "discardConfirm": "Verwerfen? Importierte Daten werden zurückgesetzt und gelöscht.",
-      "processedFiles": "Verarbeitet {{current}} / {{total}} Dateien"
+      "processedFiles": "Verarbeitet {{current}} / {{total}} Dateien",
+      "phase": {
+        "scan": "Scan & Klassifizierung",
+        "preprocess": "Vorverarbeitung",
+        "digest": "Einlagerung",
+        "explicitLinks": "Explizite Links",
+        "annotate": "Knoten-Annotation",
+        "landing": "Landing-Links",
+        "linkEval": "Link-Bewertung",
+        "keystone": "Keystone-Markierung",
+        "emergence": "Emergenz"
+      }
     },
     "table": {
       "name": "Name",
@@ -418,6 +430,7 @@
     "saved": "Gespeichert",
     "confirmSave": "Speichern bestätigen",
     "save": "Speichern",
+    "userPromptPlaceholder": "User-Prompt-Vorlage eingeben, {{VarName}} als Platzhalter für dynamische Parameter verwenden",
     "returnToEdit": "Zurück zur Bearbeitung",
     "changeReason": "Änderungsgrund (optional)",
     "rollbackToVersion": "Zu dieser Version zurückkehren",

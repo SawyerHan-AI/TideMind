@@ -45,6 +45,13 @@ export interface InitReport {
 
 const progressMap = new Map<string, InitProgress>();
 const abortedSet = new Set<string>();
+// 并发防护:防止同一 sourceId 同时跑两次 runInitialization,以及与
+// index.ts 的 runSync/runIncrementalSync 并发写同一 DB 造成重复节点。
+const initializingSet = new Set<string>();
+
+export function isNotionInitializing(sourceId: string): boolean {
+  return initializingSet.has(sourceId);
+}
 
 function getProgress(sourceId?: string): InitProgress {
   const key = sourceId ?? DEFAULT_SOURCE;
@@ -108,6 +115,20 @@ export async function runInitialization(
   sourceId: string,
 ): Promise<InitReport> {
   const key = sourceId;
+  // 并发防护:同一 sourceId 已在初始化,直接返回空 report,避免重复写入。
+  // 与 obsidian/logseq 抛错不同,这里选择静默返回 — Notion 初始化可能被
+  // startNotionSource 的首轮 runSync 在背景触发,对外静默是更温和的行为。
+  if (initializingSet.has(key)) {
+    log.warn(`Notion 初始化已在进行中,跳过重复调用: ${key}`);
+    return { totalPages: 0, nodesCreated: 0, linksCreated: 0, durationMs: 0 };
+  }
+  // 与 runSync/runIncrementalSync 互斥:sync 正在写同一 DB 时不要叠加 init。
+  const { isNotionSyncing } = await import('./index.js');
+  if (isNotionSyncing(key)) {
+    log.warn(`Notion sync 正在运行,跳过初始化: ${key}`);
+    return { totalPages: 0, nodesCreated: 0, linksCreated: 0, durationMs: 0 };
+  }
+  initializingSet.add(key);
   const startTime = Date.now();
   abortedSet.delete(key);
   clearTagNodeCache();
@@ -263,5 +284,7 @@ export async function runInitialization(
     progress.error = msg;
     log.error(`初始化失败: ${msg}`);
     throw e;
+  } finally {
+    initializingSet.delete(key);
   }
 }

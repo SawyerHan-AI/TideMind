@@ -49,6 +49,8 @@
     "tool": "工具:",
     "session": "会话:",
     "time": "时间:",
+    "stream": "Stream",
+    "id": "ID:",
     "viewTimeline": "查看时间线",
     "evidenceChain": "证据链",
     "metaInfo": "元信息",

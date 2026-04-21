@@ -49,6 +49,8 @@
     "tool": "Tool:",
     "session": "Session:",
     "time": "Time:",
+    "stream": "Stream",
+    "id": "ID:",
     "viewTimeline": "View timeline",
     "evidenceChain": "Evidence Chain",
     "metaInfo": "Meta Info",

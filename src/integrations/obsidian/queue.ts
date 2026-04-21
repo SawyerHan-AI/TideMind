@@ -19,7 +19,7 @@ import { parseCanvas } from './canvas-parser.js';
 import { readVaultConfig, getExcludedDirs } from './vault-config.js';
 import {
   getFileState, setFileState, isFileChanged,
-  computeFileHash,
+  computeFileHash, computeContentHash,
 } from './sync-state.js';
 import { OBSIDIAN_EXCLUDED_DIRS } from './types.js';
 import { digest } from '../../tools/digest.js';
@@ -166,6 +166,9 @@ async function processOneFile(
       return;
     }
 
+    // 避免 TOCTOU：用预处理时读到的 rawContent 计算 hash
+    const contentHash = computeContentHash(preprocessed.rawContent);
+
     // 判断文件类型（简单启发式，完整分类在 initialization 中做）
     const category = detectCategory(filePath, preprocessed);
 
@@ -193,7 +196,7 @@ async function processOneFile(
       });
       const nodeIds = result.created_nodes?.map(n => n.id) ?? [];
       // 不直接标记 is_tag，由 promoteFrequentTags 按阈值判断
-      updateSyncState(db, relPath, filePath, nodeIds, sourceId);
+      updateSyncState(db, relPath, filePath, nodeIds, sourceId, contentHash);
       progress.processedFiles++;
       return;
     }
@@ -276,7 +279,7 @@ async function processOneFile(
     await createFolderTagChain(db, relPath, allNodeIds);
 
     // 更新同步状态
-    updateSyncState(db, relPath, filePath, allNodeIds, sourceId);
+    updateSyncState(db, relPath, filePath, allNodeIds, sourceId, contentHash);
 
     progress.processedFiles++;
   } catch (err) {
@@ -287,6 +290,11 @@ async function processOneFile(
 
 /**
  * 处理 Canvas 文件
+ *
+ * 与 .md 路径保持一致的版本管理：
+ * - 记录旧 nodeIds（来自 syncState），新一轮入库后 supersede
+ * - 未能配对的旧节点直接标 is_superseded + 清理 links
+ * 避免每次编辑 Canvas 都累积旧节点、重复建链。
  */
 async function processCanvasFile(
   db: Database.Database,
@@ -299,6 +307,9 @@ async function processCanvasFile(
   const repo = new SqliteRepository(db);
   const parsed = parseCanvas(filePath);
   if (!parsed) return;
+
+  // 记录旧版本节点 ID（首次导入时为空）
+  const oldNodeIds = syncState?.node_ids ?? [];
 
   const nodeIds: string[] = [];
   // Canvas node id → brain node id（用于 edge 映射）
@@ -358,6 +369,18 @@ async function processCanvasFile(
       auto: true,
       status: 'pending',
     });
+  }
+
+  // 版本替代：旧节点链接迁移到新节点，旧节点标记为 superseded
+  if (oldNodeIds.length > 0 && nodeIds.length > 0) {
+    const pairs = Math.min(oldNodeIds.length, nodeIds.length);
+    for (let i = 0; i < pairs; i++) {
+      supersedeNode(db, oldNodeIds[i], nodeIds[i]);
+    }
+    for (let i = pairs; i < oldNodeIds.length; i++) {
+      db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(oldNodeIds[i]);
+      db.prepare('DELETE FROM links WHERE from_id = ? OR to_id = ?').run(oldNodeIds[i], oldNodeIds[i]);
+    }
   }
 
   updateSyncState(db, relPath, filePath, nodeIds, sourceId);
@@ -447,6 +470,7 @@ function updateSyncState(
   filePath: string,
   nodeIds: string[],
   sourceId?: string,
+  contentHash?: string,
 ): void {
   let mtime = 0;
   let size = 0;
@@ -456,9 +480,12 @@ function updateSyncState(
     size = stat.size;
   } catch {}
 
+  // 优先使用调用方已持有的 content hash（来自预处理 snapshot），避免 TOCTOU：
+  // 若不提供则退回到重新读文件计算。
+  const hash = contentHash ?? computeFileHash(filePath);
   setFileState(db, {
     file_path: relPath,
-    content_hash: computeFileHash(filePath),
+    content_hash: hash,
     mtime,
     size,
     last_synced: now(),

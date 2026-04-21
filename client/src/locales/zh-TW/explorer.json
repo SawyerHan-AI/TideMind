@@ -49,6 +49,8 @@
     "tool": "工具:",
     "session": "會話:",
     "time": "時間:",
+    "stream": "Stream",
+    "id": "ID:",
     "viewTimeline": "檢視時間線",
     "evidenceChain": "證據鏈",
     "metaInfo": "元資訊",

@@ -35,10 +35,13 @@ export function runSynapticScaling(db: Database.Database): {
   const wR = getParam('recall-rank', 'refinement_weight', 0.3);
   const wC = getParam('recall-rank', 'connectivity_weight', 0.3);
   const wI = getParam('recall-rank', 'independence_weight', 0.2);
+  // 衰减因子(decayRate)传入 SQL,由 SQL 侧对当前 heat 做 heat = heat * decayRate,
+  // 避免跨进程读-改-写覆盖:A 读 heat=0.3 → 期间 B bumpHeat 到 0.9 → A 写回
+  // 0.285 这种"衰减覆盖提热"场景。maturity_score 也用当前最新 heat 重新计算。
   const updateStmt = db.prepare(`
     UPDATE nodes SET
-      heat = ?,
-      maturity_score = ? * MIN(?, 1.0) + ? * refinement + ? * connectivity + ? * independence
+      heat = heat * ?,
+      maturity_score = ? * MIN(heat * ?, 1.0) + ? * refinement + ? * connectivity + ? * independence
     WHERE id = ?
   `);
 
@@ -53,9 +56,8 @@ export function runSynapticScaling(db: Database.Database): {
       for (const node of batch) {
         // 衰减率：所有节点严格衰减，连通度高的衰减更慢
         const decayRate = 1 - decayBase * (1 - decayDamping * Math.min(node.connectivity, 1));
-        const newHeat = node.heat * decayRate;
 
-        updateStmt.run(newHeat, wH, newHeat, wR, wC, wI, node.id);
+        updateStmt.run(decayRate, wH, decayRate, wR, wC, wI, node.id);
         decayed++;
         // 不再归档 — heat 自然衰减到极低值即可，recall 按 heat 排序自然沉底
       }
@@ -139,32 +141,9 @@ export function runSynapticScaling(db: Database.Database): {
 }
 
 
-/**
- * @deprecated 已迁移到 scheduler.ts 的 claimTask。保留向后兼容。
- */
-export function claimMaintenance(db: Database.Database, type: 'daily' | 'weekly'): boolean {
-  const key = `last_${type}_maintenance`;
-  const nowMs = Date.now();
-  const intervalMs = type === 'daily'
-    ? (getParam('metabolism-params', 'daily_check_hours', 24) * 3600000)
-    : (getParam('metabolism-params', 'weekly_check_days', 7) * 86400000);
-  const threshold = nowMs - intervalMs;
-
-  // 尝试原子更新：只有当上次执行时间早于阈值时才成功
-  const result = db.prepare(
-    `UPDATE metadata SET value = ? WHERE key = ? AND CAST(value AS REAL) < ?`,
-  ).run(nowMs.toString(), key, threshold.toString());
-
-  if (result.changes === 1) return true;
-
-  // changes === 0: 可能是行不存在（首次运行），尝试插入
-  try {
-    db.prepare(
-      `INSERT INTO metadata (key, value) VALUES (?, ?)`,
-    ).run(key, nowMs.toString());
-    return true;
-  } catch {
-    // INSERT 失败（UNIQUE 冲突）= 另一个进程已插入 = 声明失败
-    return false;
-  }
-}
+// claimMaintenance 已移除 — 调度职责 2026-03-31 迁移到 scheduler.ts::tryClaimTask,
+// 新统一 key 是 `last_task_{id}` (毫秒数字字符串),而非 `last_{daily|weekly}_maintenance`
+// (ISO 字符串)。旧函数保留半年后确认无 caller,且格式与 scheduler 冲突
+// (scheduler 用 CAST(value AS INTEGER) 对比, ISO 字符串 CAST 得到前导数字,
+// 导致 needsWeeklyMaintenance 等读方恒误判),故 2026-04-21 彻底删除。
+// 需要新任务的并发声明请直接用 scheduler.ts::tryClaimTask。

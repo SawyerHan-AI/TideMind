@@ -278,9 +278,18 @@ export function checkMonitoringWindows(
   }>;
 
   for (const adj of expiredAdjustments) {
+    // 历史数据里可能存在 signal_type 为 NULL 的调整记录。传 undefined 会让
+    // getParamFeedbackByRange 退化成"不按 signal_type 过滤",post_avg 变成跨信号
+    // 类型的平均,和基于单一信号算出来的 pre_avg 做阈值比较会导致跨类误判回滚/确认。
+    // 保守处理:跳过并记录告警,让人工/后续重构决定怎么清理。
+    if (!adj.signal_type) {
+      log.warn(`跳过监控窗口检查: adj.id=${adj.id} ${adj.strategy_name}.${adj.param_name} signal_type 为 NULL`);
+      continue;
+    }
+
     // 获取监控窗口期间的同类型反馈（用精确时间范围，不用"最近 N 天"）
     const postFeedback = getParamFeedbackByRange(
-      db, adj.strategy_name, adj.signal_type ?? undefined,
+      db, adj.strategy_name, adj.signal_type,
       adj.monitoring_start, adj.monitoring_end,
     );
 
@@ -366,8 +375,20 @@ function updateStrategyParam(
   paramName: string,
   newValue: number,
 ): boolean {
-  // 格式化数值：整数保留整数，小数保留合理精度
-  const formatted = Number.isInteger(newValue) ? String(newValue) : newValue.toFixed(4).replace(/0+$/, '').replace(/\.$/, '.0');
+  // 格式化数值：整数保留整数，小数保留合理精度。
+  // 注意 toFixed(4) 对极小值(如 0.00001234)会得到 "0.0000" → 去零后变 "0.0",
+  // 相当于把参数静默截断为 0。这里检测这种情况,退回到 toPrecision 保留有效位。
+  let formatted: string;
+  if (Number.isInteger(newValue)) {
+    formatted = String(newValue);
+  } else {
+    formatted = newValue.toFixed(4).replace(/0+$/, '').replace(/\.$/, '.0');
+    if (formatted === '0.0' && newValue !== 0) {
+      // toFixed(4) 精度不够，用 toPrecision(4) 保 4 位有效数字
+      // 结果可能是 "1.234e-5" 这种科学计数法，param 表格格式兼容数字字面量
+      formatted = newValue.toPrecision(4);
+    }
+  }
 
   // 匹配参数表行: | paramName | value | description |
   const escapedName = paramName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

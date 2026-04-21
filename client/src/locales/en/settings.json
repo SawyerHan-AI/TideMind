@@ -169,7 +169,8 @@
       "truncated": "Truncated",
       "saveToFile": "Save to File",
       "saved": "Saved",
-      "fullExportNote": "Exports all user data including history, timeline, operation logs, etc."
+      "fullExportNote": "Exports all user data including history, timeline, operation logs, etc.",
+      "exportFailed": "Export failed: {{message}}"
     },
     "logs": {
       "title": "Stream Log Browser",
@@ -247,7 +248,18 @@
       "continueInit": "Continue initialization",
       "discard": "Discard and delete",
       "discardConfirm": "Discard? Imported data will be rolled back and deleted.",
-      "processedFiles": "Processed {{current}} / {{total}} files"
+      "processedFiles": "Processed {{current}} / {{total}} files",
+      "phase": {
+        "scan": "Scan & Classify",
+        "preprocess": "Preprocess",
+        "digest": "Digest",
+        "explicitLinks": "Explicit Links",
+        "annotate": "Annotate",
+        "landing": "Landing Links",
+        "linkEval": "Link Evaluation",
+        "keystone": "Keystone",
+        "emergence": "Emergence"
+      }
     },
     "table": {
       "name": "Name",
@@ -418,6 +430,7 @@
     "saved": "Saved",
     "confirmSave": "Confirm Save",
     "save": "Save",
+    "userPromptPlaceholder": "Enter User Prompt template, use {{varName}} as placeholders for dynamic parameters",
     "returnToEdit": "Return to Edit",
     "changeReason": "Change reason (optional)",
     "rollbackToVersion": "Rollback to This Version",

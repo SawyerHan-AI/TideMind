@@ -25,5 +25,10 @@
     "items": "elementi",
     "memories": "memorie"
   },
-  "total": "{{count}} in totale"
+  "total": "{{count}} in totale",
+  "errors": {
+    "somethingWentWrong": "Qualcosa è andato storto",
+    "unexpectedError": "Si è verificato un errore imprevisto.",
+    "retry": "Riprova"
+  }
 }

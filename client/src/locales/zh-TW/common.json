@@ -25,5 +25,10 @@
     "items": "筆",
     "memories": "筆記憶"
   },
-  "total": "共 {{count}} 筆"
+  "total": "共 {{count}} 筆",
+  "errors": {
+    "somethingWentWrong": "發生了錯誤",
+    "unexpectedError": "發生了意外錯誤。",
+    "retry": "重試"
+  }
 }

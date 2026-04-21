@@ -25,5 +25,10 @@
     "items": "öğe",
     "memories": "anı"
   },
-  "total": "toplam {{count}}"
+  "total": "toplam {{count}}",
+  "errors": {
+    "somethingWentWrong": "Bir şeyler ters gitti",
+    "unexpectedError": "Beklenmedik bir hata oluştu.",
+    "retry": "Yeniden Dene"
+  }
 }

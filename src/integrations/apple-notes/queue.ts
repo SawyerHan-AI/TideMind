@@ -80,6 +80,9 @@ interface ProcessContext {
 
 /**
  * 批量处理笔记队列
+ *
+ * @param shouldStop 可选的中断谓词，在每个 batch / 并发组之间检查，
+ *                   返回 true 则立即跳出循环。用于支持 stopAppleNotesSource 的及时中断。
  */
 export async function processNoteQueue(
   db: Database.Database,
@@ -89,6 +92,7 @@ export async function processNoteQueue(
   attachTextsByNote: Map<number, AttachmentText[]>,
   sourceId: string,
   config?: Partial<QueueConfig>,
+  shouldStop?: () => boolean,
 ): Promise<QueueResult> {
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const progress = getProgress(sourceId);
@@ -109,10 +113,13 @@ export async function processNoteQueue(
 
   const ctx: ProcessContext = { db, folderPathMap, tagsByNote, attachTextsByNote, sourceId, result };
 
-  for (let i = 0; i < notes.length; i += cfg.batchSize) {
+  let aborted = false;
+  outer: for (let i = 0; i < notes.length; i += cfg.batchSize) {
+    if (shouldStop?.()) { aborted = true; break outer; }
     const batch = notes.slice(i, i + cfg.batchSize);
 
     for (let j = 0; j < batch.length; j += cfg.concurrency) {
+      if (shouldStop?.()) { aborted = true; break outer; }
       const concurrent = batch.slice(j, j + cfg.concurrency);
       await Promise.all(
         concurrent.map(note => processOneNote(ctx, note)),
@@ -125,7 +132,7 @@ export async function processNoteQueue(
     }
   }
 
-  progress.phase = 'done';
+  progress.phase = aborted ? 'idle' : 'done';
   progress.currentNote = null;
 
   // 同步计数到返回值（progress 的计数供 UI 显示，result 供调用方精确汇总）
@@ -238,10 +245,13 @@ async function processOneNote(
       for (let k = 0; k < minLen; k++) {
         supersedeNode(db, oldNodeIds[k], newNodeIds[k]);
       }
-      // 多余的旧节点标记为 superseded
-      if (oldNodeIds.length > minLen) {
+      // 多余的旧节点也走 supersedeNode，迁移到最后一个新节点
+      // 不能仅 UPDATE nodes SET is_superseded=1——那样 incoming/outgoing links 会残留指向幽灵节点，
+      // 让共享链接（手工建立的跨笔记引用等）永远悬挂。
+      if (oldNodeIds.length > minLen && newNodeIds.length > 0) {
+        const target = newNodeIds[newNodeIds.length - 1];
         for (let k = minLen; k < oldNodeIds.length; k++) {
-          db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(oldNodeIds[k]);
+          supersedeNode(db, oldNodeIds[k], target);
         }
       }
     }

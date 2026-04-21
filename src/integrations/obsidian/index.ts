@@ -26,6 +26,7 @@ import {
   processFileQueue, processFileChange, getImportProgress, resetProgress,
 } from './queue.js';
 import { clearTagNodeCache } from '../shared/property-promote.js';
+import { clearDanglingTagCache } from './initialization.js';
 
 // --- 多实例状态 ---
 const watchers = new Map<string, fs.FSWatcher>();
@@ -270,6 +271,8 @@ export async function triggerFullRescan(
   // 重置全量扫描标志，触发重新扫描
   resetFullScanState(db, sourceId);
   resetProgress(sourceId);
+  // 清空模块级悬空 tag 缓存，防止跨 vault / 跨轮次指向错误节点
+  clearDanglingTagCache();
   await runSync(db, vaultRoot, sourceId);
 }
 

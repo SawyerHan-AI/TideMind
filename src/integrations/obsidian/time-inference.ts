@@ -86,13 +86,16 @@ function parseNaturalDate(value: string): string | null {
  * 从文件内容的 frontmatter 中提取日期
  */
 function extractFrontmatterDate(content: string): string | null {
-  // 检查是否有 YAML frontmatter
-  if (!content.startsWith('---')) return null;
+  // 统一换行：CRLF 文件的 '\r\n---' 会让 indexOf('\n---') 匹配到错误位置
+  const normalized = content.replace(/\r\n/g, '\n');
 
-  const endIndex = content.indexOf('\n---', 3);
+  // 检查是否有 YAML frontmatter
+  if (!normalized.startsWith('---')) return null;
+
+  const endIndex = normalized.indexOf('\n---', 3);
   if (endIndex === -1) return null;
 
-  const frontmatter = content.slice(4, endIndex);
+  const frontmatter = normalized.slice(4, endIndex);
 
   // 按优先级遍历日期字段
   for (const field of DATE_FIELD_PRIORITY) {

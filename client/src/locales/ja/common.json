@@ -25,5 +25,10 @@
     "items": "件",
     "memories": "件のメモリ"
   },
-  "total": "合計 {{count}} 件"
+  "total": "合計 {{count}} 件",
+  "errors": {
+    "somethingWentWrong": "エラーが発生しました",
+    "unexpectedError": "予期しないエラーが発生しました。",
+    "retry": "再試行"
+  }
 }

@@ -27,7 +27,9 @@ import {
 import { clearTagNodeCache } from '../shared/property-promote.js';
 
 // --- 多实例状态 ---
-const watchers = new Map<string, fs.FSWatcher>();
+// Linux 平台 fs.watch 不支持 recursive:true（会抛错），改为监听多个顶级目录
+// 其他平台每个 sourceId 仍只有一个 watcher
+const watchers = new Map<string, fs.FSWatcher[]>();
 const debounceTimerMaps = new Map<string, Map<string, NodeJS.Timeout>>();
 
 /**
@@ -63,9 +65,11 @@ export async function startLogseqSource(
  * 停止单个 Logseq 笔记源实例
  */
 export function stopLogseqSource(sourceId: string): void {
-  const w = watchers.get(sourceId);
-  if (w) {
-    w.close();
+  const ws = watchers.get(sourceId);
+  if (ws) {
+    for (const w of ws) {
+      try { w.close(); } catch { /* ignore */ }
+    }
     watchers.delete(sourceId);
   }
   const timers = debounceTimerMaps.get(sourceId);
@@ -190,6 +194,10 @@ async function runSync(
 
 /**
  * 启动文件监听（带目录过滤）
+ *
+ * Linux 的 fs.watch 不支持 recursive:true（会抛 ERR_FEATURE_UNAVAILABLE_ON_PLATFORM）。
+ * 为避免引入 chokidar 依赖，Linux 下只监听顶级 `pages/` 和 `journals/` 两个目录（Logseq 典型结构）。
+ * 子目录（如用户自建分类）不会被监听；macOS / Windows 仍走 recursive 监听。
  */
 function startFilteredWatcher(
   db: Database.Database,
@@ -204,21 +212,19 @@ function startFilteredWatcher(
   }
   const debounceTimers = debounceTimerMaps.get(sourceId)!;
 
-  const w = fs.watch(graphRoot, { recursive: true }, (eventType, filename) => {
-    if (!filename) return;
-
+  const handleChange = (relFromRoot: string): void => {
     // 过滤：只处理 .md 文件，排除系统目录
-    if (!shouldProcessFile(filename)) return;
+    if (!shouldProcessFile(relFromRoot)) return;
 
     // 防抖 1 秒
-    const key = filename;
+    const key = relFromRoot;
     if (debounceTimers.has(key)) {
       clearTimeout(debounceTimers.get(key)!);
     }
 
     debounceTimers.set(key, setTimeout(() => {
       debounceTimers.delete(key);
-      const filePath = path.join(graphRoot, filename);
+      const filePath = path.join(graphRoot, relFromRoot);
 
       if (!fs.existsSync(filePath)) return; // 文件被删除
 
@@ -228,8 +234,8 @@ function startFilteredWatcher(
           logTimelineEvent(db, {
             type: 'memory',
             subtype: 'logseq_file_change',
-            title: JSON.stringify({ key: 'logseq_file_changed', params: { filename } }),
-            detail: { file: filename, source_id: sourceId },
+            title: JSON.stringify({ key: 'logseq_file_changed', params: { filename: relFromRoot } }),
+            detail: { file: relFromRoot, source_id: sourceId },
             actor: 'brain',
           });
         })
@@ -237,9 +243,39 @@ function startFilteredWatcher(
           log.error('文件变更处理失败:', (err as Error).message),
         );
     }, 1000));
-  });
+  };
 
-  watchers.set(sourceId, w);
+  const isLinux = os.platform() === 'linux';
+  const createdWatchers: fs.FSWatcher[] = [];
+
+  if (isLinux) {
+    // Logseq 典型结构：pages/ 和 journals/ 两个目录。不递归监听子目录。
+    for (const subdir of ['pages', 'journals']) {
+      const dirAbs = path.join(graphRoot, subdir);
+      if (!fs.existsSync(dirAbs)) continue;
+      try {
+        const w = fs.watch(dirAbs, (_eventType, filename) => {
+          if (!filename) return;
+          // filename 是相对 dirAbs 的路径，补回 subdir/ 前缀
+          handleChange(path.join(subdir, filename));
+        });
+        createdWatchers.push(w);
+      } catch (err) {
+        log.error(`监听 ${dirAbs} 失败:`, (err as Error).message);
+      }
+    }
+    if (createdWatchers.length === 0) {
+      log.warn(`Linux 下未能建立任何监听器（pages/ 和 journals/ 目录均不存在）: ${graphRoot}`);
+    }
+  } else {
+    const w = fs.watch(graphRoot, { recursive: true }, (_eventType, filename) => {
+      if (!filename) return;
+      handleChange(filename);
+    });
+    createdWatchers.push(w);
+  }
+
+  watchers.set(sourceId, createdWatchers);
 }
 
 /**

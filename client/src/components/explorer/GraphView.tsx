@@ -170,6 +170,10 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
     return Math.max(0, ...graphData.nodes.map(n => n.connectivity))
   }, [graphData])
 
+  // O(1) lookup map for nodes — rebuilt when simulation nodes change
+  const nodesByIdRef = useRef<Map<string, SimNode>>(new Map())
+  // Keep the map in sync: updated inside the data-sync effect below
+
   /* ---- Render function ---- */
   const render = useCallback(() => {
     const canvas = canvasRef.current
@@ -196,10 +200,11 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
       holeNodeIds.add(h.nodeB)
     }
 
-    // Determine visibility
+    // Determine visibility — O(1) via Map
+    const nodesById = nodesByIdRef.current
     const isVisible = (id: string): boolean => {
       if (connectivityThreshold > 0) {
-        const n = nodes.find(nd => nd.id === id)
+        const n = nodesById.get(id)
         if (n && n.connectivity < connectivityThreshold) return false
       }
       if (neighborhoodSet && !neighborhoodSet.has(id)) return false
@@ -387,6 +392,7 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
 
     nodesRef.current = nodes
     linksRef.current = links
+    nodesByIdRef.current = new Map(nodes.map(n => [n.id, n]))
 
     const { width, height } = sizeRef.current
 

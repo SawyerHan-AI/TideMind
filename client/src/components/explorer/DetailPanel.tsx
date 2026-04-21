@@ -410,7 +410,7 @@ export function DetailPanel({ nodeId, onNavigate }: {
               )}
               {node.source_stream && (
                 <div className="flex items-center gap-1">
-                  Stream <InfoTip content={NODE_ATTR_TIPS.source_stream} size={10} />
+                  {t('explorer:detail.stream')} <InfoTip content={NODE_ATTR_TIPS.source_stream} size={10} />
                   : <span className="text-gray-200 font-mono text-[10px]">{node.source_stream}</span>
                   <a
                     href={`#/timeline`}
@@ -463,7 +463,7 @@ export function DetailPanel({ nodeId, onNavigate }: {
                 ))}
               </div>
             )}
-            <div>ID: <span className="text-gray-200 font-mono text-[10px] select-all">{node.id}</span></div>
+            <div>{t('explorer:detail.id')} <span className="text-gray-200 font-mono text-[10px] select-all">{node.id}</span></div>
           </div>
         </div>
       </div>

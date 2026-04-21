@@ -15,7 +15,7 @@ function generateSourceId(): string {
 /**
  * 当前 schema 版本。每次新增 migration 时递增。
  */
-const CURRENT_SCHEMA_VERSION = 19;
+const CURRENT_SCHEMA_VERSION = 20;
 
 /**
  * 完整建表 SQL — 包含所有字段，新数据库直接创建最新结构。
@@ -270,7 +270,8 @@ CREATE TABLE IF NOT EXISTS pending_digests (
     retry_count INTEGER DEFAULT 0,
     created TEXT NOT NULL,
     next_retry_at TEXT NOT NULL,
-    completed_at TEXT
+    completed_at TEXT,
+    processing_started_at TEXT  -- 进入 processing 时写入（stale recovery 用）
 );
 CREATE INDEX IF NOT EXISTS idx_pending_digests_status ON pending_digests(status, next_retry_at);
 `;
@@ -1371,6 +1372,24 @@ const MIGRATIONS: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_links_status ON links(status)');
 
       log.info('迁移 v19 完成: links.status CHECK 已扩展为支持 rejected_by_user');
+    },
+  },
+  {
+    version: 20,
+    description: 'pending_digests 新增 processing_started_at 字段（stale recovery 语义修正）',
+    up: (db) => {
+      // 背景：claimNextPendingDigest 的 stale recovery 原先用
+      // `next_retry_at < now() - 10min` 判定卡死的 processing 行，但
+      // next_retry_at 只在 pending 态设置，进入 processing 不会刷新，
+      // 导致超时阈值变成"最后一次调度时间 + 10 min"而非"processing 开始后 10 min"。
+      // 新增 processing_started_at 专门记录进入 processing 的时刻。
+      //
+      // 幂等：用 PRAGMA table_info 检测列是否存在。
+      const cols = db.prepare("PRAGMA table_info(pending_digests)").all() as Array<{ name: string }>;
+      if (!cols.some(c => c.name === 'processing_started_at')) {
+        db.exec('ALTER TABLE pending_digests ADD COLUMN processing_started_at TEXT');
+      }
+      log.info('迁移 v20 完成: pending_digests.processing_started_at 已添加');
     },
   },
 ];

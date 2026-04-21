@@ -89,7 +89,7 @@ export function BrainExplorer() {
           ) : (
             <div className="relative h-full">
               <GraphView
-                filter={filter}
+                filter={{ ...filter, search: debouncedSearch || undefined }}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
               />

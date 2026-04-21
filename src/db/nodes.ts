@@ -5,6 +5,7 @@ import { now } from '../utils/time.js';
 import { computeMaturityScore } from '../graph/maturity.js';
 import { getParam } from '../strategy/loader.js';
 import { dimensionsToLegacyType } from '../utils/dimensions.js';
+import { deleteVector } from './vectors.js';
 
 /**
  * 安全解析节点的 tags JSON 字段。
@@ -142,7 +143,7 @@ export function updateNode(
 }
 
 /**
- * 归档节点：archived=1 + heat=0.02。
+ * 归档节点：archived=1 + heat=0.02，并清理向量（nodes_vec / node_segments）。
  *
  * archived=1 使节点在默认 UI 查询和搜索里消失，但仍可从"已归档节点"入口
  * 看到、通过 unarchiveNode 恢复；heat=0.02 是额外的自然沉底兜底。
@@ -151,16 +152,26 @@ export function updateNode(
  * 过滤 archived=1 但不看 heat（或过滤 heat > 0.01 却保留 0.02）——导致
  * "archive 了但节点还出现在 UI 里"。见 docs/backlog.md 已记的语义不一致
  * 条目。
+ *
+ * 同时清理向量：向量搜索只看 nodes_vec 表，不 join archived 字段——
+ * 不清会污染 recall / landing 结果（P0-10 migration v18 只清理了历史脏向量，
+ * 此函数负责防止未来再产生脏向量）。deleteVector 对无 embedding 的节点也安全
+ * （空 DELETE）。
  */
 export function archiveNode(db: Database.Database, id: string): void {
   db.prepare(
     'UPDATE nodes SET archived = 1, heat = 0.02 WHERE id = ?',
   ).run(id);
+  deleteVector(db, id);
 }
 
 /**
  * 恢复归档节点：将 archived 设回 0，heat 恢复到合理中间值。
  * 用于用户手动恢复因外部笔记源文件删除而归档的节点。
+ *
+ * 注意：archiveNode 已清理了节点的 embedding，此函数不会重新生成——
+ * 节点恢复后不会从 recall/landing 召回，需要用户手动触发 reembed
+ * （未来可自动 enqueue，见 docs/backlog.md）。
  */
 export function unarchiveNode(db: Database.Database, id: string): boolean {
   const result = db.prepare(
@@ -170,13 +181,18 @@ export function unarchiveNode(db: Database.Database, id: string): boolean {
 }
 
 /**
- * 重新归档节点：将 archived 设回 1，heat 降到 0.01。
+ * 重新归档节点：将 archived 设回 1，heat 降到 0.01，并清理向量。
  * 用于用户手动将已恢复的节点重新归档。
+ *
+ * 同 archiveNode：清理向量防止污染 recall。
  */
 export function reArchiveNode(db: Database.Database, id: string): boolean {
   const result = db.prepare(
     'UPDATE nodes SET archived = 1, heat = 0.01 WHERE id = ? AND archived = 0',
   ).run(id);
+  if (result.changes > 0) {
+    deleteVector(db, id);
+  }
   return result.changes > 0;
 }
 
@@ -218,6 +234,10 @@ export function listNodes(
   if (filter.archived === false) {
     conditions.push('archived = 0');
     conditions.push('is_superseded = 0');
+  } else if (filter.archived === true) {
+    // 显式请求"只归档"——与 archived=false 对称。之前漏掉这支,
+    // 导致传 true 时不加条件返回全部节点(见 P1-N)。
+    conditions.push('archived = 1');
   }
   if (filter.createdAfter) {
     conditions.push('created >= ?');
@@ -247,6 +267,11 @@ export function listNodes(
 export function getNodeCount(db: Database.Database, archived?: boolean): number {
   if (archived === false) {
     return (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE archived = 0 AND is_superseded = 0').get() as { cnt: number }).cnt;
+  }
+  if (archived === true) {
+    // 与 archived=false 对称:显式请求"只归档"。之前漏掉这支,传 true
+    // 等价于不传(返回全表计数),语义错(见 P1-N)。
+    return (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE archived = 1').get() as { cnt: number }).cnt;
   }
   return (db.prepare('SELECT COUNT(*) as cnt FROM nodes').get() as { cnt: number }).cnt;
 }

@@ -5,6 +5,7 @@
 
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import { useTranslation } from 'react-i18next'
 import { brand, btnText } from '../../lib/tokens'
 
 interface ConfirmDialogProps {
@@ -26,10 +27,13 @@ export function ConfirmDialog({
   title,
   description,
   children,
-  confirmText = 'Confirm',
-  cancelText = 'Cancel',
+  confirmText,
+  cancelText,
   danger = false,
 }: ConfirmDialogProps) {
+  const { t } = useTranslation('common')
+  const resolvedConfirmText = confirmText ?? t('actions.confirm')
+  const resolvedCancelText = cancelText ?? t('actions.cancel')
   const cancelRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
@@ -71,7 +75,7 @@ export function ConfirmDialog({
             className="px-4 py-2 rounded-lg text-xs font-medium text-gray-300 border border-white/10 hover:border-white/20 hover:text-white transition-all"
             style={{ background: 'var(--theme-glass-bg, transparent)' }}
           >
-            {cancelText}
+            {resolvedCancelText}
           </button>
           <button
             onClick={onConfirm}
@@ -90,7 +94,7 @@ export function ConfirmDialog({
                   }
             }
           >
-            {confirmText}
+            {resolvedConfirmText}
           </button>
         </div>
       </div>

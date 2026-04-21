@@ -49,6 +49,8 @@
     "tool": "도구:",
     "session": "세션:",
     "time": "시간:",
+    "stream": "스트림",
+    "id": "ID:",
     "viewTimeline": "타임라인 보기",
     "evidenceChain": "증거 체인",
     "metaInfo": "메타 정보",

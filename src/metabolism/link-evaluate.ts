@@ -103,13 +103,16 @@ export async function runLinkEvaluate(db: Database.Database): Promise<LinkEvalua
 
   if (allLinks.length === 0) return { evaluated: 0, confirmed: 0, deleted: 0 };
 
-  // 先处理过期的 pending 链接
+  // 先处理过期的 pending 链接 — 过期一律删,不再留 strength>=0.5 的 pending
+  // 链接。之前加 strength<0.5 的意图是"高强度的再留一轮机会",但 pending
+  // 本身就意味着 LLM 没来得及/没配置来确认,留着只会让 pending 越积越多、
+  // evaluator 每次都要扫过它们。强度本身就是创建者自评,不应作为保护条件。
   let deleted = 0;
   const toEvaluate: any[] = [];
   for (const link of allLinks) {
     if (link.status === 'pending') {
       const daysSinceCreation = (Date.now() - new Date(link.created).getTime()) / (1000 * 60 * 60 * 24);
-      if (daysSinceCreation > pendingExpireDays && link.strength < 0.5) {
+      if (daysSinceCreation > pendingExpireDays) {
         deleteLink(db, link.id);
         deleted++;
         continue;

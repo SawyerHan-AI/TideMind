@@ -112,7 +112,6 @@ import { setupTestDb, seedNode, seedLink } from '../helpers/test-db.js';
 import {
   runDivergentScan,
   runKeystoneIdentification,
-  needsWeeklyMaintenance,
 } from '../../src/metabolism/divergent.js';
 import { getGateStatus } from '../../src/db/stats.js';
 
@@ -208,27 +207,5 @@ describe('runDivergentScan', () => {
   });
 });
 
-// ===== needsWeeklyMaintenance =====
-
-describe('needsWeeklyMaintenance', () => {
-  it('should return true when no maintenance record exists', () => {
-    expect(needsWeeklyMaintenance(db)).toBe(true);
-  });
-
-  it('should return false when maintenance was done recently', () => {
-    db.prepare(
-      "INSERT INTO metadata (key, value) VALUES ('last_weekly_maintenance', ?)",
-    ).run(new Date().toISOString());
-
-    expect(needsWeeklyMaintenance(db)).toBe(false);
-  });
-
-  it('should return true when maintenance was done over checkDays ago', () => {
-    const oldDate = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
-    db.prepare(
-      "INSERT INTO metadata (key, value) VALUES ('last_weekly_maintenance', ?)",
-    ).run(oldDate);
-
-    expect(needsWeeklyMaintenance(db, 7)).toBe(true);
-  });
-});
+// needsWeeklyMaintenance 已于 2026-04-21 删除 (见 src/metabolism/divergent.ts 注释),
+// 调度统一由 scheduler.ts::tryClaimTask 接管,按任务级 last_task_{id} 粒度判定。

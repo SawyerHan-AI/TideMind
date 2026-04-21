@@ -169,7 +169,8 @@
       "truncated": "已截斷",
       "saveToFile": "儲存到檔案",
       "saved": "已儲存",
-      "fullExportNote": "匯出全量使用者資料，包含歷史版本、時間線、操作日誌等"
+      "fullExportNote": "匯出全量使用者資料，包含歷史版本、時間線、操作日誌等",
+      "exportFailed": "匯出失敗：{{message}}"
     },
     "logs": {
       "title": "Stream 日誌瀏覽",
@@ -247,7 +248,18 @@
       "continueInit": "繼續初始化",
       "discard": "放棄並刪除",
       "discardConfirm": "確認放棄？已匯入的資料將被回退刪除。",
-      "processedFiles": "已處理 {{current}} / {{total}} 個檔案"
+      "processedFiles": "已處理 {{current}} / {{total}} 個檔案",
+      "phase": {
+        "scan": "掃描分類",
+        "preprocess": "預處理",
+        "digest": "入庫",
+        "explicitLinks": "顯式連結",
+        "annotate": "節點標注",
+        "landing": "Landing 連接",
+        "linkEval": "連結評估",
+        "keystone": "Keystone 標記",
+        "emergence": "湧現"
+      }
     },
     "table": {
       "name": "名稱",
@@ -418,6 +430,7 @@
     "saved": "已儲存",
     "confirmSave": "確認儲存",
     "save": "儲存",
+    "userPromptPlaceholder": "輸入 User Prompt 範本，使用 {{變數名}} 作為動態參數占位符",
     "returnToEdit": "返回編輯",
     "changeReason": "變更原因（可選）",
     "rollbackToVersion": "回滾至此版本",

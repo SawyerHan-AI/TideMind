@@ -36,9 +36,12 @@ export async function getOrCreateTagNode(
   source: string = 'brain',
   created?: string,
 ): Promise<string> {
-  const normalized = tagName.trim().toLowerCase();
-  if (tagNodeCache.has(normalized)) {
-    return tagNodeCache.get(normalized)!;
+  // cache key 与 DB 查询保持一致的大小写语义：DB 侧 content/title 为大小写敏感精确匹配，
+  // 因此 cache key 也必须用原始 case（仅 trim）。
+  // 之前用 toLowerCase 归一会导致 "Foo" 和 "foo" 共享同一缓存条目 —— 与 DB 语义不符。
+  const cacheKey = tagName.trim();
+  if (tagNodeCache.has(cacheKey)) {
+    return tagNodeCache.get(cacheKey)!;
   }
 
   // 查找已存在的 tag 节点（is_tag=1，精确匹配 content 或 title）
@@ -47,7 +50,7 @@ export async function getOrCreateTagNode(
   ).get(tagName, tagName) as { id: string } | undefined;
 
   if (existing) {
-    tagNodeCache.set(normalized, existing.id);
+    tagNodeCache.set(cacheKey, existing.id);
     return existing.id;
   }
 
@@ -67,7 +70,7 @@ export async function getOrCreateTagNode(
   const nodeId = result.created_nodes?.[0]?.id;
   if (nodeId) {
     updateNode(db, nodeId, { is_tag: 1 });
-    tagNodeCache.set(normalized, nodeId);
+    tagNodeCache.set(cacheKey, nodeId);
     return nodeId;
   }
 

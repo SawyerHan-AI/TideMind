@@ -25,5 +25,10 @@
     "items": "건",
     "memories": "건의 메모리"
   },
-  "total": "총 {{count}} 건"
+  "total": "총 {{count}} 건",
+  "errors": {
+    "somethingWentWrong": "오류가 발생했습니다",
+    "unexpectedError": "예기치 않은 오류가 발생했습니다.",
+    "retry": "재시도"
+  }
 }
