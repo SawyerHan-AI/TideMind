@@ -325,6 +325,10 @@ async function deepReconsolidate(
   if (result.conflict_detected) {
     // 按序号匹配冲突节点（如有 callerContext 占了序号 1，需要偏移）
     const indexOffset = callerContext ? 1 : 0;
+    // 如果 callerContext 存在而 LLM 返回 index=1，说明把上下文本身当成冲突目标，丢弃
+    if (result.conflict_with_index === 1 && callerContext) {
+      log.warn(`node=${node.id} LLM 把 callerContext 当冲突目标（index=1），丢弃`);
+    }
     const conflictIdx = typeof result.conflict_with_index === 'number' && result.conflict_with_index > 0
       ? result.conflict_with_index - 1 - indexOffset
       : -1;

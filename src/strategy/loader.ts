@@ -459,7 +459,7 @@ export function getLLMOptions(strategyName: string): {
   const budget = getParam(strategyName, 'thinking_budget', 0) as number;
 
   const validTiers = ['light', 'standard', 'heavy'] as const;
-  const model = validTiers.includes(tier as any) ? (tier as 'light' | 'standard' | 'heavy') : 'standard';
+  const model = validTiers.includes(tier as 'light' | 'standard' | 'heavy') ? (tier as 'light' | 'standard' | 'heavy') : 'standard';
 
   return {
     model,

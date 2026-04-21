@@ -483,7 +483,7 @@ function syncCrystalToMarkdown(id: string, content: string, tags: string[], prom
   try {
     const crystalDir = path.join(getDataDir(), 'crystal');
     fs.mkdirSync(crystalDir, { recursive: true });
-    const title = content.slice(0, 30).replace(/[/\\:*?"<>|]/g, '_').trim();
+    const title = Array.from(content).slice(0, 30).join('').replace(/[/\\:*?"<>|]/g, '_').trim();
     const fileName = `${id.slice(0, 8)}_${title}.md`;
     const filePath = path.join(crystalDir, fileName);
 

@@ -43,6 +43,7 @@ function getVersion(): string {
       if (pkg.name === 'tidemind') return pkg.version;
     } catch { /* skip */ }
   }
+  log.warn('package.json 未找到，版本回落到 0.0.0');
   return '0.0.0';
 }
 

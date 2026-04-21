@@ -11,6 +11,9 @@ import Database from 'better-sqlite3';
 import type { AppConfig } from './types.js';
 import { loadStrategies, initFileWatchers } from './strategy/loader.js';
 import { syncSkillFiles, createSyncHashStoreFromDb } from './utils/sync-skill-files.js';
+import { createLogger } from './utils/logger.js';
+
+const log = createLogger('config');
 
 /**
  * 运行时校验关键配置字段。不用 Zod 避免依赖——手动检查足够。
@@ -313,7 +316,7 @@ function syncStrategyParams(sourceDir: string, targetDir: string): void {
       db.pragma('busy_timeout = 5000');
       db.exec('CREATE TABLE IF NOT EXISTS sync_hashes (file_name TEXT PRIMARY KEY, source_hash TEXT NOT NULL, synced_at TEXT NOT NULL)');
     }
-  } catch { /* DB 不可用时退化为全量覆盖 */ }
+  } catch (err) { log.debug('sync_hashes DB 初始化失败，退化为全量覆盖', err); }
 
   for (const file of fs.readdirSync(sourceDir)) {
     if (!file.endsWith('.md')) continue;
@@ -326,7 +329,7 @@ function syncStrategyParams(sourceDir: string, targetDir: string): void {
       // 新策略文件，直接复制
       fs.copyFileSync(sourcePath, targetPath);
       if (db) {
-        try { db.prepare('INSERT OR REPLACE INTO sync_hashes (file_name, source_hash, synced_at) VALUES (?, ?, datetime(\'now\'))').run(file, sourceHash); } catch { /* */ }
+        try { db.prepare('INSERT OR REPLACE INTO sync_hashes (file_name, source_hash, synced_at) VALUES (?, ?, datetime(\'now\'))').run(file, sourceHash); } catch (err) { log.debug('写入 sync_hashes 失败', err); }
       }
       continue;
     }
@@ -337,7 +340,7 @@ function syncStrategyParams(sourceDir: string, targetDir: string): void {
       try {
         const row = db.prepare('SELECT source_hash FROM sync_hashes WHERE file_name = ?').get(file) as { source_hash: string } | undefined;
         needsOverwrite = !row || row.source_hash !== sourceHash;
-      } catch { needsOverwrite = true; }
+      } catch (err) { log.debug('读取 sync_hashes 失败', err); needsOverwrite = true; }
     } else {
       // DB 不可用时，比较文件内容判断是否需要覆盖
       const targetContent = fs.readFileSync(targetPath, 'utf-8');
@@ -350,10 +353,10 @@ function syncStrategyParams(sourceDir: string, targetDir: string): void {
       try {
         const strategyName = file.replace('.md', '');
         recordStrategyUpgrade(strategyName, sourceContent);
-      } catch { /* */ }
+      } catch (err) { log.debug('记录策略版本失败', err); }
       // 更新 sync hash
       if (db) {
-        try { db.prepare('INSERT OR REPLACE INTO sync_hashes (file_name, source_hash, synced_at) VALUES (?, ?, datetime(\'now\'))').run(file, sourceHash); } catch { /* */ }
+        try { db.prepare('INSERT OR REPLACE INTO sync_hashes (file_name, source_hash, synced_at) VALUES (?, ?, datetime(\'now\'))').run(file, sourceHash); } catch (err) { log.debug('更新 sync_hashes 失败', err); }
       }
       continue;
     }
@@ -393,7 +396,7 @@ function syncStrategyParams(sourceDir: string, targetDir: string): void {
     }
   }
 
-  if (db) try { (db as { close(): void }).close(); } catch { /* */ }
+  if (db) try { (db as { close(): void }).close(); } catch (err) { log.debug('关闭 sync_hashes DB 失败', err); }
 }
 
 /**
@@ -417,8 +420,8 @@ function recordStrategyUpgrade(strategyName: string, content: string): void {
     db.prepare(
       'INSERT INTO strategy_versions (strategy_name, version, content, change_reason, changed_by, created) VALUES (?, ?, ?, ?, ?, datetime(\'now\'))',
     ).run(strategyName, maxVersion + 1, content, '源码同步更新', 'system');
-  } catch { /* DB 可能尚未初始化 */ } finally {
-    if (db) try { db.close(); } catch { /* ignore */ }
+  } catch (err) { log.debug('recordStrategyUpgrade DB 操作失败', err); } finally {
+    if (db) try { db.close(); } catch (err) { log.debug('关闭 strategy_versions DB 失败', err); }
   }
 }
 

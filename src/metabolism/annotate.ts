@@ -18,6 +18,7 @@ import { getPrompt, getParam, getLLMOptions, renderUserPrompt } from '../strateg
 import { logTimelineEvent } from '../db/log.js';
 import { getGraphVocabulary } from '../db/stats.js';
 import { createLogger } from '../utils/logger.js';
+import { dimensionsToLegacyType } from '../utils/dimensions.js';
 import { parseLLMJson } from '../llm/json-parse.js';
 
 const log = createLogger('annotate');
@@ -136,7 +137,6 @@ export async function runAnnotation(db: Database.Database): Promise<{
         if (ann.index != null) annByIndex.set(ann.index, ann);
       }
 
-      const { dimensionsToLegacyType } = await import('../utils/dimensions.js');
       let annotated = 0;
       for (let i = 0; i < batch.length; i++) {
         const node = batch[i];

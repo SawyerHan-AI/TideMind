@@ -8,7 +8,9 @@ export function today(): string {
 }
 
 export function hoursAgo(isoString: string): number {
-  return (Date.now() - new Date(isoString).getTime()) / (1000 * 60 * 60);
+  const date = new Date(isoString);
+  if (isNaN(date.getTime())) return Infinity;
+  return (Date.now() - date.getTime()) / (1000 * 60 * 60);
 }
 
 export function daysAgo(isoString: string): number {

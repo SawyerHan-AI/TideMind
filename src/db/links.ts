@@ -140,6 +140,18 @@ export function getLinksForNodes(
   if (nodeIds.length === 0) return [];
   const minStrength = options?.minStrength ?? 0;
   const status = options?.statusFilter ?? 'confirmed';
+  // SQLite 变量上限 999；每条 SQL 展开两份 nodeIds + 2 个固定参数，
+  // 单批最多放 floor((999 - 2) / 2) = 498 个 id，保守取 499 以下
+  const BATCH = 498;
+  if (nodeIds.length > BATCH) {
+    const results: BrainLink[] = [];
+    for (let i = 0; i < nodeIds.length; i += BATCH) {
+      results.push(...getLinksForNodes(db, nodeIds.slice(i, i + BATCH), options));
+    }
+    // 去重（节点可能跨批次共享链接）
+    const seen = new Set<string>();
+    return results.filter(r => { if (seen.has(r.id)) return false; seen.add(r.id); return true; });
+  }
   const placeholders = nodeIds.map(() => '?').join(',');
   const rows = db.prepare(`
     SELECT * FROM links
