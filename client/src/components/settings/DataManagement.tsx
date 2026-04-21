@@ -121,7 +121,7 @@ function ExportSection() {
         setResult(JSON.stringify(json, null, 2))
       }
     } catch (err) {
-      setResult(`导出失败: ${(err as Error).message}`)
+      setResult(t('data.export.exportFailed', { message: (err as Error).message }))
     } finally {
       setExporting(false)
     }

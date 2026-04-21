@@ -169,7 +169,8 @@
       "truncated": "Kısaltılmış",
       "saveToFile": "Dosyaya kaydet",
       "saved": "Kaydedildi",
-      "fullExportNote": "Geçmiş, zaman çizelgesi, işlem günlükleri dahil tüm kullanıcı verilerini dışa aktarır"
+      "fullExportNote": "Geçmiş, zaman çizelgesi, işlem günlükleri dahil tüm kullanıcı verilerini dışa aktarır",
+      "exportFailed": "Dışa aktarma başarısız: {{message}}"
     },
     "logs": {
       "title": "Akış Günlüğü Tarayıcısı",
@@ -247,7 +248,18 @@
       "continueInit": "Başlatmaya devam et",
       "discard": "Vazgeç ve sil",
       "discardConfirm": "Vazgeçilsin mi? İçe aktarılan veriler geri alınacak ve silinecektir.",
-      "processedFiles": "İşlenen {{current}} / {{total}} dosya"
+      "processedFiles": "İşlenen {{current}} / {{total}} dosya",
+      "phase": {
+        "scan": "Tarama & Sınıflandırma",
+        "preprocess": "Ön İşleme",
+        "digest": "Depolama",
+        "explicitLinks": "Açık Bağlantılar",
+        "annotate": "Düğüm Açıklaması",
+        "landing": "Landing Bağlantıları",
+        "linkEval": "Bağlantı Değerlendirmesi",
+        "keystone": "Keystone İşareti",
+        "emergence": "Beliriş"
+      }
     },
     "table": {
       "name": "Ad",
@@ -418,6 +430,7 @@
     "saved": "Kaydedildi",
     "confirmSave": "Kaydetmeyi onayla",
     "save": "Kaydet",
+    "userPromptPlaceholder": "User Prompt şablonunu girin, dinamik parametre yer tutucuları olarak {{değişkenAdı}} kullanın",
     "returnToEdit": "Düzenlemeye dön",
     "changeReason": "Değişiklik nedeni (isteğe bağlı)",
     "rollbackToVersion": "Bu sürüme geri dön",

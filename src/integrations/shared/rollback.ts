@@ -66,11 +66,36 @@ export function rollbackNoteSource(
       const batch = nodeIdArray.slice(i, i + BATCH_SIZE);
       const placeholders = batch.map(() => '?').join(',');
 
-      // 删除链接（双向）
+      // 删除关联表（必须先于 nodes 删除，避免外键悬挂）
+      //
+      // 清理范围覆盖 schema.ts 里所有以 node_id 作直接 FK 的表：
+      //   - node_versions(node_id) REFERENCES nodes(id)
+      //   - strategy_feedback(node_id) REFERENCES nodes(id)
+      //   - links(from_id / to_id) REFERENCES nodes(id)
+      //   - node_segments(node_id) —— 无显式 FK 声明但语义上绑定
+      //
+      // 未处理的间接引用（已知，有意不清理）：
+      //   - operation_log.output_node_ids / timeline_events.node_ids：JSON 数组里的 id 字符串，
+      //     不是外键；查询时自带容错，保留作为历史痕迹即可。
       db.prepare(`DELETE FROM links WHERE from_id IN (${placeholders})`).run(...batch);
       db.prepare(`DELETE FROM links WHERE to_id IN (${placeholders})`).run(...batch);
 
-      // 删除节点
+      // node_versions：历史版本快照，节点删了之后失去意义
+      try {
+        db.prepare(`DELETE FROM node_versions WHERE node_id IN (${placeholders})`).run(...batch);
+      } catch { /* 表可能不存在（旧 schema） */ }
+
+      // strategy_feedback：策略评估信号，悬挂的 FK 会让 DELETE nodes 报错
+      try {
+        db.prepare(`DELETE FROM strategy_feedback WHERE node_id IN (${placeholders})`).run(...batch);
+      } catch { /* 表可能不存在 */ }
+
+      // 删除 node_segments（在 nodes 之前删，避免级联异常）
+      try {
+        db.prepare(`DELETE FROM node_segments WHERE node_id IN (${placeholders})`).run(...batch);
+      } catch { /* 表可能不存在 */ }
+
+      // 删除节点本身
       db.prepare(`DELETE FROM nodes WHERE id IN (${placeholders})`).run(...batch);
 
       // 删除向量（vec0 虚拟表可能不支持 IN，逐条删除）
@@ -81,11 +106,6 @@ export function rollbackNoteSource(
 
       // 删除 FTS 索引条目（通过 trigger 自动处理，但 rebuild 更保险）
       // nodes 的 DELETE trigger 会自动清理 FTS
-
-      // 删除 node_segments
-      try {
-        db.prepare(`DELETE FROM node_segments WHERE node_id IN (${placeholders})`).run(...batch);
-      } catch { /* 表可能不存在 */ }
     }
 
     // 删除 sync state

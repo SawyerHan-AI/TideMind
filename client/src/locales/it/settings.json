@@ -169,7 +169,8 @@
       "truncated": "Troncato",
       "saveToFile": "Salva su file",
       "saved": "Salvato",
-      "fullExportNote": "Esporta tutti i dati utente, inclusi cronologia, timeline, registri operazioni, ecc."
+      "fullExportNote": "Esporta tutti i dati utente, inclusi cronologia, timeline, registri operazioni, ecc.",
+      "exportFailed": "Esportazione fallita: {{message}}"
     },
     "logs": {
       "title": "Browser dei Registri di Flusso",
@@ -247,7 +248,18 @@
       "continueInit": "Continua inizializzazione",
       "discard": "Scarta ed elimina",
       "discardConfirm": "Scartare? I dati importati verranno annullati ed eliminati.",
-      "processedFiles": "Elaborati {{current}} / {{total}} file"
+      "processedFiles": "Elaborati {{current}} / {{total}} file",
+      "phase": {
+        "scan": "Scansione & Classificazione",
+        "preprocess": "Preelaborazione",
+        "digest": "Archiviazione",
+        "explicitLinks": "Link espliciti",
+        "annotate": "Annotazione nodi",
+        "landing": "Link Landing",
+        "linkEval": "Valutazione link",
+        "keystone": "Marcatura Keystone",
+        "emergence": "Emergenza"
+      }
     },
     "table": {
       "name": "Nome",
@@ -418,6 +430,7 @@
     "saved": "Salvato",
     "confirmSave": "Conferma salvataggio",
     "save": "Salva",
+    "userPromptPlaceholder": "Inserisci il template User Prompt, usa {{nomeVar}} come segnaposto per i parametri dinamici",
     "returnToEdit": "Torna alla modifica",
     "changeReason": "Motivo della modifica (opzionale)",
     "rollbackToVersion": "Torna a questa versione",

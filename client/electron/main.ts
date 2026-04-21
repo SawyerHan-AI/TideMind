@@ -9,6 +9,7 @@ import { writeShimAndRuntimePath } from './runtime/shim-writer'
 import { selfHealPlugins } from './runtime/plugin-self-heal'
 import { migrateDataDirIfNeeded } from '@server/utils/migrate-data-dir.js'
 import { createLogger } from '@server/utils/logger.js'
+import { mainT } from './i18n'
 
 const migrationLog = createLogger('client-migrate')
 
@@ -130,7 +131,7 @@ async function handleProtocolUrl(url: string): Promise<void> {
     const msg = (err as Error).message
     log.error(`protocol handler error: ${msg}`)
     // 显示错误对话框以便排查
-    dialog.showErrorBox('TideMind Login Error', msg)
+    dialog.showErrorBox(mainT('login.errorTitle'), msg)
   }
 }
 
@@ -173,9 +174,14 @@ function createWindow(): void {
     }
   })
 
-  // 外部链接在浏览器打开
+  // 外部链接在浏览器打开（只允许 http/https，防止 file:// / javascript: 等被打开）
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
+    try {
+      const u = new URL(url)
+      if (u.protocol === 'http:' || u.protocol === 'https:') {
+        shell.openExternal(url)
+      }
+    } catch { /* invalid URL, deny */ }
     return { action: 'deny' }
   })
 
@@ -198,7 +204,7 @@ function createTray(): void {
 
   const contextMenu = Menu.buildFromTemplate([
     {
-      label: '显示窗口',
+      label: mainT('tray.showWindow'),
       click: () => {
         mainWindow?.show()
         mainWindow?.focus()
@@ -206,7 +212,7 @@ function createTray(): void {
     },
     { type: 'separator' },
     {
-      label: '退出',
+      label: mainT('tray.quit'),
       click: () => {
         isQuitting = true
         app.quit()

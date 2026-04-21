@@ -21,7 +21,7 @@ import { classifyFiles, buildInDegreeMap } from './classifier.js';
 import type { ClassifiedFile as ObsClassifiedFile } from './types.js';
 import { inferPageDates, type InferredDateInfo } from './time-inference.js';
 import { readVaultConfig, getExcludedDirs } from './vault-config.js';
-import { ensureSyncSchema, setFileState, getFileState, computeFileHash, markFullScanCompleted } from './sync-state.js';
+import { ensureSyncSchema, setFileState, getFileState, computeFileHash, computeContentHash, markFullScanCompleted } from './sync-state.js';
 import { parseCanvas } from './canvas-parser.js';
 import { digest } from '../../tools/digest.js';
 import { createLink, linkExists } from '../../db/links.js';
@@ -203,6 +203,8 @@ export async function runInitialization(db: Database.Database, sourceId?: string
   if (initializingSet.size > 0) throw new Error('有其他笔记源正在初始化，请等待完成后再试');
   initializingSet.add(key);
   abortedSet.delete(key);
+  // 清空模块级悬空 tag 缓存，防止跨 vault / 跨轮次指向错误节点
+  clearDanglingTagCache();
   const startTime = Date.now();
 
   reloadConfig();
@@ -522,6 +524,10 @@ async function processFileForInit(
   const preprocessed = preprocessFile(file.absPath, vaultRoot);
   if (!preprocessed) return [];
 
+  // 避免 TOCTOU：用预处理时读到的 rawContent 计算 hash，
+  // 而不是最后再读文件一次（两次读之间文件可能被编辑）
+  const contentHash = computeContentHash(preprocessed.rawContent);
+
   const segments = segmentContent(preprocessed.cleanContent, file.category);
   if (segments.length === 0) return [];
 
@@ -580,20 +586,29 @@ async function processFileForInit(
     }
   }
 
-  updateSyncState(db, file, nodeIds, sourceId);
+  updateSyncState(db, file, nodeIds, sourceId, contentHash);
   return nodeIds;
 }
 
-function updateSyncState(db: Database.Database, file: ObsClassifiedFile, nodeIds: string[] = [], sourceId?: string): void {
+function updateSyncState(
+  db: Database.Database,
+  file: ObsClassifiedFile,
+  nodeIds: string[] = [],
+  sourceId?: string,
+  contentHash?: string,
+): void {
   let mtime = 0, size = 0;
   try {
     const stat = fs.statSync(file.absPath);
     mtime = Math.floor(stat.mtimeMs);
     size = stat.size;
   } catch {}
+  // 优先使用调用方已持有的 content hash（来自预处理 snapshot），避免 TOCTOU：
+  // 若不提供则退回到重新读文件计算。
+  const hash = contentHash ?? computeFileHash(file.absPath);
   setFileState(db, {
     file_path: file.relPath,
-    content_hash: computeFileHash(file.absPath),
+    content_hash: hash,
     mtime, size,
     last_synced: now(),
     node_ids: nodeIds,
@@ -643,9 +658,23 @@ async function createExplicitLinks(
 
       // 处理 heading/block
       const hashIdx = pageName.indexOf('#');
+      if (hashIdx === 0) {
+        // [[#heading]] / [[#^block-id]] —— 以 # 开头表示本页引用，
+        // 没有目标 page 可解析，直接跳过；否则会把 '#heading' 作为 tag 名
+        // 去走悬空分支，造成脏 tag 节点
+        continue;
+      }
       if (hashIdx > 0) {
-        heading = pageName.slice(hashIdx + 1).replace(/^\^/, '');
+        const fragment = pageName.slice(hashIdx + 1);
         pageName = pageName.slice(0, hashIdx);
+        if (fragment.startsWith('^')) {
+          // [[note#^block-id]] 是 block-level 引用，headingToNodeId 存的是
+          // heading 文本键，用 block id 查永远命中不了，只会把 block id 误
+          // 当 heading。直接不当 heading 处理，退化为 page 级链接。
+          heading = null;
+        } else {
+          heading = fragment;
+        }
       }
 
       // 处理路径
@@ -727,7 +756,13 @@ async function createExplicitLinks(
 }
 
 // 悬空引用 tag 节点缓存
+// 注意：模块级 Map，必须在每次全量运行的入口清空，避免跨 vault / 跨轮次污染
 const danglingTagCache = new Map<string, string>();
+
+/** 清空悬空引用 tag 缓存（runInitialization / triggerFullRescan 入口调用） */
+export function clearDanglingTagCache(): void {
+  danglingTagCache.clear();
+}
 
 async function createDanglingTagNode(db: Database.Database, name: string): Promise<string | null> {
   const repo = new SqliteRepository(db);

@@ -209,8 +209,10 @@ function renderSingleBlock(node: BlockNode, depth: number, pageRefs: string[]): 
     }
 
     case 'synced_block': {
-      const syncData = data.synced_from as { block_id: string } | null;
-      if (syncData !== null) {
+      const syncData = data.synced_from as { type?: string; block_id?: string } | null | undefined;
+      // 只有 synced_from.type === 'block_id' 才是 duplicate；未来 SDK 若扩展其他
+      // type，保守按 original 处理,避免误判跳过内容。
+      if (syncData?.type === 'block_id') {
         // duplicate synced block — 跳过，避免重复
         return '';
       }

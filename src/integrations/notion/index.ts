@@ -11,6 +11,7 @@ import { clearTagNodeCache } from '../shared/property-promote.js';
 import { listAllPages, getPageProperties, validateToken } from './api-client.js';
 import { getAllPageStates, removePageState, hasCompletedFullScan, markFullScanCompleted } from './sync-state.js';
 import { processNotionPages, resetProgress } from './queue.js';
+import { isNotionInitializing } from './initialization.js';
 import type { NotionPageSummary } from './types.js';
 
 const log = createLogger('notion');
@@ -20,6 +21,11 @@ const log = createLogger('notion');
 const pollingTimers = new Map<string, ReturnType<typeof setInterval>>();
 const syncCounters = new Map<string, number>(); // 用于周期性删除检测
 const syncingSources = new Set<string>(); // 并发防护
+
+/** 供 initialization.ts 通过动态 import 做互斥检查(避免循环静态依赖)。 */
+export function isNotionSyncing(sourceId: string): boolean {
+  return syncingSources.has(sourceId);
+}
 
 // ── 公开 API ──────────────────────────────────────────────────
 
@@ -56,11 +62,17 @@ export async function startNotionSource(
   // 首次全量同步
   const isFirstRun = !hasCompletedFullScan(db, sourceId);
   if (isFirstRun) {
-    log.info('首次运行，执行全量同步...');
-    // 异步执行，不阻塞启动
-    runSync(db, token, sourceId).catch(err =>
-      log.error(`全量同步失败: ${err.message}`),
-    );
+    // 若外部触发的 runInitialization 正在跑(首次引导),不要叠加 runSync:
+    // 两者都会对同一 sourceId 写入 nodes,并发会产生重复节点。
+    if (isNotionInitializing(sourceId)) {
+      log.info(`首次运行,但 runInitialization 已在进行,跳过 runSync: ${sourceId}`);
+    } else {
+      log.info('首次运行，执行全量同步...');
+      // 异步执行，不阻塞启动
+      runSync(db, token, sourceId).catch(err =>
+        log.error(`全量同步失败: ${err.message}`),
+      );
+    }
   }
 
   // 启动轮询
@@ -129,6 +141,10 @@ async function runSync(
 ): Promise<void> {
   if (syncingSources.has(sourceId)) {
     log.info(`全量同步已在进行中，跳过: ${sourceId}`);
+    return;
+  }
+  if (isNotionInitializing(sourceId)) {
+    log.info(`runInitialization 正在进行,跳过 runSync: ${sourceId}`);
     return;
   }
   syncingSources.add(sourceId);
@@ -211,6 +227,10 @@ async function runIncrementalSync(
 ): Promise<void> {
   if (syncingSources.has(sourceId)) {
     log.debug(`增量同步已在进行中，跳过: ${sourceId}`);
+    return;
+  }
+  if (isNotionInitializing(sourceId)) {
+    log.debug(`runInitialization 正在进行,跳过增量同步: ${sourceId}`);
     return;
   }
   syncingSources.add(sourceId);

@@ -49,6 +49,8 @@
     "tool": "ツール:",
     "session": "セッション:",
     "time": "時刻:",
+    "stream": "ストリーム",
+    "id": "ID:",
     "viewTimeline": "タイムラインを表示",
     "evidenceChain": "エビデンスチェーン",
     "metaInfo": "メタ情報",

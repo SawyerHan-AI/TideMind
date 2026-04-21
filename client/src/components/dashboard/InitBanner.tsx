@@ -22,6 +22,8 @@ export function InitBanner() {
   const navigate = useNavigate()
 
   useEffect(() => {
+    let cancelled = false
+
     const poll = async () => {
       // done 已处理过，不再轮询
       if (doneHandledRef.current) return
@@ -29,11 +31,13 @@ export function InitBanner() {
       try {
         // 查询所有笔记源，找到正在初始化的
         const sources = await (window as any).api.noteSources.list(false)
+        if (cancelled) return
         let found = false
 
         for (const source of (sources ?? [])) {
           if (!source.id) continue
           const prog = await (window as any).api.noteSources.initProgress(source.id)
+          if (cancelled) return
           if (prog && (prog.status === 'running' || prog.status === 'done')) {
             setProgress({ ...prog, sourceName: source.name })
             setVisible(true)
@@ -42,6 +46,7 @@ export function InitBanner() {
               doneHandledRef.current = true
               if (pollRef.current) clearInterval(pollRef.current)
               hideTimerRef.current = setTimeout(() => {
+                if (cancelled) return
                 setVisible(false)
                 // 隐藏后恢复轮询，以便检测新的初始化
                 doneHandledRef.current = false
@@ -52,15 +57,16 @@ export function InitBanner() {
           }
         }
 
-        if (!found) setVisible(false)
+        if (!found && !cancelled) setVisible(false)
       } catch {
-        setVisible(false)
+        if (!cancelled) setVisible(false)
       }
     }
 
     poll()
     pollRef.current = setInterval(poll, 3000)
     return () => {
+      cancelled = true
       if (pollRef.current) clearInterval(pollRef.current)
       if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
     }

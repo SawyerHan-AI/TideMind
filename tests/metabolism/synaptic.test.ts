@@ -51,7 +51,7 @@ vi.mock('../../src/graph/maturity.js', () => ({
 
 import type Database from 'better-sqlite3';
 import { setupTestDb, seedNode } from '../helpers/test-db.js';
-import { runSynapticScaling, claimMaintenance } from '../../src/metabolism/synaptic.js';
+import { runSynapticScaling } from '../../src/metabolism/synaptic.js';
 
 let db: Database.Database;
 
@@ -152,58 +152,17 @@ describe('runSynapticScaling', () => {
     expect(after.maturity_score).toBeCloseTo(0.38, 5);
   });
 
-  // ===== metadata timestamp — 由 claimMaintenance 在入口处记录 =====
+  // ===== metadata timestamp =====
 
-  it('should NOT write maintenance timestamp (delegated to claimMaintenance)', () => {
+  it('should NOT write maintenance timestamp (delegated to scheduler.tryClaimTask)', () => {
     seedNode(db);
     runSynapticScaling(db);
 
-    const row = db.prepare("SELECT value FROM metadata WHERE key = 'last_daily_maintenance'").get() as { value: string } | undefined;
-    // runSynapticScaling 不再写 metadata，由 claimMaintenance 负责
+    const row = db.prepare("SELECT value FROM metadata WHERE key = 'last_task_synaptic-decay'").get() as { value: string } | undefined;
+    // runSynapticScaling 不写 metadata,由 scheduler.ts::tryClaimTask 负责
     expect(row).toBeUndefined();
   });
 });
 
-// ===== claimMaintenance =====
-
-describe('claimMaintenance', () => {
-  it('should succeed on first call (no prior maintenance)', () => {
-    const result = claimMaintenance(db, 'daily');
-    expect(result).toBe(true);
-  });
-
-  it('should fail on second consecutive call (already claimed)', () => {
-    const first = claimMaintenance(db, 'daily');
-    const second = claimMaintenance(db, 'daily');
-    expect(first).toBe(true);
-    expect(second).toBe(false);
-  });
-
-  it('should succeed after interval has passed', () => {
-    // 写入一个 25 小时前的时间戳
-    const oldTime = (Date.now() - 25 * 60 * 60 * 1000).toString();
-    db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('last_daily_maintenance', ?)").run(oldTime);
-
-    const result = claimMaintenance(db, 'daily');
-    expect(result).toBe(true);
-  });
-
-  it('should fail when interval has not passed', () => {
-    // 写入当前时间
-    db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('last_daily_maintenance', ?)").run(Date.now().toString());
-
-    const result = claimMaintenance(db, 'daily');
-    expect(result).toBe(false);
-  });
-
-  it('should work independently for daily and weekly', () => {
-    const daily = claimMaintenance(db, 'daily');
-    const weekly = claimMaintenance(db, 'weekly');
-    expect(daily).toBe(true);
-    expect(weekly).toBe(true);
-
-    // 都已声明，再次应该失败
-    expect(claimMaintenance(db, 'daily')).toBe(false);
-    expect(claimMaintenance(db, 'weekly')).toBe(false);
-  });
-});
+// claimMaintenance 已于 2026-04-21 删除 (见 synaptic.ts 注释)，
+// 相关并发声明测试在 tests/metabolism/scheduler.test.ts 的 tryClaimTask 覆盖。

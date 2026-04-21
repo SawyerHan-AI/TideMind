@@ -1,20 +1,19 @@
 import type Database from 'better-sqlite3';
 import type { BrainNode, BrainLink, RelationType } from '../types.js';
-import { getNode } from '../db/nodes.js';
+import { getNode, createNode } from '../db/nodes.js';
 import { getLinksForNode, createLink } from '../db/links.js';
 import { isTaggedLink } from '../graph/maturity.js';
 import { generateBridgeInsight, generateCrystal, enrichCrystalContent } from '../llm/extract.js';
 import { getGraphVocabulary } from '../db/stats.js';
 import { getGateStatus, invalidateGateCache } from '../db/stats.js';
 import { now } from '../utils/time.js';
-import { generateId } from '../utils/id.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getDataDir } from '../config.js';
 import { getParam } from '../strategy/loader.js';
 // inferSemtype removed — no longer needed with JSON relation format
 import { logStrategyFeedback, logTimelineEvent } from '../db/log.js';
-import { updateConnectivity, computeMaturityScore, refreshMaturityScore } from '../graph/maturity.js';
+import { updateConnectivity, refreshMaturityScore } from '../graph/maturity.js';
 import { createLogger } from '../utils/logger.js';
 
 const log = createLogger('divergent');
@@ -125,16 +124,24 @@ export async function runDivergentScan(
     );
 
     if (result?.has_insight && result.content && (result.confidence ?? 0) >= minConfidence) {
-      // 创建桥接洞察节点（crystal 类型）
-      const bridgeId = generateId();
-      const bridgeMaturity = computeMaturityScore(1.0, 0.7, 0.0, 0.8);
+      // 创建桥接洞察节点（crystal 类型）— 统一走 createNode,避免手工 INSERT
+      // 绕过 maturity 计算 / 维度派生 / source_* 字段 / now() 格式等。
       const bridgeTitle = result.title || result.content.slice(0, 50);
-      db.prepare(`
-        INSERT INTO nodes (id, type, content, title, heat, refinement, connectivity, independence,
-          maturity_score, is_crystal, specificity, subjectivity, actuality,
-          tags, created, version)
-        VALUES (?, 'fact', ?, ?, 1.0, 0.7, 0.0, 0.8, ?, 1, 0.3, 0.5, 0.7, ?, datetime('now'), 1)
-      `).run(bridgeId, result.content, bridgeTitle, bridgeMaturity, JSON.stringify(result.tags ?? []));
+      const bridgeNode = createNode(db, {
+        type: 'fact',
+        content: result.content,
+        title: bridgeTitle,
+        heat: 1.0,
+        refinement: 0.7,
+        independence: 0.8,
+        specificity: 0.3,
+        subjectivity: 0.5,
+        actuality: 0.7,
+        is_crystal: 1,
+        tags: result.tags ?? [],
+        source_tool: 'divergent-scan',
+      });
+      const bridgeId = bridgeNode.id;
 
       // 从桥接节点到两个源节点创建 pending 链接
       createLink(db, {
@@ -185,6 +192,12 @@ export async function runDivergentScan(
       ? bridgeIds.length / Math.min(candidates.length, maxPairs)
       : 0,
   });
+
+  // 发散扫描会创建 is_crystal=1 的 bridge 节点,crystal gate 依赖 crystal 计数,
+  // 新增后必须让下一次 getGateStatus 读到最新值。
+  if (bridgeIds.length > 0) {
+    invalidateGateCache();
+  }
 
   return bridgeIds.map(id => {
     const node = getNode(db, id);
@@ -269,15 +282,22 @@ export async function runCrystalEmergence(
       try {
         const crystal = await generateCrystal(contents, vocab.crystalSummaries);
         if (crystal) {
-          const crystalId = generateId();
-          const crystalMaturity = computeMaturityScore(1.0, 0.8, 0.0, 0.8);
           const crystalTitle = crystal.title || crystal.content.slice(0, 50);
-          db.prepare(`
-            INSERT INTO nodes (id, type, content, title, heat, refinement, connectivity, independence,
-              maturity_score, is_crystal, specificity, subjectivity, actuality,
-              tags, created, version)
-            VALUES (?, 'fact', ?, ?, 1.0, 0.8, 0.0, 0.8, ?, 1, 0.2, 0.5, 0.8, ?, datetime('now'), 1)
-          `).run(crystalId, crystal.content, crystalTitle, crystalMaturity, JSON.stringify(crystal.tags ?? []));
+          const crystalNode = createNode(db, {
+            type: 'fact',
+            content: crystal.content,
+            title: crystalTitle,
+            heat: 1.0,
+            refinement: 0.8,
+            independence: 0.8,
+            specificity: 0.2,
+            subjectivity: 0.5,
+            actuality: 0.8,
+            is_crystal: 1,
+            tags: crystal.tags ?? [],
+            source_tool: 'crystal-emergence',
+          });
+          const crystalId = crystalNode.id;
 
           // 链接到枢纽及其邻居
           const sourceNodes = [{ id: hub.id }, ...neighborRows];
@@ -311,15 +331,23 @@ export async function runCrystalEmergence(
     const contents = pathBPool.slice(0, 10).map(n => n.content);
     const crystal = await generateCrystal(contents, vocab.crystalSummaries);
     if (crystal) {
-      const crystalId = generateId();
-      const crystalMaturity = computeMaturityScore(1.0, 0.8, 0.0, 0.8);
+      // 统一走 createNode,与 Path A / runDivergentScan 保持一致。
       const crystalTitle = crystal.title || crystal.content.slice(0, 50);
-      db.prepare(`
-        INSERT INTO nodes (id, type, content, title, heat, refinement, connectivity, independence,
-          maturity_score, is_crystal, specificity, subjectivity, actuality,
-          tags, created, version)
-        VALUES (?, 'fact', ?, ?, 1.0, 0.8, 0.0, 0.8, ?, 1, 0.2, 0.5, 0.8, ?, datetime('now'), 1)
-      `).run(crystalId, crystal.content, crystalTitle, crystalMaturity, JSON.stringify(crystal.tags ?? []));
+      const crystalNode = createNode(db, {
+        type: 'fact',
+        content: crystal.content,
+        title: crystalTitle,
+        heat: 1.0,
+        refinement: 0.8,
+        independence: 0.8,
+        specificity: 0.2,
+        subjectivity: 0.5,
+        actuality: 0.8,
+        is_crystal: 1,
+        tags: crystal.tags ?? [],
+        source_tool: 'crystal-emerge',
+      });
+      const crystalId = crystalNode.id;
 
       for (const node of pathBPool.slice(0, 10)) {
         createLink(db, {
@@ -405,10 +433,17 @@ async function checkCrystalEvidence(db: Database.Database): Promise<string[]> {
     if (supporters.length === 0) continue;
 
     // 检查支撑节点是否在 crystal 创建/更新后被修改
+    // 坑:SQLite 的 datetime('now') 返回 "YYYY-MM-DD HH:MM:SS"(无 Z,空格分隔),
+    // 而 JS 的 new Date(...).toISOString() 返回 "YYYY-MM-DDTHH:MM:SS.sssZ"。
+    // 这两种字符串丢给 new Date() 解析,前者会被当作本地时区,后者是 UTC —
+    // 跨时区直接错几小时。统一按 UTC 规范化再比较。
+    const normalizeTs = (s: string): number =>
+      new Date(s.endsWith('Z') ? s : s.replace(' ', 'T') + 'Z').getTime();
     const crystalTime = crystal.last_reconsolidated || crystal.created;
+    const crystalTs = normalizeTs(crystalTime);
     const modifiedSupporters = supporters.filter(s => {
       if (!s.last_reconsolidated) return false;
-      return new Date(s.last_reconsolidated) > new Date(crystalTime);
+      return normalizeTs(s.last_reconsolidated) > crystalTs;
     });
 
     // 如果超过 30% 的支撑节点被修改，刷新 crystal
@@ -469,20 +504,11 @@ function syncCrystalToMarkdown(id: string, content: string, tags: string[], prom
   }
 }
 
-/**
- * 检查是否需要执行每周维护
- */
-export function needsWeeklyMaintenance(db: Database.Database, checkDays: number = 7): boolean {
-  const row = db.prepare(
-    "SELECT value FROM metadata WHERE key = 'last_weekly_maintenance'",
-  ).get() as { value: string } | undefined;
-
-  if (!row) return true;
-
-  const lastRun = new Date(row.value).getTime();
-  const elapsed = Date.now() - lastRun;
-  return elapsed > checkDays * 24 * 60 * 60 * 1000;
-}
+// needsWeeklyMaintenance 已于 2026-04-21 删除:
+// - 读的 key `last_weekly_maintenance` 早已无人写入(claimMaintenance 亦同日删除);
+// - 任务调度全面迁到 scheduler.ts::tryClaimTask + 任务级 last_task_{id};
+// - 业务代码无 caller,仅 tests 里有单测,一并清理。
+// 如有新需求应按任务粒度查 last_task_{id},不再用全局 weekly 维护概念。
 
 /**
  * 关键种识别 — connectivity top-5% 的节点标记为 keystone

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Loader2, AlertTriangle, Check } from 'lucide-react'
 import { useIPC } from '../../hooks/useIPC'
 import { Section, Field, inputClass } from './shared'
+import { safeJsonParse } from '../../lib/json'
 
 // ============================================================
 // 模型选择：从已配置连接聚合可用模型，按连接名分组
@@ -196,7 +197,7 @@ export function ModelSelection() {
     for (const conn of connections as Connection[]) {
       if (conn.archived) continue
 
-      const availableModels: string[] = conn.available_models ? JSON.parse(conn.available_models) : []
+      const availableModels: string[] = safeJsonParse<string[]>(conn.available_models, [])
 
       if (conn.provider_type === 'anthropic' || conn.provider_type === 'vertex') {
         groups.push({
@@ -222,7 +223,7 @@ export function ModelSelection() {
       }
 
       if (conn.provider_type === 'ollama' || conn.provider_type === 'openai-compatible') {
-        const models: string[] = conn.available_models ? JSON.parse(conn.available_models) : []
+        const models: string[] = safeJsonParse<string[]>(conn.available_models, [])
         if (models.length > 0) {
           groups.push({
             connectionName: conn.name,
@@ -259,7 +260,7 @@ export function ModelSelection() {
       }
 
       if (conn.provider_type === 'ollama') {
-        const ollamaModels: string[] = conn.available_models ? JSON.parse(conn.available_models) : []
+        const ollamaModels: string[] = safeJsonParse<string[]>(conn.available_models, [])
         if (ollamaModels.length > 0) {
           groups.push({
             connectionName: conn.name,

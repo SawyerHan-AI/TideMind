@@ -169,7 +169,8 @@
       "truncated": "Truncado",
       "saveToFile": "Guardar como archivo",
       "saved": "Guardado",
-      "fullExportNote": "Exporta todos los datos del usuario, incluyendo historial, línea de tiempo, registros, etc."
+      "fullExportNote": "Exporta todos los datos del usuario, incluyendo historial, línea de tiempo, registros, etc.",
+      "exportFailed": "Exportación fallida: {{message}}"
     },
     "logs": {
       "title": "Navegador de registros de flujo",
@@ -247,7 +248,18 @@
       "continueInit": "Continuar inicialización",
       "discard": "Descartar y eliminar",
       "discardConfirm": "¿Descartar? Los datos importados serán revertidos y eliminados.",
-      "processedFiles": "Procesados {{current}} / {{total}} archivos"
+      "processedFiles": "Procesados {{current}} / {{total}} archivos",
+      "phase": {
+        "scan": "Escaneo y clasificación",
+        "preprocess": "Preprocesamiento",
+        "digest": "Ingesta",
+        "explicitLinks": "Enlaces explícitos",
+        "annotate": "Anotación de nodos",
+        "landing": "Landing links",
+        "linkEval": "Evaluación de enlaces",
+        "keystone": "Marca Keystone",
+        "emergence": "Emergencia"
+      }
     },
     "table": {
       "name": "Nombre",
@@ -418,6 +430,7 @@
     "saved": "Guardado",
     "confirmSave": "Confirmar guardado",
     "save": "Guardar",
+    "userPromptPlaceholder": "Introduce la plantilla User Prompt, usa {{nombreVar}} como marcadores para parámetros dinámicos",
     "returnToEdit": "Volver a edición",
     "changeReason": "Razón del cambio (opcional)",
     "rollbackToVersion": "Revertir a esta versión",

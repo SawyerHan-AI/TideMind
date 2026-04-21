@@ -25,5 +25,10 @@
     "items": "Elemente",
     "memories": "Erinnerungen"
   },
-  "total": "{{count}} insgesamt"
+  "total": "{{count}} insgesamt",
+  "errors": {
+    "somethingWentWrong": "Etwas ist schiefgelaufen",
+    "unexpectedError": "Ein unerwarteter Fehler ist aufgetreten.",
+    "retry": "Wiederholen"
+  }
 }

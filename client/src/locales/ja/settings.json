@@ -169,7 +169,8 @@
       "truncated": "切り捨て済み",
       "saveToFile": "ファイルに保存",
       "saved": "保存済み",
-      "fullExportNote": "履歴、タイムライン、操作ログなど、すべてのユーザーデータをエクスポートします"
+      "fullExportNote": "履歴、タイムライン、操作ログなど、すべてのユーザーデータをエクスポートします",
+      "exportFailed": "エクスポートに失敗しました: {{message}}"
     },
     "logs": {
       "title": "Stream ログブラウザ",
@@ -247,7 +248,18 @@
       "continueInit": "初期化を続行",
       "discard": "破棄して削除",
       "discardConfirm": "破棄しますか？インポートされたデータはロールバックされます。",
-      "processedFiles": "処理済み {{current}} / {{total}} ファイル"
+      "processedFiles": "処理済み {{current}} / {{total}} ファイル",
+      "phase": {
+        "scan": "スキャン＆分類",
+        "preprocess": "前処理",
+        "digest": "データ登録",
+        "explicitLinks": "明示的リンク",
+        "annotate": "ノードアノテーション",
+        "landing": "ランディングリンク",
+        "linkEval": "リンク評価",
+        "keystone": "キーストーンマーク",
+        "emergence": "創発"
+      }
     },
     "table": {
       "name": "名前",
@@ -418,6 +430,7 @@
     "saved": "保存済み",
     "confirmSave": "保存を確認",
     "save": "保存",
+    "userPromptPlaceholder": "User Prompt テンプレートを入力し、{{変数名}} を動的パラメーターの占位符として使用します",
     "returnToEdit": "編集に戻る",
     "changeReason": "変更理由（任意）",
     "rollbackToVersion": "このバージョンにロールバック",

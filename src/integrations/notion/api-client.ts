@@ -282,8 +282,10 @@ function shouldRecurse(block: BlockObjectResponse): boolean {
 
   // synced_block duplicate 跳过（内容在 original 中）
   if (type === 'synced_block') {
-    const syncData = block.synced_block as { synced_from: { block_id: string } | null };
-    if (syncData.synced_from !== null) return false;
+    const syncData = (block as { synced_block?: { synced_from?: { type?: string; block_id?: string } | null } }).synced_block;
+    // 只有 synced_from.type === 'block_id' 才是 duplicate；未来 SDK 若扩展其他
+    // type（如 workspace 等），保守按 original 处理,避免误判漏取内容。
+    if (syncData?.synced_from?.type === 'block_id') return false;
   }
 
   // 其余有 children 的块都递归：toggle, callout, quote, list items,
@@ -354,6 +356,8 @@ async function retryWithBackoff<T>(
 
       if (status === 429) {
         // 速率限制 — 读取 Retry-After 或默认退避
+        // 最后一次迭代不再 sleep:再 sleep 也不会重试,直接 throw 更快。
+        if (i === maxRetries) throw e;
         const retryAfter = (e as { headers?: Record<string, string> }).headers?.['retry-after'];
         const waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : (2 ** i) * 1000;
         log.warn(`速率限制，等待 ${waitMs}ms 后重试 (${i}/${maxRetries})`);
@@ -362,6 +366,8 @@ async function retryWithBackoff<T>(
       }
 
       if (status === 502 || status === 503 || status === 504) {
+        // 同上,最后一次迭代不再 sleep。
+        if (i === maxRetries) throw e;
         const waitMs = (2 ** i) * 1000;
         log.warn(`服务端错误 ${status}，等待 ${waitMs}ms 后重试 (${i}/${maxRetries})`);
         await sleep(waitMs);

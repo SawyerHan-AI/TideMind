@@ -9,14 +9,14 @@
 
 import type Database from 'better-sqlite3';
 import type { BrainNode } from '../types.js';
-import { getNode, updateNode } from '../db/nodes.js';
+import { getNode, updateNode, createNode } from '../db/nodes.js';
 import { createLink, linkExists } from '../db/links.js';
 import { isLlmConfigured } from '../config.js';
 import { callLLM } from '../llm/client.js';
 import { getParam, getPrompt, getLLMOptions, renderUserPrompt } from '../strategy/loader.js';
 import { logTimelineEvent } from '../db/log.js';
-import { generateId } from '../utils/id.js';
-import { now } from '../utils/time.js';
+import { invalidateGateCache } from '../db/stats.js';
+// now/generateId 不再需要 — 统一走 createNode
 import { updateConnectivity } from '../graph/maturity.js';
 import { createLogger } from '../utils/logger.js';
 import { parseLLMJson } from '../llm/json-parse.js';
@@ -84,6 +84,8 @@ export async function runTemporalCrystal(db: Database.Database): Promise<Tempora
       detail: { analyzed, crystals_created },
       important: 1,
     });
+    // crystal 门控依赖 is_crystal=1 节点计数,新增 crystal 后必须刷新
+    invalidateGateCache();
   }
 
   return { analyzed, crystals_created };
@@ -164,17 +166,25 @@ async function findTopicEvolution(db: Database.Database): Promise<{ analyzed: nu
       }>(response);
       if (!result || result.confidence < 0.5) continue;
 
-      // 创建结晶节点
-      const crystalId = generateId();
+      // 创建结晶节点 — 统一走 createNode,避免手工 INSERT 漏列 / maturity 不准
       const crystalContent = `[时间演变] ${topic.tag}: ${result.insight}`;
       const crystalTitle = result.title || `[时间结晶] ${topic.tag}`;
 
-      db.prepare(`
-        INSERT INTO nodes (id, type, content, title, heat, refinement, connectivity, independence,
-          maturity_score, is_crystal, specificity, subjectivity, actuality,
-          tags, created, version)
-        VALUES (?, 'fact', ?, ?, 1.0, 0.8, 0.0, 0.8, 0.5, 1, 0.2, 0.5, 0.8, ?, ?, 1)
-      `).run(crystalId, crystalContent, crystalTitle, JSON.stringify(['时间结晶', topic.tag]), now());
+      const crystalNode = createNode(db, {
+        type: 'fact',
+        content: crystalContent,
+        title: crystalTitle,
+        heat: 1.0,
+        refinement: 0.8,
+        independence: 0.8,
+        specificity: 0.2,
+        subjectivity: 0.5,
+        actuality: 0.8,
+        is_crystal: 1,
+        tags: ['时间结晶', topic.tag],
+        source_tool: 'temporal-crystal',
+      });
+      const crystalId = crystalNode.id;
 
       // 链接到关键节点
       const keyNodes = result.key_node_ids?.filter(id => nodes.some(n => n.id === id)) ?? [];
@@ -219,8 +229,13 @@ async function findCrossTopicResonance(db: Database.Database): Promise<{ analyze
   if (coreTagSet.size < 2) return { analyzed: 0, created: 0 };
 
   // 找最近几周有活跃节点的周
+  // 坑:strftime('%Y-W%W', ...) 跨年会把元旦那一周和年末那一周拆成不同 week
+  // bucket(例如 2024-W52 和 2025-W00),逻辑上的"同一周"被分开;而且 %Y-W%W
+  // 还没有时区概念,created 若是带 Z 的 UTC 字符串再被 SQLite 按本地时区解析
+  // 也会错分。改用 date(created, 'weekday 0', '-6 days') 把任何日期映射到
+  // 所在自然周的周一,只比较 Y-M-D,既没有跨年断层,也不带时区偏差。
   const weeks = db.prepare(`
-    SELECT strftime('%Y-W%W', created) as week, COUNT(*) as node_count
+    SELECT date(created, 'weekday 0', '-6 days') as week, COUNT(*) as node_count
     FROM nodes
     WHERE tags IS NOT NULL AND heat > 0.01 AND is_meta = 0 AND is_superseded = 0
     GROUP BY week
@@ -237,7 +252,7 @@ async function findCrossTopicResonance(db: Database.Database): Promise<{ analyze
     const nodes = db.prepare(`
       SELECT id, content, tags, created
       FROM nodes
-      WHERE strftime('%Y-W%W', created) = ? AND tags IS NOT NULL AND heat > 0.01 AND is_meta = 0 AND is_superseded = 0
+      WHERE date(created, 'weekday 0', '-6 days') = ? AND tags IS NOT NULL AND heat > 0.01 AND is_meta = 0 AND is_superseded = 0
       ORDER BY heat DESC
       LIMIT 15
     `).all(week.week) as Array<{ id: string; content: string; tags: string; created: string }>;
@@ -285,17 +300,25 @@ async function findCrossTopicResonance(db: Database.Database): Promise<{ analyze
       if (!result || result.confidence < 0.6) continue;
       if (result.pattern_type !== 'resonance') continue;
 
-      // 创建结晶
-      const crystalId = generateId();
+      // 创建结晶 — 统一走 createNode
       const crystalContent = `[跨主题共振] ${week.week}: ${result.insight}`;
       const crystalTitle = result.title || `[跨主题共振] ${week.week}`;
 
-      db.prepare(`
-        INSERT INTO nodes (id, type, content, title, heat, refinement, connectivity, independence,
-          maturity_score, is_crystal, specificity, subjectivity, actuality,
-          tags, created, version)
-        VALUES (?, 'fact', ?, ?, 1.0, 0.8, 0.0, 0.8, 0.5, 1, 0.2, 0.5, 0.8, '["时间结晶","跨主题"]', ?, 1)
-      `).run(crystalId, crystalContent, crystalTitle, now());
+      const crystalNode = createNode(db, {
+        type: 'fact',
+        content: crystalContent,
+        title: crystalTitle,
+        heat: 1.0,
+        refinement: 0.8,
+        independence: 0.8,
+        specificity: 0.2,
+        subjectivity: 0.5,
+        actuality: 0.8,
+        is_crystal: 1,
+        tags: ['时间结晶', '跨主题'],
+        source_tool: 'temporal-crystal',
+      });
+      const crystalId = crystalNode.id;
 
       // 链接到涉及的节点
       const allNodes = [...new Map(nodes.map(n => [n.id, n])).values()];

@@ -69,6 +69,7 @@ vi.mock('../../src/graph/dedup.js', () => ({
 
 vi.mock('../../src/db/vectors.js', () => ({
   insertVector: vi.fn(),
+  deleteVector: vi.fn(),
 }));
 
 import type Database from 'better-sqlite3';

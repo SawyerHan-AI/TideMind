@@ -11,33 +11,47 @@ import type { PreprocessedPage, PageMetadata, BlockRefAssociation } from './type
 import { SYSTEM_PROPERTIES, EXCLUDED_DIRS } from './types.js';
 
 // --- Block UUID 索引 ---
+//
+// 多 graph 场景下，每个 graphRoot 维护独立的 UUID → 内容 映射，
+// 避免 buildBlockIndex(graphRootA) clear 掉 graphRootB 已填好的索引。
 
-/** UUID → block 原始内容 */
-const blockIndex = new Map<string, string>();
+/** graphRoot → (UUID → block 原始内容) */
+const blockIndexByGraph = new Map<string, Map<string, string>>();
+
+function getBlockIndex(graphRoot: string): Map<string, string> {
+  let idx = blockIndexByGraph.get(graphRoot);
+  if (!idx) {
+    idx = new Map<string, string>();
+    blockIndexByGraph.set(graphRoot, idx);
+  }
+  return idx;
+}
 
 /**
  * 构建 block UUID 索引
  * 扫描所有 .md 文件，提取带 `id:: <uuid>` 的 block 内容
  */
 export function buildBlockIndex(graphRoot: string): void {
-  blockIndex.clear();
+  const idx = getBlockIndex(graphRoot);
+  idx.clear();
   const files = walkMdFiles(graphRoot);
   for (const filePath of files) {
-    indexFileBlocks(filePath);
+    indexFileBlocks(filePath, idx);
   }
 }
 
 /**
  * 增量更新：重新索引单个文件的 blocks
  */
-export function updateBlockIndexForFile(filePath: string): void {
+export function updateBlockIndexForFile(filePath: string, graphRoot: string): void {
   // 移除该文件旧的索引条目
   // 由于我们没有追踪 uuid→file 映射，全量重建该文件即可
   // 删除旧条目的代价可忽略（重复 set 覆盖即可）
-  indexFileBlocks(filePath);
+  const idx = getBlockIndex(graphRoot);
+  indexFileBlocks(filePath, idx);
 }
 
-function indexFileBlocks(filePath: string): void {
+function indexFileBlocks(filePath: string, blockIndex: Map<string, string>): void {
   let content: string;
   try {
     content = fs.readFileSync(filePath, 'utf-8');
@@ -84,14 +98,14 @@ function indexFileBlocks(filePath: string): void {
   }
 }
 
-/** 查询 block 索引 */
-export function lookupBlock(uuid: string): string | undefined {
-  return blockIndex.get(uuid);
+/** 查询 block 索引（按 graphRoot 隔离） */
+export function lookupBlock(uuid: string, graphRoot: string): string | undefined {
+  return blockIndexByGraph.get(graphRoot)?.get(uuid);
 }
 
 /** 获取索引大小（用于进度报告） */
-export function getBlockIndexSize(): number {
-  return blockIndex.size;
+export function getBlockIndexSize(graphRoot: string): number {
+  return blockIndexByGraph.get(graphRoot)?.size ?? 0;
 }
 
 // --- 目录/文件过滤 ---
@@ -202,7 +216,7 @@ export function preprocessFile(
   content = resolvePageRefs(content, metadata);
 
   // Step 5: 解析 ((block references))
-  content = resolveBlockRefs(content, metadata);
+  content = resolveBlockRefs(content, metadata, graphRoot);
 
   // Step 6: 解析 #tag 和 #[[multi word tag]]
   content = resolveTags(content, metadata);
@@ -628,12 +642,14 @@ function resolvePageRefs(content: string, metadata: PageMetadata): string {
 
 /**
  * 解析 ((block-uuid)) → 查找索引替换为实际内容
+ *
+ * 按 graphRoot 隔离查询，避免多 graph 之间的 UUID 串库。
  */
-function resolveBlockRefs(content: string, metadata: PageMetadata): string {
+function resolveBlockRefs(content: string, metadata: PageMetadata, graphRoot: string): string {
   return content.replace(
     /\(\(([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\)\)/g,
     (_match, uuid: string) => {
-      const resolved = lookupBlock(uuid);
+      const resolved = lookupBlock(uuid, graphRoot);
       if (resolved) {
         metadata.blockRefAssociations.push({
           refId: uuid,

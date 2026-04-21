@@ -180,15 +180,8 @@ async function processOneFile(
     const propsStr = propEntries.length > 0
       ? propEntries.slice(0, 10).map(([k, v]) => `${k}: ${v}`).join(', ')
       : '';
-    const combinedTags = [
-      ...new Set([
-        ...preprocessed.metadata.tags,
-        ...preprocessed.metadata.pageRefs,
-      ]),
-    ];
-    if (relPath.includes('hls__')) {
-      if (!combinedTags.includes('PDF标注')) combinedTags.push('PDF标注');
-    }
+    // 注意：combinedTags 的定义在下面的循环体内，每段独立构建。
+    // 此处不预计算 combinedTags，避免与循环内同名 const 造成语义混淆。
 
     // 逐段比对 + 增量 digest
     const allNodeIds: string[] = [];
@@ -257,10 +250,20 @@ async function processOneFile(
       }
     }
 
-    // 多余旧段：标记 superseded
-    for (let i = segments.length; i < oldNodeIds.length; i++) {
-      db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(oldNodeIds[i]);
-      db.prepare('DELETE FROM links WHERE from_id = ? OR to_id = ?').run(oldNodeIds[i], oldNodeIds[i]);
+    // 多余旧段：supersede 到最后一个新节点，迁移链接、保留 updates 链
+    // （段数减少场景：把多余旧段的链接归并到最后一个新段上，而不是直接 DELETE 丢失关联）
+    if (oldNodeIds.length > segments.length && allNodeIds.length > 0) {
+      const targetNewId = allNodeIds[allNodeIds.length - 1];
+      for (let i = segments.length; i < oldNodeIds.length; i++) {
+        supersedeNode(db, oldNodeIds[i], targetNewId);
+      }
+    } else if (oldNodeIds.length > segments.length) {
+      // 极端情况：没有任何新节点（所有段都是旧 hash 复用，但段数又减少？）
+      // 兜底仍按旧逻辑处理，避免残留悬空链接
+      for (let i = segments.length; i < oldNodeIds.length; i++) {
+        db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(oldNodeIds[i]);
+        db.prepare('DELETE FROM links WHERE from_id = ? OR to_id = ?').run(oldNodeIds[i], oldNodeIds[i]);
+      }
     }
 
     // 多段 part_of 关系串联（与 initialization.ts 一致）
@@ -301,8 +304,8 @@ async function processOneFile(
     };
     setFileState(db, fileState, sourceId);
 
-    // 更新 block 索引
-    updateBlockIndexForFile(filePath);
+    // 更新 block 索引（按 graphRoot 隔离）
+    updateBlockIndexForFile(filePath, graphRoot);
 
     progress.processedFiles++;
     return true;

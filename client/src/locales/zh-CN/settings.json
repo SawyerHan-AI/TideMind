@@ -169,7 +169,8 @@
       "truncated": "已截断",
       "saveToFile": "保存到文件",
       "saved": "已保存",
-      "fullExportNote": "导出全量用户数据，包含历史版本、时间线、操作日志等"
+      "fullExportNote": "导出全量用户数据，包含历史版本、时间线、操作日志等",
+      "exportFailed": "导出失败：{{message}}"
     },
     "logs": {
       "title": "Stream 日志浏览",
@@ -247,7 +248,18 @@
       "continueInit": "继续初始化",
       "discard": "放弃并删除",
       "discardConfirm": "确认放弃？已导入的数据将被回退删除。",
-      "processedFiles": "已处理 {{current}} / {{total}} 个文件"
+      "processedFiles": "已处理 {{current}} / {{total}} 个文件",
+      "phase": {
+        "scan": "扫描分类",
+        "preprocess": "预处理",
+        "digest": "入库",
+        "explicitLinks": "显式链接",
+        "annotate": "节点标注",
+        "landing": "Landing 连接",
+        "linkEval": "链接评估",
+        "keystone": "Keystone 标记",
+        "emergence": "涌现"
+      }
     },
     "table": {
       "name": "名称",
@@ -418,6 +430,7 @@
     "saved": "已保存",
     "confirmSave": "确认保存",
     "save": "保存",
+    "userPromptPlaceholder": "输入 User Prompt 模板，使用 {{变量名}} 作为动态参数占位符",
     "returnToEdit": "返回编辑",
     "changeReason": "变更原因（可选）",
     "rollbackToVersion": "回滚至此版本",

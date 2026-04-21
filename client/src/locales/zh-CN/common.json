@@ -25,5 +25,10 @@
     "items": "条",
     "memories": "条记忆"
   },
-  "total": "共 {{count}} 条"
+  "total": "共 {{count}} 条",
+  "errors": {
+    "somethingWentWrong": "出现了错误",
+    "unexpectedError": "发生了意外错误。",
+    "retry": "重试"
+  }
 }

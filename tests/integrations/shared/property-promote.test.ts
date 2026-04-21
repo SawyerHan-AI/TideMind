@@ -218,10 +218,17 @@ describe('getOrCreateTagNode', () => {
     expect(id2).toBe(id1);
   });
 
-  it('cache key is case-insensitive and trims whitespace', async () => {
+  it('cache key is case-sensitive (matches DB lookup) but trims whitespace', async () => {
+    // P1-MM 修复：cache key 与 DB 查询 (content=? OR title=?) 同为大小写敏感，
+    // 避免 "Foo" 和 "foo" 在缓存里串库而 DB 里各自独立。
     const id1 = await getOrCreateTagNode(db, 'MyTag', 'test');
     const id2 = await getOrCreateTagNode(db, '  mytag  ', 'test');
-    expect(id2).toBe(id1);
+    expect(id2).not.toBe(id1);
+
+    // 但同 case 的首尾空白仍会被归一（trim）
+    const id3 = await getOrCreateTagNode(db, 'MyTag', 'test');
+    const id4 = await getOrCreateTagNode(db, '  MyTag  ', 'test');
+    expect(id4).toBe(id3);
   });
 
   it('finds existing tag node in DB without creating new one', async () => {

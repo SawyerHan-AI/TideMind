@@ -25,5 +25,10 @@
     "items": "itens",
     "memories": "memórias"
   },
-  "total": "{{count}} no total"
+  "total": "{{count}} no total",
+  "errors": {
+    "somethingWentWrong": "Algo deu errado",
+    "unexpectedError": "Ocorreu um erro inesperado.",
+    "retry": "Tentar novamente"
+  }
 }

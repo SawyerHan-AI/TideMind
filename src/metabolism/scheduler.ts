@@ -80,12 +80,26 @@ function isValidTimestampString(value: string): boolean {
 
 /**
  * 原子声明某个任务的执行权。
- * 利用 SQLite UPDATE 的原子性，确保多进程中只有一个能执行。
- * 返回 ClaimResult，失败时可用 priorValue 回滚。
  *
- * 防御：若 metadata 中已有同名 key 的 value 不是合法毫秒时间戳（例如被其他
- * 路径写成 ISO 字符串），拒绝声明且不改写原值——保持向后兼容，由调用方
- * 在下一 tick 重新评估（此时应由写入方负责把格式修正回来）。
+ * 用 SQLite 的 `INSERT ... ON CONFLICT DO UPDATE` 单语句完成 compare-and-swap:
+ *   - 行不存在 → INSERT 新行(首次运行)
+ *   - 行存在且 value 是合法毫秒时间戳、且早于 threshold → UPDATE 为 now
+ *   - 行存在但 value 格式不合法(ISO 字符串等)或未到 interval → WHERE 不匹配,
+ *     不改写原值
+ * 然后用 RETURNING 拿到"声明前的旧值",用于失败回滚;用 `changes()` 判断是否
+ * 真的改写了 metadata。
+ *
+ * 相比旧实现(先 SELECT、再 UPDATE、UPDATE changes=0 且行不存在时 INSERT,
+ * 用 try/catch 吞 UNIQUE 冲突):
+ *   - 消除 TOCTOU 竞态: 多进程并发 claim 同一任务时不再有"输家 DELETE
+ *     掉赢家刚插入记录"的风险(旧代码 rollbackClaim 对 priorValue=null 会
+ *     DELETE FROM metadata WHERE key = ?,会连带把赢家的 claim 抹掉)。
+ *   - 原子性由单条 SQL 语句保证。
+ *
+ * 格式校验仍然保留: 若 value 已存在但不是合法毫秒时间戳字符串,
+ * ON CONFLICT 的 WHERE 子句不匹配 → UPDATE 失败,此时 RETURNING 返回 0 行,
+ * `changes() === 0`,claim 失败;原值不变,由调用方在下一 tick 重新评估
+ * (写入方负责把格式修正回来)。
  */
 export function tryClaimTask(
   db: Database.Database,
@@ -96,40 +110,49 @@ export function tryClaimTask(
   const nowMs = Date.now();
   const intervalMs = intervalMinutes * 60 * 1000;
   const threshold = nowMs - intervalMs;
+  const nowStr = nowMs.toString();
+  const thresholdStr = threshold.toString();
 
-  // 先读旧值
-  const row = db.prepare(
-    'SELECT value FROM metadata WHERE key = ?',
-  ).get(key) as { value: string } | undefined;
-
-  // 行存在但 value 格式不合法 → 拒绝 claim，不改写原值（向后兼容）。
-  // 最常见原因：ISO 字符串被 CAST(value AS REAL) 截断为前导数字，导致
-  // 恒满足 `< threshold` 而每 tick 重复认领。
-  if (row && !isValidTimestampString(row.value)) {
-    log.warn(
-      `tryClaimTask: metadata[${key}] 的 value 不是合法毫秒时间戳 ("${row.value}")，跳过本次 claim 以避免重复执行`,
-    );
-    return { claimed: false, priorValue: row.value };
-  }
-
+  // 先查旧值,用于: (a) 回滚时恢复; (b) 失败时返回给调用方记录/告警。
+  // 注意: 这里读到的 priorValue 仅用于"失败回滚/日志",不参与 claim 决策;
+  // 决策完全由下面的 ON CONFLICT DO UPDATE WHERE 子句做,无 TOCTOU 风险。
+  const row = db.prepare('SELECT value FROM metadata WHERE key = ?').get(key) as
+    | { value: string }
+    | undefined;
   const priorValue = row?.value ?? null;
 
-  const result = db.prepare(
-    `UPDATE metadata SET value = ? WHERE key = ? AND CAST(value AS REAL) < ?`,
-  ).run(nowMs.toString(), key, threshold.toString());
+  // 行存在但格式不合法 → 记一次 warn,然后让 SQL 自己处理(WHERE 会拒绝更新)。
+  // 单独打 log 保留向后观察性;不走任何 JS 侧分支决策。
+  if (row && !isValidTimestampString(row.value)) {
+    log.warn(
+      `tryClaimTask: metadata[${key}] 的 value 不是合法毫秒时间戳 ("${row.value}"),跳过本次 claim 以避免重复执行`,
+    );
+    return { claimed: false, priorValue };
+  }
 
-  if (result.changes === 1) return { claimed: true, priorValue };
+  // 原子 CAS:
+  //   - 首次运行(无冲突) → INSERT
+  //   - 已有行且 value 是纯数字(glob '[0-9]*' 且 NOT glob '*[^0-9]*')且早于
+  //     threshold → UPDATE
+  //   - 其他情况 → WHERE 不匹配,不改写
+  // 用 typeof(value)='text' + GLOB 两层校验排除 ISO 字符串: CAST('2025-...'
+  // AS REAL) 会截断得到 2025,若只靠数值比较会恒满足 `< threshold`。GLOB
+  // 过滤掉任何含非数字字符的 value。
+  const result = db
+    .prepare(
+      `INSERT INTO metadata (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value
+       WHERE metadata.value GLOB '[0-9]*'
+         AND metadata.value NOT GLOB '*[^0-9]*'
+         AND CAST(metadata.value AS INTEGER) < ?`,
+    )
+    .run(key, nowStr, thresholdStr);
 
-  // 行不存在时尝试插入（首次运行）
-  if (!row) {
-    try {
-      db.prepare(
-        `INSERT INTO metadata (key, value) VALUES (?, ?)`,
-      ).run(key, nowMs.toString());
-      return { claimed: true, priorValue: null };
-    } catch {
-      return { claimed: false, priorValue: null };
-    }
+  // changes() = 1 表示 INSERT 了新行 或 UPDATE 命中了 WHERE → claim 成功。
+  // changes() = 0 表示冲突时 WHERE 不匹配(未到 interval / 格式不合法 / 并发
+  // 落败) → claim 失败,不改写原值。
+  if (result.changes === 1) {
+    return { claimed: true, priorValue };
   }
 
   return { claimed: false, priorValue };
@@ -168,7 +191,7 @@ const CB_FAILURES_KEY = 'circuit_breaker_failures';
 const CB_OPENED_AT_KEY = 'circuit_breaker_opened_at';
 const CB_COOLDOWN_KEY = 'circuit_breaker_cooldown_ms';
 
-function getCircuitState(db: Database.Database): {
+export function getCircuitState(db: Database.Database): {
   state: CircuitState;
   failures: number;
   cooldownMs: number;

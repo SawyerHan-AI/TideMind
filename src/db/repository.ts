@@ -39,6 +39,13 @@ export interface NodeCreateParams {
 export interface NodeFilter {
   type?: NodeType;
   archived?: boolean;
+  /**
+   * 按结构角色过滤。在上层(如 buildTags / buildCrystals)把"heat DESC
+   * 取 N 然后 JS 过滤"的错误算法替换为"SQL 层直接过滤后再排序",避免
+   * 非 tag / 非 crystal 的高 heat 节点挤掉目标。
+   */
+  is_tag?: boolean;
+  is_crystal?: boolean;
   createdAfter?: string;
   createdBefore?: string;
   limit?: number;

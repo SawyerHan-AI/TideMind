@@ -169,7 +169,8 @@
       "truncated": "잘림",
       "saveToFile": "파일로 저장",
       "saved": "저장됨",
-      "fullExportNote": "히스토리, 타임라인, 작업 로그 등 모든 사용자 데이터를 내보냅니다"
+      "fullExportNote": "히스토리, 타임라인, 작업 로그 등 모든 사용자 데이터를 내보냅니다",
+      "exportFailed": "내보내기 실패: {{message}}"
     },
     "logs": {
       "title": "Stream 로그 브라우저",
@@ -247,7 +248,18 @@
       "continueInit": "초기화 계속",
       "discard": "삭제 및 폐기",
       "discardConfirm": "폐기하시겠습니까? 가져온 데이터가 롤백됩니다.",
-      "processedFiles": "처리됨 {{current}} / {{total}} 파일"
+      "processedFiles": "처리됨 {{current}} / {{total}} 파일",
+      "phase": {
+        "scan": "스캔 & 분류",
+        "preprocess": "전처리",
+        "digest": "데이터 입력",
+        "explicitLinks": "명시적 링크",
+        "annotate": "노드 주석",
+        "landing": "랜딩 링크",
+        "linkEval": "링크 평가",
+        "keystone": "키스톤 표시",
+        "emergence": "창발"
+      }
     },
     "table": {
       "name": "이름",
@@ -418,6 +430,7 @@
     "saved": "저장됨",
     "confirmSave": "저장 확인",
     "save": "저장",
+    "userPromptPlaceholder": "User Prompt 템플릿을 입력하고 {{변수명}}을 동적 매개변수의 자리 표시자로 사용합니다",
     "returnToEdit": "편집으로 돌아가기",
     "changeReason": "변경 이유 (선택)",
     "rollbackToVersion": "이 버전으로 롤백",

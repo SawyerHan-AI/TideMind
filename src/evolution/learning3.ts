@@ -116,17 +116,19 @@ function computeDiminishingReturns(db: Database.Database): Signal {
       const tailLines = rawLines.length > 2000 ? rawLines.slice(-2000) : rawLines;
       const entries = tailLines.filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 
-      // Count accepted vs rejected variants in last 3 months
+      // Learning II 使用参数级调整 (param_adjusted / param_rolled_back / param_confirmed),
+      // 不再使用旧的 variant_accepted/variant_rejected。这里以 rolled_back 为"失败"、
+      // confirmed 为"成功"来估算策略调整的边际收益。
       const threeMonthsAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
       const recent = entries.filter((e: any) => e.timestamp > threeMonthsAgo);
-      const accepted = recent.filter((e: any) => e.action === 'variant_accepted').length;
-      const rejected = recent.filter((e: any) => e.action === 'variant_rejected').length;
+      const accepted = recent.filter((e: any) => e.action === 'param_confirmed').length;
+      const rejected = recent.filter((e: any) => e.action === 'param_rolled_back').length;
       const total = accepted + rejected;
 
       if (total > 0) {
         const rejectionRate = rejected / total;
         value = Math.min(1, rejectionRate); // High rejection = diminishing returns
-        evidence.push(`最近3个月: ${accepted}个变体被采用, ${rejected}个被拒绝`);
+        evidence.push(`最近3个月: ${accepted}个参数调整被确认, ${rejected}个被回滚`);
         if (rejectionRate > 0.7) {
           evidence.push('大部分策略调整没有带来改善——可能需要框架层面的变化');
         }

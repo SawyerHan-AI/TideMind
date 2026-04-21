@@ -296,7 +296,20 @@ const TIMEOUT_MS_BY_TIER: Record<'light' | 'standard' | 'heavy', number> = {
   heavy: 300_000,
 };
 
+/**
+ * 判断错误是否可重试。
+ *
+ * 覆盖的超时/中止形态（容易被漏掉）：
+ * - `AbortSignal.timeout(ms)` 触发时抛出的 DOMException：name === 'TimeoutError'，
+ *   message 形如 "The operation was aborted due to timeout"。
+ * - 我们自己用 AbortController + setTimeout 触发的 abort：name === 'AbortError'。
+ * - Anthropic SDK 的 `APIConnectionTimeoutError`（status 为 undefined，
+ *   所以上面的 `APIError` 分支不一定能命中），以及其父类 `APIConnectionError`。
+ */
 function isRetryable(err: unknown): boolean {
+  if (err instanceof Anthropic.APIConnectionError || err instanceof Anthropic.APIConnectionTimeoutError) {
+    return true;
+  }
   if (err instanceof Anthropic.APIError) {
     return err.status === 429 || err.status >= 500;
   }
@@ -305,6 +318,8 @@ function isRetryable(err: unknown): boolean {
   }
   if (err instanceof Error) {
     const msg = err.message;
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') return true;
+    if (msg.includes('aborted due to timeout')) return true;
     if (msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT') || msg.includes('fetch failed')) return true;
   }
   return false;
@@ -320,8 +335,18 @@ function isRetryable(err: unknown): boolean {
  * 不应该打熔断器。
  */
 function isServiceError(err: unknown): boolean {
+  // 网络/超时类错误一律视为服务级错误(进熔断器)。必须放在通用 Error 分支之前,
+  // 否则 APIConnectionTimeoutError 的 message 可能被下面的 "Invalid request" 之类的
+  // 启发式误杀,导致超时错误不累计到熔断器。
+  if (err instanceof Anthropic.APIConnectionError || err instanceof Anthropic.APIConnectionTimeoutError) {
+    return true;
+  }
   if (err instanceof Error) {
     const msg = err.message;
+    // 超时 / abort —— AbortSignal.timeout 产生的 DOMException 和我们手动 abort 的都算
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') return true;
+    if (msg.includes('aborted due to timeout')) return true;
+
     // 优先排除 — context overflow / 内容策略违规 / 输入格式错误等非服务错误
     if (/context[_ ]length|maximum context|context window/i.test(msg)) return false;
     if (/content[_ ]policy|safety|harm/i.test(msg)) return false;

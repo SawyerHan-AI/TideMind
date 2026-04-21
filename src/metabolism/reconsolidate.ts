@@ -13,6 +13,7 @@ import { RECONSOLIDATE_SYSTEM, reconsolidatePrompt } from '../llm/prompts.js';
 import { getConfig, isLlmConfigured } from '../config.js';
 import { detectConflictSignals } from './conflict-heuristics.js';
 import { getPrompt, getLLMOptions } from '../strategy/loader.js';
+import { getCircuitState } from './scheduler.js';
 import { createLogger } from '../utils/logger.js';
 import { parseLLMJson } from '../llm/json-parse.js';
 
@@ -236,6 +237,19 @@ async function deepReconsolidate(
   callerContext?: string,
 ): Promise<void> {
   const config = getConfig();
+  // 熔断器保护:recall 路径上的深度再巩固由 reconsolidateOnRecall fire-and-forget
+  // 触发,不走 scheduler 的 LLM 熔断保护。这里显式读熔断器状态,open 时走非 LLM
+  // 降级路径,避免 LLM 挂了时每次 recall 都要等超时失败。
+  if (getCircuitState(db).state === 'open') {
+    log.debug(`深度再巩固跳过 node=${node.id}: LLM 熔断器开启`);
+    db.prepare(`
+      UPDATE nodes SET refinement = MIN(refinement + 0.1, 1.0),
+                       last_reconsolidated = datetime('now')
+      WHERE id = ?
+    `).run(node.id);
+    refreshMaturityScore(db, node.id);
+    return;
+  }
   if (!isLlmConfigured()) {
     db.prepare(`
       UPDATE nodes SET refinement = MIN(refinement + 0.1, 1.0),

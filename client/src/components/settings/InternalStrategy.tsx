@@ -1050,6 +1050,7 @@ function WeightVisualization({ getVal }: { getVal: (s: string, k: string, f: num
 // ============================================================
 
 interface ProfileField {
+  id: string
   name: string
   description: string
 }
@@ -1071,8 +1072,14 @@ function ProfileFieldsEditor({ strategyName }: { strategyName: string }) {
         if (typeof raw === 'string') {
           const parsed = JSON.parse(raw)
           if (Array.isArray(parsed)) {
-            setFields(parsed)
-            latestFields.current = parsed
+            // 兼容旧数据：补上缺失的 id
+            const withIds: ProfileField[] = parsed.map((f: Partial<ProfileField>) => ({
+              id: f.id ?? crypto.randomUUID(),
+              name: f.name ?? '',
+              description: f.description ?? '',
+            }))
+            setFields(withIds)
+            latestFields.current = withIds
           }
         }
       } catch { /* use empty */ }
@@ -1124,7 +1131,7 @@ function ProfileFieldsEditor({ strategyName }: { strategyName: string }) {
   }
 
   const addField = () => {
-    const updated = [...fields, { name: '', description: '' }]
+    const updated = [...fields, { id: crypto.randomUUID(), name: '', description: '' }]
     setFields(updated)
     scheduleSave(updated)
   }
@@ -1144,7 +1151,7 @@ function ProfileFieldsEditor({ strategyName }: { strategyName: string }) {
         {saving && <Loader2 size={10} className="animate-spin text-indigo-400" />}
       </div>
       {fields.map((field, i) => (
-        <div key={i} className="flex items-start gap-2">
+        <div key={field.id} className="flex items-start gap-2">
           <input
             type="text"
             value={field.name}
@@ -1308,7 +1315,7 @@ function EmbeddedStrategyPanel({ name, type = 'system', locked }: { name: string
               onChange={e => { if (!selectedVersion) setContent(e.target.value) }}
               readOnly={!!selectedVersion}
               rows={12}
-              placeholder={isUser ? '输入 User Prompt 模板，使用 {{变量名}} 作为动态参数占位符' : undefined}
+              placeholder={isUser ? t('strategy.userPromptPlaceholder') : undefined}
               className={`w-full px-4 py-3 bg-white/5 border rounded-xl text-sm text-gray-200 font-mono leading-relaxed resize-y focus:outline-none ${
                 selectedVersion ? 'border-amber-500/30 bg-amber-500/5' : 'border-white/10 focus:border-indigo-400/50'
               }`}

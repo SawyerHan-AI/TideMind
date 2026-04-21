@@ -254,8 +254,24 @@ export function isFileChanged(
 
 /**
  * 计算文件内容 hash（SHA-256 前 16 字符）
+ *
+ * 注意：这里做 CRLF 归一化后再 hash，与 preprocessFile 内部的归一化保持一致。
+ * 否则 CRLF 文件会出现：入库时用预处理 snapshot 的 hash（已归一化），
+ * 下次 isFileChanged 又用此函数重新读 raw bytes 算 hash（未归一化），
+ * 两个 hash 永不相等 → 每次都误判为"变更"。
  */
 export function computeFileHash(filePath: string): string {
   const content = fs.readFileSync(filePath, 'utf-8');
-  return crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
+  return computeContentHash(content);
+}
+
+/**
+ * 对已读取的字符串内容计算 hash（避免 TOCTOU：入库与 hash 用同一份 content）
+ *
+ * 统一做 CRLF → LF 归一化，保证不同调用方（直接读文件 vs. preprocessFile 已读取的
+ * rawContent）对同一文件得到相同 hash。
+ */
+export function computeContentHash(content: string): string {
+  const normalized = content.replace(/\r\n/g, '\n');
+  return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 16);
 }

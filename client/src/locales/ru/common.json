@@ -25,5 +25,10 @@
     "items": "элементов",
     "memories": "воспоминаний"
   },
-  "total": "{{count}} всего"
+  "total": "{{count}} всего",
+  "errors": {
+    "somethingWentWrong": "Что-то пошло не так",
+    "unexpectedError": "Произошла непредвиденная ошибка.",
+    "retry": "Повторить"
+  }
 }
