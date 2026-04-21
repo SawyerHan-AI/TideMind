@@ -505,11 +505,18 @@ export function countNotes(
 /**
  * 从 path 字段解析账户 Z_PK 列表。
  * 存储格式：`/path/to/NoteStore.sqlite?accounts=1,3`
+ *
+ * 注意：sourcePath 是**文件系统原始路径** + 可选 `?accounts=` 后缀，不是 URL。
+ * 不能用 `new URL(sourcePath, 'file://').pathname` 解析——WHATWG URL 会对
+ * 空格/中文/emoji 做 percent-encoding（`/Users/han siyuan/...` → `/Users/han%20siyuan/...`），
+ * 后续 fs.existsSync / openNoteStoreDb 会因路径不存在而失败。
+ * 这里直接用字符串切分 `?` 保留原始路径，query 部分交给 URLSearchParams。
  */
 export function parseAccountsFromPath(sourcePath: string): { dbPath: string; accountZpks: number[] | undefined } {
-  const url = new URL(sourcePath, 'file://');
-  const dbPath = url.pathname;
-  const accountsParam = url.searchParams.get('accounts');
+  const queryIdx = sourcePath.indexOf('?');
+  const dbPath = queryIdx === -1 ? sourcePath : sourcePath.slice(0, queryIdx);
+  const queryStr = queryIdx === -1 ? '' : sourcePath.slice(queryIdx + 1);
+  const accountsParam = new URLSearchParams(queryStr).get('accounts');
   const accountZpks = accountsParam
     ? accountsParam.split(',').map(Number).filter(n => !isNaN(n))
     : undefined;
