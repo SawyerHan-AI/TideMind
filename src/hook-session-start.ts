@@ -176,7 +176,9 @@ ${prepareText}
   outputHook(content);
 }
 
-main().catch(() => {
+main().catch((err: unknown) => {
   // 最终兜底
+  const stack = err instanceof Error ? err.stack ?? err.message : String(err);
+  process.stderr.write(`[eb:hook-session-start] fatal error: ${stack}\n`);
   outputHook('Tide Mind 启动失败。请手动调用 brain_prepare 工具加载上下文。');
 });

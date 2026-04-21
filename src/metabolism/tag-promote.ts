@@ -8,7 +8,7 @@
 
 import type Database from 'better-sqlite3';
 import { createNode, updateNode, parseTags, getNode } from '../db/nodes.js';
-import { createLink, linkExists, updateLinkStrength, getLinksForNode } from '../db/links.js';
+import { createLink, linkExists, updateLinkStrength, getLinksForNode, deleteLink } from '../db/links.js';
 import { getParam, getPrompt, getLLMOptions, renderUserPrompt } from '../strategy/loader.js';
 import { callLLM } from '../llm/client.js';
 import { isLlmConfigured } from '../config.js';
@@ -193,7 +193,7 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
 
           if (strength < minStrength) {
             // 低于阈值，删除
-            db.prepare('DELETE FROM links WHERE id = ?').run(link.id);
+            deleteLink(db, link.id);
             linksRemoved++;
           } else if (Math.abs(link.strength - strength) > 0.05) {
             // strength 差异显著，更新

@@ -33,8 +33,13 @@ export async function loadProModules(ctx: PluginContext): Promise<void> {
       await m.register(ctx);
       loaded++;
       log.info(`Pro 模块已加载: ${mod.name}`);
-    } catch {
-      // 模块不存在 → 开源版，静默跳过
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_FOUND') {
+        // 模块不存在 → 开源版，静默跳过
+      } else {
+        log.error(`Pro 模块加载出错: ${mod.name}`, err);
+      }
     }
   }
 

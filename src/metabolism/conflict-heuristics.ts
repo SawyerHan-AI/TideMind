@@ -53,10 +53,13 @@ function hasNegatedOverlap(textA: string, textB: string): boolean {
 
   for (const keyword of sharedKeywords) {
     for (const neg of allNegations) {
+      // 转义用户数据，防止关键词含正则特殊字符
+      const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const escapedNeg = neg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       // 检查否定标记是否在共享关键词附近（前后 30 字符内）
       const patterns = [
-        new RegExp(`${neg}[^。.!？\\n]{0,20}${keyword}`, 'i'),
-        new RegExp(`${keyword}[^。.!？\\n]{0,20}${neg}`, 'i'),
+        new RegExp(`${escapedNeg}[^。.!？\\n]{0,20}${escapedKeyword}`, 'i'),
+        new RegExp(`${escapedKeyword}[^。.!？\\n]{0,20}${escapedNeg}`, 'i'),
       ];
       // 只需一边有否定即可
       const textAMatch = patterns.some(p => p.test(textA));

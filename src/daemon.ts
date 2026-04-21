@@ -70,10 +70,10 @@ setInterval(() => {
   tickCount++;
 
   // 检查 Skill/MCP 描述文件变更（轻量级，不阻塞）
-  try { checkFileWatchers(); } catch { /* */ }
+  try { checkFileWatchers(); } catch (err) { log.warn('checkFileWatchers 出错', err); }
   // 定期从源码同步策略文件，无需重启 daemon
   if (tickCount % STRATEGY_SYNC_EVERY_N_TICKS === 0) {
-    try { syncStrategiesFromSource(); reloadStrategies(); } catch { /* */ }
+    try { syncStrategiesFromSource(); reloadStrategies(); } catch (err) { log.warn('策略同步/重载出错', err); }
   }
 
   if (cloudEnabled) {

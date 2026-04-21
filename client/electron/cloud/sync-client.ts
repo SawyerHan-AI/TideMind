@@ -134,6 +134,19 @@ export class CloudSyncClient {
 
   // ── WebSocket ────────────────────────────────────────
 
+  /**
+   * v0.2.38 新协议:不再把 token 写进 URL,而是连上后发 {type:'auth', token} 消息。
+   * URL 进反向代理 / Cloudflare 的 access log,token 在 URL 里会被落盘。
+   * 新协议下 URL 永远干净。服务端双协议并存(仍接受 ?token=),等 v0.2.39 关闭。
+   *
+   * 状态机:
+   *   connecting → open → (send auth) → (recv auth_ok) → ready
+   *                              → (recv auth_fail)      → close
+   *                              → 3s no ack             → close
+   */
+  private wsAuthTimer: ReturnType<typeof setTimeout> | null = null;
+  private wsAuthed = false;
+
   private async connectWebSocket(): Promise<void> {
     const token = await refreshTokenIfNeeded();
     if (!token) {
@@ -141,25 +154,60 @@ export class CloudSyncClient {
       return;
     }
 
-    // 将 HTTP base URL 转为 WebSocket URL
+    // 将 HTTP base URL 转为 WebSocket URL。注意 URL 不再带 token。
     const baseUrl = getCloudBaseUrl();
     const wsUrl = baseUrl
       .replace(/^https:\/\//, 'wss://')
       .replace(/^http:\/\//, 'ws://');
-    const url = `${wsUrl}/ws/sync?token=${encodeURIComponent(token)}`;
+    const url = `${wsUrl}/ws/sync`;
+
+    this.wsAuthed = false;
 
     try {
       this.ws = new WebSocket(url);
 
       this.ws.on('open', () => {
-        log.info('ws connected');
-        this.wsReconnectAttempts = 0; // 重置退避
+        log.info('ws opened, sending auth handshake');
+        // 立即发 auth message;服务端收到后应在 3 秒内回 auth_ok/auth_fail。
+        try {
+          this.ws?.send(JSON.stringify({ type: 'auth', token }));
+        } catch (e) {
+          log.warn(`ws send auth failed: ${(e as Error).message}`);
+        }
+        // 3 秒内没收到 auth_ok 就认为对端不支持新协议或卡死,close 重连。
+        // 服务端 handshake timeout 也是 3s,客户端给稍微长一点的容忍(3500ms)
+        // 避免两边同时 timeout 抢着 close。
+        this.wsAuthTimer = setTimeout(() => {
+          if (!this.wsAuthed) {
+            log.warn('ws auth ack timeout, closing');
+            this.ws?.close(4003, 'Auth ack timeout');
+          }
+        }, 3_500);
       });
 
       this.ws.on('message', (data) => {
         try {
           const msg = JSON.parse(data.toString());
-          if (msg.type === 'changes_available') {
+          if (msg.type === 'auth_ok' || msg.type === 'connected') {
+            // auth_ok = 新协议服务端; connected = 老协议服务端(legacy ?token=)。
+            // 按当前我们不再传 query token,正常情况下应该看到 auth_ok。
+            // 保留 connected 以防 roll-forward 时某些节点用旧服务端代码。
+            this.wsAuthed = true;
+            if (this.wsAuthTimer) {
+              clearTimeout(this.wsAuthTimer);
+              this.wsAuthTimer = null;
+            }
+            log.info(`ws authed (server msg=${msg.type})`);
+            this.wsReconnectAttempts = 0; // 重置退避
+          } else if (msg.type === 'auth_fail') {
+            log.warn(`ws auth_fail: reason=${msg.reason}`);
+            this.ws?.close(msg.reason === 'expired' ? 4401 : 1008, 'auth_fail');
+          } else if (msg.type === 'changes_available') {
+            if (!this.wsAuthed) {
+              // 协议违规:未认证就收到通知 → 不信任
+              log.warn('ws: received changes_available before auth, ignoring');
+              return;
+            }
             log.info(`ws: changes_available since_version=${msg.since_version}`);
             // 收到通知，立即拉取
             this.syncOnce().catch(e => log.error('ws-triggered sync error:', (e as Error).message));
@@ -170,8 +218,13 @@ export class CloudSyncClient {
       });
 
       this.ws.on('close', async (code, reason) => {
-        log.info(`ws closed: code=${code} reason=${reason.toString()}`);
+        log.info(`ws closed: code=${code} reason=${reason.toString()} authed=${this.wsAuthed}`);
+        if (this.wsAuthTimer) {
+          clearTimeout(this.wsAuthTimer);
+          this.wsAuthTimer = null;
+        }
         this.ws = null;
+        this.wsAuthed = false;
         if (this.stopped) return;
         // code 4401(服务端自定义)= token 过期,先强制刷新再重连。
         // 不刷新直接重连会立刻再被拒,进入指数退避空转。
@@ -220,10 +273,15 @@ export class CloudSyncClient {
       clearTimeout(this.wsReconnectTimer);
       this.wsReconnectTimer = null;
     }
+    if (this.wsAuthTimer) {
+      clearTimeout(this.wsAuthTimer);
+      this.wsAuthTimer = null;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
+    this.wsAuthed = false;
   }
 
   async syncOnce(): Promise<void> {

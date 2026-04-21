@@ -12,13 +12,14 @@ import { createLogger } from '@server/utils/logger.js'
 import { mainT } from './i18n'
 
 const migrationLog = createLogger('client-migrate')
+const mainLog = createLogger('main')
 
 // 全局异常处理 — 防止 main process 无声崩溃
 process.on('uncaughtException', (err) => {
-  console.error('[eb:main] 未捕获异常:', err)
+  mainLog.error('未捕获异常:', err)
 })
 process.on('unhandledRejection', (reason) => {
-  console.error('[eb:main] 未处理的 Promise 拒绝:', reason)
+  mainLog.error('未处理的 Promise 拒绝:', reason)
 })
 
 /** 检测 Ollama 是否在运行，没运行则自动拉起（仅当 embedding 使用 ollama 时） */
@@ -46,8 +47,8 @@ async function ensureOllama(): Promise<void> {
   }
   if (process.platform === 'darwin') {
     exec('open -a Ollama', (err) => {
-      if (err) console.warn('Ollama 启动失败:', err.message)
-      else console.log('Ollama 已自动启动')
+      if (err) mainLog.warn(`Ollama 启动失败: ${err.message}`)
+      else mainLog.info('Ollama 已自动启动')
     })
   }
 }
@@ -236,19 +237,19 @@ app.whenReady().then(async () => {
   try {
     const migrationResult = migrateDataDirIfNeeded(migrationLog)
     if (migrationResult.migrated) {
-      console.log(`[eb:main] data dir migrated → ${migrationResult.newDir} (backup: ${migrationResult.backupDir})`)
+      migrationLog.info(`data dir migrated → ${migrationResult.newDir} (backup: ${migrationResult.backupDir})`)
     }
   } catch (err) {
-    console.error('[eb:main] 数据目录迁移失败:', err)
+    migrationLog.error('数据目录迁移失败:', err)
   }
 
   // 在任何 plugin 配置被读/写之前：刷新 shim 和 runtime-path，再对已有 plugin 配置
   // 做一次自愈扫描。顺序：migrate → shim → runtime-path → self-heal。
   try {
     const result = writeShimAndRuntimePath()
-    console.log(`[eb:main] shim updated=${result.shimUpdated} runtime-path updated=${result.runtimePathUpdated} → ${result.runtimePath}`)
+    mainLog.info(`shim updated=${result.shimUpdated} runtime-path updated=${result.runtimePathUpdated} → ${result.runtimePath}`)
   } catch (err) {
-    console.error('[eb:main] 写入 tm-node shim 失败:', err)
+    mainLog.error('写入 tm-node shim 失败:', err)
   }
 
   // 初始化数据库和 IPC
@@ -263,10 +264,10 @@ app.whenReady().then(async () => {
     try {
       selfHealPlugins(dataDir, db)
     } catch (err) {
-      console.error('[eb:main] plugin self-heal 失败:', err)
+      mainLog.error('plugin self-heal 失败:', err)
     }
   } catch (err) {
-    console.error('数据库初始化失败:', err)
+    mainLog.error('数据库初始化失败:', err)
   }
 
   // 恢复上次的云登录会话 + 条件性启动 sync client
@@ -280,11 +281,11 @@ app.whenReady().then(async () => {
       if (config.cloud?.sync_enabled) {
         const { createCloudSyncClient } = await import('./cloud/sync-client.js')
         const syncClient = createCloudSyncClient(db)
-        syncClient.start().catch(err => console.error('[eb:main] sync client start failed:', err))
+        syncClient.start().catch(err => mainLog.error('sync client start failed:', err))
       }
     }
   } catch (err) {
-    console.error('[eb:main] cloud auth init failed:', err)
+    mainLog.error('cloud auth init failed:', err)
   }
 
   createWindow()
@@ -297,7 +298,7 @@ app.whenReady().then(async () => {
   ensureOllama()
 
   // 启动内嵌守护进程（定时维护任务）
-  startDaemon().catch(err => console.error('daemon 启动失败:', err))
+  startDaemon().catch(err => mainLog.error('daemon 启动失败:', err))
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

@@ -20,7 +20,7 @@ export function AboutSection() {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle')
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [updateError, setUpdateError] = useState<string | null>(null)
-  const [currentVersion, setCurrentVersion] = useState('0.2.37')
+  const [currentVersion, setCurrentVersion] = useState('0.2.38')
 
   useEffect(() => {
     window.api.app.getVersion().then((v: string) => setCurrentVersion(v)).catch(() => {})
@@ -154,7 +154,7 @@ export function AboutSection() {
       <Section title={t('about.license', 'License')}>
         <div className="text-xs text-gray-500 space-y-1">
           <p>MIT License</p>
-          <p>&copy; 2024-2026 TideMind Contributors</p>
+          <p>&copy; 2024-{new Date().getFullYear()} TideMind Contributors</p>
         </div>
       </Section>
     </div>

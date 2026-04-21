@@ -125,7 +125,7 @@ export function Timeline() {
         {totalPages > 1 ? (
           <div className="flex items-center gap-3">
             <button
-              onClick={() => setPage(p => Math.max(0, p - 1))}
+              onClick={() => { setPage(p => Math.max(0, p - 1)); setExpandedId(null) }}
               disabled={page === 0}
               className="p-1 rounded text-gray-400 hover:text-white hover:bg-white/5 disabled:opacity-30 transition-all"
             >
@@ -133,7 +133,7 @@ export function Timeline() {
             </button>
             <span className="text-[11px] text-gray-400 tabular-nums">{page + 1} / {totalPages}</span>
             <button
-              onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+              onClick={() => { setPage(p => Math.min(totalPages - 1, p + 1)); setExpandedId(null) }}
               disabled={page >= totalPages - 1}
               className="p-1 rounded text-gray-400 hover:text-white hover:bg-white/5 disabled:opacity-30 transition-all"
             >

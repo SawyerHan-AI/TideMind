@@ -8,10 +8,11 @@ export function NoteSourceStep() {
   const { t } = useTranslation('onboarding')
   const { setNoteSourceConfigured } = useOnboarding()
 
-  // 轮询检测是否有笔记源
+  // 轮询检测是否有笔记源（页面隐藏时暂停，避免无效请求）
   useEffect(() => {
     let cancelled = false
     const check = async () => {
+      if (document.visibilityState !== 'visible') return
       try {
         const sources = await (window as any).api.noteSources.list(false)
         if (!cancelled) setNoteSourceConfigured(sources?.length > 0)
