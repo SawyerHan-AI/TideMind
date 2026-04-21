@@ -254,14 +254,14 @@ function TrendChart({ tokenUsage }: { tokenUsage: TokenUsageData | null }) {
   const [metric, setMetric] = useState<TrendMetric>('tokens')
   const [dimension, setDimension] = useState<TrendDimension>('model')
 
-  // 动态解析 other 标签
-  const resolvedModelGroupLabels: Record<string, string> = {
-    ...MODEL_GROUP_LABELS,
-    other: t('usage.otherModel'),
-  }
-
   // 构建堆叠面积图数据
   const { chartData, keys, colors, labels } = useMemo(() => {
+    // 动态解析 other 标签（放在 memo 内，依赖 t 以响应语言切换）
+    const resolvedModelGroupLabels: Record<string, string> = {
+      ...MODEL_GROUP_LABELS,
+      other: t('usage.otherModel'),
+    }
+
     if (!tokenUsage) return { chartData: [], keys: [], colors: {} as Record<string, string>, labels: {} as Record<string, string> }
 
     if (dimension === 'model') {
@@ -332,7 +332,7 @@ function TrendChart({ tokenUsage }: { tokenUsage: TokenUsageData | null }) {
         labels: EVENT_TYPE_LABELS,
       }
     }
-  }, [tokenUsage, metric, dimension])
+  }, [tokenUsage, metric, dimension, t])
 
   const tooltipStyle = {
     backgroundColor: chartVar.tooltipBg,

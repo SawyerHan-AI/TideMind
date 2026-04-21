@@ -172,9 +172,17 @@ export function buildInDegreeMap(
     const selfName = path.basename(file.relPath, '.md');
     const seen = new Set<string>();
 
-    // 提取 [[link]] 和 [[link|alias]] 中的 link 部分
+    // 提取 [[link]]、[[link|alias]]、[[link#heading]]、[[path/to/link]] 中的 link 部分
+    // 归一为 basename（去掉 #heading/^block 和目录前缀）再比较 nameSet，
+    // 否则子目录引用和带 heading 的引用会被漏记入度。
     for (const match of content.matchAll(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g)) {
-      const refName = match[1].trim();
+      let refName = match[1].trim();
+      // 去掉 #heading 或 ^blockId
+      refName = refName.split(/[#^]/)[0];
+      // 去掉路径前缀，只留 basename
+      refName = refName.split('/').pop() ?? refName;
+      refName = refName.trim();
+      if (!refName) continue;
       if (refName === selfName) continue; // 跳过自引用
       if (seen.has(refName)) continue;
       seen.add(refName);

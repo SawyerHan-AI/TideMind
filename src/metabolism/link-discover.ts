@@ -120,6 +120,9 @@ function discoverBySharedNeighbors(db: Database.Database): { scanned: number; di
   const minSharedNeighbors = getParam('link-discover', 'min_shared_neighbors', 2);
   const maxCandidates = getParam('link-discover', 'max_shared_candidates', 20);
 
+  // 排除 tagged 链接：tag 节点与大量节点之间有结构性 tagged 边,
+  // 若纳入共享邻居会把所有带同一 tag 的节点两两连成候选,产生大量噪声
+  // 候选对。对齐 divergent.ts:49 的同类过滤。
   const candidates = db.prepare(`
     SELECT a_node AS a, b_node AS b, COUNT(*) AS shared_count
     FROM (
@@ -127,11 +130,15 @@ function discoverBySharedNeighbors(db: Database.Database): { scanned: number; di
       FROM links l1
       JOIN links l2 ON l1.to_id = l2.to_id AND l1.from_id < l2.from_id
       WHERE l1.status = 'confirmed' AND l2.status = 'confirmed'
+        AND json_extract(l1.relation, '$[0].type') != 'tagged'
+        AND json_extract(l2.relation, '$[0].type') != 'tagged'
       UNION ALL
       SELECT l1.to_id AS a_node, l2.to_id AS b_node, l1.from_id AS shared
       FROM links l1
       JOIN links l2 ON l1.from_id = l2.from_id AND l1.to_id < l2.to_id
       WHERE l1.status = 'confirmed' AND l2.status = 'confirmed'
+        AND json_extract(l1.relation, '$[0].type') != 'tagged'
+        AND json_extract(l2.relation, '$[0].type') != 'tagged'
     )
     GROUP BY a_node, b_node
     HAVING shared_count >= ?

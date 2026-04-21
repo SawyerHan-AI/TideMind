@@ -240,18 +240,23 @@ export function inferPageDates(
   }
 
   // --- 层 5.5：重复页继承 ---
+  // Logseq 把重复页重命名为 "title 2"、"title 3" ...。匹配 ` \d+$` 时
+  // 必须再验证 originalTitle 真的是一个 canonical 页（pages 中存在），
+  // 否则用户正常叫 "Chapter 2" 的笔记会被错误继承为 "Chapter" 的日期。
+  const canonicalTitleSet = new Set(pages.map(p => p.title));
   orphans = pages.filter(p => !result.has(p.title));
   for (const orphan of orphans) {
-    if (orphan.title.endsWith(' 2')) {
-      const originalTitle = orphan.title.slice(0, -2);
-      const originalInfo = result.get(originalTitle);
-      if (originalInfo) {
-        result.set(orphan.title, {
-          date: originalInfo.date,
-          source: 'duplicate_inherit',
-          lastRef: originalInfo.lastRef,
-        });
-      }
+    const m = orphan.title.match(/^(.+?) \d+$/);
+    if (!m) continue;
+    const originalTitle = m[1];
+    if (!canonicalTitleSet.has(originalTitle)) continue; // originalTitle 必须存在
+    const originalInfo = result.get(originalTitle);
+    if (originalInfo) {
+      result.set(orphan.title, {
+        date: originalInfo.date,
+        source: 'duplicate_inherit',
+        lastRef: originalInfo.lastRef,
+      });
     }
   }
 

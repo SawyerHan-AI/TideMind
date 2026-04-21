@@ -414,10 +414,20 @@ function linkToExistingTagNodes(
   const minStrength = getParam('metabolism-params', 'tag_link_min_strength', 0.3);
 
   // 批量查找已存在的 tag 节点（优先用 title 匹配，兼容旧数据用 content）
+  // title 和 content 共用同一个 Map 时,旧的 title=null 节点可能和另一个
+  // 节点的 content 撞 key,先走 content-fallback 再走 title,让显式 title 胜出。
   const tagNodes = db.prepare(
     "SELECT id, title, content FROM nodes WHERE is_tag = 1 AND heat > 0.01 AND is_superseded = 0",
   ).all() as Array<{ id: string; title: string | null; content: string }>;
-  const tagNodeMap = new Map(tagNodes.map(tn => [tn.title ?? tn.content, tn.id]));
+  const tagNodeMap = new Map<string, string>();
+  // 先放 title=null 的兼容节点(用 content 作 key),再用 title 覆盖,
+  // 保证同名 tag 节点存在带 title 版本时优先命中它。
+  for (const tn of tagNodes) {
+    if (!tn.title) tagNodeMap.set(tn.content, tn.id);
+  }
+  for (const tn of tagNodes) {
+    if (tn.title) tagNodeMap.set(tn.title, tn.id);
+  }
 
   for (const tag of tags) {
     const tagNodeId = tagNodeMap.get(tag);

@@ -589,6 +589,7 @@ function NodeDetailPanel({ node }: { node: ProcessingNode }) {
   const [localConfig, setLocalConfig] = useState<Record<string, Record<string, number>>>({})
   const [saved, setSaved] = useState(false)
   const configInitialized = useRef(false)
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (!config) return
@@ -618,9 +619,13 @@ function NodeDetailPanel({ node }: { node: ProcessingNode }) {
     const timer = setTimeout(async () => {
       await window.api.config.update(localConfig)
       setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
+      savedTimerRef.current = setTimeout(() => setSaved(false), 2000)
     }, 500)
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(timer)
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
+    }
   }, [localConfig])
 
   // 分类策略参数

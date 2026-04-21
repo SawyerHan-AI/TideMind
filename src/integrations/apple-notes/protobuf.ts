@@ -107,8 +107,9 @@ export interface DecodedAttributeRun {
 export function decodeNoteData(zdata: Buffer): DecodedNote | null {
   try {
     // 1. gzip 解压
+    // 对空 blob / 1 字节残包做长度检测，避免 zdata[0] 访问 undefined
     let decompressed: Buffer;
-    if (zdata[0] === 0x1f && zdata[1] === 0x8b) {
+    if (zdata.length >= 2 && zdata[0] === 0x1f && zdata[1] === 0x8b) {
       decompressed = gunzipSync(zdata);
     } else {
       // 可能是未压缩的 protobuf

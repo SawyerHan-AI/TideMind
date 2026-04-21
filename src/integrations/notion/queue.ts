@@ -56,12 +56,16 @@ export function resetProgress(sourceId: string): void {
 
 /**
  * 处理一批 Notion 页面
+ *
+ * @param onPageDone 每处理完一个页面（成功或失败）调用一次，用于外部驱动的进度追踪
+ *                   （例如 initialization.ts 的 Phase 2 按 batch 粒度推进 InitProgress）。
  */
 export async function processNotionPages(
   db: Database.Database,
   token: string,
   pages: NotionPageSummary[],
   sourceId: string,
+  onPageDone?: () => void,
 ): Promise<void> {
   const progress = getProgress(sourceId);
   Object.assign(progress, {
@@ -82,6 +86,14 @@ export async function processNotionPages(
     } catch (e) {
       log.error(`处理页面失败 (${pageSummary.id}): ${(e as Error).message}`);
       progress.failedFiles++;
+    }
+
+    if (onPageDone) {
+      try {
+        onPageDone();
+      } catch {
+        // 忽略回调异常，不影响主流程
+      }
     }
   }
 

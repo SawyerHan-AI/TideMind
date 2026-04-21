@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -412,13 +413,13 @@ export function DetailPanel({ nodeId, onNavigate }: {
                 <div className="flex items-center gap-1">
                   {t('explorer:detail.stream')} <InfoTip content={NODE_ATTR_TIPS.source_stream} size={10} />
                   : <span className="text-gray-200 font-mono text-[10px]">{node.source_stream}</span>
-                  <a
-                    href={`#/timeline`}
+                  <Link
+                    to="/timeline"
                     className="inline-flex items-center gap-0.5 text-indigo-400 hover:text-indigo-300 transition-colors ml-1"
                   >
                     <ExternalLink size={10} />
                     <span>{t('explorer:detail.viewTimeline')}</span>
-                  </a>
+                  </Link>
                 </div>
               )}
             </div>

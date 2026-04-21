@@ -76,12 +76,19 @@ export function classifyFiles(
     }
 
     // 判断是否日记
-    const journalMatch = fileName.match(/^(\d{4})[-_](\d{2})[-_](\d{2})$/);
+    // 支持 YYYY-MM-DD / YYYY_MM_DD / YYYYMMDD 三种默认格式。
+    // 自定义 `:journal/file-name-format`（如 yyyy_MM_dd_EEEE）需用户把文件
+    // 放到 journals/ 目录下才会被识别。
+    const journalMatch =
+      fileName.match(/^(\d{4})[-_](\d{2})[-_](\d{2})$/) ||
+      fileName.match(/^(\d{4})(\d{2})(\d{2})$/);
     const isJournal = relPath.startsWith('journals/') || !!journalMatch;
 
     // 提取标题
     const title = isJournal
-      ? fileName.replace(/_/g, '-')
+      ? (journalMatch
+          ? `${journalMatch[1]}-${journalMatch[2]}-${journalMatch[3]}`
+          : fileName.replace(/_/g, '-'))
       : decodeURIComponent(fileName.replace(/___/g, '/'));
 
     // 计算引用数

@@ -365,6 +365,36 @@ export function checkMonitoringWindows(
 // ── 策略文件参数更新 ──────────────────────────────────────────
 
 /**
+ * 原子写入文本文件:tmp 文件 fsync 落盘 → rename → 目录 fsync,
+ * 保证 power-loss 后要么还是旧内容,要么是完整的新内容,不会半截。
+ *
+ * 为什么要显式 fsync:writeFileSync 只是走到 OS page cache,crash 时可能
+ * 丢尾部。rename 也只是更新目录项,目录本身未 fsync 时崩溃后重启可能
+ * 看不到新文件名。fsync 目录才能保证 rename 真的持久化。
+ */
+function atomicWriteFileSync(targetPath: string, content: string): void {
+  const tmpPath = targetPath + '.tmp.' + Date.now();
+  const fd = fs.openSync(tmpPath, 'w');
+  try {
+    fs.writeSync(fd, content, 0, 'utf-8');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmpPath, targetPath);
+  // 目录 fsync:确保 rename 元数据落盘。darwin/linux 支持对目录 fd fsync;
+  // 某些平台会 EISDIR,这里静默忽略——最差情况下退化到"数据安全、目录项
+  // 可能需要等自然刷盘",不至于因兼容性打断调用者。
+  try {
+    const dirFd = fs.openSync(path.dirname(targetPath), 'r');
+    try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+  } catch {
+    // ignore — fsync on dir not supported on this platform
+  }
+}
+
+
+/**
  * 更新策略参数文件中的参数值
  * 优先写入 .params.md，回退写入 .md
  * 匹配 | paramName | oldValue | description | 格式
@@ -402,9 +432,7 @@ function updateStrategyParam(
     let content = fs.readFileSync(paramsPath, 'utf-8');
     if (pattern.test(content)) {
       content = content.replace(pattern, `$1${formatted} $2`);
-      const tmpPath = paramsPath + '.tmp.' + Date.now();
-      fs.writeFileSync(tmpPath, content);
-      fs.renameSync(tmpPath, paramsPath);
+      atomicWriteFileSync(paramsPath, content);
       return true;
     }
   }
@@ -420,9 +448,7 @@ function updateStrategyParam(
   }
 
   content = content.replace(pattern, `$1${formatted} $2`);
-  const tmpPath = filePath + '.tmp.' + Date.now();
-  fs.writeFileSync(tmpPath, content);
-  fs.renameSync(tmpPath, filePath);
+  atomicWriteFileSync(filePath, content);
   return true;
 }
 

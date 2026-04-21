@@ -236,6 +236,13 @@ async function deepReconsolidate(
   contextNodes: BrainNode[],
   callerContext?: string,
 ): Promise<void> {
+  // 未标注的节点不做深度再巩固:annotate 尚未给出维度标注,
+  // 贸然让 LLM 判断"冲突/过时"会在缺失上下文的情况下做出错判断,
+  // 并且这类节点本该先走 annotate 再进入成熟流程。
+  if ((node.refinement ?? 0) <= 0) {
+    log.debug(`深度再巩固跳过 node=${node.id}: 未经标注 (refinement=${node.refinement})`);
+    return;
+  }
   const config = getConfig();
   // 熔断器保护:recall 路径上的深度再巩固由 reconsolidateOnRecall fire-and-forget
   // 触发,不走 scheduler 的 LLM 熔断保护。这里显式读熔断器状态,open 时走非 LLM

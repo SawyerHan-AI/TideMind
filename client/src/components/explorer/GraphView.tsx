@@ -108,6 +108,12 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
   const [highlightedPath, setHighlightedPath] = useState<Set<string>>(new Set())
   const [structureHoles, setStructureHoles] = useState<StructureHole[]>([])
 
+  // track mounted state to guard async setState calls
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
   // data fetching
   const rev = useDataRevision(['nodes', 'links'])
   const { data: graphData } = useIPC(
@@ -118,7 +124,11 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
   // fetch structure holes when toggled
   useEffect(() => {
     if (showStructureHoles) {
-      window.api.nodes.structureHoles(10).then(setStructureHoles).catch(() => setStructureHoles([]))
+      let cancelled = false
+      window.api.nodes.structureHoles(10)
+        .then(result => { if (!cancelled) setStructureHoles(result) })
+        .catch(() => { if (!cancelled) setStructureHoles([]) })
+      return () => { cancelled = true }
     } else {
       setStructureHoles([])
     }
@@ -490,6 +500,7 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
 
   /* ---- Click (via pointerup to avoid D3 drag suppression) ---- */
   const pointerDownRef = useRef<{ x: number; y: number; time: number } | null>(null)
+  const mountedRef = useRef(true)
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -521,10 +532,8 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
           } else {
             // find path
             window.api.nodes.path(pathFrom, node.id)
-              .then(result => {
-                setHighlightedPath(new Set(result.path))
-              })
-              .catch(() => setHighlightedPath(new Set()))
+              .then(result => { if (mountedRef.current) setHighlightedPath(new Set(result.path)) })
+              .catch(() => { if (mountedRef.current) setHighlightedPath(new Set()) })
             setPathFrom(null)
             // Keep pathMode on so user can see the result and toggle off manually
           }
@@ -725,7 +734,11 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
 
 /* ---- utility ---- */
 function hexWithAlpha(hex: string, alpha: number): string {
-  // Parse hex color and return rgba
+  // Expects a 6-digit #RRGGBB string (all callers in this file use that format)
+  if (hex.length !== 7 || !hex.startsWith('#')) {
+    // Fallback: return a transparent black rather than NaN-based rgba
+    return `rgba(0, 0, 0, ${alpha})`
+  }
   const r = parseInt(hex.slice(1, 3), 16)
   const g = parseInt(hex.slice(3, 5), 16)
   const b = parseInt(hex.slice(5, 7), 16)

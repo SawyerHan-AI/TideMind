@@ -123,6 +123,12 @@ import trOnboarding from '../locales/tr/onboarding.json'
 
 const ns = ['common', 'settings', 'dashboard', 'explorer', 'timeline', 'constants', 'tooltips', 'onboarding'] as const
 
+const VALID_LANGUAGE_CODES = ['en', 'zh-CN', 'zh-TW', 'ja', 'ko', 'fr', 'es', 'de', 'pt-BR', 'ru', 'it', 'tr']
+function getSavedLanguage(): string {
+  const v = localStorage.getItem('eb-language')
+  return v && VALID_LANGUAGE_CODES.includes(v) ? v : 'en'
+}
+
 i18n.use(initReactI18next).init({
   resources: {
     en:      { common: enCommon, settings: enSettings, dashboard: enDashboard, explorer: enExplorer, timeline: enTimeline, constants: enConstants, tooltips: enTooltips, onboarding: enOnboarding },
@@ -138,7 +144,7 @@ i18n.use(initReactI18next).init({
     it:      { common: itCommon, settings: itSettings, dashboard: itDashboard, explorer: itExplorer, timeline: itTimeline, constants: itConstants, tooltips: itTooltips, onboarding: itOnboarding },
     tr:      { common: trCommon, settings: trSettings, dashboard: trDashboard, explorer: trExplorer, timeline: trTimeline, constants: trConstants, tooltips: trTooltips, onboarding: trOnboarding },
   },
-  lng: localStorage.getItem('eb-language') || 'en',
+  lng: getSavedLanguage(),
   fallbackLng: 'en',
   defaultNS: 'common',
   ns: [...ns],

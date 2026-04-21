@@ -355,24 +355,29 @@ function migrateLegacyNoteSources(db: Database.Database): void {
   };
 
   // 迁移 Logseq
-  if (sources.logseq?.path) {
+  if (typeof sources.logseq?.path === 'string' && sources.logseq.path) {
     const id = generateSourceId();
-    const pollInterval = (sources.logseq.poll_interval as number) ?? 60;
-    insertStmt.run(id, 'Logseq', 'logseq', sources.logseq.path as string, pollInterval, now);
+    const rawInterval = sources.logseq.poll_interval;
+    const pollInterval = typeof rawInterval === 'number' ? rawInterval : 60;
+    insertStmt.run(id, 'Logseq', 'logseq', sources.logseq.path, pollInterval, now);
     if (tableExists('logseq_sync')) {
       db.prepare("UPDATE logseq_sync SET source_id = ? WHERE source_id = ''").run(id);
     }
     log.info(`迁移 v7: Logseq 笔记源已迁移 → ${id}`);
+  } else if (sources.logseq?.path) {
+    log.warn(`迁移 v7: Logseq path 非字符串,跳过 (type=${typeof sources.logseq.path})`);
   }
 
   // 迁移 Obsidian
-  if (sources.obsidian?.path) {
+  if (typeof sources.obsidian?.path === 'string' && sources.obsidian.path) {
     const id = generateSourceId();
-    insertStmt.run(id, 'Obsidian', 'obsidian', sources.obsidian.path as string, 60, now);
+    insertStmt.run(id, 'Obsidian', 'obsidian', sources.obsidian.path, 60, now);
     if (tableExists('obsidian_sync')) {
       db.prepare("UPDATE obsidian_sync SET source_id = ? WHERE source_id = ''").run(id);
     }
     log.info(`迁移 v7: Obsidian 笔记源已迁移 → ${id}`);
+  } else if (sources.obsidian?.path) {
+    log.warn(`迁移 v7: Obsidian path 非字符串,跳过 (type=${typeof sources.obsidian.path})`);
   }
 }
 
@@ -409,7 +414,7 @@ function migrateModelConnections(db: Database.Database): void {
 
   // Anthropic
   const anthropic = config.anthropic as Record<string, unknown> | undefined;
-  if (anthropic?.api_key) {
+  if (typeof anthropic?.api_key === 'string' && anthropic.api_key) {
     const id = 'mc_' + crypto.randomBytes(4).toString('hex');
     insertStmt.run(id, 'Anthropic', 'anthropic', JSON.stringify({ api_key: anthropic.api_key }), 'unconfigured', nowStr);
     connectionIdMap.anthropic = id;
@@ -418,16 +423,17 @@ function migrateModelConnections(db: Database.Database): void {
 
   // Vertex AI
   const vertex = config.vertex as Record<string, unknown> | undefined;
-  if (vertex?.project_id) {
+  if (typeof vertex?.project_id === 'string' && vertex.project_id) {
     const id = 'mc_' + crypto.randomBytes(4).toString('hex');
-    insertStmt.run(id, 'Vertex AI', 'vertex', JSON.stringify({ project_id: vertex.project_id, region: vertex.region ?? 'us-central1' }), 'unconfigured', nowStr);
+    const region = typeof vertex.region === 'string' ? vertex.region : 'us-central1';
+    insertStmt.run(id, 'Vertex AI', 'vertex', JSON.stringify({ project_id: vertex.project_id, region }), 'unconfigured', nowStr);
     connectionIdMap.vertex = id;
     log.info(`迁移 v9: Vertex AI 配置已迁移 → ${id}`);
   }
 
   // Gemini
   const gemini = config.gemini as Record<string, unknown> | undefined;
-  if (gemini?.api_key) {
+  if (typeof gemini?.api_key === 'string' && gemini.api_key) {
     const id = 'mc_' + crypto.randomBytes(4).toString('hex');
     insertStmt.run(id, 'Gemini API', 'gemini', JSON.stringify({ api_key: gemini.api_key }), 'unconfigured', nowStr);
     connectionIdMap.gemini = id;
@@ -436,7 +442,7 @@ function migrateModelConnections(db: Database.Database): void {
 
   // Ollama
   const ollama = config.ollama as Record<string, unknown> | undefined;
-  if (ollama?.url && ollama.url !== 'http://localhost:11434') {
+  if (typeof ollama?.url === 'string' && ollama.url && ollama.url !== 'http://localhost:11434') {
     // 只迁移非默认配置的 Ollama
     const id = 'mc_' + crypto.randomBytes(4).toString('hex');
     insertStmt.run(id, 'Ollama', 'ollama', JSON.stringify({ url: ollama.url }), 'unconfigured', nowStr);

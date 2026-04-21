@@ -597,6 +597,7 @@ function AddNoteSourceWizard({
   const [initError, setInitError] = useState<string | null>(null)
   const [aborting, setAborting] = useState(false)
   const pollRef = useRef<NodeJS.Timeout | null>(null)
+  const step3CancelledRef = useRef(false)
 
   // Auto-generate name based on tool type
   useEffect(() => {
@@ -614,6 +615,7 @@ function AddNoteSourceWizard({
 
   // Handle close with abort confirmation
   const handleClose = async () => {
+    step3CancelledRef.current = true
     if (initStarted && !initReport && !initError) {
       if (!confirm(t('noteSync.wizard.confirmAbort'))) return
       // Abort + rollback
@@ -693,6 +695,8 @@ function AddNoteSourceWizard({
 
   // Step 2 → Step 3: Create source + load preview
   const goToStep3 = async () => {
+    step3CancelledRef.current = false
+
     // 为 Apple Notes 构建带 accounts 参数的 path
     let finalPath = selectedPath
     if (toolType === 'apple-notes' && permissionResult?.accessible) {
@@ -706,19 +710,21 @@ function AddNoteSourceWizard({
       toolType,
       path: finalPath,
     })
+    if (step3CancelledRef.current) return
     setCreatedSourceId(source.id)
     setStep(2)
 
     // Load preview
     try {
       const res = await (window as any).api.noteSources.initPreview(source.id)
+      if (step3CancelledRef.current) return
       if (res.success) {
         setInitPreview(res.data)
       } else {
         setInitError(res.error)
       }
     } catch (err: any) {
-      setInitError(err.message)
+      if (!step3CancelledRef.current) setInitError(err.message)
     }
   }
 
@@ -764,6 +770,13 @@ function AddNoteSourceWizard({
     if (!createdSourceId) return
     setAborting(true)
     await (window as any).api.noteSources.initAbort(createdSourceId)
+    // 停止轮询并显示已中断状态
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+    setInitError(t('noteSync.wizard.aborted'))
+    setAborting(false)
   }
 
   return (
@@ -1248,8 +1261,6 @@ export function NoteSync() {
       }
     }
     loadStats()
-    // 首次也启动轮询，确保能捕获到进行中的同步
-    timer = setInterval(loadStats, 3000)
 
     return () => {
       cancelled = true

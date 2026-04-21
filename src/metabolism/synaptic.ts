@@ -71,6 +71,14 @@ export function runSynapticScaling(db: Database.Database): {
   let linkDecayed = 0;
   let linkDeleted = 0;
 
+  // 先清理 strength 已经 <= threshold 的边(不会再被下面 SELECT 捞到):
+  // 原 SELECT 用严格 >,strength 恰好等于 threshold 的链接永远不会被扫,
+  // 也就不会被衰减/删除,永远挂在图上。这里显式做一次独立 DELETE 兜底。
+  const purgedBelowThreshold = db.prepare(
+    "DELETE FROM links WHERE status = 'confirmed' AND strength <= ?",
+  ).run(linkDeleteThreshold).changes;
+  linkDeleted += purgedBelowThreshold;
+
   const confirmedLinks = db.prepare(`
     SELECT l.id, l.strength, l.from_id, l.to_id, l.relation
     FROM links l

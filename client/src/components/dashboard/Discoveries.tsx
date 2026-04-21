@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion'
 import { useTranslation } from 'react-i18next'
 import { Sparkles, ThumbsUp, ThumbsDown } from 'lucide-react'
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useIPC } from '../../hooks/useIPC'
 import { useDataRevision } from '../../contexts/DataChangeContext'
 import { useFormatters } from '../../hooks/useFormatters'
@@ -16,11 +16,17 @@ const fadeUp = {
 function FeedbackButtons({ event }: { event: TimelineEvent }) {
   const { t } = useTranslation('dashboard')
   const [submitted, setSubmitted] = useState<number | null>(null)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
 
   const handleFeedback = async (signal: number) => {
     try {
       await window.api.write.submitFeedback(event.subtype, signal)
-      setSubmitted(signal)
+      if (mountedRef.current) setSubmitted(signal)
     } catch {
       // silently fail
     }
