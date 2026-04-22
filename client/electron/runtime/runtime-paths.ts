@@ -59,6 +59,14 @@ export function getHookScriptPath(): string {
   return path.join(getBinDir(), 'hook-session-start.cjs')
 }
 
+export function getPreCompactHookScriptPath(): string {
+  return path.join(getBinDir(), 'hook-pre-compact.cjs')
+}
+
+export function getPostCompactHookScriptPath(): string {
+  return path.join(getBinDir(), 'hook-post-compact.cjs')
+}
+
 export function getMcpServerScriptPath(): string {
   return path.join(getBinDir(), 'mcp-server.cjs')
 }

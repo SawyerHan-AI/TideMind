@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { safeReadTextFileSync } from '../../utils/safe-fs.js';
 import type Database from 'better-sqlite3';
 import { getConfig, reloadConfig, isLlmConfigured } from '../../config.js';
 import { createLogger } from '../../utils/logger.js';
@@ -274,8 +275,9 @@ export async function runInitialization(db: Database.Database, sourceId?: string
     const contentCache = new Map<string, string>();
     const readCached = (fp: string): string | null => {
       if (!contentCache.has(fp)) {
-        try { contentCache.set(fp, fs.readFileSync(fp, 'utf-8')); }
-        catch { return null; }
+        const r = safeReadTextFileSync(fp);
+        if (!r.ok) return null;
+        contentCache.set(fp, r.content);
       }
       return contentCache.get(fp) ?? null;
     };
@@ -653,9 +655,11 @@ async function processFileForInit(
 
 function updateSyncState(db: Database.Database, file: ClassifiedFile, nodeIds: string[] = [], sourceId?: string): void {
   const fileStat = getFileStat(file.filePath);
+  const contentHash = computeFileHash(file.filePath);
+  if (contentHash === null) return; // dataless / missing — 不写入空 hash
   setFileState(db, {
     file_path: file.relPath,
-    content_hash: computeFileHash(file.filePath),
+    content_hash: contentHash,
     mtime: fileStat?.mtime ?? 0,
     size: fileStat?.size ?? 0,
     last_synced: now(),
@@ -685,11 +689,9 @@ async function createExplicitLinks(
     // 优先从缓存读取，否则读文件
     let content = fileContentCache.get(file.filePath);
     if (!content) {
-      try {
-        content = fs.readFileSync(file.filePath, 'utf-8');
-      } catch {
-        continue;
-      }
+      const r = safeReadTextFileSync(file.filePath);
+      if (!r.ok) continue;
+      content = r.content;
     }
 
     const refs = [...content.matchAll(/\[\[([^\]]+)\]\]/g)].map(m => m[1]);

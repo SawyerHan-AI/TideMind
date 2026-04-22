@@ -330,6 +330,8 @@ export interface AppConfig {
     light_model: string;
     standard_model: string;
     heavy_model: string;
+    /** 是否对 Claude 路径开启 prompt caching(默认 true) */
+    prompt_cache_enabled?: boolean;
   };
   embedding: {
     provider: 'vertex' | 'gemini' | 'ollama';
@@ -351,6 +353,15 @@ export interface AppConfig {
     annotate_interval_minutes: number;
     daily_check_hours: number;
     weekly_check_days: number;
+  };
+  /**
+   * digest.interactive_mode：
+   *   - "silent"（默认）：digest 遇到模糊决策（比如 correction 但 target_node 不存在）时，
+   *     按启发式自动处理（保持既有硬拒/兜底行为），不打扰用户
+   *   - "ask"：在客户端支持 MCP elicitation 的前提下，弹对话框让用户选归类/纠正目标
+   */
+  digest?: {
+    interactive_mode: 'silent' | 'ask';
   };
   cloud?: {
     enabled: boolean;

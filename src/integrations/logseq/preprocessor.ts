@@ -5,10 +5,10 @@
 // 核心设计：纯函数（除 block reference 解析需要外部索引）。
 // ============================================================
 
-import fs from 'node:fs';
 import path from 'node:path';
 import type { PreprocessedPage, PageMetadata, BlockRefAssociation } from './types.js';
 import { SYSTEM_PROPERTIES, EXCLUDED_DIRS } from './types.js';
+import { safeReadTextFileSync, walkFilesFiltered } from '../../utils/safe-fs.js';
 
 // --- Block UUID 索引 ---
 //
@@ -30,6 +30,9 @@ function getBlockIndex(graphRoot: string): Map<string, string> {
 /**
  * 构建 block UUID 索引
  * 扫描所有 .md 文件，提取带 `id:: <uuid>` 的 block 内容
+ *
+ * 注意：walkMdFiles 内部已过滤 iCloud dataless 文件，indexFileBlocks 里的读操作
+ * 不会阻塞主进程 event loop。
  */
 export function buildBlockIndex(graphRoot: string): void {
   const idx = getBlockIndex(graphRoot);
@@ -52,12 +55,9 @@ export function updateBlockIndexForFile(filePath: string, graphRoot: string): vo
 }
 
 function indexFileBlocks(filePath: string, blockIndex: Map<string, string>): void {
-  let content: string;
-  try {
-    content = fs.readFileSync(filePath, 'utf-8');
-  } catch {
-    return;
-  }
+  const res = safeReadTextFileSync(filePath);
+  if (!res.ok) return;
+  const content = res.content;
 
   const lines = content.split('\n');
   for (let i = 0; i < lines.length; i++) {
@@ -111,35 +111,24 @@ export function getBlockIndexSize(graphRoot: string): number {
 // --- 目录/文件过滤 ---
 
 /**
- * 遍历 graph 目录下的所有 .md 文件（排除系统目录）
+ * 遍历 graph 目录下的所有 .md 文件（排除系统目录）。
+ *
+ * 内部通过 walkFilesFiltered 同时剔除：
+ *   - iCloud stub 文件（`.xxx.md.icloud`）
+ *   - iCloud dataless 文件（size>0, blocks=0）——不跳过会导致 readFileSync
+ *     同步阻塞触发下载，锁死主进程
+ *
+ * onDatalessSkip：可选回调，每命中一个 dataless 文件调一次，调用方自行聚合。
  */
-export function walkMdFiles(graphRoot: string): string[] {
-  const results: string[] = [];
-
-  function walk(dir: string, relDir: string): void {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      if (entry.name.startsWith('.') && entry.isDirectory()) continue;
-
-      const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
-
-      if (entry.isDirectory()) {
-        if (isExcludedDir(relPath)) continue;
-        walk(path.join(dir, entry.name), relPath);
-      } else if (entry.name.endsWith('.md')) {
-        results.push(path.join(dir, entry.name));
-      }
-    }
-  }
-
-  walk(graphRoot, '');
-  return results;
+export function walkMdFiles(
+  graphRoot: string,
+  onDatalessSkip?: (filePath: string) => void,
+): string[] {
+  return walkFilesFiltered(graphRoot, {
+    extensions: ['.md'],
+    excludeDir: isExcludedDir,
+    onDatalessSkip,
+  });
 }
 
 /**
@@ -190,16 +179,11 @@ export function preprocessFile(
   filePath: string,
   graphRoot: string,
 ): PreprocessedPage | null {
-  let rawContent: string;
-  try {
-    rawContent = fs.readFileSync(filePath, 'utf-8');
-  } catch {
-    return null;
-  }
-
+  const res = safeReadTextFileSync(filePath);
+  if (!res.ok) return null;
   // 统一换行为 LF：LOGBOOK/properties 等正则用 `$` 锚点，CRLF 会在值里留下 \r
   // 与 Obsidian preprocessor 保持一致
-  rawContent = rawContent.replace(/\r\n/g, '\n');
+  let rawContent = res.content.replace(/\r\n/g, '\n');
 
   if (rawContent.trim().length < 10) return null;
 

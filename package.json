@@ -1,6 +1,6 @@
 {
   "name": "tidemind",
-  "version": "0.2.41",
+  "version": "0.2.42",
   "description": "Tide Mind — 基于活图的认知系统，通过 MCP 协议为 AI 工具提供记忆服务",
   "type": "module",
   "bin": {
@@ -20,9 +20,9 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.80.0",
-    "@anthropic-ai/vertex-sdk": "^0.14.4",
-    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@anthropic-ai/sdk": "^0.90.0",
+    "@anthropic-ai/vertex-sdk": "^0.16.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@notionhq/client": "^2.2.14",
     "@types/js-yaml": "^4.0.9",
     "better-sqlite3": "^11.8.0",

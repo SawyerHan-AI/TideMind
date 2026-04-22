@@ -15,13 +15,12 @@ const selectClass =
 // ---- 推荐模型列表（人工维护） ----
 
 const CLAUDE_MODELS = [
+  { id: 'claude-opus-4-7', label: 'Claude Opus 4.7' },
   { id: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
   { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
   { id: 'claude-opus-4-5', label: 'Claude Opus 4.5' },
   { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
   { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-  { id: 'claude-sonnet-4-0', label: 'Claude Sonnet 4' },
-  { id: 'claude-opus-4-0', label: 'Claude Opus 4' },
 ]
 
 const GEMINI_MODELS = [
@@ -170,7 +169,7 @@ export function ModelSelection() {
       const defaultProv = c.llm?.provider ?? 'anthropic'
       setLightValue(resolveSlot(c.llm?.light_connection, c.llm?.light_provider ?? defaultProv, defaultProv, c.llm?.light_model, 'claude-haiku-4-5'))
       setStandardValue(resolveSlot(c.llm?.standard_connection, c.llm?.standard_provider ?? defaultProv, defaultProv, c.llm?.standard_model, 'claude-sonnet-4-6'))
-      setHeavyValue(resolveSlot(c.llm?.heavy_connection, c.llm?.heavy_provider ?? defaultProv, defaultProv, c.llm?.heavy_model, 'claude-opus-4-6'))
+      setHeavyValue(resolveSlot(c.llm?.heavy_connection, c.llm?.heavy_provider ?? defaultProv, defaultProv, c.llm?.heavy_model, 'claude-opus-4-7'))
 
       const embProv = c.embedding?.provider ?? 'vertex'
       setEmbValue(resolveSlot(c.embedding?.connection, embProv, embProv, c.embedding?.model, 'gemini-embedding-001'))

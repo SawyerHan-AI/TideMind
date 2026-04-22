@@ -18,6 +18,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { createLogger } from '../../utils/logger.js';
+import { safeReadTextFileSync } from '../../utils/safe-fs.js';
 import { preprocessFile } from './preprocessor.js';
 import { segmentContent } from './segmenter.js';
 import { SqliteRepository } from '../../db/sqlite-repository.js';
@@ -250,10 +251,7 @@ export async function importVersionHistory(
 // --- 工具 ---
 
 function fileHash(filePath: string): string {
-  try {
-    const content = fs.readFileSync(filePath, 'utf-8');
-    return crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
-  } catch {
-    return '';
-  }
+  const res = safeReadTextFileSync(filePath);
+  if (!res.ok) return '';
+  return crypto.createHash('sha256').update(res.content).digest('hex').slice(0, 16);
 }

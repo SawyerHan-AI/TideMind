@@ -251,14 +251,14 @@
       "processedFiles": "Обработано {{current}} / {{total}} файлов",
       "phase": {
         "scan": "Сканирование и классификация",
-      "preprocess": "Предобработка",
-      "digest": "Загрузка",
-      "explicitLinks": "Явные связи",
-      "annotate": "Аннотация узлов",
-      "landing": "Landing-связи",
-      "linkEval": "Оценка связей",
-      "keystone": "Метка Keystone",
-      "emergence": "Эмерджентность"
+        "preprocess": "Предобработка",
+        "digest": "Загрузка",
+        "explicitLinks": "Явные связи",
+        "annotate": "Аннотация узлов",
+        "landing": "Landing-связи",
+        "linkEval": "Оценка связей",
+        "keystone": "Метка Keystone",
+        "emergence": "Эмерджентность"
       }
     },
     "table": {
@@ -900,7 +900,11 @@
         "agentsDownloaded": "AGENTS.md guide (generated to Downloads)",
         "step1": "1. Append the AGENTS.md content above to project root or ~/.codex/AGENTS.md",
         "step2": "2. Restart Codex session to apply config",
-        "mcpNote": "MCP config and SessionStart Hook written to ~/.codex/ automatically."
+        "mcpNote": "MCP config and SessionStart Hook written to ~/.codex/ automatically.",
+        "skillInjected": "Руководство Skill внедрено в ~/.codex/skills/",
+        "autoReadyTitle": "Полностью настроено — ручные шаги не требуются",
+        "autoReadyNote": "Codex автоматически загрузит контекст и руководство Skill при следующем запуске сессии.",
+        "upgradeHint": "Обнаружен Codex {{version}} — обновитесь до 0.121+ для бесшовной интеграции (без ручного копирования AGENTS.md)."
       },
       "windsurf": {
         "mcpConfig": "Windsurf MCP config (mcp_config.json)",

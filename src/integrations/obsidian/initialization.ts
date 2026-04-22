@@ -6,6 +6,7 @@
 // ============================================================
 
 import fs from 'node:fs';
+import { safeReadTextFileSync } from '../../utils/safe-fs.js';
 import os from 'node:os';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
@@ -137,8 +138,8 @@ export function previewInit(db: Database.Database, sourceId?: string, sourcePath
   const allFiles = walkMdFiles(vaultRoot, excludedDirs);
 
   const readContent = (fp: string): string | null => {
-    try { return fs.readFileSync(fp, 'utf-8'); }
-    catch { return null; }
+    const r = safeReadTextFileSync(fp);
+    return r.ok ? r.content : null;
   };
 
   const classified = classifyFiles(allFiles, vaultRoot, vaultConfig, readContent);
@@ -238,8 +239,9 @@ export async function runInitialization(db: Database.Database, sourceId?: string
     const contentCache = new Map<string, string>();
     const readCached = (fp: string): string | null => {
       if (!contentCache.has(fp)) {
-        try { contentCache.set(fp, fs.readFileSync(fp, 'utf-8')); }
-        catch { return null; }
+        const r = safeReadTextFileSync(fp);
+        if (!r.ok) return null;
+        contentCache.set(fp, r.content);
       }
       return contentCache.get(fp) ?? null;
     };
@@ -607,8 +609,9 @@ function updateSyncState(
     size = stat.size;
   } catch {}
   // 优先使用调用方已持有的 content hash（来自预处理 snapshot），避免 TOCTOU：
-  // 若不提供则退回到重新读文件计算。
+  // 若不提供则退回到重新读文件计算；computeFileHash 在 dataless/missing 时返回 null。
   const hash = contentHash ?? computeFileHash(file.absPath);
+  if (hash === null) return; // dataless / missing — 不写入空 hash
   setFileState(db, {
     file_path: file.relPath,
     content_hash: hash,
@@ -640,8 +643,9 @@ async function createExplicitLinks(
 
     let content = fileContentCache.get(file.absPath);
     if (!content) {
-      try { content = fs.readFileSync(file.absPath, 'utf-8'); }
-      catch { continue; }
+      const r = safeReadTextFileSync(file.absPath);
+      if (!r.ok) continue;
+      content = r.content;
     }
 
     // 提取 [[refs]]（排除 ![[...]] 嵌入引用 —— 那些通常是图片/PDF/音频附件，不是笔记间的引用）

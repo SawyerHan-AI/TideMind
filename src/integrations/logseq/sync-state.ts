@@ -6,9 +6,9 @@
 // ============================================================
 
 import crypto from 'node:crypto';
-import fs from 'node:fs';
 import type Database from 'better-sqlite3';
 import type { FileSyncState } from './types.js';
+import { safeReadTextFileSync, safeStatSync, isDataless } from '../../utils/safe-fs.js';
 
 /**
  * 确保同步表存在
@@ -223,14 +223,13 @@ export function isFileChanged(
   filePath: string,
   syncState: FileSyncState | null,
 ): boolean {
-  if (!syncState) return true; // 新文件
+  const stat = safeStatSync(filePath);
+  if (!stat) return false; // 文件不存在，不需要处理（由 removeStaleFiles 清理）
 
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(filePath);
-  } catch {
-    return false; // 文件不存在，不需要处理（由 removeStaleFiles 清理）
-  }
+  // iCloud dataless：跳过处理，既不触发下载也不误报"未变更"覆盖同步状态
+  if (isDataless(stat)) return false;
+
+  if (!syncState) return true; // 新文件
 
   // Step 1: mtime 比较
   const mtime = Math.floor(stat.mtimeMs);
@@ -240,6 +239,7 @@ export function isFileChanged(
 
   // Step 2: hash 比较（处理 mtime 漂移但内容未变的情况）
   const hash = computeFileHash(filePath);
+  if (hash === null) return false; // dataless 或读失败，不视作变更
   return hash !== syncState.content_hash;
 }
 
@@ -251,21 +251,23 @@ export function computeSegmentHash(content: string): string {
 }
 
 /**
- * 计算文件内容 hash
+ * 计算文件内容 hash。
+ *
+ * iCloud dataless / stub / missing 时返回 null，调用方应据此跳过本轮同步状态写入，
+ * 不要用空字符串或哨兵值充当 hash（会被当成"和上次不同"反复触发 digest）。
  */
-export function computeFileHash(filePath: string): string {
-  const content = fs.readFileSync(filePath, 'utf-8');
-  return crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
+export function computeFileHash(filePath: string): string | null {
+  const res = safeReadTextFileSync(filePath);
+  if (!res.ok) return null;
+  return crypto.createHash('sha256').update(res.content).digest('hex').slice(0, 16);
 }
 
 /**
  * 获取文件 stat 信息
  */
 export function getFileStat(filePath: string): { mtime: number; size: number } | null {
-  try {
-    const stat = fs.statSync(filePath);
-    return { mtime: Math.floor(stat.mtimeMs), size: stat.size };
-  } catch {
-    return null;
-  }
+  const stat = safeStatSync(filePath);
+  if (!stat) return null;
+  if (isDataless(stat)) return null; // dataless：当作没有可用 stat（调用方应跳过写 state）
+  return { mtime: Math.floor(stat.mtimeMs), size: stat.size };
 }

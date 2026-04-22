@@ -8,10 +8,10 @@
 // ============================================================
 
 import crypto from 'node:crypto';
-import fs from 'node:fs';
 import type Database from 'better-sqlite3';
 import type { FileSyncState } from './types.js';
 import { createLogger } from '../../utils/logger.js';
+import { safeReadTextFileSync, safeStatSync, isDataless } from '../../utils/safe-fs.js';
 
 const log = createLogger('obsidian:sync');
 
@@ -232,14 +232,11 @@ export function isFileChanged(
   filePath: string,
   syncState: FileSyncState | null,
 ): boolean {
-  if (!syncState) return true; // 新文件
+  const stat = safeStatSync(filePath);
+  if (!stat) return false; // 文件不存在，由 removeStaleFiles 清理
+  if (isDataless(stat)) return false; // iCloud 驱逐：不触发下载，也不覆盖 state
 
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(filePath);
-  } catch {
-    return false; // 文件不存在，由 removeStaleFiles 清理
-  }
+  if (!syncState) return true; // 新文件
 
   // Step 1: mtime + size 快速比较
   const mtime = Math.floor(stat.mtimeMs);
@@ -249,6 +246,7 @@ export function isFileChanged(
 
   // Step 2: hash 比较（处理 mtime 漂移但内容未变的情况）
   const hash = computeFileHash(filePath);
+  if (hash === null) return false;
   return hash !== syncState.content_hash;
 }
 
@@ -259,10 +257,13 @@ export function isFileChanged(
  * 否则 CRLF 文件会出现：入库时用预处理 snapshot 的 hash（已归一化），
  * 下次 isFileChanged 又用此函数重新读 raw bytes 算 hash（未归一化），
  * 两个 hash 永不相等 → 每次都误判为"变更"。
+ *
+ * iCloud dataless / stub / missing 返回 null，调用方应据此跳过 state 写入。
  */
-export function computeFileHash(filePath: string): string {
-  const content = fs.readFileSync(filePath, 'utf-8');
-  return computeContentHash(content);
+export function computeFileHash(filePath: string): string | null {
+  const res = safeReadTextFileSync(filePath);
+  if (!res.ok) return null;
+  return computeContentHash(res.content);
 }
 
 /**

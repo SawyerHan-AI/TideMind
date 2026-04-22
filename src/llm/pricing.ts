@@ -20,6 +20,7 @@ interface ModelPricing {
  */
 const PRICING_TABLE: ModelPricing[] = [
   // ── Claude 4.x ──
+  { pattern: 'claude-opus-4-7',     input: 5.00,  output: 25.00, thinking: 25.00 },
   { pattern: 'claude-opus-4-6',     input: 5.00,  output: 25.00, thinking: 25.00 },
   { pattern: 'claude-opus-4-5',     input: 5.00,  output: 25.00, thinking: 25.00 },
   { pattern: 'claude-opus-4-1',     input: 15.00, output: 75.00, thinking: 75.00 },

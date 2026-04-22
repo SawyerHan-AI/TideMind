@@ -220,7 +220,8 @@ server.tool(
         async: params.async,
         agent_id: agentId ?? undefined,
       };
-      const result = await digest(repo, input);
+      // 传入 server 让 digest 在归类模糊时可通过 MCP elicitation 向用户追问
+      const result = await digest(repo, input, { server });
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };

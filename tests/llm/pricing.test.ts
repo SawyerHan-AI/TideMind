@@ -15,6 +15,18 @@ import { estimateCost } from '../../src/llm/pricing.js';
 describe('estimateCost', () => {
   // ===== 基础定价匹配 =====
 
+  it('Claude Opus 4.7 定价正确', () => {
+    // input=5$/M, output=25$/M, thinking=25$/M（与 4.6 同价）
+    const cost = estimateCost('claude-opus-4-7', 1_000_000, 1_000_000, 0);
+    expect(cost).toBeCloseTo(30.0); // 5 + 25
+  });
+
+  it('Claude Opus 4.7 不被 Opus 4.6 抢先匹配', () => {
+    // 验证 PRICING_TABLE 顺序：4-7 在 4-6 之前
+    const cost = estimateCost('claude-opus-4-7-20260301', 1_000_000, 0, 1_000_000);
+    expect(cost).toBeCloseTo(30.0); // input 5 + thinking 25
+  });
+
   it('Claude Opus 4.6 定价正确', () => {
     // input=5$/M, output=25$/M, thinking=25$/M
     const cost = estimateCost('claude-opus-4-6', 1_000_000, 1_000_000, 0);

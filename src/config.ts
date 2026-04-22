@@ -62,7 +62,8 @@ const DEFAULT_CONFIG: AppConfig = {
     provider: 'anthropic' as const,
     light_model: 'claude-haiku-4-5',
     standard_model: 'claude-sonnet-4-6',
-    heavy_model: 'claude-opus-4-6',
+    heavy_model: 'claude-opus-4-7',
+    prompt_cache_enabled: true,
   },
   embedding: {
     provider: 'vertex' as const,
@@ -89,6 +90,11 @@ const DEFAULT_CONFIG: AppConfig = {
     annotate_interval_minutes: 3,
     daily_check_hours: 24,
     weekly_check_days: 7,
+  },
+  // 外脑归类模糊时的交互模式。默认 silent（保持既有启发式自动处理），
+  // 用户可改为 ask 让 brain_digest 在决策模糊时通过 MCP elicitation 向客户端弹框追问。
+  digest: {
+    interactive_mode: 'silent' as const,
   },
   // cloud.server_url: 客户端连接云服务器的地址。
   // 对应服务端 pro/cloud-server/src/config.ts 中的 baseUrl（从 BASE_URL 环境变量加载）。

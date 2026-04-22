@@ -27,6 +27,7 @@ import {
 } from './queue.js';
 import { clearTagNodeCache } from '../shared/property-promote.js';
 import { clearDanglingTagCache } from './initialization.js';
+import { DatalessSkipCounter } from '../../utils/safe-fs.js';
 
 // --- 多实例状态 ---
 // Linux 的 fs.watch 不支持 recursive:true，会 fallback 到监听多个子目录
@@ -147,8 +148,16 @@ async function runSyncInner(
   clearTagNodeCache();
 
   // 扫描所有 .md / .canvas 文件
-  const allFiles = walkMdFiles(vaultRoot, excludedDirs);
+  // iCloud 驱逐文件会被 walkMdFiles 内部剔除并回调，这里统计后输出一条汇总 warn
+  const datalessSkip = new DatalessSkipCounter();
+  const allFiles = walkMdFiles(vaultRoot, excludedDirs, (fp) => datalessSkip.record(fp));
   log.info(`扫描到 ${allFiles.length} 个文件 (source=${sourceId ?? 'default'})`);
+  if (datalessSkip.total > 0) {
+    log.warn(
+      `Obsidian 源 ${sourceId ?? 'default'} 有 ${datalessSkip.total} 个文件处于 iCloud 离线状态已跳过 ` +
+      `（示例: ${datalessSkip.sample}）。在 Finder 里下载或关闭"优化 Mac 存储"可恢复。`,
+    );
+  }
 
   if (allFiles.length === 0) {
     log.warn('未扫描到任何文件，请检查路径是否正确');

@@ -211,8 +211,8 @@ light_provider = "gemini"           # Override for light tier
 standard_provider = "anthropic"     # Override for standard tier
 heavy_provider = "anthropic"        # Override for heavy tier
 light_model = "gemini-2.0-flash"
-standard_model = "claude-sonnet-4-20250514"
-heavy_model = "claude-sonnet-4-20250514"
+standard_model = "claude-sonnet-4-6"
+heavy_model = "claude-opus-4-7"
 ```
 
 **Provider options:**

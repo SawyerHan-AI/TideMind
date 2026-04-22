@@ -395,7 +395,13 @@ export async function callLLM(options: {
   system?: string;
   model?: 'light' | 'standard' | 'heavy';
   maxTokens?: number;
-  thinking?: { budget: number };
+  /**
+   * thinking 配置。两种形态:
+   * - { mode: 'adaptive' }                  让模型自己决定推理深度(Opus 4.6+ 推荐)
+   * - { mode: 'manual', budget }            手动指定 thinking token 预算
+   * - { budget }                            兼容旧形态,等同于 manual
+   */
+  thinking?: { mode?: 'manual' | 'adaptive'; budget?: number };
   operationName?: string;
 }): Promise<string> {
   const config = getConfig();
@@ -495,15 +501,39 @@ export async function callLLM(options: {
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
-        const thinkingBudget = options.thinking?.budget;
-        const useThinking = thinkingBudget && thinkingBudget > 0;
+        // thinking 配置:adaptive 不传 budget,manual 传 budget,否则关闭
+        const thinkingOpt = options.thinking;
+        const isAdaptive = thinkingOpt?.mode === 'adaptive';
+        const thinkingBudget = thinkingOpt?.budget;
+        const useManualThinking = !isAdaptive && thinkingBudget !== undefined && thinkingBudget > 0;
+        if (isAdaptive && thinkingBudget !== undefined && thinkingBudget > 0) {
+          log.debug(`adaptive thinking 模式忽略传入的 budget=${thinkingBudget}（由模型自决推理深度）`);
+        }
+        const ADAPTIVE_THINKING_RESERVE = 8192; // adaptive 模式给 max_tokens 加的兜底
+        const adjustedMaxTokens = useManualThinking
+          ? maxTokens + (thinkingBudget ?? 0)
+          : isAdaptive
+          ? maxTokens + ADAPTIVE_THINKING_RESERVE
+          : maxTokens;
+
+        // prompt caching:对 system 末块加 cache_control,命中可省 ~90% 输入成本
+        const cacheEnabled = config.llm.prompt_cache_enabled !== false;
+        const systemField: Anthropic.MessageCreateParamsNonStreaming['system'] = cacheEnabled && system
+          ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
+          : system;
+
+        const thinkingField = useManualThinking
+          ? { thinking: { type: 'enabled' as const, budget_tokens: thinkingBudget! } }
+          : isAdaptive
+          ? { thinking: { type: 'adaptive' as const } }
+          : {};
 
         const createParams: Anthropic.MessageCreateParamsNonStreaming = {
           model: modelId,
-          max_tokens: useThinking ? maxTokens + (thinkingBudget ?? 0) : maxTokens,
-          system,
+          max_tokens: adjustedMaxTokens,
+          system: systemField,
           messages: [{ role: 'user', content: options.prompt }],
-          ...(useThinking ? { thinking: { type: 'enabled' as const, budget_tokens: thinkingBudget! } } : {}),
+          ...thinkingField,
         };
 
         const response = await client.messages.create(
@@ -515,7 +545,10 @@ export async function callLLM(options: {
         logUsage(modelId, options.operationName,
           response.usage.input_tokens, response.usage.output_tokens, 0);
 
-        log.debug(`完成 op=${options.operationName ?? 'unknown'} tokens=${response.usage.input_tokens}+${response.usage.output_tokens} 耗时=${Date.now() - callStart}ms`);
+        // cache_creation/read 仅做 debug 观测,不入库(用户日志可见命中情况即可)
+        const cacheCreate = (response.usage as { cache_creation_input_tokens?: number }).cache_creation_input_tokens ?? 0;
+        const cacheRead = (response.usage as { cache_read_input_tokens?: number }).cache_read_input_tokens ?? 0;
+        log.debug(`完成 op=${options.operationName ?? 'unknown'} tokens=${response.usage.input_tokens}+${response.usage.output_tokens} cache_create=${cacheCreate} cache_read=${cacheRead} 耗时=${Date.now() - callStart}ms`);
         const textBlock = response.content.find(b => b.type === 'text');
         if (!textBlock) {
           log.warn(`LLM 响应不含 text block op=${options.operationName ?? 'unknown'} blocks=${response.content.map(b => b.type).join(',')}`);

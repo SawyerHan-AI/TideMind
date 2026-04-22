@@ -21,6 +21,23 @@ import type { PrepareOutput } from './types.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { createLogger } from './utils/logger.js';
 
+/**
+ * 同步读取 stdin JSON payload（Codex 0.120+ 会传 `session_start_reason` 等字段）。
+ * - stdin 是 tty 或无输入时返回 null，避免手动运行脚本时阻塞
+ * - JSON 解析失败也返回 null
+ * - 返回值用于区分 startup / resume / clear，不影响其他工具（Claude Code 等无此字段）
+ */
+function readStdinPayload(): Record<string, unknown> | null {
+  try {
+    if (process.stdin.isTTY) return null;
+    const data = readFileSync(0, 'utf-8');
+    if (!data.trim()) return null;
+    return JSON.parse(data) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 const migrationLog = createLogger('migrate');
 
 // --- 解析命令行参数 ---
@@ -124,6 +141,12 @@ async function main(): Promise<void> {
 
   const { agentId, skillPath, tool } = parseArgs();
 
+  // Codex 0.120+ 的 session_start_reason：clear / startup / resume
+  const stdinPayload = readStdinPayload();
+  const sessionReason = typeof stdinPayload?.session_start_reason === 'string'
+    ? (stdinPayload.session_start_reason as string)
+    : null;
+
   // 读取 SKILL.md（即使后续步骤失败，至少有使用指南）
   let skillContent = '';
   try {
@@ -139,27 +162,32 @@ async function main(): Promise<void> {
     skillContent = '（Skill 文件读取失败，请通过 MCP 工具 brain_prepare/recall/digest 与外脑交互）';
   }
 
-  // 调用 prepare
   let prepareText = '';
-  try {
-    loadConfig();
-    ensureDataDirs();
-    const db = getDb();
-    const repo = new SqliteRepository(db);
+  if (sessionReason === 'clear') {
+    // /clear 发生时 Codex 已保留 session 上下文，只是清屏；重跑 prepare 是重复消耗
+    prepareText = '（/clear 已执行，用户上下文已在本 session 内保留，无需重新加载）';
+  } else {
+    // 正常启动 / resume：拉取 prepare 结果
+    try {
+      loadConfig();
+      ensureDataDirs();
+      const db = getDb();
+      const repo = new SqliteRepository(db);
 
-    touchAgent(db, agentId);
+      touchAgent(db, agentId);
 
-    const result = await prepare(repo, {
-      tool,
-      agent_id: agentId,
-      detail_level: 'standard',
-    });
+      const result = await prepare(repo, {
+        tool,
+        agent_id: agentId,
+        detail_level: 'standard',
+      });
 
-    prepareText = formatPrepareOutput(result);
-  } catch {
-    prepareText = '（用户上下文加载失败，请手动调用 brain_prepare 工具）';
-  } finally {
-    try { closeDb(); } catch { /* ignore */ }
+      prepareText = formatPrepareOutput(result);
+    } catch {
+      prepareText = '（用户上下文加载失败，请手动调用 brain_prepare 工具）';
+    } finally {
+      try { closeDb(); } catch { /* ignore */ }
+    }
   }
 
   // 拼合输出

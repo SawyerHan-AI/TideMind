@@ -500,8 +500,9 @@ function updateSyncState(
   } catch {}
 
   // 优先使用调用方已持有的 content hash（来自预处理 snapshot），避免 TOCTOU：
-  // 若不提供则退回到重新读文件计算。
+  // 若不提供则退回到重新读文件计算；computeFileHash 在文件 dataless/missing 时返回 null。
   const hash = contentHash ?? computeFileHash(filePath);
+  if (hash === null) return; // dataless / missing — 不写入空 hash
   setFileState(db, {
     file_path: relPath,
     content_hash: hash,
