@@ -211,8 +211,8 @@ light_provider = "gemini"           # light 层级覆盖
 standard_provider = "anthropic"     # standard 层级覆盖
 heavy_provider = "anthropic"        # heavy 层级覆盖
 light_model = "gemini-2.0-flash"
-standard_model = "claude-sonnet-4-20250514"
-heavy_model = "claude-sonnet-4-20250514"
+standard_model = "claude-sonnet-4-6"
+heavy_model = "claude-opus-4-7"
 ```
 
 **提供商选项：**

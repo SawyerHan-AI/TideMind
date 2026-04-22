@@ -3,8 +3,6 @@
 你连接了一个外部记忆系统（Tide Mind）。它是用户的长期记忆，跨越所有对话持续积累。
 
 > **用户上下文已在会话启动时通过 SessionStart Hook 自动加载。** 你不需要手动调用 brain_prepare——用户画像、记忆索引和行为指导已包含在本次会话的上下文中。你可以在对话过程中使用 brain_recall 和 brain_digest 工具。
->
-> 如果上下文未自动加载（例如 Hooks 未启用），请在对话开始时手动调用 brain_prepare，参数 `tool` 为 `"codex"`。
 
 ## 理解外脑
 

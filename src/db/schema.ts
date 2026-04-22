@@ -551,6 +551,7 @@ const MIGRATIONS: Migration[] = [
       // 回填历史数据的预估费用
       // 动态导入 pricing 会增加复杂度，这里用内联的简化定价表回填
       const pricingRules: Array<{ pattern: string; input: number; output: number; thinking: number }> = [
+        { pattern: 'claude-opus-4-7',   input: 5.00,  output: 25.00, thinking: 25.00 },
         { pattern: 'claude-opus-4-6',   input: 5.00,  output: 25.00, thinking: 25.00 },
         { pattern: 'claude-opus-4-5',   input: 5.00,  output: 25.00, thinking: 25.00 },
         { pattern: 'claude-opus-4-1',   input: 15.00, output: 75.00, thinking: 75.00 },

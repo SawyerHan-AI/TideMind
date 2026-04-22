@@ -293,16 +293,21 @@ async function processOneFile(
 
     // 更新同步状态
     const fileStat = getFileStat(filePath);
-    const fileState: FileSyncState = {
-      file_path: relPath,
-      content_hash: computeFileHash(filePath),
-      mtime: fileStat?.mtime ?? 0,
-      size: fileStat?.size ?? 0,
-      last_synced: now(),
-      node_ids: allNodeIds,
-      segment_hashes: allHashes,
-    };
-    setFileState(db, fileState, sourceId);
+    const contentHash = computeFileHash(filePath);
+    // 文件在 preprocess 与 hash 之间发生变化（例如被 iCloud 驱逐）时跳过 state 写入，
+    // 让下一轮同步根据当时的真实状态决定，而不是留个无效 hash
+    if (contentHash !== null) {
+      const fileState: FileSyncState = {
+        file_path: relPath,
+        content_hash: contentHash,
+        mtime: fileStat?.mtime ?? 0,
+        size: fileStat?.size ?? 0,
+        last_synced: now(),
+        node_ids: allNodeIds,
+        segment_hashes: allHashes,
+      };
+      setFileState(db, fileState, sourceId);
+    }
 
     // 更新 block 索引（按 graphRoot 隔离）
     updateBlockIndexForFile(filePath, graphRoot);
@@ -341,9 +346,11 @@ function markFileAsProcessed(
   sourceId?: string,
 ): void {
   const fileStat = getFileStat(filePath);
+  const contentHash = computeFileHash(filePath);
+  if (contentHash === null) return; // dataless / missing — 不写入空 hash
   const fileState: FileSyncState = {
     file_path: relPath,
-    content_hash: computeFileHash(filePath),
+    content_hash: contentHash,
     mtime: fileStat?.mtime ?? 0,
     size: fileStat?.size ?? 0,
     last_synced: now(),

@@ -449,22 +449,31 @@ export function getStrategyNames(): string[] {
  * - llm_tier: light / standard / heavy（默认 standard）
  * - thinking: true / false（默认 false）
  * - thinking_budget: number（默认 0）
+ * - thinking_mode: 'manual' | 'adaptive'（默认 manual,Opus 4.6+/Sonnet 4.6+ 推荐 adaptive）
+ *   - adaptive: 让模型自己判断推理深度,不传 budget_tokens
+ *   - manual:   按 thinking_budget 显式分配 token
  */
 export function getLLMOptions(strategyName: string): {
   model: 'light' | 'standard' | 'heavy';
-  thinking?: { budget: number };
+  thinking?: { mode: 'manual' | 'adaptive'; budget?: number };
 } {
   const tier = getParam(strategyName, 'llm_tier', 'standard') as string;
   const thinkingEnabled = getParam(strategyName, 'thinking', false);
   const budget = getParam(strategyName, 'thinking_budget', 0) as number;
+  const mode = getParam(strategyName, 'thinking_mode', 'manual') as string;
 
   const validTiers = ['light', 'standard', 'heavy'] as const;
   const model = validTiers.includes(tier as 'light' | 'standard' | 'heavy') ? (tier as 'light' | 'standard' | 'heavy') : 'standard';
 
-  return {
-    model,
-    ...(thinkingEnabled && budget > 0 ? { thinking: { budget } } : {}),
-  };
+  // adaptive 模式优先,不需要 budget
+  if (mode === 'adaptive') {
+    return { model, thinking: { mode: 'adaptive' } };
+  }
+  // manual 模式需要 thinking=true 且 budget>0 才生效(向后兼容现有策略)
+  if (thinkingEnabled && budget > 0) {
+    return { model, thinking: { mode: 'manual', budget } };
+  }
+  return { model };
 }
 
 // --- Skill 和 MCP 描述文件监控 ---

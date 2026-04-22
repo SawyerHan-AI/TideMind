@@ -36,7 +36,7 @@ export async function probeVertex(projectId: string, region: string, credPath: s
   if (!projectId) return { online: false, models: [], error: 'Project ID 未配置' }
 
   const CANDIDATE_MODELS = [
-    'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5',
+    'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5',
     'claude-opus-4-5', 'claude-sonnet-4-5',
   ]
   const FALLBACK_REGIONS = ['us-east5', 'europe-west1', 'us-central1']

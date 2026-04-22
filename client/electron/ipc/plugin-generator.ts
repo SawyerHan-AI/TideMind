@@ -7,6 +7,8 @@ import { promisify } from 'node:util'
 import {
   getShimPath,
   getHookScriptPath,
+  getPreCompactHookScriptPath,
+  getPostCompactHookScriptPath,
   getMcpServerScriptPath,
 } from '../runtime/runtime-paths'
 import {
@@ -89,6 +91,14 @@ function isPluginClientType(s: string): s is PluginClientType {
 }
 
 import { appendTomlMcpSection, removeTomlMcpSection, ensureTomlFeatureFlag } from './toml-utils'
+import {
+  CODEX_V2_MIN_VERSION,
+  codexMcpAdd,
+  codexMcpRemove,
+  detectCodexVersion,
+  meetsMinVersion,
+  wrapSkillWithFrontmatter,
+} from './codex-cli'
 
 interface PluginGenerateParams {
   agentId: string
@@ -115,6 +125,8 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
   const shimPath = getShimPath()
   const mcpServerPath = getMcpServerScriptPath()
   const hookScriptPath = getHookScriptPath()
+  const preCompactScriptPath = getPreCompactHookScriptPath()
+  const postCompactScriptPath = getPostCompactHookScriptPath()
   const skillDir = path.join(dataDir, 'skill')
   const pluginsDir = path.join(dataDir, 'plugins')
   const claudeSettingsPath = path.join(os.homedir(), '.claude', 'settings.json')
@@ -211,60 +223,90 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       }
 
       if (clientType === 'codex') {
-        // ---- Codex: TOML MCP 配置 + SessionStart Hook + AGENTS.md ----
         const codexConfigPath = path.join(os.homedir(), '.codex', 'config.toml')
         const codexHooksPath = path.join(os.homedir(), '.codex', 'hooks.json')
         const serverName = `tidemind-${agentId}`
+        const codexVersion = await detectCodexVersion()
+        const useV2 = meetsMinVersion(codexVersion, CODEX_V2_MIN_VERSION)
 
-        // 1. 追加 MCP section 到 config.toml
+        // hooks.json 写入逻辑（v1/v2 共用）
+        const writeSessionStartHook = (skillFilePath: string): void => {
+          let hooksConfig: any = { hooks: {} }
+          if (fs.existsSync(codexHooksPath)) {
+            try { hooksConfig = JSON.parse(fs.readFileSync(codexHooksPath, 'utf-8')) } catch { /* 解析失败用新的 */ }
+          }
+          if (!hooksConfig.hooks) hooksConfig.hooks = {}
+          if (!hooksConfig.hooks.SessionStart) hooksConfig.hooks.SessionStart = []
+
+          const hookCommand = [
+            JSON.stringify(shimPath),
+            JSON.stringify(hookScriptPath),
+            '--agent-id', JSON.stringify(agentId),
+            '--skill-path', JSON.stringify(skillFilePath),
+            '--tool', 'codex',
+          ].join(' ')
+          // 写入的 command 里是 `--agent-id "eb_xxx"`（JSON.stringify 带引号），
+          // 匹配时也必须带引号，否则每次生成都判定为"不存在"导致重复 push
+          const agentIdToken = `--agent-id ${JSON.stringify(agentId)}`
+          const existing = hooksConfig.hooks.SessionStart.some((group: any) =>
+            group.hooks?.some((h: any) => h.command?.includes(agentIdToken)),
+          )
+          if (!existing) {
+            hooksConfig.hooks.SessionStart.push({
+              matcher: 'startup',
+              hooks: [{
+                type: 'command',
+                command: hookCommand,
+                statusMessage: '加载外脑上下文...',
+                timeoutSec: 15,
+              }],
+            })
+          }
+          const codexDir = path.dirname(codexHooksPath)
+          if (!fs.existsSync(codexDir)) fs.mkdirSync(codexDir, { recursive: true })
+          fs.writeFileSync(codexHooksPath, JSON.stringify(hooksConfig, null, 2))
+        }
+
+        if (useV2) {
+          // ---- v2 主路径：codex mcp add + 原生 Skills ----
+
+          // 1. 用 Codex CLI 写 MCP 配置，转义/幂等交给官方实现
+          await codexMcpAdd({
+            serverName,
+            command: shimPath,
+            args: [mcpServerPath],
+            env: { EB_AGENT_ID: agentId },
+          })
+
+          // 2. 启用 hooks feature flag（Codex 暂无 CLI 替代）
+          ensureTomlFeatureFlag(codexConfigPath, 'codex_hooks')
+
+          // 3. 写 SKILL.md 到 ~/.codex/skills/tidemind-<id>/，Codex 启动自动识别
+          const skillRootDir = path.join(os.homedir(), '.codex', 'skills', serverName)
+          const skillFilePath = path.join(skillRootDir, 'SKILL.md')
+          if (!fs.existsSync(skillRootDir)) fs.mkdirSync(skillRootDir, { recursive: true })
+          const skillBody = wrapSkillWithFrontmatter(skillContent, serverName, config.skillDescription)
+          fs.writeFileSync(skillFilePath, skillBody)
+
+          // 4. 写 SessionStart hook（hook 脚本读取 SKILL.md 文件来注入会话上下文）
+          writeSessionStartHook(skillFilePath)
+
+          return { pluginDir: skillRootDir, pluginName, marketplaceRegistered: false, success: true }
+        }
+
+        // ---- v1 兜底路径：手写 TOML + Downloads/AGENTS.md（Codex <0.121 用） ----
+
         appendTomlMcpSection(codexConfigPath, serverName, {
           command: shimPath,
           args: [mcpServerPath],
           env: { EB_AGENT_ID: agentId },
         })
 
-        // 2. 启用 hooks feature flag
         ensureTomlFeatureFlag(codexConfigPath, 'codex_hooks')
 
-        // 3. 写入 SessionStart hook 到 hooks.json
         const skillFilePath = path.join(skillDir, config.skillSource)
-        let hooksConfig: any = { hooks: {} }
-        if (fs.existsSync(codexHooksPath)) {
-          try { hooksConfig = JSON.parse(fs.readFileSync(codexHooksPath, 'utf-8')) } catch { /* 解析失败用新的 */ }
-        }
-        if (!hooksConfig.hooks) hooksConfig.hooks = {}
-        if (!hooksConfig.hooks.SessionStart) hooksConfig.hooks.SessionStart = []
+        writeSessionStartHook(skillFilePath)
 
-        // hooks.json 的 command 是纯 shell 字符串，必须对带空格的路径做引号转义
-        const hookCommand = [
-          JSON.stringify(shimPath),
-          JSON.stringify(hookScriptPath),
-          '--agent-id', JSON.stringify(agentId),
-          '--skill-path', JSON.stringify(skillFilePath),
-          '--tool', 'codex',
-        ].join(' ')
-        // 写入的 command 里是 `--agent-id "eb_xxx"`（JSON.stringify 带引号），
-        // 匹配时也必须带引号，否则每次生成都判定为"不存在"导致重复 push
-        const agentIdToken = `--agent-id ${JSON.stringify(agentId)}`
-        const existing = hooksConfig.hooks.SessionStart.some((group: any) =>
-          group.hooks?.some((h: any) => h.command?.includes(agentIdToken)),
-        )
-        if (!existing) {
-          hooksConfig.hooks.SessionStart.push({
-            matcher: 'startup',
-            hooks: [{
-              type: 'command',
-              command: hookCommand,
-              statusMessage: '加载外脑上下文...',
-              timeoutSec: 15,
-            }],
-          })
-        }
-        const codexDir = path.dirname(codexHooksPath)
-        if (!fs.existsSync(codexDir)) fs.mkdirSync(codexDir, { recursive: true })
-        fs.writeFileSync(codexHooksPath, JSON.stringify(hooksConfig, null, 2))
-
-        // 4. 生成 AGENTS.md 到 ~/Downloads/
         const skillOutputPath = path.join(os.homedir(), 'Downloads', `tidemind-codex-${agentId}.md`)
         fs.writeFileSync(skillOutputPath, skillContent)
 
@@ -417,9 +459,32 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       )
 
       // SKILL.md（Claude Code 版本不需要 name，Plugin 自带命名）
+      // - description: 用于 Claude 在启动时判断是否把该 skill 纳入候选
+      // - when_to_use: 前置触发场景，提升自动命中率（和 description 共用 1536 字符预算）
+      // - allowed-tools: 预批准 brain_* 工具，避免每次调用弹权限询问
+      //   Claude Code 对 plugin 内的 MCP 工具命名方式有多种实际观测形态：
+      //     - mcp__{server_key}__{tool}                 官方 permissions 文档示例
+      //     - mcp__{plugin_name}__{tool}                plugin 命名空间 scoped
+      //     - mcp__plugin_{plugin_name}_{server_key}__{tool}  早期 plugin 实现
+      //   用 tool 名的通配后缀 `__brain_*` 兜底所有形态，确保任一实际命名都命中
       const frontmatter = [
         '---',
         `description: "${config.skillDescription}"`,
+        'when_to_use: |',
+        '  用户提起"之前"、"上次"、"记得吗"、过去的决定或观点时；',
+        '  需要判断用户偏好、历史态度、长期目标时；',
+        '  用户明确说"记住"、"别忘了"、"以后不要..."时；',
+        '  每次完成实质性请求后、用户做出决策或表达观点时需要沉淀结论。',
+        'allowed-tools:',
+        '  - mcp__tidemind__brain_prepare',
+        '  - mcp__tidemind__brain_recall',
+        '  - mcp__tidemind__brain_digest',
+        `  - mcp__${pluginName}__brain_prepare`,
+        `  - mcp__${pluginName}__brain_recall`,
+        `  - mcp__${pluginName}__brain_digest`,
+        `  - mcp__plugin_${pluginName}_tidemind__brain_prepare`,
+        `  - mcp__plugin_${pluginName}_tidemind__brain_recall`,
+        `  - mcp__plugin_${pluginName}_tidemind__brain_digest`,
         '---',
         '',
       ].join('\n')
@@ -436,6 +501,20 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
         JSON.stringify(hookScriptPath),
         '--agent-id', JSON.stringify(agentId),
         '--skill-path', JSON.stringify(skillFilePath),
+        '--tool', JSON.stringify(config.hookToolParam),
+      ].join(' ')
+      // PreCompact hook：压缩前提示模型检查未 digest 的重要信息
+      const preCompactCommand = [
+        JSON.stringify(shimPath),
+        JSON.stringify(preCompactScriptPath),
+        '--agent-id', JSON.stringify(agentId),
+      ].join(' ')
+      // PostCompact hook：压缩完成后重注一份精简的用户画像（brief 模式），
+      // 防止长对话中早期注入的 [TIDE MIND — SESSION CONTEXT] 被压缩摘要吞掉
+      const postCompactCommand = [
+        JSON.stringify(shimPath),
+        JSON.stringify(postCompactScriptPath),
+        '--agent-id', JSON.stringify(agentId),
         '--tool', JSON.stringify(config.hookToolParam),
       ].join(' ')
       fs.writeFileSync(
@@ -459,8 +538,22 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
                 hooks: [
                   {
                     type: 'command',
-                    command: 'echo "上下文即将被压缩。请检查对话中是否有尚未 brain_digest 的重要信息，如有请立刻 digest。"',
+                    command: preCompactCommand,
+                    // 脚本本身不调 DB，但 spawn shim + Electron-as-node cold start 本身约 1-2s
+                    timeout: 10000,
                     statusMessage: '检查未保存的记忆...',
+                  },
+                ],
+              },
+            ],
+            PostCompact: [
+              {
+                hooks: [
+                  {
+                    type: 'command',
+                    command: postCompactCommand,
+                    timeout: 10000,
+                    statusMessage: '恢复外脑上下文...',
                   },
                 ],
               },
@@ -536,20 +629,30 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
   // ----------------------------------------------------------
   // 检测 claude CLI 是否可用
   // ----------------------------------------------------------
-  ipcMain.handle('agents:check-cli', async (_e, cli: string): Promise<{ available: boolean; path?: string }> => {
+  ipcMain.handle('agents:check-cli', async (_e, cli: string): Promise<{ available: boolean; path?: string; version?: string }> => {
+    const parseVersion = (stdout: string): string | undefined => {
+      const m = stdout.match(/(\d+\.\d+\.\d+)/)
+      return m ? m[1] : undefined
+    }
     try {
       // macOS 上 which 可能找不到 GUI 启动的进程路径，也检查常见位置
       const candidates = [cli, `/opt/homebrew/bin/${cli}`, `/usr/local/bin/${cli}`]
       for (const candidate of candidates) {
         try {
-          await execFileAsync(candidate, ['--version'], { timeout: 5000 })
-          return { available: true, path: candidate }
+          const { stdout } = await execFileAsync(candidate, ['--version'], { timeout: 5000 })
+          return { available: true, path: candidate, version: parseVersion(stdout) }
         } catch { /* 继续尝试 */ }
       }
       // fallback: which
       const { stdout } = await execFileAsync('which', [cli])
       const cliPath = stdout.trim()
-      return { available: !!cliPath, path: cliPath || undefined }
+      if (!cliPath) return { available: false }
+      let version: string | undefined
+      try {
+        const { stdout: vOut } = await execFileAsync(cliPath, ['--version'], { timeout: 5000 })
+        version = parseVersion(vOut)
+      } catch { /* 版本获取失败不阻塞 */ }
+      return { available: true, path: cliPath, version }
     } catch {
       return { available: false }
     }
@@ -714,18 +817,23 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
           ) ?? false
         } catch { /* 忽略 */ }
       }
+      // v2：~/.codex/skills/tidemind-<id>/SKILL.md
+      const skillRootDir = path.join(os.homedir(), '.codex', 'skills', `tidemind-${agentId}`)
+      const skillDirWritten = fs.existsSync(path.join(skillRootDir, 'SKILL.md'))
+      // v1：~/Downloads/tidemind-codex-<id>.md
       const skillOutputPath = path.join(os.homedir(), 'Downloads', `tidemind-codex-${agentId}.md`)
       const skillOutputExists = fs.existsSync(skillOutputPath)
       const tools: string[] = ['brain_prepare', 'brain_recall', 'brain_digest']
       return {
-        exists: codexConfigWritten || skillOutputExists,
-        pluginDir: skillOutputPath,
+        exists: codexConfigWritten || skillOutputExists || skillDirWritten,
+        pluginDir: skillDirWritten ? skillRootDir : skillOutputPath,
         clientType,
         tools,
         skillOutputPath,
         skillOutputExists,
         codexConfigWritten,
         hooksConfigured,
+        skillDirWritten,
       }
     }
 
@@ -901,15 +1009,24 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       } catch { /* 忽略 */ }
     }
 
-    // Codex: 移除 TOML MCP section + hooks + Skill 文件
+    // Codex: 清理 MCP + hooks + Skills 目录 + Downloads（同时处理 v1/v2 两种历史装法）
     if (clientType === 'codex') {
+      const serverName = `tidemind-${agentId}`
+
+      // 1a. 优先用 CLI 卸载（v2 装法；CLI 不存在或旧版本时容错跳过）
+      try {
+        await codexMcpRemove({ serverName })
+      } catch { /* 忽略，下一步 TOML 兜底 */ }
+
+      // 1b. 兜底：从 TOML 手工删除 section（处理 v1 装法 + 上一步失败的情况）
       try {
         const codexConfigPath = path.join(os.homedir(), '.codex', 'config.toml')
-        removeTomlMcpSection(codexConfigPath, `tidemind-${agentId}`)
+        removeTomlMcpSection(codexConfigPath, serverName)
       } catch (err: any) {
         errors.push(`移除 Codex MCP 配置失败: ${err.message}`)
       }
 
+      // 2. 清理 hooks.json 中的 SessionStart hook
       try {
         const codexHooksPath = path.join(os.homedir(), '.codex', 'hooks.json')
         if (fs.existsSync(codexHooksPath)) {
@@ -929,6 +1046,13 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
         errors.push(`移除 Codex hooks 失败: ${err.message}`)
       }
 
+      // 3. 清理 v2 的原生 Skills 目录（不存在时 no-op）
+      try {
+        const skillRootDir = path.join(os.homedir(), '.codex', 'skills', serverName)
+        fs.rmSync(skillRootDir, { recursive: true, force: true })
+      } catch { /* 忽略 */ }
+
+      // 4. 清理 v1 遗留的 Downloads/AGENTS.md
       const codexSkillPath = path.join(os.homedir(), 'Downloads', `tidemind-codex-${agentId}.md`)
       try {
         if (fs.existsSync(codexSkillPath)) fs.unlinkSync(codexSkillPath)

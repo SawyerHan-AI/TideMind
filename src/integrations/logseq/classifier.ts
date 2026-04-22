@@ -4,9 +4,9 @@
 // 对 Logseq 文件做初步分类，决定处理路径。
 // ============================================================
 
-import fs from 'node:fs';
 import path from 'node:path';
 import { createLogger } from '../../utils/logger.js';
+import { safeReadTextFileSync, safeStatSync } from '../../utils/safe-fs.js';
 
 const log = createLogger('logseq-classifier');
 
@@ -64,16 +64,19 @@ export function classifyFiles(
     const relPath = path.relative(graphRoot, filePath).replace(/\\/g, '/');
     const fileName = path.basename(filePath, '.md');
 
-    let content: string;
-    let fileSize: number;
-    try {
-      const stat = fs.statSync(filePath);
-      fileSize = stat.size;
-      content = fs.readFileSync(filePath, 'utf-8');
-    } catch (err) {
-      log.warn(`文件读取失败，跳过: ${filePath} — ${(err as Error).message}`);
+    const stat = safeStatSync(filePath);
+    if (!stat) {
+      log.warn(`文件 stat 失败，跳过: ${filePath}`);
       continue;
     }
+    const fileSize = stat.size;
+    const readRes = safeReadTextFileSync(filePath);
+    if (!readRes.ok) {
+      // dataless / stub / missing / error 都跳过，不触发 iCloud 下载
+      log.warn(`文件读取跳过 (${readRes.reason}): ${filePath}`);
+      continue;
+    }
+    const content = readRes.content;
 
     // 判断是否日记
     // 支持 YYYY-MM-DD / YYYY_MM_DD / YYYYMMDD 三种默认格式。

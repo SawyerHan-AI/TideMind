@@ -28,6 +28,14 @@ const entries = [
     out: 'hook-session-start.cjs',
   },
   {
+    entry: path.join(REPO_ROOT, 'src', 'hook-pre-compact.ts'),
+    out: 'hook-pre-compact.cjs',
+  },
+  {
+    entry: path.join(REPO_ROOT, 'src', 'hook-post-compact.ts'),
+    out: 'hook-post-compact.cjs',
+  },
+  {
     entry: path.join(REPO_ROOT, 'src', 'index.ts'),
     out: 'mcp-server.cjs',
   },

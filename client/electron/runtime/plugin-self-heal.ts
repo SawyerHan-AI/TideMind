@@ -33,7 +33,7 @@ import os from 'node:os'
 import type Database from 'better-sqlite3'
 import { createLogger } from '@server/utils/logger.js'
 import { repairMarketplaceJson, repairClaudeSettings } from '@server/utils/marketplace-repair.js'
-import { getShimPath, getHookScriptPath, getMcpServerScriptPath } from './runtime-paths'
+import { getShimPath, getHookScriptPath, getPreCompactHookScriptPath, getPostCompactHookScriptPath, getMcpServerScriptPath } from './runtime-paths'
 import { listAgents } from '@server/db/agents.js'
 
 const log = createLogger('plugin-self-heal')
@@ -87,14 +87,19 @@ function hookCommandNeedsPatch(command: string, shimPath: string, hookScriptPath
   return !command.startsWith(expectedPrefix)
 }
 
-function rebuildHookCommand(shimPath: string, hookScriptPath: string, agentId: string, skillPath: string, tool: string): string {
-  return [
+function rebuildHookCommand(shimPath: string, hookScriptPath: string, agentId: string, skillPath: string | undefined, tool: string): string {
+  const parts = [
     JSON.stringify(shimPath),
     JSON.stringify(hookScriptPath),
     '--agent-id', JSON.stringify(agentId),
-    '--skill-path', JSON.stringify(skillPath),
-    '--tool', JSON.stringify(tool),
-  ].join(' ')
+  ]
+  // SessionStart hook 需要 --skill-path（读 SKILL.md 原文注入），
+  // PostCompact hook 不需要（只重注精简画像）
+  if (skillPath !== undefined) {
+    parts.push('--skill-path', JSON.stringify(skillPath))
+  }
+  parts.push('--tool', JSON.stringify(tool))
+  return parts.join(' ')
 }
 
 /**
@@ -118,8 +123,66 @@ function parseHookCommand(command: string): { agentId?: string; skillPath?: stri
 // 每类配置文件的修正逻辑
 // ----------------------------------------------------------
 
+/**
+ * 从 SessionStart hook 的 command 里提取 agentId 和 tool，用于升级老 agent
+ * 时构造缺失的 PostCompact 段。
+ */
+function extractSessionIdentity(sessionStartSection: any[]): { agentId: string; tool: string } | null {
+  for (const group of sessionStartSection) {
+    if (!Array.isArray(group?.hooks)) continue
+    for (const h of group.hooks) {
+      if (typeof h?.command !== 'string') continue
+      const parsed = parseHookCommand(h.command)
+      if (parsed.agentId && parsed.tool) return { agentId: parsed.agentId, tool: parsed.tool }
+    }
+  }
+  return null
+}
+
+function buildPostCompactSection(shimPath: string, postCompactScriptPath: string, agentId: string, tool: string): any[] {
+  return [
+    {
+      hooks: [
+        {
+          type: 'command',
+          command: rebuildHookCommand(shimPath, postCompactScriptPath, agentId, undefined, tool),
+          timeout: 10000,
+          statusMessage: '恢复外脑上下文...',
+        },
+      ],
+    },
+  ]
+}
+
+/**
+ * PreCompact 不需要 --tool 参数，只要 --agent-id。
+ */
+function buildPreCompactCommand(shimPath: string, preCompactScriptPath: string, agentId: string): string {
+  return [
+    JSON.stringify(shimPath),
+    JSON.stringify(preCompactScriptPath),
+    '--agent-id', JSON.stringify(agentId),
+  ].join(' ')
+}
+
+function preCompactCommandNeedsPatch(command: string, shimPath: string, preCompactScriptPath: string): boolean {
+  // 老的 echo 形态：不含 --agent-id，整段需要升级
+  if (!command.includes('--agent-id')) return true
+  // 新脚本形态但路径过期
+  const expectedPrefix = `${JSON.stringify(shimPath)} ${JSON.stringify(preCompactScriptPath)}`
+  return !command.startsWith(expectedPrefix)
+}
+
 /** Claude Code plugin 目录下的 .mcp.json 和 hooks.json */
-function healClaudeCodePlugins(pluginsRoot: string, shimPath: string, mcpServerPath: string, hookScriptPath: string, result: HealResult): void {
+function healClaudeCodePlugins(
+  pluginsRoot: string,
+  shimPath: string,
+  mcpServerPath: string,
+  hookScriptPath: string,
+  preCompactScriptPath: string,
+  postCompactScriptPath: string,
+  result: HealResult,
+): void {
   if (!fs.existsSync(pluginsRoot)) return
   let entries: string[] = []
   try {
@@ -169,8 +232,11 @@ function healClaudeCodePlugins(pluginsRoot: string, shimPath: string, mcpServerP
     if (fs.existsSync(hooksPath)) {
       result.scanned++
       const cfg = safeReadJson(hooksPath)
-      if (cfg?.hooks?.SessionStart) {
-        let changed = false
+      if (!cfg?.hooks) continue
+      let changed = false
+
+      // 1) SessionStart 路径修正（原有逻辑）
+      if (cfg.hooks.SessionStart) {
         for (const group of cfg.hooks.SessionStart) {
           if (!Array.isArray(group?.hooks)) continue
           for (const h of group.hooks) {
@@ -183,14 +249,56 @@ function healClaudeCodePlugins(pluginsRoot: string, shimPath: string, mcpServerP
             }
           }
         }
-        if (changed) {
-          try {
-            safeWriteJson(hooksPath, cfg)
-            result.patched++
-            log.info(`patched: ${hooksPath}`)
-          } catch (err: any) {
-            result.errors.push({ file: hooksPath, error: err.message })
+      }
+
+      const identity = cfg.hooks.SessionStart ? extractSessionIdentity(cfg.hooks.SessionStart) : null
+
+      // 2) PreCompact：老版本是硬编码 echo 字符串，升级到脚本形态。
+      //    有且是 echo：整段替换；有且是新脚本形态但路径过期：修正路径
+      if (identity && Array.isArray(cfg.hooks.PreCompact)) {
+        for (const group of cfg.hooks.PreCompact) {
+          if (!Array.isArray(group?.hooks)) continue
+          for (const h of group.hooks) {
+            if (typeof h?.command !== 'string') continue
+            if (preCompactCommandNeedsPatch(h.command, shimPath, preCompactScriptPath)) {
+              h.command = buildPreCompactCommand(shimPath, preCompactScriptPath, identity.agentId)
+              if (typeof h.timeout !== 'number') h.timeout = 10000
+              changed = true
+            }
           }
+        }
+      }
+
+      // 3) PostCompact：新增 hook，老 agent 可能没有这段。
+      //    有：按路径修正；无：从 SessionStart 提取 identity，补齐
+      if (identity) {
+        if (!Array.isArray(cfg.hooks.PostCompact) || cfg.hooks.PostCompact.length === 0) {
+          cfg.hooks.PostCompact = buildPostCompactSection(shimPath, postCompactScriptPath, identity.agentId, identity.tool)
+          changed = true
+          log.info(`added missing PostCompact section to: ${hooksPath}`)
+        } else {
+          for (const group of cfg.hooks.PostCompact) {
+            if (!Array.isArray(group?.hooks)) continue
+            for (const h of group.hooks) {
+              if (typeof h?.command !== 'string') continue
+              const parsed = parseHookCommand(h.command)
+              if (!parsed.agentId || !parsed.tool) continue
+              if (hookCommandNeedsPatch(h.command, shimPath, postCompactScriptPath, parsed.agentId)) {
+                h.command = rebuildHookCommand(shimPath, postCompactScriptPath, parsed.agentId, undefined, parsed.tool)
+                changed = true
+              }
+            }
+          }
+        }
+      }
+
+      if (changed) {
+        try {
+          safeWriteJson(hooksPath, cfg)
+          result.patched++
+          log.info(`patched: ${hooksPath}`)
+        } catch (err: any) {
+          result.errors.push({ file: hooksPath, error: err.message })
         }
       }
     }
@@ -476,12 +584,14 @@ export function selfHealPlugins(dataDir: string, db?: Database.Database): HealRe
   const shimPath = getShimPath()
   const mcpServerPath = getMcpServerScriptPath()
   const hookScriptPath = getHookScriptPath()
+  const preCompactScriptPath = getPreCompactHookScriptPath()
+  const postCompactScriptPath = getPostCompactHookScriptPath()
   const result: HealResult = { scanned: 0, patched: 0, errors: [] }
 
   const agentsByType = getExpectedAgentIdsByType(db)
 
   // Claude Code
-  healClaudeCodePlugins(path.join(dataDir, 'plugins'), shimPath, mcpServerPath, hookScriptPath, result)
+  healClaudeCodePlugins(path.join(dataDir, 'plugins'), shimPath, mcpServerPath, hookScriptPath, preCompactScriptPath, postCompactScriptPath, result)
 
   // Tide Mind 自己的 local marketplace.json（过渡清理）
   healLocalMarketplace(path.join(dataDir, 'plugins'), result)

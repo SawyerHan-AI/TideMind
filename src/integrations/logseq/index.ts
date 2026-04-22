@@ -25,6 +25,7 @@ import {
   processFileQueue, processFileChange, getImportProgress, resetProgress,
 } from './queue.js';
 import { clearTagNodeCache } from '../shared/property-promote.js';
+import { DatalessSkipCounter } from '../../utils/safe-fs.js';
 
 // --- 多实例状态 ---
 // Linux 平台 fs.watch 不支持 recursive:true（会抛错），改为监听多个顶级目录
@@ -142,8 +143,17 @@ async function runSyncInner(
   clearTagNodeCache();
 
   // 扫描所有 .md 文件
-  const allFiles = walkMdFiles(graphRoot);
+  // iCloud 驱逐文件会被 walkMdFiles 内部剔除；我们在这里统计并输出一条汇总 warn，
+  // 避免每个文件都刷一行 log。
+  const datalessSkip = new DatalessSkipCounter();
+  const allFiles = walkMdFiles(graphRoot, (fp) => datalessSkip.record(fp));
   log.info(`扫描到 ${allFiles.length} 个 .md 文件 (source=${sourceId ?? 'default'})`);
+  if (datalessSkip.total > 0) {
+    log.warn(
+      `Logseq 源 ${sourceId ?? 'default'} 有 ${datalessSkip.total} 个文件处于 iCloud 离线状态已跳过 ` +
+      `（示例: ${datalessSkip.sample}）。在 Finder 里下载或关闭"优化 Mac 存储"可恢复。`,
+    );
+  }
 
   if (allFiles.length === 0) {
     log.warn('未扫描到任何 .md 文件，请检查路径是否正确');

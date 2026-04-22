@@ -16,6 +16,7 @@ import { logTimelineEvent } from './db/log.js';
 import { runSchedulerTick } from './metabolism/scheduler.js';
 import { ALL_TASKS } from './metabolism/tasks.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
+import { migrateConfigIfNeeded } from './utils/config-migrate.js';
 
 const log = createLogger('daemon');
 const migrationLog = createLogger('migrate');
@@ -25,6 +26,8 @@ import { loadProModules } from './plugin-loader.js';
 // 初始化
 // 数据目录一次性迁移必须是第一步（在 loadConfig / 打开 DB 之前）
 migrateDataDirIfNeeded(migrationLog);
+// 检查 config 内已停用的模型 ID,自动替换为可用版本(必须在 loadConfig 之前)
+migrateConfigIfNeeded(migrationLog);
 loadConfig();
 ensureDataDirs();
 

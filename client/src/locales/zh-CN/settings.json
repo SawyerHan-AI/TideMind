@@ -900,7 +900,11 @@
         "agentsDownloaded": "AGENTS.md 使用指南（已生成到 Downloads）",
         "step1": "1. 将上方的 AGENTS.md 内容追加到项目根目录或 ~/.codex/AGENTS.md",
         "step2": "2. 重启 Codex session 使配置生效",
-        "mcpNote": "MCP 配置和 SessionStart Hook 已自动写入 ~/.codex/。"
+        "mcpNote": "MCP 配置和 SessionStart Hook 已自动写入 ~/.codex/。",
+        "skillInjected": "Skill 指南已注入 ~/.codex/skills/",
+        "autoReadyTitle": "已全部配置，无需手动步骤",
+        "autoReadyNote": "下次 Codex 启动时将自动加载上下文与 Skill 指南。",
+        "upgradeHint": "检测到 Codex {{version}} —— 建议升级到 0.121+ 以获得无缝对接体验（无需手动复制 AGENTS.md）"
       },
       "windsurf": {
         "mcpConfig": "Windsurf MCP 配置（mcp_config.json）",

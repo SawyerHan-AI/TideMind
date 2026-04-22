@@ -1,5 +1,6 @@
-import type { DigestInput, DigestOutput, NodeType } from '../types.js';
+import type { DigestInput, DigestOutput, NodeType, BrainNode } from '../types.js';
 import type { IRepository } from '../db/repository.js';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { inferDimensions } from '../utils/dimensions.js';
 import { parseTags } from '../db/nodes.js';
 import { appendToStream } from '../stream/writer.js';
@@ -11,15 +12,29 @@ import { findLandingConnections } from '../graph/landing.js';
 import { reconsolidateNode } from '../graph/dedup.js';
 import { enqueuePendingDigest } from '../db/pending-digests.js';
 import { createLogger } from '../utils/logger.js';
+import { tryElicit } from './elicit-helper.js';
 
 const log = createLogger('digest');
+
+/**
+ * Digest 调用上下文。MCP 工具 handler 在调用 digest 时传入 server，
+ * digest 内部可在归类模糊的决策点通过 MCP elicitation 向用户追问。
+ * 非 MCP 上下文（测试、其他工具链）不传该字段即可；elicit 助手会自动 fallback。
+ */
+export interface DigestContext {
+  server?: McpServer;
+}
 
 /**
  * brain_digest — 消化信息
  *
  * 基础版：content 直接存为单个节点（后续 Step 7 加 LLM 提取）
+ *
+ * 归类模糊的决策点（当 config.digest.interactive_mode === "ask" 且 client
+ * 支持 elicitation 时）会通过 context.server 发起 MCP elicit 请求让用户选择。
+ * 默认 silent 模式下 elicit 助手直接返回 null，走原有 fallback 行为。
  */
-export async function digest(repo: IRepository, input: DigestInput): Promise<DigestOutput> {
+export async function digest(repo: IRepository, input: DigestInput, context?: DigestContext): Promise<DigestOutput> {
   const traceId = generateId();
   log.info(`intent=${input.intent ?? 'new'} contentLen=${input.content.length} async=${input.async !== false} trace=${traceId}`);
 
@@ -29,11 +44,30 @@ export async function digest(repo: IRepository, input: DigestInput): Promise<Dig
   // --- 纠正已有节点 ---
   if (input.intent === 'correction' && input.target_node) {
     const existing = repo.nodes.getNode(input.target_node);
-    if (!existing) {
-      log.warn(`correction 目标节点不存在: ${input.target_node}`);
-      return { status: 'rejected', trace_id: traceId, reject_reason: `目标节点 ${input.target_node} 不存在` };
-    }
 
+    // A 场景：target_node 不存在。ask 模式下让用户挑正确的目标；silent 模式走硬拒 fallback
+    if (!existing) {
+      const resolved = await resolveMissingCorrectionTarget(repo, input, context?.server);
+      if (resolved.kind === 'skip') {
+        return { status: 'rejected', trace_id: traceId, reject_reason: '用户取消本次纠正' };
+      }
+      if (resolved.kind === 'new') {
+        // 用户选"当作新记忆保存"：改写 intent 为 new，fall-through 到下面常规消化路径
+        input = { ...input, intent: 'new', target_node: undefined };
+      } else if (resolved.kind === 'retarget') {
+        // 改写 target_node，下面 correction 分支会用新 ID 重新 getNode 拿到 existing
+        input = { ...input, target_node: resolved.targetId };
+      } else {
+        // fallback 硬拒（silent 模式、capability 不支持、用户 decline/cancel、无候选节点）
+        log.warn(`correction 目标节点不存在: ${input.target_node}`);
+        return { status: 'rejected', trace_id: traceId, reject_reason: `目标节点 ${input.target_node} 不存在` };
+      }
+    }
+  }
+
+  // 只有仍然是 correction 且 existing 有效时走下面的 correction 处理
+  if (input.intent === 'correction' && input.target_node) {
+    const existing = repo.nodes.getNode(input.target_node)!;
     repo.nodes.updateNode(input.target_node, { content: input.content }, 'correction');
     log.info(`correction target=${input.target_node}`);
     const updated = repo.nodes.getNode(input.target_node)!;
@@ -217,6 +251,69 @@ export async function digest(repo: IRepository, input: DigestInput): Promise<Dig
     created_nodes: result.nodes,
     created_links: result.links.length > 0 ? result.links : undefined,
   };
+}
+
+/**
+ * 解析 correction 请求里 target_node 不存在的情况：通过 MCP elicit 让用户
+ * 选择（纠正另一条已有记忆 / 当作新记忆 / 跳过）。
+ *
+ * 返回值：
+ *   - 'retarget'：用户选了某条候选，改用该 ID 继续走 correction 逻辑
+ *   - 'new'：用户选了"当作新记忆"，调用方应把 intent 改为 new 走常规消化
+ *   - 'skip'：用户明确取消
+ *   - 'fallback'：elicit 未发起（silent 模式 / 不支持 / 节流 / 无候选）或用户 decline；
+ *     调用方应按既有硬拒路径返回 rejected
+ */
+type ResolveResult =
+  | { kind: 'skip' }
+  | { kind: 'new' }
+  | { kind: 'retarget'; targetId: string; existing: BrainNode }
+  | { kind: 'fallback' };
+
+async function resolveMissingCorrectionTarget(
+  repo: IRepository,
+  input: DigestInput,
+  server: McpServer | undefined,
+): Promise<ResolveResult> {
+  // 按热度取 top 5 活跃节点作为候选。热度兼顾"最近被访问/被引用"，比纯 created DESC
+  // 更能命中用户想纠正的对象。
+  const candidates = repo.nodes.listNodes({ archived: false, orderBy: 'heat DESC', limit: 5 });
+  if (candidates.length === 0) return { kind: 'fallback' };
+
+  const candidateOptions = candidates.map(c => ({
+    const: c.id,
+    title: `纠正：${c.title ?? c.content.slice(0, 40)}`,
+  }));
+
+  const result = await tryElicit(server, `correction-missing:${input.target_node}`, {
+    mode: 'form' as const,
+    message: `未找到 ID "${input.target_node}" 对应的记忆。请选择如何处理：`,
+    requestedSchema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string' as const,
+          title: '处理方式',
+          oneOf: [
+            { const: '__skip__', title: '跳过本次纠正' },
+            { const: '__new__', title: '当作新记忆保存' },
+            ...candidateOptions,
+          ],
+        },
+      },
+      required: ['action'],
+    },
+  });
+
+  if (!result || result.action !== 'accept') return { kind: 'fallback' };
+  const action = result.content?.action;
+  if (typeof action !== 'string') return { kind: 'fallback' };
+  if (action === '__skip__') return { kind: 'skip' };
+  if (action === '__new__') return { kind: 'new' };
+
+  const existing = repo.nodes.getNode(action);
+  if (!existing) return { kind: 'fallback' };
+  return { kind: 'retarget', targetId: action, existing };
 }
 
 /**

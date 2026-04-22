@@ -42,6 +42,17 @@ function isPluginSupported(toolType: string): boolean {
   return getToolTypeDef(toolType)?.pluginSupport ?? false
 }
 
+/** Codex ≥0.121 支持 `codex mcp add` 和原生 Skills 机制（v2 主路径） */
+function isCodexV2Version(version: string | null | undefined): boolean {
+  if (!version) return false
+  const m = version.match(/^(\d+)\.(\d+)\.(\d+)/)
+  if (!m) return false
+  const major = Number(m[1])
+  const minor = Number(m[2])
+  if (major > 0) return true
+  return minor >= 121
+}
+
 // ============================================================
 // Agent 类型
 // ============================================================
@@ -650,6 +661,7 @@ function AgentWizard({ onClose }: { onClose: () => void }) {
   const [pluginError, setPluginError] = useState('')
   const [marketplaceRegistered, setMarketplaceRegistered] = useState(false)
   const [cliAvailable, setCliAvailable] = useState(false)
+  const [codexVersion, setCodexVersion] = useState<string | null>(null)
   const [installing, setInstalling] = useState(false)
   const [installResult, setInstallResult] = useState<{ success: boolean; message: string } | null>(null)
   // Claude Cowork 专用状态
@@ -705,9 +717,12 @@ function AgentWizard({ onClose }: { onClose: () => void }) {
       // Claude Cowork: 写入 Desktop config + 生成 Skill 到 Downloads
       setPluginGenerating(true)
       try {
-        const [result, cliCheck] = await Promise.all([
+        const [result, cliCheck, codexCheck] = await Promise.all([
           window.api.agents.generatePlugin({ agentId: agent.id, agentName: agent.name, clientType: finalToolType }),
           window.api.agents.checkCli('claude'),
+          isCodex
+            ? window.api.agents.checkCli('codex')
+            : Promise.resolve({ available: false } as { available: boolean; path?: string; version?: string }),
         ])
         if (result.success) {
           setPluginDir(result.pluginDir)
@@ -723,6 +738,7 @@ function AgentWizard({ onClose }: { onClose: () => void }) {
           setCreatedAgent(null)
         }
         setCliAvailable(cliCheck.available)
+        setCodexVersion(codexCheck.version ?? null)
       } catch (err: any) {
         setPluginError(err.message)
         await window.api.agents.delete(agent.id)
@@ -972,7 +988,9 @@ function AgentWizard({ onClose }: { onClose: () => void }) {
                     </div>
                     <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
                       <CheckCircle size={10} className="text-emerald-400/60" />
-                      {t('agent.wizard.codex.agentsDownloaded')}
+                      {isCodexV2Version(codexVersion)
+                        ? t('agent.wizard.codex.skillInjected')
+                        : t('agent.wizard.codex.agentsDownloaded')}
                     </div>
                   </>
                 ) : isWindsurf ? (
@@ -1062,12 +1080,24 @@ function AgentWizard({ onClose }: { onClose: () => void }) {
                     <FolderOpen size={11} className="text-gray-500 flex-shrink-0" />
                     <code className="text-[10px] text-gray-400 font-mono truncate">{pluginDir}</code>
                   </div>
-                  <div className="px-3 py-2 bg-indigo-400/5 border border-indigo-400/10 rounded-lg space-y-1">
-                    <p className="text-[10px] text-indigo-400 font-medium">{t('agent.wizard.manualStepsTitle')}</p>
-                    <p className="text-[10px] text-indigo-400">{t('agent.wizard.codex.step1')}</p>
-                    <p className="text-[10px] text-indigo-400">{t('agent.wizard.codex.step2')}</p>
-                    <p className="text-[10px] text-gray-500">{t('agent.wizard.codex.mcpNote')}</p>
-                  </div>
+                  {isCodexV2Version(codexVersion) ? (
+                    <div className="px-3 py-2 bg-emerald-400/5 border border-emerald-400/10 rounded-lg space-y-1">
+                      <p className="text-[10px] text-emerald-400 font-medium">{t('agent.wizard.codex.autoReadyTitle')}</p>
+                      <p className="text-[10px] text-emerald-400">{t('agent.wizard.codex.autoReadyNote')}</p>
+                    </div>
+                  ) : (
+                    <div className="px-3 py-2 bg-indigo-400/5 border border-indigo-400/10 rounded-lg space-y-1">
+                      <p className="text-[10px] text-indigo-400 font-medium">{t('agent.wizard.manualStepsTitle')}</p>
+                      <p className="text-[10px] text-indigo-400">{t('agent.wizard.codex.step1')}</p>
+                      <p className="text-[10px] text-indigo-400">{t('agent.wizard.codex.step2')}</p>
+                      <p className="text-[10px] text-gray-500">{t('agent.wizard.codex.mcpNote')}</p>
+                      {codexVersion && (
+                        <p className="text-[10px] text-amber-400 mt-1">
+                          {t('agent.wizard.codex.upgradeHint', { version: codexVersion })}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               ) : isWindsurf ? (
                 <div className="space-y-2">

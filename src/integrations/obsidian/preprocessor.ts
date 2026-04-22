@@ -14,6 +14,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import { createLogger } from '../../utils/logger.js';
+import {
+  isICloudStubName,
+  isDataless,
+  safeStatSync,
+  safeReadTextFileSync,
+} from '../../utils/safe-fs.js';
 import type { PreprocessedPage, PageMetadata } from './types.js';
 import {
   OBSIDIAN_SYSTEM_PROPERTIES,
@@ -49,17 +55,14 @@ export function preprocessFile(
   vaultRoot: string,
   fileIndex?: Map<string, string>,
 ): ObsidianPreprocessedPage | null {
-  let rawContent: string;
-  try {
-    rawContent = fs.readFileSync(filePath, 'utf-8');
-  } catch {
-    log.warn('文件读取失败: %s', filePath);
+  const res = safeReadTextFileSync(filePath);
+  if (!res.ok) {
+    if (res.reason === 'error') log.warn('文件读取失败: %s', filePath);
     return null;
   }
-
   // 统一换行为 LF：frontmatter 边界匹配（'\n---'）与后续步骤都只处理 LF，
   // 否则 CRLF 文件会错乱（找不到 frontmatter 结束、body 残留 \r）
-  rawContent = rawContent.replace(/\r\n/g, '\n');
+  let rawContent = res.content.replace(/\r\n/g, '\n');
 
   if (rawContent.trim().length < 10) return null;
 
@@ -161,9 +164,9 @@ export function buildFileIndex(
     index.set(normalizedName, relPath);
 
     // 从 frontmatter 读取 aliases
-    try {
-      const content = fs.readFileSync(filePath, 'utf-8');
-      const aliases = extractAliasesQuick(content);
+    const readRes = safeReadTextFileSync(filePath);
+    if (readRes.ok) {
+      const aliases = extractAliasesQuick(readRes.content);
       for (const alias of aliases) {
         const normalizedAlias = normalizeFileName(alias);
         // 不覆盖已有条目（优先保留文件名匹配）
@@ -171,9 +174,8 @@ export function buildFileIndex(
           index.set(normalizedAlias, relPath);
         }
       }
-    } catch {
-      // 读取失败跳过
     }
+    // iCloud dataless / stub / missing → 静默跳过 aliases，文件索引本身已经建上
   }
 
   log.info('文件索引构建完成: %d 条', index.size);
@@ -181,13 +183,22 @@ export function buildFileIndex(
 }
 
 /**
- * 遍历 vault 目录下的所有 .md 文件（排除指定目录）
+ * 遍历 vault 目录下的所有 .md / .canvas 文件（排除指定目录）
  *
  * 目录 symlink 防护：
  * - 跳过 symlink 类型的 entry（不跟随目录 symlink）
  * - 额外用 realpath 规范化路径维护 visited Set，防御 symlink 环
+ *
+ * iCloud 防护：
+ * - 跳过 `.xxx.icloud` stub
+ * - 跳过 dataless 文件（size>0 blocks=0），不触发下载，避免 readFileSync 阻塞
+ * - onDatalessSkip 可选回调，供调用方聚合日志
  */
-export function walkMdFiles(vaultRoot: string, excludedDirs: string[]): string[] {
+export function walkMdFiles(
+  vaultRoot: string,
+  excludedDirs: string[],
+  onDatalessSkip?: (filePath: string) => void,
+): string[] {
   const results: string[] = [];
   const visited = new Set<string>();
 
@@ -218,9 +229,20 @@ export function walkMdFiles(vaultRoot: string, excludedDirs: string[]): string[]
       if (entry.isDirectory()) {
         if (isExcludedDir(relPath, excludedDirs)) continue;
         walk(path.join(dir, entry.name), relPath);
-      } else if (entry.isFile() && (entry.name.endsWith('.md') || entry.name.endsWith('.canvas'))) {
-        results.push(path.join(dir, entry.name));
+        continue;
       }
+
+      if (!entry.isFile()) continue;
+      if (isICloudStubName(entry.name)) continue;
+      if (!(entry.name.endsWith('.md') || entry.name.endsWith('.canvas'))) continue;
+
+      const full = path.join(dir, entry.name);
+      const st = safeStatSync(full);
+      if (st && isDataless(st)) {
+        onDatalessSkip?.(full);
+        continue;
+      }
+      results.push(full);
     }
   }
 
