@@ -12,7 +12,7 @@ import type Database from 'better-sqlite3';
 import { getConfig } from '../../config.js';
 import { createLogger } from '../../utils/logger.js';
 import { logTimelineEvent } from '../../db/log.js';
-import { updateNode } from '../../db/nodes.js';
+import { archiveNode } from '../../db/nodes.js';
 
 const log = createLogger('obsidian');
 import { walkMdFiles, shouldProcessFile, buildFileIndex } from './preprocessor.js';
@@ -29,8 +29,11 @@ import { clearTagNodeCache } from '../shared/property-promote.js';
 import { clearDanglingTagCache } from './initialization.js';
 
 // --- 多实例状态 ---
-const watchers = new Map<string, fs.FSWatcher>();
+// Linux 的 fs.watch 不支持 recursive:true，会 fallback 到监听多个子目录
+const watchers = new Map<string, fs.FSWatcher[]>();
 const debounceTimerMaps = new Map<string, Map<string, NodeJS.Timeout>>();
+/** 正在执行 runSync 的源 ID，用于防止 watcher 事件与首次全量同步并发 */
+const syncingSources = new Set<string>();
 
 /**
  * 启动单个 Obsidian 笔记源实例
@@ -52,10 +55,15 @@ export async function startObsidianSource(
   // 1. 确保同步表存在
   ensureSyncSchema(db);
 
-  // 2. 执行同步（后台，不阻塞 daemon 启动）
-  runSync(db, vaultRoot, sourceId).catch(err =>
-    log.error(`Obsidian 同步失败 (source=${sourceId}):`, (err as Error).message),
-  );
+  // 2. 执行首次同步，完成后再启动 watcher
+  // 首次全量导入与 watcher 并发会造成同一文件被全量流程与增量流程同时处理，
+  // 产生重复 digest / supersede 链混乱。await 完成后再挂 watcher，参考 Apple Notes 的做法。
+  try {
+    await runSync(db, vaultRoot, sourceId);
+  } catch (err) {
+    log.error(`Obsidian 首次同步失败 (source=${sourceId}):`, (err as Error).message);
+    // 不 rethrow：即便首次同步失败也启动 watcher，用户改动后还能触发增量
+  }
 
   // 3. 启动文件监听
   const vaultConfig = readVaultConfig(vaultRoot);
@@ -67,9 +75,11 @@ export async function startObsidianSource(
  * 停止单个 Obsidian 笔记源实例
  */
 export function stopObsidianSource(sourceId: string): void {
-  const w = watchers.get(sourceId);
-  if (w) {
-    w.close();
+  const ws = watchers.get(sourceId);
+  if (ws) {
+    for (const w of ws) {
+      try { w.close(); } catch { /* ignore */ }
+    }
     watchers.delete(sourceId);
   }
   const timers = debounceTimerMaps.get(sourceId);
@@ -97,8 +107,34 @@ export async function startObsidianIntegration(db: Database.Database): Promise<v
 
 /**
  * 执行同步：首次全量导入或增量同步
+ *
+ * 使用 syncingSources 做 per-source 互斥：防止 watcher 事件在首次同步期间
+ * 触发 processFileChange，同时又被全量 runSync 处理，造成重复节点 / supersede 链混乱。
  */
 async function runSync(
+  db: Database.Database,
+  vaultRoot: string,
+  sourceId?: string,
+): Promise<void> {
+  const syncKey = sourceId ?? '__default__';
+  if (syncingSources.has(syncKey)) {
+    log.warn(`Obsidian 同步已在进行中，跳过重复调用 (source=${sourceId})`);
+    return;
+  }
+  syncingSources.add(syncKey);
+  try {
+    await runSyncInner(db, vaultRoot, sourceId);
+  } finally {
+    syncingSources.delete(syncKey);
+  }
+}
+
+/** 判断 source 当前是否正在全量/增量同步（供 watcher 事件检查） */
+function isSyncing(sourceId?: string): boolean {
+  return syncingSources.has(sourceId ?? '__default__');
+}
+
+async function runSyncInner(
   db: Database.Database,
   vaultRoot: string,
   sourceId?: string,
@@ -194,6 +230,11 @@ async function runSync(
 
 /**
  * 启动文件监听（带目录过滤）
+ *
+ * Linux 的 fs.watch 不支持 recursive:true（会抛 ERR_FEATURE_UNAVAILABLE_ON_PLATFORM）。
+ * 为避免引入 chokidar 依赖，Linux 下递归扫描 vault 目录，为每个子目录各建一个
+ * 非递归 watcher。这会产生较多 watcher，但对中型 vault（< 几千个目录）可用。
+ * macOS / Windows 仍走单个 recursive 监听。
  */
 function startFilteredWatcher(
   db: Database.Database,
@@ -209,31 +250,33 @@ function startFilteredWatcher(
   }
   const debounceTimers = debounceTimerMaps.get(sourceId)!;
 
-  const w = fs.watch(vaultRoot, { recursive: true }, (eventType, filename) => {
-    if (!filename) return;
-
+  const handleChange = (relFromRoot: string): void => {
     // 过滤：只处理 .md / .canvas 文件，排除系统目录
-    if (!shouldProcessFile(filename, excludedDirs)) return;
+    if (!shouldProcessFile(relFromRoot, excludedDirs)) return;
 
     // 防抖 1 秒
-    const key = filename;
+    const key = relFromRoot;
     if (debounceTimers.has(key)) {
       clearTimeout(debounceTimers.get(key)!);
     }
 
     debounceTimers.set(key, setTimeout(() => {
       debounceTimers.delete(key);
-      const filePath = path.join(vaultRoot, filename);
+      const filePath = path.join(vaultRoot, relFromRoot);
 
       if (!fs.existsSync(filePath)) return; // 文件被删除
+
+      // 首次全量同步期间忽略 watcher 事件：runSync 会处理到该文件，
+      // 避免同一文件被全量流程与增量流程并发处理。
+      if (isSyncing(sourceId)) return;
 
       processFileChange(db, filePath, vaultRoot, sourceId)
         .then(() => {
           logTimelineEvent(db, {
             type: 'memory',
             subtype: 'obsidian_file_change',
-            title: JSON.stringify({ key: 'obsidian_file_changed', params: { filename } }),
-            detail: { file: filename, source_id: sourceId },
+            title: JSON.stringify({ key: 'obsidian_file_changed', params: { filename: relFromRoot } }),
+            detail: { file: relFromRoot, source_id: sourceId },
             actor: 'brain',
           });
         })
@@ -241,9 +284,59 @@ function startFilteredWatcher(
           log.error('文件变更处理失败:', (err as Error).message),
         );
     }, 1000));
-  });
+  };
 
-  watchers.set(sourceId, w);
+  const createdWatchers: fs.FSWatcher[] = [];
+  const isLinux = os.platform() === 'linux';
+
+  if (isLinux) {
+    // Linux: 递归扫描，为每个子目录各建一个非递归 watcher
+    const excludeSet = new Set(excludedDirs);
+    const dirsToWatch: string[] = [];
+    const walkDirs = (abs: string): void => {
+      dirsToWatch.push(abs);
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(abs, { withFileTypes: true }); }
+      catch { return; }
+      for (const e of entries) {
+        if (!e.isDirectory()) continue;
+        if (excludeSet.has(e.name)) continue;
+        if (e.name.startsWith('.')) continue; // 跳过 .obsidian / .trash 等
+        walkDirs(path.join(abs, e.name));
+      }
+    };
+    walkDirs(vaultRoot);
+
+    for (const dirAbs of dirsToWatch) {
+      try {
+        const w = fs.watch(dirAbs, (_eventType, filename) => {
+          if (!filename) return;
+          const relFromDir = path.relative(vaultRoot, path.join(dirAbs, filename)).replace(/\\/g, '/');
+          handleChange(relFromDir);
+        });
+        createdWatchers.push(w);
+      } catch (err) {
+        log.debug(`监听 ${dirAbs} 失败: ${(err as Error).message}`);
+      }
+    }
+    if (createdWatchers.length === 0) {
+      log.warn(`Linux 下未能建立任何监听器: ${vaultRoot}`);
+    } else {
+      log.info(`Linux fallback: ${createdWatchers.length} 个非递归 watcher`);
+    }
+  } else {
+    try {
+      const w = fs.watch(vaultRoot, { recursive: true }, (_eventType, filename) => {
+        if (!filename) return;
+        handleChange(filename);
+      });
+      createdWatchers.push(w);
+    } catch (err) {
+      log.error(`启动 recursive watcher 失败: ${(err as Error).message}`);
+    }
+  }
+
+  watchers.set(sourceId, createdWatchers);
 }
 
 /**
@@ -280,14 +373,12 @@ export async function triggerFullRescan(
  * 归档因源文件被删除而孤立的节点
  *
  * archived = 1 仅用于此场景：外部笔记源删除导致的归档。
- * 同时降 heat 到 0.01，利用现有查询条件 (heat > 0.01) 立即隔离。
+ * 走 archiveNode() 统一清理 nodes_vec / node_segments——防止已删除内容残留在
+ * 向量召回里（向量搜索只看 nodes_vec 表，不过滤 archived 字段）。
  */
 function archiveOrphanNodes(db: Database.Database, nodeIds: string[]): void {
-  const stmt = db.prepare(
-    'UPDATE nodes SET archived = 1, heat = 0.01 WHERE id = ? AND archived = 0',
-  );
   for (const id of nodeIds) {
-    stmt.run(id);
+    archiveNode(db, id);
   }
 }
 

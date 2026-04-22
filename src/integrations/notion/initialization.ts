@@ -209,20 +209,22 @@ export async function runInitialization(
     log.info('Phase 5: Landing 连接...');
 
     const { findLandingConnections } = await import('../../graph/landing.js');
+    const { getVectorForNode } = await import('../../db/vectors.js');
     {
+      // nodes_vec.id 是 segment_id，不是 node.id。必须通过 node_segments 桥接。
       const nodes = db.prepare(`
-        SELECT n.id FROM nodes n
-        JOIN nodes_vec v ON n.id = v.id
+        SELECT DISTINCT n.id FROM nodes n
+        JOIN node_segments s ON s.node_id = n.id
+        JOIN nodes_vec v ON v.id = s.segment_id
         WHERE n.heat > 0.01 AND n.is_meta = 0 AND n.is_superseded = 0
       `).all() as Array<{ id: string }>;
 
       for (const { id } of nodes) {
         if (isAborted(sourceId)) throw new Error('初始化已中断');
         try {
-          const vecRow = db.prepare('SELECT embedding FROM nodes_vec WHERE id = ?').get(id) as { embedding: Buffer } | undefined;
-          if (!vecRow) continue;
-          const embedding = new Float32Array(vecRow.embedding.buffer, vecRow.embedding.byteOffset, vecRow.embedding.byteLength / 4);
-          // 初始化的批量 landing 只建连接，不归并——节点已经入库且各自有外部身份
+          const embedding = getVectorForNode(db, id);
+          if (!embedding) continue;
+          // 初始化的批量 landing 只建连接——节点已经入库且各自有外部身份
           findLandingConnections(db, id, embedding, { skipDedupMerge: true });
         } catch { /* skip individual node errors */ }
         advanceProgress(1, sourceId);

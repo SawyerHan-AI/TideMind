@@ -14,6 +14,7 @@ import { createLogger } from '../../utils/logger.js';
 import { clearTagNodeCache } from '../shared/property-promote.js';
 import { logTimelineEvent } from '../../db/log.js';
 import { updateLastSynced } from '../shared/note-sources.js';
+import { archiveNode } from '../../db/nodes.js';
 import {
   openNoteStoreDb,
   detectSchemaVersion,
@@ -164,13 +165,14 @@ export function getImportProgress(sourceId?: string) {
 /**
  * 执行一次完整同步
  */
-/** 归档孤立节点（外部笔记被删除时调用） */
+/** 归档孤立节点（外部笔记被删除时调用）
+ *
+ * 走 archiveNode() 统一清理 nodes_vec / node_segments——防止已删除笔记
+ * 残留在向量召回里（向量搜索只看 nodes_vec 表，不过滤 archived）。
+ */
 function archiveOrphanNodes(db: Database.Database, nodeIds: string[]): void {
-  const stmt = db.prepare(
-    'UPDATE nodes SET archived = 1, heat = 0.01 WHERE id = ? AND archived = 0',
-  );
   for (const id of nodeIds) {
-    stmt.run(id);
+    archiveNode(db, id);
   }
 }
 

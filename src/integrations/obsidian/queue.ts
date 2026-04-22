@@ -266,7 +266,17 @@ async function processOneFile(
       for (let i = 0; i < pairs; i++) {
         supersedeNode(db, oldNodeIds[i], allNodeIds[i]);
       }
-      for (let i = pairs; i < oldNodeIds.length; i++) {
+      // 多余旧段：supersede 到最后一个新节点，迁移链接、保留 updates 链
+      // （段数减少场景：把多余旧段的链接归并到最后一个新段上，而不是直接 DELETE 丢失关联）
+      if (oldNodeIds.length > allNodeIds.length) {
+        const targetNewId = allNodeIds[allNodeIds.length - 1];
+        for (let i = pairs; i < oldNodeIds.length; i++) {
+          supersedeNode(db, oldNodeIds[i], targetNewId);
+        }
+      }
+    } else if (oldNodeIds.length > 0 && allNodeIds.length === 0) {
+      // 极端兜底：没有任何新节点（例如全部 digest 失败），按旧逻辑 mark superseded
+      for (let i = 0; i < oldNodeIds.length; i++) {
         db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(oldNodeIds[i]);
         db.prepare('DELETE FROM links WHERE from_id = ? OR to_id = ?').run(oldNodeIds[i], oldNodeIds[i]);
       }
@@ -377,7 +387,16 @@ async function processCanvasFile(
     for (let i = 0; i < pairs; i++) {
       supersedeNode(db, oldNodeIds[i], nodeIds[i]);
     }
-    for (let i = pairs; i < oldNodeIds.length; i++) {
+    // 多余旧段：supersede 到最后一个新节点，迁移链接、保留 updates 链
+    if (oldNodeIds.length > nodeIds.length) {
+      const targetNewId = nodeIds[nodeIds.length - 1];
+      for (let i = pairs; i < oldNodeIds.length; i++) {
+        supersedeNode(db, oldNodeIds[i], targetNewId);
+      }
+    }
+  } else if (oldNodeIds.length > 0 && nodeIds.length === 0) {
+    // 极端兜底：没有新节点，按旧逻辑 mark superseded
+    for (let i = 0; i < oldNodeIds.length; i++) {
       db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(oldNodeIds[i]);
       db.prepare('DELETE FROM links WHERE from_id = ? OR to_id = ?').run(oldNodeIds[i], oldNodeIds[i]);
     }

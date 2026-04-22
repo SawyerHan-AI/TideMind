@@ -12,6 +12,7 @@ import { listAllPages, getPageProperties, validateToken } from './api-client.js'
 import { getAllPageStates, removePageState, hasCompletedFullScan, markFullScanCompleted } from './sync-state.js';
 import { processNotionPages, resetProgress } from './queue.js';
 import { isNotionInitializing } from './initialization.js';
+import { archiveNode } from '../../db/nodes.js';
 import type { NotionPageSummary } from './types.js';
 
 const log = createLogger('notion');
@@ -205,9 +206,9 @@ async function runSyncInner(
     log.info(`清理 ${stalePageIds.length} 个已删除/取消共享的页面`);
     for (const pageId of stalePageIds) {
       const state = syncStates.get(pageId)!;
-      // Archive 关联节点
+      // Archive 关联节点——走 archiveNode() 统一清理向量，防止已删除页面残留在召回里
       for (const nodeId of state.node_ids) {
-        db.prepare('UPDATE nodes SET archived = 1, heat = 0.01 WHERE id = ?').run(nodeId);
+        archiveNode(db, nodeId);
       }
       removePageState(db, pageId, sourceId);
     }
@@ -316,9 +317,9 @@ async function detectDeletedPages(
         await getPageProperties(token, pageId);
         // 页面仍然可访问，只是 Search 索引延迟
       } catch {
-        // 404/403 → 确认已删除/取消共享
+        // 404/403 → 确认已删除/取消共享。走 archiveNode() 清理向量。
         for (const nodeId of state.node_ids) {
-          db.prepare('UPDATE nodes SET archived = 1, heat = 0.01 WHERE id = ?').run(nodeId);
+          archiveNode(db, nodeId);
         }
         removePageState(db, pageId, sourceId);
         deletedCount++;
