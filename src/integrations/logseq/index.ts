@@ -12,7 +12,7 @@ import type Database from 'better-sqlite3';
 import { getConfig } from '../../config.js';
 import { createLogger } from '../../utils/logger.js';
 import { logTimelineEvent } from '../../db/log.js';
-import { updateNode } from '../../db/nodes.js';
+import { archiveNode } from '../../db/nodes.js';
 
 const log = createLogger('logseq');
 import { buildBlockIndex, walkMdFiles, shouldProcessFile } from './preprocessor.js';
@@ -31,6 +31,8 @@ import { clearTagNodeCache } from '../shared/property-promote.js';
 // 其他平台每个 sourceId 仍只有一个 watcher
 const watchers = new Map<string, fs.FSWatcher[]>();
 const debounceTimerMaps = new Map<string, Map<string, NodeJS.Timeout>>();
+/** 正在执行 runSync 的源 ID，用于防止 watcher 事件与首次全量同步并发 */
+const syncingSources = new Set<string>();
 
 /**
  * 启动单个 Logseq 笔记源实例
@@ -52,10 +54,15 @@ export async function startLogseqSource(
   // 1. 确保同步表存在
   ensureSyncSchema(db);
 
-  // 2. 执行同步（后台，不阻塞 daemon 启动）
-  runSync(db, graphRoot, sourceId).catch(err =>
-    log.error(`Logseq 同步失败 (source=${sourceId}):`, (err as Error).message),
-  );
+  // 2. 执行首次同步，完成后再启动 watcher
+  // 首次全量导入与 watcher 并发会造成同一文件被全量流程与增量流程同时处理，
+  // 产生重复 digest / supersede 链混乱。await 完成后再挂 watcher。
+  try {
+    await runSync(db, graphRoot, sourceId);
+  } catch (err) {
+    log.error(`Logseq 首次同步失败 (source=${sourceId}):`, (err as Error).message);
+    // 不 rethrow：即便首次同步失败也启动 watcher，用户改动后还能触发增量
+  }
 
   // 3. 启动文件监听
   startFilteredWatcher(db, graphRoot, sourceId);
@@ -97,8 +104,34 @@ export async function startLogseqIntegration(db: Database.Database): Promise<voi
 
 /**
  * 执行同步：首次全量导入或增量同步
+ *
+ * 使用 syncingSources 做 per-source 互斥：防止 watcher 事件在首次同步期间
+ * 触发 processFileChange，同时又被全量 runSync 处理，造成重复节点 / supersede 链混乱。
  */
 async function runSync(
+  db: Database.Database,
+  graphRoot: string,
+  sourceId?: string,
+): Promise<void> {
+  const syncKey = sourceId ?? '__default__';
+  if (syncingSources.has(syncKey)) {
+    log.warn(`Logseq 同步已在进行中，跳过重复调用 (source=${sourceId})`);
+    return;
+  }
+  syncingSources.add(syncKey);
+  try {
+    await runSyncInner(db, graphRoot, sourceId);
+  } finally {
+    syncingSources.delete(syncKey);
+  }
+}
+
+/** 判断 source 当前是否正在全量/增量同步（供 watcher 事件检查） */
+function isSyncing(sourceId?: string): boolean {
+  return syncingSources.has(sourceId ?? '__default__');
+}
+
+async function runSyncInner(
   db: Database.Database,
   graphRoot: string,
   sourceId?: string,
@@ -228,6 +261,10 @@ function startFilteredWatcher(
 
       if (!fs.existsSync(filePath)) return; // 文件被删除
 
+      // 首次全量同步期间忽略 watcher 事件：runSync 会处理到该文件，
+      // 避免同一文件被全量流程与增量流程并发处理。
+      if (isSyncing(sourceId)) return;
+
       processFileChange(db, filePath, graphRoot, sourceId)
         .then(changed => {
           if (!changed) return; // 内容未变（hash 相同），不写时间线
@@ -310,14 +347,12 @@ export async function triggerFullRescan(
  * 归档因源文件被删除而孤立的节点
  *
  * archived = 1 仅用于此场景：外部笔记源删除导致的归档。
- * 同时降 heat 到 0.01，利用现有查询条件 (heat > 0.01) 立即隔离。
+ * 走 archiveNode() 统一清理 nodes_vec / node_segments——防止已删除内容残留在
+ * 向量召回里（向量搜索只看 nodes_vec 表，不过滤 archived 字段）。
  */
 function archiveOrphanNodes(db: Database.Database, nodeIds: string[]): void {
-  const stmt = db.prepare(
-    'UPDATE nodes SET archived = 1, heat = 0.01 WHERE id = ? AND archived = 0',
-  );
   for (const id of nodeIds) {
-    stmt.run(id);
+    archiveNode(db, id);
   }
 }
 

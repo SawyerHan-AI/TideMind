@@ -90,19 +90,24 @@ export function rollbackNoteSource(
         db.prepare(`DELETE FROM strategy_feedback WHERE node_id IN (${placeholders})`).run(...batch);
       } catch { /* 表可能不存在 */ }
 
-      // 删除 node_segments（在 nodes 之前删，避免级联异常）
+      // 删除向量：nodes_vec.id 是 segment_id（`${nodeId}#${index}`），不是 node.id。
+      // 必须先通过 node_segments 查出 segment_id，再按 segment_id 删 nodes_vec；
+      // 如果先 DELETE FROM node_segments 就永远找不到 segment_id，导致向量残留。
+      try {
+        const segRows = db.prepare(
+          `SELECT segment_id FROM node_segments WHERE node_id IN (${placeholders})`,
+        ).all(...batch) as Array<{ segment_id: string }>;
+        const delVec = db.prepare('DELETE FROM nodes_vec WHERE id = ?');
+        for (const row of segRows) delVec.run(row.segment_id);
+      } catch { /* nodes_vec / node_segments 可能不存在 */ }
+
+      // 删除 node_segments（必须在 nodes_vec 之后，在 nodes 之前）
       try {
         db.prepare(`DELETE FROM node_segments WHERE node_id IN (${placeholders})`).run(...batch);
       } catch { /* 表可能不存在 */ }
 
       // 删除节点本身
       db.prepare(`DELETE FROM nodes WHERE id IN (${placeholders})`).run(...batch);
-
-      // 删除向量（vec0 虚拟表可能不支持 IN，逐条删除）
-      try {
-        const delVec = db.prepare('DELETE FROM nodes_vec WHERE id = ?');
-        for (const nid of batch) delVec.run(nid);
-      } catch { /* nodes_vec 可能不存在 */ }
 
       // 删除 FTS 索引条目（通过 trigger 自动处理，但 rebuild 更保险）
       // nodes 的 DELETE trigger 会自动清理 FTS

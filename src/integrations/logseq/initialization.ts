@@ -37,7 +37,7 @@ import { promoteFrequentTags } from '../../metabolism/tag-promote.js';
 import { markFullScanCompleted } from './sync-state.js';
 import { findLandingConnections } from '../../graph/landing.js';
 import { getEmbedding } from '../../llm/embedding.js';
-import { searchVectors } from '../../db/vectors.js';
+import { searchVectors, getVectorForNode } from '../../db/vectors.js';
 import { estimateCost } from '../../llm/pricing.js';
 
 const log = createLogger('logseq-init');
@@ -400,8 +400,10 @@ export async function runInitialization(db: Database.Database, sourceId?: string
     if (isAborted(sourceId)) throw new Error('初始化已中断');
 
     // === Phase 5: Landing Connections ===
+    // nodes_vec.id 存的是 segment_id（`${nodeId}#${index}`），不是 node.id。
+    // 必须通过 node_segments 桥接才能统计"已 embed 的节点数"。
     const embeddedNodeCount = (db.prepare(
-      'SELECT COUNT(DISTINCT n.id) as cnt FROM nodes n JOIN nodes_vec v ON n.id = v.id WHERE n.heat > 0.01 AND n.is_meta = 0 AND n.is_superseded = 0',
+      'SELECT COUNT(DISTINCT n.id) as cnt FROM nodes n JOIN node_segments s ON s.node_id = n.id JOIN nodes_vec v ON v.id = s.segment_id WHERE n.heat > 0.01 AND n.is_meta = 0 AND n.is_superseded = 0',
     ).get() as { cnt: number }).cnt;
     setPhase(5, 'Landing 连接', embeddedNodeCount, sourceId);
     log.info(`Phase 5: Landing Connections (${embeddedNodeCount} 个节点)`);
@@ -747,9 +749,12 @@ async function createLandingConnections(
   isAborted: () => boolean,
   onProgress: (count: number) => void,
 ): Promise<number> {
+  // nodes_vec.id 是 segment_id，不是 node.id。通过 node_segments 桥接取
+  // "有 embedding 的节点"；DISTINCT 防止多段节点被重复返回。
   const nodes = db.prepare(`
-    SELECT n.id FROM nodes n
-    JOIN nodes_vec v ON n.id = v.id
+    SELECT DISTINCT n.id FROM nodes n
+    JOIN node_segments s ON s.node_id = n.id
+    JOIN nodes_vec v ON v.id = s.segment_id
     WHERE n.heat > 0.01 AND n.is_meta = 0 AND n.is_superseded = 0
   `).all() as Array<{ id: string }>;
 
@@ -762,9 +767,9 @@ async function createLandingConnections(
   const MAX_BATCH_SIZE = 15;
 
   const processNode = (id: string): number => {
-    const vecRow = db.prepare('SELECT embedding FROM nodes_vec WHERE id = ?').get(id) as { embedding: Buffer } | undefined;
-    if (!vecRow) return 0;
-    const embedding = new Float32Array(vecRow.embedding.buffer, vecRow.embedding.byteOffset, vecRow.embedding.byteLength / 4);
+    // 通过 node_segments 查 segment 0 的 embedding；getVectorForNode 已封装此逻辑
+    const embedding = getVectorForNode(db, id);
+    if (!embedding) return 0;
     // 初始化的批量 landing 只建连接，不归并——节点已经入库且各自有外部身份
     const result = findLandingConnections(db, id, embedding, { skipDedupMerge: true });
     return result.confirmedLinks.length + result.pendingLinks.length;
