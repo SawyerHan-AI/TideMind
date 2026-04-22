@@ -12,9 +12,9 @@ jobs:
   build-mac:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: 'npm'
@@ -47,7 +47,7 @@ jobs:
       # 闭源信息(pro/ 下的内容)发布出去。发版后由人(或 Claude)用
       # `gh release edit --notes-file` 写正式 notes。
       - name: Upload Release Assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             client/release/*.dmg
@@ -63,8 +63,8 @@ jobs:
   # build-mac-signed:
   #   runs-on: macos-latest
   #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: actions/setup-node@v4
+  #     - uses: actions/checkout@v6
+  #     - uses: actions/setup-node@v6
   #       with:
   #         node-version: '22'
   #         cache: 'npm'
