@@ -91,14 +91,16 @@ export async function runAnnotation(db: Database.Database): Promise<{
   // 获取图谱词汇表（标签，所有批次共用）
   const vocab = getGraphVocabulary(db);
 
-  // 获取全局反例（跨标签最近 N 条 rejected_by_user 链接），用于提醒 LLM 不要重复犯过的错误
-  const rejectionSamples = getRecentRejectedNodesAcrossTags(db, 5);
-  const rejectionExamplesBlock = buildRejectionExamplesBlock(rejectionSamples);
-
   let totalAnnotated = 0;
   let totalSkipped = 0;
 
   for (const batch of batches) {
+    // 获取全局反例（跨标签最近 N 条 rejected_by_user 链接），每批次重新取。
+    // 搬进 batch loop 是为了让 batch N 能看到 batch 1..N-1 执行期间用户新增的
+    // rejection（例如用户边看结果边纠错），否则一轮 run 只读一次会滞后。
+    const rejectionSamples = getRecentRejectedNodesAcrossTags(db, 5);
+    const rejectionExamplesBlock = buildRejectionExamplesBlock(rejectionSamples);
+
     // 为每个节点获取向量邻居 + 用户已拒绝的标签名
     const nodesWithContext = batch.map(node => ({
       node,
@@ -144,9 +146,12 @@ export async function runAnnotation(db: Database.Database): Promise<{
         if (!ann) continue;
 
         // 合并标签：保留已有 + LLM 补充；过滤掉用户已拒绝的标签名（防止重新打上）
+        // 大小写无关比较——LLM 常返回不同大小写的同名标签（"React" vs "react"），
+        // 严格比较会让 rejection 被绕过。
         const currentTags = parseTags(node.tags);
         const rejectedNames = nodesWithContext[i].rejectedTagNames;
-        const filteredAnnTags = (ann.tags ?? []).filter(t => !rejectedNames.includes(t));
+        const lowerRejected = new Set(rejectedNames.map(n => n.toLowerCase()));
+        const filteredAnnTags = (ann.tags ?? []).filter(t => !lowerRejected.has(t.toLowerCase()));
         const mergedTags = [...new Set([...currentTags, ...filteredAnnTags])];
 
         // 校验维度分数在 0-1 范围
@@ -432,7 +437,9 @@ function linkToExistingTagNodes(
   for (const tag of tags) {
     const tagNodeId = tagNodeMap.get(tag);
     if (!tagNodeId) continue; // tag 节点不存在，等 tag-promote 创建
-    if (linkExists(db, nodeId, tagNodeId)) continue;
+    // tagged 是方向敏感的链接（node → tag），用 'from_to' 只检查正向。
+    // 若只查双向会误把反向链接（tag → node，不同语义）当作已存在，阻止建链。
+    if (linkExists(db, nodeId, tagNodeId, 'from_to')) continue;
 
     const contentMention = nodeContent.toLowerCase().includes(tag.toLowerCase()) ? 0.7 : 0.4;
     const concentrationBonus = tags.length === 1 ? 0.1 : 0;

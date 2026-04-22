@@ -1348,34 +1348,41 @@ const MIGRATIONS: Migration[] = [
 
       // 重建 links 表（SQLite 不支持 ALTER CHECK）。
       // 沿用 v3 的 pattern：不需 FK OFF，因为 links 不被其他表引用。
-      db.exec('DROP TABLE IF EXISTS links_new');
-      db.exec(`
-        CREATE TABLE links_new (
-            id TEXT PRIMARY KEY,
-            from_id TEXT NOT NULL REFERENCES nodes(id),
-            to_id TEXT NOT NULL REFERENCES nodes(id),
-            relation TEXT NOT NULL,
-            strength REAL DEFAULT 0.5,
-            note TEXT,
-            auto INTEGER DEFAULT 1,
-            status TEXT DEFAULT 'confirmed' CHECK(status IN ('confirmed','pending','rejected_by_user')),
-            created TEXT NOT NULL,
-            updated TEXT
-        )
-      `);
+      //
+      // 显式 db.transaction 包裹整个 rebuild：runMigrations 本身已经把每个
+      // migration 放在事务里，所以 better-sqlite3 会在此处自动使用 SAVEPOINT。
+      // 作为防御写法保留，若以后有人把此 migration 抽到非事务路径（像 v6），
+      // DROP→RENAME 之间 crash 仍不会永久损坏 DB。
+      db.transaction(() => {
+        db.exec('DROP TABLE IF EXISTS links_new');
+        db.exec(`
+          CREATE TABLE links_new (
+              id TEXT PRIMARY KEY,
+              from_id TEXT NOT NULL REFERENCES nodes(id),
+              to_id TEXT NOT NULL REFERENCES nodes(id),
+              relation TEXT NOT NULL,
+              strength REAL DEFAULT 0.5,
+              note TEXT,
+              auto INTEGER DEFAULT 1,
+              status TEXT DEFAULT 'confirmed' CHECK(status IN ('confirmed','pending','rejected_by_user')),
+              created TEXT NOT NULL,
+              updated TEXT
+          )
+        `);
 
-      db.exec(`
-        INSERT INTO links_new (id, from_id, to_id, relation, strength, note, auto, status, created, updated)
-        SELECT id, from_id, to_id, relation, strength, note, auto, status, created, updated FROM links
-      `);
+        db.exec(`
+          INSERT INTO links_new (id, from_id, to_id, relation, strength, note, auto, status, created, updated)
+          SELECT id, from_id, to_id, relation, strength, note, auto, status, created, updated FROM links
+        `);
 
-      db.exec('DROP TABLE links');
-      db.exec('ALTER TABLE links_new RENAME TO links');
+        db.exec('DROP TABLE links');
+        db.exec('ALTER TABLE links_new RENAME TO links');
 
-      // 重建索引
-      db.exec('CREATE INDEX IF NOT EXISTS idx_links_from ON links(from_id)');
-      db.exec('CREATE INDEX IF NOT EXISTS idx_links_to ON links(to_id)');
-      db.exec('CREATE INDEX IF NOT EXISTS idx_links_status ON links(status)');
+        // 重建索引
+        db.exec('CREATE INDEX IF NOT EXISTS idx_links_from ON links(from_id)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_links_to ON links(to_id)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_links_status ON links(status)');
+      })();
 
       log.info('迁移 v19 完成: links.status CHECK 已扩展为支持 rejected_by_user');
     },

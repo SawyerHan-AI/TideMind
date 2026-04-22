@@ -115,6 +115,12 @@ function generatePkce(): { verifier: string; challenge: string } {
 /** 构造带 PKCE + state 的登录/注册 URL。PKCE verifier 存到内存,challenge 进 query。*/
 function buildAuthUrl(kind: 'login' | 'register'): string {
   const base = getCloudBaseUrl();
+  // P2-NEW-H: 连点两次 Login 时，第二次会无声覆盖第一次的 state/verifier —— 第一次
+  // flow 回来做 CSRF 校验会失败。这里放弃第一次流是可接受的（用户意图就是新一次
+  // 登录），仅记一条 warn 便于 ops 排查"登录一次失败" 的投诉。
+  if (pendingOAuthState !== null) {
+    log.warn('in-progress OAuth flow overwritten by new buildAuthUrl call');
+  }
   pendingOAuthState = crypto.randomBytes(16).toString('hex');
   const pkce = generatePkce();
   pendingPkceVerifier = pkce.verifier;

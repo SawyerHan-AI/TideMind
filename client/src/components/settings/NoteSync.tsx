@@ -121,15 +121,25 @@ function NoteSourceDetailPanel({
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ accessible: boolean; fileCount: number } | null>(null)
   const [importing, setImporting] = useState(false)
+  // P2-NEW-J: pollInterval 初始值直接来自 source.poll_interval（props），
+  // 之前用 setTimeout(200) 只是为了绕开 mount 时那次 setState → effect 触发
+  // 的"初始相等写回"，硬编码延迟既不稳也不对。改成：比较当前 pollInterval
+  // 和 source 的原始值，值未变则跳过写回（避免把自己写成自己）。
   const intervalInitialized = useRef(false)
 
   useEffect(() => {
-    setTimeout(() => { intervalInitialized.current = true }, 200)
-  }, [])
+    // 切换 source 时重置 ref（下一次 pollInterval effect 才能跳过首次写回）
+    intervalInitialized.current = false
+  }, [source.id])
 
   // debounce 自动保存 interval 变化
   useEffect(() => {
-    if (!intervalInitialized.current) return
+    // 第一次触发跳过：这一次是 mount 或 source 切换导致的初始化，
+    // pollInterval 等于 source.poll_interval，不需要写回
+    if (!intervalInitialized.current) {
+      intervalInitialized.current = true
+      return
+    }
     const timer = setTimeout(async () => {
       await (window as any).api.noteSources.update(source.id, { pollInterval })
     }, 500)
@@ -351,6 +361,9 @@ function InitializingSourceCard({
               }
             } catch { /* ignore */ }
           }, 2000)
+          // P2-NEW-I: 覆盖之前的 timer 前先清理，避免 mount 轮询和 handleContinue
+          // 轮询同时存活导致泄漏
+          if (pollRef.current) clearInterval(pollRef.current)
           pollRef.current = timer
         }
       } catch { /* ignore */ }
@@ -372,6 +385,8 @@ function InitializingSourceCard({
     setInitError(null)
     setInitProgress({ phase: 0, phaseName: t('noteSync.wizard.starting'), current: 0, total: 0, status: 'running' })
 
+    // P2-NEW-I: 覆盖之前 mount 轮询的 timer 前先清理
+    if (pollRef.current) clearInterval(pollRef.current)
     // 开始轮询进度
     pollRef.current = setInterval(async () => {
       try {
@@ -757,6 +772,10 @@ function AddNoteSourceWizard({
       clearInterval(pollRef.current)
       pollRef.current = null
     }
+    // P3-NEW-F: await 可能跨越 unmount / handleClose；回来后若已取消就不要
+    // setInitReport / setStep / setInitError，避免"已卸载组件 setState"警告
+    // 和无谓的 step 切换。复用 step3CancelledRef（handleClose 中会置 true）。
+    if (step3CancelledRef.current) return
     if (res.success) {
       setInitReport(res.data)
       setStep(3)

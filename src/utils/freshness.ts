@@ -8,6 +8,7 @@
 
 import type { BrainNode, RecallNodeLink } from '../types.js';
 import { createLogger } from './logger.js';
+import { hoursAgo } from './time.js';
 
 const log = createLogger('freshness');
 
@@ -57,11 +58,13 @@ function computeAgeLabel(node: BrainNode): string | undefined {
 /** 计算距上次更新（再巩固或创建）的天数 */
 function getDaysSinceUpdate(node: BrainNode): number {
   const ref = node.last_reconsolidated ?? node.created;
-  const refMs = new Date(ref).getTime();
-  if (isNaN(refMs)) {
+  // 走 hoursAgo：内部会对老行的 "YYYY-MM-DD HH:MM:SS"（SQLite datetime('now')
+  // 字面量格式，会被 new Date() 当本地时区解析）先规范化成 ISO UTC 再算。
+  const hours = hoursAgo(ref);
+  if (!isFinite(hours)) {
     log.warn(`Invalid date in node ${node.id}: "${ref}"`);
     return 999;
   }
-  const days = Math.floor((Date.now() - refMs) / 86_400_000);
+  const days = Math.floor(hours / 24);
   return Math.max(0, days);
 }

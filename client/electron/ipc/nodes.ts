@@ -1,4 +1,5 @@
 import { ipcMain } from 'electron'
+import crypto from 'node:crypto'
 import type Database from 'better-sqlite3'
 
 /** 派生分类 → 维度条件 SQL（维度化迁移后前端发送派生分类名） */
@@ -185,17 +186,23 @@ export function registerNodeHandlers(db: Database.Database): void {
   })
 
   ipcMain.handle('nodes:promoteTag', (_e, tag: string) => {
+    // P3-NEW-G: 校验入参类型 / 非空，避免写入畸形数据
+    if (typeof tag !== 'string' || !tag.trim()) {
+      throw new Error('invalid tag')
+    }
     function computeTagLinkStrength(nodeContent: string, tagText: string, nodeTags: string[]): number {
       const contentMention = nodeContent.toLowerCase().includes(tagText.toLowerCase()) ? 0.7 : 0.4
       const concentrationBonus = nodeTags.length === 1 ? 0.1 : 0
       return Math.min(0.8, contentMention + concentrationBonus)
     }
 
-    const { nanoid } = require('nanoid') as { nanoid: () => string }
+    // 生成 URL-safe 随机 ID(32 字符 hex)。client/ 未安装 nanoid,复用 node:crypto,
+    // 语义与 tag-promote.ts 的 nanoid(21) 等价——唯一性足够且路径独立(不跨系统比较)。
+    const genId = () => crypto.randomBytes(16).toString('hex')
 
     db.transaction(() => {
       // 标签名存 title，content 留空（与 tag-promote.ts 一致）
-      const tagNodeId = nanoid()
+      const tagNodeId = genId()
       db.prepare(`
         INSERT INTO nodes (id, type, content, title, heat, refinement, connectivity, independence,
           specificity, subjectivity, actuality, is_tag, created, version, archived, maturity_score)
@@ -209,7 +216,7 @@ export function registerNodeHandlers(db: Database.Database): void {
           const parsed = JSON.parse(row.tags)
           if (Array.isArray(parsed) && parsed.includes(tag)) {
             const strength = computeTagLinkStrength(row.content, tag, parsed)
-            const linkId = nanoid()
+            const linkId = genId()
             db.prepare(`
               INSERT INTO links (id, from_id, to_id, relation, strength, auto, status, created)
               VALUES (?, ?, ?, ?, ?, 1, 'confirmed', datetime('now'))
@@ -318,33 +325,69 @@ export function registerNodeHandlers(db: Database.Database): void {
       nodeMap.set(n.id, n)
     }
 
-    // Get 1-hop neighbors for each filtered node
+    // Get 1-hop neighbors for each filtered node.
+    //
+    // P1-NEW-8: SQLite 默认 999 变量上限。单条 SQL 展开 3 × filteredIds，
+    // filteredIds 超过 ~333 必 crash。按 BATCH 分批查后 JS 侧合并 + 去重。
+    //
+    // P3-NEW-E: SQL 语义简化 —— 查询直接返回所有 neighbor_id（可能包含 filter-set
+    // 内自身节点 id），JS 侧统一用 `!nodeMap.has(id)` 过滤，避免 `DISTINCT CASE WHEN`
+    // 子查询的语义歧义。
     const filteredIds = filteredNodes.map(n => n.id)
+    // 单条 SQL 展开 2 × ids + 常量，保守 BATCH=400（留余量给 status 等）
+    const BATCH = 400
     if (filteredIds.length > 0) {
-      const placeholders = filteredIds.map(() => '?').join(', ')
-      const neighborLinks = db.prepare(
-        `SELECT DISTINCT CASE WHEN from_id IN (${placeholders}) THEN to_id ELSE from_id END as neighbor_id
-         FROM links WHERE (from_id IN (${placeholders}) OR to_id IN (${placeholders})) AND status != 'rejected_by_user'`
-      ).all(...filteredIds, ...filteredIds, ...filteredIds) as any[]
-
-      const neighborIds = neighborLinks.map(r => r.neighbor_id).filter((id: string) => !nodeMap.has(id))
+      const neighborIdSet = new Set<string>()
+      for (let i = 0; i < filteredIds.length; i += BATCH) {
+        const slice = filteredIds.slice(i, i + BATCH)
+        const placeholders = slice.map(() => '?').join(', ')
+        const rows = db.prepare(
+          `SELECT from_id, to_id FROM links
+           WHERE (from_id IN (${placeholders}) OR to_id IN (${placeholders}))
+             AND status != 'rejected_by_user'`
+        ).all(...slice, ...slice) as Array<{ from_id: string; to_id: string }>
+        for (const r of rows) {
+          neighborIdSet.add(r.from_id)
+          neighborIdSet.add(r.to_id)
+        }
+      }
+      // 去掉 filter-set 内节点（仅保留真正的 1-hop 外部邻居）
+      const neighborIds = Array.from(neighborIdSet).filter(id => !nodeMap.has(id))
       if (neighborIds.length > 0) {
-        const nPlaceholders = neighborIds.map(() => '?').join(', ')
-        const neighbors = db.prepare(`SELECT * FROM nodes WHERE id IN (${nPlaceholders})`).all(...neighborIds) as any[]
-        for (const n of neighbors) {
-          nodeMap.set(n.id, n)
+        for (let i = 0; i < neighborIds.length; i += BATCH) {
+          const slice = neighborIds.slice(i, i + BATCH)
+          const nPlaceholders = slice.map(() => '?').join(', ')
+          const neighbors = db.prepare(`SELECT * FROM nodes WHERE id IN (${nPlaceholders})`).all(...slice) as any[]
+          for (const n of neighbors) {
+            nodeMap.set(n.id, n)
+          }
         }
       }
     }
 
-    // Get all links between the result set
+    // Get all links between the result set. 同样受 999-var 限制影响 —— 分批 + JS 去重。
     const allIds = Array.from(nodeMap.keys())
     let links: any[] = []
     if (allIds.length > 0) {
-      const placeholders = allIds.map(() => '?').join(', ')
-      links = db.prepare(
-        `SELECT * FROM links WHERE from_id IN (${placeholders}) AND to_id IN (${placeholders}) AND status != 'rejected_by_user'`
-      ).all(...allIds, ...allIds)
+      const allIdsSet = new Set(allIds)
+      const seenLinkIds = new Set<string>()
+      for (let i = 0; i < allIds.length; i += BATCH) {
+        const slice = allIds.slice(i, i + BATCH)
+        const placeholders = slice.map(() => '?').join(', ')
+        // 对每批 slice：取该批节点作为端点之一的所有链接
+        // 再在 JS 侧过滤"另一端必须也在 allIds 内"，实现跨批 UNION 的等价语义
+        const rows = db.prepare(
+          `SELECT * FROM links
+           WHERE (from_id IN (${placeholders}) OR to_id IN (${placeholders}))
+             AND status != 'rejected_by_user'`
+        ).all(...slice, ...slice) as any[]
+        for (const r of rows) {
+          if (seenLinkIds.has(r.id)) continue
+          if (!allIdsSet.has(r.from_id) || !allIdsSet.has(r.to_id)) continue
+          seenLinkIds.add(r.id)
+          links.push(r)
+        }
+      }
     }
 
     // 解析 relation JSON
@@ -372,13 +415,16 @@ export function registerNodeHandlers(db: Database.Database): void {
     let depth = 0
     const maxDepth = 10
 
+    // P2-NEW-K: prepare 一次，循环内仅 .all()，避免每节点重新编译 SQL
+    const neighborsStmt = db.prepare(
+      "SELECT from_id, to_id FROM links WHERE (from_id = ? OR to_id = ?) AND status != 'rejected_by_user'"
+    )
+
     while (queue.length > 0 && depth < maxDepth && !found) {
       const levelSize = queue.length
       for (let i = 0; i < levelSize; i++) {
         const current = queue.shift()!
-        const neighbors = db.prepare(
-          "SELECT from_id, to_id FROM links WHERE (from_id = ? OR to_id = ?) AND status != 'rejected_by_user'"
-        ).all(current, current) as any[]
+        const neighbors = neighborsStmt.all(current, current) as any[]
 
         for (const link of neighbors) {
           const neighbor = link.from_id === current ? link.to_id : link.from_id

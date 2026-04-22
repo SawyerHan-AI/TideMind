@@ -69,7 +69,12 @@ export class CloudSyncClient {
     await this.syncOnce();
 
     // 启动 WebSocket 实时通知
-    this.connectWebSocket();
+    // P2-NEW-G: connectWebSocket 是 async，裸调用丢 Promise 会在上游触发
+    // unhandledRejection。加 .catch 兜底：记日志，并若未 stop 则进入退避重连。
+    this.connectWebSocket().catch(e => {
+      log.warn(`initial ws connect failed: ${(e as Error).message}`);
+      if (!this.stopped) this.scheduleReconnect();
+    });
 
     // 保留轮询作为兜底（WebSocket 断开时仍能同步）
     this.intervalId = setInterval(

@@ -68,13 +68,19 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
   }
 
   // 2. 找到已存在的 tag 节点（优先用 title 匹配，兼容旧数据用 content 匹配）
+  // 两遍填充：先放 title=null 的节点（用 content 作 key），再用 title 覆盖同名项，
+  // 保证带 title 的版本胜出——否则单遍 `title ?? content` 会因 Map 迭代顺序
+  // 让同名的两个节点（一个有 title，一个只有 content）互相覆盖成随机结果。
+  // 与 annotate.ts linkToExistingTagNodes 的两遍逻辑对齐。
   const existingTagNodes = new Map<string, string>();
   const tagNodes = db.prepare(
     "SELECT id, title, content FROM nodes WHERE is_tag = 1 AND heat > 0.01 AND is_superseded = 0",
   ).all() as Array<{ id: string; title: string | null; content: string }>;
   for (const tn of tagNodes) {
-    const tagName = tn.title ?? tn.content;
-    existingTagNodes.set(tagName, tn.id);
+    if (!tn.title) existingTagNodes.set(tn.content, tn.id);
+  }
+  for (const tn of tagNodes) {
+    if (tn.title) existingTagNodes.set(tn.title, tn.id);
   }
 
   // 2.5 加载手动降级黑名单（被用户降级的标签不再自动晋升）
@@ -178,18 +184,18 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
 
       const strength = computeTagLinkStrength(cached.content, tag, cached.tags);
 
-      if (linkExists(db, nodeId, tagNodeId)) {
+      // tagged 是方向敏感的链接（node → tag），只检查正向。
+      // 若用双向检测会把反向链接（tag → node，不同语义）误判为已存在，阻止建链。
+      if (linkExists(db, nodeId, tagNodeId, 'from_to')) {
         // 存量链接：用启发式重新评估 strength
+        // getLinksForNode 默认已过滤 rejected_by_user，这里只能拿到 confirmed/pending。
         const existingLinks = getLinksForNode(db, nodeId).filter(l =>
-          (l.from_id === nodeId && l.to_id === tagNodeId) ||
-          (l.from_id === tagNodeId && l.to_id === nodeId),
+          l.from_id === nodeId && l.to_id === tagNodeId,
         );
         for (const link of existingLinks) {
           const primaryType = Array.isArray(link.relation) && link.relation.length > 0
             ? link.relation[0].type : null;
           if (primaryType !== 'tagged') continue;
-          // 用户主动拒绝的标签链接不重新评估 strength、不删除（保留 rejected_by_user 状态作为反馈痕迹）
-          if (link.status === 'rejected_by_user') continue;
 
           if (strength < minStrength) {
             // 低于阈值，删除
