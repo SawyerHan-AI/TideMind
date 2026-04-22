@@ -140,8 +140,8 @@ export function getLinksForNodes(
   if (nodeIds.length === 0) return [];
   const minStrength = options?.minStrength ?? 0;
   const status = options?.statusFilter ?? 'confirmed';
-  // SQLite 变量上限 999；每条 SQL 展开两份 nodeIds + 2 个固定参数，
-  // 单批最多放 floor((999 - 2) / 2) = 498 个 id，保守取 499 以下
+  // SQLite 变量上限 999；每条 SQL 展开两份 nodeIds + 2 个固定参数（minStrength + status），
+  // 498 是精确上限：2×498 + 2 = 998 ≤ 999。
   const BATCH = 498;
   if (nodeIds.length > BATCH) {
     const results: BrainLink[] = [];
@@ -188,7 +188,28 @@ export function getLinkCount(db: Database.Database): number {
   return (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed'").get() as { cnt: number }).cnt;
 }
 
-export function linkExists(db: Database.Database, fromId: string, toId: string): boolean {
+/**
+ * 检查两节点间是否存在链接。
+ *
+ * direction='either'（默认，向后兼容）：任一方向存在即返回 true。
+ *   用于 reconsolidate / link-discover / landing 等"是否相邻"的判断。
+ *
+ * direction='from_to'：仅检查 from→to 这一方向。
+ *   用于 tagged 链接等方向敏感的去重（annotate / tag-promote 的标签反向链接
+ *   不应阻止正向 `node→tag` 的创建）。
+ */
+export function linkExists(
+  db: Database.Database,
+  fromId: string,
+  toId: string,
+  direction: 'either' | 'from_to' = 'either',
+): boolean {
+  if (direction === 'from_to') {
+    const row = db.prepare(
+      'SELECT 1 FROM links WHERE from_id = ? AND to_id = ? LIMIT 1',
+    ).get(fromId, toId);
+    return !!row;
+  }
   const row = db.prepare(
     'SELECT 1 FROM links WHERE (from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?) LIMIT 1',
   ).get(fromId, toId, toId, fromId);

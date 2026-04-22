@@ -1,6 +1,6 @@
 {
   "name": "tidemind-client",
-  "version": "0.2.38",
+  "version": "0.2.39",
   "description": "Tide Mind 桌面客户端",
   "main": "./out/main/index.js",
   "scripts": {

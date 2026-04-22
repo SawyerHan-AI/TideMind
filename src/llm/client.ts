@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import { getConfig, getDataDir } from '../config.js';
 import { createLogger } from '../utils/logger.js';
 import { estimateCost } from './pricing.js';
+import { now } from '../utils/time.js';
 
 const log = createLogger('llm');
 
@@ -380,10 +381,12 @@ function logUsage(modelId: string, operationName: string | undefined, inputToken
   if (!usageDb) return;
   try {
     const cost = estimateCost(modelId, inputTokens, outputTokens, thinkingTokens);
+    // created 统一走 JS ISO：下游 initialization.ts 用 `created >= ?` 和 ISO 字符串
+    // 比较，若写 datetime('now') 字面量(无 Z、空格分隔)字符串序会错乱。
     usageDb.prepare(
       `INSERT INTO llm_usage_log (model, operation, input_tokens, output_tokens, thinking_tokens, estimated_cost, created)
-       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`
-    ).run(modelId, operationName ?? null, inputTokens, outputTokens, thinkingTokens, cost);
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(modelId, operationName ?? null, inputTokens, outputTokens, thinkingTokens, cost, now());
   } catch { /* 用量记录失败不影响主流程 */ }
 }
 

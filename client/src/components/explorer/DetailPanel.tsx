@@ -459,8 +459,9 @@ export function DetailPanel({ nodeId, onNavigate }: {
             {parsedTags.length > 0 && (
               <div className="flex items-center gap-1 flex-wrap">
                 <span>{t('explorer:detail.tags')}</span>
-                {parsedTags.map((tag, i) => (
-                  <span key={i} className="px-1.5 py-0.5 rounded bg-white/5 text-gray-300 text-[10px]">{tag}</span>
+                {parsedTags.map((tag) => (
+                  // P2-NEW-M: 同一节点 tag 列表唯一，用 tag 当 key 比 index 稳（删除/重排不错乱）
+                  <span key={tag} className="px-1.5 py-0.5 rounded bg-white/5 text-gray-300 text-[10px]">{tag}</span>
                 ))}
               </div>
             )}

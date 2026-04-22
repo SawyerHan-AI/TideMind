@@ -454,16 +454,19 @@ async function checkCrystalEvidence(db: Database.Database): Promise<string[]> {
         const supporterContents = supporters.map(s => s.content);
         const enriched = await enrichCrystalContent(crystal.content, supporterContents);
         if (enriched && enriched !== crystal.content) {
+          // 时区坑见上：last_reconsolidated 被 freshness.ts / daysAgo 经 new Date()
+          // 解析，datetime('now') 无 Z 会被当本地时区 → 统一走 JS ISO。
+          const ts = now();
           db.prepare(`
-            UPDATE nodes SET content = ?, version = version + 1, last_reconsolidated = datetime('now')
+            UPDATE nodes SET content = ?, version = version + 1, last_reconsolidated = ?
             WHERE id = ?
-          `).run(enriched, crystal.id);
+          `).run(enriched, ts, crystal.id);
 
           // 版本历史
           db.prepare(`
             INSERT INTO node_versions (node_id, version, content, change_reason, changed_at)
-            VALUES (?, (SELECT version FROM nodes WHERE id = ?), ?, 'crystal evidence refresh', datetime('now'))
-          `).run(crystal.id, crystal.id, enriched);
+            VALUES (?, (SELECT version FROM nodes WHERE id = ?), ?, 'crystal evidence refresh', ?)
+          `).run(crystal.id, crystal.id, enriched, ts);
 
           refreshMaturityScore(db, crystal.id);
           refreshed.push(crystal.id);

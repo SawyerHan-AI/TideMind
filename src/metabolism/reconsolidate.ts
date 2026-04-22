@@ -4,7 +4,7 @@ import { bumpHeat, updateNode } from '../db/nodes.js';
 import { createLink, linkExists, getLinksForNode } from '../db/links.js';
 import { searchVectors } from '../db/vectors.js';
 import { isVecLoaded } from '../db/connection.js';
-import { daysAgo } from '../utils/time.js';
+import { daysAgo, now } from '../utils/time.js';
 import { getParam, renderUserPrompt } from '../strategy/loader.js';
 import { inferLinkType } from '../llm/link-judge.js';
 import { callLLM } from '../llm/client.js';
@@ -249,20 +249,23 @@ async function deepReconsolidate(
   // 降级路径,避免 LLM 挂了时每次 recall 都要等超时失败。
   if (getCircuitState(db).state === 'open') {
     log.debug(`深度再巩固跳过 node=${node.id}: LLM 熔断器开启`);
+    // 时区坑:SQLite 的 datetime('now') 返回 "YYYY-MM-DD HH:MM:SS"(无 Z),
+    // JS new Date(...) 会按本地时区解析 → daysAgo 跨时区误差最多 ±12h。
+    // 统一走 JS ISO (now()) 避免 freshness.ts / daysAgo 读取时误判。
     db.prepare(`
       UPDATE nodes SET refinement = MIN(refinement + 0.1, 1.0),
-                       last_reconsolidated = datetime('now')
+                       last_reconsolidated = ?
       WHERE id = ?
-    `).run(node.id);
+    `).run(now(), node.id);
     refreshMaturityScore(db, node.id);
     return;
   }
   if (!isLlmConfigured()) {
     db.prepare(`
       UPDATE nodes SET refinement = MIN(refinement + 0.1, 1.0),
-                       last_reconsolidated = datetime('now')
+                       last_reconsolidated = ?
       WHERE id = ?
-    `).run(node.id);
+    `).run(now(), node.id);
     refreshMaturityScore(db, node.id);
     return;
   }
@@ -310,9 +313,9 @@ async function deepReconsolidate(
   if (!result) {
     db.prepare(`
       UPDATE nodes SET refinement = MIN(refinement + 0.1, 1.0),
-                       last_reconsolidated = datetime('now')
+                       last_reconsolidated = ?
       WHERE id = ?
-    `).run(node.id);
+    `).run(now(), node.id);
     refreshMaturityScore(db, node.id);
     return;
   }
@@ -328,6 +331,10 @@ async function deepReconsolidate(
     // 如果 callerContext 存在而 LLM 返回 index=1，说明把上下文本身当成冲突目标，丢弃
     if (result.conflict_with_index === 1 && callerContext) {
       log.warn(`node=${node.id} LLM 把 callerContext 当冲突目标（index=1），丢弃`);
+    }
+    // LLM 约定从 1 开始计数；返回 0 说明模型用了零索引误用，告警但不当冲突处理
+    if (result.conflict_with_index === 0) {
+      log.warn(`node=${node.id} LLM 返回 conflict_with_index=0（零索引误用），丢弃`);
     }
     const conflictIdx = typeof result.conflict_with_index === 'number' && result.conflict_with_index > 0
       ? result.conflict_with_index - 1 - indexOffset
@@ -364,16 +371,16 @@ async function deepReconsolidate(
       UPDATE nodes SET
         refinement = MIN(refinement + ?, 1.0),
         independence = ?,
-        last_reconsolidated = datetime('now')
+        last_reconsolidated = ?
       WHERE id = ?
-    `).run(refinementBoost, newIndependence, node.id);
+    `).run(refinementBoost, newIndependence, now(), node.id);
   } else {
     db.prepare(`
       UPDATE nodes SET
         independence = ?,
-        last_reconsolidated = datetime('now')
+        last_reconsolidated = ?
       WHERE id = ?
-    `).run(newIndependence, node.id);
+    `).run(newIndependence, now(), node.id);
   }
   refreshMaturityScore(db, node.id);
 }
