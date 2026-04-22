@@ -30,11 +30,31 @@ export function appendTomlMcpSection(configPath: string, serverName: string, mcp
 export function removeTomlMcpSection(configPath: string, serverName: string): void {
   if (!fs.existsSync(configPath)) return
   const content = fs.readFileSync(configPath, 'utf-8')
-  // 匹配 [mcp_servers.<name>] 段直到下一个 [section] 或文件末尾
-  const escaped = serverName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const regex = new RegExp(`\\n?\\[mcp_servers\\.${escaped}\\][^\\[]*`, 'g')
-  const updated = content.replace(regex, '')
-  fs.writeFileSync(configPath, updated)
+  const lines = content.split('\n')
+  const header = `[mcp_servers.${serverName}]`
+
+  // 按行识别段边界：段头单独占一行，下一段也单独占一行。
+  // 旧实现用 `[^\[]*` 匹配到任意 `[` 为止，会被段内 `args = [...]` 的 `[` 截断，
+  // 导致段头和前几行被删但 `args` 的值和 `env` 行残留（TOML 语法错误）。
+  const startIdx = lines.findIndex(l => l.trim() === header)
+  if (startIdx === -1) return
+
+  let endIdx = lines.length
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    const trimmed = lines[i].trim()
+    // TOML table header：整行只包含 `[...]` 或 `[[...]]`
+    if (/^\[\[?[^\]]+\]\]?$/.test(trimmed)) {
+      endIdx = i
+      break
+    }
+  }
+
+  // 一并吞掉段前紧邻的空行，避免文件里留下多余空白
+  let removeStart = startIdx
+  while (removeStart > 0 && lines[removeStart - 1].trim() === '') removeStart--
+
+  lines.splice(removeStart, endIdx - removeStart)
+  fs.writeFileSync(configPath, lines.join('\n'))
 }
 
 /** 确保 TOML 配置文件中有 [features] codex_hooks = true */

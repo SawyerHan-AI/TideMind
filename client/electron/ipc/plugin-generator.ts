@@ -243,8 +243,11 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
           '--skill-path', JSON.stringify(skillFilePath),
           '--tool', 'codex',
         ].join(' ')
+        // 写入的 command 里是 `--agent-id "eb_xxx"`（JSON.stringify 带引号），
+        // 匹配时也必须带引号，否则每次生成都判定为"不存在"导致重复 push
+        const agentIdToken = `--agent-id ${JSON.stringify(agentId)}`
         const existing = hooksConfig.hooks.SessionStart.some((group: any) =>
-          group.hooks?.some((h: any) => h.command?.includes(`--agent-id ${agentId}`)),
+          group.hooks?.some((h: any) => h.command?.includes(agentIdToken)),
         )
         if (!existing) {
           hooksConfig.hooks.SessionStart.push({
@@ -705,8 +708,9 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       if (fs.existsSync(codexHooksPath)) {
         try {
           const hooks = JSON.parse(fs.readFileSync(codexHooksPath, 'utf-8'))
+          const agentIdToken = `--agent-id ${JSON.stringify(agentId)}`
           hooksConfigured = hooks.hooks?.SessionStart?.some((group: any) =>
-            group.hooks?.some((h: any) => h.command?.includes(`--agent-id ${agentId}`)),
+            group.hooks?.some((h: any) => h.command?.includes(agentIdToken)),
           ) ?? false
         } catch { /* 忽略 */ }
       }
@@ -911,8 +915,11 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
         if (fs.existsSync(codexHooksPath)) {
           const hooksConfig = JSON.parse(fs.readFileSync(codexHooksPath, 'utf-8'))
           if (hooksConfig.hooks?.SessionStart) {
+            // 写入时 command 里是 `--agent-id "eb_xxx"`（JSON.stringify 带双引号），
+            // 过滤必须匹配带引号的形式，否则永远匹配不到导致卸载残留
+            const agentIdToken = `--agent-id ${JSON.stringify(agentId)}`
             hooksConfig.hooks.SessionStart = hooksConfig.hooks.SessionStart.filter((group: any) =>
-              !group.hooks?.some((h: any) => h.command?.includes(`--agent-id ${agentId}`)),
+              !group.hooks?.some((h: any) => h.command?.includes(agentIdToken)),
             )
             if (hooksConfig.hooks.SessionStart.length === 0) delete hooksConfig.hooks.SessionStart
             fs.writeFileSync(codexHooksPath, JSON.stringify(hooksConfig, null, 2))
