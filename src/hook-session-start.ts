@@ -16,22 +16,70 @@ import { getDb, closeDb } from './db/connection.js';
 import { SqliteRepository } from './db/sqlite-repository.js';
 import { touchAgent } from './db/agents.js';
 import { prepare } from './tools/prepare.js';
-import { readFileSync } from 'node:fs';
+import { readFileSync, fstatSync } from 'node:fs';
 import type { PrepareOutput } from './types.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { createLogger } from './utils/logger.js';
 
 /**
- * 同步读取 stdin JSON payload（Codex 0.120+ 会传 `session_start_reason` 等字段）。
+ * 异步读取 stdin JSON payload（Codex 0.120+ 会传 `session_start_reason` 等字段）。
  * - stdin 是 tty 或无输入时返回 null，避免手动运行脚本时阻塞
  * - JSON 解析失败也返回 null
  * - 返回值用于区分 startup / resume / clear，不影响其他工具（Claude Code 等无此字段）
+ *
+ * 历史卡死：之前用 `readFileSync(0, 'utf-8')`——若调用方把 stdin 管道保持打开
+ * 但不写数据（比如上游 hook runner bug 或 shell wrapper 错连管道），
+ * readFileSync 会无限阻塞，整个 SessionStart hook 永远不返回，Claude Code
+ * 启动看起来 "hang 住"。
+ *
+ * 现在实现：regular file 仍用 readFileSync（有确定的 EOF，不会阻塞）；
+ * 管道/socket 用 process.stdin stream + 2s 超时，超时后放弃返回 null。
  */
-function readStdinPayload(): Record<string, unknown> | null {
+const STDIN_READ_TIMEOUT_MS = 2_000;
+
+async function readStdinPayload(): Promise<Record<string, unknown> | null> {
   try {
     if (process.stdin.isTTY) return null;
-    const data = readFileSync(0, 'utf-8');
-    if (!data.trim()) return null;
+    // regular file（如 `node script < file.json`）可以一次读完，不会阻塞
+    try {
+      const st = fstatSync(0);
+      if (st.isFile()) {
+        const data = readFileSync(0, 'utf-8');
+        if (!data.trim()) return null;
+        return JSON.parse(data) as Record<string, unknown>;
+      }
+    } catch {
+      // fstat 失败就当 pipe 处理
+    }
+    // 管道/socket：走 stream + timeout，超时后放弃
+    const data = await new Promise<string | null>((resolve) => {
+      const chunks: Buffer[] = [];
+      let settled = false;
+      const finish = (value: string | null) => {
+        if (settled) return;
+        settled = true;
+        try { process.stdin.removeAllListeners('data'); } catch { /* ignore */ }
+        try { process.stdin.removeAllListeners('end'); } catch { /* ignore */ }
+        try { process.stdin.removeAllListeners('error'); } catch { /* ignore */ }
+        try { process.stdin.pause(); } catch { /* ignore */ }
+        resolve(value);
+      };
+      const timer = setTimeout(() => {
+        process.stderr.write(`[eb:hook-session-start] stdin read timeout ${STDIN_READ_TIMEOUT_MS}ms，忽略 payload\n`);
+        finish(null);
+      }, STDIN_READ_TIMEOUT_MS);
+      timer.unref?.();
+      process.stdin.on('data', (chunk: Buffer) => { chunks.push(chunk); });
+      process.stdin.on('end', () => {
+        clearTimeout(timer);
+        finish(Buffer.concat(chunks).toString('utf-8'));
+      });
+      process.stdin.on('error', () => {
+        clearTimeout(timer);
+        finish(null);
+      });
+    });
+    if (!data || !data.trim()) return null;
     return JSON.parse(data) as Record<string, unknown>;
   } catch {
     return null;
@@ -142,7 +190,7 @@ async function main(): Promise<void> {
   const { agentId, skillPath, tool } = parseArgs();
 
   // Codex 0.120+ 的 session_start_reason：clear / startup / resume
-  const stdinPayload = readStdinPayload();
+  const stdinPayload = await readStdinPayload();
   const sessionReason = typeof stdinPayload?.session_start_reason === 'string'
     ? (stdinPayload.session_start_reason as string)
     : null;
@@ -183,7 +231,16 @@ async function main(): Promise<void> {
       });
 
       prepareText = formatPrepareOutput(result);
-    } catch {
+    } catch (err) {
+      // 之前这里是裸 catch {} — prepare() 的任何异常(DB 损坏、OOM、代码 bug、
+      // strategy loader 抛错)都会被吞成同一句静态 fallback,hook 行为看起来
+      // "正常"但用户画像一直缺失。走 stderr 而不是 createLogger,因为 hook 脚本
+      // 可能在 logger 文件初始化前就崩了,stderr 始终可写。
+      const errLine = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      process.stderr.write(`[eb:hook-session-start] prepare failed — ${errLine}\n`);
+      if (err instanceof Error && err.stack) {
+        process.stderr.write(err.stack.split('\n').slice(0, 3).join('\n') + '\n');
+      }
       prepareText = '（用户上下文加载失败，请手动调用 brain_prepare 工具）';
     } finally {
       try { closeDb(); } catch { /* ignore */ }
@@ -208,5 +265,8 @@ main().catch((err: unknown) => {
   // 最终兜底
   const stack = err instanceof Error ? err.stack ?? err.message : String(err);
   process.stderr.write(`[eb:hook-session-start] fatal error: ${stack}\n`);
-  outputHook('Tide Mind 启动失败。请手动调用 brain_prepare 工具加载上下文。');
+  // 错误标识符嵌入 fallback 文案中，方便用户拿 "HOOK_SESSION_START_FATAL"
+  // 搜 stderr / 日志文件，关联到真实 stack。保留原中文 fallback 本体。
+  const code = err instanceof Error && err.name ? err.name : 'unknown';
+  outputHook(`Tide Mind 启动失败。请手动调用 brain_prepare 工具加载上下文。[internal error: HOOK_SESSION_START_FATAL/${code}]`);
 });

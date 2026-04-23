@@ -96,7 +96,14 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
   let linksUpdated = 0;
   let linksRemoved = 0;
 
-  for (const [tag, nodeIds] of tagToNodes) {
+  // tagToNodes 的 Map 迭代顺序取决于插入顺序,而插入顺序又依赖上面 SELECT
+  // 的行顺序(没有 ORDER BY,SQLite rowid 扫描顺序不稳定 —— 不同启动、
+  // VACUUM 后或 WAL checkpoint 后可能变)。当一个节点刚好同时匹配多个
+  // 待提升 tag 的 canonical content 时,"谁先调用 updateNode(is_tag=1)"
+  // 决定了 canonical 节点归属,结果在不同 run 下可能不同。
+  // 按 tag 名升序迭代,消除此非确定性。
+  const sortedEntries = [...tagToNodes.entries()].sort(([a], [b]) => a.localeCompare(b));
+  for (const [tag, nodeIds] of sortedEntries) {
     if (nodeIds.length < threshold) continue;
     if (demotedTags.has(tag)) continue;
 

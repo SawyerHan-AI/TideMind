@@ -47,7 +47,13 @@ function saveAuthToDisk(): void {
       const encrypted = safeStorage.encryptString(json);
       fs.writeFileSync(getTokenPath(), encrypted, { mode: 0o600 });
     } else {
-      fs.writeFileSync(getTokenPath(), json, { mode: 0o600 });
+      // 无 keyring 时拒绝落盘：Linux 若没装 libsecret/GNOME Keyring，
+      // safeStorage 会回退到"无加密"，把 refresh_token（long-lived）以明文写到磁盘。
+      // 0o600 只挡普通进程，root/磁盘取证/备份泄漏都兜不住——宁可用户重启后要重新登录，
+      // 也不要静默地把长期凭据明文留在盘上。
+      // 同时删除历史上可能以明文写入过的老文件。
+      try { fs.unlinkSync(getTokenPath()); } catch { /* ignore */ }
+      log.warn('safeStorage encryption unavailable (no OS keyring) — not persisting auth; re-login required after restart');
     }
   } catch (err) {
     log.warn(`failed to persist auth: ${(err as Error).message}`);
@@ -78,7 +84,13 @@ function loadAuthFromDisk(): void {
         }
       }
     } else {
-      json = raw.toString('utf-8');
+      // safeStorage 不可用时，磁盘上若有文件也拒绝读取并清掉：
+      // 要么这是历史明文文件（应当删除），要么是加密密文但本机没有 keyring 可解密。
+      // 两种情况都没法安全地恢复会话。
+      try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+      log.warn('safeStorage encryption unavailable on load — discarding on-disk auth; please re-login');
+      cachedAuth = null;
+      return;
     }
     cachedAuth = JSON.parse(json);
     log.info('restored auth session from disk');

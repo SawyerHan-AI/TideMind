@@ -50,7 +50,19 @@ export async function searchVector(
     if (options.createdAfter && node.created < options.createdAfter) continue;
     if (options.createdBefore && node.created > options.createdBefore) continue;
 
-    // sqlite-vec 返回 L2 距离，转换为余弦相似度（假设归一化向量）
+    // sqlite-vec 返回 L2 距离，转换为余弦相似度（假设归一化向量）。
+    //
+    // TODO(embedding-normalize): `l2DistanceToSimilarity` 用的 `1 - d²/2` 公式**仅对
+    // L2 范数为 1 的单位向量**成立。nomic-embed-text 默认已归一化,但 Gemini
+    // `embedContent` 返回的 3072 维向量是 un-normalized —— 对这种向量,同一个
+    // L2 距离会得到系统性偏差,甚至 similarity < 0(被 clamp 到 0)导致排序退化。
+    //
+    // 正确修法在写入端(`src/search/*repo*` 或 `src/llm/embedding.ts` 的 setter/
+    // insertVector 路径):所有 embedding 在 insert 到 sqlite-vec 之前按 L2 范数归一
+    // (除以 `Math.sqrt(sum(x²))`),查询端同理归一化 queryEmbedding。归一化后
+    // L2 距离与余弦距离等价,`1 - d²/2` 才正确。
+    //
+    // 本文件不涉及写入路径,先保留此 TODO 给 embedding 写入/查询端处理。
     const similarity = l2DistanceToSimilarity(vr.distance);
 
     results.push({ node, score: similarity, source: 'vector' });

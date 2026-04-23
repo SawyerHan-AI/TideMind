@@ -299,8 +299,9 @@ describe('recall - meta node filtering', () => {
     seedNode(db, { type: 'meta', content: 'source meta' });
     db.prepare("UPDATE nodes SET source_stream = 'stream:test.ts' WHERE content LIKE 'source%'").run();
 
-    const result = await recall(repo, { source_file: 'test.ts' });
+    const result = await recall(repo, { source_file: 'stream:test.ts' });
 
+    expect(result.nodes.length).toBeGreaterThan(0);
     expect(result.nodes.every(n => n.type !== 'meta')).toBe(true);
   });
 });
@@ -308,11 +309,12 @@ describe('recall - meta node filtering', () => {
 // ===== source_file 模式 =====
 
 describe('recall - source_file mode', () => {
-  it('should find nodes by source_stream containing file path', async () => {
+  it('should find nodes by exact source_stream match', async () => {
+    // source_file 现在是精确匹配 (不再是子串)，避免 '.md' 匹配所有 markdown
     seedNode(db, { content: 'source file node' });
     db.prepare("UPDATE nodes SET source_stream = 'stream:2026:main.ts:1' WHERE content = 'source file node'").run();
 
-    const result = await recall(repo, { source_file: 'main.ts' });
+    const result = await recall(repo, { source_file: 'stream:2026:main.ts:1' });
 
     expect(result.nodes.length).toBe(1);
     expect(result.nodes[0].content).toBe('source file node');

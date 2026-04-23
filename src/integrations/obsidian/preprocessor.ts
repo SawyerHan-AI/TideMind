@@ -366,13 +366,23 @@ function extractFrontmatter(content: string, metadata: PageMetadata): Frontmatte
     return { body: content, changed: false };
   }
 
-  const endIndex = content.indexOf('\n---', 3);
-  if (endIndex === -1) {
+  // 用 line-by-line 扫描找 frontmatter terminator：只有整行仅含 `---`
+  // 才算真正的结束。避免 YAML block-scalar 里字面 `\n---` 被误判为结束。
+  const lines = content.split('\n');
+  // 第一行必为 `---`（已在上方 startsWith 校验），从第二行开始扫描。
+  let terminatorLine = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (/^---\s*$/.test(lines[i])) {
+      terminatorLine = i;
+      break;
+    }
+  }
+  if (terminatorLine === -1) {
     return { body: content, changed: false };
   }
 
-  const fmRaw = content.slice(4, endIndex); // 跳过开头的 ---\n
-  const body = content.slice(endIndex + 4).replace(/^\n/, ''); // 跳过结尾的 ---\n
+  const fmRaw = lines.slice(1, terminatorLine).join('\n');
+  const body = lines.slice(terminatorLine + 1).join('\n').replace(/^\n/, '');
 
   // 第一次尝试解析
   let parsed = tryParseYaml(fmRaw);

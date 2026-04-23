@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # Track GitHub Actions updates so SHA-pinned actions can be bumped safely.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - "dependencies"
+      - "ci"

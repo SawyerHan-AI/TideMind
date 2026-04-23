@@ -27,9 +27,90 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import Database from 'better-sqlite3';
 
 const OLD_DIR_NAME = '.external-brain';
 const NEW_DIR_NAME = '.tidemind';
+
+/** SQLite 数据库文件的扩展名 — checkpoint 过滤用。 */
+const SQLITE_EXTENSIONS = new Set(['.sqlite', '.sqlite3', '.db']);
+
+/**
+ * 递归收集 oldDir 下所有疑似 SQLite 数据库的主文件(不含 -wal / -shm)。
+ * 拿到绝对路径,方便后续直接 open。
+ */
+function collectSqliteFiles(root: string): string[] {
+  const out: string[] = [];
+  const stack: string[] = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      // 权限问题或中途被删:跳过该子树,继续其他目录
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+      } else if (entry.isFile()) {
+        const ext = path.extname(entry.name).toLowerCase();
+        if (SQLITE_EXTENSIONS.has(ext)) {
+          out.push(full);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * 对每个 SQLite 主文件执行 `PRAGMA wal_checkpoint(TRUNCATE)`,把残留的
+ * WAL 合并回主库。这样后续 cpSync 拿到的备份是自洽快照。
+ *
+ * 如果上一次 Electron/daemon 崩溃留下 `*.sqlite-wal`/`*.sqlite-shm`,
+ * 直接 cpSync 得到的副本可能不一致(主库少了 WAL 里的最新事务,恢复
+ * 时 SQLite 会尝试重放,但 -shm 是共享内存快照,跨机器/跨时间不可信)。
+ *
+ * 这是 best-effort:
+ *   - 文件不存在 → 跳过
+ *   - 0 字节文件 → 跳过(不是有效 DB)
+ *   - 打开/checkpoint 失败(被其他进程锁住,或不是 SQLite) → 跳过
+ *     退化为原来的朴素 cpSync,备份至少在文件系统层是原子的。
+ */
+function checkpointSqliteFiles(
+  files: string[],
+  logger?: MigrationLogger,
+): void {
+  for (const file of files) {
+    try {
+      const stat = fs.statSync(file);
+      if (!stat.isFile() || stat.size === 0) continue;
+    } catch {
+      continue;
+    }
+    let db: Database.Database | null = null;
+    try {
+      // readonly:fileMustExist: false 会在不存在时创建;我们已 stat 过,
+      // 这里用 readonly 避免意外写。但 wal_checkpoint 需要写权限 —
+      // 因此用读写打开,但仅发 checkpoint pragma。
+      db = new Database(file, { fileMustExist: true });
+      db.pragma('wal_checkpoint(TRUNCATE)');
+    } catch (err) {
+      logger?.warn(
+        `[migrate] checkpoint 跳过 ${file}: ${(err as Error).message}`,
+      );
+    } finally {
+      try {
+        db?.close();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
 
 export interface MigrationResult {
   migrated: boolean;
@@ -80,6 +161,23 @@ export function migrateDataDirIfNeeded(
 
   logger?.info(`[migrate] 检测到旧数据目录，开始迁移 ${oldDir} → ${newDir}`);
   logger?.info(`[migrate] 创建备份 → ${backupDir}`);
+
+  // Step 0: 预 checkpoint — 把所有 SQLite DB 的 WAL 合并回主库,让后续 cpSync
+  // 拿到自洽快照。best-effort:被占用的库跳过,不阻塞迁移。
+  try {
+    const sqliteFiles = collectSqliteFiles(oldDir);
+    if (sqliteFiles.length > 0) {
+      logger?.info(
+        `[migrate] 预 checkpoint ${sqliteFiles.length} 个 SQLite 文件`,
+      );
+      checkpointSqliteFiles(sqliteFiles, logger);
+    }
+  } catch (err) {
+    // checkpoint 是纯优化,失败不能让迁移停下
+    logger?.warn(
+      `[migrate] 预 checkpoint 阶段异常(忽略,继续备份): ${(err as Error).message}`,
+    );
+  }
 
   // Step 1: 复制为备份（可能较慢，但一次性）
   try {

@@ -30,9 +30,16 @@ export function registerCredentialHandlers(dataDir: string): void {
         return { success: false, error: '不是 Service Account 类型的凭证文件' }
       }
 
-      // 复制到数据目录
+      // 复制到数据目录；强制 0o600 防止 Service Account 密钥世界可读
+      // （copyFileSync 继承 umask，通常为 0644；SA 文件含 private_key 必须收紧）
       const destPath = path.join(dataDir, 'vertex-credentials.json')
       fs.copyFileSync(sourcePath, destPath)
+      try {
+        fs.chmodSync(destPath, 0o600)
+      } catch {
+        // Windows 上 chmod 语义不同（无 POSIX 权限位），失败忽略；
+        // macOS/Linux 正常路径不会走到这里
+      }
 
       // 记录到时间线
       try {

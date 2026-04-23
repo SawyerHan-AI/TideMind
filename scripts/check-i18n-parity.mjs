@@ -38,16 +38,28 @@ function diff(a, b) {
   return { onlyA, onlyB };
 }
 
-// 收集 en 下所有命名空间
-const enDir = path.join(LOCALES_DIR, 'en');
-const namespaces = fs.readdirSync(enDir)
-  .filter(f => f.endsWith('.json'))
-  .map(f => f.replace(/\.json$/, ''));
+// 命名空间 = 所有 lang 下出现过的 json 文件的 union。
+// 只从 en/ 推会漏掉"某个 lang 加了 en 没有"的情况(e.g. lang A 加了新 ns 但忘了同步到 en)。
+const namespaceSet = new Set();
+for (const lang of EXPECTED_LANGS) {
+  const langDir = path.join(LOCALES_DIR, lang);
+  if (!fs.existsSync(langDir)) continue;
+  for (const f of fs.readdirSync(langDir)) {
+    if (f.endsWith('.json')) namespaceSet.add(f.replace(/\.json$/, ''));
+  }
+}
+const namespaces = [...namespaceSet].sort();
 
 let hasIssues = false;
 
 for (const ns of namespaces) {
   const enPath = path.join(LOCALES_DIR, 'en', `${ns}.json`);
+  // en 必须有 master 版本;否则无法做基准对比。
+  if (!fs.existsSync(enPath)) {
+    console.error(`❌ [en] missing master namespace: ${ns}.json (other langs have it)`);
+    hasIssues = true;
+    continue;
+  }
   const enObj = JSON.parse(fs.readFileSync(enPath, 'utf8'));
   const enKeys = collectKeys(enObj);
 

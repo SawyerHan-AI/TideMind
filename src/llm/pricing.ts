@@ -33,7 +33,13 @@ const PRICING_TABLE: ModelPricing[] = [
   { pattern: 'claude-3-opus',       input: 15.00, output: 75.00, thinking: 75.00 },
   { pattern: 'claude-3-haiku',      input: 0.25,  output: 1.25,  thinking: 1.25 },
   // ── Gemini 3.x ──
+  // 2026 初 Google 对 3.x 系列混用两种 ID 写法:主版本号用 dash
+  // (`gemini-3-pro`, `gemini-3-flash`),小版本号用 dot(`gemini-3.1-pro`)。
+  // 同时列出两种常见形式以防模糊匹配漏掉(`includes` 需要完整子串)。
+  // 价格来自 Google AI Studio pricing page(2026-Q1 公开定价;若后续调整,
+  // 以官方为准),均为 $/1M tokens。
   { pattern: 'gemini-3.1-pro',      input: 2.00,  output: 12.00, thinking: 12.00 },
+  { pattern: 'gemini-3-pro',        input: 2.00,  output: 12.00, thinking: 12.00 },
   { pattern: 'gemini-3-flash',      input: 0.50,  output: 3.00,  thinking: 3.00 },
   // ── Gemini 2.5 ──
   { pattern: 'gemini-2.5-pro',      input: 1.25,  output: 10.00, thinking: 10.00 },

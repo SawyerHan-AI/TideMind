@@ -13,6 +13,14 @@ const CHECK_TTL_MS = 60_000;
 let inflightAvailabilityCheck: Promise<boolean> | null = null;
 
 // Vertex AI token 缓存
+//
+// 不要用 client.credentials.expiry_date:
+//   1. service-account JWT auth 在首次 getAccessToken 之前 credentials 是空的;
+//   2. expiry_date 在不同 GoogleAuth credential 子类里单位不一致(有时 ms,有时 s),
+//      错信单位会让 token 过期后还被命中 → 401 → null embedding → 搜索静默失效。
+// 用一个保守的固定窗口(50 分钟,留出 10 分钟余量给 60 分钟的 Google 默认 token 寿命)
+// 远比读 expiry_date 安全。
+const TOKEN_CACHE_WINDOW_MS = 50 * 60 * 1000;
 let cachedToken: string | null = null;
 let tokenExpiry = 0;
 
@@ -28,10 +36,9 @@ async function getVertexToken(): Promise<string> {
   });
   const client = await auth.getClient();
   const token = await client.getAccessToken();
-  if (!token.token) throw new Error('Failed to get Vertex access token');
+  if (!token?.token) throw new Error('Failed to get Vertex access token');
   cachedToken = token.token;
-  const credentials = (client as any).credentials;
-  tokenExpiry = credentials?.expiry_date ?? (now + 3500_000);
+  tokenExpiry = now + TOKEN_CACHE_WINDOW_MS;
   return cachedToken;
 }
 
@@ -106,10 +113,15 @@ async function getGeminiApiKeyEmbedding(text: string): Promise<Float32Array | nu
     return null;
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${apiKey}`;
+  // 用 x-goog-api-key header 而非 ?key= query string,避免 API key 出现在
+  // 错误日志/堆栈里(高危泄漏面)。
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent`;
   const resp = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey,
+    },
     body: JSON.stringify({
       content: { parts: [{ text }] },
     }),
@@ -140,6 +152,9 @@ async function getOllamaEmbedding(text: string): Promise<Float32Array | null> {
         model: config.embedding.model,
         input: text,
       }),
+      // 与 Gemini / Vertex 路径对齐 —— hung 的 Ollama 实例(例如模型还在加载
+      // 或显存耗尽)会让 fetch 无限等待,整个 embedding 批量任务被卡死。
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!response.ok) {

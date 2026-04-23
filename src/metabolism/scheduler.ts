@@ -196,13 +196,29 @@ export function getCircuitState(db: Database.Database): {
   failures: number;
   cooldownMs: number;
 } {
-  const failuresRow = db.prepare('SELECT value FROM metadata WHERE key = ?').get(CB_FAILURES_KEY) as { value: string } | undefined;
-  const openedRow = db.prepare('SELECT value FROM metadata WHERE key = ?').get(CB_OPENED_AT_KEY) as { value: string } | undefined;
-  const cooldownRow = db.prepare('SELECT value FROM metadata WHERE key = ?').get(CB_COOLDOWN_KEY) as { value: string } | undefined;
+  // 三个 CB_* key 一次性读出:原先三次独立 SELECT 之间 recordLLMFailure
+  // 可能并发写入,导致 failures / openedAt / cooldownMs 看到"半更新"的
+  // 不一致状态(例如 failures 已经翻到阈值之上,但 openedAt 还是 0,
+  // 判成 elapsed=now,然后 half-open 被误触发 —— 每次 SQL 调度都多放
+  // 一个 LLM 探测)。better-sqlite3 单语句 SELECT 天然原子,
+  // 改成一次 IN 查询 + 内存组装,消除读窗口。
+  const rows = db
+    .prepare(
+      `SELECT key, value FROM metadata WHERE key IN (?, ?, ?)`,
+    )
+    .all(CB_FAILURES_KEY, CB_OPENED_AT_KEY, CB_COOLDOWN_KEY) as Array<{
+      key: string;
+      value: string;
+    }>;
 
-  const failures = failuresRow ? parseInt(failuresRow.value, 10) : 0;
-  const openedAt = openedRow ? parseInt(openedRow.value, 10) : 0;
-  const cooldownMs = cooldownRow ? parseInt(cooldownRow.value, 10) : CIRCUIT_COOLDOWN_INITIAL;
+  const values = new Map<string, string>();
+  for (const r of rows) values.set(r.key, r.value);
+
+  const failures = values.has(CB_FAILURES_KEY) ? parseInt(values.get(CB_FAILURES_KEY)!, 10) : 0;
+  const openedAt = values.has(CB_OPENED_AT_KEY) ? parseInt(values.get(CB_OPENED_AT_KEY)!, 10) : 0;
+  const cooldownMs = values.has(CB_COOLDOWN_KEY)
+    ? parseInt(values.get(CB_COOLDOWN_KEY)!, 10)
+    : CIRCUIT_COOLDOWN_INITIAL;
 
   if (failures < CIRCUIT_FAILURE_THRESHOLD) {
     return { state: 'closed', failures, cooldownMs };
@@ -287,7 +303,7 @@ export async function runSchedulerTick(
     }
   } catch { /* 配置读取失败 → 保持本地代谢行为,安全兜底 */ }
 
-  const circuit = getCircuitState(db);
+  let circuit = getCircuitState(db);
   let llmAvailable = circuit.state !== 'open';
   let halfOpenProbed = false; // 半开状态是否已放行一个探测任务
 
@@ -301,6 +317,14 @@ export async function runSchedulerTick(
   }
 
   for (const task of tasks) {
+    // 每轮重新读取熔断状态:成功的 LLM 探测会把 half-open 转为 closed(recordLLMSuccess
+    // 清零计数),之前的本地 circuit 快照还停留在 half-open,halfOpenProbed=true 会把
+    // 后续所有 LLM 任务全都 skip 掉。一次 SELECT 很便宜,换正确性值得。
+    if (task.requiresLLM) {
+      circuit = getCircuitState(db);
+      llmAvailable = circuit.state !== 'open';
+    }
+
     // LLM 任务保护
     if (task.requiresLLM) {
       if (!llmAvailable) continue;
@@ -403,21 +427,61 @@ export function makeNodeAndRecallGate(
 // ============================================================
 
 let maintenanceRunning = false;
+let tickStartedAt: number = 0;
+
+/** 看门狗：tick 持续超过此时长视为卡死，强制复位 flag */
+const MAINTENANCE_WATCHDOG_MS = 30 * 60 * 1000; // 30 分钟
 
 /**
  * 在 prepare 调用时触发一轮调度。
  * 非阻塞：fire-and-forget。
+ *
+ * 健壮性约束：
+ * 1. runSchedulerTick 同步抛错（如 getCircuitState 的 SQL 失败）也必须复位
+ *    flag，否则 .catch().finally() 永不执行，整个进程后续 tick 全部空转。
+ * 2. 异步链卡死时（>30 分钟）由看门狗强制复位，避免任何路径漏复位。
  */
 export function maybeRunMaintenance(
   db: Database.Database,
   tasks: TaskDefinition[],
 ): void {
+  // 看门狗：如果上一次 tick 已经"运行"超过阈值，强制视为卡死并复位
+  if (maintenanceRunning && tickStartedAt > 0) {
+    const elapsed = Date.now() - tickStartedAt;
+    if (elapsed > MAINTENANCE_WATCHDOG_MS) {
+      log.error(
+        `maintenance tick 卡死 ${Math.round(elapsed / 60000)} 分钟，强制复位 flag`,
+      );
+      maintenanceRunning = false;
+      tickStartedAt = 0;
+    }
+  }
+
   if (maintenanceRunning) return;
 
   maintenanceRunning = true;
-  runSchedulerTick(db, tasks)
-    .catch(err => log.error('maintenance tick failed:', (err as Error).message))
-    .finally(() => { maintenanceRunning = false; });
+  tickStartedAt = Date.now();
+
+  try {
+    const p = runSchedulerTick(db, tasks);
+    if (p && typeof (p as Promise<unknown>).then === 'function') {
+      (p as Promise<unknown>)
+        .catch(err => log.error('maintenance tick failed:', (err as Error).message))
+        .finally(() => {
+          maintenanceRunning = false;
+          tickStartedAt = 0;
+        });
+    } else {
+      // 同步返回（理论上不会发生，但兜底）
+      maintenanceRunning = false;
+      tickStartedAt = 0;
+    }
+  } catch (err) {
+    // 同步抛错（如 SQL prepare 失败）→ Promise 没有产生，必须立刻复位
+    log.error('maintenance tick sync throw:', (err as Error).message);
+    maintenanceRunning = false;
+    tickStartedAt = 0;
+  }
 }
 
 // ============================================================

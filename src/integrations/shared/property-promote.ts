@@ -36,10 +36,17 @@ export async function getOrCreateTagNode(
   source: string = 'brain',
   created?: string,
 ): Promise<string> {
+  // 入口规范化：外部调用方（apple-notes/obsidian/notion/logseq 的 folderName /
+  // parent title / frontmatter value）可能传入多行或超长值。必须 trim、合并换行、
+  // 截断到 100 字符，保证 cache key 与 DB 查询一致。
+  const normalized = tagName
+    .replace(/[\r\n]+/g, ' ')
+    .trim()
+    .slice(0, 100);
   // cache key 与 DB 查询保持一致的大小写语义：DB 侧 content/title 为大小写敏感精确匹配，
   // 因此 cache key 也必须用原始 case（仅 trim）。
   // 之前用 toLowerCase 归一会导致 "Foo" 和 "foo" 共享同一缓存条目 —— 与 DB 语义不符。
-  const cacheKey = tagName.trim();
+  const cacheKey = normalized;
   if (tagNodeCache.has(cacheKey)) {
     return tagNodeCache.get(cacheKey)!;
   }
@@ -47,7 +54,7 @@ export async function getOrCreateTagNode(
   // 查找已存在的 tag 节点（is_tag=1，精确匹配 content 或 title）
   const existing = db.prepare(
     "SELECT id FROM nodes WHERE is_tag = 1 AND (content = ? OR title = ?) AND archived = 0 AND is_superseded = 0 LIMIT 1",
-  ).get(tagName, tagName) as { id: string } | undefined;
+  ).get(normalized, normalized) as { id: string } | undefined;
 
   if (existing) {
     tagNodeCache.set(cacheKey, existing.id);
@@ -57,10 +64,10 @@ export async function getOrCreateTagNode(
   // 创建普通节点（不直接标记 is_tag，由 promoteFrequentTags 按阈值判断）
   const repo = new SqliteRepository(db);
   const result = await digest(repo, {
-    content: tagName,
+    content: normalized,
     source: { tool: source },
-    context: `属性值节点: ${tagName}`,
-    tags: [tagName],
+    context: `属性值节点: ${normalized}`,
+    tags: [normalized],
     async: false,
     created,
     // 身份由 tag 名称精确匹配 + 缓存负责（上方已查过 existing）
@@ -74,7 +81,7 @@ export async function getOrCreateTagNode(
     return nodeId;
   }
 
-  throw new Error(`创建 tag 节点失败: ${tagName}`);
+  throw new Error(`创建 tag 节点失败: ${normalized}`);
 }
 
 /**

@@ -44,8 +44,13 @@ export function InitBanner() {
             found = true
             if (prog.status === 'done') {
               doneHandledRef.current = true
-              if (pollRef.current) clearInterval(pollRef.current)
+              if (pollRef.current) {
+                clearInterval(pollRef.current)
+                pollRef.current = null
+              }
+              if (cancelled) return
               hideTimerRef.current = setTimeout(() => {
+                hideTimerRef.current = null
                 if (cancelled) return
                 setVisible(false)
                 // 隐藏后恢复轮询，以便检测新的初始化
@@ -67,8 +72,14 @@ export function InitBanner() {
     pollRef.current = setInterval(poll, 3000)
     return () => {
       cancelled = true
-      if (pollRef.current) clearInterval(pollRef.current)
-      if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
+      if (hideTimerRef.current) {
+        clearTimeout(hideTimerRef.current)
+        hideTimerRef.current = null
+      }
     }
   }, [])
 

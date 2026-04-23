@@ -29,6 +29,11 @@ ensureDataDirs();
 
 // Agent 身份（通过环境变量注入，每个 MCP 进程对应一个 Agent）
 const agentId = process.env.EB_AGENT_ID ?? null;
+if (!agentId) {
+  // 没有 agentId 时 touchAgent 会被静默跳过，导致 agent 活跃度/调用归属信号丢失。
+  // 必须在启动阶段 warn 出来，让部署者能发现环境变量漏配的问题。
+  log.warn('EB_AGENT_ID 未设置：agent 活跃度追踪将被跳过（touchAgent 不会执行）');
+}
 
 // 从 package.json 读取版本号
 function getVersion(): string {
@@ -243,15 +248,33 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  // 优雅退出
-  process.on('SIGINT', () => {
-    closeDb();
+  // 优雅退出：异步 flush MCP transport → close db → exit
+  // 10s 超时兜底,避免 transport 卡住时永远退不出去。
+  async function gracefulShutdown(): Promise<void> {
+    const SHUTDOWN_TIMEOUT_MS = 10_000;
+    const timeoutPromise = new Promise<void>((resolve) =>
+      setTimeout(() => {
+        log.warn('shutdown timeout 10s 到期，强制退出');
+        resolve();
+      }, SHUTDOWN_TIMEOUT_MS).unref(),
+    );
+    const closePromise = (async () => {
+      try {
+        if (server) await server.close();
+      } catch (err) {
+        log.warn('server-close-failed:', err instanceof Error ? err.message : String(err));
+      }
+      try {
+        closeDb();
+      } catch (err) {
+        log.warn('close-db-failed:', err instanceof Error ? err.message : String(err));
+      }
+    })();
+    await Promise.race([closePromise, timeoutPromise]);
     process.exit(0);
-  });
-  process.on('SIGTERM', () => {
-    closeDb();
-    process.exit(0);
-  });
+  }
+  process.on('SIGINT', () => { void gracefulShutdown(); });
+  process.on('SIGTERM', () => { void gracefulShutdown(); });
 
   // 防止未捕获错误导致进程静默退出
   process.on('uncaughtException', (err) => {

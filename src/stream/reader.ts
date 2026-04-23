@@ -47,8 +47,14 @@ export function readStreamEntry(ref: string): StreamEntry | null {
   }
 
   // 从锚点到下一个锚点或文件末尾
+  // 用完整的 anchor 形状作为分隔符,不依赖 "s-" 前缀。
+  // 早期 migrated 条目的 anchor id 没有 s- 前缀 → 旧 regex 无法匹配,
+  // 导致从第一条 anchor 到文件末尾被当作同一 entry,内容错乱。
+  // 与 writer.ts 对齐:writer 产出 `<a id="${anchorId}"></a>`,anchorId 由
+  // `s-<time>-<nanoid>` 构成,不会含双引号 → `[^"]+` 足以覆盖当前写入格式,
+  // 同时兼容历史格式。
   const afterAnchor = content.slice(anchorPos + anchorTag.length);
-  const endMatch = afterAnchor.search(/\n<a id="s-/);
+  const endMatch = afterAnchor.search(/\n<a id="[^"]+"><\/a>/);
   const entryText = endMatch === -1
     ? afterAnchor.trimEnd()
     : afterAnchor.slice(0, endMatch);

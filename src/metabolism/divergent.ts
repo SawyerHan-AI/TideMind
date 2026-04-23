@@ -108,7 +108,41 @@ export async function runDivergentScan(
   const minConfidence = getParam('scan-divergent', 'min_confidence', 0.5);
   const bridges: Array<{ bridgeId: string; nodeA: string; nodeB: string; insight: string }> = [];
 
+  // Dedup: 已经存在为 (a,b) 对生成的 is_crystal=1 bridge 节点,且创建日期在近 N 天内,
+  // 则跳过 — 避免每周 tick 对同一 hub 无限堆 crystal。
+  // 签名: 一个 crystal 节点通过 summarizes 链接同时指向 a 和 b(顺序无关),
+  // 且节点 created 在 dedup_window_days 内。
+  const dedupWindowDays = getParam('scan-divergent', 'bridge_dedup_days', 30);
+  const dedupCutoffMs = Date.now() - dedupWindowDays * 24 * 60 * 60 * 1000;
+  const hasRecentBridge = (a: string, b: string): boolean => {
+    const row = db.prepare(`
+      SELECT n.id, n.created FROM nodes n
+      WHERE n.is_crystal = 1 AND n.is_superseded = 0
+        AND EXISTS (
+          SELECT 1 FROM links l, json_each(l.relation) j
+          WHERE l.from_id = n.id AND l.to_id = ?
+            AND json_extract(j.value, '$.type') = 'summarizes'
+        )
+        AND EXISTS (
+          SELECT 1 FROM links l, json_each(l.relation) j
+          WHERE l.from_id = n.id AND l.to_id = ?
+            AND json_extract(j.value, '$.type') = 'summarizes'
+        )
+      LIMIT 1
+    `).get(a, b) as { id: string; created: string } | undefined;
+    if (!row) return false;
+    // created 既可能是 JS ISO("2026-04-23T..."),也可能是 SQLite datetime('now')
+    // 的 "YYYY-MM-DD HH:MM:SS" 无 Z 格式;统一拼 Z 解析。
+    const createdMs = new Date(
+      row.created.endsWith('Z') ? row.created : row.created.replace(' ', 'T') + 'Z',
+    ).getTime();
+    return Number.isFinite(createdMs) && createdMs >= dedupCutoffMs;
+  };
+
   for (const candidate of candidates.slice(0, maxPairs)) {
+    // 近 N 天已有同对 bridge → 跳过,别再堆新的 crystal 节点
+    if (hasRecentBridge(candidate.a, candidate.b)) continue;
+
     const nodeA = getNode(db, candidate.a);
     const nodeB = getNode(db, candidate.b);
     if (!nodeA || !nodeB) continue;
@@ -481,32 +515,47 @@ async function checkCrystalEvidence(db: Database.Database): Promise<string[]> {
 
 /**
  * 将 crystal 节点内容同步写入 ~/.tidemind/crystal/ 目录
+ *
+ * 1. 使用完整 id 作为 filename 前缀:原本 `id.slice(0, 8)` 在 65k+ crystal
+ *    节点下有生日攻击级碰撞概率(8 字符 hex ≈ 4.3e9 空间,sqrt ≈ 65k),
+ *    两个不同 crystal 会互相覆盖。完整 id 保证唯一。
+ * 2. 用 fs.promises.writeFile + 目录同步 mkdir + 返回 Promise,
+ *    调用点按 fire-and-forget 走(错误在内部记 log,不影响调度器 tick)。
+ *    同步 writeFileSync 会阻塞 scheduler 串行链路,触发其他到期任务错过窗口。
  */
 function syncCrystalToMarkdown(id: string, content: string, tags: string[], promoted: boolean = false): void {
+  const crystalDir = path.join(getDataDir(), 'crystal');
   try {
-    const crystalDir = path.join(getDataDir(), 'crystal');
+    // mkdir 用同步是安全的:它只在首个 crystal 时真建目录,后续是无开销 noop。
     fs.mkdirSync(crystalDir, { recursive: true });
-    const title = Array.from(content).slice(0, 30).join('').replace(/[/\\:*?"<>|]/g, '_').trim();
-    const fileName = `${id.slice(0, 8)}_${title}.md`;
-    const filePath = path.join(crystalDir, fileName);
-
-    const md = [
-      `# ${content.slice(0, 60)}`,
-      '',
-      content,
-      '',
-      tags.length > 0 ? `标签: ${tags.join(', ')}` : '',
-      '',
-      `---`,
-      `节点 ID: ${id}`,
-      `来源: ${promoted ? '自然涌现（提升）' : '综合生成'}`,
-      `时间: ${now()}`,
-    ].filter(Boolean).join('\n');
-
-    fs.writeFileSync(filePath, md);
   } catch (err) {
-    log.error('Crystal 镜像同步失败:', (err as Error).message);
+    log.error('Crystal 镜像目录创建失败:', (err as Error).message);
+    return;
   }
+
+  const title = Array.from(content).slice(0, 30).join('').replace(/[/\\:*?"<>|]/g, '_').trim();
+  // 用完整 id 避免 slice(0,8) 的生日碰撞;文件系统 255 字节限制对 uuid+30 字符标题 (< 100) 绰绰有余。
+  const fileName = `${id}_${title}.md`;
+  const filePath = path.join(crystalDir, fileName);
+
+  const md = [
+    `# ${content.slice(0, 60)}`,
+    '',
+    content,
+    '',
+    tags.length > 0 ? `标签: ${tags.join(', ')}` : '',
+    '',
+    `---`,
+    `节点 ID: ${id}`,
+    `来源: ${promoted ? '自然涌现（提升）' : '综合生成'}`,
+    `时间: ${now()}`,
+  ].filter(Boolean).join('\n');
+
+  // 改用异步 writeFile,避免阻塞 scheduler 串行 tick。
+  // 错误在回调里吞并记 log —— crystal 镜像仅为可视化辅助,写失败不影响业务。
+  fs.promises.writeFile(filePath, md).catch(err => {
+    log.error('Crystal 镜像同步失败:', (err as Error).message);
+  });
 }
 
 // needsWeeklyMaintenance 已于 2026-04-21 删除:
@@ -519,24 +568,26 @@ function syncCrystalToMarkdown(id: string, content: string, tags: string[], prom
  * 关键种识别 — connectivity top-5% 的节点标记为 keystone
  */
 export function runKeystoneIdentification(db: Database.Database): number {
-  // 清除旧标记
-  db.prepare('UPDATE nodes SET is_keystone = 0 WHERE is_keystone = 1').run();
-
   // 获取活跃节点总数
   const total = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01 AND is_superseded = 0').get() as { cnt: number }).cnt;
   if (total < 20) return 0; // 太少没意义
 
   // Top 5% 节点标记为 keystone
   const topN = Math.max(1, Math.ceil(total * 0.05));
-  const result = db.prepare(`
-    UPDATE nodes SET is_keystone = 1
-    WHERE id IN (
-      SELECT id FROM nodes
-      WHERE heat > 0.01 AND is_meta = 0 AND is_superseded = 0
-      ORDER BY connectivity DESC
-      LIMIT ?
-    )
-  `).run(topN);
+  // 原子: clear + set 必须在同一事务,否则中间有窗口"无人是 keystone",
+  // 并发读到的 is_keystone 状态全错。better-sqlite3 同步 → 事务直接包起来。
+  const result = db.transaction(() => {
+    db.prepare('UPDATE nodes SET is_keystone = 0 WHERE is_keystone = 1').run();
+    return db.prepare(`
+      UPDATE nodes SET is_keystone = 1
+      WHERE id IN (
+        SELECT id FROM nodes
+        WHERE heat > 0.01 AND is_meta = 0 AND is_superseded = 0
+        ORDER BY connectivity DESC
+        LIMIT ?
+      )
+    `).run(topN);
+  })();
 
   if (result.changes > 0) {
     const keystoneIds = db.prepare(

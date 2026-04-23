@@ -242,6 +242,17 @@ async function runIncrementalSync(
   }
 }
 
+// 时钟偏移安全窗口:比较 lastSynced 和存储 scanStartedAt 时,都向前
+// 回退 60s。
+//   - `lastSynced` 是本地时钟记录的时刻,`page.last_edited_time` 来自 Notion
+//     服务端时钟。若本地时钟因 NTP 漂移 / DST 跳变 / VM 暂停恢复等原因
+//     跑在 Notion 前面,合法的编辑会被判为 `<= lastSynced` 永远跳过。
+//   - 用 60s 窗口足以覆盖常见漂移(NTP 默认容忍 ~128ms 漂移,但真实
+//     环境里几秒~几十秒并不罕见,尤其是 macOS 从睡眠恢复时)。
+//   - 存储时同样减 60s → 下次同步有重叠区,轻微过扫但保证不漏页。
+//     重叠内容会被 sync-state 的 last_edited_time 快速路径去重。
+const CLOCK_SKEW_SAFETY_MS = 60_000;
+
 async function runIncrementalSyncInner(
   db: Database.Database,
   token: string,
@@ -251,21 +262,30 @@ async function runIncrementalSyncInner(
   const source = db.prepare('SELECT last_synced FROM note_sources WHERE id = ?').get(sourceId) as { last_synced: string | null } | undefined;
   const lastSynced = source?.last_synced ?? '1970-01-01T00:00:00.000Z';
 
+  // 比较阈值:lastSynced 回退 60s,抵消本地时钟相对 Notion 服务端的偏移
+  const compareThreshold = new Date(
+    new Date(lastSynced).getTime() - CLOCK_SKEW_SAFETY_MS,
+  ).toISOString();
+
   // **在开始扫描前**记录 scanStartedAt,用作下次的 last_synced。
   //
   // 老代码在 processNotionPages 完成后才 `new Date().toISOString()`,处理
   // 期间(可能 2 分钟+)被编辑的页面 lastEditedTime < 这个时间 → 下轮
   // `page.lastEditedTime > lastSynced` 判不中,要等用户再次编辑才会被
   // 同步。用 scanStartedAt 可保证不漏:所有被跳过的页面都不会晚于扫描起点。
-  const scanStartedAt = new Date().toISOString();
+  //
+  // 存储时同样减 60s,下次同步窗口和本次有 60s 重叠,避免跨轮次漏页。
+  const scanStartedAt = new Date(
+    Date.now() - CLOCK_SKEW_SAFETY_MS,
+  ).toISOString();
 
   // 搜索最近变更的页面
   // 注意：Search API 排序不保证严格有序，不能用 break 提前终止
-  // 遍历所有结果，过滤出 lastEditedTime > lastSynced 的页面
+  // 遍历所有结果，过滤出 lastEditedTime > compareThreshold 的页面
   const changedPages: NotionPageSummary[] = [];
   for await (const page of listAllPages(token)) {
     if (page.inTrash) continue;
-    if (page.lastEditedTime > lastSynced) {
+    if (page.lastEditedTime > compareThreshold) {
       changedPages.push(page);
     }
   }

@@ -358,8 +358,38 @@ async function retryWithBackoff<T>(
         // 速率限制 — 读取 Retry-After 或默认退避
         // 最后一次迭代不再 sleep:再 sleep 也不会重试,直接 throw 更快。
         if (i === maxRetries) throw e;
-        const retryAfter = (e as { headers?: Record<string, string> }).headers?.['retry-after'];
-        const waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : (2 ** i) * 1000;
+        // 防御性读取 Retry-After:
+        //  - Notion SDK 可能把 headers 暴露为普通对象或 Headers 实例,
+        //    两种形式都要支持。
+        //  - header 缺失 / 格式非法时 parseInt 返回 NaN,
+        //    `NaN * 1000` 仍是 NaN;`sleep(NaN)` 的 setTimeout 会立即触发,
+        //    于是 429 重试会变成 hot loop,几毫秒内打爆配额。
+        //    必须在选择 waitMs 前过滤掉 NaN/非正数。
+        //  - RFC 7231 允许 Retry-After 是 HTTP-date(如 "Wed, 21 Oct ..."),
+        //    这种情况 parseInt 会失败,改走 Date.parse 的分支。
+        //  - 最后再加 60s 上限,避免上游给个离谱的大值挂住我们。
+        const rawHeaders = (e as { headers?: unknown }).headers;
+        // Headers 实例的 `['retry-after']` 会返回 undefined（非 index signature），
+        // 必须先走 `.get('retry-after')`；再 fallback 到普通对象的 bracket access。
+        const raw =
+          (rawHeaders as { get?: (k: string) => string | null } | undefined)?.get?.('retry-after') ??
+          (rawHeaders as Record<string, string> | undefined)?.['retry-after'] ??
+          undefined;
+        const parsed = raw ? parseInt(raw, 10) : NaN;
+        let waitMs: number;
+        if (Number.isFinite(parsed) && parsed > 0) {
+          waitMs = Math.min(parsed * 1000, 60_000);
+        } else if (typeof raw === 'string' && Number.isNaN(parsed)) {
+          // 尝试解析为 HTTP-date
+          const parsedDate = Date.parse(raw);
+          if (Number.isFinite(parsedDate)) {
+            waitMs = Math.min(Math.max(0, parsedDate - Date.now()), 60_000);
+          } else {
+            waitMs = (2 ** i) * 1000;
+          }
+        } else {
+          waitMs = (2 ** i) * 1000;
+        }
         log.warn(`速率限制，等待 ${waitMs}ms 后重试 (${i}/${maxRetries})`);
         await sleep(waitMs);
         continue;

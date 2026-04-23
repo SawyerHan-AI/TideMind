@@ -7,7 +7,7 @@ import { createNode } from '@server/db/nodes.js'
 import { loadConfig, reloadConfig } from '@server/config.js'
 
 function validateFileName(name: string): void {
-  if (!name || /[\/\\]|\.\./.test(name)) {
+  if (typeof name !== 'string' || name.length === 0 || name.length >= 100 || !/^[A-Za-z0-9_.-]+$/.test(name)) {
     throw new Error(`Invalid file name: ${name}`);
   }
 }

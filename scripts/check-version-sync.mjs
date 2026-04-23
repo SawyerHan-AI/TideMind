@@ -20,6 +20,14 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
+// Sanity: 脚本路径解析依赖 scripts/ 在仓库根目录下。若脚本被 symlink 到别处,
+// ROOT 推断会失败——用 root package.json 存在性作为守卫。
+if (!fs.existsSync(path.join(ROOT, 'package.json'))) {
+  console.error(`❌ check-version-sync: ROOT resolved to ${ROOT} but package.json not found.`);
+  console.error('   脚本必须从仓库 scripts/ 目录运行,不要 symlink 到别处。');
+  process.exit(1);
+}
+
 const checks = [
   {
     file: 'package.json',
@@ -34,16 +42,22 @@ const checks = [
     extract: (content) => JSON.parse(content).version,
   },
   {
+    // server.ts: 唯一的 "status":"ok","version":"X.Y.Z" 健康检查响应字面量
     file: 'pro/cloud-server/src/server.ts',
-    extract: (content) => content.match(/version:\s*'([\d.]+)'/)?.[1],
+    extract: (content) => content.match(/status:\s*'ok',\s*version:\s*'([\d.]+)'/)?.[1],
   },
   {
+    // handler.ts: new McpServer({ name: 'tidemind-cloud', version: '...' })
+    // 用 name 做 anchor 避免被其他 SDK 的 version 字面量劫持
     file: 'pro/cloud-server/src/mcp/handler.ts',
-    extract: (content) => content.match(/version:\s*'([\d.]+)'/)?.[1],
+    extract: (content) =>
+      content.match(/name:\s*['"]tidemind-cloud['"],\s*version:\s*['"]([\d.]+)['"]/)?.[1],
   },
   {
+    // AboutSection.tsx: const [currentVersion, setCurrentVersion] = useState('X.Y.Z')
     file: 'client/src/components/settings/AboutSection.tsx',
-    extract: (content) => content.match(/useState\('([\d.]+)'\)/)?.[1],
+    extract: (content) =>
+      content.match(/currentVersion[\s\S]*?useState\(['"]([\d.]+)['"]\)/)?.[1],
   },
 ];
 

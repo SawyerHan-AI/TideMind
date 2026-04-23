@@ -2,6 +2,9 @@
  * stream/writer.ts 单元测试
  *
  * mock fs 和 config，测试输出格式和引用格式。
+ *
+ * Bug #13 修复后写入路径是 openSync('a') + writeSync + fsyncSync + closeSync，
+ * 并配套 <path>.lock 排他文件锁；mock 也跟着改。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'node:fs';
@@ -25,6 +28,10 @@ vi.mock('nanoid', () => ({
 let writtenHeader = '';
 let appendedContent = '';
 let fileExists = false;
+let nextFd = 100;
+const fdToPath = new Map<number, string>();
+let fsyncCalls = 0;
+let lockHeld = false;
 
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof fs>('node:fs');
@@ -32,16 +39,48 @@ vi.mock('node:fs', async () => {
     ...actual,
     default: {
       ...actual,
-      accessSync: vi.fn(() => {
-        if (!fileExists) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      accessSync: vi.fn((p: string) => {
+        // 只对目标 .md 文件生效；锁文件应总能走 EEXIST 分支
+        if (p.endsWith('.md') && !fileExists) {
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        }
       }),
       mkdirSync: vi.fn(),
-      writeFileSync: vi.fn((_p: string, content: string) => {
-        writtenHeader = content;
+      openSync: vi.fn((p: string, flag: string) => {
+        if (typeof flag === 'string' && flag === 'wx') {
+          // lock 文件：模拟跨进程互斥
+          if (lockHeld) {
+            throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' });
+          }
+          lockHeld = true;
+        }
+        const fd = nextFd++;
+        fdToPath.set(fd, p);
+        return fd;
       }),
-      appendFileSync: vi.fn((_p: string, content: string) => {
-        appendedContent += content;
+      writeSync: vi.fn((fd: number, content: string) => {
+        const p = fdToPath.get(fd) ?? '';
+        if (p.endsWith('.md.lock')) return content.length; // lock 内容忽略
+        if (p.endsWith('.md')) {
+          // 第一次写入：判断是 header 还是 block
+          if (content.startsWith('# ') && !writtenHeader) {
+            writtenHeader = content;
+          } else {
+            appendedContent += content;
+          }
+        }
+        return content.length;
       }),
+      fsyncSync: vi.fn(() => { fsyncCalls++; }),
+      closeSync: vi.fn((fd: number) => {
+        fdToPath.delete(fd);
+      }),
+      unlinkSync: vi.fn((p: string) => {
+        if (typeof p === 'string' && p.endsWith('.md.lock')) {
+          lockHeld = false;
+        }
+      }),
+      statSync: vi.fn(() => ({ mtimeMs: Date.now() })),
     },
   };
 });
@@ -52,6 +91,9 @@ beforeEach(() => {
   writtenHeader = '';
   appendedContent = '';
   fileExists = false;
+  fsyncCalls = 0;
+  lockHeld = false;
+  fdToPath.clear();
 });
 
 describe('appendToStream', () => {
@@ -105,5 +147,24 @@ describe('appendToStream', () => {
   it('以 --- 分隔符结尾', () => {
     appendToStream({ content: '内容' });
     expect(appendedContent.trimEnd()).toMatch(/---$/);
+  });
+
+  it('每次 append 至少调用一次 fsyncSync（持久性保证）', () => {
+    appendToStream({ content: '内容' });
+    // 新文件场景：header fsync + block fsync = 2 次
+    expect(fsyncCalls).toBeGreaterThanOrEqual(1);
+  });
+
+  it('写完后释放锁文件', () => {
+    appendToStream({ content: '内容' });
+    expect(lockHeld).toBe(false);
+  });
+
+  it('两次连续 append 不会因为锁残留而失败', () => {
+    appendToStream({ content: '第一条' });
+    appendToStream({ content: '第二条' });
+    expect(appendedContent).toContain('第一条');
+    expect(appendedContent).toContain('第二条');
+    expect(lockHeld).toBe(false);
   });
 });

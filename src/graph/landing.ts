@@ -93,12 +93,18 @@ export function findLandingConnections(
   // 设计原则 10（混沌边缘）：高确定性需要更高置信度，低确定性允许更自由的连接
   let adjustedLandingThreshold = landingThreshold;
   let adjustedPendingThreshold = pendingThreshold;
+  // lowActuality: 低确定性节点走"宽松阈值 + 强制 pending"路径 —— 阈值放宽
+  // 可以收更多候选,但绕过 LLM 把"有点相似"直接 confirmed 会污染图结构
+  // (例如猜测/设想的低 actuality 节点和无关节点一样相似度 0.77,
+  // 不该当即生效)。改为进 pending,交给 link-evaluate 之后再用 LLM 判。
+  let lowActuality = false;
   if (sourceNode.actuality > 0.8) {
     adjustedLandingThreshold += 0.05; // 高确定性 → 更严格
     adjustedPendingThreshold += 0.05;
   } else if (sourceNode.actuality < 0.3) {
     adjustedLandingThreshold -= 0.05; // 低确定性 → 更宽松（鼓励发散）
     adjustedPendingThreshold -= 0.05;
+    lowActuality = true;
   }
 
   // 着陆连接：top-K with similarity > landingThreshold → confirmed
@@ -116,18 +122,34 @@ export function findLandingConnections(
           ? inferLinkType(sourceNode, targetNode)
           : { type: 'analogous' as const, confidence: 0.4 };
 
+        // 低 actuality: 即便越过了放宽后的 landing 阈值,也强制 pending,
+        // 让 link-evaluate LLM 在后续批次里再做判断;避免"宽松阈值 + 直接
+        // confirmed"这条绕过 LLM 的捷径。
+        const status: 'confirmed' | 'pending' = lowActuality ? 'pending' : 'confirmed';
+        const note = status === 'confirmed'
+          ? `着陆连接 (similarity=${c.similarity.toFixed(3)})`
+          : `低确定性待评估 (similarity=${c.similarity.toFixed(3)})`;
+
         const link = createLink(db, {
           from_id: nodeId,
           to_id: c.id,
           relation: [judgment],
           strength: c.similarity,
-          note: `着陆连接 (similarity=${c.similarity.toFixed(3)})`,
+          note,
           auto: true,
-          status: 'confirmed',
+          status,
         });
         if (!link) continue;
-        result.confirmedLinks.push(link);
-        confirmedCount++;
+        if (status === 'confirmed') {
+          result.confirmedLinks.push(link);
+          confirmedCount++;
+        } else {
+          // 降级 pending: 仍占用 topK 预算(否则会无限量创建 pending 链接),
+          // 保持与旧 confirmed 路径相同的数量规模;LLM 在 link-evaluate
+          // 那步再决定是否提升为 confirmed。
+          result.pendingLinks.push(link);
+          confirmedCount++;
+        }
       }
     } else if (c.similarity >= adjustedPendingThreshold && pendingCount < pendingTopK) {
       // pending 候选

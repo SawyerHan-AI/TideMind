@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, nativeImage, shell, dialog } from 'electron'
+import { app, BrowserWindow, Menu, Tray, nativeImage, session, shell, dialog } from 'electron'
 import path from 'node:path'
 import { exec } from 'node:child_process'
 import { getClientDb, closeClientDb, getDataDir } from './db'
@@ -50,6 +50,18 @@ async function ensureOllama(): Promise<void> {
       if (err) mainLog.warn(`Ollama start failed: ${err.message}`)
       else mainLog.info('Ollama started automatically')
     })
+  } else {
+    // Linux / Windows: 没有"启动已安装 app"的统一入口；只通知 renderer
+    // 提示用户手动启动 Ollama。mainWindow 此时可能尚未 ready-to-show，
+    // 加个小延迟避免事件被吞。
+    mainLog.warn(`Ollama not reachable and auto-start unsupported on platform=${process.platform}`)
+    const notify = () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('data-changed', { scopes: ['ollama-missing'] })
+      }
+    }
+    if (mainWindow) notify()
+    else setTimeout(notify, 2000)
   }
 }
 
@@ -230,7 +242,62 @@ function createTray(): void {
   })
 }
 
+/**
+ * 注入 Content-Security-Policy 响应头 — 防御 XSS 升级为 RCE。
+ * meta 标签里的 CSP 在 DevTools 里可以被删，header 不行；两层都加。
+ *
+ * Dev 模式需要放开 vite HMR：
+ *   - script-src 加 'unsafe-inline' 和 'unsafe-eval'（HMR runtime + react-refresh）
+ *   - connect-src 加 ws://localhost:* 和 http://localhost:* (vite dev server)
+ *
+ * Prod 模式严格策略：no inline script, no eval。
+ */
+function installCspHeader(): void {
+  const isDev = !!process.env.ELECTRON_RENDERER_URL
+  const connectSrc = [
+    "'self'",
+    'https://cloud.tidemind.ai',
+    'https://api.anthropic.com',
+    'https://generativelanguage.googleapis.com',
+    'https://api.openai.com',
+    'http://localhost:11434',
+    'http://127.0.0.1:11434',
+  ]
+  if (isDev) {
+    // vite HMR + dev server
+    connectSrc.push('ws://localhost:*', 'http://localhost:*', 'ws://127.0.0.1:*', 'http://127.0.0.1:*')
+  }
+
+  const scriptSrc = isDev
+    ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'" // vite HMR
+    : "script-src 'self'"
+
+  const csp = [
+    "default-src 'self'",
+    scriptSrc,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: https:",
+    "font-src 'self' data:",
+    `connect-src ${connectSrc.join(' ')}`,
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'",
+  ].join('; ')
+
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [csp],
+      },
+    })
+  })
+}
+
 app.whenReady().then(async () => {
+  // 必须在 createWindow 之前装好 CSP，否则首次 loadURL/loadFile 拿不到 header
+  installCspHeader()
+
   // ⚠️ 数据目录迁移必须是第一步！shim-writer 会创建 ~/.tidemind/bin/，
   // 一旦 ~/.tidemind/ 被任何子进程提前创建，迁移逻辑就会认为"已存在"而跳过，
   // 导致用户的 ~/.external-brain/ 数据孤立。

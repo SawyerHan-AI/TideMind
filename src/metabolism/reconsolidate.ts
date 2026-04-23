@@ -19,7 +19,19 @@ import { parseLLMJson } from '../llm/json-parse.js';
 
 const log = createLogger('reconsolidate');
 
-let reconsolidateInFlight = false;
+/**
+ * 并发模型：
+ * - 旧实现是模块级 boolean `reconsolidateInFlight`,任意一个 recall 进入深度
+ *   再巩固时,本进程后续所有 recall 全部跳过感知/深度读,造成"一个慢 LLM 卡
+ *   住所有用户"。
+ * - 新实现：用 `inFlightNodes: Set<string>` 按 node id 去重(同一个节点不并发
+ *   做两遍深度再巩固),并用容量上限 `MAX_CONCURRENT_RECONSOLIDATIONS` 控制
+ *   全局并发数,以免大量 recall 同时触发 LLM 调用。
+ * - 注意：本文件是本地桌面 daemon 的实现(单用户、单进程),并发上限设为 5
+ *   足够。云端 worker 的同名 bug 在另一个 issue 单独跟进。
+ */
+const inFlightNodes = new Set<string>();
+const MAX_CONCURRENT_RECONSOLIDATIONS = 5;
 
 /**
  * 读即写再巩固
@@ -40,13 +52,13 @@ export function reconsolidateOnRecall(
   context?: string,
   avgSearchScore?: number,
 ): void {
-  if (reconsolidateInFlight) return;
-  reconsolidateInFlight = true;
+  // 全局并发上限：超过即跳过本次（让旧的 LLM 调用先完成）
+  if (inFlightNodes.size >= MAX_CONCURRENT_RECONSOLIDATIONS) return;
 
-  // 整个函数体包 try/catch/finally — 感知读/深度判定阶段任一异常(createLink
-  // 抛错、SQL 错、策略配置坏等)会让模块级 flag 永远卡 true,此后本进程的
-  // recall 永远跳过深度/感知读,直到重启。async IIFE 的 .finally 有自己的
-  // 复位路径,但前面同步代码挂掉就漏了。
+  // 同步路径任一异常(createLink 抛错、SQL 错、策略配置坏等)如果在我们已经
+  // 把节点加进 inFlightNodes 之后才发生,需要把这些 id 全部清掉,否则它们
+  // 永远占着名额。claimedNodeIds 就是用来追踪本次调用占了哪些 id 的。
+  const claimedNodeIds: string[] = [];
   let spawnedAsync = false;
   try {
 
@@ -140,29 +152,65 @@ export function reconsolidateOnRecall(
     }
   }
 
+  // 按节点去重：同一节点已在再巩固队列中则跳过此次（其他节点不受影响）
+  const dedupedTargets = deepTargets.filter(n => !inFlightNodes.has(n.id));
+
+  // 冲突检测路径的名额占用（和 dedupedTargets 路径共用 inFlightNodes 配额）：
+  // - 以本次 recall 的节点 id 集合（排序后）作为 sentinel，保证同一批 recall
+  //   的重复触发会被 dedupe（命中 sentinel 则跳过），避免 detect 分支在没有
+  //   dedupedTargets 时绕过全局并发上限。
+  // - sentinel 用 "detect:" 前缀与真实 node id 区分。
+  let detectSentinel: string | null = null;
+  const wantDetect = nodes.length >= 2 || !!context;
+  if (wantDetect) {
+    const ids = nodes.map(n => n.id).sort();
+    const key = `detect:${ids.join('|')}`;
+    // 超容量 OR 同一批 recall 已在检测中 → 跳过 detect 分支
+    if (inFlightNodes.size < MAX_CONCURRENT_RECONSOLIDATIONS && !inFlightNodes.has(key)) {
+      detectSentinel = key;
+    }
+  }
+
   // 异步串行执行深度再巩固 + 冲突检测，避免不可控的并发 LLM 调用
-  if (deepTargets.length > 0 || nodes.length >= 2 || context) {
+  if (dedupedTargets.length > 0 || detectSentinel) {
+    // 占用配额：把待处理节点的 id 加入 in-flight 集合
+    for (const n of dedupedTargets) {
+      inFlightNodes.add(n.id);
+      claimedNodeIds.push(n.id);
+    }
+    if (detectSentinel) {
+      inFlightNodes.add(detectSentinel);
+      claimedNodeIds.push(detectSentinel);
+    }
     spawnedAsync = true;
     (async () => {
-      for (const node of deepTargets) {
+      for (const node of dedupedTargets) {
         log.info(`深度再巩固触发 node=${node.id} reason=时间`);
         try { await deepReconsolidate(db, node, nodes, context); } catch (err) { log.error('深度再巩固失败:', (err as Error).message); }
       }
-      // 条件 2+3: 预测误差驱动的冲突检测
-      if (nodes.length >= 2 || context) {
+      // 条件 2+3: 预测误差驱动的冲突检测（仅在本次成功占到 sentinel 时才跑）
+      if (detectSentinel) {
         try { await detectAndReconsolidateAsync(db, nodes, context); } catch (err) { log.error('冲突检测失败:', (err as Error).message); }
       }
-    })().catch(err => log.warn('再巩固 IIFE 未捕获异常:', (err as Error).message)).finally(() => { reconsolidateInFlight = false; });
+    })()
+      .catch(err => log.warn('再巩固 IIFE 未捕获异常:', (err as Error).message))
+      .finally(() => {
+        // 释放本次占用的所有节点 id 和 detect sentinel
+        for (const id of claimedNodeIds) inFlightNodes.delete(id);
+      });
   }
 
   } catch (err) {
-    // 同步路径任何异常都立刻复位 flag
+    // 同步路径任何异常都立刻释放已占用的名额，避免泄漏
     log.error(`reconsolidateOnRecall 同步异常: ${(err as Error).message}`);
-    reconsolidateInFlight = false;
+    for (const id of claimedNodeIds) inFlightNodes.delete(id);
     throw err;
   } finally {
-    // 如果没进入 async IIFE,同步路径跑完也要复位
-    if (!spawnedAsync) reconsolidateInFlight = false;
+    // 如果没进入 async IIFE,同步路径跑完也要释放(理论上 claimedNodeIds 在
+    // 未 spawnedAsync 时为空,但保险起见统一兜底)
+    if (!spawnedAsync) {
+      for (const id of claimedNodeIds) inFlightNodes.delete(id);
+    }
   }
 }
 

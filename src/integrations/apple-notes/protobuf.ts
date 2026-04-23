@@ -205,7 +205,10 @@ export function buildCleanText(
 
   // 为每个字符位置建立 "所属 attribute_run index" 映射
   // runIndexForPosition[i] = i 位置所在 run 的索引
-  const runIndexForPosition = new Int32Array(noteText.length);
+  // 默认 -1：当 attribute_runs 长度和 < noteText.length 时，尾部未覆盖的字符
+  // 不能默认落到 run 0（若 run 0 有 attachment 会把尾部所有 U+FFFC 剥掉，
+  // 或把 CHECKLIST 的 `[未完成]` 前缀错误地加到尾部）。
+  const runIndexForPosition = new Int32Array(noteText.length).fill(-1);
   {
     let pos = 0;
     for (let rIdx = 0; rIdx < attributeRuns.length; rIdx++) {
@@ -221,7 +224,9 @@ export function buildCleanText(
 
   const getRunAt = (pos: number): DecodedAttributeRun | null => {
     if (pos < 0 || pos >= noteText.length) return null;
-    return attributeRuns[runIndexForPosition[pos]] ?? null;
+    const idx = runIndexForPosition[pos];
+    if (idx < 0) return null;
+    return attributeRuns[idx] ?? null;
   };
 
   const parts: string[] = [];

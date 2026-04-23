@@ -120,7 +120,14 @@ async function main(): Promise<void> {
     });
 
     briefText = formatBriefContext(result);
-  } catch {
+  } catch (err) {
+    // 之前是裸 catch {} — 所有 prepare 异常都变成同一条 fallback,调 hook 的
+    // 用户永远看不到真实错误。至少把错误名/message/前 3 行 stack 打到 stderr。
+    const errLine = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    process.stderr.write(`[eb:hook-post-compact] prepare failed — ${errLine}\n`);
+    if (err instanceof Error && err.stack) {
+      process.stderr.write(err.stack.split('\n').slice(0, 3).join('\n') + '\n');
+    }
     briefText = '（外脑上下文恢复失败，如需参照用户画像请手动调用 brain_prepare 工具）';
   } finally {
     try { closeDb(); } catch { /* ignore */ }
@@ -139,5 +146,8 @@ ${briefText}
 main().catch((err: unknown) => {
   const stack = err instanceof Error ? err.stack ?? err.message : String(err);
   process.stderr.write(`[eb:hook-post-compact] fatal error: ${stack}\n`);
-  outputHook('Tide Mind 压缩后上下文恢复失败。如需用户画像请手动调用 brain_prepare。');
+  // 错误标识符嵌入 fallback 文案中，方便用户关联到 stderr 中的真实 stack。
+  // 保留原中文 fallback 本体。
+  const code = err instanceof Error && err.name ? err.name : 'unknown';
+  outputHook(`Tide Mind 压缩后上下文恢复失败。如需用户画像请手动调用 brain_prepare。[internal error: HOOK_POST_COMPACT_FATAL/${code}]`);
 });

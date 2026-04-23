@@ -1,11 +1,22 @@
 -- 一次性清理：删除阈值 5 时代晋升的低引用 tag 节点
 -- 保留引用数 >= 25 的 tag 节点（TideMind, architecture, strategy-evolution, 架构设计）
 --
+-- 注意：本脚本面向单用户本地 SQLite（~/.tidemind/graph/brain.sqlite）。
+--       如未来迁移到多租户后端（Postgres 等），需要在所有 nodes / links /
+--       vector_segments / nodes_vec 的 WHERE 里加入 tenant_id 过滤；
+--       当前 schema 里没有 tenant_id，因此这里不处理。
+--
 -- 执行前请备份数据库：
 --   cp ~/.tidemind/graph/brain.sqlite ~/.tidemind/graph/brain.sqlite.bak
 --
 -- 执行：
 --   sqlite3 ~/.tidemind/graph/brain.sqlite < scripts/cleanup-low-ref-tags.sql
+
+-- 幂等：临时表可能在上一次失败后残留
+DROP TABLE IF EXISTS tags_to_remove;
+
+-- 整个脚本放在事务中，任一步失败则回滚，不会留下半删状态
+BEGIN;
 
 -- 创建临时表存储不达标的 tag 节点 ID
 CREATE TEMP TABLE tags_to_remove AS
@@ -41,6 +52,8 @@ SELECT '已删除 tag 节点: ' || changes();
 
 -- 清理临时表
 DROP TABLE tags_to_remove;
+
+COMMIT;
 
 SELECT '清理完成。剩余 tag 节点:';
 SELECT '  - ' || content || ' (引用数: ' || (

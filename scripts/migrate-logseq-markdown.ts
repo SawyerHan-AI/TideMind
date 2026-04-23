@@ -14,6 +14,13 @@ import fs from 'node:fs';
 import { preprocessFile } from '../src/integrations/logseq/preprocessor.js';
 import { segmentContent } from '../src/integrations/logseq/segmenter.js';
 
+// 简单控制台 logger（脚本不引 runtime logger，避免顺带拉进一堆依赖）
+const log = {
+  warn(meta: Record<string, unknown>, msg: string) {
+    console.warn(`⚠️  ${msg}`, meta);
+  },
+};
+
 // ---- 配置 ----
 
 const dryRun = process.argv.includes('--dry-run');
@@ -202,6 +209,21 @@ for (const source of logseqSources) {
     totalFiles++;
 
     const absPath = path.join(graphRoot, state.file_path);
+
+    // 路径穿越防护：DB 里的 file_path 理论上是相对 graphRoot 的相对路径，
+    // 但如果历史数据包含 `..` 或绝对路径，join 之后会走到 graphRoot 外面。
+    // 这里用 resolve 归一化后强制要求路径落在 graphRoot 内。
+    const resolvedGraphRoot = path.resolve(graphRoot);
+    const resolvedAbsPath = path.resolve(absPath);
+    if (
+      !resolvedAbsPath.startsWith(resolvedGraphRoot + path.sep) &&
+      resolvedAbsPath !== resolvedGraphRoot
+    ) {
+      log.warn({ absPath: resolvedAbsPath, graphRoot: resolvedGraphRoot }, 'path-escapes-graphRoot-skipping');
+      skippedFiles++;
+      continue;
+    }
+
     if (!fs.existsSync(absPath)) {
       skippedFiles++;
       continue;
