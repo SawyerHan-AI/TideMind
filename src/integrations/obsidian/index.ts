@@ -148,18 +148,28 @@ async function runSyncInner(
   clearTagNodeCache();
 
   // 扫描所有 .md / .canvas 文件
-  // iCloud 驱逐文件会被 walkMdFiles 内部剔除并回调，这里统计后输出一条汇总 warn
+  // 关键修复（2026-04-23 iCloud 回归事故对称修复）：iCloud dataless 文件要纳入 currentRelPaths，
+  // 否则 removeStaleFiles 会把它们误判为"被删除"，归档节点 + 清 sync 记录；等文件回流时
+  // watcher 把它们当"新文件"重新 digest 产生重复。与 Logseq 集成对称修复。
   const datalessSkip = new DatalessSkipCounter();
-  const allFiles = walkMdFiles(vaultRoot, excludedDirs, (fp) => datalessSkip.record(fp));
-  log.info(`扫描到 ${allFiles.length} 个文件 (source=${sourceId ?? 'default'})`);
+  const datalessPaths: string[] = [];
+  const processableFiles = walkMdFiles(vaultRoot, excludedDirs, (fp) => {
+    datalessSkip.record(fp);
+    datalessPaths.push(fp);
+  });
+  const allKnownFiles = [...processableFiles, ...datalessPaths];
+  log.info(
+    `扫描到 ${allKnownFiles.length} 个文件（可处理 ${processableFiles.length}，dataless ${datalessPaths.length}，source=${sourceId ?? 'default'}）`,
+  );
   if (datalessSkip.total > 0) {
     log.warn(
-      `Obsidian 源 ${sourceId ?? 'default'} 有 ${datalessSkip.total} 个文件处于 iCloud 离线状态已跳过 ` +
-      `（示例: ${datalessSkip.sample}）。在 Finder 里下载或关闭"优化 Mac 存储"可恢复。`,
+      `Obsidian 源 ${sourceId ?? 'default'} 有 ${datalessSkip.total} 个文件处于 iCloud 离线状态已跳过处理 ` +
+      `（示例: ${datalessSkip.sample}）。在 Finder 里下载或关闭"优化 Mac 存储"可恢复。` +
+      `这些文件的 sync state 会被保留，不会触发误归档。`,
     );
   }
 
-  if (allFiles.length === 0) {
+  if (allKnownFiles.length === 0) {
     log.warn('未扫描到任何文件，请检查路径是否正确');
     return;
   }
@@ -168,11 +178,11 @@ async function runSyncInner(
   log.info('构建文件索引...');
   buildFileIndex(vaultRoot, excludedDirs);
 
-  // 加载同步状态，找出需要处理的文件
+  // 加载同步状态，找出需要处理的文件（只对 processable 做 isFileChanged）
   const syncStates = getAllFileStates(db, sourceId);
   const filesToProcess: string[] = [];
 
-  for (const filePath of allFiles) {
+  for (const filePath of processableFiles) {
     const relPath = path.relative(vaultRoot, filePath).replace(/\\/g, '/');
     const syncState = syncStates.get(relPath) ?? null;
 
@@ -182,8 +192,9 @@ async function runSyncInner(
   }
 
   // 清理已删除文件的同步记录，归档关联 nodes
+  // 用 allKnownFiles（含 dataless）构造集合 → 只有真正物理不存在的文件才会被判"已删除"
   const currentRelPaths = new Set(
-    allFiles.map(f => path.relative(vaultRoot, f).replace(/\\/g, '/')),
+    allKnownFiles.map(f => path.relative(vaultRoot, f).replace(/\\/g, '/')),
   );
   const { removed: staleRemoved, orphanNodeIds } = removeStaleFiles(db, currentRelPaths, sourceId);
   if (staleRemoved > 0) {
@@ -197,7 +208,7 @@ async function runSyncInner(
   if (filesToProcess.length === 0) {
     log.info('无需处理的文件变更');
     // 首次运行但所有文件均为最新（例如重启后再次触发），标记完成
-    if (isFirstRun && allFiles.length > 0) markFullScanCompleted(db, sourceId);
+    if (isFirstRun && allKnownFiles.length > 0) markFullScanCompleted(db, sourceId);
     return;
   }
 
