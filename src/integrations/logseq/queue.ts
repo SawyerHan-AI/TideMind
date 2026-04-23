@@ -25,6 +25,17 @@ import { now } from '../../utils/time.js';
 import { promotePropertyValues } from '../shared/property-promote.js';
 import { supersedeNode } from '../shared/version.js';
 import { SYSTEM_PROPERTIES } from './types.js';
+import { computeTimeFactor } from './initial-heat.js';
+
+/**
+ * 从 journal 文件路径推断创建日期：`journals/YYYY_MM_DD.md` → `YYYY-MM-DD`。
+ * 非 journal 文件返回 null，由调用方决定 fallback。
+ */
+function inferJournalDate(relPath: string): string | null {
+  const m = relPath.match(/^journals\/(\d{4})_(\d{2})_(\d{2})\.md$/);
+  if (!m) return null;
+  return `${m[1]}-${m[2]}-${m[3]}`;
+}
 
 const DEFAULT_CONFIG: QueueConfig = {
   concurrency: 3,
@@ -223,6 +234,17 @@ async function processOneFile(
         if (!combinedTags.includes('PDF标注')) combinedTags.push('PDF标注');
       }
 
+      // 时间戳和热度推断（与 initialization.ts 保持一致）：
+      // journal 文件直接从文件名拿日期；非 journal 文件不传，让 digest() 走 now() + qualityHeat。
+      // 不这样做的话，watcher 路径创建的节点 created 全部是 now()，heat 没做年龄衰减，
+      // recall 按 created DESC 排序时会把它们错误地顶到最前面。
+      // 详见 docs/design/incident-recovery-2026-04-23-icloud-dataless.md §5.2
+      const inferredDate = inferJournalDate(relPath);
+      const inferredCreated = inferredDate ? `${inferredDate}T00:00:00.000Z` : undefined;
+      const inferredInitialHeat = inferredDate
+        ? computeTimeFactor({ date: inferredDate, source: 'journal_name' }, now())
+        : undefined;
+
       const result = await digest(repo, {
         content: segment.content,
         // 日记页子节点不设 title——日期标题对多个 segment 都一样，不如让 annotate 生成有意义的标题
@@ -237,6 +259,9 @@ async function processOneFile(
         // 身份由 FileSyncState.node_ids + segment hash 负责，走 supersede 链
         // 跳过 landing 的向量归并，避免不同段落之间因相似度误并
         skipDedupMerge: true,
+        // journal 文件：传推断的 created + 年龄衰减 heat；pages 文件：不传，保留默认行为
+        created: inferredCreated,
+        initialHeat: inferredInitialHeat,
       });
 
       if (result.created_nodes && result.created_nodes.length > 0) {
