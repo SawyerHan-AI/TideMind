@@ -153,6 +153,9 @@ describe('findLandingConnections', () => {
 
   it('should apply looser thresholds (-0.05) for low-actuality nodes', () => {
     // actuality < 0.3 → landingThreshold -= 0.05 (0.80 → 0.75)
+    // 低 actuality 着陆被强制降级为 pending(bug #10 修复):阈值放宽只是为了收
+    // 更多候选,但直接 confirmed 会绕过 LLM 评估。0.77 落在放宽后的 landing
+    // 带内,但仍走 pending,由 link-evaluate 后续判断。
     const node = seedNode(db, { content: 'speculative idea', actuality: 0.1 });
     const target = seedNode(db, { content: 'target' });
 
@@ -163,7 +166,8 @@ describe('findLandingConnections', () => {
     ]);
 
     const result = findLandingConnections(db, node.id, new Float32Array(3072));
-    expect(result.confirmedLinks).toHaveLength(1);
+    expect(result.confirmedLinks).toHaveLength(0);
+    expect(result.pendingLinks).toHaveLength(1);
   });
 
   it('should lower pending threshold for low-actuality (-0.05 → 0.55)', () => {

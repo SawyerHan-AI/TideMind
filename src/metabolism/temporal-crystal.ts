@@ -9,7 +9,7 @@
 
 import type Database from 'better-sqlite3';
 import type { BrainNode } from '../types.js';
-import { getNode, updateNode, createNode } from '../db/nodes.js';
+import { getNode, updateNode, createNode, parseTags } from '../db/nodes.js';
 import { createLink, linkExists } from '../db/links.js';
 import { isLlmConfigured } from '../config.js';
 import { callLLM } from '../llm/client.js';
@@ -101,15 +101,32 @@ async function findTopicEvolution(db: Database.Database): Promise<{ analyzed: nu
   const minNodesPerTopic = getParam('temporal-crystal', 'min_nodes_per_topic', 5);
 
   // 找核心标签（is_tag=1 的图节点）及其关联节点数
+  // 原查询 `FROM nodes t JOIN nodes n` 无 ON 关联键,SQLite 先做笛卡尔积再
+  // 用 EXISTS + json_each 过滤 —— 1k tag 节点 × 10k 普通节点 × 每个节点
+  // json_each 扫一遍 tags,复杂度 O(|T| · |N| · k)。
+  // 这里先用 CTE 预聚合 (node_id, tag) 对,再按 tag 分组 + 关联 tag 节点 content,
+  // 复杂度降到 O(|N| · k_avg) + O(|T|) —— tag 侧不再参与笛卡尔积。
   const coreTags = db.prepare(`
-    SELECT t.content as tag, COUNT(DISTINCT n.id) as cnt
-    FROM nodes t
-    JOIN nodes n ON n.heat > 0.01 AND n.is_meta = 0 AND n.is_tag = 0 AND n.is_superseded = 0
-      AND EXISTS (SELECT 1 FROM json_each(n.tags) je WHERE je.value = t.content)
+    WITH node_tags AS (
+      SELECT n.id AS node_id, je.value AS tag
+      FROM nodes n, json_each(n.tags) je
+      WHERE n.heat > 0.01
+        AND n.is_meta = 0
+        AND n.is_tag = 0
+        AND n.is_superseded = 0
+        AND n.tags IS NOT NULL
+    ),
+    tag_counts AS (
+      SELECT tag, COUNT(DISTINCT node_id) AS cnt
+      FROM node_tags
+      GROUP BY tag
+      HAVING cnt >= ?
+    )
+    SELECT tc.tag AS tag, tc.cnt AS cnt
+    FROM tag_counts tc
+    JOIN nodes t ON t.content = tc.tag
     WHERE t.is_tag = 1 AND t.heat > 0.01 AND t.is_superseded = 0
-    GROUP BY t.content
-    HAVING cnt >= ?
-    ORDER BY cnt DESC
+    ORDER BY tc.cnt DESC
     LIMIT ?
   `).all(minNodesPerTopic, maxTopics) as Array<{ tag: string; cnt: number }>;
 
@@ -260,10 +277,15 @@ async function findCrossTopicResonance(db: Database.Database): Promise<{ analyze
     if (nodes.length < 3) continue;
 
     // 按核心标签分组
+    // 用 parseTags 安全解析:直接 JSON.parse 碰到 legacy / migration glitch 的
+    // 非 JSON 字符串会 throw,外层 try/catch 会吞掉整条节点,导致本批剩余节点
+    // 也看不到。parseTags 返回 [] 兜底,单条坏数据不影响其他节点。
     const byTag = new Map<string, typeof nodes>();
     for (const n of nodes) {
-      let tags: string[] = [];
-      try { tags = JSON.parse(n.tags); } catch { continue; }
+      const tags = parseTags(n.tags);
+      if (tags.length === 0 && n.tags) {
+        log.warn(`解析节点 tags 失败 id=${n.id}`);
+      }
       for (const tag of tags) {
         if (!coreTagSet.has(tag)) continue;
         if (!byTag.has(tag)) byTag.set(tag, []);
@@ -321,7 +343,11 @@ async function findCrossTopicResonance(db: Database.Database): Promise<{ analyze
       const crystalId = crystalNode.id;
 
       // 链接到涉及的节点
-      const allNodes = [...new Map(nodes.map(n => [n.id, n])).values()];
+      // 必须用 byTag 里累积过的节点(它们才真正属于 core tag 桶),不能用原始
+      // nodes 数组 —— 后者包含没有任何 core tag 的"路过"节点,会被 link 到
+      // "cross-topic" crystal,污染跨主题共振的语义。
+      const taggedNodes = [...byTag.values()].flat();
+      const allNodes = [...new Map(taggedNodes.map(n => [n.id, n])).values()];
       for (const n of allNodes.slice(0, 6)) {
         if (!linkExists(db, crystalId, n.id)) {
           createLink(db, {

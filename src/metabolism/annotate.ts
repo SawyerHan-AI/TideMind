@@ -238,7 +238,10 @@ function splitIntoBatches(nodes: BrainNode[]): BrainNode[][] {
  * 查找未经 LLM 标注的节点
  *
  * 判断依据：refinement === 0.0（入库时 refinement 默认为 0）
- * 排除 crystal / meta 类型（这些由系统生成，不需要标注）
+ * 排除 crystal / meta / tag 类型（这些由系统生成，不需要标注）。
+ * 尤其 is_tag=1 的节点若进入 annotate,LLM 会重写它的 tags 字段,
+ * 从而打乱 tag-promote 建立的标签分类体系(tag 节点代表分类本身,
+ * 不应该被当作普通记忆再打标签)。
  */
 export function findUnannotatedNodes(db: Database.Database, limit: number): BrainNode[] {
   return db.prepare(`
@@ -247,6 +250,7 @@ export function findUnannotatedNodes(db: Database.Database, limit: number): Brai
       AND heat > 0.01
       AND is_crystal = 0
       AND is_meta = 0
+      AND is_tag = 0
       AND is_superseded = 0
     ORDER BY created DESC
     LIMIT ?

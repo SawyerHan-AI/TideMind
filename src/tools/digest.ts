@@ -7,7 +7,7 @@ import { appendToStream } from '../stream/writer.js';
 import { generateId } from '../utils/id.js';
 import { now } from '../utils/time.js';
 
-import { isVecLoaded, getDb } from '../db/connection.js';
+import { isVecLoaded } from '../db/connection.js';
 import { findLandingConnections } from '../graph/landing.js';
 import { reconsolidateNode } from '../graph/dedup.js';
 import { enqueuePendingDigest } from '../db/pending-digests.js';
@@ -39,7 +39,9 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
   log.info(`intent=${input.intent ?? 'new'} contentLen=${input.content.length} async=${input.async !== false} trace=${traceId}`);
 
   // Legacy db handle for modules not yet refactored
-  const db = getDb();
+  // 通过 repo.rawDb 取得和 repo 共享的连接，避免绕过测试中的 mock repo（之前
+  // 直接调 getDb() 会在测试里打开另一个真实 DB，让 mock 完全失效）。
+  const db = repo.rawDb;
 
   // --- 纠正已有节点 ---
   if (input.intent === 'correction' && input.target_node) {
@@ -67,10 +69,22 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
 
   // 只有仍然是 correction 且 existing 有效时走下面的 correction 处理
   if (input.intent === 'correction' && input.target_node) {
-    const existing = repo.nodes.getNode(input.target_node)!;
+    const existing = repo.nodes.getNode(input.target_node);
+    if (!existing) {
+      // 并发场景：在上面 resolve 流程与这里之间，另一个进程可能 archive 掉该节点。
+      // 之前用 `!` 非空断言会在 existing 为 null 时访问 .content 抛 TypeError。
+      log.warn(`correction 目标节点在处理中消失: ${input.target_node}`);
+      return { status: 'rejected', trace_id: traceId, reject_reason: `目标节点 ${input.target_node} 已不存在（可能被并发归档）` };
+    }
     repo.nodes.updateNode(input.target_node, { content: input.content }, 'correction');
     log.info(`correction target=${input.target_node}`);
-    const updated = repo.nodes.getNode(input.target_node)!;
+    const updated = repo.nodes.getNode(input.target_node);
+    if (!updated) {
+      // updateNode 之后 getNode 再次返回 null：目标节点在并发窗口里被硬删。
+      // 避免非空断言崩溃，返回 rejected 让调用方看到可解释的错误。
+      log.warn(`correction 更新后目标节点消失: ${input.target_node}`);
+      return { status: 'rejected', trace_id: traceId, reject_reason: `目标节点 ${input.target_node} 在纠正过程中消失` };
+    }
 
     // Stream 先写（获取锚点引用）
     const corrStreamRef = appendToStream({
@@ -128,13 +142,16 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
   // --- 断开错误链接 ---
   if (input.intent === 'correction' && input.target_link) {
     log.info(`unlink ${input.target_link.from} → ${input.target_link.to}`);
-    const link = db.prepare(
-      'SELECT * FROM links WHERE (from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)',
-    ).get(input.target_link.from, input.target_link.to, input.target_link.to, input.target_link.from) as { id: string } | undefined;
+    // 使用 .all 而非 .get：同一对节点之间可能存在多条链接（不同 relation 或重复），
+    // 原先 .get 只删一条会留下残余链接，导致反复 unlink 依然有历史关系。
+    const links = db.prepare(
+      'SELECT id FROM links WHERE (from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)',
+    ).all(input.target_link.from, input.target_link.to, input.target_link.to, input.target_link.from) as Array<{ id: string }>;
 
-    if (link) {
+    for (const link of links) {
       repo.links.deleteLink(link.id);
     }
+    log.debug(`unlink removed ${links.length} link(s) between ${input.target_link.from} and ${input.target_link.to}`);
 
     repo.log.logOperation({
       operation: 'digest',
@@ -202,6 +219,11 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
     } catch (enqueueErr) {
       log.error('Failed to pre-enqueue digest:', (enqueueErr as Error).message);
     }
+    // 这段 detached 异步块历史上漏过异常：外层 Promise.resolve().then(...) 如果在
+     // 进入内部 try 之前同步抛错（例如顶层 `await import(...)` 模块解析失败），会
+     // 变成 unhandledRejection 静默丢失。末尾 .catch 兜底确保至少 log 出来。
+     // 另外清理 pending 条目的 try/catch 之前是 `catch {}` 吞一切，换成 warn log
+     // 让 DB 故障（比如磁盘满、锁冲突）可观测。
     Promise.resolve().then(async () => {
       try {
         await processDigestContent(repo, input, streamRef, traceId, qualityHeat);
@@ -214,7 +236,9 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
           if (pending) {
             completePendingDigest(db, pending.id);
           }
-        } catch { /* 清理失败不影响主流程 */ }
+        } catch (cleanupErr) {
+          log.warn(`digest-cleanup-failed trace=${traceId}: ${(cleanupErr as Error).message}`);
+        }
       } catch (err) {
         log.error('异步 digest 处理失败:', (err as Error).message);
         repo.log.logOperation({
@@ -238,7 +262,7 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
           log.error('Failed to update pending digest status:', (updateErr as Error).message);
         }
       }
-    });
+    }).catch(err => log.error(`digest-detached-failed trace=${traceId}: ${err instanceof Error ? err.stack ?? err.message : String(err)}`));
     return { status: 'accepted', trace_id: traceId };
   }
 
@@ -424,7 +448,8 @@ async function generateAndStoreEmbedding(
   skipDedupMerge: boolean = false,
 ): Promise<Array<{ from_id: string; to_id: string; relation: string }>> {
   // Legacy db handle for modules not yet refactored
-  const db = getDb();
+  // 用 repo.rawDb 保持和上层一致，避免绕过测试 mock。
+  const db = repo.rawDb;
 
   // 多段 embedding：长内容自动拆分为多个 segment
   const inserted = await repo.vectors.insertSegmentVectors(nodeId, content);

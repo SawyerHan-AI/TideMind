@@ -77,21 +77,25 @@ function extractSingleProperty(
 
     case 'multi_select':
       if (prop.multi_select.length > 0) {
-        const names = prop.multi_select.map(s => s.name);
-        metadata.tags.push(...names);
-        metadata.properties[key] = names.join(', ');
+        // 过滤掉空/空白 name，否则 property-promote.ts 用 trim 作为 cache key
+        // 时会把所有空名 select 合并成同一 tag 节点。
+        const names = prop.multi_select.map(s => s.name).filter(n => n && n.trim());
+        if (names.length > 0) {
+          metadata.tags.push(...names);
+          metadata.properties[key] = names.join(', ');
+        }
       }
       break;
 
     case 'select':
-      if (prop.select) {
+      if (prop.select && prop.select.name && prop.select.name.trim()) {
         metadata.tags.push(prop.select.name);
         metadata.properties[key] = prop.select.name;
       }
       break;
 
     case 'status':
-      if (prop.status) {
+      if (prop.status && prop.status.name && prop.status.name.trim()) {
         metadata.tags.push(prop.status.name);
         metadata.properties[key] = prop.status.name;
       }

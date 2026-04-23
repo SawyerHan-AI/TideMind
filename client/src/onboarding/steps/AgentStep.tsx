@@ -1,27 +1,10 @@
-import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useOnboarding } from '../OnboardingContext'
 import { StepContainer } from '../components/StepContainer'
 import { AgentIntegration } from '../../components/settings/AgentIntegration'
 
+// 配置检测轮询已上移到 OnboardingProvider，步骤组件只读渲染即可
 export function AgentStep() {
   const { t } = useTranslation('onboarding')
-  const { setAgentConfigured } = useOnboarding()
-
-  // 轮询检测是否有 Agent（页面隐藏时暂停，避免无效请求）
-  useEffect(() => {
-    let cancelled = false
-    const check = async () => {
-      if (document.visibilityState !== 'visible') return
-      try {
-        const agents = await (window as any).api.agents.list(false)
-        if (!cancelled) setAgentConfigured(agents?.length > 0)
-      } catch { /* ignore */ }
-    }
-    check()
-    const timer = setInterval(check, 3000)
-    return () => { cancelled = true; clearInterval(timer) }
-  }, [setAgentConfigured])
 
   return (
     <StepContainer

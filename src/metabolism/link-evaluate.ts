@@ -74,6 +74,17 @@ export async function runLinkEvaluate(db: Database.Database): Promise<LinkEvalua
   const maxLinks = getParam('link-evaluate', 'max_links_per_run', 50);
   const pendingExpireDays = getParam('link-evaluate', 'pending_expire_days', 7);
 
+  // 无界先清理过期 pending 链接:原逻辑把过期判定放到 LIMIT ? 之后的 JS 循环里,
+  // 意味着当 pending 堆积 > maxLinks(50) 时,超出 LIMIT 的那些"年纪更大的"
+  // pending 链接永远进不来,也永远不会过期被清,只能无限累积。
+  // 这里在任何 LIMIT 之前先无界 DELETE 所有超过 pending_expire_days 的 pending,
+  // 保证过期清理不被 per-run 预算挤掉。
+  const expiredCutoff = `-${pendingExpireDays} days`;
+  const purgedExpired = db.prepare(
+    `DELETE FROM links
+     WHERE status = 'pending' AND created < datetime('now', ?)`,
+  ).run(expiredCutoff).changes;
+
   // 收集需要评估的链接（合并 auto 新链接 + pending 链接）
   const recentAutoLinks = db.prepare(`
     SELECT * FROM links
@@ -101,13 +112,16 @@ export async function runLinkEvaluate(db: Database.Database): Promise<LinkEvalua
     }
   }
 
-  if (allLinks.length === 0) return { evaluated: 0, confirmed: 0, deleted: 0 };
+  if (allLinks.length === 0) return { evaluated: 0, confirmed: 0, deleted: purgedExpired };
 
   // 先处理过期的 pending 链接 — 过期一律删,不再留 strength>=0.5 的 pending
   // 链接。之前加 strength<0.5 的意图是"高强度的再留一轮机会",但 pending
   // 本身就意味着 LLM 没来得及/没配置来确认,留着只会让 pending 越积越多、
   // evaluator 每次都要扫过它们。强度本身就是创建者自评,不应作为保护条件。
-  let deleted = 0;
+  //
+  // 上面无界 DELETE 已经把过期 pending 清掉了,这里是一道 JS 侧兜底(防止
+  // 同 tick 内 datetime('now') 与 JS Date.now 的秒级误差漏掉边界行)。
+  let deleted = purgedExpired;
   const toEvaluate: any[] = [];
   for (const link of allLinks) {
     if (link.status === 'pending') {

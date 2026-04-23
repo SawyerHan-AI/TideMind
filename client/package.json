@@ -1,6 +1,6 @@
 {
   "name": "tidemind-client",
-  "version": "0.2.42",
+  "version": "0.2.43",
   "description": "Tide Mind 桌面客户端",
   "main": "./out/main/index.js",
   "scripts": {
@@ -10,7 +10,7 @@
     "preview": "electron-vite preview",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder --mac",
-    "postinstall": "electron-rebuild -f -w better-sqlite3"
+    "postinstall": "electron-rebuild -w better-sqlite3"
   },
   "dependencies": {
     "@date-fns/tz": "^1.4.1",

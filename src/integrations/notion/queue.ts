@@ -198,10 +198,13 @@ async function processOnePage(
   for (let i = 0; i < Math.min(oldNodeIds.length, allNodeIds.length); i++) {
     supersedeNode(db, oldNodeIds[i], allNodeIds[i]);
   }
-  // 多余的旧节点标记为 superseded
-  if (oldNodeIds.length > allNodeIds.length) {
+  // 缩容：新 digest 段数少于旧版时，把多余老节点 supersede 到当前最末节点，
+  // 与 apple-notes/obsidian 一致走 `supersedeNode`。直接 UPDATE 会让跨 Notion
+  // 的 relation/mention 链接指向 superseded 节点不通。
+  if (oldNodeIds.length > allNodeIds.length && allNodeIds.length > 0) {
+    const tailId = allNodeIds[allNodeIds.length - 1];
     for (let i = allNodeIds.length; i < oldNodeIds.length; i++) {
-      db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(oldNodeIds[i]);
+      supersedeNode(db, oldNodeIds[i], tailId);
     }
   }
 

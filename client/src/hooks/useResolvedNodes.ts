@@ -16,6 +16,7 @@ export function useResolvedNodes(
   const [loading, setLoading] = useState(false)
   const prevKey = useRef('')
   const loadedKey = useRef('')
+  const latestKeyRef = useRef('')
 
   useEffect(() => {
     if (!enabled || nodeIds.length === 0) return
@@ -25,13 +26,23 @@ export function useResolvedNodes(
 
     prevKey.current = key
     loadedKey.current = key
+    latestKeyRef.current = key
     setLoading(true)
 
     window.api.timeline
       .resolveNodes(nodeIds)
-      .then((result: NodeMap) => setNodeMap(result))
-      .catch(() => setNodeMap(null))
-      .finally(() => setLoading(false))
+      .then((result: NodeMap) => {
+        if (key !== latestKeyRef.current) return // stale — a newer call has superseded us
+        setNodeMap(result)
+      })
+      .catch(() => {
+        if (key !== latestKeyRef.current) return
+        setNodeMap(null)
+      })
+      .finally(() => {
+        if (key !== latestKeyRef.current) return
+        setLoading(false)
+      })
   }, [enabled, nodeIds])
 
   return { nodeMap, loading }

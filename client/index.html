@@ -2,6 +2,23 @@
 <html lang="zh-CN" class="dark">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      Content-Security-Policy: defense-in-depth against XSS turning into RCE.
+      - default-src 'self': only load resources from the bundled renderer
+      - script-src 'self': no inline / eval; React build outputs external scripts
+      - style-src 'self' 'unsafe-inline': Tailwind + emotion-style libs inject inline <style>
+      - img-src 'self' data: https:: avatars/og-images can come from any https host
+      - font-src 'self' data:: bundled fonts + base64 fonts
+      - connect-src: renderer talks to main via IPC; outbound HTTP only for the
+        cloud server, model providers, and a local Ollama. Daemon-process
+        traffic is unaffected (Electron CSP only applies to the renderer).
+      - object-src/base-uri/frame-ancestors: defense-in-depth against
+        plugin/iframe smuggling.
+      The same policy is also injected as an HTTP response header by the main
+      process (see electron/main.ts) — meta tags can be removed via DevTools,
+      headers cannot.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://cloud.tidemind.ai https://api.anthropic.com https://generativelanguage.googleapis.com https://api.openai.com http://localhost:11434 http://127.0.0.1:11434; object-src 'none'; base-uri 'self'; frame-ancestors 'none'" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Tide Mind</title>
   </head>

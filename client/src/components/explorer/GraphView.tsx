@@ -98,6 +98,11 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
   const rafRef = useRef<number>(0)
   const zoomBehaviorRef = useRef<d3.ZoomBehavior<HTMLCanvasElement, unknown> | null>(null)
   const draggedNodeRef = useRef<SimNode | null>(null)
+  // track mounted state to guard async setState calls
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    return () => { mountedRef.current = false }
+  }, [])
 
   // toolbar state
   const [neighborhoodDepth, setNeighborhoodDepth] = useState(0)
@@ -107,12 +112,6 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
   const [connectivityThreshold, setConnectivityThreshold] = useState(0)
   const [highlightedPath, setHighlightedPath] = useState<Set<string>>(new Set())
   const [structureHoles, setStructureHoles] = useState<StructureHole[]>([])
-
-  // track mounted state to guard async setState calls
-  useEffect(() => {
-    mountedRef.current = true
-    return () => { mountedRef.current = false }
-  }, [])
 
   // data fetching
   const rev = useDataRevision(['nodes', 'links'])
@@ -500,7 +499,6 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
 
   /* ---- Click (via pointerup to avoid D3 drag suppression) ---- */
   const pointerDownRef = useRef<{ x: number; y: number; time: number } | null>(null)
-  const mountedRef = useRef(true)
 
   useEffect(() => {
     const canvas = canvasRef.current

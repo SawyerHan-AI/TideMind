@@ -23,11 +23,20 @@ export function searchBM25(
 
   if (ftsResults.length === 0) return [];
 
-  // FTS5 rank 是负数，越小（越负）越好
-  // ftsResults 按 rank 升序排列：[0] 最负（最好），[last] 最接近 0（最差）
-  const bestRank = ftsResults[0].rank;               // 最负，如 -15
-  const worstRank = ftsResults[ftsResults.length - 1].rank;  // 最接近 0，如 -1
-  const range = bestRank - worstRank;                 // 负数，如 -14
+  // BM25 归一化不变量:
+  //   - FTS5 的 rank 是负数,越负 = 匹配越好;
+  //   - 最佳得分 → 1.0,最差 → 0.0,线性映射 [minRank, maxRank] → [1.0, 0.0]。
+  // 防御性地用 Math.min / Math.max 而不是 ftsResults[0] / ftsResults[length-1] —
+  // FTS5 行序虽然在底层 query 里有 `ORDER BY bm25(...)`,但中间一旦没排序、
+  // 或将来切到别的 retrieval 策略,假设排序就会引入 silent bug。
+  // 退化情况:
+  //   - length === 1   → 单一最佳匹配,得分 1.0(完整权重,与单结果场景下游期待一致)
+  //   - 全部并列(maxRank === minRank 但 length > 1)→ 都给 0.5,
+  //     避免 N 个并列结果各拿 1.0 反而压垮 hybrid 评分另一支(向量)。
+  const ranks = ftsResults.map(r => r.rank);
+  const minRank = Math.min(...ranks);  // 最佳(最负)
+  const maxRank = Math.max(...ranks);  // 最差(最接近 0)
+  const range = maxRank - minRank;     // 正数,可能为 0(全并列)
 
   const results: SearchResult[] = [];
 
@@ -44,8 +53,15 @@ export function searchBM25(
     if (options.createdAfter && node.created < options.createdAfter) continue;
     if (options.createdBefore && node.created > options.createdBefore) continue;
 
-    // BM25 归一化：rank 最负（最好）→ 1.0，最接近 0（最差）→ 0.0
-    const score = range === 0 ? 1.0 : (fts.rank - worstRank) / range;
+    let score: number;
+    if (ftsResults.length === 1) {
+      score = 1.0;            // 单结果:满分
+    } else if (range === 0) {
+      score = 0.5;            // 全部并列:给中点,避免压垮 hybrid 评分
+    } else {
+      // (maxRank - rank) / range:rank=minRank → 1.0,rank=maxRank → 0.0
+      score = (maxRank - fts.rank) / range;
+    }
 
     results.push({ node, score, source: 'bm25' });
 

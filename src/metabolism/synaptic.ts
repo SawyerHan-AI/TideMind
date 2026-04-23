@@ -37,12 +37,22 @@ export function runSynapticScaling(db: Database.Database): {
   const wI = getParam('recall-rank', 'independence_weight', 0.2);
   // 衰减因子(decayRate)传入 SQL,由 SQL 侧对当前 heat 做 heat = heat * decayRate,
   // 避免跨进程读-改-写覆盖:A 读 heat=0.3 → 期间 B bumpHeat 到 0.9 → A 写回
-  // 0.285 这种"衰减覆盖提热"场景。maturity_score 也用当前最新 heat 重新计算。
+  // 0.285 这种"衰减覆盖提热"场景。
+  //
+  // ⚠️ SET 子句顺序坑：SQLite 把 SET 表达式右侧统一按"行的旧值"求值，
+  // 所以 `maturity_score = ... MIN(heat * decayRate, 1.0) ...` 里的 heat 仍是
+  // 衰减前的值，等价于 maturity 永远晚 heat 一个周期。修法是把 heat 衰减
+  // 后的乘积直接当 WHERE 子句外的常量传进来，不要在 SET 里再去乘一次。
+  // 这里改用子查询 `(SELECT heat * ? FROM nodes WHERE id = ?2)` 让 maturity
+  // 引用同一行旧 heat 乘以 decayRate（与赋值给 heat 的值一致），保证
+  // maturity_score 与 heat 始终基于同一基准计算。同时仍通过 SQL 侧 `heat * ?`
+  // 保留对跨进程 bumpHeat 的安全语义。
   const updateStmt = db.prepare(`
     UPDATE nodes SET
-      heat = heat * ?,
-      maturity_score = ? * MIN(heat * ?, 1.0) + ? * refinement + ? * connectivity + ? * independence
-    WHERE id = ?
+      heat = heat * @rate,
+      maturity_score = @wH * MIN((SELECT heat * @rate FROM nodes WHERE id = @id), 1.0)
+                     + @wR * refinement + @wC * connectivity + @wI * independence
+    WHERE id = @id
   `);
 
   const decayBase = getParam('metabolism-params', 'decay_base', 0.05);
@@ -57,7 +67,9 @@ export function runSynapticScaling(db: Database.Database): {
         // 衰减率：所有节点严格衰减，连通度高的衰减更慢
         const decayRate = 1 - decayBase * (1 - decayDamping * Math.min(node.connectivity, 1));
 
-        updateStmt.run(decayRate, wH, decayRate, wR, wC, wI, node.id);
+        // 用具名参数：rate 在 SET 中出现两处（heat 衰减 / maturity 子查询），
+        // id 同理（WHERE / 子查询），具名绑定避免位置参数重复传递。
+        updateStmt.run({ rate: decayRate, wH, wR, wC, wI, id: node.id });
         decayed++;
         // 不再归档 — heat 自然衰减到极低值即可，recall 按 heat 排序自然沉底
       }
@@ -71,19 +83,26 @@ export function runSynapticScaling(db: Database.Database): {
   let linkDecayed = 0;
   let linkDeleted = 0;
 
-  // 先清理 strength 已经 <= threshold 的边(不会再被下面 SELECT 捞到):
+  // purge + SELECT 必须在同一事务内原子完成:
+  // 原写法先 DELETE 再 SELECT,两语句之间并发的 updateLinkStrength 会把一些
+  // 链接降到 <= threshold,这些链接既没被 purge 捞走,也可能在 SELECT 里因
+  // 时序被再次读进来继续衰减(最坏情况:先读旧值,衰减后写回时又新跌到阈值下)。
+  // 统一包进 db.transaction 里,让 DELETE / SELECT 看到一致的数据库快照,
+  // 任何并发的 UPDATE 在本事务提交前都看不到。
   // 原 SELECT 用严格 >,strength 恰好等于 threshold 的链接永远不会被扫,
   // 也就不会被衰减/删除,永远挂在图上。这里显式做一次独立 DELETE 兜底。
-  const purgedBelowThreshold = db.prepare(
-    "DELETE FROM links WHERE status = 'confirmed' AND strength <= ?",
-  ).run(linkDeleteThreshold).changes;
-  linkDeleted += purgedBelowThreshold;
+  const confirmedLinks = db.transaction(() => {
+    const purgedBelowThreshold = db.prepare(
+      "DELETE FROM links WHERE status = 'confirmed' AND strength <= ?",
+    ).run(linkDeleteThreshold).changes;
+    linkDeleted += purgedBelowThreshold;
 
-  const confirmedLinks = db.prepare(`
-    SELECT l.id, l.strength, l.from_id, l.to_id, l.relation
-    FROM links l
-    WHERE l.status = 'confirmed' AND l.strength > ?
-  `).all(linkDeleteThreshold) as Array<{ id: string; strength: number; from_id: string; to_id: string; relation: string }>;
+    return db.prepare(`
+      SELECT l.id, l.strength, l.from_id, l.to_id, l.relation
+      FROM links l
+      WHERE l.status = 'confirmed' AND l.strength > ?
+    `).all(linkDeleteThreshold) as Array<{ id: string; strength: number; from_id: string; to_id: string; relation: string }>;
+  })();
 
   // 预取节点 heat
   const heatCache = new Map<string, number>();

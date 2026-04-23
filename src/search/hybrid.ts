@@ -109,36 +109,70 @@ export async function searchHybrid(
   const topForExpansion = results.slice(0, EXPAND_TOP_N);
   const topIds = topForExpansion.map(r => r.node.id);
 
-  // 批量获取所有 top 结果的链接，避免 N+1
+  // 批量获取所有 top 结果的链接，避免 N+1。
+  //
+  // 对称性保证(verified 2026-04-23):`repo.links.getLinksForNodes` 在 sqlite 实现
+  // (`src/db/links.ts:135-162`)中 SQL 用的是 `from_id IN (...) OR to_id IN (...)`,
+  // 返回的链接两端谁在 topIds 里都可能。下方按 (sourceNode, neighborNode) 分组时
+  // 显式 swap from_id/to_id,所以入向和出向的邻居都会被展开,不会漏。
+  // 如果将来替换 repo 实现(例如 pg-repository),必须保持同样的对称语义。
   const allLinks = repo.links.getLinksForNodes(topIds, { minStrength: expansionConfig.minStrength, statusFilter: 'confirmed' });
+
+  // 按 (sourceNode, neighborNode) 分组链接,选择确定性的"代表链接"后再打分。
+  // 原实现对 allLinks 直接迭代,如果同一 (source, neighbor) 对有多条 relation
+  // 类型不同的链接(例如同时 caused_by + supports),首条被看到的 link 决定
+  // boost 倍率,而 boost 又影响 neighborScore → 顺序依赖非确定性。
+  // 修正: 每对只留 strength 最大(strength 并列时 id 字典序小)的链接,
+  // 这样即便 DB 返回顺序不稳定,打分也稳定。
+  const linksBySourceNeighbor = new Map<string, typeof allLinks[number]>();
+  for (const link of allLinks) {
+    // 确保链接两端包含某个 topResult
+    let sourceId: string | null = null;
+    let neighborId: string | null = null;
+    if (resultIds.has(link.from_id) && !resultIds.has(link.to_id)) {
+      sourceId = link.from_id;
+      neighborId = link.to_id;
+    } else if (resultIds.has(link.to_id) && !resultIds.has(link.from_id)) {
+      sourceId = link.to_id;
+      neighborId = link.from_id;
+    } else {
+      continue; // 两端都是 topResult 或都不是 → 不是"扩展到新邻居"的链接
+    }
+    const key = `${sourceId}|${neighborId}`;
+    const existing = linksBySourceNeighbor.get(key);
+    if (
+      !existing ||
+      link.strength > existing.strength ||
+      (link.strength === existing.strength && link.id < existing.id)
+    ) {
+      linksBySourceNeighbor.set(key, link);
+    }
+  }
 
   // 收集所有邻居 ID
   const neighborIdSet = new Set<string>();
-  for (const link of allLinks) {
-    neighborIdSet.add(link.from_id);
-    neighborIdSet.add(link.to_id);
+  for (const link of linksBySourceNeighbor.values()) {
+    if (!resultIds.has(link.from_id)) neighborIdSet.add(link.from_id);
+    if (!resultIds.has(link.to_id)) neighborIdSet.add(link.to_id);
   }
-  // 移除已在结果中的 ID
-  for (const id of resultIds) neighborIdSet.delete(id);
 
   // 批量获取所有邻居节点
   const neighborNodeMap = repo.nodes.getNodesByIds([...neighborIdSet]);
 
-  // 按 top 结果遍历链接，计算邻居分数
+  // 对每个邻居,按 topForExpansion 顺序选第一个"有边"的 source;邻居分数只算一次。
+  // topForExpansion 顺序由 results.sort(b.score - a.score) 得到,本身是确定性的。
+  const seenNeighbors = new Set<string>();
   for (const result of topForExpansion) {
-    for (const link of allLinks) {
-      // 确保链接属于当前 result
-      if (link.from_id !== result.node.id && link.to_id !== result.node.id) continue;
-
-      const neighborId = link.from_id === result.node.id ? link.to_id : link.from_id;
-      if (resultIds.has(neighborId)) continue;
+    for (const [key, link] of linksBySourceNeighbor) {
+      if (!key.startsWith(`${result.node.id}|`)) continue;
+      const neighborId = key.slice(result.node.id.length + 1);
+      if (seenNeighbors.has(neighborId) || resultIds.has(neighborId)) continue;
 
       const neighborNode = neighborNodeMap.get(neighborId);
       if (!neighborNode || neighborNode.heat < 0.01) continue;
       if (options.excludeMeta && neighborNode.is_meta) continue;
 
-      // 标记已处理，避免重复
-      resultIds.add(neighborId);
+      seenNeighbors.add(neighborId);
 
       // 用相同公式计算分数，乘以衰减系数
       const maxHeat = 10.0;
@@ -156,9 +190,9 @@ export async function searchHybrid(
     }
   }
 
-  // 合并邻居结果，重新排序并截断
+  // 合并邻居结果,按分数降序、ID 字典序升序(tiebreak,避免两条同分节点顺序随机)。
   const allResults = results.concat(neighborResults);
-  allResults.sort((a, b) => b.score - a.score);
+  allResults.sort((a, b) => b.score - a.score || a.node.id.localeCompare(b.node.id));
   log.debug(`bm25=${bm25Results.length} vector=${vectorResults.length} merged=${merged.size} 邻居=${neighborResults.length} final=${Math.min(allResults.length, limit)}`);
   return allResults.slice(0, limit);
 }

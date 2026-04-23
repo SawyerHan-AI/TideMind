@@ -27,7 +27,8 @@ export interface NoteSourceStats {
 }
 
 function generateId(): string {
-  return 'ns_' + crypto.randomBytes(4).toString('hex');
+  // 64-bit 熵：4 字节 (32-bit) 在 ~65k sources 时碰撞概率达 50%。
+  return 'ns_' + crypto.randomBytes(8).toString('hex');
 }
 
 export function listNoteSources(db: Database.Database, includeArchived = false): NoteSource[] {

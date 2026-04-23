@@ -113,6 +113,9 @@ let cachedConfig: AppConfig | null = null;
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
   const result = { ...target };
   for (const key of Object.keys(source)) {
+    // 防御原型污染：用户 config.toml 若含 __proto__/constructor/prototype 键
+    // 会污染所有对象的原型链。在合并前显式过滤。
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
     if (
       source[key] && typeof source[key] === 'object' && !Array.isArray(source[key]) &&
       target[key] && typeof target[key] === 'object' && !Array.isArray(target[key])
@@ -240,7 +243,9 @@ function findSourceDataDir(): string | null {
   const candidates = [
     path.join(__dirname, '..', 'data'),           // 从 dist/ 运行时
     path.join(__dirname, '..', '..', 'data'),     // 其他情况
-    ...('resourcesPath' in process ? [path.join((process as unknown as { resourcesPath: string }).resourcesPath, 'data')] : []),
+    ...(typeof (process as unknown as { resourcesPath?: unknown }).resourcesPath === 'string'
+      ? [path.join((process as unknown as { resourcesPath: string }).resourcesPath, 'data')]
+      : []),
   ];
   for (const c of candidates) {
     if (fs.existsSync(c)) return c;
@@ -477,7 +482,11 @@ export function backfillSyncHashes(): void {
     });
     tx();
     db.close();
-  } catch { /* 静默 */ }
+  } catch (err) {
+    // 之前是裸 catch {}：DB 锁冲突 / 磁盘错误 / schema 缺失都会静默吞掉，
+    // 问题永远暴露不出来。保留"尽力而为"语义，但通过 log.warn 留观测线。
+    log.warn('backfillSyncHashes 失败', err instanceof Error ? err.stack ?? err.message : String(err));
+  }
 }
 
 /**

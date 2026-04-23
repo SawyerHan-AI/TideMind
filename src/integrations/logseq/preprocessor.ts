@@ -749,17 +749,33 @@ function cleanUp(content: string): string {
  */
 function findCodeRegions(content: string): Array<[number, number]> {
   const regions: Array<[number, number]> = [];
-  const fenceRegex = /^(```|~~~)/gm;
-  let openStart: number | null = null;
+  // fence 必须同字符配对：``` 只能被 ``` 关闭，~~~ 只能被 ~~~ 关闭。
+  // 跨类型 fence 否则会吃掉中间的 [[wikilinks]] / ((refs))。
+  // 与 obsidian preprocessor 的 markCodeRegions 保持一致的追踪模式。
+  const lines = content.split('\n');
+  let inFence = false;
+  let fenceChar = '';
+  let fenceStart = 0;
+  let charOffset = 0;
 
-  let match;
-  while ((match = fenceRegex.exec(content)) !== null) {
-    if (openStart === null) {
-      openStart = match.index;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!inFence) {
+      const openMatch = line.match(/^(\s*)(```|~~~)/);
+      if (openMatch) {
+        inFence = true;
+        fenceChar = openMatch[2];
+        fenceStart = charOffset;
+      }
     } else {
-      regions.push([openStart, match.index + match[0].length]);
-      openStart = null;
+      const closeMatch = line.match(/^(\s*)(```|~~~)\s*$/);
+      if (closeMatch && closeMatch[2] === fenceChar) {
+        regions.push([fenceStart, charOffset + line.length]);
+        inFence = false;
+        fenceChar = '';
+      }
     }
+    charOffset += line.length + 1; // +1 for \n
   }
   // 未闭合的 fence 不作为代码块
   return regions;

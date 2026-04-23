@@ -9,9 +9,15 @@ import {
   markInitialized, getNoteSourceStats,
 } from '@server/integrations/shared/note-sources.js'
 import { getDb } from '@server/db/connection.js'
+import { createLogger } from '@server/utils/logger.js'
+
+const log = createLogger('note-sources-ipc')
 
 // 全局初始化锁（跨 Logseq/Obsidian）
 let globalInitSourceId: string | null = null
+// 最长初始化时限：30 分钟。runInitialization 挂住时用这个兜底释放锁，
+// 否则用户只能重启 Electron 才能再试
+const INIT_MAX_DURATION_MS = 30 * 60 * 1000
 
 /**
  * 注册笔记源管理 IPC handlers
@@ -173,7 +179,24 @@ export function registerNoteSourceHandlers(): void {
       }
     }
 
-    const resolved = testPath.replace('~', os.homedir())
+    const resolved = path.resolve(testPath.replace('~', os.homedir()))
+    // 路径白名单：renderer 传进来的 testPath 会被 fs.readdirSync 递归，
+    // 不卡会变成任意目录遍历（/etc, /var/root, 其他用户 home 等）。
+    // 合法根目录：用户 homedir、/Volumes（外接盘，macOS iCloud/Obsidian vault 常放这）、
+    // /mnt（Linux 常见挂载点）、/media（Linux 自动挂载）。
+    const allowedRoots = [
+      os.homedir(),
+      '/Volumes',
+      '/mnt',
+      '/media',
+    ].map(p => path.resolve(p))
+    const withinAllowedRoot = allowedRoots.some(root => {
+      // 允许等于 root 或以 root + sep 开头；避免 /homedir2 被 /home 前缀匹配
+      return resolved === root || resolved.startsWith(root + path.sep)
+    })
+    if (!withinAllowedRoot) {
+      return { accessible: false, fileCount: 0, path: resolved, error: 'path outside allowed roots' }
+    }
     if (!fs.existsSync(resolved)) {
       return { accessible: false, fileCount: 0, path: resolved }
     }
@@ -249,30 +272,42 @@ export function registerNoteSourceHandlers(): void {
     }
     globalInitSourceId = id
 
+    // 超时兜底：runInitialization 若挂住，30 分钟后强制释放全局锁。
+    // 用 Promise.race 让 handler 能返回错误，同时 finally 一定能 reset lock。
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`初始化超时（>${INIT_MAX_DURATION_MS / 60_000} 分钟），已自动释放锁`)), INIT_MAX_DURATION_MS)
+    })
+
     try {
-      let report: any
-      if (source.tool_type === 'logseq') {
-        const { runInitialization } = await import('@server/integrations/logseq/initialization.js')
-        report = await runInitialization(getDb(), id, source.path)
-      } else if (source.tool_type === 'obsidian') {
-        const { runInitialization } = await import('@server/integrations/obsidian/initialization.js')
-        report = await runInitialization(getDb(), id, source.path)
-      } else if (source.tool_type === 'apple-notes') {
-        const { runInitialization } = await import('@server/integrations/apple-notes/initialization.js')
-        report = await runInitialization(getDb(), id, source.path)
-      } else if (source.tool_type === 'notion') {
-        const { runInitialization } = await import('@server/integrations/notion/initialization.js')
-        const token = source.path.startsWith('notion://') ? source.path.slice('notion://'.length) : source.path
-        report = await runInitialization(getDb(), token, id)
-      } else {
-        return { success: false, error: `不支持的工具类型: ${source.tool_type}` }
-      }
+      const runPromise: Promise<any> = (async () => {
+        if (source.tool_type === 'logseq') {
+          const { runInitialization } = await import('@server/integrations/logseq/initialization.js')
+          return await runInitialization(getDb(), id, source.path)
+        } else if (source.tool_type === 'obsidian') {
+          const { runInitialization } = await import('@server/integrations/obsidian/initialization.js')
+          return await runInitialization(getDb(), id, source.path)
+        } else if (source.tool_type === 'apple-notes') {
+          const { runInitialization } = await import('@server/integrations/apple-notes/initialization.js')
+          return await runInitialization(getDb(), id, source.path)
+        } else if (source.tool_type === 'notion') {
+          const { runInitialization } = await import('@server/integrations/notion/initialization.js')
+          const token = source.path.startsWith('notion://') ? source.path.slice('notion://'.length) : source.path
+          return await runInitialization(getDb(), token, id)
+        }
+        throw new Error(`不支持的工具类型: ${source.tool_type}`)
+      })()
+
+      const report = await Promise.race([runPromise, timeoutPromise])
 
       // 标记为已初始化
       markInitialized(getClientDb(), id)
       return { success: true, data: report }
     } catch (err) {
-      return { success: false, error: (err as Error).message }
+      const msg = (err as Error).message
+      if (msg.includes('初始化超时')) {
+        log.error(`init timeout on source=${id}: lock force-released after ${INIT_MAX_DURATION_MS}ms`)
+      }
+      return { success: false, error: msg }
     } finally {
       globalInitSourceId = null
     }
@@ -319,6 +354,11 @@ export function registerNoteSourceHandlers(): void {
         abortInit(id)
       }
     } catch { /* ignore */ }
+    // 确保全局锁释放：即使上游 runInitialization 还没 return（finally 未跑），
+    // 用户已选择 abort，不能等 runInitialization 结束才解锁
+    if (globalInitSourceId === id) {
+      globalInitSourceId = null
+    }
     return { success: true }
   })
 

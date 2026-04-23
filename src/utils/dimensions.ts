@@ -93,7 +93,12 @@ export function inferDimensions(content: string): ContentDimensions {
   }
 
   // 主观性信号
-  if (/我觉得|我喜欢|偏好|prefer|喜欢|讨厌|感觉|feel|love|hate/.test(lower)) {
+  // 英文 token 加 word boundary，避免 Glove / lovely / preferences 触发假阳。
+  // 中文无 boundary，保留子串匹配。
+  if (
+    /我觉得|我喜欢|偏好|喜欢|讨厌|感觉/.test(content) ||
+    /\b(prefer|feel|love|hate)\b/i.test(content)
+  ) {
     subjectivity = 0.8;
   }
   if (/决定|选择|decided|chose/.test(lower)) {

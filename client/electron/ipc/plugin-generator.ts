@@ -15,6 +15,12 @@ import {
   repairMarketplaceJson,
   repairClaudeSettings,
 } from '@server/utils/marketplace-repair.js'
+import {
+  validateAgentId,
+  validatePluginName,
+  validateCli,
+  assertPathWithinRoot,
+} from './_validate'
 
 const execFileAsync = promisify(execFile)
 
@@ -90,6 +96,40 @@ function isPluginClientType(s: string): s is PluginClientType {
   return s === 'claude-code' || s === 'cowork' || s === 'cursor' || s === 'codex' || s === 'windsurf' || s === 'openclaw'
 }
 
+/**
+ * 原子写文件：先写 `<path>.tmp-<pid>-<rand>`，再 rename 到真实路径。
+ * POSIX rename 同目录下是原子的，可避免：
+ *   1. 写入中途崩溃 → 留下 half-written / 截断的 JSON；
+ *   2. 并发写 → 读者 readFileSync 命中中间态
+ * 跨 client 配置都应走这个。
+ */
+function writeFileAtomic(realPath: string, data: string | Buffer, options?: { mode?: number }): void {
+  const dir = path.dirname(realPath)
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  const tmpPath = `${realPath}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`
+  try {
+    fs.writeFileSync(tmpPath, data, options?.mode !== undefined ? { mode: options.mode } : undefined)
+    fs.renameSync(tmpPath, realPath)
+  } catch (err) {
+    // 失败时清理 tmp 文件；不 rethrow 前先让原文件保持不变（rename 失败 realPath 未变）
+    try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath) } catch { /* ignore */ }
+    throw err
+  }
+}
+
+/**
+ * 读入 JSON 文件。malformed 或不存在 → 返回传入的 fallback（通常是 {}）。
+ * 这样写 handler 里不用每次处理 JSON.parse 抛错的噪声。
+ */
+function readJsonSafe<T extends Record<string, any>>(filePath: string, fallback: T): T {
+  if (!fs.existsSync(filePath)) return fallback
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as T
+  } catch {
+    return fallback
+  }
+}
+
 import { appendTomlMcpSection, removeTomlMcpSection, ensureTomlFeatureFlag } from './toml-utils'
 import {
   CODEX_V2_MIN_VERSION,
@@ -137,12 +177,18 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
   // Claude Cowork: 写入 Desktop config + 生成 Skill .md 到 ~/Downloads/
   // ----------------------------------------------------------
   ipcMain.handle('agents:generate-plugin', async (_e, params: PluginGenerateParams): Promise<PluginGenerateResult> => {
-    const { agentId, agentName } = params
+    // 校验 agentId：拒掉所有不符合 `eb_<hex>` 形式的输入。
+    // 这之前的 path.join(pluginsDir, `prefix-${agentId}`) 在 agentId="../../../etc/passwd" 时
+    // 会逃出 ~/.tidemind/plugins/ 写到任意目录。
+    const agentId = validateAgentId(params.agentId)
+    const { agentName } = params
     const clientType: PluginClientType = isPluginClientType(params.clientType ?? '') ? params.clientType as PluginClientType : 'claude-code'
     const config = CLIENT_CONFIG[clientType]
     const pluginDirName = `${config.dirPrefix}-${agentId}`
     const pluginName = `tidemind-${agentId}`
     const pluginDir = path.join(pluginsDir, pluginDirName)
+    // 防御性纵深：即便正则被绕过，也确保 pluginDir 仍在 pluginsDir 之下
+    assertPathWithinRoot(pluginDir, pluginsDir)
 
     // 读取 Skill 源文件（两种类型共用）
     const primarySkillPath = path.join(skillDir, config.skillSource)
@@ -158,22 +204,16 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       if (clientType === 'cowork') {
         // ---- Claude Cowork: Desktop config + Skill 文件 ----
 
-        // 1. 写入 Claude Desktop 配置（MCP 桥接）
+        // 1. 写入 Claude Desktop 配置（MCP 桥接）— 原子写，避免中途崩溃留半截 JSON
         const desktopConfigPath = path.join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json')
-        let desktopConfig: any = {}
-        if (fs.existsSync(desktopConfigPath)) {
-          desktopConfig = JSON.parse(fs.readFileSync(desktopConfigPath, 'utf-8'))
-        }
+        const desktopConfig = readJsonSafe<any>(desktopConfigPath, {})
         if (!desktopConfig.mcpServers) desktopConfig.mcpServers = {}
         desktopConfig.mcpServers[`tidemind-${agentId}`] = {
           command: shimPath,
           args: [mcpServerPath],
           env: { EB_AGENT_ID: agentId },
         }
-        // 确保目录存在
-        const desktopConfigDir = path.dirname(desktopConfigPath)
-        if (!fs.existsSync(desktopConfigDir)) fs.mkdirSync(desktopConfigDir, { recursive: true })
-        fs.writeFileSync(desktopConfigPath, JSON.stringify(desktopConfig, null, 2))
+        writeFileAtomic(desktopConfigPath, JSON.stringify(desktopConfig, null, 2))
 
         // 2. 生成 Skill .md 文件到 ~/Downloads/（Claude Cowork Skills 上传需要 name + description）
         const skillFrontmatter = [
@@ -184,7 +224,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
           '',
         ].join('\n')
         const skillOutputPath = path.join(os.homedir(), 'Downloads', `tidemind-skill-${agentId}.md`)
-        fs.writeFileSync(skillOutputPath, skillFrontmatter + skillContent)
+        writeFileAtomic(skillOutputPath, skillFrontmatter + skillContent)
 
         return { pluginDir: skillOutputPath, pluginName, marketplaceRegistered: false, success: true }
       }
@@ -192,21 +232,16 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       if (clientType === 'cursor') {
         // ---- Cursor: MCP 配置 + Skill .mdc 文件 ----
 
-        // 1. 写入 Cursor MCP 配置（全局）
+        // 1. 写入 Cursor MCP 配置（全局）— 原子写
         const cursorConfigPath = path.join(os.homedir(), '.cursor', 'mcp.json')
-        let cursorConfig: any = {}
-        if (fs.existsSync(cursorConfigPath)) {
-          cursorConfig = JSON.parse(fs.readFileSync(cursorConfigPath, 'utf-8'))
-        }
+        const cursorConfig = readJsonSafe<any>(cursorConfigPath, {})
         if (!cursorConfig.mcpServers) cursorConfig.mcpServers = {}
         cursorConfig.mcpServers[`tidemind-${agentId}`] = {
           command: shimPath,
           args: [mcpServerPath],
           env: { EB_AGENT_ID: agentId },
         }
-        const cursorConfigDir = path.dirname(cursorConfigPath)
-        if (!fs.existsSync(cursorConfigDir)) fs.mkdirSync(cursorConfigDir, { recursive: true })
-        fs.writeFileSync(cursorConfigPath, JSON.stringify(cursorConfig, null, 2))
+        writeFileAtomic(cursorConfigPath, JSON.stringify(cursorConfig, null, 2))
 
         // 2. 生成 Skill .mdc 文件到 ~/Downloads/（用户复制到项目 .cursor/rules/）
         const mdcFrontmatter = [
@@ -217,7 +252,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
           '',
         ].join('\n')
         const skillOutputPath = path.join(os.homedir(), 'Downloads', `tidemind-cursor-${agentId}.mdc`)
-        fs.writeFileSync(skillOutputPath, mdcFrontmatter + skillContent)
+        writeFileAtomic(skillOutputPath, mdcFrontmatter + skillContent)
 
         return { pluginDir: skillOutputPath, pluginName, marketplaceRegistered: false, success: true }
       }
@@ -231,10 +266,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
 
         // hooks.json 写入逻辑（v1/v2 共用）
         const writeSessionStartHook = (skillFilePath: string): void => {
-          let hooksConfig: any = { hooks: {} }
-          if (fs.existsSync(codexHooksPath)) {
-            try { hooksConfig = JSON.parse(fs.readFileSync(codexHooksPath, 'utf-8')) } catch { /* 解析失败用新的 */ }
-          }
+          const hooksConfig: any = readJsonSafe<any>(codexHooksPath, { hooks: {} })
           if (!hooksConfig.hooks) hooksConfig.hooks = {}
           if (!hooksConfig.hooks.SessionStart) hooksConfig.hooks.SessionStart = []
 
@@ -262,9 +294,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
               }],
             })
           }
-          const codexDir = path.dirname(codexHooksPath)
-          if (!fs.existsSync(codexDir)) fs.mkdirSync(codexDir, { recursive: true })
-          fs.writeFileSync(codexHooksPath, JSON.stringify(hooksConfig, null, 2))
+          writeFileAtomic(codexHooksPath, JSON.stringify(hooksConfig, null, 2))
         }
 
         if (useV2) {
@@ -286,7 +316,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
           const skillFilePath = path.join(skillRootDir, 'SKILL.md')
           if (!fs.existsSync(skillRootDir)) fs.mkdirSync(skillRootDir, { recursive: true })
           const skillBody = wrapSkillWithFrontmatter(skillContent, serverName, config.skillDescription)
-          fs.writeFileSync(skillFilePath, skillBody)
+          writeFileAtomic(skillFilePath, skillBody)
 
           // 4. 写 SessionStart hook（hook 脚本读取 SKILL.md 文件来注入会话上下文）
           writeSessionStartHook(skillFilePath)
@@ -308,7 +338,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
         writeSessionStartHook(skillFilePath)
 
         const skillOutputPath = path.join(os.homedir(), 'Downloads', `tidemind-codex-${agentId}.md`)
-        fs.writeFileSync(skillOutputPath, skillContent)
+        writeFileAtomic(skillOutputPath, skillContent)
 
         return { pluginDir: skillOutputPath, pluginName, marketplaceRegistered: false, success: true }
       }
@@ -316,21 +346,16 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       if (clientType === 'windsurf') {
         // ---- Windsurf: MCP 配置 + 规则 .md 文件 ----
 
-        // 1. 写入 Windsurf MCP 配置（全局）
+        // 1. 写入 Windsurf MCP 配置（全局）— 原子写
         const windsurfConfigPath = path.join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json')
-        let windsurfConfig: any = {}
-        if (fs.existsSync(windsurfConfigPath)) {
-          windsurfConfig = JSON.parse(fs.readFileSync(windsurfConfigPath, 'utf-8'))
-        }
+        const windsurfConfig = readJsonSafe<any>(windsurfConfigPath, {})
         if (!windsurfConfig.mcpServers) windsurfConfig.mcpServers = {}
         windsurfConfig.mcpServers[`tidemind-${agentId}`] = {
           command: shimPath,
           args: [mcpServerPath],
           env: { EB_AGENT_ID: agentId },
         }
-        const windsurfConfigDir = path.dirname(windsurfConfigPath)
-        if (!fs.existsSync(windsurfConfigDir)) fs.mkdirSync(windsurfConfigDir, { recursive: true })
-        fs.writeFileSync(windsurfConfigPath, JSON.stringify(windsurfConfig, null, 2))
+        writeFileAtomic(windsurfConfigPath, JSON.stringify(windsurfConfig, null, 2))
 
         // 2. 生成规则 .md 文件到 ~/Downloads/（用户复制到项目 .windsurf/rules/）
         const windsurfFrontmatter = [
@@ -341,7 +366,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
           '',
         ].join('\n')
         const skillOutputPath = path.join(os.homedir(), 'Downloads', `tidemind-windsurf-${agentId}.md`)
-        fs.writeFileSync(skillOutputPath, windsurfFrontmatter + skillContent)
+        writeFileAtomic(skillOutputPath, windsurfFrontmatter + skillContent)
 
         return { pluginDir: skillOutputPath, pluginName, marketplaceRegistered: false, success: true }
       }
@@ -350,12 +375,9 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
         // ---- OpenClaw: MCP 配置 + Bootstrap Hook + Skill 目录 ----
         const openclawHome = path.join(os.homedir(), '.openclaw')
 
-        // 1. 写入 MCP 配置到 openclaw.json（路径是 mcp.servers，不是 mcpServers）
+        // 1. 写入 MCP 配置到 openclaw.json（路径是 mcp.servers，不是 mcpServers）— 原子写
         const openclawConfigPath = path.join(openclawHome, 'openclaw.json')
-        let openclawConfig: any = {}
-        if (fs.existsSync(openclawConfigPath)) {
-          openclawConfig = JSON.parse(fs.readFileSync(openclawConfigPath, 'utf-8'))
-        }
+        const openclawConfig = readJsonSafe<any>(openclawConfigPath, {})
         if (!openclawConfig.mcp) openclawConfig.mcp = {}
         if (!openclawConfig.mcp.servers) openclawConfig.mcp.servers = {}
         openclawConfig.mcp.servers[`tidemind-${agentId}`] = {
@@ -363,8 +385,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
           args: [mcpServerPath],
           env: { EB_AGENT_ID: agentId },
         }
-        if (!fs.existsSync(openclawHome)) fs.mkdirSync(openclawHome, { recursive: true })
-        fs.writeFileSync(openclawConfigPath, JSON.stringify(openclawConfig, null, 2))
+        writeFileAtomic(openclawConfigPath, JSON.stringify(openclawConfig, null, 2))
 
         // 2. 生成 Bootstrap Hook 目录到 ~/.openclaw/hooks/
         const hookDirName = `tidemind-${agentId}`
@@ -374,7 +395,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
         const skillFilePath = path.join(skillDir, config.skillSource)
 
         // HOOK.md
-        fs.writeFileSync(path.join(hookDir, 'HOOK.md'), [
+        writeFileAtomic(path.join(hookDir, 'HOOK.md'), [
           '---',
           `name: ${hookDirName}`,
           `description: "Tide Mind — 自动加载外脑上下文"`,
@@ -388,7 +409,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
         ].join('\n'))
 
         // handler.ts —— 用 spawnSync 传递参数数组，避免 shell 字符串拼接的转义问题
-        fs.writeFileSync(path.join(hookDir, 'handler.ts'), [
+        writeFileAtomic(path.join(hookDir, 'handler.ts'), [
           `import { spawnSync } from 'child_process'`,
           '',
           `const SHIM = ${JSON.stringify(shimPath)}`,
@@ -424,7 +445,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
           '---',
           '',
         ].join('\n')
-        fs.writeFileSync(path.join(skillOutputDir, 'SKILL.md'), openclawFrontmatter + skillContent)
+        writeFileAtomic(path.join(skillOutputDir, 'SKILL.md'), openclawFrontmatter + skillContent)
 
         return { pluginDir: skillOutputDir, pluginName, marketplaceRegistered: false, success: true }
       }
@@ -434,7 +455,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       fs.mkdirSync(path.join(pluginDir, 'skills', 'tidemind'), { recursive: true })
 
       // plugin.json
-      fs.writeFileSync(
+      writeFileAtomic(
         path.join(pluginDir, '.claude-plugin', 'plugin.json'),
         JSON.stringify({
           name: pluginName,
@@ -445,7 +466,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       )
 
       // .mcp.json
-      fs.writeFileSync(
+      writeFileAtomic(
         path.join(pluginDir, '.mcp.json'),
         JSON.stringify({
           mcpServers: {
@@ -488,7 +509,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
         '---',
         '',
       ].join('\n')
-      fs.writeFileSync(
+      writeFileAtomic(
         path.join(pluginDir, 'skills', 'tidemind', 'SKILL.md'),
         frontmatter + skillContent,
       )
@@ -517,7 +538,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
         '--agent-id', JSON.stringify(agentId),
         '--tool', JSON.stringify(config.hookToolParam),
       ].join(' ')
-      fs.writeFileSync(
+      writeFileAtomic(
         path.join(pluginDir, 'hooks', 'hooks.json'),
         JSON.stringify({
           hooks: {
@@ -590,7 +611,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       } else {
         marketplace.plugins.push(pluginEntry)
       }
-      fs.writeFileSync(marketplacePath, JSON.stringify(marketplace, null, 2))
+      writeFileAtomic(marketplacePath, JSON.stringify(marketplace, null, 2))
 
       // 注册 marketplace 到 Claude Code settings.json
       // 注意：settings.json.extraKnownMarketplaces 只是"已知列表"，Claude Code 启动时据此初始化
@@ -615,7 +636,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
           addedNew = true
         }
         if (settingsChanged || addedNew) {
-          fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2))
+          writeFileAtomic(claudeSettingsPath, JSON.stringify(settings, null, 2))
         }
         marketplaceRegistered = true
       } catch { /* 注册失败不阻塞 */ }
@@ -630,13 +651,21 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
   // 检测 claude CLI 是否可用
   // ----------------------------------------------------------
   ipcMain.handle('agents:check-cli', async (_e, cli: string): Promise<{ available: boolean; path?: string; version?: string }> => {
+    // 白名单校验：cli 字符串会被传给 execFile + path.join，
+    // 不卡名字就允许 renderer 探测/执行任意可执行文件
+    let validCli: string
+    try {
+      validCli = validateCli(cli)
+    } catch {
+      return { available: false }
+    }
     const parseVersion = (stdout: string): string | undefined => {
       const m = stdout.match(/(\d+\.\d+\.\d+)/)
       return m ? m[1] : undefined
     }
     try {
       // macOS 上 which 可能找不到 GUI 启动的进程路径，也检查常见位置
-      const candidates = [cli, `/opt/homebrew/bin/${cli}`, `/usr/local/bin/${cli}`]
+      const candidates = [validCli, `/opt/homebrew/bin/${validCli}`, `/usr/local/bin/${validCli}`]
       for (const candidate of candidates) {
         try {
           const { stdout } = await execFileAsync(candidate, ['--version'], { timeout: 5000 })
@@ -644,7 +673,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
         } catch { /* 继续尝试 */ }
       }
       // fallback: which
-      const { stdout } = await execFileAsync('which', [cli])
+      const { stdout } = await execFileAsync('which', [validCli])
       const cliPath = stdout.trim()
       if (!cliPath) return { available: false }
       let version: string | undefined
@@ -662,6 +691,14 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
   // 安装插件到 Claude Code（通过 marketplace）
   // ----------------------------------------------------------
   ipcMain.handle('agents:install-plugin', async (_e, pluginName: string): Promise<PluginInstallResult> => {
+    // pluginName 直接拼到 `claude plugin install <name>@marketplace` 命令，
+    // 必须卡死格式（同时也是 path 安全的兜底，因为 install 后续可能拿它去查目录）
+    let validPluginName: string
+    try {
+      validPluginName = validatePluginName(pluginName)
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
     const cliEnv = { ...process.env, PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin` }
 
     try {
@@ -689,7 +726,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
         // 已存在时会报错，忽略
       }
 
-      const installArg = `${pluginName}@${MARKETPLACE_ID}`
+      const installArg = `${validPluginName}@${MARKETPLACE_ID}`
       const { stdout, stderr } = await execFileAsync('claude', ['plugin', 'install', installArg, '--scope', 'user'], {
         timeout: 30000,
         env: cliEnv,
@@ -703,7 +740,15 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
   // ----------------------------------------------------------
   // 获取已生成的插件信息
   // ----------------------------------------------------------
-  ipcMain.handle('agents:plugin-path', (_e, agentId: string, toolType?: string): string | null => {
+  ipcMain.handle('agents:plugin-path', (_e, rawAgentId: string, toolType?: string): string | null => {
+    // 任何拿 agentId 拼路径的入口都先校验 — 此处虽然只是 existsSync，
+    // 但拼出非法路径仍可能被用作路径探测渠道，统一卡死
+    let agentId: string
+    try {
+      agentId = validateAgentId(rawAgentId)
+    } catch {
+      return null
+    }
     const clientType = toolType && isPluginClientType(toolType) ? toolType : undefined
 
     // 非 Claude Code 类型：返回 Downloads 中的 Skill 文件路径
@@ -745,11 +790,20 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
   // ----------------------------------------------------------
   // 获取插件详细状态（Skill 文件、工具列表、是否过期）
   // ----------------------------------------------------------
-  ipcMain.handle('agents:plugin-status', (_e, agentId: string, toolType?: string) => {
+  ipcMain.handle('agents:plugin-status', (_e, rawAgentId: string, toolType?: string) => {
+    // 校验 agentId — 失败时返回 exists:false 而不是抛错，
+    // renderer 拿不存在状态再决定是否报错（同 plugin-path 行为一致）
+    let agentId: string
+    try {
+      agentId = validateAgentId(rawAgentId)
+    } catch {
+      return { exists: false }
+    }
     const clientType: PluginClientType = isPluginClientType(toolType ?? '') ? toolType as PluginClientType : 'claude-code'
     const config = CLIENT_CONFIG[clientType]
     const pluginDirName = `${config.dirPrefix}-${agentId}`
     const pluginDir = path.join(pluginsDir, pluginDirName)
+    assertPathWithinRoot(pluginDir, pluginsDir)
     const pluginJsonPath = path.join(pluginDir, '.claude-plugin', 'plugin.json')
 
     // Cowork / Cursor / Codex / Windsurf: 没有 .claude-plugin 目录，通过配置文件和 Skill 文件判断
@@ -933,12 +987,23 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
   // ----------------------------------------------------------
   // 卸载插件
   // ----------------------------------------------------------
-  ipcMain.handle('agents:uninstall-plugin', async (_e, agentId: string, toolType?: string): Promise<PluginInstallResult> => {
+  ipcMain.handle('agents:uninstall-plugin', async (_e, rawAgentId: string, toolType?: string): Promise<PluginInstallResult> => {
+    // ⚠️ 这是最高危的入口：handler 会 fs.rmSync(pluginDir, {recursive:true,force:true}) +
+    // ~/.openclaw/hooks/, ~/.codex/skills/, ~/Downloads/...
+    // agentId="../../../Documents" 之前可以擦掉用户磁盘上的任意目录，必须先卡死格式
+    let agentId: string
+    try {
+      agentId = validateAgentId(rawAgentId)
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
     const clientType: PluginClientType = isPluginClientType(toolType ?? '') ? toolType as PluginClientType : 'claude-code'
     const config = CLIENT_CONFIG[clientType]
     const pluginName = `tidemind-${agentId}`
     const pluginDirName = `${config.dirPrefix}-${agentId}`
     const pluginDir = path.join(pluginsDir, pluginDirName)
+    // 防御纵深：在任何 fs 操作前 assert pluginDir 仍在 pluginsDir 之下
+    assertPathWithinRoot(pluginDir, pluginsDir)
     const cliEnv = { ...process.env, PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin` }
 
     const errors: string[] = []
@@ -955,9 +1020,9 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       try {
         const marketplacePath = path.join(pluginsDir, '.claude-plugin', 'marketplace.json')
         if (fs.existsSync(marketplacePath)) {
-          const marketplace = JSON.parse(fs.readFileSync(marketplacePath, 'utf-8'))
-          marketplace.plugins = marketplace.plugins.filter((p: any) => p.name !== pluginName)
-          fs.writeFileSync(marketplacePath, JSON.stringify(marketplace, null, 2))
+          const marketplace = readJsonSafe<any>(marketplacePath, { plugins: [] })
+          marketplace.plugins = (marketplace.plugins ?? []).filter((p: any) => p.name !== pluginName)
+          writeFileAtomic(marketplacePath, JSON.stringify(marketplace, null, 2))
         }
       } catch (err: any) {
         errors.push(`更新 marketplace 失败: ${err.message}`)
@@ -969,11 +1034,11 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       try {
         const desktopConfigPath = path.join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json')
         if (fs.existsSync(desktopConfigPath)) {
-          const desktopConfig = JSON.parse(fs.readFileSync(desktopConfigPath, 'utf-8'))
+          const desktopConfig = readJsonSafe<any>(desktopConfigPath, {})
           if (desktopConfig.mcpServers) {
             delete desktopConfig.mcpServers[`tidemind-${agentId}`]
             if (Object.keys(desktopConfig.mcpServers).length === 0) delete desktopConfig.mcpServers
-            fs.writeFileSync(desktopConfigPath, JSON.stringify(desktopConfig, null, 2))
+            writeFileAtomic(desktopConfigPath, JSON.stringify(desktopConfig, null, 2))
           }
         }
       } catch (err: any) {
@@ -992,11 +1057,11 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       try {
         const cursorConfigPath = path.join(os.homedir(), '.cursor', 'mcp.json')
         if (fs.existsSync(cursorConfigPath)) {
-          const cursorConfig = JSON.parse(fs.readFileSync(cursorConfigPath, 'utf-8'))
+          const cursorConfig = readJsonSafe<any>(cursorConfigPath, {})
           if (cursorConfig.mcpServers) {
             delete cursorConfig.mcpServers[`tidemind-${agentId}`]
             if (Object.keys(cursorConfig.mcpServers).length === 0) delete cursorConfig.mcpServers
-            fs.writeFileSync(cursorConfigPath, JSON.stringify(cursorConfig, null, 2))
+            writeFileAtomic(cursorConfigPath, JSON.stringify(cursorConfig, null, 2))
           }
         }
       } catch (err: any) {
@@ -1030,7 +1095,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       try {
         const codexHooksPath = path.join(os.homedir(), '.codex', 'hooks.json')
         if (fs.existsSync(codexHooksPath)) {
-          const hooksConfig = JSON.parse(fs.readFileSync(codexHooksPath, 'utf-8'))
+          const hooksConfig = readJsonSafe<any>(codexHooksPath, {})
           if (hooksConfig.hooks?.SessionStart) {
             // 写入时 command 里是 `--agent-id "eb_xxx"`（JSON.stringify 带双引号），
             // 过滤必须匹配带引号的形式，否则永远匹配不到导致卸载残留
@@ -1039,7 +1104,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
               !group.hooks?.some((h: any) => h.command?.includes(agentIdToken)),
             )
             if (hooksConfig.hooks.SessionStart.length === 0) delete hooksConfig.hooks.SessionStart
-            fs.writeFileSync(codexHooksPath, JSON.stringify(hooksConfig, null, 2))
+            writeFileAtomic(codexHooksPath, JSON.stringify(hooksConfig, null, 2))
           }
         }
       } catch (err: any) {
@@ -1048,7 +1113,9 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
 
       // 3. 清理 v2 的原生 Skills 目录（不存在时 no-op）
       try {
-        const skillRootDir = path.join(os.homedir(), '.codex', 'skills', serverName)
+        const skillRoot = path.join(os.homedir(), '.codex', 'skills')
+        const skillRootDir = path.join(skillRoot, serverName)
+        assertPathWithinRoot(skillRootDir, skillRoot)
         fs.rmSync(skillRootDir, { recursive: true, force: true })
       } catch { /* 忽略 */ }
 
@@ -1064,11 +1131,11 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       try {
         const windsurfConfigPath = path.join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json')
         if (fs.existsSync(windsurfConfigPath)) {
-          const windsurfConfig = JSON.parse(fs.readFileSync(windsurfConfigPath, 'utf-8'))
+          const windsurfConfig = readJsonSafe<any>(windsurfConfigPath, {})
           if (windsurfConfig.mcpServers) {
             delete windsurfConfig.mcpServers[`tidemind-${agentId}`]
             if (Object.keys(windsurfConfig.mcpServers).length === 0) delete windsurfConfig.mcpServers
-            fs.writeFileSync(windsurfConfigPath, JSON.stringify(windsurfConfig, null, 2))
+            writeFileAtomic(windsurfConfigPath, JSON.stringify(windsurfConfig, null, 2))
           }
         }
       } catch (err: any) {
@@ -1086,11 +1153,11 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       try {
         const openclawConfigPath = path.join(os.homedir(), '.openclaw', 'openclaw.json')
         if (fs.existsSync(openclawConfigPath)) {
-          const openclawConfig = JSON.parse(fs.readFileSync(openclawConfigPath, 'utf-8'))
+          const openclawConfig = readJsonSafe<any>(openclawConfigPath, {})
           if (openclawConfig.mcp?.servers) {
             delete openclawConfig.mcp.servers[`tidemind-${agentId}`]
             if (Object.keys(openclawConfig.mcp.servers).length === 0) delete openclawConfig.mcp.servers
-            fs.writeFileSync(openclawConfigPath, JSON.stringify(openclawConfig, null, 2))
+            writeFileAtomic(openclawConfigPath, JSON.stringify(openclawConfig, null, 2))
           }
         }
       } catch (err: any) {
@@ -1098,20 +1165,25 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       }
 
       // 删除 Hook 目录
-      const hookDir = path.join(os.homedir(), '.openclaw', 'hooks', `tidemind-${agentId}`)
+      const openclawHooksRoot = path.join(os.homedir(), '.openclaw', 'hooks')
+      const hookDir = path.join(openclawHooksRoot, `tidemind-${agentId}`)
       try {
+        assertPathWithinRoot(hookDir, openclawHooksRoot)
         if (fs.existsSync(hookDir)) fs.rmSync(hookDir, { recursive: true, force: true })
       } catch { /* 忽略 */ }
 
       // 删除 Skill 目录
-      const skillOutputDir = path.join(os.homedir(), 'Downloads', `tidemind-openclaw-${agentId}`)
+      const downloadsRoot = path.join(os.homedir(), 'Downloads')
+      const skillOutputDir = path.join(downloadsRoot, `tidemind-openclaw-${agentId}`)
       try {
+        assertPathWithinRoot(skillOutputDir, downloadsRoot)
         if (fs.existsSync(skillOutputDir)) fs.rmSync(skillOutputDir, { recursive: true, force: true })
       } catch { /* 忽略 */ }
     }
 
-    // 通用：删除插件目录
+    // 通用：删除插件目录（再 assert 一次，确保 pluginDir 没被中途篡改）
     try {
+      assertPathWithinRoot(pluginDir, pluginsDir)
       if (fs.existsSync(pluginDir)) {
         fs.rmSync(pluginDir, { recursive: true, force: true })
       }

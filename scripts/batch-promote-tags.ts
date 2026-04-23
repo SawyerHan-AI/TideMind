@@ -3,7 +3,10 @@
  *
  * 只创建 tag 节点和 tagged 链接，不调 LLM 生成定义（由日常任务后续补充）。
  *
- * 用法：npx tsx scripts/batch-promote-tags.ts [--dry-run]
+ * 用法：npx tsx scripts/batch-promote-tags.ts [--dry-run] [--no-backup]
+ *
+ * 默认在执行写入前会拷贝一份 brain.sqlite 到同目录 .bak.<unix_ts>。
+ * 传 --no-backup 可跳过（不建议）。--dry-run 不写入也不备份。
  */
 
 import path from 'node:path';
@@ -13,6 +16,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 
 const dryRun = process.argv.includes('--dry-run');
+const noBackup = process.argv.includes('--no-backup');
 
 function getDataDir(): string {
   const configPath = path.join(os.homedir(), '.tidemind', 'config.toml');
@@ -47,6 +51,16 @@ const dbPath = path.join(dataDir, 'graph', 'brain.sqlite');
 if (!fs.existsSync(dbPath)) {
   console.error(`❌ 数据库不存在: ${dbPath}`);
   process.exit(1);
+}
+
+// 备份：在实际写入前保留一份原始 DB，以便回滚。
+// --dry-run 不写入，不备份；--no-backup 明确要求跳过。
+if (!dryRun && !noBackup) {
+  const backupPath = `${dbPath}.bak.${Math.floor(Date.now() / 1000)}`;
+  fs.copyFileSync(dbPath, backupPath);
+  console.log(`🗄  已备份数据库到: ${backupPath}`);
+} else if (noBackup && !dryRun) {
+  console.log('⚠️  --no-backup 指定，跳过备份（出错将无法回滚）');
 }
 
 const db = new Database(dbPath);

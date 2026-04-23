@@ -50,10 +50,13 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
     }
   }
   // --- 按来源文件查询 ---
+  // 之前用 `source_stream LIKE %file%` 做模糊匹配，扩号太大:传入 ".md" 会命中
+  // 所有 markdown 来源，`/` 会命中所有绝对路径节点。source_file 语义是"来自
+  // 这个具体来源的记忆",应当是精确匹配。如果以后要支持前缀/子串，通过单独的
+  // API 选项（比如 source_file_prefix）暴露,不要在默认参数上做静默的模糊语义。
   else if (input.source_file) {
-    const escapedFile = input.source_file.replace(/%/g, '\\%').replace(/_/g, '\\_');
-    const conditions = ["source_stream LIKE ? ESCAPE '\\'", "heat > 0.01", "is_superseded = 0"];
-    const params: unknown[] = [`%${escapedFile}%`];
+    const conditions = ["source_stream = ?", "heat > 0.01", "is_superseded = 0"];
+    const params: unknown[] = [input.source_file];
     if (excludeMeta) { conditions.push("is_meta = 0"); }
     if (input.created_after) { conditions.push("created >= ?"); params.push(input.created_after); }
     if (input.created_before) { conditions.push("created <= ?"); params.push(input.created_before); }
@@ -174,7 +177,15 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
 
   // 读即写：给命中节点加热（按排名衰减）
   // 精确查找路径（node_id、index_ref 单节点）维持固定 +0.1
-  const isRankedResult = usedHybridSearch || (input.from_node != null) || (input.source_file != null) || (!input.node_id && !input.index_ref);
+  //
+  // 之前的条件 `(!input.node_id && !input.index_ref)` 把 browse 默认路径也判为
+  // ranked：browse 按 heat DESC 列最近活跃节点，再叠加"越热排得越前、加成越多"
+  // 的 ranked decay，会让 hot 节点更 hot，加速 Matthew 效应。
+  // source_file 路径按 `created DESC` 排序，并非搜索相关性，也不该吃 ranked decay。
+  // 真正 ranked 的路径只有：
+  //   - usedHybridSearch：query 触发的 BM25+向量混合搜索
+  //   - from_node：图扩展（可选叠加 query rerank）
+  const isRankedResult = usedHybridSearch || (input.from_node != null);
   let awakenedCount = 0;
   repo.transaction(() => {
     for (let i = 0; i < nodes.length; i++) {
@@ -199,9 +210,18 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
 
   // 再巩固(感知读 + 深度读判定)
   // 传入搜索分数用于感知读质量门槛
-  const avgScore = searchScores && searchScores.size > 0
-    ? [...searchScores.values()].reduce((a, b) => a + b, 0) / searchScores.size
-    : undefined;
+  // 注意:searchScores 包含 scope 过滤前的全量 hybrid 搜索结果;直接 .size 会
+  // 把已经被 scope 过滤掉的节点的分数也算进平均,压低真正命中节点的平均分。
+  // 对齐到当前 nodes 数组,只算实际进入结果集的分数。
+  let avgScore: number | undefined = undefined;
+  if (searchScores) {
+    const filteredScores = nodes
+      .map(n => searchScores!.get(n.id) ?? 0)
+      .filter(s => s > 0);
+    avgScore = filteredScores.length > 0
+      ? filteredScores.reduce((a, b) => a + b, 0) / filteredScores.length
+      : undefined;
+  }
   // 套 try/catch:reconsolidate v0.2.15 起同步异常会 re-throw,如果让它冒到
   // recall 调用方会让整个 MCP tool call 返回错误。再巩固是尽力而为的增强
   // 逻辑,失败不应影响 recall 的主要返回。log 出来便于排查。
@@ -332,11 +352,28 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
   log.info(`返回 ${resultNodes.length} 条结果 mode=${recallMode} 耗时=${Date.now() - startTime}ms`);
 
   // fire-and-forget: 链接重新验证
+  //
+  // 历史问题：这个 promise 完全 detached 运行，内部会拿 DB 写锁、调 LLM 做
+  // 关联再评估，慢时（LLM 超时 / DB busy 重试）能霸占写锁数十秒，阻塞代谢
+  // 任务和其他写路径。给它包一个 10s race timeout，超时后 warn 并放弃等待
+  // （底层 promise 仍在后台跑，但上层至少不会叠加无限多挂着的 handle）。
   if (resultNodes.length > 0 && input.query) {
-    revalidateLinks(db, nodes.map(n => n.id), {
+    const REVALIDATE_TIMEOUT_MS = 10_000;
+    const work = revalidateLinks(db, nodes.map(n => n.id), {
       query: input.query,
       recalledNodeIds: nodes.map(n => n.id),
-    }).catch(err => log.warn(`链接重新验证异步失败: ${err instanceof Error ? err.stack : String(err)}`));
+    });
+    const timeout = new Promise<void>(resolve =>
+      setTimeout(() => {
+        log.warn(`revalidateLinks 超过 ${REVALIDATE_TIMEOUT_MS}ms 未完成，放弃等待（后台仍在跑）`);
+        resolve();
+      }, REVALIDATE_TIMEOUT_MS).unref?.(),
+    );
+    Promise.race([work, timeout]).catch(err =>
+      log.warn(`链接重新验证异步失败: ${err instanceof Error ? err.stack : String(err)}`),
+    );
+    // 单独挂 catch 防止真实 promise 抛错变成 unhandledRejection
+    work.catch(() => { /* 已在 race 分支 log，这里只是防 unhandled */ });
   }
 
   return { nodes: resultNodes, mode: recallMode, summary, surprises };
@@ -375,7 +412,16 @@ function generateRecallSummary(nodes: RecallNode[]): string {
  * 用于 from_node + query 组合路径
  */
 async function rerankByQuery(repo: IRepository, nodes: BrainNode[], query: string): Promise<BrainNode[]> {
-  const queryEmbedding = await getEmbedding(query);
+  // 之前 getEmbedding 抛错会直接冒到 recall() 的外层 catch（没有）或者把整个
+  // MCP tool call 打回 isError。embedding 故障是尽力而为的 rerank 的前提，
+  // 失败时回退到原序而不是让整个 recall 废掉。
+  let queryEmbedding: Float32Array | null;
+  try {
+    queryEmbedding = await getEmbedding(query);
+  } catch (err) {
+    log.warn(`rerankByQuery getEmbedding 失败，回退到原序: ${err instanceof Error ? err.message : String(err)}`);
+    return nodes;
+  }
   if (!queryEmbedding) return nodes; // embedding 不可用，保持原序
 
   const scored: Array<{ node: BrainNode; similarity: number }> = [];

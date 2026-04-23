@@ -57,6 +57,19 @@ export const ALL_TASKS: TaskDefinition[] = [
     intervalStrategy: 'metabolism-params',
     defaultIntervalMinutes: 3,
     requiresLLM: true,
+    // gate: 仅当 pending_digests 真的有到期的待处理行才 claim,避免空跑浪费
+    // scheduler slot 和 LLM 任务探测名额。注意这里用 status IN ('pending','processing')
+    // + next_retry_at 条件,processing 的 stale recovery 由 claimNextPendingDigest
+    // 自己负责;这里主要是"是否值得进入 execute"。
+    gateCheck: (db) => {
+      const row = db.prepare(
+        `SELECT 1 FROM pending_digests
+         WHERE (status = 'pending' AND next_retry_at <= datetime('now'))
+            OR status = 'processing'
+         LIMIT 1`,
+      ).get();
+      return row !== undefined;
+    },
   },
 
   // ── 记忆：标注 ─────────────────────────────────

@@ -35,11 +35,16 @@ const clientCache = new Map<string, Anthropic | AnthropicVertex>();
 let legacyAnthropicClient: Anthropic | null = null;
 let legacyVertexClient: AnthropicVertex | null = null;
 
+// 关键:所有 Anthropic / AnthropicVertex 构造函数必须显式传 maxRetries: 0。
+// SDK 默认 maxRetries=2,我们外层已有 MAX_RETRIES=3 的重试循环 →
+// 不关掉 SDK 内置重试,worst case 会变成 3*3=9 次 LLM 调用,直接捅穿超时档。
+// 外层重试是唯一应当存在的重试机制(可控的 backoff + Retry-After 处理)。
 function getLegacyAnthropicClient(): Anthropic {
   if (legacyAnthropicClient) return legacyAnthropicClient;
   const config = getConfig();
   legacyAnthropicClient = new Anthropic({
     apiKey: config.anthropic.api_key || undefined,
+    maxRetries: 0,
   });
   return legacyAnthropicClient;
 }
@@ -55,6 +60,7 @@ async function getLegacyVertexClient(): Promise<AnthropicVertex> {
     legacyVertexClient = new AnthropicVertex({
       projectId: config.vertex.project_id || undefined,
       region: config.vertex.region || 'us-central1',
+      maxRetries: 0,
       googleAuth: new GoogleAuth({
         keyFile: credPath,
         scopes: 'https://www.googleapis.com/auth/cloud-platform',
@@ -64,6 +70,7 @@ async function getLegacyVertexClient(): Promise<AnthropicVertex> {
     legacyVertexClient = new AnthropicVertex({
       projectId: config.vertex.project_id || undefined,
       region: config.vertex.region || 'us-central1',
+      maxRetries: 0,
     });
   }
   return legacyVertexClient;
@@ -119,7 +126,8 @@ async function getClientByConnection(connectionId: string): Promise<ConnectionIn
   let client: Anthropic | AnthropicVertex;
 
   if (conn.provider_type === 'anthropic') {
-    client = new Anthropic({ apiKey: creds.api_key || undefined });
+    // maxRetries: 0 → 关闭 SDK 内置重试,详见上方 getLegacyAnthropicClient 注释
+    client = new Anthropic({ apiKey: creds.api_key || undefined, maxRetries: 0 });
   } else if (conn.provider_type === 'vertex') {
     const dataDir = getDataDir();
     // 优先使用按 connectionId 命名的凭证文件，回退到全局
@@ -132,6 +140,7 @@ async function getClientByConnection(connectionId: string): Promise<ConnectionIn
       client = new AnthropicVertex({
         projectId: creds.project_id || undefined,
         region: creds.region || 'us-central1',
+        maxRetries: 0,
         googleAuth: new GoogleAuth({
           keyFile: actualPath,
           scopes: 'https://www.googleapis.com/auth/cloud-platform',
@@ -141,6 +150,7 @@ async function getClientByConnection(connectionId: string): Promise<ConnectionIn
       client = new AnthropicVertex({
         projectId: creds.project_id || undefined,
         region: creds.region || 'us-central1',
+        maxRetries: 0,
       });
     }
   } else {
@@ -169,7 +179,9 @@ async function callGeminiLLM(options: {
   const apiKey = options.apiKeyOverride || config.gemini.api_key;
   if (!apiKey) throw new Error('Gemini API key 未配置');
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${options.modelId}:generateContent?key=${apiKey}`;
+  // 用 x-goog-api-key header 而非 ?key= query string,避免 API key 出现在
+  // 错误日志、URL 截图或 fetch 错误堆栈里(高危泄漏面)。
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${options.modelId}:generateContent`;
 
   const contents: Array<{ role: string; parts: Array<{ text: string }> }> = [
     { role: 'user', parts: [{ text: options.prompt }] },
@@ -188,7 +200,10 @@ async function callGeminiLLM(options: {
 
   const resp = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey,
+    },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(options.timeoutMs),
   });
@@ -258,18 +273,29 @@ async function callOpenAICompatibleLLM(options: {
 
   const rawText = data.choices?.[0]?.message?.content ?? '';
   const inputTokens = data.usage?.prompt_tokens ?? 0;
-  const outputTokens = data.usage?.completion_tokens ?? 0;
+  const rawOutputTokens = data.usage?.completion_tokens ?? 0;
 
-  // 提取 <think>...</think> 标签中的思考内容（DeepSeek-R1、QwQ 等推理模型的通用约定）
-  let text = rawText;
-  let thinkingTokens = 0;
-  const thinkRegex = /^\s*<think>([\s\S]*?)<\/think>\s*/;
-  let thinkMatch: RegExpMatchArray | null;
-  while ((thinkMatch = text.match(thinkRegex)) !== null) {
-    // 粗略估算：4 字符 ≈ 1 token
-    thinkingTokens += Math.ceil(thinkMatch[1].length / 4);
-    text = text.slice(thinkMatch[0].length);
-  }
+  // 提取 <think>...</think> 标签中的思考内容(DeepSeek-R1、QwQ 等推理模型的通用约定)。
+  //
+  // 修正两点:
+  // 1. 原 while-loop 每次 `text.slice()` + 重新匹配是 O(n²),大响应下会卡。
+  //    改用一次 `replace(/g)` 全局替换,顺便在 replacer 里累加 thinking 字符长度。
+  //    注意: 旧实现只匹配字符串开头的 <think>(^锚点),本版本放开为全局匹配 —
+  //    推理模型有时在正文中再插入一次 <think>(罕见但出现过),旧实现会把它原样
+  //    返回给下游,污染用户可见内容。
+  // 2. API 返回的 completion_tokens 已经包含 <think> 里的文字。把
+  //    thinkingTokens 额外加进 logUsage,最终 totalTokens = input+output+thinking
+  //    会把 thinking 重复计一份。做法: 从 outputTokens 里扣掉估算的 thinking 份额,
+  //    然后单独记录 thinkingTokens,保持"output=可见回答,thinking=推理开销"语义。
+  let thinkingChars = 0;
+  const text = rawText.replace(/<think>([\s\S]*?)<\/think>\s*/g, (_full, inner: string) => {
+    thinkingChars += inner.length;
+    return '';
+  }).replace(/^\s+/, '');
+  const thinkingTokens = Math.ceil(thinkingChars / 4);
+  // 避免下溢:某些 provider 不把 <think> 计入 completion_tokens,thinkingTokens
+  // 估算值可能大于 rawOutputTokens。此时把 output 视为 0,thinking 保留。
+  const outputTokens = Math.max(0, rawOutputTokens - thinkingTokens);
 
   return { text, inputTokens, outputTokens, thinkingTokens };
 }
@@ -329,41 +355,45 @@ function isRetryable(err: unknown): boolean {
 /**
  * 判断错误是否是 LLM 服务级错误(比 isRetryable 范围更广,包含 401/403)。
  *
- * **明确排除 context_length_exceeded / "maximum context length"** — 这是
- * 输入侧的错误(prompt 太长),不是服务不可用。老代码把这种 400 也归为
- * 服务错误 → scheduler 把它当作 LLM 服务失败累计到熔断器,多次触发后
- * 冷静期内所有 LLM 任务跳过。实际 context overflow 是"换个输入就能跑",
- * 不应该打熔断器。
+ * **只看结构化 statusCode / status 字段**,不再对 err.message 做数字正则。
+ * 历史上 `/\b(401|403|429|5\d{2})\b/` 会对任何文本里的这些数字误判 —— 比如
+ * 连接串里的 `:5432` Postgres port、行号 "line 429"、错误代码里的 500 等都
+ * 会触发假阳。同时结构化的 `error_code: rate_limit_exceeded` / 明文
+ * `rate_limit_exceeded` 但 HTTP status 缺失的情况又会漏判。
+ *
+ * 新策略:
+ * - `LLMServiceError.statusCode` 有值 → 只对 401/403/429/5xx 判 true
+ * - `Anthropic.APIError.status` → 400 视为非服务错误(context overflow 等),其它为 true
+ * - 网络/超时类错误(APIConnectionError / TimeoutError / AbortError / ECONNREFUSED 等)
+ *   直接 true
+ * - 其它 Error 一律 false(由 scheduler 的 circuit breaker 以别的信号感知)
  */
 function isServiceError(err: unknown): boolean {
-  // 网络/超时类错误一律视为服务级错误(进熔断器)。必须放在通用 Error 分支之前,
-  // 否则 APIConnectionTimeoutError 的 message 可能被下面的 "Invalid request" 之类的
-  // 启发式误杀,导致超时错误不累计到熔断器。
+  // 网络/超时类错误一律视为服务级错误(进熔断器)
   if (err instanceof Anthropic.APIConnectionError || err instanceof Anthropic.APIConnectionTimeoutError) {
     return true;
+  }
+  if (err instanceof Anthropic.APIError) {
+    // 400 含 context overflow / 输入格式错误 —— 不是服务不可用,不要打熔断器
+    if (err.status === 400) return false;
+    return true;
+  }
+  if (err instanceof LLMServiceError) {
+    const code = err.statusCode;
+    if (code === undefined) {
+      // 无 status 的 LLMServiceError 通常是 provider 侧字符串错误(例如 Ollama "not ok"),
+      // 我们在抛出时已经显式包装,保守视为服务错误。
+      return true;
+    }
+    return code === 401 || code === 403 || code === 429 || code >= 500;
   }
   if (err instanceof Error) {
     const msg = err.message;
     // 超时 / abort —— AbortSignal.timeout 产生的 DOMException 和我们手动 abort 的都算
     if (err.name === 'TimeoutError' || err.name === 'AbortError') return true;
     if (msg.includes('aborted due to timeout')) return true;
-
-    // 优先排除 — context overflow / 内容策略违规 / 输入格式错误等非服务错误
-    if (/context[_ ]length|maximum context|context window/i.test(msg)) return false;
-    if (/content[_ ]policy|safety|harm/i.test(msg)) return false;
-    if (/invalid[_ ]request|invalid[_ ]param|bad request/i.test(msg) && !/\b(429|5\d{2})\b/.test(msg)) {
-      return false;
-    }
-
+    // 典型的 Node 网络错误 code/子串 —— 这些不会和"消息里刚好含数字"混淆
     if (msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT') || msg.includes('fetch failed')) return true;
-    if (msg.includes('API error') || msg.includes('API key')) return true;
-    // 显式服务故障 HTTP 状态码
-    if (/\b(401|403|429|5\d{2})\b/.test(msg)) return true;
-  }
-  if (err instanceof Anthropic.APIError) {
-    // Anthropic 400 含 context overflow 按状态码判断
-    if (err.status === 400) return false;
-    return true;
   }
   return false;
 }
@@ -426,14 +456,22 @@ export async function callLLM(options: {
 
   const maxTokens = options.maxTokens ?? 2048;
 
-  // 全局注入时间上下文 — 所有 LLM 调用都获得时间感知能力
+  // 全局注入时间上下文 — 所有 LLM 调用都获得时间感知能力。
+  //
+  // 关键:不要把 timeStr 拼进 `system` 字符串然后整块打 cache_control ——
+  // 每分钟刷新一次的时间会让 cache key 每次都变,命中率永远是 0。
+  // Claude 路径专门把 stable system(带 cache)和 time 后缀(不带 cache)拆开,
+  // 见下方 systemField 构造。对 Gemini / OpenAI-compatible 这些没有
+  // prompt-cache 语义的 provider,仍然按单一字符串传(拼接成 stableSystem + time)。
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const timeStr = new Date().toLocaleString('zh-CN', {
     timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit',
   });
-  const timeContext = `\n\n[系统时间: ${timeStr}, 时区: ${tz}]`;
-  const system = options.system ? options.system + timeContext : timeContext.trim();
+  const timeSuffix = `[系统时间: ${timeStr}, 时区: ${tz}]`;
+  const stableSystem = options.system ?? '';
+  // 给非 Claude provider 用的完整 system 字符串(拼接形态)
+  const system = stableSystem ? stableSystem + '\n\n' + timeSuffix : timeSuffix;
 
   // 解析实际使用的 provider 类型和 client（connection 优先，循环外一次性解析）
   let resolvedProvider = provider;
@@ -510,17 +548,35 @@ export async function callLLM(options: {
           log.debug(`adaptive thinking 模式忽略传入的 budget=${thinkingBudget}（由模型自决推理深度）`);
         }
         const ADAPTIVE_THINKING_RESERVE = 8192; // adaptive 模式给 max_tokens 加的兜底
+        // Anthropic 要求 budget_tokens **严格小于** max_tokens。此前用
+        // `maxTokens + budget` 得到 max_tokens == budget_tokens 的等值,会触发
+        // 400 invalid_request_error。+1 保证严格小于,又不改变用户传入的 maxTokens 语义。
         const adjustedMaxTokens = useManualThinking
-          ? maxTokens + (thinkingBudget ?? 0)
+          ? maxTokens + (thinkingBudget ?? 0) + 1
           : isAdaptive
           ? maxTokens + ADAPTIVE_THINKING_RESERVE
           : maxTokens;
 
-        // prompt caching:对 system 末块加 cache_control,命中可省 ~90% 输入成本
+        // prompt caching:对 *稳定* system 前缀加 cache_control,时间后缀另起一个
+        // 不带 cache_control 的 text block。
+        //
+        // 为什么必须拆分:Anthropic ephemeral cache 的 key 是带 cache_control 的
+        // 那个 block 的完整文本。若把每分钟都变的 timeStr 拼进该 block,cache 永远 miss。
+        // 拆开后,stable 前缀复用命中,时间变动只影响末尾小 block(不参与 cache 计算)。
         const cacheEnabled = config.llm.prompt_cache_enabled !== false;
-        const systemField: Anthropic.MessageCreateParamsNonStreaming['system'] = cacheEnabled && system
-          ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
-          : system;
+        let systemField: Anthropic.MessageCreateParamsNonStreaming['system'];
+        if (cacheEnabled && stableSystem) {
+          systemField = [
+            { type: 'text', text: stableSystem, cache_control: { type: 'ephemeral' } },
+            { type: 'text', text: timeSuffix },
+          ];
+        } else if (cacheEnabled && !stableSystem) {
+          // 没有用户 system → 只有时间后缀,不值得缓存,直接走字符串形态
+          systemField = timeSuffix;
+        } else {
+          // 缓存关闭 → 单字符串形态,内含时间后缀
+          systemField = system;
+        }
 
         const thinkingField = useManualThinking
           ? { thinking: { type: 'enabled' as const, budget_tokens: thinkingBudget! } }
@@ -561,13 +617,26 @@ export async function callLLM(options: {
       lastError = err;
       if (!isRetryable(err) || attempt === MAX_RETRIES - 1) break;
 
-      let waitMs = BASE_DELAY_MS * Math.pow(2, attempt);
+      // 指数退避 + 抖动,避免 thundering herd
+      const backoffMs = BASE_DELAY_MS * Math.pow(2, attempt);
+      const jitterMs = Math.floor(Math.random() * BASE_DELAY_MS);
+      let waitMs = backoffMs + jitterMs;
       if (err instanceof Anthropic.APIError && err.status === 429) {
+        // Retry-After 既可能是数字秒("60"),也可能是 HTTP-date ("Wed, 21 Oct 2015 07:28:00 GMT")
         const retryAfter = (err.headers as Record<string, string> | undefined)?.['retry-after'];
-        const retrySeconds = retryAfter ? parseInt(retryAfter, 10) : 0;
-        const retryMs = Number.isFinite(retrySeconds) && retrySeconds > 0
-          ? Math.min(retrySeconds * 1000, 60_000)
-          : 0;
+        let retryMs = 0;
+        if (retryAfter) {
+          const retrySeconds = parseInt(retryAfter, 10);
+          if (Number.isFinite(retrySeconds) && retrySeconds > 0) {
+            retryMs = retrySeconds * 1000;
+          } else {
+            const parsedDate = Date.parse(retryAfter);
+            if (Number.isFinite(parsedDate)) {
+              retryMs = Math.max(0, parsedDate - Date.now());
+            }
+          }
+          retryMs = Math.min(retryMs, 60_000); // 兜底封顶 60s
+        }
         if (retryMs > 0) waitMs = Math.max(waitMs, retryMs);
       }
 

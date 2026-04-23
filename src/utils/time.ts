@@ -20,6 +20,11 @@ function normalizeTimestamp(raw: string): string {
   if (!raw) return raw;
   // 已是 ISO（含 T 或 Z）：原样
   if (raw.includes('T') || raw.endsWith('Z')) return raw;
+  // "YYYY-MM-DD HH:MM:SS+08:00" 形式（无 T 但带 offset）：
+  // 只把空格替换成 T，保留原始 offset，让 Date 按正确时区解析。
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{2}:?\d{2}$/.test(raw)) {
+    return raw.replace(' ', 'T');
+  }
   // 看起来像 "YYYY-MM-DD HH:MM:SS"：补 T 和 Z，按 UTC 解析
   if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(raw)) {
     return raw.replace(' ', 'T') + 'Z';

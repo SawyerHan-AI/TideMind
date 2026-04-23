@@ -88,11 +88,24 @@ export function classifyFiles(
     const isJournal = relPath.startsWith('journals/') || !!journalMatch;
 
     // 提取标题
-    const title = isJournal
-      ? (journalMatch
-          ? `${journalMatch[1]}-${journalMatch[2]}-${journalMatch[3]}`
-          : fileName.replace(/_/g, '-'))
-      : decodeURIComponent(fileName.replace(/___/g, '/'));
+    // decodeURIComponent 在文件名含未配对的 % 时（如 100%cotton.md）会抛 URIError，
+    // 不捕获会冒泡终止 Phase 0 分类循环、导致整个 Logseq 导入中断。
+    // 与 preprocessor.ts:818-824 保持同样的兜底策略。
+    let decodedTitle: string;
+    if (isJournal) {
+      decodedTitle = journalMatch
+        ? `${journalMatch[1]}-${journalMatch[2]}-${journalMatch[3]}`
+        : fileName.replace(/_/g, '-');
+    } else {
+      const replaced = fileName.replace(/___/g, '/');
+      try {
+        decodedTitle = decodeURIComponent(replaced);
+      } catch (err) {
+        log.debug(`logseq-classifier-decode-failed: fileName=${fileName} err=${err instanceof Error ? err.message : String(err)}`);
+        decodedTitle = replaced;
+      }
+    }
+    const title = decodedTitle;
 
     // 计算引用数
     const refCount = (content.match(/\[\[([^\]]+)\]\]/g) || []).length;
