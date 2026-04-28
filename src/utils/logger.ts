@@ -66,7 +66,6 @@ function ensureLogStream(): fs.WriteStream | null {
       // 时会 emit 'error';没 listener 会把异常冒到 uncaughtException 崩溃进程。
       // 降级为:关掉 stream(后续只走 stderr),不影响 daemon 继续运行。
       logStream.on('error', (err) => {
-        // eslint-disable-next-line no-console
         console.error(`[logger] file stream error: ${err.message} — continuing with stderr-only`);
         try { logStream?.end(); } catch { /* ignore */ }
         logStream = null;
@@ -75,7 +74,6 @@ function ensureLogStream(): fs.WriteStream | null {
       });
     } catch (err) {
       // mkdir / createWriteStream 同步抛(非 fs-async) — 一样降级
-      // eslint-disable-next-line no-console
       console.error(`[logger] failed to init file stream: ${(err as Error).message}`);
       logStream = null;
       return null;

@@ -1,7 +1,6 @@
 import type Database from 'better-sqlite3';
 import { callLLM } from '../llm/client.js';
 import { LEARNING3_SYSTEM } from '../llm/prompts.js';
-import { getGateStatus } from '../db/stats.js';
 import { getConfig, isLlmConfigured } from '../config.js';
 import { getPrompt, getLLMOptions, renderUserPrompt } from '../strategy/loader.js';
 import { now } from '../utils/time.js';
@@ -44,6 +43,11 @@ interface DiagnosticReport {
     affected_strategies: string[];
   }>;
   status: 'pending' | 'applied' | 'dismissed';
+}
+
+interface EvolutionLogEntry {
+  timestamp?: string;
+  action?: string;
 }
 
 /**
@@ -101,12 +105,12 @@ export function computeSignals(db: Database.Database): Signal[] {
   return signals;
 }
 
-function computeDiminishingReturns(db: Database.Database): Signal {
+function computeDiminishingReturns(_db: Database.Database): Signal {
   // Check evolution-log.jsonl for recent strategy changes and their impact
   const config = getConfig();
   const logPath = path.join(config.general.data_dir, 'strategies', 'evolution-log.jsonl');
 
-  let evidence: string[] = [];
+  const evidence: string[] = [];
   let value = 0;
 
   if (fs.existsSync(logPath)) {
@@ -114,15 +118,25 @@ function computeDiminishingReturns(db: Database.Database): Signal {
       // 只读取文件最后 2000 行，避免长期运行后 OOM
       const rawLines = fs.readFileSync(logPath, 'utf-8').split('\n');
       const tailLines = rawLines.length > 2000 ? rawLines.slice(-2000) : rawLines;
-      const entries = tailLines.filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+      const entries = tailLines
+        .filter(Boolean)
+        .map((line): EvolutionLogEntry | null => {
+          try {
+            const parsed = JSON.parse(line) as unknown;
+            return parsed && typeof parsed === 'object' ? parsed as EvolutionLogEntry : null;
+          } catch {
+            return null;
+          }
+        })
+        .filter((entry): entry is EvolutionLogEntry => entry !== null);
 
       // Learning II 使用参数级调整 (param_adjusted / param_rolled_back / param_confirmed),
       // 不再使用旧的 variant_accepted/variant_rejected。这里以 rolled_back 为"失败"、
       // confirmed 为"成功"来估算策略调整的边际收益。
       const threeMonthsAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-      const recent = entries.filter((e: any) => e.timestamp > threeMonthsAgo);
-      const accepted = recent.filter((e: any) => e.action === 'param_confirmed').length;
-      const rejected = recent.filter((e: any) => e.action === 'param_rolled_back').length;
+      const recent = entries.filter(e => typeof e.timestamp === 'string' && e.timestamp > threeMonthsAgo);
+      const accepted = recent.filter(e => e.action === 'param_confirmed').length;
+      const rejected = recent.filter(e => e.action === 'param_rolled_back').length;
       const total = accepted + rejected;
 
       if (total > 0) {
@@ -389,4 +403,3 @@ function gatherGraphStats(db: Database.Database): string {
 
   return stats.join('\n');
 }
-

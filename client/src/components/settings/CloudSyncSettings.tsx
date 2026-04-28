@@ -263,7 +263,7 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
     }
   }
 
-  const formatTime = (iso?: string) => {
+  const formatTime = (iso?: string | null) => {
     if (!iso) return t('settings:cloud.never', 'Never')
     try { return new Date(iso).toLocaleString() } catch { return iso }
   }

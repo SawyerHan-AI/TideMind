@@ -1,8 +1,16 @@
 /**
  * vectors.ts — segmentForEmbedding 单元测试
  */
-import { describe, it, expect } from 'vitest';
-import { segmentForEmbedding } from '../../src/db/vectors.js';
+import { describe, it, expect, beforeEach } from 'vitest';
+import type Database from 'better-sqlite3';
+import { isNodeVisibleToVectorSearch, segmentForEmbedding } from '../../src/db/vectors.js';
+import { setupTestDb, seedNode } from '../helpers/test-db.js';
+
+let db: Database.Database;
+
+beforeEach(() => {
+  db = setupTestDb();
+});
 
 describe('segmentForEmbedding', () => {
   // ---------- 短内容不分段 ----------
@@ -134,5 +142,23 @@ describe('segmentForEmbedding', () => {
     expect(segments.length).toBeGreaterThan(1);
     // 每段不为空
     segments.forEach(s => expect(s.length).toBeGreaterThan(0));
+  });
+});
+
+describe('isNodeVisibleToVectorSearch', () => {
+  it('hides archived, superseded, and cold nodes from vector search', () => {
+    const active = seedNode(db, { heat: 1 });
+    const archived = seedNode(db, { heat: 1 });
+    const superseded = seedNode(db, { heat: 1 });
+    const cold = seedNode(db, { heat: 0.005 });
+
+    db.prepare('UPDATE nodes SET archived = 1 WHERE id = ?').run(archived.id);
+    db.prepare('UPDATE nodes SET is_superseded = 1 WHERE id = ?').run(superseded.id);
+
+    expect(isNodeVisibleToVectorSearch(db, active.id)).toBe(true);
+    expect(isNodeVisibleToVectorSearch(db, archived.id)).toBe(false);
+    expect(isNodeVisibleToVectorSearch(db, superseded.id)).toBe(false);
+    expect(isNodeVisibleToVectorSearch(db, cold.id)).toBe(false);
+    expect(isNodeVisibleToVectorSearch(db, 'missing-node')).toBe(false);
   });
 });

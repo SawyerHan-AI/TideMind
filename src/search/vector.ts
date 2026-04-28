@@ -45,6 +45,7 @@ export async function searchVector(
   for (const vr of vecResults) {
     const node = nodeMap.get(vr.id);
     if (!node || node.heat < 0.01) continue;
+    if (node.archived || node.is_superseded) continue;
     if (options.type && node.type !== options.type) continue;
     if (options.excludeMeta && node.is_meta) continue;
     if (options.createdAfter && node.created < options.createdAfter) continue;

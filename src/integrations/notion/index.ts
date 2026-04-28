@@ -12,7 +12,8 @@ import { listAllPages, getPageProperties, validateToken } from './api-client.js'
 import { getAllPageStates, removePageState, hasCompletedFullScan, markFullScanCompleted } from './sync-state.js';
 import { processNotionPages, resetProgress } from './queue.js';
 import { isNotionInitializing } from './initialization.js';
-import { archiveNode } from '../../db/nodes.js';
+import { archiveNodeWithVectors } from '../../db/node-lifecycle.js';
+import { SourceSyncLock } from '../shared/source-sync-lock.js';
 import type { NotionPageSummary } from './types.js';
 
 const log = createLogger('notion');
@@ -21,11 +22,11 @@ const log = createLogger('notion');
 
 const pollingTimers = new Map<string, ReturnType<typeof setInterval>>();
 const syncCounters = new Map<string, number>(); // 用于周期性删除检测
-const syncingSources = new Set<string>(); // 并发防护
+const syncLock = new SourceSyncLock(); // 并发防护
 
 /** 供 initialization.ts 通过动态 import 做互斥检查(避免循环静态依赖)。 */
 export function isNotionSyncing(sourceId: string): boolean {
-  return syncingSources.has(sourceId);
+  return syncLock.isActive(sourceId);
 }
 
 // ── 公开 API ──────────────────────────────────────────────────
@@ -78,12 +79,10 @@ export async function startNotionSource(
 
   // 启动轮询
   const intervalMs = ((pollInterval ?? 300) * 1000);
-  const timer = setInterval(async () => {
-    try {
-      await runIncrementalSync(db, token, sourceId);
-    } catch (err) {
+  const timer = setInterval(() => {
+    void runIncrementalSync(db, token, sourceId).catch(err => {
       log.error(`增量同步失败: ${(err as Error).message}`);
-    }
+    });
   }, intervalMs);
 
   pollingTimers.set(sourceId, timer);
@@ -140,19 +139,19 @@ async function runSync(
   token: string,
   sourceId: string,
 ): Promise<void> {
-  if (syncingSources.has(sourceId)) {
+  if (!syncLock.tryAcquire(sourceId)) {
     log.info(`全量同步已在进行中，跳过: ${sourceId}`);
     return;
   }
   if (isNotionInitializing(sourceId)) {
+    syncLock.release(sourceId);
     log.info(`runInitialization 正在进行,跳过 runSync: ${sourceId}`);
     return;
   }
-  syncingSources.add(sourceId);
   try {
     await runSyncInner(db, token, sourceId);
   } finally {
-    syncingSources.delete(sourceId);
+    syncLock.release(sourceId);
   }
 }
 
@@ -208,7 +207,7 @@ async function runSyncInner(
       const state = syncStates.get(pageId)!;
       // Archive 关联节点——走 archiveNode() 统一清理向量，防止已删除页面残留在召回里
       for (const nodeId of state.node_ids) {
-        archiveNode(db, nodeId);
+        archiveNodeWithVectors(db, nodeId);
       }
       removePageState(db, pageId, sourceId);
     }
@@ -226,19 +225,19 @@ async function runIncrementalSync(
   token: string,
   sourceId: string,
 ): Promise<void> {
-  if (syncingSources.has(sourceId)) {
+  if (!syncLock.tryAcquire(sourceId)) {
     log.debug(`增量同步已在进行中，跳过: ${sourceId}`);
     return;
   }
   if (isNotionInitializing(sourceId)) {
+    syncLock.release(sourceId);
     log.debug(`runInitialization 正在进行,跳过增量同步: ${sourceId}`);
     return;
   }
-  syncingSources.add(sourceId);
   try {
     await runIncrementalSyncInner(db, token, sourceId);
   } finally {
-    syncingSources.delete(sourceId);
+    syncLock.release(sourceId);
   }
 }
 
@@ -339,7 +338,7 @@ async function detectDeletedPages(
       } catch {
         // 404/403 → 确认已删除/取消共享。走 archiveNode() 清理向量。
         for (const nodeId of state.node_ids) {
-          archiveNode(db, nodeId);
+          archiveNodeWithVectors(db, nodeId);
         }
         removePageState(db, pageId, sourceId);
         deletedCount++;

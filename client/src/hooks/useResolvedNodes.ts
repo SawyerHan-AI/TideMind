@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 
-export type NodeInfo = { title: string; type: string }
+export type NodeInfo = { title: string | null; type: string }
 export type NodeMap = Record<string, NodeInfo>
 
 /**
@@ -31,7 +31,7 @@ export function useResolvedNodes(
 
     window.api.timeline
       .resolveNodes(nodeIds)
-      .then((result: NodeMap) => {
+      .then((result) => {
         if (key !== latestKeyRef.current) return // stale — a newer call has superseded us
         setNodeMap(result)
       })

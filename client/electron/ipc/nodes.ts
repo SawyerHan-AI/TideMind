@@ -1,6 +1,15 @@
 import { ipcMain } from 'electron'
 import crypto from 'node:crypto'
 import type Database from 'better-sqlite3'
+import { deleteNodeCompletely } from '@server/db/node-lifecycle.js'
+import {
+  parseNodeId,
+  parseNodesListFilter,
+  parsePathArgs,
+  parseSearchLimit,
+  parseSearchQuery,
+  parseTagText,
+} from './_schemas.js'
 
 /** 派生分类 → 维度条件 SQL（维度化迁移后前端发送派生分类名） */
 function applyTypeFilter(type: string, conditions: string[], params: unknown[]): void {
@@ -23,20 +32,10 @@ function applyTypeFilter(type: string, conditions: string[], params: unknown[]):
 }
 
 export function registerNodeHandlers(db: Database.Database): void {
-  ipcMain.handle('nodes:list', (_e, filter: {
-    type?: string
-    archived?: boolean
-    search?: string
-    sortBy?: string
-    sortDir?: string
-    limit?: number
-    offset?: number
-    heatMin?: number
-    heatMax?: number
-    createdAfter?: string
-    createdBefore?: string
-    tags?: string[]
-  }) => {
+  ipcMain.handle('nodes:list', (_e, rawFilter: unknown) => {
+    const parsedFilter = parseNodesListFilter(rawFilter)
+    if (!parsedFilter.ok) return parsedFilter.error
+    const filter = parsedFilter.data
     const conditions: string[] = []
     const params: unknown[] = []
 
@@ -97,19 +96,22 @@ export function registerNodeHandlers(db: Database.Database): void {
     return { nodes, total }
   })
 
-  ipcMain.handle('nodes:get', (_e, id: string) => {
-    const node = db.prepare('SELECT * FROM nodes WHERE id = ?').get(id)
+  ipcMain.handle('nodes:get', (_e, id: unknown) => {
+    const parsedId = parseNodeId(id)
+    if (!parsedId.ok) return parsedId.error
+    const nodeId = parsedId.data
+    const node = db.prepare('SELECT * FROM nodes WHERE id = ?').get(nodeId)
     if (!node) return null
 
     // 过滤掉用户已拒绝的 tagged 链接（rejected_by_user 状态保留在 DB 作反馈痕迹，但不再展示）
     const links = db.prepare(
       "SELECT * FROM links WHERE (from_id = ? OR to_id = ?) AND status != 'rejected_by_user'"
-    ).all(id, id)
-    const versions = db.prepare('SELECT * FROM node_versions WHERE node_id = ? ORDER BY version DESC').all(id)
+    ).all(nodeId, nodeId)
+    const versions = db.prepare('SELECT * FROM node_versions WHERE node_id = ? ORDER BY version DESC').all(nodeId)
 
     // 获取链接目标节点的预览
     const enrichedLinks = (links as Array<Record<string, unknown>>).map(link => {
-      const targetId = link.from_id === id ? link.to_id : link.from_id
+      const targetId = link.from_id === nodeId ? link.to_id : link.from_id
       const target = db.prepare('SELECT id, content, title, type FROM nodes WHERE id = ?').get(targetId as string) as { id: string; content: string; title: string | null; type: string } | undefined
       // 解析 relation JSON（DB 存储为 JSON 字符串）
       let parsedRelation = link.relation
@@ -122,18 +124,22 @@ export function registerNodeHandlers(db: Database.Database): void {
         target_content_preview: target?.content?.slice(0, 80) ?? '',
         target_title: target?.title ?? null,
         target_type: target?.type ?? '',
-        direction: link.from_id === id ? 'outgoing' : 'incoming',
+        direction: link.from_id === nodeId ? 'outgoing' : 'incoming',
       }
     })
 
     return { node, links: enrichedLinks, versions }
   })
 
-  ipcMain.handle('nodes:search', (_e, query: string, limit?: number) => {
-    const safeLimit = limit ?? 20
+  ipcMain.handle('nodes:search', (_e, query: unknown, limit: unknown) => {
+    const parsedQuery = parseSearchQuery(query)
+    if (!parsedQuery.ok) return parsedQuery.error
+    const parsedLimit = parseSearchLimit(limit)
+    if (!parsedLimit.ok) return parsedLimit.error
+    const safeLimit = parsedLimit.data
     try {
       // FTS5 搜索
-      const words = query.replace(/[(){}[\]*:^~"]/g, ' ').trim().split(/\s+/).filter(Boolean)
+      const words = parsedQuery.data.replace(/[(){}[\]*:^~"]/g, ' ').trim().split(/\s+/).filter(Boolean)
       if (words.length === 0) return { nodes: [], total: 0 }
 
       const ftsQuery = words.map(w => `"${w}"`).join(' ')
@@ -148,7 +154,7 @@ export function registerNodeHandlers(db: Database.Database): void {
       return { nodes, total: nodes.length }
     } catch {
       // fallback LIKE
-      const escapedQuery = query.replace(/%/g, '\\%').replace(/_/g, '\\_')
+      const escapedQuery = parsedQuery.data.replace(/%/g, '\\%').replace(/_/g, '\\_')
       const nodes = db.prepare(
         "SELECT * FROM nodes WHERE content LIKE ? ESCAPE '\\' AND archived = 0 AND is_superseded = 0 ORDER BY heat DESC LIMIT ?"
       ).all(`%${escapedQuery}%`, safeLimit)
@@ -185,11 +191,10 @@ export function registerNodeHandlers(db: Database.Database): void {
     return result
   })
 
-  ipcMain.handle('nodes:promoteTag', (_e, tag: string) => {
-    // P3-NEW-G: 校验入参类型 / 非空，避免写入畸形数据
-    if (typeof tag !== 'string' || !tag.trim()) {
-      throw new Error('invalid tag')
-    }
+  ipcMain.handle('nodes:promoteTag', (_e, rawTag: unknown) => {
+    const parsedTag = parseTagText(rawTag)
+    if (!parsedTag.ok) return parsedTag.error
+    const tag = parsedTag.data
     function computeTagLinkStrength(nodeContent: string, tagText: string, nodeTags: string[]): number {
       const contentMention = nodeContent.toLowerCase().includes(tagText.toLowerCase()) ? 0.7 : 0.4
       const concentrationBonus = nodeTags.length === 1 ? 0.1 : 0
@@ -236,7 +241,10 @@ export function registerNodeHandlers(db: Database.Database): void {
     })()
   })
 
-  ipcMain.handle('nodes:demoteTag', (_e, tag: string) => {
+  ipcMain.handle('nodes:demoteTag', (_e, rawTag: unknown) => {
+    const parsedTag = parseTagText(rawTag)
+    if (!parsedTag.ok) return parsedTag.error
+    const tag = parsedTag.data
     db.transaction(() => {
       // 兼容新旧格式：新格式标签名在 title，旧格式在 content
       const tagNode = db.prepare(
@@ -244,10 +252,7 @@ export function registerNodeHandlers(db: Database.Database): void {
       ).get(tag, tag) as { id: string } | undefined
       if (!tagNode) return
 
-      db.prepare('DELETE FROM links WHERE from_id = ? OR to_id = ?').run(tagNode.id, tagNode.id)
-      db.prepare('DELETE FROM node_versions WHERE node_id = ?').run(tagNode.id)
-      db.prepare('DELETE FROM node_segments WHERE node_id = ?').run(tagNode.id)
-      db.prepare('DELETE FROM nodes WHERE id = ?').run(tagNode.id)
+      deleteNodeCompletely(db, tagNode.id, { ignoreMissingTables: true })
 
       // 加入降级黑名单
       const raw = db.prepare("SELECT value FROM metadata WHERE key = 'demoted_tags'").get() as { value: string } | undefined
@@ -262,16 +267,10 @@ export function registerNodeHandlers(db: Database.Database): void {
     })()
   })
 
-  ipcMain.handle('nodes:graph', (_e, filter: {
-    type?: string
-    archived?: boolean
-    search?: string
-    heatMin?: number
-    heatMax?: number
-    createdAfter?: string
-    createdBefore?: string
-    tags?: string[]
-  }) => {
+  ipcMain.handle('nodes:graph', (_e, rawFilter: unknown) => {
+    const parsedFilter = parseNodesListFilter(rawFilter)
+    if (!parsedFilter.ok) return parsedFilter.error
+    const filter = parsedFilter.data
     const conditions: string[] = []
     const params: unknown[] = []
 
@@ -402,7 +401,10 @@ export function registerNodeHandlers(db: Database.Database): void {
     return { nodes: Array.from(nodeMap.values()), links: parsedLinks }
   })
 
-  ipcMain.handle('nodes:path', (_e, fromId: string, toId: string) => {
+  ipcMain.handle('nodes:path', (_e, rawFrom: unknown, rawTo: unknown) => {
+    const parsed = parsePathArgs(rawFrom, rawTo)
+    if (!parsed.ok) return parsed.error
+    const { fromId, toId } = parsed.data
     if (fromId === toId) return { path: [fromId] }
 
     // BFS shortest path
@@ -456,8 +458,10 @@ export function registerNodeHandlers(db: Database.Database): void {
     return { path: pathResult }
   })
 
-  ipcMain.handle('nodes:structureHoles', (_e, limit?: number) => {
-    const safeLimit = limit ?? 20
+  ipcMain.handle('nodes:structureHoles', (_e, limit: unknown) => {
+    const parsedLimit = parseSearchLimit(limit)
+    if (!parsedLimit.ok) return parsedLimit.error
+    const safeLimit = parsedLimit.data
 
     // Build bidirectional adjacency: treat links as undirected
     // neighbors CTE gives (node, neighbor) for every link in both directions
@@ -504,7 +508,10 @@ export function registerNodeHandlers(db: Database.Database): void {
   // JSON 中的标签名，保持 UI 一致（详情页元信息区的标签 pill 也应消失）。
   // timeline 事件仅记录，不进 recall/dashboard，只用于审计与撤销。
 
-  ipcMain.handle('links:rejectTag', (_e, linkId: string) => {
+  ipcMain.handle('links:rejectTag', (_e, rawLinkId: unknown) => {
+    const parsed = parseNodeId(rawLinkId, 'linkId')
+    if (!parsed.ok) return parsed.error
+    const linkId = parsed.data
     let resolvedTagName = ''
     let ok = false
     db.transaction(() => {
@@ -568,7 +575,10 @@ export function registerNodeHandlers(db: Database.Database): void {
     return { success: ok, tagName: resolvedTagName }
   })
 
-  ipcMain.handle('links:undoRejectTag', (_e, linkId: string) => {
+  ipcMain.handle('links:undoRejectTag', (_e, rawLinkId: unknown) => {
+    const parsed = parseNodeId(rawLinkId, 'linkId')
+    if (!parsed.ok) return parsed.error
+    const linkId = parsed.data
     let changed = false
     db.transaction(() => {
       // 读最新一条 tag_rejected 事件恢复 strength 和 tag_name

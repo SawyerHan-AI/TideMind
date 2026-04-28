@@ -4,12 +4,11 @@
 // 模式同 logseq/queue.ts：批量 + 并发 + digest + supersede
 // ============================================================
 
-import crypto from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { createLogger } from '../../utils/logger.js';
 import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { digest } from '../../tools/digest.js';
-import { supersedeNode } from '../shared/version.js';
+import { supersedeNodeWithLinks } from '../../db/node-lifecycle.js';
 import { getOrCreateTagNode } from '../shared/property-promote.js';
 import { createLink } from '../../db/links.js';
 import { coreDataToISO } from './database.js';
@@ -243,7 +242,7 @@ async function processOneNote(
     if (oldNodeIds.length > 0) {
       const minLen = Math.min(oldNodeIds.length, newNodeIds.length);
       for (let k = 0; k < minLen; k++) {
-        supersedeNode(db, oldNodeIds[k], newNodeIds[k]);
+        supersedeNodeWithLinks(db, oldNodeIds[k], newNodeIds[k]);
       }
       // 多余的旧节点也走 supersedeNode，迁移到最后一个新节点
       // 不能仅 UPDATE nodes SET is_superseded=1——那样 incoming/outgoing links 会残留指向幽灵节点，
@@ -251,7 +250,7 @@ async function processOneNote(
       if (oldNodeIds.length > minLen && newNodeIds.length > 0) {
         const target = newNodeIds[newNodeIds.length - 1];
         for (let k = minLen; k < oldNodeIds.length; k++) {
-          supersedeNode(db, oldNodeIds[k], target);
+          supersedeNodeWithLinks(db, oldNodeIds[k], target);
         }
       }
     }

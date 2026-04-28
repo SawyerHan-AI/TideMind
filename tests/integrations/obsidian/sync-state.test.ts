@@ -173,6 +173,45 @@ describe('isFileChanged', () => {
       node_ids: [],
     })).toBe(true);
   });
+
+  it('dataless 回流后内容 hash 相同 → false，避免重复 digest', () => {
+    const fp = path.join(tmpDir, 'icloud-returned.md');
+    fs.writeFileSync(fp, 'same content after iCloud returns');
+    const hash = computeFileHash(fp);
+
+    expect(isFileChanged(fp, {
+      file_path: fp,
+      content_hash: hash,
+      mtime: 1,
+      size: 1,
+      last_synced: 't',
+      node_ids: ['existing-node'],
+    })).toBe(false);
+  });
+
+  it('dataless 文件保留旧 sync state，不被当作变更覆盖', () => {
+    const fp = path.join(tmpDir, 'offline.md');
+    fs.writeFileSync(fp, 'offline content');
+    const stat = fs.statSync(fp);
+    const statSpy = vi.spyOn(fs, 'statSync').mockReturnValue({
+      ...stat,
+      size: 128,
+      blocks: 0,
+    } as fs.Stats);
+
+    try {
+      expect(isFileChanged(fp, {
+        file_path: fp,
+        content_hash: 'old-hash',
+        mtime: 1,
+        size: 128,
+        last_synced: 't',
+        node_ids: ['existing-node'],
+      })).toBe(false);
+    } finally {
+      statSpy.mockRestore();
+    }
+  });
 });
 
 // ===== fullScan 状态 =====

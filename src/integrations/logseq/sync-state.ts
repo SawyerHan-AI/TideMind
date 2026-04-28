@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { FileSyncState } from './types.js';
 import { safeReadTextFileSync, safeStatSync, isDataless } from '../../utils/safe-fs.js';
+import { planStaleSyncStateCleanup } from '../shared/source-file-state.js';
 
 /**
  * 确保同步表存在
@@ -163,20 +164,13 @@ export function removeStaleFiles(
   sourceId?: string,
 ): { removed: number; orphanNodeIds: string[] } {
   const allStates = getAllFileStates(db, sourceId);
-  let removed = 0;
-  const orphanNodeIds: string[] = [];
+  const plan = planStaleSyncStateCleanup(allStates, currentFiles);
 
-  for (const [filePath, state] of allStates.entries()) {
-    if (!currentFiles.has(filePath)) {
-      if (state.node_ids.length > 0) {
-        orphanNodeIds.push(...state.node_ids);
-      }
-      removeFileState(db, filePath, sourceId);
-      removed++;
-    }
+  for (const filePath of plan.staleFilePaths) {
+    removeFileState(db, filePath, sourceId);
   }
 
-  return { removed, orphanNodeIds };
+  return { removed: plan.staleFilePaths.length, orphanNodeIds: plan.orphanNodeIds };
 }
 
 /**

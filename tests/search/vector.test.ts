@@ -85,6 +85,23 @@ describe('searchVector', () => {
     expect(results).toHaveLength(0);
   });
 
+  it('过滤 archived 和 superseded 节点', async () => {
+    vi.mocked(getEmbedding).mockResolvedValue(new Float32Array(10));
+    mockSearchVectors.mockReturnValue([
+      { id: 'active', distance: 0.4 },
+      { id: 'archived', distance: 0.1 },
+      { id: 'superseded', distance: 0.2 },
+    ]);
+    mockGetNodesByIds.mockReturnValue(new Map([
+      ['active', makeNode({ id: 'active', heat: 1 })],
+      ['archived', makeNode({ id: 'archived', heat: 1, archived: 1 })],
+      ['superseded', makeNode({ id: 'superseded', heat: 1, is_superseded: 1 })],
+    ]));
+
+    const results = await searchVector(repo, 'test');
+    expect(results.map(r => r.node.id)).toEqual(['active']);
+  });
+
   it('按 type 过滤', async () => {
     vi.mocked(getEmbedding).mockResolvedValue(new Float32Array(10));
     mockSearchVectors.mockReturnValue([

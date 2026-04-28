@@ -86,6 +86,36 @@ describe('rollbackNoteSource 基本回退', () => {
     const metaCount = (db.prepare('SELECT COUNT(*) as cnt FROM metadata WHERE key = ?').get(`logseq_full_scan_completed_${src.id}`) as { cnt: number }).cnt;
     expect(metaCount).toBe(0);
   });
+
+  it('回退时先清理 vectors 和 node_segments，不留下向量孤儿', () => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS nodes_vec (
+        id TEXT PRIMARY KEY,
+        embedding BLOB
+      )
+    `);
+
+    const src = createNoteSource(db, { name: 'S', toolType: 'logseq', path: '/p' });
+    const node = seedNode(db);
+    const segmentId = `${node.id}#0`;
+
+    db.prepare('INSERT INTO node_segments (segment_id, node_id, segment_index) VALUES (?, ?, ?)').run(segmentId, node.id, 0);
+    db.prepare('INSERT INTO nodes_vec (id, embedding) VALUES (?, ?)').run(segmentId, Buffer.from([1, 2, 3]));
+    insertSyncRecord('logseq_sync', '/a.md', src.id, [node.id]);
+
+    rollbackNoteSource(db, src.id, 'logseq');
+
+    const vectorOrphans = (db.prepare(`
+      SELECT COUNT(*) AS cnt
+      FROM nodes_vec v
+      LEFT JOIN node_segments s ON s.segment_id = v.id
+      WHERE s.segment_id IS NULL
+    `).get() as { cnt: number }).cnt;
+    const segments = (db.prepare('SELECT COUNT(*) AS cnt FROM node_segments WHERE node_id = ?').get(node.id) as { cnt: number }).cnt;
+
+    expect(vectorOrphans).toBe(0);
+    expect(segments).toBe(0);
+  });
 });
 
 // ===== 无节点数据时回退 =====

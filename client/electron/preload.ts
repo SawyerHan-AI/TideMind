@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { AppApi } from '../src/lib/api-contract'
 
-const api = {
+const api: AppApi = {
   /** 监听后端数据变更事件，返回取消监听函数 */
   onDataChanged: (callback: (payload: { scopes: string[] }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: { scopes: string[] }) => callback(payload)
@@ -179,4 +180,4 @@ const api = {
 
 contextBridge.exposeInMainWorld('api', api)
 
-export type ApiType = typeof api
+export type ApiType = AppApi

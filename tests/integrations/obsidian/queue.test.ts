@@ -85,14 +85,14 @@ vi.mock('../../../src/integrations/obsidian/vault-config.js', () => ({
 }));
 
 import type Database from 'better-sqlite3';
-import { setupTestDb, seedNode } from '../../helpers/test-db.js';
+import { setupTestDb, seedLink, seedNode } from '../../helpers/test-db.js';
 import {
   processFileQueue,
   processFileChange,
   getImportProgress,
   resetProgress,
 } from '../../../src/integrations/obsidian/queue.js';
-import { ensureSyncSchema, setFileState } from '../../../src/integrations/obsidian/sync-state.js';
+import { ensureSyncSchema, getFileState, setFileState } from '../../../src/integrations/obsidian/sync-state.js';
 import { getNode } from '../../../src/db/nodes.js';
 import { getLinksFrom } from '../../../src/db/links.js';
 import { clearTagNodeCache } from '../../../src/integrations/shared/property-promote.js';
@@ -211,6 +211,26 @@ describe('processFileQueue', () => {
     expect(after.failedFiles).toBe(0);
     expect(after.processedFiles + after.skippedFiles).toBe(2);
   });
+
+  it('can abort before processing the next batch', async () => {
+    const f1 = writeMd('notes/abort.md', SAMPLE_MD);
+
+    await processFileQueue(
+      db,
+      [f1],
+      tmpDir,
+      { batchSize: 10, concurrency: 1, delayBetweenBatches: 0 },
+      undefined,
+      () => true,
+    );
+
+    const prog = getImportProgress();
+    expect(prog.phase).toBe('idle');
+    expect(prog.totalFiles).toBe(1);
+    expect(prog.processedFiles).toBe(0);
+    expect(prog.skippedFiles).toBe(0);
+    expect(prog.failedFiles).toBe(0);
+  });
 });
 
 // ===== Canvas file processing =====
@@ -300,6 +320,65 @@ describe('processFileChange', () => {
 
     // Second call should add a skip
     expect(secondProg.skippedFiles).toBeGreaterThan(firstProg.skippedFiles);
+  });
+
+  it('does not write DB when a stopped watcher event reaches processFileChange', async () => {
+    const f1 = writeMd('notes/stopped.md', SAMPLE_MD);
+
+    await processFileChange(db, f1, tmpDir, 'src-stopped', () => true);
+
+    const state = getFileState(db, 'notes/stopped.md', 'src-stopped');
+    const nodeCount = (db.prepare('SELECT COUNT(*) AS cnt FROM nodes').get() as { cnt: number }).cnt;
+    expect(state).toBeNull();
+    expect(nodeCount).toBe(0);
+  });
+
+  it('supersedes removed segments and migrates links to the remaining segment', async () => {
+    const body = 'This paragraph is intentionally long enough to stay as its own semantic segment in the Obsidian heading segmenter. It describes architecture choices, testing boundaries, and operational safeguards for repeated note imports.';
+    const f1 = writeMd('notes/segment-reduction.md', `# Topic
+
+${body}
+
+## Middle
+
+${body}
+
+## Removed
+
+${body}
+`);
+
+    await processFileChange(db, f1, tmpDir);
+    const firstState = getFileState(db, 'notes/segment-reduction.md');
+    expect(firstState).not.toBeNull();
+    expect(firstState!.node_ids.length).toBe(3);
+
+    const removedNodeId = firstState!.node_ids[2];
+    const target = seedNode(db, { content: 'external target linked from removed obsidian segment' });
+    seedLink(db, removedNodeId, target.id, { strength: 0.82 });
+
+    fs.writeFileSync(f1, `# Topic
+
+${body}
+
+## Middle
+
+${body}
+`, 'utf-8');
+
+    await processFileChange(db, f1, tmpDir);
+    const secondState = getFileState(db, 'notes/segment-reduction.md');
+    expect(secondState).not.toBeNull();
+    expect(secondState!.node_ids.length).toBe(2);
+
+    const removedNode = getNode(db, removedNodeId);
+    expect(removedNode?.is_superseded).toBe(1);
+
+    const targetNewNodeId = secondState!.node_ids[secondState!.node_ids.length - 1];
+    const migratedLinks = getLinksFrom(db, targetNewNodeId);
+    const migratedLink = migratedLinks.find(link => link.to_id === target.id);
+    expect(migratedLink).toBeDefined();
+    expect(migratedLink!.strength).toBeCloseTo(0.82);
   });
 });
 

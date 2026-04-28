@@ -1,5 +1,4 @@
 import type Database from 'better-sqlite3';
-import type { BrainNode, BrainLink, RelationType } from '../types.js';
 import { getNode, createNode } from '../db/nodes.js';
 import { getLinksForNode, createLink } from '../db/links.js';
 import { isTaggedLink } from '../graph/maturity.js';
@@ -604,4 +603,3 @@ export function runKeystoneIdentification(db: Database.Database): number {
 
   return result.changes;
 }
-

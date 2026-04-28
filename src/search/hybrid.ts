@@ -127,8 +127,8 @@ export async function searchHybrid(
   const linksBySourceNeighbor = new Map<string, typeof allLinks[number]>();
   for (const link of allLinks) {
     // 确保链接两端包含某个 topResult
-    let sourceId: string | null = null;
-    let neighborId: string | null = null;
+  let sourceId: string | null;
+  let neighborId: string | null;
     if (resultIds.has(link.from_id) && !resultIds.has(link.to_id)) {
       sourceId = link.from_id;
       neighborId = link.to_id;
@@ -228,8 +228,8 @@ function getIntentWeights(intent?: Intent): HybridWeights {
  * exploratory: 连通度翻倍（优先返回枢纽节点）
  */
 function computeIntentMaturity(node: BrainNode, intent?: Intent): number {
-  let wH = getParam('recall-rank', 'heat_weight', 0.2);
-  let wR = getParam('recall-rank', 'refinement_weight', 0.3);
+  const wH = getParam('recall-rank', 'heat_weight', 0.2);
+  const wR = getParam('recall-rank', 'refinement_weight', 0.3);
   let wC = getParam('recall-rank', 'connectivity_weight', 0.3);
   let wI = getParam('recall-rank', 'independence_weight', 0.2);
 

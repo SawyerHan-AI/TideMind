@@ -8,8 +8,7 @@
 // ============================================================
 
 import type Database from 'better-sqlite3';
-import type { BrainNode } from '../types.js';
-import { getNode, updateNode, createNode, parseTags } from '../db/nodes.js';
+import { createNode, parseTags } from '../db/nodes.js';
 import { createLink, linkExists } from '../db/links.js';
 import { isLlmConfigured } from '../config.js';
 import { callLLM } from '../llm/client.js';
@@ -368,4 +367,3 @@ async function findCrossTopicResonance(db: Database.Database): Promise<{ analyze
 
   return { analyzed, created };
 }
-

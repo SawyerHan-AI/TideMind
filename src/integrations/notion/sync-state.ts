@@ -3,10 +3,7 @@
 // ============================================================
 
 import type Database from 'better-sqlite3';
-import { createLogger } from '../../utils/logger.js';
 import type { NotionSyncState, NotionPendingRelation } from './types.js';
-
-const log = createLogger('notion:sync-state');
 
 // ── Page Sync State ──────────────────────────────────────────
 

@@ -1,9 +1,10 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "Node16",
-    "moduleResolution": "Node16",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
     "outDir": "./out",
+    "rootDir": "..",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -12,5 +13,5 @@
       "@server/*": ["../dist/*"]
     }
   },
-  "include": ["electron/**/*"]
+  "include": ["electron/**/*", "../src/**/*", "src/lib/api.ts", "src/lib/api-contract.ts"]
 }

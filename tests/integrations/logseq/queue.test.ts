@@ -90,7 +90,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
 // ---- Imports（mock 之后） ----
 
 import type Database from 'better-sqlite3';
-import { setupTestDb } from '../../helpers/test-db.js';
+import { setupTestDb, seedLink, seedNode } from '../../helpers/test-db.js';
 import {
   processFileQueue,
   processFileChange,
@@ -103,6 +103,7 @@ import {
   getFileState,
 } from '../../../src/integrations/logseq/sync-state.js';
 import { getNode } from '../../../src/db/nodes.js';
+import { getLinksFrom } from '../../../src/db/links.js';
 import { invalidateGateCache } from '../../../src/db/stats.js';
 
 // ---- Helpers ----
@@ -261,6 +262,23 @@ describe('processFileQueue', () => {
     expect(progress.failedFiles).toBe(0);
   });
 
+  it('can abort before processing the next batch', async () => {
+    const file = writePage(tmpDir, 'abort-page', '- Abort content');
+
+    await processFileQueue(db, [file], tmpDir, {
+      concurrency: 1,
+      batchSize: 10,
+      delayBetweenBatches: 0,
+    }, undefined, () => true);
+
+    const progress = getImportProgress();
+    expect(progress.phase).toBe('idle');
+    expect(progress.totalFiles).toBe(1);
+    expect(progress.processedFiles).toBe(0);
+    expect(progress.skippedFiles).toBe(0);
+    expect(progress.failedFiles).toBe(0);
+  });
+
   it('respects batchSize and concurrency config', async () => {
     // 创建 5 个文件，设置 batchSize=2, concurrency=1
     const files: string[] = [];
@@ -317,6 +335,32 @@ describe('processFileChange', () => {
     // 同步状态不变
     const stateAfterSecond = getFileState(db, 'pages/watched-page.md');
     expect(stateAfterSecond!.node_ids).toEqual(oldNodeIds);
+  });
+
+  it('does not write DB when a stopped watcher event reaches processFileChange', async () => {
+    const file = writePage(tmpDir, 'stopped-page', '- Stopped source content');
+
+    const changed = await processFileChange(db, file, tmpDir, 'src-stopped', () => true);
+
+    const state = getFileState(db, 'pages/stopped-page.md', 'src-stopped');
+    const nodeCount = (db.prepare('SELECT COUNT(*) AS cnt FROM nodes').get() as { cnt: number }).cnt;
+    expect(changed).toBe(false);
+    expect(state).toBeNull();
+    expect(nodeCount).toBe(0);
+  });
+
+  it('watcher 创建 journal 节点时使用日记日期和年龄衰减 heat', async () => {
+    const file = writeJournal(tmpDir, '2026_01_15', '- Journal block with enough content\n  - Detail line');
+
+    await processFileChange(db, file, tmpDir);
+
+    const state = getFileState(db, 'journals/2026_01_15.md');
+    expect(state).not.toBeNull();
+    const node = getNode(db, state!.node_ids[0]);
+    expect(node).not.toBeNull();
+    expect(node!.created).toBe('2026-01-15T00:00:00.000Z');
+    expect(node!.heat).toBeGreaterThan(0.15);
+    expect(node!.heat).toBeLessThan(1);
   });
 
   it('updates nodes when file content changes', async () => {
@@ -413,7 +457,7 @@ describe('segment-level dedup', () => {
     expect(secondState!.node_ids.length).toBe(2);
   });
 
-  it('删除段时多余旧节点标记 superseded', async () => {
+  it('删除段时多余旧节点标记 superseded 并迁移 links', async () => {
     const filePath = path.join(tmpDir, 'journals', '2026_03_28.md');
     fs.writeFileSync(filePath, '- Block A\n  - Detail A\n- Block B\n  - Detail B\n- Block C\n  - Detail C', 'utf-8');
 
@@ -421,6 +465,8 @@ describe('segment-level dedup', () => {
     const firstState = getFileState(db, 'journals/2026_03_28.md');
     expect(firstState!.node_ids.length).toBe(3);
     const removedNodeId = firstState!.node_ids[2];
+    const target = seedNode(db, { content: 'external target linked from removed segment' });
+    seedLink(db, removedNodeId, target.id, { strength: 0.77 });
 
     // 删除最后一个 block
     fs.writeFileSync(filePath, '- Block A\n  - Detail A\n- Block B\n  - Detail B', 'utf-8');
@@ -434,6 +480,12 @@ describe('segment-level dedup', () => {
     if (removedNode) {
       expect(removedNode.is_superseded).toBe(1);
     }
+
+    const targetNewNodeId = secondState!.node_ids[secondState!.node_ids.length - 1];
+    const migratedLinks = getLinksFrom(db, targetNewNodeId);
+    const migratedLink = migratedLinks.find(link => link.to_id === target.id);
+    expect(migratedLink).toBeDefined();
+    expect(migratedLink!.strength).toBeCloseTo(0.77);
   });
 
   it('空段不产生节点', async () => {

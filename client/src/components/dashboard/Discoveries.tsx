@@ -1,4 +1,5 @@
 import { motion } from 'framer-motion'
+import type { Variants } from 'framer-motion'
 import { useTranslation } from 'react-i18next'
 import { Sparkles, ThumbsUp, ThumbsDown } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
@@ -8,7 +9,7 @@ import { useFormatters } from '../../hooks/useFormatters'
 import { resolveEventTitle } from '../../lib/timeline-utils'
 import type { TimelineEvent } from '../../lib/api'
 
-const fadeUp = {
+const fadeUp: Variants = {
   hidden: { opacity: 0, y: 12 },
   show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: 'easeOut' } },
 }

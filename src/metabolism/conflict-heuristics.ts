@@ -21,7 +21,7 @@ function extractKeywords(text: string): Set<string> {
   // 按空格、标点、换行分词，过滤短 token
   const tokens = text
     .toLowerCase()
-    .split(/[\s,;.!?，。！？、；：""''（）\[\]{}()]+/)
+    .split(/[\s,;.!?，。！？、；：""''（）[\]{}()]+/)
     .filter(t => t.length >= 2);
   return new Set(tokens);
 }

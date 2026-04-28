@@ -1,6 +1,10 @@
 import { ipcMain, dialog } from 'electron'
 import { writeFile } from 'fs/promises'
 import type Database from 'better-sqlite3'
+import {
+  parseExportScope,
+  parseSaveFileArgs,
+} from './_schemas.js'
 
 interface ExportScope {
   tag?: string
@@ -53,14 +57,17 @@ function safeQuery(db: Database.Database, sql: string): unknown[] {
 
 export function registerExportHandlers(db: Database.Database, _dataDir: string): void {
   // ── Markdown 导出 ──────────────────────────────────────────
-  ipcMain.handle('export:markdown', (_e, scope: ExportScope) => {
-    const { where, params } = buildNodeQuery(scope)
+  ipcMain.handle('export:markdown', (_e, scope: unknown) => {
+    const parsed = parseExportScope(scope)
+    if (!parsed.ok) return parsed.error
+
+    const { where, params } = buildNodeQuery(parsed.data)
     const nodes = db.prepare(`SELECT * FROM nodes ${where} ORDER BY created DESC`).all(...params) as any[]
 
     const lines: string[] = ['# Tide Mind Export', '']
 
     // 全量模式下预加载所有 node_versions
-    const full = isFullScope(scope)
+    const full = isFullScope(parsed.data)
     let versionsMap: Map<string, any[]> | undefined
     if (full) {
       const allVersions = db.prepare('SELECT * FROM node_versions ORDER BY version DESC').all() as any[]
@@ -123,15 +130,18 @@ export function registerExportHandlers(db: Database.Database, _dataDir: string):
   })
 
   // ── JSON 导出 ──────────────────────────────────────────────
-  ipcMain.handle('export:json', (_e, scope: ExportScope) => {
-    const { where, params } = buildNodeQuery(scope)
+  ipcMain.handle('export:json', (_e, scope: unknown) => {
+    const parsed = parseExportScope(scope)
+    if (!parsed.ok) return parsed.error
+
+    const { where, params } = buildNodeQuery(parsed.data)
     const nodes = db.prepare(`SELECT * FROM nodes ${where} ORDER BY created DESC`).all(...params)
 
     const nodeIds = (nodes as any[]).map(n => n.id)
 
     // Links: 全量模式导出全部，筛选模式只导出关联 nodes 的
     let links: any[]
-    if (isFullScope(scope)) {
+    if (isFullScope(parsed.data)) {
       links = db.prepare('SELECT * FROM links').all()
     } else if (nodeIds.length > 0) {
       const placeholders = nodeIds.map(() => '?').join(', ')
@@ -150,7 +160,7 @@ export function registerExportHandlers(db: Database.Database, _dataDir: string):
     }
 
     // 全量模式：附带所有用户数据表
-    if (isFullScope(scope)) {
+    if (isFullScope(parsed.data)) {
       result.nodeVersions = db.prepare('SELECT * FROM node_versions ORDER BY node_id, version').all()
       result.agents = db.prepare('SELECT * FROM agents').all()
       result.noteSources = db.prepare('SELECT * FROM note_sources').all()
@@ -175,10 +185,13 @@ export function registerExportHandlers(db: Database.Database, _dataDir: string):
   })
 
   // ── 保存到文件 ─────────────────────────────────────────────
-  ipcMain.handle('export:save-file', async (_e, content: string, defaultName: string) => {
-    const ext = defaultName.endsWith('.json') ? 'json' : 'md'
+  ipcMain.handle('export:save-file', async (_e, content: unknown, defaultName: unknown) => {
+    const parsed = parseSaveFileArgs(content, defaultName)
+    if (!parsed.ok) return parsed.error
+
+    const ext = parsed.data.defaultName.endsWith('.json') ? 'json' : 'md'
     const { canceled, filePath } = await dialog.showSaveDialog({
-      defaultPath: defaultName,
+      defaultPath: parsed.data.defaultName,
       filters: [
         ext === 'json'
           ? { name: 'JSON', extensions: ['json'] }
@@ -188,7 +201,7 @@ export function registerExportHandlers(db: Database.Database, _dataDir: string):
 
     if (canceled || !filePath) return { saved: false }
 
-    await writeFile(filePath, content, 'utf-8')
+    await writeFile(filePath, parsed.data.content, 'utf-8')
     return { saved: true, path: filePath }
   })
 }

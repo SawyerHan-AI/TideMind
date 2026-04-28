@@ -137,8 +137,8 @@ export async function runInitialization(
   progress.status = 'running';
   progress.startedAt = new Date().toISOString();
 
-  let nodesCreated = 0;
-  let linksCreated = 0;
+  let nodesCreated: number;
+  let linksCreated: number;
 
   try {
     // ── Phase 0: 扫描 ──

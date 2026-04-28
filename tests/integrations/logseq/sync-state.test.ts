@@ -224,6 +224,50 @@ describe('isFileChanged', () => {
     expect(isFileChanged(filePath, syncState)).toBe(false);
   });
 
+  it('dataless 回流后内容 hash 相同 → false，避免重复 digest', () => {
+    const filePath = path.join(tmpDir, 'icloud-returned.md');
+    fs.writeFileSync(filePath, 'same content after iCloud returns');
+    const hash = computeFileHash(filePath);
+
+    const syncState = {
+      file_path: filePath,
+      content_hash: hash,
+      mtime: 1,
+      size: 1,
+      last_synced: 't',
+      node_ids: ['existing-node'],
+      segment_hashes: ['existing-segment'],
+    };
+
+    // iCloud 回流后 mtime/size 可能漂移，但内容没变时不能重新 digest。
+    expect(isFileChanged(filePath, syncState)).toBe(false);
+  });
+
+  it('dataless 文件保留旧 sync state，不被当作变更覆盖', () => {
+    const filePath = path.join(tmpDir, 'offline.md');
+    fs.writeFileSync(filePath, 'offline content');
+    const stat = fs.statSync(filePath);
+    const statSpy = vi.spyOn(fs, 'statSync').mockReturnValue({
+      ...stat,
+      size: 128,
+      blocks: 0,
+    } as fs.Stats);
+
+    try {
+      expect(isFileChanged(filePath, {
+        file_path: filePath,
+        content_hash: 'old-hash',
+        mtime: 1,
+        size: 128,
+        last_synced: 't',
+        node_ids: ['existing-node'],
+        segment_hashes: ['existing-segment'],
+      })).toBe(false);
+    } finally {
+      statSpy.mockRestore();
+    }
+  });
+
   it('内容真的变了 → true', () => {
     const filePath = path.join(tmpDir, 'changed.md');
     fs.writeFileSync(filePath, 'original content');

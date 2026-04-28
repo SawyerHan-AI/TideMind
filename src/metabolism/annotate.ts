@@ -7,7 +7,7 @@
 // ============================================================
 
 import type Database from 'better-sqlite3';
-import type { BrainNode, NodeType } from '../types.js';
+import type { BrainNode } from '../types.js';
 import { updateNode, getNode, parseTags } from '../db/nodes.js';
 import { getVectorForNode, searchVectors } from '../db/vectors.js';
 import { createLink, linkExists, getRejectedTagNamesForNode, getRecentRejectedNodesAcrossTags } from '../db/links.js';
@@ -161,7 +161,7 @@ export async function runAnnotation(db: Database.Database): Promise<{
         const actuality = typeof ann.actuality === 'number' ? clamp(ann.actuality) : undefined;
 
         // 双写：维度 + 从维度派生 legacy type + 标题
-        const patch: Record<string, unknown> = {
+        const patch: Parameters<typeof updateNode>[2] = {
           tags: mergedTags.length > 0 ? JSON.stringify(mergedTags) : undefined,
           refinement: 0.1,
         };
@@ -173,10 +173,10 @@ export async function runAnnotation(db: Database.Database): Promise<{
         if (subjectivity !== undefined) patch.subjectivity = subjectivity;
         if (actuality !== undefined) patch.actuality = actuality;
         if (specificity !== undefined && subjectivity !== undefined && actuality !== undefined) {
-          patch.type = dimensionsToLegacyType({ specificity, subjectivity, actuality });
+          patch.type = dimensionsToLegacyType({ specificity, subjectivity, actuality }) as BrainNode['type'];
         }
 
-        updateNode(db, node.id, patch as any);
+        updateNode(db, node.id, patch);
 
         // 即时建立 tagged 链接：检查标注后的 tags 是否有对应的已存在 tag 节点
         if (mergedTags.length > 0) {

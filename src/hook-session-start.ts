@@ -196,7 +196,7 @@ async function main(): Promise<void> {
     : null;
 
   // 读取 SKILL.md（即使后续步骤失败，至少有使用指南）
-  let skillContent = '';
+  let skillContent: string;
   try {
     skillContent = readFileSync(skillPath, 'utf-8');
     // 去掉 YAML frontmatter（仅当文件以 --- 开头时）
@@ -210,7 +210,7 @@ async function main(): Promise<void> {
     skillContent = '（Skill 文件读取失败，请通过 MCP 工具 brain_prepare/recall/digest 与外脑交互）';
   }
 
-  let prepareText = '';
+  let prepareText: string;
   if (sessionReason === 'clear') {
     // /clear 发生时 Codex 已保留 session 上下文，只是清屏；重跑 prepare 是重复消耗
     prepareText = '（/clear 已执行，用户上下文已在本 session 内保留，无需重新加载）';

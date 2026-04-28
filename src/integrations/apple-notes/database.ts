@@ -5,7 +5,6 @@
 // ============================================================
 
 import Database from 'better-sqlite3';
-import path from 'node:path';
 import { createLogger } from '../../utils/logger.js';
 import {
   CORE_DATA_EPOCH_OFFSET,

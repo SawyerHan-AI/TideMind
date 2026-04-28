@@ -14,7 +14,8 @@ import { createLogger } from '../../utils/logger.js';
 import { clearTagNodeCache } from '../shared/property-promote.js';
 import { logTimelineEvent } from '../../db/log.js';
 import { updateLastSynced } from '../shared/note-sources.js';
-import { archiveNode } from '../../db/nodes.js';
+import { archiveNodeWithVectors } from '../../db/node-lifecycle.js';
+import { SourceSyncLock } from '../shared/source-sync-lock.js';
 import {
   openNoteStoreDb,
   detectSchemaVersion,
@@ -28,7 +29,7 @@ import {
   preloadNoteAttachmentTexts,
 } from './database.js';
 import { initProto } from './protobuf.js';
-import { ensureSyncSchema, getAllNoteStates, removeStaleNotes, hasCompletedFullScan, markFullScanCompleted, resetFullScanState } from './sync-state.js';
+import { ensureSyncSchema, removeStaleNotes, hasCompletedFullScan, markFullScanCompleted, resetFullScanState } from './sync-state.js';
 import { processNoteQueue, getImportProgress as getQueueProgress, resetProgress } from './queue.js';
 import { DEFAULT_POLL_INTERVAL, type AppleTag } from './types.js';
 
@@ -42,7 +43,7 @@ const lastSyncTimestamps = new Map<string, number>(); // Core Data epoch
 /** 已被显式停止的源 ID，避免首次同步后仍启动轮询 */
 const stoppedSources = new Set<string>();
 /** 正在执行 runSync 的源 ID，用于防止 pollForChanges 与其并发 */
-const syncingSources = new Set<string>();
+const syncLock = new SourceSyncLock();
 
 // ======== 入口函数 ========
 
@@ -172,7 +173,7 @@ export function getImportProgress(sourceId?: string) {
  */
 function archiveOrphanNodes(db: Database.Database, nodeIds: string[]): void {
   for (const id of nodeIds) {
-    archiveNode(db, id);
+    archiveNodeWithVectors(db, id);
   }
 }
 
@@ -182,17 +183,15 @@ async function runSync(
   accountZpks: number[] | undefined,
   sourceId?: string,
 ): Promise<void> {
-  const syncKey = sourceId ?? '__default__';
-  if (syncingSources.has(syncKey)) {
+  if (!syncLock.tryAcquire(sourceId)) {
     log.warn(`Apple Notes 同步已在进行中，跳过重复调用 (source=${sourceId})`);
     return;
   }
-  syncingSources.add(syncKey);
 
   try {
     await runSyncInner(db, dbPath, accountZpks, sourceId);
   } finally {
-    syncingSources.delete(syncKey);
+    syncLock.release(sourceId);
   }
 }
 
@@ -335,15 +334,17 @@ async function pollForChanges(
   sourceId: string,
 ): Promise<void> {
   // 守卫：如果正在执行 runSync 或已被停止，跳过此次轮询
-  if (syncingSources.has(sourceId) || stoppedSources.has(sourceId)) {
+  if (stoppedSources.has(sourceId)) {
     return;
   }
-  syncingSources.add(sourceId);
+  if (!syncLock.tryAcquire(sourceId)) {
+    return;
+  }
 
   try {
     await pollForChangesInner(db, dbPath, accountZpks, sourceId);
   } finally {
-    syncingSources.delete(sourceId);
+    syncLock.release(sourceId);
   }
 }
 

@@ -30,13 +30,13 @@ export function InitBanner() {
 
       try {
         // 查询所有笔记源，找到正在初始化的
-        const sources = await (window as any).api.noteSources.list(false)
+        const sources = await window.api.noteSources.list(false)
         if (cancelled) return
         let found = false
 
         for (const source of (sources ?? [])) {
           if (!source.id) continue
-          const prog = await (window as any).api.noteSources.initProgress(source.id)
+          const prog = await window.api.noteSources.initProgress(source.id)
           if (cancelled) return
           if (prog && (prog.status === 'running' || prog.status === 'done')) {
             setProgress({ ...prog, sourceName: source.name })

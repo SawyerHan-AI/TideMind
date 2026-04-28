@@ -1,4 +1,5 @@
 import { motion } from 'framer-motion'
+import type { Variants } from 'framer-motion'
 import { useTranslation } from 'react-i18next'
 import { CircleDashed } from 'lucide-react'
 import { truncate } from '../../lib/format'
@@ -7,7 +8,7 @@ import { EVENT_TYPE_COLORS, EVENT_TYPE_LABELS, EVENT_SUBTYPE_LABELS } from '../.
 import { resolveEventTitle } from '../../lib/timeline-utils'
 import type { DashboardData } from '../../lib/api'
 
-const fadeUp = {
+const fadeUp: Variants = {
   hidden: { opacity: 0, y: 12 },
   show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: 'easeOut' } },
 }

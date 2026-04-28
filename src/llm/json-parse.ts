@@ -74,6 +74,7 @@ export function parseLLMJson<T>(raw: string): T | null {
   }
 
   // 5. 清理 BOM 和不可见字符后再试
+  // eslint-disable-next-line no-control-regex -- JSON from LLMs can contain raw C0 control chars.
   const sanitized = cleaned.replace(/^\uFEFF/, '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
   try { return JSON.parse(sanitized) as T; } catch { /* continue */ }
 

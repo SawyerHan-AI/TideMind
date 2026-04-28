@@ -24,6 +24,7 @@ import { segmentContent } from './segmenter.js';
 import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { digest } from '../../tools/digest.js';
 import { createLink, linkExists } from '../../db/links.js';
+import { markNodeSupersededRecordOnly } from '../../db/node-lifecycle.js';
 
 const log = createLogger('logseq-versions');
 
@@ -201,7 +202,7 @@ export async function importVersionHistory(
         const nodeId = result.created_nodes?.[0]?.id;
         if (nodeId) {
           // 立即标记为 superseded
-          db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(nodeId);
+          markNodeSupersededRecordOnly(db, nodeId);
           versionNodeIds.push(nodeId);
           totalImported++;
         }

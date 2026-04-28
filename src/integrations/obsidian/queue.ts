@@ -8,7 +8,7 @@
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { ImportProgress, QueueConfig, FileSyncState } from './types.js';
-import type { ObsidianVaultConfig, ObsidianFileCategory } from './types.js';
+import type { ObsidianFileCategory } from './types.js';
 import { createLogger } from '../../utils/logger.js';
 
 const log = createLogger('obsidian');
@@ -16,16 +16,14 @@ import { preprocessFile } from './preprocessor.js';
 import { segmentContent } from './segmenter.js';
 import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { parseCanvas } from './canvas-parser.js';
-import { readVaultConfig, getExcludedDirs } from './vault-config.js';
 import {
   getFileState, setFileState, isFileChanged,
   computeFileHash, computeContentHash,
 } from './sync-state.js';
 import { OBSIDIAN_EXCLUDED_DIRS } from './types.js';
 import { digest } from '../../tools/digest.js';
-import { updateNode } from '../../db/nodes.js';
 import { createLink, linkExists } from '../../db/links.js';
-import { supersedeNode } from '../shared/version.js';
+import { retireNodeWithoutReplacement, supersedeNodeWithLinks } from '../../db/node-lifecycle.js';
 import { now } from '../../utils/time.js';
 import { promotePropertyValues as promoteProps, getOrCreateTagNode } from '../shared/property-promote.js';
 import { OBSIDIAN_SYSTEM_PROPERTIES } from './types.js';
@@ -79,6 +77,7 @@ export function resetProgress(sourceId?: string): void {
  * @param vaultRoot - Obsidian vault 根目录
  * @param config - 队列配置
  * @param sourceId - 笔记源 ID（多实例支持）
+ * @param shouldStop - 可选中断谓词，在 batch / 并发组边界检查
  */
 export async function processFileQueue(
   db: Database.Database,
@@ -86,6 +85,7 @@ export async function processFileQueue(
   vaultRoot: string,
   config: Partial<QueueConfig> = {},
   sourceId?: string,
+  shouldStop?: () => boolean,
 ): Promise<void> {
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const progress = getProgress(sourceId);
@@ -101,13 +101,16 @@ export async function processFileQueue(
   });
 
   // 按 batch 处理
-  for (let i = 0; i < files.length; i += cfg.batchSize) {
+  let aborted = false;
+  outer: for (let i = 0; i < files.length; i += cfg.batchSize) {
+    if (shouldStop?.()) { aborted = true; break outer; }
     const batch = files.slice(i, i + cfg.batchSize);
 
     for (let j = 0; j < batch.length; j += cfg.concurrency) {
+      if (shouldStop?.()) { aborted = true; break outer; }
       const concurrent = batch.slice(j, j + cfg.concurrency);
       await Promise.all(
-        concurrent.map(file => processOneFile(db, file, vaultRoot, sourceId)),
+        concurrent.map(file => processOneFile(db, file, vaultRoot, sourceId, shouldStop)),
       );
     }
 
@@ -116,7 +119,7 @@ export async function processFileQueue(
     }
   }
 
-  progress.phase = 'done';
+  progress.phase = aborted ? 'idle' : 'done';
   progress.currentFile = null;
   log.info(
     `导入完成: ${progress.processedFiles} 处理, ${progress.skippedFiles} 跳过, ${progress.failedFiles} 失败`,
@@ -138,6 +141,7 @@ async function processOneFile(
   filePath: string,
   vaultRoot: string,
   sourceId?: string,
+  shouldStop?: () => boolean,
 ): Promise<void> {
   const repo = new SqliteRepository(db);
   const relPath = path.relative(vaultRoot, filePath).replace(/\\/g, '/');
@@ -145,6 +149,8 @@ async function processOneFile(
   progress.currentFile = relPath;
 
   try {
+    if (shouldStop?.()) return;
+
     // 检查同步状态
     const syncState = getFileState(db, relPath, sourceId);
     if (!isFileChanged(filePath, syncState)) {
@@ -152,9 +158,12 @@ async function processOneFile(
       return;
     }
 
+    if (shouldStop?.()) return;
+
     // Canvas 文件走单独管线
     if (filePath.endsWith('.canvas')) {
-      await processCanvasFile(db, filePath, vaultRoot, relPath, syncState, sourceId);
+      await processCanvasFile(db, filePath, vaultRoot, relPath, syncState, sourceId, shouldStop);
+      if (shouldStop?.()) return;
       progress.processedFiles++;
       return;
     }
@@ -185,6 +194,7 @@ async function processOneFile(
 
     // 空白 / 元数据文件 → tag 节点
     if (segments.length === 0 || category === 'empty_tag' || category === 'metadata_only') {
+      if (shouldStop?.()) return;
       const result = await digest(repo, {
         content: preprocessed.title,
         source: { tool: 'obsidian', files: [relPath] },
@@ -194,6 +204,7 @@ async function processOneFile(
         // 身份由 file relPath 负责，不走向量归并
         skipDedupMerge: true,
       });
+      if (shouldStop?.()) return;
       const nodeIds = result.created_nodes?.map(n => n.id) ?? [];
       // 不直接标记 is_tag，由 promoteFrequentTags 按阈值判断
       updateSyncState(db, relPath, filePath, nodeIds, sourceId, contentHash);
@@ -205,6 +216,8 @@ async function processOneFile(
     const allNodeIds: string[] = [];
 
     for (const segment of segments) {
+      if (shouldStop?.()) return;
+
       const propEntries = Object.entries(preprocessed.metadata.properties);
       const propsStr = propEntries.length > 0
         ? propEntries.slice(0, 10).map(([k, v]) => `${k}: ${v}`).join(', ')
@@ -246,6 +259,7 @@ async function processOneFile(
     }
 
     // 多段 part_of 关系串联
+    if (shouldStop?.()) return;
     if (allNodeIds.length > 1) {
       for (let i = 1; i < allNodeIds.length; i++) {
         createLink(db, {
@@ -261,34 +275,37 @@ async function processOneFile(
     }
 
     // 版本替代：旧节点链接迁移到新节点，旧节点标记为 superseded
+    if (shouldStop?.()) return;
     if (oldNodeIds.length > 0 && allNodeIds.length > 0) {
       const pairs = Math.min(oldNodeIds.length, allNodeIds.length);
       for (let i = 0; i < pairs; i++) {
-        supersedeNode(db, oldNodeIds[i], allNodeIds[i]);
+        supersedeNodeWithLinks(db, oldNodeIds[i], allNodeIds[i]);
       }
       // 多余旧段：supersede 到最后一个新节点，迁移链接、保留 updates 链
       // （段数减少场景：把多余旧段的链接归并到最后一个新段上，而不是直接 DELETE 丢失关联）
       if (oldNodeIds.length > allNodeIds.length) {
         const targetNewId = allNodeIds[allNodeIds.length - 1];
         for (let i = pairs; i < oldNodeIds.length; i++) {
-          supersedeNode(db, oldNodeIds[i], targetNewId);
+          supersedeNodeWithLinks(db, oldNodeIds[i], targetNewId);
         }
       }
     } else if (oldNodeIds.length > 0 && allNodeIds.length === 0) {
       // 极端兜底：没有任何新节点（例如全部 digest 失败），按旧逻辑 mark superseded
       for (let i = 0; i < oldNodeIds.length; i++) {
-        db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(oldNodeIds[i]);
-        db.prepare('DELETE FROM links WHERE from_id = ? OR to_id = ?').run(oldNodeIds[i], oldNodeIds[i]);
+        retireNodeWithoutReplacement(db, oldNodeIds[i]);
       }
     }
 
     // 属性值提升为 tag 节点
+    if (shouldStop?.()) return;
     await promoteProps(db, preprocessed.metadata.properties, allNodeIds, 'obsidian', OBSIDIAN_SYSTEM_PROPERTIES);
 
     // 文件夹路径 → tag 节点链
+    if (shouldStop?.()) return;
     await createFolderTagChain(db, relPath, allNodeIds);
 
     // 更新同步状态
+    if (shouldStop?.()) return;
     updateSyncState(db, relPath, filePath, allNodeIds, sourceId, contentHash);
 
     progress.processedFiles++;
@@ -313,8 +330,10 @@ async function processCanvasFile(
   relPath: string,
   syncState: FileSyncState | null,
   sourceId?: string,
+  shouldStop?: () => boolean,
 ): Promise<void> {
   const repo = new SqliteRepository(db);
+  if (shouldStop?.()) return;
   const parsed = parseCanvas(filePath);
   if (!parsed) return;
 
@@ -327,6 +346,7 @@ async function processCanvasFile(
 
   // Text 节点 → digest
   for (const textNode of parsed.textNodes) {
+    if (shouldStop?.()) return;
     if (!textNode.text.trim()) continue;
 
     const tags = [...textNode.groupLabels];
@@ -348,6 +368,7 @@ async function processCanvasFile(
 
   // Link 节点 → digest（含 URL）
   for (const linkNode of parsed.linkNodes) {
+    if (shouldStop?.()) return;
     const result = await digest(repo, {
       content: `外部链接: ${linkNode.url}`,
       source: { tool: 'obsidian', files: [relPath] },
@@ -382,27 +403,28 @@ async function processCanvasFile(
   }
 
   // 版本替代：旧节点链接迁移到新节点，旧节点标记为 superseded
+  if (shouldStop?.()) return;
+
   if (oldNodeIds.length > 0 && nodeIds.length > 0) {
     const pairs = Math.min(oldNodeIds.length, nodeIds.length);
     for (let i = 0; i < pairs; i++) {
-      supersedeNode(db, oldNodeIds[i], nodeIds[i]);
+      supersedeNodeWithLinks(db, oldNodeIds[i], nodeIds[i]);
     }
     // 多余旧段：supersede 到最后一个新节点，迁移链接、保留 updates 链
     if (oldNodeIds.length > nodeIds.length) {
       const targetNewId = nodeIds[nodeIds.length - 1];
       for (let i = pairs; i < oldNodeIds.length; i++) {
-        supersedeNode(db, oldNodeIds[i], targetNewId);
+        supersedeNodeWithLinks(db, oldNodeIds[i], targetNewId);
       }
     }
   } else if (oldNodeIds.length > 0 && nodeIds.length === 0) {
     // 极端兜底：没有新节点，按旧逻辑 mark superseded
     for (let i = 0; i < oldNodeIds.length; i++) {
-      db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(oldNodeIds[i]);
-      db.prepare('DELETE FROM links WHERE from_id = ? OR to_id = ?').run(oldNodeIds[i], oldNodeIds[i]);
+      retireNodeWithoutReplacement(db, oldNodeIds[i]);
     }
   }
 
-  updateSyncState(db, relPath, filePath, nodeIds, sourceId);
+  if (!shouldStop?.()) updateSyncState(db, relPath, filePath, nodeIds, sourceId);
 }
 
 /**
@@ -497,7 +519,9 @@ function updateSyncState(
     const stat = fs.statSync(filePath);
     mtime = Math.floor(stat.mtimeMs);
     size = stat.size;
-  } catch {}
+  } catch {
+    // File may have become dataless or disappeared between scan and state write.
+  }
 
   // 优先使用调用方已持有的 content hash（来自预处理 snapshot），避免 TOCTOU：
   // 若不提供则退回到重新读文件计算；computeFileHash 在文件 dataless/missing 时返回 null。
@@ -525,6 +549,7 @@ export async function processFileChange(
   filePath: string,
   vaultRoot: string,
   sourceId?: string,
+  shouldStop?: () => boolean,
 ): Promise<void> {
-  await processOneFile(db, filePath, vaultRoot, sourceId);
+  await processOneFile(db, filePath, vaultRoot, sourceId, shouldStop);
 }

@@ -7,9 +7,9 @@
 // ============================================================
 
 import type Database from 'better-sqlite3';
-import type { BrainNode, RelationType, LinkRelation } from '../types.js';
+import type { RelationType, LinkRelation } from '../types.js';
 import { getNode } from '../db/nodes.js';
-import { getLinksForNode, updateLinkRelation, updateLinkStrength, deleteLink, parseRelations } from '../db/links.js';
+import { getLinksForNode, updateLinkRelation, updateLinkStrength, deleteLink } from '../db/links.js';
 import { isLlmConfigured } from '../config.js';
 import { callLLM } from '../llm/client.js';
 import { getPrompt, getLLMOptions, getParam, renderUserPrompt } from '../strategy/loader.js';
@@ -188,4 +188,3 @@ export async function revalidateLinks(
     });
   }
 }
-

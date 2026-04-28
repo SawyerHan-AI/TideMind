@@ -228,7 +228,7 @@ export async function runInitialization(db: Database.Database, sourceId?: string
 
   let nodesCreated = 0;
   let linksCreated = 0;
-  let danglingRefs = 0;
+  let danglingRefs: number;
 
   try {
     // === Phase 0: 扫描分类 ===
@@ -354,7 +354,7 @@ export async function runInitialization(db: Database.Database, sourceId?: string
       let annotateRound = 0;
       while (annotateRound < maxAnnotateRounds) {
         const result = await runAnnotation(db);
-        if (!result || (result as any).annotated === 0) break;
+        if (!result || result.annotated === 0) break;
         annotateRound++;
         if (annotateRound % 10 === 0) log.info(`Phase 4: 第 ${annotateRound} 轮`);
         advanceProgress(1, sourceId);
@@ -485,7 +485,10 @@ async function processFileForInit(
   const title = path.basename(file.relPath, path.extname(file.relPath));
   const dateInfo = inferredDates.get(file.relPath) ?? inferredDates.get(title);
   const inDegree = inDegreeMap.get(title) ?? 0;
-  const initialHeat = computeInitialHeat(dateInfo as any, inDegree, importDate);
+  const heatDateInfo: Parameters<typeof computeInitialHeat>[0] = dateInfo
+    ? { date: dateInfo.date, source: 'fallback' }
+    : undefined;
+  const initialHeat = computeInitialHeat(heatDateInfo, inDegree, importDate);
   const originalCreated = dateInfo?.date ? `${dateInfo.date}T00:00:00.000Z` : undefined;
 
   // Canvas 文件
@@ -607,7 +610,9 @@ function updateSyncState(
     const stat = fs.statSync(file.absPath);
     mtime = Math.floor(stat.mtimeMs);
     size = stat.size;
-  } catch {}
+  } catch {
+    // File may have become dataless or disappeared between scan and state write.
+  }
   // 优先使用调用方已持有的 content hash（来自预处理 snapshot），避免 TOCTOU：
   // 若不提供则退回到重新读文件计算；computeFileHash 在 dataless/missing 时返回 null。
   const hash = contentHash ?? computeFileHash(file.absPath);
@@ -839,7 +844,7 @@ async function createLandingConnections(
     const batchStart = Date.now();
     for (const { id } of batch) {
       try { totalLinks += processNode(id); }
-      catch (err) { failed.push(id); }
+      catch (_err) { failed.push(id); }
     }
     onProgress(batch.length);
     const elapsed = Date.now() - batchStart;

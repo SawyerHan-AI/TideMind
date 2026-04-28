@@ -7,7 +7,6 @@ import type {
   BlockObjectResponse,
   PageObjectResponse,
   PartialBlockObjectResponse,
-  PartialPageObjectResponse,
 } from '@notionhq/client/build/src/api-endpoints.js';
 import { createLogger } from '../../utils/logger.js';
 import type { NotionPageSummary } from './types.js';
@@ -102,7 +101,7 @@ export async function validateToken(token: string): Promise<{
       return { valid: false, pageCount: 0 };
     }
     log.warn(`Notion token validation transient failure: ${msg.slice(0, 200)}`);
-    throw new Error(`Notion validation transient: ${msg}`);
+    throw new Error(`Notion validation transient: ${msg}`, { cause: e });
   }
 }
 

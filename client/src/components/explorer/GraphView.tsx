@@ -28,7 +28,7 @@ interface SimNode extends d3.SimulationNodeDatum {
   specificity: number
   subjectivity: number
   actuality: number
-  project: string | null
+  project?: string | null
   is_keystone: number
   is_crystal: number
   is_tag: number

@@ -421,7 +421,7 @@ async function processDigestContent(
  */
 function assessContentQuality(content: string): number {
   // 纯 URL / 文件路径（无附加说明）
-  if (/^(https?:\/\/\S+|[\/~][\w\/.%-]+)$/s.test(content)) return 0.3;
+  if (/^(https?:\/\/\S+|[/~][\w/.%-]+)$/s.test(content)) return 0.3;
 
   // 内容长度评估（中英文分别计算）
   const hasChineseChars = /[\u4e00-\u9fff]/.test(content);

@@ -25,8 +25,8 @@ import type {
 import type { BrainNode, BrainLink, LinkStatus, LinkRelation, OperationLogEntry } from '../types.js';
 
 import {
-  createNode, getNode, getNodesByIds, updateNode, archiveNode, unarchiveNode,
-  reArchiveNode, listArchivedNodes, listNodes, getNodeCount, bumpHeat,
+  createNode, getNode, getNodesByIds, updateNode,
+  listArchivedNodes, listNodes, getNodeCount, bumpHeat,
 } from './nodes.js';
 import {
   createLink, getLinksFrom, getLinksTo, getLinksForNode, getLinksForNodes,
@@ -34,9 +34,15 @@ import {
   getPendingLinks, getLinkCount, linkExists,
 } from './links.js';
 import {
-  insertSegmentVectors, insertVector, deleteVector, getVectorForNode,
+  insertSegmentVectors, insertVector, getVectorForNode,
   searchVectors, hasVectors,
 } from './vectors.js';
+import {
+  archiveNodeWithVectors,
+  deleteNodeVectors,
+  reArchiveNodeWithVectors,
+  unarchiveNodeRecordOnly,
+} from './node-lifecycle.js';
 import { searchFTS, rebuildFTS } from './fts.js';
 import {
   logOperation, getRecallCount, getRecentOperations, logStrategyFeedback,
@@ -62,13 +68,13 @@ class SqliteNodeRepository implements INodeRepository {
     return updateNode(this.db, id, patch, changeReason);
   }
   archiveNode(id: string): void {
-    archiveNode(this.db, id);
+    archiveNodeWithVectors(this.db, id);
   }
   unarchiveNode(id: string): boolean {
-    return unarchiveNode(this.db, id);
+    return unarchiveNodeRecordOnly(this.db, id);
   }
   reArchiveNode(id: string): boolean {
-    return reArchiveNode(this.db, id);
+    return reArchiveNodeWithVectors(this.db, id);
   }
   listArchivedNodes(opts?: { limit?: number; offset?: number }): { nodes: BrainNode[]; total: number } {
     return listArchivedNodes(this.db, opts);
@@ -139,7 +145,7 @@ class SqliteVectorRepository implements IVectorRepository {
     insertVector(this.db, nodeId, embedding);
   }
   deleteVector(nodeId: string): void {
-    deleteVector(this.db, nodeId);
+    deleteNodeVectors(this.db, nodeId);
   }
   getVectorForNode(nodeId: string): Float32Array | null {
     return getVectorForNode(this.db, nodeId);

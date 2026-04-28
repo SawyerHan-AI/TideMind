@@ -12,10 +12,10 @@ export function resolveEventTitle(title: string, t: TFunction): string {
     const parsed = JSON.parse(title)
     if (parsed && typeof parsed.key === 'string') {
       const MISSING = '__eb_missing__'
-      const resolved = t(`timeline:events.${parsed.key}`, {
+      const resolved = String(t(`timeline:events.${parsed.key}`, {
         ...(parsed.params ?? {}),
         defaultValue: MISSING,
-      })
+      }))
       // Missing key → fall back to raw title (JSON) so we don't leak i18n paths to UI
       if (resolved === MISSING) return title
       return resolved

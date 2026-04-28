@@ -2,6 +2,14 @@ import type Database from 'better-sqlite3';
 import type { OperationLogEntry } from '../types.js';
 import { now } from '../utils/time.js';
 
+type ParamFeedbackRow = {
+  id: number;
+  param_name: string | null;
+  signal_type: string;
+  signal_value: number;
+  created: string;
+};
+
 export function logOperation(
   db: Database.Database,
   params: {
@@ -121,15 +129,15 @@ export function getParamFeedback(
   strategyName: string,
   signalType?: string,
   days: number = 30,
-): Array<{ id: number; param_name: string | null; signal_type: string; signal_value: number; created: string }> {
+): ParamFeedbackRow[] {
   if (signalType) {
     return db.prepare(
       `SELECT * FROM param_feedback WHERE strategy_name = ? AND signal_type = ? AND created > datetime('now', '-' || ? || ' days') ORDER BY created DESC`
-    ).all(strategyName, signalType, days) as any[];
+    ).all(strategyName, signalType, days) as ParamFeedbackRow[];
   }
   return db.prepare(
     `SELECT * FROM param_feedback WHERE strategy_name = ? AND created > datetime('now', '-' || ? || ' days') ORDER BY created DESC`
-  ).all(strategyName, days) as any[];
+  ).all(strategyName, days) as ParamFeedbackRow[];
 }
 
 export function getParamFeedbackByRange(
@@ -138,15 +146,15 @@ export function getParamFeedbackByRange(
   signalType: string | undefined,
   startDate: string,
   endDate: string,
-): Array<{ id: number; param_name: string | null; signal_type: string; signal_value: number; created: string }> {
+): ParamFeedbackRow[] {
   if (signalType) {
     return db.prepare(
       `SELECT * FROM param_feedback WHERE strategy_name = ? AND signal_type = ? AND created BETWEEN ? AND ? ORDER BY created DESC`
-    ).all(strategyName, signalType, startDate, endDate) as any[];
+    ).all(strategyName, signalType, startDate, endDate) as ParamFeedbackRow[];
   }
   return db.prepare(
     `SELECT * FROM param_feedback WHERE strategy_name = ? AND created BETWEEN ? AND ? ORDER BY created DESC`
-  ).all(strategyName, startDate, endDate) as any[];
+  ).all(strategyName, startDate, endDate) as ParamFeedbackRow[];
 }
 
 export function getStrategyFeedback(
