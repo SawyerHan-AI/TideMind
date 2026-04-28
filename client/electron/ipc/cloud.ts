@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import type { Reconciler as ReconcilerType } from '../cloud/reconciler.js'
 import { getConfig, reloadConfig } from '../../../src/config.js'
 import { createLogger } from '../../../src/utils/logger.js'
+import { parseRequiredBoolean } from './_schemas.js'
 
 const log = createLogger('ipc-cloud')
 
@@ -126,7 +127,10 @@ export function registerCloudHandlers(db?: Database.Database): void {
   });
 
   // 开关数据云同步
-  ipcMain.handle('cloud:set-sync-enabled', async (_event, enabled: boolean) => {
+  ipcMain.handle('cloud:set-sync-enabled', async (_event, enabled: unknown) => {
+    const parsed = parseRequiredBoolean(enabled, 'enabled')
+    if (!parsed.ok) return parsed.error
+
     const fs = await import('node:fs');
     const path = await import('node:path');
     const { parse: parseToml } = await import('smol-toml');
@@ -145,17 +149,17 @@ export function registerCloudHandlers(db?: Database.Database): void {
 
     // 深度合并 cloud section
     const cloud = (current.cloud ?? {}) as Record<string, unknown>;
-    cloud.sync_enabled = enabled;
-    cloud.enabled = enabled; // 联动 MCP 路由开关
+    cloud.sync_enabled = parsed.data;
+    cloud.enabled = parsed.data; // 联动 MCP 路由开关
     current.cloud = cloud;
 
     fs.writeFileSync(configPath, stringifyToml(current as any));
     reloadConfig();
-    log.info(`cloud sync ${enabled ? 'enabled' : 'disabled'}`);
+    log.info(`cloud sync ${parsed.data ? 'enabled' : 'disabled'}`);
 
     let startError: string | undefined;
     let startErrorDetail: string | undefined;
-    if (enabled && db) {
+    if (parsed.data && db) {
       const { isLoggedIn } = await import('../cloud/auth-client.js');
       if (!isLoggedIn()) {
         startError = 'not_logged_in';
@@ -185,7 +189,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
           log.warn(`sync start reported: ${startError}${startErrorDetail ? ' — ' + startErrorDetail : ''}`);
         }
       }
-    } else if (!enabled) {
+    } else if (!parsed.data) {
       const { destroySyncClient } = await import('../cloud/sync-client.js');
       destroySyncClient();
     }
@@ -227,7 +231,10 @@ export function registerCloudHandlers(db?: Database.Database): void {
   });
 
   // 开关云代谢(本地/云互斥开关)
-  ipcMain.handle('cloud:set-metabolism-enabled', async (_event, enabled: boolean) => {
+  ipcMain.handle('cloud:set-metabolism-enabled', async (_event, enabled: unknown) => {
+    const parsed = parseRequiredBoolean(enabled, 'enabled')
+    if (!parsed.ok) return parsed.error
+
     const fs = await import('node:fs');
     const path = await import('node:path');
     const { parse: parseToml, stringify: stringifyToml } = await import('smol-toml');
@@ -241,11 +248,11 @@ export function registerCloudHandlers(db?: Database.Database): void {
       } catch { /* ignore */ }
     }
     const cloud = (current.cloud ?? {}) as Record<string, unknown>;
-    cloud.metabolism_enabled = enabled;
+    cloud.metabolism_enabled = parsed.data;
     current.cloud = cloud;
     fs.writeFileSync(configPath, stringifyToml(current as any));
     reloadConfig();
-    log.info(`cloud metabolism ${enabled ? 'enabled' : 'disabled'}`);
+    log.info(`cloud metabolism ${parsed.data ? 'enabled' : 'disabled'}`);
     emitCloudChanged();
     return { success: true };
   });

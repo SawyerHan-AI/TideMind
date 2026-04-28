@@ -12,6 +12,7 @@ import type Database from 'better-sqlite3';
 import type { FileSyncState } from './types.js';
 import { createLogger } from '../../utils/logger.js';
 import { safeReadTextFileSync, safeStatSync, isDataless } from '../../utils/safe-fs.js';
+import { planStaleSyncStateCleanup } from '../shared/source-file-state.js';
 
 const log = createLogger('obsidian:sync');
 
@@ -164,24 +165,17 @@ export function removeStaleFiles(
   sourceId?: string,
 ): { removed: number; orphanNodeIds: string[] } {
   const allStates = getAllFileStates(db, sourceId);
-  let removed = 0;
-  const orphanNodeIds: string[] = [];
+  const plan = planStaleSyncStateCleanup(allStates, currentFiles);
 
-  for (const [filePath, state] of allStates.entries()) {
-    if (!currentFiles.has(filePath)) {
-      if (state.node_ids.length > 0) {
-        orphanNodeIds.push(...state.node_ids);
-      }
-      removeFileState(db, filePath, sourceId);
-      removed++;
-    }
+  for (const filePath of plan.staleFilePaths) {
+    removeFileState(db, filePath, sourceId);
   }
 
-  if (removed > 0) {
-    log.info(`清理了 ${removed} 条过期同步记录`);
+  if (plan.staleFilePaths.length > 0) {
+    log.info(`清理了 ${plan.staleFilePaths.length} 条过期同步记录`);
   }
 
-  return { removed, orphanNodeIds };
+  return { removed: plan.staleFilePaths.length, orphanNodeIds: plan.orphanNodeIds };
 }
 
 // --- 全量扫描状态 ---

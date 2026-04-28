@@ -11,16 +11,6 @@ import type { ObsidianFileCategory, ClassifiedFile, ObsidianVaultConfig } from '
 
 const log = createLogger('obsidian:classify');
 
-/** 非 Markdown 的文件扩展名（视为附件） */
-const NON_MD_EXTENSIONS = new Set([
-  '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp', '.ico',
-  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-  '.mp3', '.mp4', '.wav', '.ogg', '.webm', '.mov',
-  '.zip', '.tar', '.gz', '.rar', '.7z',
-  '.json', '.xml', '.csv', '.tsv',
-  '.ttf', '.otf', '.woff', '.woff2',
-]);
-
 /** Markdown 类扩展名 */
 const MD_EXTENSIONS = new Set(['.md', '.canvas']);
 

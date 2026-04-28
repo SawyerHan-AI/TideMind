@@ -19,11 +19,10 @@ import {
 } from './sync-state.js';
 import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { digest } from '../../tools/digest.js';
-import { updateNode } from '../../db/nodes.js';
 import { createLink, linkExists } from '../../db/links.js';
 import { now } from '../../utils/time.js';
 import { promotePropertyValues } from '../shared/property-promote.js';
-import { supersedeNode } from '../shared/version.js';
+import { retireNodeWithoutReplacement, supersedeNodeWithLinks } from '../../db/node-lifecycle.js';
 import { SYSTEM_PROPERTIES } from './types.js';
 import { computeTimeFactor } from './initial-heat.js';
 
@@ -85,6 +84,7 @@ function resetProgress(sourceId?: string): void {
  * @param graphRoot - Logseq graph 根目录
  * @param config - 队列配置
  * @param sourceId - 笔记源 ID（多实例支持）
+ * @param shouldStop - 可选中断谓词，在 batch / 并发组边界检查
  */
 export async function processFileQueue(
   db: Database.Database,
@@ -92,6 +92,7 @@ export async function processFileQueue(
   graphRoot: string,
   config: Partial<QueueConfig> = {},
   sourceId?: string,
+  shouldStop?: () => boolean,
 ): Promise<void> {
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const progress = getProgress(sourceId);
@@ -107,14 +108,17 @@ export async function processFileQueue(
   });
 
   // 按 batch 处理
-  for (let i = 0; i < files.length; i += cfg.batchSize) {
+  let aborted = false;
+  outer: for (let i = 0; i < files.length; i += cfg.batchSize) {
+    if (shouldStop?.()) { aborted = true; break outer; }
     const batch = files.slice(i, i + cfg.batchSize);
 
     // 每个 batch 内，最多 concurrency 个并行
     for (let j = 0; j < batch.length; j += cfg.concurrency) {
+      if (shouldStop?.()) { aborted = true; break outer; }
       const concurrent = batch.slice(j, j + cfg.concurrency);
       await Promise.all(
-        concurrent.map(file => processOneFile(db, file, graphRoot, sourceId)),
+        concurrent.map(file => processOneFile(db, file, graphRoot, sourceId, shouldStop)),
       );
     }
 
@@ -124,7 +128,7 @@ export async function processFileQueue(
     }
   }
 
-  progress.phase = 'done';
+  progress.phase = aborted ? 'idle' : 'done';
   progress.currentFile = null;
   log.info(
     `导入完成: ${progress.processedFiles} 处理, ${progress.skippedFiles} 跳过, ${progress.failedFiles} 失败`,
@@ -146,6 +150,7 @@ async function processOneFile(
   filePath: string,
   graphRoot: string,
   sourceId?: string,
+  shouldStop?: () => boolean,
 ): Promise<boolean> {
   const repo = new SqliteRepository(db);
   const relPath = path.relative(graphRoot, filePath).replace(/\\/g, '/');
@@ -153,12 +158,16 @@ async function processOneFile(
   progress.currentFile = relPath;
 
   try {
+    if (shouldStop?.()) return false;
+
     // 检查同步状态
     const syncState = getFileState(db, relPath, sourceId);
     if (!isFileChanged(filePath, syncState)) {
       progress.skippedFiles++;
       return false;
     }
+
+    if (shouldStop?.()) return false;
 
     // 预处理
     const preprocessed = preprocessFile(filePath, graphRoot);
@@ -199,6 +208,8 @@ async function processOneFile(
     const allHashes: string[] = [];
 
     for (let i = 0; i < segments.length; i++) {
+      if (shouldStop?.()) return false;
+
       const segment = segments[i];
       const newHash = computeSegmentHash(segment.content);
       allHashes.push(newHash);
@@ -264,34 +275,37 @@ async function processOneFile(
         initialHeat: inferredInitialHeat,
       });
 
+      if (shouldStop?.()) return false;
+
       if (result.created_nodes && result.created_nodes.length > 0) {
         const newNodeId = result.created_nodes[0].id;
         allNodeIds.push(newNodeId);
 
         // 有对应旧节点 → supersede
         if (i < oldNodeIds.length) {
-          supersedeNode(db, oldNodeIds[i], newNodeId);
+          supersedeNodeWithLinks(db, oldNodeIds[i], newNodeId);
         }
       }
     }
 
     // 多余旧段：supersede 到最后一个新节点，迁移链接、保留 updates 链
+    if (shouldStop?.()) return false;
     // （段数减少场景：把多余旧段的链接归并到最后一个新段上，而不是直接 DELETE 丢失关联）
     if (oldNodeIds.length > segments.length && allNodeIds.length > 0) {
       const targetNewId = allNodeIds[allNodeIds.length - 1];
       for (let i = segments.length; i < oldNodeIds.length; i++) {
-        supersedeNode(db, oldNodeIds[i], targetNewId);
+        supersedeNodeWithLinks(db, oldNodeIds[i], targetNewId);
       }
     } else if (oldNodeIds.length > segments.length) {
       // 极端情况：没有任何新节点（所有段都是旧 hash 复用，但段数又减少？）
       // 兜底仍按旧逻辑处理，避免残留悬空链接
       for (let i = segments.length; i < oldNodeIds.length; i++) {
-        db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(oldNodeIds[i]);
-        db.prepare('DELETE FROM links WHERE from_id = ? OR to_id = ?').run(oldNodeIds[i], oldNodeIds[i]);
+        retireNodeWithoutReplacement(db, oldNodeIds[i]);
       }
     }
 
     // 多段 part_of 关系串联（与 initialization.ts 一致）
+    if (shouldStop?.()) return false;
     if (allNodeIds.length > 1) {
       for (let i = 1; i < allNodeIds.length; i++) {
         if (!linkExists(db, allNodeIds[i], allNodeIds[i - 1])) {
@@ -309,6 +323,7 @@ async function processOneFile(
     }
 
     // 属性值提升为 tag 节点
+    if (shouldStop?.()) return false;
     if (Object.keys(preprocessed.metadata.properties).length > 0) {
       await promotePropertyValues(
         db, preprocessed.metadata.properties, allNodeIds,
@@ -317,6 +332,8 @@ async function processOneFile(
     }
 
     // 更新同步状态
+    if (shouldStop?.()) return false;
+
     const fileStat = getFileStat(filePath);
     const contentHash = computeFileHash(filePath);
     // 文件在 preprocess 与 hash 之间发生变化（例如被 iCloud 驱逐）时跳过 state 写入，
@@ -354,8 +371,9 @@ export async function processFileChange(
   filePath: string,
   graphRoot: string,
   sourceId?: string,
+  shouldStop?: () => boolean,
 ): Promise<boolean> {
-  return processOneFile(db, filePath, graphRoot, sourceId);
+  return processOneFile(db, filePath, graphRoot, sourceId, shouldStop);
 }
 
 // --- 工具 ---

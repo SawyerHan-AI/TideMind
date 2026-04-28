@@ -10,6 +10,14 @@ import {
 } from '@server/integrations/shared/note-sources.js'
 import { getDb } from '@server/db/connection.js'
 import { createLogger } from '@server/utils/logger.js'
+import {
+  parseNoteSourceCreate,
+  parseNoteSourceId,
+  parseNoteSourcePath,
+  parseNoteSourceTest,
+  parseNoteSourceUpdate,
+  parseOptionalBoolean,
+} from './_schemas.js'
 
 const log = createLogger('note-sources-ipc')
 
@@ -24,74 +32,103 @@ const INIT_MAX_DURATION_MS = 30 * 60 * 1000
  */
 export function registerNoteSourceHandlers(): void {
   ipcMain.handle('note-sources:list', (_e, includeArchived?: boolean) => {
-    return listNoteSources(getClientDb(), includeArchived ?? true)
+    const parsed = parseOptionalBoolean(includeArchived, 'includeArchived')
+    if (!parsed.ok) return parsed.error
+
+    return listNoteSources(getClientDb(), parsed.data ?? true)
   })
 
-  ipcMain.handle('note-sources:create', (_e, params: {
-    name: string; toolType: string; path: string; pollInterval?: number
-  }) => {
-    return createNoteSource(getClientDb(), params)
+  ipcMain.handle('note-sources:create', (_e, params: unknown) => {
+    const parsed = parseNoteSourceCreate(params)
+    if (!parsed.ok) return parsed.error
+
+    return createNoteSource(getClientDb(), parsed.data)
   })
 
-  ipcMain.handle('note-sources:update', (_e, id: string, updates: {
-    name?: string; path?: string; pollInterval?: number
-  }) => {
-    updateNoteSource(getClientDb(), id, updates)
+  ipcMain.handle('note-sources:update', (_e, id: unknown, updates: unknown) => {
+    const parsedId = parseNoteSourceId(id)
+    if (!parsedId.ok) return parsedId.error
+
+    const parsedUpdates = parseNoteSourceUpdate(updates)
+    if (!parsedUpdates.ok) return parsedUpdates.error
+
+    // path 字段需要按 toolType 走白名单：notion/apple-notes 跳过，logseq/obsidian
+    // 限制在 homedir / /Volumes / /mnt / /media。create handler 内置了同样的检查，
+    // 但 update 时只能在这里查到既存 source 的 toolType 后再做。
+    const updates2 = { ...parsedUpdates.data }
+    if (updates2.path !== undefined) {
+      const existing = getNoteSource(getClientDb(), parsedId.data)
+      if (!existing) return { success: false, error: 'invalid_arguments', details: ['source not found'] }
+      const checkedPath = parseNoteSourcePath(existing.tool_type as 'logseq' | 'obsidian' | 'apple-notes' | 'notion', updates2.path)
+      if (!checkedPath.ok) return checkedPath.error
+      updates2.path = checkedPath.data
+    }
+
+    updateNoteSource(getClientDb(), parsedId.data, updates2)
   })
 
-  ipcMain.handle('note-sources:archive', async (_e, id: string) => {
-    const source = getNoteSource(getClientDb(), id)
+  ipcMain.handle('note-sources:archive', async (_e, id: unknown) => {
+    const parsedId = parseNoteSourceId(id)
+    if (!parsedId.ok) return parsedId.error
+
+    const source = getNoteSource(getClientDb(), parsedId.data)
     if (!source) return
 
-    archiveNoteSource(getClientDb(), id)
+    archiveNoteSource(getClientDb(), parsedId.data)
 
     // 停止该笔记源的监听
     try {
       if (source.tool_type === 'logseq') {
         const { stopLogseqSource } = await import('@server/integrations/logseq/index.js')
-        stopLogseqSource(id)
+        stopLogseqSource(parsedId.data)
       } else if (source.tool_type === 'obsidian') {
         const { stopObsidianSource } = await import('@server/integrations/obsidian/index.js')
-        stopObsidianSource(id)
+        stopObsidianSource(parsedId.data)
       } else if (source.tool_type === 'apple-notes') {
         const { stopAppleNotesSource } = await import('@server/integrations/apple-notes/index.js')
-        stopAppleNotesSource(id)
+        stopAppleNotesSource(parsedId.data)
       } else if (source.tool_type === 'notion') {
         const { stopNotionSource } = await import('@server/integrations/notion/index.js')
-        stopNotionSource(id)
+        stopNotionSource(parsedId.data)
       }
     } catch { /* ignore */ }
   })
 
-  ipcMain.handle('note-sources:unarchive', async (_e, id: string) => {
-    const source = getNoteSource(getClientDb(), id)
+  ipcMain.handle('note-sources:unarchive', async (_e, id: unknown) => {
+    const parsedId = parseNoteSourceId(id)
+    if (!parsedId.ok) return parsedId.error
+
+    const source = getNoteSource(getClientDb(), parsedId.data)
     if (!source) return
 
-    unarchiveNoteSource(getClientDb(), id)
+    unarchiveNoteSource(getClientDb(), parsedId.data)
 
     // 重新启动监听
     try {
       if (source.tool_type === 'logseq') {
         const { startLogseqSource } = await import('@server/integrations/logseq/index.js')
-        await startLogseqSource(getDb(), id, source.path, source.poll_interval)
+        await startLogseqSource(getDb(), parsedId.data, source.path, source.poll_interval)
       } else if (source.tool_type === 'obsidian') {
         const { startObsidianSource } = await import('@server/integrations/obsidian/index.js')
-        await startObsidianSource(getDb(), id, source.path, source.poll_interval)
+        await startObsidianSource(getDb(), parsedId.data, source.path, source.poll_interval)
       } else if (source.tool_type === 'apple-notes') {
         const { startAppleNotesSource } = await import('@server/integrations/apple-notes/index.js')
-        await startAppleNotesSource(getDb(), id, source.path, source.poll_interval)
+        await startAppleNotesSource(getDb(), parsedId.data, source.path, source.poll_interval)
       } else if (source.tool_type === 'notion') {
         const { startNotionSource } = await import('@server/integrations/notion/index.js')
-        await startNotionSource(getDb(), id, source.path, source.poll_interval)
+        await startNotionSource(getDb(), parsedId.data, source.path, source.poll_interval)
       }
     } catch { /* ignore */ }
   })
 
-  ipcMain.handle('note-sources:stats', async (_e, id: string) => {
-    const source = getNoteSource(getClientDb(), id)
+  ipcMain.handle('note-sources:stats', async (_e, id: unknown) => {
+    const parsedId = parseNoteSourceId(id)
+    if (!parsedId.ok) return parsedId.error
+
+    const source = getNoteSource(getClientDb(), parsedId.data)
     if (!source) return { fileCount: 0, nodeCount: 0, lastSynced: null, syncing: false, accessible: true }
 
-    const stats = getNoteSourceStats(getClientDb(), id)
+    const stats = getNoteSourceStats(getClientDb(), parsedId.data)
 
     // 检查路径是否可达
     let accessible: boolean
@@ -111,19 +148,19 @@ export function registerNoteSourceHandlers(): void {
     try {
       if (source.tool_type === 'logseq') {
         const { getImportProgress } = await import('@server/integrations/logseq/queue.js')
-        const prog = getImportProgress(id)
+        const prog = getImportProgress(parsedId.data)
         syncing = prog.phase !== 'idle' && prog.phase !== 'done'
       } else if (source.tool_type === 'obsidian') {
         const { getImportProgress } = await import('@server/integrations/obsidian/queue.js')
-        const prog = getImportProgress(id)
+        const prog = getImportProgress(parsedId.data)
         syncing = prog.phase !== 'idle' && prog.phase !== 'done'
       } else if (source.tool_type === 'apple-notes') {
         const { getImportProgress } = await import('@server/integrations/apple-notes/index.js')
-        const prog = getImportProgress(id)
+        const prog = getImportProgress(parsedId.data)
         syncing = prog.phase !== 'idle' && prog.phase !== 'done'
       } else if (source.tool_type === 'notion') {
         const { getImportProgress } = await import('@server/integrations/notion/queue.js')
-        const prog = getImportProgress(id)
+        const prog = getImportProgress(parsedId.data)
         syncing = prog.phase !== 'idle' && prog.phase !== 'done'
       }
     } catch { /* ignore */ }
@@ -163,40 +200,34 @@ export function registerNoteSourceHandlers(): void {
   })
 
   // 测试路径可访问性（不需要 sourceId，直接测试给定路径）
-  ipcMain.handle('note-sources:test', async (_e, toolType: string, testPath: string) => {
+  ipcMain.handle('note-sources:test', async (_e, toolType: unknown, testPath: unknown) => {
+    const parsed = parseNoteSourceTest(toolType, testPath)
+    if (!parsed.ok) return parsed.error
+
+    const { toolType: parsedToolType, testPath: parsedTestPath } = parsed.data
+
     // Notion: 验证 token 而非检查文件系统
-    if (toolType === 'notion') {
+    if (parsedToolType === 'notion') {
       try {
         const { validateToken } = await import('@server/integrations/notion/api-client.js')
-        const token = testPath.startsWith('notion://') ? testPath.slice('notion://'.length) : testPath
+        const token = parsedTestPath.startsWith('notion://') ? parsedTestPath.slice('notion://'.length) : parsedTestPath
         const result = await validateToken(token)
-        return { accessible: result.valid, fileCount: result.pageCount, path: testPath }
+        return { accessible: result.valid, fileCount: result.pageCount, path: parsedTestPath }
       } catch (err) {
         // validateToken 在 401 情况返 valid:false 不 throw。throw 代表瞬时
         // 错误(网络/DNS/502),这里应该回馈"可重试"而不是"token 无效"。
         // UI 侧渲染时可用 `transient` 标识提示用户。
-        return { accessible: false, fileCount: 0, path: testPath, transient: true, error: (err as Error).message }
+        return { accessible: false, fileCount: 0, path: parsedTestPath, transient: true, error: (err as Error).message }
       }
     }
 
-    const resolved = path.resolve(testPath.replace('~', os.homedir()))
     // 路径白名单：renderer 传进来的 testPath 会被 fs.readdirSync 递归，
-    // 不卡会变成任意目录遍历（/etc, /var/root, 其他用户 home 等）。
-    // 合法根目录：用户 homedir、/Volumes（外接盘，macOS iCloud/Obsidian vault 常放这）、
-    // /mnt（Linux 常见挂载点）、/media（Linux 自动挂载）。
-    const allowedRoots = [
-      os.homedir(),
-      '/Volumes',
-      '/mnt',
-      '/media',
-    ].map(p => path.resolve(p))
-    const withinAllowedRoot = allowedRoots.some(root => {
-      // 允许等于 root 或以 root + sep 开头；避免 /homedir2 被 /home 前缀匹配
-      return resolved === root || resolved.startsWith(root + path.sep)
-    })
-    if (!withinAllowedRoot) {
-      return { accessible: false, fileCount: 0, path: resolved, error: 'path outside allowed roots' }
+    // 不卡会变成任意目录遍历。create/update/test 共用 parseNoteSourcePath。
+    const checkedPath = parseNoteSourcePath(parsedToolType, parsedTestPath)
+    if (!checkedPath.ok) {
+      return { accessible: false, fileCount: 0, path: parsedTestPath, error: 'path outside allowed roots' }
     }
+    const resolved = checkedPath.data
     if (!fs.existsSync(resolved)) {
       return { accessible: false, fileCount: 0, path: resolved }
     }
@@ -205,7 +236,7 @@ export function registerNoteSourceHandlers(): void {
       let count = 0
       // 排除规则与各自 walkMdFiles 保持一致（基于相对路径前缀匹配）
       // version-files 不排除：Phase 2.5 会单独处理它们
-      const excludePrefixes = toolType === 'obsidian'
+      const excludePrefixes = parsedToolType === 'obsidian'
         ? ['.obsidian', '.git', '.trash', 'node_modules']
         : ['logseq/bak', 'logseq/.recycle', 'draws', 'whiteboards', 'assets', '.git', '.trash', 'node_modules']
 
@@ -233,22 +264,25 @@ export function registerNoteSourceHandlers(): void {
 
   // --- 初始化管线转发（直接传 sourceId + path，不依赖 Function.length 检测） ---
 
-  ipcMain.handle('note-sources:init-preview', async (_e, id: string) => {
-    const source = getNoteSource(getClientDb(), id)
+  ipcMain.handle('note-sources:init-preview', async (_e, id: unknown) => {
+    const parsedId = parseNoteSourceId(id)
+    if (!parsedId.ok) return parsedId.error
+
+    const source = getNoteSource(getClientDb(), parsedId.data)
     if (!source) return { success: false, error: '笔记源不存在' }
 
     try {
       if (source.tool_type === 'logseq') {
         const { previewInit } = await import('@server/integrations/logseq/initialization.js')
-        const preview = previewInit(getDb(), id, source.path)
+        const preview = previewInit(getDb(), parsedId.data, source.path)
         return { success: true, data: preview }
       } else if (source.tool_type === 'obsidian') {
         const { previewInit } = await import('@server/integrations/obsidian/initialization.js')
-        const preview = previewInit(getDb(), id, source.path)
+        const preview = previewInit(getDb(), parsedId.data, source.path)
         return { success: true, data: preview }
       } else if (source.tool_type === 'apple-notes') {
         const { previewInit } = await import('@server/integrations/apple-notes/initialization.js')
-        const preview = previewInit(getDb(), id, source.path)
+        const preview = previewInit(getDb(), parsedId.data, source.path)
         return { success: true, data: preview }
       } else if (source.tool_type === 'notion') {
         const { previewInit } = await import('@server/integrations/notion/initialization.js')
@@ -262,15 +296,18 @@ export function registerNoteSourceHandlers(): void {
     }
   })
 
-  ipcMain.handle('note-sources:init-start', async (_e, id: string) => {
-    const source = getNoteSource(getClientDb(), id)
+  ipcMain.handle('note-sources:init-start', async (_e, id: unknown) => {
+    const parsedId = parseNoteSourceId(id)
+    if (!parsedId.ok) return parsedId.error
+
+    const source = getNoteSource(getClientDb(), parsedId.data)
     if (!source) return { success: false, error: '笔记源不存在' }
 
     // 全局锁：同一时刻只允许一个初始化（跨 Logseq/Obsidian）
     if (globalInitSourceId) {
       return { success: false, error: '有其他笔记源正在初始化，请等待完成后再试' }
     }
-    globalInitSourceId = id
+    globalInitSourceId = parsedId.data
 
     // 超时兜底：runInitialization 若挂住，30 分钟后强制释放全局锁。
     // 用 Promise.race 让 handler 能返回错误，同时 finally 一定能 reset lock。
@@ -282,17 +319,17 @@ export function registerNoteSourceHandlers(): void {
       const runPromise: Promise<any> = (async () => {
         if (source.tool_type === 'logseq') {
           const { runInitialization } = await import('@server/integrations/logseq/initialization.js')
-          return await runInitialization(getDb(), id, source.path)
+          return await runInitialization(getDb(), parsedId.data, source.path)
         } else if (source.tool_type === 'obsidian') {
           const { runInitialization } = await import('@server/integrations/obsidian/initialization.js')
-          return await runInitialization(getDb(), id, source.path)
+          return await runInitialization(getDb(), parsedId.data, source.path)
         } else if (source.tool_type === 'apple-notes') {
           const { runInitialization } = await import('@server/integrations/apple-notes/initialization.js')
-          return await runInitialization(getDb(), id, source.path)
+          return await runInitialization(getDb(), parsedId.data, source.path)
         } else if (source.tool_type === 'notion') {
           const { runInitialization } = await import('@server/integrations/notion/initialization.js')
           const token = source.path.startsWith('notion://') ? source.path.slice('notion://'.length) : source.path
-          return await runInitialization(getDb(), token, id)
+          return await runInitialization(getDb(), token, parsedId.data)
         }
         throw new Error(`不支持的工具类型: ${source.tool_type}`)
       })()
@@ -300,12 +337,12 @@ export function registerNoteSourceHandlers(): void {
       const report = await Promise.race([runPromise, timeoutPromise])
 
       // 标记为已初始化
-      markInitialized(getClientDb(), id)
+      markInitialized(getClientDb(), parsedId.data)
       return { success: true, data: report }
     } catch (err) {
       const msg = (err as Error).message
       if (msg.includes('初始化超时')) {
-        log.error(`init timeout on source=${id}: lock force-released after ${INIT_MAX_DURATION_MS}ms`)
+        log.error(`init timeout on source=${parsedId.data}: lock force-released after ${INIT_MAX_DURATION_MS}ms`)
       }
       return { success: false, error: msg }
     } finally {
@@ -313,63 +350,72 @@ export function registerNoteSourceHandlers(): void {
     }
   })
 
-  ipcMain.handle('note-sources:init-progress', async (_e, id: string) => {
-    const source = getNoteSource(getClientDb(), id)
+  ipcMain.handle('note-sources:init-progress', async (_e, id: unknown) => {
+    const parsedId = parseNoteSourceId(id)
+    if (!parsedId.ok) return parsedId.error
+
+    const source = getNoteSource(getClientDb(), parsedId.data)
     if (!source) return null
 
     try {
       if (source.tool_type === 'logseq') {
         const { getInitProgress } = await import('@server/integrations/logseq/initialization.js')
-        return getInitProgress(id)
+        return getInitProgress(parsedId.data)
       } else if (source.tool_type === 'obsidian') {
         const { getInitProgress } = await import('@server/integrations/obsidian/initialization.js')
-        return getInitProgress(id)
+        return getInitProgress(parsedId.data)
       } else if (source.tool_type === 'apple-notes') {
         const { getInitProgress } = await import('@server/integrations/apple-notes/initialization.js')
-        return getInitProgress(id)
+        return getInitProgress(parsedId.data)
       } else if (source.tool_type === 'notion') {
         const { getInitProgress } = await import('@server/integrations/notion/initialization.js')
-        return getInitProgress(id)
+        return getInitProgress(parsedId.data)
       }
     } catch { /* ignore */ }
     return null
   })
 
-  ipcMain.handle('note-sources:init-abort', async (_e, id: string) => {
-    const source = getNoteSource(getClientDb(), id)
+  ipcMain.handle('note-sources:init-abort', async (_e, id: unknown) => {
+    const parsedId = parseNoteSourceId(id)
+    if (!parsedId.ok) return parsedId.error
+
+    const source = getNoteSource(getClientDb(), parsedId.data)
     if (!source) return { success: false }
 
     try {
       if (source.tool_type === 'logseq') {
         const { abortInit } = await import('@server/integrations/logseq/initialization.js')
-        abortInit(id)
+        abortInit(parsedId.data)
       } else if (source.tool_type === 'obsidian') {
         const { abortInit } = await import('@server/integrations/obsidian/initialization.js')
-        abortInit(id)
+        abortInit(parsedId.data)
       } else if (source.tool_type === 'apple-notes') {
         const { abortInit } = await import('@server/integrations/apple-notes/initialization.js')
-        abortInit(id)
+        abortInit(parsedId.data)
       } else if (source.tool_type === 'notion') {
         const { abortInit } = await import('@server/integrations/notion/initialization.js')
-        abortInit(id)
+        abortInit(parsedId.data)
       }
     } catch { /* ignore */ }
     // 确保全局锁释放：即使上游 runInitialization 还没 return（finally 未跑），
     // 用户已选择 abort，不能等 runInitialization 结束才解锁
-    if (globalInitSourceId === id) {
+    if (globalInitSourceId === parsedId.data) {
       globalInitSourceId = null
     }
     return { success: true }
   })
 
   // 回退初始化数据
-  ipcMain.handle('note-sources:rollback', async (_e, id: string) => {
-    const source = getNoteSource(getClientDb(), id)
+  ipcMain.handle('note-sources:rollback', async (_e, id: unknown) => {
+    const parsedId = parseNoteSourceId(id)
+    if (!parsedId.ok) return parsedId.error
+
+    const source = getNoteSource(getClientDb(), parsedId.data)
     if (!source) return { success: false, error: '笔记源不存在' }
 
     try {
       const { rollbackNoteSource } = await import('@server/integrations/shared/rollback.js')
-      rollbackNoteSource(getDb(), id, source.tool_type)
+      rollbackNoteSource(getDb(), parsedId.data, source.tool_type)
       return { success: true }
     } catch (err) {
       return { success: false, error: (err as Error).message }
@@ -378,45 +424,51 @@ export function registerNoteSourceHandlers(): void {
 
   // --- 增量同步转发 ---
 
-  ipcMain.handle('note-sources:import-status', async (_e, id: string) => {
-    const source = getNoteSource(getClientDb(), id)
+  ipcMain.handle('note-sources:import-status', async (_e, id: unknown) => {
+    const parsedId = parseNoteSourceId(id)
+    if (!parsedId.ok) return parsedId.error
+
+    const source = getNoteSource(getClientDb(), parsedId.data)
     if (!source) return null
 
     try {
       if (source.tool_type === 'logseq') {
         const { getImportProgress } = await import('@server/integrations/logseq/queue.js')
-        return getImportProgress(id)
+        return getImportProgress(parsedId.data)
       } else if (source.tool_type === 'obsidian') {
         const { getImportProgress } = await import('@server/integrations/obsidian/queue.js')
-        return getImportProgress(id)
+        return getImportProgress(parsedId.data)
       } else if (source.tool_type === 'apple-notes') {
         const { getImportProgress } = await import('@server/integrations/apple-notes/index.js')
-        return getImportProgress(id)
+        return getImportProgress(parsedId.data)
       } else if (source.tool_type === 'notion') {
         const { getImportProgress } = await import('@server/integrations/notion/queue.js')
-        return getImportProgress(id)
+        return getImportProgress(parsedId.data)
       }
     } catch { /* ignore */ }
     return null
   })
 
-  ipcMain.handle('note-sources:trigger-import', async (_e, id: string) => {
-    const source = getNoteSource(getClientDb(), id)
+  ipcMain.handle('note-sources:trigger-import', async (_e, id: unknown) => {
+    const parsedId = parseNoteSourceId(id)
+    if (!parsedId.ok) return parsedId.error
+
+    const source = getNoteSource(getClientDb(), parsedId.data)
     if (!source) return { success: false, error: '笔记源不存在' }
 
     try {
       if (source.tool_type === 'logseq') {
         const { triggerFullRescan } = await import('@server/integrations/logseq/index.js')
-        await triggerFullRescan(getDb(), id, source.path)
+        await triggerFullRescan(getDb(), parsedId.data, source.path)
       } else if (source.tool_type === 'obsidian') {
         const { triggerFullRescan } = await import('@server/integrations/obsidian/index.js')
-        await triggerFullRescan(getDb(), id, source.path)
+        await triggerFullRescan(getDb(), parsedId.data, source.path)
       } else if (source.tool_type === 'apple-notes') {
         const { triggerFullRescan } = await import('@server/integrations/apple-notes/index.js')
-        await triggerFullRescan(getDb(), id, source.path)
+        await triggerFullRescan(getDb(), parsedId.data, source.path)
       } else if (source.tool_type === 'notion') {
         const { triggerFullRescan } = await import('@server/integrations/notion/index.js')
-        await triggerFullRescan(getDb(), id, source.path)
+        await triggerFullRescan(getDb(), parsedId.data, source.path)
       }
       return { success: true }
     } catch (err) {

@@ -5,12 +5,15 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { getClientDb } from '../db.js'
 import { createNode } from '@server/db/nodes.js'
 import { loadConfig, reloadConfig } from '@server/config.js'
-
-function validateFileName(name: string): void {
-  if (typeof name !== 'string' || name.length === 0 || name.length >= 100 || !/^[A-Za-z0-9_.-]+$/.test(name)) {
-    throw new Error(`Invalid file name: ${name}`);
-  }
-}
+import {
+  parseConfigContent,
+  parseConfigFileName,
+  parseConfigPatch,
+  parseOptionalReason,
+  parsePositiveVersion,
+  parseStrategyParamArgs,
+  parseStringRecord,
+} from './_schemas.js'
 
 export function registerConfigHandlers(dataDir: string): void {
   const configPath = path.join(dataDir, 'config.toml')
@@ -35,7 +38,10 @@ export function registerConfigHandlers(dataDir: string): void {
     }
   })
 
-  ipcMain.handle('config:update', (_e, patch: Record<string, unknown>) => {
+  ipcMain.handle('config:update', (_e, patch: unknown) => {
+    const parsedPatch = parseConfigPatch(patch)
+    if (!parsedPatch.ok) return parsedPatch.error
+
     let current: Record<string, unknown> = {}
     if (fs.existsSync(configPath)) {
       try {
@@ -44,20 +50,20 @@ export function registerConfigHandlers(dataDir: string): void {
     }
 
     // deep merge
-    const merged = deepMerge(current, patch)
+    const merged = deepMerge(current, parsedPatch.data)
     fs.writeFileSync(configPath, stringifyToml(merged as any))
     reloadConfig()
 
     // 记录到时间线
     try {
       const db = getClientDb()
-      const sections = Object.keys(patch)
+      const sections = Object.keys(parsedPatch.data)
       db.prepare(`
         INSERT INTO timeline_events (type, subtype, title, detail, important, actor, created)
         VALUES ('config', 'settings_change', ?, ?, 0, 'user', datetime('now'))
       `).run(
         JSON.stringify({ key: 'settings_changed', params: { section: sections.join('/') } }),
-        JSON.stringify({ section: sections.join('/'), changed_keys: Object.keys(patch) }),
+        JSON.stringify({ section: sections.join('/'), changed_keys: Object.keys(parsedPatch.data) }),
       )
     } catch {}
   })
@@ -74,128 +80,160 @@ export function registerConfigHandlers(dataDir: string): void {
       }))
   })
 
-  ipcMain.handle('config:strategy', (_e, name: string) => {
-    validateFileName(name);
-    const filePath = path.join(strategiesDir, `${name}.system.md`)
+  ipcMain.handle('config:strategy', (_e, name: unknown) => {
+    const parsedName = parseConfigFileName(name)
+    if (!parsedName.ok) return parsedName.error
+
+    const filePath = path.join(strategiesDir, `${parsedName.data}.system.md`)
     if (!fs.existsSync(filePath)) return ''
     return fs.readFileSync(filePath, 'utf-8')
   })
 
-  ipcMain.handle('config:strategy:update', (_e, name: string, content: string, reason?: string) => {
-    validateFileName(name);
-    const filePath = path.join(strategiesDir, `${name}.system.md`)
-    fs.writeFileSync(filePath, content)
+  ipcMain.handle('config:strategy:update', (_e, name: unknown, content: unknown, reason?: unknown) => {
+    const parsedName = parseConfigFileName(name)
+    if (!parsedName.ok) return parsedName.error
+    const parsedContent = parseConfigContent(content)
+    if (!parsedContent.ok) return parsedContent.error
+    const parsedReason = parseOptionalReason(reason)
+    if (!parsedReason.ok) return parsedReason.error
+
+    const filePath = path.join(strategiesDir, `${parsedName.data}.system.md`)
+    fs.writeFileSync(filePath, parsedContent.data)
 
     // 记录版本历史 + 创建 meta 节点
-    recordStrategyVersion(name, content, reason ?? null, 'user')
+    recordStrategyVersion(parsedName.data, parsedContent.data, parsedReason.data ?? null, 'user')
   })
 
   // --- User Prompt（.user.md）读写 ---
 
-  ipcMain.handle('config:strategy:user', (_e, name: string) => {
-    validateFileName(name);
-    const filePath = path.join(strategiesDir, `${name}.user.md`)
+  ipcMain.handle('config:strategy:user', (_e, name: unknown) => {
+    const parsedName = parseConfigFileName(name)
+    if (!parsedName.ok) return parsedName.error
+
+    const filePath = path.join(strategiesDir, `${parsedName.data}.user.md`)
     if (!fs.existsSync(filePath)) return ''
     return fs.readFileSync(filePath, 'utf-8')
   })
 
-  ipcMain.handle('config:strategy:user:update', (_e, name: string, content: string, reason?: string) => {
-    validateFileName(name);
-    const filePath = path.join(strategiesDir, `${name}.user.md`)
-    fs.writeFileSync(filePath, content)
-    recordStrategyVersion(`${name}:user`, content, reason ?? null, 'user')
+  ipcMain.handle('config:strategy:user:update', (_e, name: unknown, content: unknown, reason?: unknown) => {
+    const parsedName = parseConfigFileName(name)
+    if (!parsedName.ok) return parsedName.error
+    const parsedContent = parseConfigContent(content)
+    if (!parsedContent.ok) return parsedContent.error
+    const parsedReason = parseOptionalReason(reason)
+    if (!parsedReason.ok) return parsedReason.error
+
+    const filePath = path.join(strategiesDir, `${parsedName.data}.user.md`)
+    fs.writeFileSync(filePath, parsedContent.data)
+    recordStrategyVersion(`${parsedName.data}:user`, parsedContent.data, parsedReason.data ?? null, 'user')
   })
 
-  ipcMain.handle('config:strategy:user:versions', (_e, name: string) => {
-    validateFileName(name);
+  ipcMain.handle('config:strategy:user:versions', (_e, name: unknown) => {
+    const parsedName = parseConfigFileName(name)
+    if (!parsedName.ok) return parsedName.error
+
     const db = getClientDb()
     return db.prepare(
       'SELECT version, content, change_reason, changed_by, created FROM strategy_versions WHERE strategy_name = ? ORDER BY version DESC LIMIT 50'
-    ).all(`${name}:user`)
+    ).all(`${parsedName.data}:user`)
   })
 
-  ipcMain.handle('config:strategy:user:rollback', (_e, name: string, version: number) => {
-    validateFileName(name);
+  ipcMain.handle('config:strategy:user:rollback', (_e, name: unknown, version: unknown) => {
+    const parsedName = parseConfigFileName(name)
+    if (!parsedName.ok) return parsedName.error
+    const parsedVersion = parsePositiveVersion(version)
+    if (!parsedVersion.ok) return parsedVersion.error
+
     const db = getClientDb()
     const row = db.prepare(
       'SELECT content FROM strategy_versions WHERE strategy_name = ? AND version = ?'
-    ).get(`${name}:user`, version) as { content: string } | undefined
-    if (!row) throw new Error(`User prompt version ${version} not found for strategy ${name}`)
+    ).get(`${parsedName.data}:user`, parsedVersion.data) as { content: string } | undefined
+    if (!row) throw new Error(`User prompt version ${parsedVersion.data} not found for strategy ${parsedName.data}`)
 
-    const filePath = path.join(strategiesDir, `${name}.user.md`)
+    const filePath = path.join(strategiesDir, `${parsedName.data}.user.md`)
     fs.writeFileSync(filePath, row.content)
-    recordStrategyVersion(`${name}:user`, row.content, `回滚至 v${version}`, 'user')
+    recordStrategyVersion(`${parsedName.data}:user`, row.content, `回滚至 v${parsedVersion.data}`, 'user')
   })
 
   // --- 策略参数单独更新 ---
 
-  ipcMain.handle('config:strategyParamUpdate', (_e, name: string, key: string, value: string) => {
-    validateFileName(name);
+  ipcMain.handle('config:strategyParamUpdate', (_e, name: unknown, key: unknown, value: unknown) => {
+    const parsed = parseStrategyParamArgs(name, key, value)
+    if (!parsed.ok) return parsed.error
+
     // 优先在 .params.md 文件中查找和更新参数
-    const paramsPath = path.join(strategiesDir, `${name}.params.md`)
-    const mainPath = path.join(strategiesDir, `${name}.system.md`)
+    const paramsPath = path.join(strategiesDir, `${parsed.data.name}.params.md`)
+    const mainPath = path.join(strategiesDir, `${parsed.data.name}.system.md`)
 
     // 尝试在 params 文件中更新
     if (fs.existsSync(paramsPath)) {
-      const result = updateParamInFile(paramsPath, key, value)
+      const result = updateParamInFile(paramsPath, parsed.data.key, parsed.data.value)
       if (result) {
-        recordStrategyVersion(name, fs.readFileSync(paramsPath, 'utf-8'), `参数 ${key} 更新为 ${value}`, 'user')
+        recordStrategyVersion(parsed.data.name, fs.readFileSync(paramsPath, 'utf-8'), `参数 ${parsed.data.key} 更新为 ${parsed.data.value}`, 'user')
         return
       }
     }
 
     // 回退到主文件
     if (fs.existsSync(mainPath)) {
-      const result = updateParamInFile(mainPath, key, value)
+      const result = updateParamInFile(mainPath, parsed.data.key, parsed.data.value)
       if (result) {
-        recordStrategyVersion(name, fs.readFileSync(mainPath, 'utf-8'), `参数 ${key} 更新为 ${value}`, 'user')
+        recordStrategyVersion(parsed.data.name, fs.readFileSync(mainPath, 'utf-8'), `参数 ${parsed.data.key} 更新为 ${parsed.data.value}`, 'user')
         return
       }
     }
 
-    throw new Error(`Param ${key} not found in strategy ${name}`)
+    throw new Error(`Param ${parsed.data.key} not found in strategy ${parsed.data.name}`)
   })
 
   // --- 策略版本历史 ---
 
-  ipcMain.handle('config:strategy:versions', (_e, name: string) => {
-    validateFileName(name);
+  ipcMain.handle('config:strategy:versions', (_e, name: unknown) => {
+    const parsedName = parseConfigFileName(name)
+    if (!parsedName.ok) return parsedName.error
+
     const db = getClientDb()
     return db.prepare(
       'SELECT version, content, change_reason, changed_by, created FROM strategy_versions WHERE strategy_name = ? ORDER BY version DESC LIMIT 50'
-    ).all(name)
+    ).all(parsedName.data)
   })
 
-  ipcMain.handle('config:strategy:rollback', (_e, name: string, version: number) => {
-    validateFileName(name);
+  ipcMain.handle('config:strategy:rollback', (_e, name: unknown, version: unknown) => {
+    const parsedName = parseConfigFileName(name)
+    if (!parsedName.ok) return parsedName.error
+    const parsedVersion = parsePositiveVersion(version)
+    if (!parsedVersion.ok) return parsedVersion.error
+
     const db = getClientDb()
     const row = db.prepare(
       'SELECT content FROM strategy_versions WHERE strategy_name = ? AND version = ?'
-    ).get(name, version) as { content: string } | undefined
-    if (!row) throw new Error(`Version ${version} not found for strategy ${name}`)
+    ).get(parsedName.data, parsedVersion.data) as { content: string } | undefined
+    if (!row) throw new Error(`Version ${parsedVersion.data} not found for strategy ${parsedName.data}`)
 
     // 写入文件
-    const filePath = path.join(strategiesDir, `${name}.system.md`)
+    const filePath = path.join(strategiesDir, `${parsedName.data}.system.md`)
     fs.writeFileSync(filePath, row.content)
 
     // 记录回滚版本
-    recordStrategyVersion(name, row.content, `回滚至 v${version}`, 'user')
+    recordStrategyVersion(parsedName.data, row.content, `回滚至 v${parsedVersion.data}`, 'user')
   })
 
   // --- 策略参数读取（只读） ---
 
-  ipcMain.handle('config:strategyParams', (_e, name: string) => {
-    validateFileName(name);
+  ipcMain.handle('config:strategyParams', (_e, name: unknown) => {
+    const parsedName = parseConfigFileName(name)
+    if (!parsedName.ok) return parsedName.error
+
     const params: Record<string, number | string | boolean> = {}
 
     // 先读主文件中的参数（向后兼容）
-    const mainPath = path.join(strategiesDir, `${name}.system.md`)
+    const mainPath = path.join(strategiesDir, `${parsedName.data}.system.md`)
     if (fs.existsSync(mainPath)) {
       Object.assign(params, parseParamsFromStrategy(fs.readFileSync(mainPath, 'utf-8')))
     }
 
     // 再读 .params.md 文件（覆盖主文件中的同名参数）
-    const paramsPath = path.join(strategiesDir, `${name}.params.md`)
+    const paramsPath = path.join(strategiesDir, `${parsedName.data}.params.md`)
     if (fs.existsSync(paramsPath)) {
       Object.assign(params, parseParamsFromStrategy(fs.readFileSync(paramsPath, 'utf-8')))
     }
@@ -214,21 +252,31 @@ export function registerConfigHandlers(dataDir: string): void {
     }
   })
 
-  ipcMain.handle('config:mcp-descriptions:update', (_e, descriptions: Record<string, string>, changedTool?: string) => {
+  ipcMain.handle('config:mcp-descriptions:update', (_e, descriptions: unknown, changedTool?: unknown) => {
+    const parsedDescriptions = parseStringRecord(descriptions, 'descriptions')
+    if (!parsedDescriptions.ok) return parsedDescriptions.error
+
+    let parsedChangedTool: string | undefined
+    if (changedTool !== undefined) {
+      const parsed = parseConfigFileName(changedTool, 'changedTool')
+      if (!parsed.ok) return parsed.error
+      parsedChangedTool = parsed.data
+    }
+
     // 读取旧版本，找出实际变更的工具
     let oldDescriptions: Record<string, string> = {}
     if (fs.existsSync(mcpDescPath)) {
       try { oldDescriptions = JSON.parse(fs.readFileSync(mcpDescPath, 'utf-8')) } catch {}
     }
 
-    fs.writeFileSync(mcpDescPath, JSON.stringify(descriptions, null, 2))
+    fs.writeFileSync(mcpDescPath, JSON.stringify(parsedDescriptions.data, null, 2))
 
     // 按工具独立记录版本，只记录实际变更的
-    if (changedTool && descriptions[changedTool] !== oldDescriptions[changedTool]) {
-      recordStrategyVersion(`mcp-desc:${changedTool}`, descriptions[changedTool], 'MCP 工具描述更新', 'user')
+    if (parsedChangedTool && parsedDescriptions.data[parsedChangedTool] !== oldDescriptions[parsedChangedTool]) {
+      recordStrategyVersion(`mcp-desc:${parsedChangedTool}`, parsedDescriptions.data[parsedChangedTool], 'MCP 工具描述更新', 'user')
     } else {
       // fallback：找出所有变更的工具分别记录
-      for (const [name, desc] of Object.entries(descriptions)) {
+      for (const [name, desc] of Object.entries(parsedDescriptions.data)) {
         if (desc !== oldDescriptions[name]) {
           recordStrategyVersion(`mcp-desc:${name}`, desc, 'MCP 工具描述更新', 'user')
         }
@@ -236,30 +284,36 @@ export function registerConfigHandlers(dataDir: string): void {
     }
   })
 
-  ipcMain.handle('config:mcp-descriptions:versions', (_e, toolName: string) => {
-    validateFileName(toolName);
+  ipcMain.handle('config:mcp-descriptions:versions', (_e, toolName: unknown) => {
+    const parsedToolName = parseConfigFileName(toolName, 'toolName')
+    if (!parsedToolName.ok) return parsedToolName.error
+
     const db = getClientDb()
     return db.prepare(
       'SELECT version, content, change_reason, changed_by, created FROM strategy_versions WHERE strategy_name = ? ORDER BY version DESC LIMIT 50'
-    ).all(`mcp-desc:${toolName}`)
+    ).all(`mcp-desc:${parsedToolName.data}`)
   })
 
-  ipcMain.handle('config:mcp-descriptions:rollback', (_e, toolName: string, version: number) => {
-    validateFileName(toolName);
+  ipcMain.handle('config:mcp-descriptions:rollback', (_e, toolName: unknown, version: unknown) => {
+    const parsedToolName = parseConfigFileName(toolName, 'toolName')
+    if (!parsedToolName.ok) return parsedToolName.error
+    const parsedVersion = parsePositiveVersion(version)
+    if (!parsedVersion.ok) return parsedVersion.error
+
     const db = getClientDb()
     const row = db.prepare(
       'SELECT content FROM strategy_versions WHERE strategy_name = ? AND version = ?'
-    ).get(`mcp-desc:${toolName}`, version) as { content: string } | undefined
-    if (!row) throw new Error(`Version ${version} not found for mcp-desc:${toolName}`)
+    ).get(`mcp-desc:${parsedToolName.data}`, parsedVersion.data) as { content: string } | undefined
+    if (!row) throw new Error(`Version ${parsedVersion.data} not found for mcp-desc:${parsedToolName.data}`)
 
     // 更新 JSON 文件中对应工具的描述
     let descriptions: Record<string, string> = {}
     if (fs.existsSync(mcpDescPath)) {
       try { descriptions = JSON.parse(fs.readFileSync(mcpDescPath, 'utf-8')) } catch {}
     }
-    descriptions[toolName] = row.content
+    descriptions[parsedToolName.data] = row.content
     fs.writeFileSync(mcpDescPath, JSON.stringify(descriptions, null, 2))
-    recordStrategyVersion(`mcp-desc:${toolName}`, row.content, `回滚至 v${version}`, 'user')
+    recordStrategyVersion(`mcp-desc:${parsedToolName.data}`, row.content, `回滚至 v${parsedVersion.data}`, 'user')
   })
 
   // --- Skill 文件 ---
@@ -274,40 +328,54 @@ export function registerConfigHandlers(dataDir: string): void {
       }))
   })
 
-  ipcMain.handle('config:skill', (_e, name: string) => {
-    validateFileName(name);
-    const filePath = path.join(skillDir, `${name}.md`)
+  ipcMain.handle('config:skill', (_e, name: unknown) => {
+    const parsedName = parseConfigFileName(name)
+    if (!parsedName.ok) return parsedName.error
+
+    const filePath = path.join(skillDir, `${parsedName.data}.md`)
     if (!fs.existsSync(filePath)) return ''
     return fs.readFileSync(filePath, 'utf-8')
   })
 
-  ipcMain.handle('config:skill:update', (_e, name: string, content: string, reason?: string) => {
-    validateFileName(name);
-    const filePath = path.join(skillDir, `${name}.md`)
-    fs.writeFileSync(filePath, content)
-    recordStrategyVersion(`skill:${name}`, content, reason ?? null, 'user')
+  ipcMain.handle('config:skill:update', (_e, name: unknown, content: unknown, reason?: unknown) => {
+    const parsedName = parseConfigFileName(name)
+    if (!parsedName.ok) return parsedName.error
+    const parsedContent = parseConfigContent(content)
+    if (!parsedContent.ok) return parsedContent.error
+    const parsedReason = parseOptionalReason(reason)
+    if (!parsedReason.ok) return parsedReason.error
+
+    const filePath = path.join(skillDir, `${parsedName.data}.md`)
+    fs.writeFileSync(filePath, parsedContent.data)
+    recordStrategyVersion(`skill:${parsedName.data}`, parsedContent.data, parsedReason.data ?? null, 'user')
   })
 
   // Skill 版本历史
-  ipcMain.handle('config:skill:versions', (_e, name: string) => {
-    validateFileName(name);
+  ipcMain.handle('config:skill:versions', (_e, name: unknown) => {
+    const parsedName = parseConfigFileName(name)
+    if (!parsedName.ok) return parsedName.error
+
     const db = getClientDb()
     return db.prepare(
       'SELECT version, content, change_reason, changed_by, created FROM strategy_versions WHERE strategy_name = ? ORDER BY version DESC LIMIT 50'
-    ).all(`skill:${name}`)
+    ).all(`skill:${parsedName.data}`)
   })
 
-  ipcMain.handle('config:skill:rollback', (_e, name: string, version: number) => {
-    validateFileName(name);
+  ipcMain.handle('config:skill:rollback', (_e, name: unknown, version: unknown) => {
+    const parsedName = parseConfigFileName(name)
+    if (!parsedName.ok) return parsedName.error
+    const parsedVersion = parsePositiveVersion(version)
+    if (!parsedVersion.ok) return parsedVersion.error
+
     const db = getClientDb()
     const row = db.prepare(
       'SELECT content FROM strategy_versions WHERE strategy_name = ? AND version = ?'
-    ).get(`skill:${name}`, version) as { content: string } | undefined
-    if (!row) throw new Error(`Version ${version} not found for skill ${name}`)
+    ).get(`skill:${parsedName.data}`, parsedVersion.data) as { content: string } | undefined
+    if (!row) throw new Error(`Version ${parsedVersion.data} not found for skill ${parsedName.data}`)
 
-    const filePath = path.join(skillDir, `${name}.md`)
+    const filePath = path.join(skillDir, `${parsedName.data}.md`)
     fs.writeFileSync(filePath, row.content)
-    recordStrategyVersion(`skill:${name}`, row.content, `回滚至 v${version}`, 'user')
+    recordStrategyVersion(`skill:${parsedName.data}`, row.content, `回滚至 v${parsedVersion.data}`, 'user')
   })
 
   // 文件夹选择器

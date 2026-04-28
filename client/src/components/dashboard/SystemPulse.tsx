@@ -1,4 +1,5 @@
 import { motion, useMotionValue, useTransform, animate } from 'framer-motion'
+import type { Variants } from 'framer-motion'
 import { useEffect, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Brain, Zap, Link2, Search } from 'lucide-react'
@@ -7,7 +8,7 @@ import type { LucideIcon } from 'lucide-react'
 import type { DashboardData } from '../../lib/api'
 import { brand } from '../../lib/tokens'
 
-const fadeUp = {
+const fadeUp: Variants = {
   hidden: { opacity: 0, y: 12 },
   show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: 'easeOut' } },
 }

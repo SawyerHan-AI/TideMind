@@ -13,7 +13,7 @@ import { callLLM } from '../llm/client.js';
 import { isLlmConfigured } from '../config.js';
 import { getParam, getPrompt, getLLMOptions, renderUserPrompt } from '../strategy/loader.js';
 import { logTimelineEvent } from '../db/log.js';
-import { supersedeNode } from '../integrations/shared/version.js';
+import { supersedeNodeWithLinks } from '../db/node-lifecycle.js';
 import { parseLLMJson } from '../llm/json-parse.js';
 
 const log = createLogger('profile-synthesize');
@@ -379,7 +379,7 @@ export async function runProfileSynthesize(db: Database.Database): Promise<void>
   });
 
   if (currentProfile) {
-    supersedeNode(db, currentProfile.id, newNode.id);
+    supersedeNodeWithLinks(db, currentProfile.id, newNode.id);
     log.info(`画像更新：${currentProfile.id} → ${newNode.id}`);
   } else {
     log.info(`首次画像生成：${newNode.id}`);

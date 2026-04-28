@@ -91,12 +91,12 @@ describe('appendToStream concurrent safety (Bug #13)', () => {
 
   it('当 .lock 已存在且 stale (>30s) 时能强行抢占', async () => {
     const { appendToStream } = await import('../../src/stream/writer.js');
+    const { today } = await import('../../src/utils/time.js');
     const dataDir = currentDataDir;
     const streamDir = path.join(dataDir, 'stream');
     fs.mkdirSync(streamDir, { recursive: true });
     // 找出今天的 lock path
-    const today = new Date().toISOString().slice(0, 10);
-    const filePath = path.join(streamDir, `${today}.md`);
+    const filePath = path.join(streamDir, `${today()}.md`);
     const lockPath = `${filePath}.lock`;
     // 创建 stale lock：mtime 设为 1 分钟前
     fs.writeFileSync(lockPath, '');

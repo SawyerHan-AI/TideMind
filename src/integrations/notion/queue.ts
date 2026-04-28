@@ -6,7 +6,7 @@ import type Database from 'better-sqlite3';
 import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { createLogger } from '../../utils/logger.js';
 import { digest } from '../../tools/digest.js';
-import { supersedeNode } from '../shared/version.js';
+import { supersedeNodeWithLinks } from '../../db/node-lifecycle.js';
 import { promotePropertyValues, getOrCreateTagNode } from '../shared/property-promote.js';
 import { createLink } from '../../db/links.js';
 import { getPageProperties, getParentTitle } from './api-client.js';
@@ -196,7 +196,7 @@ async function processOnePage(
   // 8. Version management: supersede old nodes
   const oldNodeIds = prevState?.node_ids ?? [];
   for (let i = 0; i < Math.min(oldNodeIds.length, allNodeIds.length); i++) {
-    supersedeNode(db, oldNodeIds[i], allNodeIds[i]);
+    supersedeNodeWithLinks(db, oldNodeIds[i], allNodeIds[i]);
   }
   // 缩容：新 digest 段数少于旧版时，把多余老节点 supersede 到当前最末节点，
   // 与 apple-notes/obsidian 一致走 `supersedeNode`。直接 UPDATE 会让跨 Notion
@@ -204,7 +204,7 @@ async function processOnePage(
   if (oldNodeIds.length > allNodeIds.length && allNodeIds.length > 0) {
     const tailId = allNodeIds[allNodeIds.length - 1];
     for (let i = allNodeIds.length; i < oldNodeIds.length; i++) {
-      supersedeNode(db, oldNodeIds[i], tailId);
+      supersedeNodeWithLinks(db, oldNodeIds[i], tailId);
     }
   }
 

@@ -6,9 +6,9 @@
 // ============================================================
 
 import type Database from 'better-sqlite3';
-import type { BrainNode, RelationType, LinkRelation } from '../types.js';
+import type { BrainNode, BrainLink, RelationType, LinkRelation } from '../types.js';
 import { getNode } from '../db/nodes.js';
-import { updateLinkStatus, updateLinkRelation, deleteLink, parseRelations } from '../db/links.js';
+import { updateLinkStatus, updateLinkRelation, deleteLink } from '../db/links.js';
 import { isLlmConfigured } from '../config.js';
 import { callLLM } from '../llm/client.js';
 import { getParam, getPrompt, getLLMOptions, renderUserPrompt } from '../strategy/loader.js';
@@ -53,6 +53,8 @@ const FALLBACK_SYSTEM = `你是关系评估器。判断多对记忆之间的关�
 const BATCH_SIZE = 10;
 const CONTENT_PER_LINK = 500;
 
+type LinkRow = BrainLink & { auto: number };
+
 export interface LinkEvaluateResult {
   evaluated: number;
   confirmed: number;
@@ -93,18 +95,18 @@ export async function runLinkEvaluate(db: Database.Database): Promise<LinkEvalua
       AND created > datetime('now', ?)
     ORDER BY created DESC
     LIMIT ?
-  `).all(`-${lookbackHours} hours`, maxLinks) as any[];
+  `).all(`-${lookbackHours} hours`, maxLinks) as LinkRow[];
 
   const pendingLinks = db.prepare(`
     SELECT * FROM links
     WHERE status = 'pending'
     ORDER BY created ASC
     LIMIT ?
-  `).all(maxLinks) as any[];
+  `).all(maxLinks) as LinkRow[];
 
   // 合并去重（pending 链接可能也在 recent auto 中）
   const seen = new Set<string>();
-  const allLinks: any[] = [];
+  const allLinks: LinkRow[] = [];
   for (const link of [...recentAutoLinks, ...pendingLinks]) {
     if (!seen.has(link.id)) {
       seen.add(link.id);
@@ -122,7 +124,7 @@ export async function runLinkEvaluate(db: Database.Database): Promise<LinkEvalua
   // 上面无界 DELETE 已经把过期 pending 清掉了,这里是一道 JS 侧兜底(防止
   // 同 tick 内 datetime('now') 与 JS Date.now 的秒级误差漏掉边界行)。
   let deleted = purgedExpired;
-  const toEvaluate: any[] = [];
+  const toEvaluate: LinkRow[] = [];
   for (const link of allLinks) {
     if (link.status === 'pending') {
       const daysSinceCreation = (Date.now() - new Date(link.created).getTime()) / (1000 * 60 * 60 * 24);
@@ -183,7 +185,7 @@ export async function runLinkEvaluate(db: Database.Database): Promise<LinkEvalua
 
 async function evaluateBatch(
   db: Database.Database,
-  links: any[],
+  links: LinkRow[],
   nodeCache: Map<string, BrainNode>,
 ): Promise<{ confirmed: number; deleted: number }> {
   let confirmed = 0;

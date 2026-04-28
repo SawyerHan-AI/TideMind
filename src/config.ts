@@ -346,17 +346,17 @@ function syncStrategyParams(sourceDir: string, targetDir: string): void {
     }
 
     // 哈希比较：源码内容变了 → 覆盖运行时文件
-    let needsOverwrite = false;
-    if (db) {
-      try {
-        const row = db.prepare('SELECT source_hash FROM sync_hashes WHERE file_name = ?').get(file) as { source_hash: string } | undefined;
-        needsOverwrite = !row || row.source_hash !== sourceHash;
-      } catch (err) { log.debug('读取 sync_hashes 失败', err); needsOverwrite = true; }
-    } else {
+    const needsOverwrite = (() => {
+      if (db) {
+        try {
+          const row = db.prepare('SELECT source_hash FROM sync_hashes WHERE file_name = ?').get(file) as { source_hash: string } | undefined;
+          return !row || row.source_hash !== sourceHash;
+        } catch (err) { log.debug('读取 sync_hashes 失败', err); return true; }
+      }
       // DB 不可用时，比较文件内容判断是否需要覆盖
       const targetContent = fs.readFileSync(targetPath, 'utf-8');
-      needsOverwrite = sourceContent !== targetContent;
-    }
+      return sourceContent !== targetContent;
+    })();
 
     if (needsOverwrite) {
       fs.copyFileSync(sourcePath, targetPath);

@@ -35,7 +35,7 @@ import {
 } from './database.js';
 import { initProto } from './protobuf.js';
 import { ensureSyncSchema, markFullScanCompleted } from './sync-state.js';
-import { processNoteQueue, getImportProgress as getQueueProgress } from './queue.js';
+import { processNoteQueue } from './queue.js';
 import type { AppleNote, AppleTag, AttachmentText } from './types.js';
 
 const log = createLogger('apple-notes-init');
@@ -129,7 +129,7 @@ export function previewInit(
   reloadConfig();
   const config = getConfig();
 
-  let totalNotes = 0;
+  let totalNotes: number;
   try {
     const noteStoreDb = openNoteStoreDb(dbPath);
     try {
@@ -209,10 +209,10 @@ export async function runInitialization(
   await initProto();
   clearTagNodeCache();
 
-  let nodesCreated = 0;
+  let nodesCreated: number;
   let linksCreated = 0;
   let crystalsCreated = 0;
-  let totalNotes = 0;
+  let totalNotes: number;
 
   try {
     // Phase 0: 扫描（从 NoteStore.sqlite 读取数据）
@@ -274,7 +274,7 @@ export async function runInitialization(
       let annotateRound = 0;
       while (annotateRound < maxAnnotateRounds) {
         const result = await runAnnotation(db);
-        if (!result || (result as any).annotated === 0) break;
+        if (!result || result.annotated === 0) break;
         annotateRound++;
         advanceProgress(1, sourceId);
         if (isAborted(sourceId)) throw new Error('初始化已中断');

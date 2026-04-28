@@ -6,7 +6,7 @@
 // ============================================================
 
 import path from 'node:path';
-import type { PreprocessedPage, PageMetadata, BlockRefAssociation } from './types.js';
+import type { PreprocessedPage, PageMetadata } from './types.js';
 import { SYSTEM_PROPERTIES, EXCLUDED_DIRS } from './types.js';
 import { safeReadTextFileSync, walkFilesFiltered } from '../../utils/safe-fs.js';
 
@@ -183,7 +183,7 @@ export function preprocessFile(
   if (!res.ok) return null;
   // 统一换行为 LF：LOGBOOK/properties 等正则用 `$` 锚点，CRLF 会在值里留下 \r
   // 与 Obsidian preprocessor 保持一致
-  let rawContent = res.content.replace(/\r\n/g, '\n');
+  const rawContent = res.content.replace(/\r\n/g, '\n');
 
   if (rawContent.trim().length < 10) return null;
 
@@ -522,15 +522,12 @@ function handleAssetRefs(content: string): string {
 function extractPageProperties(content: string, metadata: PageMetadata): string {
   const lines = content.split('\n');
   const propertyLines: number[] = [];
-  let foundNonProperty = false;
-
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (line === '') continue;
 
     // 第一个 `- ` 开头的行标志着 block 内容开始
     if (line.startsWith('- ')) {
-      foundNonProperty = true;
       break;
     }
 
@@ -560,7 +557,6 @@ function extractPageProperties(content: string, metadata: PageMetadata): string 
       propertyLines.push(i);
     } else {
       // 非 property 行且非空，停止查找
-      foundNonProperty = true;
       break;
     }
   }

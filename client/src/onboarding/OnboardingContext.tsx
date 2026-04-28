@@ -38,7 +38,7 @@ export function OnboardingProvider({ children, onFinish }: { children: ReactNode
   pollingRef.current = { modelConfigured, agentConfigured, noteSourceConfigured }
   useEffect(() => {
     let cancelled = false
-    const api = (window as any).api
+    const api = window.api
     if (!api) return
 
     const checkAll = async () => {

@@ -5,6 +5,7 @@
 import { ipcMain, shell, app } from 'electron'
 import { createLogger } from '@server/utils/logger.js'
 import { getConfig } from '@server/config.js'
+import { parseExternalUrl } from './_schemas.js'
 
 const log = createLogger('ipc-app')
 
@@ -25,11 +26,11 @@ function getUpdateEndpoint(): string {
 export function registerAppHandlers(): void {
   ipcMain.handle('app:get-version', () => app.getVersion())
 
-  ipcMain.handle('app:open-external', async (_event, url: string) => {
-    if (typeof url !== 'string' || (!url.startsWith('https://') && !url.startsWith('http://'))) {
-      throw new Error('Invalid URL')
-    }
-    await shell.openExternal(url)
+  ipcMain.handle('app:open-external', async (_event, url: unknown) => {
+    const parsed = parseExternalUrl(url)
+    if (!parsed.ok) return parsed.error
+
+    await shell.openExternal(parsed.data)
   })
 
   ipcMain.handle('app:check-update', async (): Promise<UpdateInfo> => {

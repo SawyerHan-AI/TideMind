@@ -5,7 +5,11 @@ import { now } from '../utils/time.js';
 import { computeMaturityScore } from '../graph/maturity.js';
 import { getParam } from '../strategy/loader.js';
 import { dimensionsToLegacyType } from '../utils/dimensions.js';
-import { deleteVector } from './vectors.js';
+import {
+  archiveNodeWithVectors,
+  reArchiveNodeWithVectors,
+  unarchiveNodeRecordOnly,
+} from './node-lifecycle.js';
 
 /**
  * 安全解析节点的 tags JSON 字段。
@@ -159,10 +163,7 @@ export function updateNode(
  * （空 DELETE）。
  */
 export function archiveNode(db: Database.Database, id: string): void {
-  db.prepare(
-    'UPDATE nodes SET archived = 1, heat = 0.02 WHERE id = ?',
-  ).run(id);
-  deleteVector(db, id);
+  archiveNodeWithVectors(db, id);
 }
 
 /**
@@ -174,10 +175,7 @@ export function archiveNode(db: Database.Database, id: string): void {
  * （未来可自动 enqueue，见 docs/backlog.md）。
  */
 export function unarchiveNode(db: Database.Database, id: string): boolean {
-  const result = db.prepare(
-    'UPDATE nodes SET archived = 0, heat = 0.5 WHERE id = ? AND archived = 1',
-  ).run(id);
-  return result.changes > 0;
+  return unarchiveNodeRecordOnly(db, id);
 }
 
 /**
@@ -187,13 +185,7 @@ export function unarchiveNode(db: Database.Database, id: string): boolean {
  * 同 archiveNode：清理向量防止污染 recall。
  */
 export function reArchiveNode(db: Database.Database, id: string): boolean {
-  const result = db.prepare(
-    'UPDATE nodes SET archived = 1, heat = 0.01 WHERE id = ? AND archived = 0',
-  ).run(id);
-  if (result.changes > 0) {
-    deleteVector(db, id);
-  }
-  return result.changes > 0;
+  return reArchiveNodeWithVectors(db, id);
 }
 
 /**

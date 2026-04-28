@@ -72,7 +72,7 @@ export async function reconsolidateNode(
   }
 
   // 合并内容 + 标签
-  const patch: Record<string, unknown> = {};
+  const patch: Parameters<typeof updateNode>[2] = {};
   if (merged !== node.content) {
     log.info(`去重合并 target=${nodeId} reason="${reason}"`);
     patch.content = merged;
@@ -86,7 +86,7 @@ export async function reconsolidateNode(
   }
 
   if (Object.keys(patch).length > 0) {
-    updateNode(db, nodeId, patch as any, reason);
+    updateNode(db, nodeId, patch, reason);
   }
 
   // 更新热度和再巩固时间

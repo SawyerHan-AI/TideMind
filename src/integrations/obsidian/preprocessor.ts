@@ -53,7 +53,7 @@ export interface ObsidianPreprocessedPage extends PreprocessedPage {
 export function preprocessFile(
   filePath: string,
   vaultRoot: string,
-  fileIndex?: Map<string, string>,
+  _fileIndex?: Map<string, string>,
 ): ObsidianPreprocessedPage | null {
   const res = safeReadTextFileSync(filePath);
   if (!res.ok) {
@@ -62,7 +62,7 @@ export function preprocessFile(
   }
   // 统一换行为 LF：frontmatter 边界匹配（'\n---'）与后续步骤都只处理 LF，
   // 否则 CRLF 文件会错乱（找不到 frontmatter 结束、body 残留 \r）
-  let rawContent = res.content.replace(/\r\n/g, '\n');
+  const rawContent = res.content.replace(/\r\n/g, '\n');
 
   if (rawContent.trim().length < 10) return null;
 
@@ -540,7 +540,6 @@ function extractFrontmatterWikilinks(metadata: PageMetadata): void {
   // 检查 properties
   for (const [key, value] of Object.entries(metadata.properties)) {
     let match;
-    let newValue = value;
     while ((match = wikiRe.exec(value)) !== null) {
       const ref = match[1].split('|')[0].trim(); // [[page|alias]] 取 page
       if (ref && !metadata.pageRefs.includes(ref)) {
@@ -548,7 +547,7 @@ function extractFrontmatterWikilinks(metadata: PageMetadata): void {
       }
     }
     // 去除 [[ ]]
-    newValue = value.replace(/\[\[([^\]]+)\]\]/g, '$1');
+    const newValue = value.replace(/\[\[([^\]]+)\]\]/g, '$1');
     if (newValue !== value) {
       metadata.properties[key] = newValue;
     }

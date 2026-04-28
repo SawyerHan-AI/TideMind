@@ -18,6 +18,11 @@ export default [
       },
     },
     rules: {
+      '@typescript-eslint/no-unused-vars': ['error', {
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+        caughtErrorsIgnorePattern: '^_',
+      }],
       // Detached promises 是反复踩的坑（未捕获 rejection、错过 await 等）。
       // 先用 'warn' 不阻塞 CI，让存量问题暴露出来；清理干净后升级为 'error'。
       // TODO: upgrade to 'error' after initial cleanup

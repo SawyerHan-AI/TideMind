@@ -6,6 +6,7 @@
 // ============================================================
 
 import type Database from 'better-sqlite3';
+import { deleteNodeDependentsBatch } from '../../db/node-lifecycle.js';
 import { createLogger } from '../../utils/logger.js';
 
 const log = createLogger('rollback');
@@ -66,45 +67,7 @@ export function rollbackNoteSource(
       const batch = nodeIdArray.slice(i, i + BATCH_SIZE);
       const placeholders = batch.map(() => '?').join(',');
 
-      // 删除关联表（必须先于 nodes 删除，避免外键悬挂）
-      //
-      // 清理范围覆盖 schema.ts 里所有以 node_id 作直接 FK 的表：
-      //   - node_versions(node_id) REFERENCES nodes(id)
-      //   - strategy_feedback(node_id) REFERENCES nodes(id)
-      //   - links(from_id / to_id) REFERENCES nodes(id)
-      //   - node_segments(node_id) —— 无显式 FK 声明但语义上绑定
-      //
-      // 未处理的间接引用（已知，有意不清理）：
-      //   - operation_log.output_node_ids / timeline_events.node_ids：JSON 数组里的 id 字符串，
-      //     不是外键；查询时自带容错，保留作为历史痕迹即可。
-      db.prepare(`DELETE FROM links WHERE from_id IN (${placeholders})`).run(...batch);
-      db.prepare(`DELETE FROM links WHERE to_id IN (${placeholders})`).run(...batch);
-
-      // node_versions：历史版本快照，节点删了之后失去意义
-      try {
-        db.prepare(`DELETE FROM node_versions WHERE node_id IN (${placeholders})`).run(...batch);
-      } catch { /* 表可能不存在（旧 schema） */ }
-
-      // strategy_feedback：策略评估信号，悬挂的 FK 会让 DELETE nodes 报错
-      try {
-        db.prepare(`DELETE FROM strategy_feedback WHERE node_id IN (${placeholders})`).run(...batch);
-      } catch { /* 表可能不存在 */ }
-
-      // 删除向量：nodes_vec.id 是 segment_id（`${nodeId}#${index}`），不是 node.id。
-      // 必须先通过 node_segments 查出 segment_id，再按 segment_id 删 nodes_vec；
-      // 如果先 DELETE FROM node_segments 就永远找不到 segment_id，导致向量残留。
-      try {
-        const segRows = db.prepare(
-          `SELECT segment_id FROM node_segments WHERE node_id IN (${placeholders})`,
-        ).all(...batch) as Array<{ segment_id: string }>;
-        const delVec = db.prepare('DELETE FROM nodes_vec WHERE id = ?');
-        for (const row of segRows) delVec.run(row.segment_id);
-      } catch { /* nodes_vec / node_segments 可能不存在 */ }
-
-      // 删除 node_segments（必须在 nodes_vec 之后，在 nodes 之前）
-      try {
-        db.prepare(`DELETE FROM node_segments WHERE node_id IN (${placeholders})`).run(...batch);
-      } catch { /* 表可能不存在 */ }
+      deleteNodeDependentsBatch(db, batch, { ignoreMissingTables: true });
 
       // 删除节点本身
       db.prepare(`DELETE FROM nodes WHERE id IN (${placeholders})`).run(...batch);

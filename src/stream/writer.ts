@@ -33,7 +33,7 @@ function acquireLock(lockPath: string): number {
         }
       } catch { /* lock 已被释放，下轮重试即可 */ }
       if (Date.now() >= deadline) {
-        throw new Error(`appendToStream: 获取文件锁超时 (${lockPath})`);
+        throw new Error(`appendToStream: 获取文件锁超时 (${lockPath})`, { cause: err });
       }
       // 同步退避
       const delay = Math.min(160, 10 * Math.pow(2, attempt++));

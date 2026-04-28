@@ -30,7 +30,7 @@ export function segmentForEmbedding(content: string): string[] {
   let start = 0;
 
   while (start < content.length) {
-    let end = Math.min(start + SEGMENT_TARGET + 100, content.length);
+    const end = Math.min(start + SEGMENT_TARGET + 100, content.length);
 
     if (end < content.length) {
       // 在 target 附近找段落或句子边界
@@ -178,6 +178,7 @@ export function searchVectors(
     for (const r of rawResults) {
       const nodeId = resolveSegmentToNode(db, r.id);
       if (!nodeId) continue;
+      if (!isNodeVisibleToVectorSearch(db, nodeId)) continue;
 
       const existing = bestByNode.get(nodeId);
       if (existing === undefined || r.distance < existing) {
@@ -218,6 +219,14 @@ function resolveSegmentToNode(db: Database.Database, segmentId: string): string 
     'SELECT node_id FROM node_segments WHERE segment_id = ?',
   ).get(segmentId) as { node_id: string } | undefined;
   return row?.node_id ?? null;
+}
+
+export function isNodeVisibleToVectorSearch(db: Database.Database, nodeId: string): boolean {
+  const row = db.prepare(
+    'SELECT heat, archived, is_superseded FROM nodes WHERE id = ?',
+  ).get(nodeId) as { heat: number; archived: number; is_superseded: number } | undefined;
+  if (!row) return false;
+  return row.heat > 0.01 && row.archived === 0 && row.is_superseded === 0;
 }
 
 // ---- 后台重算 ----

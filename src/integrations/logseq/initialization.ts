@@ -7,14 +7,12 @@
 
 import fs from 'node:fs';
 import os from 'node:os';
-import path from 'node:path';
 import { safeReadTextFileSync } from '../../utils/safe-fs.js';
 import type Database from 'better-sqlite3';
 import { getConfig, reloadConfig, isLlmConfigured } from '../../config.js';
 import { createLogger } from '../../utils/logger.js';
 import { logTimelineEvent } from '../../db/log.js';
 import { now } from '../../utils/time.js';
-import { generateId } from '../../utils/id.js';
 
 import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { walkMdFiles, buildBlockIndex, preprocessFile } from './preprocessor.js';
@@ -27,7 +25,6 @@ import { importVersionHistory, scanVersionFiles, deduplicateVersions } from './v
 import { ensureSyncSchema, setFileState, getFileState, computeFileHash, getFileStat } from './sync-state.js';
 import { digest } from '../../tools/digest.js';
 import { createLink, linkExists } from '../../db/links.js';
-import { getNode } from '../../db/nodes.js';
 import { promotePropertyValues, getOrCreateTagNode } from '../shared/property-promote.js';
 import { runAnnotation } from '../../metabolism/annotate.js';
 import { runLinkEvaluate } from '../../metabolism/link-evaluate.js';
@@ -37,8 +34,7 @@ import { runTemporalCrystal } from '../../metabolism/temporal-crystal.js';
 import { promoteFrequentTags } from '../../metabolism/tag-promote.js';
 import { markFullScanCompleted } from './sync-state.js';
 import { findLandingConnections } from '../../graph/landing.js';
-import { getEmbedding } from '../../llm/embedding.js';
-import { searchVectors, getVectorForNode } from '../../db/vectors.js';
+import { getVectorForNode } from '../../db/vectors.js';
 import { estimateCost } from '../../llm/pricing.js';
 
 const log = createLogger('logseq-init');
@@ -251,7 +247,7 @@ export async function runInitialization(db: Database.Database, sourceId?: string
 
   let nodesCreated = 0;
   let linksCreated = 0;
-  let danglingRefs = 0;
+  let danglingRefs: number;
 
   try {
     // === Phase 0: 扫描分类 ===
@@ -390,7 +386,7 @@ export async function runInitialization(db: Database.Database, sourceId?: string
       let annotateRound = 0;
       while (annotateRound < maxAnnotateRounds) {
         const result = await runAnnotation(db);
-        if (!result || (result as any).annotated === 0) break;
+        if (!result || result.annotated === 0) break;
         annotateRound++;
         if (annotateRound % 10 === 0) log.info(`Phase 4 进度: 第 ${annotateRound} 轮标注`);
         advanceProgress(1, sourceId);

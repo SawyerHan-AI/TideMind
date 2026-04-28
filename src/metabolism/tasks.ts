@@ -5,7 +5,7 @@
  */
 
 import type { TaskDefinition } from './scheduler.js';
-import { makeNodeCountGate, makeNodeAndRecallGate } from './scheduler.js';
+import { makeNodeCountGate } from './scheduler.js';
 import { runSynapticScaling } from './synaptic.js';
 import { runAnnotation } from './annotate.js';
 import { runLinkEvaluate } from './link-evaluate.js';
@@ -20,7 +20,7 @@ import { claimNextPendingDigest, completePendingDigest, failPendingDigest } from
 import { SqliteRepository } from '../db/sqlite-repository.js';
 import { createLogger } from '../utils/logger.js';
 
-const log = createLogger('tasks');
+const _log = createLogger('tasks');
 
 /**
  * 全部代谢任务，按执行频率从高到低排列。

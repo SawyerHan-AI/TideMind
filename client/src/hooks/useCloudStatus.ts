@@ -3,13 +3,13 @@ import { useDataRevision } from '../contexts/DataChangeContext'
 
 export interface CloudStatus {
   loggedIn: boolean
-  email?: string
-  plan?: string
+  email?: string | null
+  plan?: string | null
   syncEnabled: boolean
   online: boolean
   syncing: boolean
   outboxCount: number
-  lastSyncedAt?: string
+  lastSyncedAt?: string | null
   cloudNotAvailable?: boolean
   syncNotReady?: boolean
   /** 持久化的错误码(从 syncClient 状态派生),页面切换后仍可见。 */

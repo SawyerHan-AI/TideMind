@@ -308,10 +308,9 @@ export async function runSchedulerTick(
   let halfOpenProbed = false; // 半开状态是否已放行一个探测任务
 
   if (circuit.state === 'open') {
+    const openedAt = db.prepare('SELECT value FROM metadata WHERE key = ?').get(CB_OPENED_AT_KEY) as { value: string } | undefined;
     const remaining = Math.round(
-      (parseInt(
-        (db.prepare('SELECT value FROM metadata WHERE key = ?').get(CB_OPENED_AT_KEY) as any)?.value ?? '0', 10,
-      ) + circuit.cooldownMs - Date.now()) / 60_000,
+      (parseInt(openedAt?.value ?? '0', 10) + circuit.cooldownMs - Date.now()) / 60_000,
     );
     log.debug(`LLM 熔断器开启中，跳过 LLM 任务（剩余 ~${Math.max(0, remaining)} 分钟）`);
   }
@@ -463,19 +462,12 @@ export function maybeRunMaintenance(
   tickStartedAt = Date.now();
 
   try {
-    const p = runSchedulerTick(db, tasks);
-    if (p && typeof (p as Promise<unknown>).then === 'function') {
-      (p as Promise<unknown>)
-        .catch(err => log.error('maintenance tick failed:', (err as Error).message))
-        .finally(() => {
-          maintenanceRunning = false;
-          tickStartedAt = 0;
-        });
-    } else {
-      // 同步返回（理论上不会发生，但兜底）
-      maintenanceRunning = false;
-      tickStartedAt = 0;
-    }
+    runSchedulerTick(db, tasks)
+      .catch(err => log.error('maintenance tick failed:', (err as Error).message))
+      .finally(() => {
+        maintenanceRunning = false;
+        tickStartedAt = 0;
+      });
   } catch (err) {
     // 同步抛错（如 SQL prepare 失败）→ Promise 没有产生，必须立刻复位
     log.error('maintenance tick sync throw:', (err as Error).message);

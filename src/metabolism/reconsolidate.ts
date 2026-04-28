@@ -1,8 +1,7 @@
 import type Database from 'better-sqlite3';
 import type { BrainNode } from '../types.js';
-import { bumpHeat, updateNode } from '../db/nodes.js';
+import { updateNode } from '../db/nodes.js';
 import { createLink, linkExists, getLinksForNode } from '../db/links.js';
-import { searchVectors } from '../db/vectors.js';
 import { isVecLoaded } from '../db/connection.js';
 import { daysAgo, now } from '../utils/time.js';
 import { getParam, renderUserPrompt } from '../strategy/loader.js';
@@ -10,7 +9,7 @@ import { inferLinkType } from '../llm/link-judge.js';
 import { callLLM } from '../llm/client.js';
 import { updateConnectivity, refreshMaturityScore } from '../graph/maturity.js';
 import { RECONSOLIDATE_SYSTEM, reconsolidatePrompt } from '../llm/prompts.js';
-import { getConfig, isLlmConfigured } from '../config.js';
+import { isLlmConfigured } from '../config.js';
 import { detectConflictSignals } from './conflict-heuristics.js';
 import { getPrompt, getLLMOptions } from '../strategy/loader.js';
 import { getCircuitState } from './scheduler.js';
@@ -291,7 +290,6 @@ async function deepReconsolidate(
     log.debug(`深度再巩固跳过 node=${node.id}: 未经标注 (refinement=${node.refinement})`);
     return;
   }
-  const config = getConfig();
   // 熔断器保护:recall 路径上的深度再巩固由 reconsolidateOnRecall fire-and-forget
   // 触发,不走 scheduler 的 LLM 熔断保护。这里显式读熔断器状态,open 时走非 LLM
   // 降级路径,避免 LLM 挂了时每次 recall 都要等超时失败。
@@ -432,4 +430,3 @@ async function deepReconsolidate(
   }
   refreshMaturityScore(db, node.id);
 }
-

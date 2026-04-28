@@ -27,6 +27,7 @@ export function makeNode(overrides: Partial<BrainNode> = {}): BrainNode {
     last_reconsolidated: overrides.last_reconsolidated ?? null,
     version: overrides.version ?? 1,
     archived: overrides.archived ?? 0,
+    is_superseded: overrides.is_superseded ?? 0,
     is_keystone: overrides.is_keystone ?? 0,
     is_crystal: overrides.is_crystal ?? 0,
     is_tag: overrides.is_tag ?? 0,

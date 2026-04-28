@@ -16,11 +16,15 @@ import {
   repairClaudeSettings,
 } from '@server/utils/marketplace-repair.js'
 import {
-  validateAgentId,
-  validatePluginName,
-  validateCli,
   assertPathWithinRoot,
 } from './_validate'
+import {
+  parseAgentId,
+  parseCliName,
+  parsePluginClientType,
+  parsePluginGenerateInput,
+  parsePluginName,
+} from './_schemas.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -92,10 +96,6 @@ const CLIENT_CONFIG: Record<PluginClientType, ClientTypeConfig> = {
   },
 }
 
-function isPluginClientType(s: string): s is PluginClientType {
-  return s === 'claude-code' || s === 'cowork' || s === 'cursor' || s === 'codex' || s === 'windsurf' || s === 'openclaw'
-}
-
 /**
  * 原子写文件：先写 `<path>.tmp-<pid>-<rand>`，再 rename 到真实路径。
  * POSIX rename 同目录下是原子的，可避免：
@@ -140,12 +140,6 @@ import {
   wrapSkillWithFrontmatter,
 } from './codex-cli'
 
-interface PluginGenerateParams {
-  agentId: string
-  agentName: string
-  clientType?: string
-}
-
 interface PluginGenerateResult {
   pluginDir: string
   pluginName: string
@@ -176,13 +170,24 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
   // Claude Code: 生成完整 Plugin 目录（.mcp.json + Skill + Hook）
   // Claude Cowork: 写入 Desktop config + 生成 Skill .md 到 ~/Downloads/
   // ----------------------------------------------------------
-  ipcMain.handle('agents:generate-plugin', async (_e, params: PluginGenerateParams): Promise<PluginGenerateResult> => {
+  ipcMain.handle('agents:generate-plugin', async (_e, params: unknown): Promise<PluginGenerateResult> => {
+    const parsed = parsePluginGenerateInput(params)
+    if (!parsed.ok) {
+      return {
+        pluginDir: '',
+        pluginName: '',
+        marketplaceRegistered: false,
+        success: false,
+        error: parsed.error.details.join('; '),
+      }
+    }
+
     // 校验 agentId：拒掉所有不符合 `eb_<hex>` 形式的输入。
     // 这之前的 path.join(pluginsDir, `prefix-${agentId}`) 在 agentId="../../../etc/passwd" 时
     // 会逃出 ~/.tidemind/plugins/ 写到任意目录。
-    const agentId = validateAgentId(params.agentId)
-    const { agentName } = params
-    const clientType: PluginClientType = isPluginClientType(params.clientType ?? '') ? params.clientType as PluginClientType : 'claude-code'
+    const agentId = parsed.data.agentId
+    const { agentName } = parsed.data
+    const clientType: PluginClientType = parsed.data.clientType
     const config = CLIENT_CONFIG[clientType]
     const pluginDirName = `${config.dirPrefix}-${agentId}`
     const pluginName = `tidemind-${agentId}`
@@ -650,15 +655,12 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
   // ----------------------------------------------------------
   // 检测 claude CLI 是否可用
   // ----------------------------------------------------------
-  ipcMain.handle('agents:check-cli', async (_e, cli: string): Promise<{ available: boolean; path?: string; version?: string }> => {
+  ipcMain.handle('agents:check-cli', async (_e, cli: unknown): Promise<{ available: boolean; path?: string; version?: string }> => {
     // 白名单校验：cli 字符串会被传给 execFile + path.join，
     // 不卡名字就允许 renderer 探测/执行任意可执行文件
-    let validCli: string
-    try {
-      validCli = validateCli(cli)
-    } catch {
-      return { available: false }
-    }
+    const parsedCli = parseCliName(cli)
+    if (!parsedCli.ok) return { available: false }
+    const validCli = parsedCli.data
     const parseVersion = (stdout: string): string | undefined => {
       const m = stdout.match(/(\d+\.\d+\.\d+)/)
       return m ? m[1] : undefined
@@ -690,15 +692,14 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
   // ----------------------------------------------------------
   // 安装插件到 Claude Code（通过 marketplace）
   // ----------------------------------------------------------
-  ipcMain.handle('agents:install-plugin', async (_e, pluginName: string): Promise<PluginInstallResult> => {
+  ipcMain.handle('agents:install-plugin', async (_e, pluginName: unknown): Promise<PluginInstallResult> => {
     // pluginName 直接拼到 `claude plugin install <name>@marketplace` 命令，
     // 必须卡死格式（同时也是 path 安全的兜底，因为 install 后续可能拿它去查目录）
-    let validPluginName: string
-    try {
-      validPluginName = validatePluginName(pluginName)
-    } catch (err: any) {
-      return { success: false, error: err.message }
+    const parsedPluginName = parsePluginName(pluginName)
+    if (!parsedPluginName.ok) {
+      return { success: false, error: parsedPluginName.error.details.join('; ') }
     }
+    const validPluginName = parsedPluginName.data
     const cliEnv = { ...process.env, PATH: `${process.env.PATH}:/opt/homebrew/bin:/usr/local/bin` }
 
     try {
@@ -740,16 +741,15 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
   // ----------------------------------------------------------
   // 获取已生成的插件信息
   // ----------------------------------------------------------
-  ipcMain.handle('agents:plugin-path', (_e, rawAgentId: string, toolType?: string): string | null => {
+  ipcMain.handle('agents:plugin-path', (_e, rawAgentId: unknown, toolType?: unknown): string | null => {
     // 任何拿 agentId 拼路径的入口都先校验 — 此处虽然只是 existsSync，
     // 但拼出非法路径仍可能被用作路径探测渠道，统一卡死
-    let agentId: string
-    try {
-      agentId = validateAgentId(rawAgentId)
-    } catch {
-      return null
-    }
-    const clientType = toolType && isPluginClientType(toolType) ? toolType : undefined
+    const parsedAgentId = parseAgentId(rawAgentId)
+    if (!parsedAgentId.ok) return null
+    const agentId = parsedAgentId.data
+    const parsedClientType = parsePluginClientType(toolType)
+    if (!parsedClientType.ok) return null
+    const clientType = parsedClientType.data
 
     // 非 Claude Code 类型：返回 Downloads 中的 Skill 文件路径
     if (clientType === 'cowork') {
@@ -790,16 +790,15 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
   // ----------------------------------------------------------
   // 获取插件详细状态（Skill 文件、工具列表、是否过期）
   // ----------------------------------------------------------
-  ipcMain.handle('agents:plugin-status', (_e, rawAgentId: string, toolType?: string) => {
+  ipcMain.handle('agents:plugin-status', (_e, rawAgentId: unknown, toolType?: unknown) => {
     // 校验 agentId — 失败时返回 exists:false 而不是抛错，
     // renderer 拿不存在状态再决定是否报错（同 plugin-path 行为一致）
-    let agentId: string
-    try {
-      agentId = validateAgentId(rawAgentId)
-    } catch {
-      return { exists: false }
-    }
-    const clientType: PluginClientType = isPluginClientType(toolType ?? '') ? toolType as PluginClientType : 'claude-code'
+    const parsedAgentId = parseAgentId(rawAgentId)
+    if (!parsedAgentId.ok) return { exists: false }
+    const agentId = parsedAgentId.data
+    const parsedClientType = parsePluginClientType(toolType)
+    if (!parsedClientType.ok) return { exists: false }
+    const clientType: PluginClientType = parsedClientType.data ?? 'claude-code'
     const config = CLIENT_CONFIG[clientType]
     const pluginDirName = `${config.dirPrefix}-${agentId}`
     const pluginDir = path.join(pluginsDir, pluginDirName)
@@ -966,10 +965,8 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
     const tools: string[] = ['brain_prepare', 'brain_recall', 'brain_digest']
 
     // Claude Cowork: 检查 Skill 文件是否已生成到 Downloads
-    const skillOutputPath = clientType === 'cowork'
-      ? path.join(os.homedir(), 'Downloads', `tidemind-skill-${agentId}.md`)
-      : undefined
-    const skillOutputExists = skillOutputPath ? fs.existsSync(skillOutputPath) : undefined
+    const skillOutputPath = undefined
+    const skillOutputExists = undefined
 
     return {
       exists: true,
@@ -987,17 +984,20 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
   // ----------------------------------------------------------
   // 卸载插件
   // ----------------------------------------------------------
-  ipcMain.handle('agents:uninstall-plugin', async (_e, rawAgentId: string, toolType?: string): Promise<PluginInstallResult> => {
+  ipcMain.handle('agents:uninstall-plugin', async (_e, rawAgentId: unknown, toolType?: unknown): Promise<PluginInstallResult> => {
     // ⚠️ 这是最高危的入口：handler 会 fs.rmSync(pluginDir, {recursive:true,force:true}) +
     // ~/.openclaw/hooks/, ~/.codex/skills/, ~/Downloads/...
     // agentId="../../../Documents" 之前可以擦掉用户磁盘上的任意目录，必须先卡死格式
-    let agentId: string
-    try {
-      agentId = validateAgentId(rawAgentId)
-    } catch (err: any) {
-      return { success: false, error: err.message }
+    const parsedAgentId = parseAgentId(rawAgentId)
+    if (!parsedAgentId.ok) {
+      return { success: false, error: parsedAgentId.error.details.join('; ') }
     }
-    const clientType: PluginClientType = isPluginClientType(toolType ?? '') ? toolType as PluginClientType : 'claude-code'
+    const agentId = parsedAgentId.data
+    const parsedClientType = parsePluginClientType(toolType)
+    if (!parsedClientType.ok) {
+      return { success: false, error: parsedClientType.error.details.join('; ') }
+    }
+    const clientType: PluginClientType = parsedClientType.data ?? 'claude-code'
     const config = CLIENT_CONFIG[clientType]
     const pluginName = `tidemind-${agentId}`
     const pluginDirName = `${config.dirPrefix}-${agentId}`

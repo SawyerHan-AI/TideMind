@@ -188,7 +188,7 @@ function NoteSyncDetail({ detail }: DetailProps) {
       })} />
       {Number(detail.failed) > 0 && (
         <span className="text-[10px] text-red-400">
-          {detail.failed} {t('expanded.detail.files_failed')}
+          {String(detail.failed)} {t('expanded.detail.files_failed')}
         </span>
       )}
     </div>
@@ -225,8 +225,8 @@ function RefineLinksDetail({ detail, nodeIds, nodeMap, onNodeClick }: DetailProp
         updated: detail.updated ?? 0,
         removed: detail.removed ?? 0,
       })} />
-      {detail.query && (
-        <Field label={t('expanded.detail.trigger_query')} value={detail.query as string} />
+      {typeof detail.query === 'string' && detail.query.length > 0 && (
+        <Field label={t('expanded.detail.trigger_query')} value={String(detail.query)} />
       )}
       <NodeChips nodeIds={nodeIds} nodeMap={nodeMap} onNodeClick={onNodeClick} />
     </div>
