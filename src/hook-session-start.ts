@@ -20,6 +20,7 @@ import { readFileSync, fstatSync } from 'node:fs';
 import type { PrepareOutput } from './types.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { createLogger } from './utils/logger.js';
+import { writeHookOutput as outputHook } from './hook-output.js';
 
 /**
  * 异步读取 stdin JSON payload（Codex 0.120+ 会传 `session_start_reason` 等字段）。
@@ -172,11 +173,8 @@ function formatPrepareOutput(result: PrepareOutput): string {
 }
 
 // --- 输出 hook 结果 ---
-// SessionStart hook 不支持 hookSpecificOutput.additionalContext，
-// 直接输出纯文本到 stdout，Claude Code 会自动注入为上下文。
-function outputHook(content: string): void {
-  process.stdout.write(content);
-}
+// 协议适配（Gemini JSON / 其他纯文本）见 hook-output.ts；
+// import 放在文件顶部一起声明，这里仅说明 outputHook 的语义。
 
 // --- 主逻辑 ---
 async function main(): Promise<void> {
@@ -189,11 +187,15 @@ async function main(): Promise<void> {
 
   const { agentId, skillPath, tool } = parseArgs();
 
-  // Codex 0.120+ 的 session_start_reason：clear / startup / resume
+  // 不同 CLI 给 SessionStart hook 传的字段名不同：
+  //   - Codex 0.120+：`session_start_reason`
+  //   - Gemini CLI 0.26+：`source`
+  // 字段值都是 startup / resume / clear 三个枚举，下游判断逻辑一致。
   const stdinPayload = await readStdinPayload();
-  const sessionReason = typeof stdinPayload?.session_start_reason === 'string'
-    ? (stdinPayload.session_start_reason as string)
-    : null;
+  const reasonRaw =
+    (stdinPayload?.session_start_reason as unknown)
+    ?? (stdinPayload?.source as unknown);
+  const sessionReason = typeof reasonRaw === 'string' ? reasonRaw : null;
 
   // 读取 SKILL.md（即使后续步骤失败，至少有使用指南）
   let skillContent: string;
@@ -258,7 +260,7 @@ ${prepareText}
 ---
 以上内容由 Tide Mind 在会话启动时自动注入。brain_recall 和 brain_digest 工具仍可在对话过程中使用。`;
 
-  outputHook(content);
+  outputHook(content, tool);
 }
 
 main().catch((err: unknown) => {
@@ -268,5 +270,14 @@ main().catch((err: unknown) => {
   // 错误标识符嵌入 fallback 文案中，方便用户拿 "HOOK_SESSION_START_FATAL"
   // 搜 stderr / 日志文件，关联到真实 stack。保留原中文 fallback 本体。
   const code = err instanceof Error && err.name ? err.name : 'unknown';
-  outputHook(`Tide Mind 启动失败。请手动调用 brain_prepare 工具加载上下文。[internal error: HOOK_SESSION_START_FATAL/${code}]`);
+  // catch 闭包内 tool 不在作用域，重新解析一次（失败也不阻塞——默认 'claude-code'
+  // 作为最保守的纯文本输出形式，对所有 CLI 至少都是可读的）。
+  let tool = 'claude-code';
+  try {
+    const args = process.argv.slice(2);
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '--tool' && args[i + 1]) { tool = args[i + 1]; break; }
+    }
+  } catch { /* ignore */ }
+  outputHook(`Tide Mind 启动失败。请手动调用 brain_prepare 工具加载上下文。[internal error: HOOK_SESSION_START_FATAL/${code}]`, tool);
 });

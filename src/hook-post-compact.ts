@@ -23,6 +23,7 @@ import { prepare } from './tools/prepare.js';
 import type { PrepareOutput } from './types.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { createLogger } from './utils/logger.js';
+import { writeHookOutput as outputHook } from './hook-output.js';
 
 const migrationLog = createLogger('migrate');
 
@@ -91,9 +92,7 @@ function formatBriefContext(result: PrepareOutput): string {
   return sections.join('\n\n');
 }
 
-function outputHook(content: string): void {
-  process.stdout.write(content);
-}
+// 协议适配见 hook-output.ts（已在文件顶部 import）。
 
 async function main(): Promise<void> {
   try {
@@ -140,7 +139,7 @@ ${briefText}
 ---
 以上是压缩后由 Tide Mind 自动重注的精简画像。如需完整记忆，仍可通过 brain_recall / brain_prepare 获取。`;
 
-  outputHook(content);
+  outputHook(content, tool);
 }
 
 main().catch((err: unknown) => {
@@ -149,5 +148,13 @@ main().catch((err: unknown) => {
   // 错误标识符嵌入 fallback 文案中，方便用户关联到 stderr 中的真实 stack。
   // 保留原中文 fallback 本体。
   const code = err instanceof Error && err.name ? err.name : 'unknown';
-  outputHook(`Tide Mind 压缩后上下文恢复失败。如需用户画像请手动调用 brain_prepare。[internal error: HOOK_POST_COMPACT_FATAL/${code}]`);
+  // catch 闭包外 tool 不在作用域，重新解析一次（与 hook-session-start.ts 同模式）
+  let tool = 'claude-code';
+  try {
+    const args = process.argv.slice(2);
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '--tool' && args[i + 1]) { tool = args[i + 1]; break; }
+    }
+  } catch { /* ignore */ }
+  outputHook(`Tide Mind 压缩后上下文恢复失败。如需用户画像请手动调用 brain_prepare。[internal error: HOOK_POST_COMPACT_FATAL/${code}]`, tool);
 });

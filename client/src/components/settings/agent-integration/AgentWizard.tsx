@@ -37,6 +37,7 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
   const [pluginError, setPluginError] = useState('')
   const [cliAvailable, setCliAvailable] = useState(false)
   const [codexVersion, setCodexVersion] = useState<string | null>(null)
+  const [geminiVersion, setGeminiVersion] = useState<string | null>(null)
   const [installing, setInstalling] = useState(false)
   const [installResult, setInstallResult] = useState<{ success: boolean; message: string } | null>(null)
   // Claude Cowork 专用状态
@@ -51,6 +52,7 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
   const isCodex = effectiveToolType === 'codex'
   const isWindsurf = effectiveToolType === 'windsurf'
   const isOpenClaw = effectiveToolType === 'openclaw'
+  const isGemini = effectiveToolType === 'gemini'
   const isManual = !usePlugin  // "其他"工具走手动配置流程
 
   // 根据流程类型决定步骤
@@ -65,7 +67,9 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
             ? [t('agent.wizard.nameAgent'), t('agent.wizard.configWindsurf'), t('agent.wizard.verify')]
             : isOpenClaw
               ? [t('agent.wizard.nameAgent'), t('agent.wizard.configOpenClaw'), t('agent.wizard.verify')]
-              : [t('agent.wizard.nameAgent'), t('agent.wizard.installPlugin'), t('agent.wizard.verify')]
+              : isGemini
+                ? [t('agent.wizard.nameAgent'), t('agent.wizard.configGemini'), t('agent.wizard.verify')]
+                : [t('agent.wizard.nameAgent'), t('agent.wizard.installPlugin'), t('agent.wizard.verify')]
     : [t('agent.wizard.nameAgent'), t('agent.wizard.mcpConfig'), t('agent.wizard.skillFile'), t('agent.wizard.verify')]
 
   // 选择工具类型后自动填充名称
@@ -92,18 +96,21 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
       // Claude Cowork: 写入 Desktop config + 生成 Skill 到 Downloads
       setPluginGenerating(true)
       try {
-        const [result, cliCheck, codexCheck] = await Promise.all([
+        const [result, cliCheck, codexCheck, geminiCheck] = await Promise.all([
           window.api.agents.generatePlugin({ agentId: agent.id, agentName: agent.name, clientType: finalToolType }),
           window.api.agents.checkCli('claude'),
           isCodex
             ? window.api.agents.checkCli('codex')
+            : Promise.resolve({ available: false } as { available: boolean; path?: string; version?: string }),
+          isGemini
+            ? window.api.agents.checkCli('gemini')
             : Promise.resolve({ available: false } as { available: boolean; path?: string; version?: string }),
         ])
         if (result.success) {
           setPluginDir(result.pluginDir)
           setPluginName(result.pluginName)
           setPluginGenerated(true)
-          if (isCowork || isCursor || isCodex || isWindsurf || isOpenClaw) {
+          if (isCowork || isCursor || isCodex || isWindsurf || isOpenClaw || isGemini) {
             setDesktopConfigWritten(true)
           }
         } else {
@@ -113,6 +120,7 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
         }
         setCliAvailable(cliCheck.available)
         setCodexVersion(codexCheck.version ?? null)
+        setGeminiVersion(geminiCheck.version ?? null)
       } catch (err: any) {
         setPluginError(err.message)
         await window.api.agents.delete(agent.id)
@@ -241,6 +249,7 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
           installResult={installResult}
           installCommand={installCommand}
           codexVersion={codexVersion}
+          geminiVersion={geminiVersion}
           desktopConfigWritten={desktopConfigWritten}
           copied={copied}
           isCowork={isCowork}
@@ -248,6 +257,7 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
           isCodex={isCodex}
           isWindsurf={isWindsurf}
           isOpenClaw={isOpenClaw}
+          isGemini={isGemini}
           onInstallPlugin={handleInstallPlugin}
           onCopy={handleCopy}
           onPrevious={() => setStep(0)}
@@ -299,6 +309,7 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
           isCodex={isCodex}
           isWindsurf={isWindsurf}
           isOpenClaw={isOpenClaw}
+          isGemini={isGemini}
           isManual={isManual}
           onPrevious={() => setStep(usePlugin ? 1 : 2)}
           onClose={onClose}

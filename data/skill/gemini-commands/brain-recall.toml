@@ -1,0 +1,12 @@
+description = "从 Tide Mind 外脑中检索历史信息"
+prompt = """
+请使用 brain_recall 工具（Tide Mind MCP server，工具名形如 mcp__tidemind__brain_recall）检索以下内容：
+
+{{args}}
+
+执行步骤：
+1. 如果用户没有指定具体查询词，先用 mode="index" 列出可用主题给用户选择
+2. 用 query 表达检索意图，把 context 写清楚（说明为什么查这个、未来什么场景用）
+3. 找到相关结果后，结合当前上下文给出回答；引用关键节点 id，方便用户后续操作
+4. 如果检索为空，明确告知"没有找到相关记忆"，不要凭自己的"记忆"瞎答
+"""

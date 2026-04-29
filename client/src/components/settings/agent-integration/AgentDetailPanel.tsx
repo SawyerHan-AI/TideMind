@@ -29,6 +29,7 @@ export function AgentDetailPanel({ agent, onRefetch }: { agent: Agent; onRefetch
   const isCodex = agent.tool_type === 'codex'
   const isWindsurf = agent.tool_type === 'windsurf'
   const isOpenClaw = agent.tool_type === 'openclaw'
+  const isGemini = agent.tool_type === 'gemini'
   const pluginInstallCmd = `claude plugin install tidemind-${agent.id}@tidemind-local --scope user`
 
   const loadPluginStatus = () => {
@@ -282,6 +283,17 @@ export function AgentDetailPanel({ agent, onRefetch }: { agent: Agent; onRefetch
                     </p>
                     <p className="text-[10px] text-blue-400">
                       {t('agent.detail.openclawSkillHint')}
+                    </p>
+                  </div>
+                </div>
+              ) : isGemini ? (
+                <div className="space-y-1.5">
+                  <div className="px-3 py-2 bg-emerald-500/5 border border-emerald-500/10 rounded-lg space-y-1">
+                    <p className="text-[10px] text-emerald-400">
+                      {t('agent.detail.geminiMcpHint')}
+                    </p>
+                    <p className="text-[10px] text-emerald-400">
+                      {t('agent.detail.geminiSkillHint')}
                     </p>
                   </div>
                 </div>

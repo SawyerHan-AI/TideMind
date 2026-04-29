@@ -1,6 +1,6 @@
 import { Check, CheckCircle, ChevronLeft, ChevronRight, Copy, FolderOpen, Loader2, Package, Terminal, XCircle } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { isCodexV2Version } from './toolTypes'
+import { isCodexV2Version, isGeminiHooksReady } from './toolTypes'
 
 interface AgentWizardPluginStepProps {
   pluginGenerating: boolean
@@ -12,6 +12,7 @@ interface AgentWizardPluginStepProps {
   installResult: { success: boolean; message: string } | null
   installCommand: string
   codexVersion: string | null
+  geminiVersion: string | null
   desktopConfigWritten: boolean
   copied: string | null
   isCowork: boolean
@@ -19,6 +20,7 @@ interface AgentWizardPluginStepProps {
   isCodex: boolean
   isWindsurf: boolean
   isOpenClaw: boolean
+  isGemini: boolean
   onInstallPlugin: () => void
   onCopy: (text: string, key: string) => void
   onPrevious: () => void
@@ -35,6 +37,7 @@ export function AgentWizardPluginStep({
   installResult,
   installCommand,
   codexVersion,
+  geminiVersion,
   desktopConfigWritten,
   copied,
   isCowork,
@@ -42,6 +45,7 @@ export function AgentWizardPluginStep({
   isCodex,
   isWindsurf,
   isOpenClaw,
+  isGemini,
   onInstallPlugin,
   onCopy,
   onPrevious,
@@ -150,6 +154,27 @@ export function AgentWizardPluginStep({
                   {t('agent.wizard.openclaw.skillDownloaded')}
                 </div>
               </>
+            ) : isGemini ? (
+              <>
+                <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+                  {desktopConfigWritten
+                    ? <CheckCircle size={10} className="text-emerald-400/60" />
+                    : <XCircle size={10} className="text-red-400/60" />}
+                  {t('agent.wizard.gemini.mcpConfig')}
+                </div>
+                <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+                  <CheckCircle size={10} className="text-emerald-400/60" />
+                  {t('agent.wizard.gemini.hookConfig')}
+                </div>
+                <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+                  <CheckCircle size={10} className="text-emerald-400/60" />
+                  {t('agent.wizard.gemini.contextFile')}
+                </div>
+                <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+                  <CheckCircle size={10} className="text-emerald-400/60" />
+                  {t('agent.wizard.gemini.commands')}
+                </div>
+              </>
             ) : (
               <>
                 <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
@@ -251,6 +276,27 @@ export function AgentWizardPluginStep({
                 <p className="text-[10px] text-blue-400">{t('agent.wizard.openclaw.step2')}</p>
                 <p className="text-[10px] text-gray-500">{t('agent.wizard.openclaw.mcpNote')}</p>
               </div>
+            </div>
+          ) : isGemini ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <FolderOpen size={11} className="text-gray-500 flex-shrink-0" />
+                <code className="text-[10px] text-gray-400 font-mono truncate">{pluginDir}</code>
+              </div>
+              {isGeminiHooksReady(geminiVersion) ? (
+                <div className="px-3 py-2 bg-emerald-400/5 border border-emerald-400/10 rounded-lg space-y-1">
+                  <p className="text-[10px] text-emerald-400 font-medium">{t('agent.wizard.gemini.autoReadyTitle')}</p>
+                  <p className="text-[10px] text-emerald-400">{t('agent.wizard.gemini.autoReadyNote')}</p>
+                </div>
+              ) : (
+                <div className="px-3 py-2 bg-amber-500/5 border border-amber-500/10 rounded-lg space-y-1">
+                  <p className="text-[10px] text-amber-400 font-medium">{t('agent.wizard.gemini.upgradeTitle')}</p>
+                  <p className="text-[10px] text-amber-400">
+                    {t('agent.wizard.gemini.upgradeHint', { version: geminiVersion ?? 'unknown' })}
+                  </p>
+                  <p className="text-[10px] text-gray-500">{t('agent.wizard.gemini.upgradeNote')}</p>
+                </div>
+              )}
             </div>
           ) : cliAvailable ? (
             <div className="space-y-2">

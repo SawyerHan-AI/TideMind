@@ -1,13 +1,13 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { parseSemver, compareSemver, meetsMinVersion, type SemVer } from './_semver'
 
 const execFileAsync = promisify(execFile)
 
-export interface CodexVersion {
-  major: number
-  minor: number
-  patch: number
-}
+// CodexVersion 是 SemVer 的别名，保留旧 import 名字向后兼容（tests/client/codex-cli.test.ts
+// 等老代码继续通过 codex-cli 导入这些符号）。
+export type CodexVersion = SemVer
+export { compareSemver, meetsMinVersion }
 
 /** Codex 0.121+ 提供 `codex mcp add/remove` CLI、原生 Skills 机制等 */
 export const CODEX_V2_MIN_VERSION: CodexVersion = { major: 0, minor: 121, patch: 0 }
@@ -20,29 +20,10 @@ function cliEnv(): NodeJS.ProcessEnv {
 
 /**
  * 从 `codex --version` 输出中解析版本号。
- * 兼容 `codex 0.121.4`、`codex version 0.121.4`、`0.121.4` 等形式。
+ * 实际逻辑在 _semver.ts，此处只是命名兼容层（旧调用点 / 测试通过 codex-cli 导入）。
  */
 export function parseCodexVersion(output: string): CodexVersion | null {
-  const match = output.match(/(\d+)\.(\d+)\.(\d+)/)
-  if (!match) return null
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
-  }
-}
-
-/** a < b: -1, a == b: 0, a > b: 1 */
-export function compareSemver(a: CodexVersion, b: CodexVersion): number {
-  if (a.major !== b.major) return a.major < b.major ? -1 : 1
-  if (a.minor !== b.minor) return a.minor < b.minor ? -1 : 1
-  if (a.patch !== b.patch) return a.patch < b.patch ? -1 : 1
-  return 0
-}
-
-export function meetsMinVersion(actual: CodexVersion | null, min: CodexVersion): boolean {
-  if (!actual) return false
-  return compareSemver(actual, min) >= 0
+  return parseSemver(output)
 }
 
 /** 调用 `codex --version` 并解析。执行失败或输出异常返回 null。 */

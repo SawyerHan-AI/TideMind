@@ -1,6 +1,6 @@
 {
   "name": "tidemind",
-  "version": "0.2.45",
+  "version": "0.2.46",
   "description": "Tide Mind — 基于活图的认知系统，通过 MCP 协议为 AI 工具提供记忆服务",
   "type": "module",
   "bin": {
@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src/",
-    "health": "node scripts/health-check.mjs"
+    "health": "node scripts/health-check.mjs",
+    "setup": "node scripts/setup.mjs"
   },
   "engines": {
     "node": ">=20"

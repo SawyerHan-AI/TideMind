@@ -13,6 +13,7 @@ interface AgentWizardVerifyStepProps {
   isCodex: boolean
   isWindsurf: boolean
   isOpenClaw: boolean
+  isGemini: boolean
   isManual: boolean
   onPrevious: () => void
   onClose: () => void
@@ -24,12 +25,14 @@ function pluginToolLabel({
   isCodex,
   isWindsurf,
   isOpenClaw,
-}: Pick<AgentWizardVerifyStepProps, 'isCowork' | 'isCursor' | 'isCodex' | 'isWindsurf' | 'isOpenClaw'>): string {
+  isGemini,
+}: Pick<AgentWizardVerifyStepProps, 'isCowork' | 'isCursor' | 'isCodex' | 'isWindsurf' | 'isOpenClaw' | 'isGemini'>): string {
   if (isCowork) return 'Claude Cowork'
   if (isCursor) return 'Cursor'
   if (isCodex) return 'Codex'
   if (isWindsurf) return 'Windsurf'
   if (isOpenClaw) return 'OpenClaw'
+  if (isGemini) return 'Gemini CLI'
   return 'Claude Code'
 }
 
@@ -43,6 +46,7 @@ export function AgentWizardVerifyStep({
   isCodex,
   isWindsurf,
   isOpenClaw,
+  isGemini,
   isManual,
   onPrevious,
   onClose,
@@ -61,7 +65,7 @@ export function AgentWizardVerifyStep({
           <VerifyItem
             ok={pluginGenerated}
             label={t('agent.wizard.verifyPluginGenerated', {
-              tool: pluginToolLabel({ isCowork, isCursor, isCodex, isWindsurf, isOpenClaw }),
+              tool: pluginToolLabel({ isCowork, isCursor, isCodex, isWindsurf, isOpenClaw, isGemini }),
             })}
           />
         )}
@@ -98,6 +102,13 @@ export function AgentWizardVerifyStep({
             ok={desktopConfigWritten}
             label={t('agent.wizard.verifyOpenClawMcp')}
             hint={desktopConfigWritten ? t('agent.wizard.verifyOpenClawMcpHintOk') : t('agent.wizard.verifyOpenClawMcpHintFail')}
+          />
+        )}
+        {isGemini && (
+          <VerifyItem
+            ok={desktopConfigWritten}
+            label={t('agent.wizard.verifyGeminiMcp')}
+            hint={desktopConfigWritten ? t('agent.wizard.verifyGeminiMcpHintOk') : t('agent.wizard.verifyGeminiMcpHintFail')}
           />
         )}
         {isManual && (

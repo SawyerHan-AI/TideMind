@@ -12,7 +12,7 @@ const AGENT_ID_RE = /^eb_[a-z0-9]{8,32}$/
 const PLUGIN_NAME_RE = /^tidemind-eb_[a-z0-9]{8,32}$/
 
 // agents:check-cli 允许检测的 CLI 二进制
-export const ALLOWED_CLIS = ['claude', 'codex', 'cursor', 'windsurf'] as const
+export const ALLOWED_CLIS = ['claude', 'codex', 'cursor', 'windsurf', 'gemini'] as const
 export type AllowedCli = typeof ALLOWED_CLIS[number]
 
 export function validateAgentId(id: unknown): string {

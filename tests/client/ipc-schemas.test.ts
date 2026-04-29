@@ -162,6 +162,20 @@ describe('ipc schema helpers', () => {
       ok: false,
       error: { details: ['toolType is invalid'] },
     });
+    // Regression: 'gemini' must be accepted as a valid PluginClientType
+    expect(parsePluginClientType('gemini')).toEqual({ ok: true, data: 'gemini' });
+    expect(parsePluginGenerateInput({
+      agentId: 'eb_1234abcd',
+      agentName: 'Gemini Agent',
+      clientType: 'gemini',
+    })).toEqual({
+      ok: true,
+      data: {
+        agentId: 'eb_1234abcd',
+        agentName: 'Gemini Agent',
+        clientType: 'gemini',
+      },
+    });
   });
 
   it('validates agent create and update payloads', () => {
