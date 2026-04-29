@@ -256,6 +256,8 @@ export async function runInitialization(
 
     const queueResult = await processNoteQueue(
       db, notes, folderPathMap, tagsByNote, attachTextsByNote, sourceId ?? '',
+      undefined,
+      () => isAborted(sourceId),
     );
     nodesCreated = queueResult.nodeIdsCreated.length;
     linksCreated += queueResult.linksCreated;

@@ -231,12 +231,19 @@ async function runSyncInner(
       return;
     }
 
-    // 获取文件夹路径映射
-    const folders = listFolders(noteStoreDb, schema);
+    // 获取文件夹路径映射和所有笔记。若 NoteStore 当前不可读（Full Disk
+    // Access 被撤销、Apple Notes 正在写库导致 SQLITE_BUSY/LOCKED 等），
+    // 不能继续做 stale cleanup，否则可能把"本轮没读到"误判成"用户删除"。
+    let folders: ReturnType<typeof listFolders>;
+    let allNotes: ReturnType<typeof listNotes>;
+    try {
+      folders = listFolders(noteStoreDb, schema);
+      allNotes = listNotes(noteStoreDb, schema, accountZpks);
+    } catch (err) {
+      log.warn(`Apple Notes 读取失败,跳过本轮 stale cleanup (source=${sourceId}): ${(err as Error).message}`);
+      return;
+    }
     const folderPathMap = buildFolderPathMap(folders);
-
-    // 获取所有笔记
-    const allNotes = listNotes(noteStoreDb, schema, accountZpks);
     log.info(`发现 ${allNotes.length} 条笔记`);
 
     if (isStopped()) {
@@ -388,8 +395,15 @@ async function pollForChangesInner(
 
     if (isStopped()) return;
 
-    // 清理已删除的笔记（检查当前数据库 UUID 列表）
-    const currentUuids = listAllNoteUuids(noteStoreDb, schema, accountZpks);
+    // 清理已删除的笔记（检查当前数据库 UUID 列表）。读取失败时跳过 stale
+    // cleanup，避免 DB locked / 权限错误被误判为所有笔记都删除。
+    let currentUuids: Set<string>;
+    try {
+      currentUuids = listAllNoteUuids(noteStoreDb, schema, accountZpks);
+    } catch (err) {
+      log.warn(`Apple Notes UUID 扫描失败,跳过 stale cleanup (source=${sourceId}): ${(err as Error).message}`);
+      return;
+    }
     const { removed, orphanNodeIds } = removeStaleNotes(db, currentUuids, sourceId);
     if (removed > 0) {
       log.info(`增量同步清理 ${removed} 条已删除笔记, ${orphanNodeIds.length} 个孤立节点 (source=${sourceId})`);

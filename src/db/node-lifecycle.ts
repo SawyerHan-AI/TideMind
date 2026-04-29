@@ -15,11 +15,13 @@ function runMaybeMissingTable(statement: () => void, ignoreMissingTables: boolea
   try {
     statement();
   } catch (err) {
-    // Old local databases may not have every auxiliary table yet (rollback path).
-    // 但同步真正的 SQL 错误（约束冲突/磁盘错误）会被同样吞掉，至少留一行 warn
-    // 让事故复盘时能定位。
     const msg = err instanceof Error ? err.message : String(err);
-    log.warn(`runMaybeMissingTable swallowed: ${msg}`);
+    if (/no such (table|module):/i.test(msg)) {
+      // Old local databases may not have every auxiliary table yet (rollback path).
+      log.warn(`runMaybeMissingTable ignored missing auxiliary table: ${msg}`);
+      return;
+    }
+    throw err;
   }
 }
 

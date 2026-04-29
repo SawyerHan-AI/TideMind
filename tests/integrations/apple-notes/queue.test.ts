@@ -2,10 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type Database from 'better-sqlite3';
 import { setupTestDb, seedLink, seedNode } from '../../helpers/test-db.js';
 
-const appleState = vi.hoisted(() => ({ text: '' }));
+const appleState = vi.hoisted(() => ({ text: '', digestCreatesNode: true }));
 
 vi.mock('../../../src/tools/digest.js', () => ({
   digest: vi.fn(async (repo, input) => {
+    if (!appleState.digestCreatesNode) {
+      return { status: 'rejected', reject_reason: 'mock digest failure' };
+    }
     const node = repo.nodes.createNode({
       content: input.content,
       title: input.title,
@@ -73,6 +76,7 @@ beforeEach(() => {
   ensureSyncSchema(db);
   resetProgress('src-apple');
   appleState.text = '';
+  appleState.digestCreatesNode = true;
 });
 
 describe('Apple Notes queue segment reduction', () => {
@@ -112,5 +116,34 @@ describe('Apple Notes queue segment reduction', () => {
     const migratedLink = migratedLinks.find(link => link.to_id === target.id);
     expect(migratedLink).toBeDefined();
     expect(migratedLink!.strength).toBeCloseTo(0.84);
+  });
+
+  it('keeps old nodes and sync state when every digest segment fails', async () => {
+    appleState.text = makeText(3);
+    await processNoteQueue(db, [makeNote(1)], new Map(), new Map(), new Map(), 'src-apple', {
+      batchSize: 1,
+      concurrency: 1,
+      delayBetweenBatches: 0,
+    });
+
+    const firstState = getNoteState(db, 'note-1', 'src-apple');
+    expect(firstState).not.toBeNull();
+    const oldNodeIds = firstState!.node_ids;
+    const oldNodeId = oldNodeIds[0];
+    const target = seedNode(db, { content: 'external target linked before digest failure' });
+    seedLink(db, oldNodeId, target.id, { strength: 0.82 });
+
+    appleState.text = makeText(2);
+    appleState.digestCreatesNode = false;
+    await processNoteQueue(db, [makeNote(2)], new Map(), new Map(), new Map(), 'src-apple', {
+      batchSize: 1,
+      concurrency: 1,
+      delayBetweenBatches: 0,
+    });
+
+    const secondState = getNoteState(db, 'note-1', 'src-apple');
+    expect(secondState?.node_ids).toEqual(oldNodeIds);
+    expect(getNode(db, oldNodeId)?.is_superseded).toBe(0);
+    expect(getLinksFrom(db, oldNodeId).some(link => link.to_id === target.id)).toBe(true);
   });
 });

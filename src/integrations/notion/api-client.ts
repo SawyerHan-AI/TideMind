@@ -147,6 +147,22 @@ export async function getPageProperties(
 }
 
 /**
+ * Notion 删除检测只应把明确的单页不可访问当作"已删除/取消共享"。
+ * 5xx / 429 / timeout / DNS 等临时错误必须保留旧 sync state,否则周期性
+ * 删除检测会把 API 抖动误判成页面删除并归档节点。
+ */
+export function isConfirmedNotionPageGoneError(err: unknown): boolean {
+  const status = (err as { status?: number })?.status;
+  if (status === 403 || status === 404) return true;
+
+  const code = String((err as { code?: string })?.code ?? '');
+  if (code === 'object_not_found' || code === 'restricted_resource') return true;
+
+  const message = String((err as Error)?.message ?? '');
+  return /\b(403|404)\b|object_not_found|restricted_resource/i.test(message);
+}
+
+/**
  * 获取页面 relation 属性的完整值（处理 >25 条截断）
  */
 export async function getFullRelationProperty(

@@ -2,10 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type Database from 'better-sqlite3';
 import { setupTestDb, seedLink, seedNode } from '../../helpers/test-db.js';
 
-const notionState = vi.hoisted(() => ({ content: '', hash: '' }));
+const notionState = vi.hoisted(() => ({ content: '', hash: '', digestCreatesNode: true }));
 
 vi.mock('../../../src/tools/digest.js', () => ({
   digest: vi.fn(async (repo, input) => {
+    if (!notionState.digestCreatesNode) {
+      return { status: 'rejected', reject_reason: 'mock digest failure' };
+    }
     const node = repo.nodes.createNode({
       content: input.content,
       title: input.title,
@@ -45,7 +48,7 @@ vi.mock('../../../src/config.js', () => ({
   }),
 }));
 
-import { processNotionPages, resetProgress } from '../../../src/integrations/notion/queue.js';
+import { getImportProgress, processNotionPages, resetProgress } from '../../../src/integrations/notion/queue.js';
 import { getPageState } from '../../../src/integrations/notion/sync-state.js';
 import { getNode } from '../../../src/db/nodes.js';
 import { getLinksFrom } from '../../../src/db/links.js';
@@ -98,6 +101,7 @@ beforeEach(() => {
   resetProgress('src-notion');
   notionState.content = '';
   notionState.hash = '';
+  notionState.digestCreatesNode = true;
 });
 
 describe('Notion queue segment reduction', () => {
@@ -130,5 +134,45 @@ describe('Notion queue segment reduction', () => {
     const migratedLink = migratedLinks.find(link => link.to_id === target.id);
     expect(migratedLink).toBeDefined();
     expect(migratedLink!.strength).toBeCloseTo(0.86);
+  });
+
+  it('keeps old nodes and sync state when every digest segment fails', async () => {
+    notionState.content = makeContent(2);
+    notionState.hash = 'hash-v1';
+    await processNotionPages(db, 'token', [page('2026-04-28T01:00:00.000Z')], 'src-notion');
+
+    const firstState = getPageState(db, 'page-1', 'src-notion');
+    expect(firstState).not.toBeNull();
+    const oldNodeIds = firstState!.node_ids;
+    const oldNodeId = oldNodeIds[0];
+    const target = seedNode(db, { content: 'external target linked before notion digest failure' });
+    seedLink(db, oldNodeId, target.id, { strength: 0.81 });
+
+    notionState.content = makeContent(1);
+    notionState.hash = 'hash-v2';
+    notionState.digestCreatesNode = false;
+    await processNotionPages(db, 'token', [page('2026-04-28T02:00:00.000Z')], 'src-notion');
+
+    const secondState = getPageState(db, 'page-1', 'src-notion');
+    expect(secondState?.node_ids).toEqual(oldNodeIds);
+    expect(getNode(db, oldNodeId)?.is_superseded).toBe(0);
+    expect(getLinksFrom(db, oldNodeId).some(link => link.to_id === target.id)).toBe(true);
+  });
+
+  it('stops before processing pages when initialization is aborted', async () => {
+    notionState.content = makeContent(1);
+    notionState.hash = 'hash-abort';
+
+    await processNotionPages(
+      db,
+      'token',
+      [page('2026-04-28T03:00:00.000Z')],
+      'src-notion',
+      undefined,
+      () => true,
+    );
+
+    expect(getPageState(db, 'page-1', 'src-notion')).toBeNull();
+    expect(getImportProgress('src-notion').phase).toBe('idle');
   });
 });
