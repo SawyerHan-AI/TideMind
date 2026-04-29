@@ -22,7 +22,7 @@ import { digest } from '../../tools/digest.js';
 import { createLink, linkExists } from '../../db/links.js';
 import { now } from '../../utils/time.js';
 import { promotePropertyValues } from '../shared/property-promote.js';
-import { retireNodeWithoutReplacement, supersedeNodeWithLinks } from '../../db/node-lifecycle.js';
+import { supersedeNodeWithLinks } from '../../db/node-lifecycle.js';
 import { SYSTEM_PROPERTIES } from './types.js';
 import { computeTimeFactor } from './initial-heat.js';
 
@@ -288,6 +288,12 @@ async function processOneFile(
       }
     }
 
+    if (allNodeIds.length === 0) {
+      log.warn(`文件 digest 未产生新节点,保留旧同步状态: ${relPath}`);
+      progress.skippedFiles++;
+      return false;
+    }
+
     // 多余旧段：supersede 到最后一个新节点，迁移链接、保留 updates 链
     if (shouldStop?.()) return false;
     // （段数减少场景：把多余旧段的链接归并到最后一个新段上，而不是直接 DELETE 丢失关联）
@@ -295,12 +301,6 @@ async function processOneFile(
       const targetNewId = allNodeIds[allNodeIds.length - 1];
       for (let i = segments.length; i < oldNodeIds.length; i++) {
         supersedeNodeWithLinks(db, oldNodeIds[i], targetNewId);
-      }
-    } else if (oldNodeIds.length > segments.length) {
-      // 极端情况：没有任何新节点（所有段都是旧 hash 复用，但段数又减少？）
-      // 兜底仍按旧逻辑处理，避免残留悬空链接
-      for (let i = segments.length; i < oldNodeIds.length; i++) {
-        retireNodeWithoutReplacement(db, oldNodeIds[i]);
       }
     }
 

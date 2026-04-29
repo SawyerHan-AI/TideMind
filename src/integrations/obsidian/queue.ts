@@ -23,7 +23,7 @@ import {
 import { OBSIDIAN_EXCLUDED_DIRS } from './types.js';
 import { digest } from '../../tools/digest.js';
 import { createLink, linkExists } from '../../db/links.js';
-import { retireNodeWithoutReplacement, supersedeNodeWithLinks } from '../../db/node-lifecycle.js';
+import { supersedeNodeWithLinks } from '../../db/node-lifecycle.js';
 import { now } from '../../utils/time.js';
 import { promotePropertyValues as promoteProps, getOrCreateTagNode } from '../shared/property-promote.js';
 import { OBSIDIAN_SYSTEM_PROPERTIES } from './types.js';
@@ -206,6 +206,11 @@ async function processOneFile(
       });
       if (shouldStop?.()) return;
       const nodeIds = result.created_nodes?.map(n => n.id) ?? [];
+      if (nodeIds.length === 0 && oldNodeIds.length > 0) {
+        log.warn(`标签页 digest 未产生新节点,保留旧同步状态: ${relPath}`);
+        progress.skippedFiles++;
+        return;
+      }
       // 不直接标记 is_tag，由 promoteFrequentTags 按阈值判断
       updateSyncState(db, relPath, filePath, nodeIds, sourceId, contentHash);
       progress.processedFiles++;
@@ -258,6 +263,12 @@ async function processOneFile(
       }
     }
 
+    if (allNodeIds.length === 0) {
+      log.warn(`文件 digest 未产生新节点,保留旧同步状态: ${relPath}`);
+      progress.skippedFiles++;
+      return;
+    }
+
     // 多段 part_of 关系串联
     if (shouldStop?.()) return;
     if (allNodeIds.length > 1) {
@@ -288,11 +299,6 @@ async function processOneFile(
         for (let i = pairs; i < oldNodeIds.length; i++) {
           supersedeNodeWithLinks(db, oldNodeIds[i], targetNewId);
         }
-      }
-    } else if (oldNodeIds.length > 0 && allNodeIds.length === 0) {
-      // 极端兜底：没有任何新节点（例如全部 digest 失败），按旧逻辑 mark superseded
-      for (let i = 0; i < oldNodeIds.length; i++) {
-        retireNodeWithoutReplacement(db, oldNodeIds[i]);
       }
     }
 
@@ -417,11 +423,11 @@ async function processCanvasFile(
         supersedeNodeWithLinks(db, oldNodeIds[i], targetNewId);
       }
     }
-  } else if (oldNodeIds.length > 0 && nodeIds.length === 0) {
-    // 极端兜底：没有新节点，按旧逻辑 mark superseded
-    for (let i = 0; i < oldNodeIds.length; i++) {
-      retireNodeWithoutReplacement(db, oldNodeIds[i]);
-    }
+  }
+
+  if (nodeIds.length === 0 && oldNodeIds.length > 0) {
+    log.warn(`Canvas digest 未产生新节点,保留旧同步状态: ${relPath}`);
+    return;
   }
 
   if (!shouldStop?.()) updateSyncState(db, relPath, filePath, nodeIds, sourceId);

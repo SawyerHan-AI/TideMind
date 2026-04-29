@@ -66,6 +66,7 @@ export async function processNotionPages(
   pages: NotionPageSummary[],
   sourceId: string,
   onPageDone?: () => void,
+  shouldStop?: () => boolean,
 ): Promise<void> {
   const progress = getProgress(sourceId);
   Object.assign(progress, {
@@ -78,6 +79,11 @@ export async function processNotionPages(
   });
 
   for (const pageSummary of pages) {
+    if (shouldStop?.()) {
+      progress.phase = 'idle';
+      progress.currentFile = null;
+      return;
+    }
     progress.currentFile = pageSummary.title;
 
     try {
@@ -97,7 +103,7 @@ export async function processNotionPages(
     }
   }
 
-  progress.phase = 'done';
+  progress.phase = shouldStop?.() ? 'idle' : 'done';
   progress.currentFile = null;
 }
 
@@ -145,6 +151,10 @@ async function processOnePage(
       skipDedupMerge: true,
     });
     const nodeIds = result.created_nodes?.map(n => n.id) ?? [];
+    if (nodeIds.length === 0 && prevState?.node_ids.length) {
+      log.warn(`页面标题 digest 未产生新节点,保留旧同步状态: ${pageSummary.title}`);
+      return;
+    }
     updatePageState(db, pageId, contentHash, pageSummary.lastEditedTime, pageType, nodeIds, sourceId);
     return;
   }

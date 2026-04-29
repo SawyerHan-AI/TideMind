@@ -162,7 +162,9 @@ export async function runInitialization(
 
     await processNotionPages(db, token, allPages, sourceId, () => {
       advanceProgress(1, sourceId);
-    });
+    }, () => isAborted(sourceId));
+
+    if (isAborted(sourceId)) throw new Error('初始化已中断');
 
     // 统计
     const nodeCountRow = db.prepare(

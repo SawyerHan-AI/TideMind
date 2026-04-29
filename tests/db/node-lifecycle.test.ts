@@ -5,6 +5,7 @@ import { getLinksForNode, getLinksFrom } from '../../src/db/links.js';
 import { getNode } from '../../src/db/nodes.js';
 import {
   archiveNodeWithVectors,
+  deleteNodeDependentsBatch,
   deleteNodeCompletely,
   reArchiveNodeWithVectors,
   retireNodeWithoutReplacement,
@@ -125,5 +126,34 @@ describe('node lifecycle service', () => {
     expect((db.prepare('SELECT COUNT(*) AS cnt FROM strategy_feedback WHERE node_id = ?').get(node.id) as { cnt: number }).cnt).toBe(0);
     expect((db.prepare('SELECT COUNT(*) AS cnt FROM node_segments WHERE node_id = ?').get(node.id) as { cnt: number }).cnt).toBe(0);
     expect((db.prepare('SELECT COUNT(*) AS cnt FROM nodes_vec WHERE id LIKE ?').get(`${node.id}#%`) as { cnt: number }).cnt).toBe(0);
+  });
+
+  it('only ignores missing auxiliary tables in legacy rollback mode', () => {
+    const node = seedNode(db);
+    const peer = seedNode(db);
+    seedLink(db, node.id, peer.id);
+
+    db.exec(`
+      CREATE TRIGGER block_link_delete
+      BEFORE DELETE ON links
+      BEGIN
+        SELECT RAISE(ABORT, 'blocked link delete');
+      END;
+    `);
+
+    expect(() => deleteNodeDependentsBatch(
+      db,
+      [node.id],
+      { ignoreMissingTables: true },
+    )).toThrow(/blocked link delete/);
+
+    db.exec('DROP TRIGGER block_link_delete');
+    db.exec('DROP TABLE strategy_feedback');
+
+    expect(() => deleteNodeDependentsBatch(
+      db,
+      [node.id],
+      { ignoreMissingTables: true },
+    )).not.toThrow();
   });
 });

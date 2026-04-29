@@ -62,6 +62,21 @@ describe('SqliteRepository - nodes', () => {
     expect(all.length).toBe(3);
   });
 
+  it('keeps active, archived, and superseded node visibility distinct', () => {
+    const active = repo.nodes.createNode({ type: 'fact', content: 'active' });
+    const archived = repo.nodes.createNode({ type: 'fact', content: 'archived' });
+    const superseded = repo.nodes.createNode({ type: 'fact', content: 'superseded' });
+
+    repo.nodes.updateNode(archived.id, { archived: 1 });
+    db.prepare('UPDATE nodes SET is_superseded = 1 WHERE id = ?').run(superseded.id);
+
+    expect(repo.nodes.listNodes({ archived: false }).map(n => n.id)).toEqual([active.id]);
+    expect(repo.nodes.listNodes({ archived: true }).map(n => n.id)).toEqual([archived.id]);
+    expect(repo.nodes.getNodeCount(false)).toBe(1);
+    expect(repo.nodes.getNodeCount(true)).toBe(1);
+    expect(repo.nodes.getNodeCount()).toBe(3);
+  });
+
   it('should archive a node', () => {
     const node = repo.nodes.createNode({ type: 'fact', content: 'to archive' });
     repo.nodes.archiveNode(node.id);
@@ -123,6 +138,23 @@ describe('SqliteRepository - links', () => {
     const links = repo.links.getLinksForNode(n1.id);
     expect(links.length).toBe(1);
     expect(links[0].id).toBe(link!.id);
+  });
+
+  it('hides rejected links by default and exposes them only when requested', () => {
+    const n1 = repo.nodes.createNode({ type: 'fact', content: 'node 1' });
+    const n2 = repo.nodes.createNode({ type: 'fact', content: 'node 2' });
+    const rejected = repo.links.createLink({
+      from_id: n1.id,
+      to_id: n2.id,
+      relation: [{ type: 'supports', confidence: 0.8 }],
+      status: 'rejected_by_user',
+    });
+
+    expect(rejected).not.toBeNull();
+    expect(repo.links.getLinksFrom(n1.id)).toEqual([]);
+    expect(repo.links.getLinksTo(n2.id)).toEqual([]);
+    expect(repo.links.getLinksForNode(n1.id)).toEqual([]);
+    expect(repo.links.getLinksForNode(n1.id, { includeRejected: true }).map(l => l.id)).toEqual([rejected!.id]);
   });
 
   it('should delete a link', () => {

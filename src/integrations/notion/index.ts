@@ -8,7 +8,7 @@
 import type Database from 'better-sqlite3';
 import { createLogger } from '../../utils/logger.js';
 import { clearTagNodeCache } from '../shared/property-promote.js';
-import { listAllPages, getPageProperties, validateToken } from './api-client.js';
+import { isConfirmedNotionPageGoneError, listAllPages, getPageProperties, validateToken } from './api-client.js';
 import { getAllPageStates, removePageState, hasCompletedFullScan, markFullScanCompleted } from './sync-state.js';
 import { processNotionPages, resetProgress } from './queue.js';
 import { isNotionInitializing } from './initialization.js';
@@ -314,7 +314,7 @@ async function runIncrementalSyncInner(
 
 // ── 删除检测 ──────────────────────────────────────────────────
 
-async function detectDeletedPages(
+export async function detectDeletedPages(
   db: Database.Database,
   token: string,
   sourceId: string,
@@ -335,7 +335,13 @@ async function detectDeletedPages(
       try {
         await getPageProperties(token, pageId);
         // 页面仍然可访问，只是 Search 索引延迟
-      } catch {
+      } catch (err) {
+        if (!isConfirmedNotionPageGoneError(err)) {
+          log.warn(
+            `删除检测跳过 ${pageId}: Notion API 临时错误,保留 sync state (${(err as Error).message})`,
+          );
+          continue;
+        }
         // 404/403 → 确认已删除/取消共享。走 archiveNode() 清理向量。
         for (const nodeId of state.node_ids) {
           archiveNodeWithVectors(db, nodeId);
