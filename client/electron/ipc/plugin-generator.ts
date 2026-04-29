@@ -48,7 +48,7 @@ const MARKETPLACE_ID = 'tidemind-local'
 const MARKETPLACE_NAME = 'tidemind-local'
 
 // --- 客户端类型配置 ---
-type PluginClientType = 'claude-code' | 'cowork' | 'cursor' | 'codex' | 'windsurf' | 'openclaw'
+type PluginClientType = 'claude-code' | 'cowork' | 'cursor' | 'codex' | 'windsurf' | 'openclaw' | 'gemini'
 
 interface ClientTypeConfig {
   dirPrefix: string
@@ -93,6 +93,12 @@ const CLIENT_CONFIG: Record<PluginClientType, ClientTypeConfig> = {
     skillSource: 'openclaw-skill.md',
     skillDescription: 'Tide Mind 外部记忆系统。用户上下文在 Agent Bootstrap 时通过 Hook 自动加载。对话过程中使用 brain_recall 查询历史信息，使用 brain_digest 存储有价值的内容。',
     hookToolParam: 'openclaw',
+  },
+  'gemini': {
+    dirPrefix: 'gemini',
+    skillSource: 'gemini-skill.md',
+    skillDescription: 'Tide Mind 外部记忆系统。用户上下文在会话启动时通过 SessionStart Hook 自动加载。对话过程中使用 brain_recall 查询历史信息，使用 brain_digest 存储有价值的内容。',
+    hookToolParam: 'gemini',
   },
 }
 
@@ -139,6 +145,12 @@ import {
   meetsMinVersion,
   wrapSkillWithFrontmatter,
 } from './codex-cli'
+import {
+  geminiExtensionInstall,
+  geminiExtensionUninstall,
+  geminiExtensionList,
+  stripFrontmatter,
+} from './gemini-cli'
 
 interface PluginGenerateResult {
   pluginDir: string
@@ -453,6 +465,107 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
         writeFileAtomic(path.join(skillOutputDir, 'SKILL.md'), openclawFrontmatter + skillContent)
 
         return { pluginDir: skillOutputDir, pluginName, marketplaceRegistered: false, success: true }
+      }
+
+      if (clientType === 'gemini') {
+        // ---- Gemini CLI: staging 目录 + `gemini extensions install --path` ----
+        // Gemini extension 是聚合包：单目录里同时含 mcpServers / contextFile / hooks /
+        // commands。我们走官方 CLI 安装入口（与 Codex v2 用 `codex mcp add` 同思路），
+        // 让 Gemini CLI 把目录拷到 ~/.gemini/extensions/ 并写注册表。
+        const extName = `tidemind-${agentId}`
+        const stagingDir = path.join(pluginsDir, `${config.dirPrefix}-${agentId}`)
+        // 兜底：staging 必须落在 pluginsDir 之下
+        assertPathWithinRoot(stagingDir, pluginsDir)
+
+        fs.mkdirSync(path.join(stagingDir, 'hooks'), { recursive: true })
+        fs.mkdirSync(path.join(stagingDir, 'commands'), { recursive: true })
+
+        // hook 触发时 staging 可能已经被重新生成或删除，所以 hook command 的
+        // --skill-path 必须指向**安装后位置**而不是 staging 路径。
+        const installedExtDir = path.join(os.homedir(), '.gemini', 'extensions', extName)
+        const installedSkillPath = path.join(installedExtDir, 'GEMINI.md')
+
+        // 1. gemini-extension.json
+        writeFileAtomic(
+          path.join(stagingDir, 'gemini-extension.json'),
+          JSON.stringify({
+            name: extName,
+            version: '1.0.0',
+            description: `Tide Mind 外部记忆系统 — ${agentName}`,
+            mcpServers: {
+              tidemind: {
+                command: shimPath,
+                args: [mcpServerPath],
+                env: { EB_AGENT_ID: agentId },
+              },
+            },
+            contextFileName: 'GEMINI.md',
+            excludeTools: [],
+          }, null, 2),
+        )
+
+        // 2. GEMINI.md（剥离 YAML frontmatter；Claude Code SKILL.md 模板的 frontmatter
+        //    在 Gemini CLI 是噪音）
+        const cleanSkill = stripFrontmatter(skillContent)
+        writeFileAtomic(path.join(stagingDir, 'GEMINI.md'), cleanSkill)
+
+        // 3. hooks/hooks.json —— matcher 直接用 `startup|resume` 排除 /clear，
+        //    避免每次清屏都重跑 prepare。`session_start_reason` / `source` 字段是
+        //    脚本内的二级兜底。
+        const hookCommand = [
+          JSON.stringify(shimPath),
+          JSON.stringify(hookScriptPath),
+          '--agent-id', JSON.stringify(agentId),
+          '--skill-path', JSON.stringify(installedSkillPath),
+          '--tool', JSON.stringify(config.hookToolParam),
+        ].join(' ')
+        writeFileAtomic(
+          path.join(stagingDir, 'hooks', 'hooks.json'),
+          JSON.stringify({
+            hooks: {
+              SessionStart: [
+                {
+                  matcher: 'startup|resume',
+                  hooks: [
+                    {
+                      type: 'command',
+                      command: hookCommand,
+                      timeout: 15000,
+                    },
+                  ],
+                },
+              ],
+            },
+          }, null, 2),
+        )
+
+        // 4. commands/*.toml —— 从 data/skill/gemini-commands/ 原样拷贝
+        const commandsSrcDir = path.join(skillDir, 'gemini-commands')
+        const commandFiles = ['brain-recall.toml', 'brain-digest.toml', 'brain-forget.toml']
+        for (const cmd of commandFiles) {
+          const src = path.join(commandsSrcDir, cmd)
+          if (fs.existsSync(src)) {
+            fs.copyFileSync(src, path.join(stagingDir, 'commands', cmd))
+          }
+          // 源文件缺失（dev 环境 / 安装包不完整）不阻断主流程，但需要可观测：
+          // commands 缺失只是失去 slash 命令，MCP + hook 依然能工作。
+        }
+
+        // 5. 调 gemini CLI 安装。失败时 staging 已经写好，调用方可以让用户重试或
+        //    手动 `gemini extensions install --path <stagingDir>`。
+        try {
+          await geminiExtensionInstall({ extName, stagingPath: stagingDir })
+        } catch (err: any) {
+          return {
+            pluginDir: stagingDir,
+            pluginName: extName,
+            marketplaceRegistered: false,
+            success: false,
+            error: `gemini extensions install 失败: ${err?.stderr ?? err?.message ?? String(err)}`,
+          }
+        }
+
+        return { pluginDir: stagingDir, pluginName: extName, marketplaceRegistered: false, success: true }
       }
 
       // ---- Claude Code: 生成完整 Plugin 目录 ----
@@ -772,6 +885,12 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       const p = path.join(os.homedir(), 'Downloads', `tidemind-openclaw-${agentId}`, 'SKILL.md')
       return fs.existsSync(p) ? p : null
     }
+    if (clientType === 'gemini') {
+      // staging 是「真相源」，installed 是 Gemini CLI 拷贝后的副本。
+      // UI 关心的是「能否打开看 staging 内容」，返回 staging 的 manifest。
+      const stagingDir = path.join(pluginsDir, `gemini-${agentId}`)
+      return fs.existsSync(path.join(stagingDir, 'gemini-extension.json')) ? stagingDir : null
+    }
 
     // Claude Code：检查 Plugin 目录
     const prefixes = clientType
@@ -789,8 +908,10 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
 
   // ----------------------------------------------------------
   // 获取插件详细状态（Skill 文件、工具列表、是否过期）
+  // 注：handler 改为 async，因为 gemini 分支需要调 `gemini extensions list`。
+  //     其他分支保持纯同步逻辑，不会被 Promise 包裹拖慢。
   // ----------------------------------------------------------
-  ipcMain.handle('agents:plugin-status', (_e, rawAgentId: unknown, toolType?: unknown) => {
+  ipcMain.handle('agents:plugin-status', async (_e, rawAgentId: unknown, toolType?: unknown) => {
     // 校验 agentId — 失败时返回 exists:false 而不是抛错，
     // renderer 拿不存在状态再决定是否报错（同 plugin-path 行为一致）
     const parsedAgentId = parseAgentId(rawAgentId)
@@ -937,6 +1058,50 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
         skillOutputExists,
         openclawConfigWritten,
         hooksConfigured,
+      }
+    }
+
+    if (clientType === 'gemini') {
+      const extName = `tidemind-${agentId}`
+      const stagingDir = path.join(pluginsDir, `gemini-${agentId}`)
+      const installedDir = path.join(os.homedir(), '.gemini', 'extensions', extName)
+      const stagingManifest = path.join(stagingDir, 'gemini-extension.json')
+      const installedManifest = path.join(installedDir, 'gemini-extension.json')
+      const stagingExists = fs.existsSync(stagingManifest)
+      const installedExists = fs.existsSync(installedManifest)
+
+      // CLI 注册表查询：失败（CLI 不存在 / 版本过低）→ null。UI 据此显示「未知」。
+      // null 与 false 语义不同：null = 探测失败，false = 探测到了但没该条目。
+      let registered: boolean | null = null
+      const list = await geminiExtensionList()
+      if (list !== null) {
+        registered = list.some(line => line.includes(extName))
+      }
+
+      // mtime 对比：staging GEMINI.md 比 installed 新 → 提示用户重装
+      let skillOutdated = false
+      if (stagingExists && installedExists) {
+        try {
+          const stagingMtime = fs.statSync(path.join(stagingDir, 'GEMINI.md')).mtimeMs
+          const installedMtime = fs.statSync(path.join(installedDir, 'GEMINI.md')).mtimeMs
+          skillOutdated = stagingMtime > installedMtime
+        } catch { /* 任一文件不存在视为 not outdated */ }
+      }
+
+      const tools: string[] = ['brain_prepare', 'brain_recall', 'brain_digest']
+      const generatedAt = installedExists
+        ? fs.statSync(installedManifest).mtime.toISOString()
+        : (stagingExists ? fs.statSync(stagingManifest).mtime.toISOString() : '')
+      return {
+        exists: stagingExists || installedExists,
+        pluginDir: installedExists ? installedDir : stagingDir,
+        clientType,
+        tools,
+        stagingExists,
+        installedExists,
+        registered,
+        skillOutdated,
+        generatedAt,
       }
     }
 
@@ -1146,6 +1311,33 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       try {
         if (fs.existsSync(windsurfSkillPath)) fs.unlinkSync(windsurfSkillPath)
       } catch { /* 忽略 */ }
+    }
+
+    // Gemini CLI: 三层防御（CLI uninstall → 手工删 ~/.gemini/extensions/<n>/ → 清 staging）
+    if (clientType === 'gemini') {
+      const extName = `tidemind-${agentId}`
+      // 1. 主路径：调 gemini CLI 卸载（不存在视为成功）
+      try {
+        await geminiExtensionUninstall({ extName })
+      } catch (err: any) {
+        errors.push(`gemini extensions uninstall 失败: ${err?.stderr ?? err?.message ?? String(err)}`)
+      }
+      // 2. 兜底：CLI 不存在 / 版本过低 / 卸载失败时手工删 ~/.gemini/extensions/<n>/
+      try {
+        const installedRoot = path.join(os.homedir(), '.gemini', 'extensions')
+        const installedDir = path.join(installedRoot, extName)
+        assertPathWithinRoot(installedDir, installedRoot)
+        if (fs.existsSync(installedDir)) fs.rmSync(installedDir, { recursive: true, force: true })
+      } catch { /* 忽略 */ }
+      // 3. 清 staging（同时也是 pluginDir 的一部分，下面通用清理会再处理一次，
+      //    这里显式删一次更清晰；assertPathWithinRoot 是必走的安全门）
+      try {
+        const stagingDir = path.join(pluginsDir, `gemini-${agentId}`)
+        assertPathWithinRoot(stagingDir, pluginsDir)
+        if (fs.existsSync(stagingDir)) fs.rmSync(stagingDir, { recursive: true, force: true })
+      } catch (err: any) {
+        errors.push(`删除 Gemini staging 失败: ${err.message}`)
+      }
     }
 
     // OpenClaw: 移除 MCP 配置 + Hook 目录 + Skill 目录

@@ -1,0 +1,15 @@
+description = "让 Tide Mind 忘记某条记忆"
+prompt = """
+用户希望忘记以下内容：{{args}}
+
+执行步骤：
+1. 先用 brain_recall（mcp__tidemind__brain_recall）找到相关记忆，列出候选条目（含 id 和 title）
+2. 向用户确认要忘记的具体条目——避免误删，让用户主动选择
+3. 用户确认后，调用 brain_digest（mcp__tidemind__brain_digest）：
+   - intent: "archive"
+   - target_node: <选中的记忆 id>
+   - context: 简短说明归档原因
+4. 归档完成后告诉用户已操作的条目
+
+注意：归档不是物理删除，记忆仍可通过 recall 找到，只是相关度大幅降低。
+"""

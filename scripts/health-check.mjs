@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
+import { existsSync, readdirSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +20,33 @@ const checks = [
   { name: 'client build', cwd: path.join(repoRoot, 'client'), command: 'npm', args: ['run', 'build'] },
   { name: 'client typecheck', cwd: path.join(repoRoot, 'client'), command: 'npx', args: ['tsc', '--build', '--noEmit'] },
 ];
+
+/**
+ * 在跑 check 之前确认 node_modules 存在且非空。
+ * 缺失时直接给出可操作的错误（"跑 npm run setup"），而不是让用户淹没在
+ * "Cannot find module 'postgres' / 'argon2' / astro: command not found" 这类
+ * 看起来像代码 bug 实际是装机问题的输出里。
+ *
+ * 判定标准：node_modules 目录存在 && 至少有一个条目（npm install 失败半截会留空目录）。
+ * 根 / client 的 node_modules 自带子目录，pro/* 的也是；可靠区分「装好」vs「半装」。
+ */
+function preflightDeps(check) {
+  // 只对有 package.json 的子目录做检查
+  if (!existsSync(path.join(check.cwd, 'package.json'))) return null;
+  const nm = path.join(check.cwd, 'node_modules');
+  if (!existsSync(nm)) {
+    return `node_modules missing at ${path.relative(repoRoot, check.cwd) || '.'}`;
+  }
+  try {
+    const entries = readdirSync(nm);
+    if (entries.length === 0) {
+      return `node_modules empty at ${path.relative(repoRoot, check.cwd) || '.'}`;
+    }
+  } catch (err) {
+    return `node_modules unreadable at ${path.relative(repoRoot, check.cwd) || '.'}: ${err.message}`;
+  }
+  return null;
+}
 
 function runCheck(check) {
   return new Promise((resolve) => {
@@ -59,6 +87,21 @@ console.log('');
 
 for (const check of checks) {
   process.stdout.write(`> ${check.name} ... `);
+  // Preflight：先确认 node_modules 在场。缺失时不去跑真命令——因为真命令一定会失败，
+  // 而且失败信号是 "找不到 X 模块" 这类对装机问题不直观的输出。
+  const depsIssue = preflightDeps(check);
+  if (depsIssue) {
+    const result = {
+      ...check,
+      code: 1,
+      signal: null,
+      durationMs: 0,
+      output: `${depsIssue}\n→ Run \`npm run setup\` (installs all 4 packages) or \`npm install\` in that directory.`,
+    };
+    results.push(result);
+    console.log(`SETUP_REQUIRED (${depsIssue})`);
+    continue;
+  }
   const result = await runCheck(check);
   results.push(result);
   console.log(`${statusFor(result)} (${(result.durationMs / 1000).toFixed(1)}s)`);

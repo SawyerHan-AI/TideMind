@@ -789,7 +789,8 @@
       "cursor": "~/.cursor/mcp.json (自动)",
       "codex": "~/.codex/config.toml (自动)",
       "windsurf": "~/.codeium/windsurf/mcp_config.json (自动)",
-      "openclaw": "~/.openclaw/openclaw.json (自动)"
+      "openclaw": "~/.openclaw/openclaw.json (自动)",
+      "gemini": "~/.gemini/extensions/tidemind-<id>/ (自动)"
     },
     "toolSkillPath": {
       "claudeCode": ".claude/rules/mcp-tidemind.md",
@@ -797,7 +798,8 @@
       "cursor": "复制到项目 .cursor/rules/",
       "codex": "复制到项目 AGENTS.md",
       "windsurf": "复制到项目 .windsurf/rules/",
-      "openclaw": "复制到 ~/.openclaw/skills/"
+      "openclaw": "复制到 ~/.openclaw/skills/",
+      "gemini": "由 Gemini CLI 自动作为 GEMINI.md 加载"
     },
     "detail": {
       "coworkMcpHint": "MCP 工具通过 Desktop 配置自动桥接，重启 Claude Desktop 后生效。",
@@ -809,7 +811,9 @@
       "windsurfMcpHint": "MCP 配置已写入 ~/.codeium/windsurf/mcp_config.json，需完全重启 Windsurf 生效。",
       "windsurfSkillHint": "规则文件需要复制到项目的 .windsurf/rules/ 目录。",
       "openclawMcpHint": "MCP + Bootstrap Hook 已写入 ~/.openclaw/，重启 OpenClaw 生效。",
-      "openclawSkillHint": "Skill 目录需要复制到 ~/.openclaw/skills/ 或项目 skills/ 目录。"
+      "openclawSkillHint": "Skill 目录需要复制到 ~/.openclaw/skills/ 或项目 skills/ 目录。",
+      "geminiMcpHint": "MCP + SessionStart Hook 已打包进 Gemini extension，通过 `gemini extensions install` 自动安装。重启 `gemini` 生效。",
+      "geminiSkillHint": "GEMINI.md 由 Gemini CLI 从 extension 自动加载，无需手动复制。"
     },
     "wizard": {
       "nameAgent": "命名 Agent",
@@ -818,6 +822,7 @@
       "configCodex": "配置 Codex",
       "configWindsurf": "配置 Windsurf",
       "configOpenClaw": "配置 OpenClaw",
+      "configGemini": "配置 Gemini CLI",
       "installPlugin": "安装插件",
       "mcpConfig": "MCP 配置",
       "skillFile": "Skill 文件",
@@ -872,6 +877,9 @@
       "verifyOpenClawMcp": "OpenClaw MCP 配置 + Hook 已写入",
       "verifyOpenClawMcpHintOk": "重启 OpenClaw 生效",
       "verifyOpenClawMcpHintFail": "配置写入失败",
+      "verifyGeminiMcp": "Gemini extension 已安装（MCP + Hook + 命令）",
+      "verifyGeminiMcpHintOk": "重启 `gemini` 生效",
+      "verifyGeminiMcpHintFail": "`gemini extensions install` 失败",
       "verifyMcpAdded": "MCP 配置已添加到工具中",
       "verifyMcpAddedHint": "请确认已将上一步的 JSON 配置粘贴到工具的 MCP 配置文件",
       "verifySkillCopied": "Skill 内容已复制到工具中",
@@ -925,6 +933,17 @@
         "mcpConfig": "MCP Server 配置（brain_prepare / brain_recall / brain_digest）",
         "skillFile": "Skill 文件（外脑使用指南）",
         "hooks": "Hooks（SessionStart 自动加载上下文、PreCompact 自动保存记忆）"
+      },
+      "gemini": {
+        "mcpConfig": "Gemini MCP 配置（brain_prepare / brain_recall / brain_digest）",
+        "hookConfig": "SessionStart Hook（自动加载上下文）",
+        "contextFile": "GEMINI.md 上下文文件（外脑使用指南）",
+        "commands": "Slash 命令：/brain-recall /brain-digest /brain-forget",
+        "autoReadyTitle": "已全部配置，无需手动步骤",
+        "autoReadyNote": "下次 Gemini CLI 启动时将自动加载用户上下文、外脑工具和 slash 命令。",
+        "upgradeTitle": "Gemini CLI 版本过低，hooks 无法使用",
+        "upgradeHint": "检测到 Gemini CLI {{version}} —— 建议升级到 0.26+ 以启用 SessionStart hook 自动加载用户画像。",
+        "upgradeNote": "MCP 工具（brain_*）和 slash 命令在旧版本上仍可用，但需要手动调用 brain_prepare。"
       }
     }
   },
