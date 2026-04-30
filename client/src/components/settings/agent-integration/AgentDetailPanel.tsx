@@ -5,6 +5,7 @@ import { useFormatters } from '../../../hooks/useFormatters'
 import { inputClass } from '../shared'
 import type { Agent } from './types'
 import { getToolTypeDef, isPluginSupported } from './toolTypes'
+import type { PluginStatusResult } from '../../../lib/api-contract'
 
 // Agent 详情面板（展开后显示）
 // ============================================================
@@ -20,16 +21,10 @@ export function AgentDetailPanel({ agent, onRefetch }: { agent: Agent; onRefetch
   const [skillContent, setSkillContent] = useState('')
   const [skillLoaded, setSkillLoaded] = useState(false)
   const [pluginDir, setPluginDir] = useState<string | null>(null)
-  const [pluginStatus, setPluginStatus] = useState<any>(null)
+  const [pluginStatus, setPluginStatus] = useState<PluginStatusResult | null>(null)
   const [regenerating, setRegenerating] = useState(false)
 
   const isPlugin = isPluginSupported(agent.tool_type)
-  const isCowork = agent.tool_type === 'cowork'
-  const isCursor = agent.tool_type === 'cursor'
-  const isCodex = agent.tool_type === 'codex'
-  const isWindsurf = agent.tool_type === 'windsurf'
-  const isOpenClaw = agent.tool_type === 'openclaw'
-  const isGemini = agent.tool_type === 'gemini'
   const pluginInstallCmd = `claude plugin install tidemind-${agent.id}@tidemind-local --scope user`
 
   const loadPluginStatus = () => {
@@ -85,6 +80,12 @@ export function AgentDetailPanel({ agent, onRefetch }: { agent: Agent; onRefetch
   }
 
   const toolDef = getToolTypeDef(agent.tool_type)
+  const pluginDetail = toolDef?.pluginDetail
+  const pluginDetailToneClass = pluginDetail?.tone === 'emerald'
+    ? 'bg-emerald-500/5 border-emerald-500/10 text-emerald-400'
+    : pluginDetail?.tone === 'blue'
+      ? 'bg-blue-500/5 border-blue-500/10 text-blue-400'
+      : 'bg-indigo-400/5 border-indigo-400/10 text-indigo-400'
 
   return (
     <div className="mx-3 mb-2 p-4 bg-white/[0.02] rounded-lg border border-white/5 space-y-4">
@@ -201,100 +202,20 @@ export function AgentDetailPanel({ agent, onRefetch }: { agent: Agent; onRefetch
                 <FolderOpen size={11} className="text-gray-500 flex-shrink-0" />
                 <code className="text-[10px] text-gray-400 font-mono truncate">{pluginDir}</code>
               </div>
-              {isCowork ? (
+              {pluginDetail ? (
                 <div className="space-y-1.5">
-                  {pluginStatus?.skillOutputExists && (
+                  {pluginDetail.showSkillOutput && pluginStatus?.skillOutputExists && pluginStatus.skillOutputPath && (
                     <div className="flex items-center gap-2">
                       <FolderOpen size={11} className="text-gray-500 flex-shrink-0" />
                       <code className="text-[10px] text-gray-400 font-mono truncate">{pluginStatus.skillOutputPath}</code>
                     </div>
                   )}
-                  <div className="px-3 py-2 bg-indigo-400/5 border border-indigo-400/10 rounded-lg space-y-1">
-                    <p className="text-[10px] text-indigo-400">
-                      {t('agent.detail.coworkMcpHint')}
-                    </p>
-                    <p className="text-[10px] text-indigo-400">
-                      {t('agent.detail.coworkSkillHint')}
-                    </p>
-                  </div>
-                </div>
-              ) : isCursor ? (
-                <div className="space-y-1.5">
-                  {pluginStatus?.skillOutputExists && (
-                    <div className="flex items-center gap-2">
-                      <FolderOpen size={11} className="text-gray-500 flex-shrink-0" />
-                      <code className="text-[10px] text-gray-400 font-mono truncate">{pluginStatus.skillOutputPath}</code>
-                    </div>
-                  )}
-                  <div className="px-3 py-2 bg-indigo-400/5 border border-indigo-400/10 rounded-lg space-y-1">
-                    <p className="text-[10px] text-indigo-400">
-                      {t('agent.detail.cursorMcpHint')}
-                    </p>
-                    <p className="text-[10px] text-indigo-400">
-                      {t('agent.detail.cursorSkillHint')}
-                    </p>
-                  </div>
-                </div>
-              ) : isCodex ? (
-                <div className="space-y-1.5">
-                  {pluginStatus?.skillOutputExists && (
-                    <div className="flex items-center gap-2">
-                      <FolderOpen size={11} className="text-gray-500 flex-shrink-0" />
-                      <code className="text-[10px] text-gray-400 font-mono truncate">{pluginStatus.skillOutputPath}</code>
-                    </div>
-                  )}
-                  <div className="px-3 py-2 bg-indigo-400/5 border border-indigo-400/10 rounded-lg space-y-1">
-                    <p className="text-[10px] text-indigo-400">
-                      {t('agent.detail.codexMcpHint')}
-                    </p>
-                    <p className="text-[10px] text-indigo-400">
-                      {t('agent.detail.codexSkillHint')}
-                    </p>
-                  </div>
-                </div>
-              ) : isWindsurf ? (
-                <div className="space-y-1.5">
-                  {pluginStatus?.skillOutputExists && (
-                    <div className="flex items-center gap-2">
-                      <FolderOpen size={11} className="text-gray-500 flex-shrink-0" />
-                      <code className="text-[10px] text-gray-400 font-mono truncate">{pluginStatus.skillOutputPath}</code>
-                    </div>
-                  )}
-                  <div className="px-3 py-2 bg-blue-500/5 border border-blue-500/10 rounded-lg space-y-1">
-                    <p className="text-[10px] text-blue-400">
-                      {t('agent.detail.windsurfMcpHint')}
-                    </p>
-                    <p className="text-[10px] text-blue-400">
-                      {t('agent.detail.windsurfSkillHint')}
-                    </p>
-                  </div>
-                </div>
-              ) : isOpenClaw ? (
-                <div className="space-y-1.5">
-                  {pluginStatus?.skillOutputExists && (
-                    <div className="flex items-center gap-2">
-                      <FolderOpen size={11} className="text-gray-500 flex-shrink-0" />
-                      <code className="text-[10px] text-gray-400 font-mono truncate">{pluginStatus.skillOutputPath}</code>
-                    </div>
-                  )}
-                  <div className="px-3 py-2 bg-blue-500/5 border border-blue-500/10 rounded-lg space-y-1">
-                    <p className="text-[10px] text-blue-400">
-                      {t('agent.detail.openclawMcpHint')}
-                    </p>
-                    <p className="text-[10px] text-blue-400">
-                      {t('agent.detail.openclawSkillHint')}
-                    </p>
-                  </div>
-                </div>
-              ) : isGemini ? (
-                <div className="space-y-1.5">
-                  <div className="px-3 py-2 bg-emerald-500/5 border border-emerald-500/10 rounded-lg space-y-1">
-                    <p className="text-[10px] text-emerald-400">
-                      {t('agent.detail.geminiMcpHint')}
-                    </p>
-                    <p className="text-[10px] text-emerald-400">
-                      {t('agent.detail.geminiSkillHint')}
-                    </p>
+                  <div className={`px-3 py-2 border rounded-lg space-y-1 ${pluginDetailToneClass}`}>
+                    {pluginDetail.hintKeys.map(key => (
+                      <p key={key} className="text-[10px]">
+                        {t(key)}
+                      </p>
+                    ))}
                   </div>
                 </div>
               ) : (
