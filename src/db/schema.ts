@@ -5,6 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { createLogger } from '../utils/logger.js';
+import {
+  addColumnIfMissing,
+  execIgnoringDuplicateColumn,
+  execIgnoringErrors,
+  tableHasColumn,
+} from './migration-helpers.js';
 
 const log = createLogger('schema');
 
@@ -494,21 +500,15 @@ const MIGRATIONS: Migration[] = [
     up: (db) => {
       // 这些是之前用 try-catch 做的迁移，整合到 v1
       // 对于已有数据库，这些列可能已存在（仅忽略 "duplicate column" 错误）
-      const addColumnSafe = (sql: string) => {
-        try { db.exec(sql); } catch (e) {
-          const msg = (e as Error).message ?? '';
-          if (!msg.includes('duplicate column')) throw e;
-        }
-      };
-      addColumnSafe('ALTER TABLE operation_log ADD COLUMN agent_id TEXT');
-      addColumnSafe('ALTER TABLE links ADD COLUMN refined INTEGER DEFAULT 0');
-      addColumnSafe('ALTER TABLE nodes ADD COLUMN specificity REAL DEFAULT 0.5');
-      addColumnSafe('ALTER TABLE nodes ADD COLUMN subjectivity REAL DEFAULT 0.5');
-      addColumnSafe('ALTER TABLE nodes ADD COLUMN actuality REAL DEFAULT 0.5');
-      addColumnSafe('ALTER TABLE nodes ADD COLUMN is_crystal INTEGER DEFAULT 0');
-      addColumnSafe('ALTER TABLE nodes ADD COLUMN is_tag INTEGER DEFAULT 0');
-      addColumnSafe('ALTER TABLE nodes ADD COLUMN is_meta INTEGER DEFAULT 0');
-      addColumnSafe("ALTER TABLE timeline_events ADD COLUMN actor TEXT DEFAULT 'brain'");
+      execIgnoringDuplicateColumn(db, 'ALTER TABLE operation_log ADD COLUMN agent_id TEXT');
+      execIgnoringDuplicateColumn(db, 'ALTER TABLE links ADD COLUMN refined INTEGER DEFAULT 0');
+      execIgnoringDuplicateColumn(db, 'ALTER TABLE nodes ADD COLUMN specificity REAL DEFAULT 0.5');
+      execIgnoringDuplicateColumn(db, 'ALTER TABLE nodes ADD COLUMN subjectivity REAL DEFAULT 0.5');
+      execIgnoringDuplicateColumn(db, 'ALTER TABLE nodes ADD COLUMN actuality REAL DEFAULT 0.5');
+      execIgnoringDuplicateColumn(db, 'ALTER TABLE nodes ADD COLUMN is_crystal INTEGER DEFAULT 0');
+      execIgnoringDuplicateColumn(db, 'ALTER TABLE nodes ADD COLUMN is_tag INTEGER DEFAULT 0');
+      execIgnoringDuplicateColumn(db, 'ALTER TABLE nodes ADD COLUMN is_meta INTEGER DEFAULT 0');
+      execIgnoringDuplicateColumn(db, "ALTER TABLE timeline_events ADD COLUMN actor TEXT DEFAULT 'brain'");
 
       // 回填结构角色 flags
       db.exec(`UPDATE nodes SET is_crystal = 1 WHERE type = 'crystal' AND is_crystal = 0`);
@@ -543,10 +543,7 @@ const MIGRATIONS: Migration[] = [
     version: 2,
     description: 'llm_usage_log 新增 estimated_cost 列 + 历史数据回填',
     up: (db) => {
-      try { db.exec('ALTER TABLE llm_usage_log ADD COLUMN estimated_cost REAL DEFAULT 0'); } catch (e) {
-        const msg = (e as Error).message ?? '';
-        if (!msg.includes('duplicate column')) throw e;
-      }
+      execIgnoringDuplicateColumn(db, 'ALTER TABLE llm_usage_log ADD COLUMN estimated_cost REAL DEFAULT 0');
 
       // 回填历史数据的预估费用
       // 动态导入 pricing 会增加复杂度，这里用内联的简化定价表回填
@@ -834,10 +831,7 @@ const MIGRATIONS: Migration[] = [
     version: 7,
     description: '新增 is_superseded 字段（被取代的旧版本节点标记）',
     up(db: Database.Database) {
-      const cols = db.prepare("PRAGMA table_info('nodes')").all() as Array<{ name: string }>;
-      if (!cols.some(c => c.name === 'is_superseded')) {
-        db.exec('ALTER TABLE nodes ADD COLUMN is_superseded INTEGER DEFAULT 0');
-      }
+      addColumnIfMissing(db, 'nodes', 'is_superseded', 'ALTER TABLE nodes ADD COLUMN is_superseded INTEGER DEFAULT 0');
     },
   },
   {
@@ -860,14 +854,8 @@ const MIGRATIONS: Migration[] = [
       `);
 
       // 2. 为 logseq_sync 和 obsidian_sync 添加 source_id 列（表可能不存在，跳过即可）
-      const addColumnSafe = (sql: string) => {
-        try { db.exec(sql); } catch (e) {
-          const msg = (e as Error).message ?? '';
-          if (!msg.includes('duplicate column') && !msg.includes('no such table')) throw e;
-        }
-      };
-      addColumnSafe("ALTER TABLE logseq_sync ADD COLUMN source_id TEXT DEFAULT ''");
-      addColumnSafe("ALTER TABLE obsidian_sync ADD COLUMN source_id TEXT DEFAULT ''");
+      execIgnoringErrors(db, "ALTER TABLE logseq_sync ADD COLUMN source_id TEXT DEFAULT ''", ['duplicate column', 'no such table']);
+      execIgnoringErrors(db, "ALTER TABLE obsidian_sync ADD COLUMN source_id TEXT DEFAULT ''", ['duplicate column', 'no such table']);
 
       // 3. 迁移旧配置：从 config.toml 读取已有笔记源并创建记录
       migrateLegacyNoteSources(db);
@@ -904,12 +892,7 @@ const MIGRATIONS: Migration[] = [
     version: 10,
     description: '节点标题字段：新增 title 列',
     up: (db) => {
-      try {
-        db.exec("ALTER TABLE nodes ADD COLUMN title TEXT");
-      } catch (e) {
-        const msg = (e as Error).message ?? '';
-        if (!msg.includes('duplicate column')) throw e;
-      }
+      execIgnoringDuplicateColumn(db, 'ALTER TABLE nodes ADD COLUMN title TEXT');
       log.info('迁移 v10 完成: nodes.title 列已添加');
     },
   },
@@ -949,12 +932,7 @@ const MIGRATIONS: Migration[] = [
     version: 12,
     description: '云同步准备：新增 source_device 列',
     up: (db) => {
-      try {
-        db.exec("ALTER TABLE nodes ADD COLUMN source_device TEXT DEFAULT 'local'");
-      } catch (e) {
-        const msg = (e as Error).message ?? '';
-        if (!msg.includes('duplicate column')) throw e;
-      }
+      execIgnoringDuplicateColumn(db, "ALTER TABLE nodes ADD COLUMN source_device TEXT DEFAULT 'local'");
       log.info('迁移 v12 完成: nodes.source_device 列已添加');
     },
   },
@@ -1266,18 +1244,15 @@ const MIGRATIONS: Migration[] = [
     version: 17,
     description: 'Reconcile LWW: nodes/links 加 updated 字段(双端 LWW 冲突检测)',
     up: (db) => {
-      // nodes 表
-      const nodesCols = db.prepare("PRAGMA table_info(nodes)").all() as Array<{ name: string }>;
-      if (!nodesCols.some(c => c.name === 'updated')) {
-        db.exec('ALTER TABLE nodes ADD COLUMN updated TEXT');
-        // Backfill: 老节点从未修改过,updated = created
+      const nodesUpdatedWasMissing = !tableHasColumn(db, 'nodes', 'updated');
+      addColumnIfMissing(db, 'nodes', 'updated', 'ALTER TABLE nodes ADD COLUMN updated TEXT');
+      if (nodesUpdatedWasMissing) {
         db.exec('UPDATE nodes SET updated = created WHERE updated IS NULL');
       }
 
-      // links 表
-      const linksCols = db.prepare("PRAGMA table_info(links)").all() as Array<{ name: string }>;
-      if (!linksCols.some(c => c.name === 'updated')) {
-        db.exec('ALTER TABLE links ADD COLUMN updated TEXT');
+      const linksUpdatedWasMissing = !tableHasColumn(db, 'links', 'updated');
+      addColumnIfMissing(db, 'links', 'updated', 'ALTER TABLE links ADD COLUMN updated TEXT');
+      if (linksUpdatedWasMissing) {
         db.exec('UPDATE links SET updated = created WHERE updated IS NULL');
       }
 
@@ -1399,10 +1374,12 @@ const MIGRATIONS: Migration[] = [
       // 新增 processing_started_at 专门记录进入 processing 的时刻。
       //
       // 幂等：用 PRAGMA table_info 检测列是否存在。
-      const cols = db.prepare("PRAGMA table_info(pending_digests)").all() as Array<{ name: string }>;
-      if (!cols.some(c => c.name === 'processing_started_at')) {
-        db.exec('ALTER TABLE pending_digests ADD COLUMN processing_started_at TEXT');
-      }
+      addColumnIfMissing(
+        db,
+        'pending_digests',
+        'processing_started_at',
+        'ALTER TABLE pending_digests ADD COLUMN processing_started_at TEXT',
+      );
       log.info('迁移 v20 完成: pending_digests.processing_started_at 已添加');
     },
   },

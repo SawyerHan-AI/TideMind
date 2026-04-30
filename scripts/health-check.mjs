@@ -19,6 +19,7 @@ const checks = [
   { name: 'website build', cwd: path.join(repoRoot, 'pro/website'), command: 'npm', args: ['run', 'build'] },
   { name: 'client build', cwd: path.join(repoRoot, 'client'), command: 'npm', args: ['run', 'build'] },
   { name: 'client typecheck', cwd: path.join(repoRoot, 'client'), command: 'npx', args: ['tsc', '--build', '--noEmit'] },
+  { name: 'client audit', cwd: path.join(repoRoot, 'client'), command: 'npm', args: ['audit', '--audit-level=high'] },
 ];
 
 /**
