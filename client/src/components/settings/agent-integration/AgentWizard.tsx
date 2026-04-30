@@ -57,19 +57,7 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
 
   // 根据流程类型决定步骤
   const stepLabels = usePlugin
-    ? isCowork
-      ? [t('agent.wizard.nameAgent'), t('agent.wizard.configCowork'), t('agent.wizard.verify')]
-      : isCursor
-        ? [t('agent.wizard.nameAgent'), t('agent.wizard.configCursor'), t('agent.wizard.verify')]
-        : isCodex
-          ? [t('agent.wizard.nameAgent'), t('agent.wizard.configCodex'), t('agent.wizard.verify')]
-          : isWindsurf
-            ? [t('agent.wizard.nameAgent'), t('agent.wizard.configWindsurf'), t('agent.wizard.verify')]
-            : isOpenClaw
-              ? [t('agent.wizard.nameAgent'), t('agent.wizard.configOpenClaw'), t('agent.wizard.verify')]
-              : isGemini
-                ? [t('agent.wizard.nameAgent'), t('agent.wizard.configGemini'), t('agent.wizard.verify')]
-                : [t('agent.wizard.nameAgent'), t('agent.wizard.installPlugin'), t('agent.wizard.verify')]
+    ? [t('agent.wizard.nameAgent'), t(toolDef?.wizardConfigStepKey ?? 'agent.wizard.installPlugin'), t('agent.wizard.verify')]
     : [t('agent.wizard.nameAgent'), t('agent.wizard.mcpConfig'), t('agent.wizard.skillFile'), t('agent.wizard.verify')]
 
   // 选择工具类型后自动填充名称
@@ -304,12 +292,8 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
           usePlugin={usePlugin}
           pluginGenerated={pluginGenerated}
           desktopConfigWritten={desktopConfigWritten}
-          isCowork={isCowork}
-          isCursor={isCursor}
-          isCodex={isCodex}
-          isWindsurf={isWindsurf}
-          isOpenClaw={isOpenClaw}
-          isGemini={isGemini}
+          pluginToolLabel={toolDef?.label ?? 'Claude Code'}
+          pluginVerifyMcp={toolDef?.pluginVerifyMcp}
           isManual={isManual}
           onPrevious={() => setStep(usePlugin ? 1 : 2)}
           onClose={onClose}

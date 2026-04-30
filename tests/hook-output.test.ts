@@ -6,36 +6,30 @@ describe('formatHookOutput', () => {
     expect(formatHookOutput('hello', 'claude-code')).toBe('hello')
   })
 
-  it('returns plain text for Codex (also pass-through)', () => {
-    expect(formatHookOutput('codex content', 'codex')).toBe('codex content')
-  })
-
   it('returns plain text for an unknown tool (forward-compatible default)', () => {
     expect(formatHookOutput('something', 'unknown-tool')).toBe('something')
   })
 
-  it('wraps content as JSON for Gemini CLI', () => {
-    const out = formatHookOutput('hello world', 'gemini')
-    const parsed = JSON.parse(out)
-    expect(parsed).toEqual({ hookSpecificOutput: { additionalContext: 'hello world' } })
+  it.each(['codex', 'gemini'])('wraps content as JSON for %s', (tool) => {
+    const out = formatHookOutput('hello world', tool)
+    expect(JSON.parse(out)).toEqual({ hookSpecificOutput: { additionalContext: 'hello world' } })
   })
 
-  it('Gemini output is pure JSON (no leading/trailing text)', () => {
-    const out = formatHookOutput('x', 'gemini')
+  it.each(['codex', 'gemini'])('%s output is pure JSON (no leading/trailing text)', (tool) => {
+    const out = formatHookOutput('x', tool)
     expect(out.startsWith('{')).toBe(true)
     expect(out.endsWith('}')).toBe(true)
-    // Round-trip parse should not throw
     expect(() => JSON.parse(out)).not.toThrow()
   })
 
-  it('escapes special characters in Gemini JSON output', () => {
-    const out = formatHookOutput('quotes "x" and\nnewline', 'gemini')
+  it.each(['codex', 'gemini'])('escapes special characters in %s JSON output', (tool) => {
+    const out = formatHookOutput('quotes "x" and\nnewline', tool)
     const parsed = JSON.parse(out)
     expect(parsed.hookSpecificOutput.additionalContext).toBe('quotes "x" and\nnewline')
   })
 
-  it('handles empty content for Gemini', () => {
-    const out = formatHookOutput('', 'gemini')
+  it.each(['codex', 'gemini'])('handles empty content for %s', (tool) => {
+    const out = formatHookOutput('', tool)
     expect(JSON.parse(out)).toEqual({ hookSpecificOutput: { additionalContext: '' } })
   })
 })

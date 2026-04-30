@@ -17,6 +17,30 @@ import type {
   VersionData,
 } from './api'
 
+export type PluginClientType = 'claude-code' | 'cowork' | 'cursor' | 'codex' | 'windsurf' | 'openclaw' | 'gemini'
+
+export interface PluginStatusResult {
+  exists: boolean
+  clientType?: PluginClientType
+  pluginDir?: string
+  tools?: string[]
+  skillFile?: string
+  generatedAt?: string
+  skillOutdated?: boolean
+  skillOutputPath?: string
+  skillOutputExists?: boolean
+  desktopConfigWritten?: boolean
+  cursorConfigWritten?: boolean
+  codexConfigWritten?: boolean
+  windsurfConfigWritten?: boolean
+  openclawConfigWritten?: boolean
+  hooksConfigured?: boolean
+  skillDirWritten?: boolean
+  stagingExists?: boolean
+  installedExists?: boolean
+  registered?: boolean | null
+}
+
 export interface AppApi {
   onDataChanged: (callback: (payload: { scopes: string[] }) => void) => () => void
   nodes: {
@@ -245,6 +269,6 @@ export interface AppApi {
     installPlugin: (pluginName: string) => Promise<{ success: boolean; error?: string }>
     pluginPath: (agentId: string, toolType?: string) => Promise<string | null>
     uninstallPlugin: (agentId: string, toolType?: string) => Promise<{ success: boolean; error?: string }>
-    pluginStatus: (agentId: string, toolType?: string) => Promise<Record<string, unknown>>
+    pluginStatus: (agentId: string, toolType?: string) => Promise<PluginStatusResult>
   }
 }

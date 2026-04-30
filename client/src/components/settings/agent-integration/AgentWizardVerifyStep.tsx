@@ -1,6 +1,7 @@
 import { CheckCircle, ChevronLeft } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { Agent } from './types'
+import type { PluginVerifyMcpMeta } from './toolTypes'
 import { VerifyItem } from './VerifyItem'
 
 interface AgentWizardVerifyStepProps {
@@ -8,32 +9,11 @@ interface AgentWizardVerifyStepProps {
   usePlugin: boolean
   pluginGenerated: boolean
   desktopConfigWritten: boolean
-  isCowork: boolean
-  isCursor: boolean
-  isCodex: boolean
-  isWindsurf: boolean
-  isOpenClaw: boolean
-  isGemini: boolean
+  pluginToolLabel: string
+  pluginVerifyMcp?: PluginVerifyMcpMeta
   isManual: boolean
   onPrevious: () => void
   onClose: () => void
-}
-
-function pluginToolLabel({
-  isCowork,
-  isCursor,
-  isCodex,
-  isWindsurf,
-  isOpenClaw,
-  isGemini,
-}: Pick<AgentWizardVerifyStepProps, 'isCowork' | 'isCursor' | 'isCodex' | 'isWindsurf' | 'isOpenClaw' | 'isGemini'>): string {
-  if (isCowork) return 'Claude Cowork'
-  if (isCursor) return 'Cursor'
-  if (isCodex) return 'Codex'
-  if (isWindsurf) return 'Windsurf'
-  if (isOpenClaw) return 'OpenClaw'
-  if (isGemini) return 'Gemini CLI'
-  return 'Claude Code'
 }
 
 export function AgentWizardVerifyStep({
@@ -41,12 +21,8 @@ export function AgentWizardVerifyStep({
   usePlugin,
   pluginGenerated,
   desktopConfigWritten,
-  isCowork,
-  isCursor,
-  isCodex,
-  isWindsurf,
-  isOpenClaw,
-  isGemini,
+  pluginToolLabel,
+  pluginVerifyMcp,
   isManual,
   onPrevious,
   onClose,
@@ -65,50 +41,15 @@ export function AgentWizardVerifyStep({
           <VerifyItem
             ok={pluginGenerated}
             label={t('agent.wizard.verifyPluginGenerated', {
-              tool: pluginToolLabel({ isCowork, isCursor, isCodex, isWindsurf, isOpenClaw, isGemini }),
+              tool: pluginToolLabel,
             })}
           />
         )}
-        {isCowork && (
+        {pluginVerifyMcp && (
           <VerifyItem
             ok={desktopConfigWritten}
-            label={t('agent.wizard.verifyDesktopMcp')}
-            hint={!desktopConfigWritten ? t('agent.wizard.verifyDesktopMcpHintNeeded') : t('agent.wizard.verifyDesktopMcpHintDone')}
-          />
-        )}
-        {isCursor && (
-          <VerifyItem
-            ok={desktopConfigWritten}
-            label={t('agent.wizard.verifyCursorMcp')}
-            hint={desktopConfigWritten ? t('agent.wizard.verifyCursorMcpHintOk') : t('agent.wizard.verifyCursorMcpHintFail')}
-          />
-        )}
-        {isCodex && (
-          <VerifyItem
-            ok={desktopConfigWritten}
-            label={t('agent.wizard.verifyCodexMcp')}
-            hint={desktopConfigWritten ? t('agent.wizard.verifyCodexMcpHintOk') : t('agent.wizard.verifyCodexMcpHintFail')}
-          />
-        )}
-        {isWindsurf && (
-          <VerifyItem
-            ok={desktopConfigWritten}
-            label={t('agent.wizard.verifyWindsurfMcp')}
-            hint={desktopConfigWritten ? t('agent.wizard.verifyWindsurfMcpHintOk') : t('agent.wizard.verifyWindsurfMcpHintFail')}
-          />
-        )}
-        {isOpenClaw && (
-          <VerifyItem
-            ok={desktopConfigWritten}
-            label={t('agent.wizard.verifyOpenClawMcp')}
-            hint={desktopConfigWritten ? t('agent.wizard.verifyOpenClawMcpHintOk') : t('agent.wizard.verifyOpenClawMcpHintFail')}
-          />
-        )}
-        {isGemini && (
-          <VerifyItem
-            ok={desktopConfigWritten}
-            label={t('agent.wizard.verifyGeminiMcp')}
-            hint={desktopConfigWritten ? t('agent.wizard.verifyGeminiMcpHintOk') : t('agent.wizard.verifyGeminiMcpHintFail')}
+            label={t(pluginVerifyMcp.labelKey)}
+            hint={t(desktopConfigWritten ? pluginVerifyMcp.hintOkKey : pluginVerifyMcp.hintFailKey)}
           />
         )}
         {isManual && (
