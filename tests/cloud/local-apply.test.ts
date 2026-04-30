@@ -117,4 +117,28 @@ describe('cloud local row apply', () => {
     expect(JSON.parse(node.tags)).toEqual([])
     expect(JSON.parse(link.relation)).toEqual([])
   })
+
+  it('treats string tombstones as archived and cleans local vector rows', () => {
+    const db = setupTestDb()
+    createFallbackVecTable(db)
+    const node = seedNode(db, { content: 'string archived node' })
+    db.prepare(
+      'INSERT INTO node_segments (segment_id, node_id, segment_index) VALUES (?, ?, ?)',
+    ).run(`${node.id}#0`, node.id, 0)
+    db.prepare('INSERT INTO nodes_vec (id, embedding) VALUES (?, ?)').run(`${node.id}#0`, Buffer.from([1]))
+
+    applyCloudNodeRow(db, {
+      id: node.id,
+      type: 'fact',
+      content: node.content,
+      archived: 'true',
+      created: node.created,
+      updated: '2026-04-30T00:00:00Z',
+    })
+
+    const row = db.prepare('SELECT archived FROM nodes WHERE id = ?').get(node.id) as { archived: number }
+    const vecs = db.prepare('SELECT COUNT(*) AS cnt FROM nodes_vec WHERE id = ?').get(`${node.id}#0`) as { cnt: number }
+    expect(row.archived).toBe(1)
+    expect(vecs.cnt).toBe(0)
+  })
 })

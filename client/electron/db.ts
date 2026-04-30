@@ -6,6 +6,7 @@ import { parse as parseToml } from 'smol-toml'
 import { migrateDataDirIfNeeded } from '@server/utils/migrate-data-dir.js'
 import { syncSkillFiles, createSyncHashStoreFromDb } from '@server/utils/sync-skill-files.js'
 import { createLogger } from '@server/utils/logger.js'
+import { createOutboxTable } from './cloud/outbox.js'
 
 let db: Database.Database | null = null
 let migrationDone = false
@@ -524,21 +525,9 @@ export function getClientDb(): Database.Database {
   db.pragma('foreign_keys = ON')
   db.pragma('busy_timeout = 10000')
 
-  // Cloud sync 的本地 outbox 表。历史遗留 bug:outbox.ts 定义了
-  // createOutboxTable,但除了测试外没有任何生产路径调用它。结果是
-  // 所有用户的本地 DB 都缺这张表,mcp-router 离线场景和 sync-client
-  // 首次 pushOutbox 都会报 `no such table: local_outbox`,让云同步完全
-  // 不可用。在此统一建表(IF NOT EXISTS 幂等,对已有用户也安全)。
-  // 放在核心 schema 之后而不是 core schema 里,是因为 outbox 属于
-  // 客户端 sync 基础设施,不污染 src/db/ 的 core 表定义。
-  db.exec(`CREATE TABLE IF NOT EXISTS local_outbox (
-    id TEXT PRIMARY KEY,
-    operation TEXT NOT NULL,
-    payload TEXT NOT NULL,
-    source TEXT,
-    created TEXT NOT NULL DEFAULT (datetime('now')),
-    retry_count INTEGER DEFAULT 0
-  )`)
+  // Cloud sync 的本地 outbox/dead-letter 表。放在核心 schema 之后而不是
+  // core schema 里,是因为 outbox 属于客户端 sync 基础设施。
+  createOutboxTable(db)
 
   return db
 }

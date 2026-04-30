@@ -4,6 +4,7 @@ import type { Reconciler as ReconcilerType } from '../cloud/reconciler.js'
 import { getConfig, reloadConfig } from '../../../src/config.js'
 import { createLogger } from '../../../src/utils/logger.js'
 import { parseRequiredBoolean } from './_schemas.js'
+import { getOutboxDiagnostics } from '../cloud/outbox.js'
 
 const log = createLogger('ipc-cloud')
 
@@ -57,6 +58,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
       outboxCount: 0, lastSyncedAt: null,
       cloudNotAvailable: false, syncNotReady: false,
       lastErrorCode: null, lastErrorMessage: null,
+      outboxDiagnostics: null,
     };
     try {
       const { isLoggedIn, getCloudAuth } = await import('../cloud/auth-client.js');
@@ -73,6 +75,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
       let lastReconcileAtLinks: string | null = null;
       let lastReconcileStatus: string | null = null;
       let lastReconcileError: string | null = null;
+      let outboxDiagnostics: ReturnType<typeof getOutboxDiagnostics> | null = null;
       if (db) {
         try {
           const readMeta = (key: string): string | null => {
@@ -84,6 +87,11 @@ export function registerCloudHandlers(db?: Database.Database): void {
           lastReconcileStatus = readMeta('cloud.last_reconcile_status');
           lastReconcileError = readMeta('cloud.last_reconcile_error');
         } catch { /* metadata 表或列缺失,忽略 */ }
+        try {
+          outboxDiagnostics = getOutboxDiagnostics(db);
+        } catch (err) {
+          log.warn(`failed to read outbox diagnostics: ${(err as Error).message}`);
+        }
       }
 
       const { getCloudSyncClient, getOutboxCount } = await import('../cloud/sync-client.js');
@@ -109,7 +117,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
         // 旧逻辑把"无 syncClient"也当 offline,导致未开启同步的用户被错误地显示为"离线"
         online: syncClient ? syncClient.getStatus() !== 'offline' : true,
         syncing: syncClient ? syncClient.getStatus() === 'syncing' : false,
-        outboxCount: syncClient ? getOutboxCount() : 0,
+        outboxCount: outboxDiagnostics?.pendingCount ?? (syncClient ? getOutboxCount() : 0),
         lastSyncedAt: auth.lastSyncedAt ?? null,
         cloudNotAvailable: syncClient?.cloudNotAvailable ?? false,
         syncNotReady: syncClient?.syncNotReady ?? false,
@@ -120,6 +128,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
         lastReconcileAt: oldestReconcile(lastReconcileAtNodes, lastReconcileAtLinks),
         lastReconcileStatus,
         lastReconcileError,
+        outboxDiagnostics,
       };
     } catch {
       return fallback;

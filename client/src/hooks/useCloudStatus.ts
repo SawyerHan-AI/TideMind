@@ -24,6 +24,19 @@ export interface CloudStatus {
   lastReconcileStatus?: string | null
   /** 上一次对齐失败的原因 */
   lastReconcileError?: string | null
+  /** 本地 outbox/dead-letter 诊断快照。 */
+  outboxDiagnostics?: {
+    pendingCount: number
+    deadLetterCount: number
+    oldestPendingAt: string | null
+    newestPendingAt: string | null
+    maxRetryCount: number
+    lastPendingError: string | null
+    lastDeadLetterError: string | null
+    lastDeadLetterAt: string | null
+    pendingByOperation: Array<{ operation: string; count: number }>
+    deadLetterByOperation: Array<{ operation: string; count: number }>
+  } | null
 }
 
 export function useCloudStatus(): CloudStatus {
