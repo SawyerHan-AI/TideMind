@@ -12,7 +12,12 @@ describe('formatHookOutput', () => {
 
   it.each(['codex', 'gemini'])('wraps content as JSON for %s', (tool) => {
     const out = formatHookOutput('hello world', tool)
-    expect(JSON.parse(out)).toEqual({ hookSpecificOutput: { additionalContext: 'hello world' } })
+    expect(JSON.parse(out)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: 'hello world',
+      },
+    })
   })
 
   it.each(['codex', 'gemini'])('%s output is pure JSON (no leading/trailing text)', (tool) => {
@@ -30,6 +35,11 @@ describe('formatHookOutput', () => {
 
   it.each(['codex', 'gemini'])('handles empty content for %s', (tool) => {
     const out = formatHookOutput('', tool)
-    expect(JSON.parse(out)).toEqual({ hookSpecificOutput: { additionalContext: '' } })
+    expect(JSON.parse(out)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: '',
+      },
+    })
   })
 })
