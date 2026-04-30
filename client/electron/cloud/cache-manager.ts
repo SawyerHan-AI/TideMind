@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { createLogger } from '../../../src/utils/logger.js';
+import { applyCloudLinkRow, applyCloudNodeRow } from './local-apply.js';
 
 const log = createLogger('cloud-cache');
 
@@ -21,9 +22,9 @@ export class CacheManager {
       for (const change of changes) {
         try {
           if (change.table === 'nodes') {
-            this.upsertNode(change.data);
+            applyCloudNodeRow(this.db, change.data);
           } else if (change.table === 'links') {
-            this.upsertLink(change.data);
+            applyCloudLinkRow(this.db, change.data);
           }
           // Other tables can be added later
           applied++;
@@ -39,35 +40,6 @@ export class CacheManager {
     }
     log.info(`applied ${applied}/${changes.length} changes`);
     return applied;
-  }
-
-  private upsertNode(data: Record<string, unknown>): void {
-    const fields = [
-      'id', 'type', 'content', 'title', 'heat', 'refinement', 'connectivity', 'independence',
-      'specificity', 'subjectivity', 'actuality', 'source_tool', 'source_session', 'source_stream',
-      'source_timestamp', 'tags', 'created', 'last_reconsolidated', 'version', 'archived',
-      'is_keystone', 'is_crystal', 'is_tag', 'is_meta', 'is_superseded', 'maturity_score', 'source_device',
-    ];
-    const present = fields.filter(f => data[f] !== undefined);
-    const placeholders = present.map(() => '?').join(',');
-    const values = present.map(f => {
-      const v = data[f];
-      if (typeof v === 'object' && v !== null) return JSON.stringify(v);
-      return v;
-    });
-    this.db.prepare(`INSERT OR REPLACE INTO nodes (${present.join(',')}) VALUES (${placeholders})`).run(...values as any[]);
-  }
-
-  private upsertLink(data: Record<string, unknown>): void {
-    const fields = ['id', 'from_id', 'to_id', 'relation', 'strength', 'note', 'auto', 'status', 'created'];
-    const present = fields.filter(f => data[f] !== undefined);
-    const placeholders = present.map(() => '?').join(',');
-    const values = present.map(f => {
-      const v = data[f];
-      if (typeof v === 'object' && v !== null) return JSON.stringify(v);
-      return v;
-    });
-    this.db.prepare(`INSERT OR REPLACE INTO links (${present.join(',')}) VALUES (${placeholders})`).run(...values as any[]);
   }
 
   async fullSync(token: string): Promise<void> {
@@ -91,8 +63,8 @@ export class CacheManager {
         // Apply rows
         const txn = this.db.transaction(() => {
           for (const row of data.rows) {
-            if (table === 'nodes') this.upsertNode(row);
-            else if (table === 'links') this.upsertLink(row);
+            if (table === 'nodes') applyCloudNodeRow(this.db, row);
+            else if (table === 'links') applyCloudLinkRow(this.db, row);
           }
         });
         txn();

@@ -11,6 +11,22 @@
  * 同一次写入双方时间戳可能有 1s 以内抖动。超过该容差才认为是真正不同的版本。*/
 export const TS_EQUAL_TOLERANCE_MS = 1000;
 
+export interface ReconcileManifestEntry {
+  id: string
+  updated: string
+  archived?: boolean
+}
+
+export type ManifestWinner = 'same' | 'local' | 'server'
+
+export interface ReconcileActionPlan {
+  onlyLocal: string[]
+  onlyServer: string[]
+  toUpload: string[]
+  toDownload: string[]
+  conflicts: Array<{ id: string; winner: 'local' | 'server' }>
+}
+
 /**
  * 把 SQLite / PG / JS 三种格式的时间戳字符串规范化为毫秒数。
  *  - SQLite `datetime('now')`: '2026-04-20 10:30:00'(无 T、无时区,UTC)
@@ -41,4 +57,49 @@ export function timestampsEqual(a: string | null | undefined, b: string | null |
   const db = normalizeTs(b);
   if (da === 0 && db === 0) return true;
   return Math.abs(da - db) < TS_EQUAL_TOLERANCE_MS;
+}
+
+export function chooseManifestWinner(
+  local: ReconcileManifestEntry,
+  server: ReconcileManifestEntry,
+): ManifestWinner {
+  const localArchived = local.archived === true
+  const serverArchived = server.archived === true
+  if (localArchived !== serverArchived) return localArchived ? 'local' : 'server'
+  if (timestampsEqual(local.updated, server.updated)) return 'same'
+  return normalizeTs(local.updated) > normalizeTs(server.updated) ? 'local' : 'server'
+}
+
+export function planReconcileActions(
+  localManifest: ReconcileManifestEntry[],
+  serverManifest: ReconcileManifestEntry[],
+): ReconcileActionPlan {
+  const serverMap = new Map(serverManifest.map(entry => [entry.id, entry]))
+  const localMap = new Map(localManifest.map(entry => [entry.id, entry]))
+  const onlyLocal: string[] = []
+  const onlyServer: string[] = []
+  const conflicts: Array<{ id: string; winner: 'local' | 'server' }> = []
+
+  for (const [id, local] of localMap.entries()) {
+    const server = serverMap.get(id)
+    if (!server) {
+      onlyLocal.push(id)
+      continue
+    }
+
+    const winner = chooseManifestWinner(local, server)
+    if (winner !== 'same') conflicts.push({ id, winner })
+  }
+
+  for (const id of serverMap.keys()) {
+    if (!localMap.has(id)) onlyServer.push(id)
+  }
+
+  return {
+    onlyLocal,
+    onlyServer,
+    toUpload: [...onlyLocal, ...conflicts.filter(item => item.winner === 'local').map(item => item.id)],
+    toDownload: [...onlyServer, ...conflicts.filter(item => item.winner === 'server').map(item => item.id)],
+    conflicts,
+  }
 }

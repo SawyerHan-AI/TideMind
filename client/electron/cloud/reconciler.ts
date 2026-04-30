@@ -31,8 +31,9 @@ const MANIFEST_PAGE_LIMIT = 5000;
 // 时间戳工具抽到独立文件(reconciler-utils.ts),以便测试在根目录 vitest
 // 环境下导入不会触发本文件顶部的 'electron' import 链(CI runner 干净环境
 // 没装 client/ 的 electron 依赖)。re-export 供本文件内部和外部调用者使用。
-export { normalizeTs, timestampsEqual, TS_EQUAL_TOLERANCE_MS } from './reconciler-utils.js';
-import { normalizeTs, timestampsEqual } from './reconciler-utils.js';
+export { chooseManifestWinner, normalizeTs, planReconcileActions, timestampsEqual, TS_EQUAL_TOLERANCE_MS } from './reconciler-utils.js';
+import { planReconcileActions } from './reconciler-utils.js';
+import { applyCloudRows } from './local-apply.js';
 
 export type Table = 'nodes' | 'links';
 export type ReconcilePhase = 'idle' | 'manifest' | 'diff' | 'upload' | 'download' | 'done' | 'failed';
@@ -99,12 +100,15 @@ export class Reconciler {
 
     // 整体状态 + 失败通知
     const anyFailed = results.some(r => r.errors.length > 0);
-    const status = this.aborted ? 'partial' : (anyFailed ? 'failed' : 'ok');
+    const anySucceeded = results.some(r => r.errors.length === 0);
+    const status = this.aborted ? 'partial' : (anyFailed ? (anySucceeded ? 'partial' : 'failed') : 'ok');
     this.setMetadata('cloud.last_reconcile_status', status);
 
     if (anyFailed) {
       this.setMetadata('cloud.last_reconcile_error', results.flatMap(r => r.errors).join('; '));
       this.showFailureNotification(results);
+    } else {
+      this.setMetadata('cloud.last_reconcile_error', '');
     }
 
     this.emitProgress();
@@ -140,32 +144,12 @@ export class Reconciler {
     const localManifest = this.buildLocalManifest(table);
 
     // Step 3: diff
-    const serverMap = new Map(serverManifest.map(e => [e.id, e]));
-    const localMap = new Map(localManifest.map(e => [e.id, e]));
+    const actionPlan = planReconcileActions(localManifest, serverManifest);
 
-    const onlyLocal: string[] = [];
-    const onlyServer: string[] = [];
-    const bothConflict: Array<{ id: string; localNewer: boolean }> = [];
-
-    for (const [id, local] of localMap.entries()) {
-      const server = serverMap.get(id);
-      if (!server) {
-        onlyLocal.push(id);
-      } else if (!timestampsEqual(local.updated, server.updated)) {
-        // 时间戳不等才算 conflict。字符串比较无法处理 SQLite(无毫秒无时区)
-        // vs PG ISO(带毫秒带 +00:00)格式差,一律相等比较会把所有行判为冲突
-        // 触发双向全量传输 → 用户一点"强制对齐"就可能把服务端干超时。
-        bothConflict.push({ id, localNewer: normalizeTs(local.updated) > normalizeTs(server.updated) });
-      }
-    }
-    for (const id of serverMap.keys()) {
-      if (!localMap.has(id)) onlyServer.push(id);
-    }
-
-    log.info(`reconcile ${table}: onlyLocal=${onlyLocal.length} onlyServer=${onlyServer.length} conflict=${bothConflict.length}`);
+    log.info(`reconcile ${table}: onlyLocal=${actionPlan.onlyLocal.length} onlyServer=${actionPlan.onlyServer.length} conflict=${actionPlan.conflicts.length}`);
 
     // Step 4: upload(onlyLocal + local-newer-conflict)
-    const toUpload = [...onlyLocal, ...bothConflict.filter(c => c.localNewer).map(c => c.id)];
+    const toUpload = actionPlan.toUpload;
     this.progress = { table, phase: 'upload', total: toUpload.length, processed: 0 };
     this.emitProgress();
     let uploaded = 0;
@@ -182,7 +166,7 @@ export class Reconciler {
     }
 
     // Step 5: download(onlyServer + server-newer-conflict)
-    const toDownload = [...onlyServer, ...bothConflict.filter(c => !c.localNewer).map(c => c.id)];
+    const toDownload = actionPlan.toDownload;
     this.progress = { table, phase: 'download', total: toDownload.length, processed: 0 };
     this.emitProgress();
     let downloaded = 0;
@@ -203,7 +187,7 @@ export class Reconciler {
       table,
       uploaded,
       downloaded,
-      conflicts: bothConflict.length,
+      conflicts: actionPlan.conflicts.length,
       skipped: uploadSkipped,
       errors: [],
     };
@@ -303,73 +287,7 @@ export class Reconciler {
   }
 
   private applyServerRows(table: Table, rows: Array<Record<string, unknown>>): void {
-    // 直接 INSERT OR REPLACE 写本地表。
-    // 字段顺序和 schema 对齐;boolean 转 INTEGER;tags JSONB 转 JSON 字符串。
-    if (rows.length === 0) return;
-    const insert = this.db.transaction((items: Array<Record<string, unknown>>) => {
-      for (const r of items) {
-        if (table === 'nodes') {
-          this.db.prepare(`
-            INSERT OR REPLACE INTO nodes (
-              id, type, content, title,
-              heat, refinement, connectivity, independence,
-              specificity, subjectivity, actuality,
-              is_crystal, is_tag, is_meta,
-              source_tool, source_session, source_stream, source_timestamp,
-              tags, created, last_reconsolidated, version, archived,
-              is_keystone, is_superseded, source_device, maturity_score, updated
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-          `).run(
-            r.id,
-            r.type ?? 'fact',
-            r.content ?? '',
-            r.title ?? null,
-            Number(r.heat ?? 1.0),
-            Number(r.refinement ?? 0.0),
-            Number(r.connectivity ?? 0.0),
-            Number(r.independence ?? 0.0),
-            Number(r.specificity ?? 0.5),
-            Number(r.subjectivity ?? 0.5),
-            Number(r.actuality ?? 0.5),
-            r.is_crystal ? 1 : 0,
-            r.is_tag ? 1 : 0,
-            r.is_meta ? 1 : 0,
-            r.source_tool ?? null,
-            r.source_session ?? null,
-            r.source_stream ?? null,
-            r.source_timestamp ?? null,
-            typeof r.tags === 'string' ? r.tags : JSON.stringify(r.tags ?? []),
-            r.created ?? new Date().toISOString(),
-            r.last_reconsolidated ?? null,
-            Number(r.version ?? 1),
-            r.archived ? 1 : 0,
-            r.is_keystone ? 1 : 0,
-            r.is_superseded ? 1 : 0,
-            r.source_device ?? 'cloud',
-            Number(r.maturity_score ?? 0.0),
-            r.updated ?? r.created ?? new Date().toISOString(),
-          );
-        } else {
-          this.db.prepare(`
-            INSERT OR REPLACE INTO links (
-              id, from_id, to_id, relation, strength, note, auto, status, created, updated
-            ) VALUES (?,?,?,?,?,?,?,?,?,?)
-          `).run(
-            r.id,
-            r.from_id,
-            r.to_id,
-            typeof r.relation === 'string' ? r.relation : JSON.stringify(r.relation),
-            Number(r.strength ?? 0.5),
-            r.note ?? null,
-            r.auto ? 1 : 0,
-            r.status ?? 'confirmed',
-            r.created ?? new Date().toISOString(),
-            r.updated ?? r.created ?? new Date().toISOString(),
-          );
-        }
-      }
-    });
-    insert(rows);
+    applyCloudRows(this.db, table, rows);
   }
 
   // ── Metadata + Progress emit ─────────────────────────────
@@ -383,7 +301,7 @@ export class Reconciler {
   }
 
   private emitProgress(): void {
-    for (const win of BrowserWindow.getAllWindows()) {
+    for (const win of BrowserWindow?.getAllWindows?.() ?? []) {
       if (!win.isDestroyed()) {
         win.webContents.send('reconcile-progress', this.getProgress());
       }
