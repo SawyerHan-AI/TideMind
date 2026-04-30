@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest';
 // 从 reconciler-utils 导入(不触发 electron import)。v0.2.25 把工具抽离
 // 之前从 reconciler.ts 直接 import,会在 CI 干净环境下 MODULE_NOT_FOUND。
-import { normalizeTs, timestampsEqual } from '../../client/electron/cloud/reconciler-utils.js';
+import { chooseManifestWinner, normalizeTs, timestampsEqual } from '../../client/electron/cloud/reconciler-utils.js';
 
 describe('normalizeTs', () => {
   it('解析 SQLite datetime(no T, no TZ, UTC)', () => {
@@ -76,5 +76,38 @@ describe('timestampsEqual', () => {
   it('一边空一边有值判为不等', () => {
     expect(timestampsEqual(null, '2026-04-20T10:30:00Z')).toBe(false);
     expect(timestampsEqual('2026-04-20 10:30:00', undefined)).toBe(false);
+  });
+});
+
+describe('chooseManifestWinner', () => {
+  it('uses timestamp LWW for non-archived entries', () => {
+    expect(chooseManifestWinner(
+      { id: 'n1', updated: '2026-04-20T10:30:02Z', archived: false },
+      { id: 'n1', updated: '2026-04-20T10:30:00Z', archived: false },
+    )).toBe('local');
+
+    expect(chooseManifestWinner(
+      { id: 'n1', updated: '2026-04-20T10:30:00Z', archived: false },
+      { id: 'n1', updated: '2026-04-20T10:30:02Z', archived: false },
+    )).toBe('server');
+  });
+
+  it('treats archived=true as a tombstone that wins over newer active rows', () => {
+    expect(chooseManifestWinner(
+      { id: 'n1', updated: '2026-04-20T10:30:00Z', archived: true },
+      { id: 'n1', updated: '2026-04-20T10:30:02Z', archived: false },
+    )).toBe('local');
+
+    expect(chooseManifestWinner(
+      { id: 'n1', updated: '2026-04-20T10:30:02Z', archived: false },
+      { id: 'n1', updated: '2026-04-20T10:30:00Z', archived: true },
+    )).toBe('server');
+  });
+
+  it('keeps timestamp tolerance when archive states are identical', () => {
+    expect(chooseManifestWinner(
+      { id: 'n1', updated: '2026-04-20T10:30:00.100Z', archived: false },
+      { id: 'n1', updated: '2026-04-20T10:30:00.900Z', archived: false },
+    )).toBe('same');
   });
 });
