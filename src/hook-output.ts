@@ -4,7 +4,7 @@
  * 不同 CLI 给 SessionStart / PostCompact 等 hook 的 stdout 协议不同：
  *   - Claude Code：纯文本 stdout 直接注入为上下文
  *   - Codex 0.126+ / Gemini CLI 0.26+：必须输出严格 JSON
- *     `{hookSpecificOutput: {additionalContext: "..."}}`
+ *     `{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: "..."}}`
  *     stdout 不能掺杂任何非 JSON 文本
  *
  * 把这层格式选择抽出独立模块，hook-session-start.ts / hook-post-compact.ts 共用，
@@ -14,7 +14,10 @@
 export function formatHookOutput(content: string, tool: string): string {
   if (tool === 'codex' || tool === 'gemini') {
     return JSON.stringify({
-      hookSpecificOutput: { additionalContext: content },
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: content,
+      },
     });
   }
   return content;
