@@ -37,4 +37,12 @@ describe('migration helpers', () => {
       execIgnoringErrors(db, 'ALTER TABLE missing ADD COLUMN source_id TEXT', ['no such table']);
     }).not.toThrow();
   });
+
+  it('quotes unusual table names when checking columns', () => {
+    const db = new Database(':memory:');
+    db.exec('CREATE TABLE "sample.with.dot" ("odd column" TEXT)');
+
+    expect(tableHasColumn(db, 'sample.with.dot', 'odd column')).toBe(true);
+    expect(tableHasColumn(db, 'sample.with.dot', 'missing')).toBe(false);
+  });
 });

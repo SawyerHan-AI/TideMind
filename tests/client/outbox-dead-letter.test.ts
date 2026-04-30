@@ -15,6 +15,7 @@ import {
   markOutboxFailed,
   getOutboxCount,
   getDeadLetterCount,
+  getOutboxDiagnostics,
   OUTBOX_MAX_RETRIES,
 } from '../../client/electron/cloud/outbox.js';
 
@@ -114,8 +115,36 @@ describe('outbox dead-letter', () => {
 
     const cols = db2.prepare(`PRAGMA table_info(local_outbox)`).all() as Array<{ name: string }>;
     expect(cols.some(c => c.name === 'last_error')).toBe(true);
+    expect(() => db2.prepare('SELECT COUNT(*) AS cnt FROM local_outbox_dead').get()).not.toThrow();
 
     const [item] = db2.prepare('SELECT * FROM local_outbox').all() as Array<{ id: string }>;
     expect(item.id).toBe('old'); // 老数据保留
+  });
+
+  it('汇总 outbox 诊断信息，包含 pending / dead-letter / 最近错误', () => {
+    const first = enqueueOutbox(db, 'digest', { content: 'first' }, 'mcp');
+    enqueueOutbox(db, 'edit_node', { id: 'n1' }, 'ui');
+    markOutboxFailed(db, first, 'first retry failed');
+
+    const poison = enqueueOutbox(db, 'digest', { content: 'poison' }, 'mcp');
+    for (let i = 0; i < OUTBOX_MAX_RETRIES; i++) {
+      markOutboxFailed(db, poison, 'poison payload');
+    }
+
+    const diagnostics = getOutboxDiagnostics(db);
+
+    expect(diagnostics.pendingCount).toBe(2);
+    expect(diagnostics.deadLetterCount).toBe(1);
+    expect(diagnostics.maxRetryCount).toBe(1);
+    expect(diagnostics.oldestPendingAt).toMatch(/^\d{4}-\d{2}-\d{2}/);
+    expect(diagnostics.lastPendingError).toBe('first retry failed');
+    expect(diagnostics.lastDeadLetterError).toBe('poison payload');
+    expect(diagnostics.pendingByOperation).toEqual([
+      { operation: 'digest', count: 1 },
+      { operation: 'edit_node', count: 1 },
+    ]);
+    expect(diagnostics.deadLetterByOperation).toEqual([
+      { operation: 'digest', count: 1 },
+    ]);
   });
 });

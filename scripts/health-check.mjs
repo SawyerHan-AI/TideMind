@@ -14,12 +14,14 @@ const checks = [
   { name: 'root lint', cwd: repoRoot, command: 'npm', args: ['run', 'lint'] },
   { name: 'root build', cwd: repoRoot, command: 'npm', args: ['run', 'build'] },
   { name: 'root test', cwd: repoRoot, command: 'npm', args: ['test'] },
+  { name: 'root audit', cwd: repoRoot, command: 'npm', args: ['audit', '--audit-level=moderate'] },
   { name: 'cloud typecheck', cwd: path.join(repoRoot, 'pro/cloud-server'), command: 'npx', args: ['tsc', '--noEmit'] },
   { name: 'cloud test', cwd: path.join(repoRoot, 'pro/cloud-server'), command: 'npm', args: ['test'] },
+  { name: 'cloud audit', cwd: path.join(repoRoot, 'pro/cloud-server'), command: 'npm', args: ['audit', '--audit-level=moderate'] },
   { name: 'website build', cwd: path.join(repoRoot, 'pro/website'), command: 'npm', args: ['run', 'build'] },
   { name: 'client build', cwd: path.join(repoRoot, 'client'), command: 'npm', args: ['run', 'build'] },
   { name: 'client typecheck', cwd: path.join(repoRoot, 'client'), command: 'npx', args: ['tsc', '--build', '--noEmit'] },
-  { name: 'client audit', cwd: path.join(repoRoot, 'client'), command: 'npm', args: ['audit', '--audit-level=high'] },
+  { name: 'client audit', cwd: path.join(repoRoot, 'client'), command: 'npm', args: ['audit', '--audit-level=moderate'] },
 ];
 
 /**

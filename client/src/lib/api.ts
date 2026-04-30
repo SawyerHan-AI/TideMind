@@ -228,6 +228,20 @@ export interface CloudStatusData {
   lastReconcileAt?: string | null
   lastReconcileStatus?: string | null
   lastReconcileError?: string | null
+  outboxDiagnostics?: CloudOutboxDiagnostics | null
+}
+
+export interface CloudOutboxDiagnostics {
+  pendingCount: number
+  deadLetterCount: number
+  oldestPendingAt: string | null
+  newestPendingAt: string | null
+  maxRetryCount: number
+  lastPendingError: string | null
+  lastDeadLetterError: string | null
+  lastDeadLetterAt: string | null
+  pendingByOperation: Array<{ operation: string; count: number }>
+  deadLetterByOperation: Array<{ operation: string; count: number }>
 }
 
 export interface ExplorerFilter {

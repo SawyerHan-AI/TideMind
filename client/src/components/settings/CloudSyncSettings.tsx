@@ -192,6 +192,11 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
   const displayError = dismissed
     ? null
     : (localError ?? (cloud.lastErrorCode ? { code: cloud.lastErrorCode, detail: cloud.lastErrorMessage ?? undefined } : null))
+  const diagnostics = cloud.outboxDiagnostics
+  const formatOperationCounts = (items?: Array<{ operation: string; count: number }>) => {
+    if (!items || items.length === 0) return '—'
+    return items.map(item => `${item.operation} ${item.count}`).join(' · ')
+  }
 
   const handleToggle = useCallback((enabled: boolean) => {
     setLocalError(null)
@@ -382,6 +387,63 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
                     {cloud.outboxCount}
                   </span>
                 </div>
+
+                {diagnostics && (
+                  <div className="pt-2 mt-1 border-t border-white/[0.06] space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-gray-500">{t('settings:cloud.dataSync.deadLetters', 'Dead-lettered changes')}</span>
+                      <span className={`text-xs font-mono ${diagnostics.deadLetterCount > 0 ? 'text-red-400' : 'text-gray-500'}`}>
+                        {diagnostics.deadLetterCount}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-gray-500">{t('settings:cloud.dataSync.maxRetry', 'Max retry count')}</span>
+                      <span className={`text-xs font-mono ${diagnostics.maxRetryCount > 0 ? 'text-amber-400' : 'text-gray-500'}`}>
+                        {diagnostics.maxRetryCount}
+                      </span>
+                    </div>
+                    {diagnostics.oldestPendingAt && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-gray-500">{t('settings:cloud.dataSync.oldestPending', 'Oldest pending')}</span>
+                        <span className="text-xs text-gray-400 font-mono">{formatTime(diagnostics.oldestPendingAt)}</span>
+                      </div>
+                    )}
+                    {(diagnostics.pendingByOperation.length > 0 || diagnostics.deadLetterByOperation.length > 0) && (
+                      <div className="space-y-1">
+                        {diagnostics.pendingByOperation.length > 0 && (
+                          <div className="flex items-start justify-between gap-3">
+                            <span className="text-xs text-gray-500 flex-shrink-0">{t('settings:cloud.dataSync.pendingTypes', 'Pending types')}</span>
+                            <span className="text-xs text-gray-500 font-mono text-right break-all">
+                              {formatOperationCounts(diagnostics.pendingByOperation)}
+                            </span>
+                          </div>
+                        )}
+                        {diagnostics.deadLetterByOperation.length > 0 && (
+                          <div className="flex items-start justify-between gap-3">
+                            <span className="text-xs text-gray-500 flex-shrink-0">{t('settings:cloud.dataSync.deadLetterTypes', 'Dead-letter types')}</span>
+                            <span className="text-xs text-red-300/70 font-mono text-right break-all">
+                              {formatOperationCounts(diagnostics.deadLetterByOperation)}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {(diagnostics.lastPendingError || diagnostics.lastDeadLetterError) && (
+                      <div className="space-y-1 pt-1">
+                        {diagnostics.lastPendingError && (
+                          <p className="text-[10px] text-amber-300/70 font-mono break-all">
+                            {t('settings:cloud.dataSync.lastPendingError', 'Last pending error')}: {diagnostics.lastPendingError}
+                          </p>
+                        )}
+                        {diagnostics.lastDeadLetterError && (
+                          <p className="text-[10px] text-red-300/70 font-mono break-all">
+                            {t('settings:cloud.dataSync.lastDeadLetterError', 'Last dead-letter error')}: {diagnostics.lastDeadLetterError}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {cloud.syncing && (
                   <div className="flex items-center gap-2 pt-1">
