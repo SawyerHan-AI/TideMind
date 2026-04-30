@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 // The release script is intentionally plain Node ESM so it can run without a build step.
 // @ts-expect-error no declaration file for the local .mjs script
-import { commandToString, parseArgs, previousPatch } from '../../scripts/release.mjs';
+import { commandToString, findReleaseRunId, parseArgs, previousPatch } from '../../scripts/release.mjs';
 
 describe('release script helpers', () => {
   it('derives the previous patch version when possible', () => {
@@ -63,5 +63,16 @@ describe('release script helpers', () => {
   it('quotes command parts for readable dry-run output', () => {
     expect(commandToString('git', ['commit', '-m', 'sync 0.2.52: test']))
       .toBe('git commit -m "sync 0.2.52: test"');
+  });
+
+  it('finds tag-triggered release runs from GitHub run list output', () => {
+    const runs = [
+      { databaseId: 101, headBranch: 'main', status: 'in_progress' },
+      { databaseId: 202, headBranch: 'v0.2.52', status: 'queued' },
+    ];
+
+    expect(findReleaseRunId(runs, '0.2.52')).toBe('202');
+    expect(findReleaseRunId(runs, 'v0.2.52')).toBe('202');
+    expect(findReleaseRunId(runs, '0.2.51')).toBeNull();
   });
 });
