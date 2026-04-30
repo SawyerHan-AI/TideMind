@@ -224,8 +224,8 @@ function parseJsonOutput(cmd, args, cwd) {
   return JSON.parse(result.stdout);
 }
 
-function getReleaseRunId(tag, ossRepo) {
-  const runs = parseJsonOutput('gh', [
+function listReleaseRuns(ossRepo) {
+  return parseJsonOutput('gh', [
     'run',
     'list',
     '--repo',
@@ -237,9 +237,45 @@ function getReleaseRunId(tag, ossRepo) {
     '--json',
     'databaseId,headBranch,event,status,createdAt,displayTitle',
   ], ossRepo);
-  const match = runs.find(run => run.headBranch === `v${tag}` || run.headBranch === tag);
-  if (!match) throw new Error(`Could not find Release workflow run for v${tag}`);
-  return String(match.databaseId);
+}
+
+export function findReleaseRunId(runs, tag) {
+  const tagName = tag.startsWith('v') ? tag : `v${tag}`;
+  const match = runs.find(run => run.headBranch === tagName || run.headBranch === tag);
+  return match ? String(match.databaseId) : null;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function getReleaseRunId(tag, ossRepo, timeoutMs) {
+  const tagName = tag.startsWith('v') ? tag : `v${tag}`;
+  const started = Date.now();
+  const deadline = started + timeoutMs;
+  const pollMs = 5_000;
+  let attempts = 0;
+  let lastRunSummary = '';
+
+  while (Date.now() <= deadline) {
+    attempts++;
+    const runs = listReleaseRuns(ossRepo);
+    const runId = findReleaseRunId(runs, tag);
+    if (runId) {
+      if (attempts > 1) console.log(`✓ release workflow run appeared after ${attempts} checks`);
+      return runId;
+    }
+
+    lastRunSummary = runs
+      .slice(0, 5)
+      .map(run => `${run.workflowName ?? 'Release'}:${run.headBranch ?? '(no branch)'}:${run.status ?? 'unknown'}`)
+      .join(', ');
+    console.log(`> Waiting for Release workflow run for ${tagName} (${attempts}); recent runs: ${lastRunSummary || 'none'}`);
+    await sleep(Math.min(pollMs, Math.max(0, deadline - Date.now())));
+  }
+
+  const waitedSeconds = Math.round((Date.now() - started) / 1000);
+  throw new Error(`Could not find Release workflow run for ${tagName} after ${waitedSeconds}s; recent runs: ${lastRunSummary || 'none'}`);
 }
 
 function assertTagState(tag, ossRepo, forceTag) {
@@ -384,7 +420,7 @@ async function main() {
   run('git', ['push', 'origin', tagName], { cwd: opts.ossRepo, label: `push ${tagName}`, dryRun: opts.dryRun });
 
   if (!opts.dryRun) {
-    const runId = getReleaseRunId(version, opts.ossRepo);
+    const runId = await getReleaseRunId(version, opts.ossRepo, opts.timeoutMinutes * 60_000);
     run('gh', ['run', 'watch', runId, '--repo', 'SawyerHan-AI/TideMind', '--exit-status'], {
       cwd: opts.ossRepo,
       label: `wait release workflow ${runId}`,
