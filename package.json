@@ -27,7 +27,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@notionhq/client": "^2.2.14",
     "@types/js-yaml": "^4.0.9",
-    "better-sqlite3": "^11.8.0",
+    "better-sqlite3": "^12.9.0",
     "js-yaml": "^4.1.1",
     "nanoid": "^5.1.0",
     "protobufjs": "^7.5.4",
