@@ -116,8 +116,15 @@ const api: AppApi = {
     stats: (id: string) => ipcRenderer.invoke('note-sources:stats', id),
     initPreview: (id: string) => ipcRenderer.invoke('note-sources:init-preview', id),
     initStart: (id: string) => ipcRenderer.invoke('note-sources:init-start', id),
-    initProgress: (id: string) => ipcRenderer.invoke('note-sources:init-progress', id),
+    /** 完整 snapshot（status / progress / error / report / canStart 等） */
+    initSnapshot: (id: string) => ipcRenderer.invoke('note-sources:init-snapshot', id),
     initAbort: (id: string) => ipcRenderer.invoke('note-sources:init-abort', id),
+    /** 订阅会话状态/进度事件。返回取消订阅函数。 */
+    onSessionEvent: (cb: (snapshot: unknown) => void): (() => void) => {
+      const listener = (_ev: unknown, snapshot: unknown) => cb(snapshot)
+      ipcRenderer.on('note-sources:session-event', listener)
+      return () => { ipcRenderer.off('note-sources:session-event', listener) }
+    },
     rollback: (id: string) => ipcRenderer.invoke('note-sources:rollback', id),
     importStatus: (id: string) => ipcRenderer.invoke('note-sources:import-status', id),
     triggerImport: (id: string) => ipcRenderer.invoke('note-sources:trigger-import', id),

@@ -244,6 +244,14 @@
     "init": {
       "interrupted": "Initialization interrupted",
       "inProgress": "Initializing",
+      "aborting": "Stopping…",
+      "abortedBy": {
+        "user": "Stopped",
+        "stuck": "System detected no response",
+        "navigation": "Previous run interrupted",
+        "shutdown": "Previous run interrupted (app quit)"
+      },
+      "retry": "Retry",
       "complete": "Connection complete",
       "continueInit": "Continue initialization",
       "discard": "Discard and delete",

@@ -36,68 +36,9 @@ import { markFullScanCompleted } from './sync-state.js';
 import { findLandingConnections } from '../../graph/landing.js';
 import { getVectorForNode } from '../../db/vectors.js';
 import { estimateCost } from '../../llm/pricing.js';
+import type { InitSessionContext } from '../shared/init-session.js';
 
 const log = createLogger('logseq-init');
-
-// --- 进度跟踪 ---
-
-export interface InitProgress {
-  phase: number;
-  phaseName: string;
-  current: number;
-  total: number;
-  status: 'idle' | 'running' | 'done' | 'error';
-  startedAt: string | null;
-  error?: string;
-}
-
-// --- 多实例状态 ---
-const DEFAULT_PROGRESS: InitProgress = {
-  phase: -1,
-  phaseName: 'idle',
-  current: 0,
-  total: 0,
-  status: 'idle',
-  startedAt: null,
-};
-const DEFAULT_SOURCE = '__default__';
-
-const progressMap = new Map<string, InitProgress>();
-const abortedSet = new Set<string>();
-const initializingSet = new Set<string>();
-
-function getProgress(sourceId?: string): InitProgress {
-  const key = sourceId ?? DEFAULT_SOURCE;
-  if (!progressMap.has(key)) {
-    progressMap.set(key, { ...DEFAULT_PROGRESS });
-  }
-  return progressMap.get(key)!;
-}
-
-export function getInitProgress(sourceId?: string): InitProgress {
-  return { ...getProgress(sourceId) };
-}
-
-export function abortInit(sourceId?: string): void {
-  abortedSet.add(sourceId ?? DEFAULT_SOURCE);
-}
-
-export function isAnyInitializing(): boolean {
-  return initializingSet.size > 0;
-}
-
-function isAborted(sourceId?: string): boolean {
-  return abortedSet.has(sourceId ?? DEFAULT_SOURCE);
-}
-
-function setPhase(phase: number, name: string, total: number, sourceId?: string): void {
-  const key = sourceId ?? DEFAULT_SOURCE;
-  progressMap.set(key, { phase, phaseName: name, current: 0, total, status: 'running', startedAt: now() });
-}
-
-function advanceProgress(delta: number = 1, sourceId?: string): void {
-  getProgress(sourceId).current += delta;
-}
 
 // --- 预览（不执行导入） ---
 
@@ -220,15 +161,25 @@ export interface InitReport {
 
 /**
  * 执行完整初始化管线（Phase 0-8）
+ *
+ * 由 InitSessionManager 调用，状态、进度、中断信号都通过 ctx 完成。
+ * 函数本身不再持有任何全局状态——所有 sourceId 维度的并发互斥由 SessionManager 负责。
  */
-export async function runInitialization(db: Database.Database, sourceId?: string, sourcePath?: string): Promise<InitReport> {
-  const key = sourceId ?? DEFAULT_SOURCE;
-  if (initializingSet.has(key)) throw new Error('初始化已在进行中，不能重复启动');
-  // 全局锁：同一时刻只允许一个初始化
-  if (initializingSet.size > 0) throw new Error('有其他笔记源正在初始化，请等待完成后再试');
-  initializingSet.add(key);
-  abortedSet.delete(key);
+export async function runInitialization(
+  db: Database.Database,
+  ctx: InitSessionContext,
+  sourcePath?: string,
+): Promise<InitReport> {
+  const sourceId = ctx.sourceId;
+  const signal = ctx.signal;
   const startTime = Date.now();
+  const startedAtIso = now();
+
+  const checkAborted = () => {
+    if (signal.aborted) {
+      throw signal.reason ?? new Error('初始化已中断');
+    }
+  };
 
   reloadConfig(); // 确保读到客户端最新保存的 config
   const config = getConfig();
@@ -247,276 +198,271 @@ export async function runInitialization(db: Database.Database, sourceId?: string
 
   let nodesCreated = 0;
   let linksCreated = 0;
-  let danglingRefs: number;
 
-  try {
-    // === Phase 0: 扫描分类 ===
-    setPhase(0, '扫描分类', 0, sourceId);
-    log.info('Phase 0: 扫描分类');
+  // === Phase 0: 扫描分类 ===
+  ctx.reportPhase(0, '扫描分类', 0);
+  log.info('Phase 0: 扫描分类');
 
-    const allFiles = walkMdFiles(graphRoot);
-    const classification = classifyFiles(allFiles, graphRoot);
-    getProgress(sourceId).total = classification.summary.total;
-    getProgress(sourceId).current = classification.summary.total;
+  const allFiles = walkMdFiles(graphRoot);
+  const classification = classifyFiles(allFiles, graphRoot);
+  ctx.setProgress({ total: classification.summary.total, current: classification.summary.total });
 
-    if (isAborted(sourceId)) throw new Error('初始化已中断');
+  checkAborted();
 
-    // === Phase 1: 全量预处理 + 时间推断 ===
-    setPhase(1, '预处理', classification.summary.total, sourceId);
-    log.info('Phase 1: 全量预处理');
+  // === Phase 1: 全量预处理 + 时间推断 ===
+  ctx.reportPhase(1, '预处理', classification.summary.total);
+  log.info('Phase 1: 全量预处理');
 
-    buildBlockIndex(graphRoot);
+  buildBlockIndex(graphRoot);
 
-    // 共享文件内容缓存（时间推断 + 入度统计复用）
-    const contentCache = new Map<string, string>();
-    const readCached = (fp: string): string | null => {
-      if (!contentCache.has(fp)) {
-        const r = safeReadTextFileSync(fp);
-        if (!r.ok) return null;
-        contentCache.set(fp, r.content);
-      }
-      return contentCache.get(fp) ?? null;
-    };
+  // 共享文件内容缓存（时间推断 + 入度统计复用）
+  const contentCache = new Map<string, string>();
+  const readCached = (fp: string): string | null => {
+    if (!contentCache.has(fp)) {
+      const r = safeReadTextFileSync(fp);
+      if (!r.ok) return null;
+      contentCache.set(fp, r.content);
+    }
+    return contentCache.get(fp) ?? null;
+  };
 
-    // 时间推断（六层策略链）
-    const inferredDates = inferPageDates(classification.files, readCached);
+  // 时间推断（六层策略链）
+  const inferredDates = inferPageDates(classification.files, readCached);
 
-    // 入度统计
-    const inDegreeMap = buildInDegreeMap(classification.files, readCached);
+  // 入度统计
+  const inDegreeMap = buildInDegreeMap(classification.files, readCached);
 
-    // 导入日期基准
-    const importDate = new Date().toISOString().slice(0, 10);
+  // 导入日期基准
+  const importDate = new Date().toISOString().slice(0, 10);
 
-    // 按时间排序（contentCache 保留到 Phase 3 后再释放）
-    const sortedFiles = sortByTime(classification.files, inferredDates);
-    getProgress(sourceId).current = sortedFiles.length;
+  // 按时间排序（contentCache 保留到 Phase 3 后再释放）
+  const sortedFiles = sortByTime(classification.files, inferredDates);
+  ctx.setProgress({ current: sortedFiles.length });
 
-    if (isAborted(sourceId)) throw new Error('初始化已中断');
+  checkAborted();
 
-    // === Phase 2: 按时间排序入库 ===
-    setPhase(2, '入库', sortedFiles.length, sourceId);
-    log.info(`Phase 2: 按时间排序入库 (${sortedFiles.length} 个文件)`);
+  // === Phase 2: 按时间排序入库 ===
+  ctx.reportPhase(2, '入库', sortedFiles.length);
+  log.info(`Phase 2: 按时间排序入库 (${sortedFiles.length} 个文件)`);
 
-    // 文件 → 节点ID 映射（用于 Phase 3 显式链接）
-    const fileToNodeIds = new Map<string, string[]>();
+  // 文件 → 节点ID 映射（用于 Phase 3 显式链接）
+  const fileToNodeIds = new Map<string, string[]>();
 
-    for (const file of sortedFiles) {
-      if (isAborted(sourceId)) throw new Error('初始化已中断');
+  for (const file of sortedFiles) {
+    checkAborted();
 
-      // 断点恢复：跳过已入库的文件
-      const existingState = getFileState(db, file.relPath, sourceId);
-      if (existingState && existingState.node_ids.length > 0) {
-        fileToNodeIds.set(file.title, existingState.node_ids);
-        nodesCreated += existingState.node_ids.length;
-        advanceProgress(1, sourceId);
-        continue;
-      }
-
-      try {
-        const nodeIds = await processFileForInit(db, file, graphRoot, inferredDates, inDegreeMap, importDate, sourceId);
-        if (nodeIds.length > 0) {
-          fileToNodeIds.set(file.title, nodeIds);
-          nodesCreated += nodeIds.length;
-        }
-      } catch (err) {
-        log.warn(`文件入库失败 ${file.relPath}: ${(err as Error).message}`);
-      }
-
-      advanceProgress(1, sourceId);
+    // 断点恢复：跳过已入库的文件
+    const existingState = getFileState(db, file.relPath, sourceId);
+    if (existingState && existingState.node_ids.length > 0) {
+      fileToNodeIds.set(file.title, existingState.node_ids);
+      nodesCreated += existingState.node_ids.length;
+      ctx.advance();
+      continue;
     }
 
-    log.info(`Phase 2 完成: ${nodesCreated} 个节点`);
-    if (isAborted(sourceId)) throw new Error('初始化已中断');
-
-    // === Phase 2.5: 版本文件导入 ===
-    log.info('Phase 2.5: 版本文件导入');
     try {
-      const versionCount = await importVersionHistory(db, graphRoot, fileToNodeIds);
-      if (versionCount > 0) {
-        log.info(`Phase 2.5 完成: ${versionCount} 个历史版本`);
+      const nodeIds = await processFileForInit(db, file, graphRoot, inferredDates, inDegreeMap, importDate, sourceId);
+      if (nodeIds.length > 0) {
+        fileToNodeIds.set(file.title, nodeIds);
+        nodesCreated += nodeIds.length;
       }
     } catch (err) {
-      log.warn(`版本文件导入失败: ${(err as Error).message}`);
+      log.warn(`文件入库失败 ${file.relPath}: ${(err as Error).message}`);
     }
 
-    if (isAborted(sourceId)) throw new Error('初始化已中断');
-
-    // === Phase 3: Logseq 显式链接 ===
-    setPhase(3, '显式链接', nodesCreated, sourceId);
-    log.info('Phase 3: Logseq 显式链接转化');
-
-    const explicitResult = await createExplicitLinks(db, sortedFiles, fileToNodeIds, contentCache);
-    linksCreated += explicitResult.created;
-    danglingRefs = explicitResult.dangling;
-    getProgress(sourceId).current = nodesCreated;
-
-    // Phase 3 之后释放内容缓存
-    contentCache.clear();
-
-    log.info(`Phase 3 完成: ${explicitResult.created} 条显式链接, ${danglingRefs} 个悬空引用`);
-    if (isAborted(sourceId)) throw new Error('初始化已中断');
-
-    // === Phase 3.5: 标签提升 ===
-    // 所有节点和基本链接已建立，标签引用计数准确
-    // 此时提升标签，使其参与后续的标注、Landing Connections 等流程
-    log.info('Phase 3.5: 标签提升');
-    try {
-      const tagResult = await promoteFrequentTags(db);
-      if (tagResult.promoted > 0) {
-        nodesCreated += tagResult.promoted;
-        linksCreated += tagResult.linksCreated;
-        log.info(`Phase 3.5 完成: ${tagResult.promoted} 个标签晋升, ${tagResult.linksCreated} 条链接`);
-      }
-    } catch (err) {
-      log.warn(`标签提升失败（不影响初始化）: ${(err as Error).message}`);
-    }
-    if (isAborted(sourceId)) throw new Error('初始化已中断');
-
-    // === Phase 4: 节点标注 ===
-    const pendingAnnotateCount = (db.prepare(
-      'SELECT COUNT(*) as cnt FROM nodes WHERE refinement = 0 AND heat > 0.01 AND is_crystal = 0 AND is_meta = 0 AND is_superseded = 0',
-    ).get() as { cnt: number }).cnt;
-    setPhase(4, '节点标注', pendingAnnotateCount, sourceId);
-    log.info(`Phase 4: 节点标注 (${pendingAnnotateCount} 个待标注节点)`);
-
-    if (isLlmConfigured()) {
-      // 多轮标注直到没有未标注节点
-      // 安全上限：直接用待标注数量，确保即使每轮只处理 1 个也不会提前截断
-      const maxAnnotateRounds = Math.max(200, pendingAnnotateCount);
-      let annotateRound = 0;
-      while (annotateRound < maxAnnotateRounds) {
-        const result = await runAnnotation(db);
-        if (!result || result.annotated === 0) break;
-        annotateRound++;
-        if (annotateRound % 10 === 0) log.info(`Phase 4 进度: 第 ${annotateRound} 轮标注`);
-        advanceProgress(1, sourceId);
-        if (isAborted(sourceId)) throw new Error('初始化已中断');
-      }
-      log.info(`Phase 4 完成: ${annotateRound} 轮标注`);
-    }
-
-    if (isAborted(sourceId)) throw new Error('初始化已中断');
-
-    // === Phase 5: Landing Connections ===
-    // nodes_vec.id 存的是 segment_id（`${nodeId}#${index}`），不是 node.id。
-    // 必须通过 node_segments 桥接才能统计"已 embed 的节点数"。
-    const embeddedNodeCount = (db.prepare(
-      'SELECT COUNT(DISTINCT n.id) as cnt FROM nodes n JOIN node_segments s ON s.node_id = n.id JOIN nodes_vec v ON v.id = s.segment_id WHERE n.heat > 0.01 AND n.is_meta = 0 AND n.is_superseded = 0',
-    ).get() as { cnt: number }).cnt;
-    setPhase(5, 'Landing 连接', embeddedNodeCount, sourceId);
-    log.info(`Phase 5: Landing Connections (${embeddedNodeCount} 个节点)`);
-
-    const landingResult = await createLandingConnections(db, () => isAborted(sourceId), (n: number) => advanceProgress(n, sourceId));
-    linksCreated += landingResult;
-
-    log.info(`Phase 5 完成: ${landingResult} 条 landing 连接`);
-    if (isAborted(sourceId)) throw new Error('初始化已中断');
-
-    // === Phase 6: 链接评估 ===
-    const pendingLinkCount = (db.prepare(
-      "SELECT COUNT(*) as cnt FROM links WHERE status = 'pending'",
-    ).get() as { cnt: number }).cnt;
-    setPhase(6, '链接评估', pendingLinkCount, sourceId);
-    log.info(`Phase 6: 链接评估 (${pendingLinkCount} 条待评估链接)`);
-
-    if (isLlmConfigured()) {
-      const maxEvalRounds = Math.max(200, pendingLinkCount);
-      let evalRound = 0;
-      while (evalRound < maxEvalRounds) {
-        const result = await runLinkEvaluate(db);
-        if (result.evaluated === 0) break;
-        evalRound++;
-        if (evalRound % 10 === 0) log.info(`Phase 6 进度: 第 ${evalRound} 轮评估 (确认=${result.confirmed} 删除=${result.deleted})`);
-        advanceProgress(1, sourceId);
-        if (isAborted(sourceId)) throw new Error('初始化已中断');
-      }
-      log.info(`Phase 6 完成: ${evalRound} 轮评估`);
-    }
-
-    if (isAborted(sourceId)) throw new Error('初始化已中断');
-
-    // === Phase 7: Keystone 标记 ===
-    setPhase(7, 'Keystone 标记', 0, sourceId);
-    log.info('Phase 7: Keystone 标记');
-    runKeystoneIdentification(db);
-    getProgress(sourceId).current = 1;
-
-    if (isAborted(sourceId)) throw new Error('初始化已中断');
-
-    // === Phase 8: 涌现 ===
-    setPhase(8, '涌现', 0, sourceId);
-    log.info('Phase 8: 涌现');
-
-    let crystalsCreated = 0;
-    if (isLlmConfigured()) {
-      try {
-        const crystalNodeIds = await runCrystalEmergence(db);
-        crystalsCreated += crystalNodeIds.length; // 返回类型是 string[]（新结晶节点 ID）
-      } catch (err) {
-        log.warn(`拓扑结晶失败: ${(err as Error).message}`);
-      }
-
-      try {
-        const temporalResult = await runTemporalCrystal(db);
-        crystalsCreated += temporalResult.crystals_created;
-      } catch (err) {
-        log.warn(`时间结晶失败: ${(err as Error).message}`);
-      }
-    }
-
-    // 标记全量扫描完成
-    markFullScanCompleted(db, sourceId);
-
-    // 计算时间覆盖率（文件级别：有推断日期的文件 / 总文件数）
-    const totalFiles = classification.files.length;
-    const filesWithTime = classification.files.filter(
-      f => f.journalDate || (inferredDates.has(f.title) && inferredDates.get(f.title)!.source !== 'fallback'),
-    ).length;
-    const timeCoverage = totalFiles > 0 ? filesWithTime / totalFiles : 0;
-
-    // 计算总费用
-    const totalCost = (db.prepare(`
-      SELECT COALESCE(SUM(estimated_cost), 0) as total
-      FROM llm_usage_log
-      WHERE created >= ?
-    `).get(getProgress(sourceId).startedAt ?? now()) as { total: number }).total;
-
-    const durationMs = Date.now() - startTime;
-    const report: InitReport = {
-      totalFiles: classification.summary.total,
-      nodesCreated,
-      linksCreated,
-      danglingRefs,
-      timeCoverage: Math.round(timeCoverage * 100) / 100,
-      crystalsCreated,
-      totalCost: Math.round(totalCost * 100) / 100,
-      durationMs,
-    };
-
-    // 将报告作为节点存入图谱
-    await saveReportAsNode(db, report);
-
-    // 记录时间线事件
-    logTimelineEvent(db, {
-      type: 'memory',
-      subtype: 'logseq_sync',
-      title: JSON.stringify({ key: 'logseq_init_complete', params: { nodes: nodesCreated, links: linksCreated, crystals: crystalsCreated } }),
-      detail: report as unknown as Record<string, unknown>,
-      important: 1,
-    });
-
-    getProgress(sourceId).status = 'done';
-    log.info(`初始化完成! 耗时 ${Math.round(durationMs / 1000)}s, ${nodesCreated} 节点, ${linksCreated} 链接`);
-
-    return report;
-  } catch (err) {
-    getProgress(sourceId).status = 'error';
-    getProgress(sourceId).error = (err as Error).message;
-    log.error(`初始化失败: ${(err as Error).message}`);
-    throw err;
-  } finally {
-    initializingSet.delete(key);
+    ctx.advance();
+    ctx.heartbeat();
   }
+
+  log.info(`Phase 2 完成: ${nodesCreated} 个节点`);
+  checkAborted();
+
+  // === Phase 2.5: 版本文件导入 ===
+  log.info('Phase 2.5: 版本文件导入');
+  try {
+    const versionCount = await importVersionHistory(db, graphRoot, fileToNodeIds);
+    if (versionCount > 0) {
+      log.info(`Phase 2.5 完成: ${versionCount} 个历史版本`);
+    }
+  } catch (err) {
+    log.warn(`版本文件导入失败: ${(err as Error).message}`);
+  }
+
+  checkAborted();
+
+  // === Phase 3: Logseq 显式链接 ===
+  ctx.reportPhase(3, '显式链接', nodesCreated);
+  log.info('Phase 3: Logseq 显式链接转化');
+
+  const explicitResult = await createExplicitLinks(db, sortedFiles, fileToNodeIds, contentCache);
+  linksCreated += explicitResult.created;
+  const danglingRefs = explicitResult.dangling;
+  ctx.setProgress({ current: nodesCreated });
+
+  // Phase 3 之后释放内容缓存
+  contentCache.clear();
+
+  log.info(`Phase 3 完成: ${explicitResult.created} 条显式链接, ${danglingRefs} 个悬空引用`);
+  checkAborted();
+
+  // === Phase 3.5: 标签提升 ===
+  // 所有节点和基本链接已建立，标签引用计数准确
+  // 此时提升标签，使其参与后续的标注、Landing Connections 等流程
+  log.info('Phase 3.5: 标签提升');
+  try {
+    const tagResult = await promoteFrequentTags(db);
+    if (tagResult.promoted > 0) {
+      nodesCreated += tagResult.promoted;
+      linksCreated += tagResult.linksCreated;
+      log.info(`Phase 3.5 完成: ${tagResult.promoted} 个标签晋升, ${tagResult.linksCreated} 条链接`);
+    }
+  } catch (err) {
+    log.warn(`标签提升失败（不影响初始化）: ${(err as Error).message}`);
+  }
+  checkAborted();
+
+  // === Phase 4: 节点标注 ===
+  const pendingAnnotateCount = (db.prepare(
+    'SELECT COUNT(*) as cnt FROM nodes WHERE refinement = 0 AND heat > 0.01 AND is_crystal = 0 AND is_meta = 0 AND is_superseded = 0',
+  ).get() as { cnt: number }).cnt;
+  ctx.reportPhase(4, '节点标注', pendingAnnotateCount);
+  log.info(`Phase 4: 节点标注 (${pendingAnnotateCount} 个待标注节点)`);
+
+  if (isLlmConfigured()) {
+    // 多轮标注直到没有未标注节点
+    // 安全上限：直接用待标注数量，确保即使每轮只处理 1 个也不会提前截断
+    const maxAnnotateRounds = Math.max(200, pendingAnnotateCount);
+    let annotateRound = 0;
+    while (annotateRound < maxAnnotateRounds) {
+      const result = await runAnnotation(db, { signal });
+      if (!result || result.annotated === 0) break;
+      annotateRound++;
+      if (annotateRound % 10 === 0) log.info(`Phase 4 进度: 第 ${annotateRound} 轮标注`);
+      ctx.advance();
+      ctx.heartbeat();
+      checkAborted();
+    }
+    log.info(`Phase 4 完成: ${annotateRound} 轮标注`);
+  }
+
+  checkAborted();
+
+  // === Phase 5: Landing Connections ===
+  // nodes_vec.id 存的是 segment_id（`${nodeId}#${index}`），不是 node.id。
+  // 必须通过 node_segments 桥接才能统计"已 embed 的节点数"。
+  const embeddedNodeCount = (db.prepare(
+    'SELECT COUNT(DISTINCT n.id) as cnt FROM nodes n JOIN node_segments s ON s.node_id = n.id JOIN nodes_vec v ON v.id = s.segment_id WHERE n.heat > 0.01 AND n.is_meta = 0 AND n.is_superseded = 0',
+  ).get() as { cnt: number }).cnt;
+  ctx.reportPhase(5, 'Landing 连接', embeddedNodeCount);
+  log.info(`Phase 5: Landing Connections (${embeddedNodeCount} 个节点)`);
+
+  const landingResult = await createLandingConnections(
+    db,
+    () => signal.aborted,
+    (n: number) => { ctx.advance(n); ctx.heartbeat(); },
+  );
+  linksCreated += landingResult;
+
+  log.info(`Phase 5 完成: ${landingResult} 条 landing 连接`);
+  checkAborted();
+
+  // === Phase 6: 链接评估 ===
+  const pendingLinkCount = (db.prepare(
+    "SELECT COUNT(*) as cnt FROM links WHERE status = 'pending'",
+  ).get() as { cnt: number }).cnt;
+  ctx.reportPhase(6, '链接评估', pendingLinkCount);
+  log.info(`Phase 6: 链接评估 (${pendingLinkCount} 条待评估链接)`);
+
+  if (isLlmConfigured()) {
+    const maxEvalRounds = Math.max(200, pendingLinkCount);
+    let evalRound = 0;
+    while (evalRound < maxEvalRounds) {
+      const result = await runLinkEvaluate(db, { signal });
+      if (result.evaluated === 0) break;
+      evalRound++;
+      if (evalRound % 10 === 0) log.info(`Phase 6 进度: 第 ${evalRound} 轮评估 (确认=${result.confirmed} 删除=${result.deleted})`);
+      ctx.advance();
+      ctx.heartbeat();
+      checkAborted();
+    }
+    log.info(`Phase 6 完成: ${evalRound} 轮评估`);
+  }
+
+  checkAborted();
+
+  // === Phase 7: Keystone 标记 ===
+  ctx.reportPhase(7, 'Keystone 标记', 0);
+  log.info('Phase 7: Keystone 标记');
+  runKeystoneIdentification(db);
+  ctx.setProgress({ current: 1 });
+
+  checkAborted();
+
+  // === Phase 8: 涌现 ===
+  ctx.reportPhase(8, '涌现', 0);
+  log.info('Phase 8: 涌现');
+
+  let crystalsCreated = 0;
+  if (isLlmConfigured()) {
+    try {
+      const crystalNodeIds = await runCrystalEmergence(db);
+      crystalsCreated += crystalNodeIds.length; // 返回类型是 string[]（新结晶节点 ID）
+    } catch (err) {
+      log.warn(`拓扑结晶失败: ${(err as Error).message}`);
+    }
+
+    try {
+      const temporalResult = await runTemporalCrystal(db);
+      crystalsCreated += temporalResult.crystals_created;
+    } catch (err) {
+      log.warn(`时间结晶失败: ${(err as Error).message}`);
+    }
+  }
+
+  // 标记全量扫描完成
+  markFullScanCompleted(db, sourceId);
+
+  // 计算时间覆盖率（文件级别：有推断日期的文件 / 总文件数）
+  const totalFiles = classification.files.length;
+  const filesWithTime = classification.files.filter(
+    f => f.journalDate || (inferredDates.has(f.title) && inferredDates.get(f.title)!.source !== 'fallback'),
+  ).length;
+  const timeCoverage = totalFiles > 0 ? filesWithTime / totalFiles : 0;
+
+  // 计算总费用
+  const totalCost = (db.prepare(`
+    SELECT COALESCE(SUM(estimated_cost), 0) as total
+    FROM llm_usage_log
+    WHERE created >= ?
+  `).get(startedAtIso) as { total: number }).total;
+
+  const durationMs = Date.now() - startTime;
+  const report: InitReport = {
+    totalFiles: classification.summary.total,
+    nodesCreated,
+    linksCreated,
+    danglingRefs,
+    timeCoverage: Math.round(timeCoverage * 100) / 100,
+    crystalsCreated,
+    totalCost: Math.round(totalCost * 100) / 100,
+    durationMs,
+  };
+
+  // 将报告作为节点存入图谱
+  await saveReportAsNode(db, report);
+
+  // 记录时间线事件
+  logTimelineEvent(db, {
+    type: 'memory',
+    subtype: 'logseq_sync',
+    title: JSON.stringify({ key: 'logseq_init_complete', params: { nodes: nodesCreated, links: linksCreated, crystals: crystalsCreated } }),
+    detail: report as unknown as Record<string, unknown>,
+    important: 1,
+  });
+
+  log.info(`初始化完成! 耗时 ${Math.round(durationMs / 1000)}s, ${nodesCreated} 节点, ${linksCreated} 链接`);
+
+  return report;
 }
 
 // --- 内部函数 ---

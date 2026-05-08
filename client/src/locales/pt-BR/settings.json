@@ -244,6 +244,14 @@
     "init": {
       "interrupted": "Inicialização interrompida",
       "inProgress": "Inicializando",
+      "aborting": "Parando…",
+      "abortedBy": {
+        "user": "Parado",
+        "stuck": "Sistema sem resposta",
+        "navigation": "Execução anterior interrompida",
+        "shutdown": "Execução anterior interrompida (app encerrado)"
+      },
+      "retry": "Tentar novamente",
       "complete": "Conexão concluída",
       "continueInit": "Continuar inicialização",
       "discard": "Descartar e excluir",

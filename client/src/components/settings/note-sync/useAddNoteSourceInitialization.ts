@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import type { InitPreview, InitProgress, InitReport } from './types'
+import type { InitPreview, InitReport } from './types'
 
 interface CreateAndPreviewArgs {
   name: string
@@ -10,37 +9,35 @@ interface CreateAndPreviewArgs {
 
 interface UseAddNoteSourceInitializationArgs {
   onInitStep: () => void
-  onCompleteStep: () => void
 }
 
+/**
+ * Onboarding 创建笔记源 + 拉取初始化预览。
+ *
+ * **不**再管理 init 进度状态——init 进度由 useInitSession 接管。
+ * 本 hook 只负责：
+ *   1. 调 noteSources.create 创建笔记源行（拿到 sourceId）
+ *   2. 调 noteSources.initPreview 拿预览数据
+ *   3. 切到 step 2（init step）
+ *
+ * onboarding 关闭时（cleanupBeforeClose）：
+ *   - 若 init 已启动 → **不**自动 abort（D1：会话不绑死 onboarding 生命周期）
+ *   - 若 init 未启动且笔记源已创建 → rollback 删除空壳
+ */
 export function useAddNoteSourceInitialization({
   onInitStep,
-  onCompleteStep,
 }: UseAddNoteSourceInitializationArgs) {
-  const { t } = useTranslation('settings')
   const [createdSourceId, setCreatedSourceId] = useState<string | null>(null)
   const [initPreview, setInitPreview] = useState<InitPreview | null>(null)
   const [initStarted, setInitStarted] = useState(false)
-  const [initProgress, setInitProgress] = useState<InitProgress | null>(null)
   const [initReport, setInitReport] = useState<InitReport | null>(null)
-  const [initError, setInitError] = useState<string | null>(null)
-  const [aborting, setAborting] = useState(false)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const cancelledRef = useRef(false)
-
-  const clearProgressPoll = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
-  }, [])
 
   useEffect(() => {
     return () => {
       cancelledRef.current = true
-      clearProgressPoll()
     }
-  }, [clearProgressPoll])
+  }, [])
 
   const createAndPreview = useCallback(async ({
     name,
@@ -50,11 +47,7 @@ export function useAddNoteSourceInitialization({
     cancelledRef.current = false
     setInitPreview(null)
     setInitStarted(false)
-    setInitProgress(null)
     setInitReport(null)
-    setInitError(null)
-    setAborting(false)
-    clearProgressPoll()
 
     const source = await window.api.noteSources.create({
       name: name.trim(),
@@ -71,101 +64,52 @@ export function useAddNoteSourceInitialization({
       if (cancelledRef.current) return
       if (res.success) {
         setInitPreview(res.data ?? null)
-      } else {
-        setInitError(res.error ?? 'Preview failed')
       }
-    } catch (err) {
-      if (!cancelledRef.current) setInitError((err as Error).message)
-    }
-  }, [clearProgressPoll, onInitStep])
+    } catch { /* ignore — UI will show "scanning" 然后再次 retry */ }
+  }, [onInitStep])
 
-  const startInit = useCallback(async () => {
-    if (!createdSourceId) return
+  /**
+   * 标记 init 已启动（由 AddNoteSourceInitStep 在 useInitSession 切到 running 时回调）。
+   * 用于 cleanupBeforeClose 判断是否要保留会话。
+   */
+  const markInitStarted = useCallback(() => {
     setInitStarted(true)
-    setInitProgress({
-      phase: 0,
-      phaseName: t('noteSync.wizard.starting'),
-      current: 0,
-      total: 0,
-      status: 'running',
-    })
+  }, [])
 
-    clearProgressPoll()
-    pollRef.current = setInterval(async () => {
-      try {
-        const progress = await window.api.noteSources.initProgress(createdSourceId)
-        if (progress) {
-          setInitProgress(progress)
-          if (progress.status === 'error') {
-            clearProgressPoll()
-            setInitError(progress.error ?? t('noteSync.wizard.unknownError'))
-          }
-        }
-      } catch (err) {
-        console.error('轮询初始化进度失败:', err)
-      }
-    }, 2000)
-
-    try {
-      const res = await window.api.noteSources.initStart(createdSourceId)
-      clearProgressPoll()
-      if (cancelledRef.current) return
-
-      if (res.success) {
-        setInitReport(res.data ?? null)
-        onCompleteStep()
-      } else {
-        setInitError(res.error ?? 'Initialization failed')
-      }
-    } catch (err) {
-      clearProgressPoll()
-      if (!cancelledRef.current) setInitError((err as Error).message)
+  /**
+   * 接住会话终态：若是 done，写入 report 让 step 3 能展示。
+   */
+  const onSessionTerminal = useCallback((status: 'done' | 'aborted' | 'error', report: Record<string, unknown> | null | undefined) => {
+    if (status === 'done' && report) {
+      setInitReport(report as unknown as InitReport)
     }
-  }, [clearProgressPoll, createdSourceId, onCompleteStep, t])
-
-  const handleAbort = useCallback(async () => {
-    if (!createdSourceId) return
-    setAborting(true)
-    try {
-      await window.api.noteSources.initAbort(createdSourceId)
-      clearProgressPoll()
-      setInitError(t('noteSync.wizard.aborted'))
-    } finally {
-      setAborting(false)
-    }
-  }, [clearProgressPoll, createdSourceId, t])
+  }, [])
 
   const cleanupBeforeClose = useCallback(async (): Promise<boolean> => {
-    if (initStarted && !initReport && !initError) {
-      if (!confirm(t('noteSync.wizard.confirmAbort'))) return false
-      cancelledRef.current = true
-      if (createdSourceId) {
-        await window.api.noteSources.initAbort(createdSourceId)
-        await new Promise(r => setTimeout(r, 1000))
-        await window.api.noteSources.rollback(createdSourceId)
-      }
-    } else if (createdSourceId && !initReport) {
-      cancelledRef.current = true
-      await window.api.noteSources.rollback(createdSourceId)
-    } else {
-      cancelledRef.current = true
+    cancelledRef.current = true
+
+    // 若 init 已启动 → 留给设置页接管，不弹 confirm 不 abort
+    if (initStarted) {
+      return true
     }
 
-    clearProgressPoll()
+    // 若笔记源已创建但 init 未启动 → rollback 删空壳
+    if (createdSourceId && !initReport) {
+      try {
+        await window.api.noteSources.rollback(createdSourceId)
+      } catch { /* ignore */ }
+    }
     return true
-  }, [clearProgressPoll, createdSourceId, initError, initReport, initStarted, t])
+  }, [createdSourceId, initReport, initStarted])
 
   return {
     createdSourceId,
     initPreview,
     initStarted,
-    initProgress,
     initReport,
-    initError,
-    aborting,
     createAndPreview,
-    startInit,
-    handleAbort,
+    markInitStarted,
+    onSessionTerminal,
     cleanupBeforeClose,
   }
 }

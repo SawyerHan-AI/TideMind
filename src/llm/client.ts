@@ -174,6 +174,7 @@ async function callGeminiLLM(options: {
   maxTokens: number;
   timeoutMs: number;
   apiKeyOverride?: string;
+  signal?: AbortSignal;
 }): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
   const config = getConfig();
   const apiKey = options.apiKeyOverride || config.gemini.api_key;
@@ -198,6 +199,10 @@ async function callGeminiLLM(options: {
     body.systemInstruction = { parts: [{ text: options.system }] };
   }
 
+  const timeoutSignal = AbortSignal.timeout(options.timeoutMs);
+  const fetchSignal = options.signal
+    ? AbortSignal.any([timeoutSignal, options.signal])
+    : timeoutSignal;
   const resp = await fetch(url, {
     method: 'POST',
     headers: {
@@ -205,7 +210,7 @@ async function callGeminiLLM(options: {
       'x-goog-api-key': apiKey,
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(options.timeoutMs),
+    signal: fetchSignal,
   });
 
   if (!resp.ok) {
@@ -235,6 +240,7 @@ async function callOpenAICompatibleLLM(options: {
   maxTokens: number;
   timeoutMs: number;
   apiKey?: string;
+  signal?: AbortSignal;
 }): Promise<{ text: string; inputTokens: number; outputTokens: number; thinkingTokens: number }> {
   const url = `${options.baseUrl}/chat/completions`;
 
@@ -249,6 +255,10 @@ async function callOpenAICompatibleLLM(options: {
     headers['Authorization'] = `Bearer ${options.apiKey}`;
   }
 
+  const oaTimeoutSignal = AbortSignal.timeout(options.timeoutMs);
+  const oaFetchSignal = options.signal
+    ? AbortSignal.any([oaTimeoutSignal, options.signal])
+    : oaTimeoutSignal;
   const resp = await fetch(url, {
     method: 'POST',
     headers,
@@ -258,7 +268,7 @@ async function callOpenAICompatibleLLM(options: {
       max_tokens: options.maxTokens,
       stream: false,
     }),
-    signal: AbortSignal.timeout(options.timeoutMs),
+    signal: oaFetchSignal,
   });
 
   if (!resp.ok) {
@@ -433,7 +443,16 @@ export async function callLLM(options: {
    */
   thinking?: { mode?: 'manual' | 'adaptive'; budget?: number };
   operationName?: string;
+  /**
+   * 外部 abort signal。设置后用户 abort 会立即取消正在飞行的 LLM 网络请求。
+   * 与内部超时 controller 通过 AbortSignal.any 合并：任一触发都会中止请求。
+   */
+  signal?: AbortSignal;
 }): Promise<string> {
+  // 调用前先检查外部 signal——避免在已 abort 状态下还发起一次完整的 LLM 调用
+  if (options.signal?.aborted) {
+    throw options.signal.reason ?? new Error('LLM call aborted');
+  }
   const config = getConfig();
   const tier = options.model ?? 'standard';
   const modelId = tier === 'heavy' ? config.llm.heavy_model
@@ -504,6 +523,7 @@ export async function callLLM(options: {
       if (resolvedProvider === 'gemini') {
         const geminiOpts: Parameters<typeof callGeminiLLM>[0] = {
           modelId, prompt: options.prompt, system, maxTokens, timeoutMs,
+          signal: options.signal,
         };
         if (resolvedGeminiApiKey) {
           geminiOpts.apiKeyOverride = resolvedGeminiApiKey;
@@ -527,6 +547,7 @@ export async function callLLM(options: {
           maxTokens,
           timeoutMs,
           apiKey: resolvedOpenaiApiKey,
+          signal: options.signal,
         });
         logUsage(modelId, options.operationName, result.inputTokens, result.outputTokens, result.thinkingTokens);
         log.debug(`完成 op=${options.operationName ?? 'unknown'} tokens=${result.inputTokens}+${result.outputTokens} thinking=${result.thinkingTokens} 耗时=${Date.now() - callStart}ms`);
@@ -537,6 +558,10 @@ export async function callLLM(options: {
       const client = resolvedClient ?? await getClaudeClient(resolvedProvider as 'anthropic' | 'vertex');
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      // 合并内部超时 signal 与外部 abort signal：任一触发都中止请求
+      const signalForCall: AbortSignal = options.signal
+        ? AbortSignal.any([controller.signal, options.signal])
+        : controller.signal;
 
       try {
         // thinking 配置:adaptive 不传 budget,manual 传 budget,否则关闭
@@ -594,7 +619,7 @@ export async function callLLM(options: {
 
         const response = await client.messages.create(
           createParams,
-          { signal: controller.signal },
+          { signal: signalForCall },
         );
 
         // thinking tokens 包含在 output_tokens 中，无独立计数字段

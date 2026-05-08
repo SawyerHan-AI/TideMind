@@ -244,6 +244,14 @@
     "init": {
       "interrupted": "Başlatma kesintiye uğradı",
       "inProgress": "Başlatılıyor",
+      "aborting": "Durduruluyor…",
+      "abortedBy": {
+        "user": "Durduruldu",
+        "stuck": "Sistem yanıt vermiyor",
+        "navigation": "Önceki çalıştırma yarıda kaldı",
+        "shutdown": "Önceki çalıştırma yarıda kaldı (uygulama kapandı)"
+      },
+      "retry": "Yeniden dene",
       "complete": "Bağlantı tamamlandı",
       "continueInit": "Başlatmaya devam et",
       "discard": "Vazgeç ve sil",

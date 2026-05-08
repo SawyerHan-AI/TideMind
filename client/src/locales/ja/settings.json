@@ -244,6 +244,14 @@
     "init": {
       "interrupted": "初期化が中断されました",
       "inProgress": "初期化中",
+      "aborting": "停止中…",
+      "abortedBy": {
+        "user": "停止しました",
+        "stuck": "システムが長時間無応答を検出",
+        "navigation": "前回は完了していません",
+        "shutdown": "前回は完了していません（アプリ終了）"
+      },
+      "retry": "再試行",
       "complete": "接続完了",
       "continueInit": "初期化を続行",
       "discard": "破棄して削除",

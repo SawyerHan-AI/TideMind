@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type Database from 'better-sqlite3';
 import { setupTestDb } from '../../helpers/test-db.js';
+import type { InitSessionContext } from '../../../src/integrations/shared/init-session.js';
 
 const queueControl = vi.hoisted(() => ({
   abort: undefined as undefined | (() => void),
@@ -54,20 +55,36 @@ vi.mock('../../../src/utils/logger.js', () => ({
   createLogger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
 }));
 
-import { abortInit, runInitialization } from '../../../src/integrations/notion/initialization.js';
+import { runInitialization } from '../../../src/integrations/notion/initialization.js';
 
 let db: Database.Database;
 
+function makeFakeCtx(sourceId: string): { ctx: InitSessionContext; controller: AbortController } {
+  const controller = new AbortController();
+  const ctx: InitSessionContext = {
+    sourceId,
+    signal: controller.signal,
+    reportPhase: () => {},
+    advance: () => {},
+    setProgress: () => {},
+    heartbeat: () => {},
+  };
+  return { ctx, controller };
+}
+
 beforeEach(() => {
   db = setupTestDb();
-  queueControl.abort = () => abortInit('src-notion');
+  queueControl.abort = undefined;
   queueControl.shouldStopBeforeAbort = null;
   queueControl.shouldStopAfterAbort = null;
 });
 
 describe('Notion initialization abort', () => {
   it('passes the abort predicate into page processing', async () => {
-    await expect(runInitialization(db, 'token', 'src-notion')).rejects.toThrow(/初始化已中断/);
+    const { ctx, controller } = makeFakeCtx('src-notion');
+    queueControl.abort = () => controller.abort(new Error('初始化已中断'));
+
+    await expect(runInitialization(db, ctx, 'token')).rejects.toThrow(/初始化已中断/);
 
     expect(queueControl.shouldStopBeforeAbort).toBe(false);
     expect(queueControl.shouldStopAfterAbort).toBe(true);

@@ -244,6 +244,14 @@
     "init": {
       "interrupted": "初始化中断",
       "inProgress": "初始化进行中",
+      "aborting": "正在停止…",
+      "abortedBy": {
+        "user": "已停止",
+        "stuck": "系统检测到长时间无响应",
+        "navigation": "上次未完成",
+        "shutdown": "上次未完成（应用退出）"
+      },
+      "retry": "重试",
       "complete": "对接完成",
       "continueInit": "继续初始化",
       "discard": "放弃并删除",

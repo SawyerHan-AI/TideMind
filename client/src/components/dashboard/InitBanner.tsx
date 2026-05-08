@@ -36,9 +36,10 @@ export function InitBanner() {
 
         for (const source of (sources ?? [])) {
           if (!source.id) continue
-          const prog = await window.api.noteSources.initProgress(source.id)
+          const snap = await window.api.noteSources.initSnapshot(source.id)
           if (cancelled) return
-          if (prog && (prog.status === 'running' || prog.status === 'done')) {
+          if (snap && (snap.status === 'running' || snap.status === 'done')) {
+            const prog = { ...snap.progress, status: snap.status }
             setProgress({ ...prog, sourceName: source.name })
             setVisible(true)
             found = true
