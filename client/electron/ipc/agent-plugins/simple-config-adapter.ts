@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-import { readJsonSafe, unlinkIfExists, writeFileAtomic, writeJsonAtomic } from './fs-utils'
+import { readJsonStrict, unlinkIfExists, writeFileAtomic, writeJsonAtomic } from './fs-utils'
 import { downloadPath, mcpServerEntry } from './paths'
 import type {
   AgentPluginAdapter,
@@ -24,7 +24,12 @@ export function createSimpleConfigAdapter(options: SimpleConfigAdapterOptions): 
     clientType: options.clientType,
     async generate(ctx) {
       const configPath = options.configPath(ctx)
-      const config = readJsonSafe<any>(configPath, {})
+      // CRITICAL: this config file belongs to a third-party app (Claude Desktop,
+      // Cursor, Codex, Windsurf, OpenClaw, Gemini). If it exists but is malformed,
+      // we MUST NOT silently fall back to {} — that would clobber whatever the user
+      // had (other tools' MCP servers, preferences). readJsonStrict backs up the
+      // original to a .bak and throws so the wizard surfaces the error.
+      const config = readJsonStrict<any>(configPath, {})
       const root = options.configRoot(config)
       root[`tidemind-${ctx.agentId}`] = mcpServerEntry(ctx.runtime, ctx.agentId)
       writeJsonAtomic(configPath, config)
@@ -70,7 +75,10 @@ export function createSimpleConfigAdapter(options: SimpleConfigAdapterOptions): 
       try {
         const configPath = options.configPath(ctx)
         if (fs.existsSync(configPath)) {
-          const config = readJsonSafe<any>(configPath, {})
+          // Same reasoning as in generate(): never silently rewrite a malformed
+          // third-party config with an empty object. readJsonStrict backs up
+          // and throws; the catch below records the error so the user sees it.
+          const config = readJsonStrict<any>(configPath, {})
           const root = options.configRoot(config)
           delete root[`tidemind-${ctx.agentId}`]
           options.deleteConfigRootIfEmpty?.(config)

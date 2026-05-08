@@ -56,6 +56,14 @@ export interface PluginGenerateResult {
   pluginDir: string
   pluginName: string
   marketplaceRegistered: boolean
+  /**
+   * Marketplace root directory (parent of `.claude-plugin/marketplace.json`).
+   * The wizard uses this to render the full install command including the
+   * `claude plugin marketplace add` prefix, so users who run it manually
+   * don't hit "marketplace not registered" errors. Optional because non-
+   * Claude-Code adapters don't have a marketplace.
+   */
+  pluginsDir?: string
   success: boolean
   error?: string
 }

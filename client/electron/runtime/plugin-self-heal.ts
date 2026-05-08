@@ -45,15 +45,56 @@ interface HealResult {
 }
 
 function safeReadJson(filePath: string): any | null {
+  let raw: string
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+    raw = fs.readFileSync(filePath, 'utf-8')
   } catch {
+    // ENOENT / EACCES / etc. — caller already gates on existsSync so this is
+    // typically a permission issue. Stay silent to avoid log noise on every
+    // restart; the file simply gets skipped.
+    return null
+  }
+  try {
+    return JSON.parse(raw)
+  } catch (err: any) {
+    // File exists but is not parseable. Self-heal will skip it (returning null
+    // → caller's `if (!cfg) return`), so no overwrite happens. But surface a
+    // warning so the user / debug logs reveal which third-party config is
+    // broken. Especially important because self-heal touches files we don't
+    // own (cursor mcp.json, claude_desktop_config.json, openclaw.json).
+    log.warn(`self-heal: skipping malformed JSON at ${filePath}: ${err.message}`)
     return null
   }
 }
 
+/**
+ * Atomic JSON write used by self-heal patches. Pattern matches
+ * fs-utils:writeFileAtomic so a crash mid-write leaves the original file
+ * intact. Self-heal patches third-party files (claude_desktop_config.json,
+ * openclaw.json, codex hooks.json…), so non-atomic writes risk leaving the
+ * user with a half-truncated config that breaks their other tools.
+ */
 function safeWriteJson(filePath: string, obj: any): void {
-  fs.writeFileSync(filePath, JSON.stringify(obj, null, 2))
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2))
+    fs.renameSync(tmpPath, filePath)
+  } catch (err) {
+    try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath) } catch { /* ignore */ }
+    throw err
+  }
+}
+
+/** Atomic text write counterpart to safeWriteJson, for TOML self-heal. */
+function safeWriteText(filePath: string, content: string): void {
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`
+  try {
+    fs.writeFileSync(tmpPath, content)
+    fs.renameSync(tmpPath, filePath)
+  } catch (err) {
+    try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath) } catch { /* ignore */ }
+    throw err
+  }
 }
 
 /**
@@ -486,7 +527,7 @@ function healCodexTomlConfig(filePath: string, shimPath: string, mcpServerPath: 
 
   if (changed) {
     try {
-      fs.writeFileSync(filePath, patched)
+      safeWriteText(filePath, patched)
       result.patched++
       log.info(`patched: ${filePath}`)
     } catch (err: any) {

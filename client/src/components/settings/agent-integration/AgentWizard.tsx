@@ -32,6 +32,8 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
   // 插件流程用的状态
   const [pluginDir, setPluginDir] = useState('')
   const [pluginName, setPluginName] = useState('')
+  // marketplace 根目录（仅 claude-code 流程会返回），用于拼接组合 install 命令
+  const [pluginsDir, setPluginsDir] = useState('')
   const [pluginGenerating, setPluginGenerating] = useState(false)
   const [pluginGenerated, setPluginGenerated] = useState(false)
   const [pluginError, setPluginError] = useState('')
@@ -97,6 +99,7 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
         if (result.success) {
           setPluginDir(result.pluginDir)
           setPluginName(result.pluginName)
+          if (result.pluginsDir) setPluginsDir(result.pluginsDir)
           setPluginGenerated(true)
           if (isCowork || isCursor || isCodex || isWindsurf || isOpenClaw || isGemini) {
             setDesktopConfigWritten(true)
@@ -142,9 +145,16 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
     }
   }
 
-  const installCommand = pluginName
-    ? `claude plugin install ${pluginName}@tidemind-local --scope user`
-    : ''
+  // 关键：必须把 `marketplace add` 和 `plugin install` 用 `&&` 串起来。
+  // 单独跑 install 命令在 CLI 还没注册过 marketplace 的环境下会报
+  // "Plugin not found in marketplace 'tidemind-local'"。后端 generate() 已经
+  // 顺便调过一次 marketplace add 做预热（见 claude-code.ts syncCliMarketplace），
+  // 但用户可能跨设备/重装 CLI 后再跑这条命令，必须自带前缀才稳。
+  const installCommand = pluginName && pluginsDir
+    ? `claude plugin marketplace add "${pluginsDir}" && claude plugin install ${pluginName}@tidemind-local --scope user`
+    : pluginName
+      ? `claude plugin install ${pluginName}@tidemind-local --scope user`
+      : ''
 
   // Load skill content (手动流程)
   useEffect(() => {

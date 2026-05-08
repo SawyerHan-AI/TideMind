@@ -108,6 +108,28 @@ describe('simple agent plugin adapters', () => {
     expect(readJson(configPath(runtime.homeDir)).mcpServers).toBeUndefined()
     expect(fs.existsSync(outputPath(runtime.homeDir))).toBe(false)
   })
+
+  // Regression: if the user's third-party config file (claude_desktop_config /
+  // cursor mcp.json / windsurf mcp_config) exists but is malformed JSON, the
+  // adapter must NOT silently rewrite it as `{}` (clobbering all the user's
+  // other MCP servers / preferences). It must throw and leave a .bak.
+  it('refuses to clobber a malformed cursor mcp.json and writes a backup', async () => {
+    const ctx = makeContext(runtime, 'cursor')
+    const cfgPath = path.join(runtime.homeDir, '.cursor', 'mcp.json')
+    fs.mkdirSync(path.dirname(cfgPath), { recursive: true })
+    const original = '{ "mcpServers": { "user-tool": { "command": "/usr/local/bin/tool" } broken'
+    fs.writeFileSync(cfgPath, original)
+
+    await expect(cursorAdapter.generate(ctx)).rejects.toThrow(/Refused to overwrite/)
+
+    // Original file untouched
+    expect(fs.readFileSync(cfgPath, 'utf-8')).toBe(original)
+    // Backup sibling exists with original content
+    const baks = fs.readdirSync(path.dirname(cfgPath))
+      .filter(n => n.startsWith('mcp.json.tidemind-backup-') && n.endsWith('.bak'))
+    expect(baks.length).toBe(1)
+    expect(fs.readFileSync(path.join(path.dirname(cfgPath), baks[0]), 'utf-8')).toBe(original)
+  })
 })
 
 describe('openclaw agent plugin adapter', () => {
@@ -146,5 +168,20 @@ describe('openclaw agent plugin adapter', () => {
     expect(readJson(configPath).mcp.servers).toBeUndefined()
     expect(fs.existsSync(hookPath)).toBe(false)
     expect(fs.existsSync(skillPath)).toBe(false)
+  })
+
+  // Regression: malformed openclaw.json must not be silently overwritten with
+  // `{}` — that would erase any other MCP servers / config the user has set up.
+  it('refuses to clobber a malformed ~/.openclaw/openclaw.json and writes a backup', async () => {
+    const configPath = path.join(runtime.homeDir, '.openclaw', 'openclaw.json')
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    const original = '{"mcp": {"servers": {"foo": {"command": "broken'
+    fs.writeFileSync(configPath, original)
+
+    await expect(openclawAdapter.generate(ctx)).rejects.toThrow(/Refused to overwrite/)
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(original)
+    const baks = fs.readdirSync(path.dirname(configPath))
+      .filter(n => n.startsWith('openclaw.json.tidemind-backup-') && n.endsWith('.bak'))
+    expect(baks.length).toBe(1)
   })
 })

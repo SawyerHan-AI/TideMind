@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { assertPathWithinRoot } from '../_validate'
-import { readJsonSafe, writeFileAtomic, writeJsonAtomic } from './fs-utils'
+import { readJsonStrict, writeFileAtomic, writeJsonAtomic } from './fs-utils'
 import { mcpServerEntry } from './paths'
 import type {
   AgentPluginAdapter,
@@ -35,7 +35,9 @@ export const openclawAdapter: AgentPluginAdapter = {
 
   async generate(ctx: GeneratePluginContext) {
     const openclawConfigPath = configPath(ctx)
-    const openclawConfig = readJsonSafe<any>(openclawConfigPath, {})
+    // ~/.openclaw/openclaw.json belongs to OpenClaw. readJsonStrict backs up
+    // and throws on malformed JSON instead of silently overwriting with `{}`.
+    const openclawConfig = readJsonStrict<any>(openclawConfigPath, {})
     if (!openclawConfig.mcp) openclawConfig.mcp = {}
     if (!openclawConfig.mcp.servers) openclawConfig.mcp.servers = {}
     openclawConfig.mcp.servers[`tidemind-${ctx.agentId}`] = mcpServerEntry(ctx.runtime, ctx.agentId)
@@ -133,7 +135,9 @@ export const openclawAdapter: AgentPluginAdapter = {
     try {
       const cfgPath = configPath(ctx)
       if (fs.existsSync(cfgPath)) {
-        const cfg = readJsonSafe<any>(cfgPath, {})
+        // Same protection as generate: refuse to silently overwrite malformed
+        // openclaw.json with `{}`.
+        const cfg = readJsonStrict<any>(cfgPath, {})
         if (cfg.mcp?.servers) {
           delete cfg.mcp.servers[`tidemind-${ctx.agentId}`]
           if (Object.keys(cfg.mcp.servers).length === 0) delete cfg.mcp.servers

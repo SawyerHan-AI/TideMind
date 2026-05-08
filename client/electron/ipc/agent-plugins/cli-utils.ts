@@ -20,7 +20,7 @@ export async function checkCli(cli: unknown): Promise<{ available: boolean; path
         return { available: true, path: candidate, version: parseVersion(stdout) }
       } catch { /* continue */ }
     }
-    const { stdout } = await execFileAsync('which', [validCli])
+    const { stdout } = await execFileAsync('which', [validCli], { timeout: 5000 })
     const cliPath = stdout.trim()
     if (!cliPath) return { available: false }
     let version: string | undefined

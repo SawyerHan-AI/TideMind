@@ -2,8 +2,9 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
+import { createLogger } from '@server/utils/logger.js'
 import { repairClaudeSettings, repairMarketplaceJson } from '@server/utils/marketplace-repair.js'
-import { readJsonSafe, writeFileAtomic, writeJsonAtomic } from './fs-utils'
+import { readJsonStrict, writeFileAtomic, writeJsonAtomic } from './fs-utils'
 import { cliEnv, mcpServerEntry } from './paths'
 import type {
   AgentPluginAdapter,
@@ -13,6 +14,7 @@ import type {
 } from './types'
 
 const execFileAsync = promisify(execFile)
+const log = createLogger('agent-plugin-claude-code')
 
 export const MARKETPLACE_ID = 'tidemind-local'
 
@@ -28,17 +30,57 @@ function skillPath(ctx: PluginLookupContext): string {
   return path.join(ctx.pluginDir, 'skills', 'tidemind', 'SKILL.md')
 }
 
+/**
+ * Tell the Claude Code CLI about our local marketplace.
+ *
+ * Why we do this in generate() (not just install()):
+ *   The wizard renders a "manual" install command (`claude plugin install
+ *   xxx@tidemind-local --scope user`) right after generate(). If the user
+ *   copies that into their terminal *before* clicking the install button —
+ *   or if they retry from a fresh shell after closing the wizard — the CLI
+ *   has no idea that "tidemind-local" exists yet, because `marketplace add`
+ *   was previously deferred until install time. The result is the
+ *   "Plugin not found in marketplace 'tidemind-local'" error users actually hit.
+ *
+ *   Running `marketplace add` here makes the CLI's known_marketplaces.json
+ *   reflect the on-disk marketplace.json as soon as files exist. The CLI
+ *   command is idempotent (re-add of an existing marketplace just refreshes).
+ *
+ * Failures here are non-fatal: they only mean the CLI didn't pre-register.
+ * The install adapter will try again with `marketplace add` before installing,
+ * so this is a best-effort warm-up, not a hard requirement.
+ */
+async function syncCliMarketplace(pluginsDir: string): Promise<boolean> {
+  try {
+    await execFileAsync('claude', ['plugin', 'marketplace', 'add', pluginsDir], {
+      timeout: 15000,
+      env: cliEnv(),
+    })
+    return true
+  } catch (err: any) {
+    // Best-effort warm-up — failure here is OK, install() will retry. But we
+    // log so the cause (CLI missing, timeout, wrong PATH, …) is recoverable
+    // when users report "marketplace not found" later.
+    const reason = err?.stderr?.trim() || err?.message || String(err)
+    log.warn(`syncCliMarketplace failed for ${pluginsDir}: ${reason}`)
+    return false
+  }
+}
+
 async function registerMarketplace(ctx: GeneratePluginContext): Promise<boolean> {
   const marketplaceDir = path.join(ctx.runtime.pluginsDir, '.claude-plugin')
   fs.mkdirSync(marketplaceDir, { recursive: true })
 
   const marketplacePath = path.join(marketplaceDir, 'marketplace.json')
-  let existing: any = null
-  if (fs.existsSync(marketplacePath)) {
-    try {
-      existing = JSON.parse(fs.readFileSync(marketplacePath, 'utf-8'))
-    } catch { /* parse failure means repair from empty */ }
-  }
+  // marketplace.json holds entries for ALL the user's agents (every Claude Code
+  // agent they've ever set up writes here). If it exists but is malformed we
+  // MUST NOT silently treat it as empty — that would clobber every other
+  // agent's plugin entry the moment we write back. readJsonStrict backs the
+  // file up to a .bak and throws so generate() fails loudly. The wizard
+  // surfaces the error and the user can manually inspect/restore.
+  const existing = fs.existsSync(marketplacePath)
+    ? readJsonStrict<any>(marketplacePath, null as any)
+    : null
   const { output: marketplace } = repairMarketplaceJson(existing)
   marketplace.plugins = marketplace.plugins ?? []
 
@@ -52,13 +94,27 @@ async function registerMarketplace(ctx: GeneratePluginContext): Promise<boolean>
   else marketplace.plugins.push(pluginEntry)
   writeJsonAtomic(marketplacePath, marketplace)
 
+  // Update ~/.claude/settings.json's extraKnownMarketplaces. This is a
+  // best-effort registration so Claude Code recognizes the marketplace.
+  // Failures here MUST NOT fail the whole generate flow — files on disk are
+  // already correct, install() can still succeed via `claude plugin
+  // marketplace add`. But we no longer swallow the error blindly:
+  //   - missing file        → start with {} (normal)
+  //   - malformed JSON      → readJsonStrict backs up to .bak; we log and
+  //                           skip the settings update so we don't clobber
+  //                           the user's settings (other tools, permissions,
+  //                           etc.) with our own subset
+  //   - write failure       → log and return false
+  let settings: any
+  const settingsPath = claudeSettingsPath(ctx)
   try {
-    let settings: any = {}
-    const settingsPath = claudeSettingsPath(ctx)
-    if (fs.existsSync(settingsPath)) {
-      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
-    }
+    settings = readJsonStrict<any>(settingsPath, {})
+  } catch (err: any) {
+    log.warn(`refusing to update ${settingsPath}: ${err.message}. Marketplace will still be registered via CLI.`)
+    return false
+  }
 
+  try {
     const { output: cleanedSettings, changed: settingsChanged } = repairClaudeSettings(settings)
     settings = cleanedSettings
 
@@ -72,7 +128,8 @@ async function registerMarketplace(ctx: GeneratePluginContext): Promise<boolean>
     }
     if (settingsChanged || addedNew) writeJsonAtomic(settingsPath, settings)
     return true
-  } catch {
+  } catch (err: any) {
+    log.warn(`failed to write ${settingsPath}: ${err.message}`)
     return false
   }
 }
@@ -190,7 +247,17 @@ export const claudeCodeAdapter: AgentPluginAdapter = {
     )
 
     const marketplaceRegistered = await registerMarketplace(ctx)
-    return { pluginDir: ctx.pluginDir, pluginName: ctx.pluginName, marketplaceRegistered, success: true }
+    // Best-effort: warm up the Claude Code CLI's marketplace registry so the
+    // install command works whether the user clicks the wizard's button or
+    // copies the displayed command into a terminal. See syncCliMarketplace.
+    await syncCliMarketplace(ctx.runtime.pluginsDir)
+    return {
+      pluginDir: ctx.pluginDir,
+      pluginName: ctx.pluginName,
+      marketplaceRegistered,
+      pluginsDir: ctx.runtime.pluginsDir,
+      success: true,
+    }
   },
 
   getPath(ctx) {
@@ -241,7 +308,12 @@ export const claudeCodeAdapter: AgentPluginAdapter = {
     try {
       const marketplacePath = path.join(ctx.runtime.pluginsDir, '.claude-plugin', 'marketplace.json')
       if (fs.existsSync(marketplacePath)) {
-        const marketplace = readJsonSafe<any>(marketplacePath, { plugins: [] })
+        // readJsonStrict refuses to overwrite a malformed marketplace.json
+        // with `{ plugins: [] }` — that would erase every OTHER agent's
+        // plugin entry. If it throws, we record the error and leave the file
+        // intact (plus a .bak backup); the user can inspect/restore. The
+        // plugin directory cleanup below still proceeds.
+        const marketplace = readJsonStrict<any>(marketplacePath, { plugins: [] })
         marketplace.plugins = (marketplace.plugins ?? []).filter((p: any) => p.name !== ctx.pluginName)
         writeJsonAtomic(marketplacePath, marketplace)
       }
@@ -274,7 +346,16 @@ export const claudeCodeAdapter: AgentPluginAdapter = {
           timeout: 15000,
           env: cliEnv(),
         })
-      } catch { /* already exists */ }
+      } catch (err: any) {
+        // `marketplace add` is idempotent — re-adding an already-registered
+        // marketplace is fine. But if it fails for a real reason (CLI missing,
+        // path invalid, permissions), the next `plugin install` step is the
+        // one that will surface "Plugin not found in marketplace …" to the
+        // user, with no clue why. Log the underlying reason so it's
+        // recoverable from the daemon log.
+        const reason = err?.stderr?.trim() || err?.message || String(err)
+        log.warn(`pre-install marketplace add failed (${ctx.runtime.pluginsDir}): ${reason}`)
+      }
 
       const installArg = `${ctx.pluginName}@${MARKETPLACE_ID}`
       const { stdout, stderr } = await execFileAsync('claude', ['plugin', 'install', installArg, '--scope', 'user'], {

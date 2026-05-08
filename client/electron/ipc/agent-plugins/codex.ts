@@ -10,7 +10,7 @@ import {
   meetsMinVersion,
   wrapSkillWithFrontmatter,
 } from '../codex-cli'
-import { readJsonSafe, unlinkIfExists, writeFileAtomic, writeJsonAtomic } from './fs-utils'
+import { readJsonStrict, unlinkIfExists, writeFileAtomic, writeJsonAtomic } from './fs-utils'
 import { mcpServerEntry } from './paths'
 import type {
   AgentPluginAdapter,
@@ -41,7 +41,11 @@ function nativeSkillRoot(ctx: PluginLookupContext): string {
 
 function writeSessionStartHook(ctx: PluginLookupContext, skillFilePath: string): void {
   const hooksPath = codexHooksPath(ctx)
-  const hooksConfig: any = readJsonSafe<any>(hooksPath, { hooks: {} })
+  // ~/.codex/hooks.json belongs to the Codex CLI. If the file exists but is
+  // malformed, readJsonStrict backs it up and throws — never silently overwrite
+  // a user's existing hooks with `{ hooks: {} }`. The caller (generate) will
+  // surface the error in the wizard.
+  const hooksConfig: any = readJsonStrict<any>(hooksPath, { hooks: {} })
   if (!hooksConfig.hooks) hooksConfig.hooks = {}
   if (!hooksConfig.hooks.SessionStart) hooksConfig.hooks.SessionStart = []
 
@@ -169,7 +173,9 @@ export const codexAdapter: AgentPluginAdapter = {
     try {
       const hooksPath = codexHooksPath(ctx)
       if (fs.existsSync(hooksPath)) {
-        const hooksConfig = readJsonSafe<any>(hooksPath, {})
+        // Same protection as in writeSessionStartHook: readJsonStrict refuses
+        // to silently overwrite a malformed hooks.json with `{}`.
+        const hooksConfig = readJsonStrict<any>(hooksPath, {})
         if (hooksConfig.hooks?.SessionStart) {
           const agentIdToken = `--agent-id ${JSON.stringify(ctx.agentId)}`
           hooksConfig.hooks.SessionStart = hooksConfig.hooks.SessionStart.filter((group: any) =>
