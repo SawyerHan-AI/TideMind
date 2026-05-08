@@ -191,8 +191,8 @@ function McpDetailPanel({ tool }: { tool: Extract<ToolItem, { type: 'mcp' }> }) 
 
   const loadVersions = async () => {
     try {
-      const v = await window.api.config.strategyVersions(`mcp-desc:${tool.name}`)
-      setVersions(v as VersionEntry[])
+      const v = await window.api.config.mcpDescriptionVersions(tool.name)
+      setVersions(Array.isArray(v) ? (v as VersionEntry[]) : [])
     } catch { setVersions([]) }
   }
 
