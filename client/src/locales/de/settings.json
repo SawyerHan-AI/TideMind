@@ -244,6 +244,14 @@
     "init": {
       "interrupted": "Initialisierung unterbrochen",
       "inProgress": "Initialisierung läuft",
+      "aborting": "Wird angehalten…",
+      "abortedBy": {
+        "user": "Angehalten",
+        "stuck": "System hat keine Reaktion erkannt",
+        "navigation": "Vorheriger Lauf unterbrochen",
+        "shutdown": "Vorheriger Lauf unterbrochen (App beendet)"
+      },
+      "retry": "Erneut versuchen",
       "complete": "Verbindung abgeschlossen",
       "continueInit": "Initialisierung fortsetzen",
       "discard": "Verwerfen und löschen",

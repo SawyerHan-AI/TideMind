@@ -244,6 +244,14 @@
     "init": {
       "interrupted": "Inicialización interrumpida",
       "inProgress": "Inicializando",
+      "aborting": "Deteniendo…",
+      "abortedBy": {
+        "user": "Detenido",
+        "stuck": "El sistema detectó falta de respuesta",
+        "navigation": "Ejecución anterior interrumpida",
+        "shutdown": "Ejecución anterior interrumpida (app cerrada)"
+      },
+      "retry": "Reintentar",
       "complete": "Conexión completada",
       "continueInit": "Continuar inicialización",
       "discard": "Descartar y eliminar",

@@ -69,8 +69,12 @@ export interface LinkEvaluateResult {
  * - 确定准确的关系类型
  * - 确认或删除
  */
-export async function runLinkEvaluate(db: Database.Database): Promise<LinkEvaluateResult> {
+export async function runLinkEvaluate(
+  db: Database.Database,
+  opts?: { signal?: AbortSignal },
+): Promise<LinkEvaluateResult> {
   if (!isLlmConfigured()) return { evaluated: 0, confirmed: 0, deleted: 0 };
+  if (opts?.signal?.aborted) throw opts.signal.reason ?? new Error('link-evaluate aborted');
 
   const lookbackHours = getParam('link-evaluate', 'lookback_hours', 48);
   const maxLinks = getParam('link-evaluate', 'max_links_per_run', 50);
@@ -163,7 +167,8 @@ export async function runLinkEvaluate(db: Database.Database): Promise<LinkEvalua
   }
 
   for (const batch of batches) {
-    const result = await evaluateBatch(db, batch, nodeCache);
+    if (opts?.signal?.aborted) throw opts.signal.reason ?? new Error('link-evaluate aborted');
+    const result = await evaluateBatch(db, batch, nodeCache, opts?.signal);
     confirmed += result.confirmed;
     deleted += result.deleted;
   }
@@ -187,6 +192,7 @@ async function evaluateBatch(
   db: Database.Database,
   links: LinkRow[],
   nodeCache: Map<string, BrainNode>,
+  signal?: AbortSignal,
 ): Promise<{ confirmed: number; deleted: number }> {
   let confirmed = 0;
   let deleted = 0;
@@ -214,6 +220,7 @@ async function evaluateBatch(
       ...getLLMOptions('link-evaluate'),
       maxTokens: 2048,
       operationName: 'link-evaluate',
+      signal,
     });
 
     const results = parseBatchResults(response);

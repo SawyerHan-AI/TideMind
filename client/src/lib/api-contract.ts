@@ -19,6 +19,32 @@ import type {
 
 export type PluginClientType = 'claude-code' | 'cowork' | 'cursor' | 'codex' | 'windsurf' | 'openclaw' | 'gemini'
 
+/**
+ * 笔记源初始化会话快照（与主进程 InitSessionSnapshot 对齐）。
+ * 不在主进程类型基础上 import，是因为 client/electron 与 client/src 的 tsconfig
+ * 边界不同；保持文档一致即可。
+ */
+export type NoteSourceInitStatus = 'idle' | 'running' | 'aborting' | 'aborted' | 'error' | 'done'
+export type NoteSourceInitAbortReason = 'user' | 'stuck' | 'navigation' | 'shutdown'
+export interface NoteSourceInitSnapshot {
+  sourceId: string
+  toolType: 'logseq' | 'obsidian' | 'apple-notes' | 'notion'
+  status: NoteSourceInitStatus
+  progress: {
+    phase: number
+    phaseName: string
+    current: number
+    total: number
+    startedAt: string | null
+  }
+  error: string | null
+  abortReason: NoteSourceInitAbortReason | null
+  report: Record<string, unknown> | null
+  canStart: boolean
+  canAbort: boolean
+  canDiscard: boolean
+}
+
 export interface PluginStatusResult {
   exists: boolean
   clientType?: PluginClientType
@@ -221,8 +247,16 @@ export interface AppApi {
       durationMs?: number
       totalCost?: number
     }; error?: string }>
-    initProgress: (id: string) => Promise<{ phase: number; phaseName: string; current: number; total: number; status: string; error?: string } | null>
-    initAbort: (id: string) => Promise<void>
+    /** 完整初始化会话快照。logseq 走 SessionManager 真实快照；其他 tool 由旧 progress 转换。 */
+    initSnapshot: (id: string) => Promise<NoteSourceInitSnapshot | null>
+    initAbort: (id: string) => Promise<{ success: boolean; snapshot?: NoteSourceInitSnapshot }>
+    /**
+     * 订阅会话状态变化（每次 transition / progress 都会推送）。
+     * snapshot 参数类型为 unknown，调用方需断言为 NoteSourceInitSnapshot。
+     * 这是 IPC 边界的常见模式：preload 接收来自主进程的任意 payload，
+     * 编译期无法保证形状一致。
+     */
+    onSessionEvent: (cb: (snapshot: unknown) => void) => () => void
     rollback: (id: string) => Promise<void>
     importStatus: (id: string) => Promise<unknown>
     triggerImport: (id: string) => Promise<{ success: boolean; error?: string }>

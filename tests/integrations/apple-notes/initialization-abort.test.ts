@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { setupTestDb } from '../../helpers/test-db.js';
+import type { InitSessionContext } from '../../../src/integrations/shared/init-session.js';
 
 const queueControl = vi.hoisted(() => ({
   abort: undefined as undefined | (() => void),
@@ -82,18 +83,31 @@ vi.mock('../../../src/utils/logger.js', () => ({
   createLogger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
 }));
 
-import { abortInit, runInitialization } from '../../../src/integrations/apple-notes/initialization.js';
+import { runInitialization } from '../../../src/integrations/apple-notes/initialization.js';
 
 let db: Database.Database;
 let tmpDir: string;
 let noteStorePath: string;
+
+function makeFakeCtx(sourceId: string): { ctx: InitSessionContext; controller: AbortController } {
+  const controller = new AbortController();
+  const ctx: InitSessionContext = {
+    sourceId,
+    signal: controller.signal,
+    reportPhase: () => {},
+    advance: () => {},
+    setProgress: () => {},
+    heartbeat: () => {},
+  };
+  return { ctx, controller };
+}
 
 beforeEach(() => {
   db = setupTestDb();
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-apple-init-abort-'));
   noteStorePath = path.join(tmpDir, 'NoteStore.sqlite');
   fs.writeFileSync(noteStorePath, '');
-  queueControl.abort = () => abortInit('src-apple');
+  queueControl.abort = undefined;
   queueControl.shouldStopBeforeAbort = null;
   queueControl.shouldStopAfterAbort = null;
 });
@@ -105,7 +119,10 @@ afterEach(() => {
 
 describe('Apple Notes initialization abort', () => {
   it('passes the abort predicate into the ingest queue', async () => {
-    await expect(runInitialization(db, 'src-apple', noteStorePath)).rejects.toThrow(/初始化已中断/);
+    const { ctx, controller } = makeFakeCtx('src-apple');
+    queueControl.abort = () => controller.abort(new Error('初始化已中断'));
+
+    await expect(runInitialization(db, ctx, noteStorePath)).rejects.toThrow(/初始化已中断/);
 
     expect(queueControl.shouldStopBeforeAbort).toBe(false);
     expect(queueControl.shouldStopAfterAbort).toBe(true);

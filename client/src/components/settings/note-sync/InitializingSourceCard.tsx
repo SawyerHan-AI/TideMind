@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   AlertCircle,
@@ -6,9 +7,11 @@ import {
   Play,
   RefreshCw,
   Trash2,
+  XCircle,
 } from 'lucide-react'
 import type { NoteSource } from './types'
-import { useInitializingSource } from './useInitializingSource'
+import type { NoteSourceInitSnapshot } from '../../../lib/api-contract'
+import { useInitSession } from './useInitSession'
 
 const PHASE_KEYS = ['scan', 'preprocess', 'digest', 'explicitLinks', 'annotate', 'landing', 'linkEval', 'keystone', 'emergence'] as const
 
@@ -20,154 +23,265 @@ export function InitializingSourceCard({
   onRefetch: () => void
 }) {
   const { t } = useTranslation('settings')
-  const {
-    state,
-    totalFiles,
-    syncedFiles,
-    processedPct,
-    initProgress,
-    initReport,
-    initError,
-    aborting,
-    discarding,
-    handleContinue,
-    handleAbort,
-    handleDiscard,
-    resetToInterrupted,
-  } = useInitializingSource({ source, onRefetch })
+  const [totalFiles, setTotalFiles] = useState<number | null>(null)
+  const [syncedFiles, setSyncedFiles] = useState<number>(0)
 
+  const { snapshot, uiState, aborting, discarding, start, abort, discard } = useInitSession(
+    source.id,
+    {
+      onTerminal: (snap: NoteSourceInitSnapshot) => {
+        // done / aborted / error 终态时同步外层列表（不会阻塞 UI 渲染）
+        if (snap.status === 'done') {
+          setTimeout(() => onRefetch(), 1500)
+        }
+      },
+    },
+  )
+
+  // 加载文件总数与已同步数（与 init session 状态独立）
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      try {
+        const testResult = await window.api.noteSources.test(source.tool_type, source.path)
+        if (!cancelled) setTotalFiles(testResult?.fileCount ?? null)
+      } catch { /* ignore */ }
+      try {
+        const stats = await window.api.noteSources.stats(source.id)
+        if (!cancelled) setSyncedFiles(stats?.fileCount ?? 0)
+      } catch { /* ignore */ }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [source.id, source.path, source.tool_type])
+
+  const processedPct = totalFiles && totalFiles > 0
+    ? Math.round((syncedFiles / totalFiles) * 100)
+    : 0
+
+  const handleDiscard = async () => {
+    if (!confirm(t('noteSync.init.discardConfirm'))) return
+    await discard()
+    onRefetch()
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // UI 状态映射（设计文档第八章）
+  // ─────────────────────────────────────────────────────────────
+
+  // loading：mount 后第一次 fetch 中
+  if (uiState === 'loading') {
+    return (
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <Loader2 size={14} className="text-gray-400 animate-spin flex-shrink-0" />
+          <span className="text-xs text-white font-medium">{source.name}</span>
+        </div>
+      </div>
+    )
+  }
+
+  // running：进度条 + 终止
+  if (uiState === 'running' && snapshot) {
+    return (
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <Loader2 size={14} className="text-indigo-400 animate-spin flex-shrink-0" />
+          <span className="text-xs text-white font-medium">{source.name}</span>
+          <span className="text-[10px] text-indigo-400">{t('noteSync.init.inProgress')}</span>
+        </div>
+        <div className="text-xs text-gray-400">
+          Phase {snapshot.progress.phase}/8: {snapshot.progress.phaseName}
+        </div>
+        <div className="w-full bg-white/[0.06] rounded-full h-2">
+          <div
+            className="bg-indigo-400 h-2 rounded-full transition-all duration-500"
+            style={{ width: `${snapshot.progress.total > 0 ? Math.max(5, Math.round((snapshot.progress.current / snapshot.progress.total) * 100)) : 5}%` }}
+          />
+        </div>
+        <div className="text-xs text-gray-500 text-center">
+          {snapshot.progress.current} / {snapshot.progress.total}
+        </div>
+        <div className="flex gap-0.5">
+          {PHASE_KEYS.map((key, i) => (
+            <div
+              key={i}
+              className={`h-1 flex-1 rounded-full transition-colors ${
+                i < snapshot.progress.phase ? 'bg-green-500'
+                : i === snapshot.progress.phase ? 'bg-indigo-400'
+                : 'bg-white/[0.06]'
+              }`}
+              title={`Phase ${i}: ${t(`noteSync.init.phase.${key}`)}`}
+            />
+          ))}
+        </div>
+        <button
+          onClick={abort}
+          disabled={aborting}
+          className="w-full py-1.5 bg-red-600/20 hover:bg-red-600/30 text-red-400 text-xs rounded-lg transition-colors disabled:opacity-50"
+        >
+          {aborting ? t('noteSync.wizard.aborting') : t('noteSync.wizard.abort')}
+        </button>
+      </div>
+    )
+  }
+
+  // aborting：等业务真停
+  if (uiState === 'aborting') {
+    return (
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <Loader2 size={14} className="text-amber-400 animate-spin flex-shrink-0" />
+          <span className="text-xs text-white font-medium">{source.name}</span>
+          <span className="text-[10px] text-amber-400">{t('noteSync.init.aborting')}</span>
+        </div>
+      </div>
+    )
+  }
+
+  // aborted：显示原因 + 继续/丢弃
+  if (uiState === 'aborted' && snapshot) {
+    const reasonKey = snapshot.abortReason ?? 'user'
+    return (
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <XCircle size={14} className="text-amber-400 flex-shrink-0" />
+          <span className="text-xs text-white font-medium">{source.name}</span>
+          <span className="text-[10px] text-amber-400">
+            {t(`noteSync.init.abortedBy.${reasonKey}`, { defaultValue: t('noteSync.init.interrupted') })}
+          </span>
+        </div>
+        {totalFiles !== null && (
+          <>
+            <div className="text-[11px] text-gray-400">
+              {t('noteSync.init.processedFiles', { current: syncedFiles, total: totalFiles })}
+            </div>
+            <div className="w-full bg-white/[0.06] rounded-full h-1.5">
+              <div
+                className="bg-amber-400 h-1.5 rounded-full transition-all"
+                style={{ width: `${Math.max(2, processedPct)}%` }}
+              />
+            </div>
+          </>
+        )}
+        <div className="flex items-center gap-3 pt-1">
+          <button
+            onClick={start}
+            className="flex items-center gap-2 px-4 py-2 text-xs bg-indigo-500 hover:bg-indigo-400 text-white rounded-lg transition-colors"
+          >
+            <Play size={12} />
+            {t('noteSync.init.continueInit')}
+          </button>
+          <button
+            onClick={handleDiscard}
+            disabled={discarding}
+            className="flex items-center gap-2 px-3 py-2 text-xs text-gray-500 hover:text-red-400 transition-colors disabled:opacity-50"
+          >
+            <Trash2 size={12} />
+            {t('noteSync.init.discard')}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // error：显示错误 + 重试
+  if (uiState === 'error' && snapshot) {
+    return (
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <AlertCircle size={14} className="text-red-400 flex-shrink-0" />
+          <span className="text-xs text-white font-medium">{source.name}</span>
+          <span className="text-[10px] text-red-400">{t('noteSync.wizard.initFailed')}</span>
+        </div>
+        {snapshot.error && <div className="text-xs text-red-300">{snapshot.error}</div>}
+        <div className="flex items-center gap-3 pt-1">
+          <button
+            onClick={start}
+            className="flex items-center gap-2 px-3 py-1.5 text-xs bg-white/5 hover:bg-white/10 rounded-lg text-gray-300 transition-colors"
+          >
+            <RefreshCw size={12} />
+            {t('noteSync.init.retry', { defaultValue: t('noteSync.init.continueInit') })}
+          </button>
+          <button
+            onClick={handleDiscard}
+            disabled={discarding}
+            className="flex items-center gap-2 px-3 py-2 text-xs text-gray-500 hover:text-red-400 transition-colors disabled:opacity-50"
+          >
+            <Trash2 size={12} />
+            {t('noteSync.init.discard')}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // done：报告
+  if (uiState === 'done' && snapshot?.report) {
+    const report = snapshot.report as Record<string, number | undefined>
+    return (
+      <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <CheckCircle size={14} className="text-emerald-400 flex-shrink-0" />
+          <span className="text-xs text-white font-medium">{source.name}</span>
+          <span className="text-[10px] text-emerald-400">{t('noteSync.init.complete')}</span>
+        </div>
+        <div className="grid grid-cols-4 gap-2 text-xs">
+          {[
+            [t('noteSync.wizard.reportNodes'), report.nodesCreated ?? 0],
+            [t('noteSync.wizard.reportLinks'), report.linksCreated ?? 0],
+            [t('noteSync.wizard.reportCrystals'), report.crystalsCreated ?? 0],
+            [t('noteSync.wizard.reportDuration'), `${Math.round((report.durationMs ?? 0) / 1000)}s`],
+          ].map(([label, value]) => (
+            <div key={label as string} className="bg-white/[0.04] rounded-lg p-2 text-center">
+              <div className="text-gray-500 text-[10px]">{label}</div>
+              <div className="text-white font-medium">{value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  // idle：从未启动（或 discard 后）— 显示"未初始化 + 开始"
+  // 这种情况通常意味着设置页里看到一个未 initialized 的笔记源
   return (
     <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] p-4 space-y-3">
-      {/* 中断态 */}
-      {state === 'interrupted' && (
+      <div className="flex items-center gap-2">
+        <AlertCircle size={14} className="text-amber-400 flex-shrink-0" />
+        <span className="text-xs text-white font-medium">{source.name}</span>
+        <span className="text-[10px] text-amber-400">{t('noteSync.init.interrupted')}</span>
+      </div>
+      {totalFiles !== null && (
         <>
-          <div className="flex items-center gap-2">
-            <AlertCircle size={14} className="text-amber-400 flex-shrink-0" />
-            <span className="text-xs text-white font-medium">{source.name}</span>
-            <span className="text-[10px] text-amber-400">{t('noteSync.init.interrupted')}</span>
+          <div className="text-[11px] text-gray-400">
+            {t('noteSync.init.processedFiles', { current: syncedFiles, total: totalFiles })}
           </div>
-          {totalFiles !== null && (
-            <>
-              <div className="text-[11px] text-gray-400">
-                {t('noteSync.init.processedFiles', { current: syncedFiles, total: totalFiles })}
-              </div>
-              <div className="w-full bg-white/[0.06] rounded-full h-1.5">
-                <div
-                  className="bg-amber-400 h-1.5 rounded-full transition-all"
-                  style={{ width: `${Math.max(2, processedPct)}%` }}
-                />
-              </div>
-            </>
-          )}
-          <div className="flex items-center gap-3 pt-1">
-            <button
-              onClick={handleContinue}
-              className="flex items-center gap-2 px-4 py-2 text-xs bg-indigo-500 hover:bg-indigo-400 text-white rounded-lg transition-colors"
-            >
-              <Play size={12} />
-              {t('noteSync.init.continueInit')}
-            </button>
-            <button
-              onClick={handleDiscard}
-              disabled={discarding}
-              className="flex items-center gap-2 px-3 py-2 text-xs text-gray-500 hover:text-red-400 transition-colors disabled:opacity-50"
-            >
-              <Trash2 size={12} />
-              {t('noteSync.init.discard')}
-            </button>
-          </div>
-        </>
-      )}
-
-      {/* 进行中 */}
-      {state === 'running' && initProgress && (
-        <>
-          <div className="flex items-center gap-2">
-            <Loader2 size={14} className="text-indigo-400 animate-spin flex-shrink-0" />
-            <span className="text-xs text-white font-medium">{source.name}</span>
-            <span className="text-[10px] text-indigo-400">{t('noteSync.init.inProgress')}</span>
-          </div>
-          <div className="text-xs text-gray-400">
-            Phase {initProgress.phase}/8: {initProgress.phaseName}
-          </div>
-          <div className="w-full bg-white/[0.06] rounded-full h-2">
+          <div className="w-full bg-white/[0.06] rounded-full h-1.5">
             <div
-              className="bg-indigo-400 h-2 rounded-full transition-all duration-500"
-              style={{ width: `${initProgress.total > 0 ? Math.max(5, Math.round((initProgress.current / initProgress.total) * 100)) : 5}%` }}
+              className="bg-amber-400 h-1.5 rounded-full transition-all"
+              style={{ width: `${Math.max(2, processedPct)}%` }}
             />
           </div>
-          <div className="text-xs text-gray-500 text-center">
-            {initProgress.current} / {initProgress.total}
-          </div>
-          <div className="flex gap-0.5">
-            {PHASE_KEYS.map((key, i) => (
-              <div
-                key={i}
-                className={`h-1 flex-1 rounded-full transition-colors ${
-                  i < initProgress.phase ? 'bg-green-500'
-                  : i === initProgress.phase ? 'bg-indigo-400'
-                  : 'bg-white/[0.06]'
-                }`}
-                title={`Phase ${i}: ${t(`noteSync.init.phase.${key}`)}`}
-              />
-            ))}
-          </div>
-          <button
-            onClick={handleAbort}
-            disabled={aborting}
-            className="w-full py-1.5 bg-red-600/20 hover:bg-red-600/30 text-red-400 text-xs rounded-lg transition-colors disabled:opacity-50"
-          >
-            {aborting ? t('noteSync.wizard.aborting') : t('noteSync.wizard.abort')}
-          </button>
         </>
       )}
-
-      {/* 完成 */}
-      {state === 'complete' && (
-        <>
-          <div className="flex items-center gap-2">
-            <CheckCircle size={14} className="text-emerald-400 flex-shrink-0" />
-            <span className="text-xs text-white font-medium">{source.name}</span>
-            <span className="text-[10px] text-emerald-400">{t('noteSync.init.complete')}</span>
-          </div>
-          {initReport && (
-            <div className="grid grid-cols-4 gap-2 text-xs">
-              {[
-                [t('noteSync.wizard.reportNodes'), initReport.nodesCreated],
-                [t('noteSync.wizard.reportLinks'), initReport.linksCreated],
-                [t('noteSync.wizard.reportCrystals'), initReport.crystalsCreated],
-                [t('noteSync.wizard.reportDuration'), `${Math.round((initReport.durationMs ?? 0) / 1000)}s`],
-              ].map(([label, value]) => (
-                <div key={label as string} className="bg-white/[0.04] rounded-lg p-2 text-center">
-                  <div className="text-gray-500 text-[10px]">{label}</div>
-                  <div className="text-white font-medium">{value}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </>
-      )}
-
-      {/* 错误 */}
-      {state === 'error' && (
-        <>
-          <div className="flex items-center gap-2">
-            <AlertCircle size={14} className="text-red-400 flex-shrink-0" />
-            <span className="text-xs text-white font-medium">{source.name}</span>
-            <span className="text-[10px] text-red-400">{t('noteSync.wizard.initFailed')}</span>
-          </div>
-          {initError && <div className="text-xs text-red-300">{initError}</div>}
-          <div className="flex items-center gap-3 pt-1">
-            <button
-              onClick={resetToInterrupted}
-              className="flex items-center gap-2 px-3 py-1.5 text-xs bg-white/5 hover:bg-white/10 rounded-lg text-gray-300 transition-colors"
-            >
-              <RefreshCw size={12} />
-              {t('noteSync.init.continueInit')}
-            </button>
-          </div>
-        </>
-      )}
+      <div className="flex items-center gap-3 pt-1">
+        <button
+          onClick={start}
+          className="flex items-center gap-2 px-4 py-2 text-xs bg-indigo-500 hover:bg-indigo-400 text-white rounded-lg transition-colors"
+        >
+          <Play size={12} />
+          {t('noteSync.init.continueInit')}
+        </button>
+        <button
+          onClick={handleDiscard}
+          disabled={discarding}
+          className="flex items-center gap-2 px-3 py-2 text-xs text-gray-500 hover:text-red-400 transition-colors disabled:opacity-50"
+        >
+          <Trash2 size={12} />
+          {t('noteSync.init.discard')}
+        </button>
+      </div>
     </div>
   )
 }

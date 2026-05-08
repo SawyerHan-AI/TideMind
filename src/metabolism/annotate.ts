@@ -75,11 +75,15 @@ const ANNOTATE_SYSTEM = `你是记忆标注器。对新入库的记忆在三个�
  * 按 token 预算动态分批，附带邻居上下文和已有标签体系。
  * 使用 index 匹配而非位置匹配，避免 LLM 返回数组长度不一致导致张冠李戴。
  */
-export async function runAnnotation(db: Database.Database): Promise<{
+export async function runAnnotation(
+  db: Database.Database,
+  opts?: { signal?: AbortSignal },
+): Promise<{
   annotated: number;
   skipped: number;
 }> {
   if (!isLlmConfigured()) return { annotated: 0, skipped: 0 };
+  if (opts?.signal?.aborted) throw opts.signal.reason ?? new Error('annotation aborted');
 
   const maxNodes = MAX_BATCH_SIZE();
   const rawNodes = findUnannotatedNodes(db, maxNodes);
@@ -95,6 +99,7 @@ export async function runAnnotation(db: Database.Database): Promise<{
   let totalSkipped = 0;
 
   for (const batch of batches) {
+    if (opts?.signal?.aborted) throw opts.signal.reason ?? new Error('annotation aborted');
     // 获取全局反例（跨标签最近 N 条 rejected_by_user 链接），每批次重新取。
     // 搬进 batch loop 是为了让 batch N 能看到 batch 1..N-1 执行期间用户新增的
     // rejection（例如用户边看结果边纠错），否则一轮 run 只读一次会滞后。
@@ -129,6 +134,7 @@ export async function runAnnotation(db: Database.Database): Promise<{
         ...getLLMOptions('annotate'),
         maxTokens: 4096,
         operationName: 'annotate',
+        signal: opts?.signal,
       });
 
       const annotations = parseAnnotations(response);

@@ -79,19 +79,15 @@ function AddNoteSourceWizard({
   } = useAddNoteSourceConnection(step)
 
   const {
+    createdSourceId,
     initPreview,
-    initStarted,
-    initProgress,
     initReport,
-    initError,
-    aborting,
     createAndPreview,
-    startInit,
-    handleAbort,
+    markInitStarted,
+    onSessionTerminal,
     cleanupBeforeClose,
   } = useAddNoteSourceInitialization({
     onInitStep: () => setStep(2),
-    onCompleteStep: () => setStep(3),
   })
 
   // Handle close with abort confirmation
@@ -147,13 +143,13 @@ function AddNoteSourceWizard({
           {/* Step 3: 初始化 */}
           {step === 2 && (
             <AddNoteSourceInitStep
+              sourceId={createdSourceId}
               initPreview={initPreview}
-              initStarted={initStarted}
-              initProgress={initProgress}
-              initError={initError}
-              aborting={aborting}
-              onStart={startInit}
-              onAbort={handleAbort}
+              onSessionStarted={markInitStarted}
+              onTerminal={(snap) => {
+                onSessionTerminal(snap.status as 'done' | 'aborted' | 'error', snap.report)
+                if (snap.status === 'done') setStep(3)
+              }}
             />
           )}
 

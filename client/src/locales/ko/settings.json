@@ -244,6 +244,14 @@
     "init": {
       "interrupted": "초기화 중단됨",
       "inProgress": "초기화 진행 중",
+      "aborting": "중지 중…",
+      "abortedBy": {
+        "user": "중지됨",
+        "stuck": "시스템이 장시간 무응답 감지",
+        "navigation": "이전 실행이 완료되지 않음",
+        "shutdown": "이전 실행이 완료되지 않음（앱 종료）"
+      },
+      "retry": "재시도",
       "complete": "연결 완료",
       "continueInit": "초기화 계속",
       "discard": "삭제 및 폐기",

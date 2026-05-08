@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { ipcMain, BrowserWindow } from 'electron'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -11,6 +11,11 @@ import {
 import { getDb } from '@server/db/connection.js'
 import { createLogger } from '@server/utils/logger.js'
 import {
+  initSessionManager,
+  type InitSessionContext,
+  type InitSessionSnapshot,
+} from '@server/integrations/shared/init-session.js'
+import {
   parseNoteSourceCreate,
   parseNoteSourceId,
   parseNoteSourcePath,
@@ -21,16 +26,53 @@ import {
 
 const log = createLogger('note-sources-ipc')
 
-// 全局初始化锁（跨 Logseq/Obsidian）
-let globalInitSourceId: string | null = null
-// 最长初始化时限：30 分钟。runInitialization 挂住时用这个兜底释放锁，
-// 否则用户只能重启 Electron 才能再试
-const INIT_MAX_DURATION_MS = 30 * 60 * 1000
+function isTerminalStatus(status: InitSessionSnapshot['status']): boolean {
+  return status === 'done' || status === 'aborted' || status === 'error'
+}
+
+/** 等会话进入终态（done / aborted / error），返回最终 snapshot。 */
+async function waitForTerminal(sourceId: string): Promise<InitSessionSnapshot> {
+  return new Promise((resolve) => {
+    let off: (() => void) | null = null
+    const finish = (snap: InitSessionSnapshot) => {
+      if (off) { off(); off = null }
+      resolve(snap)
+    }
+    // 先订阅再轮询当前状态，避免事件已发出后注册晚了
+    off = initSessionManager.on('transition', (snap) => {
+      if (snap.sourceId !== sourceId) return
+      if (isTerminalStatus(snap.status)) finish(snap)
+    }) as () => void
+    const current = initSessionManager.snapshot(sourceId)
+    if (!current || isTerminalStatus(current.status)) {
+      finish(current ?? {
+        sourceId,
+        toolType: 'logseq',
+        status: 'idle',
+        progress: { phase: -1, phaseName: 'idle', current: 0, total: 0, startedAt: null },
+        error: null, abortReason: null, report: null,
+        canStart: true, canAbort: false, canDiscard: false,
+      })
+    }
+  })
+}
+
+/** 把 InitSessionManager 的 transition 事件广播给所有 renderer。 */
+function broadcastSessionEvent(snapshot: InitSessionSnapshot): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('note-sources:session-event', snapshot)
+    }
+  }
+}
 
 /**
  * 注册笔记源管理 IPC handlers
  */
 export function registerNoteSourceHandlers(): void {
+  // 订阅 SessionManager 全局事件，广播到所有 renderer
+  initSessionManager.on('transition', broadcastSessionEvent)
+
   ipcMain.handle('note-sources:list', (_e, includeArchived?: boolean) => {
     const parsed = parseOptionalBoolean(includeArchived, 'includeArchived')
     if (!parsed.ok) return parsed.error
@@ -303,76 +345,64 @@ export function registerNoteSourceHandlers(): void {
     const source = getNoteSource(getClientDb(), parsedId.data)
     if (!source) return { success: false, error: '笔记源不存在' }
 
-    // 全局锁：同一时刻只允许一个初始化（跨 Logseq/Obsidian）
-    if (globalInitSourceId) {
+    // 全局互斥
+    const activeId = initSessionManager.getActiveSourceId()
+    if (activeId && activeId !== parsedId.data) {
       return { success: false, error: '有其他笔记源正在初始化，请等待完成后再试' }
     }
-    globalInitSourceId = parsedId.data
 
-    // 超时兜底：runInitialization 若挂住，30 分钟后强制释放全局锁。
-    // 用 Promise.race 让 handler 能返回错误，同时 finally 一定能 reset lock。
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(`初始化超时（>${INIT_MAX_DURATION_MS / 60_000} 分钟），已自动释放锁`)), INIT_MAX_DURATION_MS)
-    })
-
-    try {
-      const runPromise: Promise<any> = (async () => {
-        if (source.tool_type === 'logseq') {
-          const { runInitialization } = await import('@server/integrations/logseq/initialization.js')
-          return await runInitialization(getDb(), parsedId.data, source.path)
-        } else if (source.tool_type === 'obsidian') {
-          const { runInitialization } = await import('@server/integrations/obsidian/initialization.js')
-          return await runInitialization(getDb(), parsedId.data, source.path)
-        } else if (source.tool_type === 'apple-notes') {
-          const { runInitialization } = await import('@server/integrations/apple-notes/initialization.js')
-          return await runInitialization(getDb(), parsedId.data, source.path)
-        } else if (source.tool_type === 'notion') {
-          const { runInitialization } = await import('@server/integrations/notion/initialization.js')
-          const token = source.path.startsWith('notion://') ? source.path.slice('notion://'.length) : source.path
-          return await runInitialization(getDb(), token, parsedId.data)
-        }
-        throw new Error(`不支持的工具类型: ${source.tool_type}`)
-      })()
-
-      const report = await Promise.race([runPromise, timeoutPromise])
-
-      // 标记为已初始化
-      markInitialized(getClientDb(), parsedId.data)
-      return { success: true, data: report }
-    } catch (err) {
-      const msg = (err as Error).message
-      if (msg.includes('初始化超时')) {
-        log.error(`init timeout on source=${parsedId.data}: lock force-released after ${INIT_MAX_DURATION_MS}ms`)
+    // 装配 runner（按 tool_type 选择 runInitialization 实现）
+    const toolType = source.tool_type as 'logseq' | 'obsidian' | 'apple-notes' | 'notion'
+    const runner = async (ctx: InitSessionContext): Promise<Record<string, unknown>> => {
+      if (toolType === 'logseq') {
+        const { runInitialization } = await import('@server/integrations/logseq/initialization.js')
+        return await runInitialization(getDb(), ctx, source.path) as unknown as Record<string, unknown>
+      } else if (toolType === 'obsidian') {
+        const { runInitialization } = await import('@server/integrations/obsidian/initialization.js')
+        return await runInitialization(getDb(), ctx, source.path) as unknown as Record<string, unknown>
+      } else if (toolType === 'apple-notes') {
+        const { runInitialization } = await import('@server/integrations/apple-notes/initialization.js')
+        return await runInitialization(getDb(), ctx, source.path) as unknown as Record<string, unknown>
+      } else if (toolType === 'notion') {
+        const { runInitialization } = await import('@server/integrations/notion/initialization.js')
+        const token = source.path.startsWith('notion://') ? source.path.slice('notion://'.length) : source.path
+        return await runInitialization(getDb(), ctx, token) as unknown as Record<string, unknown>
       }
-      return { success: false, error: msg }
-    } finally {
-      globalInitSourceId = null
+      throw new Error(`不支持的工具类型: ${source.tool_type}`)
     }
+
+    const startResult = initSessionManager.start({
+      sourceId: parsedId.data,
+      toolType,
+      runner,
+    })
+    if (!startResult.ok) {
+      return { success: false, error: '有其他笔记源正在初始化，请等待完成后再试' }
+    }
+
+    const finalSnap = await waitForTerminal(parsedId.data)
+    if (finalSnap.status === 'done') {
+      markInitialized(getClientDb(), parsedId.data)
+      return { success: true, data: finalSnap.report }
+    }
+    if (finalSnap.status === 'aborted') {
+      return { success: false, error: finalSnap.error ?? `已停止（${finalSnap.abortReason ?? 'user'}）` }
+    }
+    return { success: false, error: finalSnap.error ?? '初始化失败' }
   })
 
-  ipcMain.handle('note-sources:init-progress', async (_e, id: unknown) => {
+  /**
+   * 返回完整 InitSessionSnapshot（status / progress / error / report / canStart 等）。
+   * 所有四个 tool 都走 SessionManager。
+   */
+  ipcMain.handle('note-sources:init-snapshot', async (_e, id: unknown) => {
     const parsedId = parseNoteSourceId(id)
     if (!parsedId.ok) return parsedId.error
 
     const source = getNoteSource(getClientDb(), parsedId.data)
     if (!source) return null
 
-    try {
-      if (source.tool_type === 'logseq') {
-        const { getInitProgress } = await import('@server/integrations/logseq/initialization.js')
-        return getInitProgress(parsedId.data)
-      } else if (source.tool_type === 'obsidian') {
-        const { getInitProgress } = await import('@server/integrations/obsidian/initialization.js')
-        return getInitProgress(parsedId.data)
-      } else if (source.tool_type === 'apple-notes') {
-        const { getInitProgress } = await import('@server/integrations/apple-notes/initialization.js')
-        return getInitProgress(parsedId.data)
-      } else if (source.tool_type === 'notion') {
-        const { getInitProgress } = await import('@server/integrations/notion/initialization.js')
-        return getInitProgress(parsedId.data)
-      }
-    } catch { /* ignore */ }
-    return null
+    return initSessionManager.snapshot(parsedId.data)
   })
 
   ipcMain.handle('note-sources:init-abort', async (_e, id: unknown) => {
@@ -382,27 +412,8 @@ export function registerNoteSourceHandlers(): void {
     const source = getNoteSource(getClientDb(), parsedId.data)
     if (!source) return { success: false }
 
-    try {
-      if (source.tool_type === 'logseq') {
-        const { abortInit } = await import('@server/integrations/logseq/initialization.js')
-        abortInit(parsedId.data)
-      } else if (source.tool_type === 'obsidian') {
-        const { abortInit } = await import('@server/integrations/obsidian/initialization.js')
-        abortInit(parsedId.data)
-      } else if (source.tool_type === 'apple-notes') {
-        const { abortInit } = await import('@server/integrations/apple-notes/initialization.js')
-        abortInit(parsedId.data)
-      } else if (source.tool_type === 'notion') {
-        const { abortInit } = await import('@server/integrations/notion/initialization.js')
-        abortInit(parsedId.data)
-      }
-    } catch { /* ignore */ }
-    // 确保全局锁释放：即使上游 runInitialization 还没 return（finally 未跑），
-    // 用户已选择 abort，不能等 runInitialization 结束才解锁
-    if (globalInitSourceId === parsedId.data) {
-      globalInitSourceId = null
-    }
-    return { success: true }
+    const snap = await initSessionManager.abort(parsedId.data, 'user')
+    return { success: true, snapshot: snap }
   })
 
   // 回退初始化数据
@@ -413,9 +424,17 @@ export function registerNoteSourceHandlers(): void {
     const source = getNoteSource(getClientDb(), parsedId.data)
     if (!source) return { success: false, error: '笔记源不存在' }
 
+    // 若仍处于活跃状态（不应该；UI 必先 abort 再 discard），先尝试 abort
+    const snap = initSessionManager.snapshot(parsedId.data)
+    if (snap && (snap.status === 'running' || snap.status === 'aborting')) {
+      await initSessionManager.abort(parsedId.data, 'user')
+    }
+
     try {
       const { rollbackNoteSource } = await import('@server/integrations/shared/rollback.js')
       rollbackNoteSource(getDb(), parsedId.data, source.tool_type)
+      // 清空 SessionManager 中残留的终态会话
+      try { initSessionManager.discard(parsedId.data) } catch { /* ignore */ }
       return { success: true }
     } catch (err) {
       return { success: false, error: (err as Error).message }
