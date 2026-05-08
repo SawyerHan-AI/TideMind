@@ -264,7 +264,7 @@ export interface AppApi {
     unarchive: (id: string) => Promise<void>
     stats: () => Promise<Array<{ id: string; digest_count: number; recall_count: number; prepare_count: number }>>
     mcpSnippet: (agentId: string) => Promise<string>
-    generatePlugin: (params: { agentId: string; agentName: string; clientType?: string }) => Promise<{ success: boolean; pluginDir: string; pluginName: string; marketplaceRegistered: boolean; error?: string }>
+    generatePlugin: (params: { agentId: string; agentName: string; clientType?: string }) => Promise<{ success: boolean; pluginDir: string; pluginName: string; marketplaceRegistered: boolean; pluginsDir?: string; error?: string }>
     checkCli: (cli: string) => Promise<{ available: boolean; path?: string; version?: string }>
     installPlugin: (pluginName: string) => Promise<{ success: boolean; error?: string }>
     pluginPath: (agentId: string, toolType?: string) => Promise<string | null>

@@ -27,6 +27,42 @@ export function readJsonSafe<T extends Record<string, any>>(filePath: string, fa
   }
 }
 
+/**
+ * Strict variant of readJsonSafe for files OWNED BY OTHER APPS (e.g. Claude
+ * Desktop's claude_desktop_config.json, Cursor's mcp.json).
+ *
+ * Behavior contract:
+ *   - file does not exist        → return `whenMissing`
+ *   - file exists, valid JSON    → return parsed value
+ *   - file exists, INVALID JSON  → back up the original to `<path>.tidemind-backup-<ts>.bak`
+ *                                  and throw. NEVER silently fall back to an empty object,
+ *                                  because writing back the empty object would clobber the
+ *                                  user's original config (other tools' MCP servers,
+ *                                  preferences, etc.).
+ *
+ * Use this whenever we read-modify-write a config file we don't fully own. The
+ * backup gives the user a deterministic recovery path; the throw surfaces the
+ * problem in the UI instead of silently corrupting their setup.
+ */
+export function readJsonStrict<T extends Record<string, any>>(filePath: string, whenMissing: T): T {
+  if (!fs.existsSync(filePath)) return whenMissing
+  const raw = fs.readFileSync(filePath, 'utf-8')
+  try {
+    return JSON.parse(raw) as T
+  } catch (err) {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-')
+    const backupPath = `${filePath}.tidemind-backup-${ts}.bak`
+    try {
+      fs.writeFileSync(backupPath, raw)
+    } catch { /* if backup itself fails, still surface the original parse error below */ }
+    const reason = err instanceof Error ? err.message : String(err)
+    throw new Error(
+      `Refused to overwrite ${filePath}: existing file is not valid JSON (${reason}). ` +
+      `Original content backed up to ${backupPath}. Please inspect and restore manually.`,
+    )
+  }
+}
+
 export function writeJsonAtomic(filePath: string, data: unknown): void {
   writeFileAtomic(filePath, JSON.stringify(data, null, 2))
 }

@@ -1,5 +1,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { writeFileAtomic } from './agent-plugins/fs-utils'
+
+// All writes in this module target ~/.codex/config.toml — a file owned by the
+// Codex CLI. Use writeFileAtomic so a crash / power loss mid-write can never
+// leave the user with a truncated TOML that breaks their entire codex setup.
 
 /** 追加 MCP section 到 TOML 配置文件（如果同名 section 不存在） */
 export function appendTomlMcpSection(configPath: string, serverName: string, mcpConfig: { command: string; args: string[]; env: Record<string, string> }): void {
@@ -23,7 +28,7 @@ export function appendTomlMcpSection(configPath: string, serverName: string, mcp
 
   const configDir = path.dirname(configPath)
   if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true })
-  fs.writeFileSync(configPath, content.trimEnd() + section + '\n')
+  writeFileAtomic(configPath, content.trimEnd() + section + '\n')
 }
 
 /** 从 TOML 配置文件中移除指定 MCP section */
@@ -54,7 +59,7 @@ export function removeTomlMcpSection(configPath: string, serverName: string): vo
   while (removeStart > 0 && lines[removeStart - 1].trim() === '') removeStart--
 
   lines.splice(removeStart, endIdx - removeStart)
-  fs.writeFileSync(configPath, lines.join('\n'))
+  writeFileAtomic(configPath, lines.join('\n'))
 }
 
 /** 确保 TOML 配置文件中有 [features] codex_hooks = true */
@@ -67,5 +72,5 @@ export function ensureTomlFeatureFlag(configPath: string, flag: string): void {
   } else {
     content = content.trimEnd() + `\n\n[features]\n${flag} = true\n`
   }
-  fs.writeFileSync(configPath, content)
+  writeFileAtomic(configPath, content)
 }
