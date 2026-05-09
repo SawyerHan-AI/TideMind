@@ -20,12 +20,15 @@ function normalizeTimestamp(raw: string): string {
   if (!raw) return raw;
   // 已是 ISO（含 T 或 Z）：原样
   if (raw.includes('T') || raw.endsWith('Z')) return raw;
-  // "YYYY-MM-DD HH:MM:SS+08:00" 形式（无 T 但带 offset）：
-  // 只把空格替换成 T，保留原始 offset，让 Date 按正确时区解析。
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{2}:?\d{2}$/.test(raw)) {
+  // 修复 M23(2026-05-09):支持可选毫秒部分。原第一分支只匹配 "YYYY-MM-DD
+  // HH:MM:SS+08:00" 无毫秒,带毫秒(SQLite 某些工具或迁移脚本写出的格式)
+  // `2026-05-09 12:34:56.789+08:00` 会绕过第一分支,落到第二分支被强行替换
+  // 空格为 T 并追加 Z,原 +08:00 偏移被吞掉,整个时间错读为 UTC,daysAgo /
+  // 新鲜度算出来差 8 小时,reconsolidate / freshness 阈值系统性偏差。
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]\d{2}:?\d{2}$/.test(raw)) {
     return raw.replace(' ', 'T');
   }
-  // 看起来像 "YYYY-MM-DD HH:MM:SS"：补 T 和 Z，按 UTC 解析
+  // 看起来像 "YYYY-MM-DD HH:MM:SS[.毫秒]" 且无时区:补 T 和 Z,按 UTC 解析
   if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(raw)) {
     return raw.replace(' ', 'T') + 'Z';
   }

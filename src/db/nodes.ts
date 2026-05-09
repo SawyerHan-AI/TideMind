@@ -95,11 +95,19 @@ export function getNode(db: Database.Database, id: string): BrainNode | null {
 
 export function getNodesByIds(db: Database.Database, ids: string[]): Map<string, BrainNode> {
   if (ids.length === 0) return new Map();
-  const placeholders = ids.map(() => '?').join(',');
-  const rows = db.prepare(
-    `SELECT * FROM nodes WHERE id IN (${placeholders})`,
-  ).all(...ids) as BrainNode[];
-  return new Map(rows.map(r => [r.id, r]));
+  // 长 ids 数组分批避免 SQLite SQLITE_MAX_VARIABLE_NUMBER 上限(默认 999):
+  // links.ts 已用同模式做 498 批处理,这里对齐避免 1000+ ids 时崩。
+  const BATCH = 498;
+  const out = new Map<string, BrainNode>();
+  for (let i = 0; i < ids.length; i += BATCH) {
+    const batch = ids.slice(i, i + BATCH);
+    const placeholders = batch.map(() => '?').join(',');
+    const rows = db.prepare(
+      `SELECT * FROM nodes WHERE id IN (${placeholders})`,
+    ).all(...batch) as BrainNode[];
+    for (const r of rows) out.set(r.id, r);
+  }
+  return out;
 }
 
 export function updateNode(

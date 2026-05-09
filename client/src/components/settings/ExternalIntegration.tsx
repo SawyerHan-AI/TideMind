@@ -12,12 +12,19 @@ import { NoteSync } from './NoteSync'
 // ============================================================
 
 type SubTab = 'agent' | 'note' | 'tools'
+const SUB_TAB_KEYS: SubTab[] = ['agent', 'note', 'tools']
+
+function parseSubTab(value: string | undefined): SubTab | null {
+  return value && SUB_TAB_KEYS.includes(value as SubTab) ? value as SubTab : null
+}
 
 export function ExternalIntegration({ initialSub }: { initialSub?: string } = {}) {
   const { t } = useTranslation('settings')
-  const [subTab, setSubTab] = useState<SubTab>(
-    (initialSub && ['agent', 'note', 'tools'].includes(initialSub) ? initialSub : 'agent') as SubTab
-  )
+  const [subTab, setSubTab] = useState<SubTab>(() => parseSubTab(initialSub) ?? 'agent')
+
+  useEffect(() => {
+    setSubTab(parseSubTab(initialSub) ?? 'agent')
+  }, [initialSub])
 
   const SUB_TABS: { key: SubTab; label: string }[] = [
     { key: 'agent', label: t('external.subtabs.agent') },
@@ -179,15 +186,31 @@ function McpDetailPanel({ tool }: { tool: Extract<ToolItem, { type: 'mcp' }> }) 
   const [selectedVersion, setSelectedVersion] = useState<VersionEntry | null>(null)
   const [showVersions, setShowVersions] = useState(true)
 
+  // 修复 M32(2026-05-09):用 cancelled flag 防止快速切换条目时旧请求覆盖
+  // 新条目的数据。原代码无 cancellation,先选 A 后选 B 时,A 的 mcpDescriptions
+  // / mcpDescriptionVersions 响应可能晚到把 B 的状态污染。
   useEffect(() => {
+    let cancelled = false
+    setSelectedVersion(null)
     window.api.config.mcpDescriptions().then((d: Record<string, string>) => {
+      if (cancelled) return
       setAllDescriptions(d)
       setDescription(d[tool.name] ?? '')
       setOriginalDescription(d[tool.name] ?? '')
     })
-    loadVersions()
-    setSelectedVersion(null)
+    void loadVersionsWithCancel(() => cancelled)
+    return () => { cancelled = true }
   }, [tool.name])
+
+  const loadVersionsWithCancel = async (isCancelled: () => boolean) => {
+    try {
+      const v = await window.api.config.mcpDescriptionVersions(tool.name)
+      if (isCancelled()) return
+      setVersions(Array.isArray(v) ? (v as VersionEntry[]) : [])
+    } catch {
+      if (!isCancelled()) setVersions([])
+    }
+  }
 
   const loadVersions = async () => {
     try {
@@ -200,14 +223,17 @@ function McpDetailPanel({ tool }: { tool: Extract<ToolItem, { type: 'mcp' }> }) 
 
   const handleSave = async () => {
     setSaving(true)
-    const updated = { ...allDescriptions, [tool.name]: description }
-    await window.api.config.mcpDescriptionsUpdate(updated, tool.name)
-    setAllDescriptions(updated)
-    setSaving(false)
-    setSaved(true)
-    setOriginalDescription(description)
-    loadVersions()
-    setTimeout(() => setSaved(false), 2000)
+    try {
+      const updated = { ...allDescriptions, [tool.name]: description }
+      await window.api.config.mcpDescriptionsUpdate(updated, tool.name)
+      setAllDescriptions(updated)
+      setSaved(true)
+      setOriginalDescription(description)
+      loadVersions()
+      setTimeout(() => setSaved(false), 2000)
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -296,14 +322,30 @@ function SkillDetailPanel({ name }: { name: string }) {
   const loadVersions = useCallback(async () => {
     try {
       const v = await window.api.config.skillVersions(name)
-      setVersions(v as VersionEntry[])
+      setVersions(Array.isArray(v) ? (v as VersionEntry[]) : [])
     } catch { setVersions([]) }
   }, [name])
 
+  // 修复 M32:同 MCP 面板,加 cancelled flag 防止快速切换条目时旧请求覆盖
   useEffect(() => {
-    loadContent()
-    loadVersions()
+    let cancelled = false
     setSelectedVersion(null)
+    void (async () => {
+      const c = await window.api.config.skillContent(name)
+      if (cancelled) return
+      setContent(c)
+      setOriginalContent(c)
+    })()
+    void (async () => {
+      try {
+        const v = await window.api.config.skillVersions(name)
+        if (cancelled) return
+        setVersions(Array.isArray(v) ? (v as VersionEntry[]) : [])
+      } catch {
+        if (!cancelled) setVersions([])
+      }
+    })()
+    return () => { cancelled = true }
   }, [name])
 
   const hasChanges = content !== originalContent
@@ -311,14 +353,17 @@ function SkillDetailPanel({ name }: { name: string }) {
   const handleSave = async () => {
     if (showReason) {
       setSaving(true)
-      await window.api.config.skillUpdate(name, content, reason || undefined)
-      setSaving(false)
-      setSaved(true)
-      setShowReason(false)
-      setReason('')
-      setOriginalContent(content)
-      loadVersions()
-      setTimeout(() => setSaved(false), 2000)
+      try {
+        await window.api.config.skillUpdate(name, content, reason || undefined)
+        setSaved(true)
+        setShowReason(false)
+        setReason('')
+        setOriginalContent(content)
+        loadVersions()
+        setTimeout(() => setSaved(false), 2000)
+      } finally {
+        setSaving(false)
+      }
     } else {
       setShowReason(true)
     }
@@ -476,4 +521,3 @@ function VersionTimeline({
     </div>
   )
 }
-

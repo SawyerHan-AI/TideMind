@@ -3,6 +3,7 @@ import AnthropicVertex from '@anthropic-ai/vertex-sdk';
 import type Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { getConfig, getDataDir } from '../config.js';
 import { createLogger } from '../utils/logger.js';
 import { estimateCost } from './pricing.js';
@@ -28,37 +29,69 @@ export function setUsageDb(db: Database.Database): void {
 }
 
 // ---- Client 缓存（按 connection_id） ----
+//
+// 历史 bug(2026-05-09):缓存只按 connectionId 索引,首次构造时 apiKey/project_id
+// 烙进 client 实例。用户在设置页改 API key → getConfig() 拿到新值,但已缓存
+// client 仍持旧 key → 持续 401 直到重启 daemon。修复:缓存 key 包含 credentials
+// 的稳定指纹(SHA256 前 12 位),credentials 变了自然换 cache key,旧 client
+// 自然失效 → GC。clearClientCache 也提供给 settings 写入路径主动清理。
 
 const clientCache = new Map<string, Anthropic | AnthropicVertex>();
 
 // 旧的全局单例（向后兼容无 connection 路径）
 let legacyAnthropicClient: Anthropic | null = null;
 let legacyVertexClient: AnthropicVertex | null = null;
+let legacyAnthropicKey = ''; // 跟踪 legacy client 当前生效的 key
+let legacyVertexProject = ''; // 跟踪 legacy vertex 当前生效的 project_id
+
+/**
+ * 清理 LLM client 缓存。配置/凭证变更时调用,避免下次请求继续用过期 client。
+ * 没有副作用 — Anthropic SDK 实例不持有连接,直接 GC 即可。
+ */
+export function clearClientCache(): void {
+  clientCache.clear();
+  legacyAnthropicClient = null;
+  legacyVertexClient = null;
+  legacyAnthropicKey = '';
+  legacyVertexProject = '';
+}
+
+function fingerprintCreds(obj: unknown): string {
+  // 稳定指纹:对 JSON 序列化后取 SHA256 前 12 位 hex(等价于 48 bit 抗碰撞,
+  // 单台 Mac 上几乎不可能撞)。不暴露原 key,纯粹用作 cache key 区分。
+  const s = JSON.stringify(obj ?? {});
+  return createHash('sha256').update(s).digest('hex').slice(0, 12);
+}
 
 // 关键:所有 Anthropic / AnthropicVertex 构造函数必须显式传 maxRetries: 0。
 // SDK 默认 maxRetries=2,我们外层已有 MAX_RETRIES=3 的重试循环 →
 // 不关掉 SDK 内置重试,worst case 会变成 3*3=9 次 LLM 调用,直接捅穿超时档。
 // 外层重试是唯一应当存在的重试机制(可控的 backoff + Retry-After 处理)。
 function getLegacyAnthropicClient(): Anthropic {
-  if (legacyAnthropicClient) return legacyAnthropicClient;
   const config = getConfig();
+  const currentKey = config.anthropic.api_key || '';
+  // key 变化时自动失效旧 client
+  if (legacyAnthropicClient && legacyAnthropicKey === currentKey) return legacyAnthropicClient;
   legacyAnthropicClient = new Anthropic({
-    apiKey: config.anthropic.api_key || undefined,
+    apiKey: currentKey || undefined,
     maxRetries: 0,
   });
+  legacyAnthropicKey = currentKey;
   return legacyAnthropicClient;
 }
 
 async function getLegacyVertexClient(): Promise<AnthropicVertex> {
-  if (legacyVertexClient) return legacyVertexClient;
   const config = getConfig();
+  const currentProject = config.vertex.project_id || '';
+  if (legacyVertexClient && legacyVertexProject === currentProject) return legacyVertexClient;
+
   const credPath = path.join(getDataDir(), 'vertex-credentials.json');
   const hasCredFile = fs.existsSync(credPath);
 
   if (hasCredFile) {
     const { GoogleAuth } = await import('google-auth-library');
     legacyVertexClient = new AnthropicVertex({
-      projectId: config.vertex.project_id || undefined,
+      projectId: currentProject || undefined,
       region: config.vertex.region || 'us-central1',
       maxRetries: 0,
       googleAuth: new GoogleAuth({
@@ -68,11 +101,12 @@ async function getLegacyVertexClient(): Promise<AnthropicVertex> {
     });
   } else {
     legacyVertexClient = new AnthropicVertex({
-      projectId: config.vertex.project_id || undefined,
+      projectId: currentProject || undefined,
       region: config.vertex.region || 'us-central1',
       maxRetries: 0,
     });
   }
+  legacyVertexProject = currentProject;
   return legacyVertexClient;
 }
 
@@ -119,8 +153,10 @@ async function getClientByConnection(connectionId: string): Promise<ConnectionIn
     };
   }
 
-  // 检查缓存
-  const cached = clientCache.get(connectionId);
+  // 检查缓存:cache key 包含 credentials 指纹,credentials 变了换 cache key
+  const credsFp = fingerprintCreds(creds);
+  const cacheKey = `${connectionId}:${credsFp}`;
+  const cached = clientCache.get(cacheKey);
   if (cached) return { client: cached, providerType: conn.provider_type };
 
   let client: Anthropic | AnthropicVertex;
@@ -157,7 +193,7 @@ async function getClientByConnection(connectionId: string): Promise<ConnectionIn
     throw new Error(`不支持的 provider 类型: ${conn.provider_type}`);
   }
 
-  clientCache.set(connectionId, client);
+  clientCache.set(cacheKey, client);
   return { client, providerType: conn.provider_type };
 }
 
@@ -298,10 +334,23 @@ async function callOpenAICompatibleLLM(options: {
   //    会把 thinking 重复计一份。做法: 从 outputTokens 里扣掉估算的 thinking 份额,
   //    然后单独记录 thinkingTokens,保持"output=可见回答,thinking=推理开销"语义。
   let thinkingChars = 0;
-  const text = rawText.replace(/<think>([\s\S]*?)<\/think>\s*/g, (_full, inner: string) => {
+  let cleaned = rawText.replace(/<think>([\s\S]*?)<\/think>\s*/g, (_full, inner: string) => {
     thinkingChars += inner.length;
     return '';
-  }).replace(/^\s+/, '');
+  });
+  // 历史 bug(2026-05-09):非贪婪 `<think>...</think>` 仅匹配成对标签,
+  // 当 max_tokens 把响应截断在 `<think>` 内部(DeepSeek-R1/QwQ 推理模型常见,
+  // 尤其是 thinking 占满 token 预算)时,孤立的 `<think>` 没有闭合,残余串
+  // 形如 `<think>推理过程被截断...`。replace 不会动它 → 整段未闭合的推理
+  // 内容被当 text 返回给上游 (parseLLMJson 把它当 garbage 抛出,但用户看
+  // 不到失败,只看到诡异输出)。修复:检测残余的孤立 `<think>`,把从该位置
+  // 到串尾的全部内容算作未闭合 thinking,从 cleaned 中剥离并计入 thinkingChars。
+  const orphan = cleaned.indexOf('<think>');
+  if (orphan >= 0) {
+    thinkingChars += cleaned.length - orphan;
+    cleaned = cleaned.slice(0, orphan);
+  }
+  const text = cleaned.replace(/^\s+/, '').replace(/\s+$/, '');
   const thinkingTokens = Math.ceil(thinkingChars / 4);
   // 避免下溢:某些 provider 不把 <think> 计入 completion_tokens,thinkingTokens
   // 估算值可能大于 rawOutputTokens。此时把 output 视为 0,thinking 保留。
@@ -660,7 +709,10 @@ export async function callLLM(options: {
               retryMs = Math.max(0, parsedDate - Date.now());
             }
           }
-          retryMs = Math.min(retryMs, 60_000); // 兜底封顶 60s
+          // 兜底封顶 180s(标准 tier timeout 量级)。原 60s 上限会让 Anthropic
+          // 返回的 120s "retry-after" 被截断到 60s,触发提前重试再次 429。
+          // 服务器明确指令 > 我们对超时的保守假设。
+          retryMs = Math.min(retryMs, 180_000);
         }
         if (retryMs > 0) waitMs = Math.max(waitMs, retryMs);
       }

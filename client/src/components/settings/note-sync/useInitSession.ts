@@ -44,16 +44,21 @@ export function useInitSession(
   const onTerminalRef = useRef(onTerminal)
   onTerminalRef.current = onTerminal
   const lastTerminalKeyRef = useRef<string | null>(null)
+  const sourceIdRef = useRef(sourceId)
+  sourceIdRef.current = sourceId
 
   // 拉取一次 snapshot
   const refresh = useCallback(async () => {
     if (!sourceId) return null
     try {
       const snap = await window.api.noteSources.initSnapshot(sourceId)
+      if (sourceIdRef.current !== sourceId) return null
       setSnapshot(snap)
       setLoaded(true)
       return snap
     } catch {
+      if (sourceIdRef.current !== sourceId) return null
+      setSnapshot(null)
       setLoaded(true)
       return null
     }
@@ -66,6 +71,8 @@ export function useInitSession(
       setLoaded(true)
       return
     }
+    setSnapshot(null)
+    lastTerminalKeyRef.current = null
     setLoaded(false)
     let cancelled = false
     let timer: ReturnType<typeof setInterval> | null = null
@@ -118,9 +125,11 @@ export function useInitSession(
   // 同时立即 refresh 让 UI 尽快从 idle 切到 running。
   const start = useCallback((): void => {
     if (!sourceId) return
-    void window.api.noteSources.initStart(sourceId).finally(() => {
-      void refresh()
-    })
+    void window.api.noteSources.initStart(sourceId)
+      .catch(() => null)
+      .finally(() => {
+        void refresh()
+      })
     void refresh()
   }, [refresh, sourceId])
 

@@ -128,11 +128,26 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
   return result;
 }
 
+// 跟踪缓存 config 的来源路径(M21 修复)。
+// 历史 bug:任何 caller 第一次调 loadConfig() 后,后续 loadConfig('/other/path')
+// 直接返回缓存,与 configPath 参数静默不一致。
+// 修复策略:**只在显式传入 configPath 且与缓存来源不同时**才绕过缓存重读;
+// 不传参数(getConfig 走的路径)仍按缓存返回 — 大多数下游调用通过 getConfig
+// 拿默认配置,需要保持"显式 load 后续返回该 load 内容"的行为。
+let cachedConfigSource: string | null = null;
+
 export function loadConfig(configPath?: string): AppConfig {
-  if (cachedConfig) return cachedConfig;
+  // configPath 显式传入,且与缓存源不同 → 强制重读
+  if (configPath !== undefined && cachedConfig && cachedConfigSource !== configPath) {
+    cachedConfig = null;
+    cachedConfigSource = null;
+  } else if (cachedConfig) {
+    return cachedConfig;
+  }
 
   let userConfig: Record<string, unknown> = {};
-  const configFile = configPath ?? path.join(DEFAULT_CONFIG.general.data_dir, 'config.toml');
+  const requestedSource = configPath ?? path.join(DEFAULT_CONFIG.general.data_dir, 'config.toml');
+  const configFile = requestedSource;
 
   if (fs.existsSync(configFile)) {
     const raw = fs.readFileSync(configFile, 'utf-8');
@@ -155,6 +170,7 @@ export function loadConfig(configPath?: string): AppConfig {
   }
 
   cachedConfig = merged;
+  cachedConfigSource = requestedSource;
   return merged;
 }
 
@@ -165,6 +181,7 @@ export function getConfig(): AppConfig {
 /** 清除 config 缓存，下次 getConfig() 会重新读取 TOML 文件 */
 export function reloadConfig(): void {
   cachedConfig = null;
+  cachedConfigSource = null;
 }
 
 export function getDataDir(): string {
@@ -515,4 +532,5 @@ function parseMarkdownParams(content: string): Record<string, string> {
 
 export function resetConfigCache(): void {
   cachedConfig = null;
+  cachedConfigSource = null;
 }

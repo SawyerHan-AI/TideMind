@@ -39,8 +39,18 @@ export interface CloudStatus {
   } | null
 }
 
+// 模块级稳定 fallback(2026-05-09 轻微):避免每次 hook 调用都新建对象,
+// 让 useMemo / 子组件浅比较稳定。Object.freeze 防意外修改。
+const CLOUD_STATUS_FALLBACK: CloudStatus = Object.freeze({
+  loggedIn: false,
+  syncEnabled: false,
+  online: false,
+  syncing: false,
+  outboxCount: 0,
+}) as CloudStatus
+
 export function useCloudStatus(): CloudStatus {
   const rev = useDataRevision(['cloud'])
   const { data } = useIPC(() => window.api.cloud.status(), [rev])
-  return data ?? { loggedIn: false, syncEnabled: false, online: false, syncing: false, outboxCount: 0 }
+  return data ?? CLOUD_STATUS_FALLBACK
 }

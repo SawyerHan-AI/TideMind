@@ -147,12 +147,22 @@ async function findTopicEvolution(db: Database.Database): Promise<{ analyzed: nu
     analyzed++;
 
     // 检查是否已有该标签的时间结晶
-    const escapedTag = topic.tag.replace(/%/g, '\\%').replace(/_/g, '\\_');
+    //
+    // 修复 M13(2026-05-09):历史用 `content LIKE '%时间演变%'` 子串硬编码做
+    // dedup,prompt 改写 / i18n / LLM 偶尔不严格遵守输出格式时会失效,导致
+    // 同一组节点反复生成多份 crystal。改用结构化主键:
+    //   - source_tool='temporal-crystal'(只看本任务产物)
+    //   - tags 同时包含 '时间结晶' 和 topic.tag(用 json_each 精确匹配)
+    // 与 content 字符串解耦,prompt/i18n 调整不影响 dedup 行为。
     const existingCrystal = db.prepare(`
       SELECT 1 FROM nodes
-      WHERE is_crystal = 1 AND tags LIKE ? ESCAPE '\\' AND content LIKE '%时间演变%' AND is_superseded = 0
+      WHERE is_crystal = 1
+        AND source_tool = 'temporal-crystal'
+        AND is_superseded = 0
+        AND EXISTS (SELECT 1 FROM json_each(tags) je WHERE je.value = '时间结晶')
+        AND EXISTS (SELECT 1 FROM json_each(tags) je WHERE je.value = ?)
       LIMIT 1
-    `).get(`%"${escapedTag}"%`);
+    `).get(topic.tag);
 
     if (existingCrystal) continue;
 

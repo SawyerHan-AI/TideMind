@@ -156,6 +156,14 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
       ? `claude plugin install ${pluginName}@tidemind-local --scope user`
       : ''
 
+  // 修复 M31(2026-05-09):effectiveToolType 变化时必须重置 skillLoaded,
+  // 否则用户从 step 2 退回 step 0 切换工具类型再前进时,会显示和复制错误的
+  // skill 内容(沿用上一个 toolType 的缓存)。
+  useEffect(() => {
+    setSkillLoaded(false)
+    setSkillContent('')
+  }, [effectiveToolType])
+
   // Load skill content (手动流程)
   useEffect(() => {
     if (!usePlugin && step === 2 && !skillLoaded) {

@@ -18,25 +18,53 @@ export class CacheManager {
 
   async applyChanges(changes: Array<{ table: string; action: string; data: Record<string, unknown>; sync_version: number }>, token: string): Promise<number> {
     let applied = 0;
+    let blocked = false;
+    let safeSyncedVersion: number | null = null;
+    const orderedChanges = [...changes].sort((a, b) => Number(a.sync_version) - Number(b.sync_version));
+    let currentVersion: number | null = null;
+    let currentVersionApplied = true;
+
+    const closeVersionGroup = () => {
+      if (currentVersion === null) return;
+      if (currentVersionApplied && !blocked) safeSyncedVersion = currentVersion;
+      else blocked = true;
+    };
+
     const txn = this.db.transaction(() => {
-      for (const change of changes) {
+      for (const change of orderedChanges) {
+        const version = Number(change.sync_version);
+        if (currentVersion !== null && version !== currentVersion) {
+          closeVersionGroup();
+          currentVersionApplied = true;
+        }
+        currentVersion = version;
+
+        let appliedThisChange = false;
         try {
           if (change.table === 'nodes') {
             applyCloudNodeRow(this.db, change.data);
+            appliedThisChange = true;
           } else if (change.table === 'links') {
             applyCloudLinkRow(this.db, change.data);
+            appliedThisChange = true;
+          } else {
+            log.warn(`unsupported cloud sync table: ${change.table}`);
           }
-          // Other tables can be added later
-          applied++;
         } catch (e) {
           log.warn(`failed to apply change: ${(e as Error).message}`);
         }
+
+        if (appliedThisChange) {
+          applied++;
+        } else {
+          currentVersionApplied = false;
+        }
       }
+      closeVersionGroup();
     });
     txn();
-    if (changes.length > 0) {
-      const maxVersion = Math.max(...changes.map(c => c.sync_version));
-      this.setLastSyncedVersion(maxVersion);
+    if (safeSyncedVersion !== null) {
+      this.setLastSyncedVersion(safeSyncedVersion);
     }
     log.info(`applied ${applied}/${changes.length} changes`);
     return applied;

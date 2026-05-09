@@ -363,7 +363,13 @@ export class CloudSyncClient {
               POLL_INTERVAL_MS,
             );
           }
-          log.info('cloud_not_available recovered, resumed normal sync');
+          // 修复 M29(2026-05-09):startSlowRetry 进入时调用了 disconnectWebSocket,
+          // 历史上恢复后**不重连 ws**,UI 显示 offline 长达 1 小时(到下次 slow
+          // retry 前)。这里探测成功后立刻重连 ws,与 syncOnce 的健康路径一致。
+          this.connectWebSocket().catch(e => {
+            log.warn(`ws reconnect after slow-retry recovery failed: ${(e as Error).message}`);
+          });
+          log.info('cloud_not_available recovered, resumed normal sync + ws');
         }
       }).catch((e) => log.warn(`slow-retry probe failed: ${(e as Error).message}`));
     }, ONE_HOUR);

@@ -88,7 +88,10 @@ server.tool(
   mcpDesc.brain_prepare,
   {
     tool: z.string().describe('当前工具名称'),
-    hint_topic: z.string().optional().describe('当前话题名称'),
+    // 历史 bug(2026-05-09 修 M19):`hint_topic` 在 schema 声明过但
+    // PrepareInput 没该字段、handler 也从未读出 — 客户端按 schema 传进来会
+    // 被静默丢弃。移除 schema 定义,避免 MCP 工具契约与实际行为不一致。
+    // 调用方有"话题"语义需求时统一走 hint 字段。
     files: z.array(z.string()).optional().describe('当前相关的文件或资源'),
     hint: z.string().optional().describe('用户的第一句话或对话主题'),
     detail_level: z.enum(['brief', 'standard', 'deep']).optional().describe('返回详细程度：brief 用于快速问答，deep 用于复杂讨论'),
@@ -275,15 +278,22 @@ async function main() {
   }
   process.on('SIGINT', () => { void gracefulShutdown(); });
   process.on('SIGTERM', () => { void gracefulShutdown(); });
-
-  // 防止未捕获错误导致进程静默退出
-  process.on('uncaughtException', (err) => {
-    log.error('uncaughtException:', err instanceof Error ? err.stack : String(err));
-  });
-  process.on('unhandledRejection', (reason) => {
-    log.error('unhandledRejection:', reason instanceof Error ? reason.stack : String(reason));
-  });
 }
+
+// 修复 M20(2026-05-09):全局错误 handler 挪到模块顶层。历史在 main() 内
+// 注册,从模块加载到 server.connect 完成的整段启动期(loadConfig / TOML 解析 /
+// schema migration 等同步或异步抛错)没有 handler,Node 22+ 默认行为是进程
+// 退出且无日志,运维只看到"daemon 起不来"无线索。daemon.ts 已是顶层注册,
+// 这里对齐。
+process.on('uncaughtException', (err) => {
+  // 启动期 log 可能还没初始化,直接 stderr.write 兜底
+  const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
+  process.stderr.write(`[eb:index] uncaughtException: ${msg}\n`);
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+  process.stderr.write(`[eb:index] unhandledRejection: ${msg}\n`);
+});
 
 main().then(() => {
   log.info('MCP server 已启动');

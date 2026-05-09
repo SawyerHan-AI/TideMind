@@ -11,10 +11,15 @@
  *
  * 老版本只看 MAX(rowid),node archive、supersede、refinement 调整、link 删除
  * 等都不触发 UI 刷新,用户必须手动切换页面才能看到最新状态。
+ *
+ * 修复 M28(2026-05-09):用独立的 readonly 连接轮询,避免与主进程写连接共享
+ * busy_timeout 队列。WAL 模式下 readonly 不阻塞写,但若 daemon 正在写大事务,
+ * 同一连接读仍可能被 busy_timeout 上限(10s)阻塞 UI。专用 readonly 连接绕过
+ * 整个写锁链。
  */
 
 import { BrowserWindow } from 'electron'
-import type Database from 'better-sqlite3'
+import Database from 'better-sqlite3'
 
 const POLL_INTERVAL_MS = 3_000
 
@@ -25,6 +30,7 @@ interface TableState {
 }
 
 let timer: ReturnType<typeof setInterval> | null = null
+let watcherDb: Database.Database | null = null
 let lastTimelineId = 0
 let lastNodes: TableState = { maxRowid: 0, maxUpdated: '', count: 0 }
 let lastLinks: TableState = { maxRowid: 0, maxUpdated: '', count: 0 }
@@ -47,17 +53,27 @@ function tablesDiffer(a: TableState, b: TableState): boolean {
 export function startDataWatcher(db: Database.Database): void {
   if (timer) return
 
+  // 用独立 readonly 连接轮询(M28 修复):传入的 db 是写连接,共享同一连接
+  // 池/锁队列;readonly 直接旁路写锁,WAL 模式下读永不阻塞写,反之亦然。
+  // 失败时降级回原 db,保留原有行为。
+  try {
+    watcherDb = new Database(db.name, { readonly: true, fileMustExist: true })
+  } catch {
+    watcherDb = null
+  }
+  const pollDb = watcherDb ?? db
+
   // 初始化基线值
-  const initTimeline = db.prepare('SELECT MAX(id) as v FROM timeline_events').get() as { v: number | null } | undefined
+  const initTimeline = pollDb.prepare('SELECT MAX(id) as v FROM timeline_events').get() as { v: number | null } | undefined
   lastTimelineId = initTimeline?.v ?? 0
-  lastNodes = snapshotTable(db, 'nodes')
-  lastLinks = snapshotTable(db, 'links')
+  lastNodes = snapshotTable(pollDb, 'nodes')
+  lastLinks = snapshotTable(pollDb, 'links')
 
   timer = setInterval(() => {
     try {
-      const curTimeline = (db.prepare('SELECT MAX(id) as v FROM timeline_events').get() as { v: number | null } | undefined)?.v ?? 0
-      const curNodes = snapshotTable(db, 'nodes')
-      const curLinks = snapshotTable(db, 'links')
+      const curTimeline = (pollDb.prepare('SELECT MAX(id) as v FROM timeline_events').get() as { v: number | null } | undefined)?.v ?? 0
+      const curNodes = snapshotTable(pollDb, 'nodes')
+      const curLinks = snapshotTable(pollDb, 'links')
 
       const nodesChanged = tablesDiffer(lastNodes, curNodes)
       const linksChanged = tablesDiffer(lastLinks, curLinks)
@@ -92,5 +108,9 @@ export function stopDataWatcher(): void {
   if (timer) {
     clearInterval(timer)
     timer = null
+  }
+  if (watcherDb) {
+    try { watcherDb.close() } catch { /* ignore */ }
+    watcherDb = null
   }
 }

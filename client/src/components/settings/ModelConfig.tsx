@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { motion } from 'framer-motion'
 import { ModelConnection } from './ModelConnection'
@@ -10,12 +10,19 @@ import { ModelUsage } from './ModelUsage'
 // ============================================================
 
 type SubTab = 'connection' | 'selection' | 'usage'
+const SUB_TAB_KEYS: SubTab[] = ['connection', 'selection', 'usage']
+
+function parseSubTab(value: string | undefined): SubTab | null {
+  return value && SUB_TAB_KEYS.includes(value as SubTab) ? value as SubTab : null
+}
 
 export function ModelConfig({ initialSub }: { initialSub?: string } = {}) {
   const { t } = useTranslation('settings')
-  const [subTab, setSubTab] = useState<SubTab>(
-    (initialSub && ['connection', 'selection', 'usage'].includes(initialSub) ? initialSub : 'connection') as SubTab
-  )
+  const [subTab, setSubTab] = useState<SubTab>(() => parseSubTab(initialSub) ?? 'connection')
+
+  useEffect(() => {
+    setSubTab(parseSubTab(initialSub) ?? 'connection')
+  }, [initialSub])
 
   const SUB_TABS: { key: SubTab; label: string }[] = [
     { key: 'connection', label: t('model.subtabs.connection') },

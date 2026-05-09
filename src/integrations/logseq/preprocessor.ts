@@ -740,6 +740,33 @@ function cleanUp(content: string): string {
 // --- 代码块保护 ---
 
 /**
+ * 把代码块/行内代码替换成等长空格,保持字符偏移不变。
+ * classifier.ts 等需要在 raw content 上跑 regex(如 [[wikilink]] 计数)
+ * 但又要跳过代码块的场景使用——避免引入 preprocessor 的全套开销。
+ *
+ * 历史 bug(2026-05-09):classifier.ts:111 / :195 直接对原文 regex,代码示例
+ * 中的 `[[name]]` 被算成引用 → refCount 虚高 → 内容页被误判 index_page;
+ * inDegree 也虚高,影响初始 heat。
+ */
+export function stripCodeForScan(content: string): string {
+  const regions = findCodeRegions(content);
+  if (regions.length === 0) {
+    // 无 fenced block,但仍要处理行内 ` ... `
+    return content.replace(/`[^`\n]*`/g, m => ' '.repeat(m.length));
+  }
+  // 用空格替换 fenced 区域,再处理行内 backtick
+  let out = '';
+  let cursor = 0;
+  for (const [start, end] of regions) {
+    out += content.slice(cursor, start);
+    out += ' '.repeat(end - start);
+    cursor = end;
+  }
+  out += content.slice(cursor);
+  return out.replace(/`[^`\n]*`/g, m => ' '.repeat(m.length));
+}
+
+/**
  * 查找所有 fenced code block 区域（``` 或 ~~~）的字符位置范围
  * 未闭合的 fence 不算代码块
  */

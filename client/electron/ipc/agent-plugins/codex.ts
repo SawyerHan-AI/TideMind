@@ -115,6 +115,9 @@ export const codexAdapter: AgentPluginAdapter = {
   },
 
   getPath(ctx) {
+    const skillRootDir = nativeSkillRoot(ctx)
+    if (fs.existsSync(path.join(skillRootDir, 'SKILL.md'))) return skillRootDir
+
     const legacyPath = legacySkillPath(ctx)
     return fs.existsSync(legacyPath) ? legacyPath : null
   },

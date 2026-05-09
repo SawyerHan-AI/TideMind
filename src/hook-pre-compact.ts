@@ -12,16 +12,26 @@
  *   2) 文案未来可 i18n
  *   3) 为后续 auto-digest 能力留下脚手架
  *
- * 用法：node hook-pre-compact.js --agent-id eb_xxx
+ * 用法：node hook-pre-compact.js --agent-id eb_xxx [--tool claude-code]
+ *
+ * 协议适配(2026-05-09):历史直接 process.stdout.write 纯文本,Codex 0.126+ /
+ * Gemini 0.26+ 严格按 JSON 解析 hook stdout,纯文本会被解析失败 → 整段提示丢失。
+ * 现在统一走 hook-output.ts::writeHookOutput,带 hookEventName='PreCompact'。
  */
 
-function parseArgs(): { agentId: string } {
+import { writeHookOutput as outputHook } from './hook-output.js';
+
+function parseArgs(): { agentId: string; tool: string } {
   const args = process.argv.slice(2);
   let agentId = '';
+  let tool = 'claude-code';
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--agent-id' && args[i + 1]) {
       agentId = args[i + 1];
+      i++;
+    } else if (args[i] === '--tool' && args[i + 1]) {
+      tool = args[i + 1];
       i++;
     }
   }
@@ -30,12 +40,14 @@ function parseArgs(): { agentId: string } {
     throw new Error('Missing --agent-id');
   }
 
-  return { agentId };
+  return { agentId, tool };
 }
 
 function main(): void {
+  let tool = 'claude-code';
   try {
-    parseArgs(); // 仅做参数校验，当前不需要 agentId 的值
+    const parsed = parseArgs(); // 仅做参数校验，当前不需要 agentId 的值
+    tool = parsed.tool;
   } catch (err) {
     process.stderr.write(`[eb:hook-pre-compact] ${(err as Error).message}\n`);
     // 参数缺失也不要阻断压缩流程，输出通用提示
@@ -47,7 +59,7 @@ function main(): void {
 用户表达的观点、做出的决策、讨论产生的洞察、被否定的方案、对某话题的态度变化等，
 如有请立刻 digest 沉淀到外脑，否则会随摘要流失。`;
 
-  process.stdout.write(content);
+  outputHook(content, tool, 'PreCompact');
 }
 
 main();

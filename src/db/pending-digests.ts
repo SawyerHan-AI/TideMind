@@ -86,24 +86,52 @@ export function failPendingDigest(
   id: string,
   errorMessage: string,
 ): void {
-  const row = db.prepare("SELECT retry_count FROM pending_digests WHERE id = ?").get(id) as { retry_count: number } | undefined;
-  if (!row) return;
+  // 历史 bug(2026-05-09):SELECT retry_count → 计算 newRetryCount → UPDATE WHERE id=?
+  // 三步之间无事务,两个 worker 误并发处理同一行时 retry_count 会少加 1,
+  // 极端情况下永远到不了 MAX_RETRIES 永远不 fail。
+  // 修复:改为单条原子 UPDATE,SET 子句里 retry_count = retry_count + 1 配合
+  // CASE 判断状态切换,DB 内部行锁兜住并发。next_retry_at 用预先计算的所有
+  // 可能值数组(MAX_RETRIES 个),不再依赖业务侧 newRetryCount 实参。
+  // 如果未来 MAX_RETRIES 改大,这里只需要扩展 CASE,不动调用方。
+  const nowStr = now();
+  // 预先计算所有可能的 next_retry_at:retry_count=0 → 第 1 次重试间隔,...
+  // SQL CASE 按 retry_count + 1 选取
+  const retrySchedule: string[] = [];
+  for (let i = 1; i <= MAX_RETRIES; i++) retrySchedule.push(computeNextRetry(i));
 
-  const newRetryCount = row.retry_count + 1;
-  if (newRetryCount >= MAX_RETRIES) {
-    db.prepare(`
-      UPDATE pending_digests
-      SET status = 'failed', error_message = ?, retry_count = ?, completed_at = ?, processing_started_at = NULL
-      WHERE id = ?
-    `).run(errorMessage, newRetryCount, now(), id);
+  const result = db.prepare(`
+    UPDATE pending_digests
+    SET
+      retry_count = retry_count + 1,
+      error_message = @errorMessage,
+      processing_started_at = NULL,
+      status = CASE
+        WHEN retry_count + 1 >= @maxRetries THEN 'failed'
+        ELSE 'pending'
+      END,
+      completed_at = CASE
+        WHEN retry_count + 1 >= @maxRetries THEN @nowStr
+        ELSE completed_at
+      END,
+      next_retry_at = CASE retry_count + 1
+        ${retrySchedule.map((_v, i) => `WHEN ${i + 1} THEN @r${i + 1}`).join('\n        ')}
+        ELSE next_retry_at
+      END
+    WHERE id = @id
+    RETURNING retry_count, status
+  `).get({
+    id,
+    errorMessage,
+    maxRetries: MAX_RETRIES,
+    nowStr,
+    ...Object.fromEntries(retrySchedule.map((v, i) => [`r${i + 1}`, v])),
+  }) as { retry_count: number; status: string } | undefined;
+
+  if (!result) return;
+  if (result.status === 'failed') {
     log.warn(`Digest permanently failed after ${MAX_RETRIES} retries: ${id}`);
   } else {
-    db.prepare(`
-      UPDATE pending_digests
-      SET status = 'pending', error_message = ?, retry_count = ?, next_retry_at = ?, processing_started_at = NULL
-      WHERE id = ?
-    `).run(errorMessage, newRetryCount, computeNextRetry(newRetryCount), id);
-    log.info(`Digest retry scheduled (attempt ${newRetryCount + 1}/${MAX_RETRIES}): ${id}`);
+    log.info(`Digest retry scheduled (attempt ${result.retry_count + 1}/${MAX_RETRIES}): ${id}`);
   }
 }
 

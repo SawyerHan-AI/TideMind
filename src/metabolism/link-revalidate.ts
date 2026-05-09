@@ -19,6 +19,12 @@ import { parseLLMJson } from '../llm/json-parse.js';
 
 const log = createLogger('link-revalidate');
 
+// 全局并发上限(2026-05-09 修 M14):此函数被 recall 路径 fire-and-forget 调起,
+// 高频 recall(前端 typing-trigger / 多窗口)会让多个并发跑各自串行 N 次 LLM
+// 调用,LLM tokens / 限流被打爆。与 reconsolidateOnRecall 的并发控制一致。
+const MAX_CONCURRENT_REVALIDATIONS = 2;
+const inflightRevalidations = new Set<string>();
+
 const VALID_RELATIONS = new Set<string>([
   'caused_by', 'continues', 'updates', 'supports', 'contradicts',
   'summarizes', 'part_of', 'analogous', 'tagged',
@@ -60,6 +66,27 @@ export async function revalidateLinks(
     return;
   }
 
+  // 并发护栏:超过上限直接退出,不阻塞 recall。用 query 串作为 in-flight 键
+  // 配对(同一查询的并发只跑一次)。简单 size 阈值兜住高频 recall 场景。
+  if (inflightRevalidations.size >= MAX_CONCURRENT_REVALIDATIONS) {
+    log.debug(`链接重新验证跳过: in-flight=${inflightRevalidations.size} 已满 ${MAX_CONCURRENT_REVALIDATIONS}`);
+    return;
+  }
+  const inflightKey = `${context.query}:${nodeIds.slice(0, 5).join(',')}`;
+  if (inflightRevalidations.has(inflightKey)) return;
+  inflightRevalidations.add(inflightKey);
+  try {
+    return await revalidateLinksInner(db, nodeIds, context);
+  } finally {
+    inflightRevalidations.delete(inflightKey);
+  }
+}
+
+async function revalidateLinksInner(
+  db: Database.Database,
+  nodeIds: string[],
+  context: RevalidateContext,
+): Promise<void> {
   const maxLinksPerRun = getParam('link-revalidate', 'max_links_per_run', 10);
   const minLinkAge = getParam('link-revalidate', 'min_link_age_hours', 24);
 

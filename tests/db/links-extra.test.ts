@@ -50,20 +50,20 @@ describe('parseRelations', () => {
     expect(result).toEqual([{ type: 'supports', confidence: 0.7 }]);
   });
 
-  it('旧格式纯字符串（非 JSON）兼容', () => {
+  it('旧格式纯字符串（非 JSON）一律返回空数组', () => {
+    // 2026-05-09 起取消"把垃圾字符串当 RelationType"的兼容路径,避免下游
+    // switch 静默走默认分支(M8)。损坏行返回 [] 让上游清楚识别。
     const result = parseRelations('supports');
-    expect(result).toEqual([{ type: 'supports', confidence: 0.7 }]);
+    expect(result).toEqual([]);
   });
 
   it('非法 JSON 且以 [ 开头返回空数组', () => {
-    // 以 [ 开头的非法 JSON 不会命中旧格式兼容逻辑
     expect(parseRelations('[broken')).toEqual([]);
   });
 
-  it('非法 JSON 非 [ 开头时走旧格式兼容', () => {
-    // 不以 [ 开头的非法 JSON 字符串会被当作旧格式单字符串处理
-    const result = parseRelations('{broken');
-    expect(result).toEqual([{ type: '{broken', confidence: 0.7 }]);
+  it('非法 JSON 非 [ 开头返回空数组', () => {
+    // 同上 M8:不再做"垃圾值当 RelationType"的兼容
+    expect(parseRelations('{broken')).toEqual([]);
   });
 
   it('空数组返回空数组', () => {

@@ -15,6 +15,30 @@ const PLUGIN_NAME_RE = /^tidemind-eb_[a-z0-9]{8,32}$/
 export const ALLOWED_CLIS = ['claude', 'codex', 'cursor', 'windsurf', 'gemini'] as const
 export type AllowedCli = typeof ALLOWED_CLIS[number]
 
+// model_connections.id 来源:`generateConnectionId()` → `'mc_' + randomBytes(4).toString('hex')`
+// 固定前缀 `mc_` + 8 个小写十六进制字符。
+const CONNECTION_ID_RE = /^mc_[a-f0-9]{8}$/
+
+// model_connections.provider_type 白名单
+export const ALLOWED_PROVIDER_TYPES = [
+  'anthropic', 'vertex', 'gemini', 'ollama', 'openai-compatible',
+] as const
+export type AllowedProviderType = typeof ALLOWED_PROVIDER_TYPES[number]
+
+export function validateConnectionId(id: unknown): string {
+  if (typeof id !== 'string' || !CONNECTION_ID_RE.test(id)) {
+    throw new Error(`Invalid connectionId: must match ${CONNECTION_ID_RE.source}`)
+  }
+  return id
+}
+
+export function validateProviderType(t: unknown): AllowedProviderType {
+  if (typeof t !== 'string' || !(ALLOWED_PROVIDER_TYPES as readonly string[]).includes(t)) {
+    throw new Error(`Invalid provider_type: must be one of ${ALLOWED_PROVIDER_TYPES.join(', ')}`)
+  }
+  return t as AllowedProviderType
+}
+
 export function validateAgentId(id: unknown): string {
   if (typeof id !== 'string' || !AGENT_ID_RE.test(id)) {
     throw new Error(`Invalid agentId: must match ${AGENT_ID_RE.source}`)

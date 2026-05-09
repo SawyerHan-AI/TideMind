@@ -23,7 +23,7 @@ import {
 import { OBSIDIAN_EXCLUDED_DIRS } from './types.js';
 import { digest } from '../../tools/digest.js';
 import { createLink, linkExists } from '../../db/links.js';
-import { supersedeNodeWithLinks } from '../../db/node-lifecycle.js';
+import { supersedeNodeWithLinks, markNodeSupersededRecordOnly } from '../../db/node-lifecycle.js';
 import { now } from '../../utils/time.js';
 import { promotePropertyValues as promoteProps, getOrCreateTagNode } from '../shared/property-promote.js';
 import { OBSIDIAN_SYSTEM_PROPERTIES } from './types.js';
@@ -264,7 +264,23 @@ async function processOneFile(
     }
 
     if (allNodeIds.length === 0) {
-      log.warn(`文件 digest 未产生新节点,保留旧同步状态: ${relPath}`);
+      // 修复 M18(2026-05-09):文件清空到只剩 frontmatter / 全空时,digest 不
+      // 产生节点。原代码直接 return 而不更新 syncState,下次 isFileChanged 因
+      // hash 变化又判为变更,反复进入此分支死循环。改为:
+      //   - 若 oldNodeIds 存在,把它们 supersede 到第一个仍活的(无可用目标)→ 标记 superseded 但保留 audit
+      //   - 更新 content_hash 让下次跳过此文件
+      // 这条路径用 markNodeSupersededRecordOnly 不抢救链接(reasonable:文件清空,
+      // 内容已不在,链接也无意义)。
+      if (oldNodeIds.length > 0) {
+        for (const oldId of oldNodeIds) {
+          markNodeSupersededRecordOnly(db, oldId);
+        }
+        log.info(`文件清空到 0 段:${oldNodeIds.length} 个旧节点已 supersede (${relPath})`);
+      } else {
+        log.warn(`文件 digest 未产生新节点,且无旧节点: ${relPath}`);
+      }
+      // 更新 content_hash,避免下次 isFileChanged 反复触发
+      updateSyncState(db, relPath, filePath, [], sourceId, contentHash);
       progress.skippedFiles++;
       return;
     }

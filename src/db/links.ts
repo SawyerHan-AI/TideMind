@@ -8,6 +8,11 @@ const log = createLogger('links');
 
 /**
  * 解析 relation JSON 字段为 LinkRelation[]
+ *
+ * 修复(2026-05-09):catch 块原本兼容"旧格式纯字符串",但条件 `typeof raw === 'string'`
+ * 永远成立(函数签名 `raw: string`),且能进 catch 说明 raw 不是合法 JSON,大概率
+ * 也不是合法 RelationType。把任意垃圾字符串当 type 写入下游会让消费方的 switch
+ * 静默走默认分支。迁移已完成 N 个版本,这条兼容分支应去掉,catch 一律 return []。
  */
 export function parseRelations(raw: string): LinkRelation[] {
   try {
@@ -23,10 +28,8 @@ export function parseRelations(raw: string): LinkRelation[] {
     if (typeof parsed === 'string') return [{ type: parsed as RelationType, confidence: 0.7 }];
     return [];
   } catch {
-    // 旧格式纯字符串（未迁移的情况）
-    if (typeof raw === 'string' && raw.length > 0 && !raw.startsWith('[')) {
-      return [{ type: raw as RelationType, confidence: 0.7 }];
-    }
+    // 损坏行 / 非 JSON。不做任何字符串兜底(原兼容分支会把垃圾值当 type),
+    // 让上游清楚看到该行无可识别的 relation。
     return [];
   }
 }

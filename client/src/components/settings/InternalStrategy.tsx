@@ -127,7 +127,13 @@ function NodeDetailPanel({ node }: { node: ProcessingNode }) {
   const { data: gateStatus } = useIPC(() => window.api.stats.gates())
   const [localConfig, setLocalConfig] = useState<Record<string, Record<string, number>>>({})
   const [saved, setSaved] = useState(false)
-  const configInitialized = useRef(false)
+  // 历史 bug(2026-05-09):configInitialized.current 在 mount 后 100ms 永久置 true,
+  // 后续任何 DataChange 推送触发 useIPC refetch → loading effect setLocalConfig
+  // 创建新对象引用 → debounce save effect 把整段 metabolism/search/gates 写回
+  // 服务器。任何归一化差异就形成持续抖动。
+  // 修复:用 dirty.current 替代 — 只在用户通过 setVal 编辑后才 true,loading
+  // effect 不动它。
+  const dirty = useRef(false)
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -138,23 +144,23 @@ function NodeDetailPanel({ node }: { node: ProcessingNode }) {
       search: { ...c.search },
       gates: { ...c.gates },
     })
-    // 延迟标记初始化完成，避免初始赋值触发自动保存
-    setTimeout(() => { configInitialized.current = true }, 100)
+    // 注意:不再标记 dirty=true,loading 路径只更新本地展示状态。
   }, [config])
 
   const getVal = (section: string, key: string, fallback: number): number =>
     localConfig[section]?.[key] ?? fallback
 
   const setVal = (section: string, key: string, v: number) => {
+    dirty.current = true
     setLocalConfig(prev => ({
       ...prev,
       [section]: { ...prev[section], [key]: v },
     }))
   }
 
-  // debounce 自动保存 config 参数
+  // debounce 自动保存 config 参数:仅在 dirty.current=true(用户实际编辑后)才写回
   useEffect(() => {
-    if (!configInitialized.current) return
+    if (!dirty.current) return
     const timer = setTimeout(async () => {
       await window.api.config.update(localConfig)
       setSaved(true)

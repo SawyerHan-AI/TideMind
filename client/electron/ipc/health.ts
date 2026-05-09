@@ -4,6 +4,54 @@ import os from 'node:os'
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 
+/**
+ * 安全递归遍历目录(M26 修复 2026-05-09)。
+ *
+ * 历史 bug:health:logseq / health:obsidian 用裸 walk 函数同步递归用户 vault,
+ * 没有 symlink 循环检测,也没有最大深度上限。用户输入恶意/过深路径(含
+ * symlink loop)会让主进程进入死循环或耗尽 fd(EMFILE)。同时同步递归大目录
+ * 时主进程被阻塞,UI 卡顿。
+ *
+ * 这里在保留同步语义(IPC handler 简单)的前提下补三道护栏:
+ *   - 跳过符号链接(`isSymbolicLink()`),消除链环
+ *   - 最大深度 20 层,防止极深路径无意义递归
+ *   - 文件数硬上限 50000,防止超大 vault 把 entries 数组撑爆
+ */
+function walkSafe(
+  rootDir: string,
+  entries: string[],
+  extensions: string[],
+  excludeDirs: Set<string>,
+  maxDepth: number = 20,
+  maxEntries: number = 50000,
+): void {
+  const stack: Array<{ dir: string; depth: number }> = [{ dir: rootDir, depth: 0 }];
+  while (stack.length > 0) {
+    if (entries.length >= maxEntries) return;
+    const { dir, depth } = stack.pop()!;
+    if (depth > maxDepth) continue;
+    let dirEntries: fs.Dirent[];
+    try {
+      dirEntries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue; // 单目录读失败不影响兄弟目录
+    }
+    for (const entry of dirEntries) {
+      if (entries.length >= maxEntries) return;
+      // 跳过符号链接,避免循环和读到无关位置
+      if (entry.isSymbolicLink()) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (excludeDirs.has(entry.name)) continue;
+        stack.push({ dir: full, depth: depth + 1 });
+      } else if (entry.isFile()) {
+        const ext = path.extname(entry.name);
+        if (extensions.includes(ext)) entries.push(entry.name);
+      }
+    }
+  }
+}
+
 // ============================================================
 // 可复用的探测函数（供 connections IPC 调用）
 // ============================================================
@@ -323,13 +371,8 @@ export function registerHealthHandlers(dataDir: string): void {
     if (!fs.existsSync(resolved)) return { accessible: false, fileCount: 0, path: resolved }
     try {
       const entries: string[] = []
-      const walk = (dir: string) => {
-        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-          if (entry.isDirectory()) walk(path.join(dir, entry.name))
-          else if (entry.name.endsWith('.md')) entries.push(entry.name)
-        }
-      }
-      walk(resolved)
+      const excludeDirs = new Set(['logseq/bak', 'logseq/.recycle', 'assets', '.git', 'node_modules'])
+      walkSafe(resolved, entries, ['.md'], excludeDirs)
       return { accessible: true, fileCount: entries.length, path: resolved }
     } catch {
       return { accessible: false, fileCount: 0, path: resolved }
@@ -351,16 +394,7 @@ export function registerHealthHandlers(dataDir: string): void {
     try {
       const entries: string[] = []
       const excludeDirs = new Set(['.obsidian', '.git', '.trash', 'node_modules'])
-      const walk = (dir: string) => {
-        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-          if (entry.isDirectory()) {
-            if (!excludeDirs.has(entry.name)) walk(path.join(dir, entry.name))
-          } else if (entry.name.endsWith('.md') || entry.name.endsWith('.canvas')) {
-            entries.push(entry.name)
-          }
-        }
-      }
-      walk(resolved)
+      walkSafe(resolved, entries, ['.md', '.canvas'], excludeDirs)
       return { accessible: true, fileCount: entries.length, path: resolved }
     } catch {
       return { accessible: false, fileCount: 0, path: resolved }

@@ -139,7 +139,7 @@ ${briefText}
 ---
 以上是压缩后由 Tide Mind 自动重注的精简画像。如需完整记忆，仍可通过 brain_recall / brain_prepare 获取。`;
 
-  outputHook(content, tool);
+  outputHook(content, tool, 'PostCompact');
 }
 
 main().catch((err: unknown) => {
@@ -156,5 +156,5 @@ main().catch((err: unknown) => {
       if (args[i] === '--tool' && args[i + 1]) { tool = args[i + 1]; break; }
     }
   } catch { /* ignore */ }
-  outputHook(`Tide Mind 压缩后上下文恢复失败。如需用户画像请手动调用 brain_prepare。[internal error: HOOK_POST_COMPACT_FATAL/${code}]`, tool);
+  outputHook(`Tide Mind 压缩后上下文恢复失败。如需用户画像请手动调用 brain_prepare。[internal error: HOOK_POST_COMPACT_FATAL/${code}]`, tool, 'PostCompact');
 });

@@ -28,7 +28,10 @@ function MiniStatCard({ icon: Icon, label, value, color, trendData, gradientId }
 
   useEffect(() => {
     const controls = animate(count, value, { duration: 0.8, ease: 'easeOut' })
-    return controls.stop
+    // 修复 M34(2026-05-09):返回箭头函数确保 controls.stop 以正确 this 调用。
+    // 原 `return controls.stop` 是 unbound 方法引用,React cleanup 调用时
+    // `this===undefined`,某些 framer-motion 版本依赖 this 会抛错或不停动画。
+    return () => controls.stop()
   }, [value])
 
   return (

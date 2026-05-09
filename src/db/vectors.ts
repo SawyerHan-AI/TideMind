@@ -42,7 +42,13 @@ export function segmentForEmbedding(content: string): string[] {
       else breakAt += 1; // 包含边界字符
 
       segments.push(content.slice(start, breakAt).trim());
-      start = Math.max(breakAt - SEGMENT_OVERLAP, start + 1);
+      // 历史 bug(2026-05-09):兜底用 `start + 1` 在极端情形下让 start 每轮只
+      // 前进 1 字符 —— 用户笔记里贴大段无标点串(base64、minified 代码、
+      // 长 token 列表)且某次 breakAt - SEGMENT_OVERLAP <= start + 1 时,
+      // 会产生数千个 1 字符递增的 segment,getEmbedding 调用爆量、nodes_vec 写爆。
+      // 改为保证最小前进 SEGMENT_TARGET,与正常切分步长一致,牺牲一些 overlap
+      // 但避免 quadratic 爆炸。
+      start = Math.max(breakAt - SEGMENT_OVERLAP, start + SEGMENT_TARGET);
     } else {
       segments.push(content.slice(start).trim());
       break;
@@ -248,33 +254,33 @@ export async function reembedAllNodes(db: Database.Database): Promise<void> {
 
   try {
     const totalRow = db.prepare(
-      "SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01 AND is_superseded = 0",
+      "SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01 AND archived = 0 AND is_superseded = 0",
     ).get() as { cnt: number };
     reembedProgress = { running: true, done: 0, total: totalRow.cnt };
 
     const PAGE_SIZE = 100;
-    const BATCH_SIZE = 5;
     let offset = 0;
 
+    // 串行化(2026-05-09):历史用 Promise.all 并发跑 5 个 insertSegmentVectors,
+    // 在 await getEmbedding 释放 event loop 后,多个 promise 会穿插写同一节点
+    // 的 deleteVector / INSERT segment,产生孤儿向量。`reembedProgress.done++`
+    // 也非原子。重 embed 期间用户编辑笔记时,旧 segment 可能在事务外被业务路径
+    // 清理,这次重算结果与新 content 错位。
+    // 改为单节点 await 串行:每节点 ~100ms,1000 节点 ~2 分钟,可接受。
     while (true) {
       const page = db.prepare(
-        "SELECT id, content FROM nodes WHERE heat > 0.01 AND is_superseded = 0 LIMIT ? OFFSET ?",
+        "SELECT id, content FROM nodes WHERE heat > 0.01 AND archived = 0 AND is_superseded = 0 LIMIT ? OFFSET ?",
       ).all(PAGE_SIZE, offset) as Array<{ id: string; content: string }>;
 
       if (page.length === 0) break;
 
-      for (let i = 0; i < page.length; i += BATCH_SIZE) {
-        const batch = page.slice(i, i + BATCH_SIZE);
-        await Promise.all(
-          batch.map(async (node) => {
-            try {
-              await insertSegmentVectors(db, node.id, node.content);
-            } catch (err) {
-              log.error(`重算 embedding 失败 (${node.id}):`, (err as Error).message);
-            }
-            reembedProgress.done++;
-          }),
-        );
+      for (const node of page) {
+        try {
+          await insertSegmentVectors(db, node.id, node.content);
+        } catch (err) {
+          log.error(`重算 embedding 失败 (${node.id}):`, (err as Error).message);
+        }
+        reembedProgress.done++;
       }
 
       offset += PAGE_SIZE;
