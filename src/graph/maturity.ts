@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import type { BrainLink } from '../types.js';
 import { getParam } from '../strategy/loader.js';
 import { getLinksForNode } from '../db/links.js';
+import { now } from '../utils/time.js';
 
 /**
  * 判断链接的主要关系类型是否为 tagged
@@ -70,9 +71,9 @@ export function updateConnectivity(db: Database.Database, nodeId: string): numbe
 
   if (node) {
     const score = computeMaturityScore(node.heat, node.refinement, connectivity, node.independence);
-    db.prepare('UPDATE nodes SET connectivity = ?, maturity_score = ? WHERE id = ?').run(connectivity, score, nodeId);
+    db.prepare('UPDATE nodes SET connectivity = ?, maturity_score = ?, updated = ? WHERE id = ?').run(connectivity, score, now(), nodeId);
   } else {
-    db.prepare('UPDATE nodes SET connectivity = ? WHERE id = ?').run(connectivity, nodeId);
+    db.prepare('UPDATE nodes SET connectivity = ?, updated = ? WHERE id = ?').run(connectivity, now(), nodeId);
   }
 
   return connectivity;
@@ -87,6 +88,6 @@ export function refreshMaturityScore(db: Database.Database, nodeId: string): voi
 
   if (node) {
     const score = computeMaturityScore(node.heat, node.refinement, node.connectivity, node.independence);
-    db.prepare('UPDATE nodes SET maturity_score = ? WHERE id = ?').run(score, nodeId);
+    db.prepare('UPDATE nodes SET maturity_score = ?, updated = ? WHERE id = ?').run(score, now(), nodeId);
   }
 }

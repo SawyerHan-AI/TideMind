@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { createLink, linkExists } from './links.js';
 import { deleteVector } from './vectors.js';
 import { createLogger } from '../utils/logger.js';
+import { now } from '../utils/time.js';
 
 interface LinkRow { id: string; from_id: string; to_id: string; strength: number; }
 
@@ -100,7 +101,7 @@ export function archiveNodeWithVectors(db: Database.Database, nodeId: string): v
   // 任何绕过它直接读 nodes_vec 的代码(包括历史 v15/v16 清理 SQL)都会再次
   // 受影响。
   db.transaction(() => {
-    db.prepare('UPDATE nodes SET archived = 1, heat = 0.02 WHERE id = ?').run(nodeId);
+    db.prepare('UPDATE nodes SET archived = 1, heat = 0.02, updated = ? WHERE id = ?').run(now(), nodeId);
     deleteVector(db, nodeId);
   })();
 }
@@ -108,8 +109,8 @@ export function archiveNodeWithVectors(db: Database.Database, nodeId: string): v
 export function reArchiveNodeWithVectors(db: Database.Database, nodeId: string): boolean {
   return db.transaction(() => {
     const result = db.prepare(
-      'UPDATE nodes SET archived = 1, heat = 0.01 WHERE id = ? AND archived = 0',
-    ).run(nodeId);
+      'UPDATE nodes SET archived = 1, heat = 0.01, updated = ? WHERE id = ? AND archived = 0',
+    ).run(now(), nodeId);
     if (result.changes > 0) {
       deleteVector(db, nodeId);
     }
@@ -119,8 +120,8 @@ export function reArchiveNodeWithVectors(db: Database.Database, nodeId: string):
 
 export function unarchiveNodeRecordOnly(db: Database.Database, nodeId: string): boolean {
   const result = db.prepare(
-    'UPDATE nodes SET archived = 0, heat = 0.5 WHERE id = ? AND archived = 1',
-  ).run(nodeId);
+    'UPDATE nodes SET archived = 0, heat = 0.5, updated = ? WHERE id = ? AND archived = 1',
+  ).run(now(), nodeId);
   return result.changes > 0;
 }
 
@@ -132,13 +133,13 @@ export function retireNodeWithoutReplacement(db: Database.Database, nodeId: stri
   // UPDATE + DELETE 原子化:中间崩溃会留下 is_superseded=1 但 links 仍指向
   // 老节点的孤儿状态,与 v15/v16 修补的孤儿向量同源。
   db.transaction(() => {
-    db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(nodeId);
+    db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01, updated = ? WHERE id = ?').run(now(), nodeId);
     db.prepare('DELETE FROM links WHERE from_id = ? OR to_id = ?').run(nodeId, nodeId);
   })();
 }
 
 export function markNodeSupersededRecordOnly(db: Database.Database, nodeId: string): void {
-  db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(nodeId);
+  db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01, updated = ? WHERE id = ?').run(now(), nodeId);
 }
 
 /**
@@ -202,7 +203,7 @@ export function supersedeNodeWithLinks(
       'DELETE FROM links WHERE (from_id = ? OR to_id = ?) AND NOT (from_id = ? AND to_id = ?)',
     ).run(oldNodeId, oldNodeId, oldNodeId, newNodeId);
 
-    db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(oldNodeId);
+    db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01, updated = ? WHERE id = ?').run(now(), oldNodeId);
   })();
 
   log.info(`节点版本替代: ${oldNodeId} -> ${newNodeId}`);

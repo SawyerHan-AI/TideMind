@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { getParam } from '../strategy/loader.js';
 import { logTimelineEvent } from '../db/log.js';
 import { createLogger } from '../utils/logger.js';
+import { now } from '../utils/time.js';
 
 const log = createLogger('synaptic');
 
@@ -52,7 +53,8 @@ export function runSynapticScaling(db: Database.Database): {
     UPDATE nodes SET
       heat = heat * @rate,
       maturity_score = @wH * MIN((SELECT heat * @rate FROM nodes WHERE id = @id), 1.0)
-                     + @wR * refinement + @wC * connectivity + @wI * independence
+                     + @wR * refinement + @wC * connectivity + @wI * independence,
+      updated = @ts
     WHERE id = @id
   `);
 
@@ -64,13 +66,14 @@ export function runSynapticScaling(db: Database.Database): {
   for (let i = 0; i < nodes.length; i += BATCH_SIZE) {
     const batch = nodes.slice(i, i + BATCH_SIZE);
     db.transaction(() => {
+      const ts = now();
       for (const node of batch) {
         // 衰减率：所有节点严格衰减，连通度高的衰减更慢
         const decayRate = 1 - decayBase * (1 - decayDamping * Math.min(node.connectivity, 1));
 
         // 用具名参数：rate 在 SET 中出现两处（heat 衰减 / maturity 子查询），
         // id 同理（WHERE / 子查询），具名绑定避免位置参数重复传递。
-        updateStmt.run({ rate: decayRate, wH, wR, wC, wI, id: node.id });
+        updateStmt.run({ rate: decayRate, wH, wR, wC, wI, ts, id: node.id });
         decayed++;
         // 不再归档 — heat 自然衰减到极低值即可，recall 按 heat 排序自然沉底
       }

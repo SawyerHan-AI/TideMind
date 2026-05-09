@@ -502,9 +502,9 @@ async function checkCrystalEvidence(db: Database.Database): Promise<string[]> {
           // 解析，datetime('now') 无 Z 会被当本地时区 → 统一走 JS ISO。
           const ts = now();
           db.prepare(`
-            UPDATE nodes SET content = ?, version = version + 1, last_reconsolidated = ?
+            UPDATE nodes SET content = ?, version = version + 1, last_reconsolidated = ?, updated = ?
             WHERE id = ?
-          `).run(enriched, ts, crystal.id);
+          `).run(enriched, ts, ts, crystal.id);
 
           // 版本历史
           db.prepare(`
@@ -587,16 +587,17 @@ export function runKeystoneIdentification(db: Database.Database): number {
   // 原子: clear + set 必须在同一事务,否则中间有窗口"无人是 keystone",
   // 并发读到的 is_keystone 状态全错。better-sqlite3 同步 → 事务直接包起来。
   const result = db.transaction(() => {
-    db.prepare('UPDATE nodes SET is_keystone = 0 WHERE is_keystone = 1').run();
+    const ts = now();
+    db.prepare('UPDATE nodes SET is_keystone = 0, updated = ? WHERE is_keystone = 1').run(ts);
     return db.prepare(`
-      UPDATE nodes SET is_keystone = 1
+      UPDATE nodes SET is_keystone = 1, updated = ?
       WHERE id IN (
         SELECT id FROM nodes
         WHERE heat > 0.01 AND is_meta = 0 AND is_superseded = 0 AND archived = 0
         ORDER BY connectivity DESC
         LIMIT ?
       )
-    `).run(topN);
+    `).run(ts, topN);
   })();
 
   if (result.changes > 0) {

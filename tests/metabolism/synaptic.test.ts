@@ -162,6 +162,18 @@ describe('runSynapticScaling', () => {
     // runSynapticScaling 不写 metadata,由 scheduler.ts::tryClaimTask 负责
     expect(row).toBeUndefined();
   });
+
+  // 守护：heat 衰减是高频路径，updated 必须 bump。否则 cloud reconcile 永远
+  // 看不到本地 heat 变化（client.updated == server.updated → 'same' → no-op），
+  // server 永远存着初始 heat=1.0，多设备 recall 排序失真。
+  it('should bump updated for every decayed node', async () => {
+    const node = seedNode(db, { heat: 2.0 });
+    const before = (db.prepare('SELECT updated FROM nodes WHERE id = ?').get(node.id) as { updated: string }).updated;
+    await new Promise(r => setTimeout(r, 5));
+    runSynapticScaling(db);
+    const after = (db.prepare('SELECT updated FROM nodes WHERE id = ?').get(node.id) as { updated: string }).updated;
+    expect(after > before).toBe(true);
+  });
 });
 
 // claimMaintenance 已于 2026-04-21 删除 (见 synaptic.ts 注释)，

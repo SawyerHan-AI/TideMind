@@ -206,4 +206,14 @@ describe('reconsolidateNode', () => {
     expect(after.content).toBe(originalContent);
     expect(after.last_reconsolidated).not.toBeNull();
   });
+
+  it('reconsolidateNode 即使内容不变也要 bump updated（heat / last_reconsolidated 写入路径）', async () => {
+    const node = seedNode(db, { content: 'unchanged content' });
+    const before = (db.prepare('SELECT updated FROM nodes WHERE id = ?').get(node.id) as { updated: string }).updated;
+    await new Promise(r => setTimeout(r, 5));
+    // LLM 未配置路径：只 bump heat + last_reconsolidated，content 不变
+    await reconsolidateNode(db, node.id, 'unchanged content');
+    const after = (db.prepare('SELECT updated FROM nodes WHERE id = ?').get(node.id) as { updated: string }).updated;
+    expect(after > before).toBe(true);
+  });
 });

@@ -304,18 +304,21 @@ async function deepReconsolidate(
     // 时区坑:SQLite 的 datetime('now') 返回 "YYYY-MM-DD HH:MM:SS"(无 Z),
     // JS new Date(...) 会按本地时区解析 → daysAgo 跨时区误差最多 ±12h。
     // 统一走 JS ISO (now()) 避免 freshness.ts / daysAgo 读取时误判。
+    const ts = now();
     db.prepare(`
-      UPDATE nodes SET last_reconsolidated = ?
+      UPDATE nodes SET last_reconsolidated = ?, updated = ?
       WHERE id = ?
-    `).run(now(), node.id);
+    `).run(ts, ts, node.id);
     return;
   }
   if (!isLlmConfigured()) {
+    const ts = now();
     db.prepare(`
       UPDATE nodes SET refinement = MIN(refinement + 0.1, 1.0),
-                       last_reconsolidated = ?
+                       last_reconsolidated = ?,
+                       updated = ?
       WHERE id = ?
-    `).run(now(), node.id);
+    `).run(ts, ts, node.id);
     refreshMaturityScore(db, node.id);
     return;
   }
@@ -361,11 +364,13 @@ async function deepReconsolidate(
   }>(response);
   log.debug(`深度读结果 node=${node.id} needs_update=${result?.needs_update} conflict=${result?.conflict_detected}`);
   if (!result) {
+    const ts = now();
     db.prepare(`
       UPDATE nodes SET refinement = MIN(refinement + 0.1, 1.0),
-                       last_reconsolidated = ?
+                       last_reconsolidated = ?,
+                       updated = ?
       WHERE id = ?
-    `).run(now(), node.id);
+    `).run(ts, ts, node.id);
     refreshMaturityScore(db, node.id);
     return;
   }
@@ -417,20 +422,24 @@ async function deepReconsolidate(
     getParam<number>('reconsolidate', 'independence_boost', 0.15));
 
   if (!contentWasUpdated) {
+    const ts = now();
     db.prepare(`
       UPDATE nodes SET
         refinement = MIN(refinement + ?, 1.0),
         independence = ?,
-        last_reconsolidated = ?
+        last_reconsolidated = ?,
+        updated = ?
       WHERE id = ?
-    `).run(refinementBoost, newIndependence, now(), node.id);
+    `).run(refinementBoost, newIndependence, ts, ts, node.id);
   } else {
+    const ts = now();
     db.prepare(`
       UPDATE nodes SET
         independence = ?,
-        last_reconsolidated = ?
+        last_reconsolidated = ?,
+        updated = ?
       WHERE id = ?
-    `).run(newIndependence, now(), node.id);
+    `).run(newIndependence, ts, ts, node.id);
   }
   refreshMaturityScore(db, node.id);
 }

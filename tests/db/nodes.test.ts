@@ -304,3 +304,75 @@ describe('bumpHeat', () => {
     expect(after.heat).toBeCloseTo(1.1, 5);
   });
 });
+
+// ===== updated 字段语义（cloud LWW + UI watcher 用）=====
+//
+// 核心不变量：本地任何 nodes 修改都必须 bump `updated`，否则
+// (1) cloud reconcile 把 client.updated == server.updated 视作 'same' 不同步
+// (2) UI 端 data-watcher 用 MAX(updated) 检测变化，漏触发会让 UI 看到陈旧状态
+// 详见 docs/work-logs/2026-05-10.md。
+
+describe('updated field bumping', () => {
+  function rawUpdated(id: string): string | null {
+    return (db.prepare('SELECT updated FROM nodes WHERE id = ?').get(id) as { updated: string | null } | undefined)?.updated ?? null;
+  }
+
+  it('createNode should set updated = created on INSERT', () => {
+    const node = seedNode(db, { content: 'fresh' });
+    const updated = rawUpdated(node.id);
+    expect(updated).not.toBeNull();
+    expect(updated).toBe(node.created);
+  });
+
+  it('updateNode should advance updated on every patch', async () => {
+    const node = seedNode(db, { content: 'original' });
+    const before = rawUpdated(node.id)!;
+    // 必须等至少 1ms，否则同毫秒内 ISO 字符串相同
+    await new Promise(r => setTimeout(r, 5));
+    updateNode(db, node.id, { heat: 5.0 });
+    const after = rawUpdated(node.id)!;
+    expect(after > before).toBe(true);
+  });
+
+  it('updateNode should bump updated even for non-content changes', async () => {
+    const node = seedNode(db, { refinement: 0.0 });
+    const before = rawUpdated(node.id)!;
+    await new Promise(r => setTimeout(r, 5));
+    // 模拟 annotate 完成的 patch（仅改维度 / refinement）
+    updateNode(db, node.id, { refinement: 0.1, specificity: 0.8, subjectivity: 0.2, actuality: 0.9 });
+    const after = rawUpdated(node.id)!;
+    expect(after > before).toBe(true);
+  });
+
+  it('updateNode no-op (empty patch) should NOT change updated', async () => {
+    const node = seedNode(db, { content: 'stable' });
+    const before = rawUpdated(node.id)!;
+    await new Promise(r => setTimeout(r, 5));
+    updateNode(db, node.id, {});
+    const after = rawUpdated(node.id)!;
+    expect(after).toBe(before);
+  });
+
+  it('updateNode for nonexistent node should NOT throw or write', () => {
+    // 守卫：早 return false，不留下幽灵更新痕迹
+    expect(() => updateNode(db, 'nonexistent-id', { heat: 5 })).not.toThrow();
+  });
+
+  it('bumpHeat should advance updated', async () => {
+    const node = seedNode(db, { heat: 1.0 });
+    const before = rawUpdated(node.id)!;
+    await new Promise(r => setTimeout(r, 5));
+    bumpHeat(db, node.id, 0.3);
+    const after = rawUpdated(node.id)!;
+    expect(after > before).toBe(true);
+  });
+
+  it('archiveNode should advance updated', async () => {
+    const node = seedNode(db);
+    const before = rawUpdated(node.id)!;
+    await new Promise(r => setTimeout(r, 5));
+    archiveNode(db, node.id);
+    const after = rawUpdated(node.id)!;
+    expect(after > before).toBe(true);
+  });
+});
