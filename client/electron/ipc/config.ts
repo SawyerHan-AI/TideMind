@@ -14,6 +14,7 @@ import {
   parseStrategyParamArgs,
   parseStringRecord,
 } from './_schemas.js'
+import { getShimPath, getMcpServerScriptPath } from '../runtime/runtime-paths.js'
 
 export function registerConfigHandlers(dataDir: string): void {
   const configPath = path.join(dataDir, 'config.toml')
@@ -21,12 +22,11 @@ export function registerConfigHandlers(dataDir: string): void {
   const skillDir = path.join(dataDir, 'skill')
   const mcpDescPath = path.join(dataDir, 'mcp-descriptions.json')
 
-  // MCP server 入口路径：从 client/electron/ipc/ 向上 3 级到项目根目录
-  const projectRoot = path.resolve(__dirname, '..', '..', '..')
-  const mcpServerPath = path.join(projectRoot, 'dist', 'index.js')
-
   ipcMain.handle('config:mcp-command', () => {
-    return { command: 'node', args: [mcpServerPath] }
+    // 历史用 `command: 'node'` + `__dirname/../../../dist/index.js`,违反
+    // plugin runtime 强约束 + packaged 模式路径根本不存在(asar 内 + 实际入口
+    // 是 app.asar.unpacked/out/bin/mcp-server.cjs)。统一走 runtime-paths.ts。
+    return { command: getShimPath(), args: [getMcpServerScriptPath()] }
   })
 
   ipcMain.handle('config:get', () => {

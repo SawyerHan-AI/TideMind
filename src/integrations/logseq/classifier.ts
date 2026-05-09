@@ -7,6 +7,7 @@
 import path from 'node:path';
 import { createLogger } from '../../utils/logger.js';
 import { safeReadTextFileSync, safeStatSync } from '../../utils/safe-fs.js';
+import { stripCodeForScan } from './preprocessor.js';
 
 const log = createLogger('logseq-classifier');
 
@@ -107,8 +108,11 @@ export function classifyFiles(
     }
     const title = decodedTitle;
 
-    // 计算引用数
-    const refCount = (content.match(/\[\[([^\]]+)\]\]/g) || []).length;
+    // 计算引用数:必须跳代码块,否则用户笔记里的 Markdown 示例(代码围栏内
+     // 含 `[[name]]`)会被算成引用,refCount 虚高 → 内容页被误判 index_page,
+     // 进而被 Phase 3 跳过显式链接(initialization.ts:626)。
+    const scanContent = stripCodeForScan(content);
+    const refCount = (scanContent.match(/\[\[([^\]]+)\]\]/g) || []).length;
 
     // 分类
     let category: PageCategory;
@@ -187,8 +191,10 @@ export function buildInDegreeMap(
   const inDegree = new Map<string, number>();
 
   for (const file of files) {
-    const content = readContent(file.filePath);
-    if (!content) continue;
+    const rawContent = readContent(file.filePath);
+    if (!rawContent) continue;
+    // 同 refCount,跳过代码块/行内代码避免示例内的 [[name]] 污染入度统计
+    const content = stripCodeForScan(rawContent);
 
     // 去重：同一文件内多次引用同一页面只计 1 次
     const seen = new Set<string>();

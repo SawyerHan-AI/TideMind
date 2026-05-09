@@ -84,25 +84,37 @@ export function deleteNodeCompletely(
   nodeId: string,
   opts: { ignoreMissingTables?: boolean } = {},
 ): void {
-  deleteNodeDependents(db, nodeId, opts);
-  db.prepare('DELETE FROM nodes WHERE id = ?').run(nodeId);
+  // 历史 bug:跨 links / node_versions / strategy_feedback / nodes_vec /
+  // node_segments / nodes 多表 DELETE 全无事务包裹,中途崩溃(磁盘满、WAL
+  // 写失败)留下脏数据 —— 与 v15/v16/v18 修补的孤儿向量同源。
+  // better-sqlite3 嵌套调用自动转 SAVEPOINT,调用方已在事务里也安全。
+  db.transaction(() => {
+    deleteNodeDependents(db, nodeId, opts);
+    db.prepare('DELETE FROM nodes WHERE id = ?').run(nodeId);
+  })();
 }
 
 export function archiveNodeWithVectors(db: Database.Database, nodeId: string): void {
-  db.prepare(
-    'UPDATE nodes SET archived = 1, heat = 0.02 WHERE id = ?',
-  ).run(nodeId);
-  deleteVector(db, nodeId);
+  // UPDATE 与 deleteVector 必须原子:中间崩溃会留下 archived=1 但向量仍活
+  // 的状态,vector search 路径靠 isNodeVisibleToVectorSearch 兜底过滤,但
+  // 任何绕过它直接读 nodes_vec 的代码(包括历史 v15/v16 清理 SQL)都会再次
+  // 受影响。
+  db.transaction(() => {
+    db.prepare('UPDATE nodes SET archived = 1, heat = 0.02 WHERE id = ?').run(nodeId);
+    deleteVector(db, nodeId);
+  })();
 }
 
 export function reArchiveNodeWithVectors(db: Database.Database, nodeId: string): boolean {
-  const result = db.prepare(
-    'UPDATE nodes SET archived = 1, heat = 0.01 WHERE id = ? AND archived = 0',
-  ).run(nodeId);
-  if (result.changes > 0) {
-    deleteVector(db, nodeId);
-  }
-  return result.changes > 0;
+  return db.transaction(() => {
+    const result = db.prepare(
+      'UPDATE nodes SET archived = 1, heat = 0.01 WHERE id = ? AND archived = 0',
+    ).run(nodeId);
+    if (result.changes > 0) {
+      deleteVector(db, nodeId);
+    }
+    return result.changes > 0;
+  })();
 }
 
 export function unarchiveNodeRecordOnly(db: Database.Database, nodeId: string): boolean {

@@ -23,23 +23,34 @@ let inflightAvailabilityCheck: Promise<boolean> | null = null;
 const TOKEN_CACHE_WINDOW_MS = 50 * 60 * 1000;
 let cachedToken: string | null = null;
 let tokenExpiry = 0;
+// 并发去重(2026-05-09):多个 embedding 任务同时命中过期 TTL 时,如不去重会
+// 各自创建 GoogleAuth 实例并打 N 次 metadata server token 请求(QPS 限制 +
+// scrypt 派生开销)。与同文件 inflightAvailabilityCheck 模式一致。
+let inflightTokenFetch: Promise<string> | null = null;
 
 async function getVertexToken(): Promise<string> {
   const now = Date.now();
   if (cachedToken && now + 30_000 < tokenExpiry) return cachedToken;
+  if (inflightTokenFetch) return inflightTokenFetch;
 
-  const credPath = path.join(getDataDir(), 'vertex-credentials.json');
-  const { GoogleAuth } = await import('google-auth-library');
-  const auth = new GoogleAuth({
-    keyFile: credPath,
-    scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+  inflightTokenFetch = (async () => {
+    const credPath = path.join(getDataDir(), 'vertex-credentials.json');
+    const { GoogleAuth } = await import('google-auth-library');
+    const auth = new GoogleAuth({
+      keyFile: credPath,
+      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+    });
+    const client = await auth.getClient();
+    const token = await client.getAccessToken();
+    if (!token?.token) throw new Error('Failed to get Vertex access token');
+    cachedToken = token.token;
+    tokenExpiry = Date.now() + TOKEN_CACHE_WINDOW_MS;
+    return cachedToken;
+  })().finally(() => {
+    inflightTokenFetch = null;
   });
-  const client = await auth.getClient();
-  const token = await client.getAccessToken();
-  if (!token?.token) throw new Error('Failed to get Vertex access token');
-  cachedToken = token.token;
-  tokenExpiry = now + TOKEN_CACHE_WINDOW_MS;
-  return cachedToken;
+
+  return inflightTokenFetch;
 }
 
 /**
@@ -172,19 +183,74 @@ async function getOllamaEmbedding(text: string): Promise<Float32Array | null> {
 }
 
 /**
+ * L2 归一化:把向量缩放到单位球面上(欧几里得范数 = 1)。
+ *
+ * 为何统一在 getEmbedding 出口归一化(2026-05-09):
+ * `src/utils/similarity.ts::l2DistanceToSimilarity` 用 `1 - d²/2` 把 L2 距离
+ * 映射到 [0,1] 的相似度,**这条公式只对单位向量成立**。Gemini/Vertex 的
+ * gemini-embedding-001 返回的是未归一化向量(L2 范数可能 > 1),L2 距离能
+ * 超过 √2 → 公式得出负数被 `Math.max(0, ...)` clamp 到 0 → 所有结果排序坍塌。
+ *
+ * 让所有 provider 在写入和查询时都过同一道归一化,既修复 Gemini/Vertex
+ * 排序问题,也保证将来切换 provider 时索引可比。Ollama nomic-embed-text
+ * 已经默认归一化,再过一遍是 no-op(范数已 = 1)。
+ *
+ * 注意:已写入 sqlite-vec 的旧向量是各自原始空间的混合,改归一化后旧向量
+ * 与新查询的 cosine 不再可比 — 配合 S7 的 dim mismatch 提示,客户端在
+ * provider 切换 / 升级到本版本后会被引导重建索引(reembedAllNodes)。
+ */
+function normalizeL2(vec: Float32Array): Float32Array {
+  let sum = 0;
+  for (let i = 0; i < vec.length; i++) sum += vec[i] * vec[i];
+  const norm = Math.sqrt(sum);
+  if (norm < 1e-8) return vec; // 零向量(理论上不应出现)保持原样,避免除 0
+  // 已经接近单位向量(Ollama 等)就直接返回,避免不必要的拷贝
+  if (Math.abs(norm - 1) < 1e-4) return vec;
+  const out = new Float32Array(vec.length);
+  for (let i = 0; i < vec.length; i++) out[i] = vec[i] / norm;
+  return out;
+}
+
+/**
  * 通过配置的 provider 获取文本 embedding
+ *
+ * 维度校验(2026-05-09):provider 返回的向量维度必须等于 config.embedding.dimensions
+ * (sqlite-vec 表的 schema 定义)。历史所有 provider 都直接 `new Float32Array(values)`
+ * 无校验,模型版本变化 / 配置漂移会让响应维度静默与库表不匹配:写入端会在
+ * sqlite-vec INSERT 时抛 dim mismatch 错误并被 catch 吞成 null;查询端 cosine
+ * 公式失去意义。这里在出口主动比对,不一致 → log.error + 返回 null,让上游决定。
+ *
+ * config.embedding.dimensions 与库表 dim 的一致性由 db/connection.ts::initVec
+ * 在启动时维护(切换 dim 会 DROP nodes_vec 并设 reembedNeeded=true)。这里只做
+ * "本次响应是否符合配置"的二次确认。
  */
 export async function getEmbedding(text: string): Promise<Float32Array | null> {
   const config = getConfig();
   log.debug(`provider=${config.embedding.provider} textLen=${text.length}`);
 
+  let vec: Float32Array | null;
   if (config.embedding.provider === 'vertex') {
-    return getGeminiVertexEmbedding(text);
+    vec = await getGeminiVertexEmbedding(text);
+  } else if (config.embedding.provider === 'gemini') {
+    vec = await getGeminiApiKeyEmbedding(text);
+  } else {
+    vec = await getOllamaEmbedding(text);
   }
-  if (config.embedding.provider === 'gemini') {
-    return getGeminiApiKeyEmbedding(text);
+
+  if (vec === null) return null;
+
+  // dim mismatch 防御:不一致直接回 null,避免污染 sqlite-vec 表
+  const expectedDim = config.embedding.dimensions;
+  if (typeof expectedDim === 'number' && expectedDim > 0 && vec.length !== expectedDim) {
+    log.error(
+      `embedding dim mismatch: provider=${config.embedding.provider} ` +
+      `model=${config.embedding.model ?? '?'} got=${vec.length} expected=${expectedDim}. ` +
+      '请检查 config.embedding.dimensions 与 provider 模型是否对齐。',
+    );
+    return null;
   }
-  return getOllamaEmbedding(text);
+
+  return normalizeL2(vec);
 }
 
 /**

@@ -134,8 +134,20 @@ export function ModelSelection() {
   const [embValue, setEmbValue] = useState('')
   const [saved, setSaved] = useState(false)
   const [reembedding, setReembedding] = useState(false)
-  const initialized = useRef(false)
+  // 历史 bug(2026-05-09):initialized.current 在 mount 后第一次进 debounce
+  // effect 时被设 true,后续任何 config refetch 触发的 setLightValue 等都会
+  // 让 debounce effect 误判为"用户编辑",把刚拉到的值再写回服务器。任何
+  // encode/decode 归一化差异就形成持续抖动。
+  // 修复:把"是否触发自动保存"绑定到 dirty.current —— 只在用户通过下拉
+  // 菜单 onChange 时才置 true,loading effect 不动它。
+  const dirty = useRef(false)
   const saveNowRef = useRef<((lv: string, sv: string, hv: string, ev: string) => void) | null>(null)
+
+  // 把每个 setter 包成"用户操作版本":显式标 dirty 才允许触发自动保存
+  const onChangeLight = useCallback((v: string) => { dirty.current = true; setLightValue(v) }, [])
+  const onChangeStandard = useCallback((v: string) => { dirty.current = true; setStandardValue(v) }, [])
+  const onChangeHeavy = useCallback((v: string) => { dirty.current = true; setHeavyValue(v) }, [])
+  const onChangeEmb = useCallback((v: string) => { dirty.current = true; setEmbValue(v) }, [])
 
   // 构建 connectionId 到 name 的映射
   const connMap = useMemo(() => {
@@ -331,12 +343,10 @@ export function ModelSelection() {
   // 始终指向最新的 saveNow（避免 effect deps 循环）
   saveNowRef.current = saveNow
 
-  // debounce 自动保存
+  // debounce 自动保存:只在用户实际编辑后(dirty.current=true)才触发,
+  // config refetch 引发的 setX 不会写回服务器。
   useEffect(() => {
-    if (!initialized.current) {
-      initialized.current = true
-      return
-    }
+    if (!dirty.current) return
     const timer = setTimeout(() => {
       saveNowRef.current?.(lightValue, standardValue, heavyValue, embValue)
     }, 300)
@@ -352,7 +362,7 @@ export function ModelSelection() {
             <Field label={t('model.selection.lightModel')} tip={t('model.selection.lightModelTip')}>
               <UnifiedModelSelect
                 value={lightValue}
-                onChange={setLightValue}
+                onChange={onChangeLight}
                 groups={llmGroups}
               />
             </Field>
@@ -363,7 +373,7 @@ export function ModelSelection() {
             <Field label={t('model.selection.standardModel')} tip={t('model.selection.standardModelTip')}>
               <UnifiedModelSelect
                 value={standardValue}
-                onChange={setStandardValue}
+                onChange={onChangeStandard}
                 groups={llmGroups}
               />
             </Field>
@@ -374,7 +384,7 @@ export function ModelSelection() {
             <Field label={t('model.selection.heavyModel')} tip={t('model.selection.heavyModelTip')}>
               <UnifiedModelSelect
                 value={heavyValue}
-                onChange={setHeavyValue}
+                onChange={onChangeHeavy}
                 groups={llmGroups}
               />
             </Field>
@@ -389,7 +399,7 @@ export function ModelSelection() {
           <Field label={t('model.selection.embeddingModel')} tip={t('model.selection.embeddingModelTip')}>
             <UnifiedModelSelect
               value={embValue}
-              onChange={setEmbValue}
+              onChange={onChangeEmb}
               groups={embGroups}
             />
           </Field>

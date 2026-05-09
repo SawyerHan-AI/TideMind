@@ -1,5 +1,4 @@
 import { ipcMain } from 'electron'
-import path from 'node:path'
 import { getClientDb } from '../db.js'
 import { randomBytes } from 'node:crypto'
 import {
@@ -8,6 +7,7 @@ import {
   parseAgentUpdate,
   parseOptionalBoolean,
 } from './_schemas.js'
+import { getShimPath, getMcpServerScriptPath } from '../runtime/runtime-paths.js'
 
 function generateAgentId(): string {
   return 'eb_' + randomBytes(4).toString('hex')
@@ -17,10 +17,14 @@ function now(): string {
   return new Date().toISOString()
 }
 
-export function registerAgentHandlers(dataDir: string): void {
-  // 查找 MCP server 入口路径
-  const projectRoot = path.resolve(__dirname, '..', '..', '..')
-  const mcpServerPath = path.join(projectRoot, 'dist', 'index.js')
+export function registerAgentHandlers(_dataDir: string): void {
+  // MCP server 入口路径(2026-05-09 重构):
+  // 历史用 `path.resolve(__dirname, '..', '..', '..', 'dist', 'index.js')` 加
+  // `command: 'node'`,违反 plugin runtime 强约束(CLAUDE.md):严禁字面量 'node'
+  // 或硬编码 Electron 路径。packaged 模式 __dirname 在 asar 内,该路径根本不
+  // 存在;packaged 实际入口是 app.asar.unpacked/out/bin/mcp-server.cjs。
+  // 改用 runtime-paths.ts 的 helpers,与 plugin-self-heal.ts / agent-plugins/
+  // 完全一致。
 
   ipcMain.handle('agents:list', (_e, includeArchived?: unknown) => {
     const parsed = parseOptionalBoolean(includeArchived, 'includeArchived')
@@ -129,8 +133,8 @@ export function registerAgentHandlers(dataDir: string): void {
     return {
       mcpServers: {
         'tidemind': {
-          command: 'node',
-          args: [mcpServerPath],
+          command: getShimPath(),
+          args: [getMcpServerScriptPath()],
           env: { EB_AGENT_ID: parsedId.data },
         },
       },

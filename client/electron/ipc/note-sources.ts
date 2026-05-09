@@ -34,25 +34,37 @@ function isTerminalStatus(status: InitSessionSnapshot['status']): boolean {
 async function waitForTerminal(sourceId: string): Promise<InitSessionSnapshot> {
   return new Promise((resolve) => {
     let off: (() => void) | null = null
+    let resolved = false
     const finish = (snap: InitSessionSnapshot) => {
+      if (resolved) return
+      resolved = true
       if (off) { off(); off = null }
       resolve(snap)
     }
-    // 先订阅再轮询当前状态，避免事件已发出后注册晚了
-    off = initSessionManager.on('transition', (snap) => {
-      if (snap.sourceId !== sourceId) return
-      if (isTerminalStatus(snap.status)) finish(snap)
-    }) as () => void
-    const current = initSessionManager.snapshot(sourceId)
-    if (!current || isTerminalStatus(current.status)) {
-      finish(current ?? {
-        sourceId,
-        toolType: 'logseq',
-        status: 'idle',
-        progress: { phase: -1, phaseName: 'idle', current: 0, total: 0, startedAt: null },
-        error: null, abortReason: null, report: null,
-        canStart: true, canAbort: false, canDiscard: false,
-      })
+    // 先订阅再轮询当前状态，避免事件已发出后注册晚了。
+    // 修复 M27(2026-05-09):用 try/finally 配合 resolved flag 兜底,即使
+    // resolve 路径有任何异常 listener 也会被取消。原版若 finish 未触发(罕见
+    // 异步竞态)listener 会泄漏到 SessionManager 直至模块卸载。
+    try {
+      off = initSessionManager.on('transition', (snap) => {
+        if (snap.sourceId !== sourceId) return
+        if (isTerminalStatus(snap.status)) finish(snap)
+      }) as () => void
+      const current = initSessionManager.snapshot(sourceId)
+      if (!current || isTerminalStatus(current.status)) {
+        finish(current ?? {
+          sourceId,
+          toolType: 'logseq',
+          status: 'idle',
+          progress: { phase: -1, phaseName: 'idle', current: 0, total: 0, startedAt: null },
+          error: null, abortReason: null, report: null,
+          canStart: true, canAbort: false, canDiscard: false,
+        })
+      }
+    } catch (err) {
+      // 任何 setup 阶段抛错都应清理 listener 后让 caller 拿到错误
+      if (off) { try { off() } catch { /* ignore */ } off = null }
+      throw err
     }
   })
 }
@@ -66,12 +78,20 @@ function broadcastSessionEvent(snapshot: InitSessionSnapshot): void {
   }
 }
 
+// 模块级注册标志:防止 registerNoteSourceHandlers 被多次调用时
+// 重复挂 transition listener 导致同一事件广播多份(M27 修复 2026-05-09)。
+// 当前应用启动只调一次,但 hot-reload / 测试 / 未来重新初始化场景需要兜底。
+let sessionListenerRegistered = false
+
 /**
  * 注册笔记源管理 IPC handlers
  */
 export function registerNoteSourceHandlers(): void {
   // 订阅 SessionManager 全局事件，广播到所有 renderer
-  initSessionManager.on('transition', broadcastSessionEvent)
+  if (!sessionListenerRegistered) {
+    initSessionManager.on('transition', broadcastSessionEvent)
+    sessionListenerRegistered = true
+  }
 
   ipcMain.handle('note-sources:list', (_e, includeArchived?: boolean) => {
     const parsed = parseOptionalBoolean(includeArchived, 'includeArchived')
@@ -285,19 +305,33 @@ export function registerNoteSourceHandlers(): void {
       const isExcluded = (relPath: string) =>
         excludePrefixes.some(p => relPath === p || relPath.startsWith(p + '/'))
 
-      const walk = (dir: string, relDir: string) => {
-        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      // M26 修复(2026-05-09):加 symlink 跳过 + 最大深度护栏,避免恶意/含链环
+      // 路径让主进程死循环或耗尽 fd。同步递归只接受合理上限。
+      const MAX_DEPTH = 20
+      const MAX_FILES = 100000
+      const walk = (dir: string, relDir: string, depth: number) => {
+        if (depth > MAX_DEPTH || count >= MAX_FILES) return
+        let entries: fs.Dirent[]
+        try {
+          entries = fs.readdirSync(dir, { withFileTypes: true })
+        } catch {
+          return
+        }
+        for (const entry of entries) {
+          if (count >= MAX_FILES) return
+          // 跳过 symlink 防循环
+          if (entry.isSymbolicLink()) continue
           if (entry.isDirectory()) {
             // 跳过隐藏目录（与 walkMdFiles 一致）
             if (entry.name.startsWith('.')) continue
             const relPath = relDir ? `${relDir}/${entry.name}` : entry.name
-            if (!isExcluded(relPath)) walk(path.join(dir, entry.name), relPath)
-          } else if (entry.name.endsWith('.md')) {
+            if (!isExcluded(relPath)) walk(path.join(dir, entry.name), relPath, depth + 1)
+          } else if (entry.isFile() && entry.name.endsWith('.md')) {
             count++
           }
         }
       }
-      walk(resolved, '')
+      walk(resolved, '', 0)
       return { accessible: true, fileCount: count, path: resolved }
     } catch {
       return { accessible: false, fileCount: 0, path: resolved }

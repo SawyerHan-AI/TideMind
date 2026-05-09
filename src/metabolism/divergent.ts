@@ -55,7 +55,7 @@ export async function runDivergentScan(
   }
 
   // 找候选对：共享邻居 ≥ 2 且无直接链接
-  const candidates: Array<{ a: string; b: string; shared: number; sharedIds: string[] }> = [];
+  const candidates: Array<{ a: string; b: string; shared: number; sharedIds: string[]; score?: number }> = [];
 
   const nodeIds = activeNodes.map(n => n.id);
 
@@ -78,6 +78,12 @@ export async function runDivergentScan(
     linkSet.add(`${l.to_id}|${l.from_id}`);
   }
 
+  // 修复 M15(2026-05-09):候选对原本只用"共享邻居 >= 2"过滤,O(n²) 跑完
+  // 配合按 shared 绝对数排序,hub 节点(高度数)会和很多其它节点共享 ≥ 2 邻居,
+  // 占满 maxPairs 预算 — 实际并不是真正的"发散桥接信号"。改为共享邻居数 /
+  // sqrt(degA * degB) 归一化后再排序,把"hub-everyone"压低,让真正稀有共享
+  // 邻居的对子排前。
+  const minShared = getParam('scan-divergent', 'min_shared_neighbors', 2);
   for (let i = 0; i < nodeIds.length - 1; i++) {
     for (let j = i + 1; j < nodeIds.length; j++) {
       const a = nodeIds[i];
@@ -93,15 +99,20 @@ export async function runDivergentScan(
         if (neighborsB.has(n)) shared.push(n);
       }
 
-      const minShared = getParam('scan-divergent', 'min_shared_neighbors', 2);
       if (shared.length >= minShared) {
-        candidates.push({ a, b, shared: shared.length, sharedIds: shared });
+        // 归一化 score:共享邻居数 / 几何平均度数。两端度数都很大时会被压低,
+        // 真正稀有的对(度数小、共享邻居多)分数高。
+        const degA = neighborsA.size;
+        const degB = neighborsB.size;
+        const denom = Math.sqrt(degA * degB) || 1;
+        const score = shared.length / denom;
+        candidates.push({ a, b, shared: shared.length, sharedIds: shared, score });
       }
     }
   }
 
-  // 按共享邻居数降序
-  candidates.sort((x, y) => y.shared - x.shared);
+  // 按归一化 score 降序(hub 节点对子被压到后面)
+  candidates.sort((x, y) => (y.score ?? 0) - (x.score ?? 0));
 
   // 用 LLM 生成桥接洞察
   const minConfidence = getParam('scan-divergent', 'min_confidence', 0.5);

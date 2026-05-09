@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { coworkAdapter } from '../../client/electron/ipc/agent-plugins/cowork'
+import { codexAdapter } from '../../client/electron/ipc/agent-plugins/codex'
 import { cursorAdapter } from '../../client/electron/ipc/agent-plugins/cursor'
 import { openclawAdapter } from '../../client/electron/ipc/agent-plugins/openclaw'
 import type {
@@ -183,5 +184,29 @@ describe('openclaw agent plugin adapter', () => {
     const baks = fs.readdirSync(path.dirname(configPath))
       .filter(n => n.startsWith('openclaw.json.tidemind-backup-') && n.endsWith('.bak'))
     expect(baks.length).toBe(1)
+  })
+})
+
+describe('codex agent plugin adapter', () => {
+  let tmpDir: string
+  let runtime: PluginRuntimeContext
+  let ctx: GeneratePluginContext
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-plugin-codex-'))
+    runtime = makeRuntime(tmpDir)
+    ctx = makeContext(runtime, 'codex')
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('reports native Codex skill directory as generated path', () => {
+    const skillDir = path.join(runtime.homeDir, '.codex', 'skills', `tidemind-${AGENT_ID}`)
+    fs.mkdirSync(skillDir, { recursive: true })
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Skill')
+
+    expect(codexAdapter.getPath(ctx)).toBe(skillDir)
   })
 })

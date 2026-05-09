@@ -11,8 +11,20 @@ import type { NoteSyncState } from './types.js';
 
 /**
  * 确保同步表存在
+ *
+ * 历史 bug(2026-05-09):原 schema 主键只有 `note_uuid`,但代码层面以
+ * `(note_uuid, source_id)` 维度读写。`setNoteState` 的 INSERT OR REPLACE 按
+ * 主键覆盖整行 → 用户配置两个 Apple Notes 源(不同账户)读同一台 Mac 的
+ * NoteStore.sqlite 时,任意一方写入会清空另一方该 UUID 的 node_ids,下次同步
+ * 把另一方对应节点判为"已删除"归档,再当"新增"重新 digest。Logseq /
+ * Obsidian / Notion 都已是复合主键 `(file_path/page_id, source_id)`,唯独
+ * apple-notes 漏迁移。
+ *
+ * 修复:迁移到复合主键 `(note_uuid, source_id)`。本函数在每次模块加载时
+ * 调用,启动时检测旧 schema 直接走幂等迁移路径。
  */
 export function ensureSyncSchema(db: Database.Database): void {
+  // 先确保表存在(老表语义,可能已是 PRIMARY KEY (note_uuid))
   db.exec(`
     CREATE TABLE IF NOT EXISTS apple_notes_sync (
       note_uuid TEXT PRIMARY KEY,
@@ -25,6 +37,41 @@ export function ensureSyncSchema(db: Database.Database): void {
   `);
   // 兼容：为已有表添加 source_id 列
   try { db.exec("ALTER TABLE apple_notes_sync ADD COLUMN source_id TEXT DEFAULT ''"); } catch { /* already exists */ }
+
+  // 检测并迁移到复合主键(幂等)。SQLite PRAGMA table_info 暴露每列的 pk 编号,
+  // 复合主键时多列 pk > 0,单主键只有一列 pk = 1。
+  const pkCols = (db.prepare("PRAGMA table_info('apple_notes_sync')").all() as Array<{ name: string; pk: number }>)
+    .filter(c => c.pk > 0)
+    .map(c => c.name)
+    .sort()
+    .join(',');
+  if (pkCols !== 'note_uuid,source_id') {
+    // 走"创建新表 → 拷贝 → 丢弃旧表 → 重命名"。包在事务内保证原子。
+    db.transaction(() => {
+      db.exec('DROP TABLE IF EXISTS apple_notes_sync_v2');
+      db.exec(`
+        CREATE TABLE apple_notes_sync_v2 (
+          note_uuid TEXT NOT NULL,
+          source_id TEXT NOT NULL DEFAULT '',
+          modification_date REAL NOT NULL,
+          content_hash TEXT NOT NULL,
+          last_synced TEXT NOT NULL,
+          node_ids TEXT,
+          PRIMARY KEY (note_uuid, source_id)
+        )
+      `);
+      // 拷贝旧数据(单源场景下 source_id='' 是默认值,迁移后行为不变;多源
+      // 用户的旧数据在原 PK 下已被覆盖丢失,无可挽救——这正是本次修复的根因)
+      db.exec(`
+        INSERT INTO apple_notes_sync_v2
+          (note_uuid, source_id, modification_date, content_hash, last_synced, node_ids)
+        SELECT note_uuid, COALESCE(source_id, ''), modification_date, content_hash, last_synced, node_ids
+        FROM apple_notes_sync
+      `);
+      db.exec('DROP TABLE apple_notes_sync');
+      db.exec('ALTER TABLE apple_notes_sync_v2 RENAME TO apple_notes_sync');
+    })();
+  }
 }
 
 /**
@@ -99,12 +146,21 @@ export function setNoteState(
 
 /**
  * 删除笔记同步记录
+ *
+ * 注意(2026-05-09):必须按 (noteUuid, sourceId) 删除,否则跨源会误删别人的
+ * 记录。sourceId 可选只是兼容老调用方;新代码应总是传。
  */
 export function removeNoteState(
   db: Database.Database,
   noteUuid: string,
+  sourceId?: string,
 ): void {
-  db.prepare('DELETE FROM apple_notes_sync WHERE note_uuid = ?').run(noteUuid);
+  if (typeof sourceId === 'string') {
+    db.prepare('DELETE FROM apple_notes_sync WHERE note_uuid = ? AND source_id = ?').run(noteUuid, sourceId);
+  } else {
+    // 老路径:删除所有源下该 UUID 的记录(可能误删多源,但保持向后兼容)
+    db.prepare('DELETE FROM apple_notes_sync WHERE note_uuid = ?').run(noteUuid);
+  }
 }
 
 /**
@@ -127,7 +183,8 @@ export function removeStaleNotes(
       if (state.node_ids.length > 0) {
         orphanNodeIds.push(...state.node_ids);
       }
-      removeNoteState(db, uuid);
+      // 传入精确的 sourceId,只删本源下的记录
+      removeNoteState(db, uuid, state.source_id);
       removed++;
     }
   }

@@ -47,7 +47,7 @@ export function EmbeddedStrategyPanel({ name, type = 'system', locked }: { name:
   const loadVersions = useCallback(async () => {
     try {
       const v = isUser ? await api.userPromptVersions(name) : await api.strategyVersions(name)
-      setVersions(v as StrategyVersion[])
+      setVersions(Array.isArray(v) ? (v as StrategyVersion[]) : [])
     } catch { setVersions([]) }
   }, [name, isUser])
 
@@ -63,18 +63,21 @@ export function EmbeddedStrategyPanel({ name, type = 'system', locked }: { name:
   const handleSave = async () => {
     if (showReason) {
       setSaving(true)
-      if (isUser) {
-        await api.userPromptUpdate(name, content, reason || undefined)
-      } else {
-        await api.strategyUpdate(name, content, reason || undefined)
+      try {
+        if (isUser) {
+          await api.userPromptUpdate(name, content, reason || undefined)
+        } else {
+          await api.strategyUpdate(name, content, reason || undefined)
+        }
+        setSaved(true)
+        setShowReason(false)
+        setReason('')
+        setOriginalContent(content)
+        loadVersions()
+        setTimeout(() => setSaved(false), 2000)
+      } finally {
+        setSaving(false)
       }
-      setSaving(false)
-      setSaved(true)
-      setShowReason(false)
-      setReason('')
-      setOriginalContent(content)
-      loadVersions()
-      setTimeout(() => setSaved(false), 2000)
     } else {
       setShowReason(true)
     }

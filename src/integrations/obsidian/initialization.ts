@@ -16,7 +16,7 @@ import { logTimelineEvent } from '../../db/log.js';
 import { now } from '../../utils/time.js';
 
 import { SqliteRepository } from '../../db/sqlite-repository.js';
-import { walkMdFiles, preprocessFile, buildFileIndex } from './preprocessor.js';
+import { walkMdFiles, preprocessFile, buildFileIndex, stripCodeForScan } from './preprocessor.js';
 import { segmentContent } from './segmenter.js';
 import { classifyFiles, buildInDegreeMap } from './classifier.js';
 import type { ClassifiedFile as ObsClassifiedFile } from './types.js';
@@ -598,7 +598,12 @@ async function createExplicitLinks(
     }
 
     // 提取 [[refs]]（排除 ![[...]] 嵌入引用 —— 那些通常是图片/PDF/音频附件，不是笔记间的引用）
-    const refs = [...content.matchAll(/(?<!!)\[\[([^\]]+)\]\]/g)].map(m => m[1]);
+    // 修复(2026-05-09):先 stripCodeForScan 把代码块/行内 backtick 替换成空格,
+    // 否则用户笔记里的 Markdown 示例(代码围栏内含 `[[name]]`)会被误算成
+    // 引用,污染图谱 + 错误悬空 tag。stripCodeForScan 保持字符偏移不变,
+    // 不影响下游对 ref 的 alias/heading 解析。
+    const scanContent = stripCodeForScan(content);
+    const refs = [...scanContent.matchAll(/(?<!!)\[\[([^\]]+)\]\]/g)].map(m => m[1]);
     const uniqueRefs = [...new Set(refs)];
 
     for (const ref of uniqueRefs) {

@@ -84,6 +84,11 @@ function parseNaturalDate(value: string): string | null {
 
 /**
  * 从文件内容的 frontmatter 中提取日期
+ *
+ * 修复 M17(2026-05-09):原 indexOf('\n---', 3) 子串搜索会被 YAML block-scalar
+ * 值里字面的 \n--- 误命中,frontmatter 被截短 → 日期推断回退到 birthtime/mtime,
+ * 不可靠但不报错。改用 frontmatter.ts::findFrontmatterTerminatorLine 行扫描,
+ * 与 extractFrontmatter 行为完全一致。
  */
 function extractFrontmatterDate(content: string): string | null {
   // 统一换行：CRLF 文件的 '\r\n---' 会让 indexOf('\n---') 匹配到错误位置
@@ -92,10 +97,15 @@ function extractFrontmatterDate(content: string): string | null {
   // 检查是否有 YAML frontmatter
   if (!normalized.startsWith('---')) return null;
 
-  const endIndex = normalized.indexOf('\n---', 3);
-  if (endIndex === -1) return null;
+  const lines = normalized.split('\n');
+  // 行扫描找结束行(整行仅 ---,允许尾随空白)
+  let terminatorLine = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (/^---\s*$/.test(lines[i])) { terminatorLine = i; break; }
+  }
+  if (terminatorLine === -1) return null;
 
-  const frontmatter = normalized.slice(4, endIndex);
+  const frontmatter = lines.slice(1, terminatorLine).join('\n');
 
   // 按优先级遍历日期字段
   for (const field of DATE_FIELD_PRIORITY) {

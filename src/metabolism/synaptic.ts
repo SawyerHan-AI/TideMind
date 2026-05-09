@@ -139,7 +139,15 @@ export function runSynapticScaling(db: Database.Database): {
         const heatB = heatCache.get(link.to_id) ?? 0;
         const activityFactor = Math.sqrt(heatA * heatB);
         const dailyRetention = 1 - linkDecayBase * (1 - activityFactor);
-        const newStrength = link.strength * dailyRetention;
+        // 历史 bug(2026-05-09):heat 字段名义 0~1 但实际钳到 10(参见
+        // src/db/nodes.ts:280 与 src/graph/dedup.ts:94 的 `MIN(heat + ?, 10.0)`)。
+        // 双热节点 heat=10 时 activityFactor=10、dailyRetention=1.27,
+        // newStrength = oldStrength × 1.27 单调爬升,strength 永远没钳位 →
+        // 涨到几十几百,污染所有依赖 strength ∈ [0,1] 的下游(hybrid ranking、
+        // graph 扩展阈值、link_delete_threshold 永远剪不掉这种"不死链")。
+        // 修复:在结果上钳到 1.0,保留赫布学习"两端活跃则增强"语义,只挡上界。
+        // 根因(heat 字段语义错位)留给后续 heat 重构,本批次只做最小止血。
+        const newStrength = Math.min(1.0, link.strength * dailyRetention);
 
         if (newStrength < linkDeleteThreshold) {
           linkDeleteStmt.run(link.id);

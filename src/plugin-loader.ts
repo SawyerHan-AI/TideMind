@@ -40,13 +40,17 @@ export async function loadProModules(ctx: PluginContext): Promise<void> {
         //   (a) mod.path 本身不存在 → 开源版,静默跳过
         //   (b) Pro 模块存在,但它 import 的某个依赖解析失败 → 真 bug,必须抛
         // 之前一刀切吞掉会让开发者在 Pro 仓库里重构 import 时看不到失败。
-        // 判断方式:看错误 message / url 是否指向 mod.path 本身。
+        //
+        // 修复(2026-05-09):历史按 `mod.path`(相对 `../pro/cloud-sync/index.js`)
+        // 子串匹配,但 ESM `ERR_MODULE_NOT_FOUND` message/url 都是绝对路径,
+        // `../` 前缀不会出现在错误信息里 → `includes` 永远 false → 开源版无
+        // pro/ 时启动直接抛错。改用 `pro/<name>/index.js` 子串匹配,绝对路径
+        // 中也包含此段。
         const msg = String((err as Error).message ?? '');
         const url = String((err as { url?: string }).url ?? '');
-        const modPathBare = mod.path.replace(/^\.\//, '');
+        const proPathSegment = `pro/${mod.name}/index.js`;
         const isSelfMissing =
-          msg.includes(mod.path) || msg.includes(modPathBare) ||
-          url.includes(mod.path) || url.includes(modPathBare);
+          msg.includes(proPathSegment) || url.includes(proPathSegment);
         if (isSelfMissing) {
           log.debug(`Pro 模块未安装,跳过: ${mod.name}`);
         } else {

@@ -10,7 +10,15 @@ import { now } from '../utils/time.js';
 import { isVecLoaded } from '../db/connection.js';
 import { findLandingConnections } from '../graph/landing.js';
 import { reconsolidateNode } from '../graph/dedup.js';
-import { enqueuePendingDigest } from '../db/pending-digests.js';
+import {
+  enqueuePendingDigest,
+  // 修复 M25(2026-05-09):detached 异步分支历史用 dynamic import 拉这两个函数,
+  // 模块解析失败(磁盘错误/损坏)时只 log 不重试 → 表里的 pending digest
+  // 永远不被 fail/complete,worker 反复重抓同一条永远拒绝的输入。改成
+  // 顶层 static import,启动时一次性解析,运行期 detached 分支只调函数。
+  completePendingDigest,
+  failPendingDigest,
+} from '../db/pending-digests.js';
 import { createLogger } from '../utils/logger.js';
 import { tryElicit } from './elicit-helper.js';
 
@@ -227,9 +235,8 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
     Promise.resolve().then(async () => {
       try {
         await processDigestContent(repo, input, streamRef, traceId, qualityHeat);
-        // 处理成功，删除 pending 条目
+        // 处理成功，删除 pending 条目(M25:不再 dynamic import,直接用顶部 static import)
         try {
-          const { completePendingDigest } = await import('../db/pending-digests.js');
           const pending = db.prepare(
             "SELECT id FROM pending_digests WHERE trace_id = ? AND status = 'pending'"
           ).get(traceId) as { id: string } | undefined;
@@ -249,13 +256,12 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
           session: input.source?.session,
           agent_id: input.agent_id,
         });
-        // pending 条目已存在，更新错误信息以供重试
+        // pending 条目已存在，更新错误信息以供重试(M25:static import)
         try {
           const pending = db.prepare(
             "SELECT id FROM pending_digests WHERE trace_id = ?"
           ).get(traceId) as { id: string } | undefined;
           if (pending) {
-            const { failPendingDigest } = await import('../db/pending-digests.js');
             failPendingDigest(db, pending.id, (err as Error).message);
           }
         } catch (updateErr) {

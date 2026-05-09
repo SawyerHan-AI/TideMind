@@ -18,16 +18,13 @@ export function InitBanner() {
   const [visible, setVisible] = useState(false)
   const pollRef = useRef<NodeJS.Timeout | null>(null)
   const hideTimerRef = useRef<NodeJS.Timeout | null>(null)
-  const doneHandledRef = useRef(false)
+  const shownDoneKeysRef = useRef<Set<string>>(new Set())
   const navigate = useNavigate()
 
   useEffect(() => {
     let cancelled = false
 
     const poll = async () => {
-      // done 已处理过，不再轮询
-      if (doneHandledRef.current) return
-
       try {
         // 查询所有笔记源，找到正在初始化的
         const sources = await window.api.noteSources.list(false)
@@ -38,27 +35,35 @@ export function InitBanner() {
           if (!source.id) continue
           const snap = await window.api.noteSources.initSnapshot(source.id)
           if (cancelled) return
-          if (snap && (snap.status === 'running' || snap.status === 'done')) {
+          if (snap?.status === 'running') {
             const prog = { ...snap.progress, status: snap.status }
             setProgress({ ...prog, sourceName: source.name })
             setVisible(true)
             found = true
-            if (prog.status === 'done') {
-              doneHandledRef.current = true
-              if (pollRef.current) {
-                clearInterval(pollRef.current)
-                pollRef.current = null
-              }
-              if (cancelled) return
-              hideTimerRef.current = setTimeout(() => {
-                hideTimerRef.current = null
-                if (cancelled) return
-                setVisible(false)
-                // 隐藏后恢复轮询，以便检测新的初始化
-                doneHandledRef.current = false
-                pollRef.current = setInterval(poll, 3000)
-              }, 10_000)
+            break // 同一时刻只有一个在初始化
+          }
+
+          if (snap?.status === 'done') {
+            const doneKey = `${snap.sourceId}:${snap.progress.startedAt ?? ''}`
+            if (shownDoneKeysRef.current.has(doneKey)) continue
+            shownDoneKeysRef.current.add(doneKey)
+
+            const prog = { ...snap.progress, status: snap.status }
+            setProgress({ ...prog, sourceName: source.name })
+            setVisible(true)
+            found = true
+            if (pollRef.current) {
+              clearInterval(pollRef.current)
+              pollRef.current = null
             }
+            if (cancelled) return
+            hideTimerRef.current = setTimeout(() => {
+              hideTimerRef.current = null
+              if (cancelled) return
+              setVisible(false)
+              // 隐藏后恢复轮询，以便检测新的初始化；同一个 doneKey 不再重复显示
+              pollRef.current = setInterval(poll, 3000)
+            }, 10_000)
             break // 同一时刻只有一个在初始化
           }
         }

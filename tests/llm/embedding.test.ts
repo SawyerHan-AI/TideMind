@@ -88,24 +88,29 @@ describe('embedding - provider routing', () => {
   });
 
   it('ollama provider returns Float32Array on success', async () => {
+    // 用 dim=3 配置 + 单位向量,匹配 getEmbedding 出口的 dim 校验 + L2 归一化
+    // (S7+S19 修复 2026-05-09 引入)。原 mock 用 dim=3072 + 3 维数据是历史
+    // 测试遗漏的不一致,本应被新校验拒(行为正确,改测试数据匹配)。
     vi.mocked(getConfig).mockReturnValue({
       general: { data_dir: '/tmp/test-eb' },
-      embedding: { provider: 'ollama', model: 'nomic-embed-text', dimensions: 3072 },
+      embedding: { provider: 'ollama', model: 'nomic-embed-text', dimensions: 3 },
       ollama: { url: 'http://localhost:11434' },
       vertex: { project_id: '', region: 'us-central1' },
       gemini: { api_key: '' },
     } as any);
 
+    // [0.6, 0.8, 0] 已是单位向量(0.36+0.64+0=1),归一化是 no-op,
+    // 测试断言可保留对原始数值的精确比较。
     mockFetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ embeddings: [[0.1, 0.2, 0.3]] }),
+      json: async () => ({ embeddings: [[0.6, 0.8, 0]] }),
     });
 
     const { getEmbedding } = await import('../../src/llm/embedding.js');
     const result = await getEmbedding('test text');
     expect(result).toBeInstanceOf(Float32Array);
     expect(result!.length).toBe(3);
-    expect(result![0]).toBeCloseTo(0.1);
+    expect(result![0]).toBeCloseTo(0.6);
   });
 
   it('gemini provider returns null when API key is missing', async () => {

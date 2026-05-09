@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 
 export type Theme = 'dark' | 'light' | 'system'
 
@@ -43,13 +43,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return () => mq.removeEventListener('change', handler)
   }, [theme])
 
-  const setTheme = (t: Theme) => {
+  const setTheme = useCallback((t: Theme) => {
     setThemeState(t)
     localStorage.setItem('eb-theme', t)
-  }
+  }, [])
+
+  // 修复(2026-05-09 轻微):用 useMemo 包 Provider value,避免每次 ThemeProvider
+  // render 都新建对象引用 → 所有 useTheme() 消费者随之 re-render。
+  const value = useMemo<ThemeContextValue>(() => ({ theme, setTheme }), [theme, setTheme])
 
   return (
-    <ThemeContext.Provider value={{ theme, setTheme }}>
+    <ThemeContext.Provider value={value}>
       {children}
     </ThemeContext.Provider>
   )

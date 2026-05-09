@@ -159,8 +159,35 @@ export function migrateDataDirIfNeeded(
       .replace(/Z$/, '');
   const backupDir = path.join(home, `${OLD_DIR_NAME}.backup-${ts}`);
 
+  // 历史 bug(2026-05-09):备份成功后 rename 失败时会留下:旧目录在原位 +
+  // 备份在 backupDir。下次启动检测到 newDir 不存在又走迁移,cpSync 创建一个
+  // 新的带新时间戳的备份目录。多次重启反复吃磁盘空间。
+  // 修复:落一个 .migration-attempted 标记文件到 oldDir,后续启动检测到该
+  // 文件且发现已存在的 backup 目录就跳过重复备份,直接重试 rename;rename
+  // 还失败则只 warn 不再生成新备份。
+  const attemptMarker = path.join(oldDir, '.migration-attempted');
+  let existingBackup: string | null = null;
+  if (fs.existsSync(attemptMarker)) {
+    // 找已有的最近一次 backup 目录(可能是上次失败留下的)
+    try {
+      const entries = fs.readdirSync(home);
+      const backups = entries
+        .filter(n => n.startsWith(`${OLD_DIR_NAME}.backup-`))
+        .map(n => path.join(home, n))
+        .filter(p => {
+          try { return fs.statSync(p).isDirectory(); } catch { return false; }
+        })
+        .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+      if (backups.length > 0) existingBackup = backups[0];
+    } catch { /* 找不到就当没有,正常走 cpSync */ }
+  }
+
   logger?.info(`[migrate] 检测到旧数据目录，开始迁移 ${oldDir} → ${newDir}`);
-  logger?.info(`[migrate] 创建备份 → ${backupDir}`);
+  if (existingBackup) {
+    logger?.info(`[migrate] 复用上次失败时已生成的备份 → ${existingBackup}`);
+  } else {
+    logger?.info(`[migrate] 创建备份 → ${backupDir}`);
+  }
 
   // Step 0: 预 checkpoint — 把所有 SQLite DB 的 WAL 合并回主库,让后续 cpSync
   // 拿到自洽快照。best-effort:被占用的库跳过,不阻塞迁移。
@@ -179,43 +206,48 @@ export function migrateDataDirIfNeeded(
     );
   }
 
-  // Step 1: 复制为备份（可能较慢，但一次性）
-  try {
-    fs.cpSync(oldDir, backupDir, { recursive: true, verbatimSymlinks: true });
-  } catch (err) {
-    logger?.warn(
-      `[migrate] 备份失败: ${(err as Error).message}。为避免数据丢失，放弃迁移，继续使用旧目录。`,
-    );
-    // 备份失败可能留下部分文件，尽力清理，避免占空间
+  // Step 1: 复制为备份(可能较慢,但一次性)。已有备份时跳过这一步避免重复消耗磁盘。
+  const effectiveBackup = existingBackup ?? backupDir;
+  if (!existingBackup) {
     try {
-      if (fs.existsSync(backupDir)) {
-        fs.rmSync(backupDir, { recursive: true, force: true });
-      }
-    } catch { /* 清理失败不影响主流程 */ }
-    return {
-      migrated: false,
-      oldDir,
-      newDir,
-      reason: `backup-failed: ${(err as Error).message}`,
-    };
+      fs.cpSync(oldDir, backupDir, { recursive: true, verbatimSymlinks: true });
+      // 落标记:下次失败重试时复用此次备份
+      try { fs.writeFileSync(attemptMarker, new Date().toISOString()); } catch { /* 标记失败不阻塞主流程 */ }
+    } catch (err) {
+      logger?.warn(
+        `[migrate] 备份失败: ${(err as Error).message}。为避免数据丢失，放弃迁移，继续使用旧目录。`,
+      );
+      // 备份失败可能留下部分文件，尽力清理，避免占空间
+      try {
+        if (fs.existsSync(backupDir)) {
+          fs.rmSync(backupDir, { recursive: true, force: true });
+        }
+      } catch { /* 清理失败不影响主流程 */ }
+      return {
+        migrated: false,
+        oldDir,
+        newDir,
+        reason: `backup-failed: ${(err as Error).message}`,
+      };
+    }
   }
 
-  // Step 2: 原地重命名（同一文件系统下为原子操作）
+  // Step 2: 原地重命名(同一文件系统下为原子操作)
   try {
     fs.renameSync(oldDir, newDir);
   } catch (err) {
     logger?.warn(
-      `[migrate] 重命名失败: ${(err as Error).message}。备份已创建在 ${backupDir}，请手动处理。`,
+      `[migrate] 重命名失败: ${(err as Error).message}。备份已创建在 ${effectiveBackup}，请手动处理。下次启动会跳过重复备份。`,
     );
     return {
       migrated: false,
       oldDir,
       newDir,
-      backupDir,
+      backupDir: effectiveBackup,
       reason: `rename-failed: ${(err as Error).message}`,
     };
   }
 
-  logger?.info(`[migrate] 迁移完成。新目录：${newDir}；备份：${backupDir}`);
-  return { migrated: true, oldDir, newDir, backupDir };
+  logger?.info(`[migrate] 迁移完成。新目录：${newDir}；备份：${effectiveBackup}`);
+  return { migrated: true, oldDir, newDir, backupDir: effectiveBackup };
 }

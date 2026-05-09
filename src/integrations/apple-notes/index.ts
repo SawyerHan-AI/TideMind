@@ -377,7 +377,11 @@ async function pollForChangesInner(
   if (currentMtime === lastMtime) {
     return; // 数据库文件未变化
   }
-  lastDbMtimes.set(sourceId, currentMtime);
+  // 历史 bug(2026-05-09 修 M16):mtime 在尝试打开 noteStoreDb 之前就被记录,
+  // openNoteStoreDb 抛错(用户撤销 Full Disk Access、SQLITE_BUSY 等)时 catch
+  // 只 return,但 mtime 已被推进 → 下次轮询发现 mtime 与上次记录相等 → 直接
+  // skip,直到 Apple Notes 又一次写入才会重试。期间用户的删除/修改可能漏判。
+  // 修复:把 lastDbMtimes.set 移到成功路径末尾(updateLastSynced 之后)。
 
   if (isStopped()) return;
 
@@ -447,6 +451,9 @@ async function pollForChangesInner(
     lastSyncTimestamps.set(sourceId, maxModDate);
 
     updateLastSynced(db, sourceId);
+    // 成功完成同步后再推进 lastDbMtimes(M16 修复)。失败路径不更新 → 下次
+    // 轮询仍能再尝试。
+    lastDbMtimes.set(sourceId, currentMtime);
 
     const progress = getImportProgress(sourceId);
     if (progress.processedNotes > 0) {

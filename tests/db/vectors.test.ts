@@ -1,10 +1,14 @@
 /**
  * vectors.ts — segmentForEmbedding 单元测试
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type Database from 'better-sqlite3';
-import { isNodeVisibleToVectorSearch, segmentForEmbedding } from '../../src/db/vectors.js';
+import { isNodeVisibleToVectorSearch, reembedAllNodes, segmentForEmbedding } from '../../src/db/vectors.js';
 import { setupTestDb, seedNode } from '../helpers/test-db.js';
+
+vi.mock('../../src/llm/embedding.js', () => ({
+  getEmbedding: vi.fn(async () => new Float32Array([1, 2, 3, 4])),
+}));
 
 let db: Database.Database;
 
@@ -160,5 +164,34 @@ describe('isNodeVisibleToVectorSearch', () => {
     expect(isNodeVisibleToVectorSearch(db, superseded.id)).toBe(false);
     expect(isNodeVisibleToVectorSearch(db, cold.id)).toBe(false);
     expect(isNodeVisibleToVectorSearch(db, 'missing-node')).toBe(false);
+  });
+});
+
+describe('reembedAllNodes', () => {
+  beforeEach(() => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS nodes_vec (
+        id TEXT PRIMARY KEY,
+        embedding BLOB
+      );
+    `);
+  });
+
+  it('skips archived nodes so reembed does not recreate archived vectors', async () => {
+    const active = seedNode(db, { content: 'active node', heat: 1 });
+    const archived = seedNode(db, { content: 'archived node', heat: 0.02 });
+    db.prepare('UPDATE nodes SET archived = 1 WHERE id = ?').run(archived.id);
+
+    await reembedAllNodes(db);
+
+    const activeSegments = db.prepare(
+      'SELECT COUNT(*) AS cnt FROM node_segments WHERE node_id = ?',
+    ).get(active.id) as { cnt: number };
+    const archivedSegments = db.prepare(
+      'SELECT COUNT(*) AS cnt FROM node_segments WHERE node_id = ?',
+    ).get(archived.id) as { cnt: number };
+
+    expect(activeSegments.cnt).toBe(1);
+    expect(archivedSegments.cnt).toBe(0);
   });
 });

@@ -19,31 +19,42 @@ export function parseLLMJson<T>(raw: string): T | null {
 
   let cleaned = trimmed;
 
-  // 2. 从 markdown 代码块中提取:
-  //    - 优先匹配带 `json` 语言标签的块(最可信),存在多个时取最后一个
-  //      (推理模型经常在正文中引用示例块,真正的答案在末尾)。
-  //    - 没有 `json` 标签时再退到裸 ``` 块,同样取最后一个。
+  // 2. 从 markdown 代码块中提取:依次尝试 *首个* 与 *末个* 代码块,谁先解析
+  //    成功就返回。
+  //    历史 bug(2026-05-09):只取末个块的策略与 step 4 "取首个 brace/bracket"
+  //    不一致——OpenAI/Anthropic 常见模式是"先输出真答案 JSON,再附 narration
+  //    或对比示例",末个块往往是示例,首个块才是答案。两个块都试可同时覆盖
+  //    "推理模型先 narration 再答案"和"答案先示例后"两种语序。
   const jsonBlocks: string[] = [];
   const jsonRe = /```json\s*([\s\S]*?)```/g;
   let m: RegExpExecArray | null;
   while ((m = jsonRe.exec(trimmed)) !== null) {
     jsonBlocks.push(m[1].trim());
   }
+  let candidates: string[] = [];
   if (jsonBlocks.length > 0) {
-    cleaned = jsonBlocks[jsonBlocks.length - 1];
+    candidates = jsonBlocks.length === 1
+      ? [jsonBlocks[0]]
+      : [jsonBlocks[0], jsonBlocks[jsonBlocks.length - 1]];
   } else {
     const anyBlocks: string[] = [];
     const anyRe = /```(?:[a-zA-Z0-9_-]*)\s*([\s\S]*?)```/g;
     while ((m = anyRe.exec(trimmed)) !== null) {
       anyBlocks.push(m[1].trim());
     }
-    if (anyBlocks.length > 0) cleaned = anyBlocks[anyBlocks.length - 1];
+    if (anyBlocks.length > 0) {
+      candidates = anyBlocks.length === 1
+        ? [anyBlocks[0]]
+        : [anyBlocks[0], anyBlocks[anyBlocks.length - 1]];
+    }
   }
 
-  // 3. 代码块内容直接解析
-  try {
-    return JSON.parse(cleaned) as T;
-  } catch { /* continue */ }
+  // 3. 代码块内容直接解析:依次试每个候选,谁成功用谁
+  for (const cand of candidates) {
+    try { return JSON.parse(cand) as T; } catch { /* continue */ }
+  }
+  // 把首个候选(或原文)作为后续 step 4 的目标
+  if (candidates.length > 0) cleaned = candidates[0];
 
   // 4. 提取 JSON 对象或数组（括号深度计数，精确定位匹配的闭合符号）
   const firstBrace = cleaned.indexOf('{');

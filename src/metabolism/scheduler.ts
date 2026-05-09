@@ -427,6 +427,13 @@ export function makeNodeAndRecallGate(
 
 let maintenanceRunning = false;
 let tickStartedAt: number = 0;
+// tickId 单调递增,与每次启动的 tick 关联;watchdog 强制复位时 currentTickId
+// 自增,旧 promise 的 .finally 通过自带 myTickId 比对发现已不是当前 tick → 不
+// 再覆盖新 tick 的状态。修复 M11(2026-05-09):历史 watchdog 直接置
+// `maintenanceRunning=false`,旧 promise 仍在跑,新 tick 立即起跑;旧
+// promise.finally 又把 maintenanceRunning 抹回 false,等于把第二个 tick 的
+// watchdog 抹掉,第三个 tick 与第二个并发执行。
+let currentTickId = 0;
 
 /** 看门狗：tick 持续超过此时长视为卡死，强制复位 flag */
 const MAINTENANCE_WATCHDOG_MS = 30 * 60 * 1000; // 30 分钟
@@ -439,6 +446,7 @@ const MAINTENANCE_WATCHDOG_MS = 30 * 60 * 1000; // 30 分钟
  * 1. runSchedulerTick 同步抛错（如 getCircuitState 的 SQL 失败）也必须复位
  *    flag，否则 .catch().finally() 永不执行，整个进程后续 tick 全部空转。
  * 2. 异步链卡死时（>30 分钟）由看门狗强制复位，避免任何路径漏复位。
+ * 3. 旧/新 tick 通过 tickId 比对配对,旧 promise.finally 不会误清新 tick 状态。
  */
 export function maybeRunMaintenance(
   db: Database.Database,
@@ -453,6 +461,7 @@ export function maybeRunMaintenance(
       );
       maintenanceRunning = false;
       tickStartedAt = 0;
+      currentTickId++; // 让卡死那轮 tick 的 finally 失去状态写权
     }
   }
 
@@ -460,19 +469,26 @@ export function maybeRunMaintenance(
 
   maintenanceRunning = true;
   tickStartedAt = Date.now();
+  const myTickId = ++currentTickId;
 
   try {
     runSchedulerTick(db, tasks)
       .catch(err => log.error('maintenance tick failed:', (err as Error).message))
       .finally(() => {
-        maintenanceRunning = false;
-        tickStartedAt = 0;
+        // 只在自己仍是当前 tick 时清理状态。watchdog 复位 + 自增 currentTickId
+        // 后,卡死那轮的 finally 进入此分支时 myTickId !== currentTickId 直接 noop。
+        if (myTickId === currentTickId) {
+          maintenanceRunning = false;
+          tickStartedAt = 0;
+        }
       });
   } catch (err) {
     // 同步抛错（如 SQL prepare 失败）→ Promise 没有产生，必须立刻复位
     log.error('maintenance tick sync throw:', (err as Error).message);
-    maintenanceRunning = false;
-    tickStartedAt = 0;
+    if (myTickId === currentTickId) {
+      maintenanceRunning = false;
+      tickStartedAt = 0;
+    }
   }
 }
 

@@ -148,7 +148,7 @@ describe('CacheManager - applyChanges edge cases', () => {
     expect(cache.getLastSyncedVersion()).toBe(0);
   });
 
-  it('should handle unknown table gracefully (counts but ignores)', async () => {
+  it('should block version advancement for unknown tables', async () => {
     const changes = [{
       table: 'unknown_table',
       action: 'upsert',
@@ -156,11 +156,24 @@ describe('CacheManager - applyChanges edge cases', () => {
       data: { id: 'x', foo: 'bar' },
     }];
 
-    // Unknown table is silently skipped by the try/catch, but applied counter still increments
     const applied = await cache.applyChanges(changes, 'fake-token');
-    expect(applied).toBe(1);
-    // Version should still update since changes had entries
-    expect(cache.getLastSyncedVersion()).toBe(10);
+    expect(applied).toBe(0);
+    expect(cache.getLastSyncedVersion()).toBe(0);
+  });
+
+  it('should not advance synced version past a failed change', async () => {
+    const changes = [
+      { table: 'nodes', action: 'upsert', sync_version: 1, data: { id: 'ok-before-failure', type: 'fact', content: 'good', heat: 1, refinement: 0, connectivity: 0, independence: 0, maturity_score: 0.2, created: '2026-01-01T00:00:00Z' } },
+      { table: 'links', action: 'upsert', sync_version: 2, data: { id: 'bad-link', from_id: 'missing-a', to_id: 'missing-b', relation: [{ type: 'supports', confidence: 0.7 }], strength: 0.5, status: 'confirmed', created: '2026-01-01T00:00:00Z' } },
+      { table: 'nodes', action: 'upsert', sync_version: 3, data: { id: 'ok-after-failure', type: 'fact', content: 'also good', heat: 1, refinement: 0, connectivity: 0, independence: 0, maturity_score: 0.2, created: '2026-01-02T00:00:00Z' } },
+    ];
+
+    const applied = await cache.applyChanges(changes, 'fake-token');
+    expect(applied).toBe(2);
+    expect(cache.getLastSyncedVersion()).toBe(1);
+
+    const laterNode = db.prepare('SELECT * FROM nodes WHERE id = ?').get('ok-after-failure') as any;
+    expect(laterNode.content).toBe('also good');
   });
 
   it('should apply all valid changes even if some fail', async () => {

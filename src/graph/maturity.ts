@@ -41,18 +41,28 @@ export function updateConnectivity(db: Database.Database, nodeId: string): numbe
   // connectivity 只计算语义链接，排除 tagged（分类索引不反映认知连通度）
   const links = allLinks.filter(l => !isTaggedLink(l));
 
-  if (links.length === 0) return 0;
+  // 历史 bug(2026-05-09):links 为空时直接 `return 0`,**未把 DB 里的 connectivity
+  // 列写回 0**。节点之前 connectivity=0.6,所有语义链接被 link-evaluate 删除后
+  // 调本函数,DB 仍是 0.6,maturity_score 也保留旧值。下次 refreshMaturityScore
+  // 又把这个陈旧 connectivity 当真使用。
+  // 修复:空集合分支也走和正常分支一致的写库路径,保证 DB 状态总是与最新计算
+  // 一致。connectivity = 0,maturity_score 用最新 heat/refinement/independence
+  // 重算。
+  let connectivity: number;
+  if (links.length === 0) {
+    connectivity = 0;
+  } else {
+    const avgStrength = links.reduce((sum, l) => sum + l.strength, 0) / links.length;
+    const baseConnectivity = Math.min(1, (links.length * avgStrength) / 5);
 
-  const avgStrength = links.reduce((sum, l) => sum + l.strength, 0) / links.length;
-  const baseConnectivity = Math.min(1, (links.length * avgStrength) / 5);
-
-  // 链接多样性加成：统计不同 relation type 数量
-  const relationTypes = new Set(
-    links.flatMap(l => Array.isArray(l.relation) ? l.relation.map(r => r.type) : []),
-  );
-  // 1 种类型无加成，每多 1 种加 5%，上限 25%（5+ 种类型）
-  const diversityBonus = Math.min(0.25, (Math.max(0, relationTypes.size - 1)) * 0.05);
-  const connectivity = Math.min(1, baseConnectivity * (1 + diversityBonus));
+    // 链接多样性加成：统计不同 relation type 数量
+    const relationTypes = new Set(
+      links.flatMap(l => Array.isArray(l.relation) ? l.relation.map(r => r.type) : []),
+    );
+    // 1 种类型无加成，每多 1 种加 5%，上限 25%（5+ 种类型）
+    const diversityBonus = Math.min(0.25, (Math.max(0, relationTypes.size - 1)) * 0.05);
+    connectivity = Math.min(1, baseConnectivity * (1 + diversityBonus));
+  }
 
   // 原子更新 connectivity 和 maturity_score，避免崩溃时两者不一致
   const node = db.prepare('SELECT heat, refinement, independence FROM nodes WHERE id = ?')

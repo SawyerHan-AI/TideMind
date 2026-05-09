@@ -24,6 +24,8 @@ export function searchFTS(
   if (!safeQuery) return [];
 
   try {
+    // archived 必须显式过滤:archive 路径设 heat = 0.02(node-lifecycle.ts:93),
+    // 正好 > 0.01 阈值 → 不加 archived=0 时已归档节点会出现在搜索结果。
     return db.prepare(`
       SELECT nodes.id, nodes.content, nodes_fts.rank
       FROM nodes_fts
@@ -31,6 +33,7 @@ export function searchFTS(
       WHERE nodes_fts MATCH ?
         AND nodes.heat > 0.01
         AND nodes.is_superseded = 0
+        AND nodes.archived = 0
       ORDER BY bm25(nodes_fts, 5.0, 1.0, 2.0)
       LIMIT ?
     `).all(safeQuery, limit) as FtsResult[];
@@ -40,7 +43,10 @@ export function searchFTS(
     return db.prepare(`
       SELECT id, content, -1.0 as rank
       FROM nodes
-      WHERE content LIKE ? ESCAPE '\\' AND heat > 0.01 AND is_superseded = 0
+      WHERE content LIKE ? ESCAPE '\\'
+        AND heat > 0.01
+        AND is_superseded = 0
+        AND archived = 0
       ORDER BY heat DESC
       LIMIT ?
     `).all(`%${escapedQuery}%`, limit) as FtsResult[];

@@ -699,10 +699,33 @@ const MIGRATIONS: Migration[] = [
     version: 6,
     description: '移除 project 字段：数据迁移到 tags，重建表和 FTS',
     up: (db) => {
-      // 1. 将 project 值迁移到 tags 数组
-      const nodesWithProject = db.prepare(
-        "SELECT id, project, tags FROM nodes WHERE project IS NOT NULL"
-      ).all() as Array<{ id: string; project: string; tags: string | null }>;
+      // 崩溃恢复 (2026-05-09): v6 因 PRAGMA foreign_keys=OFF 走非事务路径,
+      // 先 DROP TABLE nodes 再 RENAME nodes_new。中途断电 / 进程被 kill 会
+      // 留下 "nodes 不存在但 nodes_new 存在" 的半完成状态,setSchemaVersion
+      // 没跑过 → 重启后 v6 重跑,但开头 SELECT id, project, tags FROM nodes
+      // 直接抛 "no such table: nodes",数据库永远不可启动。
+      // 这里在最开头检测此状态:若发现,直接 RENAME 回去再走完整流程
+      // (nodes_new 已含正确 schema + 用户数据,RENAME 即等价于走完一次 v6)。
+      const tableInfo = db.prepare(`
+        SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('nodes', 'nodes_new')
+      `).all() as Array<{ name: string }>;
+      const tableNames = new Set(tableInfo.map(r => r.name));
+      if (!tableNames.has('nodes') && tableNames.has('nodes_new')) {
+        log.warn('迁移 v6: 检测到上次中断后的半完成状态(nodes 缺失,nodes_new 存在),恢复 RENAME');
+        db.exec('ALTER TABLE nodes_new RENAME TO nodes');
+        // 索引/触发器/FTS 由后续步骤的 IF NOT EXISTS 兜底,这里只补 RENAME。
+        // 继续走完正常流程,后续 INSERT INTO nodes_new 因为 nodes_new 已不存在
+        // 会跳过(下面会重建);但 project 列已被移除,所以前面的数据迁移要 skip。
+      }
+
+      // 1. 将 project 值迁移到 tags 数组(只在 nodes 仍含 project 列时跑)
+      const projectColExists = (db.prepare("PRAGMA table_info('nodes')").all() as Array<{ name: string }>)
+        .some(c => c.name === 'project');
+      const nodesWithProject = projectColExists
+        ? (db.prepare(
+            "SELECT id, project, tags FROM nodes WHERE project IS NOT NULL"
+          ).all() as Array<{ id: string; project: string; tags: string | null }>)
+        : [];
 
       const updateTags = db.prepare('UPDATE nodes SET tags = ? WHERE id = ?');
       for (const node of nodesWithProject) {

@@ -109,16 +109,42 @@ async function main(): Promise<void> {
   // 定时调度：每分钟 tick，每个任务独立判断是否到期
   // 防重入：上一轮未完成时跳过，避免长任务（LLM 调用）导致堆叠
   //
-  // 注意：这里没有 tick 级 timeout。长 LLM 调用由 src/llm/client.ts 的
-  // AbortController 控制上限（TIMEOUT_MS_BY_TIER）。此前曾用 Promise.race
-  // 加 55s 上限，但那不会真的中止在途的 LLM 调用，只会让 tickRunning 提前
-  // 放行，反而造成多轮 scheduler 并发执行——已移除。
+  // 修复 M24(2026-05-09):加宽松超时(12 分钟)兜底。历史移除 55s race 是
+  // 因为它不真中止 LLM,但完全无 timeout 也会留下"任意 task 内 promise 不
+  // settle 时 daemon 静默冻结"的风险——LLM 客户端的 timeout 是大概率兜底,
+  // 不是强制保证。12 分钟远大于 LLM 合理 timeout 上限(标准档 180s),只在
+  // 真异常时触发,日志显式标记给 ops 排查。
+  const TICK_HARD_TIMEOUT_MS = 12 * 60 * 1000;
   let tickRunning = false;
   let tickCount = 0;
+  let tickStartedAt = 0;
   const STRATEGY_SYNC_EVERY_N_TICKS = 5; // 每 5 分钟从源码同步一次策略文件
   setInterval(() => {
+    // 超时兜底:发现上一轮已运行超过 hard timeout,放行并 warn
+    if (tickRunning && tickStartedAt > 0) {
+      const elapsedMs = Date.now() - tickStartedAt;
+      if (elapsedMs > TICK_HARD_TIMEOUT_MS) {
+        log.error(
+          `daemon tick 卡死 ${Math.round(elapsedMs / 60000)} 分钟,强制放行 tickRunning。` +
+          '上一轮 promise 仍可能在跑,本轮启动即为并发——异常情形,请检查 LLM 调用与底层 SDK abort 行为。',
+        );
+        try {
+          logTimelineEvent(getDb(), {
+            type: 'memory',
+            subtype: 'daemon_tick_timeout',
+            title: JSON.stringify({ key: 'daemon_tick_timeout' }),
+            detail: { elapsed_ms: elapsedMs, hard_timeout_ms: TICK_HARD_TIMEOUT_MS },
+            important: 1,
+          });
+        } catch { /* timeline 写失败不能阻断恢复 */ }
+        tickRunning = false;
+        tickStartedAt = 0;
+      }
+    }
+
     if (tickRunning) return;
     tickRunning = true;
+    tickStartedAt = Date.now();
     tickCount++;
 
     // 检查 Skill/MCP 描述文件变更（轻量级，不阻塞）
@@ -131,12 +157,13 @@ async function main(): Promise<void> {
     if (cloudEnabled) {
       // Cloud mode: skip local metabolism, only run file watchers / strategy sync above
       tickRunning = false;
+      tickStartedAt = 0;
       return;
     }
 
     runSchedulerTick(getDb(), ALL_TASKS)
       .catch(err => log.error('调度 tick 失败:', err instanceof Error ? err.stack : String(err)))
-      .finally(() => { tickRunning = false; });
+      .finally(() => { tickRunning = false; tickStartedAt = 0; });
   }, TICK_INTERVAL_MS);
 
   process.on('SIGINT', () => { void shutdown(); });

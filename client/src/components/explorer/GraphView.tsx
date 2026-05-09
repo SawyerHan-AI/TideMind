@@ -115,9 +115,17 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
 
   // data fetching
   const rev = useDataRevision(['nodes', 'links'])
+  // 修复 M33(2026-05-09):deps 加 archived/sortBy/sortDir/createdAfter/createdBefore。
+  // window.api.nodes.graph 把整个 filter 传后端,这些字段都参与查询;原 deps
+  // 只列了部分字段,改这些过滤项不会触发重取,列表与图形脱节。
   const { data: graphData } = useIPC(
     () => window.api.nodes.graph(filter),
-    [filter.type, filter.tags, filter.heatMin, filter.heatMax, filter.search, rev],
+    [
+      filter.type, filter.tags, filter.heatMin, filter.heatMax, filter.search,
+      filter.archived, filter.sortBy, filter.sortDir,
+      filter.createdAfter, filter.createdBefore,
+      rev,
+    ],
   )
 
   // fetch structure holes when toggled

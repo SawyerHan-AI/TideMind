@@ -156,6 +156,25 @@ export function normalizeStringList(value: unknown): string[] {
 }
 
 /**
+ * 行扫描找 frontmatter 结束位置。只有整行仅 `---`(允许尾随空白)算结束,
+ * 避免 YAML block-scalar 里字面 `\n---` 被误判为结束(M17 修复)。
+ *
+ * 历史 bug:`extractAliasesQuick` / `extractFrontmatterDate` 等"快路径"用
+ * `content.indexOf('\n---', 3)` 子串搜索找结束符,YAML 多行字符串值里出现
+ * `\n---something` 时会命中错误位置,frontmatter 截短 → 解析失败 →
+ * aliases / 日期推断静默丢失。`extractFrontmatter` 已用 line-scan 修过,这里
+ * 抽出共用 helper 让所有路径一致。
+ *
+ * 返回 -1 表示 frontmatter 未闭合或缺失。
+ */
+export function findFrontmatterTerminatorLine(lines: string[]): number {
+  for (let i = 1; i < lines.length; i++) {
+    if (/^---\s*$/.test(lines[i])) return i;
+  }
+  return -1;
+}
+
+/**
  * 快速从文件内容提取 frontmatter aliases（不做完整预处理）。
  */
 export function extractAliasesQuick(content: string): string[] {
@@ -163,10 +182,11 @@ export function extractAliasesQuick(content: string): string[] {
   const normalized = content.replace(/\r\n/g, '\n');
   if (!normalized.startsWith('---')) return [];
 
-  const endIndex = normalized.indexOf('\n---', 3);
-  if (endIndex === -1) return [];
+  const lines = normalized.split('\n');
+  const terminator = findFrontmatterTerminatorLine(lines);
+  if (terminator === -1) return [];
 
-  const fmRaw = normalized.slice(4, endIndex);
+  const fmRaw = lines.slice(1, terminator).join('\n');
   const parsed = tryParseYaml(fmRaw);
   if (!parsed || typeof parsed !== 'object') return [];
 

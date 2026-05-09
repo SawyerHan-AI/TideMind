@@ -15,7 +15,7 @@ import { logTimelineEvent } from '../../db/log.js';
 import { now } from '../../utils/time.js';
 
 import { SqliteRepository } from '../../db/sqlite-repository.js';
-import { walkMdFiles, buildBlockIndex, preprocessFile } from './preprocessor.js';
+import { walkMdFiles, buildBlockIndex, preprocessFile, stripCodeForScan } from './preprocessor.js';
 import { SYSTEM_PROPERTIES } from './types.js';
 import { segmentContent } from './segmenter.js';
 import { classifyFiles, buildInDegreeMap, type ClassifiedFile, type ClassificationResult } from './classifier.js';
@@ -636,7 +636,12 @@ async function createExplicitLinks(
       content = r.content;
     }
 
-    const refs = [...content.matchAll(/\[\[([^\]]+)\]\]/g)].map(m => m[1]);
+    // 修复(2026-05-09):先 stripCodeForScan 把代码块/行内 backtick 替换成
+    // 空格再跑 regex,否则用户笔记里的代码示例(围栏内含 `[[name]]`)会被
+    // 误算成引用,污染图谱 + 错误悬空 tag。保持字符偏移不变,后续 ref 解析
+    // (alias / path)行为不变。
+    const scanContent = stripCodeForScan(content);
+    const refs = [...scanContent.matchAll(/\[\[([^\]]+)\]\]/g)].map(m => m[1]);
     const uniqueRefs = [...new Set(refs)];
 
     for (const ref of uniqueRefs) {

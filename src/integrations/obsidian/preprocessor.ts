@@ -344,6 +344,34 @@ function isInCodeRegion(pos: number, regions: CodeRegion[]): boolean {
   return regions.some(([start, end]) => pos >= start && pos <= end);
 }
 
+/**
+ * 把代码块/行内代码替换成等长空格,保持字符偏移不变。
+ *
+ * 历史 bug(2026-05-09):initialization.ts:601 直接对原文 raw content 跑
+ * `\[\[([^\]]+)\]\]` regex,代码示例 / `%%comments%%` / 模板里的 wikilink
+ * 全部被误算成显式引用,污染图谱 + 错误悬空 tag。preprocessor 内部已识别
+ * 代码区域(markCodeRegions),但 wiki 链接解析需要保留 alias/heading/path
+ * 等结构信息,bare pageRefs 不够;让 initialization.ts 在原文上跑 regex
+ * 之前先调本函数把代码段替换成空格(保持偏移),既保留结构解析能力又跳过
+ * 代码块内噪声。
+ */
+export function stripCodeForScan(content: string): string {
+  const regions = markCodeRegions(content);
+  if (regions.length === 0) return content;
+  let out = '';
+  let cursor = 0;
+  // markCodeRegions 可能返回乱序(行内 code 后 push),按 start 升序排
+  const sorted = [...regions].sort((a, b) => a[0] - b[0]);
+  for (const [start, end] of sorted) {
+    if (start < cursor) continue; // 重叠区域已被前一段覆盖
+    out += content.slice(cursor, start);
+    out += ' '.repeat(end - start);
+    cursor = end;
+  }
+  out += content.slice(cursor);
+  return out;
+}
+
 // ============================================================
 // Step 4: 正文 Wikilinks
 // ============================================================
