@@ -82,6 +82,7 @@
       "testConnection": "Bağlantıyı Test Et",
       "archive": "Arşivle",
       "saved": "Kaydedildi",
+      "save": "Kaydet",
       "connectionFailed": "Bağlantı başarısız",
       "modelsAvailable": "{{count}} model kullanılabilir",
       "status": {
@@ -141,7 +142,7 @@
       "notSelected": "Seçilmedi",
       "embeddingUsage": "Kullanım: anlamsal arama, benzerlik hesaplama, kopya tespiti",
       "reembedProgress": "Embedding yeniden hesaplanıyor... ({{done}}/{{total}})",
-      "reembedNeeded": "Model değiştirildikten sonra tüm düğüm vektörlerinin yeniden hesaplanması gerekir. Yeniden hesaplama sırasında arama otomatik olarak tam metin aramaya düşer.",
+      "reembedNeeded": "Vektör dizini yeniden hesaplanmalı (yükseltme veya model değişikliği sonrası tetiklenir). Yeniden hesaplama sırasında arama otomatik olarak tam metin aramaya düşer.",
       "startReembed": "Yeniden Hesaplamayı Başlat",
       "saved": "Kaydedildi"
     }

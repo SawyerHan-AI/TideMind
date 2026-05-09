@@ -82,6 +82,7 @@
       "testConnection": "Test Connection",
       "archive": "Archive",
       "saved": "Saved",
+      "save": "Save",
       "connectionFailed": "Connection failed",
       "modelsAvailable": "{{count}} models available",
       "status": {
@@ -141,7 +142,7 @@
       "notSelected": "Not selected",
       "embeddingUsage": "Usage: semantic search, similarity calculation, duplicate detection",
       "reembedProgress": "Re-embedding in progress... ({{done}}/{{total}})",
-      "reembedNeeded": "After switching models, all node vectors need to be recalculated. During recalculation, search automatically falls back to full-text search.",
+      "reembedNeeded": "Vector index needs to be recalculated (triggered after upgrade or model switch). During recalculation, search automatically falls back to full-text search.",
       "startReembed": "Start Re-embedding",
       "saved": "Saved"
     }

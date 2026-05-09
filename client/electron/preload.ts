@@ -134,6 +134,7 @@ const api: AppApi = {
   connections: {
     list: (includeArchived?: boolean) => ipcRenderer.invoke('connections:list', includeArchived),
     get: (id: string) => ipcRenderer.invoke('connections:get', id),
+    getCredentials: (id: string) => ipcRenderer.invoke('connections:get-credentials', id),
     create: (params: { name: string; provider_type: string; credentials?: Record<string, unknown> }) => ipcRenderer.invoke('connections:create', params),
     update: (id: string, params: { name?: string; credentials?: Record<string, unknown> }) => ipcRenderer.invoke('connections:update', id, params),
     archive: (id: string) => ipcRenderer.invoke('connections:archive', id),

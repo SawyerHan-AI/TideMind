@@ -82,6 +82,7 @@
       "testConnection": "Tester la connexion",
       "archive": "Archiver",
       "saved": "Enregistre",
+      "save": "Enregistrer",
       "connectionFailed": "Echec de connexion",
       "modelsAvailable": "{{count}} modeles disponibles",
       "status": {
@@ -141,7 +142,7 @@
       "notSelected": "Non selectionne",
       "embeddingUsage": "Utilisation : recherche semantique, calcul de similarite, detection de doublons",
       "reembedProgress": "Recalcul des embeddings en cours... ({{done}}/{{total}})",
-      "reembedNeeded": "Apres le changement de modele, tous les vecteurs de noeuds doivent etre recalcules. Pendant le recalcul, la recherche se replie automatiquement sur la recherche textuelle.",
+      "reembedNeeded": "L'index vectoriel doit etre recalcule (declenche apres une mise a jour ou un changement de modele). Pendant le recalcul, la recherche se replie automatiquement sur la recherche textuelle.",
       "startReembed": "Demarrer le recalcul",
       "saved": "Enregistre"
     }

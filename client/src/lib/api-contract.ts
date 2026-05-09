@@ -208,6 +208,7 @@ export interface AppApi {
       status: string; available_models: string | null; last_checked: string | null
       archived: number; created: string
     } | null>
+    getCredentials: (id: string) => Promise<Record<string, string>>
     create: (params: { name: string; provider_type: string; credentials?: Record<string, unknown> }) => Promise<{
       id: string; name: string; provider_type: string; credentials: string
       status: string; available_models: string | null; last_checked: string | null

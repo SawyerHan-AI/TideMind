@@ -82,6 +82,7 @@
       "testConnection": "测试连接",
       "archive": "归档",
       "saved": "已保存",
+      "save": "保存",
       "connectionFailed": "连接失败",
       "modelsAvailable": "{{count}} 个模型可用",
       "status": {
@@ -141,7 +142,7 @@
       "notSelected": "未选择",
       "embeddingUsage": "用途: 语义搜索、相似度计算、去重检测",
       "reembedProgress": "正在重算 embedding... ({{done}}/{{total}})",
-      "reembedNeeded": "切换模型后需要重算所有节点的向量。重算期间搜索自动降级为全文检索。",
+      "reembedNeeded": "向量索引需要重算（升级或切换模型后触发）。重算期间搜索自动降级为全文检索。",
       "startReembed": "开始重算",
       "saved": "已保存"
     }
