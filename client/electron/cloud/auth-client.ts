@@ -7,6 +7,12 @@ import { getConfig, getDataDir } from '../../../src/config.js';
 
 const log = createLogger('cloud-auth');
 
+// 客户端日志写本地 logs/,但仍按 PII 卫生掩码邮箱(避免日志被分享/上报泄漏)
+function maskEmail(email: string | null | undefined): string {
+  if (!email) return '';
+  return email.replace(/(.{3}).*@/, '$1***@');
+}
+
 export interface CloudAuth {
   accessToken: string;
   refreshToken: string;
@@ -256,7 +262,7 @@ export async function handleOAuthCallback(url: string): Promise<CloudAuth> {
   }
 
   saveAuthToDisk();
-  log.info(`logged in via OAuth callback as ${cachedAuth.email} (pkce=${code ? 'yes' : 'no'})`);
+  log.info(`logged in via OAuth callback as ${maskEmail(cachedAuth.email)} (pkce=${code ? 'yes' : 'no'})`);
   return cachedAuth;
 }
 
@@ -295,7 +301,7 @@ export async function login(email: string, password: string): Promise<CloudAuth>
   } catch { /* ignore */ }
 
   saveAuthToDisk();
-  log.info(`logged in as ${email}`);
+  log.info(`logged in as ${maskEmail(email)}`);
   return cachedAuth;
 }
 

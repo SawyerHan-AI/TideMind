@@ -55,7 +55,7 @@ export async function runTemporalCrystal(db: Database.Database): Promise<Tempora
   }
 
   const minNodes = getParam('temporal-crystal', 'gate_min_nodes', 200);
-  const totalNodes = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01 AND is_superseded = 0').get() as { cnt: number }).cnt;
+  const totalNodes = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01 AND is_superseded = 0 AND archived = 0').get() as { cnt: number }).cnt;
   if (totalNodes < minNodes) {
     log.debug(`时间结晶跳过: 节点数 ${totalNodes} < 门控 ${minNodes}`);
     return { analyzed: 0, crystals_created: 0 };
@@ -113,6 +113,7 @@ async function findTopicEvolution(db: Database.Database): Promise<{ analyzed: nu
         AND n.is_meta = 0
         AND n.is_tag = 0
         AND n.is_superseded = 0
+        AND n.archived = 0
         AND n.tags IS NOT NULL
     ),
     tag_counts AS (
@@ -124,7 +125,7 @@ async function findTopicEvolution(db: Database.Database): Promise<{ analyzed: nu
     SELECT tc.tag AS tag, tc.cnt AS cnt
     FROM tag_counts tc
     JOIN nodes t ON t.content = tc.tag
-    WHERE t.is_tag = 1 AND t.heat > 0.01 AND t.is_superseded = 0
+    WHERE t.is_tag = 1 AND t.heat > 0.01 AND t.is_superseded = 0 AND t.archived = 0
     ORDER BY tc.cnt DESC
     LIMIT ?
   `).all(minNodesPerTopic, maxTopics) as Array<{ tag: string; cnt: number }>;
@@ -138,7 +139,7 @@ async function findTopicEvolution(db: Database.Database): Promise<{ analyzed: nu
       SELECT id, content, created, heat
       FROM nodes
       WHERE EXISTS (SELECT 1 FROM json_each(tags) je WHERE je.value = ?)
-        AND heat > 0.01 AND is_meta = 0 AND is_crystal = 0 AND is_superseded = 0
+        AND heat > 0.01 AND is_meta = 0 AND is_crystal = 0 AND is_superseded = 0 AND archived = 0
       ORDER BY created ASC
       LIMIT 20
     `).all(topic.tag) as Array<{ id: string; content: string; created: string; heat: number }>;
@@ -154,11 +155,15 @@ async function findTopicEvolution(db: Database.Database): Promise<{ analyzed: nu
     //   - source_tool='temporal-crystal'(只看本任务产物)
     //   - tags 同时包含 '时间结晶' 和 topic.tag(用 json_each 精确匹配)
     // 与 content 字符串解耦,prompt/i18n 调整不影响 dedup 行为。
+    // source_tool='temporal-crystal' 在 v0.2.35 引入,更早版本的 crystal
+    // 节点 source_tool 可能为 NULL —— 兼容旧数据,IS NULL 也参与 dedup,
+    // 避免老用户升级后同 topic 被重复结晶。
     const existingCrystal = db.prepare(`
       SELECT 1 FROM nodes
       WHERE is_crystal = 1
-        AND source_tool = 'temporal-crystal'
+        AND (source_tool = 'temporal-crystal' OR source_tool IS NULL)
         AND is_superseded = 0
+        AND archived = 0
         AND EXISTS (SELECT 1 FROM json_each(tags) je WHERE je.value = '时间结晶')
         AND EXISTS (SELECT 1 FROM json_each(tags) je WHERE je.value = ?)
       LIMIT 1
@@ -248,7 +253,7 @@ async function findCrossTopicResonance(db: Database.Database): Promise<{ analyze
 
   // 获取核心标签列表
   const coreTagRows = db.prepare(
-    "SELECT content FROM nodes WHERE is_tag = 1 AND heat > 0.01 AND is_superseded = 0"
+    "SELECT content FROM nodes WHERE is_tag = 1 AND heat > 0.01 AND is_superseded = 0 AND archived = 0"
   ).all() as Array<{ content: string }>;
   const coreTagSet = new Set(coreTagRows.map(r => r.content));
 
@@ -263,7 +268,7 @@ async function findCrossTopicResonance(db: Database.Database): Promise<{ analyze
   const weeks = db.prepare(`
     SELECT date(created, 'weekday 0', '-6 days') as week, COUNT(*) as node_count
     FROM nodes
-    WHERE tags IS NOT NULL AND heat > 0.01 AND is_meta = 0 AND is_superseded = 0
+    WHERE tags IS NOT NULL AND heat > 0.01 AND is_meta = 0 AND is_superseded = 0 AND archived = 0
     GROUP BY week
     HAVING node_count >= 3
     ORDER BY week DESC
@@ -278,7 +283,7 @@ async function findCrossTopicResonance(db: Database.Database): Promise<{ analyze
     const nodes = db.prepare(`
       SELECT id, content, tags, created
       FROM nodes
-      WHERE date(created, 'weekday 0', '-6 days') = ? AND tags IS NOT NULL AND heat > 0.01 AND is_meta = 0 AND is_superseded = 0
+      WHERE date(created, 'weekday 0', '-6 days') = ? AND tags IS NOT NULL AND heat > 0.01 AND is_meta = 0 AND is_superseded = 0 AND archived = 0
       ORDER BY heat DESC
       LIMIT 15
     `).all(week.week) as Array<{ id: string; content: string; tags: string; created: string }>;

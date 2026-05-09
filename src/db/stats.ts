@@ -77,14 +77,14 @@ export function getGraphVocabulary(db: Database.Database): GraphVocabulary {
 
   // 核心标签（is_tag=1 的活跃节点）
   const coreTags = (db.prepare(`
-    SELECT content FROM nodes WHERE is_tag = 1 AND heat > 0.01 AND is_superseded = 0
+    SELECT content FROM nodes WHERE is_tag = 1 AND heat > 0.01 AND is_superseded = 0 AND archived = 0
   `).all() as Array<{ content: string }>).map(r => r.content);
 
   // 高频标签（解析 JSON 数组后统计）
   // Note: SQLite json_each would be more efficient but requires SQLite 3.38+.
   // Using JS-side aggregation for compatibility.
   const tagRows = db.prepare(`
-    SELECT tags FROM nodes WHERE tags IS NOT NULL AND heat > 0.01 AND is_superseded = 0
+    SELECT tags FROM nodes WHERE tags IS NOT NULL AND heat > 0.01 AND is_superseded = 0 AND archived = 0
   `).all() as Array<{ tags: string }>;
   const tagCounter = new Map<string, number>();
   for (const row of tagRows) {
@@ -99,7 +99,7 @@ export function getGraphVocabulary(db: Database.Database): GraphVocabulary {
 
   // 已有结晶摘要
   const crystalSummaries = (db.prepare(`
-    SELECT content FROM nodes WHERE is_crystal = 1 AND heat > 0.01 AND is_superseded = 0 ORDER BY heat DESC LIMIT 10
+    SELECT content FROM nodes WHERE is_crystal = 1 AND heat > 0.01 AND is_superseded = 0 AND archived = 0 ORDER BY heat DESC LIMIT 10
   `).all() as Array<{ content: string }>).map(r => r.content.slice(0, 120));
 
   cachedVocab = { coreTags, tags, crystalSummaries };

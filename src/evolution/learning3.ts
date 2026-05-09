@@ -241,14 +241,14 @@ function computeGraphAccommodation(db: Database.Database): Signal {
   const recentNodes = db.prepare(`
     SELECT AVG(connectivity) as avg_conn, COUNT(*) as cnt
     FROM nodes
-    WHERE heat > 0.01 AND is_meta = 0 AND is_superseded = 0
+    WHERE heat > 0.01 AND is_meta = 0 AND is_superseded = 0 AND archived = 0
     AND created > datetime('now', '-30 days')
   `).get() as { avg_conn: number | null; cnt: number };
 
   const olderNodes = db.prepare(`
     SELECT AVG(connectivity) as avg_conn
     FROM nodes
-    WHERE heat > 0.01 AND is_meta = 0 AND is_superseded = 0
+    WHERE heat > 0.01 AND is_meta = 0 AND is_superseded = 0 AND archived = 0
     AND created <= datetime('now', '-30 days')
   `).get() as { avg_conn: number | null };
 
@@ -387,12 +387,12 @@ function gatherGraphStats(db: Database.Database): string {
   const stats: string[] = [];
 
   const nodesByType = db.prepare(
-    "SELECT type, COUNT(*) as cnt FROM nodes WHERE heat > 0.01 AND is_superseded = 0 GROUP BY type"
+    "SELECT type, COUNT(*) as cnt FROM nodes WHERE heat > 0.01 AND is_superseded = 0 AND archived = 0 GROUP BY type"
   ).all() as Array<{ type: string; cnt: number }>;
   stats.push(`节点分布: ${nodesByType.map(t => `${t.type}=${t.cnt}`).join(', ')}`);
 
   const avgConnectivity = db.prepare(
-    "SELECT AVG(connectivity) as avg FROM nodes WHERE heat > 0.01 AND is_superseded = 0"
+    "SELECT AVG(connectivity) as avg FROM nodes WHERE heat > 0.01 AND is_superseded = 0 AND archived = 0"
   ).get() as { avg: number | null };
   stats.push(`平均连通度: ${(avgConnectivity.avg ?? 0).toFixed(3)}`);
 

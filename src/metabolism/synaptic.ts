@@ -19,9 +19,10 @@ export function runSynapticScaling(db: Database.Database): {
   let decayed = 0;
 
   // 只处理 heat > 0.01 的节点（极低 heat 的自然沉底，不浪费计算）
+  // archived/superseded 节点不参与 heat decay,它们已被冰冻在 0.02
   const nodes = db.prepare(`
     SELECT n.id, n.heat, n.refinement, n.connectivity, n.is_keystone
-    FROM nodes n WHERE n.heat > 0.01
+    FROM nodes n WHERE n.heat > 0.01 AND n.archived = 0 AND n.is_superseded = 0
   `).all() as Array<{
     id: string;
     heat: number;

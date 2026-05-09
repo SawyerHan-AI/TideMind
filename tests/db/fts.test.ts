@@ -88,6 +88,21 @@ describe('searchFTS', () => {
     const results = searchFTS(db, 'AND OR NOT');
     expect(results).toHaveLength(0);
   });
+
+  // M7 修复回归保护:archived 节点 heat=0.02 仍 > 0.01 阈值,
+  // searchFTS 必须显式过滤 archived = 0,否则归档记忆会出现在搜索结果中。
+  it('should not return archived nodes (M7 regression)', () => {
+    const a = seedNode(db, { content: 'before archive memorable phrase quokka' });
+    seedNode(db, { content: 'kept memorable phrase quokka' });
+
+    // 归档第一条
+    archiveNode(db, a.id);
+
+    const results = searchFTS(db, 'quokka');
+    // 应该只返回未归档的那一条
+    expect(results).toHaveLength(1);
+    expect(results[0].id).not.toBe(a.id);
+  });
 });
 
 // ===== FTS triggers =====

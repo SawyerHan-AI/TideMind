@@ -136,7 +136,9 @@ async function handleProtocolUrl(url: string): Promise<void> {
       const auth = await handleOAuthCallback(url)
       // 通知渲染进程刷新状态
       mainWindow?.webContents.send('data-changed', { scopes: ['cloud'] })
-      log.info(`OAuth login success: ${auth.email}`)
+      // 客户端日志写到本地 logs/,但仍按 PII 卫生掩码邮箱(避免日志被分享/上报时泄漏)
+      const masked = (auth.email ?? '').replace(/(.{3}).*@/, '$1***@')
+      log.info(`OAuth login success: ${masked}`)
     } else {
       log.warn(`unrecognized protocol path: hostname=${parsed.hostname}, pathname=${parsed.pathname}`)
     }

@@ -581,7 +581,25 @@ export function parseNoteSourcePath(toolType: NoteSourceToolType, rawPath: strin
 
 export function parseConfigPatch(value: unknown): ValidationResult<Record<string, unknown>> {
   if (!isPlainRecord(value)) return invalid('patch must be an object')
-  return valid(value)
+  // Prototype-pollution 纵深防御:递归剥离 __proto__ / constructor / prototype。
+  // deepMerge 也有同样守卫,这里在校验阶段先剥一道,让"attacker patch 含
+  // forbidden key"在 IPC 边界就被静默移除,日志上看到原 patch 不会因含此 key 失败。
+  return valid(stripForbiddenKeys(value))
+}
+
+const FORBIDDEN_PATCH_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+function stripForbiddenKeys(input: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(input)) {
+    if (FORBIDDEN_PATCH_KEYS.has(k)) continue
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      out[k] = stripForbiddenKeys(v as Record<string, unknown>)
+    } else {
+      out[k] = v
+    }
+  }
+  return out
 }
 
 export function parseConfigFileName(value: unknown, field = 'name'): ValidationResult<string> {

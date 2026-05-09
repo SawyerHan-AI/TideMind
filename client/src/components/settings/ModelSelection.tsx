@@ -335,6 +335,10 @@ export function ModelSelection() {
         dimensions: dims,
       },
     })
+    // 保存完成后清 dirty,否则 refetchConfig 触发的 setX 会让 debounce effect
+    // 再次进入(dirty 仍 true)→ 把刚拉的值反复写回。重置 dirty 必须在 refetch
+    // 之前,setX 由 useIPC 派进来时 effect 看到 dirty=false 直接 return。
+    dirty.current = false
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
     refetchConfig()

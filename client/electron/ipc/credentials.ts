@@ -34,8 +34,12 @@ export function registerCredentialHandlers(dataDir: string): void {
       // 修复 M30(2026-05-09):原 copyFileSync + chmodSync 之间存在短窗口
       // 文件以默认 0644 模式落盘可读;改用 writeFileSync({mode:0o600})
       // 一次性原子创建受限权限文件,无短窗口。
+      // 加固(2026-05-10):writeFileSync 的 mode 选项仅在创建新文件时应用,
+      // 目标文件已存在时 truncate 不变更 mode。先 unlink 再写,确保旧的 0644
+      // 文件升级后真的变成 0600。
       // 注:Windows 上 mode 选项被忽略不抛错,与原 chmodSync catch 行为一致。
       const destPath = path.join(dataDir, 'vertex-credentials.json')
+      try { fs.unlinkSync(destPath) } catch { /* 文件不存在或无权限,writeFileSync 会再次尝试 */ }
       fs.writeFileSync(destPath, content, { mode: 0o600 })
 
       // 记录到时间线

@@ -150,6 +150,29 @@ async function doInitVec(): Promise<void> {
       }
     }
 
+    // S19 embedding L2 归一化迁移(2026-05-10):
+    // 0.2.56 起 getEmbedding 出口对所有 provider L2 归一化。Vertex/Gemini 老用户库
+    // 里的非归一向量与新查询不可比,cosine 排序会静默失真。
+    //
+    // 检测策略(方案 A — 用户主动触发):
+    //   - 旧 DB 没有 embedding_normalization_version metadata
+    //   - 但 nodes_vec 非空(已存量历史向量)
+    //   → 设 reembedNeeded=true,UI 引导用户主动 reembedAllNodes,而不是升级时
+    //     强制后台跑(大 vault 几小时 + token 成本)。
+    // 完成 reembed 后由 reembedAllNodes 内部写入 metadata,后续启动不再触发。
+    const normRow = db!.prepare("SELECT value FROM metadata WHERE key = 'embedding_normalization_version'").get() as { value: string } | undefined;
+    if (!normRow) {
+      const vecCount = db!.prepare('SELECT COUNT(*) as cnt FROM nodes_vec').get() as { cnt: number };
+      if (vecCount.cnt > 0) {
+        // 老库且有向量 → 标 reembed,等用户主动触发
+        reembedNeeded = true;
+        log.info('embedding_normalization_version metadata 缺失且 nodes_vec 非空,标记需要重建向量索引(用户主动触发)');
+      } else {
+        // 新库或未 embed 过 → 直接写 version=1,后续 reembed 自然产物
+        db!.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('embedding_normalization_version', '1')").run();
+      }
+    }
+
     // 全部成功才标记 vec 可用
     vecLoaded = true;
   } catch (err) {

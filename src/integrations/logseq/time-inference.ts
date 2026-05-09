@@ -44,7 +44,13 @@ export interface InferredDateInfo {
 
 export type InferredDates = Map<string, InferredDateInfo>;
 
-/** [[引用]] 提取正则 */
+/** [[引用]] 提取正则。
+ *
+ * 修复(2026-05-10,与 S10 同根因):扫描前必须先 stripCodeForScan,否则代码块
+ * 内的示例(如 `[[name]]`)会被误算成日期推断的引用,污染 BFS 传播,导致页面
+ * 推断日期被错误推到几年前/未来。
+ */
+import { stripCodeForScan } from './preprocessor.js';
 const REF_PATTERN = /\[\[([^\]]+)\]\]/g;
 
 // --- 主函数 ---
@@ -68,17 +74,18 @@ export function inferPageDates(
   const pages = files.filter(f => f.category !== 'journal');
 
   // 缓存日记内容（层 2 和层 4 都要用）
+  // 缓存的是 stripCodeForScan 后的版本——后续所有 wikilink 扫描都跳过代码块。
   const journalContentCache = new Map<string, string>();
   for (const j of journals) {
     const content = readContent(j.filePath);
-    if (content) journalContentCache.set(j.filePath, content);
+    if (content) journalContentCache.set(j.filePath, stripCodeForScan(content));
   }
 
   // 缓存页面内容（层 3、4、5 都要用）
   const pageContentCache = new Map<string, string>();
   for (const p of pages) {
     const content = readContent(p.filePath);
-    if (content) pageContentCache.set(p.filePath, content);
+    if (content) pageContentCache.set(p.filePath, stripCodeForScan(content));
   }
 
   // --- 层 1：日记文件名 ---

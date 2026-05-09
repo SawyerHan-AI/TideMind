@@ -114,10 +114,17 @@ async function main(): Promise<void> {
   // settle 时 daemon 静默冻结"的风险——LLM 客户端的 timeout 是大概率兜底,
   // 不是强制保证。12 分钟远大于 LLM 合理 timeout 上限(标准档 180s),只在
   // 真异常时触发,日志显式标记给 ops 排查。
+  //
+  // tickId 配对(2026-05-10,与 metabolism/scheduler.ts:M11 同根因):
+  // 老版 finally 直接 reset tickRunning=false,在"watchdog 强制复位 → 新 tick
+  // 启动 → 老 tick 的 promise 才完成"序列下,老 finally 会把新 tick 的 running
+  // 状态抹掉,使下一轮 setInterval 与新 tick 真正并发。改用 currentTickId 严格
+  // 配对:finally 只在自己仍是当前 tick 时才 reset。
   const TICK_HARD_TIMEOUT_MS = 12 * 60 * 1000;
   let tickRunning = false;
   let tickCount = 0;
   let tickStartedAt = 0;
+  let currentTickId = 0;
   const STRATEGY_SYNC_EVERY_N_TICKS = 5; // 每 5 分钟从源码同步一次策略文件
   setInterval(() => {
     // 超时兜底:发现上一轮已运行超过 hard timeout,放行并 warn
@@ -139,6 +146,7 @@ async function main(): Promise<void> {
         } catch { /* timeline 写失败不能阻断恢复 */ }
         tickRunning = false;
         tickStartedAt = 0;
+        currentTickId++; // 让老 tick 的 finally 失效(不会再 reset 状态)
       }
     }
 
@@ -146,6 +154,7 @@ async function main(): Promise<void> {
     tickRunning = true;
     tickStartedAt = Date.now();
     tickCount++;
+    const myTickId = ++currentTickId;
 
     // 检查 Skill/MCP 描述文件变更（轻量级，不阻塞）
     try { checkFileWatchers(); } catch (err) { log.warn('checkFileWatchers 出错', err); }
@@ -156,14 +165,23 @@ async function main(): Promise<void> {
 
     if (cloudEnabled) {
       // Cloud mode: skip local metabolism, only run file watchers / strategy sync above
-      tickRunning = false;
-      tickStartedAt = 0;
+      if (myTickId === currentTickId) {
+        tickRunning = false;
+        tickStartedAt = 0;
+      }
       return;
     }
 
     runSchedulerTick(getDb(), ALL_TASKS)
       .catch(err => log.error('调度 tick 失败:', err instanceof Error ? err.stack : String(err)))
-      .finally(() => { tickRunning = false; tickStartedAt = 0; });
+      .finally(() => {
+        // 只在自己仍是当前 tick 时才 reset。watchdog 已 ++currentTickId 让
+        // 老 tick 失效,避免老 finally 抹掉新 tick 的 running 状态。
+        if (myTickId === currentTickId) {
+          tickRunning = false;
+          tickStartedAt = 0;
+        }
+      });
   }, TICK_INTERVAL_MS);
 
   process.on('SIGINT', () => { void shutdown(); });

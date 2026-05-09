@@ -45,7 +45,9 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
   // --- 按 ID 直接获取 ---
   if (input.node_id) {
     const node = repo.nodes.getNode(input.node_id);
-    if (node && node.heat > 0.01) {
+    // archive 节点 heat=0.02 仍 > 0.01 阈值,必须显式滤 archived
+    // 防止 brain_recall 把已归档记忆当活跃返回。
+    if (node && node.heat > 0.01 && !node.archived) {
       nodes = [node];
     }
   }
@@ -55,7 +57,7 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
   // 这个具体来源的记忆",应当是精确匹配。如果以后要支持前缀/子串，通过单独的
   // API 选项（比如 source_file_prefix）暴露,不要在默认参数上做静默的模糊语义。
   else if (input.source_file) {
-    const conditions = ["source_stream = ?", "heat > 0.01", "is_superseded = 0"];
+    const conditions = ["source_stream = ?", "heat > 0.01", "is_superseded = 0", "archived = 0"];
     const params: unknown[] = [input.source_file];
     if (excludeMeta) { conditions.push("is_meta = 0"); }
     if (input.created_after) { conditions.push("created >= ?"); params.push(input.created_after); }
@@ -75,7 +77,7 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
     } else if (refType === 'tag' || refType === 'project') {
       // 基于标签过滤：查找 tags JSON 数组中包含该标签的节点
       const escapedRef = refValue.replace(/%/g, '\\%').replace(/_/g, '\\_');
-      const conditions = [`tags LIKE ? ESCAPE '\\'`, `heat > 0.01`, `is_superseded = 0`];
+      const conditions = [`tags LIKE ? ESCAPE '\\'`, `heat > 0.01`, `is_superseded = 0`, `archived = 0`];
       const params: unknown[] = [`%"${escapedRef}"%`];
       if (excludeMeta) conditions.push('is_meta = 0');
       if (input.created_after) { conditions.push('created >= ?'); params.push(input.created_after); }
@@ -85,7 +87,7 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
       ).all(...params, limit) as BrainNode[];
     } else if (refType === 'node') {
       const node = repo.nodes.getNode(refValue)
-      if (node && node.heat > 0.01) nodes = [node]
+      if (node && node.heat > 0.01 && !node.archived) nodes = [node]
     }
   }
   // --- 图遍历（支持 query 组合 rerank） ---
@@ -247,7 +249,7 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
     // Pick the hottest non-result neighbor as a "surprise"
     if (candidateIds.size > 0) {
       const candidateMap = repo.nodes.getNodesByIds([...candidateIds].slice(0, 5));
-      const candidates = [...candidateMap.values()].filter(n => n.heat > 0.01);
+      const candidates = [...candidateMap.values()].filter(n => n.heat > 0.01 && !n.archived);
       candidates.sort((a, b) => b.heat - a.heat)
       if (candidates.length > 0) {
         surprises = [{

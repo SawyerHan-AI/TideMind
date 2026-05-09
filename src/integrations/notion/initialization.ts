@@ -164,7 +164,7 @@ export async function runInitialization(
       SELECT DISTINCT n.id FROM nodes n
       JOIN node_segments s ON s.node_id = n.id
       JOIN nodes_vec v ON v.id = s.segment_id
-      WHERE n.heat > 0.01 AND n.is_meta = 0 AND n.is_superseded = 0
+      WHERE n.heat > 0.01 AND n.is_meta = 0 AND n.is_superseded = 0 AND n.archived = 0
     `).all() as Array<{ id: string }>;
 
     for (const { id } of nodes) {

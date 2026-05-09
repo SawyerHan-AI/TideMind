@@ -323,7 +323,7 @@ export async function runInitialization(
 
   // === Phase 4: 节点标注 ===
   const pendingAnnotateCount = (db.prepare(
-    'SELECT COUNT(*) as cnt FROM nodes WHERE refinement = 0 AND heat > 0.01 AND is_crystal = 0 AND is_meta = 0 AND is_superseded = 0',
+    'SELECT COUNT(*) as cnt FROM nodes WHERE refinement = 0 AND heat > 0.01 AND is_crystal = 0 AND is_meta = 0 AND is_superseded = 0 AND archived = 0',
   ).get() as { cnt: number }).cnt;
   ctx.reportPhase(4, '节点标注', pendingAnnotateCount);
   log.info(`Phase 4: 节点标注 (${pendingAnnotateCount} 个待标注节点)`);
@@ -351,7 +351,7 @@ export async function runInitialization(
   // nodes_vec.id 存的是 segment_id（`${nodeId}#${index}`），不是 node.id。
   // 必须通过 node_segments 桥接才能统计"已 embed 的节点数"。
   const embeddedNodeCount = (db.prepare(
-    'SELECT COUNT(DISTINCT n.id) as cnt FROM nodes n JOIN node_segments s ON s.node_id = n.id JOIN nodes_vec v ON v.id = s.segment_id WHERE n.heat > 0.01 AND n.is_meta = 0 AND n.is_superseded = 0',
+    'SELECT COUNT(DISTINCT n.id) as cnt FROM nodes n JOIN node_segments s ON s.node_id = n.id JOIN nodes_vec v ON v.id = s.segment_id WHERE n.heat > 0.01 AND n.is_meta = 0 AND n.is_superseded = 0 AND n.archived = 0',
   ).get() as { cnt: number }).cnt;
   ctx.reportPhase(5, 'Landing 连接', embeddedNodeCount);
   log.info(`Phase 5: Landing Connections (${embeddedNodeCount} 个节点)`);
@@ -704,7 +704,7 @@ async function createLandingConnections(
     SELECT DISTINCT n.id FROM nodes n
     JOIN node_segments s ON s.node_id = n.id
     JOIN nodes_vec v ON v.id = s.segment_id
-    WHERE n.heat > 0.01 AND n.is_meta = 0 AND n.is_superseded = 0
+    WHERE n.heat > 0.01 AND n.is_meta = 0 AND n.is_superseded = 0 AND n.archived = 0
   `).all() as Array<{ id: string }>;
 
   let totalLinks = 0;

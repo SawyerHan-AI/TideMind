@@ -184,4 +184,23 @@ describe('parseLLMJson', () => {
     const result = parseLLMJson<{ text: string }>(raw);
     expect(result).toEqual({ text: 'line1\nline2\nline3' });
   });
+
+  // M1 修复回归保护:LLM 输出"答案 fence + 示例 fence"双块时,parseLLMJson 应
+  // 优先取首个解析得通的块,避免错把示例当真答案。老版只取末个块或单块匹配,
+  // 双 fence 输出会被误解析。
+  describe('M1 双 fenced-block 回归', () => {
+    it('first fence 解析成功 → 返回首个块的 JSON', () => {
+      const raw = '答案如下:\n```json\n{"answer": 1}\n```\n以下是示例:\n```json\n{"sample": 2}\n```';
+      const result = parseLLMJson<{ answer?: number; sample?: number }>(raw);
+      // 期望取到首个块(真答案),不是末个示例块
+      expect(result?.answer).toBe(1);
+      expect(result?.sample).toBeUndefined();
+    });
+
+    it('first fence 损坏但 last fence 完好 → 兜底取末个块', () => {
+      const raw = '部分答案:\n```json\n{"broken": \n```\n完整版:\n```json\n{"complete": true}\n```';
+      const result = parseLLMJson<{ complete?: boolean }>(raw);
+      expect(result?.complete).toBe(true);
+    });
+  });
 });

@@ -278,7 +278,7 @@ export async function runCrystalEmergence(
       (SELECT COUNT(DISTINCT json_extract(j.value, '$.type')) FROM links l2, json_each(l2.relation) j WHERE (l2.from_id = n.id OR l2.to_id = n.id) AND l2.status = 'confirmed') as link_diversity,
       (SELECT COUNT(*) FROM links WHERE to_id = n.id AND status = 'confirmed') as in_degree
     FROM nodes n
-    WHERE n.heat > 0.01 AND n.is_crystal = 0 AND n.is_meta = 0 AND n.is_superseded = 0
+    WHERE n.heat > 0.01 AND n.is_crystal = 0 AND n.is_meta = 0 AND n.is_superseded = 0 AND n.archived = 0
     ORDER BY link_count DESC
     LIMIT 20
   `).all() as Array<{
@@ -309,7 +309,7 @@ export async function runCrystalEmergence(
         SELECT n.id, n.content FROM nodes n
         JOIN links l ON (l.to_id = n.id OR l.from_id = n.id)
         WHERE (l.from_id = ? OR l.to_id = ?) AND n.id != ?
-          AND l.status = 'confirmed' AND n.heat > 0.01 AND n.is_superseded = 0
+          AND l.status = 'confirmed' AND n.heat > 0.01 AND n.is_superseded = 0 AND n.archived = 0
         ORDER BY l.strength DESC LIMIT 5
       `).all(hub.id, hub.id, hub.id) as Array<{ id: string; content: string }>;
 
@@ -459,7 +459,7 @@ async function checkCrystalEvidence(db: Database.Database): Promise<string[]> {
   // 找所有 crystal 节点
   const crystals = db.prepare(`
     SELECT id, content, last_reconsolidated, created
-    FROM nodes WHERE is_crystal = 1 AND heat > 0.01 AND is_superseded = 0
+    FROM nodes WHERE is_crystal = 1 AND heat > 0.01 AND is_superseded = 0 AND archived = 0
     ORDER BY heat DESC LIMIT 10
   `).all() as Array<{ id: string; content: string; last_reconsolidated: string | null; created: string }>;
 
@@ -470,7 +470,7 @@ async function checkCrystalEvidence(db: Database.Database): Promise<string[]> {
       FROM nodes n
       JOIN links l ON (l.to_id = n.id OR l.from_id = n.id)
       WHERE (l.from_id = ? OR l.to_id = ?) AND n.id != ?
-        AND l.status = 'confirmed' AND n.heat > 0.01 AND n.is_superseded = 0
+        AND l.status = 'confirmed' AND n.heat > 0.01 AND n.is_superseded = 0 AND n.archived = 0
       ORDER BY l.strength DESC LIMIT 10
     `).all(crystal.id, crystal.id, crystal.id) as Array<{
       id: string; content: string; version: number; last_reconsolidated: string | null;
@@ -579,7 +579,7 @@ function syncCrystalToMarkdown(id: string, content: string, tags: string[], prom
  */
 export function runKeystoneIdentification(db: Database.Database): number {
   // 获取活跃节点总数
-  const total = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01 AND is_superseded = 0').get() as { cnt: number }).cnt;
+  const total = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01 AND is_superseded = 0 AND archived = 0').get() as { cnt: number }).cnt;
   if (total < 20) return 0; // 太少没意义
 
   // Top 5% 节点标记为 keystone
@@ -592,7 +592,7 @@ export function runKeystoneIdentification(db: Database.Database): number {
       UPDATE nodes SET is_keystone = 1
       WHERE id IN (
         SELECT id FROM nodes
-        WHERE heat > 0.01 AND is_meta = 0 AND is_superseded = 0
+        WHERE heat > 0.01 AND is_meta = 0 AND is_superseded = 0 AND archived = 0
         ORDER BY connectivity DESC
         LIMIT ?
       )

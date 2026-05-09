@@ -8,6 +8,7 @@ import { getConfig, getDataDir } from '../config.js';
 import { createLogger } from '../utils/logger.js';
 import { estimateCost } from './pricing.js';
 import { now } from '../utils/time.js';
+import { processThinkTags } from './thinking.js';
 
 const log = createLogger('llm');
 
@@ -158,6 +159,12 @@ async function getClientByConnection(connectionId: string): Promise<ConnectionIn
   const cacheKey = `${connectionId}:${credsFp}`;
   const cached = clientCache.get(cacheKey);
   if (cached) return { client: cached, providerType: conn.provider_type };
+
+  // 清掉同 connectionId 的旧 fingerprint entry — daemon 长跑 + 频繁改凭证
+  // 会让 Map 持续增长(每个 SDK 实例 ~1 MB)。新 fingerprint 命中前先剔旧。
+  for (const k of clientCache.keys()) {
+    if (k.startsWith(`${connectionId}:`) && k !== cacheKey) clientCache.delete(k);
+  }
 
   let client: Anthropic | AnthropicVertex;
 
@@ -321,37 +328,9 @@ async function callOpenAICompatibleLLM(options: {
   const inputTokens = data.usage?.prompt_tokens ?? 0;
   const rawOutputTokens = data.usage?.completion_tokens ?? 0;
 
-  // 提取 <think>...</think> 标签中的思考内容(DeepSeek-R1、QwQ 等推理模型的通用约定)。
-  //
-  // 修正两点:
-  // 1. 原 while-loop 每次 `text.slice()` + 重新匹配是 O(n²),大响应下会卡。
-  //    改用一次 `replace(/g)` 全局替换,顺便在 replacer 里累加 thinking 字符长度。
-  //    注意: 旧实现只匹配字符串开头的 <think>(^锚点),本版本放开为全局匹配 —
-  //    推理模型有时在正文中再插入一次 <think>(罕见但出现过),旧实现会把它原样
-  //    返回给下游,污染用户可见内容。
-  // 2. API 返回的 completion_tokens 已经包含 <think> 里的文字。把
-  //    thinkingTokens 额外加进 logUsage,最终 totalTokens = input+output+thinking
-  //    会把 thinking 重复计一份。做法: 从 outputTokens 里扣掉估算的 thinking 份额,
-  //    然后单独记录 thinkingTokens,保持"output=可见回答,thinking=推理开销"语义。
-  let thinkingChars = 0;
-  let cleaned = rawText.replace(/<think>([\s\S]*?)<\/think>\s*/g, (_full, inner: string) => {
-    thinkingChars += inner.length;
-    return '';
-  });
-  // 历史 bug(2026-05-09):非贪婪 `<think>...</think>` 仅匹配成对标签,
-  // 当 max_tokens 把响应截断在 `<think>` 内部(DeepSeek-R1/QwQ 推理模型常见,
-  // 尤其是 thinking 占满 token 预算)时,孤立的 `<think>` 没有闭合,残余串
-  // 形如 `<think>推理过程被截断...`。replace 不会动它 → 整段未闭合的推理
-  // 内容被当 text 返回给上游 (parseLLMJson 把它当 garbage 抛出,但用户看
-  // 不到失败,只看到诡异输出)。修复:检测残余的孤立 `<think>`,把从该位置
-  // 到串尾的全部内容算作未闭合 thinking,从 cleaned 中剥离并计入 thinkingChars。
-  const orphan = cleaned.indexOf('<think>');
-  if (orphan >= 0) {
-    thinkingChars += cleaned.length - orphan;
-    cleaned = cleaned.slice(0, orphan);
-  }
-  const text = cleaned.replace(/^\s+/, '').replace(/\s+$/, '');
-  const thinkingTokens = Math.ceil(thinkingChars / 4);
+  // 提取 <think>...</think> 标签 + 处理 max_tokens 截断在 <think> 内部的孤立形态。
+  // 抽到 thinking.ts 让 S8 修复路径可测;行为与旧 inline 实现完全一致。
+  const { text, thinkingTokens } = processThinkTags(rawText);
   // 避免下溢:某些 provider 不把 <think> 计入 completion_tokens,thinkingTokens
   // 估算值可能大于 rawOutputTokens。此时把 output 视为 0,thinking 保留。
   const outputTokens = Math.max(0, rawOutputTokens - thinkingTokens);
