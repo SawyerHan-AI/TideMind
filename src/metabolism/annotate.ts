@@ -258,6 +258,7 @@ export function findUnannotatedNodes(db: Database.Database, limit: number): Brai
       AND is_meta = 0
       AND is_tag = 0
       AND is_superseded = 0
+      AND archived = 0
     ORDER BY created DESC
     LIMIT ?
   `).all(limit) as BrainNode[];
@@ -270,7 +271,7 @@ export function getFrequentTags(db: Database.Database, limit: number): string[] 
   // tags 字段是 JSON 数组字符串，需要解析后统计
   const rows = db.prepare(`
     SELECT tags FROM nodes
-    WHERE tags IS NOT NULL AND heat > 0.01 AND is_superseded = 0
+    WHERE tags IS NOT NULL AND heat > 0.01 AND is_superseded = 0 AND archived = 0
   `).all() as Array<{ tags: string }>;
 
   const counter = new Map<string, number>();
@@ -432,7 +433,7 @@ function linkToExistingTagNodes(
   // title 和 content 共用同一个 Map 时,旧的 title=null 节点可能和另一个
   // 节点的 content 撞 key,先走 content-fallback 再走 title,让显式 title 胜出。
   const tagNodes = db.prepare(
-    "SELECT id, title, content FROM nodes WHERE is_tag = 1 AND heat > 0.01 AND is_superseded = 0",
+    "SELECT id, title, content FROM nodes WHERE is_tag = 1 AND heat > 0.01 AND is_superseded = 0 AND archived = 0",
   ).all() as Array<{ id: string; title: string | null; content: string }>;
   const tagNodeMap = new Map<string, string>();
   // 先放 title=null 的兼容节点(用 content 作 key),再用 title 覆盖,

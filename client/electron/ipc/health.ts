@@ -17,6 +17,11 @@ import { parse as parseToml } from 'smol-toml'
  *   - 最大深度 20 层,防止极深路径无意义递归
  *   - 文件数硬上限 50000,防止超大 vault 把 entries 数组撑爆
  */
+// excludeDirs 支持两种形式:
+//   - 单段名(`'.git'`、`'node_modules'`):匹配 entry.name(任意层级);
+//   - 含 `/` 的相对前缀(`'logseq/bak'`、`'logseq/.recycle'`):匹配从 rootDir
+//     起算的 relPath 前缀。修复(2026-05-10):老版只比 entry.name 让 `'logseq/bak'`
+//     之类规则永远不命中(basename 不含 `/`),logseq 的 .bak 备份会被算进 fileCount。
 function walkSafe(
   rootDir: string,
   entries: string[],
@@ -25,6 +30,12 @@ function walkSafe(
   maxDepth: number = 20,
   maxEntries: number = 50000,
 ): void {
+  const namePatterns = new Set<string>();
+  const prefixPatterns: string[] = [];
+  for (const p of excludeDirs) {
+    if (p.includes('/')) prefixPatterns.push(p.replace(/\\/g, '/'));
+    else namePatterns.add(p);
+  }
   const stack: Array<{ dir: string; depth: number }> = [{ dir: rootDir, depth: 0 }];
   while (stack.length > 0) {
     if (entries.length >= maxEntries) return;
@@ -42,7 +53,10 @@ function walkSafe(
       if (entry.isSymbolicLink()) continue;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (excludeDirs.has(entry.name)) continue;
+        if (namePatterns.has(entry.name)) continue;
+        // path-prefix 形式:把 full 转成相对 rootDir 的 posix path 比对
+        const rel = path.relative(rootDir, full).split(path.sep).join('/');
+        if (prefixPatterns.some(p => rel === p || rel.startsWith(p + '/'))) continue;
         stack.push({ dir: full, depth: depth + 1 });
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name);

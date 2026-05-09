@@ -19,7 +19,6 @@ TideMind exposes three tools via the [Model Context Protocol](https://modelconte
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `tool` | `string` | Yes | Name of the calling tool (e.g., `"claude-code"`, `"cursor"`) |
-| `hint_topic` | `string` | No | Current topic name |
 | `files` | `string[]` | No | Currently relevant files or resources |
 | `hint` | `string` | No | User's first message or conversation topic |
 | `detail_level` | `"brief" \| "standard" \| "deep"` | No | Controls how much detail is returned. Default: `"standard"` |

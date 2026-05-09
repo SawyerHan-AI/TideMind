@@ -129,8 +129,12 @@ export function deleteNodeVectors(db: Database.Database, nodeId: string): void {
 }
 
 export function retireNodeWithoutReplacement(db: Database.Database, nodeId: string): void {
-  db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(nodeId);
-  db.prepare('DELETE FROM links WHERE from_id = ? OR to_id = ?').run(nodeId, nodeId);
+  // UPDATE + DELETE 原子化:中间崩溃会留下 is_superseded=1 但 links 仍指向
+  // 老节点的孤儿状态,与 v15/v16 修补的孤儿向量同源。
+  db.transaction(() => {
+    db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(nodeId);
+    db.prepare('DELETE FROM links WHERE from_id = ? OR to_id = ?').run(nodeId, nodeId);
+  })();
 }
 
 export function markNodeSupersededRecordOnly(db: Database.Database, nodeId: string): void {
@@ -139,61 +143,67 @@ export function markNodeSupersededRecordOnly(db: Database.Database, nodeId: stri
 
 /**
  * Mark oldNodeId as superseded by newNodeId and migrate its graph edges.
+ *
+ * 整体包事务:十几条 UPDATE/INSERT/DELETE 跨 links + nodes 多表写入,中途崩溃
+ * 会留下"is_superseded=1 但 links 仍指向老节点"的孤儿状态(与 v15/v16 修补的
+ * 孤儿向量同源)。better-sqlite3 嵌套自动转 SAVEPOINT,与上层 transaction 兼容。
  */
 export function supersedeNodeWithLinks(
   db: Database.Database,
   oldNodeId: string,
   newNodeId: string,
 ): void {
-  const outLinks = db.prepare(
-    'SELECT * FROM links WHERE from_id = ? AND to_id != ?',
-  ).all(oldNodeId, newNodeId) as LinkRow[];
+  db.transaction(() => {
+    const outLinks = db.prepare(
+      'SELECT * FROM links WHERE from_id = ? AND to_id != ?',
+    ).all(oldNodeId, newNodeId) as LinkRow[];
 
-  const inLinks = db.prepare(
-    'SELECT * FROM links WHERE to_id = ? AND from_id != ?',
-  ).all(oldNodeId, newNodeId) as LinkRow[];
+    const inLinks = db.prepare(
+      'SELECT * FROM links WHERE to_id = ? AND from_id != ?',
+    ).all(oldNodeId, newNodeId) as LinkRow[];
 
-  for (const link of outLinks) {
-    const existingLinkOnNew = db.prepare(
-      'SELECT id, strength FROM links WHERE from_id = ? AND to_id = ?',
-    ).get(newNodeId, link.to_id) as Pick<LinkRow, 'id' | 'strength'> | undefined;
+    for (const link of outLinks) {
+      const existingLinkOnNew = db.prepare(
+        'SELECT id, strength FROM links WHERE from_id = ? AND to_id = ?',
+      ).get(newNodeId, link.to_id) as Pick<LinkRow, 'id' | 'strength'> | undefined;
 
-    if (!existingLinkOnNew) {
-      db.prepare('UPDATE links SET from_id = ? WHERE id = ?').run(newNodeId, link.id);
-    } else if (link.strength > existingLinkOnNew.strength) {
-      db.prepare('UPDATE links SET strength = ? WHERE id = ?').run(link.strength, existingLinkOnNew.id);
+      if (!existingLinkOnNew) {
+        db.prepare('UPDATE links SET from_id = ? WHERE id = ?').run(newNodeId, link.id);
+      } else if (link.strength > existingLinkOnNew.strength) {
+        db.prepare('UPDATE links SET strength = ? WHERE id = ?').run(link.strength, existingLinkOnNew.id);
+      }
     }
-  }
 
-  for (const link of inLinks) {
-    const existingLinkOnNew = db.prepare(
-      'SELECT id, strength FROM links WHERE from_id = ? AND to_id = ?',
-    ).get(link.from_id, newNodeId) as Pick<LinkRow, 'id' | 'strength'> | undefined;
+    for (const link of inLinks) {
+      const existingLinkOnNew = db.prepare(
+        'SELECT id, strength FROM links WHERE from_id = ? AND to_id = ?',
+      ).get(link.from_id, newNodeId) as Pick<LinkRow, 'id' | 'strength'> | undefined;
 
-    if (!existingLinkOnNew) {
-      db.prepare('UPDATE links SET to_id = ? WHERE id = ?').run(newNodeId, link.id);
-    } else if (link.strength > existingLinkOnNew.strength) {
-      db.prepare('UPDATE links SET strength = ? WHERE id = ?').run(link.strength, existingLinkOnNew.id);
+      if (!existingLinkOnNew) {
+        db.prepare('UPDATE links SET to_id = ? WHERE id = ?').run(newNodeId, link.id);
+      } else if (link.strength > existingLinkOnNew.strength) {
+        db.prepare('UPDATE links SET strength = ? WHERE id = ?').run(link.strength, existingLinkOnNew.id);
+      }
     }
-  }
 
-  if (!linkExists(db, oldNodeId, newNodeId)) {
-    createLink(db, {
-      from_id: oldNodeId,
-      to_id: newNodeId,
-      relation: [{ type: 'updates', confidence: 0.9 }],
-      strength: 0.9,
-      note: '节点版本更新',
-      auto: true,
-      status: 'confirmed',
-    });
-  }
+    if (!linkExists(db, oldNodeId, newNodeId)) {
+      createLink(db, {
+        from_id: oldNodeId,
+        to_id: newNodeId,
+        relation: [{ type: 'updates', confidence: 0.9 }],
+        strength: 0.9,
+        note: '节点版本更新',
+        auto: true,
+        status: 'confirmed',
+      });
+    }
 
-  db.prepare(
-    'DELETE FROM links WHERE (from_id = ? OR to_id = ?) AND NOT (from_id = ? AND to_id = ?)',
-  ).run(oldNodeId, oldNodeId, oldNodeId, newNodeId);
+    db.prepare(
+      'DELETE FROM links WHERE (from_id = ? OR to_id = ?) AND NOT (from_id = ? AND to_id = ?)',
+    ).run(oldNodeId, oldNodeId, oldNodeId, newNodeId);
 
-  db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(oldNodeId);
+    db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(oldNodeId);
+  })();
 
   log.info(`节点版本替代: ${oldNodeId} -> ${newNodeId}`);
 }

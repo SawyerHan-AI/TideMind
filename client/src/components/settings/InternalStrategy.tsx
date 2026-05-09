@@ -163,6 +163,9 @@ function NodeDetailPanel({ node }: { node: ProcessingNode }) {
     if (!dirty.current) return
     const timer = setTimeout(async () => {
       await window.api.config.update(localConfig)
+      // 保存完成后清 dirty。否则后续任意 useIPC refetch 触发的 setLocalConfig
+      // 会让 effect 再次进入(dirty 仍 true)→ 反复写回相同 config 形成幽灵循环。
+      dirty.current = false
       setSaved(true)
       if (savedTimerRef.current) clearTimeout(savedTimerRef.current)
       savedTimerRef.current = setTimeout(() => setSaved(false), 2000)

@@ -287,6 +287,9 @@ export async function reembedAllNodes(db: Database.Database): Promise<void> {
     }
 
     clearReembedFlag();
+    // S19 reembed 完成后写入 normalization version,下次启动不再误触发"需 reembed"。
+    // 当前 version=1 表示出口已统一 L2 归一化(src/llm/embedding.ts:253)。
+    db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('embedding_normalization_version', '1')").run();
     log.info(`embedding 重算完成: ${reembedProgress.done}/${reembedProgress.total}`);
   } finally {
     reembedProgress.running = false;

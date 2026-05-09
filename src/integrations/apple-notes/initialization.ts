@@ -209,7 +209,7 @@ export async function runInitialization(
 
   // Phase 2: 节点标注
   const pendingAnnotateCount = (db.prepare(
-    'SELECT COUNT(*) as cnt FROM nodes WHERE refinement = 0 AND heat > 0.01 AND is_crystal = 0 AND is_meta = 0 AND is_superseded = 0',
+    'SELECT COUNT(*) as cnt FROM nodes WHERE refinement = 0 AND heat > 0.01 AND is_crystal = 0 AND is_meta = 0 AND is_superseded = 0 AND archived = 0',
   ).get() as { cnt: number }).cnt;
   ctx.reportPhase(2, '节点标注', pendingAnnotateCount);
   log.info(`Phase 2: 节点标注 (${pendingAnnotateCount} 个待标注)`);

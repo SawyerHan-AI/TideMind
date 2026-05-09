@@ -196,19 +196,28 @@ function buildPostCompactSection(shimPath: string, postCompactScriptPath: string
 }
 
 /**
- * PreCompact 不需要 --tool 参数，只要 --agent-id。
+ * PreCompact 必须传 --tool,与 PostCompact / SessionStart 一致。
+ *
+ * 历史 bug(audit P0-2 2026-05-09):本函数原本只传 --agent-id 不传 --tool,
+ * src/hook-pre-compact.ts:24-43 的 parseArgs 默认 tool='claude-code',
+ * Codex 用户的 hooks.json 在 self-heal "升级" 后失去 --tool,
+ * hook 输出退化为 plain text → Codex 0.126+ JSON 解析失败 → additionalContext
+ * 静默丢失。修复:tool 透传到命令行,与 PostCompact / SessionStart 形态一致。
  */
-function buildPreCompactCommand(shimPath: string, preCompactScriptPath: string, agentId: string): string {
+function buildPreCompactCommand(shimPath: string, preCompactScriptPath: string, agentId: string, tool: string): string {
   return [
     JSON.stringify(shimPath),
     JSON.stringify(preCompactScriptPath),
     '--agent-id', JSON.stringify(agentId),
+    '--tool', JSON.stringify(tool),
   ].join(' ')
 }
 
 function preCompactCommandNeedsPatch(command: string, shimPath: string, preCompactScriptPath: string): boolean {
-  // 老的 echo 形态：不含 --agent-id，整段需要升级
+  // 老的 echo 形态:不含 --agent-id,整段需要升级
   if (!command.includes('--agent-id')) return true
+  // 缺 --tool(老版 self-heal 没传),需要重建
+  if (!command.includes('--tool')) return true
   // 新脚本形态但路径过期
   const expectedPrefix = `${JSON.stringify(shimPath)} ${JSON.stringify(preCompactScriptPath)}`
   return !command.startsWith(expectedPrefix)
@@ -302,7 +311,7 @@ function healClaudeCodePlugins(
           for (const h of group.hooks) {
             if (typeof h?.command !== 'string') continue
             if (preCompactCommandNeedsPatch(h.command, shimPath, preCompactScriptPath)) {
-              h.command = buildPreCompactCommand(shimPath, preCompactScriptPath, identity.agentId)
+              h.command = buildPreCompactCommand(shimPath, preCompactScriptPath, identity.agentId, identity.tool)
               if (typeof h.timeout !== 'number') h.timeout = 10000
               changed = true
             }

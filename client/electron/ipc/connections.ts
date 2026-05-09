@@ -206,6 +206,9 @@ export function registerConnectionHandlers(dataDir: string): void {
       assertPathWithinRoot(destPath, dataDir)
       // 用 mode: 0o600 一次性创建受限权限文件,避免 copyFileSync + chmodSync
       // 之间默认 0644 可读窗口。content 已读到内存,直接写。
+      // 加固:writeFileSync 的 mode 仅在创建新文件时应用,先 unlink 确保
+      // 已存在的旧 0644 文件升级后真变成 0600。
+      try { fs.unlinkSync(destPath) } catch { /* 不存在或无权限 */ }
       fs.writeFileSync(destPath, content, { mode: 0o600 })
 
       // 同时更新 connection 的 credentials（project_id）

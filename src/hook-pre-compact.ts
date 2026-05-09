@@ -36,22 +36,19 @@ function parseArgs(): { agentId: string; tool: string } {
     }
   }
 
+  // agentId 缺失只 warn,不 throw —— 历史 bug:throw 会跳过下方 tool 赋值,
+  // catch 路径把 tool 重置成默认 'claude-code',导致传了 --tool codex 但
+  // 漏 --agent-id 的调用退化为 claude-code 输出 → Codex JSON 解析失败。
   if (!agentId) {
-    throw new Error('Missing --agent-id');
+    process.stderr.write('[eb:hook-pre-compact] Missing --agent-id (continuing anyway)\n');
   }
 
   return { agentId, tool };
 }
 
 function main(): void {
-  let tool = 'claude-code';
-  try {
-    const parsed = parseArgs(); // 仅做参数校验，当前不需要 agentId 的值
-    tool = parsed.tool;
-  } catch (err) {
-    process.stderr.write(`[eb:hook-pre-compact] ${(err as Error).message}\n`);
-    // 参数缺失也不要阻断压缩流程，输出通用提示
-  }
+  // parseArgs 已保证 tool 可用(不再因 agentId 缺失抛错)
+  const { tool } = parseArgs();
 
   const content = `[TIDE MIND — PRE-COMPACT CHECK]
 

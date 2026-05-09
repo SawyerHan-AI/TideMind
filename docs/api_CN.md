@@ -19,7 +19,6 @@ TideMind 通过 [Model Context Protocol](https://modelcontextprotocol.io/) 暴�
 | 参数 | 类型 | 必需 | 描述 |
 |-----------|------|----------|-------------|
 | `tool` | `string` | 是 | 调用工具的名称（如 `"claude-code"`、`"cursor"`） |
-| `hint_topic` | `string` | 否 | 当前话题名称 |
 | `files` | `string[]` | 否 | 当前相关的文件或资源 |
 | `hint` | `string` | 否 | 用户的第一句话或对话主题 |
 | `detail_level` | `"brief" \| "standard" \| "deep"` | 否 | 控制返回的详细程度。默认：`"standard"` |

@@ -52,7 +52,7 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
   // 1. 统计所有标签及其引用的节点
   const rows = db.prepare(`
     SELECT id, tags, content FROM nodes
-    WHERE tags IS NOT NULL AND heat > 0.01 AND is_tag = 0 AND is_superseded = 0
+    WHERE tags IS NOT NULL AND heat > 0.01 AND is_tag = 0 AND is_superseded = 0 AND archived = 0
   `).all() as Array<{ id: string; tags: string; content: string }>;
 
   // 节点信息缓存（id → {content, tags}）
@@ -74,7 +74,7 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
   // 与 annotate.ts linkToExistingTagNodes 的两遍逻辑对齐。
   const existingTagNodes = new Map<string, string>();
   const tagNodes = db.prepare(
-    "SELECT id, title, content FROM nodes WHERE is_tag = 1 AND heat > 0.01 AND is_superseded = 0",
+    "SELECT id, title, content FROM nodes WHERE is_tag = 1 AND heat > 0.01 AND is_superseded = 0 AND archived = 0",
   ).all() as Array<{ id: string; title: string | null; content: string }>;
   for (const tn of tagNodes) {
     if (!tn.title) existingTagNodes.set(tn.content, tn.id);
@@ -114,7 +114,7 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
       // 检查是否有同名内容节点可以复用（如 Logseq 页面节点）
       // 优先复用而不是创建空节点，避免同一概念产生两个节点
       const existingContent = db.prepare(
-        "SELECT id FROM nodes WHERE (title = ? OR (title IS NULL AND content = ?)) AND is_tag = 0 AND is_superseded = 0 AND heat > 0.01 LIMIT 1",
+        "SELECT id FROM nodes WHERE (title = ? OR (title IS NULL AND content = ?)) AND is_tag = 0 AND is_superseded = 0 AND archived = 0 AND heat > 0.01 LIMIT 1",
       ).get(tag, tag) as { id: string } | undefined;
 
       if (existingContent) {

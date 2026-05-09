@@ -9,12 +9,15 @@ import {
   unarchiveNodeRecordOnly,
 } from '@server/db/node-lifecycle.js'
 import { SqliteRepository } from '@server/db/sqlite-repository.js'
+import { createLogger } from '@server/utils/logger.js'
 import {
   parseEditNodeArgs,
   parseFeedbackArgs,
   parseListArchivedOpts,
   parseNodeId,
 } from './_schemas.js'
+
+const log = createLogger('ipc-write')
 
 export function registerWriteHandlers(db: Database.Database): void {
   const repo = new SqliteRepository(db)
@@ -133,11 +136,25 @@ export function registerWriteHandlers(db: Database.Database): void {
     return listArchivedNodes(db, parsed.data)
   })
 
-  // unarchiveNode → 恢复归档节点
-  ipcMain.handle('write:unarchiveNode', (_e, nodeId: unknown) => {
+  // unarchiveNode → 恢复归档节点 + 重建向量(archive 时被清空)
+  // archiveNodeWithVectors 在归档时删了 nodes_vec / node_segments(防孤儿向量),
+  // 不补 embed 的话恢复后的节点完全无法被 recall 召回。即使重 archive 也再删
+  // 不掉(已经没了)。所以 unarchive 必须再 embed 一次。
+  ipcMain.handle('write:unarchiveNode', async (_e, nodeId: unknown) => {
     const parsedId = parseNodeId(nodeId)
     if (!parsedId.ok) return parsedId.error
     const ok = unarchiveNodeRecordOnly(db, parsedId.data)
+    if (ok) {
+      const node = getNode(db, parsedId.data)
+      if (node && node.content) {
+        try {
+          await repo.vectors.insertSegmentVectors(parsedId.data, node.content)
+        } catch (err) {
+          // embed 失败不阻塞 unarchive(用户可在设置里手动触发 reembedAllNodes 修)
+          log.error(`unarchive ${parsedId.data} embed 失败: ${(err as Error).message}`)
+        }
+      }
+    }
     return { success: ok }
   })
 

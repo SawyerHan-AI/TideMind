@@ -15,6 +15,7 @@ import {
   parseStringRecord,
 } from './_schemas.js'
 import { getShimPath, getMcpServerScriptPath } from '../runtime/runtime-paths.js'
+import { clearClientCache } from '@server/llm/client.js'
 
 export function registerConfigHandlers(dataDir: string): void {
   const configPath = path.join(dataDir, 'config.toml')
@@ -53,6 +54,11 @@ export function registerConfigHandlers(dataDir: string): void {
     const merged = deepMerge(current, parsedPatch.data)
     fs.writeFileSync(configPath, stringifyToml(merged as any))
     reloadConfig()
+
+    // 清掉 LLM client 缓存:用户改 API key / Vertex project_id / 模型选择后,
+    // 旧 SDK 实例会持续用旧凭证返 401。指纹 cacheKey 已能盖住大多数场景,
+    // 但 settings 写入是确定性事件,主动 clear 一次最稳。
+    clearClientCache()
 
     // 记录到时间线
     try {
@@ -509,9 +515,16 @@ function parseParamsFromStrategy(content: string): Record<string, number | strin
   return params
 }
 
+// Prototype-pollution 守卫:与 src/config.ts:113 的 daemon 端 deepMerge 对齐。
+// JSON 反序列化的 own enumerable __proto__ / constructor / prototype key 不应
+// 被递归赋值到 target —— 否则攻击 patch 可污染 Object.prototype,影响主进程
+// 后续所有对象的属性查询。
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
 function deepMerge(target: Record<string, unknown>, source: Record<string, unknown>): Record<string, unknown> {
   const result = { ...target }
   for (const key of Object.keys(source)) {
+    if (FORBIDDEN_KEYS.has(key)) continue
     if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key]) &&
         target[key] && typeof target[key] === 'object' && !Array.isArray(target[key])) {
       result[key] = deepMerge(target[key] as Record<string, unknown>, source[key] as Record<string, unknown>)

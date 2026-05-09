@@ -101,7 +101,7 @@ function buildProfile(repo: IRepository): PrepareProfile {
 
   // 画像尚未生成——临时拼一个基础统计
   const typeCounts = repo.rawDb.prepare(`
-    SELECT type, COUNT(*) as cnt FROM nodes WHERE heat > 0.01 AND is_meta = 0 GROUP BY type
+    SELECT type, COUNT(*) as cnt FROM nodes WHERE heat > 0.01 AND is_meta = 0 AND archived = 0 AND is_superseded = 0 GROUP BY type
   `).all() as Array<{ type: string; cnt: number }>;
 
   const total = typeCounts.reduce((s, t) => s + t.cnt, 0);

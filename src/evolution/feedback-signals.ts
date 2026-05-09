@@ -105,7 +105,7 @@ export function collectRecallHitRate(db: Database.Database): void {
   // 获取 30-60 天前创建的非 meta 节点
   const targetNodes = db.prepare(`
     SELECT id FROM nodes
-    WHERE is_meta = 0 AND is_superseded = 0
+    WHERE is_meta = 0 AND is_superseded = 0 AND archived = 0
       AND created BETWEEN datetime('now', '-60 days') AND datetime('now', '-30 days')
   `).all() as Array<{ id: string }>;
 
