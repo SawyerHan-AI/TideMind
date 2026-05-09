@@ -128,6 +128,48 @@ describe('node lifecycle service', () => {
     expect((db.prepare('SELECT COUNT(*) AS cnt FROM nodes_vec WHERE id LIKE ?').get(`${node.id}#%`) as { cnt: number }).cnt).toBe(0);
   });
 
+  // 守护：所有 lifecycle 操作必须 bump updated，否则 cloud reconcile 看不到 archive/
+  // supersede 状态变化（client.updated 永远 = created，永远输给 server.updated）。
+  // 见 docs/work-logs/2026-05-10.md。
+  describe('updated field bumping', () => {
+    function rawUpdated(id: string): string | null {
+      return (db.prepare('SELECT updated FROM nodes WHERE id = ?').get(id) as { updated: string | null } | undefined)?.updated ?? null;
+    }
+
+    it('archiveNodeWithVectors should advance updated', async () => {
+      const node = seedNode(db);
+      const before = rawUpdated(node.id)!;
+      await new Promise(r => setTimeout(r, 5));
+      archiveNodeWithVectors(db, node.id);
+      expect(rawUpdated(node.id)! > before).toBe(true);
+    });
+
+    it('reArchiveNodeWithVectors should advance updated', async () => {
+      const node = seedNode(db);
+      const before = rawUpdated(node.id)!;
+      await new Promise(r => setTimeout(r, 5));
+      reArchiveNodeWithVectors(db, node.id);
+      expect(rawUpdated(node.id)! > before).toBe(true);
+    });
+
+    it('retireNodeWithoutReplacement should advance updated', async () => {
+      const node = seedNode(db);
+      const before = rawUpdated(node.id)!;
+      await new Promise(r => setTimeout(r, 5));
+      retireNodeWithoutReplacement(db, node.id);
+      expect(rawUpdated(node.id)! > before).toBe(true);
+    });
+
+    it('supersedeNodeWithLinks should advance updated on the old node', async () => {
+      const oldNode = seedNode(db, { content: 'old' });
+      const newNode = seedNode(db, { content: 'new' });
+      const before = rawUpdated(oldNode.id)!;
+      await new Promise(r => setTimeout(r, 5));
+      supersedeNodeWithLinks(db, oldNode.id, newNode.id);
+      expect(rawUpdated(oldNode.id)! > before).toBe(true);
+    });
+  });
+
   it('only ignores missing auxiliary tables in legacy rollback mode', () => {
     const node = seedNode(db);
     const peer = seedNode(db);

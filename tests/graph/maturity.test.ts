@@ -171,4 +171,24 @@ describe('refreshMaturityScore', () => {
   it('不存在的节点不崩溃', () => {
     expect(() => refreshMaturityScore(db, 'nonexistent-id')).not.toThrow();
   });
+
+  // refreshMaturityScore / updateConnectivity 写 nodes 表时必须 bump updated，
+  // 否则 maturity_score / connectivity 这种"被动重算"字段对 cloud reconcile 不可见。
+  it('refreshMaturityScore 推进 updated', async () => {
+    const node = seedNode(db, { heat: 0.5 });
+    const before = (db.prepare('SELECT updated FROM nodes WHERE id = ?').get(node.id) as { updated: string }).updated;
+    await new Promise(r => setTimeout(r, 5));
+    refreshMaturityScore(db, node.id);
+    const after = (db.prepare('SELECT updated FROM nodes WHERE id = ?').get(node.id) as { updated: string }).updated;
+    expect(after > before).toBe(true);
+  });
+
+  it('updateConnectivity 推进 updated（无链接的边界情况也写库）', async () => {
+    const node = seedNode(db, { heat: 0.5 });
+    const before = (db.prepare('SELECT updated FROM nodes WHERE id = ?').get(node.id) as { updated: string }).updated;
+    await new Promise(r => setTimeout(r, 5));
+    updateConnectivity(db, node.id);
+    const after = (db.prepare('SELECT updated FROM nodes WHERE id = ?').get(node.id) as { updated: string }).updated;
+    expect(after > before).toBe(true);
+  });
 });

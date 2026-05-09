@@ -89,8 +89,9 @@ export async function reconsolidateNode(
     updateNode(db, nodeId, patch, reason);
   }
 
-  // 更新热度和再巩固时间
+  // 更新热度和再巩固时间。bump updated 让 cloud reconcile + UI watcher 感知。
+  const ts = now();
   db.prepare(`
-    UPDATE nodes SET heat = MIN(heat + 0.3, 10.0), last_reconsolidated = ? WHERE id = ?
-  `).run(now(), nodeId);
+    UPDATE nodes SET heat = MIN(heat + 0.3, 10.0), last_reconsolidated = ?, updated = ? WHERE id = ?
+  `).run(ts, ts, nodeId);
 }

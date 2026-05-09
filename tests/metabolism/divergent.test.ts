@@ -172,6 +172,28 @@ describe('runKeystoneIdentification', () => {
     const node0 = db.prepare('SELECT is_keystone FROM nodes WHERE id = ?').get(nodes[0].id) as { is_keystone: number };
     expect(node0.is_keystone).toBe(0);
   });
+
+  // 守护：keystone 标记变更会影响 UI（"关键种"标签）+ recall 排序，
+  // 必须 bump updated 让 cloud reconcile 同步、UI watcher 感知。
+  it('should bump updated on nodes whose is_keystone state changes', async () => {
+    const nodes = [];
+    for (let i = 0; i < 25; i++) {
+      nodes.push(seedNode(db, { content: `node ${i}` }));
+    }
+    // 让 nodes[0] 已经是 keystone（会被 step1 清掉），nodes[24] 即将成为 keystone
+    db.prepare('UPDATE nodes SET is_keystone = 1, updated = ? WHERE id = ?').run('2020-01-01T00:00:00.000Z', nodes[0].id);
+    db.prepare('UPDATE nodes SET updated = ? WHERE id = ?').run('2020-01-01T00:00:00.000Z', nodes[24].id);
+    for (let i = 0; i < 25; i++) {
+      db.prepare('UPDATE nodes SET connectivity = ? WHERE id = ?').run(i * 0.04, nodes[i].id);
+    }
+
+    runKeystoneIdentification(db);
+
+    const cleared = db.prepare('SELECT updated FROM nodes WHERE id = ?').get(nodes[0].id) as { updated: string };
+    const promoted = db.prepare('SELECT updated FROM nodes WHERE id = ?').get(nodes[24].id) as { updated: string };
+    expect(cleared.updated > '2020-01-01T00:00:00.000Z').toBe(true);
+    expect(promoted.updated > '2020-01-01T00:00:00.000Z').toBe(true);
+  });
 });
 
 

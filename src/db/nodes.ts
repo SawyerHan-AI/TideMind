@@ -68,14 +68,17 @@ export function createNode(
   // 双写：如果没传 type，从维度派生
   const type = params.type ?? dimensionsToLegacyType({ specificity, subjectivity, actuality });
 
+  // updated 与 created 一致：新建即"上次修改"。后续任何 UPDATE 都会 bump
+  // updated（见 updateNode 等），保证 cloud LWW + UI watcher 都能感知。
+  // 不显式写会让新节点的 updated=NULL，直到下次启动 v17 backfill 才填上。
   db.prepare(`
     INSERT INTO nodes (id, type, content, title, heat, refinement, independence,
       maturity_score,
       specificity, subjectivity, actuality,
       is_crystal, is_tag, is_meta,
       source_tool, source_session, source_stream, source_timestamp,
-      tags, created)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      tags, created, updated)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id, type, params.content, params.title ?? null,
     heat, refinement, independence, maturityScore,
@@ -83,7 +86,7 @@ export function createNode(
     params.is_crystal ?? 0, params.is_tag ?? 0, params.is_meta ?? 0,
     params.source_tool ?? null, params.source_session ?? null,
     params.source_stream ?? null, params.source_timestamp ?? null,
-    tagsJson, created,
+    tagsJson, created, created,
   );
 
   return getNode(db, id)!;
@@ -147,6 +150,13 @@ export function updateNode(
 
       fields.push('version = version + 1');
     }
+
+    // 推 updated 时间戳：cloud reconcile 用 LWW 比较 updated 决定上传/下载，
+    // UI 端 data-watcher 也轮询 MAX(updated) 触发刷新。本地任何 nodes 修改
+    // 都必须 bump，否则 server 看不到变化（reconcile manifest 'same'），
+    // UI 也感知不到（watcher 漏触发）。详见 docs/work-logs/2026-05-10.md。
+    fields.push('updated = ?');
+    values.push(now());
 
     values.push(id);
     db.prepare(`UPDATE nodes SET ${fields.join(', ')} WHERE id = ?`).run(...values);
@@ -289,7 +299,8 @@ export function bumpHeat(db: Database.Database, id: string, delta: number = 0.1)
       maturity_score = ? * MIN(MIN(heat + ?, 10.0), 1.0)
                      + ? * refinement
                      + ? * connectivity
-                     + ? * independence
+                     + ? * independence,
+      updated = ?
     WHERE id = ?
-  `).run(delta, wH, delta, wR, wC, wI, id);
+  `).run(delta, wH, delta, wR, wC, wI, now(), id);
 }
