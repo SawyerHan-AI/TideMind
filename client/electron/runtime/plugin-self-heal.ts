@@ -32,6 +32,7 @@ import path from 'node:path'
 import os from 'node:os'
 import type Database from 'better-sqlite3'
 import { createLogger } from '@server/utils/logger.js'
+import { computePluginPatchVersion } from '../ipc/agent-plugins/claude-code-version'
 import { repairMarketplaceJson, repairClaudeSettings } from '@server/utils/marketplace-repair.js'
 import { getShimPath, getHookScriptPath, getPreCompactHookScriptPath, getPostCompactHookScriptPath, getMcpServerScriptPath } from './runtime-paths'
 import { listAgents } from '@server/db/agents.js'
@@ -351,6 +352,139 @@ function healClaudeCodePlugins(
           result.errors.push({ file: hooksPath, error: err.message })
         }
       }
+    }
+
+    // 4) plugin.json#version 必须跟 hooks.json/.mcp.json/SKILL.md 内容同步,
+    //    Claude Code 在 ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/
+    //    下按 version 缓存,若 version 不变,缓存里的旧 hooks.json 永不更新。
+    syncPluginVersion(pluginDir, result)
+
+    // 5) Claude Code 的本地缓存可能仍是旧版本的拷贝。即便我们 bump 了 plugin.json
+    //    的 version,Claude 可能不会立即丢弃旧 cache。为兜底:把源镜像同步进
+    //    cache 里的所有 version 目录,让"现存任何版本被读到"都是正确内容。
+    mirrorPluginToClaudeCache(pluginsRoot, name, result)
+  }
+}
+
+/**
+ * 把 plugin.json 的 version 同步到当前 hooks.json/.mcp.json/SKILL.md
+ * 的内容哈希。任何路径或文案变更都会让 Claude Code 把缓存目录名认成
+ * 新版本,从而重新拉取插件文件。
+ *
+ * @internal exported only for unit testing.
+ */
+export function syncPluginVersion(pluginDir: string, result: HealResult): void {
+  const pluginJsonPath = path.join(pluginDir, '.claude-plugin', 'plugin.json')
+  if (!fs.existsSync(pluginJsonPath)) return
+  const cfg = safeReadJson(pluginJsonPath)
+  if (!cfg || typeof cfg !== 'object') return
+  const expected = computePluginPatchVersion(pluginDir)
+  if (cfg.version === expected) return
+  result.scanned++
+  cfg.version = expected
+  try {
+    safeWriteJson(pluginJsonPath, cfg)
+    result.patched++
+    log.info(`bumped plugin version to ${expected}: ${pluginJsonPath}`)
+  } catch (err: any) {
+    result.errors.push({ file: pluginJsonPath, error: err.message })
+  }
+}
+
+// 故意不镜像 .claude-plugin/plugin.json:cache 目录名是 Claude 选定的某个
+// version,而我们更新过的 plugin.json#version 是新的 hash 串,把新 plugin.json
+// 写进旧 version 目录会出现"目录名 != plugin.json#version"的不一致。Claude
+// Code 在按 version 路由缓存时看的是目录名,不是文件内容,所以镜像 plugin.json
+// 本身没有意义,反而引入语义混淆。bump version 已足够触发 Claude 重新缓存。
+const CACHE_MIRRORED_FILES = [
+  'hooks/hooks.json',
+  '.mcp.json',
+  'skills/tidemind/SKILL.md',
+] as const
+
+/**
+ * 把已修复的源插件文件镜像到 Claude Code 的本地缓存目录,治理"plugin
+ * version 没变 → 缓存内容陈旧"的存量问题。Claude Code 的缓存路径形如:
+ *
+ *   ~/.claude/plugins/cache/<marketplace>/<plugin-name>/<version>/...
+ *
+ * 我们不知道哪个 version 是"活的",所以遍历所有 version 子目录,把镜像
+ * 内容写进去。这样无论 Claude Code 选用哪个 version 缓存条目,内容都是
+ * 当前正确的。bump version 之后新缓存目录会被 Claude 自动建立,旧目录
+ * 也被覆盖到正确内容,两边都不会回到旧路径。
+ *
+ * @internal exported only for unit testing.
+ */
+export function mirrorPluginToClaudeCache(
+  pluginsRoot: string,
+  pluginDirName: string,
+  result: HealResult,
+  homeDir: string = os.homedir(),
+): void {
+  const sourcePluginDir = path.join(pluginsRoot, pluginDirName)
+  // pluginDirName 是 `claude-code-<agentId>`,但 marketplace.json 里的
+  // plugin name 是 `tidemind-<agentId>`(见 claudeCodeAdapter.generate)。
+  // 缓存目录用 plugin name,不是目录名。
+  const sourcePluginJson = path.join(sourcePluginDir, '.claude-plugin', 'plugin.json')
+  let pluginName: string | null = null
+  try {
+    const pj = JSON.parse(fs.readFileSync(sourcePluginJson, 'utf-8'))
+    if (typeof pj?.name === 'string') pluginName = pj.name
+  } catch {
+    // plugin.json 缺失或损坏,无法决定缓存目录名。跳过镜像——这种情况下
+    // syncPluginVersion 也跳过,整体行为一致。
+    return
+  }
+  if (!pluginName) return
+
+  // 遍历所有 marketplace 下的同名 plugin 缓存(理论上只有 tidemind-local,
+  // 但有遗留 external-brain-local 的环境也一并覆盖)。
+  const cacheRoot = path.join(homeDir, '.claude', 'plugins', 'cache')
+  if (!fs.existsSync(cacheRoot)) return
+
+  let marketplaces: string[] = []
+  try {
+    marketplaces = fs.readdirSync(cacheRoot)
+  } catch { return }
+
+  for (const marketplace of marketplaces) {
+    const pluginCacheRoot = path.join(cacheRoot, marketplace, pluginName)
+    if (!fs.existsSync(pluginCacheRoot)) continue
+    let versions: string[] = []
+    try {
+      versions = fs.readdirSync(pluginCacheRoot)
+    } catch { continue }
+    for (const version of versions) {
+      const versionDir = path.join(pluginCacheRoot, version)
+      try {
+        if (!fs.statSync(versionDir).isDirectory()) continue
+      } catch { continue }
+      mirrorVersionDir(sourcePluginDir, versionDir, result)
+    }
+  }
+}
+
+function mirrorVersionDir(sourcePluginDir: string, versionDir: string, result: HealResult): void {
+  for (const rel of CACHE_MIRRORED_FILES) {
+    const src = path.join(sourcePluginDir, rel)
+    const dst = path.join(versionDir, rel)
+    if (!fs.existsSync(src) || !fs.existsSync(dst)) continue
+    let srcContent: string
+    let dstContent: string
+    try {
+      srcContent = fs.readFileSync(src, 'utf-8')
+      dstContent = fs.readFileSync(dst, 'utf-8')
+    } catch { continue }
+    if (srcContent === dstContent) continue
+    result.scanned++
+    try {
+      // 用与 safeWriteJson 同形态的原子写,文本/JSON 通用——
+      // 直接写源端 raw 内容,避免 JSON.parse → stringify 改变格式。
+      safeWriteText(dst, srcContent)
+      result.patched++
+      log.info(`mirrored ${rel} into stale cache: ${dst}`)
+    } catch (err: any) {
+      result.errors.push({ file: dst, error: err.message })
     }
   }
 }

@@ -4,6 +4,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { createLogger } from '@server/utils/logger.js'
 import { repairClaudeSettings, repairMarketplaceJson } from '@server/utils/marketplace-repair.js'
+import { computePluginPatchVersion } from './claude-code-version'
 import { readJsonStrict, writeFileAtomic, writeJsonAtomic } from './fs-utils'
 import { cliEnv, mcpServerEntry } from './paths'
 import type {
@@ -142,16 +143,6 @@ export const claudeCodeAdapter: AgentPluginAdapter = {
     fs.mkdirSync(path.join(ctx.pluginDir, 'skills', 'tidemind'), { recursive: true })
 
     writeJsonAtomic(
-      pluginJsonPath(ctx),
-      {
-        name: ctx.pluginName,
-        version: '1.0.0',
-        description: `外部记忆系统 — ${ctx.agentName}`,
-        author: { name: 'TideMind' },
-      },
-    )
-
-    writeJsonAtomic(
       path.join(ctx.pluginDir, '.mcp.json'),
       {
         mcpServers: {
@@ -243,6 +234,19 @@ export const claudeCodeAdapter: AgentPluginAdapter = {
             },
           ],
         },
+      },
+    )
+
+    // plugin.json 必须最后写:它的 version 是其余文件的内容哈希,
+    // 任何路径/内容变化都会反映到 version 里,Claude Code 缓存随之失效。
+    // 见 claude-code-version.ts 的解释。
+    writeJsonAtomic(
+      pluginJsonPath(ctx),
+      {
+        name: ctx.pluginName,
+        version: computePluginPatchVersion(ctx.pluginDir),
+        description: `外部记忆系统 — ${ctx.agentName}`,
+        author: { name: 'TideMind' },
       },
     )
 
