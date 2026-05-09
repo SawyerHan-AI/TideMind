@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import {
   Plus, ChevronRight, Loader2, CheckCircle2, XCircle,
   Pencil, Check, X, Archive, RotateCcw, Trash2, Upload,
-  MoreHorizontal, Link,
+  MoreHorizontal, Link, Eye, EyeOff,
 } from 'lucide-react'
 import { useIPC } from '../../hooks/useIPC'
 import { Section, Field, inputClass, ComingSoonBadge } from './shared'
@@ -66,28 +66,93 @@ interface Connection {
 }
 
 // ============================================================
+// 密钥输入框(带显示/隐藏切换)
+// ============================================================
+
+function SecretInput({
+  value, onChange, placeholder, show, onToggleShow,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  show: boolean
+  onToggleShow: () => void
+}) {
+  return (
+    <div className="relative">
+      <input
+        type={show ? 'text' : 'password'}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder}
+        className={`${inputClass} pr-9`}
+        autoComplete="off"
+        spellCheck={false}
+      />
+      <button
+        type="button"
+        onClick={onToggleShow}
+        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-200 transition-colors p-1"
+        tabIndex={-1}
+      >
+        {show ? <EyeOff size={14} /> : <Eye size={14} />}
+      </button>
+    </div>
+  )
+}
+
+// ============================================================
 // 连接详情面板
 // ============================================================
 
 function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefresh: () => void }) {
   const { t } = useTranslation('settings')
-  const creds = safeJsonParse<Record<string, string>>(conn.credentials || '{}', {})
 
   const [editing, setEditing] = useState(false)
   const [editName, setEditName] = useState(conn.name)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ online: boolean; models: string[]; error?: string } | null>(null)
 
-  const [apiKey, setApiKey] = useState(creds.api_key ?? '')
-  const [projectId, setProjectId] = useState(creds.project_id ?? '')
-  const [region, setRegion] = useState(creds.region ?? 'us-central1')
+  // 凭证按需取(走 connections:get-credentials),不在 list 里下发避免列表
+  // 刷新时把所有连接的密钥扇出到 renderer 内存。creds === null 表示尚未加载,
+  // Save 在此期间 disabled,杜绝"空表单写回 DB 擦凭证"路径。
+  const [creds, setCreds] = useState<Record<string, string> | null>(null)
+  const [apiKey, setApiKey] = useState('')
+  const [projectId, setProjectId] = useState('')
+  const [region, setRegion] = useState('us-central1')
   const [uploading, setUploading] = useState(false)
   const [vertexCredStatus, setVertexCredStatus] = useState<{ configured: boolean; projectId?: string } | null>(null)
-  const [geminiKey, setGeminiKey] = useState(creds.api_key ?? '')
-  const [ollamaUrl, setOllamaUrl] = useState(creds.url ?? 'http://localhost:11434')
-  const [openaiBaseUrl, setOpenaiBaseUrl] = useState(creds.base_url ?? '')
-  const [openaiApiKey, setOpenaiApiKey] = useState(creds.api_key ?? '')
+  const [geminiKey, setGeminiKey] = useState('')
+  const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434')
+  const [openaiBaseUrl, setOpenaiBaseUrl] = useState('')
+  const [openaiApiKey, setOpenaiApiKey] = useState('')
   const [saved, setSaved] = useState(false)
+  // 显示/隐藏密钥切换:同一面板里同一时刻只展示一个 provider 的密钥字段,
+  // 共享一个 toggle 即可。
+  const [showSecret, setShowSecret] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    window.api.connections.getCredentials(conn.id)
+      .then(c => {
+        if (cancelled) return
+        setCreds(c)
+        setApiKey(c.api_key ?? '')
+        setProjectId(c.project_id ?? '')
+        setRegion(c.region ?? 'us-central1')
+        setGeminiKey(c.api_key ?? '')
+        setOllamaUrl(c.url ?? 'http://localhost:11434')
+        setOpenaiBaseUrl(c.base_url ?? '')
+        setOpenaiApiKey(c.api_key ?? '')
+      })
+      .catch(() => {
+        // IPC 报错(校验失败 / 通道异常)时降级为空凭证视图,
+        // 不让 Save 永远 disabled 卡住用户。
+        if (cancelled) return
+        setCreds({})
+      })
+    return () => { cancelled = true }
+  }, [conn.id])
 
   useEffect(() => {
     if (conn.provider_type === 'vertex') {
@@ -103,6 +168,8 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
   }
 
   const handleSaveCredentials = async () => {
+    // creds 还在加载就不允许保存,否则空表单会写回 DB 擦掉凭证
+    if (creds === null) return
     let credentials: Record<string, unknown>
     switch (conn.provider_type) {
       case 'anthropic': credentials = { api_key: apiKey }; break
@@ -118,10 +185,12 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
     onRefresh()
   }
 
+  // 测试连接只读 DB 里的当前凭证,不再 auto-save 表单。否则
+  // connections:list 出于安全把 credentials 抹成 undefined,表单
+  // 用空值预填,点测试就会把已存的 API Key 覆盖成空串。
   const handleTest = async () => {
     setTesting(true)
     setTestResult(null)
-    await handleSaveCredentials()
     try {
       const result = await window.api.connections.test(conn.id)
       setTestResult(result)
@@ -170,8 +239,8 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
       {/* 凭据表单 */}
       {conn.provider_type === 'anthropic' && (
         <Field label="API Key" tip={t('model.connection.anthropicTip')}>
-          <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
-            placeholder="sk-ant-..." className={inputClass} />
+          <SecretInput value={apiKey} onChange={setApiKey} placeholder="sk-ant-..."
+            show={showSecret} onToggleShow={() => setShowSecret(!showSecret)} />
         </Field>
       )}
 
@@ -207,8 +276,8 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
 
       {conn.provider_type === 'gemini' && (
         <Field label="API Key" tip={t('model.connection.geminiTip')}>
-          <input type="password" value={geminiKey} onChange={e => setGeminiKey(e.target.value)}
-            placeholder="AIza..." className={inputClass} />
+          <SecretInput value={geminiKey} onChange={setGeminiKey} placeholder="AIza..."
+            show={showSecret} onToggleShow={() => setShowSecret(!showSecret)} />
         </Field>
       )}
 
@@ -225,14 +294,19 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
               placeholder="http://localhost:8000" className={inputClass} />
           </Field>
           <Field label="API Key" tip={t('model.connection.openaiApiKeyTip')}>
-            <input type="password" value={openaiApiKey} onChange={e => setOpenaiApiKey(e.target.value)}
-              placeholder={t('model.connection.openaiApiKeyPlaceholder')} className={inputClass} />
+            <SecretInput value={openaiApiKey} onChange={setOpenaiApiKey}
+              placeholder={t('model.connection.openaiApiKeyPlaceholder')}
+              show={showSecret} onToggleShow={() => setShowSecret(!showSecret)} />
           </Field>
         </div>
       )}
 
       {/* 操作按钮 */}
       <div className="flex items-center gap-2">
+        <button onClick={handleSaveCredentials} disabled={creds === null}
+          className="flex items-center gap-2 px-3 py-1.5 text-xs bg-white/5 hover:bg-white/10 rounded-lg text-gray-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+          {t('model.connection.save')}
+        </button>
         <button onClick={handleTest} disabled={testing}
           className="flex items-center gap-2 px-3 py-1.5 text-xs bg-white/5 hover:bg-white/10 rounded-lg text-gray-300 transition-colors disabled:opacity-50">
           {testing && <Loader2 size={12} className="animate-spin" />}

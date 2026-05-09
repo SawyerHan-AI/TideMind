@@ -82,6 +82,7 @@
       "testConnection": "接続テスト",
       "archive": "アーカイブ",
       "saved": "保存しました",
+      "save": "保存",
       "connectionFailed": "接続失敗",
       "modelsAvailable": "{{count}} 個のモデルが利用可能",
       "status": {
@@ -141,7 +142,7 @@
       "notSelected": "未選択",
       "embeddingUsage": "用途：セマンティック検索、類似度計算、重複検出",
       "reembedProgress": "embedding を再計算中... ({{done}}/{{total}})",
-      "reembedNeeded": "モデル切替後、すべてのノードのベクトルを再計算する必要があります。再計算中は検索が自動的に全文検索にフォールバックします。",
+      "reembedNeeded": "ベクトルインデックスの再計算が必要です（アップグレードまたはモデル切替後にトリガー）。再計算中は検索が自動的に全文検索にフォールバックします。",
       "startReembed": "再計算を開始",
       "saved": "保存しました"
     }

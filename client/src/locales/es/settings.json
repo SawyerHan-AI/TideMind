@@ -82,6 +82,7 @@
       "testConnection": "Probar conexion",
       "archive": "Archivar",
       "saved": "Guardado",
+      "save": "Guardar",
       "connectionFailed": "Conexion fallida",
       "modelsAvailable": "{{count}} modelos disponibles",
       "status": {
@@ -141,7 +142,7 @@
       "notSelected": "No seleccionado",
       "embeddingUsage": "Uso: busqueda semantica, calculo de similitud, deteccion de duplicados",
       "reembedProgress": "Recalculando embeddings... ({{done}}/{{total}})",
-      "reembedNeeded": "Despues de cambiar de modelo, es necesario recalcular todos los vectores de nodos. Durante el recalculo, la busqueda se cambia automaticamente a busqueda de texto completo.",
+      "reembedNeeded": "El indice vectorial debe recalcularse (activado tras una actualizacion o cambio de modelo). Durante el recalculo, la busqueda se cambia automaticamente a busqueda de texto completo.",
       "startReembed": "Iniciar recalculo",
       "saved": "Guardado"
     }

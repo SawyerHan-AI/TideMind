@@ -82,6 +82,7 @@
       "testConnection": "연결 테스트",
       "archive": "보관",
       "saved": "저장됨",
+      "save": "저장",
       "connectionFailed": "연결 실패",
       "modelsAvailable": "{{count}}개 모델 사용 가능",
       "status": {
@@ -141,7 +142,7 @@
       "notSelected": "미선택",
       "embeddingUsage": "용도: 시맨틱 검색, 유사도 계산, 중복 감지",
       "reembedProgress": "embedding 재계산 중... ({{done}}/{{total}})",
-      "reembedNeeded": "모델 전환 후 모든 노드의 벡터를 재계산해야 합니다. 재계산 중에는 검색이 자동으로 전문 검색으로 전환됩니다.",
+      "reembedNeeded": "벡터 인덱스를 재계산해야 합니다 (업그레이드 또는 모델 전환 후 트리거). 재계산 중에는 검색이 자동으로 전문 검색으로 전환됩니다.",
       "startReembed": "재계산 시작",
       "saved": "저장됨"
     }

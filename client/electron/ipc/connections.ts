@@ -46,6 +46,18 @@ export function registerConnectionHandlers(dataDir: string): void {
     return { ...row, credentials: undefined, hasCredentials: !!row.credentials }
   })
 
+  // 按需取出明文 credentials —— 仅在详情面板需要把已存凭证回填表单时调用,
+  // 不进 connections:list(避免列表刷新时把所有连接的密钥扇出到 renderer 内存)。
+  // 安全模型:credentials 反正明文存在用户本地 SQLite,UI 上隐藏不是真隔离,
+  // 让用户看到自己配过什么 > 强制蒙黑。
+  ipcMain.handle('connections:get-credentials', (_e, id: unknown) => {
+    const validId = validateConnectionId(id)
+    const db = getClientDb()
+    const row = db.prepare('SELECT credentials FROM model_connections WHERE id = ?').get(validId) as { credentials: string } | undefined
+    if (!row) return {}
+    return safeParseCredentials(row.credentials)
+  })
+
   ipcMain.handle('connections:create', (_e, params: { name: string; provider_type: string; credentials?: Record<string, unknown> }) => {
     // renderer 输入需校验:provider_type 走白名单防止 DB 里被写入垃圾值,
     // name 限长避免 timeline_events.title 失控膨胀

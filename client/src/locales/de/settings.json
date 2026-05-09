@@ -82,6 +82,7 @@
       "testConnection": "Verbindung testen",
       "archive": "Archivieren",
       "saved": "Gespeichert",
+      "save": "Speichern",
       "connectionFailed": "Verbindung fehlgeschlagen",
       "modelsAvailable": "{{count}} Modelle verfuegbar",
       "status": {
@@ -141,7 +142,7 @@
       "notSelected": "Nicht ausgewaehlt",
       "embeddingUsage": "Verwendung: Semantische Suche, Aehnlichkeitsberechnung, Duplikaterkennung",
       "reembedProgress": "Embeddings werden neu berechnet... ({{done}}/{{total}})",
-      "reembedNeeded": "Nach dem Modellwechsel muessen alle Knotenvektoren neu berechnet werden. Waehrend der Neuberechnung wechselt die Suche automatisch zur Volltextsuche.",
+      "reembedNeeded": "Der Vektorindex muss neu berechnet werden (nach Upgrade oder Modellwechsel ausgeloest). Waehrend der Neuberechnung wechselt die Suche automatisch zur Volltextsuche.",
       "startReembed": "Neuberechnung starten",
       "saved": "Gespeichert"
     }

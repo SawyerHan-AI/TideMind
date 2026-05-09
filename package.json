@@ -1,6 +1,6 @@
 {
   "name": "tidemind",
-  "version": "0.2.58",
+  "version": "0.2.59",
   "description": "Tide Mind — 基于活图的认知系统，通过 MCP 协议为 AI 工具提供记忆服务",
   "type": "module",
   "bin": {

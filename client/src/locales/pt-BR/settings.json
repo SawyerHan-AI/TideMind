@@ -82,6 +82,7 @@
       "testConnection": "Testar Conexão",
       "archive": "Arquivar",
       "saved": "Salvo",
+      "save": "Salvar",
       "connectionFailed": "Falha na conexão",
       "modelsAvailable": "{{count}} modelos disponíveis",
       "status": {
@@ -141,7 +142,7 @@
       "notSelected": "Não selecionado",
       "embeddingUsage": "Uso: busca semântica, cálculo de similaridade, detecção de duplicatas",
       "reembedProgress": "Recalculando embeddings... ({{done}}/{{total}})",
-      "reembedNeeded": "Após trocar de modelo, todos os vetores de nós precisam ser recalculados. Durante o recálculo, a busca automaticamente volta para busca textual.",
+      "reembedNeeded": "O índice vetorial precisa ser recalculado (acionado após atualização ou troca de modelo). Durante o recálculo, a busca automaticamente volta para busca textual.",
       "startReembed": "Iniciar Recálculo",
       "saved": "Salvo"
     }

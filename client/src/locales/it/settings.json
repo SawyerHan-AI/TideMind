@@ -82,6 +82,7 @@
       "testConnection": "Testa Connessione",
       "archive": "Archivia",
       "saved": "Salvato",
+      "save": "Salva",
       "connectionFailed": "Connessione fallita",
       "modelsAvailable": "{{count}} modelli disponibili",
       "status": {
@@ -141,7 +142,7 @@
       "notSelected": "Non selezionato",
       "embeddingUsage": "Utilizzo: ricerca semantica, calcolo di similarita, rilevamento duplicati",
       "reembedProgress": "Ricalcolo embedding in corso... ({{done}}/{{total}})",
-      "reembedNeeded": "Dopo il cambio di modello, tutti i vettori dei nodi devono essere ricalcolati. Durante il ricalcolo, la ricerca passa automaticamente alla ricerca testuale.",
+      "reembedNeeded": "L'indice vettoriale deve essere ricalcolato (attivato dopo un aggiornamento o un cambio di modello). Durante il ricalcolo, la ricerca passa automaticamente alla ricerca testuale.",
       "startReembed": "Avvia Ricalcolo",
       "saved": "Salvato"
     }
