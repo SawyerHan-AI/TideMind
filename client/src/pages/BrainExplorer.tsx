@@ -28,6 +28,10 @@ export function BrainExplorer() {
   )
   const [viewMode, setViewMode] = useState<'list' | 'graph'>('list')
   const [page, setPage] = useState(0)
+  // perf-optimization-2026-05-17 P2-2:GraphView 节点上限。默认 500,用户可
+  // 在 GraphToolbar 调到 200/500/1000/2000。d3 force 是 O(n²),万节点级别
+  // 直接锁死 renderer——加显式上限避免误开导致卡死。
+  const [graphLimit, setGraphLimit] = useState(500)
 
   // Sync URL params
   useEffect(() => {
@@ -89,9 +93,11 @@ export function BrainExplorer() {
           ) : (
             <div className="relative h-full">
               <GraphView
-                filter={{ ...filter, search: debouncedSearch || undefined }}
+                filter={{ ...filter, search: debouncedSearch || undefined, graphLimit }}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
+                graphLimit={graphLimit}
+                onGraphLimitChange={setGraphLimit}
               />
             </div>
           )}

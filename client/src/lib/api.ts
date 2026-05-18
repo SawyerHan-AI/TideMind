@@ -99,34 +99,35 @@ export interface TimelineEvent {
   source: 'timeline' | 'operation' | 'version'
 }
 
-export interface DashboardData {
-  // 指标卡
+// perf-optimization-2026-05-17 P1-3:Dashboard 数据按维度切片,3 个独立 IPC,
+// renderer 端并发拉、各自占位骨架。旧的 DashboardData 聚合类型已废弃。
+
+export interface DashboardMetrics {
   totalMemories: number
   todayDigests: number
   todayNewLinks: number
   todayRecalls: number
-  // 各指标近 7 天趋势
   memoryTrend: Array<{ date: string; count: number }>
   digestTrend: Array<{ date: string; count: number }>
   linkTrend: Array<{ date: string; count: number }>
   recallTrend: Array<{ date: string; count: number }>
-  // 近期动态
-  recentActivity: Array<{
-    id: number
-    type: string
-    subtype: string
-    title: string
-    node_ids: string | null
-    created: string
-  }>
-  // 近期标签
-  recentTags: Array<{
-    tag: string
-    count: number
-    lastActivity: string
-    isCore: boolean
-  }>
 }
+
+export type DashboardActivity = Array<{
+  id: number
+  type: string
+  subtype: string
+  title: string
+  node_ids: string | null
+  created: string
+}>
+
+export type DashboardTags = Array<{
+  tag: string
+  count: number
+  lastActivity: string
+  isCore: boolean
+}>
 
 export interface UsageData {
   operationsByType: Array<{ operation: string; cnt: number }>
@@ -257,4 +258,6 @@ export interface ExplorerFilter {
   archived?: boolean
   limit?: number
   offset?: number
+  /** GraphView 节点上限(按 heat DESC 取 Top-N),万节点 vault 防 d3 force O(n²) 锁死 */
+  graphLimit?: number
 }

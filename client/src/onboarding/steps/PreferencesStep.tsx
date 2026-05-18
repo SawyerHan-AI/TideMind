@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next'
 import { Sun, Moon, Monitor, ChevronDown } from 'lucide-react'
 import { useTheme, type Theme } from '../../contexts/ThemeContext'
-import { SUPPORTED_LANGUAGES } from '../../lib/i18n'
+import { SUPPORTED_LANGUAGES, changeAppLanguage } from '../../lib/i18n'
 import { StepContainer } from '../components/StepContainer'
 
 const THEME_OPTIONS: { value: Theme; labelKey: string; Icon: typeof Sun }[] = [
@@ -14,9 +14,11 @@ export function PreferencesStep() {
   const { t, i18n } = useTranslation('onboarding')
   const { theme, setTheme } = useTheme()
 
+  // perf-optimization-2026-05-17 P1-4:走 changeAppLanguage 先 await 加载
+  // locale 文件再切换,避免闪烁。i18n 仍解构用于 i18n.language 读当前值。
   const changeLanguage = (code: string) => {
-    i18n.changeLanguage(code)
     localStorage.setItem('eb-language', code)
+    void changeAppLanguage(code)
   }
 
   return (

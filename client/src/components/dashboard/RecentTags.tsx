@@ -4,7 +4,7 @@ import { motion } from 'framer-motion'
 import type { Variants } from 'framer-motion'
 import { Tag, Info } from 'lucide-react'
 import { useFormatters } from '../../hooks/useFormatters'
-import type { DashboardData } from '../../lib/api'
+import type { DashboardTags } from '../../lib/api'
 
 const fadeUp: Variants = {
   hidden: { opacity: 0, y: 12 },
@@ -12,7 +12,7 @@ const fadeUp: Variants = {
 }
 
 interface RecentTagsProps {
-  tags: DashboardData['recentTags']
+  tags: DashboardTags
   onTagClick: (tag: string) => void
 }
 

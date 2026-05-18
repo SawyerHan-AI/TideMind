@@ -388,7 +388,22 @@ async function main() {
       label: 'website build',
       dryRun: opts.dryRun,
     });
-    run('npx', ['wrangler', 'pages', 'deploy', 'dist/', '--project-name', 'tidemind-website', '--branch=main'], {
+    // 显式传 --commit-message / --commit-hash,绕开 wrangler 默认从 git
+    // 自动取 commit message 的路径。CF Pages deployment API 的 commit_message
+    // 字段有长度上限(实测 ~1KB),超长会返回误导性的
+    // "Invalid commit message, it must be a valid UTF-8 string [code: 8000111]",
+    // 实际是长度问题不是编码问题。我们的发版 commit 走中文 + 多段正文很
+    // 容易超限,直接固定成短文本最稳。SHA 还是真实的 HEAD,溯源不丢。
+    const sha = opts.dryRun
+      ? 'DRY-RUN-SHA'
+      : capture('git', ['rev-parse', 'HEAD'], repoRoot).stdout;
+    run('npx', [
+      'wrangler', 'pages', 'deploy', 'dist/',
+      '--project-name', 'tidemind-website',
+      '--branch=main',
+      '--commit-message', `release v${version}`,
+      '--commit-hash', sha,
+    ], {
       cwd: path.join(repoRoot, 'pro/website'),
       label: 'deploy website',
       dryRun: opts.dryRun,

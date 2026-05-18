@@ -15,6 +15,11 @@ interface GraphToolbarProps {
   connectivityThreshold: number
   onConnectivityThresholdChange: (v: number) => void
   maxConnectivity: number
+  /** P2-2 节点上限控件 */
+  graphLimit?: number
+  onGraphLimitChange?: (n: number) => void
+  /** 实际渲染节点数(用作信息显示) */
+  renderedNodeCount?: number
 }
 
 export function GraphToolbar({
@@ -31,6 +36,9 @@ export function GraphToolbar({
   connectivityThreshold,
   onConnectivityThresholdChange,
   maxConnectivity,
+  graphLimit,
+  onGraphLimitChange,
+  renderedNodeCount,
 }: GraphToolbarProps) {
   const { t } = useTranslation('explorer')
 
@@ -126,6 +134,32 @@ export function GraphToolbar({
           <span className="text-xs text-gray-400 tabular-nums w-4 text-right">
             {connectivityThreshold}
           </span>
+        </div>
+      )}
+
+      {/* Node limit (perf-optimization-2026-05-17 P2-2):d3 force 是 O(n²),
+          万节点级别 vault 在没上限的情况下会锁死 renderer。 */}
+      {graphLimit !== undefined && onGraphLimitChange && (
+        <div className="flex items-center gap-2 glass-card rounded-lg px-3 py-1.5 border border-white/10">
+          <span className="text-xs text-gray-400 whitespace-nowrap">{t('explorer:toolbar.nodeLimitLabel', { defaultValue: 'Top' })}</span>
+          <select
+            value={graphLimit}
+            onChange={e => onGraphLimitChange(Number(e.target.value))}
+            className="bg-transparent text-xs text-white tabular-nums focus:outline-none cursor-pointer"
+          >
+            <option value={200} className="bg-neutral-900">200</option>
+            <option value={500} className="bg-neutral-900">500</option>
+            <option value={1000} className="bg-neutral-900">1000</option>
+            <option value={2000} className="bg-neutral-900">2000</option>
+          </select>
+          {renderedNodeCount !== undefined && (
+            <span
+              className="text-[10px] text-gray-500 tabular-nums whitespace-nowrap"
+              title={t('explorer:toolbar.nodeLimitHint', { defaultValue: '按 heat 高低取前 N 个节点 + 它们的 1-hop 邻居' })}
+            >
+              ({renderedNodeCount})
+            </span>
+          )}
         </div>
       )}
 

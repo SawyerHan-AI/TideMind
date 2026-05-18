@@ -28,7 +28,10 @@ const api: AppApi = {
     gates: () => ipcRenderer.invoke('stats:gates'),
     maintenance: () => ipcRenderer.invoke('stats:maintenance'),
     evolution: () => ipcRenderer.invoke('stats:evolution'),
-    dashboard: () => ipcRenderer.invoke('stats:dashboard'),
+    // perf-optimization-2026-05-17 P1-3:dashboard 切片化,3 个独立 handler 并发拉
+    dashboardMetrics: () => ipcRenderer.invoke('stats:dashboard-metrics'),
+    dashboardActivity: () => ipcRenderer.invoke('stats:dashboard-activity'),
+    dashboardTags: () => ipcRenderer.invoke('stats:dashboard-tags'),
     usage: () => ipcRenderer.invoke('stats:usage'),
     tokenUsage: () => ipcRenderer.invoke('stats:token-usage'),
     tokenUsageFiltered: (filter: { after?: string; before?: string; limit?: number; offset?: number }) => ipcRenderer.invoke('stats:token-usage-filtered', filter),

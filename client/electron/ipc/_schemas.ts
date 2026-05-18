@@ -96,6 +96,8 @@ export interface NodesListFilterInput {
   createdAfter?: string
   createdBefore?: string
   tags?: string[]
+  /** GraphView 节点上限(按 heat DESC 取 Top-N) */
+  graphLimit?: number
 }
 
 const CONFIG_FILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,98}$/
@@ -535,6 +537,12 @@ export function parseNodesListFilter(value: unknown): ValidationResult<NodesList
     if (typeof value.offset !== 'number' || !Number.isInteger(value.offset) || value.offset < 0 || value.offset > 1_000_000) {
       errors.push('offset must be a non-negative integer')
     } else filter.offset = value.offset
+  }
+
+  if (value.graphLimit !== undefined) {
+    if (typeof value.graphLimit !== 'number' || !Number.isInteger(value.graphLimit) || value.graphLimit < 1 || value.graphLimit > 5000) {
+      errors.push('graphLimit must be an integer between 1 and 5000')
+    } else filter.graphLimit = value.graphLimit
   }
 
   const heatMin = parseHeatBound(value.heatMin, 'heatMin')

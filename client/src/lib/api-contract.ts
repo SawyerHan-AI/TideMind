@@ -1,7 +1,9 @@
 import type {
   AgentData,
   CloudStatusData,
-  DashboardData,
+  DashboardActivity,
+  DashboardMetrics,
+  DashboardTags,
   ExplorerFilter,
   GateStatus,
   GraphLinkData,
@@ -119,7 +121,10 @@ export interface AppApi {
         testing_operations: number
       }>
     }>
-    dashboard: () => Promise<DashboardData>
+    // perf-optimization-2026-05-17 P1-3:dashboard 切片化(3 个并发 IPC)
+    dashboardMetrics: () => Promise<DashboardMetrics>
+    dashboardActivity: () => Promise<DashboardActivity>
+    dashboardTags: () => Promise<DashboardTags>
     usage: () => Promise<UsageData>
     tokenUsage: () => Promise<TokenUsageData>
     tokenUsageFiltered: (filter: { after?: string; before?: string; limit?: number; offset?: number }) => Promise<TokenUsageFilteredData>

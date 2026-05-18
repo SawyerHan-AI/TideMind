@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { Brain, Zap, Link2, Search } from 'lucide-react'
 import { AreaChart, Area, YAxis, ResponsiveContainer } from 'recharts'
 import type { LucideIcon } from 'lucide-react'
-import type { DashboardData } from '../../lib/api'
+import type { DashboardMetrics } from '../../lib/api'
 import { brand } from '../../lib/tokens'
 
 const fadeUp: Variants = {
@@ -96,7 +96,7 @@ function toCumulative(trend: Array<{ date: string; count: number }>, baseTotal: 
   })
 }
 
-export function SystemPulse({ data }: { data: DashboardData }) {
+export function SystemPulse({ data }: { data: DashboardMetrics }) {
   const { t } = useTranslation('dashboard')
   const memoryTrendCumulative = useMemo(
     () => toCumulative(data.memoryTrend, data.totalMemories),

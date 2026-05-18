@@ -6,7 +6,7 @@ import { truncate } from '../../lib/format'
 import { useFormatters } from '../../hooks/useFormatters'
 import { EVENT_TYPE_COLORS, EVENT_TYPE_LABELS, EVENT_SUBTYPE_LABELS } from '../../lib/constants'
 import { resolveEventTitle } from '../../lib/timeline-utils'
-import type { DashboardData } from '../../lib/api'
+import type { DashboardActivity } from '../../lib/api'
 
 const fadeUp: Variants = {
   hidden: { opacity: 0, y: 12 },
@@ -14,7 +14,7 @@ const fadeUp: Variants = {
 }
 
 interface RecentActivityProps {
-  activity: DashboardData['recentActivity']
+  activity: DashboardActivity
   onNodeClick: (id: string) => void
 }
 
