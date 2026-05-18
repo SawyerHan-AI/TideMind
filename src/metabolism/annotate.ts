@@ -26,7 +26,10 @@ const log = createLogger('annotate');
 // 以下常量均可通过策略文件 annotate 覆盖
 const getAnnotateParam = <T extends number>(key: string, fallback: T): T =>
   getParam('annotate', key, fallback) as T;
-const MAX_BATCH_SIZE = () => getAnnotateParam('batch_size', 30);
+// perf-optimization-2026-05-17 P2-3:fallback 30 → 10。原 30 在 LLM 慢时
+// 单次跑 ~30s 锁 daemon,与前台 data-watcher / IPC 竞争 SQLite busy_timeout。
+// 调小让 daemon 繁忙时间从 30s → 10s,降低前台卡顿窗口。
+const MAX_BATCH_SIZE = () => getAnnotateParam('batch_size', 10);
 const NEIGHBOR_COUNT = () => getAnnotateParam('neighbor_count', 3);
 const CONTENT_BUDGET = () => getAnnotateParam('content_budget', 8000);
 const MAX_CONTENT_PER_NODE = () => getAnnotateParam('max_content_per_node', 1500);

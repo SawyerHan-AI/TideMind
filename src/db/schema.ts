@@ -21,7 +21,7 @@ function generateSourceId(): string {
 /**
  * 当前 schema 版本。每次新增 migration 时递增。
  */
-const CURRENT_SCHEMA_VERSION = 20;
+const CURRENT_SCHEMA_VERSION = 22;
 
 /**
  * 完整建表 SQL — 包含所有字段，新数据库直接创建最新结构。
@@ -163,6 +163,93 @@ CREATE INDEX IF NOT EXISTS idx_nodes_keystone ON nodes(is_keystone);
 CREATE INDEX IF NOT EXISTS idx_nodes_is_crystal ON nodes(is_crystal);
 CREATE INDEX IF NOT EXISTS idx_nodes_is_tag ON nodes(is_tag);
 CREATE INDEX IF NOT EXISTS idx_nodes_is_meta ON nodes(is_meta);
+
+-- 复合索引(perf-optimization-2026-05-17 P1-1):
+-- 多数 stats / nodes.list 查询过滤组合是 (archived, is_superseded, heat) 或
+-- (archived, is_superseded, updated)。单列索引下走全表扫,加复合索引让查询
+-- 走覆盖扫描。
+CREATE INDEX IF NOT EXISTS idx_nodes_active_heat ON nodes(archived, is_superseded, heat DESC);
+CREATE INDEX IF NOT EXISTS idx_nodes_active_updated ON nodes(archived, is_superseded, updated DESC);
+
+-- 标签使用聚合表(perf-optimization-2026-05-17 P1-2):
+-- 用于 stats:dashboard / stats:overview / nodes:tags 三个 handler,避免每次
+-- SELECT tags FROM nodes WHERE heat > 0.01 + JS 端 JSON.parse 全表聚合
+-- (万节点下 500-1000ms)。trigger 实时维护,启动期 rebuildTagUsage 兜底重算。
+CREATE TABLE IF NOT EXISTS tag_usage (
+    tag TEXT PRIMARY KEY,
+    node_count INTEGER NOT NULL DEFAULT 0,
+    last_updated TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tag_usage_count ON tag_usage(node_count DESC);
+
+-- 结构洞缓存(perf-optimization-2026-05-17 P2-1):单行表 id=1,
+-- daemon 后台 5 分钟跑一次预计算 + 写缓存,IPC handler 直接读。
+CREATE TABLE IF NOT EXISTS structure_holes_cache (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    payload TEXT NOT NULL,
+    computed_at TEXT NOT NULL
+);
+
+-- tag_usage trigger:节点 INSERT / UPDATE(tags|archived|is_superseded)/ DELETE
+-- 时增量维护计数。active 定义:archived=0 AND is_superseded=0。
+-- 注意 trigger 是行级,OLD/NEW 是当前行的旧/新值;json_each 拆 tags 数组。
+CREATE TRIGGER IF NOT EXISTS trg_tag_usage_after_insert
+AFTER INSERT ON nodes
+WHEN NEW.tags IS NOT NULL
+  AND COALESCE(NEW.archived, 0) = 0
+  AND COALESCE(NEW.is_superseded, 0) = 0
+BEGIN
+    INSERT INTO tag_usage(tag, node_count, last_updated)
+    SELECT value, 1, datetime('now')
+    FROM json_each(NEW.tags)
+    WHERE typeof(value) = 'text' AND length(value) > 0
+    ON CONFLICT(tag) DO UPDATE SET
+        node_count = node_count + 1,
+        last_updated = datetime('now');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_tag_usage_after_delete
+AFTER DELETE ON nodes
+WHEN OLD.tags IS NOT NULL
+  AND COALESCE(OLD.archived, 0) = 0
+  AND COALESCE(OLD.is_superseded, 0) = 0
+BEGIN
+    UPDATE tag_usage SET
+        node_count = node_count - 1,
+        last_updated = datetime('now')
+    WHERE tag IN (
+        SELECT value FROM json_each(OLD.tags) WHERE typeof(value) = 'text'
+    );
+    DELETE FROM tag_usage WHERE node_count <= 0;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_tag_usage_after_update
+AFTER UPDATE OF tags, archived, is_superseded ON nodes
+BEGIN
+    -- 减去 OLD active 状态下 tags 的贡献
+    UPDATE tag_usage SET
+        node_count = node_count - 1,
+        last_updated = datetime('now')
+    WHERE COALESCE(OLD.archived, 0) = 0
+      AND COALESCE(OLD.is_superseded, 0) = 0
+      AND tag IN (
+          SELECT value FROM json_each(COALESCE(OLD.tags, '[]'))
+          WHERE typeof(value) = 'text'
+      );
+    -- 加上 NEW active 状态下 tags 的贡献
+    INSERT INTO tag_usage(tag, node_count, last_updated)
+    SELECT value, 1, datetime('now')
+    FROM json_each(COALESCE(NEW.tags, '[]'))
+    WHERE typeof(value) = 'text'
+      AND length(value) > 0
+      AND COALESCE(NEW.archived, 0) = 0
+      AND COALESCE(NEW.is_superseded, 0) = 0
+    ON CONFLICT(tag) DO UPDATE SET
+        node_count = node_count + 1,
+        last_updated = datetime('now');
+    -- 清理零/负计数
+    DELETE FROM tag_usage WHERE node_count <= 0;
+END;
 
 -- Agent 身份表
 CREATE TABLE IF NOT EXISTS agents (
@@ -1406,7 +1493,83 @@ const MIGRATIONS: Migration[] = [
       log.info('迁移 v20 完成: pending_digests.processing_started_at 已添加');
     },
   },
+  {
+    version: 21,
+    description: 'P1: 复合索引 (archived,is_superseded,heat|updated) + tag_usage 物化表与 trigger',
+    up: (db) => {
+      // 1. 复合索引(perf-optimization-2026-05-17 P1-1)
+      db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_active_heat ON nodes(archived, is_superseded, heat DESC)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_nodes_active_updated ON nodes(archived, is_superseded, updated DESC)');
+
+      // 2. tag_usage 物化表 + trigger(perf-optimization-2026-05-17 P1-2)。
+      // SCHEMA_SQL 在 ensureSchema 入口已 IF NOT EXISTS 建好,这里只跑首次
+      // backfill。同时显式 CREATE 一份兜底——老 DB 跑 ensureSchema 时 SCHEMA_SQL
+      // 已经把它们建上,这里幂等再建一次保险(避免任何执行顺序边角)。
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS tag_usage (
+            tag TEXT PRIMARY KEY,
+            node_count INTEGER NOT NULL DEFAULT 0,
+            last_updated TEXT
+        );
+      `);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_tag_usage_count ON tag_usage(node_count DESC)');
+
+      // 3. 首次 backfill:从 nodes 全量重算 tag_usage(此时 trigger 已就位,
+      // 但 backfill 直接写 tag_usage,不通过 nodes 触发,避免双计)。
+      backfillTagUsage(db);
+
+      log.info('迁移 v21 完成: 复合索引 + tag_usage 已建,首次 backfill 已跑');
+    },
+  },
+  {
+    version: 22,
+    description: 'P2: structure_holes_cache 单行表(后台预计算结构洞,IPC 直读)',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS structure_holes_cache (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            payload TEXT NOT NULL,
+            computed_at TEXT NOT NULL
+        );
+      `);
+      log.info('迁移 v22 完成: structure_holes_cache 已建(首次填充由 daemon 任务异步进行)');
+    },
+  },
 ];
+
+/**
+ * 全量重算 tag_usage 表(perf-optimization-2026-05-17 P1-2)。
+ *
+ * 用途:
+ * 1. migration v21 首次 backfill
+ * 2. trigger 漂移修复(若发现 tag_usage 与全表聚合不一致,主动重建)
+ * 3. 测试时基准重算
+ *
+ * 注意:本函数 TRUNCATE + 重建,在事务里跑保证原子性。直接写 tag_usage 表,
+ * 不通过 UPDATE nodes 触发 trigger,避免在自身 trigger 上下文里重入。
+ */
+export function backfillTagUsage(db: Database.Database): { tagCount: number; rowsScanned: number } {
+  const tx = db.transaction(() => {
+    db.exec('DELETE FROM tag_usage');
+
+    // SQL 级聚合:json_each 拆 tags + GROUP BY 计数,一次完成,不走 JS 端
+    // JSON.parse。万节点下亦在几十 ms 量级。
+    const result = db.prepare(`
+      INSERT INTO tag_usage(tag, node_count, last_updated)
+      SELECT je.value AS tag, COUNT(*) AS cnt, datetime('now')
+      FROM nodes n, json_each(COALESCE(n.tags, '[]')) je
+      WHERE COALESCE(n.archived, 0) = 0
+        AND COALESCE(n.is_superseded, 0) = 0
+        AND typeof(je.value) = 'text'
+        AND length(je.value) > 0
+      GROUP BY je.value
+    `).run();
+
+    const rowsScanned = (db.prepare('SELECT COUNT(*) AS cnt FROM nodes WHERE COALESCE(archived,0)=0 AND COALESCE(is_superseded,0)=0').get() as { cnt: number }).cnt;
+    return { tagCount: Number(result.changes), rowsScanned };
+  });
+  return tx();
+}
 
 /**
  * 读取当前 schema 版本。返回 -1 表示 metadata 表不存在或无版本记录。

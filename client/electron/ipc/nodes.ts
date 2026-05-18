@@ -3,6 +3,11 @@ import crypto from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { deleteNodeCompletely } from '@server/db/node-lifecycle.js'
 import {
+  computeStructureHoles,
+  readStructureHolesCache,
+  writeStructureHolesCache,
+} from '@server/graph/structure-holes.js'
+import {
   parseNodeId,
   parseNodesListFilter,
   parsePathArgs,
@@ -163,29 +168,21 @@ export function registerNodeHandlers(db: Database.Database): void {
   })
 
   ipcMain.handle('nodes:tags', () => {
-    // Aggregate tags from nodes.tags JSON field
-    const rows = db.prepare('SELECT tags FROM nodes WHERE tags IS NOT NULL AND heat > 0.01').all() as Array<{ tags: string }>
-    const tagCounts = new Map<string, number>()
-    for (const row of rows) {
-      try {
-        const parsed = JSON.parse(row.tags)
-        if (Array.isArray(parsed)) {
-          for (const tag of parsed) {
-            if (typeof tag === 'string' && tag.trim()) {
-              tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1)
-            }
-          }
-        }
-      } catch { /* skip malformed */ }
-    }
+    // perf-optimization-2026-05-17 P1-2:改读 tag_usage 物化表(trigger 维护),
+    // 替代原本全表 SELECT tags + JS JSON.parse 聚合。
+    const tagRows = db.prepare(`
+      SELECT tag, node_count
+      FROM tag_usage
+      WHERE node_count > 0
+    `).all() as Array<{ tag: string; node_count: number }>
 
-    // Check which tags have is_tag=1 nodes (core tags)
-    // tag-promote 把标签名存在 title，content 是 LLM 生成的定义；兼容两种情况
+    // 核心标签判定(is_tag=1 的节点):tag-promote 把标签名存 title,
+    // content 是 LLM 生成的定义,兼容两种情况
     const coreTagRows = db.prepare('SELECT title, content FROM nodes WHERE is_tag = 1 AND heat > 0.01').all() as Array<{ title: string | null; content: string }>
     const coreTags = new Set(coreTagRows.map(r => (r.title ?? r.content).trim()))
 
-    const result = Array.from(tagCounts.entries())
-      .map(([tag, count]) => ({ tag, count, isCore: coreTags.has(tag) }))
+    const result = tagRows
+      .map(r => ({ tag: r.tag, count: r.node_count, isCore: coreTags.has(r.tag) }))
       .sort((a, b) => b.count - a.count)
 
     return result
@@ -316,7 +313,10 @@ export function registerNodeHandlers(db: Database.Database): void {
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
-    const filteredNodes = db.prepare(`SELECT * FROM nodes ${where} LIMIT 500`).all(...params) as any[]
+    // perf-optimization-2026-05-17 P2-2:graphLimit 由用户在 UI 选(默认 500),
+    // 按 heat DESC 取 Top-N 而不是 PK 顺序。万节点 vault 防 d3 force O(n²) 锁死。
+    const graphLimit = Math.min(filter.graphLimit ?? 500, 5000)
+    const filteredNodes = db.prepare(`SELECT * FROM nodes ${where} ORDER BY heat DESC LIMIT ?`).all(...params, graphLimit) as any[]
 
     // Collect all node IDs, then expand with 1-hop neighbors
     const nodeMap = new Map<string, any>()
@@ -463,42 +463,17 @@ export function registerNodeHandlers(db: Database.Database): void {
     if (!parsedLimit.ok) return parsedLimit.error
     const safeLimit = parsedLimit.data
 
-    // Build bidirectional adjacency: treat links as undirected
-    // neighbors CTE gives (node, neighbor) for every link in both directions
-    const holes = db.prepare(`
-      WITH neighbors AS (
-        SELECT from_id AS node, to_id AS neighbor FROM links WHERE status != 'rejected_by_user'
-        UNION ALL
-        SELECT to_id AS node, from_id AS neighbor FROM links WHERE status != 'rejected_by_user'
-      ),
-      -- Find node pairs sharing 2+ neighbors but with no direct link
-      shared AS (
-        SELECT a.node AS node_a, b.node AS node_b, COUNT(*) AS shared
-        FROM neighbors a
-        JOIN neighbors b ON a.neighbor = b.neighbor AND a.node < b.node
-        GROUP BY a.node, b.node
-        HAVING shared >= 2
-      )
-      SELECT s.node_a, s.node_b, s.shared
-      FROM shared s
-      LEFT JOIN links d1 ON d1.from_id = s.node_a AND d1.to_id = s.node_b AND d1.status != 'rejected_by_user'
-      LEFT JOIN links d2 ON d2.from_id = s.node_b AND d2.to_id = s.node_a AND d2.status != 'rejected_by_user'
-      WHERE d1.id IS NULL AND d2.id IS NULL
-      ORDER BY s.shared DESC
-      LIMIT ?
-    `).all(safeLimit) as any[]
-
-    return holes.map(h => {
-      const nodeA = db.prepare('SELECT id, content, type FROM nodes WHERE id = ?').get(h.node_a) as any
-      const nodeB = db.prepare('SELECT id, content, type FROM nodes WHERE id = ?').get(h.node_b) as any
-      return {
-        nodeA: h.node_a,
-        nodeB: h.node_b,
-        sharedCount: h.shared,
-        nodeAPreview: nodeA?.content?.slice(0, 80) ?? '',
-        nodeBPreview: nodeB?.content?.slice(0, 80) ?? '',
-      }
-    })
+    // perf-optimization-2026-05-17 P2-1:读 daemon 后台预计算的缓存。
+    // 缓存命中(常态):毫秒级返回 + slice 到用户请求 limit。
+    // 缓存缺失(冷启首次):同步计算一次并写缓存,之后都走缓存。
+    let cache = readStructureHolesCache(db)
+    if (!cache) {
+      const holes = computeStructureHoles(db)
+      writeStructureHolesCache(db, holes)
+      cache = readStructureHolesCache(db)
+    }
+    if (!cache) return []
+    return cache.holes.slice(0, safeLimit)
   })
 
   // ────── 标签纠错（用户解除错误标签）──────

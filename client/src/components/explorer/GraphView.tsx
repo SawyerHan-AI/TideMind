@@ -1,6 +1,29 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import * as d3 from 'd3'
+// d3 子包按需 import(perf-optimization-2026-05-17 P0-4):原 `import * as d3
+// from 'd3'` 拉整个 d3 主包 ~400KB,实际只用 force / zoom / selection / drag。
+import {
+  forceSimulation,
+  forceLink,
+  forceManyBody,
+  forceCenter,
+  forceCollide,
+  type Simulation,
+  type SimulationNodeDatum,
+  type SimulationLinkDatum,
+  type ForceCenter,
+} from 'd3-force'
+import {
+  zoom as d3Zoom,
+  zoomIdentity,
+  type ZoomBehavior,
+  type ZoomTransform,
+  type D3ZoomEvent,
+} from 'd3-zoom'
+import { select } from 'd3-selection'
+import { drag as d3Drag } from 'd3-drag'
+// d3-transition 通过副作用给 d3-selection 的 Selection 原型加上 .transition()
+import 'd3-transition'
 import { useIPC } from '../../hooks/useIPC'
 import { useDataRevision } from '../../contexts/DataChangeContext'
 import { GraphToolbar } from './GraphToolbar'
@@ -15,9 +38,12 @@ interface GraphViewProps {
   filter: ExplorerFilter
   selectedId: string | null
   onSelect: (id: string | null) => void
+  /** P2-2 节点上限(由父组件控制以便 BrainExplorer 在 list/graph 切换时持久化) */
+  graphLimit?: number
+  onGraphLimitChange?: (n: number) => void
 }
 
-interface SimNode extends d3.SimulationNodeDatum {
+interface SimNode extends SimulationNodeDatum {
   id: string
   type: string
   content: string
@@ -41,7 +67,7 @@ interface LinkRelation {
   confidence: number
 }
 
-interface SimLink extends d3.SimulationLinkDatum<SimNode> {
+interface SimLink extends SimulationLinkDatum<SimNode> {
   id: string
   from_id: string
   to_id: string
@@ -86,17 +112,17 @@ function drawStar(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: numb
 
 /* ---------- component ---------- */
 
-export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
+export function GraphView({ filter, selectedId, onSelect, graphLimit = 500, onGraphLimitChange }: GraphViewProps) {
   const { t } = useTranslation('explorer')
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const simulationRef = useRef<d3.Simulation<SimNode, SimLink> | null>(null)
-  const transformRef = useRef<d3.ZoomTransform>(d3.zoomIdentity)
+  const simulationRef = useRef<Simulation<SimNode, SimLink> | null>(null)
+  const transformRef = useRef<ZoomTransform>(zoomIdentity)
   const nodesRef = useRef<SimNode[]>([])
   const linksRef = useRef<SimLink[]>([])
   const sizeRef = useRef({ width: 0, height: 0 })
   const rafRef = useRef<number>(0)
-  const zoomBehaviorRef = useRef<d3.ZoomBehavior<HTMLCanvasElement, unknown> | null>(null)
+  const zoomBehaviorRef = useRef<ZoomBehavior<HTMLCanvasElement, unknown> | null>(null)
   const draggedNodeRef = useRef<SimNode | null>(null)
   // track mounted state to guard async setState calls
   const mountedRef = useRef(true)
@@ -413,13 +439,29 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
 
     const { width, height } = sizeRef.current
 
-    if (simulationRef.current) simulationRef.current.stop()
+    // perf-optimization-2026-05-17 P2-2:filter 变化时不再 stop + 新建 simulation,
+    // 改成增量更新——同一个 simulation 实例换 nodes/links,alpha 设 0.3 让冲击
+    // 柔和。这样:
+    //  - 缩放/拖动/选中状态保留(simulation 内部状态延续)
+    //  - 节点位置渐进过渡而不是闪动
+    //  - filter 频繁切换(用户调滑块/搜索)不再每次都 O(n) 重启冲击
+    const existing = simulationRef.current
+    if (existing) {
+      existing.nodes(nodes)
+      const linkForce = existing.force('link') as ReturnType<typeof forceLink<SimNode, SimLink>> | undefined
+      if (linkForce) linkForce.links(links)
+      // 居中力随窗口尺寸更新(尺寸变化时也走这里)
+      const centerForce = existing.force('center') as ForceCenter<SimNode> | undefined
+      if (centerForce) centerForce.x(width / 2).y(height / 2)
+      existing.alpha(0.3).restart()
+      return () => { /* keep simulation alive across re-renders */ }
+    }
 
-    const sim = d3.forceSimulation<SimNode>(nodes)
-      .force('link', d3.forceLink<SimNode, SimLink>(links).id(d => d.id).distance(80))
-      .force('charge', d3.forceManyBody().strength(-120))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide<SimNode>().radius(d => nodeRadius(d) + 2))
+    const sim = forceSimulation<SimNode>(nodes)
+      .force('link', forceLink<SimNode, SimLink>(links).id(d => d.id).distance(80))
+      .force('charge', forceManyBody().strength(-120))
+      .force('center', forceCenter(width / 2, height / 2))
+      .force('collision', forceCollide<SimNode>().radius(d => nodeRadius(d) + 2))
       .alphaDecay(0.02)
       .on('tick', () => scheduleRender()) // scheduleRender is stable, always calls latest render
 
@@ -427,6 +469,7 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
 
     return () => {
       sim.stop()
+      simulationRef.current = null
     }
   }, [graphData, scheduleRender])
 
@@ -447,7 +490,7 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
 
       // update center force
       if (simulationRef.current) {
-        const center = simulationRef.current.force('center') as d3.ForceCenter<SimNode> | undefined
+        const center = simulationRef.current.force('center') as ForceCenter<SimNode> | undefined
         if (center) {
           center.x(rect.width / 2).y(rect.height / 2)
         }
@@ -467,15 +510,15 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
     const canvas = canvasRef.current
     if (!canvas) return
 
-    const zoom = d3.zoom<HTMLCanvasElement, unknown>()
+    const zoom = d3Zoom<HTMLCanvasElement, unknown>()
       .scaleExtent([0.1, 8])
-      .on('zoom', (event: d3.D3ZoomEvent<HTMLCanvasElement, unknown>) => {
+      .on('zoom', (event: D3ZoomEvent<HTMLCanvasElement, unknown>) => {
         transformRef.current = event.transform
         scheduleRender() // stable ref, always calls latest render
       })
 
     zoomBehaviorRef.current = zoom
-    const sel = d3.select(canvas)
+    const sel = select(canvas)
     sel.call(zoom)
 
     // Disable default double-click zoom (we handle it ourselves)
@@ -568,9 +611,9 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    const sel = d3.select(canvas)
+    const sel = select(canvas)
 
-    const drag = d3.drag<HTMLCanvasElement, unknown>()
+    const drag = d3Drag<HTMLCanvasElement, unknown>()
       .subject((event) => {
         const rect = canvas.getBoundingClientRect()
         const px = event.sourceEvent.clientX - rect.left
@@ -631,9 +674,9 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
         const targetK = 2
         const tx = width / 2 - node.x * targetK
         const ty = height / 2 - node.y * targetK
-        const newTransform = d3.zoomIdentity.translate(tx, ty).scale(targetK)
+        const newTransform = zoomIdentity.translate(tx, ty).scale(targetK)
 
-        const sel = d3.select(canvas)
+        const sel = select(canvas)
         if (zoomBehaviorRef.current) {
           sel.transition().duration(500).call(zoomBehaviorRef.current.transform, newTransform)
         }
@@ -649,13 +692,13 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
   const handleZoomIn = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas || !zoomBehaviorRef.current) return
-    d3.select(canvas).transition().duration(300).call(zoomBehaviorRef.current.scaleBy, 1.5)
+    select(canvas).transition().duration(300).call(zoomBehaviorRef.current.scaleBy, 1.5)
   }, [])
 
   const handleZoomOut = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas || !zoomBehaviorRef.current) return
-    d3.select(canvas).transition().duration(300).call(zoomBehaviorRef.current.scaleBy, 1 / 1.5)
+    select(canvas).transition().duration(300).call(zoomBehaviorRef.current.scaleBy, 1 / 1.5)
   }, [])
 
   const handleFitAll = useCallback(() => {
@@ -686,8 +729,8 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
     const tx = width / 2 - cx * scale
     const ty = height / 2 - cy * scale
 
-    const newTransform = d3.zoomIdentity.translate(tx, ty).scale(scale)
-    d3.select(canvas).transition().duration(500).call(zoomBehaviorRef.current.transform, newTransform)
+    const newTransform = zoomIdentity.translate(tx, ty).scale(scale)
+    select(canvas).transition().duration(500).call(zoomBehaviorRef.current.transform, newTransform)
   }, [])
 
   const handlePathModeToggle = useCallback(() => {
@@ -722,6 +765,9 @@ export function GraphView({ filter, selectedId, onSelect }: GraphViewProps) {
         connectivityThreshold={connectivityThreshold}
         onConnectivityThresholdChange={setConnectivityThreshold}
         maxConnectivity={maxConnectivity}
+        graphLimit={graphLimit}
+        onGraphLimitChange={onGraphLimitChange}
+        renderedNodeCount={graphData?.nodes.length}
       />
       {/* Loading indicator */}
       {!graphData && (

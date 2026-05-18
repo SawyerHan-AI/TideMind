@@ -5,25 +5,16 @@ export function registerStatsHandlers(db: Database.Database): void {
   ipcMain.handle('stats:overview', () => {
     const totalNodes = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01').get() as any).cnt
     const byType = db.prepare('SELECT type, COUNT(*) as cnt FROM nodes WHERE heat > 0.01 GROUP BY type').all()
-    // Aggregate top tags by count
-    const tagRows = db.prepare('SELECT tags FROM nodes WHERE tags IS NOT NULL AND heat > 0.01').all() as Array<{ tags: string }>
-    const tagCounts = new Map<string, number>()
-    for (const row of tagRows) {
-      try {
-        const parsed = JSON.parse(row.tags)
-        if (Array.isArray(parsed)) {
-          for (const t of parsed) {
-            if (typeof t === 'string' && t.trim()) {
-              tagCounts.set(t, (tagCounts.get(t) ?? 0) + 1)
-            }
-          }
-        }
-      } catch { /* skip */ }
-    }
-    const byTag = Array.from(tagCounts.entries())
-      .map(([tag, cnt]) => ({ tag, cnt }))
-      .sort((a, b) => b.cnt - a.cnt)
-      .slice(0, 10)
+    // Top tags(perf-optimization-2026-05-17 P1-2):原本 SELECT tags FROM
+    // nodes WHERE heat > 0.01 + JS JSON.parse 全表聚合,万节点下数百 ms。
+    // 改读 tag_usage 物化表(由 trigger 实时维护),毫秒级。
+    const byTag = db.prepare(`
+      SELECT tag, node_count AS cnt
+      FROM tag_usage
+      WHERE node_count > 0
+      ORDER BY node_count DESC
+      LIMIT 10
+    `).all()
     const linkCount = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed'").get() as any).cnt
     const recallCount = (db.prepare("SELECT COUNT(*) as cnt FROM operation_log WHERE operation = 'recall'").get() as any).cnt
 
@@ -153,25 +144,34 @@ export function registerStatsHandlers(db: Database.Database): void {
     }
   })
 
-  ipcMain.handle('stats:dashboard', () => {
-    // --- 指标卡数值 ---
+  // 共用:补全 7 天空隙的辅助
+  const fillDays = (sparse: Array<{ date: string; count: number }>): Array<{ date: string; count: number }> => {
+    const map = new Map(sparse.map(d => [d.date, d.count]))
+    const result: Array<{ date: string; count: number }> = []
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date()
+      d.setDate(d.getDate() - i)
+      const key = d.toISOString().slice(0, 10)
+      result.push({ date: key, count: map.get(key) ?? 0 })
+    }
+    return result
+  }
+
+  // perf-optimization-2026-05-17 P1-3:Dashboard 切片化。
+  // 原 stats:dashboard 一个 handler 串行做 8+ 条 SQL,Dashboard 必须等
+  // 全部结果才能渲染首屏(其中 recentTags 全表 JSON.parse 在万节点下
+  // 500-1000ms,堵住整个 IPC)。
+  //
+  // 切成 3 个独立 handler,renderer 并发拉、各自 loading 状态:
+  // - dashboard-metrics:4 个 count + 4 个 trend(全部毫秒级)
+  // - dashboard-activity:timeline UNION(10-100ms)
+  // - dashboard-tags:SQL 级 json_each + GROUP BY(替代 JS JSON.parse)
+
+  ipcMain.handle('stats:dashboard-metrics', () => {
     const totalMemories = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01').get() as any).cnt
     const todayDigests = (db.prepare("SELECT COUNT(*) as cnt FROM operation_log WHERE operation = 'digest' AND date(created) = date('now')").get() as any).cnt
     const todayNewLinks = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed' AND date(created) = date('now')").get() as any).cnt
     const todayRecalls = (db.prepare("SELECT COUNT(*) as cnt FROM operation_log WHERE operation = 'recall' AND date(created) = date('now')").get() as any).cnt
-
-    // --- 各指标近 7 天趋势（补全空天为 0）---
-    const fillDays = (sparse: Array<{ date: string; count: number }>): Array<{ date: string; count: number }> => {
-      const map = new Map(sparse.map(d => [d.date, d.count]))
-      const result: Array<{ date: string; count: number }> = []
-      for (let i = 6; i >= 0; i--) {
-        const d = new Date()
-        d.setDate(d.getDate() - i)
-        const key = d.toISOString().slice(0, 10)
-        result.push({ date: key, count: map.get(key) ?? 0 })
-      }
-      return result
-    }
 
     const memoryTrendRaw = db.prepare(`
       SELECT date(created) as date, COUNT(*) as count
@@ -197,13 +197,20 @@ export function registerStatsHandlers(db: Database.Database): void {
       GROUP BY date(created) ORDER BY date
     `).all() as Array<{ date: string; count: number }>
 
-    const memoryTrend = fillDays(memoryTrendRaw)
-    const digestTrend = fillDays(digestTrendRaw)
-    const linkTrend = fillDays(linkTrendRaw)
-    const recallTrend = fillDays(recallTrendRaw)
+    return {
+      totalMemories,
+      todayDigests,
+      todayNewLinks,
+      todayRecalls,
+      memoryTrend: fillDays(memoryTrendRaw),
+      digestTrend: fillDays(digestTrendRaw),
+      linkTrend: fillDays(linkTrendRaw),
+      recallTrend: fillDays(recallTrendRaw),
+    }
+  })
 
-    // --- 近期动态（统一活动流，复用 timeline 查询逻辑） ---
-    const recentActivity = db.prepare(`
+  ipcMain.handle('stats:dashboard-activity', () => {
+    return db.prepare(`
       SELECT * FROM (
         SELECT id,
           CASE type
@@ -254,61 +261,35 @@ export function registerStatsHandlers(db: Database.Database): void {
       WHERE type != 'config'
       ORDER BY created DESC LIMIT 20
     `).all()
+  })
 
-    // --- 近期标签（核心标签 + 使用频率） ---
-    const coreTagRows = db.prepare('SELECT id, title, content, created FROM nodes WHERE is_tag = 1 AND heat > 0.01').all() as Array<{ id: string; title: string | null; content: string; created: string }>
+  ipcMain.handle('stats:dashboard-tags', () => {
+    // SQL 级聚合(perf-optimization-2026-05-17 P1-3):用 json_each 拆 tags +
+    // GROUP BY 一次完成 count + MAX(created),替代原本"全表 SELECT tags +
+    // JS JSON.parse + Map 聚合"的两阶段工作。
+    const tagAgg = db.prepare(`
+      SELECT je.value AS tag,
+             COUNT(*) AS count,
+             MAX(n.created) AS lastActivity
+      FROM nodes n, json_each(COALESCE(n.tags, '[]')) je
+      WHERE COALESCE(n.archived, 0) = 0
+        AND COALESCE(n.is_superseded, 0) = 0
+        AND typeof(je.value) = 'text'
+        AND length(je.value) > 0
+      GROUP BY je.value
+    `).all() as Array<{ tag: string; count: number; lastActivity: string }>
 
-    // Aggregate tag usage from nodes.tags JSON
-    const allTagRows = db.prepare('SELECT tags, created FROM nodes WHERE tags IS NOT NULL AND heat > 0.01').all() as Array<{ tags: string; created: string }>
-    const tagStats = new Map<string, { count: number; lastActivity: string }>()
-    for (const row of allTagRows) {
-      try {
-        const parsed = JSON.parse(row.tags)
-        if (Array.isArray(parsed)) {
-          for (const t of parsed) {
-            if (typeof t === 'string' && t.trim()) {
-              const existing = tagStats.get(t)
-              if (!existing) {
-                tagStats.set(t, { count: 1, lastActivity: row.created })
-              } else {
-                existing.count++
-                if (row.created > existing.lastActivity) existing.lastActivity = row.created
-              }
-            }
-          }
-        }
-      } catch { /* skip */ }
-    }
-
+    const coreTagRows = db.prepare('SELECT title, content FROM nodes WHERE is_tag = 1 AND heat > 0.01').all() as Array<{ title: string | null; content: string }>
     const coreTagSet = new Set(coreTagRows.map(r => (r.title ?? r.content).trim()))
 
-    // 确保所有核心标签都包含在结果中（即使 count 不在 top N）
-    const recentTags = Array.from(tagStats.entries())
-      .map(([tag, stats]) => ({
-        tag,
-        count: stats.count,
-        lastActivity: stats.lastActivity,
-        isCore: coreTagSet.has(tag),
-      }))
+    const withCore = tagAgg
+      .map(r => ({ tag: r.tag, count: r.count, lastActivity: r.lastActivity, isCore: coreTagSet.has(r.tag) }))
       .sort((a, b) => b.count - a.count)
 
     // 核心标签全部保留 + 非核心取 top 10
-    const coreTags = recentTags.filter(t => t.isCore)
-    const nonCoreTags = recentTags.filter(t => !t.isCore).slice(0, 10)
-    const finalTags = [...coreTags, ...nonCoreTags].sort((a, b) => b.count - a.count)
-
-    return {
-      totalMemories,
-      todayDigests,
-      todayNewLinks,
-      todayRecalls,
-      memoryTrend,
-      digestTrend,
-      linkTrend,
-      recallTrend,
-      recentActivity,
-      recentTags: finalTags,
-    }
+    const coreTags = withCore.filter(t => t.isCore)
+    const nonCoreTags = withCore.filter(t => !t.isCore).slice(0, 10)
+    return [...coreTags, ...nonCoreTags].sort((a, b) => b.count - a.count)
   })
 
   ipcMain.handle('stats:usage', () => {

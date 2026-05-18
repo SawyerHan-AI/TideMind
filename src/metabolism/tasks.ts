@@ -13,6 +13,7 @@ import { runLinkDiscover } from './link-discover.js';
 import { promoteFrequentTags } from './tag-promote.js';
 import { runDivergentScan, runCrystalEmergence, runKeystoneIdentification } from './divergent.js';
 import { runTemporalCrystal } from './temporal-crystal.js';
+import { runStructureHolesPrecompute } from '../graph/structure-holes.js';
 import { runProfileSynthesize } from '../evolution/profile-synthesize.js';
 import { runLearning2, canRunLearning2 } from '../evolution/learning2.js';
 import { runLearning3, canRunLearning3 } from '../evolution/learning3.js';
@@ -172,5 +173,14 @@ export const ALL_TASKS: TaskDefinition[] = [
     defaultIntervalMinutes: 7 * 24 * 60,
     gateCheck: (db) => canRunLearning3(db),
     requiresLLM: true,
+  },
+  // ── 缓存预计算(无 LLM,纯 SQL):perf-optimization-2026-05-17 P2-1 ──
+  {
+    id: 'structure-holes-precompute',
+    execute: async (db) => { await runStructureHolesPrecompute(db); },
+    intervalStrategy: 'structure-holes-precompute',
+    defaultIntervalMinutes: 5,
+    gateCheck: makeNodeCountGate('structure-holes-precompute', 50),
+    requiresLLM: false,
   },
 ];

@@ -312,8 +312,8 @@ app.whenReady().then(async () => {
     migrationLog.error('data dir migration failed:', err)
   }
 
-  // 在任何 plugin 配置被读/写之前：刷新 shim 和 runtime-path，再对已有 plugin 配置
-  // 做一次自愈扫描。顺序：migrate → shim → runtime-path → self-heal。
+  // 在任何 plugin 配置被读/写之前：刷新 shim 和 runtime-path。
+  // self-heal 延迟到首屏后异步执行（见下方）。
   try {
     const result = writeShimAndRuntimePath()
     mainLog.info(`shim updated=${result.shimUpdated} runtime-path updated=${result.runtimePathUpdated} → ${result.runtimePath}`)
@@ -321,40 +321,15 @@ app.whenReady().then(async () => {
     mainLog.error('writing tm-node shim failed:', err)
   }
 
-  // 初始化数据库和 IPC
+  // 启动期同步阻塞最小化（perf-optimization-2026-05-17 P0-1）：
+  // createWindow 之前只做"首屏 IPC 必需"的事：DB 打开 + handler 注册。
+  // 其他全部延迟到窗口显示之后（self-heal、云模块、data-watcher、daemon）。
   let db: ReturnType<typeof getClientDb> | null = null
   try {
     db = getClientDb()
-    const dataDir = getDataDir()
-    registerAllHandlers(db, dataDir)
-    startDataWatcher(db)
-
-    // self-heal 依赖 dataDir 和 db（用于重建丢失的 MCP 条目），必须在 DB 初始化之后
-    try {
-      selfHealPlugins(dataDir, db)
-    } catch (err) {
-      mainLog.error('plugin self-heal failed:', err)
-    }
+    registerAllHandlers(db, getDataDir())
   } catch (err) {
     mainLog.error('database init failed:', err)
-  }
-
-  // 恢复上次的云登录会话 + 条件性启动 sync client
-  try {
-    const { initAuth, isLoggedIn } = await import('./cloud/auth-client.js')
-    initAuth()
-
-    if (isLoggedIn() && db) {
-      const { getConfig: getAppConfig } = await import('../../src/config.js')
-      const config = getAppConfig()
-      if (config.cloud?.sync_enabled) {
-        const { createCloudSyncClient } = await import('./cloud/sync-client.js')
-        const syncClient = createCloudSyncClient(db)
-        syncClient.start().catch(err => mainLog.error('sync client start failed:', err))
-      }
-    }
-  } catch (err) {
-    mainLog.error('cloud auth init failed:', err)
   }
 
   createWindow()
@@ -363,15 +338,66 @@ app.whenReady().then(async () => {
   // 处理 app ready 之前收到的协议 URL（如从浏览器冷启动 app 的场景）
   flushPendingProtocolUrl()
 
-  // 后台确保 Ollama 运行，不阻塞应用启动
-  ensureOllama()
-
-  // 启动内嵌守护进程（定时维护任务）
-  startDaemon().catch(err => mainLog.error('daemon start failed:', err))
-
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+
+  // ─── 以下全部不阻塞首屏：让 ready-to-show 尽快触发 ────────────────────
+
+  // plugin self-heal：扫描外部 agent 配置文件，纯本地 I/O，但无首屏依赖
+  if (db) {
+    const dbForHeal = db
+    queueMicrotask(() => {
+      try {
+        selfHealPlugins(getDataDir(), dbForHeal)
+      } catch (err) {
+        mainLog.error('plugin self-heal failed:', err)
+      }
+    })
+  }
+
+  // 云模块：完全 fire-and-forget。原 await 链让 createWindow 排在三个
+  // dynamic import 之后，是冷启的主要可见瓶颈之一。
+  if (db) {
+    const dbForCloud = db
+    void (async () => {
+      try {
+        const { initAuth, isLoggedIn } = await import('./cloud/auth-client.js')
+        initAuth()
+        if (!isLoggedIn()) return
+
+        const { getConfig: getAppConfig } = await import('../../src/config.js')
+        const config = getAppConfig()
+        if (!config.cloud?.sync_enabled) return
+
+        const { createCloudSyncClient } = await import('./cloud/sync-client.js')
+        const syncClient = createCloudSyncClient(dbForCloud)
+        syncClient.start().catch(err => mainLog.error('sync client start failed:', err))
+      } catch (err) {
+        mainLog.error('cloud auth init failed:', err)
+      }
+    })()
+  }
+
+  // 后台确保 Ollama 运行（本身已经是非阻塞）
+  ensureOllama()
+
+  // data-watcher 延迟 1s 启动：避开首屏 IPC 高峰，给 renderer 第一波拉数让路
+  if (db) {
+    const dbForWatcher = db
+    setTimeout(() => {
+      try {
+        startDataWatcher(dbForWatcher)
+      } catch (err) {
+        mainLog.error('data-watcher start failed:', err)
+      }
+    }, 1000)
+  }
+
+  // 内嵌守护进程延迟 2s 启动：调度任务（含 LLM）和首屏完全错开
+  setTimeout(() => {
+    startDaemon().catch(err => mainLog.error('daemon start failed:', err))
+  }, 2000)
 })
 
 app.on('before-quit', () => {

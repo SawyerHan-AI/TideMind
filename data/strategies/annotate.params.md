@@ -3,7 +3,7 @@
 
 | 参数 | 值 | 说明 |
 |------|-----|------|
-| batch_size | 30 | 候选节点上限（实际数量由 token 预算动态决定） |
+| batch_size | 10 | 候选节点上限（实际数量由 token 预算动态决定）。原 30 在 LLM 慢时会让 daemon 单次繁忙 30+s,前台 data-watcher 可能感到延迟;perf-optimization-2026-05-17 P2-3 调小到 10,每次繁忙时间 ~10s。 |
 | interval_minutes | 3 | 检查间隔（分钟） |
 | neighbor_count | 3 | 每个节点取多少向量邻居 |
 | frequent_tags_limit | 30 | 已有标签体系展示数量 |

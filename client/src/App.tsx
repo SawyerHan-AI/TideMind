@@ -1,17 +1,31 @@
-import { useEffect, useState, useCallback } from 'react'
+import { lazy, Suspense, useEffect, useState, useCallback } from 'react'
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { TimezoneProvider } from './contexts/TimezoneContext'
 import { DataChangeProvider } from './contexts/DataChangeContext'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { Layout } from './components/Layout'
-import { Dashboard } from './pages/Dashboard'
-import { BrainExplorer } from './pages/BrainExplorer'
-import { Timeline } from './pages/Timeline'
-import { Settings } from './pages/Settings'
+import { SkeletonCard } from './components/Skeleton'
 import { OnboardingProvider } from './onboarding/OnboardingContext'
 import { OnboardingPage } from './onboarding/OnboardingPage'
 import { loadProFeatures, type ProFeatures } from './feature-registry'
+
+// 路由级代码分割(perf-optimization-2026-05-17 P0-3):4 个 page 不再
+// 静态 import 进首包,首屏只加载 Dashboard 所需的 chunk;
+// 切换路由时按需加载,Suspense fallback 兜底视觉连续。
+const Dashboard = lazy(() => import('./pages/Dashboard').then(m => ({ default: m.Dashboard })))
+const BrainExplorer = lazy(() => import('./pages/BrainExplorer').then(m => ({ default: m.BrainExplorer })))
+const Timeline = lazy(() => import('./pages/Timeline').then(m => ({ default: m.Timeline })))
+const Settings = lazy(() => import('./pages/Settings').then(m => ({ default: m.Settings })))
+
+function RouteFallback() {
+  return (
+    <div className="p-6 space-y-4">
+      <SkeletonCard />
+      <SkeletonCard />
+    </div>
+  )
+}
 
 function OnboardingRoute({ onFinish }: { onFinish: () => void }) {
   return (
@@ -55,17 +69,19 @@ export function App() {
               <Route path="*" element={<Navigate to="/onboarding" replace />} />
             </Routes>
           ) : (
-            <Routes>
-              <Route element={<Layout />}>
-                <Route path="/" element={<Dashboard />} />
-                <Route path="/knowledge" element={<BrainExplorer />} />
-                <Route path="/timeline" element={<Timeline />} />
-                <Route path="/settings" element={<Settings />} />
-                {proFeatures?.routes.map((route, i) => (
-                  <Route key={i} path={route.path} element={route.element} />
-                ))}
-              </Route>
-            </Routes>
+            <Suspense fallback={<RouteFallback />}>
+              <Routes>
+                <Route element={<Layout />}>
+                  <Route path="/" element={<Dashboard />} />
+                  <Route path="/knowledge" element={<BrainExplorer />} />
+                  <Route path="/timeline" element={<Timeline />} />
+                  <Route path="/settings" element={<Settings />} />
+                  {proFeatures?.routes.map((route, i) => (
+                    <Route key={i} path={route.path} element={route.element} />
+                  ))}
+                </Route>
+              </Routes>
+            </Suspense>
           )}
         </HashRouter>
         </DataChangeProvider>

@@ -21,7 +21,11 @@
 import { BrowserWindow } from 'electron'
 import Database from 'better-sqlite3'
 
-const POLL_INTERVAL_MS = 3_000
+// perf-optimization-2026-05-17 P2-3:3s → 8s。
+// 3s 在 daemon 跑大事务时即便 readonly 也要争 CPU;UI 数据变化的感知延迟
+// 从 ~1.5s 变 ~4s,但仍快于人眼对"列表自动刷新"的关注阈值。代价是后台
+// SQL 频率 ↓ ~60%。
+const POLL_INTERVAL_MS = 8_000
 
 interface TableState {
   maxRowid: number;

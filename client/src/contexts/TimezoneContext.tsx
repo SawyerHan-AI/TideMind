@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 
 type Timezone = string // IANA name or literal 'system'
 
@@ -42,13 +42,20 @@ export function TimezoneProvider({ children }: { children: ReactNode }) {
     }
   }, [timezone])
 
-  const setTimezone = (tz: Timezone) => {
+  const setTimezone = useCallback((tz: Timezone) => {
     localStorage.setItem('eb-timezone', tz)
     setTimezoneState(tz)
-  }
+  }, [])
+
+  // 行内字面量 value 会导致每次 Provider render 都新建对象,所有 useTimezone
+  // 消费者无条件 re-render(perf-optimization-2026-05-17 P0-2)。
+  const value = useMemo<TimezoneContextValue>(
+    () => ({ timezone, resolvedTimezone, setTimezone }),
+    [timezone, resolvedTimezone, setTimezone],
+  )
 
   return (
-    <TimezoneContext.Provider value={{ timezone, resolvedTimezone, setTimezone }}>
+    <TimezoneContext.Provider value={value}>
       {children}
     </TimezoneContext.Provider>
   )
