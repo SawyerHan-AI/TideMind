@@ -227,7 +227,12 @@
     "website": "Webseite",
     "feedback": "Feedback",
     "docs": "Dokumentation",
-    "license": "Lizenz"
+    "license": "Lizenz",
+    "downloading": "Wird heruntergeladen {{percent}}%",
+    "downloaded": "Heruntergeladen, bereit zur Installation",
+    "installNow": "Zum Aktualisieren neu starten",
+    "signatureInvalid": "Update abgelehnt (Signatur ungültig)",
+    "stagedOut": "Neue Version wird schrittweise ausgerollt, Sie erhalten sie bald"
   },
   "noteSync": {
     "title": "Verbundene Notizen",

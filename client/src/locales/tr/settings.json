@@ -227,7 +227,12 @@
     "website": "Web sitesi",
     "feedback": "Geri bildirim",
     "docs": "Belgeler",
-    "license": "Lisans"
+    "license": "Lisans",
+    "downloading": "İndiriliyor {{percent}}%",
+    "downloaded": "İndirildi, kurulmaya hazır",
+    "installNow": "Güncellemek için yeniden başlat",
+    "signatureInvalid": "Güncelleme reddedildi (geçersiz imza)",
+    "stagedOut": "Yeni sürüm kademeli olarak yayılıyor, yakında alacaksınız"
   },
   "noteSync": {
     "title": "Bagli Notlar",

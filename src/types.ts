@@ -370,6 +370,10 @@ export interface AppConfig {
     metabolism_enabled?: boolean;
     server_url: string;
   };
+  update?: {
+    /** 'stable'(默认) | 'beta'(Beta 频道,收 prerelease) */
+    channel: 'stable' | 'beta';
+  };
   sources?: {
     logseq?: {
       path: string;

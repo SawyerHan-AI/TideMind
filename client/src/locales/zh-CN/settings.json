@@ -227,7 +227,12 @@
     "website": "官网",
     "feedback": "反馈",
     "docs": "文档",
-    "license": "许可证"
+    "license": "许可证",
+    "downloading": "下载中 {{percent}}%",
+    "downloaded": "已下载，等待重启",
+    "installNow": "重启更新",
+    "signatureInvalid": "更新已被拒绝（签名异常）",
+    "stagedOut": "新版本灰度中，稍后会自动收到"
   },
   "noteSync": {
     "title": "已对接笔记",

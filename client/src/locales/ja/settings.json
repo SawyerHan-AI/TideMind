@@ -227,7 +227,12 @@
     "website": "ウェブサイト",
     "feedback": "フィードバック",
     "docs": "ドキュメント",
-    "license": "ライセンス"
+    "license": "ライセンス",
+    "downloading": "ダウンロード中 {{percent}}%",
+    "downloaded": "ダウンロード完了、再起動待ち",
+    "installNow": "再起動して更新",
+    "signatureInvalid": "更新が拒否されました（署名が無効）",
+    "stagedOut": "新しいバージョンが段階的に展開中、まもなく届きます"
   },
   "noteSync": {
     "title": "連携済みノート",

@@ -171,6 +171,16 @@ const api: AppApi = {
     openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
     checkUpdate: () => ipcRenderer.invoke('app:check-update'),
   },
+  updater: {
+    getState: () => ipcRenderer.invoke('updater:get-state'),
+    checkNow: () => ipcRenderer.invoke('updater:check-now'),
+    install: () => ipcRenderer.invoke('updater:install'),
+    onStateChanged: (cb) => {
+      const listener = (_ev: unknown, state: unknown) => cb(state as never)
+      ipcRenderer.on('updater:state-changed', listener)
+      return () => { ipcRenderer.off('updater:state-changed', listener) }
+    },
+  },
   agents: {
     list: (includeArchived?: boolean) => ipcRenderer.invoke('agents:list', includeArchived),
     create: (params: { name: string; tool_type: string }) => ipcRenderer.invoke('agents:create', params),

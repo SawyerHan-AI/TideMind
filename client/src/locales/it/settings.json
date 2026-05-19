@@ -227,7 +227,12 @@
     "website": "Sito web",
     "feedback": "Feedback",
     "docs": "Documentazione",
-    "license": "Licenza"
+    "license": "Licenza",
+    "downloading": "Download {{percent}}%",
+    "downloaded": "Scaricato, pronto all'installazione",
+    "installNow": "Riavvia per aggiornare",
+    "signatureInvalid": "Aggiornamento rifiutato (firma non valida)",
+    "stagedOut": "Nuova versione in distribuzione graduale, la riceverai presto"
   },
   "noteSync": {
     "title": "Note Connesse",

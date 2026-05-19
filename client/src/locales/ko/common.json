@@ -30,5 +30,11 @@
     "somethingWentWrong": "오류가 발생했습니다",
     "unexpectedError": "예기치 않은 오류가 발생했습니다.",
     "retry": "재시도"
+  },
+  "updater": {
+    "ready": "새 버전 {{version}}이 준비됨",
+    "readyDesc": "Tide Mind를 다시 시작하여 업데이트를 완료하세요",
+    "installNow": "지금 다시 시작",
+    "installLater": "나중에"
   }
 }

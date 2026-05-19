@@ -103,7 +103,7 @@ export function verifyWithEitherKey(
  * 双 key 轮换:主签名失败 → 尝试 secondary 签名(如果 secondary 公钥已配置且服务端
  * 提供了 .sig.secondary URL)。任意一边验证通过即认为合法。
  */
-async function verifyUpdateSignature(
+export async function verifyUpdateSignature(
   signatureUrl: string | null,
   version: string,
   url: string,
@@ -146,7 +146,7 @@ async function verifyUpdateSignature(
   }
 }
 
-function getUpdateEndpoint(): string {
+export function getUpdateEndpoint(): string {
   const cloudUrl = getConfig().cloud?.server_url ?? 'https://cloud.tidemind.ai'
   return `${cloudUrl}/api/v1/update/latest`
 }

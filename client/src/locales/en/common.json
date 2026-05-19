@@ -30,5 +30,11 @@
     "somethingWentWrong": "Something went wrong",
     "unexpectedError": "An unexpected error occurred.",
     "retry": "Retry"
+  },
+  "updater": {
+    "ready": "New version {{version}} ready",
+    "readyDesc": "Restart Tide Mind to complete the update",
+    "installNow": "Restart now",
+    "installLater": "Later"
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "tidemind-client",
-  "version": "0.2.64",
+  "version": "0.2.65",
   "description": "Tide Mind 桌面客户端",
   "main": "./out/main/index.js",
   "scripts": {
@@ -23,6 +23,7 @@
     "d3-zoom": "^3.0.0",
     "date-fns": "^4.1.0",
     "diff": "^8.0.4",
+    "electron-updater": "^6.6.2",
     "framer-motion": "^12.0.0",
     "i18next": "^26.0.4",
     "lucide-react": "^0.469.0",

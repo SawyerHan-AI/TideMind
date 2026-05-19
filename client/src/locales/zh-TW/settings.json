@@ -227,7 +227,12 @@
     "website": "官方網站",
     "feedback": "意見回饋",
     "docs": "使用文件",
-    "license": "授權條款"
+    "license": "授權條款",
+    "downloading": "下載中 {{percent}}%",
+    "downloaded": "已下載，等待重啟",
+    "installNow": "重啟更新",
+    "signatureInvalid": "更新已被拒絕（簽名異常）",
+    "stagedOut": "新版本灰度中，稍後會自動收到"
   },
   "noteSync": {
     "title": "已對接筆記",
