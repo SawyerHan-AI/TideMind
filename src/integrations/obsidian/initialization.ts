@@ -727,15 +727,19 @@ export function clearDanglingTagCache(): void {
 
 async function createDanglingTagNode(db: Database.Database, name: string): Promise<string | null> {
   const repo = new SqliteRepository(db);
-  const normalized = name.trim().toLowerCase();
-  if (danglingTagCache.has(normalized)) return danglingTagCache.get(normalized)!;
+  // cache key 与 DB 查询的大小写必须一致。原版用 lower-case 做 cache key 但 DB
+  // 查询用原始 case(content/title 大小写敏感精确匹配)→ `[[Foo]]` 和 `[[foo]]`
+  // 共享 cache 但分别命中 DB 两个不同节点,cache 第一次填啥后续就稳定指错一个。
+  // 对齐 property-promote.ts:42-49 的同模式修复。
+  const cacheKey = name.trim();
+  if (danglingTagCache.has(cacheKey)) return danglingTagCache.get(cacheKey)!;
 
   const existing = db.prepare(
     "SELECT id FROM nodes WHERE is_tag = 1 AND (content = ? OR title = ?) AND archived = 0 AND is_superseded = 0 LIMIT 1",
   ).get(name, name) as { id: string } | undefined;
 
   if (existing) {
-    danglingTagCache.set(normalized, existing.id);
+    danglingTagCache.set(cacheKey, existing.id);
     return existing.id;
   }
 
@@ -752,7 +756,7 @@ async function createDanglingTagNode(db: Database.Database, name: string): Promi
   const nodeId = result.created_nodes?.[0]?.id;
   if (nodeId) {
     updateNode(db, nodeId, { is_tag: 1 });
-    danglingTagCache.set(normalized, nodeId);
+    danglingTagCache.set(cacheKey, nodeId);
     return nodeId;
   }
   return null;

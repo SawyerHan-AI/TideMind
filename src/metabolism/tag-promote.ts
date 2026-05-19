@@ -10,7 +10,7 @@ import type Database from 'better-sqlite3';
 import { createNode, updateNode, parseTags, getNode } from '../db/nodes.js';
 import { createLink, linkExists, updateLinkStrength, getLinksForNode, deleteLink } from '../db/links.js';
 import { getParam, getPrompt, getLLMOptions, renderUserPrompt } from '../strategy/loader.js';
-import { callLLM } from '../llm/client.js';
+import { callLLM, LLMServiceError } from '../llm/client.js';
 import { isLlmConfigured } from '../config.js';
 import { TAG_DEFINE_SYSTEM } from '../llm/prompts.js';
 import { logTimelineEvent } from '../db/log.js';
@@ -179,6 +179,9 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
             updateNode(db, tagNodeId, { content: definition.trim() });
           }
         } catch (err) {
+          // LLM 全挂时必须抛 LLMServiceError 让 scheduler 熔断,否则每条 tag 都
+          // 撞一次墙(几十条 tag 就是几十次重试)继续烧 token。
+          if (err instanceof LLMServiceError) throw err;
           log.warn(`标签 "${tag}" 定义生成失败: ${(err as Error).message}`);
         }
       }

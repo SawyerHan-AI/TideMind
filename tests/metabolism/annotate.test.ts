@@ -41,6 +41,14 @@ vi.mock('../../src/db/connection.js', async (importOriginal) => {
 
 vi.mock('../../src/llm/client.js', () => ({
   callLLM: vi.fn().mockResolvedValue('[]'),
+  // annotate.ts catch 块用 `err instanceof LLMServiceError` 区分 LLM 服务错误(抛出
+  // 走熔断器)与业务错误(吞掉),mock 必须导出真实 class。
+  LLMServiceError: class LLMServiceError extends Error {
+    constructor(message: string, public readonly statusCode?: number) {
+      super(message);
+      this.name = 'LLMServiceError';
+    }
+  },
 }));
 
 import type Database from 'better-sqlite3';

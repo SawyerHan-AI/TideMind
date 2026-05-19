@@ -129,7 +129,15 @@ async function getClientByConnection(connectionId: string): Promise<ConnectionIn
   } | undefined;
   if (!conn) throw new Error(`模型连接 ${connectionId} 不存在`);
 
-  const creds = JSON.parse(conn.credentials);
+  // 加 try/catch:credentials 列若被外部修改/损坏(手工 SQL / 迁移 bug),裸 JSON.parse
+  // 抛 SyntaxError → callLLM 走的不是 LLMServiceError 分支,scheduler 当作"代码 bug"
+  // 让任务 fail 而不进熔断。包装成 LLMServiceError 让熔断逻辑接管。
+  let creds: Record<string, string>;
+  try {
+    creds = JSON.parse(conn.credentials);
+  } catch (err) {
+    throw new LLMServiceError(`credentials 解析失败 connection=${connectionId}: ${(err as Error).message}`);
+  }
 
   // Gemini 不使用 Anthropic SDK，返回特殊标记
   if (conn.provider_type === 'gemini') {

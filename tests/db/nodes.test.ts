@@ -140,7 +140,7 @@ describe('updateNode', () => {
 
   it('should not create version history for non-content changes', () => {
     const node = seedNode(db, { content: 'stable content' });
-    updateNode(db, node.id, { heat: 5.0 });
+    updateNode(db, node.id, { heat: 0.7 });
 
     const versions = db
       .prepare('SELECT * FROM node_versions WHERE node_id = ?')
@@ -148,7 +148,7 @@ describe('updateNode', () => {
     expect(versions).toHaveLength(0);
 
     const updated = getNode(db, node.id)!;
-    expect(updated.heat).toBe(5.0);
+    expect(updated.heat).toBe(0.7);
     expect(updated.version).toBe(1);
   });
 
@@ -242,7 +242,7 @@ describe('listNodes', () => {
 
   it('should accept valid orderBy values', () => {
     seedNode(db, { content: 'low heat', heat: 0.1 });
-    seedNode(db, { content: 'high heat', heat: 5.0 });
+    seedNode(db, { content: 'high heat', heat: 0.9 });
 
     const result = listNodes(db, { orderBy: 'heat DESC' });
     expect(result[0].heat).toBeGreaterThanOrEqual(result[1].heat);
@@ -271,18 +271,20 @@ describe('getNodeCount', () => {
 // ===== bumpHeat =====
 
 describe('bumpHeat', () => {
+  // 2026-05-19:heat 字段语义统一为 [0,1] 后,bump 上限也是 1.0。
+  // 之前测试期望 1.5 / 10.0 / 1.1 是依赖旧的"钳到 10"行为(语义不一致已修)。
   it('should increase heat by delta', () => {
-    const node = seedNode(db, { heat: 1.0 });
+    const node = seedNode(db, { heat: 0.4 });
     bumpHeat(db, node.id, 0.5);
     const after = getNode(db, node.id)!;
-    expect(after.heat).toBeCloseTo(1.5, 5);
+    expect(after.heat).toBeCloseTo(0.9, 5);
   });
 
-  it('should cap heat at 10.0', () => {
-    const node = seedNode(db, { heat: 9.8 });
+  it('should cap heat at 1.0', () => {
+    const node = seedNode(db, { heat: 0.8 });
     bumpHeat(db, node.id, 0.5);
     const after = getNode(db, node.id)!;
-    expect(after.heat).toBe(10.0);
+    expect(after.heat).toBe(1.0);
   });
 
   it('should update maturity_score atomically', () => {
@@ -298,10 +300,10 @@ describe('bumpHeat', () => {
   });
 
   it('should use default delta of 0.1', () => {
-    const node = seedNode(db, { heat: 1.0 });
+    const node = seedNode(db, { heat: 0.5 });
     bumpHeat(db, node.id);
     const after = getNode(db, node.id)!;
-    expect(after.heat).toBeCloseTo(1.1, 5);
+    expect(after.heat).toBeCloseTo(0.6, 5);
   });
 });
 
@@ -329,7 +331,7 @@ describe('updated field bumping', () => {
     const before = rawUpdated(node.id)!;
     // 必须等至少 1ms，否则同毫秒内 ISO 字符串相同
     await new Promise(r => setTimeout(r, 5));
-    updateNode(db, node.id, { heat: 5.0 });
+    updateNode(db, node.id, { heat: 0.7 });
     const after = rawUpdated(node.id)!;
     expect(after > before).toBe(true);
   });

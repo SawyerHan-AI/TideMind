@@ -83,7 +83,10 @@ export async function searchHybrid(
   // 计算综合评分
   const results: SearchResult[] = [];
   for (const [, item] of merged) {
-    const maxHeat = 10.0; // heat 上限
+    // heat 字段语义统一为 [0,1](bumpHeat / dedup.ts 都钳到 1.0)。
+    // 旧版 maxHeat=10 让 heat=1.0 节点的 heatBonus 只占完整刻度的 ~30%(log(2)/log(11)),
+    // 压低了所有正常活跃节点的权重。统一到 1.0 后 heat 全刻度都能贡献 heatBonus。
+    const maxHeat = 1.0;
     const heatBonus = Math.log(1 + item.node.heat) / Math.log(1 + maxHeat);
     const maturityBonus = computeIntentMaturity(item.node, options.intent);
 

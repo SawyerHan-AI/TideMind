@@ -110,9 +110,11 @@ describe('SqliteRepository - nodes', () => {
   });
 
   it('should bump heat', () => {
-    const node = repo.nodes.createNode({ type: 'fact', content: 'heatable' });
+    // createNode 默认 heat=1.0 已是上限,bump 到 1.0 仍是 1.0。
+    // 用小 delta 测试 bump 触达上限的行为(钳位在 [0,1])。
+    const node = repo.nodes.createNode({ type: 'fact', content: 'heatable', heat: 0.3 });
     const originalHeat = node.heat;
-    repo.nodes.bumpHeat(node.id, 2.0);
+    repo.nodes.bumpHeat(node.id, 0.4);
 
     const fetched = repo.nodes.getNode(node.id);
     expect(fetched!.heat).toBeGreaterThan(originalHeat);

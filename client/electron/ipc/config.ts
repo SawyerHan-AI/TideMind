@@ -16,6 +16,7 @@ import {
 } from './_schemas.js'
 import { getShimPath, getMcpServerScriptPath } from '../runtime/runtime-paths.js'
 import { clearClientCache } from '@server/llm/client.js'
+import { schedulePush as schedulePushUserStrategy } from '../cloud/strategy-push.js'
 
 export function registerConfigHandlers(dataDir: string): void {
   const configPath = path.join(dataDir, 'config.toml')
@@ -108,6 +109,10 @@ export function registerConfigHandlers(dataDir: string): void {
 
     // 记录版本历史 + 创建 meta 节点
     recordStrategyVersion(parsedName.data, parsedContent.data, parsedReason.data ?? null, 'user')
+
+    // Silent push 到云端,让云代谢用用户自定义 prompt;未登录 / 未开同步 / 网络
+    // 异常都是 no-op,不阻塞用户编辑流程。
+    schedulePushUserStrategy(parsedName.data, parsedContent.data)
   })
 
   // --- User Prompt（.user.md）读写 ---
@@ -222,6 +227,9 @@ export function registerConfigHandlers(dataDir: string): void {
 
     // 记录回滚版本
     recordStrategyVersion(parsedName.data, row.content, `回滚至 v${parsedVersion.data}`, 'user')
+
+    // 回滚也是一次用户改 prompt,同样 silent push 让云端跟上
+    schedulePushUserStrategy(parsedName.data, row.content)
   })
 
   // --- 策略参数读取（只读） ---

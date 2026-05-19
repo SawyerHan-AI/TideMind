@@ -140,7 +140,7 @@ describe('searchHybrid - intent weights', () => {
     // Create nodes with varying maturity attributes
     seedNode(db, {
       content: 'metamorphosis biological transformation',
-      heat: 5.0,
+      heat: 0.9,
       refinement: 0.8,
       independence: 0.9,
     });
@@ -183,11 +183,11 @@ describe('searchHybrid - neighbor expansion', () => {
   it('should apply 0.7 decay to neighbor scores', async () => {
     const nodeA = seedNode(db, {
       content: 'heuristic optimization search',
-      heat: 3.0,
+      heat: 0.7,
     });
     const nodeB = seedNode(db, {
       content: 'unrelated neighbor gardening tulips',
-      heat: 3.0,
+      heat: 0.7,
     });
 
     seedLink(db, nodeA.id, nodeB.id, {
@@ -284,7 +284,7 @@ describe('searchHybrid - link relation boost edge cases', () => {
 
   it('should boost analogous links with creative intent', async () => {
     const nodeA = seedNode(db, { content: 'neural network architecture deep learning' });
-    const nodeB = seedNode(db, { content: 'unrelated neighbor analogous biology', heat: 3.0 });
+    const nodeB = seedNode(db, { content: 'unrelated neighbor analogous biology', heat: 0.7 });
 
     seedLink(db, nodeA.id, nodeB.id, {
       relation: [{ type: 'analogous', confidence: 0.8 }],

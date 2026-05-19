@@ -9,6 +9,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -35,6 +36,7 @@ export function parseArgs(argv) {
     skipCloudVerify: false,
     skipUpdateVerify: false,
     timeoutMinutes: 20,
+    allowUnsigned: false,
     help: false,
   };
 
@@ -67,6 +69,9 @@ export function parseArgs(argv) {
         break;
       case '--skip-health':
         opts.skipHealth = true;
+        break;
+      case '--allow-unsigned':
+        opts.allowUnsigned = true;
         break;
       case '--skip-website':
         opts.skipWebsite = true;
@@ -110,6 +115,11 @@ Options:
   --skip-website           Skip Cloudflare Pages deploy.
   --skip-cloud-verify      Skip https://cloud.tidemind.ai/health verification.
   --skip-update-verify     Skip client update endpoint verification.
+  --allow-unsigned         Allow release without ed25519 signature.
+                           Without this flag, release fails if SIGNING_PRIVATE_KEY
+                           is unset, forcing explicit acknowledgment of the supply
+                           chain risk (anyone with GitHub write access can push
+                           malicious binaries to all clients).
 `);
 }
 
@@ -319,6 +329,76 @@ async function verifyUpdateApi(version, previousVersion) {
   console.log(`✓ update API offers ${version} to ${previousVersion} and no update to ${version}`);
 }
 
+/**
+ * 离线签名:对每个 (platform, arch) 的 DMG asset 签名 "${version}\n${dmgUrl}",
+ * 把签名(base64)作为独立 asset 上传(命名 `update-manifest-{platform}-{arch}.sig`)。
+ *
+ * SIGNING_PRIVATE_KEY env 未设 → 跳过(默认行为,向后兼容)。设了 → 必须是
+ * ed25519 PEM PKCS8 私钥(generateKeyPairSync 的 privateKey.export 输出)。
+ *
+ * 这是 release 签名机制的"发布侧"实现;客户端验签侧在 client/electron/ipc/app.ts。
+ * 用户启用流程:1) 生成 keypair 2) 私钥放 1Password 3) 公钥贴 app.ts 内置常量
+ * 4) 发版时 SIGNING_PRIVATE_KEY=... npm run release。
+ */
+function signReleaseAssets(version, ossRepo, allowUnsigned = false) {
+  const privateKeyPem = process.env.SIGNING_PRIVATE_KEY;
+  if (!privateKeyPem) {
+    if (!allowUnsigned) {
+      // 强制 opt-out:把"无签名发版"从 silent 默认变成必须主动放弃的决定。
+      // 任何能写 SawyerHan-AI/TideMind GitHub release 的人(GH_TOKEN 泄漏 / 账号被盗)
+      // 可以推恶意 DMG 给全量用户。签名机制(client/electron/ipc/app.ts +
+      // pro/cloud-server/src/update/routes.ts)已就位,密钥未生成时这条防线不工作。
+      // 启用流程见 client/electron/ipc/app.ts:UPDATE_PUBLIC_KEY_PEM 上方注释。
+      throw new Error(
+        '\n!!! Release signing is REQUIRED but SIGNING_PRIVATE_KEY env is not set.\n' +
+        '    Without signing, anyone with write access to the GitHub release\n' +
+        '    can push malicious binaries to all clients (supply chain attack).\n' +
+        '\n    Either:\n' +
+        '      (a) Generate ed25519 keypair, store private key in 1Password,\n' +
+        '          embed public key in client/electron/ipc/app.ts:UPDATE_PUBLIC_KEY_PEM,\n' +
+        '          then run release with SIGNING_PRIVATE_KEY=... npm run release\n' +
+        '      (b) Explicitly accept the risk by passing --allow-unsigned\n',
+      );
+    }
+    console.log('\n> WARNING: Releasing unsigned binaries (--allow-unsigned).');
+    console.log('  Clients with embedded public key will REJECT this release.');
+    console.log('  Clients without embedded public key will accept it (current default).');
+    return;
+  }
+  console.log('\n> Signing release manifests (ed25519)');
+  const release = parseJsonOutput('gh', [
+    'release', 'view', `v${version}`, '--repo', 'SawyerHan-AI/TideMind',
+    '--json', 'assets',
+  ], ossRepo);
+  // 客户端期望的 (platform, arch) 对应 DMG/zip 命名。
+  const targets = [
+    { platform: 'darwin', arch: 'arm64', match: /arm64.*\.dmg$/ },
+    { platform: 'darwin', arch: 'x64', match: /x64.*\.dmg$/ },
+  ];
+  let privateKey;
+  try {
+    privateKey = crypto.createPrivateKey(privateKeyPem);
+  } catch (err) {
+    throw new Error(`SIGNING_PRIVATE_KEY parse failed: ${err.message}`);
+  }
+  for (const { platform, arch, match } of targets) {
+    const asset = release.assets.find(a => match.test(a.name));
+    if (!asset) {
+      console.log(`  skip ${platform}/${arch}: no matching asset`);
+      continue;
+    }
+    const url = asset.url ?? asset.browser_download_url;
+    const message = Buffer.from(`${version}\n${url}`, 'utf8');
+    const sig = crypto.sign(null, message, privateKey).toString('base64');
+    const sigPath = path.join(os.tmpdir(), `update-manifest-${platform}-${arch}.sig`);
+    fs.writeFileSync(sigPath, sig);
+    run('gh', [
+      'release', 'upload', `v${version}`, sigPath,
+      '--repo', 'SawyerHan-AI/TideMind', '--clobber',
+    ], { cwd: ossRepo, label: `upload signature ${platform}/${arch}` });
+  }
+}
+
 function verifyRelease(version, ossRepo) {
   const release = parseJsonOutput('gh', [
     'release',
@@ -445,6 +525,9 @@ async function main() {
       cwd: opts.ossRepo,
       label: 'publish GitHub release',
     });
+    // 离线签名:对每个 (platform, arch) 的 DMG 算 sha512,签名 "${version}\n${dmgUrl}",
+    // 把签名作为额外 asset 上传到 release。SIGNING_PRIVATE_KEY env 未设时跳过(向后兼容)。
+    signReleaseAssets(version, opts.ossRepo, opts.allowUnsigned);
     verifyRelease(version, opts.ossRepo);
     if (!opts.skipCloudVerify) await verifyCloud(version);
     if (!opts.skipUpdateVerify) await verifyUpdateApi(version, previousVersion);

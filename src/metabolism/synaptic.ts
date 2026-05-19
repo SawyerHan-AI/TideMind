@@ -119,11 +119,14 @@ export function runSynapticScaling(db: Database.Database): {
     }
   }
 
-  const linkUpdateStmt = db.prepare('UPDATE links SET strength = ? WHERE id = ?');
+  // 必须 bump updated，否则赫布衰减 strength 变化不会被云端 reconcile 看到
+  // （manifest LWW 比 updated → 云端 strength 永远胜出，本地衰减无效推送）。
+  const linkUpdateStmt = db.prepare('UPDATE links SET strength = ?, updated = ? WHERE id = ?');
   const linkDeleteStmt = db.prepare('DELETE FROM links WHERE id = ?');
 
   for (let i = 0; i < confirmedLinks.length; i += BATCH_SIZE) {
     const batch = confirmedLinks.slice(i, i + BATCH_SIZE);
+    const batchTs = now();
     db.transaction(() => {
       for (const link of batch) {
         // tagged 链接跳过赫布衰减：标签归属是结构性分类关系，
@@ -143,21 +146,17 @@ export function runSynapticScaling(db: Database.Database): {
         const heatB = heatCache.get(link.to_id) ?? 0;
         const activityFactor = Math.sqrt(heatA * heatB);
         const dailyRetention = 1 - linkDecayBase * (1 - activityFactor);
-        // 历史 bug(2026-05-09):heat 字段名义 0~1 但实际钳到 10(参见
-        // src/db/nodes.ts:280 与 src/graph/dedup.ts:94 的 `MIN(heat + ?, 10.0)`)。
-        // 双热节点 heat=10 时 activityFactor=10、dailyRetention=1.27,
-        // newStrength = oldStrength × 1.27 单调爬升,strength 永远没钳位 →
-        // 涨到几十几百,污染所有依赖 strength ∈ [0,1] 的下游(hybrid ranking、
-        // graph 扩展阈值、link_delete_threshold 永远剪不掉这种"不死链")。
-        // 修复:在结果上钳到 1.0,保留赫布学习"两端活跃则增强"语义,只挡上界。
-        // 根因(heat 字段语义错位)留给后续 heat 重构,本批次只做最小止血。
+        // 2026-05-19 更新:heat 字段已统一钳到 1.0(见 src/db/nodes.ts:298 /
+        // src/graph/dedup.ts:95)。activityFactor 现在最大 1.0,dailyRetention 最大 1.0,
+        // newStrength 不再单调爬升超过原值。但保留出口 Math.min(1.0, ...) 作为深度防御:
+        // 若 heat 重构再次放开上限或 link.strength 因迁移有历史脏数据 >1,此守卫挡住。
         const newStrength = Math.min(1.0, link.strength * dailyRetention);
 
         if (newStrength < linkDeleteThreshold) {
           linkDeleteStmt.run(link.id);
           linkDeleted++;
         } else {
-          linkUpdateStmt.run(newStrength, link.id);
+          linkUpdateStmt.run(newStrength, batchTs, link.id);
           linkDecayed++;
         }
       }

@@ -67,7 +67,8 @@ describe('reconsolidateNode', () => {
   });
 
   it('should preserve existing content when no LLM api_key (fallback)', async () => {
-    const node = seedNode(db, { content: 'short' });
+    // 显式给 heat<1.0 否则钳位后 bump 不会让 heat 增加(createNode 默认 heat=1.0)。
+    const node = seedNode(db, { content: 'short', heat: 0.5 });
 
     await reconsolidateNode(db, node.id, 'a much longer new content');
     const after = getNode(db, node.id)!;
@@ -88,20 +89,21 @@ describe('reconsolidateNode', () => {
     expect(after.last_reconsolidated).not.toBeNull();
   });
 
-  it('should bump heat by 0.3 capped at 10.0', async () => {
-    const node = seedNode(db, { content: 'content', heat: 9.9 });
+  it('should bump heat by 0.3 capped at 1.0', async () => {
+    // heat 字段语义统一为 [0,1] 后,上限是 1.0(旧版钳到 10 让下游 [0,1] 假设错位)。
+    const node = seedNode(db, { content: 'content', heat: 0.9 });
 
     await reconsolidateNode(db, node.id, 'new content that is quite long');
     const after = getNode(db, node.id)!;
-    expect(after.heat).toBe(10.0);
+    expect(after.heat).toBe(1.0);
   });
 
   it('should bump heat by 0.3 when not near cap', async () => {
-    const node = seedNode(db, { content: 'original', heat: 1.0 });
+    const node = seedNode(db, { content: 'original', heat: 0.4 });
 
     await reconsolidateNode(db, node.id, 'new content');
     const after = getNode(db, node.id)!;
-    expect(after.heat).toBeCloseTo(1.3, 1);
+    expect(after.heat).toBeCloseTo(0.7, 1);
   });
 
   it('should update last_reconsolidated timestamp', async () => {
@@ -153,7 +155,7 @@ describe('reconsolidateNode', () => {
   });
 
   it('should accept custom reason parameter without overwriting content in fallback', async () => {
-    const node = seedNode(db, { content: 'short' });
+    const node = seedNode(db, { content: 'short', heat: 0.5 });
 
     // 自定义 reason 不抛异常；LLM 未配置时 content 保持不变
     await reconsolidateNode(db, node.id, 'longer replacement content', '用户纠正');

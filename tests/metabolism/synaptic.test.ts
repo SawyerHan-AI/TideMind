@@ -132,7 +132,8 @@ describe('runSynapticScaling', () => {
   // ===== maturity_score atomicity =====
 
   it('should update maturity_score atomically with heat', () => {
-    const node = seedNode(db, { heat: 2.0 });
+    // 2026-05-19:heat 语义统一 [0,1] 后 fixture 不能用 2.0,用 1.0 起点。
+    const node = seedNode(db, { heat: 1.0 });
     db.prepare('UPDATE nodes SET connectivity = 0.0, refinement = 0.4, independence = 0.3 WHERE id = ?').run(node.id);
 
     runSynapticScaling(db);
@@ -145,11 +146,10 @@ describe('runSynapticScaling', () => {
       independence: number;
     };
 
-    // decayRate = 1 - 0.05 * (1 - 0) = 0.95, newHeat = 2.0 * 0.95 = 1.9
-    // min(1.9, 1.0) = 1.0 for maturity calc
-    // maturity = 0.2 * 1.0 + 0.3 * 0.4 + 0.3 * 0.0 + 0.2 * 0.3 = 0.2 + 0.12 + 0 + 0.06 = 0.38
-    expect(after.heat).toBeCloseTo(1.9, 5);
-    expect(after.maturity_score).toBeCloseTo(0.38, 5);
+    // decayRate = 1 - 0.05 * (1 - 0) = 0.95, newHeat = 1.0 * 0.95 = 0.95
+    // maturity = 0.2 * 0.95 + 0.3 * 0.4 + 0.3 * 0.0 + 0.2 * 0.3 = 0.19 + 0.12 + 0 + 0.06 = 0.37
+    expect(after.heat).toBeCloseTo(0.95, 5);
+    expect(after.maturity_score).toBeCloseTo(0.37, 5);
   });
 
   // ===== metadata timestamp =====
@@ -167,7 +167,7 @@ describe('runSynapticScaling', () => {
   // 看不到本地 heat 变化（client.updated == server.updated → 'same' → no-op），
   // server 永远存着初始 heat=1.0，多设备 recall 排序失真。
   it('should bump updated for every decayed node', async () => {
-    const node = seedNode(db, { heat: 2.0 });
+    const node = seedNode(db, { heat: 1.0 });
     const before = (db.prepare('SELECT updated FROM nodes WHERE id = ?').get(node.id) as { updated: string }).updated;
     await new Promise(r => setTimeout(r, 5));
     runSynapticScaling(db);

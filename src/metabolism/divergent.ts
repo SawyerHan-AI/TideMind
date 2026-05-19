@@ -35,8 +35,10 @@ export async function runDivergentScan(
   // 获取活跃节点
   const minHeat = getParam('scan-divergent', 'min_heat_threshold', 0.1);
   const maxActiveNodes = getParam('scan-divergent', 'max_active_nodes', 100);
+  // 显式 archived = 0:不依赖 heat 阈值兜底。strategy 参数被调低 heat_threshold
+  // 时会让 archived 节点(heat 固定 0.02)误进活跃集。
   const activeNodes = db.prepare(
-    `SELECT id FROM nodes WHERE heat > ? AND is_meta = 0 AND is_superseded = 0 ORDER BY heat DESC LIMIT ?`,
+    `SELECT id FROM nodes WHERE heat > ? AND archived = 0 AND is_meta = 0 AND is_superseded = 0 ORDER BY heat DESC LIMIT ?`,
   ).all(minHeat, maxActiveNodes) as Array<{ id: string }>;
 
   if (activeNodes.length < 10) return [];

@@ -198,8 +198,8 @@ describe('profile-synthesize - 存储', () => {
 describe('profile-synthesize - preference 去重', () => {
   it('与 crystal 有链接的 preference 不出现在 LLM 输入中', async () => {
     const crystal = seedNode(db, { type: 'crystal', content: 'user prefers concise code' });
-    const prefLinked = seedNode(db, { type: 'preference', content: 'prefer concise', heat: 2.0 });
-    const prefFree = seedNode(db, { type: 'preference', content: 'likes dark theme', heat: 2.0 });
+    const prefLinked = seedNode(db, { type: 'preference', content: 'prefer concise', heat: 0.7 });
+    const prefFree = seedNode(db, { type: 'preference', content: 'likes dark theme', heat: 0.7 });
 
     // 链接 crystal 和 prefLinked
     seedLink(db, crystal.id, prefLinked.id, { relation: [{ type: 'supports', confidence: 0.8 }] });

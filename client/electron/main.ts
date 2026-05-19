@@ -105,6 +105,10 @@ if (!gotTheLock) {
 
 // macOS: open-url 事件（可能在 app.whenReady() 之前触发，需缓存）
 let pendingProtocolUrl: string | null = null
+// 保存 sync-client.destroy 函数引用,供 before-quit 同步调用清理 WebSocket /
+// reconnect timer / slow-retry timer。dynamic import 后立刻 set,在 before-quit
+// 时如果存在就调,避免 cloud sync 在 app 退出过程中继续操作已关闭的 db。
+let syncClientDestroyer: (() => void) | null = null
 
 app.on('open-url', (event, url) => {
   event.preventDefault()
@@ -370,8 +374,9 @@ app.whenReady().then(async () => {
         const config = getAppConfig()
         if (!config.cloud?.sync_enabled) return
 
-        const { createCloudSyncClient } = await import('./cloud/sync-client.js')
+        const { createCloudSyncClient, destroySyncClient } = await import('./cloud/sync-client.js')
         const syncClient = createCloudSyncClient(dbForCloud)
+        syncClientDestroyer = destroySyncClient
         syncClient.start().catch(err => mainLog.error('sync client start failed:', err))
       } catch (err) {
         mainLog.error('cloud auth init failed:', err)
@@ -403,6 +408,15 @@ app.whenReady().then(async () => {
 app.on('before-quit', () => {
   isQuitting = true
   stopDataWatcher()
+  // 必须停止 cloud sync client,否则 WebSocket / 重连定时器 / 慢重试 timer 全泄漏:
+  // app 退出过程中 ws 仍尝试发握手或重连;若 slowRetry 触发新 ws 连接,close handler
+  // 在 db 关闭后尝试写 metadata 会触发 "database is closed" 异常。
+  // syncClientDestroyer 在启动 syncClient 后由 dynamic import 路径保存(见 line ~375)。
+  try {
+    syncClientDestroyer?.()
+  } catch (err) {
+    mainLog.warn('destroySyncClient failed:', (err as Error).message)
+  }
   stopDaemon()
   closeClientDb()
 })

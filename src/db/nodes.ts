@@ -288,15 +288,18 @@ export function getNodeCount(db: Database.Database, archived?: boolean): number 
 
 export function bumpHeat(db: Database.Database, id: string, delta: number = 0.1): void {
   // 更新 heat 的同时内联刷新 maturity_score，避免额外查询
-  // maturity_score = wH * min(heat,1) + wR * refinement + wC * connectivity + wI * independence
+  // maturity_score = wH * heat + wR * refinement + wC * connectivity + wI * independence
+  // 修复(2026-05-19):heat 字段语义统一钳到 1.0。原版钳到 10 但 synaptic decay
+  // 公式、recall sortScore、maturity_score 都按 [0,1] 假设写,所有下游被污染。
+  // 文档明确语义是 [0,1],止血改回 1.0。
   const wH = getParam('recall-rank', 'heat_weight', 0.2);
   const wR = getParam('recall-rank', 'refinement_weight', 0.3);
   const wC = getParam('recall-rank', 'connectivity_weight', 0.3);
   const wI = getParam('recall-rank', 'independence_weight', 0.2);
   db.prepare(`
     UPDATE nodes SET
-      heat = MIN(heat + ?, 10.0),
-      maturity_score = ? * MIN(MIN(heat + ?, 10.0), 1.0)
+      heat = MIN(heat + ?, 1.0),
+      maturity_score = ? * MIN(heat + ?, 1.0)
                      + ? * refinement
                      + ? * connectivity
                      + ? * independence,

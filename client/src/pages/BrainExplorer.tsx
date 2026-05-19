@@ -48,6 +48,9 @@ export function BrainExplorer() {
   // Reset to first page whenever the search query changes
   useEffect(() => { setPage(0) }, [debouncedSearch])
 
+  // window.api.nodes.list 把整个 filter 传后端，下面所有字段都参与查询。
+  // deps 漏一个就意味着改这个过滤项不会触发重取，列表与实际过滤错位。
+  // GraphView 已经做过同样补全 (filter.archived/sortDir/createdAfter/createdBefore/graphLimit)。
   const { data: listData, loading } = useIPC(
     () => useSearchMode
       ? window.api.nodes.search(debouncedSearch, 30)
@@ -56,7 +59,13 @@ export function BrainExplorer() {
           search: undefined,
           offset: page * 30,
         }),
-    [debouncedSearch, filter.type, filter.tags, filter.sortBy, filter.heatMin, filter.heatMax, page, rev],
+    [
+      debouncedSearch, useSearchMode,
+      filter.type, filter.tags, filter.sortBy, filter.sortDir,
+      filter.heatMin, filter.heatMax, filter.archived,
+      filter.createdAfter, filter.createdBefore, filter.limit,
+      page, rev,
+    ],
   )
 
   const handleFilterChange = (patch: Partial<ExplorerFilter>) => {

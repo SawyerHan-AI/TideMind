@@ -10,7 +10,7 @@ import type { BrainNode, BrainLink, RelationType, LinkRelation } from '../types.
 import { getNode } from '../db/nodes.js';
 import { updateLinkStatus, updateLinkRelation, deleteLink } from '../db/links.js';
 import { isLlmConfigured } from '../config.js';
-import { callLLM } from '../llm/client.js';
+import { callLLM, LLMServiceError } from '../llm/client.js';
 import { getParam, getPrompt, getLLMOptions, renderUserPrompt } from '../strategy/loader.js';
 import { logTimelineEvent } from '../db/log.js';
 import { createLogger } from '../utils/logger.js';
@@ -91,11 +91,13 @@ export async function runLinkEvaluate(
      WHERE status = 'pending' AND created < datetime('now', ?)`,
   ).run(expiredCutoff).changes;
 
-  // 收集需要评估的链接（合并 auto 新链接 + pending 链接）
+  // 收集需要评估的链接（合并 auto 新链接 + pending 链接）。
+  // 必须显式排除 rejected_by_user — 用户已经明确拒绝的链接不应该被反复重新 LLM 评估,
+  // 否则每个 lookback 窗口都白烧一遍 token,LLM 看到的"已拒绝"上下文也丢失。
   const recentAutoLinks = db.prepare(`
     SELECT * FROM links
     WHERE auto = 1
-      AND status != 'confirmed'
+      AND status NOT IN ('confirmed', 'rejected_by_user')
       AND created > datetime('now', ?)
     ORDER BY created DESC
     LIMIT ?
@@ -251,6 +253,8 @@ async function evaluateBatch(
       }
     }
   } catch (err) {
+    // 与 annotate.ts 同处理:LLMServiceError 必须抛出让 scheduler 熔断生效。
+    if (err instanceof LLMServiceError) throw err;
     log.warn(`链接评估批次失败: ${(err as Error).message}`);
   }
 

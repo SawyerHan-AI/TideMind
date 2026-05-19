@@ -578,43 +578,56 @@ function extractPageProperties(content: string, metadata: PageMetadata): string 
  * 这样自定义属性作为结构化元数据保留，不以 `key:: value` 原始格式留在内容中干扰 LLM。
  */
 function extractBlockProperties(content: string, metadata: PageMetadata): string {
-  return content.replace(
-    /^([ \t]*)([\w][\w-]*):: (.*)$/gm,
-    (_match, indent: string, key: string, value: string) => {
-      const lowerKey = key.toLowerCase();
+  // 必须跳过代码块内的 `key:: value` 形式 —— 用户在 fenced code 里贴 Logseq 配置
+  // 示例(如 `tags:: example`)会被误识别成 block property,污染 metadata.properties +
+  // tag promotion 链。复用 resolvePageRefs 的 codeLines 思路。
+  const codeLines = codeRegionsToLineSet(content, findCodeRegions(content));
+  const handler = (_match: string, _indent: string, key: string, value: string) => {
+    const lowerKey = key.toLowerCase();
 
-      // 提取时间戳 epoch（在过滤系统属性之前）
-      if (lowerKey === 'created-at' && value.trim()) {
-        metadata.properties['_created_at_epoch'] = value.trim();
-      }
-      if (lowerKey === 'updated-at' && value.trim()) {
-        metadata.properties['_updated_at_epoch'] = value.trim();
-      }
+    // 提取时间戳 epoch（在过滤系统属性之前）
+    if (lowerKey === 'created-at' && value.trim()) {
+      metadata.properties['_created_at_epoch'] = value.trim();
+    }
+    if (lowerKey === 'updated-at' && value.trim()) {
+      metadata.properties['_updated_at_epoch'] = value.trim();
+    }
 
-      // 系统属性：直接删除
-      if (SYSTEM_PROPERTIES.includes(lowerKey)) {
-        return '';
-      }
-
-      // 页面级已处理的特殊属性（alias/tags），跳过重复提取
-      if (lowerKey === 'alias' || lowerKey === 'aliases' || lowerKey === 'tags') {
-        return '';
-      }
-
-      // 自定义属性：提取到 metadata，不重复写入
-      const trimmedValue = value.trim();
-      if (trimmedValue) {
-        // 同 key 多次出现时用逗号拼接
-        if (metadata.properties[key]) {
-          metadata.properties[key] += `, ${trimmedValue}`;
-        } else {
-          metadata.properties[key] = trimmedValue;
-        }
-      }
-
+    // 系统属性：直接删除
+    if (SYSTEM_PROPERTIES.includes(lowerKey)) {
       return '';
-    },
-  );
+    }
+
+    // 页面级已处理的特殊属性（alias/tags），跳过重复提取
+    if (lowerKey === 'alias' || lowerKey === 'aliases' || lowerKey === 'tags') {
+      return '';
+    }
+
+    // 自定义属性：提取到 metadata，不重复写入
+    const trimmedValue = value.trim();
+    if (trimmedValue) {
+      // 同 key 多次出现时用逗号拼接
+      if (metadata.properties[key]) {
+        metadata.properties[key] += `, ${trimmedValue}`;
+      } else {
+        metadata.properties[key] = trimmedValue;
+      }
+    }
+
+    return '';
+  };
+
+  const lineRe = /^([ \t]*)([\w][\w-]*):: (.*)$/;
+  if (codeLines.size === 0) {
+    return content.replace(/^([ \t]*)([\w][\w-]*):: (.*)$/gm, handler);
+  }
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (codeLines.has(i)) continue;
+    const m = lineRe.exec(lines[i]);
+    if (m) lines[i] = handler(m[0], m[1], m[2], m[3]);
+  }
+  return lines.join('\n');
 }
 
 /**

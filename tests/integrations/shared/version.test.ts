@@ -97,7 +97,7 @@ describe('supersedeNode', () => {
   });
 
   it('should set old node heat to 0.01', () => {
-    const oldNode = seedNode(db, { content: 'old', heat: 5.0 });
+    const oldNode = seedNode(db, { content: 'old', heat: 0.9 });
     const newNode = seedNode(db, { content: 'new' });
 
     supersedeNode(db, oldNode.id, newNode.id);

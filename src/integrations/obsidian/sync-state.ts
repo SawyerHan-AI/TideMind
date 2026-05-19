@@ -28,11 +28,14 @@ export function ensureSyncSchema(db: Database.Database): void {
       size INTEGER NOT NULL,
       last_synced TEXT NOT NULL,
       node_ids TEXT,
-      source_id TEXT DEFAULT ''
+      source_id TEXT DEFAULT '',
+      segment_hashes TEXT DEFAULT '[]'
     )
   `);
   // 兼容：为已有表添加 source_id 列
   try { db.exec("ALTER TABLE obsidian_sync ADD COLUMN source_id TEXT DEFAULT ''"); } catch { /* already exists */ }
+  // 兼容(2026-05-19):为已有表添加 segment_hashes 列(段级 dedup,与 Logseq parity)。
+  try { db.exec("ALTER TABLE obsidian_sync ADD COLUMN segment_hashes TEXT DEFAULT '[]'"); } catch { /* already exists */ }
 
   // 迁移到复合主键 (file_path, source_id)，支持多实例
   try {
@@ -49,12 +52,13 @@ export function ensureSyncSchema(db: Database.Database): void {
           size INTEGER,
           last_synced TEXT,
           node_ids TEXT DEFAULT '[]',
+          segment_hashes TEXT DEFAULT '[]',
           PRIMARY KEY (file_path, source_id)
         )
       `);
       db.exec(`
-        INSERT OR IGNORE INTO obsidian_sync_v2 (file_path, source_id, content_hash, mtime, size, last_synced, node_ids)
-        SELECT file_path, COALESCE(NULLIF(source_id, ''), '__default__'), content_hash, mtime, size, last_synced, node_ids
+        INSERT OR IGNORE INTO obsidian_sync_v2 (file_path, source_id, content_hash, mtime, size, last_synced, node_ids, segment_hashes)
+        SELECT file_path, COALESCE(NULLIF(source_id, ''), '__default__'), content_hash, mtime, size, last_synced, node_ids, COALESCE(segment_hashes, '[]')
         FROM obsidian_sync
       `);
       db.exec('DROP TABLE obsidian_sync');
@@ -86,6 +90,7 @@ export function getFileState(
     size: row.size as number,
     last_synced: row.last_synced as string,
     node_ids: row.node_ids ? JSON.parse(row.node_ids as string) : [],
+    segment_hashes: row.segment_hashes ? JSON.parse(row.segment_hashes as string) : [],
   };
 }
 
@@ -109,6 +114,7 @@ export function getAllFileStates(
       size: row.size as number,
       last_synced: row.last_synced as string,
       node_ids: row.node_ids ? JSON.parse(row.node_ids as string) : [],
+      segment_hashes: row.segment_hashes ? JSON.parse(row.segment_hashes as string) : [],
     });
   }
 
@@ -125,8 +131,8 @@ export function setFileState(
 ): void {
   db.prepare(`
     INSERT OR REPLACE INTO obsidian_sync
-    (file_path, content_hash, mtime, size, last_synced, node_ids, source_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    (file_path, content_hash, mtime, size, last_synced, node_ids, source_id, segment_hashes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     state.file_path,
     state.content_hash,
@@ -135,6 +141,7 @@ export function setFileState(
     state.last_synced,
     JSON.stringify(state.node_ids),
     sourceId ?? '__default__',
+    JSON.stringify(state.segment_hashes ?? []),
   );
 }
 
@@ -269,4 +276,12 @@ export function computeFileHash(filePath: string): string | null {
 export function computeContentHash(content: string): string {
   const normalized = content.replace(/\r\n/g, '\n');
   return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 16);
+}
+
+/**
+ * 段级 hash:用于增量 digest(段未变 → 保留旧 nodeId,避免重复 digest 写放大)。
+ * 与 Logseq 的同名函数对称。
+ */
+export function computeSegmentHash(content: string): string {
+  return crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
 }

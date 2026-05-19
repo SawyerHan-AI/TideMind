@@ -68,8 +68,11 @@ function escapeFtsQuery(query: string): string {
 
   if (!cleaned) return '';
 
-  // 将空格分隔的词用双引号包裹，过滤空词和纯符号
-  const words = cleaned.split(/\s+/).filter(w => w.length > 0 && /\w/.test(w));
+  // 将空格分隔的词用双引号包裹，过滤空词和纯符号。
+  // 必须用 Unicode 字母/数字类 \p{L}\p{N}，否则 JS `\w` 只匹配 [A-Za-z0-9_]，
+  // 纯中文 query (如 "研发周报") 会被全部过滤掉 → words=[] → 返回空串 →
+  // BM25 完全失效。中文用户的 brain_recall 会退化为纯向量分支或空结果。
+  const words = cleaned.split(/\s+/).filter(w => w.length > 0 && /[\p{L}\p{N}]/u.test(w));
   if (words.length === 0) return '';
 
   // 多个词用空格连接（FTS5 默认 AND 语义）

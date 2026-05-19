@@ -11,7 +11,7 @@ import type { RelationType, LinkRelation } from '../types.js';
 import { getNode } from '../db/nodes.js';
 import { getLinksForNode, updateLinkRelation, updateLinkStrength, deleteLink } from '../db/links.js';
 import { isLlmConfigured } from '../config.js';
-import { callLLM } from '../llm/client.js';
+import { callLLM, LLMServiceError } from '../llm/client.js';
 import { getPrompt, getLLMOptions, getParam, renderUserPrompt } from '../strategy/loader.js';
 import { logTimelineEvent } from '../db/log.js';
 import { createLogger } from '../utils/logger.js';
@@ -201,6 +201,9 @@ async function revalidateLinksInner(
         updateLinkStrength(db, item.linkId, boostedStrength);
       }
     } catch (err) {
+      // LLMServiceError 走熔断器路径,否则每条 link 都撞一次 LLM(maxLinks 通常 5-20),
+      // 在 LLM 全挂期间形成隐形烧钱循环。
+      if (err instanceof LLMServiceError) throw err;
       log.warn(`链接重新验证失败 ${item.linkId}: ${(err as Error).message}`);
     }
   }

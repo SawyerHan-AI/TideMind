@@ -249,11 +249,16 @@ export function computeSegmentHash(content: string): string {
  *
  * iCloud dataless / stub / missing 时返回 null，调用方应据此跳过本轮同步状态写入，
  * 不要用空字符串或哨兵值充当 hash（会被当成"和上次不同"反复触发 digest）。
+ *
+ * 与 preprocessor 保持一致做 CRLF → LF 归一化:外部工具(git pull / Windows
+ * 编辑器换行符切换)只改 EOL 不改语义内容时,hash 不变,不会触发整 graph 重 digest。
+ * 对齐 Obsidian sync-state.ts:269 同名修复。
  */
 export function computeFileHash(filePath: string): string | null {
   const res = safeReadTextFileSync(filePath);
   if (!res.ok) return null;
-  return crypto.createHash('sha256').update(res.content).digest('hex').slice(0, 16);
+  const normalized = res.content.replace(/\r\n/g, '\n');
+  return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 16);
 }
 
 /**
