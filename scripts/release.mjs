@@ -381,6 +381,33 @@ function loadSigningPrivateKey() {
   return { pem: null, source: null };
 }
 
+/**
+ * 加载备用签名私钥(双 key 轮换支持)。
+ *
+ * Why: 紧急轮换主私钥时,本次发版需要用新的(主) + 旧的(secondary) 同时签,让
+ * 老客户端用旧公钥验证 secondary .sig 通过,新客户端用新公钥验主 .sig 通过。
+ * 详细流程见 client/electron/ipc/app.ts:UPDATE_PUBLIC_KEY_PEM_SECONDARY 注释。
+ *
+ * 顺序:env > Keychain(service=tidemind-signing-key-secondary)> null(不签)。
+ */
+function loadSecondarySigningPrivateKey() {
+  const fromEnv = process.env.SIGNING_PRIVATE_KEY_SECONDARY;
+  if (fromEnv) return { pem: normalizePEM(fromEnv), source: 'env' };
+  if (process.platform !== 'darwin') return { pem: null, source: null };
+  try {
+    const r = spawnSync('security', [
+      'find-generic-password',
+      '-a', 'tidemind',
+      '-s', 'tidemind-signing-key-secondary',
+      '-w',
+    ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    if (r.status === 0 && r.stdout && r.stdout.includes('-----BEGIN')) {
+      return { pem: normalizePEM(r.stdout), source: 'keychain' };
+    }
+  } catch { /* secondary 不存在 → silent,不签即可,不算错 */ }
+  return { pem: null, source: null };
+}
+
 function signReleaseAssets(version, ossRepo, allowUnsigned = false) {
   const { pem: privateKeyPem, source } = loadSigningPrivateKey();
   if (privateKeyPem) {
@@ -430,6 +457,21 @@ function signReleaseAssets(version, ossRepo, allowUnsigned = false) {
   } catch (err) {
     throw new Error(`SIGNING_PRIVATE_KEY parse failed: ${err.message}`);
   }
+
+  // Secondary key:轮换期间用第二个私钥同时签 .sig.secondary。不配置则跳过。
+  const { pem: secondaryPem, source: secondarySource } = loadSecondarySigningPrivateKey();
+  let secondaryKey = null;
+  if (secondaryPem) {
+    try {
+      secondaryKey = crypto.createPrivateKey(secondaryPem);
+      console.log(`  Secondary key loaded from ${secondarySource} — will dual-sign for rotation`);
+    } catch (err) {
+      // secondary 解析失败 → fail-loud,因为如果运维主动给了备用 key,默默 skip 会让
+      // 轮换过程的发版静默退化为单 key 签,达不到双 key 平滑切换的目的。
+      throw new Error(`SIGNING_PRIVATE_KEY_SECONDARY parse failed: ${err.message}`);
+    }
+  }
+
   for (const { platform, arch, match } of targets) {
     const asset = release.assets.find(a => match.test(a.name));
     if (!asset) {
@@ -445,6 +487,16 @@ function signReleaseAssets(version, ossRepo, allowUnsigned = false) {
       'release', 'upload', `v${version}`, sigPath,
       '--repo', 'SawyerHan-AI/TideMind', '--clobber',
     ], { cwd: ossRepo, label: `upload signature ${platform}/${arch}` });
+
+    if (secondaryKey) {
+      const sigSec = crypto.sign(null, message, secondaryKey).toString('base64');
+      const sigSecPath = path.join(os.tmpdir(), `update-manifest-${platform}-${arch}.sig.secondary`);
+      fs.writeFileSync(sigSecPath, sigSec);
+      run('gh', [
+        'release', 'upload', `v${version}`, sigSecPath,
+        '--repo', 'SawyerHan-AI/TideMind', '--clobber',
+      ], { cwd: ossRepo, label: `upload secondary signature ${platform}/${arch}` });
+    }
   }
 }
 

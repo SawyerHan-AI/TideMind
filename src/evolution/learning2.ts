@@ -23,6 +23,49 @@ const PARAM_BLACKLIST = new Set([
   'max_tokens', 'content_budget', 'max_content_per_node', 'model',
 ]);
 
+/**
+ * 业务侧阈值的合法 (min, max) 区间。
+ *
+ * Why: learning2 LLM 自调 ±10% 无 clamp,长期跑 dedup_threshold 可能从 0.92 漂到 0.4
+ * 严重误合并(0.4 cosine 几乎随便两条都能合并)。每个参数从源码用法反推合理边界。
+ * How to apply: updateStrategyParam 前调 clampParam,越界 → 钳回 + log.warn,LLM 仍按
+ * 原算法计算 next value,只阻断越界生效。
+ *
+ * 整数参数用 [min, max] 闭区间,小数用 (min, max) 闭区间(都包含端点)。
+ * 未列出的参数透传(允许自定义策略加参数不被钳)。
+ */
+export const PARAM_RANGES: Record<string, { min: number; max: number; integer?: boolean }> = {
+  dedup_threshold: { min: 0.85, max: 0.98 },
+  landing_link_threshold: { min: 0.60, max: 0.90 },
+  pending_link_threshold: { min: 0.50, max: 0.80 },
+  landing_link_top_k: { min: 1, max: 5, integer: true },
+  decay_base: { min: 0.01, max: 0.15 },
+  decay_damping: { min: 0.5, max: 0.95 },
+  link_decay_base: { min: 0.01, max: 0.10 },
+  link_delete_threshold: { min: 0.02, max: 0.15 },
+  vector_similarity_threshold: { min: 0.45, max: 0.70 },
+};
+
+/**
+ * 把参数值钳到合法区间。
+ * 未在 PARAM_RANGES 表中的 key 透传(不钳)。
+ * 整数参数会先 Math.round 再钳位。
+ */
+export function clampParam(paramName: string, value: number): number {
+  const range = PARAM_RANGES[paramName];
+  if (!range) return value;
+
+  const rounded = range.integer ? Math.round(value) : value;
+  const clamped = Math.max(range.min, Math.min(range.max, rounded));
+
+  if (clamped !== value) {
+    log.warn(
+      `参数 ${paramName} 越界,钳回 [${range.min}, ${range.max}]: ${value} → ${clamped}`,
+    );
+  }
+  return clamped;
+}
+
 // ── 进化日志 ──────────────────────────────────────────────────
 
 interface EvolutionLogEntry {
@@ -182,9 +225,18 @@ export async function runLearning2(db: Database.Database): Promise<{
         // 计算新值（±maxAdjustmentPct）
         const direction = parsed.direction === 'increase' ? 1 : -1;
         // 乘法调整；currentValue=0 时回退到绝对偏移 0.01
-        const newValue = currentValue !== 0
+        const rawNewValue = currentValue !== 0
           ? currentValue * (1 + direction * maxAdjustmentPct)
           : direction * 0.01;
+
+        // 钳到合法区间(防 LLM 长期推到 dedup_threshold=0.4 等灾难值)
+        const newValue = clampParam(adjustableParam, rawNewValue);
+
+        // 钳后值与当前值相等说明已在边界 → 跳过本次调整,避免重复无效记录
+        if (newValue === currentValue) {
+          log.info(`参数 ${strategy}.${adjustableParam} 已在 clamp 边界,跳过调整 (raw=${rawNewValue})`);
+          continue;
+        }
 
         // 更新策略文件
         const updated = updateStrategyParam(strategiesDir, strategy, adjustableParam, newValue);

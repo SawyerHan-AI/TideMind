@@ -439,6 +439,18 @@ let currentTickId = 0;
 const MAINTENANCE_WATCHDOG_MS = 30 * 60 * 1000; // 30 分钟
 
 /**
+ * 判断当前 tick 是否应被看门狗强制复位。
+ *
+ * Why: maintenanceRunning + tickStartedAt 是模块级状态,直接测难。把判定提取为
+ * 纯函数后可单测:任意时刻已运行超过阈值 → true。
+ * How to apply: maybeRunMaintenance 调用时用 (Date.now(), tickStartedAt, threshold)。
+ */
+export function shouldResetWatchdog(now: number, tickStartedAt: number, thresholdMs: number = MAINTENANCE_WATCHDOG_MS): boolean {
+  if (tickStartedAt <= 0) return false;
+  return (now - tickStartedAt) > thresholdMs;
+}
+
+/**
  * 在 prepare 调用时触发一轮调度。
  * 非阻塞：fire-and-forget。
  *
@@ -453,16 +465,14 @@ export function maybeRunMaintenance(
   tasks: TaskDefinition[],
 ): void {
   // 看门狗：如果上一次 tick 已经"运行"超过阈值，强制视为卡死并复位
-  if (maintenanceRunning && tickStartedAt > 0) {
+  if (maintenanceRunning && shouldResetWatchdog(Date.now(), tickStartedAt)) {
     const elapsed = Date.now() - tickStartedAt;
-    if (elapsed > MAINTENANCE_WATCHDOG_MS) {
-      log.error(
-        `maintenance tick 卡死 ${Math.round(elapsed / 60000)} 分钟，强制复位 flag`,
-      );
-      maintenanceRunning = false;
-      tickStartedAt = 0;
-      currentTickId++; // 让卡死那轮 tick 的 finally 失去状态写权
-    }
+    log.error(
+      `maintenance tick 卡死 ${Math.round(elapsed / 60000)} 分钟，强制复位 flag`,
+    );
+    maintenanceRunning = false;
+    tickStartedAt = 0;
+    currentTickId++; // 让卡死那轮 tick 的 finally 失去状态写权
   }
 
   if (maintenanceRunning) return;

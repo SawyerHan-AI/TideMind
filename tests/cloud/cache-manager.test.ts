@@ -148,7 +148,7 @@ describe('CacheManager - applyChanges edge cases', () => {
     expect(cache.getLastSyncedVersion()).toBe(0);
   });
 
-  it('should block version advancement for unknown tables', async () => {
+  it('unknown tables go to dead-letter and cursor still advances (2026-05-19 fix)', async () => {
     const changes = [{
       table: 'unknown_table',
       action: 'upsert',
@@ -158,22 +158,50 @@ describe('CacheManager - applyChanges edge cases', () => {
 
     const applied = await cache.applyChanges(changes, 'fake-token');
     expect(applied).toBe(0);
-    expect(cache.getLastSyncedVersion()).toBe(0);
+    // Cursor MUST advance even when the only change is dead-lettered,
+    // otherwise next pull replays the same poison forever.
+    expect(cache.getLastSyncedVersion()).toBe(10);
+
+    const dl = db.prepare('SELECT * FROM cloud_sync_dead_letters').all() as any[];
+    expect(dl).toHaveLength(1);
+    expect(dl[0].resource_table).toBe('unknown_table');
+    expect(dl[0].sync_version).toBe(10);
   });
 
-  it('should not advance synced version past a failed change', async () => {
+  it('failed change goes to dead-letter and cursor advances past it (2026-05-19 fix)', async () => {
+    // We force a failure by passing a row that violates a NOT NULL constraint
+    // (omitting `id` makes applyCloudNodeRow throw on the prepared statement).
     const changes = [
       { table: 'nodes', action: 'upsert', sync_version: 1, data: { id: 'ok-before-failure', type: 'fact', content: 'good', heat: 1, refinement: 0, connectivity: 0, independence: 0, maturity_score: 0.2, created: '2026-01-01T00:00:00Z' } },
-      { table: 'links', action: 'upsert', sync_version: 2, data: { id: 'bad-link', from_id: 'missing-a', to_id: 'missing-b', relation: [{ type: 'supports', confidence: 0.7 }], strength: 0.5, status: 'confirmed', created: '2026-01-01T00:00:00Z' } },
+      // bogus type — CHECK constraint should reject
+      { table: 'nodes', action: 'upsert', sync_version: 2, data: { id: 'bad-node', type: 'invalid_type_that_violates_check', content: 'bad', heat: 1, refinement: 0, connectivity: 0, independence: 0, maturity_score: 0.2, created: '2026-01-01T00:00:00Z' } },
       { table: 'nodes', action: 'upsert', sync_version: 3, data: { id: 'ok-after-failure', type: 'fact', content: 'also good', heat: 1, refinement: 0, connectivity: 0, independence: 0, maturity_score: 0.2, created: '2026-01-02T00:00:00Z' } },
     ];
 
     const applied = await cache.applyChanges(changes, 'fake-token');
+    // 2 nodes applied (sv=1 and sv=3), 1 dead-lettered (sv=2)
     expect(applied).toBe(2);
-    expect(cache.getLastSyncedVersion()).toBe(1);
+    // cursor MUST advance to 3 — the whole point of the fix
+    expect(cache.getLastSyncedVersion()).toBe(3);
 
     const laterNode = db.prepare('SELECT * FROM nodes WHERE id = ?').get('ok-after-failure') as any;
     expect(laterNode.content).toBe('also good');
+
+    const dl = db.prepare('SELECT * FROM cloud_sync_dead_letters').all() as any[];
+    expect(dl).toHaveLength(1);
+    expect(dl[0].resource_id).toBe('bad-node');
+    expect(dl[0].sync_version).toBe(2);
+  });
+
+  it('repeated pulls of same bad data update the existing dead-letter row, not duplicate', async () => {
+    const badChange = { table: 'nodes', action: 'upsert', sync_version: 5, data: { id: 'bad-twice', type: 'wrong_check_value', content: 'x', heat: 1, refinement: 0, connectivity: 0, independence: 0, maturity_score: 0.2, created: '2026-01-01T00:00:00Z' } };
+
+    await cache.applyChanges([badChange], 'fake-token');
+    await cache.applyChanges([{ ...badChange, sync_version: 8 }], 'fake-token');
+
+    const dl = db.prepare('SELECT * FROM cloud_sync_dead_letters WHERE resource_id = ?').all('bad-twice') as any[];
+    expect(dl).toHaveLength(1);  // 同 (table, id) ON CONFLICT 更新,不增行
+    expect(dl[0].sync_version).toBe(8);  // 最新版本
   });
 
   it('should apply all valid changes even if some fail', async () => {

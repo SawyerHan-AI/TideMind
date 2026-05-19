@@ -310,3 +310,55 @@ describe('getTaskStatuses', () => {
     expect(statuses[0].gatesMet).toBe(false);
   });
 });
+
+import { shouldResetWatchdog } from '../../src/metabolism/scheduler';
+
+describe('shouldResetWatchdog (watchdog 纯函数)', () => {
+  const THRESHOLD = 30 * 60 * 1000;  // 30 分钟,跟 MAINTENANCE_WATCHDOG_MS 一致
+
+  it('tickStartedAt=0 时不复位(未运行)', () => {
+    expect(shouldResetWatchdog(Date.now(), 0, THRESHOLD)).toBe(false);
+  });
+
+  it('刚启动 5 分钟不复位', () => {
+    const now = 1_700_000_000_000;  // 2023-11 ms epoch,够大避免减出负数被 <=0 early return 拦截
+    const tickStart = now - 5 * 60 * 1000;
+    expect(shouldResetWatchdog(now, tickStart, THRESHOLD)).toBe(false);
+  });
+
+  it('刚到 30 分钟边界不复位(用严格 >)', () => {
+    const now = 1_700_000_000_000;  // 2023-11 ms epoch,够大避免减出负数被 <=0 early return 拦截
+    const tickStart = now - THRESHOLD;
+    expect(shouldResetWatchdog(now, tickStart, THRESHOLD)).toBe(false);
+  });
+
+  it('超过 30 分钟 1ms 即复位', () => {
+    const now = 1_700_000_000_000;  // 2023-11 ms epoch,够大避免减出负数被 <=0 early return 拦截
+    const tickStart = now - THRESHOLD - 1;
+    expect(shouldResetWatchdog(now, tickStart, THRESHOLD)).toBe(true);
+  });
+
+  it('卡死 1 小时必复位', () => {
+    const now = 1_700_000_000_000;  // 2023-11 ms epoch,够大避免减出负数被 <=0 early return 拦截
+    const tickStart = now - 60 * 60 * 1000;
+    expect(shouldResetWatchdog(now, tickStart, THRESHOLD)).toBe(true);
+  });
+
+  it('用 fake timers 演示完整轮回', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 4, 19, 12, 0, 0));
+    const t0 = Date.now();
+    // 还没启动
+    expect(shouldResetWatchdog(Date.now(), 0, THRESHOLD)).toBe(false);
+    // 启动
+    const tickStart = Date.now();
+    expect(shouldResetWatchdog(Date.now(), tickStart, THRESHOLD)).toBe(false);
+    // 前进 29 分钟
+    vi.advanceTimersByTime(29 * 60 * 1000);
+    expect(shouldResetWatchdog(Date.now(), tickStart, THRESHOLD)).toBe(false);
+    // 前进到 31 分钟
+    vi.advanceTimersByTime(2 * 60 * 1000);
+    expect(shouldResetWatchdog(Date.now(), tickStart, THRESHOLD)).toBe(true);
+    vi.useRealTimers();
+  });
+});

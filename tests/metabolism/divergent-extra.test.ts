@@ -165,3 +165,38 @@ describe('runKeystoneIdentification - 额外场景', () => {
     expect(result).toBe(0);
   });
 });
+
+import { scoreCandidatePair } from '../../src/metabolism/divergent';
+
+describe('scoreCandidatePair (纯函数)', () => {
+  it('shared=2, deg=2/2 → 1.0 (完美匹配)', () => {
+    expect(scoreCandidatePair(2, 2, 2)).toBeCloseTo(1.0, 6);
+  });
+
+  it('hub 节点对子被压低', () => {
+    // hub: degA=100, degB=100, shared=10 → 10/100 = 0.1
+    const hubScore = scoreCandidatePair(10, 100, 100);
+    // rare pair: degA=3, degB=3, shared=2 → 2/3 ≈ 0.667
+    const rareScore = scoreCandidatePair(2, 3, 3);
+    expect(rareScore).toBeGreaterThan(hubScore);
+  });
+
+  it('排序结果:rare pair > hub pair', () => {
+    const candidates = [
+      { id: 'hub', score: scoreCandidatePair(10, 100, 100) },
+      { id: 'rare', score: scoreCandidatePair(2, 3, 3) },
+      { id: 'mid', score: scoreCandidatePair(5, 20, 20) },
+    ];
+    candidates.sort((x, y) => y.score - x.score);
+    expect(candidates.map(c => c.id)).toEqual(['rare', 'mid', 'hub']);
+  });
+
+  it('degA=0 或 degB=0 时 fallback 1 防除零', () => {
+    expect(scoreCandidatePair(0, 0, 0)).toBe(0);
+    expect(scoreCandidatePair(3, 0, 5)).toBe(3);  // denom=0 → fallback 1
+  });
+
+  it('shared=0 → score 0', () => {
+    expect(scoreCandidatePair(0, 5, 5)).toBe(0);
+  });
+});

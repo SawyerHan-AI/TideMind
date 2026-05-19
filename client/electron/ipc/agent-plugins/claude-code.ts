@@ -135,6 +135,41 @@ async function registerMarketplace(ctx: GeneratePluginContext): Promise<boolean>
   }
 }
 
+/**
+ * 构建 Claude Code SKILL.md 的 YAML frontmatter。
+ *
+ * Why exported: plugin-self-heal.ts 需要给老用户 SKILL.md 补 when_to_use /
+ * allowed-tools 字段时调用同一份生成逻辑,避免两端 frontmatter 漂移。
+ * How to apply: generate() 时直接调用;self-heal 检测到 frontmatter 缺 when_to_use
+ * 时调用,把新 frontmatter + 原正文重写回去。
+ */
+export function buildClaudeCodeSkillFrontmatter(
+  pluginName: string,
+  skillDescription: string,
+): string {
+  return [
+    '---',
+    `description: "${skillDescription}"`,
+    'when_to_use: |',
+    '  用户提起"之前"、"上次"、"记得吗"、过去的决定或观点时；',
+    '  需要判断用户偏好、历史态度、长期目标时；',
+    '  用户明确说"记住"、"别忘了"、"以后不要..."时；',
+    '  每次完成实质性请求后、用户做出决策或表达观点时需要沉淀结论。',
+    'allowed-tools:',
+    '  - mcp__tidemind__brain_prepare',
+    '  - mcp__tidemind__brain_recall',
+    '  - mcp__tidemind__brain_digest',
+    `  - mcp__${pluginName}__brain_prepare`,
+    `  - mcp__${pluginName}__brain_recall`,
+    `  - mcp__${pluginName}__brain_digest`,
+    `  - mcp__plugin_${pluginName}_tidemind__brain_prepare`,
+    `  - mcp__plugin_${pluginName}_tidemind__brain_recall`,
+    `  - mcp__plugin_${pluginName}_tidemind__brain_digest`,
+    '---',
+    '',
+  ].join('\n')
+}
+
 export const claudeCodeAdapter: AgentPluginAdapter = {
   clientType: 'claude-code',
 
@@ -151,27 +186,7 @@ export const claudeCodeAdapter: AgentPluginAdapter = {
       },
     )
 
-    const frontmatter = [
-      '---',
-      `description: "${ctx.config.skillDescription}"`,
-      'when_to_use: |',
-      '  用户提起"之前"、"上次"、"记得吗"、过去的决定或观点时；',
-      '  需要判断用户偏好、历史态度、长期目标时；',
-      '  用户明确说"记住"、"别忘了"、"以后不要..."时；',
-      '  每次完成实质性请求后、用户做出决策或表达观点时需要沉淀结论。',
-      'allowed-tools:',
-      '  - mcp__tidemind__brain_prepare',
-      '  - mcp__tidemind__brain_recall',
-      '  - mcp__tidemind__brain_digest',
-      `  - mcp__${ctx.pluginName}__brain_prepare`,
-      `  - mcp__${ctx.pluginName}__brain_recall`,
-      `  - mcp__${ctx.pluginName}__brain_digest`,
-      `  - mcp__plugin_${ctx.pluginName}_tidemind__brain_prepare`,
-      `  - mcp__plugin_${ctx.pluginName}_tidemind__brain_recall`,
-      `  - mcp__plugin_${ctx.pluginName}_tidemind__brain_digest`,
-      '---',
-      '',
-    ].join('\n')
+    const frontmatter = buildClaudeCodeSkillFrontmatter(ctx.pluginName, ctx.config.skillDescription)
     writeFileAtomic(skillPath(ctx), frontmatter + ctx.skillContent)
 
     fs.mkdirSync(path.join(ctx.pluginDir, 'hooks'), { recursive: true })
