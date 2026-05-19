@@ -478,16 +478,16 @@ function signReleaseAssets(version, ossRepo, allowUnsigned = false) {
       console.log(`  skip ${platform}/${arch}: no matching asset`);
       continue;
     }
-    // gh CLI 的 asset 字段命名跟 GitHub REST API 不一致:
-    //   gh CLI:  asset.url = 下载 URL(browser-facing),asset.apiUrl = REST API URL
-    //   REST API 原始: asset.url = REST API URL,asset.browser_download_url = 下载 URL
-    // 这里走 `gh release view --json assets`,所以 asset.url 已经是下载 URL,与
-    // cloud-server 端点 findAsset 返回值(REST API 上下文的 browser_download_url)
-    // 一致,客户端验签的 message 才能对上。
-    // 2026-05-20 误把这里改成 asset.browser_download_url,在 gh CLI 上下文该字段是
-    // undefined,签出 "version\nundefined" 的错 .sig,导致 v0.2.66 全量客户端拒绝
-    // 更新。本提交是该错误的 revert。
-    const url = asset.url ?? asset.browser_download_url;
+    // 用 hardcoded 稳定下载 URL,不依赖 gh CLI 返回的 asset.url。
+    // 历史踩坑(v0.2.66 / v0.2.67):
+    //   - asset.url 在 draft release 是 `releases/download/untagged-<hash>/...`,
+    //     publish 后才变成 `releases/download/v<version>/...`。
+    //   - 端点 findAsset 用的是 publish 后的稳定 URL,客户端验签的 message 也是。
+    //   - 如果在 publish 前签 .sig(本脚本被这样用过),签的是 untagged URL,
+    //     publish 后客户端拉的 .sig 跟端点给的 url 对不上 → 验签 invalid → 拒绝更新。
+    // 修复:hardcoded 拼接稳定 URL,无论 release state,签名内容永远一致。
+    // 注意 sign-existing-release.mjs 同步修复。
+    const url = `https://github.com/SawyerHan-AI/TideMind/releases/download/v${version}/${asset.name}`;
     const message = Buffer.from(`${version}\n${url}`, 'utf8');
     const sig = crypto.sign(null, message, privateKey).toString('base64');
     const sigPath = path.join(os.tmpdir(), `update-manifest-${platform}-${arch}.sig`);
