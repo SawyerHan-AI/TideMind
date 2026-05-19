@@ -310,6 +310,7 @@ export interface AppApi {
     outboxCount: () => Promise<number>
     loginUrl: () => Promise<string>
     registerUrl: () => Promise<string>
+    billingPortalUrl: () => Promise<string>
   }
   app: {
     getVersion: () => Promise<string>

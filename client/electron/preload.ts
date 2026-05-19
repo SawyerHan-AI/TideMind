@@ -165,6 +165,7 @@ const api: AppApi = {
     outboxCount: () => ipcRenderer.invoke('cloud:outbox-count'),
     loginUrl: () => ipcRenderer.invoke('cloud:login-url'),
     registerUrl: () => ipcRenderer.invoke('cloud:register-url'),
+    billingPortalUrl: () => ipcRenderer.invoke('cloud:billing-portal-url'),
   },
   app: {
     getVersion: () => ipcRenderer.invoke('app:get-version'),
