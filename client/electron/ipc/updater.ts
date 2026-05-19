@@ -7,7 +7,8 @@
 
 import { ipcMain } from 'electron'
 import { createLogger } from '@server/utils/logger.js'
-import { getUpdaterState, runUpdateCheck, installUpdate } from '../updater/index.js'
+import { getUpdaterState, runUpdateCheck, installUpdate, setUpdateChannel } from '../updater/index.js'
+import { getUpdateChannel, type UpdateChannel } from '../updater/channel.js'
 
 const log = createLogger('ipc-updater')
 
@@ -22,5 +23,16 @@ export function registerUpdaterHandlers(): void {
   ipcMain.handle('updater:install', () => {
     log.info('install triggered from renderer')
     installUpdate()
+  })
+
+  ipcMain.handle('updater:get-channel', (): UpdateChannel => getUpdateChannel())
+
+  ipcMain.handle('updater:set-channel', (_event, channel: unknown) => {
+    // 显式白名单 — renderer 传 'main' / 任意字符串都会被拒。
+    if (channel !== 'stable' && channel !== 'beta') {
+      log.warn(`set-channel rejected: invalid channel=${String(channel)}`)
+      return
+    }
+    setUpdateChannel(channel)
   })
 }

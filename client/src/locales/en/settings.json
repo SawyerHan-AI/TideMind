@@ -27,7 +27,11 @@
     "timezoneSystem": "System ({{timezone}})",
     "onboarding": "Setup Wizard",
     "onboardingDesc": "Re-run the initial setup wizard to reconfigure your preferences, model connections, and integrations.",
-    "rerunOnboarding": "Re-run Setup Wizard"
+    "rerunOnboarding": "Re-run Setup Wizard",
+    "updateChannel": "Update Channel",
+    "updateChannelDesc": "Beta delivers new features earlier but may be less stable. Switching takes effect on the next check.",
+    "updateChannelStable": "Stable",
+    "updateChannelBeta": "Beta"
   },
   "external": {
     "subtabs": {

@@ -27,7 +27,11 @@
     "timezoneSystem": "Sistema ({{timezone}})",
     "onboarding": "Asistente de configuracion",
     "onboardingDesc": "Vuelva a ejecutar el asistente de configuracion inicial para reconfigurar sus preferencias, conexiones de modelos e integraciones.",
-    "rerunOnboarding": "Volver a ejecutar el asistente"
+    "rerunOnboarding": "Volver a ejecutar el asistente",
+    "updateChannel": "Canal de Actualización",
+    "updateChannelDesc": "Beta entrega nuevas funciones antes pero puede ser menos estable. El cambio tiene efecto en la próxima verificación.",
+    "updateChannelStable": "Estable",
+    "updateChannelBeta": "Beta"
   },
   "external": {
     "subtabs": {

@@ -1,6 +1,7 @@
 import { Outlet, useLocation } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { UpdateReadyBanner } from './dashboard/UpdateReadyBanner'
+import { MandatoryUpdateModal } from './MandatoryUpdateModal'
 
 export function Layout() {
   const { pathname } = useLocation()
@@ -20,6 +21,7 @@ export function Layout() {
     >
       <Sidebar />
       <UpdateReadyBanner />
+      <MandatoryUpdateModal />
       <main className={`flex-1 relative ${isFullHeight ? 'overflow-hidden flex flex-col' : 'overflow-auto'}`}>
         {isFullHeight ? (
           <>

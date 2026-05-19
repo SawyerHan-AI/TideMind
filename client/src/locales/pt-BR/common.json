@@ -35,6 +35,9 @@
     "ready": "Nova versão {{version}} pronta",
     "readyDesc": "Reinicie o Tide Mind para concluir a atualização",
     "installNow": "Reiniciar agora",
-    "installLater": "Mais tarde"
+    "installLater": "Mais tarde",
+    "mandatoryTitle": "Atualização Necessária",
+    "mandatoryDesc": "Tide Mind {{version}} contém correções obrigatórias. Você precisa atualizar para continuar usando o aplicativo.",
+    "mandatoryRestart": "Reiniciar agora para atualizar"
   }
 }

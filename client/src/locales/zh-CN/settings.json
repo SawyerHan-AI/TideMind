@@ -27,7 +27,11 @@
     "timezoneSystem": "跟随系统 ({{timezone}})",
     "onboarding": "设置向导",
     "onboardingDesc": "重新运行初始设置向导，重新配置你的偏好、模型连接和集成。",
-    "rerunOnboarding": "重新运行设置向导"
+    "rerunOnboarding": "重新运行设置向导",
+    "updateChannel": "更新频道",
+    "updateChannelDesc": "Beta 版会更早收到新功能，但可能不稳定。切换在下次检查时生效。",
+    "updateChannelStable": "稳定版",
+    "updateChannelBeta": "测试版"
   },
   "external": {
     "subtabs": {
