@@ -52,14 +52,23 @@ const UPDATE_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
 `
 ```
 
-**Step 4: 发版时注入私钥**
+**Step 4: 私钥存到 macOS Keychain(推荐,一次配置永久使用)**
 ```bash
-SIGNING_PRIVATE_KEY="$(cat 私钥路径.pem)" npm run release -- --version 0.2.62
+# 先从 1Password 复制私钥(整段 PEM)到 clipboard,然后:
+security add-generic-password -U -a tidemind -s tidemind-signing-key -w "$(pbpaste)"
+pbcopy < /dev/null   # 立刻清空 clipboard
+# 之后所有 npm run release 自动从 Keychain 取私钥,无需任何 env
 ```
-或者从 1Password CLI:
+
+第一次访问 Keychain 时会弹 Touch ID 或 Master Password 确认,可勾选"始终允许"减少摩擦。Keychain 由 macOS 系统保护(FileVault + Secure Enclave),比 env 或临时文件更稳。
+
+**或者一次性注入 env**(适合 CI / 不想配 Keychain):
 ```bash
-SIGNING_PRIVATE_KEY="$(op read 'op://Private/TideMind Signing/private-key')" npm run release -- --version 0.2.62
+SIGNING_PRIVATE_KEY="$(cat ~/key.tmp.pem)" npm run release -- --version 0.2.62
+# 跑完 unset SIGNING_PRIVATE_KEY
 ```
+
+**release.mjs 取私钥顺序**:env → Keychain → fail-loud(除非 `--allow-unsigned`)
 
 ### 启用后行为
 - `signReleaseAssets` 会对每个平台 DMG 签名,上传 `update-manifest-{platform}-{arch}.sig` 到 release
@@ -75,6 +84,96 @@ SIGNING_PRIVATE_KEY="$(op read 'op://Private/TideMind Signing/private-key')" npm
 4. 等存量用户全部升级后,新 release 才能切到新 key
 
 **当前单 key 限制**: 第一次密钥泄漏需要把所有用户挡在旧 release(或者临时回退到无签名模式)。所以**密钥保管比代码实现更重要**。
+
+---
+
+## 1B. Apple Code Signing + Notarization(强烈建议启用)
+
+### 风险
+DMG 未签名时,用户下载装 app 会弹"无法打开,因为它来自身份不明的开发者",
+需要手动右键打开绕过 Gatekeeper。装机率显著下降。
+
+### 代码层状态
+- `client/electron-builder.yml::mac` 已配置:
+  - `hardenedRuntime: true` ✓
+  - `notarize: true` ✓
+  - `entitlements: resources/entitlements.mac.plist` ✓
+  - `gatekeeperAssess: false` ✓(GitHub runner 上不验,等用户机器装时验)
+- `.github/workflows/release.yml` 已注入 5 个 secrets 到 env
+- 5 个 GitHub Secrets 未设时 electron-builder 自动跳过签名(等于今天行为,向后兼容)
+
+### 启用步骤(30 分钟,一次性)
+
+需要你**有效的 Apple Developer Program 账号**($99/年)。
+
+**Step 1: Apple Developer Portal 配置**
+1. 访问 https://developer.apple.com/account
+2. **Certificates, IDs & Profiles** → **Identifiers** → **+** → **App IDs** → 类型 **App**
+3. 填写:
+   - Description: `Tide Mind`
+   - Bundle ID:**Explicit**,值 `com.tidemind.app`(必须与 `client/electron-builder.yml::appId` 完全一致)
+   - 不需要勾任何 Capabilities(Electron app 用 entitlements 而非 capabilities)
+4. **Register**
+
+**Step 2: Developer ID Application 证书**
+1. 在 **Certificates** 标签 → **+** → 类型 **Developer ID Application**(注意是这个,**不是** Mac App Distribution)
+2. 在你 Mac 上 **钥匙串访问 → 证书助理 → 从证书颁发机构请求证书** 生成 CSR 文件
+3. 上传 CSR → 下载 .cer 证书 → 双击导入钥匙串
+4. 在 **钥匙串访问** 里找到这个证书(名字类似 "Developer ID Application: Your Name (ABCDE12345)")
+5. 右键 → **导出**,选 **.p12 格式**,设一个密码并记住(下一步用)
+6. **转 base64**(macOS 自带 openssl 是 LibreSSL,**不支持 `-i` flag**,要用 `-in` 或系统 base64):
+   ```bash
+   base64 -i ~/Downloads/TideMind.p12 | tr -d '\n' | pbcopy
+   # 或:
+   openssl base64 -A -in ~/Downloads/TideMind.p12 | pbcopy
+   ```
+   pbcopy 把 base64 字符串(无换行)复制到 clipboard,下一步粘到 GitHub Secret。
+
+**Step 3: App-Specific Password**
+1. 访问 https://account.apple.com → 登录
+2. **登录与安全** → **App 专用密码** → **+** → 标签 `TideMind notarization`
+3. 复制生成的密码(格式 `xxxx-xxxx-xxxx-xxxx`,只显示一次)
+
+**Step 4: Team ID**
+1. https://developer.apple.com/account → 顶部 **Membership details**
+2. 复制 **Team ID**(10 字符,如 `ABCDE12345`)
+
+**Step 5: 在 GitHub Repo Settings 设 5 个 Secrets**
+
+访问 `https://github.com/SawyerHan-AI/TideMind/settings/secrets/actions` → **New repository secret**,创建以下 5 个:
+
+| Secret 名 | 值来源 |
+|---|---|
+| `MAC_CERTIFICATE` | Step 2 第 6 步 `openssl base64` 的输出(整段 base64 字符串) |
+| `MAC_CERTIFICATE_PASSWORD` | Step 2 第 5 步导出 .p12 时设的密码 |
+| `APPLE_ID` | 你的 Apple Developer 账号邮箱 |
+| `APPLE_APP_SPECIFIC_PASSWORD` | Step 3 生成的 `xxxx-xxxx-xxxx-xxxx` |
+| `APPLE_TEAM_ID` | Step 4 的 10 字符 Team ID |
+
+**Step 6: 销毁本地敏感文件**
+```bash
+rm -P ~/Downloads/TideMind.p12   # macOS 安全删除(覆盖后删)
+pbcopy < /dev/null                # 清 clipboard
+# .cer 文件保留(公开信息) / 钥匙串里的证书保留(以后可以再导出 .p12)
+```
+
+### 启用后行为
+- 下次 `npm run release` 触发 GitHub Actions Release workflow:
+  - electron-builder 检测到 secrets 已设 → 签名 + 公证
+  - 公证耗时 ~2-5 分钟(Apple 服务器审核 + stapler 写票据回 DMG)
+  - 整个 build-mac job 从 ~3 分钟变成 ~6-8 分钟
+- 用户下载 DMG → 双击安装 → 不再弹"身份不明开发者"警告
+
+### 排查
+- **build 失败 "no identity found"** → MAC_CERTIFICATE secret 没设或 base64 错(用 `base64 -i FILE | tr -d '\n'` 或 `openssl base64 -A -in FILE` 去掉换行)
+- **notarize 失败 "Invalid credentials"** → APPLE_ID / APP_SPECIFIC_PASSWORD / TEAM_ID 任一错
+- **notarize 失败 "The signature does not include a secure timestamp"** → entitlements.mac.plist 漏了关键 key,看 client/resources/entitlements.mac.plist 是否完整
+- **notarize timeout > 30 分钟** → Apple 服务器排队中,通常自动恢复;实在不行 `xcrun notarytool log <submission-id>` 看具体原因
+
+### 证书过期
+- Developer ID Application 证书有效期 **5 年**
+- 过期前 3 个月内重做 Step 2(钥匙串里旧证书不删,加新的并列即可)
+- 然后更新 MAC_CERTIFICATE secret(用新 .p12 重做 Step 2 第 6 步)
 
 ---
 

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Electron / V8 JIT 必须:写入可执行内存。 -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <!-- 允许加载第三方 dylib(better-sqlite3 + sqlite-vec native module + Apple SQLite 等)。
+       不开这个,Hardened Runtime 会拒绝 dlopen 任何未签名 dylib,
+       打开 app 时 better-sqlite3 加载就会崩溃。 -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <!-- Electron 子进程 (renderer / utility / GPU process) 用 fork-exec,
+       需要这个 entitlement 才能继承父进程权限。 -->
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <!-- 网络访问:Tide Mind 主进程 fetch / cloud sync / Anthropic API 等。 -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <key>com.apple.security.network.server</key>
+  <true/>
+  <!-- 用户文件读写:用户选笔记 vault 路径。 -->
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+  <key>com.apple.security.files.user-selected.executable</key>
+  <true/>
+  <!-- 自动化:Apple Notes 集成用 AppleScript / osascript 调用。
+       注意:Apple Notes 自动化在 macOS Mojave+ 需要用户在
+       系统设置 → 隐私 → 自动化 显式授权(运行时弹窗),entitlement 只是声明能力。 -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+</dict>
+</plist>

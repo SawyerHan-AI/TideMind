@@ -340,8 +340,52 @@ async function verifyUpdateApi(version, previousVersion) {
  * 用户启用流程:1) 生成 keypair 2) 私钥放 1Password 3) 公钥贴 app.ts 内置常量
  * 4) 发版时 SIGNING_PRIVATE_KEY=... npm run release。
  */
+/**
+ * Fallback 链取签名私钥:
+ *   1. process.env.SIGNING_PRIVATE_KEY(CI / 一次性发版)
+ *   2. macOS Keychain (`security find-generic-password -a tidemind -s tidemind-signing-key`)
+ *      首次访问会弹 Touch ID / Master Password 解锁,可勾选"始终允许"减少摩擦。
+ *   3. 都没 → 返回 null,调用方决定 fail-loud 还是 --allow-unsigned。
+ */
+/**
+ * PEM 规范化(同 sign-existing-release.mjs):Keychain 在某些 shell 配置下
+ * 会把多行 PEM 折叠成一行,OpenSSL 解析失败,这里恢复换行。
+ */
+function normalizePEM(raw) {
+  if (!raw || typeof raw !== 'string') return raw;
+  if (/-----BEGIN [^\n-]+-----\n/.test(raw)) return raw;
+  const m = raw.match(/^[\s]*(-----BEGIN [^-]+-----)\s*(.+?)\s*(-----END [^-]+-----)\s*$/s);
+  if (!m) return raw;
+  const [, begin, body, end] = m;
+  const clean = body.replace(/\s+/g, '');
+  const lines = clean.match(/.{1,64}/g) || [];
+  return `${begin}\n${lines.join('\n')}\n${end}\n`;
+}
+
+function loadSigningPrivateKey() {
+  const fromEnv = process.env.SIGNING_PRIVATE_KEY;
+  if (fromEnv) return { pem: normalizePEM(fromEnv), source: 'env' };
+  // macOS only:Linux 上 `security` 命令不存在,spawn 会失败,silent fall through。
+  if (process.platform !== 'darwin') return { pem: null, source: null };
+  try {
+    const r = spawnSync('security', [
+      'find-generic-password',
+      '-a', 'tidemind',
+      '-s', 'tidemind-signing-key',
+      '-w',
+    ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    if (r.status === 0 && r.stdout && r.stdout.includes('-----BEGIN')) {
+      return { pem: normalizePEM(r.stdout), source: 'keychain' };
+    }
+  } catch { /* security 不可用 → fall through */ }
+  return { pem: null, source: null };
+}
+
 function signReleaseAssets(version, ossRepo, allowUnsigned = false) {
-  const privateKeyPem = process.env.SIGNING_PRIVATE_KEY;
+  const { pem: privateKeyPem, source } = loadSigningPrivateKey();
+  if (privateKeyPem) {
+    console.log(`\n> Signing release manifests (ed25519, key from ${source})`);
+  }
   if (!privateKeyPem) {
     if (!allowUnsigned) {
       // 强制 opt-out:把"无签名发版"从 silent 默认变成必须主动放弃的决定。
@@ -350,14 +394,20 @@ function signReleaseAssets(version, ossRepo, allowUnsigned = false) {
       // pro/cloud-server/src/update/routes.ts)已就位,密钥未生成时这条防线不工作。
       // 启用流程见 client/electron/ipc/app.ts:UPDATE_PUBLIC_KEY_PEM 上方注释。
       throw new Error(
-        '\n!!! Release signing is REQUIRED but SIGNING_PRIVATE_KEY env is not set.\n' +
+        '\n!!! Release signing is REQUIRED but no private key is available.\n' +
         '    Without signing, anyone with write access to the GitHub release\n' +
         '    can push malicious binaries to all clients (supply chain attack).\n' +
-        '\n    Either:\n' +
-        '      (a) Generate ed25519 keypair, store private key in 1Password,\n' +
-        '          embed public key in client/electron/ipc/app.ts:UPDATE_PUBLIC_KEY_PEM,\n' +
-        '          then run release with SIGNING_PRIVATE_KEY=... npm run release\n' +
-        '      (b) Explicitly accept the risk by passing --allow-unsigned\n',
+        '\n    Key sources checked (in order):\n' +
+        '      1. process.env.SIGNING_PRIVATE_KEY            (not set)\n' +
+        '      2. macOS Keychain (account=tidemind,\n' +
+        '         service=tidemind-signing-key)              (not found)\n' +
+        '\n    To enable:\n' +
+        '      (a) One-time:  security add-generic-password -U \\\n' +
+        '                       -a tidemind -s tidemind-signing-key -w "$(pbpaste)"\n' +
+        '          (first copy private key from 1Password)\n' +
+        '      (b) Or pass:   SIGNING_PRIVATE_KEY="$(...)" npm run release ...\n' +
+        '      (c) Or skip:   add --allow-unsigned (clients with embedded\n' +
+        '                     public key will REJECT this release)\n',
       );
     }
     console.log('\n> WARNING: Releasing unsigned binaries (--allow-unsigned).');
@@ -365,7 +415,6 @@ function signReleaseAssets(version, ossRepo, allowUnsigned = false) {
     console.log('  Clients without embedded public key will accept it (current default).');
     return;
   }
-  console.log('\n> Signing release manifests (ed25519)');
   const release = parseJsonOutput('gh', [
     'release', 'view', `v${version}`, '--repo', 'SawyerHan-AI/TideMind',
     '--json', 'assets',
