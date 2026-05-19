@@ -106,6 +106,9 @@ const DEFAULT_CONFIG: AppConfig = {
     metabolism_enabled: false,
     server_url: 'https://cloud.tidemind.ai',
   },
+  update: {
+    channel: 'stable',
+  },
 };
 
 let cachedConfig: AppConfig | null = null;

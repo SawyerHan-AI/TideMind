@@ -21,6 +21,17 @@ import type {
 
 export type PluginClientType = 'claude-code' | 'cowork' | 'cursor' | 'codex' | 'windsurf' | 'openclaw' | 'gemini'
 
+export type UpdaterState =
+  | { status: 'idle' }
+  | { status: 'checking' }
+  | { status: 'up-to-date'; version: string }
+  | { status: 'available'; version: string; releaseNotes?: string; mandatory: boolean }
+  | { status: 'downloading'; version: string; percent: number; transferred: number; total: number }
+  | { status: 'downloaded'; version: string; releaseNotes?: string; mandatory: boolean }
+  | { status: 'error'; message: string }
+  | { status: 'signature-invalid'; version: string; releaseUrl?: string }
+  | { status: 'staged-out'; version: string }
+
 /**
  * 笔记源初始化会话快照（与主进程 InitSessionSnapshot 对齐）。
  * 不在主进程类型基础上 import，是因为 client/electron 与 client/src 的 tsconfig
@@ -294,6 +305,12 @@ export interface AppApi {
       releaseNotes: string | null
       publishedAt: string | null
     }>
+  }
+  updater: {
+    getState: () => Promise<UpdaterState>
+    checkNow: () => Promise<void>
+    install: () => Promise<void>
+    onStateChanged: (cb: (state: UpdaterState) => void) => () => void
   }
   agents: {
     list: (includeArchived?: boolean) => Promise<AgentData[]>

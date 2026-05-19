@@ -30,5 +30,11 @@
     "somethingWentWrong": "出现了错误",
     "unexpectedError": "发生了意外错误。",
     "retry": "重试"
+  },
+  "updater": {
+    "ready": "新版本 {{version}} 已就绪",
+    "readyDesc": "重启 Tide Mind 完成更新",
+    "installNow": "立即重启",
+    "installLater": "稍后"
   }
 }

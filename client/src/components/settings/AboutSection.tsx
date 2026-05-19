@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
-import { ExternalLink, RefreshCw, CheckCircle, AlertCircle, Download } from 'lucide-react'
+import { ExternalLink, RefreshCw, CheckCircle, AlertCircle, Download, RotateCw, ShieldAlert } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Section } from './shared'
 import { brand } from '../../lib/tokens'
+import type { UpdaterState } from '../../lib/api-contract'
 
 type UpdateStatus = 'idle' | 'checking' | 'up-to-date' | 'available' | 'error'
 
@@ -20,15 +21,31 @@ export function AboutSection() {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle')
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [updateError, setUpdateError] = useState<string | null>(null)
-  const [currentVersion, setCurrentVersion] = useState('0.2.64')
+  const [currentVersion, setCurrentVersion] = useState('0.2.65')
+  const [updaterState, setUpdaterState] = useState<UpdaterState>({ status: 'idle' })
 
   useEffect(() => {
     window.api.app.getVersion().then((v: string) => setCurrentVersion(v)).catch(() => {})
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+    window.api.updater.getState().then((s) => {
+      if (!cancelled) setUpdaterState(s)
+    }).catch(() => {})
+    const off = window.api.updater.onStateChanged((s: UpdaterState) => setUpdaterState(s))
+    return () => {
+      cancelled = true
+      off()
+    }
+  }, [])
+
   const handleCheckUpdate = async () => {
     setUpdateStatus('checking')
     setUpdateError(null)
+    // 打包模式下走自动更新流程(fire-and-forget),进度由 updaterState 反映
+    void window.api.updater.checkNow().catch(() => {})
+    // 同时跑传统手动查询,dev 模式下也能给反馈、生产模式作为 release notes 来源
     try {
       const info: UpdateInfo = await window.api.app.checkUpdate()
       setUpdateInfo(info)
@@ -49,9 +66,19 @@ export function AboutSection() {
     window.api.app.openExternal(url)
   }
 
+  const handleInstall = () => {
+    window.api.updater.install().catch(() => {})
+  }
+
+  // 自动更新进行中状态优先显示
+  const isAutoUpdating =
+    updaterState.status === 'downloading' ||
+    updaterState.status === 'downloaded' ||
+    updaterState.status === 'signature-invalid' ||
+    updaterState.status === 'staged-out'
+
   return (
     <div className="max-w-lg space-y-6">
-      {/* Version + Update */}
       <Section title="Tide Mind">
         <div className="space-y-4">
           <div className="flex items-center justify-between">
@@ -60,7 +87,7 @@ export function AboutSection() {
               <p className="text-sm text-gray-200 font-mono mt-0.5">{updateInfo?.currentVersion ?? currentVersion}</p>
             </div>
 
-            {updateStatus === 'idle' && (
+            {!isAutoUpdating && updateStatus === 'idle' && (
               <button
                 onClick={handleCheckUpdate}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-300 border border-white/10 hover:border-white/20 hover:text-white transition-all"
@@ -71,24 +98,67 @@ export function AboutSection() {
               </button>
             )}
 
-            {updateStatus === 'checking' && (
+            {!isAutoUpdating && updateStatus === 'checking' && (
               <span className="flex items-center gap-1.5 text-xs text-gray-400">
                 <RefreshCw size={11} className="animate-spin" />
                 {t('about.checking', 'Checking...')}
               </span>
             )}
+
+            {updaterState.status === 'downloaded' && (
+              <button
+                onClick={handleInstall}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-emerald-200 border border-emerald-500/40 hover:border-emerald-500/60 hover:bg-emerald-500/20 transition-all"
+                style={{ background: 'rgba(16,185,129,0.12)' }}
+              >
+                <RotateCw size={11} />
+                {t('about.installNow', 'Restart to update')}
+              </button>
+            )}
           </div>
 
-          {/* Up to date */}
-          {updateStatus === 'up-to-date' && (
+          {updaterState.status === 'downloading' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs text-gray-300">
+                <span className="flex items-center gap-1.5">
+                  <Download size={11} className="text-indigo-400" />
+                  {t('about.downloading', 'Downloading {{percent}}%', { percent: updaterState.percent })}
+                </span>
+                <span className="text-gray-500 font-mono text-[10px]">{updaterState.version}</span>
+              </div>
+              <div className="w-full bg-white/[0.06] rounded-full h-1.5">
+                <div
+                  className="bg-indigo-400 h-1.5 rounded-full transition-all duration-300"
+                  style={{ width: `${Math.max(2, updaterState.percent)}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {updaterState.status === 'signature-invalid' && (
+            <div className="flex items-start gap-2 p-3 rounded-lg border border-red-500/30 bg-red-500/10">
+              <ShieldAlert size={14} className="text-red-400 flex-shrink-0 mt-0.5" />
+              <div className="text-xs text-red-300">
+                {t('about.signatureInvalid', 'Update rejected (signature invalid)')}
+              </div>
+            </div>
+          )}
+
+          {updaterState.status === 'staged-out' && (
+            <div className="flex items-center gap-2 text-xs text-gray-400">
+              <CheckCircle size={13} className="text-gray-400" />
+              <span>{t('about.stagedOut', "New version rolling out gradually, you'll get it soon")}</span>
+            </div>
+          )}
+
+          {!isAutoUpdating && updateStatus === 'up-to-date' && (
             <div className="flex items-center gap-2 text-emerald-400">
               <CheckCircle size={13} />
               <span className="text-xs">{t('about.upToDate', 'You are on the latest version.')}</span>
             </div>
           )}
 
-          {/* Update available */}
-          {updateStatus === 'available' && updateInfo && (
+          {!isAutoUpdating && updateStatus === 'available' && updateInfo && (
             <div className="p-3 rounded-lg border border-indigo-400/20" style={{ background: 'rgba(129,140,248,0.06)' }}>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-medium text-indigo-300">
@@ -111,8 +181,7 @@ export function AboutSection() {
             </div>
           )}
 
-          {/* Error */}
-          {updateStatus === 'error' && (
+          {!isAutoUpdating && updateStatus === 'error' && (
             <div className="flex items-center gap-2">
               <AlertCircle size={13} className="text-red-400" />
               <span className="text-xs text-red-400">
@@ -129,7 +198,6 @@ export function AboutSection() {
         </div>
       </Section>
 
-      {/* Links */}
       <Section title={t('about.links', 'Links')}>
         <div className="space-y-2.5">
           {[
@@ -150,13 +218,16 @@ export function AboutSection() {
         </div>
       </Section>
 
-      {/* License */}
       <Section title={t('about.license', 'License')}>
         <div className="text-xs text-gray-500 space-y-1">
           <p>MIT License</p>
           <p>&copy; 2024-{new Date().getFullYear()} TideMind Contributors</p>
         </div>
       </Section>
+
+      {updateError && (
+        <p className="text-[10px] text-red-400/60">{updateError}</p>
+      )}
     </div>
   )
 }

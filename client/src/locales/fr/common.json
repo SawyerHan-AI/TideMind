@@ -30,5 +30,11 @@
     "somethingWentWrong": "Une erreur s'est produite",
     "unexpectedError": "Une erreur inattendue s'est produite.",
     "retry": "Réessayer"
+  },
+  "updater": {
+    "ready": "Nouvelle version {{version}} prête",
+    "readyDesc": "Redémarrez Tide Mind pour terminer la mise à jour",
+    "installNow": "Redémarrer maintenant",
+    "installLater": "Plus tard"
   }
 }

@@ -30,5 +30,11 @@
     "somethingWentWrong": "Etwas ist schiefgelaufen",
     "unexpectedError": "Ein unerwarteter Fehler ist aufgetreten.",
     "retry": "Wiederholen"
+  },
+  "updater": {
+    "ready": "Neue Version {{version}} bereit",
+    "readyDesc": "Tide Mind neu starten, um das Update abzuschließen",
+    "installNow": "Jetzt neu starten",
+    "installLater": "Später"
   }
 }

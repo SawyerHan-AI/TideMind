@@ -7,6 +7,8 @@ import { startDaemon, stopDaemon } from './daemon'
 import { startDataWatcher, stopDataWatcher } from './data-watcher'
 import { writeShimAndRuntimePath } from './runtime/shim-writer'
 import { selfHealPlugins } from './runtime/plugin-self-heal'
+import { initAutoUpdater, runUpdateCheck } from './updater/index'
+import { scheduleUpdateChecks } from './updater/scheduler'
 import { migrateDataDirIfNeeded } from '@server/utils/migrate-data-dir.js'
 import { createLogger } from '@server/utils/logger.js'
 import { mainT } from './i18n'
@@ -403,6 +405,19 @@ app.whenReady().then(async () => {
   setTimeout(() => {
     startDaemon().catch(err => mainLog.error('daemon start failed:', err))
   }, 2000)
+
+  // 自动更新:打包模式下启用。initAutoUpdater 内部已判断 !app.isPackaged 直接返回。
+  // scheduler 自带 30s 首检 + 4h 周期,与首屏 IPC 高峰错开。
+  // try/catch 包裹防御 — 即使 electron-updater 初始化抛错(罕见,如 native 加载失败),
+  // 也不能让 app 启动失败。失败时记日志,用户仍可通过 AboutSection 手动检查更新。
+  if (mainWindow) {
+    try {
+      initAutoUpdater(mainWindow)
+      scheduleUpdateChecks(runUpdateCheck)
+    } catch (err) {
+      mainLog.error('autoUpdater init failed (non-fatal):', err)
+    }
+  }
 })
 
 app.on('before-quit', () => {

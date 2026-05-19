@@ -16,6 +16,7 @@ import { registerNoteSourceHandlers } from './note-sources'
 import { registerConnectionHandlers } from './connections'
 import { registerCloudHandlers } from './cloud'
 import { registerAppHandlers } from './app'
+import { registerUpdaterHandlers } from './updater'
 
 export function registerAllHandlers(db: Database.Database, dataDir: string): void {
   registerNodeHandlers(db)
@@ -35,4 +36,5 @@ export function registerAllHandlers(db: Database.Database, dataDir: string): voi
   registerConnectionHandlers(dataDir)
   registerCloudHandlers(db)
   registerAppHandlers()
+  registerUpdaterHandlers()
 }

@@ -30,5 +30,11 @@
     "somethingWentWrong": "エラーが発生しました",
     "unexpectedError": "予期しないエラーが発生しました。",
     "retry": "再試行"
+  },
+  "updater": {
+    "ready": "新しいバージョン {{version}} の準備が完了",
+    "readyDesc": "Tide Mind を再起動して更新を完了します",
+    "installNow": "今すぐ再起動",
+    "installLater": "後で"
   }
 }

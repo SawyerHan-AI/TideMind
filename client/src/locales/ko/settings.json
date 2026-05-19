@@ -227,7 +227,12 @@
     "website": "웹사이트",
     "feedback": "피드백",
     "docs": "문서",
-    "license": "라이선스"
+    "license": "라이선스",
+    "downloading": "다운로드 중 {{percent}}%",
+    "downloaded": "다운로드 완료, 다시 시작 대기",
+    "installNow": "다시 시작하여 업데이트",
+    "signatureInvalid": "업데이트가 거부됨 (서명 무효)",
+    "stagedOut": "새 버전이 단계적으로 배포 중, 곧 받게 됩니다"
   },
   "noteSync": {
     "title": "연동된 노트",

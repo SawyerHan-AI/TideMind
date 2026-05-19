@@ -30,5 +30,11 @@
     "somethingWentWrong": "Qualcosa è andato storto",
     "unexpectedError": "Si è verificato un errore imprevisto.",
     "retry": "Riprova"
+  },
+  "updater": {
+    "ready": "Nuova versione {{version}} pronta",
+    "readyDesc": "Riavvia Tide Mind per completare l'aggiornamento",
+    "installNow": "Riavvia ora",
+    "installLater": "Più tardi"
   }
 }
