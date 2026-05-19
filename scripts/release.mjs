@@ -478,6 +478,15 @@ function signReleaseAssets(version, ossRepo, allowUnsigned = false) {
       console.log(`  skip ${platform}/${arch}: no matching asset`);
       continue;
     }
+    // gh CLI 的 asset 字段命名跟 GitHub REST API 不一致:
+    //   gh CLI:  asset.url = 下载 URL(browser-facing),asset.apiUrl = REST API URL
+    //   REST API 原始: asset.url = REST API URL,asset.browser_download_url = 下载 URL
+    // 这里走 `gh release view --json assets`,所以 asset.url 已经是下载 URL,与
+    // cloud-server 端点 findAsset 返回值(REST API 上下文的 browser_download_url)
+    // 一致,客户端验签的 message 才能对上。
+    // 2026-05-20 误把这里改成 asset.browser_download_url,在 gh CLI 上下文该字段是
+    // undefined,签出 "version\nundefined" 的错 .sig,导致 v0.2.66 全量客户端拒绝
+    // 更新。本提交是该错误的 revert。
     const url = asset.url ?? asset.browser_download_url;
     const message = Buffer.from(`${version}\n${url}`, 'utf8');
     const sig = crypto.sign(null, message, privateKey).toString('base64');

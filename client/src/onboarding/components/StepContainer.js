@@ -1,0 +1,10 @@
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import { motion } from 'framer-motion';
+import { useTranslation } from 'react-i18next';
+import { useOnboarding } from '../OnboardingContext';
+import { AlertTriangle } from 'lucide-react';
+export function StepContainer({ title, description, children, skippable, skipWarning, hideNav, nextLabel, hideBack, }) {
+    const { goNext, goBack, currentStep } = useOnboarding();
+    const { t } = useTranslation('onboarding');
+    return (_jsxs(motion.div, { initial: { opacity: 0, y: 20 }, animate: { opacity: 1, y: 0 }, exit: { opacity: 0, y: -20 }, transition: { duration: 0.3 }, className: "w-full max-w-3xl mx-auto", children: [_jsxs("div", { className: "text-center mb-6", children: [_jsx("h1", { className: "text-2xl font-semibold text-white mb-2", children: title }), description && (_jsx("p", { className: "text-sm text-gray-400 max-w-lg mx-auto leading-relaxed", children: description }))] }), _jsx("div", { className: "glass-card rounded-2xl p-6 mb-4", children: children }), !hideNav && (_jsxs("div", { className: "flex items-center justify-between", children: [_jsx("div", { children: !hideBack && currentStep > 0 && (_jsx("button", { onClick: goBack, className: "px-4 py-2 text-sm text-gray-400 hover:text-white transition-colors", children: t('nav.back') })) }), _jsxs("div", { className: "flex items-center gap-3", children: [skippable && (_jsx("button", { onClick: goNext, className: "px-4 py-2 text-sm text-gray-500 hover:text-gray-300 transition-colors", children: t('nav.skip') })), _jsx("button", { onClick: goNext, className: "px-5 py-2 text-sm font-medium text-white rounded-xl transition-all duration-200 hover:brightness-110", style: { background: 'linear-gradient(135deg, #818cf8, #a78bfa)' }, children: nextLabel || t('nav.next') })] })] })), skippable && skipWarning && (_jsxs("div", { className: "mt-3 flex items-start gap-2 px-1", children: [_jsx(AlertTriangle, { size: 13, className: "text-amber-400/70 flex-shrink-0 mt-0.5" }), _jsx("p", { className: "text-[11px] text-gray-500 leading-relaxed", children: skipWarning })] }))] }));
+}

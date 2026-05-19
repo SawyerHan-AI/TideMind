@@ -39,5 +39,10 @@
     "mandatoryTitle": "Mise à jour requise",
     "mandatoryDesc": "Tide Mind {{version}} contient des corrections requises. Vous devez mettre à jour pour continuer à utiliser l'application.",
     "mandatoryRestart": "Redémarrer maintenant pour mettre à jour"
+  },
+  "llmHealth": {
+    "paused": "IA en pause ({{min}} min avant nouvel essai)",
+    "recentFailures": "L'IA a échoué récemment",
+    "idle": "IA inactive depuis longtemps"
   }
 }

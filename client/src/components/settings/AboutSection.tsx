@@ -21,7 +21,7 @@ export function AboutSection() {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle')
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [updateError, setUpdateError] = useState<string | null>(null)
-  const [currentVersion, setCurrentVersion] = useState('0.2.66')
+  const [currentVersion, setCurrentVersion] = useState('0.2.67')
   const [updaterState, setUpdaterState] = useState<UpdaterState>({ status: 'idle' })
 
   useEffect(() => {
@@ -70,8 +70,12 @@ export function AboutSection() {
     window.api.updater.install().catch(() => {})
   }
 
-  // 自动更新进行中状态优先显示
+  // 自动更新进行中状态优先显示。包括 checking/available,避免 updater 已经在跑但
+  // 旧的"打开 GitHub Release 页面"按钮还显示出来被用户点了导致多余弹网页。
+  // 只在 idle / up-to-date / error 显示旧的手动检查 UI 作为降级路径。
   const isAutoUpdating =
+    updaterState.status === 'checking' ||
+    updaterState.status === 'available' ||
     updaterState.status === 'downloading' ||
     updaterState.status === 'downloaded' ||
     updaterState.status === 'signature-invalid' ||

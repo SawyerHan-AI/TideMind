@@ -39,5 +39,10 @@
     "mandatoryTitle": "更新が必要です",
     "mandatoryDesc": "Tide Mind {{version}} には重要な修正が含まれています。続行するには更新が必要です。",
     "mandatoryRestart": "今すぐ再起動して更新"
+  },
+  "llmHealth": {
+    "paused": "AI 停止中（{{min}} 分後に再試行）",
+    "recentFailures": "AI で最近失敗あり",
+    "idle": "AI が長時間アイドル"
   }
 }

@@ -1,0 +1,62 @@
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
+const IDLE_WARN_MS = 24 * 60 * 60 * 1000; // 24h
+export function LLMHealthBadge() {
+    const { t } = useTranslation('common');
+    const navigate = useNavigate();
+    const [health, setHealth] = useState(null);
+    useEffect(() => {
+        let cancelled = false;
+        const fetchOnce = async () => {
+            try {
+                const h = await window.api.llm.getHealth();
+                if (!cancelled)
+                    setHealth(h);
+            }
+            catch { /* main 进程没准备好就忽略 */ }
+        };
+        fetchOnce();
+        // 推送订阅 + 30s 轮询兜底
+        const unsubscribe = window.api.llm.onHealthChanged((h) => setHealth(h));
+        const timer = setInterval(fetchOnce, 30_000);
+        return () => {
+            cancelled = true;
+            clearInterval(timer);
+            unsubscribe();
+        };
+    }, []);
+    if (!health)
+        return null;
+    let display = { severity: 'hidden', label: '', dotClass: '', dotShadow: '' };
+    if (health.circuitState === 'open') {
+        const remainingMs = Math.max(0, (health.openedAt + health.cooldownMs) - Date.now());
+        const min = Math.ceil(remainingMs / 60_000);
+        display = {
+            severity: 'error',
+            label: t('llmHealth.paused', { min, defaultValue: 'AI 暂停中（{{min}} 分钟后重试）' }),
+            dotClass: 'bg-red-400 animate-pulse',
+            dotShadow: '0 0 6px rgba(248,113,113,0.5)',
+        };
+    }
+    else if (health.failures > 0) {
+        display = {
+            severity: 'warning',
+            label: t('llmHealth.recentFailures', { defaultValue: 'AI 近期有失败' }),
+            dotClass: 'bg-amber-400',
+            dotShadow: '0 0 6px rgba(251,191,36,0.4)',
+        };
+    }
+    else if (health.lastSuccessAt > 0 && Date.now() - health.lastSuccessAt > IDLE_WARN_MS) {
+        display = {
+            severity: 'warning',
+            label: t('llmHealth.idle', { defaultValue: 'AI 长时间无活动' }),
+            dotClass: 'bg-amber-400',
+            dotShadow: '0 0 6px rgba(251,191,36,0.4)',
+        };
+    }
+    if (display.severity === 'hidden')
+        return null;
+    return (_jsxs("button", { type: "button", onClick: () => navigate('/settings'), className: "w-full px-4 py-1.5 flex items-center gap-2 min-h-[28px] hover:bg-white/[0.03] transition-colors text-left", title: display.label, children: [_jsx("div", { className: `w-1.5 h-1.5 rounded-full flex-shrink-0 ${display.dotClass}`, style: { boxShadow: display.dotShadow } }), _jsx("span", { className: "text-[10px] text-gray-500 truncate", children: display.label })] }));
+}

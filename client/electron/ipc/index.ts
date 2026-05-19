@@ -17,6 +17,7 @@ import { registerConnectionHandlers } from './connections'
 import { registerCloudHandlers } from './cloud'
 import { registerAppHandlers } from './app'
 import { registerUpdaterHandlers } from './updater'
+import { registerLLMHealthHandlers } from './llm-health'
 
 export function registerAllHandlers(db: Database.Database, dataDir: string): void {
   registerNodeHandlers(db)
@@ -37,4 +38,5 @@ export function registerAllHandlers(db: Database.Database, dataDir: string): voi
   registerCloudHandlers(db)
   registerAppHandlers()
   registerUpdaterHandlers()
+  registerLLMHealthHandlers(db)
 }

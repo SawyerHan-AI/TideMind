@@ -1,0 +1,22 @@
+import type { AppleNotesAccount, NoteSourceTestResult, PermissionCheckResult } from './types';
+export declare function useAddNoteSourceConnection(step: number): {
+    toolType: string;
+    name: string;
+    selectedPath: string;
+    testResult: NoteSourceTestResult | null;
+    testing: boolean;
+    permissionResult: PermissionCheckResult | null;
+    checkingPermission: boolean;
+    appleAccounts: AppleNotesAccount[];
+    selectedAccountZpks: Set<number>;
+    loadingAccounts: boolean;
+    canProceed: boolean;
+    setName: import("react").Dispatch<import("react").SetStateAction<string>>;
+    selectToolType: (nextToolType: string) => void;
+    setNotionToken: (token: string) => void;
+    testNotionToken: () => Promise<void>;
+    selectFolderAndTest: () => Promise<void>;
+    checkAppleNotesPermission: () => Promise<void>;
+    toggleAccount: (zpk: number) => void;
+    buildFinalPath: () => string;
+};

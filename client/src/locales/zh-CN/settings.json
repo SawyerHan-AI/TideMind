@@ -149,6 +149,17 @@
       "reembedNeeded": "向量索引需要重算（升级或切换模型后触发）。重算期间搜索自动降级为全文检索。",
       "startReembed": "开始重算",
       "saved": "已保存"
+    },
+    "serviceStatus": {
+      "title": "AI 服务状态",
+      "never": "从未",
+      "currentStatus": "当前状态",
+      "statusPaused": "熔断中（剩余 {{min}} 分钟）",
+      "statusDegraded": "近期失败 {{count}} 次",
+      "statusHealthy": "正常",
+      "lastSuccess": "上次成功调用",
+      "lastError": "上次错误",
+      "hint": "如需排查或测试连接，请到下方“模型连接”分别测试每个 provider。"
     }
   },
   "data": {

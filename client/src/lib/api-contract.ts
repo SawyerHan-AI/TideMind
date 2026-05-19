@@ -58,6 +58,23 @@ export interface NoteSourceInitSnapshot {
   canDiscard: boolean
 }
 
+export interface LLMHealthSnapshot {
+  /** 'closed' = LLM 工作正常; 'open' = 熔断中（冷却到期前跳过 LLM 任务）; 'half-open' = 冷却到期，准备放探测任务 */
+  circuitState: 'closed' | 'open' | 'half-open'
+  /** 当前累计连续失败次数（成功后清零） */
+  failures: number
+  /** 熔断器打开时间戳（ms）；未打开时为 0 */
+  openedAt: number
+  /** 当前熔断器冷却时长（ms） */
+  cooldownMs: number
+  /** 上次 LLM 调用成功的时间戳（ms）；从未成功过为 0 */
+  lastSuccessAt: number
+  /** 上次失败错误消息（截断 500 字符）；从未失败为 null */
+  lastError: string | null
+  /** 上次失败时间戳（ms）；从未失败为 0 */
+  lastErrorAt: number
+}
+
 export interface PluginStatusResult {
   exists: boolean
   clientType?: PluginClientType
@@ -313,6 +330,10 @@ export interface AppApi {
     getChannel: () => Promise<'stable' | 'beta'>
     setChannel: (channel: 'stable' | 'beta') => Promise<void>
     onStateChanged: (cb: (state: UpdaterState) => void) => () => void
+  }
+  llm: {
+    getHealth: () => Promise<LLMHealthSnapshot>
+    onHealthChanged: (cb: (h: LLMHealthSnapshot) => void) => () => void
   }
   agents: {
     list: (includeArchived?: boolean) => Promise<AgentData[]>

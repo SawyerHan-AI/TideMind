@@ -149,6 +149,17 @@
       "reembedNeeded": "벡터 인덱스를 재계산해야 합니다 (업그레이드 또는 모델 전환 후 트리거). 재계산 중에는 검색이 자동으로 전문 검색으로 전환됩니다.",
       "startReembed": "재계산 시작",
       "saved": "저장됨"
+    },
+    "serviceStatus": {
+      "title": "AI 서비스 상태",
+      "never": "없음",
+      "currentStatus": "현재 상태",
+      "statusPaused": "서킷 차단 중 ({{min}}분 남음)",
+      "statusDegraded": "최근 실패: {{count}}회",
+      "statusHealthy": "정상",
+      "lastSuccess": "마지막 성공 호출",
+      "lastError": "마지막 오류",
+      "hint": "조사하거나 연결을 테스트하려면 아래 \"모델 연결\" 섹션을 사용하세요."
     }
   },
   "data": {

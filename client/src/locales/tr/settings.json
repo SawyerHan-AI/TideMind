@@ -149,6 +149,17 @@
       "reembedNeeded": "Vektör dizini yeniden hesaplanmalı (yükseltme veya model değişikliği sonrası tetiklenir). Yeniden hesaplama sırasında arama otomatik olarak tam metin aramaya düşer.",
       "startReembed": "Yeniden Hesaplamayı Başlat",
       "saved": "Kaydedildi"
+    },
+    "serviceStatus": {
+      "title": "AI Servis Durumu",
+      "never": "Hiç",
+      "currentStatus": "Mevcut durum",
+      "statusPaused": "Devre kesildi (kalan süre {{min}} dk)",
+      "statusDegraded": "Son hatalar: {{count}}",
+      "statusHealthy": "Sağlıklı",
+      "lastSuccess": "Son başarılı çağrı",
+      "lastError": "Son hata",
+      "hint": "Tanılamak veya bağlantıları test etmek için aşağıdaki \"Model Bağlantıları\" bölümünü kullanın."
     }
   },
   "data": {

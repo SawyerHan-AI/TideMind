@@ -39,5 +39,10 @@
     "mandatoryTitle": "Güncelleme Gerekli",
     "mandatoryDesc": "Tide Mind {{version}} gerekli düzeltmeler içeriyor. Uygulamayı kullanmaya devam etmek için güncellemelisiniz.",
     "mandatoryRestart": "Şimdi yeniden başlatarak güncelle"
+  },
+  "llmHealth": {
+    "paused": "AI duraklatıldı ({{min}} dk sonra tekrar denenecek)",
+    "recentFailures": "AI yakın zamanda hata aldı",
+    "idle": "AI uzun süredir etkin değil"
   }
 }

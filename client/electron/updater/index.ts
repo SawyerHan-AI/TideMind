@@ -199,5 +199,16 @@ export function installUpdate(): void {
     return
   }
   log.info('quitAndInstall')
+  // quitAndInstall(isSilent=false, isForceRunAfter=true):autoUpdater 内部调
+  // app.quit()。但 macOS 上 main.ts 的 window-all-closed handler 不让 macOS
+  // app.quit (line "if (process.platform !== 'darwin')"),进程会停在"窗口关了但
+  // 没真退"状态,Squirrel.Mac swap 完成后看到旧进程还活着,forceRunAfter 的
+  // relaunch 不触发。给 quitAndInstall 500ms 触发 before-quit 钩子清理 + spawn
+  // ShipIt helper,然后 app.exit(0) 强制进程退出。这是 macOS 自动更新模式的特
+  // 殊路径,普通退出走 graceful quit。
+  setTimeout(() => {
+    log.info('forcing app.exit after quitAndInstall (macOS graceful-quit bypass)')
+    app.exit(0)
+  }, 500)
   autoUpdater.quitAndInstall(false, true)
 }
