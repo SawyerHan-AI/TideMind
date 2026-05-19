@@ -19,26 +19,42 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
-      # 安装根目录依赖（核心引擎）
       - name: Install root dependencies
         run: npm ci
 
       - name: Build core engine
         run: npm run build
 
-      # 安装客户端依赖
       - name: Install client dependencies
         run: cd client && npm ci
 
-      # 构建客户端
       - name: Build client
         run: cd client && npm run build
 
-      # 打包 macOS(无签名版本,x64 + arm64 双架构)
+      # 打包 macOS:x64 + arm64 双架构。
+      # Code signing + notarize 由 env 控制:
+      #   - 没设 secrets 时:electron-builder 跳过签名 + 跳过公证,产出无签名 DMG
+      #     (用户下载装 app 会弹"无法打开,身份不明的开发者",需手动右键打开)
+      #   - 设了 5 个 secrets 时:自动签名 + 公证(Apple 服务器审核 ~2-5 分钟)
+      #
+      # 需要设的 GitHub Secrets(全部缺一不可,缺其中任一会降级到无签名):
+      #   MAC_CERTIFICATE                  Developer ID Application .p12 文件的 base64
+      #                                    (本地 openssl base64 -i cert.p12 | pbcopy)
+      #   MAC_CERTIFICATE_PASSWORD         导出 .p12 时设的密码
+      #   APPLE_ID                         Apple Developer 账号邮箱
+      #   APPLE_APP_SPECIFIC_PASSWORD      App-specific password(在 appleid.apple.com 生成)
+      #   APPLE_TEAM_ID                    10 字符 Team ID(在 developer.apple.com Membership 看)
+      #
+      # 详细配置步骤见 SECURITY.md §Apple Code Signing。
       - name: Package macOS
         run: cd client && npx electron-builder --mac --x64 --arm64 --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.MAC_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       # 上传到 GitHub Release
       #
@@ -58,26 +74,3 @@ jobs:
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # macOS with signing (当 Apple Developer 账号通过后启用)
-  # build-mac-signed:
-  #   runs-on: macos-latest
-  #   steps:
-  #     - uses: actions/checkout@v6
-  #     - uses: actions/setup-node@v6
-  #       with:
-  #         node-version: '22'
-  #         cache: 'npm'
-  #     - run: npm ci
-  #     - run: npm run build
-  #     - run: cd client && npm ci
-  #     - run: cd client && npm run build
-  #     - name: Package macOS (signed)
-  #       run: cd client && npx electron-builder --mac --publish never
-  #       env:
-  #         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  #         CSC_LINK: ${{ secrets.MAC_CERTIFICATE }}
-  #         CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
-  #         APPLE_ID: ${{ secrets.APPLE_ID }}
-  #         APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-  #         APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
