@@ -116,6 +116,20 @@ function LoggedInView({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
     window.api.app.openExternal('https://tidemind.ai/pricing')
   }
 
+  const handleManageSubscription = async () => {
+    // 跳云服务端 portal,服务端用浏览器 session cookie 鉴权后调 Creem API
+    // 拿到 Creem 托管 portal URL,302 跳过去。
+    // 注意:用户在浏览器需要先登录(客户端 OAuth token 不共享到浏览器),
+    // 未登录时 cloud-server 的 requireAuth 会引导到 /auth/login。
+    try {
+      const url = await window.api.cloud.billingPortalUrl()
+      window.api.app.openExternal(url)
+    } catch {
+      // IPC 失败极少见;退回到官网,用户可从那里登录后再找入口
+      window.api.app.openExternal('https://tidemind.ai/pricing')
+    }
+  }
+
   const isFree = !cloud.plan || cloud.plan === 'free'
   const planLabel = cloud.plan === 'pro_plus' ? 'Pro+' : cloud.plan === 'pro' ? 'Pro' : 'Free'
 
@@ -159,7 +173,6 @@ function LoggedInView({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
       {/* Subscription */}
       <Section
         title={t('settings:account.subscription', 'Subscription')}
-        action={isFree ? <ComingSoonTag /> : undefined}
       >
         <div className="space-y-3">
           <div className="flex items-center justify-between">
@@ -167,10 +180,32 @@ function LoggedInView({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
             <span className="text-xs text-gray-200 font-medium">{planLabel}</span>
           </div>
 
-          {isFree && (
-            <p className="text-xs text-gray-500">
-              {t('settings:account.subscriptionComingSoon', 'Pro and Pro+ plans are coming soon. Stay tuned for cloud sync, 7×24 metabolism, and more.')}
-            </p>
+          {isFree ? (
+            <>
+              <p className="text-xs text-gray-500">
+                {t('settings:account.upgradeHint', 'Upgrade to Pro for unlimited cloud memories, 5 devices, 7×24 cloud metabolism, and more.')}
+              </p>
+              <button
+                onClick={handleOpenPricing}
+                className="mt-1 px-3 py-1.5 rounded-md text-xs font-medium transition-all"
+                style={{
+                  background: brand.gradientAlpha,
+                  border: `1px solid ${brand.secondary}4d`,
+                  color: btnText.onBrand,
+                }}
+                onMouseEnter={e => (e.currentTarget.style.background = brand.gradientHover)}
+                onMouseLeave={e => (e.currentTarget.style.background = brand.gradientAlpha)}
+              >
+                {t('settings:account.viewPricing', 'View Plans & Pricing')}
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={handleManageSubscription}
+              className="mt-1 px-3 py-1.5 rounded-md text-xs font-medium text-gray-300 border border-white/10 hover:border-white/20 hover:text-white transition-all"
+            >
+              {t('settings:account.manageSubscription', 'Manage Subscription')}
+            </button>
           )}
         </div>
       </Section>

@@ -327,4 +327,11 @@ export function registerCloudHandlers(db?: Database.Database): void {
     const { getRegisterUrl } = await import('../cloud/auth-client.js');
     return getRegisterUrl();
   });
+
+  // Get Creem customer portal URL (server will redirect to Creem-hosted portal
+  // when browser hits this URL with valid session cookie).
+  ipcMain.handle('cloud:billing-portal-url', async () => {
+    const { getCloudBaseUrl } = await import('../cloud/auth-client.js');
+    return `${getCloudBaseUrl()}/api/v1/billing/portal`;
+  });
 }

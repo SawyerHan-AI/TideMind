@@ -21,7 +21,7 @@ export function AboutSection() {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle')
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [updateError, setUpdateError] = useState<string | null>(null)
-  const [currentVersion, setCurrentVersion] = useState('0.2.67')
+  const [currentVersion, setCurrentVersion] = useState('0.2.68')
   const [updaterState, setUpdaterState] = useState<UpdaterState>({ status: 'idle' })
 
   useEffect(() => {
