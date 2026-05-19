@@ -149,6 +149,17 @@
       "reembedNeeded": "Der Vektorindex muss neu berechnet werden (nach Upgrade oder Modellwechsel ausgeloest). Waehrend der Neuberechnung wechselt die Suche automatisch zur Volltextsuche.",
       "startReembed": "Neuberechnung starten",
       "saved": "Gespeichert"
+    },
+    "serviceStatus": {
+      "title": "KI-Dienststatus",
+      "never": "Nie",
+      "currentStatus": "Aktueller Status",
+      "statusPaused": "Stromkreis unterbrochen (noch {{min}} Min.)",
+      "statusDegraded": "Aktuelle Fehler: {{count}}",
+      "statusHealthy": "Gesund",
+      "lastSuccess": "Letzter erfolgreicher Aufruf",
+      "lastError": "Letzter Fehler",
+      "hint": "Zum Untersuchen oder Testen der Verbindungen verwenden Sie den Abschnitt „Modellverbindungen“ unten."
     }
   },
   "data": {

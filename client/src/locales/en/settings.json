@@ -149,6 +149,17 @@
       "reembedNeeded": "Vector index needs to be recalculated (triggered after upgrade or model switch). During recalculation, search automatically falls back to full-text search.",
       "startReembed": "Start Re-embedding",
       "saved": "Saved"
+    },
+    "serviceStatus": {
+      "title": "AI Service Status",
+      "never": "Never",
+      "currentStatus": "Current status",
+      "statusPaused": "Circuit-broken ({{min}} min remaining)",
+      "statusDegraded": "Recent failures: {{count}}",
+      "statusHealthy": "Healthy",
+      "lastSuccess": "Last successful call",
+      "lastError": "Last error",
+      "hint": "To investigate or test connections, use the \"Model Connections\" section below."
     }
   },
   "data": {

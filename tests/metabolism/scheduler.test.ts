@@ -26,7 +26,7 @@ vi.mock('../../src/config.js', () => ({
 
 vi.mock('../../src/llm/client.js', () => {
   class LLMServiceError extends Error {
-    constructor(msg: string) {
+    constructor(msg: string, public readonly statusCode?: number) {
       super(msg);
       this.name = 'LLMServiceError';
     }
@@ -41,8 +41,10 @@ import {
   rollbackClaim,
   runSchedulerTick,
   getTaskStatuses,
+  setHealthChangeListener,
   type TaskDefinition,
 } from '../../src/metabolism/scheduler.js';
+import { LLMServiceError } from '../../src/llm/client.js';
 
 let db: Database.Database;
 
@@ -250,6 +252,59 @@ describe('runSchedulerTick', () => {
       "SELECT title FROM timeline_events WHERE title LIKE '%circuit_breaker_off%'",
     ).all();
     expect(offEvents).toHaveLength(0);
+  });
+
+  // ===== 健康度信号 metadata =====
+
+  it('LLM 任务成功后写入 llm_last_success_at', async () => {
+    const llmTask = makeTask({ id: 'ok-task', requiresLLM: true });
+    const before = Date.now();
+    await runSchedulerTick(db, [llmTask]);
+
+    const row = db.prepare("SELECT value FROM metadata WHERE key = 'llm_last_success_at'").get() as { value: string } | undefined;
+    expect(row).toBeDefined();
+    const ts = Number(row!.value);
+    expect(ts).toBeGreaterThanOrEqual(before);
+    expect(ts).toBeLessThanOrEqual(Date.now() + 1000);
+  });
+
+  it('LLM 服务错误后写入 llm_last_error（截断到 500 字符）+ llm_last_error_at', async () => {
+    const longMessage = 'X'.repeat(800);
+    const llmTask: TaskDefinition = {
+      id: 'fail-task',
+      execute: vi.fn().mockRejectedValue(new LLMServiceError(longMessage, 500)),
+      intervalStrategy: 'test',
+      defaultIntervalMinutes: 0,
+      requiresLLM: true,
+    };
+    const before = Date.now();
+    await runSchedulerTick(db, [llmTask]);
+
+    const errRow = db.prepare("SELECT value FROM metadata WHERE key = 'llm_last_error'").get() as { value: string };
+    expect(errRow.value.length).toBe(500);
+
+    const tsRow = db.prepare("SELECT value FROM metadata WHERE key = 'llm_last_error_at'").get() as { value: string };
+    expect(Number(tsRow.value)).toBeGreaterThanOrEqual(before);
+  });
+
+  it('setHealthChangeListener 注入的回调在成功/失败时都会被触发', async () => {
+    const cb = vi.fn();
+    setHealthChangeListener(cb);
+    try {
+      // 成功
+      await runSchedulerTick(db, [makeTask({ id: 's', requiresLLM: true })]);
+      // 失败
+      await runSchedulerTick(db, [{
+        id: 'f',
+        execute: vi.fn().mockRejectedValue(new LLMServiceError('boom', 500)),
+        intervalStrategy: 'test',
+        defaultIntervalMinutes: 0,
+        requiresLLM: true,
+      }]);
+      expect(cb).toHaveBeenCalledTimes(2);
+    } finally {
+      setHealthChangeListener(null);
+    }
   });
 });
 

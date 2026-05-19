@@ -39,5 +39,10 @@
     "mandatoryTitle": "必须更新",
     "mandatoryDesc": "Tide Mind {{version}} 包含重要修复，需要更新后才能继续使用。",
     "mandatoryRestart": "立即重启更新"
+  },
+  "llmHealth": {
+    "paused": "AI 暂停中（{{min}} 分钟后重试）",
+    "recentFailures": "AI 近期有失败",
+    "idle": "AI 长时间无活动"
   }
 }

@@ -72,29 +72,29 @@ describe('runLinkEvaluate', () => {
     expect(result).toEqual({ evaluated: 0, confirmed: 0, deleted: 0 });
   });
 
-  it('过期的 pending 链接被删除', async () => {
+  it('过期的 pending 链接不再被 runLinkEvaluate 触碰（GC 已拆到 pending-link-gc）', async () => {
     vi.mocked(isLlmConfigured).mockReturnValue(true);
 
     const nodeA = seedNode(db, { content: 'node A' });
     const nodeB = seedNode(db, { content: 'node B' });
 
-    // 创建 pending 链接
+    // 创建超期 pending 链接
     const link = seedLink(db, nodeA.id, nodeB.id, {
       status: 'pending',
-      strength: 0.3,  // < 0.5，满足删除条件
+      strength: 0.3,
       auto: true,
     });
-
-    // 将 created 设为 10 天前（超过默认 7 天过期）
     const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
     db.prepare('UPDATE links SET created = ? WHERE id = ?').run(tenDaysAgo, link!.id);
 
     const result = await runLinkEvaluate(db);
-    expect(result.deleted).toBe(1);
+    // GC 已剥离，runLinkEvaluate 自己不再产生删除
+    // （LLM mock 返回 []，所以 evaluateBatch 也不会 deleteLink）
+    expect(result.deleted).toBe(0);
 
-    // 确认链接已被删除
+    // 链接仍存在（等 pending-link-gc 任务清理）
     const remaining = db.prepare('SELECT COUNT(*) as cnt FROM links WHERE id = ?').get(link!.id) as { cnt: number };
-    expect(remaining.cnt).toBe(0);
+    expect(remaining.cnt).toBe(1);
   });
 
   it('节点已被删除的链接被跳过', async () => {

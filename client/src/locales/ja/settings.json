@@ -149,6 +149,17 @@
       "reembedNeeded": "ベクトルインデックスの再計算が必要です（アップグレードまたはモデル切替後にトリガー）。再計算中は検索が自動的に全文検索にフォールバックします。",
       "startReembed": "再計算を開始",
       "saved": "保存しました"
+    },
+    "serviceStatus": {
+      "title": "AI サービスステータス",
+      "never": "なし",
+      "currentStatus": "現在の状態",
+      "statusPaused": "サーキットブレーカー作動中（残り {{min}} 分）",
+      "statusDegraded": "最近の失敗回数: {{count}}",
+      "statusHealthy": "正常",
+      "lastSuccess": "前回の成功",
+      "lastError": "前回のエラー",
+      "hint": "調査やテストを行うには、下の「モデル接続」セクションを使用してください。"
     }
   },
   "data": {

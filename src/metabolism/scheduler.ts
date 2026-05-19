@@ -233,16 +233,44 @@ export function getCircuitState(db: Database.Database): {
   return { state: 'open', failures, cooldownMs };
 }
 
-function recordLLMSuccess(db: Database.Database): void {
-  // 成功 → 重置所有熔断状态
-  db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, '0')").run(CB_FAILURES_KEY);
-  db.prepare('DELETE FROM metadata WHERE key IN (?, ?)').run(CB_OPENED_AT_KEY, CB_COOLDOWN_KEY);
+// 健康度信号 metadata key —— 供 UI 展示和 pending-link-gc 健康度门控使用
+const LLM_LAST_SUCCESS_KEY = 'llm_last_success_at';
+const LLM_LAST_ERROR_KEY = 'llm_last_error';
+const LLM_LAST_ERROR_AT_KEY = 'llm_last_error_at';
+
+// 健康状态变化时的回调（由 electron 主进程在启动时注册，core 层不直接依赖 electron）
+type HealthChangeListener = () => void;
+let healthChangeListener: HealthChangeListener | null = null;
+export function setHealthChangeListener(listener: HealthChangeListener | null): void {
+  healthChangeListener = listener;
+}
+function emitHealthChange(): void {
+  if (!healthChangeListener) return;
+  try { healthChangeListener(); } catch (err) {
+    log.warn(`health-change listener threw: ${(err as Error).message}`);
+  }
 }
 
-function recordLLMFailure(db: Database.Database): void {
+function recordLLMSuccess(db: Database.Database): void {
+  // 成功 → 重置所有熔断状态 + 刷新成功时间戳
+  db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, '0')").run(CB_FAILURES_KEY);
+  db.prepare('DELETE FROM metadata WHERE key IN (?, ?)').run(CB_OPENED_AT_KEY, CB_COOLDOWN_KEY);
+  db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)')
+    .run(LLM_LAST_SUCCESS_KEY, String(Date.now()));
+  emitHealthChange();
+}
+
+function recordLLMFailure(db: Database.Database, errMessage?: string): void {
   const { failures, cooldownMs } = getCircuitState(db);
   const newFailures = failures + 1;
   db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)').run(CB_FAILURES_KEY, String(newFailures));
+
+  if (errMessage) {
+    db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)')
+      .run(LLM_LAST_ERROR_KEY, errMessage.slice(0, 500));
+    db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)')
+      .run(LLM_LAST_ERROR_AT_KEY, String(Date.now()));
+  }
 
   if (newFailures >= CIRCUIT_FAILURE_THRESHOLD) {
     // 打开熔断器
@@ -263,6 +291,7 @@ function recordLLMFailure(db: Database.Database): void {
       important: 1,
     });
   }
+  emitHealthChange();
 }
 
 // ============================================================
@@ -343,25 +372,23 @@ export async function runSchedulerTick(
       executed.push(task.id);
       log.info(`任务完成: ${task.id}`);
 
-      // LLM 任务成功 → 重置熔断器
+      // LLM 任务成功 → 刷新健康度信号 + 视情况重置熔断器
       //
-      // 注意两种需要区分的情况：
-      //   a) half-open：之前真的 open 过，冷却到期后放一个探测任务，此次成功 → 真正从"开启"转回"关闭"
-      //      应该发 circuit_breaker_off 时间线事件 + info 日志。
-      //   b) closed but failures > 0：累计了 1-2 次失败但没达到阈值（即从未 open 过），
-      //      之后一次成功就清零计数即可。静默重置，不发事件——否则时间线会出现孤立的
-      //      "熔断器关闭" 事件而没有对应的"开启"事件，造成噪音。
+      // recordLLMSuccess 总是写 llm_last_success_at（健康度门控需要）。
+      // 时间线事件的区分：
+      //   a) half-open：之前真的 open 过，冷却到期后放一个探测任务，此次成功
+      //      → 真正从"开启"转回"关闭"，发 circuit_breaker_off 事件 + info 日志。
+      //   b) closed：closed but failures > 0 时也走 recordLLMSuccess 重置计数，
+      //      但不发事件——否则时间线会出现孤立的"熔断器关闭"事件而没有对应的"开启"事件，造成噪音。
       if (task.requiresLLM) {
+        recordLLMSuccess(db);
         if (circuit.state === 'half-open') {
-          recordLLMSuccess(db);
           log.info('LLM 熔断器已关闭（服务恢复）');
           logTimelineEvent(db, {
             type: 'config',
             subtype: 'settings_change',
             title: JSON.stringify({ key: 'circuit_breaker_off' }),
           });
-        } else if (circuit.failures > 0) {
-          recordLLMSuccess(db); // 静默重置累计失败计数
         }
         halfOpenProbed = true;
       }
@@ -373,7 +400,7 @@ export async function runSchedulerTick(
       // LLM 服务错误 → 标记不可用 + 熔断计数
       if (task.requiresLLM && err instanceof LLMServiceError) {
         llmAvailable = false;
-        recordLLMFailure(db);
+        recordLLMFailure(db, (err as Error).message);
         halfOpenProbed = true;
         log.warn(`LLM 服务错误，跳过本 tick 剩余 LLM 任务`);
       }

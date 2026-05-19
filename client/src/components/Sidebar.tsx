@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 import logoSrc from '../assets/logo.png'
 import { getProFeatures } from '../feature-registry'
 import { CloudStatus } from './sidebar/CloudStatus'
+import { LLMHealthBadge } from './sidebar/LLMHealthBadge'
 
 const coreNavKeys = [
   { to: '/', icon: LayoutDashboard, labelKey: 'nav.dashboard' },
@@ -81,6 +82,9 @@ export function Sidebar() {
         height: '1px',
         background: 'linear-gradient(90deg, transparent, var(--border-faint) 30%, var(--border-faint) 70%, transparent)',
       }} />
+
+      {/* LLM 健康状态 */}
+      <LLMHealthBadge />
 
       {/* Cloud 状态 */}
       <CloudStatus />

@@ -9,6 +9,7 @@ import { makeNodeCountGate } from './scheduler.js';
 import { runSynapticScaling } from './synaptic.js';
 import { runAnnotation } from './annotate.js';
 import { runLinkEvaluate } from './link-evaluate.js';
+import { runPendingLinkGc, pendingLinkGcGate } from './pending-link-gc.js';
 import { runLinkDiscover } from './link-discover.js';
 import { promoteFrequentTags } from './tag-promote.js';
 import { runDivergentScan, runCrystalEmergence, runKeystoneIdentification } from './divergent.js';
@@ -89,6 +90,18 @@ export const ALL_TASKS: TaskDefinition[] = [
     intervalStrategy: 'link-evaluate',
     defaultIntervalMinutes: 24 * 60,
     requiresLLM: true,
+  },
+  // 过期 pending 链接的物理 GC。独立于 LLM 任务：
+  // requiresLLM=false（不受熔断探测影响），gateCheck 用 llm_last_success_at
+  // 拦下 LLM 长期失败时的次生删除（2026-05-19 事故防御）。
+  {
+    id: 'pending-link-gc',
+    execute: async (db) => { runPendingLinkGc(db); },
+    intervalStrategy: 'link-evaluate',
+    intervalKey: 'gc_interval_minutes',
+    defaultIntervalMinutes: 24 * 60,
+    requiresLLM: false,
+    gateCheck: pendingLinkGcGate,
   },
   {
     id: 'link-discover',

@@ -183,6 +183,14 @@ const api: AppApi = {
       return () => { ipcRenderer.off('updater:state-changed', listener) }
     },
   },
+  llm: {
+    getHealth: () => ipcRenderer.invoke('llm:health'),
+    onHealthChanged: (cb) => {
+      const listener = (_ev: unknown, h: unknown) => cb(h as never)
+      ipcRenderer.on('llm-health-changed', listener)
+      return () => { ipcRenderer.off('llm-health-changed', listener) }
+    },
+  },
   agents: {
     list: (includeArchived?: boolean) => ipcRenderer.invoke('agents:list', includeArchived),
     create: (params: { name: string; tool_type: string }) => ipcRenderer.invoke('agents:create', params),

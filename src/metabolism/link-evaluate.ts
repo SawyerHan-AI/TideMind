@@ -78,18 +78,11 @@ export async function runLinkEvaluate(
 
   const lookbackHours = getParam('link-evaluate', 'lookback_hours', 48);
   const maxLinks = getParam('link-evaluate', 'max_links_per_run', 50);
-  const pendingExpireDays = getParam('link-evaluate', 'pending_expire_days', 7);
 
-  // 无界先清理过期 pending 链接:原逻辑把过期判定放到 LIMIT ? 之后的 JS 循环里,
-  // 意味着当 pending 堆积 > maxLinks(50) 时,超出 LIMIT 的那些"年纪更大的"
-  // pending 链接永远进不来,也永远不会过期被清,只能无限累积。
-  // 这里在任何 LIMIT 之前先无界 DELETE 所有超过 pending_expire_days 的 pending,
-  // 保证过期清理不被 per-run 预算挤掉。
-  const expiredCutoff = `-${pendingExpireDays} days`;
-  const purgedExpired = db.prepare(
-    `DELETE FROM links
-     WHERE status = 'pending' AND created < datetime('now', ?)`,
-  ).run(expiredCutoff).changes;
+  // 过期 pending 的清理由独立任务 pending-link-gc 负责（requiresLLM=false +
+  // 健康度门控）。本函数只负责 LLM 评估，不再做任何"过期 GC"副作用 —
+  // 历史上把 GC 嵌在 LLM 任务内部，曾在 LLM 长期失败时被半开探测周期性触发，
+  // 一次性误删大量等待评估的 pending（2026-05-19 事故）。
 
   // 收集需要评估的链接（合并 auto 新链接 + pending 链接）。
   // 必须显式排除 rejected_by_user — 用户已经明确拒绝的链接不应该被反复重新 LLM 评估,
@@ -120,28 +113,10 @@ export async function runLinkEvaluate(
     }
   }
 
-  if (allLinks.length === 0) return { evaluated: 0, confirmed: 0, deleted: purgedExpired };
+  if (allLinks.length === 0) return { evaluated: 0, confirmed: 0, deleted: 0 };
 
-  // 先处理过期的 pending 链接 — 过期一律删,不再留 strength>=0.5 的 pending
-  // 链接。之前加 strength<0.5 的意图是"高强度的再留一轮机会",但 pending
-  // 本身就意味着 LLM 没来得及/没配置来确认,留着只会让 pending 越积越多、
-  // evaluator 每次都要扫过它们。强度本身就是创建者自评,不应作为保护条件。
-  //
-  // 上面无界 DELETE 已经把过期 pending 清掉了,这里是一道 JS 侧兜底(防止
-  // 同 tick 内 datetime('now') 与 JS Date.now 的秒级误差漏掉边界行)。
-  let deleted = purgedExpired;
-  const toEvaluate: LinkRow[] = [];
-  for (const link of allLinks) {
-    if (link.status === 'pending') {
-      const daysSinceCreation = (Date.now() - new Date(link.created).getTime()) / (1000 * 60 * 60 * 24);
-      if (daysSinceCreation > pendingExpireDays) {
-        deleteLink(db, link.id);
-        deleted++;
-        continue;
-      }
-    }
-    toEvaluate.push(link);
-  }
+  let deleted = 0;
+  const toEvaluate: LinkRow[] = allLinks;
 
   // 预加载节点
   const nodeCache = new Map<string, BrainNode>();

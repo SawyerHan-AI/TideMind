@@ -149,6 +149,17 @@
       "reembedNeeded": "L'index vectoriel doit etre recalcule (declenche apres une mise a jour ou un changement de modele). Pendant le recalcul, la recherche se replie automatiquement sur la recherche textuelle.",
       "startReembed": "Demarrer le recalcul",
       "saved": "Enregistre"
+    },
+    "serviceStatus": {
+      "title": "État du service IA",
+      "never": "Jamais",
+      "currentStatus": "État actuel",
+      "statusPaused": "Disjoncteur ouvert ({{min}} min restantes)",
+      "statusDegraded": "Échecs récents : {{count}}",
+      "statusHealthy": "Sain",
+      "lastSuccess": "Dernier appel réussi",
+      "lastError": "Dernière erreur",
+      "hint": "Pour diagnostiquer ou tester, utilisez la section « Connexions de modèles » ci-dessous."
     }
   },
   "data": {

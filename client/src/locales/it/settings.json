@@ -149,6 +149,17 @@
       "reembedNeeded": "L'indice vettoriale deve essere ricalcolato (attivato dopo un aggiornamento o un cambio di modello). Durante il ricalcolo, la ricerca passa automaticamente alla ricerca testuale.",
       "startReembed": "Avvia Ricalcolo",
       "saved": "Salvato"
+    },
+    "serviceStatus": {
+      "title": "Stato del servizio IA",
+      "never": "Mai",
+      "currentStatus": "Stato attuale",
+      "statusPaused": "Interruttore aperto ({{min}} min rimanenti)",
+      "statusDegraded": "Errori recenti: {{count}}",
+      "statusHealthy": "Integro",
+      "lastSuccess": "Ultima chiamata riuscita",
+      "lastError": "Ultimo errore",
+      "hint": "Per indagare o testare le connessioni, usa la sezione «Connessioni modello» qui sotto."
     }
   },
   "data": {

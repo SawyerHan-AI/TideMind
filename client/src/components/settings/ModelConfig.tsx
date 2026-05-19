@@ -4,6 +4,7 @@ import { motion } from 'framer-motion'
 import { ModelConnection } from './ModelConnection'
 import { ModelSelection } from './ModelSelection'
 import { ModelUsage } from './ModelUsage'
+import { LLMHealthCard } from './LLMHealthCard'
 
 // ============================================================
 // Model Config: 子 tab 壳 — 模型对接 / 模型选择 / 用量统计
@@ -54,7 +55,12 @@ export function ModelConfig({ initialSub }: { initialSub?: string } = {}) {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2 }}
       >
-        {subTab === 'connection' && <ModelConnection />}
+        {subTab === 'connection' && (
+          <div className="space-y-6 max-w-2xl">
+            <LLMHealthCard />
+            <ModelConnection />
+          </div>
+        )}
         {subTab === 'selection' && <ModelSelection />}
         {subTab === 'usage' && <ModelUsage />}
       </motion.div>
