@@ -27,7 +27,11 @@
     "timezoneSystem": "システム ({{timezone}})",
     "onboarding": "セットアップウィザード",
     "onboardingDesc": "初期セットアップウィザードを再実行して、設定、モデル接続、連携を再構成します。",
-    "rerunOnboarding": "セットアップウィザードを再実行"
+    "rerunOnboarding": "セットアップウィザードを再実行",
+    "updateChannel": "更新チャンネル",
+    "updateChannelDesc": "Beta では新機能をいち早く受け取れますが、安定性が低い可能性があります。切り替えは次回チェック時に有効になります。",
+    "updateChannelStable": "安定版",
+    "updateChannelBeta": "ベータ"
   },
   "external": {
     "subtabs": {

@@ -27,7 +27,11 @@
     "timezoneSystem": "跟隨系統 ({{timezone}})",
     "onboarding": "設定精靈",
     "onboardingDesc": "重新執行初始設定精靈，重新配置偏好設定、模型連線和整合。",
-    "rerunOnboarding": "重新執行設定精靈"
+    "rerunOnboarding": "重新執行設定精靈",
+    "updateChannel": "更新頻道",
+    "updateChannelDesc": "Beta 版會更早收到新功能，但可能不穩定。切換在下次檢查時生效。",
+    "updateChannelStable": "穩定版",
+    "updateChannelBeta": "測試版"
   },
   "external": {
     "subtabs": {

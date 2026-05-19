@@ -16,6 +16,7 @@ import { getDataDir } from '@server/config.js'
 import type { UpdaterState } from '../../src/lib/api-contract'
 import { queryAndVerifyManifest } from './verifier.js'
 import { isInStagingBatch } from './staging.js'
+import { getUpdateChannel, setUpdateChannel as persistChannel, type UpdateChannel } from './channel.js'
 
 const log = createLogger('updater')
 
@@ -52,6 +53,7 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
 
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = true
+  applyChannelToAutoUpdater()
   autoUpdater.logger = {
     info: (m: unknown) => log.info(`[eu] ${String(m)}`),
     warn: (m: unknown) => log.warn(`[eu] ${String(m)}`),
@@ -79,11 +81,14 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
   })
 
   autoUpdater.on('update-downloaded', (info) => {
+    // 保留 mandatory 标记 — 验签阶段确定 mandatory 后存到 'available' state,
+    // 这里继承下来。避免 downloaded 阶段丢失上下文,导致强制更新模态显示不出来。
+    const mandatory = currentState.status === 'available' ? currentState.mandatory : false
     setState({
       status: 'downloaded',
       version: info.version,
       releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes.slice(0, 500) : undefined,
-      mandatory: false,
+      mandatory,
     })
   })
 
@@ -159,6 +164,28 @@ export async function runUpdateCheck(): Promise<void> {
     setState({ status: 'error', message: (err as Error).message })
   } finally {
     inflight = false
+  }
+}
+
+function applyChannelToAutoUpdater(): void {
+  const channel = getUpdateChannel()
+  // GitHub provider 下 allowPrerelease=true 让 autoUpdater 在拉 manifest 时接受
+  // prerelease tag 的 release。verifier.ts 也会把 channel 传给 cloud-server 端点,
+  // 端点路由 prerelease。两端一致才能保证 Beta 流程贯通。
+  autoUpdater.allowPrerelease = channel === 'beta'
+  log.info(`channel applied → ${channel} (allowPrerelease=${autoUpdater.allowPrerelease})`)
+}
+
+/**
+ * 切换更新频道:持久化到 config.toml 并立即应用到 autoUpdater 实例。
+ *
+ * 老版本下载完未安装时切换 channel,不会撤回那条下载 — quitAndInstall 仍生效。
+ * 切换的"立即生效"只针对未来检查路径。
+ */
+export function setUpdateChannel(channel: UpdateChannel): void {
+  persistChannel(channel)
+  if (initialized) {
+    applyChannelToAutoUpdater()
   }
 }
 

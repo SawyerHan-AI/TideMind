@@ -35,6 +35,9 @@
     "ready": "새 버전 {{version}}이 준비됨",
     "readyDesc": "Tide Mind를 다시 시작하여 업데이트를 완료하세요",
     "installNow": "지금 다시 시작",
-    "installLater": "나중에"
+    "installLater": "나중에",
+    "mandatoryTitle": "업데이트가 필요합니다",
+    "mandatoryDesc": "Tide Mind {{version}}에는 필수 수정사항이 포함되어 있습니다. 계속 사용하려면 업데이트해야 합니다。",
+    "mandatoryRestart": "지금 다시 시작하여 업데이트"
   }
 }

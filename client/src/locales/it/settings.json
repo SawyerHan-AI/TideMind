@@ -27,7 +27,11 @@
     "timezoneSystem": "Sistema ({{timezone}})",
     "onboarding": "Configurazione guidata",
     "onboardingDesc": "Riesegui la configurazione guidata iniziale per riconfigurare le tue preferenze, connessioni ai modelli e integrazioni.",
-    "rerunOnboarding": "Riesegui configurazione guidata"
+    "rerunOnboarding": "Riesegui configurazione guidata",
+    "updateChannel": "Canale di Aggiornamento",
+    "updateChannelDesc": "Beta consegna nuove funzionalità prima ma potrebbe essere meno stabile. Il cambio ha effetto al prossimo controllo.",
+    "updateChannelStable": "Stabile",
+    "updateChannelBeta": "Beta"
   },
   "external": {
     "subtabs": {

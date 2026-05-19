@@ -310,6 +310,8 @@ export interface AppApi {
     getState: () => Promise<UpdaterState>
     checkNow: () => Promise<void>
     install: () => Promise<void>
+    getChannel: () => Promise<'stable' | 'beta'>
+    setChannel: (channel: 'stable' | 'beta') => Promise<void>
     onStateChanged: (cb: (state: UpdaterState) => void) => () => void
   }
   agents: {

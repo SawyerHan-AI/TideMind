@@ -27,7 +27,11 @@
     "timezoneSystem": "System ({{timezone}})",
     "onboarding": "Einrichtungsassistent",
     "onboardingDesc": "Fuehren Sie den Einrichtungsassistenten erneut aus, um Ihre Einstellungen, Modellverbindungen und Integrationen neu zu konfigurieren.",
-    "rerunOnboarding": "Einrichtungsassistent erneut ausfuehren"
+    "rerunOnboarding": "Einrichtungsassistent erneut ausfuehren",
+    "updateChannel": "Update-Kanal",
+    "updateChannelDesc": "Beta liefert neue Features früher, kann aber weniger stabil sein. Der Wechsel wird beim nächsten Check wirksam.",
+    "updateChannelStable": "Stabil",
+    "updateChannelBeta": "Beta"
   },
   "external": {
     "subtabs": {

@@ -175,6 +175,8 @@ const api: AppApi = {
     getState: () => ipcRenderer.invoke('updater:get-state'),
     checkNow: () => ipcRenderer.invoke('updater:check-now'),
     install: () => ipcRenderer.invoke('updater:install'),
+    getChannel: () => ipcRenderer.invoke('updater:get-channel'),
+    setChannel: (channel: 'stable' | 'beta') => ipcRenderer.invoke('updater:set-channel', channel),
     onStateChanged: (cb) => {
       const listener = (_ev: unknown, state: unknown) => cb(state as never)
       ipcRenderer.on('updater:state-changed', listener)

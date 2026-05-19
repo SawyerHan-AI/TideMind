@@ -27,7 +27,11 @@
     "timezoneSystem": "Sistem ({{timezone}})",
     "onboarding": "Kurulum Sihirbazı",
     "onboardingDesc": "Tercihlerinizi, model bağlantılarınızı ve entegrasyonlarınızı yeniden yapılandırmak için ilk kurulum sihirbazını tekrar çalıştırın.",
-    "rerunOnboarding": "Kurulum Sihirbazını Tekrar Çalıştır"
+    "rerunOnboarding": "Kurulum Sihirbazını Tekrar Çalıştır",
+    "updateChannel": "Güncelleme Kanalı",
+    "updateChannelDesc": "Beta yeni özellikleri daha erken sunar ancak daha az kararlı olabilir. Değişiklik bir sonraki kontrolde geçerli olur.",
+    "updateChannelStable": "Kararlı",
+    "updateChannelBeta": "Beta"
   },
   "external": {
     "subtabs": {
