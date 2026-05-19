@@ -33,6 +33,18 @@ mac:
     - target: zip
       arch: [x64, arm64]
   hardenedRuntime: true
+  # Hardened Runtime entitlements:V8 JIT / native module dlopen / 网络访问。
+  # 不加这些,签名后的 app 启动时会被 macOS Hardened Runtime 限制崩溃。
+  entitlements: resources/entitlements.mac.plist
+  entitlementsInherit: resources/entitlements.mac.plist
+  # Notarize:启用 Apple 公证。需要 env APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD /
+  # APPLE_TEAM_ID 注入(看 .github/workflows/release.yml)。
+  # 这三个 env 缺一不可 — 缺失时 electron-builder 会跳过公证但仍签名(可接受降级)。
+  # 如果连 CSC_LINK(证书)也没设,会跳过整个签名流程(等于今天行为)。
+  notarize: true
+  # Gatekeeper assess 在 GitHub Actions runner 上必失败(没装证书 keychain 时),
+  # 设 false 跳过让 build 通过 — 真正的 gatekeeper 验证在用户机器装 app 时跑。
+  gatekeeperAssess: false
 
 dmg:
   title: Tide Mind
