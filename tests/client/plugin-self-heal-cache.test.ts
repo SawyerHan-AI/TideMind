@@ -241,3 +241,113 @@ describe('mirrorPluginToClaudeCache', () => {
     expect(result.patched).toBe(1)
   })
 })
+
+import { healClaudeCodeSkillFile } from '../../client/electron/runtime/plugin-self-heal'
+
+describe('healClaudeCodeSkillFile', () => {
+  let tmpDir: string
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'self-heal-skill-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('rewrites legacy SKILL.md frontmatter that lacks when_to_use', () => {
+    const oldFrontmatter = [
+      '---',
+      'description: "外部记忆系统"',
+      '---',
+      '',
+      '# Body of skill',
+      'do something',
+    ].join('\n')
+    const pluginDir = makePluginDir(tmpDir, {
+      ...defaultPluginFiles(),
+      'skills/tidemind/SKILL.md': oldFrontmatter,
+    })
+    const result = makeResult()
+
+    healClaudeCodeSkillFile(pluginDir, result)
+
+    const updated = fs.readFileSync(path.join(pluginDir, 'skills/tidemind/SKILL.md'), 'utf-8')
+    expect(updated).toMatch(/when_to_use:/)
+    expect(updated).toMatch(/allowed-tools:/)
+    // 原 body 保留
+    expect(updated).toContain('# Body of skill')
+    expect(updated).toContain('do something')
+    // pluginName 取自 plugin.json
+    expect(updated).toMatch(new RegExp(`mcp__${PLUGIN_NAME}__brain_recall`))
+    expect(result.patched).toBe(1)
+  })
+
+  it('preserves existing description value when rewriting', () => {
+    const oldFrontmatter = [
+      '---',
+      'description: "Custom user description"',
+      '---',
+      '',
+      'body',
+    ].join('\n')
+    const pluginDir = makePluginDir(tmpDir, {
+      ...defaultPluginFiles(),
+      'skills/tidemind/SKILL.md': oldFrontmatter,
+    })
+
+    healClaudeCodeSkillFile(pluginDir, makeResult())
+
+    const updated = fs.readFileSync(path.join(pluginDir, 'skills/tidemind/SKILL.md'), 'utf-8')
+    expect(updated).toContain('description: "Custom user description"')
+  })
+
+  it('no-op when SKILL.md already has when_to_use', () => {
+    const goodFrontmatter = [
+      '---',
+      'description: "x"',
+      'when_to_use: |',
+      '  abc',
+      'allowed-tools:',
+      '  - mcp__x__y',
+      '---',
+      '',
+      'body',
+    ].join('\n')
+    const pluginDir = makePluginDir(tmpDir, {
+      ...defaultPluginFiles(),
+      'skills/tidemind/SKILL.md': goodFrontmatter,
+    })
+    const result = makeResult()
+
+    healClaudeCodeSkillFile(pluginDir, result)
+
+    const after = fs.readFileSync(path.join(pluginDir, 'skills/tidemind/SKILL.md'), 'utf-8')
+    expect(after).toBe(goodFrontmatter)
+    expect(result.patched).toBe(0)
+  })
+
+  it('skips files without frontmatter', () => {
+    const pluginDir = makePluginDir(tmpDir, {
+      ...defaultPluginFiles(),
+      'skills/tidemind/SKILL.md': '# just a markdown\nno frontmatter',
+    })
+    const result = makeResult()
+
+    healClaudeCodeSkillFile(pluginDir, result)
+
+    expect(result.patched).toBe(0)
+  })
+
+  it('skips when SKILL.md does not exist', () => {
+    // Create a plugin dir without SKILL.md
+    const pluginDir = path.join(tmpDir, 'claude-code-noskill')
+    fs.mkdirSync(path.join(pluginDir, '.claude-plugin'), { recursive: true })
+    const result = makeResult()
+
+    healClaudeCodeSkillFile(pluginDir, result)
+
+    expect(result.scanned).toBe(0)
+    expect(result.patched).toBe(0)
+  })
+})

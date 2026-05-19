@@ -33,6 +33,7 @@ import os from 'node:os'
 import type Database from 'better-sqlite3'
 import { createLogger } from '@server/utils/logger.js'
 import { computePluginPatchVersion } from '../ipc/agent-plugins/claude-code-version'
+import { buildClaudeCodeSkillFrontmatter } from '../ipc/agent-plugins/claude-code'
 import { repairMarketplaceJson, repairClaudeSettings } from '@server/utils/marketplace-repair.js'
 import { getShimPath, getHookScriptPath, getPreCompactHookScriptPath, getPostCompactHookScriptPath, getMcpServerScriptPath } from './runtime-paths'
 import { listAgents } from '@server/db/agents.js'
@@ -225,6 +226,69 @@ function preCompactCommandNeedsPatch(command: string, shimPath: string, preCompa
 }
 
 /** Claude Code plugin 目录下的 .mcp.json 和 hooks.json */
+/**
+ * 检查 Claude Code SKILL.md 的 frontmatter,如果是老版本(只有 description,没有
+ * when_to_use / allowed-tools)就用 buildClaudeCodeSkillFrontmatter 重写一遍。
+ *
+ * Why: Phase 1 升级了 frontmatter 字段,但 self-heal 没同步处理,老用户需要手动
+ * "重建 plugin" 才能享用新 frontmatter。
+ * How to apply: 在 healClaudeCodePlugins 每个 plugin 循环里调一次。
+ *
+ * @internal exported only for unit testing.
+ */
+export function healClaudeCodeSkillFile(pluginDir: string, result: HealResult): void {
+  const skillFilePath = path.join(pluginDir, 'skills', 'tidemind', 'SKILL.md')
+  if (!fs.existsSync(skillFilePath)) return
+
+  result.scanned++
+  let content: string
+  try {
+    content = fs.readFileSync(skillFilePath, 'utf-8')
+  } catch (err: any) {
+    result.errors.push({ file: skillFilePath, error: err.message })
+    return
+  }
+
+  // 必须以 --- 开头才认为有 frontmatter。
+  if (!content.startsWith('---\n') && !content.startsWith('---\r\n')) return
+
+  // 找到第二个 --- 边界。
+  const closeMatch = content.indexOf('\n---\n', 4)
+  const closeIdx = closeMatch === -1 ? content.indexOf('\n---\r\n', 4) : closeMatch
+  if (closeIdx === -1) return  // 残缺 frontmatter,不动
+
+  const frontmatterRaw = content.substring(0, closeIdx)
+  // 已含 when_to_use 字段就不需要重写
+  if (/^when_to_use\s*:/m.test(frontmatterRaw)) return
+
+  // 解析 plugin.json 拿 name 字段。失败 → 用目录名作 fallback。
+  const pluginJsonFile = path.join(pluginDir, '.claude-plugin', 'plugin.json')
+  let pluginName = path.basename(pluginDir)
+  const pluginCfg = safeReadJson(pluginJsonFile)
+  if (pluginCfg?.name && typeof pluginCfg.name === 'string') {
+    pluginName = pluginCfg.name
+  }
+
+  // 从老 frontmatter 提取 description,没有则给默认值。
+  const descMatch = frontmatterRaw.match(/^description\s*:\s*"?([^"\n]+)"?/m)
+  const skillDescription = descMatch ? descMatch[1].trim() : '外部记忆系统'
+
+  // 计算 body 起始(跳过结束的 \n---\n)。
+  const closeMarkerLen = content.substring(closeIdx).startsWith('\n---\r\n') ? 6 : 5
+  const bodyStart = closeIdx + closeMarkerLen
+  const body = content.substring(bodyStart)
+
+  const newContent = buildClaudeCodeSkillFrontmatter(pluginName, skillDescription) + body
+
+  try {
+    safeWriteText(skillFilePath, newContent)
+    result.patched++
+    log.info(`patched SKILL.md frontmatter: ${skillFilePath}`)
+  } catch (err: any) {
+    result.errors.push({ file: skillFilePath, error: err.message })
+  }
+}
+
 function healClaudeCodePlugins(
   pluginsRoot: string,
   shimPath: string,
@@ -354,12 +418,17 @@ function healClaudeCodePlugins(
       }
     }
 
-    // 4) plugin.json#version 必须跟 hooks.json/.mcp.json/SKILL.md 内容同步,
+    // 4) SKILL.md frontmatter:老版本 plugin 只生成了 description,缺
+    //    when_to_use / allowed-tools 字段。补齐后下面 syncPluginVersion
+    //    会把 SKILL.md 内容哈希反映到 plugin.json 的 version,从而失效缓存。
+    healClaudeCodeSkillFile(pluginDir, result)
+
+    // 5) plugin.json#version 必须跟 hooks.json/.mcp.json/SKILL.md 内容同步,
     //    Claude Code 在 ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/
     //    下按 version 缓存,若 version 不变,缓存里的旧 hooks.json 永不更新。
     syncPluginVersion(pluginDir, result)
 
-    // 5) Claude Code 的本地缓存可能仍是旧版本的拷贝。即便我们 bump 了 plugin.json
+    // 6) Claude Code 的本地缓存可能仍是旧版本的拷贝。即便我们 bump 了 plugin.json
     //    的 version,Claude 可能不会立即丢弃旧 cache。为兜底:把源镜像同步进
     //    cache 里的所有 version 目录,让"现存任何版本被读到"都是正确内容。
     mirrorPluginToClaudeCache(pluginsRoot, name, result)

@@ -21,7 +21,7 @@ function generateSourceId(): string {
 /**
  * 当前 schema 版本。每次新增 migration 时递增。
  */
-const CURRENT_SCHEMA_VERSION = 22;
+const CURRENT_SCHEMA_VERSION = 26;
 
 /**
  * 完整建表 SQL — 包含所有字段，新数据库直接创建最新结构。
@@ -281,6 +281,23 @@ CREATE TABLE IF NOT EXISTS agents (
     last_active TEXT,
     created TEXT NOT NULL
 );
+
+-- Cloud sync dead-letter 表(2026-05-19)
+-- 用途:applyChanges 单条失败时(FK 违反、JSON 损坏、CHECK 约束、unknown table),
+-- 失败 change 入这里,allow cursor 推进,避免反复重拉同一坏数据卡死同步。
+-- resource_table 不加 CHECK:任何未来新增 table / 服务端发的 unknown table 都要能记录,
+-- 否则 dead-letter 自身被 CHECK 拒会让"修 cursor 卡死"的修复反过来让 cursor 卡死。
+CREATE TABLE IF NOT EXISTS cloud_sync_dead_letters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    resource_table TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    sync_version INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    error_message TEXT NOT NULL,
+    created TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (resource_table, resource_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dead_letter_version ON cloud_sync_dead_letters(sync_version);
 
 -- 笔记源表（多实例支持）
 CREATE TABLE IF NOT EXISTS note_sources (
@@ -1668,6 +1685,26 @@ const MIGRATIONS: Migration[] = [
         END;
       `);
       log.info('迁移 v25 完成: heat 越界守卫 trigger 已就位');
+    },
+  },
+  {
+    version: 26,
+    description: 'cloud_sync_dead_letters 表:applyChanges 失败项入此表,cursor 不再卡死',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS cloud_sync_dead_letters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            resource_table TEXT NOT NULL,
+            resource_id TEXT NOT NULL,
+            sync_version INTEGER NOT NULL,
+            payload TEXT NOT NULL,
+            error_message TEXT NOT NULL,
+            created TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE (resource_table, resource_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_dead_letter_version ON cloud_sync_dead_letters(sync_version);
+      `);
+      log.info('迁移 v26 完成: cloud_sync_dead_letters 表已就位');
     },
   },
 ];

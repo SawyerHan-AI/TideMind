@@ -18,6 +18,20 @@ import { createLogger } from '../utils/logger.js';
 const log = createLogger('divergent');
 
 /**
+ * 归一化分数:共享邻居数 / 几何平均度数。
+ *
+ * Why: hub 节点(度数极大)即便有 N 个共享邻居,也只是因为度数大顺带,
+ * 信息价值低。压低 hub 对,把"度数小、共享邻居多"的稀有对推到前面。
+ * How to apply: runDivergentScan 找到候选 pair 后用本函数算 score 排序。
+ * 退化:degA 或 degB 为 0 时 denom=0,这里 fallback 1 避免除零(理论上
+ * 不可能进这一支,因为 shared 都非空意味着两边各至少有 1 度)。
+ */
+export function scoreCandidatePair(shared: number, degA: number, degB: number): number {
+  const denom = Math.sqrt(degA * degB) || 1;
+  return shared / denom;
+}
+
+/**
  * 发散扫描 — 结构洞检测
  *
  * 找到"共享邻居 ≥ 2 但无直接链接"的节点对
@@ -102,12 +116,7 @@ export async function runDivergentScan(
       }
 
       if (shared.length >= minShared) {
-        // 归一化 score:共享邻居数 / 几何平均度数。两端度数都很大时会被压低,
-        // 真正稀有的对(度数小、共享邻居多)分数高。
-        const degA = neighborsA.size;
-        const degB = neighborsB.size;
-        const denom = Math.sqrt(degA * degB) || 1;
-        const score = shared.length / denom;
+        const score = scoreCandidatePair(shared.length, neighborsA.size, neighborsB.size);
         candidates.push({ a, b, shared: shared.length, sharedIds: shared, score });
       }
     }

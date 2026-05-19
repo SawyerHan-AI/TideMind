@@ -75,15 +75,45 @@ SIGNING_PRIVATE_KEY="$(cat ~/key.tmp.pem)" npm run release -- --version 0.2.62
 - 新版客户端 `/api/v1/update/latest` 返回时带 `signatureUrl`
 - 客户端拿到后用内置公钥验 `${version}\n${url}` 的 ed25519 签名,失败拒更新
 
-### 应急流程
+### 应急流程(双 key 平滑轮换,v0.2.64 起支持)
 
-**私钥泄漏怎么办?**
-1. 立即用 Step 1 生成新 keypair
-2. 客户端要支持"主公钥 + 备用公钥"双签名验证(当前实现只支持单 key,**长期 TODO**)
-3. 发新版客户端嵌入新公钥
-4. 等存量用户全部升级后,新 release 才能切到新 key
+**私钥泄漏怎么办?** 客户端 `UPDATE_PUBLIC_KEY_PEM_SECONDARY` 默认空,**当其填入时启用双 key 验证**:主或次公钥任一通过即接受签名。
 
-**当前单 key 限制**: 第一次密钥泄漏需要把所有用户挡在旧 release(或者临时回退到无签名模式)。所以**密钥保管比代码实现更重要**。
+```
+轮换流程(总时长由"用户升级速度"决定,通常 1~2 个月):
+
+阶段 1(当天):
+  1) 生成新 ed25519 keypair
+       node scripts/gen-signing-keypair.mjs
+  2) 把"新公钥"填入 client/electron/ipc/app.ts::UPDATE_PUBLIC_KEY_PEM_SECONDARY
+     主公钥 UPDATE_PUBLIC_KEY_PEM 暂时保留(老 release 仍用旧私钥签的 .sig)
+  3) 立即发版 vX.Y.Z(用旧主私钥签 .sig)→ 客户端含新 secondary 公钥但不会用到
+  4) 把"新私钥"存到 Keychain 的 secondary 槽:
+       security add-generic-password -U \
+         -a tidemind -s tidemind-signing-key-secondary -w "$(pbpaste)"
+     (先从 1Password 复制新私钥到 clipboard)
+
+阶段 2(等用户升级,1~4 周):
+  发版正常进行,继续用旧主私钥签 .sig。版本号叠加直到大部分用户升到含新 secondary
+  公钥的版本(通过 update API 的 version 字段统计)。
+
+阶段 3(切换):
+  5) 发版时设 SIGNING_PRIVATE_KEY_SECONDARY 指向"旧"私钥,
+     SIGNING_PRIVATE_KEY 指向"新"私钥 → 同时上传 .sig(新私钥签) + .sig.secondary(旧私钥签)
+     老客户端用旧公钥验 .sig.secondary,新客户端用新公钥验 .sig
+  6) 跑几个版本观察日志,确认所有客户端都能正常验签
+
+阶段 4(完成轮换):
+  7) 下一版本:把 UPDATE_PUBLIC_KEY_PEM 改成"新公钥",
+     UPDATE_PUBLIC_KEY_PEM_SECONDARY 清空
+  8) release.mjs 改为只用 SIGNING_PRIVATE_KEY(新私钥)单签
+  9) 旧私钥可销毁,旧公钥从 Keychain secondary 槽删除
+
+代码:client/electron/ipc/app.ts:verifyWithEitherKey + pro/cloud-server/src/update/routes.ts:findSecondarySignatureAsset
+单测:tests/client/update-signature.test.ts (10 cases 覆盖主/次/组合验证)
+```
+
+**密钥保管仍然比代码实现更重要** — 双 key 只是把"立即停服"延后为"等用户升级再切"。私钥本身泄漏后,攻击者依然能签任何 release,直到主公钥被替换。
 
 ---
 
@@ -221,6 +251,55 @@ CLOUD_WHITELIST=usr_abc,usr_def
 ## 6. JWT Secret(必须配置)
 
 `JWT_SECRET` env 必须设置 ≥32 字符强随机值。未设时 cloud-server 启动失败。
+
+---
+
+## 7. Neon Compute 配额监控(必须配置告警)
+
+### 风险
+
+Neon Postgres Free 套餐每月 100 CU-hr,Pro 套餐有更高但仍有上限。配额耗尽 → endpoint
+被强制 suspend → cloud-server 启动时 `getSql()` 抛错 → Railway 进入 crash-loop。
+
+**实际事故**: 2026-05-10 Free 配额耗尽,cloud.tidemind.ai crash-loop **5 天才被发现**
+(因为没人监控)。修复方法:升级到 Pro + 重新部署 + 加告警。
+
+### 代码层状态
+
+- cloud-server 无 Neon 配额监控代码 — 配额监控由 **Neon 控制台原生告警** 完成,不在
+  应用层做。原因:任何"自动告警脚本"都需要 NEON_API_KEY,放 Railway env 就把生产
+  DB 读权限给了运行环境。Neon 控制台告警走他们的可信通道,不需要把 key 暴露给应用。
+
+### 启用步骤(5 分钟,只需做一次)
+
+#### Step 1 — 在 Neon 控制台配告警
+
+1. 登录 https://console.neon.tech,选 TideMind 项目
+2. **Settings** → **Usage alerts**(或 **Billing** → **Usage notifications**,UI 在改版)
+3. 配两个阈值:
+   - **80% 阈值** → 邮件告警(让你有时间扩容 / 切换套餐)
+   - **100% 阈值** → 邮件告警 + 触发 endpoint suspend(防止意外超支)
+4. 接收邮箱填本人邮箱(同 Neon 账号)
+5. 确认收到 Neon 的"alerts configured"测试邮件
+
+#### Step 2 — 验证 endpoint suspend 行为
+
+Free 套餐撞 100% 后 endpoint 会被 suspend。Pro/Scale 套餐撞 100% 通常按超量收费不
+suspend,但仍然建议设阈值告警避免账单意外。
+
+#### Step 3 — Railway 端配 dependency health check(可选)
+
+如果 cloud-server 启动失败也想告警,可以在 Railway 加 deploy alert:
+- **Settings** → **Notifications** → 配 deploy failed → Email/Discord webhook
+
+### 排查
+
+- **症状: cloud.tidemind.ai 502 / health check timeout** → 第一步检查 Neon 控制台
+  是否有 "Endpoint suspended due to compute quota exceeded" 横幅
+- **症状: Railway 日志 `error: connection terminated unexpectedly` 反复** → 同上,
+  Neon endpoint 被 suspend 后 connection 拿不到
+- **修复**: Neon 控制台 → Project → Compute → Resume endpoint(Free 用户需先升级套餐
+  才能 Resume)
 
 ---
 

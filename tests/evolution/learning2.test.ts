@@ -64,7 +64,7 @@ vi.mock('../../src/evolution/feedback-signals.js', async (importOriginal) => {
 import type Database from 'better-sqlite3';
 import { setupTestDb, seedNode } from '../helpers/test-db.js';
 import { logParamFeedback } from '../../src/db/log.js';
-import { canRunLearning2, runLearning2, checkMonitoringWindows } from '../../src/evolution/learning2.js';
+import { canRunLearning2, runLearning2, checkMonitoringWindows, clampParam, PARAM_RANGES } from '../../src/evolution/learning2.js';
 import { invalidateGateCache } from '../../src/db/stats.js';
 
 let db: Database.Database;
@@ -406,5 +406,55 @@ describe('logParamFeedback', () => {
     expect(rows[0].param_name).toBe('threshold');
     expect(rows[0].signal_type).toBe('link_survival');
     expect(rows[0].signal_value).toBe(0.5);
+  });
+});
+
+
+// ── clampParam ────────────────────────────────────────────────
+
+describe('clampParam', () => {
+  it('已知阈值 dedup_threshold 被推到 0.4 时钳回 0.85', () => {
+    expect(clampParam('dedup_threshold', 0.4)).toBe(0.85);
+  });
+
+  it('已知阈值 landing_link_threshold 被推到 1.2 时钳回 0.90', () => {
+    expect(clampParam('landing_link_threshold', 1.2)).toBe(0.90);
+  });
+
+  it('整数阈值 landing_link_top_k 被推到 0 时钳回 1', () => {
+    expect(clampParam('landing_link_top_k', 0)).toBe(1);
+  });
+
+  it('整数阈值会先 round 再钳位', () => {
+    expect(clampParam('landing_link_top_k', 2.7)).toBe(3);
+    expect(clampParam('landing_link_top_k', 100)).toBe(5);
+  });
+
+  it('未在 PARAM_RANGES 表中的 key 透传不钳', () => {
+    expect(clampParam('custom_unknown_param', 99.0)).toBe(99.0);
+    expect(clampParam('custom_unknown_param', -100)).toBe(-100);
+  });
+
+  it('合法区间内的值透传不变', () => {
+    expect(clampParam('dedup_threshold', 0.92)).toBe(0.92);
+    expect(clampParam('decay_base', 0.05)).toBe(0.05);
+    expect(clampParam('vector_similarity_threshold', 0.55)).toBe(0.55);
+  });
+
+  it('边界值精确包含', () => {
+    expect(clampParam('dedup_threshold', 0.85)).toBe(0.85);
+    expect(clampParam('dedup_threshold', 0.98)).toBe(0.98);
+  });
+
+  it('PARAM_RANGES 表覆盖所有已知业务侧阈值', () => {
+    // 防止漏录入新参数。如果新增可调参数,这里要同步更新。
+    const knownThresholds = [
+      'dedup_threshold', 'landing_link_threshold', 'pending_link_threshold',
+      'landing_link_top_k', 'decay_base', 'decay_damping',
+      'link_decay_base', 'link_delete_threshold', 'vector_similarity_threshold',
+    ];
+    for (const key of knownThresholds) {
+      expect(PARAM_RANGES[key]).toBeDefined();
+    }
   });
 });
