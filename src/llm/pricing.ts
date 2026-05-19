@@ -53,9 +53,19 @@ const PRICING_TABLE: ModelPricing[] = [
 ]
 
 /**
+ * 保守 fallback 价格:未知模型按 Sonnet 价档计费。
+ * 静默返 0 是 bug —— Pro+ 托管 LLM 路径下让月度账单聚合漏算。
+ * 用 Sonnet 价格作 fallback 让计费偏向 "略高估" 而非 "漏算",上线新模型补 PRICING_TABLE 后即可精确。
+ */
+const FALLBACK_PRICING: ModelPricing = {
+  pattern: '__fallback__',
+  input: 3.00, output: 15.00, thinking: 15.00,
+};
+
+/**
  * 根据模型名和 token 数计算预估费用（美元）。
  * 模型名支持带版本后缀，如 `claude-sonnet-4-6@20250514`。
- * 未匹配到的模型返回 0。
+ * 未匹配到的模型走 FALLBACK_PRICING(保守估价 + log.error)。
  */
 export function estimateCost(
   modelId: string,
@@ -71,13 +81,10 @@ export function estimateCost(
   if (thinkingTokens < 0) thinkingTokens = 0;
 
   const id = modelId.toLowerCase()
-  const pricing = PRICING_TABLE.find(p => id.includes(p.pattern))
+  let pricing = PRICING_TABLE.find(p => id.includes(p.pattern))
   if (!pricing) {
-    // error 级别而非 warn:返 0 会导致计费遗漏(Pro+ 托管 LLM 场景下
-    // 直接让我们没收到钱)。上线新模型时必须把 pattern 加到 PRICING_TABLE,
-    // 否则整个月的该模型调用都是 0 成本。
-    log.error(`[pricing] Unknown model ID: ${modelId} — returning 0 cost, billing may be inaccurate. Add pattern to PRICING_TABLE.`);
-    return 0;
+    log.error(`[pricing] Unknown model ID: ${modelId} — using FALLBACK_PRICING (Sonnet-level rates). Add pattern to PRICING_TABLE for accurate billing.`);
+    pricing = FALLBACK_PRICING;
   }
 
   return (

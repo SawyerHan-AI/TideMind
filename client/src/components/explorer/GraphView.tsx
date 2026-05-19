@@ -142,14 +142,16 @@ export function GraphView({ filter, selectedId, onSelect, graphLimit = 500, onGr
   // data fetching
   const rev = useDataRevision(['nodes', 'links'])
   // 修复 M33(2026-05-09):deps 加 archived/sortBy/sortDir/createdAfter/createdBefore。
-  // window.api.nodes.graph 把整个 filter 传后端,这些字段都参与查询;原 deps
-  // 只列了部分字段,改这些过滤项不会触发重取,列表与图形脱节。
+  // 修复 (2026-05-19):再补 graphLimit。父组件把 graphLimit 通过 filter 透传,
+  // 后端 nodes.graph(filter) 用它决定 Top-N。如果不放进 deps,GraphToolbar 切换
+  // 节点上限(500/2000)时 IPC 不重取,图始终是初次的节点数,性能优化的限流控件失效。
   const { data: graphData } = useIPC(
     () => window.api.nodes.graph(filter),
     [
       filter.type, filter.tags, filter.heatMin, filter.heatMax, filter.search,
       filter.archived, filter.sortBy, filter.sortDir,
       filter.createdAfter, filter.createdBefore,
+      filter.graphLimit,
       rev,
     ],
   )

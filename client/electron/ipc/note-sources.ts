@@ -244,6 +244,7 @@ export function registerNoteSourceHandlers(): void {
   ipcMain.handle('note-sources:apple-notes-list-accounts', async () => {
     try {
       const { openNoteStoreDb, detectSchemaVersion, listAccounts, listNotes, countNotes } = await import('@server/integrations/apple-notes/database.js')
+      void listNotes  // 已 import 但本 handler 不用,保留 import 不增删 surface
       const db = openNoteStoreDb()
       try {
         const schema = detectSchemaVersion(db)
@@ -257,6 +258,11 @@ export function registerNoteSourceHandlers(): void {
         db.close()
       }
     } catch (err) {
+      // 至少把错误写到日志(权限被拒 / 库损坏 / 路径变更)。
+      // 不再静默返回 []——renderer 收到 []  会把"空账户"和"异常"混为一谈,
+      // 用户无法区分。本 handler 出错时 renderer 已有 catch 路径,继续抛出
+      // 不会破坏 UI;但日志至少帮排查。
+      log.warn(`apple-notes-list-accounts 失败: ${(err as Error).message}`)
       return []
     }
   })

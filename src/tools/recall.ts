@@ -118,8 +118,11 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
   // --- 语义搜索（混合：BM25 + 向量） ---
   else if (input.query) {
     usedHybridSearch = true;
+    // scope 过滤在 hybrid 后做 → 命中率低时实际结果远小于 limit (用户传 limit=8 但只剩 1-2 条)。
+    // 修复:有 scope 时 over-fetch limit*5(上限 100)再 filter 到 limit,保证用户拿到的数量符合预期。
+    const fetchLimit = input.scope ? Math.min(limit * 5, 100) : limit;
     const results = await searchHybrid(repo, input.query, {
-      limit,
+      limit: fetchLimit,
       type: input.type,
       intent: input.intent,
       context: input.context,
@@ -137,6 +140,8 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
         const tags = parseTags(n.tags);
         return tags.some(t => t === scopeTag);
       });
+      // 过滤后裁到用户期望的 limit。over-fetch 不再返回多余结果给上层。
+      if (nodes.length > limit) nodes = nodes.slice(0, limit);
     }
   }
   // --- 默认:返回最近的活跃节点 ---

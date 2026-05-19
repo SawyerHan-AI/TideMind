@@ -28,9 +28,16 @@ export function NoteSourceDetailPanel({
   const [importing, setImporting] = useState(false)
   const intervalInitialized = useRef(false)
 
+  // 切换 source 时,所有派生自 source.* 的 state 都要重置;否则 source A 的旧值
+  // 会被 effect 当作"用户改动"写到 source B 上 (例:展开 A 看到 poll=120,折叠后
+  // 展开 B 看到的仍是 120,debounced effect 把 B 的 poll_interval 覆盖为 120)。
   useEffect(() => {
     intervalInitialized.current = false
-  }, [source.id])
+    setPollInterval(source.poll_interval)
+    setNewName(source.name)
+    setEditing(false)
+    setTestResult(null)
+  }, [source.id, source.poll_interval, source.name])
 
   useEffect(() => {
     if (!intervalInitialized.current) {

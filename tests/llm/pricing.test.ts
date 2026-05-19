@@ -95,8 +95,10 @@ describe('estimateCost', () => {
 
   // ===== 防御性处理 =====
 
-  it('未知模型返回 0', () => {
-    expect(estimateCost('unknown-model', 1000, 1000, 0)).toBe(0);
+  it('未知模型走 FALLBACK_PRICING(Sonnet 价档)而非返 0', () => {
+    // 2026-05-19 修复:未知模型静默 0 让计费遗漏。改为按 Sonnet 价(3/15/15) fallback。
+    // 1000 input + 1000 output = (1000*3 + 1000*15) / 1M = 0.018
+    expect(estimateCost('unknown-model', 1000, 1000, 0)).toBeCloseTo(0.018, 5);
   });
 
   it('NaN token 返回 0', () => {

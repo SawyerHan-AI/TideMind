@@ -193,6 +193,9 @@ CREATE TABLE IF NOT EXISTS structure_holes_cache (
 -- tag_usage trigger:节点 INSERT / UPDATE(tags|archived|is_superseded)/ DELETE
 -- 时增量维护计数。active 定义:archived=0 AND is_superseded=0。
 -- 注意 trigger 是行级,OLD/NEW 是当前行的旧/新值;json_each 拆 tags 数组。
+-- 防御:历史数据/手工 SQL 可能在 tags 列写入非法 JSON(空字符串、损坏 JSON、
+-- 单个字符串非数组)。json_each 直接对非法 JSON 抛 "malformed JSON" 错让
+-- 整 UPDATE 失败。统一在 trigger 内用 json_valid() 过滤无效 JSON,治死回退到 '[]'。
 CREATE TRIGGER IF NOT EXISTS trg_tag_usage_after_insert
 AFTER INSERT ON nodes
 WHEN NEW.tags IS NOT NULL
@@ -201,7 +204,7 @@ WHEN NEW.tags IS NOT NULL
 BEGIN
     INSERT INTO tag_usage(tag, node_count, last_updated)
     SELECT value, 1, datetime('now')
-    FROM json_each(NEW.tags)
+    FROM json_each(CASE WHEN json_valid(NEW.tags) = 1 THEN NEW.tags ELSE '[]' END)
     WHERE typeof(value) = 'text' AND length(value) > 0
     ON CONFLICT(tag) DO UPDATE SET
         node_count = node_count + 1,
@@ -218,7 +221,7 @@ BEGIN
         node_count = node_count - 1,
         last_updated = datetime('now')
     WHERE tag IN (
-        SELECT value FROM json_each(OLD.tags) WHERE typeof(value) = 'text'
+        SELECT value FROM json_each(CASE WHEN json_valid(OLD.tags) = 1 THEN OLD.tags ELSE '[]' END) WHERE typeof(value) = 'text'
     );
     DELETE FROM tag_usage WHERE node_count <= 0;
 END;
@@ -233,13 +236,13 @@ BEGIN
     WHERE COALESCE(OLD.archived, 0) = 0
       AND COALESCE(OLD.is_superseded, 0) = 0
       AND tag IN (
-          SELECT value FROM json_each(COALESCE(OLD.tags, '[]'))
+          SELECT value FROM json_each(CASE WHEN json_valid(COALESCE(OLD.tags, '[]')) = 1 THEN COALESCE(OLD.tags, '[]') ELSE '[]' END)
           WHERE typeof(value) = 'text'
       );
     -- 加上 NEW active 状态下 tags 的贡献
     INSERT INTO tag_usage(tag, node_count, last_updated)
     SELECT value, 1, datetime('now')
-    FROM json_each(COALESCE(NEW.tags, '[]'))
+    FROM json_each(CASE WHEN json_valid(COALESCE(NEW.tags, '[]')) = 1 THEN COALESCE(NEW.tags, '[]') ELSE '[]' END)
     WHERE typeof(value) = 'text'
       AND length(value) > 0
       AND COALESCE(NEW.archived, 0) = 0
@@ -249,6 +252,24 @@ BEGIN
         last_updated = datetime('now');
     -- 清理零/负计数
     DELETE FROM tag_usage WHERE node_count <= 0;
+END;
+
+-- heat 字段语义守卫(2026-05-19):字段语义统一为 [0,1],trigger 在 INSERT/UPDATE
+-- 时把越界值钳回 [0,1]。SQLite ALTER TABLE 不支持 ADD CHECK,只能用 trigger;
+-- 行为是"修正"而非"拒绝",防止历史/新增 bug 写入 >1.0 让所有下游计算错位。
+-- maturity_score 在被钳前的 heat 上计算,所以一并把它重算(用钳后的 heat)。
+CREATE TRIGGER IF NOT EXISTS trg_nodes_heat_clamp_insert
+AFTER INSERT ON nodes
+WHEN NEW.heat < 0 OR NEW.heat > 1
+BEGIN
+    UPDATE nodes SET heat = MAX(0, MIN(1, NEW.heat)) WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_nodes_heat_clamp_update
+AFTER UPDATE OF heat ON nodes
+WHEN NEW.heat < 0 OR NEW.heat > 1
+BEGIN
+    UPDATE nodes SET heat = MAX(0, MIN(1, NEW.heat)) WHERE id = NEW.id;
 END;
 
 -- Agent 身份表
@@ -392,7 +413,10 @@ CREATE TRIGGER IF NOT EXISTS nodes_ad AFTER DELETE ON nodes BEGIN
     VALUES('delete', old.rowid, old.title, old.content, old.tags);
 END;
 
-CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE ON nodes BEGIN
+-- 必须用 OF 子句限定到 FTS 索引的字段(title/content/tags),否则任何字段 UPDATE
+-- 都重写 FTS:bumpHeat / synaptic 衰减 / refreshMaturityScore / archived 标记
+-- 等高频 update 触发无意义的 delete+insert 双写,FTS 索引膨胀 + WAL 暴涨。
+CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE OF title, content, tags ON nodes BEGIN
     INSERT INTO nodes_fts(nodes_fts, rowid, title, content, tags)
     VALUES('delete', old.rowid, old.title, old.content, old.tags);
     INSERT INTO nodes_fts(rowid, title, content, tags)
@@ -1533,6 +1557,117 @@ const MIGRATIONS: Migration[] = [
         );
       `);
       log.info('迁移 v22 完成: structure_holes_cache 已建(首次填充由 daemon 任务异步进行)');
+    },
+  },
+  {
+    version: 23,
+    description: 'FTS trigger 加 OF (title, content, tags) 限定,防止无关字段 UPDATE 触发写放大',
+    up: (db) => {
+      // 现有 nodes_au trigger 无 OF 子句,bumpHeat / synaptic 衰减等高频 UPDATE 都
+      // 重写 FTS。drop 后重建带 OF 子句版本(SCHEMA_SQL 里同步更新)。
+      db.exec(`
+        DROP TRIGGER IF EXISTS nodes_au;
+        CREATE TRIGGER nodes_au AFTER UPDATE OF title, content, tags ON nodes BEGIN
+            INSERT INTO nodes_fts(nodes_fts, rowid, title, content, tags)
+            VALUES('delete', old.rowid, old.title, old.content, old.tags);
+            INSERT INTO nodes_fts(rowid, title, content, tags)
+            VALUES (new.rowid, new.title, new.content, new.tags);
+        END;
+      `);
+      log.info('迁移 v23 完成: nodes_au trigger 已加 OF 子句,FTS 写放大已修');
+    },
+  },
+  {
+    version: 24,
+    description: 'tag_usage triggers 加 json_valid 防御,损坏 JSON 不再让 UPDATE 失败',
+    up: (db) => {
+      // 旧 triggers 直接 json_each(NEW.tags),遇到非法 JSON 抛 malformed JSON 让
+      // 整 UPDATE 失败,污染所有 UPDATE nodes 的事务。重建带 json_valid 守卫的版本。
+      db.exec(`
+        DROP TRIGGER IF EXISTS trg_tag_usage_after_insert;
+        DROP TRIGGER IF EXISTS trg_tag_usage_after_delete;
+        DROP TRIGGER IF EXISTS trg_tag_usage_after_update;
+        CREATE TRIGGER trg_tag_usage_after_insert
+        AFTER INSERT ON nodes
+        WHEN NEW.tags IS NOT NULL
+          AND COALESCE(NEW.archived, 0) = 0
+          AND COALESCE(NEW.is_superseded, 0) = 0
+        BEGIN
+            INSERT INTO tag_usage(tag, node_count, last_updated)
+            SELECT value, 1, datetime('now')
+            FROM json_each(CASE WHEN json_valid(NEW.tags) = 1 THEN NEW.tags ELSE '[]' END)
+            WHERE typeof(value) = 'text' AND length(value) > 0
+            ON CONFLICT(tag) DO UPDATE SET
+                node_count = node_count + 1,
+                last_updated = datetime('now');
+        END;
+        CREATE TRIGGER trg_tag_usage_after_delete
+        AFTER DELETE ON nodes
+        WHEN OLD.tags IS NOT NULL
+          AND COALESCE(OLD.archived, 0) = 0
+          AND COALESCE(OLD.is_superseded, 0) = 0
+        BEGIN
+            UPDATE tag_usage SET
+                node_count = node_count - 1,
+                last_updated = datetime('now')
+            WHERE tag IN (
+                SELECT value FROM json_each(CASE WHEN json_valid(OLD.tags) = 1 THEN OLD.tags ELSE '[]' END) WHERE typeof(value) = 'text'
+            );
+            DELETE FROM tag_usage WHERE node_count <= 0;
+        END;
+        CREATE TRIGGER trg_tag_usage_after_update
+        AFTER UPDATE OF tags, archived, is_superseded ON nodes
+        BEGIN
+            UPDATE tag_usage SET
+                node_count = node_count - 1,
+                last_updated = datetime('now')
+            WHERE COALESCE(OLD.archived, 0) = 0
+              AND COALESCE(OLD.is_superseded, 0) = 0
+              AND tag IN (
+                  SELECT value FROM json_each(CASE WHEN json_valid(COALESCE(OLD.tags, '[]')) = 1 THEN COALESCE(OLD.tags, '[]') ELSE '[]' END)
+                  WHERE typeof(value) = 'text'
+              );
+            INSERT INTO tag_usage(tag, node_count, last_updated)
+            SELECT value, 1, datetime('now')
+            FROM json_each(CASE WHEN json_valid(COALESCE(NEW.tags, '[]')) = 1 THEN COALESCE(NEW.tags, '[]') ELSE '[]' END)
+            WHERE typeof(value) = 'text'
+              AND length(value) > 0
+              AND COALESCE(NEW.archived, 0) = 0
+              AND COALESCE(NEW.is_superseded, 0) = 0
+            ON CONFLICT(tag) DO UPDATE SET
+                node_count = node_count + 1,
+                last_updated = datetime('now');
+            DELETE FROM tag_usage WHERE node_count <= 0;
+        END;
+      `);
+      log.info('迁移 v24 完成: tag_usage triggers 已加 json_valid 守卫');
+    },
+  },
+  {
+    version: 25,
+    description: 'heat 字段语义守卫:钳现有越界数据 + trigger 拦未来越界写入',
+    up: (db) => {
+      // 1. 修历史脏数据:之前 bumpHeat / dedup 钳到 10.0,旧 DB 里可能有 heat=1.5/9.x 的节点。
+      const fixed = db.prepare('UPDATE nodes SET heat = MAX(0, MIN(1, heat)) WHERE heat < 0 OR heat > 1').run();
+      if (fixed.changes > 0) {
+        log.info(`迁移 v25: 钳 ${fixed.changes} 个节点的 heat 到 [0,1]`);
+      }
+      // 2. 部署 trigger 到现有 DB(SCHEMA_SQL 已同步,新建 DB 直接带)。
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS trg_nodes_heat_clamp_insert
+        AFTER INSERT ON nodes
+        WHEN NEW.heat < 0 OR NEW.heat > 1
+        BEGIN
+            UPDATE nodes SET heat = MAX(0, MIN(1, NEW.heat)) WHERE id = NEW.id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS trg_nodes_heat_clamp_update
+        AFTER UPDATE OF heat ON nodes
+        WHEN NEW.heat < 0 OR NEW.heat > 1
+        BEGIN
+            UPDATE nodes SET heat = MAX(0, MIN(1, NEW.heat)) WHERE id = NEW.id;
+        END;
+      `);
+      log.info('迁移 v25 完成: heat 越界守卫 trigger 已就位');
     },
   },
 ];

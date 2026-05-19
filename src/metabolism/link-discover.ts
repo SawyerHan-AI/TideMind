@@ -65,7 +65,7 @@ function discoverByVectorNeighbors(db: Database.Database): { scanned: number; di
 
   const recentNodes = db.prepare(`
     SELECT id FROM nodes
-    WHERE heat > 0.1 AND is_meta = 0 AND is_crystal = 0 AND is_superseded = 0
+    WHERE heat > 0.1 AND archived = 0 AND is_meta = 0 AND is_crystal = 0 AND is_superseded = 0
     ORDER BY heat DESC
     LIMIT ?
   `).all(maxActiveNodes) as Array<{ id: string }>;

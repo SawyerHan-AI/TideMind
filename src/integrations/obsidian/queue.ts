@@ -18,7 +18,7 @@ import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { parseCanvas } from './canvas-parser.js';
 import {
   getFileState, setFileState, isFileChanged,
-  computeFileHash, computeContentHash,
+  computeFileHash, computeContentHash, computeSegmentHash,
 } from './sync-state.js';
 import { OBSIDIAN_EXCLUDED_DIRS } from './types.js';
 import { digest } from '../../tools/digest.js';
@@ -142,37 +142,40 @@ async function processOneFile(
   vaultRoot: string,
   sourceId?: string,
   shouldStop?: () => boolean,
-): Promise<void> {
+): Promise<boolean> {
+  // 返回 boolean = 文件是否产生了实质处理(已变更并已 digest/supersede)。
+  // watcher 用这个决定是否写 timeline 事件,与 Logseq 的 S10 修复对齐 —
+  // 单纯的 mtime 漂移 / 编辑器格式化未改内容,不应产生 obsidian_file_change 噪声。
   const repo = new SqliteRepository(db);
   const relPath = path.relative(vaultRoot, filePath).replace(/\\/g, '/');
   const progress = getProgress(sourceId);
   progress.currentFile = relPath;
 
   try {
-    if (shouldStop?.()) return;
+    if (shouldStop?.()) return false;
 
     // 检查同步状态
     const syncState = getFileState(db, relPath, sourceId);
     if (!isFileChanged(filePath, syncState)) {
       progress.skippedFiles++;
-      return;
+      return false;
     }
 
-    if (shouldStop?.()) return;
+    if (shouldStop?.()) return false;
 
     // Canvas 文件走单独管线
     if (filePath.endsWith('.canvas')) {
       await processCanvasFile(db, filePath, vaultRoot, relPath, syncState, sourceId, shouldStop);
-      if (shouldStop?.()) return;
+      if (shouldStop?.()) return false;
       progress.processedFiles++;
-      return;
+      return true;
     }
 
     // 预处理
     const preprocessed = preprocessFile(filePath, vaultRoot);
     if (!preprocessed) {
       progress.skippedFiles++;
-      return;
+      return false;
     }
 
     // 避免 TOCTOU：用预处理时读到的 rawContent 计算 hash
@@ -186,7 +189,7 @@ async function processOneFile(
 
     if (segments.length === 0 && category !== 'empty_tag' && category !== 'metadata_only') {
       progress.skippedFiles++;
-      return;
+      return false;
     }
 
     // 记录旧版本节点 ID
@@ -194,7 +197,7 @@ async function processOneFile(
 
     // 空白 / 元数据文件 → tag 节点
     if (segments.length === 0 || category === 'empty_tag' || category === 'metadata_only') {
-      if (shouldStop?.()) return;
+      if (shouldStop?.()) return false;
       const result = await digest(repo, {
         content: preprocessed.title,
         source: { tool: 'obsidian', files: [relPath] },
@@ -204,24 +207,37 @@ async function processOneFile(
         // 身份由 file relPath 负责，不走向量归并
         skipDedupMerge: true,
       });
-      if (shouldStop?.()) return;
+      if (shouldStop?.()) return false;
       const nodeIds = result.created_nodes?.map(n => n.id) ?? [];
       if (nodeIds.length === 0 && oldNodeIds.length > 0) {
         log.warn(`标签页 digest 未产生新节点,保留旧同步状态: ${relPath}`);
         progress.skippedFiles++;
-        return;
+        return false;
       }
       // 不直接标记 is_tag，由 promoteFrequentTags 按阈值判断
       updateSyncState(db, relPath, filePath, nodeIds, sourceId, contentHash);
       progress.processedFiles++;
-      return;
+      return true;
     }
 
-    // 逐段 digest
+    // 逐段 digest(段级 dedup,与 Logseq parity):
+    // 段内容 hash 未变 → 保留旧 nodeId,跳过 digest;变了或新增段才走 LLM 路径。
+    // 显著减少小修改的写放大(原版每次小改都重 digest 整个文件所有段)。
+    const oldHashes = syncState?.segment_hashes ?? [];
     const allNodeIds: string[] = [];
+    const allHashes: string[] = [];
 
-    for (const segment of segments) {
-      if (shouldStop?.()) return;
+    for (let i = 0; i < segments.length; i++) {
+      if (shouldStop?.()) return false;
+      const segment = segments[i];
+      const newHash = computeSegmentHash(segment.content);
+      allHashes.push(newHash);
+
+      // 段内容未变且有对应旧节点 → 保留原节点 ID
+      if (i < oldHashes.length && oldHashes[i] === newHash && i < oldNodeIds.length) {
+        allNodeIds.push(oldNodeIds[i]);
+        continue;
+      }
 
       const propEntries = Object.entries(preprocessed.metadata.properties);
       const propsStr = propEntries.length > 0
@@ -282,13 +298,17 @@ async function processOneFile(
       // 更新 content_hash,避免下次 isFileChanged 反复触发
       updateSyncState(db, relPath, filePath, [], sourceId, contentHash);
       progress.skippedFiles++;
-      return;
+      // 有 supersede 实际处理过(旧节点被标记)算 changed,无旧节点的纯空文件不算。
+      return oldNodeIds.length > 0;
     }
 
-    // 多段 part_of 关系串联
-    if (shouldStop?.()) return;
+    // 多段 part_of 关系串联。必须先 linkExists 守卫:每次同步都会重新生成
+     // allNodeIds(supersede 链),原版每次都创建新 part_of 链接,长期累积导致
+     // 同一对节点之间叠加几十条相同 link 噪声。
+    if (shouldStop?.()) return false;
     if (allNodeIds.length > 1) {
       for (let i = 1; i < allNodeIds.length; i++) {
+        if (linkExists(db, allNodeIds[i], allNodeIds[i - 1], 'from_to')) continue;
         createLink(db, {
           from_id: allNodeIds[i],
           to_id: allNodeIds[i - 1],
@@ -301,11 +321,14 @@ async function processOneFile(
       }
     }
 
-    // 版本替代：旧节点链接迁移到新节点，旧节点标记为 superseded
-    if (shouldStop?.()) return;
+    // 版本替代:段级 dedup 后,allNodeIds[i] === oldNodeIds[i] 时表示段未变(直接复用),
+    // 此时不应再 supersede 自己到自己。只 supersede 真正变化的段 + 段数减少场景的多余旧段。
+    if (shouldStop?.()) return false;
     if (oldNodeIds.length > 0 && allNodeIds.length > 0) {
       const pairs = Math.min(oldNodeIds.length, allNodeIds.length);
       for (let i = 0; i < pairs; i++) {
+        // 跳过段级 dedup 命中的位置(同 ID 表示该段从旧版完整复用):
+        if (oldNodeIds[i] === allNodeIds[i]) continue;
         supersedeNodeWithLinks(db, oldNodeIds[i], allNodeIds[i]);
       }
       // 多余旧段：supersede 到最后一个新节点，迁移链接、保留 updates 链
@@ -319,21 +342,23 @@ async function processOneFile(
     }
 
     // 属性值提升为 tag 节点
-    if (shouldStop?.()) return;
+    if (shouldStop?.()) return false;
     await promoteProps(db, preprocessed.metadata.properties, allNodeIds, 'obsidian', OBSIDIAN_SYSTEM_PROPERTIES);
 
     // 文件夹路径 → tag 节点链
-    if (shouldStop?.()) return;
+    if (shouldStop?.()) return false;
     await createFolderTagChain(db, relPath, allNodeIds);
 
-    // 更新同步状态
-    if (shouldStop?.()) return;
-    updateSyncState(db, relPath, filePath, allNodeIds, sourceId, contentHash);
+    // 更新同步状态(包含 segment_hashes 供下次段级 dedup 用)
+    if (shouldStop?.()) return false;
+    updateSyncState(db, relPath, filePath, allNodeIds, sourceId, contentHash, allHashes);
 
     progress.processedFiles++;
+    return true;
   } catch (err) {
     log.error(`文件处理失败 (${relPath}):`, (err as Error).message);
     progress.failedFiles++;
+    return false;
   }
 }
 
@@ -534,6 +559,7 @@ function updateSyncState(
   nodeIds: string[],
   sourceId?: string,
   contentHash?: string,
+  segmentHashes?: string[],
 ): void {
   let mtime = 0;
   let size = 0;
@@ -556,6 +582,7 @@ function updateSyncState(
     size,
     last_synced: now(),
     node_ids: nodeIds,
+    segment_hashes: segmentHashes ?? [],
   }, sourceId);
 }
 
@@ -564,7 +591,9 @@ function delay(ms: number): Promise<void> {
 }
 
 /**
- * 处理单个文件变更（watcher 调用）
+ * 处理单个文件变更（watcher 调用）。返回 true 表示文件实际被处理过(产生节点变化),
+ * watcher 据此决定是否写 timeline 事件。与 Logseq 的 S10 修复对齐,避免 mtime 漂移
+ * (git pull / Dropbox 同步 / 编辑器格式化保存) 触发空噪声事件。
  */
 export async function processFileChange(
   db: Database.Database,
@@ -572,6 +601,6 @@ export async function processFileChange(
   vaultRoot: string,
   sourceId?: string,
   shouldStop?: () => boolean,
-): Promise<void> {
-  await processOneFile(db, filePath, vaultRoot, sourceId, shouldStop);
+): Promise<boolean> {
+  return processOneFile(db, filePath, vaultRoot, sourceId, shouldStop);
 }

@@ -1,7 +1,7 @@
 import { ipcMain } from 'electron'
 import crypto from 'node:crypto'
 import type Database from 'better-sqlite3'
-import { deleteNodeCompletely } from '@server/db/node-lifecycle.js'
+import { archiveNodeWithVectors } from '@server/db/node-lifecycle.js'
 import {
   computeStructureHoles,
   readStructureHolesCache,
@@ -249,7 +249,11 @@ export function registerNodeHandlers(db: Database.Database): void {
       ).get(tag, tag) as { id: string } | undefined
       if (!tagNode) return
 
-      deleteNodeCompletely(db, tagNode.id, { ignoreMissingTables: true })
+      // 改为 archive 而非 hard delete:hard delete 不会通过 reconcile 同步到云端,
+      // 下次 reconcile 时云端会把节点反向推回本地复活。archived=1 配合 reconcile-policy
+      // 的 tombstone 优先规则,真正让"降级"在跨设备/云端持久生效。
+      // 配合下方 demoted 黑名单(line 254-263),前端拉回任何同名 tag 也会被挡住。
+      archiveNodeWithVectors(db, tagNode.id)
 
       // 加入降级黑名单
       const raw = db.prepare("SELECT value FROM metadata WHERE key = 'demoted_tags'").get() as { value: string } | undefined
@@ -518,7 +522,9 @@ export function registerNodeHandlers(db: Database.Database): void {
             const tags: string[] = JSON.parse(node.tags)
             if (Array.isArray(tags) && tags.includes(tagName)) {
               const filtered = tags.filter(t => t !== tagName)
-              db.prepare('UPDATE nodes SET tags = ? WHERE id = ?').run(JSON.stringify(filtered), link.from_id)
+              // 必须 bump updated 否则 cloud reconcile 看不见 tags 变化,
+              // 下次 reconcile 时云端旧 tags 会覆盖本地新值，被拒标签复活。
+              db.prepare("UPDATE nodes SET tags = ?, updated = datetime('now') WHERE id = ?").run(JSON.stringify(filtered), link.from_id)
               tagRemovedFromNode = true
             }
           } catch { /* 解析失败不阻塞主流程 */ }
@@ -594,7 +600,8 @@ export function registerNodeHandlers(db: Database.Database): void {
         }
         if (!tags.includes(tagName)) {
           tags.push(tagName)
-          db.prepare('UPDATE nodes SET tags = ? WHERE id = ?').run(JSON.stringify(tags), fromId)
+          // 同 rejectTag 路径，必须 bump updated 否则同步丢失 unreject 的还原。
+          db.prepare("UPDATE nodes SET tags = ?, updated = datetime('now') WHERE id = ?").run(JSON.stringify(tags), fromId)
         }
       }
     })()

@@ -14,8 +14,11 @@ const log = createLogger('obsidian:classify');
 /** Markdown 类扩展名 */
 const MD_EXTENSIONS = new Set(['.md', '.canvas']);
 
-/** frontmatter 匹配正则 */
-const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---/;
+/** frontmatter 匹配正则。支持 CRLF(\r?\n) — classifier 在 preprocessor CRLF
+ *  归一化之前的 raw content 上跑;只匹 LF 会让 Windows / 网盘文件的 frontmatter
+ *  全部不可见(metadata_only / Readwise / ChatGPT 导出判定全部失效)。
+ *  frontmatter.ts:181-186 已显式做 \r\n→\n 修过同类问题,这里同步。 */
+const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---/;
 
 /**
  * 分类所有文件

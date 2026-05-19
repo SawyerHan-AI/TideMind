@@ -217,7 +217,7 @@ describe('prepare - tags', () => {
 
 describe('prepare - crystals', () => {
   it('should include crystal nodes with snippets in highlighted', async () => {
-    seedNode(db, { type: 'crystal', content: 'user prefers concise code and TDD approach', heat: 5.0 });
+    seedNode(db, { type: 'crystal', content: 'user prefers concise code and TDD approach', heat: 0.9 });
 
     const result = await prepare(repo, { tool: 'cursor' });
 
@@ -227,8 +227,9 @@ describe('prepare - crystals', () => {
 
   it('should split crystals into highlighted and others', async () => {
     // Seed 10 crystals (default highlighted limit is 8)
+    // heat 在 [0,1] 范围内,递减保持排序
     for (let i = 0; i < 10; i++) {
-      seedNode(db, { type: 'crystal', content: `crystal insight ${i}`, heat: 10 - i });
+      seedNode(db, { type: 'crystal', content: `crystal insight ${i}`, heat: 1.0 - i * 0.05 });
     }
 
     const result = await prepare(repo, { tool: 'cursor' });
@@ -241,7 +242,7 @@ describe('prepare - crystals', () => {
 
   it('should truncate highlighted snippet to snippet length', async () => {
     const longContent = 'crystal: ' + 'a'.repeat(200);
-    seedNode(db, { type: 'crystal', content: longContent, heat: 5.0 });
+    seedNode(db, { type: 'crystal', content: longContent, heat: 0.9 });
 
     const result = await prepare(repo, { tool: 'cursor' });
 
@@ -250,8 +251,9 @@ describe('prepare - crystals', () => {
   });
 
   it('should order crystals by heat DESC', async () => {
-    seedNode(db, { type: 'crystal', content: 'cold insight', heat: 1.0 });
-    seedNode(db, { type: 'crystal', content: 'hot insight', heat: 9.0 });
+    // heat 在 [0,1] 范围内,保持 hot > cold 的相对大小
+    seedNode(db, { type: 'crystal', content: 'cold insight', heat: 0.3 });
+    seedNode(db, { type: 'crystal', content: 'hot insight', heat: 0.9 });
 
     const result = await prepare(repo, { tool: 'cursor' });
 

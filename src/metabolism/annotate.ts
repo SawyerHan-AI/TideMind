@@ -12,7 +12,7 @@ import { updateNode, getNode, parseTags } from '../db/nodes.js';
 import { getVectorForNode, searchVectors } from '../db/vectors.js';
 import { createLink, linkExists, getRejectedTagNamesForNode, getRecentRejectedNodesAcrossTags } from '../db/links.js';
 import { isVecLoaded } from '../db/connection.js';
-import { callLLM } from '../llm/client.js';
+import { callLLM, LLMServiceError } from '../llm/client.js';
 import { isLlmConfigured } from '../config.js';
 import { getPrompt, getParam, getLLMOptions, renderUserPrompt } from '../strategy/loader.js';
 import { logTimelineEvent } from '../db/log.js';
@@ -198,6 +198,9 @@ export async function runAnnotation(
       totalAnnotated += annotated;
       totalSkipped += batch.length - annotated;
     } catch (err) {
+      // LLMServiceError(429 / 5xx / 超时)必须向上抛,让 scheduler 看到并触发熔断器。
+      // 否则策略整轮"看起来成功"(返回 skipped),熔断器永不打开,持续撞墙烧 token。
+      if (err instanceof LLMServiceError) throw err;
       log.error('节点标注失败:', (err as Error).message);
       totalSkipped += batch.length;
     }

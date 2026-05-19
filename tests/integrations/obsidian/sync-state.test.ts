@@ -82,6 +82,7 @@ describe('ensureSyncSchema', () => {
 
 describe('sync state CRUD', () => {
   it('setFileState + getFileState 往返', () => {
+    // 2026-05-19: sync state 加 segment_hashes 字段(段级 dedup,与 Logseq parity)。
     const state = {
       file_path: '/vault/note.md',
       content_hash: 'abc123def456',
@@ -89,6 +90,7 @@ describe('sync state CRUD', () => {
       size: 2048,
       last_synced: '2024-06-15T12:00:00Z',
       node_ids: ['n1', 'n2'],
+      segment_hashes: [],
     };
 
     setFileState(db, state);

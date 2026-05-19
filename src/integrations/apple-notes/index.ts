@@ -418,8 +418,11 @@ async function pollForChangesInner(
 
     if (changedNotes.length === 0 && removed === 0) return;
     if (changedNotes.length === 0) {
-      // 只有删除，没有变更，仍然要更新 last_synced
+      // 只有删除，没有变更，仍然要更新 last_synced + lastDbMtimes;否则下次轮询
+      // 仍会判 currentMtime > lastDbMtimes 触发 openNoteStoreDb + listAllNoteUuids
+      // (打 Full Disk Access),浪费 IO。M16 修复点的对偶面。
       updateLastSynced(db, sourceId);
+      lastDbMtimes.set(sourceId, currentMtime);
       return;
     }
 

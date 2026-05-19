@@ -155,6 +155,10 @@ export function supersedeNodeWithLinks(
   newNodeId: string,
 ): void {
   db.transaction(() => {
+    // 事务内一致时间戳：所有 link 重定向使用同一 updated 值，避免微秒级漂移。
+    // 必须 bump updated，否则 reconcile 看不到 supersede 的 link reroute（manifest LWW）。
+    const ts = now();
+
     const outLinks = db.prepare(
       'SELECT * FROM links WHERE from_id = ? AND to_id != ?',
     ).all(oldNodeId, newNodeId) as LinkRow[];
@@ -169,9 +173,9 @@ export function supersedeNodeWithLinks(
       ).get(newNodeId, link.to_id) as Pick<LinkRow, 'id' | 'strength'> | undefined;
 
       if (!existingLinkOnNew) {
-        db.prepare('UPDATE links SET from_id = ? WHERE id = ?').run(newNodeId, link.id);
+        db.prepare('UPDATE links SET from_id = ?, updated = ? WHERE id = ?').run(newNodeId, ts, link.id);
       } else if (link.strength > existingLinkOnNew.strength) {
-        db.prepare('UPDATE links SET strength = ? WHERE id = ?').run(link.strength, existingLinkOnNew.id);
+        db.prepare('UPDATE links SET strength = ?, updated = ? WHERE id = ?').run(link.strength, ts, existingLinkOnNew.id);
       }
     }
 
@@ -181,9 +185,9 @@ export function supersedeNodeWithLinks(
       ).get(link.from_id, newNodeId) as Pick<LinkRow, 'id' | 'strength'> | undefined;
 
       if (!existingLinkOnNew) {
-        db.prepare('UPDATE links SET to_id = ? WHERE id = ?').run(newNodeId, link.id);
+        db.prepare('UPDATE links SET to_id = ?, updated = ? WHERE id = ?').run(newNodeId, ts, link.id);
       } else if (link.strength > existingLinkOnNew.strength) {
-        db.prepare('UPDATE links SET strength = ? WHERE id = ?').run(link.strength, existingLinkOnNew.id);
+        db.prepare('UPDATE links SET strength = ?, updated = ? WHERE id = ?').run(link.strength, ts, existingLinkOnNew.id);
       }
     }
 

@@ -84,15 +84,18 @@ export function createLink(
   const id = generateId();
   const created = now();
 
+  // INSERT 显式写 updated = created。否则新链接 updated=NULL，reconcile-policy 的
+  // parseSyncDate(null) 回落到 epoch 1970 → 永远输给云端任何时间戳 →
+  // 跨设备同步丢失新建链接，直到下次启动 v17 backfill 兜底。
   db.prepare(`
-    INSERT INTO links (id, from_id, to_id, relation, strength, note, auto, status, created)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO links (id, from_id, to_id, relation, strength, note, auto, status, created, updated)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id, params.from_id, params.to_id,
     JSON.stringify(params.relation),
     params.strength ?? 0.5,
     params.note ?? null, params.auto !== false ? 1 : 0,
-    params.status ?? 'confirmed', created,
+    params.status ?? 'confirmed', created, created,
   );
 
   const row = db.prepare('SELECT * FROM links WHERE id = ?').get(id) as RawLinkRow | undefined;
@@ -164,16 +167,18 @@ export function getLinksForNodes(
   return rows.map(hydrateLink);
 }
 
+// UPDATE links 必须显式 bump updated，否则 cloud reconcile manifest 看不到本地
+// link 变化（manifest LWW 比 updated）；客户端 SQLite 无触发器自动维护 updated。
 export function updateLinkStatus(db: Database.Database, id: string, status: LinkStatus): void {
-  db.prepare('UPDATE links SET status = ? WHERE id = ?').run(status, id);
+  db.prepare('UPDATE links SET status = ?, updated = ? WHERE id = ?').run(status, now(), id);
 }
 
 export function updateLinkStrength(db: Database.Database, id: string, strength: number): void {
-  db.prepare('UPDATE links SET strength = ? WHERE id = ?').run(strength, id);
+  db.prepare('UPDATE links SET strength = ?, updated = ? WHERE id = ?').run(strength, now(), id);
 }
 
 export function updateLinkRelation(db: Database.Database, id: string, relation: LinkRelation[]): void {
-  db.prepare('UPDATE links SET relation = ? WHERE id = ?').run(JSON.stringify(relation), id);
+  db.prepare('UPDATE links SET relation = ?, updated = ? WHERE id = ?').run(JSON.stringify(relation), now(), id);
 }
 
 export function deleteLink(db: Database.Database, id: string): void {

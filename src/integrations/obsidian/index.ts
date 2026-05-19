@@ -327,8 +327,11 @@ function startFilteredWatcher(
       }
 
       processFileChange(db, filePath, vaultRoot, sourceId, () => stoppedSources.has(sourceId))
-        .then(() => {
+        .then(changed => {
           if (stoppedSources.has(sourceId)) return;
+          // 仅当文件实际产生处理时写时间线,对齐 Logseq S10 修复。
+          // mtime 漂移 / 格式化保存 / git pull / Dropbox 同步等"无内容变化"事件不产生噪声。
+          if (!changed) return;
           logTimelineEvent(db, {
             type: 'memory',
             subtype: 'obsidian_file_change',

@@ -93,15 +93,15 @@ describe('CacheManager - applyChanges nodes', () => {
       data: { id: 'n-upsert', type: 'fact', content: 'original', heat: 1, refinement: 0, connectivity: 0, independence: 0, maturity_score: 0.2, created: '2026-01-01T00:00:00Z' },
     }], 'fake-token');
 
-    // Update same node
+    // Update same node。heat 字段语义统一到 [0,1] 后,fixture 不能用 2.5;改用合法范围内的值。
     await cache.applyChanges([{
       table: 'nodes', action: 'upsert', sync_version: 2,
-      data: { id: 'n-upsert', type: 'fact', content: 'updated', heat: 2.5, refinement: 0, connectivity: 0, independence: 0, maturity_score: 0.3, created: '2026-01-01T00:00:00Z' },
+      data: { id: 'n-upsert', type: 'fact', content: 'updated', heat: 0.8, refinement: 0, connectivity: 0, independence: 0, maturity_score: 0.3, created: '2026-01-01T00:00:00Z' },
     }], 'fake-token');
 
     const row = db.prepare('SELECT * FROM nodes WHERE id = ?').get('n-upsert') as any;
     expect(row.content).toBe('updated');
-    expect(row.heat).toBe(2.5);
+    expect(row.heat).toBe(0.8);
   });
 });
 

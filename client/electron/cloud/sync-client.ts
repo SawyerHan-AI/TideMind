@@ -153,6 +153,20 @@ export class CloudSyncClient {
   private wsAuthed = false;
 
   private async connectWebSocket(): Promise<void> {
+    // 互斥:并发调用(start / slowRetry / 手动 trigger)可能同时进入,会让 this.ws
+    // 被覆盖,旧 socket 既不 close 也不解绑 listener,泄漏 + 占用 per-token 连接配额
+    // (MAX_CONNECTIONS_PER_TOKEN=3),导致用户在快速重试场景下被服务端拒绝(4002)。
+    // 先 close 旧连接再开新的;readyState 为 CLOSED/CLOSING 时不动。
+    if (this.ws) {
+      const rs = this.ws.readyState;
+      if (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) {
+        log.debug('ws already connecting/open, closing before reconnect');
+        try { this.ws.close(1000, 'reconnect'); } catch { /* ignore */ }
+        this.ws.removeAllListeners();
+        this.ws = null;
+      }
+    }
+
     const token = await refreshTokenIfNeeded();
     if (!token) {
       log.info('no token available, skipping ws connect');
@@ -376,26 +390,41 @@ export class CloudSyncClient {
   }
 
   async pullChanges(token: string): Promise<number> {
-    const sinceVersion = this.cacheManager.getLastSyncedVersion();
+    // 修复 (2026-05-19): 必须 loop 直到 has_more=false。
+    // 原实现单次 fetch limit=100 后直接 return 丢弃 has_more,服务端一次截 100 条剩余
+    // 永远拉不回 — cacheManager 推进 cursor 后，下次只从最大版本号开始拉,中间
+    // skipped 的 sync_version 永久丢失。代谢/dedup/link-discover 一晚上几百条很常见。
+    //
+    // 安全上限 MAX_PAGES 防止云端 bug 导致 has_more 永真死循环。
     const base = getCloudBaseUrl();
-    const res = await fetch(`${base}/api/v1/sync/pull?since_version=${sinceVersion}&limit=100`, {
-      headers: { 'Authorization': `Bearer ${token}` },
-    });
-    if (!res.ok) {
-      if (res.status === 403) {
-        const body = await res.json().catch(() => ({}));
-        if (body.error === 'cloud_not_available') {
-          throw new Error('cloud_not_available');
+    const MAX_PAGES = 50; // 单次 sync 上限 5000 条;真有更多则等下次 sync 继续。
+    let totalPulled = 0;
+    let pages = 0;
+    while (pages < MAX_PAGES) {
+      pages++;
+      const sinceVersion = this.cacheManager.getLastSyncedVersion();
+      const res = await fetch(`${base}/api/v1/sync/pull?since_version=${sinceVersion}&limit=100`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        if (res.status === 403) {
+          const body = await res.json().catch(() => ({}));
+          if (body.error === 'cloud_not_available') {
+            throw new Error('cloud_not_available');
+          }
         }
+        throw new Error(`Pull failed: ${res.status}`);
       }
-      throw new Error(`Pull failed: ${res.status}`);
+      const data = await res.json();
+      if (data.changes.length > 0) {
+        await this.cacheManager.applyChanges(data.changes, token);
+        totalPulled += data.changes.length;
+      }
+      // 没有更多就退出;applyChanges 已推进 cursor,下页用新 sinceVersion。
+      if (!data.has_more || data.changes.length === 0) break;
     }
-    const data = await res.json();
-    if (data.changes.length > 0) {
-      await this.cacheManager.applyChanges(data.changes, token);
-      log.info(`pulled ${data.changes.length} changes`);
-    }
-    return data.changes.length;
+    if (totalPulled > 0) log.info(`pulled ${totalPulled} changes across ${pages} page(s)`);
+    return totalPulled;
   }
 
   async pushOutbox(token: string): Promise<number> {

@@ -11,7 +11,7 @@ import type Database from 'better-sqlite3';
 import { createNode, parseTags } from '../db/nodes.js';
 import { createLink, linkExists } from '../db/links.js';
 import { isLlmConfigured } from '../config.js';
-import { callLLM } from '../llm/client.js';
+import { callLLM, LLMServiceError } from '../llm/client.js';
 import { getParam, getPrompt, getLLMOptions, renderUserPrompt } from '../strategy/loader.js';
 import { logTimelineEvent } from '../db/log.js';
 import { invalidateGateCache } from '../db/stats.js';
@@ -236,6 +236,8 @@ async function findTopicEvolution(db: Database.Database): Promise<{ analyzed: nu
       updateConnectivity(db, crystalId);
       created++;
     } catch (err) {
+      // LLMServiceError 必须抛出让 scheduler 熔断生效(否则 LLM 全挂时持续撞墙)。
+      if (err instanceof LLMServiceError) throw err;
       log.warn(`时间结晶失败 tag=${topic.tag}: ${(err as Error).message}`);
     }
   }
@@ -376,6 +378,7 @@ async function findCrossTopicResonance(db: Database.Database): Promise<{ analyze
       updateConnectivity(db, crystalId);
       created++;
     } catch (err) {
+      if (err instanceof LLMServiceError) throw err;
       log.warn(`跨主题共振分析失败 week=${week.week}: ${(err as Error).message}`);
     }
   }

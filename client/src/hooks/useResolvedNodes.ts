@@ -18,10 +18,15 @@ export function useResolvedNodes(
   const loadedKey = useRef('')
   const latestKeyRef = useRef('')
 
-  useEffect(() => {
-    if (!enabled || nodeIds.length === 0) return
+  // 用 string dep key 避免数组引用比较:caller 不必 useMemo 自己稳定 nodeIds,
+  // hook 内部按内容比较。原版 deps [enabled, nodeIds] 按引用比对,父组件每次
+  // render 重建数组就重跑 effect,即使 ID 集合不变也会切到 loading 状态。
+  const nodeIdsKey = nodeIds.slice().sort().join(',')
 
-    const key = nodeIds.slice().sort().join(',')
+  useEffect(() => {
+    if (!enabled || nodeIdsKey.length === 0) return
+
+    const key = nodeIdsKey
     if (key === loadedKey.current) return
 
     prevKey.current = key
@@ -30,7 +35,7 @@ export function useResolvedNodes(
     setLoading(true)
 
     window.api.timeline
-      .resolveNodes(nodeIds)
+      .resolveNodes(nodeIdsKey.split(','))
       .then((result) => {
         if (key !== latestKeyRef.current) return // stale — a newer call has superseded us
         setNodeMap(result)
@@ -43,7 +48,7 @@ export function useResolvedNodes(
         if (key !== latestKeyRef.current) return
         setLoading(false)
       })
-  }, [enabled, nodeIds])
+  }, [enabled, nodeIdsKey])
 
   return { nodeMap, loading }
 }

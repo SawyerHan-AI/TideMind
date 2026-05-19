@@ -90,8 +90,9 @@ export async function reconsolidateNode(
   }
 
   // 更新热度和再巩固时间。bump updated 让 cloud reconcile + UI watcher 感知。
+  // heat 钳到 1.0 与 bumpHeat 对齐(原版钳到 10 让下游 [0,1] 假设全部错位)。
   const ts = now();
   db.prepare(`
-    UPDATE nodes SET heat = MIN(heat + 0.3, 10.0), last_reconsolidated = ?, updated = ? WHERE id = ?
+    UPDATE nodes SET heat = MIN(heat + 0.3, 1.0), last_reconsolidated = ?, updated = ? WHERE id = ?
   `).run(ts, ts, nodeId);
 }

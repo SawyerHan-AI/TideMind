@@ -63,16 +63,27 @@ export function Settings() {
   // URL 参数变化时同步 tab
   useEffect(() => {
     const t = searchParams.get('tab')
-    if (t && TABS.some(tb => tb.id === t) && t !== tab) {
-      setTab(t)
-    }
+    // 用函数式 setState 避免 stale closure: 之前 deps 漏 `tab` 时,t === tab
+    // 比较的是初次 mount 的闭包值，可能误判跳过更新。
+    setTab(prev => (t && TABS.some(tb => tb.id === t) && t !== prev) ? t : prev)
   }, [searchParams])
 
   const handleTabChange = (id: string) => {
     setTab(id)
-    // 清掉 URL 参数，避免残留
-    if (searchParams.has('tab')) {
-      setSearchParams({}, { replace: true })
+    // 用户在 tab 间切换时只清掉 tab/sub 参数（这两个对子页有同步意义），
+    // 其他 query 保留。旧实现直接 setSearchParams({}) 把 sub 也清了 →
+    // 从 Dashboard banner 跳 /settings?tab=external&sub=note 进来,点 tab 后
+    // sub 立刻被重置到默认值，用户感知不到为何"跳错位置"。
+    if (searchParams.has('tab') || searchParams.has('sub')) {
+      setSearchParams(
+        prev => {
+          const next = new URLSearchParams(prev)
+          next.delete('tab')
+          next.delete('sub')
+          return next
+        },
+        { replace: true },
+      )
     }
   }
 

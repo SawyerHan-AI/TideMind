@@ -162,7 +162,11 @@ export function registerCloudHandlers(db?: Database.Database): void {
     cloud.enabled = parsed.data; // 联动 MCP 路由开关
     current.cloud = cloud;
 
-    fs.writeFileSync(configPath, stringifyToml(current as any));
+    // 原子写:写 tmp 再 rename,防止写入中崩溃 / 断电留下半截 TOML 让下次
+     // parseToml 失败 fallback 到 {},用户云同步状态消失。
+    const tmpPath = `${configPath}.tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(tmpPath, stringifyToml(current as any));
+    fs.renameSync(tmpPath, configPath);
     reloadConfig();
     log.info(`cloud sync ${parsed.data ? 'enabled' : 'disabled'}`);
 
@@ -259,7 +263,10 @@ export function registerCloudHandlers(db?: Database.Database): void {
     const cloud = (current.cloud ?? {}) as Record<string, unknown>;
     cloud.metabolism_enabled = parsed.data;
     current.cloud = cloud;
-    fs.writeFileSync(configPath, stringifyToml(current as any));
+    // 原子写,见 set-sync-enabled 同处理。
+    const tmpPath = `${configPath}.tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(tmpPath, stringifyToml(current as any));
+    fs.renameSync(tmpPath, configPath);
     reloadConfig();
     log.info(`cloud metabolism ${parsed.data ? 'enabled' : 'disabled'}`);
     emitCloudChanged();

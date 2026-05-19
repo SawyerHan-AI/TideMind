@@ -187,17 +187,19 @@ describe('recall - node_id mode', () => {
   });
 
   it('should include maturity info in response', async () => {
-    const node = seedNode(db, { content: 'maturity test', heat: 2.0, refinement: 0.5 });
+    // 2026-05-19: heat 字段语义统一到 [0,1]。原测试用 heat=2.0 是基于旧"钳到 10"行为,
+    // 现在 seed 起点必须 ≤1.0,bump 后也 ≤1.0。改用 heat=0.5 + bump 0.1 = 0.6 验证 bump 生效。
+    const node = seedNode(db, { content: 'maturity test', heat: 0.5, refinement: 0.5 });
 
     const result = await recall(repo, { node_id: node.id });
 
     expect(result.nodes[0].maturity).toBeDefined();
     // Response uses the in-memory node object (pre-bump value), DB is bumped separately
-    expect(result.nodes[0].maturity.heat).toBe(2.0);
+    expect(result.nodes[0].maturity.heat).toBe(0.5);
     expect(result.nodes[0].maturity.refinement).toBe(0.5);
     // But the DB value should be bumped
     const afterDb = getNode(db, node.id);
-    expect(afterDb!.heat).toBeCloseTo(2.1, 5);
+    expect(afterDb!.heat).toBeCloseTo(0.6, 5);
   });
 });
 
@@ -205,17 +207,18 @@ describe('recall - node_id mode', () => {
 
 describe('recall - heat bump side effect', () => {
   it('should bump heat on recalled nodes', async () => {
-    const node = seedNode(db, { content: 'heat bump test', heat: 1.0 });
+    // heat 起点 < 1.0 才能验证 bump 让 heat 增加(钳位上限 1.0)。
+    const node = seedNode(db, { content: 'heat bump test', heat: 0.5 });
 
     await recall(repo, { node_id: node.id });
 
     const after = getNode(db, node.id);
-    expect(after!.heat).toBeCloseTo(1.1, 5);
+    expect(after!.heat).toBeCloseTo(0.6, 5);
   });
 
   it('should bump heat on all returned nodes', async () => {
-    const n1 = seedNode(db, { content: 'node A', heat: 1.0 });
-    const n2 = seedNode(db, { content: 'node B', heat: 2.0 });
+    const n1 = seedNode(db, { content: 'node A', heat: 0.5 });
+    const n2 = seedNode(db, { content: 'node B', heat: 0.4 });
     vi.mocked(searchHybrid).mockResolvedValueOnce([
       { node: n1, score: 0.9, source: 'hybrid' },
       { node: n2, score: 0.8, source: 'hybrid' },
@@ -225,9 +228,9 @@ describe('recall - heat bump side effect', () => {
 
     const a1 = getNode(db, n1.id);
     const a2 = getNode(db, n2.id);
-    // P1-1: heat bump 按排名衰减，第 1 名 +0.1，第 2 名 +0.05
-    expect(a1!.heat).toBeCloseTo(1.1, 5);
-    expect(a2!.heat).toBeCloseTo(2.05, 5);
+    // P1-1: heat bump 按排名衰减,第 1 名 +0.1,第 2 名 +0.05
+    expect(a1!.heat).toBeCloseTo(0.6, 5);
+    expect(a2!.heat).toBeCloseTo(0.45, 5);
   });
 });
 
@@ -404,8 +407,8 @@ describe('recall - from_node mode', () => {
 
 describe('recall - default mode', () => {
   it('should return recent active nodes when no query params', async () => {
-    seedNode(db, { content: 'active node 1', heat: 3.0 });
-    seedNode(db, { content: 'active node 2', heat: 1.0 });
+    seedNode(db, { content: 'active node 1', heat: 0.9 });
+    seedNode(db, { content: 'active node 2', heat: 0.5 });
 
     const result = await recall(repo, {});
 
@@ -511,7 +514,7 @@ describe('recall - index mode', () => {
     const node = seedNode(db, {
       content: 'detailed content that should be truncated to snippet',
       tags: ['alpha'],
-      heat: 2.5,
+      heat: 0.8,
     });
 
     const result = await recall(repo, { node_id: node.id, mode: 'index' });
@@ -589,11 +592,11 @@ describe('recall - index mode', () => {
   });
 
   it('should still bump heat in index mode', async () => {
-    const node = seedNode(db, { content: 'index heat test', heat: 1.0 });
+    const node = seedNode(db, { content: 'index heat test', heat: 0.5 });
 
     await recall(repo, { node_id: node.id, mode: 'index' });
 
     const after = getNode(db, node.id);
-    expect(after!.heat).toBeCloseTo(1.1, 5);
+    expect(after!.heat).toBeCloseTo(0.6, 5);
   });
 });
