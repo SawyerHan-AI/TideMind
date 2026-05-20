@@ -175,7 +175,11 @@ const api: AppApi = {
   },
   updater: {
     getState: () => ipcRenderer.invoke('updater:get-state'),
-    checkNow: () => ipcRenderer.invoke('updater:check-now'),
+    // options.autoDownload=false → 找到新版停在 'available' 等用户手动触发下载
+    // 不传 / true → scheduler 路径的默认自动下载
+    checkNow: (options?: { autoDownload?: boolean }) => ipcRenderer.invoke('updater:check-now', options),
+    // 用户从 'available' 状态点"下载"按钮时调用,触发 autoUpdater.downloadUpdate()
+    downloadNow: () => ipcRenderer.invoke('updater:download-now'),
     install: () => ipcRenderer.invoke('updater:install'),
     getChannel: () => ipcRenderer.invoke('updater:get-channel'),
     setChannel: (channel: 'stable' | 'beta') => ipcRenderer.invoke('updater:set-channel', channel),

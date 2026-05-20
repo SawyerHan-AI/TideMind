@@ -44,6 +44,8 @@
     "checking": "Denetleniyor…",
     "upToDate": "Güncel",
     "available": "v{{version}} mevcut",
+    "availableClickToDownload": "v{{version}} · İndir",
+    "availableTitle": "Yeni sürüm v{{version}} mevcut. İndirmek için tıklayın.",
     "downloading": "İndiriliyor {{percent}}%",
     "downloadingTitle": "v{{version}} indiriliyor",
     "readyShort": "Yeniden başlat · v{{version}}",

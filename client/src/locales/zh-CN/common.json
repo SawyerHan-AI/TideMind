@@ -44,6 +44,8 @@
     "checking": "检查中…",
     "upToDate": "已是最新",
     "available": "v{{version}} 可更新",
+    "availableClickToDownload": "v{{version}} · 下载",
+    "availableTitle": "新版本 v{{version}} 可用,点击下载。",
     "downloading": "下载中 {{percent}}%",
     "downloadingTitle": "正在下载 v{{version}}",
     "readyShort": "重启 · v{{version}}",

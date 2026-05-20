@@ -44,6 +44,8 @@
     "checking": "確認中…",
     "upToDate": "最新です",
     "available": "v{{version}} 利用可能",
+    "availableClickToDownload": "v{{version}} · ダウンロード",
+    "availableTitle": "新バージョン v{{version}} が利用可能です。クリックしてダウンロード。",
     "downloading": "ダウンロード {{percent}}%",
     "downloadingTitle": "v{{version}} をダウンロード中",
     "readyShort": "再起動 · v{{version}}",

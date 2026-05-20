@@ -7,7 +7,7 @@
 
 import { ipcMain } from 'electron'
 import { createLogger } from '@server/utils/logger.js'
-import { getUpdaterState, runUpdateCheck, installUpdate, setUpdateChannel } from '../updater/index.js'
+import { getUpdaterState, runUpdateCheck, triggerDownload, installUpdate, setUpdateChannel } from '../updater/index.js'
 import { getUpdateChannel, type UpdateChannel } from '../updater/channel.js'
 
 const log = createLogger('ipc-updater')
@@ -15,9 +15,24 @@ const log = createLogger('ipc-updater')
 export function registerUpdaterHandlers(): void {
   ipcMain.handle('updater:get-state', () => getUpdaterState())
 
-  ipcMain.handle('updater:check-now', async () => {
-    log.info('manual check triggered from renderer')
-    await runUpdateCheck()
+  // renderer 透传 { autoDownload }:
+  //   - 设置页"检测更新"按钮:autoDownload=false,停在 available 等用户点下载
+  //   - 其它内部调用(不常见,目前没有 renderer 直接传 true):走默认值 true
+  // 防御性 sanitize:任何非 boolean 都视为 undefined,落到默认 true(自动下载)。
+  ipcMain.handle('updater:check-now', async (_event, options: unknown) => {
+    const autoDownload =
+      typeof options === 'object' && options !== null && 'autoDownload' in options
+        ? Boolean((options as { autoDownload: unknown }).autoDownload)
+        : undefined
+    log.info(`manual check triggered from renderer (autoDownload=${autoDownload ?? 'default'})`)
+    await runUpdateCheck(autoDownload === undefined ? {} : { autoDownload })
+  })
+
+  // 用户在 'available' 状态下点"下载"按钮触发。
+  // updater.triggerDownload() 内部有 state guard,误调用是 no-op,不需要这里再校验。
+  ipcMain.handle('updater:download-now', async () => {
+    log.info('manual download triggered from renderer')
+    await triggerDownload()
   })
 
   ipcMain.handle('updater:install', () => {

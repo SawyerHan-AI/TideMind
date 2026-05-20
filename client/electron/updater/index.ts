@@ -119,8 +119,27 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
  * 完整检查流程:端点查询 + 验签 + 灰度判定 + 触发下载。
  *
  * inflight 锁防止 scheduler / 手动触发并发多次进入 — 同时刻只允许一个检查在跑。
+ *
+ * **autoDownload 语义**(2026-05-21 重构):
+ *   - true (默认): 命中新版立即调 autoUpdater.downloadUpdate() → 直接进入 downloading
+ *     用于 scheduler 启动 5s / 每 4h 定时检查 / setChannel 切换后兜底检查
+ *   - false: 命中新版后停在 'available' 状态等用户手动调 triggerDownload()
+ *     用于设置页用户主动点"检测更新",体感是"查到 → 看到新版本 → 点下载"两步
+ *
+ * **mandatory 强制下载**:无论 autoDownload 传什么,mandatory=true 都立即下载。
+ * 强制更新不给用户选择。
+ *
+ * **'available' 状态的并发安全**:autoDownload=false 留下 'available' 状态后,
+ * 4h 定时器到了 scheduler 会再来一次 runUpdateCheck(默认 autoDownload=true)。
+ * 这次 check 看到 currentState.status === 'available' 不在 skip 列表里(只 skip
+ * downloading / downloaded),会重新走 checking → available → 自动 download,
+ * 用户停滞 4h 没操作的窗口期最长。
  */
-export async function runUpdateCheck(): Promise<void> {
+export async function runUpdateCheck(
+  options: { autoDownload?: boolean } = {}
+): Promise<void> {
+  const autoDownload = options.autoDownload ?? true
+
   if (!initialized) {
     log.info('runUpdateCheck called but updater not initialized (dev mode or init failed)')
     return
@@ -168,6 +187,44 @@ export async function runUpdateCheck(): Promise<void> {
       return
     }
 
+    // CRITICAL 防御(2026-05-21 audit B-CRITICAL):
+    // verifier 验过 cloud-server manifest 后,让 electron-updater 也拉一次 GitHub
+    // manifest 做 **version cross-check**。两边 version 不一致 → 标记 signature-invalid。
+    //
+    // 关闭的攻击路径:攻击者控制 GitHub 账号但未拿到 ed25519 私钥,推恶意 release
+    // (改 SHA512 + 用同 cert 重签 binary)→ cloud-server manifest 仍是受信的旧 version,
+    // GitHub 是新的恶意 version → 这里 mismatch 会被拦截。
+    //
+    // 同时 electron-updater 内部会 cache 这次 checkForUpdates 拿到的 manifest。
+    // 后续 downloadUpdate(无论自动路径还是 triggerDownload)都**复用 cache**,
+    // 不再独立去 GitHub 拉,所以"verifier 通过 → 用户停在 available → 攻击者
+    // 推 GitHub 恶意 release → 用户点下载"的窗口期被关闭。
+    log.info(`pre-fetching electron-updater manifest for cross-check (verifier said v${result.version})`)
+    let euVersion: string | undefined
+    try {
+      const euResult = await autoUpdater.checkForUpdates()
+      euVersion = euResult?.updateInfo.version
+    } catch (err) {
+      log.error(`electron-updater checkForUpdates failed: ${(err as Error).message}`)
+      // autoUpdater.on('error') 已经 setState 'error',这里 return
+      pendingMandatory = false
+      return
+    }
+    if (euVersion !== result.version) {
+      log.error(
+        `cross-check FAILED: cloud-server says v${result.version}, ` +
+        `but electron-updater says v${euVersion ?? '(none)'}`
+      )
+      pendingMandatory = false
+      setState({
+        status: 'signature-invalid',
+        version: result.version ?? '',
+        releaseUrl: result.releaseUrl,
+      })
+      return
+    }
+    log.info(`cross-check OK: both sides say v${result.version}`)
+
     // 锁住 mandatory 到 pendingMandatory,跨过 'downloading' 中间态不丢
     pendingMandatory = mandatory
     setState({
@@ -177,12 +234,74 @@ export async function runUpdateCheck(): Promise<void> {
       mandatory,
     })
 
+    // 手动 check 且非强制更新:停在 available,等用户调 triggerDownload()
+    if (!autoDownload && !mandatory) {
+      log.info(`manual check found ${result.version}, waiting for user to trigger download`)
+      return
+    }
+
     log.info(`triggering electron-updater download for ${result.version}`)
-    await autoUpdater.checkForUpdates()
+    // checkForUpdates 已经在 cross-check 阶段调过,electron-updater 内部 cache 了
+    // manifest,直接 downloadUpdate 复用 cache。
     await autoUpdater.downloadUpdate()
   } catch (err) {
     log.error(`runUpdateCheck failed: ${(err as Error).message}`)
+    // HIGH 修复(2026-05-21 audit B-HIGH-2):错误路径必须 reset pendingMandatory,
+    // 否则跨调用残留会让下一轮 check 误把非 mandatory 版本当成 mandatory。
+    pendingMandatory = false
     setState({ status: 'error', message: (err as Error).message })
+  } finally {
+    inflight = false
+  }
+}
+
+/**
+ * 用户手动触发下载(仅在 'available' 状态下生效)。
+ *
+ * 配合 runUpdateCheck({ autoDownload: false }) 的两步走流程:
+ *   1. 用户点"检测更新" → runUpdateCheck({ autoDownload: false }) → 停在 'available'
+ *      (期间已经做过 verifier 验签 + electron-updater cross-check)
+ *   2. 用户点"下载"      → triggerDownload()                       → 进入 'downloading'
+ *
+ * **不再独立调 autoUpdater.checkForUpdates**(2026-05-21 CRITICAL 修复):
+ * runUpdateCheck 阶段已经 cross-check 过 cloud-server 跟 GitHub 两边的 version,
+ * electron-updater 内部 cache 了 manifest。这里直接 downloadUpdate 复用 cache,
+ * 不留"用户停在 available 期间 GitHub manifest 被替换"的攻击窗口期。
+ *
+ * 状态守卫:不在 'available' 时直接 return,避免 renderer 误触把 'idle' /
+ * 'downloaded' 等无关状态推进到非法路径。
+ *
+ * inflight 互斥:跟 runUpdateCheck 共用同一个 inflight 锁。极端竞态(用户点
+ * "下载"恰好 scheduler 也在跑 check)下 throw error,renderer 可 catch 后给反馈;
+ * silent skip 会让 UI 没有任何变化让用户困惑(audit B-HIGH-3 修复)。
+ */
+export async function triggerDownload(): Promise<void> {
+  if (!initialized) {
+    log.info('triggerDownload called but updater not initialized')
+    return
+  }
+  if (currentState.status !== 'available') {
+    log.info(`triggerDownload skipped: state=${currentState.status} (expected 'available')`)
+    return
+  }
+  if (inflight) {
+    log.warn('triggerDownload rejected: another updater operation in progress')
+    // 不 silent skip — renderer 拿不到反馈会以为按钮坏了。throw 让 IPC reject,
+    // 调用方可以 toast。
+    throw new Error('Update operation in progress, please try again in a moment')
+  }
+
+  inflight = true
+  try {
+    log.info(`user triggered download for ${currentState.version} (using cached manifest from prior cross-check)`)
+    // 复用 runUpdateCheck 阶段 electron-updater 内部 cache 的 manifest(version
+    // 已 cross-check 过)。不重新走 checkForUpdates。
+    await autoUpdater.downloadUpdate()
+  } catch (err) {
+    log.error(`triggerDownload failed: ${(err as Error).message}`)
+    pendingMandatory = false
+    setState({ status: 'error', message: (err as Error).message })
+    throw err
   } finally {
     inflight = false
   }

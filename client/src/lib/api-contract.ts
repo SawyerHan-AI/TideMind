@@ -327,7 +327,15 @@ export interface AppApi {
   }
   updater: {
     getState: () => Promise<UpdaterState>
-    checkNow: () => Promise<void>
+    /**
+     * 触发一次更新检查。
+     * @param options.autoDownload  默认 true(自动下载)。设 false 表示"手动检查",
+     *                              找到新版后停在 'available' 状态等用户调 downloadNow()。
+     *                              mandatory=true 时无论该参数都会立即自动下载。
+     */
+    checkNow: (options?: { autoDownload?: boolean }) => Promise<void>
+    /** 仅在 'available' 状态下生效:用户手动触发下载,推进到 'downloading' 状态 */
+    downloadNow: () => Promise<void>
     install: () => Promise<void>
     getChannel: () => Promise<'stable' | 'beta'>
     setChannel: (channel: 'stable' | 'beta') => Promise<void>
