@@ -31,6 +31,19 @@ export type UpdaterState =
   | { status: 'error'; message: string }
   | { status: 'signature-invalid'; version: string; releaseUrl?: string }
   | { status: 'staged-out'; version: string }
+  /**
+   * release-pending: cloud-server manifest 已经标了新版本(verifier 验签通过),
+   * 但 electron-updater 在 GitHub Releases 那边还看不到对应 release(刚 publish
+   * 的 release 在 CDN 全球同步、CI assets 还在上传等等)。
+   *
+   * 跟 signature-invalid 区分:不是供应链问题,只是"快了但没到位"。UX 文案
+   * 用 "rolling out, check back later",不要红色危险标识。
+   *
+   * 跟 staged-out 区分:staged-out 是灰度算法判定当前用户不在批次(可能永远
+   * 拿不到这一版),release-pending 是 GitHub 端还没就绪(几分钟到一两小时
+   * 必到)。scheduler 4h 周期下次跑就能拿到。
+   */
+  | { status: 'release-pending'; version: string }
 
 /**
  * 笔记源初始化会话快照（与主进程 InitSessionSnapshot 对齐）。
@@ -316,14 +329,6 @@ export interface AppApi {
   app: {
     getVersion: () => Promise<string>
     openExternal: (url: string) => Promise<void>
-    checkUpdate: () => Promise<{
-      hasUpdate: boolean
-      currentVersion: string
-      latestVersion: string
-      releaseUrl: string | null
-      releaseNotes: string | null
-      publishedAt: string | null
-    }>
   }
   updater: {
     getState: () => Promise<UpdaterState>

@@ -50,6 +50,7 @@
     "downloadingTitle": "Загрузка v{{version}}",
     "readyShort": "Перезапустить · v{{version}}",
     "error": "Ошибка обновления",
+    "actionFailed": "Не удалось выполнить действие обновления",
     "signatureInvalid": "Подпись недействительна"
   },
   "llmHealth": {

@@ -231,16 +231,13 @@
   },
   "about": {
     "version": "Sürüm",
-    "user": "Kullanıcı",
     "checkUpdate": "Güncellemeleri kontrol et",
     "checking": "Kontrol ediliyor…",
     "upToDate": "En son sürümü kullanıyorsunuz.",
     "newVersion": "Yeni sürüm mevcut",
-    "downloadUpdate": "İndir",
     "downloadNow": "İndir",
     "checkFailed": "Kontrol başarısız. Lütfen daha sonra tekrar deneyin.",
     "actionFailed": "İşlem başarısız, lütfen tekrar deneyin",
-    "retry": "Tekrar dene",
     "links": "Bağlantılar",
     "website": "Web sitesi",
     "feedback": "Geri bildirim",
@@ -250,7 +247,8 @@
     "downloaded": "İndirildi, kurulmaya hazır",
     "installNow": "Güncellemek için yeniden başlat",
     "signatureInvalid": "Güncelleme reddedildi (geçersiz imza)",
-    "stagedOut": "Yeni sürüm kademeli olarak yayılıyor, yakında alacaksınız"
+    "stagedOut": "Yeni sürüm kademeli olarak yayılıyor, yakında alacaksınız",
+    "releasePending": "Yeni v{{version}} sürümü yayınlanıyor, yakında size ulaşacak"
   },
   "noteSync": {
     "title": "Bagli Notlar",

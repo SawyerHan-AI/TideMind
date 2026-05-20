@@ -18,12 +18,35 @@ export function registerUpdaterHandlers(): void {
   // renderer 透传 { autoDownload }:
   //   - 设置页"检测更新"按钮:autoDownload=false,停在 available 等用户点下载
   //   - 其它内部调用(不常见,目前没有 renderer 直接传 true):走默认值 true
-  // 防御性 sanitize:任何非 boolean 都视为 undefined,落到默认 true(自动下载)。
+  //
+  // **严格三态判定**(audit B-HIGH-4):
+  //   - autoDownload === true → 自动下载
+  //   - autoDownload === false → 停在 available
+  //   - 其它(undefined / null / string / number / 缺字段)→ 默认值 true
+  //
+  // 不用 Boolean() cast:Boolean("no") === true / Boolean(0) === false 这种隐式
+  // 转换会让 renderer 传 `{autoDownload: "no"}` 被识别成 true 进入"自动下载",
+  // 跟用户预期相反。严格 === 让边界 case 安全。
   ipcMain.handle('updater:check-now', async (_event, options: unknown) => {
-    const autoDownload =
-      typeof options === 'object' && options !== null && 'autoDownload' in options
-        ? Boolean((options as { autoDownload: unknown }).autoDownload)
-        : undefined
+    let autoDownload: boolean | undefined
+    if (typeof options === 'object' && options !== null && 'autoDownload' in options) {
+      const raw = (options as { autoDownload: unknown }).autoDownload
+      if (raw === true) autoDownload = true
+      else if (raw === false) autoDownload = false
+      else {
+        // log.warn 不能让 sanitize 自己 crash:JSON.stringify 在 BigInt / circular
+        // ref / Symbol 上会 throw,如果让 throw 一路冒上去 IPC reject,renderer
+        // 看到一个混淆的错误吐司(audit C MEDIUM-4)。
+        let display: string
+        try {
+          display = JSON.stringify(raw)
+        } catch {
+          display = `<unstringifiable ${typeof raw}>`
+        }
+        log.warn(`ignoring non-boolean autoDownload value: ${display}`)
+        autoDownload = undefined
+      }
+    }
     log.info(`manual check triggered from renderer (autoDownload=${autoDownload ?? 'default'})`)
     await runUpdateCheck(autoDownload === undefined ? {} : { autoDownload })
   })

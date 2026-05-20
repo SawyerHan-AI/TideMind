@@ -10,17 +10,6 @@ import { parseExternalUrl } from './_schemas.js'
 
 const log = createLogger('ipc-app')
 
-interface UpdateInfo {
-  hasUpdate: boolean
-  currentVersion: string
-  latestVersion: string
-  releaseUrl: string | null
-  releaseNotes: string | null
-  publishedAt: string | null
-  /** 'verified' = 签名验签通过 | 'unsigned' = 服务端未下发签名 | 'invalid' = 签名验签失败,客户端拒绝此更新 */
-  signatureStatus?: 'verified' | 'unsigned' | 'invalid'
-}
-
 /**
  * 内置公钥(ed25519, PEM SPKI 格式)。
  *
@@ -185,75 +174,11 @@ export function registerAppHandlers(): void {
     await shell.openExternal(parsed.data)
   })
 
-  ipcMain.handle('app:check-update', async (): Promise<UpdateInfo> => {
-    const currentVersion = app.getVersion()
-    try {
-      const endpoint = getUpdateEndpoint()
-      // 修复(2026-05-20 Audit B-2):带上当前 channel,避免 Beta 用户在 About 面板
-      // 看到 stable 版本的"最新版本"信息(legacy 路径 + 新 updater 状态机两套 UI
-      // 同时 show 不同版本 → 用户困惑)。
-      const { getUpdateChannel } = await import('../updater/channel.js')
-      const params = new URLSearchParams({
-        platform: process.platform,
-        arch: process.arch,
-        version: currentVersion,
-        channel: getUpdateChannel(),
-      })
-      const resp = await fetch(`${endpoint}?${params}`, {
-        signal: AbortSignal.timeout(10_000),
-      })
-      if (!resp.ok) {
-        log.warn(`update endpoint returned ${resp.status}`)
-        return { hasUpdate: false, currentVersion, latestVersion: currentVersion, releaseUrl: null, releaseNotes: null, publishedAt: null }
-      }
-      const data = await resp.json() as {
-        version: string
-        url: string | null
-        signatureUrl?: string | null
-        secondarySignatureUrl?: string | null
-        releaseDate: string | null
-        releaseNotes: string | null
-        releaseUrl?: string
-      }
-      const hasUpdate = !!data.url
-      // 验签:启用了公钥但签名不匹配 → 拒绝此更新,避免恶意 release 推到全量用户。
-      // Audit D-3:'unreachable' 时把对外 signatureStatus 折叠成 'unsigned' 让 UI
-      // 不显示"签名异常"红字 banner(本路径是 about 面板 manual check,不是
-      // autoUpdate flow,先告诉用户"未签名"等下次重试)。
-      let signatureStatus: 'verified' | 'unsigned' | 'invalid' = 'unsigned'
-      if (hasUpdate && data.url) {
-        const verdict = await verifyUpdateSignature(
-          data.signatureUrl ?? null,
-          data.version,
-          data.url,
-          data.secondarySignatureUrl ?? null,
-        )
-        if (verdict === 'invalid') {
-          log.warn(`update ${data.version} REJECTED: signature invalid`)
-          return {
-            hasUpdate: false,
-            currentVersion,
-            latestVersion: data.version,
-            releaseUrl: data.releaseUrl ?? data.url,
-            releaseNotes: data.releaseNotes?.slice(0, 500) ?? null,
-            publishedAt: data.releaseDate ?? null,
-            signatureStatus: 'invalid',
-          }
-        }
-        signatureStatus = verdict === 'unreachable' ? 'unsigned' : verdict
-      }
-      return {
-        hasUpdate,
-        currentVersion,
-        latestVersion: data.version,
-        releaseUrl: data.releaseUrl ?? data.url,
-        releaseNotes: data.releaseNotes?.slice(0, 500) ?? null,
-        publishedAt: data.releaseDate ?? null,
-        signatureStatus,
-      }
-    } catch (err) {
-      log.error(`check update failed: ${(err as Error).message}`)
-      throw err
-    }
-  })
+  // 注意:app:check-update IPC 已在 v0.2.71 移除(audit C-MEDIUM-5)。
+  // 之前是 AboutSection 独立 GitHub API 查询路径,跟主进程 updater 状态机平行
+  // 跑两套数据源,是 v0.2.69/0.2.70 "点下载变打开网页" bug 的根源。新 UI 完全
+  // 订阅 updaterState,这个 handler 零 caller。
+  //
+  // verifyUpdateSignature / getUpdateEndpoint / UPDATE_PUBLIC_KEY_PEM 等共享
+  // 函数继续保留——updater/verifier.ts 复用它们做主流程 ed25519 验签。
 }

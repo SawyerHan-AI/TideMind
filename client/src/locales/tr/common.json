@@ -50,6 +50,7 @@
     "downloadingTitle": "v{{version}} indiriliyor",
     "readyShort": "Yeniden başlat · v{{version}}",
     "error": "Güncelleme başarısız",
+    "actionFailed": "Güncelleme işlemi başarısız",
     "signatureInvalid": "İmza geçersiz"
   },
   "llmHealth": {

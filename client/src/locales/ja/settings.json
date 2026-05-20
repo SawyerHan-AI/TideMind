@@ -231,16 +231,13 @@
   },
   "about": {
     "version": "バージョン",
-    "user": "ユーザー",
     "checkUpdate": "アップデートを確認",
     "checking": "確認中…",
     "upToDate": "最新バージョンです。",
     "newVersion": "新しいバージョンがあります",
-    "downloadUpdate": "ダウンロード",
     "downloadNow": "ダウンロード",
     "checkFailed": "確認に失敗しました。後でもう一度お試しください。",
     "actionFailed": "操作に失敗しました。再試行してください",
-    "retry": "再試行",
     "links": "リンク",
     "website": "ウェブサイト",
     "feedback": "フィードバック",
@@ -250,7 +247,8 @@
     "downloaded": "ダウンロード完了、再起動待ち",
     "installNow": "再起動して更新",
     "signatureInvalid": "更新が拒否されました（署名が無効）",
-    "stagedOut": "新しいバージョンが段階的に展開中、まもなく届きます"
+    "stagedOut": "新しいバージョンが段階的に展開中、まもなく届きます",
+    "releasePending": "新バージョン v{{version}} は順次公開中です。まもなくお届けします"
   },
   "noteSync": {
     "title": "連携済みノート",

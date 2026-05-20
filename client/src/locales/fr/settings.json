@@ -231,16 +231,13 @@
   },
   "about": {
     "version": "Version",
-    "user": "Utilisateur",
     "checkUpdate": "Vérifier les mises à jour",
     "checking": "Vérification…",
     "upToDate": "Vous disposez de la dernière version.",
     "newVersion": "Nouvelle version disponible",
-    "downloadUpdate": "Télécharger",
     "downloadNow": "Télécharger",
     "checkFailed": "Vérification échouée. Veuillez réessayer plus tard.",
     "actionFailed": "Échec de l'action, veuillez réessayer",
-    "retry": "Réessayer",
     "links": "Liens",
     "website": "Site web",
     "feedback": "Commentaires",
@@ -250,7 +247,8 @@
     "downloaded": "Téléchargé, prêt à installer",
     "installNow": "Redémarrer pour mettre à jour",
     "signatureInvalid": "Mise à jour refusée (signature invalide)",
-    "stagedOut": "Nouvelle version en déploiement progressif, vous la recevrez bientôt"
+    "stagedOut": "Nouvelle version en déploiement progressif, vous la recevrez bientôt",
+    "releasePending": "La nouvelle version v{{version}} est en cours de déploiement, vous la recevrez bientôt"
   },
   "noteSync": {
     "title": "Notes connectees",

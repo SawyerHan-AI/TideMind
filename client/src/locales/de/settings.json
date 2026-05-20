@@ -231,16 +231,13 @@
   },
   "about": {
     "version": "Version",
-    "user": "Benutzer",
     "checkUpdate": "Nach Updates suchen",
     "checking": "Prüfe…",
     "upToDate": "Sie verwenden die neueste Version.",
     "newVersion": "Neue Version verfügbar",
-    "downloadUpdate": "Herunterladen",
     "downloadNow": "Herunterladen",
     "checkFailed": "Prüfung fehlgeschlagen. Bitte versuchen Sie es später erneut.",
     "actionFailed": "Aktion fehlgeschlagen, bitte erneut versuchen",
-    "retry": "Erneut versuchen",
     "links": "Links",
     "website": "Webseite",
     "feedback": "Feedback",
@@ -250,7 +247,8 @@
     "downloaded": "Heruntergeladen, bereit zur Installation",
     "installNow": "Zum Aktualisieren neu starten",
     "signatureInvalid": "Update abgelehnt (Signatur ungültig)",
-    "stagedOut": "Neue Version wird schrittweise ausgerollt, Sie erhalten sie bald"
+    "stagedOut": "Neue Version wird schrittweise ausgerollt, Sie erhalten sie bald",
+    "releasePending": "Neue Version v{{version}} wird ausgerollt, Sie erhalten sie bald"
   },
   "noteSync": {
     "title": "Verbundene Notizen",

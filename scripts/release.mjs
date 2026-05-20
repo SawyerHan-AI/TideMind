@@ -565,6 +565,10 @@ async function main() {
   assertCleanRepo(opts.ossRepo, 'TideMind OSS', opts.dryRun);
 
   run('node', ['scripts/check-version-sync.mjs'], { label: 'check version sync', dryRun: opts.dryRun });
+  // 2026-05-21 v0.2.71 audit A-HIGH-1/2:helper entitlement 防回归。
+  // 在 push 之前拦截"main plist inherit 给 helper → SIGKILL"事故。
+  // health-check 也会再跑一次,这里 fail-fast 早于 push。
+  run('node', ['scripts/check-mac-packaging.mjs'], { label: 'check mac packaging', dryRun: opts.dryRun });
   run('git', ['diff', '--check'], { label: 'git diff --check', dryRun: opts.dryRun });
   if (!opts.skipHealth) {
     run('npm', ['run', 'health'], { label: 'npm run health', dryRun: opts.dryRun });

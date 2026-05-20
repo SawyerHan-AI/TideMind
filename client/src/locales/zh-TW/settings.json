@@ -231,16 +231,13 @@
   },
   "about": {
     "version": "版本",
-    "user": "使用者",
     "checkUpdate": "檢查更新",
     "checking": "檢查中…",
     "upToDate": "已是最新版本。",
     "newVersion": "有新版本可用",
-    "downloadUpdate": "下載",
     "downloadNow": "下載",
     "checkFailed": "檢查失敗，請稍後再試。",
-    "actionFailed": "操作失敗,請重試",
-    "retry": "重試",
+    "actionFailed": "操作失敗，請重試",
     "links": "連結",
     "website": "官方網站",
     "feedback": "意見回饋",
@@ -250,7 +247,8 @@
     "downloaded": "已下載，等待重啟",
     "installNow": "重啟更新",
     "signatureInvalid": "更新已被拒絕（簽名異常）",
-    "stagedOut": "新版本灰度中，稍後會自動收到"
+    "stagedOut": "新版本灰度中，稍後會自動收到",
+    "releasePending": "新版本 v{{version}} 正在分批發布，馬上就輪到你了"
   },
   "noteSync": {
     "title": "已對接筆記",

@@ -231,16 +231,13 @@
   },
   "about": {
     "version": "版本",
-    "user": "用户",
     "checkUpdate": "检查更新",
     "checking": "正在检查…",
     "upToDate": "已是最新版本。",
     "newVersion": "发现新版本",
-    "downloadUpdate": "下载",
     "downloadNow": "下载",
     "checkFailed": "检查失败，请稍后重试。",
-    "actionFailed": "操作失败,请重试",
-    "retry": "重试",
+    "actionFailed": "操作失败，请重试",
     "links": "链接",
     "website": "官网",
     "feedback": "反馈",
@@ -250,7 +247,8 @@
     "downloaded": "已下载，等待重启",
     "installNow": "重启更新",
     "signatureInvalid": "更新已被拒绝（签名异常）",
-    "stagedOut": "新版本灰度中，稍后会自动收到"
+    "stagedOut": "新版本灰度中，稍后会自动收到",
+    "releasePending": "新版本 v{{version}} 正在分批发布，马上就轮到你了"
   },
   "noteSync": {
     "title": "已对接笔记",

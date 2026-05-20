@@ -31,13 +31,26 @@ export function AboutSection() {
   // fallback 字面量是 6 处版本号同步之一(check-version-sync.mjs 会校验)。
   // 实际值会在 useEffect 里被 IPC 返回的 app.getVersion() 覆盖,这里只是
   // mount 第一帧避免 UI 闪空,以及让 sync 脚本能 grep 到版本号。
-  const [currentVersion, setCurrentVersion] = useState('0.2.71')
+  const [currentVersion, setCurrentVersion] = useState('0.2.72')
   const [actionError, setActionError] = useState<string | null>(null)
+  // up-to-date 卡片 2.5s 后淡出(audit C-MEDIUM-1)。跟 UpdaterBadge 1.5s 类似但
+  // 略长——设置页用户更可能错过短暂提示。新一轮 up-to-date 重置 timer。
+  const [showUpToDate, setShowUpToDate] = useState(false)
   const state = useUpdaterState()
 
   useEffect(() => {
     window.api.app.getVersion().then((v: string) => setCurrentVersion(v)).catch(() => {})
   }, [])
+
+  useEffect(() => {
+    if (state.status !== 'up-to-date') {
+      setShowUpToDate(false)
+      return
+    }
+    setShowUpToDate(true)
+    const timer = window.setTimeout(() => setShowUpToDate(false), 2500)
+    return () => window.clearTimeout(timer)
+  }, [state.status])
 
   // 手动 check / downloadNow 失败时的临时反馈:3 秒后自动清除。
   // 不写入 updaterState(那是主进程拥有的状态机,不该被 renderer 错误干扰),
@@ -120,8 +133,8 @@ export function AboutSection() {
             {renderTopAction()}
           </div>
 
-          {/* up-to-date:点击"检测更新"后回到 idle 之间的提示信息 */}
-          {state.status === 'up-to-date' && (
+          {/* up-to-date:点击"检测更新"后短暂显示 2.5s 然后淡出(audit C-MEDIUM-1) */}
+          {state.status === 'up-to-date' && showUpToDate && (
             <div className="flex items-center gap-2 text-emerald-400">
               <CheckCircle size={13} />
               <span className="text-xs">{t('about.upToDate', 'You are on the latest version.')}</span>
@@ -133,13 +146,15 @@ export function AboutSection() {
               那条路径会被 download-progress 事件直接推到 'downloading'。 */}
           {state.status === 'available' && (
             <div className="p-3 rounded-lg border border-indigo-400/20" style={{ background: 'rgba(129,140,248,0.06)' }}>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-medium text-indigo-300">
+              {/* min-w-0 + flex 让长版本号(v1.2.3-beta.foo+bar)在标签那段 truncate,
+                  右侧 Download 按钮永远完整可见(audit C-MEDIUM-3) */}
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <span className="text-xs font-medium text-indigo-300 truncate min-w-0">
                   {t('about.newVersion', 'New version available')}: v{state.version}
                 </span>
                 <button
                   onClick={handleDownload}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-medium text-indigo-200 border border-indigo-400/30 hover:border-indigo-400/50 hover:bg-indigo-500/20 transition-all"
+                  className="flex-shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-medium text-indigo-200 border border-indigo-400/30 hover:border-indigo-400/50 hover:bg-indigo-500/20 transition-all"
                 >
                   <Download size={10} />
                   {t('about.downloadNow', 'Download')}
@@ -202,6 +217,19 @@ export function AboutSection() {
             <div className="flex items-center gap-2 text-xs text-gray-400">
               <CheckCircle size={13} className="text-gray-400" />
               <span>{t('about.stagedOut', "New version rolling out gradually, you'll get it soon")}</span>
+            </div>
+          )}
+
+          {/* release-pending: cloud-server 已经发了新 manifest 但 GitHub 还没就绪。
+              跟 staged-out 同样信息密度(灰色 + 小图标),文案带版本号让用户知道
+              要等的版本是什么。audit B-MEDIUM-3 修复:之前这种状态会被错判成
+              signature-invalid(红色危险)。 */}
+          {state.status === 'release-pending' && (
+            <div className="flex items-center gap-2 text-xs text-gray-400">
+              <CheckCircle size={13} className="text-gray-400" />
+              <span>
+                {t('about.releasePending', "New version v{{version}} is rolling out, you'll get it soon", { version: state.version })}
+              </span>
             </div>
           )}
 
