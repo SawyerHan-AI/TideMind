@@ -6,6 +6,7 @@ import logoSrc from '../assets/logo.png'
 import { getProFeatures } from '../feature-registry'
 import { CloudStatus } from './sidebar/CloudStatus'
 import { LLMHealthBadge } from './sidebar/LLMHealthBadge'
+import { UpdaterBadge } from './sidebar/UpdaterBadge'
 
 const coreNavKeys = [
   { to: '/', icon: LayoutDashboard, labelKey: 'nav.dashboard' },
@@ -88,6 +89,9 @@ export function Sidebar() {
 
       {/* Cloud 状态 */}
       <CloudStatus />
+
+      {/* 自动更新状态 */}
+      <UpdaterBadge />
 
       {/* 底部版本号 */}
       {appVersion && (

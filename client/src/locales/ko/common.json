@@ -37,10 +37,18 @@
     "installNow": "지금 다시 시작",
     "installLater": "나중에",
     "mandatoryTitle": "업데이트가 필요합니다",
-    "mandatoryDesc": "Tide Mind {{version}}에는 필수 수정사항이 포함되어 있습니다. 계속 사용하려면 업데이트해야 합니다。",
+    "mandatoryDesc": "Tide Mind {{version}}에는 필수 수정사항이 포함되어 있습니다. 계속 사용하려면 업데이트해야 합니다.",
     "mandatoryRestart": "지금 다시 시작하여 업데이트",
     "mandatoryCountdown": "{{seconds}}초 후 자동 재시작",
-    "mandatorySnooze": "10분 후에 다시 알림 ({{remaining}}회 남음)"
+    "mandatorySnooze": "10분 후에 다시 알림 ({{remaining}}회 남음)",
+    "checking": "확인 중…",
+    "upToDate": "최신 버전",
+    "available": "v{{version}} 사용 가능",
+    "downloading": "다운로드 {{percent}}%",
+    "downloadingTitle": "v{{version}} 다운로드 중",
+    "readyShort": "재시작 · v{{version}}",
+    "error": "업데이트 실패",
+    "signatureInvalid": "서명 무효"
   },
   "llmHealth": {
     "paused": "AI 일시 중지 ({{min}}분 후 재시도)",

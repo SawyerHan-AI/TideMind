@@ -3,7 +3,7 @@ import { ExternalLink, RefreshCw, CheckCircle, AlertCircle, Download, RotateCw, 
 import { useTranslation } from 'react-i18next'
 import { Section } from './shared'
 import { brand } from '../../lib/tokens'
-import type { UpdaterState } from '../../lib/api-contract'
+import { useUpdaterState } from '../../hooks/useUpdaterState'
 
 type UpdateStatus = 'idle' | 'checking' | 'up-to-date' | 'available' | 'error'
 
@@ -22,22 +22,10 @@ export function AboutSection() {
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [updateError, setUpdateError] = useState<string | null>(null)
   const [currentVersion, setCurrentVersion] = useState('0.2.69')
-  const [updaterState, setUpdaterState] = useState<UpdaterState>({ status: 'idle' })
+  const updaterState = useUpdaterState()
 
   useEffect(() => {
     window.api.app.getVersion().then((v: string) => setCurrentVersion(v)).catch(() => {})
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    window.api.updater.getState().then((s) => {
-      if (!cancelled) setUpdaterState(s)
-    }).catch(() => {})
-    const off = window.api.updater.onStateChanged((s: UpdaterState) => setUpdaterState(s))
-    return () => {
-      cancelled = true
-      off()
-    }
   }, [])
 
   const handleCheckUpdate = async () => {

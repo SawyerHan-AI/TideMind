@@ -40,7 +40,15 @@
     "mandatoryDesc": "Tide Mind {{version}} には重要な修正が含まれています。続行するには更新が必要です。",
     "mandatoryRestart": "今すぐ再起動して更新",
     "mandatoryCountdown": "{{seconds}} 秒後に自動的に再起動します",
-    "mandatorySnooze": "10 分後にもう一度通知(残り {{remaining}} 回)"
+    "mandatorySnooze": "10 分後にもう一度通知(残り {{remaining}} 回)",
+    "checking": "確認中…",
+    "upToDate": "最新です",
+    "available": "v{{version}} 利用可能",
+    "downloading": "ダウンロード {{percent}}%",
+    "downloadingTitle": "v{{version}} をダウンロード中",
+    "readyShort": "再起動 · v{{version}}",
+    "error": "更新に失敗",
+    "signatureInvalid": "署名が無効"
   },
   "llmHealth": {
     "paused": "AI 停止中（{{min}} 分後に再試行）",
