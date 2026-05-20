@@ -24,6 +24,8 @@ tests/prompts/backup-original/
 /client/dist/
 /client/release/
 /client/tsconfig.*.tsbuildinfo
+# 根目录 tsc -b 产物(2026-05-20 发现:原 client/ 子目录规则没拦根目录的同名文件)
+/tsconfig.tsbuildinfo
 # client/src 下的 .d.ts/.js 通常是 tsc/vite 的编译产物(每个 .tsx/.ts 对应一对)。
 # 历史踩坑(2026-05-20):合并 LLM 韧性分支时 working tree 残留 220 个编译产物,被
 # sync-oss.sh 复制到开源仓库,污染了 0.2.67 的 release commit。
