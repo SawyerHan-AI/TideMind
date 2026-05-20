@@ -17,14 +17,17 @@ import { runSchedulerTick } from '@server/metabolism/scheduler.js'
 import { ALL_TASKS } from '@server/metabolism/tasks.js'
 import { stopLogseqIntegration } from '@server/integrations/logseq/index.js'
 import { startAllNoteSources, stopAllNoteSources } from '@server/integrations/shared/note-sources.js'
+import { getActivityState } from './activity-state.js'
 
 const log = createLogger('daemon')
 
 let timer: ReturnType<typeof setInterval> | null = null
 let running = false
 let tickRunning = false
+let unsubscribeActivity: (() => void) | null = null
 
-const TICK_INTERVAL_MS = 60 * 1000 // 每分钟检查一次
+const ACTIVE_TICK_MS = 60 * 1000   // 每分钟检查一次(用户在用)
+const IDLE_TICK_MS = 10 * 60 * 1000 // 每 10 分钟(用户走了,scheduler 不需要那么积极)
 
 export async function startDaemon(): Promise<void> {
   if (running) return
@@ -47,28 +50,50 @@ export async function startDaemon(): Promise<void> {
   runSchedulerTick(getDb(), ALL_TASKS).catch(err =>
     log.error('初始调度失败:', (err as Error).message))
 
-  // 每分钟 tick，每个任务独立判断是否到期（带重入保护）
+  // 跟随 activity-state 切 tick 频率:active 60s, idle 10min。
+  // idle 时仍保留 tick(远程调度需要 progress),只是不需要那么积极。
+  // active 时立即跑一次,把 idle 期间积累的逾期任务推进。
+  startTick(getActivityState().getState())
+  unsubscribeActivity = getActivityState().onChange((state) => {
+    if (state === 'active') {
+      runSchedulerTick(getDb(), ALL_TASKS)
+        .catch(err => log.error('resume 调度失败:', (err as Error).message))
+    }
+    startTick(state)
+  })
+
+  logTimelineEvent(getDb(), {
+    type: 'memory',
+    subtype: 'daemon_start',
+    title: JSON.stringify({ key: 'daemon_start' }),
+    detail: { task_count: ALL_TASKS.length, tick_interval_s: ACTIVE_TICK_MS / 1000 },
+    actor: 'brain',
+  })
+
+  log.info(`守护进程已启动。active=${ACTIVE_TICK_MS / 1000}s / idle=${IDLE_TICK_MS / 1000}s tick，共 ${ALL_TASKS.length} 个任务独立调度。`)
+}
+
+function startTick(state: 'active' | 'idle'): void {
+  if (timer) {
+    clearInterval(timer)
+    timer = null
+  }
+  const interval = state === 'active' ? ACTIVE_TICK_MS : IDLE_TICK_MS
   timer = setInterval(() => {
     if (tickRunning) return
     tickRunning = true
     runSchedulerTick(getDb(), ALL_TASKS)
       .catch(err => log.error('调度 tick 失败:', (err as Error).message))
       .finally(() => { tickRunning = false })
-  }, TICK_INTERVAL_MS)
-
-  logTimelineEvent(getDb(), {
-    type: 'memory',
-    subtype: 'daemon_start',
-    title: JSON.stringify({ key: 'daemon_start' }),
-    detail: { task_count: ALL_TASKS.length, tick_interval_s: TICK_INTERVAL_MS / 1000 },
-    actor: 'brain',
-  })
-
-  log.info(`守护进程已启动。每 ${TICK_INTERVAL_MS / 1000}s tick，共 ${ALL_TASKS.length} 个任务独立调度。`)
+  }, interval)
 }
 
 export function stopDaemon(): void {
   if (!running) return
+  if (unsubscribeActivity) {
+    unsubscribeActivity()
+    unsubscribeActivity = null
+  }
   if (timer) {
     clearInterval(timer)
     timer = null

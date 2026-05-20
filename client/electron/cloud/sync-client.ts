@@ -5,12 +5,17 @@ import { createLogger } from '../../../src/utils/logger.js';
 import { CacheManager } from './cache-manager.js';
 import { getOutboxItems, removeOutboxItem, markOutboxFailed, getOutboxCount as _getOutboxCount } from './outbox.js';
 import { getCloudAuth, getCloudBaseUrl, refreshTokenIfNeeded } from './auth-client.js';
+import { getActivityState } from '../activity-state.js';
 
 const log = createLogger('cloud-sync');
 
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'offline';
 
-/** 轮询兜底间隔（WebSocket 断开时使用） */
+/**
+ * 轮询兜底间隔(WebSocket 断开时使用)。
+ * 注意:activity-state idle 时该 setInterval 会被 stop(start/stopPolling),
+ * idle → active 切换时延迟 ACTIVE_RESUME_DELAY_MS 重启,避免回前台瞬间撞 SQL。
+ */
 const POLL_INTERVAL_MS = 30_000;
 
 /** WebSocket 重连退避参数 */
@@ -24,6 +29,14 @@ const WS_RECONNECT_MAX_MS = 30_000;
  * reconcile 本身是兜底对齐(>7 天才会跑),delay 10s 不影响正确性。
  */
 const RECONCILE_TRIGGER_DELAY_MS = 10_000;
+
+/**
+ * idle → active 时,等多久再 fire 第一次 syncOnce。
+ * renderer 端 visibilitychange handler(OnboardingContext.checkAll 等)会在
+ * 窗口可见时立刻打 3 个 IPC,2s 让它们先跑完,sync 再上来,避免 better-sqlite3
+ * 同步 API 串行排队让鼠标转圈(2026-05-21 排查)。
+ */
+const ACTIVE_RESUME_DELAY_MS = 2_000;
 
 export class CloudSyncClient {
   private cacheManager: CacheManager;
@@ -44,6 +57,20 @@ export class CloudSyncClient {
    * 白名单后能自动恢复,无需重启 app。
    */
   private slowRetryTimer: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * syncOnce in-flight mutex。三条线都会调 syncOnce:30s 轮询 / WebSocket
+   * changes_available 通知 / activity-state 'became-active' 错峰恢复。idle 几
+   * 小时后回到前台它们会同时触发,并发 pushOutbox + pullChanges 在主线程上串
+   * 行排队,鼠标转圈(2026-05-21)。in-flight 时返回同一个 promise,新调用复用。
+   */
+  private syncInFlight: Promise<void> | null = null;
+
+  /** activity-state 订阅句柄。stop() 时必须解绑。 */
+  private unsubscribeActivity: (() => void) | null = null;
+
+  /** idle → active 错峰恢复的 timer。stop() 时必须清。 */
+  private resumeTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** 用户未在白名单中，云端返回 403 cloud_not_available */
   cloudNotAvailable = false;
@@ -94,11 +121,53 @@ export class CloudSyncClient {
       if (!this.stopped) this.scheduleReconnect();
     });
 
-    // 保留轮询作为兜底（WebSocket 断开时仍能同步）
+    // 保留轮询作为兜底（WebSocket 断开时仍能同步）。idle 状态下先不起,
+    // activity-state 切到 active 时再起;避免 idle 期间被 Chromium throttle 后,
+    // 切回前台时 timer queue 一次性 fire 多个 syncOnce()。
+    const activity = getActivityState();
+    if (activity.getState() === 'active') {
+      this.startPolling();
+    }
+
+    // 订阅活动状态。idle → 停 30s 轮询、清 resume timer; active → 错峰恢复:
+    // 等 ACTIVE_RESUME_DELAY_MS 让 renderer 把 visibilitychange handler(3 个 IPC)
+    // 先跑完,再 syncOnce + restart 轮询,IPC 通道不被 SQL 卡。
+    this.unsubscribeActivity = activity.onChange((state) => {
+      if (state === 'idle') {
+        this.stopPolling();
+        this.clearResumeTimer();
+      } else {
+        this.clearResumeTimer();
+        this.resumeTimer = setTimeout(() => {
+          this.resumeTimer = null;
+          if (this.stopped) return;
+          this.syncOnce().catch(e => log.error('resume sync error:', (e as Error).message));
+          this.startPolling();
+        }, ACTIVE_RESUME_DELAY_MS);
+      }
+    });
+  }
+
+  private startPolling(): void {
+    if (this.intervalId) return;
     this.intervalId = setInterval(
       () => this.syncOnce().catch(e => log.error('sync error:', (e as Error).message)),
       POLL_INTERVAL_MS,
     );
+  }
+
+  private stopPolling(): void {
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
+  }
+
+  private clearResumeTimer(): void {
+    if (this.resumeTimer) {
+      clearTimeout(this.resumeTimer);
+      this.resumeTimer = null;
+    }
   }
 
   /**
@@ -143,10 +212,7 @@ export class CloudSyncClient {
 
   stop(): void {
     this.stopped = true;
-    if (this.intervalId) {
-      clearInterval(this.intervalId);
-      this.intervalId = null;
-    }
+    this.stopPolling();
     if (this.slowRetryTimer) {
       clearInterval(this.slowRetryTimer);
       this.slowRetryTimer = null;
@@ -154,6 +220,11 @@ export class CloudSyncClient {
     if (this.reconcileTimer) {
       clearTimeout(this.reconcileTimer);
       this.reconcileTimer = null;
+    }
+    this.clearResumeTimer();
+    if (this.unsubscribeActivity) {
+      this.unsubscribeActivity();
+      this.unsubscribeActivity = null;
     }
     this.disconnectWebSocket();
     log.info('sync client stopped');
@@ -329,14 +400,42 @@ export class CloudSyncClient {
     this.wsAuthed = false;
   }
 
-  async syncOnce(): Promise<void> {
+  /**
+   * Sync 入口。in-flight 时直接复用同一个 Promise(不排队、不新发):
+   * 三条触发线(30s 轮询 / WS changes_available / activity-state resume)在 idle 几小时
+   * 后回前台会同时触发,并发 pushOutbox + pullChanges 在主线程上串行 SQL 排队会让
+   * 主线程卡几十秒(2026-05-21 排查)。复用 in-flight 让"瞬间多触发"塌成一次。
+   *
+   * 实现注意:**这里必须是非 async 函数**。async 包装会让 `return this.syncInFlight`
+   * 返回一个新的 Promise(包了原 Promise 一层),caller 拿到的引用不同;mutex 语义上
+   * 还是正确的(都 await 同一个底层),但引用比较失败,而且每个 caller 都多一个 microtask
+   * tick。直接 return 原 Promise 引用更省、更可断言。
+   */
+  syncOnce(): Promise<void> {
+    if (this.syncInFlight) return this.syncInFlight;
+    const p = this._doSyncOnce().finally(() => {
+      if (this.syncInFlight === p) this.syncInFlight = null;
+    });
+    this.syncInFlight = p;
+    return p;
+  }
+
+  private async _doSyncOnce(): Promise<void> {
+    // stop check 三处:入口 / token refresh 后 / pushOutbox 之后。
+    // before-quit 流程是同步的,但 in-flight await 的 promise 还在 event loop
+    // 队列里;进程退出前会 drain 一次,如果不挡 stopped 就会继续往 closeClientDb
+    // 之后的 db 写,日志爆"database is closed"。
+    if (this.stopped) return;
     const token = await refreshTokenIfNeeded();
+    if (this.stopped) return;
     if (!token) { this.status = 'offline'; return; }
 
     this.status = 'syncing';
     try {
       await this.pushOutbox(token);
+      if (this.stopped) return;
       await this.pullChanges(token);
+      if (this.stopped) return;
       this.status = 'idle';
       // 同步成功 → 重置错误标志（可能是之前的瞬时故障）
       this.syncNotReady = false;
@@ -376,10 +475,7 @@ export class CloudSyncClient {
    */
   private startSlowRetry(): void {
     // 停当前的高频轮询,但不彻底 stop(保留 slow retry timer)
-    if (this.intervalId) {
-      clearInterval(this.intervalId);
-      this.intervalId = null;
-    }
+    this.stopPolling();
     // 必须走 disconnectWebSocket 而不是裸 ws.close() — close 会触发
     // on('close') → scheduleReconnect() 设 wsReconnectTimer,导致"慢重试"
     // 和"ws 重连"两条线并行跑 cloudNotAvailable 路径下 ws 会每几秒
@@ -397,11 +493,9 @@ export class CloudSyncClient {
             clearInterval(this.slowRetryTimer);
             this.slowRetryTimer = null;
           }
-          if (!this.intervalId) {
-            this.intervalId = setInterval(
-              () => this.syncOnce().catch(e => log.error('resumed sync error:', (e as Error).message)),
-              POLL_INTERVAL_MS,
-            );
+          // 仅在 active 时恢复轮询;idle 时由 activity-state 'became-active' 路径接管。
+          if (getActivityState().getState() === 'active') {
+            this.startPolling();
           }
           // 修复 M29(2026-05-09):startSlowRetry 进入时调用了 disconnectWebSocket,
           // 历史上恢复后**不重连 ws**,UI 显示 offline 长达 1 小时(到下次 slow
@@ -431,6 +525,7 @@ export class CloudSyncClient {
     let totalPulled = 0;
     let pages = 0;
     while (pages < MAX_PAGES) {
+      if (this.stopped) break; // stop 后立即断开多页拉取,避免写已关闭 db
       pages++;
       const sinceVersion = this.cacheManager.getLastSyncedVersion();
       const res = await fetch(`${base}/api/v1/sync/pull?since_version=${sinceVersion}&limit=${PULL_LIMIT}`, {
@@ -449,6 +544,10 @@ export class CloudSyncClient {
       if (data.changes.length > 0) {
         await this.cacheManager.applyChanges(data.changes, token);
         totalPulled += data.changes.length;
+        // idle 几小时后回前台时,服务端积累的几百条变更会拉成多页,
+        // 每页 applyChanges 是同步 db.transaction。每页之间让出一个事件循环,
+        // 给 IPC handler / renderer 一个插队窗口,避免整段串行卡主线程。
+        await new Promise(resolve => setImmediate(resolve));
       }
       // 修复(2026-05-20 Audit F-1):
       // 原条件 `!data.has_more || data.changes.length === 0` 在服务端意外返回
