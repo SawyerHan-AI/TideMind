@@ -1,0 +1,4 @@
+# node-gyp / electron-rebuild 编译产物,每次 npm install 重新生成
+build/
+bin/
+*.node

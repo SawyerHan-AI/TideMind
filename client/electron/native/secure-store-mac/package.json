@@ -1,0 +1,19 @@
+{
+  "name": "secure-store-mac",
+  "version": "1.0.0",
+  "description": "macOS Data Protection Keychain native addon for Tide Mind (eliminates the safeStorage ACL prompt)",
+  "private": true,
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "binding.gyp",
+    "src/",
+    "index.js",
+    "index.d.ts"
+  ],
+  "dependencies": {
+    "node-addon-api": "^8.3.0"
+  },
+  "gypfile": true,
+  "os": ["darwin"]
+}
