@@ -42,7 +42,8 @@
       "learning3_recommendations": "生成了 {{count}} 條優化建議",
       "circuit_breaker_on": "連續 {{failures}} 次失敗，冷卻 {{minutes}} 分鐘",
       "circuit_breaker_off": "服務恢復正常運行",
-      "trigger_query": "觸發查詢"
+      "trigger_query": "觸發查詢",
+      "pending_link_gc": "清理了 {{count}} 條已過期的待審連結"
     }
   },
   "events": {
@@ -84,6 +85,7 @@
     "apple_notes_first_import": "備忘錄首次匯入 {{total}} 個筆記（處理 {{processed}}，略過 {{skipped}}，失敗 {{failed}}）",
     "apple_notes_incremental_sync": "備忘錄增量同步（處理 {{processed}}）",
     "apple_notes_init_complete": "備忘錄初始化完成：{{nodes}} 節點，{{links}} 連結，{{crystals}} 結晶",
-    "profile_synthesized": "綜合了畫像（{{crystals}} 個結晶，{{preferences}} 條偏好）"
+    "profile_synthesized": "綜合了畫像（{{crystals}} 個結晶，{{preferences}} 條偏好）",
+    "pending_link_gc": "清理了 {{count}} 條過期待審連結"
   }
 }

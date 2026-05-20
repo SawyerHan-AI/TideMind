@@ -25,8 +25,19 @@ import { getCloudBaseUrl, refreshTokenIfNeeded } from './auth-client.js';
 
 const log = createLogger('reconciler');
 
-const BATCH_SIZE = 100;
+// 修复(2026-05-20 决策 #5):BATCH_SIZE 100 → 25。
+// applyChanges 用 db.transaction() 整批跑,100 行 × ~1ms = 100ms+ 主线程阻塞,
+// pull 频率高时(WS 推送 + 30s 轮询)累积影响 IPC 响应。降到 25 一批,峰值阻塞
+// ~25ms;同步带宽相应降到 1/4,但 reconcile / pull 都是分批循环,总吞吐只看
+// 网络往返延迟,本地处理换 4 次小循环不是瓶颈。
+const BATCH_SIZE = 25;
 const MANIFEST_PAGE_LIMIT = 5000;
+/**
+ * 单次 reconcile 跑 fetchServerManifest 的最大页数。
+ * 5000 × 1000 = 500 万 manifest entry,远超任何真实用户。命中说明服务端有 bug
+ * 在 cursor 推进上(参考 audit F-2),立即报错避免主进程内存无限增长。
+ */
+const MAX_MANIFEST_PAGES = 1000;
 
 // 时间戳工具抽到独立文件(reconciler-utils.ts),以便测试在根目录 vitest
 // 环境下导入不会触发本文件顶部的 'electron' import 链(CI runner 干净环境
@@ -94,6 +105,9 @@ export class Reconciler {
         log.error(`reconcile ${table} failed: ${msg}`);
         this.progress.phase = 'failed';
         this.progress.errorMessage = msg;
+        // 修复(2026-05-20 Audit F-7):失败时也要 emit,否则 renderer 进度条
+        // 卡在最后一次 'upload'/'download' 帧不动,只能靠 Notification 通知用户。
+        this.emitProgress();
         results.push({ table, uploaded: 0, downloaded: 0, conflicts: 0, skipped: 0, errors: [msg] });
       }
     }
@@ -198,7 +212,9 @@ export class Reconciler {
   private async fetchServerManifest(table: Table): Promise<ManifestEntry[]> {
     const all: ManifestEntry[] = [];
     let cursor = '';
-    while (true) {
+    let pages = 0;
+    while (pages < MAX_MANIFEST_PAGES) {
+      pages++;
       const token = await refreshTokenIfNeeded();
       if (!token) throw new Error('not_logged_in');
       const url = new URL(`${getCloudBaseUrl()}/api/v1/sync/manifest`);
@@ -213,24 +229,55 @@ export class Reconciler {
       const data = await res.json() as { items: ManifestEntry[]; has_more: boolean; next_cursor: string | null };
       all.push(...data.items);
       if (!data.has_more || !data.next_cursor) break;
+      // 修复(2026-05-20 Audit F-2):防御服务端 cursor 退化 bug —
+      // 如果新 cursor 等于上次 cursor,说明分页逻辑卡住了,立即报错避免内存无限增长。
+      if (data.next_cursor === cursor) {
+        throw new Error(`manifest pagination stuck at cursor=${cursor}`);
+      }
       cursor = data.next_cursor;
+    }
+    if (pages >= MAX_MANIFEST_PAGES) {
+      throw new Error(`manifest exceeded MAX_MANIFEST_PAGES=${MAX_MANIFEST_PAGES}`);
     }
     return all;
   }
 
   // ── 本地 manifest ────────────────────────────────────────
 
+  /**
+   * Perf-critical:8w+ links / 1w+ nodes 全表扫描必须在主线程上跑(better-sqlite3
+   * 是 sync API)。两个不显眼但累积起来 1-2 分钟主线程 hang 的坑:
+   *   1. SQL 内的 COALESCE 表达式 + nullable updated/created 让 query planner
+   *      可能选择走 idx_nodes_active_updated(archived,is_superseded,updated DESC)
+   *      做表达式 eval,触发 vdbeSorter(实测 sample stack trace 直接命中
+   *      vdbeSorterSort/vdbeSorterCompareText)。改成 SELECT 原列让 planner 走
+   *      纯主键扫描,JS 端再做 null-coalesce(`.map` 本来就在做)。
+   *   2. `.all()` 一次性 materialize 9w 行进 V8 array,峰值内存 200MB+ 撑爆
+   *      V8 nursery 触发 GC。改 `.iterate()` 单遍流式,峰值线性。
+   * 配套修复:sync-client.ts 把 maybeTriggerReconcile 延迟 10s 触发(给 renderer
+   * 拉首屏数据一个干净窗口),即便这里的扫表仍是同步的也不会阻塞冷启动首屏。
+   */
   private buildLocalManifest(table: Table): ManifestEntry[] {
-    const rows = table === 'nodes'
-      ? this.db.prepare(`SELECT id, COALESCE(created, '') as created, COALESCE(updated, created) as updated, archived FROM nodes`).all() as Array<{ id: string; created: string; updated: string; archived: number }>
-      : this.db.prepare(`SELECT id, COALESCE(created, '') as created, COALESCE(updated, created) as updated FROM links`).all() as Array<{ id: string; created: string; updated: string }>;
+    const stmt = table === 'nodes'
+      ? this.db.prepare(`SELECT id, created, updated, archived FROM nodes`)
+      : this.db.prepare(`SELECT id, created, updated FROM links`);
 
-    return rows.map(r => ({
-      id: r.id,
-      sync_version: 0, // 本地没存 sync_version,不参与比较
-      updated: r.updated || r.created || new Date(0).toISOString(),
-      archived: 'archived' in r ? Boolean((r as { archived: number }).archived) : false,
-    }));
+    const entries: ManifestEntry[] = [];
+    const iter = stmt.iterate() as IterableIterator<{
+      id: string;
+      created: string | null;
+      updated: string | null;
+      archived?: number;
+    }>;
+    for (const r of iter) {
+      entries.push({
+        id: r.id,
+        sync_version: 0, // 本地没存 sync_version,不参与比较
+        updated: r.updated || r.created || new Date(0).toISOString(),
+        archived: typeof r.archived === 'number' ? Boolean(r.archived) : false,
+      });
+    }
+    return entries;
   }
 
   // ── Bulk upsert / fetch ─────────────────────────────────

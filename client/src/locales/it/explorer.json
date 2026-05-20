@@ -65,7 +65,8 @@
     "rejectTag": "Rimuovi questo tag",
     "rejectTagAria": "Pulsante rimuovi tag",
     "rejectTagSuccess": "«{{tag}}» rimosso",
-    "undo": "Annulla"
+    "undo": "Annulla",
+    "aiProcessing": "IA in elaborazione…"
   },
   "graph": {
     "loading": "Caricamento dati del grafo...",

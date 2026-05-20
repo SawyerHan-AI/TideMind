@@ -31,7 +31,8 @@
     "updateChannel": "Canal de Actualización",
     "updateChannelDesc": "Beta entrega nuevas funciones antes pero puede ser menos estable. El cambio tiene efecto en la próxima verificación.",
     "updateChannelStable": "Estable",
-    "updateChannelBeta": "Beta"
+    "updateChannelBeta": "Beta",
+    "channelSwitchConfirm": "Cambiar a Stable instalará la última versión estable en la próxima comprobación (algunas funciones experimentales podrían deshacerse). ¿Continuar?"
   },
   "external": {
     "subtabs": {
@@ -1002,7 +1003,15 @@
     "requestAccountDeletion": "Solicitar eliminación de cuenta",
     "requestDeletionTitle": "¿Solicitar eliminación de cuenta?",
     "requestDeletionDesc": "Al confirmar, se cerrará la sesión. Para eliminar permanentemente tu cuenta y todos los datos en la nube, envía un correo a support@tidemind.ai después de cerrar sesión. Los datos locales de este dispositivo no se ven afectados.",
-    "requestDeletionConfirm": "Cerrar sesión — contactaré a soporte"
+    "requestDeletionConfirm": "Cerrar sesión — contactaré a soporte",
+    "cancellationNote": "La cancelación tiene efecto inmediato. Tus datos existentes siguen siendo accesibles (solo lectura después del límite del plan gratuito).",
+    "memoryUsage": "Uso de memoria",
+    "memoryUsageLine": "{{used}} / {{limit}} recuerdos",
+    "memoryUnlimited": "ilimitado",
+    "memoryNearLimitHint": "Te acercas al límite del plan Free. Los recuerdos por encima de {{limit}} serán de solo lectura hasta que actualices.",
+    "llmCostThisMonth": "Uso de LLM este mes",
+    "llmCostCalls": "{{count}} llamadas",
+    "llmCostHint": "Estimado. Toca Uso del Modelo en Ajustes para ver el desglose completo."
   },
   "cloud": {
     "loginRequired": "Inicia sesión en TideMind Cloud para usar las funciones en la nube.",

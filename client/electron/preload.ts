@@ -163,6 +163,7 @@ const api: AppApi = {
       return () => ipcRenderer.off('reconcile-progress', listener);
     },
     outboxCount: () => ipcRenderer.invoke('cloud:outbox-count'),
+    memoryUsage: () => ipcRenderer.invoke('cloud:memory-usage'),
     loginUrl: () => ipcRenderer.invoke('cloud:login-url'),
     registerUrl: () => ipcRenderer.invoke('cloud:register-url'),
     billingPortalUrl: () => ipcRenderer.invoke('cloud:billing-portal-url'),

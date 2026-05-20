@@ -38,7 +38,9 @@
     "installLater": "稍後",
     "mandatoryTitle": "必須更新",
     "mandatoryDesc": "Tide Mind {{version}} 包含重要修復，需要更新後才能繼續使用。",
-    "mandatoryRestart": "立即重啟更新"
+    "mandatoryRestart": "立即重啟更新",
+    "mandatoryCountdown": "{{seconds}} 秒後自動重啟",
+    "mandatorySnooze": "10 分鐘後再提醒(剩 {{remaining}} 次)"
   },
   "llmHealth": {
     "paused": "AI 暫停中（{{min}} 分鐘後重試）",

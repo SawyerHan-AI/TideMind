@@ -16,6 +16,7 @@ import { createLogger } from '@server/utils/logger.js'
 import { app } from 'electron'
 import { verifyUpdateSignature, getUpdateEndpoint } from '../ipc/app.js'
 import { getUpdateChannel } from './channel.js'
+import { compareSemver } from '@server/utils/semver-compare.js'
 
 const log = createLogger('updater-verifier')
 
@@ -67,6 +68,17 @@ export async function queryAndVerifyManifest(): Promise<ManifestResult> {
       return { status: 'no-update', version: data.version }
     }
 
+    // 修复(2026-05-20 Audit D-2):downgrade guard。
+    // 服务端理论上不会下发比客户端旧的版本(routes.ts 已做 compareVersions > 0 检查),
+    // 但如果 cloud-server 被入侵 / Railway env 配错(STAGING_PERCENTAGE_STABLE 老 manifest
+    // 缓存被推),恶意/错误的旧版本 manifest 会绕过服务端门控。客户端再做一次硬校验,
+    // 双层防御。原 .sig 是对 ${version}\n${url} 的签名,攻击者重放老 .sig 也合法,
+    // 所以必须靠版本数字比较挡。
+    if (compareSemver(data.version, currentVersion) <= 0) {
+      log.warn(`update REJECTED: server returned ${data.version} which is not newer than current ${currentVersion}`)
+      return { status: 'no-update', version: currentVersion }
+    }
+
     const sigStatus = await verifyUpdateSignature(
       data.signatureUrl ?? null,
       data.version,
@@ -77,6 +89,14 @@ export async function queryAndVerifyManifest(): Promise<ManifestResult> {
     if (sigStatus === 'invalid') {
       log.warn(`update ${data.version} REJECTED: signature invalid`)
       return { status: 'invalid', version: data.version, releaseUrl: data.releaseUrl ?? data.url }
+    }
+
+    if (sigStatus === 'unreachable') {
+      // 修复(2026-05-20 Audit D-3):区分网络抖动与真签名失败。
+      // 这条更新当前无法验签(网络问题/GitHub Pages 暂时不可达),不算拒绝,
+      // 当成 fetch-error 让下次 30s 轮询自然重试,UI 不显示阻塞性"签名异常"banner。
+      log.warn(`update ${data.version} signature unreachable — will retry next cycle`)
+      return { status: 'fetch-error' }
     }
 
     return {

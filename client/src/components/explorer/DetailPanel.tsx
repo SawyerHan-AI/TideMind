@@ -206,6 +206,23 @@ export function DetailPanel({ nodeId, onNavigate }: {
             <InfoTip content={NODE_ATTR_TIPS.keystone} size={10} />
           </span>
         ) : null}
+        {/* AI 处理中角标(2026-05-20 产品决策 #8):refinement=0 (尚未标注) 且新建
+            < 30 分钟时显示。给用户一个 "AI 在路上" 的可见信号,避免误判 "AI 坏了"。
+            过了 30 分钟仍 refinement=0 大概率是 LLM 失败或队列卡了,这种情况由 LLM
+            health badge 暴露,不再用这个角标"假装在处理"。 */}
+        {node.refinement === 0
+          && Date.now() - new Date(node.created).getTime() < 30 * 60 * 1000
+          && !node.is_tag
+          && !node.is_crystal
+          && !node.is_meta && (
+            <span className="ml-auto flex items-center gap-1 text-[10px] text-amber-400/80">
+              <span className="relative flex h-1.5 w-1.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400/60 opacity-75" />
+                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-400" />
+              </span>
+              {t('explorer:detail.aiProcessing', 'AI processing…')}
+            </span>
+          )}
       </div>
 
       <div className="p-5 space-y-5">

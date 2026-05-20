@@ -53,8 +53,13 @@ export function runPendingLinkGc(
   tx(expired.map(r => r.id));
 
   log.info(`pending-link-gc: deleted=${expired.length}`);
+  // 修复(2026-05-20 Audit A-3/A-6):type 不能用 'metabolism' —— renderer 的
+  // EVENT_TYPES / EVENT_TYPE_COLORS / TYPE_DISPATCH 都不知道这个值,事件会变
+  // 成无色、不可筛选、走兜底 GenericDetail。改成 'think_associate'(归属于
+  // "联想/链接管理"分类,跟 link_classify / link_discover 一类),subtype 保留
+  // 'pending_link_gc' 以便 timeline 详情面板按 subtype 区分。
   logTimelineEvent(db, {
-    type: 'metabolism',
+    type: 'think_associate',
     subtype: 'pending_link_gc',
     title: JSON.stringify({ key: 'pending_link_gc', params: { count: expired.length } }),
     detail: { deleted: expired.length },

@@ -31,7 +31,8 @@
     "updateChannel": "Güncelleme Kanalı",
     "updateChannelDesc": "Beta yeni özellikleri daha erken sunar ancak daha az kararlı olabilir. Değişiklik bir sonraki kontrolde geçerli olur.",
     "updateChannelStable": "Kararlı",
-    "updateChannelBeta": "Beta"
+    "updateChannelBeta": "Beta",
+    "channelSwitchConfirm": "Stable'a geçmek bir sonraki güncelleme kontrolünde en son kararlı sürümü yükler (bazı deneysel özellikler geri alınabilir). Devam edilsin mi?"
   },
   "external": {
     "subtabs": {
@@ -1002,7 +1003,15 @@
     "requestAccountDeletion": "Hesap silme talebi",
     "requestDeletionTitle": "Hesap silme talebi?",
     "requestDeletionDesc": "Onayla tıklayınca oturumunuz kapanacak. Hesabınızı ve tüm bulut verilerinizi kalıcı olarak silmek için oturumu kapattıktan sonra support@tidemind.ai adresine e-posta gönderin. Bu cihazdaki yerel veriler etkilenmez.",
-    "requestDeletionConfirm": "Oturumu kapat — destek ekibine yazacağım"
+    "requestDeletionConfirm": "Oturumu kapat — destek ekibine yazacağım",
+    "cancellationNote": "İptal anında etkili olur. Mevcut verileriniz erişilebilir kalır (ücretsiz sınırın üzerindeki kısım salt okunur olur).",
+    "memoryUsage": "Bellek Kullanımı",
+    "memoryUsageLine": "{{used}} / {{limit}} hatıra",
+    "memoryUnlimited": "sınırsız",
+    "memoryNearLimitHint": "Free plan sınırına yaklaşıyorsunuz. {{limit}} üzerindeki yeni hatıralar yükseltene kadar salt okunur olacak.",
+    "llmCostThisMonth": "Bu Ay LLM Kullanımı",
+    "llmCostCalls": "{{count}} çağrı",
+    "llmCostHint": "Tahmini. Ayrıntılı dökümler için Ayarlar → Model Kullanımı."
   },
   "cloud": {
     "loginRequired": "Bulut özelliklerini kullanmak için TideMind Cloud'a giriş yapın.",

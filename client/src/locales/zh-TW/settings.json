@@ -31,7 +31,8 @@
     "updateChannel": "更新頻道",
     "updateChannelDesc": "Beta 版會更早收到新功能，但可能不穩定。切換在下次檢查時生效。",
     "updateChannelStable": "穩定版",
-    "updateChannelBeta": "測試版"
+    "updateChannelBeta": "測試版",
+    "channelSwitchConfirm": "切換到 Stable 後會在下次檢查更新時安裝最新正式版(可能撤回部分實驗功能)。繼續嗎?"
   },
   "external": {
     "subtabs": {
@@ -1002,7 +1003,15 @@
     "requestAccountDeletion": "申請刪除帳戶",
     "requestDeletionTitle": "申請刪除帳戶?",
     "requestDeletionDesc": "點擊確認將登出。如需永久刪除帳戶及所有雲端資料,請在登出後寄信至 support@tidemind.ai。本裝置的本機資料不受影響。",
-    "requestDeletionConfirm": "登出 — 我會寄信給客服"
+    "requestDeletionConfirm": "登出 — 我會寄信給客服",
+    "cancellationNote": "取消立即生效。已有資料持續可讀(超過免費額度後變唯讀)。",
+    "memoryUsage": "記憶用量",
+    "memoryUsageLine": "{{used}} / {{limit}} 條",
+    "memoryUnlimited": "不限",
+    "memoryNearLimitHint": "即將達到免費版上限。超過 {{limit}} 條的新記憶會變唯讀,升級後恢復。",
+    "llmCostThisMonth": "本月 LLM 用量",
+    "llmCostCalls": "{{count}} 次調用",
+    "llmCostHint": "估算值。開啟 Settings → Model Usage 查看完整明細。"
   },
   "cloud": {
     "loginRequired": "請登入 TideMind Cloud 以使用雲端功能。",

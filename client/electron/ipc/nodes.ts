@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { ipcMain, BrowserWindow } from 'electron'
 import crypto from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { archiveNodeWithVectors } from '@server/db/node-lifecycle.js'
@@ -7,6 +7,7 @@ import {
   readStructureHolesCache,
   writeStructureHolesCache,
 } from '@server/graph/structure-holes.js'
+import { createLogger } from '@server/utils/logger.js'
 import {
   parseNodeId,
   parseNodesListFilter,
@@ -15,6 +16,43 @@ import {
   parseSearchQuery,
   parseTagText,
 } from './_schemas.js'
+
+const log = createLogger('ipc-nodes')
+
+/**
+ * structureHoles 缓存缺失时的后台预热(2026-05-20 Audit E-1 修复)。
+ *
+ * 原 IPC handler 在 cache miss 时同步跑 O(E²/V) CTE,万节点级用户主进程
+ * 秒到分钟级阻塞。改成 fire-and-forget 异步触发:
+ *   1. 用 setImmediate 让本次 IPC 立即返回空数组,renderer 显示 "暂无数据"
+ *   2. 计算完成后写缓存 + emit 'data-changed' 让 renderer 触发下一次 IPC 拿到结果
+ *   3. inflight flag 防短时间多次 IPC 触发并发 compute
+ *
+ * 仍是同步 better-sqlite3,setImmediate 只是把它从"this IPC tick"挪到下一个 tick,
+ * 主线程依然要阻塞;但至少首屏 IPC 不再卡。后续优化要么走 worker_threads,要么
+ * 把 daemon 预计算节奏从 5min 提到 1min。先用最小代价拆掉同步阻塞。
+ */
+let structureHolesInflight = false
+function schedulePreheatStructureHoles(db: Database.Database): void {
+  if (structureHolesInflight) return
+  structureHolesInflight = true
+  setImmediate(() => {
+    try {
+      const holes = computeStructureHoles(db)
+      writeStructureHolesCache(db, holes)
+      log.info(`structure holes preheat done (${holes.length} holes)`)
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) {
+          win.webContents.send('data-changed', { scopes: ['structure-holes'] })
+        }
+      }
+    } catch (err) {
+      log.warn(`structure holes preheat failed: ${(err as Error).message}`)
+    } finally {
+      structureHolesInflight = false
+    }
+  })
+}
 
 /** 派生分类 → 维度条件 SQL（维度化迁移后前端发送派生分类名） */
 function applyTypeFilter(type: string, conditions: string[], params: unknown[]): void {
@@ -212,19 +250,34 @@ export function registerNodeHandlers(db: Database.Database): void {
       `).run(tagNodeId, tag)
 
       // 链接方向：content_node → tag_node（与 tag-promote.ts 一致）
-      const rows = db.prepare('SELECT id, content, tags FROM nodes WHERE tags IS NOT NULL AND heat > 0.01 AND is_tag = 0').all() as Array<{ id: string; content: string; tags: string }>
+      // 修复(2026-05-20 Audit E-5):用 json_each(tags) 让 SQLite 在索引侧直接
+      // 过滤出含本 tag 的节点,避免 JS 端拉所有非空 tags 行 + JSON.parse 全表
+      // 扫描(万节点级用户每次 promoteTag 数百 ms 阻塞主线程)。
+      // json_valid 防御:tag_usage trigger 已加同样的防御,这里再挡一层,损坏
+      // JSON 的节点直接被 json_each 跳过(返回 0 行),不会抛错让整个 transaction
+      // 中止。
+      const rows = db.prepare(
+        `SELECT n.id, n.content, n.tags
+         FROM nodes n
+         WHERE n.tags IS NOT NULL
+           AND n.heat > 0.01
+           AND n.is_tag = 0
+           AND json_valid(n.tags)
+           AND EXISTS (
+             SELECT 1 FROM json_each(n.tags) je WHERE je.value = ?
+           )`
+      ).all(tag) as Array<{ id: string; content: string; tags: string }>
       for (const row of rows) {
         try {
-          const parsed = JSON.parse(row.tags)
-          if (Array.isArray(parsed) && parsed.includes(tag)) {
-            const strength = computeTagLinkStrength(row.content, tag, parsed)
-            const linkId = genId()
-            db.prepare(`
-              INSERT INTO links (id, from_id, to_id, relation, strength, auto, status, created)
-              VALUES (?, ?, ?, ?, ?, 1, 'confirmed', datetime('now'))
-            `).run(linkId, row.id, tagNodeId, JSON.stringify([{ type: 'tagged', confidence: 1.0 }]), strength)
-          }
-        } catch { /* skip malformed tags JSON */ }
+          const parsed = JSON.parse(row.tags) // 已通过 SQL 过滤,JSON 一定 valid,只为拿数组
+          if (!Array.isArray(parsed)) continue
+          const strength = computeTagLinkStrength(row.content, tag, parsed)
+          const linkId = genId()
+          db.prepare(`
+            INSERT INTO links (id, from_id, to_id, relation, strength, auto, status, created)
+            VALUES (?, ?, ?, ?, ?, 1, 'confirmed', datetime('now'))
+          `).run(linkId, row.id, tagNodeId, JSON.stringify([{ type: 'tagged', confidence: 1.0 }]), strength)
+        } catch { /* should not happen — json_valid passed */ }
       }
 
       // 从降级黑名单移除
@@ -467,16 +520,19 @@ export function registerNodeHandlers(db: Database.Database): void {
     if (!parsedLimit.ok) return parsedLimit.error
     const safeLimit = parsedLimit.data
 
-    // perf-optimization-2026-05-17 P2-1:读 daemon 后台预计算的缓存。
+    // perf-optimization-2026-05-17 P2-1 / 修复(2026-05-20 Audit E-1):
     // 缓存命中(常态):毫秒级返回 + slice 到用户请求 limit。
-    // 缓存缺失(冷启首次):同步计算一次并写缓存,之后都走缓存。
+    // 缓存缺失(冷启首次 / cache 被手工清掉):
+    //   原实现在 IPC handler 内同步跑 computeStructureHoles(O(E²/V) CTE,万节点
+    //   级用户秒级到分钟级阻塞主线程 + 整个 UI 鼠标转圈)。改成"返回空 + 异步
+    //   预热":fire-and-forget 触发后台计算,renderer 拿到空数组先渲染"暂无数据
+    //   /计算中"状态,daemon 完成预计算后 emit 'data-changed' 让 renderer 刷新。
     let cache = readStructureHolesCache(db)
     if (!cache) {
-      const holes = computeStructureHoles(db)
-      writeStructureHolesCache(db, holes)
-      cache = readStructureHolesCache(db)
+      // 用全局 in-flight flag 避免短时间内多次 IPC 触发并发 compute
+      void schedulePreheatStructureHoles(db)
+      return []
     }
-    if (!cache) return []
     return cache.holes.slice(0, safeLimit)
   })
 

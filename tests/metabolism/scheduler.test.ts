@@ -42,6 +42,7 @@ import {
   runSchedulerTick,
   getTaskStatuses,
   setHealthChangeListener,
+  noteSuccessfulLLMCall,
   type TaskDefinition,
 } from '../../src/metabolism/scheduler.js';
 import { LLMServiceError } from '../../src/llm/client.js';
@@ -213,16 +214,46 @@ describe('runSchedulerTick', () => {
     expect(executed).toContain('safe-task');
   });
 
-  it('half-open 状态下 LLM 任务成功发送 circuit_breaker_off 事件', async () => {
+  // ===== 重构(2026-05-20 Audit A-1/A-2 修复):
+  // task.execute() 正常 return 不再被 scheduler 当作 "LLM 真的成功"。
+  // 健康度信号(llm_last_success_at + 熔断器复位 + circuit_breaker_off 事件)
+  // 只在 src/llm/client.ts callLLM 拿到 2xx response 时,通过 setLLMSuccessHook
+  // 注入的回调触发 — 单元层等价于直接调 noteSuccessfulLLMCall(db)。
+  // 原本测 "runSchedulerTick 触发健康信号写入" 的 4 个用例需要改成 "noteSuccessfulLLMCall
+  // 行为正确" 的覆盖,因为后者才是当前的正确写入入口。
+  // failure 路径(recordLLMFailure)仍在 scheduler.catch 里,沿用原 runSchedulerTick 覆盖。
+
+  it('runSchedulerTick: task.execute 正常 return 但 LLM 未真实调用 → llm_last_success_at 不应写入(Audit A-1/A-2 回归)', async () => {
+    // 模拟一个 requiresLLM=true 任务,内部吞掉 LLMServiceError 后正常 return。
+    // 真实场景:digest-retry 在 LLM 全挂期间走 failPendingDigest 后无报错 return。
+    const swallowingTask: TaskDefinition = {
+      id: 'swallow',
+      execute: vi.fn().mockResolvedValue(undefined), // 不抛
+      intervalStrategy: 'test',
+      defaultIntervalMinutes: 0,
+      requiresLLM: true,
+    };
+    await runSchedulerTick(db, [swallowingTask]);
+
+    // 关键回归断言:llm_last_success_at 必须不存在(因为 callLLM 没真的被调过)
+    const row = db.prepare("SELECT value FROM metadata WHERE key = 'llm_last_success_at'").get();
+    expect(row).toBeUndefined();
+
+    // 熔断器状态也不应被重置:failures 字段保留(本测试初始为 0,所以也是 undefined)
+    const failuresRow = db.prepare("SELECT value FROM metadata WHERE key = 'circuit_breaker_failures'").get();
+    expect(failuresRow).toBeUndefined();
+  });
+
+  // ===== noteSuccessfulLLMCall = 真实 LLM 成功的入口 =====
+
+  it('noteSuccessfulLLMCall: half-open 状态下成功调用发送 circuit_breaker_off 事件', () => {
     // 模拟：3 次失败已开启熔断器，冷却也已过期 → getCircuitState 会返回 half-open
-    const expiredOpenTime = Date.now() - 10 * 60 * 1000; // 10 分钟前开启
+    const expiredOpenTime = Date.now() - 10 * 60 * 1000;
     db.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)").run('circuit_breaker_failures', '3');
     db.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)").run('circuit_breaker_opened_at', expiredOpenTime.toString());
-    db.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)").run('circuit_breaker_cooldown_ms', (5 * 60 * 1000).toString()); // 5 分钟冷却
+    db.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)").run('circuit_breaker_cooldown_ms', (5 * 60 * 1000).toString());
 
-    const llmTask = makeTask({ id: 'probe', requiresLLM: true });
-    const executed = await runSchedulerTick(db, [llmTask]);
-    expect(executed).toContain('probe');
+    noteSuccessfulLLMCall(db);
 
     // 状态已重置
     const failuresRow = db.prepare("SELECT value FROM metadata WHERE key = 'circuit_breaker_failures'").get() as { value: string };
@@ -235,31 +266,23 @@ describe('runSchedulerTick', () => {
     expect(offEvents).toHaveLength(1);
   });
 
-  it('closed 状态下有未到阈值的失败计数 → 成功静默重置，不发事件', async () => {
-    // 只累计 1 次失败，远未达到阈值 3，熔断器从未 open → state = 'closed'
+  it('noteSuccessfulLLMCall: closed 状态下有未到阈值的失败计数 → 静默重置,不发事件', () => {
     db.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)").run('circuit_breaker_failures', '1');
 
-    const llmTask = makeTask({ id: 'recover', requiresLLM: true });
-    const executed = await runSchedulerTick(db, [llmTask]);
-    expect(executed).toContain('recover');
+    noteSuccessfulLLMCall(db);
 
-    // 计数被清零
     const failuresRow = db.prepare("SELECT value FROM metadata WHERE key = 'circuit_breaker_failures'").get() as { value: string };
     expect(failuresRow.value).toBe('0');
 
-    // 关键：时间线**不**应该出现 circuit_breaker_off 事件
     const offEvents = db.prepare(
       "SELECT title FROM timeline_events WHERE title LIKE '%circuit_breaker_off%'",
     ).all();
     expect(offEvents).toHaveLength(0);
   });
 
-  // ===== 健康度信号 metadata =====
-
-  it('LLM 任务成功后写入 llm_last_success_at', async () => {
-    const llmTask = makeTask({ id: 'ok-task', requiresLLM: true });
+  it('noteSuccessfulLLMCall: 写入 llm_last_success_at', () => {
     const before = Date.now();
-    await runSchedulerTick(db, [llmTask]);
+    noteSuccessfulLLMCall(db);
 
     const row = db.prepare("SELECT value FROM metadata WHERE key = 'llm_last_success_at'").get() as { value: string } | undefined;
     expect(row).toBeDefined();
@@ -287,13 +310,13 @@ describe('runSchedulerTick', () => {
     expect(Number(tsRow.value)).toBeGreaterThanOrEqual(before);
   });
 
-  it('setHealthChangeListener 注入的回调在成功/失败时都会被触发', async () => {
+  it('setHealthChangeListener: 成功(via noteSuccessfulLLMCall) 与失败(via runSchedulerTick) 都触发回调', async () => {
     const cb = vi.fn();
     setHealthChangeListener(cb);
     try {
-      // 成功
-      await runSchedulerTick(db, [makeTask({ id: 's', requiresLLM: true })]);
-      // 失败
+      // 成功 — 通过实际的成功入口
+      noteSuccessfulLLMCall(db);
+      // 失败 — 通过 scheduler 的 catch 路径
       await runSchedulerTick(db, [{
         id: 'f',
         execute: vi.fn().mockRejectedValue(new LLMServiceError('boom', 500)),

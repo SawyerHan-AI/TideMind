@@ -31,7 +31,8 @@
     "updateChannel": "업데이트 채널",
     "updateChannelDesc": "Beta는 새 기능을 더 빨리 받을 수 있지만 안정성이 떨어질 수 있습니다. 다음 확인 시 적용됩니다.",
     "updateChannelStable": "안정 버전",
-    "updateChannelBeta": "베타"
+    "updateChannelBeta": "베타",
+    "channelSwitchConfirm": "Stable로 전환하면 다음 업데이트 확인 시 최신 안정 버전이 설치됩니다(일부 실험 기능이 되돌려질 수 있습니다). 계속하시겠습니까?"
   },
   "external": {
     "subtabs": {
@@ -1002,7 +1003,15 @@
     "requestAccountDeletion": "계정 삭제 요청",
     "requestDeletionTitle": "계정 삭제 요청?",
     "requestDeletionDesc": "확인을 클릭하면 로그아웃됩니다. 계정과 모든 클라우드 데이터를 영구적으로 삭제하려면 로그아웃 후 support@tidemind.ai 로 이메일을 보내주세요. 이 기기의 로컬 데이터는 영향받지 않습니다.",
-    "requestDeletionConfirm": "로그아웃 — 지원팀에 이메일 보내기"
+    "requestDeletionConfirm": "로그아웃 — 지원팀에 이메일 보내기",
+    "cancellationNote": "구독 해지는 즉시 적용됩니다. 기존 데이터는 계속 열람할 수 있습니다(무료 한도를 초과한 데이터는 읽기 전용).",
+    "memoryUsage": "메모리 사용량",
+    "memoryUsageLine": "{{used}} / {{limit}}개",
+    "memoryUnlimited": "무제한",
+    "memoryNearLimitHint": "무료 플랜 한도에 근접했습니다. {{limit}}개를 초과하는 새 메모리는 업그레이드 전까지 읽기 전용이 됩니다.",
+    "llmCostThisMonth": "이번 달 LLM 사용량",
+    "llmCostCalls": "{{count}}회 호출",
+    "llmCostHint": "추정값입니다. 설정 → 모델 사용량에서 전체 내역을 확인하세요."
   },
   "cloud": {
     "loginRequired": "클라우드 기능을 사용하려면 TideMind Cloud에 로그인하세요.",

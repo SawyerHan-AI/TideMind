@@ -40,7 +40,12 @@ interface UpdateInfo {
  * (4) 等所有用户升级后才能切到新私钥签名。当前实现单 key,无 fallback——双 key 轮换
  * 在 backlog "release signing 双 key 应急轮换"(2026-05-19 起)。
  */
-const UPDATE_PUBLIC_KEY_PEM = process.env.TIDEMIND_UPDATE_PUBLIC_KEY ?? `-----BEGIN PUBLIC KEY-----
+// 修复(2026-05-20 Audit D-5):用 `||` 而不是 `??`。
+// `??` 只在 env 是 undefined/null 时 fallback,如果有人在 CI/Docker 把
+// TIDEMIND_UPDATE_PUBLIC_KEY 设成空字符串(常见的"清空 env 但忘删 key"操作),
+// 整个 const 会变成空串 → verifyUpdateSignature 第一行 `if (!UPDATE_PUBLIC_KEY_PEM)`
+// 返回 'unsigned' → 静默关闭整套验签。`||` 把空串也算 falsy 触发 fallback。
+const UPDATE_PUBLIC_KEY_PEM = process.env.TIDEMIND_UPDATE_PUBLIC_KEY || `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAWcIC4xPD18+eGpgaJSxV6MF1vUD0zPEp7T4wFxKWjXQ=
 -----END PUBLIC KEY-----
 `
@@ -98,17 +103,25 @@ export function verifyWithEitherKey(
 
 /**
  * 验证更新清单签名。signature 是对 `${version}\n${url}` 的 ed25519 签名(base64)。
- * 公钥未配置 → 'unsigned'(允许更新);签名缺失 → 'unsigned';签名不匹配 → 'invalid'(拒绝)。
+ * 公钥未配置 → 'unsigned'(允许更新);签名缺失 → 'unsigned';签名不匹配 → 'invalid'(拒绝);
+ * 签名 URL 拿不到(网络错误 / 服务端 500)→ 'unreachable'(应该重试,不拒绝更新)。
+ *
+ * 修复(2026-05-20 Audit D-3):原实现把"网络错误"和"签名不匹配"都返回 'invalid',
+ * 用户日志看到"签名异常"既可能是真攻击也可能只是 GitHub 网络抖动。同口径久而久之
+ * 训练用户忽略警告。区分后,UI 层对 'invalid' 显示阻塞性 banner,对 'unreachable'
+ * 提示"网络重试中"。
  *
  * 双 key 轮换:主签名失败 → 尝试 secondary 签名(如果 secondary 公钥已配置且服务端
  * 提供了 .sig.secondary URL)。任意一边验证通过即认为合法。
  */
+export type SignatureVerdict = 'verified' | 'unsigned' | 'invalid' | 'unreachable'
+
 export async function verifyUpdateSignature(
   signatureUrl: string | null,
   version: string,
   url: string,
   secondarySignatureUrl: string | null = null,
-): Promise<'verified' | 'unsigned' | 'invalid'> {
+): Promise<SignatureVerdict> {
   if (!UPDATE_PUBLIC_KEY_PEM) return 'unsigned' // 未启用签名
   if (!signatureUrl) {
     log.warn('update has no signatureUrl but public key is configured — refusing update')
@@ -116,33 +129,44 @@ export async function verifyUpdateSignature(
   }
   const message = Buffer.from(`${version}\n${url}`, 'utf8')
 
+  // 区分"网络失败"(应重试)与"签名不匹配"(应拒绝)。anyReachable 标记
+  // 至少一个 .sig URL 成功拉到正文,即便内容验签失败也是真有签名不对。
+  let anyReachable = false
   try {
     // 主签名 + 主公钥
     const sigResp = await fetch(signatureUrl, { signal: AbortSignal.timeout(10_000) })
     if (sigResp.ok) {
+      anyReachable = true
       const sigText = (await sigResp.text()).trim()
       const sigBuf = Buffer.from(sigText, 'base64')
       if (verifyWithEitherKey(UPDATE_PUBLIC_KEY_PEM, UPDATE_PUBLIC_KEY_PEM_SECONDARY, message, sigBuf)) {
         return 'verified'
       }
+    } else {
+      log.warn(`signature URL returned ${sigResp.status} — treated as unreachable`)
     }
 
-    // 服务端下发了 secondary signature URL → 尝试 secondary .sig(可能用主公钥或 secondary 公钥签)
+    // 服务端下发了 secondary signature URL → 尝试 secondary .sig
     if (secondarySignatureUrl) {
       const sigResp2 = await fetch(secondarySignatureUrl, { signal: AbortSignal.timeout(10_000) })
       if (sigResp2.ok) {
+        anyReachable = true
         const sig2Text = (await sigResp2.text()).trim()
         const sig2Buf = Buffer.from(sig2Text, 'base64')
         if (verifyWithEitherKey(UPDATE_PUBLIC_KEY_PEM, UPDATE_PUBLIC_KEY_PEM_SECONDARY, message, sig2Buf)) {
           return 'verified'
         }
+      } else {
+        log.warn(`secondary signature URL returned ${sigResp2.status}`)
       }
     }
 
-    return 'invalid'
+    // 区分:拉到了正文但内容不匹配 = invalid;两个 URL 都没拉到 = unreachable
+    return anyReachable ? 'invalid' : 'unreachable'
   } catch (err) {
     log.error(`update signature verify error: ${(err as Error).message}`)
-    return 'invalid'
+    // fetch 抛异常(超时 / DNS / TCP reset)= 网络问题,不是签名问题
+    return anyReachable ? 'invalid' : 'unreachable'
   }
 }
 
@@ -165,10 +189,15 @@ export function registerAppHandlers(): void {
     const currentVersion = app.getVersion()
     try {
       const endpoint = getUpdateEndpoint()
+      // 修复(2026-05-20 Audit B-2):带上当前 channel,避免 Beta 用户在 About 面板
+      // 看到 stable 版本的"最新版本"信息(legacy 路径 + 新 updater 状态机两套 UI
+      // 同时 show 不同版本 → 用户困惑)。
+      const { getUpdateChannel } = await import('../updater/channel.js')
       const params = new URLSearchParams({
         platform: process.platform,
         arch: process.arch,
         version: currentVersion,
+        channel: getUpdateChannel(),
       })
       const resp = await fetch(`${endpoint}?${params}`, {
         signal: AbortSignal.timeout(10_000),
@@ -188,15 +217,18 @@ export function registerAppHandlers(): void {
       }
       const hasUpdate = !!data.url
       // 验签:启用了公钥但签名不匹配 → 拒绝此更新,避免恶意 release 推到全量用户。
+      // Audit D-3:'unreachable' 时把对外 signatureStatus 折叠成 'unsigned' 让 UI
+      // 不显示"签名异常"红字 banner(本路径是 about 面板 manual check,不是
+      // autoUpdate flow,先告诉用户"未签名"等下次重试)。
       let signatureStatus: 'verified' | 'unsigned' | 'invalid' = 'unsigned'
       if (hasUpdate && data.url) {
-        signatureStatus = await verifyUpdateSignature(
+        const verdict = await verifyUpdateSignature(
           data.signatureUrl ?? null,
           data.version,
           data.url,
           data.secondarySignatureUrl ?? null,
         )
-        if (signatureStatus === 'invalid') {
+        if (verdict === 'invalid') {
           log.warn(`update ${data.version} REJECTED: signature invalid`)
           return {
             hasUpdate: false,
@@ -205,9 +237,10 @@ export function registerAppHandlers(): void {
             releaseUrl: data.releaseUrl ?? data.url,
             releaseNotes: data.releaseNotes?.slice(0, 500) ?? null,
             publishedAt: data.releaseDate ?? null,
-            signatureStatus,
+            signatureStatus: 'invalid',
           }
         }
+        signatureStatus = verdict === 'unreachable' ? 'unsigned' : verdict
       }
       return {
         hasUpdate,

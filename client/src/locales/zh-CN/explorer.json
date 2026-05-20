@@ -65,7 +65,8 @@
     "rejectTag": "移除此标签",
     "rejectTagAria": "移除标签按钮",
     "rejectTagSuccess": "已移除 \"{{tag}}\"",
-    "undo": "撤销"
+    "undo": "撤销",
+    "aiProcessing": "AI 处理中…"
   },
   "graph": {
     "loading": "加载图数据...",

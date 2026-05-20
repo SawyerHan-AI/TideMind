@@ -42,7 +42,8 @@
       "learning3_recommendations": "{{count}} recommandations d'optimisation générées",
       "circuit_breaker_on": "{{failures}} échecs consécutifs, refroidissement {{minutes}} minutes",
       "circuit_breaker_off": "Service rétabli en fonctionnement normal",
-      "trigger_query": "Requête déclencheur"
+      "trigger_query": "Requête déclencheur",
+      "pending_link_gc": "{{count}} liens en attente expirés nettoyés"
     }
   },
   "events": {
@@ -84,6 +85,7 @@
     "apple_notes_first_import": "Apple Notes premier import : {{total}} notes (traitées {{processed}}, ignorées {{skipped}}, échouées {{failed}})",
     "apple_notes_incremental_sync": "Apple Notes synchronisation incrémentale (traitées {{processed}})",
     "apple_notes_init_complete": "Apple Notes initialisation terminée : {{nodes}} nœuds, {{links}} liens, {{crystals}} cristaux",
-    "profile_synthesized": "Profil synthétisé ({{crystals}} cristaux, {{preferences}} préférences)"
+    "profile_synthesized": "Profil synthétisé ({{crystals}} cristaux, {{preferences}} préférences)",
+    "pending_link_gc": "{{count}} liens en attente expirés nettoyés"
   }
 }

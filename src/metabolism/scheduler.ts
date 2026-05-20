@@ -260,6 +260,40 @@ function recordLLMSuccess(db: Database.Database): void {
   emitHealthChange();
 }
 
+/**
+ * 真实 LLM 调用成功时由 callLLM hook 触发(2026-05-20 Audit A-1/A-2 修复)。
+ *
+ * 之前 scheduler 在 task.execute() 正常 return 后无条件调 recordLLMSuccess,
+ * 但 digest-retry / annotate / link-evaluate 等任务在 LLM 没配 / 没工作 / 内部
+ * 吞 LLMServiceError 时也会正常 return → scheduler 写"健康"信号 → 整个 LLM
+ * resilience 防御被绕过。
+ *
+ * 新流程:
+ *   1. daemon.ts 在启动时把 () => noteSuccessfulLLMCall(db) 注入到 callLLM 的
+ *      success hook
+ *   2. 只有真的拿到 2xx response 才写 llm_last_success_at + 重置熔断器
+ *   3. half-open → closed 的 transition 也在这里处理,避免和 scheduler 的探测
+ *      逻辑两边都写但语义不一致
+ *
+ * 副作用:同一个 scheduler tick 中,若 task 内部多次 callLLM(annotate 按节点
+ * 循环),每次成功都会触发 hook → 每次都 reset 熔断器。幂等,不是 bug。
+ */
+export function noteSuccessfulLLMCall(db: Database.Database): void {
+  const prevState = getCircuitState(db).state;
+  recordLLMSuccess(db);
+  if (prevState === 'half-open') {
+    log.info('LLM 熔断器已关闭（服务恢复）');
+    logTimelineEvent(db, {
+      type: 'config',
+      subtype: 'settings_change',
+      title: JSON.stringify({ key: 'circuit_breaker_off' }),
+      // 修复(2026-05-20 Audit A-10):跟 circuit_breaker_on 对称设 important=1,
+      // 避免用户看到"AI 暂停"红色重要事件后看不到"AI 恢复"的对应轻量事件。
+      important: 1,
+    });
+  }
+}
+
 function recordLLMFailure(db: Database.Database, errMessage?: string): void {
   const { failures, cooldownMs } = getCircuitState(db);
   const newFailures = failures + 1;
@@ -372,24 +406,19 @@ export async function runSchedulerTick(
       executed.push(task.id);
       log.info(`任务完成: ${task.id}`);
 
-      // LLM 任务成功 → 刷新健康度信号 + 视情况重置熔断器
+      // 修复(2026-05-20 Audit A-1/A-2):**不再**在这里调 recordLLMSuccess。
+      // 原实现 unconditionally 写"健康"信号 + 重置熔断器,但 task.execute 正常
+      // return 不代表 LLM 真的被调用且成功(digest-retry 吞 LLMServiceError /
+      // annotate 在 no candidate 时早 return / etc.)。
       //
-      // recordLLMSuccess 总是写 llm_last_success_at（健康度门控需要）。
-      // 时间线事件的区分：
-      //   a) half-open：之前真的 open 过，冷却到期后放一个探测任务，此次成功
-      //      → 真正从"开启"转回"关闭"，发 circuit_breaker_off 事件 + info 日志。
-      //   b) closed：closed but failures > 0 时也走 recordLLMSuccess 重置计数，
-      //      但不发事件——否则时间线会出现孤立的"熔断器关闭"事件而没有对应的"开启"事件，造成噪音。
+      // 新流程:src/llm/client.ts callLLM 拿到 2xx 时主动通过 LLMSuccessHook 调
+      // noteSuccessfulLLMCall(db),只对真实成功响应记录健康度。
+      // half-open → closed 的 transition 事件也搬到 noteSuccessfulLLMCall 里。
+      //
+      // 这里只保留 halfOpenProbed = true:即使本次 LLM 调用未触发(no candidates
+      // 等),已经"放行了一个 requiresLLM=true 的 task"事实成立,后续 LLM task
+      // 这一 tick 也不应该再被半开探测放过。
       if (task.requiresLLM) {
-        recordLLMSuccess(db);
-        if (circuit.state === 'half-open') {
-          log.info('LLM 熔断器已关闭（服务恢复）');
-          logTimelineEvent(db, {
-            type: 'config',
-            subtype: 'settings_change',
-            title: JSON.stringify({ key: 'circuit_breaker_off' }),
-          });
-        }
         halfOpenProbed = true;
       }
     } catch (err) {

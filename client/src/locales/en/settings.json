@@ -31,7 +31,8 @@
     "updateChannel": "Update Channel",
     "updateChannelDesc": "Beta delivers new features earlier but may be less stable. Switching takes effect on the next check.",
     "updateChannelStable": "Stable",
-    "updateChannelBeta": "Beta"
+    "updateChannelBeta": "Beta",
+    "channelSwitchConfirm": "Switching to Stable will install the latest stable version on your next update check (this may downgrade some experimental features). Continue?"
   },
   "external": {
     "subtabs": {
@@ -1002,7 +1003,15 @@
     "requestAccountDeletion": "Request Account Deletion",
     "requestDeletionTitle": "Request Account Deletion?",
     "requestDeletionDesc": "Clicking confirm will sign you out. To permanently delete your account and all cloud data, please email support@tidemind.ai after signing out. Local data on this device is not affected.",
-    "requestDeletionConfirm": "Sign Out — I will email support"
+    "requestDeletionConfirm": "Sign Out — I will email support",
+    "cancellationNote": "Cancellation takes effect immediately. Your existing data stays accessible (read-only after the free-tier limit).",
+    "memoryUsage": "Memory Usage",
+    "memoryUsageLine": "{{used}} / {{limit}} memories",
+    "memoryUnlimited": "unlimited",
+    "memoryNearLimitHint": "Approaching the Free plan limit. New memories beyond {{limit}} will become read-only until you upgrade.",
+    "llmCostThisMonth": "LLM Usage This Month",
+    "llmCostCalls": "{{count}} calls",
+    "llmCostHint": "Estimated. Tap Model Usage in Settings for full breakdown."
   },
   "cloud": {
     "loginRequired": "Sign in to TideMind Cloud to use cloud features.",

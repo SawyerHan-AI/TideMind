@@ -115,9 +115,33 @@ SIGNING_PRIVATE_KEY="$(cat ~/key.tmp.pem)" npm run release -- --version 0.2.62
 
 **密钥保管仍然比代码实现更重要** — 双 key 只是把"立即停服"延后为"等用户升级再切"。私钥本身泄漏后,攻击者依然能签任何 release,直到主公钥被替换。
 
----
+### 当前签名 payload 的威胁模型 + 取舍说明(2026-05-20 加入)
 
-## 1B. Apple Code Signing + Notarization(强烈建议启用)
+**签名内容**:`${version}\n${url}`(ed25519 over UTF-8 bytes)。**不包含 DMG 文件内容的 sha512**。
+
+**这能防什么**:
+- 攻击者拿到 cloud-server 写权限,伪造 manifest 返回任意 `version` / `url` —— 签名验证失败,客户端拒绝。
+- 攻击者用旧 `.sig` 回放更早版本的 manifest —— 客户端的 `compareSemver` downgrade guard 拦截(verifier.ts L67-71)。
+- 攻击者只控制 DNS / CDN —— 签名校验在客户端用内置公钥本地完成,不依赖 TLS。
+
+**这不能防**:**GitHub Release assets 被替换字节**。当前 binary 完整性是由 `electron-updater` 用 `latest-mac.yml` 里的 `sha512` 字段校验的,但 **`latest-mac.yml` 本身没有 ed25519 签名**。攻击拓扑:
+1. 攻击者拿到 `SawyerHan-AI/TideMind` 写权限
+2. 把 v0.2.X 的 DMG 字节替换为恶意版本
+3. 重算 sha512 写回 `latest-mac.yml`
+4. URL 没变,我们的 `.sig` 仍验证通过 → 客户端按"URL 是 0.2.X"的 manifest 下载 → electron-updater 用篡改的 sha512 校验 → 通过 → 用户装上恶意版本
+
+**当前的取舍**:接受这个威胁,**不**把签名 payload 扩到覆盖 sha512。理由:
+1. **威胁概率**:GitHub 写权限事故远低于"中间人换 URL 转账户"事故。GH_TOKEN + 2FA + branch protection + Actions 权限隔离比签名扩 sha512 更先该做。
+2. **改造成本**:扩 payload 需要客户端和服务端同步升级,旧客户端会因 sig 不匹配进 `invalid`。需要"双签"过渡(同时上传 `${v}\n${u}` 和 `${v}\n${u}\n${sha}` 两套 .sig),持续 1-2 个版本周期,~2 天工作量。
+3. **GH 真被入侵的话救不了多少**:攻击者既能改 DMG,也能改 `client/electron/ipc/app.ts` 里的内置公钥本身,签名扩 sha512 防御就失效了。供应链层面的攻击需要 SLSA provenance / sigstore transparency log 这类公开审计机制才能真防。
+4. **可观测性兜底**:客户端 `verifyUpdateSignature` 现在区分 `verified | unsigned | invalid | unreachable`(2026-05-20 D-3 修),`invalid` 状态在客户端日志显式标记,且 update API 是从 `cloud.tidemind.ai` 受控端点拉的(不是直接 GitHub),万一 GitHub 被入侵 cloud-server 可以紧急拒绝下发恶意 release(把 mandatory=false + URL 改成空 → 客户端不下载)。
+
+**重新评估的触发条件**:
+- 拿到 100+ 用户,或商业敏感数据上云,值得花 2 天做 SLSA provenance
+- 出现真实的 GH 入侵事故(行业平均 1-2 年一次)
+- 接入第三方依赖的 release 流程(增加供应链节点)
+
+
 
 ### 风险
 DMG 未签名时,用户下载装 app 会弹"无法打开,因为它来自身份不明的开发者",

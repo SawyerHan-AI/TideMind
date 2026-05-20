@@ -38,7 +38,9 @@
     "installLater": "Daha sonra",
     "mandatoryTitle": "Güncelleme Gerekli",
     "mandatoryDesc": "Tide Mind {{version}} gerekli düzeltmeler içeriyor. Uygulamayı kullanmaya devam etmek için güncellemelisiniz.",
-    "mandatoryRestart": "Şimdi yeniden başlatarak güncelle"
+    "mandatoryRestart": "Şimdi yeniden başlatarak güncelle",
+    "mandatoryCountdown": "{{seconds}} saniye sonra otomatik yeniden başlatılacak",
+    "mandatorySnooze": "10 dakika sonra hatırlat ({{remaining}} kaldı)"
   },
   "llmHealth": {
     "paused": "AI duraklatıldı ({{min}} dk sonra tekrar denenecek)",
