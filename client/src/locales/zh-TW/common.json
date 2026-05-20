@@ -40,7 +40,15 @@
     "mandatoryDesc": "Tide Mind {{version}} 包含重要修復，需要更新後才能繼續使用。",
     "mandatoryRestart": "立即重啟更新",
     "mandatoryCountdown": "{{seconds}} 秒後自動重啟",
-    "mandatorySnooze": "10 分鐘後再提醒(剩 {{remaining}} 次)"
+    "mandatorySnooze": "10 分鐘後再提醒(剩 {{remaining}} 次)",
+    "checking": "檢查中…",
+    "upToDate": "已是最新",
+    "available": "v{{version}} 可更新",
+    "downloading": "下載中 {{percent}}%",
+    "downloadingTitle": "正在下載 v{{version}}",
+    "readyShort": "重新啟動 · v{{version}}",
+    "error": "更新失敗",
+    "signatureInvalid": "簽章驗證失敗"
   },
   "llmHealth": {
     "paused": "AI 暫停中（{{min}} 分鐘後重試）",

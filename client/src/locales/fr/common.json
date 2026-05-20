@@ -40,7 +40,15 @@
     "mandatoryDesc": "Tide Mind {{version}} contient des corrections requises. Vous devez mettre à jour pour continuer à utiliser l'application.",
     "mandatoryRestart": "Redémarrer maintenant pour mettre à jour",
     "mandatoryCountdown": "Redémarrage automatique dans {{seconds}} secondes",
-    "mandatorySnooze": "Me rappeler dans 10 minutes ({{remaining}} restantes)"
+    "mandatorySnooze": "Me rappeler dans 10 minutes ({{remaining}} restantes)",
+    "checking": "Vérification…",
+    "upToDate": "À jour",
+    "available": "v{{version}} disponible",
+    "downloading": "Téléchargement {{percent}}%",
+    "downloadingTitle": "Téléchargement de v{{version}}",
+    "readyShort": "Redémarrer · v{{version}}",
+    "error": "Échec de mise à jour",
+    "signatureInvalid": "Signature invalide"
   },
   "llmHealth": {
     "paused": "IA en pause ({{min}} min avant nouvel essai)",

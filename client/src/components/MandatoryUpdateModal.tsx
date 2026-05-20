@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AlertTriangle, RotateCw, Clock } from 'lucide-react'
-import type { UpdaterState } from '../lib/api-contract'
+import { useUpdaterState } from '../hooks/useUpdaterState'
 
 /**
  * Mandatory(强制)更新模态:全屏阻塞,60s 倒计时 + 最多 3 次"再等 10 分钟"
@@ -25,24 +25,11 @@ const SNOOZE_MS = 10 * 60 * 1000
 
 export function MandatoryUpdateModal() {
   const { t } = useTranslation('common')
-  const [state, setState] = useState<UpdaterState>({ status: 'idle' })
+  const state = useUpdaterState()
   const [snoozeCount, setSnoozeCount] = useState(0)
   const [snoozedUntil, setSnoozedUntil] = useState<number>(0)
   const [secondsLeft, setSecondsLeft] = useState(COUNTDOWN_SECONDS)
   const [installing, setInstalling] = useState(false)
-
-  // 订阅 updater state(同原实现,只是 setState 后还要重置 countdown / snooze)
-  useEffect(() => {
-    let cancelled = false
-    window.api.updater.getState().then((s) => {
-      if (!cancelled) setState(s)
-    }).catch(() => {})
-    const off = window.api.updater.onStateChanged((s) => setState(s))
-    return () => {
-      cancelled = true
-      off()
-    }
-  }, [])
 
   const isShowing =
     state.status === 'downloaded' &&
@@ -75,11 +62,15 @@ export function MandatoryUpdateModal() {
   // snooze 到点后重新显示模态
   useEffect(() => {
     if (snoozedUntil === 0 || snoozedUntil <= Date.now()) return
-    const t = setTimeout(() => setSnoozedUntil(0), snoozedUntil - Date.now())
-    return () => clearTimeout(t)
+    // 用 timer 避免和外层 `t`(translation function)同名
+    const timer = setTimeout(() => setSnoozedUntil(0), snoozedUntil - Date.now())
+    return () => clearTimeout(timer)
   }, [snoozedUntil])
 
   if (!isShowing) return null
+  // isShowing 是 boolean 推导不是 TS type guard,这里显式 narrow 让下面读
+  // state.version / state.releaseNotes / state.mandatory 时 TS 能保证类型安全。
+  if (state.status !== 'downloaded') return null
 
   const canSnooze = snoozeCount < SNOOZE_MAX
   const remainingSnooze = SNOOZE_MAX - snoozeCount
@@ -101,7 +92,7 @@ export function MandatoryUpdateModal() {
         </div>
 
         <p className="text-sm text-gray-300 leading-relaxed mb-3">
-          {t('updater.mandatoryDesc', { version: (state as { version?: string }).version ?? '' })}
+          {t('updater.mandatoryDesc', { version: state.version })}
         </p>
 
         {/* 倒计时区域 */}
@@ -110,9 +101,9 @@ export function MandatoryUpdateModal() {
           <span>{t('updater.mandatoryCountdown', { seconds: secondsLeft })}</span>
         </div>
 
-        {(state as { releaseNotes?: string }).releaseNotes && (
+        {state.releaseNotes && (
           <div className="text-xs text-gray-400 bg-white/[0.04] rounded-lg p-3 mb-5 max-h-32 overflow-y-auto whitespace-pre-line">
-            {(state as { releaseNotes?: string }).releaseNotes}
+            {state.releaseNotes}
           </div>
         )}
 

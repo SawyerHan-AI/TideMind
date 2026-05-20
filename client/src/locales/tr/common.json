@@ -40,7 +40,15 @@
     "mandatoryDesc": "Tide Mind {{version}} gerekli düzeltmeler içeriyor. Uygulamayı kullanmaya devam etmek için güncellemelisiniz.",
     "mandatoryRestart": "Şimdi yeniden başlatarak güncelle",
     "mandatoryCountdown": "{{seconds}} saniye sonra otomatik yeniden başlatılacak",
-    "mandatorySnooze": "10 dakika sonra hatırlat ({{remaining}} kaldı)"
+    "mandatorySnooze": "10 dakika sonra hatırlat ({{remaining}} kaldı)",
+    "checking": "Denetleniyor…",
+    "upToDate": "Güncel",
+    "available": "v{{version}} mevcut",
+    "downloading": "İndiriliyor {{percent}}%",
+    "downloadingTitle": "v{{version}} indiriliyor",
+    "readyShort": "Yeniden başlat · v{{version}}",
+    "error": "Güncelleme başarısız",
+    "signatureInvalid": "İmza geçersiz"
   },
   "llmHealth": {
     "paused": "AI duraklatıldı ({{min}} dk sonra tekrar denenecek)",

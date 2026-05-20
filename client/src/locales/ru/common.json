@@ -40,7 +40,15 @@
     "mandatoryDesc": "Tide Mind {{version}} содержит важные исправления. Чтобы продолжить использование, необходимо обновить.",
     "mandatoryRestart": "Перезапустить сейчас для обновления",
     "mandatoryCountdown": "Автоматический перезапуск через {{seconds}} с",
-    "mandatorySnooze": "Напомнить через 10 минут (осталось {{remaining}})"
+    "mandatorySnooze": "Напомнить через 10 минут (осталось {{remaining}})",
+    "checking": "Проверка…",
+    "upToDate": "Актуально",
+    "available": "v{{version}} доступна",
+    "downloading": "Загрузка {{percent}}%",
+    "downloadingTitle": "Загрузка v{{version}}",
+    "readyShort": "Перезапустить · v{{version}}",
+    "error": "Ошибка обновления",
+    "signatureInvalid": "Подпись недействительна"
   },
   "llmHealth": {
     "paused": "ИИ приостановлен ({{min}} мин до повторной попытки)",

@@ -1,10 +1,11 @@
 import { Outlet, useLocation } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
-import { UpdateReadyBanner } from './dashboard/UpdateReadyBanner'
 // MandatoryUpdateModal 提到 App 根挂载(2026-05-20 产品决策 #1):
 // 原本挂在 Layout 内,route 切换 / Outlet 重渲染 / OnboardingPage 路径会让模态
 // 在某些场景下 unmount,等价于"绕开必须升级"。提到 App.tsx HashRouter 之外 +
 // 路由切换不影响。
+// 普通(非 mandatory)的 downloaded 提示从 2026-05-20 起改为左下角 Sidebar
+// UpdaterBadge chip,删除原 UpdateReadyBanner 浮窗(避免双重提示)。
 
 export function Layout() {
   const { pathname } = useLocation()
@@ -23,7 +24,6 @@ export function Layout() {
       }}
     >
       <Sidebar />
-      <UpdateReadyBanner />
       <main className={`flex-1 relative ${isFullHeight ? 'overflow-hidden flex flex-col' : 'overflow-auto'}`}>
         {isFullHeight ? (
           <>

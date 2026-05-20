@@ -40,7 +40,15 @@
     "mandatoryDesc": "Tide Mind {{version}} enthält wichtige Korrekturen. Sie müssen aktualisieren, um die App weiter zu nutzen.",
     "mandatoryRestart": "Jetzt neu starten und aktualisieren",
     "mandatoryCountdown": "Automatischer Neustart in {{seconds}} Sekunden",
-    "mandatorySnooze": "In 10 Minuten erneut erinnern ({{remaining}} übrig)"
+    "mandatorySnooze": "In 10 Minuten erneut erinnern ({{remaining}} übrig)",
+    "checking": "Suchen…",
+    "upToDate": "Aktuell",
+    "available": "v{{version}} verfügbar",
+    "downloading": "Lädt {{percent}}%",
+    "downloadingTitle": "v{{version}} wird geladen",
+    "readyShort": "Neustart · v{{version}}",
+    "error": "Update fehlgeschlagen",
+    "signatureInvalid": "Signatur ungültig"
   },
   "llmHealth": {
     "paused": "KI pausiert ({{min}} Min. bis erneuter Versuch)",
