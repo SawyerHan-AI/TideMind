@@ -31,5 +31,29 @@
        系统设置 → 隐私 → 自动化 显式授权(运行时弹窗),entitlement 只是声明能力。 -->
   <key>com.apple.security.automation.apple-events</key>
   <true/>
+  <!-- Data Protection Keychain access group(消除 safeStorage 钥匙串弹窗)。
+       格式必须是 "<TeamID>.<identifier>",必须匹配 embedded.provisionprofile
+       allowlist 里的通配 "<TeamID>.*"。
+
+       **不要用 $(AppIdentifierPrefix) 变量**——electron-builder / codesign 不展开它,
+       会作为字面量留在 signed entitlement 里(2026-05-20 踩过坑,见
+       docs/design/keychain-prompt-elimination-2026-05-20.md §4.3 / electron #47341)。
+       Xcode 项目里这个变量被 Xcode 构建系统展开,但我们走 electron-builder,
+       没有这一步。直接 hardcode Team ID 最稳。
+
+       Team ID Z4U232GXH5 来自 Developer Portal Membership 页签,
+       同 .github/workflows/release.yml 的 APPLE_TEAM_ID secret。换 Team ID
+       时这里要同步更新(否则 native module isAvailable() 会返回 false,
+       客户端会降级到强制重登)。
+
+       配套要求:
+         1. App ID 必须是 explicit "com.tidemind.app"(非 wildcard)
+         2. resources/embedded.provisionprofile 必须存在且 allowlist 含 "Z4U232GXH5.*"
+
+       详见 docs/design/keychain-prompt-elimination-2026-05-20.md §4.2-4.3 -->
+  <key>keychain-access-groups</key>
+  <array>
+    <string>Z4U232GXH5.com.tidemind.app</string>
+  </array>
 </dict>
 </plist>

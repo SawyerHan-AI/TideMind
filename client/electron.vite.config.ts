@@ -8,7 +8,7 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: resolve(__dirname, 'electron/main.ts'),
-        external: ['better-sqlite3', 'sqlite-vec'],
+        external: ['better-sqlite3', 'sqlite-vec', 'secure-store-mac'],
         output: {
           entryFileNames: 'index.js'
         }

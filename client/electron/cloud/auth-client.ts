@@ -4,8 +4,37 @@ import crypto from 'node:crypto';
 import { safeStorage } from 'electron';
 import { createLogger } from '../../../src/utils/logger.js';
 import { getConfig, getDataDir } from '../../../src/config.js';
+import { secureStore } from './secure-store.js';
 
 const log = createLogger('cloud-auth');
+
+// secureStore 里 cloud-auth 的服务/账号命名。一旦定下不要改——改了等于丢
+// 所有现存用户的 keychain 数据,他们要重登。
+const STORE_SERVICE = 'TideMind';
+const STORE_ACCOUNT = 'cloud-auth';
+
+// 老格式的磁盘文件路径(safeStorage 加密的 cloud-auth.json),用于一次性迁移
+function getLegacyTokenPath(): string {
+  return path.join(getDataDir(), 'cloud-auth.json');
+}
+
+// 迁移完成 marker:写一个空文件标记"这台机器已经处理过 v0.2.69 → v0.2.70 迁移"。
+// 防御 TimeMachine 部分还原、用户手工拷贝老文件等场景下重复触发迁移逻辑。
+function getMigrationMarkerPath(): string {
+  return path.join(getDataDir(), '.cloud-auth.migrated-v0.2.70');
+}
+
+// 迁移失败计数:连续失败超过阈值才放弃,给系统升级/钥匙串临时锁定等瞬态留出恢复窗口。
+function getMigrationAttemptsPath(): string {
+  return path.join(getDataDir(), '.cloud-auth.migration-attempts');
+}
+
+const MIGRATION_MAX_ATTEMPTS = 3;
+// safeStorage 加密的最小开销:Chromium 实现是 3 字节版本前缀("v10"/"v11") +
+// 16 字节 IV + 16 字节 GCM tag = 35 字节就算载荷为 0。真实 cloud-auth.json 有
+// access_token+refresh_token 两个 JWT,实际大小 1-2KB。低于 64 字节必定是
+// 损坏/截断,跳过 decrypt 直接当不可恢复,避免无意义的钥匙串弹窗。
+const SAFE_STORAGE_MIN_BLOB_BYTES = 64;
 
 // 客户端日志写本地 logs/,但仍按 PII 卫生掩码邮箱(避免日志被分享/上报泄漏)
 function maskEmail(email: string | null | undefined): string {
@@ -26,6 +55,11 @@ export interface CloudAuth {
 let cachedAuth: CloudAuth | null = null;
 let pendingOAuthState: string | null = null;
 /**
+ * 迁移逻辑单次保护。`initAuth()` 理论上只在 Electron 主进程启动时调用一次,
+ * 但加这个 boolean 防御 hot-reload / 测试场景下的二次调用——避免出现"两次最后弹窗"。
+ */
+let migrationRan = false;
+/**
  * PKCE verifier for the current in-flight OAuth. 与 pendingOAuthState 一对一关联。
  * 流程开始(getLoginUrl / getRegisterUrl)时生成并存内存;handleOAuthCallback
  * 成功或失败(state 不匹配)后清空,one-time use。
@@ -38,75 +72,268 @@ let pendingPkceVerifier: string | null = null;
 
 // ---- Persistent storage ----
 
-function getTokenPath(): string {
-  return path.join(getDataDir(), 'cloud-auth.json');
-}
-
-function saveAuthToDisk(): void {
+/**
+ * 持久化当前 cachedAuth(或在 cachedAuth=null 时清掉)。
+ *
+ * 返回:
+ *   true  — 持久化成功(或后端不可用属于"已知拒绝落盘"的设计意图)
+ *   false — 持久化**失败**,意味着内存 cachedAuth 跟磁盘不一致。caller 看到 false
+ *           应该考虑回滚 cachedAuth(尤其是 refresh_token 旋转场景),避免下次启动
+ *           读到老 token、被服务端 reject 后强制重登(audit-2 HIGH #3)。
+ */
+function saveAuthToDisk(): boolean {
   if (!cachedAuth) {
-    try { fs.unlinkSync(getTokenPath()); } catch { /* ignore */ }
-    return;
+    try {
+      secureStore.delete(STORE_SERVICE, STORE_ACCOUNT);
+      return true;
+    } catch (err) {
+      // logout 是 trust boundary——delete 失败意味着 keychain 里还留着 token,
+      // 下次启动会"自动登回去"。这对共享设备(家人/同事)是安全侵蚀(audit-2 MEDIUM)。
+      // 不是 true(没真的清掉),也不是直接抛——抛会让 logout() flow 崩,反而更糟。
+      // 返回 false 让 caller 决定要不要给用户错误提示。
+      log.error(`failed to clear persisted auth on logout: ${(err as Error).message} — keychain item may remain`);
+      return false;
+    }
+  }
+  if (!secureStore.isAvailable()) {
+    // 没有可用后端时拒绝落盘:refresh_token 是 long-lived 凭据,明文落盘风险高于
+    // "用户重启后要重新登录"。这条 invariant 从 safeStorage 时代就有,本次迁移到
+    // Data Protection Keychain 后保留——出错就强制重登,绝不让明文/弱加密的 token
+    // 留在磁盘上。返回 true 因为这是设计意图(并非"持久化失败")。
+    log.warn('secureStore unavailable — not persisting auth; re-login required after restart');
+    return true;
   }
   try {
     const json = JSON.stringify(cachedAuth);
-    if (safeStorage.isEncryptionAvailable()) {
-      const encrypted = safeStorage.encryptString(json);
-      fs.writeFileSync(getTokenPath(), encrypted, { mode: 0o600 });
-    } else {
-      // 无 keyring 时拒绝落盘：Linux 若没装 libsecret/GNOME Keyring，
-      // safeStorage 会回退到"无加密"，把 refresh_token（long-lived）以明文写到磁盘。
-      // 0o600 只挡普通进程，root/磁盘取证/备份泄漏都兜不住——宁可用户重启后要重新登录，
-      // 也不要静默地把长期凭据明文留在盘上。
-      // 同时删除历史上可能以明文写入过的老文件。
-      try { fs.unlinkSync(getTokenPath()); } catch { /* ignore */ }
-      log.warn('safeStorage encryption unavailable (no OS keyring) — not persisting auth; re-login required after restart');
-    }
+    secureStore.set(STORE_SERVICE, STORE_ACCOUNT, Buffer.from(json, 'utf-8'));
+    return true;
   } catch (err) {
-    log.warn(`failed to persist auth: ${(err as Error).message}`);
+    log.error(`failed to persist auth: ${(err as Error).message} — cachedAuth in-memory may diverge from disk`);
+    return false;
   }
 }
 
 function loadAuthFromDisk(): void {
+  if (!secureStore.isAvailable()) {
+    cachedAuth = null;
+    return;
+  }
+  let buf: Buffer | null;
   try {
-    const filePath = getTokenPath();
-    const raw = fs.readFileSync(filePath);
-    let json: string;
-    if (safeStorage.isEncryptionAvailable()) {
-      try {
-        // Try decrypting (new encrypted format)
-        json = safeStorage.decryptString(raw);
-      } catch {
-        // Fall back to plaintext (migration from old format)
-        json = raw.toString('utf-8');
-        // Re-save in encrypted format
-        try {
-          cachedAuth = JSON.parse(json);
-          saveAuthToDisk();
-          log.info('migrated auth to encrypted storage');
-          return;
-        } catch {
-          cachedAuth = null;
-          return;
-        }
-      }
-    } else {
-      // safeStorage 不可用时，磁盘上若有文件也拒绝读取并清掉：
-      // 要么这是历史明文文件（应当删除），要么是加密密文但本机没有 keyring 可解密。
-      // 两种情况都没法安全地恢复会话。
-      try { fs.unlinkSync(filePath); } catch { /* ignore */ }
-      log.warn('safeStorage encryption unavailable on load — discarding on-disk auth; please re-login');
-      cachedAuth = null;
-      return;
-    }
-    cachedAuth = JSON.parse(json);
+    buf = secureStore.get(STORE_SERVICE, STORE_ACCOUNT);
+  } catch (err) {
+    log.warn(`secureStore.get failed: ${(err as Error).message} — treating as logged out`);
+    cachedAuth = null;
+    return;
+  }
+  if (!buf) {
+    cachedAuth = null;
+    return;
+  }
+  try {
+    cachedAuth = JSON.parse(buf.toString('utf-8'));
     log.info('restored auth session from disk');
-  } catch {
+  } catch (err) {
+    // 数据损坏:清掉,让用户重登。比静默挂死好。
+    log.warn(`auth JSON parse failed: ${(err as Error).message} — clearing`);
+    try { secureStore.delete(STORE_SERVICE, STORE_ACCOUNT); } catch { /* ignore */ }
     cachedAuth = null;
   }
 }
 
+/**
+ * 一次性迁移:老用户磁盘上有 safeStorage 加密的 cloud-auth.json,
+ * 把它读出来写到 Data Protection Keychain,然后删除老文件。
+ *
+ * 这一次会触发**最后一次** safeStorage 钥匙串弹窗——用户点允许后即完成迁移,
+ * 之后所有读写都走 native 路径,永久无弹窗。
+ *
+ * **失败处理策略**(audit-3 CRITICAL #1 修复后的版本):
+ *   原版本无条件 finally 删老文件,把所有失败(包括 macOS 升级中钥匙串临时锁定、
+ *   secureStore.set 一次性 entitlement 探测失败等可恢复的瞬态错误)都当成永久失败,
+ *   全量老用户在升级时遭遇瞬态故障 = refresh_token 一次性销毁。
+ *
+ *   修后:
+ *     - 可恢复失败(safeStorage 临时不可用、native set 暂时失败) → 保留老文件,
+ *       不写 marker,下次启动重试。最多重试 MIGRATION_MAX_ATTEMPTS 次。
+ *     - 不可恢复失败(decryptString 抛"Decryption failed"、文件截断、JSON schema 错)
+ *       → 写 marker,删老文件,提示重登。
+ *
+ * **幂等性**:
+ *   迁移成功或永久失败后写一个 marker 文件,后续启动看到 marker 直接 skip,
+ *   不论 cloud-auth.json 是否因为 TimeMachine 还原 / 手工拷贝而重新出现。
+ *
+ * 只在使用 native(macOS Data Protection Keychain)路径时跑——其他平台/紧急
+ * 回退路径仍然用 safeStorage,跟历史数据格式一致,不需要迁移。
+ */
+function migrateLegacyAuthIfNeeded(): void {
+  if (migrationRan) return;
+  migrationRan = true;
+
+  if (!secureStore.isUsingNative()) return;
+  const legacyPath = getLegacyTokenPath();
+  const markerPath = getMigrationMarkerPath();
+
+  // 幂等 marker:已经处理过,什么都不做
+  if (fs.existsSync(markerPath)) {
+    // 如果不知道什么时候老文件又出现了,也顺手清一下(已经迁过/已经放弃过)
+    if (fs.existsSync(legacyPath)) {
+      try { fs.unlinkSync(legacyPath); } catch { /* ignore */ }
+      log.info('legacy cloud-auth.json reappeared post-migration — removed (TimeMachine restore?)');
+    }
+    return;
+  }
+
+  if (!fs.existsSync(legacyPath)) {
+    // 没有老文件 + 没有 marker = 新用户。写 marker 跳过未来检查。
+    writeMigrationMarker('no-legacy-file');
+    return;
+  }
+
+  log.info(`legacy cloud-auth.json detected — attempting migration to Data Protection Keychain (path=${legacyPath})`);
+
+  // 新 store 已有数据 → 老文件是残留(可能是 TimeMachine 选择性还原),直接清掉
+  let existing: Buffer | null;
+  try {
+    existing = secureStore.get(STORE_SERVICE, STORE_ACCOUNT);
+  } catch (err) {
+    // 探测失败 = 可恢复瞬态(audit-3 HIGH #5)。**保留老文件**,下次启动重试。
+    // 不增加 attempts 计数:这是 probe 而不是真的迁移尝试。
+    log.warn(`secureStore probe during migration failed: ${(err as Error).message} — will retry next launch`);
+    return;
+  }
+  if (existing) {
+    try { fs.unlinkSync(legacyPath); } catch { /* ignore */ }
+    writeMigrationMarker('new-store-already-has-data');
+    log.info('legacy file found but new store has data — removed legacy file');
+    return;
+  }
+
+  // 真正的迁移:读老文件 → 写新 store。区分可恢复 vs 不可恢复失败。
+  const attempts = readMigrationAttempts() + 1;
+
+  // size 校验:safeStorage 加密 blob 不可能比 SAFE_STORAGE_MIN_BLOB_BYTES 短。
+  // 截断/空文件直接当作不可恢复,避免无意义的钥匙串弹窗(audit-3 HIGH #6)。
+  let raw: Buffer;
+  try {
+    raw = fs.readFileSync(legacyPath);
+  } catch (err) {
+    log.warn(`reading legacy file failed: ${(err as Error).message} — recoverable, will retry`);
+    writeMigrationAttempts(attempts);
+    return;
+  }
+  if (raw.length < SAFE_STORAGE_MIN_BLOB_BYTES) {
+    log.warn(`legacy file truncated (${raw.length}B) — discarding without decrypt attempt`);
+    finalizeMigrationFailure(legacyPath, 'truncated');
+    return;
+  }
+
+  // safeStorage 可用性是可恢复瞬态。系统升级中钥匙串可能短暂未 unlock。
+  if (!safeStorage.isEncryptionAvailable()) {
+    if (attempts >= MIGRATION_MAX_ATTEMPTS) {
+      log.error(`safeStorage unavailable after ${attempts} attempts — giving up, user must re-login`);
+      finalizeMigrationFailure(legacyPath, 'safestorage-unavailable-permanent');
+    } else {
+      log.warn(`safeStorage unavailable (attempt ${attempts}/${MIGRATION_MAX_ATTEMPTS}) — will retry next launch`);
+      writeMigrationAttempts(attempts);
+    }
+    return;
+  }
+
+  let json: string;
+  try {
+    json = safeStorage.decryptString(raw);  // ← 最后一次钥匙串弹窗
+  } catch (err) {
+    // decryptString 失败 = 密钥/密文不匹配(证书续期破坏了 ACL、用户在弹窗上点拒绝等)。
+    // 这是不可恢复的——再试也是同样的错。
+    log.error(`safeStorage.decryptString failed: ${(err as Error).message} — unrecoverable, user must re-login`);
+    finalizeMigrationFailure(legacyPath, 'decrypt-failed');
+    return;
+  }
+
+  // schema 校验:防止把畸形对象迁进新 store 后下游崩溃(audit-3 MEDIUM)
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch (err) {
+    log.error(`legacy JSON parse failed: ${(err as Error).message} — unrecoverable`);
+    finalizeMigrationFailure(legacyPath, 'json-parse-failed');
+    return;
+  }
+  if (!isValidCloudAuthShape(parsed)) {
+    log.error('legacy auth schema invalid (missing/wrong-type fields) — unrecoverable');
+    finalizeMigrationFailure(legacyPath, 'schema-invalid');
+    return;
+  }
+
+  // 写入新 store。set 失败 = 可恢复(entitlement 探测一过、磁盘满等)。
+  try {
+    secureStore.set(STORE_SERVICE, STORE_ACCOUNT, Buffer.from(json, 'utf-8'));
+  } catch (err) {
+    if (attempts >= MIGRATION_MAX_ATTEMPTS) {
+      log.error(`secureStore.set failed after ${attempts} attempts: ${(err as Error).message} — giving up`);
+      finalizeMigrationFailure(legacyPath, 'native-set-failed-permanent');
+    } else {
+      log.warn(`secureStore.set failed (attempt ${attempts}/${MIGRATION_MAX_ATTEMPTS}): ${(err as Error).message} — will retry`);
+      writeMigrationAttempts(attempts);
+    }
+    return;
+  }
+
+  // 成功:删老文件、写 marker、清 attempts。
+  try { fs.unlinkSync(legacyPath); } catch { /* ignore */ }
+  try { fs.unlinkSync(getMigrationAttemptsPath()); } catch { /* ignore */ }
+  writeMigrationMarker('migrated');
+  log.info('migrated cloud-auth from safeStorage to Data Protection Keychain');
+}
+
+/** schema guard:防止把畸形 JSON 迁进新 store 后下游崩溃。 */
+function isValidCloudAuthShape(x: unknown): x is CloudAuth {
+  if (!x || typeof x !== 'object') return false;
+  const o = x as Record<string, unknown>;
+  return typeof o.accessToken === 'string'
+    && typeof o.refreshToken === 'string'
+    && typeof o.expiresAt === 'number'
+    && (typeof o.userId === 'string' || o.userId == null)
+    && (typeof o.email === 'string' || o.email == null);
+}
+
+function writeMigrationMarker(reason: string): void {
+  try {
+    fs.writeFileSync(getMigrationMarkerPath(), `${new Date().toISOString()} ${reason}\n`, { mode: 0o600 });
+  } catch (err) {
+    log.warn(`failed to write migration marker: ${(err as Error).message}`);
+  }
+}
+
+function readMigrationAttempts(): number {
+  try {
+    const raw = fs.readFileSync(getMigrationAttemptsPath(), 'utf-8');
+    const n = parseInt(raw.trim(), 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeMigrationAttempts(n: number): void {
+  try {
+    fs.writeFileSync(getMigrationAttemptsPath(), String(n), { mode: 0o600 });
+  } catch (err) {
+    log.warn(`failed to persist migration attempts counter: ${(err as Error).message}`);
+  }
+}
+
+function finalizeMigrationFailure(legacyPath: string, reason: string): void {
+  try { fs.unlinkSync(legacyPath); } catch { /* ignore */ }
+  try { fs.unlinkSync(getMigrationAttemptsPath()); } catch { /* ignore */ }
+  writeMigrationMarker(`failed:${reason}`);
+}
+
 /** Call once at startup to restore previous session */
 export function initAuth(): void {
+  // 先尝试从老格式迁移(只对 macOS native 路径有意义,内部自判)
+  migrateLegacyAuthIfNeeded();
   loadAuthFromDisk();
 }
 
@@ -307,7 +534,13 @@ export async function login(email: string, password: string): Promise<CloudAuth>
 
 export async function logout(): Promise<void> {
   cachedAuth = null;
-  saveAuthToDisk();
+  const cleared = saveAuthToDisk();
+  if (!cleared) {
+    // saveAuthToDisk 已经 log.error 过详情。这里再升一档,确保 ops 看日志时
+    // 能立刻发现"用户点了登出但 keychain item 没真清掉"的情况(共享设备下
+    // 下次启动会自动登回去——安全 boundary 失效,Round 4 audit CONCERN)。
+    log.error('logout: persistent storage cleanup failed — keychain may still contain auth data; next launch may auto-restore login');
+  }
   log.info('logged out');
 }
 
@@ -354,10 +587,23 @@ export async function refreshTokenIfNeeded(): Promise<string | null> {
 
   if (res.ok) {
     const data = await res.json() as { access_token: string; refresh_token: string; expires_in: number };
+    // 先快照旧值,持久化失败时回滚。理由:OAuth 2.1 推荐 rotating refresh tokens,
+    // 服务端会作废旧 refresh_token。如果"内存里换上新 token + 盘上还是旧 token",
+    // 下次启动加载的是旧 token → 服务端 reject → 用户被强制重登(audit-2 HIGH #3)。
+    const prevAccess = cachedAuth.accessToken;
+    const prevRefresh = cachedAuth.refreshToken;
+    const prevExpiresAt = cachedAuth.expiresAt;
     cachedAuth.accessToken = data.access_token;
     cachedAuth.refreshToken = data.refresh_token;
     cachedAuth.expiresAt = Date.now() + (data.expires_in * 1000);
-    saveAuthToDisk();
+    if (!saveAuthToDisk()) {
+      // 持久化失败:回滚到旧 token。旧 token 在服务端可能已经被作废,但下一次
+      // refreshTokenIfNeeded 会再试——比"盘上是已废 token"安全得多。
+      cachedAuth.accessToken = prevAccess;
+      cachedAuth.refreshToken = prevRefresh;
+      cachedAuth.expiresAt = prevExpiresAt;
+      throw new Error('refresh_token transient: failed to persist new tokens');
+    }
     return cachedAuth.accessToken;
   }
 
