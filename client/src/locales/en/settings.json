@@ -231,16 +231,13 @@
   },
   "about": {
     "version": "Version",
-    "user": "User",
     "checkUpdate": "Check for Updates",
     "checking": "Checking...",
     "upToDate": "You are on the latest version.",
     "newVersion": "New version available",
-    "downloadUpdate": "Download",
     "downloadNow": "Download",
     "checkFailed": "Check failed. Please try again later.",
     "actionFailed": "Action failed, please retry",
-    "retry": "Retry",
     "links": "Links",
     "website": "Website",
     "feedback": "Feedback",
@@ -250,7 +247,8 @@
     "downloaded": "Downloaded, ready to install",
     "installNow": "Restart to update",
     "signatureInvalid": "Update rejected (signature invalid)",
-    "stagedOut": "New version rolling out gradually, you'll get it soon"
+    "stagedOut": "New version rolling out gradually, you'll get it soon",
+    "releasePending": "New version v{{version}} is rolling out, you'll get it soon"
   },
   "noteSync": {
     "title": "Connected Notes",

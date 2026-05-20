@@ -50,6 +50,7 @@
     "downloadingTitle": "Scaricamento v{{version}}",
     "readyShort": "Riavvia · v{{version}}",
     "error": "Aggiornamento non riuscito",
+    "actionFailed": "Azione di aggiornamento non riuscita",
     "signatureInvalid": "Firma non valida"
   },
   "llmHealth": {

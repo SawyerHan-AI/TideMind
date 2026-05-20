@@ -37,6 +37,22 @@ export function UpdaterBadge() {
     return () => clearTimeout(timer)
   }, [state.status])
 
+  // onClick promise reject 时显示 2.5s 错误提示(audit B-HIGH-3 跟进修复)。
+  // 历史:dddcbbd 把 triggerDownload inflight=true 改成 throw 让 IPC reject,
+  // 但 Badge 这边 onClick 是 fire-and-forget 没 catch,reject 会变 unhandled
+  // promise。这里加局部 actionError state + handleAction 包装统一捕获。
+  const [actionError, setActionError] = useState<string | null>(null)
+  useEffect(() => {
+    if (!actionError) return
+    const timer = setTimeout(() => setActionError(null), 2500)
+    return () => clearTimeout(timer)
+  }, [actionError])
+  const handleAction = (action: () => Promise<unknown>) => () => {
+    action().catch((err: Error) => {
+      setActionError(err.message || t('updater.actionFailed', 'Action failed'))
+    })
+  }
+
   // mandatory 时让 modal 接管,状态栏不重复提示(见顶部 docstring "Mandatory 互斥")
   if (
     (state.status === 'available' || state.status === 'downloaded') &&
@@ -45,8 +61,13 @@ export function UpdaterBadge() {
     return null
   }
 
-  // 不渲染的稳定状态:idle / staged-out(灰度未命中,用户视角等价 idle)/ up-to-date 过 1.5s
-  if (state.status === 'idle' || state.status === 'staged-out') return null
+  // 不渲染的稳定状态:
+  //   - idle / staged-out:灰度未命中,用户视角等价 idle
+  //   - release-pending:GitHub 端还没就绪(audit B-MEDIUM-3),user 视角等价"等等就来",
+  //     不显示 chip 避免给"快了"的错觉(同 staged-out 设计)。AboutSection 会显示
+  //     卡片告知主动来查的用户。
+  //   - up-to-date 过 1.5s 后淡出
+  if (state.status === 'idle' || state.status === 'staged-out' || state.status === 'release-pending') return null
   if (state.status === 'up-to-date' && !showUpToDate) return null
 
   // —— 各状态的视觉与交互
@@ -77,11 +98,14 @@ export function UpdaterBadge() {
       // 入口 — 不强迫用户跳到设置页才能下载。
       // mandatory available 在前面已经被拦截(让 MandatoryUpdateModal 接管),
       // 这里只剩非 mandatory 的可选下载。
-      dotClass = 'bg-indigo-400 animate-pulse'
-      dotShadow = '0 0 6px rgba(129,140,248,0.5)'
+      // 'available' 是稳定状态(等用户决定),不是实时活动,所以不脉冲。
+      // 跟 'downloading' 的脉冲蓝形成明显区分(audit C-LOW 视觉调整)。
+      // 改用低饱和度 indigo + 不脉冲。
+      dotClass = 'bg-indigo-400'
+      dotShadow = '0 0 4px rgba(129,140,248,0.3)'
       label = t('updater.availableClickToDownload', 'v{{version}} · Download', { version: state.version })
       title = t('updater.availableTitle', 'New version v{{version}} available. Click to download.', { version: state.version })
-      onClick = () => { void window.api.updater.downloadNow() }
+      onClick = handleAction(() => window.api.updater.downloadNow())
       break
     case 'downloading':
       dotClass = 'bg-blue-400 animate-pulse'
@@ -99,7 +123,7 @@ export function UpdaterBadge() {
       dotShadow = '0 0 6px rgba(52,211,153,0.4)'
       label = t('updater.readyShort', 'Restart · v{{version}}', { version: state.version })
       title = label
-      onClick = () => { void window.api.updater.install() }
+      onClick = handleAction(() => window.api.updater.install())
       break
     case 'error':
       // 普通失败(网络 / GitHub 不可达 / 解析失败) — 静态红色,不脉冲。
@@ -119,8 +143,9 @@ export function UpdaterBadge() {
       title = label
       if (state.releaseUrl) {
         const url = state.releaseUrl
-        onClick = () => { void window.api.app.openExternal(url) }
+        onClick = handleAction(() => window.api.app.openExternal(url))
       } else {
+        // navigate 是同步的不需要 catch,直接用 inline lambda
         onClick = () => { navigate('/settings') }
       }
       break
@@ -132,6 +157,10 @@ export function UpdaterBadge() {
       return null
     }
   }
+
+  // actionError 期间(2.5s)把 tooltip 切成错误信息,visible label 保持不变避免
+  // chip 跳动;dot 仍然脉冲让用户感知"刚刚点击了但失败,可以重试"。
+  const visibleTitle = actionError ?? title
 
   const dot = (
     <div
@@ -146,7 +175,7 @@ export function UpdaterBadge() {
       <button
         type="button"
         onClick={onClick}
-        title={title}
+        title={visibleTitle}
         className="w-full px-4 py-1.5 flex items-center gap-2 min-h-[28px] hover:bg-white/[0.03] transition-colors text-left"
       >
         {dot}
@@ -155,7 +184,7 @@ export function UpdaterBadge() {
     )
   }
   return (
-    <div className="px-4 py-1.5 flex items-center gap-2 min-h-[28px]" title={title}>
+    <div className="px-4 py-1.5 flex items-center gap-2 min-h-[28px]" title={visibleTitle}>
       {dot}
       {text}
     </div>

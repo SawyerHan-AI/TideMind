@@ -45,11 +45,12 @@
     "upToDate": "최신 버전",
     "available": "v{{version}} 사용 가능",
     "availableClickToDownload": "v{{version}} · 다운로드",
-    "availableTitle": "새 버전 v{{version}}을(를) 사용할 수 있습니다. 클릭하여 다운로드하세요.",
+    "availableTitle": "새 버전 v{{version}} 사용 가능합니다. 클릭하여 다운로드하세요.",
     "downloading": "다운로드 {{percent}}%",
     "downloadingTitle": "v{{version}} 다운로드 중",
     "readyShort": "재시작 · v{{version}}",
     "error": "업데이트 실패",
+    "actionFailed": "업데이트 작업 실패",
     "signatureInvalid": "서명 무효"
   },
   "llmHealth": {

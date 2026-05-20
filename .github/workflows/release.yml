@@ -22,6 +22,13 @@ jobs:
       - name: Install root dependencies
         run: npm ci
 
+      # macOS 打包配置 sanity check(2026-05-21 v0.2.72 audit C HIGH-1 修复)。
+      # 必须在 client build 之前跑,防止 helper entitlement 错误进入 build → 用户启动 SIGKILL。
+      # 跟 release.mjs / health-check.mjs / .github/workflows/ci.yml 共用同一个脚本。
+      # release.yml 跑在 macos-latest,plutil 可用,可以完整校验 plist 内容。
+      - name: Check mac packaging
+        run: node scripts/check-mac-packaging.mjs
+
       - name: Build core engine
         run: npm run build
 

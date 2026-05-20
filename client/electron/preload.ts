@@ -171,7 +171,6 @@ const api: AppApi = {
   app: {
     getVersion: () => ipcRenderer.invoke('app:get-version'),
     openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
-    checkUpdate: () => ipcRenderer.invoke('app:check-update'),
   },
   updater: {
     getState: () => ipcRenderer.invoke('updater:get-state'),

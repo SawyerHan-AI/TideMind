@@ -52,6 +52,31 @@ export function getUpdaterState(): UpdaterState {
   return currentState
 }
 
+/**
+ * Outer-level timeout 包装(2026-05-21 audit B-MEDIUM-2)。
+ *
+ * queryAndVerifyManifest 内部依赖 fetch + manifest 解析,理论上有内部 timeout,
+ * 但历史曾出现 cloud-server endpoint 异常时 inflight 永远不释放、UI 卡 'checking'
+ * 直到 app 重启。autoUpdater.checkForUpdates 同理。outer timeout 兜底:
+ *   - 60s 超时 → reject + 调用方 catch 走 'error' 状态
+ *   - inflight 释放
+ *   - 4h 后 scheduler 再来一次,自动恢复
+ *
+ * 注意:不给 downloadUpdate 加 timeout,大文件下载可能 5-10 分钟,timeout 反而
+ * 会误伤正常路径;downloadUpdate 由 'download-progress' 事件持续刷新状态。
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    ),
+  ])
+}
+
+const MANIFEST_QUERY_TIMEOUT_MS = 60_000
+const ELECTRON_UPDATER_CHECK_TIMEOUT_MS = 60_000
+
 export function initAutoUpdater(mainWindow: BrowserWindow): void {
   if (initialized) {
     log.warn('initAutoUpdater called more than once, ignoring')
@@ -157,7 +182,11 @@ export async function runUpdateCheck(
   setState({ status: 'checking' })
 
   try {
-    const result = await queryAndVerifyManifest()
+    const result = await withTimeout(
+      queryAndVerifyManifest(),
+      MANIFEST_QUERY_TIMEOUT_MS,
+      'queryAndVerifyManifest'
+    )
 
     if (result.status === 'no-update') {
       pendingMandatory = false
@@ -201,26 +230,52 @@ export async function runUpdateCheck(
     // 推 GitHub 恶意 release → 用户点下载"的窗口期被关闭。
     log.info(`pre-fetching electron-updater manifest for cross-check (verifier said v${result.version})`)
     let euVersion: string | undefined
+    let euCheckFailed = false
     try {
-      const euResult = await autoUpdater.checkForUpdates()
+      const euResult = await withTimeout(
+        autoUpdater.checkForUpdates(),
+        ELECTRON_UPDATER_CHECK_TIMEOUT_MS,
+        'autoUpdater.checkForUpdates'
+      )
       euVersion = euResult?.updateInfo.version
     } catch (err) {
-      log.error(`electron-updater checkForUpdates failed: ${(err as Error).message}`)
-      // autoUpdater.on('error') 已经 setState 'error',这里 return
-      pendingMandatory = false
-      return
+      // 不直接 return — 之前的实现错误地假设 autoUpdater.on('error') 已经 setState
+      // 'error',但 withTimeout race / GitHub 404 / ERR_UPDATER_CHANNEL_FILE_NOT_FOUND
+      // 等典型"GitHub release 还没就绪" 错误**不会** trigger autoUpdater.on('error'),
+      // 也就是说之前 UI 会卡在 'checking' 直到下一轮 scheduler — 而这恰好是 release-pending
+      // 想消除的核心场景。v0.2.72 audit HIGH 1。
+      log.warn(
+        `electron-updater checkForUpdates failed (${(err as Error).message}) — ` +
+        `interpreting as release-pending (GitHub release likely still rolling out)`
+      )
+      euCheckFailed = true
     }
-    if (euVersion !== result.version) {
-      log.error(
-        `cross-check FAILED: cloud-server says v${result.version}, ` +
-        `but electron-updater says v${euVersion ?? '(none)'}`
+
+    // Cross-check 二态(2026-05-21 audit HIGH-1 + Agent C MEDIUM-2 修复):
+    //   1. release-pending:任何让 cross-check 拿不到 verifier-equal version 的
+    //      情况都归这一类 — electron-updater throw / 看到空 / 看到当前版本 /
+    //      看到不一致版本。**所有非验签问题归一处**,文案"rolling out"灰色提示,
+    //      不放红色危险标识。
+    //   2. cross-check OK:两边 version 一致,继续推进 available。
+    //
+    // 旧实现把 "version 不一致" 标 signature-invalid 红色危险,但实际上这种情况
+    // 99% 是 cloud-server cache lag / GitHub CDN 同步,不是 supply chain 攻击。
+    // 即使是攻击者控制 GitHub 推恶意 release,后续 codesign + notarize + verifier
+    // 端的 ed25519 验签三重防御兜底,cross-check 不必扮演"红色告警"角色。
+    //
+    // signature-invalid 状态留给 verifier 端 ed25519 验签真正失败时(result.status
+    // === 'invalid' 分支已经处理),那才是供应链信号。
+    const currentAppVersion = app.getVersion()
+    const crossCheckOk =
+      !euCheckFailed && !!euVersion && euVersion !== currentAppVersion && euVersion === result.version
+
+    if (!crossCheckOk) {
+      log.info(
+        `release-pending: cloud-server says v${result.version}, ` +
+        `electron-updater sees v${euVersion ?? '(none/error)'} — waiting for next 4h check`
       )
       pendingMandatory = false
-      setState({
-        status: 'signature-invalid',
-        version: result.version ?? '',
-        releaseUrl: result.releaseUrl,
-      })
+      setState({ status: 'release-pending', version: result.version ?? '' })
       return
     }
     log.info(`cross-check OK: both sides say v${result.version}`)
@@ -325,12 +380,19 @@ function applyChannelToAutoUpdater(): void {
  * 修复(2026-05-20 Audit B-12):切换后立即 fire-and-forget 触发一次 runUpdateCheck,
  * 让用户切到新 channel 后不用等 4h 周期才看到新版本。inflight 锁会 skip 当前
  * 正在跑的 check,不会双跑。
+ *
+ * 修复(2026-05-21 audit B-MEDIUM-1):autoDownload=false。切 channel 的语义是
+ * "我想看看新 channel 有没有新版",**不是**"立即下载新 channel 任何版本"——
+ * 跟设置页"检测更新"按钮一致。命中新版后停在 'available',等用户决定下不下载。
+ * mandatory 版本仍然自动下载(runUpdateCheck 内部规则),所以强制更新路径不变。
  */
 export async function setUpdateChannel(channel: UpdateChannel): Promise<void> {
   await persistChannel(channel)
   if (initialized) {
     applyChannelToAutoUpdater()
-    runUpdateCheck().catch(err => log.warn(`post-switch update check failed: ${(err as Error).message}`))
+    runUpdateCheck({ autoDownload: false }).catch(err =>
+      log.warn(`post-switch update check failed: ${(err as Error).message}`)
+    )
   }
 }
 

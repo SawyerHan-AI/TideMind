@@ -50,6 +50,7 @@
     "downloadingTitle": "Descargando v{{version}}",
     "readyShort": "Reiniciar · v{{version}}",
     "error": "Error al actualizar",
+    "actionFailed": "Acción de actualización fallida",
     "signatureInvalid": "Firma inválida"
   },
   "llmHealth": {

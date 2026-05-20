@@ -22,6 +22,10 @@ const checks = [
   { name: 'client build', cwd: path.join(repoRoot, 'client'), command: 'npm', args: ['run', 'build'] },
   { name: 'client typecheck', cwd: path.join(repoRoot, 'client'), command: 'npx', args: ['tsc', '--build', '--noEmit'] },
   { name: 'client audit', cwd: path.join(repoRoot, 'client'), command: 'npm', args: ['audit', '--audit-level=moderate'] },
+  // 2026-05-21 v0.2.71 audit A-HIGH-1/2:helper entitlement 防回归。
+  // 拦截 v0.2.70 那种"main plist inherit 给 helper → SIGKILL"事故,plist-parse
+  // 而非 grep,避免被注释里的字符串误判。
+  { name: 'mac packaging', cwd: repoRoot, command: 'node', args: ['scripts/check-mac-packaging.mjs'] },
 ];
 
 /**

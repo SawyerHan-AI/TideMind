@@ -50,6 +50,7 @@
     "downloadingTitle": "v{{version}} をダウンロード中",
     "readyShort": "再起動 · v{{version}}",
     "error": "更新に失敗",
+    "actionFailed": "アップデート操作に失敗しました",
     "signatureInvalid": "署名が無効"
   },
   "llmHealth": {
