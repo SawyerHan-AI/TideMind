@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, nativeImage, session, shell, dialog } from 'electron'
+import { app, BrowserWindow, Menu, Tray, nativeImage, session, shell, dialog, powerMonitor } from 'electron'
 import path from 'node:path'
 import { exec } from 'node:child_process'
 import { getClientDb, closeClientDb, getDataDir } from './db'
@@ -9,6 +9,7 @@ import { writeShimAndRuntimePath } from './runtime/shim-writer'
 import { selfHealPlugins } from './runtime/plugin-self-heal'
 import { initAutoUpdater, runUpdateCheck } from './updater/index'
 import { scheduleUpdateChecks } from './updater/scheduler'
+import { getActivityState } from './activity-state'
 import { migrateDataDirIfNeeded } from '@server/utils/migrate-data-dir.js'
 import { createLogger } from '@server/utils/logger.js'
 import { mainT } from './i18n'
@@ -199,6 +200,17 @@ function createWindow(): void {
     }
   })
 
+  // 活动状态信号:hide/minimize → idle, show/restore/focus → active, blur → 延迟 idle。
+  // 订阅方(data-watcher / sync-client / daemon)据此 pause / 错峰恢复后台任务,避免
+  // Chromium 把窗口隐藏期间的定时器全节流积压,回前台时一次性 fire 撞 SQL 同步 API。
+  const activity = getActivityState()
+  mainWindow.on('hide', () => { activity.notifyHidden('hide') })
+  mainWindow.on('minimize', () => { activity.notifyHidden('minimize') })
+  mainWindow.on('show', () => { activity.notifyVisible('show') })
+  mainWindow.on('restore', () => { activity.notifyVisible('restore') })
+  mainWindow.on('focus', () => { activity.notifyVisible('focus') })
+  mainWindow.on('blur', () => { activity.notifyBlur() })
+
   // 外部链接在浏览器打开（只允许 http/https，防止 file:// / javascript: 等被打开）
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     try {
@@ -347,6 +359,17 @@ app.whenReady().then(async () => {
 
   // 处理 app ready 之前收到的协议 URL（如从浏览器冷启动 app 的场景）
   flushPendingProtocolUrl()
+
+  // 系统级活动信号:即使窗口不是 hide/minimize(比如用户合盖、设置 displaysleep),
+  // 这两个信号也能把状态切到 idle/active,让后台任务对齐用户感知。
+  try {
+    powerMonitor.on('suspend', () => { getActivityState().notifySuspend() })
+    powerMonitor.on('resume', () => { getActivityState().notifyResume('resume') })
+    powerMonitor.on('unlock-screen', () => { getActivityState().notifyResume('unlock-screen') })
+  } catch (err) {
+    // powerMonitor 在某些 Linux 桌面环境可能初始化失败,降级即可:仍有 BrowserWindow 信号兜底
+    mainLog.warn(`powerMonitor subscribe failed (non-fatal): ${(err as Error).message}`)
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
