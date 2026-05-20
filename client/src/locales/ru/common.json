@@ -44,6 +44,8 @@
     "checking": "Проверка…",
     "upToDate": "Актуально",
     "available": "v{{version}} доступна",
+    "availableClickToDownload": "v{{version}} · Скачать",
+    "availableTitle": "Доступна новая версия v{{version}}. Нажмите, чтобы загрузить.",
     "downloading": "Загрузка {{percent}}%",
     "downloadingTitle": "Загрузка v{{version}}",
     "readyShort": "Перезапустить · v{{version}}",

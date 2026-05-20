@@ -44,6 +44,8 @@
     "checking": "Verifica…",
     "upToDate": "Aggiornato",
     "available": "v{{version}} disponibile",
+    "availableClickToDownload": "v{{version}} · Scarica",
+    "availableTitle": "Nuova versione v{{version}} disponibile. Fai clic per scaricare.",
     "downloading": "Scaricamento {{percent}}%",
     "downloadingTitle": "Scaricamento v{{version}}",
     "readyShort": "Riavvia · v{{version}}",

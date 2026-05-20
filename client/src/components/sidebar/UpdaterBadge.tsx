@@ -69,10 +69,19 @@ export function UpdaterBadge() {
       title = label
       break
     case 'available':
-      // 非 mandatory available:发现新版本但还没开始下载(灰度边缘 / 网络中断的中间态)
-      dotClass = 'bg-gray-400'
-      label = t('updater.available', 'v{{version}} available', { version: state.version })
-      title = label
+      // 'available' 状态在两种情况下停留:
+      //   1. 用户在设置页点"检测更新"(autoDownload=false),停在这里等用户决定
+      //   2. 自动路径(autoDownload=true)的极短瞬态(随后立刻被 download-progress
+      //      事件推进到 'downloading')
+      // 用户视角看到的几乎只是 case 1,所以把这个 chip 变成可点击的"立即下载"
+      // 入口 — 不强迫用户跳到设置页才能下载。
+      // mandatory available 在前面已经被拦截(让 MandatoryUpdateModal 接管),
+      // 这里只剩非 mandatory 的可选下载。
+      dotClass = 'bg-indigo-400 animate-pulse'
+      dotShadow = '0 0 6px rgba(129,140,248,0.5)'
+      label = t('updater.availableClickToDownload', 'v{{version}} · Download', { version: state.version })
+      title = t('updater.availableTitle', 'New version v{{version}} available. Click to download.', { version: state.version })
+      onClick = () => { void window.api.updater.downloadNow() }
       break
     case 'downloading':
       dotClass = 'bg-blue-400 animate-pulse'

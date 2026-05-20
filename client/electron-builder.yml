@@ -33,10 +33,16 @@ mac:
     - target: zip
       arch: [x64, arm64]
   hardenedRuntime: true
-  # Hardened Runtime entitlements:V8 JIT / native module dlopen / 网络访问。
-  # 不加这些,签名后的 app 启动时会被 macOS Hardened Runtime 限制崩溃。
+  # Hardened Runtime entitlements:
+  #   - entitlements (main app): 含 keychain-access-groups / Apple Events 等
+  #     需要 provisioning profile 授权的 capability,只给 main app 用
+  #   - entitlementsInherit (helper): **必须**是单独一份精简 entitlement,
+  #     **不得**含任何需要 provisioning profile 授权的 capability,否则
+  #     helper 进程启动时 macOS 校验 entitlement vs profile 失败 → SIGKILL
+  #     (v0.2.70 事故根因,2026-05-20 修)。详见 entitlements.mac.inherit.plist
+  #     和 docs/claude-guides/release-checklist.md §helper-entitlements-trap。
   entitlements: resources/entitlements.mac.plist
-  entitlementsInherit: resources/entitlements.mac.plist
+  entitlementsInherit: resources/entitlements.mac.inherit.plist
   # Notarize:启用 Apple 公证。需要 env APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD /
   # APPLE_TEAM_ID 注入(看 .github/workflows/release.yml)。
   # 这三个 env 缺一不可 — 缺失时 electron-builder 会跳过公证但仍签名(可接受降级)。

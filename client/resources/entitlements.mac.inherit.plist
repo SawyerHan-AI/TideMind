@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Helper 进程(Renderer / GPU / Network / Plugin / utility)的 entitlements。
+
+    **不能跟 main app 共用 entitlements.mac.plist** — main app 的 entitlements
+    含 keychain-access-groups,需要 provisioning profile 授权,而 provisioning
+    profile 只放在 main app Contents/embedded.provisionprofile,helper.app 没
+    有 profile。helper 进程启动时 macOS 会校验 entitlement vs profile,不匹
+    配 → SIGKILL(exit_code=9)→ GPU/Network 重启 5 次失败 → main FATAL abort。
+
+    这就是 v0.2.70 (3e1c657 钥匙串迁移) 启动崩溃的根因(2026-05-20 事故)。
+    详见 docs/claude-guides/release-checklist.md §helper-entitlements-trap。
+
+    Helper 进程**只保留** Hardened Runtime 必需 + 子进程通信需要的能力,**剥离**
+    所有只有 main app 用的 capability:
+      ✗ keychain-access-groups        (只有 main 跑 secure-store)
+      ✗ automation.apple-events        (只有 main 调 osascript Apple Notes)
+      ✗ files.user-selected.*          (只有 main 弹 file dialog)
+    保留的:
+      ✓ allow-jit                     V8 JIT(Renderer 必需)
+      ✓ allow-unsigned-executable-memory   V8 codegen
+      ✓ disable-library-validation     dlopen 第三方 dylib(better-sqlite3 等)
+      ✓ allow-dyld-environment-variables   Electron 子进程 fork-exec 继承
+      ✓ network.client / network.server   Renderer fetch / IPC
+  -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <key>com.apple.security.network.server</key>
+  <true/>
+</dict>
+</plist>
