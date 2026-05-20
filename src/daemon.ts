@@ -13,8 +13,9 @@ import { checkFileWatchers, reloadStrategies } from './strategy/loader.js';
 import { getDb, closeDb, initVec } from './db/connection.js';
 import { createLogger } from './utils/logger.js';
 import { logTimelineEvent } from './db/log.js';
-import { runSchedulerTick } from './metabolism/scheduler.js';
+import { runSchedulerTick, noteSuccessfulLLMCall } from './metabolism/scheduler.js';
 import { ALL_TASKS } from './metabolism/tasks.js';
+import { setLLMSuccessHook } from './llm/client.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { migrateConfigIfNeeded } from './utils/config-migrate.js';
 
@@ -90,6 +91,45 @@ async function main(): Promise<void> {
   getDb();
   backfillSyncHashes(); // DB 初始化后补填同步哈希
   await initVec();
+
+  // 注入 LLM 成功 hook(2026-05-20 Audit A-1/A-2 修复):
+  // callLLM 拿到 2xx response 时主动调本回调,只对真实 LLM 成功记录健康度信号。
+  // 之前 scheduler 在 task.execute() 完成后无条件调 recordLLMSuccess,导致 LLM
+  // 全挂 7 天期间 digest-retry 等任务内部吞 LLMServiceError 后仍 "正常 return",
+  // scheduler 误写 llm_last_success_at 并重置熔断器,使整个 resilience 防御失效。
+  // hook 走 try/catch 兜底,失败永远不影响 LLM 调用主流程。
+  const dbForHook = getDb();
+  setLLMSuccessHook(() => noteSuccessfulLLMCall(dbForHook));
+
+  // 冷启 backfill llm_last_success_at(2026-05-20 Audit A-5 修复):
+  // 升级用户从 v0.2.67 → v0.2.68 后,metadata 表没有 llm_last_success_at 这条
+  // 记录(本字段 v0.2.68 才引入),pending-link-gc 的 gate 永远拒绝放行 →
+  // pending 表只增不清。从 timeline_events 找最近一条 LLM 操作事件作为兜底
+  // 时间戳(annotate / links_evaluated / links_discovered 等 events.type 反映
+  // "曾经成功调过 LLM"),写一个合理近似值。fresh install 没这些事件,留 null
+  // 走"从未成功 → gate 拒绝"的保守分支,首次真实 LLM 成功会立刻被 hook 覆盖。
+  try {
+    const existing = dbForHook.prepare('SELECT value FROM metadata WHERE key = ?').get('llm_last_success_at');
+    if (!existing) {
+      const recent = dbForHook.prepare(
+        `SELECT created FROM timeline_events
+         WHERE type IN ('think_associate', 'memory', 'config')
+           AND created IS NOT NULL
+         ORDER BY created DESC
+         LIMIT 1`,
+      ).get() as { created: string } | undefined;
+      if (recent?.created) {
+        const ts = Date.parse(recent.created);
+        if (Number.isFinite(ts) && ts > 0) {
+          dbForHook.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)')
+            .run('llm_last_success_at', String(ts));
+          log.info(`backfilled llm_last_success_at from timeline (${recent.created})`);
+        }
+      }
+    }
+  } catch (err) {
+    log.warn(`llm_last_success_at backfill failed: ${(err as Error).message}`);
+  }
 
   // 加载 Pro 模块（不存在则跳过）
   await loadProModules({ db: getDb() });

@@ -17,6 +17,14 @@ const POLL_INTERVAL_MS = 30_000;
 const WS_RECONNECT_BASE_MS = 1_000;
 const WS_RECONNECT_MAX_MS = 30_000;
 
+/**
+ * 启动 → 首次 reconcile 触发的延迟。
+ * reconcile.buildLocalManifest 即便优化后仍是 SQL 全表扫(better-sqlite3 sync API),
+ * 8w+ 链接表秒级扫描会和首屏 IPC 抢主线程,给 renderer 一个干净的拉数窗口。
+ * reconcile 本身是兜底对齐(>7 天才会跑),delay 10s 不影响正确性。
+ */
+const RECONCILE_TRIGGER_DELAY_MS = 10_000;
+
 export class CloudSyncClient {
   private cacheManager: CacheManager;
   private intervalId: ReturnType<typeof setInterval> | null = null;
@@ -27,6 +35,9 @@ export class CloudSyncClient {
   private wsReconnectAttempts = 0;
   private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
+
+  /** 启动后延迟触发 reconcile 的 timer。stop() 必须清，避免 stop 后 callback 触底跑 reconcile。 */
+  private reconcileTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * cloud_not_available 时的慢速探测 timer。周期 1 小时,用于用户被加入
@@ -63,8 +74,15 @@ export class CloudSyncClient {
       .then(m => m.registerDevice())
       .catch(e => log.warn('device register failed:', (e as Error).message));
 
-    // 首次同步 / 距上次 > 7 天 → 触发 reconcile(fire-and-forget,不阻塞增量同步)
-    this.maybeTriggerReconcile().catch(e => log.warn('reconcile trigger failed:', (e as Error).message));
+    // 首次同步 / 距上次 > 7 天 → 触发 reconcile。
+    // 即使 buildLocalManifest 已优化(2026-05-20 PERF fix),其 SQL 仍是 better-sqlite3
+    // 同步 API,8w+ 行表扫秒级仍可能拖慢首屏 IPC 响应。给 10s 启动窗口让 renderer
+    // 拉到首屏数据后再跑 reconcile;reconcile 是兜底对齐机制,延迟 10s 完全可接受。
+    this.reconcileTimer = setTimeout(() => {
+      this.reconcileTimer = null;
+      if (this.stopped) return;
+      this.maybeTriggerReconcile().catch(e => log.warn('reconcile trigger failed:', (e as Error).message));
+    }, RECONCILE_TRIGGER_DELAY_MS);
 
     await this.syncOnce();
 
@@ -132,6 +150,10 @@ export class CloudSyncClient {
     if (this.slowRetryTimer) {
       clearInterval(this.slowRetryTimer);
       this.slowRetryTimer = null;
+    }
+    if (this.reconcileTimer) {
+      clearTimeout(this.reconcileTimer);
+      this.reconcileTimer = null;
     }
     this.disconnectWebSocket();
     log.info('sync client stopped');
@@ -245,15 +267,19 @@ export class CloudSyncClient {
         this.ws = null;
         this.wsAuthed = false;
         if (this.stopped) return;
-        // code 4401(服务端自定义)= token 过期,先强制刷新再重连。
-        // 不刷新直接重连会立刻再被拒,进入指数退避空转。
-        if (code === 4401) {
+        // 修复(2026-05-20 Audit F-6):任何 auth-related close 都尝试 refresh 一次。
+        // - code 4401(服务端自定义)= token 过期,显式刷新后立即重连。
+        // - code 1008 + auth_fail(reason !== 'expired') = 服务端 key rotation 或
+        //   签名校验失败,刷新拿新签名 token 一次。如果刷新也失败,fall through
+        //   到普通 scheduleReconnect 的指数退避(不会立刻死亡)。
+        //   原实现只挡 4401,服务端 key rotation 期间所有 ws 客户端会进入
+        //   无限退避空转直到 app 重启。
+        if (code === 4401 || code === 1008) {
           try {
             await refreshTokenIfNeeded();
-            // 刷新后立即重连,不走指数退避(普通断开才要退避)
-            this.wsReconnectAttempts = 0;
+            this.wsReconnectAttempts = 0; // 刷新成功 → 立即重连不走退避
           } catch (err) {
-            log.warn(`ws close 4401 but refresh failed: ${(err as Error).message}`);
+            log.warn(`ws close ${code} but refresh failed: ${(err as Error).message}`);
           }
         }
         this.scheduleReconnect();
@@ -396,14 +422,18 @@ export class CloudSyncClient {
     // skipped 的 sync_version 永久丢失。代谢/dedup/link-discover 一晚上几百条很常见。
     //
     // 安全上限 MAX_PAGES 防止云端 bug 导致 has_more 永真死循环。
+    // 修复(2026-05-20 决策 #5):limit 100 → 25 + MAX_PAGES 50 → 200 保持单次 sync 上限。
+    // applyChanges 用 db.transaction() 整批跑,100 行 × 1ms = 100ms+ 主线程阻塞,
+    // 降到 25 让单批阻塞 ≤ 25ms,IPC 响应顺畅;往返次数 ×4 但单次 sync 总数不变。
     const base = getCloudBaseUrl();
-    const MAX_PAGES = 50; // 单次 sync 上限 5000 条;真有更多则等下次 sync 继续。
+    const PULL_LIMIT = 25;
+    const MAX_PAGES = 200; // 25 × 200 = 5000 条,跟旧 100 × 50 一致。
     let totalPulled = 0;
     let pages = 0;
     while (pages < MAX_PAGES) {
       pages++;
       const sinceVersion = this.cacheManager.getLastSyncedVersion();
-      const res = await fetch(`${base}/api/v1/sync/pull?since_version=${sinceVersion}&limit=100`, {
+      const res = await fetch(`${base}/api/v1/sync/pull?since_version=${sinceVersion}&limit=${PULL_LIMIT}`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
       if (!res.ok) {
@@ -420,8 +450,21 @@ export class CloudSyncClient {
         await this.cacheManager.applyChanges(data.changes, token);
         totalPulled += data.changes.length;
       }
-      // 没有更多就退出;applyChanges 已推进 cursor,下页用新 sinceVersion。
-      if (!data.has_more || data.changes.length === 0) break;
+      // 修复(2026-05-20 Audit F-1):
+      // 原条件 `!data.has_more || data.changes.length === 0` 在服务端意外返回
+      // `{changes:[], has_more:true}` 时会让客户端永远卡住(cursor 不推进 + 不再轮询)。
+      // 实际服务端走 slice(0,limit) 保证 has_more=true 时 changes 非空,但靠不变量
+      // 不如靠 has_more 单一信号。
+      // 单独退出条件:`!data.has_more` — has_more=true && 0 changes 的边界状态
+      // 让 MAX_PAGES 兜底(下一轮 fetch 会再发,sinceVersion 不变,服务端继续返回相同
+      // 空页 → MAX_PAGES 退出,避免死循环)。
+      if (!data.has_more) break;
+      // 若 has_more=true 但 cursor 未推进(应用层没改 sinceVersion),也及时退出
+      // 防御无限循环;下次 syncOnce 重试。
+      if (data.changes.length === 0) {
+        log.warn(`pullChanges: server returned has_more=true with 0 changes (sinceVersion=${sinceVersion}); breaking to avoid stall`);
+        break;
+      }
     }
     if (totalPulled > 0) log.info(`pulled ${totalPulled} changes across ${pages} page(s)`);
     return totalPulled;

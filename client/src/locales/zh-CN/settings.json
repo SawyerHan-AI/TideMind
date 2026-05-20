@@ -31,7 +31,8 @@
     "updateChannel": "更新频道",
     "updateChannelDesc": "Beta 版会更早收到新功能，但可能不稳定。切换在下次检查时生效。",
     "updateChannelStable": "稳定版",
-    "updateChannelBeta": "测试版"
+    "updateChannelBeta": "测试版",
+    "channelSwitchConfirm": "切换到 Stable 后会在下次检查更新时安装最新正式版(可能撤回部分实验功能)。继续吗?"
   },
   "external": {
     "subtabs": {
@@ -1002,7 +1003,15 @@
     "requestAccountDeletion": "申请删除账户",
     "requestDeletionTitle": "申请删除账户?",
     "requestDeletionDesc": "点击确认将退出登录。如需永久删除账户及所有云端数据,请在登出后发送邮件至 support@tidemind.ai。本设备的本地数据不受影响。",
-    "requestDeletionConfirm": "退出登录 — 我会发邮件给客服"
+    "requestDeletionConfirm": "退出登录 — 我会发邮件给客服",
+    "cancellationNote": "取消立即生效。已有数据继续可读(超过免费额度后变只读)。",
+    "memoryUsage": "记忆用量",
+    "memoryUsageLine": "{{used}} / {{limit}} 条",
+    "memoryUnlimited": "不限",
+    "memoryNearLimitHint": "即将达到免费版上限。超过 {{limit}} 条的新记忆会变为只读,升级后恢复。",
+    "llmCostThisMonth": "本月 LLM 用量",
+    "llmCostCalls": "{{count}} 次调用",
+    "llmCostHint": "估算值。打开 Settings → Model Usage 查看完整明细。"
   },
   "cloud": {
     "loginRequired": "请先登录 TideMind Cloud 账号以使用云服务。",

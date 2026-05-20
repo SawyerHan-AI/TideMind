@@ -316,6 +316,29 @@ export function registerCloudHandlers(db?: Database.Database): void {
     }
   });
 
+  // 产品决策 #7(2026-05-20):用量查询(本地 active 节点数 vs 当前 plan 上限)。
+  // 仅当用户开了 cloud sync 才有意义,但 free plan 即便没开 sync 也会用 500 上限
+  // 作为参考显示。
+  ipcMain.handle('cloud:memory-usage', async () => {
+    const FREE_LIMIT = 500;
+    const PRO_LIMIT = 50000; // Pro 默认上限,纯展示用,不会真触发拒收
+    try {
+      if (!db) return { used: 0, limit: FREE_LIMIT, plan: 'free' as const };
+      // active = archived=0 AND is_superseded=0(配合 idx_nodes_active_* 索引,O(1) count)
+      const row = db
+        .prepare('SELECT COUNT(*) AS n FROM nodes WHERE archived = 0 AND is_superseded = 0')
+        .get() as { n: number } | undefined;
+      const used = row?.n ?? 0;
+      const { getCloudAuth } = await import('../cloud/auth-client.js');
+      const plan = (getCloudAuth()?.plan ?? 'free') as 'free' | 'pro' | 'pro_plus';
+      const limit = plan === 'free' ? FREE_LIMIT : PRO_LIMIT;
+      return { used, limit, plan };
+    } catch (err) {
+      log.warn(`cloud:memory-usage failed: ${(err as Error).message}`);
+      return { used: 0, limit: FREE_LIMIT, plan: 'free' as const };
+    }
+  });
+
   // Get login URL (for opening in system browser)
   ipcMain.handle('cloud:login-url', async () => {
     const { getLoginUrl } = await import('../cloud/auth-client.js');

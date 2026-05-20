@@ -65,7 +65,8 @@
     "rejectTag": "이 태그 제거",
     "rejectTagAria": "태그 제거 버튼",
     "rejectTagSuccess": "\"{{tag}}\" 제거됨",
-    "undo": "실행 취소"
+    "undo": "실행 취소",
+    "aiProcessing": "AI 처리 중…"
   },
   "graph": {
     "loading": "그래프 데이터 로딩 중...",

@@ -38,7 +38,9 @@
     "installLater": "Più tardi",
     "mandatoryTitle": "Aggiornamento Richiesto",
     "mandatoryDesc": "Tide Mind {{version}} contiene correzioni necessarie. Devi aggiornare per continuare a usare l'app.",
-    "mandatoryRestart": "Riavvia ora per aggiornare"
+    "mandatoryRestart": "Riavvia ora per aggiornare",
+    "mandatoryCountdown": "Riavvio automatico tra {{seconds}} secondi",
+    "mandatorySnooze": "Ricordamelo tra 10 minuti ({{remaining}} rimasti)"
   },
   "llmHealth": {
     "paused": "IA in pausa ({{min}} min al nuovo tentativo)",

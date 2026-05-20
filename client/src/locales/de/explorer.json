@@ -65,7 +65,8 @@
     "rejectTag": "Tag entfernen",
     "rejectTagAria": "Tag entfernen Schaltfläche",
     "rejectTagSuccess": "„{{tag}}\" entfernt",
-    "undo": "Rückgängig"
+    "undo": "Rückgängig",
+    "aiProcessing": "KI verarbeitet…"
   },
   "graph": {
     "loading": "Graphdaten werden geladen...",

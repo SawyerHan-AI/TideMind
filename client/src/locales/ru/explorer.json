@@ -65,7 +65,8 @@
     "rejectTag": "Удалить этот тег",
     "rejectTagAria": "Кнопка удаления тега",
     "rejectTagSuccess": "Тег «{{tag}}» удалён",
-    "undo": "Отменить"
+    "undo": "Отменить",
+    "aiProcessing": "ИИ обрабатывает…"
   },
   "graph": {
     "loading": "Загрузка данных графа...",

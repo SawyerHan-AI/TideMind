@@ -65,7 +65,8 @@
     "rejectTag": "Bu etiketi kaldır",
     "rejectTagAria": "Etiket kaldır düğmesi",
     "rejectTagSuccess": "\"{{tag}}\" kaldırıldı",
-    "undo": "Geri al"
+    "undo": "Geri al",
+    "aiProcessing": "AI işliyor…"
   },
   "graph": {
     "loading": "Graf verileri yükleniyor...",

@@ -65,7 +65,8 @@
     "rejectTag": "このタグを削除",
     "rejectTagAria": "タグ削除ボタン",
     "rejectTagSuccess": "「{{tag}}」を削除しました",
-    "undo": "元に戻す"
+    "undo": "元に戻す",
+    "aiProcessing": "AI 処理中…"
   },
   "graph": {
     "loading": "グラフデータを読み込み中...",

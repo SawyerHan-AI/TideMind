@@ -65,7 +65,8 @@
     "rejectTag": "Remover esta tag",
     "rejectTagAria": "Botão remover tag",
     "rejectTagSuccess": "\"{{tag}}\" removida",
-    "undo": "Desfazer"
+    "undo": "Desfazer",
+    "aiProcessing": "IA processando…"
   },
   "graph": {
     "loading": "Carregando dados do grafo...",

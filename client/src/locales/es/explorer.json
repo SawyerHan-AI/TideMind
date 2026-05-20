@@ -65,7 +65,8 @@
     "rejectTag": "Eliminar esta etiqueta",
     "rejectTagAria": "Botón eliminar etiqueta",
     "rejectTagSuccess": "«{{tag}}» eliminada",
-    "undo": "Deshacer"
+    "undo": "Deshacer",
+    "aiProcessing": "IA procesando…"
   },
   "graph": {
     "loading": "Cargando datos del grafo...",

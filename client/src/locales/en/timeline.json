@@ -35,14 +35,15 @@
       "recall_query": "Query",
       "reconsolidation_reason": "Reason",
       "content_preview": "Content preview",
-      "learning2_adjusted": "{{strategy}}.{{param}}: {{old}} \u2192 {{new}}",
-      "learning2_rolled_back": "Rolled back {{strategy}}.{{param}}: {{old}} \u2192 {{new}}",
+      "learning2_adjusted": "{{strategy}}.{{param}}: {{old}} → {{new}}",
+      "learning2_rolled_back": "Rolled back {{strategy}}.{{param}}: {{old}} → {{new}}",
       "learning2_reason": "Reason",
       "trend": "Trend",
       "learning3_recommendations": "{{count}} optimization recommendations generated",
       "circuit_breaker_on": "{{failures}} consecutive failures, cooldown {{minutes}} minutes",
       "circuit_breaker_off": "Service restored to normal operation",
-      "trigger_query": "Trigger query"
+      "trigger_query": "Trigger query",
+      "pending_link_gc": "Cleaned up {{count}} expired pending links"
     }
   },
   "events": {
@@ -84,6 +85,7 @@
     "apple_notes_first_import": "Apple Notes first import: {{total}} notes (processed {{processed}}, skipped {{skipped}}, failed {{failed}})",
     "apple_notes_incremental_sync": "Apple Notes incremental sync (processed {{processed}})",
     "apple_notes_init_complete": "Apple Notes init complete: {{nodes}} nodes, {{links}} links, {{crystals}} crystals",
-    "profile_synthesized": "Synthesized profile ({{crystals}} crystals, {{preferences}} preferences)"
+    "profile_synthesized": "Synthesized profile ({{crystals}} crystals, {{preferences}} preferences)",
+    "pending_link_gc": "GC'd {{count}} expired pending links"
   }
 }

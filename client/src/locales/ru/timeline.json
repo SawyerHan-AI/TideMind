@@ -42,7 +42,8 @@
       "learning3_recommendations": "Создано {{count}} рекомендаций по оптимизации",
       "circuit_breaker_on": "{{failures}} последовательных сбоев, охлаждение {{minutes}} мин",
       "circuit_breaker_off": "Сервис восстановлен в нормальном режиме",
-      "trigger_query": "Триггерный запрос"
+      "trigger_query": "Триггерный запрос",
+      "pending_link_gc": "Очищено {{count}} просроченных ожидающих ссылок"
     }
   },
   "events": {
@@ -84,6 +85,7 @@
     "apple_notes_first_import": "Apple Notes первый импорт: {{total}} заметок (обработано {{processed}}, пропущено {{skipped}}, ошибок {{failed}})",
     "apple_notes_incremental_sync": "Apple Notes инкрементальная синхронизация (обработано {{processed}})",
     "apple_notes_init_complete": "Apple Notes инициализация завершена: {{nodes}} узлов, {{links}} связей, {{crystals}} кристаллов",
-    "profile_synthesized": "Профиль синтезирован ({{crystals}} кристаллов, {{preferences}} предпочтений)"
+    "profile_synthesized": "Профиль синтезирован ({{crystals}} кристаллов, {{preferences}} предпочтений)",
+    "pending_link_gc": "Очищено {{count}} просроченных ожидающих ссылок"
   }
 }

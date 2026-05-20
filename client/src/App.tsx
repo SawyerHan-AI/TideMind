@@ -5,6 +5,7 @@ import { TimezoneProvider } from './contexts/TimezoneContext'
 import { DataChangeProvider } from './contexts/DataChangeContext'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { Layout } from './components/Layout'
+import { MandatoryUpdateModal } from './components/MandatoryUpdateModal'
 import { SkeletonCard } from './components/Skeleton'
 import { OnboardingProvider } from './onboarding/OnboardingContext'
 import { OnboardingPage } from './onboarding/OnboardingPage'
@@ -62,6 +63,10 @@ export function App() {
       <ThemeProvider>
         <TimezoneProvider>
         <DataChangeProvider>
+        {/* MandatoryUpdateModal 必须挂在 HashRouter 外,确保任何路由 / Onboarding
+            / Suspense fallback 状态下都覆盖全屏,不被 Outlet unmount。
+            (2026-05-20 产品决策 #1 B 方案) */}
+        <MandatoryUpdateModal />
         <HashRouter>
           {needsOnboarding ? (
             <Routes>

@@ -14,7 +14,7 @@
     "reason": "Grund",
     "detail": {
       "annotate": "{{annotated}} Knoten annotiert ({{skipped}} übersprungen, {{total}} insgesamt)",
-      "dedup_merge": "Knoten \u201E{{source}}\u201C in \u201E{{target}}\u201C zusammengeführt",
+      "dedup_merge": "Knoten „{{source}}“ in „{{target}}“ zusammengeführt",
       "landing": "{{confirmed}} bestätigte und {{pending}} ausstehende Verbindungen erstellt",
       "synaptic": "{{decayed}} Knoten abgeschwächt, {{linkDecayed}} Verbindungen abgeschwächt, {{linkDeleted}} Verbindungen entfernt",
       "daemon_start": "{{count}} Hintergrundaufgaben gestartet, Intervall {{interval}}s",
@@ -42,7 +42,8 @@
       "learning3_recommendations": "{{count}} Optimierungsempfehlungen generiert",
       "circuit_breaker_on": "{{failures}} aufeinanderfolgende Fehler, Abkühlung {{minutes}} Minuten",
       "circuit_breaker_off": "Dienst wieder im Normalbetrieb",
-      "trigger_query": "Auslöserabfrage"
+      "trigger_query": "Auslöserabfrage",
+      "pending_link_gc": "{{count}} abgelaufene wartende Links bereinigt"
     }
   },
   "events": {
@@ -84,6 +85,7 @@
     "apple_notes_first_import": "Apple Notes Erstimport: {{total}} Notizen (verarbeitet {{processed}}, übersprungen {{skipped}}, fehlgeschlagen {{failed}})",
     "apple_notes_incremental_sync": "Apple Notes inkrementelle Synchronisation (verarbeitet {{processed}})",
     "apple_notes_init_complete": "Apple Notes Initialisierung abgeschlossen: {{nodes}} Knoten, {{links}} Verbindungen, {{crystals}} Kristalle",
-    "profile_synthesized": "Profil synthetisiert ({{crystals}} Kristalle, {{preferences}} Präferenzen)"
+    "profile_synthesized": "Profil synthetisiert ({{crystals}} Kristalle, {{preferences}} Präferenzen)",
+    "pending_link_gc": "{{count}} abgelaufene wartende Links bereinigt"
   }
 }

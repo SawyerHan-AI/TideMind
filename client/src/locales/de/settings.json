@@ -31,7 +31,8 @@
     "updateChannel": "Update-Kanal",
     "updateChannelDesc": "Beta liefert neue Features früher, kann aber weniger stabil sein. Der Wechsel wird beim nächsten Check wirksam.",
     "updateChannelStable": "Stabil",
-    "updateChannelBeta": "Beta"
+    "updateChannelBeta": "Beta",
+    "channelSwitchConfirm": "Beim Wechsel zu Stable wird die neueste stabile Version installiert (experimentelle Funktionen werden möglicherweise zurückgenommen). Fortfahren?"
   },
   "external": {
     "subtabs": {
@@ -1002,7 +1003,15 @@
     "requestAccountDeletion": "Kontolöschung anfordern",
     "requestDeletionTitle": "Kontolöschung anfordern?",
     "requestDeletionDesc": "Klicken Sie auf Bestätigen, um sich abzumelden. Um Ihr Konto und alle Cloud-Daten dauerhaft zu löschen, senden Sie nach dem Abmelden eine E-Mail an support@tidemind.ai. Lokale Daten auf diesem Gerät bleiben erhalten.",
-    "requestDeletionConfirm": "Abmelden — ich kontaktiere den Support"
+    "requestDeletionConfirm": "Abmelden — ich kontaktiere den Support",
+    "cancellationNote": "Die Kündigung wird sofort wirksam. Ihre vorhandenen Daten bleiben zugänglich (nach Erreichen des kostenlosen Limits schreibgeschützt).",
+    "memoryUsage": "Speichernutzung",
+    "memoryUsageLine": "{{used}} / {{limit}} Erinnerungen",
+    "memoryUnlimited": "unbegrenzt",
+    "memoryNearLimitHint": "Sie nähern sich dem Free-Plan-Limit. Neue Einträge über {{limit}} sind schreibgeschützt, bis Sie ein Upgrade durchführen.",
+    "llmCostThisMonth": "LLM-Nutzung diesen Monat",
+    "llmCostCalls": "{{count}} Aufrufe",
+    "llmCostHint": "Geschätzt. Vollständige Aufschlüsselung unter Einstellungen → Modellnutzung."
   },
   "cloud": {
     "loginRequired": "Melde dich bei TideMind Cloud an, um Cloud-Funktionen zu nutzen.",

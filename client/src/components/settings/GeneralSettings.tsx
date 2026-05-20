@@ -39,6 +39,20 @@ export function GeneralSettings() {
 
   const handleChannelChange = async (next: UpdateChannel) => {
     if (next === updateChannel) return
+    // 修复(2026-05-20 产品决策 #2 C 方案):Beta → Stable 切换时确认提示。
+    // 用户从 0.2.X-beta.N 切回 stable 时,服务端会立刻下发同 core 的 stable 版本
+    // 作为"升级",客户端会自动下载安装。SemVer 上正式版 > beta,但用户语义里
+    // "切回 stable" 不代表"立刻给我装东西",所以需要 confirm。Stable → Beta 不需要
+    // 确认(切到 Beta 本身就是"想试新东西"的明确意图)。
+    if (updateChannel === 'beta' && next === 'stable') {
+      const ok = window.confirm(
+        t(
+          'settings:general.channelSwitchConfirm',
+          'Switching to Stable will install the latest stable version on your next update check (this may downgrade some experimental features). Continue?',
+        ),
+      )
+      if (!ok) return
+    }
     setUpdateChannelState(next)
     try {
       await window.api.updater.setChannel(next)

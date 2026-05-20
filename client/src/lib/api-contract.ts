@@ -308,6 +308,7 @@ export interface AppApi {
     triggerSync: () => Promise<{ success: boolean; error?: string; errorDetail?: string }>
     onReconcileProgress: (cb: (progress: unknown) => void) => () => void
     outboxCount: () => Promise<number>
+    memoryUsage: () => Promise<{ used: number; limit: number; plan: 'free' | 'pro' | 'pro_plus' }>
     loginUrl: () => Promise<string>
     registerUrl: () => Promise<string>
     billingPortalUrl: () => Promise<string>

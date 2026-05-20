@@ -65,7 +65,8 @@
     "rejectTag": "Retirer cette étiquette",
     "rejectTagAria": "Bouton retirer l'étiquette",
     "rejectTagSuccess": "« {{tag}} » retiré",
-    "undo": "Annuler"
+    "undo": "Annuler",
+    "aiProcessing": "IA en cours…"
   },
   "graph": {
     "loading": "Chargement des données du graphe...",

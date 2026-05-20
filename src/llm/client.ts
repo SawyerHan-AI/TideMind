@@ -29,6 +29,37 @@ export function setUsageDb(db: Database.Database): void {
   usageDb = db;
 }
 
+// ─────────────────────────────────────────────────────────────
+// LLM 真实成功信号 hook(2026-05-20 Audit A-1/A-2 修复)
+// ─────────────────────────────────────────────────────────────
+//
+// 之前 scheduler 在 task.execute() 正常 return 后无条件调 recordLLMSuccess,
+// 但很多 task(digest-retry / annotate / link-evaluate 等)在 LLM 没配置 /
+// 没工作 / 内部吞掉 LLMServiceError 的情况下也会"正常 return",scheduler 误
+// 当作"LLM 健康",写 llm_last_success_at + 重置熔断器。结果就是 2026-05-19
+// 那种 7 天 LLM 全挂的事故,熔断器每 3 分钟被 digest-retry 重置一次,健康度
+// gate 永远放行 pending-link-gc,整个"长期不可用防御"完全失效。
+//
+// 正确的做法:只有 callLLM 自己真的拿到 2xx response,才把"LLM 健康"这个事
+// 实记录下来。core 层不能直接 import scheduler / db handle,所以走 hook 注入
+// (跟 setHealthChangeListener 同样模式),由 daemon.ts 启动时把 db + 实际写入
+// 函数绑进来。
+//
+// 设计保留 callLLM 的纯 pure / no-db-dep 特征,使本模块在 worker / 单元测试
+// 等无 db 环境下仍可调用。
+type LLMSuccessHook = () => void;
+let llmSuccessHook: LLMSuccessHook | null = null;
+export function setLLMSuccessHook(hook: LLMSuccessHook | null): void {
+  llmSuccessHook = hook;
+}
+function notifyLLMSuccess(): void {
+  if (!llmSuccessHook) return;
+  try { llmSuccessHook(); } catch (err) {
+    // hook 失败永远不能影响 LLM 调用结果;只记录
+    log.warn(`llm success hook threw: ${(err as Error).message}`);
+  }
+}
+
 // ---- Client 缓存（按 connection_id） ----
 //
 // 历史 bug(2026-05-09):缓存只按 connectionId 索引,首次构造时 apiKey/project_id
@@ -567,6 +598,7 @@ export async function callLLM(options: {
         const result = await callGeminiLLM(geminiOpts);
         logUsage(modelId, options.operationName, result.inputTokens, result.outputTokens, 0);
         log.debug(`完成 op=${options.operationName ?? 'unknown'} tokens=${result.inputTokens}+${result.outputTokens} 耗时=${Date.now() - callStart}ms`);
+        notifyLLMSuccess();
         return result.text;
       }
 
@@ -587,6 +619,7 @@ export async function callLLM(options: {
         });
         logUsage(modelId, options.operationName, result.inputTokens, result.outputTokens, result.thinkingTokens);
         log.debug(`完成 op=${options.operationName ?? 'unknown'} tokens=${result.inputTokens}+${result.outputTokens} thinking=${result.thinkingTokens} 耗时=${Date.now() - callStart}ms`);
+        notifyLLMSuccess();
         return result.text;
       }
 
@@ -670,6 +703,7 @@ export async function callLLM(options: {
         if (!textBlock) {
           log.warn(`LLM 响应不含 text block op=${options.operationName ?? 'unknown'} blocks=${response.content.map(b => b.type).join(',')}`);
         }
+        notifyLLMSuccess();
         return textBlock ? textBlock.text : '';
       } finally {
         clearTimeout(timeout);

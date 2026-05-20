@@ -17,6 +17,7 @@ import type { UpdaterState } from '../../src/lib/api-contract'
 import { queryAndVerifyManifest } from './verifier.js'
 import { isInStagingBatch } from './staging.js'
 import { getUpdateChannel, setUpdateChannel as persistChannel, type UpdateChannel } from './channel.js'
+import { setQuitting } from '../lifecycle.js'
 
 const log = createLogger('updater')
 
@@ -26,6 +27,18 @@ let currentState: UpdaterState = { status: 'idle' }
 let mainWindowRef: BrowserWindow | null = null
 let initialized = false
 let inflight = false
+/**
+ * mandatory 标记的模块级"幽灵"载体。
+ *
+ * 修复(2026-05-20 Audit B-11):mandatory 在 'available' state 上设置,但
+ * autoUpdater 触发 downloadUpdate 后会先 emit 一系列 'download-progress' 事件
+ * 把 state 改成 'downloading'(没有 mandatory 字段),最后 emit 'update-downloaded'。
+ * 原实现读 `currentState.status === 'available' ? currentState.mandatory : false`
+ * → state 已经是 'downloading' 了,mandatory 永远评估为 false → MandatoryUpdateModal
+ * 永远不显示。这是 mandatory 整个 feature 的关键 bug,生产从未跑过所以一直没暴露。
+ * 用一个模块级 let 把 mandatory 锁住到 reset(idle / error / 新一轮 check)为止。
+ */
+let pendingMandatory = false
 
 function setState(next: UpdaterState): void {
   currentState = next
@@ -81,19 +94,21 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
   })
 
   autoUpdater.on('update-downloaded', (info) => {
-    // 保留 mandatory 标记 — 验签阶段确定 mandatory 后存到 'available' state,
-    // 这里继承下来。避免 downloaded 阶段丢失上下文,导致强制更新模态显示不出来。
-    const mandatory = currentState.status === 'available' ? currentState.mandatory : false
+    // 读模块级 pendingMandatory —— 'available' → 'downloading'(download-progress)
+    // → 'downloaded' 的转移路径上,'downloading' state 不带 mandatory 字段。靠
+    // currentState.status === 'available' 判定永远评不到 mandatory,模态永远不弹。
     setState({
       status: 'downloaded',
       version: info.version,
       releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes.slice(0, 500) : undefined,
-      mandatory,
+      mandatory: pendingMandatory,
     })
   })
 
   autoUpdater.on('error', (err) => {
     log.error(`electron-updater error: ${err.message}`)
+    // 错误路径重置 mandatory,避免下一轮 check 拿到错误值
+    pendingMandatory = false
     setState({ status: 'error', message: err.message })
   })
 
@@ -126,14 +141,17 @@ export async function runUpdateCheck(): Promise<void> {
     const result = await queryAndVerifyManifest()
 
     if (result.status === 'no-update') {
+      pendingMandatory = false
       setState({ status: 'up-to-date', version: result.version ?? app.getVersion() })
       return
     }
     if (result.status === 'fetch-error') {
+      pendingMandatory = false
       setState({ status: 'error', message: 'manifest fetch failed' })
       return
     }
     if (result.status === 'invalid') {
+      pendingMandatory = false
       setState({
         status: 'signature-invalid',
         version: result.version ?? '',
@@ -145,10 +163,13 @@ export async function runUpdateCheck(): Promise<void> {
     const mandatory = result.mandatory ?? false
     if (!mandatory && !isInStagingBatch(result.stagingPercentage, getDataDir())) {
       log.info(`staged-out: percentage=${result.stagingPercentage}, version=${result.version}`)
+      pendingMandatory = false
       setState({ status: 'staged-out', version: result.version ?? '' })
       return
     }
 
+    // 锁住 mandatory 到 pendingMandatory,跨过 'downloading' 中间态不丢
+    pendingMandatory = mandatory
     setState({
       status: 'available',
       version: result.version ?? '',
@@ -181,11 +202,16 @@ function applyChannelToAutoUpdater(): void {
  *
  * 老版本下载完未安装时切换 channel,不会撤回那条下载 — quitAndInstall 仍生效。
  * 切换的"立即生效"只针对未来检查路径。
+ *
+ * 修复(2026-05-20 Audit B-12):切换后立即 fire-and-forget 触发一次 runUpdateCheck,
+ * 让用户切到新 channel 后不用等 4h 周期才看到新版本。inflight 锁会 skip 当前
+ * 正在跑的 check,不会双跑。
  */
-export function setUpdateChannel(channel: UpdateChannel): void {
-  persistChannel(channel)
+export async function setUpdateChannel(channel: UpdateChannel): Promise<void> {
+  await persistChannel(channel)
   if (initialized) {
     applyChannelToAutoUpdater()
+    runUpdateCheck().catch(err => log.warn(`post-switch update check failed: ${(err as Error).message}`))
   }
 }
 
@@ -199,16 +225,16 @@ export function installUpdate(): void {
     return
   }
   log.info('quitAndInstall')
-  // quitAndInstall(isSilent=false, isForceRunAfter=true):autoUpdater 内部调
-  // app.quit()。但 macOS 上 main.ts 的 window-all-closed handler 不让 macOS
-  // app.quit (line "if (process.platform !== 'darwin')"),进程会停在"窗口关了但
-  // 没真退"状态,Squirrel.Mac swap 完成后看到旧进程还活着,forceRunAfter 的
-  // relaunch 不触发。给 quitAndInstall 500ms 触发 before-quit 钩子清理 + spawn
-  // ShipIt helper,然后 app.exit(0) 强制进程退出。这是 macOS 自动更新模式的特
-  // 殊路径,普通退出走 graceful quit。
-  setTimeout(() => {
-    log.info('forcing app.exit after quitAndInstall (macOS graceful-quit bypass)')
-    app.exit(0)
-  }, 500)
+  // 修复(2026-05-20 Audit B-5):
+  // 原实现 setTimeout(app.exit(0), 500) 是个错误诊断的 workaround。
+  // 真正的 root cause 是:autoUpdater.quitAndInstall 内部走 app.quit() 触发
+  // mainWindow.on('close'),close handler 看到 isQuitting=false 就 preventDefault
+  // 把窗口隐藏(macOS tray pattern),进程不退 → Squirrel.Mac swap 完 forceRunAfter
+  // 也跑不起来。
+  // 正确做法:在 quitAndInstall 之前显式标记 quit 意图,close handler 见 isQuitting=true
+  // 放行真正的 quit 路径,before-quit 钩子能跑完(syncClient 清理 / closeClientDb /
+  // SQLite WAL flush),autoUpdater 完成 swap 后正常 relaunch。
+  // app.exit(0) 这种硬退出会跳过 before-quit,WAL 状态不一致风险 + sync 数据丢失。
+  setQuitting()
   autoUpdater.quitAndInstall(false, true)
 }

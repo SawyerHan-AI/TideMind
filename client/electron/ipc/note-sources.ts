@@ -313,8 +313,15 @@ export function registerNoteSourceHandlers(): void {
 
       // M26 修复(2026-05-09):加 symlink 跳过 + 最大深度护栏,避免恶意/含链环
       // 路径让主进程死循环或耗尽 fd。同步递归只接受合理上限。
+      //
+      // 修复(2026-05-20 Audit E-2):MAX_FILES 从 100000 降到 10000。原值是
+      // `health.ts` 同类扫描 (10000) 的 10 倍,用户不小心选了 Downloads / 整个
+      // home 目录的话会主线程同步扫几十万文件,IPC 阻塞秒级 → 鼠标转圈。
+      // "test connection" 只是回答"路径里有几个 md 文件",10k 上限对真实笔记
+      // vault 已远超(Logseq/Obsidian 几十年长尾用户也很难达到 10k md),触顶
+      // 显示 "10000+" 即可,不需要精确计数。
       const MAX_DEPTH = 20
-      const MAX_FILES = 100000
+      const MAX_FILES = 10000
       const walk = (dir: string, relDir: string, depth: number) => {
         if (depth > MAX_DEPTH || count >= MAX_FILES) return
         let entries: fs.Dirent[]

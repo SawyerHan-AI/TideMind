@@ -42,7 +42,8 @@
       "learning3_recommendations": "{{count}} optimizasyon önerisi üretildi",
       "circuit_breaker_on": "Art arda {{failures}} başarısızlık, {{minutes}} dakika soğutma",
       "circuit_breaker_off": "Hizmet normal çalışmaya döndü",
-      "trigger_query": "Tetikleyici sorgu"
+      "trigger_query": "Tetikleyici sorgu",
+      "pending_link_gc": "{{count}} süresi dolmuş bekleyen bağlantı temizlendi"
     }
   },
   "events": {
@@ -84,6 +85,7 @@
     "apple_notes_first_import": "Apple Notes ilk içe aktarma: {{total}} not (işlenen {{processed}}, atlanan {{skipped}}, başarısız {{failed}})",
     "apple_notes_incremental_sync": "Apple Notes artımlı senkronizasyon (işlenen {{processed}})",
     "apple_notes_init_complete": "Apple Notes başlatma tamamlandı: {{nodes}} düğüm, {{links}} bağlantı, {{crystals}} kristal",
-    "profile_synthesized": "Profil sentezlendi ({{crystals}} kristal, {{preferences}} tercih)"
+    "profile_synthesized": "Profil sentezlendi ({{crystals}} kristal, {{preferences}} tercih)",
+    "pending_link_gc": "{{count}} süresi dolmuş bekleyen bağlantı temizlendi"
   }
 }

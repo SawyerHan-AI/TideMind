@@ -27,12 +27,15 @@ export function registerUpdaterHandlers(): void {
 
   ipcMain.handle('updater:get-channel', (): UpdateChannel => getUpdateChannel())
 
-  ipcMain.handle('updater:set-channel', (_event, channel: unknown) => {
+  ipcMain.handle('updater:set-channel', async (_event, channel: unknown) => {
     // 显式白名单 — renderer 传 'main' / 任意字符串都会被拒。
+    // 修复(2026-05-20 Audit B-13):非法值显式抛错让 renderer 能 catch 弹 toast,
+    // 比静默 return undefined 调试友好;同时 await setUpdateChannel 让 renderer
+    // 真正等到磁盘 + autoUpdater 一致后才解锁 UI。
     if (channel !== 'stable' && channel !== 'beta') {
       log.warn(`set-channel rejected: invalid channel=${String(channel)}`)
-      return
+      throw new Error(`Invalid update channel: ${String(channel)}`)
     }
-    setUpdateChannel(channel)
+    await setUpdateChannel(channel)
   })
 }

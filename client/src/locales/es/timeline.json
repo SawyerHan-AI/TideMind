@@ -42,7 +42,8 @@
       "learning3_recommendations": "{{count}} recomendaciones de optimización generadas",
       "circuit_breaker_on": "{{failures}} fallos consecutivos, enfriamiento {{minutes}} minutos",
       "circuit_breaker_off": "Servicio restaurado a operación normal",
-      "trigger_query": "Consulta desencadenante"
+      "trigger_query": "Consulta desencadenante",
+      "pending_link_gc": "Se han limpiado {{count}} enlaces pendientes caducados"
     }
   },
   "events": {
@@ -84,6 +85,7 @@
     "apple_notes_first_import": "Apple Notes primera importación: {{total}} notas (procesadas {{processed}}, omitidas {{skipped}}, fallidas {{failed}})",
     "apple_notes_incremental_sync": "Apple Notes sincronización incremental (procesadas {{processed}})",
     "apple_notes_init_complete": "Apple Notes inicialización completada: {{nodes}} nodos, {{links}} enlaces, {{crystals}} cristales",
-    "profile_synthesized": "Perfil sintetizado ({{crystals}} cristales, {{preferences}} preferencias)"
+    "profile_synthesized": "Perfil sintetizado ({{crystals}} cristales, {{preferences}} preferencias)",
+    "pending_link_gc": "Limpiados {{count}} enlaces pendientes caducados"
   }
 }

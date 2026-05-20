@@ -1,10 +1,118 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Cloud, Mail, LogOut, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useCloudStatus } from '../../hooks/useCloudStatus'
 import { Section } from './shared'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { brand, btnText } from '../../lib/tokens'
+
+/** 产品决策 #10(2026-05-20):本月 LLM 用量常驻卡片(简洁版,Power user 可点
+ *  Settings → Model Usage 看完整明细;这里只一个数字 + 一句话总结)。 */
+function LlmCostThisMonthSection() {
+  const { t } = useTranslation()
+  const [cost, setCost] = useState<number | null>(null)
+  const [callCount, setCallCount] = useState<number>(0)
+
+  useEffect(() => {
+    let cancelled = false
+    const firstOfMonth = new Date()
+    firstOfMonth.setDate(1)
+    firstOfMonth.setHours(0, 0, 0, 0)
+    const after = firstOfMonth.toISOString().slice(0, 10)
+    window.api.stats.tokenUsageFiltered({ after, limit: 1, offset: 0 })
+      .then((data: { operationStats?: Array<{ estimated_cost: number; cnt: number }> } | null) => {
+        if (cancelled || !data?.operationStats) return
+        const total = data.operationStats.reduce((s, op) => s + (op.estimated_cost ?? 0), 0)
+        const calls = data.operationStats.reduce((s, op) => s + (op.cnt ?? 0), 0)
+        setCost(total)
+        setCallCount(calls)
+      }).catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  if (cost === null) return null
+
+  // 简洁版:不画图表,只一行数字 + 月份范围(用户想看明细自己点 Model Usage tab)
+  const monthLabel = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long' })
+  const formattedCost = cost >= 1 ? `$${cost.toFixed(2)}` : cost > 0 ? `$${cost.toFixed(3)}` : '$0'
+
+  return (
+    <Section title={t('settings:account.llmCostThisMonth', 'LLM Usage This Month')}>
+      <div className="flex items-baseline justify-between">
+        <div>
+          <span className="text-lg font-semibold text-gray-100">{formattedCost}</span>
+          <span className="ml-2 text-[11px] text-gray-500">
+            {t('settings:account.llmCostCalls', '{{count}} calls', { count: callCount })}
+          </span>
+        </div>
+        <span className="text-[11px] text-gray-500">{monthLabel}</span>
+      </div>
+      <p className="text-[11px] text-gray-500 leading-relaxed mt-1.5">
+        {t(
+          'settings:account.llmCostHint',
+          'Estimated. Tap Model Usage in Settings for full breakdown.',
+        )}
+      </p>
+    </Section>
+  )
+}
+
+/** 产品决策 #7(2026-05-20):用量进度条 — 显示 active 节点用量 / 计划上限 */
+function MemoryUsageSection() {
+  const { t } = useTranslation()
+  const [usage, setUsage] = useState<{ used: number; limit: number; plan: 'free' | 'pro' | 'pro_plus' } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    window.api.cloud.memoryUsage().then((u) => {
+      if (!cancelled) setUsage(u)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  if (!usage) return null
+  const pct = usage.limit > 0 ? Math.min(100, Math.round((usage.used / usage.limit) * 100)) : 0
+  const isFree = usage.plan === 'free'
+  // 颜色档:< 70% 中性绿、70-90% 黄、≥ 90% 红(只有 free plan 才有意义)
+  const color = !isFree
+    ? '#34d399'
+    : pct >= 90 ? '#f87171'
+    : pct >= 70 ? '#fbbf24'
+    : '#34d399'
+
+  return (
+    <Section title={t('settings:account.memoryUsage', 'Memory Usage')}>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-gray-400">
+            {t('settings:account.memoryUsageLine', '{{used}} / {{limit}} memories', {
+              used: usage.used.toLocaleString(),
+              limit: isFree ? usage.limit.toLocaleString() : t('settings:account.memoryUnlimited', 'unlimited'),
+            })}
+          </span>
+          {isFree && <span className="text-gray-500">{pct}%</span>}
+        </div>
+        {isFree && (
+          <div className="h-1.5 rounded-full bg-white/[0.04] overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all"
+              style={{ width: `${pct}%`, background: color }}
+            />
+          </div>
+        )}
+        {isFree && pct >= 90 && (
+          <p className="text-[11px] text-red-400/80 leading-relaxed">
+            {t(
+              'settings:account.memoryNearLimitHint',
+              'Approaching the Free plan limit. New memories beyond {{limit}} will become read-only until you upgrade.',
+              { limit: usage.limit },
+            )}
+          </p>
+        )}
+      </div>
+    </Section>
+  )
+}
 
 function ComingSoonTag() {
   const { t } = useTranslation()
@@ -200,15 +308,32 @@ function LoggedInView({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
               </button>
             </>
           ) : (
-            <button
-              onClick={handleManageSubscription}
-              className="mt-1 px-3 py-1.5 rounded-md text-xs font-medium text-gray-300 border border-white/10 hover:border-white/20 hover:text-white transition-all"
-            >
-              {t('settings:account.manageSubscription', 'Manage Subscription')}
-            </button>
+            <div className="space-y-1.5">
+              <button
+                onClick={handleManageSubscription}
+                className="px-3 py-1.5 rounded-md text-xs font-medium text-gray-300 border border-white/10 hover:border-white/20 hover:text-white transition-all"
+              >
+                {t('settings:account.manageSubscription', 'Manage Subscription')}
+              </button>
+              {/* Creem 取消语义 = 立即取消(不同于 Stripe/LSQ 默认周期末取消)。
+                  让用户在点按钮前就知道行为差异,避免被 "数据被锁死了 / 钱白付了" 的
+                  误判惊到。(2026-05-20 产品决策 #3 P1) */}
+              <p className="text-[11px] text-gray-500 leading-relaxed">
+                {t(
+                  'settings:account.cancellationNote',
+                  'Cancellation takes effect immediately. Your existing data stays accessible (read-only after the free-tier limit).',
+                )}
+              </p>
+            </div>
           )}
         </div>
       </Section>
+
+      {/* Memory Usage(产品决策 #7,2026-05-20)— free plan 触顶前提示用户 */}
+      <MemoryUsageSection />
+
+      {/* LLM 本月用量(产品决策 #10,2026-05-20)— 设置页常驻,详细见 Model Usage tab */}
+      <LlmCostThisMonthSection />
 
       {/* Billing — placeholder */}
       <Section

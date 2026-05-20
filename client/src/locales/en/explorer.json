@@ -65,7 +65,8 @@
     "rejectTag": "Remove this tag",
     "rejectTagAria": "Remove tag button",
     "rejectTagSuccess": "Removed \"{{tag}}\"",
-    "undo": "Undo"
+    "undo": "Undo",
+    "aiProcessing": "AI processing…"
   },
   "graph": {
     "loading": "Loading graph data...",

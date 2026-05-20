@@ -69,8 +69,12 @@ async function ensureOllama(): Promise<void> {
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
-/** 是否真正退出（区分关闭窗口 vs 退出应用） */
-let isQuitting = false
+/**
+ * 是否真正退出（区分关闭窗口 vs 退出应用）。
+ * 抽到 lifecycle.ts 共享给 updater 模块,在 quitAndInstall 之前置 true,让
+ * close() handler 放行 quit 路径(详见 lifecycle.ts 注释 + Audit B-5)。
+ */
+import { getIsQuitting, setQuitting } from './lifecycle.js'
 
 // ── tidemind:// 协议注册 ────────────────────────────────
 // 在 macOS 上，第二次打开链接不会启动新进程，而是发送 open-url 事件。
@@ -189,7 +193,7 @@ function createWindow(): void {
 
   // macOS: 关闭窗口时隐藏到后台，而不是退出
   mainWindow.on('close', (e) => {
-    if (!isQuitting) {
+    if (!getIsQuitting()) {
       e.preventDefault()
       mainWindow?.hide()
     }
@@ -235,7 +239,7 @@ function createTray(): void {
     {
       label: mainT('tray.quit'),
       click: () => {
-        isQuitting = true
+        setQuitting()
         app.quit()
       },
     },
@@ -421,7 +425,7 @@ app.whenReady().then(async () => {
 })
 
 app.on('before-quit', () => {
-  isQuitting = true
+  setQuitting()
   stopDataWatcher()
   // 必须停止 cloud sync client,否则 WebSocket / 重连定时器 / 慢重试 timer 全泄漏:
   // app 退出过程中 ws 仍尝试发握手或重连;若 slowRetry 触发新 ws 连接,close handler
