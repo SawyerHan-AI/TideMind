@@ -39,6 +39,44 @@ export function validateProviderType(t: unknown): AllowedProviderType {
   return t as AllowedProviderType
 }
 
+/**
+ * 验证 `connections:test` 的可选 formOverride 参数。
+ *
+ * 背景:测试连接时表单可能还有未点"保存"的值(典型场景:用户新建 connection、
+ * 填了 base_url 但还没保存就点测试)。原 handler 只读 DB 已存 credentials,
+ * DB 是空 `{}` → probe 报 "Base URL not configured",违反用户心理模型。
+ *
+ * 修复策略:IPC handler 接受可选 formOverride,在 DB credentials 上 merge
+ * (form 非空字段优先,DB 字段作为 fallback)。**只用于 probe,不写 DB
+ * credentials**,所以"编辑老 connection 时 SecretInput 因安全不回填→form 空"
+ * 不会被这个 merge 覆盖已存 API Key。
+ *
+ * 安全约束:
+ * - 必须是 plain object(或 undefined / null,均当作空 override)
+ * - 字段值必须是 string(或 undefined,等价"不提供")
+ * - 总序列化大小 ≤ 8KB(与 credentials 同上限,挡 IPC 巨型负载)
+ */
+export function validateFormCredentials(raw: unknown): Record<string, string> {
+  if (raw === undefined || raw === null) return {}
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('Invalid formCredentials: must be plain object')
+  }
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(raw)) {
+    if (v === undefined || v === null) continue
+    if (typeof v !== 'string') {
+      throw new Error(`Invalid formCredentials.${k}: must be string, got ${typeof v}`)
+    }
+    out[k] = v
+  }
+  // keep in sync with MAX_CREDENTIALS_BYTES in connections.ts
+  const size = Buffer.byteLength(JSON.stringify(out), 'utf8')
+  if (size > 8192) {
+    throw new Error(`formCredentials too large: ${size} bytes (max 8192)`)
+  }
+  return out
+}
+
 export function validateAgentId(id: unknown): string {
   if (typeof id !== 'string' || !AGENT_ID_RE.test(id)) {
     throw new Error(`Invalid agentId: must match ${AGENT_ID_RE.source}`)

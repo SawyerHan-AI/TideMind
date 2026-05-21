@@ -264,7 +264,7 @@ export interface AppApi {
     archive: (id: string) => Promise<void>
     unarchive: (id: string) => Promise<void>
     delete: (id: string) => Promise<void>
-    test: (connectionId: string) => Promise<{ online: boolean; models: string[]; error?: string; region?: string }>
+    test: (connectionId: string, formOverride?: Record<string, string>) => Promise<{ online: boolean; models: string[]; error?: string; region?: string }>
     pickVertexFile: (connectionId: string) => Promise<{ success: boolean; projectId?: string; error?: string }>
     vertexCredStatus: (connectionId: string) => Promise<{ configured: boolean; projectId?: string }>
   }

@@ -191,14 +191,35 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
     onRefresh()
   }
 
-  // 测试连接只读 DB 里的当前凭证,不再 auto-save 表单。否则
-  // connections:list 出于安全把 credentials 抹成 undefined,表单
-  // 用空值预填,点测试就会把已存的 API Key 覆盖成空串。
+  // 把当前表单值收集成 IPC override。IPC 端会跟 DB 已存 credentials merge
+  // (form 非空字段优先,DB 字段作为 fallback),且不写回 DB credentials。
+  const buildFormOverride = (): Record<string, string> => {
+    switch (conn.provider_type) {
+      case 'anthropic': return { api_key: apiKey }
+      case 'vertex': return { project_id: projectId, region }
+      case 'gemini': return { api_key: geminiKey }
+      case 'ollama': return { url: ollamaUrl }
+      case 'openai-compatible': return { base_url: openaiBaseUrl, api_key: openaiApiKey }
+      default: return {}
+    }
+  }
+
+  // 测试连接同时传入表单当前值。两个场景都正确:
+  //  - 新建 connection:DB credentials 是空 `{}`,merge 后用表单填的值(修复 UX)
+  //  - 编辑老 connection:SecretInput 出于安全不回填 → 表单字段是空字符串,
+  //    merge 时被跳过(只覆盖非空),fall back 到 DB 已存值,不会被清空。
+  // 这个改动不写 DB credentials,只用于 probe;持久化仍走"保存"按钮。
+  //
+  // Audit A.M1 (2026-05-21):creds === null 时 form initial default (region 是
+  // 'us-central1' / ollamaUrl 'http://localhost:11434') 非空,会走 merge 路径
+  // 覆盖 DB 已存的 region / LAN URL,probe 用错凭证。useEffect 异步回填前点测试
+  // 触发此 race。跟 handleSaveCredentials 对齐:加 guard,按钮在加载完成前 disabled。
   const handleTest = async () => {
+    if (creds === null) return
     setTesting(true)
     setTestResult(null)
     try {
-      const result = await window.api.connections.test(conn.id)
+      const result = await window.api.connections.test(conn.id, buildFormOverride())
       setTestResult(result)
     } catch (e) {
       setTestResult({ online: false, models: [], error: (e as Error).message })
@@ -326,7 +347,7 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
           className="flex items-center gap-2 px-3 py-1.5 text-xs bg-white/5 hover:bg-white/10 rounded-lg text-gray-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
           {t('model.connection.save')}
         </button>
-        <button onClick={handleTest} disabled={testing}
+        <button onClick={handleTest} disabled={testing || creds === null}
           className="flex items-center gap-2 px-3 py-1.5 text-xs bg-white/5 hover:bg-white/10 rounded-lg text-gray-300 transition-colors disabled:opacity-50">
           {testing && <Loader2 size={12} className="animate-spin" />}
           {t('model.connection.testConnection')}

@@ -197,7 +197,13 @@ async function main(): Promise<void> {
   // 启动 → 老 tick 的 promise 才完成"序列下,老 finally 会把新 tick 的 running
   // 状态抹掉,使下一轮 setInterval 与新 tick 真正并发。改用 currentTickId 严格
   // 配对:finally 只在自己仍是当前 tick 时才 reset。
-  const TICK_HARD_TIMEOUT_MS = 12 * 60 * 1000;
+  // 2026-05-21:12 → 25 分钟。与 src/llm/client.ts TIMEOUT_MS_BY_TIER 抬高耦合
+  // — heavy tier 单次 LLM 现在最长 20min(1200s),3 次重试 worst case ~60min。
+  // 12min watchdog 早于 heavy 单次完成就会强制 reset tickRunning → 新 tick 跟
+  // 还在跑的老 tick **并发**,可能重复 API 调用或重复入库。把 watchdog 抬到
+  // 25min 让 heavy 单次 LLM 能正常返回不触发并发(标准 3 次重试还是会超,但
+  // 那是真挂了应该熔断,不是单次慢)。
+  const TICK_HARD_TIMEOUT_MS = 25 * 60 * 1000;
   let tickRunning = false;
   let tickCount = 0;
   let tickStartedAt = 0;

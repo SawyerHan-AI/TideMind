@@ -55,16 +55,19 @@ describe('LLMServiceError', () => {
 // ── TIMEOUT_MS_BY_TIER ───────────────────────────────────────
 
 describe('TIMEOUT_MS_BY_TIER', () => {
-  it('light = 60_000ms', () => {
-    expect(TIMEOUT_MS_BY_TIER.light).toBe(60_000);
+  // 2026-05-21:60/180/300 → 360/600/1200。外脑所有 LLM 调用都是后台异步,
+  // 对延迟不敏感;原 light 60s 在慢 provider 下容易撞,放宽余量更稳。
+  // 详见 src/llm/client.ts::TIMEOUT_MS_BY_TIER 注释。
+  it('light = 360_000ms', () => {
+    expect(TIMEOUT_MS_BY_TIER.light).toBe(360_000);
   });
 
-  it('standard = 180_000ms', () => {
-    expect(TIMEOUT_MS_BY_TIER.standard).toBe(180_000);
+  it('standard = 600_000ms', () => {
+    expect(TIMEOUT_MS_BY_TIER.standard).toBe(600_000);
   });
 
-  it('heavy = 300_000ms', () => {
-    expect(TIMEOUT_MS_BY_TIER.heavy).toBe(300_000);
+  it('heavy = 1200_000ms', () => {
+    expect(TIMEOUT_MS_BY_TIER.heavy).toBe(1200_000);
   });
 
   it('light < standard < heavy', () => {
