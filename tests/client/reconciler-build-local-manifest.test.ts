@@ -154,5 +154,7 @@ describe('Reconciler.buildLocalManifest', () => {
     // 本机 M1 实测 ~120ms;给 CI 留 12x 余量。如果超出阈值通常意味着回归把
     // COALESCE 加回 SQL 或者 .all() 重新引入了 sort path。
     expect(elapsed, `buildLocalManifest 10k+10k 总耗时 ${elapsed.toFixed(1)}ms (nodes=${(t1-t0).toFixed(1)}ms links=${(t2-t1).toFixed(1)}ms)`).toBeLessThan(1500);
-  });
+  }, 30_000); // 2w 行 seeding 在 vitest 并行 + 发版机器负载下可能逼近 5s 默认 timeout
+  // (2026-05-21 v0.2.74 OSS 发版踩到超时)。perf 断言 <1500ms 只测 buildLocalManifest 本身
+  // (不含 seeding),不受 timeout 余量影响,仍能抓 COALESCE/sort 回归。
 });

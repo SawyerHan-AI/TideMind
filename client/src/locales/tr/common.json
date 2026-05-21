@@ -32,10 +32,6 @@
     "retry": "Yeniden Dene"
   },
   "updater": {
-    "ready": "Yeni sürüm {{version}} hazır",
-    "readyDesc": "Güncellemeyi tamamlamak için Tide Mind'ı yeniden başlatın",
-    "installNow": "Şimdi yeniden başlat",
-    "installLater": "Daha sonra",
     "mandatoryTitle": "Güncelleme Gerekli",
     "mandatoryDesc": "Tide Mind {{version}} gerekli düzeltmeler içeriyor. Uygulamayı kullanmaya devam etmek için güncellemelisiniz.",
     "mandatoryRestart": "Şimdi yeniden başlatarak güncelle",

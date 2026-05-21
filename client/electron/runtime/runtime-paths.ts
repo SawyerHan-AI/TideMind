@@ -72,6 +72,15 @@ export function getMcpServerScriptPath(): string {
 }
 
 /**
+ * structure-holes 计算 worker 的 .cjs 路径(v0.2.74 CRITICAL #1)。
+ * 主线程用 new Worker(此路径) 起 worker_threads,把 O(E²/V) 同步 SQL 移出主线程。
+ * 跟 mcp-server.cjs 一样在 out/bin/(packaged 走 asar.unpacked)。
+ */
+export function getStructureHolesWorkerPath(): string {
+  return path.join(getBinDir(), 'structure-holes-worker.cjs')
+}
+
+/**
  * 当前 Electron 二进制的绝对路径。
  * - Dev：指向 node_modules/electron/dist/Electron.app/Contents/MacOS/Electron
  * - Packaged：指向 /Applications/Tide Mind.app/Contents/MacOS/Tide Mind

@@ -32,10 +32,6 @@
     "retry": "重试"
   },
   "updater": {
-    "ready": "新版本 {{version}} 已就绪",
-    "readyDesc": "重启 Tide Mind 完成更新",
-    "installNow": "立即重启",
-    "installLater": "稍后",
     "mandatoryTitle": "必须更新",
     "mandatoryDesc": "Tide Mind {{version}} 包含重要修复，需要更新后才能继续使用。",
     "mandatoryRestart": "立即重启更新",

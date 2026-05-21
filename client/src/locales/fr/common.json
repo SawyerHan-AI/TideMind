@@ -32,10 +32,6 @@
     "retry": "Réessayer"
   },
   "updater": {
-    "ready": "Nouvelle version {{version}} prête",
-    "readyDesc": "Redémarrez Tide Mind pour terminer la mise à jour",
-    "installNow": "Redémarrer maintenant",
-    "installLater": "Plus tard",
     "mandatoryTitle": "Mise à jour requise",
     "mandatoryDesc": "Tide Mind {{version}} contient des corrections requises. Vous devez mettre à jour pour continuer à utiliser l'application.",
     "mandatoryRestart": "Redémarrer maintenant pour mettre à jour",

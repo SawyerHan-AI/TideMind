@@ -32,10 +32,6 @@
     "retry": "Riprova"
   },
   "updater": {
-    "ready": "Nuova versione {{version}} pronta",
-    "readyDesc": "Riavvia Tide Mind per completare l'aggiornamento",
-    "installNow": "Riavvia ora",
-    "installLater": "Più tardi",
     "mandatoryTitle": "Aggiornamento Richiesto",
     "mandatoryDesc": "Tide Mind {{version}} contiene correzioni necessarie. Devi aggiornare per continuare a usare l'app.",
     "mandatoryRestart": "Riavvia ora per aggiornare",

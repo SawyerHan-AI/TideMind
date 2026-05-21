@@ -141,6 +141,10 @@ export function GraphView({ filter, selectedId, onSelect, graphLimit = 500, onGr
 
   // data fetching
   const rev = useDataRevision(['nodes', 'links'])
+  // structure-holes 单独一条 revision(v0.2.74):冷启 cache miss 时 IPC 先返回空 +
+  // 后台 worker 预计算,算完主进程 emit data-changed{scopes:['structure-holes']}。
+  // 订阅这条 revision 让面板在预计算完成后自动重取,而不是停在空状态等用户手动切换。
+  const structureHolesRev = useDataRevision(['structure-holes'])
   // 修复 M33(2026-05-09):deps 加 archived/sortBy/sortDir/createdAfter/createdBefore。
   // 修复 (2026-05-19):再补 graphLimit。父组件把 graphLimit 通过 filter 透传,
   // 后端 nodes.graph(filter) 用它决定 Top-N。如果不放进 deps,GraphToolbar 切换
@@ -168,7 +172,9 @@ export function GraphView({ filter, selectedId, onSelect, graphLimit = 500, onGr
     } else {
       setStructureHoles([])
     }
-  }, [showStructureHoles])
+    // structureHolesRev:后台 worker 预计算完成后 emit 的 data-changed 会 bump 它,
+    // 触发本 effect 重取(冷启首次 cache miss 返回空之后的自动刷新)。
+  }, [showStructureHoles, structureHolesRev])
 
   // adjacency map for neighbor lookups
   const adjacency = useMemo(() => {

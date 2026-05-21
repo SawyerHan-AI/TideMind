@@ -35,6 +35,11 @@ function writeClientId(dataDir: string, id: string): void {
 }
 
 describe('updater staging — isInStagingBatch', () => {
+  // 多个分布检查跑 500-1000 次真实 tmpdir 创建/写/删循环(重 I/O)。5s 默认 timeout
+  // 在 vitest 并行 + 发版机器负载下太紧会偶发超时(2026-05-21 v0.2.74 OSS 发版踩到)。
+  // 这些断言是统计/确定性的(不依赖时间),只是循环本身慢,给足 timeout 余量即可。
+  vi.setConfig({ testTimeout: 30_000 });
+
   let dataDir: string;
 
   beforeEach(() => {

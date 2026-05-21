@@ -40,6 +40,32 @@ let inflight = false
  */
 let pendingMandatory = false
 
+/**
+ * 目标版本号的模块级载体(2026-05-21 v0.2.74,修 backlog audit B-M2)。
+ *
+ * download-progress 事件本身不带 version,原实现靠"前一个 state 是 available 才有
+ * version"推断,边界场景(直接进 downloading / state 被其它分支重置)会拿到空串,
+ * UI 渲染成 "Downloading v" / "v"。在确定目标版本时(进 available)存一份,
+ * download-progress 优先读 currentState.version,兜底读这里。
+ */
+let pendingVersion = ''
+
+/**
+ * autoUpdater 操作"代次"计数(2026-05-21 v0.2.74,修 backlog audit C-M3)。
+ *
+ * withTimeout 把 checkForUpdates 超时放弃后,**底层** autoUpdater op 仍在跑,之后
+ * 可能 emit 一个迟到的 'error'。它不该覆盖此刻已经推进的 state(release-pending /
+ * 新一轮 check 的 checking)。每次 runUpdateCheck 进 inflight 时 bump opGeneration;
+ * checkForUpdates 失败(超时 / GitHub 404 等,已被解释成 release-pending)时把当前
+ * 代次记到 abandonedCheckGen,error handler 见到同代次的迟到 error 就忽略一次。
+ *
+ * 局限:若迟到 error 恰好在**下一轮** check 已开始后才到达(代次已变),无法精确归属
+ * (electron-updater 的 error event 不带我们的代次)→ 退化为旧行为(照常处理)。这是
+ * 罕见交错,且严格不劣于修复前(修复前所有这类 error 都照常处理)。
+ */
+let opGeneration = 0
+let abandonedCheckGen = -1
+
 function setState(next: UpdaterState): void {
   const prev = currentState
   currentState = next
@@ -118,7 +144,10 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
   })
 
   autoUpdater.on('download-progress', (p: ProgressInfo) => {
-    const version = 'version' in currentState ? (currentState as { version?: string }).version ?? '' : ''
+    // version 优先取当前 state(available→downloading 的常态),兜底取 pendingVersion
+    // (进 available 时存的目标版本),避免边界场景渲染 "Downloading v"(v0.2.74)。
+    const stateVersion = 'version' in currentState ? (currentState as { version?: string }).version : undefined
+    const version = stateVersion || pendingVersion || ''
     setState({
       status: 'downloading',
       version,
@@ -141,6 +170,14 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
   })
 
   autoUpdater.on('error', (err) => {
+    // v0.2.74:忽略被 withTimeout 放弃的 checkForUpdates 迟到 error(同代次)。
+    // 否则它会把已经推进的 state(release-pending 等)覆盖成 error,造成"状态突然
+    // 变 error"的偶发噪音。见 opGeneration / abandonedCheckGen 注释。
+    if (abandonedCheckGen === opGeneration) {
+      log.warn(`ignoring stale autoUpdater error from abandoned check (gen ${opGeneration}): ${err.message}`)
+      abandonedCheckGen = -1
+      return
+    }
     log.error(`electron-updater error: ${err.message}`)
     // Audit-3 F3 修复(对应):此处也不再清 pendingMandatory。autoUpdater error 通常是
     // download / verify 失败,业务侧"mandatory 强制升级"标记不应该被这种瞬时错误清掉,
@@ -198,7 +235,14 @@ export async function runUpdateCheck(
   }
 
   inflight = true
-  setState({ status: 'checking' })
+  const myGen = ++opGeneration
+  // v0.2.74:release-pending 是"等 GitHub 端就绪"的稳定态。自动周期重查(autoDownload
+  // 默认 true,4h scheduler)时不要先闪一下 'checking' 再回 release-pending —— UI 抖动。
+  // 保持 release-pending,等真拿到新结果再切。手动检查(autoDownload=false)仍显示
+  // 'checking' 给用户即时反馈。
+  if (!(autoDownload && currentState.status === 'release-pending')) {
+    setState({ status: 'checking' })
+  }
 
   try {
     const result = await withTimeout(
@@ -268,6 +312,9 @@ export async function runUpdateCheck(
         `interpreting as release-pending (GitHub release likely still rolling out)`
       )
       euCheckFailed = true
+      // v0.2.74:这次 checkForUpdates 已被超时/失败放弃,但底层 op 可能稍后才 emit
+      // 一个迟到的 'error'。记下代次,让 error handler 忽略它(避免覆盖 release-pending)。
+      abandonedCheckGen = myGen
     }
 
     // Cross-check 二态(2026-05-21 audit HIGH-1 + Agent C MEDIUM-2 修复):
@@ -301,6 +348,8 @@ export async function runUpdateCheck(
 
     // 锁住 mandatory 到 pendingMandatory,跨过 'downloading' 中间态不丢
     pendingMandatory = mandatory
+    // 同样锁住目标版本号:download-progress 事件不带 version,靠这个兜底(v0.2.74)
+    pendingVersion = result.version ?? ''
     setState({
       status: 'available',
       version: result.version ?? '',
@@ -446,6 +495,13 @@ export function installUpdate(): void {
     // 误判为 user-initiated quit 让 close handler 放行真退出。
     log.error(`quitAndInstall failed: ${(err as Error).message}`)
     resetQuitting()
+    // v0.2.74(修 backlog audit B-H1):install 失败说明这次(可能是 mandatory 的)更新
+    // 没装成,回到前台。清掉 pendingMandatory,避免它残留 true 让下一轮普通(非
+    // mandatory)更新在 update-downloaded 时被误标 mandatory 弹全屏 modal。下一轮 check
+    // 若服务端仍是 mandatory,会在成功路径(setState available 前)重新置 true,不漏强更。
+    // 跟 F3"不在下载/网络瞬时错误清 mandatory"不冲突:这里是 install 阶段的确定性失败,
+    // 且 state 已是 'error'(不是 'downloaded'),modal 不会基于残留值误弹。
+    pendingMandatory = false
     setState({ status: 'error', message: 'install_failed' })
   }
 }
