@@ -30,7 +30,11 @@ const log = createLogger('llm');
 // (standard tier 180s / heavy tier 300s) 永远等不到——内置 fetch 在 60s 时已经先 kill。
 //
 // 修复: 用 npm undici 包的 fetch + 自定义 Agent dispatcher,把 headersTimeout /
-// bodyTimeout 拉高到 360_000ms (6 分钟,heavy tier 300s + 60s buffer)。
+// bodyTimeout 拉高到 1500_000ms (25 分钟,heavy tier 1200s + 300s buffer)。
+//
+// 2026-05-21:数值从 360_000 → 1500_000。tier timeout 全档抬高
+// (60/180/300 → 360/600/1200)给慢 provider 更宽余量,避免 LLM 长生成误触超时;
+// dispatcher 同步抬到 heavy + 5min。
 //
 // 为什么自定义 fetch 而不是 fetchOptions.dispatcher: npm 装的 undici 的 Agent 跟
 // `globalThis.fetch` (Node 内置 undici shim) 的 Agent 是不同的 JS class——internal
@@ -50,8 +54,8 @@ const log = createLogger('llm');
 //   任何一处遗漏都会复现 60s timeout。Vertex auth (OAuth token 刷新) 走
 //   google-auth-library 的 gaxios,不经过此 fetch,不受影响 (实测确认)。
 const longRunningDispatcher = new Agent({
-  headersTimeout: 360_000,
-  bodyTimeout: 360_000,
+  headersTimeout: 1500_000,
+  bodyTimeout: 1500_000,
   // keepAliveTimeout 保持 undici 默认 (4_000ms),不破坏 socket 复用语义。
   // clientTtl: 24h 后空闲 Pool 自动释放——daemon 长跑时避免用户切多个 region 累积
   // origin Pool(每个 Pool ~ KB 级,理论上无限增长,实际影响微小但顺手加)。
@@ -74,7 +78,7 @@ const longRunningFetch = ((url: string | URL | Request, init?: RequestInit) =>
  * (2026-05-21 backlog: quit-and-install 主进程卡 5+ 分钟 95% CPU 的潜在贡献者)。
  *
  * close() 等所有 in-flight 完成,destroy() 立刻 kill。daemon shutdown 场景用
- * destroy() 更激进——用户已经按 quit,不需要等 6 分钟 LLM 响应。
+ * destroy() 更激进——用户已经按 quit,不需要等 25 分钟 LLM 响应。
  */
 export async function shutdownLLMClient(): Promise<void> {
   try {
@@ -239,7 +243,7 @@ function getLegacyAnthropicClient(): Anthropic {
     apiKey: currentKey || undefined,
     maxRetries: 0,
     fetch: longRunningFetch, // 见模块顶部 longRunningFetch 注释:避免 undici 60s headersTimeout 截断长生成请求
-    timeout: 360_000, // 跟 longRunningDispatcher 的 360s 对齐,避免 SDK 默认 600s 永远跑不到
+    timeout: 1500_000, // 跟 longRunningDispatcher 的 1500s 对齐,避免 SDK 默认 600s 永远跑不到
   });
   legacyAnthropicKey = currentKey;
   return legacyAnthropicClient;
@@ -260,7 +264,7 @@ async function getLegacyVertexClient(): Promise<AnthropicVertex> {
       region: config.vertex.region || 'us-central1',
       maxRetries: 0,
       fetch: longRunningFetch, // 见模块顶部 longRunningFetch 注释
-      timeout: 360_000, // 跟 longRunningDispatcher 360s 对齐
+      timeout: 1500_000, // 跟 longRunningDispatcher 1500s 对齐
       googleAuth: new GoogleAuth({
         keyFile: credPath,
         scopes: 'https://www.googleapis.com/auth/cloud-platform',
@@ -272,7 +276,7 @@ async function getLegacyVertexClient(): Promise<AnthropicVertex> {
       region: config.vertex.region || 'us-central1',
       maxRetries: 0,
       fetch: longRunningFetch, // 见模块顶部 longRunningFetch 注释
-      timeout: 360_000, // 跟 longRunningDispatcher 360s 对齐
+      timeout: 1500_000, // 跟 longRunningDispatcher 1500s 对齐
     });
   }
   legacyVertexProject = currentProject;
@@ -363,7 +367,7 @@ async function getClientByConnection(connectionId: string): Promise<ConnectionIn
   if (conn.provider_type === 'anthropic') {
     // maxRetries: 0 → 关闭 SDK 内置重试,详见上方 getLegacyAnthropicClient 注释
     // fetch: longRunningFetch → 见模块顶部注释,避免 undici 60s headersTimeout 截断
-    client = new Anthropic({ apiKey: creds.api_key || undefined, maxRetries: 0, fetch: longRunningFetch, timeout: 360_000 });
+    client = new Anthropic({ apiKey: creds.api_key || undefined, maxRetries: 0, fetch: longRunningFetch, timeout: 1500_000 });
   } else if (conn.provider_type === 'vertex') {
     if (vertexActualPath) {
       const { GoogleAuth } = await import('google-auth-library');
@@ -372,7 +376,7 @@ async function getClientByConnection(connectionId: string): Promise<ConnectionIn
         region: creds.region || 'us-central1',
         maxRetries: 0,
         fetch: longRunningFetch, // 见模块顶部 longRunningFetch 注释
-      timeout: 360_000, // 跟 longRunningDispatcher 360s 对齐
+      timeout: 1500_000, // 跟 longRunningDispatcher 1500s 对齐
         googleAuth: new GoogleAuth({
           keyFile: vertexActualPath,
           scopes: 'https://www.googleapis.com/auth/cloud-platform',
@@ -384,7 +388,7 @@ async function getClientByConnection(connectionId: string): Promise<ConnectionIn
         region: creds.region || 'us-central1',
         maxRetries: 0,
         fetch: longRunningFetch, // 见模块顶部 longRunningFetch 注释
-      timeout: 360_000, // 跟 longRunningDispatcher 360s 对齐
+      timeout: 1500_000, // 跟 longRunningDispatcher 1500s 对齐
       });
     }
   } else {
@@ -544,19 +548,28 @@ const BASE_DELAY_MS = 1000;
 /**
  * 按模型档位分层设置 LLM 调用超时（等待模型响应的总时长）。
  *
- * 数值给足余量，避免在真实世界的 P99 情况下误杀正常请求：
- * - light: Haiku/Flash 通常 < 15s，给 60s 缓冲网络抖动。
- * - standard: Sonnet + 长输入（如 15k tokens）+ thinking 可到 2 分钟。
- * - heavy: Opus + extended thinking 有时 4-5 分钟才返回。
+ * 2026-05-21 重订(60/180/300 → 360/600/1200):
+ *   外脑所有 LLM 调用都是后台异步任务(crystal/bridge/embedding 准备/批量回填),
+ *   没有用户在 UI 同步等的 chat 形态,**对延迟不敏感**。原 60/180/300 是按
+ *   "Haiku/Flash 直调 < 15s / Sonnet 直调 < 60s / Opus thinking < 4min" 的
+ *   快路径假设设的;遇到慢 provider 时 light tier 60s 容易撞,放宽余量更稳。
  *
- * 注意：scheduler 本身没有 tick 级 timeout，只依赖这里作为唯一的
- * "等模型响应" 上限。不要去掉或调低这些值，除非你确定下游 daemon
- * 有其他兜底机制。
+ * 新档位都给极宽余量,P99 不会误杀:
+ * - light: 360s 余量
+ * - standard: 600s 余量
+ * - heavy: 1200s 余量(Opus extended thinking 4-5min 也容得下)
+ *
+ * 代价:LLM 真挂时 daemon 等的久(light 6min, heavy 20min)才能 abort 触发熔断器。
+ * 但外脑熔断器逻辑本来就是按"连续 N 次失败"开,单次 timeout 不致命。
+ *
+ * 注意:scheduler 本身没有 tick 级 timeout,只依赖这里作为唯一的"等模型响应"
+ * 上限。dispatcher (longRunningDispatcher) 的 headersTimeout/bodyTimeout 同步
+ * 抬到 1500s(heavy + 5min buffer),改这里时记得同步那边。
  */
 export const TIMEOUT_MS_BY_TIER: Record<'light' | 'standard' | 'heavy', number> = {
-  light: 60_000,
-  standard: 180_000,
-  heavy: 300_000,
+  light: 360_000,
+  standard: 600_000,
+  heavy: 1200_000,
 };
 
 /**
@@ -906,10 +919,12 @@ export async function callLLM(options: {
               retryMs = Math.max(0, parsedDate - Date.now());
             }
           }
-          // 兜底封顶 180s(标准 tier timeout 量级)。原 60s 上限会让 Anthropic
-          // 返回的 120s "retry-after" 被截断到 60s,触发提前重试再次 429。
-          // 服务器明确指令 > 我们对超时的保守假设。
-          retryMs = Math.min(retryMs, 180_000);
+          // 兜底封顶 600s(跟 standard tier 新值 600s 对齐)。原 180s 上限在
+          // standard tier 抬到 600s 后会让"标准 tier 任务的 Anthropic
+          // retry-after"被截断,触发提前重试再次 429。服务器明确指令 > 我们的
+          // 保守假设。
+          // 2026-05-21:从 180_000 → 600_000,跟 TIMEOUT_MS_BY_TIER.standard 对齐。
+          retryMs = Math.min(retryMs, 600_000);
         }
         if (retryMs > 0) waitMs = Math.max(waitMs, retryMs);
       }

@@ -13,7 +13,7 @@ const log = createLogger('ipc-app')
 /**
  * 内置公钥(ed25519, PEM SPKI 格式)。
  *
- * 启用于 2026-05-19。配对私钥保管在韩思远 1Password "TideMind Release Signing" 条目。
+ * 启用于 2026-05-19。配对私钥保管在维护者 1Password "TideMind Release Signing" 条目。
  * 生成命令:`node scripts/gen-signing-keypair.mjs`(scripts/gen-signing-keypair.mjs)
  *
  * 启用后行为:

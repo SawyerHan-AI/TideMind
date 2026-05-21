@@ -143,7 +143,7 @@ const api: AppApi = {
     archive: (id: string) => ipcRenderer.invoke('connections:archive', id),
     unarchive: (id: string) => ipcRenderer.invoke('connections:unarchive', id),
     delete: (id: string) => ipcRenderer.invoke('connections:delete', id),
-    test: (connectionId: string) => ipcRenderer.invoke('connections:test', connectionId),
+    test: (connectionId: string, formOverride?: Record<string, string>) => ipcRenderer.invoke('connections:test', connectionId, formOverride),
     pickVertexFile: (connectionId: string) => ipcRenderer.invoke('connections:pick-vertex-file', connectionId),
     vertexCredStatus: (connectionId: string) => ipcRenderer.invoke('connections:vertex-cred-status', connectionId),
   },

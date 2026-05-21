@@ -114,17 +114,25 @@ const ABORT_SETTLE_TIMEOUT_MS = 10_000;
  *
  * 设计文档第 5.4 节定义。Phase -1 表示尚未进入 Phase 0（启动阶段）。
  */
+// 2026-05-21:Phase 4/6/8 同步 src/llm/client.ts TIMEOUT_MS_BY_TIER 抬高:
+//   - Phase 4 / 6 (标准 tier 批量 LLM,multi-batch 串行后才 heartbeat):
+//     180_000 → 700_000(standard 600s + 100s buffer)。原 180s 跟新 standard
+//     600s 冲突,multi-batch round 必撞,首次 init 被误判 stuck abort。
+//   - Phase 8 (heavy tier 涌现 LLM,单次可能数分钟):
+//     600_000 → 1300_000(heavy 1200s + 100s buffer)。原 600s 等于新 standard
+//     timeout,跟新 heavy 1200s 不留 buffer,heavy 单次 LLM 也会撞。
+//   note:docs/design/note-source-init-session.md §5.4 表格同步更新。
 const STUCK_THRESHOLD_MS_BY_PHASE: Record<number, number> = {
   [-1]: 30_000,   // 启动阶段
   0: 30_000,      // 扫描
   1: 30_000,      // 预处理
   2: 60_000,      // 入库（IO + 偶尔慢的 digest）
   3: 30_000,      // 显式链接
-  4: 180_000,     // 批量标注（LLM）
+  4: 700_000,     // 批量标注（标准 tier LLM × multi-batch）
   5: 120_000,     // Landing
-  6: 180_000,     // 链接评估（LLM）
+  6: 700_000,     // 链接评估（标准 tier LLM × multi-batch）
   7: 60_000,      // Keystone
-  8: 600_000,     // 涌现（最长，单次 LLM 可能数分钟）
+  8: 1_300_000,   // 涌现（heavy tier LLM，单次可能 10-20 分钟）
 };
 
 const STUCK_CHECK_INTERVAL_MS = 5_000;

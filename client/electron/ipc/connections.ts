@@ -4,7 +4,7 @@ import path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { getClientDb } from '../db.js'
 import { probeAnthropic, probeVertex, probeGemini, probeOllama, probeOpenAICompatible } from './health.js'
-import { validateConnectionId, validateProviderType, assertPathWithinRoot } from './_validate.js'
+import { validateConnectionId, validateProviderType, validateFormCredentials, assertPathWithinRoot } from './_validate.js'
 import { clearClientCache } from '../../../src/llm/client.js'
 import { resetCircuitBreaker } from '../../../src/metabolism/scheduler.js'
 
@@ -162,8 +162,12 @@ export function registerConnectionHandlers(dataDir: string): void {
   })
 
   // 统一测试连接入口
-  ipcMain.handle('connections:test', async (_e, connectionId: unknown) => {
+  ipcMain.handle('connections:test', async (_e, connectionId: unknown, formOverride?: unknown) => {
     const validId = validateConnectionId(connectionId)
+    // 修复(2026-05-21):允许 renderer 把当前编辑中的 form 值作为 override 传进来。
+    // 解决"新建 connection → 输入 base_url 但没保存就测试 → 报 Base URL not configured"
+    // 的反直觉 UX。详见 _validate.ts::validateFormCredentials。
+    const overrides = validateFormCredentials(formOverride)
     const db = getClientDb()
     const conn = db.prepare('SELECT * FROM model_connections WHERE id = ?').get(validId) as {
       id: string; provider_type: string; credentials: string
@@ -171,7 +175,19 @@ export function registerConnectionHandlers(dataDir: string): void {
     if (!conn) return { online: false, models: [], error: '连接不存在' }
 
     // credentials 解析失败时降级为空对象,避免 IPC 崩溃
-    const creds = safeParseCredentials(conn.credentials)
+    const dbCreds = safeParseCredentials(conn.credentials)
+    // Merge: form 非空字段优先,DB 已存字段作为 fallback。
+    // 关键:probe 后只更 status / available_models,不写 credentials,所以
+    // "编辑老 connection 时 SecretInput 安全不回填 → form 是空 → merge 优先用 DB"
+    // 这条路径仍然保护已存的 API Key 不被空表单覆盖。
+    const creds: Record<string, unknown> = { ...dbCreds }
+    let hasOverride = false
+    for (const [k, v] of Object.entries(overrides)) {
+      if (v.length > 0) {
+        creds[k] = v
+        hasOverride = true
+      }
+    }
     let result: { online: boolean; models: string[]; error?: string; region?: string }
 
     switch (conn.provider_type) {
@@ -241,16 +257,25 @@ export function registerConnectionHandlers(dataDir: string): void {
     // Audit-3 F11 修复:仅在成功(online + 有 models)时才回写 available_models。
     // 之前测试失败会把 available_models 设回 null,丢掉用户上次成功时拿到的型号列表 —
     // UI 上"模型下拉"瞬间变空,但其实凭证可能只是瞬时不可用。保留上次的 list 让 UI 仍可用。
-    const status = result.online ? 'online' : 'offline'
-    const cols = ['status = ?', 'last_checked = ?']
-    const params: unknown[] = [status, now()]
-    if (result.online && result.models.length > 0) {
-      cols.push('available_models = ?')
-      params.push(JSON.stringify(result.models))
+    //
+    // Audit A.M2 (2026-05-21):有 form override 时**不写 DB status / available_models**,
+    // 只把 probe 结果 return 给 UI 当前次显示。原因:formOverride 用的是表单未保存
+    // 的值,跟 DB credentials 不一致;此时 probe 成功不代表"DB 里这条 connection
+    // 可用"。如果写 DB,用户看到绿点 + 模型 chip 以为已配好,选了它一调 LLM 就报
+    // "credentials missing" — 误导。必须先点"保存"让 credentials 入 DB,然后再次
+    // 点"测试"用 DB credentials probe(此时 hasOverride=false),才能让 status 入 DB。
+    if (!hasOverride) {
+      const status = result.online ? 'online' : 'offline'
+      const cols = ['status = ?', 'last_checked = ?']
+      const params: unknown[] = [status, now()]
+      if (result.online && result.models.length > 0) {
+        cols.push('available_models = ?')
+        params.push(JSON.stringify(result.models))
+      }
+      db.prepare(
+        `UPDATE model_connections SET ${cols.join(', ')} WHERE id = ?`,
+      ).run(...params, validId)
     }
-    db.prepare(
-      `UPDATE model_connections SET ${cols.join(', ')} WHERE id = ?`,
-    ).run(...params, validId)
 
     return result
   })
