@@ -665,3 +665,131 @@ describe('installUpdate', () => {
     expect(mod.getUpdaterState().message).toBe('install_failed');
   });
 });
+
+// ─────────────────────────────────────────────────────
+// 测试:v0.2.74 修复(U3 pendingMandatory / U5 version / U6 generation / U7 flicker)
+// ─────────────────────────────────────────────────────
+
+async function toAvailable(mod: UpdaterModule, version = '9.9.9', mandatory = false): Promise<void> {
+  queryAndVerifyManifestMock.mockResolvedValueOnce({ status: 'ok', version, mandatory, stagingPercentage: 100 });
+  checkForUpdatesMock.mockResolvedValueOnce({ updateInfo: { version } });
+  if (mandatory) downloadUpdateMock.mockResolvedValueOnce(undefined);
+  await mod.runUpdateCheck({ autoDownload: false });
+}
+
+async function toReleasePending(mod: UpdaterModule): Promise<void> {
+  queryAndVerifyManifestMock.mockResolvedValueOnce({ status: 'ok', version: '9.9.9', mandatory: false, stagingPercentage: 100 });
+  checkForUpdatesMock.mockRejectedValueOnce(new Error('ERR_UPDATER_CHANNEL_FILE_NOT_FOUND'));
+  await mod.runUpdateCheck(); // autoDownload 默认 true(模拟自动周期)
+}
+
+describe('v0.2.74 — U3 pendingMandatory install 失败重置', () => {
+  it('install 失败清 pendingMandatory:下一轮普通更新 update-downloaded 不被误标 mandatory', async () => {
+    const mod = await freshModule();
+    mod.initAutoUpdater(makeFakeWindow() as never);
+    // mandatory 更新 → pendingMandatory=true → downloaded(mandatory=true)
+    await toAvailable(mod, '9.9.9', true);
+    autoUpdaterListeners.get('update-downloaded')!({ version: '9.9.9', releaseNotes: '' });
+    expect(mod.getUpdaterState().mandatory).toBe(true);
+
+    // install 失败
+    quitAndInstallMock.mockImplementationOnce(() => { throw new Error('quit fail'); });
+    mod.installUpdate();
+    expect(mod.getUpdaterState().status).toBe('error');
+
+    // 模拟下一轮普通(非 mandatory)更新下载完成 → mandatory 必须是 false(证明 pendingMandatory 已被清)
+    autoUpdaterListeners.get('update-downloaded')!({ version: '9.9.10', releaseNotes: '' });
+    expect(mod.getUpdaterState().mandatory).toBe(false);
+  });
+});
+
+describe('v0.2.74 — U5 downloading version 兜底', () => {
+  it('currentState 无 version 时 download-progress 回退到 pendingVersion(不渲染空 "v")', async () => {
+    const mod = await freshModule();
+    mod.initAutoUpdater(makeFakeWindow() as never);
+    // 进 available,锁住 pendingVersion=9.9.9
+    await toAvailable(mod, '9.9.9');
+    // 制造一个无 version 字段的 currentState:autoUpdater error → state=error(无 version)
+    autoUpdaterListeners.get('error')!(new Error('transient'));
+    expect(mod.getUpdaterState().status).toBe('error');
+    expect((mod.getUpdaterState() as { version?: string }).version).toBeUndefined();
+
+    // download-progress 来了:version 应回退到 pendingVersion '9.9.9',不是空串
+    autoUpdaterListeners.get('download-progress')!({ percent: 12, transferred: 1, total: 10 });
+    const st = mod.getUpdaterState();
+    expect(st.status).toBe('downloading');
+    expect(st.version).toBe('9.9.9');
+  });
+});
+
+describe('v0.2.74 — U6 orphaned check error 代次防御', () => {
+  it('checkForUpdates 失败后,同代次迟到 autoUpdater error 被忽略(不覆盖 release-pending)', async () => {
+    const mod = await freshModule();
+    mod.initAutoUpdater(makeFakeWindow() as never);
+    await toReleasePending(mod);
+    expect(mod.getUpdaterState().status).toBe('release-pending');
+
+    // 底层被放弃的 checkForUpdates 迟到 emit error(同代次)→ 应被忽略
+    autoUpdaterListeners.get('error')!(new Error('late orphaned error'));
+    expect(mod.getUpdaterState().status).toBe('release-pending'); // 没被覆盖成 error
+  });
+
+  it('忽略只生效一次:第二个 error 正常处理', async () => {
+    const mod = await freshModule();
+    mod.initAutoUpdater(makeFakeWindow() as never);
+    await toReleasePending(mod);
+    autoUpdaterListeners.get('error')!(new Error('orphan 1')); // 被忽略
+    expect(mod.getUpdaterState().status).toBe('release-pending');
+    autoUpdaterListeners.get('error')!(new Error('orphan 2')); // 第二个不再忽略
+    expect(mod.getUpdaterState().status).toBe('error');
+  });
+
+  it('新一轮 check 成功后,真实 error 不被旧代次误忽略', async () => {
+    const mod = await freshModule();
+    mod.initAutoUpdater(makeFakeWindow() as never);
+    await toReleasePending(mod); // gen 1:abandonedCheckGen=1
+    // gen 2:check 成功到 available(checkForUpdates 成功,不设 abandonedCheckGen)
+    await toAvailable(mod, '9.9.9');
+    expect(mod.getUpdaterState().status).toBe('available');
+    // gen 2 的真实 error → 不应被旧 gen-1 的 abandonedCheckGen 误忽略
+    autoUpdaterListeners.get('error')!(new Error('real gen-2 error'));
+    expect(mod.getUpdaterState().status).toBe('error');
+  });
+});
+
+describe('v0.2.74 — U7 release-pending → checking 闪烁', () => {
+  it('自动周期重查(autoDownload=true)时保持 release-pending,不闪 checking', async () => {
+    const mod = await freshModule();
+    mod.initAutoUpdater(makeFakeWindow() as never);
+    await toReleasePending(mod);
+    expect(mod.getUpdaterState().status).toBe('release-pending');
+
+    // 起一个 manifest 挂起的自动 check(autoDownload 默认 true)
+    let resolveManifest!: () => void;
+    queryAndVerifyManifestMock.mockImplementationOnce(
+      () => new Promise<unknown>((r) => { resolveManifest = () => r({ status: 'no-update', version: '0.1.0' }); }),
+    );
+    const p = mod.runUpdateCheck();
+    await new Promise((r) => setImmediate(r));
+    // 检查进行中:状态仍应是 release-pending(没闪 checking)
+    expect(mod.getUpdaterState().status).toBe('release-pending');
+    resolveManifest();
+    await p;
+  });
+
+  it('手动检查(autoDownload=false)在 release-pending 时仍显示 checking(保留用户反馈)', async () => {
+    const mod = await freshModule();
+    mod.initAutoUpdater(makeFakeWindow() as never);
+    await toReleasePending(mod);
+
+    let resolveManifest!: () => void;
+    queryAndVerifyManifestMock.mockImplementationOnce(
+      () => new Promise<unknown>((r) => { resolveManifest = () => r({ status: 'no-update', version: '0.1.0' }); }),
+    );
+    const p = mod.runUpdateCheck({ autoDownload: false });
+    await new Promise((r) => setImmediate(r));
+    expect(mod.getUpdaterState().status).toBe('checking');
+    resolveManifest();
+    await p;
+  });
+});

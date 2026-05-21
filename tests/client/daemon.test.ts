@@ -21,6 +21,11 @@ const {
   ALL_TASKS_VAL,
   startAllNoteSourcesMock, stopAllNoteSourcesMock,
   activityState,
+  // v0.2.74 健康度 hook + structure-holes worker runner（L3 + CRITICAL #1）
+  noteSuccessfulLLMCallMock, setLLMFailureHookMock, recordLLMFailureForHookMock,
+  recordEmbeddingSuccessMock, recordEmbeddingFailureMock,
+  setLLMSuccessHookMock, setEmbeddingSuccessHookMock, setEmbeddingFailureHookMock,
+  setStructureHolesRunnerMock, runStructureHolesInWorkerMock, terminateStructureHolesWorkerMock,
 } = vi.hoisted(() => {
   const tasks = [{ id: 't1' }, { id: 't2' }, { id: 't3' }];
   return {
@@ -40,6 +45,17 @@ const {
       state: 'active' as 'active' | 'idle',
       listeners: new Set<(s: 'active' | 'idle') => void>(),
     },
+    noteSuccessfulLLMCallMock: vi.fn(),
+    setLLMFailureHookMock: vi.fn(),
+    recordLLMFailureForHookMock: vi.fn(),
+    recordEmbeddingSuccessMock: vi.fn(),
+    recordEmbeddingFailureMock: vi.fn(),
+    setLLMSuccessHookMock: vi.fn(),
+    setEmbeddingSuccessHookMock: vi.fn(),
+    setEmbeddingFailureHookMock: vi.fn(),
+    setStructureHolesRunnerMock: vi.fn(),
+    runStructureHolesInWorkerMock: vi.fn(async () => []),
+    terminateStructureHolesWorkerMock: vi.fn(),
   };
 });
 
@@ -66,6 +82,29 @@ vi.mock('@server/db/log.js', () => ({
 
 vi.mock('@server/metabolism/scheduler.js', () => ({
   runSchedulerTick: runSchedulerTickMock,
+  noteSuccessfulLLMCall: noteSuccessfulLLMCallMock,
+  setLLMFailureHook: setLLMFailureHookMock,
+  recordLLMFailureForHook: recordLLMFailureForHookMock,
+  recordEmbeddingSuccess: recordEmbeddingSuccessMock,
+  recordEmbeddingFailure: recordEmbeddingFailureMock,
+}));
+
+vi.mock('@server/llm/client.js', () => ({
+  setLLMSuccessHook: setLLMSuccessHookMock,
+}));
+
+vi.mock('@server/llm/embedding.js', () => ({
+  setEmbeddingSuccessHook: setEmbeddingSuccessHookMock,
+  setEmbeddingFailureHook: setEmbeddingFailureHookMock,
+}));
+
+vi.mock('@server/graph/structure-holes.js', () => ({
+  setStructureHolesRunner: setStructureHolesRunnerMock,
+}));
+
+vi.mock('../../client/electron/workers/structure-holes-runner.js', () => ({
+  runStructureHolesInWorker: runStructureHolesInWorkerMock,
+  terminateStructureHolesWorker: terminateStructureHolesWorkerMock,
 }));
 
 vi.mock('@server/metabolism/tasks.js', () => ({
@@ -104,6 +143,17 @@ beforeEach(() => {
   runSchedulerTickMock.mockClear();
   startAllNoteSourcesMock.mockClear();
   stopAllNoteSourcesMock.mockClear();
+  noteSuccessfulLLMCallMock.mockClear();
+  setLLMFailureHookMock.mockClear();
+  recordLLMFailureForHookMock.mockClear();
+  recordEmbeddingSuccessMock.mockClear();
+  recordEmbeddingFailureMock.mockClear();
+  setLLMSuccessHookMock.mockClear();
+  setEmbeddingSuccessHookMock.mockClear();
+  setEmbeddingFailureHookMock.mockClear();
+  setStructureHolesRunnerMock.mockClear();
+  runStructureHolesInWorkerMock.mockClear();
+  terminateStructureHolesWorkerMock.mockClear();
   activityState.state = 'active';
   activityState.listeners.clear();
   vi.useFakeTimers();
@@ -155,6 +205,41 @@ describe('startDaemon', () => {
   it('初始 runSchedulerTick 抛错 → log.error 不冒泡', async () => {
     runSchedulerTickMock.mockRejectedValueOnce(new Error('scheduler boom'));
     await expect(startDaemon()).resolves.toBeUndefined();
+  });
+
+  // ── v0.2.74 L3: Electron daemon 必须 wire 健康度 hook(此前完全漏了,backlog C.H2)──
+  it('L3: 注入 4 个健康度 hook + structure-holes worker runner', async () => {
+    await startDaemon();
+    expect(setLLMSuccessHookMock).toHaveBeenCalledTimes(1);
+    expect(setLLMFailureHookMock).toHaveBeenCalledTimes(1);
+    expect(setEmbeddingSuccessHookMock).toHaveBeenCalledTimes(1);
+    expect(setEmbeddingFailureHookMock).toHaveBeenCalledTimes(1);
+    expect(setStructureHolesRunnerMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('L3: hook 必须在首次 runSchedulerTick 之前设上(否则首轮 LLM 成功信号丢失)', async () => {
+    const order: string[] = [];
+    setLLMSuccessHookMock.mockImplementationOnce(() => order.push('hook'));
+    runSchedulerTickMock.mockImplementationOnce(async () => { order.push('tick'); });
+    await startDaemon();
+    expect(order).toEqual(['hook', 'tick']);
+  });
+
+  it('L3: LLM success hook 真正调 noteSuccessfulLLMCall(db)', async () => {
+    await startDaemon();
+    // 取出注入的 success hook 并触发,验证它转发到 noteSuccessfulLLMCall
+    const hook = setLLMSuccessHookMock.mock.calls[0][0] as () => void;
+    hook();
+    expect(noteSuccessfulLLMCallMock).toHaveBeenCalledTimes(1);
+    expect(noteSuccessfulLLMCallMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'mock-db' }));
+  });
+
+  it('L3: structure-holes runner 转发到 runStructureHolesInWorker', async () => {
+    await startDaemon();
+    const runner = setStructureHolesRunnerMock.mock.calls[0][0] as (db: unknown) => unknown;
+    const fakeDb = { name: 'mock-db' };
+    runner(fakeDb);
+    expect(runStructureHolesInWorkerMock).toHaveBeenCalledWith(fakeDb);
   });
 });
 
@@ -231,6 +316,25 @@ describe('stopDaemon', () => {
     expect(activityState.listeners.size).toBe(0);
     expect(stopAllNoteSourcesMock).toHaveBeenCalledTimes(1);
     expect(closeDbMock).toHaveBeenCalledTimes(1);
+  });
+
+  // ── v0.2.74: stopDaemon 摘 hook + 强杀 worker(防 shutdown race / 线程泄漏)──
+  it('L3/#1: stopDaemon 把 4 个 hook 置 null + 摘 structure-holes runner + terminate worker', async () => {
+    await startDaemon();
+    setLLMSuccessHookMock.mockClear();
+    setLLMFailureHookMock.mockClear();
+    setEmbeddingSuccessHookMock.mockClear();
+    setEmbeddingFailureHookMock.mockClear();
+    setStructureHolesRunnerMock.mockClear();
+
+    await stopDaemon();
+
+    expect(setLLMSuccessHookMock).toHaveBeenCalledWith(null);
+    expect(setLLMFailureHookMock).toHaveBeenCalledWith(null);
+    expect(setEmbeddingSuccessHookMock).toHaveBeenCalledWith(null);
+    expect(setEmbeddingFailureHookMock).toHaveBeenCalledWith(null);
+    expect(setStructureHolesRunnerMock).toHaveBeenCalledWith(null);
+    expect(terminateStructureHolesWorkerMock).toHaveBeenCalledTimes(1);
   });
 
   it('stop 后再 stop → 不重复清理', async () => {

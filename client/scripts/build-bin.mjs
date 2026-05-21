@@ -39,6 +39,13 @@ const entries = [
     entry: path.join(REPO_ROOT, 'src', 'index.ts'),
     out: 'mcp-server.cjs',
   },
+  {
+    // structure-holes 计算 worker(v0.2.74 CRITICAL #1):worker_threads 入口,
+    // 主线程通过 new Worker(out/bin/structure-holes-worker.cjs) 起,避免 O(E²/V)
+    // 同步 SQL 冻死 Electron 主线程。better-sqlite3 作 external 运行时加载(同 mcp-server)。
+    entry: path.join(REPO_ROOT, 'src', 'graph', 'structure-holes-worker.ts'),
+    out: 'structure-holes-worker.cjs',
+  },
 ]
 
 async function main() {

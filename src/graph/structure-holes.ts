@@ -112,12 +112,33 @@ export function writeStructureHolesCache(db: Database.Database, holes: Structure
 }
 
 /**
+ * 可注入的"计算 runner"(2026-05-21 v0.2.74 CRITICAL #1)。
+ *
+ * computeStructureHoles 的 O(E²/V) CTE 自连接在万节点 vault 跑 50-200s。better-sqlite3
+ * 是同步 API,在 Electron 主线程跑会把 UI 完全冻死(实测 107s)。Electron daemon 启动时
+ * 注入一个把计算搬到 worker_threads 的 runner(见 client/electron/workers/),主线程只做
+ * 轻量的单行 UPSERT 写缓存。CLI daemon 不注入(无 UI,内联同步可接受),保持零行为变化。
+ */
+export type StructureHolesRunner = (db: Database.Database) => Promise<StructureHole[]>;
+
+let structureHolesRunner: StructureHolesRunner | null = null;
+
+export function setStructureHolesRunner(fn: StructureHolesRunner | null): void {
+  structureHolesRunner = fn;
+}
+
+/**
  * 后台任务入口:计算 + 写入缓存。失败不抛(daemon 会 swallow,日志记录)。
+ *
+ * 计算走注入的 runner(Electron=worker thread)或内联同步(CLI)。写缓存(单行 UPSERT)
+ * 永远在调用线程做——很轻,不会阻塞。
  */
 export async function runStructureHolesPrecompute(db: Database.Database): Promise<void> {
   const started = Date.now();
   try {
-    const holes = computeStructureHoles(db, PRECOMPUTE_LIMIT);
+    const holes = structureHolesRunner
+      ? await structureHolesRunner(db)
+      : computeStructureHoles(db, PRECOMPUTE_LIMIT);
     writeStructureHolesCache(db, holes);
     log.info(`structure_holes precompute done: ${holes.length} pairs in ${Date.now() - started}ms`);
   } catch (err) {

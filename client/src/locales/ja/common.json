@@ -32,10 +32,6 @@
     "retry": "再試行"
   },
   "updater": {
-    "ready": "新しいバージョン {{version}} の準備が完了",
-    "readyDesc": "Tide Mind を再起動して更新を完了します",
-    "installNow": "今すぐ再起動",
-    "installLater": "後で",
     "mandatoryTitle": "更新が必要です",
     "mandatoryDesc": "Tide Mind {{version}} には重要な修正が含まれています。続行するには更新が必要です。",
     "mandatoryRestart": "今すぐ再起動して更新",

@@ -13,11 +13,22 @@ import { loadConfig, ensureDataDirs, getDataDir } from '@server/config.js'
 import { getDb, closeDb, initVec } from '@server/db/connection.js'
 import { createLogger, enableFileLogging } from '@server/utils/logger.js'
 import { logTimelineEvent } from '@server/db/log.js'
-import { runSchedulerTick } from '@server/metabolism/scheduler.js'
+import {
+  runSchedulerTick,
+  noteSuccessfulLLMCall,
+  setLLMFailureHook,
+  recordLLMFailureForHook,
+  recordEmbeddingSuccess,
+  recordEmbeddingFailure,
+} from '@server/metabolism/scheduler.js'
 import { ALL_TASKS } from '@server/metabolism/tasks.js'
+import { setLLMSuccessHook } from '@server/llm/client.js'
+import { setEmbeddingSuccessHook, setEmbeddingFailureHook } from '@server/llm/embedding.js'
+import { setStructureHolesRunner } from '@server/graph/structure-holes.js'
 import { stopLogseqIntegration } from '@server/integrations/logseq/index.js'
 import { startAllNoteSources, stopAllNoteSources } from '@server/integrations/shared/note-sources.js'
 import { getActivityState } from './activity-state.js'
+import { runStructureHolesInWorker, terminateStructureHolesWorker } from './workers/structure-holes-runner.js'
 
 const log = createLogger('daemon')
 
@@ -41,6 +52,23 @@ export async function startDaemon(): Promise<void> {
   enableFileLogging(path.join(getDataDir(), 'logs'))
   getDb()
   await initVec()
+
+  // 注入健康度 hook(2026-05-21 v0.2.74,修 backlog C.H2)。
+  // 关键:CLI daemon(src/daemon.ts)早已注入这套 hook,但 Electron daemon 一直漏了 →
+  // 桌面端(主要用户群)callLLM 的 notifyLLMSuccess() 是空 hook,llm_last_success_at
+  // 永不写,pending-link-gc 健康度 gate 永远拒绝放行,熔断器 half-open→closed 自愈
+  // transition 在桌面端也不跑。必须在首次 runSchedulerTick 之前设上。
+  // hook 内部都有 try/catch 兜底,失败不影响 LLM/embedding 调用主流程。
+  const dbForHook = getDb()
+  setLLMSuccessHook(() => noteSuccessfulLLMCall(dbForHook))
+  setLLMFailureHook(err => recordLLMFailureForHook(dbForHook, err.message))
+  setEmbeddingSuccessHook(() => recordEmbeddingSuccess(dbForHook))
+  setEmbeddingFailureHook(err => recordEmbeddingFailure(dbForHook, err.message))
+
+  // 注入 structure-holes 计算 runner(2026-05-21 v0.2.74 CRITICAL #1)。
+  // 把 O(E²/V) 同步 SQL(实测 107s)搬到 worker thread,避免冻死主线程/UI。
+  // CLI daemon 不注入(无 UI),保持内联同步。
+  setStructureHolesRunner(db => runStructureHolesInWorker(db))
 
   // 启动所有已配置的笔记源
   startAllNoteSources(getDb()).catch(err =>
@@ -122,6 +150,17 @@ export async function stopDaemon(): Promise<void> {
     clearInterval(timer)
     timer = null
   }
+
+  // 摘掉健康度 hook + structure-holes runner,并强杀在跑的 worker(v0.2.74)。
+  // 防 shutdown race:closeDb() 之后若 hook 仍被 in-flight 的 LLM/embedding 回调触发,
+  // 会访问已关闭的 DB。worker 强杀避免线程泄漏(worker 自己开的连接由它自己 close)。
+  setLLMSuccessHook(null)
+  setLLMFailureHook(null)
+  setEmbeddingSuccessHook(null)
+  setEmbeddingFailureHook(null)
+  setStructureHolesRunner(null)
+  terminateStructureHolesWorker()
+
   // 等已 fire 的 in-flight tick 跑完(最多 5s),避免 close DB 后 tick 还在访问。
   if (tickPromise) {
     await Promise.race([

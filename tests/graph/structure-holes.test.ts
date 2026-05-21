@@ -18,12 +18,15 @@ import {
   readStructureHolesCache,
   writeStructureHolesCache,
   runStructureHolesPrecompute,
+  setStructureHolesRunner,
 } from '../../src/graph/structure-holes.js';
 
 let db: Database.Database;
 
 beforeEach(() => {
   db = setupTestDb();
+  // 每个测试前清掉注入的 runner,保证默认走内联计算(隔离 runner 测试副作用)
+  setStructureHolesRunner(null);
 });
 
 describe('computeStructureHoles', () => {
@@ -140,5 +143,62 @@ describe('runStructureHolesPrecompute', () => {
     expect(cache).not.toBeNull();
     // (A,B) 与 (X,Y) 都算结构洞
     expect(cache!.holes.length).toBe(2);
+  });
+});
+
+describe('setStructureHolesRunner（v0.2.74 CRITICAL #1 worker 注入）', () => {
+  it('注入 runner 后,runStructureHolesPrecompute 用 runner 的结果写缓存(不走内联计算)', async () => {
+    // 注入一个返回固定结果的假 runner —— 模拟 worker 算完回传。
+    // 如果内联计算被错误地仍然执行,空图会返回 [],下面断言就会失败。
+    const injected = [
+      { nodeA: 'w1', nodeB: 'w2', sharedCount: 5, nodeAPreview: 'from-worker-a', nodeBPreview: 'from-worker-b' },
+    ];
+    let called = 0;
+    setStructureHolesRunner(async (passedDb) => {
+      called++;
+      expect(passedDb).toBe(db); // runner 拿到的是主线程 db(用来取 db.name)
+      return injected;
+    });
+
+    await runStructureHolesPrecompute(db);
+
+    expect(called).toBe(1);
+    const cache = readStructureHolesCache(db);
+    expect(cache?.holes).toEqual(injected);
+  });
+
+  it('runner 抛错时 runStructureHolesPrecompute 不抛(daemon swallow),缓存保持旧值', async () => {
+    // 先写一份旧缓存
+    const old = [{ nodeA: 'old', nodeB: 'val', sharedCount: 1, nodeAPreview: '', nodeBPreview: '' }];
+    writeStructureHolesCache(db, old);
+
+    setStructureHolesRunner(async () => {
+      throw new Error('worker spawn failed / timeout');
+    });
+
+    // 不应抛出(graceful skip)
+    await expect(runStructureHolesPrecompute(db)).resolves.toBeUndefined();
+    // 缓存未被覆盖(worker 失败时不写脏数据)
+    expect(readStructureHolesCache(db)?.holes).toEqual(old);
+  });
+
+  it('setStructureHolesRunner(null) 恢复内联计算', async () => {
+    const A = seedNode(db, { content: 'A' });
+    const B = seedNode(db, { content: 'B' });
+    const X = seedNode(db, { content: 'X' });
+    const Y = seedNode(db, { content: 'Y' });
+    createLink(db, { from_id: A.id, to_id: X.id, relation: [{ type: 'analogous', confidence: 0.7 }] });
+    createLink(db, { from_id: B.id, to_id: X.id, relation: [{ type: 'analogous', confidence: 0.7 }] });
+    createLink(db, { from_id: A.id, to_id: Y.id, relation: [{ type: 'analogous', confidence: 0.7 }] });
+    createLink(db, { from_id: B.id, to_id: Y.id, relation: [{ type: 'analogous', confidence: 0.7 }] });
+
+    setStructureHolesRunner(async () => [{ nodeA: 'should-not', nodeB: 'be-used', sharedCount: 9, nodeAPreview: '', nodeBPreview: '' }]);
+    setStructureHolesRunner(null); // 清掉 → 回内联
+
+    await runStructureHolesPrecompute(db);
+    const cache = readStructureHolesCache(db);
+    // 内联计算真实图 → 2 个结构洞,而不是上面那条假数据
+    expect(cache!.holes.length).toBe(2);
+    expect(cache!.holes.some(h => h.nodeA === 'should-not')).toBe(false);
   });
 });

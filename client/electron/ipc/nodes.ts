@@ -3,10 +3,10 @@ import crypto from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { archiveNodeWithVectors } from '@server/db/node-lifecycle.js'
 import {
-  computeStructureHoles,
   readStructureHolesCache,
   writeStructureHolesCache,
 } from '@server/graph/structure-holes.js'
+import { runStructureHolesInWorker } from '../workers/structure-holes-runner.js'
 import { createLogger } from '@server/utils/logger.js'
 import { safeParseJsonArray } from '@server/utils/json-safe.js'
 import {
@@ -21,25 +21,19 @@ import {
 const log = createLogger('ipc-nodes')
 
 /**
- * structureHoles 缓存缺失时的后台预热(2026-05-20 Audit E-1 修复)。
+ * structureHoles 缓存缺失时的后台预热(2026-05-20 Audit E-1 / 2026-05-21 v0.2.74 CRITICAL #1)。
  *
- * 原 IPC handler 在 cache miss 时同步跑 O(E²/V) CTE,万节点级用户主进程
- * 秒到分钟级阻塞。改成 fire-and-forget 异步触发:
- *   1. 用 setImmediate 让本次 IPC 立即返回空数组,renderer 显示 "暂无数据"
- *   2. 计算完成后写缓存 + emit 'data-changed' 让 renderer 触发下一次 IPC 拿到结果
- *   3. inflight flag 防短时间多次 IPC 触发并发 compute
+ * 原 IPC handler 在 cache miss 时同步跑 O(E²/V) CTE,万节点级用户主进程秒到分钟级阻塞。
+ * 之前用 setImmediate 把它挪到下一个 tick,但 better-sqlite3 是同步 API,主线程依然冻结。
  *
- * 仍是同步 better-sqlite3,setImmediate 只是把它从"this IPC tick"挪到下一个 tick,
- * 主线程依然要阻塞;但至少首屏 IPC 不再卡。后续优化要么走 worker_threads,要么
- * 把 daemon 预计算节奏从 5min 提到 1min。先用最小代价拆掉同步阻塞。
+ * v0.2.74:改走 worker thread(runStructureHolesInWorker)——worker 在另一个线程跑同步
+ * SQL,主线程 event loop 空闲,UI 不冻。worker 自带 single-flight 去重(跟 daemon tick 共享),
+ * 不再需要本地 inflight flag。算完主线程做轻量单行 UPSERT 写缓存 + emit 'data-changed'。
+ * worker 失败只 log + skip(IPC 这轮返回空,下次访问读旧缓存或再触发),不崩溃。
  */
-let structureHolesInflight = false
 function schedulePreheatStructureHoles(db: Database.Database): void {
-  if (structureHolesInflight) return
-  structureHolesInflight = true
-  setImmediate(() => {
-    try {
-      const holes = computeStructureHoles(db)
+  runStructureHolesInWorker(db)
+    .then(holes => {
       writeStructureHolesCache(db, holes)
       log.info(`structure holes preheat done (${holes.length} holes)`)
       for (const win of BrowserWindow.getAllWindows()) {
@@ -47,12 +41,10 @@ function schedulePreheatStructureHoles(db: Database.Database): void {
           win.webContents.send('data-changed', { scopes: ['structure-holes'] })
         }
       }
-    } catch (err) {
+    })
+    .catch(err => {
       log.warn(`structure holes preheat failed: ${(err as Error).message}`)
-    } finally {
-      structureHolesInflight = false
-    }
-  })
+    })
 }
 
 /** 派生分类 → 维度条件 SQL（维度化迁移后前端发送派生分类名） */
