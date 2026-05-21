@@ -1,11 +1,22 @@
 import type Database from 'better-sqlite3';
 import { createLogger } from '../../../src/utils/logger.js';
 import { generateId } from '../../../src/utils/id.js';
+import { execIgnoringDuplicateColumn } from '../../../src/db/migration-helpers.js';
 
 const log = createLogger('cloud-outbox');
 
 /** 同一条 outbox 重试多少次后放到 dead-letter,阻止其永远卡住后续 push。 */
 export const OUTBOX_MAX_RETRIES = 5;
+
+/**
+ * MEDIUM 10 (audit-10, 2026-05-21): 单条 outbox payload 上限,与 server
+ * sync/routes.ts 的 PAYLOAD_MAX_BYTES 对齐(server 端也按 UTF-8 byte 计)。
+ *
+ * 之前 client 端只在 server 拒收时才知道超大,白白占了 push 配额 + 浪费用户
+ * 设备带宽。客户端落地前先拦住:超出直接抛错,renderer 上层(IPC handler)
+ * 转 `{success:false,error}` 给 UI 显示"内容过大,请拆分"。
+ */
+export const OUTBOX_PAYLOAD_MAX_BYTES = 100_000;
 
 export interface OutboxItem {
   id: string;
@@ -40,10 +51,12 @@ export function createOutboxTable(db: Database.Database): void {
     retry_count INTEGER DEFAULT 0,
     last_error TEXT
   )`);
-  // 轻量 migration:老库可能没有 last_error 列
+  // 轻量 migration:老库可能没有 last_error 列。
+  // MEDIUM 6 (audit-10, 2026-05-21):走统一 helper,而不是裸 try/catch{} —
+  // 后者会同时吞 SQLITE_FULL / SQLITE_BUSY / SQLITE_CORRUPT 让磁盘满静默成功。
   const cols = db.prepare(`PRAGMA table_info(local_outbox)`).all() as Array<{ name: string }>;
   if (!cols.some(c => c.name === 'last_error')) {
-    try { db.exec(`ALTER TABLE local_outbox ADD COLUMN last_error TEXT`); } catch { /* ignore race */ }
+    execIgnoringDuplicateColumn(db, `ALTER TABLE local_outbox ADD COLUMN last_error TEXT`);
   }
 
   // Dead-letter 表:多次失败的 outbox 进这里,等人工检查
@@ -60,8 +73,15 @@ export function createOutboxTable(db: Database.Database): void {
 }
 
 export function enqueueOutbox(db: Database.Database, operation: string, payload: object, source?: string): string {
+  const payloadStr = JSON.stringify(payload);
+  // MEDIUM 10 (audit-10): byte 级 cap,与 server 对齐。超出抛错让 caller
+  // (sync flush / IPC handler)拿到结构化失败,不静默写入 → 永远 server 拒。
+  const payloadSize = Buffer.byteLength(payloadStr, 'utf-8');
+  if (payloadSize > OUTBOX_PAYLOAD_MAX_BYTES) {
+    throw new Error(`outbox payload too large (${payloadSize} > ${OUTBOX_PAYLOAD_MAX_BYTES} bytes)`);
+  }
   const id = generateId();
-  db.prepare('INSERT INTO local_outbox (id, operation, payload, source) VALUES (?, ?, ?, ?)').run(id, operation, JSON.stringify(payload), source ?? null);
+  db.prepare('INSERT INTO local_outbox (id, operation, payload, source) VALUES (?, ?, ?, ?)').run(id, operation, payloadStr, source ?? null);
   log.info(`enqueued ${operation} id=${id}`);
   return id;
 }
@@ -98,6 +118,35 @@ export function markOutboxFailed(db: Database.Database, id: string, error: strin
   }
   db.prepare('UPDATE local_outbox SET retry_count = ?, last_error = ? WHERE id = ?').run(nextRetry, trimmedErr, id);
   return { deadLettered: false };
+}
+
+/**
+ * 立即把 outbox item 搬到 dead-letter 表,**跳过 retry**。
+ *
+ * 用于"确定性失败"——重试 5 次也修不好的情况。当前已知场景:
+ *   - 本地 payload 字段是坏 JSON(磁盘损坏 / 历史 schema 不兼容 / 手工编辑后写错):
+ *     `JSON.parse(item.payload)` 抛 SyntaxError → 走 markOutboxFailed 会让其在
+ *     队列里重试 5 次,每次都失败,期间整批 outbox 因为打包失败永远推不上去。
+ *     直接 dead-letter 让队列继续往前推。
+ *
+ * 返回 `{ deadLettered: true }` 与 markOutboxFailed 同构(方便 caller 统一计数)。
+ * row 已不存在时返回 `{ deadLettered: false }`(竞态:同一条 id 已被 remove)。
+ */
+export function deadLetterOutboxItem(db: Database.Database, id: string, error: string): { deadLettered: boolean } {
+  const row = db.prepare('SELECT * FROM local_outbox WHERE id = ?').get(id) as OutboxItem | undefined;
+  if (!row) return { deadLettered: false };
+  const trimmedErr = error.slice(0, 500);
+  const tx = db.transaction(() => {
+    db.prepare(`INSERT OR REPLACE INTO local_outbox_dead
+      (id, operation, payload, source, created, retry_count, last_error)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+      row.id, row.operation, row.payload, row.source, row.created, (row.retry_count ?? 0) + 1, trimmedErr,
+    );
+    db.prepare('DELETE FROM local_outbox WHERE id = ?').run(row.id);
+  });
+  tx();
+  log.error(`outbox item ${id} dead-lettered immediately: ${trimmedErr}`);
+  return { deadLettered: true };
 }
 
 export function getOutboxCount(db: Database.Database): number {

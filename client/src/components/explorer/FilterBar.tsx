@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { List, Network, Flame } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { SearchInput } from '../SearchInput'
@@ -23,7 +24,8 @@ export function FilterBar({ filter, onFilterChange, viewMode, onViewModeChange }
   onViewModeChange: (mode: 'list' | 'graph') => void
 }) {
   const { t } = useTranslation('explorer')
-  const { data: allTags } = useIPC(() => window.api.nodes.tags())
+  const fetchAllTags = useCallback(() => window.api.nodes.tags(), [])
+  const { data: allTags } = useIPC(fetchAllTags)
   const coreTags = (allTags ?? []).filter(item => item.isCore)
 
   return (

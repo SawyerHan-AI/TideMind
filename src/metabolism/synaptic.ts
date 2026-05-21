@@ -152,7 +152,11 @@ export function runSynapticScaling(db: Database.Database): {
         // 若 heat 重构再次放开上限或 link.strength 因迁移有历史脏数据 >1,此守卫挡住。
         const newStrength = Math.min(1.0, link.strength * dailyRetention);
 
-        if (newStrength < linkDeleteThreshold) {
+        // 阈值比较与 L100 的 DELETE WHERE strength <= ? 对齐为 <=(inclusive):
+        // 否则 strength 衰减到正好等于 0.05 的链接会延后一个 cycle 才被清(本轮 SELECT
+        // 不到、本轮 loop 又走 else 分支留在表里),与 L96-98 注释"strength 恰好等于
+        // threshold 永远不会被扫"语义冲突。
+        if (newStrength <= linkDeleteThreshold) {
           linkDeleteStmt.run(link.id);
           linkDeleted++;
         } else {

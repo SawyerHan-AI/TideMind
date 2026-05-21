@@ -86,6 +86,7 @@
     "apple_notes_incremental_sync": "Apple Notes incremental sync (processed {{processed}})",
     "apple_notes_init_complete": "Apple Notes init complete: {{nodes}} nodes, {{links}} links, {{crystals}} crystals",
     "profile_synthesized": "Synthesized profile ({{crystals}} crystals, {{preferences}} preferences)",
-    "pending_link_gc": "GC'd {{count}} expired pending links"
+    "pending_link_gc": "GC'd {{count}} expired pending links",
+    "circuit_breaker_manual_reset": "Circuit breaker manually reset"
   }
 }

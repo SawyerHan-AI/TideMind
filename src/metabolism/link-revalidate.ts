@@ -16,6 +16,7 @@ import { getPrompt, getLLMOptions, getParam, renderUserPrompt } from '../strateg
 import { logTimelineEvent } from '../db/log.js';
 import { createLogger } from '../utils/logger.js';
 import { parseLLMJson } from '../llm/json-parse.js';
+import { notifyLLMFailure } from './scheduler.js';
 
 const log = createLogger('link-revalidate');
 
@@ -72,7 +73,9 @@ export async function revalidateLinks(
     log.debug(`链接重新验证跳过: in-flight=${inflightRevalidations.size} 已满 ${MAX_CONCURRENT_REVALIDATIONS}`);
     return;
   }
-  const inflightKey = `${context.query}:${nodeIds.slice(0, 5).join(',')}`;
+  // 修复 F7(2026-05-21): inflightKey 必须排序,否则 nodeIds 顺序不同但内容相同的
+  // 并发调用会绕过 dedup(['a','b'] 和 ['b','a'] 生成不同 key)。
+  const inflightKey = `${context.query}:${nodeIds.slice(0, 5).slice().sort().join(',')}`;
   if (inflightRevalidations.has(inflightKey)) return;
   inflightRevalidations.add(inflightKey);
   try {
@@ -203,7 +206,13 @@ async function revalidateLinksInner(
     } catch (err) {
       // LLMServiceError 走熔断器路径,否则每条 link 都撞一次 LLM(maxLinks 通常 5-20),
       // 在 LLM 全挂期间形成隐形烧钱循环。
-      if (err instanceof LLMServiceError) throw err;
+      // 修复 F3(2026-05-21): 在 throw 之前先通过 hook 通知熔断器累积失败 —
+      // recall 路径 fire-and-forget 调用 revalidateLinks,外层只 log.warn,不会
+      // 走 scheduler 的 recordLLMFailure。这里 notifyLLMFailure 让熔断器收到信号。
+      if (err instanceof LLMServiceError) {
+        notifyLLMFailure(err);
+        throw err;
+      }
       log.warn(`链接重新验证失败 ${item.linkId}: ${(err as Error).message}`);
     }
   }

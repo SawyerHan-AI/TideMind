@@ -19,6 +19,10 @@ export function ProfileFieldsEditor({ strategyName }: { strategyName: string }) 
   const [saving, setSaving] = useState(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const latestFields = useRef<ProfileField[]>([])
+  // F5: unmount flush 必须在 load 完成且用户真的编辑过才触发,否则
+  // 用户在 load 完成前的快速操作 + 提前 unmount 会把空/截断字段覆盖回去。
+  const loadedRef = useRef(false)
+  const dirtyRef = useRef(false)
 
   useEffect(() => {
     let cancelled = false
@@ -41,6 +45,7 @@ export function ProfileFieldsEditor({ strategyName }: { strategyName: string }) 
         }
       } catch { /* use empty */ }
       setLoaded(true)
+      loadedRef.current = true
     })
     return () => { cancelled = true }
   }, [strategyName])
@@ -50,12 +55,15 @@ export function ProfileFieldsEditor({ strategyName }: { strategyName: string }) 
     return () => {
       if (saveTimer.current) {
         clearTimeout(saveTimer.current)
-        // 同步触发最后一次保存（fire-and-forget）
-        window.api.config.strategyParamUpdate(
-          strategyName,
-          'profile_fields',
-          JSON.stringify(latestFields.current),
-        ).catch(err => console.error('Flush save failed:', err))
+        // F5 守卫:必须 load 完成 + 真的有 pending 编辑才 flush,
+        // 否则会用 load-前的空/截断状态覆盖已有数据。
+        if (loadedRef.current && dirtyRef.current) {
+          window.api.config.strategyParamUpdate(
+            strategyName,
+            'profile_fields',
+            JSON.stringify(latestFields.current),
+          ).catch(err => console.error('Flush save failed:', err))
+        }
       }
     }
   }, [strategyName])
@@ -64,6 +72,8 @@ export function ProfileFieldsEditor({ strategyName }: { strategyName: string }) 
     setSaving(true)
     try {
       await window.api.config.strategyParamUpdate(strategyName, 'profile_fields', JSON.stringify(updated))
+      // 持久化成功后清除 dirty 标志:此时即便 unmount,也无需再 flush。
+      dirtyRef.current = false
     } catch (err) {
       console.error('Failed to save profile fields:', err)
     }
@@ -73,6 +83,7 @@ export function ProfileFieldsEditor({ strategyName }: { strategyName: string }) 
   /** 延迟保存：500ms 内连续变更只写一次 */
   const scheduleSave = (updated: ProfileField[]) => {
     latestFields.current = updated
+    dirtyRef.current = true
     if (saveTimer.current) clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(() => {
       persist(latestFields.current)

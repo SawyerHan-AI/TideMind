@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { motion } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
 import { useIPC } from '../hooks/useIPC'
@@ -22,18 +23,12 @@ export function Dashboard() {
   // 原本一个 stats:dashboard 串行做 8+ 条 SQL(含全表 tags 聚合 500-1000ms),
   // 整个 Dashboard 必须等所有结果才能渲染。改成 3 个 IPC 并发:
   // metrics(毫秒级)先到先渲染骨架卡 → activity → tags 慢一拍但不阻塞。
-  const { data: metrics, loading: metricsLoading } = useIPC(
-    () => window.api.stats.dashboardMetrics(),
-    [rev],
-  )
-  const { data: activity } = useIPC(
-    () => window.api.stats.dashboardActivity(),
-    [rev],
-  )
-  const { data: tags } = useIPC(
-    () => window.api.stats.dashboardTags(),
-    [rev],
-  )
+  const fetchMetrics = useCallback(() => window.api.stats.dashboardMetrics(), [rev])
+  const fetchActivity = useCallback(() => window.api.stats.dashboardActivity(), [rev])
+  const fetchTags = useCallback(() => window.api.stats.dashboardTags(), [rev])
+  const { data: metrics, loading: metricsLoading } = useIPC(fetchMetrics)
+  const { data: activity } = useIPC(fetchActivity)
+  const { data: tags } = useIPC(fetchTags)
   const navigate = useNavigate()
 
   const handleNodeClick = (id: string) => {

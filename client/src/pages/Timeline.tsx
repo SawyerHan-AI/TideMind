@@ -39,7 +39,7 @@ export function Timeline() {
 
   const rev = useDataRevision(['timeline'])
 
-  const { data, loading } = useIPC(
+  const fetchTimeline = useCallback(
     () =>
       window.api.timeline.list({
         types: activeTypes.length < ALL_TYPES.length ? activeTypes : undefined,
@@ -49,6 +49,7 @@ export function Timeline() {
       }),
     [activeTypes, activeActors, page, rev],
   )
+  const { data, loading } = useIPC(fetchTimeline)
 
   const totalPages = Math.ceil((data?.total ?? 0) / PAGE_SIZE)
 
@@ -101,7 +102,8 @@ export function Timeline() {
                     key={uniqueId}
                     initial={{ opacity: 0, y: 6 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: index * 0.03, duration: 0.25 }}
+                    // F10: stagger 封顶 10 项,避免大列表下后面的项 delay 累计到几秒甚至几十秒
+                    transition={{ delay: Math.min(index, 10) * 0.03, duration: 0.25 }}
                   >
                     <TimelineItem
                       event={event}

@@ -21,7 +21,7 @@ function generateSourceId(): string {
 /**
  * 当前 schema 版本。每次新增 migration 时递增。
  */
-const CURRENT_SCHEMA_VERSION = 26;
+const CURRENT_SCHEMA_VERSION = 27;
 
 /**
  * 完整建表 SQL — 包含所有字段，新数据库直接创建最新结构。
@@ -405,6 +405,23 @@ CREATE TABLE IF NOT EXISTS pending_digests (
     processing_started_at TEXT  -- 进入 processing 时写入（stale recovery 用）
 );
 CREATE INDEX IF NOT EXISTS idx_pending_digests_status ON pending_digests(status, next_retry_at);
+
+-- Notion 失败页持久化重试队列 (B-2)
+-- processOnePage 失败时入此表,下次 incremental sync 把 attempts<MAX 的 page 强制
+-- 合并进 changedPages 重试;成功 → DELETE;attempts>=MAX → status='dead_letter'。
+-- 老代码失败页只有 currentRun progress.failedFiles+1 没持久化,
+-- 重启 daemon / 下轮 sync 不再尝试,需要等用户主动改动该 page 才会重试。
+CREATE TABLE IF NOT EXISTS notion_pending_retry (
+    page_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_attempt TEXT NOT NULL,
+    last_error TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','dead_letter')),
+    PRIMARY KEY (page_id, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_notion_pending_retry_source
+  ON notion_pending_retry(source_id, status);
 `;
 
 const FTS_SQL = `
@@ -1705,6 +1722,26 @@ const MIGRATIONS: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_dead_letter_version ON cloud_sync_dead_letters(sync_version);
       `);
       log.info('迁移 v26 完成: cloud_sync_dead_letters 表已就位');
+    },
+  },
+  {
+    version: 27,
+    description: 'notion_pending_retry 表:Notion 同步失败页持久化,下轮 sync 强制重试',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS notion_pending_retry (
+            page_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_attempt TEXT NOT NULL,
+            last_error TEXT,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','dead_letter')),
+            PRIMARY KEY (page_id, source_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_notion_pending_retry_source
+          ON notion_pending_retry(source_id, status);
+      `);
+      log.info('迁移 v27 完成: notion_pending_retry 表已就位');
     },
   },
 ];

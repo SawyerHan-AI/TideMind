@@ -30,6 +30,7 @@
     "editReasonPlaceholder": "Änderungsgrund (optional)",
     "titlePlaceholder": "Titel",
     "editVersionNote": "Änderungen werden in der Versionshistorie gespeichert",
+    "concurrentEditWarning": "Der Inhalt wurde während Ihrer Bearbeitung automatisch aktualisiert. Beim Speichern wird die neueste Version überschrieben. Fortfahren?",
     "saving": "Speichern...",
     "save": "Speichern",
     "cancel": "Abbrechen",

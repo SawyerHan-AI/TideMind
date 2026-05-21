@@ -52,25 +52,27 @@ export function InitBanner() {
             setProgress({ ...prog, sourceName: source.name })
             setVisible(true)
             found = true
-            if (pollRef.current) {
-              clearInterval(pollRef.current)
-              pollRef.current = null
+            // F2 修复:不停 polling,只用 hideTimer 关 visible。
+            // 这样 done 状态展示期内若有新 source 开始 init,下一次 poll 命中
+            // running 分支会立刻 setVisible(true) 覆盖,不再有 10s 盲窗。
+            if (hideTimerRef.current) {
+              clearTimeout(hideTimerRef.current)
+              hideTimerRef.current = null
             }
-            if (cancelled) return
             hideTimerRef.current = setTimeout(() => {
               hideTimerRef.current = null
               if (cancelled) return
               setVisible(false)
-              // 隐藏后恢复轮询，以便检测新的初始化；同一个 doneKey 不再重复显示
-              pollRef.current = setInterval(poll, 3000)
             }, 10_000)
             break // 同一时刻只有一个在初始化
           }
         }
 
-        if (!found && !cancelled) setVisible(false)
+        // 若没有 running 也没有 done,隐藏 banner;但若 done 的 hideTimer 正在跑,
+        // 让它自己处理 10s 后的隐藏(否则会立刻把 done 提示吞掉)。
+        if (!found && !cancelled && !hideTimerRef.current) setVisible(false)
       } catch {
-        if (!cancelled) setVisible(false)
+        if (!cancelled && !hideTimerRef.current) setVisible(false)
       }
     }
 

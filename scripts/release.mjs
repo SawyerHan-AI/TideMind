@@ -367,17 +367,37 @@ function loadSigningPrivateKey() {
   if (fromEnv) return { pem: normalizePEM(fromEnv), source: 'env' };
   // macOS only:Linux 上 `security` 命令不存在,spawn 会失败,silent fall through。
   if (process.platform !== 'darwin') return { pem: null, source: null };
+  // 2026-05-21 audit F7:Keychain 失败的三种情况要区分日志,旧实现全 silent 吞,
+  // 让运维分不清"没装 security / Keychain 拒绝 / 项找到了但内容不是 PEM"。
+  let r;
   try {
-    const r = spawnSync('security', [
+    r = spawnSync('security', [
       'find-generic-password',
       '-a', 'tidemind',
       '-s', 'tidemind-signing-key',
       '-w',
     ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    if (r.status === 0 && r.stdout && r.stdout.includes('-----BEGIN')) {
-      return { pem: normalizePEM(r.stdout), source: 'keychain' };
+  } catch (err) {
+    // security 命令本身不可用(ENOENT 等)→ silent fall through,这是非 macOS
+    // 但 platform 检测出错的极端场景,正常 macOS 不会触发。
+    if (err && err.code === 'ENOENT') return { pem: null, source: null };
+    console.warn(`keychain lookup spawn failed: ${err && err.message ? err.message : String(err)}`);
+    return { pem: null, source: null };
+  }
+  if (r.status === 0 && r.stdout && r.stdout.includes('-----BEGIN')) {
+    return { pem: normalizePEM(r.stdout), source: 'keychain' };
+  }
+  if (r.status !== 0) {
+    const stderr = (r.stderr || '').trim();
+    if (stderr) {
+      // Keychain 拒绝 / item 找不到 / 用户取消 — 让运维看见原因。
+      console.warn(`keychain rejected: ${stderr}`);
     }
-  } catch { /* security 不可用 → fall through */ }
+  } else if (r.stdout && !r.stdout.includes('-----BEGIN')) {
+    // status=0 但内容不是 PEM:item 找到了但写错了内容(比如塞了 fingerprint
+    // 或 base64 而忘了 BEGIN/END 包络),容易让人以为"key 已配置"实际不能用。
+    console.warn('keychain item found but value is not a PEM private key (missing BEGIN header)');
+  }
   return { pem: null, source: null };
 }
 
@@ -394,17 +414,29 @@ function loadSecondarySigningPrivateKey() {
   const fromEnv = process.env.SIGNING_PRIVATE_KEY_SECONDARY;
   if (fromEnv) return { pem: normalizePEM(fromEnv), source: 'env' };
   if (process.platform !== 'darwin') return { pem: null, source: null };
+  // 2026-05-21 audit F7:secondary key 通常不存在(只在轮换期配置),非 0 退出
+  // 是常态。这里只在 stderr 显式说"找到了但不是 PEM"的异常路径才 warn,
+  // "item 不存在"保持 silent。
+  let r;
   try {
-    const r = spawnSync('security', [
+    r = spawnSync('security', [
       'find-generic-password',
       '-a', 'tidemind',
       '-s', 'tidemind-signing-key-secondary',
       '-w',
     ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    if (r.status === 0 && r.stdout && r.stdout.includes('-----BEGIN')) {
-      return { pem: normalizePEM(r.stdout), source: 'keychain' };
-    }
-  } catch { /* secondary 不存在 → silent,不签即可,不算错 */ }
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return { pem: null, source: null };
+    console.warn(`keychain secondary lookup spawn failed: ${err && err.message ? err.message : String(err)}`);
+    return { pem: null, source: null };
+  }
+  if (r.status === 0 && r.stdout && r.stdout.includes('-----BEGIN')) {
+    return { pem: normalizePEM(r.stdout), source: 'keychain' };
+  }
+  if (r.status === 0 && r.stdout && !r.stdout.includes('-----BEGIN')) {
+    console.warn('keychain secondary item found but value is not a PEM private key');
+  }
+  // status != 0 → secondary 通常未配置,不打扰 ops。
   return { pem: null, source: null };
 }
 
@@ -492,19 +524,31 @@ function signReleaseAssets(version, ossRepo, allowUnsigned = false) {
     const sig = crypto.sign(null, message, privateKey).toString('base64');
     const sigPath = path.join(os.tmpdir(), `update-manifest-${platform}-${arch}.sig`);
     fs.writeFileSync(sigPath, sig);
-    run('gh', [
-      'release', 'upload', `v${version}`, sigPath,
-      '--repo', 'SawyerHan-AI/TideMind', '--clobber',
-    ], { cwd: ossRepo, label: `upload signature ${platform}/${arch}` });
+    try {
+      run('gh', [
+        'release', 'upload', `v${version}`, sigPath,
+        '--repo', 'SawyerHan-AI/TideMind', '--clobber',
+      ], { cwd: ossRepo, label: `upload signature ${platform}/${arch}` });
+    } finally {
+      // 2026-05-21 audit F6:tmp 签名文件不要留在 /tmp。
+      // 内容是 ed25519 签名(public information 一旦发布,但发布前在 tmp 仍可被
+      // 同机器其他进程读到 → 攻击者可推断未来 release 时间表)。upload 成功
+      // 与否都清。删除失败不影响发版流程(空磁盘 / 权限错都吞掉)。
+      try { fs.unlinkSync(sigPath); } catch { /* ignore */ }
+    }
 
     if (secondaryKey) {
       const sigSec = crypto.sign(null, message, secondaryKey).toString('base64');
       const sigSecPath = path.join(os.tmpdir(), `update-manifest-${platform}-${arch}.sig.secondary`);
       fs.writeFileSync(sigSecPath, sigSec);
-      run('gh', [
-        'release', 'upload', `v${version}`, sigSecPath,
-        '--repo', 'SawyerHan-AI/TideMind', '--clobber',
-      ], { cwd: ossRepo, label: `upload secondary signature ${platform}/${arch}` });
+      try {
+        run('gh', [
+          'release', 'upload', `v${version}`, sigSecPath,
+          '--repo', 'SawyerHan-AI/TideMind', '--clobber',
+        ], { cwd: ossRepo, label: `upload secondary signature ${platform}/${arch}` });
+      } finally {
+        try { fs.unlinkSync(sigSecPath); } catch { /* ignore */ }
+      }
     }
   }
 }

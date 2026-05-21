@@ -18,7 +18,12 @@ const coreNavKeys = [
 function useAppVersion(): string {
   const [version, setVersion] = useState('')
   useEffect(() => {
-    window.api.app.getVersion().then(setVersion).catch(() => {})
+    // F4: setState after unmount 警告守卫
+    let cancelled = false
+    window.api.app.getVersion()
+      .then(v => { if (!cancelled) setVersion(v) })
+      .catch(() => {})
+    return () => { cancelled = true }
   }, [])
   return version
 }

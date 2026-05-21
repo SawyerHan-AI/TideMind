@@ -175,4 +175,21 @@ describe('Notion queue segment reduction', () => {
     expect(getPageState(db, 'page-1', 'src-notion')).toBeNull();
     expect(getImportProgress('src-notion').phase).toBe('idle');
   });
+
+  // 回归 F15(2026-05-21): stopNotionSource 必须显式 resetProgress,否则
+  // progressMap 永久挂着旧 source 的 progress 行,UI 重新 add 同 sourceId 时看到
+  // phase='done' 的过期状态。
+  it('F15 回归: stopNotionSource 调用后 progressMap 不残留', async () => {
+    const { __testing } = await import('../../../src/integrations/notion/queue.js');
+    const { stopNotionSource } = await import('../../../src/integrations/notion/index.js');
+
+    // 模拟"add source → start sync"中间态:progressMap 已有一行
+    __testing.seedProgress('src-test-f15');
+    expect(__testing.hasProgress('src-test-f15')).toBe(true);
+
+    // stopNotionSource 应该把 progress 也清理掉
+    stopNotionSource('src-test-f15');
+
+    expect(__testing.hasProgress('src-test-f15')).toBe(false);
+  });
 });

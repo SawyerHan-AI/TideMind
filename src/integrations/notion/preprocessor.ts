@@ -51,10 +51,17 @@ export async function preprocessNotionPage(
     return { page: null, contentHash: propsHash };
   }
 
-  // 4. 计算 content hash（properties + blocks，共享同一次 block 获取）
+  // 4. 计算 content hash（properties + icon + blocks，共享同一次 block 获取）
+  // 修复 F9(2026-05-21): icon (emoji) 必须纳入 hash,否则用户只改 emoji icon
+  // 时 hash 不变,sync 误认为页面无变化,UI 上的 icon 永远是旧的。
   const propsJson = JSON.stringify(page.properties);
   const blocksJson = JSON.stringify(blocks.map(b => ({ id: b.id, type: b.type, last_edited_time: b.last_edited_time })));
-  const contentHash = createHash('sha256').update(propsJson + blocksJson).digest('hex').slice(0, 16);
+  const iconJson = JSON.stringify(page.icon ?? null);
+  const contentHash = createHash('sha256')
+    .update(propsJson)
+    .update(iconJson)
+    .update(blocksJson)
+    .digest('hex').slice(0, 16);
 
   // 5. 渲染 blocks → Markdown
   const renderResult = renderBlocks(blocks);

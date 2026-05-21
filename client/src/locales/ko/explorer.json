@@ -30,6 +30,7 @@
     "editReasonPlaceholder": "수정 사유 (선택사항)",
     "titlePlaceholder": "제목",
     "editVersionNote": "수정 사항은 버전 기록에 저장됩니다",
+    "concurrentEditWarning": "편집하는 동안 콘텐츠가 자동으로 업데이트되었습니다. 저장하면 최신 버전을 덮어쓰게 됩니다. 계속하시겠습니까?",
     "saving": "저장 중...",
     "save": "저장",
     "cancel": "취소",

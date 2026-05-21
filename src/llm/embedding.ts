@@ -5,6 +5,53 @@ import { createLogger } from '../utils/logger.js';
 
 const log = createLogger('embedding');
 
+/**
+ * Embedding 服务异常(B-3, 2026-05-21)。
+ *
+ * 设计上跟 LLMServiceError 平行:外层熔断器需要区分"embedding API 真的失败"
+ * 和"业务侧拿到 null 但是合法的(空文本、零向量等)"。getEmbedding 上层捕到
+ * EmbeddingServiceError 时会调 notifyEmbeddingFailure → scheduler 熔断器累积失败,
+ * 阈值后 requiresEmbedding 的 task 在熔断器 open 状态下被跳过。
+ */
+export class EmbeddingServiceError extends Error {
+  constructor(message: string, public readonly statusCode?: number) {
+    super(message);
+    this.name = 'EmbeddingServiceError';
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Embedding 健康度信号 hook (B-3, 2026-05-21)
+// ─────────────────────────────────────────────────────────────
+//
+// 跟 LLM 的 LLMSuccessHook / LLMFailureHook 同模式。core embedding 模块不能直接
+// import scheduler / db,通过 hook 注入由 daemon.ts 把 db handle 绑进来。
+// 测试场景下 hook 未注入 → 行为退化为单纯 log。
+
+type EmbeddingSuccessHook = () => void;
+let embeddingSuccessHook: EmbeddingSuccessHook | null = null;
+export function setEmbeddingSuccessHook(hook: EmbeddingSuccessHook | null): void {
+  embeddingSuccessHook = hook;
+}
+function notifyEmbeddingSuccess(): void {
+  if (!embeddingSuccessHook) return;
+  try { embeddingSuccessHook(); } catch (err) {
+    log.warn(`embedding success hook threw: ${(err as Error).message}`);
+  }
+}
+
+type EmbeddingFailureHook = (err: EmbeddingServiceError) => void;
+let embeddingFailureHook: EmbeddingFailureHook | null = null;
+export function setEmbeddingFailureHook(hook: EmbeddingFailureHook | null): void {
+  embeddingFailureHook = hook;
+}
+function notifyEmbeddingFailure(err: EmbeddingServiceError): void {
+  if (!embeddingFailureHook) return;
+  try { embeddingFailureHook(err); } catch (hookErr) {
+    log.warn(`embedding failure hook threw: ${(hookErr as Error).message}`);
+  }
+}
+
 let available: boolean | null = null;
 let availableCheckTime = 0;
 const CHECK_TTL_MS = 60_000;
@@ -228,16 +275,33 @@ export async function getEmbedding(text: string): Promise<Float32Array | null> {
   const config = getConfig();
   log.debug(`provider=${config.embedding.provider} textLen=${text.length}`);
 
+  // B-3: 用 try/catch 兜住 provider 函数:provider 内部以"返回 null"表达失败,
+  // 但部分异常(token 获取失败、AbortSignal.timeout、网络 throw)仍然冒泡。
+  // 任何异常都视为 embedding 服务不可用,触发熔断器累积失败。
   let vec: Float32Array | null;
-  if (config.embedding.provider === 'vertex') {
-    vec = await getGeminiVertexEmbedding(text);
-  } else if (config.embedding.provider === 'gemini') {
-    vec = await getGeminiApiKeyEmbedding(text);
-  } else {
-    vec = await getOllamaEmbedding(text);
+  try {
+    if (config.embedding.provider === 'vertex') {
+      vec = await getGeminiVertexEmbedding(text);
+    } else if (config.embedding.provider === 'gemini') {
+      vec = await getGeminiApiKeyEmbedding(text);
+    } else {
+      vec = await getOllamaEmbedding(text);
+    }
+  } catch (err) {
+    // B-3: 异常路径 — 直接通知失败 hook 并 return null,保持 getEmbedding 的
+    // "失败 = null"契约(调用者已习惯 null check)。
+    const msg = (err as Error).message ?? String(err);
+    log.error(`embedding 异常(provider=${config.embedding.provider}): ${msg}`);
+    notifyEmbeddingFailure(new EmbeddingServiceError(msg));
+    return null;
   }
 
-  if (vec === null) return null;
+  if (vec === null) {
+    // B-3: provider 返回 null 同样视为失败(provider 内部已 log.error 具体原因),
+    // 熔断器需要累积才能正确判定服务不可用。
+    notifyEmbeddingFailure(new EmbeddingServiceError(`embedding provider returned null (provider=${config.embedding.provider})`));
+    return null;
+  }
 
   // dim mismatch 防御:不一致直接回 null,避免污染 sqlite-vec 表
   const expectedDim = config.embedding.dimensions;
@@ -247,17 +311,26 @@ export async function getEmbedding(text: string): Promise<Float32Array | null> {
       `model=${config.embedding.model ?? '?'} got=${vec.length} expected=${expectedDim}. ` +
       '请检查 config.embedding.dimensions 与 provider 模型是否对齐。',
     );
+    // dim mismatch 是配置错误而非服务失效,不该把熔断器吹起来 — 否则配置错误的
+    // 用户永远等不到熔断器恢复。这里只 log 不计入熔断器失败。
     return null;
   }
 
+  // B-3: 真实成功 → 通知 hook 重置熔断器健康度。
+  notifyEmbeddingSuccess();
   return normalizeL2(vec);
 }
 
 /**
  * 批量获取 embedding
+ *
+ * 用 Promise.allSettled 而非 Promise.all：单条文本失败（API 限流、超时、单条
+ * 内容触发 provider 拒绝）不应让整批 reject。失败的条目位置写 null,调用方
+ * 自行决定是否补偿（跳过 / 重试 / 降级 keyword search）。
  */
 export async function getEmbeddings(texts: string[]): Promise<(Float32Array | null)[]> {
-  return Promise.all(texts.map(t => getEmbedding(t)));
+  const results = await Promise.allSettled(texts.map(t => getEmbedding(t)));
+  return results.map(r => (r.status === 'fulfilled' ? r.value : null));
 }
 
 /**

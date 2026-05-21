@@ -370,15 +370,22 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
       query: input.query,
       recalledNodeIds: nodes.map(n => n.id),
     });
-    const timeout = new Promise<void>(resolve =>
-      setTimeout(() => {
+    // 保存 timer handle：正常路径（work 在 10s 内 settle）必须 clearTimeout，
+    // 否则 setTimeout 仍排在事件循环里，log.warn 假超时 + 闭包不释放。
+    // .unref() 只让 timer 不阻塞进程退出，不影响 fire。
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>(resolve => {
+      timer = setTimeout(() => {
         log.warn(`revalidateLinks 超过 ${REVALIDATE_TIMEOUT_MS}ms 未完成，放弃等待（后台仍在跑）`);
         resolve();
-      }, REVALIDATE_TIMEOUT_MS).unref?.(),
-    );
-    Promise.race([work, timeout]).catch(err =>
-      log.warn(`链接重新验证异步失败: ${err instanceof Error ? err.stack : String(err)}`),
-    );
+      }, REVALIDATE_TIMEOUT_MS);
+      timer.unref?.();
+    });
+    Promise.race([work, timeout])
+      .catch(err =>
+        log.warn(`链接重新验证异步失败: ${err instanceof Error ? err.stack : String(err)}`),
+      )
+      .finally(() => { if (timer) clearTimeout(timer); });
     // 单独挂 catch 防止真实 promise 抛错变成 unhandledRejection
     work.catch(() => { /* 已在 race 分支 log，这里只是防 unhandled */ });
   }

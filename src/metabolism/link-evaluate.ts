@@ -87,14 +87,21 @@ export async function runLinkEvaluate(
   // 收集需要评估的链接（合并 auto 新链接 + pending 链接）。
   // 必须显式排除 rejected_by_user — 用户已经明确拒绝的链接不应该被反复重新 LLM 评估,
   // 否则每个 lookback 窗口都白烧一遍 token,LLM 看到的"已拒绝"上下文也丢失。
+  //
+  // 修复 F2(2026-05-21): created 列是 JS ISO 字符串 'YYYY-MM-DDTHH:MM:SS.sssZ'。
+  // 原先用 `datetime('now', '-N hours')` 返回 'YYYY-MM-DD HH:MM:SS'（空格分隔无 Z），
+  // 二者按字典序比较时 position 10 是 'T' (0x54) vs ' ' (0x20)，'T' > ' '，
+  // 导致所有 ISO 字符串永远 ">" SQLite datetime → lookback 窗口边界一天内全部错判。
+  // 改为在 JS 侧计算 cutoff 的 ISO 字符串再丢给 SQL，ISO 之间字典序 = 时间序。
+  const lookbackCutoff = new Date(Date.now() - lookbackHours * 3600_000).toISOString();
   const recentAutoLinks = db.prepare(`
     SELECT * FROM links
     WHERE auto = 1
       AND status NOT IN ('confirmed', 'rejected_by_user')
-      AND created > datetime('now', ?)
+      AND created > ?
     ORDER BY created DESC
     LIMIT ?
-  `).all(`-${lookbackHours} hours`, maxLinks) as LinkRow[];
+  `).all(lookbackCutoff, maxLinks) as LinkRow[];
 
   const pendingLinks = db.prepare(`
     SELECT * FROM links
@@ -230,6 +237,13 @@ async function evaluateBatch(
   } catch (err) {
     // 与 annotate.ts 同处理:LLMServiceError 必须抛出让 scheduler 熔断生效。
     if (err instanceof LLMServiceError) throw err;
+    // 程序员错误(TypeError / ReferenceError / SyntaxError)也必须向上抛,
+    // 否则代码 bug 被静默吞掉,问题不可见。冒到 scheduler 后由 'programmer bug'
+    // 分支统一 log.error 标记,daemon 不中断。
+    if (err instanceof TypeError || err instanceof ReferenceError || err instanceof SyntaxError) {
+      log.error(`programmer bug in link-evaluate: ${(err as Error).stack ?? (err as Error).message}`);
+      throw err;
+    }
     log.warn(`链接评估批次失败: ${(err as Error).message}`);
   }
 

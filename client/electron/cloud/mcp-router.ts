@@ -8,6 +8,10 @@ import { getConfig } from '../../../src/config.js';
 const log = createLogger('cloud-router');
 
 let onlineCache: { value: boolean; checkedAt: number } = { value: false, checkedAt: 0 };
+// F7 (audit-7): 同一进程多个 tool 并发到 `handle()` 会同时调 isOnline,
+// 缓存未命中时各自起一个 fetch,造成 cache stampede(每个 MCP 调用一次 /health)。
+// inflight Promise 复用第一个还在进行中的探测,等待它结束。
+let inflightHealthCheck: Promise<boolean> | null = null;
 
 export class CloudMcpRouter {
   constructor(private localRepo: IRepository, private db: Database.Database) {}
@@ -19,17 +23,26 @@ export class CloudMcpRouter {
 
   async isOnline(): Promise<boolean> {
     if (Date.now() - onlineCache.checkedAt < 10000) return onlineCache.value;
-    try {
-      const base = getCloudBaseUrl();
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(`${base}/health`, { signal: controller.signal });
-      clearTimeout(timeout);
-      onlineCache = { value: res.ok, checkedAt: Date.now() };
-    } catch {
-      onlineCache = { value: false, checkedAt: Date.now() };
-    }
-    return onlineCache.value;
+    if (inflightHealthCheck) return inflightHealthCheck;
+    inflightHealthCheck = (async () => {
+      try {
+        const base = getCloudBaseUrl();
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        try {
+          const res = await fetch(`${base}/health`, { signal: controller.signal });
+          onlineCache = { value: res.ok, checkedAt: Date.now() };
+        } finally {
+          clearTimeout(timeout);
+        }
+      } catch {
+        onlineCache = { value: false, checkedAt: Date.now() };
+      }
+      return onlineCache.value;
+    })().finally(() => {
+      inflightHealthCheck = null;
+    });
+    return inflightHealthCheck;
   }
 
   async handle(toolName: string, args: Record<string, unknown>): Promise<object> {

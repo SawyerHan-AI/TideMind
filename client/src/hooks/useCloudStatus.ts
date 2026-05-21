@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { useIPC } from './useIPC'
 import { useDataRevision } from '../contexts/DataChangeContext'
 
@@ -8,7 +9,8 @@ export interface CloudStatus {
   syncEnabled: boolean
   online: boolean
   syncing: boolean
-  outboxCount: number
+  /** Audit-3 F14: null 表示后端无法查询(DB 关 / 异常),UI 应显示 "—" 而非 0。 */
+  outboxCount: number | null
   lastSyncedAt?: string | null
   cloudNotAvailable?: boolean
   syncNotReady?: boolean
@@ -51,6 +53,7 @@ const CLOUD_STATUS_FALLBACK: CloudStatus = Object.freeze({
 
 export function useCloudStatus(): CloudStatus {
   const rev = useDataRevision(['cloud'])
-  const { data } = useIPC(() => window.api.cloud.status(), [rev])
+  const fetchStatus = useCallback(() => window.api.cloud.status(), [rev])
+  const { data } = useIPC(fetchStatus)
   return data ?? CLOUD_STATUS_FALLBACK
 }

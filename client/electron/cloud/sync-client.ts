@@ -3,8 +3,8 @@ import { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
 import { createLogger } from '../../../src/utils/logger.js';
 import { CacheManager } from './cache-manager.js';
-import { getOutboxItems, removeOutboxItem, markOutboxFailed, getOutboxCount as _getOutboxCount } from './outbox.js';
-import { getCloudAuth, getCloudBaseUrl, refreshTokenIfNeeded } from './auth-client.js';
+import { getOutboxItems, removeOutboxItem, markOutboxFailed, deadLetterOutboxItem, getOutboxCount as _getOutboxCount } from './outbox.js';
+import { getCloudAuth, getCloudBaseUrl, refreshTokenIfNeeded, updateCloudAuth } from './auth-client.js';
 import { getActivityState } from '../activity-state.js';
 
 const log = createLogger('cloud-sync');
@@ -90,6 +90,8 @@ export class CloudSyncClient {
 
   getStatus(): SyncStatus { return this.status; }
   isCloudNotAvailable(): boolean { return this.cloudNotAvailable; }
+  /** Audit-3 F14:public getter,避免 getOutboxCount 用 `as any` 强转。 */
+  getDb(): Database.Database { return this.db; }
 
   async start(): Promise<void> {
     log.info('starting sync client');
@@ -394,6 +396,11 @@ export class CloudSyncClient {
       this.wsAuthTimer = null;
     }
     if (this.ws) {
+      // F2 修复:必须先 removeAllListeners 再 close。
+      // close 会触发 'close' 事件 → 默认 close handler 调 scheduleReconnect,
+      // 让"我们主动断"被当成"非预期断"重连。startSlowRetry 路径下这会导致慢重试
+      // 和 ws 重连并行,持续拒绝刷日志(同上方 startSlowRetry 注释中描述的 M29 场景)。
+      this.ws.removeAllListeners();
       this.ws.close();
       this.ws = null;
     }
@@ -413,11 +420,17 @@ export class CloudSyncClient {
    */
   syncOnce(): Promise<void> {
     if (this.syncInFlight) return this.syncInFlight;
-    const p = this._doSyncOnce().finally(() => {
-      if (this.syncInFlight === p) this.syncInFlight = null;
+    // F16 (audit-7) 防御式写法:先拿到 chained promise → 立刻赋给 syncInFlight,
+    // 再 return。原写法 `const p = ...finally(); this.syncInFlight = p` 看似等价
+    // (顺序在同步段内),但读起来"finally 闭包能不能拿到刚赋好的 syncInFlight"
+    // 取决于读者脑补 microtask 顺序。这里改成"先创建 chained promise,赋给 field,
+    // 同一个 chained promise 返回",finally 闭包通过引用 promise 自己比对 (而不是
+    // 闭包外的 p) 让代码读起来意图更明确。
+    const promise: Promise<void> = this._doSyncOnce().finally(() => {
+      if (this.syncInFlight === promise) this.syncInFlight = null;
     });
-    this.syncInFlight = p;
-    return p;
+    this.syncInFlight = promise;
+    return promise;
   }
 
   private async _doSyncOnce(): Promise<void> {
@@ -442,14 +455,18 @@ export class CloudSyncClient {
       this.cloudNotAvailable = false;
       this.lastErrorMessage = null;
 
-      // Update lastSyncedAt on auth
-      const auth = getCloudAuth();
-      if (auth) auth.lastSyncedAt = new Date().toISOString();
+      // Audit-3 F8 修复:不再直接修改 getCloudAuth() 返回的对象(现在是 clone,改了也不持久化)。
+      // 走 updateCloudAuth → 内部走 saveAuthToDisk,保证内存与 keychain 一致。
+      updateCloudAuth({ lastSyncedAt: new Date().toISOString() });
 
       this.emitDataChanged();
     } catch (e) {
       const msg = (e as Error).message;
       this.lastErrorMessage = msg;
+      // Audit-3 F13 修复:catch 入口先清 syncNotReady。之前只在 404 分支 set true,
+      // 不在其他分支 set false → 一旦命中 404,后续即便服务端恢复 + 网络抖了一下进了
+      // else 分支,syncNotReady 仍为 true,UI 永远显示"服务未就绪"直到 app 重启或下次成功。
+      this.syncNotReady = false;
       if (msg === 'cloud_not_available') {
         this.cloudNotAvailable = true;
         this.status = 'offline';
@@ -573,11 +590,36 @@ export class CloudSyncClient {
     const items = getOutboxItems(this.db, 50);
     if (items.length === 0) return 0;
 
+    // Per-item JSON.parse 防御。原版用 `items.map(i => ({..., payload: JSON.parse(i.payload) }))`,
+    // 一条坏 payload 抛 SyntaxError 直接中断整批 fetch → 整个 outbox 永久卡死(HIGH bug)。
+    // 修复:坏的立即搬到 dead-letter(corrupted payload 是确定性失败,retry 5 次也修不好),
+    // 好的继续走。如果全部都是坏的 → 直接返回,不发空请求。
+    const validItems: Array<{ operation: string; payload: unknown; id: string }> = [];
+    const corruptedIds: string[] = [];
+    for (const item of items) {
+      try {
+        validItems.push({ operation: item.operation, payload: JSON.parse(item.payload), id: item.id });
+      } catch (err) {
+        log.warn(`outbox item ${item.id} payload corrupted: ${(err as Error).message}`);
+        corruptedIds.push(item.id);
+      }
+    }
+    if (corruptedIds.length > 0) {
+      for (const id of corruptedIds) {
+        deadLetterOutboxItem(this.db, id, 'corrupted_payload');
+      }
+      log.error(`outbox: dead-lettered ${corruptedIds.length} item(s) with corrupted JSON payload`);
+    }
+    if (validItems.length === 0) {
+      // 全部坏掉:这一轮没东西可推,直接返回。下一轮 push 队列里就只剩好的(或空)。
+      return 0;
+    }
+
     const base = getCloudBaseUrl();
     const res = await fetch(`${base}/api/v1/sync/outbox`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items: items.map(i => ({ operation: i.operation, payload: JSON.parse(i.payload) })) }),
+      body: JSON.stringify({ items: validItems.map(i => ({ operation: i.operation, payload: i.payload })) }),
     });
     if (!res.ok) throw new Error(`Outbox push failed: ${res.status}`);
 
@@ -597,7 +639,9 @@ export class CloudSyncClient {
 
     if (Array.isArray(data.results)) {
       for (const r of data.results) {
-        const item = items[r.index];
+        // 服务端 r.index 是相对 **发出去的 batch**(即 validItems),不是原始 items。
+        // 修复 corrupted-JSON 之后两者长度可能不同。
+        const item = validItems[r.index];
         if (!item) continue;
         if (r.status === 'ok' || r.status === 'skipped') {
           removeOutboxItem(this.db, item.id);
@@ -612,14 +656,14 @@ export class CloudSyncClient {
         }
       }
     } else {
-      // 老服务端:假设全部成功,保持原行为
-      for (const item of items) {
+      // 老服务端:假设全部成功,保持原行为(只对发出去的 validItems 删除)
+      for (const item of validItems) {
         removeOutboxItem(this.db, item.id);
         removed++;
       }
     }
 
-    log.info(`pushed ${items.length} outbox items: removed=${removed} failed=${failed} deadLettered=${deadLettered} quotaExhausted=${quotaExhausted}`);
+    log.info(`pushed ${validItems.length} outbox items: removed=${removed} failed=${failed} deadLettered=${deadLettered + corruptedIds.length} quotaExhausted=${quotaExhausted}`);
     return removed;
   }
 
@@ -664,34 +708,45 @@ export function destroySyncClient(): void {
  * 根因:triggerSync silent-success 了。
  */
 export async function triggerSync(): Promise<{ success: boolean; error?: string; errorDetail?: string }> {
-  if (!instance) return { success: false, error: 'not_initialized' };
-  await instance.syncOnce();
+  // Audit-3 F4 修复:capture instance ref,await 期间可能被 destroySyncClient 设 null。
+  // 必须保留本地 inst 引用避免 NPE;同时 await 结束后再次检查 instance,如果已被 destroy
+  // 则返 destroyed_during_sync 让 caller 知道是中途取消而非真失败。
+  const inst = instance;
+  if (!inst) return { success: false, error: 'not_initialized' };
+  await inst.syncOnce();
 
-  if (instance.cloudNotAvailable) {
-    return { success: false, error: 'cloud_not_available', errorDetail: instance.lastErrorMessage ?? undefined };
+  if (!instance) {
+    return { success: false, error: 'destroyed_during_sync' };
   }
-  if (instance.syncNotReady) {
-    return { success: false, error: 'sync_not_ready', errorDetail: instance.lastErrorMessage ?? undefined };
+  if (inst.cloudNotAvailable) {
+    return { success: false, error: 'cloud_not_available', errorDetail: inst.lastErrorMessage ?? undefined };
   }
-  const status = instance.getStatus();
+  if (inst.syncNotReady) {
+    return { success: false, error: 'sync_not_ready', errorDetail: inst.lastErrorMessage ?? undefined };
+  }
+  const status = inst.getStatus();
   if (status === 'offline') {
-    return { success: false, error: 'offline', errorDetail: instance.lastErrorMessage ?? undefined };
+    return { success: false, error: 'offline', errorDetail: inst.lastErrorMessage ?? undefined };
   }
   if (status === 'error') {
-    return { success: false, error: 'sync_error', errorDetail: instance.lastErrorMessage ?? undefined };
+    return { success: false, error: 'sync_error', errorDetail: inst.lastErrorMessage ?? undefined };
   }
   return { success: true };
 }
 
 /**
  * Get the number of pending outbox items. Called by IPC handler cloud:outbox-count.
- * Returns 0 if no DB is available.
+ *
+ * Audit-3 F14 修复:用 client 的 public getter 而不是 `as any`,并区分"无 instance"
+ * (返 0)和"查询失败"(返 -1 sentinel)。IPC 层把 -1 翻译成 UI 显示 "—",让用户
+ * 能看到是真没有 outbox 还是查询出错。之前 catch 全部吞掉返 0,DB 关了 / 查询失败
+ * 与"真没有 pending"完全无法区分。
  */
 export function getOutboxCount(): number {
   if (!instance) return 0;
   try {
-    return _getOutboxCount((instance as any).db);
+    return _getOutboxCount(instance.getDb());
   } catch {
-    return 0;
+    return -1;
   }
 }

@@ -86,6 +86,7 @@
     "apple_notes_incremental_sync": "备忘录增量同步（处理 {{processed}}）",
     "apple_notes_init_complete": "备忘录初始化完成：{{nodes}} 节点，{{links}} 链接，{{crystals}} 结晶",
     "profile_synthesized": "综合了画像（{{crystals}} 个结晶，{{preferences}} 条偏好）",
-    "pending_link_gc": "清理了 {{count}} 条过期待审链接"
+    "pending_link_gc": "清理了 {{count}} 条过期待审链接",
+    "circuit_breaker_manual_reset": "熔断器已手动重置"
   }
 }

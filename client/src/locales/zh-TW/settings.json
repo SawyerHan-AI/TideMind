@@ -155,12 +155,16 @@
       "title": "AI 服務狀態",
       "never": "從未",
       "currentStatus": "目前狀態",
-      "statusPaused": "熔斷中（剩餘 {{min}} 分鐘）",
       "statusDegraded": "近期失敗 {{count}} 次",
       "statusHealthy": "正常",
       "lastSuccess": "上次成功呼叫",
       "lastError": "上次錯誤",
-      "hint": "如需排查或測試連線，請到下方「模型連線」分別測試每個 provider。"
+      "hint": "如需排查或測試連線，請到下方「模型連線」分別測試每個 provider。",
+      "statusPausedCountdown": "熔斷中（剩餘 {{time}}）",
+      "retryNow": "立即重試",
+      "retrySuccess": "已重置熔斷狀態",
+      "retryError": "重試失敗",
+      "retryDebounceHint": "請稍候再試"
     }
   },
   "data": {

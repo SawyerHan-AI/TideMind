@@ -6,13 +6,13 @@ import { isVecLoaded } from '../db/connection.js';
 import { daysAgo, now } from '../utils/time.js';
 import { getParam, renderUserPrompt } from '../strategy/loader.js';
 import { inferLinkType } from '../llm/link-judge.js';
-import { callLLM } from '../llm/client.js';
+import { callLLM, LLMServiceError } from '../llm/client.js';
 import { updateConnectivity, refreshMaturityScore } from '../graph/maturity.js';
 import { RECONSOLIDATE_SYSTEM, reconsolidatePrompt } from '../llm/prompts.js';
 import { isLlmConfigured } from '../config.js';
 import { detectConflictSignals } from './conflict-heuristics.js';
 import { getPrompt, getLLMOptions } from '../strategy/loader.js';
-import { getCircuitState } from './scheduler.js';
+import { getCircuitState, notifyLLMFailure } from './scheduler.js';
 import { createLogger } from '../utils/logger.js';
 import { parseLLMJson } from '../llm/json-parse.js';
 
@@ -31,6 +31,33 @@ const log = createLogger('reconsolidate');
  */
 const inFlightNodes = new Set<string>();
 const MAX_CONCURRENT_RECONSOLIDATIONS = 5;
+
+/**
+ * 测试辅助:暴露 inFlightNodes 的当前状态用于断言。
+ * 业务代码不要走这个接口,只在 unit-test 里探查/重置。
+ */
+export const __testing = {
+  getInFlightSize: (): number => inFlightNodes.size,
+  hasInFlight: (id: string): boolean => inFlightNodes.has(id),
+  resetInFlight: (): void => { inFlightNodes.clear(); },
+  maxConcurrent: MAX_CONCURRENT_RECONSOLIDATIONS,
+  /** 模拟同步异常路径占名额后立即释放的核心控制流(测试用,签名稳定)。*/
+  simulateClaim(ids: string[]): { claimed: string[]; release: () => void } {
+    const claimed: string[] = [];
+    for (const id of ids) {
+      if (inFlightNodes.size >= MAX_CONCURRENT_RECONSOLIDATIONS) break;
+      if (inFlightNodes.has(id)) continue;
+      inFlightNodes.add(id);
+      claimed.push(id);
+    }
+    return {
+      claimed,
+      release: () => {
+        for (const id of claimed) inFlightNodes.delete(id);
+      },
+    };
+  },
+};
 
 /**
  * 读即写再巩固
@@ -185,11 +212,25 @@ export function reconsolidateOnRecall(
     (async () => {
       for (const node of dedupedTargets) {
         log.info(`深度再巩固触发 node=${node.id} reason=时间`);
-        try { await deepReconsolidate(db, node, nodes, context); } catch (err) { log.error('深度再巩固失败:', (err as Error).message); }
+        try {
+          await deepReconsolidate(db, node, nodes, context);
+        } catch (err) {
+          // 修复 F3(2026-05-21): LLMServiceError 通过 hook 通知熔断器 —
+          // recall 路径 fire-and-forget,不走 scheduler 的 recordLLMFailure,
+          // 否则熔断器只能靠 scheduler 低频 task 累积失败,这个路径完全绕过。
+          if (err instanceof LLMServiceError) notifyLLMFailure(err);
+          log.error('深度再巩固失败:', (err as Error).message);
+        }
       }
       // 条件 2+3: 预测误差驱动的冲突检测（仅在本次成功占到 sentinel 时才跑）
       if (detectSentinel) {
-        try { await detectAndReconsolidateAsync(db, nodes, context); } catch (err) { log.error('冲突检测失败:', (err as Error).message); }
+        try {
+          await detectAndReconsolidateAsync(db, nodes, context);
+        } catch (err) {
+          // 同 F3 修复:LLMServiceError 也通知熔断器
+          if (err instanceof LLMServiceError) notifyLLMFailure(err);
+          log.error('冲突检测失败:', (err as Error).message);
+        }
       }
     })()
       .catch(err => log.warn('再巩固 IIFE 未捕获异常:', (err as Error).message))

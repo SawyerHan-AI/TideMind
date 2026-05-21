@@ -100,7 +100,12 @@ describe('ipc schema helpers', () => {
     });
     expect(parseExternalUrl('file:///etc/passwd')).toMatchObject({
       ok: false,
-      error: { details: ['url protocol must be http or https'] },
+      error: { details: ['url protocol must be https'] },
+    });
+    // http on a non-localhost host is now rejected (https-only)
+    expect(parseExternalUrl('http://example.com/x')).toMatchObject({
+      ok: false,
+      error: { details: ['url protocol must be https'] },
     });
     expect(parseRequiredBoolean(true, 'enabled')).toEqual({ ok: true, data: true });
     expect(parseRequiredBoolean('true', 'enabled')).toMatchObject({

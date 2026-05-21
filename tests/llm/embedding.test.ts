@@ -173,4 +173,40 @@ describe('getEmbeddings - batch', () => {
     const results = await getEmbeddings(['text1', 'text2']);
     expect(results).toHaveLength(2);
   });
+
+  it('F6 修复: 第二条 fetch 失败时整批不应 reject,第二位置为 null', async () => {
+    // 历史 bug:Promise.all 一败俱败 — 当时如果某天 getEmbedding 改成会 throw
+    // (比如重构后忘了 catch),Promise.all 会让整批 reject,调用方得到
+    // unhandled rejection。改为 Promise.allSettled 后失败条目变成 null 占位,
+    // 整批不 reject,与既有 contract"返 (Float32Array|null)[]"对齐。
+    //
+    // 当前 getEmbedding 自身 catch fetch error 返 null,黑盒下走 fulfilled→null
+    // 路径。这里至少验证整批不 reject + 位置正确,作为契约 regression guard
+    // (未来若 getEmbedding 改成可能 throw,allSettled 的兜底依然能保住整批不 reject)。
+    vi.mocked(getConfig).mockReturnValue({
+      general: { data_dir: '/tmp/test-eb' },
+      embedding: { provider: 'ollama', model: 'nomic-embed-text', dimensions: 2 },
+      ollama: { url: 'http://localhost:11434' },
+      vertex: { project_id: '', region: 'us-central1' },
+      gemini: { api_key: '' },
+    } as any);
+
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ embeddings: [[0.1, 0.2]] }) })
+      .mockRejectedValueOnce(new Error('fetch failed'));
+
+    const { getEmbeddings: gE } = await import('../../src/llm/embedding.js');
+    await expect(gE(['ok-text', 'failing-text'])).resolves.toBeDefined();
+
+    // 重置 fetch 计数
+    mockFetch.mockReset();
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ embeddings: [[0.1, 0.2]] }) })
+      .mockRejectedValueOnce(new Error('fetch failed again'));
+
+    const results = await gE(['ok-text', 'failing-text']);
+    expect(results).toHaveLength(2);
+    // 第二条 reject 被 getOllamaEmbedding 自身 try/catch 兜底成 null,位置仍然对应。
+    expect(results[1]).toBeNull();
+  });
 });

@@ -155,12 +155,16 @@
       "title": "Status do serviço de IA",
       "never": "Nunca",
       "currentStatus": "Status atual",
-      "statusPaused": "Disjuntor aberto ({{min}} min restantes)",
       "statusDegraded": "Falhas recentes: {{count}}",
       "statusHealthy": "Saudável",
       "lastSuccess": "Última chamada bem-sucedida",
       "lastError": "Último erro",
-      "hint": "Para investigar ou testar conexões, use a seção \"Conexões de modelo\" abaixo."
+      "hint": "Para investigar ou testar conexões, use a seção \"Conexões de modelo\" abaixo.",
+      "statusPausedCountdown": "Pausado ({{time}} restantes)",
+      "retryNow": "Tentar novamente",
+      "retrySuccess": "Disjuntor redefinido",
+      "retryError": "Falha na nova tentativa",
+      "retryDebounceHint": "Aguarde um momento"
     }
   },
   "data": {

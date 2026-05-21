@@ -320,7 +320,8 @@ export interface AppApi {
     abortReconcile: () => Promise<{ success: boolean; error?: string }>
     triggerSync: () => Promise<{ success: boolean; error?: string; errorDetail?: string }>
     onReconcileProgress: (cb: (progress: unknown) => void) => () => void
-    outboxCount: () => Promise<number>
+    /** Audit-3 F14: null 表示查询失败(DB 关 / 异常),UI 应显示 "—" 而非 0。 */
+    outboxCount: () => Promise<number | null>
     memoryUsage: () => Promise<{ used: number; limit: number; plan: 'free' | 'pro' | 'pro_plus' }>
     loginUrl: () => Promise<string>
     registerUrl: () => Promise<string>
@@ -349,6 +350,11 @@ export interface AppApi {
   llm: {
     getHealth: () => Promise<LLMHealthSnapshot>
     onHealthChanged: (cb: (h: LLMHealthSnapshot) => void) => () => void
+    /**
+     * 重置熔断器 + 清 LLM client cache + 立即触发一次 scheduler tick。
+     * 用户在 UI 上点「立即重试」按钮时调用。返回新的 health snapshot。
+     */
+    resetAndRetry: () => Promise<LLMHealthSnapshot>
   }
   agents: {
     list: (includeArchived?: boolean) => Promise<AgentData[]>

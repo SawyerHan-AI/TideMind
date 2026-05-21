@@ -201,6 +201,14 @@ export async function runAnnotation(
       // LLMServiceError(429 / 5xx / 超时)必须向上抛,让 scheduler 看到并触发熔断器。
       // 否则策略整轮"看起来成功"(返回 skipped),熔断器永不打开,持续撞墙烧 token。
       if (err instanceof LLMServiceError) throw err;
+      // 程序员错误(TypeError / ReferenceError / SyntaxError)也必须向上抛:
+      // 这是 parseBatchResults / 映射逻辑里的代码 bug,继续吞掉会让"批次失败"
+      // 变成静默 skip,问题永远不被发现。冒到 scheduler 顶层后被 'programmer bug'
+      // 分支接住(只 log.error 不让 daemon 自杀)。
+      if (err instanceof TypeError || err instanceof ReferenceError || err instanceof SyntaxError) {
+        log.error(`programmer bug in annotate: ${(err as Error).stack ?? (err as Error).message}`);
+        throw err;
+      }
       log.error('节点标注失败:', (err as Error).message);
       totalSkipped += batch.length;
     }

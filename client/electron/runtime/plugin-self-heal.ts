@@ -37,6 +37,7 @@ import { buildClaudeCodeSkillFrontmatter } from '../ipc/agent-plugins/claude-cod
 import { repairMarketplaceJson, repairClaudeSettings } from '@server/utils/marketplace-repair.js'
 import { getShimPath, getHookScriptPath, getPreCompactHookScriptPath, getPostCompactHookScriptPath, getMcpServerScriptPath } from './runtime-paths'
 import { listAgents } from '@server/db/agents.js'
+import { safeReadTextFileSync } from '@server/utils/safe-fs.js'
 
 const log = createLogger('plugin-self-heal')
 
@@ -343,77 +344,83 @@ function healClaudeCodePlugins(
     }
 
     // hooks/hooks.json
+    // 注意:历史上这里用过 `if (!cfg?.hooks) continue`,但那个 continue 会跳到
+    // 外层 plugin 循环的下一次迭代,把本 plugin 的 step 4/5/6(SKILL.md / version /
+    // cache mirror)全部静默跳过——hooks.json 一旦被用户手改坏(变成空 `{}`),
+    // SKILL frontmatter 永远不会被 patch、plugin.json#version 永远不会 bump,
+    // 整个 plugin 卡在 partial-broken 状态。改成正向条件,避免污染外层循环。
     const hooksPath = path.join(pluginDir, 'hooks', 'hooks.json')
     if (fs.existsSync(hooksPath)) {
       result.scanned++
       const cfg = safeReadJson(hooksPath)
-      if (!cfg?.hooks) continue
-      let changed = false
+      if (cfg?.hooks) {
+        let changed = false
 
-      // 1) SessionStart 路径修正（原有逻辑）
-      if (cfg.hooks.SessionStart) {
-        for (const group of cfg.hooks.SessionStart) {
-          if (!Array.isArray(group?.hooks)) continue
-          for (const h of group.hooks) {
-            if (typeof h?.command !== 'string') continue
-            const parsed = parseHookCommand(h.command)
-            if (!parsed.agentId || !parsed.skillPath || !parsed.tool) continue
-            if (hookCommandNeedsPatch(h.command, shimPath, hookScriptPath, parsed.agentId)) {
-              h.command = rebuildHookCommand(shimPath, hookScriptPath, parsed.agentId, parsed.skillPath, parsed.tool)
-              changed = true
-            }
-          }
-        }
-      }
-
-      const identity = cfg.hooks.SessionStart ? extractSessionIdentity(cfg.hooks.SessionStart) : null
-
-      // 2) PreCompact：老版本是硬编码 echo 字符串，升级到脚本形态。
-      //    有且是 echo：整段替换；有且是新脚本形态但路径过期：修正路径
-      if (identity && Array.isArray(cfg.hooks.PreCompact)) {
-        for (const group of cfg.hooks.PreCompact) {
-          if (!Array.isArray(group?.hooks)) continue
-          for (const h of group.hooks) {
-            if (typeof h?.command !== 'string') continue
-            if (preCompactCommandNeedsPatch(h.command, shimPath, preCompactScriptPath)) {
-              h.command = buildPreCompactCommand(shimPath, preCompactScriptPath, identity.agentId, identity.tool)
-              if (typeof h.timeout !== 'number') h.timeout = 10000
-              changed = true
-            }
-          }
-        }
-      }
-
-      // 3) PostCompact：新增 hook，老 agent 可能没有这段。
-      //    有：按路径修正；无：从 SessionStart 提取 identity，补齐
-      if (identity) {
-        if (!Array.isArray(cfg.hooks.PostCompact) || cfg.hooks.PostCompact.length === 0) {
-          cfg.hooks.PostCompact = buildPostCompactSection(shimPath, postCompactScriptPath, identity.agentId, identity.tool)
-          changed = true
-          log.info(`added missing PostCompact section to: ${hooksPath}`)
-        } else {
-          for (const group of cfg.hooks.PostCompact) {
+        // 1) SessionStart 路径修正（原有逻辑）
+        if (cfg.hooks.SessionStart) {
+          for (const group of cfg.hooks.SessionStart) {
             if (!Array.isArray(group?.hooks)) continue
             for (const h of group.hooks) {
               if (typeof h?.command !== 'string') continue
               const parsed = parseHookCommand(h.command)
-              if (!parsed.agentId || !parsed.tool) continue
-              if (hookCommandNeedsPatch(h.command, shimPath, postCompactScriptPath, parsed.agentId)) {
-                h.command = rebuildHookCommand(shimPath, postCompactScriptPath, parsed.agentId, undefined, parsed.tool)
+              if (!parsed.agentId || !parsed.skillPath || !parsed.tool) continue
+              if (hookCommandNeedsPatch(h.command, shimPath, hookScriptPath, parsed.agentId)) {
+                h.command = rebuildHookCommand(shimPath, hookScriptPath, parsed.agentId, parsed.skillPath, parsed.tool)
                 changed = true
               }
             }
           }
         }
-      }
 
-      if (changed) {
-        try {
-          safeWriteJson(hooksPath, cfg)
-          result.patched++
-          log.info(`patched: ${hooksPath}`)
-        } catch (err: any) {
-          result.errors.push({ file: hooksPath, error: err.message })
+        const identity = cfg.hooks.SessionStart ? extractSessionIdentity(cfg.hooks.SessionStart) : null
+
+        // 2) PreCompact：老版本是硬编码 echo 字符串，升级到脚本形态。
+        //    有且是 echo：整段替换；有且是新脚本形态但路径过期：修正路径
+        if (identity && Array.isArray(cfg.hooks.PreCompact)) {
+          for (const group of cfg.hooks.PreCompact) {
+            if (!Array.isArray(group?.hooks)) continue
+            for (const h of group.hooks) {
+              if (typeof h?.command !== 'string') continue
+              if (preCompactCommandNeedsPatch(h.command, shimPath, preCompactScriptPath)) {
+                h.command = buildPreCompactCommand(shimPath, preCompactScriptPath, identity.agentId, identity.tool)
+                if (typeof h.timeout !== 'number') h.timeout = 10000
+                changed = true
+              }
+            }
+          }
+        }
+
+        // 3) PostCompact：新增 hook，老 agent 可能没有这段。
+        //    有：按路径修正；无：从 SessionStart 提取 identity，补齐
+        if (identity) {
+          if (!Array.isArray(cfg.hooks.PostCompact) || cfg.hooks.PostCompact.length === 0) {
+            cfg.hooks.PostCompact = buildPostCompactSection(shimPath, postCompactScriptPath, identity.agentId, identity.tool)
+            changed = true
+            log.info(`added missing PostCompact section to: ${hooksPath}`)
+          } else {
+            for (const group of cfg.hooks.PostCompact) {
+              if (!Array.isArray(group?.hooks)) continue
+              for (const h of group.hooks) {
+                if (typeof h?.command !== 'string') continue
+                const parsed = parseHookCommand(h.command)
+                if (!parsed.agentId || !parsed.tool) continue
+                if (hookCommandNeedsPatch(h.command, shimPath, postCompactScriptPath, parsed.agentId)) {
+                  h.command = rebuildHookCommand(shimPath, postCompactScriptPath, parsed.agentId, undefined, parsed.tool)
+                  changed = true
+                }
+              }
+            }
+          }
+        }
+
+        if (changed) {
+          try {
+            safeWriteJson(hooksPath, cfg)
+            result.patched++
+            log.info(`patched: ${hooksPath}`)
+          } catch (err: any) {
+            result.errors.push({ file: hooksPath, error: err.message })
+          }
         }
       }
     }
@@ -496,12 +503,17 @@ export function mirrorPluginToClaudeCache(
   // 缓存目录用 plugin name,不是目录名。
   const sourcePluginJson = path.join(sourcePluginDir, '.claude-plugin', 'plugin.json')
   let pluginName: string | null = null
+  // Audit-3 F9 修复:走 safe-fs。pluginsRoot 是 ~/Library/Application Support/eb/...,
+  // 用户在 iCloud "优化存储" 时可能被驱逐成 dataless,readFileSync 会同步阻塞。
+  const pjRead = safeReadTextFileSync(sourcePluginJson)
+  if (!pjRead.ok) {
+    // plugin.json 缺失/dataless/损坏:无法决定缓存目录名,跳过镜像。
+    return
+  }
   try {
-    const pj = JSON.parse(fs.readFileSync(sourcePluginJson, 'utf-8'))
+    const pj = JSON.parse(pjRead.content)
     if (typeof pj?.name === 'string') pluginName = pj.name
   } catch {
-    // plugin.json 缺失或损坏,无法决定缓存目录名。跳过镜像——这种情况下
-    // syncPluginVersion 也跳过,整体行为一致。
     return
   }
   if (!pluginName) return
@@ -525,12 +537,39 @@ export function mirrorPluginToClaudeCache(
     } catch { continue }
     for (const version of versions) {
       const versionDir = path.join(pluginCacheRoot, version)
+      // Audit-3 F9 修复:用 lstatSync(不跟随 symlink),且显式跳过 symlink 目录。
+      // 之前 statSync 会跟随 symlink → 攻击者(或恶意软件)在 cache 下种一个指向
+      // 任意目录的 symlink,镜像逻辑会顺着 symlink 写到 cacheRoot 之外。
+      let lstat: fs.Stats
       try {
-        if (!fs.statSync(versionDir).isDirectory()) continue
+        lstat = fs.lstatSync(versionDir)
       } catch { continue }
+      if (lstat.isSymbolicLink()) {
+        log.warn(`skipping symlink in cache dir: ${versionDir}`)
+        continue
+      }
+      if (!lstat.isDirectory()) continue
+      // 二次防御:确保 versionDir 真的在 cacheRoot 之下(即便没有 symlink,防御
+      // path traversal,例如版本目录名含 '../')
+      if (!isPathWithinRoot(versionDir, cacheRoot)) {
+        log.warn(`skipping out-of-root version dir: ${versionDir}`)
+        continue
+      }
       mirrorVersionDir(sourcePluginDir, versionDir, result)
     }
   }
+}
+
+/**
+ * Audit-3 F9:验证 candidate 真实路径在 root 之下,防御 path traversal 与 symlink 跳出。
+ * 用 path.resolve 把 '..' 展开,再用 startsWith + path separator 校验。
+ */
+function isPathWithinRoot(candidate: string, root: string): boolean {
+  const resolvedCand = path.resolve(candidate)
+  const resolvedRoot = path.resolve(root)
+  const sep = path.sep
+  return resolvedCand === resolvedRoot
+    || resolvedCand.startsWith(resolvedRoot + sep)
 }
 
 function mirrorVersionDir(sourcePluginDir: string, versionDir: string, result: HealResult): void {
@@ -538,12 +577,15 @@ function mirrorVersionDir(sourcePluginDir: string, versionDir: string, result: H
     const src = path.join(sourcePluginDir, rel)
     const dst = path.join(versionDir, rel)
     if (!fs.existsSync(src) || !fs.existsSync(dst)) continue
-    let srcContent: string
-    let dstContent: string
-    try {
-      srcContent = fs.readFileSync(src, 'utf-8')
-      dstContent = fs.readFileSync(dst, 'utf-8')
-    } catch { continue }
+    // Audit-3 F9 修复:dst 是 ~/.claude/plugins/cache/* 下的文件,理论上是程序自己写的,
+    // 但用户家目录在 iCloud Drive 时会被 "优化存储" 驱逐成 dataless,fs.readFileSync 命中
+    // 会同步阻塞主进程触发 iCloud 下载。走 safeReadTextFileSync,dataless 文件直接跳过。
+    const srcRead = safeReadTextFileSync(src)
+    if (!srcRead.ok) continue
+    const dstRead = safeReadTextFileSync(dst)
+    if (!dstRead.ok) continue
+    const srcContent = srcRead.content
+    const dstContent = dstRead.content
     if (srcContent === dstContent) continue
     result.scanned++
     try {

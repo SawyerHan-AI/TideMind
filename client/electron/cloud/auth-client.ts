@@ -132,6 +132,16 @@ function loadAuthFromDisk(): void {
   }
   try {
     cachedAuth = JSON.parse(buf.toString('utf-8'));
+    // Audit-3 F5 修复:Parse 成功 != 数据合法。需要 schema 校验,防止畸形数据
+    // (TimeMachine 半还原 / 手工修改 / 老 schema 残留)被加载后下游访问 accessToken
+    // / refreshToken / expiresAt 字段时 undefined 触发崩溃。校验失败 → 清掉 + warn,
+    // 等同于"未登录",让用户重登。
+    if (!isValidCloudAuthShape(cachedAuth)) {
+      log.warn('auth shape invalid after parse — clearing and treating as logged out');
+      try { secureStore.delete(STORE_SERVICE, STORE_ACCOUNT); } catch { /* ignore */ }
+      cachedAuth = null;
+      return;
+    }
     log.info('restored auth session from disk');
   } catch (err) {
     // 数据损坏:清掉,让用户重登。比静默挂死好。
@@ -344,7 +354,26 @@ export function getCloudBaseUrl(): string {
 }
 
 export function isLoggedIn(): boolean { return cachedAuth !== null; }
-export function getCloudAuth(): CloudAuth | null { return cachedAuth; }
+
+/**
+ * Audit-3 F8 修复:返回 shallow clone 而非内部 cachedAuth 引用。
+ * 之前 sync-client.ts 等模块直接 `auth.lastSyncedAt = ...` 修改返回对象,
+ * 而该对象就是模块内部的 cachedAuth → 跳过 saveAuthToDisk,内存与磁盘漂移。
+ * 现在 caller 拿到的是副本,改也不会回写;状态变更必须走 updateCloudAuth。
+ */
+export function getCloudAuth(): CloudAuth | null {
+  return cachedAuth ? { ...cachedAuth } : null;
+}
+
+/**
+ * Audit-3 F8:受控更新接口。所有需要修改 cachedAuth 字段的地方(lastSyncedAt 等)
+ * 都应该通过这里 — 保证 in-memory 与 secureStore 持久化同步。
+ */
+export function updateCloudAuth(patch: Partial<CloudAuth>): void {
+  if (!cachedAuth) return;
+  cachedAuth = { ...cachedAuth, ...patch };
+  saveAuthToDisk();
+}
 
 /**
  * 生成 PKCE S256 pair (RFC 7636)。
@@ -545,6 +574,49 @@ export async function logout(): Promise<void> {
 }
 
 /**
+ * 把 refresh-token HTTP 响应分类为 ok / permanent / transient。
+ *
+ * 设计语义:
+ *   - networkError = true        → transient(网络抖动,保留登录态)
+ *   - status 200-299             → ok(成功)
+ *   - status 400 / 401 / 403     → permanent(凭据真坏,清除登录态)
+ *   - 其他 status(含 5xx / 408 / 429 / 解析失败等) → transient
+ *
+ * 抽出为纯函数 + export 是为了让单元测试可以直接 import 真源
+ * (替代 inline-copy 测试)。refreshTokenIfNeeded 仍是上面分类规则的
+ * **唯一**消费者,内部 5xx 重试逻辑不在此函数范围内。
+ */
+export function classifyRefreshResult(args: {
+  networkError: boolean;
+  status?: number;
+}): 'ok' | 'permanent' | 'transient' {
+  if (args.networkError) return 'transient';
+  const s = args.status ?? 0;
+  if (s >= 200 && s < 300) return 'ok';
+  if (s === 400 || s === 401 || s === 403) return 'permanent';
+  return 'transient';
+}
+
+/**
+ * 同一时刻只允许一个真正的 refresh 请求在飞。
+ *
+ * 背景:6+ 处 fire-and-forget caller(sync-client / mcp-router / strategy-push /
+ * reconciler 各路)会近乎同时发现 access_token 过期、并发调用 refreshTokenIfNeeded()。
+ * OAuth 2.1 rotating refresh-token 语义下,服务端只接受第一个 refresh_token,
+ * 之后再来的请求拿的是已作废的老 refresh_token,会被 400 拒绝。老逻辑会把这种 400
+ * 判作 permanent → cachedAuth 清空 → 用户被**无声登出**(CRITICAL bug)。
+ *
+ * 修复:加 inflight Promise mutex,所有并发 caller 复用同一个 Promise,
+ * 只发一次网络请求,大家拿到同一个新 access_token。模式与 embedding.ts
+ * 的 inflightAvailabilityCheck / auth-codes.ts 的 inflightCleanup 一致。
+ *
+ * 注意:**只 mutex 真正发 refresh 请求的那段**,而不是整个 function。因为快路径
+ *("token 还有效,直接返回"和"cachedAuth=null,直接 null")是纯内存读,
+ * 没必要排队。
+ */
+let inflightRefresh: Promise<string | null> | null = null;
+
+/**
  * 按需刷新 access token。
  *
  * 返回值语义:
@@ -555,6 +627,9 @@ export async function logout(): Promise<void> {
  * 抛异常:**临时性失败**(网络错误、5xx、超时)。登录态保留,调用方可以选择稍后重试
  * 而不是把用户"无声登出"——否则网络一抖用户的 outbox 就永久卡住。
  *
+ * 并发安全:同一时刻只发一次真实 refresh 网络请求,所有并发 caller 复用结果。
+ * 见 inflightRefresh 注释。
+ *
  * 额外:5xx 有一次短暂退避重试,避开边缘波动。
  */
 export async function refreshTokenIfNeeded(): Promise<string | null> {
@@ -562,6 +637,28 @@ export async function refreshTokenIfNeeded(): Promise<string | null> {
   if (Date.now() < cachedAuth.expiresAt - 5 * 60 * 1000) {
     return cachedAuth.accessToken; // Still valid
   }
+
+  // 已有刷新在飞 → 复用,避免 OAuth 2.1 rotating refresh-token 下的"第二个 caller
+  // 拿已作废 refresh_token 去刷 → 400 → cachedAuth 清空 → 无声登出"。
+  if (inflightRefresh) return inflightRefresh;
+
+  inflightRefresh = doRefreshToken();
+  // .finally 链清空槽位,异常路径也释放(不然下次永远不刷)。
+  // 注意:不能用 await + try/finally 写法,因为我们要立刻把 inflightRefresh 设上让
+  // 并发 caller 拿到,而不是等 await 完才设。
+  inflightRefresh.finally(() => { inflightRefresh = null; }).catch(() => { /* 已被 caller await */ });
+  return inflightRefresh;
+}
+
+/**
+ * 实际执行 refresh 的内部函数。从 refreshTokenIfNeeded 抽出来,
+ * 让 mutex 包装层 (inflightRefresh) 写法干净——只关心"已经在飞了吗"。
+ *
+ * cachedAuth 在调用进来前已经确认非空(快路径已 return),但为防止竞态
+ * (logout 中途清空 cachedAuth)在内部再读一次。
+ */
+async function doRefreshToken(): Promise<string | null> {
+  if (!cachedAuth) return null; // 防御:进入 await 链时被 logout 清空
   const base = getCloudBaseUrl();
   const body = JSON.stringify({ grant_type: 'refresh_token', refresh_token: cachedAuth.refreshToken });
 
@@ -587,6 +684,7 @@ export async function refreshTokenIfNeeded(): Promise<string | null> {
 
   if (res.ok) {
     const data = await res.json() as { access_token: string; refresh_token: string; expires_in: number };
+    if (!cachedAuth) return null; // 防御:并发 logout
     // 先快照旧值,持久化失败时回滚。理由:OAuth 2.1 推荐 rotating refresh tokens,
     // 服务端会作废旧 refresh_token。如果"内存里换上新 token + 盘上还是旧 token",
     // 下次启动加载的是旧 token → 服务端 reject → 用户被强制重登(audit-2 HIGH #3)。
@@ -608,7 +706,9 @@ export async function refreshTokenIfNeeded(): Promise<string | null> {
   }
 
   // 400 / 401 / 403 = 凭据真的坏了,清除。其他非 2xx(包括重试后仍 5xx)保留并抛异常。
-  if (res.status === 400 || res.status === 401 || res.status === 403) {
+  // 走 classifyRefreshResult 保持源码与测试同源。
+  const classification = classifyRefreshResult({ networkError: false, status: res.status });
+  if (classification === 'permanent') {
     log.error(`refreshToken permanent failure: ${res.status} — logging out`);
     cachedAuth = null;
     saveAuthToDisk();

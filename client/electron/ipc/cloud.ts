@@ -37,6 +37,19 @@ function emitCloudChanged(): void {
 export function registerCloudHandlers(db?: Database.Database): void {
   // Login
   ipcMain.handle('cloud:login', async (_event, email: string, password: string) => {
+    // F6 (audit-9): IPC 层长度上限,与服务器端 /login 对齐(email ≤ 254 / password ≤ 256)。
+    // IPC 是受信通道,但加这层挡 UI/extension bug 早失败而不是绕一圈到 server 再 400。
+    //
+    // MEDIUM 8 (audit-10, 2026-05-21):cap 校验失败由 throw 改成 return
+    // `{ success: false, error }` 结构化失败 — 跟 renderer 其他通道(connections /
+    // pick-vertex-file 等)对齐,renderer 不用为这个 IPC 单独写 try/catch。
+    // login 本身仍可能因网络/认证 throw,renderer 已有兜底,不影响。
+    if (typeof email !== 'string' || typeof password !== 'string') {
+      return { success: false, error: 'email and password must be strings' };
+    }
+    if (email.length > 254 || password.length > 256) {
+      return { success: false, error: 'email or password too long' };
+    }
     const { login } = await import('../cloud/auth-client.js');
     return login(email, password);
   });
@@ -117,7 +130,12 @@ export function registerCloudHandlers(db?: Database.Database): void {
         // 旧逻辑把"无 syncClient"也当 offline,导致未开启同步的用户被错误地显示为"离线"
         online: syncClient ? syncClient.getStatus() !== 'offline' : true,
         syncing: syncClient ? syncClient.getStatus() === 'syncing' : false,
-        outboxCount: outboxDiagnostics?.pendingCount ?? (syncClient ? getOutboxCount() : 0),
+        // Audit-3 F14:-1 表示查询失败 → null,让前端显示 "—" 而非 "0 pending"。
+        outboxCount: outboxDiagnostics?.pendingCount ?? (() => {
+          if (!syncClient) return 0;
+          const c = getOutboxCount();
+          return c < 0 ? null : c;
+        })(),
         lastSyncedAt: auth.lastSyncedAt ?? null,
         cloudNotAvailable: syncClient?.cloudNotAvailable ?? false,
         syncNotReady: syncClient?.syncNotReady ?? false,
@@ -307,12 +325,15 @@ export function registerCloudHandlers(db?: Database.Database): void {
   });
 
   // Get outbox count
+  // Audit-3 F14:getOutboxCount 返 -1 表示查询失败(DB 关 / 异常),IPC 翻译成 null,
+  // 让 UI 显示 "—" 而不是 "0 pending"(后者会让用户误以为没有未同步)。
   ipcMain.handle('cloud:outbox-count', async () => {
     try {
       const { getOutboxCount } = await import('../cloud/sync-client.js');
-      return getOutboxCount();
+      const count = getOutboxCount();
+      return count < 0 ? null : count;
     } catch {
-      return 0;
+      return null;
     }
   });
 

@@ -36,12 +36,20 @@ export function claimNextPendingDigest(
   // 用 processing_started_at 判定：进入 processing 时写入，stale recovery 比对它；
   // 兼容 v19 之前的老数据（processing_started_at IS NULL）——把它们一并回收，
   // 免得被无限卡住。
+  //
+  // 修复 F5(2026-05-21): processing_started_at 列是 JS ISO
+  // 'YYYY-MM-DDTHH:MM:SS.sssZ',原先用 `datetime('now', '-10 minutes')` 返回
+  // 'YYYY-MM-DD HH:MM:SS'(空格分隔无 Z)。二者按字典序比较时 position 10 是
+  // 'T' (0x54) vs ' ' (0x20),'T' > ' ',导致所有 ISO 字符串永远 ">" SQLite datetime
+  // → stale 条件永远不触发,进程崩溃留下的 processing 行被无限卡住。
+  // 改为 JS 侧算 cutoff 的 ISO 字符串再丢给 SQL,ISO 之间字典序 = 时间序。
+  const staleCutoff = new Date(Date.now() - 10 * 60_000).toISOString();
   const staleReset = db.prepare(`
     UPDATE pending_digests
     SET status = 'pending', retry_count = retry_count + 1, processing_started_at = NULL
     WHERE status = 'processing'
-      AND (processing_started_at IS NULL OR processing_started_at < datetime('now', '-10 minutes'))
-  `).run();
+      AND (processing_started_at IS NULL OR processing_started_at < ?)
+  `).run(staleCutoff);
   if (staleReset.changes > 0) {
     log.warn(`Recovered ${staleReset.changes} stale processing digest(s)`);
   }

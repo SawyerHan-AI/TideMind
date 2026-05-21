@@ -240,6 +240,35 @@ describe('mirrorPluginToClaudeCache', () => {
     expect(fs.readFileSync(path.join(legacy, 'hooks', 'hooks.json'), 'utf-8')).toBe(sourceHooks)
     expect(result.patched).toBe(1)
   })
+
+  // Audit-3 F9: symlink 防御 + path traversal 防御 + safe-fs(dataless 跳过)
+  it('F9: skips symlink "version" entries instead of following them', () => {
+    makePluginDir(pluginsRoot, defaultPluginFiles('1.0.123'))
+    // 真版本目录 + 一个 symlink 指向 /tmp/ 之外的恶意目录
+    setupCacheVersion('1.0.0', { 'hooks/hooks.json': '{"hooks":{"old":1}}' })
+
+    const evilTarget = fs.mkdtempSync(path.join(os.tmpdir(), 'evil-target-'))
+    // 在 evilTarget 里放一个 hooks.json 让 mirror 顺着 symlink 写过去(应被防御阻止)
+    fs.mkdirSync(path.join(evilTarget, 'hooks'), { recursive: true })
+    fs.writeFileSync(path.join(evilTarget, 'hooks', 'hooks.json'), '{"hooks":{"victim":1}}')
+    const evilLink = path.join(homeDir, '.claude', 'plugins', 'cache', 'tidemind-local', PLUGIN_NAME, '999.999.999')
+    try {
+      fs.symlinkSync(evilTarget, evilLink, 'dir')
+    } catch (err) {
+      // 某些 CI 不允许 symlink — 此 case 跳过
+      console.warn('symlink unsupported, skipping F9 symlink case:', (err as Error).message)
+      return
+    }
+
+    const result = makeResult()
+    mirrorPluginToClaudeCache(pluginsRoot, PLUGIN_DIR_NAME, result, homeDir)
+
+    // 受害目录的 hooks.json 应**不**被覆盖
+    const victim = fs.readFileSync(path.join(evilTarget, 'hooks', 'hooks.json'), 'utf-8')
+    expect(victim).toBe('{"hooks":{"victim":1}}')
+
+    fs.rmSync(evilTarget, { recursive: true, force: true })
+  })
 })
 
 import { healClaudeCodeSkillFile } from '../../client/electron/runtime/plugin-self-heal'

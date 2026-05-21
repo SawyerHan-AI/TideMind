@@ -155,12 +155,16 @@
       "title": "KI-Dienststatus",
       "never": "Nie",
       "currentStatus": "Aktueller Status",
-      "statusPaused": "Stromkreis unterbrochen (noch {{min}} Min.)",
       "statusDegraded": "Aktuelle Fehler: {{count}}",
       "statusHealthy": "Gesund",
       "lastSuccess": "Letzter erfolgreicher Aufruf",
       "lastError": "Letzter Fehler",
-      "hint": "Zum Untersuchen oder Testen der Verbindungen verwenden Sie den Abschnitt „Modellverbindungen“ unten."
+      "hint": "Zum Untersuchen oder Testen der Verbindungen verwenden Sie den Abschnitt „Modellverbindungen“ unten.",
+      "statusPausedCountdown": "Pausiert (noch {{time}})",
+      "retryNow": "Jetzt erneut versuchen",
+      "retrySuccess": "Schutzschalter zurückgesetzt",
+      "retryError": "Erneuter Versuch fehlgeschlagen",
+      "retryDebounceHint": "Bitte warten Sie einen Moment"
     }
   },
   "data": {

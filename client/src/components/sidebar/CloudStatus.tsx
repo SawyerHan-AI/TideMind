@@ -36,7 +36,7 @@ export function CloudStatus() {
         style={{ boxShadow: dotShadow }}
       />
       <span className="text-[10px] text-gray-500 truncate">{label}</span>
-      {cloud.outboxCount > 0 && (
+      {cloud.outboxCount !== null && cloud.outboxCount > 0 && (
         <span className="ml-auto text-[9px] font-medium text-amber-400 bg-amber-400/10 px-1.5 py-0.5 rounded-full leading-none">
           {cloud.outboxCount}
         </span>

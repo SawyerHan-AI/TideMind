@@ -155,12 +155,16 @@
       "title": "État du service IA",
       "never": "Jamais",
       "currentStatus": "État actuel",
-      "statusPaused": "Disjoncteur ouvert ({{min}} min restantes)",
       "statusDegraded": "Échecs récents : {{count}}",
       "statusHealthy": "Sain",
       "lastSuccess": "Dernier appel réussi",
       "lastError": "Dernière erreur",
-      "hint": "Pour diagnostiquer ou tester, utilisez la section « Connexions de modèles » ci-dessous."
+      "hint": "Pour diagnostiquer ou tester, utilisez la section « Connexions de modèles » ci-dessous.",
+      "statusPausedCountdown": "En pause ({{time}} restant)",
+      "retryNow": "Réessayer maintenant",
+      "retrySuccess": "Disjoncteur réinitialisé",
+      "retryError": "Échec de la nouvelle tentative",
+      "retryDebounceHint": "Veuillez patienter un instant"
     }
   },
   "data": {

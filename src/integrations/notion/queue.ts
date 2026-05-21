@@ -19,6 +19,8 @@ import {
   getPendingRelationsForTarget,
   removePendingRelation,
   removePendingRelationsForSource,
+  recordPageFailure,
+  clearPageFailure,
 } from './sync-state.js';
 import { NOTION_SYSTEM_PROPERTIES } from './types.js';
 import type { ImportProgress, NotionPageSummary } from './types.js';
@@ -51,6 +53,26 @@ export function getImportProgress(sourceId: string): ImportProgress {
 export function resetProgress(sourceId: string): void {
   progressMap.delete(sourceId);
 }
+
+/**
+ * 测试用:暴露 progressMap 状态供 F15 回归断言。
+ * 业务路径不要调,直接走 getImportProgress / resetProgress。
+ */
+export const __testing = {
+  hasProgress: (sourceId: string): boolean => progressMap.has(sourceId),
+  /** 直接写入 progress 用于模拟"add source → start sync"中间态 */
+  seedProgress: (sourceId: string): void => {
+    progressMap.set(sourceId, {
+      phase: 'processing',
+      totalFiles: 5,
+      processedFiles: 2,
+      skippedFiles: 0,
+      failedFiles: 0,
+      currentFile: 'page-X',
+      startedAt: new Date().toISOString(),
+    });
+  },
+};
 
 // ── 主处理函数 ────────────────────────────────────────────────
 
@@ -89,9 +111,24 @@ export async function processNotionPages(
     try {
       await processOnePage(db, token, pageSummary, sourceId);
       progress.processedFiles++;
+      // B-2: 成功一次就清掉重试记录(可能本来就没有,DELETE 无 row 不会报错)。
+      try {
+        clearPageFailure(db, pageSummary.id, sourceId);
+      } catch (clearErr) {
+        // 表不存在(老 DB 未迁移)或 DB 异常 — 主流程不应被影响
+        log.warn(`clearPageFailure 失败 (${pageSummary.id}): ${(clearErr as Error).message}`);
+      }
     } catch (e) {
-      log.error(`处理页面失败 (${pageSummary.id}): ${(e as Error).message}`);
+      const errMsg = (e as Error).message;
+      log.error(`处理页面失败 (${pageSummary.id}): ${errMsg}`);
       progress.failedFiles++;
+      // B-2: 失败入 pending_retry,attempts+1。若达到 MAX → dead_letter,
+      // 不再被 getPagesPendingRetry 合入下次 sync。
+      try {
+        recordPageFailure(db, pageSummary.id, sourceId, errMsg);
+      } catch (recordErr) {
+        log.warn(`recordPageFailure 失败 (${pageSummary.id}): ${(recordErr as Error).message}`);
+      }
     }
 
     if (onPageDone) {

@@ -210,10 +210,18 @@ export class Reconciler {
   // ── Manifest 拉取 ────────────────────────────────────────
 
   private async fetchServerManifest(table: Table): Promise<ManifestEntry[]> {
+    // Audit-3 F7 软上限:防御服务端 has_more 不收口、cursor 一直推进但每次都返回新条目
+    // 的故障模式。MAX_MANIFEST_PAGES 已挡极端情况,这里再加一个 entry 总量上限,
+    // 比 MAX_MANIFEST_PAGES × MANIFEST_PAGE_LIMIT(500 万)更激进,真实用户数据
+    // 量两年都到不了 100 万,命中就是异常。
+    const SOFT_LIMIT = 1_000_000;
     const all: ManifestEntry[] = [];
     let cursor = '';
     let pages = 0;
     while (pages < MAX_MANIFEST_PAGES) {
+      // Audit-3 F7:循环顶部检查 abort,让用户点"取消"时长 manifest 拉取能及时退出
+      // (避免数百页拉完才看到 aborted 检查)
+      if (this.aborted) throw new Error('aborted');
       pages++;
       const token = await refreshTokenIfNeeded();
       if (!token) throw new Error('not_logged_in');
@@ -228,6 +236,12 @@ export class Reconciler {
       }
       const data = await res.json() as { items: ManifestEntry[]; has_more: boolean; next_cursor: string | null };
       all.push(...data.items);
+      // Audit-3 F7 软上限检查 + 伪进度上报(让 UI 在长 manifest 拉取时有反馈)
+      if (all.length > SOFT_LIMIT) {
+        throw new Error(`manifest too large (${all.length} > ${SOFT_LIMIT}); aborting to prevent OOM`);
+      }
+      this.progress.processed = pages * MANIFEST_PAGE_LIMIT;
+      this.emitProgress();
       if (!data.has_more || !data.next_cursor) break;
       // 修复(2026-05-20 Audit F-2):防御服务端 cursor 退化 bug —
       // 如果新 cursor 等于上次 cursor,说明分页逻辑卡住了,立即报错避免内存无限增长。

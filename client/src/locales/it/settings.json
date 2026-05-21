@@ -155,12 +155,16 @@
       "title": "Stato del servizio IA",
       "never": "Mai",
       "currentStatus": "Stato attuale",
-      "statusPaused": "Interruttore aperto ({{min}} min rimanenti)",
       "statusDegraded": "Errori recenti: {{count}}",
       "statusHealthy": "Integro",
       "lastSuccess": "Ultima chiamata riuscita",
       "lastError": "Ultimo errore",
-      "hint": "Per indagare o testare le connessioni, usa la sezione «Connessioni modello» qui sotto."
+      "hint": "Per indagare o testare le connessioni, usa la sezione «Connessioni modello» qui sotto.",
+      "statusPausedCountdown": "In pausa ({{time}} rimanenti)",
+      "retryNow": "Riprova ora",
+      "retrySuccess": "Interruttore ripristinato",
+      "retryError": "Nuovo tentativo non riuscito",
+      "retryDebounceHint": "Attendere un momento"
     }
   },
   "data": {

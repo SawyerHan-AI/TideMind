@@ -155,12 +155,16 @@
       "title": "AI 서비스 상태",
       "never": "없음",
       "currentStatus": "현재 상태",
-      "statusPaused": "서킷 차단 중 ({{min}}분 남음)",
       "statusDegraded": "최근 실패: {{count}}회",
       "statusHealthy": "정상",
       "lastSuccess": "마지막 성공 호출",
       "lastError": "마지막 오류",
-      "hint": "조사하거나 연결을 테스트하려면 아래 \"모델 연결\" 섹션을 사용하세요."
+      "hint": "조사하거나 연결을 테스트하려면 아래 \"모델 연결\" 섹션을 사용하세요.",
+      "statusPausedCountdown": "일시 중지 중 (남은 시간 {{time}})",
+      "retryNow": "지금 재시도",
+      "retrySuccess": "회로 차단기가 재설정되었습니다",
+      "retryError": "재시도 실패",
+      "retryDebounceHint": "잠시만 기다려 주세요"
     }
   },
   "data": {

@@ -180,6 +180,11 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
       if (prog.phase === 'done' || prog.phase === 'failed') {
         if (reconcileClearTimer.current) clearTimeout(reconcileClearTimer.current)
         reconcileClearTimer.current = setTimeout(() => setReconcileProgress(null), 3000)
+      } else if (reconcileClearTimer.current) {
+        // F9: 非终态进度到达,取消还在跑的"3 秒后清空"定时器,
+        // 否则上一轮 done/failed 排队的 timer 会把这一轮新的进度一起吞掉。
+        clearTimeout(reconcileClearTimer.current)
+        reconcileClearTimer.current = null
       }
     })
     return () => {
@@ -383,8 +388,8 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
 
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-gray-500">{t('settings:cloud.dataSync.pending', 'Pending changes')}</span>
-                  <span className={`text-xs font-mono ${cloud.outboxCount > 0 ? 'text-amber-400' : 'text-gray-500'}`}>
-                    {cloud.outboxCount}
+                  <span className={`text-xs font-mono ${cloud.outboxCount !== null && cloud.outboxCount > 0 ? 'text-amber-400' : 'text-gray-500'}`}>
+                    {cloud.outboxCount ?? '—'}
                   </span>
                 </div>
 

@@ -195,6 +195,8 @@ const api: AppApi = {
       ipcRenderer.on('llm-health-changed', listener)
       return () => { ipcRenderer.off('llm-health-changed', listener) }
     },
+    // 用户在 UI 上点「立即重试」:重置熔断器 + 清 client cache + 立即触发 tick
+    resetAndRetry: () => ipcRenderer.invoke('llm:reset-and-retry'),
   },
   agents: {
     list: (includeArchived?: boolean) => ipcRenderer.invoke('agents:list', includeArchived),

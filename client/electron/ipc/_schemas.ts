@@ -336,9 +336,6 @@ export function parseExternalUrl(value: unknown): ValidationResult<string> {
     return invalid('url must be valid')
   }
 
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    return invalid('url protocol must be http or https')
-  }
   if (url.username || url.password) {
     return invalid('url must not contain credentials')
   }
@@ -346,12 +343,27 @@ export function parseExternalUrl(value: unknown): ValidationResult<string> {
   // URL.hostname keeps brackets around IPv6 literals; strip for net.isIP / matching.
   const rawHost = url.hostname.toLowerCase()
   const host = rawHost.startsWith('[') && rawHost.endsWith(']') ? rawHost.slice(1, -1) : rawHost
+
+  // 默认只允许 https。开发环境例外: `http://localhost` / `http://127.0.0.1` 让本地
+  // 开发服务能跑（dev server / 本地工具）。正式产物里 NODE_ENV 不会是 'development'，
+  // 因此对终端用户透明地强制 https。
+  const isDev = process.env.NODE_ENV === 'development'
+  const isDevLocalhost =
+    isDev && url.protocol === 'http:' && (host === 'localhost' || host === '127.0.0.1')
+
+  if (url.protocol !== 'https:' && !isDevLocalhost) {
+    return invalid('url protocol must be https')
+  }
+
+  // 阻断 localhost / .local / 私网 IP，避免 SSRF；dev 环境对 http://localhost 例外。
   if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) {
-    return invalid('url host is not allowed')
+    if (!isDevLocalhost) return invalid('url host is not allowed')
   }
 
   const ipKind = net.isIP(host)
-  if (ipKind === 4 && isPrivateIPv4(host)) return invalid('url host is not allowed')
+  if (ipKind === 4 && isPrivateIPv4(host)) {
+    if (!isDevLocalhost) return invalid('url host is not allowed')
+  }
   if (ipKind === 6 && isPrivateIPv6(host)) return invalid('url host is not allowed')
 
   return valid(url.toString())

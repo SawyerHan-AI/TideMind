@@ -155,12 +155,16 @@
       "title": "AI Service Status",
       "never": "Never",
       "currentStatus": "Current status",
-      "statusPaused": "Circuit-broken ({{min}} min remaining)",
       "statusDegraded": "Recent failures: {{count}}",
       "statusHealthy": "Healthy",
       "lastSuccess": "Last successful call",
       "lastError": "Last error",
-      "hint": "To investigate or test connections, use the \"Model Connections\" section below."
+      "hint": "To investigate or test connections, use the \"Model Connections\" section below.",
+      "statusPausedCountdown": "Paused ({{time}} remaining)",
+      "retryNow": "Retry now",
+      "retrySuccess": "Circuit breaker reset",
+      "retryError": "Retry failed",
+      "retryDebounceHint": "Please wait a moment"
     }
   },
   "data": {

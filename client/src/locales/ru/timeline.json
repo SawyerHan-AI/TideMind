@@ -86,6 +86,7 @@
     "apple_notes_incremental_sync": "Apple Notes инкрементальная синхронизация (обработано {{processed}})",
     "apple_notes_init_complete": "Apple Notes инициализация завершена: {{nodes}} узлов, {{links}} связей, {{crystals}} кристаллов",
     "profile_synthesized": "Профиль синтезирован ({{crystals}} кристаллов, {{preferences}} предпочтений)",
-    "pending_link_gc": "Очищено {{count}} просроченных ожидающих ссылок"
+    "pending_link_gc": "Очищено {{count}} просроченных ожидающих ссылок",
+    "circuit_breaker_manual_reset": "Прерыватель сброшен вручную"
   }
 }

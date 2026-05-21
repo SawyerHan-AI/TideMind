@@ -59,6 +59,10 @@ vi.mock('../../src/metabolism/reconsolidate.js', () => ({
   reconsolidateOnRecall: vi.fn(),
 }));
 
+vi.mock('../../src/metabolism/link-revalidate.js', () => ({
+  revalidateLinks: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('../../src/graph/expansion.js', () => ({
   expandFromNode: vi.fn().mockReturnValue([]),
 }));
@@ -69,6 +73,7 @@ import { recall } from '../../src/tools/recall.js';
 import { getNode, bumpHeat } from '../../src/db/nodes.js';
 import { searchHybrid } from '../../src/search/hybrid.js';
 import { reconsolidateOnRecall } from '../../src/metabolism/reconsolidate.js';
+import { revalidateLinks } from '../../src/metabolism/link-revalidate.js';
 import { expandFromNode } from '../../src/graph/expansion.js';
 import { invalidateGateCache } from '../../src/db/stats.js';
 import { SqliteRepository } from '../../src/db/sqlite-repository.js';
@@ -598,5 +603,31 @@ describe('recall - index mode', () => {
 
     const after = getNode(db, node.id);
     expect(after!.heat).toBeCloseTo(0.6, 5);
+  });
+});
+
+// ===== revalidateLinks 超时 timer 清理 =====
+
+describe('recall - revalidateLinks timer cleanup', () => {
+  it('revalidateLinks 在超时窗口内 settle 时,Promise.race 应 clearTimeout 避免 timer 堆积', async () => {
+    const node = seedNode(db, { content: 'revalidate timer cleanup' });
+    vi.mocked(searchHybrid).mockResolvedValueOnce([
+      { node, score: 0.9, source: 'hybrid' },
+    ]);
+    // revalidateLinks mock 立刻 resolve(< 10s 窗口)
+    vi.mocked(revalidateLinks).mockResolvedValueOnce(undefined);
+
+    const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
+    const before = clearSpy.mock.calls.length;
+
+    await recall(repo, { query: 'TypeScript' });
+
+    // fire-and-forget Promise.race 的 .finally 是 microtask,等一轮 microtask
+    await new Promise(setImmediate);
+    await new Promise(setImmediate);
+
+    // clearTimeout 至少被 recall 内部调用 1 次(其它库可能也用,断言增量 >= 1)
+    expect(clearSpy.mock.calls.length - before).toBeGreaterThanOrEqual(1);
+    clearSpy.mockRestore();
   });
 });

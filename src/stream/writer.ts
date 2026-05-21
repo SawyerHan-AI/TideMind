@@ -11,10 +11,20 @@ const log = createLogger('stream-writer');
 //   - 用 fs.openSync(lockPath, 'wx') 排他创建作为锁，写完后 unlink 释放
 //   - 失败（EEXIST）时小步退避重试，最多 ~5s
 //   - 死锁防护：发现 lock 文件 stale (>30s) 直接清掉重抢
+//
+// 历史上 acquireLock 在退避阶段用 `while (Date.now() < until) {}` 同步自旋。
+// 在 Electron 主进程 / Node 单线程模型下,这是事件循环硬冻结 —— 任何被锁定的
+// 多进程并发写入(daemon + importer + worker)都会让主线程在 5s 内无响应,
+// 期间 IPC / UI / timer 全停。C-1 改成 async setTimeout 退避,让事件循环
+// 在等待期间能继续跑其它任务。
 const LOCK_RETRY_MAX_MS = 5_000;
 const LOCK_STALE_MS = 30_000;
 
-function acquireLock(lockPath: string): number {
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function acquireLock(lockPath: string): Promise<number> {
   const deadline = Date.now() + LOCK_RETRY_MAX_MS;
   let attempt = 0;
   // 第一轮 0ms（直接试），后续 10/20/40/80/160ms 退避
@@ -35,10 +45,9 @@ function acquireLock(lockPath: string): number {
       if (Date.now() >= deadline) {
         throw new Error(`appendToStream: 获取文件锁超时 (${lockPath})`, { cause: err });
       }
-      // 同步退避
+      // 异步退避 —— 让事件循环跑别的任务，避免冻结主线程
       const delay = Math.min(160, 10 * Math.pow(2, attempt++));
-      const until = Date.now() + delay;
-      while (Date.now() < until) { /* 自旋等待，毫秒级，避免引入 setTimeout 异步化 */ }
+      await sleep(delay);
     }
   }
 }
@@ -57,13 +66,15 @@ function releaseLock(fd: number, lockPath: string): void {
  * 2. 用 <path>.lock 排他创建做跨进程串行化，避免 importer + daemon 同时写交错。
  *    POSIX 对 >PIPE_BUF (4KB) 的 append 不保证原子；锁兜底两边竞争，与 entry 大小无关。
  * 3. 锁释放在 finally，fd 关闭也在 finally，任何抛错都不会泄漏。
+ * 4. 函数 async 化（C-1）：锁退避走 setTimeout，让事件循环不被冻结；写入本身仍然是
+ *    同步 fs.* 调用（小块数据 + fsync 必要），不需要拆成 worker。
  */
-export function appendToStream(entry: {
+export async function appendToStream(entry: {
   tool?: string;
   session?: string;
   content: string;
   files?: string[];
-}): string {
+}): Promise<string> {
   const streamDir = path.join(getDataDir(), 'stream');
   const fileName = `${today()}.md`;
   const filePath = path.join(streamDir, fileName);
@@ -94,7 +105,7 @@ export function appendToStream(entry: {
   fs.mkdirSync(streamDir, { recursive: true });
 
   // 锁失败（含超时）让异常冒泡，绝不静默丢数据
-  const lockFd = acquireLock(lockPath);
+  const lockFd = await acquireLock(lockPath);
   try {
     // 文件不存在时先写头部
     let fileExists = true;

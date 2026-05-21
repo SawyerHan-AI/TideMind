@@ -51,6 +51,16 @@ export function rollbackNoteSource(
       db.prepare(`DELETE FROM ${syncTable} WHERE source_id = ?`).run(sourceId);
       db.prepare('DELETE FROM note_sources WHERE id = ?').run(sourceId);
 
+      // 清理 Notion pending_retry / pending_relations
+      if (toolType === 'notion') {
+        try {
+          db.prepare('DELETE FROM notion_pending_retry WHERE source_id = ?').run(sourceId);
+        } catch { /* table may not exist */ }
+        try {
+          db.prepare('DELETE FROM notion_pending_relations WHERE source_id = ?').run(sourceId);
+        } catch { /* table may not exist */ }
+      }
+
       // 清理 metadata 中的 full_scan 标记
       db.prepare(`DELETE FROM metadata WHERE key = ?`).run(`${toolType}_full_scan_completed_${sourceId}`);
     })();
@@ -79,10 +89,13 @@ export function rollbackNoteSource(
     // 删除 sync state
     db.prepare(`DELETE FROM ${syncTable} WHERE source_id = ?`).run(sourceId);
 
-    // 清理 Notion pending relations（如果存在）
+    // 清理 Notion pending relations / pending_retry（如果存在）
     if (toolType === 'notion') {
       try {
         db.prepare('DELETE FROM notion_pending_relations WHERE source_id = ?').run(sourceId);
+      } catch { /* table may not exist */ }
+      try {
+        db.prepare('DELETE FROM notion_pending_retry WHERE source_id = ?').run(sourceId);
       } catch { /* table may not exist */ }
     }
 

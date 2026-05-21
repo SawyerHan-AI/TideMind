@@ -78,6 +78,27 @@ describe('enqueueOutbox', () => {
     const items = getOutboxItems(db);
     expect(items[0].retry_count).toBe(0);
   });
+
+  // MEDIUM 10 (audit-10, 2026-05-21): payload > 100KB(byte 计)→ 抛错,不入队
+  it('payload size > 100KB(byte 级)→ throw "outbox payload too large",不入 DB', () => {
+    // 80KB 纯 ASCII content → JSON 后约 80KB,在限内
+    const okPayload = { content: 'a'.repeat(80_000) };
+    expect(() => enqueueOutbox(db, 'big_ok', okPayload)).not.toThrow();
+    expect(getOutboxItems(db).length).toBe(1);
+    removeOutboxItem(db, getOutboxItems(db)[0].id);
+
+    // 110KB 纯 ASCII content → 超 100KB cap
+    const bigPayload = { content: 'a'.repeat(110_000) };
+    expect(() => enqueueOutbox(db, 'big_fail', bigPayload)).toThrow(/too large/i);
+    expect(getOutboxItems(db).length, '超限 payload 不应入队').toBe(0);
+  });
+
+  it('payload byte 数 vs char 数:50KB 中文(char) → byte 计 150KB → 超限', () => {
+    // 单个汉字 UTF-8 占 3 byte
+    // 50_000 char × 3 byte = 150_000 byte → 超 100KB byte cap
+    const cjkContent = { content: '中'.repeat(50_000) };
+    expect(() => enqueueOutbox(db, 'cjk_fail', cjkContent)).toThrow(/too large/i);
+  });
 });
 
 // ===== getOutboxItems =====

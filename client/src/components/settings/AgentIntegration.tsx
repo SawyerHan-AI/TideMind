@@ -15,8 +15,10 @@ import { getToolTypeDef, isPluginSupported } from './agent-integration/toolTypes
 export function AgentIntegration() {
   const { t } = useTranslation('settings')
   const { timeAgo } = useFormatters()
-  const { data: agents, refetch: refetchAgents } = useIPC(() => window.api.agents.list(true))
-  const { data: agentStats, refetch: refetchStats } = useIPC(() => window.api.agents.stats())
+  const fetchAgents = useCallback(() => window.api.agents.list(true), [])
+  const fetchAgentStats = useCallback(() => window.api.agents.stats(), [])
+  const { data: agents, refetch: refetchAgents } = useIPC(fetchAgents)
+  const { data: agentStats, refetch: refetchStats } = useIPC(fetchAgentStats)
 
   const [wizardOpen, setWizardOpen] = useState(false)
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null)

@@ -8,6 +8,7 @@
 import crypto from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { NoteSyncState } from './types.js';
+import { execIgnoringDuplicateColumn } from '../../db/migration-helpers.js';
 
 /**
  * 确保同步表存在
@@ -36,7 +37,8 @@ export function ensureSyncSchema(db: Database.Database): void {
     )
   `);
   // 兼容：为已有表添加 source_id 列
-  try { db.exec("ALTER TABLE apple_notes_sync ADD COLUMN source_id TEXT DEFAULT ''"); } catch { /* already exists */ }
+  // MEDIUM 6 (audit-10, 2026-05-21):统一走 helper,避免裸 try/catch{} 吞 SQLITE_FULL/BUSY
+  execIgnoringDuplicateColumn(db, "ALTER TABLE apple_notes_sync ADD COLUMN source_id TEXT DEFAULT ''");
 
   // 检测并迁移到复合主键(幂等)。SQLite PRAGMA table_info 暴露每列的 pk 编号,
   // 复合主键时多列 pk > 0,单主键只有一列 pk = 1。

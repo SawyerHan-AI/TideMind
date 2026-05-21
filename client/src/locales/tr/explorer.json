@@ -30,6 +30,7 @@
     "editReasonPlaceholder": "Değişiklik nedeni (isteğe bağlı)",
     "titlePlaceholder": "Başlık",
     "editVersionNote": "Değişiklikler sürüm geçmişine kaydedilecektir",
+    "concurrentEditWarning": "İçerik siz düzenlerken otomatik olarak güncellendi. Kaydetmek en son sürümün üzerine yazacaktır. Devam edilsin mi?",
     "saving": "Kaydediliyor...",
     "save": "Kaydet",
     "cancel": "İptal",

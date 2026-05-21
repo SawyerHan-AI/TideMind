@@ -1,90 +1,95 @@
 /**
- * reconsolidateInFlight 崩溃恢复测试
+ * reconsolidate in-flight 并发控制 + 异常恢复测试
  *
- * 背景:模块级 bool flag 在同步异常路径不复位,导致本进程所有后续 recall
- * 永远跳过深度/感知读,必须重启 daemon。
- * v0.2.15 在函数外层包 try/catch/finally,任何同步异常都复位 flag。
+ * 历史(2026-05-19 audit):本文件曾用 `class FlagController` inline 复刻一份
+ * 单 boolean flag 的控制流(旧 reconsolidateInFlight 实现)。但生产代码早就改成
+ * `Set<string>` 按 node id 去重 + 全局上限 5 的方案,inline 复刻已严重漂移(参见
+ * docs/design/test-coverage-plan-2026-05-20.md §1.1 #2)。
  *
- * 这里用最小 mock 验证 flag 复位行为(纯控制流,不依赖 DB/LLM)。
+ * 改造:直接 import 真源的 `__testing` 辅助函数,验证 Set + 上限 + claim/release
+ * 语义。这套语义才是 reconsolidateOnRecall 真正用的。
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { __testing } from '../../src/metabolism/reconsolidate.js';
 
-// 复刻 flag 管理逻辑 - 不 import 真实模块避免 LLM / DB 依赖
-class FlagController {
-  inFlight = false;
-  callCount = 0;
-
-  run(syncThrows: boolean, spawnAsync: boolean): Promise<void> {
-    if (this.inFlight) return Promise.resolve();
-    this.inFlight = true;
-    this.callCount++;
-
-    let spawnedAsync = false;
-    try {
-      if (syncThrows) throw new Error('sync path exploded');
-      if (spawnAsync) {
-        spawnedAsync = true;
-        // 模拟 async IIFE 5ms 后完成
-        return new Promise<void>((resolve) => {
-          setTimeout(() => {
-            this.inFlight = false;
-            resolve();
-          }, 5);
-        });
-      }
-    } catch (err) {
-      this.inFlight = false;
-      throw err;
-    } finally {
-      if (!spawnedAsync) this.inFlight = false;
-    }
-    return Promise.resolve();
-  }
-}
-
-describe('reconsolidateInFlight crash recovery', () => {
-  let ctrl: FlagController;
-
+describe('reconsolidate inFlightNodes (Set-based concurrency control)', () => {
   beforeEach(() => {
-    ctrl = new FlagController();
+    __testing.resetInFlight();
   });
 
-  it('正常完成同步路径后 flag 复位', async () => {
-    await ctrl.run(false, false);
-    expect(ctrl.inFlight).toBe(false);
-    // 下次可以再进入
-    await ctrl.run(false, false);
-    expect(ctrl.callCount).toBe(2);
+  it('claim 后 size 增加,release 后归零', () => {
+    expect(__testing.getInFlightSize()).toBe(0);
+    const { claimed, release } = __testing.simulateClaim(['n1', 'n2', 'n3']);
+    expect(claimed).toEqual(['n1', 'n2', 'n3']);
+    expect(__testing.getInFlightSize()).toBe(3);
+    expect(__testing.hasInFlight('n1')).toBe(true);
+    expect(__testing.hasInFlight('n3')).toBe(true);
+    release();
+    expect(__testing.getInFlightSize()).toBe(0);
+    expect(__testing.hasInFlight('n1')).toBe(false);
   });
 
-  it('同步异常也复位 flag(核心 bug 修复)', async () => {
-    // run() 同步路径 throw,用 try/catch 捕获,验证 flag 已复位
-    let caught: Error | null = null;
-    try {
-      await ctrl.run(true, false);
-    } catch (e) {
-      caught = e as Error;
-    }
-    expect(caught?.message).toBe('sync path exploded');
-    expect(ctrl.inFlight).toBe(false);
-    // 崩溃后下次仍能进入
-    await ctrl.run(false, false);
-    expect(ctrl.callCount).toBe(2);
+  it('同一 node id 不重复占名额(去重语义)', () => {
+    const a = __testing.simulateClaim(['n1', 'n2']);
+    expect(a.claimed).toEqual(['n1', 'n2']);
+    // 再 claim 已存在的 id:不应再占
+    const b = __testing.simulateClaim(['n1', 'n3']);
+    expect(b.claimed).toEqual(['n3']); // n1 被跳过
+    expect(__testing.getInFlightSize()).toBe(3);
   });
 
-  it('异步路径:同步返回后 flag 仍 true,等 async 完成才复位', async () => {
-    const promise = ctrl.run(false, true);
-    // 此时 flag 应该是 true
-    expect(ctrl.inFlight).toBe(true);
-    await promise;
-    expect(ctrl.inFlight).toBe(false);
+  it('达到 MAX_CONCURRENT 上限后新 claim 拒绝', () => {
+    const max = __testing.maxConcurrent;
+    expect(max).toBeGreaterThan(0);
+    const ids = Array.from({ length: max }, (_, i) => `node-${i}`);
+    const first = __testing.simulateClaim(ids);
+    expect(first.claimed.length).toBe(max);
+    expect(__testing.getInFlightSize()).toBe(max);
+
+    // 再 claim:上限已满,拒绝
+    const overflow = __testing.simulateClaim(['extra-1', 'extra-2']);
+    expect(overflow.claimed).toEqual([]);
+    expect(__testing.getInFlightSize()).toBe(max);
   });
 
-  it('flag 占用时重入立刻 return,不重复执行', async () => {
-    const p1 = ctrl.run(false, true);  // 异步进行中
-    await ctrl.run(false, true);       // 被 flag 拦截
-    await p1;
-    expect(ctrl.callCount).toBe(1); // 第二次没进入
+  it('部分填满后 claim 只接受可容纳数量', () => {
+    const max = __testing.maxConcurrent;
+    // 先占 max - 1 个名额
+    const initial = Array.from({ length: max - 1 }, (_, i) => `init-${i}`);
+    __testing.simulateClaim(initial);
+    expect(__testing.getInFlightSize()).toBe(max - 1);
+
+    // 试 claim 5 个,只允许 1 个进
+    const next = __testing.simulateClaim(['a', 'b', 'c', 'd', 'e']);
+    expect(next.claimed.length).toBe(1);
+    expect(__testing.getInFlightSize()).toBe(max);
+  });
+
+  it('release 后名额回收,可重新 claim', () => {
+    const max = __testing.maxConcurrent;
+    const ids = Array.from({ length: max }, (_, i) => `n${i}`);
+    const a = __testing.simulateClaim(ids);
+    expect(__testing.getInFlightSize()).toBe(max);
+
+    a.release();
+    expect(__testing.getInFlightSize()).toBe(0);
+
+    // 释放后可以重新 claim 同样的 id
+    const b = __testing.simulateClaim(ids);
+    expect(b.claimed.length).toBe(max);
+  });
+
+  it('resetInFlight() 是测试 hook,强制清空所有占用(模拟崩溃恢复)', () => {
+    __testing.simulateClaim(['leak-1', 'leak-2', 'leak-3']);
+    expect(__testing.getInFlightSize()).toBe(3);
+
+    // 模拟"异常退出但 finally 没跑到 release":手动 reset 模拟下次启动
+    __testing.resetInFlight();
+    expect(__testing.getInFlightSize()).toBe(0);
+
+    // 重置后可以正常使用
+    const fresh = __testing.simulateClaim(['fresh-1']);
+    expect(fresh.claimed).toEqual(['fresh-1']);
   });
 });

@@ -145,16 +145,17 @@ export function GraphView({ filter, selectedId, onSelect, graphLimit = 500, onGr
   // 修复 (2026-05-19):再补 graphLimit。父组件把 graphLimit 通过 filter 透传,
   // 后端 nodes.graph(filter) 用它决定 Top-N。如果不放进 deps,GraphToolbar 切换
   // 节点上限(500/2000)时 IPC 不重取,图始终是初次的节点数,性能优化的限流控件失效。
-  const { data: graphData } = useIPC(
-    () => window.api.nodes.graph(filter),
-    [
-      filter.type, filter.tags, filter.heatMin, filter.heatMax, filter.search,
-      filter.archived, filter.sortBy, filter.sortDir,
-      filter.createdAfter, filter.createdBefore,
-      filter.graphLimit,
-      rev,
-    ],
-  )
+  // 注:deps 只列 filter 各字段而非 filter 对象本身,因为父组件每次渲染都会
+  // 新建 filter 对象引用 — 若依赖 filter,IPC 会被不必要地重取。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const fetchGraph = useCallback(() => window.api.nodes.graph(filter), [
+    filter.type, filter.tags, filter.heatMin, filter.heatMax, filter.search,
+    filter.archived, filter.sortBy, filter.sortDir,
+    filter.createdAfter, filter.createdBefore,
+    filter.graphLimit,
+    rev,
+  ])
+  const { data: graphData } = useIPC(fetchGraph)
 
   // fetch structure holes when toggled
   useEffect(() => {

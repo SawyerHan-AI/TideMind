@@ -86,6 +86,7 @@
     "apple_notes_incremental_sync": "Apple Notes inkrementelle Synchronisation (verarbeitet {{processed}})",
     "apple_notes_init_complete": "Apple Notes Initialisierung abgeschlossen: {{nodes}} Knoten, {{links}} Verbindungen, {{crystals}} Kristalle",
     "profile_synthesized": "Profil synthetisiert ({{crystals}} Kristalle, {{preferences}} Präferenzen)",
-    "pending_link_gc": "{{count}} abgelaufene wartende Links bereinigt"
+    "pending_link_gc": "{{count}} abgelaufene wartende Links bereinigt",
+    "circuit_breaker_manual_reset": "Schutzschalter manuell zurückgesetzt"
   }
 }

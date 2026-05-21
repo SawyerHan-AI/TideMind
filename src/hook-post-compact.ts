@@ -52,8 +52,11 @@ function parseArgs(): { agentId: string; tool: string } {
 /**
  * 压缩后重注的上下文要控制体积。和 SessionStart 的全量 formatPrepareOutput 不同，
  * 这里只取每类最多 3 条，画像用 profile.text 的第一段。
+ *
+ * 导出供单元测试覆盖（tests/hook-formatters.test.ts）—— 本函数纯字符串拼接,
+ * 不碰 IO/网络/DB,是 hook-post-compact 中最易隔离测的部分。
  */
-function formatBriefContext(result: PrepareOutput): string {
+export function formatBriefContext(result: PrepareOutput): string {
   const sections: string[] = [];
 
   if (result.profile?.text) {
@@ -62,8 +65,11 @@ function formatBriefContext(result: PrepareOutput): string {
   }
 
   if (result.keystones.length > 0) {
+    // title 用 || 而非 ?? 兜底:?? 只在 null/undefined 时切到 id,空字符串 ""
+    // 会被原样保留,渲染出 "- （id: xxx）" 这种空标题。|| 把 "" 视为 falsy,
+    // 同样落回 id,得到 "- xxx（id: xxx）"。
     const lines = result.keystones.slice(0, 3).map(k =>
-      `- ${k.title ?? k.id}（id: ${k.id}）`
+      `- ${k.title || k.id}（id: ${k.id}）`
     );
     sections.push(`## 关键枢纽\n${lines.join('\n')}`);
   }
@@ -72,11 +78,12 @@ function formatBriefContext(result: PrepareOutput): string {
   const crystalLines: string[] = [];
   for (const c of result.crystals.highlighted) {
     if (crystalLines.length >= 3) break;
-    crystalLines.push(`- ${c.title ?? c.snippet}（id: ${c.id}）`);
+    // 同上,?? → ||:title="" 时回退到 snippet
+    crystalLines.push(`- ${c.title || c.snippet}（id: ${c.id}）`);
   }
   for (const c of result.crystals.others) {
     if (crystalLines.length >= 3) break;
-    crystalLines.push(`- ${c.title ?? c.id}（id: ${c.id}）`);
+    crystalLines.push(`- ${c.title || c.id}（id: ${c.id}）`);
   }
   if (crystalLines.length > 0) {
     sections.push(`## 近期结晶\n${crystalLines.join('\n')}`);
@@ -84,7 +91,7 @@ function formatBriefContext(result: PrepareOutput): string {
 
   if (result.recent.length > 0) {
     const lines = result.recent.slice(0, 3).map(r =>
-      `- ${r.title ?? r.id}（id: ${r.id}）`
+      `- ${r.title || r.id}（id: ${r.id}）`
     );
     sections.push(`## 最近活跃\n${lines.join('\n')}`);
   }

@@ -1,58 +1,29 @@
 import { describe, it, expect } from 'vitest';
+import Anthropic from '@anthropic-ai/sdk';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import {
+  LLMServiceError,
+  TIMEOUT_MS_BY_TIER,
+  isRetryable,
+  isServiceError,
+  normalizeBaseUrl,
+  fingerprintCreds,
+} from '../../src/llm/client.js';
+import { processThinkTags } from '../../src/llm/thinking.js';
 
-// ── Inlined from src/llm/client.ts (pure logic, no SDK dependency) ──
+// LLM 客户端纯逻辑测试。
+//
+// 历史:本文件曾经 inline 复刻 isRetryable / isServiceError / extractThinking /
+// normalizeBaseUrl 等函数。复刻随源码演进出现严重漂移(参见 docs/design/
+// test-coverage-plan-2026-05-20.md §1.1 #1)。改为 import 真源后,几个原本通过
+// 的 case 暴露出真源行为已变(下面用 NEW 标记的 case):
+//   - isServiceError 不再用 `/\b(401|403|429|5\d{2})\b/` 正则,改为结构化
+//     statusCode 判断 → "HTTP 429: error" 字符串本身不再是 service error
+//   - processThinkTags 已从 `^` 锚点改为全局匹配,且新增孤立 <think> 处理
 
-class LLMServiceError extends Error {
-  constructor(message: string, public readonly statusCode?: number) {
-    super(message);
-    this.name = 'LLMServiceError';
-  }
-}
-
-const TIMEOUT_MS_BY_TIER: Record<'light' | 'standard' | 'heavy', number> = {
-  light: 60_000,
-  standard: 180_000,
-  heavy: 300_000,
-};
-
-function isRetryable(err: unknown): boolean {
-  if (err instanceof LLMServiceError) {
-    return err.statusCode === 429 || (err.statusCode != null && err.statusCode >= 500);
-  }
-  if (err instanceof Error) {
-    const msg = err.message;
-    if (msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT') || msg.includes('fetch failed')) return true;
-  }
-  return false;
-}
-
-function isServiceError(err: unknown): boolean {
-  if (err instanceof Error) {
-    const msg = err.message;
-    if (msg.includes('ECONNREFUSED') || msg.includes('ETIMEDOUT') || msg.includes('fetch failed')) return true;
-    if (msg.includes('API error') || msg.includes('API key')) return true;
-    if (/\b(401|403|429|500|502|503)\b/.test(msg)) return true;
-  }
-  return false;
-}
-
-function extractThinking(rawText: string): { text: string; thinkingTokens: number } {
-  let text = rawText;
-  let thinkingTokens = 0;
-  const thinkMatch = rawText.match(/^<think>([\s\S]*?)<\/think>\s*/);
-  if (thinkMatch) {
-    text = rawText.slice(thinkMatch[0].length);
-    thinkingTokens = Math.ceil(thinkMatch[1].length / 4);
-  }
-  return { text, thinkingTokens };
-}
-
-function normalizeBaseUrl(rawUrl: string): string {
-  const cleaned = rawUrl.replace(/\/+$/, '');
-  return cleaned.endsWith('/v1') ? cleaned : cleaned + '/v1';
-}
-
-// ── Tests ──
+// ── LLMServiceError ──────────────────────────────────────────
 
 describe('LLMServiceError', () => {
   it('has name "LLMServiceError"', () => {
@@ -81,6 +52,8 @@ describe('LLMServiceError', () => {
   });
 });
 
+// ── TIMEOUT_MS_BY_TIER ───────────────────────────────────────
+
 describe('TIMEOUT_MS_BY_TIER', () => {
   it('light = 60_000ms', () => {
     expect(TIMEOUT_MS_BY_TIER.light).toBe(60_000);
@@ -99,6 +72,8 @@ describe('TIMEOUT_MS_BY_TIER', () => {
     expect(TIMEOUT_MS_BY_TIER.standard).toBeLessThan(TIMEOUT_MS_BY_TIER.heavy);
   });
 });
+
+// ── isRetryable ──────────────────────────────────────────────
 
 describe('isRetryable', () => {
   describe('LLMServiceError status codes', () => {
@@ -153,6 +128,25 @@ describe('isRetryable', () => {
     });
   });
 
+  // NEW: 源码已加 AbortSignal.timeout 触发的超时识别
+  describe('timeout/abort error shapes (NEW: present in source, missing from old inline)', () => {
+    it('TimeoutError name → true', () => {
+      const err = new Error('aborted');
+      err.name = 'TimeoutError';
+      expect(isRetryable(err)).toBe(true);
+    });
+
+    it('AbortError name → true', () => {
+      const err = new Error('aborted');
+      err.name = 'AbortError';
+      expect(isRetryable(err)).toBe(true);
+    });
+
+    it('"aborted due to timeout" in message → true', () => {
+      expect(isRetryable(new Error('The operation was aborted due to timeout'))).toBe(true);
+    });
+  });
+
   describe('non-error values', () => {
     it('non-error object → false', () => {
       expect(isRetryable({ message: 'ECONNREFUSED' })).toBe(false);
@@ -167,6 +161,8 @@ describe('isRetryable', () => {
     });
   });
 });
+
+// ── isServiceError ───────────────────────────────────────────
 
 describe('isServiceError', () => {
   describe('network errors → true', () => {
@@ -183,19 +179,57 @@ describe('isServiceError', () => {
     });
   });
 
-  describe('API errors → true', () => {
-    it('API error in message', () => {
-      expect(isServiceError(new Error('API error: something went wrong'))).toBe(true);
+  // NEW: 源码改为结构化判断。原 inline 测试 `HTTP ${code}: error` 字符串
+  // 直接是 service error,新源码下应通过 LLMServiceError 才被认定。
+  describe('LLMServiceError statusCode (replaces old string-regex tests)', () => {
+    it.each([401, 403, 429, 500, 502, 503])('LLMServiceError statusCode=%d → true', (code) => {
+      expect(isServiceError(new LLMServiceError(`API returned ${code}`, code))).toBe(true);
     });
 
-    it('API key in message', () => {
-      expect(isServiceError(new Error('Invalid API key provided'))).toBe(true);
+    it('LLMServiceError statusCode=400 → false (context overflow etc., not service-level)', () => {
+      expect(isServiceError(new LLMServiceError('bad request', 400))).toBe(false);
+    });
+
+    it('LLMServiceError without statusCode → true (provider wrapped error, conservative)', () => {
+      expect(isServiceError(new LLMServiceError('Ollama returned not ok'))).toBe(true);
     });
   });
 
-  describe('HTTP status codes in message → true', () => {
-    it.each([401, 403, 429, 500, 502, 503])('status %d', (code) => {
-      expect(isServiceError(new Error(`HTTP ${code}: error`))).toBe(true);
+  describe('plain Error messages NO LONGER service errors (CRITICAL bug fix vs old inline test)', () => {
+    // 旧 inline 版本:任何 message 含 `\b(401|403|429|500|502|503)\b` 都视为 service error,
+    // 含 "API error"/"API key" 也是。新源码这些都不是 service error —— 必须走结构化路径。
+    it('"HTTP 429: error" plain string → false (was true under old regex)', () => {
+      expect(isServiceError(new Error('HTTP 429: error'))).toBe(false);
+    });
+
+    it('"API error: something" plain string → false', () => {
+      expect(isServiceError(new Error('API error: something went wrong'))).toBe(false);
+    });
+
+    it('"Invalid API key" plain string → false', () => {
+      expect(isServiceError(new Error('Invalid API key provided'))).toBe(false);
+    });
+
+    // 验证旧正则的"误伤"问题确实被新实现避免:Postgres 端口、行号等含数字字符串不再误判
+    it(':5432 Postgres port in message → false (no longer false-positive)', () => {
+      expect(isServiceError(new Error('connect to postgres at db:5432 failed'))).toBe(false);
+    });
+
+    it('"line 429" line number in message → false (no longer false-positive)', () => {
+      expect(isServiceError(new Error('parse error at line 429'))).toBe(false);
+    });
+  });
+
+  // NEW: 源码已加 Anthropic SDK 类型识别
+  describe('Anthropic SDK errors (NEW)', () => {
+    it('APIConnectionError → true', () => {
+      const err = new Anthropic.APIConnectionError({ message: 'conn refused' });
+      expect(isServiceError(err)).toBe(true);
+    });
+
+    it('APIConnectionTimeoutError → true', () => {
+      const err = new Anthropic.APIConnectionTimeoutError({ message: 'timeout' });
+      expect(isServiceError(err)).toBe(true);
     });
   });
 
@@ -218,9 +252,14 @@ describe('isServiceError', () => {
   });
 });
 
-describe('extractThinking', () => {
+// ── processThinkTags (from src/llm/thinking.ts) ──────────────
+//
+// 旧 inline 用 `extractThinking` 名字 + `/^<think>([\s\S]*?)<\/think>\s*/` 仅匹配开头。
+// 真源 processThinkTags **全局**匹配 + **孤立 <think>** 兜底(S8 修复)。
+
+describe('processThinkTags', () => {
   it('no think tags → text unchanged, 0 tokens', () => {
-    const result = extractThinking('Hello world');
+    const result = processThinkTags('Hello world');
     expect(result.text).toBe('Hello world');
     expect(result.thinkingTokens).toBe(0);
   });
@@ -229,47 +268,52 @@ describe('extractThinking', () => {
     const thinking = 'Let me reason about this carefully step by step';
     const body = 'The answer is 42.';
     const raw = `<think>${thinking}</think>\n${body}`;
-    const result = extractThinking(raw);
+    const result = processThinkTags(raw);
     expect(result.text).toBe(body);
     expect(result.thinkingTokens).toBe(Math.ceil(thinking.length / 4));
   });
 
   it('empty think tags → empty thinking, 0 tokens', () => {
-    const result = extractThinking('<think></think>Some response');
+    const result = processThinkTags('<think></think>Some response');
     expect(result.text).toBe('Some response');
     expect(result.thinkingTokens).toBe(0);
   });
 
   it('think tags with content after → content preserved', () => {
-    const result = extractThinking('<think>reasoning</think>   Here is my answer.\nWith multiple lines.');
+    const result = processThinkTags('<think>reasoning</think>   Here is my answer.\nWith multiple lines.');
     expect(result.text).toBe('Here is my answer.\nWith multiple lines.');
     expect(result.thinkingTokens).toBeGreaterThan(0);
   });
 
-  it('think tags not at start → not extracted (regex anchored to ^)', () => {
+  // NEW: 旧 inline 版本断言 "think tags not at start → not extracted",
+  // 真源全局匹配后这是相反行为(CRITICAL difference)。
+  // 注意:正则 `<\/think>\s*` 会吃掉紧跟在闭合标签后的空白(吞掉 " "),
+  // 加上末尾的 trim,最终输出是 "prefix suffix"。
+  it('think tags NOT at start → ALSO extracted (NEW global match)', () => {
     const raw = 'prefix <think>reasoning</think> suffix';
-    const result = extractThinking(raw);
-    expect(result.text).toBe(raw);
-    expect(result.thinkingTokens).toBe(0);
-  });
-
-  it('nested think tags → only outer matched (lazy quantifier)', () => {
-    const raw = '<think>outer <think>inner</think> rest</think> final answer';
-    const result = extractThinking(raw);
-    // The lazy [\s\S]*? matches up to the first </think>
-    // So it captures "outer <think>inner" and the remaining " rest</think> final answer" is the text
-    expect(result.text).toBe('rest</think> final answer');
-    expect(result.thinkingTokens).toBe(Math.ceil('outer <think>inner'.length / 4));
+    const result = processThinkTags(raw);
+    expect(result.text).toBe('prefix suffix');
+    expect(result.thinkingTokens).toBe(Math.ceil('reasoning'.length / 4));
   });
 
   it('multiline thinking content', () => {
     const thinking = 'line 1\nline 2\nline 3';
     const raw = `<think>${thinking}</think>\nResult`;
-    const result = extractThinking(raw);
+    const result = processThinkTags(raw);
     expect(result.text).toBe('Result');
     expect(result.thinkingTokens).toBe(Math.ceil(thinking.length / 4));
   });
+
+  // NEW: S8 孤立 <think> 兜底
+  it('orphan <think> without closing tag → strips from orphan to end (S8 fix)', () => {
+    const raw = 'final answer\n<think>incomplete reasoning truncated by max_tokens';
+    const result = processThinkTags(raw);
+    expect(result.text).toBe('final answer');
+    expect(result.thinkingTokens).toBeGreaterThan(0);
+  });
 });
+
+// ── normalizeBaseUrl ─────────────────────────────────────────
 
 describe('normalizeBaseUrl', () => {
   it('URL without /v1 gets /v1 appended', () => {
@@ -298,5 +342,47 @@ describe('normalizeBaseUrl', () => {
 
   it('URL with /v1 in path but not at end gets /v1 appended', () => {
     expect(normalizeBaseUrl('https://api.example.com/v1/chat')).toBe('https://api.example.com/v1/chat/v1');
+  });
+});
+
+// ── fingerprintCreds ─────────────────────────────────────────
+
+describe('fingerprintCreds', () => {
+  it('returns stable hash for same creds', () => {
+    const fp1 = fingerprintCreds({ api_key: 'abc' });
+    const fp2 = fingerprintCreds({ api_key: 'abc' });
+    expect(fp1).toBe(fp2);
+  });
+
+  it('changes when creds change', () => {
+    const fp1 = fingerprintCreds({ api_key: 'abc' });
+    const fp2 = fingerprintCreds({ api_key: 'def' });
+    expect(fp1).not.toBe(fp2);
+  });
+
+  it('changes when file mtime changes (Vertex cache invalidation)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-fp-'));
+    const credPath = path.join(tmpDir, 'creds.json');
+    try {
+      fs.writeFileSync(credPath, '{"project_id":"x"}');
+      const fpOld = fingerprintCreds({ project_id: 'x' }, credPath);
+
+      // 重写文件:不同 mtime,且 size 也可能不同
+      fs.writeFileSync(credPath, '{"project_id":"x","key":"k"}');
+      // mtime 在某些 FS 上可能精度不够,显式 utimesSync 推后 1s
+      const future = new Date(Date.now() + 2000);
+      fs.utimesSync(credPath, future, future);
+
+      const fpNew = fingerprintCreds({ project_id: 'x' }, credPath);
+      expect(fpNew).not.toBe(fpOld);
+    } finally {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  it('falls back gracefully when path missing', () => {
+    const fp = fingerprintCreds({ project_id: 'x' }, '/nonexistent/path/that/does/not/exist.json');
+    expect(typeof fp).toBe('string');
+    expect(fp.length).toBe(12);
   });
 });
