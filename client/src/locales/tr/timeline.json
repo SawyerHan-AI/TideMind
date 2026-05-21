@@ -86,6 +86,7 @@
     "apple_notes_incremental_sync": "Apple Notes artımlı senkronizasyon (işlenen {{processed}})",
     "apple_notes_init_complete": "Apple Notes başlatma tamamlandı: {{nodes}} düğüm, {{links}} bağlantı, {{crystals}} kristal",
     "profile_synthesized": "Profil sentezlendi ({{crystals}} kristal, {{preferences}} tercih)",
-    "pending_link_gc": "{{count}} süresi dolmuş bekleyen bağlantı temizlendi"
+    "pending_link_gc": "{{count}} süresi dolmuş bekleyen bağlantı temizlendi",
+    "circuit_breaker_manual_reset": "Devre kesici manuel olarak sıfırlandı"
   }
 }

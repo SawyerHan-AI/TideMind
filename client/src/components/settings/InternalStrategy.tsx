@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { motion } from 'framer-motion'
 import { Check, Clock, Lock, Database, Link2, Sparkles, Search, Brain, Zap, Settings2, Cpu, Timer } from 'lucide-react'
@@ -123,8 +123,10 @@ export function InternalStrategy() {
 
 function NodeDetailPanel({ node }: { node: ProcessingNode }) {
   const { t } = useTranslation('settings')
-  const { data: config } = useIPC(() => window.api.config.get())
-  const { data: gateStatus } = useIPC(() => window.api.stats.gates())
+  const fetchConfig = useCallback(() => window.api.config.get(), [])
+  const fetchGateStatus = useCallback(() => window.api.stats.gates(), [])
+  const { data: config } = useIPC(fetchConfig)
+  const { data: gateStatus } = useIPC(fetchGateStatus)
   const [localConfig, setLocalConfig] = useState<Record<string, Record<string, number>>>({})
   const [saved, setSaved] = useState(false)
   // 历史 bug(2026-05-09):configInitialized.current 在 mount 后 100ms 永久置 true,

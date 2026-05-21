@@ -30,6 +30,7 @@
     "editReasonPlaceholder": "Motivo della modifica (opzionale)",
     "titlePlaceholder": "Titolo",
     "editVersionNote": "Le modifiche saranno registrate nella cronologia delle versioni",
+    "concurrentEditWarning": "Il contenuto è stato aggiornato automaticamente mentre lo modificavi. Il salvataggio sovrascriverà l'ultima versione. Continuare?",
     "saving": "Salvataggio...",
     "save": "Salva",
     "cancel": "Annulla",

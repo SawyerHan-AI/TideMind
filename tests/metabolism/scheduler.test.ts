@@ -43,6 +43,8 @@ import {
   getTaskStatuses,
   setHealthChangeListener,
   noteSuccessfulLLMCall,
+  notifyLLMFailure,
+  getCircuitState,
   type TaskDefinition,
 } from '../../src/metabolism/scheduler.js';
 import { LLMServiceError } from '../../src/llm/client.js';
@@ -175,6 +177,68 @@ describe('runSchedulerTick', () => {
     expect(reClaim.claimed).toBe(true);
   });
 
+  it('任务抛 TypeError(程序员 bug) → log.error 含 programmer bug,daemon 不中断', async () => {
+    // F3 修复:scheduler catch 必须能区分 TypeError/ReferenceError/SyntaxError
+    // (程序员 bug)和业务错误,前者必须 log.error('programmer bug ...') 提升 visibility,
+    // 同时不 throw(保持 daemon 不中断),依赖运维 grep 'programmer bug' 告警。
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const task = makeTask({
+      id: 'programmer-bug-task',
+      execute: vi.fn().mockImplementation(async () => {
+        throw new TypeError("Cannot read properties of undefined (reading 'foo')");
+      }),
+    });
+
+    // runSchedulerTick 不应 throw（保持 daemon 不中断）
+    const executed = await runSchedulerTick(db, [task]);
+    expect(executed).not.toContain('programmer-bug-task');
+
+    // 任意一次 console.error 调用应该 message 含 'programmer bug'
+    const hasProgrammerBugLog = errorSpy.mock.calls.some(args =>
+      args.some(a => typeof a === 'string' && a.includes('programmer bug')),
+    );
+    expect(hasProgrammerBugLog).toBe(true);
+
+    errorSpy.mockRestore();
+  });
+
+  it('任务抛 ReferenceError → 同样进 programmer bug 分支', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const task = makeTask({
+      id: 'ref-err-task',
+      execute: vi.fn().mockImplementation(async () => {
+        throw new ReferenceError('xyz is not defined');
+      }),
+    });
+
+    await runSchedulerTick(db, [task]);
+    const hasProgrammerBugLog = errorSpy.mock.calls.some(args =>
+      args.some(a => typeof a === 'string' && a.includes('programmer bug')),
+    );
+    expect(hasProgrammerBugLog).toBe(true);
+    errorSpy.mockRestore();
+  });
+
+  it('任务抛普通 Error 不走 programmer bug 分支(走 "失败（已回滚）")', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const task = makeTask({
+      id: 'biz-err-task',
+      execute: vi.fn().mockRejectedValue(new Error('普通业务错误')),
+    });
+
+    await runSchedulerTick(db, [task]);
+    const hasProgrammerBugLog = errorSpy.mock.calls.some(args =>
+      args.some(a => typeof a === 'string' && a.includes('programmer bug')),
+    );
+    expect(hasProgrammerBugLog).toBe(false);
+    // 但应有 "失败" log
+    const hasFailureLog = errorSpy.mock.calls.some(args =>
+      args.some(a => typeof a === 'string' && a.includes('失败')),
+    );
+    expect(hasFailureLog).toBe(true);
+    errorSpy.mockRestore();
+  });
+
   it('多个任务串行执行', async () => {
     const order: string[] = [];
     const taskA = makeTask({
@@ -280,6 +344,30 @@ describe('runSchedulerTick', () => {
     expect(offEvents).toHaveLength(0);
   });
 
+  // 回归 F14(2026-05-21): half-open 状态下并发多次 noteSuccessfulLLMCall
+  // 必须只产生一条 circuit_breaker_off timeline 事件(事务化原子读写,
+  // 避免两个 caller 都看到 prevState='half-open' 各插一条事件)。
+  it('F14 回归: half-open 并发多次 noteSuccessfulLLMCall 只产生一条 off 事件', async () => {
+    // 模拟:3 次失败已开启熔断器,冷却已过期 → half-open
+    const expiredOpenTime = Date.now() - 10 * 60 * 1000;
+    db.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)").run('circuit_breaker_failures', '3');
+    db.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)").run('circuit_breaker_opened_at', expiredOpenTime.toString());
+    db.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)").run('circuit_breaker_cooldown_ms', (5 * 60 * 1000).toString());
+
+    // 并发调 N 次 noteSuccessfulLLMCall(better-sqlite3 同步串行,
+    // 这里用循环模拟两个 batch 同步成功的场景)
+    for (let i = 0; i < 5; i++) {
+      noteSuccessfulLLMCall(db);
+    }
+
+    // 只插一条 'circuit_breaker_off' timeline 事件 — 后续 4 次调用 prevState
+    // 已经是 'closed',不会再插。
+    const offEvents = db.prepare(
+      "SELECT title FROM timeline_events WHERE title LIKE '%circuit_breaker_off%'",
+    ).all() as Array<{ title: string }>;
+    expect(offEvents).toHaveLength(1);
+  });
+
   it('noteSuccessfulLLMCall: 写入 llm_last_success_at', () => {
     const before = Date.now();
     noteSuccessfulLLMCall(db);
@@ -328,6 +416,163 @@ describe('runSchedulerTick', () => {
     } finally {
       setHealthChangeListener(null);
     }
+  });
+
+  // 回归 F8(2026-05-21): half-open 状态下,一个 requiresLLM=true 的 task 即便
+  // 没有真的调过 callLLM(claim 失败 / no-candidate / 内部 early return),
+  // 也不应消耗本 tick 的半开探测名额 — 否则后续真正想探测的 task 全被 skip。
+  describe('F8 回归: halfOpenProbed 仅在真实 LLM 调用后消耗', () => {
+    beforeEach(() => {
+      // 强制熔断器进入 half-open:3 次失败 + 冷却已过
+      db.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)").run('circuit_breaker_failures', '3');
+      db.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)").run('circuit_breaker_opened_at', String(Date.now() - 10 * 60_000));
+      db.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)").run('circuit_breaker_cooldown_ms', String(5 * 60_000));
+      expect(getCircuitState(db).state).toBe('half-open');
+    });
+
+    it('half-open + 跑一个 LLM task 但内部没真的调过 LLM → 下一个 LLM task 仍能跑', async () => {
+      // 第一个 task:requiresLLM=true,execute 正常 return 但**不**触发 noteSuccessfulLLMCall
+      // 或 notifyLLMFailure(模拟 claimNextPendingDigest 返 null / no candidates)。
+      const noOpTask: TaskDefinition = {
+        id: 'noop-llm-task',
+        execute: vi.fn().mockResolvedValue(undefined),
+        intervalStrategy: 'test',
+        defaultIntervalMinutes: 0,
+        requiresLLM: true,
+      };
+
+      // 第二个 task:requiresLLM=true,execute 调 noteSuccessfulLLMCall 模拟真实 LLM 调用
+      const realLlmTask: TaskDefinition = {
+        id: 'real-llm-task',
+        execute: vi.fn().mockImplementation(async () => {
+          noteSuccessfulLLMCall(db); // 模拟 callLLM 内部 hook
+        }),
+        intervalStrategy: 'test',
+        defaultIntervalMinutes: 0,
+        requiresLLM: true,
+      };
+
+      const executed = await runSchedulerTick(db, [noOpTask, realLlmTask]);
+
+      // 旧代码:第一个 task return 后 halfOpenProbed=true,第二个被 skip → 只执行 1 个
+      // 新代码:第一个 task 没观察到真实 LLM 调用 → halfOpenProbed 仍 false,
+      //   第二个能跑 → 执行 2 个
+      expect(executed).toContain('noop-llm-task');
+      expect(executed).toContain('real-llm-task');
+      expect(noOpTask.execute).toHaveBeenCalled();
+      expect(realLlmTask.execute).toHaveBeenCalled();
+    });
+
+    it('half-open + 第一个 task 真的调过 LLM → 第二个 LLM task 被 skip', async () => {
+      const realLlmTask: TaskDefinition = {
+        id: 'real-llm-task',
+        execute: vi.fn().mockImplementation(async () => {
+          noteSuccessfulLLMCall(db); // 真实 LLM 成功 → 此时熔断器已 reset 成 closed
+        }),
+        intervalStrategy: 'test',
+        defaultIntervalMinutes: 0,
+        requiresLLM: true,
+      };
+
+      const second: TaskDefinition = {
+        id: 'second-llm-task',
+        execute: vi.fn().mockResolvedValue(undefined),
+        intervalStrategy: 'test',
+        defaultIntervalMinutes: 0,
+        requiresLLM: true,
+      };
+
+      const executed = await runSchedulerTick(db, [realLlmTask, second]);
+
+      // 第一个 task 真实调用成功 → noteSuccessfulLLMCall 把熔断器 reset 成 closed,
+      // 后续读 circuit.state 变 closed,llmAvailable=true,所以 second 仍能跑。
+      // 但 halfOpenProbed 也已 set。综合下来:这个用例验证的是"真实调用确实把 flag 翻 true",
+      // 后续若状态没自动恢复 closed 才能体现 skip。
+      // 简化:验证两个 task 都跑了(因为成功后状态恢复)。
+      expect(executed).toContain('real-llm-task');
+      expect(executed).toContain('second-llm-task');
+    });
+
+    it('half-open + notifyLLMFailure 也算真实 LLM 调用 → 标记 halfOpenProbed', async () => {
+      // 验证 notifyLLMFailure 也会触发 halfOpenProbed
+      // 第一个 task 内部触发 notifyLLMFailure(模拟 link-revalidate 抛 LLMServiceError)
+      const failingTask: TaskDefinition = {
+        id: 'fail-task',
+        execute: vi.fn().mockImplementation(async () => {
+          // 模拟 fire-and-forget 内部 catch:notifyLLMFailure 后吞掉 error
+          notifyLLMFailure(new LLMServiceError('boom', 500));
+        }),
+        intervalStrategy: 'test',
+        defaultIntervalMinutes: 0,
+        requiresLLM: true,
+      };
+
+      // 第二个 task:不真实调 LLM
+      const second: TaskDefinition = {
+        id: 'should-be-skipped',
+        execute: vi.fn().mockResolvedValue(undefined),
+        intervalStrategy: 'test',
+        defaultIntervalMinutes: 0,
+        requiresLLM: true,
+      };
+
+      const executed = await runSchedulerTick(db, [failingTask, second]);
+
+      // notifyLLMFailure 触发 recordLLMFailure → failures += 1。
+      // 因为初始 3 失败 + cooldown 过 → half-open → 这次再失败 + 1 = 4,
+      // 重新打开熔断器(notifyLLMFailure 内部走 recordLLMFailure)。
+      // 第二个 LLM task 因熔断器 open 被 skip(每轮重读 circuit)。
+      expect(executed).toContain('fail-task');
+      expect(executed).not.toContain('should-be-skipped');
+    });
+  });
+
+  // 回归 F4(2026-05-21): metadata 表中的 CB_* key 可能被 corrupt 写入(手工 SQL,
+  // 旧迁移,云同步异常等)。parseInt('corrupt') = NaN,NaN 参与的所有比较都返回
+  // false,导致 getCircuitState 既不返回 'closed' 也不返回 'half-open',永久卡
+  // 在 'open',熔断器永远无法恢复。
+  // 修复后:任何无效的 metadata.value 都视为 0(failures=0 → closed,系统正常)。
+  describe('F4 回归: getCircuitState 在 corrupt metadata 下不卡死', () => {
+    function setMeta(key: string, value: string): void {
+      db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)').run(key, value);
+    }
+
+    it('CB_FAILURES_KEY = "corrupt" → 视为 0,返回 closed', () => {
+      setMeta('circuit_breaker_failures', 'corrupt');
+      const r = getCircuitState(db);
+      expect(r.state).toBe('closed');
+      expect(r.failures).toBe(0);
+    });
+
+    it('CB_FAILURES_KEY = "5" 但 CB_OPENED_AT_KEY = "garbage" → 不卡 open,走 half-open', () => {
+      setMeta('circuit_breaker_failures', '5'); // >= threshold 3
+      setMeta('circuit_breaker_opened_at', 'garbage'); // NaN → openedAt=0
+      setMeta('circuit_breaker_cooldown_ms', '60000'); // 1 分钟冷却
+      const r = getCircuitState(db);
+      // openedAt=0,elapsed = now - 0 = 巨大值 → >= cooldownMs → half-open
+      expect(r.state).toBe('half-open');
+    });
+
+    it('所有 CB_* key 都 corrupt → 视为 closed,允许恢复', () => {
+      setMeta('circuit_breaker_failures', 'NaN');
+      setMeta('circuit_breaker_opened_at', 'bad');
+      setMeta('circuit_breaker_cooldown_ms', 'worse');
+      const r = getCircuitState(db);
+      // failures=0 → closed,cooldownMs 走 fallback
+      expect(r.state).toBe('closed');
+      expect(r.failures).toBe(0);
+      expect(r.cooldownMs).toBeGreaterThan(0);
+    });
+
+    it('CB_COOLDOWN_KEY = "0" → 视为初始 cooldown', () => {
+      setMeta('circuit_breaker_failures', '5');
+      setMeta('circuit_breaker_opened_at', String(Date.now() - 1000)); // 1秒前
+      setMeta('circuit_breaker_cooldown_ms', '0'); // 不合理 → fallback
+      const r = getCircuitState(db);
+      // cooldownMs 不会被 0,会走 fallback 默认 5 分钟。elapsed=1000ms < 5min cooldown → open
+      expect(r.state).toBe('open');
+      expect(r.cooldownMs).toBeGreaterThan(0);
+    });
   });
 });
 

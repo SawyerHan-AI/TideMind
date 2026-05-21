@@ -87,7 +87,8 @@ interface VersionEntry {
 
 function ToolInterface() {
   const { t } = useTranslation('settings')
-  const { data: skills } = useIPC(() => window.api.config.skills())
+  const fetchSkills = useCallback(() => window.api.config.skills(), [])
+  const { data: skills } = useIPC(fetchSkills)
   const [selected, setSelected] = useState<ToolItem | null>(null)
 
   // 构建完整列表

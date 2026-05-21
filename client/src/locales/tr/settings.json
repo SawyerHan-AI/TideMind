@@ -155,12 +155,16 @@
       "title": "AI Servis Durumu",
       "never": "Hiç",
       "currentStatus": "Mevcut durum",
-      "statusPaused": "Devre kesildi (kalan süre {{min}} dk)",
       "statusDegraded": "Son hatalar: {{count}}",
       "statusHealthy": "Sağlıklı",
       "lastSuccess": "Son başarılı çağrı",
       "lastError": "Son hata",
-      "hint": "Tanılamak veya bağlantıları test etmek için aşağıdaki \"Model Bağlantıları\" bölümünü kullanın."
+      "hint": "Tanılamak veya bağlantıları test etmek için aşağıdaki \"Model Bağlantıları\" bölümünü kullanın.",
+      "statusPausedCountdown": "Duraklatıldı (kalan {{time}})",
+      "retryNow": "Şimdi yeniden dene",
+      "retrySuccess": "Devre kesici sıfırlandı",
+      "retryError": "Yeniden deneme başarısız",
+      "retryDebounceHint": "Lütfen biraz bekleyin"
     }
   },
   "data": {

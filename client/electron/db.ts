@@ -6,12 +6,35 @@ import { parse as parseToml } from 'smol-toml'
 import { migrateDataDirIfNeeded } from '@server/utils/migrate-data-dir.js'
 import { syncSkillFiles, createSyncHashStoreFromDb } from '@server/utils/sync-skill-files.js'
 import { createLogger } from '@server/utils/logger.js'
+import { execIgnoringDuplicateColumn } from '@server/db/migration-helpers.js'
 import { createOutboxTable } from './cloud/outbox.js'
 
 let db: Database.Database | null = null
 let migrationDone = false
 
 const migrationLog = createLogger('client-migrate')
+
+/**
+ * 安全地执行 ALTER TABLE ADD COLUMN(幂等迁移)。
+ *
+ * MEDIUM 6 (audit-10, 2026-05-21): 本函数现在是 `execIgnoringDuplicateColumn`
+ * 的 backward-compat 包装,业务逻辑全收敛到 `@server/db/migration-helpers.ts`
+ * 一份实现,避免开源 / client 两边各维护一份漂移。新代码直接 import
+ * `execIgnoringDuplicateColumn` 即可,无需走本 wrapper。
+ *
+ * 历史背景:db.ts 老代码 14 处 `try { db.exec('ALTER ...') } catch {}` 把
+ * "duplicate column"(合法幂等)和 SQLITE_BUSY/FULL/CORRUPT(真错)一起吞掉,
+ * 磁盘满/损坏静默成功 → 后续业务随机崩。helper 只吞含 "duplicate column" /
+ * "already exists" 文案的 message,其他抛出 + log。
+ */
+export function safeAlterAddColumn(db: Database.Database, sql: string): void {
+  try {
+    execIgnoringDuplicateColumn(db, sql)
+  } catch (err) {
+    migrationLog.error(`migration ALTER failed: ${sql} — ${(err as Error).message}`)
+    throw err
+  }
+}
 
 function ensureMigration(): void {
   if (migrationDone) return
@@ -494,28 +517,51 @@ export function getClientDb(): Database.Database {
       completed_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_pending_digests_status ON pending_digests(status, next_retry_at);
+
+    -- B-2: Notion 失败页持久化重试 (与 daemon SCHEMA_SQL / migration v27 对齐)
+    CREATE TABLE IF NOT EXISTS notion_pending_retry (
+      page_id TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_attempt TEXT NOT NULL,
+      last_error TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','dead_letter')),
+      PRIMARY KEY (page_id, source_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_notion_pending_retry_source
+      ON notion_pending_retry(source_id, status);
   `)
-  // 迁移：补齐可能缺失的列（幂等，已存在则忽略）
-  try { tmpDb.exec('ALTER TABLE operation_log ADD COLUMN agent_id TEXT') } catch {}
-  try { tmpDb.exec("ALTER TABLE timeline_events ADD COLUMN actor TEXT DEFAULT 'brain'") } catch {}
-  try { tmpDb.exec('ALTER TABLE nodes ADD COLUMN title TEXT') } catch {}
-  try { tmpDb.exec('ALTER TABLE nodes ADD COLUMN specificity REAL DEFAULT 0.5') } catch {}
-  try { tmpDb.exec('ALTER TABLE nodes ADD COLUMN subjectivity REAL DEFAULT 0.5') } catch {}
-  try { tmpDb.exec('ALTER TABLE nodes ADD COLUMN actuality REAL DEFAULT 0.5') } catch {}
-  try { tmpDb.exec('ALTER TABLE nodes ADD COLUMN is_crystal INTEGER DEFAULT 0') } catch {}
-  try { tmpDb.exec('ALTER TABLE nodes ADD COLUMN is_tag INTEGER DEFAULT 0') } catch {}
-  try { tmpDb.exec('ALTER TABLE nodes ADD COLUMN is_meta INTEGER DEFAULT 0') } catch {}
-  try { tmpDb.exec('ALTER TABLE nodes ADD COLUMN is_superseded INTEGER DEFAULT 0') } catch {}
-  try { tmpDb.exec("ALTER TABLE nodes ADD COLUMN source_device TEXT DEFAULT 'local'") } catch {}
-  try { tmpDb.exec('ALTER TABLE links ADD COLUMN refined INTEGER DEFAULT 0') } catch {}
-  try { tmpDb.exec('ALTER TABLE llm_usage_log ADD COLUMN estimated_cost REAL DEFAULT 0') } catch {}
+  // 迁移：补齐可能缺失的列(幂等)。
+  // **不要**写成 `try { ALTER } catch {}` —— 空 catch 会同时吞 "duplicate column"
+  // (合法)和 SQLITE_BUSY / SQLITE_FULL / SQLITE_CORRUPT(真错),导致磁盘满 / 数据
+  // 损坏被静默吞掉。走 safeAlterAddColumn:只吞 "列已存在" 类,其余抛出。
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE operation_log ADD COLUMN agent_id TEXT')
+  safeAlterAddColumn(tmpDb, "ALTER TABLE timeline_events ADD COLUMN actor TEXT DEFAULT 'brain'")
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE nodes ADD COLUMN title TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE nodes ADD COLUMN specificity REAL DEFAULT 0.5')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE nodes ADD COLUMN subjectivity REAL DEFAULT 0.5')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE nodes ADD COLUMN actuality REAL DEFAULT 0.5')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE nodes ADD COLUMN is_crystal INTEGER DEFAULT 0')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE nodes ADD COLUMN is_tag INTEGER DEFAULT 0')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE nodes ADD COLUMN is_meta INTEGER DEFAULT 0')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE nodes ADD COLUMN is_superseded INTEGER DEFAULT 0')
+  safeAlterAddColumn(tmpDb, "ALTER TABLE nodes ADD COLUMN source_device TEXT DEFAULT 'local'")
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE links ADD COLUMN refined INTEGER DEFAULT 0')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE llm_usage_log ADD COLUMN estimated_cost REAL DEFAULT 0')
 
   // Reconcile LWW: nodes/links 加 `updated` 时间戳(两端都有,冲突时 LWW)。
   // 老数据默认 updated = created(表示从未修改过),backfill 一次。
-  try { tmpDb.exec("ALTER TABLE nodes ADD COLUMN updated TEXT") } catch {}
-  try { tmpDb.exec("UPDATE nodes SET updated = created WHERE updated IS NULL") } catch {}
-  try { tmpDb.exec("ALTER TABLE links ADD COLUMN updated TEXT") } catch {}
-  try { tmpDb.exec("UPDATE links SET updated = created WHERE updated IS NULL") } catch {}
+  // 注:UPDATE ... WHERE updated IS NULL 是数据 backfill 而非 schema 迁移,
+  // 此 helper 仅对 ALTER 有意义,UPDATE 仍走原来的 try/catch — 失败时静默
+  // (backfill 失败不阻塞启动,值为 NULL 时业务有 fallback)。
+  safeAlterAddColumn(tmpDb, "ALTER TABLE nodes ADD COLUMN updated TEXT")
+  try { tmpDb.exec("UPDATE nodes SET updated = created WHERE updated IS NULL") } catch (err) {
+    migrationLog.warn(`backfill nodes.updated failed: ${(err as Error).message}`)
+  }
+  safeAlterAddColumn(tmpDb, "ALTER TABLE links ADD COLUMN updated TEXT")
+  try { tmpDb.exec("UPDATE links SET updated = created WHERE updated IS NULL") } catch (err) {
+    migrationLog.warn(`backfill links.updated failed: ${(err as Error).message}`)
+  }
 
   tmpDb.close()
 

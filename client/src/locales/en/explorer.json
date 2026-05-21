@@ -30,6 +30,7 @@
     "editReasonPlaceholder": "Edit reason (optional)",
     "titlePlaceholder": "Title",
     "editVersionNote": "Changes will be recorded in version history",
+    "concurrentEditWarning": "The content was auto-updated while you were editing. Saving will overwrite the latest version. Continue?",
     "saving": "Saving...",
     "save": "Save",
     "cancel": "Cancel",

@@ -205,4 +205,37 @@ describe('runAnnotation', () => {
     const result = await runAnnotation(db);
     expect(result.annotated).toBe(0);
   });
+
+  it('TypeError 必须 re-throw + log "programmer bug"(F4 修复:程序员错误不再被静默吞掉)', async () => {
+    seedNode(db, { content: 'programmer bug test', refinement: 0.0 });
+
+    // 模拟代码 bug:callLLM 抛 TypeError(实际场景:parseBatchResults / 后续映射逻辑里
+    // 撞 undefined.foo 之类)
+    vi.mocked(callLLM).mockRejectedValueOnce(
+      new TypeError("Cannot read properties of undefined (reading 'foo')"),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(runAnnotation(db)).rejects.toBeInstanceOf(TypeError);
+
+    const hasProgrammerBugLog = errorSpy.mock.calls.some(args =>
+      args.some(a => typeof a === 'string' && a.includes('programmer bug in annotate')),
+    );
+    expect(hasProgrammerBugLog).toBe(true);
+    errorSpy.mockRestore();
+  });
+
+  it('ReferenceError 同样 re-throw + log "programmer bug"', async () => {
+    seedNode(db, { content: 'ref err test', refinement: 0.0 });
+
+    vi.mocked(callLLM).mockRejectedValueOnce(new ReferenceError('xyz is not defined'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(runAnnotation(db)).rejects.toBeInstanceOf(ReferenceError);
+    const hasProgrammerBugLog = errorSpy.mock.calls.some(args =>
+      args.some(a => typeof a === 'string' && a.includes('programmer bug in annotate')),
+    );
+    expect(hasProgrammerBugLog).toBe(true);
+    errorSpy.mockRestore();
+  });
 });

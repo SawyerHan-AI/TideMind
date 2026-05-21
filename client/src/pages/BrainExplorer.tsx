@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
 import { useIPC } from '../hooks/useIPC'
@@ -12,7 +12,7 @@ import type { ExplorerFilter } from '../lib/api'
 
 export function BrainExplorer() {
   const { t } = useTranslation('explorer')
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const [filter, setFilter] = useState<ExplorerFilter>(() => ({
     sortBy: 'created',
@@ -51,7 +51,10 @@ export function BrainExplorer() {
   // window.api.nodes.list 把整个 filter 传后端，下面所有字段都参与查询。
   // deps 漏一个就意味着改这个过滤项不会触发重取，列表与实际过滤错位。
   // GraphView 已经做过同样补全 (filter.archived/sortDir/createdAfter/createdBefore/graphLimit)。
-  const { data: listData, loading } = useIPC(
+  // 注:deps 只列 filter 各字段而非 filter 对象本身,因为本组件每次渲染都会
+  // 新建 filter(setFilter patch),依赖整个 filter 引用会引发不必要的 refetch。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const fetchList = useCallback(
     () => useSearchMode
       ? window.api.nodes.search(debouncedSearch, 30)
       : window.api.nodes.list({
@@ -67,9 +70,23 @@ export function BrainExplorer() {
       page, rev,
     ],
   )
+  const { data: listData, loading } = useIPC(fetchList)
 
   const handleFilterChange = (patch: Partial<ExplorerFilter>) => {
-    setFilter(f => ({ ...f, ...patch }))
+    setFilter(f => {
+      const next = { ...f, ...patch }
+      // F13: 双向同步 URL ?tag= 参数,这样刷新 / 分享 URL 能保留 tag 过滤。
+      // 仅同步 tag(其他 filter 字段尚无 URL 表示)。replace 避免污染 history。
+      if ('tags' in patch) {
+        setSearchParams(prev => {
+          const p = new URLSearchParams(prev)
+          if (next.tags) p.set('tag', next.tags)
+          else p.delete('tag')
+          return p
+        }, { replace: true })
+      }
+      return next
+    })
     setPage(0)
   }
 

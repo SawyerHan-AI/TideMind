@@ -20,6 +20,9 @@ export function LLMHealthBadge() {
   const { t } = useTranslation('common')
   const navigate = useNavigate()
   const [health, setHealth] = useState<LLMHealthSnapshot | null>(null)
+  // F6: circuit open 时倒计时基于 Date.now() 计算,但组件本身不会主动 re-render,
+  // 标签会冻结显示"X 分钟后重试"。加 1s tick 在 open 状态下推动 re-render。
+  const [, setTick] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -39,6 +42,13 @@ export function LLMHealthBadge() {
       unsubscribe()
     }
   }, [])
+
+  // F6: open 状态下每秒 tick 一次,推动倒计时刷新。
+  useEffect(() => {
+    if (health?.circuitState !== 'open') return
+    const t = setInterval(() => setTick(x => x + 1), 1000)
+    return () => clearInterval(t)
+  }, [health?.circuitState])
 
   if (!health) return null
 

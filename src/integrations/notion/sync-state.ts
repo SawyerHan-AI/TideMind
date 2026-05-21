@@ -157,3 +157,100 @@ export function markFullScanCompleted(db: Database.Database, sourceId: string): 
   const key = `notion_full_scan_completed_${sourceId}`;
   db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)').run(key, 'true');
 }
+
+// ── Pending Retry (B-2) ───────────────────────────────────────
+
+/**
+ * 失败页连续重试上限。到达后 status → 'dead_letter',下次 sync 不再合并。
+ * 5 次足够覆盖瞬时网络抖动 / API rate limit 自愈;再多就是 page 数据 / 集成本身有问题,
+ * 让 sync 持续浪费 LLM/embedding quota 不合理。
+ */
+export const NOTION_RETRY_MAX_ATTEMPTS = 5;
+
+export interface NotionPendingRetry {
+  page_id: string;
+  source_id: string;
+  attempts: number;
+  last_attempt: string;
+  last_error: string | null;
+  status: 'pending' | 'dead_letter';
+}
+
+/**
+ * 记录一次失败:已存在则 attempts+1,否则新建 attempts=1。
+ * attempts 达到 NOTION_RETRY_MAX_ATTEMPTS 时 status 自动切到 'dead_letter'。
+ */
+export function recordPageFailure(
+  db: Database.Database,
+  pageId: string,
+  sourceId: string,
+  error: string,
+): void {
+  const now = new Date().toISOString();
+  const existing = db.prepare(
+    'SELECT attempts FROM notion_pending_retry WHERE page_id = ? AND source_id = ?'
+  ).get(pageId, sourceId) as { attempts: number } | undefined;
+
+  const nextAttempts = (existing?.attempts ?? 0) + 1;
+  const nextStatus = nextAttempts >= NOTION_RETRY_MAX_ATTEMPTS ? 'dead_letter' : 'pending';
+
+  // 错误消息 cap 到 1000 字符,避免大 stack trace 把表撑大
+  const trimmedError = error.length > 1000 ? error.slice(0, 1000) + '...' : error;
+
+  db.prepare(`
+    INSERT INTO notion_pending_retry (page_id, source_id, attempts, last_attempt, last_error, status)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(page_id, source_id) DO UPDATE SET
+      attempts = excluded.attempts,
+      last_attempt = excluded.last_attempt,
+      last_error = excluded.last_error,
+      status = excluded.status
+  `).run(pageId, sourceId, nextAttempts, now, trimmedError, nextStatus);
+}
+
+/**
+ * 标记一次成功:清掉重试记录(成功 = 不再需要追踪)。
+ * 即便 status 已经是 dead_letter 也清,允许通过下一次外部触发 full rescan 自愈。
+ */
+export function clearPageFailure(
+  db: Database.Database,
+  pageId: string,
+  sourceId: string,
+): void {
+  db.prepare(
+    'DELETE FROM notion_pending_retry WHERE page_id = ? AND source_id = ?'
+  ).run(pageId, sourceId);
+}
+
+/**
+ * 获取还允许重试的 pageId 列表(status='pending' 即 attempts < MAX)。
+ * 由 runIncrementalSync 合并进 changedPages,确保即便 last_edited_time 没动
+ * 也会被重试。
+ */
+export function getPagesPendingRetry(
+  db: Database.Database,
+  sourceId: string,
+): string[] {
+  const rows = db.prepare(
+    "SELECT page_id FROM notion_pending_retry WHERE source_id = ? AND status = 'pending'"
+  ).all(sourceId) as Array<{ page_id: string }>;
+  return rows.map(r => r.page_id);
+}
+
+/** 测试 / 诊断用:列出所有重试条目(含 dead_letter)。 */
+export function listAllPendingRetry(
+  db: Database.Database,
+  sourceId: string,
+): NotionPendingRetry[] {
+  const rows = db.prepare(
+    'SELECT * FROM notion_pending_retry WHERE source_id = ? ORDER BY last_attempt DESC'
+  ).all(sourceId) as Array<Record<string, unknown>>;
+  return rows.map(r => ({
+    page_id: r.page_id as string,
+    source_id: r.source_id as string,
+    attempts: r.attempts as number,
+    last_attempt: r.last_attempt as string,
+    last_error: (r.last_error as string | null) ?? null,
+    status: r.status as 'pending' | 'dead_letter',
+  }));
+}

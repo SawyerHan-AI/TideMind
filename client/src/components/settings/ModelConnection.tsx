@@ -27,7 +27,12 @@ const PROVIDER_TYPES: ProviderTypeDef[] = [
   { id: 'openai-compatible', label: 'OpenAI Compatible' },
 ]
 
+// Vertex AI region 选项。'global' 是 anycast endpoint(走最近 PoP),
+// claude-haiku-4-5 / sonnet-4-6 / opus-4-6 都在 global 可用,实测延迟跟最近
+// 固定 region 持平且更稳(2026-05-21 调试 LLM 故障时验证)。中国大陆 + VPN 用户
+// 推荐选 'global'。放第一位让新用户首选 global。
 const VERTEX_REGIONS = [
+  'global',
   'us-central1', 'us-east1', 'us-east4', 'us-east5', 'us-west1',
   'europe-west1', 'europe-west4', 'asia-northeast1', 'asia-southeast1',
 ]
@@ -121,7 +126,8 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
   const [projectId, setProjectId] = useState('')
   const [region, setRegion] = useState('us-central1')
   const [uploading, setUploading] = useState(false)
-  const [vertexCredStatus, setVertexCredStatus] = useState<{ configured: boolean; projectId?: string } | null>(null)
+  // F14 (audit-8): 增加 error 字段,把 pickVertexFile 失败原因显示给用户
+  const [vertexCredStatus, setVertexCredStatus] = useState<{ configured: boolean; projectId?: string; error?: string } | null>(null)
   const [geminiKey, setGeminiKey] = useState('')
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434')
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState('')
@@ -211,8 +217,16 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
     try {
       const result = await window.api.connections.pickVertexFile(conn.id)
       if (result.success && result.projectId) setProjectId(result.projectId)
-      setVertexCredStatus(result.success ? { configured: true, projectId: result.projectId } : { configured: false })
-    } catch {}
+      setVertexCredStatus(
+        result.success
+          ? { configured: true, projectId: result.projectId }
+          // F14 (audit-8): 失败把 reason 透出来。pickVertexFile 在文件超过 1MB / 格式
+          // 错误 / 用户取消时都失败,以前空 catch 让用户点完按钮没反应,只能猜。
+          : { configured: false, error: result.error ?? 'unknown error' },
+      )
+    } catch (e) {
+      setVertexCredStatus({ configured: false, error: (e as Error).message ?? 'unexpected error' })
+    }
     setUploading(false)
   }
 
@@ -267,6 +281,11 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
                 <span className="flex items-center gap-1 text-[10px] text-emerald-400">
                   <CheckCircle2 size={10} />
                   {t('model.connection.uploaded')}{vertexCredStatus.projectId && ` (${vertexCredStatus.projectId})`}
+                </span>
+              )}
+              {vertexCredStatus?.error && (
+                <span className="text-[10px] text-rose-400">
+                  {vertexCredStatus.error}
                 </span>
               )}
             </div>
@@ -448,8 +467,10 @@ function ConnectionWizard({ onCreated, onClose }: { onCreated: (id: string) => v
 
 export function ModelConnection() {
   const { t } = useTranslation('settings')
-  const { data: connections, refetch: refetchConnections } = useIPC(() => window.api.connections.list(true))
-  const { data: config } = useIPC(() => window.api.config.get())
+  const fetchConnections = useCallback(() => window.api.connections.list(true), [])
+  const fetchConfig = useCallback(() => window.api.config.get(), [])
+  const { data: connections, refetch: refetchConnections } = useIPC(fetchConnections)
+  const { data: config } = useIPC(fetchConfig)
 
   const [wizardOpen, setWizardOpen] = useState(false)
   const [expandedId, setExpandedId] = useState<string | null>(null)

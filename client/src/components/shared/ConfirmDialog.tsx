@@ -42,11 +42,20 @@ export function ConfirmDialog({
 
   useEffect(() => {
     if (!open) return
+    // F16: 多个 ConfirmDialog 同时在 DOM 里(连环二次确认场景)时,默认
+    // window keydown 会同时触发所有 handler,导致一次 ESC 关掉全部 dialog。
+    // capture phase + stopPropagation,让最后注册(也就是最近打开 — useEffect 注册
+    // 是按 open 切换顺序入栈)的 dialog 优先响应,关掉自己后阻断传播。
+    // 注:这是简单版本,假设新弹出的 dialog 不会再叠开。如果将来有真正的 modal 栈
+    // 场景,应改用集中式 modal stack。
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel()
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        onCancel()
+      }
     }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
+    window.addEventListener('keydown', handler, true)
+    return () => window.removeEventListener('keydown', handler, true)
   }, [open, onCancel])
 
   if (!open) return null

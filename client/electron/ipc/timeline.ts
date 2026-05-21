@@ -1,17 +1,39 @@
 import { ipcMain } from 'electron'
 import type Database from 'better-sqlite3'
+import { parseSearchLimit, parseNodeId } from './_schemas.js'
+
+// F10 (audit-9): IPC 输入校验。timeline 字段没经验证就拼进 SQL params,
+// 攻击 / bug 路径可以塞超大数组 / 不合法 ID 让 SQL 引擎卡死或 timeline_events
+// 上百倍放大查询。
+const MAX_STRING_LEN = 256
+const MAX_ARRAY_LEN = 500
+
+function clampArray<T>(arr: T[] | undefined, predicate: (x: T) => boolean): T[] {
+  if (!Array.isArray(arr)) return []
+  return arr.filter(predicate).slice(0, MAX_ARRAY_LEN)
+}
+function isSafeShortString(v: unknown): v is string {
+  return typeof v === 'string' && v.length > 0 && v.length <= MAX_STRING_LEN
+}
 
 export function registerTimelineHandlers(db: Database.Database): void {
   ipcMain.handle('timeline:list', (_e, filter: {
-    types?: string[]
-    actors?: string[]
-    limit?: number
-    offset?: number
-    after?: string
-    before?: string
+    types?: unknown
+    actors?: unknown
+    limit?: unknown
+    offset?: unknown
+    after?: unknown
+    before?: unknown
   }) => {
-    const limit = filter.limit ?? 50
-    const offset = filter.offset ?? 0
+    const parsedLimit = parseSearchLimit(filter.limit)
+    const limit = parsedLimit.ok ? parsedLimit.data : 50
+    const rawOffset = typeof filter.offset === 'number' && Number.isFinite(filter.offset) ? Math.max(0, Math.floor(filter.offset)) : 0
+    const offset = Math.min(rawOffset, 100_000) // 防 OFFSET 太大致 SQL 退化扫整表
+
+    const sanitizedTypes = clampArray(filter.types as unknown[] | undefined, isSafeShortString) as string[]
+    const sanitizedActors = clampArray(filter.actors as unknown[] | undefined, isSafeShortString) as string[]
+    const after = isSafeShortString(filter.after) ? filter.after : undefined
+    const before = isSafeShortString(filter.before) ? filter.before : undefined
 
     const unionParts = [
       // timeline_events: 映射旧 type → 新认知功能分组
@@ -83,23 +105,23 @@ export function registerTimelineHandlers(db: Database.Database): void {
     const conditions: string[] = []
     const params: unknown[] = []
 
-    if (filter.types && filter.types.length > 0) {
-      const placeholders = filter.types.map(() => '?').join(', ')
+    if (sanitizedTypes.length > 0) {
+      const placeholders = sanitizedTypes.map(() => '?').join(', ')
       conditions.push(`type IN (${placeholders})`)
-      params.push(...filter.types)
+      params.push(...sanitizedTypes)
     }
-    if (filter.actors && filter.actors.length > 0) {
-      const placeholders = filter.actors.map(() => '?').join(', ')
+    if (sanitizedActors.length > 0) {
+      const placeholders = sanitizedActors.map(() => '?').join(', ')
       conditions.push(`actor IN (${placeholders})`)
-      params.push(...filter.actors)
+      params.push(...sanitizedActors)
     }
-    if (filter.after) {
+    if (after) {
       conditions.push('created > ?')
-      params.push(filter.after)
+      params.push(after)
     }
-    if (filter.before) {
+    if (before) {
       conditions.push('created < ?')
-      params.push(filter.before)
+      params.push(before)
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
@@ -113,12 +135,21 @@ export function registerTimelineHandlers(db: Database.Database): void {
     return { events, total }
   })
 
-  ipcMain.handle('timeline:resolve-nodes', (_e, nodeIds: string[]) => {
-    if (!nodeIds || nodeIds.length === 0) return {}
-    const placeholders = nodeIds.map(() => '?').join(', ')
+  ipcMain.handle('timeline:resolve-nodes', (_e, nodeIds: unknown) => {
+    // F10 (audit-9): validate + cap input。原代码直接把任意输入 splat 进 SQL params,
+    // 超大数组会让 SQLite 单条 query 卡死,且无法控制 row 数量。
+    if (!Array.isArray(nodeIds) || nodeIds.length === 0) return {}
+    const safeIds: string[] = []
+    for (const raw of nodeIds) {
+      const parsed = parseNodeId(raw)
+      if (parsed.ok) safeIds.push(parsed.data)
+      if (safeIds.length >= MAX_ARRAY_LEN) break
+    }
+    if (safeIds.length === 0) return {}
+    const placeholders = safeIds.map(() => '?').join(', ')
     const rows = db.prepare(
       `SELECT id, title, content, type FROM nodes WHERE id IN (${placeholders})`,
-    ).all(...nodeIds) as Array<{ id: string; title: string | null; content: string; type: string }>
+    ).all(...safeIds) as Array<{ id: string; title: string | null; content: string; type: string }>
     const result: Record<string, { title: string; type: string }> = {}
     for (const row of rows) {
       const displayTitle = row.title || row.content.split('\n')[0].slice(0, 60)
@@ -127,7 +158,14 @@ export function registerTimelineHandlers(db: Database.Database): void {
     return result
   })
 
-  ipcMain.handle('timeline:get', (_e, id: number, source: string) => {
+  ipcMain.handle('timeline:get', (_e, id: unknown, source: unknown) => {
+    // F10 (audit-9): id 必须是有限整数,source 必须是已知 enum
+    if (typeof id !== 'number' || !Number.isFinite(id) || !Number.isInteger(id) || id < 0) {
+      return null
+    }
+    if (source !== 'timeline' && source !== 'operation' && source !== 'version') {
+      return null
+    }
     if (source === 'timeline') {
       return db.prepare('SELECT * FROM timeline_events WHERE id = ?').get(id)
     }

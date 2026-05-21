@@ -17,6 +17,17 @@ export function setQuitting(): void {
   isQuitting = true;
 }
 
+/**
+ * Audit-3 F6 修复:installUpdate 在 quitAndInstall 抛错时需要把 isQuitting 重置,
+ * 否则下次用户关窗口走 mac tray pattern 时 close handler 看到 isQuitting=true
+ * 会放行真正退出(而本来应该只是 hide)。
+ *
+ * 另一个 reset 入口是 autoUpdater 'error' 事件(已在 updater/index.ts 兜底)。
+ */
+export function resetQuitting(): void {
+  isQuitting = false;
+}
+
 export function getIsQuitting(): boolean {
   return isQuitting;
 }

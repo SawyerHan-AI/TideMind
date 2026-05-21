@@ -155,12 +155,16 @@
       "title": "AI サービスステータス",
       "never": "なし",
       "currentStatus": "現在の状態",
-      "statusPaused": "サーキットブレーカー作動中（残り {{min}} 分）",
       "statusDegraded": "最近の失敗回数: {{count}}",
       "statusHealthy": "正常",
       "lastSuccess": "前回の成功",
       "lastError": "前回のエラー",
-      "hint": "調査やテストを行うには、下の「モデル接続」セクションを使用してください。"
+      "hint": "調査やテストを行うには、下の「モデル接続」セクションを使用してください。",
+      "statusPausedCountdown": "一時停止中（残り {{time}}）",
+      "retryNow": "今すぐ再試行",
+      "retrySuccess": "サーキットブレーカーをリセットしました",
+      "retryError": "再試行失敗",
+      "retryDebounceHint": "少々お待ちください"
     }
   },
   "data": {

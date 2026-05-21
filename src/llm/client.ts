@@ -4,6 +4,7 @@ import type Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
+import { fetch as undiciFetch, Agent } from 'undici';
 import { getConfig, getDataDir } from '../config.js';
 import { createLogger } from '../utils/logger.js';
 import { estimateCost } from './pricing.js';
@@ -11,6 +12,78 @@ import { now } from '../utils/time.js';
 import { processThinkTags } from './thinking.js';
 
 const log = createLogger('llm');
+
+// ─────────────────────────────────────────────────────────────
+// 长生成 fetch 路径 (2026-05-21 问题 A 修复)
+// ─────────────────────────────────────────────────────────────
+//
+// 真相: Vertex AI `rawPredict` 和 Gemini `generateContent` 是**非流式** API——
+// 客户端必须等服务端把所有 max_tokens 生成完才返回 HTTP response headers。
+// Sonnet-4-6 生成速度约 40 tokens/秒,所以 max_tokens >= 2500 几乎必然超 60 秒。
+//
+// Node 22+ 内置 fetch 是基于 undici 的 fetch shim,但**shim 自己写死 `headersTimeout
+// = 60_000`**(跟 npm undici 默认 300_000 不同)。触发后抛 `fetch failed`,被
+// Anthropic SDK 包装成 `Connection error.` **没有 HTTP 状态码**——光看错误根本
+// 无法诊断,会以为是网络/region/SDK 问题。
+//
+// daemon 内部 callLLM 的 `setTimeout(() => controller.abort(), timeoutMs)`
+// (standard tier 180s / heavy tier 300s) 永远等不到——内置 fetch 在 60s 时已经先 kill。
+//
+// 修复: 用 npm undici 包的 fetch + 自定义 Agent dispatcher,把 headersTimeout /
+// bodyTimeout 拉高到 360_000ms (6 分钟,heavy tier 300s + 60s buffer)。
+//
+// 为什么自定义 fetch 而不是 fetchOptions.dispatcher: npm 装的 undici 的 Agent 跟
+// `globalThis.fetch` (Node 内置 undici shim) 的 Agent 是不同的 JS class——internal
+// Symbol 不互通,通过 RequestInit.dispatcher 传 npm Agent 给内置 fetch 会被 silently
+// 忽略或 internal validation 失败。custom fetch 让整条调用链全走 npm undici,dispatcher
+// 一致。
+//
+// 复现实验: tests/manual/maxtokens-timeout.mjs (max_tokens=50/1000/4000/10000 阶梯,
+// 4000/10000 恰好在 60.5s/60.9s timeout)。
+//
+// 复杂度评估: 给 SDK 传 `fetch: longRunningFetch` 即可,SDK 内部其他逻辑
+// (重试、序列化、错误包装) 不受影响。**注意**:
+//   - 5 处 SDK 构造 (Anthropic / Vertex × legacy 单例 + per-connection 路径) 都
+//     需要 `fetch: longRunningFetch`
+//   - 2 处裸 fetch (`callGeminiLLM` / `callOpenAICompatibleLLM`) 都需要 `undiciFetch`
+//     + `dispatcher: longRunningDispatcher`
+//   任何一处遗漏都会复现 60s timeout。Vertex auth (OAuth token 刷新) 走
+//   google-auth-library 的 gaxios,不经过此 fetch,不受影响 (实测确认)。
+const longRunningDispatcher = new Agent({
+  headersTimeout: 360_000,
+  bodyTimeout: 360_000,
+  // keepAliveTimeout 保持 undici 默认 (4_000ms),不破坏 socket 复用语义。
+  // clientTtl: 24h 后空闲 Pool 自动释放——daemon 长跑时避免用户切多个 region 累积
+  // origin Pool(每个 Pool ~ KB 级,理论上无限增长,实际影响微小但顺手加)。
+  clientTtl: 24 * 60 * 60 * 1000,
+});
+
+// 类型: Anthropic SDK 的 Fetch 类型签名是 standard fetch,undici fetch 跟它有
+// 微小差异 (Response / Request / RequestInit 类型来源不同,Headers 内部互不识别
+// 但 fetch 内部 duck-typing 兼容,实测 200 OK)。运行时兼容,类型断言绕开 TS 检查。
+//
+// 注意:longRunningFetch 内部 spread `...init` 后强制覆盖 dispatcher——这是预期
+// (我们就是要保证整条 LLM 调用链全走同一个 dispatcher),不要把它当 bug 来"修"。
+const longRunningFetch = ((url: string | URL | Request, init?: RequestInit) =>
+  undiciFetch(url as Parameters<typeof undiciFetch>[0], { ...init, dispatcher: longRunningDispatcher } as Parameters<typeof undiciFetch>[1])
+) as unknown as typeof fetch;
+
+/**
+ * 关闭 LLM client 的 undici dispatcher,释放所有 keep-alive socket。
+ * 应在 Electron 主进程 before-quit 时调用,避免 in-flight 请求挂住 process exit
+ * (2026-05-21 backlog: quit-and-install 主进程卡 5+ 分钟 95% CPU 的潜在贡献者)。
+ *
+ * close() 等所有 in-flight 完成,destroy() 立刻 kill。daemon shutdown 场景用
+ * destroy() 更激进——用户已经按 quit,不需要等 6 分钟 LLM 响应。
+ */
+export async function shutdownLLMClient(): Promise<void> {
+  try {
+    await longRunningDispatcher.destroy();
+  } catch (err) {
+    // shutdown 路径永远吞掉错误,不影响 process exit
+    log.warn(`shutdownLLMClient: dispatcher destroy failed: ${(err as Error).message}`);
+  }
+}
 
 /**
  * LLM 服务级错误：429 限流、5xx 服务端错误、401/403 认证、网络错误。
@@ -77,21 +150,79 @@ let legacyAnthropicKey = ''; // 跟踪 legacy client 当前生效的 key
 let legacyVertexProject = ''; // 跟踪 legacy vertex 当前生效的 project_id
 
 /**
+ * Per-cache-entry 连续失败计数。同 cacheKey 累积 ≥ FAILURE_RESET_THRESHOLD
+ * 时,callLLM 失败路径会主动 evict 该 entry,下次 call 重建 SDK 实例。
+ *
+ * 设计动机(2026-05-21 audit followup): daemon 长跑过程中如果 SDK client 持有的
+ * undici socket pool 或 GoogleAuth token 缓存进入坏态(理论上少见,但 NordVPN/
+ * Cloudflare WARP 之类的 TUN tunnel 抖动场景观察过类似异常),`clientCache` 持续
+ * 复用同一个 SDK 实例,daemon 永远不能自愈。给 cache entry 加 consecutiveFailures
+ * 计数,连续 N 次失败就 evict——下次 callLLM 会走 cache miss 路径建新 SDK 实例,
+ * 等价于"自动重启 LLM client 但不重启 daemon"。
+ *
+ * 设计选择:
+ * - 计数器跟 cacheKey 关联,不跟 SDK 实例关联(否则 evict 之后新建实例计数器不知道
+ *   要不要继承,语义模糊)。
+ * - 阈值 3 跟 callLLM 的 MAX_RETRIES 一致——3 次重试都失败说明这次 invocation 完全
+ *   失败,可能 SDK state 损坏,值得 evict 重建。
+ * - 成功一次清零(给短瞬 transient 错误留余地,不要因为偶发抖动就一直 evict)。
+ * - clearClientCache 也清空计数,避免上次的失败"穿越"到新 cache entry。
+ */
+const FAILURE_RESET_THRESHOLD = 3;
+const failureCounters = new Map<string, number>();
+
+/**
+ * 记录一次 cacheKey 调用结果。callLLM 在每次 invocation 完成时调用:
+ * - success=true → 清零计数器(短瞬 transient 错误不应永久挂账)
+ * - success=false → 累加,如果 >= FAILURE_RESET_THRESHOLD,evict cache + 重置计数
+ * 返回值: 如果触发了 evict 则 true,调用方可以(可选地)记一行 log 监测自愈频率。
+ */
+function recordCallResult(cacheKey: string | null, success: boolean): boolean {
+  if (!cacheKey) return false; // legacy / non-connection 路径不参与自愈
+  if (success) {
+    if (failureCounters.has(cacheKey)) failureCounters.delete(cacheKey);
+    return false;
+  }
+  const next = (failureCounters.get(cacheKey) ?? 0) + 1;
+  if (next >= FAILURE_RESET_THRESHOLD) {
+    clientCache.delete(cacheKey);
+    failureCounters.delete(cacheKey);
+    return true;
+  }
+  failureCounters.set(cacheKey, next);
+  return false;
+}
+
+/**
  * 清理 LLM client 缓存。配置/凭证变更时调用,避免下次请求继续用过期 client。
  * 没有副作用 — Anthropic SDK 实例不持有连接,直接 GC 即可。
  */
 export function clearClientCache(): void {
   clientCache.clear();
+  failureCounters.clear();
   legacyAnthropicClient = null;
   legacyVertexClient = null;
   legacyAnthropicKey = '';
   legacyVertexProject = '';
 }
 
-function fingerprintCreds(obj: unknown): string {
+// 导出供测试:验证 mtime+size 进入指纹
+export function fingerprintCreds(obj: unknown, credPath?: string): string {
   // 稳定指纹:对 JSON 序列化后取 SHA256 前 12 位 hex(等价于 48 bit 抗碰撞,
   // 单台 Mac 上几乎不可能撞)。不暴露原 key,纯粹用作 cache key 区分。
-  const s = JSON.stringify(obj ?? {});
+  //
+  // F8: Vertex 凭证存放在外部文件(creds 对象里只是 projectId/region),
+  // 用户重新上传 JSON 后 creds 对象往往未变(同 projectId),需要把文件 mtime+size
+  // 也纳入指纹,否则 cache 命中导致继续用旧 key file。
+  let s = JSON.stringify(obj ?? {});
+  if (credPath) {
+    try {
+      const stat = fs.statSync(credPath);
+      s += `:${stat.mtimeMs}:${stat.size}`;
+    } catch {
+      // 文件不存在 / 不可读时用 base 指纹,保持向后兼容
+    }
+  }
   return createHash('sha256').update(s).digest('hex').slice(0, 12);
 }
 
@@ -107,6 +238,8 @@ function getLegacyAnthropicClient(): Anthropic {
   legacyAnthropicClient = new Anthropic({
     apiKey: currentKey || undefined,
     maxRetries: 0,
+    fetch: longRunningFetch, // 见模块顶部 longRunningFetch 注释:避免 undici 60s headersTimeout 截断长生成请求
+    timeout: 360_000, // 跟 longRunningDispatcher 的 360s 对齐,避免 SDK 默认 600s 永远跑不到
   });
   legacyAnthropicKey = currentKey;
   return legacyAnthropicClient;
@@ -126,6 +259,8 @@ async function getLegacyVertexClient(): Promise<AnthropicVertex> {
       projectId: currentProject || undefined,
       region: config.vertex.region || 'us-central1',
       maxRetries: 0,
+      fetch: longRunningFetch, // 见模块顶部 longRunningFetch 注释
+      timeout: 360_000, // 跟 longRunningDispatcher 360s 对齐
       googleAuth: new GoogleAuth({
         keyFile: credPath,
         scopes: 'https://www.googleapis.com/auth/cloud-platform',
@@ -136,6 +271,8 @@ async function getLegacyVertexClient(): Promise<AnthropicVertex> {
       projectId: currentProject || undefined,
       region: config.vertex.region || 'us-central1',
       maxRetries: 0,
+      fetch: longRunningFetch, // 见模块顶部 longRunningFetch 注释
+      timeout: 360_000, // 跟 longRunningDispatcher 360s 对齐
     });
   }
   legacyVertexProject = currentProject;
@@ -149,6 +286,12 @@ interface ConnectionInfo {
   geminiApiKey?: string;
   openaiBaseUrl?: string;
   openaiApiKey?: string;
+  /**
+   * cacheKey: 用于 recordCallResult 跟踪连续失败计数,callLLM 失败时累加,
+   * 达阈值会 evict 该 entry 触发下次 cache miss 重建 SDK 实例。
+   * 非 SDK 路径 (gemini / ollama / openai-compatible) 不参与自愈,留空。
+   */
+  cacheKey?: string;
 }
 
 /** 根据 connection_id 获取或创建 client */
@@ -183,8 +326,7 @@ async function getClientByConnection(connectionId: string): Promise<ConnectionIn
 
   // OpenAI Compatible — 规范化 base URL，确保包含 /v1 后缀
   if (conn.provider_type === 'openai-compatible') {
-    const rawUrl = (creds.base_url || '').replace(/\/+$/, '');
-    const baseUrl = rawUrl.endsWith('/v1') ? rawUrl : rawUrl + '/v1';
+    const baseUrl = normalizeBaseUrl(creds.base_url || '');
     return {
       client: null as unknown as Anthropic,
       providerType: 'openai-compatible',
@@ -194,10 +336,21 @@ async function getClientByConnection(connectionId: string): Promise<ConnectionIn
   }
 
   // 检查缓存:cache key 包含 credentials 指纹,credentials 变了换 cache key
-  const credsFp = fingerprintCreds(creds);
+  // F8: Vertex 需要把外部 key file 的 mtime/size 纳入指纹,以便重新上传后失效缓存。
+  let credsFp: string;
+  let vertexActualPath: string | undefined;
+  if (conn.provider_type === 'vertex') {
+    const dataDir = getDataDir();
+    const credPath = path.join(dataDir, `vertex-credentials-${connectionId}.json`);
+    const fallbackPath = path.join(dataDir, 'vertex-credentials.json');
+    vertexActualPath = fs.existsSync(credPath) ? credPath : (fs.existsSync(fallbackPath) ? fallbackPath : undefined);
+    credsFp = fingerprintCreds(creds, vertexActualPath);
+  } else {
+    credsFp = fingerprintCreds(creds);
+  }
   const cacheKey = `${connectionId}:${credsFp}`;
   const cached = clientCache.get(cacheKey);
-  if (cached) return { client: cached, providerType: conn.provider_type };
+  if (cached) return { client: cached, providerType: conn.provider_type, cacheKey };
 
   // 清掉同 connectionId 的旧 fingerprint entry — daemon 长跑 + 频繁改凭证
   // 会让 Map 持续增长(每个 SDK 实例 ~1 MB)。新 fingerprint 命中前先剔旧。
@@ -209,22 +362,19 @@ async function getClientByConnection(connectionId: string): Promise<ConnectionIn
 
   if (conn.provider_type === 'anthropic') {
     // maxRetries: 0 → 关闭 SDK 内置重试,详见上方 getLegacyAnthropicClient 注释
-    client = new Anthropic({ apiKey: creds.api_key || undefined, maxRetries: 0 });
+    // fetch: longRunningFetch → 见模块顶部注释,避免 undici 60s headersTimeout 截断
+    client = new Anthropic({ apiKey: creds.api_key || undefined, maxRetries: 0, fetch: longRunningFetch, timeout: 360_000 });
   } else if (conn.provider_type === 'vertex') {
-    const dataDir = getDataDir();
-    // 优先使用按 connectionId 命名的凭证文件，回退到全局
-    const credPath = path.join(dataDir, `vertex-credentials-${connectionId}.json`);
-    const fallbackPath = path.join(dataDir, 'vertex-credentials.json');
-    const actualPath = fs.existsSync(credPath) ? credPath : fallbackPath;
-
-    if (fs.existsSync(actualPath)) {
+    if (vertexActualPath) {
       const { GoogleAuth } = await import('google-auth-library');
       client = new AnthropicVertex({
         projectId: creds.project_id || undefined,
         region: creds.region || 'us-central1',
         maxRetries: 0,
+        fetch: longRunningFetch, // 见模块顶部 longRunningFetch 注释
+      timeout: 360_000, // 跟 longRunningDispatcher 360s 对齐
         googleAuth: new GoogleAuth({
-          keyFile: actualPath,
+          keyFile: vertexActualPath,
           scopes: 'https://www.googleapis.com/auth/cloud-platform',
         }),
       });
@@ -233,6 +383,8 @@ async function getClientByConnection(connectionId: string): Promise<ConnectionIn
         projectId: creds.project_id || undefined,
         region: creds.region || 'us-central1',
         maxRetries: 0,
+        fetch: longRunningFetch, // 见模块顶部 longRunningFetch 注释
+      timeout: 360_000, // 跟 longRunningDispatcher 360s 对齐
       });
     }
   } else {
@@ -240,7 +392,7 @@ async function getClientByConnection(connectionId: string): Promise<ConnectionIn
   }
 
   clientCache.set(cacheKey, client);
-  return { client, providerType: conn.provider_type };
+  return { client, providerType: conn.provider_type, cacheKey };
 }
 
 async function getClaudeClient(provider: 'anthropic' | 'vertex'): Promise<Anthropic | AnthropicVertex> {
@@ -285,7 +437,10 @@ async function callGeminiLLM(options: {
   const fetchSignal = options.signal
     ? AbortSignal.any([timeoutSignal, options.signal])
     : timeoutSignal;
-  const resp = await fetch(url, {
+  // 用 undiciFetch + longRunningDispatcher,跟 SDK 路径走同一个 dispatcher,
+  // 避免 Node 内置 fetch 60s headersTimeout 截断 (Gemini generateContent 是
+  // 非流式,大 maxOutputTokens 同样会撞)。详见模块顶部注释。
+  const resp = await undiciFetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -293,6 +448,7 @@ async function callGeminiLLM(options: {
     },
     body: JSON.stringify(body),
     signal: fetchSignal,
+    dispatcher: longRunningDispatcher,
   });
 
   if (!resp.ok) {
@@ -341,7 +497,9 @@ async function callOpenAICompatibleLLM(options: {
   const oaFetchSignal = options.signal
     ? AbortSignal.any([oaTimeoutSignal, options.signal])
     : oaTimeoutSignal;
-  const resp = await fetch(url, {
+  // 用 undiciFetch + longRunningDispatcher,避免 Node 内置 fetch 60s headersTimeout
+  // 截断 (stream: false 非流式,Ollama / LM Studio 等长生成同样会撞)。详见模块顶部注释。
+  const resp = await undiciFetch(url, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -351,6 +509,7 @@ async function callOpenAICompatibleLLM(options: {
       stream: false,
     }),
     signal: oaFetchSignal,
+    dispatcher: longRunningDispatcher,
   });
 
   if (!resp.ok) {
@@ -394,11 +553,23 @@ const BASE_DELAY_MS = 1000;
  * "等模型响应" 上限。不要去掉或调低这些值，除非你确定下游 daemon
  * 有其他兜底机制。
  */
-const TIMEOUT_MS_BY_TIER: Record<'light' | 'standard' | 'heavy', number> = {
+export const TIMEOUT_MS_BY_TIER: Record<'light' | 'standard' | 'heavy', number> = {
   light: 60_000,
   standard: 180_000,
   heavy: 300_000,
 };
+
+/**
+ * 规范化 OpenAI-compatible base URL：
+ *  - 去掉尾部 `/`（无论多少）
+ *  - 不以 `/v1` 结尾则追加 `/v1`
+ *
+ * 抽 export 以便测试 import 真源（避免 inline-copy 漂移）。
+ */
+export function normalizeBaseUrl(rawUrl: string): string {
+  const cleaned = rawUrl.replace(/\/+$/, '');
+  return cleaned.endsWith('/v1') ? cleaned : cleaned + '/v1';
+}
 
 /**
  * 判断错误是否可重试。
@@ -410,7 +581,7 @@ const TIMEOUT_MS_BY_TIER: Record<'light' | 'standard' | 'heavy', number> = {
  * - Anthropic SDK 的 `APIConnectionTimeoutError`（status 为 undefined，
  *   所以上面的 `APIError` 分支不一定能命中），以及其父类 `APIConnectionError`。
  */
-function isRetryable(err: unknown): boolean {
+export function isRetryable(err: unknown): boolean {
   if (err instanceof Anthropic.APIConnectionError || err instanceof Anthropic.APIConnectionTimeoutError) {
     return true;
   }
@@ -445,7 +616,7 @@ function isRetryable(err: unknown): boolean {
  *   直接 true
  * - 其它 Error 一律 false(由 scheduler 的 circuit breaker 以别的信号感知)
  */
-function isServiceError(err: unknown): boolean {
+export function isServiceError(err: unknown): boolean {
   // 网络/超时类错误一律视为服务级错误(进熔断器)
   if (err instanceof Anthropic.APIConnectionError || err instanceof Anthropic.APIConnectionTimeoutError) {
     return true;
@@ -565,6 +736,7 @@ export async function callLLM(options: {
   let resolvedOpenaiBaseUrl: string | undefined;
   let resolvedOpenaiApiKey: string | undefined;
   let resolvedClient: Anthropic | AnthropicVertex | null = null;
+  let resolvedCacheKey: string | null = null;
   if (connectionId) {
     try {
       const connInfo = await getClientByConnection(connectionId);
@@ -573,6 +745,7 @@ export async function callLLM(options: {
       resolvedOpenaiBaseUrl = connInfo.openaiBaseUrl;
       resolvedOpenaiApiKey = connInfo.openaiApiKey;
       resolvedClient = connInfo.client;
+      resolvedCacheKey = connInfo.cacheKey ?? null;
     } catch (err) {
       log.warn(`连接 ${connectionId} 查找失败，回退到 provider=${provider}: ${(err as Error).message}`);
     }
@@ -598,6 +771,7 @@ export async function callLLM(options: {
         const result = await callGeminiLLM(geminiOpts);
         logUsage(modelId, options.operationName, result.inputTokens, result.outputTokens, 0);
         log.debug(`完成 op=${options.operationName ?? 'unknown'} tokens=${result.inputTokens}+${result.outputTokens} 耗时=${Date.now() - callStart}ms`);
+        recordCallResult(resolvedCacheKey, true);
         notifyLLMSuccess();
         return result.text;
       }
@@ -619,6 +793,7 @@ export async function callLLM(options: {
         });
         logUsage(modelId, options.operationName, result.inputTokens, result.outputTokens, result.thinkingTokens);
         log.debug(`完成 op=${options.operationName ?? 'unknown'} tokens=${result.inputTokens}+${result.outputTokens} thinking=${result.thinkingTokens} 耗时=${Date.now() - callStart}ms`);
+        recordCallResult(resolvedCacheKey, true);
         notifyLLMSuccess();
         return result.text;
       }
@@ -703,6 +878,7 @@ export async function callLLM(options: {
         if (!textBlock) {
           log.warn(`LLM 响应不含 text block op=${options.operationName ?? 'unknown'} blocks=${response.content.map(b => b.type).join(',')}`);
         }
+        recordCallResult(resolvedCacheKey, true);
         notifyLLMSuccess();
         return textBlock ? textBlock.text : '';
       } finally {
@@ -738,12 +914,30 @@ export async function callLLM(options: {
         if (retryMs > 0) waitMs = Math.max(waitMs, retryMs);
       }
 
-      log.warn(`请求失败 (attempt ${attempt + 1}/${MAX_RETRIES}) ${waitMs}ms 后重试: ${(err as Error).message}`);
+      // 失败诊断: 把 err.cause?.code 也打出来。Anthropic SDK 把 fetch 错误包装成
+      // `Connection error.` 抹掉细节,但 cause 链通常保留 undici 的错误码
+      // (UND_ERR_HEADERS_TIMEOUT / UND_ERR_BODY_TIMEOUT / UND_ERR_CONNECT_TIMEOUT
+      //  / ECONNRESET / ETIMEDOUT 等),光看 message 完全分辨不了真网络错 vs
+      // headersTimeout 之类 client-side abort。2026-05-21 问题 A 就是因为
+      // 没打 cause.code 调试浪费了好几个小时。
+      const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+      const causeInfo = cause?.code ? ` cause.code=${cause.code}` : '';
+      log.warn(`请求失败 (attempt ${attempt + 1}/${MAX_RETRIES}) ${waitMs}ms 后重试: ${(err as Error).message}${causeInfo}`);
       await delay(waitMs);
     }
   }
 
-  log.error(`调用失败 (重试用尽) op=${options.operationName ?? 'unknown'}: ${(lastError as Error)?.message}`);
+  const finalCause = (lastError as { cause?: { code?: string } }).cause;
+  const finalCauseInfo = finalCause?.code ? ` cause.code=${finalCause.code}` : '';
+  log.error(`调用失败 (重试用尽) op=${options.operationName ?? 'unknown'}: ${(lastError as Error)?.message}${finalCauseInfo}`);
+
+  // 记录失败累计;>= FAILURE_RESET_THRESHOLD 时 evict cache entry,下次重建 SDK 实例
+  // (避免 SDK 内部状态损坏后 daemon 无法自愈)。详见 recordCallResult 注释。
+  const evicted = recordCallResult(resolvedCacheKey, false);
+  if (evicted) {
+    log.warn(`LLM client 连续失败 ${FAILURE_RESET_THRESHOLD} 次,已 evict cache entry connection=${connectionId},下次调用将重建 SDK 实例`);
+  }
+
   // 包装为 LLMServiceError，便于 scheduler 区分
   if (isServiceError(lastError)) {
     throw new LLMServiceError((lastError as Error).message, getErrorStatus(lastError));

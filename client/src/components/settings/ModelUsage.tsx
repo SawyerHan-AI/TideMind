@@ -93,12 +93,16 @@ export function ModelUsage() {
     offset: detailPage * DETAIL_PAGE_SIZE,
   }), [detailRange, detailPage])
 
-  const { data: opsData } = useIPC<TokenUsageFilteredData>(
-    () => window.api.stats.tokenUsageFiltered(opsFilter), [opsFilter]
+  const fetchOps = useCallback(
+    () => window.api.stats.tokenUsageFiltered(opsFilter),
+    [opsFilter],
   )
-  const { data: detailData } = useIPC<TokenUsageFilteredData>(
-    () => window.api.stats.tokenUsageFiltered(detailFilter), [detailFilter]
+  const { data: opsData } = useIPC<TokenUsageFilteredData>(fetchOps)
+  const fetchDetail = useCallback(
+    () => window.api.stats.tokenUsageFiltered(detailFilter),
+    [detailFilter],
   )
+  const { data: detailData } = useIPC<TokenUsageFilteredData>(fetchDetail)
 
   const handleDetailRangeChange = useCallback((r: TimeRange) => {
     setDetailRange(r)

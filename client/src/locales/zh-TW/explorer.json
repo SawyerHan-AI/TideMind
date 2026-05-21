@@ -30,6 +30,7 @@
     "editReasonPlaceholder": "修改原因（可選）",
     "titlePlaceholder": "標題",
     "editVersionNote": "修改將記錄在版本歷史中",
+    "concurrentEditWarning": "內容在你編輯期間被自動更新過，繼續儲存會覆蓋最新版本。繼續？",
     "saving": "儲存中...",
     "save": "儲存",
     "cancel": "取消",

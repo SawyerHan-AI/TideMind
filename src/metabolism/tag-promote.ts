@@ -15,10 +15,29 @@ import { isLlmConfigured } from '../config.js';
 import { TAG_DEFINE_SYSTEM } from '../llm/prompts.js';
 import { logTimelineEvent } from '../db/log.js';
 import { createLogger } from '../utils/logger.js';
+import { safeParseJsonArray } from '../utils/json-safe.js';
 
 const log = createLogger('tag-promote');
 
 const DEFAULT_PROMOTE_THRESHOLD = 25;
+
+/**
+ * 归一化 tag / title 用于复用匹配。
+ *
+ * 现象：用户从 Logseq 等笔记里导入的概念节点常带首 emoji（"🎯 项目规划"），
+ * 但 tag 字符串通常不含 emoji（"项目规划"）。原先 SQL 精确等值会判定为不同概念，
+ * 导致同义概念被拆成两个节点（一个内容节点 + 一个新建 tag）。
+ *
+ * 规则：剥离开头的第一个 emoji 字符 + 紧随的空白；后续比较以 trim 形态进行。
+ * 严格保守：只剥 emoji 前缀，不做大小写折叠、不剥末尾 emoji（避免把
+ * "🎯 项目规划 🚀" 这种带语义的字符误并）。
+ */
+export function normalizeTagForMatch(value: string | null | undefined): string {
+  if (!value) return '';
+  // \p{Extended_Pictographic} 覆盖 emoji 及大多数表情符号；常见 emoji 还可能带
+  // ️ variation selector 后缀，一并吃掉，再吃掉紧随的空白字符。
+  return value.replace(/^\p{Extended_Pictographic}️?\s*/u, '').trim();
+}
 
 /**
  * 计算 tagged 链接的启发式强度
@@ -84,12 +103,11 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
   }
 
   // 2.5 加载手动降级黑名单（被用户降级的标签不再自动晋升）
+  // F10 (audit-8): 用 safeParseJsonArray 处理损坏 JSON + 非数组场景
   const demotedRaw = db.prepare("SELECT value FROM metadata WHERE key = 'demoted_tags'").get() as { value: string } | undefined;
-  let demotedTags = new Set<string>();
-  if (demotedRaw) {
-    try { demotedTags = new Set<string>(JSON.parse(demotedRaw.value)); }
-    catch { log.warn('demoted_tags 元数据 JSON 解析失败，忽略黑名单'); }
-  }
+  const demotedTags = new Set<string>(
+    safeParseJsonArray<string>(demotedRaw?.value, log, 'demoted_tags').filter((t): t is string => typeof t === 'string'),
+  );
 
   let promoted = 0;
   let linksCreated = 0;
@@ -113,9 +131,25 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
     if (!tagNodeId) {
       // 检查是否有同名内容节点可以复用（如 Logseq 页面节点）
       // 优先复用而不是创建空节点，避免同一概念产生两个节点
-      const existingContent = db.prepare(
-        "SELECT id FROM nodes WHERE (title = ? OR (title IS NULL AND content = ?)) AND is_tag = 0 AND is_superseded = 0 AND archived = 0 AND heat > 0.01 LIMIT 1",
-      ).get(tag, tag) as { id: string } | undefined;
+      //
+      // C-5: 用 normalizeTagForMatch 做 in-memory 等值——剥首 emoji + 空白后比较，
+      // 让 "🎯 项目规划" 与 "项目规划" 视为同一概念。先用 LIKE 预筛收窄候选集，
+      // 再 JS 端精确归一化判定（避免 SQL emoji-aware 比较开销在大库下放大）。
+      const normalizedTag = normalizeTagForMatch(tag);
+      const likePrefix = `%${normalizedTag.replace(/[\\%_]/g, c => `\\${c}`)}%`;
+      const candidates = db.prepare(
+        `SELECT id, title, content FROM nodes
+         WHERE is_tag = 0 AND is_superseded = 0 AND archived = 0 AND heat > 0.01
+           AND (
+             (title IS NOT NULL AND title LIKE ? ESCAPE '\\')
+             OR (title IS NULL AND content LIKE ? ESCAPE '\\')
+           )
+         LIMIT 200`,
+      ).all(likePrefix, likePrefix) as Array<{ id: string; title: string | null; content: string }>;
+      const existingContent = candidates.find(n => {
+        const key = n.title ?? n.content;
+        return normalizeTagForMatch(key) === normalizedTag;
+      });
 
       if (existingContent) {
         // 直接升级现有内容节点为 tag 节点

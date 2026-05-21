@@ -17,7 +17,7 @@ import type { UpdaterState } from '../../src/lib/api-contract'
 import { queryAndVerifyManifest } from './verifier.js'
 import { isInStagingBatch } from './staging.js'
 import { getUpdateChannel, setUpdateChannel as persistChannel, type UpdateChannel } from './channel.js'
-import { setQuitting } from '../lifecycle.js'
+import { setQuitting, resetQuitting } from '../lifecycle.js'
 
 const log = createLogger('updater')
 
@@ -41,8 +41,18 @@ let inflight = false
 let pendingMandatory = false
 
 function setState(next: UpdaterState): void {
+  const prev = currentState
   currentState = next
-  log.info(`state → ${next.status}${'version' in next ? ` (${next.version})` : ''}`)
+  // 2026-05-21 修复:download-progress event 每秒触发数次,每次 setState 都打一行
+  // `state → downloading` 重复 log(实测一次升级 10 秒打 34 行同样日志)。如果
+  // 跟前一次 state 完全同形(status + version 相同),只更新 state 不打 log。
+  // version 不同(可能 staged rollout 切版本)或 status 不同时仍打,保留转移记录。
+  const prevVersion = (prev as { version?: string }).version
+  const nextVersion = (next as { version?: string }).version
+  const sameAsPrev = prev.status === next.status && prevVersion === nextVersion
+  if (!sameAsPrev) {
+    log.info(`state → ${next.status}${'version' in next ? ` (${next.version})` : ''}`)
+  }
   if (mainWindowRef && !mainWindowRef.isDestroyed()) {
     mainWindowRef.webContents.send('updater:state-changed', next)
   }
@@ -132,8 +142,17 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
 
   autoUpdater.on('error', (err) => {
     log.error(`electron-updater error: ${err.message}`)
-    // 错误路径重置 mandatory,避免下一轮 check 拿到错误值
-    pendingMandatory = false
+    // Audit-3 F3 修复(对应):此处也不再清 pendingMandatory。autoUpdater error 通常是
+    // download / verify 失败,业务侧"mandatory 强制升级"标记不应该被这种瞬时错误清掉,
+    // 让下一轮 check 重新走服务端 mandatory 字段(no-update / fetch-error / staged-out
+    // 等分支已显式清)。
+    //
+    // F6 兜底:如果 error 触发在 'downloaded'/'downloading' 状态(install 或下载阶段),
+    // 之前 setQuitting() 可能已经被调过(installUpdate);autoUpdater 内部 error 路径必须
+    // 把 isQuitting 重置,否则 close handler 后续会误判 user-initiated quit。
+    if (currentState.status === 'downloaded' || currentState.status === 'downloading') {
+      resetQuitting()
+    }
     setState({ status: 'error', message: err.message })
   })
 
@@ -301,9 +320,10 @@ export async function runUpdateCheck(
     await autoUpdater.downloadUpdate()
   } catch (err) {
     log.error(`runUpdateCheck failed: ${(err as Error).message}`)
-    // HIGH 修复(2026-05-21 audit B-HIGH-2):错误路径必须 reset pendingMandatory,
-    // 否则跨调用残留会让下一轮 check 误把非 mandatory 版本当成 mandatory。
-    pendingMandatory = false
+    // Audit-3 F3 修复:不要在错误路径清 pendingMandatory。
+    // pendingMandatory 只在下一轮 check 真拿到 mandatory=false 的服务端响应时清(no-update / fetch-error /
+    // invalid / staged-out / release-pending 分支都已显式清)。否则 download 失败一次就清掉,
+    // 会让"网络一抖 → 永远逃过强制升级"成为绕过路径。
     setState({ status: 'error', message: (err as Error).message })
   } finally {
     inflight = false
@@ -354,7 +374,8 @@ export async function triggerDownload(): Promise<void> {
     await autoUpdater.downloadUpdate()
   } catch (err) {
     log.error(`triggerDownload failed: ${(err as Error).message}`)
-    pendingMandatory = false
+    // Audit-3 F3:download 失败时不清 pendingMandatory,保留 mandatory 让下次重试 / 下一轮 check 时
+    // 仍能强制弹窗(网络问题导致下载失败时尤其重要)。
     setState({ status: 'error', message: (err as Error).message })
     throw err
   } finally {
@@ -417,5 +438,14 @@ export function installUpdate(): void {
   // SQLite WAL flush),autoUpdater 完成 swap 后正常 relaunch。
   // app.exit(0) 这种硬退出会跳过 before-quit,WAL 状态不一致风险 + sync 数据丢失。
   setQuitting()
-  autoUpdater.quitAndInstall(false, true)
+  try {
+    autoUpdater.quitAndInstall(false, true)
+  } catch (err) {
+    // Audit-3 F6 修复:quitAndInstall 抛错时 isQuitting 已被置 true,
+    // 但 app 实际没退出 — 必须 reset 否则下次用户关窗口的 mac tray pattern 会
+    // 误判为 user-initiated quit 让 close handler 放行真退出。
+    log.error(`quitAndInstall failed: ${(err as Error).message}`)
+    resetQuitting()
+    setState({ status: 'error', message: 'install_failed' })
+  }
 }

@@ -124,9 +124,12 @@ function UnifiedModelSelect({ value, onChange, groups, loading, placeholder }: {
 
 export function ModelSelection() {
   const { t } = useTranslation('settings')
-  const { data: config, refetch: refetchConfig } = useIPC(() => window.api.config.get())
-  const { data: connections } = useIPC(() => window.api.connections.list())
-  const { data: reembedStatus, refetch: recheckReembed } = useIPC(() => window.api.embedding.reembedStatus())
+  const fetchConfig = useCallback(() => window.api.config.get(), [])
+  const fetchConnections = useCallback(() => window.api.connections.list(), [])
+  const fetchReembedStatus = useCallback(() => window.api.embedding.reembedStatus(), [])
+  const { data: config, refetch: refetchConfig } = useIPC(fetchConfig)
+  const { data: connections } = useIPC(fetchConnections)
+  const { data: reembedStatus, refetch: recheckReembed } = useIPC(fetchReembedStatus)
 
   const [lightValue, setLightValue] = useState('')
   const [standardValue, setStandardValue] = useState('')

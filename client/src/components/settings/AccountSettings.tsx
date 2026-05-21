@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Cloud, Mail, LogOut, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useCloudStatus } from '../../hooks/useCloudStatus'
+import { useDataRevision } from '../../contexts/DataChangeContext'
 import { Section } from './shared'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { brand, btnText } from '../../lib/tokens'
@@ -12,6 +13,9 @@ function LlmCostThisMonthSection() {
   const { t } = useTranslation()
   const [cost, setCost] = useState<number | null>(null)
   const [callCount, setCallCount] = useState<number>(0)
+  // F15: 订阅 cloud/operations 变更,让 LLM 调用发生后这块自动刷新。
+  // 复用 'cloud' scope —— sync-client emit 此 scope 时也 implies LLM 用量有更新。
+  const rev = useDataRevision(['cloud'])
 
   useEffect(() => {
     let cancelled = false
@@ -28,7 +32,7 @@ function LlmCostThisMonthSection() {
         setCallCount(calls)
       }).catch(() => {})
     return () => { cancelled = true }
-  }, [])
+  }, [rev])
 
   if (cost === null) return null
 
@@ -61,6 +65,9 @@ function LlmCostThisMonthSection() {
 function MemoryUsageSection() {
   const { t } = useTranslation()
   const [usage, setUsage] = useState<{ used: number; limit: number; plan: 'free' | 'pro' | 'pro_plus' } | null>(null)
+  // F15: nodes scope 变更(写入 / metabolism)会改变 active 节点数,要重拉。
+  // cloud scope 涵盖了订阅 plan / quota 变更。
+  const rev = useDataRevision(['nodes', 'cloud'])
 
   useEffect(() => {
     let cancelled = false
@@ -68,7 +75,7 @@ function MemoryUsageSection() {
       if (!cancelled) setUsage(u)
     }).catch(() => {})
     return () => { cancelled = true }
-  }, [])
+  }, [rev])
 
   if (!usage) return null
   const pct = usage.limit > 0 ? Math.min(100, Math.round((usage.used / usage.limit) * 100)) : 0

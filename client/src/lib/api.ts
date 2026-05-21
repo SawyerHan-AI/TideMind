@@ -218,7 +218,7 @@ export interface CloudStatusData {
   metabolismEnabled?: boolean
   online: boolean
   syncing: boolean
-  outboxCount: number
+  outboxCount: number | null
   email?: string
   plan?: string
   cloudNotAvailable?: boolean

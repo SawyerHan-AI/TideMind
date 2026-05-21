@@ -8,6 +8,7 @@ import {
   writeStructureHolesCache,
 } from '@server/graph/structure-holes.js'
 import { createLogger } from '@server/utils/logger.js'
+import { safeParseJsonArray } from '@server/utils/json-safe.js'
 import {
   parseNodeId,
   parseNodesListFilter,
@@ -194,14 +195,17 @@ export function registerNodeHandlers(db: Database.Database): void {
         LIMIT ?
       `).all(ftsQuery, safeLimit)
 
-      return { nodes, total: nodes.length }
-    } catch {
-      // fallback LIKE
+      return { nodes, total: nodes.length, searchMode: 'fts5' }
+    } catch (err) {
+      // F9 (audit-8): fallback LIKE,但要告诉调用方走的是降级路径 + log 出 FTS5 失败原因。
+      // 之前完全静默,UI 看到的搜索结果按 heat 排序(LIKE)和按 bm25 排序(FTS5)
+      // 体验完全不同,但没有任何信号告诉运维"为什么排序怪",查起来全靠猜。
+      log.warn(`nodes:search FTS5 失败,fallback LIKE: ${(err as Error).message}`)
       const escapedQuery = parsedQuery.data.replace(/%/g, '\\%').replace(/_/g, '\\_')
       const nodes = db.prepare(
         "SELECT * FROM nodes WHERE content LIKE ? ESCAPE '\\' AND archived = 0 AND is_superseded = 0 ORDER BY heat DESC LIMIT ?"
       ).all(`%${escapedQuery}%`, safeLimit)
-      return { nodes, total: nodes.length }
+      return { nodes, total: nodes.length, searchMode: 'like-fallback' }
     }
   })
 
@@ -281,12 +285,13 @@ export function registerNodeHandlers(db: Database.Database): void {
       }
 
       // 从降级黑名单移除
+      // F10 (audit-8): 走 safeParseJsonArray,损坏 JSON / 非数组都不静默跳过
       const raw = db.prepare("SELECT value FROM metadata WHERE key = 'demoted_tags'").get() as { value: string } | undefined
       if (raw) {
-        try {
-          const demoted: string[] = JSON.parse(raw.value).filter((t: string) => t !== tag)
-          db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('demoted_tags', ?)").run(JSON.stringify(demoted))
-        } catch { /* skip corrupted blacklist */ }
+        const demoted: string[] = safeParseJsonArray<string>(raw.value, log, 'demoted_tags')
+          .filter((t): t is string => typeof t === 'string')
+          .filter(t => t !== tag)
+        db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('demoted_tags', ?)").run(JSON.stringify(demoted))
       }
     })()
   })

@@ -161,12 +161,28 @@ async function handleProtocolUrl(url: string): Promise<void> {
   }
 }
 
-/** 处理 app ready 之前缓存的协议 URL */
+/**
+ * 处理 app ready 之前缓存的协议 URL。
+ *
+ * Audit-3 F15 修复:必须等 mainWindow 的 webContents 完全 load 完毕再调用,
+ * 否则 handleProtocolUrl 内部走 `mainWindow.webContents.send('data-changed')`
+ * 时 renderer 还没注册监听,事件 silently 丢掉(冷启动用户点 OAuth 链接 →
+ * tokens 写到 keychain 但 UI 不刷,显示"未登录"直到下次切 tab)。
+ */
 function flushPendingProtocolUrl(): void {
-  if (pendingProtocolUrl) {
-    const url = pendingProtocolUrl
-    pendingProtocolUrl = null
+  if (!pendingProtocolUrl) return
+  const url = pendingProtocolUrl
+  pendingProtocolUrl = null
+  if (mainWindow && !mainWindow.webContents.isLoading()) {
     handleProtocolUrl(url)
+  } else if (mainWindow) {
+    // 等 loadURL 跑完(did-finish-load 是 webContents 发的)
+    mainWindow.webContents.once('did-finish-load', () => {
+      handleProtocolUrl(url)
+    })
+  } else {
+    // 没有 mainWindow 还能 flush? 防御:延后到下个 tick 重试
+    pendingProtocolUrl = url
   }
 }
 
@@ -459,8 +475,18 @@ app.on('before-quit', () => {
   } catch (err) {
     mainLog.warn('destroySyncClient failed:', (err as Error).message)
   }
-  stopDaemon()
-  closeClientDb()
+  // 先 fire-and-forget kill in-flight LLM 请求,让 socket 提早释放,避免 daemon
+  // 跑着 profile-synthesize (max_tokens=10000 可能 5+ 分钟) 期间用户 cmd+Q 时
+  // 进程等 fetch promise 出现"主进程 95% CPU 卡 5 分钟"的 quit-and-install 卡死。
+  import('../../src/llm/client.js')
+    .then(m => m.shutdownLLMClient())
+    .catch(err => mainLog.warn('shutdownLLMClient failed:', (err as Error).message))
+  // stopDaemon 现在是 async,要等 in-flight tick 跑完再关 DB,避免 'database is closed'
+  // 抛错。Electron 的 before-quit 不会 await 这个 promise,但我们在内部把 closeClientDb
+  // 放进 then 链确保顺序;app 实际退出前 Electron 也会等 main process 微任务清空。
+  void stopDaemon()
+    .catch(err => mainLog.warn('stopDaemon failed:', (err as Error).message))
+    .finally(() => { closeClientDb() })
 })
 
 app.on('window-all-closed', () => {

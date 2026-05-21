@@ -30,6 +30,7 @@
     "editReasonPlaceholder": "変更理由（任意）",
     "titlePlaceholder": "タイトル",
     "editVersionNote": "変更はバージョン履歴に記録されます",
+    "concurrentEditWarning": "編集中にコンテンツが自動更新されました。保存すると最新バージョンが上書きされます。続行しますか？",
     "saving": "保存中...",
     "save": "保存",
     "cancel": "キャンセル",

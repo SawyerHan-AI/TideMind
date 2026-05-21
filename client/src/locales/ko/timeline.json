@@ -86,6 +86,7 @@
     "apple_notes_incremental_sync": "메모 증분 동기화 (처리 {{processed}})",
     "apple_notes_init_complete": "메모 초기화 완료: {{nodes}} 노드, {{links}} 링크, {{crystals}} 결정체",
     "profile_synthesized": "프로필 합성 완료 (결정체 {{crystals}}개, 선호 {{preferences}}개)",
-    "pending_link_gc": "만료된 보류 중 링크 {{count}}개 정리"
+    "pending_link_gc": "만료된 보류 중 링크 {{count}}개 정리",
+    "circuit_breaker_manual_reset": "회로 차단기 수동 재설정됨"
   }
 }

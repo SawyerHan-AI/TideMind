@@ -59,17 +59,27 @@ export const ALL_TASKS: TaskDefinition[] = [
     intervalStrategy: 'metabolism-params',
     defaultIntervalMinutes: 3,
     requiresLLM: true,
+    // B-3: digest 内部走 insertSegmentVectors → getEmbedding。embedding 熔断器
+    // open 时跳过,避免持续把失败的 digest 进 retry 表填满。
+    requiresEmbedding: true,
     // gate: 仅当 pending_digests 真的有到期的待处理行才 claim,避免空跑浪费
     // scheduler slot 和 LLM 任务探测名额。注意这里用 status IN ('pending','processing')
     // + next_retry_at 条件,processing 的 stale recovery 由 claimNextPendingDigest
     // 自己负责;这里主要是"是否值得进入 execute"。
+    //
+    // 修复 F5(2026-05-21): next_retry_at 列是 JS ISO 字符串。原先用
+    // `datetime('now')` 返回 'YYYY-MM-DD HH:MM:SS'(空格无 Z),按字典序比较时
+    // ISO 的 'T' (0x54) > 空格 (0x20),`next_retry_at <= datetime('now')` 永远 false,
+    // pending 行的到期条件永远不触发(只能靠 status='processing' 分支兜底)。
+    // 改为 JS 侧 ISO,字典序 = 时间序。
     gateCheck: (db) => {
+      const nowIso = new Date().toISOString();
       const row = db.prepare(
         `SELECT 1 FROM pending_digests
-         WHERE (status = 'pending' AND next_retry_at <= datetime('now'))
+         WHERE (status = 'pending' AND next_retry_at <= ?)
             OR status = 'processing'
          LIMIT 1`,
-      ).get();
+      ).get(nowIso);
       return row !== undefined;
     },
   },
@@ -108,6 +118,10 @@ export const ALL_TASKS: TaskDefinition[] = [
     execute: async (db) => { await runLinkDiscover(db); },
     intervalStrategy: 'link-discover',
     defaultIntervalMinutes: 24 * 60,
+    // B-3: link-discover 走 searchVectors,在 embedding 长期不可用时无法产生有效
+    // 候选邻居(新节点没向量),空跑浪费 scheduler slot。这里取保守策略 — 熔断
+    // 期内整体跳过。
+    requiresEmbedding: true,
   },
   // link-revalidate 不在 scheduler 中注册，由 recall 触发
 
@@ -142,6 +156,9 @@ export const ALL_TASKS: TaskDefinition[] = [
     defaultIntervalMinutes: 7 * 24 * 60,
     gateCheck: makeNodeCountGate('scan-divergent', 500),
     requiresLLM: true,
+    // B-3: divergent 内部依赖向量结构,embedding 长期不可用时拿不到有意义的
+    // bridge candidate,空跑浪费 LLM/scheduler slot。
+    requiresEmbedding: true,
   },
   {
     id: 'crystal-emerge',

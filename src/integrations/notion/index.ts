@@ -9,7 +9,7 @@ import type Database from 'better-sqlite3';
 import { createLogger } from '../../utils/logger.js';
 import { clearTagNodeCache } from '../shared/property-promote.js';
 import { isConfirmedNotionPageGoneError, listAllPages, getPageProperties, validateToken } from './api-client.js';
-import { getAllPageStates, removePageState, hasCompletedFullScan, markFullScanCompleted } from './sync-state.js';
+import { getAllPageStates, removePageState, hasCompletedFullScan, markFullScanCompleted, getPagesPendingRetry } from './sync-state.js';
 import { processNotionPages, resetProgress } from './queue.js';
 import { isNotionInitializing } from './initialization.js';
 import { archiveNodeWithVectors } from '../../db/node-lifecycle.js';
@@ -23,6 +23,19 @@ const log = createLogger('notion');
 const pollingTimers = new Map<string, ReturnType<typeof setInterval>>();
 const syncCounters = new Map<string, number>(); // 用于周期性删除检测
 const syncLock = new SourceSyncLock(); // 并发防护
+
+// F11 (audit-7): 每个 sourceId 一份 AbortController,stopNotionSource 时 abort,
+// 让正在跑的全量 / 增量同步在 listAllPages / getPageProperties 进 throw,
+// 不阻塞用户的 stop / 切换工作流。
+const syncControllers = new Map<string, AbortController>();
+function getOrCreateController(sourceId: string): AbortController {
+  let ctrl = syncControllers.get(sourceId);
+  if (!ctrl || ctrl.signal.aborted) {
+    ctrl = new AbortController();
+    syncControllers.set(sourceId, ctrl);
+  }
+  return ctrl;
+}
 
 /** 供 initialization.ts 通过动态 import 做互斥检查(避免循环静态依赖)。 */
 export function isNotionSyncing(sourceId: string): boolean {
@@ -100,6 +113,15 @@ export function stopNotionSource(sourceId: string): void {
     pollingTimers.delete(sourceId);
   }
   syncCounters.delete(sourceId);
+  // F11 (audit-7): 触发正在跑的 listAllPages 抛 InitAbortError,让 runSync 提前结束
+  const ctrl = syncControllers.get(sourceId);
+  if (ctrl && !ctrl.signal.aborted) {
+    ctrl.abort();
+  }
+  syncControllers.delete(sourceId);
+  // 修复 F15(2026-05-21): progressMap 必须显式清理,否则 add → stop → re-add 同
+  // sourceId 时残留旧 progress 会让 UI 看到错误状态(phase=done,旧文件计数)。
+  resetProgress(sourceId);
   log.info(`Notion 笔记源已停止: ${sourceId}`);
 }
 
@@ -114,6 +136,11 @@ export function stopNotionIntegration(): void {
 
 /**
  * 触发全量重扫
+ *
+ * F14 (audit-7): 跑全量重扫前必须确认没有同 sourceId 的 sync 正在进行,否则
+ * resetProgress 会把当前 in-flight 的 sync 进度数清零,UI 看到 phase 跳来跳去,
+ * 实际写入也会被两边同时 processNotionPages,出重复节点/重复 link。
+ * 上层 IPC 应该把这个错给 UI 弹出来,不要静默掉。
  */
 export async function triggerFullRescan(
   db: Database.Database,
@@ -122,6 +149,10 @@ export async function triggerFullRescan(
 ): Promise<void> {
   const token = extractToken(path);
   if (!token) return;
+
+  if (syncLock.isActive(sourceId)) {
+    throw new Error('Sync in progress, cannot trigger full rescan');
+  }
 
   resetProgress(sourceId);
   await runSync(db, token, sourceId);
@@ -164,9 +195,11 @@ async function runSyncInner(
 
   log.info('开始全量同步...');
 
+  const ctrl = getOrCreateController(sourceId);
+
   // 1. 扫描所有页面
   const allPages: NotionPageSummary[] = [];
-  for await (const page of listAllPages(token)) {
+  for await (const page of listAllPages(token, { signal: ctrl.signal })) {
     if (page.inTrash) continue;
     allPages.push(page);
   }
@@ -278,13 +311,23 @@ async function runIncrementalSyncInner(
     Date.now() - CLOCK_SKEW_SAFETY_MS,
   ).toISOString();
 
+  const ctrl = getOrCreateController(sourceId);
+
+  // B-2: 失败页持久化重试 — 取 pending(attempts < MAX) 的 pageId 列表,
+  // 即便 last_edited_time 没变也要被合并进 changedPages。
+  const retryPageIds = new Set(getPagesPendingRetry(db, sourceId));
+  if (retryPageIds.size > 0) {
+    log.info(`增量同步: ${retryPageIds.size} 个失败页待重试`);
+  }
+
   // 搜索最近变更的页面
   // 注意：Search API 排序不保证严格有序，不能用 break 提前终止
   // 遍历所有结果，过滤出 lastEditedTime > compareThreshold 的页面
   const changedPages: NotionPageSummary[] = [];
-  for await (const page of listAllPages(token)) {
+  for await (const page of listAllPages(token, { signal: ctrl.signal })) {
     if (page.inTrash) continue;
-    if (page.lastEditedTime > compareThreshold) {
+    // B-2: 时间窗口命中 或 在 pending_retry 表里 → 都要重试
+    if (page.lastEditedTime > compareThreshold || retryPageIds.has(page.id)) {
       changedPages.push(page);
     }
   }
@@ -321,10 +364,12 @@ export async function detectDeletedPages(
 ): Promise<void> {
   log.debug('执行周期性删除检测...');
 
+  const ctrl = getOrCreateController(sourceId);
+
   const syncStates = getAllPageStates(db, sourceId);
   const currentPageIds = new Set<string>();
 
-  for await (const page of listAllPages(token)) {
+  for await (const page of listAllPages(token, { signal: ctrl.signal })) {
     currentPageIds.add(page.id);
   }
 
@@ -333,7 +378,7 @@ export async function detectDeletedPages(
     if (!currentPageIds.has(pageId)) {
       // 确认：尝试直接获取该页面
       try {
-        await getPageProperties(token, pageId);
+        await getPageProperties(token, pageId, { signal: ctrl.signal });
         // 页面仍然可访问，只是 Search 索引延迟
       } catch (err) {
         if (!isConfirmedNotionPageGoneError(err)) {

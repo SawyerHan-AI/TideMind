@@ -120,3 +120,94 @@ describe('ALL_TASKS 注册表', () => {
     expect(digestRetry!.defaultIntervalMinutes).toBe(3);
   });
 });
+
+describe('digest-retry gateCheck (F9 audit-3) — next_retry_at ISO 比较', () => {
+  // F9 / 历史 F5 链式 bug:gateCheck 原先用 datetime('now') 跟 ISO 列比对,
+  // 字典序 'T' (0x54) > ' ' (0x20) 让条件永真假反向 → 到期 pending 行被错过。
+  // 现在改成 JS new Date().toISOString() → ISO 之间字典序 = 时间序。
+  // 本测试用 in-memory better-sqlite3 真表验证逻辑。
+  it('next_retry_at 在过去时,gateCheck 返回 true(行真到期)', async () => {
+    const Database = (await import('better-sqlite3')).default;
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE pending_digests (
+        id TEXT PRIMARY KEY,
+        trace_id TEXT,
+        input_json TEXT,
+        status TEXT,
+        error_message TEXT,
+        retry_count INTEGER,
+        created TEXT,
+        next_retry_at TEXT,
+        processing_started_at TEXT,
+        completed_at TEXT
+      );
+    `);
+    const past = new Date(Date.now() - 60_000).toISOString();
+    db.prepare(`
+      INSERT INTO pending_digests (id, trace_id, input_json, status, retry_count, created, next_retry_at)
+      VALUES ('p1', 't1', '{}', 'pending', 0, ?, ?)
+    `).run(past, past);
+
+    const digestRetry = ALL_TASKS.find(t => t.id === 'digest-retry')!;
+    expect(digestRetry.gateCheck).toBeDefined();
+    expect(digestRetry.gateCheck!(db as any)).toBe(true);
+    db.close();
+  });
+
+  it('next_retry_at 在未来时,gateCheck 返回 false(不空跑)', async () => {
+    const Database = (await import('better-sqlite3')).default;
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE pending_digests (
+        id TEXT PRIMARY KEY,
+        trace_id TEXT,
+        input_json TEXT,
+        status TEXT,
+        error_message TEXT,
+        retry_count INTEGER,
+        created TEXT,
+        next_retry_at TEXT,
+        processing_started_at TEXT,
+        completed_at TEXT
+      );
+    `);
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    db.prepare(`
+      INSERT INTO pending_digests (id, trace_id, input_json, status, retry_count, created, next_retry_at)
+      VALUES ('p2', 't2', '{}', 'pending', 0, ?, ?)
+    `).run(new Date().toISOString(), future);
+
+    const digestRetry = ALL_TASKS.find(t => t.id === 'digest-retry')!;
+    expect(digestRetry.gateCheck!(db as any)).toBe(false);
+    db.close();
+  });
+
+  it('processing 行存在(无 due 条件),gateCheck 仍返回 true(走 stale recovery)', async () => {
+    const Database = (await import('better-sqlite3')).default;
+    const db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE pending_digests (
+        id TEXT PRIMARY KEY,
+        trace_id TEXT,
+        input_json TEXT,
+        status TEXT,
+        error_message TEXT,
+        retry_count INTEGER,
+        created TEXT,
+        next_retry_at TEXT,
+        processing_started_at TEXT,
+        completed_at TEXT
+      );
+    `);
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    db.prepare(`
+      INSERT INTO pending_digests (id, trace_id, input_json, status, retry_count, created, next_retry_at, processing_started_at)
+      VALUES ('p3', 't3', '{}', 'processing', 0, ?, ?, ?)
+    `).run(new Date().toISOString(), future, new Date().toISOString());
+
+    const digestRetry = ALL_TASKS.find(t => t.id === 'digest-retry')!;
+    expect(digestRetry.gateCheck!(db as any)).toBe(true);
+    db.close();
+  });
+});

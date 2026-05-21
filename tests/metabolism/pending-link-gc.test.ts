@@ -91,6 +91,48 @@ describe('runPendingLinkGc', () => {
     const result = runPendingLinkGc(db);
     expect(result.deleted).toBe(0);
   });
+
+  // 回归 F2(2026-05-21): pending-link-gc 原先用 datetime('now', '-N days') 字符串对比
+  // JS ISO 'YYYY-MM-DDTHH:MM:SS.sssZ' 的 created 列。
+  // 同日比较时 ISO 在位置 10 是 'T'(0x54),datetime 是 ' '(0x20),字典序 ISO > datetime。
+  // 这意味着对于刚过期(7d + 1h 前)的 pending,字典序对比 created < cutoff = false →
+  // 应删却漏删。
+  //
+  // 验证:7d+1h 前的 pending,旧 SQL 漏删(回归保护),新 SQL 正确删除。
+  it('F2 回归: 刚过期(7d + 1h 前)的 pending 必须被正确判定为过期', () => {
+    const nodeA = seedNode(db, { content: 'A' });
+    const nodeB = seedNode(db, { content: 'B' });
+
+    // 创建一个 pending 链接,把 created 设为 7天 + 1小时前(应删)
+    const link = seedLink(db, nodeA.id, nodeB.id, { status: 'pending', auto: true });
+    const justPastIso = new Date(Date.now() - (7 * 24 + 1) * 3600_000).toISOString();
+    db.prepare('UPDATE links SET created = ? WHERE id = ?').run(justPastIso, link!.id);
+
+    // 旧路径(字典序错判):ISO created 在位置 10 是 'T',cutoff 是 ' ',
+    // ISO > cutoff at same date → "created < cutoff" 返回 false → 漏删
+    const oldPath = db.prepare(
+      `SELECT id FROM links WHERE status='pending' AND created < datetime('now', '-7 days')`,
+    ).all() as Array<{ id: string }>;
+
+    // 新路径(ISO vs ISO 字典序 = 时间序):正确判定为过期
+    const isoCutoff = new Date(Date.now() - 7 * 24 * 3600_000).toISOString();
+    const newPath = db.prepare(
+      `SELECT id FROM links WHERE status='pending' AND created < ?`,
+    ).all(isoCutoff) as Array<{ id: string }>;
+
+    // 回归保护:旧路径漏掉这条本应过期的链接
+    expect(oldPath.map(r => r.id)).not.toContain(link!.id);
+    // 新路径正确判定为过期
+    expect(newPath.map(r => r.id)).toContain(link!.id);
+
+    // runPendingLinkGc 自身行为:必须删除这条过期 pending
+    const result = runPendingLinkGc(db);
+    expect(result.deleted).toBe(1);
+
+    const remaining = db.prepare('SELECT COUNT(*) as cnt FROM links WHERE id = ?')
+      .get(link!.id) as { cnt: number };
+    expect(remaining.cnt).toBe(0);
+  });
 });
 
 describe('pendingLinkGcGate', () => {

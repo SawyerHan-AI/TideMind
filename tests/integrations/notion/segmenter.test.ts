@@ -73,3 +73,72 @@ describe('segmentContent', () => {
     expect(contexts).toContain('技术方案');
   });
 });
+
+// F12 回归: mergeShortSegments 不能 mutate 入参数组或入参对象。
+// 旧实现有两个 mutation 点:
+//   a) result 中保存的是入参对象引用,把 short 段合并到 prev 时 prev.content 被改 → 入参对象被偷偷改了
+//   b) `segments[i + 1] = {...}` 直接写入参数组,污染调用方
+describe('mergeShortSegments — F12 回归: 不 mutate 入参', () => {
+  it('短段在中间:入参数组与对象都不变', async () => {
+    const { mergeShortSegments } = await import(
+      '../../../src/integrations/notion/segmenter.js'
+    );
+    const segments = [
+      { content: 'a'.repeat(300), context: 'A' }, // long
+      { content: 'b'.repeat(50), context: 'B' },  // short
+      { content: 'c'.repeat(300), context: 'C' }, // long
+    ];
+    const clone = JSON.parse(JSON.stringify(segments));
+
+    const result = mergeShortSegments(segments);
+
+    // 入参完全不变
+    expect(segments).toEqual(clone);
+    // 入参的每个对象身份保留 — 验证 result 中的对象都是新对象(因为旧实现 push(seg) 后改 prev.content)
+    expect(segments[0].content).toBe('a'.repeat(300));
+    expect(segments[1].content).toBe('b'.repeat(50));
+    expect(segments[2].content).toBe('c'.repeat(300));
+
+    // result 行为正确:短段被合并到上一长段
+    expect(result.length).toBe(2);
+    expect(result[0].content).toContain('a'.repeat(300));
+    expect(result[0].content).toContain('b'.repeat(50));
+    expect(result[1].content).toBe('c'.repeat(300));
+  });
+
+  it('短段在最前面:segments[i+1] 不被写穿', async () => {
+    const { mergeShortSegments } = await import(
+      '../../../src/integrations/notion/segmenter.js'
+    );
+    const segments = [
+      { content: 'short1', context: 'S1' }, // short(<200)
+      { content: 'd'.repeat(300), context: 'D' }, // long
+    ];
+    const clone = JSON.parse(JSON.stringify(segments));
+
+    mergeShortSegments(segments);
+
+    // 入参 segments[1] 不应被改写
+    expect(segments).toEqual(clone);
+    expect(segments[1].content).toBe('d'.repeat(300));
+  });
+
+  it('连续两个短段在最前面:仍不污染入参', async () => {
+    const { mergeShortSegments } = await import(
+      '../../../src/integrations/notion/segmenter.js'
+    );
+    const segments = [
+      { content: 's1', context: 'A' },
+      { content: 's2', context: 'B' },
+      { content: 'long'.repeat(100), context: 'C' },
+    ];
+    const clone = JSON.parse(JSON.stringify(segments));
+
+    const result = mergeShortSegments(segments);
+    expect(segments).toEqual(clone);
+    // 行为:s1 + s2 都被并入第三个长段
+    expect(result.length).toBe(1);
+    expect(result[0].content).toContain('s1');
+    expect(result[0].content).toContain('s2');
+  });
+});

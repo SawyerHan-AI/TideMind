@@ -317,9 +317,13 @@ async function findCrossTopicResonance(db: Database.Database): Promise<{ analyze
       ).join('\n\n');
       const fallbackResonancePrompt = `时间段: ${week.week}\n\n同一时期的不同主题记忆:\n${summaryPrompt}\n\n这些不同主题在同一时期有什么交叉点或共振？`;
 
+      // 修复 F10(2026-05-21): topic 字段在 resonance 路径上是"时间段标识",
+      // 在 evolution 路径上是"主题",两条路径共用同一个 strategy 的 prompt,
+      // LLM 容易混淆。临时方案:在 resonance 路径下,把 topic 值加 'week-' 前缀,
+      // 让 LLM 一眼看出这是"时间段"而非主题。长期可拆成两个 strategy。
       const response = await callLLM({
         prompt: renderUserPrompt('temporal-crystal', {
-          topic: week.week,
+          topic: `week-${week.week}`,
           timeline: summaryPrompt,
         }, fallbackResonancePrompt),
         system: getPrompt('temporal-crystal', FALLBACK_SYSTEM),

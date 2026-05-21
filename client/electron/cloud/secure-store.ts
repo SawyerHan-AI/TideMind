@@ -109,7 +109,28 @@ function legacySet(service: string, account: string, value: Buffer): void {
     throw new Error('safeStorage encryption unavailable');
   }
   const encrypted = safeStorage.encryptString(value.toString('utf-8'));
-  fs.writeFileSync(legacyFilePath(service, account), encrypted, { mode: 0o600 });
+  const filePath = legacyFilePath(service, account);
+  // HIGH 3 (audit-10, 2026-05-21):同 credentials.ts 的 unlink + writeFileSync(mode) +
+  // chmod 三步兜底。背景:writeFileSync 的 mode 选项**只在创建新文件时**生效,
+  // 老 v0.2.69 落盘的 0o644 cloud-auth.json 升级到新版本被 truncate 时 mode 不变,
+  // safeStorage 加密的 token 仍然世界可读。三步保证最终一定是 0o600:
+  //   1) 先 unlink 让 writeFileSync 真创建新文件,mode 选项生效
+  //   2) writeFileSync 带 mode: 0o600 兜一道
+  //   3) chmodSync 显式改一道,即便前两步因 EBUSY/平台差异失效,最终态对
+  try {
+    fs.unlinkSync(filePath);
+  } catch (err) {
+    // ENOENT 是预期的(首次写入);其他错误 log 但不放弃后续 chmod 兜底
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      log.warn(`legacySet unlink ${filePath} failed (${(err as Error).message}); will rely on chmod fallback`);
+    }
+  }
+  fs.writeFileSync(filePath, encrypted, { mode: 0o600 });
+  try {
+    fs.chmodSync(filePath, 0o600);
+  } catch (err) {
+    log.warn(`legacySet chmod ${filePath} failed: ${(err as Error).message}`);
+  }
 }
 
 function legacyGet(service: string, account: string): Buffer | null {

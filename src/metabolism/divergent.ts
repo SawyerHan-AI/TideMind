@@ -468,11 +468,12 @@ async function checkCrystalEvidence(db: Database.Database): Promise<string[]> {
   const refreshed: string[] = [];
 
   // 找所有 crystal 节点
+  // F9: 需要 version 字段以便写入 node_versions 时记 OLD version,与 db/nodes.ts 对齐
   const crystals = db.prepare(`
-    SELECT id, content, last_reconsolidated, created
+    SELECT id, content, version, last_reconsolidated, created
     FROM nodes WHERE is_crystal = 1 AND heat > 0.01 AND is_superseded = 0 AND archived = 0
     ORDER BY heat DESC LIMIT 10
-  `).all() as Array<{ id: string; content: string; last_reconsolidated: string | null; created: string }>;
+  `).all() as Array<{ id: string; content: string; version: number; last_reconsolidated: string | null; created: string }>;
 
   for (const crystal of crystals) {
     // 找支撑节点（通过 summarizes 链接连接的节点）
@@ -512,16 +513,19 @@ async function checkCrystalEvidence(db: Database.Database): Promise<string[]> {
           // 时区坑见上：last_reconsolidated 被 freshness.ts / daysAgo 经 new Date()
           // 解析，datetime('now') 无 Z 会被当本地时区 → 统一走 JS ISO。
           const ts = now();
+
+          // F9: node_versions.(version, content) 必须记 OLD 状态,与 db/nodes.ts:149 对齐。
+          // 旧写法先 UPDATE 再 SELECT,等于把 NEW version + NEW content 写进 history,
+          // 跟 db/nodes.ts 的 "version=旧、content=旧" 语义相反,UI 回滚会拿错版本。
+          db.prepare(`
+            INSERT INTO node_versions (node_id, version, content, change_reason, changed_at)
+            VALUES (?, ?, ?, 'crystal evidence refresh', ?)
+          `).run(crystal.id, crystal.version, crystal.content, ts);
+
           db.prepare(`
             UPDATE nodes SET content = ?, version = version + 1, last_reconsolidated = ?, updated = ?
             WHERE id = ?
           `).run(enriched, ts, ts, crystal.id);
-
-          // 版本历史
-          db.prepare(`
-            INSERT INTO node_versions (node_id, version, content, change_reason, changed_at)
-            VALUES (?, (SELECT version FROM nodes WHERE id = ?), ?, 'crystal evidence refresh', ?)
-          `).run(crystal.id, crystal.id, enriched, ts);
 
           refreshMaturityScore(db, crystal.id);
           refreshed.push(crystal.id);

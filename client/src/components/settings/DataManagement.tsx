@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { motion } from 'framer-motion'
 import { brand, btnText } from '../../lib/tokens'
@@ -88,7 +88,8 @@ type ExportScope = 'all' | 'tag' | 'date'
 
 function ExportSection() {
   const { t } = useTranslation('settings')
-  const { data: allTags } = useIPC(() => window.api.nodes.tags())
+  const fetchAllTags = useCallback(() => window.api.nodes.tags(), [])
+  const { data: allTags } = useIPC(fetchAllTags)
   const coreTags = (allTags ?? []).filter(tag => tag.isCore)
 
   const [format, setFormat] = useState<ExportFormat>('markdown')
@@ -329,15 +330,17 @@ function parseStreamEntries(markdown: string): StreamEntry[] {
 
 function StreamLogBrowser() {
   const { t } = useTranslation('settings')
-  const { data: dates, loading: datesLoading } = useIPC(() => window.api.stream.dates())
+  const fetchDates = useCallback(() => window.api.stream.dates(), [])
+  const { data: dates, loading: datesLoading } = useIPC(fetchDates)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
 
   const activeDate = selectedDate ?? dates?.[0] ?? null
 
-  const { data: content, loading: contentLoading } = useIPC(
+  const fetchContent = useCallback(
     () => activeDate ? window.api.stream.get(activeDate) : Promise.resolve(''),
     [activeDate],
   )
+  const { data: content, loading: contentLoading } = useIPC(fetchContent)
 
   const entries = parseStreamEntries(content ?? '')
 
@@ -426,7 +429,8 @@ function StreamLogBrowser() {
 
 function StorageStats() {
   const { t } = useTranslation('settings')
-  const { data: storage } = useIPC(() => window.api.health.storage())
+  const fetchStorage = useCallback(() => window.api.health.storage(), [])
+  const { data: storage } = useIPC(fetchStorage)
 
   return (
     <Section title={t('data.storage.title')}>
@@ -454,7 +458,8 @@ function StorageStats() {
 
 function TagManagement() {
   const { t } = useTranslation('settings')
-  const { data: allTags, loading, refetch } = useIPC(() => window.api.nodes.tags())
+  const fetchTags = useCallback(() => window.api.nodes.tags(), [])
+  const { data: allTags, loading, refetch } = useIPC(fetchTags)
   const [operating, setOperating] = useState<string | null>(null)
 
   const coreTags = (allTags ?? []).filter(tag => tag.isCore).sort((a, b) => b.count - a.count)
@@ -652,10 +657,11 @@ function ArchivedNodes() {
   // 已恢复的节点（本地跟踪，刷新后回归正常池）
   const [restoredNodes, setRestoredNodes] = useState<ArchivedNodeItem[]>([])
 
-  const { data, loading, refetch } = useIPC(
+  const fetchArchived = useCallback(
     () => window.api.write.listArchived({ limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
     [page],
   )
+  const { data, loading, refetch } = useIPC(fetchArchived)
 
   const archivedNodes = data?.nodes ?? []
   const total = data?.total ?? 0

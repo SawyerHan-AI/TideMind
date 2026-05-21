@@ -261,10 +261,18 @@ export class InitSessionManager {
     // 等业务 promise settle，最长 10s
     const promise = s.promise;
     if (promise) {
+      // 注意：业务 promise 在 10s 内 settle（正常路径）时，setTimeout 也必须 clear，
+      // 否则 callback 仍排在事件循环里，闭包内 resolve 不被释放，
+      // 高频 abort 下会有 timer 堆积。
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeoutPromise = new Promise<'timeout'>(resolve => {
+        timer = setTimeout(() => resolve('timeout'), ABORT_SETTLE_TIMEOUT_MS);
+      });
       const winner = await Promise.race([
         promise.then(() => 'settled' as const).catch(() => 'settled' as const),
-        new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), ABORT_SETTLE_TIMEOUT_MS)),
+        timeoutPromise,
       ]);
+      if (timer) clearTimeout(timer);
       if (winner === 'timeout') {
         log.warn(`abort timeout for ${sourceId}: forcing aborted state`);
         this.transition(s, 'aborted', {
@@ -316,7 +324,12 @@ export class InitSessionManager {
   }
 
   private updateProgress(session: InitSessionInternal, patch: Partial<InitProgress>): void {
-    if (session.status === 'done' || session.status === 'error' || session.status === 'aborted' || session.status === 'idle') {
+    // 修复 F5(2026-05-21): 把 'idle' 从终态判定移除。
+    // 'idle' 是初始/重置状态(还没 start),不是终态。runner 在 transition 到
+    // 'running' 之前的同步前缀里就可能调 reportPhase(例如紧跟在 start() 之后的
+    // 第一行 ctx.reportPhase(0, '...', total)),如果此时还停在 'idle',patch 会被
+    // 当作"终态后上报"丢弃,UI 看到的 phase 永远是 -1。
+    if (session.status === 'done' || session.status === 'error' || session.status === 'aborted') {
       return;  // 终态后忽略业务上报
     }
     session.progress = { ...session.progress, ...patch };

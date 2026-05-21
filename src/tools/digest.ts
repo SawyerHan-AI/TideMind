@@ -95,7 +95,7 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
     }
 
     // Stream 先写（获取锚点引用）
-    const corrStreamRef = appendToStream({
+    const corrStreamRef = await appendToStream({
       tool: input.source?.tool,
       session: input.source?.session,
       content: `[纠正] ${input.content}`,
@@ -212,7 +212,7 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
   const qualityHeat = assessContentQuality(trimmed);
 
   // Stream 日志先写（原始记录）
-  const streamRef = appendToStream({
+  const streamRef = await appendToStream({
     tool: input.source?.tool,
     session: input.source?.session,
     content: input.content,
@@ -257,9 +257,14 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
           agent_id: input.agent_id,
         });
         // pending 条目已存在，更新错误信息以供重试(M25:static import)
+        // 加 status 过滤:并发 retry-worker 可能在我们 catch 之前已经把这条行处理掉
+        // (变成 'failed' 终态)、或者删除(success 走 DELETE)。SELECT 不过滤 status
+        // 会捞到 terminal 'failed' 行 → failPendingDigest 把它重置回 'pending',造成
+        // 一条已永久失败的 digest 被无意义复活。同 traceId 还可能历史遗留多行,
+        // 只挑还在活跃状态(pending/processing)的那条。
         try {
           const pending = db.prepare(
-            "SELECT id FROM pending_digests WHERE trace_id = ?"
+            "SELECT id FROM pending_digests WHERE trace_id = ? AND status IN ('pending', 'processing')"
           ).get(traceId) as { id: string } | undefined;
           if (pending) {
             failPendingDigest(db, pending.id, (err as Error).message);

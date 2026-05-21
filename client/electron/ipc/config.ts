@@ -5,6 +5,9 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { getClientDb } from '../db.js'
 import { createNode } from '@server/db/nodes.js'
 import { loadConfig, reloadConfig } from '@server/config.js'
+import { createLogger } from '@server/utils/logger.js'
+
+const log = createLogger('ipc-config')
 import {
   parseConfigContent,
   parseConfigFileName,
@@ -477,7 +480,7 @@ function recordStrategyVersion(
       )
     } catch {}
   } catch (err) {
-    console.error('[config] 策略版本记录失败:', (err as Error).message)
+    log.error(`策略版本记录失败: ${(err as Error).message}`)
   }
 }
 

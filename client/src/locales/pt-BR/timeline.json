@@ -86,6 +86,7 @@
     "apple_notes_incremental_sync": "Apple Notes sincronização incremental (processadas {{processed}})",
     "apple_notes_init_complete": "Apple Notes inicialização concluída: {{nodes}} nós, {{links}} links, {{crystals}} cristais",
     "profile_synthesized": "Perfil sintetizado ({{crystals}} cristais, {{preferences}} preferências)",
-    "pending_link_gc": "{{count}} links pendentes expirados removidos"
+    "pending_link_gc": "{{count}} links pendentes expirados removidos",
+    "circuit_breaker_manual_reset": "Disjuntor redefinido manualmente"
   }
 }

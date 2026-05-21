@@ -9,13 +9,19 @@ import type {
   PartialBlockObjectResponse,
 } from '@notionhq/client/build/src/api-endpoints.js';
 import { createLogger } from '../../utils/logger.js';
+import { InitAbortError } from '../shared/init-session.js';
 import type { NotionPageSummary } from './types.js';
 
 const log = createLogger('notion-api');
 
 // ── 速率控制 ──────────────────────────────────────────────────
 
-class RateLimiter {
+/**
+ * 测试导出:RateLimiter 类用于回归 F6(慢路径越过 burst)。
+ * 生产代码外的所有调用应仅通过下面的 module-level rateLimiter 单例,
+ * 别在业务路径里 new RateLimiter。
+ */
+export class RateLimiter {
   private tokens: number;
   private lastRefill: number;
 
@@ -33,10 +39,18 @@ class RateLimiter {
       this.tokens -= 1;
       return;
     }
-    // 等待直到有 token
-    const waitMs = ((1 - this.tokens) / this.refillRate) * 1000;
-    await sleep(Math.ceil(waitMs));
-    this.refill();
+    // 等待直到有 token。
+    // 修复 F6(2026-05-21): 慢路径必须循环 refill + 重新校验,而不是 sleep 一次后
+    // 无条件 `tokens -= 1`。原代码在并发 N>burst 时,多个 acquire 同时落到慢路径,
+    // 各自 sleep 等量时间后并发唤醒,refill 只产生有限 token(refillRate * waitMs),
+    // 所有 acquire 都执行 `tokens -= 1` → tokens 推到负值,后续 acquire 不再受
+    // burst 上限保护。循环 refill 让真正"没拿到 token"的请求继续等下一个 slot。
+    while (this.tokens < 1) {
+      this.refill();
+      if (this.tokens >= 1) break;
+      const waitMs = ((1 - this.tokens) / this.refillRate) * 1000;
+      await sleep(Math.max(1, Math.ceil(waitMs)));
+    }
     this.tokens -= 1;
   }
 
@@ -50,6 +64,32 @@ class RateLimiter {
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * MEDIUM 9 (audit-10, 2026-05-21): abort-aware sleep。
+ *
+ * 之前 retryWithBackoff 用裸 setTimeout 等待 retry,中间用户 stop 集成
+ * 也得等 60s 才回来,无意义占用。改用 abortable sleep:signal abort 时
+ * 立即 reject InitAbortError,上层一致识别。
+ *
+ * 注:已经被 abort 的 signal 直接 reject(避免 setTimeout 0 也要绕一圈)。
+ */
+function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new InitAbortError('user'));
+  if (!signal) return sleep(ms);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      reject(new InitAbortError('user'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 // ── 公开 API ──────────────────────────────────────────────────
@@ -107,13 +147,28 @@ export async function validateToken(token: string): Promise<{
 
 /**
  * 全量扫描所有可访问的页面（Search API 分页）
+ *
+ * F11 (audit-7): 加 AbortSignal 支持。Notion 全量扫描可能跑数千页 + 几十 KB
+ * relation 解析,中途用户 stop 集成 / 触发 fullRescan 时,旧 sync 仍占满
+ * rateLimiter 队列。给 signal 后,下一轮循环 / acquire 后立刻 throw InitAbortError,
+ * 上层 (init-session / runSync 等) 统一识别 abort 不当错误处理。
  */
-export async function* listAllPages(token: string): AsyncGenerator<NotionPageSummary> {
+export async function* listAllPages(
+  token: string,
+  options?: { signal?: AbortSignal },
+): AsyncGenerator<NotionPageSummary> {
   const client = createClient(token);
   let cursor: string | undefined;
 
   do {
+    if (options?.signal?.aborted) {
+      throw new InitAbortError('user');
+    }
     await rateLimiter.acquire();
+    if (options?.signal?.aborted) {
+      throw new InitAbortError('user');
+    }
+    // MEDIUM 9 (audit-10): 透传 signal,retry sleep 期间 abort 立即退
     const response = await retryWithBackoff(() =>
       client.search({
         filter: { property: 'object', value: 'page' },
@@ -121,6 +176,8 @@ export async function* listAllPages(token: string): AsyncGenerator<NotionPageSum
         page_size: 100,
         start_cursor: cursor,
       }),
+      3,
+      { signal: options?.signal },
     );
 
     for (const result of response.results) {
@@ -139,10 +196,22 @@ export async function* listAllPages(token: string): AsyncGenerator<NotionPageSum
 export async function getPageProperties(
   token: string,
   pageId: string,
+  options?: { signal?: AbortSignal },
 ): Promise<PageObjectResponse> {
+  if (options?.signal?.aborted) {
+    throw new InitAbortError('user');
+  }
   const client = createClient(token);
   await rateLimiter.acquire();
-  const page = await retryWithBackoff(() => client.pages.retrieve({ page_id: pageId }));
+  if (options?.signal?.aborted) {
+    throw new InitAbortError('user');
+  }
+  // MEDIUM 9 (audit-10): 透传 signal 到 retry sleep
+  const page = await retryWithBackoff(
+    () => client.pages.retrieve({ page_id: pageId }),
+    3,
+    { signal: options?.signal },
+  );
   return page as PageObjectResponse;
 }
 
@@ -357,12 +426,26 @@ function extractTitleFromProperties(
   return null;
 }
 
+/**
+ * MEDIUM 9 (audit-10, 2026-05-21): 加 signal 参数,让 retry 期间的等待可中断。
+ * 之前 retry sleep 用裸 setTimeout,Notion 全量扫描中途 stop 集成 / abort
+ * 还得等 60s sleep 跑完才退出,毫无意义占用 rateLimiter 配额。signal 透传
+ * 到 sleepAbortable 后,abort 时立即 throw InitAbortError 跟其他 abort 路径
+ * 一致。
+ *
+ * caller 应在 catch InitAbortError 时按 "用户主动取消" 处理,不重试,不报错。
+ */
 async function retryWithBackoff<T>(
   fn: () => Promise<T>,
   maxRetries: number = 3,
+  options?: { signal?: AbortSignal },
 ): Promise<T> {
   let lastError: Error | null = null;
   for (let i = 0; i <= maxRetries; i++) {
+    // 每一轮进入 fn 之前都查一次 signal,abort 立即退出
+    if (options?.signal?.aborted) {
+      throw new InitAbortError('user');
+    }
     try {
       return await fn();
     } catch (e) {
@@ -406,7 +489,7 @@ async function retryWithBackoff<T>(
           waitMs = (2 ** i) * 1000;
         }
         log.warn(`速率限制，等待 ${waitMs}ms 后重试 (${i}/${maxRetries})`);
-        await sleep(waitMs);
+        await sleepAbortable(waitMs, options?.signal);
         continue;
       }
 
@@ -415,7 +498,7 @@ async function retryWithBackoff<T>(
         if (i === maxRetries) throw e;
         const waitMs = (2 ** i) * 1000;
         log.warn(`服务端错误 ${status}，等待 ${waitMs}ms 后重试 (${i}/${maxRetries})`);
-        await sleep(waitMs);
+        await sleepAbortable(waitMs, options?.signal);
         continue;
       }
 

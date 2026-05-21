@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { useDataRevision } from '../contexts/DataChangeContext'
 
 export type NodeInfo = { title: string | null; type: string }
 export type NodeMap = Record<string, NodeInfo>
@@ -7,6 +8,9 @@ export type NodeMap = Record<string, NodeInfo>
  * Resolve node IDs to human-readable titles.
  * Only fetches when `enabled` is true (i.e. the detail panel is expanded).
  * Results are cached across re-renders for the same ID set.
+ *
+ * F8: 订阅 `nodes` scope 的 revision — 后端 node title / type 变更
+ * (rename / tag refactor / metabolism)时,自动重拉。
  */
 export function useResolvedNodes(
   nodeIds: string[],
@@ -22,11 +26,14 @@ export function useResolvedNodes(
   // hook 内部按内容比较。原版 deps [enabled, nodeIds] 按引用比对,父组件每次
   // render 重建数组就重跑 effect,即使 ID 集合不变也会切到 loading 状态。
   const nodeIdsKey = nodeIds.slice().sort().join(',')
+  const rev = useDataRevision(['nodes'])
+  // 在 key 末端拼上 revision,让 nodes scope 变化后 key 自然失效,触发重拉。
+  const cacheKey = `${nodeIdsKey}:${rev}`
 
   useEffect(() => {
     if (!enabled || nodeIdsKey.length === 0) return
 
-    const key = nodeIdsKey
+    const key = cacheKey
     if (key === loadedKey.current) return
 
     prevKey.current = key
@@ -48,7 +55,7 @@ export function useResolvedNodes(
         if (key !== latestKeyRef.current) return
         setLoading(false)
       })
-  }, [enabled, nodeIdsKey])
+  }, [enabled, cacheKey, nodeIdsKey])
 
   return { nodeMap, loading }
 }

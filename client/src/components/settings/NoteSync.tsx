@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Plus, ChevronRight, RotateCcw, X,
@@ -210,7 +210,8 @@ function AddNoteSourceWizard({
 export function NoteSync() {
   const { t } = useTranslation('settings')
   const { timeAgo } = useFormatters()
-  const { data: sources, refetch } = useIPC(() => window.api.noteSources.list(true))
+  const fetchSources = useCallback(() => window.api.noteSources.list(true), [])
+  const { data: sources, refetch } = useIPC(fetchSources)
   const [statsMap, setStatsMap] = useState<Record<string, NoteSourceStat>>({})
   const [wizardOpen, setWizardOpen] = useState(false)
   const [expandedSource, setExpandedSource] = useState<string | null>(null)
@@ -222,6 +223,11 @@ export function NoteSync() {
   const uninitializedSources = activeSources.filter(s => !s.initialized)
   const archivedSources = allSources.filter(s => s.archived)
 
+  // F3: polling loop 闭包绑定 activeSources 会持有旧值,导致用户新增/归档
+  // source 后 polling 还在拉旧 source 的 stats。改用 ref 让 polling 总读到最新。
+  const activeSourcesRef = useRef(activeSources)
+  activeSourcesRef.current = activeSources
+
   // Load stats for active sources (poll every 3s while any source is syncing)
   useEffect(() => {
     if (activeSources.length === 0) return
@@ -230,7 +236,7 @@ export function NoteSync() {
 
     const loadStats = async () => {
       const map: Record<string, NoteSourceStat> = {}
-      for (const s of activeSources) {
+      for (const s of activeSourcesRef.current) {
         try {
           map[s.id] = await window.api.noteSources.stats(s.id)
         } catch (err) {

@@ -35,11 +35,15 @@ export function runPendingLinkGc(
 
   const pendingExpireDays = getParam('link-evaluate', 'pending_expire_days', 7);
   const maxPerRun = getParam('link-evaluate', 'gc_max_per_run', 2000);
-  const expiredCutoff = `-${pendingExpireDays} days`;
+  // 修复 F2(2026-05-21): created 列是 JS ISO 字符串。原先用 `datetime('now', '-N days')`
+  // 返回的字符串没有 'T' 分隔符，字典序对比时位置 10 是 ' ' (0x20) < ISO 的 'T' (0x54),
+  // 导致 ISO 永远 ">" SQLite datetime → 过期判定边界一天内全部错判。
+  // 改在 JS 侧算好 ISO cutoff 再丢给 SQL。
+  const expiredCutoff = new Date(Date.now() - pendingExpireDays * 24 * 3600_000).toISOString();
 
   const expired = db.prepare(
     `SELECT id FROM links
-     WHERE status = 'pending' AND created < datetime('now', ?)
+     WHERE status = 'pending' AND created < ?
      ORDER BY created ASC
      LIMIT ?`,
   ).all(expiredCutoff, maxPerRun) as Array<{ id: string }>;

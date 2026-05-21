@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -28,10 +28,11 @@ export function DetailPanel({ nodeId, onNavigate }: {
   const { t } = useTranslation('explorer')
   const { formatDate, timeAgo } = useFormatters()
   const rev = useDataRevision(['nodes', 'links'])
-  const { data, loading, refetch } = useIPC(
+  const fetchNode = useCallback(
     () => nodeId ? window.api.nodes.get(nodeId) : Promise.resolve(null),
     [nodeId, rev],
   )
+  const { data, loading, refetch } = useIPC(fetchNode)
 
   const [editing, setEditing] = useState(false)
   const [editContent, setEditContent] = useState('')
@@ -39,6 +40,9 @@ export function DetailPanel({ nodeId, onNavigate }: {
   const [editReason, setEditReason] = useState('')
   const [expandedVersion, setExpandedVersion] = useState<number | null>(null)
   const [showAllVersions, setShowAllVersions] = useState(false)
+  // F14: 开始编辑时记录看到的版本号,save 时比对当前版本号 — 若用户编辑期间
+  // 后端自动更新过(metabolism / reconsolidation),提示用户避免静默覆盖。
+  const openedVersionRef = useRef<number | null>(null)
   // 标签解除 toast（5s 后自动消失，支持撤销）
   const [rejectToast, setRejectToast] = useState<{ linkId: string; tagName: string } | null>(null)
 
@@ -87,11 +91,27 @@ export function DetailPanel({ nodeId, onNavigate }: {
     setEditContent(data.node.content)
     setEditTitle(data.node.title ?? '')
     setEditReason('')
+    // F14: 抓拍编辑起始版本
+    openedVersionRef.current = data.node.version ?? null
     setEditing(true)
   }
 
   const handleSave = async () => {
     if (!nodeId || !editContent.trim() || !editTitle.trim()) return
+    // F14: 并发编辑检查。openedVersion 是用户开始编辑时看到的版本;
+    // currentVersion 是当前后端最新版本(useIPC 在 nodes scope 变化时已刷新)。
+    // 不一致 → 期间被自动更新过,需用户显式确认是否覆盖。
+    const currentVersion = data?.node?.version ?? null
+    if (
+      openedVersionRef.current !== null
+      && currentVersion !== null
+      && openedVersionRef.current !== currentVersion
+    ) {
+      const msg = t('explorer:detail.concurrentEditWarning', {
+        defaultValue: '内容在你编辑期间被自动更新过,继续保存会覆盖最新版本。继续?',
+      })
+      if (!window.confirm(msg)) return
+    }
     const result = await editMutation.mutate({
       id: nodeId,
       content: editContent,
@@ -100,6 +120,7 @@ export function DetailPanel({ nodeId, onNavigate }: {
     })
     if (result?.success) {
       setEditing(false)
+      openedVersionRef.current = null
       refetch()
     }
   }

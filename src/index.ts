@@ -285,14 +285,18 @@ async function main() {
 // schema migration 等同步或异步抛错)没有 handler,Node 22+ 默认行为是进程
 // 退出且无日志,运维只看到"daemon 起不来"无线索。daemon.ts 已是顶层注册,
 // 这里对齐。
+//
+// 2026-05-21 audit F10:统一 daemon.ts / index.ts 的 unhandled handler 行为:
+//  - 不再用 stderr.write 兜底(模块顶层 import 已完成,createLogger 可用)
+//  - 都走 log.error + setTimeout exit(1),让进程在异常态下不残留
+//  - 1s delay 给日志写盘时间,Railway / file logger 都能 drain
 process.on('uncaughtException', (err) => {
-  // 启动期 log 可能还没初始化,直接 stderr.write 兜底
-  const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
-  process.stderr.write(`[eb:index] uncaughtException: ${msg}\n`);
+  log.error('uncaughtException:', err instanceof Error ? (err.stack ?? err.message) : String(err));
+  setTimeout(() => process.exit(1), 1000);
 });
 process.on('unhandledRejection', (reason) => {
-  const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
-  process.stderr.write(`[eb:index] unhandledRejection: ${msg}\n`);
+  log.error('unhandledRejection:', reason instanceof Error ? (reason.stack ?? reason.message) : String(reason));
+  setTimeout(() => process.exit(1), 1000);
 });
 
 main().then(() => {

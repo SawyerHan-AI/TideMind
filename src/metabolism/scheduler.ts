@@ -36,6 +36,15 @@ export interface TaskDefinition {
   gateCheck?: (db: Database.Database) => boolean;
   /** 是否需要 LLM 调用。LLM 不可用时跳过此任务。默认 false */
   requiresLLM?: boolean;
+  /**
+   * 是否需要 embedding 调用 (B-3, 2026-05-21)。
+   * Embedding 熔断器 open 状态下跳过此任务,避免持续浪费 quota / 在已知失败的
+   * provider 上累积错误。Embedding 跟 LLM 是独立熔断器(可能 LLM 还能用、
+   * embedding 挂了,反之亦然),独立判定。
+   * 默认 false。digest-retry / link-discover 等真正在调用路径里触发 getEmbedding
+   * 的任务标 true。
+   */
+  requiresEmbedding?: boolean;
 }
 
 export interface TaskStatus {
@@ -195,6 +204,7 @@ export function getCircuitState(db: Database.Database): {
   state: CircuitState;
   failures: number;
   cooldownMs: number;
+  openedAt: number; // epoch ms,0 表示未开启过;UI 用 openedAt + cooldownMs 算剩余
 } {
   // 三个 CB_* key 一次性读出:原先三次独立 SELECT 之间 recordLLMFailure
   // 可能并发写入,导致 failures / openedAt / cooldownMs 看到"半更新"的
@@ -214,23 +224,56 @@ export function getCircuitState(db: Database.Database): {
   const values = new Map<string, string>();
   for (const r of rows) values.set(r.key, r.value);
 
-  const failures = values.has(CB_FAILURES_KEY) ? parseInt(values.get(CB_FAILURES_KEY)!, 10) : 0;
-  const openedAt = values.has(CB_OPENED_AT_KEY) ? parseInt(values.get(CB_OPENED_AT_KEY)!, 10) : 0;
-  const cooldownMs = values.has(CB_COOLDOWN_KEY)
+  // 修复 F4(2026-05-21): parseInt 解析 corrupt metadata.value(如手工写入 / 旧迁移残留)
+  // 会返回 NaN。NaN 参与的所有比较都返回 false:
+  //   - failures < CIRCUIT_FAILURE_THRESHOLD → false → 不走 'closed' 分支
+  //   - elapsed >= cooldownMs(elapsed = now - NaN = NaN) → false → 不走 'half-open'
+  // 结果熔断器永久卡在 'open',无法恢复。
+  // 用 Number.isFinite 兜底:任何无效值视为 0(熔断器关闭、最近无失败)。
+  let failures = values.has(CB_FAILURES_KEY) ? parseInt(values.get(CB_FAILURES_KEY)!, 10) : 0;
+  if (!Number.isFinite(failures)) failures = 0;
+  let openedAt = values.has(CB_OPENED_AT_KEY) ? parseInt(values.get(CB_OPENED_AT_KEY)!, 10) : 0;
+  if (!Number.isFinite(openedAt)) openedAt = 0;
+  let cooldownMs = values.has(CB_COOLDOWN_KEY)
     ? parseInt(values.get(CB_COOLDOWN_KEY)!, 10)
     : CIRCUIT_COOLDOWN_INITIAL;
+  if (!Number.isFinite(cooldownMs) || cooldownMs <= 0) cooldownMs = CIRCUIT_COOLDOWN_INITIAL;
 
   if (failures < CIRCUIT_FAILURE_THRESHOLD) {
-    return { state: 'closed', failures, cooldownMs };
+    return { state: 'closed', failures, cooldownMs, openedAt };
   }
 
   // 熔断中 — 检查冷却是否到期
   const elapsed = Date.now() - openedAt;
   if (elapsed >= cooldownMs) {
-    return { state: 'half-open', failures, cooldownMs };
+    return { state: 'half-open', failures, cooldownMs, openedAt };
   }
 
-  return { state: 'open', failures, cooldownMs };
+  return { state: 'open', failures, cooldownMs, openedAt };
+}
+
+/**
+ * 强制重置熔断器状态(用户在 UI 上"立即重试"或修改 connection 凭据后调用)。
+ *
+ * 跟 noteSuccessfulLLMCall 的差别:
+ *   - noteSuccessfulLLMCall = LLM 调用真的成功,清熔断 + 写 llm_last_success_at
+ *   - resetCircuitBreaker = 用户主动重置(还没真的成功一次),只清熔断 + 触发
+ *     health change event,不动 llm_last_success_at(因为上次成功时间没变)
+ *
+ * 注意:这只清 daemon 端的熔断状态。客户端 fetch 的 socket pool / SDK cache 不在
+ * 这里清——如果是凭据变更场景,调用方应同时调 clearClientCache()(`src/llm/client.ts`)。
+ */
+export function resetCircuitBreaker(db: Database.Database): void {
+  db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, '0')").run(CB_FAILURES_KEY);
+  db.prepare('DELETE FROM metadata WHERE key IN (?, ?)').run(CB_OPENED_AT_KEY, CB_COOLDOWN_KEY);
+  log.info('LLM 熔断器已手动重置');
+  logTimelineEvent(db, {
+    type: 'config',
+    subtype: 'settings_change',
+    title: JSON.stringify({ key: 'circuit_breaker_manual_reset' }),
+    important: 0,
+  });
+  emitHealthChange();
 }
 
 // 健康度信号 metadata key —— 供 UI 展示和 pending-link-gc 健康度门控使用
@@ -261,6 +304,26 @@ function recordLLMSuccess(db: Database.Database): void {
 }
 
 /**
+ * 修复 F8(2026-05-21): 跟踪本 tick 是否"真的"进过 callLLM(成功或失败)。
+ *
+ * 旧代码在 task.execute 正常 return 后无条件设 halfOpenProbed=true。但很多
+ * requiresLLM=true 的 task 在 no candidate / claim 失败 / 内部 early-return
+ * 时根本没进 callLLM,这种"零开销 return"也消耗了半开探测名额,
+ * 接下来同 tick 真正需要探测的 task 反而被 skip。
+ *
+ * 新做法:noteSuccessfulLLMCall / notifyLLMFailure 触发时,scheduler 通过这个
+ * 模块级 flag 知道"本 tick 真的有 LLM 调用发生过"。runSchedulerTick 启动时清零,
+ * 任务结束后按这个 flag 而不是无条件 set halfOpenProbed。
+ *
+ * 跨 tick / 跨进程安全:整个 daemon 同步串行 runSchedulerTick,不存在并发 tick;
+ * 即便有,最坏情况是相邻 tick 共享 flag,影响仅是"少放一次探测",安全。
+ */
+let llmCallObservedInTick = false;
+export function __resetLLMCallObservedFlag(): void { llmCallObservedInTick = false; }
+export function __getLLMCallObservedFlag(): boolean { return llmCallObservedInTick; }
+function markLLMCallObserved(): void { llmCallObservedInTick = true; }
+
+/**
  * 真实 LLM 调用成功时由 callLLM hook 触发(2026-05-20 Audit A-1/A-2 修复)。
  *
  * 之前 scheduler 在 task.execute() 正常 return 后无条件调 recordLLMSuccess,
@@ -279,19 +342,65 @@ function recordLLMSuccess(db: Database.Database): void {
  * 循环),每次成功都会触发 hook → 每次都 reset 熔断器。幂等,不是 bug。
  */
 export function noteSuccessfulLLMCall(db: Database.Database): void {
-  const prevState = getCircuitState(db).state;
-  recordLLMSuccess(db);
-  if (prevState === 'half-open') {
-    log.info('LLM 熔断器已关闭（服务恢复）');
-    logTimelineEvent(db, {
-      type: 'config',
-      subtype: 'settings_change',
-      title: JSON.stringify({ key: 'circuit_breaker_off' }),
-      // 修复(2026-05-20 Audit A-10):跟 circuit_breaker_on 对称设 important=1,
-      // 避免用户看到"AI 暂停"红色重要事件后看不到"AI 恢复"的对应轻量事件。
-      important: 1,
-    });
+  markLLMCallObserved(); // F8: 真实 LLM 调用发生 → 标记本 tick 已观察到
+
+  // 修复 F14(2026-05-21): 把 getCircuitState + recordLLMSuccess + logTimelineEvent
+  // 包到一个事务里,序列化并发竞争。
+  //
+  // 背景:LLM 内部 success hook 在每次 2xx 后被调一次。同一 tick 内 annotate 按
+  // 节点串行 callLLM,但跨 tick + recall 路径的 fire-and-forget(reconsolidate /
+  // link-revalidate)也会触发 hook。若两个调用几乎同时观察到 prevState='half-open',
+  // 都会插一条 'circuit_breaker_off' timeline event,UI 看到两条相同事件。
+  // 用 db.transaction 把"读状态 + 写状态 + 写事件"原子化,确保只有一个 caller 看到
+  // half-open 然后插事件,其他 caller 看到 closed → 不重复插。
+  db.transaction(() => {
+    const prevState = getCircuitState(db).state;
+    recordLLMSuccess(db);
+    if (prevState === 'half-open') {
+      log.info('LLM 熔断器已关闭（服务恢复）');
+      logTimelineEvent(db, {
+        type: 'config',
+        subtype: 'settings_change',
+        title: JSON.stringify({ key: 'circuit_breaker_off' }),
+        // 修复(2026-05-20 Audit A-10):跟 circuit_breaker_on 对称设 important=1,
+        // 避免用户看到"AI 暂停"红色重要事件后看不到"AI 恢复"的对应轻量事件。
+        important: 1,
+      });
+    }
+  })();
+}
+
+/**
+ * 修复 F3(2026-05-21): 让 recall 路径上 fire-and-forget 的 LLM 失败也能累积熔断计数。
+ *
+ * 背景:link-revalidate / reconsolidate 在 recall 路径上 fire-and-forget 调用,
+ * 内部 catch LLMServiceError 后 log.warn 就算了 — 它们抛出的错误在 recall.ts
+ * 那层只是 log.warn,不会走 scheduler 的 recordLLMFailure。结果:LLM 长期挂掉
+ * 时熔断器只能靠 scheduler 低频 task 累积失败,recall 路径完全绕过。
+ *
+ * 解法:暴露一个失败 hook,daemon 启动时绑到 recordLLMFailure。
+ * link-revalidate / reconsolidate / 其他 fire-and-forget 路径在 catch
+ * LLMServiceError 时调 notifyLLMFailure(err),熔断器照样累积。
+ */
+let llmFailureHook: ((err: LLMServiceError) => void) | null = null;
+export function setLLMFailureHook(hook: typeof llmFailureHook): void {
+  llmFailureHook = hook;
+}
+export function notifyLLMFailure(err: LLMServiceError): void {
+  markLLMCallObserved(); // F8: 真实 LLM 调用发生(并失败)→ 标记本 tick 已观察到
+  if (llmFailureHook) {
+    try { llmFailureHook(err); } catch (hookErr) {
+      log.warn(`llmFailureHook threw: ${(hookErr as Error).message}`);
+    }
   }
+}
+
+/**
+ * 把 recordLLMFailure 导出给 hook 注入使用。
+ * 仅供 daemon 启动时 setLLMFailureHook 注入。
+ */
+export function recordLLMFailureForHook(db: Database.Database, errMessage?: string): void {
+  recordLLMFailure(db, errMessage);
 }
 
 function recordLLMFailure(db: Database.Database, errMessage?: string): void {
@@ -321,6 +430,127 @@ function recordLLMFailure(db: Database.Database, errMessage?: string): void {
       type: 'config',
       subtype: 'settings_change',
       title: JSON.stringify({ key: 'circuit_breaker_on', params: { minutes: cooldownMin } }),
+      detail: { failures: newFailures, cooldownMinutes: cooldownMin },
+      important: 1,
+    });
+  }
+  emitHealthChange();
+}
+
+// ============================================================
+// Embedding 熔断器（独立于 LLM, B-3 2026-05-21）
+// ============================================================
+//
+// 为何独立于 LLM 熔断器:embedding provider 和 LLM provider 可以是不同账户 / 不
+// 同 API key / 不同 quota,LLM 全挂时 embedding 可能还能工作(反之亦然)。
+// 共享一个熔断器会把两条路径的失败混在一起,quota 一边耗光时另一边也被一刀
+// 切,误伤。
+//
+// 阈值 / 冷却跟 LLM 一致(3 失败开,5 分钟初始 / 翻倍到 2 小时上限),保持
+// 用户能预测的"什么时候会重试"。
+const EB_FAILURES_KEY = 'embedding_circuit_failures';
+const EB_OPENED_AT_KEY = 'embedding_circuit_opened_at';
+const EB_COOLDOWN_KEY = 'embedding_circuit_cooldown_ms';
+const EMBEDDING_LAST_SUCCESS_KEY = 'embedding_last_success_at';
+const EMBEDDING_LAST_ERROR_KEY = 'embedding_last_error';
+const EMBEDDING_LAST_ERROR_AT_KEY = 'embedding_last_error_at';
+
+export function getEmbeddingCircuitState(db: Database.Database): {
+  state: CircuitState;
+  failures: number;
+  cooldownMs: number;
+} {
+  // 单次 IN 查询,跟 getCircuitState 同样原因(避免半更新窗口)。
+  const rows = db
+    .prepare(
+      `SELECT key, value FROM metadata WHERE key IN (?, ?, ?)`,
+    )
+    .all(EB_FAILURES_KEY, EB_OPENED_AT_KEY, EB_COOLDOWN_KEY) as Array<{
+      key: string;
+      value: string;
+    }>;
+
+  const values = new Map<string, string>();
+  for (const r of rows) values.set(r.key, r.value);
+
+  // 容错 corrupt metadata.value(parseInt 返回 NaN 会导致比较恒 false,
+  // 卡死在 'open' 不恢复)— 跟 LLM 熔断器对齐处理。
+  let failures = values.has(EB_FAILURES_KEY) ? parseInt(values.get(EB_FAILURES_KEY)!, 10) : 0;
+  if (!Number.isFinite(failures)) failures = 0;
+  let openedAt = values.has(EB_OPENED_AT_KEY) ? parseInt(values.get(EB_OPENED_AT_KEY)!, 10) : 0;
+  if (!Number.isFinite(openedAt)) openedAt = 0;
+  let cooldownMs = values.has(EB_COOLDOWN_KEY)
+    ? parseInt(values.get(EB_COOLDOWN_KEY)!, 10)
+    : CIRCUIT_COOLDOWN_INITIAL;
+  if (!Number.isFinite(cooldownMs) || cooldownMs <= 0) cooldownMs = CIRCUIT_COOLDOWN_INITIAL;
+
+  if (failures < CIRCUIT_FAILURE_THRESHOLD) {
+    return { state: 'closed', failures, cooldownMs };
+  }
+
+  const elapsed = Date.now() - openedAt;
+  if (elapsed >= cooldownMs) {
+    return { state: 'half-open', failures, cooldownMs };
+  }
+
+  return { state: 'open', failures, cooldownMs };
+}
+
+/**
+ * Embedding 调用成功 → 重置失败计数器 + 关闭熔断器(若开)。
+ * 由 daemon.ts setEmbeddingSuccessHook 注入 db,在 getEmbedding 拿到 valid vector
+ * 时被调到。
+ */
+export function recordEmbeddingSuccess(db: Database.Database): void {
+  db.transaction(() => {
+    const prevState = getEmbeddingCircuitState(db).state;
+    db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, '0')").run(EB_FAILURES_KEY);
+    db.prepare('DELETE FROM metadata WHERE key IN (?, ?)').run(EB_OPENED_AT_KEY, EB_COOLDOWN_KEY);
+    db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)')
+      .run(EMBEDDING_LAST_SUCCESS_KEY, String(Date.now()));
+    if (prevState === 'half-open') {
+      log.info('Embedding 熔断器已关闭（服务恢复）');
+      logTimelineEvent(db, {
+        type: 'config',
+        subtype: 'settings_change',
+        title: JSON.stringify({ key: 'embedding_circuit_breaker_off' }),
+        important: 1,
+      });
+    }
+  })();
+  emitHealthChange();
+}
+
+/**
+ * Embedding 调用失败 → 累积失败,阈值后打开熔断器。
+ * 由 daemon.ts setEmbeddingFailureHook 注入 db handle。
+ */
+export function recordEmbeddingFailure(db: Database.Database, errMessage?: string): void {
+  const { failures, cooldownMs } = getEmbeddingCircuitState(db);
+  const newFailures = failures + 1;
+  db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)').run(EB_FAILURES_KEY, String(newFailures));
+
+  if (errMessage) {
+    db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)')
+      .run(EMBEDDING_LAST_ERROR_KEY, errMessage.slice(0, 500));
+    db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)')
+      .run(EMBEDDING_LAST_ERROR_AT_KEY, String(Date.now()));
+  }
+
+  if (newFailures >= CIRCUIT_FAILURE_THRESHOLD) {
+    const newCooldown = failures >= CIRCUIT_FAILURE_THRESHOLD
+      ? Math.min(cooldownMs * 2, CIRCUIT_COOLDOWN_MAX)
+      : CIRCUIT_COOLDOWN_INITIAL;
+    db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)').run(EB_OPENED_AT_KEY, String(Date.now()));
+    db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)').run(EB_COOLDOWN_KEY, String(newCooldown));
+
+    const cooldownMin = Math.round(newCooldown / 60_000);
+    log.warn(`Embedding 熔断器开启: 连续 ${newFailures} 次失败,冷却 ${cooldownMin} 分钟`);
+
+    logTimelineEvent(db, {
+      type: 'config',
+      subtype: 'settings_change',
+      title: JSON.stringify({ key: 'embedding_circuit_breaker_on', params: { minutes: cooldownMin } }),
       detail: { failures: newFailures, cooldownMinutes: cooldownMin },
       important: 1,
     });
@@ -369,6 +599,10 @@ export async function runSchedulerTick(
   let circuit = getCircuitState(db);
   let llmAvailable = circuit.state !== 'open';
   let halfOpenProbed = false; // 半开状态是否已放行一个探测任务
+  // 修复 F8(2026-05-21): tick 开始时清零"是否观察到真实 LLM 调用"flag。
+  // noteSuccessfulLLMCall / notifyLLMFailure 触发时会把它置 true。
+  // 只有真的发生过 LLM 调用,halfOpenProbed 才设 true。
+  __resetLLMCallObservedFlag();
 
   if (circuit.state === 'open') {
     const openedAt = db.prepare('SELECT value FROM metadata WHERE key = ?').get(CB_OPENED_AT_KEY) as { value: string } | undefined;
@@ -393,6 +627,18 @@ export async function runSchedulerTick(
       if (circuit.state === 'half-open' && halfOpenProbed) continue; // 半开只放一个
     }
 
+    // B-3 (2026-05-21): Embedding 任务保护 — 独立判定,跟 LLM 互不影响。
+    // embedding 熔断器 open 时直接 skip,half-open 时第一个进来的任务作为探测
+    // 走一次(没有 halfOpenProbed 标记机制,因为 getEmbedding 成功 hook 会立刻
+    // 把熔断器关掉,下个 task 重读 state 已经是 closed)。
+    if (task.requiresEmbedding) {
+      const embCircuit = getEmbeddingCircuitState(db);
+      if (embCircuit.state === 'open') {
+        log.debug(`embedding 熔断器 open,跳过任务: ${task.id}`);
+        continue;
+      }
+    }
+
     // 门控检查（便宜操作先做）
     if (task.gateCheck && !task.gateCheck(db)) continue;
 
@@ -415,16 +661,29 @@ export async function runSchedulerTick(
       // noteSuccessfulLLMCall(db),只对真实成功响应记录健康度。
       // half-open → closed 的 transition 事件也搬到 noteSuccessfulLLMCall 里。
       //
-      // 这里只保留 halfOpenProbed = true:即使本次 LLM 调用未触发(no candidates
-      // 等),已经"放行了一个 requiresLLM=true 的 task"事实成立,后续 LLM task
-      // 这一 tick 也不应该再被半开探测放过。
-      if (task.requiresLLM) {
+      // 修复 F8(2026-05-21): halfOpenProbed 不再无条件 set。
+      // 仅当 task 内部真的触发过 callLLM(noteSuccessfulLLMCall / notifyLLMFailure
+      // 任一被调到)才认为已消耗本 tick 的探测名额。这样 digest-retry / claim
+      // 失败 / no-candidate 等 zero-LLM 路径不再误吃名额。
+      if (task.requiresLLM && __getLLMCallObservedFlag()) {
         halfOpenProbed = true;
       }
     } catch (err) {
       // 失败回滚：恢复时间戳，下次 tick 可重试
       rollbackClaim(db, task.id, claim.priorValue);
-      log.error(`任务 ${task.id} 失败（已回滚）:`, (err as Error).message);
+
+      // 区分程序员错误（TypeError / ReferenceError / SyntaxError）和业务错误：
+      //  - 程序员错误 = 我们代码的 bug，下一 tick 同样会撞，需要 visibility
+      //    提升供运维 grep 'programmer bug' 触发告警；
+      //  - 这里只 log.error 标记，不 throw（throw 会冒到 scheduler tick 顶层，
+      //    可能让 daemon 自杀；保持 daemon 不中断、靠 log 告警是更稳的妥协）。
+      if (err instanceof TypeError || err instanceof ReferenceError || err instanceof SyntaxError) {
+        log.error(
+          `programmer bug in task ${task.id}: ${(err as Error).stack ?? (err as Error).message}`,
+        );
+      } else {
+        log.error(`任务 ${task.id} 失败（已回滚）:`, (err as Error).message);
+      }
 
       // LLM 服务错误 → 标记不可用 + 熔断计数
       if (task.requiresLLM && err instanceof LLMServiceError) {

@@ -10,6 +10,7 @@ import type Database from 'better-sqlite3';
 import type { FileSyncState } from './types.js';
 import { safeReadTextFileSync, safeStatSync, isDataless } from '../../utils/safe-fs.js';
 import { planStaleSyncStateCleanup } from '../shared/source-file-state.js';
+import { execIgnoringDuplicateColumn } from '../../db/migration-helpers.js';
 
 /**
  * 确保同步表存在
@@ -27,9 +28,10 @@ export function ensureSyncSchema(db: Database.Database): void {
     )
   `);
   // 兼容：为已有表添加 source_id 列
-  try { db.exec("ALTER TABLE logseq_sync ADD COLUMN source_id TEXT DEFAULT ''"); } catch { /* already exists */ }
+  // MEDIUM 6 (audit-10, 2026-05-21):统一走 helper,避免裸 try/catch{} 吞 SQLITE_FULL/BUSY
+  execIgnoringDuplicateColumn(db, "ALTER TABLE logseq_sync ADD COLUMN source_id TEXT DEFAULT ''");
   // 兼容：为已有表添加 segment_hashes 列（段级去重）
-  try { db.exec("ALTER TABLE logseq_sync ADD COLUMN segment_hashes TEXT DEFAULT '[]'"); } catch { /* already exists */ }
+  execIgnoringDuplicateColumn(db, "ALTER TABLE logseq_sync ADD COLUMN segment_hashes TEXT DEFAULT '[]'");
 
   // 迁移到复合主键 (file_path, source_id)，支持多实例
   try {
