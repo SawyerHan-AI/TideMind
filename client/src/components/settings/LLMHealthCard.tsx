@@ -112,7 +112,7 @@ export function LLMHealthCard() {
             label={t('model.serviceStatus.currentStatus', '当前状态')}
             value={
               health.circuitState === 'open' ? (
-                <span className="flex items-center gap-1.5 text-red-300">
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/20 text-red-300">
                   <AlertCircle size={12} />
                   {/* 倒计时显示到秒(分:秒),让用户知道 UI 没卡 + 看到熔断窗口正在 tick */}
                   {t('model.serviceStatus.statusPausedCountdown', '熔断中（剩余 {{time}}）', {
@@ -120,12 +120,12 @@ export function LLMHealthCard() {
                   })}
                 </span>
               ) : health.failures > 0 ? (
-                <span className="flex items-center gap-1.5 text-amber-300">
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300">
                   <AlertCircle size={12} />
                   {t('model.serviceStatus.statusDegraded', '近期失败 {{count}} 次', { count: health.failures })}
                 </span>
               ) : (
-                <span className="flex items-center gap-1.5 text-emerald-300">
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-300">
                   <CheckCircle2 size={12} />
                   {t('model.serviceStatus.statusHealthy', '正常')}
                 </span>
@@ -150,7 +150,7 @@ export function LLMHealthCard() {
                 type="button"
                 onClick={handleRetry}
                 disabled={retrying || retryDebounce}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-emerald-600/20 hover:bg-emerald-600/30 disabled:bg-gray-700/30 disabled:cursor-not-allowed text-emerald-200 transition-colors"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 hover:border-emerald-500/30 disabled:bg-white/5 disabled:border-white/10 disabled:text-gray-500 disabled:cursor-not-allowed text-emerald-300 transition-colors"
                 title={retryDebounce && !retrying ? t('model.serviceStatus.retryDebounceHint', '请稍候再试') as string : undefined}
               >
                 {retrying ? (
@@ -181,7 +181,7 @@ export function LLMHealthCard() {
                 {t('model.serviceStatus.lastError', '上次错误')}
                 <span className="ml-2 text-gray-600">({formatRelative(health.lastErrorAt)})</span>
               </p>
-              <p className="text-[10px] text-red-300/70 font-mono break-all bg-red-950/20 px-2 py-1.5 rounded">
+              <p className="text-[11px] text-red-300 font-mono break-all bg-red-500/10 border-l-2 border-red-500/40 px-2.5 py-1.5 rounded">
                 {health.lastError}
               </p>
             </div>

@@ -95,5 +95,5 @@ describe('F7 — fetchServerManifest abort + soft limit', () => {
 
     const allErrors = results.flatMap(r => r.errors).join(' ');
     expect(allErrors).toContain('manifest too large');
-  }, 30_000); // 大数据量,给 30s 上限
+  }, 60_000); // 1M entry 大数据量,发版峰值负载下 30s 不够(v0.2.75 OSS sync 踩到),给 60s 余量
 });
