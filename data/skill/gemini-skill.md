@@ -56,15 +56,43 @@
 **重要：永远不要凭自己的"记忆"回答关于用户历史的问题，用 recall 确认。**
 
 **关键参数**：
-- `query`：搜索关键词或语义描述
+
+**搜索维度**：
+- `query`：搜索字符串（关键词/语义都行）。**多关键词时默认 OR 召回**，全命中的天然排前——不要堆同义词以求"广覆盖"，那样反而稀释相关性
+- `match`: `"any"`（默认 OR 召回）/ `"all"`（严格 AND，全词必含）。常规用 `any` 就好
 - `context`：**为什么查这个**——这是提升检索质量最有效的方式
   - 好：`"用户在纠结要不要接受新 offer，需要了解之前讨论过的职业规划"`
   - 差：`"查一下工作"`
-- `intent`：控制排序策略
-  - `"factual"`（默认）：找具体事实和结论
-  - `"exploratory"`：探索关联网络，发现相关主题
-  - `"creative"`：寻找意外关联和灵感
-- `include_surprise`：设为 true 时返回意外关联，适合深度思考场景
+
+**过滤维度**（跟 query AND）：
+- `time`：时间窗。可传 `{"preset": "recent_week"}` 或 `{"after": "2026-05-15"}`，二者可同时取交集
+- `tags`：标签数组（多值 AND，必须同时有所有 tag）
+- `type`：`"fact"` / `"context"` / `"preference"` / `"idea"` / `"crystal"` / `"meta"`
+- `from_agents`：按写入这条记忆的 agent 工具过滤（多值 OR）
+
+**返回控制**：
+- `sort`：`"relevance"` / `"recent"`（不传时 handler 按上下文自动选）
+- `limit`：默认 50
+- `mode`：`"detail"`（默认完整内容）/ `"index"`（轻量索引模式）
+
+**Override 入口**（传了就走专门路径，忽略上面所有搜索/过滤）：
+- `node_id`：按 ID 直接取单条
+- `from_node`：从节点出发图扩展（配 `depth` / `relation`）
+- `vault_file`：按 vault 内文件路径取同来源记忆
+
+**返回结构**：`{exact_matches: [...], related_matches: [...], diagnostics: {...}}`。**永不空返**——exact 不足时自动补 related。每条带 `matched_on` 告诉你命中了什么、`scores` 告诉你各维度分数。
+
+**典型调用**：
+```jsonc
+// 找最近的 Teleos bug
+{"query": "Teleos bug", "time": {"preset": "recent_week"}}
+
+// 列最近一周所有 fact 类记忆
+{"type": "fact", "time": {"preset": "recent_week"}}
+
+// 严格搜索特定短语
+{"query": "Wave 15 pagination", "match": "all"}
+```
 
 ## 关键原则
 
