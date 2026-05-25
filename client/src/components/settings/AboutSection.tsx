@@ -31,7 +31,7 @@ export function AboutSection() {
   // fallback 字面量是 6 处版本号同步之一(check-version-sync.mjs 会校验)。
   // 实际值会在 useEffect 里被 IPC 返回的 app.getVersion() 覆盖,这里只是
   // mount 第一帧避免 UI 闪空,以及让 sync 脚本能 grep 到版本号。
-  const [currentVersion, setCurrentVersion] = useState('0.2.81')
+  const [currentVersion, setCurrentVersion] = useState('0.2.82')
   const [actionError, setActionError] = useState<string | null>(null)
   // up-to-date 卡片 2.5s 后淡出(audit C-MEDIUM-1)。跟 UpdaterBadge 1.5s 类似但
   // 略长——设置页用户更可能错过短暂提示。新一轮 up-to-date 重置 timer。

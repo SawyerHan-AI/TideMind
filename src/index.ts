@@ -191,14 +191,17 @@ server.tool(
       }
 
       // 2. 全空 + 无 override → reject
-      const hasSearchDim = p.query !== undefined || p.context !== undefined;
+      // 注意：context 不算 search dim。设计 §5.2 — context 是给 query 提供检索意图,
+      // 单独传 context 没有 query 时没东西可 embed,等同于空输入。v0.2.81 之前
+      // hasSearchDim 包含 context,导致只传 context 时跑空 pipeline 而非 reject。
+      const hasSearchDim = p.query !== undefined;
       const hasFilterDim = p.time !== undefined || p.tags !== undefined || p.type !== undefined || p.from_agents !== undefined;
       const hasOverride = p.node_id !== undefined || p.from_node !== undefined || p.vault_file !== undefined || p.source_file !== undefined;
       const hasCompat = p.scope !== undefined || p.index_ref !== undefined || p.created_after !== undefined || p.created_before !== undefined;
       if (!hasSearchDim && !hasFilterDim && !hasOverride && !hasCompat) {
         return {
           isError: true,
-          content: [{ type: 'text' as const, text: 'brain_recall 至少需要一个有效输入：query / 过滤维度 (time/tags/type/from_agents) / override (node_id/from_node/vault_file) 之一。' }],
+          content: [{ type: 'text' as const, text: 'brain_recall 至少需要一个有效输入：query / 过滤维度 (time/tags/type/from_agents) / override (node_id/from_node/vault_file) 之一。context 单独传无效，需要配合 query。' }],
         };
       }
 
