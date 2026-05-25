@@ -21,7 +21,7 @@ function generateSourceId(): string {
 /**
  * 当前 schema 版本。每次新增 migration 时递增。
  */
-const CURRENT_SCHEMA_VERSION = 27;
+const CURRENT_SCHEMA_VERSION = 28;
 
 /**
  * 完整建表 SQL — 包含所有字段，新数据库直接创建最新结构。
