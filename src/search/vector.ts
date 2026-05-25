@@ -1,6 +1,6 @@
 import type { SearchResult } from '../types.js';
 import type { IRepository } from '../db/repository.js';
-import { getEmbedding } from '../llm/embedding.js';
+import { getEmbedding, EMBEDDING_RECALL_TIMEOUT_MS } from '../llm/embedding.js';
 import { l2DistanceToSimilarity } from '../utils/similarity.js';
 import { createLogger } from '../utils/logger.js';
 
@@ -28,7 +28,8 @@ export async function searchVector(
   const embeddingText = options.context
     ? `${query}\n背景: ${options.context}`
     : query;
-  const queryEmbedding = await getEmbedding(embeddingText);
+  // recall 路径用 3s timeout（设计 §6.1），不沿用 indexing 默认 30s
+  const queryEmbedding = await getEmbedding(embeddingText, { timeoutMs: EMBEDDING_RECALL_TIMEOUT_MS });
   if (!queryEmbedding) {
     log.warn('query embedding 获取失败');
     return [];

@@ -16,10 +16,16 @@ export function searchBM25(
     createdAfter?: string;
     createdBefore?: string;
     excludeMeta?: boolean;
+    /**
+     * FTS match mode: 'or' (默认) = brain_recall match=any 行为（OR + BM25 排序）；
+     * 'and' = brain_recall match=all 行为（全词必含）。
+     * 设计 doc: docs/design/brain-recall-redesign-2026-05.md §5.2
+     */
+    matchMode?: 'and' | 'or';
   } = {},
 ): SearchResult[] {
   const limit = options.limit ?? 20;
-  const ftsResults = repo.fts.search(query, limit * 2); // 多取一些，后续过滤
+  const ftsResults = repo.fts.search(query, limit * 2, options.matchMode ?? 'or'); // 多取一些，后续过滤
 
   if (ftsResults.length === 0) return [];
 

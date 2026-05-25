@@ -143,9 +143,28 @@ export const codexAdapter: AgentPluginAdapter = {
     }
 
     const skillRootDir = nativeSkillRoot(ctx)
-    const skillDirWritten = fs.existsSync(path.join(skillRootDir, 'SKILL.md'))
+    const installedSkillPath = path.join(skillRootDir, 'SKILL.md')
+    const skillDirWritten = fs.existsSync(installedSkillPath)
     const skillOutputPath = legacySkillPath(ctx)
     const skillOutputExists = fs.existsSync(skillOutputPath)
+
+    // skillOutdated: 比较 source skill md mtime vs 已安装的 SKILL.md mtime
+    // 如果 source 比 installed 新，说明 TideMind app 升级后用户没重新生成
+    // 参照 client/electron/ipc/agent-plugins/claude-code.ts:296-302 同款机制
+    let skillOutdated = false
+    let generatedAt = ''
+    const sourceCandidates = [
+      path.join(ctx.runtime.skillDir, ctx.config.skillSource),
+      path.join(ctx.runtime.skillDir, 'base-skill.md'),
+    ]
+    const sourceSkillPath = sourceCandidates.find(p => fs.existsSync(p))
+    if (sourceSkillPath && fs.existsSync(installedSkillPath)) {
+      const sourceMtime = fs.statSync(sourceSkillPath).mtimeMs
+      const installedMtime = fs.statSync(installedSkillPath).mtimeMs
+      skillOutdated = sourceMtime > installedMtime
+      generatedAt = fs.statSync(installedSkillPath).mtime.toISOString()
+    }
+
     return {
       exists: codexConfigWritten || skillOutputExists || skillDirWritten,
       pluginDir: skillDirWritten ? skillRootDir : skillOutputPath,
@@ -156,6 +175,8 @@ export const codexAdapter: AgentPluginAdapter = {
       codexConfigWritten,
       hooksConfigured,
       skillDirWritten,
+      skillOutdated,
+      generatedAt,
     }
   },
 

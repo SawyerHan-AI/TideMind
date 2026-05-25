@@ -135,7 +135,12 @@ export interface FtsResult {
 }
 
 export interface IFtsRepository {
-  search(query: string, limit?: number): FtsResult[];
+  /**
+   * @param mode 'or' (默认): match=any 语义，OR 召回 + BM25 排序。
+   *             'and': match=all 语义，全词必含。
+   * 设计 doc: docs/design/brain-recall-redesign-2026-05.md §5.2
+   */
+  search(query: string, limit?: number, mode?: 'and' | 'or'): FtsResult[];
   rebuild(): void;
 }
 
@@ -149,6 +154,11 @@ export interface OperationLogParams {
   tool?: string;
   session?: string;
   agent_id?: string;
+  // v0.2.77 brain_recall 新字段（设计 doc §7.5）
+  exact_count?: number;
+  related_count?: number;
+  fallback_chain?: string;
+  vector_unavailable?: boolean;
 }
 
 export interface TimelineEventParams {

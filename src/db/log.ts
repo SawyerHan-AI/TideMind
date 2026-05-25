@@ -20,11 +20,19 @@ export function logOperation(
     tool?: string;
     session?: string;
     agent_id?: string;
+    // v0.2.77 brain_recall 新字段（设计 doc §7.5）
+    exact_count?: number;
+    related_count?: number;
+    fallback_chain?: string;
+    vector_unavailable?: boolean;
   },
 ): number {
   const result = db.prepare(`
-    INSERT INTO operation_log (operation, input_summary, context, output_node_ids, tool, session, agent_id, created)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO operation_log (
+      operation, input_summary, context, output_node_ids, tool, session, agent_id, created,
+      exact_count, related_count, fallback_chain, vector_unavailable
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     params.operation,
     params.input_summary ?? null,
@@ -34,6 +42,10 @@ export function logOperation(
     params.session ?? null,
     params.agent_id ?? null,
     now(),
+    params.exact_count ?? null,
+    params.related_count ?? null,
+    params.fallback_chain ?? null,
+    params.vector_unavailable === undefined ? null : (params.vector_unavailable ? 1 : 0),
   );
   return result.lastInsertRowid as number;
 }

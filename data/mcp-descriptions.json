@@ -1,5 +1,5 @@
 {
   "brain_prepare": "每次新对话开始时立刻调用。返回用户画像、枢纽节点索引、标签索引、结晶摘要和最近活跃记忆。每条索引包含 ID，可用 brain_recall(node_id) 获取详情。",
-  "brain_recall": "从记忆库检索信息。支持两种模式：mode=\"index\" 返回大量轻量条目（标题+ID+摘要），mode=\"detail\"（默认）返回完整内容+关联节点。建议先用 index 浏览，再用 node_id 深入。提供 context 参数说明\"为什么查\"能显著提升检索质量。",
+  "brain_recall": "从记忆库检索。支持多维度叠加：query（关键词/语义）+ match（any 默认 / all）+ time + tags + type + from_agents 任意组合。结果分 exact_matches / related_matches 两段，永不空返。要按位置取记忆用 node_id / from_node / vault_file override 入口。详见 docs/design/brain-recall-redesign-2026-05.md。",
   "brain_digest": "将信息存入记忆库。每次响应用户后，将本轮有实质内容的交互记录下来。也可用于纠正错误记忆或归档过时信息。"
 }
