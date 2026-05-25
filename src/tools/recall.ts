@@ -154,9 +154,14 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
     // 浏览路径会混入已归档、已被取代的脏节点(用户反复看到"删除后又出现
     // 的幽灵节点"一种来源)。listNodes 在 archived===false 时同时过滤
     // is_superseded=0,所以一个 flag 解决两种脏状态。
+    //
+    // 排序：设计 §5.5 — 无 query 时 sort 默认 'recent' → ORDER BY created DESC;
+    // 用户显式传 sort='relevance' 时退化为 heat DESC（无 query 可比，热度最接近）。
+    // v0.2.81 之前这里硬编码 heat DESC,导致 "列出最近" 实际按热度返回。
+    const browseOrderBy = input.sort === 'relevance' ? 'heat DESC' : 'created DESC';
     nodes = repo.nodes.listNodes({
       limit,
-      orderBy: 'heat DESC',
+      orderBy: browseOrderBy,
       archived: false,
       createdAfter: input.created_after,
       createdBefore: input.created_before,
