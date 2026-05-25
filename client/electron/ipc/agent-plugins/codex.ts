@@ -145,8 +145,13 @@ export const codexAdapter: AgentPluginAdapter = {
     const skillRootDir = nativeSkillRoot(ctx)
     const installedSkillPath = path.join(skillRootDir, 'SKILL.md')
     const skillDirWritten = fs.existsSync(installedSkillPath)
-    const skillOutputPath = legacySkillPath(ctx)
-    const skillOutputExists = fs.existsSync(skillOutputPath)
+    // v2 用户 skill 装在 ~/.codex/skills/ (Codex CLI 0.121+ 启动自动加载),
+    // Downloads 那份是 v1 legacy 残留。skillDirWritten=true 时把 skillOutputPath
+    // 隐藏起来,避免 v2 用户看到两条路径反而困惑 "我要不要复制?"。
+    const legacyPath = legacySkillPath(ctx)
+    const legacyExists = fs.existsSync(legacyPath)
+    const skillOutputPath = skillDirWritten ? '' : legacyPath
+    const skillOutputExists = skillDirWritten ? false : legacyExists
 
     // skillOutdated: 比较 source skill md mtime vs 已安装的 SKILL.md mtime
     // 如果 source 比 installed 新，说明 TideMind app 升级后用户没重新生成
