@@ -5,8 +5,20 @@ prompt = """
 {{args}}
 
 执行步骤：
-1. 如果用户没有指定具体查询词，先用 mode="index" 列出可用主题给用户选择
-2. 用 query 表达检索意图，把 context 写清楚（说明为什么查这个、未来什么场景用）
-3. 找到相关结果后，结合当前上下文给出回答；引用关键节点 id，方便用户后续操作
-4. 如果检索为空，明确告知"没有找到相关记忆"，不要凭自己的"记忆"瞎答
+1. 把 context 写清楚（说明为什么查、未来什么场景用）。context 直接影响向量召回质量
+2. 用 query 表达检索意图：
+   - **多关键词时默认 OR 召回**，不要堆同义词稀释相关性
+   - 想严格匹配传 `match: "all"`
+3. 用过滤维度收窄范围（可叠加，跟 query AND）：
+   - `time`: `{preset: "recent_week"}` 或 `{after: "2026-05-15"}`
+   - `tags`: `["A", "B"]`（多值 AND）
+   - `type`: `"fact"` / `"context"` / `"preference"` / `"idea"` / `"crystal"`
+   - `from_agents`: `["claude-code", "codex"]`（多值 OR）
+4. 看返回结构：
+   - `exact_matches`: 严格命中
+   - `related_matches`: fallback 补的（**永不空返**）
+   - `diagnostics`: 走了哪几步退化、当前不足之处
+   - 每条带 `matched_on` 和 `scores`，告诉你为什么命中
+5. 引用关键节点 id 方便用户后续操作
+6. 若 exact 偏少看 diagnostics.hint 决定是否调整 query 重查
 """
