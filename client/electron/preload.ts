@@ -213,6 +213,7 @@ const api: AppApi = {
     pluginPath: (agentId: string, toolType?: string) => ipcRenderer.invoke('agents:plugin-path', agentId, toolType),
     uninstallPlugin: (agentId: string, toolType?: string) => ipcRenderer.invoke('agents:uninstall-plugin', agentId, toolType),
     pluginStatus: (agentId: string, toolType?: string) => ipcRenderer.invoke('agents:plugin-status', agentId, toolType),
+    markSkillCopied: (agentId: string, toolType?: string) => ipcRenderer.invoke('agents:mark-skill-copied', agentId, toolType),
   },
 }
 

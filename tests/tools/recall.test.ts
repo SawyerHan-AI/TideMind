@@ -631,3 +631,156 @@ describe('recall - revalidateLinks timer cleanup', () => {
     clearSpy.mockRestore();
   });
 });
+
+// ============================================================
+// v0.2.77 重设计的新行为：fallback chain + exact/related 分段 + diagnostics
+// 设计 doc: docs/design/brain-recall-redesign-2026-05.md §6/§7
+// 5-22 事故 regression: 多关键词 query 不再因 AND 必 0 召回
+// ============================================================
+
+describe('recall v0.2.77 - exact_matches / related_matches 分段', () => {
+  it('hybrid 命中充足时，全部进 exact_matches，related_matches 为空', async () => {
+    const nodes = [
+      seedNode(db, { content: 'a', heat: 0.5 }),
+      seedNode(db, { content: 'b', heat: 0.5 }),
+      seedNode(db, { content: 'c', heat: 0.5 }),
+      seedNode(db, { content: 'd', heat: 0.5 }),
+      seedNode(db, { content: 'e', heat: 0.5 }),
+      seedNode(db, { content: 'f', heat: 0.5 }),
+    ];
+    vi.mocked(searchHybrid).mockResolvedValueOnce(
+      nodes.map(n => ({ node: n, score: 0.8, source: 'hybrid' as const })),
+    );
+
+    const result = await recall(repo, { query: 'x' });
+
+    expect(result.exact_matches?.length).toBe(6);
+    expect(result.related_matches?.length ?? 0).toBe(0);
+    expect(result.diagnostics?.exact_count).toBe(6);
+    expect(result.diagnostics?.related_count).toBe(0);
+    expect(result.nodes.length).toBe(6); // 旧字段保持 = exact_matches 旧语义
+  });
+
+  it('hybrid 命中不足时，fallback Step 5 (heat 兜底) 补 related_matches', async () => {
+    // 数据库里有 10 个高 heat 节点（最近一个月内）
+    const allNodes = [];
+    for (let i = 0; i < 10; i++) {
+      allNodes.push(seedNode(db, { content: `node-${i}`, heat: 0.9 }));
+    }
+    // hybrid 只命中 2 个
+    vi.mocked(searchHybrid).mockResolvedValueOnce([
+      { node: allNodes[0], score: 0.9, source: 'hybrid' },
+      { node: allNodes[1], score: 0.8, source: 'hybrid' },
+    ]);
+
+    const result = await recall(repo, { query: 'sparse' });
+
+    // exact = 2 < min(5, 8) → 触发 fallback Step 5
+    expect(result.exact_matches?.length).toBe(2);
+    expect(result.related_matches?.length).toBeGreaterThan(0);
+    expect(result.diagnostics?.fallback_chain).toMatch(/heat_fallback/);
+    expect(result.diagnostics?.exact_count).toBe(2);
+  });
+
+  it('永不空返：hybrid 0 命中时 fallback Step 5 仍补 related (兑现承诺)', async () => {
+    seedNode(db, { content: 'hot1', heat: 0.9 });
+    seedNode(db, { content: 'hot2', heat: 0.9 });
+    seedNode(db, { content: 'hot3', heat: 0.9 });
+
+    vi.mocked(searchHybrid).mockResolvedValueOnce([]); // 0 命中
+
+    const result = await recall(repo, { query: 'nonexistent-query' });
+
+    expect(result.exact_matches?.length).toBe(0);
+    expect(result.related_matches?.length).toBeGreaterThan(0); // 永不空返
+    expect(result.diagnostics?.fallback_chain).toMatch(/heat_fallback/);
+  });
+});
+
+describe('recall v0.2.77 - 5-22 regression', () => {
+  it('multi-keyword 中文 query 不再因 AND 必 0 召回 (5-22 事故复盘)', async () => {
+    // 模拟 5-22 那个场景：DB 里有 Teleos 相关节点，agent 堆了多个关键词
+    seedNode(db, { content: 'Teleos 客户端 时间戳 bug', heat: 0.5 });
+    seedNode(db, { content: 'Teleos channel tag 修复', heat: 0.5 });
+
+    // hybrid 0 命中（中文 FTS 不分词）也至少能靠 fallback Step 5 给出结果
+    vi.mocked(searchHybrid).mockResolvedValueOnce([]);
+
+    const result = await recall(repo, {
+      query: 'Teleos 客户端 输入框 时间戳 channel tag bug',
+    });
+
+    // 永不返回空 nodes 数组 — 至少 related_matches 兜底
+    const total = (result.exact_matches?.length ?? 0) + (result.related_matches?.length ?? 0);
+    expect(total).toBeGreaterThan(0);
+  });
+});
+
+describe('recall v0.2.77 - diagnostics', () => {
+  it('exact 充足时 diagnostics 不带 fallback_chain', async () => {
+    const nodes: any[] = [];
+    for (let i = 0; i < 5; i++) {
+      nodes.push(seedNode(db, { content: `n${i}`, heat: 0.5 }));
+    }
+    vi.mocked(searchHybrid).mockResolvedValueOnce(
+      nodes.map(n => ({ node: n, score: 0.8, source: 'hybrid' as const })),
+    );
+
+    const result = await recall(repo, { query: 'x' });
+
+    expect(result.diagnostics?.exact_count).toBe(5);
+    expect(result.diagnostics?.fallback_chain).toBeUndefined();
+  });
+
+  it('完全无结果时 diagnostics.hint 给出可操作建议', async () => {
+    vi.mocked(searchHybrid).mockResolvedValueOnce([]);
+
+    const result = await recall(repo, { query: 'nonexistent' });
+
+    expect(result.exact_matches?.length).toBe(0);
+    // 即便 DB 完全空 fallback Step 5 也找不到 → hint 应非空
+    if ((result.related_matches?.length ?? 0) === 0) {
+      expect(result.diagnostics?.hint).toBeTruthy();
+    }
+  });
+});
+
+describe('recall v0.2.77 - 副作用分级 (设计 doc §7.4)', () => {
+  it('related_matches 不参与 reconsolidateOnRecall', async () => {
+    const exactNode = seedNode(db, { content: 'exact', heat: 0.5 });
+    const relatedNode = seedNode(db, { content: 'related', heat: 0.9 });
+
+    vi.mocked(searchHybrid).mockResolvedValueOnce([
+      { node: exactNode, score: 0.9, source: 'hybrid' },
+    ]);
+
+    await recall(repo, { query: 'q', context: 'ctx' });
+
+    // reconsolidate 只对 exactNodes 调用（不含 relatedNode）
+    const calls = vi.mocked(reconsolidateOnRecall).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    const lastCallNodes = calls[calls.length - 1][1];
+    expect(lastCallNodes.length).toBe(1);
+    expect(lastCallNodes[0].id).toBe(exactNode.id);
+    // relatedNode 不应在 reconsolidate 的 nodes 列表里
+    expect(lastCallNodes.find((n: any) => n.id === relatedNode.id)).toBeUndefined();
+  });
+
+  it('related_matches 加 heat 是固定 +0.02（不走 ranked decay）', async () => {
+    const exactNode = seedNode(db, { content: 'exact', heat: 0.5 });
+    const relatedNode = seedNode(db, { content: 'related', heat: 0.5 });
+
+    vi.mocked(searchHybrid).mockResolvedValueOnce([
+      { node: exactNode, score: 0.9, source: 'hybrid' },
+    ]);
+
+    await recall(repo, { query: 'q' });
+
+    // related node heat 增量约 0.02
+    const updated = repo.nodes.getNode(relatedNode.id);
+    expect(updated).not.toBeNull();
+    // 0.5 + 0.02 = 0.52，但有可能加上 metabolism 衰减等微调，宽松断言
+    expect(updated!.heat).toBeGreaterThan(0.5);
+    expect(updated!.heat).toBeLessThan(0.6);
+  });
+});

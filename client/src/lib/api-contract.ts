@@ -371,5 +371,12 @@ export interface AppApi {
     pluginPath: (agentId: string, toolType?: string) => Promise<string | null>
     uninstallPlugin: (agentId: string, toolType?: string) => Promise<{ success: boolean; error?: string }>
     pluginStatus: (agentId: string, toolType?: string) => Promise<PluginStatusResult>
+    /**
+     * 手动复制类 agent (cursor / windsurf / cowork) 用户点 "我已复制 Skill" 按钮时调用。
+     * 把当前 source skill md 的 hash 记到 ~/.tidemind/skill-copy-state.json，
+     * 用于后续 outdated 检测。
+     * 设计 doc: docs/design/brain-recall-redesign-2026-05.md §8.4
+     */
+    markSkillCopied: (agentId: string, toolType?: string) => Promise<{ success: boolean; error?: string }>
   }
 }

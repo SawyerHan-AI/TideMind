@@ -10,9 +10,11 @@ vi.mock('../../src/utils/logger.js', () => ({
   createLogger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
 }));
 
-// mock embedding
+// mock embedding (PR-2: 加 EMBEDDING_RECALL_TIMEOUT_MS 常量供 vector.ts 引用)
 vi.mock('../../src/llm/embedding.js', () => ({
   getEmbedding: vi.fn(),
+  EMBEDDING_RECALL_TIMEOUT_MS: 3000,
+  EMBEDDING_DEFAULT_TIMEOUT_MS: 30_000,
 }));
 
 // Note: vector search and node retrieval are now accessed via repo methods,
@@ -156,7 +158,8 @@ describe('searchVector', () => {
     mockSearchVectors.mockReturnValue([]);
 
     await searchVector(repo, 'query', { context: '背景信息' });
-    expect(getEmbedding).toHaveBeenCalledWith('query\n背景: 背景信息');
+    // PR-2: recall 路径传 timeoutMs: 3000，调用签名变成 (text, opts)
+    expect(getEmbedding).toHaveBeenCalledWith('query\n背景: 背景信息', { timeoutMs: 3000 });
   });
 
   it('limit 参数生效', async () => {

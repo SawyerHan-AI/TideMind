@@ -111,7 +111,12 @@ CREATE TABLE IF NOT EXISTS operation_log (
     tool TEXT,
     session TEXT,
     agent_id TEXT,
-    created TEXT NOT NULL
+    created TEXT NOT NULL,
+    -- v0.2.77 brain_recall 新字段（设计 doc §7.5）
+    exact_count INTEGER,
+    related_count INTEGER,
+    fallback_chain TEXT,
+    vector_unavailable INTEGER
 );
 
 -- 策略评估数据
@@ -1742,6 +1747,18 @@ const MIGRATIONS: Migration[] = [
           ON notion_pending_retry(source_id, status);
       `);
       log.info('迁移 v27 完成: notion_pending_retry 表已就位');
+    },
+  },
+  {
+    version: 28,
+    description: 'brain_recall v0.2.77 重设计: operation_log 加 4 个 diagnostics 字段',
+    up: (db) => {
+      // 设计 doc §7.5: 为遥测分析 + fallback chain 命中分布提供数据来源
+      execIgnoringDuplicateColumn(db, 'ALTER TABLE operation_log ADD COLUMN exact_count INTEGER');
+      execIgnoringDuplicateColumn(db, 'ALTER TABLE operation_log ADD COLUMN related_count INTEGER');
+      execIgnoringDuplicateColumn(db, 'ALTER TABLE operation_log ADD COLUMN fallback_chain TEXT');
+      execIgnoringDuplicateColumn(db, 'ALTER TABLE operation_log ADD COLUMN vector_unavailable INTEGER');
+      log.info('迁移 v28 完成: operation_log 加 4 个 recall diagnostics 字段');
     },
   },
 ];

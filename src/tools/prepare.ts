@@ -223,7 +223,7 @@ function buildGuidance(gates: ReturnType<typeof getGateStatus>): string {
     parts.push('外脑刚启动，请积极使用 brain_digest 存储本次对话中的关键决策、想法和发现。');
   } else {
     parts.push('对话中遇到需要历史上下文的问题时，使用 brain_recall 查询。记得提供 context 参数说明查询背景。');
-    parts.push('brain_recall 支持 mode 参数：mode="index" 返回轻量索引（标题+ID+摘要），mode="detail"（默认）返回完整内容+关联节点。先用 index 模式浏览，再用 node_id 获取感兴趣的详情。');
+    parts.push('brain_recall 支持多维度叠加：query + time/tags/type/from_agents 任意组合，结果分 exact_matches / related_matches 两段永不空返。多关键词默认 OR 召回——不要堆同义词。');
   }
 
   if (gates.node_count < 50) {

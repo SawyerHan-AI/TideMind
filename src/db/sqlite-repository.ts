@@ -163,8 +163,8 @@ class SqliteVectorRepository implements IVectorRepository {
 class SqliteFtsRepository implements IFtsRepository {
   constructor(private db: Database.Database) {}
 
-  search(query: string, limit?: number) {
-    return searchFTS(this.db, query, limit);
+  search(query: string, limit?: number, mode: 'and' | 'or' = 'or') {
+    return searchFTS(this.db, query, limit, mode);
   }
   rebuild(): void {
     rebuildFTS(this.db);

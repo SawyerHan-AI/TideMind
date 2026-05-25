@@ -401,12 +401,14 @@ describe('prepare - guidance', () => {
     expect(result.guidance).toContain('记忆较少');
   });
 
-  it('should mention recall mode feature', async () => {
+  it('should mention recall multi-dimensional feature (v0.2.77+)', async () => {
     seedNode(db, { content: 'existing node' });
 
     const result = await prepare(repo, { tool: 'cursor' });
 
-    expect(result.guidance).toContain('mode');
+    // PR-6 (2026-05-22)：mode 不再是核心提示词，改为强调"多维度叠加 + 永不空返"。
+    // 原期望 "mode" → 新期望 "多维度" 或 "exact_matches"。
+    expect(result.guidance).toMatch(/多维度|exact_matches|related_matches/);
   });
 });
 

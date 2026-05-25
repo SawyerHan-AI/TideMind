@@ -162,24 +162,77 @@ export interface PrepareOutput {
 
 // recall
 export type RecallMode = 'index' | 'detail';
+export type RecallSort = 'relevance' | 'recent';
+export type RecallMatch = 'any' | 'all';
 
+/** time 过滤窗口（preset 和 after/before 可同时传，取交集） */
+export interface RecallTimeFilter {
+  preset?: 'today' | 'recent_3days' | 'recent_week' | 'recent_month' | 'recent_3months';
+  after?: string;   // ISO date
+  before?: string;  // ISO date
+}
+
+/**
+ * brain_recall 输入。
+ * 设计 doc: docs/design/brain-recall-redesign-2026-05.md §4.1
+ *
+ * 字段分四类：
+ *   1. 搜索维度：query / match / context
+ *   2. 过滤维度：time / tags / type / from_agents
+ *   3. 返回控制：sort / limit / mode
+ *   4. Override 入口（互斥）：node_id / from_node / vault_file (+ relation, depth)
+ *
+ * 兼容字段（保留 1-2 版本做 silent 映射）：
+ *   - source_file → vault_file
+ *   - scope → tags
+ *   - index_ref → tags / node_id
+ *   - created_after/before → time.after/before
+ *
+ * 直接砍（handler 检测到返回 hint）：intent / include_surprise
+ */
 export interface RecallInput {
+  // ── 搜索维度 ──
   query?: string;
-  node_id?: string;
-  index_ref?: string;
-  source_file?: string;
-  from_node?: string;
+  match?: RecallMatch;
   context?: string;
-  intent?: Intent;
-  relation?: string;
-  depth?: number;
-  scope?: string;
+
+  // ── 过滤维度 ──
+  time?: RecallTimeFilter;
+  tags?: string[];
   type?: string;
-  created_after?: string;
-  created_before?: string;
-  include_surprise?: boolean;
+  from_agents?: string[];
+
+  // ── 返回控制 ──
+  sort?: RecallSort;
   limit?: number;
   mode?: RecallMode;
+
+  // ── Override 入口 ──
+  node_id?: string;
+  from_node?: string;
+  relation?: string;
+  depth?: number;
+  vault_file?: string;
+
+  // ── 兼容字段（normalizeInput 会映射到新字段）──
+  /** @deprecated 用 vault_file */
+  source_file?: string;
+  /** @deprecated 用 tags */
+  scope?: string;
+  /** @deprecated 用 tags 或 node_id */
+  index_ref?: string;
+  /** @deprecated 用 time.after */
+  created_after?: string;
+  /** @deprecated 用 time.before */
+  created_before?: string;
+
+  // ── 直接砍（仍接收以便 handler 返回升级 hint）──
+  /** @deprecated since v0.2.77, agent 不应再传 */
+  intent?: unknown;
+  /** @deprecated since v0.2.77, agent 不应再传 */
+  include_surprise?: unknown;
+
+  // ── 内部上下文（不是 agent 传的）──
   agent_id?: string;
   source_tool?: string;
 }
@@ -193,6 +246,10 @@ export interface RecallIndexItem {
   tags: string[];
   heat: number;
   created: string;
+  // 新版返回字段（设计 doc §7.0）
+  matched_on?: string[];
+  scores?: RecallScores;
+  reason?: string;
 }
 
 export interface RecallNodeLink {
@@ -202,6 +259,15 @@ export interface RecallNodeLink {
   relation: LinkRelation[];
   strength: number;
   note?: string;
+}
+
+/** 评分维度（设计 doc §7.1） */
+export interface RecallScores {
+  keyword: number;
+  semantic: number;
+  heat: number;
+  recency: number;
+  final: number;
 }
 
 export interface RecallNode {
@@ -220,12 +286,40 @@ export interface RecallNode {
   tags?: string[];
   /** 人类/LLM 可读的新鲜度提示。undefined 表示记忆足够新鲜。 */
   freshness?: string;
+  // 新版返回字段
+  created?: string;
+  matched_on?: string[];
+  scores?: RecallScores;
+  reason?: string;
 }
 
+/** Recall diagnostics — 永不空返的关键 (设计 doc §7) */
+export interface RecallDiagnostics {
+  exact_count: number;
+  related_count: number;
+  fallback_chain?: string;
+  vector_unavailable?: boolean;
+  embedding_timeout_ms?: number;
+  hint?: string;
+}
+
+/**
+ * 新版返回结构（设计 doc §7）。
+ * 永远 exact_matches + related_matches 分段，0 exact 时也带 diagnostics。
+ *
+ * 兼容旧字段（nodes / mode / summary / surprises）保留 1-2 版本，调用方逐步迁移。
+ */
 export interface RecallOutput {
+  // ── 新版核心字段 ──
+  exact_matches?: (RecallNode | RecallIndexItem)[];
+  related_matches?: (RecallNode | RecallIndexItem)[];
+  diagnostics?: RecallDiagnostics;
+
+  // ── 旧字段（兼容期保留）──
   nodes: RecallNode[] | RecallIndexItem[];
   mode: RecallMode;
   summary?: string;
+  /** @deprecated since v0.2.77，被 related_matches 取代 */
   surprises?: Array<{
     insight: string;
     node_a_id: string;

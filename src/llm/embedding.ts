@@ -103,7 +103,7 @@ async function getVertexToken(): Promise<string> {
 /**
  * Gemini via Vertex AI
  */
-async function getGeminiVertexEmbedding(text: string): Promise<Float32Array | null> {
+async function getGeminiVertexEmbedding(text: string, timeoutMs: number = 30_000): Promise<Float32Array | null> {
   const config = getConfig();
   const region = config.vertex.region === 'global' ? 'us-central1' : config.vertex.region;
   const projectId = config.vertex.project_id;
@@ -122,16 +122,16 @@ async function getGeminiVertexEmbedding(text: string): Promise<Float32Array | nu
         return null;
       }
       // 使用凭证文件中的 project_id
-      return await callVertexEmbedding(text, cred.project_id, region);
+      return await callVertexEmbedding(text, cred.project_id, region, timeoutMs);
     } catch (err) {
       log.error('读取凭证文件失败:', (err as Error).message);
       return null;
     }
   }
-  return callVertexEmbedding(text, projectId, region);
+  return callVertexEmbedding(text, projectId, region, timeoutMs);
 }
 
-async function callVertexEmbedding(text: string, projectId: string, region: string): Promise<Float32Array | null> {
+async function callVertexEmbedding(text: string, projectId: string, region: string, timeoutMs: number = 30_000): Promise<Float32Array | null> {
   const token = await getVertexToken();
   const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/gemini-embedding-001:predict`;
 
@@ -144,7 +144,7 @@ async function callVertexEmbedding(text: string, projectId: string, region: stri
     body: JSON.stringify({
       instances: [{ content: text }],
     }),
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!resp.ok) {
@@ -163,7 +163,7 @@ async function callVertexEmbedding(text: string, projectId: string, region: stri
 /**
  * Gemini via API Key
  */
-async function getGeminiApiKeyEmbedding(text: string): Promise<Float32Array | null> {
+async function getGeminiApiKeyEmbedding(text: string, timeoutMs: number = 30_000): Promise<Float32Array | null> {
   const config = getConfig();
   const apiKey = config.gemini.api_key;
   if (!apiKey) {
@@ -183,7 +183,7 @@ async function getGeminiApiKeyEmbedding(text: string): Promise<Float32Array | nu
     body: JSON.stringify({
       content: { parts: [{ text }] },
     }),
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!resp.ok) {
@@ -200,7 +200,7 @@ async function getGeminiApiKeyEmbedding(text: string): Promise<Float32Array | nu
 /**
  * Ollama embedding（保持原有逻辑）
  */
-async function getOllamaEmbedding(text: string): Promise<Float32Array | null> {
+async function getOllamaEmbedding(text: string, timeoutMs: number = 30_000): Promise<Float32Array | null> {
   const config = getConfig();
   try {
     const response = await fetch(`${config.ollama.url}/api/embed`, {
@@ -212,7 +212,7 @@ async function getOllamaEmbedding(text: string): Promise<Float32Array | null> {
       }),
       // 与 Gemini / Vertex 路径对齐 —— hung 的 Ollama 实例(例如模型还在加载
       // 或显存耗尽)会让 fetch 无限等待,整个 embedding 批量任务被卡死。
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
 
     if (!response.ok) {
@@ -271,9 +271,29 @@ function normalizeL2(vec: Float32Array): Float32Array {
  * 在启动时维护(切换 dim 会 DROP nodes_vec 并设 reembedNeeded=true)。这里只做
  * "本次响应是否符合配置"的二次确认。
  */
-export async function getEmbedding(text: string): Promise<Float32Array | null> {
+/**
+ * brain_recall 路径用的 timeout（3 秒硬上限）。
+ * indexing 路径继续用 30s 默认。
+ * 设计 doc: docs/design/brain-recall-redesign-2026-05.md §6.1
+ */
+export const EMBEDDING_RECALL_TIMEOUT_MS = 3000;
+export const EMBEDDING_DEFAULT_TIMEOUT_MS = 30_000;
+
+export interface GetEmbeddingOptions {
+  /**
+   * 网络超时（毫秒）。
+   * - brain_recall 调用方应传 EMBEDDING_RECALL_TIMEOUT_MS（3s）以保证主链路响应时间
+   * - indexing / digest 类后台任务保持默认 30s
+   * 超时即视为失败、不重试、返回 null。底层用 AbortSignal.timeout 真正 abort
+   * fetch 避免 socket 泄漏。
+   */
+  timeoutMs?: number;
+}
+
+export async function getEmbedding(text: string, opts: GetEmbeddingOptions = {}): Promise<Float32Array | null> {
   const config = getConfig();
-  log.debug(`provider=${config.embedding.provider} textLen=${text.length}`);
+  const timeoutMs = opts.timeoutMs ?? EMBEDDING_DEFAULT_TIMEOUT_MS;
+  log.debug(`provider=${config.embedding.provider} textLen=${text.length} timeoutMs=${timeoutMs}`);
 
   // B-3: 用 try/catch 兜住 provider 函数:provider 内部以"返回 null"表达失败,
   // 但部分异常(token 获取失败、AbortSignal.timeout、网络 throw)仍然冒泡。
@@ -281,11 +301,11 @@ export async function getEmbedding(text: string): Promise<Float32Array | null> {
   let vec: Float32Array | null;
   try {
     if (config.embedding.provider === 'vertex') {
-      vec = await getGeminiVertexEmbedding(text);
+      vec = await getGeminiVertexEmbedding(text, timeoutMs);
     } else if (config.embedding.provider === 'gemini') {
-      vec = await getGeminiApiKeyEmbedding(text);
+      vec = await getGeminiApiKeyEmbedding(text, timeoutMs);
     } else {
-      vec = await getOllamaEmbedding(text);
+      vec = await getOllamaEmbedding(text, timeoutMs);
     }
   } catch (err) {
     // B-3: 异常路径 — 直接通知失败 hook 并 return null,保持 getEmbedding 的

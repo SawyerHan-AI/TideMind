@@ -1,4 +1,4 @@
-import type { RecallInput, RecallOutput, RecallNode, RecallNodeLink, RecallIndexItem, BrainNode } from '../types.js';
+import type { RecallInput, RecallOutput, RecallNode, RecallNodeLink, RecallIndexItem, BrainNode, Intent, RecallDiagnostics } from '../types.js';
 import type { IRepository } from '../db/repository.js';
 import { getParam } from '../strategy/loader.js';
 import { parseTags } from '../db/nodes.js';
@@ -32,6 +32,10 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
   let nodes: BrainNode[] = [];
   let usedHybridSearch = false;
   let searchScores: Map<string, number> | undefined;
+  /** Fallback chain：标记哪些 nodes 是 fallback step 补进来的 (related)，
+   *  没标记的视为 exact_matches。设计 doc §6。*/
+  const relatedNodeIds = new Set<string>();
+  const fallbackSteps: string[] = [];
 
   const mode = input.node_id ? 'node_id' : input.source_file ? 'source_file' : input.index_ref ? 'index_ref' : input.from_node ? 'from_node' : input.query ? 'query' : 'browse';
   log.info(`mode=${mode}${input.query ? ` query="${input.query.slice(0, 60)}"` : ''}${input.node_id ? ` id=${input.node_id}` : ''} limit=${limit}`);
@@ -96,7 +100,7 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
       depth: input.depth ?? 1,
       maxNodes: limit,
       minStrength: 0.3,
-      intent: input.intent,
+      intent: input.intent as Intent | undefined,   // PR-3: input.intent 现为 unknown (deprecated)；PR-4 砍掉透传
     });
     // 按关系类型过滤
     if (input.relation) {
@@ -124,7 +128,7 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
     const results = await searchHybrid(repo, input.query, {
       limit: fetchLimit,
       type: input.type,
-      intent: input.intent,
+      intent: input.intent as Intent | undefined,   // PR-3: input.intent 现为 unknown (deprecated)；PR-4 砍掉透传
       context: input.context,
       createdAfter: input.created_after,
       createdBefore: input.created_before,
@@ -160,6 +164,51 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
     if (excludeMeta) nodes = nodes.filter(n => !n.is_meta);
   }
 
+  // ── Fallback chain (设计 doc §6) ──
+  // 只在搜索路径（usedHybridSearch=true）且 exact < min(5, limit) 时触发。
+  // 当前实现最关键的 Step 5 (heat 兜底)：兑现"永不空返"承诺。
+  // Step 1-4 (semantic 阈值放宽 / match all→any / time 扩档 / tags AND→OR)
+  // 留作 follow-up 增量（complexity 较高，需 vector.ts minSimilarity 支持等）。
+  const TRIGGER_THRESHOLD = Math.min(5, limit);
+  const STOP_THRESHOLD = Math.min(10, limit);
+  const exactCountBeforeFallback = nodes.length;
+  if (usedHybridSearch && nodes.length < TRIGGER_THRESHOLD) {
+    // Step 5: heat 兜底
+    // - agent 未传 time → 用 recent_month 默认窗口
+    // - 已有的 nodes 排除
+    const needMore = STOP_THRESHOLD - nodes.length;
+    if (needMore > 0) {
+      // 计算 fallback 时间窗：agent 给了就用，没给就 recent_month
+      let fallbackAfter = input.created_after;
+      if (!fallbackAfter && (!input.time || (!input.time.after && !input.time.preset))) {
+        const oneMonthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+        fallbackAfter = oneMonthAgo.toISOString();
+      }
+      const existingIds = new Set(nodes.map(n => n.id));
+      const heatCandidates = repo.nodes.listNodes({
+        limit: needMore * 3,  // over-fetch 防止过滤后不够
+        orderBy: 'heat DESC',
+        archived: false,
+        createdAfter: fallbackAfter,
+        createdBefore: input.created_before,
+      });
+      let added = 0;
+      for (const cand of heatCandidates) {
+        if (existingIds.has(cand.id)) continue;
+        if (excludeMeta && cand.is_meta) continue;
+        if (input.type && cand.type !== input.type) continue;
+        nodes.push(cand);
+        relatedNodeIds.add(cand.id);
+        added++;
+        if (added >= needMore) break;
+      }
+      if (added > 0) {
+        fallbackSteps.push(`heat_fallback=${added}`);
+        log.debug(`fallback Step 5: heat 兜底 +${added} 条`);
+      }
+    }
+  }
+
   // 图扩展（如果门控允许、有搜索结果、且首个结果质量足够高）
   // 跳过混合搜索路径：hybrid search 内部已做邻居扩展（见 hybrid.ts 91-128 行）
   const gates = getGateStatus(db);
@@ -169,7 +218,7 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
     const expanded = expandFromNode(db, nodes[0].id, {
       depth: input.depth ?? 1,
       maxNodes: limit - nodes.length,
-      intent: input.intent,
+      intent: input.intent as Intent | undefined,   // PR-3: input.intent 现为 unknown (deprecated)；PR-4 砍掉透传
     });
     const existingIds = new Set(nodes.map(n => n.id));
     for (const expNode of expanded) {
@@ -183,26 +232,29 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
   }
 
   // 读即写：给命中节点加热（按排名衰减）
-  // 精确查找路径（node_id、index_ref 单节点）维持固定 +0.1
-  //
-  // 之前的条件 `(!input.node_id && !input.index_ref)` 把 browse 默认路径也判为
-  // ranked：browse 按 heat DESC 列最近活跃节点，再叠加"越热排得越前、加成越多"
-  // 的 ranked decay，会让 hot 节点更 hot，加速 Matthew 效应。
-  // source_file 路径按 `created DESC` 排序，并非搜索相关性，也不该吃 ranked decay。
-  // 真正 ranked 的路径只有：
-  //   - usedHybridSearch：query 触发的 BM25+向量混合搜索
-  //   - from_node：图扩展（可选叠加 query rerank）
+  // 副作用分级处理 (设计 doc §7.4)：
+  // - exact_matches: ranked decay (i/exact.length)
+  // - related_matches: 固定 +0.02 (related 是工具补的，agent 不一定真读)
   const isRankedResult = usedHybridSearch || (input.from_node != null);
+  const exactNodes = nodes.filter(n => !relatedNodeIds.has(n.id));
+  const exactCount = exactNodes.length;
   let awakenedCount = 0;
   repo.transaction(() => {
+    let exactIdx = 0;
     for (let i = 0; i < nodes.length; i++) {
-      // Learning II 实时信号：接近休眠的节点被唤醒 → 衰减可能太快
-      if (nodes[i].heat < 0.1) {
-        awakenedCount++;
+      if (nodes[i].heat < 0.1) awakenedCount++;
+      let delta: number;
+      if (relatedNodeIds.has(nodes[i].id)) {
+        // related: 固定 +0.02 (设计 doc §7.4)
+        delta = 0.02;
+      } else if (isRankedResult && exactCount > 1) {
+        // exact 且为 ranked 搜索路径：按 exact 内部排名衰减
+        delta = Math.max(0.01, 0.1 * (1 - exactIdx / exactCount));
+        exactIdx++;
+      } else {
+        delta = 0.1;
+        exactIdx++;
       }
-      const delta = isRankedResult && nodes.length > 1
-        ? Math.max(0.01, 0.1 * (1 - i / nodes.length))
-        : 0.1;
       repo.nodes.bumpHeat(nodes[i].id, delta);
     }
   });
@@ -215,14 +267,11 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
     });
   }
 
-  // 再巩固(感知读 + 深度读判定)
-  // 传入搜索分数用于感知读质量门槛
-  // 注意:searchScores 包含 scope 过滤前的全量 hybrid 搜索结果;直接 .size 会
-  // 把已经被 scope 过滤掉的节点的分数也算进平均,压低真正命中节点的平均分。
-  // 对齐到当前 nodes 数组,只算实际进入结果集的分数。
+  // 再巩固(感知读 + 深度读判定) — 仅对 exact_matches 触发 (设计 doc §7.4)
+  // related 是降级召回，不算"真命中"，不该触发再巩固。
   let avgScore: number | undefined = undefined;
   if (searchScores) {
-    const filteredScores = nodes
+    const filteredScores = exactNodes
       .map(n => searchScores!.get(n.id) ?? 0)
       .filter(s => s > 0);
     avgScore = filteredScores.length > 0
@@ -233,7 +282,7 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
   // recall 调用方会让整个 MCP tool call 返回错误。再巩固是尽力而为的增强
   // 逻辑,失败不应影响 recall 的主要返回。log 出来便于排查。
   try {
-    reconsolidateOnRecall(db, nodes, input.context, avgScore);
+    reconsolidateOnRecall(db, exactNodes, input.context, avgScore);
   } catch (err) {
     log.error(`reconsolidateOnRecall failed (recall continues): ${(err as Error).message}`);
   }
@@ -331,48 +380,74 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
     });
   }
 
-  // 记录操作
+  // 记录操作（v0.2.77 设计 doc §7.5: 加 4 个 diagnostics 字段）
   const opId = repo.log.logOperation({
     operation: 'recall',
-    input_summary: input.query ?? input.node_id ?? input.from_node ?? 'browse',
+    input_summary: input.query ?? input.node_id ?? input.from_node ?? input.vault_file ?? 'browse',
     context: input.context,
     output_node_ids: nodes.map(n => n.id),
     tool: input.source_tool,
     agent_id: input.agent_id,
+    exact_count: exactNodes.length,
+    related_count: relatedNodeIds.size,
+    fallback_chain: fallbackSteps.length > 0
+      ? `exact=${exactCountBeforeFallback} → ${fallbackSteps.join(' → ')}`
+      : undefined,
+    vector_unavailable: false,  // PR-2/4 已加 timeout，但暂未实施 vector 失败信号上报
   });
 
-  // 策略反馈记录
+  // 策略反馈记录 — was_used 用 exactCount（设计 doc §7.4）
+  // 否则 related 凑数会假提升 strategy 学习信号
   repo.log.logStrategyFeedback({
     strategy_name: 'recall-search',
     operation_id: opId,
-    was_used: nodes.length > 0,
-    feedback_signal: nodes.length > 0
-      ? Math.min(nodes.length / limit, 1.0) * 0.5
+    was_used: exactCount > 0,
+    feedback_signal: exactCount > 0
+      ? Math.min(exactCount / limit, 1.0) * 0.5
       : -0.3,
   });
 
-  // 生成模板摘要（detail 模式才有意义）
+  // 拆 resultNodes 成 exact_matches / related_matches (设计 doc §7)
+  const exactMatches: typeof resultNodes = [];
+  const relatedMatches: typeof resultNodes = [];
+  for (let i = 0; i < nodes.length; i++) {
+    if (relatedNodeIds.has(nodes[i].id)) {
+      relatedMatches.push(resultNodes[i] as RecallNode & RecallIndexItem);
+    } else {
+      exactMatches.push(resultNodes[i] as RecallNode & RecallIndexItem);
+    }
+  }
+
+  // 生成模板摘要（detail 模式才有意义）— legacy 字段
   const summary = recallMode === 'detail'
     ? generateRecallSummary(resultNodes as RecallNode[])
-    : `找到 ${resultNodes.length} 条相关记忆`;
+    : `找到 ${resultNodes.length} 条相关记忆（${exactMatches.length} exact + ${relatedMatches.length} related）`;
 
-  log.info(`返回 ${resultNodes.length} 条结果 mode=${recallMode} 耗时=${Date.now() - startTime}ms`);
+  // Diagnostics (设计 doc §7)
+  const diagnostics: RecallDiagnostics = {
+    exact_count: exactMatches.length,
+    related_count: relatedMatches.length,
+    fallback_chain: fallbackSteps.length > 0
+      ? `exact=${exactCountBeforeFallback} → ${fallbackSteps.join(' → ')}`
+      : undefined,
+    hint: exactMatches.length === 0 && relatedMatches.length === 0
+      ? '未找到任何相关记忆。可尝试简化 query（去掉多余关键词）或扩大 time 窗。'
+      : (exactMatches.length < TRIGGER_THRESHOLD && fallbackSteps.length > 0
+        ? `exact 偏少（${exactMatches.length} 条），已用 fallback chain 补充 related 结果。`
+        : undefined),
+  };
 
-  // fire-and-forget: 链接重新验证
-  //
-  // 历史问题：这个 promise 完全 detached 运行，内部会拿 DB 写锁、调 LLM 做
-  // 关联再评估，慢时（LLM 超时 / DB busy 重试）能霸占写锁数十秒，阻塞代谢
-  // 任务和其他写路径。给它包一个 10s race timeout，超时后 warn 并放弃等待
-  // （底层 promise 仍在后台跑，但上层至少不会叠加无限多挂着的 handle）。
-  if (resultNodes.length > 0 && input.query) {
+  log.info(`返回 ${resultNodes.length} 条结果 (exact=${exactMatches.length}/related=${relatedMatches.length}) mode=${recallMode} 耗时=${Date.now() - startTime}ms`);
+
+  // fire-and-forget: 链接重新验证 — 仅搜索路径 + exact 非空 + 有 query (设计 doc §7.4)
+  // related 是工具补的，agent 不一定真读，不该触发链接 revalidate
+  if (exactMatches.length > 0 && input.query && usedHybridSearch) {
     const REVALIDATE_TIMEOUT_MS = 10_000;
-    const work = revalidateLinks(db, nodes.map(n => n.id), {
+    const exactIds = exactNodes.map(n => n.id);
+    const work = revalidateLinks(db, exactIds, {
       query: input.query,
-      recalledNodeIds: nodes.map(n => n.id),
+      recalledNodeIds: exactIds,
     });
-    // 保存 timer handle：正常路径（work 在 10s 内 settle）必须 clearTimeout，
-    // 否则 setTimeout 仍排在事件循环里，log.warn 假超时 + 闭包不释放。
-    // .unref() 只让 timer 不阻塞进程退出，不影响 fire。
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<void>(resolve => {
       timer = setTimeout(() => {
@@ -386,11 +461,21 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
         log.warn(`链接重新验证异步失败: ${err instanceof Error ? err.stack : String(err)}`),
       )
       .finally(() => { if (timer) clearTimeout(timer); });
-    // 单独挂 catch 防止真实 promise 抛错变成 unhandledRejection
-    work.catch(() => { /* 已在 race 分支 log，这里只是防 unhandled */ });
+    work.catch(() => { /* 防 unhandled */ });
   }
 
-  return { nodes: resultNodes, mode: recallMode, summary, surprises };
+  return {
+    // ── 新版核心字段（设计 doc §7）──
+    exact_matches: exactMatches,
+    related_matches: relatedMatches,
+    diagnostics,
+    // ── 旧字段（兼容期保留：nodes 保留旧语义=exact_matches，不混 related，
+    //    避免旧调用方看到"质量退化"。新调用方应该读 exact_matches/related_matches）──
+    nodes: exactMatches as RecallNode[] | RecallIndexItem[],
+    mode: recallMode,
+    summary,
+    surprises,
+  };
 }
 
 /**

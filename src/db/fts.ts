@@ -11,16 +11,77 @@ export interface FtsResult {
 }
 
 /**
+ * FTS 输入抽象（跨实现统一接口）
+ * 设计 doc: docs/design/brain-recall-redesign-2026-05.md §9.4
+ *
+ * 跟 brain_recall schema 一致：只有 tokens + mode，不支持 query string 语法
+ * (`+词` / `-词` / `"短语"`)。Agent 心智极轻：写 query 字符串 + 选 match。
+ */
+export interface FtsInput {
+  tokens: string[];
+  mode: 'and' | 'or';
+}
+
+/**
+ * Tokenize query into FtsInput. 跨平台共享的入口。
+ *
+ * 切分规则跟旧 escapeFtsQuery 兼容：
+ * - 去掉 FTS5 运算符字符和引号（防注入）
+ * - 显式删除 AND/OR/NOT/NEAR 关键词（agent 写到 query 里时按字面词处理而不是运算符）
+ * - 切分按空格
+ * - 过滤掉纯符号 token（必须含 Unicode 字母/数字）
+ *
+ * 中文 query 不分词（FTS5 默认 tokenizer 不分中文）—— 整串中文作为单 token，
+ * 在 FTS 里几乎查不到，由向量召回兜底。详见 §9.6 中文分词独立 backlog。
+ */
+export function tokenizeQuery(query: string, mode: 'and' | 'or' = 'or'): FtsInput {
+  const cleaned = query
+    .replace(/[(){}[\]*:^~"'/\\]/g, ' ')
+    .replace(/\bAND\b|\bOR\b|\bNOT\b|\bNEAR\b/gi, '')
+    .replace(/^[-+]+/, '')
+    .replace(/[-+]+$/, '')
+    .trim();
+  if (!cleaned) return { tokens: [], mode };
+
+  // 必须用 Unicode 字母/数字类 \p{L}\p{N}，否则 JS `\w` 只匹配 [A-Za-z0-9_]，
+  // 纯中文 query (如 "研发周报") 会被全部过滤掉 → tokens=[] → 返回空 →
+  // FTS 完全失效。
+  const tokens = cleaned.split(/\s+/).filter(w => w.length > 0 && /[\p{L}\p{N}]/u.test(w));
+  return { tokens, mode };
+}
+
+/**
+ * 把 FtsInput 转换成 SQLite FTS5 MATCH 表达式。
+ *
+ * mode=or：用 OR 运算符连接 → 默认 OR 召回 + BM25 排序（全命中的天然排前）
+ * mode=and：默认行为（空格分隔的引号短语在 FTS5 里是隐式 AND）
+ *
+ * 修复 2026-05-22 事故：旧 escapeFtsQuery 永远 AND，多词必 0 召回。
+ */
+export function buildFts5Query(input: FtsInput): string {
+  if (input.tokens.length === 0) return '';
+  // 单 token 时 mode 没区别，省一道 OR 关键字
+  if (input.tokens.length === 1) return `"${input.tokens[0]}"`;
+  const quoted = input.tokens.map(t => `"${t}"`);
+  return input.mode === 'or' ? quoted.join(' OR ') : quoted.join(' ');
+}
+
+/**
  * FTS5 全文搜索
  * 返回按 BM25 排序的结果，rank 为负数（越小越好）
+ *
+ * @param query 用户原始 query 字符串
+ * @param mode 'or' (默认) / 'and'。OR 是 brain_recall match=any 的实现；
+ *             AND 是 brain_recall match=all 的实现。
  */
 export function searchFTS(
   db: Database.Database,
   query: string,
   limit: number = 20,
+  mode: 'and' | 'or' = 'or',
 ): FtsResult[] {
   // 转义 FTS5 特殊字符，防止语法错误
-  const safeQuery = escapeFtsQuery(query);
+  const safeQuery = buildFts5Query(tokenizeQuery(query, mode));
   if (!safeQuery) return [];
 
   try {
@@ -51,32 +112,6 @@ export function searchFTS(
       LIMIT ?
     `).all(`%${escapedQuery}%`, limit) as FtsResult[];
   }
-}
-
-/**
- * 转义 FTS5 查询
- * 将用户输入转为安全的 FTS5 查询语法
- */
-function escapeFtsQuery(query: string): string {
-  // 去掉 FTS5 运算符字符和引号
-  const cleaned = query
-    .replace(/[(){}[\]*:^~"'/\\]/g, ' ')
-    .replace(/\bAND\b|\bOR\b|\bNOT\b|\bNEAR\b/gi, '')
-    .replace(/^[-+]+/, '')       // 去除开头的 +/-
-    .replace(/[-+]+$/, '')       // 去除结尾的 +/-
-    .trim();
-
-  if (!cleaned) return '';
-
-  // 将空格分隔的词用双引号包裹，过滤空词和纯符号。
-  // 必须用 Unicode 字母/数字类 \p{L}\p{N}，否则 JS `\w` 只匹配 [A-Za-z0-9_]，
-  // 纯中文 query (如 "研发周报") 会被全部过滤掉 → words=[] → 返回空串 →
-  // BM25 完全失效。中文用户的 brain_recall 会退化为纯向量分支或空结果。
-  const words = cleaned.split(/\s+/).filter(w => w.length > 0 && /[\p{L}\p{N}]/u.test(w));
-  if (words.length === 0) return '';
-
-  // 多个词用空格连接（FTS5 默认 AND 语义）
-  return words.map(w => `"${w}"`).join(' ');
 }
 
 /**

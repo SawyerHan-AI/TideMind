@@ -127,4 +127,37 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
     const ctx = contextFor(runtime, parsedAgentId.data, parsedClientType.data)
     return getAgentPluginAdapter(ctx.clientType).uninstall(ctx)
   })
+
+  // 手动复制类 agent (cursor / windsurf / cowork) 用户点"我已复制 Skill"按钮时调用，
+  // 把当前 source skill md 的 hash 记到 ~/.tidemind/skill-copy-state.json，
+  // 下次 app 升级后再算 outdated 时跟 source 的新 hash 对比。
+  // 设计 doc: docs/design/brain-recall-redesign-2026-05.md §8.4
+  ipcMain.handle('agents:mark-skill-copied', async (_e, rawAgentId: unknown, toolType?: unknown): Promise<{ success: boolean; error?: string }> => {
+    const parsedAgentId = parseAgentId(rawAgentId)
+    if (!parsedAgentId.ok) return { success: false, error: validationError(parsedAgentId.error.details) }
+    const parsedClientType = parsePluginClientType(toolType)
+    if (!parsedClientType.ok) return { success: false, error: validationError(parsedClientType.error.details) }
+
+    const ctx = contextFor(runtime, parsedAgentId.data, parsedClientType.data)
+    // source skill md 路径：data/skill/{clientType}-skill.md，回退到 base-skill.md
+    const skillSourceCandidates = [
+      `${ctx.clientType}-skill.md`,
+      'base-skill.md',
+    ]
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const sourcePath = skillSourceCandidates
+      .map(name => path.join(ctx.runtime.skillDir, name))
+      .find(p => fs.existsSync(p))
+    if (!sourcePath) {
+      return { success: false, error: `skill source not found in ${ctx.runtime.skillDir}` }
+    }
+    try {
+      const { markSkillCopied } = await import('./agent-plugins/simple-config-adapter.js')
+      markSkillCopied(ctx, sourcePath)
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err?.message ?? String(err) }
+    }
+  })
 }

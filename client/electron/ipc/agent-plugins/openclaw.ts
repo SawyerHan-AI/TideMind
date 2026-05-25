@@ -118,6 +118,25 @@ export const openclawAdapter: AgentPluginAdapter = {
     const outputDir = skillOutputDir(ctx)
     const outputPath = skillOutputPath(ctx)
     const skillOutputExists = fs.existsSync(outputPath)
+
+    // skillOutdated: openclaw 实际跑的 skill 是 ~/.openclaw/hooks/tidemind-<id>/HOOK.md（自动安装
+    // 路径）。Downloads 那份只是给用户参考。所以 outdated 检测以 HOOK.md 为准。
+    // 参照 claude-code.ts:296-302 同款机制。
+    let skillOutdated = false
+    let generatedAt = ''
+    const installedHookPath = path.join(hookDir(ctx), 'HOOK.md')
+    const sourceCandidates = [
+      path.join(ctx.runtime.skillDir, ctx.config.skillSource),
+      path.join(ctx.runtime.skillDir, 'base-skill.md'),
+    ]
+    const sourceSkillPath = sourceCandidates.find(p => fs.existsSync(p))
+    if (sourceSkillPath && fs.existsSync(installedHookPath)) {
+      const sourceMtime = fs.statSync(sourceSkillPath).mtimeMs
+      const installedMtime = fs.statSync(installedHookPath).mtimeMs
+      skillOutdated = sourceMtime > installedMtime
+      generatedAt = fs.statSync(installedHookPath).mtime.toISOString()
+    }
+
     return {
       exists: openclawConfigWritten || skillOutputExists,
       pluginDir: outputDir,
@@ -127,6 +146,8 @@ export const openclawAdapter: AgentPluginAdapter = {
       skillOutputExists,
       openclawConfigWritten,
       hooksConfigured,
+      skillOutdated,
+      generatedAt,
     }
   },
 
