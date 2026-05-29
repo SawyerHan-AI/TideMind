@@ -391,3 +391,38 @@ describe('segmentContent — pageTitle 默认值', () => {
     expect(result[0].context).toBe('');
   });
 });
+
+// ===== 短段合并：保序 + 合并（2026-05-29 round-2 回归）=====
+// 修复前 mergeShortSegments 对「开头连续短段 + 末段也短」会乱序且漏合并
+// （[short,short] 退化成 [B,A]，全短文档同理）。这里锁定正确行为。
+
+describe('segmentContent — 短段合并保序', () => {
+  it('两个短 heading 段 → 合并成一段且保持原顺序', () => {
+    const content = [
+      '# 第一节',
+      '这是第一节的简短内容。',
+      '',
+      '# 第二节',
+      '这是第二节的简短内容。',
+    ].join('\n');
+    const result = segmentContent(content, 'regular', '我的笔记');
+    expect(result).toHaveLength(1);
+    const c = result[0].content;
+    // 第一节内容必须排在第二节之前（修复前会反序）
+    expect(c.indexOf('第一节的简短内容')).toBeLessThan(c.indexOf('第二节的简短内容'));
+  });
+
+  it('全是短段（三段）→ 合并成一段且全部保序', () => {
+    const content = [
+      '# A', '短内容甲。', '', '# B', '短内容乙。', '', '# C', '短内容丙。',
+    ].join('\n');
+    const result = segmentContent(content, 'regular', '笔记');
+    expect(result).toHaveLength(1);
+    const c = result[0].content;
+    expect(c).toContain('短内容甲');
+    expect(c).toContain('短内容乙');
+    expect(c).toContain('短内容丙');
+    expect(c.indexOf('短内容甲')).toBeLessThan(c.indexOf('短内容乙'));
+    expect(c.indexOf('短内容乙')).toBeLessThan(c.indexOf('短内容丙'));
+  });
+});

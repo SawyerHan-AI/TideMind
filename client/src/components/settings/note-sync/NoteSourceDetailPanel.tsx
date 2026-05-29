@@ -31,8 +31,16 @@ export function NoteSourceDetailPanel({
   // 切换 source 时,所有派生自 source.* 的 state 都要重置;否则 source A 的旧值
   // 会被 effect 当作"用户改动"写到 source B 上 (例:展开 A 看到 poll=120,折叠后
   // 展开 B 看到的仍是 120,debounced effect 把 B 的 poll_interval 覆盖为 120)。
+  //
+  // skip-first-save 守卫只在"真的切到另一个 source"(source.id 变化)时重置;否则
+  // 重命名 / 后台 refetch 改了 source.name 也会把守卫重新拉成 false,导致下一次
+  // poll_interval 改动被首次保存守卫吞掉(改动不落库)。
   useEffect(() => {
     intervalInitialized.current = false
+  }, [source.id])
+
+  // 派生 state 在 id / 后台 refetch 时重新同步(不重置守卫)。
+  useEffect(() => {
     setPollInterval(source.poll_interval)
     setNewName(source.name)
     setEditing(false)

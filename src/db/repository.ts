@@ -48,6 +48,10 @@ export interface NodeFilter {
   is_crystal?: boolean;
   createdAfter?: string;
   createdBefore?: string;
+  /** 多值 AND：节点 tags JSON 数组需同时包含所有给定 tag（brain_recall tags 维度） */
+  tags?: string[];
+  /** 多值 OR：source_tool 命中其一（brain_recall from_agents 维度） */
+  fromAgents?: string[];
   limit?: number;
   offset?: number;
   orderBy?: string;

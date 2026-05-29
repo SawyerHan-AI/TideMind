@@ -345,12 +345,17 @@ export function registerCloudHandlers(db?: Database.Database): void {
     const PRO_LIMIT = 50000; // Pro 默认上限,纯展示用,不会真触发拒收
     try {
       if (!db) return { used: 0, limit: FREE_LIMIT, plan: 'free' as const };
-      // active = archived=0 AND is_superseded=0(配合 idx_nodes_active_* 索引,O(1) count)
+      // 与服务端 quota 口径对齐:server checkQuota 用 `COUNT(*) WHERE archived = false`
+      // (quota.ts:136/219),并不排除 is_superseded。客户端原来多排了 is_superseded=0,
+      // 显示用量低于服务端实际计费口径 → 用户在 UI 还显示"没满"时就被服务端拒收。
       const row = db
-        .prepare('SELECT COUNT(*) AS n FROM nodes WHERE archived = 0 AND is_superseded = 0')
+        .prepare('SELECT COUNT(*) AS n FROM nodes WHERE archived = 0')
         .get() as { n: number } | undefined;
       const used = row?.n ?? 0;
-      const { getCloudAuth } = await import('../cloud/auth-client.js');
+      const { getCloudAuth, refreshPlanNow } = await import('../cloud/auth-client.js');
+      // 升级/降级发生在服务端;读 plan 前先收敛一次,避免 Creem 升级后这里长期显示旧 plan。
+      // 未登录时 refreshPlanNow 是廉价 no-op。
+      await refreshPlanNow();
       const plan = (getCloudAuth()?.plan ?? 'free') as 'free' | 'pro' | 'pro_plus';
       const limit = plan === 'free' ? FREE_LIMIT : PRO_LIMIT;
       return { used, limit, plan };

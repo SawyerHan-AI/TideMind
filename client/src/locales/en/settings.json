@@ -1062,6 +1062,8 @@
       },
       "forceReconcile": "Force Align",
       "forceReconcileHint": "Full bidirectional diff + push/pull. Use if cloud and local got out of sync.",
+      "abortReconcile": "Cancel",
+      "abortReconcileHint": "Stop the running alignment after the current batch.",
       "lastReconciled": "Last full align",
       "neverReconciled": "Never",
       "reconciling": "Aligning {{table}} ({{phase}})",

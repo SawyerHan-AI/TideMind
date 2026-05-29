@@ -24,6 +24,11 @@ import { initSessionManager, type InitSessionContext } from '../shared/init-sess
 
 const log = createLogger('notion:init');
 
+// 与 index.ts 的 CLOCK_SKEW_SAFETY_MS 保持一致(那里是 source of truth)。
+// 不从 index.js 静态 import,避免重新引入 index ↔ initialization 的循环静态依赖
+// (initialization.ts 对 index 一律用动态 import,见 runInitialization 内的互斥检查)。
+const CLOCK_SKEW_SAFETY_MS = 60_000;
+
 // ── 类型 ──────────────────────────────────────────────────────
 
 export interface InitReport {
@@ -84,6 +89,14 @@ export async function runInitialization(
   }
 
   clearTagNodeCache();
+
+  // **在开始扫描前**记录 scanStartedAt,用作完成后写入的 last_synced(与 index.ts
+  // 的 runSyncInner / runIncrementalSyncInner 同义)。否则首次走 init 路径只
+  // markFullScanCompleted、从不写 last_synced,首轮增量轮询读到 null → 回退 1970
+  // → 全量重拉每页 block/property,浪费 Notion API 配额。
+  const scanStartedAt = new Date(
+    Date.now() - CLOCK_SKEW_SAFETY_MS,
+  ).toISOString();
 
   // ── Phase 0: 扫描 ──
   ctx.reportPhase(0, '扫描页面', 0);
@@ -216,6 +229,9 @@ export async function runInitialization(
 
   // ── 完成 ──
   markFullScanCompleted(db, sourceId);
+  // 写入 last_synced(用扫描起点),否则首轮增量轮询读到 null 会回退 1970 → 全量重拉。
+  db.prepare('UPDATE note_sources SET last_synced = ? WHERE id = ?')
+    .run(scanStartedAt, sourceId);
 
   const linkCountRow = db.prepare(
     "SELECT COUNT(*) as cnt FROM links WHERE auto = 1"

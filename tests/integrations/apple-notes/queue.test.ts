@@ -22,7 +22,13 @@ vi.mock('../../../src/tools/digest.js', () => ({
 vi.mock('../../../src/integrations/apple-notes/protobuf.js', () => ({
   decodeNoteData: vi.fn(() => ({ noteText: appleState.text, attributeRuns: [] })),
   buildCleanText: vi.fn(() => appleState.text),
+  buildCleanTextWithMap: vi.fn(() => ({
+    cleanText: appleState.text,
+    // 恒等映射：mock 文本不做变换，offset 原样透传
+    offsetMap: new Int32Array(appleState.text.length + 1).map((_v, i) => i),
+  })),
   extractHeadingPositions: vi.fn(() => []),
+  mapHeadingOffsets: vi.fn((headings: Array<{ offset: number; styleType: number }>) => headings),
 }));
 
 vi.mock('../../../src/strategy/loader.js', () => ({

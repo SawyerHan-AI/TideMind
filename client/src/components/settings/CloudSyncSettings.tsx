@@ -273,6 +273,26 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
     }
   }
 
+  // 取消正在运行的 reconcile。abort 在主进程的下一个 batch 边界生效(非立即),
+  // 因此 Force Align 的 spinner 会保持到 reconcileProgress 报告终态。
+  const handleAbortReconcile = async () => {
+    setLocalError(null)
+    setDismissed(false)
+    try {
+      const api = window.api.cloud as { abortReconcile?: () => Promise<{ success: boolean; error?: string }> }
+      if (!api.abortReconcile) {
+        setLocalError({ code: 'not_supported' })
+        return
+      }
+      const result = await api.abortReconcile()
+      if (!result?.success && result?.error) {
+        setLocalError({ code: result.error })
+      }
+    } catch (e) {
+      setLocalError({ code: (e as Error).message })
+    }
+  }
+
   const formatTime = (iso?: string | null) => {
     if (!iso) return t('settings:cloud.never', 'Never')
     try { return new Date(iso).toLocaleString() } catch { return iso }
@@ -339,6 +359,18 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
                   {t('settings:cloud.dataSync.syncStatus', 'Sync Status')}
                 </span>
                 <div className="flex items-center gap-1.5">
+                  {reconcileProgress
+                    && reconcileProgress.phase !== 'idle'
+                    && reconcileProgress.phase !== 'done'
+                    && reconcileProgress.phase !== 'failed' && (
+                    <button
+                      onClick={handleAbortReconcile}
+                      title={t('settings:cloud.dataSync.abortReconcileHint', 'Stop the running alignment after the current batch.')}
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium text-red-400/80 border border-red-500/20 hover:border-red-500/40 hover:text-red-300 transition-all"
+                    >
+                      {t('settings:cloud.dataSync.abortReconcile', 'Cancel')}
+                    </button>
+                  )}
                   <button
                     onClick={handleForceReconcile}
                     disabled={reconciling || reconcileProgress !== null}

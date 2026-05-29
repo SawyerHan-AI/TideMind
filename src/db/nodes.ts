@@ -229,6 +229,8 @@ export function listNodes(
     archived?: boolean;
     createdAfter?: string;
     createdBefore?: string;
+    tags?: string[];
+    fromAgents?: string[];
     limit?: number;
     offset?: number;
     orderBy?: string;
@@ -256,6 +258,20 @@ export function listNodes(
   if (filter.createdBefore) {
     conditions.push('created <= ?');
     params.push(filter.createdBefore);
+  }
+  if (filter.tags && filter.tags.length > 0) {
+    // 多值 AND：tags 以 JSON array string 存储，逐 tag 做 LIKE '%"tag"%'，全部命中才返回。
+    // 转义 %/_ 防止 tag 内含通配符误扩，与 recall.ts index_ref 分支同一套写法。
+    for (const tag of filter.tags) {
+      const escaped = tag.replace(/%/g, '\\%').replace(/_/g, '\\_');
+      conditions.push(`tags LIKE ? ESCAPE '\\'`);
+      params.push(`%"${escaped}"%`);
+    }
+  }
+  if (filter.fromAgents && filter.fromAgents.length > 0) {
+    // 多值 OR：source_tool 命中其一（brain_recall from_agents 维度）。
+    conditions.push(`source_tool IN (${filter.fromAgents.map(() => '?').join(', ')})`);
+    params.push(...filter.fromAgents);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

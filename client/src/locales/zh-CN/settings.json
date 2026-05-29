@@ -1062,6 +1062,8 @@
       },
       "forceReconcile": "强制对齐",
       "forceReconcileHint": "完整双向对齐,把本地和云端的差异全部推送/拉取。本地与云端严重不一致时使用。",
+      "abortReconcile": "取消",
+      "abortReconcileHint": "在当前批次完成后停止正在进行的对齐。",
       "lastReconciled": "最近对齐",
       "neverReconciled": "从未",
       "reconciling": "对齐 {{table}} 中({{phase}})",

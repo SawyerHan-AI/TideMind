@@ -200,8 +200,31 @@ export function buildCleanText(
   decoded: DecodedNote,
   attachmentTexts: AttachmentText[] = [],
 ): string {
+  return buildCleanTextWithMap(decoded, attachmentTexts).cleanText;
+}
+
+/**
+ * buildCleanText 的扩展版本：除了返回纯文本，还返回一个偏移映射表。
+ *
+ * 背景（坐标系一致性 bug）：
+ *   - extractHeadingPositions 的 offset 是相对 **原始 noteText** 的字符位置。
+ *   - buildCleanText 会对文本做变换（清单行 +6 前缀、U+FFFC -1、附件文本追加、
+ *     连续空行折叠、首尾 trim）。
+ *   两者坐标系不同，直接拿原始 offset 去 slice cleanText 会切错位置。
+ *
+ * offsetMap[i] = 原始 noteText 第 i 个字符在最终 cleanText 中的字符偏移。
+ * 长度为 noteText.length + 1（额外一位表示 noteText 末尾，便于映射"行尾/段末"位置）。
+ * 已被移除的字符（如 U+FFFC、被 trim 掉的首尾空白）映射到其逻辑上最接近的保留位置。
+ *
+ * 调用方应通过 mapHeadingOffsets() 把 extractHeadingPositions 的结果转换到
+ * cleanText 坐标系后再传给 segmentNote。
+ */
+export function buildCleanTextWithMap(
+  decoded: DecodedNote,
+  attachmentTexts: AttachmentText[] = [],
+): { cleanText: string; offsetMap: Int32Array } {
   const { noteText, attributeRuns } = decoded;
-  if (!noteText) return '';
+  if (!noteText) return { cleanText: '', offsetMap: new Int32Array(1) };
 
   // 为每个字符位置建立 "所属 attribute_run index" 映射
   // runIndexForPosition[i] = i 位置所在 run 的索引
@@ -232,7 +255,15 @@ export function buildCleanText(
   const parts: string[] = [];
   let atLineStart = true;
 
+  // 偏移映射：原始 noteText 位置 i → 当前已构建 cleanText（parts join 后）长度。
+  // 多记一位（noteText.length）表示文本末尾。
+  const rawToClean = new Int32Array(noteText.length + 1);
+  let cleanLen = 0; // 当前 parts 拼接后的字符长度
+
   for (let i = 0; i < noteText.length; i++) {
+    // 在写入本字符前先记录其在 cleanText 中的起始位置。
+    // 注意：清单前缀属于"行"而非某个字符，应记在前缀之后、字符本身之前——
+    // 这样标题/行的 offset 映射到的是行内容首字符，而非前缀。
     const ch = noteText[i];
 
     // 行首：检查该行的段落样式，插入清单标注
@@ -240,12 +271,17 @@ export function buildCleanText(
       atLineStart = false;
       const run = getRunAt(i);
       if (run?.paragraphStyle?.styleType === PARAGRAPH_STYLES.CHECKLIST && run.paragraphStyle.checklist) {
-        parts.push(run.paragraphStyle.checklist.done ? '[已完成] ' : '[未完成] ');
+        const prefix = run.paragraphStyle.checklist.done ? '[已完成] ' : '[未完成] ';
+        parts.push(prefix);
+        cleanLen += prefix.length;
       }
     }
 
+    rawToClean[i] = cleanLen;
+
     if (ch === '\n') {
       parts.push(ch);
+      cleanLen += 1;
       atLineStart = true;
       continue;
     }
@@ -255,16 +291,34 @@ export function buildCleanText(
     if (ch === OBJECT_REPLACEMENT_CHAR) {
       const run = getRunAt(i);
       if (run?.attachmentInfo) {
+        // 被移除的字符映射到其位置（= 下一个保留字符的起点），cleanLen 不变
         continue;
       }
     }
 
     parts.push(ch);
+    cleanLen += 1;
+  }
+  // 末尾哨兵：noteText 末尾映射到 cleanText 末尾（pre-trim）
+  rawToClean[noteText.length] = cleanLen;
+
+  const body = parts.join('');
+
+  // 对 body 应用与原实现完全一致的后处理（\n{3,} 折叠 + 首尾 trim），
+  // 同时构建 body 坐标 → 最终 cleanText 坐标的映射 bodyToFinal。
+  // 注意：附件文本是追加在 body 末尾的，标题 offset 永远落在 body 范围内，
+  // 因此只需追踪 body 部分的坐标平移；附件文本不影响 body 内偏移。
+  const { transformed: bodyFinal, map: bodyToFinal } = collapseAndTrim(body);
+
+  // 把 rawToClean（原始 → body 坐标）再经 bodyToFinal（body → 最终）复合，
+  // 得到 offsetMap（原始 noteText → 最终 cleanText body 部分坐标）。
+  const offsetMap = new Int32Array(noteText.length + 1);
+  for (let i = 0; i <= noteText.length; i++) {
+    const bodyPos = rawToClean[i];
+    offsetMap[i] = bodyToFinal[Math.min(bodyPos, body.length)];
   }
 
-  let result = parts.join('');
-
-  // 追加附件文本
+  // 追加附件文本（在 body 后处理之后拼接，不影响 offsetMap）
   const textParts: string[] = [];
   for (const att of attachmentTexts) {
     if (att.ocrSummary?.trim()) {
@@ -277,14 +331,72 @@ export function buildCleanText(
     }
   }
 
+  let cleanText = bodyFinal;
   if (textParts.length > 0) {
-    result = result.trimEnd() + '\n\n' + textParts.join('\n');
+    // 与原实现一致：附件文本前再 trimEnd 一次（bodyFinal 已 trim，幂等）+ 双换行分隔
+    cleanText = cleanText.trimEnd() + '\n\n' + textParts.join('\n');
   }
 
-  // 清理：多余空行合并，首尾空白
-  result = result.replace(/\n{3,}/g, '\n\n').trim();
+  return { cleanText, offsetMap };
+}
 
-  return result;
+/**
+ * 对字符串做 `replace(/\n{3,}/g, '\n\n')` + 首尾 `trim()`，
+ * 同时返回每个原始位置 i（0..len）映射到变换后字符串中的位置。
+ *
+ * map[i] = 原字符串第 i 个字符在变换后的位置；被删除的字符映射到删除区段
+ * 之后第一个保留字符的位置（clamp 到变换后长度）。
+ */
+function collapseAndTrim(s: string): { transformed: string; map: Int32Array } {
+  const n = s.length;
+  // keep[i] = 原位置 i 的字符是否保留
+  const keep = new Uint8Array(n);
+
+  // 1) \n{3,} → \n\n：在每段 3+ 连续换行中，仅保留前两个
+  let i = 0;
+  while (i < n) {
+    if (s[i] === '\n') {
+      let j = i;
+      while (j < n && s[j] === '\n') j++;
+      const runLen = j - i;
+      const keepCount = runLen >= 3 ? 2 : runLen;
+      for (let k = 0; k < runLen; k++) keep[i + k] = k < keepCount ? 1 : 0;
+      i = j;
+    } else {
+      keep[i] = 1;
+      i++;
+    }
+  }
+
+  // 2) trim：去掉变换后字符串的首尾空白。
+  //    先算出折叠后保留字符的序列与其原始下标，再裁掉首尾空白对应的保留标记。
+  const keptIndices: number[] = [];
+  for (let k = 0; k < n; k++) if (keep[k]) keptIndices.push(k);
+
+  // 折叠后字符串
+  let collapsed = '';
+  for (const k of keptIndices) collapsed += s[k];
+
+  // 计算 trim 的左右边界（基于 collapsed）
+  let left = 0;
+  while (left < collapsed.length && /\s/.test(collapsed[left])) left++;
+  let right = collapsed.length;
+  while (right > left && /\s/.test(collapsed[right - 1])) right--;
+
+  // 标记被 trim 掉的首尾字符为不保留
+  for (let p = 0; p < left; p++) keep[keptIndices[p]] = 0;
+  for (let p = right; p < collapsed.length; p++) keep[keptIndices[p]] = 0;
+
+  const transformed = collapsed.slice(left, right);
+
+  // 3) 构建 map：原位置 i → 变换后位置
+  const map = new Int32Array(n + 1);
+  let out = 0;
+  for (let p = 0; p <= n; p++) {
+    map[p] = out;
+    if (p < n && keep[p]) out++;
+  }
+  return { transformed, map };
 }
 
 // ======== 标题位置提取 ========
@@ -316,4 +428,25 @@ export function extractHeadingPositions(decoded: DecodedNote): HeadingPosition[]
   }
 
   return positions;
+}
+
+/**
+ * 把 extractHeadingPositions 返回的标题位置（相对原始 noteText 的 offset）
+ * 转换到 cleanText 坐标系。
+ *
+ * 必须在调用 segmentNote 之前做这层转换，否则会用原始坐标去 slice 变换后的
+ * cleanText，导致清单/附件较多的长笔记切错位置（headings 落在内容中间）。
+ *
+ * @param headings  extractHeadingPositions 的输出
+ * @param offsetMap buildCleanTextWithMap 返回的映射表
+ */
+export function mapHeadingOffsets(
+  headings: HeadingPosition[],
+  offsetMap: Int32Array,
+): HeadingPosition[] {
+  const maxRaw = offsetMap.length - 1; // = noteText.length
+  return headings.map(h => {
+    const raw = h.offset < 0 ? 0 : h.offset > maxRaw ? maxRaw : h.offset;
+    return { offset: offsetMap[raw], styleType: h.styleType };
+  });
 }

@@ -18,7 +18,7 @@ export const SIGNAL_PARAM_MAP: Record<string, Array<{ strategy: string; params: 
     { strategy: 'metabolism-params', params: ['link_decay_base', 'link_delete_threshold'] },
   ],
   recall_hit: [
-    { strategy: 'recall-search', params: ['alpha', 'beta', 'gamma', 'delta'] },
+    { strategy: 'recall-rank', params: ['alpha', 'beta', 'gamma', 'delta'] },
     { strategy: 'recall-rank', params: ['heat_weight', 'refinement_weight', 'connectivity_weight', 'independence_weight'] },
   ],
   correction: [
@@ -28,7 +28,7 @@ export const SIGNAL_PARAM_MAP: Record<string, Array<{ strategy: string; params: 
     { strategy: 'metabolism-params', params: ['decay_base', 'decay_damping'] },
   ],
   session_continuity: [
-    { strategy: 'recall-search', params: ['alpha', 'beta', 'gamma', 'delta'] },
+    { strategy: 'recall-rank', params: ['alpha', 'beta', 'gamma', 'delta'] },
     { strategy: 'prepare-assemble', params: ['max_index_standard', 'profile_max_tokens'] },
   ],
 };

@@ -8,7 +8,7 @@
  * 通过 WAL 模式 + busy_timeout 安全地与 MCP Server 共享 SQLite 数据库。
  */
 
-import { loadConfig, getConfig, ensureDataDirs, backfillSyncHashes, syncStrategiesFromSource } from './config.js';
+import { loadConfig, ensureDataDirs, backfillSyncHashes, syncStrategiesFromSource } from './config.js';
 import { checkFileWatchers, reloadStrategies } from './strategy/loader.js';
 import { getDb, closeDb, initVec } from './db/connection.js';
 import { createLogger } from './utils/logger.js';
@@ -107,11 +107,13 @@ async function main(): Promise<void> {
   loadConfig();
   ensureDataDirs();
 
-  // Cloud mode: when enabled, local metabolism is disabled (cloud handles it)
-  const cloudEnabled = getConfig().cloud?.enabled ?? false;
-  if (cloudEnabled) {
-    log.info('cloud mode enabled — local metabolism tasks will be skipped');
-  }
+  // 本地/云代谢互斥的唯一权威是 scheduler.ts 里的 cloud.metabolism_enabled 闸。
+  // 历史上 daemon 这里另用 cloud.enabled 做第二道闸——但 cloud.enabled 实际是跟
+  // sync_enabled 联动的(client cloud:set-sync-enabled 同时置 cloud.enabled,供
+  // mcp-router 判断是否路由到云端 MCP)。用它来 gate 本地代谢 = 把"开了云同步"错误
+  // 地耦合成"关掉本地代谢",即便用户没开 cloud.metabolism_enabled。移除这道闸,
+  // 让本地代谢只由 cloud.metabolism_enabled 单一权威控制(runSchedulerTick 内部
+  // 在 metabolism_enabled=true 时早返回,不会与云端重复跑)。
   getDb();
   backfillSyncHashes(); // DB 初始化后补填同步哈希
   await initVec();
@@ -176,12 +178,11 @@ async function main(): Promise<void> {
     log.error('笔记源启动失败:', err instanceof Error ? err.stack : String(err)),
   );
 
-  // 启动时立刻执行一轮（cloud mode 下跳过本地代谢）
-  if (!cloudEnabled) {
-    runSchedulerTick(getDb(), ALL_TASKS).catch(err =>
-      log.error('初始调度失败:', err instanceof Error ? err.stack : String(err)),
-    );
-  }
+  // 启动时立刻执行一轮。runSchedulerTick 内部按 cloud.metabolism_enabled 自行
+  // 决定是否跳过本地代谢（云端接管时早返回）。
+  runSchedulerTick(getDb(), ALL_TASKS).catch(err =>
+    log.error('初始调度失败:', err instanceof Error ? err.stack : String(err)),
+  );
 
   // 定时调度：每分钟 tick，每个任务独立判断是否到期
   // 防重入：上一轮未完成时跳过，避免长任务（LLM 调用）导致堆叠
@@ -244,15 +245,6 @@ async function main(): Promise<void> {
     // 定期从源码同步策略文件，无需重启 daemon
     if (tickCount % STRATEGY_SYNC_EVERY_N_TICKS === 0) {
       try { syncStrategiesFromSource(); reloadStrategies(); } catch (err) { log.warn('策略同步/重载出错', err); }
-    }
-
-    if (cloudEnabled) {
-      // Cloud mode: skip local metabolism, only run file watchers / strategy sync above
-      if (myTickId === currentTickId) {
-        tickRunning = false;
-        tickStartedAt = 0;
-      }
-      return;
     }
 
     runSchedulerTick(getDb(), ALL_TASKS)

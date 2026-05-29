@@ -36,7 +36,16 @@ export function BrainExplorer() {
   // Sync URL params
   useEffect(() => {
     const nodeParam = searchParams.get('node')
-    if (nodeParam) setSelectedId(nodeParam)
+    if (nodeParam) {
+      setSelectedId(nodeParam)
+      // 一次性消费 entry intent:清掉 node,避免后续 tag 改动重跑本 effect 时把
+      // 用户当前选中的节点 snap 回旧的 ?node=ID。
+      setSearchParams(prev => {
+        const p = new URLSearchParams(prev)
+        p.delete('node')
+        return p
+      }, { replace: true })
+    }
     const tagParam = searchParams.get('tag')
     if (tagParam) setFilter(f => ({ ...f, tags: tagParam }))
   }, [searchParams])

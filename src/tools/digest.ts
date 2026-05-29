@@ -11,7 +11,7 @@ import { isVecLoaded } from '../db/connection.js';
 import { findLandingConnections } from '../graph/landing.js';
 import { reconsolidateNode } from '../graph/dedup.js';
 import {
-  enqueuePendingDigest,
+  enqueueInFlightDigest,
   // 修复 M25(2026-05-09):detached 异步分支历史用 dynamic import 拉这两个函数,
   // 模块解析失败(磁盘错误/损坏)时只 log 不重试 → 表里的 pending digest
   // 永远不被 fail/complete,worker 反复重抓同一条永远拒绝的输入。改成
@@ -175,6 +175,15 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
 
   // --- 归档 ---
   if (input.intent === 'archive' && input.target_node) {
+    // 存在性守卫：archiveNode → archiveNodeWithVectors 是 `UPDATE ... WHERE id=?`，
+    // 对不存在/拼错/已删除的 ID 命中 0 行却不报错。没有这个守卫的话调用方会拿到
+    // 假的 'processed' + archived_nodes，以为记忆被归档了实际从未存在。与上面
+    // correction 分支一致，先 getNode 校验，缺失则 reject。
+    const existing = repo.nodes.getNode(input.target_node);
+    if (!existing) {
+      log.warn(`archive 目标节点不存在: ${input.target_node}`);
+      return { status: 'rejected', trace_id: traceId, reject_reason: `目标节点 ${input.target_node} 不存在` };
+    }
     log.info(`archive target=${input.target_node}`);
     repo.nodes.archiveNode(input.target_node);
 
@@ -221,9 +230,12 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
 
   // 异步模式（默认）：stream 已写入，后台处理其余部分
   if (input.async !== false) {
-    // 先写入 pending_digests 条目（同步），确保即使进程崩溃也能重试
+    // 先写入 pending_digests 条目（同步），确保即使进程崩溃也能重试。
+    // 以 status='processing' 写入：这条 digest 已经在本进程 detached 处理中，
+    // worker 不应在 1min backoff 后把它当成 'pending' 抢走重复 createNode；
+    // 只有真正 >10min 卡死/崩溃才由 claimNextPendingDigest 的 stale recovery 接管。
     try {
-      enqueuePendingDigest(db, traceId, JSON.stringify(input), 'pre-processing');
+      enqueueInFlightDigest(db, traceId, JSON.stringify(input));
     } catch (enqueueErr) {
       log.error('Failed to pre-enqueue digest:', (enqueueErr as Error).message);
     }
@@ -236,9 +248,12 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
       try {
         await processDigestContent(repo, input, streamRef, traceId, qualityHeat);
         // 处理成功，删除 pending 条目(M25:不再 dynamic import,直接用顶部 static import)
+        // 占位行以 status='processing' 写入(enqueueInFlightDigest),所以这里按
+        // 'processing' 过滤;若已被 stale recovery 重置回 'pending' 再被 worker 认领,
+        // 这条 SELECT 会 no-op,正确地把收尾让给 worker。
         try {
           const pending = db.prepare(
-            "SELECT id FROM pending_digests WHERE trace_id = ? AND status = 'pending'"
+            "SELECT id FROM pending_digests WHERE trace_id = ? AND status = 'processing'"
           ).get(traceId) as { id: string } | undefined;
           if (pending) {
             completePendingDigest(db, pending.id);

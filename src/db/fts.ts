@@ -100,17 +100,23 @@ export function searchFTS(
     `).all(safeQuery, limit) as FtsResult[];
   } catch (err) {
     log.warn(`FTS 查询失败，降级为 LIKE 搜索: ${(err as Error).message}`);
-    const escapedQuery = query.replace(/[%_]/g, '\\$&');
+    // 复用主路径的分词,按 mode 用 OR/AND 组合 per-token LIKE,
+    // 否则多词 query 退化为整串连续子串匹配,近似 0 召回(与主路径 OR 召回语义相反)。
+    // tokens 非空:safeQuery 为空时上面已 return [],catch 必有 >=1 token。
+    const { tokens, mode: m } = tokenizeQuery(query, mode);
+    const joiner = m === 'or' ? ' OR ' : ' AND ';
+    const likeClause = tokens.map(() => "content LIKE ? ESCAPE '\\'").join(joiner);
+    const params = tokens.map(t => `%${t.replace(/[%_]/g, '\\$&')}%`);
     return db.prepare(`
       SELECT id, content, -1.0 as rank
       FROM nodes
-      WHERE content LIKE ? ESCAPE '\\'
+      WHERE (${likeClause})
         AND heat > 0.01
         AND is_superseded = 0
         AND archived = 0
       ORDER BY heat DESC
       LIMIT ?
-    `).all(`%${escapedQuery}%`, limit) as FtsResult[];
+    `).all(...params, limit) as FtsResult[];
   }
 }
 

@@ -54,7 +54,6 @@
     "title": "连接 TideMind 云",
     "description": "可选将你的大脑同步到云端，实现多设备访问和更多集成。",
     "benefitDevices": "跨设备同步",
-    "benefitChatGPT": "通过浏览器扩展集成 ChatGPT",
     "benefitMetabolism": "不间断的后台代谢",
     "info": "云同步是可选的。你的本地大脑可以独立完美运行。你可以随时在设置中连接云端。"
   }

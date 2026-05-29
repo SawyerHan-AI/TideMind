@@ -195,6 +195,14 @@ async function runSyncInner(
 
   log.info('开始全量同步...');
 
+  // **在开始扫描前**记录 scanStartedAt,用作完成后写入的 last_synced。
+  // 与增量同步同义:减 60s 留出与下次窗口的重叠,并保证扫描期间被编辑的页面
+  // 不会因 last_synced 推到扫描终点而漏掉。否则首次全量同步只 markFullScanCompleted、
+  // 从不写 last_synced,首轮增量轮询读到 null → 回退 1970 → 全量重拉每页 block/property。
+  const scanStartedAt = new Date(
+    Date.now() - CLOCK_SKEW_SAFETY_MS,
+  ).toISOString();
+
   const ctrl = getOrCreateController(sourceId);
 
   // 1. 扫描所有页面
@@ -246,8 +254,11 @@ async function runSyncInner(
     }
   }
 
-  // 5. 标记全量同步完成
+  // 5. 标记全量同步完成,并写入 last_synced(用扫描起点),否则首轮增量轮询
+  // 读到 null 会回退到 1970 → 全量重拉每页 block/property,浪费 Notion API 配额。
   markFullScanCompleted(db, sourceId);
+  db.prepare('UPDATE note_sources SET last_synced = ? WHERE id = ?')
+    .run(scanStartedAt, sourceId);
   log.info('全量同步完成');
 }
 

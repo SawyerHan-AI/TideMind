@@ -550,15 +550,46 @@ export async function login(email: string, password: string): Promise<CloudAuth>
       headers: { 'Authorization': `Bearer ${data.access_token}` },
     });
     if (meRes.ok) {
-      const me = await meRes.json() as { id: string; plan?: string };
-      cachedAuth.userId = me.id;
-      if (me.plan) cachedAuth.plan = me.plan;
+      // /auth/me 返回 { user: { id, email, plan, ... } }（见 account-routes.ts:41）。
+      // 原代码读扁平 me.id / me.plan → 恒 undefined，userId 一直是空串、plan 不更新。
+      // 与 handleOAuthCallback 的解析保持一致。
+      const me = await meRes.json() as { user: { id: string; email: string; plan?: string } };
+      if (me.user?.id) cachedAuth.userId = me.user.id;
+      if (me.user?.email) cachedAuth.email = me.user.email;
+      if (me.user?.plan) cachedAuth.plan = me.user.plan;
     }
   } catch { /* ignore */ }
 
   saveAuthToDisk();
   log.info(`logged in as ${maskEmail(email)}`);
   return cachedAuth;
+}
+
+/**
+ * 从 /auth/me 重新拉取 plan 写回 cachedAuth。fire-and-forget 语义，失败静默（下次再试）。
+ * 背景：Creem 升级/降级发生在服务端，客户端只在 login / OAuth 回调时取过 plan，
+ * 之后从不重取 → 升级后 cloud:status / memory-usage 读到的 plan 永远是旧值（Free）。
+ */
+async function refreshPlanFromServer(): Promise<void> {
+  if (!cachedAuth) return;
+  const base = getCloudBaseUrl();
+  try {
+    const meRes = await fetch(`${base}/auth/me`, {
+      headers: { 'Authorization': `Bearer ${cachedAuth.accessToken}` },
+    });
+    if (!meRes.ok) return;
+    const body = await meRes.json() as { user?: { plan?: string } };
+    if (body.user?.plan && cachedAuth && body.user.plan !== cachedAuth.plan) {
+      cachedAuth.plan = body.user.plan;
+      saveAuthToDisk();
+    }
+  } catch { /* transient — 下次 refresh 再收敛 */ }
+}
+
+/** 供 IPC / UI 主动触发 plan 收敛（如用户从 Creem 升级页返回后）。返回收敛后的 plan。 */
+export async function refreshPlanNow(): Promise<string | null> {
+  await refreshPlanFromServer();
+  return cachedAuth?.plan ?? null;
 }
 
 export async function logout(): Promise<void> {

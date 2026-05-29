@@ -1062,6 +1062,8 @@
       },
       "forceReconcile": "Allineamento forzato",
       "forceReconcileHint": "Allineamento bidirezionale completo. Usa se cloud e locale sono fuori sincrono.",
+      "abortReconcile": "Annulla",
+      "abortReconcileHint": "Interrompi l'allineamento in corso dopo il batch corrente.",
       "lastReconciled": "Ultimo allineamento",
       "neverReconciled": "Mai",
       "reconciling": "Allineamento di {{table}} ({{phase}})",

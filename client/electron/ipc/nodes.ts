@@ -9,6 +9,7 @@ import {
 import { runStructureHolesInWorker } from '../workers/structure-holes-runner.js'
 import { createLogger } from '@server/utils/logger.js'
 import { safeParseJsonArray } from '@server/utils/json-safe.js'
+import { tokenizeQuery, buildFts5Query } from '@server/db/fts.js'
 import {
   parseNodeId,
   parseNodesListFilter,
@@ -87,8 +88,11 @@ export function registerNodeHandlers(db: Database.Database): void {
       conditions.push('is_superseded = 0')
     }
     if (filter.search) {
-      conditions.push('content LIKE ?')
-      params.push(`%${filter.search}%`)
+      // 转义 %/_ 并带 ESCAPE,与同文件 tags / nodes:search fallback 分支一致,
+      // 否则用户搜 "50%" / snake_case 标识符时 %/_ 被当成 LIKE 通配符,无声扩大匹配。
+      const escSearch = filter.search.replace(/%/g, '\\%').replace(/_/g, '\\_')
+      conditions.push("content LIKE ? ESCAPE '\\'")
+      params.push(`%${escSearch}%`)
     }
     if (filter.heatMin !== undefined) {
       conditions.push('heat >= ?')
@@ -174,11 +178,12 @@ export function registerNodeHandlers(db: Database.Database): void {
     if (!parsedLimit.ok) return parsedLimit.error
     const safeLimit = parsedLimit.data
     try {
-      // FTS5 搜索
-      const words = parsedQuery.data.replace(/[(){}[\]*:^~"]/g, ' ').trim().split(/\s+/).filter(Boolean)
-      if (words.length === 0) return { nodes: [], total: 0 }
-
-      const ftsQuery = words.map(w => `"${w}"`).join(' ')
+      // FTS5 搜索。复用 @server/db/fts.js 的 tokenizeQuery + buildFts5Query(默认 OR),
+      // 避免本地手搓 `"a" "b"` 的隐式 AND——多词必 0 召回(2026-05-22 事故,recall 路径
+      // 已修,Brain Explorer 这条曾被遗漏)。注意只复用 query 构造器,不调 searchFTS:
+      // searchFTS 只返回 {id,content,rank} 且额外过滤 heat>0.01,会破坏 ListView 字段。
+      const ftsQuery = buildFts5Query(tokenizeQuery(parsedQuery.data, 'or'))
+      if (!ftsQuery) return { nodes: [], total: 0 }
       const nodes = db.prepare(`
         SELECT nodes.* FROM nodes_fts
         JOIN nodes ON nodes.rowid = nodes_fts.rowid
@@ -336,8 +341,11 @@ export function registerNodeHandlers(db: Database.Database): void {
       conditions.push('is_superseded = 0')
     }
     if (filter.search) {
-      conditions.push('content LIKE ?')
-      params.push(`%${filter.search}%`)
+      // 转义 %/_ 并带 ESCAPE,与同文件 tags / nodes:search fallback 分支一致,
+      // 否则用户搜 "50%" / snake_case 标识符时 %/_ 被当成 LIKE 通配符,无声扩大匹配。
+      const escSearch = filter.search.replace(/%/g, '\\%').replace(/_/g, '\\_')
+      conditions.push("content LIKE ? ESCAPE '\\'")
+      params.push(`%${escSearch}%`)
     }
     if (filter.heatMin !== undefined) {
       conditions.push('heat >= ?')

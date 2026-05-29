@@ -315,4 +315,23 @@ describe('searchHybrid - link relation boost edge cases', () => {
     expect(ids).toContain(nodeA.id);
     expect(ids).not.toContain(metaNode.id);
   });
+
+  it('should exclude off-type neighbor nodes when type filter is set (2026-05-29 round-5 回归)', async () => {
+    // 邻居扩展是 bm25/vector 之外的第三个结果源；修复前它只过滤 excludeMeta，不过滤 type，
+    // 导致 type:'fact' 查询会漏返与命中 fact 强关联的 idea/context 邻居。
+    const factNode = seedNode(db, { type: 'fact', content: 'statistics regression correlation analysis' });
+    const ideaNeighbor = seedNode(db, { type: 'idea', content: 'idea neighbor strongly linked to the fact' });
+
+    seedLink(db, factNode.id, ideaNeighbor.id, {
+      relation: [{ type: 'supports', confidence: 0.7 }],
+      strength: 0.8,
+      status: 'confirmed',
+    });
+
+    const results = await searchHybrid(repo, 'statistics', { limit: 20, type: 'fact' });
+    const ids = results.map(r => r.node.id);
+    expect(ids).toContain(factNode.id);
+    // idea 邻居即便强关联,也不应出现在 type:'fact' 查询结果里
+    expect(ids).not.toContain(ideaNeighbor.id);
+  });
 });

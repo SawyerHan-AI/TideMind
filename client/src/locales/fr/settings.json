@@ -1062,6 +1062,8 @@
       },
       "forceReconcile": "Alignement forcé",
       "forceReconcileHint": "Synchronisation bidirectionnelle complète. À utiliser si le cloud et le local divergent.",
+      "abortReconcile": "Annuler",
+      "abortReconcileHint": "Arrêter l'alignement en cours après le lot actuel.",
       "lastReconciled": "Dernier alignement",
       "neverReconciled": "Jamais",
       "reconciling": "Alignement de {{table}} ({{phase}})",
