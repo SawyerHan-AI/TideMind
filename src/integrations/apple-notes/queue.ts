@@ -12,7 +12,7 @@ import { supersedeNodeWithLinks } from '../../db/node-lifecycle.js';
 import { getOrCreateTagNode } from '../shared/property-promote.js';
 import { createLink } from '../../db/links.js';
 import { coreDataToISO } from './database.js';
-import { decodeNoteData, buildCleanText, extractHeadingPositions } from './protobuf.js';
+import { decodeNoteData, buildCleanTextWithMap, extractHeadingPositions, mapHeadingOffsets } from './protobuf.js';
 import { getNoteState, setNoteState, computeContentHash, isNoteChanged } from './sync-state.js';
 import { segmentNote } from './segmenter.js';
 import type { AppleNote, AppleTag, AttachmentText, ImportProgress, QueueConfig } from './types.js';
@@ -167,9 +167,9 @@ async function processOneNote(
       return;
     }
 
-    // 2. 构建纯文本
+    // 2. 构建纯文本（同时拿到原始 noteText → cleanText 的偏移映射）
     const attachTexts = attachTextsByNote.get(note.zpk) ?? [];
-    const cleanText = buildCleanText(decoded, attachTexts);
+    const { cleanText, offsetMap } = buildCleanTextWithMap(decoded, attachTexts);
 
     if (cleanText.length < 10) {
       progress.skippedNotes++;
@@ -186,7 +186,10 @@ async function processOneNote(
     }
 
     // 4. 分段
-    const headingPositions = extractHeadingPositions(decoded);
+    //    标题 offset 是相对原始 noteText 的，必须经 offsetMap 转换到 cleanText
+    //    坐标系后再传给 segmentNote，否则清单/附件较多的长笔记会切错位置。
+    const rawHeadingPositions = extractHeadingPositions(decoded);
+    const headingPositions = mapHeadingOffsets(rawHeadingPositions, offsetMap);
     const title = note.title ?? '无标题笔记';
     const segments = segmentNote(cleanText, title, headingPositions);
 

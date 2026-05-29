@@ -15,10 +15,13 @@ import {
   initProto,
   decodeNoteData,
   buildCleanText,
+  buildCleanTextWithMap,
   extractHeadingPositions,
+  mapHeadingOffsets,
   type DecodedNote,
   type DecodedAttributeRun,
 } from '../../../src/integrations/apple-notes/protobuf.js';
+import { segmentNote } from '../../../src/integrations/apple-notes/segmenter.js';
 import { PARAGRAPH_STYLES, ATTACHMENT_UTIS } from '../../../src/integrations/apple-notes/types.js';
 
 // 加载 proto 以便构造测试 blob
@@ -349,5 +352,94 @@ describe('端到端：encode → decode → buildCleanText', () => {
     const headings = extractHeadingPositions(decoded!);
     expect(headings).toHaveLength(1);
     expect(headings[0].styleType).toBe(PARAGRAPH_STYLES.TITLE);
+  });
+});
+
+describe('buildCleanTextWithMap / mapHeadingOffsets 坐标系一致性（回归）', () => {
+  // 校验：原始 noteText 第 i 个字符，经 offsetMap 映射后落在 cleanText 中
+  // 对应保留字符的正确位置（被删除的 U+FFFC 映射到其后第一个保留字符）。
+  it('offsetMap 把清单前缀 +6 / U+FFFC -1 都正确折算', () => {
+    const OBJ = '￼';
+    // noteText: "Note\n" + U+FFFC + "Todo\n" + "Body\n"
+    // run1 是清单 + 附件，行首会插入 "[未完成] "（+6），U+FFFC 被删（-1）
+    const noteText = `Note\n${OBJ}Todo\nBody`;
+    const uuid = Buffer.from(new Uint8Array(16));
+    const runs: DecodedAttributeRun[] = [
+      { length: 5, paragraphStyle: { styleType: PARAGRAPH_STYLES.HEADING } }, // "Note\n"
+      {
+        length: 6, // U+FFFC + "Todo\n"
+        paragraphStyle: { styleType: PARAGRAPH_STYLES.CHECKLIST, checklist: { uuid, done: false } },
+        attachmentInfo: { attachmentIdentifier: 'att-1', typeUti: 'public.image' },
+      },
+      { length: 4 }, // "Body"
+    ];
+    const decoded: DecodedNote = { noteText, attributeRuns: runs };
+
+    const { cleanText, offsetMap } = buildCleanTextWithMap(decoded);
+    // 清单行的 U+FFFC 被删、加 "[未完成] " 前缀
+    expect(cleanText).toBe('Note\n[未完成] Todo\nBody');
+
+    // 每个原始保留字符都应映射到 cleanText 中的同一字符
+    for (let i = 0; i < noteText.length; i++) {
+      const ch = noteText[i];
+      if (ch === OBJ) continue; // 被删除，不强求等值
+      expect(cleanText[offsetMap[i]]).toBe(ch);
+    }
+
+    // "Body" 在 raw 里从 index 11 开始；映射后应是 cleanText 里 "Body" 的起点
+    const rawBodyStart = noteText.indexOf('Body');
+    expect(cleanText.slice(offsetMap[rawBodyStart], offsetMap[rawBodyStart] + 4)).toBe('Body');
+  });
+
+  it('长笔记：清单/附件错位会让旧代码切错，映射后标题边界对齐', () => {
+    const OBJ = '￼';
+    // 构造一篇 > 3000 字的笔记，标题二之前夹着清单行(+6)和附件字符(-1)，
+    // 使 raw offset 与 clean offset 明显分叉。
+    const filler = '这是一段足够长的正文内容。'.repeat(120); // ~1560 字
+    const heading1 = '第一章';
+    const checklistLine = `${OBJ}待办事项一`; // 清单 + 附件
+    const heading2 = '第二章';
+
+    // noteText 布局：H1\n + filler\n + checklistLine\n + H2\n + filler
+    const noteText =
+      `${heading1}\n` + `${filler}\n` + `${checklistLine}\n` + `${heading2}\n` + `${filler}`;
+
+    const uuid = Buffer.from(new Uint8Array(16));
+    const runs: DecodedAttributeRun[] = [
+      { length: heading1.length + 1, paragraphStyle: { styleType: PARAGRAPH_STYLES.HEADING } },
+      { length: filler.length + 1 },
+      {
+        length: checklistLine.length + 1,
+        paragraphStyle: { styleType: PARAGRAPH_STYLES.CHECKLIST, checklist: { uuid, done: false } },
+        attachmentInfo: { attachmentIdentifier: 'att-x', typeUti: 'public.image' },
+      },
+      { length: heading2.length + 1, paragraphStyle: { styleType: PARAGRAPH_STYLES.HEADING } },
+      { length: filler.length },
+    ];
+    const decoded: DecodedNote = { noteText, attributeRuns: runs };
+
+    const { cleanText, offsetMap } = buildCleanTextWithMap(decoded);
+    expect(cleanText.length).toBeGreaterThan(3000);
+
+    const rawHeadings = extractHeadingPositions(decoded);
+    expect(rawHeadings).toHaveLength(2);
+
+    // 旧的（错误）行为：直接用 raw offset 去 slice cleanText —— heading2 的 raw
+    // offset 会因为前面的 "[未完成] "(+6) 和 U+FFFC(-1) 而比真实 clean 位置偏 +5，
+    // 落在 "第二章" 之前的内容中间。
+    const rawH2 = rawHeadings[1].offset;
+    const mappedH2 = mapHeadingOffsets(rawHeadings, offsetMap)[1].offset;
+    expect(mappedH2).not.toBe(rawH2); // 坐标系确实分叉
+    // 映射后的位置精确指向 "第二章"
+    expect(cleanText.slice(mappedH2, mappedH2 + heading2.length)).toBe(heading2);
+    // 用 raw offset（旧行为）则切不到标题
+    expect(cleanText.slice(rawH2, rawH2 + heading2.length)).not.toBe(heading2);
+
+    // 端到端：用映射后的 heading 分段，每段都应在标题行行首切分
+    const segments = segmentNote(cleanText, '测试', mapHeadingOffsets(rawHeadings, offsetMap));
+    expect(segments.length).toBeGreaterThanOrEqual(2);
+    // 第二段应以 "第二章" 开头（标题边界对齐，没有把标题切到内容中间）
+    const hasHeading2Segment = segments.some(s => s.content.startsWith(heading2));
+    expect(hasHeading2Segment).toBe(true);
   });
 });

@@ -1,6 +1,7 @@
 import { ipcMain } from 'electron'
 import type Database from 'better-sqlite3'
 import { createLogger } from '../../../src/utils/logger.js'
+import { parseSearchLimit } from './_schemas.js'
 
 const log = createLogger('ipc-operations')
 
@@ -9,18 +10,22 @@ export function registerOperationHandlers(db: Database.Database): void {
     operation?: string
     limit?: number
     offset?: number
-  }) => {
+  } = {}) => {
+    // 输入校验,与同表 timeline:list (F10/audit-9) 一致:undefined filter 不再炸,
+    // limit clamp 到 1..200,offset 上限 100_000 防 OFFSET 太大致 SQL 退化扫整表。
     const conditions: string[] = []
     const params: unknown[] = []
 
-    if (filter.operation) {
+    if (typeof filter.operation === 'string' && filter.operation.length > 0 && filter.operation.length <= 256) {
       conditions.push('operation = ?')
       params.push(filter.operation)
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
-    const limit = filter.limit ?? 30
-    const offset = filter.offset ?? 0
+    const parsedLimit = parseSearchLimit(filter.limit)
+    const limit = parsedLimit.ok ? parsedLimit.data : 30
+    const rawOffset = typeof filter.offset === 'number' && Number.isFinite(filter.offset) ? Math.max(0, Math.floor(filter.offset)) : 0
+    const offset = Math.min(rawOffset, 100_000)
 
     const total = (db.prepare(`SELECT COUNT(*) as cnt FROM operation_log ${where}`).get(...params) as any).cnt
     const operations = db.prepare(
@@ -31,6 +36,8 @@ export function registerOperationHandlers(db: Database.Database): void {
   })
 
   ipcMain.handle('operations:get', (_e, id: number) => {
+    // id 校验,镜像 timeline:get:非有限非负整数直接 null,不让脏 bind 抛到 renderer。
+    if (typeof id !== 'number' || !Number.isFinite(id) || !Number.isInteger(id) || id < 0) return null
     const operation = db.prepare('SELECT * FROM operation_log WHERE id = ?').get(id)
     if (!operation) return null
 

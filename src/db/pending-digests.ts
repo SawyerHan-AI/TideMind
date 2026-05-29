@@ -29,6 +29,32 @@ export function enqueuePendingDigest(
   log.info(`Digest enqueued for retry: trace=${traceId}`);
 }
 
+/**
+ * 异步 digest 的 in-flight 占位：进程内已经在处理这条 digest，所以直接以
+ * status='processing' + processing_started_at=now() 写入，让 claimNextPendingDigest
+ * 的 `WHERE status='pending'` 不会在 1 分钟 backoff 后把它抢走。
+ *
+ * 原因：enqueuePendingDigest 写的是 status='pending' + next_retry_at=now()+1min，
+ * 而异步分支在同进程里 detached 处理同一条内容。若处理耗时 >1min（大内容/慢
+ * embedding），digest-retry worker 会在 next_retry_at 到期后认领这条仍是 'pending'
+ * 的行并 createNode 出第二个节点 → 静默重复。改成出生即 'processing'，只有真正
+ * >10min 卡死或进程崩溃才会被 stale recovery（processing_started_at < cutoff）回收，
+ * 正是 stale recovery 该兜的场景。
+ */
+export function enqueueInFlightDigest(
+  db: Database.Database,
+  traceId: string,
+  inputJson: string,
+): void {
+  const id = generateId();
+  const ts = now();
+  db.prepare(`
+    INSERT INTO pending_digests (id, trace_id, input_json, status, error_message, retry_count, created, next_retry_at, processing_started_at)
+    VALUES (?, ?, ?, 'processing', 'in-flight', 0, ?, ?, ?)
+  `).run(id, traceId, inputJson, ts, computeNextRetry(0), ts);
+  log.info(`Digest enqueued in-flight (processing): trace=${traceId}`);
+}
+
 export function claimNextPendingDigest(
   db: Database.Database,
 ): { id: string; trace_id: string; input_json: string; retry_count: number } | null {

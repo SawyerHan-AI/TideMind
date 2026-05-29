@@ -288,28 +288,56 @@ function postProcess(segments: Segment[]): Segment[] {
 function mergeShortSegments(segments: Segment[]): Segment[] {
   if (segments.length <= 1) return segments;
 
+  // 与 notion/segmenter.ts F12(2026-05-21)对齐:旧实现有两个 mutation 点——
+  //   a) `prev.content = ...` 直接改 result 数组里的对象(即调用方入参里的同一引用);
+  //   b) `segments[i + 1] = {...}` 直接改写入参数组。
+  // 改为:result 中始终保存新对象;"短段在最前面"时用循环本地变量 pendingPrefix
+  // 累积,不触碰入参。当前调用链虽未读回入参,但保持纯函数避免与 F12 同根因回归。
   const result: Segment[] = [];
+  let pendingPrefix: string | null = null;
 
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
 
     if (seg.content.length < SHORT_SEGMENT_THRESHOLD) {
       if (result.length > 0) {
-        // 与前一段合并
+        // 与前一段合并(用新对象替换,不改原对象)
         const prev = result[result.length - 1];
-        prev.content = prev.content + '\n\n' + seg.content;
-      } else if (i + 1 < segments.length) {
-        // 与后一段合并
-        segments[i + 1] = {
-          content: seg.content + '\n\n' + segments[i + 1].content,
-          context: segments[i + 1].context,
+        result[result.length - 1] = {
+          ...prev,
+          content: prev.content + '\n\n' + seg.content,
         };
       } else {
-        // 唯一一段且很短，保留
-        result.push(seg);
+        // 开头的短段(可能连续多个,含最后一段也短的情况)→ 累积到 pendingPrefix,
+        // 等后面第一个长段把它带上;若整篇都短则在循环后合并成一段。
+        // 必须无条件累积:之前对"最后一段也短"单独 push,会让末尾短段与缓存前缀
+        // 顺序颠倒且漏合并([short,short]/全短文档退化),见 2026-05-29 round-2 audit。
+        pendingPrefix = pendingPrefix !== null
+          ? pendingPrefix + '\n\n' + seg.content
+          : seg.content;
       }
     } else {
-      result.push(seg);
+      if (pendingPrefix !== null) {
+        // 把缓存的前缀合并到当前段(用新对象,不改原对象 / 不改入参)
+        result.push({
+          ...seg,
+          content: pendingPrefix + '\n\n' + seg.content,
+        });
+        pendingPrefix = null;
+      } else {
+        result.push(seg);
+      }
+    }
+  }
+
+  // 残留 pendingPrefix(开头连续短段后未遇到长段,即整篇都短)→ 保持原顺序合并。
+  // result 为空时整篇短段合成一段;若已有结果(理论上此分支不会进,防御性保留)则前置到首段。
+  if (pendingPrefix !== null) {
+    if (result.length > 0) {
+      const first = result[0];
+      result[0] = { ...first, content: pendingPrefix + '\n\n' + first.content };
+    } else {
+      result.push({ content: pendingPrefix, context: segments[0]?.context });
     }
   }
 

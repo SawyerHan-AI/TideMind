@@ -1,4 +1,5 @@
 import { callLLM, LLMServiceError } from './client.js';
+import { notifyLLMFailure } from '../metabolism/scheduler.js';
 import { parseLLMJson } from './json-parse.js';
 import {
   CRYSTAL_SYSTEM, crystalPrompt,
@@ -38,8 +39,15 @@ export async function generateCrystal(
     // 只吞 LLM 服务级错误和 JSON 解析相关的 SyntaxError;其它(TypeError 等
     // programmer error)让它们冒泡 —— scheduler 的 circuit breaker 需要分辨
     // "模型调不动" vs "我们代码有 bug"。前者累计失败,后者应该直接炸。
-    if (err instanceof LLMServiceError || err instanceof SyntaxError) {
-      log.warn(`generateCrystal 失败: ${(err as Error).message}`);
+    if (err instanceof LLMServiceError) {
+      // 吞错返回 null(divergent.ts 把 null 当跳过,不会冒泡到 scheduler 的
+      // recordLLMFailure),所以这里必须主动喂熔断器,否则成功清零、失败无信号 → 防御失衡。
+      notifyLLMFailure(err);
+      log.warn(`generateCrystal 失败: ${err.message}`);
+      return null;
+    }
+    if (err instanceof SyntaxError) {
+      log.warn(`generateCrystal 解析失败: ${err.message}`);
       return null;
     }
     log.error(`generateCrystal 非服务错误,上抛: ${(err as Error)?.message ?? err}`);
@@ -73,8 +81,13 @@ export async function enrichCrystalContent(
     }
     return null;
   } catch (err) {
-    if (err instanceof LLMServiceError || err instanceof SyntaxError) {
-      log.warn(`enrichCrystalContent 失败: ${(err as Error).message}`);
+    if (err instanceof LLMServiceError) {
+      notifyLLMFailure(err);
+      log.warn(`enrichCrystalContent 失败: ${err.message}`);
+      return null;
+    }
+    if (err instanceof SyntaxError) {
+      log.warn(`enrichCrystalContent 解析失败: ${err.message}`);
       return null;
     }
     log.error(`enrichCrystalContent 非服务错误,上抛: ${(err as Error)?.message ?? err}`);
@@ -133,8 +146,13 @@ export async function generateBridgeInsight(
 
     return parseLLMJson(response);
   } catch (err) {
-    if (err instanceof LLMServiceError || err instanceof SyntaxError) {
-      log.warn(`generateBridgeInsight 失败: ${(err as Error).message}`);
+    if (err instanceof LLMServiceError) {
+      notifyLLMFailure(err);
+      log.warn(`generateBridgeInsight 失败: ${err.message}`);
+      return null;
+    }
+    if (err instanceof SyntaxError) {
+      log.warn(`generateBridgeInsight 解析失败: ${err.message}`);
       return null;
     }
     log.error(`generateBridgeInsight 非服务错误,上抛: ${(err as Error)?.message ?? err}`);

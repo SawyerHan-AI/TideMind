@@ -1062,6 +1062,8 @@
       },
       "forceReconcile": "Alineación forzada",
       "forceReconcileHint": "Alineación bidireccional completa. Úsalo si la nube y el local están desincronizados.",
+      "abortReconcile": "Cancelar",
+      "abortReconcileHint": "Detener la alineación en curso después del lote actual.",
       "lastReconciled": "Última alineación",
       "neverReconciled": "Nunca",
       "reconciling": "Alineando {{table}} ({{phase}})",

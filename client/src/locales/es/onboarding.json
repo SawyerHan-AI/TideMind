@@ -54,7 +54,6 @@
     "title": "Conectar a TideMind Cloud",
     "description": "Sincroniza opcionalmente tu cerebro con la nube para acceso multi-dispositivo y más integraciones.",
     "benefitDevices": "Sincronizar en todos tus dispositivos",
-    "benefitChatGPT": "Integración con ChatGPT vía extensión del navegador",
     "benefitMetabolism": "Metabolismo de fondo sin interrupciones",
     "info": "La sincronización en la nube es opcional. Tu cerebro local funciona perfectamente solo. Puedes conectarte a la nube en cualquier momento desde Configuración."
   }

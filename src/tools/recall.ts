@@ -1,4 +1,4 @@
-import type { RecallInput, RecallOutput, RecallNode, RecallNodeLink, RecallIndexItem, BrainNode, Intent, RecallDiagnostics } from '../types.js';
+import type { RecallInput, RecallOutput, RecallNode, RecallNodeLink, RecallIndexItem, BrainNode, NodeType, Intent, RecallDiagnostics } from '../types.js';
 import type { IRepository } from '../db/repository.js';
 import { getParam } from '../strategy/loader.js';
 import { parseTags } from '../db/nodes.js';
@@ -124,7 +124,11 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
     usedHybridSearch = true;
     // scope 过滤在 hybrid 后做 → 命中率低时实际结果远小于 limit (用户传 limit=8 但只剩 1-2 条)。
     // 修复:有 scope 时 over-fetch limit*5(上限 100)再 filter 到 limit,保证用户拿到的数量符合预期。
-    const fetchLimit = input.scope ? Math.min(limit * 5, 100) : limit;
+    const hasPostFilter = !!input.scope
+      || (input.tags != null && input.tags.length > 0)
+      || (input.from_agents != null && input.from_agents.length > 0)
+      || input.sort === 'recent';
+    const fetchLimit = hasPostFilter ? Math.min(limit * 5, 100) : limit;
     const results = await searchHybrid(repo, input.query, {
       limit: fetchLimit,
       type: input.type,
@@ -133,20 +137,37 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
       createdAfter: input.created_after,
       createdBefore: input.created_before,
       excludeMeta,
+      // match=all → 严格全词必含（hybrid 内部走 FTS AND + 跳过向量/邻居）。原来恒 OR。
+      matchMode: input.match === 'all' ? 'and' : 'or',
     });
     nodes = results.map(r => r.node);
     searchScores = new Map(results.map(r => [r.node.id, r.score]));
 
-    // scope 基于标签过滤（支持 "project:xxx" 和 "tag:xxx" 前缀）
-    if (input.scope) {
-      const scopeTag = input.scope.replace(/^(project|tag):/, '');
+    // tags 多值 AND 过滤：节点必须同时含所有请求的 tag。
+    // 兼容 scope(单 tag 老字段)：未显式传 tags 时用 scope 推导单 tag。
+    // 旧实现只认 scope(单 tag),多 tag (tags.length>=2) 的 AND 语义被静默丢弃。
+    const wantTags = (input.tags != null && input.tags.length > 0)
+      ? input.tags
+      : (input.scope ? [input.scope.replace(/^(project|tag):/, '')] : []);
+    if (wantTags.length > 0) {
       nodes = nodes.filter(n => {
         const tags = parseTags(n.tags);
-        return tags.some(t => t === scopeTag);
+        return wantTags.every(want => tags.includes(want));
       });
-      // 过滤后裁到用户期望的 limit。over-fetch 不再返回多余结果给上层。
-      if (nodes.length > limit) nodes = nodes.slice(0, limit);
     }
+    // from_agents 多值 OR 过滤：source_tool 命中其一。
+    if (input.from_agents != null && input.from_agents.length > 0) {
+      const wantAgents = new Set(input.from_agents);
+      nodes = nodes.filter(n => n.source_tool != null && wantAgents.has(n.source_tool));
+    }
+    // sort='recent' + query：hybrid 返回的是 relevance 序，用户显式要 recent 时按 created 重排。
+    // 因上面已 over-fetch，这里得到的是"匹配集中最近的 limit 条"，而非仅把 relevance-top-N 重排。
+    // 旧实现完全忽略 sort='recent'，有 query 时永远按相关度返回。
+    if (input.sort === 'recent') {
+      nodes = [...nodes].sort((a, b) => (a.created < b.created ? 1 : a.created > b.created ? -1 : 0));
+    }
+    // 过滤/重排后裁到用户期望的 limit。over-fetch 不再返回多余结果给上层。
+    if (hasPostFilter && nodes.length > limit) nodes = nodes.slice(0, limit);
   }
   // --- 默认:返回最近的活跃节点 ---
   else {
@@ -159,10 +180,16 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
     // 用户显式传 sort='relevance' 时退化为 heat DESC（无 query 可比，热度最接近）。
     // v0.2.81 之前这里硬编码 heat DESC,导致 "列出最近" 实际按热度返回。
     const browseOrderBy = input.sort === 'relevance' ? 'heat DESC' : 'created DESC';
+    // 过滤维度 type / tags / from_agents 必须在 browse(无 query)路径生效。
+    // 之前只传 archived/created,导致 brain_recall({tags:[...]}) / ({type:...}) / ({from_agents:[...]})
+    // 静默忽略过滤、返回未过滤的近期节点(silent wrong-result data-integrity bug)。
     nodes = repo.nodes.listNodes({
       limit,
       orderBy: browseOrderBy,
       archived: false,
+      type: input.type as NodeType | undefined,
+      tags: input.tags,
+      fromAgents: input.from_agents,
       createdAfter: input.created_after,
       createdBefore: input.created_before,
     });
@@ -194,6 +221,11 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
         limit: needMore * 3,  // over-fetch 防止过滤后不够
         orderBy: 'heat DESC',
         archived: false,
+        // 兜底候选也必须尊重过滤维度，否则有 tags/type/from_agents 时
+        // related 段会混入不符合过滤条件的无关节点。
+        type: input.type as NodeType | undefined,
+        tags: input.tags,
+        fromAgents: input.from_agents,
         createdAfter: fallbackAfter,
         createdBefore: input.created_before,
       });

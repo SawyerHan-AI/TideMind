@@ -22,9 +22,15 @@ export async function searchHybrid(
     createdAfter?: string;
     createdBefore?: string;
     excludeMeta?: boolean;
+    /** brain_recall match: 'and' = 严格全词必含; 'or'/undefined = 默认 OR 召回 */
+    matchMode?: 'and' | 'or';
   } = {},
 ): Promise<SearchResult[]> {
   const limit = options.limit ?? 10;
+  // match=all（严格 AND）：BM25 走 AND 模式，并跳过模糊向量召回 + 邻居扩展，
+  // 最终只返回"全词必含"的 FTS 命中集，忠实 schema 承诺的"全词必含"语义。
+  // 原实现完全忽略 match，恒按 OR + 向量 + 邻居召回。
+  const strictAnd = options.matchMode === 'and';
   // 过渡期：getGateStatus 尚未迁移到 repo 接口
   const gates = getGateStatus(repo.rawDb);
   const weights = getIntentWeights(options.intent);
@@ -37,11 +43,13 @@ export async function searchHybrid(
     createdAfter: options.createdAfter,
     createdBefore: options.createdBefore,
     excludeMeta: options.excludeMeta,
+    matchMode: options.matchMode,
   });
 
-  // 向量搜索（需要门控通过）
+  // 向量搜索（需要门控通过）。strictAnd 时跳过：向量是模糊语义召回，
+  // 会引入不含全部关键词的结果，违反 match=all 的"全词必含"语义。
   let vectorResults: SearchResult[] = [];
-  if (gates.features.vector_search) {
+  if (gates.features.vector_search && !strictAnd) {
     vectorResults = await searchVector(repo, query, {
       limit: 20,
       type: options.type,
@@ -174,11 +182,16 @@ export async function searchHybrid(
       const neighborNode = neighborNodeMap.get(neighborId);
       if (!neighborNode || neighborNode.heat < 0.01) continue;
       if (options.excludeMeta && neighborNode.is_meta) continue;
+      // 邻居扩展是 bm25/vector 之外的第三个结果源,必须同样尊重 type 过滤,
+      // 否则 brain_recall({query, type:'fact'}) 会漏返与命中 fact 强关联的 idea/context
+      // 邻居(silent wrong-result + 与云端 type 严格语义不一致)。对齐 bm25.ts:57 / vector.ts:50。
+      if (options.type && neighborNode.type !== options.type) continue;
 
       seenNeighbors.add(neighborId);
 
       // 用相同公式计算分数，乘以衰减系数
-      const maxHeat = 10.0;
+      // heat 语义统一为 [0,1],maxHeat 必须与主结果路径(L89)一致,否则邻居 heatBonus 被压到 ~29% 设计值。
+      const maxHeat = 1.0;
       const heatBonus = Math.log(1 + neighborNode.heat) / Math.log(1 + maxHeat);
       const maturityBonus = computeIntentMaturity(neighborNode, options.intent);
 
@@ -194,9 +207,14 @@ export async function searchHybrid(
   }
 
   // 合并邻居结果,按分数降序、ID 字典序升序(tiebreak,避免两条同分节点顺序随机)。
-  const allResults = results.concat(neighborResults);
+  let allResults = results.concat(neighborResults);
   allResults.sort((a, b) => b.score - a.score || a.node.id.localeCompare(b.node.id));
-  log.debug(`bm25=${bm25Results.length} vector=${vectorResults.length} merged=${merged.size} 邻居=${neighborResults.length} final=${Math.min(allResults.length, limit)}`);
+  // match=all：只保留 BM25 严格 AND 命中集，丢弃邻居扩展（邻居可能不含全部关键词）。
+  if (strictAnd) {
+    const andIds = new Set(bm25Results.map(r => r.node.id));
+    allResults = allResults.filter(r => andIds.has(r.node.id));
+  }
+  log.debug(`bm25=${bm25Results.length} vector=${vectorResults.length} merged=${merged.size} 邻居=${neighborResults.length} strictAnd=${strictAnd} final=${Math.min(allResults.length, limit)}`);
   return allResults.slice(0, limit);
 }
 

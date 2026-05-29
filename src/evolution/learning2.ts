@@ -44,6 +44,16 @@ export const PARAM_RANGES: Record<string, { min: number; max: number; integer?: 
   link_decay_base: { min: 0.01, max: 0.10 },
   link_delete_threshold: { min: 0.02, max: 0.15 },
   vector_similarity_threshold: { min: 0.45, max: 0.70 },
+  // recall-rank 排序权重(maturity 打分 + hybrid 评分直接当线性系数读,未归一化)。
+  // 不钳会被 Learning II ±10%/cycle 漂到 0(信号通道塌缩)或无上限放大(单通道独占)。
+  heat_weight: { min: 0.05, max: 0.6 },
+  refinement_weight: { min: 0.05, max: 0.6 },
+  connectivity_weight: { min: 0.05, max: 0.6 },
+  independence_weight: { min: 0.05, max: 0.6 },
+  alpha: { min: 0.05, max: 0.8 },
+  beta: { min: 0.05, max: 0.8 },
+  gamma: { min: 0.02, max: 0.5 },
+  delta: { min: 0.02, max: 0.5 },
 };
 
 /**

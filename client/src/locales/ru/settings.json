@@ -1062,6 +1062,8 @@
       },
       "forceReconcile": "Принудительное выравнивание",
       "forceReconcileHint": "Полная двунаправленная сверка. Используйте, если облако и локаль расходятся.",
+      "abortReconcile": "Отмена",
+      "abortReconcileHint": "Остановить выполняемую сверку после текущего пакета.",
       "lastReconciled": "Последнее выравнивание",
       "neverReconciled": "Никогда",
       "reconciling": "Выравнивание {{table}} ({{phase}})",

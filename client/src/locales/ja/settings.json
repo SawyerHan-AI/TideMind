@@ -1062,6 +1062,8 @@
       },
       "forceReconcile": "強制整列",
       "forceReconcileHint": "ローカルとクラウドを完全に双方向同期します。データが一致しない場合に使用してください。",
+      "abortReconcile": "キャンセル",
+      "abortReconcileHint": "実行中の整列を現在のバッチの後で停止します。",
       "lastReconciled": "最終整列",
       "neverReconciled": "なし",
       "reconciling": "{{table}} を整列中({{phase}})",

@@ -1062,6 +1062,8 @@
       },
       "forceReconcile": "Erzwungene Synchronisation",
       "forceReconcileHint": "Vollständiger bidirektionaler Abgleich. Verwenden, wenn Cloud und lokal nicht übereinstimmen.",
+      "abortReconcile": "Abbrechen",
+      "abortReconcileHint": "Den laufenden Abgleich nach dem aktuellen Batch stoppen.",
       "lastReconciled": "Letzter Abgleich",
       "neverReconciled": "Nie",
       "reconciling": "Gleiche {{table}} ab ({{phase}})",

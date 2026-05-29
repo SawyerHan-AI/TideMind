@@ -1062,6 +1062,8 @@
       },
       "forceReconcile": "強制對齊",
       "forceReconcileHint": "完整雙向對齊,推送/拉取本地與雲端的差異。兩邊嚴重不一致時使用。",
+      "abortReconcile": "取消",
+      "abortReconcileHint": "在當前批次完成後停止正在進行的對齊。",
       "lastReconciled": "最近對齊",
       "neverReconciled": "從未",
       "reconciling": "對齊 {{table}} 中({{phase}})",

@@ -142,7 +142,7 @@ server.tool(
     }).optional().describe('时间窗，preset 和 after/before 可同时传取交集'),
     tags: z.array(z.string().max(64)).max(20).optional().describe('标签数组，多值 AND'),
     type: z.enum(['fact', 'context', 'preference', 'idea', 'crystal', 'meta']).optional(),
-    from_agents: z.array(z.string().max(64)).max(10).optional().describe('按来源 agent 过滤，多值 OR'),
+    from_agents: z.array(z.string().max(64)).max(10).optional().describe('按来源工具类型过滤（如 claude-code / codex / gemini / logseq / obsidian / notion / apple-notes，对应节点 source_tool），多值 OR'),
 
     // ── 返回控制 ──
     sort: z.enum(['relevance', 'recent']).optional().describe('默认：有 query → relevance；无 query → recent'),

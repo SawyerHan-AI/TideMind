@@ -29,7 +29,6 @@
     "title": "Connect to TideMind Cloud",
     "description": "Optionally sync your brain to the cloud for multi-device access and more integrations.",
     "benefitDevices": "Sync across all your devices",
-    "benefitChatGPT": "ChatGPT integration via browser extension",
     "benefitMetabolism": "Never-stop background metabolism",
     "info": "Cloud sync is optional. Your local brain works perfectly on its own. You can connect to the cloud anytime in Settings."
   },

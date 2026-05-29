@@ -1062,6 +1062,8 @@
       },
       "forceReconcile": "Zorunlu hizalama",
       "forceReconcileHint": "Tam çift yönlü hizalama. Bulut ve yerel senkronize değilse kullanın.",
+      "abortReconcile": "İptal",
+      "abortReconcileHint": "Çalışan hizalamayı mevcut toplu işlemden sonra durdur.",
       "lastReconciled": "Son hizalama",
       "neverReconciled": "Hiç",
       "reconciling": "{{table}} hizalanıyor ({{phase}})",

@@ -14,14 +14,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import os from 'node:os';
 
-const { getCloudAuthMock, getCloudBaseUrlMock, getAppVersionMock } = vi.hoisted(() => ({
-  getCloudAuthMock: vi.fn(),
+// registerDevice 现在用 refreshTokenIfNeeded()（开机/离线后避免发过期 token），
+// 不再直接读 getCloudAuth().accessToken。测试相应 mock refreshTokenIfNeeded。
+const { refreshTokenIfNeededMock, getCloudBaseUrlMock, getAppVersionMock } = vi.hoisted(() => ({
+  refreshTokenIfNeededMock: vi.fn(),
   getCloudBaseUrlMock: vi.fn(),
   getAppVersionMock: vi.fn(),
 }));
 
 vi.mock('../../client/electron/cloud/auth-client.js', () => ({
-  getCloudAuth: getCloudAuthMock,
+  refreshTokenIfNeeded: refreshTokenIfNeededMock,
   getCloudBaseUrl: getCloudBaseUrlMock,
 }));
 
@@ -49,7 +51,7 @@ describe('device — registerDevice', () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    getCloudAuthMock.mockReset();
+    refreshTokenIfNeededMock.mockReset();
     getCloudBaseUrlMock.mockReset().mockReturnValue('https://cloud.test');
     getAppVersionMock.mockReset().mockReturnValue('0.2.70');
     fetchSpy = vi.spyOn(globalThis, 'fetch');
@@ -60,15 +62,15 @@ describe('device — registerDevice', () => {
     vi.restoreAllMocks();
   });
 
-  it('getCloudAuth=null → 返回 null 不发 fetch', async () => {
-    getCloudAuthMock.mockReturnValue(null);
+  it('refreshTokenIfNeeded=null（未登录/refresh 永久失败）→ 返回 null 不发 fetch', async () => {
+    refreshTokenIfNeededMock.mockResolvedValue(null);
     const result = await registerDevice();
     expect(result).toBeNull();
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('fetch 成功 → 返回 device id', async () => {
-    getCloudAuthMock.mockReturnValue({ accessToken: 'tk_xyz' });
+    refreshTokenIfNeededMock.mockResolvedValue('tk_xyz');
     fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify({ id: 'dev-12345' }), {
         status: 200,
@@ -83,7 +85,7 @@ describe('device — registerDevice', () => {
   });
 
   it('fetch 5xx → 返回 null + warn', async () => {
-    getCloudAuthMock.mockReturnValue({ accessToken: 'tk' });
+    refreshTokenIfNeededMock.mockResolvedValue('tk');
     fetchSpy.mockResolvedValueOnce(new Response('', { status: 503 }));
 
     const result = await registerDevice();
@@ -91,7 +93,7 @@ describe('device — registerDevice', () => {
   });
 
   it('fetch 4xx → 返回 null', async () => {
-    getCloudAuthMock.mockReturnValue({ accessToken: 'tk' });
+    refreshTokenIfNeededMock.mockResolvedValue('tk');
     fetchSpy.mockResolvedValueOnce(new Response('', { status: 401 }));
 
     const result = await registerDevice();
@@ -99,14 +101,14 @@ describe('device — registerDevice', () => {
   });
 
   it('fetch 抛错(网络断) → 返回 null 不抛', async () => {
-    getCloudAuthMock.mockReturnValue({ accessToken: 'tk' });
+    refreshTokenIfNeededMock.mockResolvedValue('tk');
     fetchSpy.mockRejectedValueOnce(new Error('ECONNREFUSED'));
 
     await expect(registerDevice()).resolves.toBeNull();
   });
 
-  it('Authorization 头使用 Bearer + accessToken', async () => {
-    getCloudAuthMock.mockReturnValue({ accessToken: 'tk_distinct_123' });
+  it('Authorization 头使用 Bearer + refreshTokenIfNeeded 返回的最新 token', async () => {
+    refreshTokenIfNeededMock.mockResolvedValue('tk_distinct_123');
     fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify({ id: 'd1' }), {
         status: 200,
@@ -125,7 +127,7 @@ describe('device — registerDevice', () => {
   });
 
   it('body 包含 hostname/device_type/os_version/app_version', async () => {
-    getCloudAuthMock.mockReturnValue({ accessToken: 'tk' });
+    refreshTokenIfNeededMock.mockResolvedValue('tk');
     getAppVersionMock.mockReturnValue('0.2.71-beta');
     fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify({ id: 'd2' }), {
@@ -144,7 +146,7 @@ describe('device — registerDevice', () => {
   });
 
   it('URL 是 /api/v1/sync/devices', async () => {
-    getCloudAuthMock.mockReturnValue({ accessToken: 'tk' });
+    refreshTokenIfNeededMock.mockResolvedValue('tk');
     fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify({ id: 'd3' }), {
         status: 200,
@@ -157,7 +159,7 @@ describe('device — registerDevice', () => {
   });
 
   it('method=POST', async () => {
-    getCloudAuthMock.mockReturnValue({ accessToken: 'tk' });
+    refreshTokenIfNeededMock.mockResolvedValue('tk');
     fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify({ id: 'd4' }), {
         status: 200,
@@ -170,7 +172,7 @@ describe('device — registerDevice', () => {
   });
 
   it('多次成功调用 → deviceId 更新到最新', async () => {
-    getCloudAuthMock.mockReturnValue({ accessToken: 'tk' });
+    refreshTokenIfNeededMock.mockResolvedValue('tk');
     fetchSpy
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ id: 'd-old' }), {
@@ -192,7 +194,7 @@ describe('device — registerDevice', () => {
   });
 
   it('body 是有效 JSON 字符串', async () => {
-    getCloudAuthMock.mockReturnValue({ accessToken: 'tk' });
+    refreshTokenIfNeededMock.mockResolvedValue('tk');
     fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify({ id: 'd5' }), {
         status: 200,

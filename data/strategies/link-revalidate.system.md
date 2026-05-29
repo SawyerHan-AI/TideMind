@@ -26,7 +26,11 @@ still_valid=false 仅在一种情况下成立：上下文中（查询文本或�
 
 # 输出格式
 
-输出 JSON:
-{ "still_valid": true/false, "relation": "...", "confidence": 0.0-1.0, "reason": "..." }
+prompt 里有多对链接，标记为 `--- 对 1 ---`、`--- 对 2 ---` …。对每一对输出一个数组元素，index 与对编号一一对应：
 
-只输出 JSON。
+[
+  { "index": 1, "still_valid": true/false, "relation": "...", "confidence": 0.0-1.0, "reason": "..." },
+  { "index": 2, "still_valid": true/false, "relation": "...", "confidence": 0.0-1.0, "reason": "..." }
+]
+
+必须为每一对都输出一个元素。只输出 JSON 数组。

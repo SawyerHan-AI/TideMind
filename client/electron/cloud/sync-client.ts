@@ -49,6 +49,15 @@ export class CloudSyncClient {
   private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
 
+  /**
+   * connectWebSocket in-flight 互斥(镜像 syncInFlight 模式)。connectWebSocket 里
+   * `await refreshTokenIfNeeded()` 是个挂起点:close-old-socket 守卫跑在 await 之前,
+   * 两条线(start / slowRetry / on('close')→scheduleReconnect)在 token 过期需真刷新时
+   * 可能同时越过守卫、各自 `this.ws = new WebSocket(url)`,旧 socket 既不 close 也不
+   * 解绑 listener,泄漏 + 占用 per-token 连接配额(MAX_CONNECTIONS_PER_TOKEN=3 → 4002)。
+   */
+  private wsConnecting = false;
+
   /** 启动后延迟触发 reconcile 的 timer。stop() 必须清，避免 stop 后 callback 触底跑 reconcile。 */
   private reconcileTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -251,122 +260,135 @@ export class CloudSyncClient {
     // 互斥:并发调用(start / slowRetry / 手动 trigger)可能同时进入,会让 this.ws
     // 被覆盖,旧 socket 既不 close 也不解绑 listener,泄漏 + 占用 per-token 连接配额
     // (MAX_CONNECTIONS_PER_TOKEN=3),导致用户在快速重试场景下被服务端拒绝(4002)。
-    // 先 close 旧连接再开新的;readyState 为 CLOSED/CLOSING 时不动。
-    if (this.ws) {
-      const rs = this.ws.readyState;
-      if (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) {
-        log.debug('ws already connecting/open, closing before reconnect');
-        try { this.ws.close(1000, 'reconnect'); } catch { /* ignore */ }
-        this.ws.removeAllListeners();
-        this.ws = null;
-      }
-    }
-
-    const token = await refreshTokenIfNeeded();
-    if (!token) {
-      log.info('no token available, skipping ws connect');
+    // wsConnecting 守卫确保只有一条线能跨过下面 `await refreshTokenIfNeeded()` 的挂起点
+    // 进入 new WebSocket;第二个并发进入直接早退,不会覆盖 this.ws。
+    if (this.wsConnecting) {
+      log.debug('ws connect already in flight, skipping concurrent entry');
       return;
     }
-
-    // 将 HTTP base URL 转为 WebSocket URL。注意 URL 不再带 token。
-    const baseUrl = getCloudBaseUrl();
-    const wsUrl = baseUrl
-      .replace(/^https:\/\//, 'wss://')
-      .replace(/^http:\/\//, 'ws://');
-    const url = `${wsUrl}/ws/sync`;
-
-    this.wsAuthed = false;
-
+    this.wsConnecting = true;
     try {
-      this.ws = new WebSocket(url);
-
-      this.ws.on('open', () => {
-        log.info('ws opened, sending auth handshake');
-        // 立即发 auth message;服务端收到后应在 3 秒内回 auth_ok/auth_fail。
-        try {
-          this.ws?.send(JSON.stringify({ type: 'auth', token }));
-        } catch (e) {
-          log.warn(`ws send auth failed: ${(e as Error).message}`);
+      // 先 close 旧连接再开新的;readyState 为 CLOSED/CLOSING 时不动。
+      if (this.ws) {
+        const rs = this.ws.readyState;
+        if (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) {
+          log.debug('ws already connecting/open, closing before reconnect');
+          try { this.ws.close(1000, 'reconnect'); } catch { /* ignore */ }
+          this.ws.removeAllListeners();
+          this.ws = null;
         }
-        // 3 秒内没收到 auth_ok 就认为对端不支持新协议或卡死,close 重连。
-        // 服务端 handshake timeout 也是 3s,客户端给稍微长一点的容忍(3500ms)
-        // 避免两边同时 timeout 抢着 close。
-        this.wsAuthTimer = setTimeout(() => {
-          if (!this.wsAuthed) {
-            log.warn('ws auth ack timeout, closing');
-            this.ws?.close(4003, 'Auth ack timeout');
-          }
-        }, 3_500);
-      });
-
-      this.ws.on('message', (data) => {
-        try {
-          const msg = JSON.parse(data.toString());
-          if (msg.type === 'auth_ok' || msg.type === 'connected') {
-            // auth_ok = 新协议服务端; connected = 老协议服务端(legacy ?token=)。
-            // 按当前我们不再传 query token,正常情况下应该看到 auth_ok。
-            // 保留 connected 以防 roll-forward 时某些节点用旧服务端代码。
-            this.wsAuthed = true;
-            if (this.wsAuthTimer) {
-              clearTimeout(this.wsAuthTimer);
-              this.wsAuthTimer = null;
-            }
-            log.info(`ws authed (server msg=${msg.type})`);
-            this.wsReconnectAttempts = 0; // 重置退避
-          } else if (msg.type === 'auth_fail') {
-            log.warn(`ws auth_fail: reason=${msg.reason}`);
-            this.ws?.close(msg.reason === 'expired' ? 4401 : 1008, 'auth_fail');
-          } else if (msg.type === 'changes_available') {
-            if (!this.wsAuthed) {
-              // 协议违规:未认证就收到通知 → 不信任
-              log.warn('ws: received changes_available before auth, ignoring');
-              return;
-            }
-            log.info(`ws: changes_available since_version=${msg.since_version}`);
-            // 收到通知，立即拉取
-            this.syncOnce().catch(e => log.error('ws-triggered sync error:', (e as Error).message));
-          }
-        } catch (e) {
-          log.warn('ws: failed to parse message', (e as Error).message);
-        }
-      });
-
-      this.ws.on('close', async (code, reason) => {
-        log.info(`ws closed: code=${code} reason=${reason.toString()} authed=${this.wsAuthed}`);
-        if (this.wsAuthTimer) {
-          clearTimeout(this.wsAuthTimer);
-          this.wsAuthTimer = null;
-        }
-        this.ws = null;
-        this.wsAuthed = false;
-        if (this.stopped) return;
-        // 修复(2026-05-20 Audit F-6):任何 auth-related close 都尝试 refresh 一次。
-        // - code 4401(服务端自定义)= token 过期,显式刷新后立即重连。
-        // - code 1008 + auth_fail(reason !== 'expired') = 服务端 key rotation 或
-        //   签名校验失败,刷新拿新签名 token 一次。如果刷新也失败,fall through
-        //   到普通 scheduleReconnect 的指数退避(不会立刻死亡)。
-        //   原实现只挡 4401,服务端 key rotation 期间所有 ws 客户端会进入
-        //   无限退避空转直到 app 重启。
-        if (code === 4401 || code === 1008) {
-          try {
-            await refreshTokenIfNeeded();
-            this.wsReconnectAttempts = 0; // 刷新成功 → 立即重连不走退避
-          } catch (err) {
-            log.warn(`ws close ${code} but refresh failed: ${(err as Error).message}`);
-          }
-        }
-        this.scheduleReconnect();
-      });
-
-      this.ws.on('error', (err) => {
-        log.warn(`ws error: ${err.message}`);
-        // error 事件后会触发 close，由 close 处理重连
-      });
-    } catch (e) {
-      log.warn(`ws connect failed: ${(e as Error).message}`);
-      if (!this.stopped) {
-        this.scheduleReconnect();
       }
+
+      const token = await refreshTokenIfNeeded();
+      if (!token) {
+        log.info('no token available, skipping ws connect');
+        return;
+      }
+
+      // 将 HTTP base URL 转为 WebSocket URL。注意 URL 不再带 token。
+      const baseUrl = getCloudBaseUrl();
+      const wsUrl = baseUrl
+        .replace(/^https:\/\//, 'wss://')
+        .replace(/^http:\/\//, 'ws://');
+      const url = `${wsUrl}/ws/sync`;
+
+      this.wsAuthed = false;
+
+      try {
+        this.ws = new WebSocket(url);
+
+        this.ws.on('open', () => {
+          log.info('ws opened, sending auth handshake');
+          // 立即发 auth message;服务端收到后应在 3 秒内回 auth_ok/auth_fail。
+          try {
+            this.ws?.send(JSON.stringify({ type: 'auth', token }));
+          } catch (e) {
+            log.warn(`ws send auth failed: ${(e as Error).message}`);
+          }
+          // 3 秒内没收到 auth_ok 就认为对端不支持新协议或卡死,close 重连。
+          // 服务端 handshake timeout 也是 3s,客户端给稍微长一点的容忍(3500ms)
+          // 避免两边同时 timeout 抢着 close。
+          this.wsAuthTimer = setTimeout(() => {
+            if (!this.wsAuthed) {
+              log.warn('ws auth ack timeout, closing');
+              this.ws?.close(4003, 'Auth ack timeout');
+            }
+          }, 3_500);
+        });
+
+        this.ws.on('message', (data) => {
+          try {
+            const msg = JSON.parse(data.toString());
+            if (msg.type === 'auth_ok' || msg.type === 'connected') {
+              // auth_ok = 新协议服务端; connected = 老协议服务端(legacy ?token=)。
+              // 按当前我们不再传 query token,正常情况下应该看到 auth_ok。
+              // 保留 connected 以防 roll-forward 时某些节点用旧服务端代码。
+              this.wsAuthed = true;
+              if (this.wsAuthTimer) {
+                clearTimeout(this.wsAuthTimer);
+                this.wsAuthTimer = null;
+              }
+              log.info(`ws authed (server msg=${msg.type})`);
+              this.wsReconnectAttempts = 0; // 重置退避
+            } else if (msg.type === 'auth_fail') {
+              log.warn(`ws auth_fail: reason=${msg.reason}`);
+              this.ws?.close(msg.reason === 'expired' ? 4401 : 1008, 'auth_fail');
+            } else if (msg.type === 'changes_available') {
+              if (!this.wsAuthed) {
+                // 协议违规:未认证就收到通知 → 不信任
+                log.warn('ws: received changes_available before auth, ignoring');
+                return;
+              }
+              log.info(`ws: changes_available since_version=${msg.since_version}`);
+              // 收到通知，立即拉取
+              this.syncOnce().catch(e => log.error('ws-triggered sync error:', (e as Error).message));
+            }
+          } catch (e) {
+            log.warn('ws: failed to parse message', (e as Error).message);
+          }
+        });
+
+        this.ws.on('close', async (code, reason) => {
+          log.info(`ws closed: code=${code} reason=${reason.toString()} authed=${this.wsAuthed}`);
+          if (this.wsAuthTimer) {
+            clearTimeout(this.wsAuthTimer);
+            this.wsAuthTimer = null;
+          }
+          this.ws = null;
+          this.wsAuthed = false;
+          if (this.stopped) return;
+          // 修复(2026-05-20 Audit F-6):任何 auth-related close 都尝试 refresh 一次。
+          // - code 4401(服务端自定义)= token 过期,显式刷新后立即重连。
+          // - code 1008 + auth_fail(reason !== 'expired') = 服务端 key rotation 或
+          //   签名校验失败,刷新拿新签名 token 一次。如果刷新也失败,fall through
+          //   到普通 scheduleReconnect 的指数退避(不会立刻死亡)。
+          //   原实现只挡 4401,服务端 key rotation 期间所有 ws 客户端会进入
+          //   无限退避空转直到 app 重启。
+          if (code === 4401 || code === 1008) {
+            try {
+              await refreshTokenIfNeeded();
+              this.wsReconnectAttempts = 0; // 刷新成功 → 立即重连不走退避
+            } catch (err) {
+              log.warn(`ws close ${code} but refresh failed: ${(err as Error).message}`);
+            }
+          }
+          this.scheduleReconnect();
+        });
+
+        this.ws.on('error', (err) => {
+          log.warn(`ws error: ${err.message}`);
+          // error 事件后会触发 close，由 close 处理重连
+        });
+      } catch (e) {
+        log.warn(`ws connect failed: ${(e as Error).message}`);
+        if (!this.stopped) {
+          this.scheduleReconnect();
+        }
+      }
+    } finally {
+      // 同步部分跑完(socket 已建立 + listener 绑好,或早退/抛错),释放守卫。
+      // socket 后续生命周期由异步 event handler 驱动,不需要继续占着 wsConnecting。
+      this.wsConnecting = false;
     }
   }
 

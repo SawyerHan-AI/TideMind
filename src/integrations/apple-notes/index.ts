@@ -416,7 +416,16 @@ async function pollForChangesInner(
 
     const changedNotes = listNotesModifiedSince(noteStoreDb, schema, since, accountZpks);
 
-    if (changedNotes.length === 0 && removed === 0) return;
+    if (changedNotes.length === 0 && removed === 0) {
+      // 无变更也要推进 lastDbMtimes,否则外层 mtime 比较(currentMtime === lastMtime)
+      // 在 lastDbMtimes 未初始化(=0,如首次全量同步后)时永远命中不了,导致每次轮询都
+      // 重新 openNoteStoreDb + listAllNoteUuids(打 Full Disk Access),浪费 IO。
+      // 仅在完整一轮读取(openNoteStoreDb + listAllNoteUuids + listNotesModifiedSince)
+      // 全部成功后才推进,保持 M16 不变量。M16 删除-only 路径的对偶面。
+      updateLastSynced(db, sourceId);
+      lastDbMtimes.set(sourceId, currentMtime);
+      return;
+    }
     if (changedNotes.length === 0) {
       // 只有删除，没有变更，仍然要更新 last_synced + lastDbMtimes;否则下次轮询
       // 仍会判 currentMtime > lastDbMtimes 触发 openNoteStoreDb + listAllNoteUuids

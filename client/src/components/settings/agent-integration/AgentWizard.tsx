@@ -244,7 +244,10 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
       {/* ========================================== */}
       {/* 插件流程 Step 1: 安装插件 */}
       {/* ========================================== */}
-      {step === 1 && usePlugin && createdAgent && (
+      {/* createdAgent 在生成失败时会被置 null,但 setStep(1) 仍会执行;此时放行
+          pluginError 分支,让 AgentWizardPluginStep 显示错误 + 提供返回,
+          避免落到既无内容又无报错的空白 step。*/}
+      {step === 1 && usePlugin && (createdAgent || pluginError) && (
         <AgentWizardPluginStep
           pluginGenerating={pluginGenerating}
           pluginError={pluginError}

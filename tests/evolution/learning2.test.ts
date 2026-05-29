@@ -261,7 +261,7 @@ describe('runLearning2', () => {
     seedRecallOps(db, 2);
 
     // 写策略文件
-    writeStrategyFile('recall-search', [
+    writeStrategyFile('recall-rank', [
       '# Recall Search',
       '',
       '| 参数 | 值 | 说明 |',
@@ -272,7 +272,7 @@ describe('runLearning2', () => {
 
     // mock getStrategy 返回策略数据
     mockGetStrategy.mockImplementation((name: string) => {
-      if (name === 'recall-search') {
+      if (name === 'recall-rank') {
         return { name, version: 1, status: 'active', systemPrompt: null, params: { alpha: 0.3, beta: 0.5 }, rawContent: '' };
       }
       return null;
@@ -280,10 +280,10 @@ describe('runLearning2', () => {
 
     // 插入足够反馈：前半好后半差（趋势下降）
     for (let i = 0; i < 15; i++) {
-      insertParamFeedback(db, 'recall-search', 'recall_hit', 0.6, 25 - i); // 早期：好
+      insertParamFeedback(db, 'recall-rank', 'recall_hit', 0.6, 25 - i); // 早期：好
     }
     for (let i = 0; i < 15; i++) {
-      insertParamFeedback(db, 'recall-search', 'recall_hit', 0.1, 10 - i); // 近期：差
+      insertParamFeedback(db, 'recall-rank', 'recall_hit', 0.1, 10 - i); // 近期：差
     }
 
     // LLM 建议 decrease
@@ -294,11 +294,11 @@ describe('runLearning2', () => {
     expect(result.adjustments[0]).toContain('alpha');
 
     // 文件应该被更新
-    const content = readStrategyFile('recall-search');
+    const content = readStrategyFile('recall-rank');
     expect(content).not.toContain('| alpha | 0.3 '); // 值应该变了
 
     // DB 应有调整记录
-    const adj = db.prepare('SELECT * FROM param_adjustments WHERE strategy_name = ?').get('recall-search') as any;
+    const adj = db.prepare('SELECT * FROM param_adjustments WHERE strategy_name = ?').get('recall-rank') as any;
     expect(adj).toBeTruthy();
     expect(adj.status).toBe('active');
     expect(adj.signal_type).toBe('recall_hit');
@@ -313,15 +313,15 @@ describe('runLearning2', () => {
     for (let i = 0; i < 5; i++) seedNode(db);
     seedRecallOps(db, 2);
 
-    writeStrategyFile('recall-search', '# Test\n\n| 参数 | 值 | 说明 |\n|------|-----|------|\n| alpha | 0.3 | test |\n');
+    writeStrategyFile('recall-rank', '# Test\n\n| 参数 | 值 | 说明 |\n|------|-----|------|\n| alpha | 0.3 | test |\n');
 
     mockGetStrategy.mockImplementation((name: string) => {
-      if (name === 'recall-search') return { name, version: 1, status: 'active', systemPrompt: null, params: { alpha: 0.3 }, rawContent: '' };
+      if (name === 'recall-rank') return { name, version: 1, status: 'active', systemPrompt: null, params: { alpha: 0.3 }, rawContent: '' };
       return null;
     });
 
-    for (let i = 0; i < 15; i++) insertParamFeedback(db, 'recall-search', 'recall_hit', 0.6, 25 - i);
-    for (let i = 0; i < 15; i++) insertParamFeedback(db, 'recall-search', 'recall_hit', 0.1, 10 - i);
+    for (let i = 0; i < 15; i++) insertParamFeedback(db, 'recall-rank', 'recall_hit', 0.6, 25 - i);
+    for (let i = 0; i < 15; i++) insertParamFeedback(db, 'recall-rank', 'recall_hit', 0.1, 10 - i);
 
     mockCallLLM.mockResolvedValue('{"direction": "hold", "reason": "信号不够明确"}');
 
@@ -333,24 +333,24 @@ describe('runLearning2', () => {
     for (let i = 0; i < 5; i++) seedNode(db);
     seedRecallOps(db, 2);
 
-    writeStrategyFile('recall-search', '# Test\n\n| 参数 | 值 | 说明 |\n|------|-----|------|\n| alpha | 0.3 | test |\n');
+    writeStrategyFile('recall-rank', '# Test\n\n| 参数 | 值 | 说明 |\n|------|-----|------|\n| alpha | 0.3 | test |\n');
     mockGetStrategy.mockImplementation((name: string) => {
-      if (name === 'recall-search') return { name, version: 1, status: 'active', systemPrompt: null, params: { alpha: 0.3 }, rawContent: '' };
+      if (name === 'recall-rank') return { name, version: 1, status: 'active', systemPrompt: null, params: { alpha: 0.3 }, rawContent: '' };
       return null;
     });
 
     // 插入一条最近的调整（3天前）
     db.prepare(`
       INSERT INTO param_adjustments (strategy_name, param_name, signal_type, old_value, new_value, reason, status, pre_avg, monitoring_start, monitoring_end, created)
-      VALUES ('recall-search', 'alpha', 'recall_hit', 0.3, 0.27, 'test', 'confirmed', 0.5, ?, ?, ?)
+      VALUES ('recall-rank', 'alpha', 'recall_hit', 0.3, 0.27, 'test', 'confirmed', 0.5, ?, ?, ?)
     `).run(
       new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
       new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
       new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
     );
 
-    for (let i = 0; i < 15; i++) insertParamFeedback(db, 'recall-search', 'recall_hit', 0.6, 25 - i);
-    for (let i = 0; i < 15; i++) insertParamFeedback(db, 'recall-search', 'recall_hit', 0.1, 10 - i);
+    for (let i = 0; i < 15; i++) insertParamFeedback(db, 'recall-rank', 'recall_hit', 0.6, 25 - i);
+    for (let i = 0; i < 15; i++) insertParamFeedback(db, 'recall-rank', 'recall_hit', 0.1, 10 - i);
 
     mockCallLLM.mockResolvedValue('{"direction": "decrease", "reason": "test"}');
 

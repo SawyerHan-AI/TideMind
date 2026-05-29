@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next'
-import { Cloud, Monitor, MessageCircle, Zap } from 'lucide-react'
+import { Cloud, Monitor, Zap } from 'lucide-react'
 import { StepContainer } from '../components/StepContainer'
 
 export function CloudSyncStep() {
@@ -7,7 +7,6 @@ export function CloudSyncStep() {
 
   const benefits = [
     { Icon: Monitor, text: t('cloudSync.benefitDevices', 'Sync across all your devices') },
-    { Icon: MessageCircle, text: t('cloudSync.benefitChatGPT', 'ChatGPT integration via browser extension') },
     { Icon: Zap, text: t('cloudSync.benefitMetabolism', 'Never-stop background metabolism') },
   ]
 

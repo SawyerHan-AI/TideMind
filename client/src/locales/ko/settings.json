@@ -1062,6 +1062,8 @@
       },
       "forceReconcile": "강제 정렬",
       "forceReconcileHint": "로컬과 클라우드를 양방향으로 완전 동기화합니다. 데이터가 어긋났을 때 사용하세요。",
+      "abortReconcile": "취소",
+      "abortReconcileHint": "실행 중인 정렬을 현재 배치 이후에 중지합니다.",
       "lastReconciled": "최근 정렬",
       "neverReconciled": "없음",
       "reconciling": "{{table}} 정렬 중({{phase}})",
