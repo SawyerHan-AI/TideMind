@@ -136,6 +136,7 @@ export function ModelSelection() {
   const [heavyValue, setHeavyValue] = useState('')
   const [embValue, setEmbValue] = useState('')
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState(false)
   const [reembedding, setReembedding] = useState(false)
   // 历史 bug(2026-05-09):initialized.current 在 mount 后第一次进 debounce
   // effect 时被设 true,后续任何 config refetch 触发的 setLightValue 等都会
@@ -318,30 +319,46 @@ export function ModelSelection() {
 
     const dims = getProviderType(emb.connectionId) === 'ollama' ? 768 : 3072
 
-    await window.api.config.update({
-      llm: {
-        provider: getProviderType(light.connectionId) || 'anthropic',
-        light_connection: light.connectionId || undefined,
-        light_provider: getProviderType(light.connectionId) || 'anthropic',
-        standard_connection: standard.connectionId || undefined,
-        standard_provider: getProviderType(standard.connectionId) || 'anthropic',
-        heavy_connection: heavy.connectionId || undefined,
-        heavy_provider: getProviderType(heavy.connectionId) || 'anthropic',
-        light_model: light.model,
-        standard_model: standard.model,
-        heavy_model: heavy.model,
-      },
-      embedding: {
-        connection: emb.connectionId || undefined,
-        provider: getProviderType(emb.connectionId) || 'vertex',
-        model: emb.model,
-        dimensions: dims,
-      },
-    })
+    try {
+      const res = await window.api.config.update({
+        llm: {
+          provider: getProviderType(light.connectionId) || 'anthropic',
+          light_connection: light.connectionId || undefined,
+          light_provider: getProviderType(light.connectionId) || 'anthropic',
+          standard_connection: standard.connectionId || undefined,
+          standard_provider: getProviderType(standard.connectionId) || 'anthropic',
+          heavy_connection: heavy.connectionId || undefined,
+          heavy_provider: getProviderType(heavy.connectionId) || 'anthropic',
+          light_model: light.model,
+          standard_model: standard.model,
+          heavy_model: heavy.model,
+        },
+        embedding: {
+          connection: emb.connectionId || undefined,
+          provider: getProviderType(emb.connectionId) || 'vertex',
+          model: emb.model,
+          dimensions: dims,
+        },
+      })
+      // 主进程在 config.toml 解析失败等情况下 resolve(而非 reject){success:false},
+      // catch 不会触发——必须显式检查返回值,否则会误报「已保存」却把改动静默丢弃。
+      if (res && res.success === false) {
+        setSaved(false)
+        setSaveError(true)
+        return
+      }
+    } catch {
+      // 写入失败(磁盘满 / 权限等):dirty 保持 true,下次用户再编辑会重试;
+      // 透出错误条,避免用户以为切换已生效但后端仍是旧模型。
+      setSaved(false)
+      setSaveError(true)
+      return
+    }
     // 保存完成后清 dirty,否则 refetchConfig 触发的 setX 会让 debounce effect
     // 再次进入(dirty 仍 true)→ 把刚拉的值反复写回。重置 dirty 必须在 refetch
     // 之前,setX 由 useIPC 派进来时 effect 看到 dirty=false 直接 return。
     dirty.current = false
+    setSaveError(false)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
     refetchConfig()
@@ -451,6 +468,19 @@ export function ModelSelection() {
         <div className="flex items-center gap-1.5 text-xs text-green-400 transition-opacity">
           <Check size={12} />
           {t('model.selection.saved')}
+        </div>
+      )}
+      {saveError && (
+        <div className="flex items-center gap-1.5 text-xs text-red-400">
+          <AlertTriangle size={12} />
+          {t('model.selection.saveFailed')}
+          {/* 显式重试入口:仅靠再改下拉触发 debounce 重存对磁盘满/权限类失败不直观。 */}
+          <button
+            onClick={() => saveNow(lightValue, standardValue, heavyValue, embValue)}
+            className="ml-1 underline hover:text-red-300"
+          >
+            {t('model.selection.retry')}
+          </button>
         </div>
       )}
     </div>

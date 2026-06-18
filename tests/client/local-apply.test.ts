@@ -231,15 +231,18 @@ describe('applyCloudNodeRow — boolean flag conversion (toBool)', () => {
 })
 
 describe('applyCloudNodeRow — INSERT OR REPLACE (upsert)', () => {
-  it('overwrites existing local row with cloud data', () => {
+  it('overwrites existing local row when cloud updated is newer', () => {
     const db = setupTestDb()
     const node = seedNode(db, { content: 'old local' })
+    // 本地 updated 设为过去,确保云端 updated 更新 → 整行覆盖(情形 2)
+    db.prepare('UPDATE nodes SET updated = ? WHERE id = ?').run('2026-01-01T00:00:00Z', node.id)
     applyCloudNodeRow(db, {
       id: node.id,
       type: 'fact',
       content: 'new from cloud',
       created: node.created,
-      updated: '2026-04-30T00:00:00Z',
+      updated: '2099-01-01T00:00:00Z',
+      edit_seq: 2, // M3:云端 edit_seq 高于本地(seedNode createNode=1)才取云端
     })
     const row = db.prepare('SELECT content FROM nodes WHERE id = ?').get(node.id) as { content: string }
     expect(row.content).toBe('new from cloud')
@@ -528,6 +531,67 @@ describe('applyCloudLinkRow', () => {
   })
 })
 
+describe('applyCloudLinkRow — M10 软删 + links 下行防护', () => {
+  // 返回 {from, to}:真实 seeded 节点(links 表有 FK,from_id/to_id 必须指向存在的节点)
+  function endpoints(db: ReturnType<typeof setupTestDb>): { from: string; to: string } {
+    return { from: seedNode(db, { content: 'A' }).id, to: seedNode(db, { content: 'B' }).id }
+  }
+  const del = (db: ReturnType<typeof setupTestDb>) =>
+    db.prepare('SELECT deleted, edit_seq, note FROM links WHERE id = ?').get('L') as
+      { deleted: number; edit_seq: number; note: string | null }
+
+  it('云端 deleted=1 下行 → 本地新 link 标记 deleted(删除传播到本地)', () => {
+    const db = setupTestDb()
+    const { from, to } = endpoints(db)
+    applyCloudLinkRow(db, { id: 'L', from_id: from, to_id: to, relation: [], created: '2026-01-01T00:00:00Z', updated: '2026-02-01T00:00:00Z', edit_seq: 2, deleted: 1 })
+    expect(del(db).deleted).toBe(1)
+  })
+
+  it('防复活:本地已软删(edit_seq 高)→ 云端旧 alive 版本(edit_seq 低、updated 更新)不复活', () => {
+    const db = setupTestDb()
+    const { from, to } = endpoints(db)
+    applyCloudLinkRow(db, { id: 'L', from_id: from, to_id: to, relation: [], created: '2026-01-01T00:00:00Z', updated: '2026-01-01T00:00:00Z', edit_seq: 1, deleted: 0 })
+    // 本地软删:deleted=1, edit_seq=2, updated 推到 2026-02
+    db.prepare('UPDATE links SET deleted = 1, edit_seq = 2, updated = ? WHERE id = ?').run('2026-02-01T00:00:00Z', 'L')
+    // 云端推来 stale alive(edit_seq 1 < 本地 2,但 updated 2026-03 更新 → 纯 updated 会误复活)
+    applyCloudLinkRow(db, { id: 'L', from_id: from, to_id: to, relation: [], created: '2026-01-01T00:00:00Z', updated: '2026-03-01T00:00:00Z', edit_seq: 1, deleted: 0 })
+    const row = del(db)
+    expect(row.deleted).toBe(1)   // 因果序 edit_seq 为主:保留本地软删,未复活
+    expect(row.edit_seq).toBe(2)
+  })
+
+  it('本地 link 编辑(edit_seq 高)不被云端旧版本下行覆盖', () => {
+    const db = setupTestDb()
+    const { from, to } = endpoints(db)
+    applyCloudLinkRow(db, { id: 'L', from_id: from, to_id: to, relation: [{ type: 'supports', confidence: 0.9 }], created: '2026-01-01T00:00:00Z', updated: '2026-01-01T00:00:00Z', edit_seq: 1 })
+    db.prepare('UPDATE links SET edit_seq = 3, note = ? WHERE id = ?').run('local note', 'L')
+    applyCloudLinkRow(db, { id: 'L', from_id: from, to_id: to, relation: [], created: '2026-01-01T00:00:00Z', updated: '2099-01-01T00:00:00Z', edit_seq: 2 })
+    const row = del(db)
+    expect(row.note).toBe('local note') // edit_seq 3 > 2:保留本地
+    expect(row.edit_seq).toBe(3)
+  })
+
+  it('云端 edit_seq 更高 → 整行取云端(含 deleted=1)', () => {
+    const db = setupTestDb()
+    const { from, to } = endpoints(db)
+    applyCloudLinkRow(db, { id: 'L', from_id: from, to_id: to, relation: [], created: '2026-01-01T00:00:00Z', updated: '2026-01-01T00:00:00Z', edit_seq: 1, deleted: 0 })
+    applyCloudLinkRow(db, { id: 'L', from_id: from, to_id: to, relation: [], created: '2026-01-01T00:00:00Z', updated: '2026-02-01T00:00:00Z', edit_seq: 5, deleted: 1 })
+    const row = del(db)
+    expect(row.deleted).toBe(1)
+    expect(row.edit_seq).toBe(5)
+  })
+
+  it('flag=off → 无条件覆盖(逃生舱,云端 deleted=0 覆盖本地软删)', () => {
+    const db = setupTestDb()
+    db.prepare(`INSERT OR REPLACE INTO metadata (key, value) VALUES ('cloud.downlink_guard', 'off')`).run()
+    const { from, to } = endpoints(db)
+    applyCloudLinkRow(db, { id: 'L', from_id: from, to_id: to, relation: [], created: '2026-01-01T00:00:00Z', updated: '2026-01-01T00:00:00Z', edit_seq: 1, deleted: 0 })
+    db.prepare('UPDATE links SET deleted = 1, edit_seq = 2 WHERE id = ?').run('L')
+    applyCloudLinkRow(db, { id: 'L', from_id: from, to_id: to, relation: [], created: '2026-01-01T00:00:00Z', updated: '2026-01-01T00:00:00Z', edit_seq: 1, deleted: 0 })
+    expect(del(db).deleted).toBe(0) // 逃生舱:无条件覆盖
+  })
+})
+
 describe('applyCloudRows — bulk and transaction behavior', () => {
   it('empty array is a no-op (no exception)', () => {
     const db = setupTestDb()
@@ -647,5 +711,117 @@ describe('applyCloudNodeRow — title/source_session/source_tool nullable fields
     applyCloudNodeRow(db, { id: 'n-no-title', content: 'x', created: '2026-01-01T00:00:00Z' })
     const row = db.prepare('SELECT title FROM nodes WHERE id = ?').get('n-no-title') as { title: string | null }
     expect(row.title).toBeNull()
+  })
+})
+
+describe('applyCloudNodeRow — M1 下行版本防护(字段分层)', () => {
+  /** 造一个"本地有未上行编辑"的节点:updated 推到远未来。 */
+  function seedLocalEdited(db: ReturnType<typeof setupTestDb>, content: string): string {
+    const node = seedNode(db, { content })
+    db.prepare('UPDATE nodes SET updated = ? WHERE id = ?').run('2099-01-01T00:00:00Z', node.id)
+    return node.id
+  }
+
+  it('本地内容更新时,云端旧内容不覆盖 content,但派生字段仍取云端(止血 #4)', () => {
+    const db = setupTestDb()
+    const id = seedLocalEdited(db, 'local NEW edit')
+    applyCloudNodeRow(db, {
+      id, type: 'fact', content: 'STALE cloud content',
+      heat: 0.9, created: '2026-01-01T00:00:00Z', updated: '2026-04-30T00:00:00Z',
+    })
+    const row = db.prepare('SELECT content, heat FROM nodes WHERE id = ?').get(id) as { content: string; heat: number }
+    expect(row.content).toBe('local NEW edit') // 内容类:保留本地
+    expect(row.heat).toBe(0.9)                 // 派生类:取云端
+  })
+
+  it('情形 3 不修改本地 updated(reconcile 仍能判定本地较新并上行)', () => {
+    const db = setupTestDb()
+    const id = seedLocalEdited(db, 'local')
+    applyCloudNodeRow(db, { id, content: 'stale', created: '2026-01-01T00:00:00Z', updated: '2026-04-30T00:00:00Z' })
+    const row = db.prepare('SELECT updated FROM nodes WHERE id = ?').get(id) as { updated: string }
+    expect(row.updated).toBe('2099-01-01T00:00:00Z')
+  })
+
+  it('情形 3 保留本地三维(内容类,与 content 同源,不取云端)', () => {
+    const db = setupTestDb()
+    const node = seedNode(db, { content: 'local' })
+    db.prepare('UPDATE nodes SET updated = ?, specificity = 0.2 WHERE id = ?').run('2099-01-01T00:00:00Z', node.id)
+    applyCloudNodeRow(db, {
+      id: node.id, content: 'stale', specificity: 0.9,
+      created: '2026-01-01T00:00:00Z', updated: '2026-04-30T00:00:00Z',
+    })
+    const row = db.prepare('SELECT specificity FROM nodes WHERE id = ?').get(node.id) as { specificity: number }
+    expect(row.specificity).toBe(0.2)
+  })
+
+  it('情形 3 全部派生字段同步云端', () => {
+    const db = setupTestDb()
+    const id = seedLocalEdited(db, 'local')
+    applyCloudNodeRow(db, {
+      id, content: 'stale', created: '2026-01-01T00:00:00Z', updated: '2026-04-30T00:00:00Z',
+      heat: 0.7, refinement: 0.3, connectivity: 0.6, independence: 0.4, maturity_score: 0.55,
+      is_crystal: true, is_keystone: true,
+    })
+    const row = db.prepare(
+      'SELECT heat, refinement, connectivity, independence, maturity_score, is_crystal, is_keystone FROM nodes WHERE id = ?',
+    ).get(id) as Record<string, number>
+    expect(row.heat).toBe(0.7)
+    expect(row.refinement).toBe(0.3)
+    expect(row.connectivity).toBe(0.6)
+    expect(row.independence).toBe(0.4)
+    expect(row.maturity_score).toBe(0.55)
+    expect(row.is_crystal).toBe(1)
+    expect(row.is_keystone).toBe(1)
+  })
+
+  it('云端较新时整行覆盖内容(情形 2)', () => {
+    const db = setupTestDb()
+    const node = seedNode(db, { content: 'local old' })
+    db.prepare('UPDATE nodes SET updated = ? WHERE id = ?').run('2026-01-01T00:00:00Z', node.id)
+    applyCloudNodeRow(db, { id: node.id, content: 'cloud newer', created: '2026-01-01T00:00:00Z', updated: '2099-01-01T00:00:00Z', edit_seq: 2 })
+    const row = db.prepare('SELECT content FROM nodes WHERE id = ?').get(node.id) as { content: string }
+    expect(row.content).toBe('cloud newer')
+  })
+
+  it('对抗态:本地 edit_seq 更高、云端 updated 更新但 edit_seq 不高 → 内容保留本地(M3 关死过时代谢)', () => {
+    const db = setupTestDb()
+    const node = seedNode(db, { content: 'user edit' }) // createNode edit_seq=1
+    // 用户再编辑一次 → edit_seq=2;updated 设为较早(模拟编辑发生在早些时候)
+    db.prepare('UPDATE nodes SET edit_seq = 2, updated = ? WHERE id = ?').run('2026-01-01T00:00:00Z', node.id)
+    // 云端代谢改写:updated 更新(2099)但 edit_seq 只到 1(代谢不 bump edit_seq)
+    applyCloudNodeRow(db, {
+      id: node.id, content: 'stale metabolism rewrite', heat: 0.9,
+      created: '2026-01-01T00:00:00Z', updated: '2099-01-01T00:00:00Z', edit_seq: 1,
+    })
+    const row = db.prepare('SELECT content, heat FROM nodes WHERE id = ?').get(node.id) as { content: string; heat: number }
+    expect(row.content).toBe('user edit') // edit_seq 2 > 1:内容保留本地,不被云端较新 updated 覆盖
+    expect(row.heat).toBe(0.9)            // 派生字段仍取云端
+  })
+
+  it('云端归档 tombstone 优先(即使本地 updated 较新也接受归档)', () => {
+    const db = setupTestDb()
+    const id = seedLocalEdited(db, 'local active')
+    applyCloudNodeRow(db, {
+      id, content: 'archived on cloud', archived: true,
+      created: '2026-01-01T00:00:00Z', updated: '2026-04-30T00:00:00Z',
+    })
+    const row = db.prepare('SELECT archived FROM nodes WHERE id = ?').get(id) as { archived: number }
+    expect(row.archived).toBe(1)
+  })
+
+  it('flag=off 时回退无条件覆盖(逃生舱)', () => {
+    const db = setupTestDb()
+    db.prepare(`INSERT OR REPLACE INTO metadata (key, value) VALUES ('cloud.downlink_guard', 'off')`).run()
+    const id = seedLocalEdited(db, 'local NEW')
+    applyCloudNodeRow(db, { id, content: 'stale cloud', created: '2026-01-01T00:00:00Z', updated: '2026-04-30T00:00:00Z' })
+    const row = db.prepare('SELECT content FROM nodes WHERE id = ?').get(id) as { content: string }
+    expect(row.content).toBe('stale cloud')
+  })
+
+  it('新节点(本地不存在)直接整行插入(情形 1)', () => {
+    const db = setupTestDb()
+    applyCloudNodeRow(db, { id: 'brand-new', content: 'fresh', created: '2026-01-01T00:00:00Z', updated: '2026-01-01T00:00:00Z' })
+    const row = db.prepare('SELECT content FROM nodes WHERE id = ?').get('brand-new') as { content: string }
+    expect(row.content).toBe('fresh')
   })
 })

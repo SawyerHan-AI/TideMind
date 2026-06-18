@@ -58,6 +58,7 @@ import type Database from 'better-sqlite3';
 import { setupTestDb, seedNode } from '../helpers/test-db.js';
 import { runTemporalCrystal } from '../../src/metabolism/temporal-crystal.js';
 import { isLlmConfigured } from '../../src/config.js';
+import { callLLM } from '../../src/llm/client.js';
 
 let db: Database.Database;
 
@@ -275,5 +276,53 @@ describe('temporal crystal - structural dedup (M13)', () => {
     const result = await runTemporalCrystal(db);
     // 旧 crystal 也应被 dedup 拦下,不重复结晶
     expect(result.crystals_created).toBe(0);
+  });
+});
+
+// ===== resonance 路径结构化 dedup =====
+
+describe('temporal crystal - resonance dedup', () => {
+  // 回归:resonance 路径历史上没有任何 dedup(M13 只修了 evolution 路径),
+  // 同一周在 max_resonance_weeks 滑动窗口内被连续多次运行重复结晶。
+  // 修复后第一次运行写入 week-{week} tag,第二次运行被结构化 dedup 拦下。
+  it('同一周第二次运行不再生成共振结晶', async () => {
+    vi.mocked(isLlmConfigured).mockReturnValue(true);
+    paramOverrides = {
+      gate_min_nodes: 0,
+      min_nodes_per_topic: 100, // 关掉 evolution 路径,只测 resonance
+      max_resonance_weeks: 3,
+    };
+
+    const tagA = seedNode(db, { content: 'tagA', tags: [], heat: 0.5 });
+    db.prepare('UPDATE nodes SET is_tag = 1 WHERE id = ?').run(tagA.id);
+    const tagB = seedNode(db, { content: 'tagB', tags: [], heat: 0.5 });
+    db.prepare('UPDATE nodes SET is_tag = 1 WHERE id = ?').run(tagB.id);
+
+    seedNode(db, { content: 'n1', tags: ['tagA'], heat: 0.5 });
+    seedNode(db, { content: 'n2', tags: ['tagA'], heat: 0.5 });
+    seedNode(db, { content: 'n3', tags: ['tagB'], heat: 0.5 });
+
+    vi.mocked(callLLM).mockResolvedValue(JSON.stringify({
+      pattern_type: 'resonance',
+      title: '测试共振',
+      insight: '两个主题在同一周交汇',
+      confidence: 0.9,
+    }));
+
+    const first = await runTemporalCrystal(db);
+    expect(first.crystals_created).toBe(1);
+
+    const second = await runTemporalCrystal(db);
+    expect(second.crystals_created).toBe(0);
+
+    // 共振结晶只有一个,且带 week 标识 tag(dedup 主键)
+    const crystals = db.prepare(
+      "SELECT tags FROM nodes WHERE is_crystal = 1 AND source_tool = 'temporal-crystal'",
+    ).all() as Array<{ tags: string }>;
+    expect(crystals.length).toBe(1);
+    expect(JSON.parse(crystals[0].tags).some((t: string) => t.startsWith('week-'))).toBe(true);
+
+    // 防泄漏:恢复默认 mock,避免影响后续测试
+    vi.mocked(callLLM).mockResolvedValue('{}');
   });
 });

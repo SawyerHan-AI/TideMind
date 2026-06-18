@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { callLLM } from '../llm/client.js';
+import { callLLM, LLMServiceError } from '../llm/client.js';
 import { LEARNING3_SYSTEM } from '../llm/prompts.js';
 import { getConfig, isLlmConfigured } from '../config.js';
 import { getPrompt, getLLMOptions, renderUserPrompt } from '../strategy/loader.js';
@@ -363,6 +363,8 @@ export async function runLearning3(db: Database.Database): Promise<DiagnosticRep
 
     return report;
   } catch (err) {
+    // LLMServiceError 必须向上抛,让 scheduler 记失败 + 熔断生效(与其他 LLM 任务一致)
+    if (err instanceof LLMServiceError) throw err;
     log.error('Learning III 诊断失败:', (err as Error).message);
     return null;
   }

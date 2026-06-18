@@ -53,6 +53,7 @@ export function collectLinkSurvival(db: Database.Database): void {
     SELECT COUNT(*) as cnt, AVG(strength) as avg_strength
     FROM links
     WHERE auto = 1
+      AND deleted = 0
       AND created BETWEEN datetime('now', '-14 days') AND datetime('now', '-7 days')
   `).get() as { cnt: number; avg_strength: number | null };
 
@@ -63,6 +64,7 @@ export function collectLinkSurvival(db: Database.Database): void {
     SELECT COUNT(*) as cnt
     FROM links
     WHERE auto = 1
+      AND deleted = 0
       AND created BETWEEN datetime('now', '-21 days') AND datetime('now', '-14 days')
   `).get() as { cnt: number };
 

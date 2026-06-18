@@ -2,7 +2,7 @@
  * refreshTokenIfNeeded inflight Promise mutex 测试。
  *
  * 背景(CRITICAL):
- *   6+ 处 fire-and-forget caller(sync-client / mcp-router / strategy-push /
+ *   6+ 处 fire-and-forget caller(sync-client / strategy-push /
  *   reconciler 各路)在 access_token 接近过期时会近乎同时调用 refreshTokenIfNeeded。
  *   OAuth 2.1 rotating refresh-token:服务端只接受第一个 refresh_token,
  *   之后并发请求拿的是已被作废的老 refresh_token,服务端 400 → 老逻辑判作 permanent

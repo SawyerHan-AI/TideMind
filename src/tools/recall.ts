@@ -1,3 +1,4 @@
+import type Database from 'better-sqlite3';
 import type { RecallInput, RecallOutput, RecallNode, RecallNodeLink, RecallIndexItem, BrainNode, NodeType, Intent, RecallDiagnostics } from '../types.js';
 import type { IRepository } from '../db/repository.js';
 import { getParam } from '../strategy/loader.js';
@@ -55,20 +56,25 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
       nodes = [node];
     }
   }
-  // --- 按来源文件查询 ---
-  // 之前用 `source_stream LIKE %file%` 做模糊匹配，扩号太大:传入 ".md" 会命中
-  // 所有 markdown 来源，`/` 会命中所有绝对路径节点。source_file 语义是"来自
-  // 这个具体来源的记忆",应当是精确匹配。如果以后要支持前缀/子串，通过单独的
-  // API 选项（比如 source_file_prefix）暴露,不要在默认参数上做静默的模糊语义。
+  // --- 按来源文件查询（vault_file / 兼容 source_file）---
+  // 语义:"来自 vault 内这个文件的记忆"。关键约束:节点的 source_stream 列存的是
+  // stream 锚点(`stream/<file>#<anchor>`)而非 vault 路径,所以不能用
+  // `source_stream = vault_path` 匹配——那样对任何笔记节点恒返回 0 行(历史 HIGH bug)。
+  // vault 路径 → node_ids 的映射存在笔记源同步表(logseq_sync / obsidian_sync)的
+  // file_path 列里(相对路径、正斜杠),从那里反查节点。
   else if (input.source_file) {
-    const conditions = ["source_stream = ?", "heat > 0.01", "is_superseded = 0", "archived = 0"];
-    const params: unknown[] = [input.source_file];
-    if (excludeMeta) { conditions.push("is_meta = 0"); }
-    if (input.created_after) { conditions.push("created >= ?"); params.push(input.created_after); }
-    if (input.created_before) { conditions.push("created <= ?"); params.push(input.created_before); }
-    nodes = db.prepare(
-      `SELECT * FROM nodes WHERE ${conditions.join(' AND ')} ORDER BY created DESC LIMIT ?`,
-    ).all(...params, limit) as BrainNode[];
+    const nodeIds = lookupNodeIdsByVaultPath(db, input.source_file);
+    if (nodeIds.length > 0) {
+      const placeholders = nodeIds.map(() => '?').join(',');
+      const conditions = [`id IN (${placeholders})`, "heat > 0.01", "is_superseded = 0", "archived = 0"];
+      const params: unknown[] = [...nodeIds];
+      if (excludeMeta) { conditions.push("is_meta = 0"); }
+      if (input.created_after) { conditions.push("created >= ?"); params.push(input.created_after); }
+      if (input.created_before) { conditions.push("created <= ?"); params.push(input.created_before); }
+      nodes = db.prepare(
+        `SELECT * FROM nodes WHERE ${conditions.join(' AND ')} ORDER BY created DESC LIMIT ?`,
+      ).all(...params, limit) as BrainNode[];
+    }
   }
   // --- 按索引条目获取 ---
   else if (input.index_ref) {
@@ -518,6 +524,38 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
 /**
  * 模板生成 recall 摘要（不依赖 LLM，避免阻塞）
  */
+/**
+ * 按 vault 相对路径反查节点 ID。
+ *
+ * 笔记源(logseq/obsidian)同步表的 file_path 列存的是 vault 内相对路径(正斜杠),
+ * node_ids 列是该文件消化出的节点 ID JSON 数组。节点表的 source_stream 列存的
+ * 是 stream 锚点而非 vault 路径,所以 vault_file 查询必须走这两张同步表。
+ *
+ * 防御:同步表由笔记源集成懒创建,可能不存在;路径分隔符统一成正斜杠以匹配存储
+ * 形式;跨表/跨实例的同一文件 node_ids 去重合并。
+ */
+function lookupNodeIdsByVaultPath(db: Database.Database, vaultPath: string): string[] {
+  const normalized = vaultPath.replace(/\\/g, '/');
+  const ids = new Set<string>();
+  for (const table of ['logseq_sync', 'obsidian_sync']) {
+    try {
+      const rows = db.prepare(
+        `SELECT node_ids FROM ${table} WHERE file_path = ?`,
+      ).all(normalized) as Array<{ node_ids: string | null }>;
+      for (const row of rows) {
+        if (!row.node_ids) continue;
+        try {
+          const parsed = JSON.parse(row.node_ids) as unknown;
+          if (Array.isArray(parsed)) {
+            for (const id of parsed) if (typeof id === 'string') ids.add(id);
+          }
+        } catch { /* 损坏 JSON,跳过 */ }
+      }
+    } catch { /* 该同步表不存在(对应笔记源未启用),跳过 */ }
+  }
+  return [...ids];
+}
+
 function generateRecallSummary(nodes: RecallNode[]): string {
   if (nodes.length === 0) return '未找到相关记忆';
 

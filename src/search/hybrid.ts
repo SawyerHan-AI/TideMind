@@ -181,11 +181,18 @@ export async function searchHybrid(
 
       const neighborNode = neighborNodeMap.get(neighborId);
       if (!neighborNode || neighborNode.heat < 0.01) continue;
+      // archived/superseded 不能只靠 heat 阈值兜:归档把 heat 设为 0.02(恰好 > 0.01),
+      // supersede 保留 confirmed 链接——两者都会经邻居扩展把过时记忆泄漏回召回结果。
+      // 与 bm25(SQL 层 archived=0 AND is_superseded=0)/ vector.ts:49 语义对齐。
+      if (neighborNode.archived || neighborNode.is_superseded) continue;
       if (options.excludeMeta && neighborNode.is_meta) continue;
       // 邻居扩展是 bm25/vector 之外的第三个结果源,必须同样尊重 type 过滤,
       // 否则 brain_recall({query, type:'fact'}) 会漏返与命中 fact 强关联的 idea/context
       // 邻居(silent wrong-result + 与云端 type 严格语义不一致)。对齐 bm25.ts:57 / vector.ts:50。
       if (options.type && neighborNode.type !== options.type) continue;
+      // 时间过滤同上,对齐 bm25.ts:59-60 / vector.ts:52-53
+      if (options.createdAfter && neighborNode.created < options.createdAfter) continue;
+      if (options.createdBefore && neighborNode.created > options.createdBefore) continue;
 
       seenNeighbors.add(neighborId);
 

@@ -97,6 +97,121 @@ describe('ensureSchema 基础', () => {
   });
 });
 
+// ===== 旧空库判定（schema.ts:1866 修复回归测试）=====
+
+/**
+ * 模拟"迁移框架引入前安装、但从未写入任何节点"的旧空库：
+ * - 有旧版 nodes 表（缺 updated 等后续列）
+ * - nodes 行数为 0
+ * - metadata 表没有 schema_version
+ *
+ * 旧实现按 nodes 行数判定会把它误当作全新库直接盖戳 v28，跳过全部 migration，
+ * 旧表缺列 → 后续写入永久失败。修复后应识别为旧库并跑全量幂等 migration。
+ */
+function makeLegacyEmptyDb(): Database.Database {
+  const db = new Database(':memory:');
+  // 复刻迁移框架引入前（commit 1eb92ad）的最早期 schema：
+  // nodes 缺 updated/title/specificity/is_tag/is_superseded 等后续列；
+  // links 带已被 v3 删除的 semtype 列；metadata 表存在但没写 schema_version。
+  db.exec(`
+    CREATE TABLE nodes (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL CHECK(type IN ('fact','context','preference','idea','crystal','meta')),
+      content TEXT NOT NULL,
+      heat REAL DEFAULT 1.0,
+      refinement REAL DEFAULT 0.0,
+      connectivity REAL DEFAULT 0.0,
+      independence REAL DEFAULT 0.0,
+      source_tool TEXT,
+      source_session TEXT,
+      source_stream TEXT,
+      source_timestamp TEXT,
+      project TEXT,
+      tags TEXT,
+      created TEXT NOT NULL,
+      last_reconsolidated TEXT,
+      version INTEGER DEFAULT 1,
+      archived INTEGER DEFAULT 0,
+      is_keystone INTEGER DEFAULT 0,
+      maturity_score REAL DEFAULT 0.0
+    );
+    CREATE TABLE links (
+      id TEXT PRIMARY KEY,
+      from_id TEXT NOT NULL REFERENCES nodes(id),
+      to_id TEXT NOT NULL REFERENCES nodes(id),
+      relation TEXT NOT NULL,
+      semtype TEXT,
+      strength REAL DEFAULT 0.5,
+      note TEXT,
+      auto INTEGER DEFAULT 1,
+      status TEXT DEFAULT 'confirmed' CHECK(status IN ('confirmed','pending')),
+      created TEXT NOT NULL
+    );
+    CREATE TABLE metadata (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `);
+  // 注意：metadata 表存在但没有 schema_version 行 → getSchemaVersion 返回 -1
+  return db;
+}
+
+describe('ensureSchema 旧空库判定', () => {
+  it('旧空库（缺 updated 列、0 行、无 schema_version）会跑全量 migration 而非被盖戳', () => {
+    const db = makeLegacyEmptyDb();
+    expect(getSchemaVersion(db)).toBe(-1);
+
+    ensureSchema(db);
+
+    // 应升级到最新版本
+    expect(getSchemaVersion(db)).toBeGreaterThan(0);
+    // 旧表缺失的关键列被 migration 补齐
+    const cols = (db.prepare('PRAGMA table_info(nodes)').all() as Array<{ name: string }>).map(c => c.name);
+    expect(cols, 'nodes.updated 应被 migration 补齐').toContain('updated');
+    expect(cols, 'nodes.is_tag 应被 migration 补齐').toContain('is_tag');
+    expect(cols, 'nodes.is_superseded 应被 migration 补齐').toContain('is_superseded');
+  });
+
+  it('旧空库迁移后可正常写入显式带 updated 列的 INSERT', () => {
+    const db = makeLegacyEmptyDb();
+    ensureSchema(db);
+
+    expect(() => {
+      db.prepare(
+        "INSERT INTO nodes (id, type, content, heat, created, updated) VALUES ('n1', 'fact', 'hello world', 1.0, '2024-01-01', '2024-01-01')",
+      ).run();
+    }).not.toThrow();
+  });
+
+  it('全量 migration 后含全新库的所有表（表集合为超集）', () => {
+    // 注意：不能要求"完全相等"。notion_sync / notion_pending_relations 由
+    // migration v11 创建但从未进 SCHEMA_SQL、也无后续 migration DROP，所以任何
+    // 走过全量 migration 的库(含真实老用户升级库)都比全新库多这两张表——这是
+    // 框架既有的 fresh-vs-migrated 漂移,与本修复无关。这里只断言"超集 + 版本对齐"。
+    const legacy = makeLegacyEmptyDb();
+    ensureSchema(legacy);
+    const fresh = freshDb();
+    ensureSchema(fresh);
+
+    const legacyTables = new Set(getTableNames(legacy));
+    for (const t of getTableNames(fresh)) {
+      expect(legacyTables, `migration 后缺少全新库的表: ${t}`).toContain(t);
+    }
+    expect(getSchemaVersion(legacy)).toBe(getSchemaVersion(fresh));
+  });
+
+  it('全新库不会被误跑 migration（直接盖戳最新版本）', () => {
+    const db = freshDb();
+    ensureSchema(db);
+    // 全新库被直接标记为最新版本
+    const v = getSchemaVersion(db);
+    expect(v).toBeGreaterThan(0);
+    // 再次运行幂等，不变
+    ensureSchema(db);
+    expect(getSchemaVersion(db)).toBe(v);
+  });
+});
+
 // ===== Schema 版本 =====
 
 describe('schema 版本', () => {

@@ -3,8 +3,19 @@ import { getParam } from '../strategy/loader.js';
 import { logTimelineEvent } from '../db/log.js';
 import { createLogger } from '../utils/logger.js';
 import { now } from '../utils/time.js';
+import { heatDecayRate } from './decay-fns.js';
 
 const log = createLogger('synaptic');
+
+/** M8.5:云同步活跃(cloud_last_synced_version 存在)→ A 类衰减由 generation 重算负责,daily 跳过。 */
+function isCloudSyncActive(db: Database.Database): boolean {
+  try {
+    const row = db.prepare(`SELECT value FROM metadata WHERE key = 'cloud_last_synced_version'`).get() as { value?: string } | undefined;
+    return row?.value != null;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * 每日突触衰减 + 归档判定
@@ -17,6 +28,11 @@ const log = createLogger('synaptic');
 export function runSynapticScaling(db: Database.Database): {
   decayed: number;
 } {
+  // M8.5:云同步用户的 heat/link 衰减改由云端 generation 锚点 + 本地 recomputeToGeneration
+  // 负责(各端重算),本地 daily wall-clock 会与之双重衰减,故跳过。纯本地用户(无
+  // cloud_last_synced_version)仍跑 wall-clock 衰减。
+  if (isCloudSyncActive(db)) return { decayed: 0 };
+
   let decayed = 0;
 
   // 只处理 heat > 0.01 的节点（极低 heat 的自然沉底，不浪费计算）
@@ -68,8 +84,8 @@ export function runSynapticScaling(db: Database.Database): {
     db.transaction(() => {
       const ts = now();
       for (const node of batch) {
-        // 衰减率：所有节点严格衰减，连通度高的衰减更慢
-        const decayRate = 1 - decayBase * (1 - decayDamping * Math.min(node.connectivity, 1));
+        // 衰减率：所有节点严格衰减，连通度高的衰减更慢(M8:公式委托 @core decay-fns)
+        const decayRate = heatDecayRate(node.connectivity, { base: decayBase, damping: decayDamping });
 
         // 用具名参数：rate 在 SET 中出现两处（heat 衰减 / maturity 子查询），
         // id 同理（WHERE / 子查询），具名绑定避免位置参数重复传递。
@@ -96,15 +112,17 @@ export function runSynapticScaling(db: Database.Database): {
   // 原 SELECT 用严格 >,strength 恰好等于 threshold 的链接永远不会被扫,
   // 也就不会被衰减/删除,永远挂在图上。这里显式做一次独立 DELETE 兜底。
   const confirmedLinks = db.transaction(() => {
+    // M10:软删(deleted=1 + bump updated/edit_seq),靠 LWW 跨设备传播删除;不 hard-delete
+    // (否则另一端 reconcile 当 onlyLocal 复活)。已 deleted 的不重复软删(AND deleted = 0)。
     const purgedBelowThreshold = db.prepare(
-      "DELETE FROM links WHERE status = 'confirmed' AND strength <= ?",
-    ).run(linkDeleteThreshold).changes;
+      "UPDATE links SET deleted = 1, updated = ?, edit_seq = edit_seq + 1 WHERE status = 'confirmed' AND strength <= ? AND deleted = 0",
+    ).run(now(), linkDeleteThreshold).changes;
     linkDeleted += purgedBelowThreshold;
 
     return db.prepare(`
       SELECT l.id, l.strength, l.from_id, l.to_id, l.relation
       FROM links l
-      WHERE l.status = 'confirmed' AND l.strength > ?
+      WHERE l.status = 'confirmed' AND l.strength > ? AND l.deleted = 0
     `).all(linkDeleteThreshold) as Array<{ id: string; strength: number; from_id: string; to_id: string; relation: string }>;
   })();
 
@@ -122,7 +140,8 @@ export function runSynapticScaling(db: Database.Database): {
   // 必须 bump updated，否则赫布衰减 strength 变化不会被云端 reconcile 看到
   // （manifest LWW 比 updated → 云端 strength 永远胜出，本地衰减无效推送）。
   const linkUpdateStmt = db.prepare('UPDATE links SET strength = ?, updated = ? WHERE id = ?');
-  const linkDeleteStmt = db.prepare('DELETE FROM links WHERE id = ?');
+  // M10:软删而非 hard-delete(见上)。bump edit_seq 使删除经 LWW 跨设备传播。
+  const linkDeleteStmt = db.prepare('UPDATE links SET deleted = 1, updated = ?, edit_seq = edit_seq + 1 WHERE id = ?');
 
   for (let i = 0; i < confirmedLinks.length; i += BATCH_SIZE) {
     const batch = confirmedLinks.slice(i, i + BATCH_SIZE);
@@ -157,7 +176,7 @@ export function runSynapticScaling(db: Database.Database): {
         // 不到、本轮 loop 又走 else 分支留在表里),与 L96-98 注释"strength 恰好等于
         // threshold 永远不会被扫"语义冲突。
         if (newStrength <= linkDeleteThreshold) {
-          linkDeleteStmt.run(link.id);
+          linkDeleteStmt.run(batchTs, link.id);
           linkDeleted++;
         } else {
           linkUpdateStmt.run(newStrength, batchTs, link.id);

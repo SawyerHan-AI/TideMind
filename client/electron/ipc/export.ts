@@ -55,6 +55,28 @@ function safeQuery(db: Database.Database, sql: string): unknown[] {
   }
 }
 
+/**
+ * 查询与给定 node ids 关联的 links,按 BATCH 分批展开 IN 子句。
+ *
+ * 不分批时变量个数 = 2 × nodeIds.length,大量筛选节点(SQLite 变量上限)会让
+ * prepare 抛 "too many SQL variables" 整个导出失败。与 nodes.ts BATCH=400 同模式;
+ * client/electron 独立编译,故本地实现而非 import src/。JS 侧按 link.id 去重
+ * (一条 link 的 from_id/to_id 可能分落两个 batch)。
+ */
+function fetchLinksForNodes(db: Database.Database, nodeIds: string[]): any[] {
+  const BATCH = 400
+  const byId = new Map<string, any>()
+  for (let i = 0; i < nodeIds.length; i += BATCH) {
+    const chunk = nodeIds.slice(i, i + BATCH)
+    const placeholders = chunk.map(() => '?').join(', ')
+    const rows = db.prepare(
+      `SELECT * FROM links WHERE (from_id IN (${placeholders}) OR to_id IN (${placeholders})) AND deleted = 0`,
+    ).all(...chunk, ...chunk) as any[]
+    for (const row of rows) byId.set(row.id, row)
+  }
+  return [...byId.values()]
+}
+
 export function registerExportHandlers(db: Database.Database, _dataDir: string): void {
   // ── Markdown 导出 ──────────────────────────────────────────
   ipcMain.handle('export:markdown', (_e, scope: unknown) => {
@@ -92,7 +114,7 @@ export function registerExportHandlers(db: Database.Database, _dataDir: string):
       if (node.archived) lines.push('- **Archived**')
 
       // Links
-      const links = db.prepare('SELECT * FROM links WHERE from_id = ? OR to_id = ?').all(node.id, node.id) as any[]
+      const links = db.prepare('SELECT * FROM links WHERE (from_id = ? OR to_id = ?) AND deleted = 0').all(node.id, node.id) as any[]
       if (links.length > 0) {
         lines.push('')
         lines.push('#### Links')
@@ -142,12 +164,9 @@ export function registerExportHandlers(db: Database.Database, _dataDir: string):
     // Links: 全量模式导出全部，筛选模式只导出关联 nodes 的
     let links: any[]
     if (isFullScope(parsed.data)) {
-      links = db.prepare('SELECT * FROM links').all()
+      links = db.prepare('SELECT * FROM links WHERE deleted = 0').all()
     } else if (nodeIds.length > 0) {
-      const placeholders = nodeIds.map(() => '?').join(', ')
-      links = db.prepare(
-        `SELECT * FROM links WHERE from_id IN (${placeholders}) OR to_id IN (${placeholders})`
-      ).all(...nodeIds, ...nodeIds)
+      links = fetchLinksForNodes(db, nodeIds)
     } else {
       links = []
     }

@@ -119,6 +119,36 @@ describe('prepare - database with nodes', () => {
 
     expect(result.profile.text).toBe('这是一个开发者画像');
   });
+
+  // F3 读取侧自愈:存量污染节点(2026-06 事故)不能把 raw JSON 当画像注入
+  it('污染的 raw JSON 画像节点 → 净化为干净文本,不注入 fence 全文', async () => {
+    const poison = '```json\n{\n  "profile_text": "用户是星海科技的产品负责人，主导 DataPilot。",\n  "structured": {"role": "PM"}\n}\n```';
+    db.prepare(`
+      INSERT INTO nodes (id, type, content, title, heat, refinement, connectivity, independence, maturity_score, is_meta, created)
+      VALUES ('prof-poison', 'meta', ?, 'user-profile', 1.0, 0, 0, 0, 0.2, 1, datetime('now'))
+    `).run(poison);
+
+    const result = await prepare(repo, { tool: 'cursor' });
+
+    expect(result.profile.text).toContain('星海科技');
+    expect(result.profile.text.trimStart().startsWith('```')).toBe(false);
+    expect(result.profile.text).not.toContain('"profile_text"');
+  });
+
+  it('不可救污染节点 → 降级为基础统计,绝不返回 raw JSON', async () => {
+    const unsalvageable = '```json\n{ "wrong_key": "无 profile_text 未转义 " 破坏", "list": ["x"] }\n```';
+    db.prepare(`
+      INSERT INTO nodes (id, type, content, title, heat, refinement, connectivity, independence, maturity_score, is_meta, created)
+      VALUES ('prof-bad', 'meta', ?, 'user-profile', 1.0, 0, 0, 0, 0.2, 1, datetime('now'))
+    `).run(unsalvageable);
+    // 给点普通节点,让基础统计有内容
+    seedNode(db, { type: 'fact', content: 'fact 1' });
+
+    const result = await prepare(repo, { tool: 'cursor' });
+
+    expect(result.profile.text.trimStart().startsWith('```')).toBe(false);
+    expect(result.profile.text).not.toContain('"wrong_key"');
+  });
 });
 
 // ===== 枢纽节点 =====

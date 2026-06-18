@@ -10,6 +10,7 @@ import { runStructureHolesInWorker } from '../workers/structure-holes-runner.js'
 import { createLogger } from '@server/utils/logger.js'
 import { safeParseJsonArray } from '@server/utils/json-safe.js'
 import { tokenizeQuery, buildFts5Query } from '@server/db/fts.js'
+import { getLocalGeneration } from '@server/metabolism/generation-decay.js'
 import {
   parseNodeId,
   parseNodesListFilter,
@@ -145,7 +146,7 @@ export function registerNodeHandlers(db: Database.Database): void {
 
     // 过滤掉用户已拒绝的 tagged 链接（rejected_by_user 状态保留在 DB 作反馈痕迹，但不再展示）
     const links = db.prepare(
-      "SELECT * FROM links WHERE (from_id = ? OR to_id = ?) AND status != 'rejected_by_user'"
+      "SELECT * FROM links WHERE (from_id = ? OR to_id = ?) AND status != 'rejected_by_user' AND deleted = 0"
     ).all(nodeId, nodeId)
     const versions = db.prepare('SELECT * FROM node_versions WHERE node_id = ? ORDER BY version DESC').all(nodeId)
 
@@ -209,11 +210,20 @@ export function registerNodeHandlers(db: Database.Database): void {
   ipcMain.handle('nodes:tags', () => {
     // perf-optimization-2026-05-17 P1-2:改读 tag_usage 物化表(trigger 维护),
     // 替代原本全表 SELECT tags + JS JSON.parse 聚合。
-    const tagRows = db.prepare(`
-      SELECT tag, node_count
-      FROM tag_usage
-      WHERE node_count > 0
-    `).all() as Array<{ tag: string; node_count: number }>
+    // tag_usage 物化表只由 daemon ensureSchema 建,daemon 延迟启动。全新安装首启
+    // 窗口期该表还不存在,裸查会抛 "no such table" → IPC reject。缺表时降级返回空,
+    // 其余错误照常抛出(不吞 BUSY / CORRUPT)。
+    let tagRows: Array<{ tag: string; node_count: number }>
+    try {
+      tagRows = db.prepare(`
+        SELECT tag, node_count
+        FROM tag_usage
+        WHERE node_count > 0
+      `).all() as Array<{ tag: string; node_count: number }>
+    } catch (err) {
+      if (!/no such table/i.test((err as Error).message)) throw err
+      tagRows = []
+    }
 
     // 核心标签判定(is_tag=1 的节点):tag-promote 把标签名存 title,
     // content 是 LLM 生成的定义,兼容两种情况
@@ -246,9 +256,9 @@ export function registerNodeHandlers(db: Database.Database): void {
       const tagNodeId = genId()
       db.prepare(`
         INSERT INTO nodes (id, type, content, title, heat, refinement, connectivity, independence,
-          specificity, subjectivity, actuality, is_tag, created, version, archived, maturity_score)
-        VALUES (?, 'fact', '', ?, 1.0, 0, 0, 0, 0.1, 0.1, 0.9, 1, datetime('now'), 1, 0, 0)
-      `).run(tagNodeId, tag)
+          specificity, subjectivity, actuality, is_tag, created, version, archived, maturity_score, edit_seq, decay_gen)
+        VALUES (?, 'fact', '', ?, 1.0, 0, 0, 0, 0.1, 0.1, 0.9, 1, datetime('now'), 1, 0, 0, 1, ?)
+      `).run(tagNodeId, tag, getLocalGeneration(db))
 
       // 链接方向：content_node → tag_node（与 tag-promote.ts 一致）
       // 修复(2026-05-20 Audit E-5):用 json_each(tags) 让 SQLite 在索引侧直接
@@ -405,7 +415,7 @@ export function registerNodeHandlers(db: Database.Database): void {
         const rows = db.prepare(
           `SELECT from_id, to_id FROM links
            WHERE (from_id IN (${placeholders}) OR to_id IN (${placeholders}))
-             AND status != 'rejected_by_user'`
+             AND status != 'rejected_by_user' AND deleted = 0`
         ).all(...slice, ...slice) as Array<{ from_id: string; to_id: string }>
         for (const r of rows) {
           neighborIdSet.add(r.from_id)
@@ -440,7 +450,7 @@ export function registerNodeHandlers(db: Database.Database): void {
         const rows = db.prepare(
           `SELECT * FROM links
            WHERE (from_id IN (${placeholders}) OR to_id IN (${placeholders}))
-             AND status != 'rejected_by_user'`
+             AND status != 'rejected_by_user' AND deleted = 0`
         ).all(...slice, ...slice) as any[]
         for (const r of rows) {
           if (seenLinkIds.has(r.id)) continue
@@ -481,7 +491,7 @@ export function registerNodeHandlers(db: Database.Database): void {
 
     // P2-NEW-K: prepare 一次，循环内仅 .all()，避免每节点重新编译 SQL
     const neighborsStmt = db.prepare(
-      "SELECT from_id, to_id FROM links WHERE (from_id = ? OR to_id = ?) AND status != 'rejected_by_user'"
+      "SELECT from_id, to_id FROM links WHERE (from_id = ? OR to_id = ?) AND status != 'rejected_by_user' AND deleted = 0"
     )
 
     while (queue.length > 0 && depth < maxDepth && !found) {
@@ -556,7 +566,7 @@ export function registerNodeHandlers(db: Database.Database): void {
     let ok = false
     db.transaction(() => {
       const link = db.prepare(
-        'SELECT id, from_id, to_id, strength, relation, status FROM links WHERE id = ?',
+        'SELECT id, from_id, to_id, strength, relation, status FROM links WHERE id = ? AND deleted = 0',
       ).get(linkId) as { id: string; from_id: string; to_id: string; strength: number; relation: string; status: string } | undefined
       if (!link) return
       // 已是 rejected 状态就不重复处理（也不重复写 timeline）
@@ -585,7 +595,9 @@ export function registerNodeHandlers(db: Database.Database): void {
               const filtered = tags.filter(t => t !== tagName)
               // 必须 bump updated 否则 cloud reconcile 看不见 tags 变化,
               // 下次 reconcile 时云端旧 tags 会覆盖本地新值，被拒标签复活。
-              db.prepare("UPDATE nodes SET tags = ?, updated = datetime('now') WHERE id = ?").run(JSON.stringify(filtered), link.from_id)
+              // M3:bump edit_seq(内容类 tags 编辑),使 reconcile 内容仲裁 (edit_seq, updated)
+              // 中本地拒标签赢过云端旧 tags——否则只 bump updated 在 updated 双角色下仍会被覆盖。
+              db.prepare("UPDATE nodes SET tags = ?, edit_seq = edit_seq + 1, updated = datetime('now') WHERE id = ?").run(JSON.stringify(filtered), link.from_id)
               tagRemovedFromNode = true
             }
           } catch { /* 解析失败不阻塞主流程 */ }
@@ -661,8 +673,9 @@ export function registerNodeHandlers(db: Database.Database): void {
         }
         if (!tags.includes(tagName)) {
           tags.push(tagName)
-          // 同 rejectTag 路径，必须 bump updated 否则同步丢失 unreject 的还原。
-          db.prepare("UPDATE nodes SET tags = ?, updated = datetime('now') WHERE id = ?").run(JSON.stringify(tags), fromId)
+          // 同 rejectTag 路径,M3 一并 bump edit_seq(内容类 tags 编辑),否则 reconcile
+          // 内容仲裁 (edit_seq, updated) 下还原会被云端旧 tags 覆盖。
+          db.prepare("UPDATE nodes SET tags = ?, edit_seq = edit_seq + 1, updated = datetime('now') WHERE id = ?").run(JSON.stringify(tags), fromId)
         }
       }
     })()

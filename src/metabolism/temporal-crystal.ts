@@ -103,8 +103,15 @@ async function findTopicEvolution(db: Database.Database): Promise<{ analyzed: nu
   // 原查询 `FROM nodes t JOIN nodes n` 无 ON 关联键,SQLite 先做笛卡尔积再
   // 用 EXISTS + json_each 过滤 —— 1k tag 节点 × 10k 普通节点 × 每个节点
   // json_each 扫一遍 tags,复杂度 O(|T| · |N| · k)。
-  // 这里先用 CTE 预聚合 (node_id, tag) 对,再按 tag 分组 + 关联 tag 节点 content,
+  // 这里先用 CTE 预聚合 (node_id, tag) 对,再按 tag 分组 + 关联 tag 节点,
   // 复杂度降到 O(|N| · k_avg) + O(|T|) —— tag 侧不再参与笛卡尔积。
+  //
+  // tag 节点匹配必须 title 优先(COALESCE):tag-promote 产出的现代 tag 节点
+  // title=标签名、content=LLM 定义句(或复用节点的原文),只按 content 匹配会
+  // 让这类标签全部 JOIN 不上,整条 evolution 路径对其静默失效;title IS NULL
+  // 的 legacy / integration 节点仍按 content 匹配。与 annotate / tag-promote
+  // 的 title 优先约定对齐。GROUP BY 防同名新旧两个 tag 节点把同一 tag 翻倍
+  // 占用 LIMIT 名额。
   const coreTags = db.prepare(`
     WITH node_tags AS (
       SELECT n.id AS node_id, je.value AS tag
@@ -124,8 +131,9 @@ async function findTopicEvolution(db: Database.Database): Promise<{ analyzed: nu
     )
     SELECT tc.tag AS tag, tc.cnt AS cnt
     FROM tag_counts tc
-    JOIN nodes t ON t.content = tc.tag
+    JOIN nodes t ON COALESCE(t.title, t.content) = tc.tag
     WHERE t.is_tag = 1 AND t.heat > 0.01 AND t.is_superseded = 0 AND t.archived = 0
+    GROUP BY tc.tag
     ORDER BY tc.cnt DESC
     LIMIT ?
   `).all(minNodesPerTopic, maxTopics) as Array<{ tag: string; cnt: number }>;
@@ -254,10 +262,13 @@ async function findCrossTopicResonance(db: Database.Database): Promise<{ analyze
   const maxWeeks = getParam('temporal-crystal', 'max_resonance_weeks', 3);
 
   // 获取核心标签列表
+  // title 优先(COALESCE):tag-promote 产出的 tag 节点 title=标签名、content=
+  // LLM 定义句,只取 content 会让 coreTagSet 装满定义句,与节点 tags 里的标签名
+  // 永不相交 → resonance 路径整体 no-op。legacy 节点(title IS NULL)仍用 content。
   const coreTagRows = db.prepare(
-    "SELECT content FROM nodes WHERE is_tag = 1 AND heat > 0.01 AND is_superseded = 0 AND archived = 0"
-  ).all() as Array<{ content: string }>;
-  const coreTagSet = new Set(coreTagRows.map(r => r.content));
+    "SELECT COALESCE(title, content) AS tag FROM nodes WHERE is_tag = 1 AND heat > 0.01 AND is_superseded = 0 AND archived = 0"
+  ).all() as Array<{ tag: string }>;
+  const coreTagSet = new Set(coreTagRows.map(r => r.tag));
 
   if (coreTagSet.size < 2) return { analyzed: 0, created: 0 };
 
@@ -267,10 +278,13 @@ async function findCrossTopicResonance(db: Database.Database): Promise<{ analyze
   // 还没有时区概念,created 若是带 Z 的 UTC 字符串再被 SQLite 按本地时区解析
   // 也会错分。改用 date(created, 'weekday 0', '-6 days') 把任何日期映射到
   // 所在自然周的周一,只比较 Y-M-D,既没有跨年断层,也不带时区偏差。
+  // is_crystal = 0:resonance 自己产出的 crystal(heat=1.0)不能反哺进活跃度
+  // 统计和下面的周节点池,否则上一轮结晶会挤占 LIMIT 名额、污染分析输入。
+  // 与 evolution 路径的节点查询对齐。
   const weeks = db.prepare(`
     SELECT date(created, 'weekday 0', '-6 days') as week, COUNT(*) as node_count
     FROM nodes
-    WHERE tags IS NOT NULL AND heat > 0.01 AND is_meta = 0 AND is_superseded = 0 AND archived = 0
+    WHERE tags IS NOT NULL AND heat > 0.01 AND is_meta = 0 AND is_crystal = 0 AND is_superseded = 0 AND archived = 0
     GROUP BY week
     HAVING node_count >= 3
     ORDER BY week DESC
@@ -281,11 +295,32 @@ async function findCrossTopicResonance(db: Database.Database): Promise<{ analyze
   let created = 0;
 
   for (const week of weeks) {
-    // 获取该周的节点
+    // 结构化 dedup(对齐 evolution 路径的 M13 模式):同一周在 maxWeeks 滑动窗口
+    // 内会被连续 ~3 次运行反复分析,没有去重时 LLM 每次都可能再建一个共振结晶。
+    // 主键:source_tool='temporal-crystal'(或 NULL,兼容旧数据)+ tags 同时含
+    // '跨主题' 和 week 标识。旧版本结晶没有 week tag,用 content 前缀
+    // '[跨主题共振] {week}:' 兜底(week 是 Y-M-D 日期,无 LIKE 特殊字符)。
+    const existingResonance = db.prepare(`
+      SELECT 1 FROM nodes
+      WHERE is_crystal = 1
+        AND (source_tool = 'temporal-crystal' OR source_tool IS NULL)
+        AND is_superseded = 0
+        AND archived = 0
+        AND (
+          (EXISTS (SELECT 1 FROM json_each(tags) je WHERE je.value = '跨主题')
+           AND EXISTS (SELECT 1 FROM json_each(tags) je WHERE je.value = ?))
+          OR content LIKE '[跨主题共振] ' || ? || ':%'
+        )
+      LIMIT 1
+    `).get(`week-${week.week}`, week.week);
+
+    if (existingResonance) continue;
+
+    // 获取该周的节点(is_crystal = 0 见上面 weeks 查询的注释)
     const nodes = db.prepare(`
       SELECT id, content, tags, created
       FROM nodes
-      WHERE date(created, 'weekday 0', '-6 days') = ? AND tags IS NOT NULL AND heat > 0.01 AND is_meta = 0 AND is_superseded = 0 AND archived = 0
+      WHERE date(created, 'weekday 0', '-6 days') = ? AND tags IS NOT NULL AND heat > 0.01 AND is_meta = 0 AND is_crystal = 0 AND is_superseded = 0 AND archived = 0
       ORDER BY heat DESC
       LIMIT 15
     `).all(week.week) as Array<{ id: string; content: string; tags: string; created: string }>;
@@ -357,7 +392,8 @@ async function findCrossTopicResonance(db: Database.Database): Promise<{ analyze
         subjectivity: 0.5,
         actuality: 0.8,
         is_crystal: 1,
-        tags: ['时间结晶', '跨主题'],
+        // week 标识 tag 是上面结构化 dedup 的主键,不能去掉
+        tags: ['时间结晶', '跨主题', `week-${week.week}`],
         source_tool: 'temporal-crystal',
       });
       const crystalId = crystalNode.id;

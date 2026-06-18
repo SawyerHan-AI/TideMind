@@ -18,7 +18,9 @@ const checks = [
   { name: 'cloud typecheck', cwd: path.join(repoRoot, 'pro/cloud-server'), command: 'npx', args: ['tsc', '--noEmit'] },
   { name: 'cloud test', cwd: path.join(repoRoot, 'pro/cloud-server'), command: 'npm', args: ['test'] },
   { name: 'cloud audit', cwd: path.join(repoRoot, 'pro/cloud-server'), command: 'npm', args: ['audit', '--audit-level=moderate'] },
+  { name: 'website typecheck', cwd: path.join(repoRoot, 'pro/website'), command: 'npx', args: ['tsc', '--noEmit'] },
   { name: 'website build', cwd: path.join(repoRoot, 'pro/website'), command: 'npm', args: ['run', 'build'] },
+  { name: 'website audit', cwd: path.join(repoRoot, 'pro/website'), command: 'npm', args: ['audit', '--audit-level=moderate'] },
   { name: 'client build', cwd: path.join(repoRoot, 'client'), command: 'npm', args: ['run', 'build'] },
   { name: 'client typecheck', cwd: path.join(repoRoot, 'client'), command: 'npx', args: ['tsc', '--build', '--noEmit'] },
   { name: 'client audit', cwd: path.join(repoRoot, 'client'), command: 'npm', args: ['audit', '--audit-level=moderate'] },
@@ -65,10 +67,28 @@ function runCheck(check) {
     });
 
     let output = '';
+    let settled = false;
     child.stdout.on('data', chunk => { output += chunk.toString(); });
     child.stderr.on('data', chunk => { output += chunk.toString(); });
 
+    // spawn 本身失败(ENOENT:命令不在 PATH / cwd 异常等)会 emit 'error' 且不会
+    // emit 'close'。没有这个监听器时 Node 会以 "Unhandled 'error' event" 直接崩,
+    // 包装的 Promise 永不 resolve —— 装机问题反而绕过 preflightDeps 的友好提示。
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      resolve({
+        ...check,
+        code: 1,
+        signal: null,
+        durationMs: Math.round(performance.now() - started),
+        output: `spawn failed: ${err.message}`,
+      });
+    });
+
     child.on('close', (code, signal) => {
+      if (settled) return;
+      settled = true;
       const durationMs = Math.round(performance.now() - started);
       resolve({
         ...check,

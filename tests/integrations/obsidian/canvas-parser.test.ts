@@ -34,6 +34,27 @@ function writeCanvas(name: string, data: unknown): string {
   return filePath;
 }
 
+// ===== rawContent 透传（init/queue 用它算 content hash 避免 TOCTOU） =====
+
+describe('rawContent', () => {
+  it('rawContent 等于写入磁盘的原始字符串', () => {
+    const data = {
+      nodes: [
+        { id: 'n1', type: 'text', text: 'Hello', x: 0, y: 0, width: 100, height: 50 },
+      ],
+      edges: [],
+    };
+    const raw = JSON.stringify(data);
+    const filePath = path.join(tmpDir, 'raw.canvas');
+    fs.writeFileSync(filePath, raw, 'utf-8');
+
+    const result = parseCanvas(filePath);
+    expect(result).not.toBeNull();
+    // 解析层必须把读到的原始内容原样透传,供调用方用同一 snapshot 算 hash。
+    expect(result!.rawContent).toBe(raw);
+  });
+});
+
 // ===== 文本节点 =====
 
 describe('text nodes', () => {

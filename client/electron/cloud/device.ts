@@ -29,6 +29,8 @@ export async function registerDevice(): Promise<string | null> {
         os_version: os.release(),
         app_version: app.getVersion(),
       }),
+      // undici 默认 ~300s;device 注册是 fire-and-forget 但黑洞网络下也别挂半小时。
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (!res.ok) {

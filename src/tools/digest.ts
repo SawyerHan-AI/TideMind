@@ -94,6 +94,11 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
       return { status: 'rejected', trace_id: traceId, reject_reason: `目标节点 ${input.target_node} 在纠正过程中消失` };
     }
 
+    // 内容已变更 → 刷新向量,否则 nodes_vec 残留被纠正前的旧内容 embedding,
+    // 语义搜索仍按错误的旧表述召回(FTS 由 nodes_au trigger 自动同步,向量无 trigger)。
+    // embedding 失败(无网/未配置)不能让 correction 本身失败:保留旧向量,下次有机会覆盖。
+    await reembedNodeContent(repo, updated.id, updated.title ?? undefined, updated.content);
+
     // Stream 先写（获取锚点引用）
     const corrStreamRef = await appendToStream({
       tool: input.source?.tool,
@@ -153,7 +158,7 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
     // 使用 .all 而非 .get：同一对节点之间可能存在多条链接（不同 relation 或重复），
     // 原先 .get 只删一条会留下残余链接，导致反复 unlink 依然有历史关系。
     const links = db.prepare(
-      'SELECT id FROM links WHERE (from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)',
+      'SELECT id FROM links WHERE ((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)) AND deleted = 0',
     ).all(input.target_link.from, input.target_link.to, input.target_link.to, input.target_link.from) as Array<{ id: string }>;
 
     for (const link of links) {
@@ -203,6 +208,29 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
     };
   }
 
+  // intent=archive/correction 但缺必需的 target → 明确拒绝,不能静默落到"存新记忆"。
+  // 走到这里的 archive 一定缺 target_node(带 target_node 的已在上面归档并 return);
+  // 走到这里的 correction 一定既无 target_node 也无 target_link(否则上面已处理 return,
+  // 或 resolveMissingCorrectionTarget 把 intent 改写成了 new)。
+  // 不拦的话 agent 调 brain_digest({intent:'archive', content:'XX 已过时'}) 忘传
+  // target_node 会被当成新记忆存下、原记忆原样保留,agent 却收到 accepted 误以为成功。
+  if (input.intent === 'archive') {
+    log.warn('archive 缺少 target_node');
+    return {
+      status: 'rejected',
+      trace_id: traceId,
+      reject_reason: 'intent=archive 需要 target_node 指定要归档的记忆。未传 target_node 不会存成新记忆。',
+    };
+  }
+  if (input.intent === 'correction') {
+    log.warn('correction 缺少 target_node / target_link');
+    return {
+      status: 'rejected',
+      trace_id: traceId,
+      reject_reason: 'intent=correction 需要 target_node（纠正记忆内容）或 target_link（断开错误链接）。未传不会存成新记忆。',
+    };
+  }
+
   // --- 常规消化：存储新内容 ---
 
   // 质量门控：第一层 — 硬拒绝（零信息内容）
@@ -235,7 +263,9 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
     // worker 不应在 1min backoff 后把它当成 'pending' 抢走重复 createNode；
     // 只有真正 >10min 卡死/崩溃才由 claimNextPendingDigest 的 stale recovery 接管。
     try {
-      enqueueInFlightDigest(db, traceId, JSON.stringify(input));
+      // 把首次写入的真实 stream 锚点随 input 持久化,retry 复用它而非 `retry:<traceId>`
+      // 占位,避免重试成功的节点 source_stream 丢失真实锚点。
+      enqueueInFlightDigest(db, traceId, JSON.stringify({ ...input, _retryStreamRef: streamRef }));
     } catch (enqueueErr) {
       log.error('Failed to pre-enqueue digest:', (enqueueErr as Error).message);
     }
@@ -462,6 +492,36 @@ function assessContentQuality(content: string): number {
 }
 
 /**
+ * 内容变更后刷新节点向量（correction / dedup-merge 用）。
+ *
+ * 与新建节点的 embedding 文本拼接方式一致（title 在前获得更高注意力权重）。
+ * 不做 landing/去重归并——只覆盖该节点自己的 segment 向量。
+ *
+ * 失败保全:insertSegmentVectors 全段失败时返回 0 且保留旧向量(见 vectors.ts),
+ * 抛错(无 vec 扩展等)在这里吞掉。调用方的主操作(correction/merge)不因 embedding
+ * 失败而失败——内容与 FTS 已正确,向量缺失只是语义召回暂时按旧内容,下次有机会修。
+ */
+async function reembedNodeContent(
+  repo: IRepository,
+  nodeId: string,
+  title: string | undefined,
+  content: string,
+): Promise<void> {
+  if (!isVecLoaded()) return;
+  const embeddingText = title ? `${title}\n\n${content}` : content;
+  try {
+    const inserted = await repo.vectors.insertSegmentVectors(nodeId, embeddingText);
+    if (inserted === 0) {
+      log.debug(`re-embed 跳过(embedding 不可用) node=${nodeId}`);
+    } else {
+      log.debug(`re-embed node=${nodeId} segments=${inserted}`);
+    }
+  } catch (err) {
+    log.warn(`re-embed 失败 node=${nodeId}: ${(err as Error).message}`);
+  }
+}
+
+/**
  * 异步生成 embedding + 存储 + 着陆连接
  *
  * @param skipDedupMerge 调用方持有外部身份（logseq/obsidian 等），跳过向量归并。
@@ -498,6 +558,13 @@ async function generateAndStoreEmbedding(
     await reconsolidateNode(db, landing.mergeTarget, content, '去重合并', {
       newTags: srcTags.length > 0 ? srcTags : undefined,
     });
+    // 合并后目标节点 content 可能已变(LLM 成功合并时)→ 刷新目标的向量,否则
+    // nodes_vec 残留合并前的旧 embedding,后续按合并后语义查会漏召。reconsolidateNode
+    // 在 LLM 未配置/失败时保留旧 content,此时 re-embed 是同内容覆盖,无副作用。
+    const mergedTarget = repo.nodes.getNode(landing.mergeTarget);
+    if (mergedTarget) {
+      await reembedNodeContent(repo, mergedTarget.id, mergedTarget.title ?? undefined, mergedTarget.content);
+    }
     repo.nodes.archiveNode(nodeId);
     // 清理被归档节点的向量数据和分段数据,避免残留占用空间和干扰搜索。
     //
@@ -552,7 +619,9 @@ export async function processDigestRetry(
   traceId: string,
 ): Promise<void> {
   const qualityHeat = assessContentQuality(input.content.trim());
-  // retry 不重复写 stream，复用原始 traceId 作为引用
-  await processDigestContent(repo, input, `retry:${traceId}`, traceId, qualityHeat);
+  // retry 不重复写 stream。优先复用 enqueue 时持久化的首次真实锚点;老 pending 行
+  // (修复前入队、没存 _retryStreamRef)兜底用 `retry:<traceId>` 占位保持旧行为。
+  const streamRef = input._retryStreamRef ?? `retry:${traceId}`;
+  await processDigestContent(repo, input, streamRef, traceId, qualityHeat);
   log.info(`Digest retry succeeded: trace=${traceId}`);
 }

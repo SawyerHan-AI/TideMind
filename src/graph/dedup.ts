@@ -86,7 +86,7 @@ export async function reconsolidateNode(
   }
 
   if (Object.keys(patch).length > 0) {
-    updateNode(db, nodeId, patch, reason);
+    updateNode(db, nodeId, patch, reason, { skipEditSeqBump: true });
   }
 
   // 更新热度和再巩固时间。bump updated 让 cloud reconcile + UI watcher 感知。

@@ -7,7 +7,8 @@
     "searchPlaceholder": "Buscar memorias...",
     "all": "Todo",
     "allTags": "Todas las etiquetas",
-    "allTypes": "Todos los tipos"
+    "allTypes": "Todos los tipos",
+    "disabledInSearch": "Los filtros no se aplican en el modo de búsqueda"
   },
   "list": {
     "noResults": "No se encontraron memorias coincidentes",
@@ -84,6 +85,8 @@
     "pathDiscovery": "Descubrimiento de rutas",
     "structureHoles": "Agujeros estructurales",
     "connectivityLabel": "Conectividad",
+    "nodeLimitLabel": "Top",
+    "nodeLimitHint": "Muestra los N nodos principales por heat más sus vecinos a 1 salto.",
     "clickSecondNode": "Haz clic en el segundo nodo para ver la ruta",
     "clickStartNode": "Haz clic en el nodo de inicio"
   }

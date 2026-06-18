@@ -245,14 +245,59 @@ describe('searchHybrid - neighbor expansion', () => {
       status: 'confirmed',
     });
 
-    // Archive the neighbor
-    db.prepare('UPDATE nodes SET heat = 0.005 WHERE id = ?').run(nodeB.id);
+    // 模拟真实归档语义(node-lifecycle.ts archiveNodeWithVectors):
+    // archived=1 且 heat=0.02——heat 恰好穿过 0.01 阈值,必须靠 archived 过滤拦截
+    db.prepare('UPDATE nodes SET archived = 1, heat = 0.02 WHERE id = ?').run(nodeB.id);
 
     const results = await searchHybrid(repo, 'polynomial', { limit: 20 });
 
     const ids = results.map(r => r.node.id);
     expect(ids).toContain(nodeA.id);
     expect(ids).not.toContain(nodeB.id);
+  });
+
+  it('should not include superseded neighbors in expansion', async () => {
+    const nodeA = seedNode(db, { content: 'gradient descent optimization' });
+    const nodeB = seedNode(db, { content: 'unrelated neighbor superseded content' });
+
+    // supersede 保留 confirmed 链接(updates link 指向替代节点),旧版本靠
+    // is_superseded 标记拦截;heat=0.01 不会被 heat < 0.01 的阈值挡掉
+    seedLink(db, nodeA.id, nodeB.id, {
+      relation: 'updates',
+      strength: 0.9,
+      status: 'confirmed',
+    });
+    db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(nodeB.id);
+
+    const results = await searchHybrid(repo, 'gradient', { limit: 20 });
+
+    const ids = results.map(r => r.node.id);
+    expect(ids).toContain(nodeA.id);
+    expect(ids).not.toContain(nodeB.id);
+  });
+
+  it('should apply createdAfter/createdBefore filters to expanded neighbors', async () => {
+    const nodeA = seedNode(db, { content: 'spectral clustering algorithm' });
+    const nodeB = seedNode(db, { content: 'unrelated neighbor old era content', heat: 0.7 });
+
+    seedLink(db, nodeA.id, nodeB.id, {
+      relation: 'supports',
+      strength: 0.9,
+      status: 'confirmed',
+    });
+
+    // 邻居是 2020 年的旧节点,createdAfter 过滤应与 bm25/vector 路径一致地排除它
+    db.prepare('UPDATE nodes SET created = ? WHERE id = ?').run('2020-01-01T00:00:00.000Z', nodeB.id);
+
+    const filtered = await searchHybrid(repo, 'spectral', {
+      limit: 20,
+      createdAfter: '2024-01-01T00:00:00.000Z',
+    });
+    expect(filtered.map(r => r.node.id)).not.toContain(nodeB.id);
+
+    // 不带时间过滤时邻居应正常返回(对照组,防止过滤条件写反)
+    const unfiltered = await searchHybrid(repo, 'spectral', { limit: 20 });
+    expect(unfiltered.map(r => r.node.id)).toContain(nodeB.id);
   });
 });
 

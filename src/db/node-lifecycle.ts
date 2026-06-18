@@ -3,6 +3,7 @@ import { createLink, linkExists } from './links.js';
 import { deleteVector } from './vectors.js';
 import { createLogger } from '../utils/logger.js';
 import { now } from '../utils/time.js';
+import { getLocalGeneration } from '../metabolism/generation-decay.js';
 
 interface LinkRow { id: string; from_id: string; to_id: string; strength: number; }
 
@@ -101,7 +102,7 @@ export function archiveNodeWithVectors(db: Database.Database, nodeId: string): v
   // 任何绕过它直接读 nodes_vec 的代码(包括历史 v15/v16 清理 SQL)都会再次
   // 受影响。
   db.transaction(() => {
-    db.prepare('UPDATE nodes SET archived = 1, heat = 0.02, updated = ? WHERE id = ?').run(now(), nodeId);
+    db.prepare('UPDATE nodes SET archived = 1, heat = 0.02, edit_seq = edit_seq + 1, updated = ? WHERE id = ?').run(now(), nodeId);
     deleteVector(db, nodeId);
   })();
 }
@@ -109,7 +110,7 @@ export function archiveNodeWithVectors(db: Database.Database, nodeId: string): v
 export function reArchiveNodeWithVectors(db: Database.Database, nodeId: string): boolean {
   return db.transaction(() => {
     const result = db.prepare(
-      'UPDATE nodes SET archived = 1, heat = 0.01, updated = ? WHERE id = ? AND archived = 0',
+      'UPDATE nodes SET archived = 1, heat = 0.01, edit_seq = edit_seq + 1, updated = ? WHERE id = ? AND archived = 0',
     ).run(now(), nodeId);
     if (result.changes > 0) {
       deleteVector(db, nodeId);
@@ -119,9 +120,12 @@ export function reArchiveNodeWithVectors(db: Database.Database, nodeId: string):
 }
 
 export function unarchiveNodeRecordOnly(db: Database.Database, nodeId: string): boolean {
+  // HIGH 修复(审计二轮):unarchive 重锚 decay_gen 到当前 generation。archived 节点 decay_gen
+  // 被 recompute/synaptic 冻结(都过滤 archived),不重锚则恢复后(archived=0)重入衰减集,下次
+  // generation 重算 gen=G−旧decay_gen 巨大 → heat=0.5 被砸到 0.01,M5 恢复在 heat 维度失效。
   const result = db.prepare(
-    'UPDATE nodes SET archived = 0, heat = 0.5, updated = ? WHERE id = ? AND archived = 1',
-  ).run(now(), nodeId);
+    'UPDATE nodes SET archived = 0, heat = 0.5, edit_seq = edit_seq + 1, decay_gen = ?, updated = ? WHERE id = ? AND archived = 1',
+  ).run(getLocalGeneration(db), now(), nodeId);
   return result.changes > 0;
 }
 
@@ -130,11 +134,14 @@ export function deleteNodeVectors(db: Database.Database, nodeId: string): void {
 }
 
 export function retireNodeWithoutReplacement(db: Database.Database, nodeId: string): void {
-  // UPDATE + DELETE 原子化:中间崩溃会留下 is_superseded=1 但 links 仍指向
-  // 老节点的孤儿状态,与 v15/v16 修补的孤儿向量同源。
+  // UPDATE + 软删原子化:中间崩溃会留下 is_superseded=1 但 links 仍指向老节点的孤儿状态。
+  // M10:节点**保留**(is_superseded=1,行不删)→ 边必须**软删**而非硬删,否则边在 server 仍
+  // alive、本地硬删 → reconcile 判 onlyServer 复活,指向 superseded 节点污染 connectivity/计数。
+  // (对比 deleteNodeDependentsBatch:节点行随后被 DELETE,FK 要求边先物理删,那里保持硬删。)
+  const ts = now();
   db.transaction(() => {
-    db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01, updated = ? WHERE id = ?').run(now(), nodeId);
-    db.prepare('DELETE FROM links WHERE from_id = ? OR to_id = ?').run(nodeId, nodeId);
+    db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01, updated = ? WHERE id = ?').run(ts, nodeId);
+    db.prepare('UPDATE links SET deleted = 1, updated = ?, edit_seq = edit_seq + 1 WHERE (from_id = ? OR to_id = ?) AND deleted = 0').run(ts, nodeId, nodeId);
   })();
 }
 
@@ -160,16 +167,16 @@ export function supersedeNodeWithLinks(
     const ts = now();
 
     const outLinks = db.prepare(
-      'SELECT * FROM links WHERE from_id = ? AND to_id != ?',
+      'SELECT * FROM links WHERE from_id = ? AND to_id != ? AND deleted = 0',
     ).all(oldNodeId, newNodeId) as LinkRow[];
 
     const inLinks = db.prepare(
-      'SELECT * FROM links WHERE to_id = ? AND from_id != ?',
+      'SELECT * FROM links WHERE to_id = ? AND from_id != ? AND deleted = 0',
     ).all(oldNodeId, newNodeId) as LinkRow[];
 
     for (const link of outLinks) {
       const existingLinkOnNew = db.prepare(
-        'SELECT id, strength FROM links WHERE from_id = ? AND to_id = ?',
+        'SELECT id, strength FROM links WHERE from_id = ? AND to_id = ? AND deleted = 0',
       ).get(newNodeId, link.to_id) as Pick<LinkRow, 'id' | 'strength'> | undefined;
 
       if (!existingLinkOnNew) {
@@ -181,7 +188,7 @@ export function supersedeNodeWithLinks(
 
     for (const link of inLinks) {
       const existingLinkOnNew = db.prepare(
-        'SELECT id, strength FROM links WHERE from_id = ? AND to_id = ?',
+        'SELECT id, strength FROM links WHERE from_id = ? AND to_id = ? AND deleted = 0',
       ).get(link.from_id, newNodeId) as Pick<LinkRow, 'id' | 'strength'> | undefined;
 
       if (!existingLinkOnNew) {
@@ -203,11 +210,15 @@ export function supersedeNodeWithLinks(
       });
     }
 
+    // M10:老节点**保留**(is_superseded=1)→ 未被重定向的残留边必须**软删**(deleted=1 + bump
+    // edit_seq/updated)而非硬删,否则边在 server 仍 alive、本地硬删 → reconcile 判 onlyServer
+    // 复活,指向 superseded 老节点污染 connectivity/计数。已重定向(from/to 改指 newNode)的边不在
+    // 此 WHERE 范围,不受影响;新建的 oldNode→newNode "updates" 边被 NOT(...) 排除保留。
     db.prepare(
-      'DELETE FROM links WHERE (from_id = ? OR to_id = ?) AND NOT (from_id = ? AND to_id = ?)',
-    ).run(oldNodeId, oldNodeId, oldNodeId, newNodeId);
+      'UPDATE links SET deleted = 1, updated = ?, edit_seq = edit_seq + 1 WHERE (from_id = ? OR to_id = ?) AND NOT (from_id = ? AND to_id = ?) AND deleted = 0',
+    ).run(ts, oldNodeId, oldNodeId, oldNodeId, newNodeId);
 
-    db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01, updated = ? WHERE id = ?').run(now(), oldNodeId);
+    db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01, updated = ? WHERE id = ?').run(ts, oldNodeId);
   })();
 
   log.info(`节点版本替代: ${oldNodeId} -> ${newNodeId}`);

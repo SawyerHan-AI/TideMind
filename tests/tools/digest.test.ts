@@ -387,10 +387,15 @@ describe('digest - correction mode', () => {
 
     expect(result.status).toBe('processed');
 
-    const link = db.prepare(
-      'SELECT * FROM links WHERE from_id = ? AND to_id = ?',
+    // M10:correction 断链改软删 —— 行仍在(deleted=1)、从存活集(deleted=0)排除,靠 LWW 跨设备传播删除
+    const active = db.prepare(
+      'SELECT * FROM links WHERE from_id = ? AND to_id = ? AND deleted = 0',
     ).get(n1.id, n2.id);
-    expect(link).toBeFalsy();
+    expect(active).toBeFalsy();
+    const soft = db.prepare(
+      'SELECT deleted FROM links WHERE from_id = ? AND to_id = ?',
+    ).get(n1.id, n2.id) as { deleted: number };
+    expect(soft.deleted).toBe(1);
   });
 });
 
@@ -426,6 +431,112 @@ describe('digest - archive mode', () => {
       "SELECT * FROM operation_log WHERE operation = 'digest' AND input_summary LIKE '%archive%'",
     ).all();
     expect(ops.length).toBe(1);
+  });
+});
+
+// ===== intent=archive/correction 缺 target 时拒绝(不静默存新记忆) =====
+
+describe('digest - intent 缺 target 时拒绝', () => {
+  it('archive 缺 target_node 应 rejected 而非存新记忆', async () => {
+    const before = (db.prepare('SELECT COUNT(*) AS c FROM nodes').get() as { c: number }).c;
+
+    const result = await digest(repo, {
+      content: 'XX 已过时',
+      intent: 'archive',
+    });
+
+    expect(result.status).toBe('rejected');
+    expect(result.reject_reason).toContain('target_node');
+    const after = (db.prepare('SELECT COUNT(*) AS c FROM nodes').get() as { c: number }).c;
+    expect(after).toBe(before); // 没有误存新节点
+  });
+
+  it('correction 缺 target_node/target_link 应 rejected 而非存新记忆', async () => {
+    const before = (db.prepare('SELECT COUNT(*) AS c FROM nodes').get() as { c: number }).c;
+
+    const result = await digest(repo, {
+      content: '这条记忆需要纠正但忘了给 target',
+      intent: 'correction',
+    });
+
+    expect(result.status).toBe('rejected');
+    expect(result.reject_reason).toMatch(/target_node|target_link/);
+    const after = (db.prepare('SELECT COUNT(*) AS c FROM nodes').get() as { c: number }).c;
+    expect(after).toBe(before);
+  });
+});
+
+// ===== correction / dedup-merge 后刷新向量 =====
+
+describe('digest - 内容变更刷新向量', () => {
+  it('correction 更新 content 后调用 insertSegmentVectors 重新 embed', async () => {
+    vi.mocked(isVecLoaded).mockReturnValue(true);
+    const { insertSegmentVectors } = await import('../../src/db/vectors.js');
+    vi.mocked(insertSegmentVectors).mockClear();
+
+    const existing = seedNode(db, { content: 'old content', title: 'T' });
+
+    const result = await digest(repo, {
+      content: 'corrected content',
+      intent: 'correction',
+      target_node: existing.id,
+    });
+
+    expect(result.status).toBe('processed');
+    // 用新 content(含 title) 重新 embed 目标节点
+    expect(insertSegmentVectors).toHaveBeenCalledWith(
+      db,
+      existing.id,
+      expect.stringContaining('corrected content'),
+    );
+  });
+
+  it('correction 的 re-embed 失败不让 correction 本身失败', async () => {
+    vi.mocked(isVecLoaded).mockReturnValue(true);
+    const { insertSegmentVectors } = await import('../../src/db/vectors.js');
+    vi.mocked(insertSegmentVectors).mockRejectedValueOnce(new Error('embedding down'));
+
+    const existing = seedNode(db, { content: 'old content' });
+
+    const result = await digest(repo, {
+      content: 'corrected content',
+      intent: 'correction',
+      target_node: existing.id,
+    });
+
+    expect(result.status).toBe('processed');
+    expect(getNode(db, existing.id)!.content).toBe('corrected content');
+  });
+});
+
+// ===== retry 复用真实 stream 锚点 =====
+
+describe('digest - retry 复用 stream 锚点', () => {
+  it('processDigestRetry 用持久化的 _retryStreamRef 而非 retry:<traceId> 占位', async () => {
+    const node = await new Promise<{ id: string }>(resolve => {
+      processDigestRetry(repo, {
+        content: 'retry content with real anchor',
+        _retryStreamRef: 'stream/2026_06_10.md#anchor-1',
+      } as DigestInput, 'trace-xyz').then(() => {
+        const row = db.prepare(
+          "SELECT id, source_stream FROM nodes WHERE content = 'retry content with real anchor'",
+        ).get() as { id: string; source_stream: string };
+        expect(row.source_stream).toBe('stream/2026_06_10.md#anchor-1');
+        resolve(row);
+      });
+    });
+    expect(node.id).toBeTruthy();
+  });
+
+  it('老 pending 行(无 _retryStreamRef)兜底用 retry:<traceId>', async () => {
+    await processDigestRetry(repo, {
+      content: 'legacy retry content',
+    } as DigestInput, 'trace-legacy');
+
+    const row = db.prepare(
+      "SELECT source_stream FROM nodes WHERE content = 'legacy retry content'",
+    ).get() as { source_stream: string };
+    expect(row.source_stream).toBe('retry:trace-legacy');
   });
 });
 

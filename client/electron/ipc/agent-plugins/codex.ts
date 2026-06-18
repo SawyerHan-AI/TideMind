@@ -10,6 +10,7 @@ import {
   meetsMinVersion,
   wrapSkillWithFrontmatter,
 } from '../codex-cli'
+import { resolveCliPath } from './cli-utils'
 import { readJsonStrict, unlinkIfExists, writeFileAtomic, writeJsonAtomic } from './fs-utils'
 import { mcpServerEntry } from './paths'
 import type {
@@ -79,11 +80,15 @@ export const codexAdapter: AgentPluginAdapter = {
   async generate(ctx: GeneratePluginContext) {
     const configPath = codexConfigPath(ctx)
     const name = serverName(ctx)
-    const codexVersion = await detectCodexVersion()
+    // 用绝对路径执行,不依赖 cliEnv 的受限 PATH 做命令查找(volta/fnm/asdf/pnpm
+    // 装的 codex 也能跑)。解析失败时退回裸名(由 detect/mcpAdd 默认值兜底)。
+    const codexPath = (await resolveCliPath('codex')) ?? undefined
+    const codexVersion = await detectCodexVersion(codexPath)
     const useV2 = meetsMinVersion(codexVersion, CODEX_V2_MIN_VERSION)
 
     if (useV2) {
       await codexMcpAdd({
+        codexPath,
         serverName: name,
         command: ctx.runtime.shimPath,
         args: [ctx.runtime.mcpServerPath],
@@ -190,7 +195,8 @@ export const codexAdapter: AgentPluginAdapter = {
     const name = serverName(ctx)
 
     try {
-      await codexMcpRemove({ serverName: name })
+      const codexPath = (await resolveCliPath('codex')) ?? undefined
+      await codexMcpRemove({ codexPath, serverName: name })
     } catch { /* TOML fallback below */ }
 
     try {

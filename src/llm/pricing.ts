@@ -63,6 +63,15 @@ const FALLBACK_PRICING: ModelPricing = {
 };
 
 /**
+ * Prompt cache 价档系数(Anthropic 公开定价):
+ * cache write 按 input 价的 1.25x 计费,cache read 按 0.1x。
+ * usage.input_tokens 只是未缓存余量,完整 prompt = input + cache_creation + cache_read,
+ * 不计 cache 两项会系统性低估成本。
+ */
+const CACHE_WRITE_MULTIPLIER = 1.25;
+const CACHE_READ_MULTIPLIER = 0.1;
+
+/**
  * 根据模型名和 token 数计算预估费用（美元）。
  * 模型名支持带版本后缀，如 `claude-sonnet-4-6@20250514`。
  * 未匹配到的模型走 FALLBACK_PRICING(保守估价 + log.error)。
@@ -72,13 +81,18 @@ export function estimateCost(
   inputTokens: number,
   outputTokens: number,
   thinkingTokens: number,
+  cacheCreateTokens = 0,
+  cacheReadTokens = 0,
 ): number {
-  if (!Number.isFinite(inputTokens) || !Number.isFinite(outputTokens) || !Number.isFinite(thinkingTokens)) {
+  if (!Number.isFinite(inputTokens) || !Number.isFinite(outputTokens) || !Number.isFinite(thinkingTokens)
+    || !Number.isFinite(cacheCreateTokens) || !Number.isFinite(cacheReadTokens)) {
     return 0;
   }
   if (inputTokens < 0) inputTokens = 0;
   if (outputTokens < 0) outputTokens = 0;
   if (thinkingTokens < 0) thinkingTokens = 0;
+  if (cacheCreateTokens < 0) cacheCreateTokens = 0;
+  if (cacheReadTokens < 0) cacheReadTokens = 0;
 
   const id = modelId.toLowerCase()
   let pricing = PRICING_TABLE.find(p => id.includes(p.pattern))
@@ -89,6 +103,8 @@ export function estimateCost(
 
   return (
     (inputTokens * pricing.input +
+      cacheCreateTokens * pricing.input * CACHE_WRITE_MULTIPLIER +
+      cacheReadTokens * pricing.input * CACHE_READ_MULTIPLIER +
       outputTokens * pricing.output +
       thinkingTokens * pricing.thinking) /
     1_000_000

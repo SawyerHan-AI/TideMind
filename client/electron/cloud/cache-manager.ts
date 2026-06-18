@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import { createLogger } from '../../../src/utils/logger.js';
-import { applyCloudLinkRow, applyCloudNodeRow } from './local-apply.js';
+import { applyCloudLinkRow, applyCloudNodeRow, withApplyGuard } from './local-apply.js';
 
 const log = createLogger('cloud-cache');
 
@@ -95,7 +95,8 @@ export class CacheManager {
         safeSyncedVersion = currentVersion;
       }
     });
-    txn();
+    // M6 回声抑制:下行 apply 期间不记脏集(否则下行写又被触发器记入 cloud_dirty 上行,成环)
+    withApplyGuard(this.db, () => txn());
     if (safeSyncedVersion !== null) {
       this.setLastSyncedVersion(safeSyncedVersion);
     }

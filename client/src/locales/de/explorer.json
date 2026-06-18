@@ -7,7 +7,8 @@
     "searchPlaceholder": "Erinnerungen suchen...",
     "all": "Alle",
     "allTags": "Alle Tags",
-    "allTypes": "Alle Typen"
+    "allTypes": "Alle Typen",
+    "disabledInSearch": "Filter gelten im Suchmodus nicht"
   },
   "list": {
     "noResults": "Keine passenden Erinnerungen gefunden",
@@ -84,6 +85,8 @@
     "pathDiscovery": "Pfadsuche",
     "structureHoles": "Strukturlücken",
     "connectivityLabel": "Konnektivität",
+    "nodeLimitLabel": "Top",
+    "nodeLimitHint": "Zeigt die obersten N Knoten nach Heat plus deren direkte Nachbarn (1 Hop).",
     "clickSecondNode": "Zweiten Knoten anklicken um Pfad zu sehen",
     "clickStartNode": "Startknoten anklicken"
   }

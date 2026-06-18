@@ -1,9 +1,9 @@
 import type Database from 'better-sqlite3';
-import { callLLM } from '../llm/client.js';
+import { callLLM, LLMServiceError } from '../llm/client.js';
 import { LEARNING2_SYSTEM } from '../llm/prompts.js';
 import { getGateStatus } from '../db/stats.js';
 import { getParamFeedback, getParamFeedbackByRange, logTimelineEvent } from '../db/log.js';
-import { getConfig } from '../config.js';
+import { getConfig, isLlmConfigured } from '../config.js';
 import { getParam, getPrompt, getLLMOptions, getStrategy, renderUserPrompt } from '../strategy/loader.js';
 import { now } from '../utils/time.js';
 import { createLogger } from '../utils/logger.js';
@@ -148,6 +148,12 @@ export async function runLearning2(db: Database.Database): Promise<{
   result.confirmations = confirmations;
 
   // Step 3: 分析趋势并调整参数
+  // 需要 LLM 决定调整方向;未配置时到此为止(Step 1 信号采集 / Step 2 监控窗口
+  // 是纯 SQL/文件操作,不依赖 LLM,照常执行)。与其他 LLM 任务的前置检查约定一致。
+  if (!isLlmConfigured()) {
+    return result;
+  }
+
   const cooldownDays = getParam('evolution-learning2', 'cooldown_days', 14);
   const minSamples = getParam('evolution-learning2', 'min_feedback_samples', 20);
   const trendThreshold = getParam('evolution-learning2', 'trend_decline_threshold', -0.1);
@@ -304,6 +310,10 @@ export async function runLearning2(db: Database.Database): Promise<{
         // 每个信号类型每个策略最多调一个参数
         break;
       } catch (err) {
+        // LLMServiceError 必须向上抛,让 scheduler 记失败 + 熔断生效(与 annotate /
+        // link-evaluate 等任务一致);否则 LLM 全挂时整张 SIGNAL_PARAM_MAP 的每个
+        // mapping 都白撞一次,熔断器收不到任何信号且任务伪成功。
+        if (err instanceof LLMServiceError) throw err;
         log.error(`参数调整失败 (${strategy}.${adjustableParam}):`, (err as Error).message);
       }
     }
@@ -458,7 +468,7 @@ function atomicWriteFileSync(targetPath: string, content: string): void {
 
 /**
  * 更新策略参数文件中的参数值
- * 优先写入 .params.md，回退写入 .md
+ * 优先写入 .params.md，回退写入 .system.md（未拆分的策略把参数表内嵌在 system 文件中）
  * 匹配 | paramName | oldValue | description | 格式
  */
 function updateStrategyParam(
@@ -499,9 +509,15 @@ function updateStrategyParam(
     }
   }
 
-  // 回退到 .md（兼容未拆分的策略文件）
-  const filePath = path.join(strategiesDir, `${strategyName}.md`);
-  if (!fs.existsSync(filePath)) return false;
+  // 回退到 .system.md:metabolism-params / recall-rank / link-discover 等策略
+  // 没拆 .params.md,参数表内嵌在 system 文件里。注意 loader 只认 .system.md
+  // 后缀(strategy/loader.ts),历史命名 {name}.md 已废弃 —— 写到 {name}.md
+  // loader 永远读不到,等于静默丢弃调整。
+  const filePath = path.join(strategiesDir, `${strategyName}.system.md`);
+  if (!fs.existsSync(filePath)) {
+    log.warn(`策略文件不存在,参数 ${strategyName}.${paramName} 无法写入 (尝试过 ${strategyName}.params.md / ${strategyName}.system.md)`);
+    return false;
+  }
 
   let content = fs.readFileSync(filePath, 'utf-8');
   if (!pattern.test(content)) {
@@ -523,9 +539,10 @@ function recordStrategyVersion(
   reason: string,
 ): void {
   try {
-    // 优先记录 .params.md 的内容（参数变更通常在这里）
+    // 优先记录 .params.md 的内容（参数变更通常在这里）;回退 .system.md,
+    // 与 updateStrategyParam 的目标文件保持一致(历史命名 {name}.md 已废弃)
     const paramsPath = path.join(strategiesDir, `${strategyName}.params.md`);
-    const mainPath = path.join(strategiesDir, `${strategyName}.md`);
+    const mainPath = path.join(strategiesDir, `${strategyName}.system.md`);
     const filePath = fs.existsSync(paramsPath) ? paramsPath : mainPath;
     const content = fs.readFileSync(filePath, 'utf-8');
 

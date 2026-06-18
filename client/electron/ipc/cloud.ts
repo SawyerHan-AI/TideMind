@@ -1,21 +1,11 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import type Database from 'better-sqlite3'
-import type { Reconciler as ReconcilerType } from '../cloud/reconciler.js'
 import { getConfig, reloadConfig } from '../../../src/config.js'
 import { createLogger } from '../../../src/utils/logger.js'
 import { parseRequiredBoolean } from './_schemas.js'
 import { getOutboxDiagnostics } from '../cloud/outbox.js'
 
 const log = createLogger('ipc-cloud')
-
-/**
- * 当前正在运行的 Reconciler 实例,全局唯一。
- *
- * - force-reconcile 检查它防重复触发
- * - abort-reconcile 通过它中止
- * 必须在 reconcile 结束(成功或失败)时清空。
- */
-let activeReconciler: ReconcilerType | null = null;
 
 /**
  * 取两个 ISO 时间戳中较早的那个(null 视为"未跑过",最早)。
@@ -50,8 +40,19 @@ export function registerCloudHandlers(db?: Database.Database): void {
     if (email.length > 254 || password.length > 256) {
       return { success: false, error: 'email or password too long' };
     }
-    const { login } = await import('../cloud/auth-client.js');
-    return login(email, password);
+    // 契约裁剪:login() 返回完整 CloudAuth(含 accessToken / 长生命周期 refreshToken)。
+    // 绝不把 token 跨 IPC 送进 renderer JS 上下文——token 只存主进程 + keychain,
+    // renderer 只见 email/plan(cloud:status 即如此)。同时与 api-contract 声明对齐:
+    // 该接口契约是 { success, error? },原实现直接 return CloudAuth 没有 success 字段,
+    // 任何按契约写的 renderer 会把登录成功判成失败。成功只回 { success: true },
+    // 网络/认证失败 throw 转 { success: false, error }(与校验失败分支同形)。
+    try {
+      const { login } = await import('../cloud/auth-client.js');
+      await login(email, password);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
   });
 
   // Logout — 联动停止 sync client
@@ -202,11 +203,19 @@ export function registerCloudHandlers(db?: Database.Database): void {
         // 只写到日志,UI 看到"开启成功"假象,之后"立即同步"按钮又因 online=false 灰掉,
         // 用户体验是"打开了但不同步也点不动"。
         //
-        // 注意:CloudSyncClient.start() 内部已对 syncOnce 做 try/catch(用 status 和
-        // cloudNotAvailable/syncNotReady 标志表达错误),不会向外抛。因此这里不用包 try,
-        // 而是 await 后读 client 的状态字段来判断首次同步结果。
-        await client.start();
-        if (client.cloudNotAvailable) {
+        // start() 内部对首次 syncOnce 做了 try/catch(失败时仍建 WS/轮询/activity,
+        // 并调度延迟重试),正常不向外抛;但防御性包 try——start() 内非 syncOnce 的
+        // 意外异常不能把 set-sync-enabled 的 {success,error} 契约打破成裸 reject。
+        try {
+          await client.start();
+        } catch (err) {
+          startError = 'sync_error';
+          startErrorDetail = (err as Error).message;
+          log.warn(`sync start threw: ${startErrorDetail}`);
+        }
+        if (startError) {
+          // start() 抛了异常(startErrorDetail 已记其 message),下面的状态字段判断跳过。
+        } else if (client.cloudNotAvailable) {
           startError = 'cloud_not_available';
         } else if (client.syncNotReady) {
           startError = 'sync_not_ready';
@@ -215,8 +224,11 @@ export function registerCloudHandlers(db?: Database.Database): void {
         } else if (client.getStatus() === 'error') {
           startError = 'sync_error';
         }
-        if (startError) {
+        // 仅当 detail 尚未由 throw 路径填充时,从 client 状态字段读 detail。
+        if (startError && startErrorDetail === undefined) {
           startErrorDetail = client.lastErrorMessage ?? undefined;
+        }
+        if (startError) {
           log.warn(`sync start reported: ${startError}${startErrorDetail ? ' — ' + startErrorDetail : ''}`);
         }
       }
@@ -293,34 +305,35 @@ export function registerCloudHandlers(db?: Database.Database): void {
 
   // 用户主动触发 reconcile(设置页"强制对齐"按钮)。
   //
-  // 互斥锁 + abort IPC:
-  //  - activeReconciler 全局唯一,重复点击直接返 already_running 而不是
-  //    并发跑两个 reconciler 互相覆盖 metadata
-  //  - cloud:abort-reconcile 手动中止正在跑的 reconcile
-  //    (reconciler.abort() 只会在当前 batch 结束后退出,非立即生效)
+  // 全局互斥 + abort 走 reconcile-lock(进程级单一入口),手动 force-reconcile 与
+  // 自动 reconcile(sync-client.maybeTriggerReconcile)共享同一把锁:
+  //  - 任一已在跑 → 返 already_running,不并发跑两个 reconciler 互相覆盖 metadata
+  //  - cloud:abort-reconcile 能命中**任意来源**的实例(原实现只能 abort 手动那个,
+  //    自动 reconcile 对用户的"取消"返 not_running 无法停)
+  //  - reconciler.abort() 只在当前 batch 结束后退出,非立即生效
   ipcMain.handle('cloud:force-reconcile', async () => {
     if (!db) return { success: false, error: 'db_not_ready' };
-    if (activeReconciler) return { success: false, error: 'already_running' };
+    const dbForReconcile = db;
     try {
       const { isLoggedIn } = await import('../cloud/auth-client.js');
       if (!isLoggedIn()) return { success: false, error: 'not_logged_in' };
+      const { runExclusive } = await import('../cloud/reconcile-lock.js');
       const { Reconciler } = await import('../cloud/reconciler.js');
-      activeReconciler = new Reconciler(db);
-      try {
-        const results = await activeReconciler.runAll(false);
-        return { success: true, results };
-      } finally {
-        activeReconciler = null;
-      }
+      const outcome = await runExclusive(async (register) => {
+        const reconciler = new Reconciler(dbForReconcile);
+        register(reconciler);
+        return reconciler.runAll(false);
+      });
+      if (!outcome.ok) return { success: false, error: 'already_running' };
+      return { success: true, results: outcome.value };
     } catch (err) {
-      activeReconciler = null;
       return { success: false, error: (err as Error).message };
     }
   });
 
   ipcMain.handle('cloud:abort-reconcile', async () => {
-    if (!activeReconciler) return { success: false, error: 'not_running' };
-    activeReconciler.abort();
+    const { abortActiveReconcile } = await import('../cloud/reconcile-lock.js');
+    if (!abortActiveReconcile()) return { success: false, error: 'not_running' };
     return { success: true };
   });
 
@@ -377,10 +390,24 @@ export function registerCloudHandlers(db?: Database.Database): void {
     return getRegisterUrl();
   });
 
-  // Get Creem customer portal URL (server will redirect to Creem-hosted portal
-  // when browser hits this URL with valid session cookie).
+  // B3 fallback:任何失败/未登录都退回公开定价页(匿名仍可购买,服务端 email 兜底)。
+  const FALLBACK_PRICING = 'https://tidemind.ai/pricing';
+
+  // 升级 checkout:主进程带 token 请求 /checkout,拿回**已绑 user_id** 的 Creem URL
+  // (tier-1 强绑定,买家在 Creem 页改不改邮箱都授予对)。失败/未登录 → 公开定价页。
+  ipcMain.handle('cloud:billing-checkout-url', async (_event, plan: unknown, interval: unknown) => {
+    const { authedRedirectLocation } = await import('../cloud/auth-client.js');
+    const p = encodeURIComponent(typeof plan === 'string' ? plan : 'pro');
+    const i = encodeURIComponent(typeof interval === 'string' ? interval : 'yearly');
+    const url = await authedRedirectLocation(`/api/v1/billing/checkout?plan=${p}&interval=${i}`);
+    return url ?? FALLBACK_PRICING;
+  });
+
+  // 管理订阅:同样带 token 拿 Creem portal URL(修好以前"返回裸 cloud URL 靠浏览器
+  // session、多半打不开"的老问题)。失败 → 公开定价页。
   ipcMain.handle('cloud:billing-portal-url', async () => {
-    const { getCloudBaseUrl } = await import('../cloud/auth-client.js');
-    return `${getCloudBaseUrl()}/api/v1/billing/portal`;
+    const { authedRedirectLocation } = await import('../cloud/auth-client.js');
+    const url = await authedRedirectLocation('/api/v1/billing/portal');
+    return url ?? FALLBACK_PRICING;
   });
 }

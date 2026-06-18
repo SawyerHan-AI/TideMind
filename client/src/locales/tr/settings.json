@@ -65,7 +65,8 @@
       "learning2": "Yapay Zeka Tarafından Optimize Edildi",
       "system": "Güncelleme",
       "file_edit": "Dosya Düzenleme"
-    }
+    },
+    "saveFailed": "Kaydetme başarısız oldu. Lütfen tekrar deneyin."
   },
   "model": {
     "subtabs": {
@@ -118,6 +119,7 @@
       "connectionNameTip": "Aynı türdeki birden fazla bağlantıyı ayırt etmek için özel bir ad.",
       "connectionNamePlaceholder": "Örn: Şirket {{provider}}",
       "create": "Oluştur",
+      "createFailed": "Bağlantı oluşturulamadı. Lütfen tekrar deneyin.",
       "colName": "Ad",
       "colType": "Tür",
       "colStatus": "Durum",
@@ -149,7 +151,9 @@
       "reembedProgress": "Embedding yeniden hesaplanıyor... ({{done}}/{{total}})",
       "reembedNeeded": "Vektör dizini yeniden hesaplanmalı (yükseltme veya model değişikliği sonrası tetiklenir). Yeniden hesaplama sırasında arama otomatik olarak tam metin aramaya düşer.",
       "startReembed": "Yeniden Hesaplamayı Başlat",
-      "saved": "Kaydedildi"
+      "saved": "Kaydedildi",
+      "saveFailed": "Model seçimi kaydedilemedi. Lütfen tekrar deneyin.",
+      "retry": "Yeniden dene"
     },
     "serviceStatus": {
       "title": "AI Servis Durumu",
@@ -389,7 +393,8 @@
       "notionScopeHint": "TideMind, entegrasyonla paylaşılan tüm sayfaları senkronize edecektir. Kapsamı ayarlamak için Notion'daki paylaşım ayarlarını değiştirin.",
       "notionConnected": "Token doğrulandı, bağlantı başarılı",
       "notionFailed": "Token geçersiz veya bağlantı başarısız"
-    }
+    },
+    "createFailed": "Not kaynağı oluşturulamadı. Lütfen tekrar deneyin."
   },
   "usage": {
     "totalTokens": "Toplam Token",
@@ -462,6 +467,7 @@
       "file_edit": "Dosya"
     },
     "saved": "Kaydedildi",
+    "saveFailed": "Kaydetme başarısız oldu. Lütfen tekrar deneyin.",
     "confirmSave": "Kaydetmeyi onayla",
     "save": "Kaydet",
     "userPromptPlaceholder": "User Prompt şablonunu girin, dinamik parametre yer tutucuları olarak {{değişkenAdı}} kullanın",
@@ -873,6 +879,7 @@
       "generatingPlugin": "Generating plugin...",
       "pluginGenerateFailed": "Plugin generation failed",
       "generateFailed": "Generation failed",
+      "createFailed": "Oluşturma başarısız",
       "completed": "Completed",
       "manualStepsTitle": "Manual steps required:",
       "prevStep": "Previous",
@@ -994,12 +1001,16 @@
     "subscription": "Abonelik",
     "currentPlan": "Mevcut Plan",
     "upgradeHint": "Sınırsız bulut anılar, 5 cihaz, 7/24 bulut metabolizması ve daha fazlası için Pro'ya yükseltin.",
+    "upgradeAnnual": "Pro'ya yükselt — $49/yıl",
+    "upgradeMonthly": "veya $5/ay öde",
     "viewPricing": "Planları ve Fiyatları Gör",
     "manageSubscription": "Aboneliği Yönet",
     "billing": "Faturalama",
     "noBilling": "Ücretsiz plan için fatura geçmişi bulunmuyor.",
     "billingComingSoon": "Fatura geçmişi yakında geliyor.",
     "logout": "Çıkış Yap",
+    "logoutTitle": "Çıkış yapılsın mı?",
+    "logoutDesc": "TideMind Cloud oturumunuz kapatılacak. Yerel veriler etkilenmez.",
     "comingSoon": "Yakında",
     "subscriptionComingSoon": "Pro ve Pro+ planları yakında geliyor. Bulut senkronizasyonu, 7/24 metabolizma ve daha fazlası için takipte kalın.",
     "registerButton": "Hesap oluştur",

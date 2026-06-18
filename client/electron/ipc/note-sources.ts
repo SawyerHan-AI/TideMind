@@ -23,6 +23,7 @@ import {
   parseNoteSourceUpdate,
   parseOptionalBoolean,
 } from './_schemas.js'
+import { mainT } from '../i18n.js'
 
 const log = createLogger('note-sources-ipc')
 
@@ -358,7 +359,7 @@ export function registerNoteSourceHandlers(): void {
     if (!parsedId.ok) return parsedId.error
 
     const source = getNoteSource(getClientDb(), parsedId.data)
-    if (!source) return { success: false, error: '笔记源不存在' }
+    if (!source) return { success: false, error: mainT('noteSource.notFound') }
 
     try {
       if (source.tool_type === 'logseq') {
@@ -379,7 +380,7 @@ export function registerNoteSourceHandlers(): void {
         const preview = await previewInit(token)
         return { success: true, data: preview }
       }
-      return { success: false, error: `不支持的工具类型: ${source.tool_type}` }
+      return { success: false, error: `${mainT('noteSource.unsupportedType')}: ${source.tool_type}` }
     } catch (err) {
       return { success: false, error: (err as Error).message }
     }
@@ -390,12 +391,12 @@ export function registerNoteSourceHandlers(): void {
     if (!parsedId.ok) return parsedId.error
 
     const source = getNoteSource(getClientDb(), parsedId.data)
-    if (!source) return { success: false, error: '笔记源不存在' }
+    if (!source) return { success: false, error: mainT('noteSource.notFound') }
 
     // 全局互斥
     const activeId = initSessionManager.getActiveSourceId()
     if (activeId && activeId !== parsedId.data) {
-      return { success: false, error: '有其他笔记源正在初始化，请等待完成后再试' }
+      return { success: false, error: mainT('noteSource.anotherInitializing') }
     }
 
     // 装配 runner（按 tool_type 选择 runInitialization 实现）
@@ -415,7 +416,7 @@ export function registerNoteSourceHandlers(): void {
         const token = source.path.startsWith('notion://') ? source.path.slice('notion://'.length) : source.path
         return await runInitialization(getDb(), ctx, token) as unknown as Record<string, unknown>
       }
-      throw new Error(`不支持的工具类型: ${source.tool_type}`)
+      throw new Error(`${mainT('noteSource.unsupportedType')}: ${source.tool_type}`)
     }
 
     const startResult = initSessionManager.start({
@@ -424,7 +425,7 @@ export function registerNoteSourceHandlers(): void {
       runner,
     })
     if (!startResult.ok) {
-      return { success: false, error: '有其他笔记源正在初始化，请等待完成后再试' }
+      return { success: false, error: mainT('noteSource.anotherInitializing') }
     }
 
     const finalSnap = await waitForTerminal(parsedId.data)
@@ -433,9 +434,9 @@ export function registerNoteSourceHandlers(): void {
       return { success: true, data: finalSnap.report }
     }
     if (finalSnap.status === 'aborted') {
-      return { success: false, error: finalSnap.error ?? `已停止（${finalSnap.abortReason ?? 'user'}）` }
+      return { success: false, error: finalSnap.error ?? `${mainT('noteSource.stopped')}（${finalSnap.abortReason ?? 'user'}）` }
     }
-    return { success: false, error: finalSnap.error ?? '初始化失败' }
+    return { success: false, error: finalSnap.error ?? mainT('noteSource.initFailed') }
   })
 
   /**
@@ -469,7 +470,7 @@ export function registerNoteSourceHandlers(): void {
     if (!parsedId.ok) return parsedId.error
 
     const source = getNoteSource(getClientDb(), parsedId.data)
-    if (!source) return { success: false, error: '笔记源不存在' }
+    if (!source) return { success: false, error: mainT('noteSource.notFound') }
 
     // 若仍处于活跃状态（不应该；UI 必先 abort 再 discard），先尝试 abort
     const snap = initSessionManager.snapshot(parsedId.data)
@@ -520,7 +521,7 @@ export function registerNoteSourceHandlers(): void {
     if (!parsedId.ok) return parsedId.error
 
     const source = getNoteSource(getClientDb(), parsedId.data)
-    if (!source) return { success: false, error: '笔记源不存在' }
+    if (!source) return { success: false, error: mainT('noteSource.notFound') }
 
     try {
       if (source.tool_type === 'logseq') {

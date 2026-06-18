@@ -294,8 +294,8 @@ describe('runSynapticScaling - link Hebbian decay', () => {
 
     runSynapticScaling(db);
 
-    const after = db.prepare('SELECT * FROM links WHERE id = ?').get(link!.id);
-    expect(after).toBeUndefined(); // 被 purged
+    const after = db.prepare('SELECT deleted FROM links WHERE id = ?').get(link!.id) as { deleted: number };
+    expect(after.deleted).toBe(1); // M10:软删(行仍在、deleted=1),靠 LWW 跨设备传播删除
   });
 
   it('strength = linkDeleteThreshold(0.05) 的链接也被 purge(<= 边界)', () => {
@@ -312,8 +312,8 @@ describe('runSynapticScaling - link Hebbian decay', () => {
 
     runSynapticScaling(db);
 
-    const after = db.prepare('SELECT * FROM links WHERE id = ?').get(link!.id);
-    expect(after).toBeUndefined();
+    const after = db.prepare('SELECT deleted FROM links WHERE id = ?').get(link!.id) as { deleted: number };
+    expect(after.deleted).toBe(1); // M10:软删
   });
 
   // 2026-05-21 回归:循环里 newStrength 比较从 < 改成 <= ,跟 L100 DELETE
@@ -344,9 +344,9 @@ describe('runSynapticScaling - link Hebbian decay', () => {
 
     runSynapticScaling(db);
 
-    // <= 边界:newStrength 恰好等于 threshold 也应被 delete,不留到下一 cycle
-    const after = db.prepare('SELECT * FROM links WHERE id = ?').get(link!.id);
-    expect(after).toBeUndefined();
+    // <= 边界:newStrength 恰好等于 threshold 也应被(软)删,不留到下一 cycle
+    const after = db.prepare('SELECT deleted FROM links WHERE id = ?').get(link!.id) as { deleted: number };
+    expect(after.deleted).toBe(1); // M10:软删
   });
 
   it('strength > threshold 在衰减后跌破阈值时,在循环里被 deleteStmt 兜底删除', () => {
@@ -366,8 +366,8 @@ describe('runSynapticScaling - link Hebbian decay', () => {
 
     runSynapticScaling(db);
 
-    const after = db.prepare('SELECT * FROM links WHERE id = ?').get(link!.id);
-    expect(after).toBeUndefined();
+    const after = db.prepare('SELECT deleted FROM links WHERE id = ?').get(link!.id) as { deleted: number };
+    expect(after.deleted).toBe(1); // M10:软删(循环内 deleteStmt 兜底,改 UPDATE deleted=1)
   });
 
   it('tagged 链接(relation 中有 type:"tagged")跳过赫布衰减,strength 保持不变', () => {
@@ -534,8 +534,9 @@ describe('runSynapticScaling - link Hebbian decay', () => {
 
     runSynapticScaling(db);
 
-    // dead 链接被 purge
-    expect(db.prepare('SELECT * FROM links WHERE id = ?').get(dead!.id)).toBeUndefined();
+    // dead 链接被(软)purge:deleted=1,且因 SELECT 带 deleted=0 不会被后续读到
+    const deadRow = db.prepare('SELECT deleted FROM links WHERE id = ?').get(dead!.id) as { deleted: number };
+    expect(deadRow.deleted).toBe(1);
     // alive 链接被衰减
     const after = db.prepare('SELECT strength FROM links WHERE id = ?').get(alive!.id) as { strength: number };
     expect(after.strength).toBeLessThan(0.6);

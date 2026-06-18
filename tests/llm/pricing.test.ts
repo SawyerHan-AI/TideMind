@@ -130,4 +130,40 @@ describe('estimateCost', () => {
     const cost = estimateCost('gemini-2.0-flash', 1_000_000, 1_000_000, 0);
     expect(cost).toBeCloseTo(0.5); // 0.10 + 0.40
   });
+
+  // ===== prompt cache token =====
+  // Anthropic 计费:cache write = 1.25x input 价,cache read = 0.1x input 价。
+  // usage.input_tokens 只是未缓存余量,不折算 cache 两项会系统性低估成本。
+
+  it('cache write 按 1.25x input 价计费', () => {
+    // sonnet 4.6: input=3 → cache write = 3.75$/M
+    const cost = estimateCost('claude-sonnet-4-6', 0, 0, 0, 1_000_000, 0);
+    expect(cost).toBeCloseTo(3.75);
+  });
+
+  it('cache read 按 0.1x input 价计费', () => {
+    // sonnet 4.6: input=3 → cache read = 0.3$/M
+    const cost = estimateCost('claude-sonnet-4-6', 0, 0, 0, 0, 1_000_000);
+    expect(cost).toBeCloseTo(0.3);
+  });
+
+  it('input + cache write + cache read 一起计费', () => {
+    // opus 4.7: input=5 → 0.1M*5 + 0.2M*5*1.25 + 0.5M*5*0.1 = 0.5 + 1.25 + 0.25 = 2.0
+    const cost = estimateCost('claude-opus-4-7', 100_000, 0, 0, 200_000, 500_000);
+    expect(cost).toBeCloseTo(2.0);
+  });
+
+  it('cache 参数缺省时与旧 4 参调用结果一致（向后兼容）', () => {
+    expect(estimateCost('claude-sonnet-4-6', 100_000, 50_000, 0))
+      .toBeCloseTo(estimateCost('claude-sonnet-4-6', 100_000, 50_000, 0, 0, 0));
+  });
+
+  it('NaN cache token 返回 0', () => {
+    expect(estimateCost('claude-opus-4-6', 100, 100, 0, NaN, 0)).toBe(0);
+  });
+
+  it('负数 cache token 被 clamp 到 0', () => {
+    const cost = estimateCost('claude-opus-4-6', 0, 1_000_000, 0, -100, -100);
+    expect(cost).toBeCloseTo(25.0);
+  });
 });

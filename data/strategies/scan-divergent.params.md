@@ -13,6 +13,7 @@
 | llm_tier | heavy | 模型档位: light/standard/heavy |
 | thinking | true | 是否开启扩展思考 |
 | thinking_budget | 4096 | 思考 token 预算 |
+| thinking_mode | adaptive | manual/adaptive(heavy 档默认模型 Opus 4.7+ 已移除 manual,发 budget_tokens 会 400) |
 
 ## 候选对筛选规则
 

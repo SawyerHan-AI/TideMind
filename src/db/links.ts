@@ -114,7 +114,7 @@ export function getLinksFrom(
   nodeId: string,
   options?: { includeRejected?: boolean },
 ): BrainLink[] {
-  const extra = options?.includeRejected ? '' : " AND status != 'rejected_by_user'";
+  const extra = (options?.includeRejected ? '' : " AND status != 'rejected_by_user'") + ' AND deleted = 0';
   return (db.prepare(`SELECT * FROM links WHERE from_id = ?${extra}`).all(nodeId) as RawLinkRow[]).map(hydrateLink);
 }
 
@@ -123,7 +123,7 @@ export function getLinksTo(
   nodeId: string,
   options?: { includeRejected?: boolean },
 ): BrainLink[] {
-  const extra = options?.includeRejected ? '' : " AND status != 'rejected_by_user'";
+  const extra = (options?.includeRejected ? '' : " AND status != 'rejected_by_user'") + ' AND deleted = 0';
   return (db.prepare(`SELECT * FROM links WHERE to_id = ?${extra}`).all(nodeId) as RawLinkRow[]).map(hydrateLink);
 }
 
@@ -132,7 +132,7 @@ export function getLinksForNode(
   nodeId: string,
   options?: { includeRejected?: boolean },
 ): BrainLink[] {
-  const extra = options?.includeRejected ? '' : " AND status != 'rejected_by_user'";
+  const extra = (options?.includeRejected ? '' : " AND status != 'rejected_by_user'") + ' AND deleted = 0';
   return (db.prepare(
     `SELECT * FROM links WHERE (from_id = ? OR to_id = ?)${extra}`,
   ).all(nodeId, nodeId) as RawLinkRow[]).map(hydrateLink);
@@ -162,7 +162,7 @@ export function getLinksForNodes(
   const rows = db.prepare(`
     SELECT * FROM links
     WHERE (from_id IN (${placeholders}) OR to_id IN (${placeholders}))
-      AND strength >= ? AND status = ?
+      AND strength >= ? AND status = ? AND deleted = 0
   `).all(...nodeIds, ...nodeIds, minStrength, status) as RawLinkRow[];
   return rows.map(hydrateLink);
 }
@@ -182,18 +182,20 @@ export function updateLinkRelation(db: Database.Database, id: string, relation: 
 }
 
 export function deleteLink(db: Database.Database, id: string): void {
-  db.prepare('DELETE FROM links WHERE id = ?').run(id);
-  log.debug(`链接删除 ${id}`);
+  // M10:软删(不 hard-delete)。deleted=1 + bump updated/edit_seq,靠 reconcile/uplink 的 LWW
+  // 跨设备传播删除,杜绝 manifest diff 把已删 link 当 onlyLocal/onlyServer 复活。查询排除 deleted=1。
+  db.prepare('UPDATE links SET deleted = 1, updated = ?, edit_seq = edit_seq + 1 WHERE id = ?').run(now(), id);
+  log.debug(`链接软删 ${id}`);
 }
 
 export function getPendingLinks(db: Database.Database, limit: number = 50): BrainLink[] {
   return (db.prepare(
-    "SELECT * FROM links WHERE status = 'pending' ORDER BY created ASC LIMIT ?",
+    "SELECT * FROM links WHERE status = 'pending' AND deleted = 0 ORDER BY created ASC LIMIT ?",
   ).all(limit) as RawLinkRow[]).map(hydrateLink);
 }
 
 export function getLinkCount(db: Database.Database): number {
-  return (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed'").get() as { cnt: number }).cnt;
+  return (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed' AND deleted = 0").get() as { cnt: number }).cnt;
 }
 
 /**
@@ -214,12 +216,12 @@ export function linkExists(
 ): boolean {
   if (direction === 'from_to') {
     const row = db.prepare(
-      'SELECT 1 FROM links WHERE from_id = ? AND to_id = ? LIMIT 1',
+      'SELECT 1 FROM links WHERE from_id = ? AND to_id = ? AND deleted = 0 LIMIT 1',
     ).get(fromId, toId);
     return !!row;
   }
   const row = db.prepare(
-    'SELECT 1 FROM links WHERE (from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?) LIMIT 1',
+    'SELECT 1 FROM links WHERE ((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)) AND deleted = 0 LIMIT 1',
   ).get(fromId, toId, toId, fromId);
   return !!row;
 }
@@ -234,6 +236,7 @@ export function getRejectedTagIdsForNode(db: Database.Database, nodeId: string):
     WHERE from_id = ?
       AND status = 'rejected_by_user'
       AND relation LIKE '%"tagged"%'
+      AND deleted = 0
   `).all(nodeId) as Array<{ to_id: string }>;
   return rows.map(r => r.to_id);
 }
@@ -250,6 +253,7 @@ export function getRejectedTagNamesForNode(db: Database.Database, nodeId: string
     WHERE l.from_id = ?
       AND l.status = 'rejected_by_user'
       AND l.relation LIKE '%"tagged"%'
+      AND l.deleted = 0
   `).all(nodeId) as Array<{ tag_name: string | null }>;
   return rows.map(r => (r.tag_name ?? '').trim()).filter(n => n.length > 0);
 }
@@ -274,6 +278,7 @@ export function getRecentRejectedNodesAcrossTags(
     JOIN nodes n ON n.id = l.from_id
     WHERE l.status = 'rejected_by_user'
       AND l.relation LIKE '%"tagged"%'
+      AND l.deleted = 0
     ORDER BY COALESCE(l.updated, l.created) DESC
     LIMIT ?
   `).all(limit) as Array<{ tag_id: string; tag_name: string; node_id: string; node_content: string; node_title: string | null }>;

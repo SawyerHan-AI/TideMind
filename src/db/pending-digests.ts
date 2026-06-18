@@ -70,14 +70,27 @@ export function claimNextPendingDigest(
   // → stale 条件永远不触发,进程崩溃留下的 processing 行被无限卡住。
   // 改为 JS 侧算 cutoff 的 ISO 字符串再丢给 SQL,ISO 之间字典序 = 时间序。
   const staleCutoff = new Date(Date.now() - 10 * 60_000).toISOString();
-  const staleReset = db.prepare(`
+  // stale recovery 必须自带 MAX_RETRIES 上限:进程崩溃/OOM/被杀走不到
+  // failPendingDigest 的 catch 路径,这里不封顶时毒丸 digest 会跨重启被无限
+  // 重认领(且每轮可能在 createNode 与 complete 之间崩溃,重复建节点)。
+  // 达到上限直接转 'failed',与 failPendingDigest 的状态机语义对齐。
+  const staleRows = db.prepare(`
     UPDATE pending_digests
-    SET status = 'pending', retry_count = retry_count + 1, processing_started_at = NULL
+    SET retry_count = retry_count + 1,
+        processing_started_at = NULL,
+        status = CASE WHEN retry_count + 1 >= @maxRetries THEN 'failed' ELSE 'pending' END,
+        completed_at = CASE WHEN retry_count + 1 >= @maxRetries THEN @nowStr ELSE completed_at END,
+        error_message = CASE WHEN retry_count + 1 >= @maxRetries
+          THEN 'stale recovery exhausted (process likely crashed while processing)'
+          ELSE error_message END
     WHERE status = 'processing'
-      AND (processing_started_at IS NULL OR processing_started_at < ?)
-  `).run(staleCutoff);
-  if (staleReset.changes > 0) {
-    log.warn(`Recovered ${staleReset.changes} stale processing digest(s)`);
+      AND (processing_started_at IS NULL OR processing_started_at < @staleCutoff)
+    RETURNING status
+  `).all({ maxRetries: MAX_RETRIES, nowStr: now(), staleCutoff }) as Array<{ status: string }>;
+  if (staleRows.length > 0) {
+    const staleFailed = staleRows.filter(r => r.status === 'failed').length;
+    log.warn(`Recovered ${staleRows.length} stale processing digest(s)`
+      + (staleFailed > 0 ? `, ${staleFailed} permanently failed (retry limit)` : ''));
   }
 
   // SELECT + UPDATE 放到同一事务 + 乐观锁 + RETURNING，避免多 worker 并发

@@ -26,6 +26,8 @@
     "memories": "筆記憶"
   },
   "total": "共 {{count}} 筆",
+  "close": "關閉",
+  "loading": "載入中…",
   "errors": {
     "somethingWentWrong": "發生了錯誤",
     "unexpectedError": "發生了意外錯誤。",
@@ -53,5 +55,10 @@
     "paused": "AI 暫停中（{{min}} 分鐘後重試）",
     "recentFailures": "AI 近期有失敗",
     "idle": "AI 長時間無活動"
+  },
+  "cloud": {
+    "syncing": "同步中…",
+    "connected": "已連線",
+    "offline": "離線"
   }
 }

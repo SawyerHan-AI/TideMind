@@ -1,6 +1,6 @@
 {
   "name": "tidemind-client",
-  "version": "0.2.83",
+  "version": "0.2.85",
   "description": "Tide Mind 桌面客户端",
   "main": "./out/main/index.js",
   "scripts": {
@@ -58,12 +58,13 @@
     "electron": "^41.3.0",
     "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
-    "esbuild": "^0.25.12",
+    "esbuild": "^0.28.1",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.0"
   },
   "overrides": {
-    "tmp": "^0.2.7"
+    "tmp": "^0.2.7",
+    "esbuild": "^0.28.1"
   }
 }

@@ -195,7 +195,7 @@ export async function runInitialization(
   // ── Phase 6: 链接评估 ──
   checkAborted();
   const pendingLinkCount = (db.prepare(
-    "SELECT COUNT(*) as cnt FROM links WHERE status = 'pending'"
+    "SELECT COUNT(*) as cnt FROM links WHERE status = 'pending' AND deleted = 0"
   ).get() as { cnt: number }).cnt;
   ctx.reportPhase(6, '链接评估', pendingLinkCount);
   log.info(`Phase 6: 评估 ${pendingLinkCount} 条链接...`);
@@ -234,7 +234,7 @@ export async function runInitialization(
     .run(scanStartedAt, sourceId);
 
   const linkCountRow = db.prepare(
-    "SELECT COUNT(*) as cnt FROM links WHERE auto = 1"
+    "SELECT COUNT(*) as cnt FROM links WHERE auto = 1 AND deleted = 0"
   ).get() as { cnt: number };
   const linksCreated = linkCountRow.cnt;
 

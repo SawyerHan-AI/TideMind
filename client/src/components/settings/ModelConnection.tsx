@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Plus, ChevronRight, Loader2, CheckCircle2, XCircle,
@@ -161,9 +161,12 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
   }, [conn.id])
 
   useEffect(() => {
-    if (conn.provider_type === 'vertex') {
-      window.api.connections.vertexCredStatus(conn.id).then(setVertexCredStatus)
-    }
+    if (conn.provider_type !== 'vertex') return
+    let cancelled = false
+    window.api.connections.vertexCredStatus(conn.id)
+      .then(s => { if (!cancelled) setVertexCredStatus(s) })
+      .catch(() => { if (!cancelled) setVertexCredStatus(null) })
+    return () => { cancelled = true }
   }, [conn.id, conn.provider_type])
 
   const handleRename = async () => {
@@ -402,6 +405,9 @@ function ConnectionWizard({ onCreated, onClose }: { onCreated: (id: string) => v
   const [name, setName] = useState('')
   const [providerType, setProviderType] = useState('')
   const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState(false)
+  // setState 异步,光靠 disabled 防不住极快双击(两次调用在 re-render 前都进函数)。
+  const creatingRef = useRef(false)
   // 追踪名称是否被用户手动修改过
   const [nameManuallyEdited, setNameManuallyEdited] = useState(false)
 
@@ -420,13 +426,22 @@ function ConnectionWizard({ onCreated, onClose }: { onCreated: (id: string) => v
 
   const handleCreate = async () => {
     if (!name.trim() || !providerType) return
+    if (creatingRef.current) return
+    creatingRef.current = true
     setCreating(true)
-    const conn = await window.api.connections.create({
-      name: name.trim(),
-      provider_type: providerType,
-    })
-    setCreating(false)
-    onCreated(conn.id)
+    setCreateError(false)
+    try {
+      const conn = await window.api.connections.create({
+        name: name.trim(),
+        provider_type: providerType,
+      })
+      onCreated(conn.id)
+    } catch {
+      setCreateError(true)
+    } finally {
+      creatingRef.current = false
+      setCreating(false)
+    }
   }
 
   return (
@@ -464,6 +479,13 @@ function ConnectionWizard({ onCreated, onClose }: { onCreated: (id: string) => v
               className={inputClass} autoFocus
               onKeyDown={e => e.key === 'Enter' && handleCreate()} />
           </Field>
+        )}
+
+        {createError && (
+          <p className="flex items-center gap-1.5 text-xs text-red-400">
+            <XCircle size={12} />
+            {t('model.connection.createFailed')}
+          </p>
         )}
 
         <div className="flex justify-end gap-2">

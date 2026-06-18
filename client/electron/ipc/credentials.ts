@@ -2,6 +2,7 @@ import { ipcMain, dialog } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createLogger } from '../../../src/utils/logger.js'
+import { mainT } from '../i18n.js'
 
 const log = createLogger('credentials-ipc')
 
@@ -59,7 +60,7 @@ export function registerCredentialHandlers(dataDir: string): void {
   ipcMain.handle('credentials:pick-vertex-file', async () => {
     try {
       const result = await dialog.showOpenDialog({
-        title: '选择 Google Cloud Service Account JSON 文件',
+        title: mainT('dialog.pickServiceAccount'),
         filters: [{ name: 'JSON', extensions: ['json'] }],
         properties: ['openFile'],
       })
@@ -74,10 +75,10 @@ export function registerCredentialHandlers(dataDir: string): void {
       try {
         const stat = fs.statSync(sourcePath)
         if (stat.size > 1_000_000) {
-          return { success: false, error: '文件过大(>1MB),不是合法的 Service Account 凭证' }
+          return { success: false, error: mainT('cred.tooLarge') }
         }
       } catch (e) {
-        return { success: false, error: `无法访问文件: ${(e as Error).message}` }
+        return { success: false, error: `${mainT('cred.accessFailed')}: ${(e as Error).message}` }
       }
       const content = fs.readFileSync(sourcePath, 'utf-8')
 
@@ -85,11 +86,11 @@ export function registerCredentialHandlers(dataDir: string): void {
       try {
         parsed = JSON.parse(content)
       } catch {
-        return { success: false, error: '文件不是合法的 JSON' }
+        return { success: false, error: mainT('cred.notJson') }
       }
 
       if (parsed.type !== 'service_account') {
-        return { success: false, error: '不是 Service Account 类型的凭证文件' }
+        return { success: false, error: mainT('cred.notServiceAccount') }
       }
 
       const destPath = path.join(dataDir, 'vertex-credentials.json')

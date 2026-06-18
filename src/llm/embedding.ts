@@ -74,30 +74,69 @@ let tokenExpiry = 0;
 // 各自创建 GoogleAuth 实例并打 N 次 metadata server token 请求(QPS 限制 +
 // scrypt 派生开销)。与同文件 inflightAvailabilityCheck 模式一致。
 let inflightTokenFetch: Promise<string> | null = null;
+// 代际计数:clearEmbeddingTokenCache 时 +1。in-flight 的旧凭证 fetch resolve 时
+// 若代际已变,不得把旧 token 写回缓存(否则"清缓存"被竞态穿透)。
+let tokenGeneration = 0;
 
-async function getVertexToken(): Promise<string> {
+/**
+ * 清空 Vertex access token 缓存。凭证变更(用户重新上传 vertex JSON / 改 connection)
+ * 时必须调用,否则旧 token 最长 50 分钟内继续被命中——LLM 侧同样的问题由
+ * fingerprintCreds(文件 mtime 入指纹)解决,embedding 侧靠这里显式清。
+ * 由 client.ts 的 clearClientCache 统一触发。
+ */
+export function clearEmbeddingTokenCache(): void {
+  cachedToken = null;
+  tokenExpiry = 0;
+  tokenGeneration++;
+  inflightTokenFetch = null;
+}
+
+async function getVertexToken(timeoutMs?: number): Promise<string> {
   const now = Date.now();
   if (cachedToken && now + 30_000 < tokenExpiry) return cachedToken;
-  if (inflightTokenFetch) return inflightTokenFetch;
 
-  inflightTokenFetch = (async () => {
-    const credPath = path.join(getDataDir(), 'vertex-credentials.json');
-    const { GoogleAuth } = await import('google-auth-library');
-    const auth = new GoogleAuth({
-      keyFile: credPath,
-      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+  if (!inflightTokenFetch) {
+    const gen = tokenGeneration;
+    inflightTokenFetch = (async () => {
+      const credPath = path.join(getDataDir(), 'vertex-credentials.json');
+      const { GoogleAuth } = await import('google-auth-library');
+      const auth = new GoogleAuth({
+        keyFile: credPath,
+        scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+      });
+      const client = await auth.getClient();
+      const token = await client.getAccessToken();
+      if (!token?.token) throw new Error('Failed to get Vertex access token');
+      if (gen === tokenGeneration) {
+        cachedToken = token.token;
+        tokenExpiry = Date.now() + TOKEN_CACHE_WINDOW_MS;
+      }
+      return token.token;
+    })().finally(() => {
+      if (gen === tokenGeneration) inflightTokenFetch = null;
     });
-    const client = await auth.getClient();
-    const token = await client.getAccessToken();
-    if (!token?.token) throw new Error('Failed to get Vertex access token');
-    cachedToken = token.token;
-    tokenExpiry = Date.now() + TOKEN_CACHE_WINDOW_MS;
-    return cachedToken;
-  })().finally(() => {
-    inflightTokenFetch = null;
-  });
+  }
 
-  return inflightTokenFetch;
+  // google-auth-library 的 token 请求走 gaxios 且默认无超时,不受调用方
+  // AbortSignal.timeout 约束——OAuth 端点 hang(VPN/防火墙/DNS)会把 brain_recall
+  // 的 3s 硬上限无限拖住。用 Promise.race 兜一层调用方预算;超时按服务失败抛出,
+  // 上层 getEmbedding 捕获后降级为 null(纯 BM25 兜底)。in-flight fetch 不取消,
+  // 后续调用仍可复用其结果。
+  const fetchPromise = inflightTokenFetch;
+  if (timeoutMs !== undefined && timeoutMs > 0) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        fetchPromise,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new EmbeddingServiceError(`Vertex token fetch timeout after ${timeoutMs}ms`)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+  return fetchPromise;
 }
 
 /**
@@ -132,7 +171,9 @@ async function getGeminiVertexEmbedding(text: string, timeoutMs: number = 30_000
 }
 
 async function callVertexEmbedding(text: string, projectId: string, region: string, timeoutMs: number = 30_000): Promise<Float32Array | null> {
-  const token = await getVertexToken();
+  // token 获取在 AbortSignal.timeout 的 fetch 之前,必须单独受调用方预算约束,
+  // 否则 recall 路径承诺的 3s 上限会被 OAuth hang 穿透
+  const token = await getVertexToken(timeoutMs);
   const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/gemini-embedding-001:predict`;
 
   const resp = await fetch(url, {
@@ -148,6 +189,9 @@ async function callVertexEmbedding(text: string, projectId: string, region: stri
   });
 
   if (!resp.ok) {
+    // 401 说明缓存的 token 已失效(被撤销 / SA key 轮换 / project 变更),
+    // 不清缓存会让同一个坏 token 被重复使用最长 50 分钟,期间向量搜索静默失效
+    if (resp.status === 401) clearEmbeddingTokenCache();
     log.error(`Vertex embedding 失败: ${resp.status} ${await resp.text()}`);
     return null;
   }

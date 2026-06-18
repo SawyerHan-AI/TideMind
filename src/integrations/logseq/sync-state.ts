@@ -259,7 +259,17 @@ export function computeSegmentHash(content: string): string {
 export function computeFileHash(filePath: string): string | null {
   const res = safeReadTextFileSync(filePath);
   if (!res.ok) return null;
-  const normalized = res.content.replace(/\r\n/g, '\n');
+  return computeContentHash(res.content);
+}
+
+/**
+ * 对已读取的字符串内容计算 hash（避免 TOCTOU：入库与 hash 用同一份 content）。
+ *
+ * 统一做 CRLF → LF 归一化，保证不同调用方（直接读文件 vs. preprocessFile 已读取的
+ * rawContent）对同一文件得到相同 hash。对齐 Obsidian sync-state 的同名函数。
+ */
+export function computeContentHash(content: string): string {
+  const normalized = content.replace(/\r\n/g, '\n');
   return crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 16);
 }
 

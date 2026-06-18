@@ -236,6 +236,64 @@ describe('profile-synthesize - 错误处理', () => {
   });
 });
 
+describe('profile-synthesize - F2 解析彻底失败放弃本轮', () => {
+  // 不可救:fenced JSON、无 profile_text 键、未转义引号破坏顶层解析 → parseProfileResponse 返回 null
+  const UNSALVAGEABLE = `\`\`\`json
+{ "wrong_key": "缺 profile_text 未转义 " 破坏", "list": ["x", "y"] }
+\`\`\``;
+
+  it('首次生成时解析失败 → 不创建任何画像节点', async () => {
+    vi.mocked(callLLM).mockResolvedValueOnce(UNSALVAGEABLE);
+    seedNode(db, { type: 'crystal', content: 'some crystal' });
+
+    await runProfileSynthesize(db);
+
+    expect(getProfileNode(db)).toBeUndefined();
+  });
+
+  it('已有画像时解析失败 → 旧画像不被 supersede,内容不被脏全文覆盖', async () => {
+    db.prepare(`
+      INSERT INTO nodes (id, type, content, title, heat, refinement, connectivity, independence, maturity_score, is_meta, created)
+      VALUES ('prof-old', 'meta', '健康的旧画像', 'user-profile', 1.0, 0, 0, 0, 0.2, 1, datetime('now', '-10 days'))
+    `).run();
+    vi.mocked(callLLM).mockResolvedValueOnce(UNSALVAGEABLE);
+
+    await runProfileSynthesize(db);
+
+    const old = db.prepare("SELECT is_superseded, content FROM nodes WHERE id = 'prof-old'")
+      .get() as { is_superseded: number; content: string };
+    expect(old.is_superseded).toBe(0);            // 仍是当前有效画像
+    expect(old.content).toBe('健康的旧画像');      // 未被脏全文污染
+    // 没有产生新的画像节点
+    const count = db.prepare("SELECT COUNT(*) c FROM nodes WHERE title = 'user-profile'").get() as { c: number };
+    expect(count.c).toBe(1);
+  });
+});
+
+describe('profile-synthesize - F3 污染基线净化', () => {
+  // 历史污染节点:content 是原始 fenced JSON(模拟 2026-06 事故的存量数据)
+  const POISON_CONTENT = `\`\`\`json
+{
+  "profile_text": "用户是星海科技的产品负责人，主导 DataPilot 数据分析系统。",
+  "structured": { "role": "PM", "skills": ["数据分析", "产品设计"] }
+}
+\`\`\``;
+
+  it('上一版画像是污染 raw JSON 时,喂回 prompt 的是净化后的干净文本而非 fence 全文', async () => {
+    db.prepare(`
+      INSERT INTO nodes (id, type, content, title, heat, refinement, connectivity, independence, maturity_score, is_meta, created)
+      VALUES ('prof-poison', 'meta', ?, 'user-profile', 1.0, 0, 0, 0, 0.2, 1, datetime('now', '-10 days'))
+    `).run(POISON_CONTENT);
+
+    await runProfileSynthesize(db); // 默认 mock 返回健康响应
+
+    const call = vi.mocked(callLLM).mock.calls[0][0] as { prompt: string };
+    expect(call.prompt).toContain('星海科技');         // 净化提取出的文本进了 prompt
+    expect(call.prompt).not.toContain('```json');       // 原始 fence 没被喂回去
+    expect(call.prompt).not.toContain('"profile_text"'); // JSON 结构噪音没被喂回去
+  });
+});
+
 describe('profile-synthesize - 时间线记录', () => {
   it('生成后记录 timeline 事件', async () => {
     seedNode(db, { type: 'crystal', content: 'crystal' });

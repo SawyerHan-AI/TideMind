@@ -180,7 +180,7 @@ export interface AppApi {
   }
   config: {
     get: () => Promise<Record<string, unknown>>
-    update: (patch: Record<string, unknown>) => Promise<void>
+    update: (patch: Record<string, unknown>) => Promise<{ success: boolean; error?: string }>
     strategies: () => Promise<Array<{ name: string; path: string }>>
     strategyContent: (name: string) => Promise<string>
     strategyUpdate: (name: string, content: string, reason?: string) => Promise<void>
@@ -326,6 +326,7 @@ export interface AppApi {
     loginUrl: () => Promise<string>
     registerUrl: () => Promise<string>
     billingPortalUrl: () => Promise<string>
+    billingCheckoutUrl: (plan: 'pro', interval: 'yearly' | 'monthly') => Promise<string>
   }
   app: {
     getVersion: () => Promise<string>

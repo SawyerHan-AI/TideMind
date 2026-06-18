@@ -49,6 +49,10 @@ vi.mock('../../client/electron/cloud/device.js', () => ({
 
 import { CloudSyncClient } from '../../client/electron/cloud/sync-client.js';
 import { Reconciler } from '../../client/electron/cloud/reconciler.js';
+// 预先静态 import reconcile-lock,让它进 ESM 模块缓存:maybeTriggerReconcile 里
+// 的 `await import('./reconcile-lock.js')` 才能在 fake-timer 环境下从缓存同步解析
+// (未缓存的 dynamic import 需要真 macrotask,fake timer 下 microtask flush 推不动)。
+import '../../client/electron/cloud/reconcile-lock.js';
 
 describe('CloudSyncClient reconcile timer', () => {
   beforeEach(() => {
@@ -82,8 +86,13 @@ describe('CloudSyncClient reconcile timer', () => {
     const client = new CloudSyncClient(db);
     await client.start();
 
-    // 推进 12 秒
+    // 推进 12 秒触发 reconcile timer
     await vi.advanceTimersByTimeAsync(12_000);
+    // maybeTriggerReconcile 现在多了一层 dynamic import('./reconcile-lock.js')
+    // (走全局互斥),其 ESM 加载比同步 microtask 多几个 tick;flush 几轮 microtask
+    // 让 runExclusive 的 runner 把 reconciler 构造出来(不用 runAllTimersAsync——
+    // 它会被 ws 重连定时器拖进无限循环)。
+    for (let i = 0; i < 20; i++) await Promise.resolve();
 
     // Reconciler 构造函数被调
     expect(vi.mocked(Reconciler)).toHaveBeenCalledTimes(1);

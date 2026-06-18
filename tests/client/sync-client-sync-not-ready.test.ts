@@ -62,15 +62,15 @@ describe('F13 — syncNotReady not sticky', () => {
     const db = setupTestDb();
     const client = new CloudSyncClient(db);
 
-    // stub 私有 pushOutbox 让它抛 404 错误 → 命中 syncNotReady=true 分支
-    (client as unknown as { pushOutbox: () => Promise<unknown> }).pushOutbox = vi.fn(async () => {
+    // M9:pushOutbox 上行死链已断,改 stub pullChanges 当"抛 404 的网络调用"载体 → syncNotReady=true 分支
+    (client as unknown as { pullChanges: () => Promise<unknown> }).pullChanges = vi.fn(async () => {
       throw new Error('manifest 404: not ready');
     });
     await client.syncOnce();
     expect(client.syncNotReady).toBe(true);
 
     // 第二次 syncOnce:换成其他网络错(不带 404),走 else 分支
-    (client as unknown as { pushOutbox: () => Promise<unknown> }).pushOutbox = vi.fn(async () => {
+    (client as unknown as { pullChanges: () => Promise<unknown> }).pullChanges = vi.fn(async () => {
       throw new Error('fetch failed');
     });
     await client.syncOnce();

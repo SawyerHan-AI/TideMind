@@ -65,7 +65,8 @@
       "learning2": "Otimizado por IA",
       "system": "Atualização",
       "file_edit": "Edição de Arquivo"
-    }
+    },
+    "saveFailed": "Falha ao salvar. Tente novamente."
   },
   "model": {
     "subtabs": {
@@ -118,6 +119,7 @@
       "connectionNameTip": "Um nome personalizado para distinguir múltiplas conexões do mesmo tipo.",
       "connectionNamePlaceholder": "Ex: Empresa {{provider}}",
       "create": "Criar",
+      "createFailed": "Falha ao criar a conexão. Tente novamente.",
       "colName": "Nome",
       "colType": "Tipo",
       "colStatus": "Status",
@@ -149,7 +151,9 @@
       "reembedProgress": "Recalculando embeddings... ({{done}}/{{total}})",
       "reembedNeeded": "O índice vetorial precisa ser recalculado (acionado após atualização ou troca de modelo). Durante o recálculo, a busca automaticamente volta para busca textual.",
       "startReembed": "Iniciar Recálculo",
-      "saved": "Salvo"
+      "saved": "Salvo",
+      "saveFailed": "Falha ao salvar a seleção do modelo. Tente novamente.",
+      "retry": "Tentar novamente"
     },
     "serviceStatus": {
       "title": "Status do serviço de IA",
@@ -389,7 +393,8 @@
       "notionScopeHint": "O TideMind sincronizará todas as páginas compartilhadas com sua integração. Para ajustar o escopo, altere as configurações de compartilhamento no Notion.",
       "notionConnected": "Token verificado, conexão bem-sucedida",
       "notionFailed": "Token inválido ou falha na conexão"
-    }
+    },
+    "createFailed": "Falha ao criar a fonte de notas. Tente novamente."
   },
   "usage": {
     "totalTokens": "Tokens totais",
@@ -462,6 +467,7 @@
       "file_edit": "Arquivo"
     },
     "saved": "Salvo",
+    "saveFailed": "Falha ao salvar. Tente novamente.",
     "confirmSave": "Confirmar salvamento",
     "save": "Salvar",
     "userPromptPlaceholder": "Digite o template do User Prompt, use {{nomeVar}} como marcadores para parâmetros dinâmicos",
@@ -873,6 +879,7 @@
       "generatingPlugin": "Generating plugin...",
       "pluginGenerateFailed": "Plugin generation failed",
       "generateFailed": "Generation failed",
+      "createFailed": "Falha na criação",
       "completed": "Completed",
       "manualStepsTitle": "Manual steps required:",
       "prevStep": "Previous",
@@ -994,12 +1001,16 @@
     "subscription": "Assinatura",
     "currentPlan": "Plano atual",
     "upgradeHint": "Atualize para o Pro e tenha memórias na nuvem ilimitadas, 5 dispositivos, metabolismo na nuvem 24/7 e mais.",
+    "upgradeAnnual": "Atualizar para o Pro — $49/ano",
+    "upgradeMonthly": "ou pague $5/mês",
     "viewPricing": "Ver planos e preços",
     "manageSubscription": "Gerenciar assinatura",
     "billing": "Faturamento",
     "noBilling": "Sem histórico de faturamento para o plano gratuito.",
     "billingComingSoon": "Histórico de faturamento em breve.",
     "logout": "Sair",
+    "logoutTitle": "Sair?",
+    "logoutDesc": "Você sairá do TideMind Cloud. Os dados locais não são afetados.",
     "comingSoon": "Em breve",
     "subscriptionComingSoon": "Os planos Pro e Pro+ estão chegando. Fique atento à sincronização na nuvem, metabolismo 24/7 e muito mais.",
     "registerButton": "Criar conta",

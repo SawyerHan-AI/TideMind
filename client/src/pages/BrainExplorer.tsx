@@ -110,6 +110,7 @@ export function BrainExplorer() {
             onFilterChange={handleFilterChange}
             viewMode={viewMode}
             onViewModeChange={setViewMode}
+            filtersDisabled={useSearchMode}
           />
         </div>
 

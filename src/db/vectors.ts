@@ -259,7 +259,6 @@ export async function reembedAllNodes(db: Database.Database): Promise<void> {
     reembedProgress = { running: true, done: 0, total: totalRow.cnt };
 
     const PAGE_SIZE = 100;
-    let offset = 0;
 
     // 串行化(2026-05-09):历史用 Promise.all 并发跑 5 个 insertSegmentVectors,
     // 在 await getEmbedding 释放 event loop 后,多个 promise 会穿插写同一节点
@@ -267,10 +266,17 @@ export async function reembedAllNodes(db: Database.Database): Promise<void> {
     // 也非原子。重 embed 期间用户编辑笔记时,旧 segment 可能在事务外被业务路径
     // 清理,这次重算结果与新 content 错位。
     // 改为单节点 await 串行:每节点 ~100ms,1000 节点 ~2 分钟,可接受。
+    //
+    // 翻页必须用稳定游标(id 不可变)而非 LIMIT/OFFSET:重 embed 是长任务,
+    // 每个 await getEmbedding 都释放 event loop,期间 synaptic 衰减/归档/
+    // supersede 会并发改 heat/archived 这些过滤列——行跌出结果集时 OFFSET
+    // 会整体左移、静默跳过未处理节点,而循环结束后无条件写 normalization
+    // metadata,被跳过的节点保留旧向量且永不补救。
+    let cursor = '';
     while (true) {
       const page = db.prepare(
-        "SELECT id, content FROM nodes WHERE heat > 0.01 AND archived = 0 AND is_superseded = 0 LIMIT ? OFFSET ?",
-      ).all(PAGE_SIZE, offset) as Array<{ id: string; content: string }>;
+        "SELECT id, content FROM nodes WHERE heat > 0.01 AND archived = 0 AND is_superseded = 0 AND id > ? ORDER BY id LIMIT ?",
+      ).all(cursor, PAGE_SIZE) as Array<{ id: string; content: string }>;
 
       if (page.length === 0) break;
 
@@ -283,7 +289,7 @@ export async function reembedAllNodes(db: Database.Database): Promise<void> {
         reembedProgress.done++;
       }
 
-      offset += PAGE_SIZE;
+      cursor = page[page.length - 1].id;
     }
 
     clearReembedFlag();

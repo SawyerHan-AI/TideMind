@@ -6,6 +6,10 @@ import { CacheManager } from './cache-manager.js';
 import { getOutboxItems, removeOutboxItem, markOutboxFailed, deadLetterOutboxItem, getOutboxCount as _getOutboxCount } from './outbox.js';
 import { getCloudAuth, getCloudBaseUrl, refreshTokenIfNeeded, updateCloudAuth } from './auth-client.js';
 import { getActivityState } from '../activity-state.js';
+import { pumpReembedMissing } from './reembed-pump.js';
+import { pumpUplink } from './uplink.js';
+import { withApplyGuard } from './local-apply.js';
+import { recomputeToGeneration } from '../../../src/metabolism/generation-decay.js';
 
 const log = createLogger('cloud-sync');
 
@@ -18,9 +22,27 @@ export type SyncStatus = 'idle' | 'syncing' | 'error' | 'offline';
  */
 const POLL_INTERVAL_MS = 30_000;
 
+/** 实时上行 pump 间隔(M6):脏集空时 pump 快速返回,开销小。本地写后最多此间隔即上行。 */
+const UPLINK_INTERVAL_MS = 3_000;
+
 /** WebSocket 重连退避参数 */
 const WS_RECONNECT_BASE_MS = 1_000;
 const WS_RECONNECT_MAX_MS = 30_000;
+
+/**
+ * sync HTTP fetch 超时。undici 默认 headersTimeout ~300s,established-but-silent
+ * 连接(VPN 半断 / sleep-wake 后 NAT 失效 / 防火墙 DROP)会让单个请求挂 5 分钟,
+ * 经 syncInFlight 复用塌缩后 trigger-sync / set-sync-enabled IPC 一起卡死。
+ * pull/push 是小请求,15s 足够;命中超时归为 transient(下一轮轮询重试)。
+ */
+const SYNC_FETCH_TIMEOUT_MS = 15_000;
+
+/**
+ * start() 首次 syncOnce 瞬态失败后的重试延迟。首次 syncOnce 在 try 之外 throw
+ * (refreshTokenIfNeeded 对网络错误/5xx 是 throw),若放任 reject 整条 start()
+ * 中止,本会话云同步永久死亡。改为捕获 + 调度一次延迟重试,并照常建 WS/轮询/activity。
+ */
+const FIRST_SYNC_RETRY_MS = 30_000;
 
 /**
  * 启动 → 首次 reconcile 触发的延迟。
@@ -41,6 +63,7 @@ const ACTIVE_RESUME_DELAY_MS = 2_000;
 export class CloudSyncClient {
   private cacheManager: CacheManager;
   private intervalId: ReturnType<typeof setInterval> | null = null;
+  private uplinkTimer: ReturnType<typeof setInterval> | null = null;
   private status: SyncStatus = 'idle';
 
   // WebSocket 相关
@@ -80,6 +103,9 @@ export class CloudSyncClient {
 
   /** idle → active 错峰恢复的 timer。stop() 时必须清。 */
   private resumeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** start() 首次 syncOnce 失败后的延迟重试 timer。stop() 时必须清。 */
+  private firstSyncRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** 用户未在白名单中，云端返回 403 cloud_not_available */
   cloudNotAvailable = false;
@@ -122,7 +148,18 @@ export class CloudSyncClient {
       this.maybeTriggerReconcile().catch(e => log.warn('reconcile trigger failed:', (e as Error).message));
     }, RECONCILE_TRIGGER_DELAY_MS);
 
-    await this.syncOnce();
+    // 首次 syncOnce 的 refreshTokenIfNeeded 在 _doSyncOnce 的 try 之外:网络错误 /
+    // 5xx 是 throw 而非返回 null(auth-client),典型场景是断网/captive portal 下开机
+    // 自启动且 access token 已过期(TTL 1h,隔夜唤醒必过期)。若任 reject 穿透 start(),
+    // 后面的 WS / 轮询 / activity 订阅全部建不起来,本会话云同步永久死亡,直到用户
+    // 重启或关开 toggle。这里捕获后:照常建 WS/轮询/activity(它们各自有重试),并
+    // 调度一次延迟重试首次 syncOnce,网络恢复后自动收敛。
+    try {
+      await this.syncOnce();
+    } catch (e) {
+      log.warn(`initial syncOnce failed (will retry, ws/polling still established): ${(e as Error).message}`);
+      this.scheduleFirstSyncRetry();
+    }
 
     // 启动 WebSocket 实时通知
     // P2-NEW-G: connectWebSocket 是 async，裸调用丢 Promise 会在上游触发
@@ -159,11 +196,34 @@ export class CloudSyncClient {
     });
   }
 
+  /**
+   * 首次 syncOnce 瞬态失败后,延迟重试一次。重试本身仍可能失败(再 throw),
+   * 但 _doSyncOnce 健康路径已被它内部 try/catch 兜住——这里只兜首次那次
+   * refreshTokenIfNeeded 在 try 之外的 throw。重试成功即正常,失败再排一次。
+   */
+  private scheduleFirstSyncRetry(): void {
+    if (this.stopped || this.firstSyncRetryTimer) return;
+    this.firstSyncRetryTimer = setTimeout(() => {
+      this.firstSyncRetryTimer = null;
+      if (this.stopped) return;
+      this.syncOnce().catch(e => {
+        log.warn(`first-sync retry failed: ${(e as Error).message}`);
+        this.scheduleFirstSyncRetry();
+      });
+    }, FIRST_SYNC_RETRY_MS);
+  }
+
   private startPolling(): void {
     if (this.intervalId) return;
     this.intervalId = setInterval(
       () => this.syncOnce().catch(e => log.error('sync error:', (e as Error).message)),
       POLL_INTERVAL_MS,
+    );
+    // M6 实时上行:短 interval pump 本地脏集(空时快速返回)。跟随 polling 生命周期 + activity-state,
+    // idle 时随 stopPolling 一起停,避免后台空转。
+    this.uplinkTimer = setInterval(
+      () => { void pumpUplink(this.db); },
+      UPLINK_INTERVAL_MS,
     );
   }
 
@@ -171,6 +231,10 @@ export class CloudSyncClient {
     if (this.intervalId) {
       clearInterval(this.intervalId);
       this.intervalId = null;
+    }
+    if (this.uplinkTimer) {
+      clearInterval(this.uplinkTimer);
+      this.uplinkTimer = null;
     }
   }
 
@@ -204,10 +268,20 @@ export class CloudSyncClient {
     const isInitial = !lastNodes && !lastLinks; // 只有"两个都从未跑过"才算首次
 
     log.info(`triggering reconcile (isInitial=${isInitial}, nodes_stale=${stale(lastNodes)}, links_stale=${stale(lastLinks)})`);
+    // 走全局互斥:与手动 force-reconcile 共享同一把锁,避免两个 reconciler 并发
+    // 交错写同一组 metadata / 同一进度 channel;abort 也能命中本自动实例。
+    const { runExclusive } = await import('./reconcile-lock.js');
     const { Reconciler } = await import('./reconciler.js');
-    const reconciler = new Reconciler(this.db);
-    const results = await reconciler.runAll(isInitial);
-    for (const r of results) {
+    const outcome = await runExclusive(async (register) => {
+      const reconciler = new Reconciler(this.db);
+      register(reconciler);
+      return reconciler.runAll(isInitial);
+    });
+    if (!outcome.ok) {
+      log.info('auto reconcile skipped: another reconcile already running');
+      return;
+    }
+    for (const r of outcome.value) {
       log.info(`reconcile ${r.table}: uploaded=${r.uploaded} downloaded=${r.downloaded} conflicts=${r.conflicts} errors=${r.errors.length}`);
     }
   }
@@ -231,6 +305,10 @@ export class CloudSyncClient {
     if (this.reconcileTimer) {
       clearTimeout(this.reconcileTimer);
       this.reconcileTimer = null;
+    }
+    if (this.firstSyncRetryTimer) {
+      clearTimeout(this.firstSyncRetryTimer);
+      this.firstSyncRetryTimer = null;
     }
     this.clearResumeTimer();
     if (this.unsubscribeActivity) {
@@ -268,15 +346,23 @@ export class CloudSyncClient {
     }
     this.wsConnecting = true;
     try {
-      // 先 close 旧连接再开新的;readyState 为 CLOSED/CLOSING 时不动。
+      // 先彻底解绑/关闭旧连接,再开新的。
+      // 竞态修复:旧实现只处理 OPEN/CONNECTING、且不清 wsAuthTimer——CLOSING 态的
+      // 旧 socket 保留全部 listener,其迟到的 close 事件会执行 `this.ws = null` +
+      // scheduleReconnect,把刚建好的新 socket 引用清掉、触发多余重连,产生孤儿
+      // socket(占用 MAX_CONNECTIONS_PER_TOKEN=3 配额 → 4002)。统一处理:无论旧
+      // socket 处于何种 readyState,一律先 removeAllListeners(切断它对 this 的影响)、
+      // 再 close、清 this.ws,并清掉它可能 armed 的 wsAuthTimer。
       if (this.ws) {
-        const rs = this.ws.readyState;
-        if (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) {
-          log.debug('ws already connecting/open, closing before reconnect');
-          try { this.ws.close(1000, 'reconnect'); } catch { /* ignore */ }
-          this.ws.removeAllListeners();
-          this.ws = null;
-        }
+        log.debug('ws present before reconnect, detaching old socket');
+        const old = this.ws;
+        old.removeAllListeners();
+        try { old.close(1000, 'reconnect'); } catch { /* ignore */ }
+        this.ws = null;
+      }
+      if (this.wsAuthTimer) {
+        clearTimeout(this.wsAuthTimer);
+        this.wsAuthTimer = null;
       }
 
       const token = await refreshTokenIfNeeded();
@@ -295,28 +381,36 @@ export class CloudSyncClient {
       this.wsAuthed = false;
 
       try {
-        this.ws = new WebSocket(url);
+        // 捕获本次创建的 socket 实例引用。所有 handler 开头都比对
+        // `if (this.ws !== socket) return`:慢网络下旧 socket 的迟到事件
+        // (open/message/close)不再误操作刚建好的新 socket(误清引用、误杀连接、
+        // 误触发重连),消除"timer/listener 不校验事件源"的整类竞态。
+        const socket = new WebSocket(url);
+        this.ws = socket;
 
-        this.ws.on('open', () => {
+        socket.on('open', () => {
+          if (this.ws !== socket) return; // 旧 socket 的迟到 open,忽略
           log.info('ws opened, sending auth handshake');
           // 立即发 auth message;服务端收到后应在 3 秒内回 auth_ok/auth_fail。
           try {
-            this.ws?.send(JSON.stringify({ type: 'auth', token }));
+            socket.send(JSON.stringify({ type: 'auth', token }));
           } catch (e) {
             log.warn(`ws send auth failed: ${(e as Error).message}`);
           }
           // 3 秒内没收到 auth_ok 就认为对端不支持新协议或卡死,close 重连。
           // 服务端 handshake timeout 也是 3s,客户端给稍微长一点的容忍(3500ms)
-          // 避免两边同时 timeout 抢着 close。
+          // 避免两边同时 timeout 抢着 close。timer 闭包再次比对 socket 身份,
+          // 避免旧 socket armed 的 timer 在新 socket 尚未 auth 的窗口里 close 掉新连接。
           this.wsAuthTimer = setTimeout(() => {
-            if (!this.wsAuthed) {
+            if (this.ws === socket && !this.wsAuthed) {
               log.warn('ws auth ack timeout, closing');
-              this.ws?.close(4003, 'Auth ack timeout');
+              socket.close(4003, 'Auth ack timeout');
             }
           }, 3_500);
         });
 
-        this.ws.on('message', (data) => {
+        socket.on('message', (data) => {
+          if (this.ws !== socket) return; // 旧 socket 的迟到 message,忽略
           try {
             const msg = JSON.parse(data.toString());
             if (msg.type === 'auth_ok' || msg.type === 'connected') {
@@ -332,7 +426,11 @@ export class CloudSyncClient {
               this.wsReconnectAttempts = 0; // 重置退避
             } else if (msg.type === 'auth_fail') {
               log.warn(`ws auth_fail: reason=${msg.reason}`);
-              this.ws?.close(msg.reason === 'expired' ? 4401 : 1008, 'auth_fail');
+              // rate_limited(同 token 连接超限 MAX_CONNECTIONS_PER_TOKEN)不是凭据问题,
+              // 用 1013(try again later)区分,close handler 走退避而不清零 attempts,
+              // 避免"刷新成功 → attempts=0 → 1s 后重连 → 又被拒"的每秒互打循环。
+              const closeCode = msg.reason === 'expired' ? 4401 : msg.reason === 'rate_limited' ? 1013 : 1008;
+              socket.close(closeCode, 'auth_fail');
             } else if (msg.type === 'changes_available') {
               if (!this.wsAuthed) {
                 // 协议违规:未认证就收到通知 → 不信任
@@ -348,7 +446,8 @@ export class CloudSyncClient {
           }
         });
 
-        this.ws.on('close', async (code, reason) => {
+        socket.on('close', async (code, reason) => {
+          if (this.ws !== socket) return; // 旧 socket 的迟到 close,不动新连接
           log.info(`ws closed: code=${code} reason=${reason.toString()} authed=${this.wsAuthed}`);
           if (this.wsAuthTimer) {
             clearTimeout(this.wsAuthTimer);
@@ -364,6 +463,8 @@ export class CloudSyncClient {
           //   到普通 scheduleReconnect 的指数退避(不会立刻死亡)。
           //   原实现只挡 4401,服务端 key rotation 期间所有 ws 客户端会进入
           //   无限退避空转直到 app 重启。
+          // - code 1013(rate_limited)**不**清零 attempts:服务端会持续拒绝,
+          //   必须走指数退避(直到旧连接自然释放配额),否则每秒互打。
           if (code === 4401 || code === 1008) {
             try {
               await refreshTokenIfNeeded();
@@ -375,7 +476,8 @@ export class CloudSyncClient {
           this.scheduleReconnect();
         });
 
-        this.ws.on('error', (err) => {
+        socket.on('error', (err) => {
+          if (this.ws !== socket) return;
           log.warn(`ws error: ${err.message}`);
           // error 事件后会触发 close，由 close 处理重连
         });
@@ -404,7 +506,15 @@ export class CloudSyncClient {
 
     this.wsReconnectTimer = setTimeout(() => {
       this.wsReconnectTimer = null;
-      this.connectWebSocket();
+      // 裸调 connectWebSocket() 会丢 Promise:connectWebSocket 内 `await
+      // refreshTokenIfNeeded()`(L342)在内层 try/catch 之前,瞬态失败(笔记本唤醒后
+      // Wi-Fi 未恢复且 token 已过期)会穿透 reject → 主进程 unhandledRejection,且重连
+      // 链彻底死亡(只剩 30s 轮询,idle 时连轮询也停)。.catch 续上退避链,与 start()
+      // 路径(L139)一致。
+      this.connectWebSocket().catch(e => {
+        log.warn(`ws reconnect attempt failed: ${(e as Error).message}`);
+        if (!this.stopped) this.scheduleReconnect();
+      });
     }, delay);
   }
 
@@ -467,9 +577,16 @@ export class CloudSyncClient {
 
     this.status = 'syncing';
     try {
-      await this.pushOutbox(token);
+      // M9:outbox 上行死链已断 —— enqueueOutbox 自 M0 删 mcp-router 后无任何调用,
+      // local_outbox 永空、pushOutbox 永远空跑。实时上行走 M6 uplink(脏集)。
+      // outbox.ts/pushOutbox/server /outbox 物理删除 + UI 切 cloud_dirty 见 backlog。
+      // M6:pull 前先把本地脏集实时上行,确保 pull 拿到的是上行后状态(也兜底 uplinkTimer)。
+      const uplinked = await pumpUplink(this.db);
       if (this.stopped) return;
-      await this.pullChanges(token);
+      const pulled = await this.pullChanges(token);
+      if (this.stopped) return;
+      // M8.5:pull 后拉云端 generation 锚点,本地 lazy 重算 A 类代谢(heat/maturity)到 G。
+      await this.recomputeMetabolismGeneration(token);
       if (this.stopped) return;
       this.status = 'idle';
       // 同步成功 → 重置错误标志（可能是之前的瞬时故障）
@@ -481,7 +598,15 @@ export class CloudSyncClient {
       // 走 updateCloudAuth → 内部走 saveAuthToDisk,保证内存与 keychain 一致。
       updateCloudAuth({ lastSyncedAt: new Date().toISOString() });
 
-      this.emitDataChanged();
+      // 只在真有 uplink/pull 变更时才追加 'nodes'/'links' scope。0 变更的 30s 轮询
+      // (active 云用户每 30s 必发)只刷 'cloud' 状态条,不触发 renderer 全量重拉
+      // (nodes:list / nodes:graph)——后者在 8w+ links 库上是周期性主线程 SQL 压力 +
+      // 图谱力导向每 30s 抖动一次的来源。
+      this.emitDataChanged(uplinked > 0 || pulled > 0);
+
+      // M4(解 #2 召回缺口):pull 下来的跨设备节点向量不同步,fire-and-forget 补 embed。
+      // pump 扫全部"active 有 content 缺向量"节点,失败已在内部 swallow(无凭证/熔断时静默)。
+      void pumpReembedMissing(this.db);
     } catch (e) {
       const msg = (e as Error).message;
       this.lastErrorMessage = msg;
@@ -502,9 +627,10 @@ export class CloudSyncClient {
         this.status = 'error';
       }
       log.error('sync failed:', msg);
-      // 失败路径也需要通知 UI,否则 renderer 只能看到 syncClient 被创建时的 'idle' 初始值,
-      // 误以为 sync 已成功开启(尤其是 start() fire-and-forget 之后)
-      this.emitDataChanged();
+      // 失败路径也需要通知 UI(状态条),否则 renderer 只能看到 syncClient 被创建时的
+      // 'idle' 初始值,误以为 sync 已成功开启(尤其是 start() fire-and-forget 之后)。
+      // 但失败时没有数据变更,只刷 'cloud' scope,不触发全量重拉。
+      this.emitDataChanged(false);
     }
   }
 
@@ -539,8 +665,11 @@ export class CloudSyncClient {
           // 修复 M29(2026-05-09):startSlowRetry 进入时调用了 disconnectWebSocket,
           // 历史上恢复后**不重连 ws**,UI 显示 offline 长达 1 小时(到下次 slow
           // retry 前)。这里探测成功后立刻重连 ws,与 syncOnce 的健康路径一致。
+          // 失败时续上退避重连链(不能只记日志):否则恢复瞬间 token 又抖一下就让 ws
+          // 永久死亡,只剩轮询。
           this.connectWebSocket().catch(e => {
             log.warn(`ws reconnect after slow-retry recovery failed: ${(e as Error).message}`);
+            if (!this.stopped) this.scheduleReconnect();
           });
           log.info('cloud_not_available recovered, resumed normal sync + ws');
         }
@@ -567,8 +696,12 @@ export class CloudSyncClient {
       if (this.stopped) break; // stop 后立即断开多页拉取,避免写已关闭 db
       pages++;
       const sinceVersion = this.cacheManager.getLastSyncedVersion();
+      // AbortSignal.timeout:undici 默认 ~300s,黑洞网络下单页 fetch 会挂死整条
+      // syncInFlight(trigger-sync / set-sync-enabled IPC 一起卡)。15s 超时后归
+      // transient,下一轮轮询重试。
       const res = await fetch(`${base}/api/v1/sync/pull?since_version=${sinceVersion}&limit=${PULL_LIMIT}`, {
         headers: { 'Authorization': `Bearer ${token}` },
+        signal: AbortSignal.timeout(SYNC_FETCH_TIMEOUT_MS),
       });
       if (!res.ok) {
         if (res.status === 403) {
@@ -642,8 +775,26 @@ export class CloudSyncClient {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ items: validItems.map(i => ({ operation: i.operation, payload: i.payload })) }),
+      signal: AbortSignal.timeout(SYNC_FETCH_TIMEOUT_MS),
     });
-    if (!res.ok) throw new Error(`Outbox push failed: ${res.status}`);
+    if (!res.ok) {
+      // 与 pullChanges 对齐:解析 403 结构化错误,不再对所有非 2xx 一律泛化 throw。
+      // 原实现把 quota_exceeded / cloud_not_available 当普通失败 throw,导致 push 先于
+      // pull,push 一抛错 pull 永远跑不到——超配额用户连其他设备的下行变更都拉不下来。
+      if (res.status === 403) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        if (body.error === 'cloud_not_available') {
+          throw new Error('cloud_not_available'); // 走 slow-retry,与 pull 一致
+        }
+        if (body.error === 'quota_exceeded') {
+          // 配额耗尽不是故障:保留 outbox(不删、不计 retry),**不抛错**,让本轮
+          // 继续走 pullChanges 拉下行变更。用户升级 Pro 后下次 push 自动重试。
+          log.warn(`outbox push rejected: quota_exceeded (${validItems.length} item(s) retained)`);
+          return 0;
+        }
+      }
+      throw new Error(`Outbox push failed: ${res.status}`);
+    }
 
     // 解析服务端 per-item 结果。旧版服务端只返 { processed },新版还返 results。
     // 没有 results 字段时回退为"全部删除"(旧行为) —— 服务端升级后自动启用精确删除。
@@ -689,10 +840,46 @@ export class CloudSyncClient {
     return removed;
   }
 
-  private emitDataChanged(): void {
+  /**
+   * M8.5:拉云端 generation 锚点(/sync/version 的 decay_generation),本地把 active 节点
+   * heat/maturity lazy 重算到 G。withApplyGuard 抑制上行(派生衰减非用户写,不进 cloud_dirty)。
+   * 失败静默,下次 sync 重试。
+   */
+  private async recomputeMetabolismGeneration(token: string): Promise<void> {
+    try {
+      const res = await fetch(`${getCloudBaseUrl()}/api/v1/sync/version`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json() as { decay_generation?: number; decay_base?: number; decay_damping?: number };
+      const G = Number(data.decay_generation ?? 0);
+      if (G > 0) {
+        // M8 参数随锚点下发(审计 HIGH):存云端 decay 参数,recomputeToGeneration 据此衰减,与云端
+        // synaptic 逐位一致(不受本地 learning2 调参分叉影响)。
+        if (typeof data.decay_base === 'number') {
+          this.db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('cloud.decay_base', ?)").run(String(data.decay_base));
+        }
+        if (typeof data.decay_damping === 'number') {
+          this.db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('cloud.decay_damping', ?)").run(String(data.decay_damping));
+        }
+        const n = withApplyGuard(this.db, () => recomputeToGeneration(this.db, G));
+        if (n > 0) this.emitDataChanged();
+      }
+    } catch (err) {
+      log.warn(`generation 重算失败(下次重试): ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * 广播 data-changed。dataChanged=true 时附 'nodes'/'links' scope 触发 renderer
+   * 重拉笔记/图谱;false 时只发 'cloud'(刷状态条,不重拉)。
+   * 默认 true 以保守兼容直接调用方。
+   */
+  private emitDataChanged(dataChanged = true): void {
+    const scopes = dataChanged ? ['cloud', 'nodes', 'links'] : ['cloud'];
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) {
-        win.webContents.send('data-changed', { scopes: ['cloud', 'nodes', 'links'] });
+        win.webContents.send('data-changed', { scopes });
       }
     }
   }

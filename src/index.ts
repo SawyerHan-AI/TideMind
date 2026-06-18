@@ -11,10 +11,12 @@ import { getDb, closeDb, initVec } from './db/connection.js';
 import { SqliteRepository } from './db/sqlite-repository.js';
 import { digest } from './tools/digest.js';
 import { recall } from './tools/recall.js';
+import { normalizeRecallInput } from './tools/recall-input.js';
 import { prepare } from './tools/prepare.js';
 // PR-3: 砍 intent 字段后，Intent type 在 src/index.ts 不再用（recall.ts 内部
-// 仍 cast 但 import 在那里）。保留 RecallInput 等其它类型。
-import type { DigestInput, RecallInput, PrepareInput, DigestIntent, DetailLevel } from './types.js';
+// 仍 cast 但 import 在那里）。RecallInput 随 normalizeRecallInput 移到
+// ./tools/recall-input.js,此处不再 import。
+import type { DigestInput, PrepareInput, DigestIntent, DetailLevel } from './types.js';
 
 import { touchAgent, getAgent } from './db/agents.js';
 import { createLogger } from './utils/logger.js';
@@ -146,7 +148,11 @@ server.tool(
 
     // ── 返回控制 ──
     sort: z.enum(['relevance', 'recent']).optional().describe('默认：有 query → relevance；无 query → recent'),
-    limit: z.number().int().min(1).max(200).default(50),
+    // 不给 .default()：MCP SDK 会在调用 handler 前把 zod default 填进 params，
+    // 那样 recall.ts 按 mode 计算的策略默认值(detail=8 / index=30，用户可在
+    // recall-search 策略文件里调)会被恒定的 50 顶掉变成死代码。留 optional，让
+    // recall.ts 的 `input.limit ?? defaultLimit` 真正生效。
+    limit: z.number().int().min(1).max(200).optional(),
     mode: z.enum(['index', 'detail']).default('detail').describe('index=轻量索引；detail=完整内容+关联'),
 
     // ── Override 入口（传了忽略上面所有搜索/过滤） ──
@@ -247,89 +253,7 @@ function makeDeprecatedFieldsError(fields: string[]): { isError: true; content: 
   };
 }
 
-/**
- * 把旧字段 silent 映射到新字段。
- * 设计 doc: docs/design/brain-recall-redesign-2026-05.md §8.1 字段映射表
- */
-function normalizeRecallInput(
-  p: Record<string, unknown>,
-  agentId: string | null | undefined,
-  sourceTool: string | undefined,
-): RecallInput {
-  const input: RecallInput = {
-    query: p.query as string | undefined,
-    match: p.match as 'any' | 'all' | undefined,
-    context: p.context as string | undefined,
-    time: p.time as RecallInput['time'],
-    tags: p.tags as string[] | undefined,
-    type: p.type as string | undefined,
-    from_agents: p.from_agents as string[] | undefined,
-    sort: p.sort as 'relevance' | 'recent' | undefined,
-    limit: p.limit as number | undefined,
-    mode: p.mode as RecallInput['mode'],
-    node_id: p.node_id as string | undefined,
-    from_node: p.from_node as string | undefined,
-    relation: p.relation as string | undefined,
-    depth: p.depth as number | undefined,
-    vault_file: p.vault_file as string | undefined,
-    agent_id: agentId ?? undefined,
-    source_tool: sourceTool,
-  };
-
-  // 兼容映射 1：source_file → vault_file
-  if (!input.vault_file && typeof p.source_file === 'string') {
-    input.vault_file = p.source_file;
-  }
-
-  // 兼容映射 2：scope: "tag:xxx" / "project:xxx" → tags
-  if (!input.tags && typeof p.scope === 'string') {
-    const m = p.scope.match(/^(tag|project):(.+)$/);
-    if (m) input.tags = [m[2]];
-  }
-
-  // 兼容映射 3：index_ref: "tag:xxx" / "project:xxx" → tags；"node:xxx" → node_id
-  if (typeof p.index_ref === 'string') {
-    const m = p.index_ref.match(/^(tag|project|node):(.+)$/);
-    if (m) {
-      if (m[1] === 'node' && !input.node_id) input.node_id = m[2];
-      else if ((m[1] === 'tag' || m[1] === 'project') && !input.tags) input.tags = [m[2]];
-    }
-  }
-
-  // 兼容映射 4：created_after/before → time.after/before
-  if (!input.time && (typeof p.created_after === 'string' || typeof p.created_before === 'string')) {
-    input.time = {
-      after: typeof p.created_after === 'string' ? p.created_after : undefined,
-      before: typeof p.created_before === 'string' ? p.created_before : undefined,
-    };
-  }
-
-  // 反向映射：把新字段也写到老字段，让 recall.ts 主调度（读老字段名的）能拿到。
-  // PR-4 主调度完整重写前的桥接：避免新字段在 recall.ts 里变成死代码（audit-1 C1/C2 修复）。
-  // PR-4 完整重写后，recall.ts 应直接读新字段，此映射可移除。
-  if (!input.source_file && input.vault_file) input.source_file = input.vault_file;
-  if (!input.created_after && input.time?.after) input.created_after = input.time.after;
-  if (!input.created_before && input.time?.before) input.created_before = input.time.before;
-  // time.preset → created_after（翻译相对时间）
-  if (!input.created_after && input.time?.preset) {
-    const now = Date.now();
-    const presetMap: Record<string, number> = {
-      today: 1 * 24 * 60 * 60 * 1000,
-      recent_3days: 3 * 24 * 60 * 60 * 1000,
-      recent_week: 7 * 24 * 60 * 60 * 1000,
-      recent_month: 30 * 24 * 60 * 60 * 1000,
-      recent_3months: 90 * 24 * 60 * 60 * 1000,
-    };
-    const ms = presetMap[input.time.preset];
-    if (ms) input.created_after = new Date(now - ms).toISOString();
-  }
-  // tags → scope (单 tag) — 多 tag AND 留给 PR-4 在 hybrid 里实现，单 tag 用 scope 兼容
-  if (!input.scope && input.tags && input.tags.length === 1) {
-    input.scope = `tag:${input.tags[0]}`;
-  }
-
-  return input;
-}
+// normalizeRecallInput 已移到 ./tools/recall-input.js(便于单测，见顶部 import)。
 
 // ============================================================
 // brain_digest — 消化信息到外脑

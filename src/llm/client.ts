@@ -8,6 +8,7 @@ import { fetch as undiciFetch, Agent } from 'undici';
 import { getConfig, getDataDir } from '../config.js';
 import { createLogger } from '../utils/logger.js';
 import { estimateCost } from './pricing.js';
+import { clearEmbeddingTokenCache } from './embedding.js';
 import { now } from '../utils/time.js';
 import { processThinkTags } from './thinking.js';
 
@@ -208,6 +209,10 @@ export function clearClientCache(): void {
   legacyVertexClient = null;
   legacyAnthropicKey = '';
   legacyVertexProject = '';
+  // embedding 的 Vertex token 缓存与 SDK client 缓存共享同一批凭证,凭证变更
+  // 路径(connections.ts / config.ts / llm-health 重试按钮)都只调本函数——
+  // 不联动清理会让"修好了凭证却还是坏的"持续到 50 分钟窗口期满
+  clearEmbeddingTokenCache();
 }
 
 // 导出供测试:验证 mtime+size 进入指纹
@@ -461,11 +466,26 @@ async function callGeminiLLM(options: {
   }
 
   const data = await resp.json() as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
+    promptFeedback?: { blockReason?: string };
     usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
   };
 
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  // Gemini 对 safety 拦截返回 HTTP 200 + 空 candidates + promptFeedback.blockReason。
+  // 不能当成功返回空串:下游 parseLLMJson('') 静默跳过,且空串会走 recordCallResult(true)
+  // + notifyLLMSuccess 污染健康信号,用户看到"零产出但一切正常"。
+  const candidate = data.candidates?.[0];
+  if (!candidate && data.promptFeedback?.blockReason) {
+    throw new LLMServiceError(`Gemini prompt blocked: ${data.promptFeedback.blockReason}`);
+  }
+
+  const text = candidate?.content?.parts?.[0]?.text ?? '';
+  // 思考模型(2.5/3.x)的内部 thoughts 计入 maxOutputTokens,预算耗尽时
+  // finishReason=MAX_TOKENS 且 content.parts 缺失 → 空文本。与 Claude 路径的
+  // missing-text-block warn 对齐,留可诊断信号。
+  if (!text) {
+    log.warn(`Gemini 响应无文本 finishReason=${candidate?.finishReason ?? 'unknown'} blockReason=${data.promptFeedback?.blockReason ?? 'none'}`);
+  }
   const inputTokens = data.usageMetadata?.promptTokenCount ?? 0;
   const outputTokens = data.usageMetadata?.candidatesTokenCount ?? 0;
 
@@ -590,12 +610,22 @@ export function normalizeBaseUrl(rawUrl: string): string {
  * 覆盖的超时/中止形态（容易被漏掉）：
  * - `AbortSignal.timeout(ms)` 触发时抛出的 DOMException：name === 'TimeoutError'，
  *   message 形如 "The operation was aborted due to timeout"。
- * - 我们自己用 AbortController + setTimeout 触发的 abort：name === 'AbortError'。
+ * - 我们自己用 AbortController + setTimeout 触发的 abort：Claude SDK 路径表现为
+ *   `APIUserAbortError`（见下方专属分支），裸 fetch 路径表现为 name === 'AbortError'。
  * - Anthropic SDK 的 `APIConnectionTimeoutError`（status 为 undefined，
  *   所以上面的 `APIError` 分支不一定能命中），以及其父类 `APIConnectionError`。
  */
 export function isRetryable(err: unknown): boolean {
   if (err instanceof Anthropic.APIConnectionError || err instanceof Anthropic.APIConnectionTimeoutError) {
+    return true;
+  }
+  // APIUserAbortError 必须在 APIError 分支之前分流:它 extends APIError 且
+  // status=undefined、name 不是 'AbortError',否则会被下面的 status 判定误判为
+  // 不可重试。Claude 路径的 tier 超时(AbortController + setTimeout)经 SDK 抛的
+  // 正是这个类——语义上等同 TimeoutError,应重试。外部用户取消同样表现为
+  // APIUserAbortError,由 callLLM 在重试判定前用 options.signal.aborted 拦截,
+  // 不会走到这里。
+  if (err instanceof Anthropic.APIUserAbortError) {
     return true;
   }
   if (err instanceof Anthropic.APIError) {
@@ -668,16 +698,41 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function logUsage(modelId: string, operationName: string | undefined, inputTokens: number, outputTokens: number, thinkingTokens: number): void {
+/**
+ * 判断模型是否已移除 manual extended thinking。
+ *
+ * API 事实(Anthropic 迁移文档): Opus 4.7 及之后(4.8、Fable 系列)发送
+ * thinking:{type:'enabled', budget_tokens} 直接 400 invalid_request_error,
+ * 只接受 adaptive。Opus 4.6 / Sonnet 4.6 上 budget_tokens 处于 deprecated
+ * 过渡期仍可用,不在此列。用户自定义模型配置 + 策略 thinking_mode=manual 的
+ * 组合会踩这个 400,callLLM 据此降级为 adaptive 而不是让任务永久失败。
+ */
+export function manualThinkingUnsupported(modelId: string): boolean {
+  const id = modelId.toLowerCase();
+  if (id.includes('claude-fable')) return true;
+  const m = id.match(/claude-opus-(\d+)-(\d+)/);
+  if (m) {
+    const major = Number(m[1]);
+    const minor = Number(m[2]);
+    return major > 4 || (major === 4 && minor >= 7);
+  }
+  return false;
+}
+
+function logUsage(modelId: string, operationName: string | undefined, inputTokens: number, outputTokens: number, thinkingTokens: number, cacheCreateTokens = 0, cacheReadTokens = 0): void {
   if (!usageDb) return;
   try {
-    const cost = estimateCost(modelId, inputTokens, outputTokens, thinkingTokens);
+    const cost = estimateCost(modelId, inputTokens, outputTokens, thinkingTokens, cacheCreateTokens, cacheReadTokens);
     // created 统一走 JS ISO：下游 initialization.ts 用 `created >= ?` 和 ISO 字符串
     // 比较，若写 datetime('now') 字面量(无 Z、空格分隔)字符串序会错乱。
+    //
+    // input_tokens 列记完整 prompt 规模:Anthropic 的 usage.input_tokens 只是未缓存
+    // 余量,prompt caching 命中时大头在 cache_creation/cache_read 两项,不折算进去
+    // 用量面板的 token 数会系统性低估。成本已按 write 1.25x / read 0.1x 分档折算。
     usageDb.prepare(
       `INSERT INTO llm_usage_log (model, operation, input_tokens, output_tokens, thinking_tokens, estimated_cost, created)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).run(modelId, operationName ?? null, inputTokens, outputTokens, thinkingTokens, cost, now());
+    ).run(modelId, operationName ?? null, inputTokens + cacheCreateTokens + cacheReadTokens, outputTokens, thinkingTokens, cost, now());
   } catch { /* 用量记录失败不影响主流程 */ }
 }
 
@@ -760,6 +815,11 @@ export async function callLLM(options: {
       resolvedClient = connInfo.client;
       resolvedCacheKey = connInfo.cacheKey ?? null;
     } catch (err) {
+      // LLMServiceError(credentials JSON 损坏等服务级故障)必须原样上抛进熔断器
+      // (getClientByConnection 包装它就是为了这个);静默回退 legacy provider 会让
+      // 熔断器永远收不到信号,且多数用户没配 legacy key,回退后只会换一种方式失败。
+      if (err instanceof LLMServiceError) throw err;
+      // 仅对配置缺失类错误(connection 行不存在 / usageDb 未初始化)保留 legacy 回退
       log.warn(`连接 ${connectionId} 查找失败，回退到 provider=${provider}: ${(err as Error).message}`);
     }
   }
@@ -823,10 +883,19 @@ export async function callLLM(options: {
       try {
         // thinking 配置:adaptive 不传 budget,manual 传 budget,否则关闭
         const thinkingOpt = options.thinking;
-        const isAdaptive = thinkingOpt?.mode === 'adaptive';
+        let isAdaptive = thinkingOpt?.mode === 'adaptive';
         const thinkingBudget = thinkingOpt?.budget;
-        const useManualThinking = !isAdaptive && thinkingBudget !== undefined && thinkingBudget > 0;
-        if (isAdaptive && thinkingBudget !== undefined && thinkingBudget > 0) {
+        let useManualThinking = !isAdaptive && thinkingBudget !== undefined && thinkingBudget > 0;
+        // Opus 4.7+/Fable 已移除 manual thinking(budget_tokens → 400),manual 配置
+        // 在这些模型上必然失败且 400 不进熔断器、不会自愈——降级为 adaptive 兜底。
+        if (useManualThinking && manualThinkingUnsupported(modelId)) {
+          if (attempt === 0) {
+            log.warn(`model=${modelId} 不支持 manual extended thinking(budget_tokens 会 400),已降级为 adaptive op=${options.operationName ?? 'unknown'}`);
+          }
+          useManualThinking = false;
+          isAdaptive = true;
+        }
+        if (isAdaptive && thinkingBudget !== undefined && thinkingBudget > 0 && thinkingOpt?.mode === 'adaptive') {
           log.debug(`adaptive thinking 模式忽略传入的 budget=${thinkingBudget}（由模型自决推理深度）`);
         }
         const ADAPTIVE_THINKING_RESERVE = 8192; // adaptive 模式给 max_tokens 加的兜底
@@ -879,13 +948,13 @@ export async function callLLM(options: {
           { signal: signalForCall },
         );
 
-        // thinking tokens 包含在 output_tokens 中，无独立计数字段
-        logUsage(modelId, options.operationName,
-          response.usage.input_tokens, response.usage.output_tokens, 0);
-
-        // cache_creation/read 仅做 debug 观测,不入库(用户日志可见命中情况即可)
         const cacheCreate = (response.usage as { cache_creation_input_tokens?: number }).cache_creation_input_tokens ?? 0;
         const cacheRead = (response.usage as { cache_read_input_tokens?: number }).cache_read_input_tokens ?? 0;
+        // thinking tokens 包含在 output_tokens 中，无独立计数字段。
+        // cache 两项必须入账:input_tokens 只是未缓存余量,prompt cache 默认开启时
+        // 漏记会让用量面板与成本估算系统性低估(write 1.25x / read 0.1x 计费,非 0)。
+        logUsage(modelId, options.operationName,
+          response.usage.input_tokens, response.usage.output_tokens, 0, cacheCreate, cacheRead);
         log.debug(`完成 op=${options.operationName ?? 'unknown'} tokens=${response.usage.input_tokens}+${response.usage.output_tokens} cache_create=${cacheCreate} cache_read=${cacheRead} 耗时=${Date.now() - callStart}ms`);
         const textBlock = response.content.find(b => b.type === 'text');
         if (!textBlock) {
@@ -898,6 +967,13 @@ export async function callLLM(options: {
         clearTimeout(timeout);
       }
     } catch (err) {
+      // 外部 signal 已 abort(用户取消):SDK 会丢弃自定义 reason 抛 APIUserAbortError,
+      // 裸 fetch 路径抛的形态也不稳定。这里统一还原成外部 reason 原样上抛(与函数
+      // 入口的 pre-call 检查语义对齐),不重试、不计失败、不包装成 LLMServiceError——
+      // 否则上游(init-session 等)会把"用户取消"误判成服务故障。
+      if (options.signal?.aborted) {
+        throw options.signal.reason ?? err;
+      }
       lastError = err;
       if (!isRetryable(err) || attempt === MAX_RETRIES - 1) break;
 

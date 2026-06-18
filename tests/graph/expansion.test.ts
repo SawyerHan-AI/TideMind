@@ -81,6 +81,29 @@ describe('expandFromNode', () => {
     expect(ids).toContain(C.id);
   });
 
+  it('排除 archived 节点（heat=0.02 恰好高于阈值，必须靠 archived 过滤）', () => {
+    const { A, B, C, D, E } = buildTestGraph();
+    // archiveNode 设 archived=1 + heat=0.02(> 0.01 阈值),且不删 links
+    archiveNode(db, B.id);
+
+    const result = expandFromNode(db, A.id, { depth: 2 });
+    const ids = result.map(n => n.id);
+    expect(ids).not.toContain(B.id);
+    // B 被排除后 D、E 不可达
+    expect(ids).not.toContain(D.id);
+    expect(ids).not.toContain(E.id);
+    expect(ids).toContain(C.id);
+  });
+
+  it('排除 is_superseded 节点（即使 heat 仍然很高）', () => {
+    const { A, B } = buildTestGraph();
+    db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.9 WHERE id = ?').run(B.id);
+
+    const result = expandFromNode(db, A.id, { depth: 1 });
+    const ids = result.map(n => n.id);
+    expect(ids).not.toContain(B.id);
+  });
+
   it('排除 pending 链接（只跟随 confirmed）', () => {
     const A = seedNode(db, { content: 'A' });
     const B = seedNode(db, { content: 'B' });

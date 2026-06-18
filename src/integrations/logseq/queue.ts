@@ -15,14 +15,14 @@ import { preprocessFile, updateBlockIndexForFile } from './preprocessor.js';
 import { segmentContent } from './segmenter.js';
 import {
   getFileState, setFileState, isFileChanged,
-  computeFileHash, computeSegmentHash, getFileStat,
+  computeFileHash, computeContentHash, computeSegmentHash, getFileStat,
 } from './sync-state.js';
 import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { digest } from '../../tools/digest.js';
 import { createLink, linkExists } from '../../db/links.js';
 import { now } from '../../utils/time.js';
 import { promotePropertyValues } from '../shared/property-promote.js';
-import { supersedeNodeWithLinks } from '../../db/node-lifecycle.js';
+import { supersedeNodeWithLinks, markNodeSupersededRecordOnly } from '../../db/node-lifecycle.js';
 import { SYSTEM_PROPERTIES } from './types.js';
 import { computeTimeFactor } from './initial-heat.js';
 
@@ -157,6 +157,10 @@ async function processOneFile(
   const progress = getProgress(sourceId);
   progress.currentFile = relPath;
 
+  // 本轮新建（非复用旧 ID）的节点。声明在 try 外，让 catch 能据此清理已建节点
+  // （段级部分失败补偿，避免孤儿 + 重复）。
+  const createdThisRun: string[] = [];
+
   try {
     if (shouldStop?.()) return false;
 
@@ -169,6 +173,14 @@ async function processOneFile(
 
     if (shouldStop?.()) return false;
 
+    // 避免 TOCTOU：在预处理（读内容）的同一时刻抓取 stat，作为本轮的 snapshot。
+    // digest 期间（LLM 调用，可达分钟级）用户若编辑文件，必须保证写回的
+    // content_hash + mtime + size 都来自被 digest 的那份内容，否则：
+    //   - 用 digest 后重读的新 hash → 下轮 isFileChanged 判未变更，编辑永久丢失；
+    //   - 用 digest 后重读的新 mtime/size → isFileChanged 的 mtime+size 快速路径
+    //     直接短路，hash 比对都走不到，同样丢失编辑。
+    // 与 Obsidian 对齐（obsidian/queue.ts 用 preprocessed.rawContent 算 hash）。
+    const entrySnapshotStat = getFileStat(filePath);
     // 预处理
     const preprocessed = preprocessFile(filePath, graphRoot);
     if (!preprocessed) {
@@ -178,12 +190,31 @@ async function processOneFile(
       return false;
     }
 
+    // read-time snapshot:入口 getFileStat 抓到 dataless 返回 null,但 preprocessFile 随后
+    // 成功(文件在 stat 与 read 之间被 iCloud 下载)→ 文件此刻可读,在 digest 前(此刻仍是被
+    // digest 那份内容)补抓一次 stat,与下面用 rawContent 算的 hash 同源。绝不在 digest 后补抓
+    //(那时已可能被编辑,mtime/size=新值 配 hash=旧值,下轮 isFileChanged 快速路径短路丢编辑)。
+    const snapshotStat = entrySnapshotStat ?? getFileStat(filePath);
+
     // 分段 + 过滤空段
+    // 关键约束（node_ids / segment_hashes 索引对齐）：必须用与 digest 完全相同的
+    // 门槛过滤，digest 会硬拒 `trimmed.length < 5 且无 title` 的内容（digest.ts:211）。
+    // journal 段不传 title（见下方循环），所以 2-4 字的短 block（如中文「买菜」）会被
+    // digest 拒绝、不产生节点；若仍进循环，allHashes 会比 allNodeIds 多一项并永久错位，
+    // 导致后续段的旧节点被错配 supersede + 未变段被重复 digest。提前用同一谓词剔除，
+    // 保证「进循环的每段都会产出一个节点」，两数组逐索引严格对齐。
+    const willHaveTitle = !preprocessed.metadata.isJournal;
     const segments = segmentContent(
       preprocessed.cleanContent,
       preprocessed.title,
       preprocessed.metadata.isJournal,
-    ).filter(s => s.content.trim().length > 0);
+    ).filter(s => {
+      const trimmed = s.content.trim();
+      if (trimmed.length === 0) return false;
+      // 与 digest.ts 的硬拒门槛对齐：无 title 时 <5 字符会被拒
+      if (trimmed.length < 5 && !willHaveTitle) return false;
+      return true;
+    });
 
     if (segments.length === 0) {
       markFileAsProcessed(db, filePath, relPath, sourceId);
@@ -280,11 +311,17 @@ async function processOneFile(
       if (result.created_nodes && result.created_nodes.length > 0) {
         const newNodeId = result.created_nodes[0].id;
         allNodeIds.push(newNodeId);
-
-        // 有对应旧节点 → supersede
-        if (i < oldNodeIds.length) {
-          supersedeNodeWithLinks(db, oldNodeIds[i], newNodeId);
-        }
+        createdThisRun.push(newNodeId);
+        // 注意：supersede 旧节点的动作下移到循环结束后统一做（见下方）。
+        // 原本在循环内逐段 supersede，但这样中途某段抛错时，前面已 commit 的
+        // supersede 会留下「旧节点已 superseded、新节点待 catch 清理」的撕裂态——
+        // catch 清理新节点后该内容无任何活跃节点，且重跑会复用已 superseded 的旧 ID。
+        // 移到循环后做，保证失败时尚无任何 supersede 被 commit，回滚干净。
+      } else {
+        // 防御：上面已用 digest 同款门槛预过滤，正常不会走到这里。但若 digest 因
+        // 其他原因（未来新增质量门 / 异常）未产出节点，必须撤回本段刚 push 的 hash，
+        // 否则 allHashes 比 allNodeIds 多一项 → 持久化后两数组永久错位。
+        allHashes.pop();
       }
     }
 
@@ -294,13 +331,23 @@ async function processOneFile(
       return false;
     }
 
-    // 多余旧段：supersede 到最后一个新节点，迁移链接、保留 updates 链
+    // 版本替代（循环后统一做，与 Obsidian 对齐）：逐位置把变化段的旧节点 supersede
+    // 到对应新节点；段级 dedup 命中（allNodeIds[i] === oldNodeIds[i]，整段复用）的
+    // 位置跳过，避免 self-supersede。失败时尚无 supersede 被 commit → catch 回滚干净。
     if (shouldStop?.()) return false;
-    // （段数减少场景：把多余旧段的链接归并到最后一个新段上，而不是直接 DELETE 丢失关联）
-    if (oldNodeIds.length > segments.length && allNodeIds.length > 0) {
-      const targetNewId = allNodeIds[allNodeIds.length - 1];
-      for (let i = segments.length; i < oldNodeIds.length; i++) {
-        supersedeNodeWithLinks(db, oldNodeIds[i], targetNewId);
+    if (oldNodeIds.length > 0) {
+      const pairs = Math.min(oldNodeIds.length, allNodeIds.length);
+      for (let i = 0; i < pairs; i++) {
+        if (oldNodeIds[i] === allNodeIds[i]) continue;
+        supersedeNodeWithLinks(db, oldNodeIds[i], allNodeIds[i]);
+      }
+      // 多余旧段：supersede 到最后一个新节点，迁移链接、保留 updates 链
+      // （段数减少场景：把多余旧段的链接归并到最后一个新段上，而不是直接 DELETE 丢失关联）
+      if (oldNodeIds.length > allNodeIds.length) {
+        const targetNewId = allNodeIds[allNodeIds.length - 1];
+        for (let i = pairs; i < oldNodeIds.length; i++) {
+          supersedeNodeWithLinks(db, oldNodeIds[i], targetNewId);
+        }
       }
     }
 
@@ -334,22 +381,25 @@ async function processOneFile(
     // 更新同步状态
     if (shouldStop?.()) return false;
 
-    const fileStat = getFileStat(filePath);
-    const contentHash = computeFileHash(filePath);
-    // 文件在 preprocess 与 hash 之间发生变化（例如被 iCloud 驱逐）时跳过 state 写入，
-    // 让下一轮同步根据当时的真实状态决定，而不是留个无效 hash
-    if (contentHash !== null) {
-      const fileState: FileSyncState = {
-        file_path: relPath,
-        content_hash: contentHash,
-        mtime: fileStat?.mtime ?? 0,
-        size: fileStat?.size ?? 0,
-        last_synced: now(),
-        node_ids: allNodeIds,
-        segment_hashes: allHashes,
-      };
-      setFileState(db, fileState, sourceId);
-    }
+    // 避免 TOCTOU：content_hash + mtime + size 全部来自「内容读取那一刻」的 snapshot,
+    // 而不是 digest 之后重新读盘(重读会拿到处理期间用户的新编辑,导致编辑丢失)。
+    // snapshotStat 已在 preprocessFile 成功后、digest 前补抓过(read-time),所以此处:
+    //   - snapshotStat 有值 → 用它,mtime/size 与 hash 同源;
+    //   - snapshotStat===null → 极罕见(内容读成功却连 read-time 补抓 stat 都失败),
+    //     此时不能跳过(节点已 digest 入库,跳过会留孤儿 + 下轮重复 digest),改用
+    //     mtime=0/size=0 + 已算出的 hash:0/0 永不等于真实值,强制下轮走 hash 比对。
+    // preprocessFile 收窄 rawContent 为必填,直接算 hash,与 Obsidian queue.ts 对齐。
+    const snapshotHash = computeContentHash(preprocessed.rawContent);
+    const fileState: FileSyncState = {
+      file_path: relPath,
+      content_hash: snapshotHash,
+      mtime: snapshotStat?.mtime ?? 0,
+      size: snapshotStat?.size ?? 0,
+      last_synced: now(),
+      node_ids: allNodeIds,
+      segment_hashes: allHashes,
+    };
+    setFileState(db, fileState, sourceId);
 
     // 更新 block 索引（按 graphRoot 隔离）
     updateBlockIndexForFile(filePath, graphRoot);
@@ -358,6 +408,22 @@ async function processOneFile(
     return true;
   } catch (err) {
     log.error(`文件处理失败 (${relPath}):`, (err as Error).message);
+    // 段级 digest 部分失败补偿（与 Obsidian 对齐）：本轮已建节点未被 supersede、
+    // sync state 也未更新。这些节点不在任何 sync state 里，永不会被后续 supersede
+    // （孤儿，且持续被 recall），且下次重跑会重复 digest 同段产生重复活跃节点。
+    // 这里把它们标记 superseded（heat=0.01 + is_superseded=1，recall 与向量搜索都
+    // 会过滤掉）。因 supersede 已下移到循环后，失败时尚无 supersede 被 commit，
+    // 旧节点仍是活跃版本、recall 一致；下次从干净状态重建。
+    if (createdThisRun.length > 0) {
+      try {
+        for (const id of createdThisRun) {
+          markNodeSupersededRecordOnly(db, id);
+        }
+        log.warn(`部分失败回滚:已标记本轮新建的 ${createdThisRun.length} 个节点为 superseded (${relPath})`);
+      } catch (cleanupErr) {
+        log.error(`部分失败回滚清理也失败 (${relPath}):`, (cleanupErr as Error).message);
+      }
+    }
     progress.failedFiles++;
     return false;
   }

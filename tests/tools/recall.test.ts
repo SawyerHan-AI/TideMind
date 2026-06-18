@@ -82,6 +82,26 @@ import type { BrainNode } from '../../src/types.js';
 let db: Database.Database;
 let repo: InstanceType<typeof SqliteRepository>;
 
+/**
+ * 在笔记源同步表里写一条 file_path → node_ids 映射(模拟笔记消化后的同步状态)。
+ * 同步表由集成懒创建,核心 schema 没有,这里按需建表。
+ */
+function seedSyncFile(
+  database: Database.Database,
+  table: 'logseq_sync' | 'obsidian_sync',
+  filePath: string,
+  nodeIds: string[],
+): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS ${table} (
+      file_path TEXT PRIMARY KEY,
+      node_ids TEXT
+    )
+  `);
+  database.prepare(`INSERT OR REPLACE INTO ${table} (file_path, node_ids) VALUES (?, ?)`)
+    .run(filePath, JSON.stringify(nodeIds));
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   db = setupTestDb();
@@ -303,29 +323,52 @@ describe('recall - meta node filtering', () => {
   });
 
   it('should filter meta nodes from source_file results', async () => {
-    seedNode(db, { type: 'fact', content: 'source fact' });
-    seedNode(db, { type: 'meta', content: 'source meta' });
-    db.prepare("UPDATE nodes SET source_stream = 'stream:test.ts' WHERE content LIKE 'source%'").run();
+    // vault_file/source_file 走笔记源同步表的 file_path → node_ids 映射,
+    // 而非节点的 source_stream 列(后者存的是 stream 锚点不是 vault 路径)。
+    const fact = seedNode(db, { type: 'fact', content: 'source fact' });
+    const meta = seedNode(db, { type: 'meta', content: 'source meta' });
+    seedSyncFile(db, 'logseq_sync', 'notes/test.md', [fact.id, meta.id]);
 
-    const result = await recall(repo, { source_file: 'stream:test.ts' });
+    const result = await recall(repo, { source_file: 'notes/test.md' });
 
     expect(result.nodes.length).toBeGreaterThan(0);
     expect(result.nodes.every(n => n.type !== 'meta')).toBe(true);
   });
 });
 
-// ===== source_file 模式 =====
+// ===== source_file / vault_file 模式 =====
 
 describe('recall - source_file mode', () => {
-  it('should find nodes by exact source_stream match', async () => {
-    // source_file 现在是精确匹配 (不再是子串)，避免 '.md' 匹配所有 markdown
-    seedNode(db, { content: 'source file node' });
-    db.prepare("UPDATE nodes SET source_stream = 'stream:2026:main.ts:1' WHERE content = 'source file node'").run();
+  it('should find nodes by vault file path via sync table', async () => {
+    const node = seedNode(db, { content: 'source file node' });
+    seedSyncFile(db, 'obsidian_sync', 'folder/main.md', [node.id]);
 
-    const result = await recall(repo, { source_file: 'stream:2026:main.ts:1' });
+    const result = await recall(repo, { source_file: 'folder/main.md' });
 
     expect(result.nodes.length).toBe(1);
     expect(result.nodes[0].content).toBe('source file node');
+  });
+
+  it('should normalize backslash path separators to match stored forward slashes', async () => {
+    const node = seedNode(db, { content: 'win path node' });
+    seedSyncFile(db, 'logseq_sync', 'sub/dir/note.md', [node.id]);
+
+    const result = await recall(repo, { source_file: 'sub\\dir\\note.md' });
+
+    expect(result.nodes.length).toBe(1);
+    expect(result.nodes[0].content).toBe('win path node');
+  });
+
+  it('should merge node_ids across logseq and obsidian sync tables', async () => {
+    const a = seedNode(db, { content: 'logseq node' });
+    const b = seedNode(db, { content: 'obsidian node' });
+    seedSyncFile(db, 'logseq_sync', 'shared.md', [a.id]);
+    seedSyncFile(db, 'obsidian_sync', 'shared.md', [b.id]);
+
+    const result = await recall(repo, { source_file: 'shared.md' });
+
+    const contents = result.nodes.map(n => n.content).sort();
+    expect(contents).toEqual(['logseq node', 'obsidian node']);
   });
 
   it('should return empty when no matching source_file', async () => {

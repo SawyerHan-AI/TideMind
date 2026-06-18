@@ -7,7 +7,8 @@
     "searchPlaceholder": "Search memories...",
     "all": "All",
     "allTags": "All Tags",
-    "allTypes": "All Types"
+    "allTypes": "All Types",
+    "disabledInSearch": "Filters do not apply in search mode"
   },
   "sort": {
     "newest": "Newest",
@@ -84,6 +85,8 @@
     "pathDiscovery": "Path Discovery",
     "structureHoles": "Structure Holes",
     "connectivityLabel": "Connectivity",
+    "nodeLimitLabel": "Top",
+    "nodeLimitHint": "Shows the top N nodes by heat plus their 1-hop neighbors.",
     "clickSecondNode": "Click second node to view path",
     "clickStartNode": "Click start node"
   }

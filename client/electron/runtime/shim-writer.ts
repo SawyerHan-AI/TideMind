@@ -105,10 +105,12 @@ export function writeShimAndRuntimePath(): WriteShimResult {
   if (currentShim !== SHIM_CONTENT) {
     fs.writeFileSync(shimPath, SHIM_CONTENT, { mode: 0o755 })
     shimUpdated = true
-  } else {
-    // 就算内容对，也要确保可执行位还在
-    try { fs.chmodSync(shimPath, 0o755) } catch { /* 忽略 */ }
   }
+  // writeFileSync 的 mode 选项仅在**创建新文件**时生效:对已存在文件 truncate 重写
+  // 不改 mode。若 shim 此前丢了可执行位(备份工具/杀软)且本次内容又变化,只走上面
+  // 的 write 分支会留下不可执行的 shim → 所有外部 Agent 的 MCP/hook EACCES。
+  // 无条件 chmod 兜底:内容变与不变都确保可执行位还在(与 credentials.ts 同模式)。
+  try { fs.chmodSync(shimPath, 0o755) } catch { /* 忽略 */ }
 
   // --- runtime-path 文件 ---
   let runtimePathUpdated = false

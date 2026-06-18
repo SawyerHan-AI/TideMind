@@ -65,7 +65,8 @@
       "learning2": "KI-optimiert",
       "system": "Aktualisierung",
       "file_edit": "Dateibearbeitung"
-    }
+    },
+    "saveFailed": "Speichern fehlgeschlagen. Bitte erneut versuchen."
   },
   "model": {
     "subtabs": {
@@ -118,6 +119,7 @@
       "connectionNameTip": "Ein benutzerdefinierter Name zur Unterscheidung mehrerer Verbindungen desselben Typs.",
       "connectionNamePlaceholder": "z.B.: Firma {{provider}}",
       "create": "Erstellen",
+      "createFailed": "Verbindung konnte nicht erstellt werden. Bitte erneut versuchen.",
       "colName": "Name",
       "colType": "Typ",
       "colStatus": "Status",
@@ -149,7 +151,9 @@
       "reembedProgress": "Embeddings werden neu berechnet... ({{done}}/{{total}})",
       "reembedNeeded": "Der Vektorindex muss neu berechnet werden (nach Upgrade oder Modellwechsel ausgeloest). Waehrend der Neuberechnung wechselt die Suche automatisch zur Volltextsuche.",
       "startReembed": "Neuberechnung starten",
-      "saved": "Gespeichert"
+      "saved": "Gespeichert",
+      "saveFailed": "Modellauswahl konnte nicht gespeichert werden. Bitte erneut versuchen.",
+      "retry": "Erneut versuchen"
     },
     "serviceStatus": {
       "title": "KI-Dienststatus",
@@ -389,7 +393,8 @@
       "notionScopeHint": "TideMind synchronisiert alle mit der Integration geteilten Seiten. Passen Sie den Umfang in den Notion-Freigabeeinstellungen an.",
       "notionConnected": "Token verifiziert, Verbindung erfolgreich",
       "notionFailed": "Token ungültig oder Verbindung fehlgeschlagen"
-    }
+    },
+    "createFailed": "Notizquelle konnte nicht erstellt werden. Bitte erneut versuchen."
   },
   "usage": {
     "totalTokens": "Tokens gesamt",
@@ -462,6 +467,7 @@
       "file_edit": "Datei"
     },
     "saved": "Gespeichert",
+    "saveFailed": "Speichern fehlgeschlagen. Bitte erneut versuchen.",
     "confirmSave": "Speichern bestätigen",
     "save": "Speichern",
     "userPromptPlaceholder": "User-Prompt-Vorlage eingeben, {{VarName}} als Platzhalter für dynamische Parameter verwenden",
@@ -873,6 +879,7 @@
       "generatingPlugin": "Generating plugin...",
       "pluginGenerateFailed": "Plugin generation failed",
       "generateFailed": "Generation failed",
+      "createFailed": "Erstellung fehlgeschlagen",
       "completed": "Completed",
       "manualStepsTitle": "Manual steps required:",
       "prevStep": "Previous",
@@ -994,12 +1001,16 @@
     "subscription": "Abonnement",
     "currentPlan": "Aktueller Tarif",
     "upgradeHint": "Upgrade auf Pro für unbegrenzte Cloud-Erinnerungen, 5 Geräte, 24/7 Cloud-Metabolismus und mehr.",
+    "upgradeAnnual": "Upgrade auf Pro — $49/Jahr",
+    "upgradeMonthly": "oder $5/Monat",
     "viewPricing": "Tarife & Preise ansehen",
     "manageSubscription": "Abonnement verwalten",
     "billing": "Abrechnung",
     "noBilling": "Keine Abrechnungshistorie für den kostenlosen Tarif.",
     "billingComingSoon": "Abrechnungshistorie kommt bald.",
     "logout": "Abmelden",
+    "logoutTitle": "Abmelden?",
+    "logoutDesc": "Du wirst von TideMind Cloud abgemeldet. Lokale Daten sind nicht betroffen.",
     "comingSoon": "Demnächst",
     "subscriptionComingSoon": "Pro- und Pro+-Pläne kommen bald. Freuen Sie sich auf Cloud-Sync, 7×24 Metabolismus und mehr.",
     "registerButton": "Konto erstellen",

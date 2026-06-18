@@ -7,7 +7,8 @@
     "searchPlaceholder": "Rechercher des memoires...",
     "all": "Tout",
     "allTags": "Tous les tags",
-    "allTypes": "Tous les types"
+    "allTypes": "Tous les types",
+    "disabledInSearch": "Les filtres ne s'appliquent pas en mode recherche"
   },
   "list": {
     "noResults": "Aucune memoire correspondante trouvee",
@@ -84,6 +85,8 @@
     "pathDiscovery": "Découverte de chemin",
     "structureHoles": "Trous structurels",
     "connectivityLabel": "Connectivité",
+    "nodeLimitLabel": "Top",
+    "nodeLimitHint": "Affiche les N nœuds principaux par heat ainsi que leurs voisins à 1 saut.",
     "clickSecondNode": "Cliquez sur le deuxième nœud pour voir le chemin",
     "clickStartNode": "Cliquez sur le nœud de départ"
   }

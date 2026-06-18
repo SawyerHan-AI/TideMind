@@ -65,7 +65,8 @@
       "learning2": "AI优化",
       "system": "升级",
       "file_edit": "文件"
-    }
+    },
+    "saveFailed": "保存失败,请重试。"
   },
   "model": {
     "subtabs": {
@@ -118,6 +119,7 @@
       "connectionNameTip": "自定义名称，方便区分多个同类连接。",
       "connectionNamePlaceholder": "如：公司 {{provider}}",
       "create": "创建",
+      "createFailed": "创建连接失败,请重试。",
       "colName": "名称",
       "colType": "类型",
       "colStatus": "状态",
@@ -149,7 +151,9 @@
       "reembedProgress": "正在重算 embedding... ({{done}}/{{total}})",
       "reembedNeeded": "向量索引需要重算（升级或切换模型后触发）。重算期间搜索自动降级为全文检索。",
       "startReembed": "开始重算",
-      "saved": "已保存"
+      "saved": "已保存",
+      "saveFailed": "保存模型选择失败,请重试。",
+      "retry": "重试"
     },
     "serviceStatus": {
       "title": "AI 服务状态",
@@ -389,7 +393,8 @@
       "notionScopeHint": "TideMind 将同步所有共享给集成的页面。如需调整范围，请在 Notion 中修改页面共享设置。",
       "notionConnected": "Token 验证通过，连接成功",
       "notionFailed": "Token 无效或连接失败"
-    }
+    },
+    "createFailed": "创建笔记源失败,请重试。"
   },
   "usage": {
     "totalTokens": "总 Token",
@@ -462,6 +467,7 @@
       "file_edit": "文件"
     },
     "saved": "已保存",
+    "saveFailed": "保存失败,请重试。",
     "confirmSave": "确认保存",
     "save": "保存",
     "userPromptPlaceholder": "输入 User Prompt 模板，使用 {{变量名}} 作为动态参数占位符",
@@ -873,6 +879,7 @@
       "generatingPlugin": "正在生成插件...",
       "pluginGenerateFailed": "插件生成失败",
       "generateFailed": "生成失败",
+      "createFailed": "创建失败",
       "completed": "已完成",
       "manualStepsTitle": "接下来需要手动完成：",
       "prevStep": "上一步",
@@ -994,6 +1001,8 @@
     "subscription": "订阅计划",
     "currentPlan": "当前计划",
     "upgradeHint": "升级到 Pro，解锁无限云记忆、5 台设备同步、7×24 云代谢等更多功能。",
+    "upgradeAnnual": "升级到 Pro — $49/年",
+    "upgradeMonthly": "或按月付 $5/月",
     "viewPricing": "查看计划与定价",
     "manageSubscription": "管理订阅",
     "comingSoon": "即将推出",
@@ -1002,6 +1011,8 @@
     "noBilling": "免费计划无账单记录。",
     "billingComingSoon": "账单历史即将推出。",
     "logout": "退出登录",
+    "logoutTitle": "退出登录?",
+    "logoutDesc": "你将退出 TideMind Cloud 登录。本地数据不受影响。",
     "registerButton": "创建账号",
     "browserHint": "将在浏览器中打开，进行安全认证。",
     "requestAccountDeletion": "申请删除账户",

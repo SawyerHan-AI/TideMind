@@ -6,8 +6,8 @@
 // ============================================================
 
 import fs from 'node:fs';
-import os from 'node:os';
 import { safeReadTextFileSync } from '../../utils/safe-fs.js';
+import { expandTilde } from '../../utils/path.js';
 import type Database from 'better-sqlite3';
 import { getConfig, reloadConfig, isLlmConfigured } from '../../config.js';
 import { createLogger } from '../../utils/logger.js';
@@ -22,7 +22,7 @@ import { classifyFiles, buildInDegreeMap, type ClassifiedFile, type Classificati
 import { inferPageDates, sortByTime, type InferredDates } from './time-inference.js';
 import { computeInitialHeat } from './initial-heat.js';
 import { importVersionHistory, scanVersionFiles, deduplicateVersions } from './version-files.js';
-import { ensureSyncSchema, setFileState, getFileState, computeFileHash, getFileStat } from './sync-state.js';
+import { ensureSyncSchema, setFileState, getFileState, computeFileHash, computeContentHash, getFileStat } from './sync-state.js';
 import { digest } from '../../tools/digest.js';
 import { createLink, linkExists } from '../../db/links.js';
 import { promotePropertyValues, getOrCreateTagNode } from '../shared/property-promote.js';
@@ -68,11 +68,11 @@ export function previewInit(db: Database.Database, sourceId?: string, sourcePath
 
   let graphRoot: string;
   if (sourcePath) {
-    graphRoot = sourcePath.replace('~', os.homedir());
+    graphRoot = expandTilde(sourcePath);
   } else {
     const logseqPath = config.sources?.logseq?.path;
     if (!logseqPath) return null;
-    graphRoot = logseqPath.replace('~', os.homedir());
+    graphRoot = expandTilde(logseqPath);
   }
   if (!fs.existsSync(graphRoot)) return null;
 
@@ -186,11 +186,11 @@ export async function runInitialization(
 
   let graphRoot: string;
   if (sourcePath) {
-    graphRoot = sourcePath.replace('~', os.homedir());
+    graphRoot = expandTilde(sourcePath);
   } else {
     const logseqPath = config.sources?.logseq?.path;
     if (!logseqPath) throw new Error('Logseq path not configured');
-    graphRoot = logseqPath.replace('~', os.homedir());
+    graphRoot = expandTilde(logseqPath);
   }
   if (!fs.existsSync(graphRoot)) throw new Error(`Logseq path not found: ${graphRoot}`);
 
@@ -368,7 +368,7 @@ export async function runInitialization(
 
   // === Phase 6: 链接评估 ===
   const pendingLinkCount = (db.prepare(
-    "SELECT COUNT(*) as cnt FROM links WHERE status = 'pending'",
+    "SELECT COUNT(*) as cnt FROM links WHERE status = 'pending' AND deleted = 0",
   ).get() as { cnt: number }).cnt;
   ctx.reportPhase(6, '链接评估', pendingLinkCount);
   log.info(`Phase 6: 链接评估 (${pendingLinkCount} 条待评估链接)`);
@@ -488,8 +488,20 @@ async function processFileForInit(
     ? `${dateInfo.date}T00:00:00.000Z`
     : undefined;
 
+  // 避免 TOCTOU：在 digest（分钟级）开始前抓 stat snapshot,写回 sync state 的 mtime/size
+  // 用它,而不是 digest 后重读盘。否则 digest 期间用户编辑文件 → 下一轮增量 isFileChanged
+  // 的 mtime+size 快速路径短路判未变更,这次编辑永久丢失。与增量路径(queue.ts)一致。
+  const snapshotStat = getFileStat(file.filePath);
+
   // 空白页 → 创建普通节点（不直接标记 is_tag，由 promoteFrequentTags 按阈值判断）
   if (file.category === 'empty_tag') {
+    // 空白页分支不走 preprocessFile（拿不到 rawContent),在 digest 前读一份 content
+    // snapshot 算 hash,保证 hash 与 mtime/size 来自同一时刻;走 safe-fs,dataless 时为 undefined。
+    const snapshotRead = safeReadTextFileSync(file.filePath);
+    const snapshotContentHash = snapshotRead.ok ? computeContentHash(snapshotRead.content) : undefined;
+    // read-time snapshot:入口 stat 为 null 但此处读成功 ⇒ 文件可读,在 digest 前补抓
+    // stat,与 snapshotContentHash 同源;若内容也没读到则保持 null(updateSyncState 会跳过)。
+    const tagSnapshot = (snapshotStat === null && snapshotRead.ok) ? getFileStat(file.filePath) : snapshotStat;
     const result = await digest(repo, {
       content: file.title,
       source: { tool: 'logseq', files: [file.relPath] },
@@ -503,13 +515,22 @@ async function processFileForInit(
     });
     const nodeIds = result.created_nodes?.map(n => n.id) ?? [];
     // 更新同步状态
-    updateSyncState(db, file, nodeIds, sourceId);
+    updateSyncState(db, file, nodeIds, sourceId, snapshotContentHash, tagSnapshot);
     return nodeIds;
   }
 
   // 其他文件 → 预处理 + 分段 + digest
   const preprocessed = preprocessFile(file.filePath, graphRoot);
   if (!preprocessed) return [];
+
+  // read-time snapshot:入口 stat 为 null 但 preprocessFile 随后成功 ⇒ 文件此刻可读,
+  // 在 digest 前补抓 stat,与下面的 contentHash 同源。
+  const regularSnapshot = snapshotStat ?? getFileStat(file.filePath);
+
+  // 避免 TOCTOU：用预处理时读到的 rawContent 算 hash,而不是 digest 后重读盘。
+  // preprocessFile 要么返回 null(上方已 return),要么 rawContent 恒为字符串
+  // (preprocessor.ts 所有返回路径都填),与 Obsidian 写法对齐,无需 undefined 守卫。
+  const contentHash = computeContentHash(preprocessed.rawContent);
 
   const segments = segmentContent(
     preprocessed.cleanContent,
@@ -590,20 +611,51 @@ async function processFileForInit(
   }
 
   // 更新同步状态（即使只处理了部分段也写入，支持断点恢复）
-  updateSyncState(db, file, nodeIds, sourceId);
+  updateSyncState(db, file, nodeIds, sourceId, contentHash, regularSnapshot);
 
   return nodeIds;
 }
 
-function updateSyncState(db: Database.Database, file: ClassifiedFile, nodeIds: string[] = [], sourceId?: string): void {
-  const fileStat = getFileStat(file.filePath);
-  const contentHash = computeFileHash(file.filePath);
-  if (contentHash === null) return; // dataless / missing — 不写入空 hash
+function updateSyncState(
+  db: Database.Database,
+  file: ClassifiedFile,
+  nodeIds: string[] = [],
+  sourceId?: string,
+  contentHash?: string,
+  snapshotStat?: { mtime: number; size: number } | null,
+): void {
+  // snapshotStat 三态语义(与 4 条路径一致):调用方已在「内容读取成功那一刻、digest 前」
+  // 把有效 snapshot 捕获/补抓好传进来,这里不再重抓(digest 后重抓会拿到编辑后的 mtime/size
+  // 配 digest 前的 hash,下轮 isFileChanged 快速路径短路丢编辑)。
+  // 不给初始值:下面四个分支(含 return)恰好覆盖全部可达路径并各自赋值,
+  // 给 `= 0` 初始值反而成 no-useless-assignment(lint 阻塞项)。
+  let mtime: number, size: number;
+  if (snapshotStat) {
+    // 有 read-time snapshot:mtime/size 与 contentHash 同源(都反映被 digest 那份内容)。
+    mtime = snapshotStat.mtime;
+    size = snapshotStat.size;
+  } else if (snapshotStat === null && contentHash === undefined) {
+    // null 且无 contentHash = 内容根本没读到(dataless / 消失,本就没 digest)。整条跳过。
+    return;
+  } else if (snapshotStat === null) {
+    // null 但有 contentHash = 极罕见:内容读成功却连 read-time 补抓 stat 都失败。用 mtime=0/
+    // size=0 + 已算出的 hash——0/0 永不等于真实值,强制下轮走 hash 比对(既不丢编辑也无孤儿)。
+    mtime = 0;
+    size = 0;
+  } else {
+    // 未传(undefined) → 退回重读盘(保持旧行为)。
+    const fileStat = getFileStat(file.filePath);
+    mtime = fileStat?.mtime ?? 0;
+    size = fileStat?.size ?? 0;
+  }
+  // 优先用调用方已持有的 content hash（来自预处理 snapshot）,否则退回重读盘。
+  const hash = contentHash ?? computeFileHash(file.filePath);
+  if (hash === null) return; // dataless / missing — 不写入空 hash
   setFileState(db, {
     file_path: file.relPath,
-    content_hash: contentHash,
-    mtime: fileStat?.mtime ?? 0,
-    size: fileStat?.size ?? 0,
+    content_hash: hash,
+    mtime,
+    size,
     last_synced: now(),
     node_ids: nodeIds,
   }, sourceId);

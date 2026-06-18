@@ -53,7 +53,10 @@ function getDataDir(): string {
       const config = parseToml(raw) as Record<string, unknown>
       const general = config.general as Record<string, string> | undefined
       if (general?.data_dir) {
-        return general.data_dir.replace('~', os.homedir())
+        // 锚定正则:只展开开头的 `~`(后跟 `/` 或字符串结束),不替换路径中间的 `~`。
+        // 裸 replace('~', ...) 会把 `/data/my~notes` 误展成 `/data/my<home>notes` →
+        // 数据目录错位、DB/配置在错误位置重建。与 _schemas.ts parseNoteSourcePath 一致。
+        return general.data_dir.replace(/^~(?=$|\/)/, os.homedir())
       }
     } catch {}
   }
@@ -216,7 +219,12 @@ export function getClientDb(): Database.Database {
         is_superseded INTEGER DEFAULT 0,
         source_device TEXT DEFAULT 'local',
         maturity_score REAL DEFAULT 0.0,
-        updated TEXT
+        updated TEXT,
+        -- CRITICAL 修复(审计二轮):内联 schema 必须与 SCHEMA_SQL 同含 edit_seq(M3 因果版本)
+        -- + decay_gen(M8 衰减锚点)。否则全新安装 getClientDb 内联建表缺列 → daemon ensureSchema
+        -- 因 hasData=0 跳 migration → createNode INSERT edit_seq/decay_gen 崩(no such column)。
+        edit_seq INTEGER NOT NULL DEFAULT 0,
+        decay_gen INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS links (
         id TEXT PRIMARY KEY,
@@ -226,9 +234,11 @@ export function getClientDb(): Database.Database {
         strength REAL DEFAULT 0.5,
         note TEXT,
         auto INTEGER DEFAULT 1,
-        status TEXT DEFAULT 'confirmed' CHECK(status IN ('confirmed','pending')),
+        status TEXT DEFAULT 'confirmed' CHECK(status IN ('confirmed','pending','rejected_by_user')),
         created TEXT NOT NULL,
-        updated TEXT
+        updated TEXT,
+        edit_seq INTEGER NOT NULL DEFAULT 0,
+        deleted INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS node_versions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -243,7 +253,10 @@ export function getClientDb(): Database.Database {
         operation TEXT NOT NULL,
         input_summary TEXT, context TEXT, output_node_ids TEXT,
         tool TEXT, session TEXT, agent_id TEXT,
-        created TEXT NOT NULL
+        created TEXT NOT NULL,
+        -- CRITICAL 修复(审计三轮):logOperation(recall/digest 必经)INSERT 这 4 列,内联漏了会让
+        -- 全新安装首次 brain_recall/digest 崩(同 nodes/links 的内联漏列机制)。
+        exact_count INTEGER, related_count INTEGER, fallback_chain TEXT, vector_unavailable INTEGER
       );
       CREATE TABLE IF NOT EXISTS strategy_feedback (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -378,7 +391,8 @@ export function getClientDb(): Database.Database {
         retry_count INTEGER DEFAULT 0,
         created TEXT NOT NULL,
         next_retry_at TEXT NOT NULL,
-        completed_at TEXT
+        completed_at TEXT,
+        processing_started_at TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_pending_digests_status ON pending_digests(status, next_retry_at);
     `)
@@ -562,6 +576,22 @@ export function getClientDb(): Database.Database {
   try { tmpDb.exec("UPDATE links SET updated = created WHERE updated IS NULL") } catch (err) {
     migrationLog.warn(`backfill links.updated failed: ${(err as Error).message}`)
   }
+
+  // 审计二轮:edit_seq(M3 因果版本)+ decay_gen(M8 衰减锚点)兜底。防"旧版 db.ts 内联建空库
+  // → hasData=0 跳 ensureSchema migration → 缺列"的窄边界。有数据的库走 v29 migration 补,
+  // 此处是 getClientDb 路径与内联 schema 的双保险。
+  safeAlterAddColumn(tmpDb, "ALTER TABLE nodes ADD COLUMN edit_seq INTEGER NOT NULL DEFAULT 0")
+  safeAlterAddColumn(tmpDb, "ALTER TABLE nodes ADD COLUMN decay_gen INTEGER NOT NULL DEFAULT 0")
+  safeAlterAddColumn(tmpDb, "ALTER TABLE links ADD COLUMN edit_seq INTEGER NOT NULL DEFAULT 0")
+  safeAlterAddColumn(tmpDb, "ALTER TABLE links ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+
+  // 审计三轮:operation_log(v28)+ pending_digests(v20)的内联漏列兜底,防"旧版内联建空库 →
+  // hasData=0 跳 migration"缺列导致 recall/digest/stale-recovery 崩。
+  safeAlterAddColumn(tmpDb, "ALTER TABLE operation_log ADD COLUMN exact_count INTEGER")
+  safeAlterAddColumn(tmpDb, "ALTER TABLE operation_log ADD COLUMN related_count INTEGER")
+  safeAlterAddColumn(tmpDb, "ALTER TABLE operation_log ADD COLUMN fallback_chain TEXT")
+  safeAlterAddColumn(tmpDb, "ALTER TABLE operation_log ADD COLUMN vector_unavailable INTEGER")
+  safeAlterAddColumn(tmpDb, "ALTER TABLE pending_digests ADD COLUMN processing_started_at TEXT")
 
   tmpDb.close()
 

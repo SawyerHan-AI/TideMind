@@ -197,10 +197,15 @@ export const claudeCodeAdapter: AgentPluginAdapter = {
       '--skill-path', JSON.stringify(skillPath(ctx)),
       '--tool', JSON.stringify(ctx.config.hookToolParam),
     ].join(' ')
+    // PreCompact 必须带 --tool,与 PostCompact / SessionStart 一致,也与
+    // plugin-self-heal.ts buildPreCompactCommand / preCompactCommandNeedsPatch 对齐。
+    // 否则生成端缺 --tool → self-heal 下次启动即判定"需重建"→ 每个新插件刚生成
+    // 就被重写 hooks.json + bump version,产生确定性的无谓 churn。
     const preCompactCommand = [
       JSON.stringify(ctx.runtime.shimPath),
       JSON.stringify(ctx.runtime.preCompactScriptPath),
       '--agent-id', JSON.stringify(ctx.agentId),
+      '--tool', JSON.stringify(ctx.config.hookToolParam),
     ].join(' ')
     const postCompactCommand = [
       JSON.stringify(ctx.runtime.shimPath),

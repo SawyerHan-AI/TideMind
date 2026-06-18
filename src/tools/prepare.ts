@@ -11,6 +11,7 @@ import { ALL_TASKS } from '../metabolism/tasks.js';
 import { getFailedDigests, getPendingDigestCount } from '../db/pending-digests.js';
 import { createLogger } from '../utils/logger.js';
 import { pickDisplayTitle } from '../utils/display-title.js';
+import { sanitizeProfileContent } from '../evolution/profile-parse.js';
 
 const log = createLogger('prepare');
 
@@ -86,17 +87,17 @@ function buildProfile(repo: IRepository): PrepareProfile {
   ).get() as { content: string; created: string } | undefined;
 
   if (row) {
-    // 尝试从 content 中分离 profile_text 和 structured
-    const parts = row.content.split('\n\n---\n\n```json\n');
-    const text = parts[0];
-    let structured: Record<string, unknown> | undefined;
-    if (parts.length > 1) {
-      try {
-        const jsonStr = parts[1].replace(/\n```$/, '');
-        structured = JSON.parse(jsonStr);
-      } catch { /* ignore parse error */ }
+    // F3 读取侧自愈:存量历史节点可能是被污染的 raw JSON(2026-06 事故,见
+    // docs/design/hook-injection-overflow-fix-2026-06-11.md)。sanitizeProfileContent
+    // 对健康内容原样切出 text,对污染内容重新提取,无法救回返回 null。
+    // 任何分支都不把 raw JSON 当画像文本注入——下游 hook 注入受 10K 字符上限约束。
+    const sanitized = sanitizeProfileContent(row.content);
+    if (sanitized) {
+      const structured = Object.keys(sanitized.structured).length > 0 ? sanitized.structured : undefined;
+      return { text: sanitized.profileText, structured, generated_at: row.created };
     }
-    return { text, structured, generated_at: row.created };
+    // 净化失败(脏到救不回)→ 落到下面的基础统计降级,而非返回脏全文
+    log.warn('画像节点内容无法净化,降级为基础统计');
   }
 
   // 画像尚未生成——临时拼一个基础统计
@@ -119,7 +120,7 @@ function buildKeystones(repo: IRepository): PrepareKeystone[] {
 
   const rows = repo.rawDb.prepare(`
     SELECT n.id, n.title, n.content, n.type, COUNT(l.id) as link_count FROM nodes n
-    LEFT JOIN links l ON (l.from_id = n.id OR l.to_id = n.id)
+    LEFT JOIN links l ON (l.from_id = n.id OR l.to_id = n.id) AND l.deleted = 0
     WHERE n.is_keystone = 1 AND n.is_superseded = 0 AND n.archived = 0 AND n.heat > 0.01
     GROUP BY n.id
     ORDER BY link_count DESC
@@ -140,7 +141,7 @@ function buildTags(repo: IRepository): PrepareTag[] {
 
   const rows = repo.rawDb.prepare(`
     SELECT n.id, n.title, n.content, COUNT(l.id) as link_count FROM nodes n
-    LEFT JOIN links l ON (l.from_id = n.id OR l.to_id = n.id)
+    LEFT JOIN links l ON (l.from_id = n.id OR l.to_id = n.id) AND l.deleted = 0
     WHERE n.is_tag = 1 AND n.is_superseded = 0 AND n.archived = 0 AND n.heat > 0.01
     GROUP BY n.id
     ORDER BY link_count DESC

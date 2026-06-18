@@ -31,7 +31,12 @@ export function useAddNoteSourceInitialization({
   const [initPreview, setInitPreview] = useState<InitPreview | null>(null)
   const [initStarted, setInitStarted] = useState(false)
   const [initReport, setInitReport] = useState<InitReport | null>(null)
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState(false)
   const cancelledRef = useRef(false)
+  // in-flight 互斥:setState 异步,光靠按钮 disabled 防不住极快双击,
+  // 否则两次并发 create 会落库两条记录,前一条成为孤儿 uninitialized 源。
+  const creatingRef = useRef(false)
 
   useEffect(() => {
     return () => {
@@ -44,17 +49,32 @@ export function useAddNoteSourceInitialization({
     toolType,
     path,
   }: CreateAndPreviewArgs) => {
+    if (creatingRef.current) return
+    creatingRef.current = true
     cancelledRef.current = false
     setInitPreview(null)
     setInitStarted(false)
     setInitReport(null)
+    setCreating(true)
+    setCreateError(false)
 
-    const source = await window.api.noteSources.create({
-      name: name.trim(),
-      toolType,
-      path,
-    })
-    if (cancelledRef.current) return
+    let source: { id: string } | null = null
+    try {
+      source = await window.api.noteSources.create({
+        name: name.trim(),
+        toolType,
+        path,
+      })
+    } catch {
+      // create 失败(DB 错误等):透出错误条,留在 step 1,不切步骤。
+      if (!cancelledRef.current) setCreateError(true)
+      creatingRef.current = false
+      setCreating(false)
+      return
+    }
+    creatingRef.current = false
+    setCreating(false)
+    if (cancelledRef.current || !source) return
 
     setCreatedSourceId(source.id)
     onInitStep()
@@ -107,6 +127,8 @@ export function useAddNoteSourceInitialization({
     initPreview,
     initStarted,
     initReport,
+    creating,
+    createError,
     createAndPreview,
     markInitStarted,
     onSessionTerminal,

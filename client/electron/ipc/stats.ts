@@ -1,6 +1,22 @@
 import { ipcMain } from 'electron'
 import type Database from 'better-sqlite3'
 
+/**
+ * tag_usage 物化表 + 维护它的 trigger 只由 daemon ensureSchema 建,daemon 延迟启动。
+ * 全新安装首启窗口期(client 先建库、daemon 未跑)tag_usage 还不存在,裸查会抛
+ * "no such table" → IPC reject。这里对"缺表"降级返回 fallback,其余错误照常抛出
+ * (不吞 SQLITE_BUSY / CORRUPT)。最小方案:只读路径降级,不在 client 复制 daemon
+ * 全量 schema(复制表却没 trigger 会得到永远空的物化表,反而更糟)。
+ */
+function queryTolerateMissingTable<T>(fn: () => T, fallback: T): T {
+  try {
+    return fn()
+  } catch (err) {
+    if (/no such table/i.test((err as Error).message)) return fallback
+    throw err
+  }
+}
+
 export function registerStatsHandlers(db: Database.Database): void {
   ipcMain.handle('stats:overview', () => {
     const totalNodes = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01').get() as any).cnt
@@ -8,14 +24,14 @@ export function registerStatsHandlers(db: Database.Database): void {
     // Top tags(perf-optimization-2026-05-17 P1-2):原本 SELECT tags FROM
     // nodes WHERE heat > 0.01 + JS JSON.parse 全表聚合,万节点下数百 ms。
     // 改读 tag_usage 物化表(由 trigger 实时维护),毫秒级。
-    const byTag = db.prepare(`
+    const byTag = queryTolerateMissingTable(() => db.prepare(`
       SELECT tag, node_count AS cnt
       FROM tag_usage
       WHERE node_count > 0
       ORDER BY node_count DESC
       LIMIT 10
-    `).all()
-    const linkCount = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed'").get() as any).cnt
+    `).all(), [] as unknown[])
+    const linkCount = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed' AND deleted = 0").get() as any).cnt
     const recallCount = (db.prepare("SELECT COUNT(*) as cnt FROM operation_log WHERE operation = 'recall'").get() as any).cnt
 
     // 最近 7 天节点增长
@@ -30,13 +46,13 @@ export function registerStatsHandlers(db: Database.Database): void {
     // 链接按主要 relation 类型分布（relation 是 JSON 数组，提取第一个元素的 type）
     const linksByRelation = db.prepare(`
       SELECT json_extract(relation, '$[0].type') as relation, COUNT(*) as cnt
-      FROM links WHERE status = 'confirmed'
+      FROM links WHERE status = 'confirmed' AND deleted = 0
       GROUP BY json_extract(relation, '$[0].type') ORDER BY cnt DESC
     `).all()
 
     // 链接按状态分布
-    const confirmed = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed'").get() as any).cnt
-    const pending = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'pending'").get() as any).cnt
+    const confirmed = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed' AND deleted = 0").get() as any).cnt
+    const pending = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'pending' AND deleted = 0").get() as any).cnt
     const linksByStatus = { confirmed, pending }
 
     // 再巩固统计
@@ -53,7 +69,7 @@ export function registerStatsHandlers(db: Database.Database): void {
 
   ipcMain.handle('stats:gates', () => {
     const nodeCount = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01').get() as any).cnt
-    const linkCount = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed'").get() as any).cnt
+    const linkCount = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed' AND deleted = 0").get() as any).cnt
     const recallCount = (db.prepare("SELECT COUNT(*) as cnt FROM operation_log WHERE operation = 'recall'").get() as any).cnt
 
     return {
@@ -170,7 +186,7 @@ export function registerStatsHandlers(db: Database.Database): void {
   ipcMain.handle('stats:dashboard-metrics', () => {
     const totalMemories = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01').get() as any).cnt
     const todayDigests = (db.prepare("SELECT COUNT(*) as cnt FROM operation_log WHERE operation = 'digest' AND date(created) = date('now')").get() as any).cnt
-    const todayNewLinks = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed' AND date(created) = date('now')").get() as any).cnt
+    const todayNewLinks = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed' AND deleted = 0 AND date(created) = date('now')").get() as any).cnt
     const todayRecalls = (db.prepare("SELECT COUNT(*) as cnt FROM operation_log WHERE operation = 'recall' AND date(created) = date('now')").get() as any).cnt
 
     const memoryTrendRaw = db.prepare(`
@@ -187,7 +203,7 @@ export function registerStatsHandlers(db: Database.Database): void {
 
     const linkTrendRaw = db.prepare(`
       SELECT date(created) as date, COUNT(*) as count
-      FROM links WHERE status = 'confirmed' AND created > date('now', '-7 days')
+      FROM links WHERE status = 'confirmed' AND deleted = 0 AND created > date('now', '-7 days')
       GROUP BY date(created) ORDER BY date
     `).all() as Array<{ date: string; count: number }>
 

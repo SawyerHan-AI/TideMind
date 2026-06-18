@@ -7,6 +7,7 @@ import {
   geminiExtensionUninstall,
   stripFrontmatter,
 } from '../gemini-cli'
+import { resolveCliPath } from './cli-utils'
 import { writeFileAtomic } from './fs-utils'
 import type {
   AgentPluginAdapter,
@@ -93,7 +94,10 @@ export const geminiAdapter: AgentPluginAdapter = {
     }
 
     try {
-      await geminiExtensionInstall({ extName: name, stagingPath: stage })
+      // 用绝对路径执行,不依赖 cliEnv 的受限 PATH 做命令查找(volta/fnm/asdf/pnpm
+      // 装的 gemini 也能跑)。解析失败退回裸名(由 geminiExtensionInstall 默认值兜底)。
+      const geminiPath = (await resolveCliPath('gemini')) ?? undefined
+      await geminiExtensionInstall({ geminiPath, extName: name, stagingPath: stage })
     } catch (err: any) {
       return {
         pluginDir: stage,
@@ -122,7 +126,8 @@ export const geminiAdapter: AgentPluginAdapter = {
     const installedExists = fs.existsSync(installedManifest)
 
     let registered: boolean | null = null
-    const list = await geminiExtensionList()
+    const geminiPath = (await resolveCliPath('gemini')) ?? undefined
+    const list = await geminiExtensionList(geminiPath)
     if (list !== null) registered = list.some(line => line.includes(name))
 
     let skillOutdated = false
@@ -155,7 +160,8 @@ export const geminiAdapter: AgentPluginAdapter = {
     const errors: string[] = []
     const name = extName(ctx)
     try {
-      await geminiExtensionUninstall({ extName: name })
+      const geminiPath = (await resolveCliPath('gemini')) ?? undefined
+      await geminiExtensionUninstall({ geminiPath, extName: name })
     } catch (err: any) {
       errors.push(`gemini extensions uninstall 失败: ${err?.stderr ?? err?.message ?? String(err)}`)
     }

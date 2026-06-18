@@ -135,6 +135,51 @@ describe('claimNextPendingDigest', () => {
     expect(row.processing_started_at).toBe(fiveMinAgoIso);
     expect(row.retry_count).toBe(0);
   });
+
+  it('stale recovery 达到 MAX_RETRIES 上限 → 转 failed,不再被重认领(毒丸防护)', () => {
+    // 进程崩溃路径走不到 failPendingDigest,stale recovery 必须自带上限,
+    // 否则崩溃型 digest 会跨重启被无限重认领。
+    const fifteenMinAgoIso = new Date(Date.now() - 15 * 60_000).toISOString();
+    const nowIso = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO pending_digests (id, trace_id, input_json, status, error_message, retry_count, created, next_retry_at, processing_started_at)
+      VALUES ('pd-poison', 'trace-poison', '{}', 'processing', 'err', 2, ?, ?, ?)
+    `).run(nowIso, fifteenMinAgoIso, fifteenMinAgoIso);
+
+    // stale recovery: retry_count 2+1 >= 3 → failed,且同次调用不会再 claim 到它
+    expect(claimNextPendingDigest(db)).toBeNull();
+
+    const row = db.prepare(
+      'SELECT status, retry_count, completed_at, error_message FROM pending_digests WHERE id = ?',
+    ).get('pd-poison') as { status: string; retry_count: number; completed_at: string | null; error_message: string };
+
+    expect(row.status).toBe('failed');
+    expect(row.retry_count).toBe(3);
+    expect(row.completed_at).toBeTruthy();
+    expect(row.error_message).toContain('stale recovery exhausted');
+    expect(getFailedDigests(db).map(d => d.id)).toContain('pd-poison');
+  });
+
+  it('stale recovery 未达上限 → 仍回 pending(原有恢复语义不变)', () => {
+    const fifteenMinAgoIso = new Date(Date.now() - 15 * 60_000).toISOString();
+    const nowIso = new Date().toISOString();
+    const futureIso = new Date(Date.now() + 3600_000).toISOString();
+    db.prepare(`
+      INSERT INTO pending_digests (id, trace_id, input_json, status, error_message, retry_count, created, next_retry_at, processing_started_at)
+      VALUES ('pd-stale-2', 'trace-stale-2', '{}', 'processing', 'first err', 1, ?, ?, ?)
+    `).run(nowIso, futureIso, fifteenMinAgoIso);
+
+    claimNextPendingDigest(db);
+
+    const row = db.prepare(
+      'SELECT status, retry_count, error_message FROM pending_digests WHERE id = ?',
+    ).get('pd-stale-2') as { status: string; retry_count: number; error_message: string };
+
+    expect(row.status).toBe('pending');
+    expect(row.retry_count).toBe(2);
+    // 未达上限时不覆盖原 error_message
+    expect(row.error_message).toBe('first err');
+  });
 });
 
 describe('completePendingDigest', () => {

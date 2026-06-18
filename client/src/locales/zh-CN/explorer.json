@@ -7,7 +7,8 @@
     "searchPlaceholder": "搜索记忆...",
     "all": "全部",
     "allTags": "所有标签",
-    "allTypes": "所有类型"
+    "allTypes": "所有类型",
+    "disabledInSearch": "搜索模式下过滤器不生效"
   },
   "sort": {
     "newest": "最新",
@@ -84,6 +85,8 @@
     "pathDiscovery": "路径发现",
     "structureHoles": "结构洞",
     "connectivityLabel": "连接度",
+    "nodeLimitLabel": "前",
+    "nodeLimitHint": "按 heat 高低取前 N 个节点 + 它们的 1-hop 邻居",
     "clickSecondNode": "点击第二个节点查看路径",
     "clickStartNode": "点击起始节点"
   }

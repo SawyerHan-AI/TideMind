@@ -36,6 +36,14 @@ const MIGRATION_MAX_ATTEMPTS = 3;
 // 损坏/截断,跳过 decrypt 直接当不可恢复,避免无意义的钥匙串弹窗。
 const SAFE_STORAGE_MIN_BLOB_BYTES = 64;
 
+/**
+ * auth HTTP fetch 超时。undici 默认 ~300s,established-but-silent 连接会让
+ * /auth/token、/auth/me、/auth/login 挂数分钟;经 inflightRefresh 复用后所有并发
+ * caller 一起卡(sync / mcp / strategy-push / device / reconciler)。15s 后 abort,
+ * refresh 失败归 transient(保留登录态,下次重试),login/me 失败按既有分支处理。
+ */
+const AUTH_FETCH_TIMEOUT_MS = 15_000;
+
 // 客户端日志写本地 logs/,但仍按 PII 卫生掩码邮箱(避免日志被分享/上报泄漏)
 function maskEmail(email: string | null | undefined): string {
   if (!email) return '';
@@ -468,6 +476,7 @@ export async function handleOAuthCallback(url: string): Promise<CloudAuth> {
         code_verifier: verifier,
         redirect_uri: redirectUri,
       }),
+      signal: AbortSignal.timeout(AUTH_FETCH_TIMEOUT_MS),
     });
     if (!tokRes.ok) {
       const body = await tokRes.json().catch(() => ({ error: `token exchange failed (${tokRes.status})` }));
@@ -504,6 +513,7 @@ export async function handleOAuthCallback(url: string): Promise<CloudAuth> {
   try {
     const meRes = await fetch(`${base}/auth/me`, {
       headers: { 'Authorization': `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(AUTH_FETCH_TIMEOUT_MS),
     });
     if (meRes.ok) {
       const body = await meRes.json() as { user: { id: string; email: string; plan?: string } };
@@ -529,6 +539,7 @@ export async function login(email: string, password: string): Promise<CloudAuth>
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
+    signal: AbortSignal.timeout(AUTH_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: `Login failed (${res.status})` }));
@@ -548,6 +559,7 @@ export async function login(email: string, password: string): Promise<CloudAuth>
   try {
     const meRes = await fetch(`${base}/auth/me`, {
       headers: { 'Authorization': `Bearer ${data.access_token}` },
+      signal: AbortSignal.timeout(AUTH_FETCH_TIMEOUT_MS),
     });
     if (meRes.ok) {
       // /auth/me 返回 { user: { id, email, plan, ... } }（见 account-routes.ts:41）。
@@ -574,8 +586,16 @@ async function refreshPlanFromServer(): Promise<void> {
   if (!cachedAuth) return;
   const base = getCloudBaseUrl();
   try {
+    // 先走 refreshTokenIfNeeded 拿可用 token,而不是直接用可能已过期的
+    // cachedAuth.accessToken。背景:用户登录但**未开云同步**时没有 30s 轮询替它刷
+    // token,access token TTL 1h 后过期,直接打 /auth/me 恒 401 → plan 永远停在登录时
+    // 的旧值(Creem 升级后 memory-usage 面板继续按 free/500 显示"已满")。
+    // transient 失败 throw 被下方 catch 兜住(plan 收敛是 best-effort,下次再试)。
+    const token = await refreshTokenIfNeeded().catch(() => null);
+    if (!token) return;
     const meRes = await fetch(`${base}/auth/me`, {
-      headers: { 'Authorization': `Bearer ${cachedAuth.accessToken}` },
+      headers: { 'Authorization': `Bearer ${token}` },
+      signal: AbortSignal.timeout(AUTH_FETCH_TIMEOUT_MS),
     });
     if (!meRes.ok) return;
     const body = await meRes.json() as { user?: { plan?: string } };
@@ -593,6 +613,27 @@ export async function refreshPlanNow(): Promise<string | null> {
 }
 
 export async function logout(): Promise<void> {
+  // Best-effort 调服务端 /auth/logout 撤销 token(tokens_revoked_at = NOW())。
+  // 客户端原来只清内存 + keychain,从不通知服务端 → 已签发的 access(≤1h)/ refresh
+  // (30 天)token 在云端继续有效;若 token 此前泄漏(或 keychain delete 失败),
+  // 登出不提供任何服务端保护。服务端已实现撤销语义(account-routes /logout),
+  // 客户端这条主登出路径补上调用。
+  // best-effort:失败(网络/超时/服务端错误)不阻塞本地登出——本地清理必须照常进行。
+  // 在清 cachedAuth 之前抓取 token(清空后就拿不到了)。
+  const token = cachedAuth?.accessToken ?? null;
+  if (token) {
+    try {
+      const base = getCloudBaseUrl();
+      await fetch(`${base}/auth/logout`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(AUTH_FETCH_TIMEOUT_MS),
+      });
+    } catch (err) {
+      log.warn(`server-side logout failed (continuing local logout): ${(err as Error).message}`);
+    }
+  }
+
   cachedAuth = null;
   const cleared = saveAuthToDisk();
   if (!cleared) {
@@ -631,7 +672,7 @@ export function classifyRefreshResult(args: {
 /**
  * 同一时刻只允许一个真正的 refresh 请求在飞。
  *
- * 背景:6+ 处 fire-and-forget caller(sync-client / mcp-router / strategy-push /
+ * 背景:6+ 处 fire-and-forget caller(sync-client / strategy-push /
  * reconciler 各路)会近乎同时发现 access_token 过期、并发调用 refreshTokenIfNeeded()。
  * OAuth 2.1 rotating refresh-token 语义下,服务端只接受第一个 refresh_token,
  * 之后再来的请求拿的是已作废的老 refresh_token,会被 400 拒绝。老逻辑会把这种 400
@@ -682,6 +723,47 @@ export async function refreshTokenIfNeeded(): Promise<string | null> {
 }
 
 /**
+ * 带登录态请求一个会 302 重定向的云端端点(/billing/checkout、/billing/portal),
+ * 返回重定向目标(Creem 托管 URL)或 null。
+ *
+ * 用途(B3):app 内"升级"/"管理订阅"——主进程持有 access token,带 Bearer 请求
+ * /checkout,服务端 optionalAuth 见到 token → 用 metadata.user_id 建 Creem checkout
+ * → 302 跳 Creem。我们读 Location 拿到**已绑 user_id** 的 Creem URL,交给浏览器打开
+ * (浏览器本身没有我们的登录态,所以不能让它直接访问需鉴权的云端 URL)。
+ *
+ * - `redirect: 'manual'` 在 Node/undici(主进程)下返回真实 3xx 响应、Location 可读
+ *   (非浏览器的 opaque 响应)。
+ * - 仅接受**绝对 http(s) URL**:防御性挡住相对重定向(如 BILLING_ENABLED=false 时的
+ *   /billing/coming-soon),那种情况返回 null,由调用方降级到公开定价页。
+ * - 刷新 token 临时失败时退用现有 token(服务端 optionalAuth 对失效 token 也只降级匿名,
+ *   不报错);永久失败 / 未登录 → null。
+ */
+export async function authedRedirectLocation(path: string): Promise<string | null> {
+  if (!cachedAuth) return null;
+  let token: string | null;
+  try {
+    token = await refreshTokenIfNeeded();
+  } catch {
+    token = cachedAuth?.accessToken ?? null; // 临时刷新失败:用现有 token 尽力一搏
+  }
+  if (!token) return null;
+  try {
+    const res = await fetch(`${getCloudBaseUrl()}${path}`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
+      redirect: 'manual',
+    });
+    const loc = res.headers.get('location');
+    if (res.status >= 300 && res.status < 400 && loc && /^https?:\/\//i.test(loc)) {
+      return loc;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 实际执行 refresh 的内部函数。从 refreshTokenIfNeeded 抽出来,
  * 让 mutex 包装层 (inflightRefresh) 写法干净——只关心"已经在飞了吗"。
  *
@@ -697,6 +779,7 @@ async function doRefreshToken(): Promise<string | null> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body,
+    signal: AbortSignal.timeout(AUTH_FETCH_TIMEOUT_MS),
   });
 
   let res: Response;
@@ -716,22 +799,27 @@ async function doRefreshToken(): Promise<string | null> {
   if (res.ok) {
     const data = await res.json() as { access_token: string; refresh_token: string; expires_in: number };
     if (!cachedAuth) return null; // 防御:并发 logout
-    // 先快照旧值,持久化失败时回滚。理由:OAuth 2.1 推荐 rotating refresh tokens,
-    // 服务端会作废旧 refresh_token。如果"内存里换上新 token + 盘上还是旧 token",
-    // 下次启动加载的是旧 token → 服务端 reject → 用户被强制重登(audit-2 HIGH #3)。
-    const prevAccess = cachedAuth.accessToken;
-    const prevRefresh = cachedAuth.refreshToken;
-    const prevExpiresAt = cachedAuth.expiresAt;
+    // 内存里换上新 token。
     cachedAuth.accessToken = data.access_token;
     cachedAuth.refreshToken = data.refresh_token;
     cachedAuth.expiresAt = Date.now() + (data.expires_in * 1000);
     if (!saveAuthToDisk()) {
-      // 持久化失败:回滚到旧 token。旧 token 在服务端可能已经被作废,但下一次
-      // refreshTokenIfNeeded 会再试——比"盘上是已废 token"安全得多。
-      cachedAuth.accessToken = prevAccess;
-      cachedAuth.refreshToken = prevRefresh;
-      cachedAuth.expiresAt = prevExpiresAt;
-      throw new Error('refresh_token transient: failed to persist new tokens');
+      // 持久化失败的取舍(audit-2 HIGH #3 再修正):
+      //
+      // 旧实现"回滚到旧 token + throw transient"在服务端上线 A-3 rotation
+      // reuse-detection 后变成了**更危险**的行为:服务端已把旧 refresh_token 的 jti
+      // 标记 consumed,客户端下次拿这个已作废的旧 token 去刷 → 被判定为 token 被盗 →
+      // 服务端 `UPDATE users SET tokens_revoked_at = NOW()` 吊销该用户**所有设备**的
+      // token → 全设备强制重登。单机一次钥匙串写失败被放大成账户级事故。
+      //
+      // 改为:**不回滚**,保留刚拿到的新 token 在内存继续用(它在服务端是有效的、
+      // 未 consumed 的),并重试一次持久化。代价是若持久化始终失败,下次启动本机
+      // 读不到 token、需重登本机——这远小于"重放 consumed token 触发全设备吊销"。
+      // (服务端 same-client 宽限期由 cloud-server 负责人另做,不在客户端取舍范围。)
+      log.warn('persist new tokens failed; keeping new tokens in memory, retrying persist once');
+      if (!saveAuthToDisk()) {
+        log.error('persist new tokens failed again; in-memory tokens valid this session, re-login likely after restart');
+      }
     }
     return cachedAuth.accessToken;
   }

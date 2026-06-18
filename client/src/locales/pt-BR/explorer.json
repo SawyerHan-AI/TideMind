@@ -7,7 +7,8 @@
     "searchPlaceholder": "Pesquisar memórias...",
     "all": "Todas",
     "allTags": "Todas as tags",
-    "allTypes": "Todos os tipos"
+    "allTypes": "Todos os tipos",
+    "disabledInSearch": "Os filtros não se aplicam no modo de pesquisa"
   },
   "list": {
     "noResults": "Nenhuma memória correspondente encontrada",
@@ -84,6 +85,8 @@
     "pathDiscovery": "Descoberta de caminhos",
     "structureHoles": "Buracos estruturais",
     "connectivityLabel": "Conectividade",
+    "nodeLimitLabel": "Top",
+    "nodeLimitHint": "Mostra os N principais nós por heat e seus vizinhos a 1 salto.",
     "clickSecondNode": "Clique no segundo nó para ver o caminho",
     "clickStartNode": "Clique no nó inicial"
   }

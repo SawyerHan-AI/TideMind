@@ -24,6 +24,7 @@ const log = createLogger('daemon');
 const migrationLog = createLogger('migrate');
 import { startAllNoteSources, stopAllNoteSources } from './integrations/shared/note-sources.js';
 import { loadProModules } from './plugin-loader.js';
+import { backfillLlmLastSuccessAt } from './metabolism/llm-success-backfill.js';
 
 // 提前安装顶层错误处理器，确保 main() 初始化阶段抛错也能被记录而非静默退出
 //
@@ -140,35 +141,9 @@ async function main(): Promise<void> {
   setEmbeddingSuccessHook(() => recordEmbeddingSuccess(dbForHook));
   setEmbeddingFailureHook(err => recordEmbeddingFailure(dbForHook, err.message));
 
-  // 冷启 backfill llm_last_success_at(2026-05-20 Audit A-5 修复):
-  // 升级用户从 v0.2.67 → v0.2.68 后,metadata 表没有 llm_last_success_at 这条
-  // 记录(本字段 v0.2.68 才引入),pending-link-gc 的 gate 永远拒绝放行 →
-  // pending 表只增不清。从 timeline_events 找最近一条 LLM 操作事件作为兜底
-  // 时间戳(annotate / links_evaluated / links_discovered 等 events.type 反映
-  // "曾经成功调过 LLM"),写一个合理近似值。fresh install 没这些事件,留 null
-  // 走"从未成功 → gate 拒绝"的保守分支,首次真实 LLM 成功会立刻被 hook 覆盖。
-  try {
-    const existing = dbForHook.prepare('SELECT value FROM metadata WHERE key = ?').get('llm_last_success_at');
-    if (!existing) {
-      const recent = dbForHook.prepare(
-        `SELECT created FROM timeline_events
-         WHERE type IN ('think_associate', 'memory', 'config')
-           AND created IS NOT NULL
-         ORDER BY created DESC
-         LIMIT 1`,
-      ).get() as { created: string } | undefined;
-      if (recent?.created) {
-        const ts = Date.parse(recent.created);
-        if (Number.isFinite(ts) && ts > 0) {
-          dbForHook.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)')
-            .run('llm_last_success_at', String(ts));
-          log.info(`backfilled llm_last_success_at from timeline (${recent.created})`);
-        }
-      }
-    }
-  } catch (err) {
-    log.warn(`llm_last_success_at backfill failed: ${(err as Error).message}`);
-  }
+  // 冷启 backfill llm_last_success_at(实现见 backfillLlmLastSuccessAt,白名单过滤
+  // 防 daemon_start 等非 LLM 事件污染)。
+  backfillLlmLastSuccessAt(dbForHook);
 
   // 加载 Pro 模块（不存在则跳过）
   await loadProModules({ db: getDb() });

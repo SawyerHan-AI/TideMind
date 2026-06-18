@@ -89,6 +89,7 @@ vi.mock('../../src/db/stats.js', () => ({
     },
   }),
   invalidateGateCache: vi.fn(),
+  getGraphVocabulary: vi.fn().mockReturnValue({ coreTags: [], tags: [], crystalSummaries: [] }),
 }));
 
 vi.mock('../../src/db/log.js', () => ({
@@ -111,9 +112,12 @@ import type Database from 'better-sqlite3';
 import { setupTestDb, seedNode, seedLink } from '../helpers/test-db.js';
 import {
   runDivergentScan,
+  runCrystalEmergence,
   runKeystoneIdentification,
 } from '../../src/metabolism/divergent.js';
 import { getGateStatus } from '../../src/db/stats.js';
+import { generateCrystal } from '../../src/llm/extract.js';
+import type { BrainNode } from '../../src/types.js';
 
 let db: Database.Database;
 
@@ -226,6 +230,76 @@ describe('runDivergentScan', () => {
 
     const result = await runDivergentScan(db);
     expect(result).toEqual([]);
+  });
+});
+
+// ===== runCrystalEmergence =====
+
+describe('runCrystalEmergence', () => {
+  /**
+   * 构造一个满足 Path A 条件的枢纽:
+   * link_count >= 5(confirmed)、link_diversity >= 3、in_degree >= 3、
+   * isSpecific(independence >= 0.4 / content >= 30 字 / refinement >= 0.2)
+   */
+  function seedHub(): BrainNode {
+    const hub = seedNode(db, {
+      content: '这是一个内容足够长的枢纽节点,描述了某个核心概念及其多个关联侧面。',
+      independence: 0.8,
+      refinement: 0.8,
+      heat: 1.0,
+    });
+    const neighbors = Array.from({ length: 5 }, (_, i) =>
+      seedNode(db, { content: `neighbor ${i}`, heat: 1.0 }));
+    // 3 条入边(3 种 relation type → diversity 3)+ 2 条出边 → link_count 5
+    seedLink(db, neighbors[0].id, hub.id, { relation: [{ type: 'supports', confidence: 0.7 }] });
+    seedLink(db, neighbors[1].id, hub.id, { relation: [{ type: 'contradicts', confidence: 0.7 }] });
+    seedLink(db, neighbors[2].id, hub.id, { relation: [{ type: 'analogous', confidence: 0.7 }] });
+    seedLink(db, hub.id, neighbors[3].id, { relation: [{ type: 'supports', confidence: 0.7 }] });
+    seedLink(db, hub.id, neighbors[4].id, { relation: [{ type: 'supports', confidence: 0.7 }] });
+    return hub;
+  }
+
+  it('置信度低于 min_confidence 时不落库', async () => {
+    seedHub();
+    vi.mocked(generateCrystal).mockResolvedValue({
+      content: '低置信度结晶', tags: ['t'], confidence: 0.1,
+    });
+
+    const promoted = await runCrystalEmergence(db);
+    expect(promoted).toHaveLength(0);
+    const crystals = db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE is_crystal = 1').get() as { cnt: number };
+    expect(crystals.cnt).toBe(0);
+
+    vi.mocked(generateCrystal).mockResolvedValue(null);
+  });
+
+  // 回归:枢纽永远 is_crystal=0 且 confirmed 链接只增不减,没有 dedup 时
+  // 同一枢纽每个周期都重新入选,无限堆积近似重复 crystal。
+  it('近期已有 crystal 总结过的枢纽不再重复生成', async () => {
+    const hub = seedHub();
+    vi.mocked(generateCrystal).mockResolvedValue({
+      content: '这是一条有效的结晶洞察', tags: ['洞察'], confidence: 0.8,
+    });
+
+    const first = await runCrystalEmergence(db);
+    expect(first.length).toBeGreaterThan(0);
+
+    // 第二次运行:hub 已有近期 summarizes crystal → 跳过,不再调 LLM
+    vi.mocked(generateCrystal).mockClear();
+    const second = await runCrystalEmergence(db);
+    expect(second).toHaveLength(0);
+    expect(generateCrystal).not.toHaveBeenCalled();
+
+    // crystal 总量仍是 1
+    const crystals = db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE is_crystal = 1').get() as { cnt: number };
+    expect(crystals.cnt).toBe(1);
+    // dedup 签名:crystal → hub 的 summarizes 链接存在
+    const link = db.prepare(
+      "SELECT 1 FROM links l, json_each(l.relation) j WHERE l.to_id = ? AND json_extract(j.value, '$.type') = 'summarizes' LIMIT 1",
+    ).get(hub.id);
+    expect(link).toBeTruthy();
+
+    vi.mocked(generateCrystal).mockResolvedValue(null);
   });
 });
 

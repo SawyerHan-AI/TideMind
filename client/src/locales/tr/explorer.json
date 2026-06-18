@@ -7,7 +7,8 @@
     "searchPlaceholder": "Anılarda ara...",
     "all": "Tümü",
     "allTags": "Tüm etiketler",
-    "allTypes": "Tüm türler"
+    "allTypes": "Tüm türler",
+    "disabledInSearch": "Filtreler arama modunda geçerli değildir"
   },
   "list": {
     "noResults": "Eşleşen anı bulunamadı",
@@ -84,6 +85,8 @@
     "pathDiscovery": "Yol Keşfi",
     "structureHoles": "Yapısal Boşluklar",
     "connectivityLabel": "Bağlantılılık",
+    "nodeLimitLabel": "İlk",
+    "nodeLimitHint": "Heat değerine göre ilk N düğümü ve onların 1 adım uzaklıktaki komşularını gösterir.",
     "clickSecondNode": "Yolu görmek için ikinci düğüme tıklayın",
     "clickStartNode": "Başlangıç düğümüne tıklayın"
   }
