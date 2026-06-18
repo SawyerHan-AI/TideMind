@@ -79,9 +79,13 @@ function getDateFilter(range: TimeRange): { after?: string; before?: string } {
 
 const DETAIL_PAGE_SIZE = 100
 
+// 模块级稳定引用:useIPC 要求 fetcher 身份稳定(见 useIPC.ts 文档),
+// inline 箭头函数会导致每次 render 重新触发 IPC 形成无限拉取循环。
+const fetchTokenUsage = () => window.api.stats.tokenUsage()
+
 export function ModelUsage() {
   const { t } = useTranslation('settings')
-  const { data: tokenUsage } = useIPC<TokenUsageData>(() => window.api.stats.tokenUsage())
+  const { data: tokenUsage } = useIPC<TokenUsageData>(fetchTokenUsage)
   const [opsRange, setOpsRange] = useState<TimeRange>('30d')
   const [detailRange, setDetailRange] = useState<TimeRange>('30d')
   const [detailPage, setDetailPage] = useState(0)

@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { parseSemver, meetsMinVersion, type SemVer } from './_semver'
+import { cliEnv } from './agent-plugins/paths'
 
 const execFileAsync = promisify(execFile)
 
@@ -12,11 +13,9 @@ export type GeminiVersion = SemVer
  */
 export const GEMINI_MIN_VERSION: GeminiVersion = { major: 0, minor: 26, patch: 0 }
 
-const CLI_ENV_PATH_SUFFIX = ':/opt/homebrew/bin:/usr/local/bin'
-
-function cliEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, PATH: `${process.env.PATH ?? ''}${CLI_ENV_PATH_SUFFIX}` }
-}
+// 凭证隔离:统一走 paths.ts 的白名单 cliEnv,不再 `...process.env` 全量透传——
+// 主进程可能携带 ANTHROPIC_API_KEY / OAuth 令牌等敏感凭证,无控透传会让凭证
+// 流向不受控的外部 gemini 进程(与 claude CLI 同一安全不变量)。
 
 /**
  * 从 `gemini --version` 输出中解析版本号。封装 _semver，保持

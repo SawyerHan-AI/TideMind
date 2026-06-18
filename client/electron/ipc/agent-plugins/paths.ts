@@ -107,7 +107,33 @@ export function cliEnv(): NodeJS.ProcessEnv {
     const value = process.env[key]
     if (value !== undefined) filtered[key] = value
   }
-  // 固定 PATH（不追加用户 PATH，防恶意 entry 优先）
-  filtered.PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+  // 固定 PATH（不追加用户 PATH，防恶意 entry 优先）。除系统标准目录外补两个
+  // CLI 官方原生安装位置:~/.local/bin(claude / codex / gemini 原生安装器默认落点)
+  // 与 nvm 最新版 bin。否则 checkCli 用继承 PATH 的 `which` 能检测到、但用本固定
+  // PATH 执行时 ENOENT,出现"检测到可用 → install 失败"的脱节。
+  const home = process.env.HOME ?? ''
+  const dirs = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin']
+  if (home) {
+    dirs.push(`${home}/.local/bin`)
+    const nvmBin = latestNvmBinDir(home)
+    if (nvmBin) dirs.push(nvmBin)
+  }
+  filtered.PATH = dirs.join(':')
   return filtered
+}
+
+/** 解析 ~/.nvm/versions/node 下最新版本的 bin 目录;不存在返回 null。 */
+function latestNvmBinDir(home: string): string | null {
+  const nvmRoot = path.join(home, '.nvm', 'versions', 'node')
+  try {
+    const versions = fs.readdirSync(nvmRoot)
+      .filter(v => v.startsWith('v'))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    const latest = versions[versions.length - 1]
+    if (!latest) return null
+    const binDir = path.join(nvmRoot, latest, 'bin')
+    return fs.existsSync(binDir) ? binDir : null
+  } catch {
+    return null
+  }
 }

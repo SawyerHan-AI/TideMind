@@ -94,7 +94,7 @@ export function registerWriteHandlers(db: Database.Database): void {
 
     try {
       // digest 接口用 from/to 而非 linkId，需要先查端点
-      const link = db.prepare('SELECT from_id, to_id FROM links WHERE id = ?').get(parsedId.data) as
+      const link = db.prepare('SELECT from_id, to_id FROM links WHERE id = ? AND deleted = 0').get(parsedId.data) as
         | { from_id: string; to_id: string }
         | undefined
       if (!link) return { success: false, error: 'Link not found' }

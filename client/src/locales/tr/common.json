@@ -26,6 +26,8 @@
     "memories": "anı"
   },
   "total": "toplam {{count}}",
+  "close": "Kapat",
+  "loading": "Yükleniyor…",
   "errors": {
     "somethingWentWrong": "Bir şeyler ters gitti",
     "unexpectedError": "Beklenmedik bir hata oluştu.",
@@ -53,5 +55,10 @@
     "paused": "AI duraklatıldı ({{min}} dk sonra tekrar denenecek)",
     "recentFailures": "AI yakın zamanda hata aldı",
     "idle": "AI uzun süredir etkin değil"
+  },
+  "cloud": {
+    "syncing": "Eşitleniyor…",
+    "connected": "Bağlandı",
+    "offline": "Çevrimdışı"
   }
 }

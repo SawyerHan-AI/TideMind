@@ -381,7 +381,8 @@ export function registerHealthHandlers(dataDir: string): void {
       } catch {}
     }
     if (!watchPath) return { accessible: false, fileCount: 0, path: '' }
-    const resolved = watchPath.replace('~', os.homedir())
+    // 锚定正则:只展开开头的 `~`,不替换路径中间的 `~`(与 _schemas.ts 一致)。
+    const resolved = watchPath.replace(/^~(?=$|\/)/, os.homedir())
     if (!fs.existsSync(resolved)) return { accessible: false, fileCount: 0, path: resolved }
     try {
       const entries: string[] = []
@@ -403,7 +404,8 @@ export function registerHealthHandlers(dataDir: string): void {
       } catch {}
     }
     if (!watchPath) return { accessible: false, fileCount: 0, path: '' }
-    const resolved = watchPath.replace('~', os.homedir())
+    // 锚定正则:只展开开头的 `~`,不替换路径中间的 `~`(与 _schemas.ts 一致)。
+    const resolved = watchPath.replace(/^~(?=$|\/)/, os.homedir())
     if (!fs.existsSync(resolved)) return { accessible: false, fileCount: 0, path: resolved }
     try {
       const entries: string[] = []

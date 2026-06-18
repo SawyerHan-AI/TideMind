@@ -167,6 +167,7 @@ const api: AppApi = {
     loginUrl: () => ipcRenderer.invoke('cloud:login-url'),
     registerUrl: () => ipcRenderer.invoke('cloud:register-url'),
     billingPortalUrl: () => ipcRenderer.invoke('cloud:billing-portal-url'),
+    billingCheckoutUrl: (plan: string, interval: string) => ipcRenderer.invoke('cloud:billing-checkout-url', plan, interval),
   },
   app: {
     getVersion: () => ipcRenderer.invoke('app:get-version'),

@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto'
 import { getClientDb } from '../db.js'
 import { probeAnthropic, probeVertex, probeGemini, probeOllama, probeOpenAICompatible } from './health.js'
 import { validateConnectionId, validateProviderType, validateFormCredentials, assertPathWithinRoot } from './_validate.js'
+import { mainT } from '../i18n.js'
 import { clearClientCache } from '../../../src/llm/client.js'
 import { resetCircuitBreaker } from '../../../src/metabolism/scheduler.js'
 
@@ -172,7 +173,7 @@ export function registerConnectionHandlers(dataDir: string): void {
     const conn = db.prepare('SELECT * FROM model_connections WHERE id = ?').get(validId) as {
       id: string; provider_type: string; credentials: string
     } | undefined
-    if (!conn) return { online: false, models: [], error: '连接不存在' }
+    if (!conn) return { online: false, models: [], error: mainT('conn.notFound') }
 
     // credentials 解析失败时降级为空对象,避免 IPC 崩溃
     const dbCreds = safeParseCredentials(conn.credentials)
@@ -217,11 +218,11 @@ export function registerConnectionHandlers(dataDir: string): void {
         try {
           const parsed = new URL(rawUrl)
           if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-            result = { online: false, models: [], error: 'Ollama URL 协议必须是 http/https' }
+            result = { online: false, models: [], error: mainT('conn.ollamaSchemeInvalid') }
             break
           }
         } catch (e) {
-          result = { online: false, models: [], error: `Ollama URL 无效: ${(e as Error).message}` }
+          result = { online: false, models: [], error: `${mainT('conn.ollamaUrlInvalid')}: ${(e as Error).message}` }
           break
         }
         result = await probeOllama(rawUrl)
@@ -235,11 +236,11 @@ export function registerConnectionHandlers(dataDir: string): void {
           try {
             const parsed = new URL(baseUrl)
             if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-              result = { online: false, models: [], error: 'base_url 协议必须是 http/https' }
+              result = { online: false, models: [], error: mainT('conn.baseUrlSchemeInvalid') }
               break
             }
           } catch (e) {
-            result = { online: false, models: [], error: `base_url 无效: ${(e as Error).message}` }
+            result = { online: false, models: [], error: `${mainT('conn.baseUrlInvalid')}: ${(e as Error).message}` }
             break
           }
         }
@@ -250,7 +251,7 @@ export function registerConnectionHandlers(dataDir: string): void {
         break
       }
       default:
-        result = { online: false, models: [], error: `未知 provider 类型: ${conn.provider_type}` }
+        result = { online: false, models: [], error: `${mainT('conn.unknownProvider')}: ${conn.provider_type}` }
     }
 
     // 更新状态到数据库
@@ -290,7 +291,7 @@ export function registerConnectionHandlers(dataDir: string): void {
     const validId = validateConnectionId(connectionId)
     try {
       const result = await dialog.showOpenDialog({
-        title: '选择 Google Cloud Service Account JSON 文件',
+        title: mainT('dialog.pickServiceAccount'),
         filters: [{ name: 'JSON', extensions: ['json'] }],
         properties: ['openFile'],
       })
@@ -306,11 +307,11 @@ export function registerConnectionHandlers(dataDir: string): void {
       try {
         parsed = JSON.parse(content)
       } catch {
-        return { success: false, error: '文件不是合法的 JSON' }
+        return { success: false, error: mainT('cred.notJson') }
       }
 
       if (parsed.type !== 'service_account') {
-        return { success: false, error: '不是 Service Account 类型的凭证文件' }
+        return { success: false, error: mainT('cred.notServiceAccount') }
       }
 
       // 复制到数据目录(按 validId 命名)。validId 已正则白名单卡住,

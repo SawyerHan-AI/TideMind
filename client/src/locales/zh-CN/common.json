@@ -26,6 +26,8 @@
     "memories": "条记忆"
   },
   "total": "共 {{count}} 条",
+  "close": "关闭",
+  "loading": "加载中…",
   "errors": {
     "somethingWentWrong": "出现了错误",
     "unexpectedError": "发生了意外错误。",
@@ -53,5 +55,10 @@
     "paused": "AI 暂停中（{{min}} 分钟后重试）",
     "recentFailures": "AI 近期有失败",
     "idle": "AI 长时间无活动"
+  },
+  "cloud": {
+    "syncing": "同步中…",
+    "connected": "已连接",
+    "offline": "离线"
   }
 }

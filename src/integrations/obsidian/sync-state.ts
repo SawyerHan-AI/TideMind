@@ -287,3 +287,20 @@ export function computeContentHash(content: string): string {
 export function computeSegmentHash(content: string): string {
   return crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
 }
+
+/**
+ * 获取文件 stat（mtime/size）的 snapshot。与 Logseq 的同名函数对称。
+ *
+ * 用于消除 TOCTOU:processOneFile 在预处理时抓 snapshot,digest(分钟级 LLM)期间
+ * 用户若编辑文件,写回 sync state 的 mtime/size 必须来自被 digest 的那份内容,而不是
+ * digest 后重读的新值——否则下次 isFileChanged 的 mtime+size 快速路径会直接短路,
+ * hash 比对走不到,这次编辑永久丢失。
+ *
+ * dataless 返回 null(调用方应据此跳过写 state)。
+ */
+export function getFileStat(filePath: string): { mtime: number; size: number } | null {
+  const stat = safeStatSync(filePath);
+  if (!stat) return null;
+  if (isDataless(stat)) return null; // dataless：当作没有可用 stat（调用方应跳过写 state）
+  return { mtime: Math.floor(stat.mtimeMs), size: stat.size };
+}

@@ -26,6 +26,8 @@
     "memories": "memories"
   },
   "total": "{{count}} total",
+  "close": "Close",
+  "loading": "Loading...",
   "errors": {
     "somethingWentWrong": "Something went wrong",
     "unexpectedError": "An unexpected error occurred.",
@@ -53,5 +55,10 @@
     "paused": "AI paused ({{min}} min until retry)",
     "recentFailures": "AI had recent failures",
     "idle": "AI inactive for a while"
+  },
+  "cloud": {
+    "syncing": "Syncing...",
+    "connected": "Connected",
+    "offline": "Offline"
   }
 }

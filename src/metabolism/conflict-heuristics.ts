@@ -84,20 +84,48 @@ function keywordOverlap(textA: string, textB: string): number {
   return intersection / smaller;
 }
 
+/** 转义用户数据，防止关键词含正则特殊字符 */
+function escapeRegExpLiteral(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** keyword × negation 正则扫描的共享关键词上限（性能约束，见 hasNegatedOverlap） */
+const MAX_SHARED_KEYWORDS = 20;
+
 /**
  * 检测文本是否包含对共享关键词的否定
+ *
+ * 性能约束:本函数在 recall 的同步路径(reconsolidateOnRecall →
+ * detectConflictSignals)上对节点两两调用,CJK bigram 分词后 token 数 ≈ 文本
+ * 长度,长中文笔记不加节制会同步阻塞 daemon event loop 秒级:
+ *   - extractKeywords(textB) 必须提到 filter 外 —— 写在回调里等于 A 的每个
+ *     token 都对 B 全文重新分词,O(len²);
+ *   - 否定词先做一遍"是否出现在任一文本"预筛 —— 绝大多数文本对不含任何
+ *     否定标记,直接短路,避免 否定词 × 数百共享 bigram 的正则笛卡尔积;
+ *   - 共享关键词截断到 MAX_SHARED_KEYWORDS,按长度降序优先(完整英文单词
+ *     比 2 字 bigram 更有判别力)。
  */
 function hasNegatedOverlap(textA: string, textB: string): boolean {
-  const sharedKeywords = [...extractKeywords(textA)].filter(k => extractKeywords(textB).has(k));
+  const kwB = extractKeywords(textB);
+  const sharedKeywords = [...extractKeywords(textA)].filter(k => kwB.has(k));
   if (sharedKeywords.length === 0) return false;
 
+  // 否定词预筛:只保留至少在一边文本中出现过的否定标记
   const allNegations = [...NEGATION_ZH, ...NEGATION_EN];
+  const presentNegations = allNegations.filter(neg => {
+    const re = new RegExp(escapeRegExpLiteral(neg), 'i');
+    return re.test(textA) || re.test(textB);
+  });
+  if (presentNegations.length === 0) return false;
 
-  for (const keyword of sharedKeywords) {
-    for (const neg of allNegations) {
-      // 转义用户数据，防止关键词含正则特殊字符
-      const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const escapedNeg = neg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const cappedKeywords = sharedKeywords
+    .sort((a, b) => b.length - a.length)
+    .slice(0, MAX_SHARED_KEYWORDS);
+
+  for (const keyword of cappedKeywords) {
+    for (const neg of presentNegations) {
+      const escapedKeyword = escapeRegExpLiteral(keyword);
+      const escapedNeg = escapeRegExpLiteral(neg);
       // 检查否定标记是否在共享关键词附近（前后 30 字符内）
       const patterns = [
         new RegExp(`${escapedNeg}[^。.!？\\n]{0,20}${escapedKeyword}`, 'i'),

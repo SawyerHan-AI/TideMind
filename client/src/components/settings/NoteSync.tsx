@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Plus, ChevronRight, RotateCcw, X,
-  MoreHorizontal, BookOpen,
+  MoreHorizontal, BookOpen, Loader2, XCircle,
 } from 'lucide-react'
 import { useIPC } from '../../hooks/useIPC'
 import { Section } from './shared'
@@ -82,6 +82,8 @@ function AddNoteSourceWizard({
     createdSourceId,
     initPreview,
     initReport,
+    creating,
+    createError,
     createAndPreview,
     markInitStarted,
     onSessionTerminal,
@@ -182,13 +184,22 @@ function AddNoteSourceWizard({
             </button>
           )}
           {step === 1 && (
-            <button
-              onClick={goToStep3}
-              disabled={!canProceed}
-              className="px-4 py-1.5 text-xs bg-indigo-500 hover:bg-indigo-400 text-white rounded-lg transition-colors disabled:opacity-50"
-            >
-              {t('noteSync.wizard.nextStep')}
-            </button>
+            <div className="flex items-center gap-3">
+              {createError && (
+                <span className="flex items-center gap-1.5 text-xs text-red-400">
+                  <XCircle size={12} />
+                  {t('noteSync.createFailed')}
+                </span>
+              )}
+              <button
+                onClick={goToStep3}
+                disabled={!canProceed || creating}
+                className="flex items-center gap-2 px-4 py-1.5 text-xs bg-indigo-500 hover:bg-indigo-400 text-white rounded-lg transition-colors disabled:opacity-50"
+              >
+                {creating && <Loader2 size={12} className="animate-spin" />}
+                {t('noteSync.wizard.nextStep')}
+              </button>
+            </div>
           )}
           {step === 3 && (
             <button

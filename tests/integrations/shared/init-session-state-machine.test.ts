@@ -201,6 +201,49 @@ describe('InitSessionManager — abort()', () => {
     vi.useRealTimers();
   });
 
+  it('abort 超时强制 aborted 后,业务 runner 迟到 resolve 不把状态翻成 done', async () => {
+    vi.useFakeTimers();
+    const { runner, resolve } = deferredRunner();
+    const snapshots: string[] = [];
+    mgr.on('transition', s => { if (s.sourceId === 's-late') snapshots.push(s.status); });
+
+    mgr.start({ sourceId: 's-late', toolType: 'logseq' as ToolType, runner });
+
+    const abortPromise = mgr.abort('s-late', 'user');
+    await vi.advanceTimersByTimeAsync(11_000); // 超过 10s,强制 aborted
+    const snap = await abortPromise;
+    expect(snap.status).toBe('aborted');
+
+    // 业务 runner 现在才迟到完成(controller/promise 已被置 null)
+    resolve({ totalImported: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    // 终态保护:仍是 aborted,没有被翻成 done,也没有迟到的 done 快照广播
+    expect(mgr.snapshot('s-late')?.status).toBe('aborted');
+    expect(snapshots).not.toContain('done');
+
+    vi.useRealTimers();
+  });
+
+  it('abort 超时强制 aborted 后,业务 runner 迟到抛错也不把状态翻成 error', async () => {
+    vi.useFakeTimers();
+    const { runner, reject } = deferredRunner();
+    mgr.start({ sourceId: 's-late-err', toolType: 'logseq' as ToolType, runner });
+
+    const abortPromise = mgr.abort('s-late-err', 'user');
+    await vi.advanceTimersByTimeAsync(11_000);
+    await abortPromise;
+
+    reject(new Error('late failure'));
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    expect(mgr.snapshot('s-late-err')?.status).toBe('aborted');
+
+    vi.useRealTimers();
+  });
+
   it('abort 在 10ms 内 settle 时 settle 路径必须 clearTimeout(避免 timer 堆积)', async () => {
     // 业务 promise 在 10ms 内 settle(响应了 abort signal),
     // 此时正常路径的 setTimeout(10s) 必须被 clear,否则 callback 仍在事件循环里。

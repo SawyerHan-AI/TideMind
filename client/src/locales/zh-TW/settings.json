@@ -65,7 +65,8 @@
       "learning2": "AI 最佳化",
       "system": "升級",
       "file_edit": "檔案編輯"
-    }
+    },
+    "saveFailed": "儲存失敗,請重試。"
   },
   "model": {
     "subtabs": {
@@ -118,6 +119,7 @@
       "connectionNameTip": "自訂名稱，方便區分多個同類連線。",
       "connectionNamePlaceholder": "如：公司 {{provider}}",
       "create": "建立",
+      "createFailed": "建立連線失敗,請重試。",
       "colName": "名稱",
       "colType": "類型",
       "colStatus": "狀態",
@@ -149,7 +151,9 @@
       "reembedProgress": "正在重算 embedding... ({{done}}/{{total}})",
       "reembedNeeded": "向量索引需要重算（升級或切換模型後觸發）。重算期間搜尋自動降級為全文檢索。",
       "startReembed": "開始重算",
-      "saved": "已儲存"
+      "saved": "已儲存",
+      "saveFailed": "儲存模型選擇失敗,請重試。",
+      "retry": "重試"
     },
     "serviceStatus": {
       "title": "AI 服務狀態",
@@ -389,7 +393,8 @@
       "notionScopeHint": "TideMind 將同步所有分享給整合的頁面。如需調整範圍，請在 Notion 中修改頁面分享設定。",
       "notionConnected": "Token 驗證通過，連線成功",
       "notionFailed": "Token 無效或連線失敗"
-    }
+    },
+    "createFailed": "建立筆記來源失敗,請重試。"
   },
   "usage": {
     "totalTokens": "總 Token",
@@ -462,6 +467,7 @@
       "file_edit": "檔案"
     },
     "saved": "已儲存",
+    "saveFailed": "儲存失敗,請重試。",
     "confirmSave": "確認儲存",
     "save": "儲存",
     "userPromptPlaceholder": "輸入 User Prompt 範本，使用 {{變數名}} 作為動態參數占位符",
@@ -873,6 +879,7 @@
       "generatingPlugin": "Generating plugin...",
       "pluginGenerateFailed": "Plugin generation failed",
       "generateFailed": "Generation failed",
+      "createFailed": "建立失敗",
       "completed": "Completed",
       "manualStepsTitle": "Manual steps required:",
       "prevStep": "Previous",
@@ -994,12 +1001,16 @@
     "subscription": "訂閱",
     "currentPlan": "目前方案",
     "upgradeHint": "升級至 Pro 即可享有無限雲端記憶、5 台裝置、全天候雲端代謝等功能。",
+    "upgradeAnnual": "升級至 Pro — $49/年",
+    "upgradeMonthly": "或按月付 $5/月",
     "viewPricing": "查看方案與定價",
     "manageSubscription": "管理訂閱",
     "billing": "帳單",
     "noBilling": "免費方案無帳單記錄。",
     "billingComingSoon": "帳單記錄功能即將推出。",
     "logout": "登出",
+    "logoutTitle": "登出?",
+    "logoutDesc": "你將登出 TideMind Cloud。本機資料不受影響。",
     "comingSoon": "即將推出",
     "subscriptionComingSoon": "Pro 和 Pro+ 方案即將推出。敬請期待雲端同步、7×24 代謝引擎等更多功能。",
     "registerButton": "建立帳號",

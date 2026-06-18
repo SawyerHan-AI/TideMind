@@ -26,6 +26,8 @@
     "memories": "건의 메모리"
   },
   "total": "총 {{count}} 건",
+  "close": "닫기",
+  "loading": "불러오는 중…",
   "errors": {
     "somethingWentWrong": "오류가 발생했습니다",
     "unexpectedError": "예기치 않은 오류가 발생했습니다.",
@@ -53,5 +55,10 @@
     "paused": "AI 일시 중지 ({{min}}분 후 재시도)",
     "recentFailures": "AI에서 최근 실패 발생",
     "idle": "AI가 오랜 시간 비활성"
+  },
+  "cloud": {
+    "syncing": "동기화 중…",
+    "connected": "연결됨",
+    "offline": "오프라인"
   }
 }

@@ -71,10 +71,17 @@ describe('cliEnv (paths.ts) — allowlist + fixed PATH', () => {
     expect(env.PWD).toBe('/work')
   })
 
-  it('PATH 固定为系统标准路径，不追加用户 PATH', () => {
+  it('PATH 固定为系统标准路径 + 已知 CLI 安装位置，绝不追加用户 PATH', () => {
     setEnv('PATH', '/evil/path:/another/evil')
+    // 控制 HOME 为不存在的固定路径,使 ~/.local/bin 展开确定、~/.nvm 解析为空,
+    // 测试不依赖运行机器是否装了 nvm / 是否有真实 ~/.local 目录。
+    setEnv('HOME', '/x/home')
     const env = cliEnv()
-    expect(env.PATH).toBe('/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin')
+    // 固定可信路径:系统标准目录 + CLI 原生安装位置(~/.local/bin)。它们都不是来自
+    // process.env.PATH 的用户可控 entry —— 安全契约仍是"绝不把用户 PATH 拼进来";
+    // 加入 ~/.local/bin / nvm bin 是为消除 checkCli(继承 PATH 检测)与 exec(固定 PATH)
+    // 的"检测到却跑不起来"脱节。
+    expect(env.PATH).toBe('/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/x/home/.local/bin')
     expect(env.PATH).not.toContain('/evil/path')
     expect(env.PATH).not.toContain('/another/evil')
   })

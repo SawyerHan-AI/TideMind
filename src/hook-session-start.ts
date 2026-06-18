@@ -17,7 +17,7 @@ import { SqliteRepository } from './db/sqlite-repository.js';
 import { touchAgent } from './db/agents.js';
 import { prepare } from './tools/prepare.js';
 import { readFileSync, fstatSync } from 'node:fs';
-import type { PrepareOutput } from './types.js';
+import { formatProfileSection, formatRestSections, assembleSessionContext } from './hook-session-format.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { createLogger } from './utils/logger.js';
 import { writeHookOutput as outputHook } from './hook-output.js';
@@ -119,58 +119,7 @@ function parseArgs(): { agentId: string; skillPath: string; tool: string } {
   return { agentId, skillPath, tool };
 }
 
-// --- 格式化 prepare 结果为可读文本 ---
-function formatPrepareOutput(result: PrepareOutput): string {
-  const sections: string[] = [];
-
-  // 用户画像
-  if (result.profile?.text) {
-    sections.push(`## 用户画像\n${result.profile.text}`);
-  }
-
-  // 枢纽节点
-  if (result.keystones.length > 0) {
-    const lines = result.keystones.map(k =>
-      `- ${k.title ?? k.id}（${k.link_count} 条关联，id: ${k.id}）`
-    );
-    sections.push(`## 枢纽节点\n${lines.join('\n')}`);
-  }
-
-  // 标签索引
-  if (result.tags.length > 0) {
-    const lines = result.tags.map(t =>
-      `- ${t.title}（${t.link_count} 条关联，id: ${t.id}）`
-    );
-    sections.push(`## 标签索引\n${lines.join('\n')}`);
-  }
-
-  // 结晶
-  if (result.crystals.highlighted.length > 0 || result.crystals.others.length > 0) {
-    const lines: string[] = [];
-    for (const c of result.crystals.highlighted) {
-      lines.push(`- ${c.title ?? c.snippet}（id: ${c.id}）`);
-    }
-    for (const c of result.crystals.others) {
-      lines.push(`- ${c.title ?? c.id}（id: ${c.id}）`);
-    }
-    sections.push(`## 结晶\n${lines.join('\n')}`);
-  }
-
-  // 最近活跃
-  if (result.recent.length > 0) {
-    const lines = result.recent.map(r =>
-      `- ${r.title ?? r.id}（${r.type}，${r.timestamp}，id: ${r.id}）`
-    );
-    sections.push(`## 最近活跃\n${lines.join('\n')}`);
-  }
-
-  // 行为指导
-  if (result.guidance) {
-    sections.push(`## 行为指导\n${result.guidance}`);
-  }
-
-  return sections.join('\n\n');
-}
+// 注入正文格式化 + G1 预算安全网已拆到 ./hook-session-format.ts(纯函数,零副作用,供单测)。
 
 // --- 输出 hook 结果 ---
 // 协议适配（Gemini JSON / 其他纯文本）见 hook-output.ts；
@@ -212,10 +161,12 @@ async function main(): Promise<void> {
     skillContent = '（Skill 文件读取失败，请通过 MCP 工具 brain_prepare/recall/digest 与外脑交互）';
   }
 
-  let prepareText: string;
+  // 画像段与其余段分离,供 G1 预算按段截断。/clear 与错误路径无画像、用静态短文本走 restSection。
+  let profileSection = '';
+  let restSection: string;
   if (sessionReason === 'clear') {
     // /clear 发生时 Codex 已保留 session 上下文，只是清屏；重跑 prepare 是重复消耗
-    prepareText = '（/clear 已执行，用户上下文已在本 session 内保留，无需重新加载）';
+    restSection = '（/clear 已执行，用户上下文已在本 session 内保留，无需重新加载）';
   } else {
     // 正常启动 / resume：拉取 prepare 结果
     try {
@@ -232,7 +183,8 @@ async function main(): Promise<void> {
         detail_level: 'standard',
       });
 
-      prepareText = formatPrepareOutput(result);
+      profileSection = formatProfileSection(result);
+      restSection = formatRestSections(result);
     } catch (err) {
       // 之前这里是裸 catch {} — prepare() 的任何异常(DB 损坏、OOM、代码 bug、
       // strategy loader 抛错)都会被吞成同一句静态 fallback,hook 行为看起来
@@ -243,22 +195,14 @@ async function main(): Promise<void> {
       if (err instanceof Error && err.stack) {
         process.stderr.write(err.stack.split('\n').slice(0, 3).join('\n') + '\n');
       }
-      prepareText = '（用户上下文加载失败，请手动调用 brain_prepare 工具）';
+      restSection = '（用户上下文加载失败，请手动调用 brain_prepare 工具）';
     } finally {
       try { closeDb(); } catch { /* ignore */ }
     }
   }
 
-  // 拼合输出
-  const content = `[TIDE MIND — SESSION CONTEXT]
-
-## 使用指南
-${skillContent}
-
-${prepareText}
-
----
-以上内容由 Tide Mind 在会话启动时自动注入。brain_recall 和 brain_digest 工具仍可在对话过程中使用。`;
+  // 拼合输出（G1 预算安全网在 assembleSessionContext 内统一施加）
+  const content = assembleSessionContext({ skillContent, profileSection, restSection });
 
   outputHook(content, tool);
 }

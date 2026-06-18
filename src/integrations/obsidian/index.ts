@@ -13,6 +13,7 @@ import { getConfig } from '../../config.js';
 import { createLogger } from '../../utils/logger.js';
 import { logTimelineEvent } from '../../db/log.js';
 import { archiveNodeWithVectors } from '../../db/node-lifecycle.js';
+import { expandTilde } from '../../utils/path.js';
 
 const log = createLogger('obsidian');
 import { walkMdFiles, shouldProcessFile, buildFileIndex } from './preprocessor.js';
@@ -42,7 +43,22 @@ import { decideWatcherChange } from '../shared/source-watch.js';
 const watchers = new Map<string, fs.FSWatcher[]>();
 const debounceTimerMaps = new Map<string, Map<string, NodeJS.Timeout>>();
 const stoppedSources = new Set<string>();
-/** 正在执行 runSync 的源 ID，用于防止 watcher 事件与首次全量同步并发 */
+/** 已启动（含正在首次同步）的源 ID。startObsidianSource 入口即注册——早于
+ * watchers.set（后者在首扫 await 完成后才发生）。stopObsidianIntegration 必须遍历
+ * 它而非 watchers.keys()：大 vault 首扫可达数十分钟，期间该源不在 watchers 里，
+ * 若按 watchers.keys() 停止则 SIGTERM 下 stop 直接 no-op，isStopped() 恒 false、
+ * 首扫继续跑，shutdown 超时 closeDb 后每个 digest 命中已关闭连接（孤儿+重复节点）。 */
+const activeSources = new Set<string>();
+/** 周期性 runSync 定时器（按 poll_interval）。watcher 只感知文件内容变更，
+ * 不处理删除（decideWatcherChange 对不存在的文件返回 'skip'），删除检测
+ * （removeStaleFiles + archiveOrphanNodes）只在 runSync 里发生。没有这个定时器时，
+ * 用户删笔记后对应节点会无限期保留在活跃 recall 里直到下次重启/手动 rescan，
+ * 且 note_sources.poll_interval 配置完全无效。runSync 的增量路径靠 mtime+hash
+ * 快速跳过未变文件，定时全扫成本可控；syncLock 保证不与 watcher/首扫并发。 */
+const pollTimers = new Map<string, NodeJS.Timeout>();
+/** 文件型源的删除检测扫描默认间隔（秒）。比 Apple Notes 的 60s 长，因为这里每次要
+ * 全目录 walk，而内容变更已由 watcher 实时覆盖，定时扫描只为兜底删除/漏检。 */
+const DEFAULT_FILE_POLL_INTERVAL = 300;
 const syncLock = new SourceSyncLock();
 const WATCHER_DEBOUNCE_MS = 1000;
 const WATCHER_LOCK_RETRY_MS = 1000;
@@ -54,15 +70,17 @@ export async function startObsidianSource(
   db: Database.Database,
   sourceId: string,
   sourcePath: string,
-  _pollInterval?: number,
+  pollInterval?: number,
 ): Promise<void> {
-  const vaultRoot = sourcePath.replace('~', os.homedir());
+  const vaultRoot = expandTilde(sourcePath);
   if (!fs.existsSync(vaultRoot)) {
     log.error(`Obsidian vault 目录不存在: ${vaultRoot} (source=${sourceId})`);
     return;
   }
 
   stoppedSources.delete(sourceId);
+  // 入口即登记，确保首扫期间也能被 stopObsidianIntegration 停掉（见 activeSources 注释）
+  activeSources.add(sourceId);
   log.info(`初始化 Obsidian 集成: ${vaultRoot} (source=${sourceId})`);
 
   // 1. 确保同步表存在
@@ -84,6 +102,19 @@ export async function startObsidianSource(
     const excludedDirs = getExcludedDirs(vaultRoot, vaultConfig);
     startFilteredWatcher(db, vaultRoot, sourceId, excludedDirs);
   }
+
+  // 4. 启动周期性同步（删除检测兜底）。首扫完成后再注册，避免与首扫并发。
+  if (!stoppedSources.has(sourceId)) {
+    const intervalMs = Math.max(30, pollInterval ?? DEFAULT_FILE_POLL_INTERVAL) * 1000;
+    const timer = setInterval(() => {
+      if (stoppedSources.has(sourceId)) return;
+      runSync(db, vaultRoot, sourceId).catch(err =>
+        log.error(`Obsidian 周期同步失败 (source=${sourceId}):`, (err as Error).message),
+      );
+    }, intervalMs);
+    pollTimers.set(sourceId, timer);
+    log.info(`Obsidian 周期同步已启动: 每 ${intervalMs / 1000}s 兜底扫描删除 (source=${sourceId})`);
+  }
 }
 
 /**
@@ -91,6 +122,7 @@ export async function startObsidianSource(
  */
 export function stopObsidianSource(sourceId: string): void {
   stoppedSources.add(sourceId);
+  activeSources.delete(sourceId);
   const ws = watchers.get(sourceId);
   if (ws) {
     for (const w of ws) {
@@ -105,6 +137,12 @@ export function stopObsidianSource(sourceId: string): void {
     }
     timers.clear();
     debounceTimerMaps.delete(sourceId);
+  }
+  // 停止周期性同步定时器
+  const pollTimer = pollTimers.get(sourceId);
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimers.delete(sourceId);
   }
 }
 
@@ -410,13 +448,13 @@ export async function triggerFullRescan(
   let vaultRoot: string;
 
   if (sourcePath) {
-    vaultRoot = sourcePath.replace('~', os.homedir());
+    vaultRoot = expandTilde(sourcePath);
   } else {
     // 兼容旧调用方式
     const config = getConfig();
     const obsidianConfig = config.sources?.obsidian;
     if (!obsidianConfig?.path) return;
-    vaultRoot = obsidianConfig.path.replace('~', os.homedir());
+    vaultRoot = expandTilde(obsidianConfig.path);
   }
 
   if (!fs.existsSync(vaultRoot)) return;
@@ -446,7 +484,9 @@ function archiveOrphanNodes(db: Database.Database, nodeIds: string[]): void {
  * 停止所有 Obsidian 集成
  */
 export function stopObsidianIntegration(): void {
-  for (const sourceId of watchers.keys()) {
+  // 遍历 activeSources（含正在首扫、尚未挂 watcher 的源）而非 watchers.keys()，
+  // 否则首扫中的源在 shutdown 时停不掉。复制成数组避免遍历中 delete 改动集合。
+  for (const sourceId of [...activeSources]) {
     stopObsidianSource(sourceId);
   }
 }

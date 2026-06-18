@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { motion } from 'framer-motion'
 import { brand, btnText } from '../../lib/tokens'
@@ -666,6 +666,15 @@ function ArchivedNodes() {
   const archivedNodes = data?.nodes ?? []
   const total = data?.total ?? 0
   const totalPages = Math.ceil(total / PAGE_SIZE)
+
+  // restore / re-archive 让 total 缩小后,若当前 page 已越界(如末页恢复最后一项后
+  // totalPages 变 1 但 page 仍是 1),clamp 回有效末页。否则 fetchArchived 取到空列表、
+  // Pagination 因 totalPages<=1 隐藏,用户被困在空页且误显示 "allRestored"。
+  useEffect(() => {
+    if (page > 0 && page > totalPages - 1) {
+      setPage(Math.max(0, totalPages - 1))
+    }
+  }, [page, totalPages])
 
   const handleRestore = async (node: ArchivedNodeItem) => {
     setOperating(node.id)

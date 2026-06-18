@@ -14,7 +14,7 @@ import { isLlmConfigured } from '../config.js';
 import { getParam, getPrompt, getLLMOptions, renderUserPrompt } from '../strategy/loader.js';
 import { logTimelineEvent } from '../db/log.js';
 import { supersedeNodeWithLinks } from '../db/node-lifecycle.js';
-import { parseLLMJson } from '../llm/json-parse.js';
+import { parseProfileResponse, sanitizeProfileContent } from './profile-parse.js';
 
 const log = createLogger('profile-synthesize');
 
@@ -108,7 +108,7 @@ function getPreferencesLinkedToCrystals(db: Database.Database): Set<string> {
   const rows = db.prepare(`
     SELECT DISTINCT n.id
     FROM nodes n
-    JOIN links l ON (l.from_id = n.id OR l.to_id = n.id)
+    JOIN links l ON (l.from_id = n.id OR l.to_id = n.id) AND l.deleted = 0
     JOIN nodes c ON (
       (l.from_id = c.id AND l.to_id = n.id)
       OR (l.to_id = c.id AND l.from_id = n.id)
@@ -142,114 +142,8 @@ function renderProfileFields(fieldsJson: string): string {
   }
 }
 
-/**
- * 解析 LLM 的画像响应。
- * LLM 经常在 profile_text 值中输出未转义的引号导致 JSON 无法 parse，
- * 因此采用分段提取策略：先尝试整体 JSON parse，失败后用正则分别提取
- * profile_text 和 structured 部分。
- */
-function parseProfileResponse(response: string): {
-  profileText: string;
-  structured: Record<string, unknown>;
-} {
-  // 快路径:先用 parseLLMJson 做健壮解析(括号深度计数,能正确定位
-  // 配对的 { },比贪婪正则 /\{[\s\S]*\}/ 更可靠——贪婪正则会在
-  // "结尾有多余文本或多个对象"时抓到越界 span 导致 JSON.parse 失败)。
-  const fastParsed = parseLLMJson<{ profile_text?: string; structured?: Record<string, unknown> }>(response);
-  if (fastParsed) {
-    return {
-      profileText: fastParsed.profile_text ?? response.trim(),
-      structured: fastParsed.structured ?? {},
-    };
-  }
-
-  // 慢路径前置:fast path 失败说明 profile_text 里有未转义引号之类的脏内容,
-  // 仍然需要拿到一个"最宽的 JSON 样本"做分段提取。复用原来的 markdown
-  // code fence / 贪婪正则作为候选样本,不把 null 当致命错误。
-  const fenceMatch = response.match(/```json\s*\n([\s\S]*?)\n```/);
-  const jsonStr = fenceMatch ? fenceMatch[1] : response.match(/\{[\s\S]*\}/)?.[0];
-
-  if (!jsonStr) {
-    return { profileText: response.trim(), structured: {} };
-  }
-
-  // 慢路径：profile_text 中包含未转义引号导致整体 JSON 无法 parse
-  // 策略：用 "structured" key 的位置把 JSON 切成两段
-  let profileText = response.trim();
-  let structured: Record<string, unknown> = {};
-
-  try {
-    // 定位 "structured" 的起始位置（从后往前找，因为 profile_text 里可能包含该词）
-    const structuredKeyIdx = jsonStr.lastIndexOf('"structured"');
-    if (structuredKeyIdx > 0) {
-      // 从 "structured": 后面提取它的值对象
-      const afterKey = jsonStr.slice(structuredKeyIdx + '"structured"'.length);
-      const colonIdx = afterKey.indexOf(':');
-      if (colonIdx >= 0) {
-        const valueStart = afterKey.slice(colonIdx + 1);
-        // 找到这个对象的开头 {
-        const objStart = valueStart.indexOf('{');
-        if (objStart >= 0) {
-          // 用括号配对找到完整的 {} 块
-          let depth = 0;
-          let end = -1;
-          for (let i = objStart; i < valueStart.length; i++) {
-            if (valueStart[i] === '{') depth++;
-            else if (valueStart[i] === '}') {
-              depth--;
-              if (depth === 0) { end = i; break; }
-            }
-          }
-          if (end > 0) {
-            const structuredJson = valueStart.slice(objStart, end + 1);
-            try {
-              structured = JSON.parse(structuredJson);
-            } catch {
-              log.warn('structured 块也无法 parse，跳过');
-            }
-          }
-        }
-      }
-    }
-
-    // 提取 profile_text：找到 "profile_text" key 后的值
-    const ptKeyIdx = jsonStr.indexOf('"profile_text"');
-    if (ptKeyIdx >= 0) {
-      const afterPtKey = jsonStr.slice(ptKeyIdx + '"profile_text"'.length);
-      const ptColonIdx = afterPtKey.indexOf(':');
-      if (ptColonIdx >= 0) {
-        const afterColon = afterPtKey.slice(ptColonIdx + 1).trimStart();
-        if (afterColon.startsWith('"')) {
-          // 找到 profile_text 值的结尾——从 "structured" key 的位置往回找
-          const endSearch = structuredKeyIdx > 0
-            ? jsonStr.slice(0, structuredKeyIdx)
-            : jsonStr;
-          // profile_text 值在第一个 " 开始，到 "structured" 前最后一个 " 结束
-          const ptValueStart = ptKeyIdx + '"profile_text"'.length + ptColonIdx + 1;
-          const ptContent = endSearch.slice(ptValueStart).trimStart();
-          // 去掉开头的引号和末尾的逗号+引号
-          const cleaned = ptContent.replace(/^"/, '').replace(/"\s*,?\s*$/, '');
-          // 将 JSON 转义还原
-          profileText = cleaned
-            .replace(/\\n/g, '\n')
-            .replace(/\\"/g, '"')
-            .replace(/\\\\/g, '\\')
-            .trim();
-        }
-      }
-    }
-  } catch (err) {
-    log.warn(`分段提取画像失败: ${(err as Error).message}`);
-  }
-
-  if (Object.keys(structured).length > 0) {
-    log.info('JSON 整体 parse 失败，但分段提取 structured 成功');
-  } else {
-    log.warn('JSON parse 失败且无法提取 structured，画像仅保留 profile_text');
-  }
-
-  return { profileText, structured };
-}
+// parseProfileResponse / sanitizeProfileContent 已迁出到 ./profile-parse.ts
+// （读取侧 prepare.ts 与云端经 @core 复用同一份提取逻辑，避免本地/云端解析漂移）。
 
 export async function runProfileSynthesize(db: Database.Database): Promise<void> {
   if (!isLlmConfigured()) {
@@ -261,9 +155,15 @@ export async function runProfileSynthesize(db: Database.Database): Promise<void>
   const inputMaxTokens = getParam(STRATEGY_NAME, 'input_max_tokens', 15000);
 
   // 1. 上一版画像
+  //    F3 基线净化:若上一版节点是历史污染的 raw JSON,直接喂回 prompt 会诱导 LLM
+  //    继续输出脏格式(自我延续,见 design §2.3)。先 sanitize——可提取则用干净文本做基线,
+  //    不可提取则视为无上一版(不喂脏样本)。supersede 目标仍用 currentProfile.id,不受影响。
   const currentProfile = findCurrentProfile(db);
-  const previousProfileSection = currentProfile
-    ? `## 上一版画像（请在此基础上增量更新）\n\n${currentProfile.content}\n\n---`
+  const previousProfileText = currentProfile
+    ? sanitizeProfileContent(currentProfile.content)?.profileText ?? null
+    : null;
+  const previousProfileSection = previousProfileText
+    ? `## 上一版画像（请在此基础上增量更新）\n\n${previousProfileText}\n\n---`
     : '';
 
   // 2. Crystal 节点
@@ -285,7 +185,7 @@ export async function runProfileSynthesize(db: Database.Database): Promise<void>
   // 4. 核心 Tags
   const tags = db.prepare(`
     SELECT n.title, COUNT(l.id) as link_count FROM nodes n
-    LEFT JOIN links l ON (l.from_id = n.id OR l.to_id = n.id)
+    LEFT JOIN links l ON (l.from_id = n.id OR l.to_id = n.id) AND l.deleted = 0
     WHERE n.is_tag = 1 AND n.is_superseded = 0 AND n.archived = 0 AND n.heat > 0.01
     GROUP BY n.id
     ORDER BY link_count DESC
@@ -356,7 +256,15 @@ export async function runProfileSynthesize(db: Database.Database): Promise<void>
   }
 
   // 9. 解析输出
-  const { profileText, structured } = parseProfileResponse(response);
+  //    F2:解析彻底失败(慢路径也救不回、结果仍是 raw JSON blob)→ 放弃本轮,
+  //    保留上一版画像。绝不把脏全文存库(那正是 2026-06 事故的危害形态,且会
+  //    作为基线喂回下一轮自我延续)。错误的画像比过时的画像危害大。
+  const parsed = parseProfileResponse(response);
+  if (!parsed) {
+    log.warn('画像解析彻底失败,放弃本轮更新,保留上一版画像');
+    return;
+  }
+  const { profileText, structured } = parsed;
 
   // 10. 组装存储内容（profile_text + structured 合并存入 content）
   const contentParts = [profileText];

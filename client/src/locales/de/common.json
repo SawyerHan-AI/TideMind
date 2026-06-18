@@ -26,6 +26,8 @@
     "memories": "Erinnerungen"
   },
   "total": "{{count}} insgesamt",
+  "close": "Schließen",
+  "loading": "Wird geladen…",
   "errors": {
     "somethingWentWrong": "Etwas ist schiefgelaufen",
     "unexpectedError": "Ein unerwarteter Fehler ist aufgetreten.",
@@ -53,5 +55,10 @@
     "paused": "KI pausiert ({{min}} Min. bis erneuter Versuch)",
     "recentFailures": "KI hatte kürzlich Fehler",
     "idle": "KI seit Längerem inaktiv"
+  },
+  "cloud": {
+    "syncing": "Wird synchronisiert…",
+    "connected": "Verbunden",
+    "offline": "Offline"
   }
 }

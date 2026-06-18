@@ -362,6 +362,15 @@ export class InitSessionManager {
     next: SessionStatus,
     patch: Partial<Pick<InitSessionInternal, 'error' | 'abortReason' | 'report' | 'endedAt'>> = {},
   ): void {
+    // 终态保护:done/error/aborted 是不可逆终态,落定后忽略后续 transition。
+    // 防的是 abort() 10s 超时强制 aborted(把 controller/promise 置 null)后,迟到
+    // settle 的业务 runner 在 start():217 处发现 controller 已是 null → 误判未 abort
+    // → 把已对外宣告 aborted 的会话翻成 done/error 并重新 emit 过期快照(若期间已对
+    // 同 sourceId start 新会话,旧 runner 的 emit 还会污染新会话的 UI 订阅)。
+    // start() 重启走的是全新 session 对象,不经过这里的旧对象,故终态守卫不挡正常重启。
+    if (session.status === 'done' || session.status === 'error' || session.status === 'aborted') {
+      return;
+    }
     session.status = next;
     if (patch.error !== undefined) session.error = patch.error;
     if (patch.abortReason !== undefined) session.abortReason = patch.abortReason;

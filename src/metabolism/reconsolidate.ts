@@ -418,7 +418,7 @@ async function deepReconsolidate(
 
   const contentWasUpdated = !!(result.needs_update && result.updated_content);
   if (contentWasUpdated) {
-    updateNode(db, node.id, { content: result.updated_content!, refinement: 0 }, 'deep reconsolidation');
+    updateNode(db, node.id, { content: result.updated_content!, refinement: 0 }, 'deep reconsolidation', { skipEditSeqBump: true });
   }
 
   if (result.conflict_detected) {

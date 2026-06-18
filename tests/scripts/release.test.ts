@@ -1,9 +1,9 @@
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // The release script is intentionally plain Node ESM so it can run without a build step.
 // @ts-expect-error no declaration file for the local .mjs script
-import { commandToString, findReleaseRunId, parseArgs, previousPatch } from '../../scripts/release.mjs';
+import { commandToString, findReleaseRunId, parseArgs, previousPatch, verifyUpdateApi } from '../../scripts/release.mjs';
 
 describe('release script helpers', () => {
   it('derives the previous patch version when possible', () => {
@@ -74,5 +74,120 @@ describe('release script helpers', () => {
     expect(findReleaseRunId(runs, '0.2.52')).toBe('202');
     expect(findReleaseRunId(runs, 'v0.2.52')).toBe('202');
     expect(findReleaseRunId(runs, '0.2.51')).toBeNull();
+  });
+
+  it('ignores stale same-tag runs created before this push (--force-tag re-release)', () => {
+    const pushAt = Date.parse('2026-06-10T12:00:00Z');
+    const runs = [
+      // Old completed run from the previous release of the same tag — must be skipped.
+      { databaseId: 900, headBranch: 'v0.2.84', status: 'completed', createdAt: '2026-06-09T08:00:00Z' },
+      // The freshly-triggered run for this push — must be selected.
+      { databaseId: 901, headBranch: 'v0.2.84', status: 'queued', createdAt: '2026-06-10T12:01:30Z' },
+    ];
+
+    // Without the filter (default minCreatedAtMs=0) the stale old run would win — old behaviour.
+    expect(findReleaseRunId(runs, '0.2.84')).toBe('900');
+    // With the push timestamp, only the run created after the push is matched.
+    expect(findReleaseRunId(runs, '0.2.84', pushAt)).toBe('901');
+  });
+
+  it('returns null when only a stale same-tag run exists and a push timestamp is given', () => {
+    const pushAt = Date.parse('2026-06-10T12:00:00Z');
+    const runs = [
+      { databaseId: 900, headBranch: 'v0.2.84', status: 'completed', createdAt: '2026-06-09T08:00:00Z' },
+    ];
+    // The old run is filtered out so getReleaseRunId keeps polling for the real new run
+    // instead of immediately watching the stale completed one.
+    expect(findReleaseRunId(runs, '0.2.84', pushAt)).toBeNull();
+  });
+
+  it('matches the existing completed run when minCreatedAtMs=0 (already-at-head crash recovery)', () => {
+    // already-at-head 收尾重跑:tag 已指向 HEAD、remote ref 已存在,push 是 no-op 不触发新
+    // run,只有当初首次 push 创建的已完成 run。main() 此时传 minCreatedAtMs=0,必须仍能命中
+    // 该旧 run 继续 sign/publish,否则 getReleaseRunId 永远超时。
+    const runs = [
+      { databaseId: 900, headBranch: 'v0.2.84', status: 'completed', createdAt: '2026-06-09T08:00:00Z' },
+    ];
+    expect(findReleaseRunId(runs, '0.2.84', 0)).toBe('900');
+    expect(findReleaseRunId(runs, '0.2.84')).toBe('900');
+  });
+
+  describe('verifyUpdateApi', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    function stubUpdateApi(responses: Record<string, unknown>) {
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+        const parsed = new URL(url);
+        const arch = parsed.searchParams.get('arch') ?? '';
+        const version = parsed.searchParams.get('version') ?? '';
+        // key: arch + ':' + (offered-update | current)
+        const key = `${arch}:${version}`;
+        const body = responses[key];
+        if (body === undefined) throw new Error(`unexpected fetch ${url}`);
+        return { ok: true, status: 200, json: async () => body } as Response;
+      }));
+    }
+
+    const okBody = (arch: string) => ({
+      version: '0.2.84',
+      url: 'https://github.com/SawyerHan-AI/TideMind/releases/download/v0.2.84/Tide.Mind-0.2.84-' + arch + '.dmg',
+      signatureUrl: `https://github.com/SawyerHan-AI/TideMind/releases/download/v0.2.84/update-manifest-darwin-${arch}.sig`,
+    });
+    const noUpdate = { version: '0.2.84', url: null, signatureUrl: null };
+
+    it('passes when both arches offer the update with a valid signatureUrl', async () => {
+      stubUpdateApi({
+        'arm64:0.2.83': okBody('arm64'),
+        'arm64:0.2.84': noUpdate,
+        'x64:0.2.83': okBody('x64'),
+        'x64:0.2.84': noUpdate,
+      });
+      await expect(verifyUpdateApi('0.2.84', '0.2.83')).resolves.toBeUndefined();
+      // arm64 prev + arm64 current + x64 prev + x64 current = 4 requests (x64 not skipped)
+      expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(4);
+    });
+
+    it('throws when signatureUrl is missing on arm64 (sign-before-publish / cache window)', async () => {
+      stubUpdateApi({
+        'arm64:0.2.83': { ...okBody('arm64'), signatureUrl: null },
+        'arm64:0.2.84': noUpdate,
+        'x64:0.2.83': okBody('x64'),
+        'x64:0.2.84': noUpdate,
+      });
+      await expect(verifyUpdateApi('0.2.84', '0.2.83')).rejects.toThrow(/no signatureUrl/);
+    });
+
+    it('throws when x64 signatureUrl is missing (arm64-only verify would miss it)', async () => {
+      stubUpdateApi({
+        'arm64:0.2.83': okBody('arm64'),
+        'arm64:0.2.84': noUpdate,
+        'x64:0.2.83': { ...okBody('x64'), signatureUrl: null },
+        'x64:0.2.84': noUpdate,
+      });
+      await expect(verifyUpdateApi('0.2.84', '0.2.83')).rejects.toThrow(/no signatureUrl/);
+    });
+
+    it('throws when signatureUrl points at the wrong asset name', async () => {
+      stubUpdateApi({
+        'arm64:0.2.83': {
+          ...okBody('arm64'),
+          signatureUrl: 'https://github.com/SawyerHan-AI/TideMind/releases/download/v0.2.84/wrong-name.sig',
+        },
+        'arm64:0.2.84': noUpdate,
+      });
+      await expect(verifyUpdateApi('0.2.84', '0.2.83')).rejects.toThrow(/does not point at update-manifest-darwin-arm64\.sig/);
+    });
+
+    it('skips the signatureUrl assertion when allowUnsigned is set', async () => {
+      stubUpdateApi({
+        'arm64:0.2.83': { ...okBody('arm64'), signatureUrl: null },
+        'arm64:0.2.84': noUpdate,
+        'x64:0.2.83': { ...okBody('x64'), signatureUrl: null },
+        'x64:0.2.84': noUpdate,
+      });
+      await expect(verifyUpdateApi('0.2.84', '0.2.83', true)).resolves.toBeUndefined();
+    });
   });
 });

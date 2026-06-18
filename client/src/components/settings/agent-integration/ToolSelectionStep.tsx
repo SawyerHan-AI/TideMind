@@ -13,6 +13,7 @@ interface ToolSelectionStepProps {
   effectiveToolType: string
   usePlugin: boolean
   creating: boolean
+  createError: string
   onCreateAndNext: () => void
 }
 
@@ -26,6 +27,7 @@ export function ToolSelectionStep({
   effectiveToolType,
   usePlugin,
   creating,
+  createError,
   onCreateAndNext,
 }: ToolSelectionStepProps) {
   const { t } = useTranslation('settings')
@@ -97,6 +99,12 @@ export function ToolSelectionStep({
           {t('agent.wizard.agentNameHint')}
         </p>
       </div>
+
+      {createError && (
+        // 直接渲染 createError:AgentWizard 的 catch 已统一包成本地化的"创建失败: <message>"
+        //(无 message 时只用本地化 createFailed),这里再加前缀会双重本地化。
+        <p className="text-[10px] text-red-400">{createError}</p>
+      )}
 
       <div className="flex justify-end">
         <button

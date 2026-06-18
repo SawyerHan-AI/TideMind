@@ -28,6 +28,7 @@ export function EmbeddedStrategyPanel({ name, type = 'system', locked }: { name:
   const [originalContent, setOriginalContent] = useState('')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState(false)
   const [showReason, setShowReason] = useState(false)
   const [reason, setReason] = useState('')
   const [versions, setVersions] = useState<StrategyVersion[]>([])
@@ -63,6 +64,7 @@ export function EmbeddedStrategyPanel({ name, type = 'system', locked }: { name:
   const handleSave = async () => {
     if (showReason) {
       setSaving(true)
+      setSaveError(false)
       try {
         if (isUser) {
           await api.userPromptUpdate(name, content, reason || undefined)
@@ -75,6 +77,8 @@ export function EmbeddedStrategyPanel({ name, type = 'system', locked }: { name:
         setOriginalContent(content)
         loadVersions()
         setTimeout(() => setSaved(false), 2000)
+      } catch {
+        setSaveError(true)
       } finally {
         setSaving(false)
       }
@@ -168,6 +172,9 @@ export function EmbeddedStrategyPanel({ name, type = 'system', locked }: { name:
                 </div>
               ) : <div />}
               <div className="flex items-center gap-2">
+                {saveError && !selectedVersion && (
+                  <span className="text-[11px] text-red-400">{t('strategy.saveFailed')}</span>
+                )}
                 {selectedVersion && (
                   <button onClick={() => handleRollback(selectedVersion.version)}
                     className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 rounded-lg transition-colors">

@@ -81,7 +81,11 @@ export function expandFromNode(
         visited.add(targetId);
         const target = getNode(db, targetId);
 
-        if (target && target.heat > EXPANSION_HEAT_THRESHOLD) {
+        // archived 必须显式过滤:archive 路径设 heat = 0.02(node-lifecycle.ts),
+        // 正好 > 0.01 阈值,且归档不删 links——只看 heat 时已归档节点会经图扩展
+        // 回流进 recall 并被读时加热复活。is_superseded 同理显式挡住(其 heat=0.01
+        // 恰好不过阈值只是巧合)。与 fts / 向量召回路径的可见性语义对齐。
+        if (target && target.heat > EXPANSION_HEAT_THRESHOLD && target.archived === 0 && target.is_superseded === 0) {
           result.push(target);
           nextFrontier.push(targetId);
 

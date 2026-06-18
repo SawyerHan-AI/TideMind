@@ -153,7 +153,7 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
 
       if (existingContent) {
         // 直接升级现有内容节点为 tag 节点
-        updateNode(db, existingContent.id, { is_tag: 1, title: tag });
+        updateNode(db, existingContent.id, { is_tag: 1, title: tag }, undefined, { skipEditSeqBump: true });
         tagNodeId = existingContent.id;
         promoted++;
         log.info(`复用已有内容节点 ${existingContent.id} 作为标签「${tag}」`);
@@ -186,38 +186,41 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
         tagNodeId = tagNode.id;
         promoted++;
       }
+    }
 
-      // LLM 生成定义性描述（仅对内容为空的新建 tag 节点，复用的节点已有内容）
-      const tagContent = getNode(db, tagNodeId)?.content ?? '';
-      if (isLlmConfigured() && tagContent.trim().length === 0) {
-        try {
-          const contextNodes = nodeIds
-            .map(id => nodeCache.get(id))
-            .filter(Boolean)
-            .slice(0, 10)
-            .map(n => n!.content.slice(0, 300));
+    // LLM 生成定义性描述 — 对任何 content 为空的 tag 节点尝试,不限新建:
+    // 新建后定义生成失败(LLMServiceError 中断 / 返回空 / 当时未配置 LLM)时
+    // 节点已落库,若只在新建分支里补定义,下次运行命中 existingTagNodes 直接
+    // 跳过,content 将永久为空。复用的内容节点 content 非空,自然跳过。
+    const tagContent = getNode(db, tagNodeId)?.content ?? '';
+    if (isLlmConfigured() && tagContent.trim().length === 0) {
+      try {
+        const contextNodes = nodeIds
+          .map(id => nodeCache.get(id))
+          .filter(Boolean)
+          .slice(0, 10)
+          .map(n => n!.content.slice(0, 300));
 
-          const fallbackPrompt = `标签: ${tag}\n\n引用该标签的记忆:\n${contextNodes.map((c, i) => `${i + 1}. ${c}`).join('\n')}`;
-          const definition = await callLLM({
-            prompt: renderUserPrompt('tag-define', {
-              tag,
-              context_nodes: contextNodes.map((c, i) => `${i + 1}. ${c}`).join('\n'),
-            }, fallbackPrompt),
-            system: getPrompt('tag-define', TAG_DEFINE_SYSTEM),
-            ...getLLMOptions('tag-define'),
-            maxTokens: 200,
-            operationName: 'tag-define',
-          });
+        const fallbackPrompt = `标签: ${tag}\n\n引用该标签的记忆:\n${contextNodes.map((c, i) => `${i + 1}. ${c}`).join('\n')}`;
+        const definition = await callLLM({
+          prompt: renderUserPrompt('tag-define', {
+            tag,
+            context_nodes: contextNodes.map((c, i) => `${i + 1}. ${c}`).join('\n'),
+          }, fallbackPrompt),
+          system: getPrompt('tag-define', TAG_DEFINE_SYSTEM),
+          ...getLLMOptions('tag-define'),
+          maxTokens: 200,
+          operationName: 'tag-define',
+        });
 
-          if (definition && definition.trim()) {
-            updateNode(db, tagNodeId, { content: definition.trim() });
-          }
-        } catch (err) {
-          // LLM 全挂时必须抛 LLMServiceError 让 scheduler 熔断,否则每条 tag 都
-          // 撞一次墙(几十条 tag 就是几十次重试)继续烧 token。
-          if (err instanceof LLMServiceError) throw err;
-          log.warn(`标签 "${tag}" 定义生成失败: ${(err as Error).message}`);
+        if (definition && definition.trim()) {
+          updateNode(db, tagNodeId, { content: definition.trim() }, undefined, { skipEditSeqBump: true });
         }
+      } catch (err) {
+        // LLM 全挂时必须抛 LLMServiceError 让 scheduler 熔断,否则每条 tag 都
+        // 撞一次墙(几十条 tag 就是几十次重试)继续烧 token。
+        if (err instanceof LLMServiceError) throw err;
+        log.warn(`标签 "${tag}" 定义生成失败: ${(err as Error).message}`);
       }
     }
 

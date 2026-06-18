@@ -99,6 +99,8 @@ export function parseCanvas(filePath: string): CanvasParseResult | null {
     fileRefs: [],
     linkNodes: [],
     edges: [],
+    // 透传 parse 时刻读到的原始内容,供调用方算 content_hash(避免 digest 后重读盘)。
+    rawContent: raw,
   };
 
   // 处理各类节点

@@ -65,7 +65,8 @@
       "learning2": "Оптимизировано ИИ",
       "system": "Обновление",
       "file_edit": "Редактирование файла"
-    }
+    },
+    "saveFailed": "Не удалось сохранить. Попробуйте ещё раз."
   },
   "model": {
     "subtabs": {
@@ -118,6 +119,7 @@
       "connectionNameTip": "Пользовательское имя для различения нескольких подключений одного типа.",
       "connectionNamePlaceholder": "Например: Компания {{provider}}",
       "create": "Создать",
+      "createFailed": "Не удалось создать подключение. Попробуйте ещё раз.",
       "colName": "Название",
       "colType": "Тип",
       "colStatus": "Статус",
@@ -149,7 +151,9 @@
       "reembedProgress": "Пересчет embedding... ({{done}}/{{total}})",
       "reembedNeeded": "Векторный индекс необходимо пересчитать (запускается после обновления или смены модели). Во время пересчета поиск автоматически переключается на полнотекстовый.",
       "startReembed": "Начать пересчет",
-      "saved": "Сохранено"
+      "saved": "Сохранено",
+      "saveFailed": "Не удалось сохранить выбор модели. Попробуйте ещё раз.",
+      "retry": "Повторить"
     },
     "serviceStatus": {
       "title": "Состояние службы ИИ",
@@ -389,7 +393,8 @@
       "notionScopeHint": "TideMind будет синхронизировать все страницы, доступные интеграции. Чтобы изменить область, измените настройки доступа в Notion.",
       "notionConnected": "Токен проверен, подключение успешно",
       "notionFailed": "Токен недействителен или ошибка подключения"
-    }
+    },
+    "createFailed": "Не удалось создать источник заметок. Попробуйте ещё раз."
   },
   "usage": {
     "totalTokens": "Всего токенов",
@@ -462,6 +467,7 @@
       "file_edit": "Файл"
     },
     "saved": "Сохранено",
+    "saveFailed": "Не удалось сохранить. Попробуйте ещё раз.",
     "confirmSave": "Подтвердить сохранение",
     "save": "Сохранить",
     "userPromptPlaceholder": "Введите шаблон User Prompt, используйте {{имяПеремен}} как заполнители для динамических параметров",
@@ -873,6 +879,7 @@
       "generatingPlugin": "Generating plugin...",
       "pluginGenerateFailed": "Plugin generation failed",
       "generateFailed": "Generation failed",
+      "createFailed": "Не удалось создать",
       "completed": "Completed",
       "manualStepsTitle": "Manual steps required:",
       "prevStep": "Previous",
@@ -994,12 +1001,16 @@
     "subscription": "Подписка",
     "currentPlan": "Текущий план",
     "upgradeHint": "Перейдите на Pro для неограниченных облачных воспоминаний, 5 устройств, облачного метаболизма 24/7 и другого.",
+    "upgradeAnnual": "Перейти на Pro — $49/год",
+    "upgradeMonthly": "или $5/месяц",
     "viewPricing": "Планы и цены",
     "manageSubscription": "Управление подпиской",
     "billing": "Оплата",
     "noBilling": "Нет истории оплат для бесплатного плана.",
     "billingComingSoon": "История оплат скоро появится.",
     "logout": "Выйти",
+    "logoutTitle": "Выйти?",
+    "logoutDesc": "Вы выйдете из TideMind Cloud. Локальные данные не затрагиваются.",
     "comingSoon": "Скоро",
     "subscriptionComingSoon": "Планы Pro и Pro+ скоро будут доступны. Следите за обновлениями: облачная синхронизация, метаболизм 24/7 и многое другое.",
     "registerButton": "Создать аккаунт",

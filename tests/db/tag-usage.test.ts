@@ -152,6 +152,44 @@ describe('tag_usage trigger - DELETE', () => {
   });
 });
 
+describe('tag_usage trigger - 重复 tag 去重(DISTINCT 加法,防计数漂移)', () => {
+  it('节点 tags 含重复值时只计 +1(加减对称)', () => {
+    createNode(db, { type: 'fact', content: 'A', tags: ['dup', 'dup'] });
+    // 加法 DISTINCT → dup 只 +1,而非 +2
+    expect(getTagUsage(db).get('dup')).toBe(1);
+  });
+
+  it('含重复 tag 的节点反复 archived 翻转不让计数向上漂移', () => {
+    const a = createNode(db, { type: 'fact', content: 'A', tags: ['dup', 'dup'] });
+    expect(getTagUsage(db).get('dup')).toBe(1);
+
+    // archived 翻转多轮:每轮减 1(distinct) + 加 1(distinct),净 0
+    for (let i = 0; i < 5; i++) {
+      updateNode(db, a.id, { archived: 1 });
+      expect(getTagUsage(db).get('dup') ?? 0).toBe(0);
+      updateNode(db, a.id, { archived: 0 });
+      expect(getTagUsage(db).get('dup')).toBe(1);
+    }
+  });
+
+  it('硬删除含重复 tag 的节点后计数归零(减法不会减成负/残留)', () => {
+    const a = createNode(db, { type: 'fact', content: 'A', tags: ['dup', 'dup'] });
+    createNode(db, { type: 'fact', content: 'B', tags: ['dup'] });
+    expect(getTagUsage(db).get('dup')).toBe(2);
+
+    db.prepare('DELETE FROM nodes WHERE id = ?').run(a.id);
+    expect(getTagUsage(db).get('dup')).toBe(1);
+  });
+
+  it('backfillTagUsage 按节点数计(COUNT DISTINCT node),重复 tag 不翻倍', () => {
+    createNode(db, { type: 'fact', content: 'A', tags: ['dup', 'dup'] });
+    createNode(db, { type: 'fact', content: 'B', tags: ['dup'] });
+    backfillTagUsage(db);
+    // 2 个含 dup 的 active 节点 → 2,而非 json_each 出现次数 3
+    expect(getTagUsage(db).get('dup')).toBe(2);
+  });
+});
+
 describe('backfillTagUsage', () => {
   it('与全表 active 节点聚合结果一致', () => {
     createNode(db, { type: 'fact', content: 'A', tags: ['p', 'q'] });
@@ -175,5 +213,19 @@ describe('backfillTagUsage', () => {
     backfillTagUsage(db);
     backfillTagUsage(db);
     expect(getTagUsage(db).get('z')).toBe(1);
+  });
+
+  it('历史损坏 tags(非法 JSON)不抛错(迁移 v21 场景:抛错会让 daemon 永远起不来)', () => {
+    createNode(db, { type: 'fact', content: 'A', tags: ['ok'] });
+    const brokenEmpty = createNode(db, { type: 'fact', content: 'B' });
+    const brokenJson = createNode(db, { type: 'fact', content: 'C' });
+    // 绕过业务层模拟历史损坏数据/手工 SQL(UPDATE trigger 自身有 json_valid 守卫,不会抛)
+    db.prepare('UPDATE nodes SET tags = ? WHERE id = ?').run('', brokenEmpty.id);
+    db.prepare('UPDATE nodes SET tags = ? WHERE id = ?').run('{broken', brokenJson.id);
+
+    expect(() => backfillTagUsage(db)).not.toThrow();
+    const usage = getTagUsage(db);
+    expect(usage.get('ok')).toBe(1);
+    expect(usage.size).toBe(1);
   });
 });

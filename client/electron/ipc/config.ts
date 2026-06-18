@@ -18,6 +18,7 @@ import {
   parseStringRecord,
 } from './_schemas.js'
 import { getShimPath, getMcpServerScriptPath } from '../runtime/runtime-paths.js'
+import { mainT } from '../i18n.js'
 import { clearClientCache } from '@server/llm/client.js'
 import { schedulePush as schedulePushUserStrategy } from '../cloud/strategy-push.js'
 
@@ -47,16 +48,23 @@ export function registerConfigHandlers(dataDir: string): void {
     const parsedPatch = parseConfigPatch(patch)
     if (!parsedPatch.ok) return parsedPatch.error
 
+    // parse 失败时**绝不**降级为 {}:那会让 deepMerge({}, patch) 把整份 config.toml
+    // 重写成只含本次 patch 的内容,data_dir / cloud / API key / channel 等全部静默丢失
+    // (自我强化故障:第一次非原子写截断 → 第二次写抹掉全部)。损坏时中止本次更新,
+    // 向 renderer 返回结构化错误,保留原文件让用户/支持排查。
     let current: Record<string, unknown> = {}
     if (fs.existsSync(configPath)) {
       try {
         current = parseToml(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>
-      } catch {}
+      } catch (err) {
+        log.error(`config:update 中止——config.toml 解析失败,拒绝覆盖以免丢失其余配置: ${(err as Error).message}`)
+        return { success: false, error: 'config_parse_failed', details: [(err as Error).message] }
+      }
     }
 
     // deep merge
     const merged = deepMerge(current, parsedPatch.data)
-    fs.writeFileSync(configPath, stringifyToml(merged as any))
+    writeConfigAtomic(configPath, stringifyToml(merged as any))
     reloadConfig()
 
     // 清掉 LLM client 缓存:用户改 API key / Vertex project_id / 模型选择后,
@@ -76,6 +84,10 @@ export function registerConfigHandlers(dataDir: string): void {
         JSON.stringify({ section: sections.join('/'), changed_keys: Object.keys(parsedPatch.data) }),
       )
     } catch {}
+
+    // 显式返回成功:契约统一为 {success, error?},让 renderer 能区分写入成功 /
+    // 校验失败 / config.toml 损坏(后两者已分别返回 {success:false,...})。
+    return { success: true }
   })
 
   // --- 策略文件 ---
@@ -399,7 +411,7 @@ export function registerConfigHandlers(dataDir: string): void {
   ipcMain.handle('config:selectFolder', async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openDirectory'],
-      title: '选择笔记文件夹',
+      title: mainT('dialog.pickNoteFolder'),
     })
     if (result.canceled || result.filePaths.length === 0) return null
     return result.filePaths[0]
@@ -524,6 +536,26 @@ function parseParamsFromStrategy(content: string): Record<string, number | strin
     }
   }
   return params
+}
+
+/**
+ * 原子写 config.toml(与 updater/channel.ts 2026-05-20 Audit B-3 同模式)。
+ *
+ * 裸 writeFileSync 是 truncate + write 两步,中途崩溃/断电留下半截 TOML;外部并发
+ * 读者(外部 Agent 拉起的 mcp-server.cjs / hook 脚本 / daemon)在窗口期会读到 0 字节
+ * → parseToml('') → {} → 全字段回退默认。tmp file + POSIX rename(原子)消除该窗口。
+ * .tmp 用 pid + 时间戳避免多个 Electron 实例打架;dataDir 与 tmp 同卷,rename 不跨设备。
+ */
+function writeConfigAtomic(configPath: string, content: string): void {
+  fs.mkdirSync(path.dirname(configPath), { recursive: true })
+  const tmpPath = `${configPath}.${process.pid}.${Date.now()}.tmp`
+  try {
+    fs.writeFileSync(tmpPath, content, 'utf-8')
+    fs.renameSync(tmpPath, configPath)
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath) } catch { /* ignore */ }
+    throw err
+  }
 }
 
 // Prototype-pollution 守卫:与 src/config.ts:113 的 daemon 端 deepMerge 对齐。

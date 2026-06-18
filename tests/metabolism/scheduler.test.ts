@@ -97,8 +97,8 @@ describe('tryClaimTask', () => {
 
 describe('rollbackClaim', () => {
   it('首次运行失败时删除记录', () => {
-    tryClaimTask(db, 'test-task', 60);
-    rollbackClaim(db, 'test-task', null);
+    const claim = tryClaimTask(db, 'test-task', 60);
+    rollbackClaim(db, 'test-task', null, claim.claimedValue);
 
     const row = db.prepare("SELECT value FROM metadata WHERE key = 'last_task_test-task'").get();
     expect(row).toBeUndefined();
@@ -107,9 +107,9 @@ describe('rollbackClaim', () => {
   it('非首次运行失败时恢复原时间戳', () => {
     const oldTime = (Date.now() - 7200000).toString();
     db.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)").run('last_task_test-task', oldTime);
-    tryClaimTask(db, 'test-task', 60);
+    const claim = tryClaimTask(db, 'test-task', 60);
 
-    rollbackClaim(db, 'test-task', oldTime);
+    rollbackClaim(db, 'test-task', oldTime, claim.claimedValue);
 
     const row = db.prepare("SELECT value FROM metadata WHERE key = 'last_task_test-task'").get() as { value: string };
     expect(row.value).toBe(oldTime);
@@ -117,10 +117,41 @@ describe('rollbackClaim', () => {
 
   it('回滚后可重新声明', () => {
     const claim = tryClaimTask(db, 'test-task', 60);
-    rollbackClaim(db, 'test-task', claim.priorValue);
+    rollbackClaim(db, 'test-task', claim.priorValue, claim.claimedValue);
 
     const reClaim = tryClaimTask(db, 'test-task', 60);
     expect(reClaim.claimed).toBe(true);
+  });
+
+  // 回归:回滚是 CAS 的 —— 慢任务执行超过 interval 后,其他进程已合法重新
+  // claim,本进程失败回滚不能把对方的有效 claim 抹回旧值/删掉。
+  it('当前值已被其他进程重新 claim 时,回滚不覆盖对方的值(UPDATE 分支)', () => {
+    const oldTime = (Date.now() - 7200000).toString();
+    db.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)").run('last_task_test-task', oldTime);
+    const claimA = tryClaimTask(db, 'test-task', 60);
+    expect(claimA.claimed).toBe(true);
+
+    // 模拟进程 B 在 A 执行期间(超过 interval 后)合法重新 claim
+    const newerValue = (Date.now() + 1).toString();
+    db.prepare('UPDATE metadata SET value = ? WHERE key = ?').run(newerValue, 'last_task_test-task');
+
+    rollbackClaim(db, 'test-task', claimA.priorValue, claimA.claimedValue);
+
+    const row = db.prepare("SELECT value FROM metadata WHERE key = 'last_task_test-task'").get() as { value: string };
+    expect(row.value).toBe(newerValue); // B 的 claim 不受 A 回滚影响
+  });
+
+  it('当前值已被其他进程重新 claim 时,回滚不删除对方的行(DELETE 分支)', () => {
+    const claimA = tryClaimTask(db, 'test-task', 60); // 首次运行,priorValue=null
+    expect(claimA.claimed).toBe(true);
+
+    const newerValue = (Date.now() + 1).toString();
+    db.prepare('UPDATE metadata SET value = ? WHERE key = ?').run(newerValue, 'last_task_test-task');
+
+    rollbackClaim(db, 'test-task', null, claimA.claimedValue);
+
+    const row = db.prepare("SELECT value FROM metadata WHERE key = 'last_task_test-task'").get() as { value: string };
+    expect(row?.value).toBe(newerValue); // 行仍在,值是 B 的
   });
 });
 

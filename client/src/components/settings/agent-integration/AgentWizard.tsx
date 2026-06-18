@@ -72,60 +72,76 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
 
   // Step 0 → Step 1: 创建 Agent
   const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState('')
   const handleCreateAndNext = async () => {
     const finalToolType = effectiveToolType
     if (!agentName.trim() || !finalToolType.trim() || creating) return
     setCreating(true)
+    setCreateError('')
 
-    const agent = await window.api.agents.create({ name: agentName.trim(), tool_type: finalToolType.trim() })
-    setCreatedAgent(agent)
+    // try/finally 保证 creating 一定复位:此前 setCreating(true) 后没有任何复位路径,
+    // 用户从 step 1 点"上一步"回到本步后按钮永久 disabled(显示"正在创建");
+    // agents.create / mcpSnippet reject 时还会 unhandled rejection 且无任何用户反馈。
+    try {
+      const agent = await window.api.agents.create({ name: agentName.trim(), tool_type: finalToolType.trim() })
+      setCreatedAgent(agent)
 
-    if (usePlugin) {
-      // 插件流程：
-      // Claude Code: 生成 Plugin + marketplace + CLI 安装
-      // Claude Cowork: 写入 Desktop config + 生成 Skill 到 Downloads
-      setPluginGenerating(true)
-      try {
-        const [result, cliCheck, codexCheck, geminiCheck] = await Promise.all([
-          window.api.agents.generatePlugin({ agentId: agent.id, agentName: agent.name, clientType: finalToolType }),
-          window.api.agents.checkCli('claude'),
-          isCodex
-            ? window.api.agents.checkCli('codex')
-            : Promise.resolve({ available: false } as { available: boolean; path?: string; version?: string }),
-          isGemini
-            ? window.api.agents.checkCli('gemini')
-            : Promise.resolve({ available: false } as { available: boolean; path?: string; version?: string }),
-        ])
-        if (result.success) {
-          setPluginDir(result.pluginDir)
-          setPluginName(result.pluginName)
-          if (result.pluginsDir) setPluginsDir(result.pluginsDir)
-          setPluginGenerated(true)
-          if (isCowork || isCursor || isCodex || isWindsurf || isOpenClaw || isGemini) {
-            setDesktopConfigWritten(true)
+      if (usePlugin) {
+        // 插件流程：
+        // Claude Code: 生成 Plugin + marketplace + CLI 安装
+        // Claude Cowork: 写入 Desktop config + 生成 Skill 到 Downloads
+        setPluginGenerating(true)
+        try {
+          const [result, cliCheck, codexCheck, geminiCheck] = await Promise.all([
+            window.api.agents.generatePlugin({ agentId: agent.id, agentName: agent.name, clientType: finalToolType }),
+            window.api.agents.checkCli('claude'),
+            isCodex
+              ? window.api.agents.checkCli('codex')
+              : Promise.resolve({ available: false } as { available: boolean; path?: string; version?: string }),
+            isGemini
+              ? window.api.agents.checkCli('gemini')
+              : Promise.resolve({ available: false } as { available: boolean; path?: string; version?: string }),
+          ])
+          if (result.success) {
+            setPluginDir(result.pluginDir)
+            setPluginName(result.pluginName)
+            if (result.pluginsDir) setPluginsDir(result.pluginsDir)
+            setPluginGenerated(true)
+            if (isCowork || isCursor || isCodex || isWindsurf || isOpenClaw || isGemini) {
+              setDesktopConfigWritten(true)
+            }
+          } else {
+            setPluginError(result.error ?? t('agent.wizard.generateFailed'))
+            // 清理失败本身不应吞掉 step 1 的错误展示
+            await window.api.agents.delete(agent.id).catch(() => {})
+            setCreatedAgent(null)
           }
-        } else {
-          setPluginError(result.error ?? t('agent.wizard.generateFailed'))
-          await window.api.agents.delete(agent.id)
+          setCliAvailable(cliCheck.available)
+          setCodexVersion(codexCheck.version ?? null)
+          setGeminiVersion(geminiCheck.version ?? null)
+        } catch (err: any) {
+          setPluginError(err.message)
+          await window.api.agents.delete(agent.id).catch(() => {})
           setCreatedAgent(null)
+        } finally {
+          setPluginGenerating(false)
         }
-        setCliAvailable(cliCheck.available)
-        setCodexVersion(codexCheck.version ?? null)
-        setGeminiVersion(geminiCheck.version ?? null)
-      } catch (err: any) {
-        setPluginError(err.message)
-        await window.api.agents.delete(agent.id)
-        setCreatedAgent(null)
-      } finally {
-        setPluginGenerating(false)
+      } else {
+        // 手动流程：获取 MCP snippet
+        const snippet = await window.api.agents.mcpSnippet(agent.id)
+        setMcpSnippet(JSON.stringify(snippet, null, 2))
       }
-    } else {
-      // 手动流程：获取 MCP snippet
-      const snippet = await window.api.agents.mcpSnippet(agent.id)
-      setMcpSnippet(JSON.stringify(snippet, null, 2))
-    }
 
-    setStep(1)
+      setStep(1)
+    } catch (err) {
+      // 有 message 时带上"创建失败"阶段语境(本地化前缀 + 原始 message),无 message 时
+      // 只用本地化的 createFailed。ToolSelectionStep 直接渲染 createError,不再二次加前缀
+      //(避免双重本地化),两态都带语境。
+      const msg = (err as Error).message
+      setCreateError(msg ? `${t('agent.wizard.createFailed')}: ${msg}` : t('agent.wizard.createFailed'))
+    } finally {
+      setCreating(false)
+    }
   }
 
   // 插件安装（通过 marketplace）
@@ -237,6 +253,7 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
           effectiveToolType={effectiveToolType}
           usePlugin={usePlugin}
           creating={creating}
+          createError={createError}
           onCreateAndNext={handleCreateAndNext}
         />
       )}

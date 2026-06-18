@@ -99,6 +99,7 @@ export async function runLinkEvaluate(
     WHERE auto = 1
       AND status NOT IN ('confirmed', 'rejected_by_user')
       AND created > ?
+      AND deleted = 0
     ORDER BY created DESC
     LIMIT ?
   `).all(lookbackCutoff, maxLinks) as LinkRow[];
@@ -106,6 +107,7 @@ export async function runLinkEvaluate(
   const pendingLinks = db.prepare(`
     SELECT * FROM links
     WHERE status = 'pending'
+      AND deleted = 0
     ORDER BY created ASC
     LIMIT ?
   `).all(maxLinks) as LinkRow[];
@@ -159,7 +161,12 @@ export async function runLinkEvaluate(
 
   const evaluated = validLinks.length;
 
-  if (evaluated > 0) {
+  // gate 在 confirmed+deleted>0 而非 evaluated>0:evaluated 是 LLM 调用前的候选计数,
+  // 批次 LLM 失败被 evaluateBatch 吞掉(line 247)后仍 >0,会写出"其实没成功"的
+  // link_classify。该 subtype 在 llm-success-backfill 白名单里,冷启会据此把
+  // llm_last_success_at 设成偏乐观的时刻。与 annotate(totalAnnotated>0)/
+  // link-revalidate(updated||removed>0)一致:只在 LLM 真有产出时记事件。
+  if (confirmed > 0 || deleted > 0) {
     log.info(`链接评估: 评估=${evaluated} 确认=${confirmed} 删除=${deleted}`);
     logTimelineEvent(db, {
       type: 'think_associate',

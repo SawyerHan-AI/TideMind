@@ -43,10 +43,20 @@ export interface StructureHolesCache {
  */
 export function computeStructureHoles(db: Database.Database, limit: number = PRECOMPUTE_LIMIT): StructureHole[] {
   const holes = db.prepare(`
-    WITH neighbors AS (
-      SELECT from_id AS node, to_id AS neighbor FROM links WHERE status != 'rejected_by_user'
+    WITH active_links AS (
+      -- 归档不删 links(archive 路径只置 archived=1/heat=0.02),必须 join nodes
+      -- 过滤两端,否则已归档节点会作为候选对/共享邻居进入推荐结果
+      -- M10: deleted=0 排除软删链接
+      SELECT l.from_id, l.to_id
+      FROM links l
+      JOIN nodes nf ON nf.id = l.from_id AND nf.archived = 0 AND nf.is_superseded = 0
+      JOIN nodes nt ON nt.id = l.to_id AND nt.archived = 0 AND nt.is_superseded = 0
+      WHERE l.status != 'rejected_by_user' AND l.deleted = 0
+    ),
+    neighbors AS (
+      SELECT from_id AS node, to_id AS neighbor FROM active_links
       UNION ALL
-      SELECT to_id AS node, from_id AS neighbor FROM links WHERE status != 'rejected_by_user'
+      SELECT to_id AS node, from_id AS neighbor FROM active_links
     ),
     shared AS (
       SELECT a.node AS node_a, b.node AS node_b, COUNT(*) AS shared
@@ -57,8 +67,8 @@ export function computeStructureHoles(db: Database.Database, limit: number = PRE
     )
     SELECT s.node_a, s.node_b, s.shared
     FROM shared s
-    LEFT JOIN links d1 ON d1.from_id = s.node_a AND d1.to_id = s.node_b AND d1.status != 'rejected_by_user'
-    LEFT JOIN links d2 ON d2.from_id = s.node_b AND d2.to_id = s.node_a AND d2.status != 'rejected_by_user'
+    LEFT JOIN links d1 ON d1.from_id = s.node_a AND d1.to_id = s.node_b AND d1.status != 'rejected_by_user' AND d1.deleted = 0
+    LEFT JOIN links d2 ON d2.from_id = s.node_b AND d2.to_id = s.node_a AND d2.status != 'rejected_by_user' AND d2.deleted = 0
     WHERE d1.id IS NULL AND d2.id IS NULL
     ORDER BY s.shared DESC
     LIMIT ?

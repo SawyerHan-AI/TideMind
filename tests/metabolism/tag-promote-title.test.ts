@@ -138,6 +138,27 @@ describe('tag-promote title/content 分离', () => {
     expect(result.linksCreated).toBe(3); // 但链接正常建立
   });
 
+  // 回归:定义生成历史上只在"新建节点"分支里发生 —— 新建后 LLM 失败/返回空/
+  // 当时未配置,节点已落库(content=''),下次运行命中 existingTagNodes 直接跳过,
+  // content 永久为空。修复后对任何 content 为空的 tag 节点补定义。
+  it('已存在但 content 为空的 tag 节点会回填定义', async () => {
+    db.prepare(`
+      INSERT INTO nodes (id, type, title, content, heat, refinement, connectivity, independence, maturity_score, is_tag, created)
+      VALUES ('empty-tag', 'fact', 'go', '', 1.0, 0, 0, 0, 0.2, 1, datetime('now'))
+    `).run();
+
+    seedNode(db, { tags: ['go'], content: 'go concurrency model' });
+    seedNode(db, { tags: ['go'], content: 'go channels and goroutines' });
+    seedNode(db, { tags: ['go'], content: 'go interface design' });
+
+    const result = await promoteFrequentTags(db);
+    expect(result.promoted).toBe(0); // 不重复创建
+
+    expect(callLLM).toHaveBeenCalledOnce();
+    const tagNode = getNode(db, 'empty-tag');
+    expect(tagNode?.content).toBe('一种用于构建用户界面的 JavaScript 库'); // mock 定义已回填
+  });
+
   it('已有 tag 节点（新格式 title=标签名）正确匹配', async () => {
     // 模拟新格式的 tag 节点：title='vue', content=定义
     db.prepare(`

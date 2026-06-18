@@ -19,10 +19,11 @@ function LlmCostThisMonthSection() {
 
   useEffect(() => {
     let cancelled = false
-    const firstOfMonth = new Date()
-    firstOfMonth.setDate(1)
-    firstOfMonth.setHours(0, 0, 0, 0)
-    const after = firstOfMonth.toISOString().slice(0, 10)
+    // 本月起点用本地日期拼接,不能走 toISOString()——后者是 UTC,UTC+8 用户
+    // 本地 6/1 00:00 会被截成 '2026-05-31',把 5 月底的调用误计入本月,
+    // 与卡片标题 monthLabel(本地月份)口径不一致。
+    const now = new Date()
+    const after = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
     window.api.stats.tokenUsageFiltered({ after, limit: 1, offset: 0 })
       .then((data: { operationStats?: Array<{ estimated_cost: number; cnt: number }> } | null) => {
         if (cancelled || !data?.operationStats) return
@@ -231,16 +232,25 @@ function LoggedInView({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
     window.api.app.openExternal('https://tidemind.ai/pricing')
   }
 
+  // app 内升级走带 token 的 checkout(主进程拿回已绑 user_id 的 Creem URL,tier-1 强绑定)。
+  // IPC 内部已对未登录/失败降级到公开定价页,这里再兜一层 catch。
+  const handleUpgrade = async (interval: 'yearly' | 'monthly') => {
+    try {
+      const url = await window.api.cloud.billingCheckoutUrl('pro', interval)
+      window.api.app.openExternal(url)
+    } catch {
+      window.api.app.openExternal('https://tidemind.ai/pricing')
+    }
+  }
+
   const handleManageSubscription = async () => {
-    // 跳云服务端 portal,服务端用浏览器 session cookie 鉴权后调 Creem API
-    // 拿到 Creem 托管 portal URL,302 跳过去。
-    // 注意:用户在浏览器需要先登录(客户端 OAuth token 不共享到浏览器),
-    // 未登录时 cloud-server 的 requireAuth 会引导到 /auth/login。
+    // B3(2026-06-12):主进程带 access token 请求云端 /portal、读 302 Location 拿到
+    // Creem 托管 portal URL,再 openExternal。浏览器无需我们的登录态(打开的是 Creem
+    // 页)。IPC 内部对未登录/失败已降级到公开定价页;这里再兜一层 catch。
     try {
       const url = await window.api.cloud.billingPortalUrl()
       window.api.app.openExternal(url)
     } catch {
-      // IPC 失败极少见;退回到官网,用户可从那里登录后再找入口
       window.api.app.openExternal('https://tidemind.ai/pricing')
     }
   }
@@ -301,7 +311,7 @@ function LoggedInView({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
                 {t('settings:account.upgradeHint', 'Upgrade to Pro for unlimited cloud memories, 5 devices, 7×24 cloud metabolism, and more.')}
               </p>
               <button
-                onClick={handleOpenPricing}
+                onClick={() => handleUpgrade('yearly')}
                 className="mt-1 px-3 py-1.5 rounded-md text-xs font-medium transition-all"
                 style={{
                   background: brand.gradientAlpha,
@@ -311,8 +321,22 @@ function LoggedInView({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
                 onMouseEnter={e => (e.currentTarget.style.background = brand.gradientHover)}
                 onMouseLeave={e => (e.currentTarget.style.background = brand.gradientAlpha)}
               >
-                {t('settings:account.viewPricing', 'View Plans & Pricing')}
+                {t('settings:account.upgradeAnnual', 'Upgrade to Pro — $49/year')}
               </button>
+              <div className="flex items-center gap-3 mt-2">
+                <button
+                  onClick={() => handleUpgrade('monthly')}
+                  className="text-[11px] text-gray-400 hover:text-gray-200 transition-colors"
+                >
+                  {t('settings:account.upgradeMonthly', 'or pay $5/month')}
+                </button>
+                <button
+                  onClick={handleOpenPricing}
+                  className="text-[11px] text-gray-500 hover:text-gray-300 transition-colors"
+                >
+                  {t('settings:account.viewPricing', 'View full pricing')}
+                </button>
+              </div>
             </>
           ) : (
             <div className="space-y-1.5">

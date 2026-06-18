@@ -65,7 +65,8 @@
       "learning2": "AI Optimized",
       "system": "Upgrade",
       "file_edit": "File Edit"
-    }
+    },
+    "saveFailed": "Save failed. Please try again."
   },
   "model": {
     "subtabs": {
@@ -118,6 +119,7 @@
       "connectionNameTip": "A custom name to distinguish multiple connections of the same type.",
       "connectionNamePlaceholder": "e.g. Company {{provider}}",
       "create": "Create",
+      "createFailed": "Failed to create connection. Please try again.",
       "colName": "Name",
       "colType": "Type",
       "colStatus": "Status",
@@ -149,7 +151,9 @@
       "reembedProgress": "Re-embedding in progress... ({{done}}/{{total}})",
       "reembedNeeded": "Vector index needs to be recalculated (triggered after upgrade or model switch). During recalculation, search automatically falls back to full-text search.",
       "startReembed": "Start Re-embedding",
-      "saved": "Saved"
+      "saved": "Saved",
+      "saveFailed": "Failed to save model selection. Please try again.",
+      "retry": "Retry"
     },
     "serviceStatus": {
       "title": "AI Service Status",
@@ -389,7 +393,8 @@
       "notionScopeHint": "TideMind will sync all pages shared with your integration. To adjust scope, change sharing settings in Notion.",
       "notionConnected": "Token verified, connection successful",
       "notionFailed": "Token invalid or connection failed"
-    }
+    },
+    "createFailed": "Failed to create note source. Please try again."
   },
   "usage": {
     "totalTokens": "Total Tokens",
@@ -462,6 +467,7 @@
       "file_edit": "File"
     },
     "saved": "Saved",
+    "saveFailed": "Save failed. Please try again.",
     "confirmSave": "Confirm Save",
     "save": "Save",
     "userPromptPlaceholder": "Enter User Prompt template, use {{varName}} as placeholders for dynamic parameters",
@@ -873,6 +879,7 @@
       "generatingPlugin": "Generating plugin...",
       "pluginGenerateFailed": "Plugin generation failed",
       "generateFailed": "Generation failed",
+      "createFailed": "Creation failed",
       "completed": "Completed",
       "manualStepsTitle": "Manual steps required:",
       "prevStep": "Previous",
@@ -994,6 +1001,8 @@
     "subscription": "Subscription",
     "currentPlan": "Current Plan",
     "upgradeHint": "Upgrade to Pro for unlimited cloud memories, 5 devices, 7×24 cloud metabolism, and more.",
+    "upgradeAnnual": "Upgrade to Pro — $49/year",
+    "upgradeMonthly": "or pay $5/month",
     "viewPricing": "View Plans & Pricing",
     "manageSubscription": "Manage Subscription",
     "comingSoon": "Coming Soon",
@@ -1002,6 +1011,8 @@
     "noBilling": "No billing history for Free plan.",
     "billingComingSoon": "Billing history coming soon.",
     "logout": "Sign Out",
+    "logoutTitle": "Sign Out?",
+    "logoutDesc": "You will be signed out of TideMind Cloud. Local data is not affected.",
     "registerButton": "Create Account",
     "browserHint": "Opens in your browser for secure authentication.",
     "requestAccountDeletion": "Request Account Deletion",

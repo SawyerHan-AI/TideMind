@@ -183,6 +183,7 @@ function McpDetailPanel({ tool }: { tool: Extract<ToolItem, { type: 'mcp' }> }) 
   const [allDescriptions, setAllDescriptions] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState(false)
   const [versions, setVersions] = useState<VersionEntry[]>([])
   const [selectedVersion, setSelectedVersion] = useState<VersionEntry | null>(null)
   const [showVersions, setShowVersions] = useState(true)
@@ -224,6 +225,7 @@ function McpDetailPanel({ tool }: { tool: Extract<ToolItem, { type: 'mcp' }> }) 
 
   const handleSave = async () => {
     setSaving(true)
+    setSaveError(false)
     try {
       const updated = { ...allDescriptions, [tool.name]: description }
       await window.api.config.mcpDescriptionsUpdate(updated, tool.name)
@@ -232,6 +234,8 @@ function McpDetailPanel({ tool }: { tool: Extract<ToolItem, { type: 'mcp' }> }) 
       setOriginalDescription(description)
       loadVersions()
       setTimeout(() => setSaved(false), 2000)
+    } catch {
+      setSaveError(true)
     } finally {
       setSaving(false)
     }
@@ -281,14 +285,19 @@ function McpDetailPanel({ tool }: { tool: Extract<ToolItem, { type: 'mcp' }> }) 
                 </span>
               ) : <div />}
               {!selectedVersion && (
-                <button
-                  onClick={handleSave}
-                  disabled={saving || !hasChanges}
-                  className="flex items-center gap-2 px-4 py-2 bg-indigo-500 hover:bg-indigo-400 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50"
-                >
-                  {saving ? <Loader2 size={14} className="animate-spin" /> : saved ? <CheckCircle size={14} /> : <Save size={14} />}
-                  {saved ? t('common:actions.saved') : t('common:actions.save')}
-                </button>
+                <div className="flex items-center gap-3">
+                  {saveError && (
+                    <span className="text-[11px] text-red-400">{t('external.saveFailed')}</span>
+                  )}
+                  <button
+                    onClick={handleSave}
+                    disabled={saving || !hasChanges}
+                    className="flex items-center gap-2 px-4 py-2 bg-indigo-500 hover:bg-indigo-400 rounded-lg text-sm font-medium text-white transition-colors disabled:opacity-50"
+                  >
+                    {saving ? <Loader2 size={14} className="animate-spin" /> : saved ? <CheckCircle size={14} /> : <Save size={14} />}
+                    {saved ? t('common:actions.saved') : t('common:actions.save')}
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -308,6 +317,7 @@ function SkillDetailPanel({ name }: { name: string }) {
   const [originalContent, setOriginalContent] = useState('')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState(false)
   const [showReason, setShowReason] = useState(false)
   const [reason, setReason] = useState('')
   const [versions, setVersions] = useState<VersionEntry[]>([])
@@ -354,6 +364,7 @@ function SkillDetailPanel({ name }: { name: string }) {
   const handleSave = async () => {
     if (showReason) {
       setSaving(true)
+      setSaveError(false)
       try {
         await window.api.config.skillUpdate(name, content, reason || undefined)
         setSaved(true)
@@ -362,6 +373,8 @@ function SkillDetailPanel({ name }: { name: string }) {
         setOriginalContent(content)
         loadVersions()
         setTimeout(() => setSaved(false), 2000)
+      } catch {
+        setSaveError(true)
       } finally {
         setSaving(false)
       }
@@ -441,6 +454,9 @@ function SkillDetailPanel({ name }: { name: string }) {
                 ) : <div />}
 
                 <div className="flex items-center gap-2">
+                  {saveError && !selectedVersion && (
+                    <span className="text-[11px] text-red-400">{t('external.saveFailed')}</span>
+                  )}
                   {selectedVersion && (
                     <button
                       onClick={() => handleRollback(selectedVersion.version)}

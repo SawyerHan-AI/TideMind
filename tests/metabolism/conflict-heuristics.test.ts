@@ -174,4 +174,23 @@ describe('detectConflictSignals', () => {
     const signals = detectConflictSignals([nodeA, nodeB]);
     expect(Array.isArray(signals)).toBe(true);
   });
+
+  // ===== 性能回归 =====
+
+  // 回归:hasNegatedOverlap 曾把 extractKeywords(textB) 写在 filter 回调内,
+  // CJK bigram 下 O(len²)。30 个 1500 字高重叠中文节点(index 模式默认 limit)
+  // 两两配对,修复前实测 ~18s(同步阻塞 daemon event loop),修复后应远低于
+  // 5s 上限(发版机器峰值负载下也不应超)。所有文本都含否定词 '不再',
+  // 两边同时命中 → 不会提前 return,跑满 keyword × negation 扫描的最坏路径。
+  it('30 个长中文高重叠节点两两配对不阻塞秒级', { timeout: 60_000 }, () => {
+    const base = '我们不再依赖旧的知识管理流程,而是把智能代理框架引入复杂的知识图谱代谢任务,持续观察召回质量和链接演化的长期趋势。'.repeat(28); // ~1500 字
+    const nodes = Array.from({ length: 30 }, (_, i) =>
+      makeNode({ content: `${base}补充记录第${i}号实验的结论。` }));
+    const context = base.slice(0, 300);
+
+    const t0 = performance.now();
+    detectConflictSignals(nodes, context);
+    const elapsed = performance.now() - t0;
+    expect(elapsed).toBeLessThan(5000);
+  });
 });

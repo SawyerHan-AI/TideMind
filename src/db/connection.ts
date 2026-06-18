@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getConfig, getDataDir } from '../config.js';
-import { ensureSchema, ensureVectorTable } from './schema.js';
+import { CURRENT_SCHEMA_VERSION, ensureSchema, ensureVectorTable } from './schema.js';
 import { setUsageDb } from '../llm/client.js';
 import { createLogger } from '../utils/logger.js';
 
@@ -65,8 +65,11 @@ export function getDb(): Database.Database {
     try {
       const row = tmpDb.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get() as { value: string } | undefined;
       const version = row ? parseInt(row.value, 10) : -1;
-      // 版本不存在或低于当前版本 → 备份
-      if (version === -1 || version < 1) {
+      // 版本缺失、解析异常或低于当前版本(即将跑迁移)→ 备份。
+      // 必须对比 CURRENT_SCHEMA_VERSION 而非硬编码字面量:历史上写死 `< 1`
+      // 导致 v1 之后所有升级(含 v19 links 重建表)从未触发过备份。
+      // NaN 单独判:NaN 与任何数比较都为 false,不判会静默跳过备份。
+      if (Number.isNaN(version) || version < CURRENT_SCHEMA_VERSION) {
         backupDbIfNeeded(dbPath);
       }
     } catch {

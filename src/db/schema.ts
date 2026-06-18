@@ -20,8 +20,41 @@ function generateSourceId(): string {
 
 /**
  * 当前 schema 版本。每次新增 migration 时递增。
+ * export 给 connection.ts 的迁移前备份判定用,避免那边硬编码版本号失效。
  */
-const CURRENT_SCHEMA_VERSION = 28;
+export const CURRENT_SCHEMA_VERSION = 32;
+
+/**
+ * 实时上行(M6):脏集表 + 回声抑制 guard + nodes/links 写触发器。
+ * 任何本地写入(用户编辑/digest/代谢)→ 触发器把行 id 记入 cloud_dirty,uplink pump 取出上行。
+ * 下行 apply(applyCloudRows/applyChanges)前置 guard.applying=1,触发器 WHEN guard=0 才记,
+ * 避免"下行写入被当成上行"的回声环。全部 IF NOT EXISTS,ensureSchema 末尾(migration 之后)
+ * 与 migration v30 共用 —— 放 migration 之后建是为了避免升级时 v29 回填触发全量脏集。
+ */
+const CLOUD_UPLINK_SQL = `
+CREATE TABLE IF NOT EXISTS cloud_dirty (
+    tbl TEXT NOT NULL,
+    id TEXT NOT NULL,
+    PRIMARY KEY (tbl, id)
+);
+CREATE TABLE IF NOT EXISTS sync_apply_guard (
+    k INTEGER PRIMARY KEY CHECK (k = 0),
+    applying INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO sync_apply_guard (k, applying) VALUES (0, 0);
+CREATE TRIGGER IF NOT EXISTS trg_nodes_dirty_ins AFTER INSERT ON nodes
+    WHEN (SELECT applying FROM sync_apply_guard WHERE k = 0) = 0
+    BEGIN INSERT OR IGNORE INTO cloud_dirty (tbl, id) VALUES ('nodes', NEW.id); END;
+CREATE TRIGGER IF NOT EXISTS trg_nodes_dirty_upd AFTER UPDATE ON nodes
+    WHEN (SELECT applying FROM sync_apply_guard WHERE k = 0) = 0
+    BEGIN INSERT OR IGNORE INTO cloud_dirty (tbl, id) VALUES ('nodes', NEW.id); END;
+CREATE TRIGGER IF NOT EXISTS trg_links_dirty_ins AFTER INSERT ON links
+    WHEN (SELECT applying FROM sync_apply_guard WHERE k = 0) = 0
+    BEGIN INSERT OR IGNORE INTO cloud_dirty (tbl, id) VALUES ('links', NEW.id); END;
+CREATE TRIGGER IF NOT EXISTS trg_links_dirty_upd AFTER UPDATE ON links
+    WHEN (SELECT applying FROM sync_apply_guard WHERE k = 0) = 0
+    BEGIN INSERT OR IGNORE INTO cloud_dirty (tbl, id) VALUES ('links', NEW.id); END;
+`;
 
 /**
  * 完整建表 SQL — 包含所有字段，新数据库直接创建最新结构。
@@ -74,7 +107,13 @@ CREATE TABLE IF NOT EXISTS nodes (
     maturity_score REAL DEFAULT 0.0,
 
     -- Reconcile LWW 用(和 created 一样是 TEXT ISO 字符串,migration 对齐 v15)
-    updated TEXT
+    updated TEXT,
+
+    -- 因果版本号(M3):内容类字段(content/title/type/tags/三维/archived)变更时 +1,
+    -- 代谢派生改写不碰;同步内容仲裁用 (edit_seq, updated) 字典序,使用户编辑永远赢过过时代谢
+    edit_seq INTEGER NOT NULL DEFAULT 0,
+    -- 衰减 generation 锚点(M8 用):该节点 heat 最后衰减到的 generation
+    decay_gen INTEGER NOT NULL DEFAULT 0
 );
 
 -- 链接表（relation 存储为 JSON 数组 [{type, confidence}]）
@@ -88,7 +127,15 @@ CREATE TABLE IF NOT EXISTS links (
     auto INTEGER DEFAULT 1,
     status TEXT DEFAULT 'confirmed' CHECK(status IN ('confirmed','pending','rejected_by_user')),
     created TEXT NOT NULL,
-    updated TEXT
+    updated TEXT,
+    -- 因果版本号:link 上**仅由软删 +1**(M10 deleteLink/代谢 prune);建链/拒链/改 relation/
+    -- strength/status 流转都不碰(与 node 不同:node 用户编辑会 bump)。即 link.edit_seq 实为
+    -- "删除世代计数"(alive=0、软删≥1),这使软删在 manifest/LWW 因果序仲裁中必胜 → 删除可靠传播。
+    -- 不变量:改这条契约(如让拒链/改 relation 也 bump)前先想清楚对 chooseManifestWinner 的影响。
+    edit_seq INTEGER NOT NULL DEFAULT 0,
+    -- 软删标志(M10):link 删除改软删(deleted=1 + bump updated/edit_seq),靠 LWW 跨设备传播删除,
+    -- 杜绝 hard-delete 在 reconcile manifest diff 中被当 onlyLocal/onlyServer 复活。查询排除 deleted=1。
+    deleted INTEGER NOT NULL DEFAULT 0
 );
 
 -- 节点版本历史
@@ -179,7 +226,8 @@ CREATE INDEX IF NOT EXISTS idx_nodes_active_updated ON nodes(archived, is_supers
 -- 标签使用聚合表(perf-optimization-2026-05-17 P1-2):
 -- 用于 stats:dashboard / stats:overview / nodes:tags 三个 handler,避免每次
 -- SELECT tags FROM nodes WHERE heat > 0.01 + JS 端 JSON.parse 全表聚合
--- (万节点下 500-1000ms)。trigger 实时维护,启动期 rebuildTagUsage 兜底重算。
+-- (万节点下 500-1000ms)。trigger 实时维护;没有启动期自动兜底重算,
+-- 若发现与全表聚合漂移可手动调 backfillTagUsage 全量重建。
 CREATE TABLE IF NOT EXISTS tag_usage (
     tag TEXT PRIMARY KEY,
     node_count INTEGER NOT NULL DEFAULT 0,
@@ -207,8 +255,10 @@ WHEN NEW.tags IS NOT NULL
   AND COALESCE(NEW.archived, 0) = 0
   AND COALESCE(NEW.is_superseded, 0) = 0
 BEGIN
+    -- DISTINCT:同一节点 tags 数组含重复值(如 ["a","a"])时只 +1。否则加法按出现
+    -- 次数 +N、减法(delete/update 的 tag IN 子查询)按 distinct tag -1,计数永久向上漂移。
     INSERT INTO tag_usage(tag, node_count, last_updated)
-    SELECT value, 1, datetime('now')
+    SELECT DISTINCT value, 1, datetime('now')
     FROM json_each(CASE WHEN json_valid(NEW.tags) = 1 THEN NEW.tags ELSE '[]' END)
     WHERE typeof(value) = 'text' AND length(value) > 0
     ON CONFLICT(tag) DO UPDATE SET
@@ -244,9 +294,9 @@ BEGIN
           SELECT value FROM json_each(CASE WHEN json_valid(COALESCE(OLD.tags, '[]')) = 1 THEN COALESCE(OLD.tags, '[]') ELSE '[]' END)
           WHERE typeof(value) = 'text'
       );
-    -- 加上 NEW active 状态下 tags 的贡献
+    -- 加上 NEW active 状态下 tags 的贡献(DISTINCT 与减法侧对齐,重复 tag 只 +1)
     INSERT INTO tag_usage(tag, node_count, last_updated)
-    SELECT value, 1, datetime('now')
+    SELECT DISTINCT value, 1, datetime('now')
     FROM json_each(CASE WHEN json_valid(COALESCE(NEW.tags, '[]')) = 1 THEN COALESCE(NEW.tags, '[]') ELSE '[]' END)
     WHERE typeof(value) = 'text'
       AND length(value) > 0
@@ -262,7 +312,10 @@ END;
 -- heat 字段语义守卫(2026-05-19):字段语义统一为 [0,1],trigger 在 INSERT/UPDATE
 -- 时把越界值钳回 [0,1]。SQLite ALTER TABLE 不支持 ADD CHECK,只能用 trigger;
 -- 行为是"修正"而非"拒绝",防止历史/新增 bug 写入 >1.0 让所有下游计算错位。
--- maturity_score 在被钳前的 heat 上计算,所以一并把它重算(用钳后的 heat)。
+-- 注意:本 trigger 只钳 heat,不重算 maturity_score——maturity 权重在 JS 策略参数
+-- 里(computeMaturityScore),SQL 触发器无法精确重算。常态下 JS 主路径(bumpHeat 等)
+-- 自己已 clamp 并同步重算 maturity_score,只有绕过 JS 直写越界 heat 的罕见路径会
+-- 留下基于越界 heat 的 maturity_score,待下次 refreshMaturityScore 纠正。
 CREATE TRIGGER IF NOT EXISTS trg_nodes_heat_clamp_insert
 AFTER INSERT ON nodes
 WHEN NEW.heat < 0 OR NEW.heat > 1
@@ -1761,6 +1814,105 @@ const MIGRATIONS: Migration[] = [
       log.info('迁移 v28 完成: operation_log 加 4 个 recall diagnostics 字段');
     },
   },
+  {
+    version: 29,
+    description: '因果版本号 edit_seq(nodes/links)+ 衰减 generation 锚点 decay_gen(nodes)',
+    up: (db) => {
+      // 因果版本号:内容类字段变更时 +1,代谢派生改写不碰。同步内容仲裁用 (edit_seq, updated)。
+      addColumnIfMissing(db, 'nodes', 'edit_seq', 'ALTER TABLE nodes ADD COLUMN edit_seq INTEGER NOT NULL DEFAULT 0');
+      addColumnIfMissing(db, 'nodes', 'decay_gen', 'ALTER TABLE nodes ADD COLUMN decay_gen INTEGER NOT NULL DEFAULT 0');
+      addColumnIfMissing(db, 'links', 'edit_seq', 'ALTER TABLE links ADD COLUMN edit_seq INTEGER NOT NULL DEFAULT 0');
+      // 回填 edit_seq = version:已同步、语义最接近的因果基线。迁移瞬间两者相等,
+      // 灰度期旧客户端只 bump version、新客户端 bump edit_seq,服务端 edit_seq ?? version 兜底不退化。
+      db.exec('UPDATE nodes SET edit_seq = version WHERE edit_seq = 0');
+      log.info('迁移 v29 完成: nodes/links.edit_seq + nodes.decay_gen 已添加并回填');
+    },
+  },
+  {
+    version: 30,
+    description: '实时上行(M6): cloud_dirty 脏集 + sync_apply_guard + nodes/links 写触发器',
+    up: (db) => {
+      db.exec(CLOUD_UPLINK_SQL);
+      log.info('迁移 v30 完成: 实时上行脏集 + 触发器已建');
+    },
+  },
+  {
+    version: 31,
+    description: 'link 软删(M10): links.deleted 标志,删除改软删靠 LWW 跨设备传播,杜绝 reconcile 复活',
+    up: (db) => {
+      addColumnIfMissing(db, 'links', 'deleted', 'ALTER TABLE links ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');
+      log.info('迁移 v31 完成: links.deleted 已添加');
+    },
+  },
+  {
+    version: 32,
+    description: 'tag_usage triggers 加法去重(DISTINCT):修复重复 tag 计数向上漂移 + 重建计数',
+    up: (db) => {
+      // 旧 triggers 加法按 json_each 出现次数 +N(重复 tag 多加),减法按 distinct tag -1,
+      // 含重复 tag 的节点每次状态翻转/改写 tags 都让计数净漂移 +1。重建带 DISTINCT 的
+      // 加法版本(与 SCHEMA_SQL 对齐),并 backfill 清掉已漂移的历史计数。
+      db.exec(`
+        DROP TRIGGER IF EXISTS trg_tag_usage_after_insert;
+        DROP TRIGGER IF EXISTS trg_tag_usage_after_delete;
+        DROP TRIGGER IF EXISTS trg_tag_usage_after_update;
+        CREATE TRIGGER trg_tag_usage_after_insert
+        AFTER INSERT ON nodes
+        WHEN NEW.tags IS NOT NULL
+          AND COALESCE(NEW.archived, 0) = 0
+          AND COALESCE(NEW.is_superseded, 0) = 0
+        BEGIN
+            INSERT INTO tag_usage(tag, node_count, last_updated)
+            SELECT DISTINCT value, 1, datetime('now')
+            FROM json_each(CASE WHEN json_valid(NEW.tags) = 1 THEN NEW.tags ELSE '[]' END)
+            WHERE typeof(value) = 'text' AND length(value) > 0
+            ON CONFLICT(tag) DO UPDATE SET
+                node_count = node_count + 1,
+                last_updated = datetime('now');
+        END;
+        CREATE TRIGGER trg_tag_usage_after_delete
+        AFTER DELETE ON nodes
+        WHEN OLD.tags IS NOT NULL
+          AND COALESCE(OLD.archived, 0) = 0
+          AND COALESCE(OLD.is_superseded, 0) = 0
+        BEGIN
+            UPDATE tag_usage SET
+                node_count = node_count - 1,
+                last_updated = datetime('now')
+            WHERE tag IN (
+                SELECT value FROM json_each(CASE WHEN json_valid(OLD.tags) = 1 THEN OLD.tags ELSE '[]' END) WHERE typeof(value) = 'text'
+            );
+            DELETE FROM tag_usage WHERE node_count <= 0;
+        END;
+        CREATE TRIGGER trg_tag_usage_after_update
+        AFTER UPDATE OF tags, archived, is_superseded ON nodes
+        BEGIN
+            UPDATE tag_usage SET
+                node_count = node_count - 1,
+                last_updated = datetime('now')
+            WHERE COALESCE(OLD.archived, 0) = 0
+              AND COALESCE(OLD.is_superseded, 0) = 0
+              AND tag IN (
+                  SELECT value FROM json_each(CASE WHEN json_valid(COALESCE(OLD.tags, '[]')) = 1 THEN COALESCE(OLD.tags, '[]') ELSE '[]' END)
+                  WHERE typeof(value) = 'text'
+              );
+            INSERT INTO tag_usage(tag, node_count, last_updated)
+            SELECT DISTINCT value, 1, datetime('now')
+            FROM json_each(CASE WHEN json_valid(COALESCE(NEW.tags, '[]')) = 1 THEN COALESCE(NEW.tags, '[]') ELSE '[]' END)
+            WHERE typeof(value) = 'text'
+              AND length(value) > 0
+              AND COALESCE(NEW.archived, 0) = 0
+              AND COALESCE(NEW.is_superseded, 0) = 0
+            ON CONFLICT(tag) DO UPDATE SET
+                node_count = node_count + 1,
+                last_updated = datetime('now');
+            DELETE FROM tag_usage WHERE node_count <= 0;
+        END;
+      `);
+      // 重建计数清掉历史漂移(COUNT(DISTINCT node) 语义)。
+      backfillTagUsage(db);
+      log.info('迁移 v32 完成: tag_usage triggers 已去重 + 计数已重建');
+    },
+  },
 ];
 
 /**
@@ -1780,10 +1932,19 @@ export function backfillTagUsage(db: Database.Database): { tagCount: number; row
 
     // SQL 级聚合:json_each 拆 tags + GROUP BY 计数,一次完成,不走 JS 端
     // JSON.parse。万节点下亦在几十 ms 量级。
+    // 非法 JSON 必须用 json_valid 守卫回退 '[]'(与 tag_usage trigger 的防御
+    // 对齐):json_each 对损坏 tags 直接抛 "malformed JSON",而本函数在迁移
+    // v21 里跑——任何一行历史损坏数据都会让迁移回滚、daemon 每次启动重跑
+    // 再崩,永久起不来。WHERE 里的 typeof 过滤发生在 json_each 求值之后,救不了。
+    // COUNT(DISTINCT n.id):按"含该 tag 的 active 节点数"计,而非 json_each 出现次数。
+    // 节点 tags 含重复值(如 ["a","a"])时 COUNT(*) 会把同一节点计两次,与 trigger 的
+    // DISTINCT 加法语义不符,重建后立即漂移。改 COUNT(DISTINCT n.id) 回到"按节点数"。
     const result = db.prepare(`
       INSERT INTO tag_usage(tag, node_count, last_updated)
-      SELECT je.value AS tag, COUNT(*) AS cnt, datetime('now')
-      FROM nodes n, json_each(COALESCE(n.tags, '[]')) je
+      SELECT je.value AS tag, COUNT(DISTINCT n.id) AS cnt, datetime('now')
+      FROM nodes n, json_each(
+        CASE WHEN json_valid(COALESCE(n.tags, '[]')) = 1 THEN COALESCE(n.tags, '[]') ELSE '[]' END
+      ) je
       WHERE COALESCE(n.archived, 0) = 0
         AND COALESCE(n.is_superseded, 0) = 0
         AND typeof(je.value) = 'text'
@@ -1841,9 +2002,67 @@ function runMigrations(db: Database.Database, fromVersion: number): void {
 
 // ── 公开 API ────────────────────────────────────────────────────
 
+/** nodes 表是否已存在（区分"全新空 DB 文件"与"已有库"）。 */
+function nodesTableExists(db: Database.Database): boolean {
+  const row = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='nodes'",
+  ).get();
+  return row !== undefined;
+}
+
+/**
+ * 旧库专用：在跑 SCHEMA_SQL 前给老 nodes 表补齐它引用的新列。
+ *
+ * SCHEMA_SQL 末尾有针对 is_crystal/is_tag/is_meta/is_superseded/updated 的
+ * CREATE INDEX，tag_usage 的 CREATE TRIGGER 引用 is_superseded，FTS 触发器
+ * (nodes_ai/nodes_au) 引用 title；这些列在迁移框架引入前的老 nodes 表里不存在，
+ * 整段 db.exec(SCHEMA_SQL)/FTS 触发器创建会在第一条引用这些列的语句上抛
+ * "no such column" 直接崩在建表阶段，后续 migration 永远跑不到。先把这几列幂等
+ * 补上，SCHEMA_SQL + FTS 触发器即可创建；随后的全量 migration 会再次用
+ * addColumnIfMissing/execIgnoringDuplicateColumn 处理这些列（幂等无副作用）并
+ * 完成其余结构升级。默认值与 SCHEMA_SQL / migration 中保持一致。
+ */
+function addLegacyNodesColumns(db: Database.Database): void {
+  addColumnIfMissing(db, 'nodes', 'title', 'ALTER TABLE nodes ADD COLUMN title TEXT');
+  addColumnIfMissing(db, 'nodes', 'is_crystal', 'ALTER TABLE nodes ADD COLUMN is_crystal INTEGER DEFAULT 0');
+  addColumnIfMissing(db, 'nodes', 'is_tag', 'ALTER TABLE nodes ADD COLUMN is_tag INTEGER DEFAULT 0');
+  addColumnIfMissing(db, 'nodes', 'is_meta', 'ALTER TABLE nodes ADD COLUMN is_meta INTEGER DEFAULT 0');
+  addColumnIfMissing(db, 'nodes', 'is_superseded', 'ALTER TABLE nodes ADD COLUMN is_superseded INTEGER DEFAULT 0');
+  addColumnIfMissing(db, 'nodes', 'updated', 'ALTER TABLE nodes ADD COLUMN updated TEXT');
+}
+
 export function ensureSchema(db: Database.Database): void {
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
+
+  // 在动 SCHEMA_SQL 之前判定库的状态。三种情况：
+  // 1. 全新空 DB 文件（连 nodes 表都没有）→ SCHEMA_SQL 直接建最新结构 + 盖戳。
+  // 2. 旧库（nodes 存在但缺 updated 列、且没有 schema_version）→ 迁移框架引入前
+  //    安装的库（含从未写入任何节点的旧空库）。必须跑全量 migration。
+  // 3. 已有版本号的库 → 常规升级路径。
+  //
+  // 约束：判别"旧库 vs 全新库"必须用"关键列是否存在"，不能用 nodes 行数。旧版本
+  // 安装后从未写入数据的空库 nodes 行数也是 0，按行数判定会被误当作全新库直接
+  // 盖戳 v28，跳过全部 migration → 旧表缺 updated 等列，后续所有写入永久失败且
+  // 不可自愈（schema_version 已是最新，重启也不修）。nodes.updated（v17 引入、
+  // 存在于最新 SCHEMA_SQL）是可靠判别位：全新库由 SCHEMA_SQL 建出即带该列。
+  const hadNodesTable = nodesTableExists(db);
+  const versionBeforeSchema = getSchemaVersion(db);
+  const isLegacyDb = hadNodesTable
+    && versionBeforeSchema === -1
+    && !tableHasColumn(db, 'nodes', 'updated');
+
+  if (isLegacyDb) {
+    // 旧库：先给老 nodes 表补齐 SCHEMA_SQL 的索引/触发器引用到的新列，SCHEMA_SQL
+    // 才能整段执行；随后从 v0 跑全量幂等 migration 完成其余结构升级。
+    log.info('检测到迁移框架引入前的旧数据库，执行全量迁移...');
+    addLegacyNodesColumns(db);
+    db.exec(SCHEMA_SQL);
+    db.exec(FTS_SQL);
+    db.exec(FTS_TRIGGERS_SQL);
+    runMigrations(db, 0);
+    return;
+  }
 
   // 建表（IF NOT EXISTS 保证幂等）
   db.exec(SCHEMA_SQL);
@@ -1856,27 +2075,19 @@ export function ensureSchema(db: Database.Database): void {
   const currentVersion = getSchemaVersion(db);
 
   if (currentVersion === -1) {
-    // 两种情况：
-    // 1. 全新数据库 → SCHEMA_SQL 已创建最新结构，直接标记为最新版本
-    // 2. 旧数据库（没有 schema_version）→ 需要跑所有 migration
-    // 通过检查 nodes 表是否有数据来区分
-    const hasData = (db.prepare('SELECT COUNT(*) as cnt FROM nodes').get() as { cnt: number }).cnt > 0;
-
-    if (hasData) {
-      // 旧数据库，从 v0 开始跑 migration
-      log.info('检测到旧数据库，开始执行迁移...');
-      runMigrations(db, 0);
-    } else {
-      // 全新数据库，直接标记最新版本
-      setSchemaVersion(db, CURRENT_SCHEMA_VERSION);
-      log.info(`新数据库，schema 版本: v${CURRENT_SCHEMA_VERSION}`);
-    }
+    // 走到这里只剩"全新库"（nodes 由 SCHEMA_SQL 刚建出，带 updated 列），直接盖戳。
+    setSchemaVersion(db, CURRENT_SCHEMA_VERSION);
+    log.info(`新数据库，schema 版本: v${CURRENT_SCHEMA_VERSION}`);
   } else if (currentVersion < CURRENT_SCHEMA_VERSION) {
     // 需要升级
     log.info(`数据库 schema v${currentVersion} → v${CURRENT_SCHEMA_VERSION}，执行迁移...`);
     runMigrations(db, currentVersion);
   }
   // else: 已是最新版本，无需操作
+
+  // 实时上行(M6):脏集 + guard + 触发器。放在 migration 之后建,避免升级时 v29 回填(改所有
+  // nodes)触发全量脏集。IF NOT EXISTS 幂等;新装(不跑 migration)与已最新版本都安全重建。
+  db.exec(CLOUD_UPLINK_SQL);
 }
 
 export function ensureVectorTable(db: Database.Database, dimensions: number = 3072): void {

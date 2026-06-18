@@ -48,7 +48,9 @@ const CLOUD_STATUS_FALLBACK: CloudStatus = Object.freeze({
   syncEnabled: false,
   online: false,
   syncing: false,
-  outboxCount: 0,
+  // Audit-3 F14 语义:加载前 / IPC 失败时后端无法查询,outboxCount 应为 null(显示 "—"),
+  // 不能用 0 把"未知"伪装成"无待同步",否则排查同步积压时会误导用户。
+  outboxCount: null,
 }) as CloudStatus
 
 export function useCloudStatus(): CloudStatus {

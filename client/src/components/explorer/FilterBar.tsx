@@ -17,11 +17,14 @@ const SORT_OPTION_KEYS = [
 
 const selectClass = 'bg-white/[0.04] border border-white/[0.08] rounded-lg px-2.5 py-[7px] text-xs text-gray-300 focus:outline-none focus:border-indigo-400/40 transition-colors appearance-none cursor-pointer hover:bg-white/[0.07]'
 
-export function FilterBar({ filter, onFilterChange, viewMode, onViewModeChange }: {
+export function FilterBar({ filter, onFilterChange, viewMode, onViewModeChange, filtersDisabled = false }: {
   filter: ExplorerFilter
   onFilterChange: (patch: Partial<ExplorerFilter>) => void
   viewMode: 'list' | 'graph'
   onViewModeChange: (mode: 'list' | 'graph') => void
+  // 搜索模式下后端只走 query+limit,type/tags/heat/sort 全不下推。控件灰化避免
+  // 用户误以为过滤生效(实际是全库搜索)。见 BrainExplorer fetchList。
+  filtersDisabled?: boolean
 }) {
   const { t } = useTranslation('explorer')
   const fetchAllTags = useCallback(() => window.api.nodes.tags(), [])
@@ -62,12 +65,13 @@ export function FilterBar({ filter, onFilterChange, viewMode, onViewModeChange }
       </div>
 
       {/* Row 2: Type + Tag + Sort + Heat */}
-      <div className="flex items-center gap-2">
+      <div className={`flex items-center gap-2 ${filtersDisabled ? 'opacity-40' : ''}`}>
         {/* 类型筛选 */}
         <select
           value={filter.type ?? ''}
           onChange={e => onFilterChange({ type: e.target.value || null })}
-          className={selectClass}
+          disabled={filtersDisabled}
+          className={`${selectClass} disabled:cursor-not-allowed`}
         >
           <option value="">{t('filter.allTypes')}</option>
           {NODE_TYPES.map(nt => (
@@ -80,7 +84,8 @@ export function FilterBar({ filter, onFilterChange, viewMode, onViewModeChange }
           <select
             value={filter.tags ?? ''}
             onChange={e => onFilterChange({ tags: e.target.value || undefined })}
-            className={`${selectClass} max-w-[180px]`}
+            disabled={filtersDisabled}
+            className={`${selectClass} max-w-[180px] disabled:cursor-not-allowed`}
           >
             <option value="">{t('filter.allTags')}</option>
             {coreTags.map(item => <option key={item.tag} value={item.tag}>{item.tag} ({item.count})</option>)}
@@ -91,7 +96,8 @@ export function FilterBar({ filter, onFilterChange, viewMode, onViewModeChange }
         <select
           value={filter.sortBy ?? 'created'}
           onChange={e => onFilterChange({ sortBy: e.target.value })}
-          className={selectClass}
+          disabled={filtersDisabled}
+          className={`${selectClass} disabled:cursor-not-allowed`}
         >
           {SORT_OPTION_KEYS.map(opt => (
             <option key={opt.value} value={opt.value}>{t(opt.labelKey)}</option>
@@ -103,7 +109,7 @@ export function FilterBar({ filter, onFilterChange, viewMode, onViewModeChange }
 
         {/* Heat 范围 */}
         <div className="flex items-center gap-1.5 text-xs text-gray-500">
-          <Flame size={12} className={filter.heatMin && filter.heatMin > 0.05 ? 'text-indigo-400' : ''} />
+          <Flame size={12} className={!filtersDisabled && filter.heatMin && filter.heatMin > 0.05 ? 'text-indigo-400' : ''} />
           <input
             type="range"
             min="0"
@@ -111,12 +117,18 @@ export function FilterBar({ filter, onFilterChange, viewMode, onViewModeChange }
             step="0.05"
             value={filter.heatMin ?? 0.05}
             onChange={e => onFilterChange({ heatMin: parseFloat(e.target.value) })}
-            className="w-20 h-1 bg-white/10 rounded-full accent-indigo-400 cursor-pointer"
+            disabled={filtersDisabled}
+            className="w-20 h-1 bg-white/10 rounded-full accent-indigo-400 cursor-pointer disabled:cursor-not-allowed"
             title={t('heat.minLabel', { value: (filter.heatMin ?? 0.05).toFixed(2) })}
           />
           <span className="w-6 text-right tabular-nums text-gray-400">{(filter.heatMin ?? 0.05).toFixed(2)}</span>
         </div>
       </div>
+
+      {/* 搜索模式下过滤器不下推到后端,显式提示避免误解 */}
+      {filtersDisabled && (
+        <div className="text-[11px] text-gray-500 px-0.5">{t('filter.disabledInSearch')}</div>
+      )}
     </div>
   )
 }

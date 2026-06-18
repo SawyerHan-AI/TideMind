@@ -130,6 +130,7 @@ function discoverBySharedNeighbors(db: Database.Database): { scanned: number; di
       FROM links l1
       JOIN links l2 ON l1.to_id = l2.to_id AND l1.from_id < l2.from_id
       WHERE l1.status = 'confirmed' AND l2.status = 'confirmed'
+        AND l1.deleted = 0 AND l2.deleted = 0
         AND NOT EXISTS (SELECT 1 FROM json_each(l1.relation) j WHERE json_extract(j.value, '$.type') = 'tagged')
         AND NOT EXISTS (SELECT 1 FROM json_each(l2.relation) j WHERE json_extract(j.value, '$.type') = 'tagged')
       UNION ALL
@@ -137,6 +138,7 @@ function discoverBySharedNeighbors(db: Database.Database): { scanned: number; di
       FROM links l1
       JOIN links l2 ON l1.from_id = l2.from_id AND l1.to_id < l2.to_id
       WHERE l1.status = 'confirmed' AND l2.status = 'confirmed'
+        AND l1.deleted = 0 AND l2.deleted = 0
         AND NOT EXISTS (SELECT 1 FROM json_each(l1.relation) j WHERE json_extract(j.value, '$.type') = 'tagged')
         AND NOT EXISTS (SELECT 1 FROM json_each(l2.relation) j WHERE json_extract(j.value, '$.type') = 'tagged')
     )

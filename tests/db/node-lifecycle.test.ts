@@ -89,6 +89,27 @@ describe('node lifecycle service', () => {
     expect(oldAfter.heat).toBeCloseTo(0.01);
   });
 
+  it('M10: supersede 残留边软删(非硬删),防 reconcile 把它当 onlyServer 复活', () => {
+    const oldNode = seedNode(db, { content: 'old' });
+    const newNode = seedNode(db, { content: 'new' });
+    const target = seedNode(db, { content: 'target' });
+    // newNode 已有到 target 的边 → oldNode→target 重定向时撞重复、不 reroute → 成为残留待删边
+    seedLink(db, oldNode.id, target.id);
+    seedLink(db, newNode.id, target.id);
+
+    supersedeNodeWithLinks(db, oldNode.id, newNode.id);
+
+    // 老节点保留(is_superseded=1),残留 oldNode→target 边必须软删:物理行仍在 + deleted=1 + bump
+    // edit_seq,靠 LWW 跨设备传播删除;若硬删,边在 server 仍 alive → reconcile 判 onlyServer 复活。
+    const stale = db.prepare('SELECT deleted, edit_seq FROM links WHERE from_id = ? AND to_id = ?')
+      .get(oldNode.id, target.id) as { deleted: number; edit_seq: number } | undefined;
+    expect(stale).toBeDefined();                       // 行仍在(软删,非硬删)
+    expect(stale!.deleted).toBe(1);
+    expect(stale!.edit_seq).toBeGreaterThanOrEqual(1); // bump → 经因果序仲裁传播删除
+    // 存活集不可见
+    expect(getLinksForNode(db, oldNode.id).some(l => l.to_id === target.id)).toBe(false);
+  });
+
   it('retires a node without replacement by clearing its graph edges', () => {
     const node = seedNode(db, { heat: 1 });
     const peer = seedNode(db);
@@ -101,6 +122,12 @@ describe('node lifecycle service', () => {
     expect(retired.is_superseded).toBe(1);
     expect(retired.heat).toBeCloseTo(0.01);
     expect(getLinksForNode(db, node.id)).toEqual([]);
+    // M10:节点保留(is_superseded=1)→ 边软删而非硬删:物理行仍在(deleted=1 + bump edit_seq),
+    // 靠 LWW 跨设备传播删除,防止边在 server 仍 alive 被 reconcile 当 onlyServer 复活。
+    const rawLinks = db.prepare('SELECT deleted, edit_seq FROM links WHERE from_id = ? OR to_id = ?')
+      .all(node.id, node.id) as Array<{ deleted: number; edit_seq: number }>;
+    expect(rawLinks).toHaveLength(2);
+    expect(rawLinks.every(l => l.deleted === 1 && l.edit_seq >= 1)).toBe(true);
   });
 
   it('deletes node dependents before deleting the node, including segment vectors', () => {

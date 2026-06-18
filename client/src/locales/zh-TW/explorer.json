@@ -7,7 +7,8 @@
     "searchPlaceholder": "搜尋記憶...",
     "all": "全部",
     "allTags": "所有標籤",
-    "allTypes": "所有類型"
+    "allTypes": "所有類型",
+    "disabledInSearch": "搜尋模式下篩選器不生效"
   },
   "list": {
     "noResults": "沒有找到符合的記憶",
@@ -84,6 +85,8 @@
     "pathDiscovery": "路徑發現",
     "structureHoles": "結構洞",
     "connectivityLabel": "連接度",
+    "nodeLimitLabel": "前",
+    "nodeLimitHint": "依 heat 高低取前 N 個節點 + 它們的 1-hop 鄰居",
     "clickSecondNode": "點擊第二個節點檢視路徑",
     "clickStartNode": "點擊起始節點"
   }

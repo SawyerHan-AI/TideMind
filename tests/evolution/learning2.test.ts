@@ -36,13 +36,21 @@ vi.mock('../../src/config.js', () => ({
     },
     metabolism: { daily_check_hours: 24, weekly_check_days: 7 },
   }),
-  isLlmConfigured: () => false,
+  // runLearning2 的 Step 3(趋势调参)有 isLlmConfigured 前置检查,默认放行
+  isLlmConfigured: vi.fn(() => true),
 }));
 
 // ---- Mock LLM client ----
 const mockCallLLM = vi.fn();
 vi.mock('../../src/llm/client.js', () => ({
   callLLM: (...args: any[]) => mockCallLLM(...args),
+  // learning2.ts catch 块用 `err instanceof LLMServiceError` 区分服务错误与业务错误
+  LLMServiceError: class LLMServiceError extends Error {
+    constructor(message: string, public readonly statusCode?: number) {
+      super(message);
+      this.name = 'LLMServiceError';
+    }
+  },
 }));
 
 // ---- Mock maturity ----
@@ -66,6 +74,8 @@ import { setupTestDb, seedNode } from '../helpers/test-db.js';
 import { logParamFeedback } from '../../src/db/log.js';
 import { canRunLearning2, runLearning2, checkMonitoringWindows, clampParam, PARAM_RANGES } from '../../src/evolution/learning2.js';
 import { invalidateGateCache } from '../../src/db/stats.js';
+import { isLlmConfigured } from '../../src/config.js';
+import { LLMServiceError } from '../../src/llm/client.js';
 
 let db: Database.Database;
 let strategiesDir: string;
@@ -93,12 +103,14 @@ function seedRecallOps(db: Database.Database, count: number) {
   }
 }
 
+// 与生产命名一致:策略文件是 {name}.system.md(loader 只认这个后缀),
+// updateStrategyParam 的回退路径也指向它。
 function writeStrategyFile(name: string, content: string) {
-  fs.writeFileSync(path.join(strategiesDir, `${name}.md`), content);
+  fs.writeFileSync(path.join(strategiesDir, `${name}.system.md`), content);
 }
 
 function readStrategyFile(name: string): string {
-  return fs.readFileSync(path.join(strategiesDir, `${name}.md`), 'utf-8');
+  return fs.readFileSync(path.join(strategiesDir, `${name}.system.md`), 'utf-8');
 }
 
 function insertParamFeedback(db: Database.Database, strategyName: string, signalType: string, value: number, daysAgo: number) {
@@ -358,6 +370,72 @@ describe('runLearning2', () => {
     // 冷却期 14 天内，不应调整
     expect(result.adjustments).toHaveLength(0);
     expect(mockCallLLM).not.toHaveBeenCalled();
+  });
+
+  // 回归:updateStrategyParam 的回退路径必须是 {name}.system.md。
+  // 历史 bug:回退写 {name}.md,但 loader 只认 .system.md 且仓库里根本没有
+  // {name}.md → recall-rank / metabolism-params 等只有 .system.md 的策略
+  // 每周期白烧一次 LLM 后静默 continue,Learning II 对核心调参目标永久无效。
+  it('参数表只在 {name}.system.md 中时调整仍能写入(回退路径)', async () => {
+    for (let i = 0; i < 5; i++) seedNode(db);
+    seedRecallOps(db, 2);
+
+    // writeStrategyFile 写的就是 .system.md;确认没有 .params.md 干扰
+    writeStrategyFile('recall-rank', '# Test\n\n| 参数 | 值 | 说明 |\n|------|-----|------|\n| alpha | 0.3 | test |\n');
+    expect(fs.existsSync(path.join(strategiesDir, 'recall-rank.params.md'))).toBe(false);
+
+    mockGetStrategy.mockImplementation((name: string) => {
+      if (name === 'recall-rank') return { name, version: 1, status: 'active', systemPrompt: null, params: { alpha: 0.3 }, rawContent: '' };
+      return null;
+    });
+
+    for (let i = 0; i < 15; i++) insertParamFeedback(db, 'recall-rank', 'recall_hit', 0.6, 25 - i);
+    for (let i = 0; i < 15; i++) insertParamFeedback(db, 'recall-rank', 'recall_hit', 0.1, 10 - i);
+
+    mockCallLLM.mockResolvedValue('{"direction": "decrease", "reason": "test"}');
+
+    const result = await runLearning2(db);
+    expect(result.adjustments.length).toBeGreaterThan(0);
+    expect(readStrategyFile('recall-rank')).toContain('| alpha | 0.27 ');
+  });
+
+  it('LLM 服务错误时向上抛(scheduler 需要熔断信号)', async () => {
+    for (let i = 0; i < 5; i++) seedNode(db);
+    seedRecallOps(db, 2);
+
+    writeStrategyFile('recall-rank', '# Test\n\n| 参数 | 值 | 说明 |\n|------|-----|------|\n| alpha | 0.3 | test |\n');
+    mockGetStrategy.mockImplementation((name: string) => {
+      if (name === 'recall-rank') return { name, version: 1, status: 'active', systemPrompt: null, params: { alpha: 0.3 }, rawContent: '' };
+      return null;
+    });
+
+    for (let i = 0; i < 15; i++) insertParamFeedback(db, 'recall-rank', 'recall_hit', 0.6, 25 - i);
+    for (let i = 0; i < 15; i++) insertParamFeedback(db, 'recall-rank', 'recall_hit', 0.1, 10 - i);
+
+    mockCallLLM.mockRejectedValue(new LLMServiceError('llm down'));
+
+    await expect(runLearning2(db)).rejects.toThrow('llm down');
+  });
+
+  it('LLM 未配置时跳过趋势调参(Step 1/2 照常执行)', async () => {
+    vi.mocked(isLlmConfigured).mockReturnValueOnce(false);
+
+    for (let i = 0; i < 5; i++) seedNode(db);
+    seedRecallOps(db, 2);
+
+    writeStrategyFile('recall-rank', '# Test\n\n| 参数 | 值 | 说明 |\n|------|-----|------|\n| alpha | 0.3 | test |\n');
+    mockGetStrategy.mockImplementation((name: string) => {
+      if (name === 'recall-rank') return { name, version: 1, status: 'active', systemPrompt: null, params: { alpha: 0.3 }, rawContent: '' };
+      return null;
+    });
+
+    for (let i = 0; i < 15; i++) insertParamFeedback(db, 'recall-rank', 'recall_hit', 0.6, 25 - i);
+    for (let i = 0; i < 15; i++) insertParamFeedback(db, 'recall-rank', 'recall_hit', 0.1, 10 - i);
+
+    const result = await runLearning2(db);
+    expect(result.signals_collected).toBe(true); // Step 1 不受影响
+    expect(result.adjustments).toHaveLength(0);
+    expect(mockCallLLM).not.toHaveBeenCalled(); // 不白撞 LLM
   });
 
   it('清理旧 A/B 测试残留', async () => {

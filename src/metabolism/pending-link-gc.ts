@@ -13,6 +13,7 @@
 import type Database from 'better-sqlite3';
 import { getParam } from '../strategy/loader.js';
 import { logTimelineEvent } from '../db/log.js';
+import { now } from '../utils/time.js';
 import { createLogger } from '../utils/logger.js';
 
 const log = createLogger('pending-link-gc');
@@ -43,16 +44,18 @@ export function runPendingLinkGc(
 
   const expired = db.prepare(
     `SELECT id FROM links
-     WHERE status = 'pending' AND created < ?
+     WHERE status = 'pending' AND created < ? AND deleted = 0
      ORDER BY created ASC
      LIMIT ?`,
   ).all(expiredCutoff, maxPerRun) as Array<{ id: string }>;
 
   if (expired.length === 0) return { deleted: 0 };
 
-  const stmt = db.prepare('DELETE FROM links WHERE id = ?');
+  // M10:软删(deleted=1 + bump updated/edit_seq),靠 LWW 跨设备传播删除;不 hard-delete。
+  const stmt = db.prepare('UPDATE links SET deleted = 1, updated = ?, edit_seq = edit_seq + 1 WHERE id = ?');
   const tx = db.transaction((ids: string[]) => {
-    for (const id of ids) stmt.run(id);
+    const ts = now();
+    for (const id of ids) stmt.run(ts, id);
   });
   tx(expired.map(r => r.id));
 

@@ -84,7 +84,7 @@ export async function runDivergentScan(
     const placeholders = batchIds.map(() => '?').join(',');
     const rows = db.prepare(`
       SELECT from_id, to_id FROM links
-      WHERE from_id IN (${placeholders}) AND to_id IN (${placeholders})
+      WHERE from_id IN (${placeholders}) AND to_id IN (${placeholders}) AND deleted = 0
     `).all(...batchIds, ...batchIds) as Array<{ from_id: string; to_id: string }>;
     existingLinksAll.push(...rows);
   }
@@ -136,6 +136,10 @@ export async function runDivergentScan(
   const dedupWindowDays = getParam('scan-divergent', 'bridge_dedup_days', 30);
   const dedupCutoffMs = Date.now() - dedupWindowDays * 24 * 60 * 60 * 1000;
   const hasRecentBridge = (a: string, b: string): boolean => {
+    // ORDER BY created DESC 必须有:判定要基于"最近一个" bridge。无排序时
+    // SQLite 按 rowid 返回最旧行,同对存在新旧多个 bridge 时,最旧那个一旦
+    // 超出 30 天窗口,此后永远判 false → 每次扫描再堆一个新 bridge,与本
+    // dedup 的意图正好相反。
     const row = db.prepare(`
       SELECT n.id, n.created FROM nodes n
       WHERE n.is_crystal = 1 AND n.is_superseded = 0
@@ -143,12 +147,15 @@ export async function runDivergentScan(
           SELECT 1 FROM links l, json_each(l.relation) j
           WHERE l.from_id = n.id AND l.to_id = ?
             AND json_extract(j.value, '$.type') = 'summarizes'
+            AND l.deleted = 0
         )
         AND EXISTS (
           SELECT 1 FROM links l, json_each(l.relation) j
           WHERE l.from_id = n.id AND l.to_id = ?
             AND json_extract(j.value, '$.type') = 'summarizes'
+            AND l.deleted = 0
         )
+      ORDER BY n.created DESC
       LIMIT 1
     `).get(a, b) as { id: string; created: string } | undefined;
     if (!row) return false;
@@ -285,9 +292,9 @@ export async function runCrystalEmergence(
   const candidates = db.prepare(`
     SELECT
       n.id, n.content, n.independence, n.refinement,
-      (SELECT COUNT(*) FROM links WHERE (from_id = n.id OR to_id = n.id) AND status = 'confirmed') as link_count,
-      (SELECT COUNT(DISTINCT json_extract(j.value, '$.type')) FROM links l2, json_each(l2.relation) j WHERE (l2.from_id = n.id OR l2.to_id = n.id) AND l2.status = 'confirmed') as link_diversity,
-      (SELECT COUNT(*) FROM links WHERE to_id = n.id AND status = 'confirmed') as in_degree
+      (SELECT COUNT(*) FROM links WHERE (from_id = n.id OR to_id = n.id) AND status = 'confirmed' AND deleted = 0) as link_count,
+      (SELECT COUNT(DISTINCT json_extract(j.value, '$.type')) FROM links l2, json_each(l2.relation) j WHERE (l2.from_id = n.id OR l2.to_id = n.id) AND l2.status = 'confirmed' AND l2.deleted = 0) as link_diversity,
+      (SELECT COUNT(*) FROM links WHERE to_id = n.id AND status = 'confirmed' AND deleted = 0) as in_degree
     FROM nodes n
     WHERE n.heat > 0.01 AND n.is_crystal = 0 AND n.is_meta = 0 AND n.is_superseded = 0 AND n.archived = 0
     ORDER BY link_count DESC
@@ -311,17 +318,55 @@ export async function runCrystalEmergence(
 
   const vocab = getGraphVocabulary(db);
 
+  // Dedup(与 runDivergentScan::hasRecentBridge 同模式):枢纽本身永远
+  // is_crystal=0、confirmed 链接只增不减(本任务建的 summarizes 链接还推高
+  // 其 link_count),同一批枢纽每个周期都会重新入选 top-20。近 N 天内已有
+  // is_crystal=1 节点通过 summarizes 指向该枢纽 → 跳过,避免近似重复的
+  // crystal 无限堆积(Path B 池同理,被跳过的枢纽也不进池)。
+  const crystalDedupDays = getParam('crystal-emerge', 'crystal_dedup_days', 30);
+  const crystalDedupCutoffMs = Date.now() - crystalDedupDays * 24 * 60 * 60 * 1000;
+  const hasRecentCrystal = (nodeId: string): boolean => {
+    const row = db.prepare(`
+      SELECT n.created FROM nodes n
+      WHERE n.is_crystal = 1 AND n.is_superseded = 0
+        AND EXISTS (
+          SELECT 1 FROM links l, json_each(l.relation) j
+          WHERE l.from_id = n.id AND l.to_id = ?
+            AND json_extract(j.value, '$.type') = 'summarizes'
+            AND l.deleted = 0
+        )
+      ORDER BY n.created DESC
+      LIMIT 1
+    `).get(nodeId) as { created: string } | undefined;
+    if (!row) return false;
+    // created 格式兼容:JS ISO 带 Z / SQLite datetime('now') 无 Z,统一按 UTC 解析
+    const createdMs = new Date(
+      row.created.endsWith('Z') ? row.created : row.created.replace(' ', 'T') + 'Z',
+    ).getTime();
+    return Number.isFinite(createdMs) && createdMs >= crystalDedupCutoffMs;
+  };
+
+  // 置信度门槛:crystal-emerge.params.md 声明 min_confidence(低于此置信度
+  // 不创建结晶节点),与 runDivergentScan 的 minConfidence 对齐;否则 LLM 输出
+  // 0.1 置信度的结晶也会以 heat=1.0 落库。
+  const minCrystalConfidence = getParam('crystal-emerge', 'min_confidence', 0.4);
+
   for (const hub of hubCandidates) {
+    if (hasRecentCrystal(hub.id)) continue;
+
     const isSpecific = hub.independence >= 0.4 && hub.content.length >= 30 && hub.refinement >= 0.2;
 
     if (isSpecific) {
       // 收集枢纽 + 邻居内容
+      // GROUP BY n.id:同一对节点间可能有多条链接(tagged + analogous 等),
+      // 不聚合会让同一邻居重复占用 LIMIT 名额、重复进入 LLM 输入。
       const neighborRows = db.prepare(`
         SELECT n.id, n.content FROM nodes n
         JOIN links l ON (l.to_id = n.id OR l.from_id = n.id)
         WHERE (l.from_id = ? OR l.to_id = ?) AND n.id != ?
-          AND l.status = 'confirmed' AND n.heat > 0.01 AND n.is_superseded = 0 AND n.archived = 0
-        ORDER BY l.strength DESC LIMIT 5
+          AND l.status = 'confirmed' AND l.deleted = 0 AND n.heat > 0.01 AND n.is_superseded = 0 AND n.archived = 0
+        GROUP BY n.id
+        ORDER BY MAX(l.strength) DESC LIMIT 5
       `).all(hub.id, hub.id, hub.id) as Array<{ id: string; content: string }>;
 
       // 用 ★枢纽★ 标记区分枢纽节点，让 LLM 知道哪个是核心
@@ -338,7 +383,7 @@ export async function runCrystalEmergence(
 
       try {
         const crystal = await generateCrystal(contents, vocab.crystalSummaries);
-        if (crystal) {
+        if (crystal && (crystal.confidence ?? 0) >= minCrystalConfidence) {
           const crystalTitle = crystal.title || crystal.content.slice(0, 50);
           const crystalNode = createNode(db, {
             type: 'fact',
@@ -387,7 +432,7 @@ export async function runCrystalEmergence(
   if (pathBPool.length >= 3) {
     const contents = pathBPool.slice(0, 10).map(n => n.content);
     const crystal = await generateCrystal(contents, vocab.crystalSummaries);
-    if (crystal) {
+    if (crystal && (crystal.confidence ?? 0) >= minCrystalConfidence) {
       // 统一走 createNode,与 Path A / runDivergentScan 保持一致。
       const crystalTitle = crystal.title || crystal.content.slice(0, 50);
       const crystalNode = createNode(db, {
@@ -477,14 +522,25 @@ async function checkCrystalEvidence(db: Database.Database): Promise<string[]> {
 
   for (const crystal of crystals) {
     // 找支撑节点（通过 summarizes 链接连接的节点）
+    // 约束:只认 crystal → 源节点方向的 summarizes 链接(crystal 创建路径的
+    // 唯一证据签名)。不过滤 relation 会把 tagged / analogous 等任意邻居算作
+    // "证据",刷新阈值(≥30% 被修改)基于错误总体误触发/漏触发;GROUP BY 防
+    // 同对多链接重复计入并重复进 LLM 输入。
     const supporters = db.prepare(`
       SELECT n.id, n.content, n.version, n.last_reconsolidated
       FROM nodes n
-      JOIN links l ON (l.to_id = n.id OR l.from_id = n.id)
-      WHERE (l.from_id = ? OR l.to_id = ?) AND n.id != ?
-        AND l.status = 'confirmed' AND n.heat > 0.01 AND n.is_superseded = 0 AND n.archived = 0
-      ORDER BY l.strength DESC LIMIT 10
-    `).all(crystal.id, crystal.id, crystal.id) as Array<{
+      JOIN links l ON l.to_id = n.id
+      WHERE l.from_id = ? AND n.id != ?
+        AND l.status = 'confirmed'
+        AND EXISTS (
+          SELECT 1 FROM json_each(l.relation) j
+          WHERE json_extract(j.value, '$.type') = 'summarizes'
+        )
+        AND l.deleted = 0
+        AND n.heat > 0.01 AND n.is_superseded = 0 AND n.archived = 0
+      GROUP BY n.id
+      ORDER BY MAX(l.strength) DESC LIMIT 10
+    `).all(crystal.id, crystal.id) as Array<{
       id: string; content: string; version: number; last_reconsolidated: string | null;
     }>;
 

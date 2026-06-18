@@ -141,7 +141,7 @@ export function GraphToolbar({
           万节点级别 vault 在没上限的情况下会锁死 renderer。 */}
       {graphLimit !== undefined && onGraphLimitChange && (
         <div className="flex items-center gap-2 glass-card rounded-lg px-3 py-1.5 border border-white/10">
-          <span className="text-xs text-gray-400 whitespace-nowrap">{t('explorer:toolbar.nodeLimitLabel', { defaultValue: 'Top' })}</span>
+          <span className="text-xs text-gray-400 whitespace-nowrap">{t('explorer:toolbar.nodeLimitLabel')}</span>
           <select
             value={graphLimit}
             onChange={e => onGraphLimitChange(Number(e.target.value))}
@@ -155,7 +155,7 @@ export function GraphToolbar({
           {renderedNodeCount !== undefined && (
             <span
               className="text-[10px] text-gray-500 tabular-nums whitespace-nowrap"
-              title={t('explorer:toolbar.nodeLimitHint', { defaultValue: '按 heat 高低取前 N 个节点 + 它们的 1-hop 邻居' })}
+              title={t('explorer:toolbar.nodeLimitHint')}
             >
               ({renderedNodeCount})
             </span>

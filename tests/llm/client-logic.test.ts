@@ -10,6 +10,7 @@ import {
   isServiceError,
   normalizeBaseUrl,
   fingerprintCreds,
+  manualThinkingUnsupported,
 } from '../../src/llm/client.js';
 import { processThinkTags } from '../../src/llm/thinking.js';
 
@@ -147,6 +148,15 @@ describe('isRetryable', () => {
 
     it('"aborted due to timeout" in message → true', () => {
       expect(isRetryable(new Error('The operation was aborted due to timeout'))).toBe(true);
+    });
+
+    it('APIUserAbortError (Claude 路径 tier 超时经 SDK 抛出) → true', () => {
+      // SDK 在 signal aborted 时丢弃 reason 抛 APIUserAbortError:extends APIError、
+      // status=undefined、name 不是 'AbortError'——必须在 APIError 分支之前分流,
+      // 否则 tier 超时被误判不可重试(与 Gemini/OpenAI 路径的 TimeoutError 行为不一致)
+      const err = new Anthropic.APIUserAbortError();
+      expect(err instanceof Anthropic.APIError).toBe(true); // 前提确认:确实会命中 APIError 分支
+      expect(isRetryable(err)).toBe(true);
     });
   });
 
@@ -387,5 +397,53 @@ describe('fingerprintCreds', () => {
     const fp = fingerprintCreds({ project_id: 'x' }, '/nonexistent/path/that/does/not/exist.json');
     expect(typeof fp).toBe('string');
     expect(fp.length).toBe(12);
+  });
+});
+
+// ── manualThinkingUnsupported ────────────────────────────────
+
+describe('manualThinkingUnsupported', () => {
+  // API 事实:Opus 4.7+ / Fable 系列移除 manual extended thinking,
+  // 发送 thinking:{type:'enabled',budget_tokens} 直接 400。
+  // Opus 4.6 / Sonnet 4.6 处于 deprecated 过渡期仍可用。
+
+  it('claude-opus-4-7 (heavy 档默认) → true', () => {
+    expect(manualThinkingUnsupported('claude-opus-4-7')).toBe(true);
+  });
+
+  it('claude-opus-4-8 → true', () => {
+    expect(manualThinkingUnsupported('claude-opus-4-8')).toBe(true);
+  });
+
+  it('claude-fable-5 → true', () => {
+    expect(manualThinkingUnsupported('claude-fable-5')).toBe(true);
+  });
+
+  it('claude-opus-5-0 (未来主版本) → true', () => {
+    expect(manualThinkingUnsupported('claude-opus-5-0')).toBe(true);
+  });
+
+  it('claude-opus-4-6 (过渡期 budget_tokens 仍可用) → false', () => {
+    expect(manualThinkingUnsupported('claude-opus-4-6')).toBe(false);
+  });
+
+  it('claude-sonnet-4-6 → false', () => {
+    expect(manualThinkingUnsupported('claude-sonnet-4-6')).toBe(false);
+  });
+
+  it('claude-haiku-4-5 → false', () => {
+    expect(manualThinkingUnsupported('claude-haiku-4-5')).toBe(false);
+  });
+
+  it('Vertex 风格带版本后缀的 ID 也能匹配', () => {
+    expect(manualThinkingUnsupported('claude-opus-4-7@20260301')).toBe(true);
+  });
+
+  it('大写模型名也能匹配（toLowerCase）', () => {
+    expect(manualThinkingUnsupported('Claude-Opus-4-7')).toBe(true);
+  });
+
+  it('非 Claude 模型 → false', () => {
+    expect(manualThinkingUnsupported('gemini-2.5-pro')).toBe(false);
   });
 });

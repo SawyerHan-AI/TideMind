@@ -110,4 +110,24 @@ describe('chooseManifestWinner', () => {
       { id: 'n1', updated: '2026-04-20T10:30:00.900Z', archived: false },
     )).toBe('same');
   });
+
+  it('M3 因果版本:edit_seq 更高的一方赢(updated 双角色陷阱防护)', () => {
+    // 本地有未上行编辑(edit_seq 高),云端只 bump updated(派生改动,edit_seq 不变)→ 判 local 上行
+    expect(chooseManifestWinner(
+      { id: 'n1', updated: '2026-04-20T10:30:00Z', archived: false, edit_seq: 2 },
+      { id: 'n1', updated: '2099-01-01T00:00:00Z', archived: false, edit_seq: 1 },
+    )).toBe('local');
+    // server edit_seq 更高 → server
+    expect(chooseManifestWinner(
+      { id: 'n1', updated: '2099-01-01T00:00:00Z', archived: false, edit_seq: 1 },
+      { id: 'n1', updated: '2026-04-20T10:30:00Z', archived: false, edit_seq: 2 },
+    )).toBe('server');
+  });
+
+  it('M3 灰度兜底:edit_seq 缺失用 version', () => {
+    expect(chooseManifestWinner(
+      { id: 'n1', updated: '2026-04-20T10:30:00Z', archived: false, version: 2 },
+      { id: 'n1', updated: '2099-01-01T00:00:00Z', archived: false, version: 1 },
+    )).toBe('local');
+  });
 });

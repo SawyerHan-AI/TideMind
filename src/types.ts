@@ -365,6 +365,13 @@ export interface DigestInput {
    * 默认 false：brain_digest 等"无身份源"入口应保留向量归并作为兜底。
    */
   skipDedupMerge?: boolean;
+  /**
+   * 内部字段：异步 digest 首次写入 stream 后得到的真实锚点引用
+   * (`stream/<file>#<anchor>`)。enqueue 时随 input 一起持久化,retry 时复用,
+   * 避免 retry 路径用占位的 `retry:<traceId>` 覆盖节点 source_stream、丢失真实锚点。
+   * 非 MCP 入口/同步路径不设置。
+   */
+  _retryStreamRef?: string;
 }
 
 export interface DigestOutput {

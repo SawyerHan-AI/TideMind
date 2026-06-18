@@ -1,6 +1,8 @@
 import { useCallback } from 'react'
 import { motion } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
+import { AlertTriangle } from 'lucide-react'
 import { useIPC } from '../hooks/useIPC'
 import { useDataRevision } from '../contexts/DataChangeContext'
 import { Skeleton } from '../components/Skeleton'
@@ -18,6 +20,7 @@ const stagger = {
 }
 
 export function Dashboard() {
+  const { t } = useTranslation('common')
   const rev = useDataRevision()
   // perf-optimization-2026-05-17 P1-3:Dashboard 切片化拉数。
   // 原本一个 stats:dashboard 串行做 8+ 条 SQL(含全表 tags 聚合 500-1000ms),
@@ -26,7 +29,7 @@ export function Dashboard() {
   const fetchMetrics = useCallback(() => window.api.stats.dashboardMetrics(), [rev])
   const fetchActivity = useCallback(() => window.api.stats.dashboardActivity(), [rev])
   const fetchTags = useCallback(() => window.api.stats.dashboardTags(), [rev])
-  const { data: metrics, loading: metricsLoading } = useIPC(fetchMetrics)
+  const { data: metrics, loading: metricsLoading, error: metricsError, refetch: refetchMetrics } = useIPC(fetchMetrics)
   const { data: activity } = useIPC(fetchActivity)
   const { data: tags } = useIPC(fetchTags)
   const navigate = useNavigate()
@@ -37,6 +40,24 @@ export function Dashboard() {
 
   const handleTagClick = (tag: string) => {
     navigate(`/knowledge?tag=${encodeURIComponent(tag)}`)
+  }
+
+  // metrics IPC 失败(db 初始化失败 / SQLite 运行时错误等):此时 loading=false、
+  // metrics=null,若不显式拦截 error 就会永远卡在下面的骨架屏分支。给出可见错误
+  // 文案 + 重试按钮,而不是无限骨架。
+  if (metricsError && !metrics) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
+        <AlertTriangle size={28} className="text-amber-400/70" />
+        <p className="text-sm text-gray-400">{t('errors.somethingWentWrong')}</p>
+        <button
+          onClick={() => refetchMetrics()}
+          className="px-4 py-1.5 text-xs font-medium text-gray-200 border border-white/10 hover:border-white/20 rounded-lg transition-colors"
+        >
+          {t('errors.retry')}
+        </button>
+      </div>
+    )
   }
 
   // 首屏依赖 metrics(指标卡 + 趋势 + isEmpty 判定)。activity / tags 可

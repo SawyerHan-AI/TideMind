@@ -112,10 +112,23 @@ if (!gotTheLock) {
 
 // macOS: open-url 事件（可能在 app.whenReady() 之前触发，需缓存）
 let pendingProtocolUrl: string | null = null
-// 保存 sync-client.destroy 函数引用,供 before-quit 同步调用清理 WebSocket /
-// reconnect timer / slow-retry timer。dynamic import 后立刻 set,在 before-quit
-// 时如果存在就调,避免 cloud sync 在 app 退出过程中继续操作已关闭的 db。
-let syncClientDestroyer: (() => void) | null = null
+
+/**
+ * 在满足条件(已登录 + sync_enabled + db 就绪)时创建并启动 cloud sync client。
+ * 启动路径(whenReady)和 OAuth 登录回调路径共用,保证两条登录入口都自动起同步。
+ * createCloudSyncClient 内部先 stop 旧 singleton,重复调用安全(幂等)。
+ * before-quit 走 destroySyncClient() 销毁当前 singleton,不依赖此处的引用。
+ */
+async function maybeStartCloudSync(dbForCloud: ReturnType<typeof getClientDb>): Promise<void> {
+  const { isLoggedIn } = await import('./cloud/auth-client.js')
+  if (!isLoggedIn()) return
+  const { getConfig: getAppConfig } = await import('../../src/config.js')
+  if (!getAppConfig().cloud?.sync_enabled) return
+  const { getCloudSyncClient, createCloudSyncClient } = await import('./cloud/sync-client.js')
+  if (getCloudSyncClient()) return // 已有实例(如启动路径已建),不重复建
+  const syncClient = createCloudSyncClient(dbForCloud)
+  syncClient.start().catch(err => mainLog.error('sync client start failed:', err))
+}
 
 app.on('open-url', (event, url) => {
   event.preventDefault()
@@ -147,6 +160,17 @@ async function handleProtocolUrl(url: string): Promise<void> {
       const auth = await handleOAuthCallback(url)
       // 通知渲染进程刷新状态
       mainWindow?.webContents.send('data-changed', { scopes: ['cloud'] })
+      // OAuth 登录后自动启动 sync client(对齐启动路径)。原实现:启动时未登录会在
+      // `if (!isLoggedIn()) return` 提前退出,永不建 client;OAuth 回调只 emit
+      // data-changed 不建 client → 本会话内 30s 轮询 / WS / reconcile 全不启动,
+      // 用户以为"登录回来就恢复同步了"但实际要手动点"立即同步"或重启 app。
+      // maybeStartCloudSync 内部已判 sync_enabled + 已有实例去重,失败不阻塞登录。
+      try {
+        const dbForCloud = getClientDb()
+        await maybeStartCloudSync(dbForCloud)
+      } catch (e) {
+        mainLog.warn('post-OAuth sync start failed (non-fatal):', (e as Error).message)
+      }
       // 客户端日志写到本地 logs/,但仍按 PII 卫生掩码邮箱(避免日志被分享/上报时泄漏)
       const masked = (auth.email ?? '').replace(/(.{3}).*@/, '$1***@')
       log.info(`OAuth login success: ${masked}`)
@@ -208,9 +232,11 @@ function createWindow(): void {
     mainWindow?.show()
   })
 
-  // macOS: 关闭窗口时隐藏到后台，而不是退出
+  // 仅 macOS 遵循"关窗隐藏到 tray、不退出"的平台惯例;Windows/Linux 关窗即退出
+  // (放行 close → window-all-closed → app.quit())。getIsQuitting() 为 true 时
+  // (托盘 Quit / cmd+Q / quitAndInstall)所有平台都放行。
   mainWindow.on('close', (e) => {
-    if (!getIsQuitting()) {
+    if (process.platform === 'darwin' && !getIsQuitting()) {
       e.preventDefault()
       mainWindow?.hide()
     }
@@ -411,18 +437,11 @@ app.whenReady().then(async () => {
     const dbForCloud = db
     void (async () => {
       try {
-        const { initAuth, isLoggedIn } = await import('./cloud/auth-client.js')
+        const { initAuth } = await import('./cloud/auth-client.js')
         initAuth()
-        if (!isLoggedIn()) return
-
-        const { getConfig: getAppConfig } = await import('../../src/config.js')
-        const config = getAppConfig()
-        if (!config.cloud?.sync_enabled) return
-
-        const { createCloudSyncClient, destroySyncClient } = await import('./cloud/sync-client.js')
-        const syncClient = createCloudSyncClient(dbForCloud)
-        syncClientDestroyer = destroySyncClient
-        syncClient.start().catch(err => mainLog.error('sync client start failed:', err))
+        // 启动时未登录/未开同步则不建 client;中途登录由 OAuth 回调路径补建
+        // (见 handleProtocolUrl 的 maybeStartCloudSync 调用)。
+        await maybeStartCloudSync(dbForCloud)
       } catch (err) {
         mainLog.error('cloud auth init failed:', err)
       }
@@ -469,12 +488,15 @@ app.on('before-quit', () => {
   // 必须停止 cloud sync client,否则 WebSocket / 重连定时器 / 慢重试 timer 全泄漏:
   // app 退出过程中 ws 仍尝试发握手或重连;若 slowRetry 触发新 ws 连接,close handler
   // 在 db 关闭后尝试写 metadata 会触发 "database is closed" 异常。
-  // syncClientDestroyer 在启动 syncClient 后由 dynamic import 路径保存(见 line ~375)。
-  try {
-    syncClientDestroyer?.()
-  } catch (err) {
-    mainLog.warn('destroySyncClient failed:', (err as Error).message)
-  }
+  //
+  // 不能依赖 syncClientDestroyer:它只在**启动时**(已登录 + sync_enabled)被赋值。
+  // 用户启动时未登录/未开同步、会话中途经 cloud:set-sync-enabled 或 cloud:trigger-sync
+  // 自救路径创建的 sync client,该引用仍为 null,退出时不会被清理。改为动态 import
+  // sync-client 模块、直接调 destroySyncClient()——它销毁当前 singleton(无论哪条路径
+  // 建的),没有则 no-op。dynamic import 在 before-quit 同步段发起,promise 进微任务队列。
+  import('./cloud/sync-client.js')
+    .then(m => m.destroySyncClient())
+    .catch(err => mainLog.warn('destroySyncClient failed:', (err as Error).message))
   // 先 fire-and-forget kill in-flight LLM 请求,让 socket 提早释放,避免 daemon
   // 跑着 profile-synthesize (max_tokens=10000 可能 5+ 分钟) 期间用户 cmd+Q 时
   // 进程等 fetch promise 出现"主进程 95% CPU 卡 5 分钟"的 quit-and-install 卡死。
@@ -490,9 +512,11 @@ app.on('before-quit', () => {
 })
 
 app.on('window-all-closed', () => {
-  // macOS: 有 tray 时不退出，窗口关闭只是隐藏
+  // macOS 关窗只隐藏(close handler 已 preventDefault),不会走到这里;此分支留给
+  // Windows/Linux 关窗退出。只调 app.quit() 触发 before-quit 统一清理——绝不在此
+  // 直接 closeClientDb():否则 DB 会早于 before-quit 的 stopDaemon 关闭,daemon
+  // in-flight tick 撞 'database is closed'。退出顺序必须是 stopDaemon → closeClientDb。
   if (process.platform !== 'darwin') {
-    closeClientDb()
     app.quit()
   }
 })

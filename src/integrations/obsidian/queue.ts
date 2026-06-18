@@ -18,7 +18,7 @@ import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { parseCanvas } from './canvas-parser.js';
 import {
   getFileState, setFileState, isFileChanged,
-  computeFileHash, computeContentHash, computeSegmentHash,
+  computeFileHash, computeContentHash, computeSegmentHash, getFileStat,
 } from './sync-state.js';
 import { OBSIDIAN_EXCLUDED_DIRS } from './types.js';
 import { digest } from '../../tools/digest.js';
@@ -151,6 +151,9 @@ async function processOneFile(
   const progress = getProgress(sourceId);
   progress.currentFile = relPath;
 
+  // 本轮新建（非复用旧 ID）的节点。声明在 try 外，让 catch 能据此清理已建节点。
+  const createdThisRun: string[] = [];
+
   try {
     if (shouldStop?.()) return false;
 
@@ -165,11 +168,23 @@ async function processOneFile(
 
     // Canvas 文件走单独管线
     if (filePath.endsWith('.canvas')) {
-      await processCanvasFile(db, filePath, vaultRoot, relPath, syncState, sourceId, shouldStop);
+      const canvasChanged = await processCanvasFile(db, filePath, vaultRoot, relPath, syncState, sourceId, shouldStop);
       if (shouldStop?.()) return false;
-      progress.processedFiles++;
-      return true;
+      // 仅当实际产生处理（产出/supersede 节点）才计入 processed 并允许写 timeline，
+      // 与 .md 路径对齐——清空/空转的 canvas 不再每次 trigger 写噪声事件。
+      if (canvasChanged) progress.processedFiles++;
+      else progress.skippedFiles++;
+      return canvasChanged;
     }
+
+    // 避免 TOCTOU：在预处理（读内容）的同一时刻抓 stat 作为本轮 snapshot。
+    // digest 期间（LLM 调用，可达分钟级）用户若编辑文件,写回 sync state 的
+    // content_hash + mtime + size 必须都来自被 digest 的那份内容,否则:
+    //   - 用 digest 后重读的新 hash → 下轮 isFileChanged 判未变更,编辑永久丢失;
+    //   - 用 digest 后重读的新 mtime/size → isFileChanged 的 mtime+size 快速路径
+    //     直接短路,hash 比对都走不到,同样丢失编辑。
+    // 与 Logseq 对齐(logseq/queue.ts 同款 snapshotStat)。
+    const entrySnapshotStat = getFileStat(filePath);
 
     // 预处理
     const preprocessed = preprocessFile(filePath, vaultRoot);
@@ -177,6 +192,11 @@ async function processOneFile(
       progress.skippedFiles++;
       return false;
     }
+
+    // read-time snapshot:入口 getFileStat 抓到 dataless 返回 null,但 preprocessFile 随后
+    // 成功(文件在 stat 与 read 之间被 iCloud 下载)→ 文件此刻可读,在 digest 前(此刻仍是被
+    // digest 那份内容)补抓一次 stat,与下面用 rawContent 算的 hash 同源。绝不在 digest 后补抓。
+    const snapshotStat = entrySnapshotStat ?? getFileStat(filePath);
 
     // 避免 TOCTOU：用预处理时读到的 rawContent 计算 hash
     const contentHash = computeContentHash(preprocessed.rawContent);
@@ -215,7 +235,7 @@ async function processOneFile(
         return false;
       }
       // 不直接标记 is_tag，由 promoteFrequentTags 按阈值判断
-      updateSyncState(db, relPath, filePath, nodeIds, sourceId, contentHash);
+      updateSyncState(db, relPath, filePath, nodeIds, sourceId, contentHash, undefined, snapshotStat);
       progress.processedFiles++;
       return true;
     }
@@ -226,6 +246,10 @@ async function processOneFile(
     const oldHashes = syncState?.segment_hashes ?? [];
     const allNodeIds: string[] = [];
     const allHashes: string[] = [];
+    // createdThisRun（声明在 try 外）：本轮新建的节点 ID。若中途某段抛错
+    // （SQLITE_BUSY / 磁盘错误 / shutdown closeDb），catch 里据此清理已建节点，避免：
+    //   (a) 这些节点不在任何 sync state 里 → 永远不被 supersede（孤儿，且带向量持续被 recall）；
+    //   (b) 下次重跑因 isFileChanged 仍为 true 重新 digest 同一段 → 产生重复活跃节点。
 
     for (let i = 0; i < segments.length; i++) {
       if (shouldStop?.()) return false;
@@ -275,7 +299,9 @@ async function processOneFile(
       });
 
       if (result.created_nodes) {
-        allNodeIds.push(...result.created_nodes.map(n => n.id));
+        const newIds = result.created_nodes.map(n => n.id);
+        allNodeIds.push(...newIds);
+        createdThisRun.push(...newIds);
       }
     }
 
@@ -296,7 +322,7 @@ async function processOneFile(
         log.warn(`文件 digest 未产生新节点,且无旧节点: ${relPath}`);
       }
       // 更新 content_hash,避免下次 isFileChanged 反复触发
-      updateSyncState(db, relPath, filePath, [], sourceId, contentHash);
+      updateSyncState(db, relPath, filePath, [], sourceId, contentHash, undefined, snapshotStat);
       progress.skippedFiles++;
       // 有 supersede 实际处理过(旧节点被标记)算 changed,无旧节点的纯空文件不算。
       return oldNodeIds.length > 0;
@@ -351,12 +377,28 @@ async function processOneFile(
 
     // 更新同步状态(包含 segment_hashes 供下次段级 dedup 用)
     if (shouldStop?.()) return false;
-    updateSyncState(db, relPath, filePath, allNodeIds, sourceId, contentHash, allHashes);
+    updateSyncState(db, relPath, filePath, allNodeIds, sourceId, contentHash, allHashes, snapshotStat);
 
     progress.processedFiles++;
     return true;
   } catch (err) {
     log.error(`文件处理失败 (${relPath}):`, (err as Error).message);
+    // 段级 digest 部分失败补偿：本轮已建节点 + 旧节点都未被 supersede，sync state
+    // 也未更新。这些新建节点不在任何 sync state 里，永不会被后续 supersede（孤儿），
+    // 且下次重跑会重复 digest 同段产生重复活跃节点。这里把它们标记 superseded
+    //（heat=0.01 + is_superseded=1，recall 与向量搜索都会过滤掉，与 M18 空文件路径
+    // 用同一原语），旧节点仍是活跃版本、recall 一致；下次重跑从干净状态重建。
+    // closeDb 导致的 'database is not open' 等场景清理也可能失败，故整体 try 兜底。
+    if (createdThisRun.length > 0) {
+      try {
+        for (const id of createdThisRun) {
+          markNodeSupersededRecordOnly(db, id);
+        }
+        log.warn(`部分失败回滚:已标记本轮新建的 ${createdThisRun.length} 个节点为 superseded (${relPath})`);
+      } catch (cleanupErr) {
+        log.error(`部分失败回滚清理也失败 (${relPath}):`, (cleanupErr as Error).message);
+      }
+    }
     progress.failedFiles++;
     return false;
   }
@@ -378,14 +420,47 @@ async function processCanvasFile(
   syncState: FileSyncState | null,
   sourceId?: string,
   shouldStop?: () => boolean,
-): Promise<void> {
+): Promise<boolean> {
+  // 返回 boolean = 是否产生了实质处理（产出/supersede 了节点）。供 processOneFile
+  // 决定是否写 timeline 事件，与 .md 路径对齐——避免空转 canvas 反复写噪声事件。
   const repo = new SqliteRepository(db);
-  if (shouldStop?.()) return;
+  if (shouldStop?.()) return false;
+
+  // 避免 TOCTOU：在 parse(读内容)的同一时刻抓 stat 作为本轮 snapshot。canvas digest
+  // 对每个 text/link 节点逐个 await(可达分钟级),期间用户若编辑 .canvas,写回 sync state
+  // 的 content_hash + mtime + size 必须都来自被 digest 的那份内容,否则下次 isFileChanged
+  // 的 mtime+size 快速路径会短路 / 用新 hash 判未变更,这次编辑永久丢失。与 .md 路径
+  //(processOneFile)及 Logseq 对齐。
+  const entrySnapshotStat = getFileStat(filePath);
+
   const parsed = parseCanvas(filePath);
-  if (!parsed) return;
+  if (!parsed) {
+    // 解析失败（JSON.parse 抛错 / 缺 nodes 数组）≠ 用户清空 canvas。最常见成因是
+    // Obsidian 非原子保存的半截写、Obsidian Sync / iCloud 冲突损坏文件——内容仍在，
+    // 只是这一瞬读到的是坏文件。此处绝不能 supersede 旧节点：markNodeSupersededRecordOnly
+    // 不迁移链接，下次成功解析又建全新 ID，旧节点 + 入边会被永久遗弃 = 一次瞬时
+    // 解析失败抹掉用户手绘 canvas 记忆。
+    //
+    // 只为断死循环更新 content_hash（不更新 node_ids，旧节点原样保留）：否则下次
+    // isFileChanged 因 hash 仍是旧值反复判为变更、每次都重 parse + log 空转。
+    // 与 .md 路径对齐——.md 读/预处理失败时(queue.ts:182)同样只跳过、不 supersede；
+    // 真·清空(parse 成功但 0 节点)走下方 nodeIds.length===0 分支才 supersede。
+    if (!shouldStop?.()) {
+      const oldNodeIds = syncState?.node_ids ?? [];
+      updateSyncState(db, relPath, filePath, oldNodeIds, sourceId);
+    }
+    return false;
+  }
 
   // 记录旧版本节点 ID（首次导入时为空）
   const oldNodeIds = syncState?.node_ids ?? [];
+
+  // read-time snapshot:入口 stat 为 null 但 parseCanvas 随后成功 ⇒ 文件此刻可读,在 digest
+  // 前补抓 stat,与下面用 rawContent 算的 hash 同源。绝不在 digest 后补抓。
+  const snapshotStat = entrySnapshotStat ?? getFileStat(filePath);
+
+  // 避免 TOCTOU：用 parse 时刻读到的 rawContent 算 hash,而不是 digest 后重读盘。
+  const contentHash = computeContentHash(parsed.rawContent);
 
   const nodeIds: string[] = [];
   // Canvas node id → brain node id（用于 edge 映射）
@@ -393,7 +468,7 @@ async function processCanvasFile(
 
   // Text 节点 → digest
   for (const textNode of parsed.textNodes) {
-    if (shouldStop?.()) return;
+    if (shouldStop?.()) return false;
     if (!textNode.text.trim()) continue;
 
     const tags = [...textNode.groupLabels];
@@ -415,7 +490,7 @@ async function processCanvasFile(
 
   // Link 节点 → digest（含 URL）
   for (const linkNode of parsed.linkNodes) {
-    if (shouldStop?.()) return;
+    if (shouldStop?.()) return false;
     const result = await digest(repo, {
       content: `外部链接: ${linkNode.url}`,
       source: { tool: 'obsidian', files: [relPath] },
@@ -450,7 +525,7 @@ async function processCanvasFile(
   }
 
   // 版本替代：旧节点链接迁移到新节点，旧节点标记为 superseded
-  if (shouldStop?.()) return;
+  if (shouldStop?.()) return false;
 
   if (oldNodeIds.length > 0 && nodeIds.length > 0) {
     const pairs = Math.min(oldNodeIds.length, nodeIds.length);
@@ -467,11 +542,23 @@ async function processCanvasFile(
   }
 
   if (nodeIds.length === 0 && oldNodeIds.length > 0) {
-    log.warn(`Canvas digest 未产生新节点,保留旧同步状态: ${relPath}`);
-    return;
+    // 修复 canvas 死循环（对齐 .md M18，queue.ts:282-303）：canvas 被清空
+    // （内容删光 / 所有 text 节点变空）后 digest 不产节点。原代码直接 return 而
+    // 不 supersede 旧节点、不更新 sync state，下次 isFileChanged 因 hash 变化又判
+    // 为变更，每次同步/watcher 事件都重 parse + log，旧节点也一直保持活跃。
+    // 改为：旧节点逐个 markNodeSupersededRecordOnly（文件清空，链接已无意义，不抢救），
+    // 再写入空 node_ids + 当前 hash，让下次跳过此文件。
+    for (const oldId of oldNodeIds) {
+      markNodeSupersededRecordOnly(db, oldId);
+    }
+    log.info(`Canvas 清空到 0 节点:${oldNodeIds.length} 个旧节点已 supersede (${relPath})`);
+    if (!shouldStop?.()) updateSyncState(db, relPath, filePath, [], sourceId, contentHash, undefined, snapshotStat);
+    return true;
   }
 
-  if (!shouldStop?.()) updateSyncState(db, relPath, filePath, nodeIds, sourceId);
+  if (!shouldStop?.()) updateSyncState(db, relPath, filePath, nodeIds, sourceId, contentHash, undefined, snapshotStat);
+  // 产出了新节点 → 实质处理；纯空 canvas 且无旧节点 → 无实质处理
+  return nodeIds.length > 0;
 }
 
 /**
@@ -560,15 +647,34 @@ function updateSyncState(
   sourceId?: string,
   contentHash?: string,
   segmentHashes?: string[],
+  snapshotStat?: { mtime: number; size: number } | null,
 ): void {
+  // snapshotStat 三态语义(与 4 条路径一致):调用方已在「内容读取成功那一刻、digest 前」
+  // 把有效 snapshot 捕获/补抓好传进来,这里不再重抓(digest 后重抓会拿到编辑后的 mtime/size
+  // 配 digest 前的 hash,下轮 isFileChanged 快速路径短路丢编辑)。
   let mtime = 0;
   let size = 0;
-  try {
-    const stat = fs.statSync(filePath);
-    mtime = Math.floor(stat.mtimeMs);
-    size = stat.size;
-  } catch {
-    // File may have become dataless or disappeared between scan and state write.
+  if (snapshotStat) {
+    // 有 read-time snapshot:mtime/size 与 contentHash 同源(都反映被 digest 那份内容)。
+    mtime = snapshotStat.mtime;
+    size = snapshotStat.size;
+  } else if (snapshotStat === null && contentHash === undefined) {
+    // null 且无 contentHash = 内容根本没读到(dataless / 消失,本就没 digest)。整条跳过。
+    return;
+  } else if (snapshotStat === null) {
+    // null 但有 contentHash = 极罕见:内容读成功却连 read-time 补抓 stat 都失败。用 mtime=0/
+    // size=0 + 已算出的 hash——0/0 永不等于真实值,强制下轮走 hash 比对(既不丢编辑也无孤儿)。
+    mtime = 0;
+    size = 0;
+  } else {
+    // 未传(undefined,旧调用点) → 退回重读盘(保持旧行为)。
+    try {
+      const stat = fs.statSync(filePath);
+      mtime = Math.floor(stat.mtimeMs);
+      size = stat.size;
+    } catch {
+      // File may have become dataless or disappeared between scan and state write.
+    }
   }
 
   // 优先使用调用方已持有的 content hash（来自预处理 snapshot），避免 TOCTOU：

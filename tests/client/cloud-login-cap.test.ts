@@ -4,7 +4,9 @@
  *   `{ success: false, error: ... }`,而不是 throw。renderer 端无需 try/catch
  *   就能拿到结构化失败。
  *
- *   real login(网络/认证失败)仍然 throw —— 已有的 renderer 异常处理覆盖。
+ *   F5 契约裁剪追加(2026-06):成功只返回 { success: true }(绝不外泄 token);
+ *   login 真失败(网络/认证)也走 { success: false, error },不再 throw——
+ *   与校验失败分支统一结构化返回,且与 api-contract 声明对齐。
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
@@ -76,18 +78,25 @@ describe('MEDIUM 8 — cloud:login cap returns { success: false, error } (not th
     expect(loginMock).not.toHaveBeenCalled();
   });
 
-  it('合法长度 → 透传给 login(),返回 CloudAuth', async () => {
+  // 契约裁剪(F5):成功时只返回 { success: true },**绝不**把 CloudAuth 里的
+  // accessToken / refreshToken 跨 IPC 送进 renderer。
+  it('合法长度 → 调用 login(),只返回 { success: true }(不含 token)', async () => {
     const loginHandler = handlers.get('cloud:login');
     loginMock.mockResolvedValueOnce({ accessToken: 'a', refreshToken: 'r', email: 'x@y' });
     const result = await loginHandler!(null, 'x@y', 'pw');
     expect(loginMock).toHaveBeenCalledWith('x@y', 'pw');
-    expect(result).toMatchObject({ accessToken: 'a', email: 'x@y' });
+    expect(result).toEqual({ success: true });
+    // 显式断言 token 不外泄
+    expect(result).not.toHaveProperty('accessToken');
+    expect(result).not.toHaveProperty('refreshToken');
   });
 
-  // 反向断言:login 真失败时仍然 throw(renderer 已有兜底)
-  it('login() 真抛(认证错)→ handler 仍 throw,不假装 return', async () => {
+  // 契约裁剪(F5):login 真失败时也走 { success: false, error },与校验失败分支同形,
+  // renderer 不用为这个 IPC 单独写 try/catch。
+  it('login() 真抛(认证错)→ handler 返回 { success: false, error }(不再 throw)', async () => {
     const loginHandler = handlers.get('cloud:login');
     loginMock.mockRejectedValueOnce(new Error('Invalid credentials'));
-    await expect(loginHandler!(null, 'x@y', 'pw')).rejects.toThrow(/Invalid credentials/);
+    const result = await loginHandler!(null, 'x@y', 'pw');
+    expect(result).toEqual({ success: false, error: 'Invalid credentials' });
   });
 });

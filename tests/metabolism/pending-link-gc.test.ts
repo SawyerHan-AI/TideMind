@@ -62,11 +62,15 @@ describe('runPendingLinkGc', () => {
     const result = runPendingLinkGc(db);
     expect(result.deleted).toBe(1);
 
-    const remaining = db.prepare('SELECT id FROM links ORDER BY created').all() as Array<{ id: string }>;
+    // M10:GC 改软删,过期 pending 行仍在但 deleted=1。存活集 = deleted=0。
+    const remaining = db.prepare('SELECT id FROM links WHERE deleted = 0 ORDER BY created').all() as Array<{ id: string }>;
     const remainingIds = remaining.map(r => r.id);
     expect(remainingIds).toContain(freshPending!.id);
     expect(remainingIds).toContain(oldConfirmed!.id);
     expect(remainingIds).not.toContain(expiredPending!.id);
+    // 物理行仍在(软删),且确实被标记 deleted=1
+    const exp = db.prepare('SELECT deleted FROM links WHERE id = ?').get(expiredPending!.id) as { deleted: number };
+    expect(exp.deleted).toBe(1);
   });
 
   it('gc_max_per_run 限速生效：插入 5 条过期 + max=2 → 只删 2', () => {
@@ -83,7 +87,8 @@ describe('runPendingLinkGc', () => {
     const result = runPendingLinkGc(db);
     expect(result.deleted).toBe(2);
 
-    const remaining = db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status='pending'").get() as { cnt: number };
+    // M10:软删后存活 pending = status='pending' AND deleted=0(被软删的 2 条仍是 pending 状态但 deleted=1)
+    const remaining = db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status='pending' AND deleted = 0").get() as { cnt: number };
     expect(remaining.cnt).toBe(3);
   });
 
@@ -125,13 +130,16 @@ describe('runPendingLinkGc', () => {
     // 新路径正确判定为过期
     expect(newPath.map(r => r.id)).toContain(link!.id);
 
-    // runPendingLinkGc 自身行为:必须删除这条过期 pending
+    // runPendingLinkGc 自身行为:必须(软)删除这条过期 pending
     const result = runPendingLinkGc(db);
     expect(result.deleted).toBe(1);
 
-    const remaining = db.prepare('SELECT COUNT(*) as cnt FROM links WHERE id = ?')
+    // M10:软删 —— 行仍在(deleted=1),但从存活集(deleted=0)排除
+    const active = db.prepare('SELECT COUNT(*) as cnt FROM links WHERE id = ? AND deleted = 0')
       .get(link!.id) as { cnt: number };
-    expect(remaining.cnt).toBe(0);
+    expect(active.cnt).toBe(0);
+    const row = db.prepare('SELECT deleted FROM links WHERE id = ?').get(link!.id) as { deleted: number };
+    expect(row.deleted).toBe(1);
   });
 });
 

@@ -38,12 +38,22 @@ const packages = [
 
 function runInstall(pkg) {
   return new Promise((resolve) => {
+    let settled = false;
     const child = spawn('npm', ['install', '--no-audit', '--no-fund'], {
       cwd: pkg.cwd,
       stdio: 'inherit',
       env: process.env,
     });
+    // spawn 失败(npm 不在 PATH / cwd 异常等)会 emit 'error' 而非 'close'。
+    // 没有这个监听器进程会以 "Unhandled 'error' event" 崩溃,Promise 永不 resolve。
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      resolve({ ...pkg, code: 1, signal: null, error: err.message });
+    });
     child.on('close', (code, signal) => {
+      if (settled) return;
+      settled = true;
       resolve({ ...pkg, code, signal });
     });
   });
@@ -66,7 +76,9 @@ for (const pkg of packages) {
   if (result.code === 0) {
     installed.push(pkg);
   } else {
-    failed.push({ ...pkg, code: result.code, signal: result.signal });
+    // 带上 result.error:spawn 失败(npm 不在 PATH 等)时 stdio:'inherit' 无任何输出,
+    // err.message 是唯一诊断信息,不透出 summary 用户只看到 "(exit 1)" 无从排查。
+    failed.push({ ...pkg, code: result.code, signal: result.signal, error: result.error });
   }
 }
 
@@ -74,6 +86,6 @@ console.log('\n=== summary ===');
 console.log(`installed: ${installed.map(p => p.name).join(', ') || '(none)'}`);
 if (skipped.length) console.log(`skipped (no package.json): ${skipped.map(p => p.name).join(', ')}`);
 if (failed.length) {
-  console.log(`failed: ${failed.map(p => `${p.name} (exit ${p.code ?? p.signal})`).join(', ')}`);
+  console.log(`failed: ${failed.map(p => `${p.name} (exit ${p.code ?? p.signal})${p.error ? ': ' + p.error : ''}`).join(', ')}`);
   process.exitCode = 1;
 }

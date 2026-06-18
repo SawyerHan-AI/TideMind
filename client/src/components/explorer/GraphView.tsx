@@ -454,6 +454,11 @@ export function GraphView({ filter, selectedId, onSelect, graphLimit = 500, onGr
     //  - 缩放/拖动/选中状态保留(simulation 内部状态延续)
     //  - 节点位置渐进过渡而不是闪动
     //  - filter 频繁切换(用户调滑块/搜索)不再每次都 O(n) 重启冲击
+    //
+    // 注意:simulation 的销毁不能放在本 effect 的 cleanup 里——React 在 effect
+    // 重跑前必先执行上一次 cleanup,若 cleanup 里 stop + 清空 ref,下一次进入时
+    // `existing` 恒为 null,增量分支永远不可达(每次都全量重建并以 alpha=1 重热)。
+    // 销毁统一放在下面的 unmount-only effect。
     const existing = simulationRef.current
     if (existing) {
       existing.nodes(nodes)
@@ -463,7 +468,7 @@ export function GraphView({ filter, selectedId, onSelect, graphLimit = 500, onGr
       const centerForce = existing.force('center') as ForceCenter<SimNode> | undefined
       if (centerForce) centerForce.x(width / 2).y(height / 2)
       existing.alpha(0.3).restart()
-      return () => { /* keep simulation alive across re-renders */ }
+      return
     }
 
     const sim = forceSimulation<SimNode>(nodes)
@@ -475,12 +480,15 @@ export function GraphView({ filter, selectedId, onSelect, graphLimit = 500, onGr
       .on('tick', () => scheduleRender()) // scheduleRender is stable, always calls latest render
 
     simulationRef.current = sim
+  }, [graphData, scheduleRender])
 
+  // simulation 只在组件 unmount 时销毁(见上方 P2-2 注释)
+  useEffect(() => {
     return () => {
-      sim.stop()
+      simulationRef.current?.stop()
       simulationRef.current = null
     }
-  }, [graphData, scheduleRender])
+  }, [])
 
   /* ---- Canvas sizing ---- */
   useEffect(() => {

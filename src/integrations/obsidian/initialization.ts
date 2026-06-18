@@ -7,7 +7,7 @@
 
 import fs from 'node:fs';
 import { safeReadTextFileSync } from '../../utils/safe-fs.js';
-import os from 'node:os';
+import { expandTilde } from '../../utils/path.js';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { getConfig, reloadConfig, isLlmConfigured } from '../../config.js';
@@ -22,7 +22,7 @@ import { classifyFiles, buildInDegreeMap } from './classifier.js';
 import type { ClassifiedFile as ObsClassifiedFile } from './types.js';
 import { inferPageDates, type InferredDateInfo } from './time-inference.js';
 import { readVaultConfig, getExcludedDirs } from './vault-config.js';
-import { ensureSyncSchema, setFileState, getFileState, computeFileHash, computeContentHash, markFullScanCompleted } from './sync-state.js';
+import { ensureSyncSchema, setFileState, getFileState, computeFileHash, computeContentHash, markFullScanCompleted, getFileStat } from './sync-state.js';
 import { parseCanvas } from './canvas-parser.js';
 import { digest } from '../../tools/digest.js';
 import { createLink, linkExists } from '../../db/links.js';
@@ -66,11 +66,11 @@ export function previewInit(db: Database.Database, sourceId?: string, sourcePath
 
   let vaultRoot: string;
   if (sourcePath) {
-    vaultRoot = sourcePath.replace('~', os.homedir());
+    vaultRoot = expandTilde(sourcePath);
   } else {
     const obsidianPath = config.sources?.obsidian?.path;
     if (!obsidianPath) return null;
-    vaultRoot = obsidianPath.replace('~', os.homedir());
+    vaultRoot = expandTilde(obsidianPath);
   }
   if (!fs.existsSync(vaultRoot)) return null;
 
@@ -163,11 +163,11 @@ export async function runInitialization(
 
   let vaultRoot: string;
   if (sourcePath) {
-    vaultRoot = sourcePath.replace('~', os.homedir());
+    vaultRoot = expandTilde(sourcePath);
   } else {
     const obsidianPath = config.sources?.obsidian?.path;
     if (!obsidianPath) throw new Error('Obsidian path not configured');
-    vaultRoot = obsidianPath.replace('~', os.homedir());
+    vaultRoot = expandTilde(obsidianPath);
   }
   if (!fs.existsSync(vaultRoot)) throw new Error(`Obsidian vault not found: ${vaultRoot}`);
 
@@ -332,7 +332,7 @@ export async function runInitialization(
 
   // Phase 6: 链接评估
   const pendingLinkCount = (db.prepare(
-    "SELECT COUNT(*) as cnt FROM links WHERE status = 'pending'",
+    "SELECT COUNT(*) as cnt FROM links WHERE status = 'pending' AND deleted = 0",
   ).get() as { cnt: number }).cnt;
   ctx.reportPhase(6, '链接评估', pendingLinkCount);
   log.info(`Phase 6: 链接评估 (${pendingLinkCount} 条)`);
@@ -435,10 +435,21 @@ async function processFileForInit(
   const initialHeat = computeInitialHeat(heatDateInfo, inDegree, importDate);
   const originalCreated = dateInfo?.date ? `${dateInfo.date}T00:00:00.000Z` : undefined;
 
+  // 避免 TOCTOU：在 digest（分钟级）开始前抓 stat snapshot,写回 sync state 的
+  // mtime/size 用它,而不是 digest 后重读盘。否则 digest 期间用户编辑文件 → 下一轮
+  // 增量 isFileChanged 的 mtime+size 快速路径会短路,判未变更,这次编辑永久丢失。
+  // 与增量路径(queue.ts processOneFile)的 snapshotStat 一致;getFileStat 内部走 safe-fs。
+  const snapshotStat = getFileStat(file.absPath);
+
   // Canvas 文件
   if (file.category === 'canvas') {
     const parsed = parseCanvas(file.absPath);
     if (!parsed) return [];
+    // read-time snapshot:入口 getFileStat 抓到 dataless 返回 null,但 parseCanvas 随后成功
+    //(文件在 stat 与 read 之间被 iCloud 下载)→ 文件此刻可读,在 digest 前(此刻仍是被
+    // digest 那份内容)补抓一次 stat,与 contentHash 同源。绝不在 digest 后补抓(那时已可能
+    // 被编辑,mtime/size=新值 配 hash=旧值,下轮 isFileChanged 快速路径短路丢编辑)。
+    const canvasSnapshot = snapshotStat ?? getFileStat(file.absPath);
     const nodeIds: string[] = [];
     for (const textNode of parsed.textNodes) {
       if (!textNode.text.trim()) continue;
@@ -452,12 +463,22 @@ async function processFileForInit(
       });
       if (result.created_nodes) nodeIds.push(...result.created_nodes.map(n => n.id));
     }
-    updateSyncState(db, file, nodeIds, sourceId);
+    // canvas 分支也要传 content hash（用 parse 时刻的 rawContent 算,避免 digest 后重读盘）。
+    const contentHash = computeContentHash(parsed.rawContent);
+    updateSyncState(db, file, nodeIds, sourceId, contentHash, canvasSnapshot);
     return nodeIds;
   }
 
   // 空白 / 元数据 → tag 节点
   if (file.category === 'empty_tag' || file.category === 'metadata_only') {
+    // 空文件/tag 分支不走 preprocessFile/parseCanvas（拿不到 rawContent),在 digest 前
+    // 读一份 content snapshot 算 hash,保证 hash 与 mtime/size 来自同一时刻(避免 TOCTOU);走 safe-fs。
+    // dataless 时为 undefined,退回 updateSyncState 内部重读(其再判 dataless 跳过)。
+    const snapshotRead = safeReadTextFileSync(file.absPath);
+    const snapshotContentHash = snapshotRead.ok ? computeContentHash(snapshotRead.content) : undefined;
+    // read-time snapshot:入口 stat 为 null 但此处读成功 ⇒ 文件可读,在 digest 前补抓
+    // stat,与 snapshotContentHash 同源;若内容也没读到则保持 null(updateSyncState 会跳过)。
+    const tagSnapshot = (snapshotStat === null && snapshotRead.ok) ? getFileStat(file.absPath) : snapshotStat;
     const result = await digest(repo, {
       content: title,
       source: { tool: 'obsidian', files: [file.relPath] },
@@ -468,13 +489,17 @@ async function processFileForInit(
     });
     const nodeIds = result.created_nodes?.map(n => n.id) ?? [];
     // 不直接标记 is_tag，由 promoteFrequentTags 按阈值判断
-    updateSyncState(db, file, nodeIds, sourceId);
+    updateSyncState(db, file, nodeIds, sourceId, snapshotContentHash, tagSnapshot);
     return nodeIds;
   }
 
   // 常规文件
   const preprocessed = preprocessFile(file.absPath, vaultRoot);
   if (!preprocessed) return [];
+
+  // read-time snapshot:入口 stat 为 null 但 preprocessFile 随后成功 ⇒ 文件此刻可读,
+  // 在 digest 前补抓 stat,与下面的 contentHash 同源。
+  const regularSnapshot = snapshotStat ?? getFileStat(file.absPath);
 
   // 避免 TOCTOU：用预处理时读到的 rawContent 计算 hash，
   // 而不是最后再读文件一次（两次读之间文件可能被编辑）
@@ -538,7 +563,7 @@ async function processFileForInit(
     }
   }
 
-  updateSyncState(db, file, nodeIds, sourceId, contentHash);
+  updateSyncState(db, file, nodeIds, sourceId, contentHash, regularSnapshot);
   return nodeIds;
 }
 
@@ -548,14 +573,33 @@ function updateSyncState(
   nodeIds: string[] = [],
   sourceId?: string,
   contentHash?: string,
+  snapshotStat?: { mtime: number; size: number } | null,
 ): void {
+  // snapshotStat 三态语义(与 4 条路径一致):调用方已在「内容读取成功那一刻、digest 前」
+  // 把有效 snapshot 捕获/补抓好传进来,这里不再重抓(digest 后重抓会拿到编辑后的 mtime/size
+  // 配 digest 前的 hash,下轮 isFileChanged 快速路径短路丢编辑)。
   let mtime = 0, size = 0;
-  try {
-    const stat = fs.statSync(file.absPath);
-    mtime = Math.floor(stat.mtimeMs);
-    size = stat.size;
-  } catch {
-    // File may have become dataless or disappeared between scan and state write.
+  if (snapshotStat) {
+    // 有 read-time snapshot:mtime/size 与 contentHash 同源(都反映被 digest 那份内容)。
+    mtime = snapshotStat.mtime;
+    size = snapshotStat.size;
+  } else if (snapshotStat === null && contentHash === undefined) {
+    // null 且无 contentHash = 内容根本没读到(dataless / 消失,本就没 digest)。整条跳过。
+    return;
+  } else if (snapshotStat === null) {
+    // null 但有 contentHash = 极罕见:内容读成功却连 read-time 补抓 stat 都失败。用 mtime=0/
+    // size=0 + 已算出的 hash——0/0 永不等于真实值,强制下轮走 hash 比对(既不丢编辑也无孤儿)。
+    mtime = 0;
+    size = 0;
+  } else {
+    // 未传(undefined) → 退回重读盘(保持旧行为)。
+    try {
+      const stat = fs.statSync(file.absPath);
+      mtime = Math.floor(stat.mtimeMs);
+      size = stat.size;
+    } catch {
+      // File may have become dataless or disappeared between scan and state write.
+    }
   }
   // 优先使用调用方已持有的 content hash（来自预处理 snapshot），避免 TOCTOU：
   // 若不提供则退回到重新读文件计算；computeFileHash 在 dataless/missing 时返回 null。

@@ -22,8 +22,18 @@ import type Database from 'better-sqlite3';
 import { BrowserWindow, Notification } from 'electron';
 import { createLogger } from '../../../src/utils/logger.js';
 import { getCloudBaseUrl, refreshTokenIfNeeded } from './auth-client.js';
+import { mainT } from '../i18n.js';
 
 const log = createLogger('reconciler');
+
+/**
+ * reconcile HTTP fetch 超时。undici 默认 ~300s,黑洞网络下单个请求会挂死整个
+ * reconcile(force-reconcile / abort-reconcile IPC 都卡)。manifest 是大拉取给宽裕
+ * 值(60s),bulk-upsert/fetch 是分批小请求给 30s。命中超时 → throw → 当前 table
+ * reconcile 失败(last_reconcile_at 不写,下次重试)。
+ */
+const MANIFEST_FETCH_TIMEOUT_MS = 60_000;
+const BULK_FETCH_TIMEOUT_MS = 30_000;
 
 // 修复(2026-05-20 决策 #5):BATCH_SIZE 100 → 25。
 // applyChanges 用 db.transaction() 整批跑,100 行 × ~1ms = 100ms+ 主线程阻塞,
@@ -71,6 +81,8 @@ interface ManifestEntry {
   sync_version: number;
   updated: string;
   archived: boolean;
+  edit_seq?: number;
+  version?: number;
 }
 
 export class Reconciler {
@@ -112,15 +124,19 @@ export class Reconciler {
       }
     }
 
-    // 整体状态 + 失败通知
-    const anyFailed = results.some(r => r.errors.length > 0);
-    const anySucceeded = results.some(r => r.errors.length === 0);
+    // 整体状态 + 失败通知。
+    // 'aborted' 是用户主动取消的信号(runTable 在 abort 时 throw new Error('aborted')),
+    // 不是真失败——不能把它当 error 弹"失败"通知。把它从 error 判定里剔除。
+    const realErrors = (r: ReconcileResult): string[] => r.errors.filter(e => e !== 'aborted');
+    const anyFailed = results.some(r => realErrors(r).length > 0);
+    const anySucceeded = results.some(r => realErrors(r).length === 0);
     const status = this.aborted ? 'partial' : (anyFailed ? (anySucceeded ? 'partial' : 'failed') : 'ok');
     this.setMetadata('cloud.last_reconcile_status', status);
 
     if (anyFailed) {
-      this.setMetadata('cloud.last_reconcile_error', results.flatMap(r => r.errors).join('; '));
-      this.showFailureNotification(results);
+      this.setMetadata('cloud.last_reconcile_error', results.flatMap(realErrors).join('; '));
+      // 用户主动 abort 时不弹失败通知(即使部分 table 已 throw 'aborted')。
+      if (!this.aborted) this.showFailureNotification(results);
     } else {
       this.setMetadata('cloud.last_reconcile_error', '');
     }
@@ -132,10 +148,15 @@ export class Reconciler {
   private showFailureNotification(results: ReconcileResult[]): void {
     try {
       if (!Notification.isSupported()) return;
-      const failedTables = results.filter(r => r.errors.length > 0).map(r => r.table).join(', ');
-      const firstError = results.flatMap(r => r.errors)[0] ?? 'unknown error';
+      // 'aborted' 不是真错误,展示时剔除(与 runAll 的判定一致)。
+      const realErrors = (r: ReconcileResult): string[] => r.errors.filter(e => e !== 'aborted');
+      const failed = results.filter(r => realErrors(r).length > 0);
+      if (failed.length === 0) return; // 没有真失败,不弹
+      const failedTables = failed.map(r => r.table).join(', ');
+      const firstError = failed.flatMap(realErrors)[0] ?? 'unknown error';
       new Notification({
-        title: 'TideMind — 云端对齐失败',
+        // 主进程文案走 mainT(zh/en),不硬编码中文——非中文用户原本收到中文系统通知。
+        title: mainT('reconcile.failedTitle'),
         body: `${failedTables}: ${firstError.slice(0, 120)}`,
         silent: false,
       }).show();
@@ -230,7 +251,10 @@ export class Reconciler {
       url.searchParams.set('limit', String(MANIFEST_PAGE_LIMIT));
       if (cursor) url.searchParams.set('cursor', cursor);
 
-      const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch(url.toString(), {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(MANIFEST_FETCH_TIMEOUT_MS),
+      });
       if (!res.ok) {
         throw new Error(`manifest ${res.status}: ${(await res.text()).slice(0, 200)}`);
       }
@@ -273,8 +297,8 @@ export class Reconciler {
    */
   private buildLocalManifest(table: Table): ManifestEntry[] {
     const stmt = table === 'nodes'
-      ? this.db.prepare(`SELECT id, created, updated, archived FROM nodes`)
-      : this.db.prepare(`SELECT id, created, updated FROM links`);
+      ? this.db.prepare(`SELECT id, created, updated, archived, edit_seq, version FROM nodes`)
+      : this.db.prepare(`SELECT id, created, updated, edit_seq FROM links`);
 
     const entries: ManifestEntry[] = [];
     const iter = stmt.iterate() as IterableIterator<{
@@ -282,6 +306,8 @@ export class Reconciler {
       created: string | null;
       updated: string | null;
       archived?: number;
+      edit_seq?: number;
+      version?: number;
     }>;
     for (const r of iter) {
       entries.push({
@@ -289,6 +315,9 @@ export class Reconciler {
         sync_version: 0, // 本地没存 sync_version,不参与比较
         updated: r.updated || r.created || new Date(0).toISOString(),
         archived: typeof r.archived === 'number' ? Boolean(r.archived) : false,
+        // 因果版本号:reconcile manifest 内容方向裁决用 (edit_seq, updated)(见 chooseManifestWinner)
+        edit_seq: typeof r.edit_seq === 'number' ? r.edit_seq : 0,
+        version: typeof r.version === 'number' ? r.version : undefined,
       });
     }
     return entries;
@@ -303,6 +332,7 @@ export class Reconciler {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ table, is_initial_reconcile: isInitial, items }),
+      signal: AbortSignal.timeout(BULK_FETCH_TIMEOUT_MS),
     });
     if (!res.ok) {
       throw new Error(`bulk-upsert ${res.status}: ${(await res.text()).slice(0, 200)}`);
@@ -315,7 +345,10 @@ export class Reconciler {
     const token = await refreshTokenIfNeeded();
     if (!token) throw new Error('not_logged_in');
     const url = `${getCloudBaseUrl()}/api/v1/sync/bulk-fetch?table=${table}&ids=${ids.map(encodeURIComponent).join(',')}`;
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(BULK_FETCH_TIMEOUT_MS),
+    });
     if (!res.ok) throw new Error(`bulk-fetch ${res.status}`);
     const data = await res.json() as { items: Array<Record<string, unknown>> };
     return data.items;

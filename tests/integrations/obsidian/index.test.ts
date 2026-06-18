@@ -21,9 +21,8 @@ vi.mock('../../../src/utils/logger.js', () => ({
   createLogger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
 }));
 
-vi.mock('../../../src/db/log.js', () => ({
-  logTimelineEvent: vi.fn(),
-}));
+// 不 mock db/log.js：周期删除检测测试会走完整 digest 路径（digest 调用
+// repo.log.logOperation / logParamFeedback），用真实实现写入测试 DB（schema 完整）。
 
 vi.mock('../../../src/config.js', () => ({
   getConfig: () => ({
@@ -43,9 +42,10 @@ vi.mock('../../../src/config.js', () => ({
   isLlmConfigured: () => true,
 }));
 
+const mockGetDb = vi.fn();
 vi.mock('../../../src/db/connection.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/db/connection.js')>();
-  return { ...actual, isVecLoaded: () => false };
+  return { ...actual, isVecLoaded: () => false, getDb: () => mockGetDb() };
 });
 
 vi.mock('../../../src/llm/embedding.js', () => ({
@@ -74,14 +74,20 @@ vi.mock('../../../src/stream/writer.js', () => ({
 
 // ── Imports (after mocks) ────────────────────────────────────
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { setupTestDb, seedNode } from '../../helpers/test-db.js';
 import { invalidateGateCache } from '../../../src/db/stats.js';
-import { ensureSyncSchema, setFileState, removeStaleFiles } from '../../../src/integrations/obsidian/sync-state.js';
+import { ensureSyncSchema, setFileState, removeStaleFiles, getFileState } from '../../../src/integrations/obsidian/sync-state.js';
 import { getNode } from '../../../src/db/nodes.js';
 import {
   startObsidianIntegration,
   stopObsidianIntegration,
+  startObsidianSource,
+  stopObsidianSource,
 } from '../../../src/integrations/obsidian/index.js';
+import { appendToStream } from '../../../src/stream/writer.js';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -89,6 +95,7 @@ let db: Database.Database;
 
 beforeEach(() => {
   db = setupTestDb();
+  mockGetDb.mockReturnValue(db);
   invalidateGateCache();
   ensureSyncSchema(db);
 });
@@ -125,6 +132,86 @@ describe('stopObsidianIntegration', () => {
   it('does not throw when called without prior start', () => {
     expect(() => stopObsidianIntegration()).not.toThrow();
   });
+});
+
+// 回归（poll_interval 被忽略 → 删除检测不周期触发）：
+// watcher 不处理删除，删除检测只在 runSync 里发生。修复前 startObsidianSource 的
+// pollInterval 参数命名为 `_pollInterval` 显式弃用、没有任何周期 runSync，用户删笔记后
+// 节点无限期留在活跃 recall。现在按 poll_interval 注册周期 runSync（删除检测兜底）。
+// 这里验证「定时器被正确注册 + 用配置的间隔 + stop 时清理」这一被修复的核心契约；
+// 定时器触发的 removeStaleFiles/archiveOrphanNodes 删除逻辑已由本文件 orphan archiving 套件覆盖。
+// 回归（daemon shutdown 无法停止仍在初始 runSync 中的源）：
+// stopObsidianIntegration 修复前遍历 watchers.keys()，但 watcher 在首扫 await 完成后
+// 才注册，首扫期间该源不在 watchers 里 → stop no-op → 首扫继续跑。修复:改为遍历
+// activeSources（startObsidianSource 入口即 add，见 index.ts:83），并在 runSyncInner
+// (index.ts:201/234/282) 与 processFileQueue (queue.ts:106/110/per-segment) 各加 isStopped 短路。
+//
+// 这里只校验"stop 期间启动的源不会真正启动 watcher/poll"这一确定性子契约
+// （依赖 startObsidianSource 末尾的 `if (!stoppedSources.has(sourceId))` 守卫，
+//  index.ts:100/107）。"首扫处理中途被中止"原本用「阻塞 appendToStream 制造在途窗口」
+// 测试,但该路径要跑通真实 digest pipeline(classify/segment 依赖被 mock 成无效输出的
+// callLLM),文件能否跑到 appendToStream 本身不确定 → firstCalled 偶发永挂、30s 超时
+// (隔离 ~17%,满载更高),会偶发卡死发版全量套件(CLAUDE.md 防坑规则 #10)。中止主路径
+// (activeSources + isStopped 检查) 已由源码审查确认,不为它保留一个不可稳定的计时竞态测试。
+describe('shutdown 停止仍在首次同步中的源', () => {
+  it('stop 期间启动的源不会启动 watcher / poll 定时器（activeSources/stoppedSources 守卫生效）', async () => {
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+    const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-obs-shutdown-'));
+    fs.writeFileSync(path.join(vaultRoot, 'a.md'), '# A\n\nNote a with enough content to become a node during initial sync.\n', 'utf-8');
+
+    try {
+      // 不 await 启动:startObsidianSource 入口同步 activeSources.add(src-sd) 后 await runSync,
+      // 控制权回到测试 → 立刻 stopObsidianIntegration()(遍历 activeSources 标记 stopped),
+      // 模拟"首扫在途、watcher 尚未注册时收到 SIGTERM"。startObsidianSource 末尾的
+      // stoppedSources 守卫(index.ts:100/107)应阻止 watcher 与 poll 定时器启动。
+      // 不依赖 digest pipeline 跑到任何具体步骤 → 确定性。
+      const startPromise = startObsidianSource(db, 'src-sd', vaultRoot, 45);
+      stopObsidianIntegration();
+      await startPromise;
+
+      // 已停止 → 不应注册 poll 定时器（45_000ms）
+      const pollCall = setIntervalSpy.mock.calls.find(([, ms]) => ms === 45_000);
+      expect(pollCall).toBeUndefined();
+    } finally {
+      stopObsidianSource('src-sd');
+      setIntervalSpy.mockRestore();
+      fs.rmSync(vaultRoot, { recursive: true, force: true });
+    }
+  }, 30000);
+});
+
+describe('周期性删除检测（poll_interval）', () => {
+  it('startObsidianSource 按 poll_interval 注册周期 runSync 定时器，stop 时清理', async () => {
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+    const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');
+    const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-obs-poll-'));
+    fs.writeFileSync(
+      path.join(vaultRoot, 'note.md'),
+      '# Note\n\nThis note has enough content to pass the quality gate and become a brain node.\n',
+      'utf-8',
+    );
+
+    try {
+      await startObsidianSource(db, 'src-poll', vaultRoot, 45);
+
+      // 修复前没有任何周期定时器；现在应注册一个、且用配置的间隔（45s → 45000ms）
+      const pollCall = setIntervalSpy.mock.calls.find(([, ms]) => ms === 45_000);
+      expect(pollCall).toBeDefined();
+      const registeredTimer = setIntervalSpy.mock.results.find(
+        (_r, i) => setIntervalSpy.mock.calls[i][1] === 45_000,
+      )?.value;
+      expect(registeredTimer).toBeDefined();
+
+      // stop 应清理该定时器（避免泄漏 + 停后仍扫描）
+      stopObsidianSource('src-poll');
+      expect(clearIntervalSpy).toHaveBeenCalledWith(registeredTimer);
+    } finally {
+      stopObsidianSource('src-poll');
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+      fs.rmSync(vaultRoot, { recursive: true, force: true });
+    }
+  }, 30000);
 });
 
 describe('orphan node archiving', () => {

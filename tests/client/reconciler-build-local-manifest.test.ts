@@ -82,6 +82,8 @@ describe('Reconciler.buildLocalManifest', () => {
       sync_version: 0,
       updated: '2026-05-02T00:00:00Z',
       archived: false,
+      edit_seq: 0,
+      version: 1,
     });
 
     // n2 没有 updated → 应 fallback 到 created
@@ -90,6 +92,8 @@ describe('Reconciler.buildLocalManifest', () => {
       sync_version: 0,
       updated: '2026-05-03T00:00:00Z',
       archived: true,
+      edit_seq: 0,
+      version: 1,
     });
 
     const links = callBuildLocalManifest(db, 'links');
@@ -99,6 +103,7 @@ describe('Reconciler.buildLocalManifest', () => {
       sync_version: 0,
       updated: '2026-05-01T00:00:00Z', // updated 为 null → fallback created
       archived: false, // links 表没 archived 列,默认 false
+      edit_seq: 0,
     });
   });
 

@@ -7,6 +7,12 @@ export interface PreprocessedPage {
   title: string;
   cleanContent: string;
   metadata: PageMetadata;
+  // 原始文件内容（已 CRLF→LF 归一化）。文件型源（Logseq）必填：供调用方在同一
+  // snapshot 内算 content_hash，避免 TOCTOU——digest 期间用户编辑文件时，重新读盘
+  // 算出的是"新内容"hash，但入库节点是"旧内容"，下一轮 isFileChanged 会误判未变更、
+  // 永久跳过这次编辑（对齐 Obsidian）。非文件型源（Notion 从 API 拉取、自算 hash）
+  // 无原始文件内容，故声明为可选。
+  rawContent?: string;
 }
 
 export interface PageMetadata {

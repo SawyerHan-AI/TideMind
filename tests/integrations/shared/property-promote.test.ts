@@ -247,6 +247,34 @@ describe('getOrCreateTagNode', () => {
     expect(node).not.toBeNull();
     expect(node!.is_tag).toBe(1);
   });
+
+  it('并发同名调用只创建一个节点(in-flight 单飞,防文件队列 concurrency=3 重复)', async () => {
+    // 模拟同一批并发文件含相同属性值:cache+DB 都 miss 时,两个调用在第一个的
+    // digest(含 await)完成前都进入。修复前各自 createNode 产生重复 tag 节点;
+    // 修复后共享同一 in-flight Promise,只建一个。
+    const [id1, id2, id3] = await Promise.all([
+      getOrCreateTagNode(db, 'raceTag', 'test'),
+      getOrCreateTagNode(db, 'raceTag', 'test'),
+      getOrCreateTagNode(db, 'raceTag', 'test'),
+    ]);
+
+    expect(id1).toBe(id2);
+    expect(id2).toBe(id3);
+
+    const rows = db.prepare(
+      "SELECT id FROM nodes WHERE content = 'raceTag'",
+    ).all();
+    expect(rows.length).toBe(1);
+  });
+
+  it('in-flight 完成后清理,后续调用走 cache/DB 正常返回同一节点', async () => {
+    const id1 = await getOrCreateTagNode(db, 'afterRace', 'test');
+    const id2 = await getOrCreateTagNode(db, 'afterRace', 'test');
+    expect(id2).toBe(id1);
+    clearTagNodeCache();
+    const id3 = await getOrCreateTagNode(db, 'afterRace', 'test');
+    expect(id3).toBe(id1);
+  });
 });
 
 // ========================================================

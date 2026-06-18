@@ -3,6 +3,7 @@ import type { BrainLink } from '../types.js';
 import { getParam } from '../strategy/loader.js';
 import { getLinksForNode } from '../db/links.js';
 import { now } from '../utils/time.js';
+import { computeConnectivity as computeConnectivityPure, computeMaturityScore as computeMaturityScorePure, type ConnLink } from '../metabolism/decay-fns.js';
 
 /**
  * 判断链接的主要关系类型是否为 tagged
@@ -23,11 +24,13 @@ export function computeMaturityScore(
   connectivity: number,
   independence: number,
 ): number {
-  const wHeat = getParam('recall-rank', 'heat_weight', 0.2);
-  const wRefinement = getParam('recall-rank', 'refinement_weight', 0.3);
-  const wConnectivity = getParam('recall-rank', 'connectivity_weight', 0.3);
-  const wIndependence = getParam('recall-rank', 'independence_weight', 0.2);
-  return wHeat * Math.min(heat, 1) + wRefinement * refinement + wConnectivity * connectivity + wIndependence * independence;
+  // M8:权重从 recall-rank 策略参数读,公式委托 @core decay-fns(两端单一来源)。
+  return computeMaturityScorePure(heat, refinement, connectivity, independence, {
+    heat: getParam('recall-rank', 'heat_weight', 0.2),
+    refinement: getParam('recall-rank', 'refinement_weight', 0.3),
+    connectivity: getParam('recall-rank', 'connectivity_weight', 0.3),
+    independence: getParam('recall-rank', 'independence_weight', 0.2),
+  });
 }
 
 /**
@@ -39,31 +42,15 @@ export function computeMaturityScore(
  */
 export function updateConnectivity(db: Database.Database, nodeId: string): number {
   const allLinks = getLinksForNode(db, nodeId).filter(l => l.status === 'confirmed');
-  // connectivity 只计算语义链接，排除 tagged（分类索引不反映认知连通度）
-  const links = allLinks.filter(l => !isTaggedLink(l));
-
-  // 历史 bug(2026-05-09):links 为空时直接 `return 0`,**未把 DB 里的 connectivity
-  // 列写回 0**。节点之前 connectivity=0.6,所有语义链接被 link-evaluate 删除后
-  // 调本函数,DB 仍是 0.6,maturity_score 也保留旧值。下次 refreshMaturityScore
-  // 又把这个陈旧 connectivity 当真使用。
-  // 修复:空集合分支也走和正常分支一致的写库路径,保证 DB 状态总是与最新计算
-  // 一致。connectivity = 0,maturity_score 用最新 heat/refinement/independence
-  // 重算。
-  let connectivity: number;
-  if (links.length === 0) {
-    connectivity = 0;
-  } else {
-    const avgStrength = links.reduce((sum, l) => sum + l.strength, 0) / links.length;
-    const baseConnectivity = Math.min(1, (links.length * avgStrength) / 5);
-
-    // 链接多样性加成：统计不同 relation type 数量
-    const relationTypes = new Set(
-      links.flatMap(l => Array.isArray(l.relation) ? l.relation.map(r => r.type) : []),
-    );
-    // 1 种类型无加成，每多 1 种加 5%，上限 25%（5+ 种类型）
-    const diversityBonus = Math.min(0.25, (Math.max(0, relationTypes.size - 1)) * 0.05);
-    connectivity = Math.min(1, baseConnectivity * (1 + diversityBonus));
-  }
+  // M8:connectivity 计算委托给 @core decay-fns(排除 tagged + strength × diversity,
+  // 两端单一来源)。空集合也照常写库(2026-05-09 bug:空集合不写回 DB 会留陈旧
+  // connectivity,maturity 跟着错);computeConnectivity([]) 返回 0、下面正常写。
+  const connLinks: ConnLink[] = allLinks.map(l => ({
+    strength: l.strength,
+    relationTypes: Array.isArray(l.relation) ? l.relation.map(r => r.type) : [],
+    isTagged: isTaggedLink(l),
+  }));
+  const connectivity = computeConnectivityPure(connLinks);
 
   // 原子更新 connectivity 和 maturity_score，避免崩溃时两者不一致
   const node = db.prepare('SELECT heat, refinement, independence FROM nodes WHERE id = ?')

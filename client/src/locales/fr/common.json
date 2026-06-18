@@ -26,6 +26,8 @@
     "memories": "memoires"
   },
   "total": "{{count}} au total",
+  "close": "Fermer",
+  "loading": "Chargement…",
   "errors": {
     "somethingWentWrong": "Une erreur s'est produite",
     "unexpectedError": "Une erreur inattendue s'est produite.",
@@ -53,5 +55,10 @@
     "paused": "IA en pause ({{min}} min avant nouvel essai)",
     "recentFailures": "L'IA a échoué récemment",
     "idle": "IA inactive depuis longtemps"
+  },
+  "cloud": {
+    "syncing": "Synchronisation…",
+    "connected": "Connecté",
+    "offline": "Hors ligne"
   }
 }

@@ -18,6 +18,14 @@ const log = createLogger('property-promote');
 
 const tagNodeCache = new Map<string, string>();
 
+// 进程内 in-flight 单飞：按 normalized tag 名去重并发创建。
+// 文件队列(logseq/obsidian)默认 concurrency=3，同一批 3 个文件含相同属性值/文件夹名
+// 时会并发进入 getOrCreateTagNode；其 cache 检查 → DB 检查 → `await digest()`
+// (含 embedding 网络调用,事件循环切走)→ 写 cache 之间存在竞态窗口:第二个调用
+// 在第一个的 digest 完成前 cache+DB 都查不到 → 各自创建一个同名重复 tag 节点,
+// tagged 链接被分裂到两个节点上。用按 key 共享 Promise 串行化同名创建,消除竞态。
+const tagNodeInflight = new Map<string, Promise<string>>();
+
 /**
  * 清除 tag 节点缓存
  *
@@ -51,6 +59,23 @@ export async function getOrCreateTagNode(
     return tagNodeCache.get(cacheKey)!;
   }
 
+  // 同名创建已在飞行中 → 复用同一 Promise,不再各自查 DB / 各自 digest。
+  const pending = tagNodeInflight.get(cacheKey);
+  if (pending) return pending;
+
+  const task = createTagNode(db, normalized, cacheKey, source, created)
+    .finally(() => { tagNodeInflight.delete(cacheKey); });
+  tagNodeInflight.set(cacheKey, task);
+  return task;
+}
+
+async function createTagNode(
+  db: Database.Database,
+  normalized: string,
+  cacheKey: string,
+  source: string,
+  created?: string,
+): Promise<string> {
   // 查找已存在的 tag 节点（is_tag=1，精确匹配 content 或 title）
   const existing = db.prepare(
     "SELECT id FROM nodes WHERE is_tag = 1 AND (content = ? OR title = ?) AND archived = 0 AND is_superseded = 0 LIMIT 1",
@@ -70,7 +95,7 @@ export async function getOrCreateTagNode(
     tags: [normalized],
     async: false,
     created,
-    // 身份由 tag 名称精确匹配 + 缓存负责（上方已查过 existing）
+    // 身份由 tag 名称精确匹配 + 缓存 + in-flight 单飞负责（上方已查过 existing）
     skipDedupMerge: true,
   });
 

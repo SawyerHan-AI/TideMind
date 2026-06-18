@@ -63,6 +63,8 @@ export interface ClaimResult {
   claimed: boolean;
   /** claim 前的旧时间戳值，用于失败回滚。null 表示首次运行。 */
   priorValue: string | null;
+  /** claim 成功时本进程写入的毫秒时间戳字符串，回滚时作 CAS 校验。claim 失败为 null。 */
+  claimedValue: string | null;
 }
 
 /**
@@ -136,7 +138,7 @@ export function tryClaimTask(
     log.warn(
       `tryClaimTask: metadata[${key}] 的 value 不是合法毫秒时间戳 ("${row.value}"),跳过本次 claim 以避免重复执行`,
     );
-    return { claimed: false, priorValue };
+    return { claimed: false, priorValue, claimedValue: null };
   }
 
   // 原子 CAS:
@@ -161,27 +163,38 @@ export function tryClaimTask(
   // changes() = 0 表示冲突时 WHERE 不匹配(未到 interval / 格式不合法 / 并发
   // 落败) → claim 失败,不改写原值。
   if (result.changes === 1) {
-    return { claimed: true, priorValue };
+    return { claimed: true, priorValue, claimedValue: nowStr };
   }
 
-  return { claimed: false, priorValue };
+  return { claimed: false, priorValue, claimedValue: null };
 }
 
 /**
  * 任务执行失败时回滚 claim，恢复到执行前的时间戳。
  * 这样下一次 tick 就能重新尝试执行。
+ *
+ * 回滚必须和 claim 一样 CAS 化(WHERE value = claimedValue):任务执行时长
+ * 超过 interval 时,其他进程可能已合法重新 claim 同一任务;无条件 UPDATE/DELETE
+ * 会把对方的有效 claim 抹回旧值(或删行),重新打开重复执行窗口 —— 与
+ * tryClaimTask 注释里描述的"输家 DELETE 掉赢家 claim"是同类事故,claim 侧
+ * 修了,回滚侧也必须对称防护。当前值已不是本进程写入的 → 不动。
  */
 export function rollbackClaim(
   db: Database.Database,
   taskId: string,
   priorValue: string | null,
+  claimedValue: string | null,
 ): void {
+  // claim 未成功写入过(claimedValue=null),没有可回滚的状态
+  if (claimedValue === null) return;
+
   const key = `last_task_${taskId}`;
   if (priorValue === null) {
-    // 首次运行失败，删掉刚插入的行
-    db.prepare('DELETE FROM metadata WHERE key = ?').run(key);
+    // 首次运行失败，删掉刚插入的行(仅当仍是本进程写入的值)
+    db.prepare('DELETE FROM metadata WHERE key = ? AND value = ?').run(key, claimedValue);
   } else {
-    db.prepare('UPDATE metadata SET value = ? WHERE key = ?').run(priorValue, key);
+    db.prepare('UPDATE metadata SET value = ? WHERE key = ? AND value = ?')
+      .run(priorValue, key, claimedValue);
   }
 }
 
@@ -670,7 +683,7 @@ export async function runSchedulerTick(
       }
     } catch (err) {
       // 失败回滚：恢复时间戳，下次 tick 可重试
-      rollbackClaim(db, task.id, claim.priorValue);
+      rollbackClaim(db, task.id, claim.priorValue, claim.claimedValue);
 
       // 区分程序员错误（TypeError / ReferenceError / SyntaxError）和业务错误：
       //  - 程序员错误 = 我们代码的 bug，下一 tick 同样会撞，需要 visibility

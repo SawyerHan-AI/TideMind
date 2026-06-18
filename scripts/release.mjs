@@ -249,9 +249,21 @@ function listReleaseRuns(ossRepo) {
   ], ossRepo);
 }
 
-export function findReleaseRunId(runs, tag) {
+export function findReleaseRunId(runs, tag, minCreatedAtMs = 0) {
   const tagName = tag.startsWith('v') ? tag : `v${tag}`;
-  const match = runs.find(run => run.headBranch === tagName || run.headBranch === tag);
+  // 只接受 createdAt 晚于本次 push 的 run。否则 --force-tag(移动已有 tag 重发)
+  // 场景下,`gh run list` 里仍有上一次该 tag 的已完成 run,headBranch 同名 → 第一次
+  // 轮询(GitHub 尚未 materialize 新 run 的几秒窗口)就误命中旧 run → `gh run watch`
+  // 立即返回 → 后续 publish/sign/verify 全部对着旧构建产物执行,新构建却无人监控。
+  // minCreatedAtMs=0(默认/测试)时退化为只按 headBranch 匹配,保持向后兼容。
+  const match = runs.find(run => {
+    if (run.headBranch !== tagName && run.headBranch !== tag) return false;
+    if (minCreatedAtMs > 0 && run.createdAt) {
+      const created = Date.parse(run.createdAt);
+      if (Number.isFinite(created) && created < minCreatedAtMs) return false;
+    }
+    return true;
+  });
   return match ? String(match.databaseId) : null;
 }
 
@@ -259,7 +271,7 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function getReleaseRunId(tag, ossRepo, timeoutMs) {
+async function getReleaseRunId(tag, ossRepo, timeoutMs, minCreatedAtMs = 0) {
   const tagName = tag.startsWith('v') ? tag : `v${tag}`;
   const started = Date.now();
   const deadline = started + timeoutMs;
@@ -270,7 +282,7 @@ async function getReleaseRunId(tag, ossRepo, timeoutMs) {
   while (Date.now() <= deadline) {
     attempts++;
     const runs = listReleaseRuns(ossRepo);
-    const runId = findReleaseRunId(runs, tag);
+    const runId = findReleaseRunId(runs, tag, minCreatedAtMs);
     if (runId) {
       if (attempts > 1) console.log(`✓ release workflow run appeared after ${attempts} checks`);
       return runId;
@@ -316,17 +328,42 @@ async function verifyCloud(version) {
   console.log(`✓ cloud health reports ${version}`);
 }
 
-async function verifyUpdateApi(version, previousVersion) {
+export async function verifyUpdateApi(version, previousVersion, allowUnsigned = false) {
   const base = 'https://cloud.tidemind.ai/api/v1/update/latest';
-  const prevArm = await fetchJson(`${base}?platform=darwin&arch=arm64&version=${previousVersion}`);
-  if (prevArm.version !== version || !prevArm.url?.includes(`v${version}`)) {
-    throw new Error(`update API did not offer ${version} to ${previousVersion}: ${JSON.stringify(prevArm)}`);
+  // 双 arch 都验:客户端按各自架构请求,只验 arm64 会对"x64 .sig 缺失/命名漂移"失明。
+  // 每个 arch 断言 version / url / signatureUrl 三项,signatureUrl 必须非空且指向
+  // update-manifest-darwin-{arch}.sig —— 这正是 v0.2.66 同类"已 publish 但无签名 /
+  // 命名漂移 → 客户端拒更"故障的最后一道自动防线(CLAUDE.md 防坑规则 9)。
+  for (const arch of ['arm64', 'x64']) {
+    const prev = await fetchJson(`${base}?platform=darwin&arch=${arch}&version=${previousVersion}`);
+    if (prev.version !== version || !prev.url?.includes(`v${version}`)) {
+      throw new Error(`update API did not offer ${version}/${arch} to ${previousVersion}: ${JSON.stringify(prev)}`);
+    }
+    if (!allowUnsigned) {
+      const expectedSig = `update-manifest-darwin-${arch}.sig`;
+      if (!prev.signatureUrl) {
+        throw new Error(
+          `update API returned no signatureUrl for ${version}/${arch} — clients with ` +
+          `embedded public key will REJECT this release (sign-before-publish window or ` +
+          `asset naming drift). Response: ${JSON.stringify(prev)}`,
+        );
+      }
+      if (!prev.signatureUrl.endsWith(expectedSig)) {
+        throw new Error(
+          `update API signatureUrl for ${version}/${arch} does not point at ${expectedSig}: ${prev.signatureUrl}`,
+        );
+      }
+    }
+
+    const current = await fetchJson(`${base}?platform=darwin&arch=${arch}&version=${version}`);
+    if (current.url !== null) {
+      throw new Error(`update API should return url:null for current version (${arch}): ${JSON.stringify(current)}`);
+    }
   }
-  const current = await fetchJson(`${base}?platform=darwin&arch=arm64&version=${version}`);
-  if (current.url !== null) {
-    throw new Error(`update API should return url:null for current version: ${JSON.stringify(current)}`);
-  }
-  console.log(`✓ update API offers ${version} to ${previousVersion} and no update to ${version}`);
+  console.log(
+    `✓ update API offers ${version} to ${previousVersion} (arm64 + x64` +
+    `${allowUnsigned ? '' : ', signatureUrl present'}) and no update to ${version}`,
+  );
 }
 
 /**
@@ -440,11 +477,21 @@ function loadSecondarySigningPrivateKey() {
   return { pem: null, source: null };
 }
 
-function signReleaseAssets(version, ossRepo, allowUnsigned = false) {
+/**
+ * 在 push tag(触发不可逆的公开构建/发布)之前 fail-fast 解析签名私钥。
+ *
+ * Why 提前:
+ *   1. 私钥缺失/损坏要在 **push tag 之前** 报错,而不是等 GitHub release 已 publish
+ *      之后才在 signReleaseAssets 里炸 —— 那时已经存在"已发布但无签名"的窗口。
+ *   2. macOS Keychain 首次访问会弹 Touch ID / Master Password(见 loadSigningPrivateKey
+ *      注释),把这个交互提前到运维一定在场的发版起点,而不是发版尾声(可能已离开)。
+ *
+ * 返回 { privateKey, secondaryKey, source } —— privateKey 为 null 表示无签名
+ * (仅当 allowUnsigned 时允许走到这里;否则本函数已抛错)。createPrivateKey 在这里
+ * 完成,因此 PEM 损坏也在 push tag 之前暴露。
+ */
+function loadSigningKeys(allowUnsigned = false) {
   const { pem: privateKeyPem, source } = loadSigningPrivateKey();
-  if (privateKeyPem) {
-    console.log(`\n> Signing release manifests (ed25519, key from ${source})`);
-  }
   if (!privateKeyPem) {
     if (!allowUnsigned) {
       // 强制 opt-out:把"无签名发版"从 silent 默认变成必须主动放弃的决定。
@@ -472,23 +519,16 @@ function signReleaseAssets(version, ossRepo, allowUnsigned = false) {
     console.log('\n> WARNING: Releasing unsigned binaries (--allow-unsigned).');
     console.log('  Clients with embedded public key will REJECT this release.');
     console.log('  Clients without embedded public key will accept it (current default).');
-    return;
+    return { privateKey: null, secondaryKey: null, source: null };
   }
-  const release = parseJsonOutput('gh', [
-    'release', 'view', `v${version}`, '--repo', 'SawyerHan-AI/TideMind',
-    '--json', 'assets',
-  ], ossRepo);
-  // 客户端期望的 (platform, arch) 对应 DMG/zip 命名。
-  const targets = [
-    { platform: 'darwin', arch: 'arm64', match: /arm64.*\.dmg$/ },
-    { platform: 'darwin', arch: 'x64', match: /x64.*\.dmg$/ },
-  ];
+
   let privateKey;
   try {
     privateKey = crypto.createPrivateKey(privateKeyPem);
   } catch (err) {
     throw new Error(`SIGNING_PRIVATE_KEY parse failed: ${err.message}`);
   }
+  console.log(`\n> Signing key loaded (ed25519, key from ${source}) — verified before tag push`);
 
   // Secondary key:轮换期间用第二个私钥同时签 .sig.secondary。不配置则跳过。
   const { pem: secondaryPem, source: secondarySource } = loadSecondarySigningPrivateKey();
@@ -503,12 +543,37 @@ function signReleaseAssets(version, ossRepo, allowUnsigned = false) {
       throw new Error(`SIGNING_PRIVATE_KEY_SECONDARY parse failed: ${err.message}`);
     }
   }
+  return { privateKey, secondaryKey, source };
+}
+
+function signReleaseAssets(version, ossRepo, keys) {
+  const { privateKey, secondaryKey } = keys;
+  if (!privateKey) {
+    // allowUnsigned 路径:loadSigningKeys 已打印 warning,这里什么都不做。
+    return;
+  }
+  console.log(`\n> Signing release manifests (ed25519)`);
+  const release = parseJsonOutput('gh', [
+    'release', 'view', `v${version}`, '--repo', 'SawyerHan-AI/TideMind',
+    '--json', 'assets',
+  ], ossRepo);
+  // 客户端期望的 (platform, arch) 对应 DMG/zip 命名。
+  const targets = [
+    { platform: 'darwin', arch: 'arm64', match: /arm64.*\.dmg$/ },
+    { platform: 'darwin', arch: 'x64', match: /x64.*\.dmg$/ },
+  ];
 
   for (const { platform, arch, match } of targets) {
     const asset = release.assets.find(a => match.test(a.name));
     if (!asset) {
-      console.log(`  skip ${platform}/${arch}: no matching asset`);
-      continue;
+      // fail-loud:签名现在发生在 publish 之前,是供应链防线的一部分。如果某个
+      // (platform, arch) 的 DMG 没找到,silent skip 会让该架构永远没有 .sig,
+      // 客户端验签 invalid 拒绝更新 —— 正是 v0.2.66 事故类。verifyUpdateApi
+      // 也会兜底,但这里提前在签名阶段炸,定位更直接。
+      throw new Error(
+        `signing: no matching DMG asset for ${platform}/${arch} (pattern ${match}); ` +
+        `release assets: ${release.assets.map(a => a.name).join(', ') || '(none)'}`,
+      );
     }
     // 用 hardcoded 稳定下载 URL,不依赖 gh CLI 返回的 asset.url。
     // 历史踩坑(v0.2.66 / v0.2.67):
@@ -661,6 +726,15 @@ async function main() {
   }
   run('git', ['push', 'origin', 'main'], { cwd: opts.ossRepo, label: 'push OSS main', dryRun: opts.dryRun });
 
+  // 签名私钥 fail-fast:在 push tag(触发不可逆的公开构建/发布)之前解析私钥。
+  //   - 缺失/损坏(且非 --allow-unsigned)立即报错退出,不留"已发布但无签名"窗口。
+  //   - macOS Keychain Touch ID / 密码交互也提前到运维一定在场的发版起点。
+  // dry-run 不访问 Keychain,避免无意义的解锁弹窗。
+  let signingKeys = { privateKey: null, secondaryKey: null, source: null };
+  if (!opts.dryRun) {
+    signingKeys = loadSigningKeys(opts.allowUnsigned);
+  }
+
   const tagAction = opts.dryRun ? 'create' : assertTagState(version, opts.ossRepo, opts.forceTag);
   if (tagAction === 'move') {
     run('git', ['tag', '-f', tagName], { cwd: opts.ossRepo, label: `move ${tagName}`, dryRun: opts.dryRun });
@@ -670,25 +744,37 @@ async function main() {
   } else {
     console.log(`\n> ${tagName} already points at OSS HEAD`);
   }
+  // 记录 push tag 的时刻,用于过滤掉 --force-tag 场景下同名旧 run。
+  // 减去 60s buffer 容忍本地/GitHub 服务器时钟偏差,确保不会误排除本次刚触发的新 run;
+  // 旧 run 在 force-tag 重发场景通常早数分钟以上,buffer 不影响其被排除。
+  // 仅 'move'/'create' 会真正触发新 run(故按 push 时刻过滤旧 run);'already-at-head'
+  // 是崩溃后收尾重跑:tag 已指向 HEAD、remote ref 已存在,下面的 push 是 no-op 不触发新
+  // run,唯一的已完成 run createdAt 早于本次 push,必须 minCreatedAtMs=0 退化为按
+  // headBranch 匹配,否则收尾重跑永远找不到那个 run → getReleaseRunId 超时。
+  const minRunCreatedAtMs = tagAction === 'already-at-head' ? 0 : Date.now() - 60_000;
   run('git', ['push', 'origin', tagName], { cwd: opts.ossRepo, label: `push ${tagName}`, dryRun: opts.dryRun });
 
   if (!opts.dryRun) {
-    const runId = await getReleaseRunId(version, opts.ossRepo, opts.timeoutMinutes * 60_000);
+    const runId = await getReleaseRunId(version, opts.ossRepo, opts.timeoutMinutes * 60_000, minRunCreatedAtMs);
     run('gh', ['run', 'watch', runId, '--repo', 'SawyerHan-AI/TideMind', '--exit-status'], {
       cwd: opts.ossRepo,
       label: `wait release workflow ${runId}`,
       timeoutMs: opts.timeoutMinutes * 60_000,
     });
+    // 离线签名:对每个 (platform, arch) 的 DMG 签名 "${version}\n${dmgUrl}",把签名作为
+    // 额外 asset 上传。**先签名后 publish**:消除"已 publish 但无 .sig"的窗口
+    // (该窗口叠加云端 5min release 缓存 → 落在窗口内的客户端拿到 signatureUrl=null
+    // 快照 → 全量拒更,正是 v0.2.66 事故)。对 draft release 上传 asset 是允许的,
+    // 且签名内容用 hardcoded 稳定 URL(见 signReleaseAssets 注释),与 release state
+    // 无关,所以先签完全安全。私钥已在 push tag 之前 fail-fast 解析(signingKeys)。
+    signReleaseAssets(version, opts.ossRepo, signingKeys);
     run('gh', ['release', 'edit', tagName, '--repo', 'SawyerHan-AI/TideMind', '--notes-file', notesFile, '--draft=false', '--latest'], {
       cwd: opts.ossRepo,
       label: 'publish GitHub release',
     });
-    // 离线签名:对每个 (platform, arch) 的 DMG 算 sha512,签名 "${version}\n${dmgUrl}",
-    // 把签名作为额外 asset 上传到 release。SIGNING_PRIVATE_KEY env 未设时跳过(向后兼容)。
-    signReleaseAssets(version, opts.ossRepo, opts.allowUnsigned);
     verifyRelease(version, opts.ossRepo);
     if (!opts.skipCloudVerify) await verifyCloud(version);
-    if (!opts.skipUpdateVerify) await verifyUpdateApi(version, previousVersion);
+    if (!opts.skipUpdateVerify) await verifyUpdateApi(version, previousVersion, opts.allowUnsigned);
   }
 
   console.log(`\nRelease ${tagName} completed.`);

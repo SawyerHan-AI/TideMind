@@ -230,7 +230,7 @@ export async function runInitialization(
 
   // Phase 3: 链接评估
   const pendingLinkCount = (db.prepare(
-    "SELECT COUNT(*) as cnt FROM links WHERE status = 'pending'",
+    "SELECT COUNT(*) as cnt FROM links WHERE status = 'pending' AND deleted = 0",
   ).get() as { cnt: number }).cnt;
   ctx.reportPhase(3, '链接评估', pendingLinkCount);
   log.info(`Phase 3: 链接评估 (${pendingLinkCount} 条待评估)`);

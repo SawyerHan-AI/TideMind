@@ -185,7 +185,7 @@ export async function runAnnotation(
           patch.type = dimensionsToLegacyType({ specificity, subjectivity, actuality }) as BrainNode['type'];
         }
 
-        updateNode(db, node.id, patch);
+        updateNode(db, node.id, patch, undefined, { skipEditSeqBump: true });
 
         // 即时建立 tagged 链接：检查标注后的 tags 是否有对应的已存在 tag 节点
         if (mergedTags.length > 0) {

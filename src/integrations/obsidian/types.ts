@@ -152,6 +152,9 @@ export interface CanvasParseResult {
   fileRefs: Array<{ id: string; file: string; subpath?: string }>;
   linkNodes: Array<{ id: string; url: string }>;
   edges: Array<{ fromId: string; toId: string; label?: string; confidence: number }>;
+  // parse 时刻读到的原始文件内容。避免 TOCTOU：调用方据此算 content_hash,
+  // 不再 digest 后二次重读盘(重读会拿到 digest 期间用户的新编辑导致编辑丢失)。
+  rawContent: string;
 }
 
 // --- Checkbox 映射 ---

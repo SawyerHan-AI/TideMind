@@ -308,7 +308,16 @@ function healClaudeCodePlugins(
   for (const name of entries) {
     if (!name.startsWith('claude-code-')) continue
     const pluginDir = path.join(pluginsRoot, name)
-    if (!fs.statSync(pluginDir).isDirectory()) continue
+    // 裸 statSync 遇坏 symlink(或 readdir 与 stat 之间被删的竞态)会抛 ENOENT,
+    // 异常冒到 selfHealPlugins 外层会中止本插件之后的所有自愈(其他 plugin /
+    // marketplace 清理 / 各 client 配置修复全跳过)。单 entry 失败应跳过而非熔断。
+    let st: fs.Stats
+    try {
+      st = fs.statSync(pluginDir)
+    } catch {
+      continue
+    }
+    if (!st.isDirectory()) continue
 
     // .mcp.json
     const mcpPath = path.join(pluginDir, '.mcp.json')

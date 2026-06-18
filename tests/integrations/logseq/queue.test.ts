@@ -87,6 +87,23 @@ vi.mock('../../../src/utils/logger.js', () => ({
   }),
 }));
 
+// 部分 mock sync-state：默认保留真实实现,只在 dataless→readable race 测试里把
+// 入口那次 getFileStat 返回 null(stat 时 dataless),read-time 补抓那次返回真实 stat
+//(文件已被 iCloud 下载)。其余函数走真实逻辑。nullFirstFileStatOnly 默认 false。
+let nullFirstFileStatOnly = false;
+let fileStatCallCount = 0;
+vi.mock('../../../src/integrations/logseq/sync-state.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/integrations/logseq/sync-state.js')>();
+  return {
+    ...actual,
+    getFileStat: (filePath: string) => {
+      fileStatCallCount++;
+      if (nullFirstFileStatOnly && fileStatCallCount === 1) return null;
+      return actual.getFileStat(filePath);
+    },
+  };
+});
+
 // ---- Imports（mock 之后） ----
 
 import type Database from 'better-sqlite3';
@@ -101,10 +118,12 @@ import {
   ensureSyncSchema,
   setFileState,
   getFileState,
+  isFileChanged,
 } from '../../../src/integrations/logseq/sync-state.js';
 import { getNode } from '../../../src/db/nodes.js';
 import { getLinksFrom } from '../../../src/db/links.js';
 import { invalidateGateCache } from '../../../src/db/stats.js';
+import { appendToStream } from '../../../src/stream/writer.js';
 
 // ---- Helpers ----
 
@@ -153,6 +172,8 @@ beforeEach(() => {
 afterEach(() => {
   db.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });
+  nullFirstFileStatOnly = false;
+  fileStatCallCount = 0;
 });
 
 // ============================================================
@@ -501,6 +522,175 @@ describe('segment-level dedup', () => {
       expect(node).not.toBeNull();
       expect(node!.content.trim().length).toBeGreaterThan(0);
     }
+  });
+
+  // 回归（HIGH，node_ids/segment_hashes 错位）：
+  // journal 段不传 title，digest 硬拒 <5 字符内容（如中文「买菜」），该段不产生节点。
+  // 修复前 allHashes 无条件 push 而 allNodeIds 仅成功时 push，导致两数组错位，
+  // 后续编辑会把错误旧节点 supersede + 重复 digest 未变段。
+  it('短 journal block 被 digest 拒绝时不破坏 node_ids/segment_hashes 对齐', async () => {
+    const filePath = path.join(tmpDir, 'journals', '2026_04_01.md');
+    // segmentJournal 把无子节点的短 block 累积进 pending；遇到「有子节点的 block」
+    // 时先 flushPending → 单个短 block「买菜」(渲染为「- 买菜」=4字<5) 独立成段，
+    // 被 digest 硬拒（journal 不传 title）。随后两个带子节点的正常 block 各自成段。
+    // 期望分段：[拒绝]「- 买菜」, [节点]Second..., [节点]Third...
+    fs.writeFileSync(
+      filePath,
+      '- 买菜\n- Second real block content\n  - detail b\n- Third real block content\n  - detail c',
+      'utf-8',
+    );
+
+    await processFileChange(db, filePath, tmpDir);
+    const firstState = getFileState(db, 'journals/2026_04_01.md');
+    expect(firstState).not.toBeNull();
+    // 不变式：两数组长度严格相等；被拒短段不应留下悬空 hash
+    expect(firstState!.node_ids.length).toBe(firstState!.segment_hashes!.length);
+    // 只有两个正常段产生节点（「买菜」被拒）
+    expect(firstState!.node_ids.length).toBe(2);
+    for (const nodeId of firstState!.node_ids) {
+      expect(getNode(db, nodeId)).not.toBeNull();
+    }
+
+    const beforeNodeCount = (db.prepare(
+      "SELECT COUNT(*) AS cnt FROM nodes WHERE is_superseded = 0",
+    ).get() as { cnt: number }).cnt;
+
+    // 仅修改最后一个 block 的内容，前面的段应原样保留、不被重复 digest。
+    fs.writeFileSync(
+      filePath,
+      '- 买菜\n- Second real block content\n  - detail b\n- Third real block CHANGED\n  - detail c',
+      'utf-8',
+    );
+    await processFileChange(db, filePath, tmpDir);
+
+    const secondState = getFileState(db, 'journals/2026_04_01.md');
+    expect(secondState).not.toBeNull();
+    // 不变式持续成立
+    expect(secondState!.node_ids.length).toBe(secondState!.segment_hashes!.length);
+    // 段数不变：node_ids 长度应与首轮一致（无重复增生 / 无错配丢段）
+    expect(secondState!.node_ids.length).toBe(firstState!.node_ids.length);
+    // 未变的第一个正常段保留原节点（错位 bug 下会被错误 supersede/重复）
+    expect(secondState!.node_ids[0]).toBe(firstState!.node_ids[0]);
+    // 变化的第二个正常段产生新节点
+    expect(secondState!.node_ids[1]).not.toBe(firstState!.node_ids[1]);
+
+    // 活跃节点数应等于段数（无孤儿/重复活跃节点）
+    const afterNodeCount = (db.prepare(
+      "SELECT COUNT(*) AS cnt FROM nodes WHERE is_superseded = 0",
+    ).get() as { cnt: number }).cnt;
+    expect(afterNodeCount).toBe(beforeNodeCount);
+  });
+
+  // 回归：连续短 block 被 segmentJournal 合并成一个长段，正常产生节点（不被预过滤误杀）
+  it('连续短 journal block 合并后产生单个节点，不被预过滤误杀', async () => {
+    const file = writeJournal(tmpDir, '2026_04_02', '- 买菜\n- 开会\n- 睡觉');
+
+    await processFileChange(db, file, tmpDir);
+
+    const state = getFileState(db, 'journals/2026_04_02.md');
+    expect(state).not.toBeNull();
+    // 三个短 block 合并为一个 >5 字符的段，产生一个节点；不变式仍成立
+    expect(state!.node_ids.length).toBe(state!.segment_hashes!.length);
+    expect(state!.node_ids.length).toBe(1);
+    expect(getNode(db, state!.node_ids[0])).not.toBeNull();
+  });
+});
+
+// ============================================================
+// TOCTOU：处理期间文件被编辑（对齐 Obsidian）
+// ============================================================
+
+describe('TOCTOU: 处理期间文件被编辑', () => {
+  afterEach(() => {
+    // 恢复默认 mock 行为，避免污染其他用例
+    vi.mocked(appendToStream).mockReturnValue('stream:2026-03-25:abc123:1' as never);
+  });
+
+  it('digest 期间编辑文件后，state 记录的是 snapshot；下一轮能检测到编辑', async () => {
+    const filePath = path.join(tmpDir, 'pages', 'toctou-page.md');
+    fs.writeFileSync(filePath, '- Original content before edit', 'utf-8');
+
+    // appendToStream 在 digest 内部、state 写入之前被 await 调用，借此模拟
+    // "处理期间用户编辑文件"的 TOCTOU 窗口：第一次调用时把文件改成新内容。
+    let edited = false;
+    vi.mocked(appendToStream).mockImplementation((async () => {
+      if (!edited) {
+        edited = true;
+        fs.writeFileSync(filePath, '- Edited content during processing window', 'utf-8');
+        // 让 mtime 明显前进，确保 isFileChanged 的 mtime 快速路径不会误判
+        const future = new Date(Date.now() + 5000);
+        fs.utimesSync(filePath, future, future);
+      }
+      return 'stream:2026-03-25:abc123:1';
+    }) as never);
+
+    await processFileChange(db, filePath, tmpDir);
+
+    const state = getFileState(db, 'pages/toctou-page.md');
+    expect(state).not.toBeNull();
+
+    // 关键断言：存储的 content_hash 必须是 snapshot（原始内容）的 hash，
+    // 而不是处理期间被编辑后的新内容。用 isFileChanged 反向验证：
+    // 当前磁盘上是"新内容"，与 snapshot 不一致 → 应判定为已变更（需再处理）。
+    // 修复前：state 记录的是 digest 后重读的新 hash+新 mtime/size，
+    // isFileChanged 会短路返回 false，这次编辑永久丢失。
+    expect(isFileChanged(filePath, state)).toBe(true);
+  });
+});
+
+// ============================================================
+// 真实 race（Round 6 回归）：入口 getFileStat=null(dataless),read-time 补抓成功。
+// 增量 queue 是运行期高频主路径,比只跑一次的 init 影响更大。
+//   - bug A：digest 期间编辑 → 下一轮 isFileChanged 仍为 true(不丢编辑)。
+//   - bug B：无编辑 → state 写入且 isFileChanged 为 false(无孤儿、下轮不重复 digest)。
+// 修复前(c08a2ce):queue 的 setFileState 在 snapshotStat===null 时整条跳过,节点已
+// digest 入库却不写 state → 孤儿 + 下一轮重复 digest(bug B);且无 read-time 补抓(bug A)。
+// ============================================================
+
+describe('dataless→readable 真实 race: 入口 null + read-time 补抓成功（Round 6）', () => {
+  afterEach(() => {
+    vi.mocked(appendToStream).mockReturnValue('stream:2026-03-25:abc123:1' as never);
+  });
+
+  it('bug A：入口 dataless + digest 期间编辑 → 下一轮 isFileChanged 仍为 true（不丢编辑）', async () => {
+    const filePath = path.join(tmpDir, 'pages', 'race-edit.md');
+    fs.writeFileSync(filePath, '- This original block is long enough to pass the digest quality gate and become its own Logseq node.', 'utf-8');
+
+    nullFirstFileStatOnly = true;
+
+    let edited = false;
+    vi.mocked(appendToStream).mockImplementation((async () => {
+      if (!edited) {
+        edited = true;
+        fs.writeFileSync(filePath, '- This block was edited DURING the digest window in the dataless race and must survive into the next sync round.', 'utf-8');
+        const future = new Date(Date.now() + 5000);
+        fs.utimesSync(filePath, future, future);
+      }
+      return 'stream:2026-03-25:abc123:1';
+    }) as never);
+
+    await processFileChange(db, filePath, tmpDir);
+
+    const state = getFileState(db, 'pages/race-edit.md');
+    expect(state).not.toBeNull();
+    // read-time snapshot = 编辑前 mtime/size,与编辑前 hash 同源。磁盘当前是编辑后内容 →
+    // 快速路径不短路 → hash 比对 → 判变更。回归守卫(bug A)。
+    expect(isFileChanged(filePath, state)).toBe(true);
+  });
+
+  it('bug B：入口 dataless + 无编辑 → state 写入且 isFileChanged 为 false（无孤儿/不重复 digest）', async () => {
+    const filePath = path.join(tmpDir, 'pages', 'race-stable.md');
+    fs.writeFileSync(filePath, '- A stable Logseq block in the dataless race that is never edited; the read-time snapshot must match disk so the next round skips it.', 'utf-8');
+
+    nullFirstFileStatOnly = true;
+
+    await processFileChange(db, filePath, tmpDir);
+
+    const state = getFileState(db, 'pages/race-stable.md');
+    expect(state).not.toBeNull();
+    expect(state!.node_ids.length).toBeGreaterThan(0); // 节点非孤儿
+    // read-time snapshot = 真实 mtime/size,与磁盘一致 → 下轮跳过。回归守卫(bug B)。
+    expect(isFileChanged(filePath, state)).toBe(false);
   });
 });
 

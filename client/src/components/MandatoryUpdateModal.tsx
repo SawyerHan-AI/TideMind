@@ -37,6 +37,21 @@ export function MandatoryUpdateModal() {
     Date.now() >= snoozedUntil &&
     !installing
 
+  const handleInstall = () => {
+    setInstalling(true)
+    // install IPC 设计上总是 resolve(主进程内部消化错误并把 state 置 'error'),
+    // 但仍兜底 catch:reject 时复位 installing,避免模态从此永久消失。
+    void window.api.updater.install().catch(() => setInstalling(false))
+  }
+
+  // 安装失败时主进程会把 state 置 'error'(quitAndInstall 抛错,app 留在前台,
+  // 见 electron/updater/index.ts installUpdate)。installing 必须随 state 离开
+  // 'downloaded' 复位,否则等 scheduler 重新下载、state 回到 'downloaded'+mandatory
+  // 时,模态因 installing 恒 true 永不再现,强制更新被静默击穿。
+  useEffect(() => {
+    if (state.status !== 'downloaded') setInstalling(false)
+  }, [state.status])
+
   // 进入 showing 时重启 60 秒倒计时
   useEffect(() => {
     if (!isShowing) {
@@ -45,19 +60,19 @@ export function MandatoryUpdateModal() {
     }
     setSecondsLeft(COUNTDOWN_SECONDS)
     const timer = setInterval(() => {
-      setSecondsLeft((s) => {
-        if (s <= 1) {
-          clearInterval(timer)
-          // 倒计时归零 → 自动安装
-          setInstalling(true)
-          window.api.updater.install()
-          return 0
-        }
-        return s - 1
-      })
+      // 副作用(install)不放在 setState updater 内部——updater 必须是纯函数
+      // (StrictMode 下会被双调用),归零安装由下面的 effect 触发。
+      setSecondsLeft((s) => Math.max(0, s - 1))
     }, 1000)
     return () => clearInterval(timer)
   }, [isShowing])
+
+  // 倒计时归零 → 自动安装
+  useEffect(() => {
+    if (isShowing && secondsLeft === 0) handleInstall()
+    // handleInstall 无依赖(只用 setState + window.api),不列入 deps。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isShowing, secondsLeft])
 
   // snooze 到点后重新显示模态
   useEffect(() => {
@@ -110,10 +125,7 @@ export function MandatoryUpdateModal() {
         <div className="space-y-2">
           <button
             type="button"
-            onClick={() => {
-              setInstalling(true)
-              window.api.updater.install()
-            }}
+            onClick={handleInstall}
             className="w-full flex items-center justify-center gap-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 px-4 py-3 text-sm font-medium text-red-100 transition-colors"
           >
             <RotateCw size={14} />

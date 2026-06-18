@@ -194,4 +194,43 @@ describe('reembedAllNodes', () => {
     expect(activeSegments.cnt).toBe(1);
     expect(archivedSegments.cnt).toBe(0);
   });
+
+  it('重算期间节点跌出过滤集不会让后续节点被跳过(稳定游标翻页回归)', async () => {
+    // 重 embed 期间 daemon 的衰减/归档任务会并发改 heat/archived。
+    // LIMIT/OFFSET 翻页下,已处理区的行跌出结果集会让整个集合左移,
+    // OFFSET 静默跳过等量未处理节点;游标(id)翻页不受行漂移影响。
+    const { getEmbedding } = await import('../../src/llm/embedding.js');
+    const ids: string[] = [];
+    for (let i = 0; i < 150; i++) {
+      ids.push(seedNode(db, { content: `node ${i}`, heat: 1 }).id);
+    }
+    ids.sort(); // 与 ORDER BY id 的处理顺序一致
+
+    // 第一次 embedding 调用时归档排序最前的 50 个节点,模拟并发修改
+    let archivedOnce = false;
+    vi.mocked(getEmbedding).mockImplementation(async () => {
+      if (!archivedOnce) {
+        archivedOnce = true;
+        const first50 = ids.slice(0, 50);
+        const placeholders = first50.map(() => '?').join(',');
+        db.prepare(`UPDATE nodes SET archived = 1, heat = 0.02 WHERE id IN (${placeholders})`).run(...first50);
+      }
+      return new Float32Array([1, 2, 3, 4]);
+    });
+
+    try {
+      await reembedAllNodes(db);
+    } finally {
+      // 还原默认 mock,避免污染其他用例
+      vi.mocked(getEmbedding).mockImplementation(async () => new Float32Array([1, 2, 3, 4]));
+    }
+
+    // 未被归档的 100 个节点必须全部被重算
+    const remaining = ids.slice(50);
+    const placeholders = remaining.map(() => '?').join(',');
+    const row = db.prepare(
+      `SELECT COUNT(DISTINCT node_id) AS cnt FROM node_segments WHERE node_id IN (${placeholders})`,
+    ).get(...remaining) as { cnt: number };
+    expect(row.cnt).toBe(100);
+  });
 });

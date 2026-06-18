@@ -7,7 +7,8 @@
     "searchPlaceholder": "Поиск воспоминаний...",
     "all": "Все",
     "allTags": "Все теги",
-    "allTypes": "Все типы"
+    "allTypes": "Все типы",
+    "disabledInSearch": "Фильтры не применяются в режиме поиска"
   },
   "list": {
     "noResults": "Совпадающие воспоминания не найдены",
@@ -84,6 +85,8 @@
     "pathDiscovery": "Поиск пути",
     "structureHoles": "Структурные дыры",
     "connectivityLabel": "Связность",
+    "nodeLimitLabel": "Топ",
+    "nodeLimitHint": "Показывает топ-N узлов по heat и их соседей на расстоянии 1 переход.",
     "clickSecondNode": "Нажмите на второй узел для просмотра пути",
     "clickStartNode": "Нажмите на начальный узел"
   }

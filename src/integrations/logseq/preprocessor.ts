@@ -173,12 +173,17 @@ export function shouldProcessFile(relPath: string): boolean {
 // --- 核心预处理 ---
 
 /**
- * 预处理 Logseq markdown 文件
+ * 预处理 Logseq markdown 文件。
+ *
+ * 返回类型把 rawContent 收窄为必填(PreprocessedPage 基类里为可选,因 Notion 等
+ * 非文件源复用该类型时无原始文件内容)。本函数所有非 null 返回路径都填了 rawContent,
+ * 故调用方(init / queue)可直接用 preprocessed.rawContent 算 hash,无需 undefined 守卫,
+ * 与 Obsidian preprocessFile(返回 ObsidianPreprocessedPage,rawContent 必填)对齐。
  */
 export function preprocessFile(
   filePath: string,
   graphRoot: string,
-): PreprocessedPage | null {
+): (PreprocessedPage & { rawContent: string }) | null {
   const res = safeReadTextFileSync(filePath);
   if (!res.ok) return null;
   // 统一换行为 LF：LOGBOOK/properties 等正则用 `$` 锚点，CRLF 会在值里留下 \r
@@ -244,7 +249,7 @@ export function preprocessFile(
 
   if (content.trim().length < 5) return null;
 
-  return { title, cleanContent: content, metadata };
+  return { title, cleanContent: content, metadata, rawContent };
 }
 
 // --- PDF 标注文件解析 ---
@@ -266,7 +271,7 @@ interface Annotation {
 function preprocessAnnotationFile(
   rawContent: string,
   relPath: string,
-): PreprocessedPage | null {
+): (PreprocessedPage & { rawContent: string }) | null {
   const metadata: PageMetadata = {
     aliases: [],
     tags: [],
@@ -370,7 +375,8 @@ function preprocessAnnotationFile(
   const content = contentParts.join('\n\n');
   if (content.trim().length < 5) return null;
 
-  return { title, cleanContent: content, metadata };
+  // rawContent 为传入的（已归一化）原始文件内容，供调用方用同一 snapshot 算 hash
+  return { title, cleanContent: content, metadata, rawContent };
 }
 
 /**

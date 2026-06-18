@@ -7,7 +7,8 @@
     "searchPlaceholder": "メモリを検索...",
     "all": "すべて",
     "allTags": "すべてのタグ",
-    "allTypes": "すべてのタイプ"
+    "allTypes": "すべてのタイプ",
+    "disabledInSearch": "検索モードではフィルターは適用されません"
   },
   "list": {
     "noResults": "一致するメモリが見つかりません",
@@ -84,6 +85,8 @@
     "pathDiscovery": "パス探索",
     "structureHoles": "構造的空隙",
     "connectivityLabel": "接続度",
+    "nodeLimitLabel": "上位",
+    "nodeLimitHint": "heat の高い上位 N 件のノードと、その 1 ホップ隣接ノードを表示します。",
     "clickSecondNode": "2番目のノードをクリックしてパスを表示",
     "clickStartNode": "開始ノードをクリック"
   }

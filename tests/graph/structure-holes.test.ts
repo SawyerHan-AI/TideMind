@@ -97,6 +97,48 @@ describe('computeStructureHoles', () => {
     expect(computeStructureHoles(db, 3).length).toBe(3);
     expect(computeStructureHoles(db, 100).length).toBe(6);
   });
+
+  it('已归档节点不进入候选对,也不作为共享邻居计数(归档不删 links)', () => {
+    // A,B 共享 X,Y → 归档前 (A,B) 与 (X,Y) 都是洞
+    const A = seedNode(db, { content: 'A content' });
+    const B = seedNode(db, { content: 'B content' });
+    const X = seedNode(db, { content: 'X content' });
+    const Y = seedNode(db, { content: 'Y content' });
+    createLink(db, { from_id: A.id, to_id: X.id, relation: [{ type: 'analogous', confidence: 0.7 }] });
+    createLink(db, { from_id: B.id, to_id: X.id, relation: [{ type: 'analogous', confidence: 0.7 }] });
+    createLink(db, { from_id: A.id, to_id: Y.id, relation: [{ type: 'analogous', confidence: 0.7 }] });
+    createLink(db, { from_id: B.id, to_id: Y.id, relation: [{ type: 'analogous', confidence: 0.7 }] });
+    expect(computeStructureHoles(db).length).toBe(2);
+
+    // 模拟 archiveNodeWithVectors:archived=1 + heat=0.02,links 保留
+    db.prepare('UPDATE nodes SET archived = 1, heat = 0.02 WHERE id = ?').run(A.id);
+
+    const holes = computeStructureHoles(db);
+    // A 不能出现在任何候选对;X,Y 失去共享邻居 A 后只剩 B,不足 2 → 全部消失
+    for (const h of holes) {
+      expect([h.nodeA, h.nodeB]).not.toContain(A.id);
+    }
+    expect(holes.length).toBe(0);
+  });
+
+  it('is_superseded 节点同样被排除', () => {
+    const A = seedNode(db, { content: 'A content' });
+    const B = seedNode(db, { content: 'B content' });
+    const X = seedNode(db, { content: 'X content' });
+    const Y = seedNode(db, { content: 'Y content' });
+    createLink(db, { from_id: A.id, to_id: X.id, relation: [{ type: 'analogous', confidence: 0.7 }] });
+    createLink(db, { from_id: B.id, to_id: X.id, relation: [{ type: 'analogous', confidence: 0.7 }] });
+    createLink(db, { from_id: A.id, to_id: Y.id, relation: [{ type: 'analogous', confidence: 0.7 }] });
+    createLink(db, { from_id: B.id, to_id: Y.id, relation: [{ type: 'analogous', confidence: 0.7 }] });
+
+    db.prepare('UPDATE nodes SET is_superseded = 1 WHERE id = ?').run(B.id);
+
+    const holes = computeStructureHoles(db);
+    for (const h of holes) {
+      expect([h.nodeA, h.nodeB]).not.toContain(B.id);
+    }
+    expect(holes.length).toBe(0);
+  });
 });
 
 describe('structure_holes cache 读写', () => {

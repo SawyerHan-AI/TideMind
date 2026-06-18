@@ -4,6 +4,7 @@ import { generateId } from '../utils/id.js';
 import { now } from '../utils/time.js';
 import { computeMaturityScore } from '../graph/maturity.js';
 import { getParam } from '../strategy/loader.js';
+import { getLocalGeneration } from '../metabolism/generation-decay.js';
 import { dimensionsToLegacyType } from '../utils/dimensions.js';
 import {
   archiveNodeWithVectors,
@@ -77,8 +78,8 @@ export function createNode(
       specificity, subjectivity, actuality,
       is_crystal, is_tag, is_meta,
       source_tool, source_session, source_stream, source_timestamp,
-      tags, created, updated)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      tags, created, updated, edit_seq, decay_gen)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
   `).run(
     id, type, params.content, params.title ?? null,
     heat, refinement, independence, maturityScore,
@@ -86,7 +87,9 @@ export function createNode(
     params.is_crystal ?? 0, params.is_tag ?? 0, params.is_meta ?? 0,
     params.source_tool ?? null, params.source_session ?? null,
     params.source_stream ?? null, params.source_timestamp ?? null,
-    tagsJson, created, created,
+    // M8.5:decay_gen 锚定为本地当前 generation(云同步=云端 G,纯本地=0),
+    // 防 generation 重算把新节点补衰减历史代暴跌。
+    tagsJson, created, created, getLocalGeneration(db),
   );
 
   return getNode(db, id)!;
@@ -118,6 +121,7 @@ export function updateNode(
   id: string,
   patch: Partial<Pick<BrainNode, 'content' | 'title' | 'type' | 'heat' | 'refinement' | 'connectivity' | 'independence' | 'specificity' | 'subjectivity' | 'actuality' | 'tags' | 'archived' | 'is_keystone' | 'is_crystal' | 'is_tag' | 'is_meta' | 'maturity_score' | 'last_reconsolidated'>>,
   changeReason?: string,
+  opts?: { skipEditSeqBump?: boolean },
 ): boolean {
   return db.transaction(() => {
     const node = getNode(db, id);
@@ -129,13 +133,21 @@ export function updateNode(
       'tags', 'archived', 'is_keystone', 'is_crystal', 'is_tag', 'is_meta',
       'maturity_score', 'last_reconsolidated',
     ]);
+    // 内容类字段集(用户意图):变更则 bump edit_seq(因果版本号 M3);派生字段
+    // (heat/refinement/connectivity/independence/maturity_score/is_keystone/is_crystal/
+    // is_tag/is_meta/last_reconsolidated)不碰。三维归内容类(与 content 同源)。
+    const CONTENT_COLUMNS = new Set([
+      'content', 'title', 'type', 'tags', 'specificity', 'subjectivity', 'actuality', 'archived',
+    ]);
     const fields: string[] = [];
     const values: unknown[] = [];
+    let touchedContent = false;
 
     for (const [key, val] of Object.entries(patch)) {
       if (val !== undefined && ALLOWED_COLUMNS.has(key)) {
         fields.push(`${key} = ?`);
         values.push(val);
+        if (CONTENT_COLUMNS.has(key)) touchedContent = true;
       }
     }
 
@@ -149,6 +161,15 @@ export function updateNode(
       `).run(id, node.version, node.content, changeReason ?? null, now());
 
       fields.push('version = version + 1');
+    }
+
+    // 因果版本号:内容类字段变更则 +1,使跨设备内容仲裁中用户编辑永远赢过过时代谢。
+    // CRITICAL 修复(审计):代谢内容改写(reconsolidate/annotate/dedup/tag-promote)传
+    // skipEditSeqBump,**不** bump edit_seq —— edit_seq 是"用户意图版本",代谢与用户编辑
+    // 必须可区分,否则本地代谢 bump 的 edit_seq 与用户编辑无法区分,跨设备并发时代谢会
+    // 静默覆盖用户编辑(丢数据)。version 谱系门控仍 bump(上面),只 edit_seq 因果版本不动。
+    if (touchedContent && !opts?.skipEditSeqBump) {
+      fields.push('edit_seq = edit_seq + 1');
     }
 
     // 推 updated 时间戳：cloud reconcile 用 LWW 比较 updated 决定上传/下载，
