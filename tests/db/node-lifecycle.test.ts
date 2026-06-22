@@ -7,6 +7,7 @@ import {
   archiveNodeWithVectors,
   deleteNodeDependentsBatch,
   deleteNodeCompletely,
+  markNodeSupersededRecordOnly,
   reArchiveNodeWithVectors,
   retireNodeWithoutReplacement,
   supersedeNodeWithLinks,
@@ -87,6 +88,57 @@ describe('node lifecycle service', () => {
     const oldAfter = getNode(db, oldNode.id)!;
     expect(oldAfter.is_superseded).toBe(1);
     expect(oldAfter.heat).toBeCloseTo(0.01);
+  });
+
+  // supersede-heat-cloud-roundtrip(2026-06-18):退休节点的派生字段必须全部落地板,
+  // 且 supersede 须 bump edit_seq 成为因果事件(上行不被并发云端代谢 LWW 拒收)。
+  it('supersedeNodeWithLinks 把退休节点 heat/connectivity/maturity 归地板并 bump edit_seq', () => {
+    const oldNode = seedNode(db, { content: 'old', heat: 1 });
+    const newNode = seedNode(db, { content: 'new' });
+    db.prepare('UPDATE nodes SET connectivity = 5, maturity_score = 0.9, edit_seq = 3 WHERE id = ?').run(oldNode.id);
+
+    supersedeNodeWithLinks(db, oldNode.id, newNode.id);
+
+    const after = db.prepare(
+      'SELECT heat, connectivity, maturity_score, edit_seq, is_superseded FROM nodes WHERE id = ?',
+    ).get(oldNode.id) as { heat: number; connectivity: number; maturity_score: number; edit_seq: number; is_superseded: number };
+    expect(after.is_superseded).toBe(1);
+    expect(after.heat).toBeCloseTo(0.01);
+    expect(after.connectivity).toBe(0);
+    expect(after.maturity_score).toBe(0);
+    expect(after.edit_seq).toBe(4); // 3 -> +1
+  });
+
+  it('retireNodeWithoutReplacement 把退休节点 connectivity/maturity 归地板并 bump edit_seq', () => {
+    const node = seedNode(db, { heat: 1 });
+    db.prepare('UPDATE nodes SET connectivity = 4, maturity_score = 0.8, edit_seq = 2 WHERE id = ?').run(node.id);
+
+    retireNodeWithoutReplacement(db, node.id);
+
+    const after = db.prepare(
+      'SELECT heat, connectivity, maturity_score, edit_seq, is_superseded FROM nodes WHERE id = ?',
+    ).get(node.id) as { heat: number; connectivity: number; maturity_score: number; edit_seq: number; is_superseded: number };
+    expect(after.is_superseded).toBe(1);
+    expect(after.heat).toBeCloseTo(0.01);
+    expect(after.connectivity).toBe(0);
+    expect(after.maturity_score).toBe(0);
+    expect(after.edit_seq).toBe(3); // 2 -> +1
+  });
+
+  it('markNodeSupersededRecordOnly 把退休节点 connectivity/maturity 归地板并 bump edit_seq', () => {
+    const node = seedNode(db, { heat: 1 });
+    db.prepare('UPDATE nodes SET connectivity = 3, maturity_score = 0.7, edit_seq = 1 WHERE id = ?').run(node.id);
+
+    markNodeSupersededRecordOnly(db, node.id);
+
+    const after = db.prepare(
+      'SELECT heat, connectivity, maturity_score, edit_seq, is_superseded FROM nodes WHERE id = ?',
+    ).get(node.id) as { heat: number; connectivity: number; maturity_score: number; edit_seq: number; is_superseded: number };
+    expect(after.is_superseded).toBe(1);
+    expect(after.heat).toBeCloseTo(0.01);
+    expect(after.connectivity).toBe(0);
+    expect(after.maturity_score).toBe(0);
+    expect(after.edit_seq).toBe(2); // 1 -> +1
   });
 
   it('M10: supersede 残留边软删(非硬删),防 reconcile 把它当 onlyServer 复活', () => {

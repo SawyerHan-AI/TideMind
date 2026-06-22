@@ -333,6 +333,9 @@ export function bumpHeat(db: Database.Database, id: string, delta: number = 0.1)
   const wR = getParam('recall-rank', 'refinement_weight', 0.3);
   const wC = getParam('recall-rank', 'connectivity_weight', 0.3);
   const wI = getParam('recall-rank', 'independence_weight', 0.2);
+  // 地板自强制(2026-06-18 审计):WHERE 显式排除 superseded —— 退休节点 heat 恒为地板 0.01,
+  // 任何 caller 误传 superseded id(如 node_id/index_ref 直取分支历史上漏过滤)都不会把它加热
+  // 顶回去。不依赖"caller 的候选集已过滤"这一偶然性,让"代谢不碰 superseded"在 callee 字面成立。
   db.prepare(`
     UPDATE nodes SET
       heat = MIN(heat + ?, 1.0),
@@ -341,6 +344,6 @@ export function bumpHeat(db: Database.Database, id: string, delta: number = 0.1)
                      + ? * connectivity
                      + ? * independence,
       updated = ?
-    WHERE id = ?
+    WHERE id = ? AND is_superseded = 0
   `).run(delta, wH, delta, wR, wC, wI, now(), id);
 }
