@@ -75,8 +75,19 @@ function downlinkGuardEnabled(db: Database.Database): boolean {
   }
 }
 
-/** 无条件整行写入(新节点 / 云端归档 / 关闭防护 / 云端较新时用)。 */
-function insertFullNodeRow(db: Database.Database, row: Record<string, unknown>): void {
+/** 无条件整行写入(新节点 / 云端归档 / 关闭防护 / 云端较新时用)。
+ *  localSuperseded:调用方传入的本地 is_superseded 态,与云端值 OR 合并(单调粘滞)。 */
+function insertFullNodeRow(db: Database.Database, row: Record<string, unknown>, localSuperseded = false): void {
+  // 纵深防御(2026-06-18 supersede-heat-cloud-roundtrip):退休(superseded)节点的派生字段
+  // 必须落地板。即便服务端因旧版本/部署 skew 仍下发高 heat/connectivity/maturity,本地镜像
+  // 也强制 heat=0.01/connectivity=0/maturity_score=0,杜绝旧版本在图谱里以高热/大节点复活。
+  //
+  // sup = 本地||云端(单调,退休只增不减)。HIGH-B 修复(2026-06-18 三轮审计):情形2(contentTakesCloud)
+  // 传 localSuperseded → 多设备并发下"另一端陈旧 active 但 edit_seq 更高的行"经情形2 整行写时,
+  // 本地已退休则 sup=true、强制落地板 + is_superseded 保持 1,不被翻回 active+高热(与情形3/服务端
+  // 两路 upsert 对称)。情形1(新节点无本地态 / 归档 tombstone / guard-off 逃生舱)默认 false:guard-off
+  // 语义就是"放弃下行防护、无条件覆盖"(同 backlog 已记的 guard-off 复活已删 link),不单独保单调。
+  const sup = localSuperseded || toBool(row.is_superseded)
   db.prepare(`
     INSERT OR REPLACE INTO nodes (
       id, type, content, title,
@@ -93,9 +104,9 @@ function insertFullNodeRow(db: Database.Database, row: Record<string, unknown>):
     row.type ?? 'fact',
     row.content ?? '',
     row.title ?? null,
-    Number(row.heat ?? 1.0),
+    sup ? 0.01 : Number(row.heat ?? 1.0),
     Number(row.refinement ?? 0.0),
-    Number(row.connectivity ?? 0.0),
+    sup ? 0 : Number(row.connectivity ?? 0.0),
     Number(row.independence ?? 0.0),
     Number(row.specificity ?? 0.5),
     Number(row.subjectivity ?? 0.5),
@@ -113,9 +124,9 @@ function insertFullNodeRow(db: Database.Database, row: Record<string, unknown>):
     Number(row.version ?? 1),
     toBool(row.archived) ? 1 : 0,
     toBool(row.is_keystone) ? 1 : 0,
-    toBool(row.is_superseded) ? 1 : 0,
+    sup ? 1 : 0,
     row.source_device ?? 'cloud',
-    Number(row.maturity_score ?? 0.0),
+    sup ? 0 : Number(row.maturity_score ?? 0.0),
     row.updated ?? row.created ?? new Date().toISOString(),
     Number(row.edit_seq ?? 0),
     Number(row.decay_gen ?? 0),
@@ -147,8 +158,8 @@ export function applyCloudNodeRow(db: Database.Database, row: Record<string, unk
   }
 
   const local = db
-    .prepare(`SELECT edit_seq, updated FROM nodes WHERE id = ?`)
-    .get(id) as { edit_seq?: number; updated?: string } | undefined
+    .prepare(`SELECT edit_seq, updated, is_superseded FROM nodes WHERE id = ?`)
+    .get(id) as { edit_seq?: number; updated?: string; is_superseded?: number } | undefined
 
   // 情形 1:新节点 / 云端归档(tombstone 优先,不受本地 edit_seq/updated 阻拦)/ 关闭防护 → 整行写入。
   if (!local || cloudArchived || !downlinkGuardEnabled(db)) {
@@ -158,13 +169,27 @@ export function applyCloudNodeRow(db: Database.Database, row: Record<string, unk
   }
 
   // 情形 2:云端内容不旧于本地((edit_seq, updated) 字典序)→ 整行取云端。
+  // HIGH-B 修复:传本地 is_superseded 做 OR 合并 —— 多设备并发下,另一端陈旧 active 但 edit_seq 更高
+  // 的行会经 contentTakesCloud 走到这里,不能把本地刚退休节点翻回 active(supersede 单调)。
   if (contentTakesCloud(row, local)) {
-    insertFullNodeRow(db, row)
+    insertFullNodeRow(db, row, (local.is_superseded ?? 0) === 1)
     return
   }
 
   // 情形 3:本地内容更新(本地 edit_seq 更高)→ 只同步派生字段(含 decay_gen),
   // 内容类 + updated + version + edit_seq 保留本地。
+  // 纵深防御(2026-06-18 supersede-heat-cloud-roundtrip):同 insertFullNodeRow,退休节点的
+  // heat/connectivity/maturity 强制落地板,不被云端旧高值污染。
+  //
+  // CRITICAL 修复(C1,2026-06-18 审计):is_superseded 在情形 3 **单调粘滞**——本地已退休(=1)时,
+  // 不被云端**滞后的** is_superseded=0 翻回 active。情形 3 的前提是"本地 edit_seq 更高=本地权威",
+  // 而本地刚 supersede(bump 了 edit_seq)、其 uplink 尚未落地时,一个陈旧云端 active 行下行恰好
+  // 走到这里;若把 is_superseded 当普通派生字段无条件取云端,会把刚退休节点改回 active+高热,且
+  // 下一次 uplink 用实时行(SELECT *)把污染推回服务端、永不自愈。全仓无任何合法 un-supersede 路径
+  // (is_superseded 只增不减),故 OR 合并(本地||云端)安全:只要任一端认定退休即保持退休。
+  // supEffective 据合并值判定 → 本地已退休时强制三字段落地板。
+  const localSuperseded = (local.is_superseded ?? 0) === 1
+  const supEffective = localSuperseded || toBool(row.is_superseded)
   db.prepare(`
     UPDATE nodes SET
       heat = ?, refinement = ?, connectivity = ?, independence = ?,
@@ -172,16 +197,16 @@ export function applyCloudNodeRow(db: Database.Database, row: Record<string, unk
       is_keystone = ?, is_superseded = ?, last_reconsolidated = ?, decay_gen = ?
     WHERE id = ?
   `).run(
-    Number(row.heat ?? 1.0),
+    supEffective ? 0.01 : Number(row.heat ?? 1.0),
     Number(row.refinement ?? 0.0),
-    Number(row.connectivity ?? 0.0),
+    supEffective ? 0 : Number(row.connectivity ?? 0.0),
     Number(row.independence ?? 0.0),
-    Number(row.maturity_score ?? 0.0),
+    supEffective ? 0 : Number(row.maturity_score ?? 0.0),
     toBool(row.is_crystal) ? 1 : 0,
     toBool(row.is_tag) ? 1 : 0,
     toBool(row.is_meta) ? 1 : 0,
     toBool(row.is_keystone) ? 1 : 0,
-    toBool(row.is_superseded) ? 1 : 0,
+    supEffective ? 1 : 0,
     row.last_reconsolidated ?? null,
     Number(row.decay_gen ?? 0),
     id,

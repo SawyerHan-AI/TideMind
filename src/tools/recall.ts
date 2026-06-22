@@ -52,7 +52,10 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
     const node = repo.nodes.getNode(input.node_id);
     // archive 节点 heat=0.02 仍 > 0.01 阈值,必须显式滤 archived
     // 防止 brain_recall 把已归档记忆当活跃返回。
-    if (node && node.heat > 0.01 && !node.archived) {
+    // is_superseded 同样显式滤(2026-06-18 审计):退休节点 heat 应为 0.01 被上面挡住,但
+    // 存量未清洗 / 刚 supersede 未及落地板的 superseded 行 heat 可能仍 >0.01,直取分支若放它
+    // 进结果集,会经下方 bumpHeat 把退休节点加热顶回去(绕过防线1+runbook)。靠 flag 而非 heat 挡。
+    if (node && node.heat > 0.01 && !node.archived && !node.is_superseded) {
       nodes = [node];
     }
   }
@@ -97,7 +100,8 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
       ).all(...params, limit) as BrainNode[];
     } else if (refType === 'node') {
       const node = repo.nodes.getNode(refValue)
-      if (node && node.heat > 0.01 && !node.archived) nodes = [node]
+      // 同 node_id 直取分支:显式滤 archived + is_superseded,防退休节点经 bumpHeat 被顶回去。
+      if (node && node.heat > 0.01 && !node.archived && !node.is_superseded) nodes = [node]
     }
   }
   // --- 图遍历（支持 query 组合 rerank） ---

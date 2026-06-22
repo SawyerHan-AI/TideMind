@@ -140,13 +140,13 @@ export function retireNodeWithoutReplacement(db: Database.Database, nodeId: stri
   // (对比 deleteNodeDependentsBatch:节点行随后被 DELETE,FK 要求边先物理删,那里保持硬删。)
   const ts = now();
   db.transaction(() => {
-    db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01, updated = ? WHERE id = ?').run(ts, nodeId);
+    db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01, connectivity = 0, maturity_score = 0, edit_seq = edit_seq + 1, updated = ? WHERE id = ?').run(ts, nodeId);
     db.prepare('UPDATE links SET deleted = 1, updated = ?, edit_seq = edit_seq + 1 WHERE (from_id = ? OR to_id = ?) AND deleted = 0').run(ts, nodeId, nodeId);
   })();
 }
 
 export function markNodeSupersededRecordOnly(db: Database.Database, nodeId: string): void {
-  db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01, updated = ? WHERE id = ?').run(now(), nodeId);
+  db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01, connectivity = 0, maturity_score = 0, edit_seq = edit_seq + 1, updated = ? WHERE id = ?').run(now(), nodeId);
 }
 
 /**
@@ -218,7 +218,13 @@ export function supersedeNodeWithLinks(
       'UPDATE links SET deleted = 1, updated = ?, edit_seq = edit_seq + 1 WHERE (from_id = ? OR to_id = ?) AND NOT (from_id = ? AND to_id = ?) AND deleted = 0',
     ).run(ts, oldNodeId, oldNodeId, oldNodeId, newNodeId);
 
-    db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01, updated = ? WHERE id = ?').run(ts, oldNodeId);
+    // 退休节点的派生字段全部落地板:heat=0.01 + connectivity=0 + maturity_score=0
+    //(图谱节点大小由 connectivity 驱动,旧版本不该残留为大节点)。
+    // bump edit_seq:让 supersede 成为因果版本事件,上行 reconcile 不被并发云端代谢按
+    //(edit_seq, updated)LWW 拒收,确保"退休"状态可靠传到云端(对齐 archiveNodeWithVectors)。
+    // 三处退休函数(retire/markRecordOnly/此处)共用同一 UPDATE 形状。
+    // 参见 docs/design/supersede-heat-cloud-roundtrip-fix-2026-06-18.md。
+    db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01, connectivity = 0, maturity_score = 0, edit_seq = edit_seq + 1, updated = ? WHERE id = ?').run(ts, oldNodeId);
   })();
 
   log.info(`节点版本替代: ${oldNodeId} -> ${newNodeId}`);

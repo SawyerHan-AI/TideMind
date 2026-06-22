@@ -189,6 +189,25 @@ describe('archiveNode', () => {
   });
 });
 
+// ===== bumpHeat 地板自强制 =====
+
+describe('bumpHeat', () => {
+  it('加热活跃节点', () => {
+    const node = seedNode(db, { heat: 0.5 });
+    bumpHeat(db, node.id, 0.3);
+    expect(getNode(db, node.id)!.heat).toBeCloseTo(0.8);
+  });
+
+  // 地板自强制(2026-06-18 审计):退休节点恒为地板 heat,任何 caller 误传 superseded id
+  // (如 recall node_id/index_ref 直取分支)都不会把它加热顶回去并经同步下行污染。
+  it('不加热 superseded 节点(WHERE is_superseded=0 守卫)', () => {
+    const node = seedNode(db, { heat: 0.5 });
+    db.prepare('UPDATE nodes SET is_superseded = 1 WHERE id = ?').run(node.id);
+    bumpHeat(db, node.id, 0.3);
+    expect(getNode(db, node.id)!.heat).toBeCloseTo(0.5); // 未被加热
+  });
+});
+
 // ===== listNodes =====
 
 describe('listNodes', () => {
