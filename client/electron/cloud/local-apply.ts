@@ -162,8 +162,13 @@ export function applyCloudNodeRow(db: Database.Database, row: Record<string, unk
     .get(id) as { edit_seq?: number; updated?: string; is_superseded?: number } | undefined
 
   // 情形 1:新节点 / 云端归档(tombstone 优先,不受本地 edit_seq/updated 阻拦)/ 关闭防护 → 整行写入。
-  if (!local || cloudArchived || !downlinkGuardEnabled(db)) {
-    insertFullNodeRow(db, row)
+  // F1 修复(2026-06-24 logseq-orphan):local 存在且 guard 开(主要是 cloudArchived 子情况)时传
+  // localSuperseded 做 is_superseded OR 单调,防陈旧云端 active 整行覆盖把本地退休节点复活——这是
+  // supersede-heat 审计标 LOW-3 未修的 Case1 洞,实测在 2026-06-21/23 复活了 ~3000 个退休孤儿。
+  // !local(新节点无本地态)与 guard-off(逃生舱,放弃所有下行防护)传 false 维持既定语义。
+  const guardOn = downlinkGuardEnabled(db)
+  if (!local || cloudArchived || !guardOn) {
+    insertFullNodeRow(db, row, !!local && guardOn ? (local.is_superseded ?? 0) === 1 : false)
     if (cloudArchived) deleteVectorIfPresent(db, id)
     return
   }

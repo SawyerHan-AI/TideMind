@@ -143,7 +143,8 @@ export function registerNoteSourceHandlers(): void {
     try {
       if (source.tool_type === 'logseq') {
         const { stopLogseqSource } = await import('@server/integrations/logseq/index.js')
-        stopLogseqSource(parsedId.data)
+        // stopLogseqSource 现在 async(drain 在途串行链);移除 source 不必阻塞 IPC,后台 drain 即可
+        void stopLogseqSource(parsedId.data)
       } else if (source.tool_type === 'obsidian') {
         const { stopObsidianSource } = await import('@server/integrations/obsidian/index.js')
         stopObsidianSource(parsedId.data)

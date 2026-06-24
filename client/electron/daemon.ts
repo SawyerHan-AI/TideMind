@@ -25,8 +25,7 @@ import { ALL_TASKS } from '@server/metabolism/tasks.js'
 import { setLLMSuccessHook } from '@server/llm/client.js'
 import { setEmbeddingSuccessHook, setEmbeddingFailureHook } from '@server/llm/embedding.js'
 import { setStructureHolesRunner } from '@server/graph/structure-holes.js'
-import { stopLogseqIntegration } from '@server/integrations/logseq/index.js'
-import { startAllNoteSources, stopAllNoteSources } from '@server/integrations/shared/note-sources.js'
+import { startAllNoteSources, stopAllNoteSourcesAsync } from '@server/integrations/shared/note-sources.js'
 import { getActivityState } from './activity-state.js'
 import { runStructureHolesInWorker, terminateStructureHolesWorker } from './workers/structure-holes-runner.js'
 
@@ -179,7 +178,14 @@ export async function stopDaemon(): Promise<void> {
     log.warn(`could not log daemon_stop event (DB may not be initialized): ${(err as Error).message}`)
   }
 
-  stopAllNoteSources()
+  // H-shutdown 修复(第三轮审计):await logseq watcher 在途串行链 drain(processOneFile 跑完 setFileState/
+  // finally 退休 createdThisRun)再 closeDb,否则在途节点撞已关闭的 db、退休失败 → 残留活跃孤儿。
+  // 原 `stopAllNoteSources()`(同步 fire-and-forget)+ 立即 closeDb 让 drain 在微任务里撞已关 db,
+  // 修复 2B 的 async drain 在桌面端这条路径上完全失效。10s 兜底防卡死(对齐 src/daemon.ts CLI shutdown)。
+  await Promise.race([
+    stopAllNoteSourcesAsync(),
+    new Promise<void>(resolve => setTimeout(resolve, 10_000)),
+  ])
   closeDb()
   running = false
   log.info('守护进程已停止')

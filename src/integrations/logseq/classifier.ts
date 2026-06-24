@@ -8,6 +8,7 @@ import path from 'node:path';
 import { createLogger } from '../../utils/logger.js';
 import { safeReadTextFileSync, safeStatSync } from '../../utils/safe-fs.js';
 import { stripCodeForScan } from './preprocessor.js';
+import { parseJournalDate, extractJournalDateLoose } from './journal-date.js';
 
 const log = createLogger('logseq-classifier');
 
@@ -83,10 +84,10 @@ export function classifyFiles(
     // 支持 YYYY-MM-DD / YYYY_MM_DD / YYYYMMDD 三种默认格式。
     // 自定义 `:journal/file-name-format`（如 yyyy_MM_dd_EEEE）需用户把文件
     // 放到 journals/ 目录下才会被识别。
-    const journalMatch =
-      fileName.match(/^(\d{4})[-_](\d{2})[-_](\d{2})$/) ||
-      fileName.match(/^(\d{4})(\d{2})(\d{2})$/);
-    const isJournal = relPath.startsWith('journals/') || !!journalMatch;
+    // 与 preprocessor.ts / queue.ts 共用 parseJournalDate(含 month/day 范围校验,防 20229999 这类纯数字
+    // ID 误判 journal → created='2022-99-99' → NaN heat 僵尸节点)。journals/ 目录下自定义命名走下方宽松提取。
+    const stdJournalDate = parseJournalDate(fileName);
+    const isJournal = relPath.startsWith('journals/') || stdJournalDate !== null;
 
     // 提取标题
     // decodeURIComponent 在文件名含未配对的 % 时（如 100%cotton.md）会抛 URIError，
@@ -94,9 +95,7 @@ export function classifyFiles(
     // 与 preprocessor.ts:818-824 保持同样的兜底策略。
     let decodedTitle: string;
     if (isJournal) {
-      decodedTitle = journalMatch
-        ? `${journalMatch[1]}-${journalMatch[2]}-${journalMatch[3]}`
-        : fileName.replace(/_/g, '-');
+      decodedTitle = stdJournalDate ?? fileName.replace(/_/g, '-');
     } else {
       const replaced = fileName.replace(/___/g, '/');
       try {
@@ -138,15 +137,11 @@ export function classifyFiles(
     }
 
     // 提取日记日期
-    let journalDate: string | undefined;
-    if (isJournal && journalMatch) {
-      journalDate = `${journalMatch[1]}-${journalMatch[2]}-${journalMatch[3]}`;
-    } else if (isJournal) {
-      // 尝试从文件名提取日期
-      const dateMatch = fileName.match(/(\d{4})[-_](\d{2})[-_](\d{2})/);
-      if (dateMatch) {
-        journalDate = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
-      }
+    let journalDate: string | undefined = stdJournalDate ?? undefined;
+    if (isJournal && !journalDate) {
+      // journals/ 目录下非标准命名(自定义格式如 2022_02_17_Thursday)→ 宽松提取内嵌日期(带 month/day 范围校验)。
+      // 与增量 queue.inferJournalDate 共用 extractJournalDateLoose,保证 created/heat 一致 + 不产 NaN heat(第三轮审计 HIGH)。
+      journalDate = extractJournalDateLoose(fileName) ?? undefined;
     }
 
     files.push({

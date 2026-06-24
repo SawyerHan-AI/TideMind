@@ -296,4 +296,35 @@ describe('cloud local row apply', () => {
     expect(row.connectivity).toBe(0)
     expect(row.content).toBe('另一端 active 编辑') // 内容仍取云端(情形2 整行写),但退休态保持
   })
+
+  // F1 修复(2026-06-24 logseq-orphan):情形1 的 cloudArchived 子分支也做 is_superseded OR 单调。
+  // 这是 supersede-heat 审计标 LOW-3 未修的洞,实测云端往返复活了 ~3000 个退休孤儿。
+  it('F1: 情形1 cloudArchived 下本地 superseded 不被云端陈旧 active 翻回(OR 单调)', () => {
+    const db = setupTestDb()
+    const node = seedNode(db, { content: '本地退休', heat: 0.01 })
+    db.prepare("UPDATE nodes SET is_superseded=1, heat=0.01, connectivity=0, maturity_score=0 WHERE id=?").run(node.id)
+    // 云端归档 tombstone(走情形1),但携带陈旧 is_superseded=0 + 高热
+    applyCloudNodeRow(db, {
+      id: node.id, type: 'fact', content: '云端归档旧内容', archived: true, is_superseded: false,
+      heat: 0.9, connectivity: 5, maturity_score: 0.8, created: node.created, updated: '2026-05-20T16:38:00Z',
+    })
+    const row = db.prepare('SELECT is_superseded, archived, heat, connectivity FROM nodes WHERE id=?')
+      .get(node.id) as { is_superseded: number; archived: number; heat: number; connectivity: number }
+    expect(row.is_superseded).toBe(1)   // F1: OR 单调,不被陈旧云端 active 翻回
+    expect(row.archived).toBe(1)         // 归档优先(tombstone)
+    expect(row.heat).toBeCloseTo(0.01)   // sup → 地板,不取云端高值
+    expect(row.connectivity).toBe(0)
+  })
+
+  it('F1: 情形1 新节点(本地不存在)正常整行写入,不受 OR 影响', () => {
+    const db = setupTestDb()
+    applyCloudNodeRow(db, {
+      id: 'f1-new', type: 'fact', content: '云端新 active 节点', is_superseded: false,
+      heat: 0.7, created: '2026-01-01T00:00:00Z', updated: '2026-05-20T16:38:00Z',
+    })
+    const row = db.prepare('SELECT is_superseded, heat FROM nodes WHERE id=?')
+      .get('f1-new') as { is_superseded: number; heat: number }
+    expect(row.is_superseded).toBe(0)   // 新节点无本地退休态,localSuperseded=false
+    expect(row.heat).toBeCloseTo(0.7)    // active 不 clamp
+  })
 })

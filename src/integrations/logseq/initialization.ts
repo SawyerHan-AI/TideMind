@@ -22,7 +22,7 @@ import { classifyFiles, buildInDegreeMap, type ClassifiedFile, type Classificati
 import { inferPageDates, sortByTime, type InferredDates } from './time-inference.js';
 import { computeInitialHeat } from './initial-heat.js';
 import { importVersionHistory, scanVersionFiles, deduplicateVersions } from './version-files.js';
-import { ensureSyncSchema, setFileState, getFileState, computeFileHash, computeContentHash, getFileStat } from './sync-state.js';
+import { ensureSyncSchema, setFileState, getFileState, computeFileHash, computeContentHash, computeSegmentHash, getFileStat } from './sync-state.js';
 import { digest } from '../../tools/digest.js';
 import { createLink, linkExists } from '../../db/links.js';
 import { promotePropertyValues, getOrCreateTagNode } from '../shared/property-promote.js';
@@ -514,8 +514,8 @@ async function processFileForInit(
       skipDedupMerge: true,
     });
     const nodeIds = result.created_nodes?.map(n => n.id) ?? [];
-    // 更新同步状态
-    updateSyncState(db, file, nodeIds, sourceId, snapshotContentHash, tagSnapshot);
+    // 更新同步状态(F3: empty_tag 单 title 段,每节点对齐一个段 hash)
+    updateSyncState(db, file, nodeIds, sourceId, snapshotContentHash, tagSnapshot, nodeIds.map(() => computeSegmentHash(file.title)));
     return nodeIds;
   }
 
@@ -547,6 +547,7 @@ async function processFileForInit(
     : '';
 
   const nodeIds: string[] = [];
+  const segmentHashes: string[] = []; // F3(2026-06-24): 与 nodeIds 严格等长,首次编辑时增量路径段级复用可命中,不再全量重 digest
 
   for (const segment of segments) {
     const contextParts = [
@@ -582,8 +583,12 @@ async function processFileForInit(
       skipDedupMerge: true,
     });
 
-    if (result.created_nodes) {
-      nodeIds.push(...result.created_nodes.map(n => n.id));
+    if (result.created_nodes && result.created_nodes.length > 0) {
+      const segHash = computeSegmentHash(segment.content); // F3:与增量路径 queue.ts 同算法
+      for (const n of result.created_nodes) {
+        nodeIds.push(n.id);
+        segmentHashes.push(segHash); // 同段多节点共享 hash,保持与 nodeIds 等长
+      }
     }
   }
 
@@ -611,7 +616,7 @@ async function processFileForInit(
   }
 
   // 更新同步状态（即使只处理了部分段也写入，支持断点恢复）
-  updateSyncState(db, file, nodeIds, sourceId, contentHash, regularSnapshot);
+  updateSyncState(db, file, nodeIds, sourceId, contentHash, regularSnapshot, segmentHashes);
 
   return nodeIds;
 }
@@ -623,6 +628,7 @@ function updateSyncState(
   sourceId?: string,
   contentHash?: string,
   snapshotStat?: { mtime: number; size: number } | null,
+  segmentHashes: string[] = [], // F3(2026-06-24): 与 nodeIds 等长的段 hash,写入 sync state 供首次编辑段级复用
 ): void {
   // snapshotStat 三态语义(与 4 条路径一致):调用方已在「内容读取成功那一刻、digest 前」
   // 把有效 snapshot 捕获/补抓好传进来,这里不再重抓(digest 后重抓会拿到编辑后的 mtime/size
@@ -658,6 +664,7 @@ function updateSyncState(
     size,
     last_synced: now(),
     node_ids: nodeIds,
+    segment_hashes: segmentHashes, // F3: 与 node_ids 等长,杜绝首次编辑 oldHashes=[] 全量重 digest
   }, sourceId);
 }
 
