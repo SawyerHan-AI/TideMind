@@ -294,6 +294,43 @@ describe('普通页面（回归测试）', () => {
     expect(result!.cleanContent).not.toContain('collapsed');
   });
 
+  // F6(2026-06-24 logseq-orphan): preprocessor 的 isJournal 判定与 classifier.ts 对齐——
+  // 日期命名文件即使在 pages/ 目录(非 journals/)也算 journal,否则 init(走 classifier,当 journal)
+  // 与增量(走 preprocessor)对同一文件 isJournal 不一致 → segmentContent 段数 M≠N → supersede 配对错位。
+  it('F6: 日期命名的 page 文件(非 journals/ 目录)也识别为 journal', () => {
+    const filePath = writeFile('pages/2022_02_17.md', '- 今天讨论了 [[分享单]] 的规划 #星海科技');
+    buildBlockIndex(tmpDir);
+    const result = preprocessFile(filePath, tmpDir);
+    expect(result).not.toBeNull();
+    expect(result!.metadata.isJournal).toBe(true); // F6: 旧逻辑只认 journals/ 时这里会是 false
+  });
+
+  it('F6: YYYYMMDD 紧凑日期命名也识别为 journal', () => {
+    const filePath = writeFile('pages/20220217.md', '- 这是一段紧凑日期命名的日记内容甲乙丙');
+    buildBlockIndex(tmpDir);
+    const result = preprocessFile(filePath, tmpDir);
+    expect(result).not.toBeNull();
+    expect(result!.metadata.isJournal).toBe(true);
+  });
+
+  it('F6: 普通非日期命名 page 文件仍为非 journal', () => {
+    const filePath = writeFile('pages/我的笔记页.md', '- 这是一个普通页面不是日记的内容甲乙丙丁');
+    buildBlockIndex(tmpDir);
+    const result = preprocessFile(filePath, tmpDir);
+    expect(result).not.toBeNull();
+    expect(result!.metadata.isJournal).toBe(false);
+  });
+
+  // 无效日期范围校验(2026-06-24 第二轮审计 MEDIUM):月/日越界的纯数字 ID 不能误判 journal,
+  // 否则推 created='2022-99-99' → NaN heat 僵尸节点 + 云端往返复活成热节点。
+  it('无效日期 20229999.md(月/日越界)不误判 journal', () => {
+    const filePath = writeFile('pages/20229999.md', '- 这是一段纯数字 ID 命名的页面内容甲乙丙丁');
+    buildBlockIndex(tmpDir);
+    const result = preprocessFile(filePath, tmpDir);
+    expect(result).not.toBeNull();
+    expect(result!.metadata.isJournal).toBe(false);
+  });
+
   it('极短文件应返回 null', () => {
     const filePath = writeFile('pages/empty.md', '-');
     const result = preprocessFile(filePath, tmpDir);

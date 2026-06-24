@@ -9,6 +9,7 @@ import path from 'node:path';
 import type { PreprocessedPage, PageMetadata } from './types.js';
 import { SYSTEM_PROPERTIES, EXCLUDED_DIRS } from './types.js';
 import { safeReadTextFileSync, walkFilesFiltered } from '../../utils/safe-fs.js';
+import { parseJournalDate } from './journal-date.js';
 
 // --- Block UUID 索引 ---
 //
@@ -193,8 +194,12 @@ export function preprocessFile(
   if (rawContent.trim().length < 10) return null;
 
   const relPath = path.relative(graphRoot, filePath).replace(/\\/g, '/');
-  const isJournal = relPath.startsWith('journals/');
   const basename = path.basename(relPath, '.md');
+  // F6(2026-06-24 logseq-orphan): isJournal 判定与 classifier.ts / queue.ts 共用 parseJournalDate——
+  // 除 journals/ 目录外,也认 YYYY-MM-DD / YYYY_MM_DD / YYYYMMDD 日期命名文件(含 month/day 范围校验,
+  // 防 20229999 误判)。否则 init(走 classifier,当 journal)与增量(走 preprocessor)对同一文件判定不一致
+  // → segmentContent 段数 M≠N → supersede 位置配对错位。
+  const isJournal = relPath.startsWith('journals/') || parseJournalDate(basename) !== null;
 
   // hls__*.md PDF 标注文件走专门分支
   if (basename.startsWith('hls__')) {

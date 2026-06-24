@@ -104,6 +104,22 @@ vi.mock('../../../src/integrations/logseq/sync-state.js', async (importOriginal)
   };
 });
 
+// 部分 mock safe-fs：默认透传真实读;datalessFiles 里的文件名模拟 iCloud "优化存储"驱逐
+//（safeReadTextFileSync !ok，但文件其实存在、内容在云端）。用于验证 dataless 守卫不误退旧节点。
+const datalessFiles = new Set<string>();
+vi.mock('../../../src/utils/safe-fs.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/utils/safe-fs.js')>();
+  return {
+    ...actual,
+    safeReadTextFileSync: (filePath: string) => {
+      if ([...datalessFiles].some(f => filePath.includes(f))) {
+        return { ok: false as const, reason: 'dataless' as const };
+      }
+      return actual.safeReadTextFileSync(filePath);
+    },
+  };
+});
+
 // ---- Imports（mock 之后） ----
 
 import type Database from 'better-sqlite3';
@@ -356,6 +372,102 @@ describe('processFileChange', () => {
     // 同步状态不变
     const stateAfterSecond = getFileState(db, 'pages/watched-page.md');
     expect(stateAfterSecond!.node_ids).toEqual(oldNodeIds);
+  });
+
+  // F2(2026-06-24 logseq-orphan): 集合差对账 —— 部分改写后,复用段(节点 id 仍在新集合)保持 active,
+  // 改动段的旧节点(掉出 node_ids)退休。验证「掉出当前 node_ids 的旧版本无一遗漏、复用段不误退」。
+  it('F2: partial rewrite retires dropped-out old nodes and keeps reused ones', async () => {
+    const file = writePage(tmpDir, 'f2-partial', '- 段一不变的内容甲乙丙丁戊\n- 段二原始的内容己庚辛壬');
+    await processFileChange(db, file, tmpDir);
+    const oldIds = getFileState(db, 'pages/f2-partial.md')!.node_ids;
+    expect(oldIds.length).toBeGreaterThan(0);
+
+    // 只改段二(段一逐字不变 → segment hash 命中 → 节点复用)
+    fs.writeFileSync(file, '- 段一不变的内容甲乙丙丁戊\n- 段二改写后内容癸子丑寅', 'utf-8');
+    resetProgress();
+    await processFileChange(db, file, tmpDir);
+    const newIds = getFileState(db, 'pages/f2-partial.md')!.node_ids;
+
+    for (const oldId of oldIds) {
+      const node = getNode(db, oldId);
+      if (newIds.includes(oldId)) {
+        expect(node!.is_superseded, `复用段节点 ${oldId} 应保持 active`).toBe(0);
+      } else {
+        expect(node!.is_superseded, `掉出 node_ids 的旧节点 ${oldId} 应退休`).toBe(1);
+      }
+    }
+  });
+
+  // F2 全变场景:整篇改写,所有旧节点掉出 node_ids → 全部退休
+  it('F2: full rewrite retires every old node', async () => {
+    const file = writePage(tmpDir, 'f2-full', '- 完全原始的第一段内容甲乙丙\n- 完全原始的第二段内容丁戊己');
+    await processFileChange(db, file, tmpDir);
+    const oldIds = getFileState(db, 'pages/f2-full.md')!.node_ids;
+
+    fs.writeFileSync(file, '- 彻底不同的新第一段庚辛壬\n- 彻底不同的新第二段癸子丑', 'utf-8');
+    resetProgress();
+    await processFileChange(db, file, tmpDir);
+    const newIds = getFileState(db, 'pages/f2-full.md')!.node_ids;
+
+    for (const oldId of oldIds) {
+      expect(newIds.includes(oldId)).toBe(false); // 全变,旧节点不复用
+      expect(getNode(db, oldId)!.is_superseded, `${oldId} 应退休`).toBe(1);
+    }
+  });
+
+  // H1(2026-06-24 审计 F6 配套):日期命名 page 文件(非 journals/ 目录)增量路径也推断真实 created,
+  // 不退化成 now()。F6 把它判成 journal,inferJournalDate 必须同步放宽,否则 created/heat 与 init 不一致 → recall 回归。
+  it('H1: 日期命名 page 文件增量推断文件名日期作 created(不退化成 now)', async () => {
+    const file = writePage(tmpDir, '2022_02_17', '- 这是一段日期命名 page 的日记内容甲乙丙丁');
+    await processFileChange(db, file, tmpDir);
+    const state = getFileState(db, 'pages/2022_02_17.md');
+    expect(state!.node_ids.length).toBeGreaterThan(0);
+    const node = getNode(db, state!.node_ids[0]);
+    expect(node!.created.startsWith('2022-02-17')).toBe(true);
+  });
+
+  // F2 修复(2026-06-24 第二轮审计 HIGH):文件被清空/掏空到无可 digest 内容时,旧节点必须退休,
+  // 否则它们永久 active 成孤儿(markFileAsProcessed 覆盖 node_ids=[] 但旧逻辑从不退旧节点 + mtime/size 命中永不重处理)。
+  it('F2: 文件清空到无内容时退休旧节点(防永久活跃孤儿)', async () => {
+    const file = writePage(tmpDir, 'f2-emptied', '- 这是一段有实质内容的笔记甲乙丙丁戊\n- 第二段实质内容己庚辛壬');
+    await processFileChange(db, file, tmpDir);
+    const oldIds = getFileState(db, 'pages/f2-emptied.md')!.node_ids;
+    expect(oldIds.length).toBeGreaterThan(0);
+
+    // 把文件清空到 <10 字(preprocessFile 返回 null 的早返回路径)
+    fs.writeFileSync(file, '- ', 'utf-8');
+    resetProgress();
+    await processFileChange(db, file, tmpDir);
+
+    // 旧节点应全部退休,不留永久活跃孤儿
+    for (const oldId of oldIds) {
+      expect(getNode(db, oldId)!.is_superseded, `${oldId} 应退休`).toBe(1);
+    }
+    // sync state node_ids 清空(与退休一致)
+    expect(getFileState(db, 'pages/f2-emptied.md')!.node_ids).toEqual([]);
+  });
+
+  // dataless 守卫(第三轮审计):文件被 iCloud "优化存储"驱逐(safe-fs 读不到、内容仍在云端)时,
+  // 绝不能把它当"清空"退休旧节点——那会误杀真实当前版本。F2 退休只对真可读但清空的文件生效。
+  it('dataless 守卫: 文件被驱逐(读不到)时不退旧节点(防误杀)', async () => {
+    const file = writePage(tmpDir, 'dataless-guard', '- 这是一段真实内容的笔记甲乙丙丁戊己庚辛');
+    await processFileChange(db, file, tmpDir);
+    const oldIds = getFileState(db, 'pages/dataless-guard.md')!.node_ids;
+    expect(oldIds.length).toBeGreaterThan(0);
+
+    // 模拟 iCloud 驱逐:safe-fs 读不到(preprocessFile + computeFileHash 都返回 null),但文件其实存在
+    datalessFiles.add('dataless-guard.md');
+    // 改 mtime 绕过 isFileChanged 快速路径,强制进入处理逻辑
+    fs.utimesSync(file, new Date(), new Date(Date.now() + 60000));
+    resetProgress();
+    await processFileChange(db, file, tmpDir);
+    datalessFiles.delete('dataless-guard.md');
+
+    // dataless 时旧节点必须保留(不误杀),sync state 也保留旧 node_ids
+    for (const oldId of oldIds) {
+      expect(getNode(db, oldId)!.is_superseded, `dataless 时 ${oldId} 不该退休`).toBe(0);
+    }
+    expect(getFileState(db, 'pages/dataless-guard.md')!.node_ids).toEqual(oldIds);
   });
 
   it('does not write DB when a stopped watcher event reaches processFileChange', async () => {

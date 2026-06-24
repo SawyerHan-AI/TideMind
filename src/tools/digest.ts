@@ -236,12 +236,18 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
   // 质量门控：第一层 — 硬拒绝（零信息内容）
   // 有 title 的节点（如标签节点）允许 content 为空
   const trimmed = input.content.trim();
-  if (trimmed.length < 5 && !input.title) {
-    log.info(`内容被拒绝: 长度=${trimmed.length} 不足5字符`);
+  // F5(2026-06-24 logseq-orphan): 除"<5 字"外,再拒"纯分隔符/空 bullet"——Logseq 空 bullet 经
+  // stripOutlinerPrefix(no-op)保留为 `-`,`-\n\n-\n\n-` 等去掉 -/空白/•/* 后零信息却 >5 字,旧门槛
+  // 漏进库成永久 active 垃圾节点(实测库里 296 个)。有 title 的(标签节点)豁免,允许 content 为空。
+  const structStripped = trimmed.replace(/[-\s•*]/g, '');
+  if ((trimmed.length < 5 || structStripped.length === 0) && !input.title) {
+    log.info(`内容被拒绝: 长度=${trimmed.length} 结构剥离后=${structStripped.length}`);
     return {
       status: 'rejected',
       trace_id: traceId,
-      reject_reason: `内容过短（${trimmed.length}字符），至少需要5字符`,
+      reject_reason: structStripped.length === 0
+        ? '纯分隔符/空 bullet，无实质内容'
+        : `内容过短（${trimmed.length}字符），至少需要5字符`,
     };
   }
 

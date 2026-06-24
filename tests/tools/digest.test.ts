@@ -122,6 +122,25 @@ describe('digest - normal (sync)', () => {
     expect(result.created_nodes!.length).toBeGreaterThan(0);
   });
 
+  // F5(2026-06-24 logseq-orphan): 纯分隔符/空 bullet 零信息内容应被硬拒,不进库成 active 垃圾
+  it('F5: rejects pure-separator / empty-bullet content when no title', async () => {
+    for (const junk of ['-', '-\n\n-\n\n-', '- - -', '•  •', '*  *  *']) {
+      const result = await digest(repo, { content: junk, async: false });
+      expect(result.status, `junk=${JSON.stringify(junk)}`).toBe('rejected');
+      expect(result.reject_reason).toContain('分隔符');
+    }
+  });
+
+  it('F5: still accepts separator-prefixed real content', async () => {
+    const result = await digest(repo, { content: '- 这是一段有实质内容的笔记记录甲乙丙', async: false });
+    expect(result.status).toBe('processed');
+  });
+
+  it('F5: pure-separator with title is allowed (tag node content may be empty)', async () => {
+    const result = await digest(repo, { content: '-', title: '某标签', async: false });
+    expect(result.status).toBe('processed');
+  });
+
   it('should store original content without LLM rewriting (Layer 0)', async () => {
     const content = 'This is a long enough content that previously triggered LLM extraction';
     const result = await digest(repo, {

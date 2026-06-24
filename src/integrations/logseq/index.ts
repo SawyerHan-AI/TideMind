@@ -41,6 +41,11 @@ import { decideWatcherChange } from '../shared/source-watch.js';
 // 其他平台每个 sourceId 仍只有一个 watcher
 const watchers = new Map<string, fs.FSWatcher[]>();
 const debounceTimerMaps = new Map<string, Map<string, NodeJS.Timeout>>();
+// F4(2026-06-24 logseq-orphan): per-source 的 per-file 串行链。debounce 只防窗口内合一,但第一个
+// processFileChange fire 后(跑数秒 digest)第二次保存会 fire 第二个并发实例,两者读同一 oldNodeIds、
+// 都 setFileState(last-writer-wins)→ loser 节点没进 sync state 成 active 孤儿(实测 ~50% 孤儿来源)。
+// 链保证同文件的 processFileChange 严格串行,后一个等前一个完成再读 sync state。
+const fileChainMaps = new Map<string, Map<string, Promise<void>>>();
 const stoppedSources = new Set<string>();
 /** 已启动（含正在首次同步）的源 ID。startLogseqSource 入口即注册，早于 watchers.set
  * （首扫 await 完成后才发生）。stopLogseqIntegration 必须遍历它而非 watchers.keys()，
@@ -114,7 +119,7 @@ export async function startLogseqSource(
 /**
  * 停止单个 Logseq 笔记源实例
  */
-export function stopLogseqSource(sourceId: string): void {
+export async function stopLogseqSource(sourceId: string): Promise<void> {
   stoppedSources.add(sourceId);
   activeSources.delete(sourceId);
   const ws = watchers.get(sourceId);
@@ -138,6 +143,17 @@ export function stopLogseqSource(sourceId: string): void {
     clearInterval(pollTimer);
     pollTimers.delete(sourceId);
   }
+  // F4-shutdown 修复(2026-06-24 第二轮审计 HIGH):await 在途 fileChains 串行链跑完再返回。
+  // stoppedSources 已置(上面) → 在途 processOneFile 下个 shouldStop 返回 true、提前 return false →
+  // 其 finally 退休本轮 createdThisRun(此刻 db 仍开,因 daemon 的 closeDb 在 stopLogseqIntegration
+  // await 之后才执行)。不 drain 则 closeDb 抢在 finally 前 → 已 digest 节点既没写 sync state 也没退休
+  // → 永久活跃孤儿。daemon shutdown 的 10s Promise.race 兜底防 drain 卡死。在途链由各自 cleanup
+  // 自驱逐,这里 await 后再删 Map 对象本身(与 debounceTimerMaps 对称,防 sourceId 残留)。
+  const chains = fileChainMaps.get(sourceId);
+  if (chains && chains.size > 0) {
+    await Promise.allSettled([...chains.values()]);
+  }
+  fileChainMaps.delete(sourceId);
 }
 
 /**
@@ -326,6 +342,11 @@ function startFilteredWatcher(
     debounceTimerMaps.set(sourceId, new Map());
   }
   const debounceTimers = debounceTimerMaps.get(sourceId)!;
+  // F4: 初始化 per-file 串行链 map
+  if (!fileChainMaps.has(sourceId)) {
+    fileChainMaps.set(sourceId, new Map());
+  }
+  const fileChains = fileChainMaps.get(sourceId)!;
 
   const handleChange = (relFromRoot: string): void => {
     // 过滤：只处理 .md 文件，排除系统目录
@@ -360,7 +381,10 @@ function startFilteredWatcher(
         return;
       }
 
-      processFileChange(db, filePath, graphRoot, sourceId, () => stoppedSources.has(sourceId))
+      // F4: 串到该文件的链尾,保证同文件 processFileChange 严格串行(后一个等前一个完成再读 sync state)
+      const prevChain = fileChains.get(key) ?? Promise.resolve();
+      const thisChain = prevChain
+        .then(() => processFileChange(db, filePath, graphRoot, sourceId, () => stoppedSources.has(sourceId)))
         .then(changed => {
           if (!changed) return; // 内容未变（hash 相同），不写时间线
           if (stoppedSources.has(sourceId)) return;
@@ -375,6 +399,10 @@ function startFilteredWatcher(
         .catch(err =>
           log.error('文件变更处理失败:', (err as Error).message),
         );
+      // 链尾结算(吞结果/错误,避免链因单次失败中断);结算后若仍是当前链尾则清理,防 map 无限增长
+      const settled = thisChain.then(() => {}, () => {});
+      fileChains.set(key, settled);
+      void settled.then(() => { if (fileChains.get(key) === settled) fileChains.delete(key); });
     }, delayMs));
   };
 
@@ -455,12 +483,12 @@ function archiveOrphanNodes(db: Database.Database, nodeIds: string[]): void {
 /**
  * 停止所有 Logseq 集成
  */
-export function stopLogseqIntegration(): void {
+export async function stopLogseqIntegration(): Promise<void> {
   // 遍历 activeSources（含正在首扫、尚未挂 watcher 的源）而非 watchers.keys()，
   // 否则首扫中的源在 shutdown 时停不掉。复制成数组避免遍历中 delete 改动集合。
-  for (const sourceId of [...activeSources]) {
-    stopLogseqSource(sourceId);
-  }
+  // F4-shutdown:await 各 source 的 drain(stopLogseqSource 现在 async),让 daemon 在 closeDb 前
+  // 等到所有在途 processOneFile 跑完 setFileState/finally(防永久孤儿);daemon 的 10s race 兜底。
+  await Promise.all([...activeSources].map(sourceId => stopLogseqSource(sourceId)));
 }
 
 // 导出进度查询

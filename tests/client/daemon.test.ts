@@ -19,7 +19,7 @@ const {
   logTimelineEventMock,
   runSchedulerTickMock,
   ALL_TASKS_VAL,
-  startAllNoteSourcesMock, stopAllNoteSourcesMock,
+  startAllNoteSourcesMock, stopAllNoteSourcesMock, stopAllNoteSourcesAsyncMock,
   activityState,
   // v0.2.74 健康度 hook + structure-holes worker runner（L3 + CRITICAL #1）
   noteSuccessfulLLMCallMock, setLLMFailureHookMock, recordLLMFailureForHookMock,
@@ -41,6 +41,7 @@ const {
     ALL_TASKS_VAL: tasks,
     startAllNoteSourcesMock: vi.fn(async () => undefined),
     stopAllNoteSourcesMock: vi.fn(),
+    stopAllNoteSourcesAsyncMock: vi.fn(async () => undefined),
     activityState: {
       state: 'active' as 'active' | 'idle',
       listeners: new Set<(s: 'active' | 'idle') => void>(),
@@ -118,6 +119,7 @@ vi.mock('@server/integrations/logseq/index.js', () => ({
 vi.mock('@server/integrations/shared/note-sources.js', () => ({
   startAllNoteSources: startAllNoteSourcesMock,
   stopAllNoteSources: stopAllNoteSourcesMock,
+  stopAllNoteSourcesAsync: stopAllNoteSourcesAsyncMock,
 }));
 
 vi.mock('../../client/electron/activity-state.js', () => ({
@@ -143,6 +145,7 @@ beforeEach(() => {
   runSchedulerTickMock.mockClear();
   startAllNoteSourcesMock.mockClear();
   stopAllNoteSourcesMock.mockClear();
+  stopAllNoteSourcesAsyncMock.mockClear();
   noteSuccessfulLLMCallMock.mockClear();
   setLLMFailureHookMock.mockClear();
   recordLLMFailureForHookMock.mockClear();
@@ -314,7 +317,7 @@ describe('stopDaemon', () => {
 
     await stopDaemon();
     expect(activityState.listeners.size).toBe(0);
-    expect(stopAllNoteSourcesMock).toHaveBeenCalledTimes(1);
+    expect(stopAllNoteSourcesAsyncMock).toHaveBeenCalledTimes(1);
     expect(closeDbMock).toHaveBeenCalledTimes(1);
   });
 
@@ -342,7 +345,7 @@ describe('stopDaemon', () => {
     await stopDaemon();
     await stopDaemon();
     await stopDaemon();
-    expect(stopAllNoteSourcesMock).toHaveBeenCalledTimes(1);
+    expect(stopAllNoteSourcesAsyncMock).toHaveBeenCalledTimes(1);
     expect(closeDbMock).toHaveBeenCalledTimes(1);
   });
 

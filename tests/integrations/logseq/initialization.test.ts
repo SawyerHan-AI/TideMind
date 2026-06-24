@@ -280,6 +280,26 @@ describe('dataless→readable race: snapshotStat=null 但 contentHash 已算出 
 });
 
 // ============================================================
+// F3(2026-06-24 logseq-orphan): init 写 segment_hashes,首次编辑可段级复用不全量重 digest
+// ============================================================
+describe('F3: 初始化写入 segment_hashes（与 node_ids 等长）', () => {
+  it('regular .md：runInitialization 后 sync state 的 segment_hashes 与 node_ids 等长且非空', async () => {
+    const rel = 'pages/f3-init.md';
+    writeMd(rel, '- 第一段有实质内容的笔记甲乙丙丁戊\n- 第二段有实质内容的笔记己庚辛壬癸');
+
+    await runInitialization(db, makeCtx('__default__'), tmpDir);
+
+    const state = getFileState(db, rel);
+    expect(state).not.toBeNull();
+    expect(state!.node_ids.length).toBeGreaterThan(0);
+    // 修复前 updateSyncState 不传 segment_hashes → setFileState 写空数组 → 首次编辑 oldHashes=[]
+    // 全量重 digest。修复后严格等长 node_ids,首次编辑能段级命中复用。
+    expect(state!.segment_hashes.length).toBe(state!.node_ids.length);
+    expect(state!.segment_hashes.every(h => typeof h === 'string' && h.length > 0)).toBe(true);
+  });
+});
+
+// ============================================================
 // 真实 race（Round 6 回归）：入口 getFileStat=null(dataless),read-time 补抓成功。
 // read-time snapshot 必须与 contentHash 同源:
 //   - bug A：digest 期间编辑 → 下一轮 isFileChanged 仍为 true(不丢编辑)。

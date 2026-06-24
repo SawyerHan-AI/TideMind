@@ -108,8 +108,8 @@ beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'logseq-index-test-'));
 });
 
-afterEach(() => {
-  stopLogseqIntegration();
+afterEach(async () => {
+  await stopLogseqIntegration(); // async(drain 在途链)→ await 再 close db,对齐生产 shutdown 顺序
   db.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
@@ -171,14 +171,14 @@ describe('startLogseqIntegration', () => {
 // ============================================================
 
 describe('stopLogseqIntegration', () => {
-  it('未启动时调用不抛异常', () => {
-    expect(() => stopLogseqIntegration()).not.toThrow();
+  it('未启动时调用不抛异常', async () => {
+    await expect(stopLogseqIntegration()).resolves.toBeUndefined();
   });
 
-  it('多次调用不抛异常', () => {
-    stopLogseqIntegration();
-    stopLogseqIntegration();
-    expect(() => stopLogseqIntegration()).not.toThrow();
+  it('多次调用不抛异常', async () => {
+    await stopLogseqIntegration();
+    await stopLogseqIntegration();
+    await expect(stopLogseqIntegration()).resolves.toBeUndefined();
   });
 });
 

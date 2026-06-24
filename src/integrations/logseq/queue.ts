@@ -23,18 +23,32 @@ import { createLink, linkExists } from '../../db/links.js';
 import { now } from '../../utils/time.js';
 import { promotePropertyValues } from '../shared/property-promote.js';
 import { supersedeNodeWithLinks, markNodeSupersededRecordOnly } from '../../db/node-lifecycle.js';
+import { parseJournalDate, extractJournalDateLoose } from './journal-date.js';
 import { SYSTEM_PROPERTIES } from './types.js';
 import { computeTimeFactor } from './initial-heat.js';
 
 /**
- * 从 journal 文件路径推断创建日期：`journals/YYYY_MM_DD.md` → `YYYY-MM-DD`。
- * 非 journal 文件返回 null，由调用方决定 fallback。
+ * 从文件名推断 journal 创建日期。**判据必须与 classifier.ts:86-89 / preprocessor.ts(F6) 的
+ * isJournal/journalMatch 完全对齐**:不只 `journals/` 目录,任意目录下的日期命名文件
+ * (YYYY-MM-DD / YYYY_MM_DD / YYYYMMDD)也算 journal。
+ *
+ * F6(2026-06-24)把 isJournal 放宽到日期命名 page 文件后,此处必须同步放宽——否则增量路径对
+ * `pages/2022_02_17.md` 推不出日期 → created=now()+qualityHeat,而 init 路径(classifier 填 journalDate
+ * + time-inference 层1)给真实日期 created + 年龄衰减 heat,两路径不一致 → 编辑触发重 digest 把真实
+ * created/heat 冲成 now() → recall 按 created/heat 排序时旧日记被错误顶到最前(正是上方注释警告的回归)。
+ *
+ * 非日期命名文件返回 null,由调用方走 now() fallback。
  */
 function inferJournalDate(relPath: string): string | null {
-  const m = relPath.match(/^journals\/(\d{4})_(\d{2})_(\d{2})\.md$/);
-  if (!m) return null;
-  return `${m[1]}-${m[2]}-${m[3]}`;
+  const basename = relPath.replace(/^.*\//, '').replace(/\.md$/i, '');
+  const std = parseJournalDate(basename); // 共享判据(含 month/day 范围校验),与 classifier/preprocessor 一致
+  if (std) return std;
+  // journals/ 目录的自定义命名(带额外 token,如 2022_02_17_Thursday)宽松提取,对齐 classifier init 路径——
+  // 否则 init 宽松提取出日期、增量返回 null → created 分叉 → 编辑后 recall 排序回归(第三轮审计 HIGH)。
+  if (relPath.startsWith('journals/')) return extractJournalDateLoose(basename);
+  return null;
 }
+
 
 const DEFAULT_CONFIG: QueueConfig = {
   concurrency: 3,
@@ -157,9 +171,12 @@ async function processOneFile(
   const progress = getProgress(sourceId);
   progress.currentFile = relPath;
 
-  // 本轮新建（非复用旧 ID）的节点。声明在 try 外，让 catch 能据此清理已建节点
-  // （段级部分失败补偿，避免孤儿 + 重复）。
+  // 本轮新建（非复用旧 ID）的节点。声明在 try 外，让 catch/finally 能据此清理已建节点
+  // （段级部分失败补偿 + shutdown abort，避免孤儿 + 重复）。
   const createdThisRun: string[] = [];
+  // F-shutdown(2026-06-24 第二轮审计 HIGH):setFileState 成功才置 true;finally 据此回滚未提交的
+  // createdThisRun。否则 digest 后 shouldStop 提前 return(shutdown)的节点 active 留库却不在 sync state。
+  let committed = false;
 
   try {
     if (shouldStop?.()) return false;
@@ -184,10 +201,21 @@ async function processOneFile(
     // 预处理
     const preprocessed = preprocessFile(filePath, graphRoot);
     if (!preprocessed) {
-      // 空文件/短文件也记录 sync state，避免每次重启重复检查
+      // preprocessFile 返回 null 有两种原因,**必须区分否则误杀**(第三轮审计 dataless 守卫):
+      //   (a) dataless / 读不到(iCloud "优化存储"未下载,内容其实还在云端)→ safe-fs !ok → computeFileHash null;
+      //   (b) 文件可读但内容 <10 字(真被清空)。
+      // 只有 (b) 才退休旧节点(F2 防永久孤儿);(a) **绝不退**——会误杀内容还在的真实当前版本,
+      // 保留旧节点 + 旧 sync state,等 iCloud 下载后下一轮重判。computeFileHash 走 safe-fs,dataless 返回 null 不阻塞。
+      if (computeFileHash(filePath) === null) {
+        progress.skippedFiles++;
+        return false; // dataless:保留旧节点 + 旧 sync state,不退不写
+      }
+      // 文件可读但 <10 字 → 真清空 → 退休旧 sync state 节点(防永久活跃孤儿),再写空 sync state
+      const retired = retirePriorNodesOnEmpty(db, syncState?.node_ids ?? []);
+      if (retired > 0) log.info(`文件清空到无内容:已退休 ${retired} 个旧节点 (${relPath})`);
       markFileAsProcessed(db, filePath, relPath, sourceId);
       progress.skippedFiles++;
-      return false;
+      return retired > 0; // 有退休=实质处理(changed,允许写 timeline)
     }
 
     // read-time snapshot:入口 getFileStat 抓到 dataless 返回 null,但 preprocessFile 随后
@@ -211,15 +239,20 @@ async function processOneFile(
     ).filter(s => {
       const trimmed = s.content.trim();
       if (trimmed.length === 0) return false;
-      // 与 digest.ts 的硬拒门槛对齐：无 title 时 <5 字符会被拒
-      if (trimmed.length < 5 && !willHaveTitle) return false;
+      // 与 digest.ts 的硬拒门槛对齐(F5): 无 title 时 <5 字符 或 纯分隔符/空 bullet 都被拒,
+      // 否则 allHashes/allNodeIds 索引错位(digest 会拒它,这里不剔则两数组长度失配)。
+      const structStripped = trimmed.replace(/[-\s•*]/g, '');
+      if ((trimmed.length < 5 || structStripped.length === 0) && !willHaveTitle) return false;
       return true;
     });
 
     if (segments.length === 0) {
+      // F2 修复:掏空到无有效段时先退休旧节点(防永久活跃孤儿),再写空 sync state
+      const retired = retirePriorNodesOnEmpty(db, syncState?.node_ids ?? []);
+      if (retired > 0) log.info(`文件掏空到 0 有效段:已退休 ${retired} 个旧节点 (${relPath})`);
       markFileAsProcessed(db, filePath, relPath, sourceId);
       progress.skippedFiles++;
-      return false;
+      return retired > 0;
     }
 
     // 旧版本状态
@@ -326,28 +359,30 @@ async function processOneFile(
     }
 
     if (allNodeIds.length === 0) {
-      log.warn(`文件 digest 未产生新节点,保留旧同步状态: ${relPath}`);
+      // F2 修复:理论不可达(pre-filter 与 digest gate 字节一致,存活段必产节点),兜底退休防孤儿
+      const retired = retirePriorNodesOnEmpty(db, oldNodeIds);
+      log.warn(`文件 digest 未产生新节点:已退休 ${retired} 个旧节点 (${relPath})`);
+      markFileAsProcessed(db, filePath, relPath, sourceId);
       progress.skippedFiles++;
-      return false;
+      return retired > 0;
     }
 
     // 版本替代（循环后统一做，与 Obsidian 对齐）：逐位置把变化段的旧节点 supersede
     // 到对应新节点；段级 dedup 命中（allNodeIds[i] === oldNodeIds[i]，整段复用）的
     // 位置跳过，避免 self-supersede。失败时尚无 supersede 被 commit → catch 回滚干净。
     if (shouldStop?.()) return false;
-    if (oldNodeIds.length > 0) {
-      const pairs = Math.min(oldNodeIds.length, allNodeIds.length);
-      for (let i = 0; i < pairs; i++) {
-        if (oldNodeIds[i] === allNodeIds[i]) continue;
-        supersedeNodeWithLinks(db, oldNodeIds[i], allNodeIds[i]);
-      }
-      // 多余旧段：supersede 到最后一个新节点，迁移链接、保留 updates 链
-      // （段数减少场景：把多余旧段的链接归并到最后一个新段上，而不是直接 DELETE 丢失关联）
-      if (oldNodeIds.length > allNodeIds.length) {
-        const targetNewId = allNodeIds[allNodeIds.length - 1];
-        for (let i = pairs; i < oldNodeIds.length; i++) {
-          supersedeNodeWithLinks(db, oldNodeIds[i], targetNewId);
-        }
+    // F2 修复(2026-06-24 logseq-orphan):退休判据从纯索引位置 pairs=min 改为「集合差对账」——
+    // oldNodeIds 里所有不在 allNodeIds(新集合)的节点全部退休。纯位置对齐在段数横跳/段位漂移时
+    // 漏退被挤出 pairs 窗口的旧节点(实测全库 43% active logseq 是这类该退没退的孤儿)。集合差
+    // 保证「掉出当前 node_ids 的旧版本」无一遗漏。target:优先同位置新节点(保留版本链语义),否则最后一个。
+    if (oldNodeIds.length > 0 && allNodeIds.length > 0) {
+      const newSet = new Set(allNodeIds);
+      const lastNew = allNodeIds[allNodeIds.length - 1];
+      for (let i = 0; i < oldNodeIds.length; i++) {
+        const oldId = oldNodeIds[i];
+        if (newSet.has(oldId)) continue; // 段复用(节点 id 仍在新集合,不论位置)→ 仍是当前版本,不退
+        const target = (i < allNodeIds.length && allNodeIds[i] !== oldId) ? allNodeIds[i] : lastNew;
+        supersedeNodeWithLinks(db, oldId, target);
       }
     }
 
@@ -400,6 +435,7 @@ async function processOneFile(
       segment_hashes: allHashes,
     };
     setFileState(db, fileState, sourceId);
+    committed = true; // F-shutdown:sync state 已写,createdThisRun 已纳入 node_ids,无需回滚
 
     // 更新 block 索引（按 graphRoot 隔离）
     updateBlockIndexForFile(filePath, graphRoot);
@@ -408,24 +444,27 @@ async function processOneFile(
     return true;
   } catch (err) {
     log.error(`文件处理失败 (${relPath}):`, (err as Error).message);
-    // 段级 digest 部分失败补偿（与 Obsidian 对齐）：本轮已建节点未被 supersede、
-    // sync state 也未更新。这些节点不在任何 sync state 里，永不会被后续 supersede
-    // （孤儿，且持续被 recall），且下次重跑会重复 digest 同段产生重复活跃节点。
-    // 这里把它们标记 superseded（heat=0.01 + is_superseded=1，recall 与向量搜索都
-    // 会过滤掉）。因 supersede 已下移到循环后，失败时尚无 supersede 被 commit，
-    // 旧节点仍是活跃版本、recall 一致；下次从干净状态重建。
-    if (createdThisRun.length > 0) {
+    progress.failedFiles++;
+    return false;
+  } finally {
+    // 段级 digest 部分失败补偿（catch 路径）+ shutdown abort 补偿（正常 shouldStop return 路径，
+    // 第二轮审计 HIGH）：未 commit 时,本轮已 digest 入库的 createdThisRun 节点既未被 supersede、
+    // sync state 也未更新——不在任何 sync state 里 → 下轮 F2 集合差读 oldNodeIds 读不到 → 永不退休
+    // （孤儿，带向量持续被 recall），且下次重跑会重复 digest 同段产生重复活跃节点。这里标记 superseded
+    // （heat=0.01 + is_superseded=1，recall 与向量搜索都过滤）。**必须放 finally**:shouldStop 的正常
+    // return false 不进 catch,只有 finally 能覆盖 shutdown abort。因 supersede 已下移到循环后，
+    // 中止/失败时尚无 supersede 被 commit，旧节点仍是活跃版本、recall 一致；下次从干净状态重建。
+    // markNodeSupersededRecordOnly 幂等。
+    if (!committed && createdThisRun.length > 0) {
       try {
         for (const id of createdThisRun) {
           markNodeSupersededRecordOnly(db, id);
         }
-        log.warn(`部分失败回滚:已标记本轮新建的 ${createdThisRun.length} 个节点为 superseded (${relPath})`);
+        log.warn(`未提交回滚:已退休本轮新建的 ${createdThisRun.length} 个节点 (${relPath})`);
       } catch (cleanupErr) {
-        log.error(`部分失败回滚清理也失败 (${relPath}):`, (cleanupErr as Error).message);
+        log.error(`未提交回滚清理也失败 (${relPath}):`, (cleanupErr as Error).message);
       }
     }
-    progress.failedFiles++;
-    return false;
   }
 }
 
@@ -467,6 +506,21 @@ function markFileAsProcessed(
     segment_hashes: [],
   };
   setFileState(db, fileState, sourceId);
+}
+
+/**
+ * F2 修复(2026-06-24 第二轮审计 HIGH):文件清空/掏空到无可 digest 内容时,退休旧 sync state 节点。
+ * 否则旧节点永久 active 成孤儿——markFileAsProcessed 把 node_ids 覆盖成 [] 却从不退旧节点,且 mtime+size
+ * 命中后 isFileChanged 恒 false 永不重处理,archiveOrphanNodes 只在文件**物理删除**时兜底(清空但仍存在
+ * 的文件不在删除集)。正中"反复改写/删减 logseq 日记/把日记掏空成指针页"的高频场景(与上轮 ~3000 孤儿同根)。
+ * 无新节点作后继 → markNodeSupersededRecordOnly(record-only,不迁移链接);幂等(已 superseded 再标无害)。
+ */
+function retirePriorNodesOnEmpty(db: Database.Database, priorNodeIds: string[]): number {
+  let retired = 0;
+  for (const id of priorNodeIds) {
+    try { markNodeSupersededRecordOnly(db, id); retired++; } catch { /* 单点失败不阻断其余退休 */ }
+  }
+  return retired;
 }
 
 function delay(ms: number): Promise<void> {
