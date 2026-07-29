@@ -1,6 +1,20 @@
 import { ipcMain } from 'electron'
 import type Database from 'better-sqlite3'
 
+interface CountRow {
+  cnt: number
+}
+
+interface TokenUsageTotals {
+  input_tokens: number
+  output_tokens: number
+  thinking_tokens: number
+  estimated_cost: number
+  call_count: number
+  unpriced_call_count: number | null
+  is_partial?: boolean
+}
+
 /**
  * tag_usage 物化表 + 维护它的 trigger 只由 daemon ensureSchema 建,daemon 延迟启动。
  * 全新安装首启窗口期(client 先建库、daemon 未跑)tag_usage 还不存在,裸查会抛
@@ -19,7 +33,7 @@ function queryTolerateMissingTable<T>(fn: () => T, fallback: T): T {
 
 export function registerStatsHandlers(db: Database.Database): void {
   ipcMain.handle('stats:overview', () => {
-    const totalNodes = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01').get() as any).cnt
+    const totalNodes = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01').get() as CountRow).cnt
     const byType = db.prepare('SELECT type, COUNT(*) as cnt FROM nodes WHERE heat > 0.01 GROUP BY type').all()
     // Top tags(perf-optimization-2026-05-17 P1-2):原本 SELECT tags FROM
     // nodes WHERE heat > 0.01 + JS JSON.parse 全表聚合,万节点下数百 ms。
@@ -31,8 +45,8 @@ export function registerStatsHandlers(db: Database.Database): void {
       ORDER BY node_count DESC
       LIMIT 10
     `).all(), [] as unknown[])
-    const linkCount = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed' AND deleted = 0").get() as any).cnt
-    const recallCount = (db.prepare("SELECT COUNT(*) as cnt FROM operation_log WHERE operation = 'recall'").get() as any).cnt
+    const linkCount = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed' AND deleted = 0").get() as CountRow).cnt
+    const recallCount = (db.prepare("SELECT COUNT(*) as cnt FROM operation_log WHERE operation = 'recall'").get() as CountRow).cnt
 
     // 最近 7 天节点增长
     const recentCounts = db.prepare(`
@@ -51,14 +65,14 @@ export function registerStatsHandlers(db: Database.Database): void {
     `).all()
 
     // 链接按状态分布
-    const confirmed = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed' AND deleted = 0").get() as any).cnt
-    const pending = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'pending' AND deleted = 0").get() as any).cnt
+    const confirmed = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed' AND deleted = 0").get() as CountRow).cnt
+    const pending = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'pending' AND deleted = 0").get() as CountRow).cnt
     const linksByStatus = { confirmed, pending }
 
     // 再巩固统计
     const reconsolidateCount = (db.prepare(
       "SELECT COUNT(*) as cnt FROM node_versions WHERE change_reason LIKE '%reconsolidat%'"
-    ).get() as any).cnt
+    ).get() as CountRow).cnt
     const avgVersionRow = db.prepare(
       'SELECT AVG(version) as avg FROM nodes WHERE heat > 0.01'
     ).get() as { avg: number | null }
@@ -68,9 +82,9 @@ export function registerStatsHandlers(db: Database.Database): void {
   })
 
   ipcMain.handle('stats:gates', () => {
-    const nodeCount = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01').get() as any).cnt
-    const linkCount = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed' AND deleted = 0").get() as any).cnt
-    const recallCount = (db.prepare("SELECT COUNT(*) as cnt FROM operation_log WHERE operation = 'recall'").get() as any).cnt
+    const nodeCount = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01').get() as CountRow).cnt
+    const linkCount = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed' AND deleted = 0").get() as CountRow).cnt
+    const recallCount = (db.prepare("SELECT COUNT(*) as cnt FROM operation_log WHERE operation = 'recall'").get() as CountRow).cnt
 
     return {
       node_count: nodeCount,
@@ -122,9 +136,9 @@ export function registerStatsHandlers(db: Database.Database): void {
 
   ipcMain.handle('stats:evolution', () => {
     // 获取进化相关的统计
-    const nodeCount = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01').get() as any).cnt
-    const recallCount = (db.prepare("SELECT COUNT(*) as cnt FROM operation_log WHERE operation = 'recall'").get() as any).cnt
-    const feedbackCount = (db.prepare('SELECT COUNT(*) as cnt FROM strategy_feedback').get() as any).cnt
+    const nodeCount = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01').get() as CountRow).cnt
+    const recallCount = (db.prepare("SELECT COUNT(*) as cnt FROM operation_log WHERE operation = 'recall'").get() as CountRow).cnt
+    const feedbackCount = (db.prepare('SELECT COUNT(*) as cnt FROM strategy_feedback').get() as CountRow).cnt
 
     // 按策略分组的反馈
     const feedbackByStrategy = db.prepare(`
@@ -184,10 +198,10 @@ export function registerStatsHandlers(db: Database.Database): void {
   // - dashboard-tags:SQL 级 json_each + GROUP BY(替代 JS JSON.parse)
 
   ipcMain.handle('stats:dashboard-metrics', () => {
-    const totalMemories = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01').get() as any).cnt
-    const todayDigests = (db.prepare("SELECT COUNT(*) as cnt FROM operation_log WHERE operation = 'digest' AND date(created) = date('now')").get() as any).cnt
-    const todayNewLinks = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed' AND deleted = 0 AND date(created) = date('now')").get() as any).cnt
-    const todayRecalls = (db.prepare("SELECT COUNT(*) as cnt FROM operation_log WHERE operation = 'recall' AND date(created) = date('now')").get() as any).cnt
+    const totalMemories = (db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01').get() as CountRow).cnt
+    const todayDigests = (db.prepare("SELECT COUNT(*) as cnt FROM operation_log WHERE operation = 'digest' AND date(created) = date('now')").get() as CountRow).cnt
+    const todayNewLinks = (db.prepare("SELECT COUNT(*) as cnt FROM links WHERE status = 'confirmed' AND deleted = 0 AND date(created) = date('now')").get() as CountRow).cnt
+    const todayRecalls = (db.prepare("SELECT COUNT(*) as cnt FROM operation_log WHERE operation = 'recall' AND date(created) = date('now')").get() as CountRow).cnt
 
     const memoryTrendRaw = db.prepare(`
       SELECT date(created) as date, COUNT(*) as count
@@ -332,16 +346,15 @@ export function registerStatsHandlers(db: Database.Database): void {
           COALESCE(SUM(output_tokens), 0) as output_tokens,
           COALESCE(SUM(thinking_tokens), 0) as thinking_tokens,
           COALESCE(SUM(estimated_cost), 0) as estimated_cost,
-          COUNT(*) as call_count
+          COUNT(*) as call_count,
+          SUM(CASE
+            WHEN estimated_cost IS NULL
+             AND COALESCE(estimated_cost_kind, 'unavailable') != 'not_applicable'
+            THEN 1 ELSE 0 END
+          ) as unpriced_call_count
         FROM llm_usage_log
-      `).get() as any
-
-      // 按操作分组的费用汇总（用于拆解输入/输出/思考费用无法直接得到，用 token 级别即可）
-      const costByTokenType = db.prepare(`
-        SELECT
-          COALESCE(SUM(estimated_cost), 0) as total_cost
-        FROM llm_usage_log
-      `).get() as any
+      `).get() as TokenUsageTotals
+      totals.is_partial = Number(totals.unpriced_call_count ?? 0) > 0
 
       // 按操作分组的调用次数（用于汇总卡片 hover）
       const countByOperation = db.prepare(`
@@ -376,7 +389,27 @@ export function registerStatsHandlers(db: Database.Database): void {
         ORDER BY date(created)
       `).all()
 
-      return { totals, countByOperation, dailyByModel, dailyByOperation }
+      const byConnectionAndSource = db.prepare(`
+        SELECT
+          connection_id,
+          COALESCE(connection_name_snapshot, '—') as connection_name,
+          COALESCE(source_type, 'unknown') as source_type,
+          COUNT(*) as call_count,
+          COALESCE(SUM(
+            input_tokens + output_tokens
+          ), 0) as total_tokens,
+          SUM(estimated_cost) as estimated_cost,
+          SUM(CASE
+            WHEN estimated_cost IS NULL
+             AND COALESCE(estimated_cost_kind, 'unavailable') != 'not_applicable'
+            THEN 1 ELSE 0 END
+          ) as unpriced_call_count
+        FROM llm_usage_log
+        GROUP BY connection_id, connection_name_snapshot, source_type
+        ORDER BY call_count DESC, connection_name ASC
+      `).all()
+
+      return { totals, countByOperation, dailyByModel, dailyByOperation, byConnectionAndSource }
     } catch {
       return {
         totals: { input_tokens: 0, output_tokens: 0, thinking_tokens: 0, estimated_cost: 0, call_count: 0 },
@@ -410,7 +443,12 @@ export function registerStatsHandlers(db: Database.Database): void {
           SUM(input_tokens) as input_tokens,
           SUM(output_tokens) as output_tokens,
           SUM(thinking_tokens) as thinking_tokens,
-          COALESCE(SUM(estimated_cost), 0) as estimated_cost
+          COALESCE(SUM(estimated_cost), 0) as estimated_cost,
+          SUM(CASE
+            WHEN estimated_cost IS NULL
+             AND COALESCE(estimated_cost_kind, 'unavailable') != 'not_applicable'
+            THEN 1 ELSE 0 END
+          ) as unpriced_call_count
         FROM llm_usage_log
         ${where}
         GROUP BY operation
@@ -427,7 +465,11 @@ export function registerStatsHandlers(db: Database.Database): void {
       const limit = filter.limit ?? 100
       const offset = filter.offset ?? 0
       const recentLogs = db.prepare(`
-        SELECT id, model, operation, input_tokens, output_tokens, thinking_tokens, estimated_cost, created
+        SELECT id, model, operation, input_tokens, output_tokens, thinking_tokens,
+          cached_input_tokens, reasoning_tokens, estimated_cost,
+          provider_type, connection_id, connection_name_snapshot as connection_name,
+          source_type, billing_mode, estimated_cost_kind, pricing_table_version,
+          invocation_outcome, created
         FROM llm_usage_log
         ${where}
         ORDER BY created DESC

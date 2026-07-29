@@ -9,6 +9,7 @@ const __dirname = path.dirname(__filename);
 import { parse as parseToml } from 'smol-toml';
 import Database from 'better-sqlite3';
 import type { AppConfig } from './types.js';
+import { isEmbeddingProviderType, isLLMProviderType } from './llm/provider-types.js';
 import { loadStrategies, initFileWatchers } from './strategy/loader.js';
 import { syncSkillFiles, createSyncHashStoreFromDb } from './utils/sync-skill-files.js';
 import { createLogger } from './utils/logger.js';
@@ -20,6 +21,21 @@ const log = createLogger('config');
  * 在 deepMerge 后调用，确保合并后的配置是合理的。
  */
 function validateConfig(config: AppConfig): void {
+  if (!isLLMProviderType(config.llm.provider)) {
+    throw new Error(`config.llm.provider 不受支持，当前值: ${String(config.llm.provider)}`);
+  }
+  for (const [key, value] of [
+    ['light_provider', config.llm.light_provider],
+    ['standard_provider', config.llm.standard_provider],
+    ['heavy_provider', config.llm.heavy_provider],
+  ] as const) {
+    if (value !== undefined && !isLLMProviderType(value)) {
+      throw new Error(`config.llm.${key} 不受支持，当前值: ${String(value)}`);
+    }
+  }
+  if (!isEmbeddingProviderType(config.embedding.provider)) {
+    throw new Error(`config.embedding.provider 不受支持，当前值: ${String(config.embedding.provider)}`);
+  }
   // gates 必须为正数
   for (const [key, val] of Object.entries(config.gates)) {
     if (typeof val !== 'number' || val < 0) {
@@ -226,6 +242,11 @@ export function isLlmConfigured(): boolean {
     // openai-compatible 通过 connection 配置，走不到这里
     // 但如果手动编辑 config.toml 也能用
     return true;
+  }
+  if (config.llm.provider === 'claude-cli' || config.llm.provider === 'codex-cli') {
+    // CLI 必须通过显式 connection 保存验证结果；只有 provider 没有连接 ID
+    // 既无法定位状态，也不能安全调用。
+    return false;
   }
   // Anthropic 直连需要 api_key
   return !!config.anthropic.api_key;

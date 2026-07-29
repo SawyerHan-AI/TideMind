@@ -11,8 +11,19 @@ import {
   normalizeBaseUrl,
   fingerprintCreds,
   manualThinkingUnsupported,
+  abortableDelay,
 } from '../../src/llm/client.js';
 import { processThinkTags } from '../../src/llm/thinking.js';
+
+describe('abortableDelay', () => {
+  it('Retry-After 等待可被立即取消，不会等待完整 backoff', async () => {
+    const controller = new AbortController();
+    const reason = new Error('shutdown now');
+    const wait = abortableDelay(600_000, controller.signal);
+    controller.abort(reason);
+    await expect(wait).rejects.toBe(reason);
+  });
+});
 
 // LLM 客户端纯逻辑测试。
 //

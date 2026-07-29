@@ -69,6 +69,11 @@
     "saveFailed": "保存失败,请重试。"
   },
   "model": {
+    "providerGroups": {
+      "cloudService": "云服务",
+      "localSubscription": "本地订阅",
+      "localModel": "本地模型"
+    },
     "subtabs": {
       "connection": "模型对接",
       "selection": "模型选择",
@@ -85,7 +90,7 @@
       "cancel": "取消",
       "delete": "删除",
       "rename": "重命名",
-      "testConnection": "测试连接",
+      "testConnection": "测试链接",
       "archive": "归档",
       "saved": "已保存",
       "save": "保存",
@@ -94,14 +99,25 @@
       "status": {
         "online": "已连接",
         "offline": "连接失败",
-        "unconfigured": "未配置"
+        "unconfigured": "未配置",
+        "untested": "待测试",
+        "checking": "检查中",
+        "testing": "测试中",
+        "degraded": "部分可用",
+        "not_installed": "未安装",
+        "not_authenticated": "未登录",
+        "wrong_auth_method": "登录方式不支持",
+        "unsupported_version": "版本不支持",
+        "ambiguous": "结果不明"
       },
       "providerDesc": {
         "anthropic": "Claude 模型直连（API Key）",
         "vertex": "通过 GCP Service Account 访问 Claude 和 Gemini",
         "gemini": "直接使用 Gemini API（免费层额度）",
         "ollama": "本地推理服务（Embedding & LLM）",
-        "openai-compatible": "任意 OpenAI 兼容 API 服务"
+        "openai-compatible": "任意 OpenAI 兼容 API 服务",
+        "claude-cli": "使用本机已登录的 Claude Code 订阅",
+        "codex-cli": "使用本机已登录的 Codex / ChatGPT 订阅"
       },
       "anthropicTip": "在 console.anthropic.com 获取。",
       "vertexProjectTip": "GCP 项目 ID。上传 Service Account 后自动填入。",
@@ -126,7 +142,23 @@
       "colModels": "模型数",
       "colUsage": "用途",
       "modelCount": "{{count}} 个",
-      "confirm": "确认"
+      "confirm": "确认",
+      "cliPath": "CLI 实际路径",
+      "cliVersion": "CLI 版本",
+      "loginMethod": "登录方式",
+      "isolationStatus": "隔离门禁",
+      "isolationEnabled": "安全隔离已启用",
+      "isolationVerified": "隔离验证通过",
+      "isolationPending": "等待验证",
+      "isolationFailed": "隔离验证失败",
+      "lastTested": "最近测试",
+      "testScope": "测试范围",
+      "allCandidateModels": "全部 {{count}} 个候选模型",
+      "checkEnvironment": "检查环境",
+      "cancelTest": "取消测试",
+      "testSummary": "{{success}} / {{total}} 个模型可用",
+      "testCancelledSummary": "测试已取消 · 已完成 {{success}} / {{total}} 个模型",
+      "copyCommand": "复制命令"
     },
     "selection": {
       "loadingModels": "加载可用模型...",
@@ -153,7 +185,16 @@
       "startReembed": "开始重算",
       "saved": "已保存",
       "saveFailed": "保存模型选择失败,请重试。",
-      "retry": "重试"
+      "retry": "重试",
+      "selectConnection": "选择连接",
+      "selectModel": "选择模型",
+      "modelLabel": "模型"
+      ,"savedRouteProblem": "已保存配置异常"
+      ,"connectionArchived": "该连接已归档"
+      ,"connectionUnavailable": "已保存的连接不存在"
+      ,"modelUnavailable": "已保存的模型尚未验证通过"
+      ,"savedConnectionInvalid": "已保存的连接不可用。请选择其他连接以更新此路由。"
+      ,"savedModelInvalid": "已保存的模型不可用。请选择已验证模型以更新此路由。"
     },
     "serviceStatus": {
       "title": "AI 服务状态",
@@ -163,12 +204,17 @@
       "statusHealthy": "正常",
       "lastSuccess": "上次成功调用",
       "lastError": "上次错误",
-      "hint": "如需排查或测试连接，请到下方“模型连接”分别测试每个 provider。",
+      "hint": "如需排查或测试链接，请到下方“模型连接”分别测试每个 provider。",
       "statusPausedCountdown": "熔断中（剩余 {{time}}）",
       "retryNow": "立即重试",
       "retrySuccess": "已重置熔断状态",
       "retryError": "重试失败",
-      "retryDebounceHint": "请稍候再试"
+      "retryDebounceHint": "请稍候再试",
+      "availableConnections": "可用连接",
+      "needsAttention": "需要处理",
+      "unknownConnection": "未知连接",
+      "collapseErrors": "收起错误",
+      "expandErrors": "展开其余 {{count}} 条"
     }
   },
   "data": {
@@ -313,7 +359,7 @@
       "pollInterval": "轮询间隔",
       "pollIntervalTip": "检查目录变更的间隔时间（秒）",
       "seconds": "秒",
-      "testConnection": "测试连接",
+      "testConnection": "测试链接",
       "rescan": "重新扫描",
       "testAccessible": "目录可访问，发现 {{count}} 个文件",
       "testInaccessible": "目录不存在或不可访问",
@@ -427,7 +473,20 @@
     "colEstimatedCost": "预估费用",
     "range7d": "7 天",
     "range30d": "30 天",
-    "rangeAll": "全部"
+    "rangeAll": "全部",
+    "partialEstimate": "其中 {{count}} 次调用无法估算，合计仅为部分费用。",
+    "connectionSourceTitle": "连接与来源",
+    "colConnection": "连接",
+    "colSource": "来源",
+    "legacyConnection": "旧配置",
+    "unavailableEstimate": "无法估算",
+    "subscriptionEstimateHint": "本地订阅费用按公开 API Token 单价折算，仅供参考，不代表订阅实际扣费。",
+    "source": {
+      "cloud_service": "云服务",
+      "local_subscription": "本地订阅",
+      "local_model": "本地模型",
+      "unknown": "未知"
+    }
   },
   "strategy": {
     "groups": {
@@ -830,7 +889,8 @@
       "codex": "~/.codex/config.toml (自动)",
       "windsurf": "~/.codeium/windsurf/mcp_config.json (自动)",
       "openclaw": "~/.openclaw/openclaw.json (自动)",
-      "gemini": "~/.gemini/extensions/tidemind-<id>/ (自动)"
+      "gemini": "~/.gemini/extensions/tidemind-<id>/ (自动)",
+      "kimiCode": "~/.kimi-code/mcp.json (自动)"
     },
     "toolSkillPath": {
       "claudeCode": ".claude/rules/mcp-tidemind.md",
@@ -839,7 +899,8 @@
       "codex": "复制到项目 AGENTS.md",
       "windsurf": "复制到项目 .windsurf/rules/",
       "openclaw": "复制到 ~/.openclaw/skills/",
-      "gemini": "由 Gemini CLI 自动作为 GEMINI.md 加载"
+      "gemini": "由 Gemini CLI 自动作为 GEMINI.md 加载",
+      "kimiCode": "自动安装到 ~/.kimi-code/skills/,Kimi Code 启动时自动加载"
     },
     "detail": {
       "coworkMcpHint": "MCP 工具通过 Desktop 配置自动桥接，重启 Claude Desktop 后生效。",
@@ -853,7 +914,9 @@
       "openclawMcpHint": "MCP + Bootstrap Hook 已写入 ~/.openclaw/，重启 OpenClaw 生效。",
       "openclawSkillHint": "Skill 目录需要复制到 ~/.openclaw/skills/ 或项目 skills/ 目录。",
       "geminiMcpHint": "MCP + SessionStart Hook 已打包进 Gemini extension，通过 `gemini extensions install` 自动安装。重启 `gemini` 生效。",
-      "geminiSkillHint": "GEMINI.md 由 Gemini CLI 从 extension 自动加载，无需手动复制。"
+      "geminiSkillHint": "GEMINI.md 由 Gemini CLI 从 extension 自动加载，无需手动复制。",
+      "kimiMcpHint": "MCP + 上下文注入 Hook 已写入 ~/.kimi-code/,重启 kimi session 生效。",
+      "kimiSkillHint": "Skill 已自动安装到 ~/.kimi-code/skills/,Kimi Code 启动时自动加载,无需手动复制。"
     },
     "wizard": {
       "nameAgent": "命名 Agent",
@@ -863,6 +926,7 @@
       "configWindsurf": "配置 Windsurf",
       "configOpenClaw": "配置 OpenClaw",
       "configGemini": "配置 Gemini CLI",
+      "configKimi": "配置 Kimi Code",
       "installPlugin": "安装插件",
       "mcpConfig": "MCP 配置",
       "skillFile": "Skill 文件",
@@ -921,6 +985,9 @@
       "verifyGeminiMcp": "Gemini extension 已安装（MCP + Hook + 命令）",
       "verifyGeminiMcpHintOk": "重启 `gemini` 生效",
       "verifyGeminiMcpHintFail": "`gemini extensions install` 失败",
+      "verifyKimiMcp": "Kimi Code MCP 配置 + Hook 已写入",
+      "verifyKimiMcpHintOk": "重启 session 生效",
+      "verifyKimiMcpHintFail": "配置写入失败",
       "verifyMcpAdded": "MCP 配置已添加到工具中",
       "verifyMcpAddedHint": "请确认已将上一步的 JSON 配置粘贴到工具的 MCP 配置文件",
       "verifySkillCopied": "Skill 内容已复制到工具中",
@@ -985,6 +1052,15 @@
         "upgradeTitle": "Gemini CLI 版本过低，hooks 无法使用",
         "upgradeHint": "检测到 Gemini CLI {{version}} —— 建议升级到 0.26+ 以启用 SessionStart hook 自动加载用户画像。",
         "upgradeNote": "MCP 工具（brain_*）和 slash 命令在旧版本上仍可用，但需要手动调用 brain_prepare。"
+      },
+      "kimi": {
+        "mcpConfig": "Kimi Code MCP 配置(mcp.json)",
+        "hookConfig": "上下文注入 Hook(自动加载上下文)",
+        "skillInjected": "Skill 指南已注入 ~/.kimi-code/skills/",
+        "autoReadyTitle": "已全部配置,无需手动步骤",
+        "autoReadyNote": "下次 Kimi Code 启动时将自动加载上下文与 Skill 指南。",
+        "cliMissingTitle": "未检测到 Kimi Code CLI",
+        "cliMissingNote": "配置已写入。安装 Kimi Code CLI 后新建会话即可生效。"
       }
     }
   },

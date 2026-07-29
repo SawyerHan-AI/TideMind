@@ -27,6 +27,7 @@ import {
 } from './queue.js';
 import { clearTagNodeCache } from '../shared/property-promote.js';
 import { DatalessSkipCounter } from '../../utils/safe-fs.js';
+import { trackBackgroundWork } from '../../utils/background-work.js';
 import {
   buildKnownRelPathSet,
   collectChangedProcessableFiles,
@@ -107,9 +108,10 @@ export async function startLogseqSource(
     const intervalMs = Math.max(30, pollInterval ?? DEFAULT_FILE_POLL_INTERVAL) * 1000;
     const timer = setInterval(() => {
       if (stoppedSources.has(sourceId)) return;
-      runSync(db, graphRoot, sourceId).catch(err =>
+      const work = runSync(db, graphRoot, sourceId).catch(err =>
         log.error(`Logseq 周期同步失败 (source=${sourceId}):`, (err as Error).message),
       );
+      void trackBackgroundWork(work);
     }, intervalMs);
     pollTimers.set(sourceId, timer);
     log.info(`Logseq 周期同步已启动: 每 ${intervalMs / 1000}s 兜底扫描删除 (source=${sourceId})`);

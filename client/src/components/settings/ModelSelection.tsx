@@ -1,135 +1,226 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Loader2, AlertTriangle, Check } from 'lucide-react'
+import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import { useIPC } from '../../hooks/useIPC'
-import { Section, Field, inputClass } from './shared'
 import { safeJsonParse } from '../../lib/json'
-
-// ============================================================
-// 模型选择：从已配置连接聚合可用模型，按连接名分组
-// ============================================================
-
-const selectClass =
-  'w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-sm text-gray-200 focus:outline-none focus:border-indigo-400/50 appearance-none cursor-pointer'
-
-// ---- 推荐模型列表（人工维护） ----
+import { Field, Section } from './shared'
+import { SettingsListbox, type SettingsListboxGroup } from './SettingsListbox'
 
 const CLAUDE_MODELS = [
-  { id: 'claude-opus-4-7', label: 'Claude Opus 4.7' },
-  { id: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
-  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-  { id: 'claude-opus-4-5', label: 'Claude Opus 4.5' },
-  { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
-  { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-]
-
+  ['claude-opus-4-7', 'Claude Opus 4.7'],
+  ['claude-opus-4-6', 'Claude Opus 4.6'],
+  ['claude-sonnet-4-6', 'Claude Sonnet 4.6'],
+  ['claude-sonnet-4-5', 'Claude Sonnet 4.5'],
+  ['claude-haiku-4-5', 'Claude Haiku 4.5'],
+] as const
 const GEMINI_MODELS = [
-  { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro (Preview)' },
-  { id: 'gemini-3-flash-preview', label: 'Gemini 3 Flash (Preview)' },
-  { id: 'gemini-3.1-flash-lite-preview', label: 'Gemini 3.1 Flash Lite (Preview)' },
-  { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-  { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite' },
-]
-
-// connectionId::model 编码
-function encode(connectionId: string, model: string): string {
-  return `${connectionId}::${model}`
-}
-function decode(value: string): { connectionId: string; model: string } {
-  const idx = value.indexOf('::')
-  if (idx === -1) return { connectionId: '', model: value }
-  return { connectionId: value.slice(0, idx), model: value.slice(idx + 2) }
-}
-
-interface ModelOption {
-  connectionId: string
-  model: string
-  value: string
-  label: string
-  disabled?: boolean
-}
-
-interface ModelGroup {
-  connectionName: string
-  options: ModelOption[]
-}
-
+  ['gemini-3.1-pro-preview', 'Gemini 3.1 Pro (Preview)'],
+  ['gemini-3-flash-preview', 'Gemini 3 Flash (Preview)'],
+  ['gemini-3.1-flash-lite-preview', 'Gemini 3.1 Flash Lite (Preview)'],
+  ['gemini-2.5-pro', 'Gemini 2.5 Pro'],
+  ['gemini-2.5-flash', 'Gemini 2.5 Flash'],
+  ['gemini-2.5-flash-lite', 'Gemini 2.5 Flash Lite'],
+] as const
 interface Connection {
   id: string
   name: string
   provider_type: string
   status: string
   available_models: string | null
+  candidate_models?: string | null
+  source_type?: 'cloud_service' | 'local_subscription' | 'local_model'
   archived: number
 }
 
-// ---- 统一模型下拉 ----
-
-function UnifiedModelSelect({ value, onChange, groups, loading, placeholder }: {
+interface ModelChoice {
   value: string
-  onChange: (v: string) => void
-  groups: ModelGroup[]
-  loading?: boolean
-  placeholder?: string
+  label: string
+}
+
+interface ModelRouteConfig {
+  llm?: {
+    provider?: string
+    light_provider?: string
+    standard_provider?: string
+    heavy_provider?: string
+    light_connection?: string
+    standard_connection?: string
+    heavy_connection?: string
+    light_model?: string
+    standard_model?: string
+    heavy_model?: string
+  }
+  embedding?: {
+    provider?: string
+    connection?: string
+    model?: string
+  }
+}
+
+function encode(connectionId: string, model: string) {
+  return `${connectionId}::${model}`
+}
+
+function decode(value: string) {
+  const index = value.indexOf('::')
+  return index < 0
+    ? { connectionId: '', model: value }
+    : { connectionId: value.slice(0, index), model: value.slice(index + 2) }
+}
+
+function sourceFor(provider: string): Connection['source_type'] {
+  if (provider === 'claude-cli' || provider === 'codex-cli') return 'local_subscription'
+  if (provider === 'ollama') return 'local_model'
+  return 'cloud_service'
+}
+
+function modelsFor(connection: Connection, embedding = false): ModelChoice[] {
+  const verified = safeJsonParse<string[]>(connection.available_models, [])
+  if (embedding) {
+    if (connection.provider_type === 'vertex' || connection.provider_type === 'gemini') {
+      return [{ value: 'gemini-embedding-001', label: 'Gemini Embedding 001 (3072 dim)' }]
+    }
+    if (connection.provider_type === 'ollama') {
+      return verified.map(model => ({ value: model, label: `${model} (768 dim)` }))
+    }
+    return []
+  }
+  if (connection.provider_type === 'claude-cli') {
+    return verified.map(model => ({ value: model, label: model === 'default' ? 'Default' : `Claude ${model[0].toUpperCase()}${model.slice(1)}` }))
+  }
+  if (connection.provider_type === 'codex-cli') {
+    return verified.map(model => ({ value: model, label: model === 'default' ? 'Default' : model }))
+  }
+  if (connection.provider_type === 'anthropic' || connection.provider_type === 'vertex') {
+    return CLAUDE_MODELS
+      .filter(([id]) => verified.includes(id))
+      .map(([value, label]) => ({ value, label }))
+  }
+  if (connection.provider_type === 'gemini') {
+    return GEMINI_MODELS
+      .filter(([id]) => verified.includes(id))
+      .map(([value, label]) => ({ value, label }))
+  }
+  return verified.map(model => ({ value: model, label: model }))
+}
+
+function sourceLabel(source: Connection['source_type'], t: (key: string) => string) {
+  if (source === 'local_subscription') return t('model.providerGroups.localSubscription')
+  if (source === 'local_model') return t('model.providerGroups.localModel')
+  return t('model.providerGroups.cloudService')
+}
+
+function ModelRouteFields({
+  value,
+  onChange,
+  connections,
+  embedding = false,
+}: {
+  value: string
+  onChange: (value: string) => void
+  connections: Connection[]
+  embedding?: boolean
 }) {
   const { t } = useTranslation('settings')
-  const allOptions = groups.flatMap(g => g.options)
-  const hasOptions = allOptions.length > 0
+  const selected = decode(value)
+  const eligible = connections.filter(connection => !connection.archived && modelsFor(connection, embedding).length > 0)
+  const selectedStored = connections.find(connection => connection.id === selected.connectionId)
+  const selectedConnection = eligible.find(connection => connection.id === selected.connectionId)
+  const selectedModels = selectedConnection ? modelsFor(selectedConnection, embedding) : []
+  const invalidConnection = Boolean(selected.connectionId && !selectedConnection)
+  const invalidModel = Boolean(
+    selectedConnection &&
+    selected.model &&
+    !selectedModels.some(model => model.value === selected.model),
+  )
 
-  if (loading) {
-    return (
-      <div className="flex items-center gap-2 py-2 text-xs text-gray-500">
-        <Loader2 size={12} className="animate-spin" />
-        {t('model.selection.loadingModels')}
-      </div>
-    )
+  const connectionGroups: SettingsListboxGroup[] = [
+    ...(invalidConnection ? [{
+      label: t('model.selection.savedRouteProblem'),
+      options: [{
+        value: selected.connectionId,
+        label: selectedStored?.name ?? selected.connectionId,
+        description: selectedStored?.archived
+          ? t('model.selection.connectionArchived')
+          : t('model.selection.connectionUnavailable'),
+        disabled: true,
+      }],
+    }] : []),
+    ...(['local_subscription', 'cloud_service', 'local_model']
+    .map(source => ({
+      label: sourceLabel(source as Connection['source_type'], t),
+      options: eligible
+        .filter(connection => (connection.source_type ?? sourceFor(connection.provider_type)) === source)
+        .map(connection => ({ value: connection.id, label: connection.name, description: connection.provider_type })),
+    }))
+    .filter(group => group.options.length > 0)),
+  ]
+
+  const modelGroups: SettingsListboxGroup[] = selectedConnection || (invalidConnection && selected.model) ? [{
+    label: selectedConnection?.name ?? selectedStored?.name ?? t('model.selection.savedRouteProblem'),
+    options: [
+      ...((invalidModel || invalidConnection) && selected.model ? [{
+        value: selected.model,
+        label: selected.model,
+        description: t('model.selection.modelUnavailable'),
+        disabled: true,
+      }] : []),
+      ...selectedModels.map(model => ({
+      value: model.value,
+      label: model.label,
+      })),
+    ],
+  }] : []
+
+  const changeConnection = (connectionId: string) => {
+    const connection = eligible.find(item => item.id === connectionId)
+    const firstModel = connection ? modelsFor(connection, embedding)[0]?.value : ''
+    onChange(encode(connectionId, firstModel ?? ''))
   }
-
-  if (!hasOptions) {
-    return (
-      <input
-        value={decode(value).model}
-        onChange={e => onChange(e.target.value)}
-        placeholder={placeholder ?? t('model.selection.noConnectionPlaceholder')}
-        className={inputClass}
-      />
-    )
-  }
-
-  // 查找当前选中值所属的连接名
-  const selectedOption = allOptions.find(o => o.value === value)
-  const selectedGroup = selectedOption ? groups.find(g => g.options.includes(selectedOption)) : null
-  const showPrefix = groups.length > 1  // 多个连接时显示前缀
 
   return (
-    <select value={value} onChange={e => onChange(e.target.value)} className={selectClass}>
-      {/* 当前值不在列表中时保留 */}
-      {value && !selectedOption && (() => {
-        const d = decode(value)
-        return <option value={value}>{d.model} ({d.connectionId})</option>
-      })()}
-      {groups.map(g => g.options.length > 0 && (
-        <optgroup key={g.connectionName} label={g.connectionName}>
-          {g.options.map(o => (
-            <option key={o.value} value={o.value} disabled={o.disabled}>
-              {showPrefix ? `${g.connectionName} / ${o.label}` : o.label}{o.disabled ? ` (${t('model.selection.unavailable')})` : ''}
-            </option>
-          ))}
-        </optgroup>
-      ))}
-    </select>
+    <div className="space-y-1.5">
+      <div className="grid grid-cols-2 gap-2">
+        <SettingsListbox
+          value={selected.connectionId}
+          onChange={changeConnection}
+          groups={connectionGroups}
+          placeholder={t('model.selection.selectConnection')}
+          ariaLabel={t('model.selection.connectionLabel')}
+        />
+        <SettingsListbox
+          value={selected.model}
+          onChange={model => onChange(encode(selected.connectionId, model))}
+          groups={modelGroups}
+          placeholder={t('model.selection.selectModel')}
+          disabled={!selectedConnection}
+          ariaLabel={t('model.selection.modelLabel')}
+        />
+      </div>
+      {(invalidConnection || invalidModel) && (
+        <p className="flex items-center gap-1 text-[10px] text-red-400">
+          <AlertTriangle size={10} />
+          {invalidConnection
+            ? t('model.selection.savedConnectionInvalid')
+            : t('model.selection.savedModelInvalid')}
+        </p>
+      )}
+    </div>
   )
 }
 
 export function ModelSelection() {
   const { t } = useTranslation('settings')
   const fetchConfig = useCallback(() => window.api.config.get(), [])
-  const fetchConnections = useCallback(() => window.api.connections.list(), [])
+  // Archived connections remain visible only when referenced by a saved route;
+  // they are never eligible for a new selection.
+  const fetchConnections = useCallback(() => window.api.connections.list(true), [])
   const fetchReembedStatus = useCallback(() => window.api.embedding.reembedStatus(), [])
   const { data: config, refetch: refetchConfig } = useIPC(fetchConfig)
-  const { data: connections } = useIPC(fetchConnections)
+  const { data: connectionData } = useIPC(fetchConnections)
   const { data: reembedStatus, refetch: recheckReembed } = useIPC(fetchReembedStatus)
+  const connections = (connectionData ?? []) as Connection[]
+  const connMap = useMemo(() => new Map(connections.map(connection => [connection.id, connection])), [connections])
 
   const [lightValue, setLightValue] = useState('')
   const [standardValue, setStandardValue] = useState('')
@@ -138,61 +229,29 @@ export function ModelSelection() {
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState(false)
   const [reembedding, setReembedding] = useState(false)
-  // 历史 bug(2026-05-09):initialized.current 在 mount 后第一次进 debounce
-  // effect 时被设 true,后续任何 config refetch 触发的 setLightValue 等都会
-  // 让 debounce effect 误判为"用户编辑",把刚拉到的值再写回服务器。任何
-  // encode/decode 归一化差异就形成持续抖动。
-  // 修复:把"是否触发自动保存"绑定到 dirty.current —— 只在用户通过下拉
-  // 菜单 onChange 时才置 true,loading effect 不动它。
   const dirty = useRef(false)
-  const saveNowRef = useRef<((lv: string, sv: string, hv: string, ev: string) => void) | null>(null)
+  const saveNowRef = useRef<((light: string, standard: string, heavy: string, embedding: string) => void) | null>(null)
 
-  // 把每个 setter 包成"用户操作版本":显式标 dirty 才允许触发自动保存
-  const onChangeLight = useCallback((v: string) => { dirty.current = true; setLightValue(v) }, [])
-  const onChangeStandard = useCallback((v: string) => { dirty.current = true; setStandardValue(v) }, [])
-  const onChangeHeavy = useCallback((v: string) => { dirty.current = true; setHeavyValue(v) }, [])
-  const onChangeEmb = useCallback((v: string) => { dirty.current = true; setEmbValue(v) }, [])
-
-  // 构建 connectionId 到 name 的映射
-  const connMap = useMemo(() => {
-    const m = new Map<string, Connection>()
-    for (const c of (connections ?? []) as Connection[]) {
-      m.set(c.id, c)
-    }
-    return m
-  }, [connections])
+  const userSetter = (setter: React.Dispatch<React.SetStateAction<string>>) => (value: string) => {
+    dirty.current = true
+    setter(value)
+  }
 
   useEffect(() => {
-    if (config && connections) {
-      const c = config as any
-
-      // 优先使用 connection_id 编码，回退到旧的 provider 编码
-      const resolveSlot = (connKey: string | undefined, providerKey: string | undefined, defaultProvider: string, modelKey: string, defaultModel: string) => {
-        const connId = connKey
-        const model = modelKey || defaultModel
-        if (connId && connMap.has(connId)) {
-          return encode(connId, model)
-        }
-        // 回退：按 provider 找第一个匹配的 connection
-        const prov = providerKey || defaultProvider
-        const fallbackConn = (connections as Connection[]).find(conn => conn.provider_type === prov && !conn.archived)
-        if (fallbackConn) {
-          return encode(fallbackConn.id, model)
-        }
-        return encode('', model)
-      }
-
-      const defaultProv = c.llm?.provider ?? 'anthropic'
-      setLightValue(resolveSlot(c.llm?.light_connection, c.llm?.light_provider ?? defaultProv, defaultProv, c.llm?.light_model, 'claude-haiku-4-5'))
-      setStandardValue(resolveSlot(c.llm?.standard_connection, c.llm?.standard_provider ?? defaultProv, defaultProv, c.llm?.standard_model, 'claude-sonnet-4-6'))
-      setHeavyValue(resolveSlot(c.llm?.heavy_connection, c.llm?.heavy_provider ?? defaultProv, defaultProv, c.llm?.heavy_model, 'claude-opus-4-7'))
-
-      const embProv = c.embedding?.provider ?? 'vertex'
-      setEmbValue(resolveSlot(c.embedding?.connection, embProv, embProv, c.embedding?.model, 'gemini-embedding-001'))
+    if (!config || connectionData === null) return
+    const current = config as ModelRouteConfig
+    const resolve = (connectionId: string | undefined, provider: string | undefined, model: string, fallbackModel: string) => {
+      if (connectionId) return encode(connectionId, model || fallbackModel)
+      const matching = connections.find(connection => !connection.archived && connection.provider_type === provider)
+      return encode(matching?.id ?? '', model || fallbackModel)
     }
-  }, [config, connections, connMap])
+    const provider = current.llm?.provider ?? 'anthropic'
+    setLightValue(resolve(current.llm?.light_connection, current.llm?.light_provider ?? provider, current.llm?.light_model ?? '', 'claude-haiku-4-5'))
+    setStandardValue(resolve(current.llm?.standard_connection, current.llm?.standard_provider ?? provider, current.llm?.standard_model ?? '', 'claude-sonnet-4-6'))
+    setHeavyValue(resolve(current.llm?.heavy_connection, current.llm?.heavy_provider ?? provider, current.llm?.heavy_model ?? '', 'claude-opus-4-7'))
+    setEmbValue(resolve(current.embedding?.connection, current.embedding?.provider ?? 'vertex', current.embedding?.model ?? '', 'gemini-embedding-001'))
+  }, [config, connectionData, connections, connMap])
 
-  // Polling reembed progress
   useEffect(() => {
     if (!reembedding) return
     const timer = setInterval(() => recheckReembed(), 2000)
@@ -200,285 +259,122 @@ export function ModelSelection() {
   }, [reembedding, recheckReembed])
 
   useEffect(() => {
-    if (reembedStatus && !reembedStatus.running && reembedding) {
-      setReembedding(false)
-    }
-  }, [reembedStatus, reembedding])
+    if (reembedStatus && !reembedStatus.running) setReembedding(false)
+  }, [reembedStatus])
 
-  // ---- 构建 LLM 模型列表（按连接分组） ----
-  const llmGroups: ModelGroup[] = useMemo(() => {
-    if (!connections) return []
-    const groups: ModelGroup[] = []
-
-    for (const conn of connections as Connection[]) {
-      if (conn.archived) continue
-
-      const availableModels: string[] = safeJsonParse<string[]>(conn.available_models, [])
-
-      if (conn.provider_type === 'anthropic' || conn.provider_type === 'vertex') {
-        groups.push({
-          connectionName: conn.name,
-          options: CLAUDE_MODELS.map(m => ({
-            connectionId: conn.id, model: m.id,
-            value: encode(conn.id, m.id),
-            label: m.label,
-            disabled: availableModels.length > 0 ? !availableModels.includes(m.id) : false,
-          })),
-        })
-      }
-
-      if (conn.provider_type === 'gemini') {
-        groups.push({
-          connectionName: conn.name,
-          options: GEMINI_MODELS.map(m => ({
-            connectionId: conn.id, model: m.id,
-            value: encode(conn.id, m.id),
-            label: m.label,
-          })),
-        })
-      }
-
-      if (conn.provider_type === 'ollama' || conn.provider_type === 'openai-compatible') {
-        const models: string[] = safeJsonParse<string[]>(conn.available_models, [])
-        if (models.length > 0) {
-          groups.push({
-            connectionName: conn.name,
-            options: models.map(m => ({
-              connectionId: conn.id, model: m,
-              value: encode(conn.id, m),
-              label: m,
-            })),
-          })
-        }
-      }
-    }
-
-    return groups
-  }, [connections])
-
-  // ---- 构建 Embedding 模型列表 ----
-  const embGroups: ModelGroup[] = useMemo(() => {
-    if (!connections) return []
-    const groups: ModelGroup[] = []
-
-    for (const conn of connections as Connection[]) {
-      if (conn.archived) continue
-
-      if (conn.provider_type === 'vertex' || conn.provider_type === 'gemini') {
-        groups.push({
-          connectionName: conn.name,
-          options: [{
-            connectionId: conn.id, model: 'gemini-embedding-001',
-            value: encode(conn.id, 'gemini-embedding-001'),
-            label: `Gemini Embedding 001 (3072 dim)`,
-          }],
-        })
-      }
-
-      if (conn.provider_type === 'ollama') {
-        const ollamaModels: string[] = safeJsonParse<string[]>(conn.available_models, [])
-        if (ollamaModels.length > 0) {
-          groups.push({
-            connectionName: conn.name,
-            options: ollamaModels.map(m => ({
-              connectionId: conn.id, model: m,
-              value: encode(conn.id, m),
-              label: `${m} (768 dim)`,
-            })),
-          })
-        }
-      }
-    }
-
-    return groups
-  }, [connections])
-
-  // 当前选中的 embedding 信息
-  const selectedEmb = decode(embValue)
-  const selectedEmbConn = connMap.get(selectedEmb.connectionId)
-  const embDimensions = selectedEmbConn?.provider_type === 'ollama' ? 768 : 3072
-
-  const handleTriggerReembed = async () => {
-    setReembedding(true)
-    await window.api.embedding.triggerReembed()
-    recheckReembed()
-  }
-
-  // 即时保存
-  const saveNow = useCallback(async (lv: string, sv: string, hv: string, ev: string) => {
-    const light = decode(lv)
-    const standard = decode(sv)
-    const heavy = decode(hv)
-    const emb = decode(ev)
-
-    // 推断 provider（向后兼容）
-    const getProviderType = (connId: string): string => {
-      const conn = connMap.get(connId)
-      return conn?.provider_type ?? 'anthropic'
-    }
-
-    const dims = getProviderType(emb.connectionId) === 'ollama' ? 768 : 3072
-
+  const saveNow = useCallback(async (lightValue: string, standardValue: string, heavyValue: string, embeddingValue: string) => {
+    const light = decode(lightValue)
+    const standard = decode(standardValue)
+    const heavy = decode(heavyValue)
+    const embedding = decode(embeddingValue)
+    const current = config as ModelRouteConfig | null
+    const provider = (connectionId: string, fallback: string) => connMap.get(connectionId)?.provider_type ?? fallback
     try {
-      const res = await window.api.config.update({
+      const result = await window.api.config.update({
         llm: {
-          provider: getProviderType(light.connectionId) || 'anthropic',
+          provider: provider(light.connectionId, 'anthropic'),
           light_connection: light.connectionId || undefined,
-          light_provider: getProviderType(light.connectionId) || 'anthropic',
+          light_provider: provider(light.connectionId, current?.llm?.light_provider ?? current?.llm?.provider ?? 'anthropic'),
           standard_connection: standard.connectionId || undefined,
-          standard_provider: getProviderType(standard.connectionId) || 'anthropic',
+          standard_provider: provider(standard.connectionId, current?.llm?.standard_provider ?? current?.llm?.provider ?? 'anthropic'),
           heavy_connection: heavy.connectionId || undefined,
-          heavy_provider: getProviderType(heavy.connectionId) || 'anthropic',
+          heavy_provider: provider(heavy.connectionId, current?.llm?.heavy_provider ?? current?.llm?.provider ?? 'anthropic'),
           light_model: light.model,
           standard_model: standard.model,
           heavy_model: heavy.model,
         },
         embedding: {
-          connection: emb.connectionId || undefined,
-          provider: getProviderType(emb.connectionId) || 'vertex',
-          model: emb.model,
-          dimensions: dims,
+          connection: embedding.connectionId || undefined,
+          provider: provider(embedding.connectionId, current?.embedding?.provider ?? 'vertex'),
+          model: embedding.model,
+          dimensions: provider(embedding.connectionId, 'vertex') === 'ollama' ? 768 : 3072,
         },
       })
-      // 主进程在 config.toml 解析失败等情况下 resolve(而非 reject){success:false},
-      // catch 不会触发——必须显式检查返回值,否则会误报「已保存」却把改动静默丢弃。
-      if (res && res.success === false) {
-        setSaved(false)
-        setSaveError(true)
-        return
-      }
+      if (result?.success === false) throw new Error('save failed')
+      dirty.current = false
+      setSaveError(false)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+      refetchConfig()
     } catch {
-      // 写入失败(磁盘满 / 权限等):dirty 保持 true,下次用户再编辑会重试;
-      // 透出错误条,避免用户以为切换已生效但后端仍是旧模型。
       setSaved(false)
       setSaveError(true)
-      return
     }
-    // 保存完成后清 dirty,否则 refetchConfig 触发的 setX 会让 debounce effect
-    // 再次进入(dirty 仍 true)→ 把刚拉的值反复写回。重置 dirty 必须在 refetch
-    // 之前,setX 由 useIPC 派进来时 effect 看到 dirty=false 直接 return。
-    dirty.current = false
-    setSaveError(false)
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
-    refetchConfig()
-  }, [refetchConfig, connMap])
-
-  // 始终指向最新的 saveNow（避免 effect deps 循环）
+  }, [config, connMap, refetchConfig])
   saveNowRef.current = saveNow
 
-  // debounce 自动保存:只在用户实际编辑后(dirty.current=true)才触发,
-  // config refetch 引发的 setX 不会写回服务器。
   useEffect(() => {
     if (!dirty.current) return
-    const timer = setTimeout(() => {
-      saveNowRef.current?.(lightValue, standardValue, heavyValue, embValue)
-    }, 300)
+    const timer = setTimeout(() => saveNowRef.current?.(lightValue, standardValue, heavyValue, embValue), 300)
     return () => clearTimeout(timer)
   }, [lightValue, standardValue, heavyValue, embValue])
 
+  const selectedEmbedding = decode(embValue)
+  const embeddingDimensions = connMap.get(selectedEmbedding.connectionId)?.provider_type === 'ollama' ? 768 : 3072
+
   return (
     <div className="space-y-6 max-w-lg">
-      {/* ====== LLM ====== */}
       <Section title="LLM">
         <div className="space-y-5">
-          <div className="space-y-2">
-            <Field label={t('model.selection.lightModel')} tip={t('model.selection.lightModelTip')}>
-              <UnifiedModelSelect
-                value={lightValue}
-                onChange={onChangeLight}
-                groups={llmGroups}
-              />
-            </Field>
-            <p className="text-[10px] text-gray-500">{t('model.selection.lightModelUsage')}</p>
-          </div>
-
-          <div className="space-y-2">
-            <Field label={t('model.selection.standardModel')} tip={t('model.selection.standardModelTip')}>
-              <UnifiedModelSelect
-                value={standardValue}
-                onChange={onChangeStandard}
-                groups={llmGroups}
-              />
-            </Field>
-            <p className="text-[10px] text-gray-500">{t('model.selection.standardModelUsage')}</p>
-          </div>
-
-          <div className="space-y-2">
-            <Field label={t('model.selection.heavyModel')} tip={t('model.selection.heavyModelTip')}>
-              <UnifiedModelSelect
-                value={heavyValue}
-                onChange={onChangeHeavy}
-                groups={llmGroups}
-              />
-            </Field>
-            <p className="text-[10px] text-gray-500">{t('model.selection.heavyModelUsage')}</p>
-          </div>
+          {[
+            ['light', t('model.selection.lightModel'), t('model.selection.lightModelTip'), t('model.selection.lightModelUsage'), lightValue, userSetter(setLightValue)],
+            ['standard', t('model.selection.standardModel'), t('model.selection.standardModelTip'), t('model.selection.standardModelUsage'), standardValue, userSetter(setStandardValue)],
+            ['heavy', t('model.selection.heavyModel'), t('model.selection.heavyModelTip'), t('model.selection.heavyModelUsage'), heavyValue, userSetter(setHeavyValue)],
+          ].map(([key, label, tip, usage, value, onChange]) => (
+            <div key={key as string} className="space-y-2">
+              <Field label={label as string} tip={tip as string}>
+                <ModelRouteFields value={value as string} onChange={onChange as (value: string) => void} connections={connections} />
+              </Field>
+              <p className="text-[10px] text-gray-500">{usage as string}</p>
+            </div>
+          ))}
         </div>
       </Section>
 
-      {/* ====== Embedding ====== */}
       <Section title="Embedding">
         <div className="space-y-3">
           <Field label={t('model.selection.embeddingModel')} tip={t('model.selection.embeddingModelTip')}>
-            <UnifiedModelSelect
-              value={embValue}
-              onChange={onChangeEmb}
-              groups={embGroups}
-            />
+            <ModelRouteFields value={embValue} onChange={userSetter(setEmbValue)} connections={connections} embedding />
           </Field>
-          <div className="flex items-center gap-4">
-            <span className="text-[10px] text-gray-500">{t('model.selection.dimensions')}: {embDimensions}</span>
-            <span className="text-[10px] text-gray-500">
-              {t('model.selection.connectionLabel')}: {selectedEmbConn?.name ?? t('model.selection.notSelected')}
-            </span>
+          <div className="flex items-center gap-4 text-[10px] text-gray-500">
+            <span>{t('model.selection.dimensions')}: {embeddingDimensions}</span>
+            <span>{t('model.selection.connectionLabel')}: {connMap.get(selectedEmbedding.connectionId)?.name ?? t('model.selection.notSelected')}</span>
           </div>
           <p className="text-[10px] text-gray-500">{t('model.selection.embeddingUsage')}</p>
-        </div>
-
-        {/* 重算提示 */}
-        {(reembedStatus?.needed || reembedStatus?.running) && (
-          <div className="mt-3 p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
-            <div className="flex items-center gap-2 mb-2">
-              <AlertTriangle size={12} className="text-amber-400" />
-              <p className="text-xs text-amber-300">
-                {reembedStatus.running
-                  ? t('model.selection.reembedProgress', { done: reembedStatus.done, total: reembedStatus.total })
-                  : t('model.selection.reembedNeeded')}
-              </p>
-            </div>
-            {!reembedStatus.running && (
-              <button onClick={handleTriggerReembed} disabled={reembedding}
-                className="flex items-center gap-2 px-3 py-1.5 text-xs bg-amber-500/20 hover:bg-amber-500/30 rounded-lg text-amber-300 transition-colors disabled:opacity-50">
-                {reembedding && <Loader2 size={12} className="animate-spin" />}
-                {t('model.selection.startReembed')}
-              </button>
-            )}
-            {reembedStatus.running && (
-              <div className="w-full bg-white/10 rounded-full h-1.5 mt-2">
-                <div className="bg-amber-400 h-1.5 rounded-full transition-all"
-                  style={{ width: `${reembedStatus.total > 0 ? (reembedStatus.done / reembedStatus.total) * 100 : 0}%` }} />
+          {(reembedStatus?.needed || reembedStatus?.running) && (
+            <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+              <div className="flex items-center gap-2">
+                <AlertTriangle size={12} className="text-amber-400" />
+                <p className="text-xs text-amber-300">
+                  {reembedStatus.running
+                    ? t('model.selection.reembedProgress', { done: reembedStatus.done, total: reembedStatus.total })
+                    : t('model.selection.reembedNeeded')}
+                </p>
               </div>
-            )}
-          </div>
-        )}
+              {!reembedStatus.running && (
+                <button
+                  onClick={async () => {
+                    setReembedding(true)
+                    await window.api.embedding.triggerReembed()
+                    recheckReembed()
+                  }}
+                  disabled={reembedding}
+                  className="mt-2 flex items-center gap-2 px-3 py-1.5 text-xs bg-amber-500/20 hover:bg-amber-500/30 rounded-lg text-amber-300 disabled:opacity-50"
+                >
+                  {reembedding && <Loader2 size={12} className="animate-spin" />}
+                  {t('model.selection.startReembed')}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </Section>
 
-      {saved && (
-        <div className="flex items-center gap-1.5 text-xs text-green-400 transition-opacity">
-          <Check size={12} />
-          {t('model.selection.saved')}
-        </div>
-      )}
+      {saved && <div className="flex items-center gap-1.5 text-xs text-green-400"><Check size={12} />{t('model.selection.saved')}</div>}
       {saveError && (
         <div className="flex items-center gap-1.5 text-xs text-red-400">
-          <AlertTriangle size={12} />
-          {t('model.selection.saveFailed')}
-          {/* 显式重试入口:仅靠再改下拉触发 debounce 重存对磁盘满/权限类失败不直观。 */}
-          <button
-            onClick={() => saveNow(lightValue, standardValue, heavyValue, embValue)}
-            className="ml-1 underline hover:text-red-300"
-          >
+          <AlertTriangle size={12} />{t('model.selection.saveFailed')}
+          <button onClick={() => saveNow(lightValue, standardValue, heavyValue, embValue)} className="ml-1 underline hover:text-red-300">
             {t('model.selection.retry')}
           </button>
         </div>

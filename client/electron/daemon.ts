@@ -25,32 +25,56 @@ import { ALL_TASKS } from '@server/metabolism/tasks.js'
 import { setLLMSuccessHook } from '@server/llm/client.js'
 import { setEmbeddingSuccessHook, setEmbeddingFailureHook } from '@server/llm/embedding.js'
 import { setStructureHolesRunner } from '@server/graph/structure-holes.js'
+import { reconcileCliRuntimeState } from '@server/llm/cli/invocation-state.js'
+import { cleanupStaleCliRuntimeDirectories } from '@server/llm/cli/runtime-dir.js'
 import { startAllNoteSources, stopAllNoteSourcesAsync } from '@server/integrations/shared/note-sources.js'
 import { getActivityState } from './activity-state.js'
 import { runStructureHolesInWorker, terminateStructureHolesWorker } from './workers/structure-holes-runner.js'
+import { waitForBackgroundWork } from '@server/utils/background-work.js'
 
 const log = createLogger('daemon')
 
 let timer: ReturnType<typeof setInterval> | null = null
 let running = false
 let tickPromise: Promise<unknown> | null = null
+let pendingTickLabel: string | null = null
+let stopping = false
 let unsubscribeActivity: (() => void) | null = null
+let lifecycleGeneration = 0
+let startupPromise: Promise<void> | null = null
 
 const ACTIVE_TICK_MS = 60 * 1000   // 每分钟检查一次(用户在用)
 const IDLE_TICK_MS = 10 * 60 * 1000 // 每 10 分钟(用户走了,scheduler 不需要那么积极)
 
-export async function startDaemon(): Promise<void> {
-  if (running) return
+export function startDaemon(): Promise<void> {
+  if (startupPromise) return startupPromise
+  if (running || stopping) return Promise.resolve()
+  const generation = ++lifecycleGeneration
   running = true
+  stopping = false
+  const current = startDaemonInternal(generation)
+    .catch(err => {
+      if (lifecycleGeneration === generation) running = false
+      throw err
+    })
+    .finally(() => {
+      if (startupPromise === current) startupPromise = null
+    })
+  startupPromise = current
+  return current
+}
 
+async function startDaemonInternal(generation: number): Promise<void> {
   // 初始化 server 侧的 config 和 DB（与 client 的 getClientDb 独立）
   loadConfig()
   ensureDataDirs()
+  cleanupStaleCliRuntimeDirectories(getDataDir(), { olderThanMs: 24 * 60 * 60 * 1000 })
 
   // 启用文件日志
   enableFileLogging(path.join(getDataDir(), 'logs'))
   getDb()
   await initVec()
+  if (stopping || lifecycleGeneration !== generation) return
 
   // 注入健康度 hook(2026-05-21 v0.2.74,修 backlog C.H2)。
   // 关键:CLI daemon(src/daemon.ts)早已注入这套 hook,但 Electron daemon 一直漏了 →
@@ -59,6 +83,13 @@ export async function startDaemon(): Promise<void> {
   // transition 在桌面端也不跑。必须在首次 runSchedulerTick 之前设上。
   // hook 内部都有 try/catch 兜底,失败不影响 LLM/embedding 调用主流程。
   const dbForHook = getDb()
+  const reconciliation = reconcileCliRuntimeState(dbForHook)
+  if (reconciliation.definiteFailures.length > 0 || reconciliation.ambiguousInvocations.length > 0) {
+    log.warn(
+      `CLI runtime 冷启动恢复: definite_failures=${reconciliation.definiteFailures.length}, ` +
+      `ambiguous_invocations=${reconciliation.ambiguousInvocations.length}`,
+    )
+  }
   setLLMSuccessHook(() => noteSuccessfulLLMCall(dbForHook))
   setLLMFailureHook(err => recordLLMFailureForHook(dbForHook, err.message))
   setEmbeddingSuccessHook(() => recordEmbeddingSuccess(dbForHook))
@@ -70,12 +101,18 @@ export async function startDaemon(): Promise<void> {
   setStructureHolesRunner(db => runStructureHolesInWorker(db))
 
   // 启动所有已配置的笔记源
-  startAllNoteSources(getDb()).catch(err =>
-    log.error('笔记源启动失败:', (err as Error).message))
+  try {
+    await startAllNoteSources(getDb())
+  } catch (error) {
+    log.error('笔记源启动失败:', (error as Error).message)
+  }
+  if (stopping || lifecycleGeneration !== generation) {
+    await stopAllNoteSourcesAsync()
+    return
+  }
 
   // 启动时立刻执行一轮
-  runSchedulerTick(getDb(), ALL_TASKS).catch(err =>
-    log.error('初始调度失败:', (err as Error).message))
+  void runTickOnce('初始调度')
 
   // 跟随 activity-state 切 tick 频率:active 60s, idle 10min。
   // idle 时仍保留 tick(远程调度需要 progress),只是不需要那么积极。
@@ -83,8 +120,7 @@ export async function startDaemon(): Promise<void> {
   startTick(getActivityState().getState())
   unsubscribeActivity = getActivityState().onChange((state) => {
     if (state === 'active') {
-      runSchedulerTick(getDb(), ALL_TASKS)
-        .catch(err => log.error('resume 调度失败:', (err as Error).message))
+      void runTickOnce('resume 调度', true)
     }
     startTick(state)
   })
@@ -107,11 +143,30 @@ function startTick(state: 'active' | 'idle'): void {
   }
   const interval = state === 'active' ? ACTIVE_TICK_MS : IDLE_TICK_MS
   timer = setInterval(() => {
-    if (tickPromise) return
-    tickPromise = runSchedulerTick(getDb(), ALL_TASKS)
-      .catch(err => log.error('调度 tick 失败:', (err as Error).message))
-      .finally(() => { tickPromise = null })
+    void runTickOnce('调度 tick')
   }, interval)
+}
+
+function runTickOnce(label: string, queueIfBusy = false): Promise<unknown> {
+  if (tickPromise) {
+    if (queueIfBusy && !stopping) pendingTickLabel = label
+    return tickPromise
+  }
+  const current: Promise<void> = runSchedulerTick(getDb(), ALL_TASKS)
+    .then(() => undefined)
+    .catch(err => {
+      log.error(`${label}失败:`, (err as Error).message)
+    })
+    .finally(() => {
+      if (tickPromise === current) {
+        tickPromise = null
+        const pending = pendingTickLabel
+        pendingTickLabel = null
+        if (pending && running && !stopping) void runTickOnce(pending)
+      }
+    })
+  tickPromise = current
+  return current
 }
 
 /**
@@ -133,14 +188,14 @@ export async function triggerImmediateSchedulerTick(): Promise<void> {
     log.info('triggerImmediateSchedulerTick 调用但已有 tick 在跑,跳过')
     return
   }
-  tickPromise = runSchedulerTick(getDb(), ALL_TASKS)
-    .catch(err => log.error('立即 tick 失败:', (err as Error).message))
-    .finally(() => { tickPromise = null })
-  await tickPromise
+  await runTickOnce('立即 tick')
 }
 
 export async function stopDaemon(): Promise<void> {
-  if (!running) return
+  if (!running && !startupPromise) return
+  stopping = true
+  lifecycleGeneration++
+  pendingTickLabel = null
   if (unsubscribeActivity) {
     unsubscribeActivity()
     unsubscribeActivity = null
@@ -160,12 +215,17 @@ export async function stopDaemon(): Promise<void> {
   setStructureHolesRunner(null)
   terminateStructureHolesWorker()
 
-  // 等已 fire 的 in-flight tick 跑完(最多 5s),避免 close DB 后 tick 还在访问。
+  // 等待已进入 initVec/startAllNoteSources 的在途启动观察 generation 失效并退出。
+  // 它未完成前绝不能 closeDb，否则旧启动会在关库后继续安装 hook/watcher/timer。
+  const pendingStartup = startupPromise
+  if (pendingStartup) {
+    await pendingStartup
+  }
+
+  // shutdownLLMClient 已先中止 LLM/CLI；这里必须真正等剩余 tick 完成再关 DB。
+  // 超时后直接 closeDb 会让仍运行的任务继续访问已关闭连接，造成重复/损坏。
   if (tickPromise) {
-    await Promise.race([
-      tickPromise,
-      new Promise(resolve => setTimeout(resolve, 5000)),
-    ])
+    await tickPromise
   }
   try {
     logTimelineEvent(getDb(), {
@@ -181,12 +241,28 @@ export async function stopDaemon(): Promise<void> {
   // H-shutdown 修复(第三轮审计):await logseq watcher 在途串行链 drain(processOneFile 跑完 setFileState/
   // finally 退休 createdThisRun)再 closeDb,否则在途节点撞已关闭的 db、退休失败 → 残留活跃孤儿。
   // 原 `stopAllNoteSources()`(同步 fire-and-forget)+ 立即 closeDb 让 drain 在微任务里撞已关 db,
-  // 修复 2B 的 async drain 在桌面端这条路径上完全失效。10s 兜底防卡死(对齐 src/daemon.ts CLI shutdown)。
-  await Promise.race([
-    stopAllNoteSourcesAsync(),
-    new Promise<void>(resolve => setTimeout(resolve, 10_000)),
-  ])
+  // 修复 2B 的 async drain 在桌面端这条路径上完全失效。超时/拒绝必须使本次
+  // 退出失败并保留 DB；否则 watcher 仍可能在 closeDb 后写入。
+  let drainTimeout: ReturnType<typeof setTimeout> | null = null
+  try {
+    await Promise.race([
+      stopAllNoteSourcesAsync(),
+      new Promise<never>((_, reject) => {
+        drainTimeout = setTimeout(
+          () => reject(new Error('note source shutdown timed out after 10s')),
+          10_000,
+        )
+      }),
+    ])
+  } catch (error) {
+    stopping = false
+    throw error
+  } finally {
+    if (drainTimeout) clearTimeout(drainTimeout)
+  }
+  await waitForBackgroundWork()
   closeDb()
   running = false
+  stopping = false
   log.info('守护进程已停止')
 }

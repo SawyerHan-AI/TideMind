@@ -69,6 +69,11 @@
     "saveFailed": "저장하지 못했습니다. 다시 시도해 주세요."
   },
   "model": {
+    "providerGroups": {
+      "cloudService": "클라우드 서비스",
+      "localSubscription": "로컬 구독",
+      "localModel": "로컬 모델"
+    },
     "subtabs": {
       "connection": "모델 연결",
       "selection": "모델 선택",
@@ -94,14 +99,25 @@
       "status": {
         "online": "연결됨",
         "offline": "연결 실패",
-        "unconfigured": "미설정"
+        "unconfigured": "미설정",
+        "untested": "테스트하지 않음",
+        "checking": "확인 중",
+        "testing": "테스트 중",
+        "degraded": "일부 사용 가능",
+        "not_installed": "설치되지 않음",
+        "not_authenticated": "로그인되지 않음",
+        "wrong_auth_method": "지원되지 않는 로그인 방식",
+        "unsupported_version": "지원되지 않는 버전",
+        "ambiguous": "결과 불명"
       },
       "providerDesc": {
         "anthropic": "Claude 모델 직접 연결 (API Key)",
         "vertex": "GCP Service Account를 통해 Claude 및 Gemini 접근",
         "gemini": "Gemini API 직접 사용 (무료 티어 할당량)",
         "ollama": "로컬 추론 서비스 (Embedding & LLM)",
-        "openai-compatible": "OpenAI 호환 API 서비스"
+        "openai-compatible": "OpenAI 호환 API 서비스",
+        "claude-cli": "로컬에서 로그인한 Claude Code 구독 사용",
+        "codex-cli": "로컬에서 로그인한 Codex / ChatGPT 구독 사용"
       },
       "anthropicTip": "console.anthropic.com에서 발급받으세요.",
       "vertexProjectTip": "GCP 프로젝트 ID. Service Account 업로드 후 자동 입력됩니다.",
@@ -126,7 +142,23 @@
       "colModels": "모델 수",
       "colUsage": "용도",
       "modelCount": "{{count}}개",
-      "confirm": "확인"
+      "confirm": "확인",
+      "cliPath": "확인된 CLI 경로",
+      "cliVersion": "CLI 버전",
+      "loginMethod": "로그인 방식",
+      "isolationStatus": "격리 검사",
+      "isolationEnabled": "안전 격리 활성화됨",
+      "isolationVerified": "격리 확인 완료",
+      "isolationPending": "확인 대기 중",
+      "isolationFailed": "격리 확인 실패",
+      "lastTested": "마지막 테스트",
+      "testScope": "테스트 범위",
+      "allCandidateModels": "후보 모델 {{count}}개 모두",
+      "checkEnvironment": "환경 확인",
+      "cancelTest": "테스트 취소",
+      "testSummary": "{{success}} / {{total}}개 모델 사용 가능",
+      "testCancelledSummary": "테스트 취소됨 · {{success}} / {{total}}개 성공",
+      "copyCommand": "명령어 복사"
     },
     "selection": {
       "loadingModels": "사용 가능한 모델 로딩 중...",
@@ -153,7 +185,16 @@
       "startReembed": "재계산 시작",
       "saved": "저장됨",
       "saveFailed": "모델 선택을 저장하지 못했습니다. 다시 시도해 주세요.",
-      "retry": "다시 시도"
+      "retry": "다시 시도",
+      "selectConnection": "연결 선택",
+      "selectModel": "모델 선택",
+      "modelLabel": "모델"
+      ,"savedRouteProblem": "저장된 설정 문제"
+      ,"connectionArchived": "이 연결은 보관되었습니다"
+      ,"connectionUnavailable": "저장된 연결이 더 이상 존재하지 않습니다"
+      ,"modelUnavailable": "저장된 모델이 확인되지 않았습니다"
+      ,"savedConnectionInvalid": "저장된 연결을 사용할 수 없습니다. 다른 연결을 선택하세요."
+      ,"savedModelInvalid": "저장된 모델을 사용할 수 없습니다. 확인된 모델을 선택하세요."
     },
     "serviceStatus": {
       "title": "AI 서비스 상태",
@@ -168,7 +209,12 @@
       "retryNow": "지금 재시도",
       "retrySuccess": "회로 차단기가 재설정되었습니다",
       "retryError": "재시도 실패",
-      "retryDebounceHint": "잠시만 기다려 주세요"
+      "retryDebounceHint": "잠시만 기다려 주세요",
+      "availableConnections": "Available",
+      "needsAttention": "Needs attention",
+      "unknownConnection": "Unknown connection",
+      "collapseErrors": "Collapse errors",
+      "expandErrors": "Show {{count}} more"
     }
   },
   "data": {
@@ -427,7 +473,20 @@
     "colEstimatedCost": "예상 비용",
     "range7d": "7일",
     "range30d": "30일",
-    "rangeAll": "전체"
+    "rangeAll": "전체",
+    "partialEstimate": "{{count}}건의 호출은 가격을 계산할 수 없어 합계는 부분 추정치입니다.",
+    "connectionSourceTitle": "연결 및 소스",
+    "colConnection": "연결",
+    "colSource": "소스",
+    "legacyConnection": "이전 구성",
+    "unavailableEstimate": "사용 불가",
+    "subscriptionEstimateHint": "로컬 구독 비용은 공개 Token 가격을 기준으로 계산한 API 환산 추정치이며 실제 구독 청구액이 아닙니다.",
+    "source": {
+      "cloud_service": "클라우드 서비스",
+      "local_subscription": "로컬 구독",
+      "local_model": "로컬 모델",
+      "unknown": "알 수 없음"
+    }
   },
   "strategy": {
     "groups": {
@@ -830,7 +889,8 @@
       "codex": "~/.codex/config.toml (auto)",
       "windsurf": "~/.codeium/windsurf/mcp_config.json (auto)",
       "openclaw": "~/.openclaw/openclaw.json (auto)",
-      "gemini": "~/.gemini/extensions/tidemind-<id>/ (auto)"
+      "gemini": "~/.gemini/extensions/tidemind-<id>/ (auto)",
+      "kimiCode": "~/.kimi-code/mcp.json (자동)"
     },
     "toolSkillPath": {
       "claudeCode": ".claude/rules/mcp-tidemind.md",
@@ -839,7 +899,8 @@
       "codex": "Copy to project AGENTS.md",
       "windsurf": "Copy to project .windsurf/rules/",
       "openclaw": "Copy to ~/.openclaw/skills/",
-      "gemini": "Auto-loaded as GEMINI.md by Gemini CLI"
+      "gemini": "Auto-loaded as GEMINI.md by Gemini CLI",
+      "kimiCode": "~/.kimi-code/skills/ 에 자동 설치되며, Kimi Code 시작 시 자동 로드"
     },
     "detail": {
       "coworkMcpHint": "MCP tools bridged via Desktop config automatically. Restart Claude Desktop to apply.",
@@ -853,7 +914,9 @@
       "openclawMcpHint": "MCP + Bootstrap Hook written to ~/.openclaw/. Restart OpenClaw to apply.",
       "openclawSkillHint": "Skill directory needs to be copied to ~/.openclaw/skills/ or project skills/ directory.",
       "geminiMcpHint": "MCP + SessionStart Hook bundled in Gemini extension. Installed via `gemini extensions install`. Restart `gemini` to apply.",
-      "geminiSkillHint": "GEMINI.md auto-loaded by Gemini CLI from extension. No manual copy needed."
+      "geminiSkillHint": "GEMINI.md auto-loaded by Gemini CLI from extension. No manual copy needed.",
+      "kimiMcpHint": "MCP + 컨텍스트 주입 Hook이 ~/.kimi-code/ 에 기록되었습니다. kimi 세션을 다시 시작하면 적용됩니다.",
+      "kimiSkillHint": "Skill이 ~/.kimi-code/skills/ 에 자동 설치되며, Kimi Code 시작 시 자동으로 로드됩니다. 수동 복사가 필요 없습니다."
     },
     "wizard": {
       "nameAgent": "Name Agent",
@@ -863,6 +926,7 @@
       "configWindsurf": "Configure Windsurf",
       "configOpenClaw": "Configure OpenClaw",
       "configGemini": "Configure Gemini CLI",
+      "configKimi": "Kimi Code 설정",
       "installPlugin": "Install Plugin",
       "mcpConfig": "MCP Config",
       "skillFile": "Skill File",
@@ -921,6 +985,9 @@
       "verifyGeminiMcp": "Gemini extension installed (MCP + Hook + commands)",
       "verifyGeminiMcpHintOk": "Restart `gemini` to apply",
       "verifyGeminiMcpHintFail": "`gemini extensions install` failed",
+      "verifyKimiMcp": "Kimi Code MCP 설정 + Hook 기록됨",
+      "verifyKimiMcpHintOk": "세션을 다시 시작하면 적용됩니다",
+      "verifyKimiMcpHintFail": "설정 기록 실패",
       "verifyMcpAdded": "MCP config added to tool",
       "verifyMcpAddedHint": "Confirm you have pasted the JSON config from the previous step into the tool's MCP config file",
       "verifySkillCopied": "Skill content copied to tool",
@@ -985,6 +1052,15 @@
         "upgradeTitle": "Gemini CLI version too old for hooks",
         "upgradeHint": "Detected Gemini CLI {{version}} — upgrade to 0.26+ to enable auto-loaded user context via SessionStart hook.",
         "upgradeNote": "MCP tools (brain_*) and slash commands work on older versions, but you'll need to invoke brain_prepare manually."
+      },
+      "kimi": {
+        "mcpConfig": "Kimi Code MCP 설정 (mcp.json)",
+        "hookConfig": "컨텍스트 주입 Hook (컨텍스트 자동 로드)",
+        "skillInjected": "Skill 가이드가 ~/.kimi-code/skills/ 에 주입되었습니다",
+        "autoReadyTitle": "모든 설정 완료 — 수동 단계가 필요하지 않습니다",
+        "autoReadyNote": "다음 Kimi Code 세션 시작 시 컨텍스트와 Skill 가이드가 자동으로 로드됩니다.",
+        "cliMissingTitle": "Kimi Code CLI를 찾을 수 없습니다",
+        "cliMissingNote": "설정은 저장되었습니다. Kimi Code CLI를 설치한 뒤 새 세션을 시작하세요."
       }
     }
   },

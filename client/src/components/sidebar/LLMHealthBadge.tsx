@@ -43,18 +43,24 @@ export function LLMHealthBadge() {
     }
   }, [])
 
-  // F6: open 状态下每秒 tick 一次,推动倒计时刷新。
+  const activeError = health?.activeTask?.connectionId
+    ? health.errors?.find(error => error.connectionId === health.activeTask?.connectionId)
+    : null
+
+  // F6:当前任务所用连接 open 时每秒 tick 一次,推动倒计时刷新。
   useEffect(() => {
-    if (health?.circuitState !== 'open') return
+    if (activeError?.circuitState !== 'open') return
     const t = setInterval(() => setTick(x => x + 1), 1000)
     return () => clearInterval(t)
-  }, [health?.circuitState])
+  }, [activeError?.circuitState])
 
   if (!health) return null
 
   let display: Display = { severity: 'hidden', label: '', dotClass: '', dotShadow: '' }
-  if (health.circuitState === 'open') {
-    const remainingMs = Math.max(0, (health.openedAt + health.cooldownMs) - Date.now())
+  if (activeError?.circuitState === 'open') {
+    const retryAt = activeError.retryAt
+      ?? ((activeError.openedAt ?? 0) + (activeError.cooldownMs ?? 0))
+    const remainingMs = Math.max(0, retryAt - Date.now())
     const min = Math.ceil(remainingMs / 60_000)
     display = {
       severity: 'error',
@@ -62,7 +68,7 @@ export function LLMHealthBadge() {
       dotClass: 'bg-red-400 animate-pulse',
       dotShadow: '0 0 6px rgba(248,113,113,0.5)',
     }
-  } else if (health.failures > 0) {
+  } else if ((health.errors?.length ?? health.failures) > 0) {
     display = {
       severity: 'warning',
       label: t('llmHealth.recentFailures', { defaultValue: 'AI 近期有失败' }),

@@ -2,6 +2,11 @@
 // using renderer-supplied identifiers. All path-traversal / injection guards
 // for `agents:*` handlers funnel through here.
 import path from 'node:path'
+import {
+  LLM_PROVIDER_TYPES,
+  isLLMProviderType,
+  type LLMProviderType,
+} from '../../../src/llm/provider-types'
 
 // agentId 来源：`generateAgentId()` → `'eb_' + randomBytes(4).toString('hex')`
 // 即固定前缀 `eb_` + 8 个小写十六进制字符。
@@ -12,7 +17,7 @@ const AGENT_ID_RE = /^eb_[a-z0-9]{8,32}$/
 const PLUGIN_NAME_RE = /^tidemind-eb_[a-z0-9]{8,32}$/
 
 // agents:check-cli 允许检测的 CLI 二进制
-export const ALLOWED_CLIS = ['claude', 'codex', 'cursor', 'windsurf', 'gemini'] as const
+export const ALLOWED_CLIS = ['claude', 'codex', 'cursor', 'windsurf', 'gemini', 'kimi'] as const
 export type AllowedCli = typeof ALLOWED_CLIS[number]
 
 // model_connections.id 来源:`generateConnectionId()` → `'mc_' + randomBytes(4).toString('hex')`
@@ -20,10 +25,8 @@ export type AllowedCli = typeof ALLOWED_CLIS[number]
 const CONNECTION_ID_RE = /^mc_[a-f0-9]{8}$/
 
 // model_connections.provider_type 白名单
-export const ALLOWED_PROVIDER_TYPES = [
-  'anthropic', 'vertex', 'gemini', 'ollama', 'openai-compatible',
-] as const
-export type AllowedProviderType = typeof ALLOWED_PROVIDER_TYPES[number]
+export const ALLOWED_PROVIDER_TYPES = LLM_PROVIDER_TYPES
+export type AllowedProviderType = LLMProviderType
 
 export function validateConnectionId(id: unknown): string {
   if (typeof id !== 'string' || !CONNECTION_ID_RE.test(id)) {
@@ -33,7 +36,7 @@ export function validateConnectionId(id: unknown): string {
 }
 
 export function validateProviderType(t: unknown): AllowedProviderType {
-  if (typeof t !== 'string' || !(ALLOWED_PROVIDER_TYPES as readonly string[]).includes(t)) {
+  if (!isLLMProviderType(t)) {
     throw new Error(`Invalid provider_type: must be one of ${ALLOWED_PROVIDER_TYPES.join(', ')}`)
   }
   return t as AllowedProviderType

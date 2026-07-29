@@ -9,13 +9,13 @@ const api: AppApi = {
     return () => { ipcRenderer.removeListener('data-changed', handler) }
   },
   nodes: {
-    list: (filter: any) => ipcRenderer.invoke('nodes:list', filter),
+    list: (filter) => ipcRenderer.invoke('nodes:list', filter),
     get: (id: string) => ipcRenderer.invoke('nodes:get', id),
     search: (query: string, limit?: number) => ipcRenderer.invoke('nodes:search', query, limit),
     tags: () => ipcRenderer.invoke('nodes:tags'),
     promoteTag: (tag: string) => ipcRenderer.invoke('nodes:promoteTag', tag),
     demoteTag: (tag: string) => ipcRenderer.invoke('nodes:demoteTag', tag),
-    graph: (filter: any) => ipcRenderer.invoke('nodes:graph', filter),
+    graph: (filter) => ipcRenderer.invoke('nodes:graph', filter),
     path: (fromId: string, toId: string) => ipcRenderer.invoke('nodes:path', fromId, toId),
     structureHoles: (limit?: number) => ipcRenderer.invoke('nodes:structureHoles', limit),
   },
@@ -37,7 +37,7 @@ const api: AppApi = {
     tokenUsageFiltered: (filter: { after?: string; before?: string; limit?: number; offset?: number }) => ipcRenderer.invoke('stats:token-usage-filtered', filter),
   },
   operations: {
-    list: (filter: any) => ipcRenderer.invoke('operations:list', filter),
+    list: (filter) => ipcRenderer.invoke('operations:list', filter),
     get: (id: number) => ipcRenderer.invoke('operations:get', id),
   },
   stream: {
@@ -46,7 +46,7 @@ const api: AppApi = {
   },
   config: {
     get: () => ipcRenderer.invoke('config:get'),
-    update: (patch: any) => ipcRenderer.invoke('config:update', patch),
+    update: (patch) => ipcRenderer.invoke('config:update', patch),
     strategies: () => ipcRenderer.invoke('config:strategies'),
     strategyContent: (name: string) => ipcRenderer.invoke('config:strategy', name),
     strategyUpdate: (name: string, content: string, reason?: string) => ipcRenderer.invoke('config:strategy:update', name, content, reason),
@@ -100,13 +100,13 @@ const api: AppApi = {
     reArchiveNode: (nodeId: string) => ipcRenderer.invoke('write:reArchiveNode', nodeId),
   },
   timeline: {
-    list: (filter: any) => ipcRenderer.invoke('timeline:list', filter),
+    list: (filter) => ipcRenderer.invoke('timeline:list', filter),
     get: (id: number, source: string) => ipcRenderer.invoke('timeline:get', id, source),
     resolveNodes: (nodeIds: string[]) => ipcRenderer.invoke('timeline:resolve-nodes', nodeIds),
   },
   export: {
-    markdown: (scope: any) => ipcRenderer.invoke('export:markdown', scope),
-    json: (scope: any) => ipcRenderer.invoke('export:json', scope),
+    markdown: (scope) => ipcRenderer.invoke('export:markdown', scope),
+    json: (scope) => ipcRenderer.invoke('export:json', scope),
     saveFile: (content: string, defaultName: string) => ipcRenderer.invoke('export:save-file', content, defaultName),
   },
   noteSources: {
@@ -144,6 +144,14 @@ const api: AppApi = {
     unarchive: (id: string) => ipcRenderer.invoke('connections:unarchive', id),
     delete: (id: string) => ipcRenderer.invoke('connections:delete', id),
     test: (connectionId: string, formOverride?: Record<string, string>) => ipcRenderer.invoke('connections:test', connectionId, formOverride),
+    providerCatalog: () => ipcRenderer.invoke('connections:provider-catalog'),
+    checkEnvironment: (connectionId: string) => ipcRenderer.invoke('connections:check-environment', connectionId),
+    cancelTest: (connectionId: string) => ipcRenderer.invoke('connections:cancel-test', connectionId),
+    onTestProgress: (cb) => {
+      const listener = (_ev: unknown, progress: unknown) => cb(progress as never)
+      ipcRenderer.on('connections:test-progress', listener)
+      return () => { ipcRenderer.off('connections:test-progress', listener) }
+    },
     pickVertexFile: (connectionId: string) => ipcRenderer.invoke('connections:pick-vertex-file', connectionId),
     vertexCredStatus: (connectionId: string) => ipcRenderer.invoke('connections:vertex-cred-status', connectionId),
   },
@@ -197,7 +205,7 @@ const api: AppApi = {
       return () => { ipcRenderer.off('llm-health-changed', listener) }
     },
     // 用户在 UI 上点「立即重试」:重置熔断器 + 清 client cache + 立即触发 tick
-    resetAndRetry: () => ipcRenderer.invoke('llm:reset-and-retry'),
+    resetAndRetry: (connectionId?: string) => ipcRenderer.invoke('llm:reset-and-retry', connectionId),
   },
   agents: {
     list: (includeArchived?: boolean) => ipcRenderer.invoke('agents:list', includeArchived),

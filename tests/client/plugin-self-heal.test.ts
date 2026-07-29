@@ -37,6 +37,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { parse as parseToml } from 'smol-toml'
 
 // ---------------------------------------------------------------------------
 // Mock electron (双路径)
@@ -789,6 +790,48 @@ describe('selfHealPlugins — Codex config.toml', () => {
     expect(updated).toContain('tidemind-eb_t')
   })
 
+  it('uses real TOML boundaries when a legacy section contains table-looking multiline text', () => {
+    const tomlPath = path.join(homeDir, '.codex', 'config.toml')
+    const content = [
+      '[mcp_servers.external-brain-old]',
+      'command = "/legacy/tm"',
+      'note = """',
+      '[not-a-table]',
+      '"""',
+      '',
+      '[mcp_servers.tidemind-eb_keep]',
+      `command = ${JSON.stringify(SHIM_PATH)}`,
+      `args = [${JSON.stringify(MCP_SERVER_PATH)}]`,
+      '',
+    ].join('\n')
+    writeTextFile(tomlPath, content)
+
+    const result = selfHealPlugins(dataDir)
+
+    const updated = fs.readFileSync(tomlPath, 'utf-8')
+    expect(result.errors).toEqual([])
+    expect(updated).not.toContain('external-brain-old')
+    expect((parseToml(updated) as any).mcp_servers['tidemind-eb_keep'].command).toBe(SHIM_PATH)
+  })
+
+  it('patches an escaped quoted command without producing invalid TOML', () => {
+    const tomlPath = path.join(homeDir, '.codex', 'config.toml')
+    const content = [
+      '[mcp_servers.tidemind-eb_quoted]',
+      `command = ${JSON.stringify('/old/"quoted')}`,
+      'args = ["/old/mcp.cjs"]',
+      '',
+    ].join('\n')
+    writeTextFile(tomlPath, content)
+
+    const result = selfHealPlugins(dataDir)
+
+    const parsed = parseToml(fs.readFileSync(tomlPath, 'utf-8')) as any
+    expect(result.errors).toEqual([])
+    expect(parsed.mcp_servers['tidemind-eb_quoted'].command).toBe(SHIM_PATH)
+    expect(parsed.mcp_servers['tidemind-eb_quoted'].args[0]).toBe(MCP_SERVER_PATH)
+  })
+
   it('non-existent codex config.toml silently ignored', () => {
     const result = selfHealPlugins(dataDir)
     expect(result.errors).toEqual([])
@@ -810,6 +853,234 @@ describe('selfHealPlugins — Codex config.toml', () => {
     const updated = fs.readFileSync(tomlPath, 'utf-8')
     expect(updated).toContain('[settings]')
     expect(updated).toContain('theme = "dark"')
+  })
+})
+
+describe('selfHealPlugins — Kimi Code config.toml', () => {
+  let tmpRoot: string
+  let homeDir: string
+  let dataDir: string
+  let homedirSpy: ReturnType<typeof vi.spyOn>
+
+  const kimiConfigPath = () => path.join(homeDir, '.kimi-code', 'config.toml')
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'self-heal-kimi-'))
+    homeDir = path.join(tmpRoot, 'home')
+    dataDir = path.join(tmpRoot, 'data')
+    fs.mkdirSync(homeDir, { recursive: true })
+    fs.mkdirSync(dataDir, { recursive: true })
+    homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(homeDir)
+  })
+
+  afterEach(() => {
+    homedirSpy.mockRestore()
+    delete process.env.KIMI_CODE_HOME
+    fs.rmSync(tmpRoot, { recursive: true, force: true })
+  })
+
+  it('patches a stale UserPromptSubmit hook command in the [[hooks]] block, preserving --once-per-session', () => {
+    const agentId = 'eb_kimi'
+    const staleCmd = `"/old/tm" "/old/hook-session-start.cjs" --agent-id "${agentId}" --skill-path "/old/SKILL.md" --tool "kimi-code" --once-per-session`
+    writeTextFile(kimiConfigPath(), [
+      'model = "k2"',
+      '',
+      '[[hooks]]',
+      'event = "UserPromptSubmit"',
+      `command = ${JSON.stringify(staleCmd)}`,
+      'timeout = 30',
+      '',
+    ].join('\n'))
+
+    selfHealPlugins(dataDir)
+
+    const updated = fs.readFileSync(kimiConfigPath(), 'utf-8')
+    expect(updated).toContain('model = "k2"')
+    const cmdMatch = updated.match(/^command = ("(?:[^"\\]|\\.)*")$/m)
+    expect(cmdMatch).not.toBeNull()
+    const cmd = JSON.parse(cmdMatch![1])
+    expect(cmd.startsWith(`${JSON.stringify(SHIM_PATH)} ${JSON.stringify(HOOK_SCRIPT_PATH)}`)).toBe(true)
+    // agent-id / skill-path / tool 从原 command 保留
+    expect(cmd).toContain(`--agent-id "${agentId}"`)
+    expect(cmd).toContain('--skill-path "/old/SKILL.md"')
+    expect(cmd).toContain('"kimi-code"')
+    // --once-per-session 必须在自愈后保留,否则 UserPromptSubmit 每条消息都注入
+    expect(cmd).toContain('--once-per-session')
+  })
+
+  it('patches a stale hook while preserving valid event and command tail comments', () => {
+    const staleCmd = '"/old/tm" "/old/hook-session-start.cjs" --agent-id "eb_comments" --skill-path "/old/SKILL.md" --tool "kimi-code"'
+    writeTextFile(kimiConfigPath(), [
+      '[[hooks]]',
+      'event = "UserPromptSubmit" # user note',
+      `command = ${JSON.stringify(staleCmd)} # keep this`,
+      'timeout = 30',
+      '',
+    ].join('\n'))
+
+    selfHealPlugins(dataDir)
+
+    const updated = fs.readFileSync(kimiConfigPath(), 'utf-8')
+    expect(updated).toContain('# user note')
+    expect(updated).toContain('# keep this')
+    expect((parseToml(updated) as any).hooks[0].command.startsWith(`${JSON.stringify(SHIM_PATH)} ${JSON.stringify(HOOK_SCRIPT_PATH)}`)).toBe(true)
+  })
+
+  it('patches a stale hook whose valid target header is [[ hooks ]]', () => {
+    const staleCmd = '"/old/tm" "/old/hook-session-start.cjs" --agent-id "eb_spaced" --skill-path "/old/SKILL.md" --tool "kimi-code" --once-per-session'
+    writeTextFile(kimiConfigPath(), [
+      '[[ hooks ]]\t# Tide Mind',
+      'event = "UserPromptSubmit"',
+      `command = ${JSON.stringify(staleCmd)}`,
+      'timeout = 30',
+      '',
+    ].join('\n'))
+
+    selfHealPlugins(dataDir)
+
+    const updated = fs.readFileSync(kimiConfigPath(), 'utf-8')
+    const command = JSON.parse(updated.match(/^command = ("(?:[^"\\]|\\.)*")$/m)![1])
+    expect(command.startsWith(`${JSON.stringify(SHIM_PATH)} ${JSON.stringify(HOOK_SCRIPT_PATH)}`)).toBe(true)
+    expect(command).toContain('--once-per-session')
+  })
+
+  it('patches only the stale block when multiple agents have [[hooks]] blocks', () => {
+    const staleCmd = `"/old/tm" "/old/hook-session-start.cjs" --agent-id "eb_a" --skill-path "/old/A.md" --tool "kimi-code"`
+    const currentCmd = `${JSON.stringify(SHIM_PATH)} ${JSON.stringify(HOOK_SCRIPT_PATH)} --agent-id "eb_b" --skill-path "/home/u/B.md" --tool "kimi-code"`
+    writeTextFile(kimiConfigPath(), [
+      '[[hooks]]',
+      'event = "UserPromptSubmit"',
+      `command = ${JSON.stringify(staleCmd)}`,
+      'timeout = 30',
+      '',
+      '[[hooks]]',
+      'event = "UserPromptSubmit"',
+      `command = ${JSON.stringify(currentCmd)}`,
+      'timeout = 30',
+      '',
+    ].join('\n'))
+
+    selfHealPlugins(dataDir)
+
+    const updated = fs.readFileSync(kimiConfigPath(), 'utf-8')
+    const cmds = [...updated.matchAll(/^command = ("(?:[^"\\]|\\.)*")$/gm)].map(m => JSON.parse(m[1]))
+    expect(cmds).toHaveLength(2)
+    expect(cmds[0].startsWith(`${JSON.stringify(SHIM_PATH)} ${JSON.stringify(HOOK_SCRIPT_PATH)}`)).toBe(true)
+    expect(cmds[0]).toContain('"eb_a"')
+    // eb_b 的块原样保留
+    expect(cmds[1]).toBe(currentCmd)
+  })
+
+  it('treats a section header with trailing comment as the block boundary', () => {
+    const staleCmd = `"/old/tm" "/old/hook-session-start.cjs" --agent-id "eb_c" --skill-path "/old/C.md" --tool "kimi-code"`
+    writeTextFile(kimiConfigPath(), [
+      '[[hooks]]',
+      'event = "UserPromptSubmit"',
+      `command = ${JSON.stringify(staleCmd)}`,
+      '',
+      '[providers.anthropic] # user provider',
+      'base_url = "https://example.com"',
+      '',
+    ].join('\n'))
+
+    selfHealPlugins(dataDir)
+
+    const updated = fs.readFileSync(kimiConfigPath(), 'utf-8')
+    expect(updated).toContain(JSON.stringify(SHIM_PATH).slice(1, -1))
+    // 带注释的用户段完整保留
+    expect(updated).toContain('[providers.anthropic] # user provider')
+    expect(updated).toContain('base_url = "https://example.com"')
+  })
+
+  it('leaves non-UserPromptSubmit [[hooks]] blocks untouched (gate ①)', () => {
+    const staleCmd = `"/old/tm" "/old/hook-session-start.cjs" --agent-id "eb_d" --skill-path "/old/D.md" --tool "kimi-code"`
+    const original = [
+      '[[hooks]]',
+      'event = "SessionStart"',
+      `command = ${JSON.stringify(staleCmd)}`,
+      '',
+    ].join('\n')
+    writeTextFile(kimiConfigPath(), original)
+    selfHealPlugins(dataDir)
+    expect(fs.readFileSync(kimiConfigPath(), 'utf-8')).toBe(original)
+  })
+
+  it('leaves UserPromptSubmit blocks whose command is not hook-session-start untouched (gate ②)', () => {
+    // 用户自定义 hook,碰巧也带 --agent-id 参数
+    const customCmd = '"/old/tm" "/old/my-custom-hook.cjs" --agent-id "eb_e" --skill-path "/old/E.md" --tool "kimi-code"'
+    const original = [
+      '[[hooks]]',
+      'event = "UserPromptSubmit"',
+      `command = ${JSON.stringify(customCmd)}`,
+      '',
+    ].join('\n')
+    writeTextFile(kimiConfigPath(), original)
+    selfHealPlugins(dataDir)
+    expect(fs.readFileSync(kimiConfigPath(), 'utf-8')).toBe(original)
+  })
+
+  it('honors KIMI_CODE_HOME and does not touch the default ~/.kimi-code config', () => {
+    const envHome = path.join(tmpRoot, 'kimi-env-home')
+    process.env.KIMI_CODE_HOME = envHome
+    const staleCmd = `"/old/tm" "/old/hook-session-start.cjs" --agent-id "eb_f" --skill-path "/old/F.md" --tool "kimi-code"`
+    const block = [
+      '[[hooks]]',
+      'event = "UserPromptSubmit"',
+      `command = ${JSON.stringify(staleCmd)}`,
+      '',
+    ].join('\n')
+    writeTextFile(path.join(envHome, 'config.toml'), block)
+    // 默认位置也放一个过期配置:env 设置时不应被扫描
+    writeTextFile(kimiConfigPath(), block)
+
+    selfHealPlugins(dataDir)
+
+    const healed = fs.readFileSync(path.join(envHome, 'config.toml'), 'utf-8')
+    expect(healed).toContain(JSON.stringify(SHIM_PATH).slice(1, -1))
+    expect(fs.readFileSync(kimiConfigPath(), 'utf-8')).toBe(block)
+  })
+
+  it('leaves [[hooks]] blocks without --agent-id untouched', () => {
+    const original = [
+      '[[hooks]]',
+      'event = "UserPromptSubmit"',
+      'command = "echo hi"',
+      '',
+    ].join('\n')
+    writeTextFile(kimiConfigPath(), original)
+    selfHealPlugins(dataDir)
+    expect(fs.readFileSync(kimiConfigPath(), 'utf-8')).toBe(original)
+  })
+
+  it('leaves an up-to-date hook command untouched', () => {
+    const currentCmd = `${JSON.stringify(SHIM_PATH)} ${JSON.stringify(HOOK_SCRIPT_PATH)} --agent-id "eb_kimi" --skill-path "/home/u/.kimi-code/skills/tidemind-eb_kimi/SKILL.md" --tool "kimi-code" --once-per-session`
+    writeTextFile(kimiConfigPath(), [
+      '[[hooks]]',
+      'event = "UserPromptSubmit"',
+      `command = ${JSON.stringify(currentCmd)}`,
+      'timeout = 30',
+      '',
+    ].join('\n'))
+    const before = fs.readFileSync(kimiConfigPath(), 'utf-8')
+    selfHealPlugins(dataDir)
+    expect(fs.readFileSync(kimiConfigPath(), 'utf-8')).toBe(before)
+  })
+
+  it('non-existent kimi config.toml silently ignored', () => {
+    const result = selfHealPlugins(dataDir)
+    expect(result.errors).toEqual([])
+  })
+
+  it('malformed kimi config.toml is left unchanged and reported', () => {
+    const malformed = '[[hooks]\nevent = "UserPromptSubmit"\n'
+    writeTextFile(kimiConfigPath(), malformed)
+
+    const result = selfHealPlugins(dataDir)
+
+    expect(fs.readFileSync(kimiConfigPath(), 'utf-8')).toBe(malformed)
+    expect(result.errors).toEqual([
+      expect.objectContaining({ file: kimiConfigPath(), error: expect.stringContaining('invalid TOML') }),
+    ])
   })
 })
 

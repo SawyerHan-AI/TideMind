@@ -15,6 +15,7 @@ import { getPrompt, getLLMOptions } from '../strategy/loader.js';
 import { getCircuitState, notifyLLMFailure } from './scheduler.js';
 import { createLogger } from '../utils/logger.js';
 import { parseLLMJson } from '../llm/json-parse.js';
+import { trackBackgroundWork } from '../utils/background-work.js';
 
 const log = createLogger('reconsolidate');
 
@@ -209,7 +210,7 @@ export function reconsolidateOnRecall(
       claimedNodeIds.push(detectSentinel);
     }
     spawnedAsync = true;
-    (async () => {
+    const work = (async () => {
       for (const node of dedupedTargets) {
         log.info(`深度再巩固触发 node=${node.id} reason=时间`);
         try {
@@ -238,6 +239,7 @@ export function reconsolidateOnRecall(
         // 释放本次占用的所有节点 id 和 detect sentinel
         for (const id of claimedNodeIds) inFlightNodes.delete(id);
       });
+    void trackBackgroundWork(work);
   }
 
   } catch (err) {

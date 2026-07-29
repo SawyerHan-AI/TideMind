@@ -18,9 +18,18 @@ import { runStructureHolesPrecompute } from '../graph/structure-holes.js';
 import { runProfileSynthesize } from '../evolution/profile-synthesize.js';
 import { runLearning2, canRunLearning2 } from '../evolution/learning2.js';
 import { runLearning3, canRunLearning3 } from '../evolution/learning3.js';
-import { claimNextPendingDigest, completePendingDigest, failPendingDigest } from '../db/pending-digests.js';
+import {
+  claimNextPendingDigest,
+  completePendingDigest,
+  failPendingDigest,
+  markPendingDigestAmbiguous,
+} from '../db/pending-digests.js';
 import { SqliteRepository } from '../db/sqlite-repository.js';
 import { createLogger } from '../utils/logger.js';
+import {
+  getLLMInvocationContext,
+  runWithLLMInvocationContext,
+} from '../llm/invocation-context.js';
 
 const _log = createLogger('tasks');
 
@@ -50,9 +59,22 @@ export const ALL_TASKS: TaskDefinition[] = [
         const input = JSON.parse(item.input_json);
         const { processDigestRetry } = await import('../tools/digest.js');
         const repo = new SqliteRepository(db);
-        await processDigestRetry(repo, input, item.trace_id);
+        const parent = getLLMInvocationContext();
+        await runWithLLMInvocationContext({
+          taskId: parent?.taskId ?? 'digest-retry',
+          claimKey: parent?.claimKey ?? 'last_task_digest-retry',
+          workItemId: item.id,
+        }, () => processDigestRetry(repo, input, item.trace_id));
         completePendingDigest(db, item.id);
       } catch (err) {
+        const ambiguous = (err as { kind?: string; code?: string; invocationId?: string });
+        if (
+          (ambiguous.kind === 'ambiguous_outcome' || ambiguous.code === 'ambiguous_outcome')
+          && ambiguous.invocationId
+        ) {
+          markPendingDigestAmbiguous(db, item.id, ambiguous.invocationId, (err as Error).message);
+          throw err;
+        }
         failPendingDigest(db, item.id, (err as Error).message);
       }
     },

@@ -7,10 +7,25 @@ import { createHash } from 'node:crypto';
 import { fetch as undiciFetch, Agent } from 'undici';
 import { getConfig, getDataDir } from '../config.js';
 import { createLogger } from '../utils/logger.js';
-import { estimateCost } from './pricing.js';
+import { estimateVersionedCost } from './pricing.js';
 import { clearEmbeddingTokenCache } from './embedding.js';
 import { now } from '../utils/time.js';
 import { processThinkTags } from './thinking.js';
+import {
+  assertRouteCallable,
+  resolveLLMRoute,
+  type ResolvedLLMRoute,
+} from './route.js';
+import {
+  assertConnectionHealthCallable,
+  releaseConnectionHealthProbe,
+  recordConnectionFailure,
+  recordConnectionSuccess,
+  type LLMCallEvent,
+  type LLMConnectionErrorKind,
+} from './connection-health.js';
+import { noteActiveLLMRoute } from './invocation-context.js';
+import { CliLLMError, runCliLLM, shutdownCliRuntime } from './cli/index.js';
 
 const log = createLogger('llm');
 
@@ -62,6 +77,10 @@ const longRunningDispatcher = new Agent({
   // origin Pool(每个 Pool ~ KB 级,理论上无限增长,实际影响微小但顺手加)。
   clientTtl: 24 * 60 * 60 * 1000,
 });
+const activeCallAbortControllers = new Set<AbortController>();
+let llmRuntimeStopping = false;
+let llmShutdownPromise: Promise<void> | null = null;
+const activeCallDrainWaiters = new Set<() => void>();
 
 // 类型: Anthropic SDK 的 Fetch 类型签名是 standard fetch,undici fetch 跟它有
 // 微小差异 (Response / Request / RequestInit 类型来源不同,Headers 内部互不识别
@@ -81,12 +100,39 @@ const longRunningFetch = ((url: string | URL | Request, init?: RequestInit) =>
  * close() 等所有 in-flight 完成,destroy() 立刻 kill。daemon shutdown 场景用
  * destroy() 更激进——用户已经按 quit,不需要等 25 分钟 LLM 响应。
  */
-export async function shutdownLLMClient(): Promise<void> {
+export function shutdownLLMClient(): Promise<void> {
+  llmRuntimeStopping = true;
+  if (llmShutdownPromise) return llmShutdownPromise;
+  const current = shutdownLLMClientInternal().catch(error => {
+    if (llmShutdownPromise === current) llmShutdownPromise = null;
+    throw error;
+  });
+  llmShutdownPromise = current;
+  return current;
+}
+
+async function shutdownLLMClientInternal(): Promise<void> {
+  const failures: unknown[] = [];
+  for (const controller of activeCallAbortControllers) {
+    controller.abort(new Error('LLM runtime is shutting down'));
+  }
+  try {
+    await shutdownCliRuntime();
+  } catch (err) {
+    log.warn(`shutdownLLMClient: CLI runtime shutdown failed: ${(err as Error).message}`);
+    failures.push(err);
+  }
   try {
     await longRunningDispatcher.destroy();
   } catch (err) {
-    // shutdown 路径永远吞掉错误,不影响 process exit
     log.warn(`shutdownLLMClient: dispatcher destroy failed: ${(err as Error).message}`);
+    failures.push(err);
+  }
+  if (activeCallAbortControllers.size > 0) {
+    await new Promise<void>(resolve => activeCallDrainWaiters.add(resolve));
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'LLM runtime shutdown did not complete');
   }
 }
 
@@ -95,7 +141,11 @@ export async function shutdownLLMClient(): Promise<void> {
  * 与任务自身逻辑错误区分——只有此类错误应触发熔断器。
  */
 export class LLMServiceError extends Error {
-  constructor(message: string, public readonly statusCode?: number) {
+  constructor(
+    message: string,
+    public readonly statusCode?: number,
+    public readonly connectionId: string | null = null,
+  ) {
     super(message);
     this.name = 'LLMServiceError';
   }
@@ -694,8 +744,22 @@ function getErrorStatus(err: unknown): number | undefined {
   return undefined;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+export function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(signal.reason ?? new Error('LLM call aborted'));
+  }
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', onAbort);
+      reject(signal?.reason ?? new Error('LLM call aborted'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 /**
@@ -719,10 +783,44 @@ export function manualThinkingUnsupported(modelId: string): boolean {
   return false;
 }
 
-function logUsage(modelId: string, operationName: string | undefined, inputTokens: number, outputTokens: number, thinkingTokens: number, cacheCreateTokens = 0, cacheReadTokens = 0): void {
+function logUsage(
+  route: ResolvedLLMRoute,
+  actualModel: string | null,
+  operationName: string | undefined,
+  inputTokens: number | null,
+  outputTokens: number | null,
+  thinkingTokens: number | null,
+  cacheCreateTokens = 0,
+  cacheReadTokens = 0,
+  reasoningTokens = 0,
+): void {
   if (!usageDb) return;
   try {
-    const cost = estimateCost(modelId, inputTokens, outputTokens, thinkingTokens, cacheCreateTokens, cacheReadTokens);
+    const pricedModel = actualModel ?? route.modelAlias;
+    let estimatedCost: number | null = null;
+    let estimatedCostKind: 'api_estimate' | 'api_equivalent' | 'not_applicable' | 'unavailable';
+    let pricingTableVersion: string | null = null;
+    if (route.billingMode === 'local_compute') {
+      estimatedCostKind = 'not_applicable';
+    } else if (inputTokens === null || outputTokens === null || thinkingTokens === null) {
+      estimatedCostKind = 'unavailable';
+    } else {
+      const estimate = estimateVersionedCost(
+        pricedModel,
+        inputTokens,
+        outputTokens,
+        thinkingTokens,
+        cacheCreateTokens,
+        cacheReadTokens,
+      );
+      estimatedCost = estimate.estimatedCost;
+      estimatedCostKind = estimate.kind === 'unavailable'
+        ? 'unavailable'
+        : route.billingMode === 'account_cli'
+          ? 'api_equivalent'
+          : 'api_estimate';
+      pricingTableVersion = estimate.pricingTableVersion;
+    }
     // created 统一走 JS ISO：下游 initialization.ts 用 `created >= ?` 和 ISO 字符串
     // 比较，若写 datetime('now') 字面量(无 Z、空格分隔)字符串序会错乱。
     //
@@ -730,10 +828,90 @@ function logUsage(modelId: string, operationName: string | undefined, inputToken
     // 余量,prompt caching 命中时大头在 cache_creation/cache_read 两项,不折算进去
     // 用量面板的 token 数会系统性低估。成本已按 write 1.25x / read 0.1x 分档折算。
     usageDb.prepare(
-      `INSERT INTO llm_usage_log (model, operation, input_tokens, output_tokens, thinking_tokens, estimated_cost, created)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).run(modelId, operationName ?? null, inputTokens + cacheCreateTokens + cacheReadTokens, outputTokens, thinkingTokens, cost, now());
+      `INSERT INTO llm_usage_log (
+        model, operation, input_tokens, output_tokens, thinking_tokens,
+        estimated_cost, provider_type, connection_id, connection_name_snapshot,
+        source_type, billing_mode, estimated_cost_kind, pricing_table_version,
+        provider_reported_cost, provider_reported_cost_kind,
+        cached_input_tokens, reasoning_tokens, invocation_outcome, created
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, 'success', ?)`
+    ).run(
+      pricedModel,
+      operationName ?? null,
+      inputTokens ?? 0,
+      outputTokens ?? 0,
+      thinkingTokens ?? 0,
+      estimatedCost,
+      route.providerType,
+      route.connectionId,
+      route.connectionName,
+      route.sourceType,
+      route.billingMode,
+      estimatedCostKind,
+      pricingTableVersion,
+      cacheCreateTokens + cacheReadTokens,
+      reasoningTokens,
+      now(),
+    );
   } catch { /* 用量记录失败不影响主流程 */ }
+}
+
+function healthErrorFrom(error: unknown): {
+  kind: LLMConnectionErrorKind;
+  message: string;
+  needsUserAction?: boolean;
+  retryAt?: number | null;
+} {
+  if (error instanceof CliLLMError) {
+    const supportedKinds = new Set<LLMConnectionErrorKind>([
+      'not_installed',
+      'unsupported_version',
+      'not_authenticated',
+      'wrong_auth_method',
+      'quota',
+      'rate_limit',
+      'capacity',
+      'model_unavailable',
+      'permission_policy',
+      'timeout',
+      'aborted',
+      'ambiguous_outcome',
+      'process_crash',
+      'protocol',
+      'transient',
+    ]);
+    return {
+      kind: supportedKinds.has(error.kind as LLMConnectionErrorKind)
+        ? error.kind as LLMConnectionErrorKind
+        : 'protocol',
+      message: error.message,
+      needsUserAction: error.options.needsUserAction,
+      retryAt: error.options.retryAt ?? null,
+    };
+  }
+  const status = getErrorStatus(error);
+  const message = (error as Error)?.message ?? String(error);
+  if (status === 401 || status === 403) {
+    return { kind: 'not_authenticated', message, needsUserAction: true };
+  }
+  if (status === 429) return { kind: 'rate_limit', message };
+  if (/abort/i.test((error as Error)?.name ?? '')) return { kind: 'aborted', message };
+  if (/timeout|timed out|UND_ERR_HEADERS_TIMEOUT/i.test(message)) {
+    return { kind: 'timeout', message };
+  }
+  return { kind: 'transient', message };
+}
+
+export function recordConnectionSuccessBestEffort(
+  db: Database.Database,
+  event: LLMCallEvent,
+  providerLabel: string,
+): void {
+  try {
+    recordConnectionSuccess(db, event);
+  } catch (error) {
+    log.error(`${providerLabel} 调用已完成，但连接健康状态记录失败: ${(error as Error).message}`);
+  }
 }
 
 export async function callLLM(options: {
@@ -755,29 +933,42 @@ export async function callLLM(options: {
    */
   signal?: AbortSignal;
 }): Promise<string> {
+  if (llmRuntimeStopping) {
+    throw new Error('LLM runtime is shutting down');
+  }
   // 调用前先检查外部 signal——避免在已 abort 状态下还发起一次完整的 LLM 调用
   if (options.signal?.aborted) {
     throw options.signal.reason ?? new Error('LLM call aborted');
   }
+  const runtimeAbortController = new AbortController();
+  const callSignal = options.signal
+    ? AbortSignal.any([options.signal, runtimeAbortController.signal])
+    : runtimeAbortController.signal;
   const config = getConfig();
   const tier = options.model ?? 'standard';
-  const modelId = tier === 'heavy' ? config.llm.heavy_model
-    : tier === 'light' ? config.llm.light_model
-    : config.llm.standard_model;
-
-  // 优先使用 connection_id 路径
-  const connectionId = tier === 'heavy'
-    ? config.llm.heavy_connection
-    : tier === 'light'
-    ? config.llm.light_connection
-    : config.llm.standard_connection;
-
-  // 回退到旧的 provider 路径
-  const provider = tier === 'heavy'
-    ? (config.llm.heavy_provider ?? config.llm.provider ?? 'anthropic')
-    : tier === 'light'
-    ? (config.llm.light_provider ?? config.llm.provider ?? 'anthropic')
-    : (config.llm.standard_provider ?? config.llm.provider ?? 'anthropic');
+  const route = resolveLLMRoute(tier, usageDb);
+  assertRouteCallable(route);
+  const routeIsCli = route.providerType === 'claude-cli' || route.providerType === 'codex-cli';
+  const probeAttempts = routeIsCli ? 1 : MAX_RETRIES;
+  const probeLeaseMs = (
+    TIMEOUT_MS_BY_TIER[tier] * probeAttempts
+    + (probeAttempts - 1) * 600_000
+    + 60_000
+  );
+  const healthProbeToken = usageDb
+    ? assertConnectionHealthCallable(
+        usageDb,
+        route.scopeId,
+        Date.now(),
+        probeLeaseMs,
+      )
+    : null;
+  activeCallAbortControllers.add(runtimeAbortController);
+  try {
+  noteActiveLLMRoute(tier, route.connectionId);
+  const modelId = route.modelAlias;
+  const connectionId = route.connectionId;
+  const provider = route.providerType;
 
   const maxTokens = options.maxTokens ?? 2048;
 
@@ -805,8 +996,11 @@ export async function callLLM(options: {
   let resolvedOpenaiApiKey: string | undefined;
   let resolvedClient: Anthropic | AnthropicVertex | null = null;
   let resolvedCacheKey: string | null = null;
-  if (connectionId) {
-    try {
+  if (
+    connectionId
+    && resolvedProvider !== 'claude-cli'
+    && resolvedProvider !== 'codex-cli'
+  ) {
       const connInfo = await getClientByConnection(connectionId);
       resolvedProvider = connInfo.providerType as typeof provider;
       resolvedGeminiApiKey = connInfo.geminiApiKey;
@@ -814,14 +1008,6 @@ export async function callLLM(options: {
       resolvedOpenaiApiKey = connInfo.openaiApiKey;
       resolvedClient = connInfo.client;
       resolvedCacheKey = connInfo.cacheKey ?? null;
-    } catch (err) {
-      // LLMServiceError(credentials JSON 损坏等服务级故障)必须原样上抛进熔断器
-      // (getClientByConnection 包装它就是为了这个);静默回退 legacy provider 会让
-      // 熔断器永远收不到信号,且多数用户没配 legacy key,回退后只会换一种方式失败。
-      if (err instanceof LLMServiceError) throw err;
-      // 仅对配置缺失类错误(connection 行不存在 / usageDb 未初始化)保留 legacy 回退
-      log.warn(`连接 ${connectionId} 查找失败，回退到 provider=${provider}: ${(err as Error).message}`);
-    }
   }
 
   const timeoutMs = TIMEOUT_MS_BY_TIER[tier];
@@ -830,22 +1016,85 @@ export async function callLLM(options: {
   const callStart = Date.now();
   log.debug(`调用 model=${modelId} provider=${resolvedProvider} connection=${connectionId ?? 'legacy'} op=${options.operationName ?? 'unknown'} tier=${tier} timeoutMs=${timeoutMs} promptLen=${options.prompt.length}`);
 
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+  const isCliProvider = resolvedProvider === 'claude-cli' || resolvedProvider === 'codex-cli';
+  const maxAttempts = isCliProvider ? 1 : MAX_RETRIES;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
+      if (callSignal.aborted) {
+        throw callSignal.reason ?? new Error('LLM call aborted');
+      }
+      // ---- 本机订阅 CLI 路径（固定单次，不套 HTTP retry） ----
+      if (resolvedProvider === 'claude-cli' || resolvedProvider === 'codex-cli') {
+        if (!usageDb || !connectionId) {
+          throw new CliLLMError('protocol', '本机订阅连接数据库尚未初始化');
+        }
+        const result = await runCliLLM(usageDb, getDataDir(), {
+          connectionId,
+          providerType: resolvedProvider,
+          modelAlias: modelId,
+          system,
+          prompt: options.prompt,
+          maxOutputTokens: maxTokens,
+          thinking: options.thinking,
+          timeoutMs,
+          operationName: options.operationName,
+          signal: callSignal,
+          purpose: 'background',
+        });
+        try {
+          logUsage(
+            route,
+            result.actualModel,
+            options.operationName,
+            result.inputTokens,
+            result.outputTokens,
+            0,
+            0,
+            result.cachedInputTokens ?? 0,
+            result.reasoningTokens ?? 0,
+          );
+        } catch (error) {
+          log.error(`CLI 调用已完成，但用量记录失败: ${(error as Error).message}`);
+        }
+        const event: LLMCallEvent = {
+          scopeId: route.scopeId,
+          connectionId,
+          providerType: route.providerType,
+          modelAlias: modelId,
+          actualModel: result.actualModel,
+          outcome: 'success',
+          probeToken: healthProbeToken,
+        };
+        recordConnectionSuccessBestEffort(usageDb, event, 'CLI');
+        log.debug(`完成 CLI op=${options.operationName ?? 'unknown'} model=${result.actualModel ?? modelId} 耗时=${Date.now() - callStart}ms`);
+        return result.text;
+      }
+
       // ---- Gemini 路径 ----
       if (resolvedProvider === 'gemini') {
         const geminiOpts: Parameters<typeof callGeminiLLM>[0] = {
           modelId, prompt: options.prompt, system, maxTokens, timeoutMs,
-          signal: options.signal,
+          signal: callSignal,
         };
         if (resolvedGeminiApiKey) {
           geminiOpts.apiKeyOverride = resolvedGeminiApiKey;
         }
         const result = await callGeminiLLM(geminiOpts);
-        logUsage(modelId, options.operationName, result.inputTokens, result.outputTokens, 0);
+        logUsage(route, modelId, options.operationName, result.inputTokens, result.outputTokens, 0);
         log.debug(`完成 op=${options.operationName ?? 'unknown'} tokens=${result.inputTokens}+${result.outputTokens} 耗时=${Date.now() - callStart}ms`);
         recordCallResult(resolvedCacheKey, true);
-        notifyLLMSuccess();
+        if (usageDb) {
+          recordConnectionSuccessBestEffort(usageDb, {
+              scopeId: route.scopeId,
+              connectionId: route.connectionId,
+              providerType: route.providerType,
+              modelAlias: modelId,
+              actualModel: modelId,
+              outcome: 'success',
+              probeToken: healthProbeToken,
+            }, 'Gemini');
+        }
+        if (route.connectionId === null) notifyLLMSuccess();
         return result.text;
       }
 
@@ -862,12 +1111,30 @@ export async function callLLM(options: {
           maxTokens,
           timeoutMs,
           apiKey: resolvedOpenaiApiKey,
-          signal: options.signal,
+          signal: callSignal,
         });
-        logUsage(modelId, options.operationName, result.inputTokens, result.outputTokens, result.thinkingTokens);
+        logUsage(
+          route,
+          modelId,
+          options.operationName,
+          result.inputTokens,
+          result.outputTokens,
+          result.thinkingTokens,
+        );
         log.debug(`完成 op=${options.operationName ?? 'unknown'} tokens=${result.inputTokens}+${result.outputTokens} thinking=${result.thinkingTokens} 耗时=${Date.now() - callStart}ms`);
         recordCallResult(resolvedCacheKey, true);
-        notifyLLMSuccess();
+        if (usageDb) {
+          recordConnectionSuccessBestEffort(usageDb, {
+              scopeId: route.scopeId,
+              connectionId: route.connectionId,
+              providerType: route.providerType,
+              modelAlias: modelId,
+              actualModel: modelId,
+              outcome: 'success',
+              probeToken: healthProbeToken,
+            }, 'OpenAI-compatible');
+        }
+        if (route.connectionId === null) notifyLLMSuccess();
         return result.text;
       }
 
@@ -876,9 +1143,7 @@ export async function callLLM(options: {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
       // 合并内部超时 signal 与外部 abort signal：任一触发都中止请求
-      const signalForCall: AbortSignal = options.signal
-        ? AbortSignal.any([controller.signal, options.signal])
-        : controller.signal;
+      const signalForCall: AbortSignal = AbortSignal.any([controller.signal, callSignal]);
 
       try {
         // thinking 配置:adaptive 不传 budget,manual 传 budget,否则关闭
@@ -953,15 +1218,34 @@ export async function callLLM(options: {
         // thinking tokens 包含在 output_tokens 中，无独立计数字段。
         // cache 两项必须入账:input_tokens 只是未缓存余量,prompt cache 默认开启时
         // 漏记会让用量面板与成本估算系统性低估(write 1.25x / read 0.1x 计费,非 0)。
-        logUsage(modelId, options.operationName,
-          response.usage.input_tokens, response.usage.output_tokens, 0, cacheCreate, cacheRead);
+        logUsage(
+          route,
+          response.model,
+          options.operationName,
+          response.usage.input_tokens,
+          response.usage.output_tokens,
+          0,
+          cacheCreate,
+          cacheRead,
+        );
         log.debug(`完成 op=${options.operationName ?? 'unknown'} tokens=${response.usage.input_tokens}+${response.usage.output_tokens} cache_create=${cacheCreate} cache_read=${cacheRead} 耗时=${Date.now() - callStart}ms`);
         const textBlock = response.content.find(b => b.type === 'text');
         if (!textBlock) {
           log.warn(`LLM 响应不含 text block op=${options.operationName ?? 'unknown'} blocks=${response.content.map(b => b.type).join(',')}`);
         }
         recordCallResult(resolvedCacheKey, true);
-        notifyLLMSuccess();
+        if (usageDb) {
+          recordConnectionSuccessBestEffort(usageDb, {
+              scopeId: route.scopeId,
+              connectionId: route.connectionId,
+              providerType: route.providerType,
+              modelAlias: modelId,
+              actualModel: response.model,
+              outcome: 'success',
+              probeToken: healthProbeToken,
+            }, 'Anthropic/Vertex');
+        }
+        if (route.connectionId === null) notifyLLMSuccess();
         return textBlock ? textBlock.text : '';
       } finally {
         clearTimeout(timeout);
@@ -971,11 +1255,13 @@ export async function callLLM(options: {
       // 裸 fetch 路径抛的形态也不稳定。这里统一还原成外部 reason 原样上抛(与函数
       // 入口的 pre-call 检查语义对齐),不重试、不计失败、不包装成 LLMServiceError——
       // 否则上游(init-session 等)会把"用户取消"误判成服务故障。
-      if (options.signal?.aborted) {
-        throw options.signal.reason ?? err;
+      if (callSignal.aborted) {
+        throw options.signal?.aborted
+          ? options.signal.reason ?? err
+          : callSignal.reason ?? err;
       }
       lastError = err;
-      if (!isRetryable(err) || attempt === MAX_RETRIES - 1) break;
+      if (!isRetryable(err) || attempt === maxAttempts - 1) break;
 
       // 指数退避 + 抖动,避免 thundering herd
       const backoffMs = BASE_DELAY_MS * Math.pow(2, attempt);
@@ -1013,8 +1299,8 @@ export async function callLLM(options: {
       // 没打 cause.code 调试浪费了好几个小时。
       const cause = (err as { cause?: { code?: string; message?: string } }).cause;
       const causeInfo = cause?.code ? ` cause.code=${cause.code}` : '';
-      log.warn(`请求失败 (attempt ${attempt + 1}/${MAX_RETRIES}) ${waitMs}ms 后重试: ${(err as Error).message}${causeInfo}`);
-      await delay(waitMs);
+      log.warn(`请求失败 (attempt ${attempt + 1}/${maxAttempts}) ${waitMs}ms 后重试: ${(err as Error).message}${causeInfo}`);
+      await abortableDelay(waitMs, callSignal);
     }
   }
 
@@ -1029,9 +1315,52 @@ export async function callLLM(options: {
     log.warn(`LLM client 连续失败 ${FAILURE_RESET_THRESHOLD} 次,已 evict cache entry connection=${connectionId},下次调用将重建 SDK 实例`);
   }
 
+  if (usageDb && lastError) {
+    const healthError = healthErrorFrom(lastError);
+    try {
+      recordConnectionFailure(usageDb, {
+        scopeId: route.scopeId,
+        connectionId: route.connectionId,
+        providerType: route.providerType,
+        modelAlias: route.modelAlias,
+        outcome: healthError.kind === 'ambiguous_outcome'
+          ? 'ambiguous'
+          : healthError.kind === 'aborted'
+            ? 'aborted'
+            : healthError.kind === 'capacity'
+              ? 'capacity_deferred'
+              : 'definite_failure',
+        error: healthError,
+        probeToken: healthProbeToken,
+      });
+    } catch (error) {
+      log.error(`LLM 调用已失败，连接健康状态记录也失败: ${(error as Error).message}`);
+    }
+  }
+
+  if (lastError instanceof CliLLMError) throw lastError;
+
   // 包装为 LLMServiceError，便于 scheduler 区分
   if (isServiceError(lastError)) {
-    throw new LLMServiceError((lastError as Error).message, getErrorStatus(lastError));
+    throw new LLMServiceError(
+      (lastError as Error).message,
+      getErrorStatus(lastError),
+      route.connectionId,
+    );
   }
   throw lastError;
+  } finally {
+    activeCallAbortControllers.delete(runtimeAbortController);
+    if (activeCallAbortControllers.size === 0) {
+      for (const resolve of activeCallDrainWaiters) resolve();
+      activeCallDrainWaiters.clear();
+    }
+    if (usageDb && healthProbeToken) {
+      try {
+        releaseConnectionHealthProbe(usageDb, route.scopeId, healthProbeToken);
+      } catch (error) {
+        log.warn(`half-open probe lease cleanup failed: ${(error as Error).message}`);
+      }
+    }
+  }
 }

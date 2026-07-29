@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { parse as parseToml } from 'smol-toml'
 import { coworkAdapter } from '../../client/electron/ipc/agent-plugins/cowork'
 import { codexAdapter } from '../../client/electron/ipc/agent-plugins/codex'
 import { cursorAdapter } from '../../client/electron/ipc/agent-plugins/cursor'
+import { kimiCodeAdapter } from '../../client/electron/ipc/agent-plugins/kimi-code'
 import { openclawAdapter } from '../../client/electron/ipc/agent-plugins/openclaw'
 import type {
   GeneratePluginContext,
@@ -208,5 +210,147 @@ describe('codex agent plugin adapter', () => {
     fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Skill')
 
     expect(codexAdapter.getPath(ctx)).toBe(skillDir)
+  })
+})
+
+describe('kimi-code agent plugin adapter', () => {
+  let tmpDir: string
+  let runtime: PluginRuntimeContext
+  let ctx: GeneratePluginContext
+
+  const mcpPath = () => path.join(runtime.homeDir, '.kimi-code', 'mcp.json')
+  const configPath = () => path.join(runtime.homeDir, '.kimi-code', 'config.toml')
+  const skillDir = () => path.join(runtime.homeDir, '.kimi-code', 'skills', `tidemind-${AGENT_ID}`)
+  const skillFilePath = () => path.join(skillDir(), 'SKILL.md')
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-plugin-kimi-'))
+    runtime = makeRuntime(tmpDir)
+    ctx = makeContext(runtime, 'kimi-code')
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('generates mcp.json, SKILL.md and config.toml hook; reports status; uninstalls cleanly', async () => {
+    const generated = await kimiCodeAdapter.generate(ctx)
+    expect(generated.success).toBe(true)
+    expect(generated.pluginName).toBe(`tidemind-${AGENT_ID}`)
+    expect(generated.pluginDir).toBe(skillDir())
+
+    // 1) ~/.kimi-code/mcp.json
+    const mcp = readJson(mcpPath())
+    expect(mcp.mcpServers[`tidemind-${AGENT_ID}`]).toEqual({
+      command: runtime.shimPath,
+      args: [runtime.mcpServerPath],
+      env: { EB_AGENT_ID: AGENT_ID },
+    })
+
+    // 2) ~/.kimi-code/skills/tidemind-<agentId>/SKILL.md(带 frontmatter)
+    const skill = fs.readFileSync(skillFilePath(), 'utf-8')
+    expect(skill).toContain(`name: tidemind-${AGENT_ID}`)
+    expect(skill).toContain('Use memory well.')
+
+    // 3) ~/.kimi-code/config.toml 的 [[hooks]]
+    // UserPromptSubmit(实测 SessionStart 输出不被 Kimi 注入);无 matcher(match all);
+    // timeout 30;command 含 --once-per-session(拼在 --tool 之后,每会话只注入一次)
+    const tomlContent = fs.readFileSync(configPath(), 'utf-8')
+    expect(tomlContent).toContain('[[hooks]]')
+    expect(tomlContent).toContain('event = "UserPromptSubmit"')
+    expect(tomlContent).not.toContain('matcher')
+    expect(tomlContent).toContain('timeout = 30')
+    const parsed = parseToml(tomlContent) as any
+    expect(parsed.hooks).toHaveLength(1)
+    const cmd = parsed.hooks[0].command as string
+    expect(parsed.hooks[0].event).toBe('UserPromptSubmit')
+    expect(parsed.hooks[0].timeout).toBe(30)
+    expect('matcher' in parsed.hooks[0]).toBe(false)
+    expect(cmd.startsWith(`${JSON.stringify(runtime.shimPath)} ${JSON.stringify(runtime.hookScriptPath)}`)).toBe(true)
+    expect(cmd).toContain(`--agent-id "${AGENT_ID}"`)
+    expect(cmd).toContain(`--skill-path "${skillFilePath()}"`)
+    expect(cmd).toContain('--tool "kimi-code" --once-per-session')
+
+    expect(kimiCodeAdapter.getPath(ctx)).toBe(skillDir())
+
+    const status = await kimiCodeAdapter.getStatus(ctx)
+    expect(status.exists).toBe(true)
+    expect(status.kimiConfigWritten).toBe(true)
+    expect(status.hooksConfigured).toBe(true)
+    expect(status.skillDirWritten).toBe(true)
+
+    const result = await kimiCodeAdapter.uninstall(ctx)
+    expect(result.success).toBe(true)
+    expect(readJson(mcpPath()).mcpServers).toBeUndefined()
+    expect(fs.readFileSync(configPath(), 'utf-8')).not.toContain('[[hooks]]')
+    expect(fs.existsSync(skillDir())).toBe(false)
+    expect(kimiCodeAdapter.getPath(ctx)).toBeNull()
+  })
+
+  it('does not duplicate the [[hooks]] entry on repeated generate', async () => {
+    await kimiCodeAdapter.generate(ctx)
+    await kimiCodeAdapter.generate(ctx)
+
+    const parsed = parseToml(fs.readFileSync(configPath(), 'utf-8')) as any
+    expect(parsed.hooks).toHaveLength(1)
+  })
+
+  it('preserves existing user content in mcp.json and config.toml', async () => {
+    fs.mkdirSync(path.dirname(mcpPath()), { recursive: true })
+    fs.writeFileSync(mcpPath(), JSON.stringify({ mcpServers: { 'user-tool': { command: '/usr/local/bin/tool' } } }))
+    fs.writeFileSync(configPath(), 'model = "k2"\n')
+
+    await kimiCodeAdapter.generate(ctx)
+
+    const mcp = readJson(mcpPath())
+    expect(mcp.mcpServers['user-tool']).toEqual({ command: '/usr/local/bin/tool' })
+    expect(mcp.mcpServers[`tidemind-${AGENT_ID}`]).toBeDefined()
+    const tomlContent = fs.readFileSync(configPath(), 'utf-8')
+    expect(tomlContent).toContain('model = "k2"')
+  })
+
+  // Regression: malformed ~/.kimi-code/mcp.json must not be silently overwritten
+  // with `{}` — that would erase any other MCP servers the user has set up.
+  it('refuses to clobber a malformed ~/.kimi-code/mcp.json and writes a backup', async () => {
+    fs.mkdirSync(path.dirname(mcpPath()), { recursive: true })
+    const original = '{ "mcpServers": { "user-tool": { "command": "/usr/local/bin/tool" } broken'
+    fs.writeFileSync(mcpPath(), original)
+
+    await expect(kimiCodeAdapter.generate(ctx)).rejects.toThrow(/Refused to overwrite/)
+    expect(fs.readFileSync(mcpPath(), 'utf-8')).toBe(original)
+    const baks = fs.readdirSync(path.dirname(mcpPath()))
+      .filter(n => n.startsWith('mcp.json.tidemind-backup-') && n.endsWith('.bak'))
+    expect(baks).toHaveLength(1)
+  })
+
+  it('honors KIMI_CODE_HOME as the config root for generate / getStatus / uninstall', async () => {
+    const kimiHome = path.join(tmpDir, 'custom-kimi-home')
+    process.env.KIMI_CODE_HOME = kimiHome
+    try {
+      const generated = await kimiCodeAdapter.generate(ctx)
+      expect(generated.success).toBe(true)
+
+      // 三件套全部落在 KIMI_CODE_HOME 下,默认 ~/.kimi-code 不出现
+      const envMcp = path.join(kimiHome, 'mcp.json')
+      const envConfig = path.join(kimiHome, 'config.toml')
+      const envSkillDir = path.join(kimiHome, 'skills', `tidemind-${AGENT_ID}`)
+      expect(readJson(envMcp).mcpServers[`tidemind-${AGENT_ID}`]).toBeDefined()
+      expect(fs.readFileSync(envConfig, 'utf-8')).toContain('event = "UserPromptSubmit"')
+      expect(fs.existsSync(path.join(envSkillDir, 'SKILL.md'))).toBe(true)
+      expect(fs.existsSync(path.join(runtime.homeDir, '.kimi-code'))).toBe(false)
+
+      expect(kimiCodeAdapter.getPath(ctx)).toBe(envSkillDir)
+      const status = await kimiCodeAdapter.getStatus(ctx)
+      expect(status.kimiConfigWritten).toBe(true)
+      expect(status.hooksConfigured).toBe(true)
+      expect(status.skillDirWritten).toBe(true)
+
+      const result = await kimiCodeAdapter.uninstall(ctx)
+      expect(result.success).toBe(true)
+      expect(fs.existsSync(envSkillDir)).toBe(false)
+      expect(fs.readFileSync(envConfig, 'utf-8')).not.toContain('[[hooks]]')
+    } finally {
+      delete process.env.KIMI_CODE_HOME
+    }
   })
 })

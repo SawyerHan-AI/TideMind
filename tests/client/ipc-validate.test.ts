@@ -114,6 +114,10 @@ describe('validateCli', () => {
     }
   });
 
+  it('accepts kimi for Kimi Code CLI detection', () => {
+    expect(validateCli('kimi')).toBe('kimi');
+  });
+
   it('rejects shell-injection-shaped input', () => {
     expect(() => validateCli('claude; rm -rf /')).toThrow();
     expect(() => validateCli('claude && evil')).toThrow();

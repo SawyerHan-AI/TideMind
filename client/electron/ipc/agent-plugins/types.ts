@@ -1,4 +1,4 @@
-export type PluginClientType = 'claude-code' | 'cowork' | 'cursor' | 'codex' | 'windsurf' | 'openclaw' | 'gemini'
+export type PluginClientType = 'claude-code' | 'cowork' | 'cursor' | 'codex' | 'windsurf' | 'openclaw' | 'gemini' | 'kimi-code'
 
 export interface ClientTypeConfig {
   dirPrefix: string
@@ -49,6 +49,12 @@ export const CLIENT_CONFIG: Record<PluginClientType, ClientTypeConfig> = {
     skillSource: 'gemini-skill.md',
     skillDescription: 'Tide Mind 外部记忆系统。用户上下文在会话启动时通过 SessionStart Hook 自动加载。对话过程中使用 brain_recall 查询历史信息，使用 brain_digest 存储有价值的内容。',
     hookToolParam: 'gemini',
+  },
+  'kimi-code': {
+    dirPrefix: 'kimi-code',
+    skillSource: 'kimi-code-skill.md',
+    skillDescription: 'Tide Mind 外部记忆系统。用户上下文在每次会话开始时通过 Hook 自动加载（在第一条消息前注入）。对话过程中使用 brain_recall 查询历史信息，使用 brain_digest 存储有价值的内容。',
+    hookToolParam: 'kimi-code',
   },
 }
 

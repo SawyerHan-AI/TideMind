@@ -1,4 +1,4 @@
-import { ipcMain, dialog } from 'electron'
+import { ipcMain, dialog, BrowserWindow } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
@@ -8,6 +8,23 @@ import { validateConnectionId, validateProviderType, validateFormCredentials, as
 import { mainT } from '../i18n.js'
 import { clearClientCache } from '../../../src/llm/client.js'
 import { resetCircuitBreaker } from '../../../src/metabolism/scheduler.js'
+import {
+  LLM_PROVIDER_CATALOG,
+} from '../../../src/llm/provider-types.js'
+import {
+  checkCliEnvironment,
+  cliUserActionCommand,
+  CliLLMError,
+  runCliLLM,
+  type CliEnvironmentCheck,
+  type CliProviderType,
+} from '../../../src/llm/cli/index.js'
+import {
+  updateCliConnectionEnvironment,
+  type ModelConnectionStatus,
+} from '../../../src/db/connections.js'
+import { resolveAmbiguousConnection } from '../../../src/llm/cli/invocation-state.js'
+import { broadcastLLMHealth } from './llm-health.js'
 
 function generateConnectionId(): string {
   return 'mc_' + randomBytes(4).toString('hex')
@@ -25,6 +42,83 @@ function now(): string {
  */
 const MAX_CREDENTIALS_BYTES = 8192
 
+type ModelConnectionDbRow = Record<string, unknown> & {
+  provider_type: string
+  credentials: string | null
+}
+
+type CliOperation = {
+  token: string
+  kind: 'environment' | 'test'
+  controller: AbortController
+}
+const cliOperations = new Map<string, CliOperation>()
+
+function isCliProvider(value: string): value is CliProviderType {
+  return value === 'claude-cli' || value === 'codex-cli'
+}
+
+function sourceTypeFor(providerType: string): string {
+  return LLM_PROVIDER_CATALOG.find(provider => provider.id === providerType)?.sourceType
+    ?? 'cloud_service'
+}
+
+function beginCliOperation(connectionId: string, kind: CliOperation['kind']): CliOperation {
+  if (cliOperations.has(connectionId)) {
+    throw new Error('该连接正在检查或测试，请等待当前操作完成')
+  }
+  const operation = {
+    token: randomBytes(16).toString('hex'),
+    kind,
+    controller: new AbortController(),
+  }
+  cliOperations.set(connectionId, operation)
+  return operation
+}
+
+function operationIsCurrent(connectionId: string, operation: CliOperation): boolean {
+  return cliOperations.get(connectionId)?.token === operation.token
+}
+
+function finishCliOperation(connectionId: string, operation: CliOperation): void {
+  if (operationIsCurrent(connectionId, operation)) cliOperations.delete(connectionId)
+}
+
+function cancelCliOperation(connectionId: string, reason: string): boolean {
+  const operation = cliOperations.get(connectionId)
+  if (!operation) return false
+  operation.controller.abort(new Error(reason))
+  // Keep the operation token until its handler reaches finally. Removing it
+  // here makes the handler treat a user cancellation like archive/delete and
+  // can leave the durable status stuck at "checking" or "testing".
+  return true
+}
+
+function broadcastTestProgress(progress: {
+  connectionId: string
+  currentModel: string
+  completed: number
+  total: number
+}): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    try {
+      if (!win.isDestroyed()) win.webContents.send('connections:test-progress', progress)
+    } catch {
+      // Window may disappear while a long test is running.
+    }
+  }
+}
+
+function cliStatusForError(error: CliLLMError): string {
+  if (
+    error.kind === 'not_installed'
+    || error.kind === 'not_authenticated'
+    || error.kind === 'wrong_auth_method'
+    || error.kind === 'unsupported_version'
+  ) return error.kind
+  return 'offline'
+}
+
 /**
  * 安全解析 credentials 字段:DB 里写入的 JSON 字符串可能因升级/手动改库
  * 损坏。直接 `JSON.parse` 会抛错让 IPC handler 崩溃,前端拿到 unhandled
@@ -41,20 +135,42 @@ function safeParseCredentials(raw: string | null | undefined): Record<string, un
 }
 
 export function registerConnectionHandlers(dataDir: string): void {
+  ipcMain.handle('connections:provider-catalog', () =>
+    LLM_PROVIDER_CATALOG.map(provider => ({
+      id: provider.id,
+      labelKey: provider.labelKey,
+      sourceType: provider.sourceType,
+      billingMode: provider.billingMode,
+      transport: provider.transport,
+      supportsLlm: provider.supportsLLM,
+      supportsEmbedding: provider.supportsEmbedding,
+    })),
+  )
+
   ipcMain.handle('connections:list', (_e, includeArchived?: boolean) => {
     const db = getClientDb()
     const rows = includeArchived
-      ? db.prepare('SELECT * FROM model_connections ORDER BY archived ASC, created DESC').all() as any[]
-      : db.prepare('SELECT * FROM model_connections WHERE archived = 0 ORDER BY created DESC').all() as any[]
-    return rows.map(r => ({ ...r, credentials: undefined, hasCredentials: !!r.credentials }))
+      ? db.prepare('SELECT * FROM model_connections ORDER BY archived ASC, created DESC').all() as ModelConnectionDbRow[]
+      : db.prepare('SELECT * FROM model_connections WHERE archived = 0 ORDER BY created DESC').all() as ModelConnectionDbRow[]
+    return rows.map(r => ({
+      ...r,
+      credentials: undefined,
+      hasCredentials: isCliProvider(r.provider_type) ? false : !!r.credentials,
+      source_type: sourceTypeFor(r.provider_type),
+    }))
   })
 
   ipcMain.handle('connections:get', (_e, id: unknown) => {
     const validId = validateConnectionId(id)
     const db = getClientDb()
-    const row = db.prepare('SELECT * FROM model_connections WHERE id = ?').get(validId) as any
+    const row = db.prepare('SELECT * FROM model_connections WHERE id = ?').get(validId) as ModelConnectionDbRow | undefined
     if (!row) return null
-    return { ...row, credentials: undefined, hasCredentials: !!row.credentials }
+    return {
+      ...row,
+      credentials: undefined,
+      hasCredentials: isCliProvider(row.provider_type) ? false : !!row.credentials,
+      source_type: sourceTypeFor(row.provider_type),
+    }
   })
 
   // 按需取出明文 credentials —— 仅在详情面板需要把已存凭证回填表单时调用,
@@ -79,7 +195,9 @@ export function registerConnectionHandlers(dataDir: string): void {
     const db = getClientDb()
     const id = generateConnectionId()
     const created = now()
-    const creds = JSON.stringify(params.credentials ?? {})
+    const creds = JSON.stringify(
+      isCliProvider(providerType) ? {} : params.credentials ?? {},
+    )
     // F8 (audit-9): credentials JSON 上限 8KB,API key / project_id 类参数远不到这个量。
     // 没有上限的话恶意 / 出 bug 的 renderer 能把 100MB 字符串塞进 SQLite,后续 SELECT/
     // 同步推送都被拖累(也会让 cloud-server 的 reconcile size limit 失效)。
@@ -89,6 +207,7 @@ export function registerConnectionHandlers(dataDir: string): void {
     db.prepare(
       'INSERT INTO model_connections (id, name, provider_type, credentials, created) VALUES (?, ?, ?, ?, ?)',
     ).run(id, name, providerType, creds, created)
+    broadcastLLMHealth(db)
 
     try {
       db.prepare(`
@@ -98,12 +217,13 @@ export function registerConnectionHandlers(dataDir: string): void {
         `创建了模型连接: ${name}`,
         JSON.stringify({ section: 'model_connection', action: 'create', connection_name: name, connection_id: id }),
       )
-    } catch {}
+    } catch { /* timeline logging is best-effort */ }
 
     return {
       id, name, provider_type: providerType,
       credentials: creds, status: 'unconfigured',
       available_models: null, last_checked: null,
+      source_type: sourceTypeFor(providerType),
       archived: 0, created,
     }
   })
@@ -119,7 +239,12 @@ export function registerConnectionHandlers(dataDir: string): void {
       sets.push('name = ?'); values.push(trimmed)
     }
     if (params.credentials !== undefined) {
-      const creds = JSON.stringify(params.credentials)
+      const existing = db.prepare(
+        'SELECT provider_type FROM model_connections WHERE id = ?',
+      ).get(validId) as { provider_type: string } | undefined
+      const creds = JSON.stringify(
+        existing && isCliProvider(existing.provider_type) ? {} : params.credentials,
+      )
       // HIGH 2 (audit-10): 跟 create 一致的 8KB cap;之前 update 漏检让 renderer
       // 能先 create 小 payload 再 update 到任意大小绕过 create 的限制。
       if (creds.length > MAX_CREDENTIALS_BYTES) {
@@ -146,20 +271,117 @@ export function registerConnectionHandlers(dataDir: string): void {
 
   ipcMain.handle('connections:archive', (_e, id: unknown) => {
     const validId = validateConnectionId(id)
+    cancelCliOperation(validId, '连接已归档')
     const db = getClientDb()
     db.prepare('UPDATE model_connections SET archived = 1 WHERE id = ?').run(validId)
+    broadcastLLMHealth(db)
   })
 
   ipcMain.handle('connections:unarchive', (_e, id: unknown) => {
     const validId = validateConnectionId(id)
     const db = getClientDb()
     db.prepare('UPDATE model_connections SET archived = 0 WHERE id = ?').run(validId)
+    broadcastLLMHealth(db)
   })
 
   ipcMain.handle('connections:delete', (_e, id: unknown) => {
     const validId = validateConnectionId(id)
+    cancelCliOperation(validId, '连接已删除')
     const db = getClientDb()
     db.prepare('DELETE FROM model_connections WHERE id = ?').run(validId)
+    broadcastLLMHealth(db)
+  })
+
+  ipcMain.handle('connections:check-environment', async (_e, connectionId: unknown) => {
+    const validId = validateConnectionId(connectionId)
+    const db = getClientDb()
+    const connection = db.prepare(`
+      SELECT id, provider_type, status, status_reason, archived
+      FROM model_connections WHERE id = ?
+    `).get(validId) as {
+      id: string
+      provider_type: string
+      status: ModelConnectionStatus
+      status_reason: string | null
+      archived: number
+    } | undefined
+    if (!connection || connection.archived) throw new Error('模型连接不存在或已归档')
+    if (!isCliProvider(connection.provider_type)) {
+      throw new Error('只有本地订阅连接需要检查 CLI 环境')
+    }
+    const operation = beginCliOperation(validId, 'environment')
+    db.prepare(`
+      UPDATE model_connections
+      SET status = 'checking', status_reason = NULL
+      WHERE id = ? AND archived = 0
+    `).run(validId)
+    try {
+      const environment = await checkCliEnvironment({
+        providerType: connection.provider_type,
+        allowLoginShell: true,
+        signal: operation.controller.signal,
+      })
+      if (!operationIsCurrent(validId, operation) || operation.controller.signal.aborted) {
+        throw new CliLLMError('aborted', '环境检查已取消')
+      }
+      const preservedStatus = (
+        connection.status === 'online'
+        || connection.status === 'degraded'
+        || connection.status === 'ambiguous'
+      ) ? connection.status : 'untested'
+      updateCliConnectionEnvironment(db, validId, {
+        status: preservedStatus,
+        statusReason: null,
+        cliPath: environment.resolved.path,
+        cliVersion: environment.resolved.version,
+        authMethod: environment.auth.method,
+        authFingerprint: environment.authFingerprint,
+        candidateModels: environment.candidateModels,
+        environmentCheckedAt: environment.checkedAt,
+      })
+      return {
+        status: preservedStatus,
+        cliPath: environment.resolved.path,
+        cliVersion: environment.resolved.version,
+        authMethod: environment.auth.method,
+        capabilityStatus: environment.capabilityStatus,
+        candidateModels: environment.candidateModels,
+        checkedAt: environment.checkedAt,
+      }
+    } catch (error) {
+      const cliError = error instanceof CliLLMError
+        ? error
+        : new CliLLMError('transient', (error as Error).message, { cause: error })
+      if (operationIsCurrent(validId, operation)) {
+        const status = cliError.kind === 'aborted'
+          ? connection.status
+          : cliStatusForError(cliError)
+        const reason = cliError.kind === 'aborted'
+          ? connection.status_reason
+          : cliError.message.slice(0, 500)
+        db.prepare(`
+          UPDATE model_connections
+          SET status = ?, status_reason = ?, last_checked = ?
+          WHERE id = ? AND archived = 0
+        `).run(status, reason, now(), validId)
+      }
+      return {
+        status: cliError.kind === 'aborted' ? connection.status : cliStatusForError(cliError),
+        error: {
+          kind: cliError.kind,
+          message: cliError.message,
+          copyCommand: cliUserActionCommand(connection.provider_type, cliError.kind),
+        },
+      }
+    } finally {
+      broadcastLLMHealth(db)
+      finishCliOperation(validId, operation)
+    }
+  })
+
+  ipcMain.handle('connections:cancel-test', (_e, connectionId: unknown) => {
+    const validId = validateConnectionId(connectionId)
+    return { cancelled: cancelCliOperation(validId, '用户取消测试') }
   })
 
   // 统一测试连接入口
@@ -171,9 +393,332 @@ export function registerConnectionHandlers(dataDir: string): void {
     const overrides = validateFormCredentials(formOverride)
     const db = getClientDb()
     const conn = db.prepare('SELECT * FROM model_connections WHERE id = ?').get(validId) as {
-      id: string; provider_type: string; credentials: string
+      id: string
+      provider_type: string
+      credentials: string
+      status: ModelConnectionStatus
+      status_reason: string | null
+      available_models: string | null
+      validation_fingerprint: string | null
+      model_validation_json: string | null
+      last_tested_at: string | null
+      last_test_summary: string | null
+      archived: number
     } | undefined
     if (!conn) return { online: false, models: [], error: mainT('conn.notFound') }
+
+    if (isCliProvider(conn.provider_type)) {
+      if (conn.archived) {
+        return { online: false, models: [], error: '模型连接已归档' }
+      }
+      const operation = beginCliOperation(validId, 'test')
+      db.prepare(`
+        UPDATE model_connections
+        SET status = 'testing', status_reason = NULL
+        WHERE id = ? AND archived = 0
+      `).run(validId)
+      const startedAt = Date.now()
+      let environment: CliEnvironmentCheck | null = null
+      let environmentInvalidated = false
+      const previousValidation = {
+        status: conn.status,
+        statusReason: conn.status_reason,
+        availableModels: conn.available_models,
+        validationFingerprint: conn.validation_fingerprint,
+        modelValidationJson: conn.model_validation_json,
+        lastTestedAt: conn.last_tested_at,
+        lastTestSummary: conn.last_test_summary,
+      }
+      const results: Array<{
+        model: string
+        success: boolean
+        actualModel?: string | null
+        error?: string
+        errorKind?: string
+      }> = []
+      try {
+        environment = await checkCliEnvironment({
+          providerType: conn.provider_type,
+          allowLoginShell: true,
+          signal: operation.controller.signal,
+        })
+        if (!operationIsCurrent(validId, operation)) {
+          throw new CliLLMError('aborted', '测试已取消')
+        }
+        const environmentUpdate = updateCliConnectionEnvironment(db, validId, {
+          status: 'testing',
+          statusReason: null,
+          cliPath: environment.resolved.path,
+          cliVersion: environment.resolved.version,
+          authMethod: environment.auth.method,
+          authFingerprint: environment.authFingerprint,
+          candidateModels: environment.candidateModels,
+          environmentCheckedAt: environment.checkedAt,
+        })
+        environmentInvalidated = environmentUpdate.validationInvalidated
+        for (const model of environment.candidateModels) {
+          if (!operationIsCurrent(validId, operation) || operation.controller.signal.aborted) break
+          broadcastTestProgress({
+            connectionId: validId,
+            currentModel: model,
+            completed: results.length,
+            total: environment.candidateModels.length,
+          })
+          try {
+            const result = await runCliLLM(
+              db,
+              dataDir,
+              {
+                connectionId: validId,
+                providerType: conn.provider_type,
+                modelAlias: model,
+                system: 'This is a connection test. Do not use tools or access files.',
+                prompt: 'Reply with exactly: TIDEMIND_CONNECTION_OK',
+                maxOutputTokens: 32,
+                timeoutMs: 120_000,
+                operationName: 'connection-test',
+                signal: operation.controller.signal,
+                purpose: 'connection_test',
+              },
+              {
+                purpose: 'connection_test',
+                environment,
+              },
+            )
+            if (result.text.trim() !== 'TIDEMIND_CONNECTION_OK') {
+              throw new CliLLMError(
+                'protocol',
+                '模型未返回连接测试标记，不能判定为可用',
+              )
+            }
+            results.push({
+              model,
+              success: true,
+              actualModel: result.actualModel,
+            })
+          } catch (error) {
+            const cliError = error instanceof CliLLMError
+              ? error
+              : new CliLLMError('transient', (error as Error).message, { cause: error })
+            if (cliError.kind === 'aborted') break
+            results.push({
+              model,
+              success: false,
+              error: cliError.message.slice(0, 500),
+              errorKind: cliError.kind,
+            })
+          }
+          broadcastTestProgress({
+            connectionId: validId,
+            currentModel: model,
+            completed: results.length,
+            total: environment.candidateModels.length,
+          })
+        }
+
+        const cancelled = !operationIsCurrent(validId, operation)
+          || operation.controller.signal.aborted
+        if (!cancelled) {
+          const finalEnvironment = await checkCliEnvironment({
+            providerType: conn.provider_type,
+            allowLoginShell: true,
+            signal: operation.controller.signal,
+          })
+          if (finalEnvironment.validationFingerprint !== environment.validationFingerprint) {
+            const finalUpdate = updateCliConnectionEnvironment(db, validId, {
+              status: 'untested',
+              statusReason: 'CLI 路径、版本或登录状态在测试期间发生变化，请重新测试',
+              cliPath: finalEnvironment.resolved.path,
+              cliVersion: finalEnvironment.resolved.version,
+              authMethod: finalEnvironment.auth.method,
+              authFingerprint: finalEnvironment.authFingerprint,
+              candidateModels: finalEnvironment.candidateModels,
+              environmentCheckedAt: finalEnvironment.checkedAt,
+            })
+            environmentInvalidated ||= finalUpdate.validationInvalidated
+            throw new CliLLMError(
+              'aborted',
+              'CLI 路径、版本或登录状态在测试期间发生变化，请重新测试',
+              { needsUserAction: true },
+            )
+          }
+        }
+        // Archive/delete removes the operation token before the child exits.
+        const current = db.prepare(
+          'SELECT archived FROM model_connections WHERE id = ?',
+        ).get(validId) as { archived: number } | undefined
+        if (!current || current.archived) {
+          return {
+            online: false,
+            models: [],
+            successCount: 0,
+            totalCount: environment.candidateModels.length,
+            cancelled: true,
+            results,
+          }
+        }
+
+        if (cancelled) {
+          if (!environmentInvalidated) {
+            db.prepare(`
+              UPDATE model_connections
+              SET status = ?,
+                  status_reason = ?,
+                  available_models = ?,
+                  validation_fingerprint = ?,
+                  model_validation_json = ?,
+                  last_tested_at = ?,
+                  last_test_summary = ?,
+                  last_checked = ?
+              WHERE id = ? AND archived = 0
+            `).run(
+              previousValidation.status,
+              previousValidation.statusReason,
+              previousValidation.availableModels,
+              previousValidation.validationFingerprint,
+              previousValidation.modelValidationJson,
+              previousValidation.lastTestedAt,
+              previousValidation.lastTestSummary,
+              now(),
+              validId,
+            )
+          } else {
+            db.prepare(`
+              UPDATE model_connections
+              SET status = 'untested',
+                  status_reason = '测试已取消；CLI 环境已变化，请重新测试',
+                  last_checked = ?
+              WHERE id = ? AND archived = 0
+            `).run(now(), validId)
+          }
+          return {
+            online: false,
+            models: [],
+            successCount: results.filter(item => item.success).length,
+            totalCount: environment.candidateModels.length,
+            cancelled: true,
+            results,
+          }
+        }
+
+        const successfulModels = results.filter(item => item.success).map(item => item.model)
+        const validations = Object.fromEntries(results.map(item => [
+          item.model,
+          {
+            success: item.success,
+            actualModel: item.actualModel ?? null,
+            error: item.error ?? null,
+            errorKind: item.errorKind ?? null,
+            checkedAt: now(),
+          },
+        ]))
+        const coveredAll = results.length === environment.candidateModels.length
+        const status = !coveredAll
+          ? successfulModels.length > 0 ? 'degraded' : 'untested'
+          : successfulModels.length === environment.candidateModels.length
+            ? 'online'
+            : successfulModels.length > 0
+              ? 'degraded'
+              : 'offline'
+        const summary = {
+          operationId: operation.token,
+          success: successfulModels.length,
+          total: environment.candidateModels.length,
+          durationMs: Date.now() - startedAt,
+          cancelled: false,
+        }
+        db.transaction(() => {
+          db.prepare(`
+            UPDATE model_connections
+            SET status = ?,
+                status_reason = ?,
+                available_models = ?,
+                validation_fingerprint = ?,
+                model_validation_json = ?,
+                last_tested_at = ?,
+                last_test_summary = ?,
+                last_checked = ?
+            WHERE id = ? AND archived = 0
+          `).run(
+            status,
+            status === 'offline' ? '所有候选模型测试失败' : null,
+            JSON.stringify(successfulModels),
+            environment!.validationFingerprint,
+            JSON.stringify(validations),
+            now(),
+            JSON.stringify(summary),
+            now(),
+            validId,
+          )
+          if (successfulModels.length > 0) {
+            // 模型验证结果与“解除 ambiguous 并重排 pending digest”必须原子提交；
+            // 否则应用在两步之间退出会出现 UI 已在线、后台仍永久暂停。
+            resolveAmbiguousConnection(db, validId)
+          }
+        })()
+        return {
+          online: successfulModels.length > 0,
+          models: successfulModels,
+          successCount: successfulModels.length,
+          totalCount: environment.candidateModels.length,
+          cancelled: false,
+          results,
+        }
+      } catch (error) {
+        const cliError = error instanceof CliLLMError
+          ? error
+          : new CliLLMError('transient', (error as Error).message, { cause: error })
+        if (operationIsCurrent(validId, operation)) {
+          if (cliError.kind === 'aborted' && !environmentInvalidated) {
+            db.prepare(`
+              UPDATE model_connections
+              SET status = ?,
+                  status_reason = ?,
+                  available_models = ?,
+                  validation_fingerprint = ?,
+                  model_validation_json = ?,
+                  last_tested_at = ?,
+                  last_test_summary = ?,
+                  last_checked = ?
+              WHERE id = ? AND archived = 0
+            `).run(
+              previousValidation.status,
+              previousValidation.statusReason,
+              previousValidation.availableModels,
+              previousValidation.validationFingerprint,
+              previousValidation.modelValidationJson,
+              previousValidation.lastTestedAt,
+              previousValidation.lastTestSummary,
+              now(),
+              validId,
+            )
+          } else {
+            db.prepare(`
+              UPDATE model_connections
+              SET status = ?, status_reason = ?, last_checked = ?
+              WHERE id = ? AND archived = 0
+            `).run(
+              cliError.kind === 'aborted' ? 'untested' : cliStatusForError(cliError),
+              cliError.message.slice(0, 500),
+              now(),
+              validId,
+            )
+          }
+        }
+        return {
+          online: false,
+          models: results.filter(item => item.success).map(item => item.model),
+          error: cliError.message,
+          successCount: results.filter(item => item.success).length,
+          totalCount: environment?.candidateModels.length ?? 0,
+          cancelled: cliError.kind === 'aborted',
+          results,
+        }
+      } finally {
+        broadcastLLMHealth(db)
+        finishCliOperation(validId, operation)
+      }
+    }
 
     // credentials 解析失败时降级为空对象,避免 IPC 崩溃
     const dbCreds = safeParseCredentials(conn.credentials)
@@ -267,8 +812,12 @@ export function registerConnectionHandlers(dataDir: string): void {
     // 点"测试"用 DB credentials probe(此时 hasOverride=false),才能让 status 入 DB。
     if (!hasOverride) {
       const status = result.online ? 'online' : 'offline'
-      const cols = ['status = ?', 'last_checked = ?']
-      const params: unknown[] = [status, now()]
+      const cols = ['status = ?', 'status_reason = ?', 'last_checked = ?']
+      const params: unknown[] = [
+        status,
+        result.online ? null : (result.error ?? 'Unknown connection error').slice(0, 500),
+        now(),
+      ]
       if (result.online && result.models.length > 0) {
         cols.push('available_models = ?')
         params.push(JSON.stringify(result.models))
@@ -276,6 +825,7 @@ export function registerConnectionHandlers(dataDir: string): void {
       db.prepare(
         `UPDATE model_connections SET ${cols.join(', ')} WHERE id = ?`,
       ).run(...params, validId)
+      broadcastLLMHealth(db)
     }
 
     return result
@@ -303,9 +853,13 @@ export function registerConnectionHandlers(dataDir: string): void {
       const sourcePath = result.filePaths[0]
       const content = fs.readFileSync(sourcePath, 'utf-8')
 
-      let parsed: any
+      let parsed: Record<string, unknown>
       try {
-        parsed = JSON.parse(content)
+        const value: unknown = JSON.parse(content)
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+          return { success: false, error: mainT('cred.notJson') }
+        }
+        parsed = value as Record<string, unknown>
       } catch {
         return { success: false, error: mainT('cred.notJson') }
       }
@@ -330,7 +884,7 @@ export function registerConnectionHandlers(dataDir: string): void {
       const conn = db.prepare('SELECT credentials FROM model_connections WHERE id = ?').get(validId) as { credentials: string } | undefined
       if (conn) {
         const creds = safeParseCredentials(conn.credentials)
-        if (parsed.project_id) creds.project_id = parsed.project_id
+        if (typeof parsed.project_id === 'string') creds.project_id = parsed.project_id
         db.prepare('UPDATE model_connections SET credentials = ? WHERE id = ?').run(JSON.stringify(creds), validId)
         // 2026-05-21 (audit A.H2 / C.H3): 上传新 SA 文件后,即使 project_id 不变,
         // 文件内容已经换了(私钥/客户端 email 不同),GoogleAuth 内部 cachedCredential
@@ -352,7 +906,9 @@ export function registerConnectionHandlers(dataDir: string): void {
           '上传了 Vertex AI 凭证',
           JSON.stringify({ section: 'model_connection', action: 'upload_vertex_cred', connection_id: validId }),
         )
-      } catch {}
+      } catch {
+        // Timeline telemetry must not make a successful credential upload fail.
+      }
 
       return {
         success: true,

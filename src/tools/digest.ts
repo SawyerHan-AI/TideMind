@@ -18,9 +18,12 @@ import {
   // 顶层 static import,启动时一次性解析,运行期 detached 分支只调函数。
   completePendingDigest,
   failPendingDigest,
+  markPendingDigestAmbiguous,
 } from '../db/pending-digests.js';
 import { createLogger } from '../utils/logger.js';
+import { runWithLLMInvocationContext } from '../llm/invocation-context.js';
 import { tryElicit } from './elicit-helper.js';
+import { trackBackgroundWork } from '../utils/background-work.js';
 
 const log = createLogger('digest');
 
@@ -268,10 +271,15 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
     // 以 status='processing' 写入：这条 digest 已经在本进程 detached 处理中，
     // worker 不应在 1min backoff 后把它当成 'pending' 抢走重复 createNode；
     // 只有真正 >10min 卡死/崩溃才由 claimNextPendingDigest 的 stale recovery 接管。
+    let pendingDigestId: string | null = null;
     try {
       // 把首次写入的真实 stream 锚点随 input 持久化,retry 复用它而非 `retry:<traceId>`
       // 占位,避免重试成功的节点 source_stream 丢失真实锚点。
-      enqueueInFlightDigest(db, traceId, JSON.stringify({ ...input, _retryStreamRef: streamRef }));
+      pendingDigestId = enqueueInFlightDigest(
+        db,
+        traceId,
+        JSON.stringify({ ...input, _retryStreamRef: streamRef }),
+      );
     } catch (enqueueErr) {
       log.error('Failed to pre-enqueue digest:', (enqueueErr as Error).message);
     }
@@ -280,9 +288,18 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
      // 变成 unhandledRejection 静默丢失。末尾 .catch 兜底确保至少 log 出来。
      // 另外清理 pending 条目的 try/catch 之前是 `catch {}` 吞一切，换成 warn log
      // 让 DB 故障（比如磁盘满、锁冲突）可观测。
-    Promise.resolve().then(async () => {
+    const detachedWork = Promise.resolve().then(async () => {
       try {
-        await processDigestContent(repo, input, streamRef, traceId, qualityHeat);
+        const run = () => processDigestContent(repo, input, streamRef, traceId, qualityHeat);
+        if (pendingDigestId) {
+          await runWithLLMInvocationContext({
+            taskId: 'digest-async',
+            claimKey: `pending_digest_${pendingDigestId}`,
+            workItemId: pendingDigestId,
+          }, run);
+        } else {
+          await run();
+        }
         // 处理成功，删除 pending 条目(M25:不再 dynamic import,直接用顶部 static import)
         // 占位行以 status='processing' 写入(enqueueInFlightDigest),所以这里按
         // 'processing' 过滤;若已被 stale recovery 重置回 'pending' 再被 worker 认领,
@@ -318,13 +335,27 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
             "SELECT id FROM pending_digests WHERE trace_id = ? AND status IN ('pending', 'processing')"
           ).get(traceId) as { id: string } | undefined;
           if (pending) {
-            failPendingDigest(db, pending.id, (err as Error).message);
+            const ambiguous = err as { kind?: string; code?: string; invocationId?: string };
+            if (
+              (ambiguous.kind === 'ambiguous_outcome' || ambiguous.code === 'ambiguous_outcome')
+              && ambiguous.invocationId
+            ) {
+              markPendingDigestAmbiguous(
+                db,
+                pending.id,
+                ambiguous.invocationId,
+                (err as Error).message,
+              );
+            } else {
+              failPendingDigest(db, pending.id, (err as Error).message);
+            }
           }
         } catch (updateErr) {
           log.error('Failed to update pending digest status:', (updateErr as Error).message);
         }
       }
     }).catch(err => log.error(`digest-detached-failed trace=${traceId}: ${err instanceof Error ? err.stack ?? err.message : String(err)}`));
+    void trackBackgroundWork(detachedWork);
     return { status: 'accepted', trace_id: traceId };
   }
 

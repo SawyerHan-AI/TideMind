@@ -69,6 +69,11 @@
     "saveFailed": "Не удалось сохранить. Попробуйте ещё раз."
   },
   "model": {
+    "providerGroups": {
+      "cloudService": "Облачные сервисы",
+      "localSubscription": "Локальные подписки",
+      "localModel": "Локальные модели"
+    },
     "subtabs": {
       "connection": "Подключение",
       "selection": "Выбор",
@@ -94,14 +99,25 @@
       "status": {
         "online": "Подключено",
         "offline": "Ошибка подключения",
-        "unconfigured": "Не настроено"
+        "unconfigured": "Не настроено",
+        "untested": "Не проверено",
+        "checking": "Проверка",
+        "testing": "Тестирование",
+        "degraded": "Частично доступно",
+        "not_installed": "Не установлено",
+        "not_authenticated": "Вход не выполнен",
+        "wrong_auth_method": "Неподдерживаемый способ входа",
+        "unsupported_version": "Неподдерживаемая версия",
+        "ambiguous": "Результат неизвестен"
       },
       "providerDesc": {
         "anthropic": "Прямое подключение к моделям Claude (API-ключ)",
         "vertex": "Доступ к Claude и Gemini через GCP Service Account",
         "gemini": "Прямое использование Gemini API (бесплатная квота)",
         "ollama": "Локальный сервис вывода (Embedding и LLM)",
-        "openai-compatible": "Любой API-сервис, совместимый с OpenAI"
+        "openai-compatible": "Любой API-сервис, совместимый с OpenAI",
+        "claude-cli": "Использовать локальную авторизованную подписку Claude Code",
+        "codex-cli": "Использовать локальную авторизованную подписку Codex / ChatGPT"
       },
       "anthropicTip": "Получите на console.anthropic.com.",
       "vertexProjectTip": "ID проекта GCP. Заполняется автоматически после загрузки Service Account.",
@@ -126,7 +142,23 @@
       "colModels": "Модели",
       "colUsage": "Назначение",
       "modelCount": "{{count}}",
-      "confirm": "Подтвердить"
+      "confirm": "Подтвердить",
+      "cliPath": "Определённый путь CLI",
+      "cliVersion": "Версия CLI",
+      "loginMethod": "Способ входа",
+      "isolationStatus": "Проверка изоляции",
+      "isolationEnabled": "Безопасная изоляция включена",
+      "isolationVerified": "Изоляция проверена",
+      "isolationPending": "Ожидает проверки",
+      "isolationFailed": "Проверка изоляции не пройдена",
+      "lastTested": "Последняя проверка",
+      "testScope": "Область проверки",
+      "allCandidateModels": "Все модели-кандидаты: {{count}}",
+      "checkEnvironment": "Проверить окружение",
+      "cancelTest": "Отменить проверку",
+      "testSummary": "Доступно моделей: {{success}} / {{total}}",
+      "testCancelledSummary": "Тест отменён · успешно {{success}} из {{total}}",
+      "copyCommand": "Копировать команду"
     },
     "selection": {
       "loadingModels": "Загрузка доступных моделей...",
@@ -153,7 +185,16 @@
       "startReembed": "Начать пересчет",
       "saved": "Сохранено",
       "saveFailed": "Не удалось сохранить выбор модели. Попробуйте ещё раз.",
-      "retry": "Повторить"
+      "retry": "Повторить",
+      "selectConnection": "Выберите подключение",
+      "selectModel": "Выберите модель",
+      "modelLabel": "Модель"
+      ,"savedRouteProblem": "Проблема сохранённой конфигурации"
+      ,"connectionArchived": "Это подключение архивировано"
+      ,"connectionUnavailable": "Сохранённое подключение больше не существует"
+      ,"modelUnavailable": "Сохранённая модель не проверена"
+      ,"savedConnectionInvalid": "Сохранённое подключение недоступно. Выберите другое подключение."
+      ,"savedModelInvalid": "Сохранённая модель недоступна. Выберите проверенную модель."
     },
     "serviceStatus": {
       "title": "Состояние службы ИИ",
@@ -168,7 +209,12 @@
       "retryNow": "Повторить сейчас",
       "retrySuccess": "Прерыватель сброшен",
       "retryError": "Повтор не удался",
-      "retryDebounceHint": "Подождите немного"
+      "retryDebounceHint": "Подождите немного",
+      "availableConnections": "Available",
+      "needsAttention": "Needs attention",
+      "unknownConnection": "Unknown connection",
+      "collapseErrors": "Collapse errors",
+      "expandErrors": "Show {{count}} more"
     }
   },
   "data": {
@@ -427,7 +473,20 @@
     "colEstimatedCost": "Оценка стоимости",
     "range7d": "7 дней",
     "range30d": "30 дней",
-    "rangeAll": "Все"
+    "rangeAll": "Все",
+    "partialEstimate": "Не удалось рассчитать стоимость {{count}} вызовов; итоговая сумма является лишь частичной оценкой.",
+    "connectionSourceTitle": "Подключения и источники",
+    "colConnection": "Подключение",
+    "colSource": "Источник",
+    "legacyConnection": "Устаревшая конфигурация",
+    "unavailableEstimate": "Недоступно",
+    "subscriptionEstimateHint": "Стоимость локальной подписки — это эквивалентная API оценка на основе общедоступных цен за Token. Она не отражает фактическое списание по подписке.",
+    "source": {
+      "cloud_service": "Облачный сервис",
+      "local_subscription": "Локальная подписка",
+      "local_model": "Локальная модель",
+      "unknown": "Неизвестно"
+    }
   },
   "strategy": {
     "groups": {
@@ -830,7 +889,8 @@
       "codex": "~/.codex/config.toml (auto)",
       "windsurf": "~/.codeium/windsurf/mcp_config.json (auto)",
       "openclaw": "~/.openclaw/openclaw.json (auto)",
-      "gemini": "~/.gemini/extensions/tidemind-<id>/ (auto)"
+      "gemini": "~/.gemini/extensions/tidemind-<id>/ (auto)",
+      "kimiCode": "~/.kimi-code/mcp.json (авто)"
     },
     "toolSkillPath": {
       "claudeCode": ".claude/rules/mcp-tidemind.md",
@@ -839,7 +899,8 @@
       "codex": "Copy to project AGENTS.md",
       "windsurf": "Copy to project .windsurf/rules/",
       "openclaw": "Copy to ~/.openclaw/skills/",
-      "gemini": "Auto-loaded as GEMINI.md by Gemini CLI"
+      "gemini": "Auto-loaded as GEMINI.md by Gemini CLI",
+      "kimiCode": "Автоматически устанавливается в ~/.kimi-code/skills/, загружается при запуске Kimi Code"
     },
     "detail": {
       "coworkMcpHint": "MCP tools bridged via Desktop config automatically. Restart Claude Desktop to apply.",
@@ -853,7 +914,9 @@
       "openclawMcpHint": "MCP + Bootstrap Hook written to ~/.openclaw/. Restart OpenClaw to apply.",
       "openclawSkillHint": "Skill directory needs to be copied to ~/.openclaw/skills/ or project skills/ directory.",
       "geminiMcpHint": "MCP + SessionStart Hook bundled in Gemini extension. Installed via `gemini extensions install`. Restart `gemini` to apply.",
-      "geminiSkillHint": "GEMINI.md auto-loaded by Gemini CLI from extension. No manual copy needed."
+      "geminiSkillHint": "GEMINI.md auto-loaded by Gemini CLI from extension. No manual copy needed.",
+      "kimiMcpHint": "MCP + Hook внедрения контекста записаны в ~/.kimi-code/. Перезапустите сессию kimi, чтобы применить.",
+      "kimiSkillHint": "Skill автоматически установлен в ~/.kimi-code/skills/ и загружается при запуске Kimi Code. Ручное копирование не требуется."
     },
     "wizard": {
       "nameAgent": "Name Agent",
@@ -863,6 +926,7 @@
       "configWindsurf": "Configure Windsurf",
       "configOpenClaw": "Configure OpenClaw",
       "configGemini": "Configure Gemini CLI",
+      "configKimi": "Настроить Kimi Code",
       "installPlugin": "Install Plugin",
       "mcpConfig": "MCP Config",
       "skillFile": "Skill File",
@@ -921,6 +985,9 @@
       "verifyGeminiMcp": "Gemini extension installed (MCP + Hook + commands)",
       "verifyGeminiMcpHintOk": "Restart `gemini` to apply",
       "verifyGeminiMcpHintFail": "`gemini extensions install` failed",
+      "verifyKimiMcp": "Конфигурация MCP + Hook Kimi Code записана",
+      "verifyKimiMcpHintOk": "Перезапустите сессию, чтобы применить",
+      "verifyKimiMcpHintFail": "Не удалось записать конфигурацию",
       "verifyMcpAdded": "MCP config added to tool",
       "verifyMcpAddedHint": "Confirm you have pasted the JSON config from the previous step into the tool's MCP config file",
       "verifySkillCopied": "Skill content copied to tool",
@@ -985,6 +1052,15 @@
         "upgradeTitle": "Gemini CLI version too old for hooks",
         "upgradeHint": "Detected Gemini CLI {{version}} — upgrade to 0.26+ to enable auto-loaded user context via SessionStart hook.",
         "upgradeNote": "MCP tools (brain_*) and slash commands work on older versions, but you'll need to invoke brain_prepare manually."
+      },
+      "kimi": {
+        "mcpConfig": "Конфигурация MCP Kimi Code (mcp.json)",
+        "hookConfig": "Hook внедрения контекста (автозагрузка контекста)",
+        "skillInjected": "Руководство Skill внедрено в ~/.kimi-code/skills/",
+        "autoReadyTitle": "Полностью настроено — ручные шаги не требуются",
+        "autoReadyNote": "Kimi Code автоматически загрузит контекст и руководство Skill при следующем запуске сессии.",
+        "cliMissingTitle": "Kimi Code CLI не обнаружен",
+        "cliMissingNote": "Конфигурация готова. Установите Kimi Code CLI и запустите новую сессию."
       }
     }
   },

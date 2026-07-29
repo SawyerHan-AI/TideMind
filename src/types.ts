@@ -2,6 +2,8 @@
 // 外脑类型定义
 // ============================================================
 
+import type { EmbeddingProviderType, LLMProviderType } from './llm/provider-types.js';
+
 // --- 节点类型 ---
 export type NodeType = 'fact' | 'context' | 'preference' | 'idea' | 'crystal' | 'meta' | 'tag';
 export type LinkStatus = 'confirmed' | 'pending' | 'rejected_by_user';
@@ -420,10 +422,10 @@ export interface AppConfig {
   };
   // 功能用途
   llm: {
-    provider: 'anthropic' | 'vertex' | 'gemini' | 'ollama' | 'openai-compatible';  // 默认 provider（向后兼容）
-    light_provider?: 'anthropic' | 'vertex' | 'gemini' | 'ollama' | 'openai-compatible';
-    standard_provider?: 'anthropic' | 'vertex' | 'gemini' | 'ollama' | 'openai-compatible';
-    heavy_provider?: 'anthropic' | 'vertex' | 'gemini' | 'ollama' | 'openai-compatible';
+    provider: LLMProviderType;  // 默认 provider（向后兼容）
+    light_provider?: LLMProviderType;
+    standard_provider?: LLMProviderType;
+    heavy_provider?: LLMProviderType;
     // 新：按 connection_id 引用（优先于 provider）
     light_connection?: string;
     standard_connection?: string;
@@ -435,7 +437,7 @@ export interface AppConfig {
     prompt_cache_enabled?: boolean;
   };
   embedding: {
-    provider: 'vertex' | 'gemini' | 'ollama';
+    provider: EmbeddingProviderType;
     connection?: string;  // connection_id（优先于 provider）
     model: string;
     dimensions: number;

@@ -15,6 +15,7 @@ import { isNotionInitializing } from './initialization.js';
 import { archiveNodeWithVectors } from '../../db/node-lifecycle.js';
 import { SourceSyncLock } from '../shared/source-sync-lock.js';
 import type { NotionPageSummary } from './types.js';
+import { trackBackgroundWork } from '../../utils/background-work.js';
 
 const log = createLogger('notion');
 
@@ -84,18 +85,20 @@ export async function startNotionSource(
     } else {
       log.info('首次运行，执行全量同步...');
       // 异步执行，不阻塞启动
-      runSync(db, token, sourceId).catch(err =>
+      const work = runSync(db, token, sourceId).catch(err =>
         log.error(`全量同步失败: ${err.message}`),
       );
+      void trackBackgroundWork(work);
     }
   }
 
   // 启动轮询
   const intervalMs = ((pollInterval ?? 300) * 1000);
   const timer = setInterval(() => {
-    void runIncrementalSync(db, token, sourceId).catch(err => {
+    const work = runIncrementalSync(db, token, sourceId).catch(err => {
       log.error(`增量同步失败: ${(err as Error).message}`);
     });
+    void trackBackgroundWork(work);
   }, intervalMs);
 
   pollingTimers.set(sourceId, timer);

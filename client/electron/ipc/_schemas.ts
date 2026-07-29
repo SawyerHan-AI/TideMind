@@ -48,7 +48,7 @@ export interface SaveFileInput {
   defaultName: string
 }
 
-export type PluginClientType = 'claude-code' | 'cowork' | 'cursor' | 'codex' | 'windsurf' | 'openclaw' | 'gemini'
+export type PluginClientType = 'claude-code' | 'cowork' | 'cursor' | 'codex' | 'windsurf' | 'openclaw' | 'gemini' | 'kimi-code'
 
 export interface PluginGenerateInput {
   agentId: string
@@ -116,6 +116,7 @@ const PLUGIN_CLIENT_TYPES = new Set<PluginClientType>([
   'windsurf',
   'openclaw',
   'gemini',
+  'kimi-code',
 ])
 
 const NOTE_SOURCE_TOOL_TYPES = new Set<NoteSourceToolType>([

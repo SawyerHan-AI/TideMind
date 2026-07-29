@@ -6,7 +6,10 @@ import { parse as parseToml } from 'smol-toml'
 import { migrateDataDirIfNeeded } from '@server/utils/migrate-data-dir.js'
 import { syncSkillFiles, createSyncHashStoreFromDb } from '@server/utils/sync-skill-files.js'
 import { createLogger } from '@server/utils/logger.js'
-import { execIgnoringDuplicateColumn } from '@server/db/migration-helpers.js'
+import {
+  ensurePendingDigestsV33,
+  execIgnoringDuplicateColumn,
+} from '@server/db/migration-helpers.js'
 import { createOutboxTable } from './cloud/outbox.js'
 
 let db: Database.Database | null = null
@@ -58,7 +61,9 @@ function getDataDir(): string {
         // 数据目录错位、DB/配置在错误位置重建。与 _schemas.ts parseNoteSourcePath 一致。
         return general.data_dir.replace(/^~(?=$|\/)/, os.homedir())
       }
-    } catch {}
+    } catch {
+      // Malformed optional config falls back to the default data directory.
+    }
   }
 
   return defaultDir
@@ -322,11 +327,25 @@ export function getClientDb(): Database.Database {
         input_tokens INTEGER DEFAULT 0,
         output_tokens INTEGER DEFAULT 0,
         thinking_tokens INTEGER DEFAULT 0,
-        estimated_cost REAL DEFAULT 0,
+        estimated_cost REAL,
+        provider_type TEXT,
+        connection_id TEXT,
+        connection_name_snapshot TEXT,
+        source_type TEXT,
+        billing_mode TEXT,
+        estimated_cost_kind TEXT,
+        pricing_table_version TEXT,
+        provider_reported_cost REAL,
+        provider_reported_cost_kind TEXT,
+        cached_input_tokens INTEGER DEFAULT 0,
+        reasoning_tokens INTEGER DEFAULT 0,
+        invocation_outcome TEXT,
         created TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_llm_usage_created ON llm_usage_log(created);
       CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage_log(model);
+      CREATE INDEX IF NOT EXISTS idx_llm_usage_connection ON llm_usage_log(connection_id, created);
+      CREATE INDEX IF NOT EXISTS idx_llm_usage_source ON llm_usage_log(source_type, created);
       CREATE TABLE IF NOT EXISTS timeline_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         type TEXT NOT NULL,
@@ -379,20 +398,84 @@ export function getClientDb(): Database.Database {
         status TEXT DEFAULT 'unconfigured',
         available_models TEXT,
         last_checked TEXT,
+        status_reason TEXT,
+        cli_path TEXT,
+        cli_version TEXT,
+        auth_method TEXT,
+        auth_fingerprint TEXT,
+        environment_checked_at TEXT,
+        candidate_models TEXT,
+        validation_fingerprint TEXT,
+        model_validation_json TEXT,
+        last_tested_at TEXT,
+        last_test_summary TEXT,
         archived INTEGER DEFAULT 0,
         created TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS llm_connection_health (
+        scope_id TEXT PRIMARY KEY,
+        connection_id TEXT,
+        provider_type TEXT NOT NULL,
+        circuit_state TEXT NOT NULL DEFAULT 'closed',
+        failure_count INTEGER NOT NULL DEFAULT 0,
+        opened_at INTEGER,
+        cooldown_ms INTEGER NOT NULL DEFAULT 300000,
+        last_success_at INTEGER,
+        last_error_kind TEXT,
+        last_error_message TEXT,
+        last_error_at INTEGER,
+        needs_user_action INTEGER NOT NULL DEFAULT 0,
+        retry_at INTEGER,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_llm_connection_health_connection ON llm_connection_health(connection_id);
+      CREATE TABLE IF NOT EXISTS llm_connection_probe_leases (
+        scope_id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS cli_capacity_leases (
+        account_scope TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        owner_pid INTEGER NOT NULL,
+        fencing_token INTEGER NOT NULL,
+        lease_expires_at INTEGER NOT NULL,
+        heartbeat_at INTEGER NOT NULL,
+        connection_id TEXT NOT NULL,
+        invocation_id TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_cli_capacity_leases_expiry ON cli_capacity_leases(lease_expires_at);
+      CREATE TABLE IF NOT EXISTS cli_invocations (
+        id TEXT PRIMARY KEY,
+        connection_id TEXT NOT NULL,
+        provider_type TEXT NOT NULL,
+        account_scope TEXT NOT NULL,
+        task_id TEXT,
+        operation_name TEXT,
+        model_alias TEXT,
+        actual_model TEXT,
+        prompt_committed INTEGER NOT NULL DEFAULT 0,
+        outcome TEXT NOT NULL DEFAULT 'running',
+        resolution TEXT,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        error_kind TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_cli_invocations_connection ON cli_invocations(connection_id, started_at);
+      CREATE INDEX IF NOT EXISTS idx_cli_invocations_task ON cli_invocations(task_id, started_at);
+      CREATE INDEX IF NOT EXISTS idx_cli_invocations_outcome ON cli_invocations(outcome, started_at);
       CREATE TABLE IF NOT EXISTS pending_digests (
         id TEXT PRIMARY KEY,
         trace_id TEXT NOT NULL,
         input_json TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','failed')),
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','failed','ambiguous')),
         error_message TEXT,
         retry_count INTEGER DEFAULT 0,
         created TEXT NOT NULL,
         next_retry_at TEXT NOT NULL,
         completed_at TEXT,
-        processing_started_at TEXT
+        processing_started_at TEXT,
+        ambiguous_invocation_id TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_pending_digests_status ON pending_digests(status, next_retry_at);
     `)
@@ -429,12 +512,23 @@ export function getClientDb(): Database.Database {
       input_tokens INTEGER DEFAULT 0,
       output_tokens INTEGER DEFAULT 0,
       thinking_tokens INTEGER DEFAULT 0,
-      estimated_cost REAL DEFAULT 0,
+      estimated_cost REAL,
+      provider_type TEXT,
+      connection_id TEXT,
+      connection_name_snapshot TEXT,
+      source_type TEXT,
+      billing_mode TEXT,
+      estimated_cost_kind TEXT,
+      pricing_table_version TEXT,
+      provider_reported_cost REAL,
+      provider_reported_cost_kind TEXT,
+      cached_input_tokens INTEGER DEFAULT 0,
+      reasoning_tokens INTEGER DEFAULT 0,
+      invocation_outcome TEXT,
       created TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_llm_usage_created ON llm_usage_log(created);
     CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage_log(model);
-
     CREATE TABLE IF NOT EXISTS strategy_versions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       strategy_name TEXT NOT NULL,
@@ -515,20 +609,86 @@ export function getClientDb(): Database.Database {
       status TEXT DEFAULT 'unconfigured',
       available_models TEXT,
       last_checked TEXT,
+      status_reason TEXT,
+      cli_path TEXT,
+      cli_version TEXT,
+      auth_method TEXT,
+      auth_fingerprint TEXT,
+      environment_checked_at TEXT,
+      candidate_models TEXT,
+      validation_fingerprint TEXT,
+      model_validation_json TEXT,
+      last_tested_at TEXT,
+      last_test_summary TEXT,
       archived INTEGER DEFAULT 0,
       created TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS llm_connection_health (
+      scope_id TEXT PRIMARY KEY,
+      connection_id TEXT,
+      provider_type TEXT NOT NULL,
+      circuit_state TEXT NOT NULL DEFAULT 'closed',
+      failure_count INTEGER NOT NULL DEFAULT 0,
+      opened_at INTEGER,
+      cooldown_ms INTEGER NOT NULL DEFAULT 300000,
+      last_success_at INTEGER,
+      last_error_kind TEXT,
+      last_error_message TEXT,
+      last_error_at INTEGER,
+      needs_user_action INTEGER NOT NULL DEFAULT 0,
+      retry_at INTEGER,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_llm_connection_health_connection ON llm_connection_health(connection_id);
+    CREATE TABLE IF NOT EXISTS llm_connection_probe_leases (
+      scope_id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS cli_capacity_leases (
+      account_scope TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      owner_pid INTEGER NOT NULL,
+      fencing_token INTEGER NOT NULL,
+      lease_expires_at INTEGER NOT NULL,
+      heartbeat_at INTEGER NOT NULL,
+      connection_id TEXT NOT NULL,
+      invocation_id TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_cli_capacity_leases_expiry ON cli_capacity_leases(lease_expires_at);
+    CREATE TABLE IF NOT EXISTS cli_invocations (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      provider_type TEXT NOT NULL,
+      account_scope TEXT NOT NULL,
+      task_id TEXT,
+      operation_name TEXT,
+      model_alias TEXT,
+      actual_model TEXT,
+      prompt_committed INTEGER NOT NULL DEFAULT 0,
+      outcome TEXT NOT NULL DEFAULT 'running',
+      resolution TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      error_kind TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_cli_invocations_connection ON cli_invocations(connection_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_cli_invocations_task ON cli_invocations(task_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_cli_invocations_outcome ON cli_invocations(outcome, started_at);
 
     CREATE TABLE IF NOT EXISTS pending_digests (
       id TEXT PRIMARY KEY,
       trace_id TEXT NOT NULL,
       input_json TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','failed')),
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','failed','ambiguous')),
       error_message TEXT,
       retry_count INTEGER DEFAULT 0,
       created TEXT NOT NULL,
       next_retry_at TEXT NOT NULL,
-      completed_at TEXT
+      completed_at TEXT,
+      processing_started_at TEXT,
+      ambiguous_invocation_id TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_pending_digests_status ON pending_digests(status, next_retry_at);
 
@@ -562,6 +722,33 @@ export function getClientDb(): Database.Database {
   safeAlterAddColumn(tmpDb, "ALTER TABLE nodes ADD COLUMN source_device TEXT DEFAULT 'local'")
   safeAlterAddColumn(tmpDb, 'ALTER TABLE links ADD COLUMN refined INTEGER DEFAULT 0')
   safeAlterAddColumn(tmpDb, 'ALTER TABLE llm_usage_log ADD COLUMN estimated_cost REAL DEFAULT 0')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE llm_usage_log ADD COLUMN provider_type TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE llm_usage_log ADD COLUMN connection_id TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE llm_usage_log ADD COLUMN connection_name_snapshot TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE llm_usage_log ADD COLUMN source_type TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE llm_usage_log ADD COLUMN billing_mode TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE llm_usage_log ADD COLUMN estimated_cost_kind TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE llm_usage_log ADD COLUMN pricing_table_version TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE llm_usage_log ADD COLUMN provider_reported_cost REAL')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE llm_usage_log ADD COLUMN provider_reported_cost_kind TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE llm_usage_log ADD COLUMN cached_input_tokens INTEGER DEFAULT 0')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE llm_usage_log ADD COLUMN reasoning_tokens INTEGER DEFAULT 0')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE llm_usage_log ADD COLUMN invocation_outcome TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE model_connections ADD COLUMN status_reason TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE model_connections ADD COLUMN cli_path TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE model_connections ADD COLUMN cli_version TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE model_connections ADD COLUMN auth_method TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE model_connections ADD COLUMN auth_fingerprint TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE model_connections ADD COLUMN environment_checked_at TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE model_connections ADD COLUMN candidate_models TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE model_connections ADD COLUMN validation_fingerprint TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE model_connections ADD COLUMN model_validation_json TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE model_connections ADD COLUMN last_tested_at TEXT')
+  safeAlterAddColumn(tmpDb, 'ALTER TABLE model_connections ADD COLUMN last_test_summary TEXT')
+  tmpDb.exec(`
+    CREATE INDEX IF NOT EXISTS idx_llm_usage_connection ON llm_usage_log(connection_id, created);
+    CREATE INDEX IF NOT EXISTS idx_llm_usage_source ON llm_usage_log(source_type, created);
+  `)
 
   // Reconcile LWW: nodes/links 加 `updated` 时间戳(两端都有,冲突时 LWW)。
   // 老数据默认 updated = created(表示从未修改过),backfill 一次。
@@ -592,6 +779,7 @@ export function getClientDb(): Database.Database {
   safeAlterAddColumn(tmpDb, "ALTER TABLE operation_log ADD COLUMN fallback_chain TEXT")
   safeAlterAddColumn(tmpDb, "ALTER TABLE operation_log ADD COLUMN vector_unavailable INTEGER")
   safeAlterAddColumn(tmpDb, "ALTER TABLE pending_digests ADD COLUMN processing_started_at TEXT")
+  ensurePendingDigestsV33(tmpDb)
 
   tmpDb.close()
 

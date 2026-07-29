@@ -1,13 +1,36 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import type Database from 'better-sqlite3'
-import { getCircuitState, resetCircuitBreaker, setHealthChangeListener } from '../../../src/metabolism/scheduler'
+import {
+  listConnectionHealth,
+  resetConnectionHealth,
+  setConnectionHealthChangeListener,
+} from '../../../src/llm/connection-health'
+import {
+  setActiveLLMTaskListener,
+  type ActiveLLMTask,
+} from '../../../src/llm/invocation-context'
 import { clearClientCache } from '../../../src/llm/client'
 import { triggerImmediateSchedulerTick } from '../daemon'
 import { createLogger } from '../../../src/utils/logger'
 
 const log = createLogger('ipc:llm-health')
 
+export interface ConnectionHealthItem {
+  connectionId: string
+  connectionName: string
+  providerType: string
+  kind: string
+  message: string
+  needsUserAction: boolean
+  occurredAt: number
+  retryAt: number | null
+  circuitState: 'closed' | 'open' | 'half-open'
+  openedAt: number | null
+  cooldownMs: number
+}
+
 export interface LLMHealthSnapshot {
+  // Legacy fields remain during the renderer migration.
   circuitState: 'closed' | 'open' | 'half-open'
   failures: number
   openedAt: number
@@ -15,56 +38,137 @@ export interface LLMHealthSnapshot {
   lastSuccessAt: number
   lastError: string | null
   lastErrorAt: number
+  availableCount: number
+  needsAttentionCount: number
+  errors: ConnectionHealthItem[]
+  activeTask: ActiveLLMTask | null
 }
 
-function readSnapshot(db: Database.Database): LLMHealthSnapshot {
-  const rows = db.prepare(
-    `SELECT key, value FROM metadata
-     WHERE key IN (
-       'circuit_breaker_opened_at',
-       'llm_last_success_at',
-       'llm_last_error',
-       'llm_last_error_at'
-     )`,
-  ).all() as Array<{ key: string; value: string }>
-  const m = new Map(rows.map(r => [r.key, r.value]))
-  const circuit = getCircuitState(db)
+let activeTask: ActiveLLMTask | null = null
+
+export function readLLMHealthSnapshot(db: Database.Database): LLMHealthSnapshot {
+  const connections = db.prepare(`
+    SELECT id, name, provider_type, status, status_reason, archived
+    FROM model_connections
+    WHERE archived = 0
+  `).all() as Array<{
+    id: string
+    name: string
+    provider_type: string
+    status: string
+    status_reason: string | null
+    archived: number
+  }>
+  const connectionById = new Map(connections.map(row => [row.id, row]))
+  const health = listConnectionHealth(db)
+  const errors: ConnectionHealthItem[] = []
+  const healthConnections = new Set<string>()
+
+  for (const item of health) {
+    if (!item.connectionId) continue
+    const connection = connectionById.get(item.connectionId)
+    if (!connection) continue
+    healthConnections.add(item.connectionId)
+    if (!item.lastErrorKind || !item.lastErrorMessage) continue
+    errors.push({
+      connectionId: item.connectionId,
+      connectionName: connection.name,
+      providerType: item.providerType,
+      kind: item.lastErrorKind,
+      message: item.lastErrorMessage,
+      needsUserAction: item.needsUserAction,
+      occurredAt: item.lastErrorAt ?? 0,
+      retryAt: item.retryAt,
+      circuitState: item.circuitState,
+      openedAt: item.openedAt,
+      cooldownMs: item.cooldownMs,
+    })
+  }
+
+  const unavailableStatuses = new Set([
+    'not_installed',
+    'not_authenticated',
+    'wrong_auth_method',
+    'unsupported_version',
+    'offline',
+    'ambiguous',
+  ])
+  for (const connection of connections) {
+    if (
+      unavailableStatuses.has(connection.status)
+      && !healthConnections.has(connection.id)
+    ) {
+      errors.push({
+        connectionId: connection.id,
+        connectionName: connection.name,
+        providerType: connection.provider_type,
+        kind: connection.status,
+        message: connection.status_reason ?? connection.status,
+        needsUserAction: connection.status !== 'offline',
+        occurredAt: 0,
+        retryAt: null,
+        circuitState: 'open',
+        openedAt: null,
+        cooldownMs: 0,
+      })
+    }
+  }
+
+  errors.sort((a, b) => {
+    if (a.needsUserAction !== b.needsUserAction) return a.needsUserAction ? -1 : 1
+    return b.occurredAt - a.occurredAt
+  })
+  // “可用”与模型选择采用同一口径：只有至少一个模型通过真实测试，
+  // 连接才会进入 online/degraded。环境检查成功但尚未测试的 untested
+  // 不能被统计为可用，否则状态卡会和 verified-only 下拉菜单互相矛盾。
+  const callableStatuses = new Set(['online', 'degraded'])
+  const availableCount = connections.filter(row => callableStatuses.has(row.status)).length
+  const lastSuccessAt = health.reduce(
+    (max, item) => Math.max(max, item.lastSuccessAt ?? 0),
+    0,
+  )
+  const worst = health
+    .filter(item => item.circuitState !== 'closed')
+    .sort((a, b) => (b.lastErrorAt ?? 0) - (a.lastErrorAt ?? 0))[0]
+
   return {
-    circuitState: circuit.state,
-    failures: circuit.failures,
-    openedAt: Number(m.get('circuit_breaker_opened_at') ?? 0),
-    cooldownMs: circuit.cooldownMs,
-    lastSuccessAt: Number(m.get('llm_last_success_at') ?? 0),
-    lastError: m.get('llm_last_error') ?? null,
-    lastErrorAt: Number(m.get('llm_last_error_at') ?? 0),
+    circuitState: worst?.circuitState ?? 'closed',
+    failures: worst?.failureCount ?? 0,
+    openedAt: worst?.openedAt ?? 0,
+    cooldownMs: worst?.cooldownMs ?? 5 * 60_000,
+    lastSuccessAt,
+    lastError: errors[0]?.message ?? null,
+    lastErrorAt: errors[0]?.occurredAt ?? 0,
+    availableCount,
+    needsAttentionCount: errors.length,
+    errors,
+    activeTask,
   }
 }
 
-function broadcastHealth(db: Database.Database): void {
+export function broadcastLLMHealth(db: Database.Database): void {
   let snapshot: LLMHealthSnapshot
-  try { snapshot = readSnapshot(db) }
-  catch { return /* main 进程不应因诊断查询失败崩溃 */ }
+  try { snapshot = readLLMHealthSnapshot(db) }
+  catch { return }
   for (const win of BrowserWindow.getAllWindows()) {
     try {
       if (!win.isDestroyed()) win.webContents.send('llm-health-changed', snapshot)
-    } catch { /* 窗口已销毁等竞态，忽略 */ }
+    } catch {
+      // Window destruction races are expected during shutdown.
+    }
   }
 }
 
 export function registerLLMHealthHandlers(db: Database.Database): void {
-  ipcMain.handle('llm:health', () => readSnapshot(db))
+  ipcMain.handle('llm:health', () => readLLMHealthSnapshot(db))
 
-  // 用户在 UI 上点「立即重试」时调用:
-  //   1. 强制重置熔断器(清 failures + openedAt + cooldownMs)
-  //   2. 清掉 LLM client cache(避免上次坏 SDK 实例被复用)
-  //   3. 立即触发一次 scheduler tick(不等下个 60s/600s tick 周期)
-  // 返回新的 snapshot 给 UI 即时刷新。
-  ipcMain.handle('llm:reset-and-retry', async () => {
+  ipcMain.handle('llm:reset-and-retry', async (_event, connectionId?: unknown) => {
+    if (typeof connectionId !== 'string' || !/^mc_[a-f0-9]{8}$/.test(connectionId)) {
+      throw new Error('必须指定有效的模型连接')
+    }
     try {
-      resetCircuitBreaker(db)
+      resetConnectionHealth(db, connectionId)
       clearClientCache()
-      // fire-and-forget tick——不 await,避免 IPC 调用一直等到 LLM 调用完成。
-      // 用户点按钮的语义是"赶紧跑一下",不需要等结果(snapshot 会通过 health-change 自动推)。
       triggerImmediateSchedulerTick().catch(err => {
         log.warn(`triggerImmediateSchedulerTick 失败: ${(err as Error).message}`)
       })
@@ -72,15 +176,12 @@ export function registerLLMHealthHandlers(db: Database.Database): void {
       log.error(`llm:reset-and-retry 失败: ${(err as Error).message}`)
       throw err
     }
-    return readSnapshot(db)
+    return readLLMHealthSnapshot(db)
   })
 
-  // 注: 没有单独的 'llm:reset-circuit-breaker' IPC。connection 凭据变更场景由
-  // connections.ts 内部直接调 clearClientCache() + resetCircuitBreaker() 处理,
-  // 不需要走 IPC(那是同进程内部调用)。
-
-  // 把 core scheduler 的状态变化 hook 接到 BrowserWindow 广播。
-  // 注意：core 层 (src/metabolism/scheduler.ts) 不能直接 import electron，
-  // 通过 setHealthChangeListener 注入回调实现解耦。
-  setHealthChangeListener(() => broadcastHealth(db))
+  setConnectionHealthChangeListener(() => broadcastLLMHealth(db))
+  setActiveLLMTaskListener(task => {
+    activeTask = task
+    broadcastLLMHealth(db)
+  })
 }
