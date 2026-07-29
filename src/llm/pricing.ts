@@ -7,6 +7,9 @@ import { createLogger } from '../utils/logger.js';
 
 const log = createLogger('pricing');
 
+/** 写入 usage ledger，确保历史预估可以按当时价表解释。 */
+export const PRICING_TABLE_VERSION = '2026-07-29';
+
 interface ModelPricing {
   /** 模型名关键词（用 includes 匹配） */
   pattern: string
@@ -53,16 +56,6 @@ const PRICING_TABLE: ModelPricing[] = [
 ]
 
 /**
- * 保守 fallback 价格:未知模型按 Sonnet 价档计费。
- * 静默返 0 是 bug —— Pro+ 托管 LLM 路径下让月度账单聚合漏算。
- * 用 Sonnet 价格作 fallback 让计费偏向 "略高估" 而非 "漏算",上线新模型补 PRICING_TABLE 后即可精确。
- */
-const FALLBACK_PRICING: ModelPricing = {
-  pattern: '__fallback__',
-  input: 3.00, output: 15.00, thinking: 15.00,
-};
-
-/**
  * Prompt cache 价档系数(Anthropic 公开定价):
  * cache write 按 input 价的 1.25x 计费,cache read 按 0.1x。
  * usage.input_tokens 只是未缓存余量,完整 prompt = input + cache_creation + cache_read,
@@ -74,19 +67,19 @@ const CACHE_READ_MULTIPLIER = 0.1;
 /**
  * 根据模型名和 token 数计算预估费用（美元）。
  * 模型名支持带版本后缀，如 `claude-sonnet-4-6@20250514`。
- * 未匹配到的模型走 FALLBACK_PRICING(保守估价 + log.error)。
+ * 未匹配到的模型返回 NULL，禁止拿任意 fallback 伪装成可审计的 API 价格。
  */
-export function estimateCost(
+function calculateEstimatedCost(
   modelId: string,
   inputTokens: number,
   outputTokens: number,
   thinkingTokens: number,
   cacheCreateTokens = 0,
   cacheReadTokens = 0,
-): number {
+): number | null {
   if (!Number.isFinite(inputTokens) || !Number.isFinite(outputTokens) || !Number.isFinite(thinkingTokens)
     || !Number.isFinite(cacheCreateTokens) || !Number.isFinite(cacheReadTokens)) {
-    return 0;
+    return null;
   }
   if (inputTokens < 0) inputTokens = 0;
   if (outputTokens < 0) outputTokens = 0;
@@ -95,10 +88,10 @@ export function estimateCost(
   if (cacheReadTokens < 0) cacheReadTokens = 0;
 
   const id = modelId.toLowerCase()
-  let pricing = PRICING_TABLE.find(p => id.includes(p.pattern))
+  const pricing = PRICING_TABLE.find(p => id.includes(p.pattern))
   if (!pricing) {
-    log.error(`[pricing] Unknown model ID: ${modelId} — using FALLBACK_PRICING (Sonnet-level rates). Add pattern to PRICING_TABLE for accurate billing.`);
-    pricing = FALLBACK_PRICING;
+    log.error(`[pricing] Unknown model ID: ${modelId} — estimated cost is unavailable. Add the actual model ID to PRICING_TABLE.`);
+    return null;
   }
 
   return (
@@ -109,4 +102,62 @@ export function estimateCost(
       thinkingTokens * pricing.thinking) /
     1_000_000
   )
+}
+
+/**
+ * 兼容旧调用点的数值接口。新 usage ledger 必须使用 estimateVersionedCost，
+ * 才能把未知模型保存为 NULL + unavailable，而不是把 0 当成真实价格。
+ */
+export function estimateCost(
+  modelId: string,
+  inputTokens: number,
+  outputTokens: number,
+  thinkingTokens: number,
+  cacheCreateTokens = 0,
+  cacheReadTokens = 0,
+): number {
+  return calculateEstimatedCost(
+    modelId,
+    inputTokens,
+    outputTokens,
+    thinkingTokens,
+    cacheCreateTokens,
+    cacheReadTokens,
+  ) ?? 0;
+}
+
+export interface VersionedCostEstimate {
+  estimatedCost: number | null;
+  kind: 'api_estimate' | 'unavailable';
+  pricingTableVersion: string | null;
+}
+
+export function estimateVersionedCost(
+  modelId: string,
+  inputTokens: number,
+  outputTokens: number,
+  thinkingTokens: number,
+  cacheCreateTokens = 0,
+  cacheReadTokens = 0,
+): VersionedCostEstimate {
+  const estimatedCost = calculateEstimatedCost(
+    modelId,
+    inputTokens,
+    outputTokens,
+    thinkingTokens,
+    cacheCreateTokens,
+    cacheReadTokens,
+  );
+  return estimatedCost === null
+    ? {
+      estimatedCost: null,
+      kind: 'unavailable',
+      // 即使未命中也记录“哪一版价表判定为未知”，后续才能审计或回填。
+      pricingTableVersion: PRICING_TABLE_VERSION,
+    }
+    : {
+      estimatedCost,
+      kind: 'api_estimate',
+      pricingTableVersion: PRICING_TABLE_VERSION,
+    };
 }

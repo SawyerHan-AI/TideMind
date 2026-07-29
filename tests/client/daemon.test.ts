@@ -26,6 +26,7 @@ const {
   recordEmbeddingSuccessMock, recordEmbeddingFailureMock,
   setLLMSuccessHookMock, setEmbeddingSuccessHookMock, setEmbeddingFailureHookMock,
   setStructureHolesRunnerMock, runStructureHolesInWorkerMock, terminateStructureHolesWorkerMock,
+  reconcileCliRuntimeStateMock, cleanupStaleCliRuntimeDirectoriesMock,
 } = vi.hoisted(() => {
   const tasks = [{ id: 't1' }, { id: 't2' }, { id: 't3' }];
   return {
@@ -57,6 +58,12 @@ const {
     setStructureHolesRunnerMock: vi.fn(),
     runStructureHolesInWorkerMock: vi.fn(async () => []),
     terminateStructureHolesWorkerMock: vi.fn(),
+    reconcileCliRuntimeStateMock: vi.fn(() => ({
+      definiteFailures: [],
+      ambiguousInvocations: [],
+      stabilizedConnections: [],
+    })),
+    cleanupStaleCliRuntimeDirectoriesMock: vi.fn(),
   };
 });
 
@@ -92,6 +99,14 @@ vi.mock('@server/metabolism/scheduler.js', () => ({
 
 vi.mock('@server/llm/client.js', () => ({
   setLLMSuccessHook: setLLMSuccessHookMock,
+}));
+
+vi.mock('@server/llm/cli/invocation-state.js', () => ({
+  reconcileCliRuntimeState: reconcileCliRuntimeStateMock,
+}));
+
+vi.mock('@server/llm/cli/runtime-dir.js', () => ({
+  cleanupStaleCliRuntimeDirectories: cleanupStaleCliRuntimeDirectoriesMock,
 }));
 
 vi.mock('@server/llm/embedding.js', () => ({
@@ -203,6 +218,22 @@ describe('startDaemon', () => {
   it('startAllNoteSources 抛错 → log.error 不冒泡', async () => {
     startAllNoteSourcesMock.mockRejectedValueOnce(new Error('source init failed'));
     await expect(startDaemon()).resolves.toBeUndefined();
+  });
+
+  it('initVec 尚未完成时 stop 会使旧启动失效，且关库后不再安装 hook 或启动笔记源', async () => {
+    let resolveInit: (() => void) | undefined;
+    initVecMock.mockImplementationOnce(() => new Promise<void>(resolve => { resolveInit = resolve; }));
+
+    const startPromise = startDaemon();
+    await Promise.resolve();
+    const stopPromise = stopDaemon();
+    expect(closeDbMock).not.toHaveBeenCalled();
+
+    resolveInit?.();
+    await Promise.all([startPromise, stopPromise]);
+    expect(startAllNoteSourcesMock).not.toHaveBeenCalled();
+    expect(setLLMSuccessHookMock).not.toHaveBeenCalledWith(expect.any(Function));
+    expect(closeDbMock).toHaveBeenCalledTimes(1);
   });
 
   it('初始 runSchedulerTick 抛错 → log.error 不冒泡', async () => {
@@ -318,6 +349,17 @@ describe('stopDaemon', () => {
     await stopDaemon();
     expect(activityState.listeners.size).toBe(0);
     expect(stopAllNoteSourcesAsyncMock).toHaveBeenCalledTimes(1);
+    expect(closeDbMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('笔记源 drain 失败时拒绝退出并保留 DB，之后可重试停止', async () => {
+    await startDaemon();
+    stopAllNoteSourcesAsyncMock.mockRejectedValueOnce(new Error('watcher drain failed'));
+
+    await expect(stopDaemon()).rejects.toThrow('watcher drain failed');
+    expect(closeDbMock).not.toHaveBeenCalled();
+
+    await expect(stopDaemon()).resolves.toBeUndefined();
     expect(closeDbMock).toHaveBeenCalledTimes(1);
   });
 

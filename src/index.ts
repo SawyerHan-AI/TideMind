@@ -21,6 +21,8 @@ import type { DigestInput, PrepareInput, DigestIntent, DetailLevel } from './typ
 import { touchAgent, getAgent } from './db/agents.js';
 import { createLogger } from './utils/logger.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
+import { shutdownLLMClient } from './llm/client.js';
+import { waitForBackgroundWork } from './utils/background-work.js';
 
 const log = createLogger('server');
 const migrationLog = createLogger('migrate');
@@ -60,6 +62,33 @@ const server = new McpServer({
   name: 'tidemind',
   version: getVersion(),
 });
+let mcpStopping = false;
+let activeMcpHandlers = 0;
+const mcpHandlerDrainWaiters = new Set<() => void>();
+
+function enterMcpHandler(): boolean {
+  if (mcpStopping) return false;
+  activeMcpHandlers++;
+  return true;
+}
+
+function leaveMcpHandler(): void {
+  activeMcpHandlers--;
+  if (activeMcpHandlers === 0) {
+    for (const resolve of mcpHandlerDrainWaiters) resolve();
+    mcpHandlerDrainWaiters.clear();
+  }
+}
+
+function waitForMcpHandlers(): Promise<void> {
+  if (activeMcpHandlers === 0) return Promise.resolve();
+  return new Promise(resolve => mcpHandlerDrainWaiters.add(resolve));
+}
+
+const mcpStoppingResult = {
+  isError: true as const,
+  content: [{ type: 'text' as const, text: 'Tide Mind 正在安全退出，已停止接收新请求。' }],
+};
 
 // --- 加载 MCP 工具描述（可在客户端编辑）---
 const defaultDescriptions: Record<string, string> = {
@@ -101,25 +130,30 @@ server.tool(
     detail_level: z.enum(['brief', 'standard', 'deep']).optional().describe('返回详细程度：brief 用于快速问答，deep 用于复杂讨论'),
   },
   async (params) => {
+    if (!enterMcpHandler()) return mcpStoppingResult;
     try {
-      const db = getDb();
-      const repo = new SqliteRepository(db);
-      if (agentId) touchAgent(db, agentId);
-      const input: PrepareInput = {
-        tool: params.tool,
-        files: params.files,
-        hint: params.hint,
-        detail_level: params.detail_level as DetailLevel | undefined,
-        agent_id: agentId ?? undefined,
-      };
-      const result = await prepare(repo, input);
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
-      };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.error('brain_prepare 失败:', msg);
-      return { isError: true, content: [{ type: 'text' as const, text: `Error: ${msg}` }] };
+      try {
+        const db = getDb();
+        const repo = new SqliteRepository(db);
+        if (agentId) touchAgent(db, agentId);
+        const input: PrepareInput = {
+          tool: params.tool,
+          files: params.files,
+          hint: params.hint,
+          detail_level: params.detail_level as DetailLevel | undefined,
+          agent_id: agentId ?? undefined,
+        };
+        const result = await prepare(repo, input);
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.error('brain_prepare 失败:', msg);
+        return { isError: true, content: [{ type: 'text' as const, text: `Error: ${msg}` }] };
+      }
+    } finally {
+      leaveMcpHandler();
     }
   },
 );
@@ -175,6 +209,8 @@ server.tool(
     include_surprise: z.unknown().optional().describe('[DEPRECATED v0.2.77] 已合并到 related_matches。传入会被检测并返回升级 hint。'),
   },
   async (params: unknown) => {
+    if (!enterMcpHandler()) return mcpStoppingResult;
+    try {
     try {
       const db = getDb();
       const repo = new SqliteRepository(db);
@@ -232,6 +268,9 @@ server.tool(
       log.error('brain_recall 失败:', msg);
       return { isError: true, content: [{ type: 'text' as const, text: `Error: ${msg}` }] };
     }
+    } finally {
+      leaveMcpHandler();
+    }
   },
 );
 
@@ -280,6 +319,8 @@ server.tool(
     async: z.boolean().optional().describe('是否异步处理（默认 true）'),
   },
   async (params) => {
+    if (!enterMcpHandler()) return mcpStoppingResult;
+    try {
     try {
       const db = getDb();
       const repo = new SqliteRepository(db);
@@ -306,6 +347,9 @@ server.tool(
       log.error('brain_digest 失败:', msg);
       return { isError: true, content: [{ type: 'text' as const, text: `Error: ${msg}` }] };
     }
+    } finally {
+      leaveMcpHandler();
+    }
   },
 );
 
@@ -319,30 +363,30 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  // 优雅退出：异步 flush MCP transport → close db → exit
-  // 10s 超时兜底,避免 transport 卡住时永远退不出去。
+  // 优雅退出：先停止 MCP admission，再关闭 LLM runtime 并排空脱离请求的后台
+  // recall work，最后才 close DB。CLI kill verification / ambiguous 收口失败时
+  // 必须保留进程和数据库，不能用固定 timeout 强退。
+  let shutdownPromise: Promise<void> | null = null;
   async function gracefulShutdown(): Promise<void> {
-    const SHUTDOWN_TIMEOUT_MS = 10_000;
-    const timeoutPromise = new Promise<void>((resolve) =>
-      setTimeout(() => {
-        log.warn('shutdown timeout 10s 到期，强制退出');
-        resolve();
-      }, SHUTDOWN_TIMEOUT_MS).unref(),
-    );
-    const closePromise = (async () => {
-      try {
-        if (server) await server.close();
-      } catch (err) {
-        log.warn('server-close-failed:', err instanceof Error ? err.message : String(err));
-      }
+    if (shutdownPromise) return shutdownPromise;
+    const current = (async () => {
+      mcpStopping = true;
+      if (server) await server.close();
+      await shutdownLLMClient();
+      await waitForMcpHandlers();
+      await waitForBackgroundWork();
       try {
         closeDb();
       } catch (err) {
         log.warn('close-db-failed:', err instanceof Error ? err.message : String(err));
       }
-    })();
-    await Promise.race([closePromise, timeoutPromise]);
-    process.exit(0);
+      process.exit(0);
+    })().catch(error => {
+      log.error('graceful shutdown failed; process and DB kept alive:', error);
+      shutdownPromise = null;
+    });
+    shutdownPromise = current;
+    return current;
   }
   process.on('SIGINT', () => { void gracefulShutdown(); });
   process.on('SIGTERM', () => { void gracefulShutdown(); });

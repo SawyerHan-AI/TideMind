@@ -17,6 +17,7 @@ import { logTimelineEvent } from '../db/log.js';
 import { createLogger } from '../utils/logger.js';
 import { parseLLMJson } from '../llm/json-parse.js';
 import { notifyLLMFailure } from './scheduler.js';
+import { trackBackgroundWork } from '../utils/background-work.js';
 
 const log = createLogger('link-revalidate');
 
@@ -78,11 +79,11 @@ export async function revalidateLinks(
   const inflightKey = `${context.query}:${nodeIds.slice(0, 5).slice().sort().join(',')}`;
   if (inflightRevalidations.has(inflightKey)) return;
   inflightRevalidations.add(inflightKey);
-  try {
-    return await revalidateLinksInner(db, nodeIds, context);
-  } finally {
-    inflightRevalidations.delete(inflightKey);
-  }
+  const work = revalidateLinksInner(db, nodeIds, context)
+    .finally(() => {
+      inflightRevalidations.delete(inflightKey);
+    });
+  return trackBackgroundWork(work);
 }
 
 async function revalidateLinksInner(

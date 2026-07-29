@@ -19,7 +19,7 @@ import type {
   VersionData,
 } from './api'
 
-export type PluginClientType = 'claude-code' | 'cowork' | 'cursor' | 'codex' | 'windsurf' | 'openclaw' | 'gemini'
+export type PluginClientType = 'claude-code' | 'cowork' | 'cursor' | 'codex' | 'windsurf' | 'openclaw' | 'gemini' | 'kimi-code'
 
 export type UpdaterState =
   | { status: 'idle' }
@@ -86,6 +86,22 @@ export interface LLMHealthSnapshot {
   lastError: string | null
   /** 上次失败时间戳（ms）；从未失败为 0 */
   lastErrorAt: number
+  availableCount?: number
+  needsAttentionCount?: number
+  errors?: Array<{
+    connectionId: string
+    connectionName?: string
+    providerType: string
+    kind: string
+    message: string
+    needsUserAction: boolean
+    occurredAt: number
+    retryAt?: number | null
+    circuitState?: 'closed' | 'open' | 'half-open'
+    openedAt?: number | null
+    cooldownMs?: number
+  }>
+  activeTask?: { taskId: string; tier: string; connectionId: string } | null
 }
 
 export interface PluginStatusResult {
@@ -103,6 +119,7 @@ export interface PluginStatusResult {
   codexConfigWritten?: boolean
   windsurfConfigWritten?: boolean
   openclawConfigWritten?: boolean
+  kimiConfigWritten?: boolean
   hooksConfigured?: boolean
   skillDirWritten?: boolean
   stagingExists?: boolean
@@ -247,24 +264,74 @@ export interface AppApi {
     list: (includeArchived?: boolean) => Promise<Array<{
       id: string; name: string; provider_type: string; credentials: string
       status: string; available_models: string | null; last_checked: string | null
+      source_type?: 'cloud_service' | 'local_subscription' | 'local_model'
+      candidate_models?: string | null; status_reason?: string | null
+      cli_path?: string | null; cli_version?: string | null; auth_method?: string | null
+      environment_checked_at?: string | null; model_validation_json?: string | null
+      last_tested_at?: string | null; last_test_summary?: string | null
       archived: number; created: string
     }>>
     get: (id: string) => Promise<{
       id: string; name: string; provider_type: string; credentials: string
       status: string; available_models: string | null; last_checked: string | null
+      source_type?: 'cloud_service' | 'local_subscription' | 'local_model'
+      candidate_models?: string | null; status_reason?: string | null
+      cli_path?: string | null; cli_version?: string | null; auth_method?: string | null
+      environment_checked_at?: string | null; model_validation_json?: string | null
+      last_tested_at?: string | null; last_test_summary?: string | null
       archived: number; created: string
     } | null>
     getCredentials: (id: string) => Promise<Record<string, string>>
     create: (params: { name: string; provider_type: string; credentials?: Record<string, unknown> }) => Promise<{
       id: string; name: string; provider_type: string; credentials: string
       status: string; available_models: string | null; last_checked: string | null
+      source_type?: 'cloud_service' | 'local_subscription' | 'local_model'
+      candidate_models?: string | null; status_reason?: string | null
+      cli_path?: string | null; cli_version?: string | null; auth_method?: string | null
+      environment_checked_at?: string | null; model_validation_json?: string | null
+      last_tested_at?: string | null; last_test_summary?: string | null
       archived: number; created: string
     }>
     update: (id: string, params: { name?: string; credentials?: Record<string, unknown> }) => Promise<void>
     archive: (id: string) => Promise<void>
     unarchive: (id: string) => Promise<void>
     delete: (id: string) => Promise<void>
-    test: (connectionId: string, formOverride?: Record<string, string>) => Promise<{ online: boolean; models: string[]; error?: string; region?: string }>
+    test: (connectionId: string, formOverride?: Record<string, string>) => Promise<{
+      online: boolean
+      models: string[]
+      error?: string
+      region?: string
+      successCount?: number
+      totalCount?: number
+      cancelled?: boolean
+      results?: Array<{ model: string; success: boolean; actualModel?: string | null; error?: string }>
+    }>
+    providerCatalog: () => Promise<Array<{
+      id: string
+      labelKey: string
+      sourceType: 'cloud_service' | 'local_subscription' | 'local_model'
+      billingMode: 'api' | 'account_cli' | 'local_compute'
+      transport: string
+      supportsLlm: boolean
+      supportsEmbedding: boolean
+    }>>
+    checkEnvironment: (connectionId: string) => Promise<{
+      status: string
+      cliPath?: string
+      cliVersion?: string
+      authMethod?: string
+      capabilityStatus?: string
+      candidateModels?: string[]
+      checkedAt?: string
+      error?: { kind: string; message: string; copyCommand?: string }
+    }>
+    cancelTest: (connectionId: string) => Promise<{ cancelled: boolean }>
+    onTestProgress: (cb: (progress: {
+      connectionId: string
+      currentModel: string
+      completed: number
+      total: number
+    }) => void) => () => void
     pickVertexFile: (connectionId: string) => Promise<{ success: boolean; projectId?: string; error?: string }>
     vertexCredStatus: (connectionId: string) => Promise<{ configured: boolean; projectId?: string }>
   }
@@ -355,7 +422,7 @@ export interface AppApi {
      * 重置熔断器 + 清 LLM client cache + 立即触发一次 scheduler tick。
      * 用户在 UI 上点「立即重试」按钮时调用。返回新的 health snapshot。
      */
-    resetAndRetry: () => Promise<LLMHealthSnapshot>
+    resetAndRetry: (connectionId?: string) => Promise<LLMHealthSnapshot>
   }
   agents: {
     list: (includeArchived?: boolean) => Promise<AgentData[]>

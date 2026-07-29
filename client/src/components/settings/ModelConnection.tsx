@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Plus, ChevronRight, Loader2, CheckCircle2, XCircle,
   Pencil, Check, X, Archive, RotateCcw, Trash2, Upload,
-  MoreHorizontal, Link, Eye, EyeOff,
+  MoreHorizontal, Link, Eye, EyeOff, Copy, ShieldCheck, Terminal,
 } from 'lucide-react'
 import { useIPC } from '../../hooks/useIPC'
 import { Section, Field, inputClass, ComingSoonBadge } from './shared'
@@ -16,16 +16,9 @@ import { safeJsonParse } from '../../lib/json'
 interface ProviderTypeDef {
   id: string
   label: string
+  source: 'cloud' | 'subscription' | 'local'
   comingSoon?: boolean
 }
-
-const PROVIDER_TYPES: ProviderTypeDef[] = [
-  { id: 'anthropic', label: 'Anthropic' },
-  { id: 'vertex', label: 'Google Vertex AI' },
-  { id: 'gemini', label: 'Google Gemini API' },
-  { id: 'ollama', label: 'Ollama' },
-  { id: 'openai-compatible', label: 'OpenAI Compatible' },
-]
 
 // Vertex AI region 选项。'global' 是 anycast endpoint(走最近 PoP),
 // claude-haiku-4-5 / sonnet-4-6 / opus-4-6 都在 global 可用,实测延迟跟最近
@@ -43,10 +36,8 @@ const PROVIDER_LABELS: Record<string, string> = {
   gemini: 'Gemini API',
   ollama: 'Ollama',
   'openai-compatible': 'OpenAI Compatible',
-}
-
-function getProviderDef(providerType: string): ProviderTypeDef | undefined {
-  return PROVIDER_TYPES.find(t => t.id === providerType)
+  'claude-cli': 'Claude Code',
+  'codex-cli': 'Codex',
 }
 
 /** 生成 4 位随机后缀 */
@@ -66,8 +57,29 @@ interface Connection {
   status: string
   available_models: string | null
   last_checked: string | null
+  source_type?: 'cloud_service' | 'local_subscription' | 'local_model'
+  candidate_models?: string | null
+  status_reason?: string | null
+  cli_path?: string | null
+  cli_version?: string | null
+  auth_method?: string | null
+  environment_checked_at?: string | null
+  model_validation_json?: string | null
+  last_tested_at?: string | null
+  last_test_summary?: string | null
   archived: number
   created: string
+}
+
+interface ConnectionUsageConfig {
+  llm?: {
+    light_connection?: string
+    standard_connection?: string
+    heavy_connection?: string
+  }
+  embedding?: {
+    connection?: string
+  }
 }
 
 // ============================================================
@@ -106,17 +118,119 @@ function SecretInput({
   )
 }
 
+function CliFact({
+  label,
+  value,
+  icon,
+  copy = false,
+}: {
+  label: string
+  value: string
+  icon?: React.ReactNode
+  copy?: boolean
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[10px] text-gray-500 mb-1">{label}</div>
+      <div className="flex items-center gap-1.5 text-[11px] text-gray-300 min-w-0">
+        {icon && <span className="shrink-0 text-gray-500">{icon}</span>}
+        <span className="font-mono truncate" title={value}>{value}</span>
+        {copy && value !== '—' && (
+          <button
+            type="button"
+            aria-label={label}
+            onClick={() => navigator.clipboard.writeText(value)}
+            className="shrink-0 p-1 rounded text-gray-500 hover:text-gray-300 hover:bg-white/5"
+          >
+            <Copy size={11} />
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ============================================================
 // 连接详情面板
 // ============================================================
 
 function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefresh: () => void }) {
   const { t } = useTranslation('settings')
+  const isCli = conn.provider_type === 'claude-cli' || conn.provider_type === 'codex-cli'
 
   const [editing, setEditing] = useState(false)
   const [editName, setEditName] = useState(conn.name)
   const [testing, setTesting] = useState(false)
-  const [testResult, setTestResult] = useState<{ online: boolean; models: string[]; error?: string } | null>(null)
+  const [testResult, setTestResult] = useState<{
+    online: boolean
+    models: string[]
+    error?: string
+    successCount?: number
+    totalCount?: number
+    cancelled?: boolean
+    results?: Array<{ model: string; success: boolean; actualModel?: string | null; error?: string }>
+  } | null>(null)
+  const [checkingEnvironment, setCheckingEnvironment] = useState(false)
+  const [environmentResult, setEnvironmentResult] = useState<{
+    status: string
+    capabilityStatus?: string
+    error?: { kind: string; message: string; copyCommand?: string }
+  } | null>(null)
+  const [progress, setProgress] = useState<{ currentModel: string; completed: number; total: number } | null>(null)
+  const persistedTestResult = useMemo(() => {
+    const summary = safeJsonParse<{
+      success?: number
+      total?: number
+      cancelled?: boolean
+    } | null>(conn.last_test_summary, null)
+    if (!summary) return null
+    const validations = safeJsonParse<Record<string, {
+      success?: boolean
+      actualModel?: string | null
+      error?: string | null
+    }>>(conn.model_validation_json, {})
+    const results = Object.entries(validations).map(([model, validation]) => ({
+      model,
+      success: validation.success === true,
+      actualModel: validation.actualModel,
+      error: validation.error ?? undefined,
+    }))
+    return {
+      online: (summary.success ?? 0) > 0,
+      models: results.filter(result => result.success).map(result => result.model),
+      successCount: summary.success ?? 0,
+      totalCount: summary.total ?? results.length,
+      cancelled: summary.cancelled ?? false,
+      results,
+      error: undefined,
+    }
+  }, [conn.last_test_summary, conn.model_validation_json])
+  const displayTestResult = testResult ?? persistedTestResult
+  const isolationState = useMemo(() => {
+    const failedStatuses = new Set([
+      'not_installed', 'not_authenticated', 'wrong_auth_method',
+      'unsupported_version', 'offline', 'ambiguous',
+    ])
+    if (environmentResult?.error || failedStatuses.has(conn.status)) return 'failed'
+    if (
+      environmentResult?.capabilityStatus === 'verified' ||
+      (
+        conn.cli_path &&
+        conn.cli_version &&
+        conn.auth_method &&
+        conn.environment_checked_at &&
+        conn.status !== 'checking'
+      )
+    ) return 'verified'
+    return 'pending'
+  }, [
+    conn.auth_method,
+    conn.cli_path,
+    conn.cli_version,
+    conn.environment_checked_at,
+    conn.status,
+    environmentResult,
+  ])
 
   // 凭证按需取(走 connections:get-credentials),不在 list 里下发避免列表
   // 刷新时把所有连接的密钥扇出到 renderer 内存。creds === null 表示尚未加载,
@@ -138,6 +252,10 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
   const [showSecret, setShowSecret] = useState(false)
 
   useEffect(() => {
+    if (isCli) {
+      setCreds({})
+      return
+    }
     let cancelled = false
     window.api.connections.getCredentials(conn.id)
       .then(c => {
@@ -158,7 +276,16 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
         setCreds({})
       })
     return () => { cancelled = true }
-  }, [conn.id])
+  }, [conn.id, isCli])
+
+  useEffect(() => {
+    if (!isCli || !window.api.connections.onTestProgress) return
+    return window.api.connections.onTestProgress(event => {
+      if (event.connectionId === conn.id) {
+        setProgress({ currentModel: event.currentModel, completed: event.completed, total: event.total })
+      }
+    })
+  }, [conn.id, isCli])
 
   useEffect(() => {
     if (conn.provider_type !== 'vertex') return
@@ -220,6 +347,7 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
   const handleTest = async () => {
     if (creds === null) return
     setTesting(true)
+    setProgress(null)
     setTestResult(null)
     try {
       const result = await window.api.connections.test(conn.id, buildFormOverride())
@@ -228,7 +356,27 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
       setTestResult({ online: false, models: [], error: (e as Error).message })
     }
     setTesting(false)
+    setProgress(null)
     onRefresh()
+  }
+
+  const handleCheckEnvironment = async () => {
+    if (!window.api.connections.checkEnvironment) return
+    setCheckingEnvironment(true)
+    try {
+      const result = await window.api.connections.checkEnvironment(conn.id)
+      setEnvironmentResult(result)
+      onRefresh()
+    } catch (error) {
+      setEnvironmentResult({ status: 'error', error: { kind: 'ipc', message: (error as Error).message } })
+    } finally {
+      setCheckingEnvironment(false)
+    }
+  }
+
+  const handleCancelTest = async () => {
+    if (!window.api.connections.cancelTest) return
+    await window.api.connections.cancelTest(conn.id)
   }
 
   const handleArchive = async () => {
@@ -275,6 +423,38 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
       </div>
 
       {/* 凭据表单 */}
+      {isCli && (
+        <div className="grid grid-cols-2 gap-x-5 gap-y-3 rounded-lg border border-white/5 bg-white/[0.02] p-3">
+          <CliFact icon={<Terminal size={12} />} label={t('model.connection.cliPath')} value={conn.cli_path ?? '—'} copy />
+          <CliFact label={t('model.connection.cliVersion')} value={conn.cli_version ?? '—'} />
+          <CliFact label={t('model.connection.loginMethod')} value={conn.auth_method ?? '—'} />
+          <CliFact
+            icon={<ShieldCheck size={12} />}
+            label={t('model.connection.isolationStatus')}
+            value={t(`model.connection.isolation${isolationState[0].toUpperCase()}${isolationState.slice(1)}`)}
+          />
+          <CliFact label={t('model.connection.lastTested')} value={conn.last_tested_at ? new Date(conn.last_tested_at).toLocaleString() : '—'} />
+          <CliFact label={t('model.connection.testScope')} value={t('model.connection.allCandidateModels', {
+            count: safeJsonParse<string[]>(conn.candidate_models, []).length,
+          })} />
+          {(environmentResult?.error || conn.status_reason) && (
+            <div className="col-span-2 flex items-start justify-between gap-3 rounded-md border border-red-500/20 bg-red-500/10 px-2.5 py-2 text-[11px] text-red-300">
+              <span>{environmentResult?.error?.message ?? conn.status_reason}</span>
+              {environmentResult?.error?.copyCommand && (
+                <button
+                  type="button"
+                  onClick={() => navigator.clipboard.writeText(environmentResult.error?.copyCommand ?? '')}
+                  className="shrink-0 flex items-center gap-1 text-gray-400 hover:text-gray-200"
+                >
+                  <Copy size={11} />
+                  {t('model.connection.copyCommand')}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {conn.provider_type === 'anthropic' && (
         <Field label="API Key" tip={t('model.connection.anthropicTip')}>
           <SecretInput value={apiKey} onChange={setApiKey} placeholder="sk-ant-..."
@@ -346,14 +526,21 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
 
       {/* 操作按钮 */}
       <div className="flex items-center gap-2">
-        <button onClick={handleSaveCredentials} disabled={creds === null}
+        {!isCli && <button onClick={handleSaveCredentials} disabled={creds === null}
           className="flex items-center gap-2 px-3 py-1.5 text-xs bg-white/5 hover:bg-white/10 rounded-lg text-gray-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
           {t('model.connection.save')}
-        </button>
-        <button onClick={handleTest} disabled={testing || creds === null}
+        </button>}
+        {isCli && (
+          <button onClick={handleCheckEnvironment} disabled={checkingEnvironment || testing || !window.api.connections.checkEnvironment}
+            className="flex items-center gap-2 px-3 py-1.5 text-xs bg-white/5 hover:bg-white/10 rounded-lg text-gray-300 transition-colors disabled:opacity-50">
+            {checkingEnvironment && <Loader2 size={12} className="animate-spin" />}
+            {t('model.connection.checkEnvironment')}
+          </button>
+        )}
+        <button onClick={testing && isCli ? handleCancelTest : handleTest} disabled={creds === null || (testing && isCli && !window.api.connections.cancelTest)}
           className="flex items-center gap-2 px-3 py-1.5 text-xs bg-white/5 hover:bg-white/10 rounded-lg text-gray-300 transition-colors disabled:opacity-50">
           {testing && <Loader2 size={12} className="animate-spin" />}
-          {t('model.connection.testConnection')}
+          {testing && isCli ? t('model.connection.cancelTest') : t('model.connection.testConnection')}
         </button>
         <button onClick={handleArchive}
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded-lg transition-colors">
@@ -364,28 +551,73 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
         )}
       </div>
 
+      {progress && (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-[10px] text-gray-500">
+            <span className="truncate">{progress.currentModel}</span>
+            <span>{progress.completed} / {progress.total}</span>
+          </div>
+          <div className="h-1 rounded-full bg-white/10 overflow-hidden">
+            <div className="h-full bg-indigo-400 transition-all" style={{ width: `${progress.total ? (progress.completed / progress.total) * 100 : 0}%` }} />
+          </div>
+        </div>
+      )}
+
       {/* 测试结果 */}
-      {testResult && (
+      {displayTestResult && (
         <div className={`p-2.5 rounded-lg text-[11px] ${
-          testResult.online ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-red-500/10 border border-red-500/20'
+          displayTestResult.cancelled
+            ? 'bg-amber-500/10 border border-amber-500/20'
+            : displayTestResult.online
+              ? 'bg-emerald-500/10 border border-emerald-500/20'
+              : 'bg-red-500/10 border border-red-500/20'
         }`}>
-          {testResult.online ? (
-            <>
-              <div className="flex items-center gap-1.5 text-emerald-400 mb-1.5">
-                <CheckCircle2 size={11} />
-                <span>{t('model.connection.modelsAvailable', { count: testResult.models.length })}</span>
-              </div>
-              <div className="flex flex-wrap gap-1">
-                {testResult.models.map(m => (
-                  <span key={m} className="text-[10px] bg-white/5 text-gray-300 px-1.5 py-0.5 rounded">{m}</span>
-                ))}
-              </div>
-            </>
-          ) : (
-            <span className="flex items-center gap-1.5 text-red-400">
-              <XCircle size={11} />
-              {testResult.error ?? t('model.connection.connectionFailed')}
-            </span>
+          <div className={`flex items-center gap-1.5 mb-1.5 ${
+            displayTestResult.cancelled
+              ? 'text-amber-400'
+              : displayTestResult.online ? 'text-emerald-400' : 'text-red-400'
+          }`}>
+            {displayTestResult.cancelled
+              ? <XCircle size={11} />
+              : displayTestResult.online ? <CheckCircle2 size={11} /> : <XCircle size={11} />}
+            <span>{displayTestResult.cancelled
+              ? t('model.connection.testCancelledSummary', {
+                success: displayTestResult.successCount ?? displayTestResult.models.length,
+                total: displayTestResult.totalCount ?? displayTestResult.models.length,
+              })
+              : isCli
+                ? t('model.connection.testSummary', {
+                  success: displayTestResult.successCount ?? displayTestResult.models.length,
+                  total: displayTestResult.totalCount ?? displayTestResult.models.length,
+                })
+                : displayTestResult.online
+                  ? t('model.connection.modelsAvailable', { count: displayTestResult.models.length })
+                  : (displayTestResult.error ?? t('model.connection.connectionFailed'))}</span>
+          </div>
+          {(displayTestResult.results?.length ?? 0) > 0 && (
+            <div
+              className="space-y-1"
+              role="list"
+              aria-label={t('model.connection.lastTested')}
+            >
+              {displayTestResult.results?.map(result => (
+                <div
+                  key={result.model}
+                  role="listitem"
+                  className={`rounded px-1.5 py-1 text-[10px] ${
+                    result.success ? 'bg-emerald-500/10 text-emerald-300' : 'bg-red-500/10 text-red-300'
+                  }`}
+                >
+                  <span className="font-medium">{result.model}</span>
+                  {!result.success && result.error && (
+                    <p className="mt-0.5 break-words text-red-300/90">{result.error}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {isCli && displayTestResult.error && (
+            <p className="mt-1.5 text-red-300">{displayTestResult.error}</p>
           )}
         </div>
       )}
@@ -400,7 +632,15 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
 // 创建向导
 // ============================================================
 
-function ConnectionWizard({ onCreated, onClose }: { onCreated: (id: string) => void; onClose: () => void }) {
+function ConnectionWizard({
+  onCreated,
+  onClose,
+  providerTypes,
+}: {
+  onCreated: (id: string) => void
+  onClose: () => void
+  providerTypes: ProviderTypeDef[]
+}) {
   const { t } = useTranslation('settings')
   const [name, setName] = useState('')
   const [providerType, setProviderType] = useState('')
@@ -414,10 +654,10 @@ function ConnectionWizard({ onCreated, onClose }: { onCreated: (id: string) => v
   // 选择类型后自动更新名称（除非用户已手动编辑）
   useEffect(() => {
     if (providerType && !nameManuallyEdited) {
-      const def = getProviderDef(providerType)
+      const def = providerTypes.find(provider => provider.id === providerType)
       if (def) setName(`${def.label} ${randomSuffix()}`)
     }
-  }, [providerType, nameManuallyEdited])
+  }, [providerType, nameManuallyEdited, providerTypes])
 
   const handleNameChange = (v: string) => {
     setName(v)
@@ -449,28 +689,35 @@ function ConnectionWizard({ onCreated, onClose }: { onCreated: (id: string) => v
       <button onClick={onClose} className="p-1 text-gray-500 hover:text-gray-300"><X size={14} /></button>
     }>
       <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-2">
-          {PROVIDER_TYPES.map(pt => (
-            <button
-              key={pt.id}
-              disabled={pt.comingSoon}
-              onClick={() => setProviderType(pt.id)}
-              className={`p-3 rounded-lg text-left transition-all ${
-                pt.comingSoon
-                  ? 'opacity-40 cursor-not-allowed bg-white/[0.02]'
-                  : providerType === pt.id
-                    ? 'bg-indigo-500/10 border border-indigo-400/30'
-                    : 'bg-white/[0.03] hover:bg-white/[0.06] border border-white/5'
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-medium text-gray-200">{pt.label}</span>
-                {pt.comingSoon && <ComingSoonBadge />}
-              </div>
-              <p className="text-[10px] text-gray-500 mt-1">{t(`model.connection.providerDesc.${pt.id}`)}</p>
-            </button>
-          ))}
-        </div>
+        {(['cloud', 'subscription', 'local'] as const).map(source => (
+          <div key={source} className="space-y-2">
+            <p className="text-[10px] uppercase tracking-wide text-gray-500">
+              {t(`model.providerGroups.${source === 'cloud' ? 'cloudService' : source === 'subscription' ? 'localSubscription' : 'localModel'}`)}
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              {providerTypes.filter(provider => provider.source === source).map(pt => (
+                <button
+                  key={pt.id}
+                  disabled={pt.comingSoon}
+                  onClick={() => setProviderType(pt.id)}
+                  className={`p-3 rounded-lg text-left transition-all ${
+                    pt.comingSoon
+                      ? 'opacity-40 cursor-not-allowed bg-white/[0.02]'
+                      : providerType === pt.id
+                        ? 'bg-indigo-500/10 border border-indigo-400/30'
+                        : 'bg-white/[0.03] hover:bg-white/[0.06] border border-white/5'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-medium text-gray-200">{pt.label}</span>
+                    {pt.comingSoon && <ComingSoonBadge />}
+                  </div>
+                  <p className="text-[10px] text-gray-500 mt-1">{t(`model.connection.providerDesc.${pt.id}`)}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
 
         {providerType && (
           <Field label={t('model.connection.connectionName')} tip={t('model.connection.connectionNameTip')}>
@@ -512,8 +759,26 @@ export function ModelConnection() {
   const { t } = useTranslation('settings')
   const fetchConnections = useCallback(() => window.api.connections.list(true), [])
   const fetchConfig = useCallback(() => window.api.config.get(), [])
+  const fetchProviderCatalog = useCallback(() => window.api.connections.providerCatalog(), [])
   const { data: connections, refetch: refetchConnections } = useIPC(fetchConnections)
   const { data: config } = useIPC(fetchConfig)
+  const { data: providerCatalog } = useIPC(fetchProviderCatalog)
+  const providerTypes = useMemo<ProviderTypeDef[]>(() => (
+    (providerCatalog ?? []).map(provider => {
+      const translated = t(provider.labelKey)
+      return {
+        id: provider.id,
+        label: translated === provider.labelKey
+          ? PROVIDER_LABELS[provider.id] ?? provider.id
+          : translated,
+        source: provider.sourceType === 'local_subscription'
+          ? 'subscription'
+          : provider.sourceType === 'local_model'
+            ? 'local'
+            : 'cloud',
+      }
+    })
+  ), [providerCatalog, t])
 
   const [wizardOpen, setWizardOpen] = useState(false)
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -526,7 +791,7 @@ export function ModelConnection() {
   // 检查连接是否被模型选择引用
   const getUsages = (connId: string): string[] => {
     if (!config) return []
-    const c = config as any
+    const c = config as ConnectionUsageConfig
     const usages: string[] = []
     const llmConns = [c.llm?.light_connection, c.llm?.standard_connection, c.llm?.heavy_connection]
     if (llmConns.includes(connId)) usages.push('LLM')
@@ -536,8 +801,13 @@ export function ModelConnection() {
 
   const getStatusInfo = (conn: Connection) => {
     if (conn.status === 'online') return { color: 'bg-emerald-400', textColor: 'text-emerald-400', label: t('model.connection.status.online') }
+    if (conn.status === 'degraded') return { color: 'bg-amber-400', textColor: 'text-amber-400', label: t('model.connection.status.degraded') }
+    if (conn.status === 'testing' || conn.status === 'checking') return { color: 'bg-indigo-400', textColor: 'text-indigo-300', label: t(`model.connection.status.${conn.status}`) }
     if (conn.status === 'offline') return { color: 'bg-red-400', textColor: 'text-red-400', label: t('model.connection.status.offline') }
-    return { color: 'bg-gray-600', textColor: 'text-gray-500', label: t('model.connection.status.unconfigured') }
+    if (['not_installed', 'not_authenticated', 'wrong_auth_method', 'unsupported_version', 'ambiguous'].includes(conn.status)) {
+      return { color: 'bg-red-400', textColor: 'text-red-400', label: t(`model.connection.status.${conn.status}`) }
+    }
+    return { color: 'bg-gray-600', textColor: 'text-gray-500', label: t(`model.connection.status.${conn.status}`, t('model.connection.status.unconfigured')) }
   }
 
   const handleCreated = (id: string) => {
@@ -582,6 +852,8 @@ export function ModelConnection() {
                 <div key={conn.id}>
                   <button
                     onClick={() => setExpandedId(isExpanded ? null : conn.id)}
+                    aria-expanded={isExpanded}
+                    aria-controls={`connection-detail-${conn.id}`}
                     className="w-full grid grid-cols-[10rem_6rem_4rem_5rem_1fr_3rem] gap-x-4 items-center px-3 py-2.5 hover:bg-white/[0.03] rounded-lg transition-colors text-left"
                   >
                     <div className="flex items-center gap-2 min-w-0">
@@ -609,7 +881,9 @@ export function ModelConnection() {
                   </button>
 
                   {isExpanded && (
-                    <ConnectionDetailPanel conn={conn} onRefresh={refetchConnections} />
+                    <div id={`connection-detail-${conn.id}`}>
+                      <ConnectionDetailPanel conn={conn} onRefresh={refetchConnections} />
+                    </div>
                   )}
                 </div>
               )
@@ -622,13 +896,15 @@ export function ModelConnection() {
           <div className="mt-4">
             <button
               onClick={() => setShowArchived(!showArchived)}
+              aria-expanded={showArchived}
+              aria-controls="archived-model-connections"
               className="flex items-center gap-1.5 text-[11px] text-gray-500 hover:text-gray-300 transition-colors"
             >
               <ChevronRight size={12} className={`transition-transform ${showArchived ? 'rotate-90' : ''}`} />
               {t('model.connection.archived')} ({archivedConns.length})
             </button>
             {showArchived && (
-              <div className="mt-2 space-y-0.5 pl-2 border-l border-white/5">
+              <div id="archived-model-connections" className="mt-2 space-y-0.5 pl-2 border-l border-white/5">
                 {archivedConns.map((conn: Connection) => (
                   <div key={conn.id} className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-white/[0.02]">
                     <div className="flex items-center gap-2">
@@ -692,6 +968,7 @@ export function ModelConnection() {
         <ConnectionWizard
           onCreated={handleCreated}
           onClose={() => setWizardOpen(false)}
+          providerTypes={providerTypes}
         />
       )}
     </div>

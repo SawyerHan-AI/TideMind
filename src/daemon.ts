@@ -8,23 +8,26 @@
  * 通过 WAL 模式 + busy_timeout 安全地与 MCP Server 共享 SQLite 数据库。
  */
 
-import { loadConfig, ensureDataDirs, backfillSyncHashes, syncStrategiesFromSource } from './config.js';
+import { loadConfig, ensureDataDirs, getDataDir, backfillSyncHashes, syncStrategiesFromSource } from './config.js';
 import { checkFileWatchers, reloadStrategies } from './strategy/loader.js';
 import { getDb, closeDb, initVec } from './db/connection.js';
 import { createLogger } from './utils/logger.js';
 import { logTimelineEvent } from './db/log.js';
 import { runSchedulerTick, noteSuccessfulLLMCall, setLLMFailureHook, recordLLMFailureForHook, recordEmbeddingSuccess, recordEmbeddingFailure } from './metabolism/scheduler.js';
 import { ALL_TASKS } from './metabolism/tasks.js';
-import { setLLMSuccessHook } from './llm/client.js';
+import { setLLMSuccessHook, shutdownLLMClient } from './llm/client.js';
+import { reconcileCliRuntimeState } from './llm/cli/invocation-state.js';
+import { cleanupStaleCliRuntimeDirectories } from './llm/cli/runtime-dir.js';
 import { setEmbeddingSuccessHook, setEmbeddingFailureHook } from './llm/embedding.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { migrateConfigIfNeeded } from './utils/config-migrate.js';
 
 const log = createLogger('daemon');
 const migrationLog = createLogger('migrate');
-import { startAllNoteSources, stopAllNoteSources } from './integrations/shared/note-sources.js';
+import { startAllNoteSources, stopAllNoteSourcesAsync } from './integrations/shared/note-sources.js';
 import { loadProModules } from './plugin-loader.js';
 import { backfillLlmLastSuccessAt } from './metabolism/llm-success-backfill.js';
+import { waitForBackgroundWork } from './utils/background-work.js';
 
 // 提前安装顶层错误处理器，确保 main() 初始化阶段抛错也能被记录而非静默退出
 //
@@ -49,6 +52,9 @@ const TICK_INTERVAL_MS = 60 * 1000; // 每分钟检查一次
 // 跟 closeDb 竞争产生 cryptic error。即便 exit(0) 同步到来,挂在 timer
 // 队列里的 callback 也是噪声。改成持有句柄 + shutdown 先 clearInterval。
 let tickHandle: NodeJS.Timeout | null = null;
+let activeTickPromise: Promise<unknown> | null = null;
+let shutdownInProgress = false;
+let noteSourcesStartupPromise: Promise<void> | null = null;
 
 /**
  * 优雅退出
@@ -58,6 +64,8 @@ let tickHandle: NodeJS.Timeout | null = null;
  * 改为 async：等 stop 完成（最多 10s），再 closeDb，最后 exit。
  */
 async function shutdown(): Promise<void> {
+  if (shutdownInProgress) return;
+  shutdownInProgress = true;
   log.info('shutdown 开始');
   // F9:第一时间停掉主 tick,避免 shutdown 期间再启动新 tick 触发 LLM/DB
   // 调用与 closeDb 竞争。clearInterval 后,即便 finally 中的回调还在,
@@ -67,30 +75,36 @@ async function shutdown(): Promise<void> {
     tickHandle = null;
   }
   try {
-    // stopAllNoteSources 内部 fire-and-forget 4 个 dynamic import + stop 调用，
-    // 这里手动 await 它们的结果以保证收尾真正完成；超过 10s 强制放行避免卡死。
-    const stopPromise: Promise<void> = (async () => {
-      try {
-        await Promise.all([
-          // F12 (audit-8): catch 内必须 log 出来,不然 logseq/obsidian/apple-notes/notion
-          // stop 失败完全静默,运维只能看到"shutdown 完成"但实际可能某个 integration
-          // 留下了 fs.watch / 长任务 handle,进程没能干净退出。
-          import('./integrations/logseq/index.js').then(m => m.stopLogseqIntegration()).catch(err => log.warn('stopLogseqIntegration failed:', err)),
-          import('./integrations/obsidian/index.js').then(m => m.stopObsidianIntegration()).catch(err => log.warn('stopObsidianIntegration failed:', err)),
-          import('./integrations/apple-notes/index.js').then(m => m.stopAppleNotesIntegration()).catch(err => log.warn('stopAppleNotesIntegration failed:', err)),
-          import('./integrations/notion/index.js').then(m => m.stopNotionIntegration()).catch(err => log.warn('stopNotionIntegration failed:', err)),
-        ]);
-      } catch (err) {
-        log.warn('stopAllNoteSources 出错', err instanceof Error ? err.stack : String(err));
-      }
-      // 同步版本也调一遍，保留原有副作用（保险起见）
-      try { stopAllNoteSources(); } catch (err) { log.warn('stopAllNoteSources sync 调用失败:', err); }
-    })();
-    const timeoutPromise = new Promise<void>(resolve => setTimeout(resolve, 10_000));
-    await Promise.race([stopPromise, timeoutPromise]);
+    // 先关闭 LLM 准入并中止所有活动 provider，再排空 watcher。否则 note-source
+    // drain 失败会让本次退出返回，却留下仍在执行的 LLM 调用。
+    await shutdownLLMClient();
+
+    const pendingNoteSourceStartup = noteSourcesStartupPromise;
+    if (pendingNoteSourceStartup) await pendingNoteSourceStartup;
+
+    let drainTimeout: NodeJS.Timeout | null = null;
+    try {
+      await Promise.race([
+        stopAllNoteSourcesAsync(),
+        new Promise<never>((_, reject) => {
+          drainTimeout = setTimeout(
+            () => reject(new Error('note source shutdown timed out after 10s')),
+            10_000,
+          );
+        }),
+      ]);
+    } finally {
+      if (drainTimeout) clearTimeout(drainTimeout);
+    }
   } catch (err) {
-    log.warn('shutdown stop 阶段异常', err instanceof Error ? err.stack : String(err));
+    shutdownInProgress = false;
+    log.error('shutdown stop 阶段失败，保留数据库并取消退出', err instanceof Error ? err.stack : String(err));
+    return;
   }
+  if (activeTickPromise) {
+    await activeTickPromise;
+  }
+  await waitForBackgroundWork();
   try {
     closeDb();
   } catch (err) {
@@ -107,6 +121,7 @@ async function main(): Promise<void> {
   migrateConfigIfNeeded(migrationLog);
   loadConfig();
   ensureDataDirs();
+  cleanupStaleCliRuntimeDirectories(getDataDir(), { olderThanMs: 24 * 60 * 60 * 1000 });
 
   // 本地/云代谢互斥的唯一权威是 scheduler.ts 里的 cloud.metabolism_enabled 闸。
   // 历史上 daemon 这里另用 cloud.enabled 做第二道闸——但 cloud.enabled 实际是跟
@@ -116,6 +131,13 @@ async function main(): Promise<void> {
   // 让本地代谢只由 cloud.metabolism_enabled 单一权威控制(runSchedulerTick 内部
   // 在 metabolism_enabled=true 时早返回,不会与云端重复跑)。
   getDb();
+  const reconciliation = reconcileCliRuntimeState(getDb());
+  if (reconciliation.definiteFailures.length > 0 || reconciliation.ambiguousInvocations.length > 0) {
+    log.warn(
+      `CLI runtime 冷启动恢复: definite_failures=${reconciliation.definiteFailures.length}, ` +
+      `ambiguous_invocations=${reconciliation.ambiguousInvocations.length}`,
+    );
+  }
   backfillSyncHashes(); // DB 初始化后补填同步哈希
   await initVec();
 
@@ -148,16 +170,21 @@ async function main(): Promise<void> {
   // 加载 Pro 模块（不存在则跳过）
   await loadProModules({ db: getDb() });
 
-  // 启动所有已配置的笔记源
-  startAllNoteSources(getDb()).catch(err =>
-    log.error('笔记源启动失败:', err instanceof Error ? err.stack : String(err)),
-  );
-
-  // 启动时立刻执行一轮。runSchedulerTick 内部按 cloud.metabolism_enabled 自行
-  // 决定是否跳过本地代谢（云端接管时早返回）。
-  runSchedulerTick(getDb(), ALL_TASKS).catch(err =>
-    log.error('初始调度失败:', err instanceof Error ? err.stack : String(err)),
-  );
+  // 启动过程本身也是 shutdown barrier。信号处理器必须在 await 之前安装：
+  // 若 source start 尚未完成就收到 SIGTERM，shutdown 会先等它结束，再 stop，
+  // 不允许出现 stop 已完成后旧 start 又恢复创建 watcher 的顺序反转。
+  process.on('SIGINT', () => { void shutdown(); });
+  process.on('SIGTERM', () => { void shutdown(); });
+  const noteSourceStart = startAllNoteSources(getDb())
+    .catch(err => {
+      log.error('笔记源启动失败:', err instanceof Error ? err.stack : String(err));
+    })
+    .finally(() => {
+      if (noteSourcesStartupPromise === noteSourceStart) noteSourcesStartupPromise = null;
+    });
+  noteSourcesStartupPromise = noteSourceStart;
+  await noteSourceStart;
+  if (shutdownInProgress) return;
 
   // 定时调度：每分钟 tick，每个任务独立判断是否到期
   // 防重入：上一轮未完成时跳过，避免长任务（LLM 调用）导致堆叠
@@ -183,16 +210,19 @@ async function main(): Promise<void> {
   let tickRunning = false;
   let tickCount = 0;
   let tickStartedAt = 0;
+  let tickTimeoutReported = false;
   let currentTickId = 0;
   const STRATEGY_SYNC_EVERY_N_TICKS = 5; // 每 5 分钟从源码同步一次策略文件
-  tickHandle = setInterval(() => {
-    // 超时兜底:发现上一轮已运行超过 hard timeout,放行并 warn
+  const runTick = () => {
+  // 超时兜底只告警，不放行并发。没有可证明中止成功的 AbortController 前，
+  // 把 running 标志复位会让同一批任务重入，造成订阅调用和写库重复。
     if (tickRunning && tickStartedAt > 0) {
       const elapsedMs = Date.now() - tickStartedAt;
-      if (elapsedMs > TICK_HARD_TIMEOUT_MS) {
+      if (elapsedMs > TICK_HARD_TIMEOUT_MS && !tickTimeoutReported) {
+        tickTimeoutReported = true;
         log.error(
-          `daemon tick 卡死 ${Math.round(elapsedMs / 60000)} 分钟,强制放行 tickRunning。` +
-          '上一轮 promise 仍可能在跑,本轮启动即为并发——异常情形,请检查 LLM 调用与底层 SDK abort 行为。',
+          `daemon tick 已运行 ${Math.round(elapsedMs / 60000)} 分钟，继续阻止重入。` +
+          '请检查 LLM 调用与底层 SDK abort 行为。',
         );
         try {
           logTimelineEvent(getDb(), {
@@ -203,15 +233,13 @@ async function main(): Promise<void> {
             important: 1,
           });
         } catch { /* timeline 写失败不能阻断恢复 */ }
-        tickRunning = false;
-        tickStartedAt = 0;
-        currentTickId++; // 让老 tick 的 finally 失效(不会再 reset 状态)
       }
     }
 
     if (tickRunning) return;
     tickRunning = true;
     tickStartedAt = Date.now();
+    tickTimeoutReported = false;
     tickCount++;
     const myTickId = ++currentTickId;
 
@@ -222,7 +250,7 @@ async function main(): Promise<void> {
       try { syncStrategiesFromSource(); reloadStrategies(); } catch (err) { log.warn('策略同步/重载出错', err); }
     }
 
-    runSchedulerTick(getDb(), ALL_TASKS)
+    const tickPromise: Promise<unknown> = runSchedulerTick(getDb(), ALL_TASKS)
       .catch(err => log.error('调度 tick 失败:', err instanceof Error ? err.stack : String(err)))
       .finally(() => {
         // 只在自己仍是当前 tick 时才 reset。watchdog 已 ++currentTickId 让
@@ -230,12 +258,15 @@ async function main(): Promise<void> {
         if (myTickId === currentTickId) {
           tickRunning = false;
           tickStartedAt = 0;
+          tickTimeoutReported = false;
         }
+        if (activeTickPromise === tickPromise) activeTickPromise = null;
       });
-  }, TICK_INTERVAL_MS);
-
-  process.on('SIGINT', () => { void shutdown(); });
-  process.on('SIGTERM', () => { void shutdown(); });
+    activeTickPromise = tickPromise;
+  };
+  tickHandle = setInterval(runTick, TICK_INTERVAL_MS);
+  // 初始轮次也必须进入同一个防重入状态机，不能作为额外的 detached promise。
+  runTick();
 
   logTimelineEvent(getDb(), {
     type: 'memory',

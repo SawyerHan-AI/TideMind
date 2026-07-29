@@ -31,6 +31,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import type Database from 'better-sqlite3'
+import { parse as parseToml } from 'smol-toml'
 import { createLogger } from '@server/utils/logger.js'
 import { computePluginPatchVersion } from '../ipc/agent-plugins/claude-code-version'
 import { buildClaudeCodeSkillFrontmatter } from '../ipc/agent-plugins/claude-code'
@@ -38,6 +39,7 @@ import { repairMarketplaceJson, repairClaudeSettings } from '@server/utils/marke
 import { getShimPath, getHookScriptPath, getPreCompactHookScriptPath, getPostCompactHookScriptPath, getMcpServerScriptPath } from './runtime-paths'
 import { listAgents } from '@server/db/agents.js'
 import { safeReadTextFileSync } from '@server/utils/safe-fs.js'
+import { scanTomlTableHeaders } from '../ipc/toml-utils'
 
 const log = createLogger('plugin-self-heal')
 
@@ -754,43 +756,176 @@ function healCodexTomlConfig(filePath: string, shimPath: string, mcpServerPath: 
   result.scanned++
   let content: string
   try { content = fs.readFileSync(filePath, 'utf-8') } catch { return }
+  try {
+    parseToml(content)
+  } catch (err: any) {
+    result.errors.push({ file: filePath, error: `invalid TOML, skipped self-heal: ${err.message}` })
+    return
+  }
 
   let changed = false
+  let lines = content.split('\n')
 
-  // 一次性过渡清理：移除 [mcp_servers.external-brain-*] 段落
-  // 匹配从段落标题开始到下一个段落或文件结尾
-  const legacySectionRe = /(?:^|\n)\[mcp_servers\.external-brain-[\w-]+\][\s\S]*?(?=\n\[|$)/g
-  const withoutLegacy = content.replace(legacySectionRe, '')
-  if (withoutLegacy !== content) {
-    content = withoutLegacy
+  // 一次性过渡清理：只按 scanner 给出的真实 table 边界删除 legacy 段，
+  // 不让 multiline string 内形似 `[table]` 的文本截断删除范围。
+  const initialHeaders = scanTomlTableHeaders(content)
+  const legacyRanges = initialHeaders
+    .map((header, index) => ({ header, end: initialHeaders[index + 1]?.line ?? lines.length }))
+    .filter(({ header }) => !header.array && /^mcp_servers\.external-brain-[\w-]+$/.test(header.key))
+  for (const { header, end } of [...legacyRanges].reverse()) {
+    lines.splice(header.line, end - header.line)
     changed = true
+  }
+  if (legacyRanges.length > 0) {
+    content = lines.join('\n')
     log.info(`cleanup legacy [mcp_servers.external-brain-*] sections in: ${filePath}`)
   }
 
-  // 常规修正：patch [mcp_servers.tidemind-*] 段落的路径
-  const sectionRe = /\[mcp_servers\.(tidemind-[\w-]+)\]([\s\S]*?)(?=\n\[|\n*$)/g
-  const patched = content.replace(sectionRe, (whole: string, _name: string, body: string) => {
-    let newBody = body
-    // command = "..."
-    const cmdRe = /^(\s*)command\s*=\s*"[^"]*"/m
-    if (cmdRe.test(newBody)) {
-      const replacement = `$1command = ${JSON.stringify(shimPath)}`
-      const updated = newBody.replace(cmdRe, replacement)
-      if (updated !== newBody) { newBody = updated; changed = true }
+  // 常规修正：仅修改真实 [mcp_servers.tidemind-*] table 中、且源码仍是
+  // 我们生成的单行 basic-string 形态的 command / args[0]。非标准格式跳过，
+  // 宁可不自愈也不重排或误改用户 TOML。
+  const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const headers = scanTomlTableHeaders(content)
+  lines = content.split('\n')
+  for (let headerIndex = 0; headerIndex < headers.length; headerIndex++) {
+    const header = headers[headerIndex]
+    const nameMatch = !header.array ? header.key.match(/^mcp_servers\.(tidemind-[\w-]+)$/) : null
+    if (!nameMatch) continue
+    const name = nameMatch[1]
+    const end = headers[headerIndex + 1]?.line ?? lines.length
+    const originalLines = [...lines]
+    const parsed = parseToml(lines.join('\n')) as any
+    const entry = parsed.mcp_servers?.[name]
+    if (!entry || typeof entry !== 'object') continue
+
+    if (typeof entry.command === 'string' && entry.command !== shimPath) {
+      const oldLiteral = JSON.stringify(entry.command)
+      const commandRe = new RegExp(`^(\\s*command\\s*=\\s*)${escapeRegExp(oldLiteral)}(\\s*(?:#.*)?)$`)
+      const lineIndex = lines.slice(header.line + 1, end).findIndex(line => commandRe.test(line))
+      if (lineIndex >= 0) {
+        const absolute = header.line + 1 + lineIndex
+        lines[absolute] = lines[absolute].replace(commandRe, (_whole, prefix, suffix) =>
+          `${prefix}${JSON.stringify(shimPath)}${suffix}`)
+      }
     }
-    // args = [ "..." ] 只改第一个元素
-    const argsRe = /^(\s*)args\s*=\s*\[\s*"[^"]*"([\s\S]*?)\]/m
-    if (argsRe.test(newBody)) {
-      const replacement = `$1args = [${JSON.stringify(mcpServerPath)}$2]`
-      const updated = newBody.replace(argsRe, replacement)
-      if (updated !== newBody) { newBody = updated; changed = true }
+    if (Array.isArray(entry.args) && typeof entry.args[0] === 'string' && entry.args[0] !== mcpServerPath) {
+      const oldLiteral = JSON.stringify(entry.args[0])
+      const argsRe = new RegExp(`^(\\s*args\\s*=\\s*\\[\\s*)${escapeRegExp(oldLiteral)}(?=\\s*(?:,|\\]))`)
+      const lineIndex = lines.slice(header.line + 1, end).findIndex(line => argsRe.test(line))
+      if (lineIndex >= 0) {
+        const absolute = header.line + 1 + lineIndex
+        lines[absolute] = lines[absolute].replace(argsRe, (_whole, prefix) =>
+          `${prefix}${JSON.stringify(mcpServerPath)}`)
+      }
     }
-    return whole.replace(body, newBody)
-  })
+
+    const candidate = lines.join('\n')
+    try {
+      const updatedEntry = (parseToml(candidate) as any).mcp_servers?.[name]
+      if (updatedEntry?.command !== shimPath || updatedEntry?.args?.[0] !== mcpServerPath) {
+        lines = originalLines
+      } else if (candidate !== originalLines.join('\n')) {
+        changed = true
+      }
+    } catch {
+      lines = originalLines
+    }
+  }
+  const patched = lines.join('\n')
 
   if (changed) {
     try {
+      parseToml(patched)
       safeWriteText(filePath, patched)
+      result.patched++
+      log.info(`patched: ${filePath}`)
+    } catch (err: any) {
+      result.errors.push({ file: filePath, error: err.message })
+    }
+  }
+}
+
+/**
+ * Kimi Code config.toml 中 [[hooks]] 块的 hook command 路径修正。
+ *
+ * [[hooks]] 是 TOML array-of-tables,与 codex 的 hooks.json 结构不同,但
+ * command 字符串形态一致,因此复用通用的 parseHookCommand /
+ * hookCommandNeedsPatch / rebuildHookCommand。按行定位 [[hooks]] 块,
+ * 只替换块内的 command 行,其余用户内容原样保留。
+ *
+ * command 行形如:
+ *   command = "\"/path/shim\" \"/path/hook.cjs\" --agent-id \"eb_x\" ..."
+ * 值是 JSON 转义兼容的 TOML basic string,用 JSON.parse 解出原文。
+ *
+ * 门控(两个条件同时满足才 patch):①块内有 event = "UserPromptSubmit" 行;
+ * ②command 引用的 hook 脚本 basename 必须是 hook-session-start.cjs——防止误改
+ * 用户自定义的 [[hooks]] 块。
+ */
+function healKimiCodeConfig(filePath: string, shimPath: string, hookScriptPath: string, result: HealResult): void {
+  if (!fs.existsSync(filePath)) return
+  result.scanned++
+  let content: string
+  try { content = fs.readFileSync(filePath, 'utf-8') } catch { return }
+  try {
+    parseToml(content)
+  } catch (err: any) {
+    result.errors.push({ file: filePath, error: `invalid TOML, skipped self-heal: ${err.message}` })
+    return
+  }
+
+  const lines = content.split('\n')
+  const commandRe = /^(\s*command\s*=\s*)("(?:[^"\\]|\\.)*")(\s*(?:#.*)?)$/
+  const headers = scanTomlTableHeaders(content)
+
+  let changed = false
+  for (let headerIndex = 0; headerIndex < headers.length; headerIndex++) {
+    const header = headers[headerIndex]
+    if (!header.array || header.key !== 'hooks') continue
+    const i = header.line
+    const end = headers[headerIndex + 1]?.line ?? lines.length
+    // 门控 ①:只 patch event = "UserPromptSubmit" 的块(TideMind 的 hook 形态)。
+    // 其他事件(如用户自己的 SessionStart hook)即使含 --agent-id 也不动。
+    const blockText = lines.slice(i, end).join('\n')
+    let hookEntry: { event?: unknown } | undefined
+    try {
+      hookEntry = (parseToml(blockText) as { hooks?: Array<{ event?: unknown }> }).hooks?.[0]
+    } catch {
+      continue
+    }
+    if (hookEntry?.event !== 'UserPromptSubmit') {
+      continue
+    }
+    for (let j = i + 1; j < end; j++) {
+      const m = lines[j].match(commandRe)
+      if (!m) continue
+      let command: string
+      try {
+        command = JSON.parse(m[2])
+      } catch { continue }
+      if (typeof command !== 'string' || !command.includes('--agent-id')) continue
+      // 门控 ②:command 引用的 hook 脚本 basename 必须是 hook-session-start*,
+      // 防误改用户自定义的 UserPromptSubmit hook(碰巧也带 --agent-id 参数)。
+      const scriptMatch = command.match(/^"(?:[^"\\]|\\.)*"\s+"((?:[^"\\]|\\.)*)"/)
+      const scriptBase = scriptMatch ? path.basename(scriptMatch[1]) : ''
+      if (scriptBase !== 'hook-session-start.cjs') continue
+      const parsed = parseHookCommand(command)
+      if (!parsed.agentId || !parsed.skillPath || !parsed.tool) continue
+      if (hookCommandNeedsPatch(command, shimPath, hookScriptPath, parsed.agentId)) {
+        let rebuilt = rebuildHookCommand(shimPath, hookScriptPath, parsed.agentId, parsed.skillPath, parsed.tool)
+        // rebuildHookCommand 不认识 --once-per-session,原命令有则保留,
+        // 否则自愈后 UserPromptSubmit 会对每条消息都注入上下文。
+        if (command.includes('--once-per-session')) rebuilt += ' --once-per-session'
+        lines[j] = `${m[1]}${JSON.stringify(rebuilt)}${m[3]}`
+        changed = true
+      }
+    }
+  }
+
+  if (changed) {
+    try {
+      const updated = lines.join('\n')
+      parseToml(updated)
+      safeWriteText(filePath, updated)
       result.patched++
       log.info(`patched: ${filePath}`)
     } catch (err: any) {
@@ -924,6 +1059,10 @@ export function selfHealPlugins(dataDir: string, db?: Database.Database): HealRe
   // Codex
   healCodexHooks(path.join(os.homedir(), '.codex', 'hooks.json'), shimPath, hookScriptPath, result)
   healCodexTomlConfig(path.join(os.homedir(), '.codex', 'config.toml'), shimPath, mcpServerPath, result)
+
+  // Kimi Code(配置根目录支持 KIMI_CODE_HOME 覆盖,与 kimi-code adapter 一致)
+  const kimiHome = process.env.KIMI_CODE_HOME || path.join(os.homedir(), '.kimi-code')
+  healKimiCodeConfig(path.join(kimiHome, 'config.toml'), shimPath, hookScriptPath, result)
 
   log.info(`self-heal done: scanned=${result.scanned} patched=${result.patched} errors=${result.errors.length}`)
   if (result.errors.length > 0) {

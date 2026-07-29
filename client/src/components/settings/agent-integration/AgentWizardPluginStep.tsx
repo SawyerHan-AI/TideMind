@@ -21,6 +21,8 @@ interface AgentWizardPluginStepProps {
   isWindsurf: boolean
   isOpenClaw: boolean
   isGemini: boolean
+  isKimi: boolean
+  kimiAvailable: boolean
   onInstallPlugin: () => void
   onCopy: (text: string, key: string) => void
   onPrevious: () => void
@@ -46,6 +48,8 @@ export function AgentWizardPluginStep({
   isWindsurf,
   isOpenClaw,
   isGemini,
+  isKimi,
+  kimiAvailable,
   onInstallPlugin,
   onCopy,
   onPrevious,
@@ -175,6 +179,23 @@ export function AgentWizardPluginStep({
                   {t('agent.wizard.gemini.commands')}
                 </div>
               </>
+            ) : isKimi ? (
+              <>
+                <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+                  {desktopConfigWritten
+                    ? <CheckCircle size={10} className="text-emerald-400/60" />
+                    : <XCircle size={10} className="text-red-400/60" />}
+                  {t('agent.wizard.kimi.mcpConfig')}
+                </div>
+                <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+                  <CheckCircle size={10} className="text-emerald-400/60" />
+                  {t('agent.wizard.kimi.hookConfig')}
+                </div>
+                <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+                  <CheckCircle size={10} className="text-emerald-400/60" />
+                  {t('agent.wizard.kimi.skillInjected')}
+                </div>
+              </>
             ) : (
               <>
                 <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
@@ -295,6 +316,24 @@ export function AgentWizardPluginStep({
                     {t('agent.wizard.gemini.upgradeHint', { version: geminiVersion ?? 'unknown' })}
                   </p>
                   <p className="text-[10px] text-gray-500">{t('agent.wizard.gemini.upgradeNote')}</p>
+                </div>
+              )}
+            </div>
+          ) : isKimi ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <FolderOpen size={11} className="text-gray-500 flex-shrink-0" />
+                <code className="text-[10px] text-gray-400 font-mono truncate">{pluginDir}</code>
+              </div>
+              {kimiAvailable ? (
+                <div className="px-3 py-2 bg-emerald-400/5 border border-emerald-400/10 rounded-lg space-y-1">
+                  <p className="text-[10px] text-emerald-400 font-medium">{t('agent.wizard.kimi.autoReadyTitle')}</p>
+                  <p className="text-[10px] text-emerald-400">{t('agent.wizard.kimi.autoReadyNote')}</p>
+                </div>
+              ) : (
+                <div className="px-3 py-2 bg-amber-500/5 border border-amber-500/10 rounded-lg space-y-1">
+                  <p className="text-[10px] text-amber-400 font-medium">{t('agent.wizard.kimi.cliMissingTitle')}</p>
+                  <p className="text-[10px] text-gray-500">{t('agent.wizard.kimi.cliMissingNote')}</p>
                 </div>
               )}
             </div>

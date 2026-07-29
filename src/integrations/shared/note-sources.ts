@@ -214,14 +214,20 @@ export function stopAllNoteSources(): void {
  * logseq 的 stopLogseqIntegration 现在 async（drain 在途 processOneFile 串行链），**必须 await** 它跑完
  * setFileState/finally 再 closeDb——否则在途节点撞已关闭的 db、退休失败 → 残留活跃孤儿（第三轮审计 HIGH:
  * 桌面端 client/electron/daemon.ts 原走同步 stopAllNoteSources + 立即 closeDb，drain 在微任务里撞已关 db）。
- * 调用方应包 10s 超时兜底防卡死（对齐 src/daemon.ts CLI shutdown 的 Promise.race）。
- * Promise.allSettled 保证单个 integration stop 失败不影响其余。
+ * 调用方必须把超时或任一 stop 失败视为退出失败并保留 DB。这里先等待所有 integration
+ * 都完成，再把失败汇总抛出，避免一个失败掩盖其他 source 的 drain 结果。
  */
 export async function stopAllNoteSourcesAsync(): Promise<void> {
-  await Promise.allSettled([
+  const results = await Promise.allSettled([
     import('../logseq/index.js').then(mod => mod.stopLogseqIntegration()),
     import('../obsidian/index.js').then(mod => mod.stopObsidianIntegration()),
     import('../apple-notes/index.js').then(mod => mod.stopAppleNotesIntegration()),
     import('../notion/index.js').then(mod => mod.stopNotionIntegration()),
   ]);
+  const failures = results
+    .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+    .map(result => result.reason);
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'one or more note sources failed to stop');
+  }
 }

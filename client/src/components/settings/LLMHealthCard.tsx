@@ -1,207 +1,153 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { AlertCircle, CheckCircle2, Clock, Loader2, RotateCw } from 'lucide-react'
-import { Section } from './shared'
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronRight, Clock, Loader2, RotateCw } from 'lucide-react'
 import type { LLMHealthSnapshot } from '../../lib/api-contract'
+import { Section } from './shared'
 
-/**
- * AI 服务状态卡片 — 设置页诊断
- *
- * 显示：上次成功调用时间、当前熔断器状态 + 冷却剩余、最近一条错误摘要。
- * 不在此处提供"测试连接"按钮（"模型连接"卡片每条连接已自带，更精确）。
- */
 export function LLMHealthCard() {
   const { t, i18n } = useTranslation('settings')
   const [health, setHealth] = useState<LLMHealthSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
-  // "立即重试" 按钮状态:
-  //   - retrying: IPC 调用进行中,按钮 disabled + spinner
-  //   - retryDebounce: 防抖 5 秒,避免狂点打死 quota
-  //   - retryFeedback: 'success' | 'error' | null,刚点完显示反馈,3 秒后自动消失
-  const [retrying, setRetrying] = useState(false)
-  const [retryDebounce, setRetryDebounce] = useState(false)
-  const [retryFeedback, setRetryFeedback] = useState<'success' | 'error' | null>(null)
-  const retryFeedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // tick 触发 1 Hz 倒计时刷新(只在熔断中需要,避免无意义重渲)
-  const [, setTick] = useState(0)
+  const [expanded, setExpanded] = useState(false)
+  const [retryingId, setRetryingId] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
-    const fetchOnce = async () => {
+    const fetchHealth = async () => {
       try {
-        const h = await window.api.llm.getHealth()
-        if (!cancelled) { setHealth(h); setLoading(false) }
-      } catch { if (!cancelled) setLoading(false) }
+        const snapshot = await window.api.llm.getHealth()
+        if (!cancelled) setHealth(snapshot)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
     }
-    fetchOnce()
-    const unsubscribe = window.api.llm.onHealthChanged((h) => setHealth(h))
-    const timer = setInterval(fetchOnce, 30_000)
-    return () => { cancelled = true; clearInterval(timer); unsubscribe() }
-  }, [])
-
-  // 熔断中时启动 1 Hz 倒计时(每秒强制重渲,让"剩余 N:NN"实时刷新)。
-  // 非熔断状态不跑 timer,避免 settings 页常驻 1 Hz 渲染浪费。
-  useEffect(() => {
-    if (health?.circuitState !== 'open') return
-    const t = setInterval(() => setTick(n => n + 1), 1000)
-    return () => clearInterval(t)
-  }, [health?.circuitState])
-
-  // 卸载时清掉 feedback timer
-  useEffect(() => () => {
-    if (retryFeedbackTimer.current) clearTimeout(retryFeedbackTimer.current)
-  }, [])
-
-  const handleRetry = async () => {
-    if (retrying || retryDebounce) return
-    setRetrying(true)
-    setRetryFeedback(null)
-    try {
-      const newSnapshot = await window.api.llm.resetAndRetry()
-      setHealth(newSnapshot)
-      setRetryFeedback('success')
-    } catch {
-      setRetryFeedback('error')
-    } finally {
-      setRetrying(false)
-      // debounce 5 秒,避免用户狂点打死 quota
-      setRetryDebounce(true)
-      setTimeout(() => setRetryDebounce(false), 5_000)
-      // feedback 3 秒后消失
-      if (retryFeedbackTimer.current) clearTimeout(retryFeedbackTimer.current)
-      retryFeedbackTimer.current = setTimeout(() => setRetryFeedback(null), 3_000)
+    fetchHealth()
+    const unsubscribe = window.api.llm.onHealthChanged(snapshot => setHealth(snapshot))
+    const timer = setInterval(fetchHealth, 30_000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+      unsubscribe()
     }
-  }
-
-  // 计算冷却剩余(秒)。openedAt=0 表示未开过熔断。
-  const remainingMs = health && health.openedAt > 0
-    ? Math.max(0, (health.openedAt + health.cooldownMs) - Date.now())
-    : 0
-  const remainingSec = Math.ceil(remainingMs / 1000)
-  const remainingMin = Math.floor(remainingSec / 60)
-  const remainingSecOfMin = remainingSec % 60
-  const cooldownText = remainingMin > 0
-    ? `${remainingMin}:${String(remainingSecOfMin).padStart(2, '0')}`
-    : `0:${String(remainingSecOfMin).padStart(2, '0')}`
+  }, [])
 
   const rtf = new Intl.RelativeTimeFormat(i18n.language, { numeric: 'auto' })
-  const formatRelative = (ts: number): string => {
-    if (!ts || ts <= 0) return t('model.serviceStatus.never', '从未')
-    const diffMs = Date.now() - ts
-    const diffSec = Math.round(diffMs / 1000)
-    if (diffSec < 60) return rtf.format(-diffSec, 'second')
-    const diffMin = Math.round(diffSec / 60)
-    if (diffMin < 60) return rtf.format(-diffMin, 'minute')
-    const diffHour = Math.round(diffMin / 60)
-    if (diffHour < 24) return rtf.format(-diffHour, 'hour')
-    const diffDay = Math.round(diffHour / 24)
-    return rtf.format(-diffDay, 'day')
+  const formatRelative = (timestamp: number) => {
+    if (!timestamp) return t('model.serviceStatus.never')
+    const seconds = Math.round((Date.now() - timestamp) / 1000)
+    if (seconds < 60) return rtf.format(-seconds, 'second')
+    const minutes = Math.round(seconds / 60)
+    if (minutes < 60) return rtf.format(-minutes, 'minute')
+    const hours = Math.round(minutes / 60)
+    return hours < 24 ? rtf.format(-hours, 'hour') : rtf.format(-Math.round(hours / 24), 'day')
+  }
+
+  const fallbackErrors: NonNullable<LLMHealthSnapshot['errors']> = health?.lastError ? [{
+    connectionId: '',
+    providerType: '',
+    kind: 'legacy',
+    message: health.lastError,
+    needsUserAction: health.circuitState === 'open',
+    occurredAt: health.lastErrorAt,
+  }] : []
+  const errors = [...(health?.errors ?? fallbackErrors)].sort((a, b) =>
+    Number(b.needsUserAction) - Number(a.needsUserAction) || b.occurredAt - a.occurredAt,
+  )
+  const shownErrors = expanded ? errors : errors.slice(0, 3)
+  const retryableKinds = new Set(['offline', 'timeout', 'quota', 'rate_limit', 'network', 'provider_error'])
+
+  const reset = async (connectionId: string) => {
+    setRetryingId(connectionId || 'legacy')
+    try {
+      setHealth(await window.api.llm.resetAndRetry(connectionId || undefined))
+    } finally {
+      setRetryingId(null)
+    }
   }
 
   return (
-    <Section title={t('model.serviceStatus.title', 'AI 服务状态')}>
+    <Section title={t('model.serviceStatus.title')}>
       {loading || !health ? (
         <div className="flex items-center gap-2 text-xs text-gray-500">
           <Loader2 size={12} className="animate-spin" />
-          {t('common:loading', 'Loading...')}
+          {t('common:loading')}
         </div>
       ) : (
         <div className="space-y-3">
-          {/* 当前状态 */}
-          <Row
-            label={t('model.serviceStatus.currentStatus', '当前状态')}
-            value={
-              health.circuitState === 'open' ? (
-                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/20 text-red-300">
-                  <AlertCircle size={12} />
-                  {/* 倒计时显示到秒(分:秒),让用户知道 UI 没卡 + 看到熔断窗口正在 tick */}
-                  {t('model.serviceStatus.statusPausedCountdown', '熔断中（剩余 {{time}}）', {
-                    time: cooldownText,
-                  })}
-                </span>
-              ) : health.failures > 0 ? (
-                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300">
-                  <AlertCircle size={12} />
-                  {t('model.serviceStatus.statusDegraded', '近期失败 {{count}} 次', { count: health.failures })}
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-300">
-                  <CheckCircle2 size={12} />
-                  {t('model.serviceStatus.statusHealthy', '正常')}
-                </span>
-              )
-            }
-          />
+          <div className="grid grid-cols-3 gap-2">
+            <Metric label={t('model.serviceStatus.availableConnections')} value={String(health.availableCount ?? (health.circuitState === 'closed' ? 1 : 0))} />
+            <Metric label={t('model.serviceStatus.needsAttention')} value={String(health.needsAttentionCount ?? errors.length)} warning={errors.length > 0} />
+            <Metric label={t('model.serviceStatus.lastSuccess')} value={formatRelative(health.lastSuccessAt)} icon={<Clock size={11} />} />
+          </div>
 
-          {/* 立即重试按钮 — 只在熔断中或有失败时显示 */}
-          {(health.circuitState === 'open' || health.failures > 0) && (
-            <div className="flex items-center justify-end gap-3">
-              {retryFeedback === 'success' && (
-                <span className="text-xs text-emerald-300">
-                  {t('model.serviceStatus.retrySuccess', '已重置熔断状态')}
-                </span>
+          {errors.length === 0 ? (
+            <div className="flex items-center gap-2 rounded-lg border border-emerald-500/15 bg-emerald-500/[0.07] px-3 py-2 text-xs text-emerald-300">
+              <CheckCircle2 size={13} />
+              {t('model.serviceStatus.statusHealthy')}
+            </div>
+          ) : (
+            <div id="llm-health-errors" className="space-y-1.5">
+              {shownErrors.map((error, index) => (
+                <div key={`${error.connectionId}-${error.kind}-${index}`} className="rounded-lg border border-red-500/15 bg-red-500/[0.07] px-3 py-2">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle size={13} className="mt-0.5 shrink-0 text-red-400" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-xs font-medium text-gray-200">
+                          {error.connectionName || error.providerType || t('model.serviceStatus.unknownConnection')}
+                        </span>
+                        <span className="text-[10px] text-gray-600">{formatRelative(error.occurredAt)}</span>
+                      </div>
+                      <p className="mt-0.5 break-words text-[11px] text-red-300">{error.message}</p>
+                    </div>
+                    {error.connectionId && retryableKinds.has(error.kind) && (
+                      <button
+                        type="button"
+                        onClick={() => reset(error.connectionId)}
+                        disabled={retryingId !== null}
+                        className="shrink-0 flex items-center gap-1 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[10px] text-gray-400 hover:text-gray-200 disabled:opacity-50"
+                      >
+                        {retryingId === error.connectionId ? <Loader2 size={10} className="animate-spin" /> : <RotateCw size={10} />}
+                        {t('model.serviceStatus.retryNow')}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {errors.length > 3 && (
+                <button
+                  type="button"
+                  onClick={() => setExpanded(value => !value)}
+                  aria-expanded={expanded}
+                  aria-controls="llm-health-errors"
+                  className="flex items-center gap-1 text-[11px] text-gray-500 hover:text-gray-300"
+                >
+                  {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                  {expanded ? t('model.serviceStatus.collapseErrors') : t('model.serviceStatus.expandErrors', { count: errors.length - 3 })}
+                </button>
               )}
-              {retryFeedback === 'error' && (
-                <span className="text-xs text-red-300">
-                  {t('model.serviceStatus.retryError', '重试失败')}
-                </span>
-              )}
-              <button
-                type="button"
-                onClick={handleRetry}
-                disabled={retrying || retryDebounce}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25 hover:border-emerald-500/30 disabled:bg-white/5 disabled:border-white/10 disabled:text-gray-500 disabled:cursor-not-allowed text-emerald-300 transition-colors"
-                title={retryDebounce && !retrying ? t('model.serviceStatus.retryDebounceHint', '请稍候再试') as string : undefined}
-              >
-                {retrying ? (
-                  <Loader2 size={12} className="animate-spin" />
-                ) : (
-                  <RotateCw size={12} />
-                )}
-                {t('model.serviceStatus.retryNow', '立即重试')}
-              </button>
             </div>
           )}
 
-          {/* 上次成功 */}
-          <Row
-            label={t('model.serviceStatus.lastSuccess', '上次成功调用')}
-            value={
-              <span className="flex items-center gap-1.5 text-gray-300">
-                <Clock size={12} />
-                {formatRelative(health.lastSuccessAt)}
-              </span>
-            }
-          />
-
-          {/* 上次错误 */}
-          {health.lastError && (
-            <div className="space-y-1">
-              <p className="text-xs text-gray-500">
-                {t('model.serviceStatus.lastError', '上次错误')}
-                <span className="ml-2 text-gray-600">({formatRelative(health.lastErrorAt)})</span>
-              </p>
-              <p className="text-[11px] text-red-300 font-mono break-all bg-red-500/10 border-l-2 border-red-500/40 px-2.5 py-1.5 rounded">
-                {health.lastError}
-              </p>
-            </div>
-          )}
-
-          {/* 提示链接到模型连接卡片 */}
-          <p className="text-[11px] text-gray-500 pt-1">
-            {t('model.serviceStatus.hint', '如需排查或测试连接，请到下方"模型连接"分别测试每个 provider。')}
-          </p>
+          <p className="text-[11px] text-gray-500">{t('model.serviceStatus.hint')}</p>
         </div>
       )}
     </Section>
   )
 }
 
-function Row({ label, value }: { label: string; value: React.ReactNode }) {
+function Metric({ label, value, warning = false, icon }: {
+  label: string
+  value: string
+  warning?: boolean
+  icon?: React.ReactNode
+}) {
   return (
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-xs text-gray-500 flex-shrink-0">{label}</span>
-      <span className="text-xs">{value}</span>
+    <div className="rounded-lg border border-white/5 bg-white/[0.025] px-3 py-2">
+      <div className="text-[10px] text-gray-500">{label}</div>
+      <div className={`mt-1 flex items-center gap-1.5 text-sm font-medium ${warning ? 'text-amber-300' : 'text-gray-200'}`}>
+        {icon}{value}
+      </div>
     </div>
   )
 }

@@ -33,7 +33,9 @@ async function ensureOllama(): Promise<void> {
     const { parse } = await import('smol-toml')
     const fs = await import('node:fs')
     if (fs.existsSync(configPath)) {
-      const cfg = parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, any>
+      const cfg = parse(fs.readFileSync(configPath, 'utf-8')) as {
+        embedding?: { provider?: unknown }
+      }
       if (cfg.embedding?.provider !== 'ollama') return
     } else {
       return // 无配置文件，默认不启动
@@ -48,6 +50,7 @@ async function ensureOllama(): Promise<void> {
   } catch {
     // 未运行，尝试启动
   }
+  if (getIsQuitting()) return
   if (process.platform === 'darwin') {
     exec('open -a Ollama', (err) => {
       if (err) mainLog.warn(`Ollama start failed: ${err.message}`)
@@ -75,7 +78,7 @@ let tray: Tray | null = null
  * 抽到 lifecycle.ts 共享给 updater 模块,在 quitAndInstall 之前置 true,让
  * close() handler 放行 quit 路径(详见 lifecycle.ts 注释 + Audit B-5)。
  */
-import { getIsQuitting, setQuitting } from './lifecycle.js'
+import { getIsQuitting, resetQuitting, setQuitting } from './lifecycle.js'
 
 // ── tidemind:// 协议注册 ────────────────────────────────
 // 在 macOS 上，第二次打开链接不会启动新进程，而是发送 open-url 事件。
@@ -360,6 +363,11 @@ function installCspHeader(): void {
   })
 }
 
+let daemonStartTimer: NodeJS.Timeout | null = null
+let dataWatcherStartTimer: NodeJS.Timeout | null = null
+let cloudStartupPromise: Promise<void> | null = null
+let daemonStartupPromise: Promise<void> | null = null
+
 app.whenReady().then(async () => {
   // 必须在 createWindow 之前装好 CSP，否则首次 loadURL/loadFile 拿不到 header
   installCspHeader()
@@ -435,17 +443,20 @@ app.whenReady().then(async () => {
   // dynamic import 之后，是冷启的主要可见瓶颈之一。
   if (db) {
     const dbForCloud = db
-    void (async () => {
+    cloudStartupPromise = (async () => {
       try {
         const { initAuth } = await import('./cloud/auth-client.js')
+        if (getIsQuitting()) return
         initAuth()
         // 启动时未登录/未开同步则不建 client;中途登录由 OAuth 回调路径补建
         // (见 handleProtocolUrl 的 maybeStartCloudSync 调用)。
-        await maybeStartCloudSync(dbForCloud)
+        if (!getIsQuitting()) await maybeStartCloudSync(dbForCloud)
       } catch (err) {
         mainLog.error('cloud auth init failed:', err)
       }
-    })()
+    })().finally(() => {
+      cloudStartupPromise = null
+    })
   }
 
   // 后台确保 Ollama 运行（本身已经是非阻塞）
@@ -454,7 +465,9 @@ app.whenReady().then(async () => {
   // data-watcher 延迟 1s 启动：避开首屏 IPC 高峰，给 renderer 第一波拉数让路
   if (db) {
     const dbForWatcher = db
-    setTimeout(() => {
+    dataWatcherStartTimer = setTimeout(() => {
+      dataWatcherStartTimer = null
+      if (getIsQuitting()) return
       try {
         startDataWatcher(dbForWatcher)
       } catch (err) {
@@ -464,8 +477,15 @@ app.whenReady().then(async () => {
   }
 
   // 内嵌守护进程延迟 2s 启动：调度任务（含 LLM）和首屏完全错开
-  setTimeout(() => {
-    startDaemon().catch(err => mainLog.error('daemon start failed:', err))
+  daemonStartTimer = setTimeout(() => {
+    daemonStartTimer = null
+    if (getIsQuitting()) return
+    const current = startDaemon()
+      .catch(err => mainLog.error('daemon start failed:', err))
+      .finally(() => {
+        if (daemonStartupPromise === current) daemonStartupPromise = null
+      })
+    daemonStartupPromise = current
   }, 2000)
 
   // 自动更新:打包模式下启用。initAutoUpdater 内部已判断 !app.isPackaged 直接返回。
@@ -482,8 +502,21 @@ app.whenReady().then(async () => {
   }
 })
 
-app.on('before-quit', () => {
+let quitCleanupPromise: Promise<void> | null = null
+let quitCleanupComplete = false
+
+app.on('before-quit', (event) => {
+  if (quitCleanupComplete) return
+  event.preventDefault()
   setQuitting()
+  if (daemonStartTimer) {
+    clearTimeout(daemonStartTimer)
+    daemonStartTimer = null
+  }
+  if (dataWatcherStartTimer) {
+    clearTimeout(dataWatcherStartTimer)
+    dataWatcherStartTimer = null
+  }
   stopDataWatcher()
   // 必须停止 cloud sync client,否则 WebSocket / 重连定时器 / 慢重试 timer 全泄漏:
   // app 退出过程中 ws 仍尝试发握手或重连;若 slowRetry 触发新 ws 连接,close handler
@@ -494,21 +527,41 @@ app.on('before-quit', () => {
   // 自救路径创建的 sync client,该引用仍为 null,退出时不会被清理。改为动态 import
   // sync-client 模块、直接调 destroySyncClient()——它销毁当前 singleton(无论哪条路径
   // 建的),没有则 no-op。dynamic import 在 before-quit 同步段发起,promise 进微任务队列。
-  import('./cloud/sync-client.js')
-    .then(m => m.destroySyncClient())
-    .catch(err => mainLog.warn('destroySyncClient failed:', (err as Error).message))
-  // 先 fire-and-forget kill in-flight LLM 请求,让 socket 提早释放,避免 daemon
-  // 跑着 profile-synthesize (max_tokens=10000 可能 5+ 分钟) 期间用户 cmd+Q 时
-  // 进程等 fetch promise 出现"主进程 95% CPU 卡 5 分钟"的 quit-and-install 卡死。
-  import('../../src/llm/client.js')
-    .then(m => m.shutdownLLMClient())
-    .catch(err => mainLog.warn('shutdownLLMClient failed:', (err as Error).message))
-  // stopDaemon 现在是 async,要等 in-flight tick 跑完再关 DB,避免 'database is closed'
-  // 抛错。Electron 的 before-quit 不会 await 这个 promise,但我们在内部把 closeClientDb
-  // 放进 then 链确保顺序;app 实际退出前 Electron 也会等 main process 微任务清空。
-  void stopDaemon()
-    .catch(err => mainLog.warn('stopDaemon failed:', (err as Error).message))
-    .finally(() => { closeClientDb() })
+  if (quitCleanupPromise) return
+  quitCleanupPromise = (async () => {
+    // 先主动中止所有 LLM/CLI 子进程，再等待 daemon 与 cloud 收尾。Electron 事件
+    // 本身不会 await promise，因此 before-quit 必须 preventDefault，并在全部资源
+    // 已关闭后再次 app.quit()。
+    const llmShutdown = import('../../src/llm/client.js')
+      .then(m => m.shutdownLLMClient())
+    const pendingCloudStartup = cloudStartupPromise
+    const pendingDaemonStartup = daemonStartupPromise
+    const cloudShutdown = (async () => {
+      await pendingCloudStartup
+      const cloud = await import('./cloud/sync-client.js')
+      await cloud.destroySyncClient()
+    })()
+      .catch(err => mainLog.warn('destroySyncClient failed:', (err as Error).message))
+
+    await llmShutdown
+    // stopDaemon 会让在途 start generation 失效并等待它退出；这里保留显式引用，
+    // 防止 timer callback 清空后启动 promise 变成退出 barrier 的盲区。
+    const daemonShutdown = stopDaemon()
+    await Promise.all([
+      cloudShutdown,
+      daemonShutdown,
+      pendingDaemonStartup?.catch(() => undefined),
+    ])
+    closeClientDb()
+    quitCleanupComplete = true
+    app.quit()
+  })().catch(err => {
+    // CLI 进程或 DB 收尾未完成时禁止强退，否则 prompt 已提交的后台任务
+    // 可能被错误重放。保留数据库与进程，下一次退出动作可重试清理。
+    mainLog.error('quit cleanup failed; quit cancelled:', err)
+    quitCleanupPromise = null
+    resetQuitting()
+  })
 })
 
 app.on('window-all-closed', () => {

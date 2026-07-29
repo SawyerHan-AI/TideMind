@@ -7,6 +7,7 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import { createLogger } from '../utils/logger.js';
 import {
   addColumnIfMissing,
+  ensurePendingDigestsV33,
   execIgnoringDuplicateColumn,
   execIgnoringErrors,
   tableHasColumn,
@@ -22,7 +23,7 @@ function generateSourceId(): string {
  * 当前 schema 版本。每次新增 migration 时递增。
  * export 给 connection.ts 的迁移前备份判定用,避免那边硬编码版本号失效。
  */
-export const CURRENT_SCHEMA_VERSION = 32;
+export const CURRENT_SCHEMA_VERSION = 33;
 
 /**
  * 实时上行(M6):脏集表 + 回声抑制 guard + nodes/links 写触发器。
@@ -378,7 +379,19 @@ CREATE TABLE IF NOT EXISTS llm_usage_log (
     input_tokens INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
     thinking_tokens INTEGER DEFAULT 0,
-    estimated_cost REAL DEFAULT 0,
+    estimated_cost REAL,
+    provider_type TEXT,
+    connection_id TEXT,
+    connection_name_snapshot TEXT,
+    source_type TEXT,
+    billing_mode TEXT,
+    estimated_cost_kind TEXT,
+    pricing_table_version TEXT,
+    provider_reported_cost REAL,
+    provider_reported_cost_kind TEXT,
+    cached_input_tokens INTEGER DEFAULT 0,
+    reasoning_tokens INTEGER DEFAULT 0,
+    invocation_outcome TEXT,
     created TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_llm_usage_created ON llm_usage_log(created);
@@ -445,22 +458,94 @@ CREATE TABLE IF NOT EXISTS model_connections (
     status TEXT DEFAULT 'unconfigured',
     available_models TEXT,
     last_checked TEXT,
+    status_reason TEXT,
+    cli_path TEXT,
+    cli_version TEXT,
+    auth_method TEXT,
+    auth_fingerprint TEXT,
+    environment_checked_at TEXT,
+    candidate_models TEXT,
+    validation_fingerprint TEXT,
+    model_validation_json TEXT,
+    last_tested_at TEXT,
+    last_test_summary TEXT,
     archived INTEGER DEFAULT 0,
     created TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS llm_connection_health (
+    scope_id TEXT PRIMARY KEY,
+    connection_id TEXT,
+    provider_type TEXT NOT NULL,
+    circuit_state TEXT NOT NULL DEFAULT 'closed',
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    opened_at INTEGER,
+    cooldown_ms INTEGER NOT NULL DEFAULT 300000,
+    last_success_at INTEGER,
+    last_error_kind TEXT,
+    last_error_message TEXT,
+    last_error_at INTEGER,
+    needs_user_action INTEGER NOT NULL DEFAULT 0,
+    retry_at INTEGER,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_llm_connection_health_connection
+    ON llm_connection_health(connection_id);
+CREATE TABLE IF NOT EXISTS llm_connection_probe_leases (
+    scope_id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cli_capacity_leases (
+    account_scope TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    owner_pid INTEGER NOT NULL,
+    fencing_token INTEGER NOT NULL,
+    lease_expires_at INTEGER NOT NULL,
+    heartbeat_at INTEGER NOT NULL,
+    connection_id TEXT NOT NULL,
+    invocation_id TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cli_capacity_leases_expiry
+  ON cli_capacity_leases(lease_expires_at);
+
+CREATE TABLE IF NOT EXISTS cli_invocations (
+    id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL,
+    provider_type TEXT NOT NULL,
+    account_scope TEXT NOT NULL,
+    task_id TEXT,
+    operation_name TEXT,
+    model_alias TEXT,
+    actual_model TEXT,
+    prompt_committed INTEGER NOT NULL DEFAULT 0,
+    outcome TEXT NOT NULL DEFAULT 'running',
+    resolution TEXT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    error_kind TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cli_invocations_connection
+  ON cli_invocations(connection_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_cli_invocations_task
+  ON cli_invocations(task_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_cli_invocations_outcome
+  ON cli_invocations(outcome, started_at);
 
 -- Digest 重试队列
 CREATE TABLE IF NOT EXISTS pending_digests (
     id TEXT PRIMARY KEY,
     trace_id TEXT NOT NULL,
     input_json TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','failed')),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','failed','ambiguous')),
     error_message TEXT,
     retry_count INTEGER DEFAULT 0,
     created TEXT NOT NULL,
     next_retry_at TEXT NOT NULL,
     completed_at TEXT,
-    processing_started_at TEXT  -- 进入 processing 时写入（stale recovery 用）
+    processing_started_at TEXT,  -- 进入 processing 时写入（stale recovery 用）
+    ambiguous_invocation_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_pending_digests_status ON pending_digests(status, next_retry_at);
 
@@ -1913,6 +1998,154 @@ const MIGRATIONS: Migration[] = [
       log.info('迁移 v32 完成: tag_usage triggers 已去重 + 计数已重建');
     },
   },
+  {
+    version: 33,
+    description: '连接级 LLM 运行时底座：CLI 环境/验证、健康熔断、容量租约、调用账本与来源计费',
+    up: (db) => {
+      const connectionColumns: Array<[string, string]> = [
+        ['status_reason', 'TEXT'],
+        ['cli_path', 'TEXT'],
+        ['cli_version', 'TEXT'],
+        ['auth_method', 'TEXT'],
+        ['auth_fingerprint', 'TEXT'],
+        ['environment_checked_at', 'TEXT'],
+        ['candidate_models', 'TEXT'],
+        ['validation_fingerprint', 'TEXT'],
+        ['model_validation_json', 'TEXT'],
+        ['last_tested_at', 'TEXT'],
+        ['last_test_summary', 'TEXT'],
+      ];
+      for (const [column, sqlType] of connectionColumns) {
+        addColumnIfMissing(
+          db,
+          'model_connections',
+          column,
+          `ALTER TABLE model_connections ADD COLUMN ${column} ${sqlType}`,
+        );
+      }
+
+      const usageColumns: Array<[string, string]> = [
+        ['provider_type', 'TEXT'],
+        ['connection_id', 'TEXT'],
+        ['connection_name_snapshot', 'TEXT'],
+        ['source_type', 'TEXT'],
+        ['billing_mode', 'TEXT'],
+        ['estimated_cost_kind', 'TEXT'],
+        ['pricing_table_version', 'TEXT'],
+        ['provider_reported_cost', 'REAL'],
+        ['provider_reported_cost_kind', 'TEXT'],
+        ['cached_input_tokens', 'INTEGER DEFAULT 0'],
+        ['reasoning_tokens', 'INTEGER DEFAULT 0'],
+        ['invocation_outcome', 'TEXT'],
+      ];
+      for (const [column, sqlType] of usageColumns) {
+        addColumnIfMissing(
+          db,
+          'llm_usage_log',
+          column,
+          `ALTER TABLE llm_usage_log ADD COLUMN ${column} ${sqlType}`,
+        );
+      }
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS llm_connection_health (
+          scope_id TEXT PRIMARY KEY,
+          connection_id TEXT,
+          provider_type TEXT NOT NULL,
+          circuit_state TEXT NOT NULL DEFAULT 'closed',
+          failure_count INTEGER NOT NULL DEFAULT 0,
+          opened_at INTEGER,
+          cooldown_ms INTEGER NOT NULL DEFAULT 300000,
+          last_success_at INTEGER,
+          last_error_kind TEXT,
+          last_error_message TEXT,
+          last_error_at INTEGER,
+          needs_user_action INTEGER NOT NULL DEFAULT 0,
+          retry_at INTEGER,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_llm_connection_health_connection
+          ON llm_connection_health(connection_id);
+        CREATE TABLE IF NOT EXISTS llm_connection_probe_leases (
+          scope_id TEXT PRIMARY KEY,
+          owner_id TEXT NOT NULL,
+          expires_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS cli_capacity_leases (
+          account_scope TEXT PRIMARY KEY,
+          owner_id TEXT NOT NULL,
+          owner_pid INTEGER NOT NULL,
+          fencing_token INTEGER NOT NULL,
+          lease_expires_at INTEGER NOT NULL,
+          heartbeat_at INTEGER NOT NULL,
+          connection_id TEXT NOT NULL,
+          invocation_id TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_cli_capacity_leases_expiry
+          ON cli_capacity_leases(lease_expires_at);
+        CREATE TABLE IF NOT EXISTS cli_invocations (
+          id TEXT PRIMARY KEY,
+          connection_id TEXT NOT NULL,
+          provider_type TEXT NOT NULL,
+          account_scope TEXT NOT NULL,
+          task_id TEXT,
+          operation_name TEXT,
+          model_alias TEXT,
+          actual_model TEXT,
+          prompt_committed INTEGER NOT NULL DEFAULT 0,
+          outcome TEXT NOT NULL DEFAULT 'running',
+          resolution TEXT,
+          started_at TEXT NOT NULL,
+          finished_at TEXT,
+          error_kind TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_cli_invocations_connection
+          ON cli_invocations(connection_id, started_at);
+        CREATE INDEX IF NOT EXISTS idx_cli_invocations_task
+          ON cli_invocations(task_id, started_at);
+        CREATE INDEX IF NOT EXISTS idx_cli_invocations_outcome
+          ON cli_invocations(outcome, started_at);
+        CREATE INDEX IF NOT EXISTS idx_llm_usage_connection
+          ON llm_usage_log(connection_id, created);
+        CREATE INDEX IF NOT EXISTS idx_llm_usage_source
+          ON llm_usage_log(source_type, created);
+      `);
+
+      ensurePendingDigestsV33(db);
+
+      // 历史日志没有 connection，保留 NULL；只对能从模型名可靠推断的 provider 回填。
+      db.exec(`
+        UPDATE llm_usage_log
+        SET provider_type = CASE
+              WHEN lower(model) LIKE '%gemini%' THEN 'gemini'
+              ELSE 'unknown'
+            END,
+            source_type = CASE
+              WHEN lower(model) LIKE '%claude%' OR lower(model) LIKE '%gemini%' THEN 'cloud_service'
+              ELSE 'unknown'
+            END,
+            billing_mode = CASE
+              WHEN lower(model) LIKE '%claude%' OR lower(model) LIKE '%gemini%' THEN 'api'
+              ELSE 'unknown'
+            END,
+            estimated_cost_kind = CASE
+              WHEN lower(model) LIKE '%claude%' OR lower(model) LIKE '%gemini%' THEN 'api_estimate'
+              ELSE 'unavailable'
+            END,
+            pricing_table_version = CASE
+              WHEN lower(model) LIKE '%claude%' OR lower(model) LIKE '%gemini%' THEN '2026-07-29'
+              ELSE NULL
+            END,
+            estimated_cost = CASE
+              WHEN lower(model) LIKE '%claude%' OR lower(model) LIKE '%gemini%' THEN estimated_cost
+              ELSE NULL
+            END,
+            invocation_outcome = 'success'
+        WHERE provider_type IS NULL;
+      `);
+      log.info('迁移 v33 完成: 连接级 LLM 运行时与来源计费底座已就位');
+    },
+  },
 ];
 
 /**
@@ -2088,6 +2321,12 @@ export function ensureSchema(db: Database.Database): void {
   // 实时上行(M6):脏集 + guard + 触发器。放在 migration 之后建,避免升级时 v29 回填(改所有
   // nodes)触发全量脏集。IF NOT EXISTS 幂等;新装(不跑 migration)与已最新版本都安全重建。
   db.exec(CLOUD_UPLINK_SQL);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_llm_usage_connection
+      ON llm_usage_log(connection_id, created);
+    CREATE INDEX IF NOT EXISTS idx_llm_usage_source
+      ON llm_usage_log(source_type, created);
+  `);
 }
 
 export function ensureVectorTable(db: Database.Database, dimensions: number = 3072): void {

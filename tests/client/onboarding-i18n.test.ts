@@ -81,7 +81,13 @@ describe('dashboard i18n 新增 key', () => {
 })
 
 describe('settings i18n 新增 key', () => {
-  const REQUIRED_KEYS = ['general.onboarding', 'general.onboardingDesc', 'general.rerunOnboarding']
+  const REQUIRED_KEYS = [
+    'general.onboarding',
+    'general.onboardingDesc',
+    'general.rerunOnboarding',
+    'agent.wizard.kimi.cliMissingTitle',
+    'agent.wizard.kimi.cliMissingNote',
+  ]
 
   for (const lang of LANGUAGES) {
     it(`${lang}/settings.json 包含 onboarding 相关 key`, () => {

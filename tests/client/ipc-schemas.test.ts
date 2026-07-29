@@ -181,6 +181,20 @@ describe('ipc schema helpers', () => {
         clientType: 'gemini',
       },
     });
+    // Regression: 'kimi-code' must be accepted as a valid PluginClientType
+    expect(parsePluginClientType('kimi-code')).toEqual({ ok: true, data: 'kimi-code' });
+    expect(parsePluginGenerateInput({
+      agentId: 'eb_1234abcd',
+      agentName: 'Kimi Agent',
+      clientType: 'kimi-code',
+    })).toEqual({
+      ok: true,
+      data: {
+        agentId: 'eb_1234abcd',
+        agentName: 'Kimi Agent',
+        clientType: 'kimi-code',
+      },
+    });
   });
 
   it('validates agent create and update payloads', () => {

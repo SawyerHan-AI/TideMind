@@ -10,7 +10,11 @@ vi.mock('../../src/utils/logger.js', () => ({
   createLogger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
 }));
 
-import { estimateCost } from '../../src/llm/pricing.js';
+import {
+  estimateCost,
+  estimateVersionedCost,
+  PRICING_TABLE_VERSION,
+} from '../../src/llm/pricing.js';
 
 describe('estimateCost', () => {
   // ===== 基础定价匹配 =====
@@ -95,10 +99,20 @@ describe('estimateCost', () => {
 
   // ===== 防御性处理 =====
 
-  it('未知模型走 FALLBACK_PRICING(Sonnet 价档)而非返 0', () => {
-    // 2026-05-19 修复:未知模型静默 0 让计费遗漏。改为按 Sonnet 价(3/15/15) fallback。
-    // 1000 input + 1000 output = (1000*3 + 1000*15) / 1M = 0.018
-    expect(estimateCost('unknown-model', 1000, 1000, 0)).toBeCloseTo(0.018, 5);
+  it('未知模型的版本化估价明确返回 unavailable + NULL', () => {
+    expect(estimateVersionedCost('unknown-model', 1000, 1000, 0)).toEqual({
+      estimatedCost: null,
+      kind: 'unavailable',
+      pricingTableVersion: PRICING_TABLE_VERSION,
+    });
+  });
+
+  it('已知模型的版本化估价记录固定价表版本', () => {
+    expect(estimateVersionedCost('claude-sonnet-4-6', 1_000_000, 0, 0)).toEqual({
+      estimatedCost: 3,
+      kind: 'api_estimate',
+      pricingTableVersion: PRICING_TABLE_VERSION,
+    });
   });
 
   it('NaN token 返回 0', () => {

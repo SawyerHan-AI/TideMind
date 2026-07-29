@@ -40,6 +40,7 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
   const [cliAvailable, setCliAvailable] = useState(false)
   const [codexVersion, setCodexVersion] = useState<string | null>(null)
   const [geminiVersion, setGeminiVersion] = useState<string | null>(null)
+  const [kimiAvailable, setKimiAvailable] = useState(false)
   const [installing, setInstalling] = useState(false)
   const [installResult, setInstallResult] = useState<{ success: boolean; message: string } | null>(null)
   // Claude Cowork 专用状态
@@ -55,6 +56,7 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
   const isWindsurf = effectiveToolType === 'windsurf'
   const isOpenClaw = effectiveToolType === 'openclaw'
   const isGemini = effectiveToolType === 'gemini'
+  const isKimi = effectiveToolType === 'kimi-code'
   const isManual = !usePlugin  // "其他"工具走手动配置流程
 
   // 根据流程类型决定步骤
@@ -92,7 +94,7 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
         // Claude Cowork: 写入 Desktop config + 生成 Skill 到 Downloads
         setPluginGenerating(true)
         try {
-          const [result, cliCheck, codexCheck, geminiCheck] = await Promise.all([
+          const [result, cliCheck, codexCheck, geminiCheck, kimiCheck] = await Promise.all([
             window.api.agents.generatePlugin({ agentId: agent.id, agentName: agent.name, clientType: finalToolType }),
             window.api.agents.checkCli('claude'),
             isCodex
@@ -101,13 +103,16 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
             isGemini
               ? window.api.agents.checkCli('gemini')
               : Promise.resolve({ available: false } as { available: boolean; path?: string; version?: string }),
+            isKimi
+              ? window.api.agents.checkCli('kimi')
+              : Promise.resolve({ available: false } as { available: boolean; path?: string; version?: string }),
           ])
           if (result.success) {
             setPluginDir(result.pluginDir)
             setPluginName(result.pluginName)
             if (result.pluginsDir) setPluginsDir(result.pluginsDir)
             setPluginGenerated(true)
-            if (isCowork || isCursor || isCodex || isWindsurf || isOpenClaw || isGemini) {
+            if (isCowork || isCursor || isCodex || isWindsurf || isOpenClaw || isGemini || isKimi) {
               setDesktopConfigWritten(true)
             }
           } else {
@@ -119,6 +124,7 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
           setCliAvailable(cliCheck.available)
           setCodexVersion(codexCheck.version ?? null)
           setGeminiVersion(geminiCheck.version ?? null)
+          setKimiAvailable(kimiCheck.available)
         } catch (err: any) {
           setPluginError(err.message)
           await window.api.agents.delete(agent.id).catch(() => {})
@@ -284,6 +290,8 @@ export function AgentWizard({ onClose }: { onClose: () => void }) {
           isWindsurf={isWindsurf}
           isOpenClaw={isOpenClaw}
           isGemini={isGemini}
+          isKimi={isKimi}
+          kimiAvailable={kimiAvailable}
           onInstallPlugin={handleInstallPlugin}
           onCopy={handleCopy}
           onPrevious={() => setStep(0)}

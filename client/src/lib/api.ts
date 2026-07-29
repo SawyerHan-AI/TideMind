@@ -141,10 +141,21 @@ export interface TokenUsageData {
     thinking_tokens: number
     estimated_cost: number
     call_count: number
+    unpriced_call_count?: number
+    is_partial?: boolean
   }
   countByOperation: Array<{ operation: string; cnt: number; cost: number }>
   dailyByModel: Array<{ date: string; model: string; input_tokens: number; output_tokens: number; thinking_tokens: number; estimated_cost: number }>
   dailyByOperation: Array<{ date: string; operation: string; input_tokens: number; output_tokens: number; thinking_tokens: number; estimated_cost: number }>
+  byConnectionAndSource?: Array<{
+    connection_id: string | null
+    connection_name: string | null
+    source_type: string
+    call_count: number
+    total_tokens: number
+    estimated_cost: number | null
+    unpriced_call_count: number
+  }>
 }
 
 export interface TokenUsageFilteredData {
@@ -163,7 +174,12 @@ export interface TokenUsageFilteredData {
     input_tokens: number
     output_tokens: number
     thinking_tokens: number
-    estimated_cost: number
+    estimated_cost: number | null
+    connection_id?: string | null
+    connection_name?: string | null
+    source_type?: string | null
+    billing_mode?: string | null
+    estimated_cost_kind?: string | null
     created: string
   }>
   totalLogs: number

@@ -45,7 +45,7 @@ export function enqueueInFlightDigest(
   db: Database.Database,
   traceId: string,
   inputJson: string,
-): void {
+): string {
   const id = generateId();
   const ts = now();
   db.prepare(`
@@ -53,6 +53,7 @@ export function enqueueInFlightDigest(
     VALUES (?, ?, ?, 'processing', 'in-flight', 0, ?, ?, ?)
   `).run(id, traceId, inputJson, ts, computeNextRetry(0), ts);
   log.info(`Digest enqueued in-flight (processing): trace=${traceId}`);
+  return id;
 }
 
 export function claimNextPendingDigest(
@@ -180,6 +181,27 @@ export function failPendingDigest(
   } else {
     log.info(`Digest retry scheduled (attempt ${result.retry_count + 1}/${MAX_RETRIES}): ${id}`);
   }
+}
+
+/**
+ * A CLI invocation may have been completed and charged even though its final
+ * frame was lost. Such work must not re-enter the ordinary retry queue.
+ */
+export function markPendingDigestAmbiguous(
+  db: Database.Database,
+  id: string,
+  invocationId: string,
+  errorMessage: string,
+): void {
+  db.prepare(`
+    UPDATE pending_digests
+    SET status = 'ambiguous',
+        ambiguous_invocation_id = ?,
+        error_message = ?,
+        processing_started_at = NULL
+    WHERE id = ? AND status IN ('pending', 'processing')
+  `).run(invocationId, errorMessage.slice(0, 500), id);
+  log.warn(`Digest paused after ambiguous CLI invocation: ${id}`);
 }
 
 export function getFailedDigests(db: Database.Database): Array<{ id: string; trace_id: string; error_message: string; created: string }> {

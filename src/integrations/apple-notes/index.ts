@@ -32,6 +32,7 @@ import { initProto } from './protobuf.js';
 import { ensureSyncSchema, removeStaleNotes, hasCompletedFullScan, markFullScanCompleted, resetFullScanState } from './sync-state.js';
 import { processNoteQueue, getImportProgress as getQueueProgress, resetProgress } from './queue.js';
 import { DEFAULT_POLL_INTERVAL, type AppleTag } from './types.js';
+import { trackBackgroundWork } from '../../utils/background-work.js';
 
 const log = createLogger('apple-notes');
 
@@ -95,9 +96,10 @@ export async function startAppleNotesSource(
   if (!stoppedSources.has(sourceId)) {
     const interval = (pollInterval ?? DEFAULT_POLL_INTERVAL) * 1000;
     const timer = setInterval(() => {
-      pollForChanges(db, dbPath, accountZpks, sourceId).catch(err =>
+      const work = pollForChanges(db, dbPath, accountZpks, sourceId).catch(err =>
         log.error(`Apple Notes 轮询失败 (source=${sourceId}):`, (err as Error).message),
       );
+      void trackBackgroundWork(work);
     }, interval);
     pollingTimers.set(sourceId, timer);
     log.info(`Apple Notes 轮询已启动: 每 ${pollInterval ?? DEFAULT_POLL_INTERVAL} 秒 (source=${sourceId})`);

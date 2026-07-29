@@ -7,8 +7,12 @@
  * 1. SKILL.md 使用指南全文
  * 2. brain_prepare 返回的用户上下文（画像、索引、行为指导）
  *
- * 用法：node hook-session-start.js --agent-id eb_xxx --skill-path /path/to/SKILL.md [--tool claude-code]
- * 输出：JSON { hookSpecificOutput: { additionalContext: "..." } }
+ * 用法：node hook-session-start.js --agent-id eb_xxx --skill-path /path/to/SKILL.md [--tool claude-code] [--once-per-session]
+ * 输出：JSON { hookSpecificOutput: { additionalContext: "..." } }（codex/gemini）或纯文本（claude-code/kimi-code 等）
+ *
+ * --once-per-session：为 Kimi Code 的 UserPromptSubmit hook 准备——该事件对每条
+ * 用户消息都触发,此参数保证每个 session 只注入一次(从 stdin payload 读
+ * session_id,tmpdir 下 marker 文件去重;无 session_id 时降级为照常注入)。
  */
 
 import { loadConfig, ensureDataDirs } from './config.js';
@@ -21,6 +25,7 @@ import { formatProfileSection, formatRestSections, assembleSessionContext } from
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { createLogger } from './utils/logger.js';
 import { writeHookOutput as outputHook } from './hook-output.js';
+import { hasSessionMarker, createSessionMarker } from './hook-once-session.js';
 
 /**
  * 异步读取 stdin JSON payload（Codex 0.120+ 会传 `session_start_reason` 等字段）。
@@ -90,11 +95,12 @@ async function readStdinPayload(): Promise<Record<string, unknown> | null> {
 const migrationLog = createLogger('migrate');
 
 // --- 解析命令行参数 ---
-function parseArgs(): { agentId: string; skillPath: string; tool: string } {
+function parseArgs(): { agentId: string; skillPath: string; tool: string; oncePerSession: boolean } {
   const args = process.argv.slice(2);
   let agentId = '';
   let skillPath = '';
   let tool = 'claude-code';
+  let oncePerSession = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--agent-id' && args[i + 1]) {
@@ -106,6 +112,8 @@ function parseArgs(): { agentId: string; skillPath: string; tool: string } {
     } else if (args[i] === '--tool' && args[i + 1]) {
       tool = args[i + 1];
       i++;
+    } else if (args[i] === '--once-per-session') {
+      oncePerSession = true;
     }
   }
 
@@ -116,7 +124,7 @@ function parseArgs(): { agentId: string; skillPath: string; tool: string } {
     throw new Error('Missing --skill-path');
   }
 
-  return { agentId, skillPath, tool };
+  return { agentId, skillPath, tool, oncePerSession };
 }
 
 // 注入正文格式化 + G1 预算安全网已拆到 ./hook-session-format.ts(纯函数,零副作用,供单测)。
@@ -134,13 +142,22 @@ async function main(): Promise<void> {
     // 迁移失败不阻断 hook，降级走正常流程
   }
 
-  const { agentId, skillPath, tool } = parseArgs();
+  const { agentId, skillPath, tool, oncePerSession } = parseArgs();
 
   // 不同 CLI 给 SessionStart hook 传的字段名不同：
   //   - Codex 0.120+：`session_start_reason`
   //   - Gemini CLI 0.26+：`source`
   // 字段值都是 startup / resume / clear 三个枚举，下游判断逻辑一致。
   const stdinPayload = await readStdinPayload();
+
+  // --once-per-session(Kimi Code UserPromptSubmit):每会话只注入一次。
+  // marker 已存在 → 静默退出(无任何 stdout);无 session_id(异常场景)→
+  // 降级为不过滤、照常注入(重复注入比丢上下文好)。
+  const sessionId = typeof stdinPayload?.session_id === 'string' ? stdinPayload.session_id : null;
+  if (oncePerSession && sessionId && hasSessionMarker(sessionId)) {
+    return;
+  }
+
   const reasonRaw =
     (stdinPayload?.session_start_reason as unknown)
     ?? (stdinPayload?.source as unknown);
@@ -205,6 +222,14 @@ async function main(): Promise<void> {
   const content = assembleSessionContext({ skillContent, profileSection, restSection });
 
   outputHook(content, tool);
+
+  // 仅在成功输出后创建 marker;失败路径(上方 throw / 最终 catch)不建 marker,
+  // 下一条 prompt 会重试注入。marker 创建本身失败不阻断输出(下次重复注入兜底)。
+  if (oncePerSession && sessionId) {
+    try {
+      createSessionMarker(sessionId);
+    } catch { /* ignore */ }
+  }
 }
 
 main().catch((err: unknown) => {

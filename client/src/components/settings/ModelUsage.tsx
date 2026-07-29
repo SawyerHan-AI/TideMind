@@ -9,8 +9,7 @@ import { useIPC } from '../../hooks/useIPC'
 import { useFormatters } from '../../hooks/useFormatters'
 import { Section } from './shared'
 import {
-  EVENT_TYPE_LABELS, EVENT_TYPE_COLORS,
-  OPERATION_CATEGORY_MAP, OPERATION_LABELS,
+  EVENT_TYPE_LABELS, OPERATION_LABELS,
   getOperationCategory,
   type OperationCategory,
 } from '../../lib/constants'
@@ -40,7 +39,8 @@ function formatTokenCount(n: number): string {
   return String(n)
 }
 
-function formatCost(n: number): string {
+function formatCost(n: number | null | undefined): string {
+  if (n == null) return '—'
   if (n >= 1) return `$${n.toFixed(2)}`
   if (n >= 0.01) return `$${n.toFixed(3)}`
   if (n > 0) return `$${n.toFixed(4)}`
@@ -84,7 +84,6 @@ const DETAIL_PAGE_SIZE = 100
 const fetchTokenUsage = () => window.api.stats.tokenUsage()
 
 export function ModelUsage() {
-  const { t } = useTranslation('settings')
   const { data: tokenUsage } = useIPC<TokenUsageData>(fetchTokenUsage)
   const [opsRange, setOpsRange] = useState<TimeRange>('30d')
   const [detailRange, setDetailRange] = useState<TimeRange>('30d')
@@ -114,7 +113,7 @@ export function ModelUsage() {
   }, [])
 
   const totals = tokenUsage?.totals ?? { input_tokens: 0, output_tokens: 0, thinking_tokens: 0, estimated_cost: 0, call_count: 0 }
-  const totalTokens = totals.input_tokens + totals.output_tokens + totals.thinking_tokens
+  const totalTokens = totals.input_tokens + totals.output_tokens
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -127,7 +126,10 @@ export function ModelUsage() {
       {/* 3. 操作统计 */}
       <OperationStats data={opsData} range={opsRange} onRangeChange={setOpsRange} />
 
-      {/* 4. 明细表 */}
+      {/* 4. 连接与来源 */}
+      <ConnectionSourceStats tokenUsage={tokenUsage} detailData={detailData} />
+
+      {/* 5. 明细表 */}
       <DetailTable
         data={detailData}
         range={detailRange}
@@ -191,7 +193,7 @@ function SummaryCards({ totals, totalTokens, countByOperation }: {
       />
       <SummaryCard
         label={t('usage.totalEstimatedCost')}
-        value={formatCost(totals.estimated_cost)}
+        value={totals.is_partial ? `${formatCost(totals.estimated_cost)}*` : formatCost(totals.estimated_cost)}
         tooltip={
           <div className="space-y-1">
             <div className="flex justify-between gap-4"><span className="text-gray-400">{t('usage.input')}</span><span className="text-[10px] text-gray-500">{t('usage.perToken')}</span></div>
@@ -201,6 +203,11 @@ function SummaryCards({ totals, totalTokens, countByOperation }: {
               <span className="text-gray-300">{t('usage.subtotal')}</span>
               <span className="text-white font-medium">{formatCost(totals.estimated_cost)}</span>
             </div>
+            {totals.is_partial && (
+              <p className="max-w-[220px] pt-1 text-[10px] text-amber-300">
+                {t('usage.partialEstimate', { count: totals.unpriced_call_count ?? 0 })}
+              </p>
+            )}
           </div>
         }
       />
@@ -283,7 +290,7 @@ function TrendChart({ tokenUsage }: { tokenUsage: TokenUsageData | null }) {
         allGroups.add(group)
         if (!byDate[row.date]) byDate[row.date] = {}
         const val = metric === 'tokens'
-          ? (row.input_tokens + row.output_tokens + row.thinking_tokens)
+          ? (row.input_tokens + row.output_tokens)
           : row.estimated_cost
         byDate[row.date][group] = (byDate[row.date][group] ?? 0) + val
       }
@@ -316,7 +323,7 @@ function TrendChart({ tokenUsage }: { tokenUsage: TokenUsageData | null }) {
         const cat = getOperationCategory(row.operation)
         if (!byDate[row.date]) byDate[row.date] = {}
         const val = metric === 'tokens'
-          ? (row.input_tokens + row.output_tokens + row.thinking_tokens)
+          ? (row.input_tokens + row.output_tokens)
           : row.estimated_cost
         byDate[row.date][cat] = (byDate[row.date][cat] ?? 0) + val
       }
@@ -473,7 +480,8 @@ function OperationStats({ data, range, onRangeChange }: {
   const toggle = (cat: string) => {
     setExpanded(prev => {
       const next = new Set(prev)
-      next.has(cat) ? next.delete(cat) : next.add(cat)
+      if (next.has(cat)) next.delete(cat)
+      else next.add(cat)
       return next
     })
   }
@@ -538,7 +546,84 @@ function OperationStats({ data, range, onRangeChange }: {
 }
 
 // ============================================================
-// 4. 明细表
+// 4. 连接与来源
+// ============================================================
+
+function ConnectionSourceStats({ tokenUsage, detailData }: {
+  tokenUsage: TokenUsageData | null
+  detailData: TokenUsageFilteredData | null
+}) {
+  const { t } = useTranslation('settings')
+  const rows = useMemo(() => {
+    if (tokenUsage?.byConnectionAndSource) return tokenUsage.byConnectionAndSource
+    const grouped = new Map<string, {
+      connection_id: string | null
+      connection_name: string | null
+      source_type: string
+      call_count: number
+      total_tokens: number
+      estimated_cost: number | null
+      unpriced_call_count: number
+    }>()
+    for (const log of detailData?.recentLogs ?? []) {
+      const key = `${log.connection_id ?? ''}:${log.source_type ?? 'unknown'}`
+      const current = grouped.get(key) ?? {
+        connection_id: log.connection_id ?? null,
+        connection_name: log.connection_name ?? null,
+        source_type: log.source_type ?? 'unknown',
+        call_count: 0,
+        total_tokens: 0,
+        estimated_cost: 0,
+        unpriced_call_count: 0,
+      }
+      current.call_count += 1
+      // Provider output_tokens already includes reasoning/thinking tokens.
+      // Keep the same non-overlapping total used by the backend aggregates.
+      current.total_tokens += log.input_tokens + log.output_tokens
+      if (log.estimated_cost == null) {
+        current.unpriced_call_count += 1
+      } else {
+        current.estimated_cost = (current.estimated_cost ?? 0) + log.estimated_cost
+      }
+      grouped.set(key, current)
+    }
+    return [...grouped.values()]
+  }, [tokenUsage?.byConnectionAndSource, detailData])
+
+  if (rows.length === 0) return null
+  return (
+    <Section title={t('usage.connectionSourceTitle')}>
+      <div className="space-y-1">
+        <div className="grid grid-cols-[1fr_7rem_4rem_5rem_5rem] gap-2 border-b border-white/5 px-2 py-1.5 text-[10px] text-gray-500">
+          <span>{t('usage.colConnection')}</span>
+          <span>{t('usage.colSource')}</span>
+          <span className="text-right">{t('usage.totalCalls')}</span>
+          <span className="text-right">{t('usage.colTotalTokens')}</span>
+          <span className="text-right">{t('usage.colEstimatedCost')}</span>
+        </div>
+        {rows.map((row, index) => (
+          <div key={`${row.connection_id}-${row.source_type}-${index}`} className="grid grid-cols-[1fr_7rem_4rem_5rem_5rem] gap-2 rounded-md px-2 py-2 text-[11px] hover:bg-white/[0.03]">
+            <span className="truncate text-gray-300">{row.connection_name || t('usage.legacyConnection')}</span>
+            <span className="truncate text-gray-400">{t(`usage.source.${row.source_type}`, row.source_type)}</span>
+            <span className="text-right font-mono text-gray-300">{row.call_count}</span>
+            <span className="text-right font-mono text-gray-300">{formatTokenCount(row.total_tokens)}</span>
+            <span className="text-right font-mono text-gray-300">
+              {row.unpriced_call_count === row.call_count
+                ? t('usage.unavailableEstimate')
+                : row.unpriced_call_count > 0
+                  ? `${formatCost(row.estimated_cost)}*`
+                  : formatCost(row.estimated_cost)}
+            </span>
+          </div>
+        ))}
+        <p className="px-2 pt-1 text-[10px] text-gray-500">{t('usage.subscriptionEstimateHint')}</p>
+      </div>
+    </Section>
+  )
+}
+
+// ============================================================
+// 5. 明细表
 // ============================================================
 
 function DetailTable({ data, range, onRangeChange, page, onPageChange, pageSize }: {
@@ -577,6 +662,8 @@ function DetailTable({ data, range, onRangeChange, page, onPageChange, pageSize 
                 <th className="text-left py-1.5 px-2 font-medium">{t('usage.colTime')}</th>
                 <th className="text-left py-1.5 px-2 font-medium">{t('usage.colOperation')}</th>
                 <th className="text-left py-1.5 px-2 font-medium">{t('usage.colModel')}</th>
+                <th className="text-left py-1.5 px-2 font-medium">{t('usage.colConnection')}</th>
+                <th className="text-left py-1.5 px-2 font-medium">{t('usage.colSource')}</th>
                 <th className="text-right py-1.5 px-2 font-medium">{t('usage.colTotalTokens')}</th>
                 <th className="text-right py-1.5 px-2 font-medium">{t('usage.colEstimatedCost')}</th>
               </tr>
@@ -584,7 +671,7 @@ function DetailTable({ data, range, onRangeChange, page, onPageChange, pageSize 
             <tbody>
               {data.recentLogs.map((log) => {
                 const cat = getOperationCategory(log.operation)
-                const totalTk = log.input_tokens + log.output_tokens + log.thinking_tokens
+                const totalTk = log.input_tokens + log.output_tokens
                 return (
                   <tr key={log.id} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
                     <td className="py-1.5 px-2 text-gray-400 font-mono whitespace-nowrap">
@@ -604,11 +691,17 @@ function DetailTable({ data, range, onRangeChange, page, onPageChange, pageSize 
                     <td className="py-1.5 px-2 text-gray-300 truncate max-w-[120px]">
                       {resolvedModelGroupLabels[getModelGroup(log.model)] ?? log.model}
                     </td>
+                    <td className="py-1.5 px-2 text-gray-300 truncate max-w-[110px]">
+                      {log.connection_name || t('usage.legacyConnection')}
+                    </td>
+                    <td className="py-1.5 px-2 text-gray-400 whitespace-nowrap">
+                      {t(`usage.source.${log.source_type ?? 'unknown'}`, log.source_type ?? t('usage.source.unknown'))}
+                    </td>
                     <td className="py-1.5 px-2 text-right text-gray-300 font-mono tabular-nums">
                       {formatTokenCount(totalTk)}
                     </td>
                     <td className="py-1.5 px-2 text-right text-gray-300 font-mono tabular-nums">
-                      {formatCost(log.estimated_cost)}
+                      {log.estimated_cost == null ? t('usage.unavailableEstimate') : formatCost(log.estimated_cost)}
                     </td>
                   </tr>
                 )

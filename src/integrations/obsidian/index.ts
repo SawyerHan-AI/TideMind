@@ -37,6 +37,7 @@ import {
 } from '../shared/source-file-state.js';
 import { SourceSyncLock } from '../shared/source-sync-lock.js';
 import { decideWatcherChange } from '../shared/source-watch.js';
+import { trackBackgroundWork } from '../../utils/background-work.js';
 
 // --- 多实例状态 ---
 // Linux 的 fs.watch 不支持 recursive:true，会 fallback 到监听多个子目录
@@ -108,9 +109,10 @@ export async function startObsidianSource(
     const intervalMs = Math.max(30, pollInterval ?? DEFAULT_FILE_POLL_INTERVAL) * 1000;
     const timer = setInterval(() => {
       if (stoppedSources.has(sourceId)) return;
-      runSync(db, vaultRoot, sourceId).catch(err =>
+      const work = runSync(db, vaultRoot, sourceId).catch(err =>
         log.error(`Obsidian 周期同步失败 (source=${sourceId}):`, (err as Error).message),
       );
+      void trackBackgroundWork(work);
     }, intervalMs);
     pollTimers.set(sourceId, timer);
     log.info(`Obsidian 周期同步已启动: 每 ${intervalMs / 1000}s 兜底扫描删除 (source=${sourceId})`);
@@ -364,7 +366,7 @@ function startFilteredWatcher(
         return;
       }
 
-      processFileChange(db, filePath, vaultRoot, sourceId, () => stoppedSources.has(sourceId))
+      const work = processFileChange(db, filePath, vaultRoot, sourceId, () => stoppedSources.has(sourceId))
         .then(changed => {
           if (stoppedSources.has(sourceId)) return;
           // 仅当文件实际产生处理时写时间线,对齐 Logseq S10 修复。
@@ -381,6 +383,7 @@ function startFilteredWatcher(
         .catch(err =>
           log.error('文件变更处理失败:', (err as Error).message),
         );
+      void trackBackgroundWork(work);
     }, delayMs));
   };
 

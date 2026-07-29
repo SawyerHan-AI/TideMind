@@ -13,7 +13,12 @@ import { getLinkCount } from '../db/links.js';
 import { getRecallCount } from '../db/log.js';
 import { logTimelineEvent } from '../db/log.js';
 import { LLMServiceError } from '../llm/client.js';
+import {
+  clearActiveLLMTask,
+  runWithLLMInvocationContext,
+} from '../llm/invocation-context.js';
 import { createLogger } from '../utils/logger.js';
+import { trackBackgroundWork } from '../utils/background-work.js';
 
 const log = createLogger('scheduler');
 
@@ -401,7 +406,9 @@ export function setLLMFailureHook(hook: typeof llmFailureHook): void {
 }
 export function notifyLLMFailure(err: LLMServiceError): void {
   markLLMCallObserved(); // F8: 真实 LLM 调用发生(并失败)→ 标记本 tick 已观察到
-  if (llmFailureHook) {
+  // 显式 connection 已由 callLLM 写入 connection-scoped health。只有真正的
+  // legacy provider 继续写旧 metadata，避免一条连接污染全局 circuit。
+  if (err.connectionId == null && llmFailureHook) {
     try { llmFailureHook(err); } catch (hookErr) {
       log.warn(`llmFailureHook threw: ${(hookErr as Error).message}`);
     }
@@ -596,6 +603,7 @@ export async function runSchedulerTick(
   tasks: TaskDefinition[],
 ): Promise<string[]> {
   const executed: string[] = [];
+  let legacyOnlyRoutes = true;
 
   // 本地/云代谢互斥: 用户开启 cloud.metabolism_enabled 后,服务端 worker 接管
   // 所有代谢任务,本地 scheduler 停跑以避免双端跑同样策略导致数据抖动。
@@ -603,41 +611,40 @@ export async function runSchedulerTick(
   try {
     const { getConfig } = await import('../config.js');
     const config = getConfig();
+    legacyOnlyRoutes = !(
+      config.llm.light_connection
+      || config.llm.standard_connection
+      || config.llm.heavy_connection
+    );
     if (config.cloud?.metabolism_enabled) {
       log.debug('本地代谢已暂停 — cloud.metabolism_enabled=true,服务端接管');
       return executed;
     }
   } catch { /* 配置读取失败 → 保持本地代谢行为,安全兜底 */ }
 
-  let circuit = getCircuitState(db);
-  let llmAvailable = circuit.state !== 'open';
-  let halfOpenProbed = false; // 半开状态是否已放行一个探测任务
   // 修复 F8(2026-05-21): tick 开始时清零"是否观察到真实 LLM 调用"flag。
   // noteSuccessfulLLMCall / notifyLLMFailure 触发时会把它置 true。
   // 只有真的发生过 LLM 调用,halfOpenProbed 才设 true。
   __resetLLMCallObservedFlag();
+  let circuit = getCircuitState(db);
+  let halfOpenProbed = false;
 
-  if (circuit.state === 'open') {
-    const openedAt = db.prepare('SELECT value FROM metadata WHERE key = ?').get(CB_OPENED_AT_KEY) as { value: string } | undefined;
+  if (legacyOnlyRoutes && circuit.state === 'open') {
+    const openedAt = db.prepare('SELECT value FROM metadata WHERE key = ?')
+      .get(CB_OPENED_AT_KEY) as { value: string } | undefined;
     const remaining = Math.round(
       (parseInt(openedAt?.value ?? '0', 10) + circuit.cooldownMs - Date.now()) / 60_000,
     );
-    log.debug(`LLM 熔断器开启中，跳过 LLM 任务（剩余 ~${Math.max(0, remaining)} 分钟）`);
+    log.debug(`legacy LLM 熔断器开启中，跳过 LLM 任务（剩余 ~${Math.max(0, remaining)} 分钟）`);
   }
 
   for (const task of tasks) {
-    // 每轮重新读取熔断状态:成功的 LLM 探测会把 half-open 转为 closed(recordLLMSuccess
-    // 清零计数),之前的本地 circuit 快照还停留在 half-open,halfOpenProbed=true 会把
-    // 后续所有 LLM 任务全都 skip 掉。一次 SELECT 很便宜,换正确性值得。
-    if (task.requiresLLM) {
+    // 纯 legacy 配置继续复用历史全局 circuit；只要任一档位使用显式连接，就把
+    // circuit 判断下沉到 callLLM 的真实 route，避免一个账号误伤其他连接。
+    if (task.requiresLLM && legacyOnlyRoutes) {
       circuit = getCircuitState(db);
-      llmAvailable = circuit.state !== 'open';
-    }
-
-    // LLM 任务保护
-    if (task.requiresLLM) {
-      if (!llmAvailable) continue;
-      if (circuit.state === 'half-open' && halfOpenProbed) continue; // 半开只放一个
+      if (circuit.state === 'open') continue;
+      if (circuit.state === 'half-open' && halfOpenProbed) continue;
     }
 
     // B-3 (2026-05-21): Embedding 任务保护 — 独立判定,跟 LLM 互不影响。
@@ -661,7 +668,13 @@ export async function runSchedulerTick(
 
     try {
       log.info(`执行任务: ${task.id}`);
-      await task.execute(db);
+      await runWithLLMInvocationContext(
+        {
+          taskId: task.id,
+          claimKey: `last_task_${task.id}`,
+        },
+        () => task.execute(db),
+      );
       executed.push(task.id);
       log.info(`任务完成: ${task.id}`);
 
@@ -674,16 +687,19 @@ export async function runSchedulerTick(
       // noteSuccessfulLLMCall(db),只对真实成功响应记录健康度。
       // half-open → closed 的 transition 事件也搬到 noteSuccessfulLLMCall 里。
       //
-      // 修复 F8(2026-05-21): halfOpenProbed 不再无条件 set。
-      // 仅当 task 内部真的触发过 callLLM(noteSuccessfulLLMCall / notifyLLMFailure
-      // 任一被调到)才认为已消耗本 tick 的探测名额。这样 digest-retry / claim
-      // 失败 / no-candidate 等 zero-LLM 路径不再误吃名额。
-      if (task.requiresLLM && __getLLMCallObservedFlag()) {
+      if (legacyOnlyRoutes && task.requiresLLM && __getLLMCallObservedFlag()) {
         halfOpenProbed = true;
       }
     } catch (err) {
-      // 失败回滚：恢复时间戳，下次 tick 可重试
-      rollbackClaim(db, task.id, claim.priorValue, claim.claimedValue);
+      const ambiguous = (
+        (err as { kind?: string }).kind === 'ambiguous_outcome'
+        || (err as { code?: string }).code === 'ambiguous_outcome'
+      );
+      // 结果不明代表供应商可能已经完成并计费。回滚会让下一 tick 自动重放同一
+      // 工作，因此只有确定失败才恢复 claim。
+      if (!ambiguous) {
+        rollbackClaim(db, task.id, claim.priorValue, claim.claimedValue);
+      }
 
       // 区分程序员错误（TypeError / ReferenceError / SyntaxError）和业务错误：
       //  - 程序员错误 = 我们代码的 bug，下一 tick 同样会撞，需要 visibility
@@ -699,12 +715,21 @@ export async function runSchedulerTick(
       }
 
       // LLM 服务错误 → 标记不可用 + 熔断计数
-      if (task.requiresLLM && err instanceof LLMServiceError) {
-        llmAvailable = false;
+      if (
+        task.requiresLLM
+        && err instanceof LLMServiceError
+        && err.connectionId == null
+      ) {
         recordLLMFailure(db, (err as Error).message);
-        halfOpenProbed = true;
-        log.warn(`LLM 服务错误，跳过本 tick 剩余 LLM 任务`);
+        if (legacyOnlyRoutes) {
+          halfOpenProbed = true;
+          log.warn('legacy LLM 服务错误，跳过本 tick 剩余 LLM 任务');
+        } else {
+          log.warn('legacy LLM 服务错误已记录；显式连接继续按各自 circuit 判断');
+        }
       }
+    } finally {
+      clearActiveLLMTask(task.id);
     }
   }
 
@@ -755,23 +780,19 @@ export function makeNodeAndRecallGate(
 
 let maintenanceRunning = false;
 let tickStartedAt: number = 0;
-// tickId 单调递增,与每次启动的 tick 关联;watchdog 强制复位时 currentTickId
-// 自增,旧 promise 的 .finally 通过自带 myTickId 比对发现已不是当前 tick → 不
-// 再覆盖新 tick 的状态。修复 M11(2026-05-09):历史 watchdog 直接置
-// `maintenanceRunning=false`,旧 promise 仍在跑,新 tick 立即起跑;旧
-// promise.finally 又把 maintenanceRunning 抹回 false,等于把第二个 tick 的
-// watchdog 抹掉,第三个 tick 与第二个并发执行。
+let maintenanceTimeoutWarned = false;
+// tickId 单调递增,与每次启动的 tick 关联;finally 只清理自己启动的状态。
 let currentTickId = 0;
 
-/** 看门狗：tick 持续超过此时长视为卡死，强制复位 flag */
+/** 看门狗：tick 持续超过此时长时告警，但不能在未确认中止前放行重入。 */
 const MAINTENANCE_WATCHDOG_MS = 30 * 60 * 1000; // 30 分钟
 
 /**
- * 判断当前 tick 是否应被看门狗强制复位。
+ * 判断当前 tick 是否已超过看门狗告警阈值。
  *
  * Why: maintenanceRunning + tickStartedAt 是模块级状态,直接测难。把判定提取为
  * 纯函数后可单测:任意时刻已运行超过阈值 → true。
- * How to apply: maybeRunMaintenance 调用时用 (Date.now(), tickStartedAt, threshold)。
+ * How to apply: maybeRunMaintenance 调用时只告警；旧 tick 未 settle 前继续阻止重入。
  */
 export function shouldResetWatchdog(now: number, tickStartedAt: number, thresholdMs: number = MAINTENANCE_WATCHDOG_MS): boolean {
   if (tickStartedAt <= 0) return false;
@@ -785,46 +806,53 @@ export function shouldResetWatchdog(now: number, tickStartedAt: number, threshol
  * 健壮性约束：
  * 1. runSchedulerTick 同步抛错（如 getCircuitState 的 SQL 失败）也必须复位
  *    flag，否则 .catch().finally() 永不执行，整个进程后续 tick 全部空转。
- * 2. 异步链卡死时（>30 分钟）由看门狗强制复位，避免任何路径漏复位。
- * 3. 旧/新 tick 通过 tickId 比对配对,旧 promise.finally 不会误清新 tick 状态。
+ * 2. 异步链卡死时（>30 分钟）看门狗只告警一次。没有可证明成功的中止，
+ *    强制复位会让同一批任务并发重放，可能重复调用订阅服务和重复写库。
+ * 3. tickId 让 promise.finally 只清理自己启动的状态。
  */
 export function maybeRunMaintenance(
   db: Database.Database,
   tasks: TaskDefinition[],
 ): void {
-  // 看门狗：如果上一次 tick 已经"运行"超过阈值，强制视为卡死并复位
-  if (maintenanceRunning && shouldResetWatchdog(Date.now(), tickStartedAt)) {
+  // 看门狗：超时只告警，不放行并发。告警在当前 tick 内只发一次。
+  if (
+    maintenanceRunning
+    && !maintenanceTimeoutWarned
+    && shouldResetWatchdog(Date.now(), tickStartedAt)
+  ) {
     const elapsed = Date.now() - tickStartedAt;
     log.error(
-      `maintenance tick 卡死 ${Math.round(elapsed / 60000)} 分钟，强制复位 flag`,
+      `maintenance tick 已运行 ${Math.round(elapsed / 60000)} 分钟，继续阻止重入`,
     );
-    maintenanceRunning = false;
-    tickStartedAt = 0;
-    currentTickId++; // 让卡死那轮 tick 的 finally 失去状态写权
+    maintenanceTimeoutWarned = true;
   }
 
   if (maintenanceRunning) return;
 
   maintenanceRunning = true;
+  maintenanceTimeoutWarned = false;
   tickStartedAt = Date.now();
   const myTickId = ++currentTickId;
 
   try {
-    runSchedulerTick(db, tasks)
+    const work = runSchedulerTick(db, tasks)
       .catch(err => log.error('maintenance tick failed:', (err as Error).message))
       .finally(() => {
-        // 只在自己仍是当前 tick 时清理状态。watchdog 复位 + 自增 currentTickId
-        // 后,卡死那轮的 finally 进入此分支时 myTickId !== currentTickId 直接 noop。
+        // 只在自己仍是当前 tick 时清理状态，避免未来引入其它终止路径后由
+        // 旧 promise 的 finally 覆盖新一轮状态。
         if (myTickId === currentTickId) {
           maintenanceRunning = false;
+          maintenanceTimeoutWarned = false;
           tickStartedAt = 0;
         }
       });
+    void trackBackgroundWork(work);
   } catch (err) {
     // 同步抛错（如 SQL prepare 失败）→ Promise 没有产生，必须立刻复位
     log.error('maintenance tick sync throw:', (err as Error).message);
     if (myTickId === currentTickId) {
       maintenanceRunning = false;
+      maintenanceTimeoutWarned = false;
       tickStartedAt = 0;
     }
   }
