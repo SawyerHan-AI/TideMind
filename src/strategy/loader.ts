@@ -3,6 +3,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { getDataDir } from '../config.js';
 import { createLogger } from '../utils/logger.js';
+import { getMetabolismWorkerRuntimeContext } from '../metabolism/worker-runtime-context.js';
 
 const log = createLogger('strategy');
 
@@ -302,6 +303,7 @@ function recordFileChangeVersion(strategyName: string, content: string): void {
  * 加载所有策略文件到内存缓存（带 mtime 记录）
  */
 export function loadStrategies(strategiesDir?: string): void {
+  if (getMetabolismWorkerRuntimeContext()) throw new Error('metabolism Worker禁止从文件加载策略');
   const dir = strategiesDir ?? path.join(getDataDir(), 'strategies');
   const map = new Map<string, CacheEntry>();
 
@@ -372,9 +374,48 @@ export function loadStrategies(strategiesDir?: string): void {
 }
 
 /**
+ * 为immutable Worker generation建立fail-closed策略快照。
+ * 与交互式hot reload不同，任何已发现文件的读取/解析竞态都必须阻止新代启动，
+ * 不能静默丢策略后继续运行。
+ */
+export function readStrategiesStrict(strategiesDir: string): ReadonlyMap<string, ParsedStrategy> {
+  if (getMetabolismWorkerRuntimeContext()) throw new Error('metabolism Worker禁止从文件加载策略');
+  const result = new Map<string, ParsedStrategy>();
+  if (!fs.existsSync(strategiesDir)) return result;
+  const dirStat = fs.lstatSync(strategiesDir);
+  if (!dirStat.isDirectory() || fs.realpathSync.native(strategiesDir) !== path.resolve(strategiesDir)) {
+    throw new Error('strategy source is not a canonical directory');
+  }
+  const files = fs.readdirSync(strategiesDir).filter(file => file.endsWith('.system.md')).sort();
+  for (const file of files) {
+    const name = file.replace('.system.md', '');
+    const systemPath = path.join(strategiesDir, file);
+    const systemStat = fs.lstatSync(systemPath);
+    if (!systemStat.isFile() || systemStat.nlink !== 1) throw new Error(`strategy source is not a regular file or has multiple links: ${file}`);
+    const strategy = parseStrategyFile(name, fs.readFileSync(systemPath, 'utf8'));
+    const paramsPath = path.join(strategiesDir, `${name}.params.md`);
+    if (fs.existsSync(paramsPath)) {
+      const paramsStat = fs.lstatSync(paramsPath);
+      if (!paramsStat.isFile() || paramsStat.nlink !== 1) throw new Error(`strategy params are not a regular file or has multiple links: ${name}`);
+      Object.assign(strategy.params, parseParams(fs.readFileSync(paramsPath, 'utf8')));
+    }
+    const userPath = path.join(strategiesDir, `${name}.user.md`);
+    if (fs.existsSync(userPath)) {
+      const userStat = fs.lstatSync(userPath);
+      if (!userStat.isFile() || userStat.nlink !== 1) throw new Error(`strategy user prompt is not a regular file or has multiple links: ${name}`);
+      strategy.userPrompt = fs.readFileSync(userPath, 'utf8').trim() || null;
+    }
+    result.set(name, strategy);
+  }
+  return result;
+}
+
+/**
  * 获取已解析的策略（带 mtime 失效检查）
  */
 export function getStrategy(name: string): ParsedStrategy | null {
+  const workerRuntime = getMetabolismWorkerRuntimeContext();
+  if (workerRuntime) return workerRuntime.strategies.get(name) ?? null;
   if (!cache) loadStrategies();
   checkMtimeInvalidation();
   return cache!.get(name)?.strategy ?? null;
@@ -430,6 +471,7 @@ export function renderUserPrompt(
  * 重新加载所有策略（热重载）
  */
 export function reloadStrategies(): void {
+  if (getMetabolismWorkerRuntimeContext()) throw new Error('metabolism Worker运行时策略不可热重载');
   cache = null;
   loadStrategies();
 }
@@ -438,6 +480,8 @@ export function reloadStrategies(): void {
  * 获取所有已加载策略的名称列表
  */
 export function getStrategyNames(): string[] {
+  const workerRuntime = getMetabolismWorkerRuntimeContext();
+  if (workerRuntime) return [...workerRuntime.strategies.keys()];
   if (!cache) loadStrategies();
   return [...cache!.keys()];
 }

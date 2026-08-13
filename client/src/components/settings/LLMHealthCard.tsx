@@ -74,13 +74,26 @@ export function LLMHealthCard() {
         </div>
       ) : (
         <div className="space-y-3">
+          {health.metabolismWorkerDegradedReason && (
+            <div className="flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/[0.08] px-3 py-2 text-xs text-red-300">
+              <AlertCircle size={13} className="mt-0.5 shrink-0" />
+              <div>
+                <div className="font-medium">
+                  {t('model.serviceStatus.backgroundSchedulerUnavailable', { defaultValue: '后台记忆整理暂不可用' })}
+                </div>
+                <p className="mt-0.5 break-words text-[11px] text-red-300/80">
+                  {health.metabolismWorkerDegradedReason}
+                </p>
+              </div>
+            </div>
+          )}
           <div className="grid grid-cols-3 gap-2">
             <Metric label={t('model.serviceStatus.availableConnections')} value={String(health.availableCount ?? (health.circuitState === 'closed' ? 1 : 0))} />
             <Metric label={t('model.serviceStatus.needsAttention')} value={String(health.needsAttentionCount ?? errors.length)} warning={errors.length > 0} />
             <Metric label={t('model.serviceStatus.lastSuccess')} value={formatRelative(health.lastSuccessAt)} icon={<Clock size={11} />} />
           </div>
 
-          {errors.length === 0 ? (
+          {errors.length === 0 && !health.metabolismWorkerDegradedReason ? (
             <div className="flex items-center gap-2 rounded-lg border border-emerald-500/15 bg-emerald-500/[0.07] px-3 py-2 text-xs text-emerald-300">
               <CheckCircle2 size={13} />
               {t('model.serviceStatus.statusHealthy')}

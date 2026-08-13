@@ -48,8 +48,9 @@ let nativeAvailable = false;
  * 严格 === '1' 会让支持工程师远程救场时写错值(如 "true" / "yes")导致无效——
  * 紧急回退本来就是兜底,语义应该尽量宽容(audit-2 MEDIUM)。
  */
-function parseForceLegacy(): boolean {
-  const v = process.env.TIDEMIND_USE_LEGACY_KEYCHAIN;
+export function parseForceLegacy(
+  v: string | undefined = process.env.TIDEMIND_USE_LEGACY_KEYCHAIN,
+): boolean {
   if (!v) return false;
   const lower = v.toLowerCase().trim();
   return lower !== '' && lower !== '0' && lower !== 'false' && lower !== 'no' && lower !== 'off';

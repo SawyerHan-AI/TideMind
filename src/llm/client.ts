@@ -26,6 +26,10 @@ import {
 } from './connection-health.js';
 import { noteActiveLLMRoute } from './invocation-context.js';
 import { CliLLMError, runCliLLM, shutdownCliRuntime } from './cli/index.js';
+import {
+  getMetabolismWorkerRuntimeContext,
+  getMetabolismWorkerVertexCredential,
+} from '../metabolism/worker-runtime-context.js';
 
 const log = createLogger('llm');
 
@@ -155,6 +159,10 @@ let usageDb: Database.Database | null = null;
 
 export function setUsageDb(db: Database.Database): void {
   usageDb = db;
+}
+
+export function clearUsageDb(expected?: Database.Database): void {
+  if (expected === undefined || usageDb === expected) usageDb = null;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -309,8 +317,9 @@ async function getLegacyVertexClient(): Promise<AnthropicVertex> {
   const currentProject = config.vertex.project_id || '';
   if (legacyVertexClient && legacyVertexProject === currentProject) return legacyVertexClient;
 
+  const frozenCredential = getMetabolismWorkerVertexCredential();
   const credPath = path.join(getDataDir(), 'vertex-credentials.json');
-  const hasCredFile = fs.existsSync(credPath);
+  const hasCredFile = frozenCredential !== null || fs.existsSync(credPath);
 
   if (hasCredFile) {
     const { GoogleAuth } = await import('google-auth-library');
@@ -321,7 +330,7 @@ async function getLegacyVertexClient(): Promise<AnthropicVertex> {
       fetch: longRunningFetch, // 见模块顶部 longRunningFetch 注释
       timeout: 1500_000, // 跟 longRunningDispatcher 1500s 对齐
       googleAuth: new GoogleAuth({
-        keyFile: credPath,
+        ...(frozenCredential ? { credentials: frozenCredential } : { keyFile: credPath }),
         scopes: 'https://www.googleapis.com/auth/cloud-platform',
       }),
     });
@@ -355,9 +364,14 @@ interface ConnectionInfo {
 
 /** 根据 connection_id 获取或创建 client */
 async function getClientByConnection(connectionId: string): Promise<ConnectionInfo> {
-  // 查数据库
-  if (!usageDb) throw new Error('数据库未初始化');
-  const conn = usageDb.prepare('SELECT provider_type, credentials FROM model_connections WHERE id = ?').get(connectionId) as {
+  const workerRuntime = getMetabolismWorkerRuntimeContext();
+  const frozenConnection = workerRuntime?.connections.get(connectionId);
+  // Worker generation使用冻结的provider/credential；health/circuit等live事实仍由DB读取。
+  if (!frozenConnection && !usageDb) throw new Error('数据库未初始化');
+  const conn = frozenConnection ? {
+    provider_type: frozenConnection.providerType,
+    credentials: JSON.stringify(frozenConnection.credentials),
+  } : usageDb!.prepare('SELECT provider_type, credentials FROM model_connections WHERE id = ?').get(connectionId) as {
     provider_type: string; credentials: string;
   } | undefined;
   if (!conn) throw new Error(`模型连接 ${connectionId} 不存在`);
@@ -398,12 +412,18 @@ async function getClientByConnection(connectionId: string): Promise<ConnectionIn
   // F8: Vertex 需要把外部 key file 的 mtime/size 纳入指纹,以便重新上传后失效缓存。
   let credsFp: string;
   let vertexActualPath: string | undefined;
+  let frozenVertexCredential: Readonly<Record<string, string>> | null = null;
   if (conn.provider_type === 'vertex') {
-    const dataDir = getDataDir();
-    const credPath = path.join(dataDir, `vertex-credentials-${connectionId}.json`);
-    const fallbackPath = path.join(dataDir, 'vertex-credentials.json');
-    vertexActualPath = fs.existsSync(credPath) ? credPath : (fs.existsSync(fallbackPath) ? fallbackPath : undefined);
-    credsFp = fingerprintCreds(creds, vertexActualPath);
+    frozenVertexCredential = getMetabolismWorkerVertexCredential(connectionId);
+    if (getMetabolismWorkerRuntimeContext()) {
+      credsFp = fingerprintCreds({ credentials: creds, vertexCredential: frozenVertexCredential });
+    } else {
+      const dataDir = getDataDir();
+      const credPath = path.join(dataDir, `vertex-credentials-${connectionId}.json`);
+      const fallbackPath = path.join(dataDir, 'vertex-credentials.json');
+      vertexActualPath = fs.existsSync(credPath) ? credPath : (fs.existsSync(fallbackPath) ? fallbackPath : undefined);
+      credsFp = fingerprintCreds(creds, vertexActualPath);
+    }
   } else {
     credsFp = fingerprintCreds(creds);
   }
@@ -424,16 +444,18 @@ async function getClientByConnection(connectionId: string): Promise<ConnectionIn
     // fetch: longRunningFetch → 见模块顶部注释,避免 undici 60s headersTimeout 截断
     client = new Anthropic({ apiKey: creds.api_key || undefined, maxRetries: 0, fetch: longRunningFetch, timeout: 1500_000 });
   } else if (conn.provider_type === 'vertex') {
-    if (vertexActualPath) {
+    if (frozenVertexCredential || vertexActualPath) {
       const { GoogleAuth } = await import('google-auth-library');
       client = new AnthropicVertex({
         projectId: creds.project_id || undefined,
         region: creds.region || 'us-central1',
         maxRetries: 0,
         fetch: longRunningFetch, // 见模块顶部 longRunningFetch 注释
-      timeout: 1500_000, // 跟 longRunningDispatcher 1500s 对齐
+        timeout: 1500_000, // 跟 longRunningDispatcher 1500s 对齐
         googleAuth: new GoogleAuth({
-          keyFile: vertexActualPath,
+          ...(frozenVertexCredential
+            ? { credentials: frozenVertexCredential }
+            : { keyFile: vertexActualPath! }),
           scopes: 'https://www.googleapis.com/auth/cloud-platform',
         }),
       });

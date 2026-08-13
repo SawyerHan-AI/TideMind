@@ -102,6 +102,7 @@ export interface LLMHealthSnapshot {
     cooldownMs?: number
   }>
   activeTask?: { taskId: string; tier: string; connectionId: string } | null
+  metabolismWorkerDegradedReason?: string | null
 }
 
 export interface PluginStatusResult {

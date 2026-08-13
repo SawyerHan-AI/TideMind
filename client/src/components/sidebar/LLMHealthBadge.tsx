@@ -57,7 +57,14 @@ export function LLMHealthBadge() {
   if (!health) return null
 
   let display: Display = { severity: 'hidden', label: '', dotClass: '', dotShadow: '' }
-  if (activeError?.circuitState === 'open') {
+  if (health.metabolismWorkerDegradedReason) {
+    display = {
+      severity: 'error',
+      label: t('llmHealth.backgroundSchedulerUnavailable', { defaultValue: '后台记忆整理暂不可用' }),
+      dotClass: 'bg-red-400 animate-pulse',
+      dotShadow: '0 0 6px rgba(248,113,113,0.5)',
+    }
+  } else if (activeError?.circuitState === 'open') {
     const retryAt = activeError.retryAt
       ?? ((activeError.openedAt ?? 0) + (activeError.cooldownMs ?? 0))
     const remainingMs = Math.max(0, retryAt - Date.now())

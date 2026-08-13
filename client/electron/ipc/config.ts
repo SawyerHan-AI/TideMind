@@ -21,6 +21,7 @@ import { getShimPath, getMcpServerScriptPath } from '../runtime/runtime-paths.js
 import { mainT } from '../i18n.js'
 import { clearClientCache } from '@server/llm/client.js'
 import { schedulePush as schedulePushUserStrategy } from '../cloud/strategy-push.js'
+import { notifyMetabolismWorkerRuntimeMutation } from '../workers/metabolism-worker-runtime-mutations.js'
 
 export function registerConfigHandlers(dataDir: string): void {
   const configPath = path.join(dataDir, 'config.toml')
@@ -71,6 +72,7 @@ export function registerConfigHandlers(dataDir: string): void {
     // 旧 SDK 实例会持续用旧凭证返 401。指纹 cacheKey 已能盖住大多数场景,
     // 但 settings 写入是确定性事件,主动 clear 一次最稳。
     clearClientCache()
+    notifyMetabolismWorkerRuntimeMutation('config')
 
     // 记录到时间线
     try {
@@ -124,6 +126,7 @@ export function registerConfigHandlers(dataDir: string): void {
 
     // 记录版本历史 + 创建 meta 节点
     recordStrategyVersion(parsedName.data, parsedContent.data, parsedReason.data ?? null, 'user')
+    notifyMetabolismWorkerRuntimeMutation('strategy')
 
     // Silent push 到云端,让云代谢用用户自定义 prompt;未登录 / 未开同步 / 网络
     // 异常都是 no-op,不阻塞用户编辑流程。
@@ -152,6 +155,7 @@ export function registerConfigHandlers(dataDir: string): void {
     const filePath = path.join(strategiesDir, `${parsedName.data}.user.md`)
     fs.writeFileSync(filePath, parsedContent.data)
     recordStrategyVersion(`${parsedName.data}:user`, parsedContent.data, parsedReason.data ?? null, 'user')
+    notifyMetabolismWorkerRuntimeMutation('strategy')
   })
 
   ipcMain.handle('config:strategy:user:versions', (_e, name: unknown) => {
@@ -179,6 +183,7 @@ export function registerConfigHandlers(dataDir: string): void {
     const filePath = path.join(strategiesDir, `${parsedName.data}.user.md`)
     fs.writeFileSync(filePath, row.content)
     recordStrategyVersion(`${parsedName.data}:user`, row.content, `回滚至 v${parsedVersion.data}`, 'user')
+    notifyMetabolismWorkerRuntimeMutation('strategy')
   })
 
   // --- 策略参数单独更新 ---
@@ -196,6 +201,7 @@ export function registerConfigHandlers(dataDir: string): void {
       const result = updateParamInFile(paramsPath, parsed.data.key, parsed.data.value)
       if (result) {
         recordStrategyVersion(parsed.data.name, fs.readFileSync(paramsPath, 'utf-8'), `参数 ${parsed.data.key} 更新为 ${parsed.data.value}`, 'user')
+        notifyMetabolismWorkerRuntimeMutation('strategy')
         return
       }
     }
@@ -205,6 +211,7 @@ export function registerConfigHandlers(dataDir: string): void {
       const result = updateParamInFile(mainPath, parsed.data.key, parsed.data.value)
       if (result) {
         recordStrategyVersion(parsed.data.name, fs.readFileSync(mainPath, 'utf-8'), `参数 ${parsed.data.key} 更新为 ${parsed.data.value}`, 'user')
+        notifyMetabolismWorkerRuntimeMutation('strategy')
         return
       }
     }
@@ -242,6 +249,7 @@ export function registerConfigHandlers(dataDir: string): void {
 
     // 记录回滚版本
     recordStrategyVersion(parsedName.data, row.content, `回滚至 v${parsedVersion.data}`, 'user')
+    notifyMetabolismWorkerRuntimeMutation('strategy')
 
     // 回滚也是一次用户改 prompt,同样 silent push 让云端跟上
     schedulePushUserStrategy(parsedName.data, row.content)

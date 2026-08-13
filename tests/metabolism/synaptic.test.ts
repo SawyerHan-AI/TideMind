@@ -49,9 +49,12 @@ vi.mock('../../src/graph/maturity.js', () => ({
   },
 }));
 
-import type Database from 'better-sqlite3';
+import Database from 'better-sqlite3';
 import { setupTestDb, seedNode } from '../helpers/test-db.js';
-import { runSynapticScaling } from '../../src/metabolism/synaptic.js';
+import {
+  runSynapticScaling,
+  runSynapticScalingCooperatively,
+} from '../../src/metabolism/synaptic.js';
 
 let db: Database.Database;
 
@@ -63,6 +66,198 @@ beforeEach(() => {
 // ===== runSynapticScaling — decay formula =====
 
 describe('runSynapticScaling', () => {
+  it('cooperative入口在短事务批次之间让出事件循环', async () => {
+    for (let index = 0; index < 250; index++) {
+      const node = seedNode(db, { heat: 1 });
+      db.prepare('UPDATE nodes SET connectivity = ? WHERE id = ?').run((index % 10) / 10, node.id);
+    }
+
+    let eventLoopAdvanced = false;
+    setImmediate(() => {
+      eventLoopAdvanced = true;
+    });
+    let yieldCount = 0;
+
+    const result = await runSynapticScalingCooperatively(db, async () => {
+      yieldCount++;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    });
+
+    expect(result.decayed).toBe(250);
+    expect(yieldCount).toBe(3);
+    expect(eventLoopAdvanced).toBe(true);
+  });
+
+  it('yield后按当前节点状态重读，不能破坏archive/supersede冻结或使用旧connectivity', async () => {
+    const nodes = Array.from({ length: 250 }, () => seedNode(db, { heat: 1 }));
+    let yieldCount = 0;
+
+    const result = await runSynapticScalingCooperatively(db, async () => {
+      yieldCount++;
+      if (yieldCount !== 1) return;
+      db.prepare('UPDATE nodes SET archived = 1, heat = 0.02 WHERE id = ?').run(nodes[150].id);
+      db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(nodes[151].id);
+      db.prepare('DELETE FROM nodes WHERE id = ?').run(nodes[152].id);
+      db.prepare('UPDATE nodes SET connectivity = 1 WHERE id = ?').run(nodes[220].id);
+    });
+
+    expect(result.decayed).toBe(247);
+    expect(db.prepare('SELECT heat FROM nodes WHERE id = ?').pluck().get(nodes[150].id)).toBe(0.02);
+    expect(db.prepare('SELECT heat FROM nodes WHERE id = ?').pluck().get(nodes[151].id)).toBe(0.01);
+    expect(db.prepare('SELECT heat FROM nodes WHERE id = ?').pluck().get(nodes[220].id)).toBeCloseTo(0.99, 5);
+  });
+
+  it('链接阶段按current-row短事务分批并在批间yield', async () => {
+    const nodes = Array.from({ length: 202 }, () => seedNode(db, { heat: 0.005 }));
+    for (let index = 0; index < 201; index++) {
+      createLink(db, {
+        from_id: nodes[index].id,
+        to_id: nodes[index + 1].id,
+        relation: [{ type: 'supports', confidence: 0.7 }],
+        strength: 0.8,
+      });
+    }
+    let yieldCount = 0;
+
+    await runSynapticScalingCooperatively(db, async () => {
+      yieldCount++;
+    });
+
+    expect(yieldCount).toBe(3);
+  });
+
+  it('链接清册后发生的前台编辑由批内current-row重读保护', async () => {
+    const from = seedNode(db, { heat: 0.005 });
+    const to = seedNode(db, { heat: 0.005 });
+    const link = createLink(db, {
+      from_id: from.id,
+      to_id: to.id,
+      relation: [{ type: 'supports', confidence: 0.7 }],
+      strength: 0.8,
+    });
+
+    await runSynapticScalingCooperatively(db, async () => {}, {
+      beforeFirstLinkBatch: () => {
+        db.prepare("UPDATE links SET strength = 0.93, status = 'rejected_by_user', updated = ? WHERE id = ?")
+          .run(Date.now(), link.id);
+      },
+    });
+
+    expect(db.prepare('SELECT strength, status FROM links WHERE id = ?').get(link.id)).toEqual({
+      strength: 0.93,
+      status: 'rejected_by_user',
+    });
+  });
+
+  it('前一链接批次yield后降到删除阈值的后批链接仍由current-row purge处理', async () => {
+    const from = seedNode(db, { heat: 0.005 });
+    const to = seedNode(db, { heat: 0.005 });
+    Array.from({ length: 1001 }, () => createLink(db, {
+      from_id: from.id,
+      to_id: to.id,
+      relation: [{ type: 'supports', confidence: 0.7 }],
+      strength: 0.8,
+    }));
+    const target = (db.prepare("SELECT id FROM links WHERE status = 'confirmed' ORDER BY id LIMIT 1 OFFSET 1000").get() as { id: string });
+    let yieldCount = 0;
+
+    await runSynapticScalingCooperatively(db, async () => {
+      yieldCount++;
+      if (yieldCount === 1) {
+        db.prepare('UPDATE links SET strength = 0.04 WHERE id = ?').run(target.id);
+      }
+    });
+
+    expect(yieldCount).toBe(11);
+    expect(db.prepare('SELECT strength, deleted, edit_seq FROM links WHERE id = ?').get(target.id)).toEqual({
+      strength: 0.04,
+      deleted: 1,
+      edit_seq: 1,
+    });
+  });
+
+  it('无并发写入时同步与cooperative入口产生相同nodes和links结果', async () => {
+    const nodes = Array.from({ length: 205 }, (_, index) => {
+      const node = seedNode(db, { heat: 0.5 + (index % 10) / 20 });
+      db.prepare('UPDATE nodes SET connectivity = ? WHERE id = ?').run((index % 5) / 5, node.id);
+      return node;
+    });
+    for (let index = 0; index < 20; index++) {
+      createLink(db, {
+        from_id: nodes[index].id,
+        to_id: nodes[index + 1].id,
+        relation: [{ type: 'supports', confidence: 0.7 }],
+        strength: 0.6 + (index % 4) / 20,
+      });
+    }
+    const cooperativeDb = new Database(db.serialize());
+    try {
+      const syncResult = runSynapticScaling(db);
+      const cooperativeResult = await runSynapticScalingCooperatively(cooperativeDb, async () => {});
+      const snapshot = (source: Database.Database) => ({
+        nodes: source.prepare(`
+          SELECT id, heat, maturity_score, archived, is_superseded
+          FROM nodes ORDER BY id
+        `).all(),
+        links: source.prepare(`
+          SELECT id, strength, status, relation, deleted, edit_seq
+          FROM links ORDER BY id
+        `).all(),
+      });
+
+      expect(cooperativeResult).toEqual(syncResult);
+      expect(snapshot(cooperativeDb)).toEqual(snapshot(db));
+    } finally {
+      cooperativeDb.close();
+    }
+  });
+
+  it('yield callback失败保留已提交批次且不继续后续批次', async () => {
+    Array.from({ length: 250 }, () => seedNode(db, { heat: 1 }));
+
+    await expect(runSynapticScalingCooperatively(db, async () => {
+      throw new Error('injected yield failure');
+    })).rejects.toMatchObject({
+      name: 'SynapticPartialEffectError',
+      code: 'partial_task_effect',
+      cause: expect.objectContaining({ message: 'injected yield failure' }),
+    });
+
+    const decayed = db.prepare('SELECT COUNT(*) FROM nodes WHERE heat < 1').pluck().get();
+    const untouched = db.prepare('SELECT COUNT(*) FROM nodes WHERE heat = 1').pluck().get();
+    expect(decayed).toBe(100);
+    expect(untouched).toBe(150);
+  });
+
+  it('零eligible节点时link已提交后timeline失败标记partial effect并保留claim语义', async () => {
+    const from = seedNode(db, { heat: 0.01 });
+    const to = seedNode(db, { heat: 0.01 });
+    const link = createLink(db, {
+      from_id: from.id,
+      to_id: to.id,
+      relation: [{ type: 'supports', confidence: 0.7 }],
+      strength: 0.8,
+    });
+
+    await expect(runSynapticScalingCooperatively(db, async () => {}, {
+      beforeTimelineEvent: () => { throw new Error('injected timeline failure'); },
+    })).rejects.toMatchObject({
+      name: 'SynapticPartialEffectError',
+      code: 'partial_task_effect',
+      cause: expect.objectContaining({ message: 'injected timeline failure' }),
+    });
+
+    const row = db.prepare('SELECT strength, deleted, edit_seq FROM links WHERE id = ?').get(link.id) as {
+      strength: number;
+      deleted: number;
+      edit_seq: number;
+    };
+    expect(row.strength).toBeLessThan(0.8);
+    expect(row.deleted).toBe(0);
+    expect(row.edit_seq).toBe(0);
+    expect(db.prepare("SELECT COUNT(*) FROM timeline_events WHERE subtype = 'synaptic_scaling'").pluck().get()).toBe(0);
+  });
+
   it('should decay heat with connectivity=0 by multiplying ~0.95', () => {
     const node = seedNode(db, { heat: 1.0 });
     db.prepare('UPDATE nodes SET connectivity = 0, refinement = 0 WHERE id = ?').run(node.id);
@@ -430,6 +625,27 @@ describe('runSynapticScaling - link Hebbian decay', () => {
     const after = db.prepare('SELECT strength FROM links WHERE id = ?').get(link!.id) as { strength: number };
     // 解析失败 → catch 后继续衰减,而不是跳过
     expect(after.strength).toBeLessThan(0.8);
+  });
+
+  it.each([
+    ['仅scalar元素', '["foo"]', true],
+    ['scalar后含tagged对象', '["foo",{"type":"tagged","confidence":1}]', false],
+    ['scalar后含普通对象', '["foo",{"type":"related","confidence":1}]', true],
+  ])('%s不应让set-based链接衰减抛malformed JSON', (_name, relation, shouldDecay) => {
+    const a = seedNode(db, { heat: 0.005 });
+    const b = seedNode(db, { heat: 0.005 });
+    const link = createLink(db, {
+      from_id: a.id,
+      to_id: b.id,
+      relation: [{ type: 'supports', confidence: 0.7 }],
+      strength: 0.8,
+    });
+    setLinkRelation(db, link!.id, relation);
+
+    expect(() => runSynapticScaling(db)).not.toThrow();
+    const strength = (db.prepare('SELECT strength FROM links WHERE id = ?').get(link!.id) as { strength: number }).strength;
+    if (shouldDecay) expect(strength).toBeLessThan(0.8);
+    else expect(strength).toBe(0.8);
   });
 
   it('链接衰减后必须 bump updated', async () => {

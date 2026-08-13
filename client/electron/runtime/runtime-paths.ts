@@ -80,6 +80,10 @@ export function getStructureHolesWorkerPath(): string {
   return path.join(getBinDir(), 'structure-holes-worker.cjs')
 }
 
+export function getMetabolismWorkerPath(): string {
+  return path.join(getBinDir(), 'metabolism-worker.cjs')
+}
+
 /**
  * 当前 Electron 二进制的绝对路径。
  * - Dev：指向 node_modules/electron/dist/Electron.app/Contents/MacOS/Electron

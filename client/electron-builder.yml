@@ -45,8 +45,8 @@ mac:
   entitlementsInherit: resources/entitlements.mac.inherit.plist
   # Notarize:启用 Apple 公证。需要 env APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD /
   # APPLE_TEAM_ID 注入(看 .github/workflows/release.yml)。
-  # 这三个 env 缺一不可 — 缺失时 electron-builder 会跳过公证但仍签名(可接受降级)。
-  # 如果连 CSC_LINK(证书)也没设,会跳过整个签名流程(等于今天行为)。
+  # 这三个 env 缺一不可。普通本地candidate构建可以不注入，但公开Release workflow
+  # 会在打包前fail closed，并在上传前逐架构验证签名、公证、staple和Gatekeeper。
   notarize: true
   # Developer ID provisioning profile,签名时 @electron/osx-sign 会复制到
   # Contents/embedded.provisionprofile,授权 entitlements.mac.plist 里的
@@ -89,6 +89,14 @@ asarUnpack:
   - "out/bin/**"
 
 extraResources:
+  # 长期Worker由真实OS文件路径启动，external native模块的JS加载链也必须位于
+  # app.asar.unpacked；只unpack *.node/*.dylib不足以让Node解析bindings和架构包。
+  - from: "node_modules"
+    to: "app.asar.unpacked/node_modules"
+    filter:
+      - "bindings/**/*"
+      - "file-uri-to-path/**/*"
+      - "sqlite-vec*/**/*"
   - from: "../data"
     to: "data"
     filter:

@@ -19,8 +19,11 @@ import {
 } from '../llm/invocation-context.js';
 import { createLogger } from '../utils/logger.js';
 import { trackBackgroundWork } from '../utils/background-work.js';
+import { tryAcquireSchedulerRunLock } from './scheduler-run-lock.js';
 
 const log = createLogger('scheduler');
+const CHECKPOINT_LIVENESS_MS = 10 * 60 * 1000;
+const schedulerCheckpointState = new WeakMap<Database.Database, number>();
 
 // ============================================================
 // 类型定义
@@ -58,6 +61,69 @@ export interface TaskStatus {
   intervalMinutes: number;
   nextRunAfter: number | null;
   gatesMet: boolean;
+}
+
+/**
+ * Phase 0 性能基线使用的轻量观测事件。
+ *
+ * observer 默认不存在，现有 Electron/CLI 调用路径行为不变。事件只包含任务 ID、
+ * 时间和错误分类，不包含 prompt、节点内容、凭据或模型响应。observer 自身异常会被
+ * scheduler 隔离，不能改变任务执行结果。
+ */
+export type SchedulerObservation =
+  | { type: 'tick_skipped'; at: number; reason: 'owner_busy' }
+  | {
+      type: 'sqlite_contention';
+      at: number;
+      reason: 'busy_deferred' | 'busy_task_failure' | 'locked_task_failure';
+    }
+  | { type: 'tick_started'; at: number }
+  | { type: 'task_started'; taskId: string; at: number }
+  | { type: 'task_finished'; taskId: string; at: number; durationMs: number }
+  | {
+      type: 'task_failed';
+      taskId: string;
+      at: number;
+      durationMs: number;
+      errorKind: 'ambiguous' | 'programmer' | 'service' | 'other';
+    }
+  | { type: 'tick_finished'; at: number; durationMs: number; executedTaskIds: string[] };
+
+export interface SchedulerRunOptions {
+  observer?: (event: SchedulerObservation) => void;
+  now?: () => number;
+  /** 成功取得task claim后即计一次attempt；失败也消耗预算。默认无限。 */
+  maxAttempts?: number;
+  /** 每个attempt settle后的动态边界；返回false时停止本pass的新task admission。 */
+  continueAfterAttempt?: () => boolean;
+  /** 可选的cooperative boundary；Electron用于让focus/suspend事件在task间被处理。 */
+  yieldAfterAttempt?: () => Promise<void>;
+}
+
+export class SchedulerClaimRollbackUnconfirmedError extends Error {
+  readonly code = 'scheduler_claim_rollback_unconfirmed';
+
+  constructor(readonly taskId: string, options?: ErrorOptions) {
+    super(`scheduler claim rollback could not be confirmed for ${taskId}`, options);
+    this.name = 'SchedulerClaimRollbackUnconfirmedError';
+  }
+}
+
+function isSqliteBusy(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && code.startsWith('SQLITE_BUSY');
+}
+
+function emitSchedulerObservation(
+  observer: SchedulerRunOptions['observer'],
+  event: SchedulerObservation,
+): void {
+  if (!observer) return;
+  try {
+    observer(event);
+  } catch (error) {
+    log.warn('scheduler observer failed:', error instanceof Error ? error.message : String(error));
+  }
 }
 
 // ============================================================
@@ -601,9 +667,38 @@ export function getTaskInterval(task: TaskDefinition): number {
 export async function runSchedulerTick(
   db: Database.Database,
   tasks: TaskDefinition[],
+  options: SchedulerRunOptions = {},
 ): Promise<string[]> {
   const executed: string[] = [];
+  const now = options.now ?? Date.now;
+  const maxAttempts = options.maxAttempts ?? Number.POSITIVE_INFINITY;
+  if (
+    maxAttempts !== Number.POSITIVE_INFINITY
+    && (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1)
+  ) {
+    throw new RangeError('scheduler maxAttempts must be a positive safe integer');
+  }
+  const lockResult = tryAcquireSchedulerRunLock(db);
+  if (!lockResult.acquired) {
+    emitSchedulerObservation(options.observer, {
+      type: 'tick_skipped',
+      at: now(),
+      reason: lockResult.reason,
+    });
+    return executed;
+  }
+
+  const tickStartedAt = now();
+  if (db.name !== '' && db.name !== ':memory:' && !schedulerCheckpointState.has(db)) {
+    schedulerCheckpointState.set(db, tickStartedAt);
+  }
+  emitSchedulerObservation(options.observer, { type: 'tick_started', at: tickStartedAt });
+  let tickFinishedAt = tickStartedAt;
   let legacyOnlyRoutes = true;
+  let attemptedTasks = 0;
+  let unsettledClaimTaskId: string | null = null;
+
+  try {
 
   // 本地/云代谢互斥: 用户开启 cloud.metabolism_enabled 后,服务端 worker 接管
   // 所有代谢任务,本地 scheduler 停跑以避免双端跑同样策略导致数据抖动。
@@ -665,6 +760,15 @@ export async function runSchedulerTick(
     const interval = getTaskInterval(task);
     const claim = tryClaimTask(db, task.id, interval);
     if (!claim.claimed) continue;
+    attemptedTasks += 1;
+    unsettledClaimTaskId = task.id;
+
+    const taskStartedAt = now();
+    emitSchedulerObservation(options.observer, {
+      type: 'task_started',
+      taskId: task.id,
+      at: taskStartedAt,
+    });
 
     try {
       log.info(`执行任务: ${task.id}`);
@@ -675,8 +779,18 @@ export async function runSchedulerTick(
         },
         () => task.execute(db),
       );
+      // task effect已经明确成功；claim现在是已结算的调度时间戳。后续仅日志、
+      // observer或health写入即使遇到BUSY，也不能把它误判成未回滚claim。
+      unsettledClaimTaskId = null;
       executed.push(task.id);
       log.info(`任务完成: ${task.id}`);
+      const taskFinishedAt = now();
+      emitSchedulerObservation(options.observer, {
+        type: 'task_finished',
+        taskId: task.id,
+        at: taskFinishedAt,
+        durationMs: Math.max(0, taskFinishedAt - taskStartedAt),
+      });
 
       // 修复(2026-05-20 Audit A-1/A-2):**不再**在这里调 recordLLMSuccess。
       // 原实现 unconditionally 写"健康"信号 + 重置熔断器,但 task.execute 正常
@@ -691,15 +805,54 @@ export async function runSchedulerTick(
         halfOpenProbed = true;
       }
     } catch (err) {
+      const sqliteCode = (err as { code?: unknown } | null)?.code;
+      if (typeof sqliteCode === 'string' && sqliteCode.startsWith('SQLITE_BUSY')) {
+        emitSchedulerObservation(options.observer, {
+          type: 'sqlite_contention',
+          at: now(),
+          reason: 'busy_task_failure',
+        });
+      } else if (typeof sqliteCode === 'string' && sqliteCode.startsWith('SQLITE_LOCKED')) {
+        emitSchedulerObservation(options.observer, {
+          type: 'sqlite_contention',
+          at: now(),
+          reason: 'locked_task_failure',
+        });
+      }
       const ambiguous = (
         (err as { kind?: string }).kind === 'ambiguous_outcome'
         || (err as { code?: string }).code === 'ambiguous_outcome'
       );
+      const partialEffect = (err as { code?: string }).code === 'partial_task_effect';
+      const retainClaim = ambiguous || partialEffect;
+      const taskFailedAt = now();
+      const programmer = (
+        err instanceof TypeError
+        || err instanceof ReferenceError
+        || err instanceof SyntaxError
+      );
+      emitSchedulerObservation(options.observer, {
+        type: 'task_failed',
+        taskId: task.id,
+        at: taskFailedAt,
+        durationMs: Math.max(0, taskFailedAt - taskStartedAt),
+        errorKind: ambiguous
+          ? 'ambiguous'
+          : programmer
+            ? 'programmer'
+            : err instanceof LLMServiceError
+              ? 'service'
+              : 'other',
+      });
       // 结果不明代表供应商可能已经完成并计费。回滚会让下一 tick 自动重放同一
       // 工作，因此只有确定失败才恢复 claim。
-      if (!ambiguous) {
+      if (!retainClaim) {
         rollbackClaim(db, task.id, claim.priorValue, claim.claimedValue);
       }
+      // ambiguous outcome 与已提交部分effect都保留claim防止重放；确定失败只有在
+      // CAS rollback成功返回后才算结算。rollback抛错时此字段保持非空，由pass
+      // 边界升级为fatal。
+      unsettledClaimTaskId = null;
 
       // 区分程序员错误（TypeError / ReferenceError / SyntaxError）和业务错误：
       //  - 程序员错误 = 我们代码的 bug，下一 tick 同样会撞，需要 visibility
@@ -711,7 +864,12 @@ export async function runSchedulerTick(
           `programmer bug in task ${task.id}: ${(err as Error).stack ?? (err as Error).message}`,
         );
       } else {
-        log.error(`任务 ${task.id} 失败（已回滚）:`, (err as Error).message);
+        log.error(
+          retainClaim
+            ? `任务 ${task.id} 失败（保留claim以阻止不安全重放）:`
+            : `任务 ${task.id} 失败（已回滚）:`,
+          (err as Error).message,
+        );
       }
 
       // LLM 服务错误 → 标记不可用 + 熔断计数
@@ -731,9 +889,70 @@ export async function runSchedulerTick(
     } finally {
       clearActiveLLMTask(task.id);
     }
+
+    await options.yieldAfterAttempt?.();
+
+    if (
+      attemptedTasks >= maxAttempts
+      || options.continueAfterAttempt?.() === false
+    ) {
+      break;
+    }
   }
 
   return executed;
+  } catch (error) {
+    if (isSqliteBusy(error)) {
+      if (unsettledClaimTaskId !== null) {
+        throw new SchedulerClaimRollbackUnconfirmedError(unsettledClaimTaskId, { cause: error });
+      }
+      // 仅“没有未结算claim”的BUSY可安全延后；保留已完成task结果并在未来
+      // cadence重试余下扫描。SQLITE_LOCKED不在此白名单，继续fail closed。
+      emitSchedulerObservation(options.observer, {
+        type: 'sqlite_contention',
+        at: now(),
+        reason: 'busy_deferred',
+      });
+      log.warn('scheduler pass deferred by SQLite BUSY before an unsettled claim');
+      return executed;
+    }
+    throw error;
+  } finally {
+    try {
+      tickFinishedAt = now();
+      emitSchedulerObservation(options.observer, {
+        type: 'tick_finished',
+        at: tickFinishedAt,
+        durationMs: Math.max(0, tickFinishedAt - tickStartedAt),
+        executedTaskIds: [...executed],
+      });
+    } finally {
+      // Only the Worker connection disables commit-time auto-checkpoint, so a
+      // foreground write does not inherit its background maintenance. Electron
+      // main connections keep a high bounded fallback, while generic CLI/MCP
+      // connections retain SQLite's default auto-checkpoint.
+      // Even PASSIVE can create a large I/O/locking tail immediately after a
+      // write-heavy task, so checkpoint only on a cadence where no task was
+      // attempted. Active Electron cadence will normally provide that idle
+      // boundary within one minute; incomplete work remains for the next one.
+      // A permanently failing task can otherwise remain due on every cadence
+      // and starve maintenance forever, so each long-lived connection also has
+      // a ten-minute liveness deadline. WeakMap state is deliberately local to
+      // the connection and does not become durable scheduling authority.
+      const checkpointState = schedulerCheckpointState.get(db);
+      const checkpointDue = checkpointState != null
+        && tickFinishedAt - checkpointState >= CHECKPOINT_LIVENESS_MS;
+      if ((attemptedTasks === 0 || checkpointDue) && db.name !== '' && db.name !== ':memory:') {
+        try {
+          db.pragma('wal_checkpoint(PASSIVE)');
+          schedulerCheckpointState.set(db, tickFinishedAt);
+        } catch (error) {
+          log.warn(`scheduler passive WAL checkpoint deferred: ${(error as Error).message}`);
+        }
+      }
+      lockResult.lock.release();
+    }
+  }
 }
 
 // ============================================================

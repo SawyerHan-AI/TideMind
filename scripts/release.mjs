@@ -97,6 +97,14 @@ export function parseArgs(argv) {
   return opts;
 }
 
+export function assertRequestedVersion(requestedVersion, packageVersion) {
+  if (requestedVersion !== null && requestedVersion !== packageVersion) {
+    throw new Error(
+      `--version ${requestedVersion} does not match package.json version ${packageVersion}`,
+    );
+  }
+}
+
 function printHelp() {
   console.log(`Usage: npm run release -- --version X.Y.Z --previous-version A.B.C --yes
 
@@ -195,6 +203,32 @@ function assertMainBranch(cwd, label) {
   }
 }
 
+export function assertExactSnapshot(expectedHead, actualHead, status, label) {
+  if (actualHead !== expectedHead) {
+    throw new Error(`${label} HEAD changed during release: expected ${expectedHead}, got ${actualHead}`);
+  }
+  if (status) {
+    throw new Error(`${label} became dirty during release:\n${status}`);
+  }
+}
+
+function assertRepoSnapshot(cwd, label, expectedHead) {
+  assertExactSnapshot(
+    expectedHead,
+    capture('git', ['rev-parse', 'HEAD'], cwd).stdout,
+    capture('git', ['status', '--porcelain'], cwd).stdout,
+    label,
+  );
+}
+
+function assertRemoteMainAt(cwd, expectedHead) {
+  const output = capture('git', ['ls-remote', '--heads', 'origin', 'refs/heads/main'], cwd).stdout;
+  const actualHead = output.split(/\s+/)[0] ?? '';
+  if (actualHead !== expectedHead) {
+    throw new Error(`origin/main drifted during release: expected ${expectedHead}, got ${actualHead || '(missing)'}`);
+  }
+}
+
 export function previousPatch(version) {
   const match = version.match(/^(\d+)\.(\d+)\.(\d+)$/);
   if (!match) return null;
@@ -245,7 +279,7 @@ function listReleaseRuns(ossRepo) {
     '--limit',
     '20',
     '--json',
-    'databaseId,headBranch,event,status,createdAt,displayTitle',
+    'databaseId,headBranch,headSha,event,status,createdAt,displayTitle',
   ], ossRepo);
 }
 
@@ -258,6 +292,19 @@ export function findReleaseRunId(runs, tag, minCreatedAtMs = 0) {
   // minCreatedAtMs=0(默认/测试)时退化为只按 headBranch 匹配,保持向后兼容。
   const match = runs.find(run => {
     if (run.headBranch !== tagName && run.headBranch !== tag) return false;
+    if (minCreatedAtMs > 0 && run.createdAt) {
+      const created = Date.parse(run.createdAt);
+      if (Number.isFinite(created) && created < minCreatedAtMs) return false;
+    }
+    return true;
+  });
+  return match ? String(match.databaseId) : null;
+}
+
+export function findPackagePreflightRunId(runs, expectedHeadSha, minCreatedAtMs = 0) {
+  const match = runs.find(run => {
+    if (run.headBranch !== 'main' || run.event !== 'workflow_dispatch') return false;
+    if (run.headSha !== expectedHeadSha) return false;
     if (minCreatedAtMs > 0 && run.createdAt) {
       const created = Date.parse(run.createdAt);
       if (Number.isFinite(created) && created < minCreatedAtMs) return false;
@@ -298,6 +345,29 @@ async function getReleaseRunId(tag, ossRepo, timeoutMs, minCreatedAtMs = 0) {
 
   const waitedSeconds = Math.round((Date.now() - started) / 1000);
   throw new Error(`Could not find Release workflow run for ${tagName} after ${waitedSeconds}s; recent runs: ${lastRunSummary || 'none'}`);
+}
+
+async function getPackagePreflightRunId(ossRepo, timeoutMs, expectedHeadSha, minCreatedAtMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const runId = findPackagePreflightRunId(listReleaseRuns(ossRepo), expectedHeadSha, minCreatedAtMs);
+    if (runId) return runId;
+    console.log('> Waiting for the dual-architecture package preflight run');
+    await sleep(Math.min(5_000, Math.max(0, deadline - Date.now())));
+  }
+  throw new Error('Could not find the dual-architecture package preflight run');
+}
+
+function assertOssMainStillAt(expectedHead, ossRepo) {
+  const localHead = capture('git', ['rev-parse', 'HEAD'], ossRepo).stdout;
+  if (localHead !== expectedHead) {
+    throw new Error(`OSS local HEAD drifted during release preflight: expected ${expectedHead}, got ${localHead}`);
+  }
+  const remoteLine = capture('git', ['ls-remote', '--heads', 'origin', 'main'], ossRepo).stdout;
+  const remoteHead = remoteLine.split(/\s+/)[0] ?? '';
+  if (remoteHead !== expectedHead) {
+    throw new Error(`OSS origin/main drifted during release preflight: expected ${expectedHead}, got ${remoteHead || 'missing'}`);
+  }
 }
 
 function assertTagState(tag, ossRepo, forceTag) {
@@ -647,6 +717,7 @@ async function main() {
     return;
   }
   const rootPkg = readJson(path.join(repoRoot, 'package.json'));
+  assertRequestedVersion(opts.version, rootPkg.version);
   const version = opts.version ?? rootPkg.version;
   const previousVersion = opts.previousVersion ?? previousPatch(version);
   if (!previousVersion && !opts.skipUpdateVerify) {
@@ -672,6 +743,15 @@ async function main() {
   }
   assertCleanRepo(repoRoot, 'ExternaBrain', opts.dryRun);
   assertCleanRepo(opts.ossRepo, 'TideMind OSS', opts.dryRun);
+  const expectedRootHead = capture('git', ['rev-parse', 'HEAD'], repoRoot).stdout;
+
+  // Release website assets must be built from the exact lockfile, not whatever
+  // happens to remain in a long-lived local node_modules directory.
+  run('npm', ['ci'], {
+    cwd: path.join(repoRoot, 'pro/website'),
+    label: 'install exact website dependencies',
+    dryRun: opts.dryRun,
+  });
 
   run('node', ['scripts/check-version-sync.mjs'], { label: 'check version sync', dryRun: opts.dryRun });
   // 2026-05-21 v0.2.71 audit A-HIGH-1/2:helper entitlement 防回归。
@@ -683,25 +763,34 @@ async function main() {
     run('npm', ['run', 'health'], { label: 'npm run health', dryRun: opts.dryRun });
   }
 
+  if (!opts.dryRun) assertRepoSnapshot(repoRoot, 'ExternaBrain', expectedRootHead);
+
   run('git', ['push', 'origin', 'main'], { label: 'push ExternaBrain main', dryRun: opts.dryRun });
+  if (!opts.dryRun) assertRemoteMainAt(repoRoot, expectedRootHead);
 
   if (!opts.skipWebsite) {
+    if (!opts.dryRun) {
+      assertRepoSnapshot(repoRoot, 'ExternaBrain', expectedRootHead);
+      assertRemoteMainAt(repoRoot, expectedRootHead);
+    }
     run('npx', ['astro', 'build'], {
       cwd: path.join(repoRoot, 'pro/website'),
       label: 'website build',
       dryRun: opts.dryRun,
     });
+    if (!opts.dryRun) {
+      assertRepoSnapshot(repoRoot, 'ExternaBrain', expectedRootHead);
+      assertRemoteMainAt(repoRoot, expectedRootHead);
+    }
     // 显式传 --commit-message / --commit-hash,绕开 wrangler 默认从 git
     // 自动取 commit message 的路径。CF Pages deployment API 的 commit_message
     // 字段有长度上限(实测 ~1KB),超长会返回误导性的
     // "Invalid commit message, it must be a valid UTF-8 string [code: 8000111]",
     // 实际是长度问题不是编码问题。我们的发版 commit 走中文 + 多段正文很
     // 容易超限,直接固定成短文本最稳。SHA 还是真实的 HEAD,溯源不丢。
-    const sha = opts.dryRun
-      ? 'DRY-RUN-SHA'
-      : capture('git', ['rev-parse', 'HEAD'], repoRoot).stdout;
-    run('npx', [
-      'wrangler', 'pages', 'deploy', 'dist/',
+    const sha = opts.dryRun ? 'DRY-RUN-SHA' : expectedRootHead;
+    run('npm', [
+      'exec', '--offline', '--', 'wrangler', 'pages', 'deploy', 'dist/',
       '--project-name', 'tidemind-website',
       '--branch=main',
       '--commit-message', `release v${version}`,
@@ -713,10 +802,18 @@ async function main() {
     });
   }
 
+  if (!opts.dryRun) {
+    assertRepoSnapshot(repoRoot, 'ExternaBrain', expectedRootHead);
+    assertRemoteMainAt(repoRoot, expectedRootHead);
+  }
   run('./sync-oss.sh', [opts.ossRepo, ...(opts.yes ? ['--yes'] : [])], {
     label: 'sync OSS repo',
     dryRun: opts.dryRun,
   });
+  if (!opts.dryRun) {
+    assertRepoSnapshot(repoRoot, 'ExternaBrain', expectedRootHead);
+    assertRemoteMainAt(repoRoot, expectedRootHead);
+  }
   const ossDirty = !opts.dryRun && capture('git', ['status', '--porcelain'], opts.ossRepo).stdout;
   if (ossDirty) {
     run('git', ['add', '-A'], { cwd: opts.ossRepo, label: 'stage OSS changes', dryRun: opts.dryRun });
@@ -725,6 +822,43 @@ async function main() {
     console.log('\n> OSS repo has no changes to commit');
   }
   run('git', ['push', 'origin', 'main'], { cwd: opts.ossRepo, label: 'push OSS main', dryRun: opts.dryRun });
+  const expectedOssHead = opts.dryRun
+    ? 'DRY-RUN-OSS-HEAD'
+    : capture('git', ['rev-parse', 'HEAD'], opts.ossRepo).stdout;
+  if (!opts.dryRun) assertOssMainStillAt(expectedOssHead, opts.ossRepo);
+
+  // 在创建公开tag之前先用与正式发布完全相同的arm64/x64 runner、Apple签名、
+  // 公证、native架构与包内Worker smoke跑一次。workflow_dispatch不会创建Release；
+  // 任何一架构失败都会在不可逆的tag push之前停止。
+  const packagePreflightStartedAt = Date.now() - 60_000;
+  run('gh', ['workflow', 'run', 'release.yml', '--repo', 'SawyerHan-AI/TideMind', '--ref', 'main'], {
+    cwd: opts.ossRepo,
+    label: 'start dual-architecture package preflight',
+    dryRun: opts.dryRun,
+  });
+  if (!opts.dryRun) {
+    const packagePreflightRunId = await getPackagePreflightRunId(
+      opts.ossRepo,
+      opts.timeoutMinutes * 60_000,
+      expectedOssHead,
+      packagePreflightStartedAt,
+    );
+    run('gh', ['run', 'watch', packagePreflightRunId, '--repo', 'SawyerHan-AI/TideMind', '--exit-status'], {
+      cwd: opts.ossRepo,
+      label: `wait dual-architecture package preflight ${packagePreflightRunId}`,
+      timeoutMs: opts.timeoutMinutes * 60_000,
+    });
+    const verifiedRunHead = capture('gh', [
+      'run', 'view', packagePreflightRunId,
+      '--repo', 'SawyerHan-AI/TideMind',
+      '--json', 'headSha',
+      '--jq', '.headSha',
+    ], opts.ossRepo).stdout;
+    if (verifiedRunHead !== expectedOssHead) {
+      throw new Error(`dual-architecture preflight ran at ${verifiedRunHead}, expected ${expectedOssHead}`);
+    }
+    assertOssMainStillAt(expectedOssHead, opts.ossRepo);
+  }
 
   // 签名私钥 fail-fast:在 push tag(触发不可逆的公开构建/发布)之前解析私钥。
   //   - 缺失/损坏(且非 --allow-unsigned)立即报错退出,不留"已发布但无签名"窗口。
@@ -733,6 +867,7 @@ async function main() {
   let signingKeys = { privateKey: null, secondaryKey: null, source: null };
   if (!opts.dryRun) {
     signingKeys = loadSigningKeys(opts.allowUnsigned);
+    assertOssMainStillAt(expectedOssHead, opts.ossRepo);
   }
 
   const tagAction = opts.dryRun ? 'create' : assertTagState(version, opts.ossRepo, opts.forceTag);

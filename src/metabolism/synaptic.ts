@@ -3,9 +3,24 @@ import { getParam } from '../strategy/loader.js';
 import { logTimelineEvent } from '../db/log.js';
 import { createLogger } from '../utils/logger.js';
 import { now } from '../utils/time.js';
-import { heatDecayRate } from './decay-fns.js';
 
 const log = createLogger('synaptic');
+
+/**
+ * Cooperative decay commits node batches independently. Once any batch has
+ * committed, retrying the whole task would apply the decay twice to that
+ * prefix. The scheduler therefore retains the daily claim for this explicit
+ * outcome and lets the next normal cadence reconcile the remaining rows.
+ */
+export class SynapticPartialEffectError extends Error {
+  readonly code = 'partial_task_effect';
+
+  constructor(cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(`synaptic decay stopped after a committed batch: ${detail}`, { cause });
+    this.name = 'SynapticPartialEffectError';
+  }
+}
 
 /** M8.5:云同步活跃(cloud_last_synced_version 存在)→ A 类衰减由 generation 重算负责,daily 跳过。 */
 function isCloudSyncActive(db: Database.Database): boolean {
@@ -25,9 +40,12 @@ function isCloudSyncActive(db: Database.Database): boolean {
  * 效果: connectivity=0 → ×0.950（衰减5%）, connectivity=0.5 → ×0.970, connectivity=1.0 → ×0.990
  * 所有节点严格衰减（decay_rate 恒 < 1.0），连通度高的节点衰减更慢但不会增长。
  */
-export function runSynapticScaling(db: Database.Database): {
+function* runSynapticScalingBatches(db: Database.Database, testHooks?: {
+  beforeFirstLinkBatch?: () => void;
+  beforeTimelineEvent?: () => void;
+}): Generator<'node' | 'link' | 'link_slow', {
   decayed: number;
-} {
+}, void> {
   // M8.5:云同步用户的 heat/link 衰减改由云端 generation 锚点 + 本地 recomputeToGeneration
   // 负责(各端重算),本地 daily wall-clock 会与之双重衰减,故跳过。纯本地用户(无
   // cloud_last_synced_version)仍跑 wall-clock 衰减。
@@ -38,22 +56,16 @@ export function runSynapticScaling(db: Database.Database): {
   // 只处理 heat > 0.01 的节点（极低 heat 的自然沉底，不浪费计算）
   // archived/superseded 节点不参与 heat decay,它们已被冰冻在 0.02
   const nodes = db.prepare(`
-    SELECT n.id, n.heat, n.refinement, n.connectivity, n.is_keystone
+    SELECT n.id
     FROM nodes n WHERE n.heat > 0.01 AND n.archived = 0 AND n.is_superseded = 0
-  `).all() as Array<{
-    id: string;
-    heat: number;
-    refinement: number;
-    connectivity: number;
-    is_keystone: number;
-  }>;
+  `).all() as Array<{ id: string }>;
 
   // maturity_score 权重，与 graph/maturity.ts 一致（动态加载策略参数）
   const wH = getParam('recall-rank', 'heat_weight', 0.2);
   const wR = getParam('recall-rank', 'refinement_weight', 0.3);
   const wC = getParam('recall-rank', 'connectivity_weight', 0.3);
   const wI = getParam('recall-rank', 'independence_weight', 0.2);
-  // 衰减因子(decayRate)传入 SQL,由 SQL 侧对当前 heat 做 heat = heat * decayRate,
+  // 衰减因子传入 SQL并作用于当前heat，
   // 避免跨进程读-改-写覆盖:A 读 heat=0.3 → 期间 B bumpHeat 到 0.9 → A 写回
   // 0.285 这种"衰减覆盖提热"场景。
   //
@@ -61,39 +73,51 @@ export function runSynapticScaling(db: Database.Database): {
   // 所以 `maturity_score = ... MIN(heat * decayRate, 1.0) ...` 里的 heat 仍是
   // 衰减前的值，等价于 maturity 永远晚 heat 一个周期。修法是把 heat 衰减
   // 后的乘积直接当 WHERE 子句外的常量传进来，不要在 SET 里再去乘一次。
-  // 这里改用子查询 `(SELECT heat * ? FROM nodes WHERE id = ?2)` 让 maturity
-  // 引用同一行旧 heat 乘以 decayRate（与赋值给 heat 的值一致），保证
-  // maturity_score 与 heat 始终基于同一基准计算。同时仍通过 SQL 侧 `heat * ?`
-  // 保留对跨进程 bumpHeat 的安全语义。
-  const updateStmt = db.prepare(`
-    UPDATE nodes SET
-      heat = heat * @rate,
-      maturity_score = @wH * MIN((SELECT heat * @rate FROM nodes WHERE id = @id), 1.0)
-                     + @wR * refinement + @wC * connectivity + @wI * independence,
-      updated = @ts
-    WHERE id = @id
-  `);
-
+  // maturity显式使用同一rate，让它与赋值后的heat基于同一旧行快照。
   const decayBase = getParam('metabolism-params', 'decay_base', 0.05);
   const decayDamping = getParam('metabolism-params', 'decay_damping', 0.8);
+
+  // 每批只执行一条基于当前行快照的 UPDATE。旧实现为了 cooperative yield 后的
+  // 并发安全，对每个节点 point-read + UPDATE；10k 节点因此产生约 20k 次 SQL
+  // 往返。这里仍在每个短事务内读取当前 connectivity/active 状态，但由 SQLite
+  // 对整批集合完成，避免旧快照覆盖的同时把往返降到约 100 次。显式使用主键
+  // index；否则planner会为每个100-node批次扫描整个active-heat index。
+  const updateBatch = db.prepare(`
+    UPDATE nodes INDEXED BY sqlite_autoindex_nodes_1 SET
+      heat = heat * (
+        1 - @base * (1 - @damping * MIN(COALESCE(connectivity, 0), 1.0))
+      ),
+      maturity_score = @wH * MIN(
+          heat * (1 - @base * (1 - @damping * MIN(COALESCE(connectivity, 0), 1.0))),
+          1.0
+        )
+        + @wR * refinement + @wC * connectivity + @wI * independence,
+      updated = @ts
+    WHERE id IN (SELECT value FROM json_each(@ids))
+      AND heat > 0.01 AND archived = 0 AND is_superseded = 0
+  `);
 
   // 分批事务：每 BATCH_SIZE 个节点一个事务，减少写锁持有时间
   const BATCH_SIZE = 100;
   for (let i = 0; i < nodes.length; i += BATCH_SIZE) {
     const batch = nodes.slice(i, i + BATCH_SIZE);
+    const batchStartedAt = Date.now();
     db.transaction(() => {
-      const ts = now();
-      for (const node of batch) {
-        // 衰减率：所有节点严格衰减，连通度高的衰减更慢(M8:公式委托 @core decay-fns)
-        const decayRate = heatDecayRate(node.connectivity, { base: decayBase, damping: decayDamping });
-
-        // 用具名参数：rate 在 SET 中出现两处（heat 衰减 / maturity 子查询），
-        // id 同理（WHERE / 子查询），具名绑定避免位置参数重复传递。
-        updateStmt.run({ rate: decayRate, wH, wR, wC, wI, ts, id: node.id });
-        decayed++;
-        // 不再归档 — heat 自然衰减到极低值即可，recall 按 heat 排序自然沉底
-      }
-    })();
+      decayed += updateBatch.run({
+        ids: JSON.stringify(batch.map(node => node.id)),
+        base: decayBase,
+        damping: decayDamping,
+        wH,
+        wR,
+        wC,
+        wI,
+        ts: now(),
+      }).changes;
+      // 不再归档 — heat 自然衰减到极低值即可，recall 按 heat 排序自然沉底
+    }).immediate();
+    const batchDurationMs = Date.now() - batchStartedAt;
+    if (batchDurationMs > 50) log.warn(`node decay batch transaction took ${batchDurationMs}ms`);
+    yield 'node';
   }
 
   // --- 链接衰减（赫布学习）---
@@ -103,102 +127,160 @@ export function runSynapticScaling(db: Database.Database): {
   let linkDecayed = 0;
   let linkDeleted = 0;
 
-  // purge + SELECT 必须在同一事务内原子完成:
-  // 原写法先 DELETE 再 SELECT,两语句之间并发的 updateLinkStrength 会把一些
-  // 链接降到 <= threshold,这些链接既没被 purge 捞走,也可能在 SELECT 里因
-  // 时序被再次读进来继续衰减(最坏情况:先读旧值,衰减后写回时又新跌到阈值下)。
-  // 统一包进 db.transaction 里,让 DELETE / SELECT 看到一致的数据库快照,
-  // 任何并发的 UPDATE 在本事务提交前都看不到。
-  // 原 SELECT 用严格 >,strength 恰好等于 threshold 的链接永远不会被扫,
-  // 也就不会被衰减/删除,永远挂在图上。这里显式做一次独立 DELETE 兜底。
-  const confirmedLinks = db.transaction(() => {
-    // M10:软删(deleted=1 + bump updated/edit_seq),靠 LWW 跨设备传播删除;不 hard-delete
-    // (否则另一端 reconcile 当 onlyLocal 复活)。已 deleted 的不重复软删(AND deleted = 0)。
-    const purgedBelowThreshold = db.prepare(
-      "UPDATE links SET deleted = 1, updated = ?, edit_seq = edit_seq + 1 WHERE status = 'confirmed' AND strength <= ? AND deleted = 0",
-    ).run(now(), linkDeleteThreshold).changes;
-    linkDeleted += purgedBelowThreshold;
-
-    return db.prepare(`
-      SELECT l.id, l.strength, l.from_id, l.to_id, l.relation
-      FROM links l
-      WHERE l.status = 'confirmed' AND l.strength > ? AND l.deleted = 0
-    `).all(linkDeleteThreshold) as Array<{ id: string; strength: number; from_id: string; to_id: string; relation: string }>;
-  })();
-
-  // 预取节点 heat
-  const heatCache = new Map<string, number>();
-  for (const link of confirmedLinks) {
-    for (const nid of [link.from_id, link.to_id]) {
-      if (!heatCache.has(nid)) {
-        const row = db.prepare('SELECT heat FROM nodes WHERE id = ?').get(nid) as { heat: number } | undefined;
-        heatCache.set(nid, row?.heat ?? 0);
+  // 链接按清册分批，但每批必须按事务内current row重算。不能在yield前读取
+  // strength/relation/status后再写回，否则会覆盖前台编辑。清册只决定“本轮最多
+  // 看哪些id”；每批WHERE与computed都重新检查当前状态，新建链接留到下个周期。
+  // 这把20k links的百毫秒级单writer事务拆成短事务，同时保持并发安全。
+  if (testHooks?.beforeFirstLinkBatch) testHooks.beforeFirstLinkBatch();
+  const LINK_BATCH_SIZE = 100;
+  const linkIds = db.prepare(
+    "SELECT id FROM links WHERE status = 'confirmed' AND deleted = 0 ORDER BY id",
+  ).all() as Array<{ id: string }>;
+  const updateLinkBatch = db.prepare(`
+      WITH computed AS MATERIALIZED (
+        SELECT l.id,
+          l.strength <= @threshold AS should_purge,
+          CASE
+            WHEN l.strength > @threshold
+              AND NOT (
+                json_valid(l.relation) = 1
+                AND json_type(l.relation) = 'array'
+                AND EXISTS (
+                  SELECT 1 FROM json_each(l.relation) AS relation_item
+                  WHERE CASE
+                    WHEN relation_item.type = 'object'
+                    THEN json_extract(relation_item.value, '$.type') = 'tagged'
+                    ELSE 0
+                  END
+                )
+              )
+            THEN MIN(1.0, l.strength * (1 - @base * (1 - SQRT(
+              COALESCE(a.heat, 0) * COALESCE(b.heat, 0)
+            ))))
+            ELSE NULL
+          END AS next_strength
+        FROM links l
+        LEFT JOIN nodes a ON a.id = l.from_id
+        LEFT JOIN nodes b ON b.id = l.to_id
+        WHERE l.id IN (SELECT value FROM json_each(@ids))
+          AND l.status = 'confirmed' AND l.deleted = 0
+      )
+      UPDATE links
+      SET strength = CASE
+            WHEN computed.should_purge OR computed.next_strength <= @threshold THEN links.strength
+            ELSE computed.next_strength
+          END,
+          deleted = CASE
+            WHEN computed.should_purge OR computed.next_strength <= @threshold THEN 1
+            ELSE 0
+          END,
+          edit_seq = edit_seq + CASE
+            WHEN computed.should_purge OR computed.next_strength <= @threshold THEN 1
+            ELSE 0
+          END,
+          updated = @ts
+      FROM computed
+      WHERE links.id = computed.id
+        AND (computed.should_purge OR computed.next_strength IS NOT NULL)
+      RETURNING deleted
+  `);
+  for (let index = 0; index < linkIds.length; index += LINK_BATCH_SIZE) {
+    const inventoryIds = JSON.stringify(linkIds.slice(index, index + LINK_BATCH_SIZE).map(row => row.id));
+    const batchStartedAt = Date.now();
+    db.transaction(() => {
+      // purge与decay必须在同一current-row批次里完成。否则尚未处理的
+      // link在前一批yield后被前台降到threshold时，会同时错过旧purge清册
+      // 和decay的strength>threshold谓词，残留到下一个cadence。
+      // 单条UPDATE在同一SQLite snapshot中按current strength分流，既保留低强度
+      // tagged link也应被purge的旧语义，又避免每批两次UPDATE的锁内往返。
+      const changed = updateLinkBatch.all({
+        ids: inventoryIds,
+        base: linkDecayBase,
+        threshold: linkDeleteThreshold,
+        ts: now(),
+      }) as Array<{ deleted: number }>;
+      for (const row of changed) {
+        if (row.deleted === 1) linkDeleted++;
+        else linkDecayed++;
       }
-    }
+    }).immediate();
+    const batchDurationMs = Date.now() - batchStartedAt;
+    if (batchDurationMs > 50) log.warn(`link decay batch transaction took ${batchDurationMs}ms`);
+    yield batchDurationMs > 10 ? 'link_slow' : 'link';
   }
 
-  // 必须 bump updated，否则赫布衰减 strength 变化不会被云端 reconcile 看到
-  // （manifest LWW 比 updated → 云端 strength 永远胜出，本地衰减无效推送）。
-  const linkUpdateStmt = db.prepare('UPDATE links SET strength = ?, updated = ? WHERE id = ?');
-  // M10:软删而非 hard-delete(见上)。bump edit_seq 使删除经 LWW 跨设备传播。
-  const linkDeleteStmt = db.prepare('UPDATE links SET deleted = 1, updated = ?, edit_seq = edit_seq + 1 WHERE id = ?');
-
-  for (let i = 0; i < confirmedLinks.length; i += BATCH_SIZE) {
-    const batch = confirmedLinks.slice(i, i + BATCH_SIZE);
-    const batchTs = now();
+  if (decayed > 0 || linkDecayed > 0) {
     db.transaction(() => {
-      for (const link of batch) {
-        // tagged 链接跳过赫布衰减：标签归属是结构性分类关系，
-        // 其生命周期跟随 tag 节点的 heat，不受赫布学习影响
-        if (link.relation) {
-          try {
-            const relations: Array<{ type?: string }> = typeof link.relation === 'string'
-              ? JSON.parse(link.relation)
-              : link.relation;
-            if (Array.isArray(relations) && relations.some(r => r?.type === 'tagged')) continue;
-          } catch {
-            // 解析失败时不跳过，继续衰减
-          }
-        }
-
-        const heatA = heatCache.get(link.from_id) ?? 0;
-        const heatB = heatCache.get(link.to_id) ?? 0;
-        const activityFactor = Math.sqrt(heatA * heatB);
-        const dailyRetention = 1 - linkDecayBase * (1 - activityFactor);
-        // 2026-05-19 更新:heat 字段已统一钳到 1.0(见 src/db/nodes.ts:298 /
-        // src/graph/dedup.ts:95)。activityFactor 现在最大 1.0,dailyRetention 最大 1.0,
-        // newStrength 不再单调爬升超过原值。但保留出口 Math.min(1.0, ...) 作为深度防御:
-        // 若 heat 重构再次放开上限或 link.strength 因迁移有历史脏数据 >1,此守卫挡住。
-        const newStrength = Math.min(1.0, link.strength * dailyRetention);
-
-        // 阈值比较与 L100 的 DELETE WHERE strength <= ? 对齐为 <=(inclusive):
-        // 否则 strength 衰减到正好等于 0.05 的链接会延后一个 cycle 才被清(本轮 SELECT
-        // 不到、本轮 loop 又走 else 分支留在表里),与 L96-98 注释"strength 恰好等于
-        // threshold 永远不会被扫"语义冲突。
-        if (newStrength <= linkDeleteThreshold) {
-          linkDeleteStmt.run(batchTs, link.id);
-          linkDeleted++;
-        } else {
-          linkUpdateStmt.run(newStrength, batchTs, link.id);
-          linkDecayed++;
-        }
-      }
+      testHooks?.beforeTimelineEvent?.();
+      logTimelineEvent(db, {
+        type: 'memory',
+        subtype: 'synaptic_scaling',
+        title: JSON.stringify({ key: 'synaptic_decayed', params: { nodes: decayed, links: linkDecayed } }),
+        detail: { decayed, linkDecayed, linkDeleted },
+        important: 0,
+      });
     })();
   }
 
   log.info(`衰减 ${decayed} 节点, 链接衰减 ${linkDecayed} 条, 删除 ${linkDeleted} 条`);
 
-  if (decayed > 0 || linkDecayed > 0) {
-    logTimelineEvent(db, {
-      type: 'memory',
-      subtype: 'synaptic_scaling',
-      title: JSON.stringify({ key: 'synaptic_decayed', params: { nodes: decayed, links: linkDecayed } }),
-      detail: { decayed, linkDecayed, linkDeleted },
-      important: 0,
-    });
-  }
-
   return { decayed };
+}
+
+/**
+ * 保留原同步 API，供不承载 Electron UI 的调用方和既有测试使用。
+ */
+export function runSynapticScaling(db: Database.Database): { decayed: number } {
+  const batches = runSynapticScalingBatches(db);
+  let step = batches.next();
+  while (!step.done) step = batches.next();
+  return step.value;
+}
+
+const yieldToImmediate = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
+
+/**
+ * scheduler 使用的协作式入口。节点和链接都在current-row短事务批次后
+ * 让出事件循环；链接不复用yield前读取的strength/relation快照。
+ */
+export async function runSynapticScalingCooperatively(
+  db: Database.Database,
+  yieldBetweenBatches: () => Promise<void> = yieldToImmediate,
+  testHooks?: { beforeFirstLinkBatch?: () => void; beforeTimelineEvent?: () => void },
+): Promise<{ decayed: number }> {
+  const batches = runSynapticScalingBatches(db, testHooks);
+  let committedEffectBatch = false;
+  let linkBatchesSinceFairnessPause = 0;
+  try {
+    let step = batches.next();
+    while (!step.done) {
+      // Reaching a yield means the generator has committed one node or link batch.
+      committedEffectBatch = true;
+      // The transaction has ended before this cooperative yield. setImmediate
+      // keeps Worker throughput high, while a 5ms pause after a slow batch or
+      // every twenty normal 100-link batches gives a foreground SQLite waiter a
+      // OS scheduling window and prevents this Worker from reacquiring through
+      // hundreds of batches. Combining purge+decay into one statement keeps the
+      // added fairness budget below the frozen throughput margin.
+      await yieldBetweenBatches();
+      if (
+        (step.value === 'link' || step.value === 'link_slow')
+        && (step.value === 'link_slow' || ++linkBatchesSinceFairnessPause === 20)
+      ) {
+        linkBatchesSinceFairnessPause = 0;
+        // SQLite's blocking busy handler backs off in millisecond-scale steps;
+        // a 1ms timer can let this Worker reacquire before the foreground
+        // connection wakes. Five milliseconds is long enough for that retry
+        // while adding at most ~50ms to the 20k-link frozen fixture.
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      step = batches.next();
+    }
+    return step.value;
+  } catch (error) {
+    if (committedEffectBatch) throw new SynapticPartialEffectError(error);
+    throw error;
+  }
 }
 
 

@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { getMetabolismWorkerConnectionSnapshot, getMetabolismWorkerRuntimeContext } from '../../metabolism/worker-runtime-context.js';
 import { createLogger } from '../../utils/logger.js';
 import { getLLMInvocationContext } from '../invocation-context.js';
 import { CliChildProcessRunner, CliProcessRegistry } from './child-process-runner.js';
@@ -194,12 +195,24 @@ export async function runCliLLM(
            available_models, validation_fingerprint, model_validation_json
     FROM model_connections WHERE id = ?
   `).get(request.connectionId) as ConnectionRow | undefined;
-  if (!row || row.archived) {
+  const workerContext = getMetabolismWorkerRuntimeContext();
+  const workerConnection = workerContext ? getMetabolismWorkerConnectionSnapshot(request.connectionId) : null;
+  if ((!row && !workerConnection) || (workerContext && !workerConnection) || (workerConnection ? workerConnection.archived : row!.archived !== 0)) {
     throw new CliLLMError('protocol', '模型连接不存在或已归档', {
       needsUserAction: true,
     });
   }
-  if (row.provider_type !== request.providerType) {
+  const effectiveRow: ConnectionRow = row ?? {
+    id: workerConnection!.id,
+    provider_type: workerConnection!.providerType,
+    archived: workerConnection!.archived ? 1 : 0,
+    status: workerConnection!.status,
+    candidate_models: workerConnection!.candidateModels,
+    available_models: workerConnection!.availableModels,
+    validation_fingerprint: workerConnection!.validationFingerprint,
+    model_validation_json: workerConnection!.modelValidationJson,
+  };
+  if ((workerConnection?.providerType ?? effectiveRow.provider_type) !== request.providerType) {
     throw new CliLLMError('protocol', '模型连接 provider 不匹配', {
       needsUserAction: true,
     });
@@ -212,15 +225,15 @@ export async function runCliLLM(
   });
   const purpose = options.purpose ?? request.purpose ?? 'background';
   if (purpose === 'background') {
-    if (row.validation_fingerprint !== environment.validationFingerprint) {
-      saveEnvironment(db, row, environment);
+    if (effectiveRow.validation_fingerprint !== environment.validationFingerprint) {
+      saveEnvironment(db, effectiveRow, environment);
       throw new CliLLMError(
         'unsupported_version',
         'CLI 路径、版本或登录状态已变化，请重新测试连接',
         { needsUserAction: true },
       );
     }
-    if (!parseArray(row.available_models).includes(request.modelAlias)) {
+    if (!parseArray(effectiveRow.available_models).includes(request.modelAlias)) {
       throw new CliLLMError(
         'model_unavailable',
         `模型 ${request.modelAlias} 尚未在当前 CLI 环境中验证成功`,
@@ -228,7 +241,7 @@ export async function runCliLLM(
       );
     }
   }
-  saveEnvironment(db, row, environment);
+  saveEnvironment(db, effectiveRow, environment);
   if (!environment.candidateModels.includes(request.modelAlias)) {
     throw new CliLLMError('model_unavailable', `模型 ${request.modelAlias} 不在当前 CLI 候选目录`);
   }

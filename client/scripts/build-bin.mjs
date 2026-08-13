@@ -46,6 +46,12 @@ const entries = [
     entry: path.join(REPO_ROOT, 'src', 'graph', 'structure-holes-worker.ts'),
     out: 'structure-holes-worker.cjs',
   },
+  {
+    // 长生命周期 metabolism scheduler Worker。Electron production scheduler
+    // 只允许通过 daemon handoff/controller 启动这份 bundle，main 不保留 fallback。
+    entry: path.join(CLIENT_ROOT, 'electron', 'workers', 'metabolism-worker-entry.ts'),
+    out: 'metabolism-worker.cjs',
+  },
 ]
 
 async function main() {

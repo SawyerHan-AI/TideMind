@@ -5,13 +5,16 @@ import { getConfig, getDataDir } from '../config.js';
 import { CURRENT_SCHEMA_VERSION, ensureSchema, ensureVectorTable } from './schema.js';
 import { setUsageDb } from '../llm/client.js';
 import { createLogger } from '../utils/logger.js';
+import { resolveSqliteVecLoadablePath } from './sqlite-vec-path.js';
 
 const log = createLogger('db');
 
 let db: Database.Database | null = null;
 let vecLoaded = false;
 let reembedNeeded = false;
-let vecInitPromise: Promise<void> | null = null;
+let vecInitPromise: Promise<VecCapability> | null = null;
+
+export type VecCapability = 'ready' | 'unavailable';
 
 /**
  * 自动备份数据库（迁移前调用）。
@@ -91,18 +94,19 @@ export function getDb(): Database.Database {
 }
 
 /** 异步加载 sqlite-vec 扩展，应在 getDb() 之后调用一次 */
-export async function initVec(): Promise<void> {
-  if (vecLoaded || !db) return;
+export async function initVec(): Promise<VecCapability> {
+  if (vecLoaded) return 'ready';
+  if (!db) return 'unavailable';
   if (vecInitPromise) return vecInitPromise;
   vecInitPromise = doInitVec();
   try {
-    await vecInitPromise;
+    return await vecInitPromise;
   } finally {
     vecInitPromise = null;
   }
 }
 
-async function doInitVec(): Promise<void> {
+async function doInitVec(): Promise<VecCapability> {
   // 历史 bug(2026-05-09):
   //   1. `vecLoaded = true` 在 loadExtension 成功后立刻设置(line 111),但
   //      ensureVectorTable / metadata 写入仍可能失败,失败后 catch 把 vecLoaded
@@ -116,15 +120,11 @@ async function doInitVec(): Promise<void> {
   //   - catch 块带 err.message 让 ops 看清失败位置
   try {
     const sqliteVec = await import('sqlite-vec');
-    let loadablePath = sqliteVec.getLoadablePath();
-    // Electron asar 修复：dlopen 无法读取 asar 内文件，需指向 unpacked 目录
-    if (loadablePath.includes('app.asar')) {
-      loadablePath = loadablePath.replace('app.asar', 'app.asar.unpacked');
-    }
+    const loadablePath = resolveSqliteVecLoadablePath(sqliteVec.getLoadablePath());
     db!.loadExtension(loadablePath);
   } catch (err) {
     log.error(`sqlite-vec 加载失败，向量搜索不可用: ${(err as Error).message}`);
-    return;
+    return 'unavailable';
   }
 
   const config = getConfig();
@@ -178,9 +178,11 @@ async function doInitVec(): Promise<void> {
 
     // 全部成功才标记 vec 可用
     vecLoaded = true;
+    return 'ready';
   } catch (err) {
     log.error(`向量表初始化失败: ${(err as Error).message}`);
     // vecLoaded 仍为 false(初始值),后续 searchVectors 路径会绕开向量搜索
+    return 'unavailable';
   }
 }
 

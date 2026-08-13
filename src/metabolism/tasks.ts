@@ -6,7 +6,7 @@
 
 import type { TaskDefinition } from './scheduler.js';
 import { makeNodeCountGate } from './scheduler.js';
-import { runSynapticScaling } from './synaptic.js';
+import { runSynapticScalingCooperatively } from './synaptic.js';
 import { runAnnotation } from './annotate.js';
 import { runLinkEvaluate } from './link-evaluate.js';
 import { runPendingLinkGc, pendingLinkGcGate } from './pending-link-gc.js';
@@ -150,7 +150,7 @@ export const ALL_TASKS: TaskDefinition[] = [
   // ── 记忆：衰减（关联层完成后再衰减）───────────
   {
     id: 'synaptic-decay',
-    execute: async (db) => { runSynapticScaling(db); },
+    execute: async (db) => { await runSynapticScalingCooperatively(db); },
     intervalStrategy: 'metabolism-params',
     intervalKey: 'decay_interval_minutes',
     defaultIntervalMinutes: 24 * 60,

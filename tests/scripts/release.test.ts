@@ -1,9 +1,10 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // The release script is intentionally plain Node ESM so it can run without a build step.
 // @ts-expect-error no declaration file for the local .mjs script
-import { commandToString, findReleaseRunId, parseArgs, previousPatch, verifyUpdateApi } from '../../scripts/release.mjs';
+import { assertExactSnapshot, assertRequestedVersion, commandToString, findPackagePreflightRunId, findReleaseRunId, parseArgs, previousPatch, verifyUpdateApi } from '../../scripts/release.mjs';
 
 describe('release script helpers', () => {
   it('derives the previous patch version when possible', () => {
@@ -54,6 +55,41 @@ describe('release script helpers', () => {
     expect(parseArgs(['-h']).help).toBe(true);
   });
 
+  it('rejects a requested release version that differs from package.json', () => {
+    expect(() => assertRequestedVersion('0.2.90', '0.2.89'))
+      .toThrow('--version 0.2.90 does not match package.json version 0.2.89');
+    expect(() => assertRequestedVersion('0.2.89', '0.2.89')).not.toThrow();
+    expect(() => assertRequestedVersion(null, '0.2.89')).not.toThrow();
+  });
+
+  it('fails closed when the release repository changes after validation', () => {
+    expect(() => assertExactSnapshot('abc', 'def', '', 'ExternaBrain'))
+      .toThrow('HEAD changed during release');
+    expect(() => assertExactSnapshot('abc', 'abc', ' M package.json', 'ExternaBrain'))
+      .toThrow('became dirty during release');
+    expect(() => assertExactSnapshot('abc', 'abc', '', 'ExternaBrain')).not.toThrow();
+  });
+
+  it('rechecks the source snapshot immediately before website and OSS side effects', () => {
+    const source = fs.readFileSync(path.resolve('scripts/release.mjs'), 'utf8');
+    const websiteStart = source.indexOf("if (!opts.skipWebsite)");
+    const websiteBuild = source.indexOf("label: 'website build'", websiteStart);
+    const websiteFence = source.indexOf("assertRepoSnapshot(repoRoot, 'ExternaBrain', expectedRootHead)", websiteBuild);
+    const websiteDeploy = source.indexOf("label: 'deploy website'", websiteFence);
+    expect(websiteStart).toBeGreaterThan(0);
+    expect(websiteBuild).toBeGreaterThan(websiteStart);
+    expect(websiteFence).toBeGreaterThan(websiteBuild);
+    expect(websiteDeploy).toBeGreaterThan(websiteFence);
+
+    const syncStart = source.indexOf("label: 'sync OSS repo'");
+    const syncFence = source.indexOf("assertRepoSnapshot(repoRoot, 'ExternaBrain', expectedRootHead)", syncStart);
+    const ossDirty = source.indexOf('const ossDirty =', syncFence);
+    expect(syncStart).toBeGreaterThan(websiteDeploy);
+    expect(syncFence).toBeGreaterThan(syncStart);
+    expect(ossDirty).toBeGreaterThan(syncFence);
+    expect(source).toContain("'exec', '--offline', '--', 'wrangler'");
+  });
+
   it('rejects invalid arguments', () => {
     expect(() => parseArgs(['--timeout-minutes', '0'])).toThrow('--timeout-minutes');
     expect(() => parseArgs(['--unknown'])).toThrow('Unknown argument');
@@ -74,6 +110,17 @@ describe('release script helpers', () => {
     expect(findReleaseRunId(runs, '0.2.52')).toBe('202');
     expect(findReleaseRunId(runs, 'v0.2.52')).toBe('202');
     expect(findReleaseRunId(runs, '0.2.51')).toBeNull();
+  });
+
+  it('only accepts a fresh main workflow_dispatch run as package preflight', () => {
+    const startedAt = Date.parse('2026-08-12T12:00:00Z');
+    const runs = [
+      { databaseId: 1, headBranch: 'main', headSha: 'expected', event: 'push', createdAt: '2026-08-12T12:02:00Z' },
+      { databaseId: 2, headBranch: 'main', headSha: 'expected', event: 'workflow_dispatch', createdAt: '2026-08-12T11:00:00Z' },
+      { databaseId: 3, headBranch: 'main', headSha: 'other', event: 'workflow_dispatch', createdAt: '2026-08-12T12:02:00Z' },
+      { databaseId: 4, headBranch: 'main', headSha: 'expected', event: 'workflow_dispatch', createdAt: '2026-08-12T12:01:00Z' },
+    ];
+    expect(findPackagePreflightRunId(runs, 'expected', startedAt)).toBe('4');
   });
 
   it('ignores stale same-tag runs created before this push (--force-tag re-release)', () => {

@@ -13,6 +13,9 @@ const repoRoot = path.resolve(__dirname, '..');
 const checks = [
   { name: 'root lint', cwd: repoRoot, command: 'npm', args: ['run', 'lint'] },
   { name: 'root build', cwd: repoRoot, command: 'npm', args: ['run', 'build'] },
+  // Root packaging tests inspect the real Worker bundle. Build it before the
+  // suite instead of relying on stale ignored client/out artifacts.
+  { name: 'worker bundle', cwd: path.join(repoRoot, 'client'), command: 'npm', args: ['run', 'build:bin'] },
   { name: 'root test', cwd: repoRoot, command: 'npm', args: ['test'] },
   { name: 'root audit', cwd: repoRoot, command: 'npm', args: ['audit', '--audit-level=moderate'] },
   { name: 'cloud typecheck', cwd: path.join(repoRoot, 'pro/cloud-server'), command: 'npx', args: ['tsc', '--noEmit'] },

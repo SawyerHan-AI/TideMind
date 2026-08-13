@@ -13,6 +13,7 @@ import { isEmbeddingProviderType, isLLMProviderType } from './llm/provider-types
 import { loadStrategies, initFileWatchers } from './strategy/loader.js';
 import { syncSkillFiles, createSyncHashStoreFromDb } from './utils/sync-skill-files.js';
 import { createLogger } from './utils/logger.js';
+import { getMetabolismWorkerRuntimeContext } from './metabolism/worker-runtime-context.js';
 
 const log = createLogger('config');
 
@@ -156,6 +157,11 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
 let cachedConfigSource: string | null = null;
 
 export function loadConfig(configPath?: string): AppConfig {
+  const workerRuntime = getMetabolismWorkerRuntimeContext();
+  if (workerRuntime) {
+    if (configPath !== undefined) throw new Error('metabolism Worker禁止从文件重新加载配置');
+    return workerRuntime.config;
+  }
   // configPath 显式传入,且与缓存源不同 → 强制重读
   if (configPath !== undefined && cachedConfig && cachedConfigSource !== configPath) {
     cachedConfig = null;
@@ -199,11 +205,14 @@ export function getConfig(): AppConfig {
 
 /** 清除 config 缓存，下次 getConfig() 会重新读取 TOML 文件 */
 export function reloadConfig(): void {
+  if (getMetabolismWorkerRuntimeContext()) throw new Error('metabolism Worker运行时配置不可热重载');
   cachedConfig = null;
   cachedConfigSource = null;
 }
 
 export function getDataDir(): string {
+  const workerRuntime = getMetabolismWorkerRuntimeContext();
+  if (workerRuntime) return workerRuntime.dataDir;
   return getConfig().general.data_dir;
 }
 
@@ -253,6 +262,7 @@ export function isLlmConfigured(): boolean {
 }
 
 export function ensureDataDirs(): void {
+  if (getMetabolismWorkerRuntimeContext()) throw new Error('metabolism Worker禁止创建数据目录');
   const dataDir = getDataDir();
   const dirs = [
     dataDir,

@@ -1,5 +1,5 @@
-import { appendFileSync, chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { appendFileSync, chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertResolvedCliIdentity, resolveCli } from '../../../src/llm/cli/resolve-cli.js';
@@ -9,8 +9,19 @@ const fixture = resolve(
 );
 
 describe('CLI resolver', () => {
+  const tempDirs: string[] = [];
+  const makeTrustedTempDir = (prefix: string): string => {
+    const dir = mkdtempSync(join(homedir(), prefix));
+    tempDirs.push(dir);
+    return dir;
+  };
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
   it('realpaths, validates, and probes a fixed candidate', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'tidemind-resolver-'));
+    const dir = makeTrustedTempDir('.tidemind-resolver-');
     const real = join(dir, 'claude-real');
     const link = join(dir, 'claude');
     copyFileSync(fixture, real);
@@ -33,7 +44,7 @@ describe('CLI resolver', () => {
   }, 15_000);
 
   it('rejects world-writable and non-absolute candidates', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'tidemind-resolver-unsafe-'));
+    const dir = makeTrustedTempDir('.tidemind-resolver-unsafe-');
     const path = join(dir, 'codex');
     copyFileSync(fixture, path);
     chmodSync(path, 0o777);
@@ -46,7 +57,7 @@ describe('CLI resolver', () => {
   });
 
   it('rejects an executable below an untrusted writable parent', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'tidemind-resolver-parent-'));
+    const dir = makeTrustedTempDir('.tidemind-resolver-parent-');
     const writable = join(dir, 'writable');
     mkdirSync(writable, { mode: 0o777 });
     chmodSync(writable, 0o777);
@@ -62,7 +73,7 @@ describe('CLI resolver', () => {
   });
 
   it('allows a group-writable parent owned by the current user for standard Homebrew layouts', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'tidemind-resolver-group-parent-'));
+    const dir = makeTrustedTempDir('.tidemind-resolver-group-parent-');
     const writable = join(dir, 'writable');
     mkdirSync(writable, { mode: 0o775 });
     chmodSync(writable, 0o775);
@@ -78,7 +89,7 @@ describe('CLI resolver', () => {
   });
 
   it('ignores development override unless explicitly enabled', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'tidemind-resolver-dev-'));
+    const dir = makeTrustedTempDir('.tidemind-resolver-dev-');
     const path = join(dir, 'codex');
     copyFileSync(fixture, path);
     chmodSync(path, 0o700);
