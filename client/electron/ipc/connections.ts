@@ -25,6 +25,7 @@ import {
 } from '../../../src/db/connections.js'
 import { resolveAmbiguousConnection } from '../../../src/llm/cli/invocation-state.js'
 import { broadcastLLMHealth } from './llm-health.js'
+import { notifyMetabolismWorkerRuntimeMutation } from '../workers/metabolism-worker-runtime-mutations.js'
 
 function generateConnectionId(): string {
   return 'mc_' + randomBytes(4).toString('hex')
@@ -207,6 +208,7 @@ export function registerConnectionHandlers(dataDir: string): void {
     db.prepare(
       'INSERT INTO model_connections (id, name, provider_type, credentials, created) VALUES (?, ?, ?, ?, ?)',
     ).run(id, name, providerType, creds, created)
+    notifyMetabolismWorkerRuntimeMutation('connection')
     broadcastLLMHealth(db)
 
     try {
@@ -256,6 +258,7 @@ export function registerConnectionHandlers(dataDir: string): void {
     if (sets.length === 0) return
     values.push(validId)
     db.prepare(`UPDATE model_connections SET ${sets.join(', ')} WHERE id = ?`).run(...values)
+    notifyMetabolismWorkerRuntimeMutation(params.credentials === undefined ? 'connection' : 'credential')
     // 2026-05-21: 凭据变更后主动清 LLM client cache + 重置熔断器。
     // 用户改 connection 等同于"我在主动修复 LLM 问题",不应该让旧的熔断状态继续挡。
     // 注意只在 credentials 变更时清,纯改 name 不动 LLM 调用路径。
@@ -274,6 +277,7 @@ export function registerConnectionHandlers(dataDir: string): void {
     cancelCliOperation(validId, '连接已归档')
     const db = getClientDb()
     db.prepare('UPDATE model_connections SET archived = 1 WHERE id = ?').run(validId)
+    notifyMetabolismWorkerRuntimeMutation('connection')
     broadcastLLMHealth(db)
   })
 
@@ -281,6 +285,7 @@ export function registerConnectionHandlers(dataDir: string): void {
     const validId = validateConnectionId(id)
     const db = getClientDb()
     db.prepare('UPDATE model_connections SET archived = 0 WHERE id = ?').run(validId)
+    notifyMetabolismWorkerRuntimeMutation('connection')
     broadcastLLMHealth(db)
   })
 
@@ -289,6 +294,7 @@ export function registerConnectionHandlers(dataDir: string): void {
     cancelCliOperation(validId, '连接已删除')
     const db = getClientDb()
     db.prepare('DELETE FROM model_connections WHERE id = ?').run(validId)
+    notifyMetabolismWorkerRuntimeMutation('connection')
     broadcastLLMHealth(db)
   })
 
@@ -886,6 +892,7 @@ export function registerConnectionHandlers(dataDir: string): void {
         const creds = safeParseCredentials(conn.credentials)
         if (typeof parsed.project_id === 'string') creds.project_id = parsed.project_id
         db.prepare('UPDATE model_connections SET credentials = ? WHERE id = ?').run(JSON.stringify(creds), validId)
+        notifyMetabolismWorkerRuntimeMutation('credential')
         // 2026-05-21 (audit A.H2 / C.H3): 上传新 SA 文件后,即使 project_id 不变,
         // 文件内容已经换了(私钥/客户端 email 不同),GoogleAuth 内部 cachedCredential
         // 还会沿用旧 JWT。必须 clearClientCache() 让 SDK 重建,resetCircuitBreaker

@@ -1,6 +1,6 @@
 {
   "name": "tidemind",
-  "version": "0.2.88",
+  "version": "0.2.89",
   "description": "Tide Mind — 基于活图的认知系统，通过 MCP 协议为 AI 工具提供记忆服务",
   "type": "module",
   "bin": {
@@ -15,6 +15,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src/",
+    "measure:metabolism": "npm run build && node --expose-gc scripts/measure-metabolism-phase0.mjs --check docs/design/evidence/local-metabolism-performance-thresholds.json",
+    "measure:metabolism:electron": "npm --prefix client run build:bin && node scripts/run-metabolism-worker-electron-performance.mjs",
+    "measure:metabolism:packaged": "node scripts/run-packaged-metabolism-worker-performance.mjs",
+    "smoke:packaged-metabolism": "npm run build && node scripts/smoke-packaged-metabolism-worker.mjs",
     "health": "node scripts/health-check.mjs",
     "release": "node scripts/release.mjs",
     "setup": "node scripts/setup.mjs"
@@ -29,12 +33,12 @@
     "@notionhq/client": "^2.2.14",
     "@types/js-yaml": "^4.0.9",
     "better-sqlite3": "^12.9.0",
-    "js-yaml": "^4.3.0",
-    "nanoid": "^5.1.0",
+    "js-yaml": "^4.3.1",
+    "nanoid": "^5.1.16",
     "protobufjs": "^7.6.5",
     "smol-toml": "^1.3.0",
     "sqlite-vec": "^0.1.7",
-    "undici": "^7.25.0",
+    "undici": "^7.29.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {

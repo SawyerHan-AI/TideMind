@@ -1,27 +1,27 @@
 /**
  * Electron 内嵌守护进程
  *
- * 将代谢任务的定时调度集成到 Electron main process 中，
- * 应用启动时自动运行，退出时自动停止。
+ * Electron main只负责代谢Worker的启动排序、状态桥接和退出；
+ * scheduler timer与业务task全部运行在Worker Thread中。
  *
  * 使用 server 侧的 getDb() 单例（与 client 的 getClientDb() 独立，
  * 两者通过 WAL 模式安全共存）。
  */
 
 import path from 'node:path'
-import { loadConfig, ensureDataDirs, getDataDir } from '@server/config.js'
+import { loadConfig, ensureDataDirs, getConfig, getDataDir } from '@server/config.js'
 import { getDb, closeDb, initVec } from '@server/db/connection.js'
+import { CURRENT_SCHEMA_VERSION } from '@server/db/schema.js'
 import { createLogger, enableFileLogging } from '@server/utils/logger.js'
 import { logTimelineEvent } from '@server/db/log.js'
 import {
-  runSchedulerTick,
   noteSuccessfulLLMCall,
   setLLMFailureHook,
   recordLLMFailureForHook,
   recordEmbeddingSuccess,
   recordEmbeddingFailure,
 } from '@server/metabolism/scheduler.js'
-import { ALL_TASKS } from '@server/metabolism/tasks.js'
+import { MetabolismWorkerRuntimeRevisionAllocator } from '@server/metabolism/worker-runtime-snapshot.js'
 import { setLLMSuccessHook } from '@server/llm/client.js'
 import { setEmbeddingSuccessHook, setEmbeddingFailureHook } from '@server/llm/embedding.js'
 import { setStructureHolesRunner } from '@server/graph/structure-holes.js'
@@ -29,27 +29,79 @@ import { reconcileCliRuntimeState } from '@server/llm/cli/invocation-state.js'
 import { cleanupStaleCliRuntimeDirectories } from '@server/llm/cli/runtime-dir.js'
 import { startAllNoteSources, stopAllNoteSourcesAsync } from '@server/integrations/shared/note-sources.js'
 import { getActivityState } from './activity-state.js'
+import {
+  getSchedulerExecutionMode,
+  type SchedulerExecutionMode,
+} from './scheduler-execution-mode.js'
 import { runStructureHolesInWorker, terminateStructureHolesWorker } from './workers/structure-holes-runner.js'
+import { getMetabolismWorkerPath } from './runtime/runtime-paths.js'
+import { MetabolismWorkerController } from './workers/metabolism-worker-controller.js'
+import { MetabolismWorkerGenerationManager } from './workers/metabolism-worker-generation-manager.js'
+import { createMetabolismWorkerStartupHandoffIssuer, type MetabolismWorkerStartupHandoffIssuer } from './workers/metabolism-worker-startup-handoff.js'
+import {
+  bindMetabolismWorkerRuntimeMutationRestart,
+  watchMetabolismWorkerExternalRuntimeSources,
+  type MetabolismWorkerExternalRuntimeSourceWatcher,
+} from './workers/metabolism-worker-runtime-mutations.js'
 import { waitForBackgroundWork } from '@server/utils/background-work.js'
 
 const log = createLogger('daemon')
 
-let timer: ReturnType<typeof setInterval> | null = null
 let running = false
-let tickPromise: Promise<unknown> | null = null
-let pendingTickLabel: string | null = null
 let stopping = false
 let unsubscribeActivity: (() => void) | null = null
+let unsubscribeSchedulerMode: (() => void) | null = null
+let lastSchedulerMode: SchedulerExecutionMode = 'background'
 let lifecycleGeneration = 0
 let startupPromise: Promise<void> | null = null
+let workerManager: MetabolismWorkerGenerationManager | null = null
+let workerHandoffIssuer: MetabolismWorkerStartupHandoffIssuer | null = null
+let unbindRuntimeMutation: (() => void) | null = null
+let runtimeSourceWatcher: MetabolismWorkerExternalRuntimeSourceWatcher | null = null
+let workerDegradedReason: string | null = null
+let noteSourcesOwned = false
+let structureWorkerOwned = false
+let activeSchedulerPasses = 0
+let maxConcurrentSchedulerPasses = 0
+let mainThreadSchedulerTaskExecutions = 0
+let sqliteContentionEvents = 0
 
-const ACTIVE_TICK_MS = 60 * 1000   // 每分钟检查一次(用户在用)
-const IDLE_TICK_MS = 10 * 60 * 1000 // 每 10 分钟(用户走了,scheduler 不需要那么积极)
+const ACTIVE_TICK_MS = 60 * 1000
+const IDLE_TICK_MS = 10 * 60 * 1000
+
+export function getMetabolismWorkerDegradedReason(): string | null {
+  return workerDegradedReason
+}
+
+/** Read-only execution diagnostics used by packaged performance/activation gates. */
+export function getMetabolismWorkerExecutionDiagnostics(): Readonly<{
+  concurrentSchedulerPasses: number
+  mainThreadSchedulerTaskExecutions: number
+  sqliteContentionEvents: number
+}> {
+  return Object.freeze({
+    concurrentSchedulerPasses: maxConcurrentSchedulerPasses,
+    mainThreadSchedulerTaskExecutions,
+    sqliteContentionEvents,
+  })
+}
+
+function publishWorkerDegraded(db: ReturnType<typeof getDb>, reason: unknown, prefix: string): void {
+  workerDegradedReason = reason instanceof Error ? reason.message : String(reason)
+  log.error(`${prefix}: ${workerDegradedReason}`)
+  void import('./ipc/llm-health.js')
+    .then(module => module.broadcastLLMHealth(db))
+    .catch(error => log.warn(`Worker降级状态广播失败: ${(error as Error).message}`))
+}
 
 export function startDaemon(): Promise<void> {
   if (startupPromise) return startupPromise
   if (running || stopping) return Promise.resolve()
   const generation = ++lifecycleGeneration
+  activeSchedulerPasses = 0
+  maxConcurrentSchedulerPasses = 0
+  mainThreadSchedulerTaskExecutions = 0
+  sqliteContentionEvents = 0
   running = true
   stopping = false
   const current = startDaemonInternal(generation)
@@ -65,6 +117,7 @@ export function startDaemon(): Promise<void> {
 }
 
 async function startDaemonInternal(generation: number): Promise<void> {
+  try {
   // 初始化 server 侧的 config 和 DB（与 client 的 getClientDb 独立）
   loadConfig()
   ensureDataDirs()
@@ -72,15 +125,19 @@ async function startDaemonInternal(generation: number): Promise<void> {
 
   // 启用文件日志
   enableFileLogging(path.join(getDataDir(), 'logs'))
-  getDb()
-  await initVec()
+  const db = getDb()
+  // Never run synchronous checkpoint I/O from an Electron main timer. The
+  // Worker owns frequent PASSIVE maintenance while healthy; this high fallback
+  // keeps WAL bounded when it is degraded without adding another main task.
+  db.pragma('wal_autocheckpoint = 10000')
+  const vecCapability = await initVec()
   if (stopping || lifecycleGeneration !== generation) return
 
   // 注入健康度 hook(2026-05-21 v0.2.74,修 backlog C.H2)。
   // 关键:CLI daemon(src/daemon.ts)早已注入这套 hook,但 Electron daemon 一直漏了 →
   // 桌面端(主要用户群)callLLM 的 notifyLLMSuccess() 是空 hook,llm_last_success_at
   // 永不写,pending-link-gc 健康度 gate 永远拒绝放行,熔断器 half-open→closed 自愈
-  // transition 在桌面端也不跑。必须在首次 runSchedulerTick 之前设上。
+  // transition 在桌面端也不跑。必须在首次Worker scheduler pass之前设上。
   // hook 内部都有 try/catch 兜底,失败不影响 LLM/embedding 调用主流程。
   const dbForHook = getDb()
   const reconciliation = reconcileCliRuntimeState(dbForHook)
@@ -99,9 +156,11 @@ async function startDaemonInternal(generation: number): Promise<void> {
   // 把 O(E²/V) 同步 SQL(实测 107s)搬到 worker thread,避免冻死主线程/UI。
   // CLI daemon 不注入(无 UI),保持内联同步。
   setStructureHolesRunner(db => runStructureHolesInWorker(db))
+  structureWorkerOwned = true
 
   // 启动所有已配置的笔记源
   try {
+    noteSourcesOwned = true
     await startAllNoteSources(getDb())
   } catch (error) {
     log.error('笔记源启动失败:', (error as Error).message)
@@ -111,62 +170,150 @@ async function startDaemonInternal(generation: number): Promise<void> {
     return
   }
 
-  // 启动时立刻执行一轮
-  void runTickOnce('初始调度')
-
-  // 跟随 activity-state 切 tick 频率:active 60s, idle 10min。
-  // idle 时仍保留 tick(远程调度需要 progress),只是不需要那么积极。
-  // active 时立即跑一次,把 idle 期间积累的逾期任务推进。
-  startTick(getActivityState().getState())
-  unsubscribeActivity = getActivityState().onChange((state) => {
-    if (state === 'active') {
-      void runTickOnce('resume 调度', true)
+  const schedulerMode = getSchedulerExecutionMode()
+  lastSchedulerMode = schedulerMode.getMode()
+  const runtimeRevisions = new MetabolismWorkerRuntimeRevisionAllocator()
+  const handoffIssuer = createMetabolismWorkerStartupHandoffIssuer({
+    db,
+    dataDir: getDataDir(),
+    expectedSchemaVersion: CURRENT_SCHEMA_VERSION,
+    controllerGeneration: generation,
+    vecCapability,
+  })
+  workerHandoffIssuer = handoffIssuer
+  const manager = new MetabolismWorkerGenerationManager({
+    buildBootstrap: async workerGeneration => handoffIssuer.build(
+      getConfig(),
+      workerGeneration,
+      runtimeRevisions.allocate(),
+    ),
+    createController: () => new MetabolismWorkerController({
+      workerPath: getMetabolismWorkerPath(),
+      structureHolesHandler: async () => runStructureHolesInWorker(db),
+    }),
+    initialMode: lastSchedulerMode,
+    initialCadence: getActivityState().getState(),
+  })
+  workerManager = manager
+  workerDegradedReason = null
+  manager.on('message', message => {
+    if (message.kind === 'scheduler_pass_started') {
+      activeSchedulerPasses += 1
+      maxConcurrentSchedulerPasses = Math.max(maxConcurrentSchedulerPasses, activeSchedulerPasses)
+      if (message.executionThreadId === 0) mainThreadSchedulerTaskExecutions += 1
+    } else if (message.kind === 'scheduler_pass_finished') {
+      activeSchedulerPasses = Math.max(0, activeSchedulerPasses - 1)
+    } else if (message.kind === 'scheduler_sqlite_contention') {
+      sqliteContentionEvents += 1
     }
-    startTick(state)
+    if (message.kind === 'runtime_snapshot_invalidated') {
+      try {
+        runtimeSourceWatcher?.acknowledgeCurrent()
+      } catch (error) {
+        publishWorkerDegraded(db, error, '代谢Worker runtime source确认失败')
+      }
+    }
+    void import('./ipc/llm-health.js')
+      .then(module => module.applyMetabolismWorkerStatusMessage(db, message))
+      .catch(error => log.warn(`Worker状态桥接失败: ${(error as Error).message}`))
+  })
+  manager.on('clear-generation-tasks', workerGeneration => {
+    void import('./ipc/llm-health.js')
+      .then(module => module.clearMetabolismWorkerGenerationStatus(db, workerGeneration as number))
+      .catch(error => log.warn(`Worker任务镜像清理失败: ${(error as Error).message}`))
+  })
+  manager.on('degraded', reason => {
+    publishWorkerDegraded(db, reason, '代谢Worker不可用，已停止后台调度且不会回退main')
+  })
+  unbindRuntimeMutation = bindMetabolismWorkerRuntimeMutationRestart(
+    async () => {
+      runtimeSourceWatcher?.acknowledgeCurrent()
+      await manager.requestRestart()
+    },
+    error => {
+      publishWorkerDegraded(db, error, '代谢Worker runtime重建失败')
+    },
+  )
+  runtimeSourceWatcher = watchMetabolismWorkerExternalRuntimeSources(getDataDir(), () => {
+    void manager.requestRestart().catch(error => {
+      publishWorkerDegraded(db, error, '代谢Worker外部runtime source换代失败')
+    })
+  })
+  await manager.start()
+  if (stopping || lifecycleGeneration !== generation) {
+    await manager.shutdown()
+    handoffIssuer.invalidate()
+    return
+  }
+
+  unsubscribeActivity = getActivityState().onChange((state) => {
+    if (state === 'active' && schedulerMode.getMode() !== 'paused') {
+      manager.trigger('resume')
+    }
+    manager.setScheduleContext(schedulerMode.getMode(), state)
+  })
+  unsubscribeSchedulerMode = schedulerMode.onChange((mode) => {
+    const previous = lastSchedulerMode
+    lastSchedulerMode = mode
+    manager.setScheduleContext(mode, getActivityState().getState())
+    if (previous === 'paused' && mode !== 'paused' && running && !stopping) manager.trigger('resume')
   })
 
   logTimelineEvent(getDb(), {
     type: 'memory',
     subtype: 'daemon_start',
     title: JSON.stringify({ key: 'daemon_start' }),
-    detail: { task_count: ALL_TASKS.length, tick_interval_s: ACTIVE_TICK_MS / 1000 },
+    detail: { runtime: 'worker_thread', tick_interval_s: ACTIVE_TICK_MS / 1000 },
     actor: 'brain',
   })
 
-  log.info(`守护进程已启动。active=${ACTIVE_TICK_MS / 1000}s / idle=${IDLE_TICK_MS / 1000}s tick，共 ${ALL_TASKS.length} 个任务独立调度。`)
-}
-
-function startTick(state: 'active' | 'idle'): void {
-  if (timer) {
-    clearInterval(timer)
-    timer = null
-  }
-  const interval = state === 'active' ? ACTIVE_TICK_MS : IDLE_TICK_MS
-  timer = setInterval(() => {
-    void runTickOnce('调度 tick')
-  }, interval)
-}
-
-function runTickOnce(label: string, queueIfBusy = false): Promise<unknown> {
-  if (tickPromise) {
-    if (queueIfBusy && !stopping) pendingTickLabel = label
-    return tickPromise
-  }
-  const current: Promise<void> = runSchedulerTick(getDb(), ALL_TASKS)
-    .then(() => undefined)
-    .catch(err => {
-      log.error(`${label}失败:`, (err as Error).message)
-    })
-    .finally(() => {
-      if (tickPromise === current) {
-        tickPromise = null
-        const pending = pendingTickLabel
-        pendingTickLabel = null
-        if (pending && running && !stopping) void runTickOnce(pending)
+  log.info(`守护进程已启动。scheduler=Worker Thread，active=${ACTIVE_TICK_MS / 1000}s / idle=${IDLE_TICK_MS / 1000}s tick。`)
+  } catch (error) {
+    unbindRuntimeMutation?.()
+    unbindRuntimeMutation = null
+    runtimeSourceWatcher?.close()
+    runtimeSourceWatcher = null
+    unsubscribeActivity?.()
+    unsubscribeActivity = null
+    unsubscribeSchedulerMode?.()
+    unsubscribeSchedulerMode = null
+    const manager = workerManager
+    let workerExitConfirmed = manager === null
+    if (manager) {
+      try {
+        await manager.shutdown()
+        workerExitConfirmed = true
+        if (workerManager === manager) workerManager = null
+      } catch (cleanupError) {
+        log.error(`代谢Worker启动回滚未能确认线程退出: ${(cleanupError as Error).message}`)
       }
-    })
-  tickPromise = current
-  return current
+    }
+    workerHandoffIssuer?.invalidate()
+    workerHandoffIssuer = null
+    setLLMSuccessHook(null)
+    setLLMFailureHook(null)
+    setEmbeddingSuccessHook(null)
+    setEmbeddingFailureHook(null)
+    setStructureHolesRunner(null)
+    let structureExitConfirmed = !structureWorkerOwned
+    try {
+      await terminateStructureHolesWorker()
+      structureWorkerOwned = false
+      structureExitConfirmed = true
+    } catch (cleanupError) {
+      log.error(`structure Worker启动回滚失败: ${(cleanupError as Error).message}`)
+    }
+    let noteDrainConfirmed = !noteSourcesOwned
+    try {
+      await stopAllNoteSourcesAsync()
+      noteSourcesOwned = false
+      noteDrainConfirmed = true
+    } catch (cleanupError) {
+      log.error(`笔记源启动回滚失败: ${(cleanupError as Error).message}`)
+    }
+    if (workerExitConfirmed && structureExitConfirmed && noteDrainConfirmed) closeDb()
+    throw error
+  }
 }
 
 /**
@@ -176,57 +323,84 @@ function runTickOnce(label: string, queueIfBusy = false): Promise<unknown> {
  * fire-and-forget 跑一次 tick——熔断器已被 resetCircuitBreaker 清掉,LLM 任务
  * 会立即重试。
  *
- * 注意:复用 setInterval 里的 tickPromise 模式(同样的 await Promise.race + finally),
- * 让 stopDaemon 能 await in-flight tick 完成,避免 race。
+ * Worker controller会合并在途trigger，避免并发scheduler pass。
  */
 export async function triggerImmediateSchedulerTick(): Promise<void> {
   if (!running) {
     log.warn('triggerImmediateSchedulerTick 调用但 daemon 未启动,忽略')
     return
   }
-  if (tickPromise) {
-    log.info('triggerImmediateSchedulerTick 调用但已有 tick 在跑,跳过')
+  if (!workerManager) {
+    log.warn('triggerImmediateSchedulerTick 调用但Worker尚未ready,忽略')
     return
   }
-  await runTickOnce('立即 tick')
+  workerManager.trigger('immediate')
+}
+
+/** Rebuild Worker-local SDK/CLI caches before an operator-requested retry. */
+export async function restartMetabolismWorkerAndTriggerImmediate(): Promise<void> {
+  if (!running || !workerManager) throw new Error('metabolism Worker is not ready')
+  await workerManager.requestRestart()
+  workerManager.trigger('immediate')
 }
 
 export async function stopDaemon(): Promise<void> {
-  if (!running && !startupPromise) return
+  if (
+    !running
+    && !startupPromise
+    && !workerManager
+    && !workerHandoffIssuer
+    && !runtimeSourceWatcher
+    && !unbindRuntimeMutation
+    && !noteSourcesOwned
+    && !structureWorkerOwned
+  ) return
   stopping = true
   lifecycleGeneration++
-  pendingTickLabel = null
+  if (unbindRuntimeMutation) {
+    unbindRuntimeMutation()
+    unbindRuntimeMutation = null
+  }
+  runtimeSourceWatcher?.close()
+  runtimeSourceWatcher = null
   if (unsubscribeActivity) {
     unsubscribeActivity()
     unsubscribeActivity = null
   }
-  if (timer) {
-    clearInterval(timer)
-    timer = null
+  if (unsubscribeSchedulerMode) {
+    unsubscribeSchedulerMode()
+    unsubscribeSchedulerMode = null
   }
 
-  // 摘掉健康度 hook + structure-holes runner,并强杀在跑的 worker(v0.2.74)。
+  // 摘掉main isolate健康度hook；Worker isolate由generation manager在自己的shutdown中清理。
   // 防 shutdown race:closeDb() 之后若 hook 仍被 in-flight 的 LLM/embedding 回调触发,
   // 会访问已关闭的 DB。worker 强杀避免线程泄漏(worker 自己开的连接由它自己 close)。
   setLLMSuccessHook(null)
   setLLMFailureHook(null)
   setEmbeddingSuccessHook(null)
   setEmbeddingFailureHook(null)
-  setStructureHolesRunner(null)
-  terminateStructureHolesWorker()
 
   // 等待已进入 initVec/startAllNoteSources 的在途启动观察 generation 失效并退出。
-  // 它未完成前绝不能 closeDb，否则旧启动会在关库后继续安装 hook/watcher/timer。
+  // 它未完成前绝不能 closeDb，否则旧启动会在关库后继续安装hook/watcher/Worker。
   const pendingStartup = startupPromise
   if (pendingStartup) {
-    await pendingStartup
+    try {
+      await pendingStartup
+    } catch (err) {
+      log.warn(`daemon startup failed while shutdown was waiting: ${(err as Error).message}`)
+    }
   }
 
-  // shutdownLLMClient 已先中止 LLM/CLI；这里必须真正等剩余 tick 完成再关 DB。
-  // 超时后直接 closeDb 会让仍运行的任务继续访问已关闭连接，造成重复/损坏。
-  if (tickPromise) {
-    await tickPromise
+  const manager = workerManager
+  if (manager) {
+    await manager.shutdown()
+    workerManager = null
   }
+  workerHandoffIssuer?.invalidate()
+  workerHandoffIssuer = null
+  setStructureHolesRunner(null)
+  await terminateStructureHolesWorker()
+  structureWorkerOwned = false
   try {
     logTimelineEvent(getDb(), {
       type: 'memory',
@@ -254,6 +428,7 @@ export async function stopDaemon(): Promise<void> {
         )
       }),
     ])
+    noteSourcesOwned = false
   } catch (error) {
     stopping = false
     throw error
@@ -264,5 +439,6 @@ export async function stopDaemon(): Promise<void> {
   closeDb()
   running = false
   stopping = false
+  workerDegradedReason = null
   log.info('守护进程已停止')
 }

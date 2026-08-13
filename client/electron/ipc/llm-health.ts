@@ -10,8 +10,10 @@ import {
   type ActiveLLMTask,
 } from '../../../src/llm/invocation-context'
 import { clearClientCache } from '../../../src/llm/client'
-import { triggerImmediateSchedulerTick } from '../daemon'
+import { getMetabolismWorkerDegradedReason, restartMetabolismWorkerAndTriggerImmediate } from '../daemon'
 import { createLogger } from '../../../src/utils/logger'
+import { MetabolismWorkerActiveTaskMirror } from '../workers/metabolism-worker-active-task-mirror'
+import type { MetabolismWorkerToMainMessage } from '../workers/metabolism-worker-protocol'
 
 const log = createLogger('ipc:llm-health')
 
@@ -42,9 +44,11 @@ export interface LLMHealthSnapshot {
   needsAttentionCount: number
   errors: ConnectionHealthItem[]
   activeTask: ActiveLLMTask | null
+  metabolismWorkerDegradedReason: string | null
 }
 
 let activeTask: ActiveLLMTask | null = null
+const activeTaskMirror = new MetabolismWorkerActiveTaskMirror()
 
 export function readLLMHealthSnapshot(db: Database.Database): LLMHealthSnapshot {
   const connections = db.prepare(`
@@ -143,6 +147,7 @@ export function readLLMHealthSnapshot(db: Database.Database): LLMHealthSnapshot 
     needsAttentionCount: errors.length,
     errors,
     activeTask,
+    metabolismWorkerDegradedReason: getMetabolismWorkerDegradedReason(),
   }
 }
 
@@ -150,13 +155,35 @@ export function broadcastLLMHealth(db: Database.Database): void {
   let snapshot: LLMHealthSnapshot
   try { snapshot = readLLMHealthSnapshot(db) }
   catch { return }
-  for (const win of BrowserWindow.getAllWindows()) {
+  for (const win of BrowserWindow?.getAllWindows?.() ?? []) {
     try {
       if (!win.isDestroyed()) win.webContents.send('llm-health-changed', snapshot)
     } catch {
       // Window destruction races are expected during shutdown.
     }
   }
+}
+
+export function applyMetabolismWorkerStatusMessage(
+  db: Database.Database,
+  message: MetabolismWorkerToMainMessage,
+): void {
+  if (message.kind === 'active_llm_task_started' || message.kind === 'active_llm_task_cleared') {
+    activeTaskMirror.applyWorkerMessage(message)
+    activeTask = activeTaskMirror.projectActiveLLMTask()
+    broadcastLLMHealth(db)
+  } else if (message.kind === 'health_changed') {
+    broadcastLLMHealth(db)
+  }
+}
+
+export function clearMetabolismWorkerGenerationStatus(
+  db: Database.Database,
+  lifecycleGeneration: number,
+): void {
+  activeTaskMirror.clearWorkerGeneration(lifecycleGeneration)
+  activeTask = activeTaskMirror.projectActiveLLMTask()
+  broadcastLLMHealth(db)
 }
 
 export function registerLLMHealthHandlers(db: Database.Database): void {
@@ -169,9 +196,7 @@ export function registerLLMHealthHandlers(db: Database.Database): void {
     try {
       resetConnectionHealth(db, connectionId)
       clearClientCache()
-      triggerImmediateSchedulerTick().catch(err => {
-        log.warn(`triggerImmediateSchedulerTick 失败: ${(err as Error).message}`)
-      })
+      await restartMetabolismWorkerAndTriggerImmediate()
     } catch (err) {
       log.error(`llm:reset-and-retry 失败: ${(err as Error).message}`)
       throw err
@@ -181,7 +206,8 @@ export function registerLLMHealthHandlers(db: Database.Database): void {
 
   setConnectionHealthChangeListener(() => broadcastLLMHealth(db))
   setActiveLLMTaskListener(task => {
-    activeTask = task
+    activeTaskMirror.updateMain(task)
+    activeTask = activeTaskMirror.projectActiveLLMTask()
     broadcastLLMHealth(db)
   })
 }

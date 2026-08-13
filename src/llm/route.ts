@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { getConfig } from '../config.js';
+import { getMetabolismWorkerConnectionSnapshot, getMetabolismWorkerRuntimeContext } from '../metabolism/worker-runtime-context.js';
 import {
   getLLMProviderDefinition,
   isLLMProviderType,
@@ -163,55 +164,73 @@ export function resolveLLMRoute(
     FROM model_connections
     WHERE id = ?
   `).get(selected.connectionId) as ConnectionRow | undefined;
+  const workerContext = getMetabolismWorkerRuntimeContext();
+  const workerConnection = workerContext
+    ? getMetabolismWorkerConnectionSnapshot(selected.connectionId)
+    : null;
 
-  if (!row) {
+  if ((!row && !workerConnection) || (workerContext && !workerConnection)) {
     throw new LLMRouteError(
       'connection_missing',
       `模型连接 ${selected.connectionId} 不存在`,
       selected.connectionId,
     );
   }
-  if (row.archived) {
+  const effectiveRow: ConnectionRow = row ?? {
+    id: workerConnection!.id,
+    name: workerConnection!.name,
+    provider_type: workerConnection!.providerType,
+    status: workerConnection!.status,
+    status_reason: workerConnection!.statusReason,
+    archived: workerConnection!.archived ? 1 : 0,
+    candidate_models: workerConnection!.candidateModels,
+    available_models: workerConnection!.availableModels,
+    validation_fingerprint: workerConnection!.validationFingerprint,
+    auth_fingerprint: workerConnection!.authFingerprint,
+  };
+  const archived = workerConnection ? workerConnection.archived : effectiveRow.archived !== 0;
+  const providerType = workerConnection?.providerType ?? effectiveRow.provider_type;
+  if (archived) {
     throw new LLMRouteError(
       'connection_archived',
-      `模型连接 ${row.name} 已归档`,
-      row.id,
+      `模型连接 ${effectiveRow.name} 已归档`,
+      effectiveRow.id,
     );
   }
-  if (!isLLMProviderType(row.provider_type)) {
+  if (!isLLMProviderType(providerType)) {
     throw new LLMRouteError(
       'provider_mismatch',
-      `模型连接 ${row.name} 的 provider 无效`,
-      row.id,
+      `模型连接 ${effectiveRow.name} 的 provider 无效`,
+      effectiveRow.id,
     );
   }
   if (
     selected.explicitProviderType !== undefined
-    && selected.explicitProviderType !== row.provider_type
+    && selected.explicitProviderType !== providerType
   ) {
     throw new LLMRouteError(
       'provider_mismatch',
-      `模型连接 ${row.name} 与已保存 provider 不一致`,
-      row.id,
+      `模型连接 ${effectiveRow.name} 与已保存 provider 不一致`,
+      effectiveRow.id,
     );
   }
 
-  const definition = getLLMProviderDefinition(row.provider_type);
+  const definition = getLLMProviderDefinition(providerType);
   return {
     tier,
-    connectionId: row.id,
-    connectionName: row.name,
-    scopeId: row.id,
-    providerType: row.provider_type,
+    connectionId: effectiveRow.id,
+    connectionName: effectiveRow.name,
+    scopeId: effectiveRow.id,
+    providerType,
     sourceType: definition.sourceType,
     billingMode: definition.billingMode,
     modelAlias: selected.modelAlias,
-    status: (row.status ?? 'unconfigured') as ModelConnectionStatus,
-    statusReason: row.status_reason,
-    candidateModels: parseStringArray(row.candidate_models),
-    availableModels: parseStringArray(row.available_models),
-    validationFingerprint: row.validation_fingerprint,
-    authFingerprint: row.auth_fingerprint,
+    status: (effectiveRow.status ?? 'unconfigured') as ModelConnectionStatus,
+    statusReason: effectiveRow.status_reason,
+    candidateModels: parseStringArray(effectiveRow.candidate_models),
+    availableModels: parseStringArray(effectiveRow.available_models),
+    validationFingerprint: effectiveRow.validation_fingerprint,
+    authFingerprint: effectiveRow.auth_fingerprint,
   };
 }
 

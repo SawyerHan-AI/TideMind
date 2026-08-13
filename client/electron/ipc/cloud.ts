@@ -4,6 +4,7 @@ import { getConfig, reloadConfig } from '../../../src/config.js'
 import { createLogger } from '../../../src/utils/logger.js'
 import { parseRequiredBoolean } from './_schemas.js'
 import { getOutboxDiagnostics } from '../cloud/outbox.js'
+import { notifyMetabolismWorkerRuntimeMutation } from '../workers/metabolism-worker-runtime-mutations.js'
 
 const log = createLogger('ipc-cloud')
 
@@ -187,6 +188,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
     fs.writeFileSync(tmpPath, stringifyToml(current as any));
     fs.renameSync(tmpPath, configPath);
     reloadConfig();
+    notifyMetabolismWorkerRuntimeMutation('config');
     log.info(`cloud sync ${parsed.data ? 'enabled' : 'disabled'}`);
 
     let startError: string | undefined;
@@ -298,6 +300,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
     fs.writeFileSync(tmpPath, stringifyToml(current as any));
     fs.renameSync(tmpPath, configPath);
     reloadConfig();
+    notifyMetabolismWorkerRuntimeMutation('config');
     log.info(`cloud metabolism ${parsed.data ? 'enabled' : 'disabled'}`);
     emitCloudChanged();
     return { success: true };

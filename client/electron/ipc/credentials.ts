@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createLogger } from '../../../src/utils/logger.js'
 import { mainT } from '../i18n.js'
+import { notifyMetabolismWorkerRuntimeMutation } from '../workers/metabolism-worker-runtime-mutations.js'
 
 const log = createLogger('credentials-ipc')
 
@@ -95,6 +96,7 @@ export function registerCredentialHandlers(dataDir: string): void {
 
       const destPath = path.join(dataDir, 'vertex-credentials.json')
       writeVertexCredentials(destPath, content)
+      notifyMetabolismWorkerRuntimeMutation('credential')
 
       // 记录到时间线
       try {

@@ -1,454 +1,328 @@
-/**
- * tests/client/daemon.test.ts
- *
- * 覆盖 client/electron/daemon.ts 的 startDaemon/stopDaemon:
- *  - running flag 幂等(重复 start 不重复初始化)
- *  - timer interval 跟随 activity state 切换(60s active / 10min idle)
- *  - activity state 'active' 触发立即 runSchedulerTick(catch up overdue)
- *  - tickRunning 守卫防止 tick overlap
- *  - stopDaemon 清理 timer + unsubscribe + stopAllNoteSources + closeDb
- *  - 异常隔离:笔记源启动失败 / scheduler tick 失败 / log event 失败 都不冒泡
- */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-const {
-  loadConfigMock, ensureDataDirsMock, getDataDirMock,
-  getDbMock, closeDbMock, initVecMock,
-  enableFileLoggingMock,
-  logTimelineEventMock,
-  runSchedulerTickMock,
-  ALL_TASKS_VAL,
-  startAllNoteSourcesMock, stopAllNoteSourcesMock, stopAllNoteSourcesAsyncMock,
-  activityState,
-  // v0.2.74 健康度 hook + structure-holes worker runner（L3 + CRITICAL #1）
-  noteSuccessfulLLMCallMock, setLLMFailureHookMock, recordLLMFailureForHookMock,
-  recordEmbeddingSuccessMock, recordEmbeddingFailureMock,
-  setLLMSuccessHookMock, setEmbeddingSuccessHookMock, setEmbeddingFailureHookMock,
-  setStructureHolesRunnerMock, runStructureHolesInWorkerMock, terminateStructureHolesWorkerMock,
-  reconcileCliRuntimeStateMock, cleanupStaleCliRuntimeDirectoriesMock,
-} = vi.hoisted(() => {
-  const tasks = [{ id: 't1' }, { id: 't2' }, { id: 't3' }];
+const mocks = vi.hoisted(() => {
+  const order: string[] = []
+  const activity = { state: 'active' as 'active' | 'idle', listeners: new Set<(value: 'active' | 'idle') => void>() }
+  const mode = { value: 'foreground' as 'foreground' | 'background' | 'paused', listeners: new Set<(value: 'foreground' | 'background' | 'paused') => void>() }
+  const managers: Array<{
+    options: Record<string, unknown>
+    listeners: Map<string, Array<(...args: unknown[]) => void>>
+    start: ReturnType<typeof vi.fn>
+    setScheduleContext: ReturnType<typeof vi.fn>
+    trigger: ReturnType<typeof vi.fn>
+    requestRestart: ReturnType<typeof vi.fn>
+    shutdown: ReturnType<typeof vi.fn>
+    emit: (event: string, ...args: unknown[]) => void
+  }> = []
+  const createManager = vi.fn(function (this: unknown, options: Record<string, unknown>) {
+    const listeners = new Map<string, Array<(...args: unknown[]) => void>>()
+    const manager = {
+      options,
+      listeners,
+      start: vi.fn(async () => { order.push('worker-start') }),
+      setScheduleContext: vi.fn(),
+      trigger: vi.fn(),
+      requestRestart: vi.fn(async () => undefined),
+      shutdown: vi.fn(async () => { order.push('worker-shutdown') }),
+      on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+        listeners.set(event, [...(listeners.get(event) ?? []), listener])
+        return manager
+      }),
+      emit: (event: string, ...args: unknown[]) => {
+        for (const listener of listeners.get(event) ?? []) listener(...args)
+      },
+    }
+    managers.push(manager)
+    return manager
+  })
+  const issuer = {
+    startupAuthority: { controllerReceiptId: 'receipt', dataScopeFingerprint: 'a'.repeat(64), controllerGeneration: 1 },
+    build: vi.fn(() => ({ protocolVersion: 1, lifecycleGeneration: 1 })),
+    invalidate: vi.fn(() => { order.push('handoff-invalidate') }),
+  }
   return {
-    loadConfigMock: vi.fn(),
-    ensureDataDirsMock: vi.fn(),
-    getDataDirMock: vi.fn(() => '/tmp/test-daemon-dir'),
-    getDbMock: vi.fn(() => ({ name: 'mock-db' })),
-    closeDbMock: vi.fn(),
-    initVecMock: vi.fn(async () => undefined),
-    enableFileLoggingMock: vi.fn(),
-    logTimelineEventMock: vi.fn(),
-    runSchedulerTickMock: vi.fn(async () => undefined),
-    ALL_TASKS_VAL: tasks,
-    startAllNoteSourcesMock: vi.fn(async () => undefined),
-    stopAllNoteSourcesMock: vi.fn(),
-    stopAllNoteSourcesAsyncMock: vi.fn(async () => undefined),
-    activityState: {
-      state: 'active' as 'active' | 'idle',
-      listeners: new Set<(s: 'active' | 'idle') => void>(),
-    },
-    noteSuccessfulLLMCallMock: vi.fn(),
-    setLLMFailureHookMock: vi.fn(),
-    recordLLMFailureForHookMock: vi.fn(),
-    recordEmbeddingSuccessMock: vi.fn(),
-    recordEmbeddingFailureMock: vi.fn(),
-    setLLMSuccessHookMock: vi.fn(),
-    setEmbeddingSuccessHookMock: vi.fn(),
-    setEmbeddingFailureHookMock: vi.fn(),
-    setStructureHolesRunnerMock: vi.fn(),
-    runStructureHolesInWorkerMock: vi.fn(async () => []),
-    terminateStructureHolesWorkerMock: vi.fn(),
-    reconcileCliRuntimeStateMock: vi.fn(() => ({
-      definiteFailures: [],
-      ambiguousInvocations: [],
-      stabilizedConnections: [],
-    })),
-    cleanupStaleCliRuntimeDirectoriesMock: vi.fn(),
-  };
-});
+    order,
+    activity,
+    mode,
+    managers,
+    createManager,
+    issuer,
+    loadConfig: vi.fn(() => { order.push('load-config') }),
+    ensureDataDirs: vi.fn(() => { order.push('ensure-data-dirs') }),
+    getConfig: vi.fn(() => ({ general: { data_dir: '/tmp/test-daemon-dir' } })),
+    getDataDir: vi.fn(() => '/tmp/test-daemon-dir'),
+    db: { name: '/tmp/test-daemon-dir/graph/brain.sqlite', pragma: vi.fn() },
+    getDb: vi.fn(() => { order.push('get-db'); return mocks.db }),
+    closeDb: vi.fn(() => { order.push('close-db') }),
+    initVec: vi.fn(async () => { order.push('init-vec'); return 'unavailable' as const }),
+    startSources: vi.fn(async () => { order.push('start-sources') }),
+    stopSources: vi.fn(async () => { order.push('stop-sources') }),
+    createHandoff: vi.fn(() => { order.push('create-handoff'); return issuer }),
+    bindMutation: vi.fn((restart: (kind: string) => Promise<void>) => {
+      mocks.mutationRestart = restart
+      return vi.fn(() => { order.push('unbind-mutation') })
+    }),
+    sourceWatcher: { acknowledgeCurrent: vi.fn(), poll: vi.fn(), close: vi.fn() },
+    mutationRestart: null as ((kind: string) => Promise<void>) | null,
+    setLLMSuccess: vi.fn(() => { order.push('llm-success-hook') }),
+    setLLMFailure: vi.fn(() => { order.push('llm-failure-hook') }),
+    setEmbeddingSuccess: vi.fn(() => { order.push('embedding-success-hook') }),
+    setEmbeddingFailure: vi.fn(() => { order.push('embedding-failure-hook') }),
+    setStructureRunner: vi.fn(() => { order.push('structure-hook') }),
+    terminateStructure: vi.fn(async () => { order.push('structure-terminate') }),
+    reconcile: vi.fn(() => ({ definiteFailures: [], ambiguousInvocations: [], stabilizedConnections: [] })),
+    cleanupCli: vi.fn(),
+    logTimeline: vi.fn(),
+    waitBackground: vi.fn(async () => { order.push('wait-background') }),
+    applyStatus: vi.fn(),
+    clearStatus: vi.fn(),
+  }
+})
 
 vi.mock('@server/config.js', () => ({
-  loadConfig: loadConfigMock,
-  ensureDataDirs: ensureDataDirsMock,
-  getDataDir: getDataDirMock,
-}));
-
-vi.mock('@server/db/connection.js', () => ({
-  getDb: getDbMock,
-  closeDb: closeDbMock,
-  initVec: initVecMock,
-}));
-
-vi.mock('@server/utils/logger.js', () => ({
-  createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
-  enableFileLogging: enableFileLoggingMock,
-}));
-
-vi.mock('@server/db/log.js', () => ({
-  logTimelineEvent: logTimelineEventMock,
-}));
-
+  loadConfig: mocks.loadConfig,
+  ensureDataDirs: mocks.ensureDataDirs,
+  getConfig: mocks.getConfig,
+  getDataDir: mocks.getDataDir,
+}))
+vi.mock('@server/db/connection.js', () => ({ getDb: mocks.getDb, closeDb: mocks.closeDb, initVec: mocks.initVec }))
+vi.mock('@server/db/schema.js', () => ({ CURRENT_SCHEMA_VERSION: 33 }))
+vi.mock('@server/utils/logger.js', () => ({ createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }), enableFileLogging: vi.fn() }))
+vi.mock('@server/db/log.js', () => ({ logTimelineEvent: mocks.logTimeline }))
 vi.mock('@server/metabolism/scheduler.js', () => ({
-  runSchedulerTick: runSchedulerTickMock,
-  noteSuccessfulLLMCall: noteSuccessfulLLMCallMock,
-  setLLMFailureHook: setLLMFailureHookMock,
-  recordLLMFailureForHook: recordLLMFailureForHookMock,
-  recordEmbeddingSuccess: recordEmbeddingSuccessMock,
-  recordEmbeddingFailure: recordEmbeddingFailureMock,
-}));
-
-vi.mock('@server/llm/client.js', () => ({
-  setLLMSuccessHook: setLLMSuccessHookMock,
-}));
-
-vi.mock('@server/llm/cli/invocation-state.js', () => ({
-  reconcileCliRuntimeState: reconcileCliRuntimeStateMock,
-}));
-
-vi.mock('@server/llm/cli/runtime-dir.js', () => ({
-  cleanupStaleCliRuntimeDirectories: cleanupStaleCliRuntimeDirectoriesMock,
-}));
-
-vi.mock('@server/llm/embedding.js', () => ({
-  setEmbeddingSuccessHook: setEmbeddingSuccessHookMock,
-  setEmbeddingFailureHook: setEmbeddingFailureHookMock,
-}));
-
-vi.mock('@server/graph/structure-holes.js', () => ({
-  setStructureHolesRunner: setStructureHolesRunnerMock,
-}));
-
-vi.mock('../../client/electron/workers/structure-holes-runner.js', () => ({
-  runStructureHolesInWorker: runStructureHolesInWorkerMock,
-  terminateStructureHolesWorker: terminateStructureHolesWorkerMock,
-}));
-
-vi.mock('@server/metabolism/tasks.js', () => ({
-  ALL_TASKS: ALL_TASKS_VAL,
-}));
-
-vi.mock('@server/integrations/logseq/index.js', () => ({
-  stopLogseqIntegration: vi.fn(),
-}));
-
-vi.mock('@server/integrations/shared/note-sources.js', () => ({
-  startAllNoteSources: startAllNoteSourcesMock,
-  stopAllNoteSources: stopAllNoteSourcesMock,
-  stopAllNoteSourcesAsync: stopAllNoteSourcesAsyncMock,
-}));
-
+  noteSuccessfulLLMCall: vi.fn(),
+  setLLMFailureHook: mocks.setLLMFailure,
+  recordLLMFailureForHook: vi.fn(),
+  recordEmbeddingSuccess: vi.fn(),
+  recordEmbeddingFailure: vi.fn(),
+}))
+vi.mock('@server/metabolism/worker-runtime-snapshot.js', () => ({
+  MetabolismWorkerRuntimeRevisionAllocator: class {
+    private revision = 0
+    allocate() { return ++this.revision }
+  },
+}))
+vi.mock('@server/llm/client.js', () => ({ setLLMSuccessHook: mocks.setLLMSuccess }))
+vi.mock('@server/llm/embedding.js', () => ({ setEmbeddingSuccessHook: mocks.setEmbeddingSuccess, setEmbeddingFailureHook: mocks.setEmbeddingFailure }))
+vi.mock('@server/graph/structure-holes.js', () => ({ setStructureHolesRunner: mocks.setStructureRunner }))
+vi.mock('@server/llm/cli/invocation-state.js', () => ({ reconcileCliRuntimeState: mocks.reconcile }))
+vi.mock('@server/llm/cli/runtime-dir.js', () => ({ cleanupStaleCliRuntimeDirectories: mocks.cleanupCli }))
+vi.mock('@server/integrations/shared/note-sources.js', () => ({ startAllNoteSources: mocks.startSources, stopAllNoteSourcesAsync: mocks.stopSources }))
+vi.mock('@server/utils/background-work.js', () => ({ waitForBackgroundWork: mocks.waitBackground }))
 vi.mock('../../client/electron/activity-state.js', () => ({
   getActivityState: () => ({
-    getState: () => activityState.state,
-    onChange: (cb: (s: 'active' | 'idle') => void) => {
-      activityState.listeners.add(cb);
-      return () => activityState.listeners.delete(cb);
+    getState: () => mocks.activity.state,
+    onChange: (listener: (value: 'active' | 'idle') => void) => {
+      mocks.activity.listeners.add(listener)
+      return () => mocks.activity.listeners.delete(listener)
     },
   }),
-}));
+}))
+vi.mock('../../client/electron/scheduler-execution-mode.js', () => ({
+  getSchedulerExecutionMode: () => ({
+    getMode: () => mocks.mode.value,
+    onChange: (listener: (value: 'foreground' | 'background' | 'paused') => void) => {
+      mocks.mode.listeners.add(listener)
+      return () => mocks.mode.listeners.delete(listener)
+    },
+  }),
+}))
+vi.mock('../../client/electron/workers/structure-holes-runner.js', () => ({ runStructureHolesInWorker: vi.fn(async () => []), terminateStructureHolesWorker: mocks.terminateStructure }))
+vi.mock('../../client/electron/runtime/runtime-paths.js', () => ({ getMetabolismWorkerPath: () => '/worker.cjs' }))
+vi.mock('../../client/electron/workers/metabolism-worker-controller.js', () => ({ MetabolismWorkerController: vi.fn() }))
+vi.mock('../../client/electron/workers/metabolism-worker-generation-manager.js', () => ({ MetabolismWorkerGenerationManager: mocks.createManager }))
+vi.mock('../../client/electron/workers/metabolism-worker-startup-handoff.js', () => ({ createMetabolismWorkerStartupHandoffIssuer: mocks.createHandoff }))
+vi.mock('../../client/electron/workers/metabolism-worker-runtime-mutations.js', () => ({
+  bindMetabolismWorkerRuntimeMutationRestart: mocks.bindMutation,
+  watchMetabolismWorkerExternalRuntimeSources: vi.fn(() => mocks.sourceWatcher),
+}))
+vi.mock('../../client/electron/ipc/llm-health.js', () => ({ applyMetabolismWorkerStatusMessage: mocks.applyStatus, clearMetabolismWorkerGenerationStatus: mocks.clearStatus }))
 
-const { startDaemon, stopDaemon } = await import('../../client/electron/daemon.js');
+const daemon = await import('../../client/electron/daemon.js')
 
 beforeEach(() => {
-  loadConfigMock.mockClear();
-  ensureDataDirsMock.mockClear();
-  getDbMock.mockClear();
-  closeDbMock.mockClear();
-  initVecMock.mockClear();
-  enableFileLoggingMock.mockClear();
-  logTimelineEventMock.mockClear();
-  runSchedulerTickMock.mockClear();
-  startAllNoteSourcesMock.mockClear();
-  stopAllNoteSourcesMock.mockClear();
-  stopAllNoteSourcesAsyncMock.mockClear();
-  noteSuccessfulLLMCallMock.mockClear();
-  setLLMFailureHookMock.mockClear();
-  recordLLMFailureForHookMock.mockClear();
-  recordEmbeddingSuccessMock.mockClear();
-  recordEmbeddingFailureMock.mockClear();
-  setLLMSuccessHookMock.mockClear();
-  setEmbeddingSuccessHookMock.mockClear();
-  setEmbeddingFailureHookMock.mockClear();
-  setStructureHolesRunnerMock.mockClear();
-  runStructureHolesInWorkerMock.mockClear();
-  terminateStructureHolesWorkerMock.mockClear();
-  activityState.state = 'active';
-  activityState.listeners.clear();
-  vi.useFakeTimers();
-});
+  for (const value of Object.values(mocks)) {
+    if (typeof value === 'function' && 'mockClear' in value) (value as ReturnType<typeof vi.fn>).mockClear()
+  }
+  mocks.order.length = 0
+  mocks.managers.length = 0
+  mocks.activity.state = 'active'
+  mocks.activity.listeners.clear()
+  mocks.mode.value = 'foreground'
+  mocks.mode.listeners.clear()
+  mocks.mutationRestart = null
+  mocks.db.pragma.mockClear()
+  mocks.issuer.build.mockClear()
+  mocks.issuer.invalidate.mockClear()
+  mocks.initVec.mockImplementation(async () => { mocks.order.push('init-vec'); return 'unavailable' })
+  mocks.startSources.mockImplementation(async () => { mocks.order.push('start-sources') })
+  mocks.stopSources.mockImplementation(async () => { mocks.order.push('stop-sources') })
+  mocks.issuer.build.mockImplementation(() => ({ protocolVersion: 1, lifecycleGeneration: 1 }))
+  mocks.createHandoff.mockImplementation(() => { mocks.order.push('create-handoff'); return mocks.issuer })
+})
 
 afterEach(async () => {
-  // 确保 daemon 停下,跨 case 不残留 timer
-  vi.useRealTimers();
-  await stopDaemon();
-});
+  await daemon.stopDaemon().catch(() => undefined)
+})
 
-describe('startDaemon', () => {
-  it('启动:loadConfig / ensureDataDirs / initVec / startAllNoteSources / runSchedulerTick(初次)全部调用', async () => {
-    await startDaemon();
-    expect(loadConfigMock).toHaveBeenCalledTimes(1);
-    expect(ensureDataDirsMock).toHaveBeenCalledTimes(1);
-    expect(enableFileLoggingMock).toHaveBeenCalledTimes(1);
-    expect(initVecMock).toHaveBeenCalledTimes(1);
-    expect(startAllNoteSourcesMock).toHaveBeenCalledTimes(1);
-    expect(runSchedulerTickMock).toHaveBeenCalledTimes(1); // 启动立即跑一次
-  });
+describe('Electron daemon Worker production path', () => {
+  it('unwinds hooks, note sources and DB when handoff creation fails', async () => {
+    mocks.createHandoff.mockImplementationOnce(() => { throw new Error('handoff failed') })
+    await expect(daemon.startDaemon()).rejects.toThrow('handoff failed')
+    expect(mocks.stopSources).toHaveBeenCalledTimes(1)
+    expect(mocks.terminateStructure).toHaveBeenCalledTimes(1)
+    expect(mocks.closeDb).toHaveBeenCalledTimes(1)
+    expect(mocks.setLLMSuccess).toHaveBeenLastCalledWith(null)
+    expect(mocks.setStructureRunner).toHaveBeenLastCalledWith(null)
+  })
+  it('keeps DB ownership and lets stopDaemon retry when startup note-source drain fails', async () => {
+    mocks.createHandoff.mockImplementationOnce(() => { throw new Error('handoff failed') })
+    mocks.stopSources
+      .mockRejectedValueOnce(new Error('note drain failed'))
+      .mockImplementationOnce(async () => { mocks.order.push('stop-sources') })
+    await expect(daemon.startDaemon()).rejects.toThrow('handoff failed')
+    expect(mocks.closeDb).not.toHaveBeenCalled()
+    await daemon.stopDaemon()
+    expect(mocks.stopSources).toHaveBeenCalledTimes(2)
+    expect(mocks.closeDb).toHaveBeenCalled()
+  })
+  it('creates the handoff and starts the Worker only after mandatory main bootstrap', async () => {
+    await daemon.startDaemon()
+    expect(mocks.db.pragma).toHaveBeenCalledWith('wal_autocheckpoint = 10000')
+    expect(mocks.order).toEqual(expect.arrayContaining([
+      'load-config', 'ensure-data-dirs', 'get-db', 'init-vec', 'start-sources', 'create-handoff', 'worker-start',
+    ]))
+    expect(mocks.order.indexOf('create-handoff')).toBeGreaterThan(mocks.order.indexOf('start-sources'))
+    expect(mocks.order.indexOf('worker-start')).toBeGreaterThan(mocks.order.indexOf('create-handoff'))
+    expect(mocks.createHandoff).toHaveBeenCalledWith(expect.objectContaining({
+      db: mocks.db,
+      dataDir: '/tmp/test-daemon-dir',
+      expectedSchemaVersion: 33,
+      vecCapability: 'unavailable',
+    }))
+    const manager = mocks.managers[0]
+    const buildBootstrap = manager.options.buildBootstrap as (generation: number) => Promise<unknown>
+    await buildBootstrap(1)
+    expect(mocks.issuer.build).toHaveBeenCalledWith(mocks.getConfig(), 1, 1)
+  })
 
-  it('记录 daemon_start timeline 事件,带 task_count', async () => {
-    await startDaemon();
-    expect(logTimelineEventMock).toHaveBeenCalledWith(
-      expect.any(Object),
-      expect.objectContaining({
-        type: 'memory',
-        subtype: 'daemon_start',
-        detail: expect.objectContaining({ task_count: 3 }),
-      }),
-    );
-  });
+  it('contains runtime source acknowledgement failures instead of throwing through main EventEmitter', async () => {
+    await daemon.startDaemon()
+    mocks.sourceWatcher.acknowledgeCurrent.mockImplementationOnce(() => { throw new Error('source raced') })
+    expect(() => mocks.managers[0].emit('message', {
+      protocolVersion: 1,
+      lifecycleGeneration: 1,
+      kind: 'runtime_snapshot_invalidated',
+      changeKind: 'strategy',
+      sourceFingerprint: 'a'.repeat(64),
+    })).not.toThrow()
+    expect(daemon.getMetabolismWorkerDegradedReason()).toContain('source raced')
+  })
 
-  it('幂等:重复 startDaemon 不重复初始化', async () => {
-    await startDaemon();
-    await startDaemon();
-    await startDaemon();
-    expect(loadConfigMock).toHaveBeenCalledTimes(1);
-    expect(initVecMock).toHaveBeenCalledTimes(1);
-    expect(startAllNoteSourcesMock).toHaveBeenCalledTimes(1);
-  });
+  it('does not create a Worker when stop wins while initVec is pending', async () => {
+    let resolveInit: ((value: 'unavailable') => void) | null = null
+    mocks.initVec.mockImplementationOnce(() => new Promise(resolve => { resolveInit = resolve }))
+    const starting = daemon.startDaemon()
+    await Promise.resolve()
+    const stopping = daemon.stopDaemon()
+    resolveInit?.('unavailable')
+    await Promise.all([starting, stopping])
+    expect(mocks.createHandoff).not.toHaveBeenCalled()
+    expect(mocks.createManager).not.toHaveBeenCalled()
+    expect(mocks.closeDb).toHaveBeenCalledTimes(1)
+  })
 
-  it('startAllNoteSources 抛错 → log.error 不冒泡', async () => {
-    startAllNoteSourcesMock.mockRejectedValueOnce(new Error('source init failed'));
-    await expect(startDaemon()).resolves.toBeUndefined();
-  });
+  it('continues shutdown cleanup when the in-flight startup rejects', async () => {
+    let rejectInit: ((error: Error) => void) | null = null
+    mocks.initVec.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectInit = reject }))
+    const starting = daemon.startDaemon()
+    await Promise.resolve()
+    const stopping = daemon.stopDaemon()
+    rejectInit?.(new Error('init failed during shutdown'))
+    await expect(starting).rejects.toThrow('init failed during shutdown')
+    await expect(stopping).resolves.toBeUndefined()
+    expect(mocks.createManager).not.toHaveBeenCalled()
+    expect(mocks.closeDb).toHaveBeenCalled()
+  })
 
-  it('initVec 尚未完成时 stop 会使旧启动失效，且关库后不再安装 hook 或启动笔记源', async () => {
-    let resolveInit: (() => void) | undefined;
-    initVecMock.mockImplementationOnce(() => new Promise<void>(resolve => { resolveInit = resolve; }));
+  it('forwards activity, mode, resume and immediate triggers to the current generation', async () => {
+    await daemon.startDaemon()
+    const manager = mocks.managers[0]
+    mocks.activity.state = 'idle'
+    for (const listener of mocks.activity.listeners) listener('idle')
+    expect(manager.setScheduleContext).toHaveBeenCalledWith('foreground', 'idle')
+    mocks.activity.state = 'active'
+    for (const listener of mocks.activity.listeners) listener('active')
+    expect(manager.trigger).toHaveBeenCalledWith('resume')
+    mocks.mode.value = 'paused'
+    for (const listener of mocks.mode.listeners) listener('paused')
+    expect(manager.setScheduleContext).toHaveBeenCalledWith('paused', 'active')
+    mocks.mode.value = 'background'
+    for (const listener of mocks.mode.listeners) listener('background')
+    expect(manager.trigger).toHaveBeenCalledWith('resume')
+    await daemon.triggerImmediateSchedulerTick()
+    expect(manager.trigger).toHaveBeenCalledWith('immediate')
+  })
 
-    const startPromise = startDaemon();
-    await Promise.resolve();
-    const stopPromise = stopDaemon();
-    expect(closeDbMock).not.toHaveBeenCalled();
+  it('coalesces runtime mutations through generation restart and bridges Worker status', async () => {
+    await daemon.startDaemon()
+    const manager = mocks.managers[0]
+    await mocks.mutationRestart?.('config')
+    expect(manager.requestRestart).toHaveBeenCalledTimes(1)
+    const message = { protocolVersion: 1, lifecycleGeneration: 1, kind: 'health_changed', scope: 'llm' }
+    manager.emit('message', message)
+    await vi.waitFor(() => expect(mocks.applyStatus).toHaveBeenCalledWith(mocks.db, message))
+    manager.emit('clear-generation-tasks', 1)
+    await vi.waitFor(() => expect(mocks.clearStatus).toHaveBeenCalledWith(mocks.db, 1))
+  })
 
-    resolveInit?.();
-    await Promise.all([startPromise, stopPromise]);
-    expect(startAllNoteSourcesMock).not.toHaveBeenCalled();
-    expect(setLLMSuccessHookMock).not.toHaveBeenCalledWith(expect.any(Function));
-    expect(closeDbMock).toHaveBeenCalledTimes(1);
-  });
+  it('counts structured scheduler contention independently of filtered logs', async () => {
+    await daemon.startDaemon()
+    mocks.managers[0].emit('message', {
+      protocolVersion: 1,
+      lifecycleGeneration: 1,
+      kind: 'scheduler_sqlite_contention',
+      reason: 'busy_deferred',
+    })
+    expect(daemon.getMetabolismWorkerExecutionDiagnostics().sqliteContentionEvents).toBe(1)
+  })
 
-  it('初始 runSchedulerTick 抛错 → log.error 不冒泡', async () => {
-    runSchedulerTickMock.mockRejectedValueOnce(new Error('scheduler boom'));
-    await expect(startDaemon()).resolves.toBeUndefined();
-  });
+  it('publishes degraded state without invoking a main scheduler fallback', async () => {
+    await daemon.startDaemon()
+    mocks.managers[0].emit('degraded', new Error('worker failed'))
+    expect(daemon.getMetabolismWorkerDegradedReason()).toBe('worker failed')
+  })
 
-  // ── v0.2.74 L3: Electron daemon 必须 wire 健康度 hook(此前完全漏了,backlog C.H2)──
-  it('L3: 注入 4 个健康度 hook + structure-holes worker runner', async () => {
-    await startDaemon();
-    expect(setLLMSuccessHookMock).toHaveBeenCalledTimes(1);
-    expect(setLLMFailureHookMock).toHaveBeenCalledTimes(1);
-    expect(setEmbeddingSuccessHookMock).toHaveBeenCalledTimes(1);
-    expect(setEmbeddingFailureHookMock).toHaveBeenCalledTimes(1);
-    expect(setStructureHolesRunnerMock).toHaveBeenCalledTimes(1);
-  });
+  it('rolls back daemon-owned resources when Worker startup fails', async () => {
+    const original = mocks.createManager.getMockImplementation()
+    mocks.createManager.mockImplementationOnce(function (this: unknown, options: Record<string, unknown>) {
+      const manager = original!.call(this, options) as (typeof mocks.managers)[number]
+      manager.start.mockRejectedValueOnce(new Error('ready failed'))
+      return manager
+    })
+    await expect(daemon.startDaemon()).rejects.toThrow('ready failed')
+    expect(mocks.issuer.invalidate).toHaveBeenCalledTimes(1)
+    expect(mocks.stopSources).toHaveBeenCalledTimes(1)
+    expect(mocks.closeDb).toHaveBeenCalledTimes(1)
+  })
 
-  it('L3: hook 必须在首次 runSchedulerTick 之前设上(否则首轮 LLM 成功信号丢失)', async () => {
-    const order: string[] = [];
-    setLLMSuccessHookMock.mockImplementationOnce(() => order.push('hook'));
-    runSchedulerTickMock.mockImplementationOnce(async () => { order.push('tick'); });
-    await startDaemon();
-    expect(order).toEqual(['hook', 'tick']);
-  });
+  it('shuts the Worker down before structure, note sources and DB', async () => {
+    await daemon.startDaemon()
+    await daemon.stopDaemon()
+    expect(mocks.order.indexOf('worker-shutdown')).toBeLessThan(mocks.order.indexOf('structure-terminate'))
+    expect(mocks.order.indexOf('structure-terminate')).toBeLessThan(mocks.order.indexOf('stop-sources'))
+    expect(mocks.order.indexOf('stop-sources')).toBeLessThan(mocks.order.indexOf('close-db'))
+    expect(mocks.issuer.invalidate).toHaveBeenCalledTimes(1)
+    expect(mocks.activity.listeners.size).toBe(0)
+    expect(mocks.mode.listeners.size).toBe(0)
+  })
 
-  it('L3: LLM success hook 真正调 noteSuccessfulLLMCall(db)', async () => {
-    await startDaemon();
-    // 取出注入的 success hook 并触发,验证它转发到 noteSuccessfulLLMCall
-    const hook = setLLMSuccessHookMock.mock.calls[0][0] as () => void;
-    hook();
-    expect(noteSuccessfulLLMCallMock).toHaveBeenCalledTimes(1);
-    expect(noteSuccessfulLLMCallMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'mock-db' }));
-  });
-
-  it('L3: structure-holes runner 转发到 runStructureHolesInWorker', async () => {
-    await startDaemon();
-    const runner = setStructureHolesRunnerMock.mock.calls[0][0] as (db: unknown) => unknown;
-    const fakeDb = { name: 'mock-db' };
-    runner(fakeDb);
-    expect(runStructureHolesInWorkerMock).toHaveBeenCalledWith(fakeDb);
-  });
-});
-
-describe('timer interval (activity state)', () => {
-  it("active state 时 60s 间隔触发 runSchedulerTick", async () => {
-    activityState.state = 'active';
-    await startDaemon();
-    runSchedulerTickMock.mockClear();
-
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(runSchedulerTickMock).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(runSchedulerTickMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("idle state 时 10min 间隔触发", async () => {
-    activityState.state = 'idle';
-    await startDaemon();
-    runSchedulerTickMock.mockClear();
-
-    // 60s 不应触发(idle 是 10min)
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(runSchedulerTickMock).not.toHaveBeenCalled();
-
-    // 10min 触发
-    await vi.advanceTimersByTimeAsync(9 * 60_000);
-    expect(runSchedulerTickMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("activity active→idle 切换:timer 重置为 10min 间隔", async () => {
-    activityState.state = 'active';
-    await startDaemon();
-    runSchedulerTickMock.mockClear();
-
-    // 触发 active→idle 事件
-    for (const cb of activityState.listeners) cb('idle');
-    activityState.state = 'idle';
-
-    // 现在是 idle,60s 不触发
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(runSchedulerTickMock).not.toHaveBeenCalled();
-
-    // 推进到 10min(从切换那一刻起)
-    await vi.advanceTimersByTimeAsync(9 * 60_000);
-    expect(runSchedulerTickMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("activity idle→active 切换:立刻 runSchedulerTick 一次(catch up)", async () => {
-    activityState.state = 'idle';
-    await startDaemon();
-    runSchedulerTickMock.mockClear();
-
-    // idle → active 切换:模块内监听器收到 active 会立即跑 runSchedulerTick
-    activityState.state = 'active';
-    for (const cb of activityState.listeners) cb('active');
-
-    // 让 microtask 解决
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(runSchedulerTickMock).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('stopDaemon', () => {
-  it('未启动时 stopDaemon → no-op,不抛', async () => {
-    await expect(stopDaemon()).resolves.toBeUndefined();
-  });
-
-  it('启动后 stopDaemon:清 timer + 取消 activity 订阅 + stopAllNoteSources + closeDb', async () => {
-    await startDaemon();
-    expect(activityState.listeners.size).toBeGreaterThanOrEqual(1);
-
-    await stopDaemon();
-    expect(activityState.listeners.size).toBe(0);
-    expect(stopAllNoteSourcesAsyncMock).toHaveBeenCalledTimes(1);
-    expect(closeDbMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('笔记源 drain 失败时拒绝退出并保留 DB，之后可重试停止', async () => {
-    await startDaemon();
-    stopAllNoteSourcesAsyncMock.mockRejectedValueOnce(new Error('watcher drain failed'));
-
-    await expect(stopDaemon()).rejects.toThrow('watcher drain failed');
-    expect(closeDbMock).not.toHaveBeenCalled();
-
-    await expect(stopDaemon()).resolves.toBeUndefined();
-    expect(closeDbMock).toHaveBeenCalledTimes(1);
-  });
-
-  // ── v0.2.74: stopDaemon 摘 hook + 强杀 worker(防 shutdown race / 线程泄漏)──
-  it('L3/#1: stopDaemon 把 4 个 hook 置 null + 摘 structure-holes runner + terminate worker', async () => {
-    await startDaemon();
-    setLLMSuccessHookMock.mockClear();
-    setLLMFailureHookMock.mockClear();
-    setEmbeddingSuccessHookMock.mockClear();
-    setEmbeddingFailureHookMock.mockClear();
-    setStructureHolesRunnerMock.mockClear();
-
-    await stopDaemon();
-
-    expect(setLLMSuccessHookMock).toHaveBeenCalledWith(null);
-    expect(setLLMFailureHookMock).toHaveBeenCalledWith(null);
-    expect(setEmbeddingSuccessHookMock).toHaveBeenCalledWith(null);
-    expect(setEmbeddingFailureHookMock).toHaveBeenCalledWith(null);
-    expect(setStructureHolesRunnerMock).toHaveBeenCalledWith(null);
-    expect(terminateStructureHolesWorkerMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('stop 后再 stop → 不重复清理', async () => {
-    await startDaemon();
-    await stopDaemon();
-    await stopDaemon();
-    await stopDaemon();
-    expect(stopAllNoteSourcesAsyncMock).toHaveBeenCalledTimes(1);
-    expect(closeDbMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('记录 daemon_stop timeline 事件', async () => {
-    await startDaemon();
-    logTimelineEventMock.mockClear();
-    await stopDaemon();
-    expect(logTimelineEventMock).toHaveBeenCalledWith(
-      expect.any(Object),
-      expect.objectContaining({ type: 'memory', subtype: 'daemon_stop' }),
-    );
-  });
-
-  it('logTimelineEvent 抛错时 stopDaemon 仍完成清理(DB 已关情况)', async () => {
-    await startDaemon();
-    logTimelineEventMock.mockImplementationOnce(() => {
-      throw new Error('DB closed already');
-    });
-
-    await expect(stopDaemon()).resolves.toBeUndefined();
-    expect(closeDbMock).toHaveBeenCalled();
-  });
-
-  it('stop 后 timer 不再触发 runSchedulerTick', async () => {
-    await startDaemon();
-    await stopDaemon();
-    runSchedulerTickMock.mockClear();
-
-    await vi.advanceTimersByTimeAsync(10 * 60_000); // idle 间隔
-    expect(runSchedulerTickMock).not.toHaveBeenCalled();
-  });
-
-  it('F1: stopDaemon 等已 fire 的 in-flight tick 跑完后再 closeDb', async () => {
-    // mock runSchedulerTick 第二次调用(60s timer fired)返个 pending promise
-    let resolveTick: (() => void) | undefined;
-    const pendingTick = new Promise<void>((resolve) => { resolveTick = resolve });
-    runSchedulerTickMock.mockImplementationOnce(async () => undefined); // initial(立即 resolve)
-    runSchedulerTickMock.mockImplementationOnce(() => pendingTick);     // timer-fired(挂起)
-
-    await startDaemon();
-    // 跑到 timer 触发的那个 tick(注意:vi.useFakeTimers 下 advance 会同步触发 setInterval cb)
-    await vi.advanceTimersByTimeAsync(60_000);
-
-    // 此时 tick 还没 resolve → stopDaemon 应当等
-    // 用 real timers 验证"等待"(避免 fake timer 把 5s timeout 也提前)
-    vi.useRealTimers();
-
-    const stopP = stopDaemon();
-    let stopped = false;
-    stopP.then(() => { stopped = true });
-
-    // 给 stopDaemon 一些时间检查 tickPromise
-    await new Promise(r => setTimeout(r, 50));
-    expect(stopped).toBe(false);
-    // closeDb 还没被调
-    expect(closeDbMock).not.toHaveBeenCalled();
-
-    // 让 tick 完成
-    resolveTick?.();
-    await stopP;
-    expect(stopped).toBe(true);
-    expect(closeDbMock).toHaveBeenCalledTimes(1);
-  });
-});
+  it('keeps the DB open when note-source drain fails', async () => {
+    await daemon.startDaemon()
+    mocks.stopSources.mockRejectedValueOnce(new Error('drain failed'))
+    await expect(daemon.stopDaemon()).rejects.toThrow('drain failed')
+    expect(mocks.closeDb).not.toHaveBeenCalled()
+    await daemon.stopDaemon()
+    expect(mocks.closeDb).toHaveBeenCalledTimes(1)
+  })
+})

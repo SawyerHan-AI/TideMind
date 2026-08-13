@@ -1,0 +1,42 @@
+{
+  "protocolVersion": 1,
+  "status": "frozen-before-worker-results",
+  "scope": "local packaged Electron metabolism Worker candidate; not a release SLO",
+  "requiredWorkloads": [
+    "focused-renderer-ipc-writes",
+    "note-source-writes",
+    "cloud-outbox-writes",
+    "background-full-backlog",
+    "foreground-single-attempt",
+    "suspend-resume",
+    "worker-owner-terminate-reacquire"
+  ],
+  "environment": {
+    "cpuUtilizationMax": 0.5,
+    "cpuSampleMinimumWindowMs": 1000
+  },
+  "eventLoopDelayMs": {
+    "p95Max": 25,
+    "p99Max": 50,
+    "absoluteMax": 200,
+    "p99ImprovementVsMainBaselineMin": 0.5
+  },
+  "foregroundWriterDelayMs": {
+    "rendererIpcP99Max": 75,
+    "rendererIpcAbsoluteMax": 250,
+    "noteSourceP99Max": 100,
+    "noteSourceAbsoluteMax": 500,
+    "cloudOutboxP99Max": 100,
+    "cloudOutboxAbsoluteMax": 500
+  },
+  "throughput": {
+    "workerVsMainBaselineRatioMin": 0.85
+  },
+  "correctness": {
+    "unexpectedSqliteBusyOrLockedMax": 0,
+    "concurrentSchedulerPassesMax": 1,
+    "mainThreadSchedulerTaskExecutionsMax": 0,
+    "orphanCliProcessGroupsAfterShutdownMax": 0
+  },
+  "gateRule": "Any failure keeps production activation blocked. Rerun the same workload and thresholds after a targeted fix."
+}

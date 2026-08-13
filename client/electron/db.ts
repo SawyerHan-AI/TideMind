@@ -788,6 +788,10 @@ export function getClientDb(): Database.Database {
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
   db.pragma('busy_timeout = 10000')
+  // The daemon normally owns frequent PASSIVE maintenance so foreground
+  // commits do not inherit it. Keep a high, bounded per-connection fallback in
+  // case daemon startup/degradation removes that owner while UI writes remain.
+  db.pragma('wal_autocheckpoint = 10000')
 
   // Cloud sync 的本地 outbox/dead-letter 表。放在核心 schema 之后而不是
   // core schema 里,是因为 outbox 属于客户端 sync 基础设施。

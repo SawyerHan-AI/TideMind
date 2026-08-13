@@ -1,6 +1,7 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'v*'
@@ -10,14 +11,48 @@ permissions:
 
 jobs:
   build-mac:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - uses: actions/setup-node@v6
+      - name: Bind release tag to package version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          package_version="$(node -p "require('./client/package.json').version")"
+          expected_tag="v${package_version}"
+          if [ "$GITHUB_REF_NAME" != "$expected_tag" ]; then
+            echo "::error::release tag $GITHUB_REF_NAME does not match client package version $package_version"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
           cache: 'npm'
+
+      - name: Require Apple signing and notarization secrets
+        env:
+          MAC_CERTIFICATE: ${{ secrets.MAC_CERTIFICATE }}
+          MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for name in MAC_CERTIFICATE MAC_CERTIFICATE_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::required Apple signing secret $name is missing"
+              exit 1
+            fi
+          done
 
       - name: Install root dependencies
         run: npm ci
@@ -38,13 +73,23 @@ jobs:
       - name: Build client
         run: cd client && npm run build
 
-      # 打包 macOS:x64 + arm64 双架构。
-      # Code signing + notarize 由 env 控制:
-      #   - 没设 secrets 时:electron-builder 跳过签名 + 跳过公证,产出无签名 DMG
-      #     (用户下载装 app 会弹"无法打开,身份不明的开发者",需手动右键打开)
-      #   - 设了 5 个 secrets 时:自动签名 + 公证(Apple 服务器审核 ~2-5 分钟)
+      - name: Run frozen packaged metabolism performance gate
+        if: matrix.arch == 'arm64'
+        run: npm run measure:metabolism:packaged -- --output "$RUNNER_TEMP/metabolism-performance-receipt.json"
+
+      - name: Retain packaged metabolism performance receipt
+        if: matrix.arch == 'arm64'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: metabolism-performance-receipt-${{ github.sha }}
+          path: ${{ runner.temp }}/metabolism-performance-receipt.json
+          if-no-files-found: error
+          retention-days: 30
+
+      # 每个架构都在同架构runner上安装/编译native依赖，禁止用文件名冒充架构。
+      # 五个Apple secret由上面的preflight强制要求；缺任一个都不能产出release资产。
       #
-      # 需要设的 GitHub Secrets(全部缺一不可,缺其中任一会降级到无签名):
+      # 需要设的 GitHub Secrets（全部缺一不可，缺其中任一立即失败）:
       #   MAC_CERTIFICATE                  Developer ID Application .p12 文件的 base64
       #                                    (本地 openssl base64 -i cert.p12 | pbcopy)
       #   MAC_CERTIFICATE_PASSWORD         导出 .p12 时设的密码
@@ -54,7 +99,7 @@ jobs:
       #
       # 详细配置步骤见 SECURITY.md §Apple Code Signing。
       - name: Package macOS
-        run: cd client && npx electron-builder --mac --x64 --arm64 --publish never
+        run: cd client && npx electron-builder --mac --${{ matrix.arch }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.MAC_CERTIFICATE }}
@@ -63,14 +108,77 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      # 上传到 GitHub Release
-      #
-      # generate_release_notes 必须是 false:release-checklist 要求手写
-      # Release Notes,防 auto-generated 把 sync commit message 里意外泄露
-      # 闭源信息(pro/ 下的内容)发布出去。发版后由人(或 Claude)用
-      # `gh release edit --notes-file` 写正式 notes。
-      - name: Upload Release Assets
-        uses: softprops/action-gh-release@v3
+      - name: Bind release Worker to the performance receipt
+        if: matrix.arch == 'arm64'
+        env:
+          RECEIPT_PATH: ${{ runner.temp }}/metabolism-performance-receipt.json
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs')
+          const crypto = require('node:crypto')
+          const path = require('node:path')
+          const receipt = JSON.parse(fs.readFileSync(process.env.RECEIPT_PATH, 'utf8'))
+          if (receipt.provenance?.gitHead !== process.env.GITHUB_SHA) throw new Error('performance receipt SHA mismatch')
+          if (receipt.thresholdEvaluation?.status !== 'passed') throw new Error('performance receipt did not pass')
+          const candidates = [
+            'client/release/mac-arm64/Tide Mind.app/Contents/Resources/app.asar.unpacked/out/bin/metabolism-worker.cjs',
+            'client/release/mac/Tide Mind.app/Contents/Resources/app.asar.unpacked/out/bin/metabolism-worker.cjs',
+          ]
+          const worker = candidates.find(fs.existsSync)
+          if (!worker) throw new Error('release Worker bundle is missing')
+          const actual = crypto.createHash('sha256').update(fs.readFileSync(worker)).digest('hex')
+          if (actual !== receipt.provenance.sourceWorkerSha256) throw new Error('release Worker differs from performance candidate')
+          NODE
+
+      - name: Verify signed/notarized package and native architecture
+        run: node scripts/verify-mac-release-assets.mjs --release-dir client/release --arch ${{ matrix.arch }}
+
+      - name: Run packaged Worker and CLI teardown smoke
+        run: node scripts/smoke-packaged-metabolism-worker.mjs --arch ${{ matrix.arch }}
+
+      - name: Rename architecture metadata
+        run: mv client/release/latest-mac.yml client/release/latest-mac-${{ matrix.arch }}.yml
+
+      - name: Stage architecture assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mac-release-${{ matrix.arch }}
+          path: |
+            client/release/*.dmg
+            client/release/*.zip
+            client/release/*.blockmap
+            client/release/latest-mac-${{ matrix.arch }}.yml
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-draft:
+    if: github.event_name == 'push'
+    needs: build-mac
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install metadata merger dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Download verified architecture assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: mac-release-*
+          path: client/release
+          merge-multiple: true
+
+      - name: Merge and verify update metadata
+        run: node scripts/merge-mac-update-metadata.mjs client/release
+
+      # generate_release_notes必须为false，避免公开Release泄露闭源commit信息。
+      - name: Upload verified Release assets as Draft
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           files: |
             client/release/*.dmg

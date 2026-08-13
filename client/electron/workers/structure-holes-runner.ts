@@ -101,10 +101,10 @@ export function runStructureHolesInWorker(db: Database.Database): Promise<Struct
   return inflight
 }
 
-/** 停 daemon / 退出时调用:强杀在跑的 worker,避免线程泄漏。 */
-export function terminateStructureHolesWorker(): void {
-  if (activeWorker) {
-    void activeWorker.terminate()
-    activeWorker = null
-  }
+/** 停 daemon / 退出时调用:等待线程真实退出，避免sidecar/read connection泄漏。 */
+export async function terminateStructureHolesWorker(): Promise<void> {
+  const worker = activeWorker
+  if (!worker) return
+  activeWorker = null
+  await worker.terminate()
 }

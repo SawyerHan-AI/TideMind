@@ -196,24 +196,18 @@ describe('secure-store: parseForceLegacy 宽松匹配 (audit-2 MEDIUM 修复)', 
   // 严格 === '1' 是设计上放弃的——紧急回退应该尽量宽容。
 
   it('"1" / "true" / "yes" / "TRUE" / "On" → 视为开启 legacy', async () => {
+    const { parseForceLegacy } = await loadSecureStoreReal();
     for (const v of ['1', 'true', 'yes', 'TRUE', 'On']) {
-      setForceLegacy(v);
-      const m = await loadSecureStoreReal();
-      expect(m.secureStore.isUsingNative(),
-        `forceLegacy=${v} should disable native`).toBe(false);
+      expect(parseForceLegacy(v), `forceLegacy=${v} should enable legacy`).toBe(true);
     }
   });
 
   it('"0" / "false" / "no" / "off" / "" → 不视为开启 legacy(空字符串等价未设置)', async () => {
-    // 注:darwin native available 时 isUsingNative=true(本机 native binary 实在);
-    // 这条 case 检查 parseForceLegacy 不会把 "0"/"false" 等错认为开启 legacy。
+    const { parseForceLegacy } = await loadSecureStoreReal();
     for (const v of ['0', 'false', 'no', 'off', '']) {
-      setForceLegacy(v);
-      const m = await loadSecureStoreReal();
-      // forceLegacy 不开启 → 走 native path → isUsingNative=true(因本机 native 可用)
-      expect(m.secureStore.isUsingNative(),
-        `forceLegacy=${v} should NOT disable native`).toBe(true);
+      expect(parseForceLegacy(v), `forceLegacy=${v} should not enable legacy`).toBe(false);
     }
+    expect(parseForceLegacy(undefined)).toBe(false);
   });
 });
 

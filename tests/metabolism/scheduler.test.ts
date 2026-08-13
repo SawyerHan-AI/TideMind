@@ -208,6 +208,19 @@ describe('runSchedulerTick', () => {
     expect(reClaim.claimed).toBe(true);
   });
 
+  it('任务已有分批effect时保留claim，阻止立即重放', async () => {
+    const task = makeTask({
+      id: 'partial-effect-task',
+      execute: vi.fn().mockRejectedValue(
+        Object.assign(new Error('later batch failed'), { code: 'partial_task_effect' }),
+      ),
+    });
+
+    const executed = await runSchedulerTick(db, [task]);
+    expect(executed).not.toContain('partial-effect-task');
+    expect(tryClaimTask(db, 'partial-effect-task', 1).claimed).toBe(false);
+  });
+
   it('任务抛 TypeError(程序员 bug) → log.error 含 programmer bug,daemon 不中断', async () => {
     // F3 修复:scheduler catch 必须能区分 TypeError/ReferenceError/SyntaxError
     // (程序员 bug)和业务错误,前者必须 log.error('programmer bug ...') 提升 visibility,

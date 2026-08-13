@@ -2,6 +2,10 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { getConfig, getDataDir } from '../config.js';
 import { createLogger } from '../utils/logger.js';
+import {
+  getMetabolismWorkerRuntimeContext,
+  getMetabolismWorkerVertexCredential,
+} from '../metabolism/worker-runtime-context.js';
 
 const log = createLogger('embedding');
 
@@ -98,10 +102,12 @@ async function getVertexToken(timeoutMs?: number): Promise<string> {
   if (!inflightTokenFetch) {
     const gen = tokenGeneration;
     inflightTokenFetch = (async () => {
-      const credPath = path.join(getDataDir(), 'vertex-credentials.json');
       const { GoogleAuth } = await import('google-auth-library');
+      const frozenCredential = getMetabolismWorkerVertexCredential();
       const auth = new GoogleAuth({
-        keyFile: credPath,
+        ...(frozenCredential
+          ? { credentials: frozenCredential }
+          : { keyFile: path.join(getDataDir(), 'vertex-credentials.json') }),
         scopes: ['https://www.googleapis.com/auth/cloud-platform'],
       });
       const client = await auth.getClient();
@@ -148,6 +154,15 @@ async function getGeminiVertexEmbedding(text: string, timeoutMs: number = 30_000
   const projectId = config.vertex.project_id;
 
   if (!projectId) {
+    const frozenCredential = getMetabolismWorkerVertexCredential();
+    if (getMetabolismWorkerRuntimeContext()) {
+      const frozenProjectId = frozenCredential?.project_id;
+      if (!frozenProjectId) {
+        log.error('Worker generation 的 Vertex AI 凭证未配置 project_id');
+        return null;
+      }
+      return callVertexEmbedding(text, frozenProjectId, region, timeoutMs);
+    }
     // 尝试从凭证文件读取
     const credPath = path.join(getDataDir(), 'vertex-credentials.json');
     if (!fs.existsSync(credPath)) {

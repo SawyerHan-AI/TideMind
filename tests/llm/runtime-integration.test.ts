@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { configState, runCliLLMMock } = vi.hoisted(() => ({
   configState: {
@@ -81,6 +81,10 @@ import {
   recordConnectionSuccessBestEffort,
   setUsageDb,
 } from '../../src/llm/client.js';
+import {
+  clearMetabolismWorkerRuntimeContext,
+  installMetabolismWorkerRuntimeContext,
+} from '../../src/metabolism/worker-runtime-context.js';
 
 function freshDb(): Database.Database {
   const db = new Database(':memory:');
@@ -117,6 +121,7 @@ beforeEach(() => {
   configState.current.llm.standard_provider = undefined;
   configState.current.llm.standard_model = 'claude-sonnet-4-6';
 });
+afterEach(() => clearMetabolismWorkerRuntimeContext());
 
 describe('显式 connection + model 路由', () => {
   it('连接缺失时失败，不回退到已配置的 legacy Anthropic', () => {
@@ -158,6 +163,27 @@ describe('显式 connection + model 路由', () => {
     expect(() => resolveLLMRoute('standard', db)).toThrowError(
       expect.objectContaining({ kind: 'connection_archived', connectionId }),
     );
+    db.close();
+  });
+
+  it('Worker generation在连接物理删除后仍使用完整冻结route投影完成drain', () => {
+    const db = freshDb();
+    const connectionId = configureCliConnection(db, 'claude-cli');
+    configState.current.llm.standard_connection = connectionId;
+    configState.current.llm.standard_provider = 'claude-cli';
+    installMetabolismWorkerRuntimeContext({
+      runtimeRevision: 1,
+      config: configState.current,
+      connectionSnapshot: { connections: [{
+        id: connectionId, name: 'Local claude-cli', providerType: 'claude-cli', archived: false,
+        status: 'online', statusReason: null, candidateModels: JSON.stringify(['claude-sonnet-4-6']),
+        availableModels: JSON.stringify(['claude-sonnet-4-6']), validationFingerprint: 'validated-fixture',
+        authFingerprint: null, modelValidationJson: null, credentials: {},
+      }] },
+      strategySnapshot: {}, credentials: {}, dataDir: configState.current.general.data_dir,
+    });
+    db.prepare('DELETE FROM model_connections WHERE id = ?').run(connectionId);
+    expect(resolveLLMRoute('standard', db)).toMatchObject({ connectionId, providerType: 'claude-cli', status: 'online' });
     db.close();
   });
 });

@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { LLM_PROVIDER_TYPES } from '../src/llm/provider-types.js';
 
 vi.mock('../../src/strategy/loader.js', () => ({
   loadStrategies: () => {},
@@ -44,13 +45,8 @@ describe('getConfig', () => {
 
   it('llm provider 为有效值', () => {
     const config = getConfig();
-    // 白名单与 src/types.ts AppConfig.llm.provider 及 client/electron/ipc/_validate.ts
-    // ALLOWED_PROVIDER_TYPES 保持一致。原值漏 'ollama' 和 'openai-compatible'
-    // 是 stale 测试债 —— 之前 config.toml 写了真实合法值 'openai-compatible'
-    // 这条断言就 fail。TODO: 把 union 抽成 src/types.ts 的 const 再 import,
-    // 避免 5 处重复(types.ts 4 处 + _validate.ts 1 处 + 这里 1 处)。
-    expect(['anthropic', 'vertex', 'gemini', 'ollama', 'openai-compatible'])
-      .toContain(config.llm.provider);
+    // 与core和Electron共同引用同一份canonical运行时白名单。
+    expect(LLM_PROVIDER_TYPES).toContain(config.llm.provider);
   });
 
   it('默认 embedding dimensions 为 3072', () => {
