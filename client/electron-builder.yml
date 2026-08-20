@@ -56,6 +56,9 @@ mac:
   gatekeeperAssess: false
 
 dmg:
+  # Gatekeeper assesses the outermost distribution container. Sign the DMG
+  # with the same Developer ID identity before the workflow notarizes/staples it.
+  sign: true
   title: Tide Mind
   iconSize: 80
   contents:

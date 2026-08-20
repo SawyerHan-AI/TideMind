@@ -21,7 +21,11 @@ jobs:
       # The production-only secure-store-mac package correctly rejects Linux,
       # so bypass platform checks without running any native install scripts.
       - run: cd client && npm ci --force --ignore-scripts
+      # Tests import Electron and assert the generated Worker bundle. Recreate
+      # only those two deterministic artifacts after suppressing all scripts.
+      - run: cd client && node node_modules/electron/install.js
       - run: npm run build
+      - run: cd client && npm run build:bin
       - run: npm test
 
       - name: Security audit

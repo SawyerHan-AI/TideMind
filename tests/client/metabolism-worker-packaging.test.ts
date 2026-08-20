@@ -30,6 +30,7 @@ describe('metabolism Worker packaged candidate', () => {
     expect(workflow).toContain('xcrun notarytool submit "$dmg"')
     expect(workflow).toContain('xcrun stapler staple "$dmg"')
     expect(workflow).toContain('refresh-mac-dmg-update-metadata.mjs')
+    expect(builder).toMatch(/dmg:\s*\n(?:\s*#.*\n)*\s*sign:\s*true/)
     expect(workflow.indexOf('Notarize and staple architecture DMG'))
       .toBeLessThan(workflow.indexOf('Verify signed/notarized package and native architecture'))
     expect(builder).not.toContain('arch: [x64, arm64]')
