@@ -37,8 +37,8 @@ export function materializeMetabolismPerformanceRunner(source, repoRoot) {
   )
   materialized = replaceExactlyOnce(
     materialized,
-    "import { createCpuUtilizationSampler } from './cpu-utilization-sampler.mjs'",
-    `import { createCpuUtilizationSampler } from ${JSON.stringify(pathToFileURL(path.join(canonicalRepoRoot, 'scripts', 'cpu-utilization-sampler.mjs')).href)}`,
+    "import {\n  createCpuUtilizationSampler,\n  externalCpuUtilizationBetween,\n} from './cpu-utilization-sampler.mjs'",
+    `import { createCpuUtilizationSampler, externalCpuUtilizationBetween } from ${JSON.stringify(pathToFileURL(path.join(canonicalRepoRoot, 'scripts', 'cpu-utilization-sampler.mjs')).href)}`,
     'CPU utilization sampler',
   )
   return materialized

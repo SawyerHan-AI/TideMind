@@ -6,7 +6,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { materializeMetabolismPerformanceRunner } from './materialize-metabolism-performance-runner.mjs'
-import { createCpuUtilizationSampler } from './cpu-utilization-sampler.mjs'
+import {
+  createCpuUtilizationSampler,
+  externalCpuUtilizationBetween,
+} from './cpu-utilization-sampler.mjs'
 
 const repoRoot = path.resolve(new URL('..', import.meta.url).pathname)
 const clientDir = path.join(repoRoot, 'client')
@@ -54,7 +57,10 @@ function assertExactHead(expectedHead) {
 async function waitForStableHost() {
   const deadline = performance.now() + 15 * 60_000
   let consecutiveSamples = 0
-  const sampler = createCpuUtilizationSampler({ minimumWindowMs: cpuSampleMinimumWindowMs })
+  const sampler = createCpuUtilizationSampler({
+    minimumWindowMs: cpuSampleMinimumWindowMs,
+    calculate: externalCpuUtilizationBetween,
+  })
   while (performance.now() < deadline) {
     const utilization = await sampler.sample()
     if (utilization <= maximumCpuUtilization) consecutiveSamples++

@@ -126,6 +126,27 @@ describe('runSynapticScaling', () => {
     expect(yieldCount).toBe(3);
   });
 
+  it('每五个正常链接批次给前台SQLite waiter一个2ms公平窗口', async () => {
+    const from = seedNode(db, { heat: 0.005 });
+    const to = seedNode(db, { heat: 0.005 });
+    for (let index = 0; index < 501; index++) {
+      createLink(db, {
+        from_id: from.id,
+        to_id: to.id,
+        relation: [{ type: 'supports', confidence: 0.7 }],
+        strength: 0.8,
+      });
+    }
+    const fairnessPauses: number[] = [];
+
+    await runSynapticScalingCooperatively(db, async () => {}, {
+      linkBatchDurationMs: () => 0,
+      pauseForFairness: async delayMs => { fairnessPauses.push(delayMs); },
+    });
+
+    expect(fairnessPauses).toEqual([2]);
+  });
+
   it('链接清册后发生的前台编辑由批内current-row重读保护', async () => {
     const from = seedNode(db, { heat: 0.005 });
     const to = seedNode(db, { heat: 0.005 });

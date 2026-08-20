@@ -43,6 +43,7 @@ function isCloudSyncActive(db: Database.Database): boolean {
 function* runSynapticScalingBatches(db: Database.Database, testHooks?: {
   beforeFirstLinkBatch?: () => void;
   beforeTimelineEvent?: () => void;
+  linkBatchDurationMs?: () => number;
 }): Generator<'node' | 'link' | 'link_slow', {
   decayed: number;
 }, void> {
@@ -204,7 +205,7 @@ function* runSynapticScalingBatches(db: Database.Database, testHooks?: {
         else linkDecayed++;
       }
     }).immediate();
-    const batchDurationMs = Date.now() - batchStartedAt;
+    const batchDurationMs = testHooks?.linkBatchDurationMs?.() ?? (Date.now() - batchStartedAt);
     if (batchDurationMs > 50) log.warn(`link decay batch transaction took ${batchDurationMs}ms`);
     yield batchDurationMs > 10 ? 'link_slow' : 'link';
   }
@@ -246,33 +247,43 @@ const yieldToImmediate = (): Promise<void> => new Promise(resolve => setImmediat
 export async function runSynapticScalingCooperatively(
   db: Database.Database,
   yieldBetweenBatches: () => Promise<void> = yieldToImmediate,
-  testHooks?: { beforeFirstLinkBatch?: () => void; beforeTimelineEvent?: () => void },
+  testHooks?: {
+    beforeFirstLinkBatch?: () => void;
+    beforeTimelineEvent?: () => void;
+    linkBatchDurationMs?: () => number;
+    pauseForFairness?: (delayMs: number) => Promise<void>;
+  },
 ): Promise<{ decayed: number }> {
   const batches = runSynapticScalingBatches(db, testHooks);
   let committedEffectBatch = false;
   let linkBatchesSinceFairnessPause = 0;
+  const LINK_BATCHES_PER_FAIRNESS_PAUSE = 5;
+  const NORMAL_LINK_FAIRNESS_PAUSE_MS = 2;
+  const SLOW_LINK_FAIRNESS_PAUSE_MS = 5;
+  const pauseForFairness = testHooks?.pauseForFairness
+    ?? ((delayMs: number) => new Promise<void>(resolve => setTimeout(resolve, delayMs)));
   try {
     let step = batches.next();
     while (!step.done) {
       // Reaching a yield means the generator has committed one node or link batch.
       committedEffectBatch = true;
       // The transaction has ended before this cooperative yield. setImmediate
-      // keeps Worker throughput high, while a 5ms pause after a slow batch or
-      // every twenty normal 100-link batches gives a foreground SQLite waiter a
-      // OS scheduling window and prevents this Worker from reacquiring through
-      // hundreds of batches. Combining purge+decay into one statement keeps the
-      // added fairness budget below the frozen throughput margin.
+      // keeps Worker throughput high, while a bounded timer pause after a slow
+      // batch or every five normal 100-link batches gives a foreground SQLite
+      // waiter an OS scheduling window and prevents this Worker from repeatedly
+      // reacquiring the write lock. Five normal batches cap the pre-pause lock
+      // convoy below the frozen foreground p99 budget; the shorter 2ms normal
+      // pause keeps the total 20k-link fairness budget close to the old 20x5ms
+      // cadence. A slow batch still gets the full 5ms recovery window.
       await yieldBetweenBatches();
       if (
         (step.value === 'link' || step.value === 'link_slow')
-        && (step.value === 'link_slow' || ++linkBatchesSinceFairnessPause === 20)
+        && (step.value === 'link_slow' || ++linkBatchesSinceFairnessPause === LINK_BATCHES_PER_FAIRNESS_PAUSE)
       ) {
         linkBatchesSinceFairnessPause = 0;
-        // SQLite's blocking busy handler backs off in millisecond-scale steps;
-        // a 1ms timer can let this Worker reacquire before the foreground
-        // connection wakes. Five milliseconds is long enough for that retry
-        // while adding at most ~50ms to the 20k-link frozen fixture.
-        await new Promise(resolve => setTimeout(resolve, 5));
+        await pauseForFairness(step.value === 'link_slow'
+          ? SLOW_LINK_FAIRNESS_PAUSE_MS
+          : NORMAL_LINK_FAIRNESS_PAUSE_MS);
       }
       step = batches.next();
     }

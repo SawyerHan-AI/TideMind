@@ -10,6 +10,7 @@ import { ALL_TASKS } from '../src/metabolism/tasks.js'
 import {
   cpuEnvironmentUtilizationsBetween,
   createCpuUtilizationSampler,
+  externalCpuUtilizationBetween,
 } from './cpu-utilization-sampler.mjs'
 import { tryAcquireSchedulerRunLock } from '../src/metabolism/scheduler-run-lock.js'
 import { createNoteSource, updateNoteSource } from '../src/integrations/shared/note-sources.js'
@@ -131,7 +132,10 @@ async function main(): Promise<void> {
     || !Number.isSafeInteger(cpuSampleMinimumWindowMs) || cpuSampleMinimumWindowMs < 500) {
     throw new Error('invalid frozen CPU utilization sample window')
   }
-  const cpuSampler = createCpuUtilizationSampler({ minimumWindowMs: cpuSampleMinimumWindowMs })
+  const cpuSampler = createCpuUtilizationSampler({
+    minimumWindowMs: cpuSampleMinimumWindowMs,
+    calculate: externalCpuUtilizationBetween,
+  })
   const sampleCpuUtilization = async (): Promise<number> => {
     const utilization = await cpuSampler.sample()
     cpuUtilizationSamples.push(utilization)
