@@ -174,6 +174,15 @@ describe('runSchedulerTick', () => {
     expect(task.execute).toHaveBeenCalledOnce();
   });
 
+  it('把动态任务执行上下文原样传给已claim任务', async () => {
+    const task = makeTask({ id: 'context-aware' });
+    const context = { isForeground: () => true };
+
+    await runSchedulerTick(db, [task], { taskExecutionContext: context });
+
+    expect(task.execute).toHaveBeenCalledWith(db, context);
+  });
+
   it('未到期的任务不执行', async () => {
     const task = makeTask({ id: 'skip-me', defaultIntervalMinutes: 9999 });
     // 先标记为刚运行过

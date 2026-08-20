@@ -281,6 +281,9 @@ async function boot(): Promise<void> {
       await scheduler.runSchedulerTick(db, tasks.ALL_TASKS, {
         continueAfterAttempt: () => !stopping && !runtimeSnapshotInvalidated && scheduleContext?.mode === 'background',
         yieldAfterAttempt: () => new Promise(resolve => setImmediate(resolve)),
+        taskExecutionContext: {
+          isForeground: () => scheduleContext?.mode === 'foreground',
+        },
         observer: event => {
           if (event.type === 'tick_started') post({ kind: 'scheduler_pass_started', executionThreadId: threadId })
           if (event.type === 'tick_finished') post({ kind: 'scheduler_pass_finished', executionThreadId: threadId })

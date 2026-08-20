@@ -84,7 +84,7 @@ describe('runSynapticScaling', () => {
     });
 
     expect(result.decayed).toBe(250);
-    expect(yieldCount).toBe(3);
+    expect(yieldCount).toBe(2);
     expect(eventLoopAdvanced).toBe(true);
   });
 
@@ -95,16 +95,16 @@ describe('runSynapticScaling', () => {
     const result = await runSynapticScalingCooperatively(db, async () => {
       yieldCount++;
       if (yieldCount !== 1) return;
-      db.prepare('UPDATE nodes SET archived = 1, heat = 0.02 WHERE id = ?').run(nodes[150].id);
-      db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(nodes[151].id);
-      db.prepare('DELETE FROM nodes WHERE id = ?').run(nodes[152].id);
-      db.prepare('UPDATE nodes SET connectivity = 1 WHERE id = ?').run(nodes[220].id);
+      db.prepare('UPDATE nodes SET archived = 1, heat = 0.02 WHERE id = ?').run(nodes[220].id);
+      db.prepare('UPDATE nodes SET is_superseded = 1, heat = 0.01 WHERE id = ?').run(nodes[221].id);
+      db.prepare('DELETE FROM nodes WHERE id = ?').run(nodes[222].id);
+      db.prepare('UPDATE nodes SET connectivity = 1 WHERE id = ?').run(nodes[240].id);
     });
 
     expect(result.decayed).toBe(247);
-    expect(db.prepare('SELECT heat FROM nodes WHERE id = ?').pluck().get(nodes[150].id)).toBe(0.02);
-    expect(db.prepare('SELECT heat FROM nodes WHERE id = ?').pluck().get(nodes[151].id)).toBe(0.01);
-    expect(db.prepare('SELECT heat FROM nodes WHERE id = ?').pluck().get(nodes[220].id)).toBeCloseTo(0.99, 5);
+    expect(db.prepare('SELECT heat FROM nodes WHERE id = ?').pluck().get(nodes[220].id)).toBe(0.02);
+    expect(db.prepare('SELECT heat FROM nodes WHERE id = ?').pluck().get(nodes[221].id)).toBe(0.01);
+    expect(db.prepare('SELECT heat FROM nodes WHERE id = ?').pluck().get(nodes[240].id)).toBeCloseTo(0.99, 5);
   });
 
   it('链接阶段按current-row短事务分批并在批间yield', async () => {
@@ -123,13 +123,25 @@ describe('runSynapticScaling', () => {
       yieldCount++;
     });
 
-    expect(yieldCount).toBe(3);
+    expect(yieldCount).toBe(2);
+  });
+
+  it('每五个正常节点批次给前台SQLite waiter一个2ms公平窗口', async () => {
+    for (let index = 0; index < 1001; index++) seedNode(db, { heat: 1 });
+    const fairnessPauses: number[] = [];
+
+    await runSynapticScalingCooperatively(db, async () => {}, {
+      nodeBatchDurationMs: () => 0,
+      pauseForFairness: async delayMs => { fairnessPauses.push(delayMs); },
+    });
+
+    expect(fairnessPauses).toEqual([2]);
   });
 
   it('每五个正常链接批次给前台SQLite waiter一个2ms公平窗口', async () => {
     const from = seedNode(db, { heat: 0.005 });
     const to = seedNode(db, { heat: 0.005 });
-    for (let index = 0; index < 501; index++) {
+    for (let index = 0; index < 1001; index++) {
       createLink(db, {
         from_id: from.id,
         to_id: to.id,
@@ -141,6 +153,40 @@ describe('runSynapticScaling', () => {
 
     await runSynapticScalingCooperatively(db, async () => {}, {
       linkBatchDurationMs: () => 0,
+      pauseForFairness: async delayMs => { fairnessPauses.push(delayMs); },
+    });
+
+    expect(fairnessPauses).toEqual([2]);
+  });
+
+  it('慢节点批次立即给前台SQLite waiter完整5ms恢复窗口', async () => {
+    seedNode(db, { heat: 1 });
+    const fairnessPauses: number[] = [];
+
+    await runSynapticScalingCooperatively(db, async () => {}, {
+      nodeBatchDurationMs: () => 11,
+      pauseForFairness: async delayMs => { fairnessPauses.push(delayMs); },
+    });
+
+    expect(fairnessPauses).toEqual([5]);
+  });
+
+  it('后台模式不支付前台公平暂停且切回前台后从新窗口计数', async () => {
+    const insertNode = db.prepare(`
+      INSERT INTO nodes (id, type, content, heat, created, updated)
+      VALUES (?, 'fact', ?, 1, '2026-08-20T00:00:00.000Z', '2026-08-20T00:00:00.000Z')
+    `);
+    db.transaction(() => {
+      for (let index = 0; index < 2001; index++) {
+        insertNode.run(`fairness-node-${index}`, `fairness node ${index}`);
+      }
+    })();
+    const fairnessPauses: number[] = [];
+    let batches = 0;
+
+    await runSynapticScalingCooperatively(db, async () => { batches++; }, {
+      nodeBatchDurationMs: () => 0,
+      shouldPauseForFairness: () => batches > 5,
       pauseForFairness: async delayMs => { fairnessPauses.push(delayMs); },
     });
 
@@ -189,7 +235,7 @@ describe('runSynapticScaling', () => {
       }
     });
 
-    expect(yieldCount).toBe(11);
+    expect(yieldCount).toBe(6);
     expect(db.prepare('SELECT strength, deleted, edit_seq FROM links WHERE id = ?').get(target.id)).toEqual({
       strength: 0.04,
       deleted: 1,
@@ -246,8 +292,8 @@ describe('runSynapticScaling', () => {
 
     const decayed = db.prepare('SELECT COUNT(*) FROM nodes WHERE heat < 1').pluck().get();
     const untouched = db.prepare('SELECT COUNT(*) FROM nodes WHERE heat = 1').pluck().get();
-    expect(decayed).toBe(100);
-    expect(untouched).toBe(150);
+    expect(decayed).toBe(200);
+    expect(untouched).toBe(50);
   });
 
   it('零eligible节点时link已提交后timeline失败标记partial effect并保留claim语义', async () => {
