@@ -24,14 +24,11 @@ protocols:
 mac:
   category: public.app-category.productivity
   icon: resources/icon.icns
-  # 显式声明双架构:Intel(x64) + Apple Silicon(arm64)。
-  # 不写 arch 时 electron-builder 只打 host arch(macos-latest runner 是 arm64),
-  # Intel Mac 用户从 Release 下到的 DMG 会启动失败。
+  # 架构由release matrix显式传入--x64/--arm64；这里不得再次展开双架构，
+  # 否则单一原生runner会为另一架构产出带错native modules的伪资产。
   target:
     - target: dmg
-      arch: [x64, arm64]
     - target: zip
-      arch: [x64, arm64]
   hardenedRuntime: true
   # Hardened Runtime entitlements:
   #   - entitlements (main app): 含 keychain-access-groups / Apple Events 等

@@ -121,6 +121,10 @@ describe('scheduler run lock', () => {
           'const db = new Database(process.env.EB_SCHEDULER_LOCK_PATH, { timeout: 0 });',
           "db.pragma('busy_timeout = 0');",
           "db.exec('BEGIN IMMEDIATE');",
+          // Keep the native connection strongly reachable for the complete child
+          // lifetime. Under the Node 22 full suite, the eval module binding can be
+          // collected before the parent probes the lock, releasing it early.
+          'globalThis.__schedulerLockDb = db;',
           "process.stdout.write('OWNER_READY\\n');",
           'setInterval(() => {}, 1_000);',
         ].join('\n'),

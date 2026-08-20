@@ -108,6 +108,29 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
+      # electron-builder公证并staple .app，但不会为随后生成的DMG提交独立票据。
+      # 在验证和上传前公证exact架构DMG，并把票据装订到最终分发文件。
+      - name: Notarize and staple architecture DMG
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          version="$(node -p "require('./client/package.json').version")"
+          dmg="client/release/Tide.Mind-${version}-${{ matrix.arch }}.dmg"
+          test -f "$dmg"
+          xcrun notarytool submit "$dmg" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$dmg"
+          node scripts/refresh-mac-dmg-update-metadata.mjs \
+            --release-dir client/release \
+            --arch "${{ matrix.arch }}" \
+            --version "$version"
+
       - name: Bind release Worker to the performance receipt
         if: matrix.arch == 'arm64'
         env:

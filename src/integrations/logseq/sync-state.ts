@@ -211,13 +211,14 @@ export function resetFullScanState(db: Database.Database, sourceId?: string): vo
 /**
  * 检查文件是否需要重新处理
  *
- * 两步快速检测：
- * 1. 比较 mtime（零 I/O）
- * 2. mtime 不同时才读取文件计算 hash
+ * 文件存在且有旧状态时始终读取内容计算 hash。
+ * mtime 与 size 都只是诊断信息：低精度/保留时间戳可掩盖等长改写，
+ * 而仅换行符形式时 size 又可能变化但归一化后的语义 hash 不变。
  */
 export function isFileChanged(
   filePath: string,
   syncState: FileSyncState | null,
+  observedContentHash?: string,
 ): boolean {
   const stat = safeStatSync(filePath);
   if (!stat) return false; // 文件不存在，不需要处理（由 removeStaleFiles 清理）
@@ -227,14 +228,7 @@ export function isFileChanged(
 
   if (!syncState) return true; // 新文件
 
-  // Step 1: mtime 比较
-  const mtime = Math.floor(stat.mtimeMs);
-  if (mtime === syncState.mtime && stat.size === syncState.size) {
-    return false;
-  }
-
-  // Step 2: hash 比较（处理 mtime 漂移但内容未变的情况）
-  const hash = computeFileHash(filePath);
+  const hash = observedContentHash ?? computeFileHash(filePath);
   if (hash === null) return false; // dataless 或读失败，不视作变更
   return hash !== syncState.content_hash;
 }
@@ -280,5 +274,5 @@ export function getFileStat(filePath: string): { mtime: number; size: number } |
   const stat = safeStatSync(filePath);
   if (!stat) return null;
   if (isDataless(stat)) return null; // dataless：当作没有可用 stat（调用方应跳过写 state）
-  return { mtime: Math.floor(stat.mtimeMs), size: stat.size };
+  return { mtime: stat.mtimeMs, size: stat.size };
 }

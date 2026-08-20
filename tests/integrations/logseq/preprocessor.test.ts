@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { preprocessFile, buildBlockIndex } from '../../../src/integrations/logseq/preprocessor.js';
+import { computeContentHash } from '../../../src/integrations/logseq/sync-state.js';
 
 let tmpDir: string;
 
@@ -25,6 +26,13 @@ beforeAll(() => {
 
 afterAll(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+it('buildBlockIndex 同次扫描返回每个可读文件的归一化内容hash', () => {
+  const content = '- first line\r\n  id:: 64e5aba0-10f7-499a-8432-ae9ec8163430\r\n';
+  const filePath = writeFile('pages/hash-cache.md', content);
+  const hashes = buildBlockIndex(tmpDir);
+  expect(hashes.get(filePath)).toBe(computeContentHash(content));
 });
 
 // === hls__ PDF 标注文件 ===

@@ -10,6 +10,7 @@ import type { PreprocessedPage, PageMetadata } from './types.js';
 import { SYSTEM_PROPERTIES, EXCLUDED_DIRS } from './types.js';
 import { safeReadTextFileSync, walkFilesFiltered } from '../../utils/safe-fs.js';
 import { parseJournalDate } from './journal-date.js';
+import { computeContentHash } from './sync-state.js';
 
 // --- Block UUID 索引 ---
 //
@@ -35,13 +36,16 @@ function getBlockIndex(graphRoot: string): Map<string, string> {
  * 注意：walkMdFiles 内部已过滤 iCloud dataless 文件，indexFileBlocks 里的读操作
  * 不会阻塞主进程 event loop。
  */
-export function buildBlockIndex(graphRoot: string): void {
+export function buildBlockIndex(graphRoot: string): Map<string, string> {
   const idx = getBlockIndex(graphRoot);
+  const contentHashes = new Map<string, string>();
   idx.clear();
   const files = walkMdFiles(graphRoot);
   for (const filePath of files) {
-    indexFileBlocks(filePath, idx);
+    const content = indexFileBlocks(filePath, idx);
+    if (content !== null) contentHashes.set(filePath, computeContentHash(content));
   }
+  return contentHashes;
 }
 
 /**
@@ -55,9 +59,9 @@ export function updateBlockIndexForFile(filePath: string, graphRoot: string): vo
   indexFileBlocks(filePath, idx);
 }
 
-function indexFileBlocks(filePath: string, blockIndex: Map<string, string>): void {
+function indexFileBlocks(filePath: string, blockIndex: Map<string, string>): string | null {
   const res = safeReadTextFileSync(filePath);
-  if (!res.ok) return;
+  if (!res.ok) return null;
   const content = res.content;
 
   const lines = content.split('\n');
@@ -97,6 +101,7 @@ function indexFileBlocks(filePath: string, blockIndex: Map<string, string>): voi
       blockIndex.set(uuid, blockContent);
     }
   }
+  return content;
 }
 
 /** 查询 block 索引（按 graphRoot 隔离） */
@@ -185,12 +190,35 @@ export function preprocessFile(
   filePath: string,
   graphRoot: string,
 ): (PreprocessedPage & { rawContent: string }) | null {
+  const result = readAndPreprocessFile(filePath, graphRoot);
+  return result.kind === 'ready' ? result.page : null;
+}
+
+export type LogseqFilePreprocessResult =
+  | { kind: 'unreadable' }
+  | { kind: 'empty'; rawContent: string }
+  | { kind: 'ready'; page: PreprocessedPage & { rawContent: string } };
+
+/** 读取一次文件并保留 unreadable / semantic-empty / ready 的分类与同源 snapshot。 */
+export function readAndPreprocessFile(
+  filePath: string,
+  graphRoot: string,
+): LogseqFilePreprocessResult {
   const res = safeReadTextFileSync(filePath);
-  if (!res.ok) return null;
+  if (!res.ok) return { kind: 'unreadable' };
   // 统一换行为 LF：LOGBOOK/properties 等正则用 `$` 锚点，CRLF 会在值里留下 \r
   // 与 Obsidian preprocessor 保持一致
   const rawContent = res.content.replace(/\r\n/g, '\n');
 
+  const page = preprocessReadableContent(rawContent, filePath, graphRoot);
+  return page ? { kind: 'ready', page } : { kind: 'empty', rawContent };
+}
+
+function preprocessReadableContent(
+  rawContent: string,
+  filePath: string,
+  graphRoot: string,
+): (PreprocessedPage & { rawContent: string }) | null {
   if (rawContent.trim().length < 10) return null;
 
   const relPath = path.relative(graphRoot, filePath).replace(/\\/g, '/');

@@ -42,6 +42,7 @@ import {
   isFileChanged,
   computeFileHash,
   computeSegmentHash,
+  getFileStat,
 } from '../../../src/integrations/logseq/sync-state.js';
 
 let db: Database.Database;
@@ -169,6 +170,17 @@ describe('fullScan 状态', () => {
 // ===== isFileChanged =====
 
 describe('isFileChanged', () => {
+  it('保留文件系统的亚毫秒mtime精度', () => {
+    const filePath = path.join(tmpDir, 'precise-mtime.md');
+    fs.writeFileSync(filePath, 'content');
+    const desired = new Date(1_700_000_000_123.456);
+    fs.utimesSync(filePath, desired, desired);
+    const actual = fs.statSync(filePath).mtimeMs;
+    const observed = getFileStat(filePath);
+    expect(observed?.mtime).toBe(actual);
+    if (!Number.isInteger(actual)) expect(observed?.mtime).not.toBe(Math.floor(actual));
+  });
+
   it('无 syncState（新文件） → true', () => {
     const filePath = path.join(tmpDir, 'new.md');
     fs.writeFileSync(filePath, 'hello');
@@ -188,15 +200,15 @@ describe('isFileChanged', () => {
     })).toBe(false);
   });
 
-  it('mtime + size 相同 → false（快速路径）', () => {
+  it('mtime + size 相同且hash相同 → false', () => {
     const filePath = path.join(tmpDir, 'unchanged.md');
     fs.writeFileSync(filePath, 'content');
     const stat = fs.statSync(filePath);
 
     const syncState = {
       file_path: filePath,
-      content_hash: 'whatever',
-      mtime: Math.floor(stat.mtimeMs),
+      content_hash: computeFileHash(filePath)!,
+      mtime: stat.mtimeMs,
       size: stat.size,
       last_synced: 't',
       node_ids: [],
@@ -204,6 +216,42 @@ describe('isFileChanged', () => {
     };
 
     expect(isFileChanged(filePath, syncState)).toBe(false);
+  });
+
+  it('周期扫描可复用block索引同次读取的content hash', () => {
+    const filePath = path.join(tmpDir, 'cached-hash.md');
+    fs.writeFileSync(filePath, 'content');
+    const stat = fs.statSync(filePath);
+    const syncState = {
+      file_path: filePath,
+      content_hash: computeFileHash(filePath)!,
+      mtime: stat.mtimeMs,
+      size: stat.size,
+      last_synced: 't',
+      node_ids: [],
+      segment_hashes: [],
+    };
+    expect(isFileChanged(filePath, syncState, syncState.content_hash)).toBe(false);
+    expect(isFileChanged(filePath, syncState, 'different-scan-hash')).toBe(true);
+  });
+
+  it('mtime + size 相同但内容不同 → true', () => {
+    const filePath = path.join(tmpDir, 'same-stat-different-content.md');
+    fs.writeFileSync(filePath, 'AAAA');
+    const originalStat = fs.statSync(filePath);
+    const syncState = {
+      file_path: filePath,
+      content_hash: computeFileHash(filePath)!,
+      mtime: originalStat.mtimeMs,
+      size: originalStat.size,
+      last_synced: 't',
+      node_ids: [],
+      segment_hashes: [],
+    };
+    fs.writeFileSync(filePath, 'BBBB');
+    fs.utimesSync(filePath, originalStat.atime, originalStat.mtime);
+    expect(fs.statSync(filePath).size).toBe(syncState.size);
+    expect(isFileChanged(filePath, syncState)).toBe(true);
   });
 
   it('mtime 不同但内容相同（hash 匹配） → false', () => {
@@ -240,6 +288,23 @@ describe('isFileChanged', () => {
     };
 
     // iCloud 回流后 mtime/size 可能漂移，但内容没变时不能重新 digest。
+    expect(isFileChanged(filePath, syncState)).toBe(false);
+  });
+
+  it('仅CRLF/LF形式和size变化但归一化hash相同 → false', () => {
+    const filePath = path.join(tmpDir, 'eol-only.md');
+    fs.writeFileSync(filePath, 'line one\nline two\n');
+    const syncState = {
+      file_path: filePath,
+      content_hash: computeFileHash(filePath)!,
+      mtime: fs.statSync(filePath).mtimeMs,
+      size: fs.statSync(filePath).size,
+      last_synced: 't',
+      node_ids: [],
+      segment_hashes: [],
+    };
+    fs.writeFileSync(filePath, 'line one\r\nline two\r\n');
+    expect(fs.statSync(filePath).size).not.toBe(syncState.size);
     expect(isFileChanged(filePath, syncState)).toBe(false);
   });
 

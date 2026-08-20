@@ -1,4 +1,5 @@
 import { appendFileSync, chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +8,23 @@ import { assertResolvedCliIdentity, resolveCli } from '../../../src/llm/cli/reso
 const fixture = resolve(
   fileURLToPath(new URL('../../fixtures/llm-cli/fake-cli.mjs', import.meta.url)),
 );
+
+const executeFixture = (
+  file: string,
+  args: string[],
+  options: { env: NodeJS.ProcessEnv; timeoutMs: number; maxBytes: number; signal?: AbortSignal },
+): Promise<{ stdout: string; stderr: string }> => new Promise((resolveResult, reject) => {
+  execFile(process.execPath, [file, ...args], {
+    env: options.env,
+    timeout: options.timeoutMs,
+    maxBuffer: options.maxBytes,
+    encoding: 'utf8',
+    signal: options.signal,
+  }, (error, stdout, stderr) => {
+    if (error) reject(error);
+    else resolveResult({ stdout, stderr });
+  });
+});
 
 describe('CLI resolver', () => {
   const tempDirs: string[] = [];
@@ -32,6 +50,7 @@ describe('CLI resolver', () => {
       candidates: [link],
       allowLoginShell: false,
       homeDir: dir,
+      exec: executeFixture,
     });
     expect(resolved.path).toBe(realpathSync(real));
     expect(resolved.version).toBe('2.1.215');
@@ -85,6 +104,7 @@ describe('CLI resolver', () => {
       candidates: [path],
       allowLoginShell: false,
       homeDir: dir,
+      exec: executeFixture,
     })).resolves.toMatchObject({ kind: 'codex', path: realpathSync(path) });
   });
 

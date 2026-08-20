@@ -107,6 +107,8 @@ vi.mock('../../../src/integrations/logseq/sync-state.js', async (importOriginal)
 // 部分 mock safe-fs：默认透传真实读;datalessFiles 里的文件名模拟 iCloud "优化存储"驱逐
 //（safeReadTextFileSync !ok，但文件其实存在、内容在云端）。用于验证 dataless 守卫不误退旧节点。
 const datalessFiles = new Set<string>();
+const mutateAfterRead = new Map<string, { read: number; replacement: string }>();
+const safeReadCounts = new Map<string, number>();
 vi.mock('../../../src/utils/safe-fs.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/utils/safe-fs.js')>();
   return {
@@ -115,7 +117,16 @@ vi.mock('../../../src/utils/safe-fs.js', async (importOriginal) => {
       if ([...datalessFiles].some(f => filePath.includes(f))) {
         return { ok: false as const, reason: 'dataless' as const };
       }
-      return actual.safeReadTextFileSync(filePath);
+      const result = actual.safeReadTextFileSync(filePath);
+      const fileName = path.basename(filePath);
+      const readCount = (safeReadCounts.get(fileName) ?? 0) + 1;
+      safeReadCounts.set(fileName, readCount);
+      const mutation = mutateAfterRead.get(fileName);
+      if (mutation?.read === readCount) {
+        fs.writeFileSync(filePath, mutation.replacement, 'utf-8');
+        mutateAfterRead.delete(fileName);
+      }
+      return result;
     },
   };
 });
@@ -177,6 +188,8 @@ function writeJournal(graphRoot: string, name: string, content: string): string 
 // ---- Setup / Teardown ----
 
 beforeEach(() => {
+  mutateAfterRead.clear();
+  safeReadCounts.clear();
   db = setupTestDb();
   mockGetDb.mockReturnValue(db);
   ensureSyncSchema(db);
@@ -445,6 +458,105 @@ describe('processFileChange', () => {
     }
     // sync state node_ids 清空(与退休一致)
     expect(getFileState(db, 'pages/f2-emptied.md')!.node_ids).toEqual([]);
+  });
+
+  it('空snapshot提交中任一节点退休失败时整体回滚state和节点', async () => {
+    const file = writePage(tmpDir, 'empty-rollback', '- 这是一段原始有效内容甲乙丙丁戊己庚辛');
+    await processFileChange(db, file, tmpDir);
+    const originalState = getFileState(db, 'pages/empty-rollback.md')!;
+    fs.writeFileSync(file, '- ', 'utf-8');
+    db.exec(`
+      CREATE TRIGGER fail_empty_state_write
+      BEFORE INSERT ON logseq_sync
+      BEGIN
+        SELECT RAISE(ABORT, 'injected state write failure');
+      END
+    `);
+
+    expect(await processFileChange(db, file, tmpDir)).toBe(false);
+    db.exec('DROP TRIGGER fail_empty_state_write');
+    expect(getFileState(db, 'pages/empty-rollback.md')!.node_ids).toEqual(originalState.node_ids);
+    for (const nodeId of originalState.node_ids) {
+      expect(getNode(db, nodeId)!.is_superseded).toBe(0);
+    }
+  });
+
+  it('判短后文件恢复有效内容时保留旧节点和旧state，留给下一轮处理', async () => {
+    const file = writePage(tmpDir, 'empty-race', '- 这是一段原始有效内容甲乙丙丁戊己庚辛');
+    await processFileChange(db, file, tmpDir);
+    const originalState = getFileState(db, 'pages/empty-race.md')!;
+    safeReadCounts.set('empty-race.md', 0);
+
+    fs.writeFileSync(file, '- ', 'utf-8');
+    // 本轮第一次读取供 isFileChanged；第二次读取由readAndPreprocessFile同时完成
+    // 判短与snapshot hash。返回短内容后立刻模拟用户写回有效内容，最终复核必须发现漂移。
+    mutateAfterRead.set('empty-race.md', {
+      read: 2,
+      replacement: '- 判短之后写入的有效新内容必须在下一轮被处理',
+    });
+
+    expect(await processFileChange(db, file, tmpDir)).toBe(false);
+    expect(getFileState(db, 'pages/empty-race.md')!.node_ids).toEqual(originalState.node_ids);
+    for (const nodeId of originalState.node_ids) {
+      expect(getNode(db, nodeId)!.is_superseded).toBe(0);
+    }
+    expect(isFileChanged(file, getFileState(db, 'pages/empty-race.md'))).toBe(true);
+  });
+
+  it('长原文清洗后语义为空时退休旧节点并写空state', async () => {
+    const file = writePage(tmpDir, 'semantic-empty', '- 这是一段原始有效内容甲乙丙丁戊己庚辛');
+    await processFileChange(db, file, tmpDir);
+    const oldIds = getFileState(db, 'pages/semantic-empty.md')!.node_ids;
+
+    fs.writeFileSync(file, 'filters:: {and: [[private]]}\n- {{query (todo now)}}', 'utf-8');
+    await processFileChange(db, file, tmpDir);
+
+    expect(getFileState(db, 'pages/semantic-empty.md')!.node_ids).toEqual([]);
+    for (const nodeId of oldIds) expect(getNode(db, nodeId)!.is_superseded).toBe(1);
+  });
+
+  it('hls由文本标注变成仅area标注时退休旧节点', async () => {
+    const file = writePage(tmpDir, 'hls__area_only_1681190565324_0', `\
+file-path:: ../assets/paper_1681190565324_0.pdf
+- Text annotation that creates a node
+  ls-type:: annotation
+  hl-page:: 1`);
+    await processFileChange(db, file, tmpDir);
+    const relPath = 'pages/hls__area_only_1681190565324_0.md';
+    const oldIds = getFileState(db, relPath)!.node_ids;
+
+    fs.writeFileSync(file, `\
+file-path:: ../assets/paper_1681190565324_0.pdf
+- [:span]
+  ls-type:: annotation
+  hl-type:: area
+  hl-page:: 1`, 'utf-8');
+    await processFileChange(db, file, tmpDir);
+
+    expect(getFileState(db, relPath)!.node_ids).toEqual([]);
+    for (const nodeId of oldIds) expect(getNode(db, nodeId)!.is_superseded).toBe(1);
+  });
+
+  it('零有效段判定后文件恢复有效内容时不写空state', async () => {
+    const file = writeJournal(tmpDir, '2026_08_13', '- 这是一段原始有效内容甲乙丙丁戊己庚辛');
+    await processFileChange(db, file, tmpDir);
+    const originalState = getFileState(db, 'journals/2026_08_13.md')!;
+    safeReadCounts.set('2026_08_13.md', 0);
+
+    // 长度足够让 preprocessFile 成功，但journal正文只有结构符号，过滤后为0有效段。
+    fs.writeFileSync(file, '- - - - - -', 'utf-8');
+    // preprocessFile 的读取返回零段snapshot后，立即模拟用户写回有效内容。
+    mutateAfterRead.set('2026_08_13.md', {
+      read: 2,
+      replacement: '- 零段判定之后写入的有效新内容必须在下一轮被处理',
+    });
+
+    expect(await processFileChange(db, file, tmpDir)).toBe(false);
+    expect(getFileState(db, 'journals/2026_08_13.md')!.node_ids).toEqual(originalState.node_ids);
+    for (const nodeId of originalState.node_ids) {
+      expect(getNode(db, nodeId)!.is_superseded).toBe(0);
+    }
+    expect(isFileChanged(file, getFileState(db, 'journals/2026_08_13.md'))).toBe(true);
   });
 
   // dataless 守卫(第三轮审计):文件被 iCloud "优化存储"驱逐(safe-fs 读不到、内容仍在云端)时,

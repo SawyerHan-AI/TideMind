@@ -42,8 +42,8 @@ describe('metabolism Worker Phase 0 inventory', () => {
     const artifact = JSON.parse(readFileSync(artifactPath, 'utf8')) as Record<string, unknown>;
 
     expect(artifact).toMatchObject({
-      protocolVersion: 1,
-      status: 'frozen-before-worker-results',
+      protocolVersion: 2,
+      status: 'refrozen-before-external-cpu-fix-results',
       correctness: {
         unexpectedSqliteBusyOrLockedMax: 0,
         concurrentSchedulerPassesMax: 1,
