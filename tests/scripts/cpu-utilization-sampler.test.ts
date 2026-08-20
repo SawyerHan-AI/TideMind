@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { cpuUtilizationBetween, createCpuUtilizationSampler } from '../../scripts/cpu-utilization-sampler.mjs'
+import {
+  cpuUtilizationBetween,
+  createCpuUtilizationSampler,
+  cpuEnvironmentUtilizationsBetween,
+  externalCpuUtilizationBetween,
+} from '../../scripts/cpu-utilization-sampler.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
@@ -25,11 +30,43 @@ describe('CPU utilization sampler', () => {
     expect(cpuUtilizationBetween({ idle: 100, total: 200 }, { idle: 200, total: 300 })).toBe(0)
     expect(cpuUtilizationBetween({ idle: 100, total: 200 }, { idle: 100, total: 300 })).toBe(1)
     expect(cpuUtilizationBetween({ idle: 100, total: 200 }, { idle: 100, total: 200 })).toBe(1)
+    expect(cpuUtilizationBetween({ idle: 100, total: 200 }, { idle: 250, total: 300 })).toBe(1)
+    expect(cpuUtilizationBetween({ idle: 100, total: 200 }, { idle: Number.NaN, total: 300 })).toBe(1)
+  })
+
+  it('subtracts benchmark-process CPU from the host environment gate', () => {
+    expect(externalCpuUtilizationBetween(
+      { idle: 100, total: 200, processCpuMicros: 0 },
+      { idle: 140, total: 300, processCpuMicros: 50_000 },
+    )).toBeCloseTo(0.1)
+    expect(externalCpuUtilizationBetween(
+      { idle: 100, total: 200, processCpuMicros: 0 },
+      { idle: 100, total: 300, processCpuMicros: 100_000 },
+    )).toBe(0)
+    expect(cpuEnvironmentUtilizationsBetween(
+      { idle: 100, total: 200, processCpuMicros: 0 },
+      { idle: 140, total: 300, processCpuMicros: 50_000 },
+    )).toEqual({ host: 0.6, process: 0.5, external: 0.1 })
+  })
+
+  it('fails closed for invalid host or process CPU deltas', () => {
+    expect(externalCpuUtilizationBetween(
+      { idle: 100, total: 200, processCpuMicros: 100 },
+      { idle: 100, total: 200, processCpuMicros: 200 },
+    )).toBe(1)
+    expect(externalCpuUtilizationBetween(
+      { idle: 100, total: 200, processCpuMicros: 200 },
+      { idle: 150, total: 300, processCpuMicros: 100 },
+    )).toBe(1)
+    expect(externalCpuUtilizationBetween(
+      { idle: 100, total: 200, processCpuMicros: 0 },
+      { idle: 190, total: 300, processCpuMicros: 50_000 },
+    )).toBe(1)
   })
 
   it('waits out the minimum window instead of emitting a zero-delta sample', async () => {
     let now = 0
-    const snapshots = [{ idle: 0, total: 0 }, { idle: 50, total: 100 }]
+    const snapshots = [{ idle: 0, total: 0, processCpuMicros: 0 }, { idle: 50, total: 100, processCpuMicros: 0 }]
     const waits: number[] = []
     const sampler = createCpuUtilizationSampler({
       minimumWindowMs: 1_000,
@@ -43,7 +80,7 @@ describe('CPU utilization sampler', () => {
 
   it('does not wait again after a synchronous block already spans the window', async () => {
     let now = 0
-    const snapshots = [{ idle: 0, total: 0 }, { idle: 75, total: 100 }]
+    const snapshots = [{ idle: 0, total: 0, processCpuMicros: 0 }, { idle: 75, total: 100, processCpuMicros: 0 }]
     const waits: number[] = []
     const sampler = createCpuUtilizationSampler({
       minimumWindowMs: 1_000,
@@ -58,7 +95,7 @@ describe('CPU utilization sampler', () => {
 
   it('waits again when an injected timer returns before the minimum window', async () => {
     let now = 0
-    const snapshots = [{ idle: 0, total: 0 }, { idle: 25, total: 100 }]
+    const snapshots = [{ idle: 0, total: 0, processCpuMicros: 0 }, { idle: 25, total: 100, processCpuMicros: 0 }]
     const waits: number[] = []
     const sampler = createCpuUtilizationSampler({
       minimumWindowMs: 1_000,

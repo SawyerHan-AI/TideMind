@@ -251,7 +251,7 @@ async function runSyncInner(
 
   // 构建 block UUID 索引
   log.info('构建 block UUID 索引...');
-  buildBlockIndex(graphRoot);
+  const scannedContentHashes = buildBlockIndex(graphRoot);
 
   // 加载同步状态，找出需要处理的文件
   // 注意：只对 processable 文件做 isFileChanged 检查，dataless 文件跳过处理（isFileChanged 会返回 false）
@@ -260,7 +260,11 @@ async function runSyncInner(
     graphRoot,
     scan.processableFiles,
     syncStates,
-    isFileChanged,
+    (filePath, syncState) => isFileChanged(
+      filePath,
+      syncState,
+      scannedContentHashes.get(filePath),
+    ),
   );
 
   // 清理已删除文件的同步记录，归档关联 nodes

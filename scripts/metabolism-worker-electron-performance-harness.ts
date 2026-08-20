@@ -7,7 +7,10 @@ import Database from 'better-sqlite3'
 import { ensureSchema } from '../src/db/schema.js'
 import { runSynapticScaling } from '../src/metabolism/synaptic.js'
 import { ALL_TASKS } from '../src/metabolism/tasks.js'
-import { createCpuUtilizationSampler } from './cpu-utilization-sampler.mjs'
+import {
+  cpuEnvironmentUtilizationsBetween,
+  createCpuUtilizationSampler,
+} from './cpu-utilization-sampler.mjs'
 import { tryAcquireSchedulerRunLock } from '../src/metabolism/scheduler-run-lock.js'
 import { createNoteSource, updateNoteSource } from '../src/integrations/shared/note-sources.js'
 import { createOutboxTable, enqueueOutbox } from '../client/electron/cloud/outbox.js'
@@ -152,7 +155,10 @@ async function main(): Promise<void> {
   const cpuUtilizationAtStart = await waitForStableCpuBoundary('packaged harness start')
   const mainBaselineRunsMs: number[] = []
   const mainBaselineEventLoopDelaysMs: number[] = []
-  const mainBaselineCpuUtilization: number[] = []
+  const mainBaselineHostCpuUtilization: number[] = []
+  const mainBaselineProcessCpuUtilization: number[] = []
+  const mainBaselineExternalCpuUtilization: number[] = []
+  const mainBaselineCpuWindows: Array<{ host: number; process: number; external: number }> = []
   const baseline = createFixture(path.join(canonicalRoot, 'baseline.sqlite'))
   for (let run = 0; run < 3; run++) {
     baseline.transaction(() => {
@@ -167,9 +173,15 @@ async function main(): Promise<void> {
     // prior baseline sample) and spans the synchronous run. Reject external
     // host contention during the comparison baseline instead of allowing it
     // to inflate the relative Worker improvement.
-    const baselineCpu = await cpuSampler.sample()
-    mainBaselineCpuUtilization.push(baselineCpu)
-    if (baselineCpu > maximumCpuUtilization) throw new Error('main baseline CPU environment exceeded the frozen limit')
+    const baselineCpuSample = await cpuSampler.sampleSnapshot()
+    const baselineCpu = cpuEnvironmentUtilizationsBetween(baselineCpuSample.previous, baselineCpuSample.current)
+    mainBaselineHostCpuUtilization.push(baselineCpu.host)
+    mainBaselineProcessCpuUtilization.push(baselineCpu.process)
+    mainBaselineExternalCpuUtilization.push(baselineCpu.external)
+    mainBaselineCpuWindows.push(baselineCpu)
+    if (baselineCpu.external > maximumCpuUtilization) {
+      throw new Error(`main baseline external CPU environment exceeded the frozen limit: run=${run + 1}, host=${baselineCpu.host.toFixed(4)}, process=${baselineCpu.process.toFixed(4)}, external=${baselineCpu.external.toFixed(4)}, limit=${maximumCpuUtilization.toFixed(4)}`)
+    }
   }
   baseline.close()
   const mainBaselineMs = percentile(mainBaselineRunsMs, 0.5)
@@ -388,7 +400,7 @@ async function main(): Promise<void> {
   const checkpoint = db.pragma('wal_checkpoint(PASSIVE)') as Array<{ busy: number; log: number; checkpointed: number }>
   const toMs = (nanoseconds: number): number => nanoseconds / 1_000_000
   const result = {
-    protocolVersion: 1,
+    protocolVersion: 2,
     measuredAt: new Date().toISOString(),
     machine: {
       cpu: os.cpus()[0]?.model ?? 'unknown',
@@ -397,7 +409,10 @@ async function main(): Promise<void> {
       loadAverageAtEnd,
       cpuUtilizationGate: {
         start: cpuUtilizationAtStart,
-        baselineMaximumObserved: Math.max(...mainBaselineCpuUtilization),
+        baselineHostMaximumObserved: Math.max(...mainBaselineHostCpuUtilization),
+        baselineProcessMaximumObserved: Math.max(...mainBaselineProcessCpuUtilization),
+        baselineExternalMaximumObserved: Math.max(...mainBaselineExternalCpuUtilization),
+        baselineWindows: mainBaselineCpuWindows,
         beforeCandidate: cpuUtilizationBeforeCandidate,
         maximumObserved: Math.max(...cpuUtilizationSamples),
         end: cpuUtilizationAtEnd,

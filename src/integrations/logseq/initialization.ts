@@ -645,7 +645,7 @@ function updateSyncState(
     return;
   } else if (snapshotStat === null) {
     // null 但有 contentHash = 极罕见:内容读成功却连 read-time 补抓 stat 都失败。用 mtime=0/
-    // size=0 + 已算出的 hash——0/0 永不等于真实值,强制下轮走 hash 比对(既不丢编辑也无孤儿)。
+    // size=0 + 已算出的 hash；下一轮仍以内容 hash 作最终判断(既不丢编辑也无孤儿)。
     mtime = 0;
     size = 0;
   } else {

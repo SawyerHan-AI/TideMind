@@ -26,8 +26,8 @@ function run(script: string, args: string[]) {
 
 describe('packaged metabolism performance gate', () => {
   const validThresholds = {
-    protocolVersion: 1,
-    status: 'frozen-before-worker-results',
+    protocolVersion: 2,
+    status: 'refrozen-before-external-cpu-fix-results',
     scope: 'local packaged Electron metabolism Worker candidate; not a release SLO',
     requiredWorkloads: [
       'focused-renderer-ipc-writes', 'note-source-writes', 'cloud-outbox-writes', 'background-full-backlog',
@@ -50,14 +50,23 @@ describe('packaged metabolism performance gate', () => {
     gateRule: 'Any failure keeps production activation blocked. Rerun the same workload and thresholds after a targeted fix.',
   }
   const validResult = () => ({
-    protocolVersion: 1,
+    protocolVersion: 2,
     measuredAt: '2026-08-13T00:00:00.000Z',
     fixture: { nodeCount: 10_000, linkCount: 20_000, writesPerKind: 100, dataRoot: 'ephemeral-temp-only' },
     workloads: { focusedRendererIpcWrites: true, backgroundFullBacklog: true },
     machine: {
       cpu: 'test CPU', cpuCount: 8, memoryBytes: 1024, os: 'test OS', arch: 'arm64', electronVersion: '1.0.0',
       loadAverageAtStart: [1, 1, 1], loadAverageAtEnd: [1, 1, 1],
-      cpuUtilizationGate: { start: 0.1, baselineMaximumObserved: 0.1, beforeCandidate: 0.1, maximumObserved: 0.1, end: 0.1 },
+      cpuUtilizationGate: {
+        start: 0.1,
+        baselineHostMaximumObserved: 0.2,
+        baselineProcessMaximumObserved: 0.1,
+        baselineExternalMaximumObserved: 0.1,
+        baselineWindows: Array.from({ length: 3 }, () => ({ host: 0.2, process: 0.1, external: 0.1 })),
+        beforeCandidate: 0.1,
+        maximumObserved: 0.1,
+        end: 0.1,
+      },
     },
     backgroundFullBacklog: { durationMs: 10, llmAndEmbeddingTasksCircuitGated: true },
     mainBaselineEventLoopDelayMs: { p50: 10, p95: 11, p99: 11, max: 11 },
@@ -204,9 +213,12 @@ describe('packaged metabolism performance gate', () => {
     const baselineLoop = harness.indexOf('for (let run = 0; run < 3; run++)')
     const baselineEnd = harness.indexOf('baseline.close()', baselineLoop)
     const baselineBlock = harness.slice(baselineLoop, baselineEnd)
-    expect(baselineBlock).toContain('const baselineCpu = await cpuSampler.sample()')
-    expect(baselineBlock).toContain('if (baselineCpu > maximumCpuUtilization)')
-    expect(harness).toContain('baselineMaximumObserved: Math.max(...mainBaselineCpuUtilization)')
+    expect(baselineBlock).toContain('const baselineCpuSample = await cpuSampler.sampleSnapshot()')
+    expect(baselineBlock).toContain('if (baselineCpu.external > maximumCpuUtilization)')
+    expect(harness).toContain('baselineExternalMaximumObserved: Math.max(...mainBaselineExternalCpuUtilization)')
+    expect(harness).toContain('baselineHostMaximumObserved: Math.max(...mainBaselineHostCpuUtilization)')
+    expect(harness).toContain('baselineProcessMaximumObserved: Math.max(...mainBaselineProcessCpuUtilization)')
+    expect(harness).toContain('baselineWindows: mainBaselineCpuWindows')
   })
 
   it.each([
@@ -222,7 +234,14 @@ describe('packaged metabolism performance gate', () => {
     ['changed workload set', (_result: any, thresholds: any) => { thresholds.requiredWorkloads.pop() }],
     ['invalid CPU utilization', (result: any) => { result.machine.cpuUtilizationGate.start = 2 }],
     ['underreported maximum CPU utilization', (result: any) => { result.machine.cpuUtilizationGate.beforeCandidate = 0.4; result.machine.cpuUtilizationGate.maximumObserved = 0.1 }],
-    ['polluted main baseline CPU', (result: any) => { result.machine.cpuUtilizationGate.baselineMaximumObserved = 0.75 }],
+    ['polluted main baseline CPU', (result: any) => { result.machine.cpuUtilizationGate.baselineExternalMaximumObserved = 0.75 }],
+    ['underreported baseline external CPU', (result: any) => { result.machine.cpuUtilizationGate.baselineWindows[1].external = 0.01 }],
+    ['unbound baseline host maximum', (result: any) => { result.machine.cpuUtilizationGate.baselineHostMaximumObserved = 0.3 }],
+    ['impossible baseline process CPU', (result: any) => {
+      result.machine.cpuUtilizationGate.baselineWindows = Array.from({ length: 3 }, () => ({ host: 0.2, process: 0.9, external: 0 }))
+      result.machine.cpuUtilizationGate.baselineProcessMaximumObserved = 0.9
+      result.machine.cpuUtilizationGate.baselineExternalMaximumObserved = 0
+    }],
     ['missing writer focus evidence', (result: any) => { result.workloads.focusedRendererIpcWrites = false }],
     ['missing background backlog evidence', (result: any) => { result.workloads.backgroundFullBacklog = false }],
     ['inflated baseline summary', (result: any) => { result.mainBaselineEventLoopDelayMs.p99 = 1e9; result.mainBaselineEventLoopDelayMs.max = 1e9 }],

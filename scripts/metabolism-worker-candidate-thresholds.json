@@ -1,6 +1,6 @@
 {
-  "protocolVersion": 1,
-  "status": "frozen-before-worker-results",
+  "protocolVersion": 2,
+  "status": "refrozen-before-external-cpu-fix-results",
   "scope": "local packaged Electron metabolism Worker candidate; not a release SLO",
   "requiredWorkloads": [
     "focused-renderer-ipc-writes",

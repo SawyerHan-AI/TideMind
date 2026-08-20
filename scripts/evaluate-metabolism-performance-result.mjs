@@ -50,8 +50,8 @@ const REQUIRED_WORKLOADS = [
 export function evaluateMetabolismPerformanceResult({ result, thresholds, packaged, writesPerKind, maximumCpuUtilization }) {
   const failures = []
   if (!packaged) failures.push('packaged Electron candidate not exercised by development harness')
-  if (thresholds?.protocolVersion !== 1 || result?.protocolVersion !== 1) failures.push('protocol version')
-  if (thresholds?.status !== 'frozen-before-worker-results') failures.push('threshold frozen status')
+  if (thresholds?.protocolVersion !== 2 || result?.protocolVersion !== 2) failures.push('protocol version')
+  if (thresholds?.status !== 'refrozen-before-external-cpu-fix-results') failures.push('threshold frozen status')
   if (thresholds?.scope !== 'local packaged Electron metabolism Worker candidate; not a release SLO') failures.push('threshold scope')
   if (!Array.isArray(thresholds?.requiredWorkloads)
     || thresholds.requiredWorkloads.length !== REQUIRED_WORKLOADS.length
@@ -104,12 +104,42 @@ export function evaluateMetabolismPerformanceResult({ result, thresholds, packag
   }
   requireNumberArray(failures, result?.machine?.loadAverageAtStart, 'start load averages', 3)
   requireNumberArray(failures, result?.machine?.loadAverageAtEnd, 'end load averages', 3)
-  for (const field of ['start', 'baselineMaximumObserved', 'beforeCandidate', 'maximumObserved', 'end']) {
-    const utilization = result?.machine?.cpuUtilizationGate?.[field]
+  const cpuGate = result?.machine?.cpuUtilizationGate
+  for (const field of ['start', 'baselineExternalMaximumObserved', 'beforeCandidate', 'maximumObserved', 'end']) {
+    const utilization = cpuGate?.[field]
     if (!requireNumber(failures, utilization, `host CPU utilization ${field}`, value => finiteNumber(value) && value >= 0 && value <= 1)) continue
     if (utilization > maximumCpuUtilization) failures.push(`host CPU utilization ${field}`)
   }
-  const cpuGate = result?.machine?.cpuUtilizationGate
+  for (const field of ['baselineHostMaximumObserved', 'baselineProcessMaximumObserved']) {
+    requireNumber(failures, result?.machine?.cpuUtilizationGate?.[field], `baseline CPU diagnostic ${field}`,
+      value => finiteNumber(value) && value >= 0 && value <= 1)
+  }
+  const baselineWindows = result?.machine?.cpuUtilizationGate?.baselineWindows
+  if (!Array.isArray(baselineWindows) || baselineWindows.length !== 3) {
+    failures.push('baseline CPU windows')
+  } else {
+    for (const [index, window] of baselineWindows.entries()) {
+      const values = ['host', 'process', 'external'].map(field => window?.[field])
+      if (!values.every(value => finiteNumber(value) && value >= 0 && value <= 1)) {
+        failures.push(`baseline CPU window ${index + 1}`)
+        continue
+      }
+      const expectedExternal = Math.max(0, window.host - window.process)
+      if (Math.abs(window.external - expectedExternal) > 1e-9) failures.push(`baseline CPU external binding ${index + 1}`)
+      if (window.process > window.host + 0.01) failures.push(`baseline CPU counter consistency ${index + 1}`)
+    }
+    const summaryBindings = [
+      ['host', cpuGate?.baselineHostMaximumObserved],
+      ['process', cpuGate?.baselineProcessMaximumObserved],
+      ['external', cpuGate?.baselineExternalMaximumObserved],
+    ]
+    for (const [field, summary] of summaryBindings) {
+      const expected = Math.max(...baselineWindows.map(window => window?.[field]))
+      if (!finiteNumber(expected) || !finiteNumber(summary) || Math.abs(expected - summary) > 1e-9) {
+        failures.push(`baseline CPU ${field} maximum binding`)
+      }
+    }
+  }
   if ([cpuGate?.start, cpuGate?.beforeCandidate, cpuGate?.end, cpuGate?.maximumObserved].every(finiteNumber)
     && cpuGate.maximumObserved < Math.max(cpuGate.start, cpuGate.beforeCandidate, cpuGate.end)) failures.push('maximum CPU utilization binding')
   if (result?.workloads?.focusedRendererIpcWrites !== true) failures.push('focused renderer writer workload')

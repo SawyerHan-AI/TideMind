@@ -11,7 +11,7 @@ import type { ImportProgress, QueueConfig, FileSyncState } from './types.js';
 import { createLogger } from '../../utils/logger.js';
 
 const log = createLogger('logseq');
-import { preprocessFile, updateBlockIndexForFile } from './preprocessor.js';
+import { readAndPreprocessFile, updateBlockIndexForFile } from './preprocessor.js';
 import { segmentContent } from './segmenter.js';
 import {
   getFileState, setFileState, isFileChanged,
@@ -194,34 +194,40 @@ async function processOneFile(
     // digest 期间（LLM 调用，可达分钟级）用户若编辑文件，必须保证写回的
     // content_hash + mtime + size 都来自被 digest 的那份内容，否则：
     //   - 用 digest 后重读的新 hash → 下轮 isFileChanged 判未变更，编辑永久丢失；
-    //   - 用 digest 后重读的新 mtime/size → isFileChanged 的 mtime+size 快速路径
-    //     直接短路，hash 比对都走不到，同样丢失编辑。
+    //   - 用 digest 后重读的新 mtime/size → state 不再描述被 digest 的 snapshot，
+    //     会破坏审计与后续变化判断的一致性。
     // 与 Obsidian 对齐（obsidian/queue.ts 用 preprocessed.rawContent 算 hash）。
     const entrySnapshotStat = getFileStat(filePath);
     // 预处理
-    const preprocessed = preprocessFile(filePath, graphRoot);
-    if (!preprocessed) {
-      // preprocessFile 返回 null 有两种原因,**必须区分否则误杀**(第三轮审计 dataless 守卫):
-      //   (a) dataless / 读不到(iCloud "优化存储"未下载,内容其实还在云端)→ safe-fs !ok → computeFileHash null;
-      //   (b) 文件可读但内容 <10 字(真被清空)。
-      // 只有 (b) 才退休旧节点(F2 防永久孤儿);(a) **绝不退**——会误杀内容还在的真实当前版本,
-      // 保留旧节点 + 旧 sync state,等 iCloud 下载后下一轮重判。computeFileHash 走 safe-fs,dataless 返回 null 不阻塞。
-      if (computeFileHash(filePath) === null) {
+    const preprocessResult = readAndPreprocessFile(filePath, graphRoot);
+    if (preprocessResult.kind !== 'ready') {
+      // unreadable/dataless 必须保留旧节点与旧state；readable但语义为空时，
+      // 分类与hash来自同一次读取，覆盖短文件、清洗后为空、area-only hls等所有null原因。
+      if (preprocessResult.kind === 'unreadable') {
         progress.skippedFiles++;
-        return false; // dataless:保留旧节点 + 旧 sync state,不退不写
+        return false;
       }
+      const emptySnapshotHash = computeContentHash(preprocessResult.rawContent);
+      const emptySnapshotStat = getFileStat(filePath);
+      // The file may become valid between preprocess and commit. Only retire
+      // nodes when the content still matches the empty/short snapshot; an edit
+      // after this comparison remains detectable because we persist the old hash.
+      if (computeFileHash(filePath) !== emptySnapshotHash) return false;
       // 文件可读但 <10 字 → 真清空 → 退休旧 sync state 节点(防永久活跃孤儿),再写空 sync state
-      const retired = retirePriorNodesOnEmpty(db, syncState?.node_ids ?? []);
+      const retired = commitEmptySnapshot(
+        db, syncState?.node_ids ?? [], relPath,
+        emptySnapshotHash, emptySnapshotStat, sourceId,
+      );
       if (retired > 0) log.info(`文件清空到无内容:已退休 ${retired} 个旧节点 (${relPath})`);
-      markFileAsProcessed(db, filePath, relPath, sourceId);
       progress.skippedFiles++;
       return retired > 0; // 有退休=实质处理(changed,允许写 timeline)
     }
+    const preprocessed = preprocessResult.page;
 
     // read-time snapshot:入口 getFileStat 抓到 dataless 返回 null,但 preprocessFile 随后
     // 成功(文件在 stat 与 read 之间被 iCloud 下载)→ 文件此刻可读,在 digest 前(此刻仍是被
     // digest 那份内容)补抓一次 stat,与下面用 rawContent 算的 hash 同源。绝不在 digest 后补抓
-    //(那时已可能被编辑,mtime/size=新值 配 hash=旧值,下轮 isFileChanged 快速路径短路丢编辑)。
+    //(那时已可能被编辑,mtime/size=新值 配 hash=旧值,破坏同一 snapshot 约束)。
     const snapshotStat = entrySnapshotStat ?? getFileStat(filePath);
 
     // 分段 + 过滤空段
@@ -247,10 +253,14 @@ async function processOneFile(
     });
 
     if (segments.length === 0) {
+      const emptySnapshotHash = computeContentHash(preprocessed.rawContent);
+      if (computeFileHash(filePath) !== emptySnapshotHash) return false;
       // F2 修复:掏空到无有效段时先退休旧节点(防永久活跃孤儿),再写空 sync state
-      const retired = retirePriorNodesOnEmpty(db, syncState?.node_ids ?? []);
+      const retired = commitEmptySnapshot(
+        db, syncState?.node_ids ?? [], relPath,
+        emptySnapshotHash, snapshotStat, sourceId,
+      );
       if (retired > 0) log.info(`文件掏空到 0 有效段:已退休 ${retired} 个旧节点 (${relPath})`);
-      markFileAsProcessed(db, filePath, relPath, sourceId);
       progress.skippedFiles++;
       return retired > 0;
     }
@@ -360,9 +370,12 @@ async function processOneFile(
 
     if (allNodeIds.length === 0) {
       // F2 修复:理论不可达(pre-filter 与 digest gate 字节一致,存活段必产节点),兜底退休防孤儿
-      const retired = retirePriorNodesOnEmpty(db, oldNodeIds);
+      const emptySnapshotHash = computeContentHash(preprocessed.rawContent);
+      if (computeFileHash(filePath) !== emptySnapshotHash) return false;
+      const retired = commitEmptySnapshot(
+        db, oldNodeIds, relPath, emptySnapshotHash, snapshotStat, sourceId,
+      );
       log.warn(`文件 digest 未产生新节点:已退休 ${retired} 个旧节点 (${relPath})`);
-      markFileAsProcessed(db, filePath, relPath, sourceId);
       progress.skippedFiles++;
       return retired > 0;
     }
@@ -422,7 +435,7 @@ async function processOneFile(
     //   - snapshotStat 有值 → 用它,mtime/size 与 hash 同源;
     //   - snapshotStat===null → 极罕见(内容读成功却连 read-time 补抓 stat 都失败),
     //     此时不能跳过(节点已 digest 入库,跳过会留孤儿 + 下轮重复 digest),改用
-    //     mtime=0/size=0 + 已算出的 hash:0/0 永不等于真实值,强制下轮走 hash 比对。
+    //     mtime=0/size=0 + 已算出的 hash；下一轮仍以内容 hash 作最终判断。
     // preprocessFile 收窄 rawContent 为必填,直接算 hash,与 Obsidian queue.ts 对齐。
     const snapshotHash = computeContentHash(preprocessed.rawContent);
     const fileState: FileSyncState = {
@@ -487,15 +500,13 @@ export async function processFileChange(
  * 对空文件/短文件/无内容段的文件也写入 sync state，
  * 避免每次重启因 !syncState 而重复判定为"新文件"。
  */
-function markFileAsProcessed(
+function markFileSnapshotAsProcessed(
   db: Database.Database,
-  filePath: string,
   relPath: string,
+  contentHash: string,
+  fileStat: { mtime: number; size: number } | null,
   sourceId?: string,
 ): void {
-  const fileStat = getFileStat(filePath);
-  const contentHash = computeFileHash(filePath);
-  if (contentHash === null) return; // dataless / missing — 不写入空 hash
   const fileState: FileSyncState = {
     file_path: relPath,
     content_hash: contentHash,
@@ -509,18 +520,25 @@ function markFileAsProcessed(
 }
 
 /**
- * F2 修复(2026-06-24 第二轮审计 HIGH):文件清空/掏空到无可 digest 内容时,退休旧 sync state 节点。
- * 否则旧节点永久 active 成孤儿——markFileAsProcessed 把 node_ids 覆盖成 [] 却从不退旧节点,且 mtime+size
- * 命中后 isFileChanged 恒 false 永不重处理,archiveOrphanNodes 只在文件**物理删除**时兜底(清空但仍存在
+ * 文件清空/掏空到无可 digest 内容时，在同一事务中退休旧节点并提交空 snapshot。
+ * 否则旧节点永久 active 成孤儿——markFileSnapshotAsProcessed 把 node_ids 覆盖成 [] 却从不退旧节点，
+ * archiveOrphanNodes 又只在文件**物理删除**时兜底(清空但仍存在
  * 的文件不在删除集)。正中"反复改写/删减 logseq 日记/把日记掏空成指针页"的高频场景(与上轮 ~3000 孤儿同根)。
  * 无新节点作后继 → markNodeSupersededRecordOnly(record-only,不迁移链接);幂等(已 superseded 再标无害)。
  */
-function retirePriorNodesOnEmpty(db: Database.Database, priorNodeIds: string[]): number {
-  let retired = 0;
-  for (const id of priorNodeIds) {
-    try { markNodeSupersededRecordOnly(db, id); retired++; } catch { /* 单点失败不阻断其余退休 */ }
-  }
-  return retired;
+function commitEmptySnapshot(
+  db: Database.Database,
+  priorNodeIds: string[],
+  relPath: string,
+  contentHash: string,
+  fileStat: { mtime: number; size: number } | null,
+  sourceId?: string,
+): number {
+  return db.transaction(() => {
+    for (const id of priorNodeIds) markNodeSupersededRecordOnly(db, id);
+    markFileSnapshotAsProcessed(db, relPath, contentHash, fileStat, sourceId);
+    return priorNodeIds.length;
+  })();
 }
 
 function delay(ms: number): Promise<void> {
