@@ -7,7 +7,10 @@ import { performance } from 'node:perf_hooks'
 import { execFileSync, spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { evaluateMetabolismPerformanceResult } from './evaluate-metabolism-performance-result.mjs'
-import { createCpuUtilizationSampler } from './cpu-utilization-sampler.mjs'
+import {
+  createCpuUtilizationSampler,
+  externalCpuUtilizationBetween,
+} from './cpu-utilization-sampler.mjs'
 
 const require = createRequire(import.meta.url)
 const { build } = require('esbuild')
@@ -42,7 +45,10 @@ async function waitForStableHost(thresholds) {
     || !Number.isSafeInteger(minimumWindowMs) || minimumWindowMs < 500) {
     throw new Error('invalid frozen CPU utilization environment gate')
   }
-  const sampler = createCpuUtilizationSampler({ minimumWindowMs })
+  const sampler = createCpuUtilizationSampler({
+    minimumWindowMs,
+    calculate: externalCpuUtilizationBetween,
+  })
   const deadline = performance.now() + 15 * 60_000
   let consecutiveSamples = 0
   while (consecutiveSamples < 3 && performance.now() < deadline) {

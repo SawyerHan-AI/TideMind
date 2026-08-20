@@ -107,8 +107,8 @@ export function evaluateMetabolismPerformanceResult({ result, thresholds, packag
   const cpuGate = result?.machine?.cpuUtilizationGate
   for (const field of ['start', 'baselineExternalMaximumObserved', 'beforeCandidate', 'maximumObserved', 'end']) {
     const utilization = cpuGate?.[field]
-    if (!requireNumber(failures, utilization, `host CPU utilization ${field}`, value => finiteNumber(value) && value >= 0 && value <= 1)) continue
-    if (utilization > maximumCpuUtilization) failures.push(`host CPU utilization ${field}`)
+    if (!requireNumber(failures, utilization, `external CPU utilization ${field}`, value => finiteNumber(value) && value >= 0 && value <= 1)) continue
+    if (utilization > maximumCpuUtilization) failures.push(`external CPU utilization ${field}`)
   }
   for (const field of ['baselineHostMaximumObserved', 'baselineProcessMaximumObserved']) {
     requireNumber(failures, result?.machine?.cpuUtilizationGate?.[field], `baseline CPU diagnostic ${field}`,

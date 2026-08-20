@@ -158,6 +158,15 @@ describe('packaged metabolism performance gate', () => {
     )
   })
 
+  it('charges only external CPU to every environment boundary', () => {
+    const wrapper = fs.readFileSync(path.join(repoRoot, 'scripts', 'run-packaged-metabolism-worker-performance.mjs'), 'utf8')
+    const runner = fs.readFileSync(path.join(repoRoot, 'scripts', 'run-metabolism-worker-electron-performance.mjs'), 'utf8')
+    const harness = fs.readFileSync(path.join(repoRoot, 'scripts', 'metabolism-worker-electron-performance-harness.ts'), 'utf8')
+    for (const source of [wrapper, runner, harness]) {
+      expect(source).toContain('calculate: externalCpuUtilizationBetween')
+    }
+  })
+
   it('executes the materialized runner with repository dependency resolution', async () => {
     const { materializeMetabolismPerformanceRunner } = await import('../../scripts/materialize-metabolism-performance-runner.mjs')
     const source = fs.readFileSync(path.join(repoRoot, 'scripts', 'run-metabolism-worker-electron-performance.mjs'), 'utf8')
