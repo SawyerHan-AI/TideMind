@@ -150,7 +150,11 @@ export const ALL_TASKS: TaskDefinition[] = [
   // ── 记忆：衰减（关联层完成后再衰减）───────────
   {
     id: 'synaptic-decay',
-    execute: async (db) => { await runSynapticScalingCooperatively(db); },
+    execute: async (db, context) => {
+      await runSynapticScalingCooperatively(db, undefined, {
+        shouldPauseForFairness: () => context?.isForeground() ?? true,
+      });
+    },
     intervalStrategy: 'metabolism-params',
     intervalKey: 'decay_interval_minutes',
     defaultIntervalMinutes: 24 * 60,

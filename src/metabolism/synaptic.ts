@@ -43,8 +43,9 @@ function isCloudSyncActive(db: Database.Database): boolean {
 function* runSynapticScalingBatches(db: Database.Database, testHooks?: {
   beforeFirstLinkBatch?: () => void;
   beforeTimelineEvent?: () => void;
+  nodeBatchDurationMs?: () => number;
   linkBatchDurationMs?: () => number;
-}): Generator<'node' | 'link' | 'link_slow', {
+}): Generator<'node' | 'node_slow' | 'link' | 'link_slow', {
   decayed: number;
 }, void> {
   // M8.5:云同步用户的 heat/link 衰减改由云端 generation 锚点 + 本地 recomputeToGeneration
@@ -82,7 +83,7 @@ function* runSynapticScalingBatches(db: Database.Database, testHooks?: {
   // 并发安全，对每个节点 point-read + UPDATE；10k 节点因此产生约 20k 次 SQL
   // 往返。这里仍在每个短事务内读取当前 connectivity/active 状态，但由 SQLite
   // 对整批集合完成，避免旧快照覆盖的同时把往返降到约 100 次。显式使用主键
-  // index；否则planner会为每个100-node批次扫描整个active-heat index。
+  // index；否则planner会为每个200-node批次扫描整个active-heat index。
   const updateBatch = db.prepare(`
     UPDATE nodes INDEXED BY sqlite_autoindex_nodes_1 SET
       heat = heat * (
@@ -99,7 +100,7 @@ function* runSynapticScalingBatches(db: Database.Database, testHooks?: {
   `);
 
   // 分批事务：每 BATCH_SIZE 个节点一个事务，减少写锁持有时间
-  const BATCH_SIZE = 100;
+  const BATCH_SIZE = 200;
   for (let i = 0; i < nodes.length; i += BATCH_SIZE) {
     const batch = nodes.slice(i, i + BATCH_SIZE);
     const batchStartedAt = Date.now();
@@ -116,9 +117,9 @@ function* runSynapticScalingBatches(db: Database.Database, testHooks?: {
       }).changes;
       // 不再归档 — heat 自然衰减到极低值即可，recall 按 heat 排序自然沉底
     }).immediate();
-    const batchDurationMs = Date.now() - batchStartedAt;
+    const batchDurationMs = testHooks?.nodeBatchDurationMs?.() ?? (Date.now() - batchStartedAt);
     if (batchDurationMs > 50) log.warn(`node decay batch transaction took ${batchDurationMs}ms`);
-    yield 'node';
+    yield batchDurationMs > 10 ? 'node_slow' : 'node';
   }
 
   // --- 链接衰减（赫布学习）---
@@ -133,7 +134,7 @@ function* runSynapticScalingBatches(db: Database.Database, testHooks?: {
   // 看哪些id”；每批WHERE与computed都重新检查当前状态，新建链接留到下个周期。
   // 这把20k links的百毫秒级单writer事务拆成短事务，同时保持并发安全。
   if (testHooks?.beforeFirstLinkBatch) testHooks.beforeFirstLinkBatch();
-  const LINK_BATCH_SIZE = 100;
+  const LINK_BATCH_SIZE = 200;
   const linkIds = db.prepare(
     "SELECT id FROM links WHERE status = 'confirmed' AND deleted = 0 ORDER BY id",
   ).all() as Array<{ id: string }>;
@@ -247,21 +248,24 @@ const yieldToImmediate = (): Promise<void> => new Promise(resolve => setImmediat
 export async function runSynapticScalingCooperatively(
   db: Database.Database,
   yieldBetweenBatches: () => Promise<void> = yieldToImmediate,
-  testHooks?: {
+  options?: {
     beforeFirstLinkBatch?: () => void;
     beforeTimelineEvent?: () => void;
+    nodeBatchDurationMs?: () => number;
     linkBatchDurationMs?: () => number;
     pauseForFairness?: (delayMs: number) => Promise<void>;
+    shouldPauseForFairness?: () => boolean;
   },
 ): Promise<{ decayed: number }> {
-  const batches = runSynapticScalingBatches(db, testHooks);
+  const batches = runSynapticScalingBatches(db, options);
   let committedEffectBatch = false;
-  let linkBatchesSinceFairnessPause = 0;
-  const LINK_BATCHES_PER_FAIRNESS_PAUSE = 5;
-  const NORMAL_LINK_FAIRNESS_PAUSE_MS = 2;
-  const SLOW_LINK_FAIRNESS_PAUSE_MS = 5;
-  const pauseForFairness = testHooks?.pauseForFairness
+  let batchesSinceFairnessPause = 0;
+  const BATCHES_PER_FAIRNESS_PAUSE = 5;
+  const NORMAL_FAIRNESS_PAUSE_MS = 2;
+  const SLOW_FAIRNESS_PAUSE_MS = 5;
+  const pauseForFairness = options?.pauseForFairness
     ?? ((delayMs: number) => new Promise<void>(resolve => setTimeout(resolve, delayMs)));
+  const shouldPauseForFairness = options?.shouldPauseForFairness ?? (() => true);
   try {
     let step = batches.next();
     while (!step.done) {
@@ -269,21 +273,26 @@ export async function runSynapticScalingCooperatively(
       committedEffectBatch = true;
       // The transaction has ended before this cooperative yield. setImmediate
       // keeps Worker throughput high, while a bounded timer pause after a slow
-      // batch or every five normal 100-link batches gives a foreground SQLite
+      // batch or every five normal 200-row batches gives a foreground SQLite
       // waiter an OS scheduling window and prevents this Worker from repeatedly
-      // reacquiring the write lock. Five normal batches cap the pre-pause lock
-      // convoy below the frozen foreground p99 budget; the shorter 2ms normal
-      // pause keeps the total 20k-link fairness budget close to the old 20x5ms
-      // cadence. A slow batch still gets the full 5ms recovery window.
+      // reacquiring the write lock. This must cover nodes as well as links: the
+      // node phase otherwise forms one uninterrupted cross-process lock convoy
+      // before link fairness begins. Five normal batches keep that
+      // convoy below the frozen foreground p99 budget. Doubling the old batch
+      // size halves transaction/yield overhead, so covering both phases keeps
+      // the normal timer budget below the old link-only cadence; a slow batch
+      // still gets a 5ms recovery window.
       await yieldBetweenBatches();
-      if (
-        (step.value === 'link' || step.value === 'link_slow')
-        && (step.value === 'link_slow' || ++linkBatchesSinceFairnessPause === LINK_BATCHES_PER_FAIRNESS_PAUSE)
-      ) {
-        linkBatchesSinceFairnessPause = 0;
-        await pauseForFairness(step.value === 'link_slow'
-          ? SLOW_LINK_FAIRNESS_PAUSE_MS
-          : NORMAL_LINK_FAIRNESS_PAUSE_MS);
+      const slowBatch = step.value === 'node_slow' || step.value === 'link_slow';
+      if (!shouldPauseForFairness()) {
+        // A later focus transition starts a fresh bounded window; background
+        // work must not carry an almost-full counter into foreground mode.
+        batchesSinceFairnessPause = 0;
+      } else if (slowBatch || ++batchesSinceFairnessPause === BATCHES_PER_FAIRNESS_PAUSE) {
+        batchesSinceFairnessPause = 0;
+        await pauseForFairness(slowBatch
+          ? SLOW_FAIRNESS_PAUSE_MS
+          : NORMAL_FAIRNESS_PAUSE_MS);
       }
       step = batches.next();
     }

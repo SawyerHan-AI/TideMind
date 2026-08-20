@@ -6,6 +6,7 @@ import { readReleaseWorkflow } from '../helpers/release-workflow.js'
 describe('metabolism Worker packaged candidate', () => {
   it('is a built bin entry covered by asarUnpack with native dependencies', () => {
     const buildScript = fs.readFileSync(path.join(process.cwd(), 'client/scripts/build-bin.mjs'), 'utf8')
+    const entry = fs.readFileSync(path.join(process.cwd(), 'client/electron/workers/metabolism-worker-entry.ts'), 'utf8')
     const builder = fs.readFileSync(path.join(process.cwd(), 'client/electron-builder.yml'), 'utf8')
     expect(buildScript).toContain("'metabolism-worker.cjs'")
     expect(buildScript).toContain("'metabolism-worker-entry.ts'")
@@ -16,6 +17,8 @@ describe('metabolism Worker packaged candidate', () => {
     expect(builder).toContain('to: "app.asar.unpacked/node_modules"')
     expect(builder).toContain('- "bindings/**/*"')
     expect(builder).toContain('- "file-uri-to-path/**/*"')
+    expect(entry).toContain('taskExecutionContext:')
+    expect(entry).toContain("isForeground: () => scheduleContext?.mode === 'foreground'")
   })
 
   it('pins release actions and verifies each architecture before publishing', () => {

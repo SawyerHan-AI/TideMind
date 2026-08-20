@@ -33,7 +33,7 @@ export interface TaskDefinition {
   /** 任务唯一标识，也用于 metadata 表中的 last_task_{id} */
   id: string;
   /** 执行函数 */
-  execute: (db: Database.Database) => Promise<void>;
+  execute: (db: Database.Database, context?: TaskExecutionContext) => Promise<void>;
   /** 从哪个策略文件读取 interval_minutes */
   intervalStrategy: string;
   /** 策略文件中的参数名（默认 'interval_minutes'） */
@@ -53,6 +53,11 @@ export interface TaskDefinition {
    * 的任务标 true。
    */
   requiresEmbedding?: boolean;
+}
+
+export interface TaskExecutionContext {
+  /** 动态读取当前UI是否真实前台；长任务不能只看attempt开始时的旧快照。 */
+  isForeground: () => boolean;
 }
 
 export interface TaskStatus {
@@ -98,6 +103,8 @@ export interface SchedulerRunOptions {
   continueAfterAttempt?: () => boolean;
   /** 可选的cooperative boundary；Electron用于让focus/suspend事件在task间被处理。 */
   yieldAfterAttempt?: () => Promise<void>;
+  /** Electron Worker传入的动态执行上下文；通用/CLI入口缺省时维持保守行为。 */
+  taskExecutionContext?: TaskExecutionContext;
 }
 
 export class SchedulerClaimRollbackUnconfirmedError extends Error {
@@ -777,7 +784,7 @@ export async function runSchedulerTick(
           taskId: task.id,
           claimKey: `last_task_${task.id}`,
         },
-        () => task.execute(db),
+        () => task.execute(db, options.taskExecutionContext),
       );
       // task effect已经明确成功；claim现在是已结算的调度时间戳。后续仅日志、
       // observer或health写入即使遇到BUSY，也不能把它误判成未回滚claim。
