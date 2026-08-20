@@ -17,7 +17,10 @@ jobs:
           cache: 'npm'
 
       - run: npm ci
-      - run: cd client && npm ci
+      # Linux CI only needs the client dependency graph for shared tests/builds.
+      # The production-only secure-store-mac package correctly rejects Linux,
+      # so bypass platform checks without running any native install scripts.
+      - run: cd client && npm ci --force --ignore-scripts
       - run: npm run build
       - run: npm test
 
