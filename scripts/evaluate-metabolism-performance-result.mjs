@@ -50,8 +50,8 @@ const REQUIRED_WORKLOADS = [
 export function evaluateMetabolismPerformanceResult({ result, thresholds, packaged, writesPerKind, maximumCpuUtilization }) {
   const failures = []
   if (!packaged) failures.push('packaged Electron candidate not exercised by development harness')
-  if (thresholds?.protocolVersion !== 2 || result?.protocolVersion !== 2) failures.push('protocol version')
-  if (thresholds?.status !== 'refrozen-before-external-cpu-fix-results') failures.push('threshold frozen status')
+  if (thresholds?.protocolVersion !== 3 || result?.protocolVersion !== 3) failures.push('protocol version')
+  if (thresholds?.status !== 'frozen-before-multitrial-contention-sampling-results') failures.push('threshold frozen status')
   if (thresholds?.scope !== 'local packaged Electron metabolism Worker candidate; not a release SLO') failures.push('threshold scope')
   if (!Array.isArray(thresholds?.requiredWorkloads)
     || thresholds.requiredWorkloads.length !== REQUIRED_WORKLOADS.length
@@ -144,6 +144,40 @@ export function evaluateMetabolismPerformanceResult({ result, thresholds, packag
     && cpuGate.maximumObserved < Math.max(cpuGate.start, cpuGate.beforeCandidate, cpuGate.end)) failures.push('maximum CPU utilization binding')
   if (result?.workloads?.focusedRendererIpcWrites !== true) failures.push('focused renderer writer workload')
   if (result?.workloads?.backgroundFullBacklog !== true) failures.push('background full backlog workload')
+
+  const contentionRuns = result?.contentionRuns
+  if (!Array.isArray(contentionRuns) || contentionRuns.length !== 3) failures.push('contention runs')
+  const delayFields = ['p50', 'p95', 'p99', 'max']
+  const writerKinds = ['renderer', 'note', 'cloud']
+  if (Array.isArray(contentionRuns) && contentionRuns.length === 3) {
+    for (const [index, run] of contentionRuns.entries()) {
+      const eventLoop = run?.eventLoopDelayMs
+      if (!delayFields.every(field => nonnegativeNumber(eventLoop?.[field]))
+        || !(eventLoop.p50 <= eventLoop.p95 && eventLoop.p95 <= eventLoop.p99 && eventLoop.p99 <= eventLoop.max)) {
+        failures.push(`invalid contention run ${index + 1} event-loop summary`)
+      }
+      for (const kind of writerKinds) {
+        const writer = run?.foregroundWriterDelayMs?.[kind]
+        if (writer?.count !== writesPerKind
+          || !delayFields.every(field => nonnegativeNumber(writer?.[field]))
+          || !(writer.p50 <= writer.p95 && writer.p95 <= writer.p99 && writer.p99 <= writer.max)) {
+          failures.push(`invalid contention run ${index + 1} ${kind} writer summary`)
+        }
+      }
+    }
+    for (const field of delayFields) {
+      const expected = percentile(contentionRuns.map(run => run?.eventLoopDelayMs?.[field]), 0.5)
+      if (!approximatelyEqual(result?.eventLoopDelayMs?.[field], expected)) failures.push(`event-loop ${field} median binding`)
+    }
+    for (const kind of writerKinds) {
+      for (const field of delayFields) {
+        const expected = percentile(contentionRuns.map(run => run?.foregroundWriterDelayMs?.[kind]?.[field]), 0.5)
+        if (!approximatelyEqual(result?.foregroundWriterDelayMs?.[kind]?.[field], expected)) {
+          failures.push(`${kind} writer ${field} median binding`)
+        }
+      }
+    }
+  }
 
   const eventLoopP95 = result?.eventLoopDelayMs?.p95
   const eventLoopP99 = result?.eventLoopDelayMs?.p99
