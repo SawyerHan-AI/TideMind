@@ -153,7 +153,8 @@ describe('migration v33 — connection-aware LLM persistence', () => {
     const db = new Database(':memory:');
     ensureSchema(db);
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(33);
+    // 本测试冻结 v33 字段；后续 additive migration 不应要求它永远是最新版本。
+    expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(33);
     expect(columns(db, 'model_connections')).toEqual(expect.arrayContaining([
       'status_reason',
       'cli_path',
@@ -190,7 +191,7 @@ describe('migration v33 — connection-aware LLM persistence', () => {
     ensureSchema(db);
 
     expect((db.prepare("SELECT value FROM metadata WHERE key='schema_version'").get() as { value: string }).value)
-      .toBe('33');
+      .toBe(String(CURRENT_SCHEMA_VERSION));
     expect(db.prepare("SELECT status FROM pending_digests WHERE id='pd_1'").get())
       .toEqual({ status: 'failed' });
     expect(() => db.prepare(`

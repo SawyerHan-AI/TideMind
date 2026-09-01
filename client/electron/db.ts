@@ -10,6 +10,7 @@ import {
   ensurePendingDigestsV33,
   execIgnoringDuplicateColumn,
 } from '@server/db/migration-helpers.js'
+import { ensureAgentIntegrationSchema } from '@server/db/agent-integration-schema.js'
 import { createOutboxTable } from './cloud/outbox.js'
 
 let db: Database.Database | null = null
@@ -181,10 +182,12 @@ function copyDefaultFiles(dataDir: string): void {
  *
  * 统一使用单一连接，写操作通过 digest 通道保证副作用完整性
  */
-export function getClientDb(): Database.Database {
+export function getClientDb(forcedDataDir?: string): Database.Database {
   if (db) return db
 
-  const dataDir = getDataDir()
+  // Hermetic UI audit supplies a canonical fixture directory and must not
+  // consult config.toml's general.data_dir or run the ordinary HOME migration.
+  const dataDir = resolveClientDataDir(forcedDataDir)
 
   // 确保目录存在
   ensureDataDirs(dataDir)
@@ -479,6 +482,8 @@ export function getClientDb(): Database.Database {
       );
       CREATE INDEX IF NOT EXISTS idx_pending_digests_status ON pending_digests(status, next_retry_at);
     `)
+    // 本机 Agent 托管表与 daemon 共用唯一 schema；不会创建 cloud sync trigger。
+    ensureAgentIntegrationSchema(newDb)
     newDb.close()
   }
 
@@ -705,6 +710,8 @@ export function getClientDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_notion_pending_retry_source
       ON notion_pending_retry(source_id, status);
   `)
+  // repair/fallback 路径也必须补齐 v34 本机 Agent 表与最低 writer protocol。
+  ensureAgentIntegrationSchema(tmpDb)
   // 迁移：补齐可能缺失的列(幂等)。
   // **不要**写成 `try { ALTER } catch {}` —— 空 catch 会同时吞 "duplicate column"
   // (合法)和 SQLITE_BUSY / SQLITE_FULL / SQLITE_CORRUPT(真错),导致磁盘满 / 数据
@@ -798,6 +805,10 @@ export function getClientDb(): Database.Database {
   createOutboxTable(db)
 
   return db
+}
+
+export function resolveClientDataDir(forcedDataDir?: string): string {
+  return forcedDataDir ? path.resolve(forcedDataDir) : getDataDir()
 }
 
 export function closeClientDb(): void {

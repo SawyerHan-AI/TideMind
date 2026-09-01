@@ -1,6 +1,6 @@
 {
   "name": "tidemind",
-  "version": "0.2.89",
+  "version": "0.2.90",
   "description": "Tide Mind — 基于活图的认知系统，通过 MCP 协议为 AI 工具提供记忆服务",
   "type": "module",
   "bin": {
@@ -14,6 +14,10 @@
     "daemon": "tsx src/daemon.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:agent-integration-ui-e2e": "npm run build && npm --prefix client run build && node scripts/run-agent-integration-electron-ui-e2e.mjs",
+    "audit:agent-integration-ui-e2e": "npm run build && npm --prefix client run build && node scripts/run-agent-integration-electron-ui-e2e.mjs --keep",
+    "measure:agent-integration": "node scripts/measure-agent-integration-performance.mjs",
+    "verify:agent-integration-gates": "node scripts/verify-agent-integration-gate-receipts.mjs",
     "lint": "eslint src/",
     "measure:metabolism": "npm run build && node --expose-gc scripts/measure-metabolism-phase0.mjs --check docs/design/evidence/local-metabolism-performance-thresholds.json",
     "measure:metabolism:electron": "npm --prefix client run build:bin && node scripts/run-metabolism-worker-electron-performance.mjs",

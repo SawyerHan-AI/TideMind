@@ -128,6 +128,270 @@ export interface PluginStatusResult {
   registered?: boolean | null
 }
 
+export type AgentIntegrationAccessLevel = 'complete' | 'basic' | 'partial' | 'unconnected'
+export type AgentIntegrationStatusGroup =
+  | 'available'
+  | 'limited'
+  | 'awaiting_connection'
+  | 'awaiting_verification'
+  | 'processing'
+  | 'needs_attention'
+  | 'paused'
+  | 'disconnected'
+export type AgentIntegrationComponentKey = 'instruction' | 'memory_tools' | 'lifecycle'
+export type AgentIntegrationComponentState =
+  | 'verified'
+  | 'configured'
+  | 'verification_stale'
+  | 'new_session'
+  | 'confirmation_required'
+  | 'missing'
+  | 'conflict'
+  | 'unsupported'
+  | 'unconnected'
+
+export interface AgentIntegrationComponentDto {
+  key: AgentIntegrationComponentKey
+  state: AgentIntegrationComponentState
+  implementationTypes: string[]
+  targetLabel: string | null
+  lastVerifiedAt: string | null
+}
+
+export interface AgentIntegrationInstallationDto {
+  id: string
+  familyId: string
+  hostVariant: string
+  variantLabel: string
+  displayName: string
+  profileLabel: string | null
+  version: string | null
+  desiredState: 'unmanaged' | 'managed' | 'disabled' | 'removed'
+  /** True only when the production composition has an enabled, writable adapter for this host. */
+  manageable: boolean
+  statusGroup: AgentIntegrationStatusGroup
+  statusReason: string
+  accessLevel: AgentIntegrationAccessLevel
+  accessIsHistorical: boolean
+  components: AgentIntegrationComponentDto[]
+  unreadEventCount: number
+  lastDetectedAt: string | null
+  lastVerifiedAt: string | null
+  lastRepairedAt: string | null
+  /** Latest still-valid runtime evidence bound to this exact managed Installation. */
+  lastRealUseAt: string | null
+}
+
+export interface AgentIntegrationFamilyDto {
+  id: string
+  displayName: string
+  installationIds: string[]
+  statusGroup: AgentIntegrationStatusGroup
+  accessLevels: AgentIntegrationAccessLevel[]
+  needsAttentionCount: number
+  unreadEventCount: number
+}
+
+export interface AgentIntegrationSnapshotDto {
+  /** Present only in the hermetic visual-audit harness; never a host verification claim. */
+  fixtureMode?: 'isolated_ui_audit'
+  /** Confirmed-uninstalled Installations retained for read-only audit/history views. */
+  historyInstallations: AgentIntegrationInstallationDto[]
+  families: AgentIntegrationFamilyDto[]
+  installations: AgentIntegrationInstallationDto[]
+  summary: {
+    familyCount: number
+    installationCount: number
+    availableCount: number
+    needsAttentionCount: number
+    awaitingConnectionCount: number
+  }
+  lastScanAt: string | null
+}
+
+export interface AgentIntegrationScanResultDto {
+  snapshot: AgentIntegrationSnapshotDto
+  detectedCount: number
+  newlyDiscoveredCount: number
+  unresolved: Array<{ hostVariants: string[]; reason: string; summary: string }>
+}
+
+export interface AgentIntegrationPlanTargetDto {
+  componentKey: AgentIntegrationComponentKey
+  action: 'create' | 'update' | 'remove' | 'detach' | 'invoke'
+  scope: 'user' | 'project' | 'system' | 'other'
+  targetLabel: string | null
+  risk: 'read_only' | 'low' | 'elevated' | 'high'
+  commandCategory: 'none' | 'file_write' | 'host_cli' | 'plugin_install' | 'host_trust' | 'admin'
+  reversible: boolean
+  selector?: string
+  executableLabel?: string
+  args?: string[]
+  sharedImpact?: {
+    outcome: 'consumer_detach_only'
+    remainsVisibleForCurrentInstallation: boolean
+    consumers: Array<{
+      installationId: string
+      displayName: string
+      variantLabel: string
+      profileLabel: string | null
+      componentKey: AgentIntegrationComponentKey
+    }>
+  }
+}
+
+export interface AgentIntegrationPlanInstallationDto {
+  installationId: string
+  displayName: string
+  desiredCapability: 0 | 1 | 2 | 3 | 4
+  componentKeys: AgentIntegrationComponentKey[]
+  targets: AgentIntegrationPlanTargetDto[]
+  requiredUserActions: string[]
+  diagnostics: string[]
+}
+
+export interface AgentIntegrationPlanPreviewDto {
+  planHash: string
+  operation: 'connect' | 'disconnect'
+  installations: AgentIntegrationPlanInstallationDto[]
+  expiresAt: string
+}
+
+export interface AgentIntegrationApplyItemDto {
+  installationId: string
+  status: 'awaiting_consent' | 'awaiting_verification' | 'paused' | 'committed' | 'needs_recovery' | 'failed' | 'interrupted'
+  completion?: 'disconnected' | 'detached_shared_visible'
+  runId?: string
+  reason?: string
+}
+
+export interface AgentIntegrationApplyResultDto {
+  planHash: string
+  results: AgentIntegrationApplyItemDto[]
+}
+
+export interface AgentIntegrationConnectOptionsDto {
+  /** Lifecycle is the only optional capability in the first managed rollout. */
+  withoutLifecycleInstallationIds?: string[]
+}
+
+export interface AgentIntegrationApplyTaskDto {
+  id: string
+  planHash: string
+  installationIds: string[]
+  pendingInstallationIds: string[]
+  results: AgentIntegrationApplyItemDto[]
+  state: 'running' | 'completed'
+  startedAt: string
+  completedAt: string | null
+  /** Stable feed identity; task:<id> or run:<coordinator-run-id>. */
+  feedKey?: string
+}
+
+export interface AgentIntegrationApplyTaskPageRequestDto {
+  limit?: number
+  cursor?: string
+}
+
+export interface AgentIntegrationApplyTaskPageDto {
+  tasks: AgentIntegrationApplyTaskDto[]
+  attentionCount: number
+  activeCount: number
+  totalCount: number
+  startIndex: number
+  hasMore: boolean
+  hasPrevious: boolean
+  nextCursor: string | null
+  previousCursor: string | null
+}
+
+export interface AgentIntegrationInboxDto {
+  unreadCount: number
+  actionableUnreadCount: number
+  startupUnreadCount: number
+  events: AgentIntegrationEventDto[]
+  /** Events whose durable notification policy requires a startup fallback. */
+  startupEvents: AgentIntegrationEventDto[]
+}
+
+export interface AgentIntegrationUserNotificationDto {
+  title: string
+  body: string
+  level: 'info' | 'warning' | 'error'
+  eventId: string
+  installationId: string | null
+}
+
+export interface AgentIntegrationCircuitResetPreviewDto {
+  planHash: string
+  initiatingInstallationId: string
+  artifactCount: number
+  hasSharedArtifacts: boolean
+  affectedInstallations: Array<{
+    installationId: string
+    displayName: string
+    variantLabel: string
+    profileLabel: string | null
+    componentKeys: AgentIntegrationComponentKey[]
+  }>
+  expiresAt: string
+}
+
+export interface AgentIntegrationEventDto {
+  id: string
+  installationId: string | null
+  componentKey: AgentIntegrationComponentKey | null
+  kind: string
+  severity: 'info' | 'warning' | 'error'
+  state: 'unread' | 'read' | 'archived'
+  createdAt: string
+  readAt: string | null
+}
+
+export interface AgentIntegrationDetailDto {
+  installation: AgentIntegrationInstallationDto
+  configRootLabel: string | null
+  events: AgentIntegrationEventDto[]
+  technical?: {
+    agentId: string | null
+    installKey: string
+    distributionId: string | null
+    reconcileState: string
+    latestRun: {
+      planHash: string
+      state: string
+      adapterVersion: string
+      catalogVersion: string
+      projectionVersion: string
+      selectorSchemaVersion: string
+    } | null
+    components: Array<{
+      componentKey: AgentIntegrationComponentKey
+      targetLabel: string | null
+      ownershipSelector: string | null
+      projectionVersion: string | null
+      selectorSchemaVersion: string | null
+      artifactState: string | null
+      ownedHash: string | null
+      observedHash: string | null
+      lastAppliedAt: string | null
+      lastReadAt: string | null
+    }>
+  }
+}
+
+export interface AgentIntegrationSupportProductDto {
+  id: string
+  displayName: string
+  variants: Array<{
+    id: string
+    displayName: string
+    hostKind: string
+    maturity: 'detectable' | 'guided' | 'managed'
+    maximumAccessLevel: AgentIntegrationAccessLevel
+  }>
+}
+
 export interface AppApi {
   onDataChanged: (callback: (payload: { scopes: string[] }) => void) => () => void
   nodes: {
@@ -399,6 +663,7 @@ export interface AppApi {
   app: {
     getVersion: () => Promise<string>
     openExternal: (url: string) => Promise<void>
+    setLanguage: (language: string) => Promise<{ success: boolean; language?: string; error?: string }>
   }
   updater: {
     getState: () => Promise<UpdaterState>
@@ -447,5 +712,36 @@ export interface AppApi {
      * 设计 doc: docs/design/brain-recall-redesign-2026-05.md §8.4
      */
     markSkillCopied: (agentId: string, toolType?: string) => Promise<{ success: boolean; error?: string }>
+  }
+  agentIntegrations: {
+    onOpenInstallation: (callback: (installationId: string) => void) => () => void
+    onTaskProgress: (callback: (task: AgentIntegrationApplyTaskDto) => void) => () => void
+    onNotification: (callback: (notification: AgentIntegrationUserNotificationDto) => void) => () => void
+    snapshot: () => Promise<AgentIntegrationSnapshotDto>
+    scan: () => Promise<AgentIntegrationScanResultDto>
+    previewConnect: (
+      installationIds: string[],
+      includeTechnicalDetails?: boolean,
+      frozenPlanHash?: string,
+      options?: AgentIntegrationConnectOptionsDto,
+    ) => Promise<AgentIntegrationPlanPreviewDto>
+    applyConnect: (planHash: string, installationIds: string[]) => Promise<AgentIntegrationApplyResultDto>
+    startApplyConnect: (planHash: string, installationIds: string[]) => Promise<AgentIntegrationApplyTaskDto>
+    getApplyTask: (taskId: string) => Promise<AgentIntegrationApplyTaskDto>
+    listApplyTasks: (request?: AgentIntegrationApplyTaskPageRequestDto) => Promise<AgentIntegrationApplyTaskPageDto>
+    inbox: (limit?: number) => Promise<AgentIntegrationInboxDto>
+    pause: (installationId: string) => Promise<AgentIntegrationInstallationDto>
+    resume: (installationId: string) => Promise<AgentIntegrationInstallationDto>
+    previewResetAutoRestore: (installationId: string) => Promise<AgentIntegrationCircuitResetPreviewDto>
+    resetAutoRestore: (planHash: string, installationId: string) => Promise<AgentIntegrationInstallationDto>
+    previewDisconnect: (installationId: string, includeTechnicalDetails?: boolean) => Promise<AgentIntegrationPlanPreviewDto>
+    disconnect: (planHash: string, installationId: string) => Promise<AgentIntegrationApplyResultDto>
+    detail: (installationId: string, includeTechnicalDetails?: boolean) => Promise<AgentIntegrationDetailDto>
+    listEvents: (installationId: string, state?: 'unread' | 'read' | 'archived', limit?: number) => Promise<AgentIntegrationEventDto[]>
+    markEventRead: (eventId: string) => Promise<boolean>
+    markInstallationEventsRead: (installationId: string) => Promise<number>
+    copyComponentPath: (installationId: string, componentKey: AgentIntegrationComponentKey) => Promise<boolean>
+    revealComponentPath: (installationId: string, componentKey: AgentIntegrationComponentKey) => Promise<boolean>
+    supportCatalog: () => Promise<AgentIntegrationSupportProductDto[]>
   }
 }

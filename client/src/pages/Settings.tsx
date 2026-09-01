@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, type KeyboardEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Palette, Plug, Cpu, Sliders, Database, Info, Cloud, User } from 'lucide-react'
@@ -11,6 +11,7 @@ import { DataManagement } from '../components/settings/DataManagement'
 import { AboutSection } from '../components/settings/AboutSection'
 import { CloudSyncSettings } from '../components/settings/CloudSyncSettings'
 import { AccountSettings } from '../components/settings/AccountSettings'
+import { subscribeAgentIntegrationInboxRefresh } from '../lib/agent-integration-inbox-refresh'
 
 // ============================================================
 // Tab definitions (grouped with separators)
@@ -53,6 +54,25 @@ const TABS = TAB_ITEMS.filter((t): t is TabDef => !('separator' in t))
 export function Settings() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { t } = useTranslation()
+  const tabRefs = useRef(new Map<string, HTMLButtonElement>())
+  const [agentUnreadCount, setAgentUnreadCount] = useState(0)
+
+  useEffect(() => {
+    let active = true
+    const refresh = () => {
+      void window.api.agentIntegrations.inbox(1).then(inbox => {
+        if (active) setAgentUnreadCount(inbox.actionableUnreadCount)
+      }).catch(() => {})
+    }
+    refresh()
+    const unsubscribe = window.api.agentIntegrations.onNotification(refresh)
+    const unsubscribeVisibleRefresh = subscribeAgentIntegrationInboxRefresh(window, document, refresh)
+    return () => {
+      active = false
+      unsubscribe()
+      unsubscribeVisibleRefresh()
+    }
+  }, [])
 
   // 从 URL 参数读取初始 tab，支持 /settings?tab=model&sub=connection
   const urlTab = searchParams.get('tab') || 'general'
@@ -87,37 +107,89 @@ export function Settings() {
     }
   }
 
+  const selectTab = (id: string, focus = false) => {
+    handleTabChange(id)
+    if (focus) requestAnimationFrame(() => tabRefs.current.get(id)?.focus())
+  }
+
+  const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, id: string) => {
+    const index = TABS.findIndex(item => item.id === id)
+    if (index < 0) return
+    let next: number
+    if (event.key === 'ArrowRight') next = (index + 1) % TABS.length
+    else if (event.key === 'ArrowLeft') next = (index - 1 + TABS.length) % TABS.length
+    else if (event.key === 'Home') next = 0
+    else if (event.key === 'End') next = TABS.length - 1
+    else return
+    event.preventDefault()
+    selectTab(TABS[next].id, true)
+  }
+
   return (
     <div className="space-y-4">
       {/* Tabs */}
-      <div className="flex items-center gap-0.5 pb-0" style={{ borderBottom: '1px solid var(--border-faint)' }}>
-        {TAB_ITEMS.map((item, idx) => {
-          if ('separator' in item) {
+      <div
+        className="overflow-x-auto overscroll-x-contain"
+        style={{ borderBottom: '1px solid var(--border-faint)' }}
+      >
+        <div
+          className="flex w-max min-w-full items-center gap-0.5 pb-0"
+          role="tablist"
+          aria-label={t('settings:title', 'Settings')}
+        >
+          {TAB_ITEMS.map((item, idx) => {
+            if ('separator' in item) {
+              return (
+                <div
+                  key={`sep-${idx}`}
+                  aria-hidden="true"
+                  className="w-px h-4 mx-1 flex-shrink-0"
+                  style={{ background: 'var(--border-faint)' }}
+                />
+              )
+            }
+            const tb = item
             return (
-              <div key={`sep-${idx}`} className="w-px h-4 mx-1 flex-shrink-0" style={{ background: 'var(--border-faint)' }} />
+              <button
+                key={tb.id}
+                ref={element => {
+                  if (element) tabRefs.current.set(tb.id, element)
+                  else tabRefs.current.delete(tb.id)
+                }}
+                id={`settings-tab-${tb.id}`}
+                role="tab"
+                aria-selected={tab === tb.id}
+                aria-controls={`settings-panel-${tb.id}`}
+                tabIndex={tab === tb.id ? 0 : -1}
+                onClick={() => selectTab(tb.id)}
+                onKeyDown={event => handleTabKeyDown(event, tb.id)}
+                className={`flex flex-shrink-0 items-center gap-1.5 px-3 py-2 text-xs font-medium transition-all duration-150 relative ${
+                  tab === tb.id ? 'text-white' : 'text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                <tb.icon size={13} />
+                {t(tb.labelKey)}
+                {tb.id === 'external' && agentUnreadCount > 0 && (
+                  <>
+                    <span className="h-1.5 w-1.5 rounded-full bg-red-400" aria-hidden />
+                    <span className="sr-only">{t('settings:agent.managed.unreadUpdates', { count: agentUnreadCount })}</span>
+                  </>
+                )}
+                {tab === tb.id && (
+                  <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full" style={{ background: 'var(--indicator)' }} />
+                )}
+              </button>
             )
-          }
-          const tb = item
-          return (
-            <button
-              key={tb.id}
-              onClick={() => handleTabChange(tb.id)}
-              className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-all duration-150 relative ${
-                tab === tb.id ? 'text-white' : 'text-gray-500 hover:text-gray-300'
-              }`}
-            >
-              <tb.icon size={13} />
-              {t(tb.labelKey)}
-              {tab === tb.id && (
-                <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full" style={{ background: 'var(--indicator)' }} />
-              )}
-            </button>
-          )
-        })}
+          })}
+        </div>
       </div>
 
       <motion.div
         key={tab}
+        id={`settings-panel-${tab}`}
+        role="tabpanel"
+        aria-labelledby={`settings-tab-${tab}`}
+        tabIndex={0}
         initial={{ opacity: 0, y: 6 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2 }}

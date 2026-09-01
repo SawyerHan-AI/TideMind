@@ -40,14 +40,41 @@ import { getShimPath, getHookScriptPath, getPreCompactHookScriptPath, getPostCom
 import { listAgents } from '@server/db/agents.js'
 import { safeReadTextFileSync } from '@server/utils/safe-fs.js'
 import { scanTomlTableHeaders } from '../ipc/toml-utils'
+import {
+  buildLegacyMutationDomain,
+  createLegacyWriterGuard,
+  type LegacyMutationScope,
+  type LegacyWriterGuard,
+  type LegacyWriterMode,
+} from '../agent-integration/legacy-writer'
 
 const log = createLogger('plugin-self-heal')
 
-interface HealResult {
+export interface HealResult {
   scanned: number
   patched: number
   errors: { file: string; error: string }[]
+  blocked: {
+    file: string
+    adapterId: string
+    domain: string
+    reason: string
+  }[]
 }
+
+export interface SelfHealOptions {
+  mode?: LegacyWriterMode
+  observeOnlyAdapters?: readonly string[]
+  writerGuard?: LegacyWriterGuard
+}
+
+/**
+ * Legacy self-heal rewrites whole third-party documents and cannot share the
+ * v34 mutation-domain/CAS protocol. Production startup must stay read-only.
+ */
+export const STARTUP_SELF_HEAL_OPTIONS: Readonly<SelfHealOptions> = Object.freeze({
+  mode: 'observe-only',
+})
 
 function safeReadJson(filePath: string): any | null {
   let raw: string
@@ -100,6 +127,26 @@ function safeWriteText(filePath: string, content: string): void {
     try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath) } catch { /* ignore */ }
     throw err
   }
+}
+
+/**
+ * 旧 self-heal 在每一个外部副作用前都重读 writer fence。不能只在
+ * selfHealPlugins 入口检查一次，否则长扫描期间发生 cutover 仍会被旧 writer 覆盖。
+ */
+function legacyWriteAllowed(
+  filePath: string,
+  adapterId: string,
+  result: HealResult,
+  guard?: LegacyWriterGuard,
+): boolean {
+  if (!guard) return true
+  const scope: LegacyMutationScope = { adapterId, target: filePath, selector: 'document' }
+  const decision = guard.canWrite(scope)
+  if (decision.allowed) return true
+  const domain = decision.domain ?? buildLegacyMutationDomain(scope)
+  result.blocked.push({ file: filePath, adapterId, domain, reason: decision.reason })
+  log.warn(`self-heal observe-only: ${adapterId} ${filePath} — ${decision.reason}`)
+  return false
 }
 
 /**
@@ -239,7 +286,11 @@ function preCompactCommandNeedsPatch(command: string, shimPath: string, preCompa
  *
  * @internal exported only for unit testing.
  */
-export function healClaudeCodeSkillFile(pluginDir: string, result: HealResult): void {
+export function healClaudeCodeSkillFile(
+  pluginDir: string,
+  result: HealResult,
+  guard?: LegacyWriterGuard,
+): void {
   const skillFilePath = path.join(pluginDir, 'skills', 'tidemind', 'SKILL.md')
   if (!fs.existsSync(skillFilePath)) return
 
@@ -284,6 +335,7 @@ export function healClaudeCodeSkillFile(pluginDir: string, result: HealResult): 
   const newContent = buildClaudeCodeSkillFrontmatter(pluginName, skillDescription) + body
 
   try {
+    if (!legacyWriteAllowed(skillFilePath, 'claude-code', result, guard)) return
     safeWriteText(skillFilePath, newContent)
     result.patched++
     log.info(`patched SKILL.md frontmatter: ${skillFilePath}`)
@@ -300,6 +352,7 @@ function healClaudeCodePlugins(
   preCompactScriptPath: string,
   postCompactScriptPath: string,
   result: HealResult,
+  guard?: LegacyWriterGuard,
 ): void {
   if (!fs.existsSync(pluginsRoot)) return
   let entries: string[] = []
@@ -345,9 +398,11 @@ function healClaudeCodePlugins(
 
       if (changed) {
         try {
-          safeWriteJson(mcpPath, cfg)
-          result.patched++
-          log.info(`patched: ${mcpPath}`)
+          if (legacyWriteAllowed(mcpPath, 'claude-code', result, guard)) {
+            safeWriteJson(mcpPath, cfg)
+            result.patched++
+            log.info(`patched: ${mcpPath}`)
+          }
         } catch (err: any) {
           result.errors.push({ file: mcpPath, error: err.message })
         }
@@ -426,9 +481,11 @@ function healClaudeCodePlugins(
 
         if (changed) {
           try {
-            safeWriteJson(hooksPath, cfg)
-            result.patched++
-            log.info(`patched: ${hooksPath}`)
+            if (legacyWriteAllowed(hooksPath, 'claude-code', result, guard)) {
+              safeWriteJson(hooksPath, cfg)
+              result.patched++
+              log.info(`patched: ${hooksPath}`)
+            }
           } catch (err: any) {
             result.errors.push({ file: hooksPath, error: err.message })
           }
@@ -439,17 +496,17 @@ function healClaudeCodePlugins(
     // 4) SKILL.md frontmatter:老版本 plugin 只生成了 description,缺
     //    when_to_use / allowed-tools 字段。补齐后下面 syncPluginVersion
     //    会把 SKILL.md 内容哈希反映到 plugin.json 的 version,从而失效缓存。
-    healClaudeCodeSkillFile(pluginDir, result)
+    healClaudeCodeSkillFile(pluginDir, result, guard)
 
     // 5) plugin.json#version 必须跟 hooks.json/.mcp.json/SKILL.md 内容同步,
     //    Claude Code 在 ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/
     //    下按 version 缓存,若 version 不变,缓存里的旧 hooks.json 永不更新。
-    syncPluginVersion(pluginDir, result)
+    syncPluginVersion(pluginDir, result, guard)
 
     // 6) Claude Code 的本地缓存可能仍是旧版本的拷贝。即便我们 bump 了 plugin.json
     //    的 version,Claude 可能不会立即丢弃旧 cache。为兜底:把源镜像同步进
     //    cache 里的所有 version 目录,让"现存任何版本被读到"都是正确内容。
-    mirrorPluginToClaudeCache(pluginsRoot, name, result)
+    mirrorPluginToClaudeCache(pluginsRoot, name, result, os.homedir(), guard)
   }
 }
 
@@ -460,7 +517,11 @@ function healClaudeCodePlugins(
  *
  * @internal exported only for unit testing.
  */
-export function syncPluginVersion(pluginDir: string, result: HealResult): void {
+export function syncPluginVersion(
+  pluginDir: string,
+  result: HealResult,
+  guard?: LegacyWriterGuard,
+): void {
   const pluginJsonPath = path.join(pluginDir, '.claude-plugin', 'plugin.json')
   if (!fs.existsSync(pluginJsonPath)) return
   const cfg = safeReadJson(pluginJsonPath)
@@ -470,6 +531,7 @@ export function syncPluginVersion(pluginDir: string, result: HealResult): void {
   result.scanned++
   cfg.version = expected
   try {
+    if (!legacyWriteAllowed(pluginJsonPath, 'claude-code', result, guard)) return
     safeWriteJson(pluginJsonPath, cfg)
     result.patched++
     log.info(`bumped plugin version to ${expected}: ${pluginJsonPath}`)
@@ -507,6 +569,7 @@ export function mirrorPluginToClaudeCache(
   pluginDirName: string,
   result: HealResult,
   homeDir: string = os.homedir(),
+  guard?: LegacyWriterGuard,
 ): void {
   const sourcePluginDir = path.join(pluginsRoot, pluginDirName)
   // pluginDirName 是 `claude-code-<agentId>`,但 marketplace.json 里的
@@ -566,7 +629,7 @@ export function mirrorPluginToClaudeCache(
         log.warn(`skipping out-of-root version dir: ${versionDir}`)
         continue
       }
-      mirrorVersionDir(sourcePluginDir, versionDir, result)
+      mirrorVersionDir(sourcePluginDir, versionDir, result, guard)
     }
   }
 }
@@ -583,7 +646,12 @@ function isPathWithinRoot(candidate: string, root: string): boolean {
     || resolvedCand.startsWith(resolvedRoot + sep)
 }
 
-function mirrorVersionDir(sourcePluginDir: string, versionDir: string, result: HealResult): void {
+function mirrorVersionDir(
+  sourcePluginDir: string,
+  versionDir: string,
+  result: HealResult,
+  guard?: LegacyWriterGuard,
+): void {
   for (const rel of CACHE_MIRRORED_FILES) {
     const src = path.join(sourcePluginDir, rel)
     const dst = path.join(versionDir, rel)
@@ -602,6 +670,7 @@ function mirrorVersionDir(sourcePluginDir: string, versionDir: string, result: H
     try {
       // 用与 safeWriteJson 同形态的原子写,文本/JSON 通用——
       // 直接写源端 raw 内容,避免 JSON.parse → stringify 改变格式。
+      if (!legacyWriteAllowed(dst, 'claude-code', result, guard)) continue
       safeWriteText(dst, srcContent)
       result.patched++
       log.info(`mirrored ${rel} into stale cache: ${dst}`)
@@ -618,7 +687,15 @@ function mirrorVersionDir(sourcePluginDir: string, versionDir: string, result: H
  *   如果传入且非空，当配置文件中缺少对应的 `tidemind-{agentId}` 条目时会重建。
  *   这解决了 Claude Desktop 覆写配置导致 mcpServers 整段丢失的问题。
  */
-function healMcpServersFile(filePath: string, shimPath: string, mcpServerPath: string, result: HealResult, expectedAgentIds?: string[]): void {
+function healMcpServersFile(
+  filePath: string,
+  shimPath: string,
+  mcpServerPath: string,
+  result: HealResult,
+  adapterId: string,
+  expectedAgentIds?: string[],
+  guard?: LegacyWriterGuard,
+): void {
   if (!fs.existsSync(filePath)) return
   result.scanned++
   const cfg = safeReadJson(filePath)
@@ -668,6 +745,7 @@ function healMcpServersFile(filePath: string, shimPath: string, mcpServerPath: s
 
   if (changed) {
     try {
+      if (!legacyWriteAllowed(filePath, adapterId, result, guard)) return
       safeWriteJson(filePath, cfg)
       result.patched++
       log.info(`patched: ${filePath}`)
@@ -678,7 +756,13 @@ function healMcpServersFile(filePath: string, shimPath: string, mcpServerPath: s
 }
 
 /** OpenClaw 配置：mcp.servers 嵌套一层 */
-function healOpenclawConfig(filePath: string, shimPath: string, mcpServerPath: string, result: HealResult): void {
+function healOpenclawConfig(
+  filePath: string,
+  shimPath: string,
+  mcpServerPath: string,
+  result: HealResult,
+  guard?: LegacyWriterGuard,
+): void {
   if (!fs.existsSync(filePath)) return
   result.scanned++
   const cfg = safeReadJson(filePath)
@@ -705,6 +789,7 @@ function healOpenclawConfig(filePath: string, shimPath: string, mcpServerPath: s
 
   if (changed) {
     try {
+      if (!legacyWriteAllowed(filePath, 'openclaw', result, guard)) return
       safeWriteJson(filePath, cfg)
       result.patched++
       log.info(`patched: ${filePath}`)
@@ -715,7 +800,13 @@ function healOpenclawConfig(filePath: string, shimPath: string, mcpServerPath: s
 }
 
 /** Codex hooks.json（结构和 Claude Code 的 hooks.json 几乎一样，复用逻辑） */
-function healCodexHooks(filePath: string, shimPath: string, hookScriptPath: string, result: HealResult): void {
+function healCodexHooks(
+  filePath: string,
+  shimPath: string,
+  hookScriptPath: string,
+  result: HealResult,
+  guard?: LegacyWriterGuard,
+): void {
   if (!fs.existsSync(filePath)) return
   result.scanned++
   const cfg = safeReadJson(filePath)
@@ -736,6 +827,7 @@ function healCodexHooks(filePath: string, shimPath: string, hookScriptPath: stri
   }
   if (changed) {
     try {
+      if (!legacyWriteAllowed(filePath, 'codex', result, guard)) return
       safeWriteJson(filePath, cfg)
       result.patched++
       log.info(`patched: ${filePath}`)
@@ -751,7 +843,13 @@ function healCodexHooks(filePath: string, shimPath: string, hookScriptPath: stri
  * 用字符串替换：找到 `command = "..."` 和 `args = [...]` 行并替换。
  * 简单粗暴但够用——toml-utils 的 appendTomlMcpSection 会在 self-heal 场景下重复追加段落，不合适。
  */
-function healCodexTomlConfig(filePath: string, shimPath: string, mcpServerPath: string, result: HealResult): void {
+function healCodexTomlConfig(
+  filePath: string,
+  shimPath: string,
+  mcpServerPath: string,
+  result: HealResult,
+  guard?: LegacyWriterGuard,
+): void {
   if (!fs.existsSync(filePath)) return
   result.scanned++
   let content: string
@@ -836,6 +934,7 @@ function healCodexTomlConfig(filePath: string, shimPath: string, mcpServerPath: 
   if (changed) {
     try {
       parseToml(patched)
+      if (!legacyWriteAllowed(filePath, 'codex', result, guard)) return
       safeWriteText(filePath, patched)
       result.patched++
       log.info(`patched: ${filePath}`)
@@ -861,7 +960,13 @@ function healCodexTomlConfig(filePath: string, shimPath: string, mcpServerPath: 
  * ②command 引用的 hook 脚本 basename 必须是 hook-session-start.cjs——防止误改
  * 用户自定义的 [[hooks]] 块。
  */
-function healKimiCodeConfig(filePath: string, shimPath: string, hookScriptPath: string, result: HealResult): void {
+function healKimiCodeConfig(
+  filePath: string,
+  shimPath: string,
+  hookScriptPath: string,
+  result: HealResult,
+  guard?: LegacyWriterGuard,
+): void {
   if (!fs.existsSync(filePath)) return
   result.scanned++
   let content: string
@@ -925,6 +1030,7 @@ function healKimiCodeConfig(filePath: string, shimPath: string, hookScriptPath: 
     try {
       const updated = lines.join('\n')
       parseToml(updated)
+      if (!legacyWriteAllowed(filePath, 'kimi-code', result, guard)) return
       safeWriteText(filePath, updated)
       result.patched++
       log.info(`patched: ${filePath}`)
@@ -946,7 +1052,11 @@ function healKimiCodeConfig(filePath: string, shimPath: string, hookScriptPath: 
  *
  * 纯转换逻辑在 src/utils/marketplace-repair.ts，方便单元测试。
  */
-function healLocalMarketplace(pluginsRoot: string, result: HealResult): void {
+function healLocalMarketplace(
+  pluginsRoot: string,
+  result: HealResult,
+  guard?: LegacyWriterGuard,
+): void {
   const mpPath = path.join(pluginsRoot, '.claude-plugin', 'marketplace.json')
   if (!fs.existsSync(mpPath)) return
   result.scanned++
@@ -960,6 +1070,7 @@ function healLocalMarketplace(pluginsRoot: string, result: HealResult): void {
     log.info(`removed ${removedLegacyPlugins} legacy external-brain-* entries from: ${mpPath}`)
   }
   try {
+    if (!legacyWriteAllowed(mpPath, 'claude-code', result, guard)) return
     safeWriteJson(mpPath, output)
     result.patched++
     log.info(`patched marketplace: ${mpPath}`)
@@ -975,7 +1086,7 @@ function healLocalMarketplace(pluginsRoot: string, result: HealResult): void {
  *     但至少让 settings.json 自身保持干净。
  *     真正的内部状态要在 install-plugin handler 里通过 CLI 命令 remove。
  */
-function healClaudeSettings(result: HealResult): void {
+function healClaudeSettings(result: HealResult, guard?: LegacyWriterGuard): void {
   const settingsPath = path.join(os.homedir(), '.claude', 'settings.json')
   if (!fs.existsSync(settingsPath)) return
   result.scanned++
@@ -987,6 +1098,7 @@ function healClaudeSettings(result: HealResult): void {
 
   log.info(`removed legacy extraKnownMarketplaces keys [${removedKeys.join(', ')}] from: ${settingsPath}`)
   try {
+    if (!legacyWriteAllowed(settingsPath, 'claude-code', result, guard)) return
     safeWriteJson(settingsPath, output)
     result.patched++
   } catch (err: any) {
@@ -1019,30 +1131,38 @@ function getExpectedAgentIdsByType(db?: Database.Database): Record<string, strin
   }
 }
 
-export function selfHealPlugins(dataDir: string, db?: Database.Database): HealResult {
+export function selfHealPlugins(
+  dataDir: string,
+  db?: Database.Database,
+  options: SelfHealOptions = {},
+): HealResult {
   const shimPath = getShimPath()
   const mcpServerPath = getMcpServerScriptPath()
   const hookScriptPath = getHookScriptPath()
   const preCompactScriptPath = getPreCompactHookScriptPath()
   const postCompactScriptPath = getPostCompactHookScriptPath()
-  const result: HealResult = { scanned: 0, patched: 0, errors: [] }
+  const result: HealResult = { scanned: 0, patched: 0, errors: [], blocked: [] }
+  const guard = options.writerGuard ?? createLegacyWriterGuard(db, {
+    mode: options.mode,
+    observeOnlyAdapters: options.observeOnlyAdapters,
+  })
 
   const agentsByType = getExpectedAgentIdsByType(db)
 
   // Claude Code
-  healClaudeCodePlugins(path.join(dataDir, 'plugins'), shimPath, mcpServerPath, hookScriptPath, preCompactScriptPath, postCompactScriptPath, result)
+  healClaudeCodePlugins(path.join(dataDir, 'plugins'), shimPath, mcpServerPath, hookScriptPath, preCompactScriptPath, postCompactScriptPath, result, guard)
 
   // Tide Mind 自己的 local marketplace.json（过渡清理）
-  healLocalMarketplace(path.join(dataDir, 'plugins'), result)
+  healLocalMarketplace(path.join(dataDir, 'plugins'), result, guard)
 
   // Claude Code settings.json 里的 extraKnownMarketplaces 遗留条目
-  healClaudeSettings(result)
+  healClaudeSettings(result, guard)
 
   // Cursor
-  healMcpServersFile(path.join(os.homedir(), '.cursor', 'mcp.json'), shimPath, mcpServerPath, result, agentsByType['cursor'])
+  healMcpServersFile(path.join(os.homedir(), '.cursor', 'mcp.json'), shimPath, mcpServerPath, result, 'cursor', agentsByType['cursor'], guard)
 
   // Windsurf
-  healMcpServersFile(path.join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json'), shimPath, mcpServerPath, result, agentsByType['windsurf'])
+  healMcpServersFile(path.join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json'), shimPath, mcpServerPath, result, 'windsurf', agentsByType['windsurf'], guard)
 
   // Claude Cowork (Desktop)
   healMcpServersFile(
@@ -1050,21 +1170,23 @@ export function selfHealPlugins(dataDir: string, db?: Database.Database): HealRe
     shimPath,
     mcpServerPath,
     result,
+    'cowork',
     agentsByType['cowork'],
+    guard,
   )
 
   // OpenClaw
-  healOpenclawConfig(path.join(os.homedir(), '.openclaw', 'openclaw.json'), shimPath, mcpServerPath, result)
+  healOpenclawConfig(path.join(os.homedir(), '.openclaw', 'openclaw.json'), shimPath, mcpServerPath, result, guard)
 
   // Codex
-  healCodexHooks(path.join(os.homedir(), '.codex', 'hooks.json'), shimPath, hookScriptPath, result)
-  healCodexTomlConfig(path.join(os.homedir(), '.codex', 'config.toml'), shimPath, mcpServerPath, result)
+  healCodexHooks(path.join(os.homedir(), '.codex', 'hooks.json'), shimPath, hookScriptPath, result, guard)
+  healCodexTomlConfig(path.join(os.homedir(), '.codex', 'config.toml'), shimPath, mcpServerPath, result, guard)
 
   // Kimi Code(配置根目录支持 KIMI_CODE_HOME 覆盖,与 kimi-code adapter 一致)
   const kimiHome = process.env.KIMI_CODE_HOME || path.join(os.homedir(), '.kimi-code')
-  healKimiCodeConfig(path.join(kimiHome, 'config.toml'), shimPath, hookScriptPath, result)
+  healKimiCodeConfig(path.join(kimiHome, 'config.toml'), shimPath, hookScriptPath, result, guard)
 
-  log.info(`self-heal done: scanned=${result.scanned} patched=${result.patched} errors=${result.errors.length}`)
+  log.info(`self-heal done: scanned=${result.scanned} patched=${result.patched} blocked=${result.blocked.length} errors=${result.errors.length}`)
   if (result.errors.length > 0) {
     for (const e of result.errors) log.warn(`self-heal error: ${e.file} — ${e.error}`)
   }

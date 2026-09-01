@@ -1,0 +1,104 @@
+{
+  "unsafe": [
+    {
+      "name": "POSIX punctuation-leading single leaf",
+      "input": "/[Privacy Canary]",
+      "forbidden": ["Privacy Canary"]
+    },
+    {
+      "name": "POSIX leading-space leaf in an explicit field",
+      "input": "location=\"/ Privacy Canary\"",
+      "forbidden": ["Privacy Canary"]
+    },
+    {
+      "name": "POSIX leading-space leaf as the whole diagnostic",
+      "input": "/ Privacy Canary",
+      "forbidden": ["Privacy Canary"]
+    },
+    {
+      "name": "POSIX leading-space leaf after fullwidth colon",
+      "input": "路径：/ Privacy Canary/private/secret-v13.json",
+      "forbidden": ["Privacy Canary", "secret-v13.json"]
+    },
+    {
+      "name": "POSIX leading-space leaf after fullwidth equals",
+      "input": "路径＝/ Privacy Canary/private/secret-v13.json",
+      "forbidden": ["Privacy Canary", "secret-v13.json"]
+    },
+    {
+      "name": "POSIX leading-space leaf after Unicode arrow",
+      "input": "目标→/ Privacy Canary/private/secret-v13.json",
+      "forbidden": ["Privacy Canary", "secret-v13.json"]
+    },
+    {
+      "name": "POSIX leading-space leaf after ideographic comma",
+      "input": "路径、/ Privacy Canary/private/secret-v13.json",
+      "forbidden": ["Privacy Canary", "secret-v13.json"]
+    },
+    {
+      "name": "Windows punctuation-leading single leaf",
+      "input": "location=C:\\!Privacy-Canary",
+      "forbidden": ["Privacy-Canary"]
+    },
+    {
+      "name": "Windows leading-space single leaf",
+      "input": "location=C:\\ Privacy Canary",
+      "forbidden": ["Privacy Canary"]
+    },
+    {
+      "name": "POSIX triple root slash",
+      "input": "location=///Users/Privacy Canary/private/secret-v12.json",
+      "forbidden": ["Privacy Canary", "secret-v12.json"]
+    },
+    {
+      "name": "POSIX repeated root slash",
+      "input": "location=////private/Privacy Canary/secret-v12.json",
+      "forbidden": ["Privacy Canary", "secret-v12.json"]
+    },
+    {
+      "name": "HTTP URL semicolon suffix with triple-root POSIX path",
+      "input": "url=https://example.com/docs;path=///Users/Privacy Canary/private/secret-v12.json",
+      "forbidden": ["Privacy Canary", "secret-v12.json"]
+    },
+    {
+      "name": "HTTP URL arrow suffix with leading-space POSIX path",
+      "input": "url=https://example.com/docs→target=/ Privacy Canary/private/secret-v12.json",
+      "forbidden": ["Privacy Canary", "secret-v12.json"]
+    },
+    {
+      "name": "custom URL pipe suffix with punctuation-leading Windows path",
+      "input": "url=custom+scheme://example.test/docs|target=C:\\!Privacy Canary\\secret-v12.json",
+      "forbidden": ["Privacy Canary", "secret-v12.json"]
+    }
+  ],
+  "safe": [
+    {
+      "name": "HTTP query path syntax",
+      "input": "https://example.com/docs?next=///Users/public&target=C:/Users/public"
+    },
+    {
+      "name": "HTTP fragment path syntax",
+      "input": "https://example.com/docs#/ Privacy public"
+    },
+    {
+      "name": "protocol-relative network URL",
+      "input": "//cdn.example.com/public/[path],;final"
+    },
+    {
+      "name": "custom scheme punctuation",
+      "input": "custom+scheme://example.test/[public],;path?next=/public#fragment"
+    },
+    {
+      "name": "regular expression",
+      "input": "regex \\\\d+\\\\w+ and \\\\p{L}+\\\\s+"
+    },
+    {
+      "name": "slash help text",
+      "input": "命令选项 /? 表示帮助；分隔符 / 不代表文件"
+    },
+    {
+      "name": "ordinary slash prose",
+      "input": "choose yes / no before continuing"
+    }
+  ]
+}

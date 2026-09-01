@@ -16,6 +16,11 @@ const __dirname = path.dirname(__filename)
 const CLIENT_ROOT = path.resolve(__dirname, '..')
 const REPO_ROOT = path.resolve(CLIENT_ROOT, '..')
 const OUT_DIR = path.resolve(CLIENT_ROOT, 'out', 'bin')
+const rootPackage = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'))
+if (rootPackage.name !== 'tidemind' || typeof rootPackage.version !== 'string' || !rootPackage.version.trim()) {
+  throw new Error('[build-bin] root package name/version is invalid')
+}
+const bundledTideMindVersion = rootPackage.version.trim()
 
 // 保持 external 的只有 native 模块——它们必须在运行时由 node 从 node_modules 里加载
 // Electron-as-node 下会从脚本同级目录向上解析 node_modules，
@@ -81,6 +86,7 @@ async function main() {
       // URL 都是当前 bundle 文件的 file:// URL。
       define: {
         'import.meta.url': '__tm_bundle_url__',
+        '__TIDEMIND_BUNDLED_VERSION__': JSON.stringify(bundledTideMindVersion),
       },
       banner: {
         js: '"use strict"; const __tm_bundle_url__ = require("node:url").pathToFileURL(__filename).href;',

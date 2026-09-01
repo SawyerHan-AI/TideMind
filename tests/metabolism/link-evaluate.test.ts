@@ -151,21 +151,27 @@ describe('runLinkEvaluate', () => {
       status: 'pending',
     });
 
-    // 49h 前(刚超出 48h lookback)
-    const justPast = new Date(Date.now() - 49 * 3600_000).toISOString();
+    // 固定在 UTC 中午，让 49h 前与 48h cutoff 落在同一 UTC 日；
+    // 否则用例在 UTC 00:00 附近会因跨日而无法重现字符串格式 bug。
+    const fixedNow = Date.UTC(2026, 4, 21, 12, 0, 0)
+    const justPast = new Date(fixedNow - 49 * 3600_000).toISOString();
     db.prepare('UPDATE links SET created = ? WHERE id = ?').run(justPast, link!.id);
 
-    // 旧路径:datetime('now', '-48 hours') 返回 'YYYY-MM-DD HH:MM:SS',
-    // 同日 ISO created 因位置 10 的 'T' > ' ' 而被错误包含。
+    // 旧路径的 cutoff 是 SQLite datetime 格式。这里显式传入同一时刻的
+    // `YYYY-MM-DD HH:MM:SS` ，避免用例结果受当前 UTC 小时、是否刚好跨日影响。
+    const oldCutoff = new Date(fixedNow - 48 * 3600_000)
+      .toISOString()
+      .replace('T', ' ')
+      .replace(/\.\d{3}Z$/, '')
     const oldQuery = db.prepare(`
       SELECT id FROM links
       WHERE auto = 1
         AND status NOT IN ('confirmed', 'rejected_by_user')
-        AND created > datetime('now', ?)
-    `).all('-48 hours') as Array<{ id: string }>;
+        AND created > ?
+    `).all(oldCutoff) as Array<{ id: string }>;
 
     // 新路径:JS 侧算 ISO cutoff,ISO 之间字典序 = 时间序,正确排除。
-    const newCutoff = new Date(Date.now() - 48 * 3600_000).toISOString();
+    const newCutoff = new Date(fixedNow - 48 * 3600_000).toISOString();
     const newQuery = db.prepare(`
       SELECT id FROM links
       WHERE auto = 1

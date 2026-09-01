@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef, type KeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useFormatters } from '../../hooks/useFormatters'
 import { motion } from 'framer-motion'
@@ -21,6 +21,7 @@ function parseSubTab(value: string | undefined): SubTab | null {
 export function ExternalIntegration({ initialSub }: { initialSub?: string } = {}) {
   const { t } = useTranslation('settings')
   const [subTab, setSubTab] = useState<SubTab>(() => parseSubTab(initialSub) ?? 'agent')
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
 
   useEffect(() => {
     setSubTab(parseSubTab(initialSub) ?? 'agent')
@@ -32,14 +33,39 @@ export function ExternalIntegration({ initialSub }: { initialSub?: string } = {}
     { key: 'tools', label: t('external.subtabs.tools') },
   ]
 
+  const selectTab = (index: number) => {
+    const tab = SUB_TABS[index]
+    if (!tab) return
+    setSubTab(tab.key)
+    requestAnimationFrame(() => tabRefs.current[index]?.focus())
+  }
+
+  const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let next = index
+    if (event.key === 'ArrowRight') next = (index + 1) % SUB_TABS.length
+    else if (event.key === 'ArrowLeft') next = (index - 1 + SUB_TABS.length) % SUB_TABS.length
+    else if (event.key === 'Home') next = 0
+    else if (event.key === 'End') next = SUB_TABS.length - 1
+    else return
+    event.preventDefault()
+    selectTab(next)
+  }
+
   return (
     <div className="space-y-4">
       {/* Sub-tab switcher */}
-      <div className="flex items-center gap-2">
-        {SUB_TABS.map(tab => (
+      <div className="flex items-center gap-2" role="tablist" aria-label={t('tabs.external')}>
+        {SUB_TABS.map((tab, index) => (
           <button
             key={tab.key}
+            ref={element => { tabRefs.current[index] = element }}
+            id={`external-tab-${tab.key}`}
+            role="tab"
+            aria-selected={subTab === tab.key}
+            aria-controls={`external-panel-${tab.key}`}
+            tabIndex={subTab === tab.key ? 0 : -1}
             onClick={() => setSubTab(tab.key)}
+            onKeyDown={event => handleTabKeyDown(event, index)}
             className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-150 ${
               subTab === tab.key ? 'text-white' : 'text-gray-500 hover:text-gray-200 hover:bg-white/[0.05]'
             }`}
@@ -52,6 +78,10 @@ export function ExternalIntegration({ initialSub }: { initialSub?: string } = {}
 
       <motion.div
         key={subTab}
+        id={`external-panel-${subTab}`}
+        role="tabpanel"
+        aria-labelledby={`external-tab-${subTab}`}
+        tabIndex={0}
         initial={{ opacity: 0, y: 6 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2 }}

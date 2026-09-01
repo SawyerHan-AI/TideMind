@@ -2,11 +2,15 @@ import { app, BrowserWindow, Menu, Tray, nativeImage, session, shell, dialog, po
 import path from 'node:path'
 import { exec } from 'node:child_process'
 import { getClientDb, closeClientDb, getDataDir } from './db'
-import { registerAllHandlers } from './ipc/index'
+import { registerAgentIntegrationUiAuditHandlers, registerAllHandlers } from './ipc/index'
+import {
+  stopProductionAgentIntegrationRuntime,
+  triggerProductionAgentIntegrationScan,
+} from './agent-integration/production-service'
 import { startDaemon, stopDaemon } from './daemon'
 import { startDataWatcher, stopDataWatcher } from './data-watcher'
 import { writeShimAndRuntimePath } from './runtime/shim-writer'
-import { selfHealPlugins } from './runtime/plugin-self-heal'
+import { selfHealPlugins, STARTUP_SELF_HEAL_OPTIONS } from './runtime/plugin-self-heal'
 import { initAutoUpdater, runUpdateCheck } from './updater/index'
 import { scheduleUpdateChecks } from './updater/scheduler'
 import { getActivityState } from './activity-state'
@@ -14,9 +18,14 @@ import { getSchedulerExecutionMode } from './scheduler-execution-mode'
 import { migrateDataDirIfNeeded } from '@server/utils/migrate-data-dir.js'
 import { createLogger } from '@server/utils/logger.js'
 import { mainT } from './i18n'
+import { createUiAuditAgentIntegrationOptions, resolveUiAuditDataDir, resolveUiAuditRoot } from './ui-audit'
+import { getAppLanguage } from './app-language'
 
 const migrationLog = createLogger('client-migrate')
 const mainLog = createLogger('main')
+const uiAuditRoot = resolveUiAuditRoot()
+if (uiAuditRoot && app.isPackaged) throw new Error('UI audit mode is forbidden in packaged builds')
+if (uiAuditRoot) app.setPath('userData', path.join(uiAuditRoot, 'user-data'))
 
 // 全局异常处理 — 防止 main process 无声崩溃
 process.on('uncaughtException', (err) => {
@@ -75,6 +84,31 @@ async function ensureOllama(): Promise<void> {
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 
+function deliverInAppAgentIntegrationNotification(notification: import('./agent-integration/events.js').UserNotification): void {
+  const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+  if (!window) return
+  const send = () => window.webContents.send('agent-integration:notification', {
+    title: notification.title,
+    body: notification.body,
+    level: notification.level,
+    eventId: notification.eventId,
+    installationId: notification.installationId,
+  })
+  if (window.webContents.isLoading()) window.webContents.once('did-finish-load', send)
+  else send()
+}
+
+function openAgentIntegrationInstallation(installationId: string): void {
+  const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+  if (!window) return
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+  const send = () => window.webContents.send('agent-integration:open-installation', installationId)
+  if (window.webContents.isLoading()) window.webContents.once('did-finish-load', send)
+  else send()
+}
+
 function sampleSchedulerWindow(): void {
   const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
   getSchedulerExecutionMode().sampleWindow(window)
@@ -92,12 +126,12 @@ import { getIsQuitting, resetQuitting, setQuitting } from './lifecycle.js'
 
 const PROTOCOL = 'tidemind'
 
-if (process.defaultApp) {
+if (!uiAuditRoot && process.defaultApp) {
   // 开发模式：需要传递 Electron 路径
   if (process.argv.length >= 2) {
     app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])])
   }
-} else {
+} else if (!uiAuditRoot) {
   app.setAsDefaultProtocolClient(PROTOCOL)
 }
 
@@ -108,8 +142,10 @@ if (!gotTheLock) {
 } else {
   app.on('second-instance', (_event, argv) => {
     // Windows/Linux: 第二个实例启动时，URL 在 argv 中
-    const url = argv.find(arg => arg.startsWith(`${PROTOCOL}://`))
-    if (url) handleProtocolUrl(url)
+    if (!uiAuditRoot) {
+      const url = argv.find(arg => arg.startsWith(`${PROTOCOL}://`))
+      if (url) handleProtocolUrl(url)
+    }
     // 聚焦主窗口
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()
@@ -139,15 +175,17 @@ async function maybeStartCloudSync(dbForCloud: ReturnType<typeof getClientDb>): 
   syncClient.start().catch(err => mainLog.error('sync client start failed:', err))
 }
 
-app.on('open-url', (event, url) => {
-  event.preventDefault()
-  if (!app.isReady() || !mainWindow) {
-    // app 还没 ready 或窗口还没创建，缓存 URL 稍后处理
-    pendingProtocolUrl = url
-  } else {
-    handleProtocolUrl(url)
-  }
-})
+if (!uiAuditRoot) {
+  app.on('open-url', (event, url) => {
+    event.preventDefault()
+    if (!app.isReady() || !mainWindow) {
+      // app 还没 ready 或窗口还没创建，缓存 URL 稍后处理
+      pendingProtocolUrl = url
+    } else {
+      handleProtocolUrl(url)
+    }
+  })
+}
 
 /** 处理 tidemind:// 协议链接 */
 async function handleProtocolUrl(url: string): Promise<void> {
@@ -293,10 +331,27 @@ function createWindow(): void {
   })
 
   // 开发模式加载 Vite dev server，生产模式加载构建产物
-  if (process.env.ELECTRON_RENDERER_URL) {
-    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL
+  const rendererFile = path.join(__dirname, '../renderer/index.html')
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    try {
+      const requested = new URL(url)
+      const allowed = rendererUrl
+        ? requested.origin === new URL(rendererUrl).origin
+        : requested.protocol === 'file:' && decodeURIComponent(requested.pathname) === rendererFile
+      if (allowed) return
+    } catch { /* malformed navigation is denied below */ }
+    event.preventDefault()
+    mainLog.warn('blocked renderer navigation outside the Tide Mind application origin')
+  })
+  if (rendererUrl) {
+    mainWindow.loadURL(uiAuditRoot
+      ? `${rendererUrl.replace(/\/$/u, '')}/#/settings?tab=external&sub=agent`
+      : rendererUrl)
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
+    mainWindow.loadFile(rendererFile, uiAuditRoot
+      ? { hash: '/settings?tab=external&sub=agent' }
+      : undefined)
   }
 }
 
@@ -400,22 +455,26 @@ app.whenReady().then(async () => {
   // ⚠️ 数据目录迁移必须是第一步！shim-writer 会创建 ~/.tidemind/bin/，
   // 一旦 ~/.tidemind/ 被任何子进程提前创建，迁移逻辑就会认为"已存在"而跳过，
   // 导致用户的 ~/.external-brain/ 数据孤立。
-  try {
-    const migrationResult = migrateDataDirIfNeeded(migrationLog)
-    if (migrationResult.migrated) {
-      migrationLog.info(`data dir migrated → ${migrationResult.newDir} (backup: ${migrationResult.backupDir})`)
+  if (!uiAuditRoot) {
+    try {
+      const migrationResult = migrateDataDirIfNeeded(migrationLog)
+      if (migrationResult.migrated) {
+        migrationLog.info(`data dir migrated → ${migrationResult.newDir} (backup: ${migrationResult.backupDir})`)
+      }
+    } catch (err) {
+      migrationLog.error('data dir migration failed:', err)
     }
-  } catch (err) {
-    migrationLog.error('data dir migration failed:', err)
   }
 
   // 在任何 plugin 配置被读/写之前：刷新 shim 和 runtime-path。
   // self-heal 延迟到首屏后异步执行（见下方）。
-  try {
-    const result = writeShimAndRuntimePath()
-    mainLog.info(`shim updated=${result.shimUpdated} runtime-path updated=${result.runtimePathUpdated} → ${result.runtimePath}`)
-  } catch (err) {
-    mainLog.error('writing tm-node shim failed:', err)
+  if (!uiAuditRoot) {
+    try {
+      const result = writeShimAndRuntimePath()
+      mainLog.info(`shim updated=${result.shimUpdated} runtime-path updated=${result.runtimePathUpdated} → ${result.runtimePath}`)
+    } catch (err) {
+      mainLog.error('writing tm-node shim failed:', err)
+    }
   }
 
   // 启动期同步阻塞最小化（perf-optimization-2026-05-17 P0-1）：
@@ -423,45 +482,69 @@ app.whenReady().then(async () => {
   // 其他全部延迟到窗口显示之后（self-heal、云模块、data-watcher、daemon）。
   let db: ReturnType<typeof getClientDb> | null = null
   try {
-    db = getClientDb()
-    registerAllHandlers(db, getDataDir())
+    const auditDataDir = uiAuditRoot ? resolveUiAuditDataDir(uiAuditRoot) : null
+    db = getClientDb(auditDataDir ?? undefined)
+    if (uiAuditRoot) {
+      registerAgentIntegrationUiAuditHandlers(
+        db,
+        auditDataDir!,
+        createUiAuditAgentIntegrationOptions(db, uiAuditRoot),
+      )
+    } else {
+      registerAllHandlers(db, getDataDir(), {
+        agentIntegration: {
+          notificationLocale: getAppLanguage,
+          onOpenInstallation: openAgentIntegrationInstallation,
+          onInAppNotification: deliverInAppAgentIntegrationNotification,
+          isAppActive: () => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()),
+        },
+      })
+    }
   } catch (err) {
     mainLog.error('database init failed:', err)
   }
 
   createWindow()
-  createTray()
+  if (!uiAuditRoot) createTray()
 
   // 处理 app ready 之前收到的协议 URL（如从浏览器冷启动 app 的场景）
-  flushPendingProtocolUrl()
+  if (!uiAuditRoot) flushPendingProtocolUrl()
 
   // 系统级活动信号:即使窗口不是 hide/minimize(比如用户合盖、设置 displaysleep),
   // 这两个信号也能把状态切到 idle/active,让后台任务对齐用户感知。
-  try {
-    powerMonitor.on('suspend', () => {
-      getActivityState().notifySuspend()
-      getSchedulerExecutionMode().notifySuspend()
-    })
-    powerMonitor.on('resume', () => {
-      getActivityState().notifyResume('resume')
-      getSchedulerExecutionMode().notifyResume(
-        mainWindow && !mainWindow.isDestroyed() ? mainWindow : null,
-      )
-    })
-    powerMonitor.on('unlock-screen', () => {
-      getActivityState().notifyResume('unlock-screen')
-      getSchedulerExecutionMode().notifyResume(
-        mainWindow && !mainWindow.isDestroyed() ? mainWindow : null,
-      )
-    })
-  } catch (err) {
-    // powerMonitor 在某些 Linux 桌面环境可能初始化失败,降级即可:仍有 BrowserWindow 信号兜底
-    mainLog.warn(`powerMonitor subscribe failed (non-fatal): ${(err as Error).message}`)
+  if (!uiAuditRoot) {
+    try {
+      powerMonitor.on('suspend', () => {
+        getActivityState().notifySuspend()
+        getSchedulerExecutionMode().notifySuspend()
+      })
+      powerMonitor.on('resume', () => {
+        getActivityState().notifyResume('resume')
+        getSchedulerExecutionMode().notifyResume(
+          mainWindow && !mainWindow.isDestroyed() ? mainWindow : null,
+        )
+        triggerProductionAgentIntegrationScan()
+      })
+      powerMonitor.on('unlock-screen', () => {
+        getActivityState().notifyResume('unlock-screen')
+        getSchedulerExecutionMode().notifyResume(
+          mainWindow && !mainWindow.isDestroyed() ? mainWindow : null,
+        )
+        triggerProductionAgentIntegrationScan()
+      })
+    } catch (err) {
+      // powerMonitor 在某些 Linux 桌面环境可能初始化失败,降级即可:仍有 BrowserWindow 信号兜底
+      mainLog.warn(`powerMonitor subscribe failed (non-fatal): ${(err as Error).message}`)
+    }
   }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+
+  // The isolated audit exercises real renderer/preload/IPC/DB code, but none
+  // of the machine-level services, credentials, updaters, or external writers.
+  if (uiAuditRoot) return
 
   // ─── 以下全部不阻塞首屏：让 ready-to-show 尽快触发 ────────────────────
 
@@ -470,7 +553,11 @@ app.whenReady().then(async () => {
     const dbForHeal = db
     queueMicrotask(() => {
       try {
-        selfHealPlugins(getDataDir(), dbForHeal)
+        // The legacy whole-document writer cannot participate atomically in
+        // the v34 physical mutation-domain protocol. Keep it read-only in the
+        // production startup path; all future external writes must go through
+        // the consented coordinator/journal/CAS pipeline.
+        selfHealPlugins(getDataDir(), dbForHeal, STARTUP_SELF_HEAL_OPTIONS)
       } catch (err) {
         mainLog.error('plugin self-heal failed:', err)
       }
@@ -547,6 +634,13 @@ app.on('before-quit', (event) => {
   if (quitCleanupComplete) return
   event.preventDefault()
   setQuitting()
+  if (uiAuditRoot) {
+    stopProductionAgentIntegrationRuntime()
+    closeClientDb()
+    quitCleanupComplete = true
+    app.quit()
+    return
+  }
   if (daemonStartTimer) {
     clearTimeout(daemonStartTimer)
     daemonStartTimer = null
@@ -556,6 +650,7 @@ app.on('before-quit', (event) => {
     dataWatcherStartTimer = null
   }
   stopDataWatcher()
+  stopProductionAgentIntegrationRuntime()
   // 必须停止 cloud sync client,否则 WebSocket / 重连定时器 / 慢重试 timer 全泄漏:
   // app 退出过程中 ws 仍尝试发握手或重连;若 slowRetry 触发新 ws 连接,close handler
   // 在 db 关闭后尝试写 metadata 会触发 "database is closed" 异常。

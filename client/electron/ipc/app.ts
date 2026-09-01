@@ -7,6 +7,7 @@ import crypto from 'node:crypto'
 import { createLogger } from '@server/utils/logger.js'
 import { getConfig } from '@server/config.js'
 import { parseExternalUrl } from './_schemas.js'
+import { setAppLanguage } from '../app-language.js'
 
 const log = createLogger('ipc-app')
 
@@ -164,8 +165,21 @@ export function getUpdateEndpoint(): string {
   return `${cloudUrl}/api/v1/update/latest`
 }
 
-export function registerAppHandlers(): void {
+export function registerAppHandlers(options: {
+  onLanguageReady?: () => void | Promise<void>
+} = {}): void {
   ipcMain.handle('app:get-version', () => app.getVersion())
+  ipcMain.handle('app:set-language', (_event, language: unknown) => {
+    try {
+      const normalized = setAppLanguage(language)
+      void Promise.resolve(options.onLanguageReady?.()).catch(error => {
+        log.error(`language-ready callback failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return { success: true, language: normalized }
+    } catch {
+      return { success: false, error: 'invalid_arguments' }
+    }
+  })
 
   ipcMain.handle('app:open-external', async (_event, url: unknown) => {
     const parsed = parseExternalUrl(url)

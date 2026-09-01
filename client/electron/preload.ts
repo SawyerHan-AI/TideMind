@@ -1,5 +1,30 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AppApi } from '../src/lib/api-contract'
+import type {
+  AgentIntegrationApplyTaskDto,
+  AgentIntegrationUserNotificationDto,
+  AppApi,
+} from '../src/lib/api-contract'
+import { LatestValueBridge } from './agent-integration/latest-value-bridge.js'
+
+const installationOpenBridge = new LatestValueBridge<string>()
+const applyTaskBridge = new LatestValueBridge<AgentIntegrationApplyTaskDto>()
+const integrationNotificationBridge = new LatestValueBridge<AgentIntegrationUserNotificationDto>()
+
+// Register at preload evaluation time, before React performs its asynchronous
+// locale/bootstrap work.  Notification clicks that arrive during renderer
+// startup or reload are buffered until App mounts the public subscription.
+ipcRenderer.on('agent-integration:open-installation', (_event, installationId: unknown) => {
+  if (typeof installationId !== 'string' || installationId.length === 0) return
+  installationOpenBridge.publish(installationId)
+})
+ipcRenderer.on('agent-integration:task-progress', (_event, task: AgentIntegrationApplyTaskDto) => {
+  if (!task || typeof task.id !== 'string') return
+  applyTaskBridge.publish(task)
+})
+ipcRenderer.on('agent-integration:notification', (_event, notification: AgentIntegrationUserNotificationDto) => {
+  if (!notification || typeof notification.eventId !== 'string') return
+  integrationNotificationBridge.publish(notification)
+})
 
 const api: AppApi = {
   /** 监听后端数据变更事件，返回取消监听函数 */
@@ -180,6 +205,7 @@ const api: AppApi = {
   app: {
     getVersion: () => ipcRenderer.invoke('app:get-version'),
     openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
+    setLanguage: (language: string) => ipcRenderer.invoke('app:set-language', language),
   },
   updater: {
     getState: () => ipcRenderer.invoke('updater:get-state'),
@@ -223,6 +249,34 @@ const api: AppApi = {
     uninstallPlugin: (agentId: string, toolType?: string) => ipcRenderer.invoke('agents:uninstall-plugin', agentId, toolType),
     pluginStatus: (agentId: string, toolType?: string) => ipcRenderer.invoke('agents:plugin-status', agentId, toolType),
     markSkillCopied: (agentId: string, toolType?: string) => ipcRenderer.invoke('agents:mark-skill-copied', agentId, toolType),
+  },
+  agentIntegrations: {
+    onOpenInstallation: (callback: (installationId: string) => void) => {
+      return installationOpenBridge.subscribe(callback)
+    },
+    onTaskProgress: callback => applyTaskBridge.subscribe(callback),
+    onNotification: callback => integrationNotificationBridge.subscribe(callback),
+    snapshot: () => ipcRenderer.invoke('agent-integrations:snapshot'),
+    scan: () => ipcRenderer.invoke('agent-integrations:scan'),
+    previewConnect: (installationIds, includeTechnicalDetails, frozenPlanHash, options) => ipcRenderer.invoke('agent-integrations:preview-connect', installationIds, includeTechnicalDetails, frozenPlanHash, options),
+    applyConnect: (planHash: string, installationIds: string[]) => ipcRenderer.invoke('agent-integrations:apply-connect', planHash, installationIds),
+    startApplyConnect: (planHash, installationIds) => ipcRenderer.invoke('agent-integrations:start-apply-connect', planHash, installationIds),
+    getApplyTask: taskId => ipcRenderer.invoke('agent-integrations:get-apply-task', taskId),
+    listApplyTasks: request => ipcRenderer.invoke('agent-integrations:list-apply-tasks', request),
+    inbox: limit => ipcRenderer.invoke('agent-integrations:inbox', limit),
+    pause: (installationId: string) => ipcRenderer.invoke('agent-integrations:pause', installationId),
+    resume: (installationId: string) => ipcRenderer.invoke('agent-integrations:resume', installationId),
+    previewResetAutoRestore: (installationId: string) => ipcRenderer.invoke('agent-integrations:preview-reset-auto-restore', installationId),
+    resetAutoRestore: (planHash: string, installationId: string) => ipcRenderer.invoke('agent-integrations:reset-auto-restore', planHash, installationId),
+    previewDisconnect: (installationId: string, includeTechnicalDetails?: boolean) => ipcRenderer.invoke('agent-integrations:preview-disconnect', installationId, includeTechnicalDetails),
+    disconnect: (planHash: string, installationId: string) => ipcRenderer.invoke('agent-integrations:disconnect', planHash, installationId),
+    detail: (installationId: string, includeTechnicalDetails?: boolean) => ipcRenderer.invoke('agent-integrations:detail', installationId, includeTechnicalDetails),
+    listEvents: (installationId: string, state?: 'unread' | 'read' | 'archived', limit?: number) => ipcRenderer.invoke('agent-integrations:list-events', installationId, state, limit),
+    markEventRead: (eventId: string) => ipcRenderer.invoke('agent-integrations:mark-event-read', eventId),
+    markInstallationEventsRead: (installationId: string) => ipcRenderer.invoke('agent-integrations:mark-installation-events-read', installationId),
+    copyComponentPath: (installationId, componentKey) => ipcRenderer.invoke('agent-integrations:copy-component-path', installationId, componentKey),
+    revealComponentPath: (installationId, componentKey) => ipcRenderer.invoke('agent-integrations:reveal-component-path', installationId, componentKey),
+    supportCatalog: () => ipcRenderer.invoke('agent-integrations:support-catalog'),
   },
 }
 

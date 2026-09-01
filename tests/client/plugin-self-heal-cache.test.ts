@@ -23,7 +23,12 @@ const PLUGIN_DIR_NAME = `claude-code-${AGENT_ID}`
 const PLUGIN_NAME = `tidemind-${AGENT_ID}`
 
 function makeResult() {
-  return { scanned: 0, patched: 0, errors: [] as { file: string; error: string }[] }
+  return {
+    scanned: 0,
+    patched: 0,
+    errors: [] as { file: string; error: string }[],
+    blocked: [] as { file: string; adapterId: string; domain: string; reason: string }[],
+  }
 }
 
 function makePluginDir(root: string, files: Record<string, string>): string {

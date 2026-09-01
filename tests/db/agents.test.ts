@@ -1,7 +1,7 @@
 /**
  * db/agents.ts 单元测试
  *
- * Agent CRUD + touchAgent 自动复活。
+ * Agent CRUD + touchAgent 身份安全边界。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -98,33 +98,111 @@ describe('touchAgent', () => {
     const agent = createAgent(db, { name: 'Touch', tool_type: 't' });
     expect(agent.last_active).toBeNull();
 
-    touchAgent(db, agent.id);
+    const result = touchAgent(db, agent.id);
 
     const updated = getAgent(db, agent.id);
     expect(updated!.last_active).not.toBeNull();
+    expect(result).toEqual({ status: 'touched' });
   });
 
-  it('自动取消归档', () => {
-    const agent = createAgent(db, { name: 'Revive', tool_type: 't' });
+  it('不会让 last_active 因系统时钟回拨而倒退', () => {
+    const agent = createAgent(db, { name: 'Future Agent', tool_type: 'cursor' });
+    const future = '2099-01-01T00:00:00.000Z';
+    db.prepare('UPDATE agents SET last_active = ? WHERE id = ?').run(future, agent.id);
+
+    expect(touchAgent(db, agent.id)).toEqual({ status: 'touched' });
+    expect(getAgent(db, agent.id)?.last_active).toBe(future);
+  });
+
+  it('归档身份不会因 MCP 活动自动复活', () => {
+    const agent = createAgent(db, { name: 'Archived', tool_type: 't' });
     archiveAgent(db, agent.id);
     expect(getAgent(db, agent.id)!.archived).toBe(1);
 
-    touchAgent(db, agent.id);
-    expect(getAgent(db, agent.id)!.archived).toBe(0);
+    const result = touchAgent(db, agent.id);
+
+    expect(result).toEqual({ status: 'suppressed', reason: 'archived' });
+    expect(getAgent(db, agent.id)!.archived).toBe(1);
+    expect(getAgent(db, agent.id)!.last_active).toBeNull();
   });
 
-  it('agent 被删除后自动重建', () => {
+  it('未知 agent 只返回 orphan diagnostic，不隐式建档', () => {
     const agentId = 'eb_deadbeef';
-    // agent 不存在
     expect(getAgent(db, agentId)).toBeUndefined();
 
-    // touch 应该自动重建
-    touchAgent(db, agentId);
+    const result = touchAgent(db, agentId);
 
-    const revived = getAgent(db, agentId);
-    expect(revived).not.toBeNull();
-    expect(revived!.id).toBe(agentId);
-    expect(revived!.tool_type).toBe('unknown');
+    expect(result).toEqual({ status: 'orphan', reason: 'unknown_agent' });
+    expect(getAgent(db, agentId)).toBeUndefined();
+    const event = db.prepare(`
+      SELECT kind, severity, payload_json
+      FROM agent_integration_events
+      WHERE kind = 'orphan_agent_activity'
+    `).get() as { kind: string; severity: string; payload_json: string };
+    expect(event.kind).toBe('orphan_agent_activity');
+    expect(event.severity).toBe('warning');
+    expect(JSON.parse(event.payload_json)).toEqual({
+      agent_id: agentId,
+      reason: 'unknown_agent',
+    });
+  });
+
+  it('removed/tombstoned Installation 不更新旧 agents 行', () => {
+    const agent = createAgent(db, { name: 'Removed', tool_type: 'cursor' });
+    db.prepare(`
+      INSERT INTO agent_installations (
+        id, family, host_variant, install_key, provenance, display_name,
+        agent_id, desired_state, tombstoned_at, created_at, updated_at
+      ) VALUES (?, 'cursor', 'cursor-desktop', ?, 'legacy', 'Cursor', ?, 'removed', ?, ?, ?)
+    `).run(
+      'installation-1',
+      'cursor:test',
+      agent.id,
+      new Date().toISOString(),
+      new Date().toISOString(),
+      new Date().toISOString(),
+    );
+
+    const result = touchAgent(db, agent.id);
+
+    expect(result).toEqual({ status: 'suppressed', reason: 'removed' });
+    expect(getAgent(db, agent.id)!.last_active).toBeNull();
+    const event = db.prepare(`
+      SELECT installation_id, payload_json
+      FROM agent_integration_events
+      WHERE kind = 'orphan_agent_activity'
+    `).get() as { installation_id: string; payload_json: string };
+    expect(event.installation_id).toBe('installation-1');
+    expect(JSON.parse(event.payload_json).reason).toBe('removed');
+  });
+
+  it('legacy alias 指向 tombstone 时不会被当作新身份重建', () => {
+    const legacyId = 'eb_legacy_alias';
+    const timestamp = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO agent_installations (
+        id, family, host_variant, install_key, provenance, display_name,
+        desired_state, tombstoned_at, created_at, updated_at
+      ) VALUES (?, 'cursor', 'cursor-desktop', ?, 'legacy', 'Cursor tombstone',
+        'disabled', ?, ?, ?)
+    `).run('installation-tombstone', 'cursor:tombstone', timestamp, timestamp, timestamp);
+    db.prepare(`
+      INSERT INTO agent_aliases (
+        id, alias_type, alias_value, canonical_agent_id, installation_id, reason, created_at
+      ) VALUES (?, 'legacy_agent_id', ?, NULL, ?, 'legacy migration', ?)
+    `).run('alias-tombstone', legacyId, 'installation-tombstone', timestamp);
+
+    const result = touchAgent(db, legacyId);
+
+    expect(result).toEqual({ status: 'suppressed', reason: 'tombstoned' });
+    expect(getAgent(db, legacyId)).toBeUndefined();
+    const event = db.prepare(`
+      SELECT installation_id, payload_json
+      FROM agent_integration_events
+      WHERE kind = 'orphan_agent_activity'
+    `).get() as { installation_id: string; payload_json: string };
+    expect(event.installation_id).toBe('installation-tombstone');
+    expect(JSON.parse(event.payload_json).reason).toBe('tombstoned');
   });
 });
 

@@ -12,6 +12,10 @@ import {
   execIgnoringErrors,
   tableHasColumn,
 } from './migration-helpers.js';
+import {
+  AGENT_INTEGRATION_SCHEMA_SQL,
+  ensureAgentIntegrationSchema,
+} from './agent-integration-schema.js';
 
 const log = createLogger('schema');
 
@@ -23,7 +27,7 @@ function generateSourceId(): string {
  * 当前 schema 版本。每次新增 migration 时递增。
  * export 给 connection.ts 的迁移前备份判定用,避免那边硬编码版本号失效。
  */
-export const CURRENT_SCHEMA_VERSION = 33;
+export const CURRENT_SCHEMA_VERSION = 34;
 
 /**
  * 实时上行(M6):脏集表 + 回声抑制 guard + nodes/links 写触发器。
@@ -565,6 +569,9 @@ CREATE TABLE IF NOT EXISTS notion_pending_retry (
 );
 CREATE INDEX IF NOT EXISTS idx_notion_pending_retry_source
   ON notion_pending_retry(source_id, status);
+
+-- 本机外部 Agent 托管表。定义来自唯一权威 SQL，未加入 cloud_dirty/sync trigger。
+${AGENT_INTEGRATION_SCHEMA_SQL}
 `;
 
 const FTS_SQL = `
@@ -2146,6 +2153,17 @@ const MIGRATIONS: Migration[] = [
       log.info('迁移 v33 完成: 连接级 LLM 运行时与来源计费底座已就位');
     },
   },
+  {
+    version: 34,
+    description: '本机外部 Agent 托管底座：身份、Artifact、授权、协调日志、证据与 writer fence',
+    up: (db) => {
+      // 只创建本机 SQLite 结构与协议元数据；不读取或写入任何宿主配置/用户目录。
+      // legacy agents 的 adoption/alias 由后续可恢复应用层迁移完成，不能在 schema
+      // migration 中凭 tool_type 猜测归属。
+      ensureAgentIntegrationSchema(db);
+      log.info('迁移 v34 完成: 本机外部 Agent 托管数据底座已就位');
+    },
+  },
 ];
 
 /**
@@ -2299,6 +2317,7 @@ export function ensureSchema(db: Database.Database): void {
 
   // 建表（IF NOT EXISTS 保证幂等）
   db.exec(SCHEMA_SQL);
+  ensureAgentIntegrationSchema(db);
 
   // FTS5
   db.exec(FTS_SQL);

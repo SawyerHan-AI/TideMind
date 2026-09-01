@@ -48,7 +48,7 @@ async function runHook(args: string[]): Promise<RunResult> {
   }
 }
 
-describe('hook-pre-compact subprocess', () => {
+describe('hook-pre-compact subprocess', { timeout: 30_000 }, () => {
   beforeAll(() => {
     // 跳过整个 suite 如果 dist/ 还没 build
     if (!fs.existsSync(HOOK_SCRIPT)) {

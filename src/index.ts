@@ -4,8 +4,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { readFileSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { loadConfig, ensureDataDirs, getConfig } from './config.js';
 import { getDb, closeDb, initVec } from './db/connection.js';
 import { SqliteRepository } from './db/sqlite-repository.js';
@@ -18,11 +17,13 @@ import { prepare } from './tools/prepare.js';
 // ./tools/recall-input.js,此处不再 import。
 import type { DigestInput, PrepareInput, DigestIntent, DetailLevel } from './types.js';
 
-import { touchAgent, getAgent } from './db/agents.js';
+import { getAgent } from './db/agents.js';
+import { recordHostActivityEvidence, type HostActivitySignal } from './db/agent-host-activity.js';
 import { createLogger } from './utils/logger.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { shutdownLLMClient } from './llm/client.js';
 import { waitForBackgroundWork } from './utils/background-work.js';
+import { getTideMindVersion } from './utils/app-version.js';
 
 const log = createLogger('server');
 const migrationLog = createLogger('migrate');
@@ -35,32 +36,43 @@ ensureDataDirs();
 
 // Agent 身份（通过环境变量注入，每个 MCP 进程对应一个 Agent）
 const agentId = process.env.EB_AGENT_ID ?? null;
+const hostVariant = process.env.EB_HOST_VARIANT ?? null;
 if (!agentId) {
-  // 没有 agentId 时 touchAgent 会被静默跳过，导致 agent 活跃度/调用归属信号丢失。
+  // 没有 agentId 时宿主活动无法归属到 exact Installation。
   // 必须在启动阶段 warn 出来，让部署者能发现环境变量漏配的问题。
-  log.warn('EB_AGENT_ID 未设置：agent 活跃度追踪将被跳过（touchAgent 不会执行）');
+  log.warn('EB_AGENT_ID 未设置：不会生成宿主活动验证证据');
 }
+if (!hostVariant) log.warn('EB_HOST_VARIANT 未设置：不会生成宿主活动验证证据');
 
-// 从 package.json 读取版本号
-function getVersion(): string {
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    join(__dirname, '..', 'package.json'),   // 从 dist/ 运行
-    join(__dirname, '..', '..', 'package.json'), // 其他情况
-  ];
-  for (const p of candidates) {
-    try {
-      const pkg = JSON.parse(readFileSync(p, 'utf-8'));
-      if (pkg.name === 'tidemind') return pkg.version;
-    } catch { /* skip */ }
+const tideMindVersion = getTideMindVersion();
+const activityWarnings = new Set<string>();
+
+function recordMcpActivity(db: ReturnType<typeof getDb>, signalName: HostActivitySignal): void {
+  if (!agentId || !hostVariant) return;
+  try {
+    const result = recordHostActivityEvidence(db, {
+      agentId,
+      hostVariant,
+      componentKey: 'memory_tools',
+      signalName,
+      tideMindVersion,
+    });
+    if (result.status === 'rejected' && !activityWarnings.has(result.reason)) {
+      activityWarnings.add(result.reason);
+      log.warn(`MCP 宿主活动证据被拒绝：${result.reason}`);
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    if (!activityWarnings.has(reason)) {
+      activityWarnings.add(reason);
+      log.warn(`MCP 宿主活动证据不可用：${reason}`);
+    }
   }
-  log.warn('package.json 未找到，版本回落到 0.0.0');
-  return '0.0.0';
 }
 
 const server = new McpServer({
   name: 'tidemind',
-  version: getVersion(),
+  version: tideMindVersion,
 });
 let mcpStopping = false;
 let activeMcpHandlers = 0;
@@ -135,7 +147,6 @@ server.tool(
       try {
         const db = getDb();
         const repo = new SqliteRepository(db);
-        if (agentId) touchAgent(db, agentId);
         const input: PrepareInput = {
           tool: params.tool,
           files: params.files,
@@ -144,6 +155,7 @@ server.tool(
           agent_id: agentId ?? undefined,
         };
         const result = await prepare(repo, input);
+        recordMcpActivity(db, 'brain_prepare');
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
         };
@@ -214,8 +226,6 @@ server.tool(
     try {
       const db = getDb();
       const repo = new SqliteRepository(db);
-      if (agentId) touchAgent(db, agentId);
-
       // 推导 source_tool
       let sourceTool: string | undefined;
       if (agentId) {
@@ -260,6 +270,7 @@ server.tool(
       const input = normalizeRecallInput(p, agentId, sourceTool);
 
       const result = await recall(repo, input);
+      recordMcpActivity(db, 'brain_recall');
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
@@ -324,7 +335,6 @@ server.tool(
     try {
       const db = getDb();
       const repo = new SqliteRepository(db);
-      if (agentId) touchAgent(db, agentId);
       const input: DigestInput = {
         content: params.content,
         title: params.title,
@@ -339,6 +349,7 @@ server.tool(
       };
       // 传入 server 让 digest 在归类模糊时可通过 MCP elicitation 向用户追问
       const result = await digest(repo, input, { server });
+      recordMcpActivity(db, 'brain_digest');
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
