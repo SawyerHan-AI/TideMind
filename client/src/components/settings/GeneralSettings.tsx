@@ -67,6 +67,7 @@ export function GeneralSettings() {
   const changeLanguage = (code: string) => {
     localStorage.setItem('eb-language', code)
     void changeAppLanguage(code)
+    void window.api.app.setLanguage(code)
   }
 
   return (

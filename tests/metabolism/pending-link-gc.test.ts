@@ -108,19 +108,26 @@ describe('runPendingLinkGc', () => {
     const nodeA = seedNode(db, { content: 'A' });
     const nodeB = seedNode(db, { content: 'B' });
 
-    // 创建一个 pending 链接,把 created 设为 7天 + 1小时前(应删)
+    // 固定在 UTC 中午，让 7d+1h 前与 7d cutoff 落在同一 UTC 日；
+    // 否则用例在 UTC 00:00 附近会因跨日而无法重现字符串格式 bug。
     const link = seedLink(db, nodeA.id, nodeB.id, { status: 'pending', auto: true });
-    const justPastIso = new Date(Date.now() - (7 * 24 + 1) * 3600_000).toISOString();
+    const fixedNow = Date.UTC(2026, 4, 21, 12, 0, 0)
+    const justPastIso = new Date(fixedNow - (7 * 24 + 1) * 3600_000).toISOString();
     db.prepare('UPDATE links SET created = ? WHERE id = ?').run(justPastIso, link!.id);
 
-    // 旧路径(字典序错判):ISO created 在位置 10 是 'T',cutoff 是 ' ',
-    // ISO > cutoff at same date → "created < cutoff" 返回 false → 漏删
+    // 旧路径的 cutoff 是 SQLite datetime 格式。这里显式传入同一时刻的
+    // `YYYY-MM-DD HH:MM:SS` ，避免用例结果受当前 UTC 小时、是否刚好跨日影响。
+    // ISO created 在位置 10 是 'T',cutoff 是 ' '，字典序仍会漏删。
+    const oldCutoff = new Date(fixedNow - 7 * 24 * 3600_000)
+      .toISOString()
+      .replace('T', ' ')
+      .replace(/\.\d{3}Z$/, '')
     const oldPath = db.prepare(
-      `SELECT id FROM links WHERE status='pending' AND created < datetime('now', '-7 days')`,
-    ).all() as Array<{ id: string }>;
+      `SELECT id FROM links WHERE status='pending' AND created < ?`,
+    ).all(oldCutoff) as Array<{ id: string }>;
 
     // 新路径(ISO vs ISO 字典序 = 时间序):正确判定为过期
-    const isoCutoff = new Date(Date.now() - 7 * 24 * 3600_000).toISOString();
+    const isoCutoff = new Date(fixedNow - 7 * 24 * 3600_000).toISOString();
     const newPath = db.prepare(
       `SELECT id FROM links WHERE status='pending' AND created < ?`,
     ).all(isoCutoff) as Array<{ id: string }>;

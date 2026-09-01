@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
+import { AGENT_INTEGRATION_TABLES as AGENT_TABLES } from '../../src/db/agent-integration-schema.js';
 
 const RUNTIME_TABLES = [
   'model_connections',
@@ -32,6 +33,10 @@ const clientSource = readFileSync(
 );
 const migrationHelperSource = readFileSync(
   fileURLToPath(new URL('../../src/db/migration-helpers.ts', import.meta.url)),
+  'utf8',
+);
+const agentIntegrationSchemaSource = readFileSync(
+  fileURLToPath(new URL('../../src/db/agent-integration-schema.ts', import.meta.url)),
   'utf8',
 );
 
@@ -105,4 +110,23 @@ describe('core/client CLI runtime schema parity', () => {
       }
     });
   }
+});
+
+describe('core/client local Agent schema parity', () => {
+  it('keeps one authoritative definition for every managed Agent table', () => {
+    for (const table of AGENT_TABLES) {
+      expect(
+        new RegExp(`CREATE TABLE IF NOT EXISTS\\s+${table}\\s*\\(`).test(agentIntegrationSchemaSource),
+        table,
+      ).toBe(true);
+    }
+  });
+
+  it('wires the shared definition into daemon fresh/migration and both Electron entrypoints', () => {
+    expect(coreSource).toContain('${AGENT_INTEGRATION_SCHEMA_SQL}');
+    expect(coreSource).toContain('version: 34');
+    expect(coreSource.match(/ensureAgentIntegrationSchema\(db\)/g)).toHaveLength(2);
+    expect(clientSource.match(/ensureAgentIntegrationSchema\(newDb\)/g)).toHaveLength(1);
+    expect(clientSource.match(/ensureAgentIntegrationSchema\(tmpDb\)/g)).toHaveLength(1);
+  });
 });

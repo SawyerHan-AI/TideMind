@@ -1,0 +1,31 @@
+{
+  "fixtureVersion": 1,
+  "schemaVersion": 33,
+  "schemaSource": {
+    "gitCommit": "6a2792932e36e4d34fb915a546a76cb3f42928f3",
+    "path": "src/db/schema.ts",
+    "builder": "ensureSchema"
+  },
+  "generation": {
+    "description": "Created by checking out schemaSource.gitCommit, running that commit's ensureSchema against a physical better-sqlite3 database, inserting only the deterministic sample rows listed below, setting journal_mode=DELETE, and running VACUUM.",
+    "networkRequired": false,
+    "seedFile": "v33-authoritative-seed.sql",
+    "seedSha256": "c49a38be926b8003eda286880bfaa7e62cae031c53c113f39aafa2e35b3bbf58",
+    "journalMode": "delete",
+    "vacuumed": true
+  },
+  "artifact": {
+    "encoding": "base64(gzip -n -9(sqlite))",
+    "encodedFile": "v33-authoritative.sqlite.gz.base64",
+    "compressedBytes": 10826,
+    "compressedSha256": "6a35e5c0de573fcbb06799990b80aa043d5d806078f0b43c16e6f76cdadd4c78",
+    "sqliteBytes": 352256,
+    "sqliteSha256": "2e02e69e441f01dbb5ab442fc15b402750cee6ba33a0885e1097818881be87bc"
+  },
+  "samples": {
+    "agents": ["legacy-agent-cursor"],
+    "model_connections": ["legacy-model-codex"],
+    "pending_digests": ["legacy-queue-digest"],
+    "cli_invocations": ["legacy-invocation-1"]
+  }
+}

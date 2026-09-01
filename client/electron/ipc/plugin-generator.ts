@@ -35,8 +35,12 @@ function contextFor(
   return buildPluginLookupContext(runtime, agentId, clientType ?? 'claude-code')
 }
 
-export function registerPluginGeneratorHandlers(dataDir: string): void {
+export function registerPluginGeneratorHandlers(
+  dataDir: string,
+  options: { allowLegacyMutations?: boolean } = {},
+): void {
   const runtime = createPluginRuntimeContext(dataDir)
+  const legacyMutationError = 'Legacy Agent configuration is read-only; use the managed Agent integration flow'
 
   ipcMain.handle('agents:generate-plugin', async (_e, params: unknown): Promise<PluginGenerateResult> => {
     const parsed = parsePluginGenerateInput(params)
@@ -56,6 +60,15 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
       parsed.data.agentName,
       parsed.data.clientType,
     )
+    if (options.allowLegacyMutations !== true) {
+      return {
+        pluginDir: '',
+        pluginName: ctx.pluginName,
+        marketplaceRegistered: false,
+        success: false,
+        error: legacyMutationError,
+      }
+    }
     try {
       return await getAgentPluginAdapter(ctx.clientType).generate(ctx)
     } catch (err) {
@@ -78,6 +91,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
   ipcMain.handle('agents:install-plugin', async (_e, pluginName: unknown): Promise<PluginInstallResult> => {
     const parsed = parsePluginName(pluginName)
     if (!parsed.ok) return { success: false, error: validationError(parsed.error.details) }
+    if (options.allowLegacyMutations !== true) return { success: false, error: legacyMutationError }
 
     const agentId = parsed.data.slice('tidemind-'.length)
     const adapter = getAgentPluginAdapter('claude-code')
@@ -123,6 +137,7 @@ export function registerPluginGeneratorHandlers(dataDir: string): void {
     if (!parsedAgentId.ok) return { success: false, error: validationError(parsedAgentId.error.details) }
     const parsedClientType = parsePluginClientType(toolType)
     if (!parsedClientType.ok) return { success: false, error: validationError(parsedClientType.error.details) }
+    if (options.allowLegacyMutations !== true) return { success: false, error: legacyMutationError }
 
     const ctx = contextFor(runtime, parsedAgentId.data, parsedClientType.data)
     return getAgentPluginAdapter(ctx.clientType).uninstall(ctx)

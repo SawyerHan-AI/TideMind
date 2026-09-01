@@ -26,6 +26,10 @@
 
 常用命令、安装细节见 `docs/Codex-guides/dev-setup.md`。运行时数据目录见 `docs/Codex-guides/runtime-data.md`。
 
+### Self-hosted CI
+
+私有 `ExternaBrain` 当前所有CI job都由Mac Studio承载；公开 `TideMind` 的CI与双架构发版仍使用GitHub-hosted runner。修改runner labels、workflow路由、隔离、维护或恢复流程前，必须先读 `docs/Codex-guides/self-hosted-ci-operations.md`。
+
 ### Stabilization Cycle（2026-04-24 起）
 
 项目进入 2-4 周稳定化重构周期，当前目标是降低回归率，不做完整重写。

@@ -1,0 +1,53 @@
+{
+  "protocolVersion": 1,
+  "status": "frozen-local-development-baseline-2026-08-26",
+  "scope": "deterministic local Agent Integration development gate; not a packaged release SLO",
+  "fixture": {
+    "probeCount": 18,
+    "probeOperationTimeoutMs": 20,
+    "probeWarmupRuns": 1,
+    "probeMeasuredRuns": 5,
+    "queryWarmupRuns": 2,
+    "queryMeasuredRuns": 7,
+    "scanRounds": 100,
+    "reconcileRounds": 100
+  },
+  "discoveryTimeout": {
+    "wallMaxMs": 150
+  },
+  "queries": {
+    "100-installations-10000-events": {
+      "snapshotP95MaxMs": 100,
+      "snapshotAbsoluteMaxMs": 250,
+      "detailP95MaxMs": 25,
+      "detailAbsoluteMaxMs": 100,
+      "eventsP95MaxMs": 25,
+      "eventsAbsoluteMaxMs": 100
+    },
+    "1000-installations-100000-events": {
+      "snapshotP95MaxMs": 1000,
+      "snapshotAbsoluteMaxMs": 2500,
+      "detailP95MaxMs": 25,
+      "detailAbsoluteMaxMs": 100,
+      "eventsP95MaxMs": 25,
+      "eventsAbsoluteMaxMs": 100
+    }
+  },
+  "taskFeed": {
+    "pageLimit": 50,
+    "10000-attention-full-traversal": {
+      "elapsedMaxMs": 30000,
+      "rssDeltaMaxBytes": 536870912
+    },
+    "100000-attention-first-page": {
+      "elapsedMaxMs": 15000,
+      "rssDeltaMaxBytes": 536870912
+    }
+  },
+  "stability": {
+    "finalOutstandingTimersMax": 0,
+    "maxOutstandingTimersMax": 32,
+    "databaseRowGrowthMax": 0
+  },
+  "gateRule": "Any failure blocks performance sign-off until the same frozen fixture passes after a targeted fix or an explicitly reviewed threshold refreeze."
+}

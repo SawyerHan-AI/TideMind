@@ -18,12 +18,13 @@
 import { loadConfig, ensureDataDirs } from './config.js';
 import { getDb, closeDb } from './db/connection.js';
 import { SqliteRepository } from './db/sqlite-repository.js';
-import { touchAgent } from './db/agents.js';
+import { recordHookActivityEvidence } from './db/agent-host-activity.js';
 import { prepare } from './tools/prepare.js';
 import type { PrepareOutput } from './types.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { createLogger } from './utils/logger.js';
 import { writeHookOutput as outputHook } from './hook-output.js';
+import { getTideMindVersion } from './utils/app-version.js';
 
 const migrationLog = createLogger('migrate');
 
@@ -117,8 +118,6 @@ async function main(): Promise<void> {
     const db = getDb();
     const repo = new SqliteRepository(db);
 
-    touchAgent(db, agentId);
-
     const result = await prepare(repo, {
       tool,
       agent_id: agentId,
@@ -145,6 +144,24 @@ ${briefText}
 
 ---
 以上是压缩后由 Tide Mind 自动重注的精简画像。如需完整记忆，仍可通过 brain_recall / brain_prepare 获取。`;
+
+  try {
+    loadConfig();
+    ensureDataDirs();
+    const activity = recordHookActivityEvidence(getDb(), {
+      agentId,
+      tool,
+      signalName: 'post_compact',
+      tideMindVersion: getTideMindVersion(),
+    });
+    if (activity.status === 'rejected') {
+      process.stderr.write(`[eb:hook-post-compact] activity evidence rejected — ${activity.reason}\n`);
+    }
+  } catch (error) {
+    process.stderr.write(`[eb:hook-post-compact] activity evidence unavailable — ${error instanceof Error ? error.message : String(error)}\n`);
+  } finally {
+    try { closeDb(); } catch { /* ignore */ }
+  }
 
   outputHook(content, tool, 'PostCompact');
 }

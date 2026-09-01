@@ -38,6 +38,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
+import Database from 'better-sqlite3'
 
 // ---------------------------------------------------------------------------
 // Mock electron (双路径)
@@ -80,8 +81,11 @@ vi.mock('../../client/electron/runtime/runtime-paths', () => ({
 // 动态 import,确保上面所有 mock 已生效
 // ---------------------------------------------------------------------------
 
-const { selfHealPlugins } = await import(
+const { selfHealPlugins, STARTUP_SELF_HEAL_OPTIONS } = await import(
   '../../client/electron/runtime/plugin-self-heal'
+)
+const { buildLegacyMutationDomain } = await import(
+  '../../client/electron/agent-integration/legacy-writer'
 )
 
 // ---------------------------------------------------------------------------
@@ -227,6 +231,110 @@ describe('selfHealPlugins — 顶层入口', () => {
     })
     const result = selfHealPlugins(dataDir, fakeDb)
     expect(result.errors).toEqual([])
+  })
+
+  it('observe-only 会扫描并报告本可修复项，但不写配置', () => {
+    const cursorConfig = path.join(homeDir, '.cursor', 'mcp.json')
+    writeJsonFile(cursorConfig, {
+      mcpServers: {
+        'tidemind-eb_cursor': {
+          command: '/stale/tm-node',
+          args: ['/stale/mcp-server.cjs'],
+        },
+      },
+    })
+
+    const result = selfHealPlugins(dataDir, undefined, { mode: 'observe-only' })
+
+    expect(readJson(cursorConfig).mcpServers['tidemind-eb_cursor'].command).toBe('/stale/tm-node')
+    expect(result.scanned).toBe(1)
+    expect(result.patched).toBe(0)
+    expect(result.blocked).toHaveLength(1)
+    expect(result.blocked[0]).toMatchObject({
+      file: cursorConfig,
+      adapterId: 'cursor',
+      reason: 'observe_only',
+    })
+  })
+
+  it('生产启动策略永久使用 observe-only，阻止旧 writer 参与外部配置写入', () => {
+    expect(STARTUP_SELF_HEAL_OPTIONS).toEqual({ mode: 'observe-only' })
+    expect(Object.isFrozen(STARTUP_SELF_HEAL_OPTIONS)).toBe(true)
+  })
+
+  it('指定 Adapter 只观察时不影响其他未迁移 scope', () => {
+    const cursorConfig = path.join(homeDir, '.cursor', 'mcp.json')
+    const windsurfConfig = path.join(homeDir, '.codeium', 'windsurf', 'mcp_config.json')
+    for (const configPath of [cursorConfig, windsurfConfig]) {
+      writeJsonFile(configPath, {
+        mcpServers: {
+          'tidemind-eb_agent': {
+            command: '/stale/tm-node',
+            args: ['/stale/mcp-server.cjs'],
+          },
+        },
+      })
+    }
+
+    const result = selfHealPlugins(dataDir, undefined, {
+      observeOnlyAdapters: ['cursor'],
+    })
+
+    expect(readJson(cursorConfig).mcpServers['tidemind-eb_agent'].command).toBe('/stale/tm-node')
+    expect(readJson(windsurfConfig).mcpServers['tidemind-eb_agent'].command).toBe(SHIM_PATH)
+    expect(result.patched).toBe(1)
+    expect(result.blocked).toHaveLength(1)
+    expect(result.blocked[0].adapterId).toBe('cursor')
+  })
+
+  it('对应物理 target 已被 active fence 接管时只扫描不落盘', () => {
+    const cursorConfig = path.join(homeDir, '.cursor', 'mcp.json')
+    writeJsonFile(cursorConfig, {
+      mcpServers: {
+        'tidemind-eb_cursor': {
+          command: '/stale/tm-node',
+          args: ['/stale/mcp-server.cjs'],
+        },
+      },
+    })
+    const fenceDb = new Database(':memory:')
+    fenceDb.exec(`
+      CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE writer_fences (
+        mutation_domain TEXT PRIMARY KEY,
+        minimum_writer_protocol INTEGER NOT NULL,
+        writer_generation INTEGER NOT NULL,
+        owner_instance_id TEXT,
+        epoch INTEGER NOT NULL,
+        lease_expires_at INTEGER,
+        state TEXT NOT NULL,
+        metadata_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO metadata (key, value)
+      VALUES ('agent_integration_minimum_writer_protocol', '1');
+    `)
+    const domain = buildLegacyMutationDomain({
+      adapterId: 'cursor',
+      target: cursorConfig,
+      selector: 'document',
+    })
+    fenceDb.prepare(`
+      INSERT INTO writer_fences (
+        mutation_domain, minimum_writer_protocol, writer_generation,
+        owner_instance_id, epoch, lease_expires_at, state, created_at, updated_at
+      ) VALUES (?, 1, 1, 'managed-reconciler', 1, ?, 'active', ?, ?)
+    `).run(domain, Date.now() + 60_000, new Date().toISOString(), new Date().toISOString())
+
+    const result = selfHealPlugins(dataDir, fenceDb)
+    fenceDb.close()
+
+    expect(readJson(cursorConfig).mcpServers['tidemind-eb_cursor'].command).toBe('/stale/tm-node')
+    expect(result.patched).toBe(0)
+    expect(result.blocked).toEqual([
+      expect.objectContaining({ adapterId: 'cursor', domain, reason: 'scope_owned' }),
+    ])
   })
 })
 

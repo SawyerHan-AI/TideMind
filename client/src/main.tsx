@@ -9,6 +9,10 @@ import { getSavedLanguage, loadLocaleNamespaces } from './lib/i18n'
 // locale + 英文 fallback 的 16 份 JSON,而不是把 12 语言 × 8 命名空间 = 96
 // 份 JSON 全打进首包。其他语言切换时再异步拉对应文件。
 const savedLng = getSavedLanguage()
+void window.api.app.setLanguage(savedLng).catch(() => {
+  // The hermetic UI-audit shell and an older preload may omit this optional
+  // synchronization channel. Renderer localization must still initialize.
+})
 const pending: Array<Promise<void>> = [loadLocaleNamespaces(savedLng)]
 if (savedLng !== 'en') pending.push(loadLocaleNamespaces('en'))
 

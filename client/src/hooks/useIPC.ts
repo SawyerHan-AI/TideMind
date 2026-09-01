@@ -33,30 +33,46 @@ export function useIPC<T>(fetcher: () => Promise<T>): {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const hasData = useRef(false)
+  const requestSequence = useRef(0)
   const mountedRef = useMountedRef()
 
-  const refetch = useCallback(async () => {
+  const execute = useCallback(async (resetForFetcherChange: boolean) => {
+    const sequence = ++requestSequence.current
+    if (resetForFetcherChange && mountedRef.current) {
+      hasData.current = false
+      setData(null)
+      setLoading(true)
+    }
     // 已有数据时静默刷新（不显示 loading 骨架屏）
     if (mountedRef.current && !hasData.current) setLoading(true)
     if (mountedRef.current) setError(null)
     try {
       const result = await fetcher()
-      if (mountedRef.current) {
+      if (mountedRef.current && requestSequence.current === sequence) {
         setData(result)
         hasData.current = true
       }
     } catch (err) {
-      if (mountedRef.current) setError((err as Error).message)
+      if (mountedRef.current && requestSequence.current === sequence) {
+        setError((err as Error).message)
+      }
     } finally {
-      if (mountedRef.current) setLoading(false)
+      if (mountedRef.current && requestSequence.current === sequence) setLoading(false)
     }
     // mountedRef 是 ref(身份稳定),deps 只列 fetcher。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetcher])
 
+  const refetch = useCallback(() => {
+    void execute(false)
+  }, [execute])
+
   useEffect(() => {
-    void refetch()
-  }, [refetch])
+    void execute(true)
+    return () => {
+      requestSequence.current += 1
+    }
+  }, [execute])
 
   return { data, loading, error, refetch }
 }

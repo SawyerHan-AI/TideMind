@@ -18,7 +18,7 @@
 import { loadConfig, ensureDataDirs } from './config.js';
 import { getDb, closeDb } from './db/connection.js';
 import { SqliteRepository } from './db/sqlite-repository.js';
-import { touchAgent } from './db/agents.js';
+import { recordHookActivityEvidence } from './db/agent-host-activity.js';
 import { prepare } from './tools/prepare.js';
 import { readFileSync, fstatSync } from 'node:fs';
 import { formatProfileSection, formatRestSections, assembleSessionContext } from './hook-session-format.js';
@@ -26,6 +26,7 @@ import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { createLogger } from './utils/logger.js';
 import { writeHookOutput as outputHook } from './hook-output.js';
 import { hasSessionMarker, createSessionMarker } from './hook-once-session.js';
+import { getTideMindVersion } from './utils/app-version.js';
 
 /**
  * 异步读取 stdin JSON payload（Codex 0.120+ 会传 `session_start_reason` 等字段）。
@@ -192,8 +193,6 @@ async function main(): Promise<void> {
       const db = getDb();
       const repo = new SqliteRepository(db);
 
-      touchAgent(db, agentId);
-
       const result = await prepare(repo, {
         tool,
         agent_id: agentId,
@@ -220,6 +219,27 @@ async function main(): Promise<void> {
 
   // 拼合输出（G1 预算安全网在 assembleSessionContext 内统一施加）
   const content = assembleSessionContext({ skillContent, profileSection, restSection });
+
+  // The hook reaching this point is host-runtime evidence. Reopen the local DB
+  // after prepare's independent lifetime and record only if the exact managed
+  // Installation/component/version binding still authorizes it.
+  try {
+    loadConfig();
+    ensureDataDirs();
+    const activity = recordHookActivityEvidence(getDb(), {
+      agentId,
+      tool,
+      signalName: 'session_start',
+      tideMindVersion: getTideMindVersion(),
+    });
+    if (activity.status === 'rejected') {
+      process.stderr.write(`[eb:hook-session-start] activity evidence rejected — ${activity.reason}\n`);
+    }
+  } catch (error) {
+    process.stderr.write(`[eb:hook-session-start] activity evidence unavailable — ${error instanceof Error ? error.message : String(error)}\n`);
+  } finally {
+    try { closeDb(); } catch { /* ignore */ }
+  }
 
   outputHook(content, tool);
 

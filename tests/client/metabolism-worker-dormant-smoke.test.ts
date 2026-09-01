@@ -113,9 +113,9 @@ describe('dormant metabolism Worker', () => {
     const { db } = createDataDb(dataDir)
     db.pragma('journal_mode = WAL')
     db.exec('CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
-    db.prepare('INSERT INTO metadata VALUES (?, ?)').run('schema_version', '33')
+    db.prepare('INSERT INTO metadata VALUES (?, ?)').run('schema_version', String(CURRENT_SCHEMA_VERSION))
     const authority = installAuthority(db, dataDir, 'receipt-1')
-    const identity = deriveInitializedDatabaseIdentity(db, authority, 33)
+    const identity = deriveInitializedDatabaseIdentity(db, authority, CURRENT_SCHEMA_VERSION)
     db.close()
 
     const bundleDir = fs.mkdtempSync(path.join(process.cwd(), '.metabolism-worker-test-'))
@@ -147,7 +147,7 @@ describe('dormant metabolism Worker', () => {
       lifecycleGeneration: 1,
       startupAuthority: authority,
       databaseIdentity: identity,
-      expectedSchemaVersion: 33,
+      expectedSchemaVersion: CURRENT_SCHEMA_VERSION,
       runtimeRevision: 1,
       runtimeConfigSnapshot: {
         general: { data_dir: fs.realpathSync.native(dataDir) },
