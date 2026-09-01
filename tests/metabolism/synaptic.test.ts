@@ -126,7 +126,7 @@ describe('runSynapticScaling', () => {
     expect(yieldCount).toBe(2);
   });
 
-  it('每五个正常节点批次给前台SQLite waiter一个2ms公平窗口', async () => {
+  it('每个正常节点批次都给前台SQLite waiter一个5ms公平窗口', async () => {
     for (let index = 0; index < 1001; index++) seedNode(db, { heat: 1 });
     const fairnessPauses: number[] = [];
 
@@ -135,10 +135,10 @@ describe('runSynapticScaling', () => {
       pauseForFairness: async delayMs => { fairnessPauses.push(delayMs); },
     });
 
-    expect(fairnessPauses).toEqual([2]);
+    expect(fairnessPauses).toEqual([5, 5, 5, 5, 5, 5]);
   });
 
-  it('每五个正常链接批次给前台SQLite waiter一个2ms公平窗口', async () => {
+  it('每个正常链接批次都给前台SQLite waiter一个5ms公平窗口', async () => {
     const from = seedNode(db, { heat: 0.005 });
     const to = seedNode(db, { heat: 0.005 });
     for (let index = 0; index < 1001; index++) {
@@ -156,7 +156,7 @@ describe('runSynapticScaling', () => {
       pauseForFairness: async delayMs => { fairnessPauses.push(delayMs); },
     });
 
-    expect(fairnessPauses).toEqual([2]);
+    expect(fairnessPauses).toEqual([5, 5, 5, 5, 5, 5]);
   });
 
   it('慢节点批次立即给前台SQLite waiter完整5ms恢复窗口', async () => {
@@ -171,7 +171,7 @@ describe('runSynapticScaling', () => {
     expect(fairnessPauses).toEqual([5]);
   });
 
-  it('后台模式不支付前台公平暂停且切回前台后从新窗口计数', async () => {
+  it('后台模式不支付前台公平暂停且切回前台后每批暂停', async () => {
     const insertNode = db.prepare(`
       INSERT INTO nodes (id, type, content, heat, created, updated)
       VALUES (?, 'fact', ?, 1, '2026-08-20T00:00:00.000Z', '2026-08-20T00:00:00.000Z')
@@ -190,7 +190,7 @@ describe('runSynapticScaling', () => {
       pauseForFairness: async delayMs => { fairnessPauses.push(delayMs); },
     });
 
-    expect(fairnessPauses).toEqual([2]);
+    expect(fairnessPauses).toEqual([5, 5, 5, 5, 5, 5]);
   });
 
   it('链接清册后发生的前台编辑由批内current-row重读保护', async () => {

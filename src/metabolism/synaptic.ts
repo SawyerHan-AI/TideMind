@@ -259,10 +259,7 @@ export async function runSynapticScalingCooperatively(
 ): Promise<{ decayed: number }> {
   const batches = runSynapticScalingBatches(db, options);
   let committedEffectBatch = false;
-  let batchesSinceFairnessPause = 0;
-  const BATCHES_PER_FAIRNESS_PAUSE = 5;
-  const NORMAL_FAIRNESS_PAUSE_MS = 2;
-  const SLOW_FAIRNESS_PAUSE_MS = 5;
+  const FOREGROUND_FAIRNESS_PAUSE_MS = 5;
   const pauseForFairness = options?.pauseForFairness
     ?? ((delayMs: number) => new Promise<void>(resolve => setTimeout(resolve, delayMs)));
   const shouldPauseForFairness = options?.shouldPauseForFairness ?? (() => true);
@@ -272,28 +269,15 @@ export async function runSynapticScalingCooperatively(
       // Reaching a yield means the generator has committed one node or link batch.
       committedEffectBatch = true;
       // The transaction has ended before this cooperative yield. setImmediate
-      // keeps Worker throughput high, while a bounded timer pause after a slow
-      // batch or every five normal 200-row batches gives a foreground SQLite
-      // waiter an OS scheduling window and prevents this Worker from repeatedly
-      // reacquiring the write lock. This must cover nodes as well as links: the
-      // node phase otherwise forms one uninterrupted cross-process lock convoy
-      // before link fairness begins. Five normal batches keep that
-      // convoy below the frozen foreground p99 budget. Doubling the old batch
-      // size halves transaction/yield overhead, so covering both phases keeps
-      // the normal timer budget below the old link-only cadence; a slow batch
-      // still gets a 5ms recovery window.
+      // keeps background Worker throughput high. In foreground mode every
+      // committed batch also gets a bounded timer pause: a less frequent pause
+      // still allowed the Worker to repeatedly reacquire SQLite's single-writer
+      // lock and form 200-390ms lock convoys on Electron main. Five milliseconds
+      // gives a waiting renderer/note/cloud writer an OS scheduling window while
+      // only slowing the daily maintenance pass when the user is actively using
+      // the app. Background execution pays no timer cost.
       await yieldBetweenBatches();
-      const slowBatch = step.value === 'node_slow' || step.value === 'link_slow';
-      if (!shouldPauseForFairness()) {
-        // A later focus transition starts a fresh bounded window; background
-        // work must not carry an almost-full counter into foreground mode.
-        batchesSinceFairnessPause = 0;
-      } else if (slowBatch || ++batchesSinceFairnessPause === BATCHES_PER_FAIRNESS_PAUSE) {
-        batchesSinceFairnessPause = 0;
-        await pauseForFairness(slowBatch
-          ? SLOW_FAIRNESS_PAUSE_MS
-          : NORMAL_FAIRNESS_PAUSE_MS);
-      }
+      if (shouldPauseForFairness()) await pauseForFairness(FOREGROUND_FAIRNESS_PAUSE_MS);
       step = batches.next();
     }
     return step.value;
