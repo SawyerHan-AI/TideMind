@@ -65,6 +65,7 @@
   },
   "overrides": {
     "tmp": "^0.2.7",
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "postcss-selector-parser": "6.1.4"
   }
 }
