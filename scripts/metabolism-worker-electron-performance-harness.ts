@@ -245,18 +245,26 @@ async function main(): Promise<void> {
     return true
   })
 
-  const writerSamples: Record<'renderer' | 'note' | 'cloud', number[]> = { renderer: [], note: [], cloud: [] }
-  const runWriter = async (kind: keyof typeof writerSamples): Promise<void> => {
+  type WriterKind = 'renderer' | 'note' | 'cloud'
+  type DelaySummary = { p50: number; p95: number; p99: number; max: number }
+  type WriterDelaySummary = DelaySummary & { count: number }
+  const runWriter = async (kind: WriterKind, samples: Record<WriterKind, number[]>, run: number): Promise<void> => {
     for (let sequence = 0; sequence < WRITES_PER_KIND; sequence++) {
       const startedAt = performance.now()
       await window.webContents.executeJavaScript(
-        `require('electron').ipcRenderer.invoke('perf:writer', ${JSON.stringify(kind)}, ${sequence})`,
+        `require('electron').ipcRenderer.invoke('perf:writer', ${JSON.stringify(kind)}, ${run * WRITES_PER_KIND + sequence})`,
         true,
       )
-      writerSamples[kind].push(performance.now() - startedAt)
+      samples[kind].push(performance.now() - startedAt)
       await new Promise(resolve => setImmediate(resolve))
     }
   }
+  const summarizeDelays = (values: readonly number[]): DelaySummary => ({
+    p50: percentile(values, 0.5),
+    p95: percentile(values, 0.95),
+    p99: percentile(values, 0.99),
+    max: percentile(values, 1),
+  })
 
   getSchedulerExecutionMode().sampleWindow(null)
   const candidateCpuStartedAt = process.cpuUsage()
@@ -317,30 +325,70 @@ async function main(): Promise<void> {
   window.on('blur', markWriterFocusLost)
   window.on('hide', markWriterFocusLost)
   window.on('minimize', markWriterFocusLost)
-  const eventLoop = monitorEventLoopDelay({ resolution: 1 })
+  const contentionRuns: Array<{
+    eventLoopDelayMs: DelaySummary
+    foregroundWriterDelayMs: Record<WriterKind, WriterDelaySummary>
+  }> = []
   try {
-    resetSynapticFixture()
-    eventLoop.enable()
-    const writerPromises = [runWriter('renderer'), runWriter('note'), runWriter('cloud')]
-    const contentionTiming = beginWorkerTiming()
-    await triggerImmediateSchedulerTick()
-    await contentionTiming
-    await Promise.all(writerPromises)
-    await waitForSchedulerOwnerFree(db, 30_000)
-    if (focusLostDuringWriterWorkload || !window.isFocused()) throw new Error('writer workload BrowserWindow lost focus')
+    for (let run = 0; run < 3; run++) {
+      if (run > 0) await new Promise(resolve => setTimeout(resolve, 25))
+      resetSynapticFixture()
+      const eventLoop = monitorEventLoopDelay({ resolution: 1 })
+      const writerSamples: Record<WriterKind, number[]> = { renderer: [], note: [], cloud: [] }
+      eventLoop.enable()
+      try {
+        const writerPromises = [
+          runWriter('renderer', writerSamples, run),
+          runWriter('note', writerSamples, run),
+          runWriter('cloud', writerSamples, run),
+        ]
+        const contentionTiming = beginWorkerTiming()
+        await triggerImmediateSchedulerTick()
+        await contentionTiming
+        await Promise.all(writerPromises)
+        await waitForSchedulerOwnerFree(db, 30_000)
+      } finally {
+        eventLoop.disable()
+      }
+      if (focusLostDuringWriterWorkload || !window.isFocused()) throw new Error('writer workload BrowserWindow lost focus')
+      const toMs = (nanoseconds: number): number => nanoseconds / 1_000_000
+      const eventLoopDelayMs = Object.fromEntries(
+        Object.entries({
+          p50: eventLoop.percentile(50),
+          p95: eventLoop.percentile(95),
+          p99: eventLoop.percentile(99),
+          max: eventLoop.max,
+        }).map(([key, value]) => [key, toMs(value)]),
+      ) as DelaySummary
+      const foregroundWriterDelayMs = Object.fromEntries(
+        Object.entries(writerSamples).map(([kind, values]) => [kind, {
+          count: values.length,
+          ...summarizeDelays(values),
+        }]),
+      ) as Record<WriterKind, WriterDelaySummary>
+      contentionRuns.push({ eventLoopDelayMs, foregroundWriterDelayMs })
+    }
     focusedRendererIpcWrites = true
   } finally {
     window.off('blur', markWriterFocusLost)
     window.off('hide', markWriterFocusLost)
     window.off('minimize', markWriterFocusLost)
-    eventLoop.disable()
   }
-  const eventLoopDelayMs = {
-    p50: eventLoop.percentile(50),
-    p95: eventLoop.percentile(95),
-    p99: eventLoop.percentile(99),
-    max: eventLoop.max,
-  }
+  const eventLoopDelayMs = Object.fromEntries(
+    (['p50', 'p95', 'p99', 'max'] as const).map(field => [
+      field,
+      percentile(contentionRuns.map(run => run.eventLoopDelayMs[field]), 0.5),
+    ]),
+  ) as DelaySummary
+  const foregroundWriterDelayMs = Object.fromEntries(
+    (['renderer', 'note', 'cloud'] as const).map(kind => [kind, {
+      count: WRITES_PER_KIND,
+      ...Object.fromEntries((['p50', 'p95', 'p99', 'max'] as const).map(field => [
+        field,
+        percentile(contentionRuns.map(run => run.foregroundWriterDelayMs[kind][field]), 0.5),
+      ])),
+    }]),
+  ) as Record<WriterKind, WriterDelaySummary>
 
   const metadataWrite = db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)')
   metadataWrite.run('circuit_breaker_failures', '5')
@@ -402,9 +450,8 @@ async function main(): Promise<void> {
   const walPath = `${dbPath}-wal`
   const walBytesBeforeCheckpoint = fs.existsSync(walPath) ? fs.statSync(walPath).size : 0
   const checkpoint = db.pragma('wal_checkpoint(PASSIVE)') as Array<{ busy: number; log: number; checkpointed: number }>
-  const toMs = (nanoseconds: number): number => nanoseconds / 1_000_000
   const result = {
-    protocolVersion: 2,
+    protocolVersion: 3,
     measuredAt: new Date().toISOString(),
     machine: {
       cpu: os.cpus()[0]?.model ?? 'unknown',
@@ -436,14 +483,15 @@ async function main(): Promise<void> {
       max: percentile(mainBaselineEventLoopDelaysMs, 1),
     },
     backgroundFullBacklog: { durationMs: backgroundFullBacklogMs, llmAndEmbeddingTasksCircuitGated: true },
-    eventLoopDelayMs: Object.fromEntries(Object.entries(eventLoopDelayMs).map(([key, value]) => [key, toMs(value)])),
+    contentionRuns,
+    eventLoopDelayMs,
     resourceUsage: {
       cpuUserMs: candidateCpu.user / 1_000,
       cpuSystemMs: candidateCpu.system / 1_000,
       walBytesBeforeCheckpoint,
       checkpoint: checkpoint[0] ?? null,
     },
-    foregroundWriterDelayMs: Object.fromEntries(Object.entries(writerSamples).map(([kind, values]) => [kind, { count: values.length, p50: percentile(values, 0.5), p95: percentile(values, 0.95), p99: percentile(values, 0.99), max: percentile(values, 1) }])),
+    foregroundWriterDelayMs,
     correctness: {
       foregroundSingleAttempt: true,
       suspendResume: true,

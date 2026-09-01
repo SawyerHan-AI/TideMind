@@ -26,8 +26,8 @@ function run(script: string, args: string[]) {
 
 describe('packaged metabolism performance gate', () => {
   const validThresholds = {
-    protocolVersion: 2,
-    status: 'refrozen-before-external-cpu-fix-results',
+    protocolVersion: 3,
+    status: 'frozen-before-multitrial-contention-sampling-results',
     scope: 'local packaged Electron metabolism Worker candidate; not a release SLO',
     requiredWorkloads: [
       'focused-renderer-ipc-writes', 'note-source-writes', 'cloud-outbox-writes', 'background-full-backlog',
@@ -50,7 +50,7 @@ describe('packaged metabolism performance gate', () => {
     gateRule: 'Any failure keeps production activation blocked. Rerun the same workload and thresholds after a targeted fix.',
   }
   const validResult = () => ({
-    protocolVersion: 2,
+    protocolVersion: 3,
     measuredAt: '2026-08-13T00:00:00.000Z',
     fixture: { nodeCount: 10_000, linkCount: 20_000, writesPerKind: 100, dataRoot: 'ephemeral-temp-only' },
     workloads: { focusedRendererIpcWrites: true, backgroundFullBacklog: true },
@@ -70,6 +70,14 @@ describe('packaged metabolism performance gate', () => {
     },
     backgroundFullBacklog: { durationMs: 10, llmAndEmbeddingTasksCircuitGated: true },
     mainBaselineEventLoopDelayMs: { p50: 10, p95: 11, p99: 11, max: 11 },
+    contentionRuns: Array.from({ length: 3 }, () => ({
+      eventLoopDelayMs: { p50: 1, p95: 3, p99: 5, max: 6 },
+      foregroundWriterDelayMs: {
+        renderer: { count: 100, p50: 1, p95: 5, p99: 10, max: 20 },
+        note: { count: 100, p50: 1, p95: 5, p99: 10, max: 20 },
+        cloud: { count: 100, p50: 1, p95: 5, p99: 10, max: 20 },
+      },
+    })),
     eventLoopDelayMs: { p50: 1, p95: 3, p99: 5, max: 6 },
     throughput: {
       mainBaselineRunsMs: [9, 10, 11], workerRunsMs: [10, 11, 12],
@@ -96,6 +104,33 @@ describe('packaged metabolism performance gate', () => {
     expect(evaluateMetabolismPerformanceResult({
       result: validResult(), thresholds: structuredClone(validThresholds), packaged: true, writesPerKind: 100, maximumCpuUtilization: 0.5,
     })).toEqual([])
+  })
+
+  it('uses the median of three contention trials so one noisy trial does not dominate the gate', async () => {
+    const { evaluateMetabolismPerformanceResult } = await import('../../scripts/evaluate-metabolism-performance-result.mjs')
+    const result = validResult()
+    result.contentionRuns[2].eventLoopDelayMs = { p50: 40, p95: 80, p99: 120, max: 180 }
+    result.contentionRuns[2].foregroundWriterDelayMs.renderer = { count: 100, p50: 40, p95: 80, p99: 120, max: 180 }
+    expect(evaluateMetabolismPerformanceResult({
+      result, thresholds: structuredClone(validThresholds), packaged: true, writesPerKind: 100, maximumCpuUtilization: 0.5,
+    })).toEqual([])
+  })
+
+  it('rejects two noisy contention trials through the bound median summary', async () => {
+    const { evaluateMetabolismPerformanceResult } = await import('../../scripts/evaluate-metabolism-performance-result.mjs')
+    const result = validResult()
+    for (const index of [1, 2]) {
+      result.contentionRuns[index].eventLoopDelayMs = { p50: 40, p95: 80, p99: 120, max: 180 }
+      result.contentionRuns[index].foregroundWriterDelayMs.renderer = { count: 100, p50: 40, p95: 80, p99: 120, max: 180 }
+    }
+    result.eventLoopDelayMs = { p50: 40, p95: 80, p99: 120, max: 180 }
+    result.foregroundWriterDelayMs.renderer = { count: 100, p50: 40, p95: 80, p99: 120, max: 180 }
+    const failures = evaluateMetabolismPerformanceResult({
+      result, thresholds: structuredClone(validThresholds), packaged: true, writesPerKind: 100, maximumCpuUtilization: 0.5,
+    })
+    expect(failures).toContain('event-loop p95')
+    expect(failures).toContain('event-loop p99')
+    expect(failures).toContain('renderer writer p99')
   })
 
   it.each(['--prepare-only', '--no-writers'])('rejects wrapper bypass flag %s', flag => {
@@ -238,6 +273,9 @@ describe('packaged metabolism performance gate', () => {
     ['invalid CPU sample window', (_result: any, thresholds: any) => { thresholds.environment.cpuSampleMinimumWindowMs = 0 }],
     ['zero fixture', (result: any) => { result.fixture.nodeCount = 0 }],
     ['short run array', (result: any) => { result.throughput.workerRunsMs = [10, 11] }],
+    ['short contention run array', (result: any) => { result.contentionRuns.pop() }],
+    ['tampered contention median', (result: any) => { result.eventLoopDelayMs.p99 = 4 }],
+    ['invalid contention writer count', (result: any) => { result.contentionRuns[0].foregroundWriterDelayMs.note.count = 99 }],
     ['null retained percentile', (result: any) => { result.foregroundWriterDelayMs.cloud.p50 = null }],
     ['inconsistent ratio', (result: any) => { result.throughput.workerVsMainBaselineRatio = 2 }],
     ['changed workload set', (_result: any, thresholds: any) => { thresholds.requiredWorkloads.pop() }],
@@ -294,7 +332,7 @@ describe('packaged metabolism performance gate', () => {
   it('latches any focus loss across the complete foreground writer workload', () => {
     const harness = fs.readFileSync(path.join(repoRoot, 'scripts', 'metabolism-worker-electron-performance-harness.ts'), 'utf8')
     const writerStart = harness.indexOf('let focusedRendererIpcWrites = false')
-    const writerEnd = harness.indexOf('const eventLoopDelayMs =', writerStart)
+    const writerEnd = harness.indexOf('const metadataWrite =', writerStart)
     expect(writerStart).toBeGreaterThan(0)
     expect(writerEnd).toBeGreaterThan(writerStart)
     const writerBlock = harness.slice(writerStart, writerEnd)
