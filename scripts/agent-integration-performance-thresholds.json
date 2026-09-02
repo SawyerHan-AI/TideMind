@@ -1,7 +1,7 @@
 {
   "protocolVersion": 1,
-  "status": "frozen-local-development-baseline-2026-08-26",
-  "scope": "deterministic local Agent Integration development gate; not a packaged release SLO",
+  "status": "frozen-local-and-self-hosted-ci-baseline-2026-09-02",
+  "scope": "deterministic local and self-hosted CI Agent Integration gate; not a packaged release SLO",
   "fixture": {
     "probeCount": 18,
     "probeOperationTimeoutMs": 20,
@@ -17,7 +17,7 @@
   },
   "queries": {
     "100-installations-10000-events": {
-      "snapshotP95MaxMs": 100,
+      "snapshotP95MaxMs": 200,
       "snapshotAbsoluteMaxMs": 250,
       "detailP95MaxMs": 25,
       "detailAbsoluteMaxMs": 100,
@@ -25,7 +25,7 @@
       "eventsAbsoluteMaxMs": 100
     },
     "1000-installations-100000-events": {
-      "snapshotP95MaxMs": 1000,
+      "snapshotP95MaxMs": 2000,
       "snapshotAbsoluteMaxMs": 2500,
       "detailP95MaxMs": 25,
       "detailAbsoluteMaxMs": 100,

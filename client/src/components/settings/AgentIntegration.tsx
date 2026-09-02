@@ -58,6 +58,23 @@ function InitialSkeleton() {
   )
 }
 
+function AgentOverviewMetric({
+  label,
+  value,
+  warning = false,
+}: {
+  label: string
+  value: string
+  warning?: boolean
+}) {
+  return (
+    <div className="rounded-lg border border-white/5 bg-white/[0.025] px-3 py-2">
+      <p className="text-[10px] text-gray-500">{label}</p>
+      <p className={`mt-1 text-sm font-medium ${warning ? 'text-amber-300' : 'text-gray-200'}`}>{value}</p>
+    </div>
+  )
+}
+
 function historyFamily(installation: AgentIntegrationInstallationDto): AgentIntegrationFamilyDto {
   return {
     id: `history:${installation.id}`,
@@ -155,8 +172,8 @@ function SupportCatalogDialog({
   const filtered = (products ?? []).filter(product => matchesSupportQuery(product, query))
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/65 backdrop-blur-sm" onClick={onClose} aria-hidden />
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="support-catalog-title" className="relative flex max-h-[80vh] w-full max-w-lg flex-col rounded-2xl border border-white/10 bg-[#151523] shadow-2xl">
+      <div className="theme-modal-overlay absolute inset-0 backdrop-blur-sm" onClick={onClose} aria-hidden />
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="support-catalog-title" className="theme-popup-surface relative flex max-h-[80vh] w-full max-w-lg flex-col rounded-2xl border">
         <header className="flex items-start justify-between border-b border-white/[0.07] p-4">
           <div>
             <h3 id="support-catalog-title" className="text-sm font-semibold text-gray-100">{t('agent.managed.supportCatalog')}</h3>
@@ -472,36 +489,54 @@ export function AgentIntegration() {
 
   return (
     <div ref={layoutRef} className="w-full max-w-[1280px] space-y-5">
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h2 className="text-base font-semibold text-gray-100">{t('agent.managed.title')}</h2>
-          <p className="mt-1 text-xs text-gray-400">{t('agent.managed.subtitle')}</p>
-          {summary && (
-            <p className="mt-2 text-xs text-gray-400">
+      <section className="glass-card rounded-xl p-5" aria-labelledby="managed-overview-title">
+        <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 id="managed-overview-title" className="text-base font-semibold text-gray-100">{t('agent.managed.title')}</h2>
+            <p className="mt-1 text-xs text-gray-400">{t('agent.managed.subtitle')}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void scan()}
+            disabled={scanning || loading}
+            className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-indigo-400/20 bg-indigo-400/10 px-3 py-2 text-xs font-medium text-indigo-200 transition-colors hover:bg-indigo-400/15 disabled:cursor-wait disabled:opacity-50"
+          >
+            <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} aria-hidden />
+            {scanning ? t('agent.managed.scanning') : t('agent.managed.recheck')}
+          </button>
+        </header>
+
+        {summary && (
+          <>
+            <div className="mt-4 grid grid-cols-1 gap-2 min-[560px]:grid-cols-3">
+              <AgentOverviewMetric
+                label={t('agent.managed.status.available')}
+                value={String(summary.availableCount)}
+              />
+              <AgentOverviewMetric
+                label={t('agent.managed.needsAttention')}
+                value={String(summary.pendingCount + summary.attentionCount + (scanReport?.unresolved.length ?? 0))}
+                warning={summary.pendingCount + summary.attentionCount + (scanReport?.unresolved.length ?? 0) > 0}
+              />
+              <AgentOverviewMetric
+                label={t('agent.managed.lastChecked', { time: '' }).replace(/[：:]\s*$/, '').trim()}
+                value={snapshot?.lastScanAt ? timeAgo(snapshot.lastScanAt) : t('agent.managed.notCheckedYet')}
+              />
+            </div>
+            <p className="mt-3 text-xs text-gray-400">
               {t('agent.managed.summary', {
                 products: summary.productCount,
                 installations: summary.installationCount,
                 available: summary.availableCount,
               })}
-              <span className="mx-2 text-gray-700">·</span>
-              {snapshot?.lastScanAt ? t('agent.managed.lastChecked', { time: timeAgo(snapshot.lastScanAt) }) : t('agent.managed.notCheckedYet')}
             </p>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={() => void scan()}
-          disabled={scanning || loading}
-          className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-indigo-400/20 bg-indigo-400/10 px-3 py-2 text-xs font-medium text-indigo-200 transition-colors hover:bg-indigo-400/15 disabled:cursor-wait disabled:opacity-50"
-        >
-          <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} aria-hidden />
-          {scanning ? t('agent.managed.scanning') : t('agent.managed.recheck')}
-        </button>
-      </header>
+          </>
+        )}
 
-      <div className="sr-only" aria-live="polite">{scanAnnouncement}</div>
+        <div className="sr-only" aria-live="polite">{scanAnnouncement}</div>
+        <div className="mt-4 space-y-3">
 
-      {applyTaskPageError && (
+        {applyTaskPageError && (
         <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-400/15 bg-amber-400/[0.06] px-4 py-3 text-xs text-amber-200" role="alert">
           <span>{t('agent.managed.backgroundTaskPageLoadFailed')}</span>
           <button
@@ -512,9 +547,9 @@ export function AgentIntegration() {
             {t('agent.managed.retryBackgroundTaskPage')}
           </button>
         </div>
-      )}
+        )}
 
-      {applyTask && applyTaskSummary && (() => {
+        {applyTask && applyTaskSummary && (() => {
         const failed = applyTaskSummary.failed > 0 || applyTaskSummary.needsRecovery > 0
         const pendingVerification = !failed && applyTask.state === 'completed' && applyTaskSummary.awaitingVerification > 0
         const interrupted = !failed && applyTaskSummary.interrupted > 0
@@ -687,15 +722,15 @@ export function AgentIntegration() {
             )}
           </div>
         )
-      })()}
+        })()}
 
-      {snapshot?.fixtureMode === 'isolated_ui_audit' && (
+        {snapshot?.fixtureMode === 'isolated_ui_audit' && (
         <div className="rounded-xl border border-sky-400/15 bg-sky-400/[0.06] px-4 py-3 text-xs text-sky-200" role="note">
           UI Audit Fixture · 合成审计数据，仅用于界面验收，不代表真实宿主验证。
         </div>
-      )}
+        )}
 
-      {(error || scanError) && (
+        {(error || scanError) && (
         <div className="flex items-start gap-3 rounded-xl border border-red-400/15 bg-red-400/[0.06] p-4" role="alert">
           <ServerOff size={16} className="mt-0.5 shrink-0 text-red-300" aria-hidden />
           <div className="min-w-0 flex-1">
@@ -711,9 +746,9 @@ export function AgentIntegration() {
             {t('agent.managed.retry')}
           </button>
         </div>
-      )}
+        )}
 
-      {snapshot && summary && (summary.pendingCount > 0 || summary.attentionCount > 0 || Boolean(scanReport?.unresolved.length)) && (
+        {snapshot && summary && (summary.pendingCount > 0 || summary.attentionCount > 0 || Boolean(scanReport?.unresolved.length)) && (
         <section className="rounded-xl border border-amber-400/15 bg-amber-400/[0.06] p-4" aria-labelledby="managed-attention-title">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-start gap-3">
@@ -753,7 +788,9 @@ export function AgentIntegration() {
             )}
           </div>
         </section>
-      )}
+        )}
+        </div>
+      </section>
 
       <section aria-labelledby="managed-local-agents-title">
         <div className="mb-2 flex items-center justify-between">
@@ -772,7 +809,7 @@ export function AgentIntegration() {
             </div>
           </div>
         ) : snapshot ? (
-          <div className={`grid gap-3 ${wideDetailLayout ? 'grid-cols-[minmax(0,1.55fr)_minmax(340px,.95fr)]' : ''}`}>
+          <div className={`grid gap-3 ${selectedFamily && wideDetailLayout ? 'grid-cols-[minmax(0,1.55fr)_minmax(340px,.95fr)]' : ''}`}>
             <div className={selectedFamily && !wideDetailLayout ? 'hidden' : 'block'}>
               <ManagedFamilyList snapshot={snapshot} selectedFamilyId={selectedFamilyId} onSelect={(familyId, trigger) => {
                 detailTriggerRef.current = { familyId, element: trigger }
@@ -781,8 +818,8 @@ export function AgentIntegration() {
                 setSelectedInstallationId(null)
               }} />
             </div>
-            <div className={`${selectedFamily || wideDetailLayout ? 'block' : 'hidden'} overflow-hidden rounded-xl border border-white/[0.07] bg-white/[0.02]`}>
-              {selectedFamily ? (
+            {selectedFamily && (
+              <div data-agent-detail-pane className="glass-card overflow-hidden rounded-xl">
                 <ManagedAgentDetail
                   key={selectedFamily.id}
                   family={selectedFamily}
@@ -795,15 +832,11 @@ export function AgentIntegration() {
                   }}
                   onChanged={refetch}
                   onReconnect={installationId => openBatch([installationId])}
-                  showBackButton={!wideDetailLayout}
+                  showBackButton
+                  focusBackButton={!wideDetailLayout}
                 />
-              ) : (
-                <div className="flex min-h-64 flex-col items-center justify-center p-6 text-center">
-                  <Search size={18} className="text-gray-700" aria-hidden />
-                  <p className="mt-2 text-xs text-gray-400">{t('agent.managed.selectForDetails')}</p>
-                </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         ) : null}
       </section>
@@ -866,7 +899,7 @@ export function AgentIntegration() {
                 <p className="mt-3 text-xs text-gray-400">{t('agent.managed.connectionHistoryEmpty')}</p>
               )}
               {selectedHistoryInstallation && snapshot && (
-                <div className="mt-3 overflow-hidden rounded-xl border border-white/[0.07] bg-white/[0.015]">
+                <div className="glass-card mt-3 overflow-hidden rounded-xl">
                   <ManagedAgentDetail
                     key={`history:${selectedHistoryInstallation.id}`}
                     family={historyFamily(selectedHistoryInstallation)}

@@ -92,7 +92,7 @@ export function ManagedFamilyList({
   useEffect(() => {
     const element = containerRef.current
     if (!element) return
-    const update = (width: number) => setWideTableLayout(width >= 680)
+    const update = (width: number) => setWideTableLayout(width >= 560)
     update(element.getBoundingClientRect().width)
     const observer = new ResizeObserver(entries => update(entries[0]?.contentRect.width ?? 0))
     observer.observe(element)
@@ -103,9 +103,9 @@ export function ManagedFamilyList({
     <div
       ref={containerRef}
       data-agent-family-list
-      className="min-w-0 overflow-hidden rounded-xl border border-white/[0.07] bg-white/[0.02]"
+      className="glass-card min-w-0 rounded-xl"
     >
-      <div className={`${wideTableLayout ? 'grid grid-cols-[minmax(150px,1.05fr)_minmax(180px,.95fr)_minmax(210px,1.25fr)_36px]' : 'hidden'} gap-4 border-b border-white/[0.06] px-4 py-2 text-xs font-medium text-gray-400`}>
+      <div className={`${wideTableLayout ? 'grid grid-cols-[minmax(120px,1fr)_minmax(150px,.9fr)_minmax(180px,1.15fr)_24px]' : 'hidden'} gap-3 border-b border-white/[0.06] px-3 py-2 text-xs font-medium text-gray-400`}>
         <span>{t('agent.managed.table.agent')}</span>
         <span>{t('agent.managed.table.currentStatus')} · {t('agent.managed.table.access')}</span>
         <span>{t('agent.managed.table.components')} · {t('agent.managed.table.lastVerified')}</span>
@@ -119,12 +119,21 @@ export function ManagedFamilyList({
         return (
           <div
             key={family.id}
-            className={`border-b border-white/[0.05] px-4 py-3 last:border-b-0 ${selected ? 'bg-indigo-400/[0.07]' : 'hover:bg-white/[0.025]'}`}
+            data-agent-family-row={family.id}
+            className={`group relative border-b border-white/[0.05] px-3 py-2.5 last:border-b-0 ${selected ? 'bg-indigo-400/[0.07]' : 'hover:bg-white/[0.025]'}`}
           >
-            <div className={`grid min-w-0 items-center ${wideTableLayout ? 'grid-cols-[minmax(150px,1.05fr)_minmax(180px,.95fr)_minmax(210px,1.25fr)_36px] gap-4' : 'gap-3'}`}>
+            <button
+              type="button"
+              data-agent-family-trigger={family.id}
+              onClick={event => onSelect(family.id, event.currentTarget)}
+              aria-label={t('agent.managed.viewDetailsFor', { name: family.displayName })}
+              aria-current={selected ? 'true' : undefined}
+              className="absolute inset-0 z-0 rounded-[inherit] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400/60"
+            />
+            <div className={`pointer-events-none relative z-[1] grid min-w-0 items-center ${wideTableLayout ? 'grid-cols-[minmax(120px,1fr)_minmax(150px,.9fr)_minmax(180px,1.15fr)_24px] gap-3' : 'gap-2'}`}>
               <div className="flex min-w-0 items-center gap-2.5">
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.04] text-indigo-300">
-                  <Bot size={15} aria-hidden />
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.04] text-indigo-300">
+                  <Bot size={14} aria-hidden />
                 </span>
                 <span className="min-w-0">
                   <span className="block truncate text-xs font-medium text-gray-200">{family.displayName}</span>
@@ -141,11 +150,11 @@ export function ManagedFamilyList({
                   </span>
                 </span>
               </div>
-              <div className={`${wideTableLayout ? '' : 'mt-2'} min-w-0 space-y-2`}>
-                {!wideTableLayout && <span className="mb-1 block text-xs text-gray-400">{t('agent.managed.table.currentStatus')} · {t('agent.managed.table.access')}</span>}
+              <div className={`${wideTableLayout ? 'space-y-1' : 'flex flex-wrap items-center gap-x-3 gap-y-1 pl-9'} min-w-0`}>
                 <StatusBadge
                   group={family.statusGroup}
                   reason={primary.statusReason}
+                  compact
                   detectOnly={installations.every(installation => !installation.manageable)}
                 />
                 {family.needsAttentionCount > 0 && installations.length > 1 && (
@@ -153,25 +162,20 @@ export function ManagedFamilyList({
                     {t('agent.managed.instancesNeedAttention', { count: family.needsAttentionCount })}
                   </p>
                 )}
-                <MixedAccess family={family} snapshot={snapshot} />
+                <span className="relative z-10 inline-flex min-w-0">
+                  <MixedAccess family={family} snapshot={snapshot} />
+                </span>
               </div>
-              <div className={`${wideTableLayout ? '' : 'mt-2'} min-w-0 space-y-2`}>
-                {!wideTableLayout && <span className="mb-1 block text-xs text-gray-400">{t('agent.managed.table.components')} · {t('agent.managed.table.lastVerified')}</span>}
+              <div className={`${wideTableLayout ? 'space-y-1' : 'flex flex-wrap items-center gap-x-3 gap-y-1 pl-9'} min-w-0`}>
                 <AggregatedComponents family={family} snapshot={snapshot} />
-                <p className="text-xs text-gray-400">
-                  <span className="mr-1">{t('agent.managed.table.lastVerified')}：</span>
+                <p className="whitespace-nowrap text-xs text-gray-400">
+                  <span className="mr-1">{t('agent.managed.table.lastVerified')}:</span>
                   {verifiedAt ? timeAgo(verifiedAt) : t('agent.managed.neverVerified')}
                 </p>
               </div>
-              <button
-                type="button"
-                data-agent-family-trigger={family.id}
-                onClick={event => onSelect(family.id, event.currentTarget)}
-                aria-label={t('agent.managed.viewDetailsFor', { name: family.displayName })}
-                className="min-h-8 min-w-8 justify-self-end rounded p-1 text-gray-400 transition-colors hover:bg-white/5 hover:text-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/60"
-              >
+              <span className={`${wideTableLayout ? '' : 'absolute right-3 top-1/2 -translate-y-1/2'} justify-self-end text-gray-400 transition-colors group-hover:text-gray-200`}>
                 <ChevronRight size={15} aria-hidden />
-              </button>
+              </span>
             </div>
           </div>
         )

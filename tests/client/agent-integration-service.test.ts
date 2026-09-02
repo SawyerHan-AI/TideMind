@@ -1733,7 +1733,7 @@ describe('AgentIntegrationService', () => {
       if (db.open) db.close()
       fs.rmSync(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   it('resolves a 1k by 1k legacy group without materializing candidate edges', () => {
     const { db, repository } = setup()

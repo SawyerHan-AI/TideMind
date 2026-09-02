@@ -30,6 +30,7 @@ import {
   createProductionLiveTrustAttestor,
   inspectMacAppSignature,
   inspectMacAppSignatureSync,
+  productionAgentDiscoveryExecutableDirectories,
   productionAgentIntegrationWriterLockDirectory,
   startProductionAgentIntegrationRuntime,
   stopProductionAgentIntegrationRuntime,
@@ -457,6 +458,23 @@ describe('production Agent Integration writer lock scope', () => {
 })
 
 describe('production Agent Integration discovery environment', () => {
+  it('adds deterministic GUI-safe executable roots without starting a login shell', () => {
+    expect(productionAgentDiscoveryExecutableDirectories('/Users/fixture', '/usr/bin:/bin')).toEqual([
+      '/usr/bin',
+      '/bin',
+      '/opt/homebrew/bin',
+      '/usr/local/bin',
+      '/opt/local/bin',
+      '/Users/fixture/.local/bin',
+      '/Users/fixture/.openclaw/bin',
+      '/Users/fixture/.kimi-code/bin',
+      '/Users/fixture/.volta/bin',
+      '/Users/fixture/.bun/bin',
+      '/Users/fixture/Library/pnpm',
+      '/Users/fixture/.npm-global/bin',
+    ])
+  })
+
   it('passes the official OMP config and profile variables into the production scanner', async () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-omp-profile-')))
     const home = path.join(root, 'home')

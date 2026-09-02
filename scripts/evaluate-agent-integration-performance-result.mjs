@@ -48,8 +48,8 @@ const QUERY_FIELDS = ['snapshot', 'detail', 'events']
 export function evaluateAgentIntegrationPerformanceResult({ result, thresholds }) {
   const failures = []
   if (result?.protocolVersion !== 1 || thresholds?.protocolVersion !== 1) failures.push('protocol version')
-  if (thresholds?.status !== 'frozen-local-development-baseline-2026-08-26') failures.push('threshold frozen status')
-  if (thresholds?.scope !== 'deterministic local Agent Integration development gate; not a packaged release SLO') {
+  if (thresholds?.status !== 'frozen-local-and-self-hosted-ci-baseline-2026-09-02') failures.push('threshold frozen status')
+  if (thresholds?.scope !== 'deterministic local and self-hosted CI Agent Integration gate; not a packaged release SLO') {
     failures.push('threshold scope')
   }
   if (thresholds?.gateRule !== 'Any failure blocks performance sign-off until the same frozen fixture passes after a targeted fix or an explicitly reviewed threshold refreeze.') {

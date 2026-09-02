@@ -35,6 +35,11 @@ const KEEP_ROOT = process.argv.includes('--keep') || process.env.TIDEMIND_UI_E2E
 const HARD_TIMEOUT_MS = Number(process.env.TIDEMIND_UI_E2E_TIMEOUT_MS ?? 90_000)
 const RECEIPT_PATH = optionPath('--receipt')
 const EVIDENCE_DIR = optionPath('--evidence-dir')
+const UI_THEME = process.env.TIDEMIND_UI_E2E_THEME ?? 'dark'
+
+if (!['dark', 'light'].includes(UI_THEME)) {
+  throw new Error(`TIDEMIND_UI_E2E_THEME must be dark or light, got: ${UI_THEME}`)
+}
 
 function optionPath(option) {
   const indexes = process.argv.flatMap((argument, index) => argument === option ? [index] : [])
@@ -126,11 +131,19 @@ async function main() {
     && location.hash.includes('/settings?tab=external&sub=agent')
     && document.querySelector('[role="note"]')?.textContent?.includes('UI Audit Fixture')
     && document.body.textContent.includes('ZCode'))()`, 'Agent Integration fixture renderer')
+    await cdp.send('Runtime.evaluate', {
+      expression: `(() => {
+        localStorage.setItem('eb-theme', ${JSON.stringify(UI_THEME)})
+        document.documentElement.dataset.theme = ${JSON.stringify(UI_THEME)}
+      })()`,
+    })
+    await waitFor(cdp, `document.documentElement.dataset.theme === ${JSON.stringify(UI_THEME)}`, `${UI_THEME} theme application`)
     await waitFor(cdp, 'document.hasFocus() === true', 'focused Electron renderer')
     assert.equal(await value(cdp, 'typeof window.api?.agentIntegrations?.snapshot'), 'function', 'preload API was not exposed')
     assert.equal(await value(cdp, 'document.querySelectorAll(\'[role="alert"]\').length'), 0, 'renderer reported an error')
     const initialScan = await waitForExactInitialScan(cdp)
-    const startupNotification = await exerciseStartupNotification(cdp)
+    const defaultList = await assertDefaultListLayout(cdp)
+    const startupNotification = await exerciseStartupNotification(cdp, artifactsDir)
     const interruptedRestart = await exerciseInterruptedRestartTask(cdp)
     await screenshot(cdp, path.join(artifactsDir, '01-wide-agent-list.png'))
 
@@ -154,7 +167,9 @@ async function main() {
       auditRoot: root,
       screenshots: fs.readdirSync(artifactsDir).sort().map(name => path.join(artifactsDir, name)),
       uiAssertions: {
+        theme: UI_THEME,
         initialScan,
+        defaultList,
         accessInfo,
         startupNotification,
         interruptedRestart,
@@ -250,15 +265,74 @@ function captureLogs(child) {
   return () => entries.join('').slice(-12_000)
 }
 
-async function exerciseStartupNotification(client) {
+async function assertDefaultListLayout(client) {
+  const result = await value(client, `(() => {
+    const section = document.querySelector('section[aria-labelledby="managed-local-agents-title"]')
+    const list = section?.querySelector('[data-agent-family-list]')
+    const detailPane = section?.querySelector('[data-agent-detail-pane]')
+    const rows = [...(list?.querySelectorAll('[data-agent-family-row]') ?? [])]
+      .filter(row => row instanceof HTMLElement && row.offsetParent !== null)
+    const rowMetrics = rows.map(row => {
+      const trigger = row.querySelector('[data-agent-family-trigger]')
+      const rowRect = row.getBoundingClientRect()
+      const triggerRect = trigger?.getBoundingClientRect()
+      const bodyHitTested = rowRect.top >= 0 && rowRect.bottom <= window.innerHeight
+      const bodyHit = bodyHitTested
+        ? document.elementFromPoint(
+          rowRect.left + Math.min(80, rowRect.width * 0.2),
+          rowRect.top + rowRect.height / 2,
+        )
+        : null
+      return {
+        height: rowRect.height,
+        triggerCoverageX: triggerRect ? triggerRect.width / rowRect.width : 0,
+        triggerCoverageY: triggerRect ? triggerRect.height / rowRect.height : 0,
+        bodyHitTested,
+        bodyHitTarget: !bodyHitTested || Boolean(bodyHit?.closest('[data-agent-family-trigger]')),
+      }
+    })
+    const sectionRect = section?.getBoundingClientRect()
+    const listRect = list?.getBoundingClientRect()
+    return {
+      rowCount: rows.length,
+      maxRowHeight: Math.max(0, ...rowMetrics.map(metric => metric.height)),
+      fullRowTriggers: rowMetrics.every(metric => metric.triggerCoverageX >= 0.95 && metric.triggerCoverageY >= 0.95),
+      clickableCardBodies: rowMetrics.every(metric => metric.bodyHitTarget),
+      clickableCardBodiesTested: rowMetrics.filter(metric => metric.bodyHitTested).length,
+      detailPaneAbsent: detailPane === null,
+      fullWidthList: Boolean(sectionRect && listRect && listRect.width >= sectionRect.width - 2),
+    }
+  })()`)
+  assert.ok(result.rowCount >= 3, `expected compact Agent rows: ${JSON.stringify(result)}`)
+  assert.ok(result.maxRowHeight <= 112, `default Agent rows are too tall: ${JSON.stringify(result)}`)
+  assert.equal(result.fullRowTriggers, true, `Agent rows are not fully clickable: ${JSON.stringify(result)}`)
+  assert.equal(result.clickableCardBodies, true, `Agent card bodies do not activate the row: ${JSON.stringify(result)}`)
+  assert.ok(result.clickableCardBodiesTested >= 1, `no visible Agent card body was hit-tested: ${JSON.stringify(result)}`)
+  assert.equal(result.detailPaneAbsent, true, `detail pane exists before selection: ${JSON.stringify(result)}`)
+  assert.equal(result.fullWidthList, true, `default Agent list does not use the full section width: ${JSON.stringify(result)}`)
+  return result
+}
+
+async function exerciseStartupNotification(client, artifactRoot) {
   await waitFor(client, `(() => {
-    const toast = [...document.querySelectorAll('[role="status"]')]
-      .find(element => element.querySelector('button') && element.textContent.includes('Agent'))
+    const toast = document.querySelector('[data-agent-integration-notification]')
     return Boolean(toast && document.querySelector('#settings-tab-external .bg-red-400'))
   })()`, 'startup Agent notification and Settings unread dot')
+  const expectedBackground = UI_THEME === 'light' ? 'rgba(250, 249, 254, 0.97)' : 'rgba(22, 22, 26, 0.97)'
+  const expectedTitleColor = UI_THEME === 'light' ? 'rgb(17, 24, 39)' : 'rgb(243, 244, 246)'
+  const colors = await value(client, `(() => {
+    const toast = document.querySelector('[data-agent-integration-notification]')
+    const title = toast?.querySelector('p')
+    return {
+      background: toast ? getComputedStyle(toast).backgroundColor : null,
+      title: title ? getComputedStyle(title).color : null,
+    }
+  })()`)
+  assert.equal(colors.background, expectedBackground, `startup notification surface ignored ${UI_THEME} theme: ${JSON.stringify(colors)}`)
+  assert.equal(colors.title, expectedTitleColor, `startup notification title ignored ${UI_THEME} theme: ${JSON.stringify(colors)}`)
+  await screenshot(client, path.join(artifactRoot, '00-startup-notification.png'))
   const point = await value(client, `(() => {
-    const toast = [...document.querySelectorAll('[role="status"]')]
-      .find(element => element.querySelector('button') && element.textContent.includes('Agent'))
+    const toast = document.querySelector('[data-agent-integration-notification]')
     const button = toast?.querySelector('button')
     if (!(button instanceof HTMLButtonElement)) throw new Error('startup notification detail action missing')
     button.scrollIntoView({ block: 'center', inline: 'center' })
@@ -276,10 +350,12 @@ async function exerciseStartupNotification(client) {
     unreadDotVisible: true,
     exactInstallationOpened: 'opencode-conflict',
     ordinaryInfoDidNotKeepDot: true,
+    colors,
   }
 }
 
 async function exerciseInterruptedRestartTask(client) {
+  const expectedAttentionColor = UI_THEME === 'light' ? 'rgb(146, 64, 14)' : 'rgb(253, 230, 138)'
   await waitFor(client, `(() => {
     const task = [...document.querySelectorAll('[role="status"]')]
       .find(element => /中断|interrupted/iu.test(element.textContent ?? ''))
@@ -290,7 +366,7 @@ async function exerciseInterruptedRestartTask(client) {
     return Boolean(task && action
       && recheck
       && task.getAttribute('data-tone') === 'attention'
-      && getComputedStyle(task).color === 'rgb(253, 230, 138)'
+      && getComputedStyle(task).color === ${JSON.stringify(expectedAttentionColor)}
       && getComputedStyle(task).color !== 'rgb(167, 243, 208)')
   })()`, 'interrupted restart task amber attention card')
   const actionPoint = await value(client, `(() => {
@@ -331,7 +407,7 @@ async function exerciseInterruptedRestartTask(client) {
   `interrupted task did not remain exact after fresh preview cancellation: ${JSON.stringify(tasks)}`)
   return {
     amberAttention: true,
-    stableAttentionTone: 'rgb(253, 230, 138)',
+    stableAttentionTone: expectedAttentionColor,
     exactInstallationIds: ['zcode-default'],
     unavailableInstallationIds: ['claude-history'],
     freshPreviewOnly: true,
@@ -476,9 +552,20 @@ async function exerciseSupportCatalogModal(client) {
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
   })()`)
   await mouseClick(client, triggerPoint)
-  await waitFor(client, `Boolean(document.querySelector('#support-catalog-title')
-    && document.querySelector('#root')?.inert
-    && document.querySelector('[role="dialog"]')?.contains(document.activeElement))`, 'support catalog inert modal')
+  try {
+    await waitFor(client, `Boolean(document.querySelector('#support-catalog-title')
+      && document.querySelector('#root')?.inert
+      && document.querySelector('[role="dialog"]')?.contains(document.activeElement))`, 'support catalog inert modal')
+  } catch (error) {
+    const state = await value(client, `(() => ({
+      title: Boolean(document.querySelector('#support-catalog-title')),
+      inert: document.querySelector('#root')?.inert ?? null,
+      active: document.activeElement?.outerHTML?.slice(0, 500) ?? null,
+      dialogContainsFocus: document.querySelector('[role="dialog"]')?.contains(document.activeElement) ?? false,
+      trigger: globalThis.__tidemindSupportTrigger?.outerHTML?.slice(0, 500) ?? null,
+    }))()`)
+    throw new Error(`${error.message}; supportModal=${JSON.stringify(state)}`, { cause: error })
+  }
   assert.equal(await value(client, `(() => {
     globalThis.__tidemindSupportTrigger?.focus()
     return document.querySelector('[role="dialog"]')?.contains(document.activeElement) === true
@@ -799,29 +886,32 @@ async function exerciseLiveTaskAdvancement(client, artifactRoot) {
     // mock, and verifies retained content, visible retry, and initiating focus.
     db.exec(`ALTER TABLE agent_integration_apply_task_feed_state
       RENAME TO agent_integration_apply_task_feed_state_ui_blocked`)
-    const failingNextPoint = await value(client, `(() => {
-      const card = document.querySelector('[data-task-feed-key]')
-      const button = [...(card?.querySelectorAll('button') ?? [])]
-        .find(candidate => !candidate.disabled && candidate.querySelector('svg.lucide-chevron-right'))
-      if (!(button instanceof HTMLButtonElement)) return null
-      button.focus()
-      const rect = button.getBoundingClientRect()
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
-    })()`)
-    assert.ok(failingNextPoint, 'first-page boundary did not expose the next-page request')
-    await mouseClick(client, failingNextPoint)
-    await waitFor(client, `(() => [...document.querySelectorAll('[role="alert"]')].some(alert =>
-      [...alert.querySelectorAll('button')].some(button =>
-        /重试加载后台任务|Retry loading background tasks/iu.test(button.textContent ?? ''))))()` ,
-    'non-stale task page failure remains visible with retry', 5_000)
-    assert.equal(await value(client, `document.querySelector('[data-task-feed-key]')?.getAttribute('data-task-feed-key')`),
-      firstPageBoundary.key, 'failed page request replaced the retained task card')
-    assert.equal(await value(client, `Boolean(document.activeElement instanceof HTMLButtonElement
-      && document.activeElement.querySelector('svg.lucide-chevron-right'))`), true,
-    'failed page request did not restore keyboard focus to the initiating arrow')
+    try {
+      const failingNextPoint = await value(client, `(() => {
+        const card = document.querySelector('[data-task-feed-key]')
+        const button = [...(card?.querySelectorAll('button') ?? [])]
+          .find(candidate => !candidate.disabled && candidate.querySelector('svg.lucide-chevron-right'))
+        if (!(button instanceof HTMLButtonElement)) return null
+        button.focus()
+        const rect = button.getBoundingClientRect()
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+      })()`)
+      assert.ok(failingNextPoint, 'first-page boundary did not expose the next-page request')
+      await mouseClick(client, failingNextPoint)
+      await waitFor(client, `(() => [...document.querySelectorAll('[role="alert"]')].some(alert =>
+        [...alert.querySelectorAll('button')].some(button =>
+          /重试加载后台任务|Retry loading background tasks/iu.test(button.textContent ?? ''))))()` ,
+      'non-stale task page failure remains visible with retry', 5_000)
+      assert.equal(await value(client, `document.querySelector('[data-task-feed-key]')?.getAttribute('data-task-feed-key')`),
+        firstPageBoundary.key, 'failed page request replaced the retained task card')
+      assert.equal(await value(client, `Boolean(document.activeElement instanceof HTMLButtonElement
+        && document.activeElement.querySelector('svg.lucide-chevron-right'))`), true,
+      'failed page request did not restore keyboard focus to the initiating arrow')
+    } finally {
+      db.exec(`ALTER TABLE agent_integration_apply_task_feed_state_ui_blocked
+        RENAME TO agent_integration_apply_task_feed_state`)
+    }
     await screenshot(client, path.join(artifactRoot, '05-task-page-error.png'))
-    db.exec(`ALTER TABLE agent_integration_apply_task_feed_state_ui_blocked
-      RENAME TO agent_integration_apply_task_feed_state`)
     const retryPoint = await value(client, `(() => {
       const alert = [...document.querySelectorAll('[role="alert"]')].find(candidate =>
         [...candidate.querySelectorAll('button')].some(button =>
@@ -1091,7 +1181,7 @@ async function exerciseResponsiveBreakpoints(client, artifactRoot) {
         if (!(button instanceof HTMLButtonElement)) throw new Error('ZCode family trigger missing')
         button.scrollIntoView({ block: 'center', inline: 'center' })
         const rect = button.getBoundingClientRect()
-        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+        return { x: rect.left + Math.min(80, rect.width * 0.2), y: rect.top + rect.height / 2 }
       })()`)
       await mouseClick(client, point)
       await waitFor(client, `document.querySelector('#components-zcode-default') !== null`, 'responsive detail selection')
@@ -1301,7 +1391,11 @@ function assertInsideRoot(candidate) {
 
 async function screenshot(client, target) {
   assertInsideRoot(target)
-  const result = await client.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
+  const result = await client.send(
+    'Page.captureScreenshot',
+    { format: 'png', captureBeyondViewport: false },
+    15_000,
+  )
   fs.writeFileSync(target, Buffer.from(result.data, 'base64'))
   assert.ok(fs.statSync(target).size > 10_000, `empty or suspicious screenshot: ${target}`)
 }
@@ -1425,13 +1519,13 @@ class CdpClient {
     return new CdpClient(socket)
   }
 
-  send(method, params = {}) {
+  send(method, params = {}, timeoutMs = 5_000) {
     const id = ++this.sequence
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)
         reject(new Error(`${method}: CDP command timed out`))
-      }, 5_000)
+      }, timeoutMs)
       this.pending.set(id, {
         method,
         resolve: result => { clearTimeout(timer); resolve(result) },

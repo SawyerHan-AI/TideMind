@@ -79,6 +79,7 @@ export function ManagedAgentDetail({
   onReconnect,
   historyOnly = false,
   showBackButton = false,
+  focusBackButton = showBackButton,
 }: {
   family: ManagedProductFamilyDto
   snapshot: ManagedSnapshotDto
@@ -89,6 +90,7 @@ export function ManagedAgentDetail({
   onReconnect: (installationId: string) => void
   historyOnly?: boolean
   showBackButton?: boolean
+  focusBackButton?: boolean
 }) {
   const { t } = useTranslation('settings')
   const { timeAgo } = useFormatters()
@@ -122,9 +124,9 @@ export function ManagedAgentDetail({
   const acknowledgingInstallations = useRef(new Set<string>())
 
   useEffect(() => {
-    if (!showBackButton) return
+    if (!focusBackButton) return
     requestAnimationFrame(() => backRef.current?.focus())
-  }, [showBackButton])
+  }, [focusBackButton])
 
   useEffect(() => {
     technicalRequestSequence.current += 1
@@ -424,7 +426,7 @@ export function ManagedAgentDetail({
           <h4 id={`components-${installation.id}`} className="mb-2 text-xs font-medium text-gray-300">
             {t('agent.managed.integrationComponents')}
           </h4>
-          <div className="space-y-2 rounded-lg border border-white/[0.06] bg-white/[0.02] p-3">
+          <div className="space-y-2 rounded-xl border border-white/[0.06] bg-white/[0.025] p-3">
             {(['instruction', 'memory_tools', 'lifecycle'] as const).map(componentKey => {
               const component = installation.components.find(candidate => candidate.key === componentKey)
               return (
@@ -477,19 +479,19 @@ export function ManagedAgentDetail({
             {t('agent.managed.healthAndActivity')}
           </h4>
           <dl className="grid grid-cols-1 gap-2 text-xs min-[420px]:grid-cols-2">
-            <div className="rounded-lg bg-white/[0.025] p-2.5">
+            <div className="rounded-lg border border-white/5 bg-white/[0.025] p-2.5">
               <dt className="text-gray-400">{t('agent.managed.lastVerified')}</dt>
               <dd className="mt-1 text-gray-300">{installation.lastVerifiedAt ? timeAgo(installation.lastVerifiedAt) : t('agent.managed.neverVerified')}</dd>
             </div>
-            <div className="rounded-lg bg-white/[0.025] p-2.5">
+            <div className="rounded-lg border border-white/5 bg-white/[0.025] p-2.5">
               <dt className="text-gray-400">{t('agent.managed.lastRepair')}</dt>
               <dd className="mt-1 text-gray-300">{installation.lastRepairedAt ? timeAgo(installation.lastRepairedAt) : t('agent.managed.noRecord')}</dd>
             </div>
-            <div className="rounded-lg bg-white/[0.025] p-2.5">
+            <div className="rounded-lg border border-white/5 bg-white/[0.025] p-2.5">
               <dt className="text-gray-400">{t('agent.managed.lastDetected')}</dt>
               <dd className="mt-1 text-gray-300">{installation.lastDetectedAt ? timeAgo(installation.lastDetectedAt) : t('agent.managed.noRecord')}</dd>
             </div>
-            <div className="rounded-lg bg-white/[0.025] p-2.5">
+            <div className="rounded-lg border border-white/5 bg-white/[0.025] p-2.5">
               <dt className="text-gray-400">{t('agent.managed.lastUsed')}</dt>
               <dd className="mt-1 text-gray-300">{installation.lastRealUseAt ? timeAgo(installation.lastRealUseAt) : t('agent.managed.noReliableUsage')}</dd>
             </div>
@@ -507,7 +509,7 @@ export function ManagedAgentDetail({
               {detail.events.slice(0, 8).map(event => {
                 const title = eventTitle(event.kind)
                 return (
-                <li key={event.id} className={`flex gap-2 rounded-lg p-2.5 text-xs ${event.state === 'unread' ? 'bg-sky-400/[0.06]' : 'bg-white/[0.025]'}`}>
+                <li key={event.id} className={`flex gap-2 rounded-lg border p-2.5 text-xs ${event.state === 'unread' ? 'border-sky-400/15 bg-sky-400/[0.06]' : 'border-white/5 bg-white/[0.025]'}`}>
                   <span className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${event.severity === 'error' ? 'bg-red-400' : event.severity === 'warning' ? 'bg-amber-400' : 'bg-sky-400'}`} />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-gray-300">{t(title.key, { defaultValue: title.fallback })}</span>

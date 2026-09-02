@@ -190,7 +190,7 @@ export function createProductionAgentIntegrationComposition(
     isAppActive: options.isAppActive,
   })
   const repository = new AgentIntegrationRepository(db)
-  const discoveryDependencies = options.discoveryDependencies ?? productionDiscoveryDependencies()
+  const discoveryDependencies = options.discoveryDependencies ?? productionDiscoveryDependencies(homeDir)
   const canManageInstallation = options.canManageInstallation
     ?? (row => isProductionInstallationTrusted(row))
   const liveTrustAttestor = options.liveTrustAttestor
@@ -1156,11 +1156,13 @@ function createProductionScanner(
       environment: discoveryEnvironment(),
       applicationRoots: ['/Applications', path.join(homeDir, 'Applications')],
       operationTimeoutMs: 2_500,
+      signatureTimeoutMs: 20_000,
     }, dependencies),
   }
 }
 
-function productionDiscoveryDependencies(): DiscoveryDependencies {
+function productionDiscoveryDependencies(homeDir: string): DiscoveryDependencies {
+  const executableDirectories = productionAgentDiscoveryExecutableDirectories(homeDir)
   return {
     fs: {
       async lstat(targetPath) {
@@ -1195,7 +1197,7 @@ function productionDiscoveryDependencies(): DiscoveryDependencies {
       readStableFileFingerprint,
       readStableFileMetadata,
     },
-    which: findExecutable,
+    which: command => findExecutable(command, executableDirectories),
     // Read only bounded package/release metadata adjacent to the already
     // canonical executable. Discovery never starts an arbitrary PATH binary.
     execVersion: executableRealpath => inspectPassiveCliVersion(executableRealpath, {
@@ -1456,10 +1458,32 @@ function runCodesignSync(
   return { stdout: result.stdout, stderr: result.stderr }
 }
 
-async function findExecutable(command: string): Promise<string | undefined> {
+export function productionAgentDiscoveryExecutableDirectories(
+  homeDir: string,
+  inheritedPath = process.env.PATH ?? '',
+): readonly string[] {
+  const candidates = [
+    ...inheritedPath.split(path.delimiter),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/opt/local/bin',
+    path.join(homeDir, '.local', 'bin'),
+    path.join(homeDir, '.openclaw', 'bin'),
+    path.join(homeDir, '.kimi-code', 'bin'),
+    path.join(homeDir, '.volta', 'bin'),
+    path.join(homeDir, '.bun', 'bin'),
+    path.join(homeDir, 'Library', 'pnpm'),
+    path.join(homeDir, '.npm-global', 'bin'),
+  ]
+  return [...new Set(candidates.filter(directory => path.isAbsolute(directory)))]
+}
+
+async function findExecutable(
+  command: string,
+  executableDirectories: readonly string[],
+): Promise<string | undefined> {
   if (!/^[A-Za-z0-9._+-]{1,128}$/u.test(command)) return undefined
-  const candidates = (process.env.PATH ?? '').split(path.delimiter).filter(directory => path.isAbsolute(directory))
-  for (const directory of candidates) {
+  for (const directory of executableDirectories) {
     const candidate = path.join(directory, command)
     try {
       await fs.access(candidate, 1)

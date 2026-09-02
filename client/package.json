@@ -1,6 +1,6 @@
 {
   "name": "tidemind-client",
-  "version": "0.2.90",
+  "version": "0.2.91",
   "description": "Tide Mind 桌面客户端",
   "main": "./out/main/index.js",
   "scripts": {
@@ -66,6 +66,7 @@
   "overrides": {
     "tmp": "^0.2.7",
     "esbuild": "^0.28.1",
+    "browserslist": "4.28.7",
     "postcss-selector-parser": "6.1.4"
   }
 }

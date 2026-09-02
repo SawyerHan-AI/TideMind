@@ -55,6 +55,7 @@
   --theme-popup-bg: rgba(22, 22, 26, 0.97);
   --theme-popup-border: rgba(255, 255, 255, 0.10);
   --theme-popup-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), 0 8px 32px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4);
+  --theme-modal-overlay: rgba(0, 0, 0, 0.65);
 
   /* 面板 header (sticky) */
   --theme-panel-header: rgba(9, 9, 11, 0.90);
@@ -129,6 +130,7 @@
   --theme-popup-bg: rgba(250, 249, 254, 0.97);
   --theme-popup-border: rgba(0, 0, 0, 0.08);
   --theme-popup-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.07);
+  --theme-modal-overlay: rgba(24, 20, 38, 0.38);
 
   /* 面板 header */
   --theme-panel-header: rgba(215, 210, 230, 0.85);
@@ -313,6 +315,19 @@ body {
   z-index: 1;
 }
 
+/* Portal surfaces cannot use .glass-popup because it changes positioning. */
+.theme-popup-surface {
+  background: var(--theme-popup-bg) !important;
+  border-color: var(--theme-popup-border) !important;
+  box-shadow: var(--theme-popup-shadow) !important;
+  backdrop-filter: blur(24px) saturate(1.3);
+  -webkit-backdrop-filter: blur(24px) saturate(1.3);
+}
+
+.theme-modal-overlay {
+  background: var(--theme-modal-overlay) !important;
+}
+
 /* 面板 sticky header */
 .panel-header {
   background: var(--theme-panel-header);
@@ -388,6 +403,9 @@ body {
 
 /* 半透明白色背景 → 半透明黑色背景 */
 [data-theme="light"] .bg-white\/5,
+[data-theme="light"] .bg-white\/\[0\.015\],
+[data-theme="light"] .bg-white\/\[0\.02\],
+[data-theme="light"] .bg-white\/\[0\.025\],
 [data-theme="light"] .bg-white\/\[0\.03\],
 [data-theme="light"] .bg-white\/\[0\.04\],
 [data-theme="light"] .bg-white\/\[0\.05\] {
@@ -402,6 +420,8 @@ body {
 
 /* hover 状态 */
 [data-theme="light"] .hover\:bg-white\/\[0\.03\]:hover,
+[data-theme="light"] .hover\:bg-white\/\[0\.025\]:hover,
+[data-theme="light"] .hover\:bg-white\/\[0\.035\]:hover,
 [data-theme="light"] .hover\:bg-white\/\[0\.04\]:hover,
 [data-theme="light"] .hover\:bg-white\/\[0\.05\]:hover,
 [data-theme="light"] .hover\:bg-white\/5:hover {
@@ -415,6 +435,8 @@ body {
 /* 边框颜色 */
 [data-theme="light"] .border-white\/5 { border-color: rgba(0, 0, 0, 0.07) !important; }
 [data-theme="light"] .border-white\/\[0\.05\] { border-color: rgba(0, 0, 0, 0.07) !important; }
+[data-theme="light"] .border-white\/\[0\.06\],
+[data-theme="light"] .border-white\/\[0\.07\] { border-color: rgba(0, 0, 0, 0.08) !important; }
 [data-theme="light"] .border-white\/\[0\.08\] { border-color: rgba(0, 0, 0, 0.08) !important; }
 [data-theme="light"] .border-white\/10 { border-color: rgba(0, 0, 0, 0.10) !important; }
 [data-theme="light"] .border-white\/\[0\.10\] { border-color: rgba(0, 0, 0, 0.10) !important; }
@@ -459,15 +481,39 @@ input[type="checkbox"] {
 [data-theme="light"] .text-purple-300 { color: #7c3aed !important; }
 [data-theme="light"] .text-purple-400 { color: #7c3aed !important; }
 [data-theme="light"] .text-emerald-300 { color: #059669 !important; }
+[data-theme="light"] .text-emerald-200 { color: #047857 !important; }
+[data-theme="light"] .text-amber-100,
+[data-theme="light"] .text-amber-100\/70,
+[data-theme="light"] .text-amber-200,
+[data-theme="light"] .text-amber-200\/80 { color: #92400e !important; }
 [data-theme="light"] .text-amber-300 { color: #d97706 !important; }
 [data-theme="light"] .text-amber-400 { color: #d97706 !important; }
+[data-theme="light"] .text-sky-200 { color: #0369a1 !important; }
 [data-theme="light"] .text-sky-300 { color: #0284c7 !important; }
+[data-theme="light"] .text-indigo-200 { color: #4338ca !important; }
 [data-theme="light"] .text-violet-300 { color: #7c3aed !important; }
 [data-theme="light"] .text-slate-300 { color: #475569 !important; }
 [data-theme="light"] .text-green-300 { color: #16a34a !important; }
 [data-theme="light"] .text-green-400 { color: #16a34a !important; }
 [data-theme="light"] .text-red-300 { color: #dc2626 !important; }
+[data-theme="light"] .text-red-200,
+[data-theme="light"] .text-red-300\/80 { color: #b91c1c !important; }
 [data-theme="light"] .text-red-400 { color: #dc2626 !important; }
+
+/* Agent 状态面板：浅色主题使用低饱和底色和足够深的语义文字。 */
+[data-theme="light"] .bg-indigo-400\/\[0\.06\],
+[data-theme="light"] .bg-indigo-400\/\[0\.07\] { background-color: rgba(79, 70, 229, 0.08) !important; }
+[data-theme="light"] .bg-amber-400\/\[0\.05\],
+[data-theme="light"] .bg-amber-400\/\[0\.06\] { background-color: rgba(217, 119, 6, 0.09) !important; }
+[data-theme="light"] .bg-red-400\/\[0\.06\] { background-color: rgba(220, 38, 38, 0.08) !important; }
+[data-theme="light"] .bg-sky-400\/\[0\.06\] { background-color: rgba(2, 132, 199, 0.08) !important; }
+[data-theme="light"] .bg-emerald-400\/\[0\.06\] { background-color: rgba(5, 150, 105, 0.08) !important; }
+[data-theme="light"] .border-indigo-400\/15,
+[data-theme="light"] .border-indigo-400\/20 { border-color: rgba(79, 70, 229, 0.24) !important; }
+[data-theme="light"] .border-amber-400\/15 { border-color: rgba(217, 119, 6, 0.24) !important; }
+[data-theme="light"] .border-red-400\/15 { border-color: rgba(220, 38, 38, 0.22) !important; }
+[data-theme="light"] .border-sky-400\/15 { border-color: rgba(2, 132, 199, 0.22) !important; }
+[data-theme="light"] .border-emerald-400\/15 { border-color: rgba(5, 150, 105, 0.22) !important; }
 [data-theme="light"] .text-cyan-300 { color: #0891b2 !important; }
 [data-theme="light"] .text-indigo-300 { color: #4f46e5 !important; }
 [data-theme="light"] .text-indigo-400 { color: #4f46e5 !important; }

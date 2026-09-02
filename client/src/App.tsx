@@ -69,7 +69,12 @@ function AgentIntegrationNotificationRouter() {
 
   if (!notification) return null
   return (
-    <div className="fixed bottom-5 right-5 z-[70] w-[min(360px,calc(100vw-2.5rem))] rounded-xl border border-white/10 bg-[#1b1b2b] p-4 shadow-2xl" role="status" aria-live="polite">
+    <div
+      data-agent-integration-notification
+      className="theme-popup-surface fixed bottom-5 right-5 z-[70] w-[min(360px,calc(100vw-2.5rem))] rounded-xl border p-4"
+      role="status"
+      aria-live="polite"
+    >
       <div className="flex items-start gap-3">
         <div className={`mt-1 h-2 w-2 shrink-0 rounded-full ${notification.level === 'error'
           ? 'bg-red-400'
