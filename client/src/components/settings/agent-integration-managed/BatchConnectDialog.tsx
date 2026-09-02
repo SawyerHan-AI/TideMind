@@ -430,14 +430,14 @@ export function BatchConnectDialog({
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center min-[720px]:p-6">
-      <div className="absolute inset-0 bg-black/65 backdrop-blur-sm" aria-hidden />
+      <div className="theme-modal-overlay absolute inset-0 backdrop-blur-sm" aria-hidden />
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         aria-busy={loading || applyTask?.state === 'running'}
-        className="relative flex h-full w-full flex-col border-white/10 bg-[#151523] shadow-2xl min-[720px]:h-auto min-[720px]:max-h-[86vh] min-[720px]:max-w-2xl min-[720px]:rounded-2xl min-[720px]:border"
+        className="theme-popup-surface relative flex h-full w-full flex-col min-[720px]:h-auto min-[720px]:max-h-[86vh] min-[720px]:max-w-2xl min-[720px]:rounded-2xl min-[720px]:border"
       >
         <header className="flex items-start justify-between border-b border-white/[0.07] px-5 py-4">
           <div>

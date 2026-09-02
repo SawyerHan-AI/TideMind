@@ -48,6 +48,10 @@ describe('writeRegularFileAtomicCas', () => {
   it('preserves the existing file mode on replace', () => {
     const target = path.join(root, 'config.json')
     fs.writeFileSync(target, 'old', { mode: 0o640 })
+    // Creation mode is filtered through the process umask. Establish the
+    // fixture permission explicitly so this test verifies replacement
+    // preservation rather than the runner's ambient umask policy.
+    fs.chmodSync(target, 0o640)
     const before = inspectRegularFile(target)
 
     const after = writeRegularFileAtomicCas(target, 'new', {

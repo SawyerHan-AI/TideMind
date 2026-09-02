@@ -149,7 +149,7 @@ export function AccessibleInfo({
 
   return (
     <span
-      className="relative inline-flex"
+      className="pointer-events-auto relative inline-flex"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
@@ -171,7 +171,7 @@ export function AccessibleInfo({
         <span
           id={id}
           role="tooltip"
-          className="fixed z-[70] rounded-lg border border-white/10 bg-[#171728] p-3 text-left text-xs font-normal leading-relaxed text-gray-300 shadow-2xl"
+          className="theme-popup-surface fixed z-[70] rounded-lg border p-3 text-left text-xs font-normal leading-relaxed text-gray-300"
           style={{
             left: position.left,
             top: position.top,

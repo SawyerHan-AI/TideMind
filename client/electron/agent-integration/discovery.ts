@@ -187,6 +187,8 @@ export interface LocalDiscoveryContext {
   environment?: Readonly<Record<string, string | undefined>>
   applicationRoots?: readonly string[]
   operationTimeoutMs?: number
+  /** Platform signature verification is bounded separately from ordinary path probes. */
+  signatureTimeoutMs?: number
 }
 
 export type DiscoveryEvidenceKind =
@@ -1130,6 +1132,7 @@ async function discoverApp(
   context: LocalDiscoveryContext,
   dependencies: DiscoveryDependencies,
   timeoutMs: number,
+  signatureTimeoutMs: number,
 ): Promise<ProbeResult> {
   const result = EMPTY_RESULT()
   const applicationRoots = context.applicationRoots ?? [
@@ -1167,16 +1170,9 @@ async function discoverApp(
   if (uniqueCandidates.length === 0) return result
 
   if (definition.requiresHostLoadedEvidence) {
-    result.unresolved.push({
-      catalogIds: [definition.catalogId],
-      reason: 'surface_identity_unproven',
-      summary: 'Claude is installed, but a generic bundle/config cannot prove a host-loaded Cowork Plugin or Connector.',
-      evidence: stableEvidence(uniqueCandidates.map(candidate => ({
-        kind: 'app_bundle' as const,
-        source: candidate.requestedPath,
-        value: candidate.realpath,
-      }))),
-    })
+    // A generic Claude bundle is neither positive Cowork evidence nor a user-
+    // actionable Cowork failure. Stay fail-closed without manufacturing an
+    // unresolved item until an authoritative host-loaded registry is present.
     return result
   }
 
@@ -1238,7 +1234,7 @@ async function discoverApp(
       try {
         signature = await withTimeout(
           dependencies.inspectAppSignature(app.realpath, {
-            timeoutMs,
+            timeoutMs: signatureTimeoutMs,
             beforeFinalVerification: async () => {
               const currentSurface = await inspectStableDesktopBundleSurface(
                 dependencies,
@@ -1250,7 +1246,7 @@ async function discoverApp(
               }
             },
           }),
-          timeoutMs,
+          signatureTimeoutMs,
         )
       } catch (error) {
         const surfaceChanged = error instanceof Error
@@ -1443,10 +1439,14 @@ export async function discoverLocalP0Agents(
 ): Promise<LocalDiscoveryReport> {
   if (!isSafeAbsolutePath(context.homeDir)) throw new Error('homeDir must be an absolute local path')
   const timeoutMs = Math.max(10, Math.min(context.operationTimeoutMs ?? 2_500, 30_000))
+  const signatureTimeoutMs = Math.max(
+    timeoutMs,
+    Math.min(context.signatureTimeoutMs ?? timeoutMs, 60_000),
+  )
   const results = await Promise.all(P0_DISCOVERY_PROBES.map(probe =>
     probe.kind === 'cli'
       ? discoverCli(probe, context, dependencies, timeoutMs)
-      : discoverApp(probe, context, dependencies, timeoutMs),
+      : discoverApp(probe, context, dependencies, timeoutMs, signatureTimeoutMs),
   ))
   return stabilizeReport(results)
 }

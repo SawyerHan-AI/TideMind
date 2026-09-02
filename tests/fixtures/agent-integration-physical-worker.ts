@@ -29,6 +29,7 @@ const target = path.join(sharedSkillRoot, 'tidemind', 'SKILL.md')
 const applyCountPath = path.join(root, 'physical-apply-count.log')
 const CONTENT = '---\nname: tidemind\ndescription: isolated physical fixture\n---\n'
 const NOW = '2026-08-26T00:00:00.000Z'
+const FIXTURE_LEASE_MS = 3_000
 
 if (!mode || !rootInput || !dbInput) throw new Error('mode, root and db path are required')
 if (path.relative(root, dbPath).startsWith('..') || process.env.HOME !== home) {
@@ -183,7 +184,7 @@ function physicalAdapter(blockAfterApply = false): AgentHostAdapter {
 function coordinator(adapter: AgentHostAdapter, bridgeOverride?: SqliteCoordinatorRepository) {
   const bridge = bridgeOverride ?? new SqliteCoordinatorRepository(db, repository, {
     ownerInstanceId: `worker-${process.pid}-${randomUUID()}`,
-    leaseDurationMs: 100,
+    leaseDurationMs: FIXTURE_LEASE_MS,
     lockDirectory,
     lockDirectoryTrustRoot: home,
   })
@@ -311,7 +312,7 @@ async function crash(): Promise<void> {
   const adapter = physicalAdapter(crashPoint === 'effect')
   const bridge = new SqliteCoordinatorRepository(db, repository, {
     ownerInstanceId: `crash-${process.pid}`,
-    leaseDurationMs: 100,
+    leaseDurationMs: FIXTURE_LEASE_MS,
     lockDirectory,
     lockDirectoryTrustRoot: home,
   })
@@ -447,7 +448,7 @@ async function sharedCycle(): Promise<void> {
 async function holdFence(): Promise<void> {
   const bridge = new SqliteCoordinatorRepository(db, repository, {
     ownerInstanceId: `fence-holder-${process.pid}`,
-    leaseDurationMs: 100,
+    leaseDurationMs: FIXTURE_LEASE_MS,
     lockDirectory,
     lockDirectoryTrustRoot: home,
   })
@@ -476,7 +477,7 @@ async function holdFence(): Promise<void> {
 async function tryFence(): Promise<void> {
   const bridge = new SqliteCoordinatorRepository(db, repository, {
     ownerInstanceId: `fence-contender-${process.pid}`,
-    leaseDurationMs: 100,
+    leaseDurationMs: FIXTURE_LEASE_MS,
     lockDirectory,
     lockDirectoryTrustRoot: home,
   })

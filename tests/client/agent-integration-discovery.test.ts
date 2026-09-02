@@ -262,13 +262,15 @@ describe('P0 local Agent discovery', () => {
       ...first.installations.map(item => item.catalogId),
       ...first.unresolved.flatMap(item => item.catalogIds),
     ].sort()).toEqual(P0_DISCOVERY_CATALOG_IDS.filter(id =>
-      id !== 'claude-code-native' && id !== 'kimi-code-native').sort())
+      id !== 'claude-code-native'
+        && id !== 'kimi-code-native'
+        && id !== 'claude-cowork-local').sort())
     expect(first.installations.map(item => item.catalogId)).not.toContain('claude-cowork-local')
     expect(first).toEqual(second)
     expect(first.diagnostics).toEqual([])
-    expect(first.unresolved).toEqual(expect.arrayContaining([
-      expect.objectContaining({ catalogIds: ['claude-cowork-local'], reason: 'surface_identity_unproven' }),
-    ]))
+    expect(first.unresolved).not.toContainEqual(expect.objectContaining({
+      catalogIds: ['claude-cowork-local'],
+    }))
     expect(first.installations).toEqual(expect.arrayContaining([
       expect.objectContaining({ catalogId: 'codex-desktop' }),
       expect.objectContaining({ catalogId: 'windsurf-desktop' }),
@@ -874,9 +876,8 @@ describe('P0 local Agent discovery', () => {
     const legacyOnly = await discoverLocalP0Agents(context(), runtime.dependencies)
     expect(legacyOnly.installations.map(item => item.catalogId)).toContain('claude-desktop-legacy')
     expect(legacyOnly.installations.map(item => item.catalogId)).not.toContain('claude-cowork-local')
-    expect(legacyOnly.unresolved).toContainEqual(expect.objectContaining({
+    expect(legacyOnly.unresolved).not.toContainEqual(expect.objectContaining({
       catalogIds: ['claude-cowork-local'],
-      reason: 'surface_identity_unproven',
     }))
 
     // Even a Cowork-looking directory is not host-loaded Plugin/Connector
@@ -1027,6 +1028,34 @@ describe('P0 local Agent discovery', () => {
     expect(report.unresolved).toContainEqual(expect.objectContaining({
       catalogIds: ['zcode-cli'],
       reason: 'probe_inaccessible',
+    }))
+  })
+
+  it('uses a separate bounded budget for slow platform code-signature verification', async () => {
+    const runtime = fakeRuntime()
+    runtime.fs.addApp('ZCode.app', {
+      bundleId: 'dev.zcode.app',
+      signature: {
+        valid: true,
+        identifier: 'dev.zcode.app',
+        teamIdentifier: '8A5X4JJ39T',
+      },
+    })
+    const inspect = runtime.dependencies.inspectAppSignature!
+    runtime.dependencies.inspectAppSignature = async (targetPath, options) => {
+      await new Promise(resolve => setTimeout(resolve, 30))
+      return inspect(targetPath, options)
+    }
+
+    const report = await discoverLocalP0Agents(context({
+      operationTimeoutMs: 10,
+      signatureTimeoutMs: 100,
+    }), runtime.dependencies)
+
+    expect(report.installations).toContainEqual(expect.objectContaining({ catalogId: 'zcode-desktop' }))
+    expect(report.unresolved).not.toContainEqual(expect.objectContaining({
+      catalogIds: ['zcode-desktop'],
+      reason: 'distribution_identity_unproven',
     }))
   })
 

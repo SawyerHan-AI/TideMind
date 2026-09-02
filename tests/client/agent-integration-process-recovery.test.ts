@@ -9,6 +9,9 @@ const PROJECT_ROOT = path.resolve(import.meta.dirname, '../..')
 const WORKER = path.join(PROJECT_ROOT, 'tests', 'fixtures', 'agent-integration-physical-worker.ts')
 const WORKER_TSCONFIG = path.join(PROJECT_ROOT, 'tests', 'fixtures', 'agent-integration-worker-tsconfig.json')
 const TSX = path.join(PROJECT_ROOT, 'node_modules', '.bin', 'tsx')
+const FIXTURE_LEASE_MS = 3_000
+const STALE_LOCK_WAIT_MS = FIXTURE_LEASE_MS * 2 + 500
+const PROCESS_WATCHDOG_MS = 45_000
 const roots = new Set<string>()
 
 interface WorkerMessage {
@@ -79,7 +82,7 @@ async function killAt(point: 'intent' | 'effect', root: string, dbPath: string):
     const timeout = setTimeout(() => {
       child.kill('SIGKILL')
       reject(new Error(`worker did not reach ${point}: ${stderr}`))
-    }, 15_000)
+    }, PROCESS_WATCHDOG_MS)
     messages(child, message => {
       if (message.type === 'error') {
         clearTimeout(timeout)
@@ -177,7 +180,7 @@ describe('Agent Integration physical process recovery', () => {
 
       // The killed writer cannot release its file lock. Recovery must wait for
       // the real SQLite lease and lock-file staleness window before takeover.
-      await new Promise(resolve => setTimeout(resolve, 350))
+      await new Promise(resolve => setTimeout(resolve, STALE_LOCK_WAIT_MS))
       const recovered = await runToResult('recover', root, dbPath)
       expect(recovered.outcomes).toEqual([
         expect.objectContaining({ status: 'committed' }),
@@ -189,7 +192,7 @@ describe('Agent Integration physical process recovery', () => {
         mutations: [{ state: 'committed', has_receipt: 1, count: 1 }],
       })
     },
-    30_000,
+    60_000,
   )
 
   it('keeps durable receipt evidence when a stale recovery process loses the journal CAS', async () => {
@@ -210,7 +213,7 @@ describe('Agent Integration physical process recovery', () => {
       if (message.type === 'killpoint' && message.point === 'journal_loaded') loadedResolve(message)
       if (message.type === 'result') resultResolve(message)
     })
-    const timeout = setTimeout(() => stale.kill('SIGKILL'), 15_000)
+    const timeout = setTimeout(() => stale.kill('SIGKILL'), PROCESS_WATCHDOG_MS)
     try {
       await loaded
       expect(await runToResult('journal-advance', root, dbPath)).toMatchObject({ journalVersion: 2 })
@@ -301,13 +304,13 @@ describe('Agent Integration physical process recovery', () => {
       if (message.type === 'killpoint' && message.point === 'fence_held') readyResolve(message)
       if (message.type === 'result') releasedResolve(message)
     })
-    const timeout = setTimeout(() => holder.kill('SIGKILL'), 15_000)
+    const timeout = setTimeout(() => holder.kill('SIGKILL'), PROCESS_WATCHDOG_MS)
     try {
       await ready
       expect(holder.kill('SIGSTOP')).toBe(true)
       // The SQLite lease and lock mtime are both stale now, but PID/start
       // identity still proves that the original owner exists.
-      await new Promise(resolve => setTimeout(resolve, 350))
+      await new Promise(resolve => setTimeout(resolve, STALE_LOCK_WAIT_MS))
       expect(await runToResult('fence-try', root, dbPath, { LC_ALL: 'fr_FR.UTF-8' }))
         .toMatchObject({ acquired: false })
 
@@ -342,7 +345,7 @@ describe('Agent Integration physical process recovery', () => {
       if (message.type === 'killpoint' && message.point === 'fence_held') readyResolve(message)
       if (message.type === 'result') resultResolve(message)
     })
-    const timeout = setTimeout(() => holder.kill('SIGKILL'), 15_000)
+    const timeout = setTimeout(() => holder.kill('SIGKILL'), PROCESS_WATCHDOG_MS)
     try {
       await ready
       const lockDirectory = path.join(root, 'home', '.tidemind', 'writer-locks')
