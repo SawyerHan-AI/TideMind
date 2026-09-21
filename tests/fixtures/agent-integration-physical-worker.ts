@@ -209,6 +209,37 @@ function coordinator(adapter: AgentHostAdapter, bridgeOverride?: SqliteCoordinat
   }
 }
 
+function blockAtVerified(
+  bridge: SqliteCoordinatorRepository,
+  point: string,
+): SqliteCoordinatorRepository {
+  const originalSetRunState = bridge.setRunState.bind(bridge)
+  return new Proxy(bridge, {
+    get(targetObject, property) {
+      if (property === 'setRunState') {
+        return async (...args: Parameters<typeof originalSetRunState>) => {
+          originalSetRunState(...args)
+          if (args[1] !== 'verified') return
+          const row = db.prepare(`
+            SELECT r.state AS run_state, m.state AS mutation_state
+            FROM reconcile_runs r LEFT JOIN projection_mutations m ON m.run_id = r.id
+            WHERE r.id = ? ORDER BY m.created_at, m.id LIMIT 1
+          `).get(args[0]) as { run_state: string; mutation_state: string | null }
+          return hangAfterSignal({
+            type: 'killpoint',
+            point,
+            runState: row.run_state,
+            mutationState: row.mutation_state,
+            fileExists: fs.existsSync(target),
+          })
+        }
+      }
+      const value = Reflect.get(targetObject, property)
+      return typeof value === 'function' ? value.bind(targetObject) : value
+    },
+  })
+}
+
 function ensureConsent(installationId: string, consentId: string): void {
   if (repository.getConsent(consentId)) return
   repository.createConsent({
@@ -256,10 +287,16 @@ function activeConsumerKeys(): string[] {
     .map(row => `${row.installation_id}\0${row.component_key}`)
 }
 
-async function disconnect(id: string): Promise<Record<string, unknown>> {
+async function disconnect(id: string, verifiedPoint?: string): Promise<Record<string, unknown>> {
   const installation = installationFor(id)
   const adapter = physicalAdapter(false)
-  const active = coordinator(adapter)
+  const bridge = new SqliteCoordinatorRepository(db, repository, {
+    ownerInstanceId: `disconnect-${process.pid}-${randomUUID()}`,
+    leaseDurationMs: FIXTURE_LEASE_MS,
+    lockDirectory,
+    lockDirectoryTrustRoot: home,
+  })
+  const active = coordinator(adapter, verifiedPoint ? blockAtVerified(bridge, verifiedPoint) : bridge)
   const plan = await active.coordinator.preview({
     installation,
     operation: 'disconnect',
@@ -391,6 +428,33 @@ async function crash(): Promise<void> {
     })
     throw new Error(`intent crash point was not reached: ${JSON.stringify(outcome)}`)
   }
+  if (crashPoint === 'verified') {
+    const blockingRepository = blockAtVerified(bridge, 'verified_persisted')
+    let sequence = 0
+    const blocked = new AgentIntegrationCoordinator({
+      runtime,
+      adapters: { get: catalogId => catalogId === adapter.catalogId ? adapter : undefined },
+      repository: blockingRepository,
+      notifications: { deliver: () => {} },
+      clock: { now: () => new Date() },
+      ids: { next: prefix => `${prefix}-${process.pid}-${++sequence}-${randomUUID()}` },
+      catalogGeneration: 1,
+      adapterGeneration: () => 1,
+      projectionGeneration: () => 1,
+      installationSurfaceFingerprint: currentInstallation => {
+        const row = repository.getInstallation(currentInstallation.id)
+        return row ? persistedProjectionSurfaceFingerprint(row) : null
+      },
+    })
+    const outcome = await blocked.applyPrepared({
+      installation,
+      preparedPlan: plan,
+      consentId: 'consent-crash',
+      desiredCapability: 1,
+      applyTaskBinding,
+    })
+    throw new Error(`verified crash point was not reached: ${JSON.stringify(outcome)}`)
+  }
   const outcome = await active.coordinator.applyPrepared({
     installation,
     preparedPlan: plan,
@@ -407,42 +471,66 @@ async function recover(): Promise<void> {
   signal({ type: 'result', outcomes, snapshot: snapshot() })
 }
 
+async function verifiedFinalizerRace(): Promise<void> {
+  const bridge = new SqliteCoordinatorRepository(db, repository, {
+    ownerInstanceId: `verified-finalizer-race-${process.pid}`,
+    leaseDurationMs: FIXTURE_LEASE_MS,
+    lockDirectory,
+    lockDirectoryTrustRoot: home,
+  })
+  const execution = bridge.listRecoverableExecutions()[0]
+  if (!execution || execution.runState !== 'verified') {
+    throw new Error('verified finalizer race fixture has no verified execution')
+  }
+  signal({ type: 'killpoint', point: 'verified_recovery_loaded', runId: execution.runId })
+  await readStdinCommand()
+  process.stdin.pause()
+  let error: string | null = null
+  try {
+    bridge.setRunState(execution.runId, 'committed', new Date().toISOString())
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause)
+  }
+  signal({ type: 'result', error, snapshot: snapshot() })
+}
+
 async function sharedCycle(): Promise<void> {
   const first = await connect('installation-one')
   const afterFirst = snapshot()
   const second = await connect('installation-two')
   const afterSecond = snapshot()
-  let unsafeDetachError: { name: string; message: string } | null = null
-  let unsafeDetachResult: Record<string, unknown> | null = null
-  try {
-    unsafeDetachResult = await disconnect('installation-one')
-  } catch (error) {
-    unsafeDetachError = error instanceof Error
-      ? { name: error.name, message: error.message }
-      : { name: 'NonErrorThrow', message: typeof error === 'string' ? error : 'non_error_throw' }
-  }
-  const afterUnsafeDetach = snapshot()
+  const detach = await disconnect('installation-one')
+  const afterDetach = snapshot()
   // This models the explicit manual-cleanup action in an isolated fixture.
   // Production code never performs this pathname unlink.
   fs.unlinkSync(target)
-  const detach = await disconnect('installation-one')
-  const afterDetach = snapshot()
   const last = await disconnect('installation-two')
   const afterLast = snapshot()
   signal({
     type: 'result',
     first,
     second,
-    unsafeDetachError,
-    unsafeDetachResult,
     detach,
     last,
     afterFirst,
     afterSecond,
-    afterUnsafeDetach,
     afterDetach,
     afterLast,
   })
+}
+
+async function sharedDetachVerifiedCrash(): Promise<void> {
+  await connect('installation-one')
+  await connect('installation-two')
+  await disconnect('installation-one', 'detach_verified_persisted')
+  throw new Error('detach verified crash point was not reached')
+}
+
+async function physicalRemoveVerifiedCrash(): Promise<void> {
+  await connect('installation-one')
+  fs.unlinkSync(target)
+  await disconnect('installation-one', 'physical_remove_verified_persisted')
+  throw new Error('physical remove verified crash point was not reached')
 }
 
 async function holdFence(): Promise<void> {
@@ -455,10 +543,7 @@ async function holdFence(): Promise<void> {
   const lease = bridge.acquireWriterFence('physical-fence-sigstop')
   if (!lease) throw new Error('fence holder could not acquire its initial lease')
   signal({ type: 'killpoint', point: 'fence_held', pid: process.pid })
-  const command = await new Promise<string>((resolve) => {
-    process.stdin.setEncoding('utf8')
-    process.stdin.once('data', value => resolve(String(value).trim()))
-  })
+  const command = await readStdinCommand()
   process.stdin.pause()
   if (command === 'assert') {
     try {
@@ -523,10 +608,7 @@ async function persistStaleJournal(): Promise<void> {
   })
   const { runId, journal } = firstRecoverableJournal(bridge)
   signal({ type: 'killpoint', point: 'journal_loaded', journalVersion: journal.journalVersion })
-  await new Promise<void>((resolve) => {
-    process.stdin.setEncoding('utf8')
-    process.stdin.once('data', () => resolve())
-  })
+  await readStdinCommand()
   process.stdin.pause()
   let conflict: string | null = null
   try {
@@ -548,10 +630,39 @@ async function persistStaleJournal(): Promise<void> {
   signal({ type: 'result', conflict, persisted })
 }
 
+function readStdinCommand(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    process.stdin.setEncoding('utf8')
+    const cleanup = () => {
+      process.stdin.off('data', onData)
+      process.stdin.off('end', onEnd)
+      process.stdin.off('error', onError)
+    }
+    const onData = (value: string | Buffer) => {
+      cleanup()
+      resolve(String(value).trim())
+    }
+    const onEnd = () => {
+      cleanup()
+      reject(new Error('worker stdin ended before a command was received'))
+    }
+    const onError = (error: Error) => {
+      cleanup()
+      reject(error)
+    }
+    process.stdin.once('data', onData)
+    process.stdin.once('end', onEnd)
+    process.stdin.once('error', onError)
+  })
+}
+
 try {
   if (mode === 'crash') await crash()
   else if (mode === 'recover') await recover()
+  else if (mode === 'verified-finalizer-race') await verifiedFinalizerRace()
   else if (mode === 'shared-cycle') await sharedCycle()
+  else if (mode === 'shared-detach-verified-crash') await sharedDetachVerifiedCrash()
+  else if (mode === 'physical-remove-verified-crash') await physicalRemoveVerifiedCrash()
   else if (mode === 'fence-hold') await holdFence()
   else if (mode === 'fence-try') await tryFence()
   else if (mode === 'journal-advance') await advanceJournal()

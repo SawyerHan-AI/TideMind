@@ -25,6 +25,19 @@ export function createCompositeHostAdapter(
     componentKey,
     [...new Set(componentAdapters.flatMap(adapter => adapter.implementationTypes[componentKey] ?? []))],
   ]))
+  const componentContracts = Object.fromEntries(componentKeys.map((componentKey) => {
+    const owners = componentAdapters.filter(adapter => adapter.componentKeys.includes(componentKey))
+    if (owners.length !== 1) throw new Error(`Duplicate component contract for ${catalogId}:${componentKey}`)
+    const contract = owners[0].componentContracts?.[componentKey]
+    if (!contract) throw new Error(`Missing component contract for ${catalogId}:${componentKey}`)
+    return [componentKey, contract]
+  }))
+  const connectOptionalComponentKeys = [...new Set(componentAdapters.flatMap(adapter => [
+    ...(adapter.connectOptionalComponentKeys ?? []),
+    ...(adapter.componentKeys.length === 1 && adapter.componentKeys[0] === 'lifecycle'
+      ? adapter.componentKeys
+      : []),
+  ]))]
 
   const inspectAll = async (context: AdapterOperationContext): Promise<AdapterInspection> => {
     const inspections = await Promise.all(componentAdapters.map(adapter => adapter.inspect(context)))
@@ -71,6 +84,7 @@ export function createCompositeHostAdapter(
       projectionVersion: context.runtime.projectionVersion,
       mutations: active.flatMap(plan => plan.mutations),
       requiredUserActions: active.flatMap(plan => plan.requiredUserActions),
+      requiredUserActionDetails: active.flatMap(plan => plan.requiredUserActionDetails ?? []),
       diagnostics: active.flatMap(plan => plan.diagnostics),
     }
   }
@@ -88,6 +102,9 @@ export function createCompositeHostAdapter(
     adapterVersion,
     componentKeys,
     implementationTypes,
+    componentContracts,
+    verificationDependencies: Object.assign({}, ...componentAdapters.map(adapter => adapter.verificationDependencies ?? {})),
+    connectOptionalComponentKeys,
     inspect: inspectAll,
     inspectAdoptableArtifacts: async context => (await Promise.all(componentAdapters.map(adapter =>
       adapter.inspectAdoptableArtifacts?.(context) ?? Promise.resolve([]),

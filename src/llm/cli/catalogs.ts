@@ -35,6 +35,23 @@ function featureSnapshot(
   );
 }
 
+function evolveFeatureSnapshot(
+  base: Readonly<Record<string, Readonly<{ stage: string; enabled: boolean }>>>,
+  rows: readonly [name: string, stage: string, enabled: boolean][],
+): Readonly<Record<string, Readonly<{ stage: string; enabled: boolean }>>> {
+  return Object.freeze({ ...base, ...featureSnapshot(rows) });
+}
+
+function enabledFeatures(
+  snapshot: Readonly<Record<string, Readonly<{ stage: string; enabled: boolean }>>>,
+): readonly string[] {
+  return Object.freeze(
+    Object.entries(snapshot)
+      .filter(([, state]) => state.enabled)
+      .map(([name]) => name),
+  );
+}
+
 const CODEX_0145_FEATURES = featureSnapshot([
   ['apply_patch_freeform', 'removed', false],
   ['apply_patch_streaming_events', 'under development', false],
@@ -132,14 +149,64 @@ const CODEX_0145_FEATURES = featureSnapshot([
   ['workspace_owner_usage_nudge', 'removed', false],
 ]);
 
+// Captured from the official OpenAI 0.153.4 arm64 release binary. This is an
+// exact evolution of the previously reviewed snapshot: omitted rows retain
+// their 0.145 state, while every added or changed row is frozen below.
+const CODEX_0153_FEATURES = evolveFeatureSnapshot(CODEX_0145_FEATURES, [
+  ['apply_patch_preserve_line_endings', 'under development', false],
+  ['background_paginated_rollout_migration', 'under development', false],
+  ['bedrock_setup_wizard', 'under development', false],
+  ['code_mode_buffered_exec', 'removed', false],
+  ['code_mode_interrupt', 'under development', false],
+  ['code_mode_prewarm', 'under development', false],
+  ['compaction_image_budget', 'stable', true],
+  ['content_item_kinds', 'stable', true],
+  ['context_management', 'under development', false],
+  ['cwd_relative_turn_diffs', 'under development', false],
+  ['deferred_tool_world_state', 'under development', false],
+  ['enable_fanout', 'removed', false],
+  ['executed_tool_call_metadata', 'under development', false],
+  ['executor_capability_discovery', 'under development', false],
+  ['guardian_enhanced_node_repl_transcripts', 'under development', false],
+  ['guardian_ext', 'under development', false],
+  ['guardian_node_repl_transcript_images', 'under development', false],
+  ['guardian_reuse_parent_compaction', 'under development', false],
+  ['guardianv2', 'under development', false],
+  ['image_resize_notice', 'under development', false],
+  ['in_app_chat', 'stable', true],
+  ['in_app_dictation', 'stable', true],
+  ['in_app_local_automation', 'stable', true],
+  ['in_app_updates', 'stable', true],
+  ['item_ids', 'removed', true],
+  ['local_thread_store_shared_compression', 'removed', false],
+  ['mcp_2026_07_28', 'under development', false],
+  ['mcp_oauth_refresh_coordination', 'under development', false],
+  ['memories', 'stable', false],
+  ['multi_agent_v2', 'stable', false],
+  ['omit_app_server_notification_media', 'under development', false],
+  ['powershell_shell_version', 'under development', false],
+  ['psp', 'under development', false],
+  ['recommended_plugins', 'stable', false],
+  ['retain_client_developer_messages', 'under development', false],
+  ['send_async_message', 'removed', false],
+  ['shell_snapshot_v2', 'under development', false],
+  ['skip_host_skill_discovery', 'under development', false],
+  ['sleep_tool', 'stable', true],
+  ['step_model_switching', 'under development', false],
+  ['transcript_v2', 'under development', false],
+  ['unbounded_connection_retries', 'stable', true],
+  ['unified_exec_zsh_fork', 'removed', true],
+  ['unified_image_budget', 'under development', false],
+  ['view_image', 'stable', true],
+  ['write_stdin_approval', 'under development', false],
+]);
+
 // The account-backed CLI is used as a text-only model transport. Disable every
 // feature that the reviewed binary reports as enabled; retaining a subjective
 // "dangerous" subset would let newly understood remote/tool behavior execute
 // before the output parser can reject it.
 const DISABLED_CODEX_FEATURES = Object.freeze(
-  Object.entries(CODEX_0145_FEATURES)
-    .filter(([, state]) => state.enabled)
-    .map(([name]) => name),
+  enabledFeatures(CODEX_0145_FEATURES),
 );
 
 export const CODEX_CAPABILITY_MANIFESTS: readonly CodexCapabilityManifest[] = [
@@ -156,5 +223,19 @@ export const CODEX_CAPABILITY_MANIFESTS: readonly CodexCapabilityManifest[] = [
     requiredPromptInputHelp: ['prompt-input'],
     knownFeatures: CODEX_0145_FEATURES,
     disableFeatures: DISABLED_CODEX_FEATURES,
+  },
+  {
+    version: '0.153.4',
+    requiredExecHelp: [
+      '--ignore-user-config',
+      '--ignore-rules',
+      '--ephemeral',
+      '--json',
+      '--skip-git-repo-check',
+      '--strict-config',
+    ],
+    requiredPromptInputHelp: ['prompt-input'],
+    knownFeatures: CODEX_0153_FEATURES,
+    disableFeatures: enabledFeatures(CODEX_0153_FEATURES),
   },
 ];

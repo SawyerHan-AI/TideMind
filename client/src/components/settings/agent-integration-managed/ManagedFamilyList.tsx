@@ -8,8 +8,10 @@ import {
   aggregateComponents,
   componentLabelKey,
   componentStatusPresentation,
+  managementUnavailableHelpKey,
   primaryInstallation,
   sortProductFamilies,
+  statusPresentation,
 } from './presentation'
 import { AccessBadge, ComponentFact, StatusBadge } from './ManagedPrimitives'
 import type { ManagedProductFamilyDto, ManagedSnapshotDto } from './types'
@@ -116,6 +118,23 @@ export function ManagedFamilyList({
         const primary = primaryInstallation(family, snapshot)
         const verifiedAt = latestVerification(installations)
         const selected = selectedFamilyId === family.id
+        const access = aggregateAccess(installations)
+        const statusLabel = installations.every(installation => !installation.manageable)
+          ? t('agent.managed.supportMode.detectable')
+          : t(statusPresentation(family.statusGroup).labelKey)
+        const unavailableDetail = installations.every(installation => !installation.manageable)
+          ? t(managementUnavailableHelpKey(primary.statusReason))
+          : null
+        const accessLabel = access.kind === 'uniform' && access.level
+          ? t(accessLabelKey(access.level, access.historical))
+          : t('agent.managed.accessMixed')
+        const componentSummary = aggregateComponents(installations).map(component => {
+          const state = component.kind === 'uniform' && component.status
+            ? t(componentStatusPresentation(component.status).labelKey)
+            : t('agent.managed.mixed')
+          return `${t(componentLabelKey(component.key))}：${state}`
+        }).join(' · ')
+        const summaryId = `agent-family-summary-${family.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
         return (
           <div
             key={family.id}
@@ -127,9 +146,13 @@ export function ManagedFamilyList({
               data-agent-family-trigger={family.id}
               onClick={event => onSelect(family.id, event.currentTarget)}
               aria-label={t('agent.managed.viewDetailsFor', { name: family.displayName })}
+              aria-describedby={summaryId}
               aria-current={selected ? 'true' : undefined}
               className="absolute inset-0 z-0 rounded-[inherit] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-400/60"
             />
+            <span id={summaryId} className="sr-only">
+              {statusLabel}. {unavailableDetail ? `${unavailableDetail}. ` : ''}{accessLabel}. {componentSummary}. {t('agent.managed.table.lastVerified')}: {verifiedAt ? timeAgo(verifiedAt) : t('agent.managed.neverVerified')}
+            </span>
             <div className={`pointer-events-none relative z-[1] grid min-w-0 items-center ${wideTableLayout ? 'grid-cols-[minmax(120px,1fr)_minmax(150px,.9fr)_minmax(180px,1.15fr)_24px] gap-3' : 'gap-2'}`}>
               <div className="flex min-w-0 items-center gap-2.5">
                 <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.04] text-indigo-300">

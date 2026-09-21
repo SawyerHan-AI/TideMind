@@ -9,6 +9,7 @@ export type HostActivitySignal =
   | 'brain_digest'
   | 'session_start'
   | 'pre_compact'
+  | 'session_end'
   | 'post_compact';
 
 export type RecordHostActivityResult =
@@ -25,6 +26,7 @@ export type RecordHostActivityResult =
         | 'host_variant_mismatch'
         | 'signal_component_mismatch'
         | 'component_not_managed'
+        | 'activity_generation_mismatch'
         | 'version_binding_missing';
     };
 
@@ -35,14 +37,17 @@ export interface RecordHostActivityInput {
   tideMindVersion: string;
   /** Exact Catalog host variant emitted by the managed projection. */
   hostVariant: string;
+  /** Opaque token returned by the exact managed runtime projection. */
+  activityGenerationToken: string;
   observedAt?: string;
 }
 
 export interface RecordHookActivityInput {
   agentId: string;
   tool: string;
-  signalName: 'session_start' | 'pre_compact' | 'post_compact';
+  signalName: 'session_start' | 'pre_compact' | 'session_end' | 'post_compact';
   tideMindVersion: string;
+  activityGenerationToken: string;
   observedAt?: string;
 }
 
@@ -55,19 +60,31 @@ interface ActivityBindingRow {
   detected_version: string | null;
   legacy_archived: number | null;
   component_desired_state: string | null;
+  component_delivery_mode: string | null;
+  component_artifact_id: string | null;
+  component_consent_id: string | null;
   consumer_state: string | null;
   consumer_desired_state: string | null;
+  consumer_consent_id: string | null;
   current_consent_id: string | null;
+  current_consent_active: number;
   pending_activation_authorized: number;
 }
 
 interface GenerationBindingRow {
+  id: string;
   adapter_version: string | null;
   projection_version: string | null;
+  activity_generation_token: string | null;
+  activity_generation_token_hash: string | null;
 }
 
 function sha256(parts: readonly string[]): string {
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
+}
+
+function sha256Json(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
 function evidenceId(): string {
@@ -97,14 +114,17 @@ function diagnoseRejectedIdentity(
 }
 
 const TOOL_HOST_VARIANTS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  'claude-code': ['claude-code-cli'],
+  'claude-code': ['claude-code-cli', 'claude-code-native'],
   codex: ['codex-cli', 'codex-desktop'],
+  cursor: ['cursor-desktop'],
+  windsurf: ['windsurf-desktop'],
   gemini: ['gemini-cli'],
-  'kimi-code': ['kimi-code-cli'],
+  'kimi-code': ['kimi-code-cli', 'kimi-code-native'],
   openclaw: ['openclaw-local'],
   'qwen-code': ['qwen-code-cli'],
   qwen: ['qwen-code-cli'],
-  zcode: ['zcode-cli'],
+  qwenwork: ['qwenwork-desktop'],
+  zcode: ['zcode-desktop'],
   opencode: ['opencode-v1-cli', 'opencode-v2-beta-cli'],
   pi: ['pi-official-cli'],
   omp: ['omp-cli'],
@@ -131,6 +151,7 @@ export function recordHookActivityEvidence(
     componentKey: 'lifecycle',
     signalName: input.signalName,
     tideMindVersion: input.tideMindVersion,
+    activityGenerationToken: input.activityGenerationToken,
     observedAt: input.observedAt,
   });
 }
@@ -151,8 +172,9 @@ export function recordHostActivityEvidence(
   const agentId = input.agentId.trim();
   const tideMindVersion = input.tideMindVersion.trim();
   const hostVariant = input.hostVariant.trim();
+  const activityGenerationToken = input.activityGenerationToken?.trim() ?? '';
   const rawObservedAt = input.observedAt ?? new Date().toISOString();
-  if (!agentId || !tideMindVersion || !hostVariant || !validIso(rawObservedAt)) {
+  if (!agentId || !tideMindVersion || !hostVariant || !activityGenerationToken || !validIso(rawObservedAt)) {
     return { status: 'rejected', reason: 'version_binding_missing' };
   }
   // Persist one canonical UTC representation so lexical SQLite ordering and
@@ -169,9 +191,19 @@ export function recordHostActivityEvidence(
              i.tombstoned_at, i.health_state, i.detected_version,
              legacy.archived AS legacy_archived,
              component.desired_state AS component_desired_state,
+             component.delivery_mode AS component_delivery_mode,
+             component.artifact_id AS component_artifact_id,
+             component.consent_envelope_id AS component_consent_id,
              consumer.state AS consumer_state,
              consumer.desired_state AS consumer_desired_state,
+             consumer.consent_envelope_id AS consumer_consent_id,
              i.consent_envelope_id AS current_consent_id,
+             CASE WHEN EXISTS (
+               SELECT 1 FROM agent_consents current_consent
+               WHERE current_consent.id = i.consent_envelope_id
+                 AND current_consent.installation_id = i.id
+                 AND current_consent.status = 'active'
+             ) THEN 1 ELSE 0 END AS current_consent_active,
              CASE WHEN consumer.desired_state = 'disabled'
                     AND consumer.state = 'active'
                     AND consumer.consent_envelope_id = i.consent_envelope_id
@@ -230,12 +262,23 @@ export function recordHostActivityEvidence(
       return { status: 'rejected', reason: 'host_variant_mismatch' };
     }
     const activeManagedConsumer = installation.consumer_state === 'active'
-      && installation.consumer_desired_state === 'managed';
+      && installation.consumer_desired_state === 'managed'
+      && installation.current_consent_id !== null
+      && installation.component_consent_id === installation.current_consent_id
+      && installation.consumer_consent_id === installation.current_consent_id
+      && installation.current_consent_active === 1;
     const exactPendingConsumer = installation.consumer_state === 'active'
       && installation.consumer_desired_state === 'disabled'
       && installation.pending_activation_authorized === 1;
+    const guidedComponent = installation.component_delivery_mode === 'guided'
+      && installation.component_artifact_id === null
+      && installation.component_consent_id === installation.current_consent_id
+      && Boolean(db.prepare(`
+        SELECT 1 FROM agent_consents consent
+        WHERE consent.id = ? AND consent.installation_id = ? AND consent.status = 'active'
+      `).get(installation.current_consent_id, installation.installation_id));
     if (installation.component_desired_state !== 'managed'
-      || (!activeManagedConsumer && !exactPendingConsumer)) {
+      || (!activeManagedConsumer && !exactPendingConsumer && !guidedComponent)) {
       return { status: 'rejected', reason: 'component_not_managed' };
     }
     if (!installation.detected_version) {
@@ -243,14 +286,21 @@ export function recordHostActivityEvidence(
     }
 
     const generation = db.prepare(`
-      SELECT run.adapter_version, run.projection_version
+      SELECT run.id, run.adapter_version, run.projection_version,
+             json_extract(run.prepared_plan_json, '$.activityGenerationToken') AS activity_generation_token,
+             json_extract(run.prepared_plan_json, '$.executionPlan.activityGenerationTokenHash') AS activity_generation_token_hash
       FROM reconcile_runs run
       WHERE run.installation_id = ?
         AND run.operation_type != 'disconnect'
         AND (
-          (? = 0 AND run.state IN ('applied_unverified','verified','committed'))
+          (? = 0 AND run.state IN ('applied_unverified','verified','committed')
+            AND run.consent_envelope_id = ?)
           OR (
             ? = 1 AND run.state = 'applied_unverified'
+            AND run.consent_envelope_id = ?
+          )
+          OR (
+            ? = 2 AND run.state IN ('applied_unverified','verified','committed')
             AND run.consent_envelope_id = ?
           )
         )
@@ -261,24 +311,32 @@ export function recordHostActivityEvidence(
           ) component
           WHERE component.value = ?
         )
-      ORDER BY run.created_at DESC, run.id DESC
+      ORDER BY run.rowid DESC
       LIMIT 1
     `).get(
       installation.installation_id,
-      exactPendingConsumer ? 1 : 0,
-      exactPendingConsumer ? 1 : 0,
+      guidedComponent ? 2 : exactPendingConsumer ? 1 : 0,
+      installation.current_consent_id,
+      guidedComponent ? 2 : exactPendingConsumer ? 1 : 0,
+      installation.current_consent_id,
+      guidedComponent ? 2 : exactPendingConsumer ? 1 : 0,
       installation.current_consent_id,
       input.componentKey,
     ) as GenerationBindingRow | undefined;
     const adapterVersion = generation?.adapter_version?.trim();
     const projectionVersion = generation?.projection_version?.trim();
-    if (!adapterVersion || !projectionVersion) {
+    if (!generation || !adapterVersion || !projectionVersion) {
       return { status: 'rejected', reason: 'version_binding_missing' };
+    }
+    if (generation.activity_generation_token !== activityGenerationToken
+      || generation.activity_generation_token_hash !== sha256Json(activityGenerationToken)) {
+      return { status: 'rejected', reason: 'activity_generation_mismatch' };
     }
 
     const id = evidenceId();
     const hash = sha256([
       installation.installation_id,
+      generation.id,
       agentId,
       hostVariant,
       input.componentKey,
@@ -287,16 +345,17 @@ export function recordHostActivityEvidence(
       adapterVersion,
       projectionVersion,
       installation.detected_version,
+      activityGenerationToken,
       observedAt,
     ]);
     db.prepare(`
       INSERT INTO agent_host_activity_evidence (
-        id, installation_id, agent_id, host_variant, component_key,
+        id, installation_id, activation_run_id, agent_id, host_variant, component_key,
         signal_name, tide_mind_version, adapter_version, projection_version,
         host_version, evidence_hash, observed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(
-        installation_id, component_key, signal_name, tide_mind_version,
+        activation_run_id, installation_id, component_key, signal_name, tide_mind_version,
         adapter_version, projection_version, host_version
       ) DO UPDATE SET
         id = excluded.id,
@@ -304,10 +363,18 @@ export function recordHostActivityEvidence(
         host_variant = excluded.host_variant,
         evidence_hash = excluded.evidence_hash,
         observed_at = excluded.observed_at
+      -- The writer already proved the exact current activation generation.
+      -- Within that run, equal wall-clock timestamps may replace a prior
+      -- observation only when the exact payload hash changed.
       WHERE julianday(excluded.observed_at) > julianday(agent_host_activity_evidence.observed_at)
+         OR (
+           julianday(excluded.observed_at) = julianday(agent_host_activity_evidence.observed_at)
+           AND excluded.evidence_hash != agent_host_activity_evidence.evidence_hash
+         )
     `).run(
       id,
       installation.installation_id,
+      generation.id,
       agentId,
       hostVariant,
       input.componentKey,
@@ -322,10 +389,11 @@ export function recordHostActivityEvidence(
 
     const persisted = db.prepare(`
       SELECT id FROM agent_host_activity_evidence
-      WHERE installation_id = ? AND component_key = ? AND signal_name = ?
+      WHERE activation_run_id = ? AND installation_id = ? AND component_key = ? AND signal_name = ?
         AND tide_mind_version = ? AND adapter_version = ?
         AND projection_version = ? AND host_version = ?
     `).get(
+      generation.id,
       installation.installation_id,
       input.componentKey,
       input.signalName,

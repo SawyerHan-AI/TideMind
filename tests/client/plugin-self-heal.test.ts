@@ -987,9 +987,9 @@ describe('selfHealPlugins — Kimi Code config.toml', () => {
     fs.rmSync(tmpRoot, { recursive: true, force: true })
   })
 
-  it('patches a stale UserPromptSubmit hook command in the [[hooks]] block, preserving --once-per-session', () => {
+  it('patches a stale UserPromptSubmit hook command while preserving injection-only flags', () => {
     const agentId = 'eb_kimi'
-    const staleCmd = `"/old/tm" "/old/hook-session-start.cjs" --agent-id "${agentId}" --skill-path "/old/SKILL.md" --tool "kimi-code" --once-per-session`
+    const staleCmd = `"/old/tm" "/old/hook-session-start.cjs" --agent-id "${agentId}" --skill-path "/old/SKILL.md" --tool "kimi-code" --once-per-session --suppress-session-start-activity`
     writeTextFile(kimiConfigPath(), [
       'model = "k2"',
       '',
@@ -1014,6 +1014,8 @@ describe('selfHealPlugins — Kimi Code config.toml', () => {
     expect(cmd).toContain('"kimi-code"')
     // --once-per-session 必须在自愈后保留,否则 UserPromptSubmit 每条消息都注入
     expect(cmd).toContain('--once-per-session')
+    // UserPromptSubmit 只做注入，不得因旧 writer 修路径而恢复伪 SessionStart 证据。
+    expect(cmd).toContain('--suppress-session-start-activity')
   })
 
   it('patches a stale hook while preserving valid event and command tail comments', () => {

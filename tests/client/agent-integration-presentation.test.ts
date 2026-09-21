@@ -16,16 +16,20 @@ import {
   aggregateComponents,
   canShowGreenAvailability,
   canCloseBatchDialog,
+  customApplyOutcome,
   detailFocusDestination,
+  isValidCustomSelectorKey,
   matchesSupportQuery,
   managementUnavailableHelpKey,
   nextRovingTabIndex,
+  requiredUserActionDetailKey,
+  requiredUserActionPresentation,
   safeDisplayTarget,
   sortProductFamilies,
   statusReasonKey,
   summarizeExecutionResults,
   summarizeSnapshot,
-} from '../../client/src/components/settings/agent-integration-managed/presentation'
+} from '../../client/src/components/settings/agent-integration-managed/presentation.ts'
 
 function installation(
   id: string,
@@ -178,13 +182,32 @@ describe('managed Agent presentation', () => {
 
   it('maps stable reasons and redacts accidental secrets in display-only targets', () => {
     expect(statusReasonKey('new_session')).toBe('agent.managed.reason.newSession')
+    expect(statusReasonKey('legacy_callable_unmanaged')).toBe('agent.managed.reason.legacyCallableUnmanaged')
     expect(statusReasonKey('executable_proof_too_large')).toBe('agent.managed.reason.executableProofTooLarge')
     expect(statusReasonKey('executable_metadata_unavailable')).toBe('agent.managed.reason.executableMetadataUnavailable')
+    expect(statusReasonKey('release_entry_missing')).toBe('agent.managed.reason.releaseEntryMissing')
+    expect(statusReasonKey('release_mode_detect_only')).toBe('agent.managed.reason.releaseModeDetectOnly')
+    expect(statusReasonKey('release_distribution_not_accepted')).toBe('agent.managed.reason.releaseDistributionNotAccepted')
+    expect(statusReasonKey('release_version_unverified')).toBe('agent.managed.reason.releaseVersionUnverified')
+    expect(statusReasonKey('release_version_not_accepted')).toBe('agent.managed.reason.releaseVersionNotAccepted')
+    expect(statusReasonKey('release_artifact_not_accepted')).toBe('agent.managed.reason.releaseArtifactNotAccepted')
     expect(statusReasonKey('future_reason')).toBe('agent.managed.reason.unknown')
     expect(managementUnavailableHelpKey('executable_proof_too_large'))
       .toBe('agent.managed.reason.executableProofTooLarge')
     expect(managementUnavailableHelpKey('executable_metadata_unavailable'))
       .toBe('agent.managed.reason.executableMetadataUnavailable')
+    expect(managementUnavailableHelpKey('release_entry_missing'))
+      .toBe('agent.managed.reason.releaseEntryMissing')
+    expect(managementUnavailableHelpKey('release_mode_detect_only'))
+      .toBe('agent.managed.reason.releaseModeDetectOnly')
+    expect(managementUnavailableHelpKey('release_distribution_not_accepted'))
+      .toBe('agent.managed.reason.releaseDistributionNotAccepted')
+    expect(managementUnavailableHelpKey('release_version_unverified'))
+      .toBe('agent.managed.reason.releaseVersionUnverified')
+    expect(managementUnavailableHelpKey('release_version_not_accepted'))
+      .toBe('agent.managed.reason.releaseVersionNotAccepted')
+    expect(managementUnavailableHelpKey('release_artifact_not_accepted'))
+      .toBe('agent.managed.reason.releaseArtifactNotAccepted')
     expect(managementUnavailableHelpKey('detect_only')).toBe('agent.managed.supportMode.detectableHelp')
     expect(safeDisplayTarget('https://user:secret@example.test/path?token=abc&key=def')).toBe(
       'https://•••@example.test/path?token=•••&key=•••',
@@ -226,10 +249,12 @@ describe('managed Agent presentation', () => {
       { installationId: 'c', status: 'failed', reason: 'Read-back failed' },
       { installationId: 'd', status: 'needs_recovery' },
       { installationId: 'e', status: 'interrupted' },
+      { installationId: 'f', status: 'superseded', reason: 'superseded_by_disconnect' },
     ])).toEqual({
-      total: 5,
+      total: 6,
       committed: 1,
       awaitingVerification: 1,
+      superseded: 1,
       failed: 1,
       needsRecovery: 1,
       interrupted: 1,
@@ -238,6 +263,53 @@ describe('managed Agent presentation', () => {
     })
     expect(canCloseBatchDialog(true)).toBe(false)
     expect(canCloseBatchDialog(false)).toBe(true)
+  })
+
+  it('classifies Custom connection results without presenting partial work as success', () => {
+    expect(customApplyOutcome({ planHash: 'a', results: [
+      { installationId: 'custom', status: 'committed' },
+    ] })).toBe('committed')
+    expect(customApplyOutcome({ planHash: 'b', results: [
+      { installationId: 'custom', status: 'awaiting_verification' },
+    ] })).toBe('awaiting_verification')
+    expect(customApplyOutcome({ planHash: 'c', results: [
+      { installationId: 'custom', status: 'committed' },
+      { installationId: 'other', status: 'needs_recovery' },
+    ] })).toBe('needs_recovery')
+    expect(customApplyOutcome({ planHash: 'd', results: [
+      { installationId: 'custom', status: 'failed' },
+    ] })).toBe('failed')
+    expect(customApplyOutcome({ planHash: 'superseded', results: [
+      { installationId: 'custom', status: 'superseded', reason: 'superseded_by_disconnect' },
+    ] })).toBe('failed')
+    expect(customApplyOutcome({ planHash: 'empty', results: [] })).toBe('failed')
+  })
+
+  it('validates Custom MCP selector keys before IPC and never exposes unknown action tokens', () => {
+    expect(isValidCustomSelectorKey('tidemind-agent_2')).toBe(true)
+    expect(isValidCustomSelectorKey('bad selector')).toBe(false)
+    expect(isValidCustomSelectorKey('__proto__')).toBe(false)
+    expect(isValidCustomSelectorKey('constructor')).toBe(false)
+    expect(requiredUserActionPresentation('qwenwork_mcp_gui_connect_required').labelKey)
+      .toBe('agent.managed.userAction.qwenWorkConnect')
+    expect(requiredUserActionPresentation('component_requires_other_projection:lifecycle')).toEqual({
+      labelKey: 'agent.managed.userAction.componentRequiresOtherProjection',
+      componentKey: 'lifecycle',
+    })
+    expect(requiredUserActionPresentation('future_internal_token').labelKey)
+      .toBe('agent.managed.userAction.manualReview')
+    expect(requiredUserActionPresentation('toString').labelKey)
+      .toBe('agent.managed.userAction.manualReview')
+    expect(requiredUserActionDetailKey({
+      kind: 'mcp_activation',
+      componentKey: 'memory_tools',
+      operation: 'connect',
+      instruction: 'Enable the server',
+      hostVariant: 'qwen-code-cli',
+      serverName: 'tidemind',
+      configLabel: '~/.qwen/settings.json',
+      reason: 'excluded',
+    })).toBe('mcp_activation:qwen-code-cli:tidemind:excluded')
   })
 
   it('implements wrapped arrow, Home, and End navigation for installation tabs', () => {
@@ -269,6 +341,9 @@ describe('managed Agent locale resources', () => {
     expect(expected).toEqual(expect.arrayContaining([
       'status.available',
       'status.needsAttention',
+      'reason.releaseModeDetectOnly',
+      'reason.releaseDistributionNotAccepted',
+      'reason.releaseVersionNotAccepted',
       'access.complete',
       'access.partial',
       'component.instruction',
@@ -282,6 +357,23 @@ describe('managed Agent locale resources', () => {
       'execution.awaiting_verification',
       'execution.committed',
       'targetAccess.4',
+      'releasePolicy.emergencyReadOnlyTitle',
+      'releasePolicy.emergencyReadOnlyDescription',
+      'releasePolicy.invalidManifestTitle',
+      'releasePolicy.invalidManifestDescription',
+      'custom.dialogTitle',
+      'custom.mode.nonstandard_config_root.title',
+      'custom.mode.manual_mcp_client.title',
+      'custom.localOnlyNotice',
+      'custom.approveExactPlan',
+      'custom.selectorInvalid',
+      'custom.result.awaiting_verification',
+      'custom.result.needs_recovery',
+      'custom.warning.new_session_and_real_tool_call_required',
+      'userAction.qwenWorkConnect',
+      'userAction.manualReview',
+      'actionDetail.command',
+      'actionDetail.activationReason.invalid_policy',
     ]))
     expect(flattenKeys(readManaged('zh-CN')).sort()).toEqual(expected)
     for (const locale of locales.slice(2)) {
@@ -289,5 +381,47 @@ describe('managed Agent locale resources', () => {
     }
     expect(JSON.stringify(readManaged('en'))).not.toMatch(/\bC[0-4]\b/)
     expect(JSON.stringify(readManaged('zh-CN'))).not.toMatch(/\bC[0-4]\b/)
+  })
+
+  it('keeps the Custom flow modal, local-only inputs, consent, and keyboard semantics explicit', () => {
+    const source = readFileSync(resolve(
+      process.cwd(),
+      'client/src/components/settings/agent-integration-managed/CustomLocalAgentDialog.tsx',
+    ), 'utf8')
+    expect(source).toContain('role="dialog"')
+    expect(source).toContain('aria-modal="true"')
+    expect(source).toContain("event.key === 'Escape'")
+    expect(source).toContain("pickCustomPath(kind)")
+    expect(source).toContain("previewCustomInstallation")
+    expect(source).toContain("prepareCustomConnect")
+    expect(source).toContain("applyConnect(plan.planHash")
+    expect(source).toContain('customApplyOutcome(result)')
+    expect(source).toContain('theme-modal-overlay')
+    expect(source).toContain('theme-popup-surface')
+    const selectLines = source.split('\n').filter(line => line.includes('<select'))
+    expect(selectLines).toHaveLength(3)
+    expect(selectLines.every(line => line.includes('bg-white/[0.035]'))).toBe(true)
+    expect(source).not.toContain('bg-slate-900/70')
+    expect(source).toContain('}, [initialLegacyInstallationId, open])')
+    expect(source).not.toContain('}, [open, sourceInstallations])')
+    expect(source).not.toContain('`${item.reason}`')
+    expect(source).not.toContain('shellCommand')
+    expect(source).not.toContain('remoteUrl')
+  })
+
+  it('keeps Agent dialogs theme-aware and the full-row trigger described by visible facts', () => {
+    const confirmSource = readFileSync(resolve(
+      process.cwd(),
+      'client/src/components/shared/ConfirmDialog.tsx',
+    ), 'utf8')
+    const listSource = readFileSync(resolve(
+      process.cwd(),
+      'client/src/components/settings/agent-integration-managed/ManagedFamilyList.tsx',
+    ), 'utf8')
+    expect(confirmSource).toContain('theme-modal-overlay')
+    expect(confirmSource).toContain('theme-popup-surface')
+    expect(confirmSource).not.toContain('#f87171')
+    expect(listSource).toContain('aria-describedby={summaryId}')
+    expect(listSource).toContain('className="sr-only"')
   })
 })

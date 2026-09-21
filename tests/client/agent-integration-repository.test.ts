@@ -8,7 +8,18 @@ vi.mock('../../src/strategy/loader.js', () => ({
 }))
 
 import Database from 'better-sqlite3'
-import { AgentIntegrationRepository } from '../../client/electron/agent-integration/repository'
+import {
+  AgentIntegrationRepository,
+  persistedManagementEligibility,
+} from '../../client/electron/agent-integration/repository'
+import {
+  CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,
+  MAX_CLI_EXECUTABLE_PROOF_BYTES,
+} from '../../client/electron/agent-integration/discovery'
+import {
+  buildLegacyInstallKey,
+  canonicalizeInstallationIdentity,
+} from '../../client/electron/agent-integration/identity'
 import { ensureSchema } from '../../src/db/schema.js'
 
 const T0 = '2026-08-25T00:00:00.000Z'
@@ -94,6 +105,153 @@ function componentAndConsumer(
 }
 
 describe('AgentIntegrationRepository', () => {
+  it('retains local preflight and migration metadata while replacing stale discovery evidence', () => {
+    const { db, repository } = setup()
+    try {
+      discover(repository, 'metadata-owner')
+      const localRecords = {
+        legacyAdoption: { evidenceVersion: 2, evidenceHash: 'owned-baseline' },
+        legacyIdentity: { sourceAgentId: 'legacy-agent' },
+        customInstallation: { kind: 'nonstandard_config_root', sourceInstallationId: 'source' },
+        guidedInstallation: { kind: 'claude_cowork_plugin_upload', hostLoaded: false },
+      }
+      db.prepare('UPDATE agent_installations SET metadata_json = ? WHERE id = ?').run(JSON.stringify({
+        ...localRecords, evidence: [{ value: 'old' }], resourceRoots: { obsolete: '/tmp/old' },
+        managementEligibility: { eligible: true }, consecutiveDetectionMisses: 1,
+      }), 'metadata-owner')
+      repository.upsertDiscoveredInstallation({
+        id: 'metadata-owner', family: 'cursor', hostVariant: 'cursor-desktop',
+        installKey: 'metadata-owner', distributionId: 'com.todesktop.230313mzl4w4u92',
+        provenance: 'bundle_id', displayName: 'Cursor', supportedCapability: 4, lastDetectedAt: T0,
+        metadata: { evidence: [{ value: 'current' }] },
+      })
+      expect(JSON.parse(repository.getInstallation('metadata-owner')!.metadata_json)).toEqual({
+        ...localRecords, evidence: [{ value: 'current' }],
+      })
+    } finally {
+      db.close()
+    }
+  })
+
+  it('preserves exact release rejection reasons while rejecting malformed eligibility records', () => {
+    const releaseReasons = [
+      'release_entry_missing',
+      'release_mode_detect_only',
+      'release_distribution_not_accepted',
+      'release_version_unverified',
+      'release_version_not_accepted',
+      'release_artifact_not_accepted',
+    ] as const
+
+    for (const reason of releaseReasons) {
+      const { db, repository } = setup()
+      discover(repository, `release-${reason}`)
+      db.prepare('UPDATE agent_installations SET metadata_json = ? WHERE id = ?').run(JSON.stringify({
+        managementEligibility: {
+          schemaVersion: CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,
+          eligible: false,
+          reason,
+          proofLimitBytes: MAX_CLI_EXECUTABLE_PROOF_BYTES,
+        },
+      }), `release-${reason}`)
+      expect(persistedManagementEligibility(repository.getInstallation(`release-${reason}`)!)).toEqual({
+        schemaVersion: CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,
+        eligible: false,
+        reason,
+        executableSizeBytes: undefined,
+        proofLimitBytes: MAX_CLI_EXECUTABLE_PROOF_BYTES,
+      })
+      db.close()
+    }
+
+    const { db, repository } = setup()
+    discover(repository, 'release-malformed')
+    db.prepare('UPDATE agent_installations SET metadata_json = ? WHERE id = ?').run(JSON.stringify({
+      managementEligibility: {
+        schemaVersion: CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,
+        eligible: true,
+        reason: 'release_version_not_accepted',
+        proofLimitBytes: MAX_CLI_EXECUTABLE_PROOF_BYTES,
+      },
+    }), 'release-malformed')
+    expect(persistedManagementEligibility(repository.getInstallation('release-malformed')!)).toMatchObject({
+      eligible: false,
+      reason: 'executable_metadata_unavailable',
+    })
+    db.close()
+  })
+
+  it('rekeys a legacy root-less identity exactly once when discovery freezes component roots', () => {
+    const { db, repository } = setup()
+    const observed = canonicalizeInstallationIdentity({
+      runtimeRealm: 'local_macos',
+      osUserIdentity: 'usr_01JROOTENRICHMENT',
+      productFamilyId: 'opencode',
+      hostVariant: 'opencode-v1-cli',
+      configRoot: '/tmp/opencode-config',
+      componentConfigRoots: { lifecycle: '/tmp/opencode-resources' },
+      componentConfigFiles: {
+        memory_tools: '/tmp/opencode-config/opencode.jsonc',
+        lifecycle: '/tmp/opencode-resources/plugins/tidemind.ts',
+      },
+      distribution: { distributionId: 'cli:opencode-v1-cli' },
+    })
+    const legacyKey = buildLegacyInstallKey(observed)
+    repository.upsertDiscoveredInstallation({
+      id: 'opencode-root-enrichment',
+      family: 'opencode',
+      hostVariant: 'opencode-v1-cli',
+      runtimeRealm: 'local_macos',
+      profileId: 'default',
+      installKey: legacyKey,
+      distributionId: 'cli:opencode-v1-cli',
+      provenance: 'npm:opencode-ai',
+      osUserIdentity: observed.osUserIdentity,
+      displayName: 'OpenCode',
+      configRoot: observed.canonicalConfigRoot,
+      agentId: 'agent-opencode-root-enrichment',
+      supportedCapability: 4,
+      lastDetectedAt: T0,
+      metadata: { distribution: observed.distribution },
+    })
+
+    const enriched = repository.upsertDiscoveredInstallation({
+      id: 'opencode-root-enrichment',
+      family: 'opencode',
+      hostVariant: 'opencode-v1-cli',
+      runtimeRealm: 'local_macos',
+      profileId: 'default',
+      installKey: observed.installKey,
+      distributionId: 'cli:opencode-v1-cli',
+      provenance: 'npm:opencode-ai',
+      osUserIdentity: observed.osUserIdentity,
+      displayName: 'OpenCode',
+      configRoot: observed.canonicalConfigRoot,
+      supportedCapability: 4,
+      lastDetectedAt: '2026-08-25T00:01:00.000Z',
+      metadata: {
+        distribution: observed.distribution,
+        componentConfigRoots: observed.componentConfigRoots,
+        componentConfigFiles: observed.componentConfigFiles,
+      },
+    })
+
+    expect(enriched).toMatchObject({
+      id: 'opencode-root-enrichment',
+      install_key: observed.installKey,
+      agent_id: 'agent-opencode-root-enrichment',
+    })
+    expect(repository.listInstallationIdentityRecords()[0]).toMatchObject({
+      componentConfigRoots: { lifecycle: '/tmp/opencode-resources' },
+      componentConfigFiles: {
+        memory_tools: '/tmp/opencode-config/opencode.jsonc',
+        lifecycle: '/tmp/opencode-resources/plugins/tidemind.ts',
+      },
+      aliasInstallKeys: [legacyKey],
+    })
+    expect(db.prepare('SELECT COUNT(*) AS count FROM agent_installations').get()).toEqual({ count: 1 })
+  })
+
   it('deduplicates canonical identity and never resurrects a tombstoned Installation', () => {
     const { db, repository } = setup()
     discover(repository, 'i1', 'cursor:default')
@@ -561,6 +719,109 @@ describe('AgentIntegrationRepository', () => {
     `).get()).toEqual({
       invalidated_at: '2026-08-25T02:00:00.000Z',
       invalidation_reason: 'host_version_changed',
+    })
+  })
+
+  it('atomically revokes green evidence when an owned Artifact drifts', () => {
+    const { db, repository } = setup()
+    discover(repository, 'i1')
+    consent(repository, 'i1', 'consent-i1')
+    artifact(repository, 'a1')
+    componentAndConsumer(repository, 'i1', 'a1', 'consent-i1')
+    repository.setInstallationIntent('i1', 'managed', T0)
+    repository.recordVerificationResult({
+      id: 'vr-drift', installationId: 'i1', componentKey: 'instruction',
+      family: 'cursor', hostVariant: 'cursor-desktop', runtimeRealm: 'local_macos',
+      adapterVersion: '1', catalogVersion: '1', projectionVersion: '1',
+      selectorSchemaVersion: '1', verificationManifestVersion: '1', method: 'read_back',
+      identityAssertion: 'agent-i1', artifactHash: 'desired-a1', result: 'verified',
+      evidenceHash: 'green-before-drift', verifiedAt: T0,
+    })
+    db.prepare(`
+      UPDATE agent_installations
+      SET verified_capability = 1, verification_summary = 'verified', status_reason = 'verified'
+      WHERE id = 'i1'
+    `).run()
+
+    expect(repository.markArtifactNeedsAttention({
+      artifactId: 'a1', artifactState: 'drifted', statusReason: 'conflict',
+      invalidationReason: 'artifact_drifted', observedFingerprint: 'foreign-edit',
+      observedAt: '2026-08-25T00:01:00.000Z',
+    })).toBe(true)
+    expect(db.prepare(`
+      SELECT state, observed_fragment_hash FROM managed_artifacts WHERE id = 'a1'
+    `).get()).toEqual({ state: 'drifted', observed_fragment_hash: 'foreign-edit' })
+    expect(db.prepare(`
+      SELECT invalidation_reason FROM verification_results WHERE id = 'vr-drift'
+    `).get()).toEqual({ invalidation_reason: 'artifact_drifted' })
+    expect(db.prepare(`
+      SELECT verification_status FROM installation_components
+      WHERE installation_id = 'i1' AND component_key = 'instruction'
+    `).get()).toEqual({ verification_status: 'stale' })
+    expect(db.prepare(`
+      SELECT verified_capability, verification_summary, reconcile_state, status_reason
+      FROM agent_installations WHERE id = 'i1'
+    `).get()).toEqual({
+      verified_capability: 0,
+      verification_summary: 'stale',
+      reconcile_state: 'idle',
+      status_reason: 'conflict',
+    })
+    expect(repository.markArtifactHealthyAfterReadback('a1', '2026-08-25T00:02:00.000Z')).toBe(true)
+    expect(db.prepare(`
+      SELECT verified_capability, verification_summary, status_reason
+      FROM agent_installations WHERE id = 'i1'
+    `).get()).toEqual({
+      verified_capability: 0,
+      verification_summary: 'stale',
+      status_reason: 'verification_stale',
+    })
+  })
+
+  it('atomically makes resumed verification historical before maintenance runs', () => {
+    const { db, repository } = setup()
+    discover(repository, 'i1')
+    consent(repository, 'i1', 'consent-i1')
+    artifact(repository, 'a1')
+    componentAndConsumer(repository, 'i1', 'a1', 'consent-i1')
+    repository.setInstallationIntent('i1', 'managed', T0)
+    repository.recordVerificationResult({
+      id: 'vr-resume', installationId: 'i1', componentKey: 'instruction',
+      family: 'cursor', hostVariant: 'cursor-desktop', runtimeRealm: 'local_macos',
+      adapterVersion: '1', catalogVersion: '1', projectionVersion: '1',
+      selectorSchemaVersion: '1', verificationManifestVersion: '1', method: 'read_back',
+      identityAssertion: 'agent-i1', artifactHash: 'desired-a1', result: 'verified',
+      evidenceHash: 'green-before-pause', verifiedAt: T0,
+    })
+    db.prepare(`
+      UPDATE agent_installations
+      SET verified_capability = 1, verification_summary = 'verified', status_reason = 'verified'
+      WHERE id = 'i1'
+    `).run()
+    repository.setInstallationIntent('i1', 'disabled', '2026-08-25T00:01:00.000Z')
+    repository.setInstallationIntent('i1', 'managed', '2026-08-25T00:02:00.000Z')
+
+    expect(db.prepare(`
+      SELECT desired_state, verified_capability, verification_summary, status_reason
+      FROM agent_installations WHERE id = 'i1'
+    `).get()).toEqual({
+      desired_state: 'managed', verified_capability: 1,
+      verification_summary: 'stale', status_reason: 'verification_stale',
+    })
+    expect(db.prepare(`
+      SELECT invalidated_at, invalidation_reason FROM verification_results WHERE id = 'vr-resume'
+    `).get()).toEqual({ invalidated_at: null, invalidation_reason: null })
+    expect(db.prepare(`
+      SELECT verification_status FROM installation_components
+      WHERE installation_id = 'i1' AND component_key = 'instruction'
+    `).get()).toEqual({ verification_status: 'stale' })
+
+    expect(repository.markArtifactHealthyAfterReadback('a1', '2026-08-25T00:03:00.000Z')).toBe(true)
+    expect(db.prepare(`
+      SELECT verified_capability, verification_summary, status_reason
+      FROM agent_installations WHERE id = 'i1'
+    `).get()).toEqual({
+      verified_capability: 1, verification_summary: 'verified', status_reason: 'verified',
     })
   })
 

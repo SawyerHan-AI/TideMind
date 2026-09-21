@@ -17,7 +17,11 @@ import { ConfirmDialog } from '../../shared/ConfirmDialog'
 import type {
   AgentIntegrationApplyResultDto,
   AgentIntegrationCircuitResetPreviewDto,
+  AgentIntegrationCodexTrustReviewDto,
+  AgentIntegrationCodexTrustResultDto,
   AgentIntegrationDetailDto,
+  AgentIntegrationGuidedRemovalResultDto,
+  AgentIntegrationGuidedRemovalReviewDto,
   AgentIntegrationPlanPreviewDto,
 } from '../../../lib/api-contract'
 import {
@@ -27,10 +31,13 @@ import {
   eventTitle,
   managementUnavailableHelpKey,
   nextRovingTabIndex,
+  requiredUserActionDetailKey,
+  requiredUserActionPresentation,
   safeDisplayTarget,
   statusReasonKey,
   summarizeExecutionResults,
 } from './presentation'
+import { RequiredUserActionDetail } from './RequiredUserActionDetail'
 import { AccessBadge, ComponentFact, StatusBadge } from './ManagedPrimitives'
 import type { ManagedInstallationDto, ManagedProductFamilyDto, ManagedSnapshotDto } from './types'
 import { agentIntegrationsApi, installationsForFamily } from './types'
@@ -111,14 +118,30 @@ export function ManagedAgentDetail({
   const [disconnectPreview, setDisconnectPreview] = useState<AgentIntegrationPlanPreviewDto | null>(null)
   const [circuitResetPreview, setCircuitResetPreview] = useState<AgentIntegrationCircuitResetPreviewDto | null>(null)
   const [disconnectResult, setDisconnectResult] = useState<AgentIntegrationApplyResultDto | null>(null)
+  const [codexTrustReview, setCodexTrustReview] = useState<AgentIntegrationCodexTrustReviewDto | null>(null)
+  const [codexTrustResult, setCodexTrustResult] = useState<AgentIntegrationCodexTrustResultDto | null>(null)
+  const [guidedRemovalReview, setGuidedRemovalReview] = useState<AgentIntegrationGuidedRemovalReviewDto | null>(null)
+  const [guidedRemovalResult, setGuidedRemovalResult] = useState<AgentIntegrationGuidedRemovalResultDto | null>(null)
+  const codexTrustConfirmRef = useRef<HTMLButtonElement>(null)
+  const codexTrustStatusRef = useRef<HTMLParagraphElement>(null)
   const backRef = useRef<HTMLButtonElement>(null)
   const retryDetailRef = useRef<HTMLButtonElement>(null)
   const tabListRef = useRef<HTMLDivElement>(null)
+  const requiredActionText = useCallback((action: string) => {
+    const presentation = requiredUserActionPresentation(action)
+    return t(presentation.labelKey, {
+      ...(presentation.count === undefined ? {} : { count: presentation.count }),
+      ...(presentation.componentKey === undefined
+        ? {}
+        : { component: t(componentLabelKey(presentation.componentKey)) }),
+    })
+  }, [t])
   const detailPanelRef = useRef<HTMLDivElement>(null)
   const technicalRequestSequence = useRef(0)
   const actionRequestSequence = useRef(0)
   const pendingTabFocusInstallationId = useRef<string | null>(null)
   const activeInstallationId = useRef(installationId)
+  const detailSnapshotRef = useRef(snapshot)
   activeInstallationId.current = installationId
   const acknowledgedInstallations = useRef(new Set<string>())
   const acknowledgingInstallations = useRef(new Set<string>())
@@ -136,10 +159,30 @@ export function ManagedAgentDetail({
     setDisconnectPreview(null)
     setCircuitResetPreview(null)
     setDisconnectResult(null)
+    setCodexTrustReview(null)
+    setCodexTrustResult(null)
+    setGuidedRemovalReview(null)
+    setGuidedRemovalResult(null)
     setActionError(null)
     setConfirmPauseInstallationId(null)
     setBusyAction(null)
   }, [installationId])
+
+  useEffect(() => {
+    if (detailSnapshotRef.current === snapshot) return
+    detailSnapshotRef.current = snapshot
+    refetch()
+  }, [refetch, snapshot])
+
+  useEffect(() => {
+    if (codexTrustReview?.status !== 'action_required') return
+    requestAnimationFrame(() => codexTrustConfirmRef.current?.focus())
+  }, [codexTrustReview])
+
+  useEffect(() => {
+    if (codexTrustReview?.status !== 'already_recorded' && !codexTrustResult) return
+    requestAnimationFrame(() => codexTrustStatusRef.current?.focus())
+  }, [codexTrustResult, codexTrustReview])
 
   useEffect(() => {
     const pendingId = pendingTabFocusInstallationId.current
@@ -197,16 +240,31 @@ export function ManagedAgentDetail({
     onChanged()
   }, [onChanged, refetch])
 
+  const backNavigation = (
+    <button
+      ref={backRef}
+      type="button"
+      onClick={onCloseMobile}
+      className={`mb-3 items-center gap-1 text-xs text-gray-400 hover:text-gray-200 ${historyOnly || showBackButton ? 'inline-flex' : 'hidden'}`}
+    >
+      <ArrowLeft size={13} aria-hidden />
+      {t(historyOnly ? 'agent.managed.backToHistory' : 'agent.managed.backToList')}
+    </button>
+  )
+
   if ((loading && !detail) || (detail && detail.installation.id !== installationId)) {
-    return <DetailSkeleton />
+    return <div className="min-w-0"><div className="border-b border-white/[0.06] p-4">{backNavigation}</div><DetailSkeleton /></div>
   }
   if (error || !detail) {
     return (
-      <div className="p-5 text-xs text-red-300" role="alert">
-        {t('agent.managed.detailLoadFailed')}
-        <button ref={retryDetailRef} type="button" onClick={retryDetail} className="ml-2 text-indigo-300 hover:text-indigo-200">
-          {t('agent.managed.retry')}
-        </button>
+      <div className="min-w-0">
+        <div className="border-b border-white/[0.06] p-4">{backNavigation}</div>
+        <div className="p-4 text-xs text-red-300" role="alert">
+          {t('agent.managed.detailLoadFailed')}
+          <button ref={retryDetailRef} type="button" onClick={retryDetail} className="ml-2 text-indigo-300 hover:text-indigo-200">
+            {t('agent.managed.retry')}
+          </button>
+        </div>
       </div>
     )
   }
@@ -317,6 +375,103 @@ export function ManagedAgentDetail({
     }
   }
 
+  const reviewCodexTrust = async () => {
+    const targetInstallationId = installation.id
+    const requestSequence = ++actionRequestSequence.current
+    setBusyAction('codex-trust-review')
+    setActionError(null)
+    setCodexTrustResult(null)
+    try {
+      const review = await agentIntegrationsApi().reviewCodexHookTrust(targetInstallationId)
+      if (activeInstallationId.current === targetInstallationId
+        && actionRequestSequence.current === requestSequence) setCodexTrustReview(review)
+    } catch (reviewError) {
+      if (activeInstallationId.current === targetInstallationId
+        && actionRequestSequence.current === requestSequence) {
+        setActionError(reviewError instanceof Error ? reviewError.message : t('agent.managed.unknownError'))
+      }
+    } finally {
+      if (activeInstallationId.current === targetInstallationId
+        && actionRequestSequence.current === requestSequence) setBusyAction(null)
+    }
+  }
+
+  const confirmCodexTrust = async () => {
+    if (!codexTrustReview?.actionHash) return
+    const targetInstallationId = installation.id
+    const requestSequence = ++actionRequestSequence.current
+    setBusyAction('codex-trust-confirm')
+    setActionError(null)
+    try {
+      const result = await agentIntegrationsApi().confirmCodexHookTrust(codexTrustReview.actionHash)
+      if (activeInstallationId.current === targetInstallationId
+        && actionRequestSequence.current === requestSequence) {
+        setCodexTrustResult(result)
+        if (result.status === 'trust_recorded') {
+          setCodexTrustReview(current => current ? { ...current, status: 'already_recorded', actionHash: null } : current)
+          refreshAfterAction()
+        }
+      }
+    } catch (confirmError) {
+      if (activeInstallationId.current === targetInstallationId
+        && actionRequestSequence.current === requestSequence) {
+        setActionError(confirmError instanceof Error ? confirmError.message : t('agent.managed.unknownError'))
+      }
+    } finally {
+      if (activeInstallationId.current === targetInstallationId
+        && actionRequestSequence.current === requestSequence) setBusyAction(null)
+    }
+  }
+
+  const reviewGuidedRemoval = async () => {
+    const targetInstallationId = installation.id
+    const requestSequence = ++actionRequestSequence.current
+    setBusyAction('guided-removal-review')
+    setActionError(null)
+    setGuidedRemovalResult(null)
+    try {
+      const review = await agentIntegrationsApi().reviewGuidedRemoval(targetInstallationId)
+      if (activeInstallationId.current === targetInstallationId
+        && actionRequestSequence.current === requestSequence) setGuidedRemovalReview(review)
+    } catch (reviewError) {
+      if (activeInstallationId.current === targetInstallationId
+        && actionRequestSequence.current === requestSequence) {
+        setActionError(reviewError instanceof Error ? reviewError.message : t('agent.managed.unknownError'))
+      }
+    } finally {
+      if (activeInstallationId.current === targetInstallationId
+        && actionRequestSequence.current === requestSequence) setBusyAction(null)
+    }
+  }
+
+  const confirmGuidedRemoval = async () => {
+    if (!guidedRemovalReview) return
+    const targetInstallationId = guidedRemovalReview.installationId
+    const requestSequence = ++actionRequestSequence.current
+    setBusyAction('guided-removal-confirm')
+    setActionError(null)
+    try {
+      const result = await agentIntegrationsApi().confirmGuidedRemoval(guidedRemovalReview.actionHash)
+      if (activeInstallationId.current === targetInstallationId
+        && actionRequestSequence.current === requestSequence) {
+        setGuidedRemovalResult(result)
+        setGuidedRemovalReview(null)
+        if (result.status === 'removal_confirmed') {
+          refreshAfterAction()
+        }
+      }
+    } catch (confirmError) {
+      if (activeInstallationId.current === targetInstallationId
+        && actionRequestSequence.current === requestSequence) {
+        setGuidedRemovalReview(null)
+        setActionError(confirmError instanceof Error ? confirmError.message : t('agent.managed.unknownError'))
+      }
+    } finally {
+      if (activeInstallationId.current === targetInstallationId
+        && actionRequestSequence.current === requestSequence) setBusyAction(null)
+    }
+  }
+
   const handleTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
     const nextIndex = nextRovingTabIndex(index, installations.length, event.key)
     if (nextIndex === null) return
@@ -343,15 +498,7 @@ export function ManagedAgentDetail({
   return (
     <div className="min-w-0">
       <div className="border-b border-white/[0.06] p-4">
-        <button
-          ref={backRef}
-          type="button"
-          onClick={onCloseMobile}
-          className={`mb-3 items-center gap-1 text-xs text-gray-400 hover:text-gray-200 ${historyOnly || showBackButton ? 'inline-flex' : 'hidden'}`}
-        >
-          <ArrowLeft size={13} aria-hidden />
-          {t(historyOnly ? 'agent.managed.backToHistory' : 'agent.managed.backToList')}
-        </button>
+        {backNavigation}
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h3 className="truncate text-sm font-semibold text-gray-100">{family.displayName}</h3>
@@ -452,7 +599,7 @@ export function ManagedAgentDetail({
                           onClick={() => void doAction(`copy-${componentKey}`, () => agentIntegrationsApi().copyComponentPath(installation.id, componentKey))}
                           disabled={busyAction !== null}
                           aria-label={t('agent.managed.copyComponentPath', { component: t(componentLabelKey(componentKey)) })}
-                          className="rounded p-1 text-gray-500 hover:bg-white/5 hover:text-gray-200 disabled:opacity-40"
+                          className="inline-flex min-h-6 min-w-6 items-center justify-center rounded text-gray-500 hover:bg-white/5 hover:text-gray-200 disabled:opacity-40"
                         >
                           <Copy size={11} aria-hidden />
                         </button>
@@ -461,7 +608,7 @@ export function ManagedAgentDetail({
                           onClick={() => void doAction(`reveal-${componentKey}`, () => agentIntegrationsApi().revealComponentPath(installation.id, componentKey))}
                           disabled={busyAction !== null}
                           aria-label={t('agent.managed.revealComponentPath', { component: t(componentLabelKey(componentKey)) })}
-                          className="rounded p-1 text-gray-500 hover:bg-white/5 hover:text-gray-200 disabled:opacity-40"
+                          className="inline-flex min-h-6 min-w-6 items-center justify-center rounded text-gray-500 hover:bg-white/5 hover:text-gray-200 disabled:opacity-40"
                         >
                           <FolderOpen size={11} aria-hidden />
                         </button>
@@ -473,6 +620,109 @@ export function ManagedAgentDetail({
             })}
           </div>
         </section>
+
+        {(detail.requiredUserActionDetails?.length ?? 0) > 0 && (
+          <section data-required-user-actions={installation.id} aria-labelledby={`required-actions-${installation.id}`}>
+            <h4 id={`required-actions-${installation.id}`} className="mb-2 text-xs font-medium text-gray-300">
+              {t('agent.managed.currentRequiredAction')}
+            </h4>
+            <details className="group rounded-xl border border-amber-400/15 bg-amber-400/[0.04] p-3">
+              <summary className="cursor-pointer text-xs font-medium text-amber-200">
+                {t('agent.managed.openCurrentRequiredAction')}
+              </summary>
+              <div className="mt-2">
+                {detail.requiredUserActionDetails?.map(action => (
+                  <RequiredUserActionDetail key={requiredUserActionDetailKey(action)} action={action} />
+                ))}
+                {detail.requiredUserActionDetails?.some(action => (
+                  (action.kind === 'qwenwork_mcp_gui' || action.kind === 'custom_mcp_import') && action.operation === 'disconnect'
+                )) && (
+                  <div className="mt-3 border-t border-amber-400/15 pt-3">
+                    <p className="mb-2 text-xs leading-relaxed text-gray-300">
+                      {t(installation.hostVariant === 'custom-local-mcp'
+                        ? 'agent.managed.custom.guidedRemoveStep' : 'agent.managed.guidedRemoval.explanation')}
+                    </p>
+                    <button
+                      data-guided-removal-review
+                      type="button"
+                      onClick={() => void reviewGuidedRemoval()}
+                      disabled={busyAction !== null}
+                      className="inline-flex min-h-8 items-center rounded-lg border border-amber-400/25 bg-amber-400/10 px-3 py-1.5 text-xs font-medium text-amber-200 hover:bg-amber-400/15 disabled:opacity-50"
+                    >
+                      {busyAction === 'guided-removal-review'
+                        ? t('agent.managed.guidedRemoval.checking')
+                        : t('agent.managed.guidedRemoval.reviewConfirmation')}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </details>
+          </section>
+        )}
+        {guidedRemovalResult && (
+          <p
+            className={`rounded-lg border border-white/[0.07] bg-white/[0.025] p-3 text-xs ${guidedRemovalResult.status === 'removal_confirmed' ? 'text-emerald-300' : 'text-amber-200'}`}
+            role="status"
+          >
+            {t(`agent.managed.guidedRemoval.${guidedRemovalResult.status === 'removal_confirmed' ? 'confirmed' : 'notReady'}`)}
+          </p>
+        )}
+
+        {!historyOnly
+          && (installation.hostVariant === 'codex-cli' || installation.hostVariant === 'codex-desktop')
+          && installation.desiredState === 'managed'
+          && installation.accessLevel !== 'complete' && (
+          <section data-codex-trust-section={installation.id} aria-labelledby={`codex-trust-${installation.id}`}>
+            <h4 id={`codex-trust-${installation.id}`} className="mb-2 text-xs font-medium text-gray-300">
+              {t('agent.managed.codexTrust.title')}
+            </h4>
+            <div className="space-y-3 rounded-xl border border-amber-400/15 bg-amber-400/[0.055] p-3 text-xs">
+              <p className="leading-relaxed text-gray-300">{t('agent.managed.codexTrust.description')}</p>
+              {codexTrustReview?.status === 'action_required' && (
+                <div className="space-y-2">
+                  <p className="rounded-lg border border-white/[0.07] bg-white/[0.025] p-2.5 leading-relaxed text-amber-200">
+                    {codexTrustReview.instruction}
+                  </p>
+                  <dl className="space-y-1.5 text-[11px]">
+                    <TrustFact label={t('agent.managed.codexTrust.source')} value={codexTrustReview.sourceLabel} />
+                    <TrustFact label={t('agent.managed.codexTrust.hostHash')} value={codexTrustReview.hostCurrentHash} mono />
+                    <TrustFact label={t('agent.managed.codexTrust.ownedHash')} value={codexTrustReview.ownedFragmentHash} mono />
+                  </dl>
+                </div>
+              )}
+              {(codexTrustReview?.status === 'already_recorded' || codexTrustResult?.status === 'trust_recorded') && (
+                <p ref={codexTrustStatusRef} className="leading-relaxed text-emerald-300 focus:outline-none" role="status" tabIndex={-1}>{t('agent.managed.codexTrust.recorded')}</p>
+              )}
+              {codexTrustResult?.status === 'not_trusted' && (
+                <p ref={codexTrustStatusRef} className="leading-relaxed text-amber-200 focus:outline-none" role="status" tabIndex={-1}>{t('agent.managed.codexTrust.notTrusted')}</p>
+              )}
+              {codexTrustReview?.status === 'action_required' ? (
+                <button
+                  ref={codexTrustConfirmRef}
+                  data-codex-trust-confirm
+                  type="button"
+                  onClick={() => void confirmCodexTrust()}
+                  disabled={busyAction !== null}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400/25 bg-amber-400/10 px-3 py-1.5 text-xs font-medium text-amber-200 hover:bg-amber-400/15 disabled:opacity-50"
+                >
+                  <RefreshCw size={11} aria-hidden />
+                  {busyAction === 'codex-trust-confirm' ? t('agent.managed.codexTrust.checking') : t('agent.managed.codexTrust.confirm')}
+                </button>
+              ) : codexTrustReview?.status !== 'already_recorded' ? (
+                <button
+                  data-codex-trust-review
+                  type="button"
+                  onClick={() => void reviewCodexTrust()}
+                  disabled={busyAction !== null}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-xs text-gray-300 hover:bg-white/5 disabled:opacity-50"
+                >
+                  <RefreshCw size={11} aria-hidden />
+                  {busyAction === 'codex-trust-review' ? t('agent.managed.codexTrust.checking') : t('agent.managed.codexTrust.check')}
+                </button>
+              ) : null}
+            </div>
+          </section>
+        )}
 
         <section aria-labelledby={`health-${installation.id}`}>
           <h4 id={`health-${installation.id}`} className="mb-2 text-xs font-medium text-gray-300">
@@ -576,13 +826,16 @@ export function ManagedAgentDetail({
             ) : null}
             {installation.manageable
             && installation.desiredState === 'unmanaged'
-            && installation.statusGroup === 'awaiting_connection' ? (
+            && (installation.statusGroup === 'awaiting_connection'
+              || installation.statusReason === 'legacy_callable_unmanaged') ? (
               <button
                 type="button"
                 onClick={() => onReconnect(installation.id)}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-400/20 px-3 py-1.5 text-xs text-indigo-300 hover:bg-indigo-400/10"
               >
-                <Play size={11} aria-hidden /> {t('agent.managed.reviewAndConnect')}
+                <Play size={11} aria-hidden /> {t(installation.statusReason === 'legacy_callable_unmanaged'
+                  ? 'agent.managed.reviewAndEnableMaintenance'
+                  : 'agent.managed.reviewAndConnect')}
               </button>
             ) : installation.manageable && installation.desiredState === 'removed' ? (
               <button
@@ -738,6 +991,16 @@ export function ManagedAgentDetail({
       >
         {disconnectPreview && (
           <div className="space-y-2 text-xs text-gray-400">
+            {disconnectPreview.installations.flatMap(item => item.requiredUserActions).map(action => (
+              <div key={action} className="rounded border border-amber-400/20 bg-amber-400/[0.06] px-2 py-2 text-amber-200">
+                {requiredActionText(action)}
+              </div>
+            ))}
+            {disconnectPreview.installations.flatMap(item => (
+              (item.requiredUserActionDetails ?? []).map(action => ({ installationId: item.installationId, action }))
+            )).map(({ installationId: actionInstallationId, action }) => (
+              <RequiredUserActionDetail key={`${actionInstallationId}:${requiredUserActionDetailKey(action)}`} action={action} />
+            ))}
             {disconnectPreview.installations.flatMap(item => item.targets).map((target, index) => (
               <div key={`${target.componentKey}-${index}`} className="rounded bg-white/[0.03] px-2 py-1.5">
                 {t(`agent.managed.targetAction.${target.action}`)} · {safeDisplayTarget(target.targetLabel)}
@@ -763,6 +1026,32 @@ export function ManagedAgentDetail({
           </div>
         )}
       </ConfirmDialog>
+      <ConfirmDialog
+        open={guidedRemovalReview !== null}
+        onCancel={() => setGuidedRemovalReview(null)}
+        onConfirm={() => void confirmGuidedRemoval()}
+        title={t('agent.managed.guidedRemoval.title', {
+          connector: guidedRemovalReview?.connectorName ?? 'Tide Mind',
+        })}
+        description={t(installation.hostVariant === 'custom-local-mcp'
+          ? 'agent.managed.guidedRemoval.userConfirmedNotice' : 'agent.managed.guidedRemoval.description')}
+        confirmText={t(installation.hostVariant === 'custom-local-mcp'
+          ? 'agent.managed.guidedRemoval.reviewConfirmation' : 'agent.managed.guidedRemoval.confirm')}
+        confirmDisabled={busyAction !== null}
+      >
+        <p className="text-xs leading-relaxed text-gray-300">
+          {t('agent.managed.guidedRemoval.userConfirmedNotice')}
+        </p>
+      </ConfirmDialog>
+    </div>
+  )
+}
+
+function TrustFact({ label, value, mono = false }: { label: string; value: string | null; mono?: boolean }) {
+  return (
+    <div className="grid gap-1 min-[520px]:grid-cols-[120px_minmax(0,1fr)]">
+      <dt className="text-gray-400">{label}</dt>
+      <dd className={`break-all text-gray-300 ${mono ? 'font-mono' : ''}`}>{value ?? '—'}</dd>
     </div>
   )
 }

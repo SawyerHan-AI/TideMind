@@ -67,7 +67,10 @@ export function StatusBadge({
     const helpKey = managementUnavailableHelpKey(reason)
     return (
       <div className="min-w-0">
-        <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-medium ${TONE_CLASSES.gray}`}>
+        <span
+          className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-medium ${TONE_CLASSES.gray}`}
+          title={t(helpKey)}
+        >
           <MinusCircle size={12} aria-hidden />
           {t('agent.managed.supportMode.detectable')}
         </span>
@@ -163,7 +166,7 @@ export function AccessibleInfo({
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
         onClick={() => setPinned(value => !value)}
-        className="rounded p-0.5 text-gray-500 transition-colors hover:text-gray-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/60"
+        className="inline-flex min-h-6 min-w-6 items-center justify-center rounded text-gray-500 transition-colors hover:text-gray-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/60"
       >
         <Info size={12} aria-hidden />
       </button>

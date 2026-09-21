@@ -164,6 +164,18 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
       'SELECT id FROM links WHERE ((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)) AND deleted = 0',
     ).all(input.target_link.from, input.target_link.to, input.target_link.to, input.target_link.from) as Array<{ id: string }>;
 
+    // operation_log 只是审计记录，不能把它当成“业务写入”并返回 processed。
+    // 没有活跃链接时明确拒绝，使 MCP activity writer 不会把空操作提升为
+    // memory write 能力证据。已软删链接也属于没有可执行目标。
+    if (links.length === 0) {
+      log.warn(`unlink 未找到活跃链接: ${input.target_link.from} ↔ ${input.target_link.to}`);
+      return {
+        status: 'rejected',
+        trace_id: traceId,
+        reject_reason: `节点 ${input.target_link.from} 与 ${input.target_link.to} 之间没有可断开的活跃链接`,
+      };
+    }
+
     for (const link of links) {
       repo.links.deleteLink(link.id);
     }
@@ -192,8 +204,18 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
       log.warn(`archive 目标节点不存在: ${input.target_node}`);
       return { status: 'rejected', trace_id: traceId, reject_reason: `目标节点 ${input.target_node} 不存在` };
     }
+    if (existing.archived === 1) {
+      log.warn(`archive 目标节点已归档: ${input.target_node}`);
+      return { status: 'rejected', trace_id: traceId, reject_reason: `目标节点 ${input.target_node} 已归档` };
+    }
     log.info(`archive target=${input.target_node}`);
-    repo.nodes.archiveNode(input.target_node);
+    // getNode 与 UPDATE 之间可能有另一个 MCP 进程抢先归档。底层用
+    // WHERE archived=0 原子护栏；未实际改变状态时必须 reject，不记
+    // operation_log，也不让 MCP handler 生成 memory-write activity。
+    if (!repo.nodes.archiveNode(input.target_node)) {
+      log.warn(`archive 目标节点已被并发归档: ${input.target_node}`);
+      return { status: 'rejected', trace_id: traceId, reject_reason: `目标节点 ${input.target_node} 已归档` };
+    }
 
     repo.log.logOperation({
       operation: 'digest',

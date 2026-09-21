@@ -16,14 +16,34 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      - name: Prepare private job temp
+        shell: bash
+        run: |
+          set -euo pipefail
+          job_temp="$(mktemp -d "$RUNNER_TEMP/tidemind-linux-job.XXXXXX")"
+          printf 'TIDEMIND_CI_JOB_TEMP=%s\nTMPDIR=%s\n' "$job_temp" "$job_temp" >> "$GITHUB_ENV"
+
       - run: npm ci
       # Linux CI only needs the client dependency graph for shared tests/builds.
       # The production-only secure-store-mac package correctly rejects Linux,
       # so bypass platform checks without running any native install scripts.
       - run: cd client && npm ci --force --ignore-scripts
-      # Tests import Electron and assert the generated Worker bundle. Recreate
-      # only those two deterministic artifacts after suppressing all scripts.
+      # Tests import Electron and assert the generated Worker bundle. Restore
+      # their runtime artifacts explicitly after suppressing package scripts.
       - run: cd client && node node_modules/electron/install.js
+      - name: Verify Electron runtime before root tests
+        run: |
+          ldd client/node_modules/electron/dist/electron
+          ELECTRON_RUN_AS_NODE=1 client/node_modules/electron/dist/electron -e 'if (!process.versions.electron) process.exit(1); console.log(process.versions)'
+      # Kimi production tests launch client Electron, whose SQLite ABI differs
+      # from root Node. Rebuild only client SQLite; keep Darwin scripts disabled.
+      - name: Rebuild client SQLite for Electron
+        run: |
+          cd client
+          ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron node_modules/@electron/rebuild/lib/cli.js --force --only better-sqlite3 --module-dir .
+          ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron -e 'const db = new (require("better-sqlite3"))(":memory:"); if (db.prepare("SELECT 1 AS ok").get().ok !== 1) process.exit(1); db.close()'
+      - name: Verify root SQLite retains Node ABI
+        run: node -e 'const db = new (require("better-sqlite3"))(":memory:"); if (db.prepare("SELECT 1 AS ok").get().ok !== 1) process.exit(1); db.close()'
       - run: npm run build
       - run: cd client && npm run build:bin
       - run: npm test

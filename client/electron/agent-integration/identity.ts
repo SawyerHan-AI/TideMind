@@ -17,6 +17,7 @@ export interface InstallationIdentityInput {
   productFamilyId: ProductFamilyId
   hostVariant: CatalogId
   configRoot: string
+  componentConfigRoots?: Readonly<Partial<Record<ComponentKey, string>>>
   componentConfigFiles?: Readonly<Partial<Record<ComponentKey, string>>>
   explicitProfile?: string | null
   hostOwnedIdentity?: string | null
@@ -37,7 +38,7 @@ export interface DistributionIdentityAssessment {
 }
 
 export type InstallationIdentityMatch =
-  | { kind: 'matched'; record: InstallationIdentityRecord; reason: 'install_key' | 'alias' | 'host_identity' }
+  | { kind: 'matched'; record: InstallationIdentityRecord; reason: 'install_key' | 'component_roots_enrichment' | 'alias' | 'host_identity' }
   | { kind: 'new'; reason: 'no_candidate' }
   | { kind: 'ambiguous'; candidates: readonly InstallationIdentityRecord[]; reason: string }
   | { kind: 'distribution_conflict'; candidates: readonly InstallationIdentityRecord[]; reason: string }
@@ -100,10 +101,28 @@ function normalizeDistribution(
       : undefined,
     packageProvenance: normalizeOptional(distribution?.packageProvenance),
     capabilityFingerprint: normalizeOptional(distribution?.capabilityFingerprint),
+    portableArtifactFingerprint: normalizeOptional(distribution?.portableArtifactFingerprint),
   }
 }
 
 export function buildInstallKey(input: Pick<
+  InstallationIdentity,
+  'runtimeRealm' | 'osUserIdentity' | 'productFamilyId' | 'hostVariant' | 'canonicalConfigRoot' | 'componentConfigRoots' | 'explicitProfile'
+>): string {
+  if (input.componentConfigRoots === undefined) return buildLegacyInstallKey(input)
+  return JSON.stringify([
+    input.runtimeRealm,
+    input.osUserIdentity,
+    input.productFamilyId,
+    input.hostVariant,
+    input.canonicalConfigRoot,
+    stableComponentRoots(input.componentConfigRoots),
+    input.explicitProfile,
+  ])
+}
+
+/** Pre-component-root key retained only for one-way adoption of v34 rows. */
+export function buildLegacyInstallKey(input: Pick<
   InstallationIdentity,
   'runtimeRealm' | 'osUserIdentity' | 'productFamilyId' | 'hostVariant' | 'canonicalConfigRoot' | 'explicitProfile'
 >): string {
@@ -125,9 +144,14 @@ export function canonicalizeInstallationIdentity(input: InstallationIdentityInpu
     )
   }
   const canonicalConfigRoot = normalizeIdentityPath(input.configRoot, input.runtimeRealm)
+  const componentConfigRoots = normalizeComponentConfigRoots(
+    input.componentConfigRoots,
+    input.runtimeRealm,
+  )
   const componentConfigFiles = normalizeComponentConfigFiles(
     input.componentConfigFiles,
     canonicalConfigRoot,
+    componentConfigRoots,
     input.runtimeRealm,
   )
   const identityWithoutKey = {
@@ -136,6 +160,7 @@ export function canonicalizeInstallationIdentity(input: InstallationIdentityInpu
     productFamilyId: variant.productFamilyId,
     hostVariant: variant.catalogId,
     canonicalConfigRoot,
+    ...(componentConfigRoots === undefined ? {} : { componentConfigRoots }),
     ...(componentConfigFiles === undefined ? {} : { componentConfigFiles }),
     explicitProfile: normalizeExplicitProfile(input.explicitProfile),
     hostOwnedIdentity: normalizeOptional(input.hostOwnedIdentity),
@@ -147,9 +172,24 @@ export function canonicalizeInstallationIdentity(input: InstallationIdentityInpu
   }
 }
 
+function normalizeComponentConfigRoots(
+  roots: Readonly<Partial<Record<ComponentKey, string>>> | undefined,
+  runtimeRealm: RuntimeRealm,
+): Readonly<Partial<Record<ComponentKey, string>>> | undefined {
+  if (!roots) return undefined
+  const normalized: Partial<Record<ComponentKey, string>> = {}
+  for (const componentKey of ['instruction', 'memory_tools', 'lifecycle'] as const) {
+    const value = roots[componentKey]
+    if (!value) continue
+    normalized[componentKey] = normalizeIdentityPath(value, runtimeRealm)
+  }
+  return Object.keys(normalized).length > 0 ? Object.freeze(normalized) : undefined
+}
+
 function normalizeComponentConfigFiles(
   files: Readonly<Partial<Record<ComponentKey, string>>> | undefined,
   canonicalConfigRoot: string,
+  componentConfigRoots: Readonly<Partial<Record<ComponentKey, string>>> | undefined,
   runtimeRealm: RuntimeRealm,
 ): Readonly<Partial<Record<ComponentKey, string>>> | undefined {
   if (!files) return undefined
@@ -159,14 +199,24 @@ function normalizeComponentConfigFiles(
     if (!value) continue
     const target = normalizeIdentityPath(value, runtimeRealm)
     if (runtimeRealm === 'local_macos') {
-      const relative = path.posix.relative(canonicalConfigRoot, target)
+      const allowedRoot = componentConfigRoots?.[componentKey] ?? canonicalConfigRoot
+      const relative = path.posix.relative(allowedRoot, target)
       if (relative === '' || relative.startsWith('..') || path.posix.isAbsolute(relative)) {
-        throw new Error(`${componentKey} config file must be inside configRoot`)
+        throw new Error(`${componentKey} config file must be inside its component config root`)
       }
     }
     normalized[componentKey] = target
   }
   return Object.keys(normalized).length > 0 ? Object.freeze(normalized) : undefined
+}
+
+function stableComponentRoots(
+  roots: Readonly<Partial<Record<ComponentKey, string>>> | undefined,
+): readonly (readonly [ComponentKey, string])[] {
+  return (['instruction', 'memory_tools', 'lifecycle'] as const)
+    .flatMap(componentKey => roots?.[componentKey]
+      ? [[componentKey, roots[componentKey]!] as const]
+      : [])
 }
 
 export function resolveCatalogIdentity(value: string): CatalogAliasResolutionResult {
@@ -316,6 +366,27 @@ export function matchInstallationIdentity(
   }
   if (exact.length > 0 && exactCompatible.length === 0) {
     return { kind: 'distribution_conflict', candidates: exact, reason: 'Exact install key has conflicting distribution provenance.' }
+  }
+  const legacyInstallKey = buildLegacyInstallKey(observed)
+  const componentRootEnrichment = scoped.filter(record =>
+    observed.componentConfigRoots !== undefined
+    && record.componentConfigRoots === undefined
+    && record.installKey === legacyInstallKey
+    && !distributionConflicts(record, observed),
+  )
+  if (componentRootEnrichment.length === 1) {
+    return {
+      kind: 'matched',
+      record: componentRootEnrichment[0],
+      reason: 'component_roots_enrichment',
+    }
+  }
+  if (componentRootEnrichment.length > 1) {
+    return {
+      kind: 'ambiguous',
+      candidates: componentRootEnrichment,
+      reason: 'Multiple legacy records match the component-root identity enrichment.',
+    }
   }
   const aliases = scoped.filter(record =>
     record.aliasInstallKeys.includes(observed.installKey)

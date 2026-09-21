@@ -72,7 +72,7 @@ describe('Agent Integration apply task presentation recovery', () => {
     })
   })
 
-  it('orders running, actionable attention, awaiting verification, then success', () => {
+  it('orders running, actionable attention, awaiting verification, then neutral/success completions', () => {
     const success = task({
       id: 'success', state: 'completed', pendingInstallationIds: [], completedAt: '2026-08-26T00:04:00.000Z',
       startedAt: '2026-08-26T00:04:00.000Z',
@@ -89,9 +89,21 @@ describe('Agent Integration apply task presentation recovery', () => {
       results: [{ installationId: 'installation-1', status: 'interrupted' }],
     })
     const running = task({ id: 'running', startedAt: '2026-08-26T00:01:00.000Z' })
+    const superseded = task({
+      id: 'superseded', state: 'completed', pendingInstallationIds: [], completedAt: '2026-08-26T00:05:00.000Z',
+      startedAt: '2026-08-26T00:05:00.000Z',
+      results: [{ installationId: 'installation-1', status: 'superseded', reason: 'superseded_by_disconnect' }],
+    })
+    const ordinaryCancelled = task({
+      id: 'ordinary-cancelled', state: 'completed', pendingInstallationIds: [], completedAt: '2026-08-26T00:06:00.000Z',
+      startedAt: '2026-08-26T00:06:00.000Z',
+      results: [{ installationId: 'installation-1', status: 'failed', reason: 'cancelled_fixture' }],
+    })
 
-    expect(prioritizeApplyTasks([success, awaiting, attention, running]).map(item => item.id))
-      .toEqual(['running', 'attention', 'awaiting', 'success'])
+    expect(prioritizeApplyTasks([success, superseded, awaiting, ordinaryCancelled, attention, running]).map(item => item.id))
+      .toEqual(['running', 'ordinary-cancelled', 'attention', 'awaiting', 'superseded', 'success'])
+    expect(applyTaskPresentationPriority(superseded)).toBe(3)
+    expect(applyTaskPresentationPriority(ordinaryCancelled)).toBe(1)
     expect(recoverVisibleApplyTask(success, [success, attention])).toEqual(attention)
     expect(mergeApplyTaskProgress(success, attention)).toEqual(attention)
   })

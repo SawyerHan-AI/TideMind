@@ -12,20 +12,23 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { SqliteCoordinatorRepository } from '../../client/electron/agent-integration/coordinator-repository'
-import type { MutationJournalRecord } from '../../client/electron/agent-integration/mutation-runner'
+import type { PrepareExecutionInput } from '../../client/electron/agent-integration/coordinator'
+import { executeMutation, recoverMutation, WriterFenceUnavailableError, type MutationJournalRecord } from '../../client/electron/agent-integration/mutation-runner'
 import { buildExecutionPlan } from '../../client/electron/agent-integration/planner'
-import { executionPlanHash } from '../../client/electron/agent-integration/consent'
+import { executionPlanHash, type PlanOperation } from '../../client/electron/agent-integration/consent'
+import { sha256Json } from '../../client/electron/agent-integration/fingerprint'
+import { buildLegacyMutationDomain } from '../../client/electron/agent-integration/legacy-writer'
 import {
   AgentIntegrationRepository,
   persistedProjectionSurfaceFingerprint,
 } from '../../client/electron/agent-integration/repository'
-import type { PlannedMutation } from '../../client/electron/agent-integration/types'
+import type { ComponentKey, PlannedMutation } from '../../client/electron/agent-integration/types'
 import { ensureAgentIntegrationSchema } from '../../src/db/agent-integration-schema.js'
 import { ensureSchema } from '../../src/db/schema.js'
 
 const T0 = '2026-08-25T00:00:00.000Z'
 const TARGET = '/tmp/tidemind-bridge/config.json'
-const DOMAIN = `local_macos:file:${TARGET}:document`
+const DOMAIN = buildLegacyMutationDomain({ adapterId: 'cursor-desktop', target: TARGET, selector: 'document' })
 const bridgeRepositories = new WeakMap<SqliteCoordinatorRepository, AgentIntegrationRepository>()
 
 function setup(lockDirectory?: string, lockDirectoryTrustRoot?: string) {
@@ -45,11 +48,28 @@ function setup(lockDirectory?: string, lockDirectoryTrustRoot?: string) {
 }
 
 function commitRun(db: Database.Database, bridge: SqliteCoordinatorRepository, runId: string): void {
-  db.prepare(`UPDATE projection_mutations SET state = 'committed' WHERE run_id = ?`).run(runId)
+  markMutationsCommitted(db, runId)
   markApplied(bridge, runId)
   recordRunVerification(db, bridge, runId)
   bridge.setRunState(runId, 'verified', T0)
   bridge.setRunState(runId, 'committed', T0)
+}
+
+function markMutationsCommitted(db: Database.Database, runId: string): void {
+  db.prepare(`
+    UPDATE projection_mutations
+    SET state = 'committed',
+        journal_version = CASE WHEN idempotency_strategy = 'consumer_detach_only' THEN 0 ELSE 5 END,
+        post_effect_fingerprint = CASE
+          WHEN idempotency_strategy = 'consumer_detach_only' THEN NULL ELSE after_hash END,
+        compensation_precondition = CASE
+          WHEN idempotency_strategy = 'consumer_detach_only' THEN NULL ELSE after_hash END,
+        apply_receipt_json = CASE
+          WHEN idempotency_strategy = 'consumer_detach_only' THEN NULL
+          ELSE json_object('fingerprint', after_hash) END,
+        failure_code = NULL, failure_stage = NULL
+    WHERE run_id = ?
+  `).run(runId)
 }
 
 function commitMutation(
@@ -67,7 +87,7 @@ function commitMutation(
   const receipt = bridge.saveMutation(runId, {
     ...observed,
     state: 'receipt_persisted',
-    receiptJson: '{}',
+    receiptJson: JSON.stringify({ fingerprint: journal.desiredFingerprint }),
     updatedAt: T0,
   })
   const verified = bridge.saveMutation(runId, { ...receipt, state: 'verified', updatedAt: T0 })
@@ -93,9 +113,12 @@ function recordRunVerification(
     .get(run.installation_id) as Record<string, unknown>
   const plan = JSON.parse(run.prepared_plan_json) as { componentKeys: Array<'instruction' | 'memory_tools' | 'lifecycle'> }
   const detached = new Set((db.prepare(`
-    SELECT component_key FROM projection_mutations
+    SELECT component_key, planned_mutation_json FROM projection_mutations
     WHERE run_id = ? AND idempotency_strategy = 'consumer_detach_only'
-  `).all(runId) as Array<{ component_key: string }>).map(row => row.component_key))
+  `).all(runId) as Array<{ component_key: string; planned_mutation_json: string }>).flatMap((row) => {
+    const mutation = JSON.parse(row.planned_mutation_json) as PlannedMutation
+    return mutation.coveredComponentKeys ?? [row.component_key as ComponentKey]
+  }))
   for (const componentKey of plan.componentKeys) {
     if (detached.has(componentKey)) continue
     bridge.recordVerification({
@@ -154,13 +177,15 @@ function discover(repository: AgentIntegrationRepository, id: string): void {
     id: `consent-${id}`,
     installationId: id,
     policyVersion: '1',
-    allowedComponents: ['instruction', 'memory_tools'],
+    allowedComponents: ['instruction', 'memory_tools', 'lifecycle'],
     allowedScopes: [TARGET],
     normalizedTargets: [TARGET],
     selectorSchemaVersion: '1',
     selectorResolution: {
       'cursor-desktop:instruction:document': 'document',
       'cursor-desktop:memory_tools:mcpServers.tidemind': 'mcpServers.tidemind',
+      'cursor-desktop:memory_tools:tidemind.aggregate': 'tidemind.aggregate',
+      'cursor-desktop:lifecycle:tidemind.aggregate': 'tidemind.aggregate',
     },
     executableRealpaths: [],
     commandCategories: ['file_write'],
@@ -187,12 +212,12 @@ function mutation(operation: 'create' | 'remove' = 'create'): PlannedMutation {
   }
 }
 
-function prepared(installationId: string, planned: PlannedMutation, operation: 'connect' | 'disconnect' = 'connect') {
+function prepared(installationId: string, planned: PlannedMutation, operation: PlanOperation = 'connect') {
   return buildExecutionPlan({
     installationId,
     installationKey: `cursor:${installationId}`,
     operation,
-    componentKeys: [planned.componentKey],
+    componentKeys: [...(planned.coveredComponentKeys ?? [planned.componentKey])],
     inspection: {
       catalogId: 'cursor-desktop',
       detected: true,
@@ -208,6 +233,106 @@ function prepared(installationId: string, planned: PlannedMutation, operation: '
       projectionVersion: '9',
       mutations: [planned],
       requiredUserActions: [],
+      diagnostics: [],
+    },
+    catalogGeneration: 3,
+    adapterGeneration: 7,
+    projectionGeneration: 9,
+    createdAt: T0,
+  })
+}
+
+function guidedDisconnectPlan(installationId: string) {
+  return buildExecutionPlan({
+    installationId,
+    installationKey: `cursor:${installationId}`,
+    operation: 'disconnect',
+    componentKeys: ['memory_tools'],
+    inspection: {
+      catalogId: 'cursor-desktop',
+      detected: true,
+      distribution: { distributionId: 'cursor' },
+      components: [{ componentKey: 'memory_tools', visibility: 'absent', verificationStatus: 'unverified' }],
+      provenance: ['fixture'],
+      diagnostics: [],
+    },
+    adapterPlan: {
+      catalogId: 'cursor-desktop',
+      installationKey: `cursor:${installationId}`,
+      adapterVersion: '7',
+      projectionVersion: '9',
+      mutations: [],
+      requiredUserActions: [],
+      requiredUserActionDetails: [{
+        kind: 'qwenwork_mcp_gui',
+        componentKey: 'memory_tools',
+        operation: 'disconnect',
+        installationId,
+        agentId: `agent-${installationId}`,
+        hostVariant: 'qwenwork-desktop',
+        hostVersion: '1.0.3',
+        tideMindVersion: '0.2.92',
+        adapterVersion: '7',
+        projectionVersion: '9',
+        installationBindingHash: 'binding',
+        connectorName: 'tidemind',
+        serverType: 'STDIO',
+        command: '/tmp/tm-node',
+        args: ['/tmp/mcp.cjs'],
+        environment: {
+          EB_AGENT_ID: `agent-${installationId}`,
+          EB_HOST_VARIANT: 'qwenwork-desktop',
+          EB_ACTIVITY_GENERATION_TOKEN: 'generation-guided',
+        },
+        configurationJson: '{}',
+        connectorConfigurationHash: 'connector',
+        steps: ['Remove the connector in QwenWork.'],
+        instruction: 'Remove the connector in QwenWork.',
+      }],
+      diagnostics: [],
+    },
+    catalogGeneration: 3,
+    adapterGeneration: 7,
+    projectionGeneration: 9,
+    createdAt: T0,
+  })
+}
+
+function manualRemovalDisconnectPlan(installationId: string, observedHash = 'desired') {
+  return buildExecutionPlan({
+    installationId,
+    installationKey: `cursor:${installationId}`,
+    operation: 'disconnect',
+    componentKeys: ['memory_tools'],
+    inspection: {
+      catalogId: 'cursor-desktop',
+      detected: true,
+      distribution: { distributionId: 'cursor' },
+      components: [{
+        componentKey: 'memory_tools',
+        visibility: 'dedicated',
+        verificationStatus: 'verified',
+        observedTarget: TARGET,
+        observedFragmentHash: observedHash,
+      }],
+      provenance: ['fixture'],
+      diagnostics: [],
+    },
+    adapterPlan: {
+      catalogId: 'cursor-desktop',
+      installationKey: `cursor:${installationId}`,
+      adapterVersion: '7',
+      projectionVersion: '9',
+      mutations: [],
+      requiredUserActions: [],
+      requiredUserActionDetails: [{
+        kind: 'manual_file_removal',
+        componentKey: 'memory_tools',
+        operation: 'disconnect',
+        physicalTarget: TARGET,
+        ownedFragmentHash: 'desired',
+        instruction: `Remove ${TARGET}`,
+      }],
       diagnostics: [],
     },
     catalogGeneration: 3,
@@ -237,7 +362,7 @@ function prepare(
   installationId: string,
   runId: string,
   planned = mutation(),
-  operation: 'connect' | 'disconnect' = 'connect',
+  operation: PlanOperation = 'connect',
   options: {
     consentId?: string
     expectedDesiredState?: 'unmanaged' | 'managed' | 'disabled' | 'removed'
@@ -274,7 +399,14 @@ function prepare(
     desiredCapability: operation === 'disconnect' ? 0 : 3,
     mutations: [{
       operationId: planned.operationId,
-      mutationDomain: DOMAIN,
+      mutationDomain: planned.domainKind === 'file_fragment'
+        ? buildLegacyMutationDomain({ adapterId: 'cursor-desktop', target: planned.physicalTarget, selector: 'document' })
+        : `local_macos:${planned.domainKind}:${planned.physicalTarget}`,
+      additionalMutationDomains: planned.additionalFenceTargets?.map(target => (
+        target.domainKind === 'file_fragment'
+          ? buildLegacyMutationDomain({ adapterId: 'cursor-desktop', target: target.physicalTarget, selector: 'document' })
+          : `local_macos:${target.domainKind}:${target.physicalTarget}`
+      )),
       plannedMutation: planned,
       journal: {
         id: `mutation-${runId}`,
@@ -307,7 +439,146 @@ function prepare(
   })
 }
 
+function prepareGuidedDisconnect(
+  bridge: SqliteCoordinatorRepository,
+  repository: AgentIntegrationRepository,
+  installationId: string,
+  runId: string,
+  disconnectScopeExpectations: PrepareExecutionInput['disconnectScopeExpectations'],
+) {
+  const plan = guidedDisconnectPlan(installationId)
+  bindSurface(plan, repository, installationId)
+  return bridge.prepareExecution({
+    runId,
+    installationId,
+    operation: 'disconnect',
+    planHash: plan.executionPlanHash,
+    consentId: `consent-${installationId}`,
+    preparedPlan: plan,
+    desiredCapability: 0,
+    mutations: [],
+    expectedDesiredState: 'managed',
+    intentAfterPrepare: 'removed',
+    disconnectScopeExpectations,
+    createdAt: T0,
+  })
+}
+
+function prepareManualRemovalDisconnect(
+  bridge: SqliteCoordinatorRepository,
+  repository: AgentIntegrationRepository,
+  installationId: string,
+  runId: string,
+  observedHash = 'desired',
+) {
+  const plan = manualRemovalDisconnectPlan(installationId, observedHash)
+  bindSurface(plan, repository, installationId)
+  return bridge.prepareExecution({
+    runId,
+    installationId,
+    operation: 'disconnect',
+    planHash: plan.executionPlanHash,
+    consentId: `consent-${installationId}`,
+    preparedPlan: plan,
+    desiredCapability: 0,
+    mutations: [],
+    expectedDesiredState: 'managed',
+    intentAfterPrepare: 'removed',
+    disconnectScopeExpectations: [{
+      componentKey: 'memory_tools',
+      physicalTarget: TARGET,
+      ownershipKey: 'mcpServers.tidemind',
+      consumerKeys: [`${installationId}\0memory_tools`],
+    }],
+    createdAt: T0,
+  })
+}
+
 describe('SqliteCoordinatorRepository', () => {
+  it('uses SQLite causal insertion order when same-timestamp generations supersede random run ids', () => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    const insert = db.prepare(`
+      INSERT INTO reconcile_runs (
+        id, installation_id, operation_type, execution_plan_hash, consent_envelope_id,
+        state, recovery_strategy, writer_fence_snapshot_json, adapter_version,
+        catalog_version, projection_version, selector_schema_version,
+        prepared_plan_json, desired_capability, created_at, updated_at
+      ) VALUES (?, 'i1', 'connect', ?, 'consent-i1', ?, 'readback_before_replay',
+        '{}', '7', '3', '9', '1', ?, 2, ?, ?)
+    `)
+    const storedPlan = (token: string) => JSON.stringify({
+      componentKeys: ['memory_tools'],
+      activityGenerationToken: token,
+      executionPlan: { activityGenerationTokenHash: sha256Json(token) },
+    })
+    insert.run('zzz-older-random-id', 'old-plan', 'committed', storedPlan('old-generation'), T0, T0)
+    insert.run('aaa-newer-random-id', 'new-plan', 'applied_unverified', storedPlan('new-generation'), T0, T0)
+
+    expect(bridge.getCurrentActivityGenerationToken('i1', ['memory_tools'])).toBe('new-generation')
+    expect(repository.getLatestRunTechnical('i1')).toMatchObject({
+      execution_plan_hash: 'new-plan',
+      state: 'applied_unverified',
+    })
+    expect(JSON.parse(repository.getLatestRunUserActions('i1')!.prepared_plan_json))
+      .toMatchObject({ activityGenerationToken: 'new-generation' })
+    db.close()
+  })
+
+  it('binds and removes every covered component through one aggregate Artifact mutation', () => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    const aggregate: PlannedMutation = {
+      operationId: 'aggregate-create',
+      componentKey: 'memory_tools',
+      coveredComponentKeys: ['memory_tools', 'lifecycle'],
+      operation: 'create',
+      domainKind: 'file_fragment',
+      physicalTarget: TARGET,
+      ownershipKey: 'tidemind.aggregate',
+      selectorSchemaVersion: 1,
+      risk: 'low',
+      reload: 'new_session',
+      desiredFragmentHash: 'aggregate-desired',
+      idempotent: true,
+    }
+
+    prepare(bridge, 'i1', 'run-aggregate-create', aggregate)
+    const consumers = db.prepare(`
+      SELECT component_key, artifact_id, state
+      FROM artifact_consumers ORDER BY component_key
+    `).all()
+    expect(consumers).toEqual([
+      { component_key: 'lifecycle', artifact_id: expect.any(String), state: 'active' },
+      { component_key: 'memory_tools', artifact_id: expect.any(String), state: 'active' },
+    ])
+    expect(new Set(consumers.map(row => (row as { artifact_id: string }).artifact_id)).size).toBe(1)
+    commitRun(db, bridge, 'run-aggregate-create')
+
+    const removal: PlannedMutation = {
+      ...aggregate,
+      operationId: 'aggregate-remove',
+      operation: 'remove',
+      preconditionHash: 'aggregate-desired',
+      desiredFragmentHash: undefined,
+    }
+    const disconnect = prepare(bridge, 'i1', 'run-aggregate-remove', removal, 'disconnect')
+    expect(disconnect.mutations).toHaveLength(1)
+    expect(db.prepare(`
+      SELECT component_key, state FROM artifact_consumers ORDER BY component_key
+    `).all()).toEqual([
+      { component_key: 'lifecycle', state: 'removal_pending' },
+      { component_key: 'memory_tools', state: 'removal_pending' },
+    ])
+    commitRun(db, bridge, 'run-aggregate-remove')
+    expect(db.prepare(`
+      SELECT component_key, state FROM artifact_consumers ORDER BY component_key
+    `).all()).toEqual([
+      { component_key: 'lifecycle', state: 'removed' },
+      { component_key: 'memory_tools', state: 'removed' },
+    ])
+  })
+
   it('commits the reconcile run and exact apply-task binding in one immediate transaction', () => {
     const { db, repository, bridge } = setup()
     discover(repository, 'i1')
@@ -479,10 +750,99 @@ describe('SqliteCoordinatorRepository', () => {
 
     expect(run.runId).toBe('run-1')
     expect(run.desiredCapability).toBe(3)
+    expect(run.activationEpoch).toBe(T0)
     expect(run.preparedPlan.adapterPlan.adapterVersion).toBe('7')
     expect(run.preparedPlan.adapterPlan.projectionVersion).toBe('9')
     expect(run.mutations[0].plannedMutation).toEqual(mutation())
     expect(run.mutations[0].journal.desiredFingerprint).toBe('desired')
+  })
+
+  // Each corruption case owns its fixture and default timeout. `setup()` builds the
+  // complete application schema, so folding this matrix into one test makes its
+  // timeout depend on aggregate schema-initialization speed rather than recovery.
+  it.each([
+    'missing_top', 'unknown_top', 'missing_additional', 'unknown_additional',
+    'adapter_missing_top', 'adapter_unknown_top', 'unknown_risk', 'unknown_action',
+    'unknown_command_category', 'unknown_plan_operation', 'unknown_plan_component',
+    'unknown_outer_operation', 'unknown_outer_component', 'adapter_unknown_operation',
+    'adapter_unknown_component', 'adapter_unknown_risk', 'adapter_unknown_reload',
+    'adapter_unknown_command_category', 'row_unknown_risk', 'row_unknown_operation',
+    'row_operation_projection_changed', 'row_unknown_recovery_strategy', 'row_plan_hash_changed',
+    'row_mutation_domain_changed', 'row_unknown_idempotency_strategy', 'row_idempotency_projection_changed',
+  ] as const)('quarantines a persisted recovery plan with malformed runtime data: %s', (mode) => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    prepare(bridge, 'i1', `run-${mode}`)
+    const row = db.prepare(`SELECT prepared_plan_json FROM reconcile_runs WHERE id = ?`)
+      .get(`run-${mode}`) as { prepared_plan_json: string }
+    const prepared = JSON.parse(row.prepared_plan_json) as any
+    const mutation = prepared.executionPlan.mutations[0]
+    if (mode === 'missing_top') delete mutation.domainKind
+    if (mode === 'unknown_top') mutation.domainKind = 'forged_domain'
+    if (mode === 'adapter_missing_top') delete prepared.adapterPlan.mutations[0].domainKind
+    if (mode === 'adapter_unknown_top') prepared.adapterPlan.mutations[0].domainKind = 'forged_domain'
+    if (mode === 'unknown_risk') mutation.risk = 'future_risk'
+    if (mode === 'unknown_action') mutation.action = 'future_action'
+    if (mode === 'unknown_command_category') mutation.commandCategory = 'future_command'
+    if (mode === 'unknown_plan_operation') prepared.executionPlan.operation = 'future_operation'
+    if (mode === 'unknown_plan_component') prepared.executionPlan.componentKeys = ['future_component']
+    if (mode === 'unknown_outer_operation') prepared.operation = 'future_operation'
+    if (mode === 'unknown_outer_component') prepared.componentKeys = ['future_component']
+    if (mode === 'adapter_unknown_operation') prepared.adapterPlan.mutations[0].operation = 'future_operation'
+    if (mode === 'adapter_unknown_component') prepared.adapterPlan.mutations[0].componentKey = 'future_component'
+    if (mode === 'adapter_unknown_risk') prepared.adapterPlan.mutations[0].risk = 'future_risk'
+    if (mode === 'adapter_unknown_reload') prepared.adapterPlan.mutations[0].reload = 'future_reload'
+    if (mode === 'adapter_unknown_command_category') {
+      prepared.adapterPlan.mutations[0].commandCategory = 'future_command'
+    }
+    if (mode === 'missing_additional' || mode === 'unknown_additional') {
+      mutation.additionalFenceTargets = [{
+        targetPath: '/tmp/tidemind-bridge/source.json',
+        ...(mode === 'unknown_additional' ? { domainKind: 'forged_domain' } : {}),
+      }]
+    }
+    db.prepare(`UPDATE reconcile_runs SET prepared_plan_json = ? WHERE id = ?`)
+      .run(JSON.stringify(prepared), `run-${mode}`)
+    if (mode === 'row_unknown_risk') {
+      const mutationRow = db.prepare(`SELECT id, planned_mutation_json FROM projection_mutations WHERE run_id = ?`)
+        .get(`run-${mode}`) as { id: string; planned_mutation_json: string }
+      const persistedMutation = JSON.parse(mutationRow.planned_mutation_json) as any
+      persistedMutation.risk = 'future_risk'
+      db.prepare(`UPDATE projection_mutations SET planned_mutation_json = ? WHERE id = ?`)
+        .run(JSON.stringify(persistedMutation), mutationRow.id)
+    }
+    if (mode === 'row_unknown_operation') {
+      db.prepare(`UPDATE reconcile_runs SET operation_type = 'future_operation' WHERE id = ?`)
+        .run(`run-${mode}`)
+    }
+    if (mode === 'row_operation_projection_changed') {
+      db.prepare(`UPDATE reconcile_runs SET operation_type = 'disconnect' WHERE id = ?`)
+        .run(`run-${mode}`)
+    }
+    if (mode === 'row_unknown_recovery_strategy') {
+      db.prepare(`UPDATE reconcile_runs SET recovery_strategy = 'future_strategy' WHERE id = ?`)
+        .run(`run-${mode}`)
+    }
+    if (mode === 'row_plan_hash_changed') {
+      db.prepare(`UPDATE reconcile_runs SET execution_plan_hash = 'forged' WHERE id = ?`)
+        .run(`run-${mode}`)
+    }
+    if (mode === 'row_mutation_domain_changed') {
+      db.prepare(`UPDATE projection_mutations SET mutation_domain = 'forged-domain' WHERE run_id = ?`)
+        .run(`run-${mode}`)
+    }
+    if (mode === 'row_unknown_idempotency_strategy') {
+      db.prepare(`UPDATE projection_mutations SET idempotency_strategy = 'future_strategy' WHERE run_id = ?`)
+        .run(`run-${mode}`)
+    }
+    if (mode === 'row_idempotency_projection_changed') {
+      db.prepare(`UPDATE projection_mutations SET idempotency_strategy = 'never_replay' WHERE run_id = ?`)
+        .run(`run-${mode}`)
+    }
+
+    expect(bridge.listRecoverableExecutions()).toEqual([])
+    expect(db.prepare(`SELECT state, failure_code FROM reconcile_runs WHERE id = ?`)
+      .get(`run-${mode}`)).toEqual({ state: 'needs_recovery', failure_code: 'journal_decode_failed' })
   })
 
   it('requires applied-unverified then verified before a run can commit', () => {
@@ -492,7 +852,7 @@ describe('SqliteCoordinatorRepository', () => {
 
     expect(() => bridge.setRunState('run-state-cas', 'verified', T0))
       .toThrow(/invalid reconcile run transition/)
-    db.prepare(`UPDATE projection_mutations SET state = 'committed' WHERE run_id = 'run-state-cas'`).run()
+    markMutationsCommitted(db, 'run-state-cas')
     markApplied(bridge, 'run-state-cas')
     expect(() => bridge.setRunState('run-state-cas', 'committed', T0))
       .toThrow(/invalid reconcile run transition/)
@@ -513,12 +873,9 @@ describe('SqliteCoordinatorRepository', () => {
     const { db, repository, bridge } = setup()
     discover(repository, 'i1')
     prepare(bridge, 'i1', 'run-verified')
-    db.prepare(`UPDATE projection_mutations SET state = 'committed' WHERE run_id = 'run-verified'`).run()
+    markMutationsCommitted(db, 'run-verified')
     markApplied(bridge, 'run-verified')
     bridge.setRunState('run-verified', 'verified', T0)
-    db.prepare(`
-      UPDATE reconcile_runs SET prepared_plan_json = 'not-json' WHERE id = 'run-verified'
-    `).run()
     db.prepare(`UPDATE agent_installations SET agent_id = NULL WHERE id = 'i1'`).run()
 
     expect(bridge.listRecoverableExecutions()).toHaveLength(1)
@@ -529,12 +886,120 @@ describe('SqliteCoordinatorRepository', () => {
     })
   })
 
+  it('atomically cancels a verified finalizer when its persisted envelope changes after enumeration', () => {
+    for (const field of ['recovery', 'hash', 'domain', 'idempotency'] as const) {
+      const { db, repository, bridge } = setup()
+      discover(repository, 'i1')
+      prepare(bridge, 'i1', `run-verified-${field}`)
+      markMutationsCommitted(db, `run-verified-${field}`)
+      markApplied(bridge, `run-verified-${field}`)
+      recordRunVerification(db, bridge, `run-verified-${field}`)
+      bridge.setRunState(`run-verified-${field}`, 'verified', T0)
+      expect(bridge.listRecoverableExecutions()).toHaveLength(1)
+
+      if (field === 'recovery') {
+        db.prepare(`UPDATE reconcile_runs SET recovery_strategy = 'future_strategy' WHERE id = ?`)
+          .run(`run-verified-${field}`)
+      } else if (field === 'hash') {
+        db.prepare(`UPDATE reconcile_runs SET execution_plan_hash = 'forged' WHERE id = ?`)
+          .run(`run-verified-${field}`)
+      } else if (field === 'domain') {
+        db.prepare(`UPDATE projection_mutations SET mutation_domain = 'forged-domain' WHERE run_id = ?`)
+          .run(`run-verified-${field}`)
+      } else {
+        db.prepare(`UPDATE projection_mutations SET idempotency_strategy = 'never_replay' WHERE run_id = ?`)
+          .run(`run-verified-${field}`)
+      }
+
+      expect(() => bridge.setRunState(`run-verified-${field}`, 'committed', T0))
+        .toThrow(/recovery_envelope_invalid/)
+      expect(db.prepare(`SELECT state, failure_code FROM reconcile_runs WHERE id = ?`)
+        .get(`run-verified-${field}`)).toEqual({ state: 'cancelled', failure_code: 'journal_decode_failed' })
+    }
+  })
+
+  it('finalizes a verified mutation with the complete canonical multi-domain writer fence snapshot', () => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    const secondaryTarget = '/tmp/tidemind-bridge/source.json'
+    const scopes = JSON.stringify([TARGET, secondaryTarget])
+    db.prepare(`
+      UPDATE agent_consents
+      SET allowed_scopes_json = ?, normalized_targets_json = ?
+      WHERE id = 'consent-i1'
+    `).run(scopes, scopes)
+    const planned: PlannedMutation = {
+      ...mutation(),
+      additionalFenceTargets: [{ domainKind: 'file_fragment', physicalTarget: secondaryTarget }],
+    }
+
+    prepare(bridge, 'i1', 'run-verified-multi-domain', planned)
+    const snapshot = JSON.parse((db.prepare(`
+      SELECT writer_fence_snapshot_json FROM reconcile_runs WHERE id = 'run-verified-multi-domain'
+    `).get() as { writer_fence_snapshot_json: string }).writer_fence_snapshot_json) as {
+      mutationDomains: string[]
+    }
+    expect(snapshot.mutationDomains).toHaveLength(2)
+    expect(snapshot.mutationDomains).toEqual([...snapshot.mutationDomains].sort())
+    expect(snapshot.mutationDomains).toContain(DOMAIN)
+
+    expect(() => commitRun(db, bridge, 'run-verified-multi-domain')).not.toThrow()
+    expect(db.prepare(`SELECT state FROM reconcile_runs WHERE id = 'run-verified-multi-domain'`).get())
+      .toEqual({ state: 'committed' })
+  })
+
+  it.each([
+    ['mutation Installation', `PRAGMA foreign_keys = OFF; UPDATE projection_mutations SET installation_id = 'forged'`],
+    ['mutation component', `UPDATE projection_mutations SET component_key = 'instruction'`],
+    ['mutation Artifact', `UPDATE projection_mutations SET artifact_id = NULL`],
+    ['mutation target', `UPDATE projection_mutations SET target = '/tmp/forged-target'`],
+    ['Artifact target', `UPDATE managed_artifacts SET target_path = '/tmp/forged-target'`],
+    ['Artifact ownership', `UPDATE managed_artifacts SET ownership_key = 'forged.owner'`],
+    ['Artifact domain', `UPDATE managed_artifacts SET mutation_domain = 'forged-domain'`],
+    ['Artifact desired hash', `UPDATE managed_artifacts SET desired_fragment_hash = 'forged'`],
+    ['Artifact owned hash', `UPDATE managed_artifacts SET owned_fragment_hash = 'forged'`],
+    ['Artifact observed hash', `UPDATE managed_artifacts SET observed_fragment_hash = 'forged'`],
+    ['Artifact state', `UPDATE managed_artifacts SET state = 'needs_recovery'`],
+    ['component binding', `UPDATE installation_components SET artifact_id = NULL`],
+    ['consumer binding', `UPDATE artifact_consumers SET desired_state = 'disabled'`],
+    ['missing fence domain', `UPDATE reconcile_runs SET writer_fence_snapshot_json = '{"mutationDomains":[]}'`],
+    ['duplicate fence domain', `UPDATE reconcile_runs SET writer_fence_snapshot_json = (
+      SELECT json_object('mutationDomains', json_array(mutation_domain, mutation_domain))
+      FROM projection_mutations LIMIT 1
+    )`],
+    ['extra fence domain', `UPDATE reconcile_runs SET writer_fence_snapshot_json = (
+      SELECT json_object('mutationDomains', json_array(mutation_domain, 'forged-domain'))
+      FROM projection_mutations LIMIT 1
+    )`],
+  ] as const)(
+    'atomically cancels a verified finalizer when its %s changes after enumeration',
+    (_label, corruption) => {
+      const { db, repository, bridge } = setup()
+      discover(repository, 'i1')
+      prepare(bridge, 'i1', 'run-verified-binding-race')
+      markMutationsCommitted(db, 'run-verified-binding-race')
+      markApplied(bridge, 'run-verified-binding-race')
+      recordRunVerification(db, bridge, 'run-verified-binding-race')
+      bridge.setRunState('run-verified-binding-race', 'verified', T0)
+      expect(bridge.listRecoverableExecutions()).toHaveLength(1)
+
+      db.pragma('foreign_keys = OFF')
+      db.exec(corruption)
+      db.pragma('foreign_keys = ON')
+
+      expect(() => bridge.setRunState('run-verified-binding-race', 'committed', T0))
+        .toThrow(/recovery_envelope_invalid/)
+      expect(db.prepare(`SELECT state, failure_code FROM reconcile_runs`).get())
+        .toEqual({ state: 'cancelled', failure_code: 'journal_decode_failed' })
+    },
+  )
+
   it('blocks only the exact verified finalizer token and Installation in one transaction', () => {
     const { db, repository, bridge } = setup()
     discover(repository, 'i1')
     discover(repository, 'i2')
     prepare(bridge, 'i1', 'run-verified-trust')
-    db.prepare(`UPDATE projection_mutations SET state = 'committed' WHERE run_id = 'run-verified-trust'`).run()
+    markMutationsCommitted(db, 'run-verified-trust')
     markApplied(bridge, 'run-verified-trust')
     recordRunVerification(db, bridge, 'run-verified-trust')
     bridge.setRunState('run-verified-trust', 'verified', T0)
@@ -869,6 +1334,41 @@ describe('SqliteCoordinatorRepository', () => {
     ])
   })
 
+  it('refreshes causal activity evidence without accepting stale evidence or changed Adapter bindings', () => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    prepare(bridge, 'i1', 'run-activity-refresh')
+    markApplied(bridge, 'run-activity-refresh')
+    const execution = bridge.listRecoverableExecutions()[0]!
+    if (execution.runState === 'verified') throw new Error('expected mutable execution')
+    const input = {
+      runId: execution.runId, installation: execution.installation,
+      adapterVersion: '7', catalogVersion: '3', projectionVersion: '9', expectedHostVersion: null,
+      verifiedAt: T0,
+      result: {
+        componentKey: 'memory_tools' as const, status: 'verified' as const, verifiedCapability: 2 as const,
+        identityAssertion: 'agent-i1', invalidationKeys: ['activity_freshness'], diagnostics: [],
+        evidenceRef: 'host-activity:first', evidenceHash: 'first', expiresAt: '2026-09-24T00:00:00.000Z',
+      },
+    }
+    bridge.recordVerification(input)
+    const refreshed = {
+      ...input, verifiedAt: '2026-08-25T00:01:00.000Z',
+      result: { ...input.result, evidenceRef: 'host-activity:second', evidenceHash: 'second', expiresAt: '2026-09-24T00:01:00.000Z' },
+    }
+    expect(() => bridge.recordVerification({ ...refreshed, adapterVersion: '8' })).toThrow(/evidence changed/)
+    expect(() => bridge.recordVerification({
+      ...refreshed, result: { ...refreshed.result, expiresAt: '2026-09-23T00:00:00.000Z' },
+    })).toThrow(/evidence changed/)
+    expect(() => bridge.recordVerification(refreshed)).not.toThrow()
+    expect(db.prepare(`SELECT run_id, evidence_ref, invalidation_reason FROM verification_results ORDER BY rowid`).all())
+      .toEqual([
+        { run_id: null, evidence_ref: 'host-activity:first', invalidation_reason: 'verification_retry_superseded' },
+        { run_id: execution.runId, evidence_ref: 'host-activity:second', invalidation_reason: null },
+      ])
+    db.close()
+  })
+
   it('supersedes failed evidence when the same recovery run later verifies', () => {
     const { db, repository, bridge } = setup()
     discover(repository, 'i1')
@@ -913,12 +1413,98 @@ describe('SqliteCoordinatorRepository', () => {
     ])
   })
 
+  it('does not let recovery without the physical fence invalidate an active mutation journal', async () => {
+    const lockDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'tidemind-active-recovery-'))
+    const { db, repository, bridge } = setup(lockDirectory)
+    discover(repository, 'i1')
+    const execution = prepare(bridge, 'i1', 'run-active-recovery')
+    let latest = execution.mutations[0].journal
+    const lease = bridge.acquireWriterFence(DOMAIN)
+    if (!lease) throw new Error('fixture could not acquire writer fence')
+    let enterEffect!: () => void
+    let releaseEffect!: () => void
+    const entered = new Promise<void>(resolve => { enterEffect = resolve })
+    const release = new Promise<void>(resolve => { releaseEffect = resolve })
+    const journal = {
+      save: (record: MutationJournalRecord) => {
+        latest = bridge.saveMutation('run-active-recovery', record)
+        return latest
+      },
+    }
+    const active = executeMutation(latest, {
+      journal,
+      fence: lease,
+      effect: {
+        apply: async () => { enterEffect(); await release },
+        readBack: () => 'desired',
+        receipt: () => ({ applied: true }),
+      },
+    })
+    // Attach a rejection handler before releasing the deterministic barrier.
+    const activeResult = active.then(value => ({ value }), error => ({ error }))
+    try {
+      await entered
+      expect(latest.state).toBe('effect_started')
+      await recoverMutation({ ...latest }, {
+        journal,
+        fence: {
+          assertOwned: () => {
+            const recoveryLease = bridge.acquireWriterFence(DOMAIN)
+            if (!recoveryLease) throw new WriterFenceUnavailableError('writer fence unavailable')
+            recoveryLease.release()
+            throw new Error('recovery unexpectedly acquired active physical fence')
+          },
+        },
+        effect: {
+          apply: () => { throw new Error('recovery must not apply') },
+          readBack: () => { throw new Error('recovery must not read without fence') },
+          receipt: () => null,
+        },
+      })
+      releaseEffect()
+      const result = await activeResult
+      expect(result).toMatchObject({ value: { state: 'committed' } })
+      expect(latest).toMatchObject({ state: 'committed', failureCode: null })
+    } finally {
+      releaseEffect()
+      await activeResult
+      lease.release()
+      db.close()
+      fs.rmSync(lockDirectory, { recursive: true, force: true })
+    }
+  })
+
+  it('serializes execution across independent repositories and lists candidates without decoding writes', () => {
+    const lockDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'tidemind-run-fence-'))
+    const first = setup(lockDirectory)
+    const second = setup(lockDirectory)
+    const lease = first.bridge.acquireExecutionFence('same-run')!
+    try {
+      expect(second.bridge.acquireExecutionFence('same-run')).toBeNull()
+      discover(first.repository, 'i1')
+      prepare(first.bridge, 'i1', 'same-run')
+      first.db.prepare(`UPDATE reconcile_runs SET prepared_plan_json = '{}' WHERE id = 'same-run'`).run()
+      const before = first.db.prepare(`SELECT * FROM reconcile_runs WHERE id = 'same-run'`).get()
+      expect(first.bridge.listRecoverableRunIds()).toEqual(['same-run'])
+      expect(first.db.prepare(`SELECT * FROM reconcile_runs WHERE id = 'same-run'`).get()).toEqual(before)
+      lease.release()
+      const next = second.bridge.acquireExecutionFence('same-run')!
+      expect(next).not.toBeNull()
+      next.release()
+    } finally {
+      lease.release()
+      first.db.close()
+      second.db.close()
+      fs.rmSync(lockDirectory, { recursive: true, force: true })
+    }
+  })
+
   it('keeps mutation terminal states monotonic under a stale duplicate recovery', () => {
     const { db, repository, bridge } = setup()
     discover(repository, 'i1')
     const execution = prepare(bridge, 'i1', 'run-terminal')
     const stale = execution.mutations[0].journal
-    db.prepare(`UPDATE projection_mutations SET state = 'committed' WHERE id = ?`).run(stale.id)
+    markMutationsCommitted(db, 'run-terminal')
 
     expect(() => bridge.saveMutation('run-terminal', {
       ...stale, state: 'effect_observed', updatedAt: '2026-08-25T00:01:00.000Z',
@@ -1000,7 +1586,7 @@ describe('SqliteCoordinatorRepository', () => {
     const { db, repository, bridge } = setup()
     discover(repository, 'i1')
     prepare(bridge, 'i1', 'run-stale-finalizer')
-    db.prepare(`UPDATE projection_mutations SET state = 'committed' WHERE run_id = 'run-stale-finalizer'`).run()
+    markMutationsCommitted(db, 'run-stale-finalizer')
     markApplied(bridge, 'run-stale-finalizer')
     recordRunVerification(db, bridge, 'run-stale-finalizer')
     bridge.setRunState('run-stale-finalizer', 'verified', T0)
@@ -1161,6 +1747,326 @@ describe('SqliteCoordinatorRepository', () => {
     `).get()).toEqual({ desired_state: 'managed' })
     expect(db.prepare(`SELECT state FROM managed_artifacts WHERE id = 'legacy-mcp'`).get())
       .toEqual({ state: 'healthy' })
+  })
+
+  it('transfers an exact selector Ledger binding and retires the source only after commit', () => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    const sourceHash = 'a'.repeat(64)
+    const desiredHash = 'b'.repeat(64)
+    db.prepare(`
+      UPDATE agent_consents
+      SET selector_schema_version = '2', selector_resolution_json = ?
+      WHERE id = 'consent-i1'
+    `).run(JSON.stringify({ 'cursor-desktop:memory_tools:mcp.tidemind': 'mcp.tidemind' }))
+    repository.createManagedArtifact({
+      id: 'legacy-selector', componentType: 'mcp', targetPath: TARGET,
+      ownershipKey: 'mcp.servers.tidemind', mutationDomain: DOMAIN,
+      projectionVersion: '9', selectorSchemaVersion: '1', ownedFragmentHash: sourceHash,
+      desiredFragmentHash: sourceHash, observedFragmentHash: sourceHash,
+    }, T0)
+    repository.upsertComponent({
+      installationId: 'i1', componentKey: 'memory_tools', desiredState: 'unmanaged',
+      desiredCapability: 0, deliveryMode: 'managed', verificationStatus: 'stale',
+      artifactId: 'legacy-selector', visibilityState: 'dedicated',
+    }, T0)
+    repository.addArtifactConsumer({
+      artifactId: 'legacy-selector', installationId: 'i1', componentKey: 'memory_tools',
+      requiredCapability: 0, discoverReachability: 'dedicated', consentEnvelopeId: 'consent-i1',
+      ownershipFingerprint: sourceHash, addedAt: T0,
+    })
+    const transfer: PlannedMutation = {
+      operationId: 'migrate-selector', componentKey: 'memory_tools', operation: 'create',
+      domainKind: 'file_fragment', physicalTarget: TARGET, ownershipKey: 'mcp.tidemind',
+      selectorSchemaVersion: 2,
+      ownershipTransferFrom: {
+        physicalTarget: TARGET, ownershipKey: 'mcp.servers.tidemind',
+        ownedFragmentHash: sourceHash, selectorSchemaVersion: 1,
+      },
+      risk: 'low', reload: 'new_session', preconditionHash: sourceHash,
+      desiredFragmentHash: desiredHash, idempotent: true,
+    }
+
+    prepare(bridge, 'i1', 'run-selector-transfer', transfer, 'repair')
+    const newArtifact = db.prepare(`
+      SELECT artifact_id AS id FROM installation_components
+      WHERE installation_id = 'i1' AND component_key = 'memory_tools'
+    `).get() as { id: string }
+    expect(newArtifact.id).not.toBe('legacy-selector')
+    expect(db.prepare(`
+      SELECT state, desired_state, tombstone_reason FROM artifact_consumers
+      WHERE artifact_id = 'legacy-selector' AND installation_id = 'i1'
+    `).get()).toEqual({
+      state: 'removal_pending', desired_state: 'removal_pending',
+      tombstone_reason: 'ownership_selector_migrated',
+    })
+    expect(db.prepare(`SELECT state FROM managed_artifacts WHERE id = 'legacy-selector'`).get())
+      .toEqual({ state: 'removal_pending' })
+    expect(bridge.listRecoverableExecutions()[0].mutations[0].plannedMutation.ownershipTransferFrom)
+      .toEqual(transfer.ownershipTransferFrom)
+
+    commitRun(db, bridge, 'run-selector-transfer')
+    expect(db.prepare(`
+      SELECT state, desired_state FROM artifact_consumers
+      WHERE artifact_id = 'legacy-selector' AND installation_id = 'i1'
+    `).get()).toEqual({ state: 'removed', desired_state: 'removed' })
+    expect(db.prepare(`
+      SELECT state, owned_fragment_hash, observed_fragment_hash
+      FROM managed_artifacts WHERE id = 'legacy-selector'
+    `).get()).toEqual({ state: 'removed', owned_fragment_hash: null, observed_fragment_hash: null })
+    expect(db.prepare(`
+      SELECT state, owned_fragment_hash FROM managed_artifacts WHERE id = ?
+    `).get(newArtifact.id)).toEqual({ state: 'healthy', owned_fragment_hash: desiredHash })
+  })
+
+  it('retires only an exact read-backed transfer when an immediate disconnect supersedes verification', () => {
+    for (const exact of [true, false]) {
+      const { db, repository, bridge } = setup()
+      discover(repository, 'i1')
+      const sourceHash = 'a'.repeat(64)
+      const desiredHash = 'b'.repeat(64)
+      db.prepare(`UPDATE agent_consents SET selector_schema_version = '2', selector_resolution_json = ?
+        WHERE id = 'consent-i1'`).run(JSON.stringify({
+        'cursor-desktop:memory_tools:mcp.tidemind': 'mcp.tidemind',
+      }))
+      repository.createManagedArtifact({
+        id: 'legacy-selector', componentType: 'mcp', targetPath: TARGET,
+        ownershipKey: 'mcp.servers.tidemind', mutationDomain: DOMAIN,
+        projectionVersion: '9', selectorSchemaVersion: '1', ownedFragmentHash: sourceHash,
+        desiredFragmentHash: sourceHash, observedFragmentHash: sourceHash,
+      }, T0)
+      repository.upsertComponent({
+        installationId: 'i1', componentKey: 'memory_tools', desiredState: 'unmanaged',
+        desiredCapability: 0, deliveryMode: 'managed', verificationStatus: 'stale',
+        artifactId: 'legacy-selector', visibilityState: 'dedicated',
+      }, T0)
+      repository.addArtifactConsumer({
+        artifactId: 'legacy-selector', installationId: 'i1', componentKey: 'memory_tools',
+        requiredCapability: 0, discoverReachability: 'dedicated', consentEnvelopeId: 'consent-i1',
+        ownershipFingerprint: sourceHash, addedAt: T0,
+      })
+      const transfer: PlannedMutation = {
+        operationId: 'migrate-selector', componentKey: 'memory_tools', operation: 'create',
+        domainKind: 'file_fragment', physicalTarget: TARGET, ownershipKey: 'mcp.tidemind',
+        selectorSchemaVersion: 2,
+        ownershipTransferFrom: {
+          physicalTarget: TARGET, ownershipKey: 'mcp.servers.tidemind',
+          ownedFragmentHash: sourceHash, selectorSchemaVersion: 1,
+        },
+        risk: 'low', reload: 'new_session', preconditionHash: sourceHash,
+        desiredFragmentHash: desiredHash, idempotent: true,
+      }
+      const execution = prepare(bridge, 'i1', 'run-transfer-pending', transfer, 'repair')
+      commitMutation(bridge, 'run-transfer-pending', execution.mutations[0].journal)
+      markApplied(bridge, 'run-transfer-pending')
+      if (!exact) {
+        db.prepare(`UPDATE managed_artifacts SET observed_fragment_hash = 'drifted'
+          WHERE ownership_key = 'mcp.tidemind'`).run()
+      }
+      const remove: PlannedMutation = {
+        operationId: 'remove-new-selector', componentKey: 'memory_tools', operation: 'remove',
+        domainKind: 'file_fragment', physicalTarget: TARGET, ownershipKey: 'mcp.tidemind',
+        selectorSchemaVersion: 2, risk: 'low', reload: 'new_session',
+        preconditionHash: desiredHash, desiredFragmentHash: undefined, idempotent: true,
+      }
+      prepare(bridge, 'i1', 'run-immediate-disconnect', remove, 'disconnect')
+      expect(db.prepare(`SELECT state, failure_code FROM reconcile_runs WHERE id = 'run-transfer-pending'`).get())
+        .toEqual(exact
+          ? { state: 'cancelled', failure_code: 'superseded_by_disconnect' }
+          : { state: 'needs_recovery', failure_code: 'superseded_disconnect_takeover_unproven' })
+      expect(db.prepare(`SELECT state, owned_fragment_hash FROM managed_artifacts
+        WHERE id = 'legacy-selector'`).get()).toEqual(exact
+        ? { state: 'removed', owned_fragment_hash: null }
+        : { state: 'needs_recovery', owned_fragment_hash: sourceHash })
+      db.close()
+    }
+  })
+
+  it('stages one exact singleton source into a three-component plugin aggregate and retires it only after commit', () => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    const sourceHash = 'a'.repeat(64)
+    const desiredHash = 'b'.repeat(64)
+    repository.createManagedArtifact({
+      id: 'legacy-openclaw-mcp', componentType: 'mcp', targetPath: TARGET,
+      ownershipKey: 'mcp.servers.tidemind-agent-i1', mutationDomain: DOMAIN,
+      projectionVersion: '9', selectorSchemaVersion: '1', ownedFragmentHash: sourceHash,
+      desiredFragmentHash: sourceHash, observedFragmentHash: sourceHash,
+    }, T0)
+    repository.upsertComponent({
+      installationId: 'i1', componentKey: 'memory_tools', desiredState: 'unmanaged',
+      desiredCapability: 0, deliveryMode: 'managed', verificationStatus: 'stale',
+      artifactId: 'legacy-openclaw-mcp', visibilityState: 'dedicated',
+    }, T0)
+    repository.addArtifactConsumer({
+      artifactId: 'legacy-openclaw-mcp', installationId: 'i1', componentKey: 'memory_tools',
+      requiredCapability: 0, discoverReachability: 'dedicated', consentEnvelopeId: 'consent-i1',
+      ownershipFingerprint: sourceHash, addedAt: T0,
+    })
+    db.prepare(`
+      UPDATE agent_consents
+      SET selector_resolution_json = ?, executable_realpaths_json = ?,
+          command_categories_json = ?, maximum_risk = 'elevated'
+      WHERE id = 'consent-i1'
+    `).run(
+      JSON.stringify({ 'cursor-desktop:memory_tools:tidemind-agent-i1': 'tidemind-agent-i1' }),
+      JSON.stringify(['/tmp/openclaw']),
+      JSON.stringify(['plugin_install']),
+    )
+    const transfer: PlannedMutation = {
+      operationId: 'migrate-openclaw-plugin', componentKey: 'memory_tools',
+      coveredComponentKeys: ['instruction', 'memory_tools', 'lifecycle'],
+      operation: 'host_command', domainKind: 'plugin_manager',
+      physicalTarget: 'openclaw:user:tidemind-agent-i1', ownershipKey: 'tidemind-agent-i1',
+      selectorSchemaVersion: 1,
+      ownershipTransferFrom: {
+        physicalTarget: TARGET, ownershipKey: 'mcp.servers.tidemind-agent-i1',
+        ownedFragmentHash: sourceHash, selectorSchemaVersion: 1,
+      },
+      frozenCommands: [{ category: 'plugin_install', executableRealpath: '/tmp/openclaw', args: ['plugins', 'install', '/tmp/plugin'] }],
+      risk: 'elevated', reload: 'restart_host', preconditionHash: sourceHash,
+      desiredFragmentHash: desiredHash, idempotent: true,
+      metadata: { artifactType: 'plugin', migrationSummary: '旧 MCP 升级为原生 Plugin' },
+    }
+
+    prepare(bridge, 'i1', 'run-openclaw-transfer', transfer, 'upgrade')
+    const newArtifact = db.prepare(`
+      SELECT artifact_id AS id FROM installation_components
+      WHERE installation_id = 'i1' AND component_key = 'memory_tools'
+    `).get() as { id: string }
+    expect(newArtifact.id).not.toBe('legacy-openclaw-mcp')
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM artifact_consumers
+      WHERE artifact_id = ? AND installation_id = 'i1' AND state = 'active'
+    `).get(newArtifact.id)).toEqual({ count: 3 })
+    expect(db.prepare(`
+      SELECT state, desired_state FROM artifact_consumers
+      WHERE artifact_id = 'legacy-openclaw-mcp' AND installation_id = 'i1'
+    `).get()).toEqual({ state: 'removal_pending', desired_state: 'removal_pending' })
+
+    commitRun(db, bridge, 'run-openclaw-transfer')
+    expect(db.prepare(`
+      SELECT state, desired_state FROM artifact_consumers
+      WHERE artifact_id = 'legacy-openclaw-mcp' AND installation_id = 'i1'
+    `).get()).toEqual({ state: 'removed', desired_state: 'removed' })
+    expect(db.prepare(`SELECT state, owned_fragment_hash FROM managed_artifacts WHERE id = ?`).get(newArtifact.id))
+      .toEqual({ state: 'healthy', owned_fragment_hash: desiredHash })
+    const repairCandidates = bridge.listManagedReconcileCandidates()
+      .filter(candidate => candidate.artifactId === newArtifact.id)
+    expect(repairCandidates).toHaveLength(3)
+    expect(repairCandidates.every(candidate => (
+      JSON.stringify([...candidate.componentKeys].sort())
+        === JSON.stringify(['instruction', 'lifecycle', 'memory_tools'])
+    ))).toBe(true)
+  })
+
+  it('stages one exact MCP source into a two-component JSON aggregate through a file update', () => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    const sourceHash = 'a'.repeat(64)
+    const liveAggregateHash = 'c'.repeat(64)
+    const desiredHash = 'b'.repeat(64)
+    repository.createManagedArtifact({
+      id: 'legacy-zcode-mcp', componentType: 'mcp', targetPath: TARGET,
+      ownershipKey: 'mcp.servers.tidemind-agent-i1', mutationDomain: DOMAIN,
+      projectionVersion: '9', selectorSchemaVersion: '1', ownedFragmentHash: sourceHash,
+      desiredFragmentHash: sourceHash, observedFragmentHash: sourceHash,
+    }, T0)
+    repository.upsertComponent({
+      installationId: 'i1', componentKey: 'memory_tools', desiredState: 'unmanaged',
+      desiredCapability: 0, deliveryMode: 'managed', verificationStatus: 'stale',
+      artifactId: 'legacy-zcode-mcp', visibilityState: 'dedicated',
+    }, T0)
+    repository.addArtifactConsumer({
+      artifactId: 'legacy-zcode-mcp', installationId: 'i1', componentKey: 'memory_tools',
+      requiredCapability: 0, discoverReachability: 'dedicated', consentEnvelopeId: 'consent-i1',
+      ownershipFingerprint: sourceHash, addedAt: T0,
+    })
+    db.prepare(`
+      UPDATE agent_consents
+      SET selector_resolution_json = ?
+      WHERE id = 'consent-i1'
+    `).run(JSON.stringify({
+      'cursor-desktop:memory_tools:tidemind.aggregate.zcode.agent-i1.activation-owned':
+        'tidemind.aggregate.zcode.agent-i1.activation-owned',
+    }))
+    const transfer: PlannedMutation = {
+      operationId: 'migrate-zcode-aggregate', componentKey: 'memory_tools',
+      coveredComponentKeys: ['memory_tools', 'lifecycle'], operation: 'update',
+      domainKind: 'file_fragment', physicalTarget: TARGET,
+      ownershipKey: 'tidemind.aggregate.zcode.agent-i1.activation-owned', selectorSchemaVersion: 1,
+      ownershipTransferFrom: {
+        physicalTarget: TARGET, ownershipKey: 'mcp.servers.tidemind-agent-i1',
+        ownedFragmentHash: sourceHash, selectorSchemaVersion: 1,
+      },
+      risk: 'low', reload: 'new_session', preconditionHash: liveAggregateHash,
+      desiredFragmentHash: desiredHash, idempotent: true,
+    }
+
+    prepare(bridge, 'i1', 'run-zcode-aggregate-transfer', transfer, 'upgrade')
+    const newArtifact = db.prepare(`
+      SELECT artifact_id AS id FROM installation_components
+      WHERE installation_id = 'i1' AND component_key = 'memory_tools'
+    `).get() as { id: string }
+    expect(newArtifact.id).not.toBe('legacy-zcode-mcp')
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM artifact_consumers
+      WHERE artifact_id = ? AND installation_id = 'i1' AND state = 'active'
+    `).get(newArtifact.id)).toEqual({ count: 2 })
+    expect(db.prepare(`
+      SELECT state, desired_state FROM artifact_consumers
+      WHERE artifact_id = 'legacy-zcode-mcp' AND installation_id = 'i1'
+    `).get()).toEqual({ state: 'removal_pending', desired_state: 'removal_pending' })
+
+    commitRun(db, bridge, 'run-zcode-aggregate-transfer')
+    expect(db.prepare(`SELECT state FROM managed_artifacts WHERE id = 'legacy-zcode-mcp'`).get())
+      .toEqual({ state: 'removed' })
+    expect(db.prepare(`SELECT state, owned_fragment_hash FROM managed_artifacts WHERE id = ?`).get(newArtifact.id))
+      .toEqual({ state: 'healthy', owned_fragment_hash: desiredHash })
+  })
+
+  it('rolls back selector-transfer preparation when the source Ledger binding changed', () => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    const sourceHash = 'a'.repeat(64)
+    db.prepare(`
+      UPDATE agent_consents
+      SET selector_schema_version = '2', selector_resolution_json = ?
+      WHERE id = 'consent-i1'
+    `).run(JSON.stringify({ 'cursor-desktop:memory_tools:mcp.tidemind': 'mcp.tidemind' }))
+    repository.createManagedArtifact({
+      id: 'legacy-selector', componentType: 'mcp', targetPath: TARGET,
+      ownershipKey: 'mcp.servers.tidemind', mutationDomain: DOMAIN,
+      projectionVersion: '9', selectorSchemaVersion: '1', ownedFragmentHash: sourceHash,
+      desiredFragmentHash: sourceHash, observedFragmentHash: sourceHash,
+    }, T0)
+    repository.upsertComponent({
+      installationId: 'i1', componentKey: 'memory_tools', desiredState: 'unmanaged',
+      desiredCapability: 0, deliveryMode: 'managed', verificationStatus: 'stale',
+      artifactId: 'legacy-selector', visibilityState: 'dedicated',
+    }, T0)
+    repository.addArtifactConsumer({
+      artifactId: 'legacy-selector', installationId: 'i1', componentKey: 'memory_tools',
+      requiredCapability: 0, discoverReachability: 'dedicated', consentEnvelopeId: 'consent-i1',
+      ownershipFingerprint: sourceHash, addedAt: T0,
+    })
+    const transfer: PlannedMutation = {
+      operationId: 'migrate-selector', componentKey: 'memory_tools', operation: 'create',
+      domainKind: 'file_fragment', physicalTarget: TARGET, ownershipKey: 'mcp.tidemind',
+      selectorSchemaVersion: 2,
+      ownershipTransferFrom: {
+        physicalTarget: TARGET, ownershipKey: 'mcp.servers.tidemind',
+        ownedFragmentHash: 'c'.repeat(64), selectorSchemaVersion: 1,
+      },
+      risk: 'low', reload: 'new_session', desiredFragmentHash: 'b'.repeat(64), idempotent: true,
+    }
+
+    expect(() => prepare(bridge, 'i1', 'run-bad-selector-transfer', transfer, 'repair'))
+      .toThrow(/ownership transfer source changed/)
+    expect(db.prepare(`SELECT id FROM reconcile_runs WHERE id = 'run-bad-selector-transfer'`).get()).toBeUndefined()
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM managed_artifacts`).get()).toEqual({ count: 1 })
+    expect(db.prepare(`SELECT state FROM artifact_consumers WHERE artifact_id = 'legacy-selector'`).get())
+      .toEqual({ state: 'active' })
   })
 
   it('rebinds a moved Installation component before verification and disconnect planning', () => {
@@ -1423,6 +2329,42 @@ describe('SqliteCoordinatorRepository', () => {
       .toEqual({ state: 'removed', owned_fragment_hash: null })
   })
 
+  it.each(['absent', 'dedicated', 'unknown'] as const)('binds shared no-op disconnect health to %s read-back', visibility => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    discover(repository, 'i2')
+    prepare(bridge, 'i1', 'run-1')
+    commitRun(db, bridge, 'run-1')
+    prepare(bridge, 'i2', 'run-2')
+    commitRun(db, bridge, 'run-2')
+    const plan = buildExecutionPlan({
+      installationId: 'i1', installationKey: 'cursor:i1', operation: 'disconnect', componentKeys: ['memory_tools'],
+      inspection: {
+        catalogId: 'cursor-desktop', detected: true, distribution: { distributionId: 'cursor' },
+        components: [{ componentKey: 'memory_tools', visibility, verificationStatus: 'unverified' }],
+        provenance: ['fixture'], diagnostics: [],
+      },
+      adapterPlan: {
+        catalogId: 'cursor-desktop', installationKey: 'cursor:i1', adapterVersion: '7', projectionVersion: '9',
+        mutations: [], requiredUserActions: [], diagnostics: [],
+      },
+      catalogGeneration: 3, adapterGeneration: 7, projectionGeneration: 9, createdAt: T0,
+    })
+    bindSurface(plan, repository, 'i1')
+    const disconnect = () => bridge.prepareExecution({
+      runId: 'disconnect', installationId: 'i1', operation: 'disconnect', planHash: plan.executionPlanHash,
+      consentId: 'consent-i1', preparedPlan: plan, desiredCapability: 0, mutations: [],
+      expectedDesiredState: 'managed', intentAfterPrepare: 'removed', createdAt: T0,
+    })
+    if (visibility === 'unknown') expect(disconnect).toThrow(/requires_known_readback/)
+    else expect(disconnect().mutations).toEqual([])
+    expect(db.prepare(`SELECT state FROM managed_artifacts`).get())
+      .toEqual({ state: visibility === 'absent' ? 'missing' : 'healthy' })
+    expect(db.prepare(`SELECT state FROM artifact_consumers WHERE installation_id = 'i2'`).get())
+      .toEqual({ state: 'active' })
+    db.close()
+  })
+
   it('detaches one shared consumer and only plans physical removal for the last consumer', () => {
     const { db, repository, bridge } = setup()
     discover(repository, 'i1')
@@ -1437,6 +2379,12 @@ describe('SqliteCoordinatorRepository', () => {
       effectDisposition: 'consumer_detach',
       journal: { state: 'committed' },
     })
+    expect(bridge.listRecoverableExecutions()).toEqual([
+      expect.objectContaining({
+        runId: 'run-detach',
+        mutations: [expect.objectContaining({ effectDisposition: 'consumer_detach' })],
+      }),
+    ])
     expect(db.prepare(`SELECT state FROM managed_artifacts`).get()).toEqual({ state: 'healthy' })
     expect(db.prepare(`
       SELECT installation_id, state FROM artifact_consumers ORDER BY installation_id
@@ -1451,6 +2399,12 @@ describe('SqliteCoordinatorRepository', () => {
 
     const last = prepare(bridge, 'i2', 'run-remove', mutation('remove'), 'disconnect')
     expect(last.mutations[0]).toMatchObject({ effectDisposition: 'apply', journal: { state: 'prepared' } })
+    expect(bridge.listRecoverableExecutions()).toEqual([
+      expect.objectContaining({
+        runId: 'run-remove',
+        mutations: [expect.objectContaining({ effectDisposition: 'apply' })],
+      }),
+    ])
     expect(db.prepare(`SELECT state FROM managed_artifacts`).get()).toEqual({ state: 'removal_pending' })
   })
 
@@ -1700,6 +2654,137 @@ describe('SqliteCoordinatorRepository', () => {
       SELECT state FROM artifact_consumers
       WHERE installation_id = 'i1' AND component_key = 'memory_tools'
     `).get()).toEqual({ state: 'active' })
+  })
+
+  it('disconnects a persisted guided component without fabricating an ownership scope', () => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    const connected = prepare(bridge, 'i1', 'run-connect-guided-seed')
+    commitMutation(bridge, 'run-connect-guided-seed', connected.mutations[0].journal)
+    commitRun(db, bridge, 'run-connect-guided-seed')
+    db.prepare(`DELETE FROM artifact_consumers WHERE installation_id = ? AND component_key = ?`)
+      .run('i1', 'memory_tools')
+    db.prepare(`
+      UPDATE installation_components
+      SET artifact_id = NULL, delivery_mode = 'guided'
+      WHERE installation_id = ? AND component_key = ?
+    `).run('i1', 'memory_tools')
+
+    expect(() => prepareGuidedDisconnect(bridge, repository, 'i1', 'run-guided-disconnect', []))
+      .not.toThrow()
+    expect(db.prepare(`
+      SELECT desired_state, delivery_mode, artifact_id
+      FROM installation_components
+      WHERE installation_id = 'i1' AND component_key = 'memory_tools'
+    `).get()).toEqual({ desired_state: 'removed', delivery_mode: 'guided', artifact_id: null })
+  })
+
+  it('stages an exact manual removal as pending without pretending the file is absent', () => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    const connected = prepare(bridge, 'i1', 'run-connect-manual-seed')
+    commitMutation(bridge, 'run-connect-manual-seed', connected.mutations[0].journal)
+    commitRun(db, bridge, 'run-connect-manual-seed')
+
+    expect(() => prepareManualRemovalDisconnect(
+      bridge,
+      repository,
+      'i1',
+      'run-manual-removal',
+    )).not.toThrow()
+    expect(db.prepare(`
+      SELECT state, desired_state FROM artifact_consumers
+      WHERE installation_id = 'i1' AND component_key = 'memory_tools'
+    `).get()).toEqual({ state: 'removal_pending', desired_state: 'removal_pending' })
+    expect(db.prepare(`
+      SELECT state, observed_fragment_hash FROM managed_artifacts
+      WHERE target_path = ? AND ownership_key = ?
+    `).get(TARGET, 'mcpServers.tidemind')).toEqual({
+      state: 'removal_pending',
+      observed_fragment_hash: 'desired',
+    })
+
+    markApplied(bridge, 'run-manual-removal')
+    const restarted = new SqliteCoordinatorRepository(db, repository, {
+      ownerInstanceId: 'bridge-test-restarted',
+      now: () => new Date(T0),
+      id: prefix => `${prefix}-restarted`,
+    })
+    expect(restarted.listRecoverableExecutions()).toEqual([
+      expect.objectContaining({ runId: 'run-manual-removal', runState: 'applied_unverified', mutations: [] }),
+    ])
+    // This models the adapter's exact absent read-back after the user removes
+    // the frozen target. Only then may the durable removal finalize.
+    recordRunVerification(db, restarted, 'run-manual-removal')
+    restarted.setRunState('run-manual-removal', 'verified', T0)
+    restarted.setRunState('run-manual-removal', 'committed', T0)
+    expect(db.prepare(`
+      SELECT state, desired_state FROM artifact_consumers
+      WHERE installation_id = 'i1' AND component_key = 'memory_tools'
+    `).get()).toEqual({ state: 'removed', desired_state: 'removed' })
+    expect(db.prepare(`
+      SELECT state, observed_fragment_hash, owned_fragment_hash FROM managed_artifacts
+      WHERE target_path = ? AND ownership_key = ?
+    `).get(TARGET, 'mcpServers.tidemind')).toEqual({
+      state: 'removed', observed_fragment_hash: null, owned_fragment_hash: null,
+    })
+  })
+
+  it('rejects manual removal when frozen read-back no longer matches the owned ledger', () => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    const connected = prepare(bridge, 'i1', 'run-connect-manual-drift-seed')
+    commitMutation(bridge, 'run-connect-manual-drift-seed', connected.mutations[0].journal)
+    commitRun(db, bridge, 'run-connect-manual-drift-seed')
+
+    expect(() => prepareManualRemovalDisconnect(
+      bridge,
+      repository,
+      'i1',
+      'run-manual-removal-drifted',
+      'wrong-content',
+    )).toThrow(/manual removal read-back changed/)
+    expect(db.prepare(`SELECT id FROM reconcile_runs WHERE id = 'run-manual-removal-drifted'`).get())
+      .toBeUndefined()
+    expect(db.prepare(`
+      SELECT state, desired_state FROM artifact_consumers
+      WHERE installation_id = 'i1' AND component_key = 'memory_tools'
+    `).get()).toEqual({ state: 'active', desired_state: 'managed' })
+  })
+
+  it('rejects renderer-supplied ownership scope for a guided component', () => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    const connected = prepare(bridge, 'i1', 'run-connect-guided-scope-seed')
+    commitMutation(bridge, 'run-connect-guided-scope-seed', connected.mutations[0].journal)
+    commitRun(db, bridge, 'run-connect-guided-scope-seed')
+    db.prepare(`DELETE FROM artifact_consumers WHERE installation_id = ? AND component_key = ?`)
+      .run('i1', 'memory_tools')
+    db.prepare(`
+      UPDATE installation_components
+      SET artifact_id = NULL, delivery_mode = 'guided'
+      WHERE installation_id = ? AND component_key = ?
+    `).run('i1', 'memory_tools')
+
+    expect(() => prepareGuidedDisconnect(bridge, repository, 'i1', 'run-guided-fake-scope', [{
+      componentKey: 'memory_tools',
+      physicalTarget: TARGET,
+      ownershipKey: 'mcpServers.tidemind',
+      consumerKeys: ['i1\0memory_tools'],
+    }])).toThrow(/consumer scope no longer matches/)
+    expect(db.prepare(`SELECT id FROM reconcile_runs WHERE id = 'run-guided-fake-scope'`).get()).toBeUndefined()
+  })
+
+  it('does not let a frozen guided action bypass ownership scope for a managed component', () => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    const connected = prepare(bridge, 'i1', 'run-connect-managed-seed')
+    commitMutation(bridge, 'run-connect-managed-seed', connected.mutations[0].journal)
+    commitRun(db, bridge, 'run-connect-managed-seed')
+
+    expect(() => prepareGuidedDisconnect(bridge, repository, 'i1', 'run-guided-spoof', []))
+      .toThrow(/consumer scope no longer matches/)
+    expect(db.prepare(`SELECT id FROM reconcile_runs WHERE id = 'run-guided-spoof'`).get()).toBeUndefined()
   })
 
   it('does not overwrite a later user pause when an older connect run finalizes', () => {

@@ -1,3 +1,6 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { ConsentEnvelope } from '../../client/electron/agent-integration/consent'
 import {
@@ -11,6 +14,10 @@ import {
   type RecoverableExecution,
 } from '../../client/electron/agent-integration/coordinator'
 import { buildLegacyMutationDomain } from '../../client/electron/agent-integration/legacy-writer'
+import { sha256Json } from '../../client/electron/agent-integration/fingerprint'
+import { canonicalizeInstallationIdentity } from '../../client/electron/agent-integration/identity'
+import { createKimiCodeInstructionHostAdapter } from '../../client/electron/agent-integration/hosts/kimi-code-instruction-adapter'
+import { P0_INSTRUCTION_SPECS } from '../../client/electron/agent-integration/hosts/p0-adapter-registry'
 import type { IntegrationEvent } from '../../client/electron/agent-integration/events'
 import type { MutationJournalRecord } from '../../client/electron/agent-integration/mutation-runner'
 import type {
@@ -81,9 +88,13 @@ class MemoryRepository implements CoordinatorRepositoryPort {
   beforeVerificationBatch: (() => void) | null = null
   afterRunState: ((state: string) => void) | null = null
   verificationHostVersions: Array<string | null> = []
+  fenceDomains: string[] = []
+  hostVersion: string | null = '2.3.4'
+  currentActivityGenerationToken: string | null = null
 
   getInstallationControl() { return this.control }
-  getInstallationHostVersion() { return '2.3.4' }
+  getInstallationHostVersion() { return this.hostVersion }
+  getCurrentActivityGenerationToken() { return this.currentActivityGenerationToken }
   listOwnedArtifactBaselines() { return this.baselines }
   getConsent(id: string) { return this.consent?.id === id ? this.consent : null }
   setInstallationReconcileState(
@@ -138,8 +149,9 @@ class MemoryRepository implements CoordinatorRepositoryPort {
     if (state === 'committed' && this.commitThrows) throw new Error('finalizer unavailable')
     this.afterRunState?.(state)
   }
-  acquireWriterFence() {
+  acquireWriterFence(domain: string) {
     this.calls.push('fence:acquire')
+    this.fenceDomains.push(domain)
     return {
       epoch: 1,
       writerGeneration: 1,
@@ -171,6 +183,14 @@ class MemoryRepository implements CoordinatorRepositoryPort {
     this.calls.push('installation:needs_recovery')
   }
   listRecoverableExecutions() { return this.recoverable }
+  listRecoverableRunIds() { return this.recoverable.map(execution => execution.runId) }
+  getRecoverableExecution(runId: string) { return this.recoverable.find(execution => execution.runId === runId) ?? null }
+  private executionLocks = new Set<string>()
+  acquireExecutionFence(runId: string) {
+    if (this.executionLocks.has(runId)) return null
+    this.executionLocks.add(runId)
+    return { assertOwned: () => {}, release: () => { this.executionLocks.delete(runId) } }
+  }
   recordEvent(event: IntegrationEvent) { this.events.push(event) }
 }
 
@@ -197,6 +217,7 @@ function harness() {
   const hostActivityEvidence = { find: vi.fn(() => []) }
   const apply = vi.fn(async (context, mutation) => {
     expect(context.agentId).toBe('eb-agent-1')
+    expect(context.hostVersion).toBe('2.3.4')
     repository.calls.push('adapter:apply')
     live = mutation.operation === 'remove' ? null : 'desired'
     return { operationId: mutation.operationId, effectObserved: true, postEffectFingerprint: live ?? undefined }
@@ -232,13 +253,15 @@ function harness() {
       }
     }),
     apply,
-    readBack: vi.fn(async () => {
+    readBack: vi.fn(async context => {
+      expect(context.hostVersion).toBe('2.3.4')
       repository.calls.push('adapter:readback')
       return {
         operationId: 'write-mcp',
         observed: live !== null,
         matchesDesired: live === 'desired',
         observedFragmentHash: live ?? undefined,
+        visibility: live === null ? 'absent' : 'dedicated',
         diagnostics: [],
       }
     }),
@@ -268,6 +291,7 @@ function harness() {
     }),
     verify: vi.fn(async (context, request) => {
       expect(context.agentId).toBe('eb-agent-1')
+      expect(context.hostVersion).toBe('2.3.4')
       expect(context.hostActivityEvidence).toBe(hostActivityEvidence)
       expect(request.activityBinding).toMatchObject({
         installationId: installation.id,
@@ -363,6 +387,254 @@ function appliedUnverifiedExecution(
 }
 
 describe('AgentIntegrationCoordinator', () => {
+  it('defers recovery while the ordinary run is applying without rewriting its state', async () => {
+    const test = harness()
+    const plan = await preview(test)
+    let entered!: () => void
+    let release!: () => void
+    const entering = new Promise<void>(resolve => { entered = resolve })
+    const barrier = new Promise<void>(resolve => { release = resolve })
+    const original = test.adapter.apply
+    test.adapter.apply = async (...args) => { entered(); await barrier; return original(...args) }
+    const active = test.coordinator.applyPrepared({ installation, preparedPlan: plan, consentId: consent.id, desiredCapability: 3 })
+    try {
+      await entering
+      const prepared = test.repository.prepared!
+      test.repository.recoverable = [{
+        ...appliedUnverifiedExecution(plan, prepared.runId),
+        runState: 'applying',
+        mutations: prepared.mutations.map(mutation => ({
+          ...mutation, journal: test.repository.mutationRecords.get(mutation.journal.id)!,
+        })),
+      }]
+      const calls = [...test.repository.calls]
+      const journals = [...test.repository.mutationRecords]
+      expect(await test.coordinator.recoverNonTerminalRuns()).toEqual([])
+      expect(test.repository.calls).toEqual(calls)
+      expect([...test.repository.mutationRecords]).toEqual(journals)
+    } finally { release() }
+    expect(await active).toMatchObject({ status: 'committed' })
+  })
+
+  it('reloads a recovery candidate after acquiring its execution fence', async () => {
+    const test = harness()
+    const plan = await preview(test)
+    test.repository.recoverable = [appliedUnverifiedExecution(plan, 'completed-before-acquisition')]
+    const acquire = test.repository.acquireExecutionFence.bind(test.repository)
+    test.repository.acquireExecutionFence = runId => {
+      test.repository.recoverable = []
+      return acquire(runId)
+    }
+    const calls = [...test.repository.calls]
+    expect(await test.coordinator.recoverNonTerminalRuns()).toEqual([])
+    expect(test.repository.calls).toEqual(calls)
+  })
+
+  it('defers physical fence contention before changing recovery run or installation state', async () => {
+    const test = harness()
+    const plan = await preview(test)
+    test.repository.recoverable = [appliedUnverifiedExecution(plan, 'busy-domain')]
+    vi.spyOn(test.repository, 'acquireWriterFence').mockReturnValue(null as never)
+    const calls = [...test.repository.calls]
+    expect(await test.coordinator.recoverNonTerminalRuns()).toEqual([])
+    expect(test.repository.calls).toEqual(calls)
+    expect(test.adapter.verify).not.toHaveBeenCalled()
+  })
+
+  it('reuses a stable loaded generation for no-op previews and rotates only for a real repair mutation', async () => {
+    const test = harness()
+    const managedInstallation = { ...installation, desiredState: 'managed' as const }
+    test.repository.currentActivityGenerationToken = 'operation-loaded-generation'
+    vi.mocked(test.adapter.plan).mockResolvedValueOnce({
+      catalogId: 'cursor-desktop',
+      installationKey: 'cursor:default',
+      adapterVersion: '1.0.0',
+      projectionVersion: '1',
+      mutations: [],
+      requiredUserActions: [],
+      diagnostics: [],
+    })
+    const stable = await test.coordinator.preview({
+      installation: managedInstallation,
+      operation: 'connect',
+      componentKeys: ['memory_tools'],
+      desiredCapability: 3,
+    })
+    expect(stable.activityGenerationToken).toBe('operation-loaded-generation')
+
+    test.repository.baselines = [{
+      componentKey: 'memory_tools',
+      physicalTarget: '/tmp/tidemind/config.json',
+      ownershipKey: 'mcpServers.tidemind',
+      ownedFragmentHash: 'desired',
+      selectorSchemaVersion: 1,
+    }]
+    const originalPlan = vi.mocked(test.adapter.plan).getMockImplementation()!
+    const seenTokens: Array<string | undefined> = []
+    vi.mocked(test.adapter.plan).mockImplementation(async (context, request) => {
+      seenTokens.push(context.activityGenerationToken)
+      const planned = await originalPlan(context, request)
+      return {
+        ...planned,
+        mutations: planned.mutations.map(mutation => ({
+          ...mutation,
+          operation: 'update' as const,
+          preconditionHash: 'desired',
+        })),
+      }
+    })
+    const repaired = await test.coordinator.preview({
+      installation: managedInstallation,
+      operation: 'repair',
+      componentKeys: ['memory_tools'],
+      desiredCapability: 3,
+    })
+    expect(seenTokens).toEqual(['operation-loaded-generation', repaired.activityGenerationToken])
+    expect(repaired.activityGenerationToken).not.toBe('operation-loaded-generation')
+    expect(repaired.executionPlan.activityGenerationTokenHash)
+      .toBe(sha256Json(repaired.activityGenerationToken))
+  })
+
+  it('rotates a committed generation when a guided connector must be installed again', async () => {
+    const test = harness()
+    test.repository.currentActivityGenerationToken = 'operation-old-guided-generation'
+    const seenTokens: string[] = []
+    vi.mocked(test.adapter.plan).mockImplementation(async context => {
+      const token = context.activityGenerationToken!
+      seenTokens.push(token)
+      return {
+        catalogId: 'cursor-desktop',
+        installationKey: 'cursor:default',
+        adapterVersion: '1.0.0',
+        projectionVersion: '1',
+        mutations: [],
+        requiredUserActions: ['qwenwork_mcp_gui_connect_required'],
+        requiredUserActionDetails: [{
+          kind: 'qwenwork_mcp_gui',
+          componentKey: 'memory_tools',
+          operation: 'connect',
+          installationId: installation.id,
+          agentId: installation.agentId,
+          hostVariant: 'qwenwork-desktop',
+          hostVersion: '1.0.3',
+          tideMindVersion: '0.2.92',
+          adapterVersion: '1.0.0',
+          projectionVersion: '1',
+          installationBindingHash: 'binding',
+          connectorName: 'Tide Mind',
+          serverType: 'STDIO',
+          command: '/tmp/tm-node',
+          args: ['/tmp/mcp.cjs'],
+          environment: {
+            EB_AGENT_ID: installation.agentId,
+            EB_HOST_VARIANT: 'qwenwork-desktop',
+            EB_ACTIVITY_GENERATION_TOKEN: token,
+          },
+          configurationJson: JSON.stringify({ token }),
+          connectorConfigurationHash: sha256Json({ token }),
+          steps: ['Install the connector.'],
+          instruction: 'Install the connector.',
+        }],
+        diagnostics: [],
+      }
+    })
+
+    const repaired = await test.coordinator.preview({
+      installation: { ...installation, desiredState: 'managed' },
+      operation: 'repair',
+      componentKeys: ['memory_tools'],
+      desiredCapability: 2,
+    })
+
+    expect(seenTokens).toEqual(['operation-old-guided-generation', repaired.activityGenerationToken])
+    expect(repaired.activityGenerationToken).not.toBe('operation-old-guided-generation')
+    expect(repaired.adapterPlan.requiredUserActionDetails?.[0]).toMatchObject({
+      environment: expect.objectContaining({
+        EB_ACTIVITY_GENERATION_TOKEN: repaired.activityGenerationToken,
+      }),
+    })
+  })
+
+  it('fails closed on Custom MCP capability above C2 at preview, apply and recovery boundaries', async () => {
+    const test = harness()
+    const prepared = await preview(test)
+    const customInstallation: CoordinatorInstallation = {
+      ...installation,
+      id: 'custom-installation',
+      agentId: 'eb-custom-agent',
+      identity: {
+        ...installation.identity,
+        productFamilyId: 'custom-local-agent',
+        hostVariant: 'custom-local-mcp',
+        installKey: 'custom-local:fixture',
+      },
+    }
+
+    await expect(test.coordinator.preview({
+      installation: customInstallation,
+      operation: 'connect',
+      componentKeys: ['memory_tools'],
+      desiredCapability: 3,
+    })).rejects.toThrow('custom_mcp_capability_ceiling_exceeded')
+    await expect(test.coordinator.applyPrepared({
+      installation: customInstallation,
+      preparedPlan: prepared,
+      consentId: consent.id,
+      desiredCapability: 3,
+    })).rejects.toThrow('custom_mcp_capability_ceiling_exceeded')
+
+    test.repository.recoverable = [{
+      ...appliedUnverifiedExecution(prepared, 'run-custom-c3'),
+      installation: { ...customInstallation, desiredState: 'managed' },
+      desiredCapability: 3,
+    }]
+    const [recovery] = await test.coordinator.recoverNonTerminalRuns()
+    expect(recovery).toMatchObject({
+      status: 'needs_recovery',
+      runId: 'run-custom-c3',
+      reason: 'host_capability_ceiling_exceeded',
+    })
+    expect(test.apply).not.toHaveBeenCalled()
+  })
+
+  it('binds the prepared inspection host version into the hashed execution plan', async () => {
+    const test = harness()
+    const plan = await preview(test)
+    expect(plan.inspection.detectedVersion).toBe('2.3.4')
+    expect(plan.executionPlan.hostVersion).toBe('2.3.4')
+
+    const tampered = { ...plan, inspection: { ...plan.inspection, detectedVersion: '9.9.9' } }
+    await expect(test.coordinator.applyPrepared({
+      installation, preparedPlan: tampered, consentId: consent.id, desiredCapability: 3,
+    })).rejects.toThrow(/inspection host version is not bound/)
+  })
+
+  it('rejects an approved plan when the current host version changed after preview', async () => {
+    const test = harness()
+    const plan = await preview(test)
+    test.repository.hostVersion = '9.9.9'
+    const result = await test.coordinator.applyPrepared({
+      installation, preparedPlan: plan, consentId: consent.id, desiredCapability: 3,
+    })
+    expect(result).toMatchObject({ status: 'awaiting_consent', reasons: ['host_version_changed'] })
+    expect(test.repository.prepared).toBeNull()
+    expect(test.apply).not.toHaveBeenCalled()
+  })
+
+  it('rechecks the current host version after precondition read-back before apply', async () => {
+    const test = harness()
+    const plan = await preview(test)
+    vi.mocked(test.adapter.readBack).mockImplementationOnce(async () => {
+      test.repository.hostVersion = '9.9.9'
+      return { operationId: 'write-mcp', observed: false, matchesDesired: false, diagnostics: [] }
+    })
+    const result = await test.coordinator.applyPrepared({
+      installation, preparedPlan: plan, consentId: consent.id, desiredCapability: 3,
+    })
+    expect(result).toMatchObject({ status: 'needs_recovery', reason: 'effect_failed_or_unknown' })
+    expect(test.apply).not.toHaveBeenCalled()
+  })
+
   it('keeps a newly discovered Installation awaiting consent and produces no effect', async () => {
     const test = harness()
     const plan = await preview(test)
@@ -449,7 +721,7 @@ describe('AgentIntegrationCoordinator', () => {
     vi.mocked(test.adapter.readBack).mockImplementationOnce(async () => {
       test.repository.control = { ...test.repository.control, desiredState: 'disabled' }
       return {
-        operationId: 'write-mcp', observed: false, matchesDesired: false, diagnostics: [],
+        operationId: 'write-mcp', observed: false, matchesDesired: false, visibility: 'absent', diagnostics: [],
       }
     })
 
@@ -652,6 +924,86 @@ describe('AgentIntegrationCoordinator', () => {
     expect(test.adapter.readBack).toHaveBeenCalledOnce()
     expect(test.apply).not.toHaveBeenCalled()
     expect(test.repository.calls).not.toContain('effect:claim')
+  })
+
+  it('resumes an exact frozen intermediate only after coordinator authorization and fence reacquisition', async () => {
+    const test = harness()
+    const partialFingerprint = 'b'.repeat(64)
+    const originalPlan = test.adapter.plan
+    test.adapter.plan = vi.fn(async (context, request) => {
+      const base = await originalPlan(context, request)
+      return {
+        ...base,
+        mutations: base.mutations.map(mutation => ({
+          ...mutation,
+          safeResumeStates: [{ fingerprint: partialFingerprint, completedStepIds: ['step-1'] }],
+        })),
+      }
+    })
+    const plan = await preview(test)
+    test.setLive(partialFingerprint)
+    const partialReadBack = {
+      operationId: 'write-mcp',
+      observed: true,
+      matchesDesired: false,
+      observedFragmentHash: partialFingerprint,
+      visibility: 'dedicated',
+      safeToResumeFrom: { fingerprint: partialFingerprint, completedStepIds: ['step-1'] },
+      diagnostics: [],
+    } as const
+    test.adapter.readBack = vi.fn()
+      .mockResolvedValueOnce(partialReadBack)
+      .mockResolvedValueOnce(partialReadBack)
+      .mockResolvedValue({
+        operationId: 'write-mcp',
+        observed: true,
+        matchesDesired: true,
+        observedFragmentHash: 'desired',
+        visibility: 'dedicated',
+        diagnostics: [],
+      })
+    test.repository.control = { ...test.repository.control, desiredState: 'managed', tombstoned: false }
+    test.repository.recoverable = [{
+      runId: 'run-safe-partial',
+      runState: 'applying',
+      installation: { ...installation, desiredState: 'managed' },
+      consentId: consent.id,
+      desiredCapability: 3,
+      preparedPlan: plan,
+      mutations: [{
+        operationId: 'write-mcp',
+        mutationDomain: 'local_macos:file:/tmp/tidemind/config.json:document',
+        plannedMutation: plan.adapterPlan.mutations[0],
+        journal: {
+          id: 'mutation-safe-partial',
+          state: 'effect_started',
+          journalVersion: 1,
+          attemptCount: 1,
+          idempotent: true,
+          beforeFingerprint: null,
+          desiredFingerprint: 'desired',
+          postEffectFingerprint: null,
+          compensationPrecondition: null,
+          receiptJson: null,
+          failureCode: null,
+          failureStage: null,
+          updatedAt: T0.toISOString(),
+        },
+      }],
+    }]
+    const continueRecovery = vi.fn(() => true)
+    const canReplayEffect = vi.fn(() => true)
+
+    const [result] = await test.coordinator.recoverNonTerminalRuns({
+      canContinueRecovery: continueRecovery,
+      canReplayEffect,
+    })
+
+    expect(result).toEqual({ status: 'committed', runId: 'run-safe-partial', verification: expect.any(Array) })
+    expect(test.apply).toHaveBeenCalledTimes(1)
+    expect(continueRecovery).toHaveBeenCalledTimes(2)
+    expect(canReplayEffect).toHaveBeenCalledTimes(1)
+    expect(test.repository.calls.indexOf('fence:acquire')).toBeLessThan(test.repository.calls.indexOf('adapter:apply'))
   })
 
   it('never replays a pending connect effect after the host was authoritatively uninstalled', async () => {
@@ -1176,6 +1528,7 @@ describe('AgentIntegrationCoordinator', () => {
       operationId: 'write-mcp',
       observed: true,
       matchesDesired: false,
+      visibility: 'dedicated',
       diagnostics: ['host did not expose a stable fingerprint'],
     }))
     test.repository.recoverable = [{
@@ -1209,6 +1562,95 @@ describe('AgentIntegrationCoordinator', () => {
     const [result] = await test.coordinator.recoverNonTerminalRuns()
     expect(result).toMatchObject({ status: 'needs_recovery', reason: 'ambiguous_live_state' })
     expect(test.apply).not.toHaveBeenCalled()
+  })
+
+  it('does not commit or replay an idempotent remove recovery when the Adapter read-back is unknown', async () => {
+    const test = harness()
+    test.setLive('desired')
+    test.repository.control = { ...test.repository.control, desiredState: 'removed' }
+    test.repository.baselines = [{
+      componentKey: 'memory_tools',
+      physicalTarget: '/tmp/tidemind/config.json',
+      ownershipKey: 'mcpServers.tidemind',
+      ownedFragmentHash: 'desired',
+    }]
+    const plan = await test.coordinator.preview({
+      installation: { ...installation, desiredState: 'managed' },
+      operation: 'disconnect',
+      componentKeys: ['memory_tools'],
+      desiredCapability: 0,
+    })
+    test.adapter.readBack = vi.fn(async mutationContext => ({
+      operationId: mutationContext.operationId,
+      observed: false,
+      matchesDesired: false,
+      visibility: 'unknown',
+      diagnostics: ['managed_text_parent_symlink_rejected'],
+    }))
+    test.repository.recoverable = [{
+      runId: 'run-remove-unknown',
+      runState: 'needs_recovery',
+      installation: { ...installation, desiredState: 'removed' },
+      consentId: consent.id,
+      desiredCapability: 0,
+      preparedPlan: plan,
+      mutations: [{
+        operationId: 'remove-mcp',
+        mutationDomain: 'local_macos:file:/tmp/tidemind/config.json:document',
+        plannedMutation: plan.adapterPlan.mutations[0],
+        journal: {
+          id: 'mutation-remove-unknown',
+          state: 'needs_recovery',
+          journalVersion: 2,
+          attemptCount: 1,
+          idempotent: true,
+          beforeFingerprint: 'desired',
+          desiredFingerprint: null,
+          postEffectFingerprint: null,
+          compensationPrecondition: null,
+          receiptJson: null,
+          failureCode: 'effect_failed_or_unknown',
+          failureStage: 'effect',
+          updatedAt: T0.toISOString(),
+        },
+      }],
+    }]
+
+    const [result] = await test.coordinator.recoverNonTerminalRuns()
+
+    expect(result).toMatchObject({
+      status: 'needs_recovery',
+      runId: 'run-remove-unknown',
+      reason: 'read_back_failed',
+    })
+    expect(test.apply).not.toHaveBeenCalled()
+    expect(test.repository.calls).toContain('journal:needs_recovery')
+    expect(test.repository.calls).not.toContain('journal:committed')
+    expect(test.repository.calls).not.toContain('run:committed')
+  })
+
+  it('does not cross the physical effect boundary when an Adapter precondition is unknown', async () => {
+    const test = harness()
+    const plan = await preview(test)
+    test.adapter.readBack = vi.fn(async (_context, mutation) => ({
+      operationId: mutation.operationId,
+      observed: false,
+      matchesDesired: false,
+      visibility: 'unknown',
+      diagnostics: ['managed_text_parent_symlink_rejected'],
+    }))
+
+    const result = await test.coordinator.applyPrepared({
+      installation,
+      preparedPlan: plan,
+      consentId: consent.id,
+      desiredCapability: 3,
+    })
+
+    expect(result).toMatchObject({ status: 'needs_recovery', reason: 'effect_failed_or_unknown' })
+    expect(test.apply).not.toHaveBeenCalled()
+    expect(test.repository.calls).not.toContain('journal:committed')
+    expect(test.repository.calls).not.toContain('run:committed')
   })
 
   it('rejects an Adapter plan changed after the consent preview', async () => {
@@ -1245,6 +1687,217 @@ describe('AgentIntegrationCoordinator', () => {
       desiredCapability: 0,
     })
     expect(plan.adapterPlan.mutations).toHaveLength(1)
+  })
+
+  it('allows repair to transfer an exact owned selector and freezes the source in the execution plan', async () => {
+    const test = harness()
+    const sourceHash = 'a'.repeat(64)
+    test.repository.baselines = [{
+      componentKey: 'memory_tools',
+      physicalTarget: '/tmp/tidemind/config.json',
+      ownershipKey: 'mcp.servers.tidemind',
+      ownedFragmentHash: sourceHash,
+      selectorSchemaVersion: 1,
+    }]
+    test.adapter.plan = vi.fn(async () => ({
+      catalogId: 'cursor-desktop',
+      installationKey: 'cursor:default',
+      adapterVersion: '1.0.0',
+      projectionVersion: '1',
+      mutations: [{
+        operationId: 'migrate-mcp',
+        componentKey: 'memory_tools',
+        operation: 'create',
+        domainKind: 'file_fragment',
+        physicalTarget: '/tmp/tidemind/config.json',
+        ownershipKey: 'mcp.tidemind',
+        selectorSchemaVersion: 2,
+        ownershipTransferFrom: {
+          physicalTarget: '/tmp/tidemind/config.json',
+          ownershipKey: 'mcp.servers.tidemind',
+          ownedFragmentHash: sourceHash,
+          selectorSchemaVersion: 1,
+        },
+        risk: 'low',
+        reload: 'new_session',
+        desiredFragmentHash: 'b'.repeat(64),
+        idempotent: true,
+      }],
+      requiredUserActions: [],
+      diagnostics: [],
+    }))
+
+    const plan = await test.coordinator.preview({
+      installation,
+      operation: 'repair',
+      componentKeys: ['memory_tools'],
+      desiredCapability: 3,
+    })
+    expect(plan.executionPlan.mutations[0].ownershipTransferFrom).toEqual({
+      targetPath: '/tmp/tidemind/config.json',
+      ownershipSelector: 'mcp.servers.tidemind',
+      ownedFragmentHash: sourceHash,
+      selectorSchemaVersion: 1,
+    })
+  })
+
+  it('allows one exact singleton Ledger source to upgrade into a three-component host plugin aggregate', async () => {
+    const test = harness()
+    test.adapter.inspect = vi.fn(async () => ({
+      ...inspection(null),
+      components: (['instruction', 'memory_tools', 'lifecycle'] as const).map(componentKey => ({
+        componentKey, visibility: 'absent' as const, verificationStatus: 'unverified' as const,
+      })),
+    }))
+    const sourceHash = 'a'.repeat(64)
+    test.repository.baselines = [{
+      componentKey: 'memory_tools',
+      physicalTarget: '/tmp/tidemind/openclaw.json',
+      ownershipKey: 'mcp.servers.tidemind-eb-openclaw',
+      ownedFragmentHash: sourceHash,
+      selectorSchemaVersion: 1,
+    }]
+    test.adapter.plan = vi.fn(async () => ({
+      catalogId: 'cursor-desktop',
+      installationKey: 'cursor:default',
+      adapterVersion: '1.0.0',
+      projectionVersion: '1',
+      mutations: [{
+        operationId: 'migrate-openclaw-plugin',
+        componentKey: 'memory_tools',
+        coveredComponentKeys: ['instruction', 'memory_tools', 'lifecycle'],
+        operation: 'host_command',
+        domainKind: 'plugin_manager',
+        physicalTarget: 'openclaw:user:tidemind-eb-openclaw',
+        ownershipKey: 'tidemind-eb-openclaw',
+        selectorSchemaVersion: 1,
+        additionalFenceTargets: [{ domainKind: 'file_fragment', physicalTarget: '/tmp/tidemind/openclaw.json' }],
+        ownershipTransferFrom: {
+          physicalTarget: '/tmp/tidemind/openclaw.json',
+          ownershipKey: 'mcp.servers.tidemind-eb-openclaw',
+          ownedFragmentHash: sourceHash,
+          selectorSchemaVersion: 1,
+        },
+        frozenCommands: [{
+          category: 'plugin_install', executableRealpath: '/tmp/openclaw',
+          args: ['plugins', 'install', '/tmp/tidemind/plugin', '--link'],
+        }],
+        risk: 'elevated', reload: 'restart_host', preconditionHash: sourceHash,
+        desiredFragmentHash: 'b'.repeat(64), idempotent: true,
+        metadata: { artifactType: 'plugin', migrationSummary: '旧 MCP 升级为原生 Plugin' },
+      }],
+      requiredUserActions: [],
+      diagnostics: [],
+    }))
+
+    const plan = await test.coordinator.preview({
+      installation,
+      operation: 'upgrade',
+      componentKeys: ['instruction', 'memory_tools', 'lifecycle'],
+      desiredCapability: 4,
+    })
+    expect(plan.executionPlan.mutations[0]).toMatchObject({
+      componentKey: 'memory_tools',
+      coveredComponentKeys: ['instruction', 'memory_tools', 'lifecycle'],
+      ownershipTransferFrom: {
+        targetPath: '/tmp/tidemind/openclaw.json',
+        ownershipSelector: 'mcp.servers.tidemind-eb-openclaw',
+        ownedFragmentHash: sourceHash,
+      },
+    })
+  })
+
+  it('allows an exact singleton MCP Ledger source to upgrade through one aggregate file update', async () => {
+    const test = harness()
+    test.adapter.inspect = vi.fn(async () => ({
+      ...inspection(null),
+      components: (['memory_tools', 'lifecycle'] as const).map(componentKey => ({
+        componentKey, visibility: 'absent' as const, verificationStatus: 'unverified' as const,
+      })),
+    }))
+    const sourceHash = 'a'.repeat(64)
+    const liveAggregateHash = 'c'.repeat(64)
+    test.repository.baselines = [{
+      componentKey: 'memory_tools',
+      physicalTarget: '/tmp/tidemind/config.json',
+      ownershipKey: 'mcp.servers.tidemind',
+      ownedFragmentHash: sourceHash,
+      selectorSchemaVersion: 1,
+    }]
+    test.adapter.plan = vi.fn(async () => ({
+      catalogId: 'cursor-desktop', installationKey: 'cursor:default',
+      adapterVersion: '1.0.0', projectionVersion: '1',
+      mutations: [{
+        operationId: 'migrate-json-aggregate', componentKey: 'memory_tools',
+        coveredComponentKeys: ['memory_tools', 'lifecycle'], operation: 'update',
+        domainKind: 'file_fragment', physicalTarget: '/tmp/tidemind/config.json',
+        ownershipKey: 'tidemind.aggregate.zcode.agent.activation-owned', selectorSchemaVersion: 1,
+        ownershipTransferFrom: {
+          physicalTarget: '/tmp/tidemind/config.json', ownershipKey: 'mcp.servers.tidemind',
+          ownedFragmentHash: sourceHash, selectorSchemaVersion: 1,
+        },
+        risk: 'low', reload: 'new_session', preconditionHash: liveAggregateHash,
+        desiredFragmentHash: 'b'.repeat(64), idempotent: true,
+      }],
+      requiredUserActions: [], diagnostics: [],
+    }))
+
+    const plan = await test.coordinator.preview({
+      installation,
+      operation: 'upgrade',
+      componentKeys: ['memory_tools', 'lifecycle'],
+      desiredCapability: 4,
+    })
+    expect(plan.executionPlan.mutations[0]).toMatchObject({
+      action: 'update',
+      commandCategory: 'file_write',
+      ownershipTransferFrom: { ownershipSelector: 'mcp.servers.tidemind' },
+    })
+  })
+
+  it('rejects a selector transfer whose source is not an exact current Ledger baseline', async () => {
+    const test = harness()
+    test.repository.baselines = [{
+      componentKey: 'memory_tools',
+      physicalTarget: '/tmp/tidemind/config.json',
+      ownershipKey: 'mcp.servers.tidemind',
+      ownedFragmentHash: 'a'.repeat(64),
+      selectorSchemaVersion: 1,
+    }]
+    test.adapter.plan = vi.fn(async () => ({
+      catalogId: 'cursor-desktop',
+      installationKey: 'cursor:default',
+      adapterVersion: '1.0.0',
+      projectionVersion: '1',
+      mutations: [{
+        operationId: 'migrate-mcp',
+        componentKey: 'memory_tools',
+        operation: 'create',
+        domainKind: 'file_fragment',
+        physicalTarget: '/tmp/tidemind/config.json',
+        ownershipKey: 'mcp.tidemind',
+        selectorSchemaVersion: 2,
+        ownershipTransferFrom: {
+          physicalTarget: '/tmp/tidemind/config.json',
+          ownershipKey: 'mcp.servers.tidemind',
+          ownedFragmentHash: 'c'.repeat(64),
+          selectorSchemaVersion: 1,
+        },
+        risk: 'low',
+        reload: 'new_session',
+        desiredFragmentHash: 'b'.repeat(64),
+        idempotent: true,
+      }],
+      requiredUserActions: [],
+      diagnostics: [],
+    }))
+
+    await expect(test.coordinator.preview({
+      installation,
+      operation: 'upgrade',
+      componentKeys: ['memory_tools'],
+      desiredCapability: 3,
+    })).rejects.toThrow(/ownership_transfer_source_mismatch/)
   })
 
   it('commits a disconnect only after the owned selector is proven absent', async () => {
@@ -1322,6 +1975,195 @@ describe('AgentIntegrationCoordinator', () => {
     expect(test.repository.calls.at(-1)).toBe('installation:idle')
   })
 
+  it('keeps an exact frozen Kimi guided conflict awaiting while its target is still absent', async () => {
+    const test = harness()
+    test.repository.consent = { ...consent, componentKeys: ['instruction'] }
+    Object.assign(test.adapter, { componentKeys: ['instruction'], implementationTypes: { instruction: ['skill'] } })
+    vi.mocked(test.adapter.inspect).mockResolvedValue({
+      ...inspection(null),
+      components: [{ componentKey: 'instruction', visibility: 'absent', verificationStatus: 'unverified' }],
+    })
+    vi.mocked(test.adapter.plan).mockResolvedValue({
+      catalogId: 'cursor-desktop',
+      installationKey: 'cursor:default',
+      adapterVersion: '1.0.0',
+      projectionVersion: '1',
+      mutations: [],
+        requiredUserActions: [],
+        requiredUserActionDetails: [{
+          kind: 'kimi_instruction_conflict' as const,
+          componentKey: 'instruction' as const,
+          operation: 'connect' as const,
+          reason: 'target_occupied' as const,
+          sourcePath: '/tmp/legacy-skill.md',
+          targetPath: '/tmp/tidemind-skill.md',
+          targetVisibility: 'absent' as const,
+          instruction: 'Resolve the conflicting instruction file.',
+          steps: ['Review the conflict.'],
+        }],
+      diagnostics: [],
+    })
+    const plan = await test.coordinator.preview({
+      installation,
+      operation: 'connect',
+      componentKeys: ['instruction'],
+      desiredCapability: 1,
+    })
+    test.adapter.verify = vi.fn(async () => [{
+      componentKey: 'instruction',
+      status: 'failed',
+      verifiedCapability: null,
+      invalidationKeys: ['artifact_hash'],
+      diagnostics: ['managed_document_not_visible'],
+    }])
+
+    const result = await test.coordinator.applyPrepared({
+      installation,
+      preparedPlan: plan,
+      consentId: consent.id,
+      desiredCapability: 1,
+    })
+
+    expect(result).toMatchObject({
+      status: 'awaiting_verification',
+      verification: [expect.objectContaining({ componentKey: 'instruction', status: 'unverified' })],
+    })
+    expect(test.repository.calls).toContain('verification:unverified')
+    expect(test.repository.calls).not.toContain('verification:failed')
+    expect(test.repository.calls).not.toContain('run:needs_recovery')
+  })
+
+  it('does not hide wrong visible Kimi content behind a guided conflict action', async () => {
+    const test = harness()
+    test.repository.consent = { ...consent, componentKeys: ['instruction'] }
+    Object.assign(test.adapter, { componentKeys: ['instruction'], implementationTypes: { instruction: ['skill'] } })
+    vi.mocked(test.adapter.inspect).mockResolvedValue({
+      ...inspection(null),
+      components: [{ componentKey: 'instruction', visibility: 'absent', verificationStatus: 'unverified' }],
+    })
+    vi.mocked(test.adapter.plan).mockResolvedValue({
+      catalogId: 'cursor-desktop',
+      installationKey: 'cursor:default',
+      adapterVersion: '1.0.0',
+      projectionVersion: '1',
+      mutations: [],
+        requiredUserActions: [],
+        requiredUserActionDetails: [{
+          kind: 'kimi_instruction_conflict' as const,
+          componentKey: 'instruction' as const,
+          operation: 'connect' as const,
+          reason: 'target_occupied' as const,
+          sourcePath: '/tmp/legacy-skill.md',
+          targetPath: '/tmp/tidemind-skill.md',
+          targetVisibility: 'dedicated' as const,
+          instruction: 'Resolve the conflicting instruction file.',
+          steps: ['Review the conflict.'],
+        }],
+      diagnostics: [],
+    })
+    const plan = await test.coordinator.preview({
+      installation,
+      operation: 'connect',
+      componentKeys: ['instruction'],
+      desiredCapability: 1,
+    })
+    test.adapter.verify = vi.fn(async () => [{
+      componentKey: 'instruction',
+      status: 'failed',
+      verifiedCapability: null,
+      invalidationKeys: ['artifact_hash'],
+      diagnostics: ['managed_document_hash_mismatch'],
+    }])
+
+    const result = await test.coordinator.applyPrepared({
+      installation,
+      preparedPlan: plan,
+      consentId: consent.id,
+      desiredCapability: 1,
+    })
+
+    expect(result).toMatchObject({ status: 'needs_recovery', reason: 'verification_failed' })
+  })
+
+  it.each(['target', 'parent'] as const)(
+    'keeps a Kimi managed-target %s symlink as a hard failure through the real wrapper and coordinator',
+    async symlinkKind => {
+      const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-coordinator-symlink-')))
+      try {
+        const configRoot = path.join(root, '.kimi-code')
+        const skillsRoot = path.join(configRoot, 'skills')
+        const targetDirectory = path.join(skillsRoot, 'tidemind')
+        const target = path.join(targetDirectory, 'SKILL.md')
+        const legacy = path.join(skillsRoot, `tidemind-${installation.agentId}`, 'SKILL.md')
+        fs.mkdirSync(path.dirname(legacy), { recursive: true })
+        fs.writeFileSync(legacy, '# user-modified legacy Skill\n')
+        if (symlinkKind === 'target') {
+          const outside = path.join(root, 'outside-skill.md')
+          fs.mkdirSync(targetDirectory, { recursive: true })
+          fs.writeFileSync(outside, '# outside\n')
+          fs.symlinkSync(outside, target)
+        } else {
+          const outside = path.join(root, 'outside-skill-dir')
+          fs.mkdirSync(outside, { recursive: true })
+          fs.symlinkSync(outside, targetDirectory)
+        }
+
+        const test = harness()
+        const kimiInstallation: CoordinatorInstallation = {
+          ...installation,
+          displayName: 'Kimi Code',
+          identity: canonicalizeInstallationIdentity({
+            runtimeRealm: 'local_macos',
+            osUserIdentity: 'usr_kimi_coordinator',
+            productFamilyId: 'kimi-code',
+            hostVariant: 'kimi-code-cli',
+            configRoot,
+            distribution: { executableRealpath: path.join(root, 'kimi') },
+          }),
+        }
+        const adapter = createKimiCodeInstructionHostAdapter(P0_INSTRUCTION_SPECS['kimi-code-cli']!)
+        test.repository.control = {
+          ...test.repository.control,
+          installKey: kimiInstallation.identity.installKey,
+          hostVariant: 'kimi-code-cli',
+        }
+        test.repository.consent = { ...consent, componentKeys: ['instruction'] }
+        const coordinator = new AgentIntegrationCoordinator({
+          ...test.dependencies,
+          runtime: {
+            ...test.dependencies.runtime,
+            homeDir: root,
+            applicationDataDir: path.join(root, '.tidemind'),
+          },
+          adapters: { get: id => id === 'kimi-code-cli' ? adapter : undefined },
+        })
+        const plan = await coordinator.preview({
+          installation: kimiInstallation,
+          operation: 'connect',
+          componentKeys: ['instruction'],
+          desiredCapability: 1,
+        })
+        expect(plan.adapterPlan.requiredUserActionDetails).toContainEqual(expect.objectContaining({
+          kind: 'kimi_instruction_conflict',
+          targetPath: target,
+          targetVisibility: 'unknown',
+        }))
+
+        const result = await coordinator.applyPrepared({
+          installation: kimiInstallation,
+          preparedPlan: plan,
+          consentId: consent.id,
+          desiredCapability: 1,
+        })
+        expect(result).toMatchObject({ status: 'needs_recovery', reason: 'verification_failed' })
+        expect(test.repository.calls).toContain('verification:failed')
+        expect(test.repository.calls).not.toContain('verification:unverified')
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true })
+      }
+    },
+  )
+
   it('uses the legacy document fence for every selector in the same physical file', () => {
     const base = {
       operationId: 'one',
@@ -1347,6 +2189,47 @@ describe('AgentIntegrationCoordinator', () => {
       target: base.physicalTarget,
       selector: 'document',
     }))
+  })
+
+  it('holds every aggregate physical domain in canonical order across apply and read-back', async () => {
+    const test = harness()
+    const originalPlan = test.adapter.plan.bind(test.adapter)
+    test.adapter.plan = vi.fn(async (context, request) => {
+      const planned = await originalPlan(context, request)
+      return {
+        ...planned,
+        mutations: planned.mutations.map(mutation => ({
+          ...mutation,
+          additionalFenceTargets: [{
+            domainKind: 'file_fragment' as const,
+            physicalTarget: '/tmp/tidemind/pi/settings.json',
+          }],
+        })),
+      }
+    })
+    const plan = await preview(test)
+    const result = await test.coordinator.applyPrepared({
+      installation,
+      preparedPlan: plan,
+      consentId: consent.id,
+      desiredCapability: 3,
+    })
+
+    expect(result).toMatchObject({ status: 'committed' })
+    expect(test.repository.fenceDomains).toEqual([
+      buildLegacyMutationDomain({
+        adapterId: 'cursor',
+        target: '/tmp/tidemind/config.json',
+        selector: 'document',
+      }),
+      buildLegacyMutationDomain({
+        adapterId: 'aggregate',
+        target: '/tmp/tidemind/pi/settings.json',
+        selector: 'document',
+      }),
+    ].sort())
+    expect(test.repository.calls.filter(call => call === 'fence:assert')).toHaveLength(6)
+    expect(test.repository.calls.filter(call => call === 'fence:release')).toHaveLength(2)
   })
 
   it('does not report success when the physical writer fence cannot be released', async () => {

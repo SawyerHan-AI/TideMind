@@ -88,12 +88,13 @@ export const CATALOG_IDS = [
   'catpaw-desktop',
   'codegeex-ide',
   'claude-desktop-legacy',
+  'custom-local-mcp',
 ] as const
 
 export type CatalogId = (typeof CATALOG_IDS)[number]
 export type ProductFamilyId = string
 
-export type DeliveryPriority = 'P0.1' | 'P0.2' | 'P1' | 'P2' | 'P3' | 'observe'
+export type DeliveryPriority = 'P0.1' | 'P0.2' | 'P1' | 'P2' | 'P3' | 'observe' | 'custom'
 export type RuntimeRealm = 'local_macos' | 'wsl' | 'ssh' | 'dev_container'
 export type HostKind = 'cli' | 'desktop' | 'ide_extension' | 'local_server' | 'runtime'
 export type ReleaseChannel = 'stable' | 'beta' | 'legacy'
@@ -142,6 +143,7 @@ export type StatusGroup =
 
 export type StatusReason =
   | 'verified'
+  | 'legacy_callable_unmanaged'
   | 'instruction_only'
   | 'capability_ceiling'
   | 'awaiting_consent'
@@ -166,6 +168,12 @@ export type StatusReason =
   | 'host_uninstalled'
   | 'executable_proof_too_large'
   | 'executable_metadata_unavailable'
+  | 'release_entry_missing'
+  | 'release_mode_detect_only'
+  | 'release_distribution_not_accepted'
+  | 'release_version_unverified'
+  | 'release_version_not_accepted'
+  | 'release_artifact_not_accepted'
 
 export type MutationDomainKind =
   | 'file_fragment'
@@ -173,8 +181,26 @@ export type MutationDomainKind =
   | 'host_registry'
   | 'plugin_manager'
   | 'none'
+export const MUTATION_DOMAIN_KINDS: readonly MutationDomainKind[] = [
+  'file_fragment', 'directory', 'host_registry', 'plugin_manager', 'none',
+]
+
+export function isMutationDomainKind(value: unknown): value is MutationDomainKind {
+  return typeof value === 'string' && MUTATION_DOMAIN_KINDS.includes(value as MutationDomainKind)
+}
 export type MutationRisk = 'read_only' | 'low' | 'elevated' | 'high'
 export type CommandCategory = 'none' | 'file_write' | 'host_cli' | 'plugin_install' | 'host_trust' | 'admin'
+
+export interface FrozenHostCommand {
+  category: Exclude<CommandCategory, 'none' | 'file_write'>
+  executableRealpath: string
+  args: readonly string[]
+}
+
+export interface FrozenIntermediateState {
+  fingerprint: string
+  completedStepIds: readonly string[]
+}
 export type ReloadRequirement =
   | 'none'
   | 'reload'
@@ -250,6 +276,8 @@ export interface DistributionIdentity {
   executableRealpath?: string
   packageProvenance?: string
   capabilityFingerprint?: string
+  /** Cross-machine digest of immutable package bytes/signature proof; excludes inode, timestamps, and absolute paths. */
+  portableArtifactFingerprint?: string
 }
 
 export interface InstallationIdentity {
@@ -258,6 +286,11 @@ export interface InstallationIdentity {
   productFamilyId: ProductFamilyId
   hostVariant: CatalogId
   canonicalConfigRoot: string
+  /**
+   * Canonical, discovery-frozen roots for components whose host-supported
+   * storage location is intentionally outside canonicalConfigRoot.
+   */
+  componentConfigRoots?: Readonly<Partial<Record<ComponentKey, string>>>
   /** Exact host-owned config files selected by an explicit profile/env override. */
   componentConfigFiles?: Readonly<Partial<Record<ComponentKey, string>>>
   explicitProfile: string
@@ -290,6 +323,8 @@ export interface InstallationStatusInput {
   verificationSummary: VerificationSummary
   disconnectVerified: boolean
   circuitBreakerOpen: boolean
+  /** Exact read-only adoption proves the existing connection is callable, but grants no maintenance consent. */
+  legacyCallableWithoutConsent?: boolean
   blockingReasons?: readonly StatusReason[]
 }
 
@@ -323,11 +358,13 @@ export type HostActivitySignal =
   | 'brain_digest'
   | 'session_start'
   | 'pre_compact'
+  | 'session_end'
   | 'post_compact'
 
 export interface HostActivityEvidenceRecord {
   id: string
   installationId: string
+  activationRunId: string
   agentId: string
   hostVariant: CatalogId
   componentKey: 'memory_tools' | 'lifecycle'
@@ -350,6 +387,8 @@ export interface HostActivityEvidenceQuery {
   adapterVersion: string
   projectionVersion: string
   hostVersion: string
+  activationRunId: string
+  activityGenerationToken: string
   observedAfter: string
 }
 
@@ -357,14 +396,75 @@ export interface HostActivityEvidenceReader {
   find(query: HostActivityEvidenceQuery): readonly HostActivityEvidenceRecord[] | Promise<readonly HostActivityEvidenceRecord[]>
 }
 
+export interface GuidedRemovalEvidenceQuery {
+  installationId: string
+  agentId: string
+  hostVariant: 'qwenwork-desktop' | 'custom-local-mcp'
+  componentKey: 'memory_tools'
+  activationRunId: string
+  activityGenerationToken: string
+  connectorName: string
+}
+
+export interface GuidedRemovalEvidenceRecord extends GuidedRemovalEvidenceQuery {
+  id: string
+  confirmedAt: string
+}
+
+export interface GuidedRemovalEvidenceReader {
+  findGuidedRemovalEvidence(
+    query: GuidedRemovalEvidenceQuery,
+  ): GuidedRemovalEvidenceRecord | null | Promise<GuidedRemovalEvidenceRecord | null>
+}
+
+export interface CodexHookTrustBinding {
+  installationId: string
+  agentId: string
+  hostVariant: 'codex-cli' | 'codex-desktop'
+  sourcePathHash: string
+  hookKeyHash: string
+  ownedFragmentHash: string
+  hostCurrentHash: string
+  tideMindVersion: string
+  adapterVersion: string
+  projectionVersion: string
+  hostVersion: string
+}
+
+export interface CodexHookTrustEvidenceRecord extends CodexHookTrustBinding {
+  id: string
+  artifactId: string
+  verifiedAt: string
+}
+
+export interface CodexHookTrustEvidenceReader {
+  findCodexHookTrustEvidence(
+    query: CodexHookTrustBinding,
+  ): CodexHookTrustEvidenceRecord | null | Promise<CodexHookTrustEvidenceRecord | null>
+}
+
 export interface AdapterOperationContext {
   runtime: AdapterRuntimeContext
   installation: InstallationIdentity
+  /** Durable Installation row bound by the coordinator; required for Codex trust receipts. */
+  installationId?: string
+  /** Discovery-persisted host version frozen for user-trust planning. */
+  hostVersion?: string
   /** Stable EB_AGENT_ID assigned after discovery and persisted with the Installation. */
   agentId: string
   operationId: string
+  /**
+   * Opaque generation token frozen at preview and embedded in every runtime
+   * projection. Runtime calls must return this exact value; the activity
+   * writer never guesses a generation from current database state.
+   */
+  activityGenerationToken?: string
   /** Read-only local runtime evidence; absent means verification must stay unverified. */
   hostActivityEvidence?: HostActivityEvidenceReader
+  /** Durable user-confirmed Codex hook trust evidence; absent caps lifecycle at C3. */
+  codexHookTrustEvidence?: CodexHookTrustEvidenceReader
+  /** Durable, user-confirmed receipt for a guided host removal that has no readable registry. */
+  guidedRemovalEvidence?: GuidedRemovalEvidenceReader
 }
 
 export interface AdapterComponentObservation {
@@ -391,16 +491,48 @@ export type MutationOperation = 'create' | 'update' | 'remove' | 'host_command'
 export interface PlannedMutation {
   operationId: string
   componentKey: ComponentKey
+  /**
+   * Components represented by this one aggregate physical mutation. When
+   * omitted, the mutation covers only componentKey. The primary componentKey
+   * must be present whenever this list is supplied.
+   */
+  coveredComponentKeys?: readonly ComponentKey[]
   operation: MutationOperation
   domainKind: MutationDomainKind
   physicalTarget: string
   ownershipKey: string
   selectorSchemaVersion: number
+  /**
+   * Additional physical surfaces changed atomically by one host-owned
+   * aggregate operation. The coordinator acquires every corresponding writer
+   * fence in canonical order before the Adapter may cross its effect boundary.
+   * Selector/CAS material for these surfaces remains in the immutable
+   * Adapter metadata and is covered by the frozen plan hash.
+   */
+  additionalFenceTargets?: readonly {
+    domainKind: MutationDomainKind
+    physicalTarget: string
+  }[]
+  /** Exact prior Ledger binding retired by this same journaled mutation. */
+  ownershipTransferFrom?: {
+    physicalTarget: string
+    ownershipKey: string
+    ownedFragmentHash: string
+    selectorSchemaVersion: number
+  }
   risk: MutationRisk
   reload: ReloadRequirement
   commandCategory?: CommandCategory
   executableRealpath?: string
   args?: readonly string[]
+  /**
+   * Ordered host commands for one aggregate host-owned effect. This is the
+   * only command source when present; every executable/argument/category is
+   * frozen into the plan and consent preview.
+   */
+  frozenCommands?: readonly FrozenHostCommand[]
+  /** Exact crash-visible prefix states from which an idempotent apply may resume. */
+  safeResumeStates?: readonly FrozenIntermediateState[]
   /** Exact live hash of the Tide Mind-owned selector/directory entry. */
   preconditionHash?: string
   /** Exact hash of the containing file before a selector-level mutation. */
@@ -423,6 +555,7 @@ export interface OwnedArtifactBaseline {
   ownershipKey: string
   ownedFragmentHash: string
   selectorSchemaVersion?: number
+  activeConsumerCount?: number
 }
 
 export interface AdapterDisconnectRequest {
@@ -431,6 +564,112 @@ export interface AdapterDisconnectRequest {
   ownedArtifacts: readonly OwnedArtifactBaseline[]
 }
 
+export interface CodexHookTrustRequiredUserAction extends CodexHookTrustBinding {
+  kind: 'codex_hook_trust'
+  componentKey: 'lifecycle'
+  sourcePath: string
+  hookKey: string
+  /** Exact user-facing instruction. Completion must still be read back through hooks/list. */
+  instruction: string
+}
+
+export interface QwenWorkMcpRequiredUserAction {
+  kind: 'qwenwork_mcp_gui'
+  componentKey: 'memory_tools'
+  operation: 'connect' | 'disconnect'
+  installationId: string
+  agentId: string
+  hostVariant: 'qwenwork-desktop'
+  hostVersion: string
+  tideMindVersion: string
+  adapterVersion: string
+  projectionVersion: string
+  /** Hash of the exact discovery-frozen distribution identity and component roots. */
+  installationBindingHash: string
+  connectorName: string
+  serverType: 'STDIO'
+  command: string
+  args: readonly string[]
+  environment: Readonly<Record<
+    'EB_AGENT_ID' | 'EB_HOST_VARIANT' | 'EB_ACTIVITY_GENERATION_TOKEN',
+    string
+  >>
+  /** Complete QwenWork-importable JSON with command, args, and env kept separate. */
+  configurationJson: string
+  connectorConfigurationHash: string
+  /** Exact host-UI steps; completing them never substitutes for runtime verification. */
+  steps: readonly string[]
+  instruction: string
+}
+
+export interface CustomMcpImportRequiredUserAction extends Omit<QwenWorkMcpRequiredUserAction, 'kind' | 'hostVariant'> {
+  kind: 'custom_mcp_import'
+  hostVariant: 'custom-local-mcp'
+  usageGuide: string
+}
+
+export interface ClaudeCoworkPluginRequiredUserAction {
+  kind: 'claude_cowork_plugin_upload'
+  componentKey: 'memory_tools'
+  operation: 'connect' | 'disconnect'
+  installationId: string
+  agentId: string
+  hostVariant: 'claude-cowork-local'
+  hostVersion: string
+  tideMindVersion: string
+  adapterVersion: string
+  projectionVersion: string
+  packageHash: string
+  packagePath: string
+  packageName: string
+  steps: readonly string[]
+  instruction: string
+}
+
+export interface McpActivationRequiredUserAction {
+  kind: 'mcp_activation'
+  componentKey: 'memory_tools'
+  operation: 'connect'
+  hostVariant: Extract<CatalogId, 'qwen-code-cli' | 'omp-cli'>
+  serverName: string
+  configPath: string
+  reason: 'excluded' | 'not_allowed' | 'invalid_policy'
+  /** Exact remediation; the Adapter never rewrites the user's allow/deny policy. */
+  instruction: string
+}
+
+export interface ManualFileRemovalRequiredUserAction {
+  kind: 'manual_file_removal'
+  componentKey: ComponentKey
+  operation: 'disconnect'
+  physicalTarget: string
+  ownedFragmentHash: string
+  /** Exact cleanup instruction; completion must still be read back by the Adapter. */
+  instruction: string
+}
+
+export interface KimiInstructionConflictRequiredUserAction {
+  kind: 'kimi_instruction_conflict'
+  componentKey: 'instruction'
+  operation: 'connect'
+  reason: 'legacy_unowned' | 'legacy_not_exact' | 'legacy_changed' | 'target_occupied'
+  sourcePath: string
+  targetPath: string
+  /** Physical visibility of the managed target itself, independent of the legacy source. */
+  targetVisibility: VisibilityState
+  instruction: string
+  steps: readonly string[]
+}
+
+export type RequiredUserActionDetail =
+  | CodexHookTrustRequiredUserAction
+  | QwenWorkMcpRequiredUserAction
+  | CustomMcpImportRequiredUserAction
+  | ClaudeCoworkPluginRequiredUserAction
+  | McpActivationRequiredUserAction
+  | ManualFileRemovalRequiredUserAction
+  | KimiInstructionConflictRequiredUserAction
+
 export interface AdapterPlan {
   catalogId: CatalogId
   installationKey: string
@@ -438,6 +677,7 @@ export interface AdapterPlan {
   projectionVersion: string
   mutations: readonly PlannedMutation[]
   requiredUserActions: readonly string[]
+  requiredUserActionDetails?: readonly RequiredUserActionDetail[]
   diagnostics: readonly string[]
 }
 
@@ -454,6 +694,8 @@ export interface MutationReadBack {
   matchesDesired: boolean
   observedFragmentHash?: string
   visibility?: VisibilityState
+  /** Exact frozen intermediate state recognized by the Adapter. */
+  safeToResumeFrom?: FrozenIntermediateState
   diagnostics: readonly string[]
 }
 
@@ -468,6 +710,12 @@ export interface AdapterVerificationRequest {
     adapterVersion: string
     projectionVersion: string
     hostVersion: string | null
+    /** Exact reconcile run that established the current managed activation. */
+    activationRunId?: string
+    /** Exact token physically loaded by the host runtime projection. */
+    activityGenerationToken?: string
+    /** Current connect/repair activation boundary; evidence before it is stale. */
+    activationEpoch?: string
     observedAfter: string
     verifiedAt: string
   }
@@ -517,8 +765,23 @@ export interface AgentHostAdapter {
   readonly adapterVersion: string
   /** Components for which this Adapter has an actual projector/read-back path. */
   readonly componentKeys: readonly ComponentKey[]
+  /** Existing components whose fresh runtime activity proves this component was loaded. */
+  readonly verificationDependencies?: Readonly<Partial<Record<ComponentKey, readonly ComponentKey[]>>>
   /** Concrete Artifact carriers emitted by this implementation, not Catalog aspirations. */
   readonly implementationTypes: Readonly<Partial<Record<ComponentKey, readonly ArtifactComponentType[]>>>
+  /**
+   * Machine-readable projection contract exported by the concrete Adapter.
+   * This describes the current writer/read-back implementation, not a future
+   * Catalog aspiration. Release policy compares it with the frozen manifest.
+   */
+  readonly componentContracts?: Readonly<Partial<Record<ComponentKey, Readonly<{
+    deliveryMode: DeliveryMode
+    artifactTypes: readonly ArtifactComponentType[]
+    mutationDomain: MutationDomainKind
+    reload: ReloadRequirement
+  }>>>>
+  /** Components that may be omitted from a connect request without changing the remaining projection. */
+  readonly connectOptionalComponentKeys?: readonly ComponentKey[]
   inspect(context: AdapterOperationContext): Promise<AdapterInspection>
   /** Exact, read-only legacy ownership probes; absence means "not adoptable". */
   inspectAdoptableArtifacts?(
@@ -660,6 +923,14 @@ export function deriveInstallationStatus(input: InstallationStatusInput): Derive
 
   if (!input.compatible) {
     return { statusGroup: 'awaiting_connection', statusReason: 'incompatible', accessLevel, accessIsHistorical }
+  }
+  if (input.legacyCallableWithoutConsent && (input.verifiedCapability ?? 0) > 0) {
+    return {
+      statusGroup: (input.verifiedCapability ?? 0) >= 2 ? 'available' : 'limited',
+      statusReason: 'legacy_callable_unmanaged',
+      accessLevel,
+      accessIsHistorical: true,
+    }
   }
   if (!input.hasConsent || input.reconcileState === 'awaiting_consent') {
     return { statusGroup: 'awaiting_connection', statusReason: 'awaiting_consent', accessLevel, accessIsHistorical }

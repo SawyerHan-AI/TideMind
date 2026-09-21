@@ -1,10 +1,10 @@
 import fs from 'node:fs/promises'
 import fsSync from 'node:fs'
-import { constants as fsConstants, type BigIntStats } from 'node:fs'
+import { constants as fsConstants, type BigIntStats, type Dir, type Dirent } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { execFile, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { app } from 'electron'
 import type Database from 'better-sqlite3'
 import { CATALOG_SCHEMA_VERSION, CATALOG_VERSION } from './catalog.js'
@@ -26,9 +26,11 @@ import {
 import {
   DESKTOP_BUNDLE_SURFACE_SCHEMA,
   discoverLocalP0Agents,
+  discoverClaudeCoworkGuidedCandidate,
   inspectStableDesktopBundleSurface,
   MAX_CLI_EXECUTABLE_PROOF_BYTES,
-  type AppCodeSignatureResult,
+  signedCodePortableArtifactFingerprint,
+  signedKimiPortableArtifactFingerprint,
   type DiscoveryDependencies,
   type PackageMetadataProofNode,
   type StableFileFingerprint,
@@ -36,24 +38,57 @@ import {
 import {
   readStableFileMetadata,
   inspectPassiveCliVersion,
+  kimiNativeExecutablePortableArtifactFingerprint,
+  MAX_PACKAGE_TREE_DEPTH,
+  MAX_PACKAGE_TREE_DIRECTORIES,
+  MAX_STANDALONE_PACKAGE_TREE_DIRECTORIES,
+  MAX_PACKAGE_TREE_ENTRIES_PER_DIRECTORY,
+  MAX_PACKAGE_TREE_FILES,
   readStableFileFingerprint,
   readStableFileSnapshot,
+  readStablePackageTree,
+  verifyStablePackageTree,
 } from './passive-cli-version.js'
 import { sha256Json } from './fingerprint.js'
+import {
+  desktopSignatureReceiptFingerprint,
+  inspectMacAppSignature,
+  inspectMacAppSignatureSync,
+} from './mac-code-signature.js'
+export { inspectMacAppSignature, inspectMacAppSignatureSync } from './mac-code-signature.js'
+import { parseJsoncObject } from './jsonc-document.js'
 import { adoptProvableLegacyConnections } from './legacy-adoption.js'
 import type { NotificationPort, UserNotification } from './events.js'
 import { createP0HostAdapters } from './hosts/p0-adapter-registry.js'
+import { verifyCodexHookTrustAction } from './hosts/codex-lifecycle-adapter.js'
 import { SqliteHostActivityEvidenceReader } from './host-activity-evidence.js'
 import { ManagedAgentReconciler, type ManagedArtifactObservation } from './reconciler.js'
 import {
+  AGENT_INTEGRATION_RELEASE_ENTRY_MAP,
+  AGENT_INTEGRATION_RELEASE_MANIFEST,
+  applyAgentReleaseGateToReport,
+  agentReleaseEligibilityReason,
+  agentReleaseSurfaceEligibilityReason,
+  isAgentReleaseGateReason,
+  resolveAcceptedKimiNativeReceipt,
+  resolveAgentIntegrationReleasePolicy,
+  type AgentIntegrationReleasePolicyMode,
+} from './release-manifest.js'
+import { kimiNativeReceiptLookupFingerprint } from './distribution-artifact.js'
+import {
   AgentIntegrationService,
+  isCustomInstallationManagementContractValid,
   type AgentIntegrationExecutionPort,
+  type AgentIntegrationServiceDependencies,
   type AgentIntegrationScannerPort,
 } from './service.js'
 import {
   AgentIntegrationRepository,
   frozenProjectionSurfaceFingerprint,
+  persistedComponentConfigRoots,
+  persistedComponentConfigFiles,
   persistedDistribution,
+  persistedHostOwnedIdentity,
   persistedManagementEligibility,
   persistedProjectionSurfaceFingerprint,
   type AgentInstallationRow,
@@ -64,6 +99,7 @@ import type {
   AdapterRuntimeContext,
   AgentHostAdapter,
   CatalogId,
+  ComponentKey,
 } from './types.js'
 import {
   getHookScriptPath,
@@ -74,10 +110,6 @@ import {
 } from '../runtime/runtime-paths.js'
 
 const DEFAULT_MAINTENANCE_INTERVAL_MS = 4 * 60 * 60 * 1_000
-const WRITE_GATE_ENV = 'TIDEMIND_AGENT_INTEGRATION_WRITES'
-const ADAPTER_GATE_ENV = 'TIDEMIND_AGENT_INTEGRATION_ENABLED_ADAPTERS'
-const AUTO_RESTORE_GATE_ENV = 'TIDEMIND_AGENT_INTEGRATION_AUTO_RESTORE'
-
 let executionPort: AgentIntegrationExecutionPort | null = null
 let productionRuntime: ProductionAgentIntegrationRuntime | null = null
 let productionRuntimeStarter: (() => Promise<void>) | null = null
@@ -123,6 +155,8 @@ export interface ProductionAgentIntegrationOptions {
   discoveryDependencies?: DiscoveryDependencies
   /** Hermetic embedding seam; production callers use passive local discovery. */
   scanner?: AgentIntegrationScannerPort
+  /** Isolated-fixture seam; production uses the official Codex persisted-state verifier. */
+  codexHookTrustVerifier?: AgentIntegrationServiceDependencies['verifyCodexHookTrust']
   maintenanceIntervalMs?: number
   startRuntime?: boolean
   fixtureMode?: 'isolated_ui_audit'
@@ -136,6 +170,8 @@ export interface ProductionAgentIntegrationComposition {
   runtime: ProductionAgentIntegrationRuntime
   observeOnly: boolean
   enabledAdapterIds: readonly CatalogId[]
+  releasePolicyMode: AgentIntegrationReleasePolicyMode
+  releasePolicyDiagnostics: readonly string[]
 }
 
 /**
@@ -155,32 +191,85 @@ export function productionAgentIntegrationWriterLockDirectory(input: {
 }
 
 /**
- * Production composition root. The default is deliberately observe-only:
- * writes require both the global rollout gate and an explicit per-adapter allowlist.
+ * Production composition root. The signed-build release manifest is the
+ * default allowlist; runtime options and environment variables can only narrow
+ * it or force the entire integration surface read-only.
  */
 export function createProductionAgentIntegrationComposition(
   db: Database.Database,
   options: ProductionAgentIntegrationOptions = {},
 ): ProductionAgentIntegrationComposition {
+  const injectedTrustSeams = [
+    options.canManageInstallation && 'canManageInstallation',
+    options.liveTrustAttestor && 'liveTrustAttestor',
+    options.codexHookTrustVerifier && 'codexHookTrustVerifier',
+  ].filter((value): value is string => Boolean(value))
+  if (injectedTrustSeams.length > 0 && options.fixtureMode !== 'isolated_ui_audit') {
+    throw new Error(`production_trust_seam_injection_forbidden:${injectedTrustSeams.join(',')}`)
+  }
   const homeDir = path.resolve(options.homeDir ?? os.homedir())
   const applicationDataDir = path.resolve(options.applicationDataDir ?? app.getPath('userData'))
   const allAdapters = options.adapters ?? createP0HostAdapters()
   const implementedComponents = new Map(
-    [...allAdapters].map(([catalogId, adapter]) => [catalogId, adapter.componentKeys] as const),
+    [...allAdapters].map(([catalogId, adapter]) => {
+      const released = new Set(AGENT_INTEGRATION_RELEASE_ENTRY_MAP.get(catalogId)?.requiredComponents
+        ?? (catalogId === 'custom-local-mcp' ? adapter.componentKeys : []))
+      return [catalogId, adapter.componentKeys.filter(componentKey => released.has(componentKey))] as const
+    }),
   )
   const implementedArtifactTypes = new Map(
-    [...allAdapters].map(([catalogId, adapter]) => [catalogId, adapter.implementationTypes] as const),
+    [...allAdapters].map(([catalogId, adapter]) => {
+      const released = new Set(AGENT_INTEGRATION_RELEASE_ENTRY_MAP.get(catalogId)?.requiredComponents
+        ?? (catalogId === 'custom-local-mcp' ? adapter.componentKeys : []))
+      return [catalogId, Object.fromEntries(Object.entries(adapter.implementationTypes)
+        .filter(([componentKey]) => released.has(componentKey as ComponentKey)))] as const
+    }),
   )
-  const enabledAdapterIds = enabledAdapters(allAdapters, options.enabledAdapterIds)
-  const observeOnly = options.observeOnly ?? !productionWriteGateEnabled()
-  const activeAdapterIds = observeOnly ? [] : enabledAdapterIds
+  const connectOptionalComponents = new Map(
+    [...allAdapters].map(([catalogId, adapter]) => {
+      const released = new Set(AGENT_INTEGRATION_RELEASE_ENTRY_MAP.get(catalogId)?.requiredComponents
+        ?? (catalogId === 'custom-local-mcp' ? adapter.componentKeys : []))
+      return [catalogId, (adapter.connectOptionalComponentKeys ?? [])
+        .filter(componentKey => released.has(componentKey))] as const
+    }),
+  )
+  const releasePolicy = resolveAgentIntegrationReleasePolicy({
+    adapters: allAdapters,
+    restrictToAdapterIds: options.enabledAdapterIds,
+    forceObserveOnly: options.observeOnly === true,
+    autoRestore: options.autoRestore,
+    // An injected Adapter registry is an explicit hermetic test seam. The
+    // production registry must cover every released entry exactly.
+    strictAdapterCoverage: options.adapters === undefined,
+  })
+  if (options.discoveryDependencies
+    && releasePolicy.mode === 'active'
+    && options.fixtureMode !== 'isolated_ui_audit') {
+    throw new Error('production_trust_seam_injection_forbidden:discoveryDependencies')
+  }
+  // Injected discovery/Adapter ports are the existing explicit hermetic test
+  // seam. The app composition supplies none of them and therefore always
+  // re-evaluates even pre-manifest persisted rows against this signed build.
+  const enforceReleaseAcceptance = options.adapters === undefined
+    && options.scanner === undefined
+    && options.discoveryDependencies === undefined
+  const observeOnly = releasePolicy.mode !== 'active'
+  const customAdapterActive = !observeOnly
+    && releasePolicy.customLocalAgentEnabled
+    && allAdapters.has('custom-local-mcp')
+  const activeAdapterIds = [...new Set<CatalogId>([
+    ...releasePolicy.enabledAdapterIds,
+    ...(customAdapterActive ? ['custom-local-mcp' as const] : []),
+  ])]
   const activeAdapterSet = new Set(activeAdapterIds)
   const managedAdapters: AdapterResolverPort = {
     get: id => activeAdapterSet.has(id) ? allAdapters.get(id) : undefined,
   }
   // A rollout/kill switch blocks new work, but persisted non-terminal runs must
   // still be recoverable through their reviewed Adapter implementation.
-  const recoveryAdapters: AdapterResolverPort = { get: id => allAdapters.get(id) }
+  const recoveryAdapters: AdapterResolverPort = {
+    get: id => id === 'custom-local-mcp' && !customAdapterActive ? undefined : allAdapters.get(id),
+  }
   const clock = options.clock ?? { now: () => new Date() }
   const ids = options.ids ?? { next: prefix => `${prefix}_${randomUUID()}` }
   const notificationLocale = options.notificationLocale ?? 'en'
@@ -191,14 +280,38 @@ export function createProductionAgentIntegrationComposition(
   })
   const repository = new AgentIntegrationRepository(db)
   const discoveryDependencies = options.discoveryDependencies ?? productionDiscoveryDependencies(homeDir)
-  const canManageInstallation = options.canManageInstallation
-    ?? (row => isProductionInstallationTrusted(row))
+  const runtimeContext = options.runtimeContext ?? defaultRuntimeContext(homeDir, applicationDataDir)
+  const distributionCanManageInstallation = options.canManageInstallation
+    ?? (row => isProductionInstallationTrusted(row, homeDir))
+  const currentReleaseReason = (row: AgentInstallationRow) => {
+    const persistedReason = persistedManagementEligibility(row)?.reason
+    if (isAgentReleaseGateReason(persistedReason)) return persistedReason
+    if (!enforceReleaseAcceptance || row.host_variant === 'custom-local-mcp') return null
+    const distribution = persistedDistribution(row)
+    return agentReleaseSurfaceEligibilityReason({
+      catalogId: row.host_variant as CatalogId,
+      detectedVersion: row.detected_version,
+      distributionId: distribution.distributionId ?? row.distribution_id,
+      packageProvenance: distribution.packageProvenance,
+      architecture: process.arch === 'x64' ? 'x64' : 'arm64',
+      portableArtifactFingerprint: distribution.portableArtifactFingerprint,
+    })
+  }
+  const canManageInstallation = (row: AgentInstallationRow): boolean => (
+    isCustomInstallationManagementContractValid(row, repository, AGENT_INTEGRATION_RELEASE_ENTRY_MAP)
+    && currentReleaseReason(row) === null
+    && distributionCanManageInstallation(row)
+  )
   const liveTrustAttestor = options.liveTrustAttestor
     ?? (options.canManageInstallation
       ? async (row: AgentInstallationRow) => sha256Json({
           fixtureTrust: persistedProjectionSurfaceFingerprint(row),
         })
-      : createProductionLiveTrustAttestor(discoveryDependencies))
+      : createProductionLiveTrustAttestor(discoveryDependencies, {
+          homeDir,
+          repository,
+          runtime: runtimeContext,
+        }))
   const canManageCurrentInstallation = (installation: CoordinatorInstallation): boolean => {
     const current = repository.getInstallation(installation.id)
     const frozenSurface = frozenProjectionSurfaceFingerprint(installation.identity.distribution)
@@ -210,6 +323,7 @@ export function createProductionAgentIntegrationComposition(
       && current.agent_id === installation.agentId
       && current.host_variant === installation.identity.hostVariant
       && current.runtime_realm === installation.identity.runtimeRealm
+      && currentReleaseReason(current) === null
       && canManageInstallation(current),
     )
   }
@@ -219,12 +333,15 @@ export function createProductionAgentIntegrationComposition(
   ): Promise<string | null> => {
     const before = repository.getInstallation(observed.id)
     if (!before || persistedProjectionSurfaceFingerprint(before)
-      !== persistedProjectionSurfaceFingerprint(observed) || !canManageInstallation(before)) return null
+      !== persistedProjectionSurfaceFingerprint(observed)
+      || currentReleaseReason(before) !== null
+      || !canManageInstallation(before)) return null
     const proof = await liveTrustAttestor(before)
     if (!proof || (expectedProofFingerprint && proof !== expectedProofFingerprint)) return null
     const after = repository.getInstallation(observed.id)
     return after
       && persistedProjectionSurfaceFingerprint(after) === persistedProjectionSurfaceFingerprint(before)
+      && currentReleaseReason(after) === null
       && canManageInstallation(after)
       ? proof
       : null
@@ -246,7 +363,6 @@ export function createProductionAgentIntegrationComposition(
     }),
     lockDirectoryTrustRoot: homeDir,
   })
-  const runtimeContext = options.runtimeContext ?? defaultRuntimeContext(homeDir, applicationDataDir)
   const coordinator = new AgentIntegrationCoordinator({
     runtime: runtimeContext,
     adapters: recoveryAdapters,
@@ -268,6 +384,8 @@ export function createProductionAgentIntegrationComposition(
       && await attestCurrentInstallation(installation, binding.liveTrustProofFingerprint),
     ),
     hostActivityEvidence: new SqliteHostActivityEvidenceReader(db),
+    codexHookTrustEvidence: repository,
+    guidedRemovalEvidence: repository,
   })
   const reconciler = new ManagedAgentReconciler({
     coordinator,
@@ -284,7 +402,7 @@ export function createProductionAgentIntegrationComposition(
     adapters: managedAdapters,
     runtimeContext,
     observeOnly,
-    autoRestore: options.autoRestore ?? process.env[AUTO_RESTORE_GATE_ENV] !== '0',
+    autoRestore: releasePolicy.autoRestore,
     canManageInstallation: installation => attestCurrentInstallation(installation).then(Boolean),
     canContinueRecovery: async execution => {
       if (execution.runState === 'verified') {
@@ -310,10 +428,9 @@ export function createProductionAgentIntegrationComposition(
       )
     },
   })
-  const scanner = options.scanner ?? createProductionScanner(
-    homeDir,
-    discoveryDependencies,
-  )
+  const scanner = options.scanner ?? (options.discoveryDependencies
+    ? createProductionScanner(homeDir, discoveryDependencies)
+    : releaseGatedScanner(createProductionScanner(homeDir, discoveryDependencies)))
   const configRootWatcher = new AgentConfigRootWatcher({
     allowedRoots: [homeDir, applicationDataDir],
     onChange: () => service.scan().then(() => undefined),
@@ -375,19 +492,53 @@ export function createProductionAgentIntegrationComposition(
     },
     afterCircuitReset: () => runtime.runMaintenance(),
     afterDisconnect: () => runtime.runMaintenance(),
+    afterResume: () => runtime.triggerScan(),
     refreshVerificationFreshness,
     notifications,
     notificationLocale,
+    now: () => clock.now(),
     homeDir,
+    customMcpRuntime: {
+      shimPath: runtimeContext.shimPath,
+      mcpServerPath: runtimeContext.mcpServerPath,
+    },
+    coworkGuidedRuntime: { applicationDataDir },
     fixtureMode: options.fixtureMode,
     enabledCatalogIds: activeAdapterIds,
     implementedComponents,
     implementedArtifactTypes,
+    connectOptionalComponents,
+    releaseEntries: AGENT_INTEGRATION_RELEASE_ENTRY_MAP,
+    enforceReleaseAcceptance,
+    releasePolicy: {
+      manifestVersion: releasePolicy.manifestVersion,
+      mode: releasePolicy.mode,
+      customLocalAgentEnabled: releasePolicy.customLocalAgentEnabled,
+      diagnostics: releasePolicy.diagnostics,
+    },
     canManageInstallation,
     cliManagementProofLimitBytes: MAX_CLI_EXECUTABLE_PROOF_BYTES,
     attestInstallation: async (row, expectedProof) => Boolean(
       await attestCurrentRow(row, expectedProof),
     ),
+    verifyCodexHookTrust: options.codexHookTrustVerifier ?? (async ({ installation, hostVersion, action }) => (
+      verifyCodexHookTrustAction({
+        runtime: runtimeContext,
+        installation: installation.identity,
+        installationId: installation.id,
+        hostVersion,
+        agentId: installation.agentId,
+        operationId: ids.next('operation'),
+        codexHookTrustEvidence: repository,
+      }, action)
+    )),
+    afterCodexHookTrust: () => runtime.runMaintenance(),
+    afterGuidedRemoval: () => runtime.runMaintenance(),
+    probeCustomInstallation: customAdapterActive
+      ? async row => row.host_variant === 'custom-local-mcp'
+        ? Boolean(await attestCurrentRow(row))
+        : probeNonstandardCustomInstallation(row, homeDir, repository, attestCurrentRow)
+      : undefined,
   })
   runtime.configureScheduler(
     () => service.scan().then(() => undefined),
@@ -402,21 +553,28 @@ export function createProductionAgentIntegrationComposition(
     runtime,
     observeOnly,
     enabledAdapterIds: activeAdapterIds,
+    releasePolicyMode: releasePolicy.mode,
+    releasePolicyDiagnostics: releasePolicy.diagnostics,
   }
 }
 
 const TRUSTED_APP_BUNDLE_IDS: Readonly<Partial<Record<CatalogId, readonly string[]>>> = Object.freeze({
+  'claude-cowork-local': ['com.anthropic.claudefordesktop'],
   'claude-desktop-legacy': ['com.anthropic.claudefordesktop'],
   'codex-desktop': ['com.openai.codex'],
   'cursor-desktop': ['com.todesktop.230313mzl4w4u92'],
-  'windsurf-desktop': ['com.codeium.windsurf'],
-  'qwenwork-desktop': ['com.alibaba.qwenwork'],
+  'windsurf-desktop': ['com.exafunction.windsurf'],
+  'qwenwork-desktop': ['cn.qwenwork.desktop.mac'],
   'zcode-desktop': ['dev.zcode.app'],
 })
 
 const TRUSTED_SIGNED_APP_PROVENANCE: Readonly<Partial<Record<CatalogId, readonly string[]>>> = Object.freeze({
+  'claude-cowork-local': ['signed_app:com.anthropic.claudefordesktop:Q6L2SF6YDW'],
   'claude-desktop-legacy': ['signed_app:com.anthropic.claudefordesktop:Q6L2SF6YDW'],
+  'codex-desktop': ['signed_app:com.openai.codex:2DC432GLL2'],
   'cursor-desktop': ['signed_app:com.todesktop.230313mzl4w4u92:VDXQ22DGB9'],
+  'windsurf-desktop': ['signed_app:com.exafunction.windsurf:83Z2LHX6XW'],
+  'qwenwork-desktop': ['signed_app:cn.qwenwork.desktop.mac:XN6U3EV979'],
   'zcode-desktop': ['signed_app:dev.zcode.app:8A5X4JJ39T'],
 })
 
@@ -429,12 +587,204 @@ const TRUSTED_CLI_PROVENANCE: Readonly<Partial<Record<CatalogId, readonly string
   'qwen-code-cli': ['npm_metadata:@qwen-code/qwen-code'],
   'opencode-v1-cli': ['npm_metadata:opencode-ai'],
   'opencode-v2-beta-cli': ['npm_metadata:@opencode-ai/cli'],
-  'pi-official-cli': [
-    'npm_metadata:@mariozechner/pi-coding-agent',
-    'npm_metadata:@earendil-works/pi-coding-agent',
-  ],
+  // The historical Mario distribution remains discoverable for migration
+  // visibility, but only the maintained Earendil API has a writable Adapter.
+  'pi-official-cli': ['npm_metadata:@earendil-works/pi-coding-agent'],
   'omp-cli': ['npm_metadata:@oh-my-pi/pi-coding-agent'],
 })
+
+const TRUSTED_SIGNED_CLI_PROVENANCE: Readonly<Partial<Record<CatalogId, readonly string[]>>> = Object.freeze({
+  'claude-code-native': ['signed_cli:com.anthropic.claude-code:Q6L2SF6YDW'],
+  'kimi-code-native': ['signed_cli:kimi:2J9472RW75'],
+})
+const SIGNED_CLI_SURFACE_SCHEMA = 'signed-cli-surface-v1'
+const KIMI_SIGNED_CLI_SURFACE_SCHEMA = 'signed-cli-kimi-receipt-lookup-v1'
+
+const CUSTOM_MCP_SCHEMAS = new Set([
+  'standard_mcp_servers',
+  'nested_mcp_servers',
+  'opencode_mcp',
+])
+const CUSTOM_CONFIG_PROOF_LIMIT_BYTES = 1024 * 1024
+
+interface CustomMcpTrustBinding {
+  userOwned: boolean
+  executablePath: string
+  executableFingerprint: string
+  executableSize: number
+  configPath: string
+  configFingerprint: string
+  schemaKind: 'standard_mcp_servers' | 'nested_mcp_servers' | 'opencode_mcp'
+  selectorKey: string
+  selector: readonly string[]
+  ownershipKey: string
+}
+
+async function probeNonstandardCustomInstallation(
+  row: AgentInstallationRow,
+  homeDir: string,
+  repository: AgentIntegrationRepository,
+  attestCurrentRow: (row: AgentInstallationRow) => Promise<string | null>,
+): Promise<boolean> {
+  if (!isCustomInstallationManagementContractValid(row, repository, AGENT_INTEGRATION_RELEASE_ENTRY_MAP)
+    || row.family !== 'custom-local-agent'
+    || row.host_variant === 'custom-local-mcp'
+    || row.runtime_realm !== 'local_macos'
+    || !row.config_root) return false
+  let metadata: Record<string, unknown>
+  try {
+    const parsed = JSON.parse(row.metadata_json) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
+    metadata = parsed as Record<string, unknown>
+  } catch {
+    return false
+  }
+  const custom = metadata.customInstallation
+  if (!custom || typeof custom !== 'object' || Array.isArray(custom)) return false
+  const values = custom as Record<string, unknown>
+  if (values.kind !== 'nonstandard_config_root'
+    || typeof values.sourceInstallationId !== 'string'
+    || typeof values.sourceHostVariant !== 'string'
+    || typeof values.sourceInstallKey !== 'string'
+    || typeof values.sourceSurfaceFingerprint !== 'string'
+    || typeof values.configFingerprint !== 'string') return false
+
+  const root = path.resolve(row.config_root)
+  const relativeHome = path.relative(path.resolve(homeDir), root)
+  if (relativeHome === '..' || relativeHome.startsWith(`..${path.sep}`) || path.isAbsolute(relativeHome)) return false
+  try {
+    const lstat = fsSync.lstatSync(root, { bigint: true })
+    if (lstat.isSymbolicLink() || !lstat.isDirectory() || fsSync.realpathSync(root) !== root) return false
+    const fingerprint = sha256Json({
+      realpath: root,
+      device: String(lstat.dev),
+      inode: String(lstat.ino),
+      mode: String(lstat.mode),
+    })
+    if (fingerprint !== values.configFingerprint) return false
+  } catch {
+    return false
+  }
+
+  const source = repository.getInstallation(values.sourceInstallationId)
+  return Boolean(
+    source
+    && source.desired_state !== 'removed'
+    && source.health_state === 'discovered'
+    && persistedProjectionSurfaceFingerprint(source) === values.sourceSurfaceFingerprint
+    && await attestCurrentRow(source),
+  )
+}
+
+function customMcpTrustBinding(
+  row: AgentInstallationRow,
+  homeDir: string,
+): CustomMcpTrustBinding | null {
+  if (row.family !== 'custom-local-agent'
+    || row.host_variant !== 'custom-local-mcp'
+    || row.runtime_realm !== 'local_macos'
+    || row.health_state !== 'discovered'
+    || row.provenance !== 'user_selected_local_executable'
+    || !row.agent_id
+    || !row.config_root
+    || !row.executable_path) return null
+  let metadata: Record<string, unknown>
+  try {
+    const parsed = JSON.parse(row.metadata_json) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    metadata = parsed as Record<string, unknown>
+  } catch {
+    return null
+  }
+  const custom = metadata.customInstallation
+  if (!custom || typeof custom !== 'object' || Array.isArray(custom)) return null
+  const values = custom as Record<string, unknown>
+  const schemaKind = values.schemaKind
+  const userOwned = values.configurationOwnership === 'user'
+  const selectorKey = values.selectorKey
+  const configFingerprint = values.configFingerprint
+  const executableFingerprint = values.executableFingerprint
+  if (values.kind !== 'manual_mcp_client'
+    || typeof schemaKind !== 'string'
+    || !CUSTOM_MCP_SCHEMAS.has(schemaKind)
+    || typeof selectorKey !== 'string'
+    || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(selectorKey)
+    || ['__proto__', 'constructor', 'prototype'].includes(selectorKey)
+    || typeof configFingerprint !== 'string'
+    || !/^[a-f0-9]{64}$/u.test(configFingerprint)
+    || typeof executableFingerprint !== 'string'
+    || !/^[a-f0-9]{64}$/u.test(executableFingerprint)) return null
+
+  const distribution = persistedDistribution(row)
+  const eligibility = persistedManagementEligibility(row)
+  let configFiles: ReturnType<typeof persistedComponentConfigFiles>
+  try {
+    configFiles = persistedComponentConfigFiles(row)
+  } catch {
+    return null
+  }
+  const executablePath = path.resolve(row.executable_path)
+  const configPath = userOwned ? '' : configFiles?.memory_tools
+  const configRoot = path.resolve(row.config_root)
+  const canonicalHome = path.resolve(homeDir)
+  const relativeHome = path.relative(canonicalHome, configRoot)
+  if (!path.isAbsolute(row.executable_path)
+    || !path.isAbsolute(row.config_root)
+    || (!userOwned && (!configPath || !path.isAbsolute(configPath)
+      || path.dirname(path.resolve(configPath)) !== configRoot))
+    || relativeHome === '..'
+    || relativeHome.startsWith(`..${path.sep}`)
+    || path.isAbsolute(relativeHome)
+    || (!userOwned && !['.json', '.jsonc'].includes(path.extname(configPath!).toLowerCase()))
+    || distribution.executableRealpath !== executablePath
+    || distribution.packageProvenance !== 'user_selected_local_executable'
+    || eligibility?.eligible !== true
+    || !Number.isSafeInteger(eligibility.executableSizeBytes)
+    || (eligibility.executableSizeBytes ?? -1) < 0) return null
+
+  const typedSchema = schemaKind as CustomMcpTrustBinding['schemaKind']
+  const expectedCapability = `custom-local-surface:${sha256Json({
+    executableFingerprint,
+    configFingerprint,
+    schemaKind: typedSchema,
+    selectorKey,
+  })}`
+  const executableDigest = row.distribution_id?.match(/^custom-local-executable:([a-f0-9]{16})$/u)?.[1]
+  if (!executableDigest
+    || row.detected_version !== `custom-${executableDigest}`
+    || row.version_detection_method !== 'user_selected_executable_fingerprint'
+    || distribution.capabilityFingerprint !== expectedCapability
+    || row.profile_id !== `${userOwned ? 'custom-guided' : 'custom-mcp'}:${typedSchema}:${selectorKey}`
+    || row.install_key !== customMcpInstallKey({
+      mode: 'manual_mcp_client',
+      executablePath,
+      configFilePath: userOwned ? '' : path.resolve(configPath!),
+      schemaKind: typedSchema,
+      selectorKey,
+    })) return null
+
+  const selector = typedSchema === 'standard_mcp_servers'
+    ? ['mcpServers', selectorKey]
+    : typedSchema === 'nested_mcp_servers'
+      ? ['mcp', 'servers', selectorKey]
+      : ['mcp', selectorKey]
+  return {
+    userOwned,
+    executablePath,
+    executableFingerprint,
+    executableSize: eligibility.executableSizeBytes!,
+    configPath: userOwned ? '' : path.resolve(configPath!),
+    configFingerprint,
+    schemaKind: typedSchema,
+    selector,
+    selectorKey,
+    ownershipKey: selector.join('.'),
+  }
+}
+
+function customMcpInstallKey(value: Record<string, unknown>): string {
+  return `custom-local:${createHash('sha256').update(sha256Json(value)).digest('hex')}`
+}
 
 function isExactDesktopMainExecutable(appPath: string, executablePath: string): boolean {
   const executableRoot = path.resolve(appPath, 'Contents', 'MacOS')
@@ -453,10 +803,18 @@ function isExactDesktopMainExecutable(appPath: string, executablePath: string): 
  * predicate is deliberately narrower than detection and is consulted again at
  * preview time so a renderer cannot promote an unproven distribution.
  */
-export function isProductionInstallationTrusted(row: AgentInstallationRow): boolean {
+export function isProductionInstallationTrusted(
+  row: AgentInstallationRow,
+  homeDir = os.homedir(),
+): boolean {
   // A persisted distribution receipt is not current host-presence evidence.
   // Every writable channel must wait for one authoritative fresh scan.
   if (row.health_state !== 'discovered') return false
+  const eligibility = persistedManagementEligibility(row)
+  if (isAgentReleaseGateReason(eligibility?.reason)) return false
+  if (row.host_variant === 'custom-local-mcp') {
+    return customMcpTrustBinding(row, homeDir) !== null
+  }
   const distribution = persistedDistribution(row)
   const bundleIds = TRUSTED_APP_BUNDLE_IDS[row.host_variant as CatalogId]
   if (bundleIds) {
@@ -472,7 +830,6 @@ export function isProductionInstallationTrusted(row: AgentInstallationRow): bool
     )
   }
 
-  const eligibility = persistedManagementEligibility(row)
   if (eligibility?.eligible !== true) return false
   const explicitExecutableRealpath = persistedExplicitExecutableRealpath(row)
   if (!explicitExecutableRealpath || !row.executable_path
@@ -480,8 +837,16 @@ export function isProductionInstallationTrusted(row: AgentInstallationRow): bool
     || !path.isAbsolute(row.executable_path)
     || path.resolve(explicitExecutableRealpath) !== path.resolve(row.executable_path)) return false
   const provenance = distribution.packageProvenance
-  const allowedProvenance = TRUSTED_CLI_PROVENANCE[row.host_variant as CatalogId] ?? []
-  return Boolean(provenance && allowedProvenance.includes(provenance))
+  const allowedPackageProvenance = TRUSTED_CLI_PROVENANCE[row.host_variant as CatalogId] ?? []
+  const allowedSignedProvenance = TRUSTED_SIGNED_CLI_PROVENANCE[row.host_variant as CatalogId] ?? []
+  if (!provenance) return false
+  if (allowedSignedProvenance.includes(provenance)) {
+    const schema = row.host_variant === 'kimi-code-native'
+      ? KIMI_SIGNED_CLI_SURFACE_SCHEMA
+      : SIGNED_CLI_SURFACE_SCHEMA
+    return Boolean(distribution.capabilityFingerprint?.startsWith(`${schema}:`))
+  }
+  return allowedPackageProvenance.includes(provenance)
 }
 
 function persistedExplicitExecutableRealpath(row: AgentInstallationRow): string | null {
@@ -506,9 +871,18 @@ function persistedExplicitExecutableRealpath(row: AgentInstallationRow): string 
  */
 export function createProductionLiveTrustAttestor(
   dependencies: DiscoveryDependencies,
+  options: {
+    homeDir: string
+    repository: AgentIntegrationRepository
+    runtime: AdapterRuntimeContext
+  } | null = null,
 ): (row: AgentInstallationRow) => Promise<string | null> {
   return async row => {
-    if (!isProductionInstallationTrusted(row)) return null
+    if (!isProductionInstallationTrusted(row, options?.homeDir)) return null
+    if (row.host_variant === 'custom-local-mcp') {
+      if (!options) return null
+      return attestCustomMcpInstallation(row, options)
+    }
     const distribution = persistedDistribution(row)
     const provenance = distribution.packageProvenance
     const executable = distribution.executableRealpath
@@ -527,6 +901,9 @@ export function createProductionLiveTrustAttestor(
           || distribution.capabilityFingerprint !== frozenSurfaceFingerprint) return null
         const appBefore = await stableCanonicalNodeProof(appPath, 'directory')
         const executableBefore = await stableDesktopExecutableProof(executablePath)
+        const portableExecutableBefore = dependencies.fs.readStableFileFingerprint
+          ? await dependencies.fs.readStableFileFingerprint(executablePath, MAX_CLI_EXECUTABLE_PROOF_BYTES)
+          : undefined
         const physicalSurfaceBefore = stableDesktopSurfaceIdentityProofSync(appPath, executablePath)
         const signature = await dependencies.inspectAppSignature(appPath, {
           timeoutMs: 2_000,
@@ -534,9 +911,14 @@ export function createProductionLiveTrustAttestor(
             const surfaceAfter = await inspectStableDesktopBundleSurface(dependencies, appPath, 2_000)
             const appAfter = await stableCanonicalNodeProof(appPath, 'directory')
             const executableAfter = await stableDesktopExecutableProof(executablePath)
+            const portableExecutableDuring = portableExecutableBefore && dependencies.fs.readStableFileFingerprint
+              ? await dependencies.fs.readStableFileFingerprint(executablePath, MAX_CLI_EXECUTABLE_PROOF_BYTES)
+              : undefined
             if (surfaceAfter.fingerprint !== surfaceBefore.fingerprint
               || surfaceAfter.executableRealpath !== executablePath
-              || appAfter !== appBefore || executableAfter !== executableBefore) {
+              || appAfter !== appBefore || executableAfter !== executableBefore
+              || (portableExecutableBefore
+                && portableExecutableDuring?.fingerprint !== portableExecutableBefore.fingerprint)) {
               throw new Error('desktop_trust_physical_identity_changed_during_signature')
             }
           },
@@ -544,9 +926,14 @@ export function createProductionLiveTrustAttestor(
         const surfaceFinal = await inspectStableDesktopBundleSurface(dependencies, appPath, 2_000)
         const appFinal = await stableCanonicalNodeProof(appPath, 'directory')
         const executableFinal = await stableDesktopExecutableProof(executablePath)
+        const portableExecutableFinal = portableExecutableBefore && dependencies.fs.readStableFileFingerprint
+          ? await dependencies.fs.readStableFileFingerprint(executablePath, MAX_CLI_EXECUTABLE_PROOF_BYTES)
+          : undefined
         if (surfaceFinal.fingerprint !== surfaceBefore.fingerprint
           || surfaceFinal.executableRealpath !== executablePath
-          || appFinal !== appBefore || executableFinal !== executableBefore) return null
+          || appFinal !== appBefore || executableFinal !== executableBefore
+          || (portableExecutableBefore
+            && portableExecutableFinal?.fingerprint !== portableExecutableBefore.fingerprint)) return null
         // The earlier awaited receipt binds publisher identity. This final
         // production-owned recursive verifier is synchronous so queued work
         // cannot mutate sealed resources before the following surface CAS.
@@ -565,8 +952,15 @@ export function createProductionLiveTrustAttestor(
         if (liveProvenance !== provenance || !bundleIds.includes(signature.identifier)) return null
         const signatureReceiptFingerprint = desktopSignatureReceiptFingerprint(signature)
         const finalSignatureReceiptFingerprint = desktopSignatureReceiptFingerprint(finalSignature)
+        const livePortableArtifactFingerprint = signedCodePortableArtifactFingerprint({
+          version: row.detected_version ?? undefined,
+          executable: portableExecutableFinal,
+          signature: finalSignature,
+        })
         if (!signatureReceiptFingerprint
-          || finalSignatureReceiptFingerprint !== signatureReceiptFingerprint) return null
+          || finalSignatureReceiptFingerprint !== signatureReceiptFingerprint
+          || (distribution.portableArtifactFingerprint !== undefined
+            && livePortableArtifactFingerprint !== distribution.portableArtifactFingerprint)) return null
         return sha256Json({
           channel: 'signed_app',
           appPath,
@@ -583,9 +977,129 @@ export function createProductionLiveTrustAttestor(
       }
     }
 
-    if (!executable || !provenance?.startsWith('npm_metadata:')
-      || !dependencies.fs.readStableFileFingerprint) return null
+    if (!executable || !provenance || !dependencies.fs.readStableFileFingerprint) return null
+    const readExecutableFingerprint = dependencies.fs.readStableFileFingerprint
     const executablePath = path.resolve(executable)
+    const allowedSignedProvenance = TRUSTED_SIGNED_CLI_PROVENANCE[row.host_variant as CatalogId] ?? []
+    if (allowedSignedProvenance.includes(provenance)) {
+      if (!dependencies.inspectAppSignature || !dependencies.finalVerifyAppSignatureSync) return null
+      try {
+        if ((await dependencies.fs.lstat(executablePath))?.kind !== 'file') return null
+        if (path.resolve(await dependencies.fs.realpath(executablePath)) !== executablePath) return null
+        const executableBefore = await readExecutableFingerprint(
+          executablePath,
+          MAX_CLI_EXECUTABLE_PROOF_BYTES,
+        )
+        if (!executableBefore.executable) return null
+        const kimiArchitecture = row.host_variant === 'kimi-code-native'
+          ? await dependencies.inspectExecutableArchitecture?.(executablePath) ?? null
+          : null
+        if (row.host_variant === 'kimi-code-native' && !kimiArchitecture) return null
+        const signature = await dependencies.inspectAppSignature(executablePath, {
+          timeoutMs: 2_000,
+          beforeFinalVerification: async () => {
+            const currentRealpath = path.resolve(await dependencies.fs.realpath(executablePath))
+            const executableDuring = await readExecutableFingerprint(
+              executablePath,
+              MAX_CLI_EXECUTABLE_PROOF_BYTES,
+            )
+            if (currentRealpath !== executablePath
+              || executableDuring.fingerprint !== executableBefore.fingerprint) {
+              throw new Error('signed_cli_surface_changed_during_signature')
+            }
+          },
+        })
+        const executableAfter = await readExecutableFingerprint(
+          executablePath,
+          MAX_CLI_EXECUTABLE_PROOF_BYTES,
+        )
+        if (executableAfter.fingerprint !== executableBefore.fingerprint) return null
+        const finalSignature = dependencies.finalVerifyAppSignatureSync(executablePath, 2_000)
+        // No await after the final platform verifier. Bind the path entry and
+        // open descriptor to the exact executable generation frozen above.
+        if (!stableCliProofSurfaceSync(
+          executablePath,
+          executableAfter,
+          [],
+          options?.homeDir,
+        )) return null
+        if (!signature.valid || signature.verificationBoundary !== 'strict_final'
+          || !finalSignature.valid || finalSignature.verificationBoundary !== 'strict_final'
+          || !signature.identifier || !signature.teamIdentifier
+          || finalSignature.identifier !== signature.identifier
+          || finalSignature.teamIdentifier !== signature.teamIdentifier) return null
+        const liveProvenance = `signed_cli:${signature.identifier}:${signature.teamIdentifier}`
+        if (liveProvenance !== provenance) return null
+        const signatureReceiptFingerprint = desktopSignatureReceiptFingerprint(signature)
+        const finalSignatureReceiptFingerprint = desktopSignatureReceiptFingerprint(finalSignature)
+        const kimiLookupFingerprint = row.host_variant === 'kimi-code-native'
+          && kimiArchitecture
+          && finalSignature.identifier
+          && finalSignature.teamIdentifier
+          && finalSignature.cdHash
+          && finalSignature.designatedRequirement
+          ? kimiNativeReceiptLookupFingerprint({
+              architecture: kimiArchitecture,
+              executableSha256: executableAfter.sha256,
+              executableSizeBytes: executableAfter.size,
+              identifier: finalSignature.identifier,
+              teamIdentifier: finalSignature.teamIdentifier,
+              cdHash: finalSignature.cdHash,
+              designatedRequirement: finalSignature.designatedRequirement,
+            })
+          : null
+        const kimiReceipt = kimiLookupFingerprint && kimiArchitecture
+          ? dependencies.resolveKimiNativeReceipt?.({
+              architecture: kimiArchitecture,
+              lookupFingerprint: kimiLookupFingerprint,
+            }) ?? null
+          : null
+        const surfaceFingerprint = row.host_variant === 'kimi-code-native'
+          ? kimiLookupFingerprint
+          : signatureReceiptFingerprint
+        const surfaceSchema = row.host_variant === 'kimi-code-native'
+          ? KIMI_SIGNED_CLI_SURFACE_SCHEMA
+          : SIGNED_CLI_SURFACE_SCHEMA
+        const livePortableArtifactFingerprint = row.host_variant === 'kimi-code-native'
+          ? kimiReceipt && signedKimiPortableArtifactFingerprint({
+              version: kimiReceipt.version,
+              executableArtifactFingerprint: kimiNativeExecutablePortableArtifactFingerprint(executableAfter),
+              signature: finalSignature,
+            })
+          : signedCodePortableArtifactFingerprint({
+              version: row.detected_version ?? undefined,
+              executable: executableAfter,
+              signature: finalSignature,
+            })
+        if (!signatureReceiptFingerprint
+          || finalSignatureReceiptFingerprint !== signatureReceiptFingerprint
+          || !surfaceFingerprint
+          || (row.host_variant === 'kimi-code-native'
+            && (!kimiReceipt
+              || row.detected_version !== kimiReceipt.version
+              || distribution.portableArtifactFingerprint !== kimiReceipt.portableArtifactFingerprint))
+          || (distribution.portableArtifactFingerprint !== undefined
+            && livePortableArtifactFingerprint !== distribution.portableArtifactFingerprint)
+          || distribution.capabilityFingerprint
+            !== `${surfaceSchema}:${surfaceFingerprint}`) return null
+        return sha256Json({
+          channel: 'signed_cli',
+          executablePath,
+          executableFileFingerprint: executableBefore.fingerprint,
+          identifier: signature.identifier,
+          teamIdentifier: signature.teamIdentifier,
+          signatureReceiptFingerprint,
+          ...(kimiReceipt ? {
+            version: kimiReceipt.version,
+            artifactReceiptFingerprint: kimiReceipt.portableArtifactFingerprint,
+          } : {}),
+        })
+      } catch {
+        return null
+      }
+    }
+
+    if (!provenance.startsWith('npm_metadata:')) return null
     try {
       if ((await dependencies.fs.lstat(executablePath))?.kind !== 'file') return null
       if (path.resolve(await dependencies.fs.realpath(executablePath)) !== executablePath) return null
@@ -599,11 +1113,26 @@ export function createProductionLiveTrustAttestor(
         || metadataBefore.verifiedPackageProvenance !== provenance
         || !metadataBefore.packageMetadataFingerprint
         || !metadataBefore.packageProofNodes?.length) return null
-      const metadataAfter = await dependencies.execVersion(executablePath, [], { timeoutMs: 2_000 })
+      const portableNpmExecutable = metadataBefore.packageProofNodes.find(
+        node => node.role === 'npm_package_executable' || node.role === 'qwen_launcher',
+      )
+      const isPortableWrapper = metadataBefore.packageProofNodes.some(
+        node => node.role === 'openclaw_wrapper',
+      )
+      if (metadataBefore.portableArtifactFingerprint && !isPortableWrapper
+        && (portableNpmExecutable?.path !== executablePath
+          || portableNpmExecutable.fingerprint !== executableBefore.fingerprint)) return null
+      if (distribution.portableArtifactFingerprint !== undefined
+        && metadataBefore.portableArtifactFingerprint !== distribution.portableArtifactFingerprint) return null
+      const hasOwnedPackageProof = metadataBefore.packageProofNodes.some(node => node.entryType !== undefined)
+      const metadataAfter = hasOwnedPackageProof
+        ? metadataBefore
+        : await dependencies.execVersion(executablePath, [], { timeoutMs: 2_000 })
       if (metadataAfter.exitCode !== 0
         || metadataAfter.stdout !== metadataBefore.stdout
         || metadataAfter.verifiedPackageProvenance !== metadataBefore.verifiedPackageProvenance
         || metadataAfter.packageMetadataFingerprint !== metadataBefore.packageMetadataFingerprint
+        || metadataAfter.portableArtifactFingerprint !== metadataBefore.portableArtifactFingerprint
         || !metadataAfter.packageProofNodes?.length
         || cliPackageProofNodesFingerprint(metadataAfter.packageProofNodes)
           !== cliPackageProofNodesFingerprint(metadataBefore.packageProofNodes)) return null
@@ -615,6 +1144,7 @@ export function createProductionLiveTrustAttestor(
         executablePath,
         executableBefore,
         metadataAfter.packageProofNodes,
+        options?.homeDir,
       )) return null
       return sha256Json({
         channel: 'npm_metadata',
@@ -627,6 +1157,210 @@ export function createProductionLiveTrustAttestor(
       })
     } catch {
       return null
+    }
+  }
+}
+
+async function attestCustomMcpInstallation(
+  row: AgentInstallationRow,
+  options: {
+    homeDir: string
+    repository: AgentIntegrationRepository
+    runtime: AdapterRuntimeContext
+  },
+): Promise<string | null> {
+  const binding = customMcpTrustBinding(row, options.homeDir)
+  if (!binding || !row.agent_id) return null
+  try {
+    const executableBefore = await readStableFileFingerprint(
+      binding.executablePath,
+      MAX_CLI_EXECUTABLE_PROOF_BYTES,
+    )
+    if (binding.userOwned) {
+      const after = await readStableFileFingerprint(binding.executablePath, MAX_CLI_EXECUTABLE_PROOF_BYTES)
+      if (!executableBefore.executable || executableBefore.size !== binding.executableSize
+        || executableBefore.fingerprint !== binding.executableFingerprint
+        || after.fingerprint !== executableBefore.fingerprint) return null
+      return sha256Json({ channel: 'custom_user_owned_import', installationId: row.id,
+        agentId: row.agent_id, executableFingerprint: binding.executableFingerprint })
+    }
+    const configBefore = await readStableFileSnapshot(
+      binding.configPath,
+      CUSTOM_CONFIG_PROOF_LIMIT_BYTES,
+    )
+    const configAfter = await readStableFileSnapshot(
+      binding.configPath,
+      CUSTOM_CONFIG_PROOF_LIMIT_BYTES,
+    )
+    const executableAfter = await readStableFileFingerprint(
+      binding.executablePath,
+      MAX_CLI_EXECUTABLE_PROOF_BYTES,
+    )
+    if (!executableBefore.executable
+      || executableBefore.size !== binding.executableSize
+      || executableBefore.fingerprint !== binding.executableFingerprint
+      || executableAfter.fingerprint !== executableBefore.fingerprint
+      || configAfter.fingerprint !== configBefore.fingerprint
+      || !customConfigGenerationTrusted(
+        row,
+        binding,
+        configBefore,
+        options.repository,
+        options.runtime,
+      )
+      || !stableCustomProofSurfaceSync(binding, executableAfter, configAfter)) return null
+    // Deliberately exclude the live config generation: the first authorized
+    // projection atomically changes that file. The immutable preflight receipt
+    // plus exact owned selector keeps the proof stable across that transition.
+    return sha256Json({
+      channel: 'custom_local_preflight',
+      installationId: row.id,
+      agentId: row.agent_id,
+      executablePath: binding.executablePath,
+      executableFingerprint: binding.executableFingerprint,
+      executableSize: binding.executableSize,
+      configPath: binding.configPath,
+      configPreflightFingerprint: binding.configFingerprint,
+      schemaKind: binding.schemaKind,
+      selectorKey: binding.selectorKey,
+    })
+  } catch {
+    return null
+  }
+}
+
+function customConfigGenerationTrusted(
+  row: AgentInstallationRow,
+  binding: CustomMcpTrustBinding,
+  snapshot: Awaited<ReturnType<typeof readStableFileSnapshot>>,
+  repository: AgentIntegrationRepository,
+  runtime: AdapterRuntimeContext,
+): boolean {
+  if (snapshot.fingerprint === binding.configFingerprint) return true
+  if (!row.agent_id) return false
+  let document: Record<string, unknown>
+  try {
+    const source = Buffer.from(snapshot.content).toString('utf8')
+    const parsed = path.extname(binding.configPath).toLowerCase() === '.jsonc'
+      ? parseJsoncObject(source).root
+      : JSON.parse(source) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
+    document = parsed as Record<string, unknown>
+  } catch {
+    return false
+  }
+  // Once the first authorized projection has committed, the config file's
+  // inode/content fingerprint necessarily differs from the preflight receipt.
+  // At that point trust comes only from the exact active ledger ownership for
+  // this Installation/path/selector. Arbitrary files with the same shape do
+  // not qualify. The Adapter still treats an occupied non-owned selector as a
+  // conflict, while an absent selector remains eligible for auto-repair.
+  const ownedScope = repository.getDisconnectArtifactScope(
+    row.id,
+    'memory_tools',
+    binding.configPath,
+    binding.ownershipKey,
+  )
+  const pendingRemoval = repository.listInstallationComponentDetails(row.id).find(component => (
+    component.component_key === 'memory_tools'
+    && component.target_path === binding.configPath
+    && component.ownership_key === binding.ownershipKey
+    && component.artifact_state === 'removal_pending'
+    && component.desired_state === 'removed'
+    && component.consent_envelope_id === row.consent_envelope_id
+  ))
+  if (!ownedScope && !pendingRemoval) return false
+  let fragment: unknown = document
+  for (const key of binding.selector) {
+    if (!fragment || typeof fragment !== 'object' || Array.isArray(fragment)
+      || !Object.prototype.hasOwnProperty.call(fragment, key)) {
+      return ownedScope !== null || pendingRemoval !== undefined
+    }
+    fragment = (fragment as Record<string, unknown>)[key]
+  }
+  const projectedEnvironment = fragment && typeof fragment === 'object' && !Array.isArray(fragment)
+    ? (binding.schemaKind === 'opencode_mcp'
+        ? (fragment as Record<string, unknown>).environment
+        : (fragment as Record<string, unknown>).env)
+    : null
+  const activityGenerationToken = projectedEnvironment
+    && typeof projectedEnvironment === 'object'
+    && !Array.isArray(projectedEnvironment)
+    && typeof (projectedEnvironment as Record<string, unknown>).EB_ACTIVITY_GENERATION_TOKEN === 'string'
+    ? (projectedEnvironment as Record<string, unknown>).EB_ACTIVITY_GENERATION_TOKEN as string
+    : ''
+  if (!activityGenerationToken) return false
+  const environment = {
+    EB_AGENT_ID: row.agent_id,
+    EB_HOST_VARIANT: 'custom-local-mcp',
+    EB_ACTIVITY_GENERATION_TOKEN: activityGenerationToken,
+  }
+  const desired = binding.schemaKind === 'opencode_mcp'
+    ? {
+        type: 'local',
+        command: [runtime.shimPath, runtime.mcpServerPath],
+        enabled: true,
+        environment,
+      }
+    : {
+        command: runtime.shimPath,
+        args: [runtime.mcpServerPath],
+        env: environment,
+      }
+  const fragmentHash = sha256Json(fragment)
+  if (fragmentHash !== sha256Json(desired)) return false
+  if (pendingRemoval?.owned_fragment_hash === fragmentHash) return true
+  const artifacts = repository.findExactManagedArtifacts(
+    'local_macos',
+    binding.configPath,
+    fragmentHash,
+  )
+  if (artifacts.some(artifact => {
+    if (artifact.ownership_key !== binding.ownershipKey) return false
+    return repository.listArtifactConsumers(String(artifact.id)).some(consumer => (
+      consumer.installation_id === row.id
+      && consumer.component_key === 'memory_tools'
+      && consumer.state === 'active'
+      && (consumer.desired_state === 'managed' || consumer.desired_state === 'disabled')
+    ))
+  })) return true
+  // Disconnect stages this exact owner and Artifact as removal_pending before
+  // the physical selector removal. Keep source trust valid only for that
+  // exact owned fragment; coordinator consent/fence/CAS still authorize the
+  // effect, and a foreign fragment remains rejected above.
+  return false
+}
+
+function stableCustomProofSurfaceSync(
+  binding: CustomMcpTrustBinding,
+  executable: StableFileFingerprint,
+  config: StableFileFingerprint,
+): boolean {
+  try {
+    if (fsSync.realpathSync(binding.executablePath) !== binding.executablePath
+      || fsSync.realpathSync(binding.configPath) !== binding.configPath) return false
+  } catch {
+    return false
+  }
+  const nodes = [
+    { path: binding.executablePath, proof: executable },
+    { path: binding.configPath, proof: config },
+  ]
+  const opened: Array<{ path: string; proof: StableFileFingerprint; fd: number }> = []
+  try {
+    for (const node of nodes) {
+      opened.push({
+        ...node,
+        fd: fsSync.openSync(node.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW),
+      })
+    }
+    return opened.every(node => stableCliProofNodeMatches(node.fd, node.path, node.proof))
+      && [...opened].reverse().every(node => stableCliProofNodeMatches(node.fd, node.path, node.proof))
+  } catch {
+    return false
+  } finally {
+    for (const node of opened.reverse()) {
+      try { fsSync.closeSync(node.fd) } catch { /* fail closed */ }
     }
   }
 }
@@ -644,14 +1378,22 @@ function stableCliProofSurfaceSync(
   executablePath: string,
   executable: StableFileFingerprint,
   packageNodes: readonly PackageMetadataProofNode[],
+  homeDir?: string,
 ): boolean {
+  const criticalPackageNodes = packageNodes.filter(node => (
+    node.role !== 'npm_package_file'
+    && node.role !== 'openclaw_package_file'
+    && node.role !== 'qwen_package_file'
+  ))
   const nodes: Array<{ path: string; proof: StableFileFingerprint }> = [
     { path: executablePath, proof: executable },
-    ...packageNodes.map(node => ({ path: node.path, proof: node })),
-  ]
+    ...criticalPackageNodes.map(node => ({ path: node.path, proof: node })),
+  ].filter((node, index, all) => all.findIndex(candidate => candidate.path === node.path) === index)
   if (nodes.some(node => !path.isAbsolute(node.path) || path.resolve(node.path) !== node.path)) return false
   const opened: Array<{ path: string; proof: StableFileFingerprint; fd: number }> = []
   try {
+    if (!stableNpmPackageTreePathsSync(packageNodes)) return false
+    if (!stableOpenClawWrapperAliasesSync(executablePath, packageNodes, homeDir)) return false
     for (const node of nodes) {
       opened.push({
         ...node,
@@ -667,7 +1409,8 @@ function stableCliProofSurfaceSync(
     for (const node of [...opened].reverse()) {
       if (!stableCliProofNodeMatches(node.fd, node.path, node.proof)) return false
     }
-    return true
+    return stableNpmPackageTreePathsSync(packageNodes)
+      && stableOpenClawWrapperAliasesSync(executablePath, packageNodes, homeDir)
   } catch {
     return false
   } finally {
@@ -675,6 +1418,170 @@ function stableCliProofSurfaceSync(
       try { fsSync.closeSync(node.fd) } catch { /* fail-closed result already chosen */ }
     }
   }
+}
+
+function stableOpenClawWrapperAliasesSync(
+  executablePath: string,
+  packageNodes: readonly PackageMetadataProofNode[],
+  homeDir?: string,
+): boolean {
+  const wrapper = packageNodes.find(node => node.role === 'openclaw_wrapper')
+  if (!wrapper) return true
+  const nodeRuntime = packageNodes.find(node => node.role === 'openclaw_node_runtime')
+  if (!nodeRuntime || wrapper.path !== executablePath) return false
+  const openClawRoot = path.dirname(path.dirname(executablePath))
+  const effectiveHomeDir = homeDir
+    ?? (path.basename(openClawRoot) === '.openclaw' ? path.dirname(openClawRoot) : undefined)
+  const defaultOpenClawRoot = effectiveHomeDir ? path.join(effectiveHomeDir, '.openclaw') : null
+  const requiresDefaultAlias = defaultOpenClawRoot === openClawRoot
+  const outerAlias = effectiveHomeDir ? path.join(effectiveHomeDir, '.local', 'bin', 'openclaw') : null
+  const nodeAliasRoot = path.join(openClawRoot, 'tools', 'node')
+  const nodeAlias = path.join(nodeAliasRoot, 'bin', 'node')
+  const toolchainRoot = path.dirname(path.dirname(nodeRuntime.path))
+  try {
+    const expectedUid = typeof process.getuid === 'function' ? String(process.getuid()) : null
+    if (expectedUid === null) return false
+    const directories = [
+      ...(requiresDefaultAlias && effectiveHomeDir
+        ? [path.join(effectiveHomeDir, '.local'), path.join(effectiveHomeDir, '.local', 'bin')]
+        : []),
+      openClawRoot,
+      path.join(openClawRoot, 'bin'),
+      path.join(openClawRoot, 'tools'),
+      toolchainRoot,
+      path.join(toolchainRoot, 'bin'),
+      path.join(toolchainRoot, 'lib'),
+      path.join(toolchainRoot, 'lib', 'node_modules'),
+      path.join(toolchainRoot, 'lib', 'node_modules', 'openclaw'),
+      path.join(toolchainRoot, 'lib', 'node_modules', 'openclaw', 'dist'),
+    ]
+    if (directories.some(directory => {
+      const node = fsSync.lstatSync(directory, { bigint: true })
+      return !node.isDirectory()
+        || node.isSymbolicLink()
+        || String(node.uid) !== expectedUid
+        || (Number(node.mode & 0o7777n) & 0o022) !== 0
+        || path.resolve(fsSync.realpathSync(directory)) !== directory
+    })) return false
+    const nodeAliasNode = fsSync.lstatSync(nodeAliasRoot, { bigint: true })
+    if (!nodeAliasNode.isSymbolicLink()
+      || String(nodeAliasNode.uid) !== expectedUid
+      || path.resolve(fsSync.realpathSync(nodeAliasRoot)) !== toolchainRoot
+      || path.resolve(fsSync.realpathSync(nodeAlias)) !== nodeRuntime.path) return false
+    if (!requiresDefaultAlias) return true
+    if (!outerAlias) return false
+    const outerNode = fsSync.lstatSync(outerAlias, { bigint: true })
+    return outerNode.isSymbolicLink()
+      && String(outerNode.uid) === expectedUid
+      && path.resolve(fsSync.realpathSync(outerAlias)) === executablePath
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Re-list the exact package tree at the final synchronous trust boundary. The
+ * per-file descriptors below bind contents and metadata; this list equality
+ * additionally rejects a file added, removed or replaced by a directory after
+ * the asynchronous package-tree snapshots completed.
+ */
+function stableNpmPackageTreePathsSync(packageNodes: readonly PackageMetadataProofNode[]): boolean {
+  const hasTreeProof = packageNodes.some(node => node.entryType !== undefined)
+  if (!hasTreeProof) return true
+  const includeNodeModules = packageNodes.some(node => node.role === 'qwen_standalone_manifest')
+  const manifest = packageNodes.find(node => node.role === 'package_manifest')
+  if (!manifest) return false
+  const packageRoot = path.dirname(manifest.path)
+  const expectedPaths = packageNodes
+    .filter(node => node.entryType !== undefined)
+    .map(node => node.path)
+    .sort((left, right) => left.localeCompare(right))
+  if (expectedPaths.length === 0 || expectedPaths.length > MAX_PACKAGE_TREE_FILES
+    || !expectedPaths.includes(manifest.path)
+    || expectedPaths.some(filePath => !isPathWithin(packageRoot, filePath))) return false
+
+  const actualPaths: string[] = []
+  const expectedByPath = new Map(expectedPaths.map(filePath => [
+    filePath,
+    packageNodes.find(node => node.path === filePath && node.entryType !== undefined)!,
+  ]))
+  let directoryCount = 0
+  const maxDirectories = includeNodeModules
+    ? MAX_STANDALONE_PACKAGE_TREE_DIRECTORIES
+    : MAX_PACKAGE_TREE_DIRECTORIES
+  const visit = (directory: string, depth: number): boolean => {
+    directoryCount += 1
+    if (directoryCount > maxDirectories || depth > MAX_PACKAGE_TREE_DEPTH) return false
+    const directoryNode = fsSync.lstatSync(directory, { bigint: true })
+    if (!directoryNode.isDirectory()
+      || directoryNode.isSymbolicLink()
+      || !isTrustedArtifactOwner(String(directoryNode.uid))
+      || (Number(directoryNode.mode & 0o7777n) & 0o022) !== 0
+      || path.resolve(fsSync.realpathSync(directory)) !== directory) return false
+    const entries = fsSync.readdirSync(directory, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name))
+    if (entries.length > MAX_PACKAGE_TREE_ENTRIES_PER_DIRECTORY) return false
+    for (const directoryEntry of entries) {
+      const targetPath = path.join(directory, directoryEntry.name)
+      if (directoryEntry.isDirectory()) {
+        if (!includeNodeModules && directoryEntry.name === 'node_modules') continue
+        if (!visit(targetPath, depth + 1)) return false
+        continue
+      }
+      if ((!directoryEntry.isFile() && !directoryEntry.isSymbolicLink())
+        || actualPaths.length >= MAX_PACKAGE_TREE_FILES) return false
+      const proof = expectedByPath.get(targetPath)
+      if (!proof) return false
+      const pathNode = fsSync.lstatSync(targetPath, { bigint: true })
+      if (directoryEntry.isSymbolicLink()) {
+        if (proof.entryType !== 'symlink' || !pathNode.isSymbolicLink()) return false
+        const rawTarget = fsSync.readlinkSync(targetPath)
+        if (path.isAbsolute(rawTarget)) return false
+        const resolvedTarget = path.resolve(path.dirname(targetPath), rawTarget)
+        const normalizedTarget = path.relative(path.dirname(targetPath), resolvedTarget).split(path.sep).join('/')
+        const targetProof = expectedByPath.get(resolvedTarget)
+        if (!isPathWithin(packageRoot, resolvedTarget)
+          || (!includeNodeModules
+            && path.relative(packageRoot, resolvedTarget).split(path.sep).includes('node_modules'))
+          || normalizedTarget !== proof.symlinkTarget
+          || targetProof?.entryType !== 'file'
+          || !stableSymlinkIdentityMatches(pathNode, proof)) return false
+      } else if (proof.entryType !== 'file'
+        || !pathNode.isFile()
+        || pathNode.isSymbolicLink()
+        || path.resolve(fsSync.realpathSync(targetPath)) !== targetPath
+        || !stableFileFingerprintIdentityMatches(pathNode, proof)) return false
+      actualPaths.push(targetPath)
+    }
+    return true
+  }
+  return visit(packageRoot, 0)
+    && actualPaths.length === expectedPaths.length
+    && actualPaths.every((filePath, index) => filePath === expectedPaths[index])
+}
+
+function stableSymlinkIdentityMatches(
+  stat: BigIntStats,
+  proof: StableFileFingerprint,
+): boolean {
+  return String(stat.dev) === proof.device
+    && String(stat.ino) === proof.inode
+    && String(stat.nlink) === proof.linkCount
+    && String(stat.mtimeNs) === proof.mtimeNs
+    && String(stat.ctimeNs) === proof.ctimeNs
+    && Number(stat.mode & 0o7777n) === proof.mode
+    && (proof.ownerUid === undefined || String(stat.uid) === proof.ownerUid)
+    && (proof.groupGid === undefined || String(stat.gid) === proof.groupGid)
+}
+
+function isTrustedArtifactOwner(ownerUid: string): boolean {
+  const currentUid = typeof process.getuid === 'function' ? String(process.getuid()) : null
+  return currentUid !== null && (ownerUid === currentUid || ownerUid === '0')
+}
+
+function isPathWithin(rootPath: string, targetPath: string): boolean {
+  const relative = path.relative(rootPath, targetPath)
+  return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
 }
 
 function stableCliProofNodeMatches(
@@ -703,6 +1610,8 @@ function stableFileFingerprintIdentityMatches(
     && String(stat.ctimeNs) === proof.ctimeNs
     && Number(stat.size) === proof.size
     && Number(stat.mode & 0o7777n) === proof.mode
+    && (proof.ownerUid === undefined || String(stat.uid) === proof.ownerUid)
+    && (proof.groupGid === undefined || String(stat.gid) === proof.groupGid)
 }
 
 export function createProductionAgentIntegrationService(
@@ -768,6 +1677,7 @@ interface RuntimeDependencies {
 
 export class ProductionAgentIntegrationRuntime {
   private maintenance: Promise<void> | null = null
+  private maintenanceRequested = false
   private timer: NodeJS.Timeout | null = null
   private scheduledScan: (() => Promise<void>) | null = null
   private intervalMs = DEFAULT_MAINTENANCE_INTERVAL_MS
@@ -811,8 +1721,20 @@ export class ProductionAgentIntegrationRuntime {
 
   runMaintenance(): Promise<void> {
     if (this.stopped || !this.freshScanReady) return Promise.resolve()
+    this.maintenanceRequested = true
     if (this.maintenance) return this.maintenance
-    this.maintenance = this.performMaintenance().finally(() => { this.maintenance = null })
+    // A concurrent confirmation may persist evidence after the current pass
+    // read it. Drain that request serially before resolving the shared promise.
+    this.maintenance = (async () => {
+      try {
+        while (this.maintenanceRequested && !this.stopped && this.freshScanReady) {
+          this.maintenanceRequested = false
+          await this.performMaintenance()
+        }
+      } finally {
+        this.maintenance = null
+      }
+    })()
     return this.maintenance
   }
 
@@ -916,6 +1838,7 @@ export class ProductionAgentIntegrationRuntime {
       installation: candidate.installation,
       installationDesiredState: candidate.installation.desiredState,
       componentKey: candidate.componentKey,
+      componentKeys: candidate.componentKeys,
       componentName: candidate.componentName,
       desiredCapability: candidate.desiredCapability,
       consentId: candidate.consentId,
@@ -1018,21 +1941,6 @@ function defaultRuntimeContext(homeDir: string, applicationDataDir: string): Ada
   }
 }
 
-function enabledAdapters(
-  adapters: ReadonlyMap<CatalogId, AgentHostAdapter>,
-  override?: readonly CatalogId[],
-): CatalogId[] {
-  const requested = override ?? String(process.env[ADAPTER_GATE_ENV] ?? '')
-    .split(',')
-    .map(value => value.trim())
-    .filter((value): value is CatalogId => value.length > 0)
-  return [...new Set(requested)].filter(id => adapters.has(id))
-}
-
-function productionWriteGateEnabled(): boolean {
-  return process.env[WRITE_GATE_ENV] === '1'
-}
-
 function numericGeneration(version: string): number {
   const parsed = Number.parseInt(version, 10)
   return Number.isInteger(parsed) && parsed > 0 ? parsed : 1
@@ -1102,7 +2010,10 @@ function observationFor(
   inspection: AdapterInspection,
 ): ManagedArtifactObservation {
   const component = inspection.components.find(item => item.componentKey === candidate.componentKey)
-  const inaccessible = !inspection.detected || inspection.diagnostics.some(diagnostic =>
+  const relevantDiagnostics = inspection.diagnostics.filter(diagnostic => (
+    diagnostic !== 'qwenwork_connector_registry_not_readable_guided_only'
+  ))
+  const inaccessible = !inspection.detected || relevantDiagnostics.some(diagnostic =>
     /permission|denied|inaccessible|unreadable|timeout/iu.test(diagnostic),
   )
   if (inaccessible) {
@@ -1145,6 +2056,20 @@ function observationFor(
   }
 }
 
+function releaseGatedScanner(scanner: AgentIntegrationScannerPort): AgentIntegrationScannerPort {
+  return {
+    scan: async () => applyAgentReleaseGateToReport(await scanner.scan()),
+    ...(scanner.previewGuidedInstallation ? {
+      previewGuidedInstallation: async catalogId => {
+        const installation = await scanner.previewGuidedInstallation!(catalogId)
+        return installation && agentReleaseEligibilityReason(installation) === null
+          ? installation
+          : null
+      },
+    } : {}),
+  }
+}
+
 function createProductionScanner(
   homeDir: string,
   dependencies: DiscoveryDependencies,
@@ -1158,6 +2083,130 @@ function createProductionScanner(
       operationTimeoutMs: 2_500,
       signatureTimeoutMs: 20_000,
     }, dependencies),
+    previewGuidedInstallation: async catalogId => {
+      if (catalogId !== 'claude-cowork-local') return null
+      const report = await discoverClaudeCoworkGuidedCandidate({
+        homeDir,
+        osUserIdentity: safeUserIdentity(),
+        environment: discoveryEnvironment(),
+        applicationRoots: ['/Applications', path.join(homeDir, 'Applications')],
+        operationTimeoutMs: 2_500,
+        signatureTimeoutMs: 20_000,
+      }, dependencies)
+      if (report.unresolved.length > 0 || report.installations.length !== 1) return null
+      return report.installations[0]
+    },
+  }
+}
+
+/**
+ * Read-only production surface used by the signed real-host acceptance
+ * exporter.  Keeping this composition here ensures capture uses the exact
+ * discovery and live-trust primitives that guard ordinary production writes;
+ * it never exposes an Adapter, coordinator, or mutation capability.
+ */
+export function createProductionAgentHostMetadataEvidenceRuntime(
+  homeDir = os.homedir(),
+  fixture?: { runtimeContext: AdapterRuntimeContext },
+): {
+  scan(): Promise<ReturnType<typeof applyAgentReleaseGateToReport>>
+  attest(row: AgentInstallationRow): Promise<string | null>
+  inspectCliVersion(executableRealpath: string): ReturnType<DiscoveryDependencies['execVersion']>
+  readExecutable(executableRealpath: string): Promise<StableFileFingerprint>
+  attestCustom(row: AgentInstallationRow, db: Database.Database): Promise<string | null>
+  inspect(row: AgentInstallationRow, db: Database.Database): Promise<AdapterInspection | null>
+} {
+  const dependencies = productionDiscoveryDependencies(homeDir)
+  const scanner = createProductionScanner(homeDir, dependencies)
+  const attest = createProductionLiveTrustAttestor(dependencies)
+  // Standard distribution reads do not need Adapter paths. Custom inspection
+  // resolves them from the executing candidate, including Electron-as-Node.
+  const evidenceRuntime = () => fixture?.runtimeContext ?? metadataEvidenceRuntimeContext(homeDir)
+  return Object.freeze({
+    scan: async () => applyAgentReleaseGateToReport(await scanner.scan()),
+    attest,
+    inspectCliVersion: executableRealpath => dependencies.execVersion(
+      executableRealpath,
+      [],
+      { timeoutMs: 2_000 },
+    ),
+    readExecutable: async executableRealpath => {
+      if (!dependencies.fs.readStableFileFingerprint) {
+        throw new Error('production executable fingerprint primitive is unavailable')
+      }
+      return dependencies.fs.readStableFileFingerprint(
+        executableRealpath,
+        MAX_CLI_EXECUTABLE_PROOF_BYTES,
+      )
+    },
+    attestCustom: async (row, db) => {
+      const repository = new AgentIntegrationRepository(db)
+      const runtime = evidenceRuntime()
+      if (row.family === 'custom-local-agent' && row.host_variant !== 'custom-local-mcp') {
+        const trusted = await probeNonstandardCustomInstallation(
+          row,
+          homeDir,
+          repository,
+          createProductionLiveTrustAttestor(dependencies),
+        )
+        return trusted ? sha256Json({
+          schema: 'custom-nonstandard-live-trust-v1',
+          installationId: row.id,
+          agentId: row.agent_id,
+          projectionSurface: persistedProjectionSurfaceFingerprint(row),
+        }) : null
+      }
+      return createProductionLiveTrustAttestor(dependencies, { homeDir, repository, runtime })(row)
+    },
+    inspect: async (row, db) => {
+      if (!row.agent_id || !row.config_root) return null
+      const adapter = createP0HostAdapters().get(row.host_variant as CatalogId)
+      if (!adapter) return null
+      const runtime = evidenceRuntime()
+      return adapter.inspect({
+        runtime,
+        installation: {
+          runtimeRealm: row.runtime_realm as 'local_macos',
+          osUserIdentity: row.os_user_identity ?? 'local-user',
+          productFamilyId: row.family as never,
+          hostVariant: row.host_variant as CatalogId,
+          canonicalConfigRoot: row.config_root,
+          componentConfigRoots: persistedComponentConfigRoots(row),
+          componentConfigFiles: persistedComponentConfigFiles(row),
+          explicitProfile: row.profile_id || 'default',
+          hostOwnedIdentity: persistedHostOwnedIdentity(row),
+          distribution: persistedDistribution(row),
+          installKey: row.install_key,
+        },
+        agentId: row.agent_id,
+        operationId: 'host-acceptance-read-only',
+        hostActivityEvidence: new SqliteHostActivityEvidenceReader(db),
+      })
+    },
+  })
+}
+
+export function metadataEvidenceRuntimeContext(homeDir: string, candidateExecutable = process.execPath): AdapterRuntimeContext {
+  const executable = path.resolve(candidateExecutable)
+  const macOsDirectory = path.dirname(executable)
+  const contents = path.dirname(macOsDirectory)
+  if (path.basename(executable) !== 'Tide Mind' || path.basename(macOsDirectory) !== 'MacOS'
+    || path.basename(contents) !== 'Contents' || !path.dirname(contents).endsWith('.app')) {
+    throw new Error('metadata exporter requires the packaged candidate executable')
+  }
+  const bin = path.join(contents, 'Resources', 'app.asar.unpacked', 'out', 'bin')
+  return {
+    runtimeRealm: 'local_macos',
+    homeDir,
+    applicationDataDir: path.join(homeDir, 'Library', 'Application Support', 'TideMind'),
+    shimPath: path.join(homeDir, '.tidemind', 'bin', 'tm-node'),
+    mcpServerPath: path.join(bin, 'mcp-server.cjs'),
+    hookScriptPath: path.join(bin, 'hook-session-start.cjs'),
+    preCompactScriptPath: path.join(bin, 'hook-pre-compact.cjs'),
+    postCompactScriptPath: path.join(bin, 'hook-post-compact.cjs'),
+    tideMindVersion: AGENT_INTEGRATION_RELEASE_MANIFEST.appVersion,
+    catalogVersion: CATALOG_VERSION,
+    projectionVersion: '1',
   }
 }
 
@@ -1176,6 +2225,9 @@ function productionDiscoveryDependencies(homeDir: string): DiscoveryDependencies
                 : stat.isFile()
                   ? 'file'
                   : 'other',
+            mode: stat.mode & 0o7777,
+            ownerUid: String(stat.uid),
+            groupGid: String(stat.gid),
           }
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
@@ -1183,6 +2235,20 @@ function productionDiscoveryDependencies(homeDir: string): DiscoveryDependencies
         }
       },
       realpath: targetPath => fs.realpath(targetPath),
+      async readDirectoryNames(targetPath, maxEntries) {
+        try {
+          const directory = await fs.opendir(targetPath)
+          const names: string[] = []
+          for await (const entry of directory) {
+            if (names.length === maxEntries) return { names, truncated: true }
+            names.push(entry.name)
+          }
+          return { names, truncated: false }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+          throw error
+        }
+      },
       async readTextFile(targetPath, maxBytes) {
         const handle = await fs.open(targetPath, 'r')
         try {
@@ -1196,8 +2262,11 @@ function productionDiscoveryDependencies(homeDir: string): DiscoveryDependencies
       readStableFileSnapshot,
       readStableFileFingerprint,
       readStableFileMetadata,
+      readStablePackageTree,
+      verifyStablePackageTree,
     },
-    which: command => findExecutable(command, executableDirectories),
+    which: command => findExecutableForAgentDiscovery(command, executableDirectories),
+    whichAll: command => findExecutablesForAgentDiscovery(command, executableDirectories),
     // Read only bounded package/release metadata adjacent to the already
     // canonical executable. Discovery never starts an arbitrary PATH binary.
     execVersion: executableRealpath => inspectPassiveCliVersion(executableRealpath, {
@@ -1212,6 +2281,9 @@ function productionDiscoveryDependencies(homeDir: string): DiscoveryDependencies
                 : stat.isFile()
                   ? 'file'
                   : 'other',
+            mode: stat.mode & 0o7777,
+            ownerUid: String(stat.uid),
+            groupGid: String(stat.gid),
           }
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
@@ -1220,108 +2292,35 @@ function productionDiscoveryDependencies(homeDir: string): DiscoveryDependencies
       },
       realpath: targetPath => fs.realpath(targetPath),
       readStableFileSnapshot,
+      readStableFileFingerprint,
+      readStablePackageTree,
+      verifyStablePackageTree,
     }),
     inspectAppSignature: inspectMacAppSignature,
     finalVerifyAppSignatureSync: inspectMacAppSignatureSync,
-  }
-}
-
-type CodesignRunner = (
-  args: readonly string[],
-  timeoutMs: number,
-) => Promise<{ stdout: string; stderr: string }>
-
-type CodesignSyncRunner = (
-  args: readonly string[],
-  timeoutMs: number,
-) => { stdout: string; stderr: string }
-
-export async function inspectMacAppSignature(
-  appBundleRealpath: string,
-  options: { timeoutMs: number; beforeFinalVerification?: () => Promise<void> },
-  codesign: CodesignRunner = runCodesign,
-): Promise<AppCodeSignatureResult> {
-  const before = await readMacAppSignatureReceipt(appBundleRealpath, options.timeoutMs, codesign)
-  // `--strict` tightens validation but does not recursively verify nested
-  // frameworks, plug-ins, helpers, or their full sealed contents. Production
-  // trust promises an exact bundle proof, so every verification boundary must
-  // include `--deep` (deprecated for signing, still required for verification).
-  await codesign(['--verify', '--deep', '--strict', appBundleRealpath], options.timeoutMs)
-  const after = await readMacAppSignatureReceipt(appBundleRealpath, options.timeoutMs, codesign)
-  if (desktopSignatureReceiptFingerprint(before) !== desktopSignatureReceiptFingerprint(after)) {
-    throw new Error('desktop_signature_receipt_changed_during_verification')
-  }
-  await options.beforeFinalVerification?.()
-  // This must remain the last codesign operation. Any nested-code/resource
-  // mutation after the receipt was read is rejected before trust is returned.
-  await codesign(['--verify', '--deep', '--strict', appBundleRealpath], options.timeoutMs)
-  return { valid: true, ...after, verificationBoundary: 'strict_final' }
-}
-
-/**
- * The production write boundary cannot end with an awaited codesign process:
- * a queued filesystem mutation would run before the caller resumes. Keep the
- * final receipt/recursive verification sequence synchronous, then let the
- * caller perform its no-await App/Info.plist/executable CAS immediately.
- */
-export function inspectMacAppSignatureSync(
-  appBundleRealpath: string,
-  timeoutMs: number,
-  codesign: CodesignSyncRunner = runCodesignSync,
-): AppCodeSignatureResult {
-  const before = readMacAppSignatureReceiptSync(appBundleRealpath, timeoutMs, codesign)
-  codesign(['--verify', '--deep', '--strict', appBundleRealpath], timeoutMs)
-  const after = readMacAppSignatureReceiptSync(appBundleRealpath, timeoutMs, codesign)
-  if (desktopSignatureReceiptFingerprint(before) !== desktopSignatureReceiptFingerprint(after)) {
-    throw new Error('desktop_signature_receipt_changed_during_final_verification')
-  }
-  // This is deliberately the final platform operation on the successful
-  // path. No Promise is created between it and the caller's synchronous CAS.
-  codesign(['--verify', '--deep', '--strict', appBundleRealpath], timeoutMs)
-  return { valid: true, ...after, verificationBoundary: 'strict_final' }
-}
-
-async function readMacAppSignatureReceipt(
-  appBundleRealpath: string,
-  timeoutMs: number,
-  codesign: CodesignRunner,
-): Promise<{
-  identifier?: string
-  teamIdentifier?: string
-  cdHash?: string
-  designatedRequirement?: string
-}> {
-  const details = await codesign(['-dv', '--verbose=4', appBundleRealpath], timeoutMs)
-  const output = `${details.stdout}\n${details.stderr}`
-  const requirements = await codesign(['-d', '-r-', appBundleRealpath], timeoutMs)
-  const requirementOutput = `${requirements.stdout}\n${requirements.stderr}`
-  return {
-    identifier: output.match(/^Identifier=(.+)$/mu)?.[1]?.trim(),
-    teamIdentifier: output.match(/^TeamIdentifier=(.+)$/mu)?.[1]?.trim(),
-    cdHash: output.match(/^CDHash=([A-Fa-f0-9]+)$/mu)?.[1]?.toLowerCase(),
-    designatedRequirement: requirementOutput.match(/^designated => (.+)$/mu)?.[1]?.trim(),
-  }
-}
-
-function readMacAppSignatureReceiptSync(
-  appBundleRealpath: string,
-  timeoutMs: number,
-  codesign: CodesignSyncRunner,
-): {
-  identifier?: string
-  teamIdentifier?: string
-  cdHash?: string
-  designatedRequirement?: string
-} {
-  const details = codesign(['-dv', '--verbose=4', appBundleRealpath], timeoutMs)
-  const output = `${details.stdout}\n${details.stderr}`
-  const requirements = codesign(['-d', '-r-', appBundleRealpath], timeoutMs)
-  const requirementOutput = `${requirements.stdout}\n${requirements.stderr}`
-  return {
-    identifier: output.match(/^Identifier=(.+)$/mu)?.[1]?.trim(),
-    teamIdentifier: output.match(/^TeamIdentifier=(.+)$/mu)?.[1]?.trim(),
-    cdHash: output.match(/^CDHash=([A-Fa-f0-9]+)$/mu)?.[1]?.toLowerCase(),
-    designatedRequirement: requirementOutput.match(/^designated => (.+)$/mu)?.[1]?.trim(),
+    inspectExecutableArchitecture: async executableRealpath => {
+      const result = spawnSync('/usr/bin/lipo', ['-archs', executableRealpath], {
+        encoding: 'utf8',
+        timeout: 2_000,
+        maxBuffer: 4 * 1024,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      if (result.error || result.status !== 0) return null
+      const architectures = result.stdout.trim().split(/\s+/u).filter(Boolean)
+      if (architectures.length !== 1) return null
+      return architectures[0] === 'arm64'
+        ? 'arm64'
+        : architectures[0] === 'x86_64'
+          ? 'x64'
+          : null
+    },
+    resolveKimiNativeReceipt: surface => {
+      const receipt = resolveAcceptedKimiNativeReceipt(surface)
+      return receipt ? {
+        version: receipt.version,
+        portableArtifactFingerprint: receipt.portableArtifactFingerprint,
+      } : null
+    },
   }
 }
 
@@ -1413,91 +2412,128 @@ function desktopNodeIdentity(stat: BigIntStats): string {
   return [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeNs, stat.ctimeNs].join(':')
 }
 
-function desktopSignatureReceiptFingerprint(signature: {
-  cdHash?: string
-  designatedRequirement?: string
-}): string | null {
-  const cdHash = signature.cdHash?.trim().toLowerCase()
-  const designatedRequirement = signature.designatedRequirement?.trim()
-  if (!cdHash || !/^[a-f0-9]{20,128}$/u.test(cdHash)
-    || !designatedRequirement || designatedRequirement.length > 8 * 1024) return null
-  return sha256Json({ cdHash, designatedRequirement })
-}
-
-function runCodesign(
-  args: readonly string[],
-  timeoutMs: number,
-): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    execFile('/usr/bin/codesign', [...args], {
-      timeout: timeoutMs,
-      killSignal: 'SIGKILL',
-      maxBuffer: 64 * 1024,
-      encoding: 'utf8',
-    }, (error, stdout, stderr) => {
-      if (error) reject(error)
-      else resolve({ stdout, stderr })
-    })
-  })
-}
-
-function runCodesignSync(
-  args: readonly string[],
-  timeoutMs: number,
-): { stdout: string; stderr: string } {
-  const result = spawnSync('/usr/bin/codesign', [...args], {
-    timeout: timeoutMs,
-    killSignal: 'SIGKILL',
-    maxBuffer: 64 * 1024,
-    encoding: 'utf8',
-  })
-  if (result.error) throw result.error
-  if (result.status !== 0) {
-    throw new Error(`codesign failed with status ${result.status ?? 'unknown'}: ${result.stderr}`)
-  }
-  return { stdout: result.stdout, stderr: result.stderr }
-}
-
 export function productionAgentDiscoveryExecutableDirectories(
   homeDir: string,
   inheritedPath = process.env.PATH ?? '',
+  environment: Readonly<Record<string, string | undefined>> = process.env,
 ): readonly string[] {
+  const rawOpenClawPrefix = environment.OPENCLAW_PREFIX?.trim()
+  const openClawPrefix = rawOpenClawPrefix === '~'
+    ? homeDir
+    : rawOpenClawPrefix?.startsWith('~/')
+      ? path.join(homeDir, rawOpenClawPrefix.slice(2))
+      : rawOpenClawPrefix
+  const boundedVersionBins = (
+    versionsRoot: string,
+    binSuffix: readonly string[],
+    maxEntries = 64,
+  ): string[] => {
+    if (!path.isAbsolute(versionsRoot)) return []
+    let directory: Dir | undefined
+    try {
+      directory = fsSync.opendirSync(versionsRoot)
+      const entries: Dirent[] = []
+      for (;;) {
+        const entry = directory.readSync()
+        if (!entry) break
+        // Fail closed after a bounded number of direct children instead of
+        // allocating or walking an unexpectedly large version registry.
+        if (entries.length === maxEntries) return []
+        entries.push(entry)
+      }
+      return entries
+        .filter(entry => entry.isDirectory() || entry.isSymbolicLink())
+        .map(entry => path.join(versionsRoot, entry.name, ...binSuffix))
+    } catch {
+      return []
+    } finally {
+      directory?.closeSync()
+    }
+  }
+  const absoluteEnvironmentRoot = (name: string, fallback: string): string => {
+    const raw = environment[name]?.trim()
+    if (!raw) return fallback
+    if (raw === '~') return homeDir
+    if (raw.startsWith('~/')) return path.join(homeDir, raw.slice(2))
+    return path.isAbsolute(raw) ? path.normalize(raw) : fallback
+  }
+  const nvmRoot = absoluteEnvironmentRoot('NVM_DIR', path.join(homeDir, '.nvm'))
+  const fnmRoots = [...new Set([
+    absoluteEnvironmentRoot('FNM_DIR', path.join(homeDir, '.local', 'share', 'fnm')),
+    path.join(homeDir, '.fnm'),
+    path.join(homeDir, 'Library', 'Application Support', 'fnm'),
+  ])]
+  const asdfRoot = absoluteEnvironmentRoot('ASDF_DATA_DIR', path.join(homeDir, '.asdf'))
+  const miseRoot = absoluteEnvironmentRoot('MISE_DATA_DIR', path.join(homeDir, '.local', 'share', 'mise'))
+  const yarnGlobalRoot = absoluteEnvironmentRoot(
+    'YARN_GLOBAL_FOLDER',
+    path.join(homeDir, '.config', 'yarn', 'global'),
+  )
+  const inheritedDirectories = inheritedPath
+    .split(path.delimiter)
+    .filter(directory => path.isAbsolute(directory))
+    .slice(0, 128)
   const candidates = [
-    ...inheritedPath.split(path.delimiter),
+    ...inheritedDirectories,
     '/opt/homebrew/bin',
     '/usr/local/bin',
     '/opt/local/bin',
     path.join(homeDir, '.local', 'bin'),
     path.join(homeDir, '.openclaw', 'bin'),
+    ...(openClawPrefix && path.isAbsolute(openClawPrefix)
+      ? [path.join(path.normalize(openClawPrefix), 'bin')]
+      : []),
     path.join(homeDir, '.kimi-code', 'bin'),
     path.join(homeDir, '.volta', 'bin'),
     path.join(homeDir, '.bun', 'bin'),
     path.join(homeDir, 'Library', 'pnpm'),
     path.join(homeDir, '.npm-global', 'bin'),
+    ...boundedVersionBins(path.join(nvmRoot, 'versions', 'node'), ['bin']),
+    ...fnmRoots.flatMap(root => [
+      path.join(root, 'aliases', 'default', 'bin'),
+      ...boundedVersionBins(path.join(root, 'node-versions'), ['installation', 'bin']),
+    ]),
+    ...boundedVersionBins(path.join(asdfRoot, 'installs', 'nodejs'), ['bin']),
+    ...boundedVersionBins(path.join(miseRoot, 'installs', 'node'), ['bin']),
+    path.join(yarnGlobalRoot, 'node_modules', '.bin'),
+    path.join(homeDir, '.yarn', 'bin'),
   ]
-  return [...new Set(candidates.filter(directory => path.isAbsolute(directory)))]
+  return [...new Set(candidates.filter(directory => path.isAbsolute(directory)))].slice(0, 256)
 }
 
-async function findExecutable(
+export async function findExecutablesForAgentDiscovery(
   command: string,
   executableDirectories: readonly string[],
-): Promise<string | undefined> {
-  if (!/^[A-Za-z0-9._+-]{1,128}$/u.test(command)) return undefined
-  for (const directory of executableDirectories) {
+): Promise<readonly string[]> {
+  if (!/^[A-Za-z0-9._+-]{1,128}$/u.test(command)) return []
+  const matches: string[] = []
+  for (const directory of executableDirectories.slice(0, 256)) {
     const candidate = path.join(directory, command)
+    if (matches.includes(candidate)) continue
     try {
       await fs.access(candidate, 1)
-      return await fs.realpath(candidate)
+      // Preserve each PATH entry itself. Discovery resolves and proves every
+      // candidate separately, including launcher symlinks such as OpenClaw.
+      matches.push(candidate)
     } catch {
       continue
     }
   }
-  return undefined
+  return matches
 }
 
-function discoveryEnvironment(): Readonly<Record<string, string | undefined>> {
+export async function findExecutableForAgentDiscovery(
+  command: string,
+  executableDirectories: readonly string[],
+): Promise<string | undefined> {
+  return (await findExecutablesForAgentDiscovery(command, executableDirectories))[0]
+}
+
+export function discoveryEnvironment(): Readonly<Record<string, string | undefined>> {
   const names = [
-    'KIMI_CODE_HOME', 'QWEN_HOME', 'OPENCODE_CONFIG_DIR', 'OPENCODE_CONFIG',
+    'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GEMINI_CLI_HOME', 'OPENCLAW_STATE_DIR', 'OPENCLAW_CONFIG_PATH',
+    'KIMI_CODE_HOME', 'OPENCLAW_HOME', 'OPENCLAW_PREFIX',
+    'QWEN_HOME', 'XDG_CONFIG_HOME', 'OPENCODE_CONFIG_DIR', 'OPENCODE_CONFIG',
     'PI_CODING_AGENT_DIR', 'PI_CONFIG_DIR', 'OMP_PROFILE', 'PI_PROFILE',
   ] as const
   return Object.fromEntries(names.map(name => [name, process.env[name]]))

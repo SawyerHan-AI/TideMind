@@ -27,6 +27,8 @@ export function parseArgs(argv) {
     ossRepo: defaultOssRepo,
     ossMessage: null,
     notesFile: null,
+    agentHostEvidence: null,
+    agentHostCandidateApp: null,
     yes: false,
     dryRun: false,
     forceTag: false,
@@ -53,6 +55,9 @@ export function parseArgs(argv) {
       case '--oss-repo': opts.ossRepo = path.resolve(next()); break;
       case '--oss-message': opts.ossMessage = next(); break;
       case '--notes-file': opts.notesFile = path.resolve(next()); break;
+      case '--agent-host-evidence': opts.agentHostEvidence = path.resolve(next()); break;
+      case '--agent-host-candidate-app-arm64': opts.agentHostCandidateAppArm64 = path.resolve(next()); break;
+      case '--agent-host-candidate-app-x64': opts.agentHostCandidateAppX64 = path.resolve(next()); break;
       case '--timeout-minutes': opts.timeoutMinutes = Number(next()); break;
       case '--yes':
       case '-y':
@@ -61,6 +66,7 @@ export function parseArgs(argv) {
       case '--dry-run':
         opts.dryRun = true;
         break;
+      case '--prepare-candidate': opts.prepareCandidate = true; break;
       case '--force-tag':
         opts.forceTag = true;
         break;
@@ -105,20 +111,66 @@ export function assertRequestedVersion(requestedVersion, packageVersion) {
   }
 }
 
+const V0_2_92_FORBIDDEN_BYPASSES = [
+  ['forceTag', '--force-tag'],
+  ['skipHealth', '--skip-health'],
+  ['skipWebsite', '--skip-website'],
+  ['skipCloudVerify', '--skip-cloud-verify'],
+  ['skipUpdateVerify', '--skip-update-verify'],
+];
+
+export function assertReleaseBypassesAllowed(version, opts) {
+  if (opts.allowNonMain && !opts.dryRun) {
+    throw new Error('--allow-non-main requires --dry-run');
+  }
+  if (version !== '0.2.92') return;
+  const requested = V0_2_92_FORBIDDEN_BYPASSES
+    .filter(([key]) => opts[key])
+    .map(([, flag]) => flag);
+  if (requested.length > 0) {
+    throw new Error(`0.2.92 cannot be released with ${requested.join(', ')}`);
+  }
+}
+
+export function resolveUpdatePreviousVersions(version, requestedVersion = null) {
+  if (version === '0.2.92') {
+    const required = ['0.2.89', '0.2.91'];
+    if (requestedVersion !== null && !required.includes(requestedVersion)) {
+      throw new Error(
+        '--previous-version for 0.2.92 must be 0.2.89 or 0.2.91; both are always verified',
+      );
+    }
+    return required;
+  }
+  const previousVersion = requestedVersion ?? previousPatch(version);
+  return previousVersion ? [previousVersion] : [];
+}
+
 function printHelp() {
   console.log(`Usage: npm run release -- --version X.Y.Z --previous-version A.B.C --yes
 
 Options:
   --version X.Y.Z          Version to release. Defaults to root package.json.
-  --previous-version X.Y.Z Version used to verify update API. Defaults to previous patch.
+  --previous-version X.Y.Z Version used to verify update API. Defaults to previous patch;
+                           0.2.92 always verifies both 0.2.89 and 0.2.91.
   --oss-repo PATH          OSS repo path. Defaults to ../tidemind or TIDEMIND_OSS_REPO.
   --oss-message TEXT       Public OSS commit message.
-  --notes-file PATH        Release notes markdown. Defaults to /tmp/notes-vX.Y.Z.md.
+  --notes-file PATH        Release notes markdown. Required for 0.2.92; older versions
+                           default to /tmp/notes-vX.Y.Z.md.
+  --agent-host-evidence PATH
+                           Real-host Agent acceptance index. Required for a real release;
+                           may also be set with TIDEMIND_AGENT_HOST_ACCEPTANCE_INDEX.
+  --agent-host-candidate-app-arm64 PATH
+  --agent-host-candidate-app-x64 PATH
+                           Exact signed RC apps for each supported release architecture (0.2.92: arm64);
+                           physical bytes, executable architecture and identity are re-verified.
   --timeout-minutes N      Release workflow wait timeout. Defaults to 20.
   --yes, -y                Pass --yes to sync-oss.sh.
   --force-tag              Move an existing OSS tag to HEAD after confirmation-by-flag.
   --allow-non-main         CI dry-run escape hatch for detached checkouts.
   --dry-run                Print commands without mutating repositories or deployments.
+  --prepare-candidate      Sync verified main and build a signed candidate using existing
+                           public-repository credentials; no tag or release is published.
   --skip-health            Skip npm run health.
   --skip-website           Skip Cloudflare Pages deploy.
   --skip-cloud-verify      Skip https://cloud.tidemind.ai/health verification.
@@ -133,6 +185,18 @@ Options:
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+export function releaseMacArchitectures(version) {
+  const requirements = readJson(path.join(repoRoot, 'scripts/agent-integration-host-acceptance-requirements.json'));
+  if (version !== requirements.appVersion) return ['arm64', 'x64'];
+  const architectures = requirements.releaseMacArchitectures;
+  if (!Array.isArray(architectures) || architectures.length === 0
+    || new Set(architectures).size !== architectures.length
+    || architectures.some(arch => !['arm64', 'x64'].includes(arch))) {
+    throw new Error('invalid releaseMacArchitectures in acceptance requirements');
+  }
+  return architectures;
 }
 
 export function commandToString(cmd, args) {
@@ -237,9 +301,58 @@ export function previousPatch(version) {
   return `${match[1]}.${match[2]}.${patch - 1}`;
 }
 
-function ensureNotesFile(version, explicitPath) {
+const RELEASE_0_2_92_AGENT_DISCLOSURES = Object.freeze([
+  ['Claude Code', /Claude Code/iu],
+  ['Claude Cowork', /Claude Cowork/iu],
+  ['Codex', /\bCodex\b/iu],
+  ['Cursor', /\bCursor\b/iu],
+  ['Devin Desktop', /Devin Desktop/iu],
+  ['Gemini CLI', /Gemini CLI/iu],
+  ['Kimi Code', /Kimi Code/iu],
+  ['OpenClaw', /OpenClaw/iu],
+  ['Qwen Code', /Qwen Code/iu],
+  ['ZCode', /\bZCode\b/iu],
+  ['OpenCode', /\bOpenCode\b/iu],
+  ['Pi', /(?:^|[^A-Za-z])Pi(?:[^A-Za-z]|$)/iu],
+  ['Oh My Pi / OMP', /Oh My Pi|\bOMP\b/iu],
+  ['QwenWork', /QwenWork/iu],
+]);
+
+export function validateReleaseNotesContent(version, content) {
+  if (version !== '0.2.92') return;
+  if (/supports? (?:all )?(?:major|mainstream) agents?|支持(?:全部|所有|主流)\s*Agent/iu.test(content)) {
+    throw new Error('0.2.92 release notes use a vague Agent support claim');
+  }
+  if (!content.includes(version)) throw new Error(`0.2.92 release notes do not name version ${version}`);
+  const level = /完整接入|基础接入|部分接入|未接入|complete integration|full integration|basic integration|partial integration|not integrated/iu;
+  const lines = content.split(/\r?\n/u);
+  for (const [name, matcher] of RELEASE_0_2_92_AGENT_DISCLOSURES) {
+    const disclosed = lines.some(line => matcher.test(line)
+      && level.test(line)
+      && !(name === 'Pi' && /Oh My Pi|\bOMP\b/iu.test(line)));
+    if (!disclosed) {
+      throw new Error(`0.2.92 release notes must disclose the actual connection level for ${name}`);
+    }
+  }
+  if (!/自定义本机\s*Agent|Custom local Agent/iu.test(content)) {
+    throw new Error('0.2.92 release notes must disclose Custom local Agent support');
+  }
+  if (!/非标准配置根|non-?standard config(?:uration)? root/iu.test(content)
+    || !/手动\s*MCP|manual MCP/iu.test(content)) {
+    throw new Error('0.2.92 release notes must disclose both Custom local Agent boundaries');
+  }
+  if (!/限制|局限|能力边界|host limitations?|limitations?/iu.test(content)) {
+    throw new Error('0.2.92 release notes must include host limitations or capability boundaries');
+  }
+}
+
+export function ensureNotesFile(version, explicitPath, allowTemplate = false) {
+  if (version === '0.2.92' && !explicitPath && !allowTemplate) {
+    throw new Error('0.2.92 requires an explicit --notes-file with per-Agent connection levels and limitations');
+  }
   const file = explicitPath ?? path.join(os.tmpdir(), `notes-v${version}.md`);
   if (!fs.existsSync(file)) {
+    if (explicitPath) throw new Error(`release notes file does not exist: ${file}`);
     fs.writeFileSync(file, [
       `## TideMind v${version}`,
       '',
@@ -250,6 +363,9 @@ function ensureNotesFile(version, explicitPath) {
       '',
     ].join('\n'));
     console.log(`Created default release notes: ${file}`);
+  }
+  if (!(version === '0.2.92' && allowTemplate && !explicitPath)) {
+    validateReleaseNotesContent(version, fs.readFileSync(file, 'utf8'));
   }
   return file;
 }
@@ -283,7 +399,29 @@ function listReleaseRuns(ossRepo) {
   ], ossRepo);
 }
 
-export function findReleaseRunId(runs, tag, minCreatedAtMs = 0) {
+function listPrivateCiRuns() {
+  return parseJsonOutput('gh', [
+    'run',
+    'list',
+    '--workflow',
+    'CI',
+    '--branch',
+    'main',
+    '--limit',
+    '30',
+    '--json',
+    'databaseId,headBranch,headSha,event,status,conclusion,createdAt,displayTitle',
+  ], repoRoot);
+}
+
+export function findPrivateCiRunId(runs, expectedHeadSha) {
+  const match = runs.find(run => run.headBranch === 'main'
+    && run.headSha === expectedHeadSha
+    && run.event === 'push');
+  return match ? String(match.databaseId) : null;
+}
+
+export function findReleaseRunId(runs, tag, expectedHeadSha, minCreatedAtMs = 0) {
   const tagName = tag.startsWith('v') ? tag : `v${tag}`;
   // 只接受 createdAt 晚于本次 push 的 run。否则 --force-tag(移动已有 tag 重发)
   // 场景下,`gh run list` 里仍有上一次该 tag 的已完成 run,headBranch 同名 → 第一次
@@ -292,6 +430,7 @@ export function findReleaseRunId(runs, tag, minCreatedAtMs = 0) {
   // minCreatedAtMs=0(默认/测试)时退化为只按 headBranch 匹配,保持向后兼容。
   const match = runs.find(run => {
     if (run.headBranch !== tagName && run.headBranch !== tag) return false;
+    if (run.headSha !== expectedHeadSha || run.event !== 'push') return false;
     if (minCreatedAtMs > 0 && run.createdAt) {
       const created = Date.parse(run.createdAt);
       if (Number.isFinite(created) && created < minCreatedAtMs) return false;
@@ -301,10 +440,14 @@ export function findReleaseRunId(runs, tag, minCreatedAtMs = 0) {
   return match ? String(match.databaseId) : null;
 }
 
-export function findPackagePreflightRunId(runs, expectedHeadSha, minCreatedAtMs = 0) {
+export function findPackagePreflightRunId(runs, expectedHeadSha, minCreatedAtMs, expectedTitle) {
+  if (typeof expectedTitle !== 'string' || !/^(Candidate|Preflight) [0-9a-f-]{36}$/u.test(expectedTitle)) {
+    throw new Error('package preflight requires a mode and unique request ID');
+  }
   const match = runs.find(run => {
     if (run.headBranch !== 'main' || run.event !== 'workflow_dispatch') return false;
     if (run.headSha !== expectedHeadSha) return false;
+    if (run.displayTitle !== expectedTitle) return false;
     if (minCreatedAtMs > 0 && run.createdAt) {
       const created = Date.parse(run.createdAt);
       if (Number.isFinite(created) && created < minCreatedAtMs) return false;
@@ -318,7 +461,7 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function getReleaseRunId(tag, ossRepo, timeoutMs, minCreatedAtMs = 0) {
+async function getReleaseRunId(tag, ossRepo, timeoutMs, expectedHeadSha, minCreatedAtMs = 0) {
   const tagName = tag.startsWith('v') ? tag : `v${tag}`;
   const started = Date.now();
   const deadline = started + timeoutMs;
@@ -329,7 +472,7 @@ async function getReleaseRunId(tag, ossRepo, timeoutMs, minCreatedAtMs = 0) {
   while (Date.now() <= deadline) {
     attempts++;
     const runs = listReleaseRuns(ossRepo);
-    const runId = findReleaseRunId(runs, tag, minCreatedAtMs);
+    const runId = findReleaseRunId(runs, tag, expectedHeadSha, minCreatedAtMs);
     if (runId) {
       if (attempts > 1) console.log(`✓ release workflow run appeared after ${attempts} checks`);
       return runId;
@@ -347,15 +490,26 @@ async function getReleaseRunId(tag, ossRepo, timeoutMs, minCreatedAtMs = 0) {
   throw new Error(`Could not find Release workflow run for ${tagName} after ${waitedSeconds}s; recent runs: ${lastRunSummary || 'none'}`);
 }
 
-async function getPackagePreflightRunId(ossRepo, timeoutMs, expectedHeadSha, minCreatedAtMs) {
+async function getPackagePreflightRunId(ossRepo, timeoutMs, expectedHeadSha, minCreatedAtMs, expectedTitle) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
-    const runId = findPackagePreflightRunId(listReleaseRuns(ossRepo), expectedHeadSha, minCreatedAtMs);
+    const runId = findPackagePreflightRunId(listReleaseRuns(ossRepo), expectedHeadSha, minCreatedAtMs, expectedTitle);
     if (runId) return runId;
-    console.log('> Waiting for the dual-architecture package preflight run');
+    console.log('> Waiting for the macOS package preflight run');
     await sleep(Math.min(5_000, Math.max(0, deadline - Date.now())));
   }
-  throw new Error('Could not find the dual-architecture package preflight run');
+  throw new Error('Could not find the macOS package preflight run');
+}
+
+async function getPrivateCiRunId(expectedHeadSha, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const runId = findPrivateCiRunId(listPrivateCiRuns(), expectedHeadSha);
+    if (runId) return runId;
+    console.log(`> Waiting for private CI at ${expectedHeadSha}`);
+    await sleep(Math.min(5_000, Math.max(0, deadline - Date.now())));
+  }
+  throw new Error(`Could not find private CI for exact source commit ${expectedHeadSha}`);
 }
 
 function assertOssMainStillAt(expectedHead, ossRepo) {
@@ -368,6 +522,57 @@ function assertOssMainStillAt(expectedHead, ossRepo) {
   if (remoteHead !== expectedHead) {
     throw new Error(`OSS origin/main drifted during release preflight: expected ${expectedHead}, got ${remoteHead || 'missing'}`);
   }
+}
+
+function assertOssSourceBinding(expectedSourceCommit, ossRepo) {
+  const trailer = capture('git', [
+    'log', '-1', '--format=%(trailers:key=TideMind-Source-Commit,valueonly)',
+  ], ossRepo).stdout;
+  if (trailer !== expectedSourceCommit) {
+    throw new Error(`OSS release commit source binding mismatch: expected ${expectedSourceCommit}, got ${trailer || 'missing'}`);
+  }
+}
+
+export function classifyReleaseTagPreflight({
+  localTagHead,
+  remoteTagHead,
+  ossHead,
+  sourceCommitTrailer,
+  expectedSourceCommit,
+  forceTag,
+}) {
+  if (forceTag) return 'move';
+  const existingHeads = [localTagHead, remoteTagHead].filter(Boolean);
+  if (existingHeads.length === 0) return 'create';
+  if (existingHeads.some(head => head !== ossHead)) {
+    throw new Error('release tag already exists at a different OSS commit');
+  }
+  if (sourceCommitTrailer !== expectedSourceCommit) {
+    throw new Error('existing release tag is not bound to the exact TideMind source commit');
+  }
+  return 'already-at-head';
+}
+
+function assertReleaseTagPreflight(version, expectedSourceCommit, ossRepo, forceTag) {
+  const tagName = `v${version}`;
+  const local = capture('git', [
+    'rev-parse', '--verify', '--quiet', `refs/tags/${tagName}`,
+  ], ossRepo, true);
+  const remoteOutput = capture('git', [
+    'ls-remote', '--tags', 'origin', `refs/tags/${tagName}`,
+  ], ossRepo).stdout;
+  const ossHead = capture('git', ['rev-parse', 'HEAD'], ossRepo).stdout;
+  const sourceCommitTrailer = capture('git', [
+    'log', '-1', '--format=%(trailers:key=TideMind-Source-Commit,valueonly)',
+  ], ossRepo).stdout;
+  return classifyReleaseTagPreflight({
+    localTagHead: local.status === 0 ? local.stdout : '',
+    remoteTagHead: remoteOutput.split(/\s+/u)[0] ?? '',
+    ossHead,
+    sourceCommitTrailer,
+    expectedSourceCommit,
+    forceTag,
+  });
 }
 
 function assertTagState(tag, ossRepo, forceTag) {
@@ -390,6 +595,12 @@ async function fetchJson(url) {
   return await resp.json();
 }
 
+async function fetchText(url) {
+  const resp = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+  if (!resp.ok) throw new Error(`${url} returned ${resp.status}`);
+  return await resp.text();
+}
+
 async function verifyCloud(version) {
   const health = await fetchJson('https://cloud.tidemind.ai/health');
   if (health.version !== version) {
@@ -398,30 +609,107 @@ async function verifyCloud(version) {
   console.log(`✓ cloud health reports ${version}`);
 }
 
-export async function verifyUpdateApi(version, previousVersion, allowUnsigned = false) {
+function decodeEd25519Signature(value, label) {
+  const normalized = value.trim();
+  if (!/^[A-Za-z0-9+/]+={0,2}$/u.test(normalized) || normalized.length % 4 !== 0) {
+    throw new Error(`${label} is not canonical base64`);
+  }
+  const signature = Buffer.from(normalized, 'base64');
+  if (signature.length !== 64 || signature.toString('base64') !== normalized) {
+    throw new Error(`${label} is not a 64-byte Ed25519 signature`);
+  }
+  return signature;
+}
+
+export async function verifyUpdateApi(
+  version,
+  previousVersions,
+  allowUnsigned = false,
+  embeddedKeys = readEmbeddedUpdatePublicKeys(),
+  convergence = {},
+) {
   const base = 'https://cloud.tidemind.ai/api/v1/update/latest';
-  // 双 arch 都验:客户端按各自架构请求,只验 arm64 会对"x64 .sig 缺失/命名漂移"失明。
+  const versionsToVerify = Array.isArray(previousVersions) ? previousVersions : [previousVersions];
+  // The cloud endpoint intentionally caches the previous GitHub release for
+  // five minutes. Only a well-formed older release is a retryable state.
+  const timeoutMs = convergence.timeoutMs ?? 360_000;
+  const intervalMs = convergence.intervalMs ?? 10_000;
+  const now = convergence.now ?? Date.now;
+  const wait = convergence.wait ?? sleep;
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || !Number.isFinite(intervalMs) || intervalMs <= 0) {
+    throw new Error('invalid update convergence timeout or interval');
+  }
+  const deadline = now() + timeoutMs;
+  async function offeredRelease(url, arch) {
+    for (;;) {
+      const body = await fetchJson(url);
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || !/^\d+\.\d+\.\d+$/u.test(body.version ?? '')
+        || !(body.url === null || typeof body.url === 'string')) {
+        throw new Error('update API returned a malformed release response');
+      }
+      const parts = body.version.split('.').map(Number);
+      const expected = version.split('.').map(Number);
+      const comparison = parts.reduce((result, part, index) => result || Math.sign(part - expected[index]), 0);
+      if (comparison >= 0) return body;
+      const oldDmg = `https://github.com/SawyerHan-AI/TideMind/releases/download/v${body.version}/Tide.Mind-${body.version}-${arch}.dmg`;
+      const oldSig = `https://github.com/SawyerHan-AI/TideMind/releases/download/v${body.version}/update-manifest-darwin-${arch}.sig`;
+      if ((body.url !== null && body.url !== oldDmg)
+        || (!allowUnsigned && body.url !== null && body.signatureUrl !== oldSig)) {
+        throw new Error('update API returned malformed cached release URLs');
+      }
+      if (!allowUnsigned && body.url !== null) {
+        const signature = decodeEd25519Signature(await fetchText(oldSig), 'cached release signature');
+        const keys = [embeddedKeys.primary, embeddedKeys.secondary].filter(Boolean);
+        if (!keys.some(key => crypto.verify(null, Buffer.from(`${body.version}\n${oldDmg}`), crypto.createPublicKey(key), signature))) {
+          throw new Error('cached release signature does not verify with a public key embedded in the client');
+        }
+      }
+      if (now() >= deadline) throw new Error(`update API cache did not converge to ${version} within ${timeoutMs}ms`);
+      console.log(`> Waiting for update API cache to advance from ${body.version} to ${version}`);
+      await wait(Math.min(intervalMs, deadline - now()));
+    }
+  }
+  // 每个发布支持的架构都验证。未发布架构另行验证保持旧版本的无更新契约。
   // 每个 arch 断言 version / url / signatureUrl 三项,signatureUrl 必须非空且指向
   // update-manifest-darwin-{arch}.sig —— 这正是 v0.2.66 同类"已 publish 但无签名 /
   // 命名漂移 → 客户端拒更"故障的最后一道自动防线(CLAUDE.md 防坑规则 9)。
-  for (const arch of ['arm64', 'x64']) {
-    const prev = await fetchJson(`${base}?platform=darwin&arch=${arch}&version=${previousVersion}`);
-    if (prev.version !== version || !prev.url?.includes(`v${version}`)) {
-      throw new Error(`update API did not offer ${version}/${arch} to ${previousVersion}: ${JSON.stringify(prev)}`);
-    }
-    if (!allowUnsigned) {
-      const expectedSig = `update-manifest-darwin-${arch}.sig`;
-      if (!prev.signatureUrl) {
-        throw new Error(
-          `update API returned no signatureUrl for ${version}/${arch} — clients with ` +
-          `embedded public key will REJECT this release (sign-before-publish window or ` +
-          `asset naming drift). Response: ${JSON.stringify(prev)}`,
-        );
+  for (const arch of releaseMacArchitectures(version)) {
+    const expectedDmgUrl = `https://github.com/SawyerHan-AI/TideMind/releases/download/v${version}/Tide.Mind-${version}-${arch}.dmg`;
+    for (const previousVersion of versionsToVerify) {
+      const prev = await offeredRelease(`${base}?platform=darwin&arch=${arch}&version=${previousVersion}`, arch);
+      if (prev.version !== version || prev.url !== expectedDmgUrl) {
+        throw new Error(`update API did not offer ${version}/${arch} to ${previousVersion}: ${JSON.stringify(prev)}`);
       }
-      if (!prev.signatureUrl.endsWith(expectedSig)) {
-        throw new Error(
-          `update API signatureUrl for ${version}/${arch} does not point at ${expectedSig}: ${prev.signatureUrl}`,
+      if (!allowUnsigned) {
+        const expectedSig = `update-manifest-darwin-${arch}.sig`;
+        const expectedSigUrl = `https://github.com/SawyerHan-AI/TideMind/releases/download/v${version}/${expectedSig}`;
+        if (!prev.signatureUrl) {
+          throw new Error(
+            `update API returned no signatureUrl for ${version}/${arch} — clients with ` +
+            `embedded public key will REJECT this release (sign-before-publish window or ` +
+            `asset naming drift). Response: ${JSON.stringify(prev)}`,
+          );
+        }
+        if (prev.signatureUrl !== expectedSigUrl) {
+          throw new Error(
+            `update API signatureUrl for ${version}/${arch} does not point at ${expectedSig}: ${prev.signatureUrl}`,
+          );
+        }
+        const signature = decodeEd25519Signature(
+          await fetchText(prev.signatureUrl),
+          `${version}/${arch} downloaded signature`,
         );
+        const message = Buffer.from(`${version}\n${expectedDmgUrl}`, 'utf8');
+        const candidateKeys = [embeddedKeys.primary, embeddedKeys.secondary].filter(Boolean);
+        if (!candidateKeys.some(publicKeyPem => crypto.verify(
+          null,
+          message,
+          crypto.createPublicKey(publicKeyPem),
+          signature,
+        ))) {
+          throw new Error(`${version}/${arch} downloaded signature does not verify with a public key embedded in the client`);
+        }
       }
     }
 
@@ -430,9 +718,17 @@ export async function verifyUpdateApi(version, previousVersion, allowUnsigned = 
       throw new Error(`update API should return url:null for current version (${arch}): ${JSON.stringify(current)}`);
     }
   }
+  for (const arch of ['arm64', 'x64'].filter(arch => !releaseMacArchitectures(version).includes(arch))) {
+    for (const previousVersion of versionsToVerify) {
+      const body = await fetchJson(`${base}?platform=darwin&arch=${arch}&version=${previousVersion}`);
+      if (body.version !== previousVersion || body.url !== null) {
+        throw new Error(`unsupported ${arch} must retain ${previousVersion} without an update: ${JSON.stringify(body)}`);
+      }
+    }
+  }
   console.log(
-    `✓ update API offers ${version} to ${previousVersion} (arm64 + x64` +
-    `${allowUnsigned ? '' : ', signatureUrl present'}) and no update to ${version}`,
+    `✓ update API offers ${version} to ${versionsToVerify.join(' and ')} (${releaseMacArchitectures(version).join(' + ')}` +
+    `${allowUnsigned ? '' : ', downloaded signatures verified'}) and no update to ${version}`,
   );
 }
 
@@ -547,8 +843,58 @@ function loadSecondarySigningPrivateKey() {
   return { pem: null, source: null };
 }
 
+function decodeSourceStringLiteral(value, label) {
+  if (value.startsWith('`')) return value.slice(1, -1);
+  if (value.startsWith("'")) {
+    try {
+      return JSON.parse(`"${value.slice(1, -1).replaceAll('"', '\\"')}"`);
+    } catch (error) {
+      throw new Error(`cannot decode ${label}: ${error.message}`);
+    }
+  }
+  return JSON.parse(value);
+}
+
+/** Read the literal public keys shipped to clients, never environment overrides. */
+export function extractEmbeddedUpdatePublicKeys(source) {
+  const primaryMatch = source.match(
+    /const UPDATE_PUBLIC_KEY_PEM\s*=\s*process\.env\.TIDEMIND_UPDATE_PUBLIC_KEY\s*\|\|\s*(`[^`]*`|"(?:\\.|[^"])*"|'(?:\\.|[^'])*')/u,
+  );
+  const secondaryMatch = source.match(
+    /const UPDATE_PUBLIC_KEY_PEM_SECONDARY\s*=\s*process\.env\.TIDEMIND_UPDATE_PUBLIC_KEY_SECONDARY\s*\?\?\s*(`[^`]*`|"(?:\\.|[^"])*"|'(?:\\.|[^'])*')/u,
+  );
+  if (!primaryMatch) throw new Error('cannot find embedded primary update public key');
+  if (!secondaryMatch) throw new Error('cannot find embedded secondary update public key');
+  const primary = decodeSourceStringLiteral(primaryMatch[1], 'embedded primary update public key').trim();
+  const secondary = decodeSourceStringLiteral(secondaryMatch[1], 'embedded secondary update public key').trim();
+  if (!primary) throw new Error('embedded primary update public key is empty');
+  return Object.freeze({ primary, secondary });
+}
+
+function readEmbeddedUpdatePublicKeys() {
+  return extractEmbeddedUpdatePublicKeys(fs.readFileSync(
+    path.join(repoRoot, 'client/electron/ipc/app.ts'),
+    'utf8',
+  ));
+}
+
+export function assertSigningKeyMatchesEmbeddedPublicKey(privateKeyInput, publicKeyPem, label = 'primary') {
+  const privateKey = privateKeyInput?.type === 'private'
+    ? privateKeyInput
+    : crypto.createPrivateKey(privateKeyInput);
+  const publicKey = crypto.createPublicKey(publicKeyPem);
+  if (privateKey.asymmetricKeyType !== 'ed25519' || publicKey.asymmetricKeyType !== 'ed25519') {
+    throw new Error(`${label} update signing key must be Ed25519`);
+  }
+  const derived = crypto.createPublicKey(privateKey).export({ type: 'spki', format: 'der' });
+  const embedded = publicKey.export({ type: 'spki', format: 'der' });
+  if (derived.length !== embedded.length || !crypto.timingSafeEqual(derived, embedded)) {
+    throw new Error(`${label} release signing private key does not match the public key embedded in the client`);
+  }
+}
+
 /**
- * 在 push tag(触发不可逆的公开构建/发布)之前 fail-fast 解析签名私钥。
+ * 在第一次远端写入之前 fail-fast 解析并核对签名私钥。
  *
  * Why 提前:
  *   1. 私钥缺失/损坏要在 **push tag 之前** 报错,而不是等 GitHub release 已 publish
@@ -561,6 +907,7 @@ function loadSecondarySigningPrivateKey() {
  * 完成,因此 PEM 损坏也在 push tag 之前暴露。
  */
 function loadSigningKeys(allowUnsigned = false) {
+  const embeddedKeys = readEmbeddedUpdatePublicKeys();
   const { pem: privateKeyPem, source } = loadSigningPrivateKey();
   if (!privateKeyPem) {
     if (!allowUnsigned) {
@@ -598,14 +945,19 @@ function loadSigningKeys(allowUnsigned = false) {
   } catch (err) {
     throw new Error(`SIGNING_PRIVATE_KEY parse failed: ${err.message}`);
   }
-  console.log(`\n> Signing key loaded (ed25519, key from ${source}) — verified before tag push`);
+  assertSigningKeyMatchesEmbeddedPublicKey(privateKey, embeddedKeys.primary, 'primary');
+  console.log(`\n> Signing key loaded (ed25519, key from ${source}) — matched to client before remote writes`);
 
   // Secondary key:轮换期间用第二个私钥同时签 .sig.secondary。不配置则跳过。
   const { pem: secondaryPem, source: secondarySource } = loadSecondarySigningPrivateKey();
   let secondaryKey = null;
   if (secondaryPem) {
+    if (!embeddedKeys.secondary) {
+      throw new Error('secondary release signing key is configured but the client embeds no secondary public key');
+    }
     try {
       secondaryKey = crypto.createPrivateKey(secondaryPem);
+      assertSigningKeyMatchesEmbeddedPublicKey(secondaryKey, embeddedKeys.secondary, 'secondary');
       console.log(`  Secondary key loaded from ${secondarySource} — will dual-sign for rotation`);
     } catch (err) {
       // secondary 解析失败 → fail-loud,因为如果运维主动给了备用 key,默默 skip 会让
@@ -628,20 +980,19 @@ function signReleaseAssets(version, ossRepo, keys) {
     '--json', 'assets',
   ], ossRepo);
   // 客户端期望的 (platform, arch) 对应 DMG/zip 命名。
-  const targets = [
-    { platform: 'darwin', arch: 'arm64', match: /arm64.*\.dmg$/ },
-    { platform: 'darwin', arch: 'x64', match: /x64.*\.dmg$/ },
-  ];
+  const targets = releaseMacArchitectures(version).map(arch => ({
+    platform: 'darwin', arch, assetName: `Tide.Mind-${version}-${arch}.dmg`,
+  }));
 
-  for (const { platform, arch, match } of targets) {
-    const asset = release.assets.find(a => match.test(a.name));
+  for (const { platform, arch, assetName } of targets) {
+    const asset = release.assets.find(a => a.name === assetName);
     if (!asset) {
       // fail-loud:签名现在发生在 publish 之前,是供应链防线的一部分。如果某个
       // (platform, arch) 的 DMG 没找到,silent skip 会让该架构永远没有 .sig,
       // 客户端验签 invalid 拒绝更新 —— 正是 v0.2.66 事故类。verifyUpdateApi
       // 也会兜底,但这里提前在签名阶段炸,定位更直接。
       throw new Error(
-        `signing: no matching DMG asset for ${platform}/${arch} (pattern ${match}); ` +
+        `signing: release is missing exact DMG asset ${assetName}; ` +
         `release assets: ${release.assets.map(a => a.name).join(', ') || '(none)'}`,
       );
     }
@@ -688,7 +1039,35 @@ function signReleaseAssets(version, ossRepo, keys) {
   }
 }
 
-function verifyRelease(version, ossRepo) {
+export function expectedReleaseAssetNames(version, includeSecondary = false) {
+  const names = ['latest-mac.yml'];
+  for (const arch of releaseMacArchitectures(version)) {
+    const base = `Tide.Mind-${version}-${arch}`;
+    names.push(`${base}.dmg`, `${base}.dmg.blockmap`, `${base}.zip`, `${base}.zip.blockmap`);
+    names.push(`update-manifest-darwin-${arch}.sig`);
+    if (includeSecondary) names.push(`update-manifest-darwin-${arch}.sig.secondary`);
+  }
+  return names.sort();
+}
+
+export function assertCompleteReleaseAssetList(version, assets, signed = true, includeSecondary = false) {
+  const actual = assets.map(asset => asset.name).sort();
+  const expected = expectedReleaseAssetNames(version, includeSecondary)
+    .filter(name => signed || !name.includes('update-manifest-'));
+  if (new Set(actual).size !== actual.length) throw new Error('release contains duplicate asset names');
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    const missing = expected.filter(name => !actual.includes(name));
+    const unexpected = actual.filter(name => !expected.includes(name));
+    throw new Error(
+      `release asset list mismatch; missing: ${missing.join(', ') || '(none)'}; ` +
+      `unexpected: ${unexpected.join(', ') || '(none)'}`,
+    );
+  }
+  const empty = assets.filter(asset => typeof asset.size === 'number' && asset.size <= 0).map(asset => asset.name);
+  if (empty.length > 0) throw new Error(`release contains empty assets: ${empty.join(', ')}`);
+}
+
+function verifyRelease(version, ossRepo, signed = true, includeSecondary = false) {
   const release = parseJsonOutput('gh', [
     'release',
     'view',
@@ -698,14 +1077,7 @@ function verifyRelease(version, ossRepo) {
     '--json',
     'tagName,isDraft,isPrerelease,url,assets',
   ], ossRepo);
-  const assetNames = release.assets.map(asset => asset.name);
-  for (const name of [
-    `Tide.Mind-${version}-arm64.dmg`,
-    `Tide.Mind-${version}-x64.dmg`,
-    'latest-mac.yml',
-  ]) {
-    if (!assetNames.includes(name)) throw new Error(`release missing asset ${name}`);
-  }
+  assertCompleteReleaseAssetList(version, release.assets, signed, includeSecondary);
   if (release.isDraft) throw new Error(`release v${version} is still draft`);
   console.log(`✓ release published: ${release.url}`);
 }
@@ -719,12 +1091,16 @@ async function main() {
   const rootPkg = readJson(path.join(repoRoot, 'package.json'));
   assertRequestedVersion(opts.version, rootPkg.version);
   const version = opts.version ?? rootPkg.version;
-  const previousVersion = opts.previousVersion ?? previousPatch(version);
-  if (!previousVersion && !opts.skipUpdateVerify) {
+  assertReleaseBypassesAllowed(version, opts);
+  const previousVersions = resolveUpdatePreviousVersions(version, opts.previousVersion);
+  if (previousVersions.length === 0 && !opts.skipUpdateVerify) {
     throw new Error('Could not infer --previous-version from --version; pass it explicitly');
   }
   const tagName = `v${version}`;
-  const notesFile = ensureNotesFile(version, opts.notesFile);
+  if (version === '0.2.92' && opts.allowUnsigned) {
+    throw new Error('0.2.92 cannot be released with --allow-unsigned');
+  }
+  const notesFile = opts.prepareCandidate ? null : ensureNotesFile(version, opts.notesFile, opts.dryRun);
   const ossMessage = opts.ossMessage ?? `sync ${version}: release maintenance updates`;
 
   console.log(`TideMind release ${tagName}`);
@@ -744,16 +1120,54 @@ async function main() {
   assertCleanRepo(repoRoot, 'ExternaBrain', opts.dryRun);
   assertCleanRepo(opts.ossRepo, 'TideMind OSS', opts.dryRun);
   const expectedRootHead = capture('git', ['rev-parse', 'HEAD'], repoRoot).stdout;
+  const agentHostEvidence = opts.agentHostEvidence
+    ?? (process.env.TIDEMIND_AGENT_HOST_ACCEPTANCE_INDEX
+      ? path.resolve(process.env.TIDEMIND_AGENT_HOST_ACCEPTANCE_INDEX)
+      : null);
+  const agentHostCandidateApps = {
+    arm64: opts.agentHostCandidateAppArm64 ?? (process.env.TIDEMIND_AGENT_HOST_CANDIDATE_APP_ARM64
+      ? path.resolve(process.env.TIDEMIND_AGENT_HOST_CANDIDATE_APP_ARM64) : null),
+    x64: opts.agentHostCandidateAppX64 ?? (process.env.TIDEMIND_AGENT_HOST_CANDIDATE_APP_X64
+      ? path.resolve(process.env.TIDEMIND_AGENT_HOST_CANDIDATE_APP_X64) : null),
+  };
+  const architectures = releaseMacArchitectures(version);
+  if ((!agentHostEvidence || architectures.some(arch => !agentHostCandidateApps[arch])) && !opts.dryRun && !opts.prepareCandidate) {
+    throw new Error(`A real release requires real-host evidence and exact signed ${architectures.join('/')} candidate apps`);
+  }
+  const acceptanceIndex = agentHostEvidence
+    ?? path.join(repoRoot, 'release-evidence', 'agent-integration-host-acceptance', version, 'index.json');
+  const acceptanceVerifierArgs = [
+    'scripts/verify-agent-integration-host-acceptance.mjs',
+    '--index', acceptanceIndex,
+    '--app-version', version,
+    '--source-commit', expectedRootHead,
+    ...architectures.flatMap(arch => [
+      `--candidate-app-${arch}`, agentHostCandidateApps[arch] ?? path.join(repoRoot, `.dry-run-${arch}-candidate.app`),
+    ]),
+  ];
+  // This is an external release acceptance gate, not a unit/health check. It
+  // remains mandatory when --skip-health is used and rejects fixture evidence.
+  if (!opts.prepareCandidate) run('node', acceptanceVerifierArgs, {
+    label: 'verify real-host Agent Integration acceptance',
+    dryRun: opts.dryRun,
+  });
 
   // Release website assets must be built from the exact lockfile, not whatever
   // happens to remain in a long-lived local node_modules directory.
-  run('npm', ['ci'], {
+  if (!opts.prepareCandidate) run('npm', ['ci'], {
     cwd: path.join(repoRoot, 'pro/website'),
     label: 'install exact website dependencies',
     dryRun: opts.dryRun,
   });
 
   run('node', ['scripts/check-version-sync.mjs'], { label: 'check version sync', dryRun: opts.dryRun });
+  // Agent Adapter enablement is a release contract, not a general health
+  // convenience. Keep this outside --skip-health so no release path can ship
+  // an empty, inconsistent, or falsely advertised signed manifest.
+  run('npm', ['run', 'verify:agent-integration-release'], {
+    label: 'verify Agent Integration release manifest',
+    dryRun: opts.dryRun,
+  });
   // 2026-05-21 v0.2.71 audit A-HIGH-1/2:helper entitlement 防回归。
   // 在 push 之前拦截"main plist inherit 给 helper → SIGKILL"事故。
   // health-check 也会再跑一次,这里 fail-fast 早于 push。
@@ -765,10 +1179,40 @@ async function main() {
 
   if (!opts.dryRun) assertRepoSnapshot(repoRoot, 'ExternaBrain', expectedRootHead);
 
-  run('git', ['push', 'origin', 'main'], { label: 'push ExternaBrain main', dryRun: opts.dryRun });
-  if (!opts.dryRun) assertRemoteMainAt(repoRoot, expectedRootHead);
+  // Keychain/private-key validation belongs before the first external mutation,
+  // not merely before the public tag. A bad key must not leave private main,
+  // the website, or OSS main advanced by an otherwise doomed release attempt.
+  let signingKeys = { privateKey: null, secondaryKey: null, source: null };
+  if (!opts.dryRun && !opts.prepareCandidate) {
+    signingKeys = loadSigningKeys(opts.allowUnsigned);
+    assertRepoSnapshot(repoRoot, 'ExternaBrain', expectedRootHead);
+    assertReleaseTagPreflight(version, expectedRootHead, opts.ossRepo, opts.forceTag);
+  }
 
-  if (!opts.skipWebsite) {
+  run('git', ['push', 'origin', 'main'], { label: 'push ExternaBrain main', dryRun: opts.dryRun });
+  if (!opts.dryRun) {
+    assertRemoteMainAt(repoRoot, expectedRootHead);
+    const privateCiRunId = await getPrivateCiRunId(expectedRootHead, opts.timeoutMinutes * 60_000);
+    run('gh', ['run', 'watch', privateCiRunId, '--exit-status'], {
+      cwd: repoRoot,
+      label: `wait private exact-SHA CI ${privateCiRunId}`,
+      timeoutMs: opts.timeoutMinutes * 60_000,
+    });
+    const privateCi = parseJsonOutput('gh', [
+      'run', 'view', privateCiRunId,
+      '--json', 'headBranch,headSha,event,status,conclusion',
+    ], repoRoot);
+    if (privateCi.headBranch !== 'main'
+      || privateCi.headSha !== expectedRootHead
+      || privateCi.event !== 'push'
+      || privateCi.status !== 'completed'
+      || privateCi.conclusion !== 'success') {
+      throw new Error(`private CI ${privateCiRunId} is not successful at exact source commit ${expectedRootHead}`);
+    }
+    assertRemoteMainAt(repoRoot, expectedRootHead);
+  }
+
+  if (!opts.skipWebsite && !opts.prepareCandidate) {
     if (!opts.dryRun) {
       assertRepoSnapshot(repoRoot, 'ExternaBrain', expectedRootHead);
       assertRemoteMainAt(repoRoot, expectedRootHead);
@@ -814,26 +1258,126 @@ async function main() {
     assertRepoSnapshot(repoRoot, 'ExternaBrain', expectedRootHead);
     assertRemoteMainAt(repoRoot, expectedRootHead);
   }
+  const ossAcceptanceDirectory = path.join(
+    opts.ossRepo,
+    'release-evidence',
+    'agent-integration-host-acceptance',
+    version,
+  );
+  if (!opts.prepareCandidate) run('node', [...acceptanceVerifierArgs, '--copy-to', ossAcceptanceDirectory], {
+    label: 'stage verified real-host Agent acceptance for release CI',
+    dryRun: opts.dryRun,
+  });
+  const candidateTransferTemp = opts.dryRun || opts.prepareCandidate
+    ? path.join(os.tmpdir(), 'tidemind-agent-host-candidate-dry-run')
+    : fs.mkdtempSync(path.join(os.tmpdir(), 'tidemind-agent-host-candidate-'));
+  const candidateTransfers = Object.fromEntries((opts.prepareCandidate ? [] : architectures).map(architecture => {
+    const archive = path.join(candidateTransferTemp, `Tide.Mind-${version}-${architecture}-${expectedRootHead.slice(0, 12)}.zip`);
+    const receipt = path.join(
+      opts.ossRepo,
+      'release-evidence',
+      'agent-integration-host-candidate-transfer',
+      `${version}-${architecture}.json`,
+    );
+    run('node', [
+      'scripts/agent-host-candidate-transfer.mjs', 'prepare',
+      '--architecture', architecture,
+      '--candidate-app', agentHostCandidateApps[architecture] ?? path.join(repoRoot, `.dry-run-${architecture}-candidate.app`),
+      '--index', acceptanceIndex,
+      '--source-commit', expectedRootHead,
+      '--app-version', version,
+      '--archive', archive,
+      '--receipt', receipt,
+    ], {
+      label: `seal physical ${architecture} candidate transfer artifact`,
+      dryRun: opts.dryRun,
+    });
+    return [architecture, { archive, receipt }];
+  }));
   const ossDirty = !opts.dryRun && capture('git', ['status', '--porcelain'], opts.ossRepo).stdout;
   if (ossDirty) {
     run('git', ['add', '-A'], { cwd: opts.ossRepo, label: 'stage OSS changes', dryRun: opts.dryRun });
-    run('git', ['commit', '-m', ossMessage], { cwd: opts.ossRepo, label: 'commit OSS changes', dryRun: opts.dryRun });
+    const boundOssMessage = `${ossMessage}\n\nTideMind-Source-Commit: ${expectedRootHead}`;
+    run('git', ['commit', '-m', boundOssMessage], { cwd: opts.ossRepo, label: 'commit OSS changes', dryRun: opts.dryRun });
   } else {
     console.log('\n> OSS repo has no changes to commit');
   }
+  if (!opts.dryRun) assertOssSourceBinding(expectedRootHead, opts.ossRepo);
   run('git', ['push', 'origin', 'main'], { cwd: opts.ossRepo, label: 'push OSS main', dryRun: opts.dryRun });
   const expectedOssHead = opts.dryRun
     ? 'DRY-RUN-OSS-HEAD'
     : capture('git', ['rev-parse', 'HEAD'], opts.ossRepo).stdout;
   if (!opts.dryRun) assertOssMainStillAt(expectedOssHead, opts.ossRepo);
+  if (!opts.dryRun) assertOssSourceBinding(expectedRootHead, opts.ossRepo);
 
-  // 在创建公开tag之前先用与正式发布完全相同的arm64/x64 runner、Apple签名、
+  if (opts.prepareCandidate) {
+    const startedAt = Date.now() - 60_000;
+    const requestId = crypto.randomUUID();
+    run('gh', ['workflow', 'run', 'release.yml', '--repo', 'SawyerHan-AI/TideMind', '--ref', 'main',
+      '-f', 'candidate_only=true', '-f', `source_sha=${expectedRootHead}`, '-f', `request_id=${requestId}`], {
+      cwd: opts.ossRepo, label: 'build signed Apple Silicon candidate', dryRun: opts.dryRun,
+    });
+    if (!opts.dryRun) {
+      const runId = await getPackagePreflightRunId(opts.ossRepo, opts.timeoutMinutes * 60_000, expectedOssHead, startedAt, `Candidate ${requestId}`);
+      run('gh', ['run', 'watch', runId, '--repo', 'SawyerHan-AI/TideMind', '--exit-status'], {
+        cwd: opts.ossRepo, label: `wait signed candidate ${runId}`, timeoutMs: opts.timeoutMinutes * 60_000,
+      });
+      assertOssMainStillAt(expectedOssHead, opts.ossRepo);
+      console.log(`Signed candidate ready: https://github.com/SawyerHan-AI/TideMind/actions/runs/${runId}`);
+    }
+    return;
+  }
+
+  // GitHub-hosted runners cannot see a path on the release Mac. Transfer the
+  // exact signed candidate through a private draft release asset; the committed
+  // receipt binds archive bytes to source, version and accepted app bundle hash.
+  if (!opts.dryRun) {
+    const transfers = Object.values(candidateTransfers).map(({ archive, receipt }) => ({
+      archive,
+      receipt: readJson(receipt),
+    }));
+    const transfer = transfers[0].receipt;
+    const existing = capture('gh', [
+      'release', 'view', transfer.transferTag, '--repo', 'SawyerHan-AI/TideMind',
+      '--json', 'isDraft,tagName',
+    ], opts.ossRepo, true);
+    if (existing.status === 0) {
+      const metadata = JSON.parse(existing.stdout);
+      if (!metadata.isDraft || metadata.tagName !== transfer.transferTag) {
+        throw new Error(`candidate transfer ${transfer.transferTag} exists but is not the expected draft release`);
+      }
+      const remoteTag = capture('git', [
+        'ls-remote', '--tags', 'origin', `refs/tags/${transfer.transferTag}`,
+      ], opts.ossRepo).stdout.split(/\s+/u)[0] ?? '';
+      if (remoteTag !== expectedOssHead) {
+        throw new Error(`candidate transfer tag points at ${remoteTag || '(missing)'}, expected ${expectedOssHead}`);
+      }
+      run('gh', [
+        'release', 'upload', transfer.transferTag,
+        ...transfers.map(item => item.archive),
+        '--repo', 'SawyerHan-AI/TideMind', '--clobber',
+      ], { cwd: opts.ossRepo, label: 'replace sealed candidate transfer asset' });
+    } else {
+      run('gh', [
+        'release', 'create', transfer.transferTag,
+        ...transfers.map(item => item.archive),
+        '--repo', 'SawyerHan-AI/TideMind', '--target', expectedOssHead,
+        '--title', `Private Agent host candidate ${version} ${expectedRootHead.slice(0, 12)}`,
+        '--notes', 'Private draft transfer used only by the release verification workflow.',
+        '--draft',
+      ], { cwd: opts.ossRepo, label: 'upload sealed candidate to private draft release' });
+    }
+  }
+
+  // 在创建公开tag之前先用与正式发布完全相同的runner、Apple签名、
   // 公证、native架构与包内Worker smoke跑一次。workflow_dispatch不会创建Release；
   // 任何一架构失败都会在不可逆的tag push之前停止。
   const packagePreflightStartedAt = Date.now() - 60_000;
-  run('gh', ['workflow', 'run', 'release.yml', '--repo', 'SawyerHan-AI/TideMind', '--ref', 'main'], {
+  const packagePreflightRequestId = crypto.randomUUID();
+  run('gh', ['workflow', 'run', 'release.yml', '--repo', 'SawyerHan-AI/TideMind', '--ref', 'main',
+    '-f', 'candidate_only=false', '-f', `request_id=${packagePreflightRequestId}`], {
     cwd: opts.ossRepo,
-    label: 'start dual-architecture package preflight',
+    label: 'start macOS package preflight',
     dryRun: opts.dryRun,
   });
   if (!opts.dryRun) {
@@ -842,10 +1386,11 @@ async function main() {
       opts.timeoutMinutes * 60_000,
       expectedOssHead,
       packagePreflightStartedAt,
+      `Preflight ${packagePreflightRequestId}`,
     );
     run('gh', ['run', 'watch', packagePreflightRunId, '--repo', 'SawyerHan-AI/TideMind', '--exit-status'], {
       cwd: opts.ossRepo,
-      label: `wait dual-architecture package preflight ${packagePreflightRunId}`,
+      label: `wait macOS package preflight ${packagePreflightRunId}`,
       timeoutMs: opts.timeoutMinutes * 60_000,
     });
     const verifiedRunHead = capture('gh', [
@@ -855,21 +1400,12 @@ async function main() {
       '--jq', '.headSha',
     ], opts.ossRepo).stdout;
     if (verifiedRunHead !== expectedOssHead) {
-      throw new Error(`dual-architecture preflight ran at ${verifiedRunHead}, expected ${expectedOssHead}`);
+      throw new Error(`macOS preflight ran at ${verifiedRunHead}, expected ${expectedOssHead}`);
     }
     assertOssMainStillAt(expectedOssHead, opts.ossRepo);
   }
 
-  // 签名私钥 fail-fast:在 push tag(触发不可逆的公开构建/发布)之前解析私钥。
-  //   - 缺失/损坏(且非 --allow-unsigned)立即报错退出,不留"已发布但无签名"窗口。
-  //   - macOS Keychain Touch ID / 密码交互也提前到运维一定在场的发版起点。
-  // dry-run 不访问 Keychain,避免无意义的解锁弹窗。
-  let signingKeys = { privateKey: null, secondaryKey: null, source: null };
-  if (!opts.dryRun) {
-    signingKeys = loadSigningKeys(opts.allowUnsigned);
-    assertOssMainStillAt(expectedOssHead, opts.ossRepo);
-  }
-
+  if (!opts.dryRun) assertOssMainStillAt(expectedOssHead, opts.ossRepo);
   const tagAction = opts.dryRun ? 'create' : assertTagState(version, opts.ossRepo, opts.forceTag);
   if (tagAction === 'move') {
     run('git', ['tag', '-f', tagName], { cwd: opts.ossRepo, label: `move ${tagName}`, dryRun: opts.dryRun });
@@ -890,12 +1426,31 @@ async function main() {
   run('git', ['push', 'origin', tagName], { cwd: opts.ossRepo, label: `push ${tagName}`, dryRun: opts.dryRun });
 
   if (!opts.dryRun) {
-    const runId = await getReleaseRunId(version, opts.ossRepo, opts.timeoutMinutes * 60_000, minRunCreatedAtMs);
+    const runId = await getReleaseRunId(
+      version,
+      opts.ossRepo,
+      opts.timeoutMinutes * 60_000,
+      expectedOssHead,
+      minRunCreatedAtMs,
+    );
     run('gh', ['run', 'watch', runId, '--repo', 'SawyerHan-AI/TideMind', '--exit-status'], {
       cwd: opts.ossRepo,
       label: `wait release workflow ${runId}`,
       timeoutMs: opts.timeoutMinutes * 60_000,
     });
+    const verifiedReleaseRun = parseJsonOutput('gh', [
+      'run', 'view', runId,
+      '--repo', 'SawyerHan-AI/TideMind',
+      '--json', 'headSha,event,status,conclusion',
+    ], opts.ossRepo);
+    if (verifiedReleaseRun.headSha !== expectedOssHead
+      || verifiedReleaseRun.event !== 'push'
+      || verifiedReleaseRun.status !== 'completed'
+      || verifiedReleaseRun.conclusion !== 'success') {
+      throw new Error(
+        `release workflow ${runId} is not the successful tag push for OSS ${expectedOssHead}`,
+      );
+    }
     // 离线签名:对每个 (platform, arch) 的 DMG 签名 "${version}\n${dmgUrl}",把签名作为
     // 额外 asset 上传。**先签名后 publish**:消除"已 publish 但无 .sig"的窗口
     // (该窗口叠加云端 5min release 缓存 → 落在窗口内的客户端拿到 signatureUrl=null
@@ -907,9 +1462,19 @@ async function main() {
       cwd: opts.ossRepo,
       label: 'publish GitHub release',
     });
-    verifyRelease(version, opts.ossRepo);
+    verifyRelease(version, opts.ossRepo, !opts.allowUnsigned, Boolean(signingKeys.secondaryKey));
     if (!opts.skipCloudVerify) await verifyCloud(version);
-    if (!opts.skipUpdateVerify) await verifyUpdateApi(version, previousVersion, opts.allowUnsigned);
+    if (!opts.skipUpdateVerify) await verifyUpdateApi(
+      version,
+      previousVersions,
+      opts.allowUnsigned,
+      readEmbeddedUpdatePublicKeys(),
+    );
+    const transfer = readJson(candidateTransfers.arm64.receipt);
+    run('gh', [
+      'release', 'delete', transfer.transferTag,
+      '--repo', 'SawyerHan-AI/TideMind', '--cleanup-tag', '--yes',
+    ], { cwd: opts.ossRepo, label: 'remove completed private candidate transfer' });
   }
 
   console.log(`\nRelease ${tagName} completed.`);

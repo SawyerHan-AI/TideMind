@@ -67,8 +67,8 @@ class SqliteNodeRepository implements INodeRepository {
   updateNode(id: string, patch: Parameters<typeof updateNode>[2], changeReason?: string): boolean {
     return updateNode(this.db, id, patch, changeReason);
   }
-  archiveNode(id: string): void {
-    archiveNodeWithVectors(this.db, id);
+  archiveNode(id: string): boolean {
+    return archiveNodeWithVectors(this.db, id);
   }
   unarchiveNode(id: string): boolean {
     return unarchiveNodeRecordOnly(this.db, id);

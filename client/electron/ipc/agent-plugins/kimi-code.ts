@@ -73,8 +73,8 @@ export const kimiCodeAdapter: AgentPluginAdapter = {
     writeFileAtomic(skillFilePath, skillBody)
 
     // 3) UserPromptSubmit hook → ~/.kimi-code/config.toml 的 [[hooks]]
-    //    --once-per-session 拼在 --tool 之后:UserPromptSubmit 每条消息都触发,
-    //    脚本侧按 session_id 去重,每会话只注入一次。不写 matcher(match all)。
+    //    --once-per-session 按 session_id 去重；--suppress-session-start-activity
+    //    保证用户消息只注入上下文，不伪装成真实 SessionStart。不写 matcher(match all)。
     const hookCommand = [
       JSON.stringify(ctx.runtime.shimPath),
       JSON.stringify(ctx.runtime.hookScriptPath),
@@ -82,6 +82,7 @@ export const kimiCodeAdapter: AgentPluginAdapter = {
       '--skill-path', JSON.stringify(skillFilePath),
       '--tool', JSON.stringify(ctx.config.hookToolParam),
       '--once-per-session',
+      '--suppress-session-start-activity',
     ].join(' ')
     ensureTomlHook(kimiConfigPath(ctx), {
       event: 'UserPromptSubmit',

@@ -4,7 +4,9 @@ import { buildLegacyMutationDomain } from './legacy-writer.js'
 import {
   persistedDistribution,
   persistedComponentConfigFiles,
+  persistedComponentConfigRoots,
   persistedHostOwnedIdentity,
+  legacyAdoptionHostBinding,
   type AgentInstallationRow,
   type AgentIntegrationRepository,
   type LegacyAgentRow,
@@ -48,6 +50,7 @@ export async function adoptProvableLegacyConnections(input: {
     legacy: LegacyAgentRow
     possible: AgentInstallationRow[]
     proven: Array<{ installation: AgentInstallationRow; observations: readonly AdoptableArtifactObservation[] }>
+    knownSecondary: boolean
   }> = []
 
   for (const legacy of input.repository.listLegacyAgents()) {
@@ -57,7 +60,84 @@ export async function adoptProvableLegacyConnections(input: {
     }
     const historical = input.repository.getInstallationByLegacyAgentAlias(legacy.id, input.runtime.runtimeRealm)
     if (historical) {
-      report.alreadyAdopted += 1
+      if (historical.host_variant === 'custom-local-mcp') {
+        try {
+          input.repository.adoptLegacyIdentityOnlyInstallation({
+            legacy,
+            runtimeRealm: input.runtime.runtimeRealm,
+            adoptedAt: input.now,
+          })
+          report.alreadyAdopted += 1
+          continue
+        } catch {
+          // An alias to an ordinary user-selected Custom target is not proof
+          // that this legacy identity was preserved. Continue read-only host
+          // matching; any attempted secondary preservation will fail closed
+          // without pausing the canonical physical Installation.
+        }
+      } else if (historical.desired_state !== 'unmanaged'
+        || historical.tombstoned_at) {
+        report.alreadyAdopted += 1
+        continue
+      } else {
+        const adapter = input.adapters.get(historical.host_variant as CatalogId)
+        let observedEvidenceHash: string | null = null
+        let observedLegacyEvidenceHash: string | null = null
+        if (adapter?.inspectAdoptableArtifacts && historical.config_root) {
+          try {
+            const observations = (await adapter.inspectAdoptableArtifacts({
+              runtime: input.runtime,
+              installation: installationIdentity(historical),
+              agentId: legacy.id,
+              operationId: `legacy_adoption_${legacy.id}:recheck`,
+            })).filter(observation => observation.identityAssertion === legacy.id)
+            if (observations.length > 0) {
+              observedEvidenceHash = legacyEvidenceHash(legacy, historical, observations)
+              observedLegacyEvidenceHash = sha256Json({
+                legacyAgentId: legacy.id, legacyToolType: legacy.tool_type,
+                installationId: historical.id, observations,
+              })
+            }
+          } catch {
+            // A read-only probe failure is indistinguishable from missing proof.
+            // The repository revokes only historical availability and never writes
+            // the host or creates maintenance consent.
+          }
+        }
+        const recheck = input.repository.recheckLegacyAdoption({
+          legacyAgentId: legacy.id,
+          legacyToolType: legacy.tool_type,
+          installationId: historical.id,
+          observedEvidenceHash,
+          observedLegacyEvidenceHash,
+          observedHostBinding: legacyAdoptionHostBinding(historical),
+          checkedAt: input.now,
+        })
+        if (recheck === 'stale') report.needsConfirmation += 1
+        else report.alreadyAdopted += 1
+        continue
+      }
+    }
+    if (isLegacyCustomToolType(legacy.tool_type)) {
+      try {
+        const result = input.repository.adoptLegacyCustomInstallation({
+          legacy,
+          runtimeRealm: input.runtime.runtimeRealm,
+          adoptedAt: input.now,
+        })
+        if (result === 'adopted') report.adopted += 1
+        else report.alreadyAdopted += 1
+      } catch (error) {
+        report.needsConfirmation += 1
+        recordNeedsConfirmation(
+          input.repository,
+          legacy,
+          [],
+          [],
+          input.now,
+          error instanceof Error ? error.message : String(error),
+        )
+      }
       continue
     }
     const alias = CATALOG_ALIASES.find(candidate => candidate.alias === legacy.tool_type)
@@ -92,35 +172,111 @@ export async function adoptProvableLegacyConnections(input: {
       }
     }
 
-    candidates.push({ legacy, possible, proven })
+    candidates.push({
+      legacy,
+      possible,
+      proven,
+      knownSecondary: proven.length === 1
+        && persistedCanonicalSelection(proven[0].installation)?.canonicalAgentId !== legacy.id
+        && persistedCanonicalSelection(proven[0].installation)?.candidateLegacyAgentIds.includes(legacy.id) === true,
+    })
   }
 
   const legacyCountByInstallation = new Map<string, number>()
+  const claimantsByInstallation = new Map<string, typeof candidates>()
   for (const candidate of candidates) {
+    if (candidate.knownSecondary) continue
     for (const installationId of new Set(candidate.proven.map(item => item.installation.id))) {
       legacyCountByInstallation.set(
         installationId,
         (legacyCountByInstallation.get(installationId) ?? 0) + 1,
       )
+      if (candidate.proven.length === 1) {
+        const claimants = claimantsByInstallation.get(installationId) ?? []
+        claimants.push(candidate)
+        claimantsByInstallation.set(installationId, claimants)
+      }
     }
   }
-  const uniquelyClaimedInstallations = new Set(candidates.flatMap(candidate => (
-    candidate.proven.length === 1
-      && legacyCountByInstallation.get(candidate.proven[0].installation.id) === 1
-      ? [candidate.proven[0].installation.id]
-      : []
-  )))
+  const canonicalByInstallation = new Map<
+    string,
+    CanonicalLegacySelection<typeof candidates[number]>
+  >()
+  for (const [installationId, claimants] of claimantsByInstallation) {
+    canonicalByInstallation.set(
+      installationId,
+      chooseCanonicalLegacyIdentity(claimants, claimants[0].proven[0].installation),
+    )
+  }
+  const claimedInstallations = new Set(
+    canonicalByInstallation.keys(),
+  )
 
-  for (const { legacy, possible, proven } of candidates) {
-    const globallyUnique = proven.length === 1
-      && legacyCountByInstallation.get(proven[0].installation.id) === 1
+  for (const { legacy, possible, proven, knownSecondary } of candidates) {
+    if (knownSecondary) {
+      try {
+        const result = input.repository.adoptLegacyIdentityOnlyInstallation({
+          legacy,
+          runtimeRealm: input.runtime.runtimeRealm,
+          adoptedAt: input.now,
+        })
+        if (result === 'adopted') report.adopted += 1
+        else report.alreadyAdopted += 1
+      } catch (error) {
+        report.needsConfirmation += 1
+        recordNeedsConfirmation(
+          input.repository, legacy, possible, proven, input.now,
+          error instanceof Error ? error.message : String(error), false,
+        )
+      }
+      continue
+    }
+    const singleTarget = proven.length === 1
+    const sharedInstallation = singleTarget
+      && (legacyCountByInstallation.get(proven[0].installation.id) ?? 0) > 1
+    const canonicalSelection = singleTarget
+      ? canonicalByInstallation.get(proven[0].installation.id) ?? null
+      : null
+    const canonicalIdentity = singleTarget && canonicalSelection?.candidate.legacy.id === legacy.id
 
-    if (!globallyUnique) {
+    if (sharedInstallation && !canonicalIdentity) {
+      try {
+        const result = input.repository.adoptLegacyIdentityOnlyInstallation({
+          legacy,
+          runtimeRealm: input.runtime.runtimeRealm,
+          adoptedAt: input.now,
+        })
+        if (result === 'adopted') report.adopted += 1
+        else report.alreadyAdopted += 1
+      } catch (error) {
+        report.needsConfirmation += 1
+        recordNeedsConfirmation(
+          input.repository, legacy, possible, proven, input.now,
+          error instanceof Error ? error.message : String(error), false,
+        )
+        continue
+      }
+      if (canonicalSelection === null) {
+        report.needsConfirmation += 1
+        recordNeedsConfirmation(
+          input.repository,
+          legacy,
+          possible,
+          proven,
+          input.now,
+          'multiple_legacy_identities_need_canonical_selection',
+          false,
+        )
+      }
+      continue
+    }
+
+    if (!singleTarget) {
       report.needsConfirmation += 1
       recordNeedsConfirmation(
         input.repository,
         legacy,
-        possible.filter(installation => !uniquelyClaimedInstallations.has(installation.id)),
+        possible.filter(installation => !claimedInstallations.has(installation.id)),
         proven,
         input.now,
       )
@@ -139,12 +295,7 @@ export async function adoptProvableLegacyConnections(input: {
       recordNeedsConfirmation(input.repository, legacy, possible, [], input.now, 'evidence_changed_during_adoption')
       continue
     }
-    const evidenceHash = sha256Json({
-      legacyAgentId: legacy.id,
-      legacyToolType: legacy.tool_type,
-      installationId: candidate.installation.id,
-      observations: candidate.observations,
-    })
+    const evidenceHash = legacyEvidenceHash(legacy, candidate.installation, candidate.observations)
     try {
       const result = input.repository.adoptLegacyInstallation({
         legacyAgentId: legacy.id,
@@ -164,6 +315,9 @@ export async function adoptProvableLegacyConnections(input: {
         expectedVersionDetectionMethod: candidate.installation.version_detection_method,
         expectedMetadataJson: candidate.installation.metadata_json,
         evidenceHash,
+        evidenceVersion: 2,
+        canonicalSelectionBasis: canonicalSelection?.basis,
+        candidateLegacyAgentIds: canonicalSelection?.claimantAgentIds,
         artifacts: currentObservations.map(observation => ({
           id: `artifact_${sha256Json({
             runtimeRealm: candidate.installation.runtime_realm,
@@ -207,6 +361,97 @@ export async function adoptProvableLegacyConnections(input: {
   return report
 }
 
+function persistedCanonicalSelection(row: AgentInstallationRow): {
+  canonicalAgentId: string
+  candidateLegacyAgentIds: string[]
+} | null {
+  try {
+    const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>
+    const adoption = metadata.legacyAdoption
+    if (!adoption || typeof adoption !== 'object' || Array.isArray(adoption)) return null
+    const selection = (adoption as Record<string, unknown>).canonicalSelection
+    if (!selection || typeof selection !== 'object' || Array.isArray(selection)) return null
+    const canonicalAgentId = (selection as Record<string, unknown>).canonicalAgentId
+    const candidates = (selection as Record<string, unknown>).candidateLegacyAgentIds
+    if (typeof canonicalAgentId !== 'string'
+      || !Array.isArray(candidates)
+      || !candidates.every(candidate => typeof candidate === 'string')) return null
+    return { canonicalAgentId, candidateLegacyAgentIds: candidates }
+  } catch {
+    return null
+  }
+}
+
+type CanonicalLegacySelection<T> = {
+  candidate: T
+  basis: 'sole_claimant' | 'current_binding' | 'unique_last_active' | 'unique_created' | 'stable_id'
+  claimantAgentIds: string[]
+}
+
+function chooseCanonicalLegacyIdentity<T extends { legacy: LegacyAgentRow }>(
+  claimants: readonly T[],
+  installation: AgentInstallationRow,
+): CanonicalLegacySelection<T> {
+  const result = (
+    candidate: T,
+    basis: CanonicalLegacySelection<T>['basis'],
+  ): CanonicalLegacySelection<T> => ({
+    candidate,
+    basis,
+    claimantAgentIds: claimants.map(item => item.legacy.id).sort(),
+  })
+  if (claimants.length === 1) return result(claimants[0], 'sole_claimant')
+  const exactCurrent = claimants.filter(candidate => candidate.legacy.id === installation.agent_id)
+  if (exactCurrent.length === 1) return result(exactCurrent[0], 'current_binding')
+
+  const ranked = claimants
+    .map(candidate => ({ candidate, timestamp: Date.parse(candidate.legacy.last_active ?? '') }))
+    .filter(item => Number.isFinite(item.timestamp))
+    .sort((left, right) => right.timestamp - left.timestamp)
+  if (ranked.length > 0 && (!ranked[1] || ranked[0].timestamp !== ranked[1].timestamp)) {
+    return result(ranked[0].candidate, 'unique_last_active')
+  }
+
+  // Multiple exact Tide Mind selectors on one physical host are equivalent
+  // ownership proof.  When activity cannot distinguish them, prefer the most
+  // recently created historical identity, then a stable ID order.  This keeps
+  // one proven legacy selector canonical instead of inventing a third managed
+  // selector under the scanner-generated identity.
+  const byCreated = [...claimants].map(candidate => ({
+    candidate,
+    timestamp: Date.parse(candidate.legacy.created),
+  })).sort((left, right) => right.timestamp - left.timestamp)
+  if (Number.isFinite(byCreated[0]?.timestamp)
+    && (!byCreated[1] || byCreated[0].timestamp !== byCreated[1].timestamp)) {
+    return result(byCreated[0].candidate, 'unique_created')
+  }
+  return result(
+    [...claimants].sort((left, right) => right.legacy.id.localeCompare(left.legacy.id))[0],
+    'stable_id',
+  )
+}
+
+function isLegacyCustomToolType(toolType: string): boolean {
+  return toolType === 'other' || toolType.startsWith('custom-')
+}
+
+function legacyEvidenceHash(
+  legacy: Pick<LegacyAgentRow, 'id' | 'tool_type'>,
+  installation: AgentInstallationRow,
+  observations: readonly AdoptableArtifactObservation[],
+): string {
+  return sha256Json({
+    legacyAgentId: legacy.id,
+    legacyToolType: legacy.tool_type,
+    installationId: installation.id,
+    hostBinding: legacyAdoptionHostBinding(installation),
+    // Container bytes are CAS preconditions for a write, not proof that our
+    // unchanged selector remains callable after an unrelated config edit.
+    observations: observations.map(({ containerHash: _containerHash, ...owned }) => owned)
+      .sort((left, right) => sha256Json(left).localeCompare(sha256Json(right))),
+  })
+}
+
 function installationIdentity(row: AgentInstallationRow): InstallationIdentity {
   return {
     runtimeRealm: row.runtime_realm as InstallationIdentity['runtimeRealm'],
@@ -214,6 +459,7 @@ function installationIdentity(row: AgentInstallationRow): InstallationIdentity {
     productFamilyId: row.family as InstallationIdentity['productFamilyId'],
     hostVariant: row.host_variant as CatalogId,
     canonicalConfigRoot: row.config_root!,
+    componentConfigRoots: persistedComponentConfigRoots(row),
     componentConfigFiles: persistedComponentConfigFiles(row),
     explicitProfile: row.profile_id || 'default',
     hostOwnedIdentity: persistedHostOwnedIdentity(row),
@@ -229,6 +475,7 @@ function recordNeedsConfirmation(
   proven: readonly { installation: AgentInstallationRow }[],
   createdAt: string,
   explicitReason?: string,
+  pauseInstallations = true,
 ): void {
   const reason = explicitReason ?? (possible.length === 0
     ? 'installation_not_discovered'
@@ -238,7 +485,9 @@ function recordNeedsConfirmation(
   const installationIds = [...new Set(possible.map(installation => installation.id))]
   const targets = installationIds.length > 0 ? installationIds : [undefined]
   for (const installationId of targets) {
-    if (installationId) repository.markLegacyConfirmationRequired(installationId, createdAt)
+    if (installationId && pauseInstallations) {
+      repository.markLegacyConfirmationRequired(installationId, createdAt)
+    }
     repository.recordEvent({
       installationId,
       kind: 'legacy_connection_needs_confirmation',

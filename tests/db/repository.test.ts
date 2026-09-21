@@ -79,7 +79,8 @@ describe('SqliteRepository - nodes', () => {
 
   it('should archive a node', () => {
     const node = repo.nodes.createNode({ type: 'fact', content: 'to archive' });
-    repo.nodes.archiveNode(node.id);
+    expect(repo.nodes.archiveNode(node.id)).toBe(true);
+    expect(repo.nodes.archiveNode(node.id)).toBe(false);
 
     const fetched = repo.nodes.getNode(node.id);
     // archiveNode sets heat to 0.02 via cooldown

@@ -5,9 +5,12 @@ import {
   P0_DISCOVERY_CATALOG_IDS,
   P0_DISCOVERY_PROBES,
   CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,
+  discoverClaudeCoworkGuidedCandidate,
   discoverLocalP0Agents,
   MAX_CLI_EXECUTABLE_PROOF_BYTES,
+  signedCodePortableArtifactFingerprint,
   toDiscoverInstallationInput,
+  type AppCodeSignatureResult,
   type DiscoveryDependencies,
   type DiscoveryPathStat,
   type VersionCommandResult,
@@ -20,7 +23,7 @@ class FakeDiscoveryFs {
   readonly entries = new Map<string, DiscoveryPathStat>()
   readonly realpaths = new Map<string, string>()
   readonly textFiles = new Map<string, string>()
-  readonly signatures = new Map<string, { valid: boolean; identifier?: string; teamIdentifier?: string }>()
+  readonly signatures = new Map<string, AppCodeSignatureResult>()
   readonly calls: string[] = []
   readonly fileSizes = new Map<string, number>()
   readonly fileInodes = new Map<string, string>()
@@ -82,6 +85,22 @@ class FakeDiscoveryFs {
     return resolved
   }
 
+  async readDirectoryNames(targetPath: string, maxEntries: number) {
+    this.calls.push(`readDirectoryNames:${targetPath}:${maxEntries}`)
+    if (this.entries.get(targetPath)?.kind !== 'directory') return undefined
+    const prefix = `${targetPath.replace(/\/$/u, '')}/`
+    const names = [...new Set(
+      [...this.entries.keys()]
+        .filter(candidate => candidate.startsWith(prefix))
+        .map(candidate => candidate.slice(prefix.length))
+        .filter(relative => relative.length > 0 && !relative.includes('/')),
+    )].sort((left, right) => left.localeCompare(right))
+    return {
+      names: names.slice(0, maxEntries),
+      truncated: names.length > maxEntries,
+    }
+  }
+
   async readTextFile(targetPath: string, maxBytes: number): Promise<string> {
     this.calls.push(`readTextFile:${targetPath}:${maxBytes}`)
     const content = this.textFiles.get(targetPath)
@@ -127,6 +146,27 @@ class FakeDiscoveryFs {
       executable: (mode & 0o111) !== 0,
     }
   }
+
+  async readStableFileFingerprint(targetPath: string, maxBytes: number) {
+    this.calls.push(`readStableFileFingerprint:${targetPath}:${maxBytes}`)
+    const size = this.fileSizes.get(targetPath)
+    if (size === undefined || size > maxBytes) throw Object.assign(new Error('missing or oversized fixture file'), { code: 'ENOENT' })
+    const mode = this.fileModes.get(targetPath) ?? 0o755
+    const inode = this.fileInodes.get(targetPath) ?? targetPath
+    const sha256 = createHash('sha256').update(JSON.stringify({ targetPath, inode, size })).digest('hex')
+    return {
+      size,
+      mode,
+      device: '1',
+      inode,
+      linkCount: '1',
+      mtimeNs: '1000000',
+      ctimeNs: '1000000',
+      sha256,
+      fingerprint: createHash('sha256').update(JSON.stringify({ device: '1', inode, size, mode, sha256 })).digest('hex'),
+      executable: (mode & 0o111) !== 0,
+    }
+  }
 }
 
 interface FakeRuntime {
@@ -146,9 +186,11 @@ function fakeRuntime(): FakeRuntime {
     fs: {
       lstat: targetPath => fs.lstat(targetPath),
       realpath: targetPath => fs.realpath(targetPath),
+      readDirectoryNames: (targetPath, maxEntries) => fs.readDirectoryNames(targetPath, maxEntries),
       readTextFile: (targetPath, maxBytes) => fs.readTextFile(targetPath, maxBytes),
       readStableFileMetadata: targetPath => fs.readStableFileMetadata(targetPath),
       readStableFileSnapshot: (targetPath, maxBytes) => fs.readStableFileSnapshot(targetPath, maxBytes),
+      readStableFileFingerprint: (targetPath, maxBytes) => fs.readStableFileFingerprint(targetPath, maxBytes),
     },
     async which(command) {
       calls.push(`which:${command}`)
@@ -161,6 +203,9 @@ function fakeRuntime(): FakeRuntime {
     async inspectAppSignature(appBundleRealpath) {
       return fs.signatures.get(appBundleRealpath) ?? { valid: false }
     },
+    async inspectExecutableArchitecture() {
+      return 'arm64'
+    },
   }
   return { fs, commands, versions, calls, dependencies }
 }
@@ -168,7 +213,12 @@ function fakeRuntime(): FakeRuntime {
 function addCommand(
   runtime: FakeRuntime,
   command: string,
-  options: { realpath?: string; output?: string; verifiedPackageProvenance?: string } = {},
+  options: {
+    realpath?: string
+    output?: string
+    verifiedPackageProvenance?: string
+    portableArtifactFingerprint?: string
+  } = {},
 ): string {
   const commandPath = `/fixture/bin/${command}`
   const realpath = options.realpath ?? commandPath
@@ -180,6 +230,9 @@ function addCommand(
     stderr: '',
     ...(options.verifiedPackageProvenance
       ? { verifiedPackageProvenance: options.verifiedPackageProvenance }
+      : {}),
+    ...(options.portableArtifactFingerprint
+      ? { portableArtifactFingerprint: options.portableArtifactFingerprint }
       : {}),
   })
   return realpath
@@ -194,7 +247,124 @@ function context(overrides: Partial<Parameters<typeof discoverLocalP0Agents>[0]>
   }
 }
 
+function exactSignedCode(identifier: string, teamIdentifier: string): AppCodeSignatureResult {
+  return {
+    valid: true,
+    identifier,
+    teamIdentifier,
+    cdHash: '28d49821f609d871c2282bdec52116bd91ea5806',
+    designatedRequirement: `identifier "${identifier}" and anchor apple generic`,
+    verificationBoundary: 'strict_final',
+  }
+}
+
 describe('P0 local Agent discovery', () => {
+  it('uses the same signed-code portable canonical payload as the release receipt', async () => {
+    const runtime = fakeRuntime()
+    const executable = '/fixture/signed-code'
+    runtime.fs.addFile(executable, executable, 1_024, 0o755)
+    const proof = await runtime.fs.readStableFileFingerprint(executable, MAX_CLI_EXECUTABLE_PROOF_BYTES)
+    const signature = exactSignedCode('dev.zcode.app', '8A5X4JJ39T')
+    expect(signedCodePortableArtifactFingerprint({ version: '3.10.2', executable: proof, signature }))
+      .toBe(createHash('sha256').update(JSON.stringify({
+        schema: 'signed-code-v1',
+        version: '3.10.2',
+        executable: { sha256: proof.sha256, sizeBytes: proof.size, executable: true },
+        identifier: signature.identifier,
+        teamIdentifier: signature.teamIdentifier,
+        cdHash: signature.cdHash,
+        designatedRequirement: signature.designatedRequirement,
+      })).digest('hex'))
+    expect(signedCodePortableArtifactFingerprint({
+      version: '3.10.2',
+      executable: proof,
+      signature: { ...signature, verificationBoundary: undefined },
+    })).toBeUndefined()
+  })
+
+  it.each([
+    ['claude-desktop-legacy', 'Claude.app', 'com.anthropic.claudefordesktop', 'Q6L2SF6YDW', 'Claude'],
+    ['codex-desktop', 'ChatGPT.app', 'com.openai.codex', '2DC432GLL2', 'ChatGPT'],
+    ['codex-desktop', 'Codex.app', 'com.openai.codex', '2DC432GLL2', 'Codex'],
+    ['cursor-desktop', 'Cursor.app', 'com.todesktop.230313mzl4w4u92', 'VDXQ22DGB9', 'Cursor'],
+    ['windsurf-desktop', 'Devin.app', 'com.exafunction.windsurf', '83Z2LHX6XW', 'Devin'],
+    ['qwenwork-desktop', 'QwenWorkCN.app', 'cn.qwenwork.desktop.mac', 'XN6U3EV979', 'QwenWorkCN'],
+    ['zcode-desktop', 'ZCode.app', 'dev.zcode.app', '8A5X4JJ39T', 'ZCode'],
+  ] as const)('emits a release-matchable signed receipt for %s', async (
+    catalogId, bundleName, bundleId, teamIdentifier, executable,
+  ) => {
+    const runtime = fakeRuntime()
+    runtime.fs.addApp(bundleName, {
+      bundleId,
+      version: '1.2.3',
+      executable,
+      signature: exactSignedCode(bundleId, teamIdentifier),
+    })
+    if (catalogId === 'qwenwork-desktop') runtime.fs.addDirectory(`${HOME}/.qwenworkcn`)
+    if (catalogId === 'windsurf-desktop') runtime.fs.addDirectory(`${HOME}/.config/devin`)
+    const report = await discoverLocalP0Agents(context(), runtime.dependencies)
+    expect(report.installations.find(item => item.catalogId === catalogId)?.identity.distribution)
+      .toMatchObject({ portableArtifactFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u) })
+  })
+
+  it('fails closed when signed legacy and renamed Codex Desktop bundles coexist', async () => {
+    const runtime = fakeRuntime()
+    for (const [bundleName, executable] of [
+      ['ChatGPT.app', 'ChatGPT'],
+      ['Codex.app', 'Codex'],
+    ] as const) {
+      runtime.fs.addApp(bundleName, {
+        bundleId: 'com.openai.codex',
+        executable,
+        signature: exactSignedCode('com.openai.codex', '2DC432GLL2'),
+      })
+    }
+
+    const report = await discoverLocalP0Agents(context(), runtime.dependencies)
+
+    expect(report.installations).not.toContainEqual(expect.objectContaining({ catalogId: 'codex-desktop' }))
+    expect(report.unresolved).toContainEqual(expect.objectContaining({
+      catalogIds: ['codex-desktop'],
+      reason: 'multiple_installations_ambiguous',
+    }))
+  })
+
+  it.each([
+    ['ChatGPT.app', 'com.openai.codex', 'ATTACKERTEAM'],
+    ['Codex.app', 'com.attacker.codex', '2DC432GLL2'],
+  ] as const)('does not trust the Codex Desktop bundle name without its exact identity: %s', async (
+    bundleName, bundleId, teamIdentifier,
+  ) => {
+    const runtime = fakeRuntime()
+    runtime.fs.addApp(bundleName, {
+      bundleId,
+      executable: bundleName === 'ChatGPT.app' ? 'ChatGPT' : 'Codex',
+      signature: exactSignedCode(bundleId, teamIdentifier),
+    })
+
+    const report = await discoverLocalP0Agents(context(), runtime.dependencies)
+
+    expect(report.installations).not.toContainEqual(expect.objectContaining({ catalogId: 'codex-desktop' }))
+    expect(report.unresolved).toContainEqual(expect.objectContaining({
+      catalogIds: ['codex-desktop'],
+      reason: 'distribution_identity_unproven',
+    }))
+  })
+
+  it('emits the same signed receipt for the explicitly guided Cowork surface', async () => {
+    const runtime = fakeRuntime()
+    runtime.fs.addApp('Claude.app', {
+      bundleId: 'com.anthropic.claudefordesktop',
+      version: '1.2.3',
+      executable: 'Claude',
+      signature: exactSignedCode('com.anthropic.claudefordesktop', 'Q6L2SF6YDW'),
+    })
+    runtime.fs.addDirectory(path.posix.join(HOME, 'Library', 'Application Support', 'Claude'))
+    const report = await discoverClaudeCoworkGuidedCandidate(context(), runtime.dependencies)
+    expect(report.installations[0]?.identity.distribution.portableArtifactFingerprint)
+      .toMatch(/^[a-f0-9]{64}$/u)
+  })
+
   it('has one exact, bounded probe for every reviewed P0.1/P0.2 surface', () => {
     expect(P0_DISCOVERY_PROBES.flatMap(probe => probe.kind === 'cli'
       ? [probe.catalogId, ...(probe.detectOnlyFallbackCatalogId ? [probe.detectOnlyFallbackCatalogId] : [])]
@@ -221,11 +391,13 @@ describe('P0 local Agent discovery', () => {
       realpath: '/fixture/lib/node_modules/@mariozechner/pi-coding-agent/dist/cli.js',
       output: 'pi 0.52.1',
       verifiedPackageProvenance: 'npm_metadata:@mariozechner/pi-coding-agent',
+      portableArtifactFingerprint: 'a'.repeat(64),
     })
     addCommand(runtime, 'omp', {
       realpath: '/fixture/lib/node_modules/@oh-my-pi/pi-coding-agent/bin/omp.js',
       output: 'Oh My Pi 0.9.0',
       verifiedPackageProvenance: 'npm_metadata:@oh-my-pi/pi-coding-agent',
+      portableArtifactFingerprint: 'b'.repeat(64),
     })
     runtime.fs.addApp('Claude.app', {
       bundleId: 'com.anthropic.claudefordesktop',
@@ -236,7 +408,16 @@ describe('P0 local Agent discovery', () => {
         teamIdentifier: 'Q6L2SF6YDW',
       },
     })
-    runtime.fs.addApp('Codex.app', { bundleId: 'com.openai.codex', version: '0.1.2' })
+    runtime.fs.addApp('ChatGPT.app', {
+      bundleId: 'com.openai.codex',
+      version: '26.825.51511',
+      executable: 'ChatGPT',
+      signature: {
+        valid: true,
+        identifier: 'com.openai.codex',
+        teamIdentifier: '2DC432GLL2',
+      },
+    })
     runtime.fs.addApp('Cursor.app', {
       bundleId: 'com.todesktop.230313mzl4w4u92',
       version: '2.3.4',
@@ -246,14 +427,33 @@ describe('P0 local Agent discovery', () => {
         teamIdentifier: 'VDXQ22DGB9',
       },
     })
-    runtime.fs.addApp('Windsurf.app', { bundleId: 'com.codeium.windsurf', version: '1.9.1' })
-    runtime.fs.addApp('QwenWork.app', { bundleId: 'com.alibaba.qwenwork', version: '3.2.1' })
+    runtime.fs.addApp('Devin.app', {
+      bundleId: 'com.exafunction.windsurf',
+      version: '3.8.20',
+      executable: 'Devin',
+      signature: {
+        valid: true,
+        identifier: 'com.exafunction.windsurf',
+        teamIdentifier: '83Z2LHX6XW',
+      },
+    })
+    runtime.fs.addApp('QwenWorkCN.app', {
+      bundleId: 'cn.qwenwork.desktop.mac',
+      version: '1.2.0',
+      executable: 'QwenWorkCN',
+      signature: {
+        valid: true,
+        identifier: 'cn.qwenwork.desktop.mac',
+        teamIdentifier: 'XN6U3EV979',
+      },
+    })
     runtime.fs.addApp('ZCode.app', {
       bundleId: 'dev.zcode.app',
       version: '3.9.1',
       signature: { valid: true, identifier: 'dev.zcode.app', teamIdentifier: '8A5X4JJ39T' },
     })
     runtime.fs.addDirectory(`${HOME}/.qwenworkcn`)
+    runtime.fs.addDirectory(`${HOME}/.config/devin`)
 
     const first = await discoverLocalP0Agents(context(), runtime.dependencies)
     const second = await discoverLocalP0Agents(context(), runtime.dependencies)
@@ -283,12 +483,14 @@ describe('P0 local Agent discovery', () => {
         distributionId: 'pi-official:@mariozechner/pi-coding-agent',
         packageProvenance: 'npm_metadata:@mariozechner/pi-coding-agent',
         capabilityFingerprint: 'pi-official-extension-api',
+        portableArtifactFingerprint: 'a'.repeat(64),
       })
     expect(first.installations.find(item => item.catalogId === 'omp-cli')?.identity.distribution)
       .toMatchObject({
         distributionId: 'omp:oh-my-pi',
         packageProvenance: 'npm_metadata:@oh-my-pi/pi-coding-agent',
         capabilityFingerprint: 'omp-native-profile',
+        portableArtifactFingerprint: 'b'.repeat(64),
       })
   })
 
@@ -299,7 +501,7 @@ describe('P0 local Agent discovery', () => {
       output: '2.1.246',
     })
     addCommand(runtime, 'kimi', {
-      realpath: '/fixture/.kimi-code/bin/kimi',
+      realpath: `${HOME}/.kimi-code/bin/kimi`,
       output: '1.20.0',
     })
 
@@ -323,6 +525,90 @@ describe('P0 local Agent discovery', () => {
     ]))
     expect(report.installations.map(item => item.catalogId)).not.toContain('claude-code-cli')
     expect(report.installations.map(item => item.catalogId)).not.toContain('kimi-code-cli')
+  })
+
+  it('promotes only the platform-attested Anthropic native executable to signed provenance', async () => {
+    const runtime = fakeRuntime()
+    const executable = addCommand(runtime, 'claude', {
+      realpath: '/fixture/.local/share/claude/versions/2.1.252',
+      output: '2.1.252',
+    })
+    runtime.fs.signatures.set(executable, {
+      valid: true,
+      identifier: 'com.anthropic.claude-code',
+      teamIdentifier: 'Q6L2SF6YDW',
+      cdHash: '28d49821f609d871c2282bdec52116bd91ea5806',
+      designatedRequirement: 'identifier "com.anthropic.claude-code" and anchor apple generic',
+      verificationBoundary: 'strict_final',
+    })
+
+    const report = await discoverLocalP0Agents(context(), runtime.dependencies)
+    const installation = report.installations.find(item => item.catalogId === 'claude-code-native')
+    expect(installation?.identity.distribution).toMatchObject({
+      executableRealpath: executable,
+      packageProvenance: 'signed_cli:com.anthropic.claude-code:Q6L2SF6YDW',
+    })
+    expect(installation?.identity.distribution.capabilityFingerprint)
+      .toMatch(/^signed-cli-surface-v1:[a-f0-9]{64}$/u)
+    expect(report.installations.map(item => item.catalogId)).not.toContain('claude-code-cli')
+  })
+
+  it('recognizes signed Kimi without updater metadata but leaves version unaccepted without a frozen receipt', async () => {
+    const runtime = fakeRuntime()
+    const executable = addCommand(runtime, 'kimi', {
+      realpath: `${HOME}/.kimi-code/bin/kimi`,
+      output: '1.20.0',
+    })
+    runtime.fs.signatures.set(executable, {
+      valid: true,
+      identifier: 'kimi',
+      teamIdentifier: '2J9472RW75',
+      cdHash: 'bb4cdfad0d4aeb516ba70c5179a7ad23b7d7bbc2',
+      designatedRequirement: 'identifier kimi and anchor apple generic',
+      verificationBoundary: 'strict_final',
+    })
+
+    const report = await discoverLocalP0Agents(context(), runtime.dependencies)
+    const installation = report.installations.find(item => item.catalogId === 'kimi-code-native')
+    expect(installation?.identity.distribution).toMatchObject({
+      executableRealpath: executable,
+      packageProvenance: 'signed_cli:kimi:2J9472RW75',
+    })
+    expect(installation?.identity.distribution.capabilityFingerprint)
+      .toMatch(/^signed-cli-kimi-receipt-lookup-v1:[a-f0-9]{64}$/u)
+    expect(installation?.detectedVersion).toBeUndefined()
+    expect(runtime.calls.some(call => call.startsWith(`execVersion:${executable}:`))).toBe(false)
+    expect(report.installations.map(item => item.catalogId)).not.toContain('kimi-code-cli')
+
+    const lookupFingerprint = installation!.identity.distribution.capabilityFingerprint!.split(':')[1]!
+    runtime.dependencies.resolveKimiNativeReceipt = surface => (
+      surface.architecture === 'arm64' && surface.lookupFingerprint === lookupFingerprint
+        ? { version: '0.41.0', portableArtifactFingerprint: 'a'.repeat(64) }
+        : null
+    )
+    const accepted = await discoverLocalP0Agents(context(), runtime.dependencies)
+    expect(accepted.installations.find(item => item.catalogId === 'kimi-code-native')).toMatchObject({
+      detectedVersion: '0.41.0',
+      versionDetectionMethod: 'release_receipt',
+      identity: { distribution: { portableArtifactFingerprint: 'a'.repeat(64) } },
+    })
+  })
+
+  it('never applies the npm Kimi identity to the distinct native updater surface', async () => {
+    const runtime = fakeRuntime()
+    addCommand(runtime, 'kimi', {
+      realpath: `${HOME}/.kimi-code/bin/kimi`,
+      output: '0.40.1',
+      verifiedPackageProvenance: 'npm_metadata:@moonshot-ai/kimi-code',
+    })
+
+    const report = await discoverLocalP0Agents(context(), runtime.dependencies)
+    const native = report.installations.find(item => item.catalogId === 'kimi-code-native')
+    expect(native?.identity.distribution).toMatchObject({
+      distributionId: 'cli:kimi-code-native',
+      packageProvenance: undefined,
+    })
+    expect(report.installations).not.toContainEqual(expect.objectContaining({ catalogId: 'kimi-code-cli' }))
   })
 
   it('only performs exact PATH, app bundle, config-root and Info.plist reads', async () => {
@@ -354,6 +640,72 @@ describe('P0 local Agent discovery', () => {
     expect(report.installations).not.toContainEqual(expect.objectContaining({ catalogId: 'zcode-cli' }))
     expect(report.unresolved).not.toContainEqual(expect.objectContaining({ catalogIds: ['zcode-cli'] }))
     expect(runtime.calls).toContain('which:zcode')
+  })
+
+  it('does not let an unproved PATH shadow hide a later official npm candidate', async () => {
+    const runtime = fakeRuntime()
+    const shadow = '/fixture/shadow/qwen'
+    const official = `${HOME}/.nvm/versions/node/v22.18.0/bin/qwen`
+    runtime.fs.addFile(shadow)
+    runtime.fs.addFile(official)
+    runtime.versions.set(shadow, {
+      exitCode: 0,
+      stdout: 'qwen 9.9.9',
+      stderr: '',
+    })
+    runtime.versions.set(official, {
+      exitCode: 0,
+      stdout: 'qwen 0.21.13',
+      stderr: '',
+      verifiedPackageProvenance: 'npm_metadata:@qwen-code/qwen-code',
+      packageMetadataFingerprint: 'physical-qwen-proof',
+      portableArtifactFingerprint: 'portable-qwen-proof',
+    })
+    runtime.dependencies.whichAll = async command => command === 'qwen'
+      ? [shadow, official]
+      : []
+
+    const report = await discoverLocalP0Agents(context(), runtime.dependencies)
+
+    expect(report.installations.filter(item => item.catalogId === 'qwen-code-cli')).toHaveLength(1)
+    expect(report.installations.find(item => item.catalogId === 'qwen-code-cli')).toMatchObject({
+      executablePath: official,
+      detectedVersion: '0.21.13',
+      identity: {
+        distribution: {
+          packageProvenance: 'npm_metadata:@qwen-code/qwen-code',
+        },
+      },
+    })
+    expect(report.unresolved).not.toContainEqual(expect.objectContaining({
+      catalogIds: ['qwen-code-cli'],
+    }))
+  })
+
+  it('preserves ambiguity when two distinct candidates both prove official provenance', async () => {
+    const runtime = fakeRuntime()
+    const first = `${HOME}/.nvm/versions/node/v20.19.0/bin/qwen`
+    const second = `${HOME}/.nvm/versions/node/v22.18.0/bin/qwen`
+    for (const [candidate, version] of [[first, '0.20.0'], [second, '0.21.13']] as const) {
+      runtime.fs.addFile(candidate)
+      runtime.versions.set(candidate, {
+        exitCode: 0,
+        stdout: `qwen ${version}`,
+        stderr: '',
+        verifiedPackageProvenance: 'npm_metadata:@qwen-code/qwen-code',
+        packageMetadataFingerprint: `physical-${version}`,
+        portableArtifactFingerprint: `portable-${version}`,
+      })
+    }
+    runtime.dependencies.whichAll = async command => command === 'qwen' ? [first, second] : []
+
+    const report = await discoverLocalP0Agents(context(), runtime.dependencies)
+
+    expect(report.installations).not.toContainEqual(expect.objectContaining({ catalogId: 'qwen-code-cli' }))
+    expect(report.unresolved).toContainEqual(expect.objectContaining({
+      catalogIds: ['qwen-code-cli'],
+      reason: 'multiple_installations_ambiguous',
+    }))
   })
 
   it('fails closed for an unrelated pi command while preserving the evidence for diagnosis', async () => {
@@ -436,6 +788,15 @@ describe('P0 local Agent discovery', () => {
         packageProvenance: `npm_metadata:${packageName}`,
         capabilityFingerprint: 'pi-official-extension-api',
       })
+      if (packageName.startsWith('@earendil-works/')) {
+        expect(pi?.managementEligibility?.eligible).toBe(true)
+        expect(pi?.managementEligibility?.reason).toBeUndefined()
+      } else {
+        expect(pi?.managementEligibility).toMatchObject({
+          eligible: false,
+          reason: 'distribution_not_managed',
+        })
+      }
       expect(report.unresolved).not.toContainEqual(expect.objectContaining({
         catalogIds: ['pi-official-cli'],
       }))
@@ -511,6 +872,83 @@ describe('P0 local Agent discovery', () => {
     expect(defaultProfile?.identity.explicitProfile).toBe('default')
   })
 
+  it('enumerates OMP named profile agent roots while keeping the default override independent', async () => {
+    const runtime = fakeRuntime()
+    addCommand(runtime, 'omp', {
+      realpath: '/fixture/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js',
+      verifiedPackageProvenance: 'npm_metadata:@oh-my-pi/pi-coding-agent',
+    })
+    runtime.fs.addDirectory(`${HOME}/.config/omp/profiles`)
+    runtime.fs.addDirectory(`${HOME}/.config/omp/profiles/personal`)
+    runtime.fs.addDirectory(`${HOME}/.config/omp/profiles/personal/agent`)
+    runtime.fs.addDirectory(`${HOME}/.config/omp/profiles/work`)
+    runtime.fs.addDirectory(`${HOME}/.config/omp/profiles/work/agent`)
+    runtime.fs.addDirectory(`${HOME}/.config/omp/profiles/missing-agent`)
+    runtime.fs.addDirectory(`${HOME}/.config/omp/profiles/Work`)
+    runtime.fs.addDirectory(`${HOME}/.config/omp/profiles/Work/agent`)
+    runtime.fs.addDirectory(
+      `${HOME}/.config/omp/profiles/linked`,
+      `${HOME}/outside/linked-profile`,
+    )
+    runtime.fs.addDirectory(`${HOME}/outside/linked-profile/agent`)
+
+    const report = await discoverLocalP0Agents(context({
+      environment: {
+        PI_CONFIG_DIR: '.config/omp',
+        PI_CODING_AGENT_DIR: `${HOME}/custom-default-agent`,
+      },
+    }), runtime.dependencies)
+    const omp = report.installations.filter(item => item.catalogId === 'omp-cli')
+
+    expect(omp.map(item => ({
+      profile: item.identity.explicitProfile,
+      root: item.identity.canonicalConfigRoot,
+    }))).toEqual([
+      { profile: 'default', root: `${HOME}/custom-default-agent` },
+      { profile: 'personal', root: `${HOME}/.config/omp/profiles/personal/agent` },
+      { profile: 'work', root: `${HOME}/.config/omp/profiles/work/agent` },
+    ])
+    expect(new Set(omp.map(item => item.identity.installKey)).size).toBe(3)
+  })
+
+  it('does not enumerate sibling OMP profiles when OMP_PROFILE or PI_PROFILE selects one', async () => {
+    const runtime = fakeRuntime()
+    addCommand(runtime, 'omp', {
+      realpath: '/fixture/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js',
+      verifiedPackageProvenance: 'npm_metadata:@oh-my-pi/pi-coding-agent',
+    })
+    runtime.fs.addDirectory(`${HOME}/.omp/profiles`)
+    runtime.fs.addDirectory(`${HOME}/.omp/profiles/personal`)
+    runtime.fs.addDirectory(`${HOME}/.omp/profiles/personal/agent`)
+
+    const report = await discoverLocalP0Agents(context({
+      environment: { OMP_PROFILE: 'work', PI_PROFILE: 'personal' },
+    }), runtime.dependencies)
+    const omp = report.installations.filter(item => item.catalogId === 'omp-cli')
+
+    expect(omp).toHaveLength(1)
+    expect(omp[0].identity.explicitProfile).toBe('work')
+    expect(omp[0].identity.canonicalConfigRoot).toBe(`${HOME}/.omp/profiles/work/agent`)
+    expect(runtime.calls).not.toContain(`readDirectoryNames:${HOME}/.omp/profiles:256`)
+  })
+
+  it('fails OMP discovery closed when the bounded profile registry is truncated', async () => {
+    const runtime = fakeRuntime()
+    addCommand(runtime, 'omp', {
+      realpath: '/fixture/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js',
+      verifiedPackageProvenance: 'npm_metadata:@oh-my-pi/pi-coding-agent',
+    })
+    runtime.dependencies.fs.readDirectoryNames = async () => ({ names: [], truncated: true })
+
+    const report = await discoverLocalP0Agents(context(), runtime.dependencies)
+
+    expect(report.installations).not.toContainEqual(expect.objectContaining({ catalogId: 'omp-cli' }))
+    expect(report.unresolved).toContainEqual(expect.objectContaining({
+      catalogIds: ['omp-cli'],
+      reason: 'probe_inaccessible',
+    }))
+  })
+
   it('fails closed for path-like OMP profiles and unsafe config-directory overrides', async () => {
     const runtime = fakeRuntime()
     addCommand(runtime, 'omp', {
@@ -542,6 +980,7 @@ describe('P0 local Agent discovery', () => {
 
     const report = await discoverLocalP0Agents(context({
       environment: {
+        XDG_CONFIG_HOME: `${HOME}/ignored-xdg`,
         OPENCODE_CONFIG: `${HOME}/shared/opencode.jsonc`,
         OPENCODE_CONFIG_DIR: `${HOME}/opencode-resources`,
       },
@@ -552,10 +991,22 @@ describe('P0 local Agent discovery', () => {
     expect(v1?.configRoot).toBe(`${HOME}/shared`)
     expect(v2?.configRoot).toBe(`${HOME}/shared`)
     expect(v1?.identity.componentConfigFiles).toEqual({
+      instruction: `${HOME}/.agents/skills/tidemind/SKILL.md`,
       memory_tools: `${HOME}/shared/opencode.jsonc`,
+      lifecycle: `${HOME}/canonical-resources/plugins/tidemind-v1.ts`,
     })
     expect(v2?.identity.componentConfigFiles).toEqual({
+      instruction: `${HOME}/.agents/skills/tidemind/SKILL.md`,
       memory_tools: `${HOME}/shared/opencode.jsonc`,
+      lifecycle: `${HOME}/canonical-resources/plugins/tidemind-v2.ts`,
+    })
+    expect(v1?.identity.componentConfigRoots).toEqual({
+      instruction: `${HOME}/.agents/skills`,
+      lifecycle: `${HOME}/canonical-resources`,
+    })
+    expect(v2?.identity.componentConfigRoots).toEqual({
+      instruction: `${HOME}/.agents/skills`,
+      lifecycle: `${HOME}/canonical-resources`,
     })
     expect(v1?.resourceRoots).toEqual({ opencode_resources: `${HOME}/canonical-resources` })
     expect(v2?.resourceRoots).toEqual({ opencode_resources: `${HOME}/canonical-resources` })
@@ -568,7 +1019,15 @@ describe('P0 local Agent discovery', () => {
       id: 'installation_opencode_v1',
       lastDetectedAt: '2026-08-26T00:00:00.000Z',
     }).metadata).toMatchObject({
-      componentConfigFiles: { memory_tools: `${HOME}/shared/opencode.jsonc` },
+      componentConfigFiles: {
+        instruction: `${HOME}/.agents/skills/tidemind/SKILL.md`,
+        memory_tools: `${HOME}/shared/opencode.jsonc`,
+        lifecycle: `${HOME}/canonical-resources/plugins/tidemind-v1.ts`,
+      },
+      componentConfigRoots: {
+        instruction: `${HOME}/.agents/skills`,
+        lifecycle: `${HOME}/canonical-resources`,
+      },
       resourceRoots: { opencode_resources: `${HOME}/canonical-resources` },
     })
     expect(v1?.identity.installKey).not.toBe(v2?.identity.installKey)
@@ -660,19 +1119,52 @@ describe('P0 local Agent discovery', () => {
     expect(runtime.fs.calls.some(call => call.startsWith(`readTextFile:${executable}:`))).toBe(false)
   })
 
-  it('does not reinterpret OPENCODE_CONFIG_DIR as the MCP config root', async () => {
+  it.each([
+    {
+      name: 'default config root',
+      environment: {},
+      requestedRoot: `${HOME}/.config/opencode`,
+      canonicalRoot: `${HOME}/.config/opencode`,
+    },
+    {
+      name: 'XDG config root',
+      environment: { XDG_CONFIG_HOME: `${HOME}/xdg-config` },
+      requestedRoot: `${HOME}/xdg-config/opencode`,
+      canonicalRoot: `${HOME}/canonical-xdg/opencode`,
+    },
+    {
+      name: 'OPENCODE_CONFIG_DIR root',
+      environment: { OPENCODE_CONFIG_DIR: `${HOME}/resources` },
+      requestedRoot: `${HOME}/resources`,
+      canonicalRoot: `${HOME}/canonical-resources`,
+    },
+  ])('uses the $name for both OpenCode configuration and resources', async ({
+    environment,
+    requestedRoot,
+    canonicalRoot,
+  }) => {
     const runtime = fakeRuntime()
     addCommand(runtime, 'opencode', { output: 'opencode 1.8.0' })
-    runtime.fs.addDirectory(`${HOME}/resources`)
+    addCommand(runtime, 'opencode2', { output: 'opencode2 2.0.0-beta.2' })
+    if (requestedRoot !== canonicalRoot) runtime.fs.addDirectory(requestedRoot, canonicalRoot)
 
-    const report = await discoverLocalP0Agents(context({
-      environment: { OPENCODE_CONFIG_DIR: `${HOME}/resources` },
-    }), runtime.dependencies)
-    const installation = report.installations.find(item => item.catalogId === 'opencode-v1-cli')
-
-    expect(installation?.configRoot).toBe(`${HOME}/.config/opencode`)
-    expect(installation?.identity.componentConfigFiles).toBeUndefined()
-    expect(installation?.resourceRoots).toEqual({ opencode_resources: `${HOME}/resources` })
+    const report = await discoverLocalP0Agents(context({ environment }), runtime.dependencies)
+    for (const [catalogId, pluginFileName] of [
+      ['opencode-v1-cli', 'tidemind-v1.ts'],
+      ['opencode-v2-beta-cli', 'tidemind-v2.ts'],
+    ] as const) {
+      const installation = report.installations.find(item => item.catalogId === catalogId)
+      expect(installation?.configRoot).toBe(canonicalRoot)
+      expect(installation?.identity.componentConfigFiles).toEqual({
+        instruction: `${HOME}/.agents/skills/tidemind/SKILL.md`,
+        lifecycle: `${canonicalRoot}/plugins/${pluginFileName}`,
+      })
+      expect(installation?.identity.componentConfigRoots).toEqual({
+        instruction: `${HOME}/.agents/skills`,
+        lifecycle: canonicalRoot,
+      })
+      expect(installation?.resourceRoots).toEqual({ opencode_resources: canonicalRoot })
+    }
   })
 
   it('requires the official ZCode Desktop bundle signature and keeps the legacy CLI separate', async () => {
@@ -888,6 +1380,36 @@ describe('P0 local Agent discovery', () => {
     expect(stillUnproven.installations.map(item => item.catalogId)).not.toContain('claude-cowork-local')
   })
 
+  it('returns the signed shared app only through the explicit Cowork guided probe', async () => {
+    const runtime = fakeRuntime()
+    runtime.fs.addApp('Claude.app', {
+      bundleId: 'com.anthropic.claudefordesktop',
+      version: '1.2.3',
+      signature: {
+        valid: true,
+        identifier: 'com.anthropic.claudefordesktop',
+        teamIdentifier: 'Q6L2SF6YDW',
+      },
+    })
+    runtime.fs.addDirectory(path.posix.join(HOME, 'Library', 'Application Support', 'Claude'))
+
+    const passive = await discoverLocalP0Agents(context(), runtime.dependencies)
+    const guided = await discoverClaudeCoworkGuidedCandidate(context(), runtime.dependencies)
+
+    expect(passive.installations.map(item => item.catalogId)).not.toContain('claude-cowork-local')
+    expect(guided.installations).toHaveLength(1)
+    expect(guided.installations[0]).toMatchObject({
+      catalogId: 'claude-cowork-local',
+      detectedVersion: '1.2.3',
+      identity: {
+        distribution: {
+          distributionId: 'com.anthropic.claudefordesktop',
+          packageProvenance: 'signed_app:com.anthropic.claudefordesktop:Q6L2SF6YDW',
+        },
+      },
+    })
+  })
+
   it('respects explicit config roots and records executable/config symlink realpaths', async () => {
     const runtime = fakeRuntime()
     addCommand(runtime, 'qwen', {
@@ -914,24 +1436,118 @@ describe('P0 local Agent discovery', () => {
     })
   })
 
-  it('persists QwenWork as bundle-ID-bound detect-only until an authoritative signing Team is frozen', async () => {
+  it('keeps Qwen standalone and global npm receipts independently addressable', async () => {
+    const standaloneRuntime = fakeRuntime()
+    const standalone = addCommand(standaloneRuntime, 'qwen', {
+      realpath: `${HOME}/.local/bin/qwen`,
+      output: '0.21.13',
+      verifiedPackageProvenance: 'npm_metadata:@qwen-code/qwen-code',
+      portableArtifactFingerprint: 'a'.repeat(64),
+    })
+    standaloneRuntime.versions.set(standalone, {
+      ...standaloneRuntime.versions.get(standalone)!,
+      packageProofNodes: [{
+        role: 'qwen_launcher', path: standalone, maxBytes: 4096,
+        size: 1, mode: 0o700, device: '1', inode: '1', linkCount: '1',
+        mtimeNs: '1', ctimeNs: '1', sha256: 'b'.repeat(64),
+        fingerprint: 'c'.repeat(64), executable: true,
+      }],
+    })
+    const standaloneReport = await discoverLocalP0Agents(context(), standaloneRuntime.dependencies)
+    expect(standaloneReport.installations.find(item => item.catalogId === 'qwen-code-cli')?.identity.distribution)
+      .toMatchObject({
+        distributionId: 'cli:qwen-code-cli:standalone',
+        portableArtifactFingerprint: 'a'.repeat(64),
+      })
+
+    const npmRuntime = fakeRuntime()
+    addCommand(npmRuntime, 'qwen', {
+      realpath: '/opt/lib/node_modules/@qwen-code/qwen-code/dist/cli.js',
+      output: '0.21.13',
+      verifiedPackageProvenance: 'npm_metadata:@qwen-code/qwen-code',
+      portableArtifactFingerprint: 'd'.repeat(64),
+    })
+    const npmReport = await discoverLocalP0Agents(context(), npmRuntime.dependencies)
+    expect(npmReport.installations.find(item => item.catalogId === 'qwen-code-cli')?.identity.distribution)
+      .toMatchObject({
+        distributionId: 'cli:qwen-code-cli:npm-global',
+        portableArtifactFingerprint: 'd'.repeat(64),
+      })
+  })
+
+  it.each([
+    ['opencode-v1-cli', 'opencode', 'opencode-ai', 'modern', 'darwin-x64'],
+    ['opencode-v2-beta-cli', 'opencode2', '@opencode-ai/cli', 'modern', 'darwin-x64'],
+    ['opencode-v2-beta-cli', 'opencode2', '@opencode-ai/cli', 'baseline', 'darwin-x64-baseline'],
+  ] as const)('derives %s distribution identity from the copied $variant root entry', async (
+    catalogId, command, packageName, variant, expectedSuffix,
+  ) => {
     const runtime = fakeRuntime()
-    runtime.fs.addApp('QwenWork.app', { bundleId: 'com.alibaba.qwenwork' })
+    const executable = addCommand(runtime, command, {
+      realpath: `/opt/lib/node_modules/${packageName}/bin/${command}.js`,
+      output: '1.18.29',
+      verifiedPackageProvenance: `npm_metadata:${packageName}`,
+      portableArtifactFingerprint: 'a'.repeat(64),
+    })
+    runtime.versions.set(executable, {
+      ...runtime.versions.get(executable)!,
+      packageProofNodes: [{
+        role: 'npm_package_executable', path: executable, maxBytes: 1024,
+        size: 5, mode: 0o700, device: '1', inode: '1', linkCount: '1',
+        mtimeNs: '1', ctimeNs: '1', sha256: 'c'.repeat(64),
+        fingerprint: 'd'.repeat(64), executable: true,
+      }],
+      npmComposition: {
+        entryRule: 'copy_platform_binary_v1',
+        components: ['', '-baseline'].map(suffix => {
+          const leafName = `${packageName === 'opencode-ai' ? 'opencode' : '@opencode-ai/cli'}-darwin-x64${suffix}`
+          const selected = packageName === 'opencode-ai'
+            || (variant === 'baseline' ? suffix === '-baseline' : suffix === '')
+          return {
+            role: 'platform_leaf', installName: leafName, manifestName: leafName,
+            version: packageName === 'opencode-ai' ? '1.18.29' : '0.0.0-beta-19157',
+            integrity: 'sha512-YQ==', ownedPackageSha256: 'b'.repeat(64),
+            ownedEntryCount: 2, ownedTotalBytes: 10, nativeExecutableRelativePath: `bin/${command}`,
+            nativeExecutableSha256: (selected ? 'c' : 'e').repeat(64), nativeExecutableSizeBytes: 5,
+          }
+        }),
+      },
+    })
+    const report = await discoverLocalP0Agents(context(), runtime.dependencies)
+    expect(report.installations.find(item => item.catalogId === catalogId)?.identity.distribution.distributionId)
+      .toBe(`cli:${catalogId}:${expectedSuffix}`)
+  })
+
+  it('binds QwenWorkCN to its official signed bundle and one shared config root', async () => {
+    const runtime = fakeRuntime()
+    runtime.fs.addApp('QwenWorkCN.app', {
+      bundleId: 'cn.qwenwork.desktop.mac',
+      version: '1.2.0',
+      executable: 'QwenWorkCN',
+      signature: {
+        valid: true,
+        identifier: 'cn.qwenwork.desktop.mac',
+        teamIdentifier: 'XN6U3EV979',
+      },
+    })
     runtime.fs.addDirectory(`${HOME}/.qwenworkcn`)
-    runtime.fs.addDirectory(`${HOME}/.qwenwork`)
 
     const report = await discoverLocalP0Agents(context(), runtime.dependencies)
     const qwenWork = report.installations.find(item => item.catalogId === 'qwenwork-desktop')
     expect(qwenWork).toMatchObject({
-      configRoot: `${HOME}/.qwenwork`,
+      configRoot: `${HOME}/.qwenworkcn`,
       componentConfigRoots: {
         instruction: `${HOME}/.qwenworkcn`,
-        lifecycle: `${HOME}/.qwenwork`,
+        lifecycle: `${HOME}/.qwenworkcn`,
       },
       identity: {
+        componentConfigRoots: {
+          instruction: `${HOME}/.qwenworkcn`,
+          lifecycle: `${HOME}/.qwenworkcn`,
+        },
         distribution: {
-          distributionId: 'com.alibaba.qwenwork',
-          packageProvenance: 'app_bundle:com.alibaba.qwenwork',
+          distributionId: 'cn.qwenwork.desktop.mac',
+          packageProvenance: 'signed_app:cn.qwenwork.desktop.mac:XN6U3EV979',
         },
       },
     })
@@ -940,19 +1556,205 @@ describe('P0 local Agent discovery', () => {
     }))
   })
 
-  it('fails closed on a relative environment override', async () => {
+  it('discovers the official global npm OpenClaw channel without requiring the portable wrapper', async () => {
     const runtime = fakeRuntime()
-    addCommand(runtime, 'kimi')
+    addCommand(runtime, 'openclaw', {
+      realpath: '/usr/local/lib/node_modules/openclaw/dist/entry.js',
+      output: '2026.8.1',
+      verifiedPackageProvenance: 'npm_metadata:openclaw',
+    })
+
+    const report = await discoverLocalP0Agents(context(), runtime.dependencies)
+    const openClaw = report.installations.find(item => item.catalogId === 'openclaw-local')
+
+    expect(openClaw).toMatchObject({
+      configRoot: `${HOME}/.openclaw`,
+      executablePath: '/usr/local/lib/node_modules/openclaw/dist/entry.js',
+      detectedVersion: '2026.8.1',
+      identity: { distribution: {
+        distributionId: 'cli:openclaw-local:npm-global',
+        packageProvenance: 'npm_metadata:openclaw',
+      } },
+    })
+    expect(report.unresolved).not.toContainEqual(expect.objectContaining({
+      catalogIds: ['openclaw-local'],
+    }))
+  })
+
+  it.each([
+    { catalogId: 'claude-code-cli', command: 'claude', name: 'CLAUDE_CONFIG_DIR', value: `${HOME}/.claude-work`, expected: `${HOME}/.claude-work` },
+    { catalogId: 'codex-cli', command: 'codex', name: 'CODEX_HOME', value: `${HOME}/.codex-work`, expected: `${HOME}/.codex-work` },
+    { catalogId: 'gemini-cli', command: 'gemini', name: 'GEMINI_CLI_HOME', value: `${HOME}/gemini-work`, expected: `${HOME}/gemini-work/.gemini` },
+  ])('binds the official $name override instead of a different default profile', async ({ catalogId, command, name, value, expected }) => {
+    const runtime = fakeRuntime()
+    addCommand(runtime, command, {
+      output: '1.2.3',
+      ...(command === 'claude' ? { verifiedPackageProvenance: 'npm_metadata:@anthropic-ai/claude-code' } : {}),
+    })
+    const report = await discoverLocalP0Agents(context({ environment: { [name]: value } }), runtime.dependencies)
+    expect(report.installations.find(item => item.catalogId === catalogId)?.configRoot).toBe(expected)
+    for (const invalid of ['relative/profile', '/', 'bad\0path']) {
+      const rejected = await discoverLocalP0Agents(context({ environment: { [name]: invalid } }), runtime.dependencies)
+      expect(rejected.installations.some(item => item.catalogId === catalogId)).toBe(false)
+      expect(rejected.unresolved.some(item => item.reason === 'invalid_environment_override' && item.catalogIds.includes(catalogId as never))).toBe(true)
+    }
+  })
+
+  it('binds OpenClaw state and an exact in-domain config filename, rejecting cross-domain overrides', async () => {
+    const runtime = fakeRuntime()
+    addCommand(runtime, 'openclaw', { output: '2026.8.1' })
+    const state = `${HOME}/.openclaw-work`
+    const report = await discoverLocalP0Agents(context({ environment: {
+      OPENCLAW_HOME: `${HOME}/other-home`, OPENCLAW_STATE_DIR: state, OPENCLAW_CONFIG_PATH: `${state}/profile.json`,
+    } }), runtime.dependencies)
+    expect(report.installations.find(item => item.catalogId === 'openclaw-local')).toMatchObject({
+      configRoot: state, componentConfigFiles: { memory_tools: `${state}/profile.json` },
+    })
+    const rejected = await discoverLocalP0Agents(context({ environment: {
+      OPENCLAW_STATE_DIR: state, OPENCLAW_CONFIG_PATH: `${state}/../other.json`,
+    } }), runtime.dependencies)
+    expect(rejected.installations.some(item => item.catalogId === 'openclaw-local')).toBe(false)
+    expect(rejected.unresolved).toContainEqual(expect.objectContaining({ catalogIds: ['openclaw-local'], reason: 'invalid_environment_override' }))
+  })
+
+  it('separates OpenClaw portable prefix from its effective home state root', async () => {
+    const runtime = fakeRuntime()
+    const prefix = `${HOME}/Applications/openclaw-portable`
+    const wrapper = `${prefix}/bin/openclaw`
+    const stateRoot = `${HOME}/profiles/assistant/.openclaw`
+    runtime.commands.set('openclaw', wrapper)
+    runtime.fs.addFile(wrapper)
+    runtime.fs.addDirectory(prefix)
+    runtime.fs.addDirectory(stateRoot)
+    runtime.versions.set(wrapper, {
+      exitCode: 0,
+      stdout: '2026.8.1',
+      stderr: '',
+      verifiedPackageProvenance: 'npm_metadata:openclaw',
+      portableArtifactFingerprint: 'a'.repeat(64),
+    })
 
     const report = await discoverLocalP0Agents(context({
-      environment: { KIMI_CODE_HOME: 'relative/kimi' },
+      environment: {
+        OPENCLAW_PREFIX: prefix,
+        OPENCLAW_HOME: `${HOME}/profiles/assistant`,
+      },
     }), runtime.dependencies)
+    const openClaw = report.installations.find(item => item.catalogId === 'openclaw-local')
 
-    expect(report.installations.map(item => item.catalogId)).not.toContain('kimi-code-cli')
-    expect(report.unresolved).toContainEqual(expect.objectContaining({
-      catalogIds: ['kimi-code-cli', 'kimi-code-native'],
-      reason: 'invalid_environment_override',
+    expect(openClaw).toMatchObject({
+      configRoot: stateRoot,
+      executablePath: wrapper,
+      resourceRoots: { openclaw_prefix: prefix },
+      identity: { distribution: { portableArtifactFingerprint: 'a'.repeat(64) } },
+    })
+  })
+
+  it('binds current Devin Desktop to its signed bundle and documented user files', async () => {
+    const runtime = fakeRuntime()
+    runtime.fs.addApp('Devin.app', {
+      bundleId: 'com.exafunction.windsurf',
+      version: '3.8.20',
+      executable: 'Devin',
+      signature: {
+        valid: true,
+        identifier: 'com.exafunction.windsurf',
+        teamIdentifier: '83Z2LHX6XW',
+      },
+    })
+    runtime.fs.addDirectory(`${HOME}/.config/devin`)
+
+    const report = await discoverLocalP0Agents(context(), runtime.dependencies)
+    const devin = report.installations.find(item => item.catalogId === 'windsurf-desktop')
+    expect(devin).toMatchObject({
+      displayName: 'Devin Desktop（原 Windsurf）',
+      configRoot: `${HOME}/.config/devin`,
+      componentConfigRoots: {
+        instruction: `${HOME}/.config/devin`,
+        memory_tools: `${HOME}/.config/devin`,
+        lifecycle: `${HOME}/.config/devin`,
+      },
+      componentConfigFiles: {
+        instruction: `${HOME}/.config/devin/skills/tidemind/SKILL.md`,
+        memory_tools: `${HOME}/.config/devin/mcp_config.json`,
+        lifecycle: `${HOME}/.config/devin/config.json`,
+      },
+      identity: {
+        distribution: {
+          distributionId: 'com.exafunction.windsurf',
+          packageProvenance: 'signed_app:com.exafunction.windsurf:83Z2LHX6XW',
+        },
+      },
+    })
+  })
+
+  it('does not mistake the legacy Windsurf bundle contract for current Devin Desktop', async () => {
+    const runtime = fakeRuntime()
+    runtime.fs.addApp('Windsurf.app', {
+      bundleId: 'com.codeium.windsurf',
+      version: '1.9.1',
+      executable: 'Windsurf',
+    })
+    runtime.fs.addDirectory(`${HOME}/.codeium/windsurf`)
+
+    const report = await discoverLocalP0Agents(context(), runtime.dependencies)
+    expect(report.installations).not.toContainEqual(expect.objectContaining({
+      catalogId: 'windsurf-desktop',
     }))
+  })
+
+  it.each([
+    {
+      name: 'KIMI_CODE_HOME',
+      command: 'kimi',
+      environment: { KIMI_CODE_HOME: 'relative/kimi' },
+      catalogIds: ['kimi-code-cli', 'kimi-code-native'],
+    },
+    {
+      name: 'OPENCLAW_HOME',
+      command: 'openclaw',
+      environment: { OPENCLAW_HOME: 'relative/openclaw-home' },
+      catalogIds: ['openclaw-local'],
+    },
+    {
+      name: 'OPENCLAW_PREFIX',
+      command: 'openclaw',
+      environment: { OPENCLAW_PREFIX: 'relative/openclaw-prefix' },
+      catalogIds: ['openclaw-local'],
+    },
+    {
+      name: 'XDG_CONFIG_HOME',
+      environment: { XDG_CONFIG_HOME: 'relative/xdg' },
+    },
+    {
+      name: 'OPENCODE_CONFIG_DIR',
+      environment: { OPENCODE_CONFIG_DIR: 'relative/opencode' },
+    },
+    {
+      name: 'OPENCODE_CONFIG',
+      environment: { OPENCODE_CONFIG: 'relative/opencode.jsonc' },
+    },
+  ] as const)('fails closed on a relative $name override', async ({ name, environment, ...input }) => {
+    const runtime = fakeRuntime()
+    if ('command' in input) {
+      addCommand(runtime, input.command)
+    } else {
+      addCommand(runtime, 'opencode')
+      addCommand(runtime, 'opencode2')
+    }
+
+    const report = await discoverLocalP0Agents(context({ environment }), runtime.dependencies)
+
+    const catalogIds = 'catalogIds' in input
+      ? input.catalogIds
+      : ['opencode-v1-cli', 'opencode-v2-beta-cli'] as const
+    for (const catalogId of catalogIds) {
+      expect(report.installations.map(item => item.catalogId)).not.toContain(catalogId)
+      expect(report.unresolved).toContainEqual(expect.objectContaining({
+        catalogIds: name === 'KIMI_CODE_HOME' ? [...catalogIds] : [catalogId],
+        reason: 'invalid_environment_override',
+      }))
+    }
   })
 
   it('deduplicates CLI aliases only when they resolve to the same physical executable', async () => {

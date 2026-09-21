@@ -20,7 +20,7 @@
  * 现在统一走 hook-output.ts::writeHookOutput,带 hookEventName='PreCompact'。
  */
 
-import { writeHookOutput as outputHook } from './hook-output.js';
+import { writeHookOutputBeforeEvidence, type HookEventName } from './hook-output.js';
 import { loadConfig, ensureDataDirs } from './config.js';
 import { getDb, closeDb } from './db/connection.js';
 import { recordHookActivityEvidence } from './db/agent-host-activity.js';
@@ -30,10 +30,12 @@ import { getTideMindVersion } from './utils/app-version.js';
 
 const migrationLog = createLogger('migrate');
 
-function parseArgs(): { agentId: string; tool: string } {
+function parseArgs(): { agentId: string; tool: string; activityGenerationToken: string; eventName: Extract<HookEventName, 'PreCompact' | 'PreCompress'> } {
   const args = process.argv.slice(2);
   let agentId = '';
   let tool = 'claude-code';
+  let eventName: 'PreCompact' | 'PreCompress' = 'PreCompact';
+  let activityGenerationToken = '';
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--agent-id' && args[i + 1]) {
@@ -41,6 +43,14 @@ function parseArgs(): { agentId: string; tool: string } {
       i++;
     } else if (args[i] === '--tool' && args[i + 1]) {
       tool = args[i + 1];
+      i++;
+    } else if (args[i] === '--event-name' && args[i + 1]) {
+      if (args[i + 1] === 'PreCompact' || args[i + 1] === 'PreCompress') {
+        eventName = args[i + 1] as 'PreCompact' | 'PreCompress';
+      }
+      i++;
+    } else if (args[i] === '--activity-generation-token' && args[i + 1]) {
+      activityGenerationToken = args[i + 1];
       i++;
     }
   }
@@ -52,12 +62,12 @@ function parseArgs(): { agentId: string; tool: string } {
     process.stderr.write('[eb:hook-pre-compact] Missing --agent-id (continuing anyway)\n');
   }
 
-  return { agentId, tool };
+  return { agentId, tool, activityGenerationToken, eventName };
 }
 
-function main(): void {
+async function main(): Promise<void> {
   // parseArgs 已保证 tool 可用(不再因 agentId 缺失抛错)
-  const { agentId, tool } = parseArgs();
+  const { agentId, tool, activityGenerationToken, eventName } = parseArgs();
 
   const content = `[TIDE MIND — PRE-COMPACT CHECK]
 
@@ -65,26 +75,31 @@ function main(): void {
 用户表达的观点、做出的决策、讨论产生的洞察、被否定的方案、对某话题的态度变化等，
 如有请立刻 digest 沉淀到外脑，否则会随摘要流失。`;
 
-  try {
-    migrateDataDirIfNeeded(migrationLog);
-    loadConfig();
-    ensureDataDirs();
-    const activity = recordHookActivityEvidence(getDb(), {
-      agentId,
-      tool,
-      signalName: 'pre_compact',
-      tideMindVersion: getTideMindVersion(),
-    });
-    if (activity.status === 'rejected') {
-      process.stderr.write(`[eb:hook-pre-compact] activity evidence rejected — ${activity.reason}\n`);
+  await writeHookOutputBeforeEvidence(content, tool, eventName, () => {
+    try {
+      migrateDataDirIfNeeded(migrationLog);
+      loadConfig();
+      ensureDataDirs();
+      const activity = recordHookActivityEvidence(getDb(), {
+        agentId,
+        tool,
+        signalName: 'pre_compact',
+        tideMindVersion: getTideMindVersion(),
+        activityGenerationToken,
+      });
+      if (activity.status === 'rejected') {
+        process.stderr.write(`[eb:hook-pre-compact] activity evidence rejected — ${activity.reason}\n`);
+      }
+    } catch (error) {
+      process.stderr.write(`[eb:hook-pre-compact] activity evidence unavailable — ${error instanceof Error ? error.message : String(error)}\n`);
+    } finally {
+      try { closeDb(); } catch { /* ignore */ }
     }
-  } catch (error) {
-    process.stderr.write(`[eb:hook-pre-compact] activity evidence unavailable — ${error instanceof Error ? error.message : String(error)}\n`);
-  } finally {
-    try { closeDb(); } catch { /* ignore */ }
-  }
+  });
 
-  outputHook(content, tool, 'PreCompact');
 }
 
-main();
+void main().catch((error: unknown) => {
+  process.stderr.write(`[eb:hook-pre-compact] output failed — ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exitCode = 1;
+});

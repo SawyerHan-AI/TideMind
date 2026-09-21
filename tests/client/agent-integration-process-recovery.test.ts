@@ -4,6 +4,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { executionPlanHash } from '../../client/electron/agent-integration/consent'
+import { sha256Json } from '../../client/electron/agent-integration/fingerprint'
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, '../..')
 const WORKER = path.join(PROJECT_ROOT, 'tests', 'fixtures', 'agent-integration-physical-worker.ts')
@@ -13,6 +15,7 @@ const FIXTURE_LEASE_MS = 3_000
 const STALE_LOCK_WAIT_MS = FIXTURE_LEASE_MS * 2 + 500
 const PROCESS_WATCHDOG_MS = 45_000
 const roots = new Set<string>()
+const activeWorkers = new Set<ChildProcessWithoutNullStreams>()
 
 interface WorkerMessage {
   type: 'killpoint' | 'result' | 'error'
@@ -29,7 +32,19 @@ function sandbox(): { root: string; dbPath: string } {
   return { root, dbPath: path.join(root, 'agent-integration.sqlite') }
 }
 
-afterEach(() => {
+afterEach(async () => {
+  const workers = [...activeWorkers]
+  await Promise.all(workers.map(child => new Promise<void>((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve()
+      return
+    }
+    const settle = () => resolve()
+    child.once('close', settle)
+    child.once('error', settle)
+    child.kill('SIGCONT')
+    child.kill('SIGKILL')
+  })))
   for (const root of roots) fs.rmSync(root, { recursive: true, force: true })
   roots.clear()
 })
@@ -43,7 +58,7 @@ function startWorker(
 ): ChildProcessWithoutNullStreams {
   const home = path.join(root, 'home')
   fs.mkdirSync(home, { recursive: true })
-  return spawn(TSX, ['--tsconfig', WORKER_TSCONFIG, WORKER, mode, root, dbPath, ...(point ? [point] : [])], {
+  const child = spawn(TSX, ['--tsconfig', WORKER_TSCONFIG, WORKER, mode, root, dbPath, ...(point ? [point] : [])], {
     cwd: PROJECT_ROOT,
     env: {
       ...process.env,
@@ -55,6 +70,10 @@ function startWorker(
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
+  activeWorkers.add(child)
+  child.once('close', () => activeWorkers.delete(child))
+  child.once('error', () => activeWorkers.delete(child))
+  return child
 }
 
 function messages(child: ChildProcessWithoutNullStreams, onMessage: (message: WorkerMessage) => void): void {
@@ -72,8 +91,13 @@ function messages(child: ChildProcessWithoutNullStreams, onMessage: (message: Wo
   })
 }
 
-async function killAt(point: 'intent' | 'effect', root: string, dbPath: string): Promise<WorkerMessage> {
-  const child = startWorker('crash', root, dbPath, point)
+async function killAt(
+  point: 'intent' | 'effect' | 'verified' | 'detach_verified_persisted' | 'physical_remove_verified_persisted',
+  root: string,
+  dbPath: string,
+  mode = 'crash',
+): Promise<WorkerMessage> {
+  const child = startWorker(mode, root, dbPath, mode === 'crash' ? point : undefined)
   let stderr = ''
   child.stderr.setEncoding('utf8')
   child.stderr.on('data', chunk => { stderr += String(chunk) })
@@ -195,6 +219,201 @@ describe('Agent Integration physical process recovery', () => {
     60_000,
   )
 
+  it.each([
+    ['unknown recovery strategy', 'run_recovery', 'future_strategy'],
+    ['mismatched execution plan hash', 'run_hash', 'forged'],
+    ['mismatched mutation domain', 'mutation_domain', 'forged-domain'],
+    ['unknown idempotency strategy', 'mutation_idempotency', 'future_strategy'],
+    ['mismatched idempotency strategy', 'mutation_idempotency', 'never_replay'],
+  ] as const)(
+    'quarantines a verified-boundary SQLite run with %s instead of finalizing it',
+    async (_label, field, value) => {
+      const { root, dbPath } = sandbox()
+      const killed = await killAt('verified', root, dbPath)
+      expect(killed).toMatchObject({
+        point: 'verified_persisted',
+        runState: 'verified',
+        mutationState: 'committed',
+      })
+
+      const db = new Database(dbPath)
+      try {
+        if (field === 'run_recovery') {
+          db.prepare(`UPDATE reconcile_runs SET recovery_strategy = ?`).run(value)
+        } else if (field === 'run_hash') {
+          db.prepare(`UPDATE reconcile_runs SET execution_plan_hash = ?`).run(value)
+        } else if (field === 'mutation_domain') {
+          db.prepare(`UPDATE projection_mutations SET mutation_domain = ?`).run(value)
+        } else {
+          db.prepare(`UPDATE projection_mutations SET idempotency_strategy = ?`).run(value)
+        }
+      } finally {
+        db.close()
+      }
+
+      const recovered = await runToResult('recover', root, dbPath)
+      expect(recovered.outcomes).toEqual([])
+      expect(recovered.snapshot).toMatchObject({
+        applyCount: 1,
+        runs: [{ state: 'cancelled', count: 1 }],
+        mutations: [{ state: 'committed', has_receipt: 1, count: 1 }],
+      })
+      const verified = new Database(dbPath, { readonly: true })
+      try {
+        expect(verified.prepare(`
+          SELECT failure_code, failure_stage FROM reconcile_runs
+        `).get()).toEqual({
+          failure_code: 'journal_decode_failed',
+          failure_stage: 'startup_recovery',
+        })
+      } finally {
+        verified.close()
+      }
+    },
+    60_000,
+  )
+
+  it.each([
+    ['non-committed mutation state', `UPDATE projection_mutations SET state = 'compensated'`],
+    ['invalid journal version', `UPDATE projection_mutations SET journal_version = 1`],
+    ['changed desired fingerprint', `UPDATE projection_mutations SET after_hash = 'forged-desired'`],
+    ['changed post-effect fingerprint', `UPDATE projection_mutations SET post_effect_fingerprint = 'forged-post'`],
+    ['changed compensation precondition', `UPDATE projection_mutations SET compensation_precondition = 'forged-compensation'`],
+    ['missing durable receipt', `UPDATE projection_mutations SET apply_receipt_json = NULL`],
+    ['changed durable receipt', `UPDATE projection_mutations SET apply_receipt_json = '{"fingerprint":"forged-receipt"}'`],
+    ['missing frozen Artifact binding', `UPDATE projection_mutations SET artifact_id = NULL`],
+    ['changed managed Artifact ownership evidence', `UPDATE managed_artifacts SET owned_fragment_hash = 'forged-owned'`],
+    ['missing physical writer fence domain', `UPDATE reconcile_runs SET writer_fence_snapshot_json = '{"mutationDomains":[]}'`],
+  ] as const)(
+    'quarantines a verified-boundary SQLite run with %s before startup finalization',
+    async (_label, corruption) => {
+      const { root, dbPath } = sandbox()
+      await killAt('verified', root, dbPath)
+      const db = new Database(dbPath)
+      try {
+        db.exec(corruption)
+      } finally {
+        db.close()
+      }
+
+      const recovered = await runToResult('recover', root, dbPath)
+      expect(recovered.outcomes).toEqual([])
+      expect(recovered.snapshot).toMatchObject({
+        fileExists: true,
+        applyCount: 1,
+        runs: [{ state: 'cancelled', count: 1 }],
+      })
+    },
+    60_000,
+  )
+
+  it.each([
+    ['durable receipt', `UPDATE projection_mutations SET apply_receipt_json = NULL`],
+    ['managed Artifact evidence', `UPDATE managed_artifacts SET owned_fragment_hash = 'forged-owned'`],
+    ['physical writer fence snapshot', `UPDATE reconcile_runs SET writer_fence_snapshot_json = '{"mutationDomains":[]}'`],
+  ] as const)('atomically cancels verified finalization when %s changes after recovery enumeration', async (_label, corruption) => {
+    const { root, dbPath } = sandbox()
+    await killAt('verified', root, dbPath)
+    const stale = startWorker('verified-finalizer-race', root, dbPath)
+    let stderr = ''
+    stale.stderr.setEncoding('utf8')
+    stale.stderr.on('data', chunk => { stderr += String(chunk) })
+    let loadedResolve!: (message: WorkerMessage) => void
+    let resultResolve!: (message: WorkerMessage) => void
+    const loaded = new Promise<WorkerMessage>(resolve => { loadedResolve = resolve })
+    const result = new Promise<WorkerMessage>(resolve => { resultResolve = resolve })
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      stale.once('close', (code, signal) => resolve({ code, signal }))
+    })
+    messages(stale, message => {
+      if (message.type === 'killpoint' && message.point === 'verified_recovery_loaded') loadedResolve(message)
+      if (message.type === 'result') resultResolve(message)
+    })
+    const timeout = setTimeout(() => stale.kill('SIGKILL'), PROCESS_WATCHDOG_MS)
+    try {
+      await loaded
+      const db = new Database(dbPath)
+      try {
+        db.exec(corruption)
+      } finally {
+        db.close()
+      }
+      stale.stdin.write('finalize\n')
+      expect(await result).toMatchObject({
+        error: expect.stringMatching(/recovery_envelope_invalid/),
+        snapshot: {
+          fileExists: true,
+          applyCount: 1,
+          runs: [{ state: 'cancelled', count: 1 }],
+          mutations: [{ state: 'committed', count: 1 }],
+        },
+      })
+      expect(await closed).toEqual({ code: 0, signal: null })
+    } finally {
+      clearTimeout(timeout)
+      if (stale.exitCode === null && stale.signalCode === null) stale.kill('SIGKILL')
+    }
+    expect(stderr).toBe('')
+  }, 60_000)
+
+  it('quarantines a shared detach-only finalizer when its zero-effect journal is forged', async () => {
+    const { root, dbPath } = sandbox()
+    await killAt('detach_verified_persisted', root, dbPath, 'shared-detach-verified-crash')
+    const db = new Database(dbPath)
+    try {
+      db.prepare(`
+        UPDATE projection_mutations SET journal_version = 1
+        WHERE run_id = (SELECT id FROM reconcile_runs WHERE state = 'verified')
+      `).run()
+    } finally {
+      db.close()
+    }
+
+    const recovered = await runToResult('recover', root, dbPath)
+    expect(recovered.outcomes).toEqual([])
+    expect(recovered.snapshot).toMatchObject({
+      fileExists: true,
+      applyCount: 1,
+      runs: [
+        { state: 'cancelled', count: 1 },
+        { state: 'committed', count: 2 },
+      ],
+    })
+  }, 60_000)
+
+  it('commits an intact verified-boundary finalizer without replaying Adapter apply', async () => {
+    const { root, dbPath } = sandbox()
+    await killAt('verified', root, dbPath)
+    const recovered = await runToResult('recover', root, dbPath)
+    expect(recovered.outcomes).toEqual([expect.objectContaining({ status: 'committed' })])
+    expect(recovered.snapshot).toMatchObject({
+      applyCount: 1,
+      runs: [{ state: 'committed', count: 1 }],
+      mutations: [{ state: 'committed', has_receipt: 1, count: 1 }],
+    })
+  }, 60_000)
+
+  it.each([
+    ['shared-detach-verified-crash', 'detach_verified_persisted', true, 1],
+    ['physical-remove-verified-crash', 'physical_remove_verified_persisted', false, 1],
+  ] as const)(
+    'commits an intact %s finalizer without replaying its disconnect effect',
+    async (mode, point, fileExists, applyCount) => {
+      const { root, dbPath } = sandbox()
+      const killed = await killAt(point, root, dbPath, mode)
+      expect(killed).toMatchObject({ point, runState: 'verified', fileExists })
+      expect(killed.mutationState).toBe(mode === 'shared-detach-verified-crash' ? 'committed' : null)
+      const recovered = await runToResult('recover', root, dbPath)
+      expect(recovered.outcomes).toEqual([expect.objectContaining({ status: 'committed' })])
+      expect(recovered.snapshot).toMatchObject({
+        fileExists,
+        applyCount,
+        runs: [{ state: 'committed', count: mode === 'shared-detach-verified-crash' ? 3 : 2 }],
+      })
+    },
+    60_000,
+  )
+
   it('keeps durable receipt evidence when a stale recovery process loses the journal CAS', async () => {
     const { root, dbPath } = sandbox()
     await killAt('intent', root, dbPath)
@@ -206,8 +425,8 @@ describe('Agent Integration physical process recovery', () => {
     let resultResolve!: (message: WorkerMessage) => void
     const loaded = new Promise<WorkerMessage>(resolve => { loadedResolve = resolve })
     const result = new Promise<WorkerMessage>(resolve => { resultResolve = resolve })
-    const closed = new Promise<void>((resolve, reject) => {
-      stale.once('close', code => code === 0 ? resolve() : reject(new Error(`stale worker failed: ${stderr}`)))
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      stale.once('close', (code, signal) => resolve({ code, signal }))
     })
     messages(stale, message => {
       if (message.type === 'killpoint' && message.point === 'journal_loaded') loadedResolve(message)
@@ -230,14 +449,169 @@ describe('Agent Integration physical process recovery', () => {
           failure_code: null,
         },
       })
-      await closed
+      expect(await closed).toEqual({ code: 0, signal: null })
     } finally {
       clearTimeout(timeout)
       if (stale.exitCode === null && stale.signalCode === null) stale.kill('SIGKILL')
     }
   }, 60_000)
 
-  it('keeps a shared Skill until explicit manual cleanup, then disconnects both consumers', async () => {
+  it('fails closed before replay when physical SQLite contains a valid high-risk plan and corrupt legacy consent enums', async () => {
+    const { root, dbPath } = sandbox()
+    await killAt('intent', root, dbPath)
+
+    const db = new Database(dbPath)
+    try {
+      const row = db.prepare(`
+        SELECT id, prepared_plan_json, consent_envelope_id
+        FROM reconcile_runs ORDER BY created_at DESC LIMIT 1
+      `).get() as { id: string; prepared_plan_json: string; consent_envelope_id: string }
+      const prepared = JSON.parse(row.prepared_plan_json) as any
+      prepared.executionPlan.mutations[0].risk = 'high'
+      prepared.adapterPlan.mutations[0].risk = 'high'
+      prepared.executionPlanHash = executionPlanHash(prepared.executionPlan)
+      prepared.adapterPlanHash = sha256Json(prepared.adapterPlan)
+      db.prepare(`
+        UPDATE reconcile_runs SET prepared_plan_json = ?, execution_plan_hash = ? WHERE id = ?
+      `).run(JSON.stringify(prepared), prepared.executionPlanHash, row.id)
+      const mutation = db.prepare(`
+        SELECT id, planned_mutation_json FROM projection_mutations WHERE run_id = ?
+      `).get(row.id) as { id: string; planned_mutation_json: string }
+      const plannedMutation = JSON.parse(mutation.planned_mutation_json) as any
+      plannedMutation.risk = 'high'
+      db.prepare(`UPDATE projection_mutations SET planned_mutation_json = ? WHERE id = ?`)
+        .run(JSON.stringify(plannedMutation), mutation.id)
+      // Model a malformed pre-release v34 table or damaged local row whose
+      // enum constraint was not authoritative. Recovery must validate values,
+      // not trust the TypeScript cast used when reading SQLite.
+      db.pragma('ignore_check_constraints = ON')
+      db.prepare(`
+        UPDATE agent_consents
+        SET maximum_risk = 'future_risk',
+            command_categories_json = '["file_write","future_command"]'
+        WHERE id = ?
+      `).run(row.consent_envelope_id)
+    } finally {
+      db.close()
+    }
+
+    const recovered = await runToResult('recover', root, dbPath)
+    expect(recovered.outcomes).toEqual([
+      expect.objectContaining({ status: 'needs_recovery', reason: 'consent_no_longer_covers_plan' }),
+    ])
+    expect(recovered.snapshot).toMatchObject({
+      fileExists: false,
+      applyCount: 0,
+      runs: [{ state: 'needs_recovery', count: 1 }],
+      mutations: [{ state: 'needs_recovery', has_receipt: 0, count: 1 }],
+    })
+  }, 60_000)
+
+  it.each([
+    ['unknown operation', 'run_operation', 'future_operation'],
+    ['unknown recovery strategy', 'run_recovery', 'future_strategy'],
+    ['mismatched execution plan hash', 'run_hash', 'forged'],
+    ['mismatched mutation domain', 'mutation_domain', 'forged-domain'],
+    ['unknown idempotency strategy', 'mutation_idempotency', 'future_strategy'],
+    ['mismatched idempotency strategy', 'mutation_idempotency', 'never_replay'],
+  ] as const)(
+    'quarantines a physical SQLite run with %s before Adapter apply',
+    async (_label, field, value) => {
+      const { root, dbPath } = sandbox()
+      await killAt('intent', root, dbPath)
+
+      const db = new Database(dbPath)
+      try {
+        if (field === 'run_operation') {
+          db.prepare(`UPDATE reconcile_runs SET operation_type = ?`).run(value)
+        } else if (field === 'run_recovery') {
+          db.prepare(`UPDATE reconcile_runs SET recovery_strategy = ?`).run(value)
+        } else if (field === 'run_hash') {
+          db.prepare(`UPDATE reconcile_runs SET execution_plan_hash = ?`).run(value)
+        } else if (field === 'mutation_domain') {
+          db.prepare(`UPDATE projection_mutations SET mutation_domain = ?`).run(value)
+        } else {
+          db.prepare(`UPDATE projection_mutations SET idempotency_strategy = ?`).run(value)
+        }
+      } finally {
+        db.close()
+      }
+
+      const recovered = await runToResult('recover', root, dbPath)
+      expect(recovered.outcomes).toEqual([])
+      expect(recovered.snapshot).toMatchObject({
+        fileExists: false,
+        applyCount: 0,
+        runs: [{ state: 'needs_recovery', count: 1 }],
+        mutations: [{ state: 'prepared', has_receipt: 0, count: 1 }],
+      })
+      const verified = new Database(dbPath, { readonly: true })
+      try {
+        expect(verified.prepare(`
+          SELECT failure_code, failure_stage FROM reconcile_runs
+        `).get()).toEqual({
+          failure_code: 'journal_decode_failed',
+          failure_stage: 'startup_recovery',
+        })
+      } finally {
+        verified.close()
+      }
+    },
+    60_000,
+  )
+
+  it('quarantines unknown persisted outer and Adapter enums without applying or changing Installation state', async () => {
+    for (const corrupt of ['outer_operation', 'adapter_operation'] as const) {
+      const { root, dbPath } = sandbox()
+      await killAt('intent', root, dbPath)
+
+      const db = new Database(dbPath)
+      let before: unknown
+      try {
+        before = db.prepare(`
+          SELECT desired_state, reconcile_state, status_reason
+          FROM agent_installations WHERE id = 'installation-crash'
+        `).get()
+        const row = db.prepare(`
+          SELECT id, prepared_plan_json FROM reconcile_runs ORDER BY created_at DESC LIMIT 1
+        `).get() as { id: string; prepared_plan_json: string }
+        const prepared = JSON.parse(row.prepared_plan_json) as any
+        if (corrupt === 'outer_operation') {
+          prepared.operation = 'future_operation'
+        } else {
+          prepared.adapterPlan.mutations[0].operation = 'future_operation'
+          prepared.adapterPlanHash = sha256Json(prepared.adapterPlan)
+          const mutation = structuredClone(prepared.adapterPlan.mutations[0])
+          db.prepare(`
+            UPDATE projection_mutations SET planned_mutation_json = ? WHERE run_id = ?
+          `).run(JSON.stringify(mutation), row.id)
+        }
+        db.prepare(`UPDATE reconcile_runs SET prepared_plan_json = ? WHERE id = ?`)
+          .run(JSON.stringify(prepared), row.id)
+      } finally {
+        db.close()
+      }
+
+      const recovered = await runToResult('recover', root, dbPath)
+      expect(recovered.outcomes).toEqual([])
+      expect(recovered.snapshot).toMatchObject({
+        fileExists: false,
+        applyCount: 0,
+        runs: [{ state: 'needs_recovery', count: 1 }],
+      })
+      const verified = new Database(dbPath, { readonly: true })
+      try {
+        expect(verified.prepare(`
+          SELECT desired_state, reconcile_state, status_reason
+          FROM agent_installations WHERE id = 'installation-crash'
+        `).get()).toEqual(before)
+      } finally {
+        verified.close()
+      }
+    }
+  }, 60_000)
+
+  it('detaches one shared Skill consumer without unlinking, then removes the last after manual cleanup', async () => {
     const { root, dbPath } = sandbox()
     const result = await runToResult('shared-cycle', root, dbPath)
 
@@ -258,18 +632,12 @@ describe('Agent Integration physical process recovery', () => {
         { installation_id: 'installation-two', state: 'active', desired_state: 'managed' },
       ],
     })
-    expect(result.unsafeDetachError).toMatchObject({
-      name: 'Error',
-      message: expect.stringMatching(/disconnect_noop_requires_absent_readback/),
-    })
-    expect(result.unsafeDetachResult).toBeNull()
-    expect(result.afterUnsafeDetach).toEqual(result.afterSecond)
     expect(result.detach).toMatchObject({ status: 'committed' })
     expect(result.afterDetach).toMatchObject({
-      fileExists: false,
+      fileExists: true,
       applyCount: 1,
-      artifacts: [{ component_type: 'skill', state: 'missing', count: 1 }],
-      missingEvents: { count: 1 },
+      artifacts: [{ component_type: 'skill', state: 'healthy', count: 1 }],
+      missingEvents: { count: 0 },
       consumers: [
         { installation_id: 'installation-one', state: 'removed', desired_state: 'removed' },
         { installation_id: 'installation-two', state: 'active', desired_state: 'managed' },
@@ -297,8 +665,8 @@ describe('Agent Integration physical process recovery', () => {
     let releasedResolve!: (message: WorkerMessage) => void
     const ready = new Promise<WorkerMessage>(resolve => { readyResolve = resolve })
     const released = new Promise<WorkerMessage>(resolve => { releasedResolve = resolve })
-    const closed = new Promise<void>((resolve, reject) => {
-      holder.once('close', code => code === 0 ? resolve() : reject(new Error(`holder failed: ${stderr}`)))
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      holder.once('close', (code, signal) => resolve({ code, signal }))
     })
     messages(holder, message => {
       if (message.type === 'killpoint' && message.point === 'fence_held') readyResolve(message)
@@ -317,7 +685,7 @@ describe('Agent Integration physical process recovery', () => {
       expect(holder.kill('SIGCONT')).toBe(true)
       holder.stdin.write('release\n')
       await released
-      await closed
+      expect(await closed).toEqual({ code: 0, signal: null })
       expect(await runToResult('fence-try', root, dbPath)).toMatchObject({ acquired: true })
     } finally {
       clearTimeout(timeout)
@@ -338,8 +706,8 @@ describe('Agent Integration physical process recovery', () => {
     let resultResolve!: (message: WorkerMessage) => void
     const ready = new Promise<WorkerMessage>(resolve => { readyResolve = resolve })
     const result = new Promise<WorkerMessage>(resolve => { resultResolve = resolve })
-    const closed = new Promise<void>((resolve, reject) => {
-      holder.once('close', code => code === 0 ? resolve() : reject(new Error(`holder failed: ${stderr}`)))
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      holder.once('close', (code, signal) => resolve({ code, signal }))
     })
     messages(holder, message => {
       if (message.type === 'killpoint' && message.point === 'fence_held') readyResolve(message)
@@ -362,7 +730,7 @@ describe('Agent Integration physical process recovery', () => {
       await new Promise(resolve => setTimeout(resolve, 1_100))
       holder.stdin.write('assert\n')
       expect(await result).toMatchObject({ asserted: false, error: expect.stringMatching(/writer lock|heartbeat/) })
-      await closed
+      expect(await closed).toEqual({ code: 0, signal: null })
     } finally {
       clearTimeout(timeout)
       if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGKILL')

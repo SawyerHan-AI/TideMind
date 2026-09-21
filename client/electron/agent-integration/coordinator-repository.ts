@@ -16,18 +16,25 @@ import {
   type PreparedMutationExecution,
   type RecoverableExecution,
   type WriterFenceLease,
+  additionalPhysicalMutationDomains,
   frozenPlanInstallationSurfaceFingerprint,
   frozenPlanLiveTrustProofFingerprint,
+  physicalMutationDomain,
   supplementalConsentClaims,
 } from './coordinator'
 import { sha256Json } from './fingerprint'
 import { buildLegacyMutationDomain } from './legacy-writer'
 import type { IntegrationEvent } from './events'
 import type { MutationJournalRecord } from './mutation-runner'
-import type { PreparedCoordinatorPlan } from './planner'
+import {
+  assertPersistedPlannedMutationShape,
+  assertPersistedPreparedPlanShape,
+  type PreparedCoordinatorPlan,
+} from './planner'
 import {
   AgentIntegrationRepository,
   persistedComponentConfigFiles,
+  persistedComponentConfigRoots,
   persistedDistribution,
   persistedHostOwnedIdentity,
   persistedProjectionSurfaceFingerprint,
@@ -60,16 +67,47 @@ interface RunRow {
   id: string
   installation_id: string
   operation_type: string
+  execution_plan_hash: string
   consent_envelope_id: string
   state: RecoverableExecution['runState'] | 'planned' | 'preconditions_checked'
+  recovery_strategy: string
+  writer_fence_snapshot_json: string
   prepared_plan_json: string
   desired_capability: number
+  updated_at: string
+}
+
+const PERSISTED_RUN_OPERATIONS = ['connect', 'upgrade', 'repair', 'disconnect'] as const
+const PERSISTED_RECOVERY_STRATEGIES = ['readback_before_replay'] as const
+const PERSISTED_IDEMPOTENCY_STRATEGIES = [
+  'consumer_detach_only', 'readback_exact_then_replay', 'never_replay',
+] as const
+
+function assertPersistedRunEnvelope(run: RunRow, preparedPlan: PreparedCoordinatorPlan): void {
+  if (!PERSISTED_RUN_OPERATIONS.includes(run.operation_type as typeof PERSISTED_RUN_OPERATIONS[number])) {
+    throw new Error(`persisted reconcile run has invalid operation: ${run.operation_type}`)
+  }
+  if (run.operation_type !== preparedPlan.operation) {
+    throw new Error('persisted reconcile run operation projection changed')
+  }
+  if (!PERSISTED_RECOVERY_STRATEGIES.includes(
+    run.recovery_strategy as typeof PERSISTED_RECOVERY_STRATEGIES[number],
+  )) {
+    throw new Error(`persisted reconcile run has invalid recovery strategy: ${run.recovery_strategy}`)
+  }
+  if (run.execution_plan_hash !== preparedPlan.executionPlanHash) {
+    throw new Error('persisted reconcile run execution plan hash projection changed')
+  }
 }
 
 interface MutationRow {
   id: string
   operation_id: string
+  installation_id: string
+  component_key: string
+  artifact_id: string | null
   mutation_domain: string
+  target: string
   planned_mutation_json: string
   idempotency_strategy: string
   state: MutationJournalRecord['state']
@@ -85,17 +123,24 @@ interface MutationRow {
   updated_at: string
 }
 
+interface ValidatedMutationRow {
+  row: MutationRow
+  plannedMutation: PlannedMutation
+}
+
 interface OwnedArtifactBaselineRow {
   component_key: ComponentKey
   target_path: string
   ownership_key: string
   owned_fragment_hash: string
   selector_schema_version: string | number
+  active_consumer_count: number
 }
 
 export interface ManagedReconcileCandidate {
   artifactId: string
   componentKey: ComponentKey
+  componentKeys: readonly ComponentKey[]
   componentName: string
   desiredCapability: CapabilityLevel
   consentId: string | null
@@ -158,10 +203,52 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     return this.repository.getInstallation(installationId)?.detected_version ?? null
   }
 
+  getCurrentActivityGenerationToken(
+    installationId: string,
+    componentKeys: readonly ComponentKey[],
+  ): string | null {
+    if (componentKeys.length === 0) return null
+    const placeholders = componentKeys.map(() => '?').join(',')
+    const row = this.db.prepare(`
+      SELECT prepared_plan_json
+      FROM reconcile_runs
+      WHERE installation_id = ?
+        AND operation_type != 'disconnect'
+        AND state IN ('applied_unverified','verified','committed')
+        AND EXISTS (
+          SELECT 1 FROM json_each(
+            CASE WHEN json_valid(prepared_plan_json) THEN prepared_plan_json ELSE '{}' END,
+            '$.componentKeys'
+          ) component
+          WHERE component.value IN (${placeholders})
+        )
+      ORDER BY rowid DESC
+      LIMIT 1
+    `).get(installationId, ...componentKeys) as { prepared_plan_json: string } | undefined
+    if (!row) return null
+    try {
+      const prepared = JSON.parse(row.prepared_plan_json) as {
+        activityGenerationToken?: unknown
+        executionPlan?: { activityGenerationTokenHash?: unknown }
+      }
+      return typeof prepared.activityGenerationToken === 'string'
+        && prepared.activityGenerationToken.length > 0
+        && prepared.executionPlan?.activityGenerationTokenHash === sha256Json(prepared.activityGenerationToken)
+        ? prepared.activityGenerationToken
+        : null
+    } catch {
+      return null
+    }
+  }
+
   listOwnedArtifactBaselines(installationId: string): readonly OwnedArtifactBaseline[] {
     const rows = this.db.prepare(`
       SELECT c.component_key, a.target_path, a.ownership_key, a.owned_fragment_hash,
-             a.selector_schema_version
+             a.selector_schema_version,
+             (SELECT COUNT(*) FROM artifact_consumers peers
+              WHERE peers.artifact_id = a.id AND peers.state = 'active'
+                AND peers.desired_state IN ('managed','disabled')
+                AND peers.tombstoned_at IS NULL) AS active_consumer_count
       FROM artifact_consumers c
       JOIN managed_artifacts a ON a.id = c.artifact_id
       WHERE c.installation_id = ?
@@ -178,14 +265,19 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       ownershipKey: String(row.ownership_key),
       ownedFragmentHash: String(row.owned_fragment_hash),
       selectorSchemaVersion: Number(row.selector_schema_version),
+      ...(Number(row.active_consumer_count) > 1
+        ? { activeConsumerCount: Number(row.active_consumer_count) }
+        : {}),
     }))
   }
 
   /** Durable managed-ledger rows eligible for read-only inspection and repair orchestration. */
   listManagedReconcileCandidates(): readonly ManagedReconcileCandidate[] {
+    this.repository.normalizeCustomMcpCapabilityCeiling(this.now().toISOString())
     const rows = this.db.prepare(`
       SELECT a.id AS artifact_id, a.owned_fragment_hash, a.desired_fragment_hash,
-             c.installation_id, c.component_key, c.required_capability, c.consent_envelope_id
+             c.installation_id, c.component_key, c.required_capability,
+             active_consent.id AS active_consent_id
       FROM managed_artifacts a
       JOIN artifact_consumers c ON c.artifact_id = a.id
       JOIN agent_installations i ON i.id = c.installation_id
@@ -214,29 +306,42 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       installation_id: string
       component_key: ComponentKey
       required_capability: number
-      consent_envelope_id: string | null
+      active_consent_id: string | null
     }>
     const consumersByArtifact = new Map<string, Array<{ installationId: string; displayName: string }>>()
+    const scopeByConsumer = new Map<string, typeof rows>()
     for (const row of rows) {
       const installation = this.repository.getInstallation(row.installation_id)
       if (!installation) continue
       const consumers = consumersByArtifact.get(row.artifact_id) ?? []
-      consumers.push({
-        installationId: installation.id,
-        displayName: installation.display_alias ?? installation.display_name,
-      })
+      if (!consumers.some(consumer => consumer.installationId === installation.id)) {
+        consumers.push({
+          installationId: installation.id,
+          displayName: installation.display_alias ?? installation.display_name,
+        })
+      }
       consumersByArtifact.set(row.artifact_id, consumers)
+      const scopeKey = `${row.artifact_id}\u0000${row.installation_id}`
+      const scope = scopeByConsumer.get(scopeKey) ?? []
+      scope.push(row)
+      scopeByConsumer.set(scopeKey, scope)
     }
     const candidates: ManagedReconcileCandidate[] = []
     for (const row of rows) {
       const installation = this.repository.getInstallation(row.installation_id)
       if (!installation) continue
+      const scope = scopeByConsumer.get(`${row.artifact_id}\u0000${row.installation_id}`) ?? [row]
       candidates.push({
         artifactId: row.artifact_id,
         componentKey: row.component_key,
+        componentKeys: [...new Set(scope.map(item => item.component_key))],
         componentName: componentDisplayName(row.component_key),
-        desiredCapability: capability(row.required_capability),
-        consentId: row.consent_envelope_id,
+        desiredCapability: capability(Math.min(
+          Math.max(...scope.map(item => item.required_capability)),
+          capabilityForComponentScope(scope.map(item => item.component_key)),
+          installation.host_variant === 'custom-local-mcp' ? 2 : 4,
+        )),
+        consentId: row.active_consent_id,
         ownedFragmentHash: row.owned_fragment_hash,
         desiredFragmentHash: row.desired_fragment_hash,
         installation: installationFromRow(installation),
@@ -257,6 +362,10 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
 
   markArtifactHealthyAfterReadback(artifactId: string, verifiedAt: string): boolean {
     return this.repository.markArtifactHealthyAfterReadback(artifactId, verifiedAt)
+  }
+
+  markArtifactNeedsAttention(input: Parameters<AgentIntegrationRepository['markArtifactNeedsAttention']>[0]): boolean {
+    return this.repository.markArtifactNeedsAttention(input)
   }
 
   getConsent(consentId: string): ConsentEnvelope | null {
@@ -328,6 +437,13 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       const persistedMutations: PreparedMutationExecution[] = []
       const installation = this.repository.getInstallation(input.installationId)
       if (!installation?.agent_id) throw new Error(`unknown Installation: ${input.installationId}`)
+      if (installation.host_variant === 'custom-local-mcp'
+        && input.operation !== 'disconnect'
+        && (input.desiredCapability > 2
+          || input.preparedPlan.componentKeys.length !== 1
+          || input.preparedPlan.componentKeys[0] !== 'memory_tools')) {
+        throw new Error('Custom MCP execution cannot exceed its memory-only C2 contract')
+      }
       const expectedSurface = frozenPlanInstallationSurfaceFingerprint(input.preparedPlan)
       if (expectedSurface
         && expectedSurface !== persistedProjectionSurfaceFingerprint(installation)) {
@@ -500,6 +616,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       }
 
       for (const componentKey of input.preparedPlan.componentKeys) {
+        const deliveryMode = isGuidedNoMutationComponent(input, componentKey) ? 'guided' : 'managed'
         this.upsertDesiredComponent(
           installation,
           componentKey,
@@ -507,15 +624,26 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
           input.desiredCapability,
           input.consentId,
           input.createdAt,
+          deliveryMode,
         )
       }
 
-      const mutationComponents = new Set(input.mutations.map(mutation => mutation.plannedMutation.componentKey))
+      const mutationComponents = new Set(input.mutations.flatMap(mutation => (
+        mutationComponentKeys(mutation.plannedMutation)
+      )))
       for (const componentKey of input.preparedPlan.componentKeys) {
         if (mutationComponents.has(componentKey)) continue
-        managedDomains.add(input.operation === 'disconnect'
-          ? this.stageAbsentOwnedArtifactConsumer(input, componentKey)
-          : this.activateOwnedExistingArtifactConsumer(input, componentKey))
+        // A guided host surface is deliberately not readable/writable by Tide
+        // Mind. Persist its desired state and frozen action in the run, but do
+        // not fabricate an owned Artifact/consumer for an external GUI action.
+        if (isGuidedNoMutationComponent(input, componentKey)) continue
+        if (input.operation === 'disconnect' && isManualRemovalPendingComponent(input, componentKey)) {
+          managedDomains.add(this.stageManualRemovalPendingConsumer(input, componentKey))
+        } else {
+          managedDomains.add(input.operation === 'disconnect'
+            ? this.stageAbsentOwnedArtifactConsumer(input, componentKey)
+            : this.activateOwnedExistingArtifactConsumer(input, componentKey))
+        }
       }
 
       const preparedArtifacts = input.mutations.map(mutation => {
@@ -524,6 +652,9 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
           ? { ...mutation.journal, state: 'committed' as const, updatedAt: input.createdAt }
           : mutation.journal
         if (artifact.effectDisposition !== 'consumer_detach') managedDomains.add(mutation.mutationDomain)
+        if (artifact.effectDisposition !== 'consumer_detach') {
+          for (const domain of mutation.additionalMutationDomains ?? []) managedDomains.add(domain)
+        }
         return { mutation, artifact, journal }
       })
       for (const mutationDomain of managedDomains) {
@@ -581,6 +712,9 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
           effectDisposition: artifact.effectDisposition,
         })
       }
+      if (input.operation === 'disconnect') {
+        this.retireSupersededOwnershipTransfers(input)
+      }
 
       this.db.prepare(`
         UPDATE agent_installations
@@ -599,7 +733,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
         WHERE id = ?
       `).run(
         input.intentAfterPrepare,
-        input.desiredCapability,
+        input.operation === 'repair' ? installation.desired_capability : input.desiredCapability,
         input.consentId,
         input.createdAt,
         input.intentAfterPrepare,
@@ -625,6 +759,180 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       }
       return { mutations: persistedMutations }
     }).immediate()
+  }
+
+  /**
+   * A disconnect may supersede a connect whose effects passed exact read-back
+   * but whose runtime verification is still pending. Retire only transfer
+   * sources that are provably replaced by the exact healthy Artifact now
+   * staged for removal by this disconnect; every mismatch rolls back the
+   * surrounding prepare transaction and leaves recovery evidence intact.
+   */
+  private retireSupersededOwnershipTransfers(input: PrepareExecutionInput): void {
+    const requestedComponents = [...new Set(input.preparedPlan.componentKeys)].sort()
+    const candidates = this.db.prepare(`
+      SELECT id, consent_envelope_id, prepared_plan_json
+      FROM reconcile_runs
+      WHERE installation_id = ? AND state = 'applied_unverified'
+        AND operation_type IN ('connect','repair') AND id != ?
+      ORDER BY created_at, id
+    `).all(input.installationId, input.runId) as Array<{
+      id: string
+      consent_envelope_id: string
+      prepared_plan_json: string
+    }>
+    for (const candidate of candidates) {
+      const prepared = parseObject(candidate.prepared_plan_json, 'prepared plan') as unknown as PreparedCoordinatorPlan
+      assertPersistedPreparedPlanShape(prepared)
+      const candidateComponents = [...prepared.componentKeys].sort()
+      if (sha256Json(candidateComponents) !== sha256Json(requestedComponents)) continue
+      const mutations = this.db.prepare(`
+        SELECT artifact_id, component_key, after_hash, post_effect_fingerprint,
+               apply_receipt_json, planned_mutation_json, state
+        FROM projection_mutations WHERE run_id = ? ORDER BY id
+      `).all(candidate.id) as Array<{
+        artifact_id: string | null
+        component_key: string
+        after_hash: string | null
+        post_effect_fingerprint: string | null
+        apply_receipt_json: string | null
+        planned_mutation_json: string
+        state: string
+      }>
+      const transfers = mutations.flatMap((row) => {
+        const mutation = parseObject(row.planned_mutation_json, 'planned mutation') as unknown as PlannedMutation
+        return mutation.ownershipTransferFrom
+          ? [{ componentKey: mutation.componentKey, source: mutation.ownershipTransferFrom }]
+          : []
+      })
+      if (transfers.length === 0) continue
+      const exactTakeover = mutations.length > 0 && !mutations.some(mutation => (
+        mutation.state !== 'committed'
+        || !mutation.artifact_id
+        || !mutation.after_hash
+        || !mutation.post_effect_fingerprint
+        || !mutation.apply_receipt_json
+        || !this.db.prepare(`
+          SELECT 1 FROM managed_artifacts artifact
+          JOIN artifact_consumers consumer ON consumer.artifact_id = artifact.id
+          WHERE artifact.id = ? AND artifact.state IN ('healthy','removal_pending')
+            AND artifact.owned_fragment_hash = ? AND artifact.observed_fragment_hash = ?
+            AND consumer.installation_id = ? AND consumer.component_key = ?
+            AND consumer.state = 'removal_pending' AND consumer.desired_state = 'removal_pending'
+            AND consumer.consent_envelope_id = ? AND consumer.tombstoned_at IS NOT NULL
+        `).get(
+          mutation.artifact_id,
+          mutation.after_hash,
+          mutation.post_effect_fingerprint,
+          input.installationId,
+          mutation.component_key,
+          input.consentId,
+        )
+      ))
+      if (!exactTakeover) {
+        this.markSupersededTransferNeedsRecovery(input, candidate, transfers)
+        continue
+      }
+      for (const transfer of transfers) {
+        const retired = this.db.prepare(`
+          UPDATE artifact_consumers
+          SET desired_state = 'removed', state = 'removed', removed_at = ?, updated_at = ?
+          WHERE installation_id = ? AND component_key = ?
+            AND state = 'removal_pending' AND desired_state = 'removal_pending'
+            AND consent_envelope_id = ? AND tombstone_reason = 'ownership_selector_migrated'
+            AND artifact_id = (
+              SELECT id FROM managed_artifacts
+              WHERE runtime_realm = (
+                SELECT runtime_realm FROM agent_installations WHERE id = ?
+              ) AND target_path = ? AND ownership_key = ?
+                AND owned_fragment_hash = ? AND selector_schema_version = ?
+                AND state = 'removal_pending'
+            )
+        `).run(
+          input.createdAt,
+          input.createdAt,
+          input.installationId,
+          transfer.componentKey,
+          candidate.consent_envelope_id,
+          input.installationId,
+          transfer.source.physicalTarget,
+          transfer.source.ownershipKey,
+          transfer.source.ownedFragmentHash,
+          String(transfer.source.selectorSchemaVersion),
+        )
+        if (retired.changes !== 1) {
+          throw new Error(`superseded ownership transfer changed: ${candidate.id}:${transfer.componentKey}`)
+        }
+        const artifactRetired = this.db.prepare(`
+          UPDATE managed_artifacts
+          SET state = 'removed', observed_fragment_hash = NULL, owned_fragment_hash = NULL,
+              last_verified_at = ?, updated_at = ?
+          WHERE runtime_realm = (
+              SELECT runtime_realm FROM agent_installations WHERE id = ?
+            ) AND target_path = ? AND ownership_key = ? AND state = 'removal_pending'
+            AND NOT EXISTS (
+              SELECT 1 FROM artifact_consumers consumer
+              WHERE consumer.artifact_id = managed_artifacts.id
+                AND consumer.state IN ('active','removal_pending')
+            )
+        `).run(
+          input.createdAt,
+          input.createdAt,
+          input.installationId,
+          transfer.source.physicalTarget,
+          transfer.source.ownershipKey,
+        )
+        if (artifactRetired.changes !== 1) {
+          throw new Error(`superseded transfer Artifact changed: ${candidate.id}:${transfer.componentKey}`)
+        }
+      }
+      const cancelled = this.db.prepare(`
+        UPDATE reconcile_runs
+        SET state = 'cancelled', failure_code = 'superseded_by_disconnect',
+            failure_stage = 'verification', completed_at = ?, updated_at = ?
+        WHERE id = ? AND installation_id = ? AND state = 'applied_unverified'
+      `).run(input.createdAt, input.createdAt, candidate.id, input.installationId)
+      if (cancelled.changes !== 1) throw new Error(`superseded connect run changed: ${candidate.id}`)
+    }
+  }
+
+  private markSupersededTransferNeedsRecovery(
+    input: PrepareExecutionInput,
+    candidate: { id: string; consent_envelope_id: string },
+    transfers: ReadonlyArray<{ componentKey: ComponentKey; source: NonNullable<PlannedMutation['ownershipTransferFrom']> }>,
+  ): void {
+    this.db.prepare(`
+      UPDATE reconcile_runs SET state = 'needs_recovery',
+          failure_code = 'superseded_disconnect_takeover_unproven', failure_stage = 'disconnect_prepare',
+          completed_at = ?, updated_at = ?
+      WHERE id = ? AND installation_id = ? AND state = 'applied_unverified'
+    `).run(input.createdAt, input.createdAt, candidate.id, input.installationId)
+    for (const transfer of transfers) {
+      this.db.prepare(`
+        UPDATE managed_artifacts SET state = 'needs_recovery', updated_at = ?
+        WHERE runtime_realm = (
+            SELECT runtime_realm FROM agent_installations WHERE id = ?
+          ) AND target_path = ? AND ownership_key = ? AND owned_fragment_hash = ?
+          AND selector_schema_version = ? AND state = 'removal_pending'
+          AND EXISTS (
+            SELECT 1 FROM artifact_consumers consumer
+            WHERE consumer.artifact_id = managed_artifacts.id
+              AND consumer.installation_id = ? AND consumer.component_key = ?
+              AND consumer.consent_envelope_id = ?
+              AND consumer.state = 'removal_pending' AND consumer.desired_state = 'removal_pending'
+          )
+      `).run(
+        input.createdAt,
+        input.installationId,
+        transfer.source.physicalTarget,
+        transfer.source.ownershipKey,
+        transfer.source.ownedFragmentHash,
+        String(transfer.source.selectorSchemaVersion),
+        input.installationId,
+        transfer.componentKey,
+        candidate.consent_envelope_id,
+      )
+    }
   }
 
   saveMutation(runId: string, mutation: MutationJournalRecord): MutationJournalRecord {
@@ -798,20 +1106,44 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     failure?: { code: string; stage: string },
   ): void {
     let finalizationRejection: string | null = null
+    let finalizationFailureCode = 'verification_evidence_stale'
+    let finalizationStatusReason = 'verification_stale'
     this.db.transaction(() => {
       if (state === 'committed') {
         const currentRun = this.db.prepare(`
-          SELECT state, installation_id FROM reconcile_runs WHERE id = ?
-        `).get(runId) as { state: string; installation_id: string | null } | undefined
+          SELECT id, installation_id, operation_type, execution_plan_hash,
+                 consent_envelope_id, state, recovery_strategy, writer_fence_snapshot_json,
+                 prepared_plan_json, desired_capability, updated_at
+          FROM reconcile_runs WHERE id = ?
+        `).get(runId) as RunRow | undefined
         if (currentRun?.state === 'verified') {
-          const unfinished = this.db.prepare(`
-            SELECT 1
-            FROM projection_mutations pm
-            WHERE pm.run_id = ? AND pm.state NOT IN ('committed','compensated')
-            LIMIT 1
-          `).get(runId)
-          if (unfinished) throw new Error(`verified run has unfinished mutation: ${runId}`)
-          finalizationRejection = this.verificationFinalizationProblem(runId, updatedAt)
+          try {
+            const preparedPlan = parseObject(
+              currentRun.prepared_plan_json,
+              'prepared plan',
+            ) as unknown as PreparedCoordinatorPlan
+            assertPersistedPreparedPlanShape(preparedPlan)
+            assertPersistedRunEnvelope(currentRun, preparedPlan)
+            const installation = installationFromRow(
+              this.repository.getInstallation(currentRun.installation_id),
+              true,
+            )
+            this.loadValidatedRecoveryEnvelope(currentRun, preparedPlan, installation)
+          } catch (error) {
+            finalizationRejection = `recovery_envelope_invalid:${error instanceof Error ? error.message : String(error)}`
+            finalizationFailureCode = 'journal_decode_failed'
+            finalizationStatusReason = 'journal_decode_failed'
+          }
+          if (!finalizationRejection) {
+            const unfinished = this.db.prepare(`
+              SELECT 1
+              FROM projection_mutations pm
+              WHERE pm.run_id = ? AND pm.state != 'committed'
+              LIMIT 1
+            `).get(runId)
+            if (unfinished) throw new Error(`verified run has unfinished mutation: ${runId}`)
+            finalizationRejection = this.verificationFinalizationProblem(runId, updatedAt)
+          }
         }
         if (finalizationRejection && currentRun?.state === 'verified') {
           const run = this.db.prepare(`
@@ -819,18 +1151,18 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
           `).get(runId) as { installation_id: string | null } | undefined
           this.db.prepare(`
             UPDATE reconcile_runs
-            SET state = 'cancelled', failure_code = 'verification_evidence_stale',
+            SET state = 'cancelled', failure_code = ?,
                 failure_stage = 'finalization', completed_at = ?, updated_at = ?
             WHERE id = ? AND state = 'verified'
-          `).run(updatedAt, updatedAt, runId)
+          `).run(finalizationFailureCode, updatedAt, updatedAt, runId)
           if (run?.installation_id) {
             this.db.prepare(`
               UPDATE agent_installations
-              SET reconcile_state = 'needs_recovery', status_reason = 'verification_stale',
+              SET reconcile_state = 'needs_recovery', status_reason = ?,
                   updated_at = ?
               WHERE id = ? AND reconcile_state != 'paused'
                 AND health_state = 'discovered' AND COALESCE(status_reason, '') != 'conflict'
-            `).run(updatedAt, run.installation_id)
+            `).run(finalizationStatusReason, updatedAt, run.installation_id)
           }
           return
         }
@@ -883,6 +1215,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     try {
       componentKeys = persistedComponentKeys(run.prepared_plan_json)
       const preparedPlan = parseObject(run.prepared_plan_json, 'prepared plan') as unknown as PreparedCoordinatorPlan
+      assertPersistedPreparedPlanShape(preparedPlan)
       installationSurfaceFingerprint = frozenPlanInstallationSurfaceFingerprint(preparedPlan)
     } catch {
       return 'prepared_plan_invalid'
@@ -928,6 +1261,30 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       WHERE consumer.installation_id = ?
         AND consumer.component_key IN (${componentPlaceholders})
         AND consumer.state = 'removal_pending'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM projection_mutations transfer_mutation
+          JOIN managed_artifacts transfer_source ON transfer_source.id = consumer.artifact_id
+          JOIN installation_components transfer_component
+            ON transfer_component.installation_id = consumer.installation_id
+           AND transfer_component.component_key = consumer.component_key
+           AND transfer_component.artifact_id = transfer_mutation.artifact_id
+          WHERE transfer_mutation.run_id = ?
+            AND transfer_mutation.installation_id = consumer.installation_id
+            AND transfer_mutation.component_key = consumer.component_key
+            AND transfer_mutation.state = 'committed'
+            AND transfer_component.desired_state = 'managed'
+            AND transfer_component.tombstoned_at IS NULL
+            AND transfer_component.consent_envelope_id = ?
+            AND json_extract(transfer_mutation.planned_mutation_json,
+              '$.ownershipTransferFrom.physicalTarget') = transfer_source.target_path
+            AND json_extract(transfer_mutation.planned_mutation_json,
+              '$.ownershipTransferFrom.ownershipKey') = transfer_source.ownership_key
+            AND json_extract(transfer_mutation.planned_mutation_json,
+              '$.ownershipTransferFrom.ownedFragmentHash') = transfer_source.owned_fragment_hash
+            AND CAST(json_extract(transfer_mutation.planned_mutation_json,
+              '$.ownershipTransferFrom.selectorSchemaVersion') AS TEXT) = transfer_source.selector_schema_version
+        )
         AND (
           consumer.desired_state != 'removal_pending'
           OR consumer.tombstoned_at IS NULL
@@ -944,13 +1301,26 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
           OR (
             EXISTS (
               SELECT 1 FROM projection_mutations scoped
-              WHERE scoped.run_id = ? AND scoped.component_key = consumer.component_key
+              WHERE scoped.run_id = ?
+                AND (
+                  scoped.component_key = consumer.component_key
+                  OR EXISTS (
+                    SELECT 1 FROM json_each(scoped.planned_mutation_json, '$.coveredComponentKeys') covered
+                    WHERE covered.value = consumer.component_key
+                  )
+                )
             )
             AND NOT EXISTS (
               SELECT 1 FROM projection_mutations mutation
               WHERE mutation.run_id = ?
                 AND mutation.installation_id = consumer.installation_id
-                AND mutation.component_key = consumer.component_key
+                AND (
+                  mutation.component_key = consumer.component_key
+                  OR EXISTS (
+                    SELECT 1 FROM json_each(mutation.planned_mutation_json, '$.coveredComponentKeys') covered
+                    WHERE covered.value = consumer.component_key
+                  )
+                )
                 AND mutation.artifact_id = consumer.artifact_id
                 AND mutation.state = 'committed'
             )
@@ -960,6 +1330,8 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     `).get(
       run.installation_id,
       ...componentKeys,
+      runId,
+      run.consent_envelope_id,
       run.consent_envelope_id,
       run.consent_envelope_id,
       runId,
@@ -982,7 +1354,13 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
             JOIN managed_artifacts artifact ON artifact.id = consumer.artifact_id
             WHERE consumer.artifact_id = mutation.artifact_id
               AND consumer.installation_id = mutation.installation_id
-              AND consumer.component_key = mutation.component_key
+              AND (
+                mutation.component_key = consumer.component_key
+                OR EXISTS (
+                  SELECT 1 FROM json_each(mutation.planned_mutation_json, '$.coveredComponentKeys') covered
+                  WHERE covered.value = consumer.component_key
+                )
+              )
               AND consumer.state = 'removal_pending'
               AND consumer.desired_state = 'removal_pending'
               AND consumer.tombstoned_at IS NOT NULL
@@ -993,7 +1371,14 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
               AND artifact.state IN ('healthy','removal_pending')
           ) THEN 1 ELSE 0 END AS exact_binding
       FROM projection_mutations mutation
-      WHERE mutation.run_id = ? AND mutation.component_key = ?
+      WHERE mutation.run_id = ?
+        AND (
+          mutation.component_key = ?
+          OR EXISTS (
+            SELECT 1 FROM json_each(mutation.planned_mutation_json, '$.coveredComponentKeys') covered
+            WHERE covered.value = ?
+          )
+        )
     `)
     for (const componentKey of componentKeys) {
       const bindings = detachBindings.all(
@@ -1001,6 +1386,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
         run.consent_envelope_id,
         run.consent_envelope_id,
         runId,
+        componentKey,
         componentKey,
       ) as Array<{ id: string; exact_binding: number }>
       if (run.operation_type === 'disconnect'
@@ -1033,6 +1419,22 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
           AND evidence.family = i.family AND evidence.host_variant = i.host_variant
           AND evidence.runtime_realm = i.runtime_realm
           AND evidence.artifact_hash IS artifact.observed_fragment_hash
+          AND (
+            r.operation_type = 'disconnect'
+            OR NOT EXISTS (
+              SELECT 1 FROM projection_mutations physical
+              WHERE physical.run_id = r.id
+                AND physical.idempotency_strategy != 'consumer_detach_only'
+                AND (
+                  physical.component_key = component.component_key
+                  OR EXISTS (
+                    SELECT 1 FROM json_each(physical.planned_mutation_json, '$.coveredComponentKeys') covered
+                    WHERE covered.value = component.component_key
+                  )
+                )
+            )
+            OR (evidence.artifact_hash IS NOT NULL AND artifact.observed_fragment_hash IS NOT NULL)
+          )
           AND component.verification_status = 'verified'
       `).get(componentKey, runId, run.installation_id, at)
       if (!current) return `component:${componentKey}`
@@ -1109,7 +1511,13 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     }
   }
 
-  private acquireOsLock(mutationDomain: string): {
+  acquireExecutionFence(runId: string): { assertOwned(): void; release(): void } | null {
+    // An execution mutex has no durable writer lease. Once its exact process
+    // owner is proven dead, startup finalization need not wait for a lease age.
+    return this.acquireOsLock(`execution:${runId}`, true)
+  }
+
+  private acquireOsLock(mutationDomain: string, executionMutex = false): {
     assertOwned(): void
     touch(at: Date): void
     release(): void
@@ -1154,7 +1562,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       try {
         existing = readOsLockSnapshot(lockPath)
         const ageMs = this.now().getTime() - existing.stat.mtimeMs
-        stale = ageMs > this.leaseDurationMs * 2
+        stale = (executionMutex || ageMs > this.leaseDurationMs * 2)
           && (!fence || fence.state !== 'active' || (fence.lease_expires_at ?? 0) <= this.now().getTime())
           && existing.owner.mutationDomain === mutationDomain
           && osLockOwnerProvenDead(existing.owner)
@@ -1351,7 +1759,31 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
         delete existingReplay.id
         delete existingReplay.invalidated_at
         delete existingReplay.invalidation_reason
-        if (invalidatedAt !== null || existing.result === 'failed') {
+        // A scan and the exact-run recovery verifier can observe the same
+        // immutable host evidence at different wall-clock instants. Preserve
+        // the first durable timestamps and compare the causal evidence/bindings;
+        // otherwise a harmless retry turns a verified run into needs_recovery.
+        delete existingReplay.verified_at
+        delete existingReplay.expires_at
+        const comparableExpectedReplay: Record<string, unknown> = { ...expectedReplay }
+        delete comparableExpectedReplay.verified_at
+        delete comparableExpectedReplay.expires_at
+        const existingBinding = { ...existingReplay }
+        const expectedBinding = { ...comparableExpectedReplay }
+        for (const binding of [existingBinding, expectedBinding]) {
+          delete binding.evidence_ref
+          delete binding.evidence_hash
+        }
+        const refreshedActivity = existing.result === 'verified' && result.status === 'verified'
+          && result.invalidationKeys.includes('activity_freshness')
+          && typeof existing.evidence_ref === 'string' && existing.evidence_ref.startsWith('host-activity:')
+          && result.evidenceRef?.startsWith('host-activity:') === true
+          && sha256Json(existingReplay) !== sha256Json(comparableExpectedReplay)
+          && sha256Json(existingBinding) === sha256Json(expectedBinding)
+          && Date.parse(input.verifiedAt) >= Date.parse(String(existing.verified_at))
+          && Date.parse(result.expiresAt ?? '') > Date.parse(input.verifiedAt)
+          && Date.parse(result.expiresAt ?? '') >= Date.parse(String(existing.expires_at))
+        if (invalidatedAt !== null || existing.result === 'failed' || refreshedActivity) {
           this.db.prepare(`
             UPDATE verification_results
             SET run_id = NULL,
@@ -1363,7 +1795,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
             id: this.id('verification'),
             ...verification,
           })
-        } else if (sha256Json(existingReplay) !== sha256Json(expectedReplay)) {
+        } else if (sha256Json(existingReplay) !== sha256Json(comparableExpectedReplay)) {
           throw new Error(`verification evidence changed during retry: ${result.componentKey}`)
         }
       } else {
@@ -1415,64 +1847,73 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     }).immediate()
   }
 
-  listRecoverableExecutions(): readonly RecoverableExecution[] {
+  listRecoverableRunIds(): readonly string[] {
+    return (this.db.prepare(`SELECT id FROM reconcile_runs
+      WHERE state IN ('planned','preconditions_checked','applying','applied_unverified','verified','compensating','needs_recovery')
+      ORDER BY created_at, id`).all() as { id: string }[]).map(row => row.id)
+  }
+
+  getRecoverableExecution(runId: string): RecoverableExecution | null {
+    return this.listRecoverableExecutions(runId)[0] ?? null
+  }
+
+  listRecoverableExecutions(runId?: string): readonly RecoverableExecution[] {
+    if (runId === undefined) this.repository.normalizeCustomMcpCapabilityCeiling(this.now().toISOString())
     const runs = this.db.prepare(`
-      SELECT id, installation_id, operation_type, consent_envelope_id, state,
-             prepared_plan_json, desired_capability
+      SELECT id, installation_id, operation_type, execution_plan_hash,
+             consent_envelope_id, state, recovery_strategy, writer_fence_snapshot_json,
+             prepared_plan_json, desired_capability, updated_at
       FROM reconcile_runs
       WHERE state IN ('planned','preconditions_checked','applying','applied_unverified','verified','compensating','needs_recovery')
+        AND (? IS NULL OR id = ?)
       ORDER BY created_at, id
-    `).all() as RunRow[]
+    `).all(runId ?? null, runId ?? null) as RunRow[]
     const recoverable: RecoverableExecution[] = []
     for (const run of runs) {
       // A verified run is a finalizer-only token, but its exact frozen trust
       // bindings are still required. Invalid/legacy plans remain non-replayable
       // and are rejected by production recovery plus the atomic finalizer.
       if (run.state === 'verified') {
-        let installationSurfaceFingerprint: string | null = null
-        let liveTrustProofFingerprint: string | null = null
         try {
           const preparedPlan = parseObject(run.prepared_plan_json, 'prepared plan') as unknown as PreparedCoordinatorPlan
-          installationSurfaceFingerprint = frozenPlanInstallationSurfaceFingerprint(preparedPlan)
-          liveTrustProofFingerprint = frozenPlanLiveTrustProofFingerprint(preparedPlan)
-        } catch {
-          // Keep null bindings so recovery fails closed without decoding mutations.
+          assertPersistedPreparedPlanShape(preparedPlan)
+          assertPersistedRunEnvelope(run, preparedPlan)
+          const installation = installationFromRow(
+            this.repository.getInstallation(run.installation_id),
+            true,
+          )
+          this.loadValidatedRecoveryEnvelope(run, preparedPlan, installation)
+          recoverable.push({
+            runId: run.id,
+            runState: 'verified',
+            installationId: run.installation_id,
+            installationSurfaceFingerprint: frozenPlanInstallationSurfaceFingerprint(preparedPlan),
+            liveTrustProofFingerprint: frozenPlanLiveTrustProofFingerprint(preparedPlan),
+          })
+        } catch (error) {
+          this.quarantineVerifiedRecoveryEnvelope(run, error)
         }
-        recoverable.push({
-          runId: run.id,
-          runState: 'verified',
-          installationId: run.installation_id,
-          installationSurfaceFingerprint,
-          liveTrustProofFingerprint,
-        })
         continue
       }
       try {
         const installation = installationFromRow(this.repository.getInstallation(run.installation_id))
         const preparedPlan = parseObject(run.prepared_plan_json, 'prepared plan') as unknown as PreparedCoordinatorPlan
-        const mutationRows = this.db.prepare(`
-          SELECT id, operation_id, mutation_domain, planned_mutation_json, state,
-                 idempotency_strategy, journal_version,
-                 attempt_count, before_hash, after_hash, post_effect_fingerprint,
-                 compensation_precondition, apply_receipt_json, failure_code,
-                 failure_stage, updated_at
-          FROM projection_mutations WHERE run_id = ? ORDER BY created_at, id
-        `).all(run.id) as MutationRow[]
+        assertPersistedPreparedPlanShape(preparedPlan)
+        assertPersistedRunEnvelope(run, preparedPlan)
+        const mutationRows = this.loadValidatedRecoveryEnvelope(run, preparedPlan, installation)
         recoverable.push({
           runId: run.id,
           runState: normalizeRecoverableState(run.state),
           installation,
           consentId: run.consent_envelope_id,
           desiredCapability: capability(run.desired_capability),
+          activationEpoch: run.updated_at,
           preparedPlan,
-          mutations: mutationRows.map(row => {
-            const plannedMutation = parseObject(
-              row.planned_mutation_json,
-              'planned mutation',
-            ) as unknown as PlannedMutation
+          mutations: mutationRows.map(({ row, plannedMutation }) => {
             return {
               operationId: row.operation_id,
               mutationDomain: row.mutation_domain,
+              additionalMutationDomains: additionalPhysicalMutationDomains(installation, plannedMutation),
               plannedMutation,
               effectDisposition: row.idempotency_strategy === 'consumer_detach_only'
                 ? 'consumer_detach'
@@ -1514,6 +1955,298 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     return recoverable
   }
 
+  private loadValidatedMutationRows(
+    run: RunRow,
+    preparedPlan: PreparedCoordinatorPlan,
+    installation: CoordinatorInstallation,
+  ): ValidatedMutationRow[] {
+    const rows = this.db.prepare(`
+      SELECT id, operation_id, installation_id, component_key, artifact_id,
+             mutation_domain, target, planned_mutation_json, state,
+             idempotency_strategy, journal_version,
+             attempt_count, before_hash, after_hash, post_effect_fingerprint,
+             compensation_precondition, apply_receipt_json, failure_code,
+             failure_stage, updated_at
+      FROM projection_mutations WHERE run_id = ? ORDER BY created_at, id
+    `).all(run.id) as MutationRow[]
+    const expectedOperationIds = preparedPlan.adapterPlan.mutations
+      .map(mutation => mutation.operationId).sort()
+    const actualOperationIds = rows.map(row => row.operation_id).sort()
+    if (sha256Json(actualOperationIds) !== sha256Json(expectedOperationIds)) {
+      throw new Error(`persisted mutation set changed: ${run.id}`)
+    }
+    return rows.map(row => {
+      const plannedMutation = parseObject(
+        row.planned_mutation_json,
+        'planned mutation',
+      ) as unknown as PlannedMutation
+      assertPersistedPlannedMutationShape(plannedMutation)
+      const frozenMutation = preparedPlan.adapterPlan.mutations.find(
+        candidate => candidate.operationId === row.operation_id,
+      )
+      if (!frozenMutation || sha256Json(frozenMutation) !== sha256Json(plannedMutation)) {
+        throw new Error(`persisted mutation row changed: ${row.operation_id}`)
+      }
+      if (row.mutation_domain !== physicalMutationDomain(installation, plannedMutation)) {
+        throw new Error(`persisted mutation domain projection changed: ${row.operation_id}`)
+      }
+      if (!PERSISTED_IDEMPOTENCY_STRATEGIES.includes(
+        row.idempotency_strategy as typeof PERSISTED_IDEMPOTENCY_STRATEGIES[number],
+      )) {
+        throw new Error(`persisted mutation has invalid idempotency strategy: ${row.operation_id}`)
+      }
+      const expectedStrategy = plannedMutation.idempotent
+        ? 'readback_exact_then_replay'
+        : 'never_replay'
+      if (row.idempotency_strategy === 'consumer_detach_only') {
+        if (preparedPlan.operation !== 'disconnect'
+          || row.installation_id !== run.installation_id
+          || row.component_key !== plannedMutation.componentKey
+          || row.artifact_id === null
+          || !this.db.prepare(`
+            SELECT 1
+            FROM artifact_consumers detached
+            WHERE detached.artifact_id = ? AND detached.installation_id = ?
+              AND detached.component_key = ? AND detached.state = 'removal_pending'
+              AND detached.desired_state = 'removal_pending' AND detached.tombstoned_at IS NOT NULL
+              AND (
+                EXISTS (
+                  SELECT 1 FROM artifact_consumers peer
+                  WHERE peer.artifact_id = detached.artifact_id
+                    AND NOT (
+                      peer.installation_id = detached.installation_id
+                      AND peer.component_key = detached.component_key
+                    )
+                    AND peer.state = 'active' AND peer.desired_state IN ('managed','disabled')
+                    AND peer.tombstoned_at IS NULL
+                )
+                OR EXISTS (
+                  SELECT 1 FROM projection_mutations physical_remove
+                  WHERE physical_remove.artifact_id = detached.artifact_id
+                    AND physical_remove.idempotency_strategy != 'consumer_detach_only'
+                    AND physical_remove.after_hash IS NULL
+                    AND physical_remove.state IN (
+                      'prepared','effect_started','effect_observed','receipt_persisted',
+                      'verified','committed','needs_recovery'
+                    )
+                )
+              )
+          `).get(row.artifact_id, run.installation_id, row.component_key)) {
+          throw new Error(`persisted consumer detach strategy projection changed: ${row.operation_id}`)
+        }
+      } else {
+        if (row.idempotency_strategy !== expectedStrategy) {
+          throw new Error(`persisted mutation idempotency projection changed: ${row.operation_id}`)
+        }
+        this.assertManagedMutationLedgerBinding(run, row, plannedMutation, installation)
+      }
+      if (run.state === 'verified') {
+        assertVerifiedMutationJournal(row, plannedMutation)
+      }
+      return { row, plannedMutation }
+    })
+  }
+
+  private loadValidatedRecoveryEnvelope(
+    run: RunRow,
+    preparedPlan: PreparedCoordinatorPlan,
+    installation: CoordinatorInstallation,
+  ): ValidatedMutationRow[] {
+    const rows = this.loadValidatedMutationRows(run, preparedPlan, installation)
+    this.assertWriterFenceSnapshot(run, preparedPlan, installation, rows)
+    return rows
+  }
+
+  private assertManagedMutationLedgerBinding(
+    run: RunRow,
+    row: MutationRow,
+    mutation: PlannedMutation,
+    installation: CoordinatorInstallation,
+  ): void {
+    const componentKeys = mutationComponentKeys(mutation)
+    const expectedBefore = mutation.preconditionHash ?? null
+    const expectedAfter = mutation.operation === 'remove'
+      ? null
+      : mutation.desiredFragmentHash ?? `desired:${mutation.operation}:${mutation.operationId}`
+    const expectedArtifactDesired = mutation.operation === 'remove' ? expectedBefore : expectedAfter
+    const expectedArtifactObserved = mutation.operation === 'remove' ? expectedBefore : expectedAfter
+    if (row.installation_id !== run.installation_id
+      || row.component_key !== mutation.componentKey
+      || row.artifact_id === null
+      || row.target !== mutation.physicalTarget
+      || row.before_hash !== expectedBefore
+      || row.after_hash !== expectedAfter) {
+      throw new Error(`persisted mutation ledger projection changed: ${row.operation_id}`)
+    }
+    const artifact = this.db.prepare(`
+      SELECT runtime_realm, target_path, ownership_key, mutation_domain,
+             selector_schema_version, owned_fragment_hash,
+             desired_fragment_hash, observed_fragment_hash, state
+      FROM managed_artifacts WHERE id = ?
+    `).get(row.artifact_id) as {
+      runtime_realm: string
+      target_path: string
+      ownership_key: string
+      mutation_domain: string
+      selector_schema_version: string
+      owned_fragment_hash: string | null
+      desired_fragment_hash: string | null
+      observed_fragment_hash: string | null
+      state: string
+    } | undefined
+    if (!artifact
+      || artifact.runtime_realm !== installation.identity.runtimeRealm
+      || artifact.target_path !== mutation.physicalTarget
+      || artifact.ownership_key !== mutation.ownershipKey
+      || artifact.mutation_domain !== row.mutation_domain
+      || Number(artifact.selector_schema_version) !== mutation.selectorSchemaVersion
+      || artifact.desired_fragment_hash !== expectedArtifactDesired
+      || (run.state === 'verified' && (
+        artifact.owned_fragment_hash !== expectedArtifactDesired
+        || artifact.observed_fragment_hash !== expectedArtifactObserved
+        || artifact.state !== (run.operation_type === 'disconnect' ? 'removal_pending' : 'healthy')
+      ))) {
+      throw new Error(`persisted mutation Artifact binding changed: ${row.operation_id}`)
+    }
+    const componentBindings = this.db.prepare(`
+      SELECT component.component_key
+      FROM installation_components component
+      JOIN artifact_consumers consumer
+        ON consumer.artifact_id = component.artifact_id
+       AND consumer.installation_id = component.installation_id
+       AND consumer.component_key = component.component_key
+      WHERE component.installation_id = ? AND component.artifact_id = ?
+        AND component.component_key IN (${componentKeys.map(() => '?').join(',')})
+        AND component.consent_envelope_id = ?
+        AND consumer.consent_envelope_id = ?
+        AND (
+          (? = 'disconnect'
+            AND component.desired_state = 'removed' AND component.tombstoned_at IS NOT NULL
+            AND consumer.desired_state = 'removal_pending'
+            AND consumer.state = 'removal_pending' AND consumer.tombstoned_at IS NOT NULL)
+          OR
+          (? != 'disconnect'
+            AND component.desired_state = 'managed' AND component.tombstoned_at IS NULL
+            AND consumer.desired_state = 'managed'
+            AND consumer.state = 'active' AND consumer.tombstoned_at IS NULL)
+        )
+      ORDER BY component.component_key
+    `).all(
+      run.installation_id,
+      row.artifact_id,
+      ...componentKeys,
+      run.consent_envelope_id,
+      run.consent_envelope_id,
+      run.operation_type,
+      run.operation_type,
+    ) as Array<{ component_key: ComponentKey }>
+    if (sha256Json(componentBindings.map(binding => binding.component_key).sort())
+      !== sha256Json([...componentKeys].sort())) {
+      throw new Error(`persisted mutation component binding changed: ${row.operation_id}`)
+    }
+  }
+
+  private assertWriterFenceSnapshot(
+    run: RunRow,
+    preparedPlan: PreparedCoordinatorPlan,
+    installation: CoordinatorInstallation,
+    rows: readonly ValidatedMutationRow[],
+  ): void {
+    const snapshot = parseObject(run.writer_fence_snapshot_json, 'writer fence snapshot')
+    if (Object.keys(snapshot).length !== 1 || !Array.isArray(snapshot.mutationDomains)
+      || !snapshot.mutationDomains.every(domain => typeof domain === 'string' && domain.length > 0)) {
+      throw new Error(`persisted writer fence snapshot is invalid: ${run.id}`)
+    }
+    const persistedDomains = snapshot.mutationDomains as string[]
+    if (new Set(persistedDomains).size !== persistedDomains.length
+      || persistedDomains.some((domain, index) => index > 0 && persistedDomains[index - 1]! > domain)) {
+      throw new Error(`persisted writer fence snapshot is not canonical: ${run.id}`)
+    }
+    const expectedDomains = new Set<string>()
+    const coveredComponents = new Set<ComponentKey>()
+    for (const { row, plannedMutation } of rows) {
+      for (const componentKey of mutationComponentKeys(plannedMutation)) coveredComponents.add(componentKey)
+      if (row.idempotency_strategy === 'consumer_detach_only') continue
+      expectedDomains.add(physicalMutationDomain(installation, plannedMutation))
+      for (const domain of additionalPhysicalMutationDomains(installation, plannedMutation)) {
+        expectedDomains.add(domain)
+      }
+    }
+    for (const componentKey of preparedPlan.componentKeys) {
+      if (coveredComponents.has(componentKey)) continue
+      const binding = this.db.prepare(`
+        SELECT artifact.mutation_domain
+        FROM installation_components component
+        JOIN managed_artifacts artifact ON artifact.id = component.artifact_id
+        JOIN artifact_consumers consumer
+          ON consumer.artifact_id = component.artifact_id
+         AND consumer.installation_id = component.installation_id
+         AND consumer.component_key = component.component_key
+        WHERE component.installation_id = ? AND component.component_key = ?
+          AND component.consent_envelope_id = ? AND consumer.consent_envelope_id = ?
+          AND (
+            (? = 'disconnect'
+              AND component.desired_state = 'removed' AND component.tombstoned_at IS NOT NULL
+              AND consumer.desired_state = 'removal_pending'
+              AND consumer.state = 'removal_pending' AND consumer.tombstoned_at IS NOT NULL)
+            OR
+            (? != 'disconnect'
+              AND component.desired_state = 'managed' AND component.tombstoned_at IS NULL
+              AND consumer.desired_state IN ('managed','disabled')
+              AND consumer.state = 'active' AND consumer.tombstoned_at IS NULL)
+          )
+      `).get(
+        run.installation_id,
+        componentKey,
+        run.consent_envelope_id,
+        run.consent_envelope_id,
+        run.operation_type,
+        run.operation_type,
+      ) as { mutation_domain: string } | undefined
+      // Guided components deliberately have no Artifact or physical domain.
+      const guided = this.db.prepare(`
+        SELECT 1 FROM installation_components
+        WHERE installation_id = ? AND component_key = ?
+          AND delivery_mode = 'guided' AND artifact_id IS NULL
+      `).get(run.installation_id, componentKey)
+      if (!binding && !guided) {
+        throw new Error(`persisted no-effect component fence binding changed: ${componentKey}`)
+      }
+      if (binding) expectedDomains.add(binding.mutation_domain)
+    }
+    if (sha256Json(persistedDomains) !== sha256Json([...expectedDomains].sort())) {
+      throw new Error(`persisted writer fence snapshot changed: ${run.id}`)
+    }
+  }
+
+  private quarantineVerifiedRecoveryEnvelope(run: RunRow, error: unknown): void {
+    const now = this.now().toISOString()
+    const quarantined = this.db.transaction(() => {
+      const result = this.db.prepare(`
+        UPDATE reconcile_runs
+        SET state = 'cancelled', failure_code = 'journal_decode_failed',
+            failure_stage = 'startup_recovery', completed_at = ?, updated_at = ?
+        WHERE id = ? AND state = 'verified'
+      `).run(now, now, run.id)
+      if (result.changes !== 1) return false
+      this.db.prepare(`
+        UPDATE agent_installations
+        SET reconcile_state = 'needs_recovery', status_reason = 'journal_decode_failed', updated_at = ?
+        WHERE id = ? AND reconcile_state != 'paused'
+      `).run(now, run.installation_id)
+      return true
+    }).immediate()
+    if (!quarantined) return
+    this.repository.recordEvent({
+      installationId: run.installation_id,
+      kind: 'reconcile_journal_decode_failed',
+      severity: 'error',
+      dedupeKey: `${run.id}:journal_decode_failed`,
+      payload: { message: error instanceof Error ? error.message : String(error) },
+      createdAt: now,
+    })
+  }
+
   recordEvent(event: IntegrationEvent): void {
     this.repository.recordEvent({
       id: event.id,
@@ -1536,16 +2269,18 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     desiredCapability: CapabilityLevel,
     consentId: string,
     at: string,
+    deliveryMode: 'guided' | 'managed' = 'managed',
   ): void {
     this.db.prepare(`
       INSERT INTO installation_components (
         installation_id, component_key, desired_state, desired_capability, delivery_mode,
         verification_status, visibility_state, tombstoned_at, tombstone_reason,
         consent_envelope_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'managed', 'unverified', 'unknown', ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, 'unverified', 'unknown', ?, ?, ?, ?, ?)
       ON CONFLICT(installation_id, component_key) DO UPDATE SET
         desired_state = excluded.desired_state,
         desired_capability = excluded.desired_capability,
+        delivery_mode = excluded.delivery_mode,
         verification_status = CASE WHEN excluded.desired_state = 'removed' THEN 'stale' ELSE installation_components.verification_status END,
         tombstoned_at = CASE WHEN excluded.desired_state = 'removed' THEN COALESCE(installation_components.tombstoned_at, excluded.tombstoned_at) ELSE installation_components.tombstoned_at END,
         tombstone_reason = CASE WHEN excluded.desired_state = 'removed' THEN excluded.tombstone_reason ELSE installation_components.tombstone_reason END,
@@ -1556,6 +2291,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       componentKey,
       desiredState,
       desiredCapability,
+      deliveryMode,
       desiredState === 'removed' ? at : null,
       desiredState === 'removed' ? 'user_disconnect' : null,
       consentId,
@@ -1773,9 +2509,6 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
 
   private stageAbsentOwnedArtifactConsumer(input: PrepareExecutionInput, componentKey: ComponentKey): string {
     const observation = input.preparedPlan.inspection.components.find(component => component.componentKey === componentKey)
-    if (observation?.visibility !== 'absent') {
-      throw new Error(`disconnect_noop_requires_absent_readback:${componentKey}`)
-    }
     const owned = this.db.prepare(`
       SELECT a.id, a.mutation_domain, a.state
       FROM installation_components ic
@@ -1797,6 +2530,15 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       WHERE artifact_id = ? AND installation_id != ?
         AND state = 'active' AND desired_state IN ('managed','disabled') AND tombstoned_at IS NULL
     `).get(owned.id, input.installationId) as { count: number }
+    if (otherConsumers.count > 0) {
+      // A shared no-op can detach from a present projection or acknowledge
+      // its proven absence. Unknown visibility cannot justify either outcome.
+      if (observation?.visibility !== 'dedicated' && observation?.visibility !== 'absent') {
+        throw new Error(`disconnect_shared_noop_requires_known_readback:${componentKey}`)
+      }
+    } else if (observation?.visibility !== 'absent') {
+      throw new Error(`disconnect_noop_requires_absent_readback:${componentKey}`)
+    }
     const updated = this.db.prepare(`
       UPDATE artifact_consumers
       SET desired_state = 'removal_pending', state = 'removal_pending',
@@ -1815,7 +2557,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     )
     if (updated.changes !== 1) throw new Error(`disconnect consumer missing: ${componentKey}`)
     if (otherConsumers.count > 0) {
-      if (owned.state === 'healthy') {
+      if (owned.state === 'healthy' && observation?.visibility === 'absent') {
         // Positive absent read-back proves the shared physical Artifact has
         // disappeared for every remaining consumer. Persist the missing edge
         // in the same transaction as the detach so no observer can report a
@@ -1840,12 +2582,164 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     return owned.mutation_domain
   }
 
+  private stageManualRemovalPendingConsumer(input: PrepareExecutionInput, componentKey: ComponentKey): string {
+    const detail = input.preparedPlan.adapterPlan.requiredUserActionDetails?.find(candidate => (
+      candidate.kind === 'manual_file_removal' && candidate.componentKey === componentKey
+    ))
+    if (!detail || detail.kind !== 'manual_file_removal') {
+      throw new Error(`manual removal action missing: ${componentKey}`)
+    }
+    const observation = input.preparedPlan.inspection.components.find(candidate => (
+      candidate.componentKey === componentKey
+    ))
+    if (observation?.visibility !== 'dedicated'
+      || observation.observedTarget !== detail.physicalTarget
+      || observation.observedFragmentHash !== detail.ownedFragmentHash) {
+      throw new Error(`manual removal read-back changed: ${componentKey}`)
+    }
+    const owned = this.db.prepare(`
+      SELECT a.id, a.mutation_domain
+      FROM installation_components ic
+      JOIN managed_artifacts a ON a.id = ic.artifact_id
+      JOIN artifact_consumers c
+        ON c.artifact_id = a.id AND c.installation_id = ic.installation_id
+       AND c.component_key = ic.component_key
+      WHERE ic.installation_id = ? AND ic.component_key = ?
+        AND ic.delivery_mode = 'managed'
+        AND a.target_path = ? AND a.owned_fragment_hash = ?
+        AND a.desired_fragment_hash = ? AND a.state IN ('healthy','needs_recovery')
+        AND c.state = 'active' AND c.desired_state IN ('managed','disabled')
+        AND c.tombstoned_at IS NULL
+    `).get(
+      input.installationId,
+      componentKey,
+      detail.physicalTarget,
+      detail.ownedFragmentHash,
+      detail.ownedFragmentHash,
+    ) as { id: string; mutation_domain: string } | undefined
+    if (!owned) throw new Error(`manual removal ownership ledger changed: ${componentKey}`)
+    const otherConsumers = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM artifact_consumers
+      WHERE artifact_id = ? AND installation_id != ?
+        AND state = 'active' AND desired_state IN ('managed','disabled') AND tombstoned_at IS NULL
+    `).get(owned.id, input.installationId) as { count: number }
+    if (otherConsumers.count > 0) throw new Error(`manual removal shared artifact requires replan: ${componentKey}`)
+    const updated = this.db.prepare(`
+      UPDATE artifact_consumers
+      SET desired_state = 'removal_pending', state = 'removal_pending',
+          tombstoned_at = COALESCE(tombstoned_at, ?), tombstone_reason = 'user_disconnect',
+          consent_envelope_id = ?, updated_at = ?
+      WHERE artifact_id = ? AND installation_id = ? AND component_key = ?
+        AND state = 'active' AND desired_state IN ('managed','disabled')
+        AND tombstoned_at IS NULL
+    `).run(
+      input.createdAt,
+      input.consentId,
+      input.createdAt,
+      owned.id,
+      input.installationId,
+      componentKey,
+    )
+    if (updated.changes !== 1) throw new Error(`manual removal consumer changed: ${componentKey}`)
+    this.db.prepare(`
+      UPDATE managed_artifacts SET state = 'removal_pending', updated_at = ? WHERE id = ?
+    `).run(input.createdAt, owned.id)
+    return owned.mutation_domain
+  }
+
   private prepareArtifactAndConsumer(
     input: PrepareExecutionInput,
     mutation: PlannedMutation,
   ): { artifactId: string; effectDisposition: 'apply' | 'consumer_detach' } {
     const installation = this.repository.getInstallation(input.installationId)
     if (!installation) throw new Error(`unknown Installation: ${input.installationId}`)
+    const componentKeys = mutationComponentKeys(mutation)
+    const transfer = mutation.ownershipTransferFrom
+    const aggregateTransfer = transfer !== undefined && componentKeys.length > 1
+    if (transfer !== undefined && (
+      input.operation === 'disconnect'
+      || (aggregateTransfer
+        ? mutation.operation !== 'host_command' && mutation.operation !== 'update'
+        : mutation.operation !== 'create')
+      || !/^[a-f0-9]{64}$/.test(transfer.ownedFragmentHash)
+      || !Number.isInteger(transfer.selectorSchemaVersion)
+      || transfer.selectorSchemaVersion < 1
+    )) {
+      throw new Error(`ownership transfer shape changed: ${mutation.operationId}`)
+    }
+    const transferSource = transfer === undefined ? undefined : this.db.prepare(`
+      SELECT a.id, a.owned_fragment_hash, a.selector_schema_version
+      FROM installation_components component
+      JOIN managed_artifacts a ON a.id = component.artifact_id
+      JOIN artifact_consumers consumer
+        ON consumer.artifact_id = a.id
+       AND consumer.installation_id = component.installation_id
+       AND consumer.component_key = component.component_key
+      WHERE component.installation_id = ? AND component.component_key = ?
+        AND a.runtime_realm = ? AND a.target_path = ? AND a.ownership_key = ?
+        AND consumer.state = 'active' AND consumer.desired_state IN ('managed','disabled')
+        AND consumer.tombstoned_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM artifact_consumers other
+          WHERE other.artifact_id = a.id
+            AND (other.installation_id != component.installation_id
+              OR other.component_key != component.component_key)
+            AND other.state IN ('active','removal_pending')
+            AND other.desired_state IN ('managed','disabled','removal_pending')
+            AND other.tombstoned_at IS NULL
+        )
+    `).get(
+      input.installationId,
+      mutation.componentKey,
+      installation.runtime_realm,
+      transfer.physicalTarget,
+      transfer.ownershipKey,
+    ) as { id: string; owned_fragment_hash: string | null; selector_schema_version: string } | undefined
+    if (transfer !== undefined && (
+      (!aggregateTransfer
+        && transfer.physicalTarget !== mutation.physicalTarget
+        && !mutation.additionalFenceTargets?.some(target => (
+          target.physicalTarget === transfer.physicalTarget && target.domainKind === mutation.domainKind
+        )))
+      || (transfer.physicalTarget === mutation.physicalTarget
+        && transfer.ownershipKey === mutation.ownershipKey)
+      || transferSource === undefined
+      || transferSource.owned_fragment_hash !== transfer.ownedFragmentHash
+      || Number(transferSource.selector_schema_version) !== transfer.selectorSchemaVersion
+    )) {
+      throw new Error(`ownership transfer source changed: ${mutation.operationId}`)
+    }
+    if (aggregateTransfer) {
+      for (const componentKey of componentKeys) {
+        if (componentKey === mutation.componentKey) continue
+        const current = this.db.prepare(`
+          SELECT a.target_path, a.ownership_key, a.owned_fragment_hash, a.selector_schema_version
+          FROM installation_components component
+          JOIN managed_artifacts a ON a.id = component.artifact_id
+          JOIN artifact_consumers consumer
+            ON consumer.artifact_id = a.id
+           AND consumer.installation_id = component.installation_id
+           AND consumer.component_key = component.component_key
+          WHERE component.installation_id = ? AND component.component_key = ?
+            AND consumer.state = 'active' AND consumer.desired_state IN ('managed','disabled')
+            AND consumer.tombstoned_at IS NULL
+        `).get(input.installationId, componentKey) as {
+          target_path: string
+          ownership_key: string
+          owned_fragment_hash: string | null
+          selector_schema_version: string
+        } | undefined
+        const exactAggregate = current !== undefined
+          && current.target_path === mutation.physicalTarget
+          && current.ownership_key === mutation.ownershipKey
+          && mutation.preconditionHash !== undefined
+          && current.owned_fragment_hash === mutation.preconditionHash
+          && Number(current.selector_schema_version) === mutation.selectorSchemaVersion
+        if (current !== undefined && !exactAggregate) {
+          throw new Error(`aggregate ownership transfer target changed: ${mutation.operationId}:${componentKey}`)
+        }
+      }
+    }
     const artifactId = `artifact_${sha256Json({
       runtimeRealm: installation.runtime_realm,
       target: mutation.physicalTarget,
@@ -1868,16 +2762,19 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
         SET desired_state = 'removal_pending', state = 'removal_pending',
             tombstoned_at = COALESCE(tombstoned_at, ?), tombstone_reason = 'user_disconnect',
             consent_envelope_id = ?, updated_at = ?
-        WHERE artifact_id = ? AND installation_id = ? AND component_key = ?
+        WHERE artifact_id = ? AND installation_id = ?
+          AND component_key IN (${componentKeys.map(() => '?').join(',')})
           AND state = 'active' AND desired_state IN ('managed','disabled')
-      `).run(input.createdAt, input.consentId, input.createdAt, existing.id, input.installationId, mutation.componentKey)
-      if (updated.changes !== 1) throw new Error(`disconnect consumer missing: ${mutation.operationId}`)
+      `).run(input.createdAt, input.consentId, input.createdAt, existing.id, input.installationId, ...componentKeys)
+      if (updated.changes !== componentKeys.length) throw new Error(`disconnect consumer missing: ${mutation.operationId}`)
       if (otherConsumers.count > 0) {
-        this.db.prepare(`
-          UPDATE installation_components
-          SET visibility_state = 'shared_visible', updated_at = ?
-          WHERE installation_id = ? AND component_key = ?
-        `).run(input.createdAt, input.installationId, mutation.componentKey)
+        for (const componentKey of componentKeys) {
+          this.db.prepare(`
+            UPDATE installation_components
+            SET visibility_state = 'shared_visible', updated_at = ?
+            WHERE installation_id = ? AND component_key = ?
+          `).run(input.createdAt, input.installationId, componentKey)
+        }
         return { artifactId: existing.id, effectDisposition: 'consumer_detach' }
       }
       this.db.prepare(`UPDATE managed_artifacts SET state = 'removal_pending', updated_at = ? WHERE id = ?`)
@@ -1917,60 +2814,89 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       input.createdAt,
     )
     const resolvedId = existing?.id ?? artifactId
-    const previousComponent = this.db.prepare(`
-      SELECT artifact_id FROM installation_components
-      WHERE installation_id = ? AND component_key = ?
-    `).get(input.installationId, mutation.componentKey) as { artifact_id: string | null } | undefined
-    if (previousComponent?.artifact_id && previousComponent.artifact_id !== resolvedId) {
-      // A stable host identity may move to a different config root.  The old
-      // projection remains an auditable Artifact, but this Installation must
-      // stop consuming it before verification is rebound to the new target.
+    for (const componentKey of componentKeys) {
+      const previousComponent = this.db.prepare(`
+        SELECT artifact_id FROM installation_components
+        WHERE installation_id = ? AND component_key = ?
+      `).get(input.installationId, componentKey) as { artifact_id: string | null } | undefined
+      if (previousComponent?.artifact_id && previousComponent.artifact_id !== resolvedId) {
+      if (transferSource !== undefined) {
+        if (previousComponent.artifact_id !== transferSource.id) {
+          throw new Error(`ownership transfer component changed: ${mutation.operationId}`)
+        }
+        const staged = this.db.prepare(`
+          UPDATE artifact_consumers
+          SET desired_state = 'removal_pending', state = 'removal_pending',
+              tombstoned_at = COALESCE(tombstoned_at, ?),
+              tombstone_reason = 'ownership_selector_migrated',
+              consent_envelope_id = ?, updated_at = ?
+          WHERE artifact_id = ? AND installation_id = ? AND component_key = ?
+            AND state = 'active' AND desired_state IN ('managed','disabled')
+            AND tombstoned_at IS NULL
+        `).run(
+          input.createdAt,
+          input.consentId,
+          input.createdAt,
+          transferSource.id,
+          input.installationId,
+          componentKey,
+        )
+        if (staged.changes !== 1) throw new Error(`ownership transfer consumer changed: ${mutation.operationId}`)
+        this.db.prepare(`
+          UPDATE managed_artifacts SET state = 'removal_pending', updated_at = ? WHERE id = ?
+        `).run(input.createdAt, transferSource.id)
+      } else {
+        // A stable host identity may move to a different config root.  The old
+        // projection remains an auditable Artifact, but this Installation must
+        // stop consuming it before verification is rebound to the new target.
+        this.db.prepare(`
+          UPDATE artifact_consumers
+          SET desired_state = 'removed', state = 'removed',
+              tombstoned_at = COALESCE(tombstoned_at, ?),
+              tombstone_reason = 'host_installation_surface_changed',
+              removed_at = COALESCE(removed_at, ?), updated_at = ?
+          WHERE artifact_id = ? AND installation_id = ? AND component_key = ?
+            AND state = 'active' AND tombstoned_at IS NULL
+        `).run(
+          input.createdAt,
+          input.createdAt,
+          input.createdAt,
+          previousComponent.artifact_id,
+          input.installationId,
+          componentKey,
+        )
+      }
+      }
       this.db.prepare(`
-        UPDATE artifact_consumers
-        SET desired_state = 'removed', state = 'removed',
-            tombstoned_at = COALESCE(tombstoned_at, ?),
-            tombstone_reason = 'host_installation_surface_changed',
-            removed_at = COALESCE(removed_at, ?), updated_at = ?
-        WHERE artifact_id = ? AND installation_id = ? AND component_key = ?
-          AND state = 'active' AND tombstoned_at IS NULL
+        UPDATE installation_components
+        SET artifact_id = ?, verification_status = 'stale', verification_result_id = NULL,
+            visibility_state = 'unknown', updated_at = ?
+        WHERE installation_id = ? AND component_key = ?
+      `).run(resolvedId, input.createdAt, input.installationId, componentKey)
+      this.db.prepare(`
+        INSERT INTO artifact_consumers (
+          artifact_id, installation_id, component_key, required_capability, desired_state,
+          discover_reachability, consent_envelope_id, state, added_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'managed', 'dedicated', ?, 'active', ?, ?)
+        ON CONFLICT(artifact_id, installation_id, component_key) DO UPDATE SET
+          required_capability = excluded.required_capability,
+          desired_state = 'managed',
+          consent_envelope_id = excluded.consent_envelope_id,
+          state = 'active',
+          tombstoned_at = NULL,
+          tombstone_reason = NULL,
+          removed_at = NULL,
+          updated_at = excluded.updated_at
       `).run(
-        input.createdAt,
-        input.createdAt,
-        input.createdAt,
-        previousComponent.artifact_id,
+        resolvedId,
         input.installationId,
-        mutation.componentKey,
+        componentKey,
+        input.desiredCapability,
+        input.consentId,
+        input.createdAt,
+        input.createdAt,
       )
     }
-    this.db.prepare(`
-      UPDATE installation_components
-      SET artifact_id = ?, verification_status = 'stale', verification_result_id = NULL,
-          visibility_state = 'unknown', updated_at = ?
-      WHERE installation_id = ? AND component_key = ?
-    `).run(resolvedId, input.createdAt, input.installationId, mutation.componentKey)
-    this.db.prepare(`
-      INSERT INTO artifact_consumers (
-        artifact_id, installation_id, component_key, required_capability, desired_state,
-        discover_reachability, consent_envelope_id, state, added_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'managed', 'dedicated', ?, 'active', ?, ?)
-      ON CONFLICT(artifact_id, installation_id, component_key) DO UPDATE SET
-        required_capability = excluded.required_capability,
-        desired_state = 'managed',
-        consent_envelope_id = excluded.consent_envelope_id,
-        state = 'active',
-        tombstoned_at = NULL,
-        tombstone_reason = NULL,
-        removed_at = NULL,
-        updated_at = excluded.updated_at
-    `).run(
-      resolvedId,
-      input.installationId,
-      mutation.componentKey,
-      input.desiredCapability,
-      input.consentId,
-      input.createdAt,
-      input.createdAt,
-    )
     return { artifactId: resolvedId, effectDisposition: 'apply' }
   }
 
@@ -1992,7 +2918,14 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       SET visibility_state = CASE
             WHEN EXISTS (
               SELECT 1 FROM projection_mutations pm
-              WHERE pm.run_id = ? AND pm.component_key = installation_components.component_key
+              WHERE pm.run_id = ?
+                AND (
+                  pm.component_key = installation_components.component_key
+                  OR EXISTS (
+                    SELECT 1 FROM json_each(pm.planned_mutation_json, '$.coveredComponentKeys') covered
+                    WHERE covered.value = installation_components.component_key
+                  )
+                )
                 AND pm.idempotency_strategy = 'consumer_detach_only'
             ) THEN 'shared_visible'
             WHEN desired_state = 'removed' THEN 'absent'
@@ -2000,7 +2933,17 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
           END,
           updated_at = ?
       WHERE installation_id = (SELECT installation_id FROM reconcile_runs WHERE id = ?)
-        AND component_key IN (SELECT component_key FROM projection_mutations WHERE run_id = ?)
+        AND EXISTS (
+          SELECT 1 FROM projection_mutations pm
+          WHERE pm.run_id = ?
+            AND (
+              pm.component_key = installation_components.component_key
+              OR EXISTS (
+                SELECT 1 FROM json_each(pm.planned_mutation_json, '$.coveredComponentKeys') covered
+                WHERE covered.value = installation_components.component_key
+              )
+            )
+        )
     `).run(runId, at, runId, runId)
   }
 
@@ -2014,7 +2957,10 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
 
   private assertFrozenDisconnectScopes(input: PrepareExecutionInput): void {
     const expectations = input.disconnectScopeExpectations ?? []
-    if (expectations.length !== input.preparedPlan.componentKeys.length) {
+    const ownershipComponents = new Set(input.preparedPlan.componentKeys.filter(componentKey => (
+      !this.isPersistedGuidedNoArtifactComponent(input, componentKey)
+    )))
+    if (expectations.length !== ownershipComponents.size) {
       throw new Error('disconnect consumer scope no longer matches the approved plan')
     }
     const seenComponents = new Set<ComponentKey>()
@@ -2023,11 +2969,11 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
         throw new Error('disconnect consumer scope contains a duplicate component')
       }
       seenComponents.add(expectation.componentKey)
-      if (!input.preparedPlan.componentKeys.includes(expectation.componentKey)) {
+      if (!ownershipComponents.has(expectation.componentKey)) {
         throw new Error('disconnect consumer scope contains an unapproved component')
       }
       const mutation = input.preparedPlan.executionPlan.mutations.find(candidate => (
-        candidate.componentKey === expectation.componentKey
+        (candidate.coveredComponentKeys ?? [candidate.componentKey]).includes(expectation.componentKey)
       ))
       if (mutation && (
         mutation.targetPath !== expectation.physicalTarget
@@ -2074,6 +3020,21 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     }
   }
 
+  private isPersistedGuidedNoArtifactComponent(
+    input: PrepareExecutionInput,
+    componentKey: ComponentKey,
+  ): boolean {
+    if (!isGuidedNoMutationComponent(input, componentKey)) return false
+    const component = this.db.prepare(`
+      SELECT delivery_mode, artifact_id
+      FROM installation_components
+      WHERE installation_id = ? AND component_key = ?
+    `).get(input.installationId, componentKey) as
+      | { delivery_mode: string; artifact_id: string | null }
+      | undefined
+    return component?.delivery_mode === 'guided' && component.artifact_id === null
+  }
+
   private finalizeRun(runId: string, at: string): void {
     const run = this.db.prepare(`
       SELECT installation_id, operation_type, consent_envelope_id, prepared_plan_json
@@ -2087,6 +3048,65 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     if (!run) throw new Error(`unknown run: ${runId}`)
     const componentKeys = persistedComponentKeys(run.prepared_plan_json)
     const componentPlaceholders = componentKeys.map(() => '?').join(',')
+    const transfers = (this.db.prepare(`
+      SELECT planned_mutation_json FROM projection_mutations
+      WHERE run_id = ? AND state = 'committed'
+    `).all(runId) as Array<{ planned_mutation_json: string }>).flatMap((row) => {
+      const mutation = JSON.parse(row.planned_mutation_json) as PlannedMutation
+      return mutation.ownershipTransferFrom === undefined
+        ? []
+        : [{ componentKey: mutation.componentKey, source: mutation.ownershipTransferFrom }]
+    })
+    for (const transfer of transfers) {
+      const retired = this.db.prepare(`
+        UPDATE artifact_consumers
+        SET desired_state = 'removed', state = 'removed', removed_at = ?, updated_at = ?
+        WHERE installation_id = ? AND component_key = ?
+          AND state = 'removal_pending' AND desired_state = 'removal_pending'
+          AND consent_envelope_id = ?
+          AND artifact_id = (
+            SELECT id FROM managed_artifacts
+            WHERE runtime_realm = (
+              SELECT runtime_realm FROM agent_installations WHERE id = ?
+            ) AND target_path = ? AND ownership_key = ?
+              AND owned_fragment_hash = ? AND selector_schema_version = ?
+          )
+      `).run(
+        at,
+        at,
+        run.installation_id,
+        transfer.componentKey,
+        run.consent_envelope_id,
+        run.installation_id,
+        transfer.source.physicalTarget,
+        transfer.source.ownershipKey,
+        transfer.source.ownedFragmentHash,
+        String(transfer.source.selectorSchemaVersion),
+      )
+      if (retired.changes !== 1) throw new Error(`ownership transfer finalization changed: ${transfer.componentKey}`)
+      const artifactRetired = this.db.prepare(`
+        UPDATE managed_artifacts
+        SET state = 'removed', observed_fragment_hash = NULL, owned_fragment_hash = NULL,
+            last_verified_at = ?, updated_at = ?
+        WHERE runtime_realm = (
+            SELECT runtime_realm FROM agent_installations WHERE id = ?
+          ) AND target_path = ? AND ownership_key = ? AND state = 'removal_pending'
+          AND NOT EXISTS (
+            SELECT 1 FROM artifact_consumers consumer
+            WHERE consumer.artifact_id = managed_artifacts.id
+              AND consumer.state IN ('active','removal_pending')
+          )
+      `).run(
+        at,
+        at,
+        run.installation_id,
+        transfer.source.physicalTarget,
+        transfer.source.ownershipKey,
+      )
+      if (artifactRetired.changes !== 1) {
+        throw new Error(`ownership transfer Artifact finalization changed: ${transfer.componentKey}`)
+      }
+    }
     if (run.operation_type === 'disconnect') {
       this.db.prepare(`
         UPDATE artifact_consumers AS consumer
@@ -2098,11 +3118,17 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
             FROM projection_mutations mutation
             JOIN installation_components component
               ON component.installation_id = mutation.installation_id
-             AND component.component_key = mutation.component_key
+             AND component.component_key = consumer.component_key
              AND component.artifact_id = mutation.artifact_id
             WHERE mutation.run_id = ?
               AND mutation.installation_id = consumer.installation_id
-              AND mutation.component_key = consumer.component_key
+              AND (
+                mutation.component_key = consumer.component_key
+                OR EXISTS (
+                  SELECT 1 FROM json_each(mutation.planned_mutation_json, '$.coveredComponentKeys') covered
+                  WHERE covered.value = consumer.component_key
+                )
+              )
               AND mutation.artifact_id = consumer.artifact_id
               AND mutation.idempotency_strategy = 'consumer_detach_only'
               AND mutation.state = 'committed'
@@ -2139,7 +3165,13 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
               SELECT 1 FROM projection_mutations mutation
               WHERE mutation.run_id = ?
                 AND mutation.installation_id = consumer.installation_id
-                AND mutation.component_key = consumer.component_key
+                AND (
+                  mutation.component_key = consumer.component_key
+                  OR EXISTS (
+                    SELECT 1 FROM json_each(mutation.planned_mutation_json, '$.coveredComponentKeys') covered
+                    WHERE covered.value = consumer.component_key
+                  )
+                )
                 AND mutation.artifact_id = consumer.artifact_id
                 AND mutation.idempotency_strategy != 'consumer_detach_only'
                 AND mutation.state = 'committed'
@@ -2148,7 +3180,14 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
               consumer.component_key IN (${componentPlaceholders})
               AND NOT EXISTS (
                 SELECT 1 FROM projection_mutations scoped
-                WHERE scoped.run_id = ? AND scoped.component_key = consumer.component_key
+                WHERE scoped.run_id = ?
+                  AND (
+                    scoped.component_key = consumer.component_key
+                    OR EXISTS (
+                      SELECT 1 FROM json_each(scoped.planned_mutation_json, '$.coveredComponentKeys') covered
+                      WHERE covered.value = consumer.component_key
+                    )
+                  )
               )
             )
           )
@@ -2325,12 +3364,12 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
 
   private refreshInstallationVerification(installationId: string, at: string): void {
     const eligible = this.db.prepare(`
-      SELECT 1
+      SELECT i.host_variant
       FROM agent_installations i
       JOIN agent_consents c ON c.id = i.consent_envelope_id AND c.status = 'active'
       WHERE i.id = ? AND i.desired_state = 'managed' AND i.tombstoned_at IS NULL
         AND i.health_state = 'discovered' AND COALESCE(i.status_reason, '') != 'conflict'
-    `).get(installationId)
+    `).get(installationId) as { host_variant: string } | undefined
     if (!eligible) return
     const rows = this.db.prepare(`
       SELECT component_key, verification_status FROM installation_components
@@ -2338,7 +3377,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     `).all(installationId) as Array<{ component_key: ComponentKey; verification_status: string }>
     const statuses = new Set(rows.map(row => row.verification_status))
     const verified = new Set(rows.filter(row => row.verification_status === 'verified').map(row => row.component_key))
-    const capability: CapabilityLevel = verified.has('instruction') && verified.has('memory_tools') && verified.has('lifecycle')
+    const derivedCapability: CapabilityLevel = verified.has('instruction') && verified.has('memory_tools') && verified.has('lifecycle')
       ? 4
       : verified.has('instruction') && verified.has('memory_tools')
         ? 3
@@ -2347,6 +3386,9 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
           : verified.has('instruction')
             ? 1
             : 0
+    const capability = eligible.host_variant === 'custom-local-mcp'
+      ? Math.min(derivedCapability, 2) as CapabilityLevel
+      : derivedCapability
     const summary = rows.length === 0
       ? 'unverified'
       : statuses.size === 1
@@ -2561,19 +3603,25 @@ function osLockOwnerProvenDead(owner: OsLockOwner): boolean {
     && owner.processStartIdentity !== secondLiveStartIdentity
 }
 
-function installationFromRow(row: AgentInstallationRow | undefined): CoordinatorInstallation {
-  if (!row?.agent_id || !row.config_root) throw new Error('recoverable Installation identity is incomplete')
+function installationFromRow(
+  row: AgentInstallationRow | undefined,
+  allowMissingAgentId = false,
+): CoordinatorInstallation {
+  if (!row?.config_root || (!allowMissingAgentId && !row.agent_id)) {
+    throw new Error('recoverable Installation identity is incomplete')
+  }
   return {
     id: row.id,
     displayName: row.display_alias ?? row.display_name,
     desiredState: row.desired_state,
-    agentId: row.agent_id,
+    agentId: row.agent_id ?? 'recovery-envelope-projection-only',
     identity: {
       runtimeRealm: row.runtime_realm as CoordinatorInstallation['identity']['runtimeRealm'],
       osUserIdentity: row.os_user_identity ?? 'local-user',
       productFamilyId: row.family,
       hostVariant: row.host_variant as CatalogId,
       canonicalConfigRoot: row.config_root,
+      componentConfigRoots: persistedComponentConfigRoots(row),
       componentConfigFiles: persistedComponentConfigFiles(row),
       explicitProfile: row.profile_id || 'default',
       hostOwnedIdentity: persistedHostOwnedIdentity(row),
@@ -2607,6 +3655,44 @@ function parseObject(value: string, label: string): Record<string, unknown> {
   const parsed = JSON.parse(value) as unknown
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(`invalid ${label}`)
   return parsed as Record<string, unknown>
+}
+
+function assertVerifiedMutationJournal(row: MutationRow, mutation: PlannedMutation): void {
+  const expectedBefore = mutation.preconditionHash ?? null
+  const expectedAfter = mutation.operation === 'remove'
+    ? null
+    : mutation.desiredFragmentHash ?? `desired:${mutation.operation}:${mutation.operationId}`
+  if (row.state !== 'committed') {
+    throw new Error(`verified mutation is not committed: ${row.operation_id}`)
+  }
+  if (row.before_hash !== expectedBefore || row.after_hash !== expectedAfter) {
+    throw new Error(`verified mutation fingerprint projection changed: ${row.operation_id}`)
+  }
+  if (!Number.isSafeInteger(row.journal_version) || row.journal_version < 0
+    || !Number.isSafeInteger(row.attempt_count) || row.attempt_count < 0) {
+    throw new Error(`verified mutation journal counter changed: ${row.operation_id}`)
+  }
+  if (row.idempotency_strategy === 'consumer_detach_only') {
+    if (row.journal_version !== 0 || row.attempt_count !== 0
+      || row.post_effect_fingerprint !== null
+      || row.compensation_precondition !== null
+      || row.apply_receipt_json !== null
+      || row.failure_code !== null || row.failure_stage !== null) {
+      throw new Error(`verified consumer detach journal changed: ${row.operation_id}`)
+    }
+    return
+  }
+  if (row.journal_version < 4
+    || row.post_effect_fingerprint !== expectedAfter
+    || row.compensation_precondition !== expectedAfter
+    || row.apply_receipt_json === null
+    || row.failure_code !== null || row.failure_stage !== null) {
+    throw new Error(`verified mutation durable evidence changed: ${row.operation_id}`)
+  }
+  const receipt = parseObject(row.apply_receipt_json, 'mutation receipt')
+  if (!Object.hasOwn(receipt, 'fingerprint') || receipt.fingerprint !== expectedAfter) {
+    throw new Error(`verified mutation receipt changed: ${row.operation_id}`)
+  }
 }
 
 function stringArray(value: string): string[] {
@@ -2647,9 +3733,62 @@ function maxSelectorVersion(plan: PreparedCoordinatorPlan): number {
 function maxSelectorVersionForComponent(runId: string, componentKey: ComponentKey, db: Database.Database): number {
   const row = db.prepare(`
     SELECT MAX(CAST(selector_schema_version AS INTEGER)) AS version
-    FROM projection_mutations WHERE run_id = ? AND component_key = ?
-  `).get(runId, componentKey) as { version: number | null }
+    FROM projection_mutations
+    WHERE run_id = ?
+      AND (
+        component_key = ?
+        OR EXISTS (
+          SELECT 1 FROM json_each(planned_mutation_json, '$.coveredComponentKeys') covered
+          WHERE covered.value = ?
+        )
+      )
+  `).get(runId, componentKey, componentKey) as { version: number | null }
   return row.version ?? 1
+}
+
+function mutationComponentKeys(mutation: PlannedMutation): ComponentKey[] {
+  return [...(mutation.coveredComponentKeys ?? [mutation.componentKey])]
+}
+
+function capabilityForComponentScope(componentKeys: readonly ComponentKey[]): CapabilityLevel {
+  const components = new Set(componentKeys)
+  if (components.has('lifecycle')) return 4
+  if (components.has('instruction') && components.has('memory_tools')) return 3
+  if (components.has('memory_tools')) return 2
+  return components.has('instruction') ? 1 : 0
+}
+
+function isGuidedNoMutationComponent(
+  input: PrepareExecutionInput,
+  componentKey: ComponentKey,
+): boolean {
+  const mutated = input.mutations.some(mutation => (
+    mutationComponentKeys(mutation.plannedMutation).includes(componentKey)
+  ))
+  if (mutated) return false
+  return input.preparedPlan.adapterPlan.requiredUserActionDetails?.some(detail => (
+    detail.componentKey === componentKey
+    && (detail.kind === 'qwenwork_mcp_gui'
+      || detail.kind === 'custom_mcp_import'
+      || detail.kind === 'claude_cowork_plugin_upload'
+      || detail.kind === 'kimi_instruction_conflict')
+  )) ?? false
+}
+
+function isManualRemovalPendingComponent(
+  input: PrepareExecutionInput,
+  componentKey: ComponentKey,
+): boolean {
+  if (input.operation !== 'disconnect') return false
+  const mutated = input.mutations.some(mutation => (
+    mutationComponentKeys(mutation.plannedMutation).includes(componentKey)
+  ))
+  if (mutated) return false
+  return input.preparedPlan.adapterPlan.requiredUserActionDetails?.some(detail => (
+    detail.kind === 'manual_file_removal'
+    && detail.componentKey === componentKey
+    && detail.operation === 'disconnect'
+  )) ?? false
 }
 
 function artifactTypeFor(mutation: PlannedMutation): 'skill' | 'mcp' | 'hook' | 'plugin' | 'rule' {

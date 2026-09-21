@@ -9,17 +9,24 @@ import { sanitizeAgentIntegrationEventPersistence } from '@server/db/agent-integ
 import type {
   ArtifactComponentType,
   CatalogId,
+  CodexHookTrustBinding,
+  CodexHookTrustEvidenceRecord,
   ComponentKey,
   DistributionIdentity,
+  GuidedRemovalEvidenceQuery,
+  GuidedRemovalEvidenceRecord,
   InstallationIdentityRecord,
   ProductFamilyId,
   RuntimeRealm,
 } from './types.js'
-import { sha256Json } from './fingerprint.js'
+import { sha256Bytes, sha256Json } from './fingerprint.js'
 import {
   CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,
   MAX_CLI_EXECUTABLE_PROOF_BYTES,
+  type ManagementEligibilityReason,
 } from './discovery.js'
+import { buildLegacyInstallKey } from './identity.js'
+import type { PreparedCoordinatorPlan } from './planner.js'
 
 const AGENT_INTEGRATION_LAST_SUCCESSFUL_SCAN_AT_KEY = 'agent_integration_last_successful_scan_at'
 
@@ -44,6 +51,38 @@ export interface LegacyAdoptionArtifactInput {
   containerHash?: string | null
   fragmentHash: string
   discoverReachability: 'dedicated' | 'shared_visible' | 'per_host_ignorable'
+}
+
+function legacyCallableCapability(
+  artifacts: readonly LegacyAdoptionArtifactInput[],
+  legacyToolType?: string,
+): number {
+  const components = new Set(artifacts.map(artifact => artifact.componentKey))
+  // Tide Mind 0.2.91's Kimi UserPromptSubmit hook proves injection ownership,
+  // not the four independent lifecycle signals required for C4. Preserve the
+  // already-callable memory capability without manufacturing lifecycle trust.
+  if (legacyToolType === 'kimi-code' && components.has('memory_tools')) return 2
+  if (components.has('instruction') && components.has('memory_tools') && components.has('lifecycle')) return 4
+  if (components.has('instruction') && components.has('memory_tools')) return 3
+  if (components.has('memory_tools')) return 2
+  if (components.has('instruction')) return 1
+  return 0
+}
+
+/** Stable host facts for a historical read-only baseline; excludes scan/status metadata. */
+export function legacyAdoptionHostBinding(row: AgentInstallationRow): string {
+  return sha256Json({
+    family: row.family, hostVariant: row.host_variant, runtimeRealm: row.runtime_realm,
+    installKey: row.install_key, profileId: row.profile_id, configRoot: row.config_root,
+    osUserIdentity: row.os_user_identity, provenance: row.provenance,
+    distributionId: row.distribution_id, executablePath: row.executable_path,
+    appPath: row.app_path, detectedVersion: row.detected_version,
+    versionDetectionMethod: row.version_detection_method,
+    distribution: persistedDistribution(row),
+    componentConfigRoots: persistedComponentConfigRoots(row),
+    componentConfigFiles: persistedComponentConfigFiles(row),
+    hostOwnedIdentity: persistedHostOwnedIdentity(row),
+  })
 }
 
 export type InstallationDesiredState = 'unmanaged' | 'managed' | 'disabled' | 'removed'
@@ -229,6 +268,7 @@ export interface ApplyTaskRunRow {
   execution_plan_hash: string
   state: string
   failure_code: string | null
+  prepared_plan_json?: string
   created_at: string
   started_at: string | null
   completed_at: string | null
@@ -311,6 +351,7 @@ interface ApplyTaskFeedItemFact {
   payload_run_id: string | null
   exact_run_correlation: number
   run_state: string | null
+  run_failure_code: string | null
 }
 
 interface ApplyTaskFeedTraversalCache {
@@ -339,6 +380,7 @@ export interface DurableApplyTaskRow {
     exact_run_correlation: number
     exact_run_state: string | null
     exact_run_failure_code: string | null
+    exact_run_prepared_plan_json: string | null
     exact_run_created_at: string | null
     exact_run_started_at: string | null
     exact_run_completed_at: string | null
@@ -424,6 +466,18 @@ export interface IntegrationEventInput {
   createdAt: string
 }
 
+export interface RecordCodexHookTrustEvidenceInput extends Omit<
+  CodexHookTrustBinding,
+  'sourcePathHash' | 'hookKeyHash'
+> {
+  artifactId: string
+  sourcePath: string
+  hookKey: string
+  hooksFileFingerprint: string
+  trustConfigFingerprint: string
+  verifiedAt: string
+}
+
 function json(value: unknown, fallback: unknown): string {
   return JSON.stringify(value === undefined ? fallback : value)
 }
@@ -452,7 +506,7 @@ function stringOrUndefined(value: unknown): string | undefined {
 export interface PersistedManagementEligibility {
   schemaVersion: typeof CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION
   eligible: boolean
-  reason?: 'executable_proof_too_large' | 'executable_metadata_unavailable'
+  reason?: ManagementEligibilityReason
   executableSizeBytes?: number
   proofLimitBytes: number
 }
@@ -475,14 +529,32 @@ export function persistedManagementEligibility(
     || (source.executableSizeBytes !== undefined && source.executableSizeBytes !== null
       && (!Number.isSafeInteger(source.executableSizeBytes) || Number(source.executableSizeBytes) < 0))) return invalid
   const rawReason = stringOrUndefined(source.reason)
-  if (rawReason && rawReason !== 'executable_proof_too_large' && rawReason !== 'executable_metadata_unavailable') {
+  if (rawReason
+    && rawReason !== 'executable_proof_too_large'
+    && rawReason !== 'executable_metadata_unavailable'
+    && rawReason !== 'distribution_not_managed'
+    && rawReason !== 'release_entry_missing'
+    && rawReason !== 'release_mode_detect_only'
+    && rawReason !== 'release_distribution_not_accepted'
+    && rawReason !== 'release_version_unverified'
+    && rawReason !== 'release_version_not_accepted'
+    && rawReason !== 'release_artifact_not_accepted') {
     return invalid
   }
   const reason: PersistedManagementEligibility['reason'] = rawReason === 'executable_proof_too_large'
     ? rawReason
     : rawReason === 'executable_metadata_unavailable'
       ? rawReason
-      : undefined
+      : rawReason === 'distribution_not_managed'
+        ? rawReason
+        : rawReason === 'release_entry_missing'
+          || rawReason === 'release_mode_detect_only'
+          || rawReason === 'release_distribution_not_accepted'
+          || rawReason === 'release_version_unverified'
+          || rawReason === 'release_version_not_accepted'
+          || rawReason === 'release_artifact_not_accepted'
+          ? rawReason
+          : undefined
   const result: PersistedManagementEligibility = {
     schemaVersion: CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,
     eligible: source.eligible,
@@ -498,6 +570,18 @@ export function persistedManagementEligibility(
   } else if (result.reason === 'executable_proof_too_large') {
     if (result.executableSizeBytes === undefined
       || result.executableSizeBytes <= result.proofLimitBytes) return invalid
+  } else if (result.reason === 'distribution_not_managed') {
+    if (result.executableSizeBytes === undefined
+      || result.executableSizeBytes > result.proofLimitBytes) return invalid
+  } else if (result.reason === 'release_entry_missing'
+    || result.reason === 'release_mode_detect_only'
+    || result.reason === 'release_distribution_not_accepted'
+    || result.reason === 'release_version_unverified'
+    || result.reason === 'release_version_not_accepted'
+    || result.reason === 'release_artifact_not_accepted') {
+    // Release acceptance is independent from executable-size eligibility. The
+    // size remains optional inventory, but must already satisfy the generic
+    // structural validation above when present.
   } else if (result.reason !== 'executable_metadata_unavailable') {
     return invalid
   }
@@ -543,6 +627,7 @@ export function persistedProjectionSurfaceFingerprint(row: AgentInstallationRow)
     configRoot: row.config_root,
     executablePath: row.executable_path,
     appPath: row.app_path,
+    detectedVersion: row.detected_version,
     supportedCapability: row.supported_capability,
     hostOwnedIdentity: stringOrUndefined(metadata.hostOwnedIdentity) ?? null,
     distribution: {
@@ -550,6 +635,7 @@ export function persistedProjectionSurfaceFingerprint(row: AgentInstallationRow)
       executableRealpath: stringOrUndefined(distribution.executableRealpath) ?? row.executable_path ?? null,
       packageProvenance: stringOrUndefined(distribution.packageProvenance) ?? null,
       capabilityFingerprint: stringOrUndefined(distribution.capabilityFingerprint) ?? null,
+      portableArtifactFingerprint: stringOrUndefined(distribution.portableArtifactFingerprint) ?? null,
     },
     componentConfigFiles: stableStringRecord(metadata.componentConfigFiles),
     componentConfigRoots: stableStringRecord(metadata.componentConfigRoots),
@@ -571,6 +657,7 @@ export function persistedDistribution(row: AgentInstallationRow): DistributionId
     executableRealpath: stringOrUndefined(distribution.executableRealpath) ?? row.executable_path ?? undefined,
     packageProvenance: stringOrUndefined(distribution.packageProvenance),
     capabilityFingerprint: stringOrUndefined(distribution.capabilityFingerprint),
+    portableArtifactFingerprint: stringOrUndefined(distribution.portableArtifactFingerprint),
   }
   frozenProjectionSurfaceFingerprints.set(result, persistedProjectionSurfaceFingerprint(row))
   return result
@@ -584,6 +671,7 @@ export function persistedComponentConfigFiles(
   row: AgentInstallationRow,
 ): Readonly<Partial<Record<ComponentKey, string>>> | undefined {
   const source = safeJsonObject(safeJsonObject(row.metadata_json).componentConfigFiles)
+  const componentRoots = persistedComponentConfigRoots(row)
   const result: Partial<Record<ComponentKey, string>> = {}
   for (const componentKey of ['instruction', 'memory_tools', 'lifecycle'] as const) {
     const value = stringOrUndefined(source[componentKey])
@@ -592,10 +680,27 @@ export function persistedComponentConfigFiles(
       if (!row.config_root || !path.isAbsolute(value)) {
         throw new Error(`Persisted ${componentKey} config file is not an absolute Installation path`)
       }
-      const relative = path.relative(path.resolve(row.config_root), path.resolve(value))
+      const allowedRoot = componentRoots?.[componentKey] ?? row.config_root
+      const relative = path.relative(path.resolve(allowedRoot), path.resolve(value))
       if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
-        throw new Error(`Persisted ${componentKey} config file is outside the Installation config root`)
+        throw new Error(`Persisted ${componentKey} config file is outside its component config root`)
       }
+    }
+    result[componentKey] = value
+  }
+  return Object.keys(result).length > 0 ? result : undefined
+}
+
+export function persistedComponentConfigRoots(
+  row: AgentInstallationRow,
+): Readonly<Partial<Record<ComponentKey, string>>> | undefined {
+  const source = safeJsonObject(safeJsonObject(row.metadata_json).componentConfigRoots)
+  const result: Partial<Record<ComponentKey, string>> = {}
+  for (const componentKey of ['instruction', 'memory_tools', 'lifecycle'] as const) {
+    const value = stringOrUndefined(source[componentKey])
+    if (!value) continue
+    if (row.runtime_realm === 'local_macos' && !path.isAbsolute(value)) {
+      throw new Error(`Persisted ${componentKey} config root is not an absolute Installation path`)
     }
     result[componentKey] = value
   }
@@ -610,6 +715,112 @@ export class AgentIntegrationRepository {
   private applyTaskFeedTraversalCache: ApplyTaskFeedTraversalCache | null = null
 
   constructor(private readonly db: Database.Database) {}
+
+  /**
+   * 0.2.91 briefly persisted manual MCP clients with a C3 ceiling even though
+   * their contract can prove only memory read/write activity. Correct that
+   * local projection without granting consent or touching any host artifact.
+   */
+  normalizeCustomMcpCapabilityCeiling(updatedAt: string): number {
+    return this.db.transaction(() => {
+      const nonTerminalRuns = this.db.prepare(`
+        SELECT r.id, r.installation_id, r.consent_envelope_id,
+               r.operation_type, r.prepared_plan_json, r.desired_capability
+        FROM reconcile_runs r
+        JOIN agent_installations i ON i.id = r.installation_id
+        WHERE i.family = 'custom-local-agent' AND i.host_variant = 'custom-local-mcp'
+          AND r.state IN (
+            'planned','preconditions_checked','applying','applied_unverified',
+            'verified','compensating','needs_recovery'
+          )
+      `).all() as Array<{
+        id: string
+        installation_id: string
+        consent_envelope_id: string | null
+        operation_type: string
+        prepared_plan_json: string
+        desired_capability: number
+      }>
+      const unsafeRuns = nonTerminalRuns.filter(run => (
+        run.desired_capability > 2 || !isSafeCustomMcpPersistedPlan(run.operation_type, run.prepared_plan_json)
+      ))
+      const unsafeRunIds = unsafeRuns.map(run => run.id)
+      const unsafeConsentIds = [...new Set(unsafeRuns.flatMap(run => (
+        run.consent_envelope_id ? [run.consent_envelope_id] : []
+      )))]
+      let changes = 0
+
+      if (unsafeRunIds.length > 0) {
+        const placeholders = unsafeRunIds.map(() => '?').join(',')
+        changes += this.db.prepare(`
+          UPDATE reconcile_runs
+          SET state = 'cancelled', desired_capability = 2,
+              failure_code = 'custom_capability_ceiling_changed',
+              failure_stage = 'upgrade_normalization',
+              completed_at = COALESCE(completed_at, ?), updated_at = ?
+          WHERE id IN (${placeholders})
+        `).run(updatedAt, updatedAt, ...unsafeRunIds).changes
+      }
+      if (unsafeConsentIds.length > 0) {
+        const placeholders = unsafeConsentIds.map(() => '?').join(',')
+        changes += this.db.prepare(`
+          UPDATE agent_consents
+          SET status = 'revoked', revoked_at = COALESCE(revoked_at, ?)
+          WHERE id IN (${placeholders}) AND status = 'active'
+        `).run(updatedAt, ...unsafeConsentIds).changes
+      }
+      const unsafeInstallationIds = [...new Set(unsafeRuns.map(run => run.installation_id))]
+      if (unsafeInstallationIds.length > 0) {
+        const placeholders = unsafeInstallationIds.map(() => '?').join(',')
+        changes += this.db.prepare(`
+          UPDATE agent_installations
+          SET consent_envelope_id = CASE
+                WHEN consent_envelope_id IN (
+                  SELECT id FROM agent_consents WHERE status = 'revoked'
+                ) THEN NULL ELSE consent_envelope_id END,
+              reconcile_state = 'needs_recovery', status_reason = 'verification_stale',
+              updated_at = ?
+          WHERE id IN (${placeholders})
+        `).run(updatedAt, ...unsafeInstallationIds).changes
+      }
+
+      changes += this.db.prepare(`
+        UPDATE installation_components
+        SET desired_capability = MIN(desired_capability, 2), updated_at = ?
+        WHERE installation_id IN (
+          SELECT id FROM agent_installations
+          WHERE family = 'custom-local-agent' AND host_variant = 'custom-local-mcp'
+        ) AND desired_capability > 2
+      `).run(updatedAt).changes
+      changes += this.db.prepare(`
+        UPDATE artifact_consumers
+        SET required_capability = MIN(required_capability, 2), updated_at = ?
+        WHERE installation_id IN (
+          SELECT id FROM agent_installations
+          WHERE family = 'custom-local-agent' AND host_variant = 'custom-local-mcp'
+        ) AND required_capability > 2
+      `).run(updatedAt).changes
+      changes += this.db.prepare(`
+        UPDATE agent_installations
+        SET supported_capability = MIN(supported_capability, 2),
+            desired_capability = MIN(desired_capability, 2),
+            verified_capability = MIN(verified_capability, 2),
+            consent_envelope_id = CASE
+              WHEN consent_envelope_id IN (
+                SELECT id FROM agent_consents WHERE status = 'revoked'
+              ) THEN NULL ELSE consent_envelope_id END,
+            updated_at = ?
+        WHERE family = 'custom-local-agent' AND host_variant = 'custom-local-mcp'
+          AND (
+            supported_capability > 2 OR desired_capability > 2 OR verified_capability > 2
+            OR consent_envelope_id IN (
+              SELECT id FROM agent_consents WHERE status = 'revoked'
+            )
+          )
+      `).run(updatedAt).changes
+      return changes
+    }).immediate()
+  }
 
   listLegacyAgents(): LegacyAgentRow[] {
     return this.db.prepare(`
@@ -631,20 +842,42 @@ export class AgentIntegrationRepository {
       const priorAliases = Array.isArray(priorMetadata.installKeyAliases)
         ? priorMetadata.installKeyAliases.filter((value): value is string => typeof value === 'string')
         : []
+      // Discovery replaces its own evidence, roots and eligibility, but these
+      // records belong to local migration/preflight workflows. An ordinary
+      // scan omits them; omission must not erase their durable authority.
+      // Explicit preflight values can still update their own local record.
+      const retainedLocalMetadata = Object.fromEntries(
+        ['legacyAdoption', 'legacyIdentity', 'customInstallation', 'guidedInstallation']
+          .filter(key => Object.hasOwn(priorMetadata, key) && !Object.hasOwn(incomingMetadata, key))
+          .map(key => [key, priorMetadata[key]]),
+      )
       let metadata = {
+        ...retainedLocalMetadata,
         ...incomingMetadata,
         ...(priorAliases.length > 0 ? { installKeyAliases: [...new Set(priorAliases)] } : {}),
       }
       if (previousById && previousById.install_key !== input.installKey) {
         const previousHostIdentity = persistedHostOwnedIdentity(previousById)
         const incomingHostIdentity = stringOrUndefined(incomingMetadata.hostOwnedIdentity)
+        const previousComponentRoots = persistedComponentConfigRoots(previousById)
+        const incomingComponentRoots = stableStringRecord(incomingMetadata.componentConfigRoots)
+        const oneWayComponentRootEnrichment = previousComponentRoots === undefined
+          && Object.keys(incomingComponentRoots).length > 0
+          && previousById.install_key === buildLegacyInstallKey({
+            runtimeRealm: runtimeRealm as RuntimeRealm,
+            osUserIdentity: input.osUserIdentity ?? '',
+            productFamilyId: input.family as ProductFamilyId,
+            hostVariant: input.hostVariant as CatalogId,
+            canonicalConfigRoot: input.configRoot ?? '',
+            explicitProfile: input.profileId ?? 'default',
+          })
         if (previousById.runtime_realm !== runtimeRealm
           || previousById.family !== input.family
           || previousById.host_variant !== input.hostVariant
           || (previousById.profile_id || 'default') !== (input.profileId || 'default')
           || previousById.os_user_identity !== (input.osUserIdentity ?? null)
-          || !previousHostIdentity
-          || previousHostIdentity !== incomingHostIdentity) {
+          || (!oneWayComponentRootEnrichment
+            && (!previousHostIdentity || previousHostIdentity !== incomingHostIdentity))) {
           throw new Error('Installation install key changed without the same stable host identity')
         }
         if (previous && previous.id !== previousById.id) {
@@ -733,12 +966,16 @@ export class AgentIntegrationRepository {
       const projectionSurfaceChanged = priorInstallation !== undefined
         && persistedProjectionSurfaceFingerprint(priorInstallation)
           !== persistedProjectionSurfaceFingerprint(persisted)
+      const nonVersionProjectionSurfaceChanged = priorInstallation !== undefined
+        && persistedProjectionSurfaceFingerprint({ ...priorInstallation, detected_version: detectedVersion })
+          !== persistedProjectionSurfaceFingerprint(persisted)
       const installationSurfaceChanged = installKeyChanged || projectionSurfaceChanged
       const versionChanged = priorInstallation !== undefined
         && priorInstallation.detected_version !== null
         && priorInstallation.detected_version !== detectedVersion
       if ((versionChanged || installationSurfaceChanged) && persisted.desired_state !== 'removed') {
-        const invalidationReason = installationSurfaceChanged
+        const nonVersionInstallationSurfaceChanged = installKeyChanged || nonVersionProjectionSurfaceChanged
+        const invalidationReason = nonVersionInstallationSurfaceChanged
           ? 'host_installation_surface_changed'
           : 'host_version_changed'
         this.db.prepare(`
@@ -762,7 +999,7 @@ export class AgentIntegrationRepository {
               status_reason = CASE
                 WHEN desired_state != 'removed'
                   AND reconcile_state IN ('idle','awaiting_consent')
-                  AND (status_reason IS NULL OR status_reason IN ('verified','verification_stale'))
+                  AND (status_reason IS NULL OR status_reason IN ('verified','verification_stale','legacy_callable_unmanaged'))
                   THEN 'verification_stale'
                 ELSE status_reason
               END,
@@ -803,9 +1040,9 @@ export class AgentIntegrationRepository {
         if (!installationSurfaceChanged || surfaceChangeInvalidatedUserState) {
           this.recordEvent({
             installationId: persisted.id,
-            kind: installationSurfaceChanged ? 'host_installation_surface_changed' : 'host_version_changed',
+            kind: nonVersionInstallationSurfaceChanged ? 'host_installation_surface_changed' : 'host_version_changed',
             severity: 'info',
-            dedupeKey: installationSurfaceChanged
+            dedupeKey: nonVersionInstallationSurfaceChanged
               ? `${persisted.id}:installation-surface:${persistedProjectionSurfaceFingerprint(persisted)}`
               : `${persisted.id}:host-version:${input.detectedVersion}`,
             payload: {
@@ -1048,6 +1285,7 @@ export class AgentIntegrationRepository {
         productFamilyId: row.family as ProductFamilyId,
         hostVariant: row.host_variant as CatalogId,
         canonicalConfigRoot: row.config_root,
+        componentConfigRoots: persistedComponentConfigRoots(row),
         componentConfigFiles: persistedComponentConfigFiles(row),
         explicitProfile: row.profile_id || 'default',
         hostOwnedIdentity: stringOrUndefined(metadata.hostOwnedIdentity),
@@ -1256,6 +1494,120 @@ export class AgentIntegrationRepository {
     `).get(legacyAgentId, runtimeRealm) as AgentInstallationRow | undefined
   }
 
+  /**
+   * Rechecks an already-adopted legacy projection without acquiring ownership
+   * or granting consent. Missing or changed bytes revoke the historical
+   * callable summary. Restoring the exact baseline may restore that historical
+   * summary, but never grants consent or creates managed verification.
+   */
+  recheckLegacyAdoption(input: {
+    legacyAgentId: string
+    legacyToolType: string
+    installationId: string
+    observedEvidenceHash: string | null
+    observedLegacyEvidenceHash?: string | null
+    observedHostBinding?: string
+    checkedAt: string
+  }): 'matched' | 'stale' | 'superseded' {
+    return this.db.transaction(() => {
+      const legacy = this.db.prepare(`
+        SELECT id, tool_type, archived FROM agents WHERE id = ?
+      `).get(input.legacyAgentId) as { id: string; tool_type: string; archived: number } | undefined
+      const installation = this.getInstallation(input.installationId)
+      const alias = installation ? this.db.prepare(`
+        SELECT installation_id FROM agent_aliases
+        WHERE alias_type = 'legacy_agent_id' AND alias_value = ? AND runtime_realm = ?
+      `).get(input.legacyAgentId, installation.runtime_realm) as { installation_id: string } | undefined : undefined
+      if (!legacy || legacy.tool_type !== input.legacyToolType || legacy.archived !== 0
+        || !installation || alias?.installation_id !== installation.id) {
+        throw new Error('legacy adoption identity changed before read-only recheck')
+      }
+      // Explicit intent and unresolved identity/maintenance conflicts take
+      // precedence over legacy bytes, even after the same host is rediscovered.
+      if (installation.desired_state !== 'unmanaged' || installation.tombstoned_at
+        || ['conflict', 'circuit_breaker', 'user_disabled'].includes(installation.status_reason ?? '')) {
+        return 'superseded'
+      }
+
+      const metadata = safeJsonObject(installation.metadata_json)
+      const adoption = safeJsonObject(metadata.legacyAdoption)
+      const storedEvidenceHash = typeof adoption.evidenceHash === 'string'
+        ? adoption.evidenceHash
+        : null
+      const legacyBaselineMatch = adoption.evidenceVersion !== 2
+        && input.observedLegacyEvidenceHash != null
+        && input.observedLegacyEvidenceHash === storedEvidenceHash
+        && installation.status_reason === 'legacy_callable_unmanaged'
+        && installation.verified_capability > 0
+      const historicalCapability = adoption.evidenceVersion === 2
+        ? adoption.historicalCapability
+        : installation.verified_capability
+      const exactMatch = input.observedEvidenceHash !== null
+        && (adoption.evidenceVersion === 2
+          ? input.observedEvidenceHash === storedEvidenceHash
+          : legacyBaselineMatch)
+        && input.observedHostBinding === legacyAdoptionHostBinding(installation)
+        && adoption.sourceAgentId === input.legacyAgentId
+        && adoption.sourceToolType === input.legacyToolType
+        && installation.health_state === 'discovered'
+        && installation.consent_envelope_id === null
+        && ['legacy_callable_unmanaged', 'verification_stale'].includes(installation.status_reason ?? '')
+        && typeof historicalCapability === 'number'
+        && Number.isInteger(historicalCapability) && historicalCapability > 0 && historicalCapability <= 4
+      if (exactMatch) {
+        if (legacyBaselineMatch || installation.status_reason !== 'legacy_callable_unmanaged'
+          || installation.verified_capability !== historicalCapability) {
+          this.db.prepare(`
+            UPDATE agent_installations
+            SET verified_capability = ?, verification_summary = 'stale',
+                verification_result_id = NULL, reconcile_state = 'idle',
+                status_reason = 'legacy_callable_unmanaged', last_verified_at = ?,
+                metadata_json = ?, updated_at = ?
+            WHERE id = ? AND desired_state = 'unmanaged' AND tombstoned_at IS NULL
+          `).run(historicalCapability, input.checkedAt, json({
+            ...metadata,
+            legacyAdoption: {
+              ...adoption, evidenceVersion: 2, evidenceHash: input.observedEvidenceHash,
+              historicalCapability,
+            },
+          }, {}), input.checkedAt, installation.id)
+        }
+        return 'matched'
+      }
+
+      this.db.prepare(`
+        UPDATE verification_results
+        SET invalidated_at = COALESCE(invalidated_at, ?),
+            invalidation_reason = COALESCE(invalidation_reason, 'legacy_adoption_artifact_changed')
+        WHERE installation_id = ? AND invalidated_at IS NULL
+      `).run(input.checkedAt, installation.id)
+      this.db.prepare(`
+        UPDATE installation_components
+        SET verification_status = 'stale', verification_result_id = NULL, updated_at = ?
+        WHERE installation_id = ? AND desired_state = 'unmanaged'
+      `).run(input.checkedAt, installation.id)
+      this.db.prepare(`
+        UPDATE agent_installations
+        SET verified_capability = 0, verification_summary = 'stale',
+            verification_result_id = NULL, reconcile_state = 'paused',
+            status_reason = 'verification_stale', updated_at = ?
+        WHERE id = ? AND desired_state = 'unmanaged' AND tombstoned_at IS NULL
+      `).run(input.checkedAt, installation.id)
+      this.recordEvent({
+        installationId: installation.id,
+        kind: 'legacy_adoption_artifact_changed',
+        severity: 'warning',
+        dedupeKey: `${installation.id}:legacy-adoption-artifact-changed:${storedEvidenceHash ?? 'missing-baseline'}`,
+        payload: {
+          legacyAgentId: input.legacyAgentId,
+          legacyToolType: input.legacyToolType,
+        },
+        createdAt: input.checkedAt,
+      })
+      return 'stale'
+    }).immediate()
+  }
+
   markLegacyConfirmationRequired(installationId: string, updatedAt: string): void {
     this.db.prepare(`
       UPDATE agent_installations
@@ -1285,40 +1637,63 @@ export class AgentIntegrationRepository {
     if (desiredState === 'removed' && !tombstoneReason) {
       throw new Error('removing an installation requires a tombstone reason')
     }
-    this.db.prepare(`
-      UPDATE agent_installations
-      SET desired_state = ?,
-          reconcile_state = CASE
-            WHEN ? = 'disabled' THEN 'paused'
-            WHEN ? = 'managed' THEN 'idle'
-            ELSE reconcile_state
-          END,
-          status_reason = CASE
-            WHEN ? = 'disabled' THEN 'user_disabled'
-            WHEN ? = 'managed' THEN 'verification_stale'
-            ELSE status_reason
-          END,
-          tombstoned_at = CASE WHEN ? = 'removed' THEN COALESCE(tombstoned_at, ?) ELSE tombstoned_at END,
-          tombstone_reason = CASE WHEN ? = 'removed' THEN ? ELSE tombstone_reason END,
-          updated_at = ?
-      WHERE id = ?
-    `).run(
-      desiredState,
-      desiredState,
-      desiredState,
-      desiredState,
-      desiredState,
-      desiredState,
-      updatedAt,
-      desiredState,
-      tombstoneReason ?? null,
-      updatedAt,
-      installationId,
-    )
+    const resuming = existing.desired_state === 'disabled' && desiredState === 'managed'
+    this.db.transaction(() => {
+      if (resuming) {
+        this.db.prepare(`
+          UPDATE installation_components
+          SET verification_status = CASE
+                WHEN verification_result_id IS NULL THEN 'unverified'
+                ELSE 'stale'
+              END,
+              updated_at = ?
+          WHERE installation_id = ? AND desired_state IN ('managed','disabled')
+        `).run(updatedAt, installationId)
+      }
+      this.db.prepare(`
+        UPDATE agent_installations
+        SET desired_state = ?,
+            reconcile_state = CASE
+              WHEN ? = 'disabled' THEN 'paused'
+              WHEN ? = 'managed' THEN 'idle'
+              ELSE reconcile_state
+            END,
+            status_reason = CASE
+              WHEN ? = 'disabled' THEN 'user_disabled'
+              WHEN ? = 'managed' THEN 'verification_stale'
+              ELSE status_reason
+            END,
+            verification_summary = CASE
+              WHEN ? AND verification_summary != 'unverified' THEN 'stale'
+              ELSE verification_summary
+            END,
+            tombstoned_at = CASE WHEN ? = 'removed' THEN COALESCE(tombstoned_at, ?) ELSE tombstoned_at END,
+            tombstone_reason = CASE WHEN ? = 'removed' THEN ? ELSE tombstone_reason END,
+            updated_at = ?
+        WHERE id = ?
+      `).run(
+        desiredState,
+        desiredState,
+        desiredState,
+        desiredState,
+        desiredState,
+        resuming ? 1 : 0,
+        desiredState,
+        updatedAt,
+        desiredState,
+        tombstoneReason ?? null,
+        updatedAt,
+        installationId,
+      )
+    }).immediate()
   }
 
   upsertComponent(input: InstallationComponentInput, updatedAt: string): void {
     assertCapability(input.desiredCapability)
+    const installation = this.getInstallation(input.installationId)
+    if (installation?.host_variant === 'custom-local-mcp' && input.desiredCapability > 2) {
+      throw new Error('Custom MCP capability cannot exceed C2')
+    }
     const existing = this.db.prepare(`
       SELECT desired_state, tombstoned_at
       FROM installation_components
@@ -1410,18 +1785,37 @@ export class AgentIntegrationRepository {
        AND verification.tide_mind_version = evidence.tide_mind_version
        AND verification.adapter_version = evidence.adapter_version
        AND verification.projection_version = evidence.projection_version
-      JOIN artifact_consumers consumer
+      LEFT JOIN artifact_consumers consumer
         ON consumer.installation_id = component.installation_id
        AND consumer.component_key = component.component_key
        AND consumer.artifact_id = component.artifact_id
+      LEFT JOIN agent_consents consent
+        ON consent.id = component.consent_envelope_id
+       AND consent.installation_id = component.installation_id
       WHERE installation.id = ?
         AND installation.desired_state = 'managed'
         AND installation.tombstoned_at IS NULL
         AND installation.health_state = 'discovered'
         AND component.desired_state = 'managed'
         AND component.verification_status = 'verified'
-        AND consumer.state = 'active'
-        AND consumer.desired_state = 'managed'
+        AND (
+          (
+            component.delivery_mode = 'managed'
+            AND component.artifact_id IS NOT NULL
+            AND consumer.state = 'active'
+            AND consumer.desired_state = 'managed'
+            AND component.consent_envelope_id = installation.consent_envelope_id
+            AND consumer.consent_envelope_id = installation.consent_envelope_id
+            AND consent.status = 'active'
+          )
+          OR (
+            component.delivery_mode = 'guided'
+            AND component.artifact_id IS NULL
+            AND consumer.artifact_id IS NULL
+            AND component.consent_envelope_id = installation.consent_envelope_id
+            AND consent.status = 'active'
+          )
+        )
         AND verification.result = 'verified'
         AND verification.invalidated_at IS NULL
         AND verification.evidence_ref LIKE 'host-activity:%'
@@ -1442,9 +1836,23 @@ export class AgentIntegrationRepository {
              projection_version, selector_schema_version
       FROM reconcile_runs
       WHERE installation_id = ?
-      ORDER BY created_at DESC, id DESC
+      ORDER BY rowid DESC
       LIMIT 1
     `).get(installationId) as Record<string, unknown> | undefined
+  }
+
+  getLatestRunUserActions(installationId: string): {
+    operation_type: string
+    state: string
+    prepared_plan_json: string
+  } | undefined {
+    return this.db.prepare(`
+      SELECT operation_type, state, prepared_plan_json
+      FROM reconcile_runs
+      WHERE installation_id = ?
+      ORDER BY rowid DESC
+      LIMIT 1
+    `).get(installationId) as { operation_type: string; state: string; prepared_plan_json: string } | undefined
   }
 
   /**
@@ -1454,7 +1862,7 @@ export class AgentIntegrationRepository {
   listRecentApplyTaskRuns(limit = 100): ApplyTaskRunRow[] {
     const bounded = Math.max(1, Math.min(Math.trunc(limit), 500))
     const columns = `
-      SELECT id, installation_id, execution_plan_hash, state, failure_code,
+      SELECT id, installation_id, execution_plan_hash, state, failure_code, prepared_plan_json,
              created_at, started_at, completed_at, updated_at
       FROM reconcile_runs
       WHERE operation_type = 'connect' AND installation_id IS NOT NULL
@@ -1532,7 +1940,7 @@ export class AgentIntegrationRepository {
         ${eligibleLegacyItemsSql}
       )
       SELECT run.id, run.installation_id, run.execution_plan_hash,
-             run.state, run.failure_code, run.created_at, run.started_at,
+             run.state, run.failure_code, run.prepared_plan_json, run.created_at, run.started_at,
              run.completed_at, run.updated_at
       FROM reconcile_runs run
       JOIN legacy_groups legacy
@@ -1646,7 +2054,8 @@ export class AgentIntegrationRepository {
                  AND run.installation_id = item.installation_id
                  AND run.execution_plan_hash = item.execution_plan_hash
                  AND run.operation_type = task.operation_type THEN 1 ELSE 0 END AS exact_run_correlation,
-               run.state AS run_state
+               run.state AS run_state,
+               run.failure_code AS run_failure_code
         FROM agent_integration_apply_task_items item
         JOIN agent_integration_apply_tasks task ON task.id = item.task_id
         LEFT JOIN reconcile_runs run ON run.id = item.run_id
@@ -1802,7 +2211,7 @@ export class AgentIntegrationRepository {
   getApplyTaskFeedRun(runId: string, nowMs: number): ApplyTaskRunRow | undefined {
     return this.db.transaction(() => {
       const run = this.db.prepare(`
-        SELECT id, installation_id, execution_plan_hash, state, failure_code,
+        SELECT id, installation_id, execution_plan_hash, state, failure_code, prepared_plan_json,
                created_at, started_at, completed_at, updated_at
         FROM reconcile_runs
         WHERE id = ? AND operation_type = 'connect' AND installation_id IS NOT NULL
@@ -2050,6 +2459,7 @@ export class AgentIntegrationRepository {
              END AS exact_run_correlation,
              run.state AS exact_run_state,
              run.failure_code AS exact_run_failure_code,
+             run.prepared_plan_json AS exact_run_prepared_plan_json,
              run.created_at AS exact_run_created_at,
              run.started_at AS exact_run_started_at,
              run.completed_at AS exact_run_completed_at,
@@ -2205,6 +2615,9 @@ export class AgentIntegrationRepository {
       const installation = this.getInstallation(input.installationId)
       if (!installation || installation.desired_state === 'removed' || installation.tombstoned_at) {
         throw new Error(`cannot attach consumer to removed or unknown installation: ${input.installationId}`)
+      }
+      if (installation.host_variant === 'custom-local-mcp' && input.requiredCapability > 2) {
+        throw new Error('Custom MCP capability cannot exceed C2')
       }
       const component = this.db.prepare(`
         SELECT desired_state, tombstoned_at FROM installation_components
@@ -2532,6 +2945,329 @@ export class AgentIntegrationRepository {
   }
 
   /**
+   * Imports only the stable identity of an active legacy custom Agent.  There
+   * is deliberately no host/config assertion here: the advanced setup flow
+   * must collect and verify those facts before any managed component exists.
+   */
+  adoptLegacyCustomInstallation(input: {
+    legacy: LegacyAgentRow
+    runtimeRealm: RuntimeRealm
+    adoptedAt: string
+  }): 'adopted' | 'already_adopted' {
+    if (input.legacy.tool_type !== 'other' && !input.legacy.tool_type.startsWith('custom-')) {
+      throw new Error('legacy custom adoption requires tool_type=other or custom-*')
+    }
+    return this.adoptLegacyIdentityOnlyInstallation(input)
+  }
+
+  /**
+   * Preserves a legacy Agent identity that cannot be the canonical identity of
+   * a one-Installation-per-host model.  The resulting Custom placeholder is a
+   * local identity/history record and an explicit user continuation entry; it
+   * owns no host path, Artifact, consumer, consent, or writer fence.
+   */
+  adoptLegacyIdentityOnlyInstallation(input: {
+    legacy: LegacyAgentRow
+    runtimeRealm: RuntimeRealm
+    adoptedAt: string
+  }): 'adopted' | 'already_adopted' {
+    const customSource = input.legacy.tool_type === 'other'
+      || input.legacy.tool_type.startsWith('custom-')
+    const identityOnlyReason = customSource
+      ? 'legacy_custom_identity_only'
+      : 'legacy_secondary_identity_only'
+    const identityHash = sha256Json({
+      kind: customSource ? 'legacy_custom_agent' : 'legacy_agent_identity_only',
+      runtimeRealm: input.runtimeRealm,
+      legacyAgentId: input.legacy.id,
+    })
+    const installationId = `installation_custom_${identityHash.slice(0, 32)}`
+    const installKey = `custom-local-mcp:legacy:${identityHash}`
+    const aliasId = `alias_custom_${identityHash.slice(0, 32)}`
+
+    return this.db.transaction(() => {
+      const legacy = this.db.prepare(`
+        SELECT id, name, tool_type, archived, last_active, created
+        FROM agents WHERE id = ?
+      `).get(input.legacy.id) as LegacyAgentRow | undefined
+      if (!legacy
+        || legacy.name !== input.legacy.name
+        || legacy.tool_type !== input.legacy.tool_type
+        || legacy.archived !== input.legacy.archived
+        || legacy.last_active !== input.legacy.last_active
+        || legacy.created !== input.legacy.created) {
+        throw new Error('legacy custom adoption source changed')
+      }
+      if (legacy.archived !== 0) throw new Error('archived legacy Agent cannot be adopted as active')
+
+      const isExactIdentityOnlyPlaceholder = (row: AgentInstallationRow | undefined): boolean => {
+        if (!row) return false
+        const metadata = safeJsonObject(row.metadata_json)
+        const custom = safeJsonObject(metadata.customInstallation)
+        const state = this.db.prepare(`
+          SELECT
+            (SELECT COUNT(*) FROM installation_components WHERE installation_id = ?) AS components,
+            (SELECT COUNT(*) FROM artifact_consumers WHERE installation_id = ?) AS consumers,
+            (SELECT COUNT(*) FROM agent_consents WHERE installation_id = ?) AS consents,
+            (SELECT COUNT(*) FROM reconcile_runs WHERE installation_id = ?) AS runs,
+            (SELECT COUNT(*) FROM managed_artifacts artifact
+              JOIN installation_components component ON component.artifact_id = artifact.id
+              WHERE component.installation_id = ?) AS artifacts,
+            (SELECT COUNT(*) FROM writer_fences fence
+              JOIN projection_mutations mutation ON mutation.mutation_domain = fence.mutation_domain
+              JOIN reconcile_runs run ON run.id = mutation.run_id
+              WHERE run.installation_id = ?) AS fences
+        `).get(row.id, row.id, row.id, row.id, row.id, row.id) as {
+          components: number
+          consumers: number
+          consents: number
+          runs: number
+          artifacts: number
+          fences: number
+        }
+        return row.id === installationId
+          && row.family === 'custom-local-agent'
+          && row.host_variant === 'custom-local-mcp'
+          && row.runtime_realm === input.runtimeRealm
+          && row.profile_id === 'legacy-unconfigured'
+          && row.install_key === installKey
+          && row.provenance === 'legacy_identity_only'
+          && row.display_name === legacy.name
+          && row.display_alias === null
+          && row.agent_id === legacy.id
+          && row.desired_state === 'unmanaged'
+          && row.tombstoned_at === null
+          && row.config_root === null
+          && row.executable_path === null
+          && row.app_path === null
+          && row.detected_version === null
+          && row.version_detection_method === null
+          && row.os_user_identity === null
+          && row.distribution_id === null
+          && row.supported_capability === 0
+          && row.desired_capability === 0
+          && row.verified_capability === 0
+          && row.consent_envelope_id === null
+          && row.delivery_summary === 'cataloged'
+          && row.verification_summary === 'unverified'
+          && row.health_state === 'identity_only'
+          && row.status_reason === null
+          && row.reconcile_state === 'idle'
+          && row.last_detected_at === null
+          && Object.keys(metadata).length === 1
+          && custom.kind === 'legacy_identity_only'
+          && custom.sourceAgentId === legacy.id
+          && custom.sourceToolType === legacy.tool_type
+          && custom.sourceCreatedAt === legacy.created
+          && typeof custom.adoptedAt === 'string'
+          && Number.isFinite(Date.parse(custom.adoptedAt))
+          && Object.keys(custom).length === 6
+          && Object.keys(custom).every(key => [
+            'kind', 'sourceAgentId', 'sourceToolType', 'sourceCreatedAt',
+            'sourceLastActiveAt', 'adoptedAt',
+          ].includes(key))
+          && state.components === 0
+          && state.consumers === 0
+          && state.consents === 0
+          && state.runs === 0
+          && state.artifacts === 0
+          && state.fences === 0
+      }
+
+      const existingAlias = this.db.prepare(`
+        SELECT installation_id FROM agent_aliases
+        WHERE alias_type = 'legacy_agent_id' AND alias_value = ? AND runtime_realm = ?
+      `).get(legacy.id, input.runtimeRealm) as { installation_id: string } | undefined
+      if (existingAlias) {
+        const aliased = this.getInstallation(existingAlias.installation_id)
+        if (!isExactIdentityOnlyPlaceholder(aliased)) {
+          throw new Error('legacy Agent identity is already bound to another Installation')
+        }
+        return 'already_adopted'
+      }
+
+      const identityOwner = this.getInstallationByAgentIdOrAlias(legacy.id)
+      if (identityOwner) {
+        if (!isExactIdentityOnlyPlaceholder(identityOwner)) {
+          throw new Error('legacy Agent identity is already owned')
+        }
+        this.db.prepare(`
+          INSERT INTO agent_aliases (
+            id, alias_type, alias_value, runtime_realm, canonical_agent_id,
+            installation_id, reason, created_at
+          ) VALUES (?, 'legacy_agent_id', ?, ?, ?, ?, ?, ?)
+        `).run(
+          aliasId, legacy.id, input.runtimeRealm, legacy.id, identityOwner.id,
+          identityOnlyReason, input.adoptedAt,
+        )
+        return 'already_adopted'
+      }
+
+      if (this.getInstallation(installationId)
+        || this.getInstallationByInstallKey(input.runtimeRealm, installKey)) {
+        throw new Error('legacy custom Installation identity collides with an existing record')
+      }
+
+      this.db.prepare(`
+        INSERT INTO agent_installations (
+          id, family, host_variant, runtime_realm, profile_id, install_key,
+          provenance, display_name, agent_id, supported_capability,
+          delivery_summary, verification_summary, health_state, status_reason,
+          reconcile_state, last_detected_at, metadata_json, created_at, updated_at
+        ) VALUES (
+          ?, 'custom-local-agent', 'custom-local-mcp', ?, 'legacy-unconfigured', ?,
+          'legacy_identity_only', ?, ?, 0,
+          'cataloged', 'unverified', 'identity_only', NULL,
+          'idle', NULL, ?, ?, ?
+        )
+      `).run(
+        installationId,
+        input.runtimeRealm,
+        installKey,
+        legacy.name,
+        legacy.id,
+        json({
+          customInstallation: {
+            kind: 'legacy_identity_only',
+            sourceAgentId: legacy.id,
+            sourceToolType: legacy.tool_type,
+            sourceCreatedAt: legacy.created,
+            sourceLastActiveAt: legacy.last_active,
+            adoptedAt: input.adoptedAt,
+          },
+        }, {}),
+        input.adoptedAt,
+        input.adoptedAt,
+      )
+      this.db.prepare(`
+        INSERT INTO agent_aliases (
+          id, alias_type, alias_value, runtime_realm, canonical_agent_id,
+          installation_id, reason, created_at
+        ) VALUES (?, 'legacy_agent_id', ?, ?, ?, ?, ?, ?)
+      `).run(
+        aliasId, legacy.id, input.runtimeRealm, legacy.id, installationId,
+        identityOnlyReason, input.adoptedAt,
+      )
+      this.recordEvent({
+        installationId,
+        kind: customSource ? 'legacy_custom_identity_adopted' : 'legacy_secondary_identity_preserved',
+        severity: 'info',
+        dedupeKey: `${legacy.id}:legacy-identity-only-adopted`,
+        payload: {
+          legacyAgentId: legacy.id,
+          legacyToolType: legacy.tool_type,
+        },
+        createdAt: input.adoptedAt,
+      })
+      return 'adopted'
+    }).immediate()
+  }
+
+  /**
+   * Replaces only an identity-only legacy Custom placeholder with a freshly
+   * user-selected, preflight-frozen MCP surface. This is ledger state only;
+   * consent and every host mutation remain the coordinator's responsibility.
+   */
+  bindLegacyCustomInstallationSurface(input: {
+    expected: { installationId: string; agentId: string; installKey: string; metadataJson: string }
+    draft: DiscoverInstallationInput
+    boundAt: string
+  }): AgentInstallationRow {
+    if (input.draft.id !== input.expected.installationId
+      || input.draft.agentId !== input.expected.agentId
+      || input.draft.family !== 'custom-local-agent'
+      || input.draft.hostVariant !== 'custom-local-mcp'
+      || input.draft.runtimeRealm !== 'local_macos'
+      || input.draft.provenance !== 'user_selected_local_executable'
+      || !input.draft.configRoot
+      || !input.draft.executablePath
+      || !input.draft.detectedVersion) {
+      throw new Error('legacy Custom surface binding is incomplete or changes identity')
+    }
+    return this.db.transaction(() => {
+      const current = this.getInstallation(input.expected.installationId)
+      const currentMetadata = current ? safeJsonObject(current.metadata_json) : {}
+      const legacy = safeJsonObject(currentMetadata.customInstallation)
+      if (!current
+        || current.agent_id !== input.expected.agentId
+        || current.install_key !== input.expected.installKey
+        || current.metadata_json !== input.expected.metadataJson
+        || current.family !== 'custom-local-agent'
+        || current.host_variant !== 'custom-local-mcp'
+        || current.runtime_realm !== 'local_macos'
+        || current.profile_id !== 'legacy-unconfigured'
+        || current.provenance !== 'legacy_identity_only'
+        || current.health_state !== 'identity_only'
+        || current.desired_state !== 'unmanaged'
+        || current.tombstoned_at !== null
+        || legacy.kind !== 'legacy_identity_only'
+        || legacy.sourceAgentId !== input.expected.agentId) {
+        throw new Error('legacy Custom identity changed before surface binding')
+      }
+      const installKeyOwner = this.getInstallationByInstallKey('local_macos', input.draft.installKey)
+      if (installKeyOwner && installKeyOwner.id !== current.id) {
+        throw new Error('Custom MCP surface is already bound to another Installation')
+      }
+      const boundMetadata = {
+        ...safeJsonObject(input.draft.metadata),
+        legacyIdentity: legacy,
+        customInstallation: {
+          ...safeJsonObject(safeJsonObject(input.draft.metadata).customInstallation),
+          legacySourceAgentId: input.expected.agentId,
+          legacyIdentityBoundAt: input.boundAt,
+        },
+      }
+      this.db.prepare(`
+        UPDATE agent_installations
+        SET profile_id = ?, install_key = ?, distribution_id = ?, provenance = ?,
+            display_name = ?, config_root = ?, executable_path = ?, app_path = ?,
+            detected_version = ?, version_detection_method = ?, os_user_identity = ?,
+            supported_capability = ?, health_state = 'discovered', status_reason = NULL,
+            reconcile_state = 'idle', last_detected_at = ?, metadata_json = ?, updated_at = ?
+        WHERE id = ? AND agent_id = ? AND install_key = ? AND metadata_json = ?
+          AND family = 'custom-local-agent' AND host_variant = 'custom-local-mcp'
+          AND runtime_realm = 'local_macos' AND profile_id = 'legacy-unconfigured'
+          AND provenance = 'legacy_identity_only' AND health_state = 'identity_only'
+          AND desired_state = 'unmanaged' AND tombstoned_at IS NULL
+      `).run(
+        input.draft.profileId,
+        input.draft.installKey,
+        input.draft.distributionId ?? null,
+        input.draft.provenance ?? null,
+        input.draft.displayName,
+        input.draft.configRoot,
+        input.draft.executablePath,
+        input.draft.appPath ?? null,
+        input.draft.detectedVersion,
+        input.draft.versionDetectionMethod ?? null,
+        input.draft.osUserIdentity ?? null,
+        input.draft.supportedCapability ?? 0,
+        input.draft.lastDetectedAt,
+        json(boundMetadata, {}),
+        input.boundAt,
+        current.id,
+        input.expected.agentId,
+        input.expected.installKey,
+        input.expected.metadataJson,
+      )
+      const rebound = this.getInstallation(current.id)
+      if (!rebound || rebound.install_key !== input.draft.installKey
+        || rebound.agent_id !== input.expected.agentId) {
+        throw new Error('legacy Custom surface binding CAS failed')
+      }
+      this.recordEvent({
+        installationId: current.id,
+        kind: 'legacy_custom_surface_bound',
+        severity: 'info',
+        dedupeKey: `${current.id}:legacy-custom-surface:${input.draft.installKey}`,
+        payload: { legacyAgentId: input.expected.agentId },
+        createdAt: input.boundAt,
+      })
+      return rebound
+    }).immediate()
+  }
+
+  /**
    * Imports an exact, side-effect-free legacy ownership baseline.  This never
    * grants maintenance consent and never mutates a host: it only preserves the
    * old identity plus proven Tide Mind-owned fragments in the local Ledger.
@@ -2554,10 +3290,20 @@ export class AgentIntegrationRepository {
     expectedVersionDetectionMethod: string | null
     expectedMetadataJson: string
     evidenceHash: string
+    evidenceVersion?: 2
+    canonicalSelectionBasis?: 'sole_claimant' | 'current_binding' | 'unique_last_active' | 'unique_created' | 'stable_id'
+    candidateLegacyAgentIds?: readonly string[]
     artifacts: readonly LegacyAdoptionArtifactInput[]
     adoptedAt: string
   }): 'adopted' | 'already_adopted' {
     if (input.artifacts.length === 0) throw new Error('legacy adoption requires owned artifacts')
+    const candidateLegacyAgentIds = input.candidateLegacyAgentIds
+      ? [...new Set(input.candidateLegacyAgentIds)].sort()
+      : [input.legacyAgentId]
+    if (!candidateLegacyAgentIds.includes(input.legacyAgentId)
+      || candidateLegacyAgentIds.length !== (input.candidateLegacyAgentIds?.length ?? 1)) {
+      throw new Error('legacy canonical selection candidates are invalid')
+    }
     return this.db.transaction(() => {
       const legacy = this.db.prepare(`
         SELECT id, tool_type, archived FROM agents WHERE id = ?
@@ -2622,19 +3368,32 @@ export class AgentIntegrationRepository {
 
       const previousAgentId = installation.agent_id
       const metadata = safeJsonObject(installation.metadata_json)
+      const historicalCapability = legacyCallableCapability(input.artifacts, input.legacyToolType)
+      if (historicalCapability === 0) throw new Error('legacy adoption has no callable component evidence')
       this.db.prepare(`
         UPDATE agent_installations
-        SET agent_id = ?, status_reason = 'awaiting_consent',
+        SET agent_id = ?, status_reason = 'legacy_callable_unmanaged',
+            verified_capability = ?, verification_summary = 'stale', last_verified_at = ?,
             metadata_json = ?, updated_at = ?
         WHERE id = ? AND desired_state = 'unmanaged' AND tombstoned_at IS NULL
       `).run(
         input.legacyAgentId,
+        historicalCapability,
+        input.adoptedAt,
         json({
           ...metadata,
           legacyAdoption: {
             sourceAgentId: input.legacyAgentId,
             sourceToolType: input.legacyToolType,
             evidenceHash: input.evidenceHash,
+            ...(input.evidenceVersion === 2 ? { evidenceVersion: 2, historicalCapability } : {}),
+            ...(input.canonicalSelectionBasis ? {
+              canonicalSelection: {
+                basis: input.canonicalSelectionBasis,
+                canonicalAgentId: input.legacyAgentId,
+                candidateLegacyAgentIds,
+              },
+            } : {}),
             adoptedAt: input.adoptedAt,
           },
         }, {}),
@@ -2735,11 +3494,11 @@ export class AgentIntegrationRepository {
             installation_id, component_key, desired_state, desired_capability,
             delivery_mode, verification_status, artifact_id, visibility_state,
             created_at, updated_at
-          ) VALUES (?, ?, 'unmanaged', 0, 'managed', 'unverified', ?, ?, ?, ?)
+          ) VALUES (?, ?, 'unmanaged', 0, 'managed', 'stale', ?, ?, ?, ?)
           ON CONFLICT(installation_id, component_key) DO UPDATE SET
             artifact_id = excluded.artifact_id,
             delivery_mode = 'managed',
-            verification_status = 'unverified',
+            verification_status = 'stale',
             visibility_state = excluded.visibility_state,
             updated_at = excluded.updated_at
           WHERE installation_components.desired_state = 'unmanaged'
@@ -2795,6 +3554,10 @@ export class AgentIntegrationRepository {
           legacyToolType: input.legacyToolType,
           evidenceHash: input.evidenceHash,
           componentKeys: input.artifacts.map(artifact => artifact.componentKey),
+          ...(input.canonicalSelectionBasis ? {
+            canonicalSelectionBasis: input.canonicalSelectionBasis,
+            candidateLegacyAgentIds,
+          } : {}),
         },
         createdAt: input.adoptedAt,
       })
@@ -2827,6 +3590,312 @@ export class AgentIntegrationRepository {
       input.reason,
       input.createdAt,
     )
+  }
+
+  /**
+   * Persists a user-completed Codex /hooks trust action only after the caller
+   * has read the exact hook back through Codex's official persisted state.
+   * The event is additionally tied to the current Ownership Ledger row, so an
+   * old receipt cannot authorize a replaced or moved lifecycle fragment.
+   */
+  recordCodexHookTrustEvidence(input: RecordCodexHookTrustEvidenceInput): string {
+    assertCodexTrustHash(input.ownedFragmentHash, 'ownedFragmentHash')
+    assertCodexTrustHash(input.hostCurrentHash, 'hostCurrentHash', true)
+    assertCodexTrustHash(input.hooksFileFingerprint, 'hooksFileFingerprint')
+    assertCodexTrustHash(input.trustConfigFingerprint, 'trustConfigFingerprint')
+    if (!path.isAbsolute(input.sourcePath)) throw new Error('Codex hook trust sourcePath must be absolute')
+    if (!input.hookKey.startsWith(`${input.sourcePath}:`)) {
+      throw new Error('Codex hook trust key does not belong to sourcePath')
+    }
+    const installation = this.db.prepare(`
+      SELECT agent_id, host_variant, detected_version
+      FROM agent_installations
+      WHERE id = ? AND tombstoned_at IS NULL AND desired_state = 'managed'
+    `).get(input.installationId) as {
+      agent_id: string | null
+      host_variant: string
+      detected_version: string | null
+    } | undefined
+    if (!installation
+      || installation.agent_id !== input.agentId
+      || installation.host_variant !== input.hostVariant
+      || installation.detected_version !== input.hostVersion) {
+      throw new Error('Codex hook trust Installation binding changed')
+    }
+    const artifact = this.db.prepare(`
+      SELECT artifact.target_path, artifact.owned_fragment_hash, artifact.projection_version
+      FROM managed_artifacts artifact
+      JOIN artifact_consumers consumer
+        ON consumer.artifact_id = artifact.id
+       AND consumer.installation_id = ?
+       AND consumer.component_key = 'lifecycle'
+       AND consumer.state = 'active'
+       AND consumer.desired_state = 'managed'
+       AND consumer.tombstoned_at IS NULL
+      WHERE artifact.id = ? AND artifact.state = 'healthy'
+    `).get(input.installationId, input.artifactId) as {
+      target_path: string
+      owned_fragment_hash: string | null
+      projection_version: string
+    } | undefined
+    if (!artifact
+      || path.resolve(artifact.target_path) !== path.resolve(input.sourcePath)
+      || artifact.owned_fragment_hash !== input.ownedFragmentHash
+      || artifact.projection_version !== input.projectionVersion) {
+      throw new Error('Codex hook trust Artifact binding changed')
+    }
+
+    const sourcePathHash = sha256Bytes(path.resolve(input.sourcePath))
+    const hookKeyHash = sha256Bytes(input.hookKey)
+    return this.recordEvent({
+      installationId: input.installationId,
+      componentKey: 'lifecycle',
+      artifactId: input.artifactId,
+      kind: 'codex_hook_trust_verified',
+      severity: 'info',
+      dedupeKey: [
+        input.installationId,
+        input.artifactId,
+        input.ownedFragmentHash,
+        input.hostCurrentHash,
+        input.tideMindVersion,
+        input.adapterVersion,
+        input.projectionVersion,
+        input.hostVersion,
+      ].join(':'),
+      payload: {
+        schemaVersion: 1,
+        agentId: input.agentId,
+        hostVariant: input.hostVariant,
+        sourcePathHash,
+        hookKeyHash,
+        hooksFileFingerprint: input.hooksFileFingerprint,
+        trustConfigFingerprint: input.trustConfigFingerprint,
+        ownedFragmentHash: input.ownedFragmentHash,
+        hostCurrentHash: input.hostCurrentHash,
+        tideMindVersion: input.tideMindVersion,
+        adapterVersion: input.adapterVersion,
+        projectionVersion: input.projectionVersion,
+        hostVersion: input.hostVersion,
+        verifiedAt: input.verifiedAt,
+      },
+      createdAt: input.verifiedAt,
+    })
+  }
+
+  findCodexHookTrustEvidence(query: CodexHookTrustBinding): CodexHookTrustEvidenceRecord | null {
+    const row = this.db.prepare(`
+      SELECT event.id, event.artifact_id, event.created_at, event.payload_json
+      FROM agent_integration_events event
+      JOIN agent_installations installation
+        ON installation.id = event.installation_id
+       AND installation.agent_id = json_extract(event.payload_json, '$.agentId')
+       AND installation.host_variant = json_extract(event.payload_json, '$.hostVariant')
+       AND installation.detected_version = json_extract(event.payload_json, '$.hostVersion')
+       AND installation.desired_state = 'managed'
+       AND installation.tombstoned_at IS NULL
+      JOIN managed_artifacts artifact
+        ON artifact.id = event.artifact_id
+       AND artifact.owned_fragment_hash = json_extract(event.payload_json, '$.ownedFragmentHash')
+       AND artifact.projection_version = json_extract(event.payload_json, '$.projectionVersion')
+       AND artifact.state = 'healthy'
+      JOIN artifact_consumers consumer
+        ON consumer.artifact_id = artifact.id
+       AND consumer.installation_id = installation.id
+       AND consumer.component_key = 'lifecycle'
+       AND consumer.state = 'active'
+       AND consumer.desired_state = 'managed'
+       AND consumer.tombstoned_at IS NULL
+      WHERE event.kind = 'codex_hook_trust_verified'
+        AND event.installation_id = ?
+        AND json_extract(event.payload_json, '$.schemaVersion') = 1
+        AND json_extract(event.payload_json, '$.agentId') = ?
+        AND json_extract(event.payload_json, '$.hostVariant') = ?
+        AND json_extract(event.payload_json, '$.sourcePathHash') = ?
+        AND json_extract(event.payload_json, '$.hookKeyHash') = ?
+        AND json_extract(event.payload_json, '$.ownedFragmentHash') = ?
+        AND json_extract(event.payload_json, '$.hostCurrentHash') = ?
+        AND json_extract(event.payload_json, '$.tideMindVersion') = ?
+        AND json_extract(event.payload_json, '$.adapterVersion') = ?
+        AND json_extract(event.payload_json, '$.projectionVersion') = ?
+        AND json_extract(event.payload_json, '$.hostVersion') = ?
+      ORDER BY event.created_at DESC, event.id DESC
+      LIMIT 1
+    `).get(
+      query.installationId,
+      query.agentId,
+      query.hostVariant,
+      query.sourcePathHash,
+      query.hookKeyHash,
+      query.ownedFragmentHash,
+      query.hostCurrentHash,
+      query.tideMindVersion,
+      query.adapterVersion,
+      query.projectionVersion,
+      query.hostVersion,
+    ) as {
+      id: string
+      artifact_id: string
+      created_at: string
+      payload_json: string
+    } | undefined
+    if (!row) return null
+    return {
+      ...query,
+      id: row.id,
+      artifactId: row.artifact_id,
+      verifiedAt: row.created_at,
+    }
+  }
+
+  recordGuidedRemovalEvidence(
+    input: GuidedRemovalEvidenceQuery & { confirmedAt: string },
+  ): string {
+    return this.db.transaction(() => {
+      const run = this.db.prepare(`
+        SELECT prepared_plan_json
+        FROM reconcile_runs
+        WHERE id = ? AND installation_id = ? AND operation_type = 'disconnect'
+          AND state = 'applied_unverified'
+      `).get(input.activationRunId, input.installationId) as { prepared_plan_json: string } | undefined
+      if (!run) throw new Error('guided removal run is no longer pending')
+      const prepared = JSON.parse(run.prepared_plan_json) as PreparedCoordinatorPlan
+      if (prepared.activityGenerationToken !== input.activityGenerationToken
+        || prepared.executionPlan.activityGenerationTokenHash !== sha256Json(input.activityGenerationToken)) {
+        throw new Error('guided removal generation changed')
+      }
+      const action = prepared.adapterPlan.requiredUserActionDetails?.find(detail => (
+        (detail.kind === 'qwenwork_mcp_gui' || detail.kind === 'custom_mcp_import')
+        && detail.operation === 'disconnect'
+        && detail.componentKey === 'memory_tools'
+      ))
+      if (!action || (action.kind !== 'qwenwork_mcp_gui' && action.kind !== 'custom_mcp_import')
+        || action.installationId !== input.installationId
+        || action.agentId !== input.agentId
+        || action.hostVariant !== input.hostVariant
+        || action.connectorName !== input.connectorName) {
+        throw new Error('guided removal action binding changed')
+      }
+      const ledger = this.db.prepare(`
+        SELECT installation.agent_id, installation.host_variant,
+               memory.delivery_mode AS memory_delivery_mode,
+               memory.artifact_id AS memory_artifact_id,
+               instruction.desired_state AS instruction_desired_state,
+               artifact.state AS instruction_artifact_state,
+               consumer.state AS instruction_consumer_state
+        FROM agent_installations installation
+        JOIN installation_components memory
+          ON memory.installation_id = installation.id AND memory.component_key = 'memory_tools'
+        LEFT JOIN installation_components instruction
+          ON instruction.installation_id = installation.id AND instruction.component_key = 'instruction'
+        LEFT JOIN managed_artifacts artifact ON artifact.id = instruction.artifact_id
+        LEFT JOIN artifact_consumers consumer
+          ON consumer.artifact_id = artifact.id AND consumer.installation_id = installation.id
+         AND consumer.component_key = 'instruction'
+        WHERE installation.id = ? AND installation.desired_state = 'removed'
+          AND installation.tombstoned_at IS NOT NULL
+          AND memory.desired_state = 'removed' AND memory.delivery_mode = 'guided'
+          AND memory.artifact_id IS NULL
+      `).get(input.installationId) as {
+        agent_id: string | null
+        host_variant: string
+        memory_delivery_mode: string
+        memory_artifact_id: string | null
+        instruction_desired_state: string
+        instruction_artifact_state: string | null
+        instruction_consumer_state: string | null
+      } | undefined
+      if (!ledger
+        || ledger.agent_id !== input.agentId
+        || ledger.host_variant !== input.hostVariant
+        || (action.kind === 'qwenwork_mcp_gui' && (ledger.instruction_desired_state !== 'removed'
+          || ledger.instruction_artifact_state !== 'removal_pending'
+          || ledger.instruction_consumer_state !== 'removal_pending'))) {
+        throw new Error('guided removal ledger is no longer pending')
+      }
+      return this.recordEvent({
+        installationId: input.installationId,
+        componentKey: 'memory_tools',
+        kind: 'user_confirmed_guided_removal',
+        severity: 'info',
+        dedupeKey: `guided-removal:${input.activationRunId}`,
+        payload: {
+          schemaVersion: 1,
+          installationId: input.installationId,
+          agentId: input.agentId,
+          hostVariant: input.hostVariant,
+          componentKey: input.componentKey,
+          activationRunId: input.activationRunId,
+          generationProof: sha256Json(input.activityGenerationToken),
+          connectorName: input.connectorName,
+          confirmedAt: input.confirmedAt,
+        },
+        createdAt: input.confirmedAt,
+      })
+    }).immediate()
+  }
+
+  findGuidedRemovalEvidence(query: GuidedRemovalEvidenceQuery): GuidedRemovalEvidenceRecord | null {
+    const row = this.db.prepare(`
+      SELECT event.id, event.created_at
+      FROM agent_integration_events event
+      JOIN reconcile_runs run
+        ON run.id = json_extract(event.payload_json, '$.activationRunId')
+       AND run.installation_id = event.installation_id
+       AND run.operation_type = 'disconnect'
+       AND run.state IN ('applied_unverified','verified')
+      JOIN installation_components component
+        ON component.installation_id = event.installation_id
+       AND component.component_key = 'memory_tools'
+       AND component.delivery_mode = 'guided'
+       AND component.artifact_id IS NULL
+       AND component.desired_state = 'removed'
+      WHERE event.kind = 'user_confirmed_guided_removal'
+        AND event.installation_id = ?
+        AND json_extract(event.payload_json, '$.schemaVersion') = 1
+        AND json_extract(event.payload_json, '$.agentId') = ?
+        AND json_extract(event.payload_json, '$.hostVariant') = ?
+        AND json_extract(event.payload_json, '$.componentKey') = ?
+        AND json_extract(event.payload_json, '$.activationRunId') = ?
+        AND json_extract(event.payload_json, '$.generationProof') = ?
+        AND json_extract(event.payload_json, '$.connectorName') = ?
+      ORDER BY event.rowid DESC LIMIT 1
+    `).get(
+      query.installationId,
+      query.agentId,
+      query.hostVariant,
+      query.componentKey,
+      query.activationRunId,
+      sha256Json(query.activityGenerationToken),
+      query.connectorName,
+    ) as { id: string; created_at: string } | undefined
+    return row ? { ...query, id: row.id, confirmedAt: row.created_at } : null
+  }
+
+  getPendingGuidedRemovalAction(installationId: string): {
+    runId: string
+    activityGenerationToken: string
+    connectorAction: Extract<import('./types.js').RequiredUserActionDetail, { kind: 'qwenwork_mcp_gui' | 'custom_mcp_import' }>
+    fileAction: Extract<import('./types.js').RequiredUserActionDetail, { kind: 'manual_file_removal' }> | null
+  } | null {
+    const row = this.db.prepare(`
+      SELECT id, prepared_plan_json FROM reconcile_runs
+      WHERE installation_id = ? AND operation_type = 'disconnect' AND state = 'applied_unverified'
+      ORDER BY rowid DESC LIMIT 1
+    `).get(installationId) as { id: string; prepared_plan_json: string } | undefined
+    if (!row) return null
+    const prepared = JSON.parse(row.prepared_plan_json) as PreparedCoordinatorPlan
+    const connectorAction = prepared.adapterPlan.requiredUserActionDetails?.find(detail => (
+      (detail.kind === 'qwenwork_mcp_gui' || detail.kind === 'custom_mcp_import') && detail.operation === 'disconnect'
+    ))
+    const fileAction = prepared.adapterPlan.requiredUserActionDetails?.find(detail => (
+      detail.kind === 'manual_file_removal' && detail.operation === 'disconnect'
+    ))
+    if (!prepared.activityGenerationToken
+      || !connectorAction || (connectorAction.kind !== 'qwenwork_mcp_gui' && connectorAction.kind !== 'custom_mcp_import')
+      || (connectorAction.kind === 'qwenwork_mcp_gui' && (!fileAction || fileAction.kind !== 'manual_file_removal'))) return null
+    return { runId: row.id, activityGenerationToken: prepared.activityGenerationToken, connectorAction,
+      fileAction: fileAction?.kind === 'manual_file_removal' ? fileAction : null }
   }
 
   recordEvent(input: IntegrationEventInput): string {
@@ -3131,14 +4200,163 @@ export class AgentIntegrationRepository {
     return tx.immediate()
   }
 
+  /**
+   * Invalidates green evidence when read-only inspection can no longer prove the
+   * exact owned fragment. This deliberately records no repair intent and never
+   * writes the external target.
+   */
+  markArtifactNeedsAttention(input: {
+    artifactId: string
+    artifactState: 'drifted' | 'conflict'
+    statusReason: 'conflict' | 'permission'
+    invalidationReason: 'artifact_drifted' | 'artifact_conflicted' | 'artifact_inaccessible'
+    observedFingerprint: string | null
+    observedAt: string
+  }): boolean {
+    return this.db.transaction(() => {
+      const artifact = this.db.prepare(`
+        SELECT state FROM managed_artifacts WHERE id = ?
+      `).get(input.artifactId) as { state: ArtifactState } | undefined
+      if (!artifact || ['paused', 'removal_pending', 'removed'].includes(artifact.state)) return false
+
+      const nextState = artifact.state === 'conflict' ? 'conflict' : input.artifactState
+      const updated = this.db.prepare(`
+        UPDATE managed_artifacts
+        SET state = ?, observed_fragment_hash = ?, updated_at = ?
+        WHERE id = ? AND state NOT IN ('paused','removal_pending','removed')
+      `).run(nextState, input.observedFingerprint, input.observedAt, input.artifactId)
+      if (updated.changes !== 1) return false
+
+      const affected = this.db.prepare(`
+        SELECT DISTINCT installation_id AS id
+        FROM installation_components
+        WHERE artifact_id = ?
+      `).all(input.artifactId) as Array<{ id: string }>
+      this.db.prepare(`
+        UPDATE verification_results
+        SET invalidated_at = COALESCE(invalidated_at, ?),
+            invalidation_reason = COALESCE(invalidation_reason, ?)
+        WHERE id IN (
+          SELECT verification_result_id
+          FROM installation_components
+          WHERE artifact_id = ? AND verification_result_id IS NOT NULL
+        )
+      `).run(input.observedAt, input.invalidationReason, input.artifactId)
+      this.db.prepare(`
+        UPDATE installation_components
+        SET verification_status = CASE
+              WHEN verification_result_id IS NULL THEN 'unverified'
+              ELSE 'stale'
+            END,
+            updated_at = ?
+        WHERE artifact_id = ? AND desired_state IN ('managed','disabled')
+      `).run(input.observedAt, input.artifactId)
+
+      for (const installation of affected) {
+        this.refreshInstallationVerificationSummary(installation.id, input.observedAt)
+        this.db.prepare(`
+          UPDATE agent_installations
+          SET reconcile_state = CASE
+                WHEN desired_state = 'managed'
+                  AND reconcile_state IN ('idle','needs_recovery','backoff') THEN 'idle'
+                ELSE reconcile_state
+              END,
+              status_reason = CASE
+                WHEN desired_state = 'managed'
+                  AND reconcile_state IN ('idle','needs_recovery','backoff') THEN ?
+                ELSE status_reason
+              END,
+              updated_at = ?
+          WHERE id = ?
+        `).run(input.statusReason, input.observedAt, installation.id)
+      }
+      return true
+    }).immediate()
+  }
+
   markArtifactHealthyAfterReadback(artifactId: string, verifiedAt: string): boolean {
-    const result = this.db.prepare(`
-      UPDATE managed_artifacts
-      SET state = 'healthy', missing_episode_id = NULL, paused_reason = NULL,
-          last_verified_at = ?, updated_at = ?
-      WHERE id = ? AND state IN ('missing','needs_recovery')
-    `).run(verifiedAt, verifiedAt, artifactId)
-    return result.changes === 1
+    return this.db.transaction(() => {
+      const prior = this.db.prepare(`SELECT state FROM managed_artifacts WHERE id = ?`)
+        .get(artifactId) as { state: ArtifactState } | undefined
+      const result = this.db.prepare(`
+        UPDATE managed_artifacts
+        SET state = 'healthy', missing_episode_id = NULL, paused_reason = NULL,
+            last_verified_at = ?, updated_at = ?
+        WHERE id = ? AND state IN ('healthy','missing','needs_recovery','drifted')
+      `).run(verifiedAt, verifiedAt, artifactId)
+      if (result.changes !== 1) return false
+      if (prior?.state === 'healthy') {
+        const revived = this.db.prepare(`
+          UPDATE installation_components AS component
+          SET verification_status = 'verified', updated_at = ?
+          WHERE component.artifact_id = ? AND component.verification_status = 'stale'
+            AND EXISTS (
+              SELECT 1
+              FROM verification_results verification
+              JOIN agent_installations installation ON installation.id = component.installation_id
+              JOIN managed_artifacts artifact ON artifact.id = component.artifact_id
+              WHERE verification.id = component.verification_result_id
+                AND verification.result = 'verified' AND verification.invalidated_at IS NULL
+                AND verification.installation_id = installation.id
+                AND verification.component_key = component.component_key
+                AND verification.family = installation.family
+                AND verification.host_variant = installation.host_variant
+                AND verification.runtime_realm = installation.runtime_realm
+                AND verification.identity_assertion = installation.agent_id
+                AND (verification.host_version IS installation.detected_version)
+                AND (
+                  NOT EXISTS (
+                    SELECT 1 FROM json_each(verification.invalidation_keys_json)
+                    WHERE value = 'artifact_hash'
+                  )
+                  OR verification.artifact_hash = artifact.owned_fragment_hash
+                )
+            )
+        `).run(verifiedAt, artifactId)
+        if (revived.changes === 0) return true
+        const affected = this.db.prepare(`
+          SELECT DISTINCT installation_id AS id
+          FROM installation_components WHERE artifact_id = ?
+        `).all(artifactId) as Array<{ id: string }>
+        for (const installation of affected) {
+          const statuses = this.db.prepare(`
+            SELECT verification_status AS status
+            FROM installation_components
+            WHERE installation_id = ? AND desired_state = 'managed'
+          `).all(installation.id) as Array<{ status: VerificationStatus }>
+          const uniqueStatuses = new Set(statuses.map(row => row.status))
+          const summary = statuses.length === 0
+            ? 'unverified'
+            : uniqueStatuses.size === 1
+              ? [...uniqueStatuses][0]
+              : 'mixed'
+          this.db.prepare(`
+            UPDATE agent_installations
+            SET verification_summary = ?,
+                status_reason = CASE
+                  WHEN ? = 'verified' THEN 'verified'
+                  ELSE 'verification_stale'
+                END,
+                updated_at = ?
+            WHERE id = ? AND desired_state = 'managed' AND reconcile_state = 'idle'
+              AND status_reason = 'verification_stale'
+          `).run(summary, summary, verifiedAt, installation.id)
+        }
+      } else if (prior?.state === 'drifted') {
+        this.db.prepare(`
+          UPDATE agent_installations
+          SET status_reason = 'verification_stale', updated_at = ?
+          WHERE id IN (
+            SELECT installation_id FROM artifact_consumers
+            WHERE artifact_id = ? AND state = 'active' AND tombstoned_at IS NULL
+          )
+            AND desired_state = 'managed'
+            AND reconcile_state = 'idle'
+            AND status_reason IN ('conflict','permission')
+        `).run(verifiedAt, artifactId)
+      }
+      return true
+    }).immediate()
   }
 
   resetArtifactCircuit(artifactId: string, resetAt: string): boolean {
@@ -3378,9 +4596,15 @@ const FEED_RUNNING_RUN_STATES = new Set([
   'planned', 'preconditions_checked', 'applying', 'verified', 'compensating',
 ])
 
+function assertCodexTrustHash(value: string, label: string, prefixed = false): void {
+  const pattern = prefixed ? /^sha256:[a-f0-9]{64}$/u : /^[a-f0-9]{64}$/u
+  if (!pattern.test(value)) throw new Error(`invalid Codex hook trust ${label}`)
+}
+
 function applyTaskFeedRunPriority(run: ApplyTaskRunRow): number {
   if (FEED_RUNNING_RUN_STATES.has(run.state)) return 0
   if (run.state === 'applied_unverified') return 2
+  if (run.state === 'cancelled' && run.failure_code === 'superseded_by_disconnect') return 3
   return run.state === 'committed' ? 3 : 1
 }
 
@@ -3396,6 +4620,7 @@ function applyTaskFeedItemPriority(
         || (fact.payload_run_id !== null && fact.payload_run_id !== fact.run_id)
         || ((fact.payload_status === 'committed'
           || fact.payload_status === 'awaiting_verification'
+          || fact.payload_status === 'superseded'
           || fact.payload_status === 'needs_recovery')
           && (fact.payload_installation_id !== fact.installation_id
             || fact.payload_run_id !== fact.run_id)))) return 1
@@ -3404,7 +4629,7 @@ function applyTaskFeedItemPriority(
       installation_id: fact.installation_id,
       execution_plan_hash: '',
       state: fact.run_state,
-      failure_code: null,
+      failure_code: fact.run_failure_code,
       created_at: '',
       started_at: null,
       completed_at: null,
@@ -3487,5 +4712,18 @@ function decodeApplyTaskFeedCursor(raw: string): ApplyTaskFeedCursorPayload {
     return parsed as unknown as ApplyTaskFeedCursorPayload
   } catch {
     throw new Error('invalid_task_feed_cursor')
+  }
+}
+
+function isSafeCustomMcpPersistedPlan(operation: string, rawPlan: string): boolean {
+  if (operation === 'disconnect') return true
+  if (operation !== 'connect' && operation !== 'repair') return false
+  try {
+    const parsed = JSON.parse(rawPlan) as { componentKeys?: unknown }
+    return Array.isArray(parsed.componentKeys)
+      && parsed.componentKeys.length === 1
+      && parsed.componentKeys[0] === 'memory_tools'
+  } catch {
+    return false
   }
 }

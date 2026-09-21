@@ -1,11 +1,16 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { AgentIntegrationRepository } from '../client/electron/agent-integration/repository.js'
+import { sha256Json } from '../client/electron/agent-integration/fingerprint.js'
+import { PORTABLE_TIDEMIND_SKILL_SHA256 } from '../client/electron/agent-integration/hosts/portable-skill.js'
+import { shellArgument } from '../client/electron/agent-integration/shell-argument.js'
 import type { CatalogId, ComponentKey, ProductFamilyId } from '../client/electron/agent-integration/types.js'
 import { uiAuditMarker } from '../client/electron/ui-audit.js'
 import { ensureSchema } from '../src/db/schema.js'
+import { ensureAgentIntegrationSchema } from '../src/db/agent-integration-schema.js'
 
 const rootArg = process.argv[2]
 if (!rootArg || !path.isAbsolute(rootArg)) throw new Error('usage: tsx script <absolute-empty-audit-root>')
@@ -35,9 +40,29 @@ fs.mkdirSync(graphDir, { recursive: true })
 const marker = uiAuditMarker()
 fs.writeFileSync(path.join(root, marker.name), marker.content)
 fs.writeFileSync(path.join(dataDir, 'config.toml'), 'onboarding_completed = true\nlanguage = "zh-CN"\n')
+const customFixtureRoot = path.join(dataDir, 'ui-audit-custom-client')
+fs.mkdirSync(customFixtureRoot, { recursive: true })
+fs.mkdirSync(path.join(dataDir, 'ui-audit-custom-root'))
+fs.writeFileSync(path.join(customFixtureRoot, 'config.json'), '{}\n', { mode: 0o600 })
+fs.writeFileSync(path.join(customFixtureRoot, 'audit-agent'), '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+const coworkAppPath = path.join(root, 'apps', 'Claude.app')
+const coworkExecutablePath = path.join(coworkAppPath, 'Contents', 'MacOS', 'Claude')
+fs.mkdirSync(path.dirname(coworkExecutablePath), { recursive: true })
+fs.mkdirSync(path.join(home, 'Library', 'Application Support', 'Claude'), { recursive: true })
+fs.writeFileSync(coworkExecutablePath, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+const runtimeRoot = path.join(root, 'runtime')
+fs.mkdirSync(runtimeRoot)
+for (const name of [
+  'tm-node', 'mcp-server.cjs', 'hook-session-start.cjs', 'hook-pre-compact.cjs',
+  'hook-post-compact.cjs', 'hook-session-end.cjs', 'hook-kimi-session-start-activity.cjs',
+]) fs.writeFileSync(path.join(runtimeRoot, name), '// isolated UI audit fixture\n', { mode: 0o700 })
 
 const db = new Database(path.join(graphDir, 'brain.sqlite'))
 ensureSchema(db)
+// The fixture must exercise the same authoritative v34 schema repair used by
+// daemon, Electron fresh DBs, and migrations. Calling it explicitly also
+// catches accidental omissions in the broader fresh-schema composition.
+ensureAgentIntegrationSchema(db)
 const repository = new AgentIntegrationRepository(db)
 const now = new Date()
 const iso = (minutesAgo: number) => new Date(now.getTime() - minutesAgo * 60_000).toISOString()
@@ -61,6 +86,45 @@ interface FixtureInstallation {
   }[]
 }
 
+function codexLifecycleFixture(
+  configRoot: string,
+  agentId: string,
+  runtimeRoot: string,
+  activityGenerationToken: string,
+) {
+  const instructionPath = path.join(home, '.agents', 'skills', 'tidemind', 'SKILL.md')
+  const definitions = [
+    { eventName: 'SessionStart', matcher: 'startup|resume', script: 'hook-session-start.cjs', includeSkill: true },
+    { eventName: 'PreCompact', matcher: 'manual|auto', script: 'hook-pre-compact.cjs', includeSkill: false },
+    { eventName: 'PostCompact', matcher: 'manual|auto', script: 'hook-post-compact.cjs', includeSkill: false },
+    { eventName: 'SessionEnd', matcher: 'exit|archive', script: 'hook-session-end.cjs', includeSkill: false },
+  ] as const
+  const entries = definitions.map(definition => {
+    const args = [
+      path.join(runtimeRoot, 'tm-node'), path.join(runtimeRoot, definition.script),
+      '--agent-id', agentId,
+      ...(definition.includeSkill ? [
+        '--skill-path', instructionPath,
+        '--expected-skill-sha256', PORTABLE_TIDEMIND_SKILL_SHA256,
+      ] : []),
+      '--tool', 'codex',
+      '--activity-generation-token', activityGenerationToken,
+    ]
+    return [definition.eventName, {
+      matcher: definition.matcher,
+      hooks: [{
+        type: 'command',
+        command: args.map(shellArgument).join(' '),
+        ...(definition.includeSkill ? { statusMessage: '正在加载 Tide Mind 记忆…' } : {}),
+        timeout: 15,
+      }],
+    }] as const
+  })
+  const fragment = Object.fromEntries(entries)
+  const documentHooks = Object.fromEntries(entries.map(([eventName, entry]) => [eventName, [entry]]))
+  return { document: { hooks: documentHooks }, hash: sha256Json(fragment), configRoot }
+}
+
 const fixtures: readonly FixtureInstallation[] = [
   {
     id: 'cursor-work', family: 'cursor', hostVariant: 'cursor-desktop', displayName: 'Cursor',
@@ -73,16 +137,17 @@ const fixtures: readonly FixtureInstallation[] = [
   },
   {
     id: 'kimi-default', family: 'kimi-code', hostVariant: 'kimi-code-cli', displayName: 'Kimi Code',
-    version: '1.16.0', desiredState: 'managed', verifiedCapability: 2,
-    verificationSummary: 'stale', statusReason: 'verification_stale',
-    components: [
-      { key: 'instruction', status: 'verified' },
-      { key: 'memory_tools', status: 'stale' },
-    ],
+    profile: '迁移冲突', version: '0.41.0', desiredState: 'unmanaged', verifiedCapability: 0,
+    verificationSummary: 'unverified', statusReason: null, components: [],
   },
   {
     id: 'zcode-default', family: 'zcode', hostVariant: 'zcode-desktop', displayName: 'ZCode',
     version: '0.9.4', desiredState: 'unmanaged', verifiedCapability: 0,
+    verificationSummary: 'unverified', statusReason: null, components: [],
+  },
+  {
+    id: 'qwenwork-guided', family: 'qwenwork', hostVariant: 'qwenwork-desktop', displayName: 'QwenWork',
+    version: '1.6.2', desiredState: 'unmanaged', verifiedCapability: 0,
     verificationSummary: 'unverified', statusReason: null, components: [],
   },
   {
@@ -96,15 +161,21 @@ const fixtures: readonly FixtureInstallation[] = [
   },
   {
     id: 'codex-cli', family: 'codex', hostVariant: 'codex-cli', displayName: 'Codex',
-    profile: 'CLI', version: '0.94.0', desiredState: 'managed', verifiedCapability: 1,
-    verificationSummary: 'verified', statusReason: 'instruction_only',
-    components: [{ key: 'instruction', status: 'verified', shared: true }],
+    profile: 'CLI', version: '0.145.0-alpha.18', desiredState: 'managed', verifiedCapability: 1,
+    verificationSummary: 'verified', statusReason: 'host_confirmation',
+    components: [
+      { key: 'instruction', status: 'verified', shared: true },
+      { key: 'lifecycle', status: 'verified' },
+    ],
   },
   {
     id: 'codex-desktop', family: 'codex', hostVariant: 'codex-desktop', displayName: 'Codex',
-    profile: 'Desktop', version: '1.12.3', desiredState: 'disabled', verifiedCapability: 1,
-    verificationSummary: 'verified', statusReason: 'user_disabled',
-    components: [{ key: 'instruction', status: 'verified', shared: true }],
+    profile: 'Desktop', version: '26.901.31953', desiredState: 'managed', verifiedCapability: 1,
+    verificationSummary: 'verified', statusReason: 'host_confirmation',
+    components: [
+      { key: 'instruction', status: 'verified', shared: true },
+      { key: 'lifecycle', status: 'verified' },
+    ],
   },
   {
     id: 'claude-history', family: 'claude-code', hostVariant: 'claude-code-cli', displayName: 'Claude Code',
@@ -130,30 +201,82 @@ const zcodeDistribution = {
   executableRealpath: fs.realpathSync(zcodeExecutablePath),
   packageProvenance: 'signed_app:dev.zcode.app:8A5X4JJ39T',
   capabilityFingerprint: 'app-surface:zcode-desktop',
+  portableArtifactFingerprint: `fixture:${sha256Json({ executable: 'zcode-ui-audit' })}`,
+} as const
+const qwenWorkAppPath = path.join(root, 'apps', 'QwenWork.app')
+const qwenWorkExecutablePath = path.join(qwenWorkAppPath, 'Contents', 'MacOS', 'QwenWork')
+fs.mkdirSync(path.dirname(qwenWorkExecutablePath), { recursive: true })
+fs.writeFileSync(qwenWorkExecutablePath, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+const qwenWorkDistribution = {
+  distributionId: 'cn.qwenwork.desktop.mac',
+  executableRealpath: fs.realpathSync(qwenWorkExecutablePath),
+  packageProvenance: 'signed_app:cn.qwenwork.desktop.mac:XN6U3EV979',
+  capabilityFingerprint: 'app-surface:qwenwork-desktop',
+  portableArtifactFingerprint: `fixture:${sha256Json({ executable: 'qwenwork-ui-audit' })}`,
+} as const
+const kimiExecutablePath = path.join(root, 'node_modules', '@moonshot-ai', 'kimi-code', 'bin', 'kimi.js')
+fs.mkdirSync(path.dirname(kimiExecutablePath), { recursive: true })
+fs.writeFileSync(kimiExecutablePath, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+const kimiDistribution = {
+  distributionId: 'cli:kimi-code-cli',
+  executableRealpath: fs.realpathSync(kimiExecutablePath),
+  packageProvenance: 'npm_metadata:@moonshot-ai/kimi-code',
+  capabilityFingerprint: 'cli-surface:kimi-code-cli',
+  portableArtifactFingerprint: `fixture:${sha256Json({ executable: 'kimi-code-ui-audit' })}`,
 } as const
 
 for (const fixture of fixtures) {
   const configRoot = path.join(home, `.${fixture.id}`)
   fs.mkdirSync(configRoot, { recursive: true })
   const isZcodeDesktop = fixture.hostVariant === 'zcode-desktop'
+  const isQwenWork = fixture.hostVariant === 'qwenwork-desktop'
+  const isKimiCode = fixture.hostVariant === 'kimi-code-cli'
+  const isCodex = fixture.hostVariant === 'codex-cli' || fixture.hostVariant === 'codex-desktop'
+  const codexActivityGenerationToken = isCodex ? randomUUID() : null
+  if (fixture.id === 'kimi-default') {
+    const legacyTarget = path.join(configRoot, 'skills', `tidemind-eb_audit_${fixture.id}`, 'SKILL.md')
+    fs.mkdirSync(path.dirname(legacyTarget), { recursive: true })
+    fs.writeFileSync(legacyTarget, '# user-owned legacy conflict fixture\n', { mode: 0o600 })
+  }
+  const distribution = isZcodeDesktop
+    ? zcodeDistribution
+    : isQwenWork
+      ? qwenWorkDistribution
+      : isKimiCode
+        ? kimiDistribution
+        : null
   repository.upsertDiscoveredInstallation({
     id: fixture.id,
     family: fixture.family,
     hostVariant: fixture.hostVariant,
     runtimeRealm: 'local_macos',
+    osUserIdentity: 'ui-audit-user',
     profileId: fixture.profile ?? '',
     installKey: `${fixture.hostVariant}:${fixture.id}`,
-    distributionId: isZcodeDesktop ? zcodeDistribution.distributionId : `audit.${fixture.hostVariant}`,
+    distributionId: distribution?.distributionId ?? `audit.${fixture.hostVariant}`,
     provenance: 'isolated_ui_audit_fixture',
     displayName: fixture.displayName,
     configRoot,
-    executablePath: isZcodeDesktop ? zcodeDistribution.executableRealpath : null,
-    appPath: isZcodeDesktop ? zcodeAppPath : null,
+    executablePath: distribution?.executableRealpath ?? null,
+    appPath: isZcodeDesktop ? zcodeAppPath : isQwenWork ? qwenWorkAppPath : null,
     detectedVersion: fixture.version,
     agentId: `eb_audit_${fixture.id}`,
     supportedCapability: 4,
     lastDetectedAt: iso(2),
-    metadata: isZcodeDesktop ? { distribution: zcodeDistribution } : undefined,
+    metadata: distribution ? {
+      distribution,
+      ...(isKimiCode ? {
+        managementEligibility: {
+          schemaVersion: 1,
+          eligible: true,
+          executableSizeBytes: fs.statSync(kimiExecutablePath).size,
+          proofLimitBytes: 512 * 1024 * 1024,
+        },
+      } : {}),
+      ...(isQwenWork ? {
+        componentConfigRoots: { instruction: configRoot, lifecycle: configRoot },
+      } : {}),
+    } : undefined,
   })
   const consentId = `consent-${fixture.id}`
   if (fixture.desiredState !== 'unmanaged') {
@@ -176,19 +299,34 @@ for (const fixture of fixtures) {
     const sharedTarget = path.join(home, '.agents', 'skills', 'tidemind', 'SKILL.md')
     const target = component.shared
       ? sharedTarget
+      : (fixture.hostVariant === 'codex-cli' || fixture.hostVariant === 'codex-desktop') && component.key === 'lifecycle'
+        ? path.join(configRoot, 'hooks.json')
       : path.join(configRoot, component.key === 'instruction' ? 'skills/tidemind/SKILL.md' : 'mcp.json')
     const artifactId = component.shared ? 'artifact-shared-skill' : `artifact-${fixture.id}-${component.key}`
+    const ownedFragmentHash = isCodex && component.key === 'lifecycle'
+      ? codexLifecycleFixture(configRoot, `eb_audit_${fixture.id}`, runtimeRoot, codexActivityGenerationToken!).hash
+      : `hash-${artifactId}`
+    if (isCodex && component.key === 'lifecycle') {
+      const hooks = codexLifecycleFixture(configRoot, `eb_audit_${fixture.id}`, runtimeRoot, codexActivityGenerationToken!)
+      fs.writeFileSync(target, `${JSON.stringify(hooks.document, null, 2)}\n`, { mode: 0o600 })
+    }
+    const codexLifecycle = isCodex && component.key === 'lifecycle'
+    const ownershipKey = codexLifecycle
+      ? `hooks.tidemind-eb_audit_${fixture.id}`
+      : component.key === 'instruction'
+        ? 'document'
+        : `mcpServers.tidemind-${fixture.id}`
     if (!repository.getManagedArtifact(artifactId)) repository.createManagedArtifact({
       id: artifactId,
-      componentType: component.key === 'instruction' ? 'skill' : 'mcp',
+      componentType: component.key === 'instruction' ? 'skill' : codexLifecycle ? 'hook' : 'mcp',
       targetPath: target,
-      ownershipKey: component.key === 'instruction' ? 'document' : `mcpServers.tidemind-${fixture.id}`,
-      mutationDomain: `local_macos:file:${target}:document`,
+      ownershipKey,
+      mutationDomain: `local_macos:file:${target}:${ownershipKey}`,
       projectionVersion: '1',
       selectorSchemaVersion: '1',
-      ownedFragmentHash: `hash-${artifactId}`,
-      desiredFragmentHash: `hash-${artifactId}`,
-      observedFragmentHash: `hash-${artifactId}`,
+      ownedFragmentHash,
+      desiredFragmentHash: ownedFragmentHash,
+      observedFragmentHash: ownedFragmentHash,
       state: 'healthy',
     }, iso(180))
     repository.upsertComponent({
@@ -209,7 +347,7 @@ for (const fixture of fixtures) {
       requiredCapability: fixture.verifiedCapability,
       discoverReachability: component.shared ? 'shared_visible' : 'dedicated',
       consentEnvelopeId: fixture.desiredState === 'unmanaged' ? null : consentId,
-      ownershipFingerprint: `hash-${artifactId}`,
+      ownershipFingerprint: ownedFragmentHash,
       addedAt: iso(180),
     })
     if (component.state && component.state !== 'healthy') {
@@ -240,6 +378,33 @@ for (const fixture of fixtures) {
     iso(2),
     fixture.id,
   )
+  if (codexActivityGenerationToken) {
+    const preparedPlan = {
+      componentKeys: ['lifecycle'],
+      activityGenerationToken: codexActivityGenerationToken,
+      executionPlan: {
+        activityGenerationTokenHash: sha256Json(codexActivityGenerationToken),
+      },
+    }
+    db.prepare(`
+      INSERT INTO reconcile_runs (
+        id, installation_id, operation_type, execution_plan_hash, consent_envelope_id,
+        state, recovery_strategy, writer_fence_snapshot_json, adapter_version,
+        catalog_version, projection_version, selector_schema_version,
+        prepared_plan_json, desired_capability, created_at, completed_at, updated_at
+      ) VALUES (?, ?, 'connect', ?, ?, 'committed', 'readback_before_replay', '{}',
+        'ui-audit-codex-lifecycle', 'ui-audit', '1', '1', ?, 4, ?, ?, ?)
+    `).run(
+      `fixture-generation-${fixture.id}`,
+      fixture.id,
+      sha256Json(preparedPlan),
+      consentId,
+      JSON.stringify(preparedPlan),
+      iso(180),
+      iso(180),
+      iso(180),
+    )
+  }
 }
 
 repository.recordEvent({
@@ -265,5 +430,8 @@ repository.createApplyTask({
   ],
 })
 
+// Make the completed fixture self-contained before Electron opens the same
+// physical database. This is evidence hygiene, not a production migration.
+db.pragma('wal_checkpoint(TRUNCATE)')
 db.close()
 process.stdout.write(`${root}\n`)

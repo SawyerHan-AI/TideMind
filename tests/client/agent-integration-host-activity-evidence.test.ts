@@ -6,13 +6,16 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   SqliteHostActivityEvidenceReader,
   verifyHostActivity,
+  verifyMemoryReadWriteActivity,
 } from '../../client/electron/agent-integration/host-activity-evidence'
 import { createJsonMcpHostAdapter } from '../../client/electron/agent-integration/hosts/json-mcp-adapter'
 import { canonicalizeInstallationIdentity } from '../../client/electron/agent-integration/identity'
+import { sha256Json } from '../../client/electron/agent-integration/fingerprint'
+import { AgentIntegrationRepository } from '../../client/electron/agent-integration/repository'
 import type { AdapterOperationContext, AdapterVerificationRequest } from '../../client/electron/agent-integration/types'
 import {
-  recordHookActivityEvidence,
-  recordHostActivityEvidence,
+  recordHookActivityEvidence as recordHookActivityEvidenceRaw,
+  recordHostActivityEvidence as recordHostActivityEvidenceRaw,
 } from '../../src/db/agent-host-activity'
 import { ensureSchema } from '../../src/db/schema'
 
@@ -20,6 +23,19 @@ const T0 = '2026-08-26T00:00:00.000Z'
 const T1 = '2026-08-26T00:01:00.000Z'
 const AFTER = '2026-07-27T00:00:00.000Z'
 const AGENT_ID = 'eb_activity01'
+const ACTIVITY_TOKEN = 'operation-activity'
+
+const recordHostActivityEvidence = (
+  db: Database.Database,
+  input: Omit<Parameters<typeof recordHostActivityEvidenceRaw>[1], 'activityGenerationToken'>
+    & { activityGenerationToken?: string },
+) => recordHostActivityEvidenceRaw(db, { activityGenerationToken: ACTIVITY_TOKEN, ...input })
+
+const recordHookActivityEvidence = (
+  db: Database.Database,
+  input: Omit<Parameters<typeof recordHookActivityEvidenceRaw>[1], 'activityGenerationToken'>
+    & { activityGenerationToken?: string },
+) => recordHookActivityEvidenceRaw(db, { activityGenerationToken: ACTIVITY_TOKEN, ...input })
 
 const databases: Database.Database[] = []
 const roots: string[] = []
@@ -88,7 +104,30 @@ function setup(componentKey: 'memory_tools' | 'lifecycle' = 'memory_tools') {
       'run-activity', 'installation-activity', 'connect', 'plan-hash', 'committed',
       'readback_before_replay', 'adapter-3', '1', '7', '1', ?, 4, ?, ?
     )
-  `).run(JSON.stringify({ componentKeys: [componentKey] }), T0, T0)
+  `).run(JSON.stringify({
+    componentKeys: [componentKey],
+    activityGenerationToken: ACTIVITY_TOKEN,
+    executionPlan: { activityGenerationTokenHash: sha256Json(ACTIVITY_TOKEN) },
+  }), T0, T0)
+  db.prepare(`
+    INSERT INTO agent_consents (
+      id, installation_id, policy_version, allowed_components_json,
+      allowed_scopes_json, normalized_targets_json, selector_schema_version,
+      selector_resolution_json, executable_realpaths_json, command_categories_json,
+      maximum_risk, status, confirmed_at, created_at
+    ) VALUES (
+      'consent-activity', 'installation-activity', '1', ?, '[]', '[]', '1',
+      '{}', '[]', '[]', 'low', 'active', ?, ?
+    )
+  `).run(JSON.stringify([componentKey]), T0, T0)
+  db.prepare(`UPDATE agent_installations SET consent_envelope_id = 'consent-activity'
+    WHERE id = 'installation-activity'`).run()
+  db.prepare(`UPDATE installation_components SET consent_envelope_id = 'consent-activity'
+    WHERE installation_id = 'installation-activity'`).run()
+  db.prepare(`UPDATE artifact_consumers SET consent_envelope_id = 'consent-activity'
+    WHERE installation_id = 'installation-activity'`).run()
+  db.prepare(`UPDATE reconcile_runs SET consent_envelope_id = 'consent-activity'
+    WHERE id = 'run-activity'`).run()
   return db
 }
 
@@ -120,6 +159,7 @@ function context(reader?: SqliteHostActivityEvidenceReader): AdapterOperationCon
     }),
     agentId: AGENT_ID,
     operationId: 'operation-activity',
+    activityGenerationToken: ACTIVITY_TOKEN,
     hostActivityEvidence: reader,
   }
 }
@@ -138,6 +178,8 @@ function verificationRequest(
       adapterVersion: 'adapter-3',
       projectionVersion: '7',
       hostVersion: '2.3.4',
+      activationRunId: 'run-activity',
+      activityGenerationToken: ACTIVITY_TOKEN,
       observedAfter: AFTER,
       verifiedAt: T1,
     },
@@ -171,6 +213,56 @@ describe('managed host activity evidence', () => {
       FROM agent_host_activity_evidence
     `).get()).toEqual({ count: 1, observed_at: T1 })
     expect(db.prepare(`SELECT COUNT(*) AS count FROM nodes`).get()).toEqual({ count: 0 })
+  })
+
+  it('rejects managed activity after its current consent is revoked or switched', () => {
+    const db = setup()
+    const input = {
+      agentId: AGENT_ID,
+      hostVariant: 'cursor-desktop',
+      componentKey: 'memory_tools' as const,
+      signalName: 'brain_recall' as const,
+      tideMindVersion: '0.2.89',
+      observedAt: T0,
+    }
+    const query = {
+      installationId: 'installation-activity',
+      agentId: AGENT_ID,
+      hostVariant: 'cursor-desktop' as const,
+      componentKey: 'memory_tools' as const,
+      signalNames: ['brain_recall'] as const,
+      tideMindVersion: '0.2.89',
+      adapterVersion: 'adapter-3',
+      projectionVersion: '7',
+      hostVersion: '2.3.4',
+      activationRunId: 'run-activity',
+      activityGenerationToken: ACTIVITY_TOKEN,
+      observedAfter: AFTER,
+    }
+    expect(recordHostActivityEvidence(db, input)).toMatchObject({ status: 'recorded' })
+    expect(new SqliteHostActivityEvidenceReader(db).find(query)).toHaveLength(1)
+
+    db.prepare(`UPDATE agent_consents SET status = 'revoked' WHERE id = 'consent-activity'`).run()
+    expect(recordHostActivityEvidence(db, { ...input, observedAt: T1 }))
+      .toEqual({ status: 'rejected', reason: 'component_not_managed' })
+    expect(new SqliteHostActivityEvidenceReader(db).find(query)).toEqual([])
+
+    db.prepare(`
+      INSERT INTO agent_consents (
+        id, installation_id, policy_version, allowed_components_json,
+        allowed_scopes_json, normalized_targets_json, selector_schema_version,
+        selector_resolution_json, executable_realpaths_json, command_categories_json,
+        maximum_risk, status, confirmed_at, created_at
+      ) VALUES (
+        'consent-replacement', 'installation-activity', '1', '["memory_tools"]',
+        '[]', '[]', '1', '{}', '[]', '[]', 'low', 'active', ?, ?
+      )
+    `).run(T1, T1)
+    db.prepare(`UPDATE agent_installations SET consent_envelope_id = 'consent-replacement'
+      WHERE id = 'installation-activity'`).run()
+    expect(recordHostActivityEvidence(db, { ...input, observedAt: T1 }))
+      .toEqual({ status: 'rejected', reason: 'component_not_managed' })
+    expect(new SqliteHostActivityEvidenceReader(db).find(query)).toEqual([])
   })
 
   it('keeps evidence and legacy last_active monotonic across reverse order and timezone offsets', () => {
@@ -209,6 +301,39 @@ describe('managed host activity evidence', () => {
       .toEqual({ observed_at: '2026-08-26T00:02:00.000Z' })
     expect(db.prepare(`SELECT last_active FROM agents WHERE id = ?`).get(AGENT_ID))
       .toEqual({ last_active: '2026-08-26T00:02:00.000Z' })
+  })
+
+  it('keeps the original evidence id when the same generation replays at the same instant', () => {
+    const db = setup()
+    const input = {
+      agentId: AGENT_ID,
+      hostVariant: 'cursor-desktop',
+      componentKey: 'memory_tools' as const,
+      signalName: 'brain_recall' as const,
+      tideMindVersion: '0.2.89',
+      observedAt: T0,
+    }
+    const first = recordHostActivityEvidence(db, input)
+    if (first.status !== 'recorded') throw new Error('expected recorded evidence')
+    const repository = new AgentIntegrationRepository(db)
+    repository.recordVerificationResult({
+      id: 'verification-same-instant', installationId: 'installation-activity',
+      componentKey: 'memory_tools', family: 'cursor', hostVariant: 'cursor-desktop',
+      runtimeRealm: 'local_macos', hostVersion: '2.3.4', tideMindVersion: '0.2.89',
+      adapterVersion: 'adapter-3', catalogVersion: '1', projectionVersion: '7',
+      selectorSchemaVersion: '1', verificationManifestVersion: '1',
+      method: 'host_activity_recognized:brain_recall', identityAssertion: AGENT_ID,
+      artifactHash: 'owned-hash', invalidationKeys: ['activity_freshness'], result: 'verified',
+      evidenceRef: `host-activity:${first.evidenceId}`, evidenceHash: 'verification-hash',
+      verifiedAt: T1, expiresAt: '2026-09-25T00:00:00.000Z',
+    })
+    expect(repository.latestVerifiedHostActivityAt('installation-activity', T1)).toBe(T0)
+    const replay = recordHostActivityEvidence(db, input)
+    expect(first).toMatchObject({ status: 'recorded' })
+    expect(replay).toEqual(first)
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM agent_host_activity_evidence`).get())
+      .toEqual({ count: 1 })
+    expect(repository.latestVerifiedHostActivityAt('installation-activity', T1)).toBe(T0)
   })
 
   it('accepts a disabled no-op consumer only for its exact active-consent applied_unverified run', () => {
@@ -267,6 +392,8 @@ describe('managed host activity evidence', () => {
       adapterVersion: 'adapter-3',
       projectionVersion: '7',
       hostVersion: '2.3.4',
+      activationRunId: 'run-activity',
+      activityGenerationToken: ACTIVITY_TOKEN,
       observedAfter: AFTER,
     })).toHaveLength(1)
 
@@ -276,6 +403,77 @@ describe('managed host activity evidence', () => {
     db.prepare(`UPDATE agent_consents SET status = 'active' WHERE id = 'consent-pending'`).run()
     db.prepare(`UPDATE installation_components SET artifact_id = NULL WHERE installation_id = 'installation-activity'`).run()
     expect(recordHostActivityEvidence(db, { ...input, observedAt: T1 }))
+      .toEqual({ status: 'rejected', reason: 'component_not_managed' })
+  })
+
+  it('binds a guided component without an Artifact to its exact active-consent run and generation', () => {
+    const db = setup()
+    db.prepare(`
+      INSERT INTO agent_consents (
+        id, installation_id, policy_version, allowed_components_json,
+        allowed_scopes_json, normalized_targets_json, selector_schema_version,
+        selector_resolution_json, executable_realpaths_json, command_categories_json,
+        maximum_risk, status, confirmed_at, created_at
+      ) VALUES (
+        'consent-guided', 'installation-activity', '1', '["memory_tools"]',
+        '[]', '[]', '1', '{}', '[]', '[]', 'low', 'active', ?, ?
+      )
+    `).run(T0, T0)
+    db.prepare(`DELETE FROM artifact_consumers WHERE installation_id = 'installation-activity'`).run()
+    db.prepare(`
+      UPDATE installation_components
+      SET delivery_mode = 'guided', artifact_id = NULL, consent_envelope_id = 'consent-guided'
+      WHERE installation_id = 'installation-activity' AND component_key = 'memory_tools'
+    `).run()
+    db.prepare(`
+      UPDATE agent_installations SET consent_envelope_id = 'consent-guided'
+      WHERE id = 'installation-activity'
+    `).run()
+    db.prepare(`
+      UPDATE reconcile_runs
+      SET state = 'applied_unverified', consent_envelope_id = 'consent-guided'
+      WHERE id = 'run-activity'
+    `).run()
+
+    const input = {
+      agentId: AGENT_ID,
+      hostVariant: 'cursor-desktop',
+      componentKey: 'memory_tools' as const,
+      tideMindVersion: '0.2.89',
+      activityGenerationToken: ACTIVITY_TOKEN,
+    }
+    expect(recordHostActivityEvidenceRaw(db, { ...input, signalName: 'brain_recall', observedAt: T0 }))
+      .toMatchObject({ status: 'recorded' })
+    expect(recordHostActivityEvidenceRaw(db, { ...input, signalName: 'brain_digest', observedAt: T1 }))
+      .toMatchObject({ status: 'recorded' })
+    const query = {
+      installationId: 'installation-activity',
+      agentId: AGENT_ID,
+      hostVariant: 'cursor-desktop' as const,
+      componentKey: 'memory_tools' as const,
+      signalNames: ['brain_recall', 'brain_digest'] as const,
+      tideMindVersion: '0.2.89',
+      adapterVersion: 'adapter-3',
+      projectionVersion: '7',
+      hostVersion: '2.3.4',
+      activationRunId: 'run-activity',
+      activityGenerationToken: ACTIVITY_TOKEN,
+      observedAfter: AFTER,
+    }
+    expect(new SqliteHostActivityEvidenceReader(db).find(query)).toHaveLength(2)
+    expect(new SqliteHostActivityEvidenceReader(db).find({
+      ...query,
+      activityGenerationToken: 'old-guided-generation',
+    })).toEqual([])
+
+    db.prepare(`UPDATE agent_consents SET status = 'revoked' WHERE id = 'consent-guided'`).run()
+    expect(recordHostActivityEvidenceRaw(db, { ...input, signalName: 'brain_recall', observedAt: T1 }))
+      .toEqual({ status: 'rejected', reason: 'component_not_managed' })
+    expect(new SqliteHostActivityEvidenceReader(db).find(query)).toEqual([])
+
+    db.prepare(`UPDATE installation_components SET delivery_mode = 'managed'
+      WHERE installation_id = 'installation-activity' AND component_key = 'memory_tools'`).run()
+    expect(recordHostActivityEvidenceRaw(db, { ...input, signalName: 'brain_recall', observedAt: T1 }))
       .toEqual({ status: 'rejected', reason: 'component_not_managed' })
   })
 
@@ -340,6 +538,70 @@ describe('managed host activity evidence', () => {
     })).toMatchObject({ status: 'recorded', installationId: 'installation-activity' })
   })
 
+  it.each([
+    ['claude-code', 'claude-code', 'claude-code-native'],
+    ['kimi-code', 'kimi-code', 'kimi-code-native'],
+    ['cursor', 'cursor', 'cursor-desktop'],
+    ['windsurf', 'windsurf', 'windsurf-desktop'],
+    ['qwenwork', 'qwenwork', 'qwenwork-desktop'],
+    ['zcode', 'zcode', 'zcode-desktop'],
+  ])('records hook activity for the exact %s host variant', (tool, family, hostVariant) => {
+    const db = setup('lifecycle')
+    db.prepare(`
+      UPDATE agent_installations
+      SET family = ?, host_variant = ?
+      WHERE id = 'installation-activity'
+    `).run(family, hostVariant)
+
+    expect(recordHookActivityEvidence(db, {
+      agentId: AGENT_ID,
+      tool,
+      signalName: 'session_start',
+      tideMindVersion: '0.2.89',
+      observedAt: T0,
+    })).toMatchObject({ status: 'recorded', installationId: 'installation-activity' })
+  })
+
+  it('records Cursor sessionEnd as its own lifecycle signal', () => {
+    const db = setup('lifecycle')
+    expect(recordHookActivityEvidence(db, {
+      agentId: AGENT_ID,
+      tool: 'cursor',
+      signalName: 'session_end',
+      tideMindVersion: '0.2.89',
+      observedAt: T0,
+    })).toMatchObject({ status: 'recorded', installationId: 'installation-activity' })
+    expect(db.prepare(`
+      SELECT component_key, signal_name FROM agent_host_activity_evidence
+    `).get()).toEqual({ component_key: 'lifecycle', signal_name: 'session_end' })
+  })
+
+  it.each([
+    ['claude-code', 'kimi-code', 'kimi-code-native'],
+    ['kimi-code', 'claude-code', 'claude-code-native'],
+    ['cursor', 'codex', 'codex-cli'],
+    ['windsurf', 'cursor', 'cursor-desktop'],
+    ['qwenwork', 'qwen-code', 'qwen-code-cli'],
+    ['zcode', 'zcode', 'zcode-cli'],
+  ])('rejects hook activity when %s is reported by a different host variant', (tool, family, hostVariant) => {
+    const db = setup('lifecycle')
+    db.prepare(`
+      UPDATE agent_installations
+      SET family = ?, host_variant = ?
+      WHERE id = 'installation-activity'
+    `).run(family, hostVariant)
+
+    expect(recordHookActivityEvidence(db, {
+      agentId: AGENT_ID,
+      tool,
+      signalName: 'session_start',
+      tideMindVersion: '0.2.89',
+      observedAt: T0,
+    })).toEqual({ status: 'rejected', reason: 'host_variant_mismatch' })
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM agent_host_activity_evidence`).get())
+      .toEqual({ count: 0 })
+  })
+
   it('binds reads to exact versions and freshness, then rejects tombstoned history', () => {
     const db = setup()
     recordHostActivityEvidence(db, {
@@ -361,6 +623,8 @@ describe('managed host activity evidence', () => {
       adapterVersion: 'adapter-3',
       projectionVersion: '7',
       hostVersion: '2.3.4',
+      activationRunId: 'run-activity',
+      activityGenerationToken: ACTIVITY_TOKEN,
       observedAfter: AFTER,
     }
     expect(reader.find(exact)).toHaveLength(1)
@@ -370,7 +634,7 @@ describe('managed host activity evidence', () => {
     expect(reader.find(exact)).toEqual([])
   })
 
-  it('requires every declared lifecycle signal while memory tools accept one real invocation', async () => {
+  it('supports explicit any/all evidence policies for non-memory component contracts', async () => {
     const memoryDb = setup()
     recordHostActivityEvidence(memoryDb, {
       agentId: AGENT_ID,
@@ -441,6 +705,190 @@ describe('managed host activity evidence', () => {
       .toMatchObject({ status: 'verified', identityAssertion: AGENT_ID })
   })
 
+  it('requires both recall and digest before memory read/write is verified', async () => {
+    const db = setup()
+    const memoryContext = context(new SqliteHostActivityEvidenceReader(db))
+    const inspection = {
+      catalogId: 'cursor-desktop' as const,
+      detected: true,
+      distribution: {},
+      components: [],
+      provenance: [],
+      diagnostics: [],
+    }
+    const request = verificationRequest(inspection, 'memory_tools')
+    const record = (signalName: 'brain_prepare' | 'brain_recall' | 'brain_digest') => recordHostActivityEvidence(db, {
+      agentId: AGENT_ID,
+      hostVariant: 'cursor-desktop',
+      componentKey: 'memory_tools',
+      signalName,
+      tideMindVersion: '0.2.89',
+      observedAt: T0,
+    })
+
+    record('brain_prepare')
+    expect(await verifyMemoryReadWriteActivity(memoryContext, request))
+      .toMatchObject({ status: 'unverified', diagnostics: ['fresh_host_activity_evidence_missing'] })
+    record('brain_recall')
+    expect(await verifyMemoryReadWriteActivity(memoryContext, request))
+      .toMatchObject({ status: 'unverified', diagnostics: ['fresh_host_activity_evidence_missing'] })
+    record('brain_digest')
+    expect(await verifyMemoryReadWriteActivity(memoryContext, request)).toMatchObject({
+      status: 'verified',
+      verifiedCapability: 2,
+      diagnostics: ['host_activity_recognized:brain_digest,brain_recall'],
+    })
+  })
+
+  it('does not compose memory evidence across the current activation epoch', async () => {
+    const activationEpoch = '2026-08-26T00:01:00.000Z'
+    const verifiedAt = '2026-08-26T00:03:00.000Z'
+    const inspection = {
+      catalogId: 'cursor-desktop' as const,
+      detected: true,
+      distribution: {},
+      components: [],
+      provenance: [],
+      diagnostics: [],
+    }
+    const verify = async (
+      db: Database.Database,
+      options: { activationEpoch?: string; activationRunId?: string; activityGenerationToken?: string } = {},
+    ) => {
+      const request = verificationRequest(inspection, 'memory_tools')
+      request.activityBinding = {
+        ...request.activityBinding!,
+        activationEpoch: options.activationEpoch ?? activationEpoch,
+        activationRunId: options.activationRunId ?? 'run-activity',
+        activityGenerationToken: options.activityGenerationToken ?? ACTIVITY_TOKEN,
+        verifiedAt,
+      }
+      return verifyMemoryReadWriteActivity(context(new SqliteHostActivityEvidenceReader(db)), request)
+    }
+    const record = (
+      db: Database.Database,
+      signalName: 'brain_recall' | 'brain_digest',
+      observedAt: string,
+    ) => recordHostActivityEvidence(db, {
+      agentId: AGENT_ID,
+      hostVariant: 'cursor-desktop',
+      componentKey: 'memory_tools',
+      signalName,
+      tideMindVersion: '0.2.89',
+      observedAt,
+    })
+
+    const splitAcrossReconnect = setup()
+    record(splitAcrossReconnect, 'brain_recall', T0)
+    record(splitAcrossReconnect, 'brain_digest', '2026-08-26T00:02:00.000Z')
+    expect(await verify(splitAcrossReconnect)).toMatchObject({
+      status: 'unverified',
+      diagnostics: ['fresh_host_activity_evidence_missing'],
+    })
+
+    const bothBeforeApply = setup()
+    record(bothBeforeApply, 'brain_recall', T0)
+    record(bothBeforeApply, 'brain_digest', '2026-08-26T00:00:30.000Z')
+    expect(await verify(bothBeforeApply)).toMatchObject({
+      status: 'unverified',
+      diagnostics: ['fresh_host_activity_evidence_missing'],
+    })
+
+    const priorRunAtSameVersions = setup()
+    record(priorRunAtSameVersions, 'brain_recall', T0)
+    record(priorRunAtSameVersions, 'brain_digest', '2026-08-26T00:00:30.000Z')
+    priorRunAtSameVersions.prepare(`
+      INSERT INTO reconcile_runs (
+        id, installation_id, operation_type, execution_plan_hash, state,
+        recovery_strategy, adapter_version, catalog_version, projection_version,
+        selector_schema_version, prepared_plan_json, desired_capability, consent_envelope_id,
+        created_at, updated_at
+      ) VALUES (
+        'run-current-activation', 'installation-activity', 'repair', 'plan-current',
+        'applied_unverified', 'readback_before_replay', 'adapter-3', '1', '7', '1',
+        ?, 4, 'consent-activity', ?, ?
+      )
+    `).run(JSON.stringify({
+      componentKeys: ['memory_tools'],
+      activityGenerationToken: 'operation-current-activation',
+      executionPlan: { activityGenerationTokenHash: sha256Json('operation-current-activation') },
+    }), activationEpoch, activationEpoch)
+    expect(await verify(priorRunAtSameVersions, {
+      activationEpoch: AFTER,
+      activationRunId: 'run-current-activation',
+      activityGenerationToken: 'operation-current-activation',
+    })).toMatchObject({
+      status: 'unverified',
+      diagnostics: ['fresh_host_activity_evidence_missing'],
+    })
+  })
+
+  it('binds physical activity writes to the latest causal projection token even at the same timestamp', () => {
+    const db = setup()
+    expect(recordHostActivityEvidenceRaw(db, {
+      agentId: AGENT_ID,
+      hostVariant: 'cursor-desktop',
+      componentKey: 'memory_tools',
+      signalName: 'brain_recall',
+      tideMindVersion: '0.2.89',
+      activityGenerationToken: ACTIVITY_TOKEN,
+      observedAt: T1,
+    })).toMatchObject({ status: 'recorded' })
+    const oldHash = (db.prepare(`SELECT evidence_hash FROM agent_host_activity_evidence`).get() as {
+      evidence_hash: string
+    }).evidence_hash
+    db.prepare(`
+      INSERT INTO reconcile_runs (
+        id, installation_id, operation_type, execution_plan_hash, state,
+        recovery_strategy, adapter_version, catalog_version, projection_version,
+        selector_schema_version, prepared_plan_json, desired_capability, consent_envelope_id,
+        created_at, updated_at
+      ) VALUES (
+        'aaa-random-looking-new-run', 'installation-activity', 'repair', 'plan-new',
+        'applied_unverified', 'readback_before_replay', 'adapter-3', '1', '7', '1',
+        ?, 4, 'consent-activity', ?, ?
+      )
+    `).run(JSON.stringify({
+      componentKeys: ['memory_tools'],
+      activityGenerationToken: 'operation-new-generation',
+      executionPlan: { activityGenerationTokenHash: sha256Json('operation-new-generation') },
+    }), T0, T0)
+
+    const base = {
+      agentId: AGENT_ID,
+      hostVariant: 'cursor-desktop',
+      componentKey: 'memory_tools' as const,
+      signalName: 'brain_recall' as const,
+      tideMindVersion: '0.2.89',
+      observedAt: T1,
+    }
+    expect(recordHostActivityEvidenceRaw(db, {
+      ...base,
+      activityGenerationToken: ACTIVITY_TOKEN,
+    })).toEqual({ status: 'rejected', reason: 'activity_generation_mismatch' })
+    expect(recordHostActivityEvidenceRaw(db, {
+      ...base,
+      activityGenerationToken: 'aaa-random-looking-new-run',
+    })).toEqual({ status: 'rejected', reason: 'activity_generation_mismatch' })
+    expect(recordHostActivityEvidenceRaw(db, {
+      ...base,
+      activityGenerationToken: '',
+    })).toEqual({ status: 'rejected', reason: 'version_binding_missing' })
+    expect(recordHostActivityEvidenceRaw(db, {
+      ...base,
+      activityGenerationToken: 'operation-new-generation',
+    })).toMatchObject({ status: 'recorded', installationId: 'installation-activity' })
+    const evidence = db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM agent_host_activity_evidence) AS count,
+        evidence_hash, observed_at
+      FROM agent_host_activity_evidence
+      WHERE activation_run_id = 'aaa-random-looking-new-run'
+    `).get() as { count: number; evidence_hash: string; observed_at: string }
+    expect(evidence).toMatchObject({ count: 2, observed_at: T1 })
+    expect(evidence.evidence_hash).not.toBe(oldHash)
+  })
+
   it('lets a JSON MCP Adapter verify only after static read-back and runtime invocation agree', async () => {
     const db = setup()
     const reader = new SqliteHostActivityEvidenceReader(db)
@@ -475,6 +923,18 @@ describe('managed host activity evidence', () => {
       observedAt: T0,
     })
     expect((await adapter.verify(operationContext, request))[0]).toMatchObject({
+      status: 'unverified',
+      diagnostics: ['static_readback_passed', 'fresh_host_activity_evidence_missing'],
+    })
+    recordHostActivityEvidence(db, {
+      agentId: AGENT_ID,
+      hostVariant: 'cursor-desktop',
+      componentKey: 'memory_tools',
+      signalName: 'brain_digest',
+      tideMindVersion: '0.2.89',
+      observedAt: T0,
+    })
+    expect((await adapter.verify(operationContext, request))[0]).toMatchObject({
       status: 'verified',
       identityAssertion: AGENT_ID,
     })
@@ -485,6 +945,7 @@ describe('managed host activity evidence', () => {
     expect(config.mcpServers[`tidemind-${AGENT_ID}`].env).toEqual({
       EB_AGENT_ID: AGENT_ID,
       EB_HOST_VARIANT: 'cursor-desktop',
+      EB_ACTIVITY_GENERATION_TOKEN: ACTIVITY_TOKEN,
     })
 
     config.mcpServers[`tidemind-${AGENT_ID}`].env.EXTRA_UNMANAGED_VALUE = 'tampered'

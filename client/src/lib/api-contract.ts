@@ -195,6 +195,13 @@ export interface AgentIntegrationFamilyDto {
 export interface AgentIntegrationSnapshotDto {
   /** Present only in the hermetic visual-audit harness; never a host verification claim. */
   fixtureMode?: 'isolated_ui_audit'
+  /** Signed-build integration policy; emergency/invalid modes are user-visible. */
+  releasePolicy?: {
+    manifestVersion: string
+    mode: 'active' | 'emergency_read_only' | 'invalid_manifest'
+    customLocalAgentEnabled: boolean
+    diagnostics: string[]
+  }
   /** Confirmed-uninstalled Installations retained for read-only audit/history views. */
   historyInstallations: AgentIntegrationInstallationDto[]
   families: AgentIntegrationFamilyDto[]
@@ -227,6 +234,11 @@ export interface AgentIntegrationPlanTargetDto {
   selector?: string
   executableLabel?: string
   args?: string[]
+  commands?: Array<{
+    commandCategory: 'host_cli' | 'plugin_install' | 'host_trust' | 'admin'
+    executableLabel: string
+    args: string[]
+  }>
   sharedImpact?: {
     outcome: 'consumer_detach_only'
     remainsVisibleForCurrentInstallation: boolean
@@ -247,7 +259,121 @@ export interface AgentIntegrationPlanInstallationDto {
   componentKeys: AgentIntegrationComponentKey[]
   targets: AgentIntegrationPlanTargetDto[]
   requiredUserActions: string[]
+  requiredUserActionDetails?: AgentIntegrationRequiredUserActionDto[]
   diagnostics: string[]
+  /** Only these components may be deselected without invalidating the remaining projection. */
+  optionalComponentKeys?: AgentIntegrationComponentKey[]
+}
+
+export type AgentIntegrationRequiredUserActionDto = AgentIntegrationCodexTrustActionDto
+  | AgentIntegrationClaudeCoworkActionDto
+  | AgentIntegrationQwenWorkMcpActionDto
+  | (Omit<AgentIntegrationQwenWorkMcpActionDto, 'kind'> & { kind: 'custom_mcp_import'; usageGuide: string })
+  | AgentIntegrationMcpActivationActionDto
+  | AgentIntegrationManualFileRemovalActionDto
+  | AgentIntegrationKimiInstructionConflictActionDto
+
+export interface AgentIntegrationCodexTrustActionDto {
+  kind: 'codex_hook_trust'
+  componentKey: 'lifecycle'
+  instruction: string
+  sourceLabel: string
+  hookKeyHash: string
+  ownedFragmentHash: string
+  hostCurrentHash: string
+}
+
+export interface AgentIntegrationClaudeCoworkActionDto {
+  kind: 'claude_cowork_plugin_upload'
+  componentKey: 'memory_tools'
+  operation: 'connect' | 'disconnect'
+  instruction: string
+  packageLabel: string
+  packageName: string
+  packageHash: string
+  steps: string[]
+}
+
+export interface AgentIntegrationQwenWorkMcpActionDto {
+  kind: 'qwenwork_mcp_gui'
+  componentKey: 'memory_tools'
+  operation: 'connect' | 'disconnect'
+  instruction: string
+  connectorName: string
+  serverType: 'STDIO'
+  command: string
+  args: string[]
+  environment: Record<'EB_AGENT_ID' | 'EB_HOST_VARIANT', string>
+  configurationJson: string
+  connectorConfigurationHash: string
+  steps: string[]
+}
+
+export interface AgentIntegrationMcpActivationActionDto {
+  kind: 'mcp_activation'
+  componentKey: 'memory_tools'
+  operation: 'connect'
+  instruction: string
+  hostVariant: 'qwen-code-cli' | 'omp-cli'
+  serverName: string
+  configLabel: string
+  reason: 'excluded' | 'not_allowed' | 'invalid_policy'
+}
+
+export interface AgentIntegrationManualFileRemovalActionDto {
+  kind: 'manual_file_removal'
+  componentKey: AgentIntegrationComponentKey
+  operation: 'disconnect'
+  instruction: string
+  physicalTargetLabel: string
+  ownedFragmentHash: string
+}
+
+export interface AgentIntegrationKimiInstructionConflictActionDto {
+  kind: 'kimi_instruction_conflict'
+  componentKey: 'instruction'
+  operation: 'connect'
+  reason: 'legacy_unowned' | 'legacy_not_exact' | 'legacy_changed' | 'target_occupied'
+  instruction: string
+  sourceLabel: string
+  targetLabel: string
+  steps: string[]
+}
+
+export interface AgentIntegrationCodexTrustReviewDto {
+  installationId: string
+  status: 'action_required' | 'already_recorded'
+  actionHash: string | null
+  instruction: string | null
+  sourceLabel: string | null
+  hookKeyHash: string | null
+  ownedFragmentHash: string | null
+  hostCurrentHash: string | null
+  expiresAt: string | null
+}
+
+export interface AgentIntegrationCodexTrustResultDto {
+  installationId: string
+  status: 'trust_recorded' | 'not_trusted'
+  receiptId: string | null
+  hostCurrentHash: string
+}
+
+export interface AgentIntegrationGuidedRemovalReviewDto {
+  installationId: string
+  status: 'action_required'
+  actionHash: string
+  runId: string
+  connectorName: string
+  instruction: string
+  expiresAt: string
+}
+
+export interface AgentIntegrationGuidedRemovalResultDto {
+  installationId: string
+  runId: string
+  status: 'removal_confirmed' | 'not_ready'
+  receiptId: string | null
 }
 
 export interface AgentIntegrationPlanPreviewDto {
@@ -259,10 +385,12 @@ export interface AgentIntegrationPlanPreviewDto {
 
 export interface AgentIntegrationApplyItemDto {
   installationId: string
-  status: 'awaiting_consent' | 'awaiting_verification' | 'paused' | 'committed' | 'needs_recovery' | 'failed' | 'interrupted'
+  status: 'awaiting_consent' | 'awaiting_verification' | 'paused' | 'committed' | 'superseded' | 'needs_recovery' | 'failed' | 'interrupted'
   completion?: 'disconnected' | 'detached_shared_visible'
   runId?: string
   reason?: string
+  /** Persisted, coordinator-bound steps still required before verification can complete. */
+  requiredUserActionDetails?: AgentIntegrationRequiredUserActionDto[]
 }
 
 export interface AgentIntegrationApplyResultDto {
@@ -271,7 +399,7 @@ export interface AgentIntegrationApplyResultDto {
 }
 
 export interface AgentIntegrationConnectOptionsDto {
-  /** Lifecycle is the only optional capability in the first managed rollout. */
+  /** Valid only when the preview advertises lifecycle as optional for that Installation. */
   withoutLifecycleInstallationIds?: string[]
 }
 
@@ -352,6 +480,8 @@ export interface AgentIntegrationDetailDto {
   installation: AgentIntegrationInstallationDto
   configRootLabel: string | null
   events: AgentIntegrationEventDto[]
+  /** Current pending steps reconstructed from the latest authoritative coordinator run. */
+  requiredUserActionDetails?: AgentIntegrationRequiredUserActionDto[]
   technical?: {
     agentId: string | null
     installKey: string
@@ -390,6 +520,65 @@ export interface AgentIntegrationSupportProductDto {
     maturity: 'detectable' | 'guided' | 'managed'
     maximumAccessLevel: AgentIntegrationAccessLevel
   }>
+}
+
+export interface AgentIntegrationClaudeCoworkPreflightDto {
+  preflightHash: string
+  displayName: string
+  appLabel: string
+  hostVersion: string
+  componentKeys: ['instruction', 'memory_tools']
+  warnings: string[]
+  expiresAt: string
+}
+
+export interface AgentIntegrationClaudeCoworkPreparedDto {
+  installationId: string
+}
+
+export type AgentIntegrationCustomMode = 'nonstandard_config_root' | 'manual_mcp_client'
+export type AgentIntegrationCustomMcpSchema =
+  | 'standard_mcp_servers'
+  | 'nested_mcp_servers'
+  | 'opencode_mcp'
+
+export type AgentIntegrationCustomRequestDto =
+  | {
+      mode: 'nonstandard_config_root'
+      displayName: string
+      sourceInstallationId: string
+      configRoot: string
+    }
+  | {
+      mode: 'manual_mcp_client'
+      displayName: string
+      /** A user-owned import never grants configuration-file ownership. */
+      configurationOwnership?: 'user' | 'tidemind'
+      /** Reuse a previously imported identity-only legacy Custom Installation. */
+      legacyInstallationId?: string
+      clientExecutablePath: string
+      configFilePath: string
+      schemaKind: AgentIntegrationCustomMcpSchema
+      selectorKey: string
+    }
+
+/**
+ * Read-only preflight. Local paths and generated configuration remain in the
+ * main process; the renderer receives only redacted labels and an opaque hash.
+ */
+export interface AgentIntegrationCustomPreflightDto {
+  preflightHash: string
+  mode: AgentIntegrationCustomMode
+  displayName: string
+  targetLabel: string
+  hostLabel: string
+  schemaKind: AgentIntegrationCustomMcpSchema | null
+  selectorKey: string | null
+  agentId: string
+  reusedLegacyInstallationId: string | null
+  componentKeys: AgentIntegrationComponentKey[]
+  warnings: string[]
+  expiresAt: string
 }
 
 export interface AppApi {
@@ -743,5 +932,15 @@ export interface AppApi {
     copyComponentPath: (installationId: string, componentKey: AgentIntegrationComponentKey) => Promise<boolean>
     revealComponentPath: (installationId: string, componentKey: AgentIntegrationComponentKey) => Promise<boolean>
     supportCatalog: () => Promise<AgentIntegrationSupportProductDto[]>
+    previewClaudeCoworkSetup: () => Promise<AgentIntegrationClaudeCoworkPreflightDto>
+    prepareClaudeCoworkSetup: (preflightHash: string) => Promise<AgentIntegrationClaudeCoworkPreparedDto>
+    pickCustomPath: (kind: 'config_root' | 'config_file' | 'client_executable') => Promise<string | null>
+    previewCustomInstallation: (request: AgentIntegrationCustomRequestDto) => Promise<AgentIntegrationCustomPreflightDto>
+    prepareCustomConnect: (preflightHash: string, includeTechnicalDetails?: boolean) => Promise<AgentIntegrationPlanPreviewDto>
+    copyCustomMcpConfiguration: (preflightHash: string) => Promise<boolean>
+    reviewCodexHookTrust: (installationId: string) => Promise<AgentIntegrationCodexTrustReviewDto>
+    confirmCodexHookTrust: (actionHash: string) => Promise<AgentIntegrationCodexTrustResultDto>
+    reviewGuidedRemoval: (installationId: string) => Promise<AgentIntegrationGuidedRemovalReviewDto>
+    confirmGuidedRemoval: (actionHash: string) => Promise<AgentIntegrationGuidedRemovalResultDto>
   }
 }

@@ -117,7 +117,21 @@ export function registerAgentIntegrationUiAuditHandlers(
   }))
   const rendererUrl = process.env.ELECTRON_RENDERER_URL
     ?? pathToFileURL(path.join(__dirname, '../renderer/index.html')).href
+  const customFixtureRoot = path.join(dataDir, 'ui-audit-custom-client')
   registerAgentIntegrationHandlers(createProductionAgentIntegrationService(db, agentIntegration), {
     expectedRendererUrl: rendererUrl,
+    pickCustomPath: async kind => {
+      const target = kind === 'config_root'
+        ? path.join(dataDir, 'ui-audit-custom-root')
+        : kind === 'config_file'
+          ? path.join(customFixtureRoot, 'config.json')
+          : path.join(customFixtureRoot, 'audit-agent')
+      const canonical = fs.realpathSync(target)
+      const relative = path.relative(dataDir, canonical)
+      if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+        throw new Error('UI audit custom path escaped the isolated fixture')
+      }
+      return canonical
+    },
   })
 }

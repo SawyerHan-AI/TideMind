@@ -1017,9 +1017,11 @@ function healKimiCodeConfig(
       if (!parsed.agentId || !parsed.skillPath || !parsed.tool) continue
       if (hookCommandNeedsPatch(command, shimPath, hookScriptPath, parsed.agentId)) {
         let rebuilt = rebuildHookCommand(shimPath, hookScriptPath, parsed.agentId, parsed.skillPath, parsed.tool)
-        // rebuildHookCommand 不认识 --once-per-session,原命令有则保留,
-        // 否则自愈后 UserPromptSubmit 会对每条消息都注入上下文。
+        // rebuildHookCommand 不认识 Kimi 的无值标志，原命令有则精确保留。
         if (command.includes('--once-per-session')) rebuilt += ' --once-per-session'
+        if (command.includes('--suppress-session-start-activity')) {
+          rebuilt += ' --suppress-session-start-activity'
+        }
         lines[j] = `${m[1]}${JSON.stringify(rebuilt)}${m[3]}`
         changed = true
       }

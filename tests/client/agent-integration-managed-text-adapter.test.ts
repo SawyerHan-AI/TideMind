@@ -32,12 +32,20 @@ describe('managed whole-document projection', () => {
 
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
 
-  const adapter = () => createManagedTextHostAdapter({
+  const adapter = (recognitionViaLifecycle = false) => createManagedTextHostAdapter({
     catalogId: 'qwen-code-cli', adapterVersion: '1', componentKey: 'instruction',
     targetFile: ctx => path.join(ctx.installation.canonicalConfigRoot, 'skills', 'tidemind', 'SKILL.md'),
     allowedRoot: ctx => path.join(ctx.installation.canonicalConfigRoot, 'skills'),
     content: () => '---\nname: tidemind\ndescription: test\n---\n',
     reload: 'new_session',
+    ...(recognitionViaLifecycle ? {
+      recognitionViaHostActivity: {
+        componentKey: 'lifecycle' as const,
+        signalNames: ['session_start'] as const,
+        require: 'any' as const,
+        diagnostic: 'document_loaded_by_lifecycle_command',
+      },
+    } : {}),
   })
 
   async function plan(ownedArtifacts: readonly OwnedArtifactBaseline[] = []) {
@@ -78,6 +86,17 @@ describe('managed whole-document projection', () => {
     const observed = await adapter().inspect(context)
     expect(observed.components[0].visibility).toBe('unknown')
     expect(observed.diagnostics[0]).toContain('symbolic-link')
+
+    const verified = await adapter().verify(context, {
+      componentKeys: ['instruction'],
+      expectedCapability: 1,
+      inspection: observed,
+    })
+    expect(verified[0]).toMatchObject({
+      componentKey: 'instruction',
+      status: 'failed',
+      diagnostics: ['managed_document_visibility_unknown'],
+    })
   })
 
   it('rejects a symlink anywhere in the managed parent chain', async () => {
@@ -91,6 +110,17 @@ describe('managed whole-document projection', () => {
     expect(observed.components[0].visibility).toBe('unknown')
     expect(observed.diagnostics).toContain('managed_text_parent_symlink_rejected')
     expect(fs.readdirSync(outside)).toEqual([])
+
+    const verified = await adapter().verify(context, {
+      componentKeys: ['instruction'],
+      expectedCapability: 1,
+      inspection: observed,
+    })
+    expect(verified[0]).toMatchObject({
+      componentKey: 'instruction',
+      status: 'failed',
+      diagnostics: ['managed_document_visibility_unknown'],
+    })
   })
 
   it('binds read-back to the planned canonical path inside the allowed root', async () => {
@@ -135,6 +165,14 @@ describe('managed whole-document projection', () => {
     expect(disconnected.mutations).toEqual([])
     expect(disconnected.diagnostics).toContain('managed_text_manual_cleanup_required')
     expect(disconnected.requiredUserActions).toContain('manually_remove_owned_document')
+    expect(disconnected.requiredUserActionDetails).toEqual([{
+      kind: 'manual_file_removal',
+      componentKey: 'instruction',
+      operation: 'disconnect',
+      physicalTarget: fs.realpathSync(target),
+      ownedFragmentHash: ownedHash,
+      instruction: `Remove the Tide Mind-owned file at ${fs.realpathSync(target)}, then recheck the connection.`,
+    }])
     expect(fs.existsSync(target)).toBe(true)
   })
 
@@ -154,5 +192,53 @@ describe('managed whole-document projection', () => {
 
     await expect(host.apply(context, legacyRemove)).rejects.toThrow('managed_text_automatic_remove_unsupported')
     expect(fs.existsSync(legacyRemove.physicalTarget)).toBe(true)
+  })
+
+  it('verifies instruction recognition only when the identity-bound lifecycle command really ran', async () => {
+    const host = adapter(true)
+    const observed = await host.inspect(context)
+    const prepared = await host.plan(context, {
+      desiredCapability: 4,
+      desiredComponents: ['instruction'],
+      observed,
+      ownedArtifacts: [],
+    })
+    await host.apply(context, prepared.mutations[0])
+    const inspection = await host.inspect(context)
+    const request = {
+      componentKeys: ['instruction'] as const,
+      expectedCapability: 4 as const,
+      inspection,
+      activityBinding: {
+        installationId: 'installation',
+        tideMindVersion: '1',
+        adapterVersion: '1',
+        projectionVersion: '1',
+        hostVersion: '1.0.0',
+        activationRunId: 'run-current',
+        activityGenerationToken: 'generation-current',
+        activationEpoch: '2026-09-03T00:04:00.000Z',
+        observedAfter: '2026-09-03T00:00:00.000Z',
+        verifiedAt: '2026-09-03T00:10:00.000Z',
+      },
+    }
+
+    expect((await host.verify(context, request))[0]).toMatchObject({
+      componentKey: 'instruction', status: 'unverified', verifiedCapability: null,
+    })
+
+    context.hostActivityEvidence = {
+      find: query => [{
+        id: 'activity', installationId: query.installationId, agentId: query.agentId,
+        hostVariant: query.hostVariant, componentKey: 'lifecycle', signalName: 'session_start',
+        tideMindVersion: query.tideMindVersion, adapterVersion: query.adapterVersion,
+        projectionVersion: query.projectionVersion, hostVersion: query.hostVersion,
+        evidenceHash: 'real-host-receipt', observedAt: '2026-09-03T00:05:00.000Z',
+      }],
+    }
+    expect((await host.verify(context, request))[0]).toMatchObject({
+      componentKey: 'instruction', status: 'verified', verifiedCapability: 1,
+      diagnostics: expect.arrayContaining(['document_loaded_by_lifecycle_command']),
+    })
   })
 })

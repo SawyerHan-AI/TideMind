@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import { sha256Json } from './fingerprint'
+import { modifyJsoncObject, parseJsoncObject } from './jsonc-document'
 import {
   ensureSafeParentDirectoryWithinRoot,
   inspectRegularFile,
@@ -33,6 +34,11 @@ export interface JsonProjectionPlan {
   conflictReason: string | null
 }
 
+export interface JsonProjectionMovePlan extends JsonProjectionPlan {
+  sourceSelector: JsonSelector
+  sourceFragmentHash: string | null
+}
+
 export class JsonProjectionConflictError extends Error {
   constructor(message: string) {
     super(message)
@@ -55,7 +61,7 @@ export function inspectJsonProjection(
 
   let document: unknown
   try {
-    document = JSON.parse(fs.readFileSync(file.canonicalPath, 'utf8'))
+    document = parseContainer(file.canonicalPath)
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
     throw new JsonProjectionConflictError(`Managed JSON container is malformed: ${file.canonicalPath} (${reason})`)
@@ -134,7 +140,8 @@ export function applyJsonProjection(plan: JsonProjectionPlan, allowedRoot?: stri
     throw new JsonProjectionConflictError('fragment_precondition_changed')
   }
 
-  const document = current.file.exists
+  const source = current.file.exists ? fs.readFileSync(current.file.canonicalPath, 'utf8') : undefined
+  const document = source !== undefined
     ? parseObject(current.file.canonicalPath)
     : {}
   if (plan.action === 'remove') {
@@ -145,7 +152,10 @@ export function applyJsonProjection(plan: JsonProjectionPlan, allowedRoot?: stri
   }
 
   if (allowedRoot) ensureSafeParentDirectoryWithinRoot(plan.targetPath, allowedRoot)
-  writeRegularFileAtomicCas(plan.targetPath, `${JSON.stringify(document, null, 2)}\n`, {
+  const content = source !== undefined && isJsoncFile(plan.targetPath)
+    ? modifyJsoncObject(source, plan.selector, plan.action === 'remove' ? undefined : plan.desiredFragment)
+    : `${JSON.stringify(document, null, 2)}\n`
+  writeRegularFileAtomicCas(plan.targetPath, content, {
     expectedContainerHash: plan.containerPreconditionHash,
     expectedCanonicalPath: plan.canonicalPath,
   })
@@ -154,6 +164,56 @@ export function applyJsonProjection(plan: JsonProjectionPlan, allowedRoot?: stri
     throw new JsonProjectionConflictError('fragment_read_back_mismatch')
   }
   return after
+}
+
+/** Atomically move one owned selector to another selector in the same JSON container. */
+export function applyJsonProjectionMove(
+  plan: JsonProjectionMovePlan,
+  allowedRoot?: string,
+): JsonProjectionInspection {
+  if (plan.desiredFragment === undefined) throw new Error('Missing desired JSON fragment')
+  const target = inspectJsonProjection(plan.targetPath, plan.selector, allowedRoot)
+  const source = inspectJsonProjection(plan.targetPath, plan.sourceSelector, allowedRoot)
+  if (target.file.canonicalPath !== plan.canonicalPath || source.file.canonicalPath !== plan.canonicalPath) {
+    throw new JsonProjectionConflictError('container_canonical_path_changed')
+  }
+  if (target.file.containerHash !== plan.containerPreconditionHash
+    || source.file.containerHash !== plan.containerPreconditionHash) {
+    throw new JsonProjectionConflictError('container_precondition_changed')
+  }
+  if (target.fragmentExists || target.fragmentHash !== plan.liveFragmentHash) {
+    throw new JsonProjectionConflictError('migration_target_precondition_changed')
+  }
+  if (source.fragmentHash !== plan.sourceFragmentHash) {
+    throw new JsonProjectionConflictError('migration_source_precondition_changed')
+  }
+
+  const original = target.file.exists ? fs.readFileSync(target.file.canonicalPath, 'utf8') : undefined
+  const document = original === undefined ? {} : parseObject(target.file.canonicalPath)
+  if (plan.sourceFragmentHash !== null) deleteJsonFragment(document, plan.sourceSelector)
+  setJsonFragment(document, plan.selector, plan.desiredFragment)
+
+  let content: string
+  if (original !== undefined && isJsoncFile(plan.targetPath)) {
+    const withoutSource = plan.sourceFragmentHash === null
+      ? original
+      : modifyJsoncObject(original, plan.sourceSelector, undefined)
+    content = modifyJsoncObject(withoutSource, plan.selector, plan.desiredFragment)
+  } else {
+    content = `${JSON.stringify(document, null, 2)}\n`
+  }
+
+  if (allowedRoot) ensureSafeParentDirectoryWithinRoot(plan.targetPath, allowedRoot)
+  writeRegularFileAtomicCas(plan.targetPath, content, {
+    expectedContainerHash: plan.containerPreconditionHash,
+    expectedCanonicalPath: plan.canonicalPath,
+  })
+  const afterTarget = inspectJsonProjection(plan.targetPath, plan.selector, allowedRoot)
+  const afterSource = inspectJsonProjection(plan.targetPath, plan.sourceSelector, allowedRoot)
+  if (afterTarget.fragmentHash !== plan.desiredFragmentHash || afterSource.fragmentExists) {
+    throw new JsonProjectionConflictError('migration_read_back_mismatch')
+  }
+  return afterTarget
 }
 
 function makePlan(
@@ -183,9 +243,18 @@ function makePlan(
 }
 
 function parseObject(filePath: string): Record<string, JsonValue> {
-  const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+  const parsed = parseContainer(filePath)
   if (!isJsonObject(parsed)) throw new JsonProjectionConflictError('container_root_not_object')
   return parsed
+}
+
+function parseContainer(filePath: string): unknown {
+  const source = fs.readFileSync(filePath, 'utf8')
+  return isJsoncFile(filePath) ? parseJsoncObject(source).root : JSON.parse(source)
+}
+
+function isJsoncFile(filePath: string): boolean {
+  return filePath.toLowerCase().endsWith('.jsonc')
 }
 
 function getJsonFragment(root: Record<string, JsonValue>, selector: JsonSelector): {

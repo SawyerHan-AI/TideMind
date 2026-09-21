@@ -25,9 +25,9 @@ vi.mock('../../client/electron/cloud/auth-client.js', () => ({
 }));
 
 vi.mock('../../client/electron/cloud/reconciler.js', () => ({
-  Reconciler: vi.fn().mockImplementation(() => ({
+  Reconciler: vi.fn().mockImplementation(function () { return ({
     runAll: vi.fn(async () => []),
-  })),
+  }) }),
 }));
 
 const pushOutboxMock = vi.fn();
@@ -40,10 +40,10 @@ vi.mock('../../client/electron/cloud/outbox.js', () => ({
 }));
 
 vi.mock('../../client/electron/cloud/cache-manager.js', () => ({
-  CacheManager: vi.fn().mockImplementation(() => ({
+  CacheManager: vi.fn().mockImplementation(function () { return ({
     applyChanges: vi.fn(),
     getLastSyncedVersion: () => 0,
-  })),
+  }) }),
 }));
 
 vi.mock('../../client/electron/cloud/device.js', () => ({

@@ -8,7 +8,7 @@ import {
   CliChildProcessRunner,
   CliProcessRegistry,
 } from '../../../src/llm/cli/child-process-runner.js';
-import type { CodexCapabilityManifest } from '../../../src/llm/cli/catalogs.js';
+import { CODEX_CAPABILITY_MANIFESTS } from '../../../src/llm/cli/catalogs.js';
 import { captureCliIdentity } from '../../../src/llm/cli/resolve-cli.js';
 
 const fixture = resolve(
@@ -26,7 +26,7 @@ async function setup(kind: 'claude' | 'codex') {
     resolved: {
       kind,
       path: realExecutable,
-      version: kind === 'claude' ? '2.1.215' : '0.145.0-alpha.18',
+      version: kind === 'claude' ? '2.1.215' : '0.153.4',
       controlledPath: `${dirname(process.execPath)}:${dataDir}:/usr/bin:/bin`,
       source: 'known_path' as const,
       identity: await captureCliIdentity(realExecutable),
@@ -75,19 +75,11 @@ describe('CLI adapters with fake executables', () => {
 
   it('Codex uses ignore-config/rules, disables reviewed features, and fails on tool events', async () => {
     const setupResult = await setup('codex');
-    const manifest: CodexCapabilityManifest = {
-      version: '0.145.0-alpha.18',
-      requiredExecHelp: [],
-      requiredPromptInputHelp: [],
-      knownFeatures: {
-        shell_tool: { stage: 'stable', enabled: true },
-        apps: { stage: 'stable', enabled: true },
-      },
-      disableFeatures: ['shell_tool', 'apps'],
-    };
+    const manifest = CODEX_CAPABILITY_MANIFESTS.find(candidate => candidate.version === '0.153.4');
+    expect(manifest).toBeDefined();
     const adapter = new CodexCliAdapter({
       ...setupResult,
-      manifest,
+      manifest: manifest!,
       preflight: () => undefined,
       sourceEnv: { HOME: setupResult.dataDir, USER: 'fixture', ANTHROPIC_API_KEY: 'no' },
       invocationId: () => 'codex12345',
@@ -99,6 +91,9 @@ describe('CLI adapters with fake executables', () => {
       '--skip-git-repo-check', '--strict-config', '-s', 'read-only',
       '--disable', 'shell_tool', '--disable', 'apps',
     ]));
+    expect(inspection.argv.flatMap((value: string, index: number) => (
+      value === '--disable' ? [inspection.argv[index + 1]] : []
+    ))).toEqual(manifest!.disableFeatures);
     expect(inspection.argv.join(' ')).not.toContain('prompt secret');
     expect(inspection.stdin).toBe('prompt secret');
     expect(inspection.envKeys).not.toContain('ANTHROPIC_API_KEY');
@@ -138,13 +133,9 @@ describe('CLI adapters with fake executables', () => {
         ? new ClaudeCliAdapter(common)
         : new CodexCliAdapter({
             ...common,
-            manifest: {
-              version: '0.145.0-alpha.18',
-              requiredExecHelp: [],
-              requiredPromptInputHelp: [],
-              knownFeatures: {},
-              disableFeatures: [],
-            },
+            manifest: CODEX_CAPABILITY_MANIFESTS.find(candidate => (
+              candidate.version === '0.153.4'
+            ))!,
           });
       await expect(adapter.run({
         ...request,

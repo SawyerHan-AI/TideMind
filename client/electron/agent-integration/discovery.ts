@@ -1,7 +1,9 @@
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { getCatalogVariant } from './catalog'
 import { sha256Json } from './fingerprint'
 import { canonicalizeInstallationIdentity } from './identity'
+import { kimiNativeReceiptLookupFingerprint } from './distribution-artifact'
 import type { DiscoverInstallationInput } from './repository'
 import type {
   CatalogId,
@@ -19,6 +21,9 @@ import type {
  */
 export interface DiscoveryPathStat {
   kind: 'file' | 'directory' | 'symbolic_link' | 'other'
+  mode?: number
+  ownerUid?: string
+  groupGid?: string
 }
 
 export interface StableFileSnapshot {
@@ -35,16 +40,49 @@ export interface StableFileSnapshot {
   /** Hash of content plus the physical file identity and executable mode. */
   fingerprint: string
   executable: boolean
+  ownerUid?: string
+  groupGid?: string
 }
 
 export type StableFileFingerprint = Omit<StableFileSnapshot, 'content'>
 
 export interface PackageMetadataProofNode extends StableFileFingerprint {
-  role: 'package_manifest' | 'qwen_launcher' | 'qwen_target'
+  role:
+    | 'package_manifest'
+    | 'qwen_launcher'
+    | 'qwen_inner_launcher'
+    | 'qwen_standalone_manifest'
+    | 'qwen_cli_entry'
+    | 'qwen_node_runtime'
+    | 'qwen_package_file'
+    | 'kimi_install_metadata'
+    | 'kimi_latest_metadata'
+    | 'openclaw_wrapper'
+    | 'openclaw_node_runtime'
+    | 'openclaw_entry'
+    | 'openclaw_package_file'
+    | 'npm_install_lock'
+    | 'npm_package_executable'
+    | 'npm_package_file'
+    | 'npm_component_manifest'
+    | 'npm_component_native_executable'
+    | 'npm_component_file'
   /** Canonical absolute path whose current directory entry is bound by the proof. */
   path: string
   /** Bound used by the passive inspector when it read and hashed this node. */
   maxBytes: number
+  /** Portable package-owned entry semantics; omitted for non-package proof nodes. */
+  entryType?: 'file' | 'symlink'
+  /** Normalized relative target for a package-owned symlink, otherwise null/omitted. */
+  symlinkTarget?: string | null
+}
+
+export interface StablePackageTree {
+  packageTreeSha256: string
+  ownedEntryCount: number
+  ownedTotalBytes: number
+  physicalTreeFingerprint: string
+  proofNodes: readonly PackageMetadataProofNode[]
 }
 
 export interface StableFileMetadata {
@@ -53,6 +91,8 @@ export interface StableFileMetadata {
   device: string
   inode: string
   executable: boolean
+  ownerUid?: string
+  groupGid?: string
 }
 
 export const MAX_CLI_EXECUTABLE_PROOF_BYTES = 512 * 1024 * 1024
@@ -61,6 +101,13 @@ export const CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION = 1
 export type ManagementEligibilityReason =
   | 'executable_proof_too_large'
   | 'executable_metadata_unavailable'
+  | 'distribution_not_managed'
+  | 'release_entry_missing'
+  | 'release_mode_detect_only'
+  | 'release_distribution_not_accepted'
+  | 'release_version_unverified'
+  | 'release_version_not_accepted'
+  | 'release_artifact_not_accepted'
 
 export interface ManagementEligibility {
   schemaVersion: typeof CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION
@@ -103,11 +150,21 @@ function sameStableFileMetadata(left: StableFileMetadata, right: StableFileMetad
     && left.device === right.device
     && left.inode === right.inode
     && left.executable === right.executable
+    && left.ownerUid === right.ownerUid
+    && left.groupGid === right.groupGid
 }
 
 export interface DiscoveryFileSystem {
   lstat(targetPath: string): Promise<DiscoveryPathStat | undefined>
   realpath(targetPath: string): Promise<string>
+  /**
+   * Returns a bounded snapshot of direct child names. OMP uses this only for
+   * its host-owned `profiles/` registry; discovery never walks recursively.
+   */
+  readDirectoryNames?(targetPath: string, maxEntries: number): Promise<{
+    names: readonly string[]
+    truncated: boolean
+  } | undefined>
   /** Reads at most maxBytes. It is only used for an app bundle's Info.plist. */
   readTextFile(targetPath: string, maxBytes: number): Promise<string>
   /**
@@ -118,6 +175,10 @@ export interface DiscoveryFileSystem {
   readStableFileSnapshot?(targetPath: string, maxBytes: number): Promise<StableFileSnapshot>
   /** Streams large executables without allocating fileSize bytes. */
   readStableFileFingerprint?(targetPath: string, maxBytes: number): Promise<StableFileFingerprint>
+  /** Bounded, no-symlink whole-package snapshot for immutable npm receipts. */
+  readStablePackageTree?(targetPath: string): Promise<StablePackageTree>
+  /** Metadata-only exact recheck of a previously content-hashed owned package. */
+  verifyStablePackageTree?(targetPath: string, snapshot: StablePackageTree): Promise<boolean>
   /** Opens without following the leaf and returns two-fstat-stable metadata without reading content. */
   readStableFileMetadata?(targetPath: string): Promise<StableFileMetadata>
 }
@@ -135,6 +196,31 @@ export interface VersionCommandResult {
   packageMetadataFingerprint?: string
   /** Exact physical files that produced packageMetadataFingerprint. */
   packageProofNodes?: readonly PackageMetadataProofNode[]
+  /**
+   * Machine-portable digest of immutable artifact facts. Unlike
+   * packageMetadataFingerprint this must never include inode, timestamps, uid,
+   * or absolute installation paths.
+   */
+  portableArtifactFingerprint?: string
+  /** Portable content tree for package receipts that require whole-package binding. */
+  packageTreeSha256?: string
+  /** Exact non-root packages that make a composed npm CLI runnable. */
+  npmComposition?: Readonly<{
+    entryRule: string
+    components: readonly Readonly<{
+      role: string
+      installName: string
+      manifestName: string
+      version: string
+      integrity: string
+      ownedPackageSha256: string
+      ownedEntryCount: number
+      ownedTotalBytes: number
+      nativeExecutableRelativePath: string | null
+      nativeExecutableSha256: string | null
+      nativeExecutableSizeBytes: number | null
+    }>[]
+  }>
 }
 
 export interface AppCodeSignatureResult {
@@ -155,9 +241,83 @@ export interface AppCodeSignatureOptions {
   beforeFinalVerification?: () => Promise<void>
 }
 
+function codeSignatureReceiptFingerprint(signature: AppCodeSignatureResult): string | null {
+  const cdHash = signature.cdHash?.trim().toLowerCase()
+  const designatedRequirement = signature.designatedRequirement?.trim()
+  if (!cdHash || !/^[a-f0-9]{20,128}$/u.test(cdHash)
+    || !designatedRequirement || designatedRequirement.length > 8 * 1024) return null
+  return sha256Json({ cdHash, designatedRequirement })
+}
+
+export function signedKimiPortableArtifactFingerprint(input: {
+  version: string | undefined
+  executableArtifactFingerprint: string | undefined
+  signature: AppCodeSignatureResult
+}): string | undefined {
+  const cdHash = input.signature.cdHash?.trim().toLowerCase()
+  const designatedRequirement = input.signature.designatedRequirement?.trim()
+  if (!input.version || !input.executableArtifactFingerprint
+    || !input.signature.valid || input.signature.verificationBoundary !== 'strict_final'
+    || !input.signature.identifier || !input.signature.teamIdentifier
+    || !cdHash || !/^[a-f0-9]{20,128}$/u.test(cdHash)
+    || !designatedRequirement || designatedRequirement.length > 8 * 1024) return undefined
+  return createHash('sha256').update(JSON.stringify({
+    schema: 'signed-cli-kimi-release-v2',
+    version: input.version,
+    executableArtifactFingerprint: input.executableArtifactFingerprint,
+    identifier: input.signature.identifier,
+    teamIdentifier: input.signature.teamIdentifier,
+    cdHash,
+    designatedRequirement,
+  })).digest('hex')
+}
+
+const SIGNED_ARTIFACT_VERSION = /^(\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?)$/u
+
+/**
+ * Cross-machine identity for one exact signed code object. Physical paths,
+ * inode/time metadata and user ownership remain local CAS inputs and are
+ * intentionally excluded from the release-frozen digest.
+ */
+export function signedCodePortableArtifactFingerprint(input: {
+  version: string | undefined
+  executable: StableFileFingerprint | undefined
+  signature: AppCodeSignatureResult
+}): string | undefined {
+  const cdHash = input.signature.cdHash?.trim().toLowerCase()
+  const designatedRequirement = input.signature.designatedRequirement?.trim()
+  if (!input.version || !SIGNED_ARTIFACT_VERSION.test(input.version)
+    || !input.executable?.executable
+    || !input.signature.valid
+    || input.signature.verificationBoundary !== 'strict_final'
+    || !input.signature.identifier || !input.signature.teamIdentifier
+    || !cdHash || !/^[a-f0-9]{20,128}$/u.test(cdHash)
+    || !designatedRequirement || designatedRequirement.length > 8 * 1024) return undefined
+  return createHash('sha256').update(JSON.stringify({
+    schema: 'signed-code-v1',
+    version: input.version,
+    executable: {
+      sha256: input.executable.sha256,
+      sizeBytes: input.executable.size,
+      executable: true,
+    },
+    identifier: input.signature.identifier,
+    teamIdentifier: input.signature.teamIdentifier,
+    cdHash,
+    designatedRequirement,
+  })).digest('hex')
+}
+
 export interface DiscoveryDependencies {
   fs: DiscoveryFileSystem
+  /**
+   * Legacy single-candidate lookup retained for dependency-injected callers.
+   * Production supplies `whichAll` so an unrelated earlier PATH executable
+   * cannot shadow a later, provenance-proved official installation.
+   */
   which(command: string): Promise<string | undefined>
+  /** Bounded, PATH-ordered executable candidates for one exact command name. */
+  whichAll?(command: string): Promise<readonly string[]>
   execVersion(
     executableRealpath: string,
     args: readonly string[],
@@ -178,6 +338,16 @@ export interface DiscoveryDependencies {
     appBundleRealpath: string,
     timeoutMs: number,
   ): AppCodeSignatureResult
+  /** Reads the exact thin Mach-O architecture without starting the executable. */
+  inspectExecutableArchitecture?(executableRealpath: string): Promise<'arm64' | 'x64' | null>
+  /** Resolves a live Kimi surface only from the frozen release receipt matrix. */
+  resolveKimiNativeReceipt?(surface: {
+    architecture: 'arm64' | 'x64'
+    lookupFingerprint: string
+  }): Readonly<{
+    version: string
+    portableArtifactFingerprint: string
+  }> | null
 }
 
 export interface LocalDiscoveryContext {
@@ -226,7 +396,7 @@ export interface DiscoveredInstallation {
   executablePath?: string
   appPath?: string
   detectedVersion?: string
-  versionDetectionMethod?: 'cli_version' | 'bundle_plist'
+  versionDetectionMethod?: 'cli_version' | 'bundle_plist' | 'updater_metadata' | 'release_receipt'
   managementEligibility?: ManagementEligibility
   provenance: readonly string[]
   evidence: readonly DiscoveryEvidence[]
@@ -279,6 +449,17 @@ interface CliProbeDefinition {
    */
   detectOnlyFallbackCatalogId?: CatalogId
   managedPackageProvenances?: readonly string[]
+  /** Exact package identities for which this Catalog Adapter has write support. */
+  writablePackageProvenances?: readonly string[]
+  /**
+   * A native single-file executable is a different trust surface from the npm
+   * package. It is promoted only when the platform verifies the exact code
+   * object and its publisher identity; path shape alone remains detect-only.
+   */
+  signedNativeFallback?: {
+    identifiers: readonly string[]
+    teamIdentifiers: readonly string[]
+  }
 }
 
 interface AppProbeDefinition {
@@ -352,41 +533,96 @@ function environmentRoot(
       : override.startsWith('~/')
         ? path.posix.join(context.homeDir, override.slice(2))
         : override
-    if (!isSafeAbsolutePath(expanded)) {
+    const normalized = path.posix.normalize(expanded)
+    if (!isSafeAbsolutePath(normalized)) {
       return { roots: [], explicitProfile, invalidOverride: environmentKey }
     }
     return {
-      roots: [options.valueIsFile ? path.posix.dirname(expanded) : expanded],
+      roots: [options.valueIsFile ? path.posix.dirname(normalized) : normalized],
       explicitProfile,
     }
   }
 }
 
-function openCodeRoot(context: LocalDiscoveryContext): ConfigRootResolution {
-  const defaultRoot = path.posix.join(context.homeDir, '.config', 'opencode')
-  const directoryOverride = context.environment?.OPENCODE_CONFIG_DIR?.trim()
-  const fileOverride = context.environment?.OPENCODE_CONFIG?.trim()
-  const expandedDirectory = directoryOverride
-    ? expandEnvironmentPath(directoryOverride, context.homeDir)
-    : undefined
-  const expandedFile = fileOverride
-    ? expandEnvironmentPath(fileOverride, context.homeDir)
-    : undefined
-  if (expandedDirectory !== undefined && !isSafeAbsolutePath(expandedDirectory)) {
-    return { roots: [], invalidOverride: 'OPENCODE_CONFIG_DIR' }
+function openClawRoot(context: LocalDiscoveryContext): ConfigRootResolution {
+  const rawHome = context.environment?.OPENCLAW_HOME?.trim()
+  const rawPrefix = context.environment?.OPENCLAW_PREFIX?.trim()
+  const effectiveHome = rawHome ? expandEnvironmentPath(rawHome, context.homeDir) : context.homeDir
+  const prefix = rawPrefix
+    ? expandEnvironmentPath(rawPrefix, context.homeDir)
+    : path.posix.join(context.homeDir, '.openclaw')
+  if (!isSafeAbsolutePath(effectiveHome)) return { roots: [], invalidOverride: 'OPENCLAW_HOME' }
+  if (!isSafeAbsolutePath(prefix)) return { roots: [], invalidOverride: 'OPENCLAW_PREFIX' }
+  const rawState = context.environment?.OPENCLAW_STATE_DIR?.trim()
+  const stateRoot = path.posix.normalize(rawState
+    ? expandEnvironmentPath(rawState, context.homeDir)
+    : path.posix.join(effectiveHome, '.openclaw'))
+  if (!isSafeAbsolutePath(stateRoot) || stateRoot === '/') return { roots: [], invalidOverride: 'OPENCLAW_STATE_DIR' }
+  const rawConfig = context.environment?.OPENCLAW_CONFIG_PATH?.trim()
+  const configFile = path.posix.normalize(rawConfig
+    ? expandEnvironmentPath(rawConfig, context.homeDir)
+    : path.posix.join(stateRoot, 'openclaw.json'))
+  // The plugin command also mutates state under this root. A config outside
+  // that physical domain needs a separately reviewed multi-root contract.
+  if (!isSafeAbsolutePath(configFile) || path.posix.dirname(configFile) !== stateRoot
+    || !['.json', '.json5'].includes(path.posix.extname(configFile))) {
+    return { roots: [], invalidOverride: 'OPENCLAW_CONFIG_PATH' }
   }
-  if (expandedFile !== undefined && !isSafeAbsolutePath(expandedFile)) {
-    return { roots: [], invalidOverride: 'OPENCODE_CONFIG' }
-  }
-  const normalizedFile = expandedFile ? path.posix.normalize(expandedFile) : undefined
   return {
-    // OPENCODE_CONFIG is the exact MCP-bearing file. OPENCODE_CONFIG_DIR only
-    // relocates host resources such as agents, commands and plugins.
-    roots: [normalizedFile ? path.posix.dirname(normalizedFile) : defaultRoot],
-    componentFiles: normalizedFile ? { memory_tools: normalizedFile } : undefined,
-    resourceRoots: expandedDirectory
-      ? { opencode_resources: path.posix.normalize(expandedDirectory) }
-      : undefined,
+    roots: [stateRoot],
+    componentFiles: { memory_tools: configFile },
+    resourceRoots: { openclaw_prefix: path.posix.normalize(prefix) },
+  }
+}
+
+function geminiRoot(context: LocalDiscoveryContext): ConfigRootResolution {
+  const home = environmentRoot('GEMINI_CLI_HOME', [])(context)
+  return home.invalidOverride ? home : { roots: home.roots.map(root => path.posix.join(root, '.gemini')) }
+}
+
+function openCodeRoot(pluginFileName: 'tidemind-v1.ts' | 'tidemind-v2.ts'): ConfigRootResolver {
+  return context => {
+    const xdgConfigHome = context.environment?.XDG_CONFIG_HOME?.trim()
+    const directoryOverride = context.environment?.OPENCODE_CONFIG_DIR?.trim()
+    const fileOverride = context.environment?.OPENCODE_CONFIG?.trim()
+    const expandedXdgConfigHome = xdgConfigHome
+      ? expandEnvironmentPath(xdgConfigHome, context.homeDir)
+      : undefined
+    const expandedDirectory = directoryOverride
+      ? expandEnvironmentPath(directoryOverride, context.homeDir)
+      : undefined
+    const expandedFile = fileOverride
+      ? expandEnvironmentPath(fileOverride, context.homeDir)
+      : undefined
+    if (expandedXdgConfigHome !== undefined && !isSafeAbsolutePath(expandedXdgConfigHome)) {
+      return { roots: [], invalidOverride: 'XDG_CONFIG_HOME' }
+    }
+    if (expandedDirectory !== undefined && !isSafeAbsolutePath(expandedDirectory)) {
+      return { roots: [], invalidOverride: 'OPENCODE_CONFIG_DIR' }
+    }
+    if (expandedFile !== undefined && !isSafeAbsolutePath(expandedFile)) {
+      return { roots: [], invalidOverride: 'OPENCODE_CONFIG' }
+    }
+    const normalizedFile = expandedFile ? path.posix.normalize(expandedFile) : undefined
+    const defaultRoot = path.posix.join(
+      expandedXdgConfigHome ?? path.posix.join(context.homeDir, '.config'),
+      'opencode',
+    )
+    const resourceRoot = path.posix.normalize(expandedDirectory ?? defaultRoot)
+    const configRoot = normalizedFile ? path.posix.dirname(normalizedFile) : resourceRoot
+    const instructionRoot = path.posix.join(context.homeDir, '.agents', 'skills')
+    return {
+      // OPENCODE_CONFIG selects one exact MCP-bearing file. Otherwise OpenCode
+      // reads both configuration and resources from its overridden/XDG root.
+      roots: [configRoot],
+      componentRoots: { instruction: instructionRoot, lifecycle: resourceRoot },
+      componentFiles: {
+        instruction: path.posix.join(instructionRoot, 'tidemind', 'SKILL.md'),
+        ...(normalizedFile ? { memory_tools: normalizedFile } : {}),
+        lifecycle: path.posix.join(resourceRoot, 'plugins', pluginFileName),
+      },
+      resourceRoots: { opencode_resources: resourceRoot },
+    }
   }
 }
 
@@ -397,20 +633,35 @@ function expandEnvironmentPath(value: string, homeDir: string): string {
 }
 
 function qwenWorkRoots(context: LocalDiscoveryContext): ConfigRootResolution {
-  const instructionRoot = path.posix.join(context.homeDir, '.qwenworkcn')
-  const lifecycleRoot = path.posix.join(context.homeDir, '.qwenwork')
+  const configRoot = path.posix.join(context.homeDir, '.qwenworkcn')
   return {
-    roots: [instructionRoot, lifecycleRoot],
-    // The two roots are one QwenWork Installation, not competing profiles.
-    // Keep the lifecycle/settings root as the stable identity root even when
-    // only the Skill root exists today, so later host initialization does not
-    // churn the install key.
-    canonicalRoot: lifecycleRoot,
+    roots: [configRoot],
+    // QwenWorkCN 1.0.3 and 1.2.0 pass this exact root to its embedded agent runtime.
+    // Skills and user settings are different artifacts in one Installation,
+    // not profiles and not independent roots.
+    canonicalRoot: configRoot,
     componentRoots: {
-      instruction: instructionRoot,
-      lifecycle: lifecycleRoot,
+      instruction: configRoot,
+      lifecycle: configRoot,
     },
-    allowDistinctComponentRoots: true,
+  }
+}
+
+function devinDesktopRoots(context: LocalDiscoveryContext): ConfigRootResolution {
+  const configRoot = path.posix.join(context.homeDir, '.config', 'devin')
+  return {
+    roots: [configRoot],
+    canonicalRoot: configRoot,
+    componentRoots: {
+      instruction: configRoot,
+      memory_tools: configRoot,
+      lifecycle: configRoot,
+    },
+    componentFiles: {
+      instruction: path.posix.join(configRoot, 'skills', 'tidemind', 'SKILL.md'),
+      memory_tools: path.posix.join(configRoot, 'mcp_config.json'),
+      lifecycle: path.posix.join(configRoot, 'config.json'),
+    },
   }
 }
 
@@ -459,11 +710,64 @@ function ompRoot(context: LocalDiscoveryContext): ConfigRootResolution {
   return { roots: [path.posix.normalize(expandedAgentDir)] }
 }
 
+const OMP_PROFILE_ENUMERATION_LIMIT = 256
+
+async function ompRootResolutions(
+  context: LocalDiscoveryContext,
+  dependencies: DiscoveryDependencies,
+  timeoutMs: number,
+): Promise<readonly ConfigRootResolution[]> {
+  const selected = ompRoot(context)
+  const hasExplicitProfile = context.environment?.OMP_PROFILE !== undefined
+    || context.environment?.PI_PROFILE !== undefined
+  if (hasExplicitProfile || selected.invalidOverride || !dependencies.fs.readDirectoryNames) {
+    return [selected]
+  }
+
+  const configDir = context.environment?.PI_CONFIG_DIR?.trim() || '.omp'
+  const profilesRoot = path.posix.join(context.homeDir, configDir, 'profiles')
+  const snapshot = await withTimeout(
+    dependencies.fs.readDirectoryNames(profilesRoot, OMP_PROFILE_ENUMERATION_LIMIT),
+    timeoutMs,
+  )
+  if (!snapshot) return [selected]
+  if (snapshot.truncated) throw new Error('omp_profile_enumeration_limit')
+
+  const named: ConfigRootResolution[] = []
+  for (const profile of [...new Set(snapshot.names)].sort((left, right) => left.localeCompare(right))) {
+    if (!OMP_PROFILE_NAME.test(profile)
+      || profile.endsWith('.')
+      || OMP_RESERVED_PROFILE.test(profile)) continue
+    const profileRoot = path.posix.join(profilesRoot, profile)
+    const agentRoot = path.posix.join(profileRoot, 'agent')
+    const [profileNode, agentNode] = await Promise.all([
+      withTimeout(dependencies.fs.lstat(profileRoot), timeoutMs),
+      withTimeout(dependencies.fs.lstat(agentRoot), timeoutMs),
+    ])
+    // OMP itself follows symlinks, but automatic management narrows discovery
+    // to host-owned real directories. Relocated roots remain outside this
+    // release contract until they receive an explicit supported path.
+    if (profileNode?.kind !== 'directory' || agentNode?.kind !== 'directory') continue
+    const [profileRealpath, agentRealpath] = await Promise.all([
+      withTimeout(dependencies.fs.realpath(profileRoot), timeoutMs),
+      withTimeout(dependencies.fs.realpath(agentRoot), timeoutMs),
+    ])
+    if (path.posix.normalize(profileRealpath) !== profileRoot
+      || path.posix.normalize(agentRealpath) !== agentRoot) continue
+    named.push({ roots: [agentRoot], explicitProfile: profile })
+  }
+  return [selected, ...named]
+}
+
 export const P0_DISCOVERY_PROBES: readonly P0DiscoveryProbe[] = Object.freeze([
   {
-    kind: 'cli', catalogId: 'claude-code-cli', commands: ['claude'], configRoot: homeRoot('.claude'),
+    kind: 'cli', catalogId: 'claude-code-cli', commands: ['claude'], configRoot: environmentRoot('CLAUDE_CONFIG_DIR', ['.claude']),
     detectOnlyFallbackCatalogId: 'claude-code-native',
     managedPackageProvenances: ['npm_metadata:@anthropic-ai/claude-code'],
+    signedNativeFallback: {
+      identifiers: ['com.anthropic.claude-code'],
+      teamIdentifiers: ['Q6L2SF6YDW'],
+    },
   },
   {
     kind: 'app',
@@ -474,12 +778,13 @@ export const P0_DISCOVERY_PROBES: readonly P0DiscoveryProbe[] = Object.freeze([
     requiredSigningTeamIds: ['Q6L2SF6YDW'],
     configRoot: homeRoot('Library', 'Application Support', 'Claude'),
   },
-  { kind: 'cli', catalogId: 'codex-cli', commands: ['codex'], configRoot: homeRoot('.codex') },
+  { kind: 'cli', catalogId: 'codex-cli', commands: ['codex'], configRoot: environmentRoot('CODEX_HOME', ['.codex']) },
   {
-    kind: 'app', catalogId: 'codex-desktop', bundleNames: ['Codex.app'],
-    // The official signing Team is not yet frozen from authoritative evidence.
-    // Keep the bundle visible, but intentionally detect-only.
-    bundleIds: ['com.openai.codex'], requiredSigningTeamIds: [], configRoot: homeRoot('.codex'),
+    kind: 'app', catalogId: 'codex-desktop', bundleNames: ['ChatGPT.app', 'Codex.app'],
+    // The current official Codex desktop distribution is shipped inside ChatGPT.app.
+    // Keep the historical bundle name only as an alternate name for the same exact
+    // bundle ID + publisher identity; neither name is trusted on its own.
+    bundleIds: ['com.openai.codex'], requiredSigningTeamIds: ['2DC432GLL2'], configRoot: environmentRoot('CODEX_HOME', ['.codex']),
   },
   {
     kind: 'app', catalogId: 'cursor-desktop', bundleNames: ['Cursor.app', 'Cursor Beta.app'],
@@ -487,12 +792,15 @@ export const P0_DISCOVERY_PROBES: readonly P0DiscoveryProbe[] = Object.freeze([
     configRoot: homeRoot('.cursor'),
   },
   {
-    kind: 'app', catalogId: 'windsurf-desktop', bundleNames: ['Windsurf.app'],
-    // The official signing Team is not yet frozen from authoritative evidence.
-    // Keep the bundle visible, but intentionally detect-only.
-    bundleIds: ['com.codeium.windsurf'], requiredSigningTeamIds: [], configRoot: homeRoot('.codeium', 'windsurf'),
+    kind: 'app', catalogId: 'windsurf-desktop', bundleNames: ['Devin.app'],
+    // Windsurf Desktop was renamed to Devin Desktop. Frozen from the official
+    // arm64 3.8.20 DMG on 2026-09-04; legacy Windsurf.app is deliberately not
+    // treated as the same writable surface because its contract differs.
+    bundleIds: ['com.exafunction.windsurf'],
+    requiredSigningTeamIds: ['83Z2LHX6XW'],
+    configRoot: devinDesktopRoots,
   },
-  { kind: 'cli', catalogId: 'gemini-cli', commands: ['gemini'], configRoot: homeRoot('.gemini') },
+  { kind: 'cli', catalogId: 'gemini-cli', commands: ['gemini'], configRoot: geminiRoot },
   {
     kind: 'cli',
     catalogId: 'kimi-code-cli',
@@ -500,8 +808,12 @@ export const P0_DISCOVERY_PROBES: readonly P0DiscoveryProbe[] = Object.freeze([
     configRoot: environmentRoot('KIMI_CODE_HOME', ['.kimi-code']),
     detectOnlyFallbackCatalogId: 'kimi-code-native',
     managedPackageProvenances: ['npm_metadata:@moonshot-ai/kimi-code'],
+    signedNativeFallback: {
+      identifiers: ['kimi'],
+      teamIdentifiers: ['2J9472RW75'],
+    },
   },
-  { kind: 'cli', catalogId: 'openclaw-local', commands: ['openclaw'], configRoot: homeRoot('.openclaw') },
+  { kind: 'cli', catalogId: 'openclaw-local', commands: ['openclaw'], configRoot: openClawRoot },
   {
     kind: 'cli',
     catalogId: 'qwen-code-cli',
@@ -517,14 +829,21 @@ export const P0_DISCOVERY_PROBES: readonly P0DiscoveryProbe[] = Object.freeze([
     configRoot: homeRoot('.zcode', 'cli'),
   },
   { kind: 'cli', catalogId: 'zcode-cli', commands: ['zcode'], configRoot: homeRoot('.zcode', 'cli') },
-  { kind: 'cli', catalogId: 'opencode-v1-cli', commands: ['opencode'], configRoot: openCodeRoot },
-  { kind: 'cli', catalogId: 'opencode-v2-beta-cli', commands: ['opencode2'], configRoot: openCodeRoot },
+  {
+    kind: 'cli', catalogId: 'opencode-v1-cli', commands: ['opencode'],
+    configRoot: openCodeRoot('tidemind-v1.ts'),
+  },
+  {
+    kind: 'cli', catalogId: 'opencode-v2-beta-cli', commands: ['opencode2'],
+    configRoot: openCodeRoot('tidemind-v2.ts'),
+  },
   {
     kind: 'cli',
     catalogId: 'pi-official-cli',
     commands: ['pi'],
     configRoot: environmentRoot('PI_CODING_AGENT_DIR', ['.pi', 'agent']),
     strongDistribution: 'pi_official',
+    writablePackageProvenances: ['npm_metadata:@earendil-works/pi-coding-agent'],
   },
   {
     kind: 'cli',
@@ -536,11 +855,11 @@ export const P0_DISCOVERY_PROBES: readonly P0DiscoveryProbe[] = Object.freeze([
   {
     kind: 'app',
     catalogId: 'qwenwork-desktop',
-    bundleNames: ['QwenWork.app', 'Qwen Work.app'],
-    // The official signing Team is not yet frozen from authoritative evidence.
-    // Keep the bundle visible, but intentionally detect-only.
-    bundleIds: ['com.alibaba.qwenwork'],
-    requiredSigningTeamIds: [],
+    bundleNames: ['QwenWorkCN.app', '千问办公.app'],
+    // Frozen from the official qwenwork.cn arm64 DMG on 2026-09-04.
+    // The display name is never trusted without this exact bundle + Team pair.
+    bundleIds: ['cn.qwenwork.desktop.mac'],
+    requiredSigningTeamIds: ['XN6U3EV979'],
     configRoot: qwenWorkRoots,
   },
   {
@@ -548,6 +867,7 @@ export const P0_DISCOVERY_PROBES: readonly P0DiscoveryProbe[] = Object.freeze([
     catalogId: 'claude-cowork-local',
     bundleNames: ['Claude.app'],
     bundleIds: ['com.anthropic.claudefordesktop'],
+    requiredSigningTeamIds: ['Q6L2SF6YDW'],
     configRoot: homeRoot('Library', 'Application Support', 'Claude'),
     requiresHostLoadedEvidence: true,
   },
@@ -769,6 +1089,7 @@ function strongDistribution(
   kind: NonNullable<CliProbeDefinition['strongDistribution']>,
   executableRealpath: string,
   verifiedPackageProvenance: string | undefined,
+  portableArtifactFingerprint: string | undefined,
 ): DistributionIdentity | undefined {
   const nodePackage = verifiedPackageProvenance?.startsWith('npm_metadata:')
     ? verifiedPackageProvenance.slice('npm_metadata:'.length)
@@ -781,6 +1102,7 @@ function strongDistribution(
       executableRealpath,
       packageProvenance: verifiedPackageProvenance,
       capabilityFingerprint: 'pi-official-extension-api',
+      portableArtifactFingerprint,
     }
   }
 
@@ -790,6 +1112,7 @@ function strongDistribution(
     executableRealpath,
     packageProvenance: verifiedPackageProvenance,
     capabilityFingerprint: 'omp-native-profile',
+    portableArtifactFingerprint,
   }
 }
 
@@ -820,15 +1143,34 @@ async function existingConfigRoots(
   const selected = canonicalRoot
     ? presentByRequestedPath.get(canonicalRoot) ?? canonicalRoot
     : present[0]?.realpath ?? roots[0]
-  const componentRoots = resolution.componentRoots
-    ? Object.fromEntries(Object.entries(resolution.componentRoots).map(([componentKey, root]) => {
-        const normalized = path.posix.normalize(root)
-        return [componentKey, presentByRequestedPath.get(normalized) ?? normalized]
-      })) as Partial<Record<ComponentKey, string>>
-    : undefined
+  const componentRoots: Partial<Record<ComponentKey, string>> = {}
+  const componentRootEvidence: DiscoveryEvidence[] = []
+  for (const [componentKey, root] of Object.entries(resolution.componentRoots ?? {}) as Array<[ComponentKey, string]>) {
+    const normalized = path.posix.normalize(root)
+    const observed = presentByRequestedPath.has(normalized)
+      ? { requestedPath: normalized, realpath: presentByRequestedPath.get(normalized)!, kind: 'directory' as const }
+      : await observePath(dependencies, normalized, 'directory', timeoutMs)
+    componentRoots[componentKey] = observed?.realpath ?? normalized
+    if (observed) {
+      componentRootEvidence.push({
+        kind: 'config_root',
+        source: observed.requestedPath,
+        value: observed.realpath,
+      })
+    }
+  }
   const componentFiles = resolution.componentFiles
     ? Object.fromEntries(Object.entries(resolution.componentFiles).map(([componentKey, file]) => {
         const normalized = path.posix.normalize(file)
+        const requestedComponentRoot = resolution.componentRoots?.[componentKey as ComponentKey]
+        const canonicalComponentRoot = componentRoots[componentKey as ComponentKey]
+        if (requestedComponentRoot && canonicalComponentRoot) {
+          const relative = path.posix.relative(path.posix.normalize(requestedComponentRoot), normalized)
+          if (relative === '' || relative.startsWith('..') || path.posix.isAbsolute(relative)) {
+            throw new Error(`${componentKey}_config_file_outside_component_root`)
+          }
+          return [componentKey, path.posix.join(canonicalComponentRoot, relative)]
+        }
         const requestedParent = path.posix.dirname(normalized)
         const canonicalParent = presentByRequestedPath.get(requestedParent) ?? requestedParent
         return [componentKey, path.posix.join(canonicalParent, path.posix.basename(normalized))]
@@ -850,11 +1192,12 @@ async function existingConfigRoots(
   }
   return {
     selected,
-    componentRoots,
+    componentRoots: Object.keys(componentRoots).length > 0 ? componentRoots : undefined,
     componentFiles,
     resourceRoots: Object.keys(resourceRoots).length > 0 ? resourceRoots : undefined,
     evidence: [
       ...present.map(item => ({ kind: 'config_root' as const, source: item.requestedPath, value: item.realpath })),
+      ...componentRootEvidence,
       ...resourceEvidence,
     ],
     ambiguous: resolution.allowDistinctComponentRoots !== true && (
@@ -875,7 +1218,7 @@ function makeInstallation(
     executablePath?: string
     appPath?: string
     detectedVersion?: string
-    versionDetectionMethod?: 'cli_version' | 'bundle_plist'
+    versionDetectionMethod?: 'cli_version' | 'bundle_plist' | 'updater_metadata' | 'release_receipt'
     componentConfigRoots?: Readonly<Partial<Record<ComponentKey, string>>>
     componentConfigFiles?: Readonly<Partial<Record<ComponentKey, string>>>
     resourceRoots?: Readonly<Record<string, string>>
@@ -891,6 +1234,7 @@ function makeInstallation(
     hostVariant: catalogId,
     configRoot,
     explicitProfile: options.explicitProfile,
+    componentConfigRoots: options.componentConfigRoots,
     componentConfigFiles: options.componentConfigFiles,
     distribution,
   })
@@ -899,7 +1243,7 @@ function makeInstallation(
     displayName: variant.displayName,
     identity,
     configRoot: identity.canonicalConfigRoot,
-    componentConfigRoots: options.componentConfigRoots,
+    componentConfigRoots: identity.componentConfigRoots,
     componentConfigFiles: identity.componentConfigFiles,
     resourceRoots: options.resourceRoots,
     executablePath: options.executablePath,
@@ -934,9 +1278,15 @@ async function discoverCli(
   }
 
   for (const command of definition.commands) {
-    let executable: string | undefined
+    let executables: readonly string[]
     try {
-      executable = (await withTimeout(dependencies.which(command), timeoutMs))?.trim()
+      const discovered = dependencies.whichAll
+        ? await withTimeout(dependencies.whichAll(command), timeoutMs)
+        : [await withTimeout(dependencies.which(command), timeoutMs)]
+      executables = [...new Set(discovered
+        .map(candidate => candidate?.trim())
+        .filter((candidate): candidate is string => Boolean(candidate)))]
+        .slice(0, 256)
     } catch (error) {
       result.diagnostics.push(`${definition.catalogId}:which:${command}:${stableErrorCode(error)}`)
       result.unresolved.push({
@@ -947,7 +1297,10 @@ async function discoverCli(
       })
       continue
     }
-    if (!executable) continue
+    if (executables.length === 0) continue
+    const commandUnresolvedStart = result.unresolved.length
+    const commandInstallationsStart = result.installations.length
+    for (const executable of executables) {
     if (!isSafeAbsolutePath(executable)) {
       result.unresolved.push({
         catalogIds: unresolvedCatalogIds,
@@ -969,6 +1322,69 @@ async function discoverCli(
         catalogIds: unresolvedCatalogIds,
         reason: 'surface_identity_unproven',
         summary: `The ${command} executable could not be resolved to a regular file.`,
+        evidence: [{ kind: 'command', source: 'PATH', value: command }],
+      })
+      continue
+    }
+
+    if (definition.catalogId === 'openclaw-local') {
+      const openClawPrefix = rootResolution.resourceRoots?.openclaw_prefix
+        ?? path.posix.join(context.homeDir, '.openclaw')
+      const expectedAlias = path.posix.join(context.homeDir, '.local', 'bin', 'openclaw')
+      const expectedWrapper = path.posix.join(openClawPrefix, 'bin', 'openclaw')
+      const isPortableWrapper = observedExecutable.realpath === expectedWrapper
+      if (isPortableWrapper) {
+        try {
+          const aliasNode = await withTimeout(dependencies.fs.lstat(executable), timeoutMs)
+          const expectedUid = typeof process.getuid === 'function' ? String(process.getuid()) : undefined
+          const usesDefaultAlias = path.posix.normalize(executable) === expectedAlias
+          const launcherParents = usesDefaultAlias ? await Promise.all([
+            path.posix.join(context.homeDir, '.local'), path.posix.join(context.homeDir, '.local', 'bin'),
+          ].map(async directory => ({
+            directory,
+            node: await withTimeout(dependencies.fs.lstat(directory), timeoutMs),
+            realpath: path.posix.normalize(await withTimeout(dependencies.fs.realpath(directory), timeoutMs)),
+          }))) : []
+          const directWrapper = path.posix.normalize(executable) === expectedWrapper
+            && aliasNode?.kind === 'file'
+          const officialAlias = usesDefaultAlias
+            && aliasNode?.kind === 'symbolic_link'
+            && expectedUid !== undefined
+            && aliasNode.ownerUid === expectedUid
+          if ((!directWrapper && !officialAlias)
+            || !expectedUid
+            || launcherParents.some(parent => parent.node?.kind !== 'directory'
+              || parent.node.ownerUid !== expectedUid
+              || typeof parent.node.mode !== 'number'
+              || (parent.node.mode & 0o022) !== 0
+              || parent.realpath !== parent.directory)) {
+            result.unresolved.push({
+              catalogIds: [definition.catalogId],
+              reason: 'surface_identity_unproven',
+              summary: 'OpenClaw is present, but its official launcher chain is not intact.',
+              evidence: [{ kind: 'command', source: 'PATH', value: command }],
+            })
+            continue
+          }
+        } catch {
+          result.unresolved.push({
+            catalogIds: [definition.catalogId],
+            reason: 'surface_identity_unproven',
+            summary: 'OpenClaw is present, but its official launcher directories could not be proved.',
+            evidence: [{ kind: 'command', source: 'PATH', value: command }],
+          })
+          continue
+        }
+      }
+    }
+
+    if (definition.catalogId === 'kimi-code-cli'
+      && observedExecutable.realpath.endsWith(`${path.posix.sep}.kimi-code${path.posix.sep}bin${path.posix.sep}kimi`)
+      && observedExecutable.realpath !== path.posix.join(context.homeDir, '.kimi-code', 'bin', 'kimi')) {
+      result.unresolved.push({
+        catalogIds: unresolvedCatalogIds,
+        reason: 'surface_identity_unproven',
+        summary: 'Kimi native is present outside the official per-user installation root.',
         evidence: [{ kind: 'command', source: 'PATH', value: command }],
       })
       continue
@@ -999,27 +1415,174 @@ async function discoverCli(
     }
     let detectedVersion: string | undefined
     let verifiedPackageProvenance: string | undefined
-    try {
-      const versionResult = await withTimeout(
-        dependencies.execVersion(observedExecutable.realpath, ['--version'], { timeoutMs }),
-        timeoutMs,
-      )
-      const versionOutput = `${versionResult.stdout}\n${versionResult.stderr}`.slice(0, 4096)
-      verifiedPackageProvenance = versionResult.verifiedPackageProvenance
-      if (versionResult.exitCode === 0) {
-        detectedVersion = parseVersion(versionOutput)
-        if (detectedVersion) {
-          evidence.push({ kind: 'version', source: `${command} --version`, value: detectedVersion })
+    let packageProofNodes: readonly PackageMetadataProofNode[] | undefined
+    let npmComposition: VersionCommandResult['npmComposition']
+    let portableArtifactFingerprint: string | undefined
+    let versionDetectionMethod: 'cli_version' | 'updater_metadata' | 'release_receipt' | undefined
+    let signedNativeReceiptFingerprint: string | undefined
+    const isKimiNativeSurface = definition.catalogId === 'kimi-code-cli'
+      && observedExecutable.realpath === path.posix.join(context.homeDir, '.kimi-code', 'bin', 'kimi')
+    if (!isKimiNativeSurface) {
+      try {
+        const versionResult = await withTimeout(
+          dependencies.execVersion(observedExecutable.realpath, ['--version'], { timeoutMs }),
+          timeoutMs,
+        )
+        const versionOutput = `${versionResult.stdout}\n${versionResult.stderr}`.slice(0, 4096)
+        verifiedPackageProvenance = versionResult.verifiedPackageProvenance
+        versionDetectionMethod = 'cli_version'
+        packageProofNodes = versionResult.packageProofNodes
+        npmComposition = versionResult.npmComposition
+        portableArtifactFingerprint = versionResult.portableArtifactFingerprint
+        if (versionResult.exitCode === 0) {
+          detectedVersion = parseVersion(versionOutput)
+          if (detectedVersion) {
+            evidence.push({ kind: 'version', source: `${command} --version`, value: detectedVersion })
+          }
+        } else {
+          result.diagnostics.push(`${definition.catalogId}:version:${command}:exit_${versionResult.exitCode}`)
         }
-      } else {
-        result.diagnostics.push(`${definition.catalogId}:version:${command}:exit_${versionResult.exitCode}`)
+      } catch (error) {
+        result.diagnostics.push(`${definition.catalogId}:version:${command}:${stableErrorCode(error)}`)
       }
-    } catch (error) {
-      result.diagnostics.push(`${definition.catalogId}:version:${command}:${stableErrorCode(error)}`)
+    }
+
+    if (isKimiNativeSurface) {
+      // Updater JSON is mutable local state, not release authority. Kimi's
+      // authoritative version and portable fingerprint are resolved below
+      // from the exact live signed binary and the frozen receipt matrix.
+      detectedVersion = undefined
+      versionDetectionMethod = undefined
+      verifiedPackageProvenance = undefined
+      packageProofNodes = undefined
+      portableArtifactFingerprint = undefined
+    }
+    const isManagedPackage = !isKimiNativeSurface
+      && definition.managedPackageProvenances?.includes(verifiedPackageProvenance ?? '') === true
+    if (!isManagedPackage && definition.signedNativeFallback && dependencies.inspectAppSignature) {
+      try {
+        const signedExecutableBefore = dependencies.fs.readStableFileFingerprint
+          ? await withTimeout(
+              dependencies.fs.readStableFileFingerprint(
+                observedExecutable.realpath,
+                MAX_CLI_EXECUTABLE_PROOF_BYTES,
+              ),
+              timeoutMs,
+            )
+          : undefined
+        const signature = await withTimeout(
+          dependencies.inspectAppSignature(observedExecutable.realpath, {
+            timeoutMs,
+            beforeFinalVerification: async () => {
+              const currentRealpath = await dependencies.fs.realpath(observedExecutable!.realpath)
+              if (currentRealpath !== observedExecutable!.realpath) {
+                throw new Error('signed_cli_realpath_changed_during_signature')
+              }
+              if (dependencies.fs.readStableFileMetadata && initialExecutableMetadata) {
+                const currentMetadata = await dependencies.fs.readStableFileMetadata(observedExecutable!.realpath)
+                if (!sameStableFileMetadata(initialExecutableMetadata, currentMetadata)) {
+                  throw new Error('signed_cli_metadata_changed_during_signature')
+                }
+              }
+              if (signedExecutableBefore && dependencies.fs.readStableFileFingerprint) {
+                const currentExecutable = await withTimeout(
+                  dependencies.fs.readStableFileFingerprint(
+                    observedExecutable!.realpath,
+                    MAX_CLI_EXECUTABLE_PROOF_BYTES,
+                  ),
+                  timeoutMs,
+                )
+                if (currentExecutable.fingerprint !== signedExecutableBefore.fingerprint) {
+                  throw new Error('signed_cli_executable_changed_during_signature')
+                }
+              }
+            },
+          }),
+          timeoutMs,
+        )
+        const signedExecutableAfter = signedExecutableBefore && dependencies.fs.readStableFileFingerprint
+          ? await withTimeout(
+              dependencies.fs.readStableFileFingerprint(
+                observedExecutable.realpath,
+                MAX_CLI_EXECUTABLE_PROOF_BYTES,
+              ),
+              timeoutMs,
+            )
+          : undefined
+        const receiptFingerprint = codeSignatureReceiptFingerprint(signature)
+        const isKimiNative = definition.detectOnlyFallbackCatalogId === 'kimi-code-native'
+        const kimiArchitecture = isKimiNative && dependencies.inspectExecutableArchitecture
+          ? await withTimeout(
+              dependencies.inspectExecutableArchitecture(observedExecutable.realpath),
+              timeoutMs,
+            )
+          : null
+        const kimiLookupFingerprint = isKimiNative
+          && kimiArchitecture
+          && signedExecutableAfter
+          && signature.identifier
+          && signature.teamIdentifier
+          && signature.cdHash
+          && signature.designatedRequirement
+          ? kimiNativeReceiptLookupFingerprint({
+              architecture: kimiArchitecture,
+              executableSha256: signedExecutableAfter.sha256,
+              executableSizeBytes: signedExecutableAfter.size,
+              identifier: signature.identifier,
+              teamIdentifier: signature.teamIdentifier,
+              cdHash: signature.cdHash,
+              designatedRequirement: signature.designatedRequirement,
+            })
+          : undefined
+        const kimiReleaseResolution = kimiLookupFingerprint && kimiArchitecture
+          ? dependencies.resolveKimiNativeReceipt?.({
+              architecture: kimiArchitecture,
+              lookupFingerprint: kimiLookupFingerprint,
+            }) ?? null
+          : null
+        if (signature.valid
+          && signature.verificationBoundary === 'strict_final'
+          && (!signedExecutableBefore
+            || signedExecutableAfter?.fingerprint === signedExecutableBefore.fingerprint)
+          && signature.identifier
+          && definition.signedNativeFallback.identifiers.includes(signature.identifier)
+          && signature.teamIdentifier
+          && definition.signedNativeFallback.teamIdentifiers.includes(signature.teamIdentifier)
+          && receiptFingerprint
+          && (!isKimiNative || Boolean(kimiLookupFingerprint))) {
+          verifiedPackageProvenance = `signed_cli:${signature.identifier}:${signature.teamIdentifier}`
+          signedNativeReceiptFingerprint = isKimiNative
+            ? kimiLookupFingerprint
+            : receiptFingerprint
+          if (isKimiNative && kimiReleaseResolution) {
+            detectedVersion = kimiReleaseResolution.version
+            versionDetectionMethod = 'release_receipt'
+            portableArtifactFingerprint = kimiReleaseResolution.portableArtifactFingerprint
+            evidence.push({
+              kind: 'version',
+              source: 'Tide Mind frozen release receipt',
+              value: detectedVersion,
+            })
+          } else if (!isKimiNative) {
+            portableArtifactFingerprint = signedCodePortableArtifactFingerprint({
+              version: detectedVersion,
+              executable: signedExecutableAfter,
+              signature,
+            })
+          }
+          evidence.push({
+            kind: 'code_signature',
+            source: signature.identifier,
+            value: signature.teamIdentifier,
+          })
+        }
+      } catch (error) {
+        result.diagnostics.push(`${definition.detectOnlyFallbackCatalogId}:signature:${command}:${stableErrorCode(error)}`)
+      }
     }
 
     const catalogId = definition.detectOnlyFallbackCatalogId
-      && !definition.managedPackageProvenances?.includes(verifiedPackageProvenance ?? '')
+      && !isManagedPackage
       ? definition.detectOnlyFallbackCatalogId
       : definition.catalogId
 
@@ -1059,15 +1622,29 @@ async function discoverCli(
           definition.strongDistribution,
           observedExecutable.realpath,
           verifiedPackageProvenance,
+          portableArtifactFingerprint,
         )
       : {
           // Command aliases are evidence, not distribution identity. Keeping
           // them out of the distribution ID prevents `kimi` -> `kimi-code`
           // alias churn from looking like a package replacement.
-          distributionId: `cli:${catalogId}`,
+          distributionId: catalogId === 'openclaw-local'
+            ? packageProofNodes?.some(node => node.role === 'openclaw_wrapper')
+              ? 'cli:openclaw-local:portable-wrapper'
+              : 'cli:openclaw-local:npm-global'
+            : catalogId === 'qwen-code-cli'
+              ? packageProofNodes?.some(node => node.role === 'qwen_launcher')
+                ? 'cli:qwen-code-cli:standalone'
+                : 'cli:qwen-code-cli:npm-global'
+            : catalogId === 'opencode-v1-cli' || catalogId === 'opencode-v2-beta-cli'
+              ? openCodeDistributionId(catalogId, npmComposition, packageProofNodes)
+              : `cli:${catalogId}`,
           executableRealpath: observedExecutable.realpath,
           packageProvenance: verifiedPackageProvenance,
-          capabilityFingerprint: `cli-surface:${catalogId}`,
+          capabilityFingerprint: signedNativeReceiptFingerprint
+            ? `${catalogId === 'kimi-code-native' ? 'signed-cli-kimi-receipt-lookup-v1' : 'signed-cli-surface-v1'}:${signedNativeReceiptFingerprint}`
+            : `cli-surface:${catalogId}`,
+          portableArtifactFingerprint,
         }
     if (!distribution) {
       result.unresolved.push({
@@ -1078,53 +1655,143 @@ async function discoverCli(
       })
       continue
     }
+    if (managementEligibility?.eligible
+      && definition.writablePackageProvenances
+      && !definition.writablePackageProvenances.includes(distribution.packageProvenance ?? '')) {
+      managementEligibility = {
+        ...managementEligibility,
+        eligible: false,
+        reason: 'distribution_not_managed',
+      }
+    }
     evidence.push({
       kind: 'distribution',
       source: distribution.distributionId ?? catalogId,
       value: distribution.packageProvenance ?? 'unknown',
     })
 
-    let roots: Awaited<ReturnType<typeof existingConfigRoots>>
-    try {
-      roots = await existingConfigRoots(dependencies, rootResolution, timeoutMs)
-    } catch (error) {
-      result.diagnostics.push(`${catalogId}:config_root:${stableErrorCode(error)}`)
-      result.unresolved.push({
-        catalogIds: [catalogId],
-        reason: 'probe_inaccessible',
-        summary: `The ${catalogId} config root could not be checked authoritatively.`,
-        evidence: stableEvidence(evidence),
-      })
-      continue
+    let rootResolutions: readonly ConfigRootResolution[] = [rootResolution]
+    if (definition.strongDistribution === 'omp') {
+      try {
+        rootResolutions = await ompRootResolutions(context, dependencies, timeoutMs)
+      } catch (error) {
+        result.diagnostics.push(`${catalogId}:profile_registry:${stableErrorCode(error)}`)
+        result.unresolved.push({
+          catalogIds: [catalogId],
+          reason: 'probe_inaccessible',
+          summary: `The ${catalogId} profile registry could not be checked authoritatively.`,
+          evidence: stableEvidence(evidence),
+        })
+        continue
+      }
     }
-    if (roots.ambiguous) {
-      result.unresolved.push({
-        catalogIds: [catalogId],
-        reason: 'multiple_installations_ambiguous',
-        summary: `Multiple live config roots were found for ${catalogId} without a host-owned profile identity.`,
-        evidence: stableEvidence([...evidence, ...roots.evidence]),
-      })
-      continue
+
+    for (const resolvedRoot of rootResolutions) {
+      let roots: Awaited<ReturnType<typeof existingConfigRoots>>
+      try {
+        roots = await existingConfigRoots(dependencies, resolvedRoot, timeoutMs)
+      } catch (error) {
+        result.diagnostics.push(`${catalogId}:config_root:${stableErrorCode(error)}`)
+        result.unresolved.push({
+          catalogIds: [catalogId],
+          reason: 'probe_inaccessible',
+          summary: `The ${catalogId} config root could not be checked authoritatively.`,
+          evidence: stableEvidence(evidence),
+        })
+        continue
+      }
+      if (roots.ambiguous) {
+        result.unresolved.push({
+          catalogIds: [catalogId],
+          reason: 'multiple_installations_ambiguous',
+          summary: `Multiple live config roots were found for ${catalogId} without a host-owned profile identity.`,
+          evidence: stableEvidence([...evidence, ...roots.evidence]),
+        })
+        continue
+      }
+      result.installations.push(makeInstallation(
+        context,
+        catalogId,
+        roots.selected,
+        distribution,
+        [...evidence, ...roots.evidence],
+        {
+          explicitProfile: resolvedRoot.explicitProfile,
+          executablePath: observedExecutable.realpath,
+          detectedVersion,
+          versionDetectionMethod: detectedVersion ? versionDetectionMethod : undefined,
+          managementEligibility,
+          componentConfigRoots: roots.componentRoots,
+          componentConfigFiles: roots.componentFiles,
+          resourceRoots: roots.resourceRoots,
+        },
+      ))
     }
-    result.installations.push(makeInstallation(
-      context,
-      catalogId,
-      roots.selected,
-      distribution,
-      [...evidence, ...roots.evidence],
-      {
-        explicitProfile: rootResolution.explicitProfile,
-        executablePath: observedExecutable.realpath,
-        detectedVersion,
-        versionDetectionMethod: detectedVersion ? 'cli_version' : undefined,
-        managementEligibility,
-        componentConfigRoots: roots.componentRoots,
-        componentConfigFiles: roots.componentFiles,
-        resourceRoots: roots.resourceRoots,
-      },
-    ))
+    }
+    const commandInstallations = result.installations.slice(commandInstallationsStart)
+    const provedInstallations = commandInstallations.filter(installation =>
+      Boolean(installation.identity.distribution.packageProvenance),
+    )
+    if (provedInstallations.length > 0) {
+      // Detect-only PATH observations remain useful when they are all we can
+      // see, but they must not collide with or shadow an official package (or
+      // signed-code) candidate for the same command.
+      result.installations.splice(
+        commandInstallationsStart,
+        commandInstallations.length,
+        ...provedInstallations,
+      )
+      // A PATH shadow without a valid distribution proof is diagnostic noise,
+      // not uncertainty about a later official candidate. Multiple proved
+      // candidates remain intact and are reconciled by stabilizeReport, which
+      // preserves its existing conflict/Installation identity semantics.
+      const authoritativeUnresolved = result.unresolved
+        .slice(commandUnresolvedStart)
+        .filter(item => item.evidence.some(evidence => evidence.kind === 'distribution'))
+      result.unresolved.splice(
+        commandUnresolvedStart,
+        result.unresolved.length - commandUnresolvedStart,
+        ...authoritativeUnresolved,
+      )
+    }
   }
   return result
+}
+
+function openCodeDistributionId(
+  catalogId: 'opencode-v1-cli' | 'opencode-v2-beta-cli',
+  composition: VersionCommandResult['npmComposition'],
+  proofNodes: VersionCommandResult['packageProofNodes'],
+): string {
+  const leaves = composition?.components.filter(component => component.role === 'platform_leaf') ?? []
+  const armName = catalogId === 'opencode-v1-cli'
+    ? 'opencode-darwin-arm64'
+    : '@opencode-ai/cli-darwin-arm64'
+  if (leaves.length === 1 && leaves[0]?.installName === armName) {
+    return `cli:${catalogId}:darwin-arm64`
+  }
+  const x64Base = catalogId === 'opencode-v1-cli'
+    ? 'opencode-darwin-x64'
+    : '@opencode-ai/cli-darwin-x64'
+  const modern = leaves.find(leaf => leaf.installName === x64Base)
+  const baseline = leaves.find(leaf => leaf.installName === `${x64Base}-baseline`)
+  const executable = proofNodes?.find(node => node.role === 'npm_package_executable')
+  if (leaves.length !== 2 || !modern || !baseline || !executable) {
+    return `cli:${catalogId}:unproven-platform`
+  }
+  const matches = [modern, baseline].filter(leaf => (
+    leaf.nativeExecutableSha256 === executable.sha256
+      && leaf.nativeExecutableSizeBytes === executable.size
+  ))
+  if (catalogId === 'opencode-v1-cli' && matches.length === 2) {
+    return 'cli:opencode-v1-cli:darwin-x64'
+  }
+  if (catalogId === 'opencode-v2-beta-cli' && matches.length === 1) {
+    return matches[0] === baseline
+      ? 'cli:opencode-v2-beta-cli:darwin-x64-baseline'
+      : 'cli:opencode-v2-beta-cli:darwin-x64'
+  }
+  return `cli:${catalogId}:unproven-platform`
 }
 
 async function discoverApp(
@@ -1217,6 +1884,7 @@ async function discoverApp(
       continue
     }
     let signingTeamIdentifier: string | undefined
+    let signedPortableArtifactFingerprint: string | undefined
     if (definition.requiredSigningTeamIds && definition.requiredSigningTeamIds.length > 0) {
       if (!dependencies.inspectAppSignature) {
         result.unresolved.push({
@@ -1231,7 +1899,17 @@ async function discoverApp(
         continue
       }
       let signature: AppCodeSignatureResult
+      let executableArtifactBefore: StableFileFingerprint | undefined
       try {
+        executableArtifactBefore = dependencies.fs.readStableFileFingerprint
+          ? await withTimeout(
+              dependencies.fs.readStableFileFingerprint(
+                bundleSurface.executableRealpath,
+                MAX_CLI_EXECUTABLE_PROOF_BYTES,
+              ),
+              timeoutMs,
+            )
+          : undefined
         signature = await withTimeout(
           dependencies.inspectAppSignature(app.realpath, {
             timeoutMs: signatureTimeoutMs,
@@ -1243,6 +1921,18 @@ async function discoverApp(
               )
               if (currentSurface.fingerprint !== bundleSurface.fingerprint) {
                 throw new Error('desktop_bundle_surface_changed_during_signature')
+              }
+              if (executableArtifactBefore && dependencies.fs.readStableFileFingerprint) {
+                const currentExecutable = await withTimeout(
+                  dependencies.fs.readStableFileFingerprint(
+                    bundleSurface.executableRealpath,
+                    MAX_CLI_EXECUTABLE_PROOF_BYTES,
+                  ),
+                  timeoutMs,
+                )
+                if (currentExecutable.fingerprint !== executableArtifactBefore.fingerprint) {
+                  throw new Error('desktop_bundle_executable_changed_during_signature')
+                }
               }
             },
           }),
@@ -1271,9 +1961,27 @@ async function discoverApp(
           app.realpath,
           timeoutMs,
         )
+        const executableArtifactAfter = executableArtifactBefore && dependencies.fs.readStableFileFingerprint
+          ? await withTimeout(
+              dependencies.fs.readStableFileFingerprint(
+                bundleSurface.executableRealpath,
+                MAX_CLI_EXECUTABLE_PROOF_BYTES,
+              ),
+              timeoutMs,
+            )
+          : undefined
         if (surfaceAfterSignature.fingerprint !== bundleSurface.fingerprint) {
           throw new Error('desktop_bundle_surface_changed_after_signature')
         }
+        if (executableArtifactBefore
+          && executableArtifactAfter?.fingerprint !== executableArtifactBefore.fingerprint) {
+          throw new Error('desktop_bundle_executable_changed_after_signature')
+        }
+        signedPortableArtifactFingerprint = signedCodePortableArtifactFingerprint({
+          version: bundleSurface.version,
+          executable: executableArtifactAfter,
+          signature,
+        })
       } catch (error) {
         const errorCode = error instanceof Error ? error.message : stableErrorCode(error)
         result.diagnostics.push(`${definition.catalogId}:bundle_surface_post_signature:${errorCode}`)
@@ -1350,6 +2058,7 @@ async function discoverApp(
         ? `signed_app:${bundleSurface.bundleId}:${signingTeamIdentifier}`
         : `app_bundle:${bundleSurface.bundleId}`,
       capabilityFingerprint: `${DESKTOP_BUNDLE_SURFACE_SCHEMA}:${bundleSurface.fingerprint}`,
+      portableArtifactFingerprint: signedPortableArtifactFingerprint,
     }
     evidence.push({
       kind: 'distribution',
@@ -1451,6 +2160,26 @@ export async function discoverLocalP0Agents(
   return stabilizeReport(results)
 }
 
+/**
+ * Read-only candidate probe used only after the user explicitly starts the
+ * Cowork guided setup flow. Passive discovery still refuses to create a
+ * Cowork Installation from the shared Claude.app bundle alone.
+ */
+export async function discoverClaudeCoworkGuidedCandidate(
+  context: LocalDiscoveryContext,
+  dependencies: DiscoveryDependencies,
+): Promise<LocalDiscoveryReport> {
+  if (!isSafeAbsolutePath(context.homeDir)) throw new Error('homeDir must be an absolute local path')
+  const timeoutMs = Math.max(10, Math.min(context.operationTimeoutMs ?? 2_500, 30_000))
+  const signatureTimeoutMs = Math.max(timeoutMs, Math.min(context.signatureTimeoutMs ?? timeoutMs, 60_000))
+  const definition = P0_DISCOVERY_PROBES.find(probe => probe.catalogId === 'claude-cowork-local')
+  if (!definition || definition.kind !== 'app') throw new Error('claude Cowork discovery contract is unavailable')
+  return stabilizeReport([await discoverApp({
+    ...definition,
+    requiresHostLoadedEvidence: false,
+  }, context, dependencies, timeoutMs, signatureTimeoutMs)])
+}
+
 /** Pure adapter from a confirmed observation to the v34 repository contract. */
 export function toDiscoverInstallationInput(
   installation: DiscoveredInstallation,
@@ -1471,6 +2200,7 @@ export function toDiscoverInstallationInput(
       executableRealpath: installation.identity.distribution.executableRealpath ?? null,
       packageProvenance: installation.identity.distribution.packageProvenance ?? null,
       capabilityFingerprint: installation.identity.distribution.capabilityFingerprint ?? null,
+      portableArtifactFingerprint: installation.identity.distribution.portableArtifactFingerprint ?? null,
     },
     componentConfigRoots: installation.componentConfigRoots ?? {},
     componentConfigFiles: installation.identity.componentConfigFiles ?? {},

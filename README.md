@@ -61,7 +61,7 @@ TideMind is a memory layer that spans all your tools — a living knowledge grap
 
 The easiest way to get started. Download, install, and you're ready to go.
 
-**[Download for macOS (Apple Silicon) — Beta](https://github.com/SawyerHan-AI/TideMind/releases/tag/v0.1.0)**
+**[Download for macOS (Apple Silicon) — Beta](https://github.com/SawyerHan-AI/TideMind/releases/latest)**
 
 Open the app, then head to **Settings** to connect your AI tools and note systems with one click.
 

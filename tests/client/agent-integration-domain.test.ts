@@ -8,6 +8,7 @@ import {
 } from '../../client/electron/agent-integration/catalog'
 import {
   assessDistributionIdentity,
+  buildLegacyInstallKey,
   canonicalizeInstallationIdentity,
   matchInstallationIdentity,
   resolveCatalogIdentity,
@@ -41,7 +42,6 @@ const P0_1 = [
 const P0_2 = [
   'qwen-code-cli',
   'zcode-desktop',
-  'zcode-cli',
   'opencode-v1-cli',
   'opencode-v2-beta-cli',
   'pi-official-cli',
@@ -63,6 +63,24 @@ describe('local Agent Catalog', () => {
     expect(CATALOG_IDS.filter(id => DELIVERY_PRIORITY_BY_CATALOG_ID[id] === 'P0.2').sort()).toEqual([...P0_2].sort())
   })
 
+  it('reserves Custom Installation for the advanced flow without changing P0 scope', () => {
+    const custom = getCatalogVariant('custom-local-mcp')
+    expect(custom).toMatchObject({
+      productFamilyId: 'custom-local-agent',
+      hostKind: 'local_server',
+      releaseChannel: 'stable',
+      deliveryPriority: 'custom',
+      maxCapability: 2,
+    })
+    expect(custom.components).toEqual(expect.arrayContaining([
+      expect.objectContaining({ componentKey: 'instruction', deliveryMode: 'guided' }),
+      expect.objectContaining({ componentKey: 'memory_tools', deliveryMode: 'guided' }),
+      expect.objectContaining({ componentKey: 'lifecycle', applicability: 'not_applicable' }),
+    ]))
+    expect(P0_1).not.toContain('custom-local-mcp')
+    expect(P0_2).not.toContain('custom-local-mcp')
+  })
+
   it('declares all three logical components for every P0 host variant', () => {
     for (const variant of AGENT_CATALOG.variants.filter(candidate =>
       candidate.deliveryPriority === 'P0.1' || candidate.deliveryPriority === 'P0.2',
@@ -76,25 +94,22 @@ describe('local Agent Catalog', () => {
     expect(getCatalogVariant('kimi-code-native').hostKind).toBe('cli')
   })
 
-  it('caps Windsurf at basic integration until a lifecycle contract is verified', () => {
+  it('declares the official Windsurf user Hook lifecycle as managed', () => {
     const windsurf = getCatalogVariant('windsurf-desktop')
-    expect(windsurf.maxCapability).toBe(3)
+    expect(windsurf.maxCapability).toBe(4)
     expect(windsurf.components.find(component => component.componentKey === 'lifecycle')).toMatchObject({
-      applicability: 'not_applicable',
-      deliveryMode: 'cataloged',
-      artifactTypes: [],
-      mutationDomain: 'none',
-      reload: 'none',
+      applicability: 'supported',
+      deliveryMode: 'managed',
+      artifactTypes: ['hook'],
+      mutationDomain: 'file_fragment',
+      reload: 'restart_host',
     })
   })
 
-  it('keeps unproven Claude and Kimi native channels explicitly detect-only', () => {
+  it('manages signed Claude and Kimi native channels separately from their npm variants', () => {
     for (const catalogId of ['claude-code-native', 'kimi-code-native'] as const) {
-      expect(getCatalogVariant(catalogId).components).toEqual(expect.arrayContaining([
-        expect.objectContaining({ deliveryMode: 'detectable' }),
-      ]))
       expect(getCatalogVariant(catalogId).components.every(component =>
-        component.deliveryMode === 'detectable')).toBe(true)
+        component.deliveryMode === 'managed')).toBe(true)
     }
   })
 
@@ -106,6 +121,10 @@ describe('local Agent Catalog', () => {
     expect(getCatalogVariant('pi-official-cli').productFamilyId).not.toBe(getCatalogVariant('pi-agent-rust-cli').productFamilyId)
     expect(getCatalogVariant('zcode-desktop').productFamilyId).toBe('zcode')
     expect(getCatalogVariant('zcode-cli').components.every(component => component.deliveryMode === 'detectable')).toBe(true)
+    expect(getCatalogVariant('zcode-cli')).toMatchObject({
+      deliveryPriority: 'observe',
+      maxCapability: 0,
+    })
   })
 
   it('maps legacy cowork only to the legacy Claude Desktop audit identity', () => {
@@ -320,7 +339,7 @@ describe('stable Installation identity', () => {
     })).toThrow(/opaque local identifier/)
   })
 
-  it('rejects an exact component config file outside the Installation config root', () => {
+  it('rejects an exact component config file outside its frozen component root', () => {
     expect(() => canonicalizeInstallationIdentity({
       runtimeRealm: 'local_macos',
       osUserIdentity: 'usr_01JABCDEF0123456789',
@@ -328,7 +347,67 @@ describe('stable Installation identity', () => {
       hostVariant: 'opencode-v1-cli',
       configRoot: '/Users/test/.config/opencode',
       componentConfigFiles: { memory_tools: '/Users/test/outside.json' },
-    })).toThrow(/config file must be inside configRoot/)
+    })).toThrow(/config file must be inside its component config root/)
+  })
+
+  it('binds an out-of-tree component root into identity and only adopts its old root-less key once', () => {
+    const observed = canonicalizeInstallationIdentity({
+      runtimeRealm: 'local_macos',
+      osUserIdentity: 'usr_01JABCDEF0123456789',
+      productFamilyId: 'opencode',
+      hostVariant: 'opencode-v1-cli',
+      configRoot: '/Users/test/config-file-parent',
+      componentConfigRoots: { lifecycle: '/Users/test/opencode-resources' },
+      componentConfigFiles: {
+        memory_tools: '/Users/test/config-file-parent/opencode.jsonc',
+        lifecycle: '/Users/test/opencode-resources/plugins/tidemind.ts',
+      },
+    })
+    const legacyKey = buildLegacyInstallKey(observed)
+    expect(observed.installKey).not.toBe(legacyKey)
+    expect(matchInstallationIdentity(observed, [{
+      ...observed,
+      componentConfigRoots: undefined,
+      installKey: legacyKey,
+      installationId: 'legacy-opencode',
+      aliasInstallKeys: [],
+    }])).toMatchObject({
+      kind: 'matched',
+      reason: 'component_roots_enrichment',
+      record: { installationId: 'legacy-opencode' },
+    })
+
+    const drifted = canonicalizeInstallationIdentity({
+      runtimeRealm: 'local_macos',
+      osUserIdentity: observed.osUserIdentity,
+      productFamilyId: 'opencode',
+      hostVariant: 'opencode-v1-cli',
+      configRoot: observed.canonicalConfigRoot,
+      componentConfigRoots: { lifecycle: '/Users/test/replaced-opencode-resources' },
+      componentConfigFiles: {
+        memory_tools: '/Users/test/config-file-parent/opencode.jsonc',
+        lifecycle: '/Users/test/replaced-opencode-resources/plugins/tidemind.ts',
+      },
+      distribution: observed.distribution,
+    })
+    expect(matchInstallationIdentity(drifted, [{
+      ...observed,
+      installationId: 'current-opencode',
+      aliasInstallKeys: [],
+    }])).toMatchObject({
+      kind: 'ambiguous',
+      candidates: [{ installationId: 'current-opencode' }],
+    })
+
+    expect(() => canonicalizeInstallationIdentity({
+      runtimeRealm: 'local_macos',
+      osUserIdentity: 'usr_01JABCDEF0123456789',
+      productFamilyId: 'opencode',
+      hostVariant: 'opencode-v1-cli',
+      configRoot: '/Users/test/config-file-parent',
+      componentConfigRoots: { lifecycle: '/Users/test/opencode-resources' },
+      componentConfigFiles: { lifecycle: '/Users/test/other/tidemind.ts' },
+    })).toThrow(/config file must be inside its component config root/)
   })
 })
 
@@ -398,6 +477,20 @@ describe('component and presentation derivation', () => {
       statusGroup: 'awaiting_verification',
       statusReason: 'verification_stale',
       accessLevel: 'complete',
+      accessIsHistorical: true,
+    })
+  })
+
+  it('keeps exactly adopted legacy access callable without treating it as maintenance consent', () => {
+    expect(deriveInstallationStatus(statusInput({
+      hasConsent: false,
+      verifiedCapability: 2,
+      verificationSummary: 'stale',
+      legacyCallableWithoutConsent: true,
+    }))).toEqual({
+      statusGroup: 'available',
+      statusReason: 'legacy_callable_unmanaged',
+      accessLevel: 'partial',
       accessIsHistorical: true,
     })
   })

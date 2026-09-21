@@ -56,6 +56,7 @@ const prepared = buildExecutionPlan({
 
 class ReconcilerRepository implements ReconcilerRepositoryPort {
   events: IntegrationEvent[] = []
+  attention: Array<Parameters<ReconcilerRepositoryPort['markArtifactNeedsAttention']>[0]> = []
   episode: MissingEpisodeResult = {
     changed: true,
     eventCount: 1,
@@ -66,6 +67,11 @@ class ReconcilerRepository implements ReconcilerRepositoryPort {
   recordEvent(event: IntegrationEvent) { this.calls.push('event'); this.events.push(event) }
   beginMissingEpisode() { this.calls.push('episode'); return this.episode }
   markArtifactHealthyAfterReadback() { this.calls.push('healthy'); return true }
+  markArtifactNeedsAttention(input: Parameters<ReconcilerRepositoryPort['markArtifactNeedsAttention']>[0]) {
+    this.calls.push('attention')
+    this.attention.push(input)
+    return true
+  }
 }
 
 function request(overrides: Partial<ReconcileManagedArtifactRequest> = {}): ReconcileManagedArtifactRequest {
@@ -74,6 +80,7 @@ function request(overrides: Partial<ReconcileManagedArtifactRequest> = {}): Reco
     installation,
     installationDesiredState: 'managed',
     componentKey: 'memory_tools',
+    componentKeys: ['memory_tools'],
     componentName: '记忆工具',
     desiredCapability: 3,
     consentId: 'consent-1',
@@ -135,6 +142,20 @@ describe('ManagedAgentReconciler', () => {
     const result = await test.reconciler.reconcileArtifact(request())
     expect(result).toMatchObject({ status: 'auto_restored' })
     expect(test.calls).toEqual(['episode', 'preview', 'apply', 'healthy', 'event', 'notify'])
+  })
+
+  it('freezes the complete atomic Artifact component scope for automatic repair', async () => {
+    const test = harness()
+    await test.reconciler.reconcileArtifact(request({
+      componentKeys: ['memory_tools', 'lifecycle'],
+      desiredCapability: 4,
+    }))
+
+    expect(test.preview).toHaveBeenCalledWith(expect.objectContaining({
+      operation: 'repair',
+      componentKeys: ['memory_tools', 'lifecycle'],
+      desiredCapability: 4,
+    }))
   })
 
   it('notifies after projection read-back even when host recognition remains pending', async () => {
@@ -210,6 +231,7 @@ describe('ManagedAgentReconciler', () => {
       },
     }))).toEqual({ status: 'needs_attention', reason: 'drifted' })
     expect(drift.repository.calls).not.toContain('episode')
+    expect(drift.repository.calls).toEqual(['attention', 'event'])
 
     const occupied = harness()
     expect(await occupied.reconciler.reconcileArtifact(request({
@@ -223,6 +245,34 @@ describe('ManagedAgentReconciler', () => {
       },
     }))).toEqual({ status: 'needs_attention', reason: 'missing_not_safe_to_restore' })
     expect(occupied.applyPrepared).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['drifted', 'drifted', 'conflict', 'artifact_drifted'],
+    ['conflicted', 'conflict', 'conflict', 'artifact_conflicted'],
+    ['inaccessible', 'drifted', 'permission', 'artifact_inaccessible'],
+  ] as const)('atomically invalidates green state for %s observations', async (
+    kind, artifactState, statusReason, invalidationReason,
+  ) => {
+    const test = harness()
+    await test.reconciler.reconcileArtifact(request({
+      observation: {
+        kind,
+        selectorEmpty: false,
+        ownershipBaselineVerified: false,
+        containerResolvable: kind !== 'inaccessible',
+        observedFingerprint: kind === 'drifted' ? 'foreign-edit' : null,
+        diagnostics: [],
+      },
+    }))
+
+    expect(test.repository.attention).toEqual([expect.objectContaining({
+      artifactState,
+      statusReason,
+      invalidationReason,
+    })])
+    expect(test.preview).not.toHaveBeenCalled()
+    expect(test.applyPrepared).not.toHaveBeenCalled()
   })
 
   it('does not repair disabled or removed Installations', async () => {

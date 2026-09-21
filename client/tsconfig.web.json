@@ -8,6 +8,7 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "composite": true,
+    "noEmit": true,
     "paths": {
       "@/*": ["./src/*"]
     }

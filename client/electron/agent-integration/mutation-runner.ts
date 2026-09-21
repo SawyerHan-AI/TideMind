@@ -33,11 +33,25 @@ export interface WriterFencePort {
   assertOwned(): void | Promise<void>
 }
 
+/** Acquisition contention is not loss of a lease already held by this worker. */
+export class WriterFenceUnavailableError extends Error {}
+
 export interface MutationEffectPort {
   apply(): void | Promise<void>
-  readBack(): string | null | Promise<string | null>
+  readBack(): MutationEffectReadBack | string | null | Promise<MutationEffectReadBack | string | null>
   receipt(observedFingerprint: string | null): unknown
   compensate?(): void | Promise<void>
+}
+
+/**
+ * Structured recovery evidence emitted by the coordinator after it has
+ * matched an Adapter-declared partial state against the immutable plan.
+ * `safeToResumeFrom` is never accepted on its own: it must equal the live
+ * fingerprint and be present in `safeResumeFingerprints` below.
+ */
+export interface MutationEffectReadBack {
+  fingerprint: string | null
+  safeToResumeFrom?: string
 }
 
 export interface MutationRunDependencies {
@@ -53,6 +67,8 @@ export interface MutationRunDependencies {
     | { allowed: true }
     | { allowed: false; reason: string }
     | Promise<{ allowed: true } | { allowed: false; reason: string }>
+  /** Exact intermediate fingerprints frozen into the persisted Adapter plan. */
+  safeResumeFingerprints?: readonly string[]
   now?: () => string
 }
 
@@ -85,15 +101,17 @@ export async function recoverMutation(
   try {
     await dependencies.fence.assertOwned()
   } catch (error) {
+    if (error instanceof WriterFenceUnavailableError) return record
     return persistFailure(record, dependencies, 'writer_fence_lost', 'recovery_read_back', error)
   }
 
-  let observed: string | null
+  let readBack: MutationEffectReadBack
   try {
-    observed = await dependencies.effect.readBack()
+    readBack = normalizeReadBack(await dependencies.effect.readBack())
   } catch (error) {
     return persistFailure(record, dependencies, 'read_back_failed', 'recovery_read_back', error)
   }
+  const observed = readBack.fingerprint
 
   try {
     await dependencies.fence.assertOwned()
@@ -132,6 +150,39 @@ export async function recoverMutation(
     return applyAndCommit(record, dependencies)
   }
 
+  if (readBack.safeToResumeFrom !== undefined) {
+    const allowedIntermediates = new Set(dependencies.safeResumeFingerprints ?? [])
+    if (readBack.safeToResumeFrom !== observed || !allowedIntermediates.has(readBack.safeToResumeFrom)) {
+      return persistFailure(
+        record,
+        dependencies,
+        'unsafe_intermediate_state',
+        'recovery_compare',
+        new MutationNeedsRecoveryError('Adapter recovery state was not frozen into the plan'),
+      )
+    }
+    if (!record.idempotent || hasDurableEffectEvidence(record)) {
+      return persistFailure(
+        record,
+        dependencies,
+        'unsafe_intermediate_state',
+        'recovery_compare',
+        new MutationNeedsRecoveryError('Partial recovery cannot replay after durable effect evidence'),
+      )
+    }
+    const replay = await dependencies.replayGuard?.() ?? { allowed: true as const }
+    if (!replay.allowed) {
+      return persistFailure(
+        record,
+        dependencies,
+        replay.reason,
+        'recovery_replay_guard',
+        new MutationNeedsRecoveryError(`Recovery replay blocked: ${replay.reason}`),
+      )
+    }
+    return applyAndCommit(record, dependencies)
+  }
+
   return persistFailure(
     record,
     dependencies,
@@ -151,7 +202,7 @@ export async function compensateMutation(
 
   let observed: string | null
   try {
-    observed = await dependencies.effect.readBack()
+    observed = normalizeReadBack(await dependencies.effect.readBack()).fingerprint
   } catch (error) {
     return persistFailure(record, dependencies, 'read_back_failed', 'compensation_read_back', error)
   }
@@ -163,7 +214,7 @@ export async function compensateMutation(
   try {
     await dependencies.fence.assertOwned()
     await dependencies.effect.compensate()
-    const after = await dependencies.effect.readBack()
+    const after = normalizeReadBack(await dependencies.effect.readBack()).fingerprint
     await dependencies.fence.assertOwned()
     if (after !== record.beforeFingerprint) {
       return persistFailure(current, dependencies, 'compensation_read_back_mismatch', 'compensation_verify')
@@ -198,7 +249,7 @@ async function applyAndCommit(
 
   let observed: string | null
   try {
-    observed = await dependencies.effect.readBack()
+    observed = normalizeReadBack(await dependencies.effect.readBack()).fingerprint
   } catch (error) {
     return persistFailure(current, dependencies, 'read_back_failed', 'read_back', error)
   }
@@ -211,6 +262,12 @@ async function applyAndCommit(
     return persistFailure(current, dependencies, 'effect_read_back_mismatch', 'read_back')
   }
   return persistObservedAndCommit(current, observed, dependencies)
+}
+
+function normalizeReadBack(value: MutationEffectReadBack | string | null): MutationEffectReadBack {
+  return typeof value === 'object' && value !== null && Object.hasOwn(value, 'fingerprint')
+    ? value
+    : { fingerprint: value as string | null }
 }
 
 async function persistObservedAndCommit(

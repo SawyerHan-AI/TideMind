@@ -71,7 +71,7 @@ export interface INodeRepository {
     >>,
     changeReason?: string,
   ): boolean;
-  archiveNode(id: string): void;
+  archiveNode(id: string): boolean;
   unarchiveNode(id: string): boolean;
   reArchiveNode(id: string): boolean;
   listArchivedNodes(opts?: { limit?: number; offset?: number }): { nodes: BrainNode[]; total: number };
