@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { sha256Bytes } from '../fingerprint'
+import { verifyHostActivity } from '../host-activity-evidence'
 import {
   inspectRegularFile,
   inspectRegularFileWithinRoot,
@@ -20,8 +21,10 @@ import type {
   ComponentKey,
   ComponentVerificationResult,
   JsonValue,
+  HostActivitySignal,
   MutationReadBack,
   PlannedMutation,
+  RequiredUserActionDetail,
   ReloadRequirement,
 } from '../types'
 
@@ -40,6 +43,16 @@ export interface ManagedTextHostSpec {
   content(context: AdapterOperationContext): string
   reload: ReloadRequirement
   detect?(context: AdapterOperationContext): boolean
+  /**
+   * Exact-generation host activity may prove that the host recognized this
+   * document. Static file presence alone never does.
+   */
+  recognitionViaHostActivity?: {
+    componentKey: 'memory_tools' | 'lifecycle'
+    signalNames: readonly HostActivitySignal[]
+    require: 'any' | 'all'
+    diagnostic: string
+  }
 }
 
 export function createManagedTextHostAdapter(spec: ManagedTextHostSpec): AgentHostAdapter {
@@ -93,6 +106,7 @@ export function createManagedTextHostAdapter(spec: ManagedTextHostSpec): AgentHo
     const liveHash = inspection.containerHash
     const diagnostics: string[] = []
     const requiredUserActions: string[] = []
+    const requiredUserActionDetails: RequiredUserActionDetail[] = []
     let operation: PlannedMutation['operation'] | null = null
 
     if (!request.observed.detected) diagnostics.push('host_not_detected')
@@ -100,11 +114,25 @@ export function createManagedTextHostAdapter(spec: ManagedTextHostSpec): AgentHo
     else if (desiredContent === null) {
       if (!inspection.exists) operation = null
       else if (!baseline || baseline.ownedFragmentHash !== liveHash) diagnostics.push('remove_requires_exact_owned_document')
+      else if ((baseline.activeConsumerCount ?? 1) > 1) {
+        // Freeze an ordinary remove intent. The coordinator's Ownership Ledger
+        // converts it to consumer_detach_only, so no filesystem unlink occurs.
+        operation = 'remove'
+        diagnostics.push('shared_document_consumer_detach')
+      }
       else {
         // Node has no portable unlinkat/dirfd API. Even an exact hash and
         // canonical read-back cannot close the final parent-symlink swap.
         diagnostics.push('managed_text_manual_cleanup_required')
         requiredUserActions.push('manually_remove_owned_document')
+        requiredUserActionDetails.push({
+          kind: 'manual_file_removal',
+          componentKey: spec.componentKey,
+          operation: 'disconnect',
+          physicalTarget: inspection.canonicalPath,
+          ownedFragmentHash: baseline.ownedFragmentHash,
+          instruction: `Remove the Tide Mind-owned file at ${inspection.canonicalPath}, then recheck the connection.`,
+        })
       }
     } else if (!inspection.exists) {
       operation = 'create'
@@ -146,6 +174,7 @@ export function createManagedTextHostAdapter(spec: ManagedTextHostSpec): AgentHo
       projectionVersion: context.runtime.projectionVersion,
       mutations,
       requiredUserActions,
+      requiredUserActionDetails,
       diagnostics,
     }
   }
@@ -154,7 +183,18 @@ export function createManagedTextHostAdapter(spec: ManagedTextHostSpec): AgentHo
     catalogId: spec.catalogId,
     adapterVersion: spec.adapterVersion,
     componentKeys: [spec.componentKey],
+    ...(spec.recognitionViaHostActivity ? {
+      verificationDependencies: { [spec.componentKey]: [spec.recognitionViaHostActivity.componentKey] },
+    } : {}),
     implementationTypes: { [spec.componentKey]: [spec.artifactType] },
+    componentContracts: {
+      [spec.componentKey]: {
+        deliveryMode: 'managed',
+        artifactTypes: [spec.artifactType],
+        mutationDomain: 'file_fragment',
+        reload: spec.reload,
+      },
+    },
     inspect,
     async inspectAdoptableArtifacts(context): Promise<readonly AdoptableArtifactObservation[]> {
       try {
@@ -257,8 +297,38 @@ export function createManagedTextHostAdapter(spec: ManagedTextHostSpec): AgentHo
           status: 'failed',
           verifiedCapability: null,
           invalidationKeys: ['artifact_hash', 'host_version', 'adapter_version'],
-          diagnostics: ['managed_document_not_visible'],
+          diagnostics: [observation.visibility === 'absent'
+            ? 'managed_document_not_visible'
+            : 'managed_document_visibility_unknown'],
         }]
+      }
+      const desiredHash = sha256Bytes(normalizeContent(spec.content(context)))
+      if (observation.observedFragmentHash !== desiredHash) {
+        return [{
+          componentKey: spec.componentKey,
+          status: 'failed',
+          verifiedCapability: null,
+          evidenceHash: observation.observedFragmentHash,
+          identityAssertion: context.agentId,
+          invalidationKeys: ['artifact_hash', 'host_version', 'adapter_version'],
+          diagnostics: ['managed_document_drifted_from_current_desired'],
+        }]
+      }
+      if (spec.componentKey === 'instruction' && spec.recognitionViaHostActivity) {
+        const lifecycle = await verifyHostActivity(context, request, {
+          componentKey: spec.recognitionViaHostActivity.componentKey,
+          signalNames: spec.recognitionViaHostActivity.signalNames,
+          require: spec.recognitionViaHostActivity.require,
+        })
+        if (lifecycle.status === 'verified') {
+          return [{
+            ...lifecycle,
+            componentKey: 'instruction',
+            verifiedCapability: 1,
+            evidenceHash: sha256Bytes(`${desiredHash}:${lifecycle.evidenceHash ?? ''}`),
+            diagnostics: ['static_readback_passed', spec.recognitionViaHostActivity.diagnostic, ...lifecycle.diagnostics],
+          }]
+        }
       }
       return [{
         componentKey: spec.componentKey,

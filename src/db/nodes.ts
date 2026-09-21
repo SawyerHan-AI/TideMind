@@ -201,8 +201,8 @@ export function updateNode(
  * 此函数负责防止未来再产生脏向量）。deleteVector 对无 embedding 的节点也安全
  * （空 DELETE）。
  */
-export function archiveNode(db: Database.Database, id: string): void {
-  archiveNodeWithVectors(db, id);
+export function archiveNode(db: Database.Database, id: string): boolean {
+  return archiveNodeWithVectors(db, id);
 }
 
 /**

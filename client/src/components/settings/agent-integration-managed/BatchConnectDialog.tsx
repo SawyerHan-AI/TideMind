@@ -13,10 +13,14 @@ import type {
 import { acquireModalInert } from '../../../lib/modal-inert'
 import {
   canCloseBatchDialog,
+  componentLabelKey,
   executionInstallationIds,
+  requiredUserActionDetailKey,
+  requiredUserActionPresentation,
   safeDisplayTarget,
   summarizeExecutionResults,
 } from './presentation'
+import { RequiredUserActionDetail } from './RequiredUserActionDetail'
 import { agentIntegrationsApi } from './types'
 
 type DialogStep = 'select' | 'preview' | 'execute'
@@ -48,6 +52,7 @@ function requestedConnectCandidateIds(
 
 function resultTone(status: AgentIntegrationApplyResultDto['results'][number]['status']) {
   if (status === 'committed') return 'text-emerald-300'
+  if (status === 'superseded') return 'text-gray-400'
   if (status === 'needs_recovery' || status === 'failed') return 'text-red-300'
   return 'text-amber-300'
 }
@@ -89,10 +94,12 @@ export function BatchConnectDialog({
   const openedRef = useRef(false)
   const openRef = useRef(open)
   const dialogSessionSequence = useRef(0)
+  const actionRequestSequence = useRef(0)
   const technicalRequestSequence = useRef(0)
   const confirmedPlanHashRef = useRef<string | null>(null)
   const taskIdRef = useRef<string | null>(null)
   const completedTaskIdsRef = useRef(new Set<string>())
+  const trackedTaskIdsRef = useRef(new Set<string>())
   openRef.current = open
   const [step, setStep] = useState<DialogStep>('select')
   const [initialPreview, setInitialPreview] = useState<AgentIntegrationPlanPreviewDto | null>(null)
@@ -109,6 +116,37 @@ export function BatchConnectDialog({
   const [technicalLoading, setTechnicalLoading] = useState(false)
   confirmedPlanHashRef.current = confirmedPreview?.planHash ?? null
 
+  const beginAction = useCallback(() => {
+    const session = dialogSessionSequence.current
+    const request = ++actionRequestSequence.current
+    return () => openRef.current
+      && dialogSessionSequence.current === session
+      && actionRequestSequence.current === request
+  }, [])
+
+  useEffect(() => () => {
+    dialogSessionSequence.current += 1
+    openedRef.current = false
+  }, [])
+
+  const reportTask = useCallback((task: AgentIntegrationApplyTaskDto) => {
+    onTaskUpdate(task)
+    if (task.state === 'completed' && !completedTaskIdsRef.current.has(task.id)) {
+      completedTaskIdsRef.current.add(task.id)
+      onComplete()
+    }
+  }, [onComplete, onTaskUpdate])
+
+  const requiredActionText = useCallback((action: string) => {
+    const presentation = requiredUserActionPresentation(action)
+    return t(presentation.labelKey, {
+      ...(presentation.count === undefined ? {} : { count: presentation.count }),
+      ...(presentation.componentKey === undefined
+        ? {}
+        : { component: t(componentLabelKey(presentation.componentKey)) }),
+    })
+  }, [t])
+
   const invalidateTechnical = () => {
     technicalRequestSequence.current += 1
     setTechnicalOpen(new Set())
@@ -122,7 +160,9 @@ export function BatchConnectDialog({
   ), [requestedInstallationIds, snapshot.installations])
 
   const loadInitialPreview = useCallback(async () => {
+    const isCurrent = beginAction()
     if (candidateIds.length === 0) {
+      setLoading(false)
       if (requestedInstallationIds?.length) {
         setInitialPreview(null)
         setError(t('agent.managed.requestedInstallationsUnavailable'))
@@ -133,14 +173,15 @@ export function BatchConnectDialog({
     setError(null)
     try {
       const preview = await agentIntegrationsApi().previewConnect(candidateIds, false)
+      if (!isCurrent()) return
       setInitialPreview(preview)
       setSelected(new Set(preview.installations.filter(isLowRiskDefault).map(item => item.installationId)))
     } catch (previewError) {
-      setError(previewError instanceof Error ? previewError.message : t('agent.managed.unknownError'))
+      if (isCurrent()) setError(previewError instanceof Error ? previewError.message : t('agent.managed.unknownError'))
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
-  }, [candidateIds, requestedInstallationIds, t])
+  }, [beginAction, candidateIds, requestedInstallationIds, t])
 
   useEffect(() => {
     if (!open) {
@@ -154,6 +195,7 @@ export function BatchConnectDialog({
     dialogSessionSequence.current += 1
     technicalRequestSequence.current += 1
     previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    previousStepRef.current = 'select'
     setStep('select')
     setInitialPreview(null)
     setConfirmedPreview(null)
@@ -195,19 +237,18 @@ export function BatchConnectDialog({
   }, [open])
 
   useEffect(() => agentIntegrationsApi().onTaskProgress(task => {
-    if (task.id !== taskIdRef.current) return
-    setApplyTask(task)
-    setExecution({ planHash: task.planHash, results: task.results })
-    onTaskUpdate(task)
-    if (task.state === 'completed' && !completedTaskIdsRef.current.has(task.id)) {
-      completedTaskIdsRef.current.add(task.id)
-      onComplete()
+    if (!trackedTaskIdsRef.current.has(task.id)) return
+    reportTask(task)
+    if (openRef.current && task.id === taskIdRef.current) {
+      setApplyTask(task)
+      setExecution({ planHash: task.planHash, results: task.results })
     }
-  }), [onComplete, onTaskUpdate])
+  }), [reportTask])
 
   const closeDialog = useCallback(() => {
     dialogSessionSequence.current += 1
     technicalRequestSequence.current += 1
+    taskIdRef.current = null
     onClose()
   }, [onClose])
 
@@ -257,6 +298,7 @@ export function BatchConnectDialog({
   const continueToPreview = async () => {
     const ids = [...selected].sort()
     if (ids.length === 0) return
+    const isCurrent = beginAction()
     setLoading(true)
     setError(null)
     invalidateTechnical()
@@ -264,56 +306,59 @@ export function BatchConnectDialog({
       const preview = await agentIntegrationsApi().previewConnect(ids, false, undefined, {
         withoutLifecycleInstallationIds: [...withoutLifecycle].filter(id => selected.has(id)),
       })
+      if (!isCurrent()) return
       setConfirmedPreview(preview)
       setConfirmedIds(ids)
       setStep('preview')
     } catch (previewError) {
-      setError(previewError instanceof Error ? previewError.message : t('agent.managed.unknownError'))
+      if (isCurrent()) setError(previewError instanceof Error ? previewError.message : t('agent.managed.unknownError'))
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }
 
   const applyPlan = async () => {
     if (!confirmedPreview) return
+    const isCurrent = beginAction()
     setLoading(true)
     setError(null)
     invalidateTechnical()
     setStep('execute')
     try {
       const task = await agentIntegrationsApi().startApplyConnect(confirmedPreview.planHash, confirmedIds)
-      taskIdRef.current = task.id
-      setApplyTask(task)
-      setExecution({ planHash: task.planHash, results: task.results })
-      onTaskUpdate(task)
-      setLoading(false)
+      trackedTaskIdsRef.current.add(task.id)
+      reportTask(task)
+      if (isCurrent()) {
+        taskIdRef.current = task.id
+        setApplyTask(task)
+        setExecution({ planHash: task.planHash, results: task.results })
+        setLoading(false)
+      }
       // The preload listener is registered before React. Read the task back as
       // well so an extremely fast completion cannot be lost between invoke and
       // the renderer committing its task id.
       const latest = await agentIntegrationsApi().getApplyTask(task.id)
-      if (taskIdRef.current === latest.id) {
+      reportTask(latest)
+      if (isCurrent() && taskIdRef.current === latest.id) {
         setApplyTask(latest)
         setExecution({ planHash: latest.planHash, results: latest.results })
-        onTaskUpdate(latest)
-        if (latest.state === 'completed' && !completedTaskIdsRef.current.has(latest.id)) {
-          completedTaskIdsRef.current.add(latest.id)
-          onComplete()
-        }
       }
     } catch (applyError) {
-      setError(applyError instanceof Error ? applyError.message : t('agent.managed.unknownError'))
+      if (isCurrent()) setError(applyError instanceof Error ? applyError.message : t('agent.managed.unknownError'))
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }
 
   const retryFailed = async () => {
     const failedIds = execution ? executionInstallationIds(execution.results, 'failed') : []
     if (failedIds.length === 0) return
+    const isCurrent = beginAction()
     setLoading(true)
     setError(null)
     try {
       const next = await agentIntegrationsApi().previewConnect(failedIds, false)
+      if (!isCurrent()) return
       setInitialPreview(next)
       setConfirmedPreview(null)
       setExecution(null)
@@ -323,19 +368,21 @@ export function BatchConnectDialog({
       invalidateTechnical()
       setStep('select')
     } catch (retryError) {
-      setError(retryError instanceof Error ? retryError.message : t('agent.managed.unknownError'))
+      if (isCurrent()) setError(retryError instanceof Error ? retryError.message : t('agent.managed.unknownError'))
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }
 
   const regenerateRecovery = async () => {
     const recoveryIds = execution ? executionInstallationIds(execution.results, 'needs_recovery') : []
     if (recoveryIds.length === 0) return
+    const isCurrent = beginAction()
     setLoading(true)
     setError(null)
     try {
       const next = await agentIntegrationsApi().previewConnect(recoveryIds, false)
+      if (!isCurrent()) return
       setInitialPreview(next)
       setConfirmedPreview(null)
       setExecution(null)
@@ -345,33 +392,36 @@ export function BatchConnectDialog({
       invalidateTechnical()
       setStep('select')
     } catch (recoveryError) {
-      setError(recoveryError instanceof Error ? recoveryError.message : t('agent.managed.unknownError'))
+      if (isCurrent()) setError(recoveryError instanceof Error ? recoveryError.message : t('agent.managed.unknownError'))
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }
 
   const reloadCurrentSelection = async () => {
     const ids = selected.size > 0 ? [...selected] : candidateIds
     if (ids.length === 0) return
+    const isCurrent = beginAction()
     setLoading(true)
     setError(null)
     invalidateTechnical()
     setInitialPreview(null)
     setConfirmedPreview(null)
     setConfirmedIds([])
-      setExecution(null)
-      setApplyTask(null)
-      setStep('select')
+    setExecution(null)
+    setApplyTask(null)
+    taskIdRef.current = null
+    setStep('select')
     try {
       const next = await agentIntegrationsApi().previewConnect(ids, false)
+      if (!isCurrent()) return
       setInitialPreview(next)
       setSelected(new Set(ids))
       setWithoutLifecycle(current => new Set([...current].filter(id => ids.includes(id))))
     } catch (retryError) {
-      setError(retryError instanceof Error ? retryError.message : t('agent.managed.unknownError'))
+      if (isCurrent()) setError(retryError instanceof Error ? retryError.message : t('agent.managed.unknownError'))
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }
 
@@ -510,11 +560,17 @@ export function BatchConnectDialog({
                             ].join(' · ')).join(' / ')}
                           </span>
                           {item.requiredUserActions.length > 0 && (
-                            <span className="mt-1 block text-xs text-amber-300">{item.requiredUserActions.join(' · ')}</span>
+                            <span className="mt-1 block text-xs text-amber-300">
+                              {item.requiredUserActions.map(requiredActionText).join(' · ')}
+                            </span>
                           )}
                           </span>
                         </label>
-                        {item.componentKeys.includes('lifecycle') && (
+                        {item.requiredUserActionDetails?.map(action => (
+                          <RequiredUserActionDetail key={requiredUserActionDetailKey(action)} action={action} />
+                        ))}
+                        {item.componentKeys.includes('lifecycle')
+                          && item.optionalComponentKeys?.includes('lifecycle') && (
                           <label className="ml-7 mt-2 flex items-start gap-2 rounded-lg bg-white/[0.025] p-2 text-xs text-gray-400">
                             <input
                               type="checkbox"
@@ -566,6 +622,14 @@ export function BatchConnectDialog({
                         </div>
                       ))}
                     </div>
+                    {item.requiredUserActions.length > 0 && (
+                      <p className="mt-2 rounded-lg border border-amber-400/20 bg-amber-400/[0.06] p-2 text-xs leading-relaxed text-amber-200">
+                        {item.requiredUserActions.map(requiredActionText).join(' · ')}
+                      </p>
+                    )}
+                    {item.requiredUserActionDetails?.map(action => (
+                      <RequiredUserActionDetail key={requiredUserActionDetailKey(action)} action={action} />
+                    ))}
                     <button
                       type="button"
                       onClick={() => void toggleTechnical(item.installationId)}
@@ -584,6 +648,11 @@ export function BatchConnectDialog({
                             <span>{target.selector ?? safeDisplayTarget(target.targetLabel)}</span>
                             {target.executableLabel && <span> · {safeDisplayTarget(target.executableLabel)}</span>}
                             {target.args?.length ? <span> · {target.args.map(argument => safeDisplayTarget(argument)).join(' ')}</span> : null}
+                            {target.commands?.map((command, commandIndex) => (
+                              <span key={commandIndex} className="block pl-3">
+                                {commandIndex + 1}. {t(`agent.managed.commandCategory.${command.commandCategory}`)} · {safeDisplayTarget(command.executableLabel)} · {command.args.map(argument => safeDisplayTarget(argument)).join(' ')}
+                              </span>
+                            ))}
                           </div>
                         ))}
                       </div>
@@ -605,6 +674,7 @@ export function BatchConnectDialog({
                   {executionSummary.total}
                   {' · '}{executionSummary.committed} {t('agent.managed.execution.committed')}
                   {' · '}{executionSummary.awaitingVerification} {t('agent.managed.execution.awaiting_verification')}
+                  {executionSummary.superseded > 0 && <>{' · '}{executionSummary.superseded} {t('agent.managed.execution.superseded')}</>}
                   {' · '}{executionSummary.needsAttention} {t('agent.managed.needsAttention')}
                 </p>
               )}
@@ -639,6 +709,9 @@ export function BatchConnectDialog({
                       {'reason' in item && item.reason && (
                         <p className="mt-1 break-words pl-[22px] text-xs leading-relaxed text-gray-400">{item.reason}</p>
                       )}
+                      {item.requiredUserActionDetails?.map(action => (
+                        <RequiredUserActionDetail key={requiredUserActionDetailKey(action)} action={action} />
+                      ))}
                     </div>
                   )
                 })}
@@ -679,7 +752,7 @@ export function BatchConnectDialog({
                 type="button"
                 onClick={() => void continueToPreview()}
                 disabled={loading || selected.size === 0}
-                className="rounded-lg bg-indigo-500 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-40"
+                className="theme-confirm-primary rounded-lg px-4 py-2 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {t('agent.managed.continueWithCount', { count: selected.size })}
               </button>
@@ -690,7 +763,7 @@ export function BatchConnectDialog({
               type="button"
               onClick={() => void applyPlan()}
               disabled={loading}
-              className="rounded-lg bg-indigo-500 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-400 disabled:opacity-40"
+              className="theme-confirm-primary rounded-lg px-4 py-2 text-xs font-medium disabled:opacity-40"
             >
               {t('agent.managed.connectCount', { count: confirmedIds.length })}
             </button>
@@ -726,7 +799,7 @@ export function BatchConnectDialog({
                   })}
                 </button>
               )}
-              <button type="button" onClick={closeDialog} className="rounded-lg bg-indigo-500 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-400">
+              <button type="button" onClick={closeDialog} className="theme-confirm-primary rounded-lg px-4 py-2 text-xs font-medium">
                 {t('agent.managed.done')}
               </button>
             </div>

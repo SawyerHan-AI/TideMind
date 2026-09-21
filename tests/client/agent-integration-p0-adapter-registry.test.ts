@@ -33,15 +33,100 @@ function context(catalogId: CatalogId): AdapterOperationContext {
 }
 
 describe('P0 host adapter registry', () => {
-  it('exposes implemented adapters without claiming guided-only surfaces', () => {
+  it('exposes implemented adapters without claiming unsupported surfaces', () => {
     const adapters = createP0HostAdapters()
     expect(adapters.has('qwen-code-cli')).toBe(true)
+    expect(adapters.has('windsurf-desktop')).toBe(true)
     expect(adapters.has('zcode-desktop')).toBe(true)
     expect(adapters.has('zcode-cli')).toBe(false)
     expect(adapters.has('opencode-v1-cli')).toBe(true)
     expect(adapters.has('pi-official-cli')).toBe(true)
-    expect(adapters.has('qwenwork-desktop')).toBe(false)
-    expect(adapters.has('claude-cowork-local')).toBe(false)
+    expect(adapters.has('openclaw-local')).toBe(true)
+    expect(adapters.has('gemini-cli')).toBe(true)
+    expect(adapters.has('qwenwork-desktop')).toBe(true)
+    expect(adapters.has('claude-cowork-local')).toBe(true)
+  })
+
+  it('registers ZCode Desktop as Skill plus one MCP/lifecycle JSON aggregate', () => {
+    const adapter = createP0HostAdapters().get('zcode-desktop')!
+
+    expect(adapter.adapterVersion).toBe('1+2')
+    expect(adapter.componentKeys).toEqual(['instruction', 'memory_tools', 'lifecycle'])
+    expect(adapter.implementationTypes).toEqual({
+      instruction: ['skill'],
+      memory_tools: ['mcp'],
+      lifecycle: ['hook'],
+    })
+  })
+
+  it('registers Windsurf as Skill + MCP + official user Hook aggregate', () => {
+    const adapter = createP0HostAdapters().get('windsurf-desktop')!
+    expect(adapter.componentKeys).toEqual(['instruction', 'memory_tools', 'lifecycle'])
+    expect(adapter.implementationTypes).toEqual({
+      instruction: ['skill'],
+      memory_tools: ['mcp'],
+      lifecycle: ['hook'],
+    })
+  })
+
+  it('registers Cowork as a guided two-component plugin export', () => {
+    const adapter = createP0HostAdapters().get('claude-cowork-local')!
+    expect(adapter.componentKeys).toEqual(['instruction', 'memory_tools'])
+    expect(adapter.implementationTypes).toEqual({
+      instruction: ['plugin', 'skill'],
+      memory_tools: ['plugin', 'mcp'],
+    })
+  })
+
+  it('registers QwenWork as one honest managed/guided hybrid aggregate', () => {
+    const adapter = createP0HostAdapters().get('qwenwork-desktop')!
+
+    expect(P0_INSTRUCTION_SPECS['qwenwork-desktop']).toBeUndefined()
+    expect(adapter.componentKeys).toEqual(['instruction', 'memory_tools', 'lifecycle'])
+    expect(adapter.implementationTypes).toEqual({
+      instruction: ['skill'],
+      memory_tools: ['mcp'],
+      lifecycle: ['hook'],
+    })
+  })
+
+  it('registers Pi as one native package aggregate rather than the portable text fallback', () => {
+    const adapter = createP0HostAdapters().get('pi-official-cli')!
+
+    expect(P0_INSTRUCTION_SPECS['pi-official-cli']).toBeUndefined()
+    expect(adapter.adapterVersion).toBe('1')
+    expect(adapter.componentKeys).toEqual(['instruction', 'memory_tools', 'lifecycle'])
+    expect(adapter.implementationTypes).toEqual({
+      instruction: ['plugin', 'skill'],
+      memory_tools: ['plugin'],
+      lifecycle: ['plugin'],
+    })
+  })
+
+  it('registers OpenClaw as one native Plugin aggregate rather than portable Skill plus loose MCP', () => {
+    const adapter = createP0HostAdapters().get('openclaw-local')!
+
+    expect(P0_INSTRUCTION_SPECS['openclaw-local']).toBeUndefined()
+    expect(adapter.adapterVersion).toBe('1')
+    expect(adapter.componentKeys).toEqual(['instruction', 'memory_tools', 'lifecycle'])
+    expect(adapter.implementationTypes).toEqual({
+      instruction: ['plugin', 'skill'],
+      memory_tools: ['plugin'],
+      lifecycle: ['plugin', 'hook'],
+    })
+  })
+
+  it('registers Gemini as one official Extension aggregate for all components', () => {
+    const adapter = createP0HostAdapters().get('gemini-cli')!
+
+    expect(P0_INSTRUCTION_SPECS['gemini-cli']).toBeUndefined()
+    expect(adapter.adapterVersion).toBe('1')
+    expect(adapter.componentKeys).toEqual(['instruction', 'memory_tools', 'lifecycle'])
+    expect(adapter.implementationTypes).toEqual({
+      instruction: ['plugin', 'skill'],
+      memory_tools: ['plugin', 'mcp'],
+      lifecycle: ['plugin', 'hook'],
+    })
   })
 
   it('keeps one portable skill body free of Installation identity', () => {
@@ -52,6 +137,17 @@ describe('P0 host adapter registry', () => {
     expect(portableSkillContent()).not.toContain('EB_AGENT_ID')
   })
 
+  it('recognizes Kimi instruction only after a real SessionStart signal', () => {
+    for (const catalogId of ['kimi-code-cli', 'kimi-code-native'] as const) {
+      expect(P0_INSTRUCTION_SPECS[catalogId]?.recognitionViaHostActivity).toEqual({
+        componentKey: 'lifecycle',
+        signalNames: ['session_start'],
+        require: 'any',
+        diagnostic: 'document_recognized_after_real_session_start',
+      })
+    }
+  })
+
   it('declares concrete Artifact carriers for every implemented component', () => {
     for (const [catalogId, adapter] of createP0HostAdapters()) {
       expect(new Set(adapter.componentKeys).size, catalogId).toBe(adapter.componentKeys.length)
@@ -60,6 +156,22 @@ describe('P0 host adapter registry', () => {
       }
       expect(Object.keys(adapter.implementationTypes).sort(), catalogId)
         .toEqual([...adapter.componentKeys].sort())
+    }
+  })
+
+  it('advertises lifecycle omission only when lifecycle has an independent projection', () => {
+    const adapters = createP0HostAdapters()
+    for (const catalogId of [
+      'cursor-desktop', 'windsurf-desktop', 'codex-cli', 'codex-desktop',
+      'kimi-code-cli', 'kimi-code-native', 'omp-cli', 'opencode-v1-cli', 'qwenwork-desktop',
+    ] as const) {
+      expect(adapters.get(catalogId)?.connectOptionalComponentKeys, catalogId).toContain('lifecycle')
+    }
+    for (const catalogId of [
+      'claude-code-cli', 'claude-code-native', 'gemini-cli', 'openclaw-local',
+      'qwen-code-cli', 'zcode-desktop', 'pi-official-cli',
+    ] as const) {
+      expect(adapters.get(catalogId)?.connectOptionalComponentKeys ?? [], catalogId).not.toContain('lifecycle')
     }
   })
 

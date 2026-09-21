@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 /**
- * 版本号一致性守护:6 处版本号必须完全一致,CI 中跑,漂移立即 fail。
+ * 版本号一致性守护:10 处版本号必须完全一致,CI 中跑,漂移立即 fail。
  *
  * 追踪的位置:
  *   1. package.json (root)
- *   2. client/package.json
- *   3. pro/cloud-server/package.json
- *   4. pro/cloud-server/src/server.ts     ("status":"ok","version":"X.Y.Z")
- *   5. pro/cloud-server/src/mcp/handler.ts (version: 'X.Y.Z')
- *   6. client/src/components/settings/AboutSection.tsx (useState('X.Y.Z'))
- *
- * 注意:lockfile 也要对齐,但 lockfile 修改依赖 npm install,CI 不在这里查
- * (npm ci 本身会校验 lockfile version)。
+ *   2. package-lock.json (root version 与 packages[""].version 必须一致)
+ *   3. client/package.json
+ *   4. client/package-lock.json
+ *   5. pro/cloud-server/package.json
+ *   6. pro/cloud-server/package-lock.json
+ *   7. pro/cloud-server/src/server.ts     ("status":"ok","version":"X.Y.Z")
+ *   8. pro/cloud-server/src/mcp/handler.ts (version: 'X.Y.Z')
+ *   9. client/src/components/settings/AboutSection.tsx (useState('X.Y.Z'))
+ *   10. client/electron/agent-integration/release-manifest.ts
+ *      (AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION)
  */
 
 import fs from 'node:fs';
@@ -20,18 +22,39 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
+export function extractLockfileVersion(content) {
+  const lock = JSON.parse(content);
+  const rootVersion = lock?.version;
+  const packageVersion = lock?.packages?.['']?.version;
+  return typeof rootVersion === 'string' && rootVersion === packageVersion
+    ? rootVersion
+    : undefined;
+}
+
 export const checks = [
   {
     file: 'package.json',
     extract: (content) => JSON.parse(content).version,
   },
   {
+    file: 'package-lock.json',
+    extract: extractLockfileVersion,
+  },
+  {
     file: 'client/package.json',
     extract: (content) => JSON.parse(content).version,
   },
   {
+    file: 'client/package-lock.json',
+    extract: extractLockfileVersion,
+  },
+  {
     file: 'pro/cloud-server/package.json',
     extract: (content) => JSON.parse(content).version,
+  },
+  {
+    file: 'pro/cloud-server/package-lock.json',
+    extract: extractLockfileVersion,
   },
   {
     // server.ts: 唯一的 "status":"ok","version":"X.Y.Z" 健康检查响应字面量
@@ -56,6 +79,14 @@ export const checks = [
     file: 'client/src/components/settings/AboutSection.tsx',
     extract: (content) =>
       content.match(/const \[currentVersion[^\]]*\]\s*=\s*useState\(['"]([\d.]+)['"]\)/)?.[1],
+  },
+  {
+    // The signed Agent release policy must describe this exact app version.
+    // Anchor on the exported constant so unrelated version literals cannot
+    // make a stale policy appear current.
+    file: 'client/electron/agent-integration/release-manifest.ts',
+    extract: (content) =>
+      content.match(/export\s+const\s+AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION\s*=\s*['"]([\d.]+)['"]/)?.[1],
   },
 ];
 
@@ -96,11 +127,11 @@ function main() {
     for (const [file, v] of versions) {
       console.error(`   ${v}  —  ${file}`);
     }
-    console.error('\nAll 6 locations must show the same version.');
+    console.error(`\nAll ${checks.length} locations must show the same version.`);
     process.exit(1);
   }
 
-  console.log(`✓ Version sync OK — all 6 locations at ${[...unique][0]}`);
+  console.log(`✓ Version sync OK — all ${checks.length} locations at ${[...unique][0]}`);
 }
 
 // 仅在 CLI 调用时执行 main();被 import(测试场景)时只导出 checks。

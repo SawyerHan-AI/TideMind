@@ -2,13 +2,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {
   applyJsonProjection,
+  applyJsonProjectionMove,
   inspectJsonProjection,
   planJsonProjection,
   type JsonProjectionPlan,
   type JsonSelector,
 } from '../json-projection'
 import { sha256Json } from '../fingerprint'
-import { verifyHostActivity } from '../host-activity-evidence'
+import { verifyMemoryReadWriteActivity } from '../host-activity-evidence'
 import type {
   AdoptableArtifactObservation,
   AdapterInspection,
@@ -21,7 +22,9 @@ import type {
   ComponentVerificationResult,
   JsonValue,
   MutationReadBack,
+  OwnedArtifactBaseline,
   PlannedMutation,
+  RequiredUserActionDetail,
   ReloadRequirement,
 } from '../types'
 
@@ -33,17 +36,33 @@ interface JsonMcpMetadata {
   ownedFragmentHash: string | null
   desiredFragment?: JsonValue
   remove: boolean
+  migrationSourceSelector?: string[]
+  migrationSourceFragmentHash?: string | null
 }
 
 export interface JsonMcpHostSpec {
   catalogId: CatalogId
   adapterVersion: string
   configFile(context: AdapterOperationContext): string
+  /** Exact selector for host contracts whose terminal key is user-selected. */
+  selector?(context: AdapterOperationContext): JsonSelector
   selectorRoot?: readonly string[]
+  legacySelectorRoots?: readonly (readonly string[])[]
+  selectorSchemaVersion?: number
   reload: ReloadRequirement
   distributionId?: string
   detect?(context: AdapterOperationContext): boolean
   buildEntry?(context: AdapterOperationContext): JsonValue
+  allowLegacyAgentOnlyAdoption?: boolean
+  activationGate?(
+    context: AdapterOperationContext,
+    serverName: string,
+  ): {
+    allowed: boolean
+    diagnostic?: string
+    requiredUserAction?: string
+    requiredUserActionDetail?: RequiredUserActionDetail
+  }
 }
 
 export function createJsonMcpHostAdapter(spec: JsonMcpHostSpec): AgentHostAdapter {
@@ -64,6 +83,11 @@ export function createJsonMcpHostAdapter(spec: JsonMcpHostSpec): AgentHostAdapte
         if (projection.fragmentExists) {
           visibility = 'dedicated'
           observedFragmentHash = projection.fragmentHash ?? undefined
+        }
+        const gate = spec.activationGate?.(context, selector.at(-1)!)
+        if (gate && !gate.allowed) {
+          if (visibility === 'dedicated') visibility = 'unknown'
+          diagnostics.push(gate.diagnostic ?? 'mcp_server_not_active_by_host_policy')
         }
       } catch (error) {
         visibility = 'unknown'
@@ -95,6 +119,11 @@ export function createJsonMcpHostAdapter(spec: JsonMcpHostSpec): AgentHostAdapte
     adapterVersion: spec.adapterVersion,
     componentKeys: ['memory_tools'],
     implementationTypes: { memory_tools: ['mcp'] },
+    componentContracts: {
+      memory_tools: {
+        deliveryMode: 'managed', artifactTypes: ['mcp'], mutationDomain: 'file_fragment', reload: spec.reload,
+      },
+    },
     inspect,
     async inspectAdoptableArtifacts(context): Promise<readonly AdoptableArtifactObservation[]> {
       const target = spec.configFile(context)
@@ -108,14 +137,19 @@ export function createJsonMcpHostAdapter(spec: JsonMcpHostSpec): AgentHostAdapte
         const desired = spec.buildEntry?.(context) ?? mcpEntry(context)
         if (!projection.fragmentExists
           || projection.fragmentHash === null
-          || !isExactAdoptableEntry(projection.fragment, desired, context)) return []
+          || !isExactAdoptableEntry(
+            projection.fragment,
+            desired,
+            context,
+            spec.allowLegacyAgentOnlyAdoption !== false,
+          )) return []
         return [{
           componentKey: 'memory_tools',
           artifactType: 'mcp',
           domainKind: 'file_fragment',
           physicalTarget: projection.file.canonicalPath,
           ownershipKey: selector.join('.'),
-          selectorSchemaVersion: 1,
+          selectorSchemaVersion: spec.selectorSchemaVersion ?? 1,
           projectionVersion: context.runtime.projectionVersion,
           containerHash: projection.file.containerHash ?? undefined,
           fragmentHash: projection.fragmentHash,
@@ -155,7 +189,13 @@ export function createJsonMcpHostAdapter(spec: JsonMcpHostSpec): AgentHostAdapte
         desiredFragmentHash: mutation.desiredFragmentHash ?? null,
         conflictReason: null,
       }
-      const readBack = applyJsonProjection(plan, _context.installation.canonicalConfigRoot)
+      const readBack = metadata.migrationSourceSelector === undefined
+        ? applyJsonProjection(plan, _context.installation.canonicalConfigRoot)
+        : applyJsonProjectionMove({
+            ...plan,
+            sourceSelector: metadata.migrationSourceSelector,
+            sourceFragmentHash: metadata.migrationSourceFragmentHash ?? null,
+          }, _context.installation.canonicalConfigRoot)
       return {
         operationId: mutation.operationId,
         effectObserved: true,
@@ -174,6 +214,43 @@ export function createJsonMcpHostAdapter(spec: JsonMcpHostSpec): AgentHostAdapte
           metadata.selector,
           _context.installation.canonicalConfigRoot,
         )
+        if (metadata.migrationSourceSelector !== undefined) {
+          const source = inspectJsonProjection(
+            mutation.physicalTarget,
+            metadata.migrationSourceSelector,
+            _context.installation.canonicalConfigRoot,
+          )
+          const desiredHash = mutation.desiredFragmentHash ?? null
+          if (readBack.fragmentHash === desiredHash && !source.fragmentExists) {
+            return {
+              operationId: mutation.operationId,
+              observed: true,
+              matchesDesired: true,
+              observedFragmentHash: readBack.fragmentHash ?? undefined,
+              visibility: 'dedicated',
+              diagnostics: [],
+            }
+          }
+          if (!readBack.fragmentExists
+            && source.fragmentHash === (metadata.migrationSourceFragmentHash ?? null)) {
+            return {
+              operationId: mutation.operationId,
+              observed: source.fragmentExists,
+              matchesDesired: false,
+              observedFragmentHash: source.fragmentHash ?? undefined,
+              visibility: source.fragmentExists ? 'dedicated' : 'absent',
+              diagnostics: ['legacy_selector_pending_migration'],
+            }
+          }
+          return {
+            operationId: mutation.operationId,
+            observed: readBack.fragmentExists || source.fragmentExists,
+            matchesDesired: false,
+            observedFragmentHash: readBack.fragmentHash ?? source.fragmentHash ?? undefined,
+            visibility: readBack.fragmentExists || source.fragmentExists ? 'unknown' : 'absent',
+            diagnostics: ['selector_migration_state_conflict'],
+          }
+        }
         return {
           operationId: mutation.operationId,
           observed: readBack.fragmentExists,
@@ -228,11 +305,7 @@ export function createJsonMcpHostAdapter(spec: JsonMcpHostSpec): AgentHostAdapte
           diagnostics: ['managed_mcp_fragment_drifted_from_current_desired'],
         }]
       }
-      const activity = await verifyHostActivity(context, request, {
-        componentKey: 'memory_tools',
-        signalNames: ['brain_prepare', 'brain_recall', 'brain_digest'],
-        require: 'any',
-      })
+      const activity = await verifyMemoryReadWriteActivity(context, request)
       if (activity.status === 'unverified') {
         return [{
           ...activity,
@@ -268,11 +341,33 @@ function isExactAdoptableEntry(
   live: JsonValue | undefined,
   desired: JsonValue,
   context: AdapterOperationContext,
+  allowLegacyAgentOnlyAdoption: boolean,
 ): boolean {
   if (live === undefined || !assertsAgentIdentity(live, context.agentId)) return false
   if (sha256Json(live) === sha256Json(desired)) return true
-  const legacyDesired = withoutManagedHostVariant(desired, context.installation.hostVariant)
-  return legacyDesired !== undefined && sha256Json(live) === sha256Json(legacyDesired)
+  if (!allowLegacyAgentOnlyAdoption) return false
+  const generationlessDesired = withoutActivityGenerationToken(desired)
+  if (generationlessDesired !== undefined && sha256Json(live) === sha256Json(generationlessDesired)) return true
+  const agentOnlyLegacyDesired = withoutManagedHostVariant(
+    generationlessDesired ?? desired,
+    context.installation.hostVariant,
+  )
+  return agentOnlyLegacyDesired !== undefined && sha256Json(live) === sha256Json(agentOnlyLegacyDesired)
+}
+
+function withoutActivityGenerationToken(desired: JsonValue): JsonValue | undefined {
+  if (desired === null || Array.isArray(desired) || typeof desired !== 'object') return undefined
+  const record = desired as Record<string, JsonValue>
+  for (const key of ['env', 'environment'] as const) {
+    const environment = record[key]
+    if (environment === null || Array.isArray(environment) || typeof environment !== 'object') continue
+    const values = environment as Record<string, JsonValue>
+    if (typeof values.EB_ACTIVITY_GENERATION_TOKEN !== 'string') continue
+    const legacyEnvironment = { ...values }
+    delete legacyEnvironment.EB_ACTIVITY_GENERATION_TOKEN
+    return { ...record, [key]: legacyEnvironment }
+  }
+  return undefined
 }
 
 function withoutManagedHostVariant(
@@ -300,8 +395,9 @@ function buildPlan(
   remove: boolean,
 ): AdapterPlan {
   const target = spec.configFile(context)
-  const selector = serverSelector(spec, context)
-  const ownershipKey = selector.join('.')
+  const primarySelector = serverSelector(spec, context)
+  let selector = primarySelector
+  let ownershipKey = selector.join('.')
   if (!request.observed.detected) {
     return {
       catalogId: spec.catalogId,
@@ -315,11 +411,58 @@ function buildPlan(
       diagnostics: ['host_not_detected_or_projection_format_unsupported'],
     }
   }
-  const baseline = request.ownedArtifacts.find(artifact =>
+  if (!remove && request.desiredComponents.includes('memory_tools')) {
+    let gate: ReturnType<NonNullable<JsonMcpHostSpec['activationGate']>> | undefined
+    try {
+      gate = spec.activationGate?.(context, primarySelector.at(-1)!)
+    } catch (error) {
+      return {
+        catalogId: spec.catalogId,
+        installationKey: context.installation.installKey,
+        adapterVersion: spec.adapterVersion,
+        projectionVersion: context.runtime.projectionVersion,
+        mutations: [],
+        requiredUserActions: [],
+        diagnostics: [error instanceof Error ? error.message : String(error)],
+      }
+    }
+    if (gate && !gate.allowed) {
+      return {
+        catalogId: spec.catalogId,
+        installationKey: context.installation.installKey,
+        adapterVersion: spec.adapterVersion,
+        projectionVersion: context.runtime.projectionVersion,
+        mutations: [],
+        requiredUserActions: gate.requiredUserAction ? [gate.requiredUserAction] : [],
+        requiredUserActionDetails: gate.requiredUserActionDetail ? [gate.requiredUserActionDetail] : [],
+        diagnostics: [gate.diagnostic ?? 'mcp_server_not_active_by_host_policy'],
+      }
+    }
+  }
+  let baseline = request.ownedArtifacts.find(artifact =>
     artifact.componentKey === 'memory_tools'
     && path.resolve(artifact.physicalTarget) === path.resolve(target)
     && artifact.ownershipKey === ownershipKey,
   )
+  const legacyCandidates = (spec.legacySelectorRoots ?? []).map(root => {
+    const legacySelector = [...root, `tidemind-${context.agentId}`]
+    return {
+      selector: legacySelector,
+      baseline: request.ownedArtifacts.find(artifact =>
+        artifact.componentKey === 'memory_tools'
+        && artifact.physicalTarget === target
+        && artifact.ownershipKey === legacySelector.join('.'),
+      ),
+    }
+  })
+  if (remove && baseline === undefined) {
+    const legacy = legacyCandidates.find(candidate => candidate.baseline !== undefined)
+    if (legacy?.baseline !== undefined) {
+      selector = legacy.selector
+      ownershipKey = selector.join('.')
+      baseline = legacy.baseline
+    }
+  }
   const desiredFragment = remove ? undefined : (spec.buildEntry?.(context) ?? mcpEntry(context))
   const desiredFragmentHash = desiredFragment === undefined ? null : sha256Json(desiredFragment)
   const relocatedBaseline = !remove && baseline === undefined && assertsAgentIdentity(desiredFragment!, context.agentId)
@@ -339,9 +482,53 @@ function buildPlan(
   })
   const diagnostics: string[] = []
   const mutations: PlannedMutation[] = []
+  let migration: {
+    sourceSelector: JsonSelector
+    sourceFragmentHash: string | null
+    baseline: OwnedArtifactBaseline
+  } | undefined
+
+  if (!remove && projection.action === 'create' && baseline === undefined) {
+    for (const candidate of legacyCandidates) {
+      const observed = inspectJsonProjection(target, candidate.selector, context.installation.canonicalConfigRoot)
+      if (observed.fragmentExists) {
+        if (candidate.baseline === undefined) {
+          diagnostics.push('legacy_selector_occupied_without_ownership')
+          break
+        }
+        if (observed.fragmentHash !== candidate.baseline.ownedFragmentHash) {
+          diagnostics.push('legacy_owned_fragment_modified')
+          break
+        }
+        if (observed.fragment === undefined || !assertsAgentIdentity(observed.fragment, context.agentId)) {
+          diagnostics.push('legacy_selector_identity_mismatch')
+          break
+        }
+        migration = {
+          sourceSelector: candidate.selector,
+          sourceFragmentHash: observed.fragmentHash,
+          baseline: candidate.baseline,
+        }
+        break
+      }
+      if (candidate.baseline !== undefined) {
+        // The old owned selector was deleted externally. Restore directly at
+        // the canonical selector while retiring the legacy Ledger binding.
+        migration = {
+          sourceSelector: candidate.selector,
+          sourceFragmentHash: null,
+          baseline: candidate.baseline,
+        }
+        break
+      }
+    }
+  }
 
   if (!request.desiredComponents.includes('memory_tools')) {
     diagnostics.push('memory_tools_not_requested')
+  } else if (diagnostics.some(diagnostic => diagnostic.startsWith('legacy_'))) {
+    // Same-name legacy state is part of the managed migration surface. Never
+    // create a second selector without exact ownership and live-hash proof.
   } else if (projection.action === 'conflict') {
     diagnostics.push(projection.conflictReason ?? 'json_projection_conflict')
   } else if (projection.action !== 'noop') {
@@ -352,6 +539,10 @@ function buildPlan(
       liveFragmentHash: projection.liveFragmentHash,
       ownedFragmentHash: projection.ownedFragmentHash,
       remove,
+      ...(migration === undefined ? {} : {
+        migrationSourceSelector: [...migration.sourceSelector],
+        migrationSourceFragmentHash: migration.sourceFragmentHash,
+      }),
       ...(desiredFragment === undefined ? {} : { desiredFragment }),
     }
     mutations.push({
@@ -361,11 +552,19 @@ function buildPlan(
       domainKind: 'file_fragment',
       physicalTarget: target,
       ownershipKey,
-      selectorSchemaVersion: 1,
+      selectorSchemaVersion: migration === undefined
+        ? (baseline?.selectorSchemaVersion ?? spec.selectorSchemaVersion ?? 1)
+        : (spec.selectorSchemaVersion ?? 1),
+      ownershipTransferFrom: migration === undefined ? undefined : {
+        physicalTarget: migration.baseline.physicalTarget,
+        ownershipKey: migration.baseline.ownershipKey,
+        ownedFragmentHash: migration.baseline.ownedFragmentHash,
+        selectorSchemaVersion: migration.baseline.selectorSchemaVersion ?? 1,
+      },
       risk: 'low',
       reload: spec.reload,
       commandCategory: 'file_write',
-      preconditionHash: projection.liveFragmentHash ?? undefined,
+      preconditionHash: migration?.sourceFragmentHash ?? projection.liveFragmentHash ?? undefined,
       containerPreconditionHash: projection.containerPreconditionHash ?? undefined,
       desiredFragmentHash: projection.desiredFragmentHash ?? undefined,
       idempotent: true,
@@ -386,6 +585,7 @@ function buildPlan(
 }
 
 function serverSelector(spec: JsonMcpHostSpec, context: AdapterOperationContext): JsonSelector {
+  if (spec.selector) return [...spec.selector(context)]
   return [...(spec.selectorRoot ?? ['mcpServers']), `tidemind-${context.agentId}`]
 }
 
@@ -396,6 +596,7 @@ function mcpEntry(context: AdapterOperationContext): JsonValue {
     env: {
       EB_AGENT_ID: context.agentId,
       EB_HOST_VARIANT: context.installation.hostVariant,
+      ...(context.activityGenerationToken ? { EB_ACTIVITY_GENERATION_TOKEN: context.activityGenerationToken } : {}),
     },
   }
 }
@@ -416,6 +617,12 @@ function parseMetadata(mutation: PlannedMutation): JsonMcpMetadata {
     || typeof value.canonicalPath !== 'string'
     || (value.containerPreconditionHash !== null && typeof value.containerPreconditionHash !== 'string')
     || typeof value.remove !== 'boolean'
+    || (value.migrationSourceSelector !== undefined
+      && (!Array.isArray(value.migrationSourceSelector)
+        || !value.migrationSourceSelector.every(part => typeof part === 'string')))
+    || (value.migrationSourceFragmentHash !== undefined
+      && value.migrationSourceFragmentHash !== null
+      && typeof value.migrationSourceFragmentHash !== 'string')
   ) {
     throw new Error(`Invalid JSON MCP mutation metadata: ${mutation.operationId}`)
   }
@@ -427,5 +634,7 @@ function parseMetadata(mutation: PlannedMutation): JsonMcpMetadata {
     ownedFragmentHash: value.ownedFragmentHash ?? null,
     desiredFragment: value.desiredFragment,
     remove: value.remove,
+    migrationSourceSelector: value.migrationSourceSelector,
+    migrationSourceFragmentHash: value.migrationSourceFragmentHash,
   }
 }

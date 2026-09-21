@@ -21,7 +21,7 @@ import {
 } from './types'
 
 export const CATALOG_SCHEMA_VERSION = 2
-export const CATALOG_VERSION = '1.1.0'
+export const CATALOG_VERSION = '1.3.0'
 
 const PRIORITY_GROUPS = {
   'P0.1': [
@@ -40,7 +40,6 @@ const PRIORITY_GROUPS = {
   'P0.2': [
     'qwen-code-cli',
     'zcode-desktop',
-    'zcode-cli',
     'opencode-v1-cli',
     'opencode-v2-beta-cli',
     'pi-official-cli',
@@ -112,7 +111,8 @@ const PRIORITY_GROUPS = {
     'aider-cli',
     'codegeex-ide',
   ],
-  observe: ['nami-desktop', 'catpaw-desktop'],
+  observe: ['nami-desktop', 'catpaw-desktop', 'zcode-cli'],
+  custom: ['custom-local-mcp'],
 } as const satisfies Record<DeliveryPriority, readonly CatalogId[]>
 
 function makePriorityMap(): Readonly<Record<CatalogId, DeliveryPriority>> {
@@ -137,7 +137,7 @@ const PRODUCT_SEEDS = [
   { id: 'claude-desktop-legacy', displayName: 'Claude Desktop（遗留）', variantIds: ['claude-desktop-legacy'] },
   { id: 'codex', displayName: 'Codex', variantIds: ['codex-cli', 'codex-desktop'] },
   { id: 'cursor', displayName: 'Cursor', variantIds: ['cursor-desktop'] },
-  { id: 'windsurf', displayName: 'Windsurf', variantIds: ['windsurf-desktop'] },
+  { id: 'windsurf', displayName: 'Devin Desktop（原 Windsurf）', variantIds: ['windsurf-desktop'] },
   { id: 'gemini', displayName: 'Gemini CLI', variantIds: ['gemini-cli'] },
   { id: 'openclaw', displayName: 'OpenClaw', variantIds: ['openclaw-local'] },
   { id: 'pi-official', displayName: 'Pi', variantIds: ['pi-official-cli'] },
@@ -186,6 +186,7 @@ const PRODUCT_SEEDS = [
   { id: 'nami', displayName: '360 纳米 AI', variantIds: ['nami-desktop'] },
   { id: 'catpaw', displayName: 'CatPaw', variantIds: ['catpaw-desktop'] },
   { id: 'codegeex', displayName: 'CodeGeeX', variantIds: ['codegeex-ide'] },
+  { id: 'custom-local-agent', displayName: '自定义本机 Agent', variantIds: ['custom-local-mcp'] },
 ] as const satisfies readonly ProductSeed[]
 
 function supportedComponent(
@@ -227,7 +228,7 @@ function notApplicable(componentKey: ComponentKey, reason: string): ComponentDec
   }
 }
 
-type ComponentModes = readonly [DeliveryMode, DeliveryMode, DeliveryMode | 'not_applicable']
+type ComponentModes = readonly [DeliveryMode | 'not_applicable', DeliveryMode | 'not_applicable', DeliveryMode | 'not_applicable']
 
 function p0Components(
   modes: ComponentModes,
@@ -241,27 +242,26 @@ function p0Components(
     memoryReload?: ReloadRequirement
     lifecycleReload?: ReloadRequirement
     lifecycleNotApplicableReason?: string
+    instructionNotApplicableReason?: string
+    memoryNotApplicableReason?: string
+    instructionReload?: ReloadRequirement
     risk?: MutationRisk
   } = {},
 ): readonly ComponentDeclaration[] {
   const [instruction, memoryTools, lifecycle] = modes
   return [
-    supportedComponent(
-      'instruction',
-      instruction,
-      options.instructionArtifacts ?? ['skill'],
-      options.instructionDomain ?? 'directory',
-      'new_session',
-      options.risk,
-    ),
-    supportedComponent(
-      'memory_tools',
-      memoryTools,
-      options.memoryArtifacts ?? ['mcp'],
-      options.memoryDomain ?? 'file_fragment',
-      options.memoryReload ?? 'reload',
-      options.risk,
-    ),
+    instruction === 'not_applicable'
+      ? notApplicable('instruction', options.instructionNotApplicableReason ?? 'This surface has no released instruction integration contract.')
+      : supportedComponent(
+          'instruction', instruction, options.instructionArtifacts ?? ['skill'],
+          options.instructionDomain ?? 'file_fragment', options.instructionReload ?? 'new_session', options.risk,
+        ),
+    memoryTools === 'not_applicable'
+      ? notApplicable('memory_tools', options.memoryNotApplicableReason ?? 'This surface has no released memory integration contract.')
+      : supportedComponent(
+          'memory_tools', memoryTools, options.memoryArtifacts ?? ['mcp'],
+          options.memoryDomain ?? 'file_fragment', options.memoryReload ?? 'reload', options.risk,
+        ),
     lifecycle === 'not_applicable'
       ? notApplicable(
           'lifecycle',
@@ -283,77 +283,95 @@ const P0_COMPONENTS: Readonly<Partial<Record<CatalogId, readonly ComponentDeclar
   'claude-code-cli': p0Components(['managed', 'managed', 'managed'], {
     instructionArtifacts: ['plugin', 'skill'], memoryArtifacts: ['plugin', 'mcp'], lifecycleArtifacts: ['plugin', 'hook'],
     instructionDomain: 'plugin_manager', memoryDomain: 'plugin_manager', lifecycleDomain: 'plugin_manager',
+    memoryReload: 'new_session',
   }),
-  'claude-code-native': p0Components(['detectable', 'detectable', 'detectable']),
-  'claude-desktop-legacy': p0Components(['cataloged', 'managed', 'not_applicable'], {
+  'claude-code-native': p0Components(['managed', 'managed', 'managed'], {
+    instructionArtifacts: ['plugin', 'skill'], memoryArtifacts: ['plugin', 'mcp'], lifecycleArtifacts: ['plugin', 'hook'],
+    instructionDomain: 'plugin_manager', memoryDomain: 'plugin_manager', lifecycleDomain: 'plugin_manager',
+    memoryReload: 'new_session',
+  }),
+  'claude-desktop-legacy': p0Components(['not_applicable', 'managed', 'not_applicable'], {
     memoryArtifacts: ['mcp'], memoryReload: 'restart_host',
   }),
-  'codex-cli': p0Components(['managed', 'managed', 'managed']),
-  'codex-desktop': p0Components(['managed', 'managed', 'managed']),
-  'cursor-desktop': p0Components(['managed', 'managed', 'managed'], { lifecycleReload: 'new_session' }),
-  'windsurf-desktop': p0Components(['managed', 'managed', 'not_applicable'], {
+  'codex-cli': p0Components(['managed', 'managed', 'managed'], { memoryReload: 'new_session' }),
+  'codex-desktop': p0Components(['managed', 'managed', 'managed'], { memoryReload: 'new_session' }),
+  'cursor-desktop': p0Components(['managed', 'managed', 'managed'], { memoryReload: 'new_session', lifecycleReload: 'new_session' }),
+  'windsurf-desktop': p0Components(['managed', 'managed', 'managed'], {
     memoryReload: 'version_dependent',
-    lifecycleNotApplicableReason: 'Windsurf exposes prompt, response, and tool hooks but no verified session or compaction lifecycle contract.',
+    lifecycleReload: 'restart_host',
   }),
   'gemini-cli': p0Components(['managed', 'managed', 'managed'], {
     instructionArtifacts: ['plugin', 'skill'], memoryArtifacts: ['plugin', 'mcp'], lifecycleArtifacts: ['plugin', 'hook'],
     instructionDomain: 'plugin_manager', memoryDomain: 'plugin_manager', lifecycleDomain: 'plugin_manager',
+    memoryReload: 'new_session',
   }),
   'kimi-code-cli': p0Components(['managed', 'managed', 'managed'], { memoryReload: 'new_session' }),
-  'kimi-code-native': p0Components(['detectable', 'detectable', 'detectable'], { memoryReload: 'new_session' }),
+  'kimi-code-native': p0Components(['managed', 'managed', 'managed'], { memoryReload: 'new_session' }),
   'openclaw-local': p0Components(['managed', 'managed', 'managed'], {
-    instructionArtifacts: ['plugin', 'skill'], memoryArtifacts: ['plugin', 'mcp'], lifecycleArtifacts: ['plugin', 'hook'],
+    instructionArtifacts: ['plugin', 'skill'], memoryArtifacts: ['plugin'], lifecycleArtifacts: ['plugin', 'hook'],
+    instructionDomain: 'plugin_manager', memoryDomain: 'plugin_manager', lifecycleDomain: 'plugin_manager',
+    instructionReload: 'restart_host', memoryReload: 'restart_host', lifecycleReload: 'restart_host',
   }),
   'qwen-code-cli': p0Components(['managed', 'managed', 'managed'], {
-    instructionArtifacts: ['plugin', 'skill'], memoryArtifacts: ['plugin', 'mcp'], lifecycleArtifacts: ['hook'],
-    instructionDomain: 'plugin_manager', memoryDomain: 'plugin_manager',
+    instructionArtifacts: ['skill'], memoryArtifacts: ['mcp'], lifecycleArtifacts: ['hook'],
+    memoryReload: 'new_session',
   }),
-  'zcode-desktop': p0Components(['managed', 'managed', 'managed'], { lifecycleReload: 'new_session' }),
+  'zcode-desktop': p0Components(['managed', 'managed', 'managed'], { memoryReload: 'new_session', lifecycleReload: 'new_session' }),
   // The historical same-named CLI is not an official ZCode distribution.
   // It remains visible to discovery, but has no writable Adapter surface.
   'zcode-cli': p0Components(['detectable', 'detectable', 'detectable'], { lifecycleReload: 'new_session' }),
   'opencode-v1-cli': p0Components(['managed', 'managed', 'managed'], {
-    instructionArtifacts: ['plugin', 'skill'], memoryArtifacts: ['plugin', 'mcp'], lifecycleArtifacts: ['plugin'],
+    instructionArtifacts: ['skill'], memoryArtifacts: ['mcp'], lifecycleArtifacts: ['plugin'],
+    memoryReload: 'new_session', lifecycleReload: 'restart_host',
   }),
-  'opencode-v2-beta-cli': p0Components(['managed', 'managed', 'guided'], {
-    instructionArtifacts: ['plugin', 'skill'], memoryArtifacts: ['mcp'], lifecycleArtifacts: ['plugin'],
-    lifecycleDomain: 'plugin_manager', lifecycleReload: 'user_confirmation',
+  'opencode-v2-beta-cli': p0Components(['managed', 'managed', 'not_applicable'], {
+    instructionArtifacts: ['skill'], memoryArtifacts: ['mcp'], memoryReload: 'new_session',
+    lifecycleNotApplicableReason: 'The released V2 Beta surface has no verified lifecycle carrier.',
   }),
   'pi-official-cli': p0Components(['managed', 'managed', 'managed'], {
     instructionArtifacts: ['plugin', 'skill'], memoryArtifacts: ['plugin'], lifecycleArtifacts: ['plugin'],
     instructionDomain: 'plugin_manager', memoryDomain: 'plugin_manager', lifecycleDomain: 'plugin_manager',
+    memoryReload: 'new_session',
   }),
-  'omp-cli': p0Components(['managed', 'managed', 'managed']),
+  'omp-cli': p0Components(['managed', 'managed', 'managed'], {
+    lifecycleArtifacts: ['plugin'], lifecycleReload: 'restart_host',
+  }),
   'qwenwork-desktop': p0Components(['managed', 'guided', 'managed'], {
-    memoryReload: 'user_confirmation', lifecycleReload: 'restart_host',
+    memoryDomain: 'none', memoryReload: 'user_confirmation', lifecycleReload: 'restart_host',
   }),
-  'claude-cowork-local': p0Components(['guided', 'guided', 'guided'], {
-    instructionArtifacts: ['plugin'], memoryArtifacts: ['plugin'], lifecycleArtifacts: ['plugin'],
-    instructionDomain: 'plugin_manager', memoryDomain: 'plugin_manager', lifecycleDomain: 'plugin_manager',
-    memoryReload: 'user_confirmation', lifecycleReload: 'user_confirmation', risk: 'elevated',
+  'claude-cowork-local': p0Components(['guided', 'guided', 'not_applicable'], {
+    instructionArtifacts: ['plugin', 'skill'], memoryArtifacts: ['plugin', 'mcp'],
+    instructionDomain: 'file_fragment', memoryDomain: 'file_fragment',
+    instructionReload: 'user_confirmation', memoryReload: 'user_confirmation', risk: 'elevated',
+  }),
+  'custom-local-mcp': p0Components(['guided', 'guided', 'not_applicable'], {
+    memoryReload: 'user_confirmation',
+    lifecycleNotApplicableReason: 'Custom local MCP Installations have no generic verified lifecycle contract.',
+    risk: 'elevated',
   }),
 }
 
 const CAPABILITY_CEILINGS: Readonly<Record<CapabilityLevel, readonly CatalogId[]>> = {
-  0: ['nami-desktop', 'catpaw-desktop', 'codegeex-ide'],
+  0: ['nami-desktop', 'catpaw-desktop', 'codegeex-ide', 'zcode-cli'],
   1: ['aider-cli', 'trae-ide'],
-  2: ['claude-desktop-legacy', 'continue-ide', 'amazon-q-cli', 'amazon-q-ide', 'maxkb-local'],
+  2: ['claude-desktop-legacy', 'continue-ide', 'amazon-q-cli', 'amazon-q-ide', 'maxkb-local', 'custom-local-mcp'],
   3: [
     'raycast-ai-desktop', 'goose-cli', 'goose-desktop', 'letta-local-server', 'agent-zero-local',
     'open-webui-local', 'github-copilot-jetbrains', 'cline-ide', 'junie-ide', 'roo-code-vscode',
     'zed-agent', 'warp-desktop', 'oz-runtime', 'lobehub-desktop', 'lobehub-local', 'cherry-studio-desktop',
     'chatbox-desktop', 'fastgpt-local', 'ragflow-local', 'baidu-comate-ide', 'qoder-ide', 'qoder-jetbrains',
-    'windsurf-desktop',
     'codebuddy-ide', 'codebuddy-vscode', 'codebuddy-jetbrains',
+    'opencode-v2-beta-cli', 'claude-cowork-local',
   ],
   4: [
-    'claude-code-cli', 'claude-code-native', 'claude-cowork-local', 'codex-cli', 'codex-desktop', 'cursor-desktop',
+    'claude-code-cli', 'claude-code-native', 'codex-cli', 'codex-desktop', 'cursor-desktop',
+    'windsurf-desktop',
     'gemini-cli', 'openclaw-local', 'pi-official-cli', 'omp-cli',
     'openhands-cli', 'openhands-gui', 'openhands-acp', 'jan-desktop', 'jan-cli',
     'anythingllm-desktop', 'anythingllm-local-server', 'librechat-local', 'pi-agent-desktop',
     'pi-agent-rust-cli', 'github-copilot-cli', 'github-copilot-vscode', 'cline-cli',
-    'opencode-v1-cli', 'opencode-v2-beta-cli', 'kiro-cli', 'kiro-ide', 'junie-cli', 'amp-cli',
-    'qwenwork-desktop', 'astrbot-local', 'langbot-local', 'kimi-code-cli', 'kimi-code-native', 'zcode-desktop', 'zcode-cli', 'qwen-code-cli',
+    'opencode-v1-cli', 'kiro-cli', 'kiro-ide', 'junie-cli', 'amp-cli',
+    'qwenwork-desktop', 'astrbot-local', 'langbot-local', 'kimi-code-cli', 'kimi-code-native', 'zcode-desktop', 'qwen-code-cli',
     'qoder-cli', 'codebuddy-cli', 'codearts-agent-cli', 'codearts-agent-ide', 'codearts-agent-vscode',
     'codearts-agent-jetbrains', 'dify-local',
   ],
@@ -370,7 +388,7 @@ const CAPABILITY_BY_CATALOG_ID = buildCapabilityMap()
 
 const VARIANT_DISPLAY_NAMES: Readonly<Partial<Record<CatalogId, string>>> = {
   'claude-code-cli': 'npm CLI',
-  'claude-code-native': '原生安装（仅检测）',
+  'claude-code-native': '官方原生 CLI',
   'codex-cli': 'CLI',
   'codex-desktop': 'Desktop',
   'opencode-v1-cli': 'V1 CLI',
@@ -378,16 +396,18 @@ const VARIANT_DISPLAY_NAMES: Readonly<Partial<Record<CatalogId, string>>> = {
   'zcode-desktop': 'Desktop',
   'zcode-cli': 'Unofficial CLI（仅检测）',
   'kimi-code-cli': 'npm CLI',
-  'kimi-code-native': '原生安装（仅检测）',
+  'kimi-code-native': '官方原生 CLI',
   'openhands-cli': 'CLI',
   'openhands-gui': 'GUI',
   'openhands-acp': 'ACP',
   'github-copilot-cli': 'CLI',
   'github-copilot-vscode': 'VS Code',
   'github-copilot-jetbrains': 'JetBrains',
+  'custom-local-mcp': '本机 MCP',
 }
 
 function inferHostKind(catalogId: CatalogId): HostKind {
+  if (catalogId === 'custom-local-mcp') return 'local_server'
   if (catalogId === 'claude-code-native' || catalogId === 'kimi-code-native') return 'cli'
   if (catalogId.endsWith('-cli')) return 'cli'
   if (catalogId.endsWith('-vscode') || catalogId.endsWith('-jetbrains') || catalogId.endsWith('-ide')) {

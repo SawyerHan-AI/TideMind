@@ -8,8 +8,8 @@ import {
 import { publishIntegrationEvent, type IntegrationEventRepositoryPort, type NotificationPort } from './events'
 import { sha256Json } from './fingerprint'
 import { buildLegacyMutationDomain } from './legacy-writer'
-import { executeMutation, recoverMutation, type MutationJournalRecord, type WriterFencePort } from './mutation-runner'
-import { buildExecutionPlan, type PreparedCoordinatorPlan } from './planner'
+import { executeMutation, recoverMutation, WriterFenceUnavailableError, type MutationJournalRecord, type WriterFencePort } from './mutation-runner'
+import { assertPersistedPreparedPlanShape, buildExecutionPlan, type PreparedCoordinatorPlan } from './planner'
 import type {
   AdapterOperationContext,
   AdapterRuntimeContext,
@@ -25,6 +25,7 @@ import type {
   PlannedMutation,
   ReconcileState,
 } from './types'
+import { isMutationDomainKind } from './types'
 
 export interface CoordinatorInstallation {
   id: string
@@ -50,6 +51,8 @@ export interface PreparedMutationExecution {
   journal: MutationJournalRecord
   operationId: string
   mutationDomain: string
+  /** Extra physical domains held for one aggregate host-owned effect. */
+  additionalMutationDomains?: readonly string[]
   plannedMutation: PlannedMutation
   effectDisposition?: 'apply' | 'consumer_detach'
 }
@@ -102,6 +105,8 @@ export interface VerifiedRecoverableExecution {
 export interface MutableRecoverableExecution {
   runId: string
   runState: 'applying' | 'applied_unverified' | 'compensating' | 'needs_recovery'
+  /** Durable lower bound for activity belonging to this activation epoch. */
+  activationEpoch?: string
   installation: CoordinatorInstallation
   consentId: string
   desiredCapability: CapabilityLevel
@@ -134,7 +139,11 @@ export interface WriterFenceLease extends WriterFencePort {
 export interface CoordinatorRepositoryPort extends IntegrationEventRepositoryPort {
   getInstallationControl(installationId: string): InstallationControlState | null | Promise<InstallationControlState | null>
   listOwnedArtifactBaselines(installationId: string): readonly OwnedArtifactBaseline[] | Promise<readonly OwnedArtifactBaseline[]>
-  getInstallationHostVersion?(installationId: string): string | null | Promise<string | null>
+  getInstallationHostVersion(installationId: string): string | null | Promise<string | null>
+  getCurrentActivityGenerationToken?(
+    installationId: string,
+    componentKeys: readonly ComponentKey[],
+  ): string | null | Promise<string | null>
   getConsent(consentId: string): ConsentEnvelope | null | Promise<ConsentEnvelope | null>
   setInstallationReconcileState(
     installationId: string,
@@ -170,6 +179,9 @@ export interface CoordinatorRepositoryPort extends IntegrationEventRepositoryPor
     failure?: { code: string; stage: string },
   ): void | Promise<void>
   acquireWriterFence(mutationDomain: string): WriterFenceLease | null | Promise<WriterFenceLease | null>
+  acquireExecutionFence(runId: string): { assertOwned(): void; release(): void } | null
+  listRecoverableRunIds(): readonly string[] | Promise<readonly string[]>
+  getRecoverableExecution(runId: string): RecoverableExecution | null | Promise<RecoverableExecution | null>
   recordVerification(input: {
     runId: string
     installation: CoordinatorInstallation
@@ -233,9 +245,23 @@ export interface CoordinatorDependencies {
     binding: { installationSurfaceFingerprint: string | null; liveTrustProofFingerprint: string | null },
   ): boolean | Promise<boolean>
   hostActivityEvidence?: HostActivityEvidenceReader
+  codexHookTrustEvidence?: AdapterOperationContext['codexHookTrustEvidence']
+  guidedRemovalEvidence?: AdapterOperationContext['guidedRemovalEvidence']
 }
 
 const HOST_ACTIVITY_FRESHNESS_MS = 30 * 24 * 60 * 60 * 1_000
+
+function assertHostCapabilityCeiling(
+  installation: CoordinatorInstallation,
+  operation: PlanOperation,
+  desiredCapability: CapabilityLevel,
+): void {
+  if (installation.identity.hostVariant === 'custom-local-mcp'
+    && operation !== 'disconnect'
+    && desiredCapability > 2) {
+    throw new Error('custom_mcp_capability_ceiling_exceeded')
+  }
+}
 
 class FrozenGenerationChangedError extends Error {
   constructor(readonly reason: 'catalog_generation_changed' | 'adapter_generation_changed' | 'projection_generation_changed') {
@@ -267,6 +293,11 @@ export interface PreviewRequest {
   operation: PlanOperation
   componentKeys: readonly ComponentKey[]
   desiredCapability: CapabilityLevel
+  /**
+   * Internal freshness checks must reproduce the exact generation frozen in
+   * the user-approved plan. This is never accepted from renderer input.
+   */
+  frozenActivityGenerationToken?: string
 }
 
 export interface ApplyPreparedRequest {
@@ -293,16 +324,52 @@ export class AgentIntegrationCoordinator {
   /** Read-only inspect + pure plan. No journal, consent, or host mutation occurs here. */
   async preview(request: PreviewRequest): Promise<PreparedCoordinatorPlan> {
     assertInstallation(request.installation)
+    assertHostCapabilityCeiling(request.installation, request.operation, request.desiredCapability)
     const adapter = this.requireAdapter(request.installation.identity.hostVariant)
-    const context = this.context(request.installation, this.dependencies.ids.next('operation'))
-    const inspection = await adapter.inspect(context)
+    const ownedArtifacts = await this.dependencies.repository.listOwnedArtifactBaselines(request.installation.id)
+    const verificationDependencies = request.operation === 'repair'
+      && request.componentKeys.length === 1 && request.componentKeys[0] === 'instruction'
+      ? [...(adapter.verificationDependencies?.instruction ?? [])]
+      : []
+    for (const componentKey of verificationDependencies) {
+      if (!ownedArtifacts.some(artifact => artifact.componentKey === componentKey)) {
+        throw new Error(`repair_verification_dependency_unmanaged:${componentKey}`)
+      }
+    }
+    const requestedComponents = [...new Set([...request.componentKeys, ...verificationDependencies])]
+    const persistedHostVersion = await this.dependencies.repository.getInstallationHostVersion(request.installation.id)
+    const operationId = this.dependencies.ids.next('operation')
+    const currentActivityToken = request.installation.desiredState === 'managed'
+      ? await this.dependencies.repository.getCurrentActivityGenerationToken?.(
+          request.installation.id,
+          verificationDependencies.length > 0 ? verificationDependencies : request.componentKeys,
+        ) ?? null
+      : null
+    const frozenActivityGenerationToken = request.frozenActivityGenerationToken?.trim()
+    if (request.frozenActivityGenerationToken !== undefined && !frozenActivityGenerationToken) {
+      throw new Error('Frozen activity generation token is invalid')
+    }
+    let activityGenerationToken = frozenActivityGenerationToken ?? currentActivityToken ?? operationId
+    let context = this.context(
+      request.installation,
+      operationId,
+      persistedHostVersion ?? null,
+      activityGenerationToken,
+    )
+    const observedInspection = await adapter.inspect(context)
+    if (observedInspection.detectedVersion !== undefined
+      && observedInspection.detectedVersion !== persistedHostVersion) {
+      throw new Error('Installation host version changed during preview')
+    }
+    const inspection = observedInspection.detectedVersion === undefined
+      ? { ...observedInspection, detectedVersion: persistedHostVersion ?? undefined }
+      : observedInspection
     const implementedComponents = new Set(inspection.components.map(component => component.componentKey))
-    const componentKeys = request.componentKeys.filter(component => implementedComponents.has(component))
+    const componentKeys = requestedComponents.filter(component => implementedComponents.has(component))
     if (componentKeys.length === 0) {
       throw new Error(`no enabled component projection for ${request.installation.identity.hostVariant}`)
     }
-    const ownedArtifacts = await this.dependencies.repository.listOwnedArtifactBaselines(request.installation.id)
-    const adapterPlan = request.operation === 'disconnect'
+    let adapterPlan = request.operation === 'disconnect'
       ? await adapter.disconnect(context, {
           componentKeys,
           observed: inspection,
@@ -314,6 +381,36 @@ export class AgentIntegrationCoordinator {
           observed: inspection,
           ownedArtifacts,
         })
+    if (verificationDependencies.length > 0 && (!currentActivityToken
+      || verificationDependencies.some(component => !componentKeys.includes(component))
+      || adapterPlan.mutations.some(mutation => mutationComponentKeys(mutation)
+        .some(component => verificationDependencies.includes(component))))) {
+      throw new Error('repair_verification_dependency_changed')
+    }
+    // Instruction-only repair reuses unchanged runtime carriers, but their
+    // activity must be freshly emitted into this run's frozen component scope.
+    // A stable, already-loaded projection keeps its generation across ordinary
+    // scans. Only a real connect/repair mutation rotates the token, then the
+    // exact same observed surface is replanned with the new frozen generation.
+    if (request.operation !== 'disconnect'
+      && currentActivityToken
+      && !frozenActivityGenerationToken
+      && verificationDependencies.length === 0
+      && (adapterPlan.mutations.length > 0 || establishesGuidedRuntimeProjection(adapterPlan))) {
+      activityGenerationToken = operationId
+      context = this.context(
+        request.installation,
+        operationId,
+        persistedHostVersion ?? null,
+        activityGenerationToken,
+      )
+      adapterPlan = await adapter.plan(context, {
+        desiredCapability: request.desiredCapability,
+        desiredComponents: componentKeys,
+        observed: inspection,
+        ownedArtifacts,
+      })
+    }
 
     assertLedgerOwnership(adapterPlan.mutations, ownedArtifacts, request.operation)
     const prepared = buildExecutionPlan({
@@ -327,6 +424,7 @@ export class AgentIntegrationCoordinator {
       adapterGeneration: this.dependencies.adapterGeneration(adapter),
       projectionGeneration: this.dependencies.projectionGeneration(adapter),
       createdAt: nowIso(this.dependencies.clock),
+      activityGenerationToken,
     })
     const surfaceFingerprint = this.dependencies.installationSurfaceFingerprint?.(request.installation)
     if (this.dependencies.installationSurfaceFingerprint && !surfaceFingerprint) {
@@ -351,10 +449,18 @@ export class AgentIntegrationCoordinator {
 
   async applyPrepared(request: ApplyPreparedRequest): Promise<CoordinatorOutcome> {
     assertInstallation(request.installation)
+    assertHostCapabilityCeiling(
+      request.installation,
+      request.preparedPlan.operation,
+      request.desiredCapability,
+    )
     assertPreparedPlan(request.installation, request.preparedPlan)
     const control = await this.dependencies.repository.getInstallationControl(request.installation.id)
     if (!control) throw new Error(`unknown Installation: ${request.installation.id}`)
     assertControlIdentity(request.installation, control)
+    if (!await this.currentHostVersionMatches(request.installation.id, request.preparedPlan)) {
+      return this.awaitConsent(request, ['host_version_changed'], control)
+    }
     if (control.healthState !== 'discovered' || control.statusReason === 'conflict') {
       return { status: 'paused', reason: 'host_not_authoritatively_present' }
     }
@@ -396,46 +502,64 @@ export class AgentIntegrationCoordinator {
       journal: journalFor(this.dependencies.ids.next('mutation'), plannedMutation, nowIso(this.dependencies.clock)),
       operationId: plannedMutation.operationId,
       mutationDomain: physicalMutationDomain(request.installation, plannedMutation),
+      additionalMutationDomains: additionalPhysicalMutationDomains(request.installation, plannedMutation),
       plannedMutation,
     }))
     const createdAt = nowIso(this.dependencies.clock)
-    const prepared = await this.dependencies.repository.prepareExecution({
-      runId,
-      installationId: request.installation.id,
-      operation: request.preparedPlan.operation,
-      planHash: request.preparedPlan.executionPlanHash,
-      consentId: consent.id,
-      preparedPlan: request.preparedPlan,
-      desiredCapability: request.desiredCapability,
-      mutations: preparedMutations,
-      expectedDesiredState: request.installation.desiredState,
-      intentAfterPrepare: request.preparedPlan.operation === 'disconnect' ? 'removed' : 'managed',
-      reconnectFromRemoved,
-      disconnectScopeExpectations: request.disconnectScopeExpectations,
-      applyTaskBinding: request.applyTaskBinding,
-      createdAt,
-    })
+    const executionFence = this.dependencies.repository.acquireExecutionFence(runId)
+    if (!executionFence) throw new WriterFenceUnavailableError(`execution fence unavailable: ${runId}`)
+    try {
+      const prepared = await this.dependencies.repository.prepareExecution({
+        runId,
+        installationId: request.installation.id,
+        operation: request.preparedPlan.operation,
+        planHash: request.preparedPlan.executionPlanHash,
+        consentId: consent.id,
+        preparedPlan: request.preparedPlan,
+        desiredCapability: request.desiredCapability,
+        mutations: preparedMutations,
+        expectedDesiredState: request.installation.desiredState,
+        intentAfterPrepare: request.preparedPlan.operation === 'disconnect' ? 'removed' : 'managed',
+        reconnectFromRemoved,
+        disconnectScopeExpectations: request.disconnectScopeExpectations,
+        applyTaskBinding: request.applyTaskBinding,
+        createdAt,
+      })
 
-    return this.executePreparedRun({
-      runId,
-      installation: request.installation,
-      consentId: consent.id,
-      preparedPlan: request.preparedPlan,
-      mutations: prepared.mutations,
-      desiredCapability: request.desiredCapability,
-      recovery: false,
-    })
+      return await this.executePreparedRun({
+        runId,
+        installation: request.installation,
+        consentId: consent.id,
+        preparedPlan: request.preparedPlan,
+        mutations: prepared.mutations,
+        desiredCapability: request.desiredCapability,
+        recovery: false,
+      })
+    } finally {
+      executionFence.release()
+    }
   }
 
   /** Recover persisted non-terminal mutations before starting ordinary reconciliation. */
   async recoverNonTerminalRuns(options: RecoveryOptions = {}): Promise<CoordinatorOutcome[]> {
-    const pending = await this.dependencies.repository.listRecoverableExecutions()
+    const pending = await this.dependencies.repository.listRecoverableRunIds()
     const outcomes: CoordinatorOutcome[] = []
-    for (const execution of pending) {
+    for (const runId of pending) {
+      const executionFence = this.dependencies.repository.acquireExecutionFence(runId)
+      if (!executionFence) continue
       try {
-        outcomes.push(await this.recoverExecution(execution, options))
-      } catch (error) {
-        outcomes.push(await this.isolateRecoveryExecutionFailure(execution, error))
+        const execution = await this.dependencies.repository.getRecoverableExecution(runId)
+        if (!execution) continue
+        executionFence.assertOwned()
+        try {
+          outcomes.push(await this.recoverExecution(execution, options))
+        } catch (error) {
+          if (!(error instanceof WriterFenceUnavailableError)) {
+            outcomes.push(await this.isolateRecoveryExecutionFailure(execution, error))
+          }
+        }
+      } finally {
+        executionFence.release()
       }
     }
     return outcomes
@@ -444,6 +568,22 @@ export class AgentIntegrationCoordinator {
   private async recoverExecution(
     execution: RecoverableExecution,
     options: RecoveryOptions,
+  ): Promise<CoordinatorOutcome> {
+    const domains = execution.runState === 'verified' ? [] : [...new Set(
+      execution.mutations.flatMap(mutation => allPhysicalMutationDomains(mutation)),
+    )].sort()
+    const leases = await acquireWriterFences(this.dependencies.repository, domains)
+    try {
+      return await this.recoverExecutionWithFences(execution, options, leases)
+    } finally {
+      await releaseWriterFences(leases)
+    }
+  }
+
+  private async recoverExecutionWithFences(
+    execution: RecoverableExecution,
+    options: RecoveryOptions,
+    recoveryLeases: WriterFenceLease[],
   ): Promise<CoordinatorOutcome> {
     let recoveryAuthorized: boolean
     try {
@@ -458,6 +598,15 @@ export class AgentIntegrationCoordinator {
     }
     if (execution.runState === 'verified') {
       return this.finalizeVerifiedExecution(execution)
+    }
+    try {
+      assertHostCapabilityCeiling(
+        execution.installation,
+        execution.preparedPlan.operation,
+        execution.desiredCapability,
+      )
+    } catch {
+      return this.failRecovery(execution, 'host_capability_ceiling_exceeded')
     }
     if (execution.runState === 'compensating') {
       return this.failRecovery(execution, 'compensation_requires_recovery_plan')
@@ -478,6 +627,7 @@ export class AgentIntegrationCoordinator {
       mutations: execution.mutations,
       desiredCapability: execution.preparedPlan.operation === 'disconnect' ? 0 : execution.desiredCapability,
       recovery: true,
+      recoveryLeases,
       recoveryReplayGuard: () => this.checkRecoveryReplay(execution, options),
     })
   }
@@ -653,7 +803,7 @@ export class AgentIntegrationCoordinator {
     if (generationFailure) return this.failRecovery(execution, generationFailure)
     const detachedComponents = new Set(execution.mutations
       .filter(mutation => mutation.effectDisposition === 'consumer_detach')
-      .map(mutation => mutation.plannedMutation.componentKey))
+      .flatMap(mutation => mutationComponentKeys(mutation.plannedMutation)))
     const verificationComponents = execution.preparedPlan.componentKeys
       .filter(componentKey => !detachedComponents.has(componentKey))
     let verification: readonly ComponentVerificationResult[]
@@ -665,6 +815,7 @@ export class AgentIntegrationCoordinator {
             adapter,
             verificationComponents,
             () => this.assertRecoveryAuthorized(execution, options),
+            execution.activationEpoch ?? latestMutationEpoch(execution.mutations),
           )
     } catch (error) {
       if (error instanceof FrozenGenerationChangedError) {
@@ -723,9 +874,14 @@ export class AgentIntegrationCoordinator {
     mutations: readonly PreparedMutationExecution[]
     desiredCapability: CapabilityLevel
     recovery: boolean
+    recoveryLeases?: WriterFenceLease[]
     recoveryReplayGuard?: () => Promise<{ allowed: true } | { allowed: false; reason: string }>
   }): Promise<CoordinatorOutcome> {
     const adapter = this.requireAdapter(input.installation.identity.hostVariant)
+    const hostVersion = frozenPlanHostVersion(input.preparedPlan)
+    if (!await this.currentHostVersionMatches(input.installation.id, input.preparedPlan)) {
+      return this.needsRecovery(input, 'host_version_changed', 'host_version')
+    }
     const operationById = new Map(input.preparedPlan.adapterPlan.mutations.map(mutation => [mutation.operationId, mutation]))
     if (!input.recovery) {
       await this.dependencies.repository.setRunState(input.runId, 'preconditions_checked', nowIso(this.dependencies.clock))
@@ -746,30 +902,38 @@ export class AgentIntegrationCoordinator {
       if (!plannedMutation || !sameMutation(plannedMutation, persisted.plannedMutation)) {
         return this.needsRecovery(input, 'persisted_plan_mismatch', 'plan_restore')
       }
-      let lease: WriterFenceLease | null = null
+      let leases: WriterFenceLease[] = input.recoveryLeases ?? []
+      const mutationDomains = allPhysicalMutationDomains(persisted)
       if (!input.recovery) {
         try {
-          lease = await this.dependencies.repository.acquireWriterFence(persisted.mutationDomain)
+          leases = await acquireWriterFences(this.dependencies.repository, mutationDomains)
         } catch {
           return this.needsRecovery(input, 'writer_fence_unavailable', 'fence')
         }
-        if (!lease) return this.needsRecovery(input, 'writer_fence_unavailable', 'fence')
+        if (leases.length !== mutationDomains.length) return this.needsRecovery(input, 'writer_fence_unavailable', 'fence')
       }
       let mutationFailure: { code: string; stage: string } | null = null
       try {
         let applyReceipt: unknown = null
-        const context = this.context(input.installation, persisted.operationId)
+        const context = this.context(
+          input.installation,
+          persisted.operationId,
+          hostVersion,
+          input.preparedPlan.activityGenerationToken,
+        )
         const runnerDependencies = {
           journal: {
             save: (record: MutationJournalRecord) => this.dependencies.repository.saveMutation(input.runId, record),
           },
           fence: {
             assertOwned: async () => {
-              if (!lease) {
-                lease = await this.dependencies.repository.acquireWriterFence(persisted.mutationDomain)
-                if (!lease) throw new Error(`writer fence unavailable: ${persisted.mutationDomain}`)
+              if (leases.length === 0) {
+                leases = await acquireWriterFences(this.dependencies.repository, mutationDomains)
+                if (leases.length !== mutationDomains.length) {
+                  throw new Error(`writer fence unavailable: ${mutationDomains.join(',')}`)
+                }
               }
-              await lease.assertOwned()
+              await assertWriterFencesOwned(leases)
             },
           },
           effect: {
@@ -789,7 +953,8 @@ export class AgentIntegrationCoordinator {
                 claimedAt: nowIso(this.dependencies.clock),
               })
               if (!claimed) throw new Error('mutation effect authorization changed before apply')
-              await assertLivePrecondition(adapter, context, plannedMutation)
+              await this.assertCurrentHostVersion(input.installation.id, input.preparedPlan)
+              await assertLivePrecondition(adapter, context, plannedMutation, input.recovery)
               if (await this.dependencies.authorizeEffect?.(
                 input.installation,
                 this.trustBinding(input.preparedPlan),
@@ -809,8 +974,10 @@ export class AgentIntegrationCoordinator {
               // The precondition read-back may await filesystem or host I/O. Recheck
               // the exact owner/epoch immediately before crossing the physical
               // effect boundary so an expired lease cannot resume into a write.
-              if (!lease) throw new Error(`writer fence unavailable: ${persisted.mutationDomain}`)
-              await lease.assertOwned()
+              if (leases.length < mutationDomains.length) {
+                throw new Error(`writer fence unavailable: ${mutationDomains.join(',')}`)
+              }
+              await assertWriterFencesOwned(leases)
               // Repository CAS and the writer-fence assertion are both awaitable.
               // Re-attest only after those waits so physical host/config mutation
               // is the very next external operation after source trust succeeds.
@@ -820,15 +987,20 @@ export class AgentIntegrationCoordinator {
               ) === false) {
                 throw new Error('Installation source trust changed at physical effect boundary')
               }
+              await this.assertCurrentHostVersion(input.installation.id, input.preparedPlan)
               applyReceipt = await adapter.apply(context, plannedMutation)
             },
-            readBack: async () => readBackFingerprint(
-              await adapter.readBack(context, plannedMutation),
-              desiredFingerprint(plannedMutation),
-            ),
+            readBack: async () => {
+              await this.assertCurrentHostVersion(input.installation.id, input.preparedPlan)
+              return mutationEffectReadBack(
+                await adapter.readBack(context, plannedMutation),
+                plannedMutation,
+              )
+            },
             receipt: (fingerprint: string | null) => ({ adapterReceipt: applyReceipt, fingerprint }),
           },
           replayGuard: input.recoveryReplayGuard,
+          safeResumeFingerprints: plannedMutation.safeResumeStates?.map(state => state.fingerprint),
           now: () => nowIso(this.dependencies.clock),
         }
         const result = input.recovery
@@ -843,18 +1015,17 @@ export class AgentIntegrationCoordinator {
       } catch {
         mutationFailure = { code: 'mutation_runner_failed', stage: 'mutation_runner' }
       } finally {
-        if (lease) {
-          try {
-            await lease.release()
-          } catch {
-            mutationFailure ??= { code: 'writer_fence_release_failed', stage: 'fence_release' }
-          }
+        try {
+          if (!input.recoveryLeases) await releaseWriterFences(leases)
+        } catch {
+          mutationFailure ??= { code: 'writer_fence_release_failed', stage: 'fence_release' }
         }
       }
       if (mutationFailure) return this.needsRecovery(input, mutationFailure.code, mutationFailure.stage)
     }
 
-    await this.dependencies.repository.setRunState(input.runId, 'applied_unverified', nowIso(this.dependencies.clock))
+    const activationEpoch = nowIso(this.dependencies.clock)
+    await this.dependencies.repository.setRunState(input.runId, 'applied_unverified', activationEpoch)
     const verificationControl = await this.dependencies.repository.getInstallationControl(input.installation.id)
     if (!verificationControl) return this.needsRecovery(input, 'installation_missing_before_verification', 'verification')
     try {
@@ -872,7 +1043,7 @@ export class AgentIntegrationCoordinator {
     await this.setInstallationState(input.installation.id, 'verifying', null, executionDesiredState, input.consentId)
     const detachedComponents = new Set(input.mutations
       .filter(mutation => mutation.effectDisposition === 'consumer_detach')
-      .map(mutation => mutation.plannedMutation.componentKey))
+      .flatMap(mutation => mutationComponentKeys(mutation.plannedMutation)))
     const verificationComponents = input.preparedPlan.componentKeys
       .filter(componentKey => !detachedComponents.has(componentKey))
     let verification: readonly ComponentVerificationResult[]
@@ -888,6 +1059,7 @@ export class AgentIntegrationCoordinator {
             adapter,
             verificationComponents,
             () => this.assertCurrentInstallationAuthorized(input.installation, input.preparedPlan),
+            activationEpoch,
           )
     } catch (error) {
       if (error instanceof FrozenGenerationChangedError) {
@@ -954,18 +1126,32 @@ export class AgentIntegrationCoordinator {
     adapter: AgentHostAdapter,
     componentKeys: readonly ComponentKey[],
     assertAuthorized: () => Promise<void>,
+    activationEpoch?: string,
   ): Promise<readonly ComponentVerificationResult[]> {
-    const context = this.context(input.installation, `${input.runId}:verify`)
+    const hostVersion = frozenPlanHostVersion(input.preparedPlan)
+    await this.assertCurrentHostVersion(input.installation.id, input.preparedPlan)
+    const context = this.context(
+      input.installation,
+      `${input.runId}:verify`,
+      hostVersion,
+      input.preparedPlan.activityGenerationToken,
+    )
     const inspection = await adapter.inspect(context)
+    await this.assertCurrentHostVersion(input.installation.id, input.preparedPlan)
     await assertAuthorized()
     this.assertFrozenGenerations(input.preparedPlan, adapter)
     const verificationAt = nowIso(this.dependencies.clock)
-    const hostVersion = await this.dependencies.repository.getInstallationHostVersion?.(input.installation.id)
-      ?? inspection.detectedVersion
-      ?? null
+    const verificationMs = Date.parse(verificationAt)
+    const activationMs = Date.parse(activationEpoch ?? '')
+    if (!Number.isFinite(verificationMs)
+      || !Number.isFinite(activationMs)
+      || activationMs > verificationMs) {
+      throw new Error('activity_activation_epoch_invalid')
+    }
+    const observedAfter = new Date(verificationMs - HOST_ACTIVITY_FRESHNESS_MS).toISOString()
     await assertAuthorized()
     this.assertFrozenGenerations(input.preparedPlan, adapter)
-    const results = await adapter.verify(context, {
+    const rawResults = await adapter.verify(context, {
       componentKeys,
       expectedCapability: input.desiredCapability,
       inspection,
@@ -975,10 +1161,15 @@ export class AgentIntegrationCoordinator {
         adapterVersion: adapter.adapterVersion,
         projectionVersion: input.preparedPlan.adapterPlan.projectionVersion,
         hostVersion,
-        observedAfter: new Date(Date.parse(verificationAt) - HOST_ACTIVITY_FRESHNESS_MS).toISOString(),
+        activationRunId: input.runId,
+        activityGenerationToken: input.preparedPlan.activityGenerationToken,
+        activationEpoch: new Date(activationMs).toISOString(),
+        observedAfter,
         verifiedAt: verificationAt,
       },
     })
+    const results = normalizeGuidedPendingVerification(input.preparedPlan, rawResults)
+    await this.assertCurrentHostVersion(input.installation.id, input.preparedPlan)
     await assertAuthorized()
     this.assertFrozenGenerations(input.preparedPlan, adapter)
     const seen = new Set<ComponentKey>()
@@ -1019,6 +1210,23 @@ export class AgentIntegrationCoordinator {
     return results
   }
 
+  private async currentHostVersionMatches(
+    installationId: string,
+    preparedPlan: PreparedCoordinatorPlan,
+  ): Promise<boolean> {
+    const current = await this.dependencies.repository.getInstallationHostVersion(installationId)
+    return current === frozenPlanHostVersion(preparedPlan)
+  }
+
+  private async assertCurrentHostVersion(
+    installationId: string,
+    preparedPlan: PreparedCoordinatorPlan,
+  ): Promise<void> {
+    if (!await this.currentHostVersionMatches(installationId, preparedPlan)) {
+      throw new Error('Installation host version changed after preview')
+    }
+  }
+
   /**
    * Recovery invokes this only after a side-effect-free read-back proves the
    * old before state. A paused/revoked/stale plan can therefore never replay an
@@ -1029,6 +1237,7 @@ export class AgentIntegrationCoordinator {
     options: RecoveryOptions,
   ): Promise<{ allowed: true } | { allowed: false; reason: string }> {
     try {
+      await this.assertRecoveryAuthorized(execution, options)
       if (await options.canReplayEffect?.(execution.installation) === false) {
         return { allowed: false, reason: 'recovery_write_gate_closed' }
       }
@@ -1075,6 +1284,9 @@ export class AgentIntegrationCoordinator {
       return 'catalog_generation_changed'
     }
     if (preparedPlan.executionPlan.adapterVersion !== this.dependencies.adapterGeneration(adapter)) {
+      return 'adapter_generation_changed'
+    }
+    if (preparedPlan.adapterPlan.adapterVersion !== adapter.adapterVersion) {
       return 'adapter_generation_changed'
     }
     if (preparedPlan.executionPlan.projectionVersion !== this.dependencies.projectionGeneration(adapter)) {
@@ -1176,13 +1388,23 @@ export class AgentIntegrationCoordinator {
     return { status: 'needs_recovery', runId: input.runId, reason: code }
   }
 
-  private context(installation: CoordinatorInstallation, operationId: string): AdapterOperationContext {
+  private context(
+    installation: CoordinatorInstallation,
+    operationId: string,
+    hostVersion?: string | null,
+    activityGenerationToken?: string,
+  ): AdapterOperationContext {
     return {
       runtime: this.dependencies.runtime,
       installation: installation.identity,
+      installationId: installation.id,
+      ...(hostVersion ? { hostVersion } : {}),
       agentId: installation.agentId,
       operationId,
+      ...(activityGenerationToken ? { activityGenerationToken } : {}),
       hostActivityEvidence: this.dependencies.hostActivityEvidence,
+      codexHookTrustEvidence: this.dependencies.codexHookTrustEvidence,
+      guidedRemovalEvidence: this.dependencies.guidedRemovalEvidence,
     }
   }
 
@@ -1278,6 +1500,30 @@ function assertPreparedPlan(installation: CoordinatorInstallation, plan: Prepare
   if (sha256Json(plan.adapterPlan) !== plan.adapterPlanHash) {
     throw new Error('prepared Adapter plan was modified after preview')
   }
+  assertPersistedPreparedPlanShape(plan)
+  if (plan.activityGenerationToken !== undefined) {
+    if (!plan.activityGenerationToken.trim()
+      || plan.executionPlan.activityGenerationTokenHash !== sha256Json(plan.activityGenerationToken)) {
+      throw new Error('prepared activity generation token binding is invalid')
+    }
+  } else if (plan.executionPlan.activityGenerationTokenHash !== undefined) {
+    throw new Error('prepared activity generation token is missing')
+  }
+  frozenPlanHostVersion(plan)
+}
+
+function frozenPlanHostVersion(plan: PreparedCoordinatorPlan): string | null {
+  if (!Object.hasOwn(plan.executionPlan, 'hostVersion')) {
+    throw new Error('prepared execution plan has no frozen host version')
+  }
+  const value = plan.executionPlan.hostVersion
+  if (!(value === null || (typeof value === 'string' && value.length > 0))) {
+    throw new Error('prepared execution plan has an invalid frozen host version')
+  }
+  if (value !== (plan.inspection.detectedVersion ?? null)) {
+    throw new Error('prepared inspection host version is not bound to the execution plan')
+  }
+  return value
 }
 
 /** Existing content can only be updated/removed/repaired with an exact Ledger baseline. */
@@ -1287,20 +1533,71 @@ function assertLedgerOwnership(
   operation: PlanOperation,
 ): void {
   for (const mutation of mutations) {
-    if ((mutation.operation === 'create' && operation !== 'repair') || mutation.operation === 'host_command') continue
-    const baseline = baselines.find(candidate => candidate.componentKey === mutation.componentKey
-      && candidate.physicalTarget === mutation.physicalTarget
-      && candidate.ownershipKey === mutation.ownershipKey)
-    if (!baseline) {
-      throw new Error(`ownership_conflict:${mutation.operationId}`)
+    const componentKeys = mutationComponentKeys(mutation)
+    const transfer = mutation.ownershipTransferFrom
+    if (transfer !== undefined) {
+      const aggregateTransfer = componentKeys.length > 1
+      if ((aggregateTransfer
+        ? mutation.operation !== 'host_command' && mutation.operation !== 'update'
+        : mutation.operation !== 'create')
+        || operation === 'disconnect'
+        || (!aggregateTransfer
+          && transfer.physicalTarget !== mutation.physicalTarget
+          && !mutation.additionalFenceTargets?.some(target => (
+            target.physicalTarget === transfer.physicalTarget && target.domainKind === mutation.domainKind
+          )))
+        || (transfer.physicalTarget === mutation.physicalTarget
+          && transfer.ownershipKey === mutation.ownershipKey)) {
+        throw new Error(`ownership_transfer_invalid:${mutation.operationId}`)
+      }
+      const source = baselines.find(candidate => candidate.componentKey === mutation.componentKey
+        && candidate.physicalTarget === transfer.physicalTarget
+        && candidate.ownershipKey === transfer.ownershipKey)
+      if (!source) throw new Error(`ownership_transfer_source_missing:${mutation.operationId}`)
+      if (source.ownedFragmentHash !== transfer.ownedFragmentHash
+        || (source.selectorSchemaVersion ?? 1) !== transfer.selectorSchemaVersion) {
+        throw new Error(`ownership_transfer_source_mismatch:${mutation.operationId}`)
+      }
+      if (!aggregateTransfer && mutation.preconditionHash !== undefined
+        && mutation.preconditionHash !== transfer.ownedFragmentHash) {
+        throw new Error(`ownership_transfer_precondition_mismatch:${mutation.operationId}`)
+      }
+      for (const componentKey of componentKeys) {
+        if (componentKey === mutation.componentKey) continue
+        const existing = baselines.filter(candidate => candidate.componentKey === componentKey)
+        const exactAggregate = existing.length === 1
+          && existing[0].physicalTarget === mutation.physicalTarget
+          && existing[0].ownershipKey === mutation.ownershipKey
+          && mutation.preconditionHash !== undefined
+          && existing[0].ownedFragmentHash === mutation.preconditionHash
+          && (existing[0].selectorSchemaVersion ?? 1) === mutation.selectorSchemaVersion
+        if (existing.length > 0 && !exactAggregate) {
+          throw new Error(`aggregate_ownership_transfer_target_conflict:${mutation.operationId}:${componentKey}`)
+        }
+      }
+      continue
     }
+    if ((mutation.operation === 'create' && operation !== 'repair')
+      || (mutation.operation === 'host_command' && mutation.preconditionHash === undefined)) continue
     if (mutation.operation !== 'create' && mutation.preconditionHash === undefined) {
       throw new Error(`ownership_precondition_missing:${mutation.operationId}`)
     }
-    if (mutation.preconditionHash !== undefined && mutation.preconditionHash !== baseline.ownedFragmentHash) {
-      throw new Error(`ownership_baseline_mismatch:${mutation.operationId}`)
+    for (const componentKey of componentKeys) {
+      const baseline = baselines.find(candidate => candidate.componentKey === componentKey
+        && candidate.physicalTarget === mutation.physicalTarget
+        && candidate.ownershipKey === mutation.ownershipKey)
+      if (!baseline) {
+        throw new Error(`ownership_conflict:${mutation.operationId}:${componentKey}`)
+      }
+      if (mutation.preconditionHash !== undefined && mutation.preconditionHash !== baseline.ownedFragmentHash) {
+        throw new Error(`ownership_baseline_mismatch:${mutation.operationId}:${componentKey}`)
+      }
     }
   }
+}
+
+function mutationComponentKeys(mutation: PlannedMutation): readonly ComponentKey[] {
+  return mutation.coveredComponentKeys ?? [mutation.componentKey]
 }
 
 function journalFor(id: string, mutation: PlannedMutation, createdAt: string): MutationJournalRecord {
@@ -1327,6 +1624,7 @@ function desiredFingerprint(mutation: PlannedMutation): string | null {
 }
 
 export function physicalMutationDomain(installation: CoordinatorInstallation, mutation: PlannedMutation): string {
+  if (!isMutationDomainKind(mutation.domainKind)) throw new Error('invalid mutation domain kind')
   // A fence protects the physical mutation surface, not an ownership selector.
   // In particular every fragment writer for the same JSON/TOML document must
   // contend with the legacy writer on one `...:file:<target>:document` domain.
@@ -1340,14 +1638,88 @@ export function physicalMutationDomain(installation: CoordinatorInstallation, mu
   return `${installation.identity.runtimeRealm}:${mutation.domainKind}:${mutation.physicalTarget}`
 }
 
+export function additionalPhysicalMutationDomains(
+  installation: CoordinatorInstallation,
+  mutation: PlannedMutation,
+): readonly string[] {
+  return [...new Set((mutation.additionalFenceTargets ?? []).map(target => physicalDomainForTarget(
+    installation.identity.runtimeRealm,
+    target.domainKind,
+    target.physicalTarget,
+  )))].sort()
+}
+
+function physicalDomainForTarget(
+  runtimeRealm: InstallationIdentity['runtimeRealm'],
+  domainKind: PlannedMutation['domainKind'],
+  physicalTarget: string,
+): string {
+  if (!isMutationDomainKind(domainKind)) throw new Error('invalid additional mutation domain kind')
+  if (domainKind === 'file_fragment' && runtimeRealm === 'local_macos') {
+    return buildLegacyMutationDomain({ adapterId: 'aggregate', target: physicalTarget, selector: 'document' })
+  }
+  return `${runtimeRealm}:${domainKind}:${physicalTarget}`
+}
+
+function allPhysicalMutationDomains(mutation: PreparedMutationExecution): readonly string[] {
+  return [...new Set([mutation.mutationDomain, ...(mutation.additionalMutationDomains ?? [])])].sort()
+}
+
+function latestMutationEpoch(mutations: readonly PreparedMutationExecution[]): string | undefined {
+  const epochs = mutations
+    .map(mutation => mutation.journal.updatedAt)
+    .filter(value => Number.isFinite(Date.parse(value)))
+    .sort((left, right) => Date.parse(right) - Date.parse(left))
+  return epochs[0]
+}
+
+async function acquireWriterFences(
+  repository: CoordinatorRepositoryPort,
+  mutationDomains: readonly string[],
+): Promise<WriterFenceLease[]> {
+  const leases: WriterFenceLease[] = []
+  try {
+    for (const domain of mutationDomains) {
+      const lease = await repository.acquireWriterFence(domain)
+      if (!lease) throw new WriterFenceUnavailableError(`writer fence unavailable: ${domain}`)
+      leases.push(lease)
+    }
+    return leases
+  } catch (error) {
+    await releaseWriterFences(leases).catch(() => undefined)
+    throw error
+  }
+}
+
+async function assertWriterFencesOwned(leases: readonly WriterFenceLease[]): Promise<void> {
+  for (const lease of leases) await lease.assertOwned()
+}
+
+async function releaseWriterFences(leases: readonly WriterFenceLease[]): Promise<void> {
+  let failed = false
+  for (const lease of [...leases].reverse()) {
+    try {
+      await lease.release()
+    } catch {
+      failed = true
+    }
+  }
+  if (failed) throw new Error('writer fence release failed')
+}
+
 async function assertLivePrecondition(
   adapter: AgentHostAdapter,
   context: AdapterOperationContext,
   mutation: PlannedMutation,
+  allowSafeResume = false,
 ): Promise<void> {
   const observation = await adapter.readBack(context, mutation)
+  assertReadBackVisibilityKnown(observation, mutation)
+  if (allowSafeResume && exactFrozenResumeState(mutation, observation.safeToResumeFrom)) return
   if (mutation.operation === 'create' && mutation.preconditionHash === undefined) {
-    if (observation.observed) throw new Error(`unowned_selector_occupied:${mutation.operationId}`)
+    if (observation.visibility !== 'absent') {
+      throw new Error(`unowned_selector_occupied:${mutation.operationId}`)
+    }
     return
   }
   if (mutation.preconditionHash === undefined) return
@@ -1356,15 +1728,57 @@ async function assertLivePrecondition(
   }
 }
 
+function mutationEffectReadBack(
+  readBack: Awaited<ReturnType<AgentHostAdapter['readBack']>>,
+  mutation: PlannedMutation,
+): { fingerprint: string | null; safeToResumeFrom?: string } {
+  assertReadBackVisibilityKnown(readBack, mutation)
+  if (exactFrozenResumeState(mutation, readBack.safeToResumeFrom)
+    && readBack.observedFragmentHash === readBack.safeToResumeFrom!.fingerprint) {
+    return {
+      fingerprint: readBack.safeToResumeFrom!.fingerprint,
+      safeToResumeFrom: readBack.safeToResumeFrom!.fingerprint,
+    }
+  }
+  const fingerprint = readBackFingerprint(readBack, desiredFingerprint(mutation))
+  return { fingerprint }
+}
+
+function exactFrozenResumeState(
+  mutation: PlannedMutation,
+  claimed: Awaited<ReturnType<AgentHostAdapter['readBack']>>['safeToResumeFrom'],
+): boolean {
+  if (!claimed) return false
+  return (mutation.safeResumeStates ?? []).some(state => (
+    state.fingerprint === claimed.fingerprint
+    && state.completedStepIds.length === claimed.completedStepIds.length
+    && state.completedStepIds.every((stepId, index) => stepId === claimed.completedStepIds[index])
+  ))
+}
+
 function readBackFingerprint(
   readBack: Awaited<ReturnType<AgentHostAdapter['readBack']>>,
   desired: string | null,
 ): string | null {
-  if (readBack.matchesDesired) return readBack.observedFragmentHash ?? desired
-  if (!readBack.observed) return null
+  assertReadBackVisibilityKnown(readBack)
+  if (readBack.visibility === 'absent') return null
+  if (readBack.matchesDesired) return readBack.observedFragmentHash ?? desired ?? 'observed:unknown'
   // Never infer the planned before hash from a hashless observation. Recovery
   // may replay only when read-back positively proves that exact fingerprint.
   return readBack.observedFragmentHash ?? 'observed:unknown'
+}
+
+function assertReadBackVisibilityKnown(
+  readBack: Awaited<ReturnType<AgentHostAdapter['readBack']>>,
+  mutation?: PlannedMutation,
+): void {
+  const operationId = mutation?.operationId ?? readBack.operationId
+  if (readBack.visibility === undefined || readBack.visibility === 'unknown') {
+    throw new Error(`adapter_read_back_visibility_unknown:${operationId}`)
+  }
+  if (!readBack.observed && readBack.visibility !== 'absent') {
+    throw new Error(`adapter_read_back_not_observed:${operationId}`)
+  }
 }
 
 function isCompleteVerification(
@@ -1375,7 +1789,53 @@ function isCompleteVerification(
   if (results.length !== new Set(expected).size) return false
   const expectedSet = new Set(expected)
   if (!results.every(result => expectedSet.has(result.componentKey) && result.status === 'verified')) return false
-  return Math.max(0, ...results.map(result => result.verifiedCapability ?? 0)) >= expectedCapability
+  const verifiedComponents = new Set(results.map(result => result.componentKey))
+  const achievedCapability = verifiedComponents.has('lifecycle')
+    ? 4
+    : verifiedComponents.has('instruction') && verifiedComponents.has('memory_tools')
+      ? 3
+      : verifiedComponents.has('memory_tools')
+        ? 2
+        : verifiedComponents.has('instruction')
+          ? 1
+          : 0
+  const declaredCapability = Math.max(0, ...results.map(result => result.verifiedCapability ?? 0))
+  return Math.max(achievedCapability, declaredCapability) >= expectedCapability
+}
+
+/**
+ * A frozen Kimi conflict action is an explicit user-guided, no-write delivery
+ * mode. While its target remains absent, verification is still pending rather
+ * than a failed managed projection. Any visible-but-wrong content (or any
+ * other adapter failure) remains a hard failure.
+ */
+function normalizeGuidedPendingVerification(
+  preparedPlan: PreparedCoordinatorPlan,
+  results: readonly ComponentVerificationResult[],
+): readonly ComponentVerificationResult[] {
+  const kimiPending = preparedPlan.adapterPlan.requiredUserActionDetails?.some(detail => (
+    detail.kind === 'kimi_instruction_conflict'
+    && detail.componentKey === 'instruction'
+    && detail.targetVisibility === 'absent'
+  )) ?? false
+  if (!kimiPending) return results
+  return results.map(result => (
+    result.componentKey === 'instruction'
+    && result.status === 'failed'
+    && result.diagnostics.length === 1
+    && result.diagnostics[0] === 'managed_document_not_visible'
+      ? { ...result, status: 'unverified' as const }
+      : result
+  ))
+}
+
+function establishesGuidedRuntimeProjection(
+  plan: PreparedCoordinatorPlan['adapterPlan'],
+): boolean {
+  return plan.requiredUserActionDetails?.some(detail => (
+    (detail.kind === 'qwenwork_mcp_gui' && detail.operation === 'connect')
+    || (detail.kind === 'claude_cowork_plugin_upload' && detail.operation === 'connect')
+  )) ?? false
 }
 
 function sameMutation(left: PlannedMutation, right: PlannedMutation): boolean {

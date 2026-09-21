@@ -25,9 +25,13 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   bindAgentIntegrationExecutionPort,
+  createProductionAgentHostMetadataEvidenceRuntime,
   createProductionAgentIntegrationComposition,
   createProductionAgentIntegrationService,
   createProductionLiveTrustAttestor,
+  discoveryEnvironment,
+  findExecutableForAgentDiscovery,
+  findExecutablesForAgentDiscovery,
   inspectMacAppSignature,
   inspectMacAppSignatureSync,
   productionAgentDiscoveryExecutableDirectories,
@@ -37,9 +41,13 @@ import {
 } from '../../client/electron/agent-integration/production-service'
 import {
   inspectPassiveCliVersion,
+  kimiNativeExecutablePortableArtifactFingerprint,
+  normalizedQwenLauncherBytes,
   readStableFileFingerprint,
   readStableFileMetadata,
   readStableFileSnapshot,
+  readStablePackageTree,
+  verifyStablePackageTree,
 } from '../../client/electron/agent-integration/passive-cli-version'
 import {
   CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,
@@ -47,17 +55,32 @@ import {
   discoverLocalP0Agents,
   inspectStableDesktopBundleSurface,
   MAX_CLI_EXECUTABLE_PROOF_BYTES,
+  signedCodePortableArtifactFingerprint,
+  signedKimiPortableArtifactFingerprint,
 } from '../../client/electron/agent-integration/discovery'
-import type { DiscoveryDependencies } from '../../client/electron/agent-integration/discovery'
+import type { DiscoveredInstallation, DiscoveryDependencies } from '../../client/electron/agent-integration/discovery'
 import type { CoordinatorInstallation } from '../../client/electron/agent-integration/coordinator'
 import type { ManagedReconcileCandidate } from '../../client/electron/agent-integration/coordinator-repository'
 import type { AgentHostAdapter, AdapterRuntimeContext, CatalogId } from '../../client/electron/agent-integration/types'
 import {
   AgentIntegrationRepository,
+  persistedComponentConfigFiles,
+  persistedComponentConfigRoots,
   persistedDistribution,
+  persistedHostOwnedIdentity,
 } from '../../client/electron/agent-integration/repository'
 import { ensureSchema } from '../../src/db/schema.js'
 import { createUiAuditAgentIntegrationOptions } from '../../client/electron/ui-audit'
+import { createCustomLocalMcpHostAdapter } from '../../client/electron/agent-integration/hosts/custom-local-mcp-adapter'
+import { createP0HostAdapters } from '../../client/electron/agent-integration/hosts/p0-adapter-registry'
+import { recordHostActivityEvidence } from '../../src/db/agent-host-activity'
+import { sha256Json } from '../../client/electron/agent-integration/fingerprint'
+import { kimiNativeReceiptLookupFingerprint } from '../../client/electron/agent-integration/distribution-artifact'
+import { canonicalizeInstallationIdentity } from '../../client/electron/agent-integration/identity'
+import {
+  AGENT_INTEGRATION_RELEASE_ENTRY_MAP,
+  agentReleaseEligibilityReason,
+} from '../../client/electron/agent-integration/release-manifest'
 
 function runtimeContext(root: string): AdapterRuntimeContext {
   return {
@@ -152,6 +175,7 @@ function adapter(root: string, catalogId: CatalogId = 'cursor-desktop') {
       observed: live !== null,
       matchesDesired: live === 'desired',
       observedFragmentHash: live ?? undefined,
+      visibility: live === null ? 'absent' : 'dedicated',
       diagnostics: [],
     }),
     disconnect: async context => ({
@@ -187,6 +211,9 @@ function physicalDiscoveryFileSystem(): DiscoveryDependencies['fs'] {
               : stat.isDirectory()
                 ? 'directory'
                 : 'other',
+          mode: stat.mode & 0o7777,
+          ownerUid: String(stat.uid),
+          groupGid: String(stat.gid),
         }
       } catch { return undefined }
     },
@@ -195,6 +222,8 @@ function physicalDiscoveryFileSystem(): DiscoveryDependencies['fs'] {
     readStableFileSnapshot,
     readStableFileFingerprint,
     readStableFileMetadata,
+    readStablePackageTree,
+    verifyStablePackageTree,
   }
 }
 
@@ -209,18 +238,29 @@ function cliPostMetadataBarrierFixture(kind: 'npm' | 'qwen') {
     : path.join(home, '.local', 'bin', 'qwen')
   const target = kind === 'npm'
     ? executable
-    : path.join(home, '.local', 'lib', 'qwen-code', 'bin', 'qwen')
+    : path.join(home, '.local', 'lib', 'cli-entry.js')
   const packageJson = kind === 'npm'
     ? path.join(root, 'node_modules', '@openai', 'codex', 'package.json')
-    : path.join(home, '.local', 'lib', 'qwen-code', 'package.json')
+    : path.join(home, '.local', 'package.json')
+  const qwenPackageRoot = kind === 'qwen' ? path.join(home, '.local') : undefined
   const configRoot = kind === 'npm' ? path.join(home, '.codex') : path.join(home, '.qwen')
   fs.mkdirSync(path.dirname(executable), { recursive: true, mode: 0o700 })
   fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 })
   fs.mkdirSync(configRoot, { recursive: true, mode: 0o700 })
   fs.mkdirSync(appData, { recursive: true, mode: 0o700 })
   if (kind === 'qwen') {
-    fs.writeFileSync(executable, `#!/usr/bin/env sh\nexec '${target}' "$@"\n`, { mode: 0o700 })
-    fs.writeFileSync(target, '#!/usr/bin/env sh\nexec qwen-runtime "$@"\n', { mode: 0o700 })
+    fs.writeFileSync(executable, normalizedQwenLauncherBytes(), { mode: 0o700 })
+    fs.mkdirSync(path.join(qwenPackageRoot!, 'lib'), { recursive: true })
+    fs.mkdirSync(path.join(qwenPackageRoot!, 'node', 'bin'), { recursive: true })
+    fs.writeFileSync(target, 'export async function main() {}\n')
+    fs.writeFileSync(path.join(qwenPackageRoot!, 'node', 'bin', 'node'), 'official-node-runtime', { mode: 0o700 })
+    fs.writeFileSync(path.join(qwenPackageRoot!, 'manifest.json'), JSON.stringify({
+      name: packageName,
+      version: '1.2.3',
+      target: `darwin-${process.arch === 'x64' ? 'x64' : 'arm64'}`,
+      runtime: 'node',
+      nodeArchive: `node-v22.0.0-darwin-${process.arch === 'x64' ? 'x64' : 'arm64'}.tar.gz`,
+    }))
   } else {
     fs.writeFileSync(executable, '#!/usr/bin/env node\n', { mode: 0o700 })
   }
@@ -252,7 +292,12 @@ function cliPostMetadataBarrierFixture(kind: 'npm' | 'qwen') {
       const result = await inspectPassiveCliVersion(targetPath, fileSystem)
       if (armed) {
         armedMetadataCalls += 1
-        if (armedMetadataCalls === 2) {
+        // Owned-package surfaces are read once and finish with a synchronous
+        // exact-tree CAS. Legacy manifest-only npm fixtures retain the older
+        // two-read barrier. Mutate after the relevant completed metadata read,
+        // never by relying on an unrelated internal package-tree call count.
+        if ((kind === 'qwen' && armedMetadataCalls === 1)
+          || (kind === 'npm' && armedMetadataCalls === 2)) {
           armed = false
           mutateLastProofNode()
         }
@@ -273,6 +318,7 @@ function cliPostMetadataBarrierFixture(kind: 'npm' | 'qwen') {
     autoRestore: false,
     startRuntime: false,
     notifications: { deliver: vi.fn() },
+    fixtureMode: 'isolated_ui_audit',
     discoveryDependencies,
   })
   composition.repository.upsertDiscoveredInstallation({
@@ -367,6 +413,7 @@ async function desktopPostFinalReceiptBarrierFixture() {
     autoRestore: false,
     startRuntime: false,
     notifications: { deliver: vi.fn() },
+    fixtureMode: 'isolated_ui_audit',
     discoveryDependencies,
   })
   const unbind = bindAgentIntegrationExecutionPort(composition.coordinator)
@@ -458,6 +505,16 @@ describe('production Agent Integration writer lock scope', () => {
 })
 
 describe('production Agent Integration discovery environment', () => {
+  it('passes only reviewed official config-root overrides to passive discovery', () => {
+    const names = ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GEMINI_CLI_HOME', 'OPENCLAW_STATE_DIR', 'OPENCLAW_CONFIG_PATH']
+    try {
+      for (const name of names) vi.stubEnv(name, `/Users/fixture/${name}`)
+      vi.stubEnv('UNRELATED_SECRET_FOR_TEST', 'never-copy')
+      const environment = discoveryEnvironment()
+      for (const name of names) expect(environment[name]).toBe(`/Users/fixture/${name}`)
+      expect(environment).not.toHaveProperty('UNRELATED_SECRET_FOR_TEST')
+    } finally { vi.unstubAllEnvs() }
+  })
   it('adds deterministic GUI-safe executable roots without starting a login shell', () => {
     expect(productionAgentDiscoveryExecutableDirectories('/Users/fixture', '/usr/bin:/bin')).toEqual([
       '/usr/bin',
@@ -472,7 +529,103 @@ describe('production Agent Integration discovery environment', () => {
       '/Users/fixture/.bun/bin',
       '/Users/fixture/Library/pnpm',
       '/Users/fixture/.npm-global/bin',
+      '/Users/fixture/.local/share/fnm/aliases/default/bin',
+      '/Users/fixture/.fnm/aliases/default/bin',
+      '/Users/fixture/Library/Application Support/fnm/aliases/default/bin',
+      '/Users/fixture/.config/yarn/global/node_modules/.bin',
+      '/Users/fixture/.yarn/bin',
     ])
+    expect(productionAgentDiscoveryExecutableDirectories(
+      '/Users/fixture',
+      '/usr/bin',
+      { OPENCLAW_PREFIX: '~/Tools/openclaw' },
+    )).toContain('/Users/fixture/Tools/openclaw/bin')
+    expect(productionAgentDiscoveryExecutableDirectories(
+      '/Users/fixture',
+      '/usr/bin',
+      { OPENCLAW_PREFIX: 'relative/openclaw' },
+    )).not.toContain('relative/openclaw/bin')
+  })
+
+  it('finds bounded official version-manager npm roots under a Finder-minimal PATH', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-version-managers-')))
+    const home = path.join(root, 'home')
+    const shadowBin = path.join(root, 'shadow-bin')
+    const expectedBins = [
+      path.join(home, '.nvm', 'versions', 'node', 'v22.18.0', 'bin'),
+      path.join(home, '.local', 'share', 'fnm', 'node-versions', 'v22.18.0', 'installation', 'bin'),
+      path.join(home, '.asdf', 'installs', 'nodejs', '22.18.0', 'bin'),
+      path.join(home, '.local', 'share', 'mise', 'installs', 'node', '22.18.0', 'bin'),
+      path.join(home, '.config', 'yarn', 'global', 'node_modules', '.bin'),
+    ]
+    try {
+      fs.mkdirSync(shadowBin, { recursive: true })
+      for (const bin of expectedBins) fs.mkdirSync(bin, { recursive: true })
+      const shadow = path.join(shadowBin, 'qwen')
+      const official = path.join(expectedBins[0], 'qwen')
+      fs.writeFileSync(shadow, '#!/bin/sh\n', { mode: 0o700 })
+      fs.writeFileSync(official, '#!/bin/sh\n', { mode: 0o700 })
+
+      const directories = productionAgentDiscoveryExecutableDirectories(
+        home,
+        `${shadowBin}:/usr/bin:/bin`,
+        {},
+      )
+      expect(directories).toEqual(expect.arrayContaining(expectedBins))
+      expect(await findExecutablesForAgentDiscovery('qwen', directories)).toEqual([
+        shadow,
+        official,
+      ])
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('fails closed instead of partially reading an oversized version-manager registry', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-version-bound-')))
+    const home = path.join(root, 'home')
+    const versions = path.join(home, '.nvm', 'versions', 'node')
+    try {
+      for (let index = 0; index < 65; index += 1) {
+        fs.mkdirSync(path.join(versions, `v22.18.${index}`, 'bin'), { recursive: true })
+      }
+      expect(productionAgentDiscoveryExecutableDirectories(home, '/usr/bin'))
+        .not.toContain(path.join(versions, 'v22.18.0', 'bin'))
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('preserves the official OpenClaw PATH symlink for production topology verification', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-openclaw-path-')))
+    const home = path.join(root, 'home')
+    const openClawRoot = path.join(home, '.openclaw')
+    const alias = path.join(home, '.local', 'bin', 'openclaw')
+    const wrapper = path.join(openClawRoot, 'bin', 'openclaw')
+    const toolchain = path.join(openClawRoot, 'tools', 'node-v24.19.0')
+    const node = path.join(toolchain, 'bin', 'node')
+    const entry = path.join(toolchain, 'lib', 'node_modules', 'openclaw', 'dist', 'entry.js')
+    const packageJson = path.join(toolchain, 'lib', 'node_modules', 'openclaw', 'package.json')
+    fs.mkdirSync(path.dirname(alias), { recursive: true, mode: 0o700 })
+    fs.mkdirSync(path.dirname(wrapper), { recursive: true, mode: 0o700 })
+    fs.mkdirSync(path.dirname(node), { recursive: true, mode: 0o700 })
+    fs.mkdirSync(path.dirname(entry), { recursive: true, mode: 0o700 })
+    fs.symlinkSync(wrapper, alias)
+    fs.symlinkSync(toolchain, path.join(openClawRoot, 'tools', 'node'))
+    fs.writeFileSync(wrapper, `#!/usr/bin/env bash\nset -euo pipefail\nexec "${path.join(openClawRoot, 'tools', 'node', 'bin', 'node')}" "${entry}" "$@"\n`, { mode: 0o700 })
+    fs.writeFileSync(node, 'official-node-runtime', { mode: 0o700 })
+    fs.writeFileSync(entry, 'export async function main() {}\n', { mode: 0o600 })
+    fs.writeFileSync(packageJson, JSON.stringify({ name: 'openclaw', version: '2026.8.1', type: 'module', bin: { openclaw: 'openclaw.mjs' } }), { mode: 0o600 })
+    try {
+      const found = await findExecutableForAgentDiscovery(
+        'openclaw',
+        productionAgentDiscoveryExecutableDirectories(home, ''),
+      )
+      expect(found).toBe(alias)
+      expect(fs.realpathSync(found!)).toBe(wrapper)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('passes the official OMP config and profile variables into the production scanner', async () => {
@@ -542,6 +695,111 @@ describe('production Agent Integration discovery environment', () => {
         config_root: path.join(home, '.config', 'omp', 'profiles', 'work', 'agent'),
         profile_id: 'work',
       })
+    } finally {
+      composition.runtime.stop()
+      db.close()
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    ['XDG_CONFIG_HOME', 'xdg-config', true],
+    ['OPENCODE_CONFIG_DIR', 'custom-opencode', false],
+    ['OPENCODE_CONFIG', 'configs/opencode.jsonc', false],
+  ] as const)('passes %s into the production OpenCode scanner', async (
+    environmentKey,
+    relativeValue,
+    appendsOpenCodeDirectory,
+  ) => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-opencode-env-')))
+    const home = path.join(root, 'home')
+    const appData = path.join(root, 'app-data')
+    const environmentValue = path.join(home, relativeValue)
+    const exactConfigFile = environmentKey === 'OPENCODE_CONFIG' ? environmentValue : undefined
+    const configRoot = exactConfigFile
+      ? path.dirname(exactConfigFile)
+      : appendsOpenCodeDirectory
+        ? path.join(environmentValue, 'opencode')
+        : environmentValue
+    const resourceRoot = exactConfigFile
+      ? path.join(home, '.config', 'opencode')
+      : configRoot
+    const packageRoot = path.join(root, 'node_modules', 'opencode-ai')
+    const executable = path.join(packageRoot, 'bin', 'opencode')
+    fs.mkdirSync(path.dirname(executable), { recursive: true, mode: 0o700 })
+    fs.mkdirSync(configRoot, { recursive: true, mode: 0o700 })
+    fs.mkdirSync(appData, { recursive: true, mode: 0o700 })
+    fs.writeFileSync(executable, '#!/usr/bin/env node\n', { mode: 0o700 })
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
+      name: 'opencode-ai',
+      version: '1.18.28',
+    }), { mode: 0o600 })
+    const fileSystem = {
+      lstat: async (targetPath: string) => {
+        try {
+          const stat = fs.lstatSync(targetPath)
+          return {
+            kind: stat.isSymbolicLink()
+              ? 'symbolic_link' as const
+              : stat.isFile()
+                ? 'file' as const
+                : stat.isDirectory()
+                  ? 'directory' as const
+                  : 'other' as const,
+          }
+        } catch { return undefined }
+      },
+      realpath: async (targetPath: string) => fs.realpathSync(targetPath),
+      readTextFile: async (targetPath: string, maxBytes: number) => fs.readFileSync(targetPath, 'utf8').slice(0, maxBytes),
+      readStableFileSnapshot,
+      readStableFileFingerprint,
+      readStableFileMetadata,
+    }
+    const previous = {
+      XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+      OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR,
+      OPENCODE_CONFIG: process.env.OPENCODE_CONFIG,
+    }
+    delete process.env.XDG_CONFIG_HOME
+    delete process.env.OPENCODE_CONFIG_DIR
+    delete process.env.OPENCODE_CONFIG
+    process.env[environmentKey] = environmentValue
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const composition = createProductionAgentIntegrationComposition(db, {
+      homeDir: home,
+      applicationDataDir: appData,
+      runtimeContext: runtimeContext(home),
+      observeOnly: true,
+      startRuntime: false,
+      notifications: { deliver: vi.fn() },
+      discoveryDependencies: {
+        fs: fileSystem,
+        which: async command => command === 'opencode' ? executable : undefined,
+        execVersion: targetPath => inspectPassiveCliVersion(targetPath, fileSystem),
+      },
+    })
+    try {
+      const scan = await composition.service.scan()
+      const opencode = scan.snapshot.installations.find(item => item.hostVariant === 'opencode-v1-cli')
+      const row = composition.repository.getInstallation(opencode!.id)!
+      expect(row).toMatchObject({
+        config_root: configRoot,
+      })
+      const metadata = JSON.parse(row.metadata_json) as {
+        componentConfigFiles?: Record<string, string>
+        resourceRoots?: Record<string, string>
+      }
+      expect(metadata.componentConfigFiles).toMatchObject({
+        instruction: path.join(home, '.agents', 'skills', 'tidemind', 'SKILL.md'),
+        lifecycle: path.join(resourceRoot, 'plugins', 'tidemind-v1.ts'),
+      })
+      expect(metadata.componentConfigFiles?.memory_tools).toBe(exactConfigFile)
+      expect(metadata.resourceRoots).toEqual({ opencode_resources: resourceRoot })
     } finally {
       composition.runtime.stop()
       db.close()
@@ -705,6 +963,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       autoRestore: true,
       startRuntime: false,
       notifications: { deliver: vi.fn() },
+      fixtureMode: 'isolated_ui_audit',
       discoveryDependencies: {
         fs: fileSystem,
         which: async candidate => candidate === command ? executable : undefined,
@@ -752,18 +1011,36 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     }
   })
 
-  it('manages the exact official Qwen local launcher and rejects a contained-target swap after preview', async () => {
+  it('manages the exact official Qwen installer shim and rejects a nested runtime swap after preview', async () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-qwen-launcher-proof-')))
     const home = path.join(root, 'home')
     const launcher = path.join(home, '.local', 'bin', 'qwen')
-    const target = path.join(home, '.local', 'lib', 'qwen-code', 'bin', 'qwen')
-    const packageJson = path.join(home, '.local', 'lib', 'qwen-code', 'package.json')
+    const packageRoot = path.join(home, '.local', 'lib', 'qwen-code')
+    const innerLauncher = path.join(packageRoot, 'bin', 'qwen')
+    const packageJson = path.join(packageRoot, 'package.json')
+    const standaloneManifest = path.join(packageRoot, 'manifest.json')
+    const cliEntry = path.join(packageRoot, 'lib', 'cli-entry.js')
+    const nestedRuntime = path.join(packageRoot, 'lib', 'node_modules', '@qwen-code', 'runtime.js')
+    const nodeRuntime = path.join(packageRoot, 'node', 'bin', 'node')
     fs.mkdirSync(path.dirname(launcher), { recursive: true })
-    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.mkdirSync(path.dirname(innerLauncher), { recursive: true })
+    fs.mkdirSync(path.dirname(cliEntry), { recursive: true })
+    fs.mkdirSync(path.dirname(nestedRuntime), { recursive: true })
+    fs.mkdirSync(path.dirname(nodeRuntime), { recursive: true })
     fs.mkdirSync(path.join(home, '.qwen'), { recursive: true })
-    fs.writeFileSync(launcher, `#!/usr/bin/env sh\nexec '${target}' "$@"\n`, { mode: 0o700 })
-    fs.writeFileSync(target, '#!/usr/bin/env sh\nexec qwen-runtime "$@"\n', { mode: 0o700 })
-    fs.writeFileSync(packageJson, JSON.stringify({ name: '@qwen-code/qwen-code', version: '0.21.13' }))
+    fs.writeFileSync(launcher, `#!/usr/bin/env sh\nexec '${innerLauncher}' "$@"\n`, { mode: 0o700 })
+    fs.writeFileSync(innerLauncher, normalizedQwenLauncherBytes(), { mode: 0o700 })
+    fs.writeFileSync(packageJson, JSON.stringify({ name: '@qwen-code/qwen-code', version: '0.23.0' }))
+    fs.writeFileSync(standaloneManifest, JSON.stringify({
+      name: '@qwen-code/qwen-code',
+      version: '0.23.0',
+      target: `darwin-${process.arch === 'x64' ? 'x64' : 'arm64'}`,
+      runtime: 'node',
+      nodeArchive: `node-v22.0.0-darwin-${process.arch === 'x64' ? 'x64' : 'arm64'}.tar.gz`,
+    }))
+    fs.writeFileSync(cliEntry, 'export async function main() {}\n')
+    fs.writeFileSync(nestedRuntime, 'export const runtime = true\n')
+    fs.writeFileSync(nodeRuntime, 'official-node-runtime', { mode: 0o700 })
     const fileSystem = {
       ...physicalDiscoveryFileSystem(),
       readStableFileSnapshot,
@@ -786,6 +1063,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       enabledAdapterIds: ['qwen-code-cli'],
       observeOnly: false,
       startRuntime: false,
+      fixtureMode: 'isolated_ui_audit',
       discoveryDependencies,
       scanner: {
         scan: () => discoverLocalP0Agents({
@@ -800,15 +1078,15 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     try {
       const scan = await composition.service.scan()
       const qwen = scan.snapshot.installations.find(item => item.hostVariant === 'qwen-code-cli')!
-      expect(qwen).toMatchObject({ manageable: true, version: '0.21.13' })
+      expect(qwen).toMatchObject({ manageable: true, version: '0.23.0' })
       expect(composition.repository.getInstallation(qwen.id)).toMatchObject({
         executable_path: launcher,
         health_state: 'discovered',
       })
       const preview = await composition.service.previewConnect([qwen.id])
-      const replacement = `${target}.replacement`
+      const replacement = `${nestedRuntime}.replacement`
       fs.writeFileSync(replacement, '#!/usr/bin/env sh\necho replaced\n', { mode: 0o700 })
-      fs.renameSync(replacement, target)
+      fs.renameSync(replacement, nestedRuntime)
 
       const result = await composition.service.applyConnect(preview.planHash, [qwen.id])
 
@@ -905,6 +1183,436 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     }
   })
 
+  it.each([
+    {
+      catalogId: 'kimi-code-cli' as const,
+      family: 'kimi-code',
+      command: 'kimi',
+      packageName: '@moonshot-ai/kimi-code',
+      version: '0.41.0',
+      distributionId: 'cli:kimi-code-cli',
+    },
+    {
+      catalogId: 'openclaw-local' as const,
+      family: 'openclaw',
+      command: 'openclaw',
+      packageName: 'openclaw',
+      version: '2026.8.1',
+      distributionId: 'cli:openclaw-local:npm-global',
+    },
+  ])('carries $catalogId global npm from physical discovery through receipt gate and live trust', async ({
+    catalogId, family, command, packageName, version, distributionId,
+  }) => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-npm-release-flow-')))
+    const home = path.join(root, 'home')
+    const nodeModules = path.join(root, 'npm', 'lib', 'node_modules')
+    const packageRoot = path.join(nodeModules, ...packageName.split('/'))
+    const executable = path.join(packageRoot, 'dist', 'cli.js')
+    const secondaryModule = path.join(packageRoot, 'dist', 'secondary.js')
+    const packageJson = path.join(packageRoot, 'package.json')
+    const installLock = path.join(nodeModules, '.package-lock.json')
+    const integrity = 'sha512-YWdlbnQtb2ZmaWNpYWwtYXJ0aWZhY3Q='
+    fs.mkdirSync(path.dirname(executable), { recursive: true, mode: 0o700 })
+    fs.mkdirSync(home, { recursive: true, mode: 0o700 })
+    fs.writeFileSync(executable, '#!/usr/bin/env node\n', { mode: 0o700 })
+    fs.writeFileSync(secondaryModule, 'export const secondary = true\n', { mode: 0o600 })
+    fs.writeFileSync(packageJson, JSON.stringify({ name: packageName, version }), { mode: 0o600 })
+    fs.writeFileSync(installLock, JSON.stringify({
+      lockfileVersion: 3,
+      packages: { [`node_modules/${packageName}`]: { version, integrity } },
+    }), { mode: 0o600 })
+    const fileSystem = physicalDiscoveryFileSystem()
+    const dependencies: DiscoveryDependencies = {
+      fs: fileSystem,
+      which: async candidate => candidate === command ? executable : undefined,
+      execVersion: targetPath => inspectPassiveCliVersion(targetPath, fileSystem),
+    }
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    try {
+      const report = await discoverLocalP0Agents({
+        homeDir: home,
+        osUserIdentity: 'usr_fixture_1234',
+        environment: {},
+        applicationRoots: [],
+        operationTimeoutMs: 2_000,
+      }, dependencies)
+      const discovered = report.installations.find(item => item.catalogId === catalogId)!
+      expect(discovered).toMatchObject({
+        executablePath: executable,
+        detectedVersion: version,
+        identity: { distribution: {
+          distributionId,
+          packageProvenance: `npm_metadata:${packageName}`,
+          portableArtifactFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        } },
+      })
+      const releaseEntry = AGENT_INTEGRATION_RELEASE_ENTRY_MAP.get(catalogId)!
+      expect(agentReleaseEligibilityReason(discovered, {
+        ...releaseEntry,
+        releaseAcceptedExactVersions: [version],
+        acceptedDistributionArtifacts: [{
+          distributionId,
+          packageProvenance: `npm_metadata:${packageName}`,
+          version,
+          architecture: process.arch === 'x64' ? 'x64' : 'arm64',
+          artifactSha256: 'a'.repeat(64), artifactSizeBytes: 1,
+          executableSha256: 'b'.repeat(64), executableSizeBytes: 1,
+          distributionSha256: 'c'.repeat(64), distributionSizeBytes: 1,
+          portableFingerprintSchema: 'npm-package-surface-v1',
+          portableArtifactFingerprint: discovered.identity.distribution.portableArtifactFingerprint!,
+          signedCode: null,
+          npmPackage: {
+            integrity,
+            packageTreeSha256: 'd'.repeat(64),
+            proofNodes: [],
+          },
+        }],
+      })).toBeNull()
+
+      const repository = new AgentIntegrationRepository(db)
+      repository.upsertDiscoveredInstallation({
+        id: `${catalogId}-npm-proof`, family, hostVariant: catalogId,
+        installKey: discovered.identity.installKey, distributionId, provenance: 'fixture',
+        osUserIdentity: 'usr_fixture_1234', displayName: catalogId,
+        configRoot: discovered.configRoot, executablePath: executable,
+        detectedVersion: version, versionDetectionMethod: discovered.versionDetectionMethod,
+        agentId: `agent-${catalogId}`, supportedCapability: 4,
+        lastDetectedAt: '2026-09-05T00:00:00.000Z',
+        metadata: {
+          managementEligibility: freshCliManagementEligibility(fs.statSync(executable).size),
+          distribution: discovered.identity.distribution,
+        },
+      })
+      const attest = createProductionLiveTrustAttestor(dependencies, {
+        homeDir: home,
+        repository,
+        runtime: runtimeContext(home),
+      })
+      const row = repository.getInstallation(`${catalogId}-npm-proof`)!
+      expect(await attest(row)).toMatch(/^[a-f0-9]{64}$/u)
+      fs.writeFileSync(secondaryModule, 'export const secondary = false\n', { mode: 0o600 })
+      expect(await attest(row)).toBeNull()
+      fs.writeFileSync(secondaryModule, 'export const secondary = true\n', { mode: 0o600 })
+      fs.writeFileSync(installLock, JSON.stringify({
+        lockfileVersion: 3,
+        packages: { [`node_modules/${packageName}`]: { version } },
+      }), { mode: 0o600 })
+      expect(await attest(row)).toBeNull()
+    } finally {
+      db.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    {
+      label: 'Claude', family: 'claude-code', catalogId: 'claude-code-native' as const,
+      executableName: 'claude', identifier: 'com.anthropic.claude-code', team: 'Q6L2SF6YDW',
+      cdHash: '28d49821f609d871c2282bdec52116bd91ea5806',
+    },
+  ])('binds $label native write trust to the exact signed Mach-O generation and publisher receipt', async ({
+    family, catalogId, executableName, identifier, team, cdHash,
+  }) => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-live-signed-cli-proof-')))
+    const executable = path.join(root, executableName)
+    fs.writeFileSync(executable, 'fixture-native-code', { mode: 0o700 })
+    const designatedRequirement = `identifier "${identifier}" and anchor apple generic`
+    const receiptFingerprint = sha256Json({ cdHash, designatedRequirement })
+    const executableProof = await readStableFileFingerprint(executable, MAX_CLI_EXECUTABLE_PROOF_BYTES)
+    const portableArtifactFingerprint = signedCodePortableArtifactFingerprint({
+      version: '2.1.260',
+      executable: executableProof,
+      signature: {
+        valid: true, identifier, teamIdentifier: team, cdHash, designatedRequirement,
+        verificationBoundary: 'strict_final',
+      },
+    })!
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const repository = new AgentIntegrationRepository(db)
+    repository.upsertDiscoveredInstallation({
+      id: `${catalogId}-proof`, family, hostVariant: catalogId,
+      installKey: `${catalogId}:native`, distributionId: `cli:${catalogId}`, provenance: 'fixture',
+      osUserIdentity: 'usr_fixture_1234', displayName: `${family} native`,
+      configRoot: path.join(root, `.${executableName}`), executablePath: executable,
+      detectedVersion: '2.1.260', versionDetectionMethod: 'cli_version',
+      agentId: `agent-${catalogId}`, supportedCapability: 4,
+      lastDetectedAt: '2026-09-03T00:00:00.000Z',
+      metadata: {
+        managementEligibility: freshCliManagementEligibility(fs.statSync(executable).size),
+        distribution: {
+          distributionId: `cli:${catalogId}`, executableRealpath: executable,
+          packageProvenance: `signed_cli:${identifier}:${team}`,
+          capabilityFingerprint: `signed-cli-surface-v1:${receiptFingerprint}`,
+          portableArtifactFingerprint,
+        },
+      },
+    })
+    const fileSystem = physicalDiscoveryFileSystem()
+    let teamIdentifier = team
+    let replaceDuringSignature = false
+    const signature = () => ({
+      valid: true,
+      identifier,
+      teamIdentifier,
+      cdHash,
+      designatedRequirement,
+      verificationBoundary: 'strict_final' as const,
+    })
+    const attest = createProductionLiveTrustAttestor({
+      fs: fileSystem,
+      which: async () => undefined,
+      execVersion: async () => ({ exitCode: 126, stdout: '', stderr: 'not used' }),
+      inspectAppSignature: async (_targetPath, options) => {
+        await options.beforeFinalVerification?.()
+        if (replaceDuringSignature) {
+          const replacement = path.join(root, `replacement-${executableName}`)
+          fs.writeFileSync(replacement, 'different-native-code', { mode: 0o700 })
+          fs.renameSync(replacement, executable)
+        }
+        return signature()
+      },
+      finalVerifyAppSignatureSync: signature,
+    })
+    try {
+      const row = repository.getInstallation(`${catalogId}-proof`)!
+      expect(await attest(row)).toMatch(/^[a-f0-9]{64}$/u)
+      const metadata = JSON.parse(row.metadata_json) as { distribution: { portableArtifactFingerprint: string } }
+      metadata.distribution.portableArtifactFingerprint = 'f'.repeat(64)
+      expect(await attest({ ...row, metadata_json: JSON.stringify(metadata) })).toBeNull()
+      teamIdentifier = 'ATTACKER00'
+      expect(await attest(row)).toBeNull()
+      teamIdentifier = team
+      replaceDuringSignature = true
+      expect(await attest(row)).toBeNull()
+    } finally {
+      db.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('resolves Kimi native version from one frozen receipt and ignores mutable updater state', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-live-kimi-updater-proof-')))
+    const home = path.join(root, 'home')
+    const nativeRoot = path.join(home, '.kimi-code')
+    const configRoot = path.join(home, 'profiles', 'kimi-data')
+    const executable = path.join(nativeRoot, 'bin', 'kimi')
+    const installJson = path.join(nativeRoot, 'updates', 'install.json')
+    const latestJson = path.join(nativeRoot, 'updates', 'latest.json')
+    fs.mkdirSync(path.dirname(executable), { recursive: true, mode: 0o700 })
+    fs.mkdirSync(path.dirname(installJson), { recursive: true, mode: 0o700 })
+    fs.mkdirSync(configRoot, { recursive: true, mode: 0o700 })
+    fs.writeFileSync(executable, 'signed-kimi-native', { mode: 0o700 })
+    fs.writeFileSync(installJson, JSON.stringify({
+      active: null,
+      lastFailure: null,
+      lastSuccess: { version: '0.40.1', installedAt: '2026-09-03T07:38:44.514Z' },
+    }), { mode: 0o600 })
+    fs.writeFileSync(latestJson, JSON.stringify({
+      source: 'cdn', checkedAt: '2026-09-03T07:56:14.443Z', latest: '0.40.1',
+      manifest: { version: '0.40.1', publishedAt: '2026-09-02T10:31:46Z' },
+    }), { mode: 0o600 })
+    const cdHash = 'bb4cdfad0d4aeb516ba70c5179a7ad23b7d7bbc2'
+    const designatedRequirement = 'identifier "kimi" and anchor apple generic'
+    const signature = () => ({
+      valid: true,
+      identifier: 'kimi',
+      teamIdentifier: '2J9472RW75',
+      cdHash,
+      designatedRequirement,
+      verificationBoundary: 'strict_final' as const,
+    })
+    const fileSystem = physicalDiscoveryFileSystem()
+    const executableProof = await readStableFileFingerprint(executable, MAX_CLI_EXECUTABLE_PROOF_BYTES)
+    const lookupFingerprint = kimiNativeReceiptLookupFingerprint({
+      architecture: 'arm64', executableSha256: executableProof.sha256,
+      executableSizeBytes: executableProof.size, identifier: 'kimi',
+      teamIdentifier: '2J9472RW75', cdHash, designatedRequirement,
+    })
+    const portableArtifactFingerprint = signedKimiPortableArtifactFingerprint({
+      version: '0.41.0',
+      executableArtifactFingerprint: kimiNativeExecutablePortableArtifactFingerprint(executableProof),
+      signature: signature(),
+    })!
+    const dependencies: DiscoveryDependencies = {
+      fs: fileSystem,
+      which: async command => command === 'kimi' ? executable : undefined,
+      execVersion: targetPath => inspectPassiveCliVersion(targetPath, fileSystem),
+      inspectAppSignature: async (_targetPath, options) => {
+        await options.beforeFinalVerification?.()
+        return signature()
+      },
+      finalVerifyAppSignatureSync: signature,
+      inspectExecutableArchitecture: async () => 'arm64',
+      resolveKimiNativeReceipt: surface => surface.architecture === 'arm64'
+        && surface.lookupFingerprint === lookupFingerprint
+        ? { version: '0.41.0', portableArtifactFingerprint }
+        : null,
+    }
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    try {
+      const report = await discoverLocalP0Agents({
+        homeDir: home,
+        osUserIdentity: 'usr_fixture_1234',
+        environment: { KIMI_CODE_HOME: configRoot },
+        applicationRoots: [],
+        operationTimeoutMs: 2_000,
+      }, dependencies)
+      const discovered = report.installations.find(item => item.catalogId === 'kimi-code-native')!
+      expect(discovered).toMatchObject({
+        configRoot,
+        executablePath: executable,
+        detectedVersion: '0.41.0',
+        versionDetectionMethod: 'release_receipt',
+        identity: { distribution: {
+          packageProvenance: 'signed_cli:kimi:2J9472RW75',
+          capabilityFingerprint: `signed-cli-kimi-receipt-lookup-v1:${lookupFingerprint}`,
+          portableArtifactFingerprint,
+        } },
+      })
+      const repository = new AgentIntegrationRepository(db)
+      repository.upsertDiscoveredInstallation({
+        id: 'kimi-native-proof', family: 'kimi-code', hostVariant: 'kimi-code-native',
+        installKey: discovered.identity.installKey, distributionId: 'cli:kimi-code-native', provenance: 'fixture',
+        osUserIdentity: 'usr_fixture_1234', displayName: 'Kimi native', configRoot,
+        executablePath: executable, detectedVersion: discovered.detectedVersion,
+        versionDetectionMethod: discovered.versionDetectionMethod,
+        agentId: 'agent-kimi-native', supportedCapability: 4,
+        lastDetectedAt: '2026-09-03T00:00:00.000Z',
+        metadata: {
+          managementEligibility: freshCliManagementEligibility(fs.statSync(executable).size),
+          distribution: discovered.identity.distribution,
+        },
+      })
+      const attest = createProductionLiveTrustAttestor(dependencies)
+      const row = repository.getInstallation('kimi-native-proof')!
+      expect(await attest(row)).toMatch(/^[a-f0-9]{64}$/u)
+
+      fs.writeFileSync(installJson, JSON.stringify({
+        lastSuccess: { version: '9.9.9', installedAt: '2026-09-03T07:38:44.514Z' },
+      }), { mode: 0o600 })
+      fs.rmSync(latestJson)
+      expect(await attest(row)).toMatch(/^[a-f0-9]{64}$/u)
+    } finally {
+      db.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('discovers and attests the official contained OpenClaw wrapper under an explicit prefix', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-live-openclaw-wrapper-')))
+    const home = path.join(root, 'home')
+    const prefix = path.join(home, 'Applications', 'openclaw-portable')
+    const effectiveHome = path.join(home, 'profiles', 'assistant')
+    const configRoot = path.join(effectiveHome, '.openclaw')
+    const wrapper = path.join(prefix, 'bin', 'openclaw')
+    const toolchain = path.join(prefix, 'tools', 'node-v24.19.0')
+    const node = path.join(toolchain, 'bin', 'node')
+    const entry = path.join(toolchain, 'lib', 'node_modules', 'openclaw', 'dist', 'entry.js')
+    const secondaryModule = path.join(toolchain, 'lib', 'node_modules', 'openclaw', 'dist', 'secondary.js')
+    const packageJson = path.join(toolchain, 'lib', 'node_modules', 'openclaw', 'package.json')
+    fs.mkdirSync(path.dirname(wrapper), { recursive: true, mode: 0o700 })
+    fs.mkdirSync(path.dirname(node), { recursive: true, mode: 0o700 })
+    fs.mkdirSync(path.dirname(entry), { recursive: true, mode: 0o700 })
+    fs.mkdirSync(configRoot, { recursive: true, mode: 0o700 })
+    fs.symlinkSync(toolchain, path.join(prefix, 'tools', 'node'))
+    fs.writeFileSync(wrapper, `#!/usr/bin/env bash\nset -euo pipefail\nexec "${path.join(prefix, 'tools', 'node', 'bin', 'node')}" "${entry}" "$@"\n`, { mode: 0o700 })
+    fs.writeFileSync(node, 'official-node-runtime', { mode: 0o700 })
+    fs.writeFileSync(entry, 'export async function main() {}\n', { mode: 0o600 })
+    fs.writeFileSync(secondaryModule, 'export const secondary = true\n', { mode: 0o600 })
+    fs.writeFileSync(packageJson, JSON.stringify({ name: 'openclaw', version: '2026.8.1', type: 'module', bin: { openclaw: 'openclaw.mjs' } }), { mode: 0o600 })
+    const fileSystem = physicalDiscoveryFileSystem()
+    const dependencies: DiscoveryDependencies = {
+      fs: fileSystem,
+      which: async command => command === 'openclaw' ? wrapper : undefined,
+      execVersion: targetPath => inspectPassiveCliVersion(targetPath, fileSystem),
+    }
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    try {
+      const report = await discoverLocalP0Agents({
+        homeDir: home,
+        osUserIdentity: 'usr_fixture_1234',
+        environment: { OPENCLAW_PREFIX: prefix, OPENCLAW_HOME: effectiveHome },
+        applicationRoots: [],
+        operationTimeoutMs: 2_000,
+      }, dependencies)
+      const discovered = report.installations.find(item => item.catalogId === 'openclaw-local')!
+      expect(discovered).toMatchObject({
+        configRoot,
+        executablePath: wrapper,
+        detectedVersion: '2026.8.1',
+        identity: { distribution: {
+          distributionId: 'cli:openclaw-local:portable-wrapper',
+          packageProvenance: 'npm_metadata:openclaw',
+        } },
+      })
+      const repository = new AgentIntegrationRepository(db)
+      repository.upsertDiscoveredInstallation({
+        id: 'openclaw-wrapper-proof', family: 'openclaw', hostVariant: 'openclaw-local',
+        installKey: discovered.identity.installKey,
+        distributionId: 'cli:openclaw-local:portable-wrapper', provenance: 'fixture',
+        osUserIdentity: 'usr_fixture_1234', displayName: 'OpenClaw', configRoot,
+        executablePath: wrapper, detectedVersion: discovered.detectedVersion,
+        versionDetectionMethod: discovered.versionDetectionMethod,
+        agentId: 'agent-openclaw', supportedCapability: 4,
+        lastDetectedAt: '2026-09-03T00:00:00.000Z',
+        metadata: {
+          managementEligibility: freshCliManagementEligibility(fs.statSync(wrapper).size),
+          distribution: discovered.identity.distribution,
+        },
+      })
+      const attest = createProductionLiveTrustAttestor(dependencies, {
+        homeDir: home,
+        repository,
+        runtime: runtimeContext(home),
+      })
+      const row = repository.getInstallation('openclaw-wrapper-proof')!
+      expect(await attest(row)).toMatch(/^[a-f0-9]{64}$/u)
+
+      fs.writeFileSync(secondaryModule, 'export const secondary = false\n', { mode: 0o600 })
+      expect(await attest(row)).toBeNull()
+      fs.writeFileSync(secondaryModule, 'export const secondary = true\n', { mode: 0o600 })
+      expect(await attest(row)).toMatch(/^[a-f0-9]{64}$/u)
+
+      const lateModule = path.join(path.dirname(entry), 'late.js')
+      let injectedAfterSnapshot = false
+      const racingFileSystem: DiscoveryDependencies['fs'] = {
+        ...fileSystem,
+        verifyStablePackageTree: async (targetPath, snapshot) => {
+          if (!injectedAfterSnapshot) {
+            injectedAfterSnapshot = true
+            fs.writeFileSync(lateModule, 'export const late = true\n', { mode: 0o600 })
+          }
+          return verifyStablePackageTree(targetPath, snapshot)
+        },
+      }
+      const racingAttest = createProductionLiveTrustAttestor({
+        ...dependencies,
+        fs: racingFileSystem,
+        execVersion: targetPath => inspectPassiveCliVersion(targetPath, racingFileSystem),
+      }, {
+        homeDir: home,
+        repository,
+        runtime: runtimeContext(home),
+      })
+      expect(await racingAttest(row)).toBeNull()
+      fs.unlinkSync(lateModule)
+
+      fs.unlinkSync(path.join(prefix, 'tools', 'node'))
+      const attackerToolchain = path.join(root, 'attacker-node')
+      fs.mkdirSync(path.join(attackerToolchain, 'bin'), { recursive: true })
+      fs.writeFileSync(path.join(attackerToolchain, 'bin', 'node'), 'attacker', { mode: 0o700 })
+      fs.symlinkSync(attackerToolchain, path.join(prefix, 'tools', 'node'))
+      expect(await attest(row)).toBeNull()
+    } finally {
+      db.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('rejects executable or manifest replacement interleaved between stable CLI snapshots', async () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-live-npm-interleave-')))
     const executable = path.join(root, 'node_modules', '@openai', 'codex', 'bin', 'codex.js')
@@ -973,7 +1681,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
   })
 
   it.each(['npm', 'qwen'] as const)(
-    'rejects a %s proof-node replacement after the second metadata result at preview',
+    'rejects a %s proof-node replacement after the final metadata result at preview',
     async kind => {
       const fixture = cliPostMetadataBarrierFixture(kind)
       try {
@@ -1195,6 +1903,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     fs.writeFileSync(path.join(appPath, 'Contents', 'Info.plist'), [
       '<plist><dict>',
       '<key>CFBundleIdentifier</key><string>dev.zcode.app</string>',
+      '<key>CFBundleShortVersionString</key><string>3.10.2</string>',
       '<key>CFBundleExecutable</key><string>ZCode</string>',
       '</dict></plist>',
     ].join(''))
@@ -1204,6 +1913,19 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       which: async () => undefined,
       execVersion: async () => ({ exitCode: 126, stdout: '', stderr: 'not used' }),
     }, appPath, 2_000)
+    const executableProof = await readStableFileFingerprint(executable, MAX_CLI_EXECUTABLE_PROOF_BYTES)
+    const portableArtifactFingerprint = signedCodePortableArtifactFingerprint({
+      version: '3.10.2',
+      executable: executableProof,
+      signature: {
+        valid: true,
+        identifier: 'dev.zcode.app',
+        teamIdentifier: '8A5X4JJ39T',
+        cdHash: '0123456789abcdef0123456789abcdef01234567',
+        designatedRequirement: 'identifier "dev.zcode.app" and anchor apple generic',
+        verificationBoundary: 'strict_final',
+      },
+    })!
     const db = new Database(':memory:')
     ensureSchema(db)
     const repository = new AgentIntegrationRepository(db)
@@ -1219,6 +1941,8 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       configRoot: path.join(root, '.zcode'),
       executablePath: executable,
       appPath,
+      detectedVersion: '3.10.2',
+      versionDetectionMethod: 'bundle_plist',
       agentId: 'agent-zcode-proof',
       supportedCapability: 3,
       lastDetectedAt: '2026-08-26T00:00:00.000Z',
@@ -1228,6 +1952,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
           executableRealpath: executable,
           packageProvenance: 'signed_app:dev.zcode.app:8A5X4JJ39T',
           capabilityFingerprint: `${DESKTOP_BUNDLE_SURFACE_SCHEMA}:${surface.fingerprint}`,
+          portableArtifactFingerprint,
         },
       },
     })
@@ -1264,6 +1989,9 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     try {
       const row = repository.getInstallation('zcode-proof')!
       expect(await attest(row)).toMatch(/^[a-f0-9]{64}$/)
+      const metadata = JSON.parse(row.metadata_json) as { distribution: { portableArtifactFingerprint: string } }
+      metadata.distribution.portableArtifactFingerprint = 'f'.repeat(64)
+      expect(await attest({ ...row, metadata_json: JSON.stringify(metadata) })).toBeNull()
       finalIdentityMutation = 'app_mode'
       expect(await attest(row)).toBeNull()
       fs.chmodSync(appPath, appMode)
@@ -1335,6 +2063,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       runtimeContext: runtimeContext(home),
       adapters: new Map([['zcode-desktop', fake.host]]),
       enabledAdapterIds: ['zcode-desktop'],
+      fixtureMode: 'isolated_ui_audit',
       discoveryDependencies,
       observeOnly: false,
       startRuntime: false,
@@ -1424,6 +2153,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       runtimeContext: runtimeContext(home),
       adapters: new Map([['zcode-desktop', fake.host]]),
       enabledAdapterIds: ['zcode-desktop'],
+      fixtureMode: 'isolated_ui_audit',
       discoveryDependencies: stableDependencies,
       scanner,
       observeOnly: false,
@@ -1469,93 +2199,9 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
   })
 
   it.each([
-    ['codex-desktop', 'Codex.app', 'Codex', 'com.openai.codex'],
-    ['windsurf-desktop', 'Windsurf.app', 'Windsurf', 'com.codeium.windsurf'],
-    ['qwenwork-desktop', 'QwenWork.app', 'QwenWork', 'com.alibaba.qwenwork'],
-  ] as const)('persists %s bundle-ID-bound detect-only visibility across service rebuild', async (
-    catalogId,
-    bundleName,
-    executableName,
-    bundleId,
-  ) => {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-desktop-detect-only-')))
-    const home = path.join(root, 'home')
-    const appRoot = path.join(home, 'Applications')
-    const appPath = path.join(appRoot, bundleName)
-    const executable = path.join(appPath, 'Contents', 'MacOS', executableName)
-    fs.mkdirSync(path.dirname(executable), { recursive: true, mode: 0o700 })
-    fs.writeFileSync(executable, 'detect-only-main', { mode: 0o700 })
-    fs.writeFileSync(path.join(appPath, 'Contents', 'Info.plist'), [
-      '<plist><dict>',
-      `<key>CFBundleIdentifier</key><string>${bundleId}</string>`,
-      `<key>CFBundleExecutable</key><string>${executableName}</string>`,
-      '</dict></plist>',
-    ].join(''))
-    const discoveryDependencies: DiscoveryDependencies = {
-      fs: physicalDiscoveryFileSystem(),
-      which: async () => undefined,
-      execVersion: async () => ({ exitCode: 126, stdout: '', stderr: 'not used' }),
-    }
-    const scanner = {
-      scan: () => discoverLocalP0Agents({
-        homeDir: home,
-        osUserIdentity: 'usr_fixture_1234',
-        applicationRoots: [appRoot],
-        operationTimeoutMs: 2_000,
-      }, discoveryDependencies),
-    }
-    const db = new Database(':memory:')
-    ensureSchema(db)
-    const options = {
-      homeDir: home,
-      applicationDataDir: path.join(root, 'app-data'),
-      runtimeContext: runtimeContext(home),
-      enabledAdapterIds: [catalogId],
-      discoveryDependencies,
-      scanner,
-      observeOnly: false,
-      startRuntime: false,
-    } as const
-    const first = createProductionAgentIntegrationComposition(db, options)
-    let installationId: string
-    try {
-      const scan = await first.service.scan()
-      const installation = scan.snapshot.installations.find(item => item.hostVariant === catalogId)
-      expect(installation).toMatchObject({ manageable: false, statusReason: 'detect_only' })
-      installationId = installation!.id
-      expect(first.repository.getInstallation(installationId)).toMatchObject({
-        app_path: appPath,
-        executable_path: executable,
-        health_state: 'discovered',
-      })
-    } finally {
-      first.runtime.stop()
-    }
-
-    const rebuilt = createProductionAgentIntegrationComposition(db, options)
-    try {
-      expect(rebuilt.service.snapshot().installations).toContainEqual(expect.objectContaining({
-        id: installationId,
-        hostVariant: catalogId,
-        manageable: false,
-        statusReason: 'detect_only',
-      }))
-      await expect(rebuilt.service.previewConnect([installationId]))
-        .rejects.toThrow('managed integration is not enabled')
-      expect(db.prepare(`SELECT COUNT(*) AS count FROM agent_consents`).get()).toEqual({ count: 0 })
-      expect(db.prepare(`SELECT COUNT(*) AS count FROM reconcile_runs`).get()).toEqual({ count: 0 })
-      expect(db.prepare(`SELECT COUNT(*) AS count FROM projection_mutations`).get()).toEqual({ count: 0 })
-    } finally {
-      rebuilt.runtime.stop()
-      db.close()
-      fs.rmSync(root, { recursive: true, force: true })
-    }
-  })
-
-  it.each([
     ['claude-code-native', 'claude', '.local/share/claude/versions/2.1.246', '2.1.246'],
     ['kimi-code-native', 'kimi', '.kimi-code/bin/kimi', '1.20.0'],
-  ] as const)('persists %s as a distinct native detect-only channel across service rebuild', async (
+  ] as const)('persists an unaccepted %s native version as detect-only while catalog support remains managed', async (
     catalogId,
     command,
     executableRelativePath,
@@ -1585,6 +2231,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       homeDir: home,
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(home),
+      fixtureMode: 'isolated_ui_audit',
       discoveryDependencies,
       scanner,
       observeOnly: false,
@@ -1604,7 +2251,8 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
         .flatMap(product => product.variants)
         .find(variant => variant.id === catalogId)).toMatchObject({
           hostKind: 'cli',
-          maturity: 'detectable',
+          maturity: 'managed',
+          maximumAccessLevel: 'complete',
         })
       expect(scan.snapshot.installations).not.toContainEqual(expect.objectContaining({
         hostVariant: catalogId === 'claude-code-native' ? 'claude-code-cli' : 'kimi-code-cli',
@@ -1670,6 +2318,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(home),
       scanner,
+      fixtureMode: 'isolated_ui_audit',
       discoveryDependencies,
       observeOnly: false,
       startRuntime: false,
@@ -1764,13 +2413,13 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       const row = composition.repository.getInstallation('zcode-no-executable')!
       expect(composition.service.snapshot().installations[0]).toMatchObject({
         manageable: false,
-        statusReason: 'detect_only',
+        statusReason: 'release_version_unverified',
       })
       expect(composition.service.detail(row.id).installation.manageable).toBe(false)
       expect(await attest(row)).toBeNull()
       expect(inspectAppSignature).not.toHaveBeenCalled()
       await expect(composition.service.previewConnect([row.id]))
-        .rejects.toThrow('managed integration is not enabled')
+        .rejects.toThrow('managed integration is unavailable: release_version_unverified')
       expect(db.prepare(`SELECT COUNT(*) AS count FROM agent_consents`).get()).toEqual({ count: 0 })
       expect(db.prepare(`SELECT COUNT(*) AS count FROM reconcile_runs`).get()).toEqual({ count: 0 })
       expect(db.prepare(`SELECT COUNT(*) AS count FROM projection_mutations`).get()).toEqual({ count: 0 })
@@ -1869,6 +2518,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       observeOnly: false,
       startRuntime: false,
       notifications: { deliver: vi.fn() },
+      fixtureMode: 'isolated_ui_audit',
       discoveryDependencies,
     })
     const unbind = bindAgentIntegrationExecutionPort(composition.coordinator)
@@ -1951,6 +2601,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       observeOnly: false,
       startRuntime: false,
       notifications: { deliver: vi.fn() },
+      fixtureMode: 'isolated_ui_audit',
       discoveryDependencies,
     })
     const unbind = bindAgentIntegrationExecutionPort(composition.coordinator)
@@ -2065,6 +2716,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
         observeOnly: false,
         startRuntime: false,
         notifications: { deliver: vi.fn() },
+        fixtureMode: 'isolated_ui_audit',
         discoveryDependencies,
       })
       const unbind = bindAgentIntegrationExecutionPort(composition.coordinator)
@@ -2281,6 +2933,94 @@ function freezeCandidateSurface(
 }
 
 describe('production Agent integration composition', () => {
+  it.each([
+    ['canManageInstallation', { canManageInstallation: () => true }],
+    ['liveTrustAttestor', { liveTrustAttestor: async () => 'a'.repeat(64) }],
+    ['codexHookTrustVerifier', { codexHookTrustVerifier: async () => null }],
+    ['discoveryDependencies', {
+      discoveryDependencies: {
+        fs: physicalDiscoveryFileSystem(),
+        which: async () => undefined,
+        execVersion: async () => ({ exitCode: 126, stdout: '', stderr: 'not used' }),
+      },
+    }],
+  ] as const)('rejects the %s trust-authority seam outside isolated fixture mode', (seam, injected) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-trust-seam-'))
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    expect(() => createProductionAgentIntegrationComposition(db, {
+      homeDir: root,
+      applicationDataDir: path.join(root, 'app-data'),
+      startRuntime: false,
+      ...injected,
+    })).toThrow(`production_trust_seam_injection_forbidden:${seam}`)
+    db.close()
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it('blocks a pre-0.2.92 eligible row before the first scan and during recovery', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-pre-manifest-row-'))
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const composition = createProductionAgentIntegrationComposition(db, {
+      homeDir: root,
+      applicationDataDir: path.join(root, 'app-data'),
+      runtimeContext: runtimeContext(root),
+      fixtureMode: 'isolated_ui_audit',
+      canManageInstallation: () => true,
+      enabledAdapterIds: ['cursor-desktop'],
+      observeOnly: false,
+      startRuntime: false,
+    })
+    const candidate = managedCursorCandidate(root).installation
+    composition.repository.upsertDiscoveredInstallation({
+      id: candidate.id,
+      family: 'cursor',
+      hostVariant: 'cursor-desktop',
+      installKey: candidate.identity.installKey,
+      distributionId: 'com.todesktop.230313mzl4w4u92',
+      provenance: 'app_bundle',
+      osUserIdentity: candidate.identity.osUserIdentity,
+      displayName: candidate.displayName,
+      configRoot: candidate.identity.canonicalConfigRoot,
+      executablePath: path.join(root, 'Cursor.app', 'Contents', 'MacOS', 'Cursor'),
+      appPath: path.join(root, 'Cursor.app'),
+      detectedVersion: '3.10.20',
+      versionDetectionMethod: 'bundle_short_version',
+      agentId: candidate.agentId,
+      supportedCapability: 4,
+      lastDetectedAt: '2026-08-25T00:00:00.000Z',
+      metadata: {
+        distribution: {
+          distributionId: 'com.todesktop.230313mzl4w4u92',
+          packageProvenance: 'signed_app:com.todesktop.230313mzl4w4u92:VDXQ22DGB9',
+        },
+        managementEligibility: freshCliManagementEligibility(),
+      },
+    })
+    let replayAllowed: boolean | Promise<boolean> | undefined
+    vi.spyOn(composition.coordinator, 'recoverNonTerminalRuns').mockImplementation(async options => {
+      replayAllowed = options?.canReplayEffect?.(candidate)
+      return []
+    })
+    try {
+      expect(composition.service.snapshot().installations[0]).toMatchObject({
+        manageable: false,
+        statusReason: 'release_version_not_accepted',
+      })
+      await expect(composition.service.previewConnect([candidate.id]))
+        .rejects.toThrow('managed integration is unavailable: release_version_not_accepted')
+      await composition.runtime.markScanCompleted()
+      expect(await replayAllowed).toBe(false)
+      expect(db.prepare('SELECT COUNT(*) AS count FROM agent_consents').get()).toEqual({ count: 0 })
+      expect(db.prepare('SELECT COUNT(*) AS count FROM projection_mutations').get()).toEqual({ count: 0 })
+    } finally {
+      composition.runtime.stop()
+      db.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('defers the first discovery scan until the renderer locale handshake starts the runtime', async () => {
     const db = new Database(':memory:')
     ensureSchema(db)
@@ -2313,6 +3053,7 @@ describe('production Agent integration composition', () => {
       homeDir: root,
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
+      adapters: createP0HostAdapters(),
       enabledAdapterIds: ['codex-cli'],
       observeOnly: false,
       startRuntime: false,
@@ -2473,6 +3214,7 @@ describe('production Agent integration composition', () => {
       homeDir: root,
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
+      adapters: createP0HostAdapters(),
       enabledAdapterIds: ['opencode-v1-cli'],
       observeOnly: false,
       startRuntime: false,
@@ -2586,7 +3328,7 @@ describe('production Agent integration composition', () => {
     }
   })
 
-  it('trusts both official Pi npm scopes but not a same-named third-party package', () => {
+  it('manages maintained Earendil Pi while keeping historical Mario and third-party Pi read-only', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-pi-trust-'))
     const db = new Database(':memory:')
     ensureSchema(db)
@@ -2594,6 +3336,7 @@ describe('production Agent integration composition', () => {
       homeDir: root,
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
+      adapters: createP0HostAdapters(),
       enabledAdapterIds: ['pi-official-cli'],
       observeOnly: false,
       startRuntime: false,
@@ -2611,15 +3354,22 @@ describe('production Agent integration composition', () => {
         executablePath: path.join(root, 'bin', 'pi'),
         supportedCapability: 4,
       }
-      for (const [index, packageName] of [
-        '@mariozechner/pi-coding-agent',
-        '@earendil-works/pi-coding-agent',
+      for (const [index, candidate] of [
+        { packageName: '@mariozechner/pi-coding-agent', manageable: false },
+        { packageName: '@earendil-works/pi-coding-agent', manageable: true },
       ].entries()) {
+        const { packageName, manageable } = candidate
         composition.repository.upsertDiscoveredInstallation({
           ...base,
           distributionId: `pi-official:${packageName}`,
           metadata: {
-            managementEligibility: freshCliManagementEligibility(),
+            managementEligibility: manageable
+              ? freshCliManagementEligibility()
+              : {
+                  ...freshCliManagementEligibility(),
+                  eligible: false,
+                  reason: 'distribution_not_managed',
+                },
             distribution: {
               executableRealpath: base.executablePath,
               packageProvenance: `npm_metadata:${packageName}`,
@@ -2627,7 +3377,11 @@ describe('production Agent integration composition', () => {
           },
           lastDetectedAt: `2026-08-25T00:0${index}:00.000Z`,
         })
-        expect(composition.service.snapshot().installations[0].manageable).toBe(true)
+        expect(composition.service.snapshot().installations[0]).toMatchObject({
+          manageable,
+          statusGroup: manageable ? 'awaiting_connection' : 'disconnected',
+          statusReason: manageable ? 'awaiting_consent' : 'incompatible',
+        })
       }
 
       composition.repository.upsertDiscoveredInstallation({
@@ -2652,6 +3406,7 @@ describe('production Agent integration composition', () => {
       homeDir: root,
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
+      adapters: createP0HostAdapters(),
       enabledAdapterIds: ['opencode-v1-cli'],
       observeOnly: false,
       startRuntime: false,
@@ -2717,6 +3472,7 @@ describe('production Agent integration composition', () => {
       homeDir: root,
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
+      adapters: createP0HostAdapters(),
       enabledAdapterIds: ['opencode-v2-beta-cli'],
       observeOnly: false,
       startRuntime: false,
@@ -2765,6 +3521,7 @@ describe('production Agent integration composition', () => {
       homeDir: root,
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
+      adapters: createP0HostAdapters(),
       enabledAdapterIds: ['zcode-desktop'],
       observeOnly: false,
       startRuntime: false,
@@ -2805,6 +3562,32 @@ describe('production Agent integration composition', () => {
       expect(composition.service.snapshot().installations[0].manageable).toBe(true)
 
       composition.repository.upsertDiscoveredInstallation({
+        ...base,
+        lastDetectedAt: '2026-08-25T00:01:30.000Z',
+        metadata: {
+          distribution: {
+            executableRealpath: base.executablePath,
+            packageProvenance: 'signed_app:dev.zcode.app:8A5X4JJ39T',
+            capabilityFingerprint: `${DESKTOP_BUNDLE_SURFACE_SCHEMA}:fixture-zcode`,
+          },
+          managementEligibility: {
+            schemaVersion: CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,
+            eligible: false,
+            reason: 'release_version_not_accepted',
+            proofLimitBytes: MAX_CLI_EXECUTABLE_PROOF_BYTES,
+          },
+        },
+      })
+      expect(composition.service.snapshot().installations[0]).toMatchObject({
+        manageable: false,
+        statusReason: 'release_version_not_accepted',
+      })
+      expect(composition.service.detail(base.id).installation).toMatchObject({
+        manageable: false,
+        statusReason: 'release_version_not_accepted',
+      })
+
+      composition.repository.upsertDiscoveredInstallation({
         id: 'zcode-cli',
         family: 'zcode',
         hostVariant: 'zcode-cli',
@@ -2827,7 +3610,7 @@ describe('production Agent integration composition', () => {
     }
   })
 
-  it('requires an approved signing Team for every writable Desktop variant', () => {
+  it('requires an approved signing Team for writable Desktop variants and keeps legacy migration-only', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-desktop-signing-'))
     const db = new Database(':memory:')
     ensureSchema(db)
@@ -2835,7 +3618,11 @@ describe('production Agent integration composition', () => {
       homeDir: root,
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
-      enabledAdapterIds: ['claude-desktop-legacy', 'cursor-desktop', 'codex-desktop'],
+      adapters: createP0HostAdapters(),
+      enabledAdapterIds: [
+        'claude-desktop-legacy', 'cursor-desktop', 'codex-desktop',
+        'windsurf-desktop', 'qwenwork-desktop',
+      ],
       observeOnly: false,
       startRuntime: false,
     })
@@ -2882,16 +3669,46 @@ describe('production Agent integration composition', () => {
         distributionId: 'com.openai.codex',
         displayName: 'Codex Desktop',
         configRoot: path.join(root, '.codex'),
-        appPath: path.join(root, 'Applications', 'Codex.app'),
-        executablePath: path.join(root, 'Applications', 'Codex.app', 'Contents', 'MacOS', 'Codex'),
+        appPath: path.join(root, 'Applications', 'ChatGPT.app'),
+        executablePath: path.join(root, 'Applications', 'ChatGPT.app', 'Contents', 'MacOS', 'ChatGPT'),
         lastDetectedAt: '2026-08-25T00:02:00.000Z',
         metadata: { distribution: { packageProvenance: 'signed_app:com.openai.codex:UNVERIFIED' } },
+      })
+      composition.repository.upsertDiscoveredInstallation({
+        ...base,
+        id: 'qwenwork-desktop',
+        family: 'qwenwork',
+        hostVariant: 'qwenwork-desktop',
+        installKey: 'qwenwork:desktop',
+        distributionId: 'cn.qwenwork.desktop.mac',
+        displayName: 'QwenWork',
+        configRoot: path.join(root, '.qwenworkcn'),
+        appPath: path.join(root, 'Applications', 'QwenWorkCN.app'),
+        executablePath: path.join(root, 'Applications', 'QwenWorkCN.app', 'Contents', 'MacOS', 'QwenWorkCN'),
+        lastDetectedAt: '2026-08-25T00:02:30.000Z',
+        metadata: { distribution: { packageProvenance: 'signed_app:cn.qwenwork.desktop.mac:UNVERIFIED' } },
+      })
+      composition.repository.upsertDiscoveredInstallation({
+        ...base,
+        id: 'windsurf-desktop',
+        family: 'windsurf',
+        hostVariant: 'windsurf-desktop',
+        installKey: 'windsurf:desktop',
+        distributionId: 'com.exafunction.windsurf',
+        displayName: 'Devin Desktop（原 Windsurf）',
+        configRoot: path.join(root, '.config', 'devin'),
+        appPath: path.join(root, 'Applications', 'Devin.app'),
+        executablePath: path.join(root, 'Applications', 'Devin.app', 'Contents', 'MacOS', 'Devin'),
+        lastDetectedAt: '2026-08-25T00:02:45.000Z',
+        metadata: { distribution: { packageProvenance: 'signed_app:com.exafunction.windsurf:ATTACKER' } },
       })
       expect(Object.fromEntries(composition.service.snapshot().installations.map(item => [item.id, item.manageable])))
         .toMatchObject({
           'claude-desktop': false,
           'cursor-desktop': false,
           'codex-desktop': false,
+          'windsurf-desktop': false,
+          'qwenwork-desktop': false,
         })
 
       composition.repository.upsertDiscoveredInstallation({
@@ -2934,11 +3751,75 @@ describe('production Agent integration composition', () => {
           },
         },
       })
+      composition.repository.upsertDiscoveredInstallation({
+        ...base,
+        id: 'codex-desktop',
+        family: 'codex',
+        hostVariant: 'codex-desktop',
+        installKey: 'codex:desktop',
+        distributionId: 'com.openai.codex',
+        displayName: 'Codex Desktop',
+        configRoot: path.join(root, '.codex'),
+        appPath: path.join(root, 'Applications', 'ChatGPT.app'),
+        executablePath: path.join(root, 'Applications', 'ChatGPT.app', 'Contents', 'MacOS', 'ChatGPT'),
+        lastDetectedAt: '2026-08-25T00:05:00.000Z',
+        metadata: {
+          distribution: {
+            executableRealpath: path.join(root, 'Applications', 'ChatGPT.app', 'Contents', 'MacOS', 'ChatGPT'),
+            packageProvenance: 'signed_app:com.openai.codex:2DC432GLL2',
+            capabilityFingerprint: `${DESKTOP_BUNDLE_SURFACE_SCHEMA}:fixture-codex`,
+          },
+        },
+      })
+      composition.repository.upsertDiscoveredInstallation({
+        ...base,
+        id: 'qwenwork-desktop',
+        family: 'qwenwork',
+        hostVariant: 'qwenwork-desktop',
+        installKey: 'qwenwork:desktop',
+        distributionId: 'cn.qwenwork.desktop.mac',
+        displayName: 'QwenWork',
+        configRoot: path.join(root, '.qwenworkcn'),
+        appPath: path.join(root, 'Applications', 'QwenWorkCN.app'),
+        executablePath: path.join(root, 'Applications', 'QwenWorkCN.app', 'Contents', 'MacOS', 'QwenWorkCN'),
+        lastDetectedAt: '2026-08-25T00:05:30.000Z',
+        metadata: {
+          distribution: {
+            executableRealpath: path.join(root, 'Applications', 'QwenWorkCN.app', 'Contents', 'MacOS', 'QwenWorkCN'),
+            packageProvenance: 'signed_app:cn.qwenwork.desktop.mac:XN6U3EV979',
+            capabilityFingerprint: `${DESKTOP_BUNDLE_SURFACE_SCHEMA}:fixture-qwenwork`,
+          },
+        },
+      })
+      composition.repository.upsertDiscoveredInstallation({
+        ...base,
+        id: 'windsurf-desktop',
+        family: 'windsurf',
+        hostVariant: 'windsurf-desktop',
+        installKey: 'windsurf:desktop',
+        distributionId: 'com.exafunction.windsurf',
+        displayName: 'Devin Desktop（原 Windsurf）',
+        configRoot: path.join(root, '.config', 'devin'),
+        appPath: path.join(root, 'Applications', 'Devin.app'),
+        executablePath: path.join(root, 'Applications', 'Devin.app', 'Contents', 'MacOS', 'Devin'),
+        lastDetectedAt: '2026-08-25T00:05:45.000Z',
+        metadata: {
+          distribution: {
+            executableRealpath: path.join(root, 'Applications', 'Devin.app', 'Contents', 'MacOS', 'Devin'),
+            packageProvenance: 'signed_app:com.exafunction.windsurf:83Z2LHX6XW',
+            capabilityFingerprint: `${DESKTOP_BUNDLE_SURFACE_SCHEMA}:fixture-devin`,
+          },
+        },
+      })
       expect(Object.fromEntries(composition.service.snapshot().installations.map(item => [item.id, item.manageable])))
         .toMatchObject({
-          'claude-desktop': true,
+          // Valid signing evidence may preserve/adopt a migrated record, but
+          // Claude Desktop legacy is never a new managed-write surface.
+          'claude-desktop': false,
           'cursor-desktop': true,
-          'codex-desktop': false,
+          'codex-desktop': true,
+          'windsurf-desktop': true,
+          'qwenwork-desktop': true,
         })
     } finally {
       composition.runtime.stop()
@@ -2955,6 +3836,7 @@ describe('production Agent integration composition', () => {
       homeDir: root,
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
+      adapters: createP0HostAdapters(),
       enabledAdapterIds: ['codex-cli'],
       observeOnly: false,
       startRuntime: false,
@@ -3094,6 +3976,74 @@ describe('production Agent integration composition', () => {
     }
   })
 
+  it('blocks recovery replay for a legacy non-Cursor Custom root even when its host Adapter is enabled', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-recovery-custom-contract-'))
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const fake = adapter(root)
+    const codexHost: AgentHostAdapter = { ...fake.host, catalogId: 'codex-cli' }
+    const composition = createProductionAgentIntegrationComposition(db, {
+      homeDir: root,
+      applicationDataDir: path.join(root, 'app-data'),
+      runtimeContext: runtimeContext(root),
+      adapters: new Map([['codex-cli', codexHost]]),
+      enabledAdapterIds: ['codex-cli'],
+      fixtureMode: 'isolated_ui_audit',
+      canManageInstallation: () => true,
+      observeOnly: false,
+      startRuntime: false,
+    })
+    const sourceRoot = path.join(root, '.codex')
+    const customRoot = path.join(root, '.codex-work')
+    composition.repository.upsertDiscoveredInstallation({
+      id: 'codex-custom-source', family: 'codex', hostVariant: 'codex-cli',
+      installKey: 'codex:custom-source', distributionId: 'cli:codex-cli', provenance: 'legacy fixture',
+      osUserIdentity: 'usr_fixture_1234', displayName: 'Codex', configRoot: sourceRoot,
+      agentId: 'eb_codex_source', supportedCapability: 4, lastDetectedAt: '2026-08-25T00:00:00.000Z',
+      metadata: { distribution: { distributionId: 'cli:codex-cli', capabilityFingerprint: 'codex-source-surface' } },
+    })
+    composition.repository.upsertDiscoveredInstallation({
+      id: 'legacy-custom-codex', family: 'custom-local-agent', hostVariant: 'codex-cli',
+      installKey: 'custom-local:legacy-wide-allowlist', distributionId: 'cli:codex-cli', provenance: 'legacy fixture',
+      osUserIdentity: 'usr_fixture_1234', displayName: 'Legacy Codex Work', configRoot: customRoot,
+      agentId: 'eb_legacy_custom', supportedCapability: 4, lastDetectedAt: '2026-08-25T00:00:00.000Z',
+      metadata: {
+        distribution: { distributionId: 'cli:codex-cli', capabilityFingerprint: 'codex-source-surface' },
+        customInstallation: {
+          kind: 'nonstandard_config_root', sourceInstallationId: 'codex-custom-source',
+          sourceSurfaceFingerprint: 'legacy-source-surface', configFingerprint: 'legacy-root',
+        },
+      },
+    })
+    const recoveryInstallation: CoordinatorInstallation = {
+      id: 'legacy-custom-codex', displayName: 'Legacy Codex Work', desiredState: 'managed',
+      agentId: 'eb_legacy_custom',
+      identity: {
+        runtimeRealm: 'local_macos', osUserIdentity: 'usr_fixture_1234',
+        productFamilyId: 'custom-local-agent', hostVariant: 'codex-cli',
+        canonicalConfigRoot: customRoot, explicitProfile: 'default',
+        distribution: { distributionId: 'cli:codex-cli', capabilityFingerprint: 'codex-source-surface' },
+        installKey: 'custom-local:legacy-wide-allowlist',
+      },
+    }
+    let replayAllowed: boolean | Promise<boolean> | undefined
+    vi.spyOn(composition.coordinator, 'recoverNonTerminalRuns').mockImplementation(async options => {
+      replayAllowed = options?.canReplayEffect?.(recoveryInstallation)
+      return []
+    })
+    composition.runtime.configureScheduler(async () => {}, 60_000)
+    try {
+      await composition.runtime.start()
+      expect(await replayAllowed).toBe(false)
+      expect(fake.inspect).not.toHaveBeenCalled()
+      expect(fake.apply).not.toHaveBeenCalled()
+    } finally {
+      composition.runtime.stop()
+      db.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('blocks background replay and reconcile after current package provenance disappears', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-runtime-trust-loss-'))
     const db = new Database(':memory:')
@@ -3193,6 +4143,7 @@ describe('production Agent integration composition', () => {
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
       adapters: new Map([['cursor-desktop', fake.host]]),
+      fixtureMode: 'isolated_ui_audit',
       canManageInstallation: hasFixturePackageTrust,
       enabledAdapterIds: ['cursor-desktop'],
       observeOnly: false,
@@ -3246,6 +4197,7 @@ describe('production Agent integration composition', () => {
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
       adapters: new Map([['cursor-desktop', fake.host]]),
+      fixtureMode: 'isolated_ui_audit',
       canManageInstallation: () => true,
       enabledAdapterIds: ['cursor-desktop'],
       observeOnly: false,
@@ -3315,7 +4267,10 @@ describe('production Agent integration composition', () => {
     }
   })
 
-  it('atomically blocks a real verified finalizer when provenance disappears before restart recovery', async () => {
+  it.each([
+    'package provenance disappears',
+    'the persisted exact version loses release acceptance',
+  ])('atomically blocks a real verified finalizer when %s before restart recovery', async revocation => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-verified-trust-loss-'))
     const db = new Database(':memory:')
     ensureSchema(db)
@@ -3335,6 +4290,7 @@ describe('production Agent integration composition', () => {
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
       adapters: new Map([['cursor-desktop', fake.host]]),
+      fixtureMode: 'isolated_ui_audit',
       canManageInstallation: hasFixturePackageTrust,
       enabledAdapterIds: ['cursor-desktop'],
       observeOnly: false,
@@ -3357,12 +4313,34 @@ describe('production Agent integration composition', () => {
       expect(db.prepare(`SELECT state FROM reconcile_runs`).get()).toEqual({ state: 'verified' })
       finalizerCrash.mockRestore()
 
-      discoverCursorWithPackageProvenance(
-        composition,
-        root,
-        null,
-        '2026-08-25T00:01:00.000Z',
-      )
+      if (revocation === 'package provenance disappears') {
+        discoverCursorWithPackageProvenance(
+          composition,
+          root,
+          null,
+          '2026-08-25T00:01:00.000Z',
+        )
+      } else {
+        const current = composition.repository.getInstallation('cursor-1')!
+        const metadata = JSON.parse(current.metadata_json) as Record<string, unknown>
+        db.prepare('UPDATE agent_installations SET metadata_json = ?, last_detected_at = ? WHERE id = ?').run(
+          JSON.stringify({
+            ...metadata,
+            managementEligibility: {
+              schemaVersion: CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,
+              eligible: false,
+              reason: 'release_version_not_accepted',
+              proofLimitBytes: MAX_CLI_EXECUTABLE_PROOF_BYTES,
+            },
+          }),
+          '2026-08-25T00:01:00.000Z',
+          'cursor-1',
+        )
+        expect(composition.service.snapshot().installations[0]).toMatchObject({
+          manageable: false,
+          statusReason: 'release_version_not_accepted',
+        })
+      }
       fake.inspect.mockClear()
       verify.mockClear()
       await composition.runtime.markScanCompleted()
@@ -3408,6 +4386,7 @@ describe('production Agent integration composition', () => {
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
       adapters: new Map([['cursor-desktop', fake.host]]),
+      fixtureMode: 'isolated_ui_audit',
       canManageInstallation: hasFixturePackageTrust,
       enabledAdapterIds: ['cursor-desktop'],
       observeOnly: false,
@@ -3473,6 +4452,7 @@ describe('production Agent integration composition', () => {
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
       adapters: new Map([['cursor-desktop', fake.host]]),
+      fixtureMode: 'isolated_ui_audit',
       canManageInstallation: hasFixturePackageTrust,
       enabledAdapterIds: ['cursor-desktop'],
       observeOnly: false,
@@ -3585,6 +4565,7 @@ describe('production Agent integration composition', () => {
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
       adapters: new Map([['cursor-desktop', fake.host]]),
+      fixtureMode: 'isolated_ui_audit',
       canManageInstallation: () => true,
       enabledAdapterIds: ['cursor-desktop'],
       observeOnly: false,
@@ -3676,6 +4657,7 @@ describe('production Agent integration composition', () => {
         ['cursor-desktop', cursor.host],
         ...(gateClosed ? [['codex-cli', blocked.host] as const] : []),
       ]),
+      fixtureMode: 'isolated_ui_audit',
       canManageInstallation: row => gateClosed || row.id === 'b-trusted',
       enabledAdapterIds: ['cursor-desktop'],
       observeOnly: false,
@@ -3758,6 +4740,7 @@ describe('production Agent integration composition', () => {
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
       adapters: new Map([['cursor-desktop', fake.host]]),
+      fixtureMode: 'isolated_ui_audit',
       canManageInstallation: () => true,
       enabledAdapterIds: ['cursor-desktop'],
       observeOnly: false,
@@ -3912,6 +4895,7 @@ describe('production Agent integration composition', () => {
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
       adapters: new Map([['cursor-desktop', fake.host]]),
+      fixtureMode: 'isolated_ui_audit',
       canManageInstallation: () => true,
       enabledAdapterIds: ['cursor-desktop'],
       observeOnly: true,
@@ -3945,6 +4929,7 @@ describe('production Agent integration composition', () => {
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
       adapters: new Map([['cursor-desktop', fake.host]]),
+      fixtureMode: 'isolated_ui_audit',
       canManageInstallation: () => true,
       enabledAdapterIds: ['cursor-desktop'],
       observeOnly: false,
@@ -3994,6 +4979,7 @@ describe('production Agent integration composition', () => {
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
       adapters: new Map([['cursor-desktop', fake.host]]),
+      fixtureMode: 'isolated_ui_audit',
       canManageInstallation: hasFixturePackageTrust,
       enabledAdapterIds: ['cursor-desktop'],
       observeOnly: false,
@@ -4076,6 +5062,7 @@ describe('production Agent integration composition', () => {
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
       adapters: new Map([['cursor-desktop', fake.host]]),
+      fixtureMode: 'isolated_ui_audit',
       canManageInstallation: hasFixturePackageTrust,
       liveTrustAttestor: async () => liveProof,
       enabledAdapterIds: ['cursor-desktop'],
@@ -4135,6 +5122,7 @@ describe('production Agent integration composition', () => {
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
       adapters: new Map([['cursor-desktop', fake.host]]),
+      fixtureMode: 'isolated_ui_audit',
       canManageInstallation: hasFixturePackageTrust,
       enabledAdapterIds: ['cursor-desktop'],
       observeOnly: false,
@@ -4220,6 +5208,7 @@ describe('production Agent integration composition', () => {
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
       adapters: new Map([['cursor-desktop', fake.host]]),
+      fixtureMode: 'isolated_ui_audit',
       canManageInstallation: hasFixturePackageTrust,
       enabledAdapterIds: ['cursor-desktop'],
       observeOnly: false,
@@ -4300,6 +5289,7 @@ describe('production Agent integration composition', () => {
         applicationDataDir: path.join(root, 'app-data'),
         runtimeContext: runtimeContext(root),
         adapters: new Map([['cursor-desktop', restartedFake.host]]),
+        fixtureMode: 'isolated_ui_audit',
         canManageInstallation: hasFixturePackageTrust,
         enabledAdapterIds: ['cursor-desktop'],
         observeOnly: false,
@@ -4344,6 +5334,7 @@ describe('production Agent integration composition', () => {
       applicationDataDir: path.join(root, 'app-data'),
       runtimeContext: runtimeContext(root),
       adapters: new Map([['cursor-desktop', fake.host]]),
+      fixtureMode: 'isolated_ui_audit',
       canManageInstallation: hasFixturePackageTrust,
       enabledAdapterIds: ['cursor-desktop'],
       observeOnly: false,
@@ -4377,6 +5368,7 @@ describe('production Agent integration composition', () => {
         applicationDataDir: path.join(root, 'app-data'),
         runtimeContext: runtimeContext(root),
         adapters: new Map([['cursor-desktop', restartedFake.host]]),
+        fixtureMode: 'isolated_ui_audit',
         canManageInstallation: hasFixturePackageTrust,
         enabledAdapterIds: ['cursor-desktop'],
         observeOnly: false,
@@ -4490,6 +5482,767 @@ describe('production Agent integration composition', () => {
         SELECT invalidation_reason FROM verification_results WHERE id = 'verification-old-adapter'
       `).get()).toEqual({ invalidation_reason: 'adapter_version_changed' })
     } finally {
+      composition.runtime.stop()
+      db.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps QwenWork guided MCP pending across restart until the exact generation proves read and write', async () => {
+    let currentTime = new Date()
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-qwenwork-guided-')))
+    const home = path.join(root, 'home')
+    const appData = path.join(root, 'app-data')
+    const configRoot = path.join(home, '.qwenworkcn')
+    const executable = path.join(root, 'Applications', 'QwenWorkCN.app', 'Contents', 'MacOS', 'QwenWorkCN')
+    const runtime = runtimeContext(home)
+    const dbPath = path.join(root, 'agent-integration.db')
+    fs.mkdirSync(configRoot, { recursive: true })
+    fs.mkdirSync(path.dirname(executable), { recursive: true })
+    fs.mkdirSync(path.dirname(runtime.shimPath), { recursive: true })
+    fs.mkdirSync(appData, { recursive: true })
+    fs.writeFileSync(executable, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+    fs.writeFileSync(runtime.shimPath, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+    fs.writeFileSync(runtime.mcpServerPath, '// packaged MCP runtime\n', { mode: 0o600 })
+    fs.writeFileSync(path.join(configRoot, 'settings.json'), '{}\n', { mode: 0o600 })
+
+    const distribution = {
+      distributionId: 'cn.qwenwork.desktop.mac',
+      executableRealpath: executable,
+      packageProvenance: 'signed_app:cn.qwenwork.desktop.mac:XN6U3EV979',
+      capabilityFingerprint: `${DESKTOP_BUNDLE_SURFACE_SCHEMA}:fixture-qwenwork-guided`,
+    }
+    const identity = canonicalizeInstallationIdentity({
+      runtimeRealm: 'local_macos',
+      osUserIdentity: 'usr_fixture_qwenwork',
+      productFamilyId: 'qwenwork',
+      hostVariant: 'qwenwork-desktop',
+      configRoot,
+      componentConfigRoots: { instruction: configRoot, lifecycle: configRoot },
+      distribution,
+    })
+    const discovered: DiscoveredInstallation = {
+      catalogId: 'qwenwork-desktop',
+      displayName: 'QwenWork',
+      identity,
+      configRoot,
+      componentConfigRoots: identity.componentConfigRoots,
+      executablePath: executable,
+      appPath: path.join(root, 'Applications', 'QwenWorkCN.app'),
+      detectedVersion: '1.2.0',
+      versionDetectionMethod: 'bundle_plist',
+      provenance: ['fixture:signed-qwenwork'],
+      evidence: [{ kind: 'distribution', source: executable, value: distribution.packageProvenance }],
+    }
+    const scanner = { scan: async () => ({ installations: [discovered], unresolved: [], diagnostics: [] }) }
+    const adapters = new Map([['qwenwork-desktop', createP0HostAdapters().get('qwenwork-desktop')!]] as const)
+    const options = {
+      homeDir: home,
+      applicationDataDir: appData,
+      runtimeContext: runtime,
+      adapters,
+      enabledAdapterIds: ['qwenwork-desktop'] as const,
+      scanner,
+      canManageInstallation: row => (
+        persistedDistribution(row).packageProvenance === distribution.packageProvenance
+      ),
+      fixtureMode: 'isolated_ui_audit' as const,
+      clock: { now: () => new Date(currentTime) },
+      autoRestore: true,
+      startRuntime: false,
+    }
+
+    let db = new Database(dbPath)
+    ensureSchema(db)
+    let composition = createProductionAgentIntegrationComposition(db, options)
+    let unbind = bindAgentIntegrationExecutionPort(composition.coordinator)
+    try {
+      await composition.service.scan()
+      const installation = composition.service.snapshot().installations[0]!
+      expect(installation).toMatchObject({ hostVariant: 'qwenwork-desktop', manageable: true })
+
+      const preview = await composition.service.previewConnect([installation.id])
+      const applied = await composition.service.applyConnect(preview.planHash, [installation.id])
+      expect(applied.results[0]).toMatchObject({ status: 'awaiting_verification' })
+      const connectRun = db.prepare(`
+        SELECT id, prepared_plan_json FROM reconcile_runs
+        WHERE installation_id = ? AND operation_type = 'connect'
+        ORDER BY rowid DESC LIMIT 1
+      `).get(installation.id) as { id: string; prepared_plan_json: string }
+      const prepared = JSON.parse(connectRun.prepared_plan_json) as {
+        activityGenerationToken: string
+        adapterPlan: { requiredUserActionDetails: Array<{
+          kind: string
+          operation: string
+          environment: Record<string, string>
+        }> }
+      }
+      const generation = prepared.activityGenerationToken
+      expect(generation).toMatch(/^operation_[a-f0-9-]{16,}$/u)
+      expect(prepared.adapterPlan.requiredUserActionDetails).toContainEqual(expect.objectContaining({
+        kind: 'qwenwork_mcp_gui',
+        operation: 'connect',
+        environment: expect.objectContaining({ EB_ACTIVITY_GENERATION_TOKEN: generation }),
+      }))
+      expect(db.prepare(`
+        SELECT delivery_mode, desired_state, artifact_id FROM installation_components
+        WHERE installation_id = ? AND component_key = 'memory_tools'
+      `).get(installation.id)).toEqual({
+        delivery_mode: 'guided', desired_state: 'managed', artifact_id: null,
+      })
+      expect(db.prepare(`
+        SELECT COUNT(*) AS count FROM artifact_consumers
+        WHERE installation_id = ? AND component_key = 'memory_tools'
+      `).get(installation.id)).toEqual({ count: 0 })
+
+      // Simulate a real app restart: reopen the durable DB and let production
+      // startup recovery retry verification. Static GUI state must not commit.
+      unbind()
+      composition.runtime.stop()
+      db.close()
+      db = new Database(dbPath)
+      ensureSchema(db)
+      composition = createProductionAgentIntegrationComposition(db, options)
+      unbind = bindAgentIntegrationExecutionPort(composition.coordinator)
+      await composition.runtime.start()
+      expect(db.prepare(`SELECT state FROM reconcile_runs WHERE id = ?`).get(connectRun.id))
+        .toEqual({ state: 'applied_unverified' })
+
+      for (const signalName of ['session_start', 'pre_compact', 'session_end'] as const) {
+        expect(recordHostActivityEvidence(db, {
+          agentId: composition.repository.getInstallation(installation.id)!.agent_id!,
+          hostVariant: 'qwenwork-desktop', componentKey: 'lifecycle', signalName,
+          tideMindVersion: runtime.tideMindVersion, activityGenerationToken: generation,
+        }).status).toBe('recorded')
+      }
+      expect(recordHostActivityEvidence(db, {
+        agentId: composition.repository.getInstallation(installation.id)!.agent_id!,
+        hostVariant: 'qwenwork-desktop', componentKey: 'memory_tools', signalName: 'brain_recall',
+        tideMindVersion: runtime.tideMindVersion, activityGenerationToken: generation,
+      }).status).toBe('recorded')
+      currentTime = new Date(Date.now() + 1_000)
+      await composition.runtime.runMaintenance()
+      expect(db.prepare(`SELECT state FROM reconcile_runs WHERE id = ?`).get(connectRun.id))
+        .toEqual({ state: 'applied_unverified' })
+
+      expect(recordHostActivityEvidence(db, {
+        agentId: composition.repository.getInstallation(installation.id)!.agent_id!,
+        hostVariant: 'qwenwork-desktop', componentKey: 'memory_tools', signalName: 'brain_digest',
+        tideMindVersion: runtime.tideMindVersion, activityGenerationToken: generation,
+      }).status).toBe('recorded')
+      currentTime = new Date(Date.now() + 1_000)
+      await composition.runtime.runMaintenance()
+      expect(db.prepare(`SELECT state, failure_code, failure_stage FROM reconcile_runs WHERE id = ?`).get(connectRun.id))
+        .toEqual({ state: 'committed', failure_code: null, failure_stage: null })
+      const verifiedComponents = db.prepare(`
+        SELECT component_key FROM verification_results
+        WHERE installation_id = ? AND result = 'verified' AND invalidated_at IS NULL
+        ORDER BY component_key
+      `).all(installation.id)
+      expect(verifiedComponents).toEqual([
+        { component_key: 'instruction' },
+        { component_key: 'lifecycle' },
+        { component_key: 'memory_tools' },
+      ])
+      expect(composition.repository.getInstallation(installation.id)).toMatchObject({ verified_capability: 4 })
+      expect(composition.service.detail(installation.id).installation.lastRealUseAt).not.toBeNull()
+
+      await composition.service.scan()
+      expect(composition.repository.getInstallation(installation.id)).toMatchObject({
+        verified_capability: 4,
+        verification_summary: 'verified',
+      })
+      expect(db.prepare(`
+        SELECT component_key FROM verification_results
+        WHERE installation_id = ? AND result = 'verified' AND invalidated_at IS NULL
+        ORDER BY component_key
+      `).all(installation.id)).toEqual(verifiedComponents)
+
+      // Exercise a production-composed guided connector repair. Reinstalling
+      // the GUI connector establishes a new host projection, so every
+      // token-carrying projection is regenerated and the old process is no
+      // longer authoritative.
+      const managedRow = composition.repository.getInstallation(installation.id)!
+      const repairInstallation: CoordinatorInstallation = {
+        id: installation.id,
+        displayName: installation.displayName,
+        desiredState: 'managed',
+        agentId: managedRow.agent_id!,
+        identity: {
+          runtimeRealm: managedRow.runtime_realm as 'local_macos',
+          osUserIdentity: managedRow.os_user_identity!,
+          productFamilyId: managedRow.family,
+          hostVariant: managedRow.host_variant as CatalogId,
+          canonicalConfigRoot: managedRow.config_root!,
+          componentConfigRoots: persistedComponentConfigRoots(managedRow),
+          componentConfigFiles: persistedComponentConfigFiles(managedRow),
+          explicitProfile: managedRow.profile_id || 'default',
+          hostOwnedIdentity: persistedHostOwnedIdentity(managedRow),
+          distribution: persistedDistribution(managedRow),
+          installKey: managedRow.install_key,
+        },
+      }
+      const repairPlan = await composition.coordinator.preview({
+        installation: repairInstallation,
+        operation: 'repair',
+        componentKeys: ['instruction', 'lifecycle', 'memory_tools'],
+        desiredCapability: 4,
+      })
+      const repairGeneration = repairPlan.activityGenerationToken
+      expect(repairGeneration).not.toBe(generation)
+      expect(repairPlan.adapterPlan.requiredUserActionDetails).toContainEqual(expect.objectContaining({
+        kind: 'qwenwork_mcp_gui',
+        operation: 'connect',
+        environment: expect.objectContaining({ EB_ACTIVITY_GENERATION_TOKEN: repairGeneration }),
+      }))
+      const repairOutcome = await composition.coordinator.applyPrepared({
+        installation: repairInstallation,
+        preparedPlan: repairPlan,
+        consentId: managedRow.consent_envelope_id,
+        desiredCapability: 4,
+      })
+      expect(repairOutcome).toMatchObject({ status: 'awaiting_verification' })
+      const repairRunId = 'runId' in repairOutcome ? repairOutcome.runId : ''
+      const repairActivityAt = new Date(currentTime.getTime() + 1_000).toISOString()
+      expect(recordHostActivityEvidence(db, {
+        agentId: composition.repository.getInstallation(installation.id)!.agent_id!,
+        hostVariant: 'qwenwork-desktop', componentKey: 'memory_tools', signalName: 'brain_recall',
+        tideMindVersion: runtime.tideMindVersion, activityGenerationToken: generation,
+      })).toEqual({ status: 'rejected', reason: 'activity_generation_mismatch' })
+      for (const signalName of ['session_start', 'pre_compact', 'session_end'] as const) {
+        expect(recordHostActivityEvidence(db, {
+          agentId: composition.repository.getInstallation(installation.id)!.agent_id!,
+          hostVariant: 'qwenwork-desktop', componentKey: 'lifecycle', signalName,
+          tideMindVersion: runtime.tideMindVersion, activityGenerationToken: repairGeneration,
+          observedAt: repairActivityAt,
+        }).status).toBe('recorded')
+      }
+      for (const signalName of ['brain_recall', 'brain_digest'] as const) {
+        expect(recordHostActivityEvidence(db, {
+          agentId: composition.repository.getInstallation(installation.id)!.agent_id!,
+          hostVariant: 'qwenwork-desktop', componentKey: 'memory_tools', signalName,
+          tideMindVersion: runtime.tideMindVersion, activityGenerationToken: repairGeneration,
+          observedAt: repairActivityAt,
+        }).status).toBe('recorded')
+      }
+      currentTime = new Date(Date.parse(repairActivityAt) + 1_000)
+      await composition.runtime.runMaintenance()
+      expect(db.prepare(`SELECT state FROM reconcile_runs WHERE id = ?`).get(repairRunId))
+        .toEqual({ state: 'committed' })
+      expect(composition.repository.getInstallation(installation.id)).toMatchObject({ verified_capability: 4 })
+
+      const instructionTarget = (db.prepare(`
+        SELECT artifact.target_path
+        FROM installation_components component
+        JOIN managed_artifacts artifact ON artifact.id = component.artifact_id
+        WHERE component.installation_id = ? AND component.component_key = 'instruction'
+      `).get(installation.id) as { target_path: string }).target_path
+      const disconnectPreview = await composition.service.previewDisconnect(installation.id)
+      const disconnected = await composition.service.disconnect(disconnectPreview.planHash, installation.id)
+      expect(disconnected.results[0]).toMatchObject({ status: 'awaiting_verification' })
+      const disconnectRun = db.prepare(`
+        SELECT state, prepared_plan_json FROM reconcile_runs
+        WHERE installation_id = ? AND operation_type = 'disconnect'
+        ORDER BY rowid DESC LIMIT 1
+      `).get(installation.id) as { state: string; prepared_plan_json: string }
+      expect(disconnectRun.state).toBe('applied_unverified')
+      expect(JSON.parse(disconnectRun.prepared_plan_json).adapterPlan.requiredUserActionDetails)
+        .toContainEqual(expect.objectContaining({ kind: 'qwenwork_mcp_gui', operation: 'disconnect' }))
+      expect(db.prepare(`
+        SELECT delivery_mode, desired_state, artifact_id FROM installation_components
+        WHERE installation_id = ? AND component_key = 'memory_tools'
+      `).get(installation.id)).toEqual({
+        delivery_mode: 'guided', desired_state: 'removed', artifact_id: null,
+      })
+      expect(db.prepare(`
+        SELECT COUNT(*) AS count FROM artifact_consumers
+        WHERE installation_id = ? AND component_key = 'memory_tools'
+      `).get(installation.id)).toEqual({ count: 0 })
+
+      const beforeRemovalReview = composition.service.reviewGuidedRemoval(installation.id)
+      expect(await composition.service.confirmGuidedRemoval(beforeRemovalReview.actionHash)).toMatchObject({
+        status: 'not_ready', receiptId: null, runId: expect.any(String),
+      })
+      // The opaque confirmation can be reconstructed after restart, but it
+      // cannot succeed until the exact frozen managed Skill is physically gone.
+      unbind()
+      composition.runtime.stop()
+      db.close()
+      db = new Database(dbPath)
+      ensureSchema(db)
+      composition = createProductionAgentIntegrationComposition(db, options)
+      unbind = bindAgentIntegrationExecutionPort(composition.coordinator)
+      await composition.runtime.start()
+      const expiredReview = composition.service.reviewGuidedRemoval(installation.id)
+      currentTime = new Date(currentTime.getTime() + (16 * 60 * 1_000))
+      await expect(composition.service.confirmGuidedRemoval(expiredReview.actionHash))
+        .rejects.toThrow(/unknown or has expired/)
+      const removalReview = composition.service.reviewGuidedRemoval(installation.id)
+      const currentRemoval = composition.repository.getPendingGuidedRemovalAction(installation.id)!
+      expect(() => composition.repository.recordGuidedRemovalEvidence({
+        installationId: installation.id,
+        agentId: composition.repository.getInstallation(installation.id)!.agent_id!,
+        hostVariant: 'qwenwork-desktop',
+        componentKey: 'memory_tools',
+        activationRunId: currentRemoval.runId,
+        activityGenerationToken: 'operation-stale-generation',
+        connectorName: currentRemoval.connectorAction.connectorName,
+        confirmedAt: new Date().toISOString(),
+      })).toThrow(/generation changed/)
+      db.prepare(`UPDATE agent_installations SET config_root = NULL WHERE id = ?`).run(installation.id)
+      await expect(composition.service.confirmGuidedRemoval(removalReview.actionHash))
+        .rejects.toThrow(/action changed/)
+      db.prepare(`UPDATE agent_installations SET config_root = ? WHERE id = ?`).run(configRoot, installation.id)
+      fs.unlinkSync(instructionTarget)
+      // A filesystem-triggered maintenance pass can finish checking the old
+      // evidence while the user is confirming removal. Hold that pass before
+      // it resolves so the new receipt must request another recovery pass.
+      let recoveryRead!: () => void
+      let releaseRecovery!: () => void
+      const recoveryReadBarrier = new Promise<void>(resolve => { recoveryRead = resolve })
+      const releaseRecoveryBarrier = new Promise<void>(resolve => { releaseRecovery = resolve })
+      const recover = composition.coordinator.recoverNonTerminalRuns.bind(composition.coordinator)
+      const recoverySpy = vi.spyOn(composition.coordinator, 'recoverNonTerminalRuns')
+        .mockImplementationOnce(async recoveryOptions => {
+          const result = await recover(recoveryOptions)
+          recoveryRead()
+          await releaseRecoveryBarrier
+          return result
+        })
+      const existingMaintenance = composition.runtime.runMaintenance()
+      await recoveryReadBarrier
+      const confirmation = composition.service.confirmGuidedRemoval(removalReview.actionHash)
+      expect(db.prepare(`
+        SELECT COUNT(*) AS count FROM agent_integration_events
+        WHERE installation_id = ? AND kind = 'user_confirmed_guided_removal'
+      `).get(installation.id)).toEqual({ count: 1 })
+      const concurrentMaintenance = [composition.runtime.runMaintenance(), composition.runtime.runMaintenance()]
+      expect(recoverySpy).toHaveBeenCalledTimes(1)
+      releaseRecovery()
+      const confirmed = await confirmation
+      await existingMaintenance
+      await Promise.all(concurrentMaintenance)
+      expect(recoverySpy).toHaveBeenCalledTimes(2)
+      recoverySpy.mockRestore()
+      expect(confirmed).toMatchObject({
+        installationId: installation.id,
+        runId: expect.any(String),
+        status: 'removal_confirmed',
+        receiptId: expect.stringMatching(/^aie_/u),
+      })
+      expect(db.prepare(`SELECT state FROM reconcile_runs WHERE id = ?`).get(confirmed.runId))
+        .toEqual({ state: 'committed' })
+      expect(db.prepare(`
+        SELECT component_key, desired_state FROM installation_components
+        WHERE installation_id = ? ORDER BY component_key
+      `).all(installation.id)).toEqual([
+        { component_key: 'instruction', desired_state: 'removed' },
+        { component_key: 'lifecycle', desired_state: 'removed' },
+        { component_key: 'memory_tools', desired_state: 'removed' },
+      ])
+      expect(db.prepare(`
+        SELECT kind FROM agent_integration_events WHERE id = ?
+      `).get(confirmed.receiptId)).toEqual({ kind: 'user_confirmed_guided_removal' })
+      await expect(composition.service.confirmGuidedRemoval(removalReview.actionHash))
+        .rejects.toThrow(/unknown or has expired/)
+    } finally {
+      unbind()
+      composition.runtime.stop()
+      db.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  it('runs a Custom MCP target through scoped trust, C2 activity, auto-repair, and exact disconnect', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-custom-e2e-')))
+    const home = path.join(root, 'home')
+    const appData = path.join(root, 'app-data')
+    const executable = path.join(home, 'bin', 'private-agent')
+    const configFile = path.join(home, '.private-agent', 'mcp.json')
+    const runtime = runtimeContext(home)
+    fs.mkdirSync(path.dirname(executable), { recursive: true })
+    fs.mkdirSync(path.dirname(configFile), { recursive: true })
+    fs.mkdirSync(path.dirname(runtime.shimPath), { recursive: true })
+    fs.mkdirSync(appData, { recursive: true })
+    fs.writeFileSync(executable, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+    fs.writeFileSync(configFile, JSON.stringify({ userSetting: true }, null, 2), { mode: 0o600 })
+    fs.writeFileSync(runtime.shimPath, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+    fs.writeFileSync(runtime.mcpServerPath, '// packaged MCP runtime\n', { mode: 0o600 })
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const customHost = createCustomLocalMcpHostAdapter()
+    const composition = createProductionAgentIntegrationComposition(db, {
+      homeDir: home,
+      applicationDataDir: appData,
+      runtimeContext: runtime,
+      adapters: new Map([['custom-local-mcp', customHost]]),
+      enabledAdapterIds: ['custom-local-mcp'],
+      scanner: { scan: async () => ({ installations: [], unresolved: [], diagnostics: [] }) },
+      autoRestore: true,
+      startRuntime: false,
+      notifications: { deliver: vi.fn() },
+    })
+    const unbind = bindAgentIntegrationExecutionPort(composition.coordinator)
+    try {
+      const preflight = await composition.service.previewCustomInstallation({
+        mode: 'manual_mcp_client',
+        displayName: 'Private Agent',
+        clientExecutablePath: executable,
+        configFilePath: configFile,
+        schemaKind: 'standard_mcp_servers',
+        selectorKey: 'tidemind-private',
+      })
+      const preview = await composition.service.prepareCustomConnect(preflight.preflightHash)
+      const installationId = preview.installations[0]!.installationId
+      expect(composition.service.snapshot().installations[0]).toMatchObject({
+        id: installationId,
+        hostVariant: 'custom-local-mcp',
+        manageable: true,
+      })
+
+      const applied = await composition.service.applyConnect(preview.planHash, [installationId])
+      expect(applied.results[0]).toMatchObject({ status: 'awaiting_verification' })
+      expect(composition.repository.getInstallation(installationId)).toMatchObject({
+        supported_capability: 2,
+        desired_capability: 2,
+      })
+      const installedMcpEntry = JSON.parse(fs.readFileSync(configFile, 'utf8')).mcpServers['tidemind-private']
+      expect(installedMcpEntry).toEqual({
+        command: runtime.shimPath,
+        args: [runtime.mcpServerPath],
+        env: {
+          EB_AGENT_ID: preflight.agentId,
+          EB_HOST_VARIANT: 'custom-local-mcp',
+          EB_ACTIVITY_GENERATION_TOKEN: expect.any(String),
+        },
+      })
+      const activityGenerationToken = installedMcpEntry.env.EB_ACTIVITY_GENERATION_TOKEN as string
+
+      const activity = recordHostActivityEvidence(db, {
+        agentId: preflight.agentId,
+        hostVariant: 'custom-local-mcp',
+        componentKey: 'memory_tools',
+        signalName: 'brain_recall',
+        tideMindVersion: runtime.tideMindVersion,
+        activityGenerationToken,
+      })
+      expect(activity.status).toBe('recorded')
+      await composition.service.scan()
+      expect(composition.repository.getInstallation(installationId)).toMatchObject({
+        desired_state: 'managed',
+        verified_capability: 0,
+      })
+      expect(db.prepare(`
+        SELECT r.state, r.desired_capability, r.failure_code, c.status AS consent_status
+        FROM reconcile_runs r JOIN agent_consents c ON c.id = r.consent_envelope_id
+        WHERE r.installation_id = ? ORDER BY r.created_at DESC LIMIT 1
+      `).get(installationId)).toMatchObject({
+        state: 'applied_unverified', desired_capability: 2,
+        failure_code: null, consent_status: 'active',
+      })
+      const writeActivity = recordHostActivityEvidence(db, {
+        agentId: preflight.agentId,
+        hostVariant: 'custom-local-mcp',
+        componentKey: 'memory_tools',
+        signalName: 'brain_digest',
+        tideMindVersion: runtime.tideMindVersion,
+        activityGenerationToken,
+      })
+      expect(writeActivity.status).toBe('recorded')
+      await composition.service.scan()
+      expect(composition.repository.getInstallation(installationId)).toMatchObject({
+        desired_state: 'managed',
+        verified_capability: 2,
+      })
+      expect(composition.service.snapshot().installations[0]?.accessLevel).toBe('partial')
+
+      const metadataEvidence = createProductionAgentHostMetadataEvidenceRuntime(home, { runtimeContext: runtime })
+      const currentCustomRow = composition.repository.getInstallation(installationId)!
+      await expect(metadataEvidence.attestCustom(currentCustomRow, db)).resolves.toMatch(/^[a-f0-9]{64}$/u)
+      await expect(metadataEvidence.inspect(currentCustomRow, db)).resolves.toMatchObject({
+        catalogId: 'custom-local-mcp',
+        detected: true,
+        components: [{ componentKey: 'memory_tools', visibility: 'dedicated' }],
+      })
+
+      const drifted = JSON.parse(fs.readFileSync(configFile, 'utf8'))
+      delete drifted.mcpServers['tidemind-private']
+      fs.writeFileSync(configFile, JSON.stringify(drifted, null, 2), { mode: 0o600 })
+      await composition.service.scan()
+      expect(JSON.parse(fs.readFileSync(configFile, 'utf8')).mcpServers['tidemind-private']).toBeDefined()
+
+      const disconnectPreview = await composition.service.previewDisconnect(installationId)
+      const disconnected = await composition.service.disconnect(disconnectPreview.planHash, installationId)
+      expect(disconnected.results[0]).toMatchObject({ status: 'committed' })
+      expect(JSON.parse(fs.readFileSync(configFile, 'utf8'))).toEqual({ userSetting: true })
+      expect(composition.repository.getInstallation(installationId)?.desired_state).toBe('removed')
+    } finally {
+      unbind()
+      composition.runtime.stop()
+      db.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  it.each(['standard_mcp_servers', 'nested_mcp_servers', 'opencode_mcp'] as const)('completes user-owned Custom %s import with no config file, real activity and explicit removal', async (schemaKind) => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-custom-guided-')))
+    const home = path.join(root, 'home')
+    const appData = path.join(root, 'app-data')
+    const executable = path.join(home, 'private-agent')
+    const runtime = runtimeContext(home)
+    fs.mkdirSync(home, { recursive: true })
+    fs.mkdirSync(appData, { recursive: true })
+    fs.mkdirSync(path.dirname(runtime.shimPath), { recursive: true })
+    fs.writeFileSync(executable, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+    fs.writeFileSync(runtime.shimPath, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+    fs.writeFileSync(runtime.mcpServerPath, '// MCP runtime\n')
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const composition = createProductionAgentIntegrationComposition(db, {
+      homeDir: home, applicationDataDir: appData, runtimeContext: runtime,
+      adapters: new Map([['custom-local-mcp', createCustomLocalMcpHostAdapter()]]),
+      enabledAdapterIds: ['custom-local-mcp'],
+      scanner: { scan: async () => ({ installations: [], unresolved: [], diagnostics: [] }) },
+      autoRestore: true, startRuntime: false, notifications: { deliver: vi.fn() },
+    })
+    const unbind = bindAgentIntegrationExecutionPort(composition.coordinator)
+    try {
+      const preflight = await composition.service.previewCustomInstallation({
+        mode: 'manual_mcp_client', configurationOwnership: 'user', displayName: 'User-owned client',
+        clientExecutablePath: executable, configFilePath: '', schemaKind, selectorKey: 'tidemind-private',
+      })
+      const preview = await composition.service.prepareCustomConnect(preflight.preflightHash)
+      const installationId = preview.installations[0].installationId
+      expect(preview.installations[0].targets).toEqual([])
+      const action = preview.installations[0].requiredUserActionDetails?.find(item => item.kind === 'custom_mcp_import')
+      expect(action).toMatchObject({ kind: 'custom_mcp_import', usageGuide: expect.stringContaining('brain_recall') })
+      if (action?.kind !== 'custom_mcp_import') throw new Error('missing import action')
+      const config = JSON.parse(composition.service.customMcpConfiguration(preflight.preflightHash))
+      expect(action.connectorName).toBe('tidemind-private')
+      const entry = schemaKind === 'standard_mcp_servers' ? config.mcpServers[action.connectorName]
+        : schemaKind === 'nested_mcp_servers' ? config.mcp.servers[action.connectorName] : config.mcp[action.connectorName]
+      const token = (entry.env ?? entry.environment).EB_ACTIVITY_GENERATION_TOKEN
+      expect(JSON.parse(action.configurationJson)).toEqual(config)
+      expect(token).toBeTruthy()
+      const before = fs.readdirSync(home, { recursive: true }).sort()
+      const userFiles = before.filter(relative => fs.statSync(path.join(home, relative)).isFile())
+        .map(relative => ({ relative, bytes: fs.readFileSync(path.join(home, relative)) }))
+      const assertOnlyPrivateLockDirectoriesAdded = () => {
+        const privateDirectories = ['.tidemind', '.tidemind/agent-integration', '.tidemind/agent-integration/writer-locks']
+        expect(fs.readdirSync(home, { recursive: true }).sort()).toEqual([...before, ...privateDirectories].sort())
+        for (const relative of privateDirectories) {
+          const stat = fs.lstatSync(path.join(home, relative))
+          expect(stat.isDirectory()).toBe(true)
+          expect(stat.mode & 0o077).toBe(0)
+        }
+        expect(fs.readdirSync(path.join(home, privateDirectories[2]))).toEqual([])
+        for (const file of userFiles) expect(fs.readFileSync(path.join(home, file.relative))).toEqual(file.bytes)
+      }
+      const result = await composition.service.applyConnect(preview.planHash, [installationId])
+      expect(result.results[0]).toMatchObject({ status: 'awaiting_verification' })
+      expect(db.prepare('SELECT COUNT(*) AS n FROM managed_artifacts').get()).toEqual({ n: 0 })
+      expect(db.prepare('SELECT COUNT(*) AS n FROM artifact_consumers').get()).toEqual({ n: 0 })
+      expect(db.prepare('SELECT delivery_mode, artifact_id FROM installation_components WHERE installation_id = ?').get(installationId))
+        .toMatchObject({ delivery_mode: 'guided', artifact_id: null })
+      const invoke = (signalName: 'brain_recall' | 'brain_digest', activityGenerationToken = token) => recordHostActivityEvidence(db, {
+        agentId: preflight.agentId, hostVariant: 'custom-local-mcp', componentKey: 'memory_tools', signalName,
+        tideMindVersion: runtime.tideMindVersion, activityGenerationToken,
+      })
+      expect(invoke('brain_recall', 'stale-token').status).toBe('rejected')
+      expect(invoke('brain_recall').status).toBe('recorded')
+      await composition.service.scan()
+      expect(composition.repository.getInstallation(installationId)?.verified_capability).toBe(0)
+      expect(invoke('brain_digest').status).toBe('recorded')
+      await composition.service.scan()
+      expect(composition.repository.getInstallation(installationId)?.verified_capability,
+        JSON.stringify({ runs: db.prepare('SELECT state, failure_code FROM reconcile_runs').all(),
+          verifications: db.prepare('SELECT result, method FROM verification_results').all(),
+          component: db.prepare('SELECT verification_status, visibility_state FROM installation_components').all(),
+          events: db.prepare('SELECT signal_name FROM agent_host_activity_evidence').all() })).toBe(2)
+      assertOnlyPrivateLockDirectoriesAdded()
+      composition.service.pause(installationId)
+      expect(invoke('brain_digest').status).toBe('rejected')
+      await composition.service.resume(installationId)
+      expect(invoke('brain_digest').status).toBe('recorded')
+      const disconnect = await composition.service.previewDisconnect(installationId)
+      expect(disconnect.installations[0].targets).toEqual([])
+      expect((await composition.service.disconnect(disconnect.planHash, installationId)).results[0].status).toBe('awaiting_verification')
+      const removal = composition.service.reviewGuidedRemoval(installationId)
+      const confirmed = await composition.service.confirmGuidedRemoval(removal.actionHash)
+      expect(confirmed.status).toBe('removal_confirmed')
+      expect(db.prepare('SELECT state FROM reconcile_runs WHERE id = ?').get(confirmed.runId)).toEqual({ state: 'committed' })
+      expect(invoke('brain_digest').status).toBe('rejected')
+      await expect(composition.service.confirmGuidedRemoval(removal.actionHash)).rejects.toThrow(/unknown or has expired/)
+      assertOnlyPrivateLockDirectoriesAdded()
+    } finally {
+      unbind(); composition.runtime.stop(); db.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  it('relocates a Custom root through the production coordinator and real Cursor Adapter', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-custom-root-')))
+    const home = path.join(root, 'home')
+    const sourceRoot = path.join(home, '.cursor')
+    const customRoot = path.join(home, '.cursor-work')
+    const appData = path.join(root, 'app-data')
+    const runtime = runtimeContext(home)
+    fs.mkdirSync(sourceRoot, { recursive: true })
+    fs.mkdirSync(customRoot, { recursive: true })
+    fs.mkdirSync(path.dirname(runtime.shimPath), { recursive: true })
+    fs.mkdirSync(appData, { recursive: true })
+    for (const asset of [
+      runtime.shimPath,
+      runtime.mcpServerPath,
+      path.join(path.dirname(runtime.hookScriptPath), 'hook-cursor-lifecycle.cjs'),
+    ]) fs.writeFileSync(asset, '// packaged runtime\n', { mode: 0o700 })
+    const sourceIdentity = canonicalizeInstallationIdentity({
+      runtimeRealm: 'local_macos',
+      osUserIdentity: 'usr_fixture_1234',
+      productFamilyId: 'cursor',
+      hostVariant: 'cursor-desktop',
+      configRoot: sourceRoot,
+      distribution: {
+        distributionId: 'com.todesktop.230313mzl4w4u92',
+        executableRealpath: path.join(root, 'Cursor'),
+        packageProvenance: 'signed_app:com.todesktop.230313mzl4w4u92:VDXQ22DGB9',
+        capabilityFingerprint: 'signed-cursor-test',
+      },
+    })
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const composition = createProductionAgentIntegrationComposition(db, {
+      homeDir: home,
+      applicationDataDir: appData,
+      runtimeContext: runtime,
+      enabledAdapterIds: ['cursor-desktop'],
+      scanner: { scan: async () => ({
+        installations: [{
+          catalogId: 'cursor-desktop',
+          displayName: 'Cursor',
+          identity: sourceIdentity,
+          configRoot: sourceRoot,
+          executablePath: path.join(root, 'Cursor'),
+          detectedVersion: '3.10.20',
+          versionDetectionMethod: 'bundle_plist',
+          managementEligibility: freshCliManagementEligibility(),
+          provenance: ['signed test fixture'],
+          evidence: [],
+        }],
+        unresolved: [],
+        diagnostics: [],
+      }) },
+      fixtureMode: 'isolated_ui_audit',
+      canManageInstallation: () => true,
+      startRuntime: false,
+    })
+    composition.repository.upsertDiscoveredInstallation({
+      id: 'cursor-source',
+      family: 'cursor',
+      hostVariant: 'cursor-desktop',
+      installKey: sourceIdentity.installKey,
+      distributionId: 'com.todesktop.230313mzl4w4u92',
+      provenance: 'signed test fixture',
+      osUserIdentity: sourceIdentity.osUserIdentity,
+      displayName: 'Cursor',
+      configRoot: sourceRoot,
+      executablePath: path.join(root, 'Cursor'),
+      detectedVersion: '3.10.20',
+      versionDetectionMethod: 'bundle_plist',
+      agentId: 'eb_cursor_source',
+      supportedCapability: 4,
+      lastDetectedAt: '2026-09-05T00:00:00.000Z',
+      metadata: {
+        distribution: {
+          distributionId: 'com.todesktop.230313mzl4w4u92',
+          executableRealpath: path.join(root, 'Cursor'),
+          packageProvenance: 'signed_app:com.todesktop.230313mzl4w4u92:VDXQ22DGB9',
+          capabilityFingerprint: 'signed-cursor-test',
+        },
+        managementEligibility: freshCliManagementEligibility(),
+      },
+    })
+    const unbind = bindAgentIntegrationExecutionPort(composition.coordinator)
+    try {
+      const preflight = await composition.service.previewCustomInstallation({
+        mode: 'nonstandard_config_root',
+        displayName: 'Cursor Work',
+        sourceInstallationId: 'cursor-source',
+        configRoot: customRoot,
+      })
+      const preview = await composition.service.prepareCustomConnect(preflight.preflightHash)
+      const custom = preview.installations[0]!
+      expect(custom.targets.map(target => target.targetLabel)).toEqual(expect.arrayContaining([
+        '~/.cursor-work/skills/tidemind/SKILL.md',
+        '~/.cursor-work/mcp.json',
+        '~/.cursor-work/hooks.json',
+      ]))
+      expect(custom.targets.every(target => target.targetLabel.startsWith('~/.cursor-work/'))).toBe(true)
+
+      // Automatic discovery has no standard installKey for this Custom root;
+      // two consecutive scans must retain it via its scoped source/root proof.
+      await composition.service.scan()
+      await composition.service.scan()
+      expect(composition.repository.getInstallation(custom.installationId)).toMatchObject({
+        health_state: 'discovered',
+        status_reason: null,
+      })
+
+      const applied = await composition.service.applyConnect(preview.planHash, [custom.installationId])
+      expect(applied.results[0]).toMatchObject({ status: 'awaiting_verification' })
+      expect(fs.existsSync(path.join(customRoot, 'skills', 'tidemind', 'SKILL.md'))).toBe(true)
+      expect(fs.existsSync(path.join(customRoot, 'mcp.json'))).toBe(true)
+      expect(fs.existsSync(path.join(customRoot, 'hooks.json'))).toBe(true)
+      expect(fs.readdirSync(sourceRoot)).toEqual([])
+    } finally {
+      unbind()
+      composition.runtime.stop()
+      db.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  it('fails closed when a frozen Custom executable is replaced before preview', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-custom-tamper-')))
+    const home = path.join(root, 'home')
+    const executable = path.join(home, 'bin', 'private-agent')
+    const configFile = path.join(home, '.private-agent', 'mcp.json')
+    const runtime = runtimeContext(home)
+    fs.mkdirSync(path.dirname(executable), { recursive: true })
+    fs.mkdirSync(path.dirname(configFile), { recursive: true })
+    fs.mkdirSync(path.dirname(runtime.shimPath), { recursive: true })
+    fs.writeFileSync(executable, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+    fs.writeFileSync(configFile, '{}\n', { mode: 0o600 })
+    fs.writeFileSync(runtime.shimPath, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+    fs.writeFileSync(runtime.mcpServerPath, '// packaged MCP runtime\n', { mode: 0o600 })
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const composition = createProductionAgentIntegrationComposition(db, {
+      homeDir: home,
+      applicationDataDir: path.join(root, 'app-data'),
+      runtimeContext: runtime,
+      adapters: new Map([['custom-local-mcp', createCustomLocalMcpHostAdapter()]]),
+      enabledAdapterIds: ['custom-local-mcp'],
+      scanner: { scan: async () => ({ installations: [], unresolved: [], diagnostics: [] }) },
+      startRuntime: false,
+    })
+    const unbind = bindAgentIntegrationExecutionPort(composition.coordinator)
+    try {
+      const preflight = await composition.service.previewCustomInstallation({
+        mode: 'manual_mcp_client', displayName: 'Private Agent',
+        clientExecutablePath: executable, configFilePath: configFile,
+        schemaKind: 'standard_mcp_servers', selectorKey: 'tidemind-private',
+      })
+      const replacement = path.join(home, 'bin', 'replacement')
+      fs.writeFileSync(replacement, '#!/bin/sh\nexit 1\n', { mode: 0o700 })
+      fs.renameSync(replacement, executable)
+
+      await expect(composition.service.prepareCustomConnect(preflight.preflightHash))
+        .rejects.toThrow(/surface changed|not enabled|trust/i)
+      expect(JSON.parse(fs.readFileSync(configFile, 'utf8'))).toEqual({})
+      expect(db.prepare('SELECT COUNT(*) AS count FROM agent_consents').get()).toEqual({ count: 0 })
+    } finally {
+      unbind()
       composition.runtime.stop()
       db.close()
       fs.rmSync(root, { recursive: true, force: true })

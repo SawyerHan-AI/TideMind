@@ -46,6 +46,14 @@ export interface ReconcilerRepositoryPort extends IntegrationEventRepositoryPort
     windowMs?: number
   }): MissingEpisodeResult | Promise<MissingEpisodeResult>
   markArtifactHealthyAfterReadback(artifactId: string, verifiedAt: string): boolean | Promise<boolean>
+  markArtifactNeedsAttention(input: {
+    artifactId: string
+    artifactState: 'drifted' | 'conflict'
+    statusReason: 'conflict' | 'permission'
+    invalidationReason: 'artifact_drifted' | 'artifact_conflicted' | 'artifact_inaccessible'
+    observedFingerprint: string | null
+    observedAt: string
+  }): boolean | Promise<boolean>
 }
 
 export interface ReconcilerClock {
@@ -70,6 +78,8 @@ export interface ReconcileManagedArtifactRequest {
   installation: CoordinatorInstallation
   installationDesiredState: DesiredState
   componentKey: ComponentKey
+  /** Complete Adapter-declared atomic component scope represented by this Artifact. */
+  componentKeys: readonly ComponentKey[]
   componentName: string
   desiredCapability: CapabilityLevel
   consentId: string | null
@@ -101,6 +111,19 @@ export class ManagedAgentReconciler {
       return { status: 'healthy' }
     }
     if (request.observation.kind !== 'exact_missing') {
+      const observedAt = this.dependencies.clock.now().toISOString()
+      await this.dependencies.repository.markArtifactNeedsAttention({
+        artifactId: request.artifactId,
+        artifactState: request.observation.kind === 'conflicted' ? 'conflict' : 'drifted',
+        statusReason: request.observation.kind === 'inaccessible' ? 'permission' : 'conflict',
+        invalidationReason: request.observation.kind === 'inaccessible'
+          ? 'artifact_inaccessible'
+          : request.observation.kind === 'conflicted'
+            ? 'artifact_conflicted'
+            : 'artifact_drifted',
+        observedFingerprint: request.observation.observedFingerprint,
+        observedAt,
+      })
       await this.persistAttentionEvent(request, `artifact_${request.observation.kind}`)
       return { status: 'needs_attention', reason: request.observation.kind }
     }
@@ -152,7 +175,7 @@ export class ManagedAgentReconciler {
       const previewRequest: PreviewRequest = {
         installation: request.installation,
         operation: 'repair',
-        componentKeys: [request.componentKey],
+        componentKeys: [...request.componentKeys],
         desiredCapability: request.desiredCapability,
       }
       prepared = await this.dependencies.coordinator.preview(previewRequest)

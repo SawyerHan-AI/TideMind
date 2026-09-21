@@ -3,6 +3,7 @@ import {
   compensateMutation,
   executeMutation,
   recoverMutation,
+  WriterFenceUnavailableError,
   type MutationJournalRecord,
   type MutationRunDependencies,
 } from '../../client/electron/agent-integration/mutation-runner'
@@ -44,6 +45,22 @@ function harness(initialLive = 'before') {
   }
   return { dependencies, states, apply, compensate, setLive: (value: string | null) => { live = value } }
 }
+
+it('defers an unacquired recovery fence but persists loss of a previously held fence', async () => {
+  const busy = harness()
+  busy.dependencies.fence.assertOwned = () => { throw new WriterFenceUnavailableError('busy') }
+  const record = prepared({ state: 'effect_started' })
+  expect(await recoverMutation(record, busy.dependencies)).toBe(record)
+  expect(busy.states).toEqual([])
+  expect(busy.dependencies.effect.readBack).not.toHaveBeenCalled()
+
+  const lost = harness()
+  lost.dependencies.fence.assertOwned = () => { throw new Error('held lease lost') }
+  expect(await recoverMutation(record, lost.dependencies)).toMatchObject({
+    state: 'needs_recovery', failureCode: 'writer_fence_lost',
+  })
+  expect(lost.states).toEqual(['needs_recovery'])
+})
 
 describe('mutation runner', () => {
   it('persists effect intent before applying and commits only after read-back and receipt', async () => {
@@ -129,6 +146,61 @@ describe('mutation runner', () => {
     expect(result.state).toBe('committed')
     expect(result.attemptCount).toBe(2)
     expect(test.apply).toHaveBeenCalledTimes(1)
+  })
+
+  it('replays a frozen safe intermediate only while no durable effect receipt exists', async () => {
+    const test = harness('partial-1')
+    test.dependencies.effect.readBack = vi.fn()
+      .mockReturnValueOnce({ fingerprint: 'partial-1', safeToResumeFrom: 'partial-1' })
+      .mockImplementation(() => 'desired')
+    test.dependencies.safeResumeFingerprints = ['partial-1', 'partial-2']
+    test.dependencies.replayGuard = vi.fn(() => ({ allowed: true }))
+
+    const result = await recoverMutation(prepared({ state: 'needs_recovery', attemptCount: 1 }), test.dependencies)
+
+    expect(result.state).toBe('committed')
+    expect(test.apply).toHaveBeenCalledTimes(1)
+    expect(test.dependencies.replayGuard).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails closed for an adapter-claimed intermediate not frozen into the plan', async () => {
+    const test = harness('tampered-partial')
+    test.dependencies.effect.readBack = vi.fn(() => ({
+      fingerprint: 'tampered-partial',
+      safeToResumeFrom: 'tampered-partial',
+    }))
+    test.dependencies.safeResumeFingerprints = ['partial-1']
+
+    const result = await recoverMutation(prepared({ state: 'needs_recovery' }), test.dependencies)
+
+    expect(result.failureCode).toBe('unsafe_intermediate_state')
+    expect(test.apply).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when consent or trust replay guard rejects a safe intermediate', async () => {
+    const test = harness('partial-1')
+    test.dependencies.effect.readBack = vi.fn(() => ({ fingerprint: 'partial-1', safeToResumeFrom: 'partial-1' }))
+    test.dependencies.safeResumeFingerprints = ['partial-1']
+    test.dependencies.replayGuard = vi.fn(() => ({ allowed: false, reason: 'consent_no_longer_covers_plan' }))
+
+    const result = await recoverMutation(prepared({ state: 'needs_recovery' }), test.dependencies)
+
+    expect(result.failureCode).toBe('consent_no_longer_covers_plan')
+    expect(test.apply).not.toHaveBeenCalled()
+  })
+
+  it('never replays a partial state after durable effect evidence exists', async () => {
+    const test = harness('partial-1')
+    test.dependencies.effect.readBack = vi.fn(() => ({ fingerprint: 'partial-1', safeToResumeFrom: 'partial-1' }))
+    test.dependencies.safeResumeFingerprints = ['partial-1']
+
+    const result = await recoverMutation(prepared({
+      state: 'needs_recovery',
+      postEffectFingerprint: 'partial-1',
+    }), test.dependencies)
+
+    expect(result.failureCode).toBe('unsafe_intermediate_state')
+    expect(test.apply).not.toHaveBeenCalled()
   })
 
   it('fails closed when recovery sees an unknown external edit', async () => {

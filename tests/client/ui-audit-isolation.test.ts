@@ -149,6 +149,86 @@ describe('isolated Electron UI audit mode', () => {
     db.close()
   })
 
+  it('keeps disconnected hosts discoverable and excludes explicit uninstall history', async () => {
+    const root = auditRoot()
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const repository = new AgentIntegrationRepository(db)
+    try {
+      for (const id of ['disconnected', 'absent-history', 'reason-history']) {
+        const configRoot = path.join(root, 'home', id)
+        fs.mkdirSync(configRoot)
+        repository.upsertDiscoveredInstallation({
+          id, family: 'cursor', hostVariant: 'cursor-desktop',
+          installKey: `cursor:${id}`, distributionId: 'com.todesktop.230313mzl4w4u92',
+          provenance: 'fixture', displayName: 'Cursor', configRoot,
+          agentId: `eb_${id}`, lastDetectedAt: '2026-08-25T00:00:00.000Z',
+        })
+        repository.setInstallationIntent(id, 'removed', '2026-08-25T00:01:00.000Z', 'user_disconnect')
+      }
+      db.prepare(`UPDATE agent_installations SET health_state = 'absent' WHERE id = ?`).run('absent-history')
+      db.prepare(`UPDATE agent_installations SET status_reason = 'host_uninstalled' WHERE id = ?`).run('reason-history')
+      const options = createUiAuditAgentIntegrationOptions(db, fs.realpathSync(root))
+      for (let scan = 0; scan < 2; scan += 1) {
+        const report = await options.scanner!.scan()
+        expect(report.installations.map(row => row.identity.installKey)).toEqual(['cursor:disconnected'])
+      }
+      expect(repository.getInstallation('disconnected')).toMatchObject({
+        desired_state: 'removed', health_state: 'discovered',
+      })
+    } finally {
+      db.close()
+    }
+  })
+
+  it('provides the complete Codex persisted-state snapshot shape used by adapter planning', async () => {
+    const root = auditRoot()
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const options = createUiAuditAgentIntegrationOptions(db, fs.realpathSync(root))
+    const configRoot = path.join(root, 'home', '.codex')
+    fs.mkdirSync(configRoot)
+    fs.writeFileSync(path.join(configRoot, 'hooks.json'), JSON.stringify({ hooks: {} }))
+    const adapter = options.adapters!.get('codex-cli')!
+    const context = {
+      runtime: options.runtimeContext!,
+      installation: {
+        runtimeRealm: 'local_macos' as const,
+        osUserIdentity: 'ui-audit-user',
+        productFamilyId: 'codex' as const,
+        hostVariant: 'codex-cli' as const,
+        canonicalConfigRoot: configRoot,
+        explicitProfile: 'default',
+        distribution: {},
+        installKey: 'codex-cli:ui-audit',
+      },
+      installationId: 'ui-audit-codex',
+      hostVersion: '0.145.0',
+      agentId: 'eb_ui_audit_codex',
+      operationId: 'ui-audit-plan',
+      activityGenerationToken: 'ui-audit-frozen-generation',
+    }
+    const observed = await adapter.inspect(context)
+    const plan = await adapter.plan(context, {
+      desiredCapability: 4,
+      desiredComponents: ['lifecycle'],
+      observed,
+      ownedArtifacts: [],
+    })
+    expect(plan.diagnostics).not.toEqual(expect.arrayContaining([
+      expect.stringMatching(/official_hooks_list_unavailable|hooks\.filter/u),
+    ]))
+    expect(plan.mutations).toHaveLength(1)
+    expect(plan.diagnostics).toEqual([])
+    expect(plan).toMatchObject({
+      requiredUserActions: ['codex_hook_trust_required'],
+      requiredUserActionDetails: [
+        expect.objectContaining({ kind: 'codex_hook_trust', componentKey: 'lifecycle' }),
+      ],
+    })
+    db.close()
+  })
+
   it('binds ZCode audit trust to the fake executable and every strong fixture identity field', async () => {
     const root = auditRoot()
     const appPath = path.join(root, 'apps', 'ZCode.app')

@@ -7,12 +7,35 @@ import path from 'node:path'
 export function protectedRealAgentPaths(homeDir) {
   return [
     path.join(homeDir, '.agents', 'skills', 'tidemind'),
+    path.join(homeDir, '.qwenworkcn', 'skills', 'tidemind'),
+    path.join(homeDir, '.qwenworkcn', 'settings.json'),
+    path.join(homeDir, '.kimi-code', 'skills', 'tidemind'),
+    path.join(homeDir, '.kimi-code', 'mcp.json'),
+    path.join(homeDir, '.kimi-code', 'config.toml'),
+    path.join(homeDir, '.codex', 'config.toml'),
+    path.join(homeDir, '.codex', 'hooks.json'),
+    path.join(homeDir, '.cursor', 'skills', 'tidemind'),
+    path.join(homeDir, '.cursor', 'mcp.json'),
+    path.join(homeDir, '.cursor', 'hooks.json'),
+    path.join(homeDir, '.config', 'opencode', 'opencode.json'),
+    path.join(homeDir, '.config', 'opencode', 'opencode.jsonc'),
+    path.join(homeDir, '.config', 'opencode', 'plugins', 'tidemind-v1.ts'),
+    path.join(homeDir, '.config', 'opencode', 'plugins', 'tidemind-v2.ts'),
+    // The UI audit Custom Agent flow freezes this exact user-selected target.
+    // Guard its real-HOME analogue in addition to the isolated fixture HOME.
+    path.join(homeDir, '.tidemind', 'ui-audit-custom-client', 'config.json'),
     path.join(homeDir, '.zcode', 'skills', 'tidemind'),
     path.join(homeDir, '.zcode', 'config.json'),
     path.join(homeDir, '.zcode', 'cli', 'config.json'),
     // The isolated fixture uses a distinct profile root; protect its exact
     // real-HOME analogue as well as the production default above.
     path.join(homeDir, '.zcode-default', 'config.json'),
+    path.join(homeDir, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'),
+    path.join(homeDir, 'Library', 'Application Support', 'Claude', 'plugins'),
+    path.join(homeDir, 'Library', 'Application Support', 'Claude', 'cowork'),
+    path.join(homeDir, '.claude', 'plugins'),
+    path.join(homeDir, '.claude', 'cowork'),
+    path.join(homeDir, 'Library', 'Application Support', 'Tide Mind', 'agent-integration', 'claude-cowork'),
   ]
 }
 

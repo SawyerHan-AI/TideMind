@@ -23,15 +23,16 @@ import { prepare } from './tools/prepare.js';
 import type { PrepareOutput } from './types.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { createLogger } from './utils/logger.js';
-import { writeHookOutput as outputHook } from './hook-output.js';
+import { writeHookOutput as outputHook, writeHookOutputBeforeEvidence } from './hook-output.js';
 import { getTideMindVersion } from './utils/app-version.js';
 
 const migrationLog = createLogger('migrate');
 
-function parseArgs(): { agentId: string; tool: string } {
+function parseArgs(): { agentId: string; tool: string; activityGenerationToken: string } {
   const args = process.argv.slice(2);
   let agentId = '';
   let tool = 'claude-code';
+  let activityGenerationToken = '';
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--agent-id' && args[i + 1]) {
@@ -40,6 +41,9 @@ function parseArgs(): { agentId: string; tool: string } {
     } else if (args[i] === '--tool' && args[i + 1]) {
       tool = args[i + 1];
       i++;
+    } else if (args[i] === '--activity-generation-token' && args[i + 1]) {
+      activityGenerationToken = args[i + 1];
+      i++;
     }
   }
 
@@ -47,7 +51,8 @@ function parseArgs(): { agentId: string; tool: string } {
     throw new Error('Missing --agent-id');
   }
 
-  return { agentId, tool };
+  if (!activityGenerationToken) throw new Error('Missing --activity-generation-token');
+  return { agentId, tool, activityGenerationToken };
 }
 
 /**
@@ -109,9 +114,10 @@ async function main(): Promise<void> {
     // 迁移失败不阻断 hook，降级走正常流程
   }
 
-  const { agentId, tool } = parseArgs();
+  const { agentId, tool, activityGenerationToken } = parseArgs();
 
   let briefText: string;
+  let contextPrepared = false;
   try {
     loadConfig();
     ensureDataDirs();
@@ -125,6 +131,7 @@ async function main(): Promise<void> {
     });
 
     briefText = formatBriefContext(result);
+    contextPrepared = true;
   } catch (err) {
     // 之前是裸 catch {} — 所有 prepare 异常都变成同一条 fallback,调 hook 的
     // 用户永远看不到真实错误。至少把错误名/message/前 3 行 stack 打到 stderr。
@@ -145,28 +152,34 @@ ${briefText}
 ---
 以上是压缩后由 Tide Mind 自动重注的精简画像。如需完整记忆，仍可通过 brain_recall / brain_prepare 获取。`;
 
-  try {
-    loadConfig();
-    ensureDataDirs();
-    const activity = recordHookActivityEvidence(getDb(), {
-      agentId,
-      tool,
-      signalName: 'post_compact',
-      tideMindVersion: getTideMindVersion(),
-    });
-    if (activity.status === 'rejected') {
-      process.stderr.write(`[eb:hook-post-compact] activity evidence rejected — ${activity.reason}\n`);
+  const hostOutput = tool === 'openclaw'
+    ? JSON.stringify({ protocol: 'tidemind-openclaw-context-v1', content, evidenceEligible: contextPrepared })
+    : content;
+  await writeHookOutputBeforeEvidence(hostOutput, tool, 'PostCompact', () => {
+    if (tool === 'openclaw') return;
+    try {
+      loadConfig();
+      ensureDataDirs();
+      const activity = recordHookActivityEvidence(getDb(), {
+        agentId,
+        tool,
+        signalName: 'post_compact',
+        tideMindVersion: getTideMindVersion(),
+        activityGenerationToken,
+      });
+      if (activity.status === 'rejected') {
+        process.stderr.write(`[eb:hook-post-compact] activity evidence rejected — ${activity.reason}\n`);
+      }
+    } catch (error) {
+      process.stderr.write(`[eb:hook-post-compact] activity evidence unavailable — ${error instanceof Error ? error.message : String(error)}\n`);
+    } finally {
+      try { closeDb(); } catch { /* ignore */ }
     }
-  } catch (error) {
-    process.stderr.write(`[eb:hook-post-compact] activity evidence unavailable — ${error instanceof Error ? error.message : String(error)}\n`);
-  } finally {
-    try { closeDb(); } catch { /* ignore */ }
-  }
+  });
 
-  outputHook(content, tool, 'PostCompact');
 }
 
-main().catch((err: unknown) => {
+main().catch(async (err: unknown) => {
   const stack = err instanceof Error ? err.stack ?? err.message : String(err);
   process.stderr.write(`[eb:hook-post-compact] fatal error: ${stack}\n`);
   // 错误标识符嵌入 fallback 文案中，方便用户关联到 stderr 中的真实 stack。
@@ -180,5 +193,10 @@ main().catch((err: unknown) => {
       if (args[i] === '--tool' && args[i + 1]) { tool = args[i + 1]; break; }
     }
   } catch { /* ignore */ }
-  outputHook(`Tide Mind 压缩后上下文恢复失败。如需用户画像请手动调用 brain_prepare。[internal error: HOOK_POST_COMPACT_FATAL/${code}]`, tool, 'PostCompact');
+  try {
+    await outputHook(`Tide Mind 压缩后上下文恢复失败。如需用户画像请手动调用 brain_prepare。[internal error: HOOK_POST_COMPACT_FATAL/${code}]`, tool, 'PostCompact');
+  } catch (outputError) {
+    process.stderr.write(`[eb:hook-post-compact] fallback output failed — ${outputError instanceof Error ? outputError.message : String(outputError)}\n`);
+    process.exitCode = 1;
+  }
 });

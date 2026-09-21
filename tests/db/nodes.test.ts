@@ -174,10 +174,24 @@ describe('archiveNode', () => {
     expect(node.heat).toBe(1.0);
     expect(node.archived).toBe(0);
 
-    archiveNode(db, node.id);
+    expect(archiveNode(db, node.id)).toBe(true);
     const after = getNode(db, node.id)!;
     expect(after.archived).toBe(1);
     expect(after.heat).toBeCloseTo(0.02);
+  });
+
+  it('should report false and preserve the row when the node is already archived', () => {
+    const node = seedNode(db);
+    expect(archiveNode(db, node.id)).toBe(true);
+    const before = getNode(db, node.id)!;
+
+    expect(archiveNode(db, node.id)).toBe(false);
+    expect(getNode(db, node.id)).toMatchObject({
+      archived: before.archived,
+      heat: before.heat,
+      edit_seq: before.edit_seq,
+      updated: before.updated,
+    });
   });
 
   it('should make archived node disappear from default UI filters (archived=0 gate)', () => {

@@ -55,6 +55,109 @@ CREATE TABLE IF NOT EXISTS verification_results (
       REFERENCES installation_components(installation_id, component_key) ON DELETE CASCADE
 );`;
 
+export const AGENT_HOST_ACTIVITY_EVIDENCE_TABLE_SQL = `
+CREATE TABLE IF NOT EXISTS agent_host_activity_evidence (
+    id TEXT PRIMARY KEY,
+    installation_id TEXT NOT NULL REFERENCES agent_installations(id) ON DELETE CASCADE,
+    activation_run_id TEXT NOT NULL REFERENCES reconcile_runs(id) ON DELETE CASCADE,
+    agent_id TEXT NOT NULL,
+    host_variant TEXT NOT NULL,
+    component_key TEXT NOT NULL
+      CHECK(component_key IN ('memory_tools','lifecycle')),
+    signal_name TEXT NOT NULL
+      CHECK(signal_name IN (
+        'brain_prepare','brain_recall','brain_digest',
+        'session_start','pre_compact','session_end','post_compact'
+      )),
+    tide_mind_version TEXT NOT NULL,
+    adapter_version TEXT NOT NULL,
+    projection_version TEXT NOT NULL,
+    host_version TEXT NOT NULL,
+    evidence_hash TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    CHECK(
+      (component_key = 'memory_tools' AND signal_name IN (
+        'brain_prepare','brain_recall','brain_digest'
+      )) OR
+      (component_key = 'lifecycle' AND signal_name IN (
+        'session_start','pre_compact','session_end','post_compact'
+      ))
+    ),
+    UNIQUE(
+      activation_run_id, installation_id, component_key, signal_name, tide_mind_version,
+      adapter_version, projection_version, host_version
+    )
+);`;
+
+/** Read-only semantic parity check used by the signed acceptance exporter. */
+export function inspectAgentHostActivityEvidenceV34Schema(db: Database.Database): {
+  schemaVersion: 34;
+  fingerprintInput: unknown;
+} {
+  const schemaVersion = Number((db.prepare(
+    "SELECT value FROM metadata WHERE key = 'schema_version'",
+  ).get() as { value?: string } | undefined)?.value);
+  if (schemaVersion !== 34) throw new Error(`activity ledger database schema is ${schemaVersion}, expected 34`);
+  const columns = db.prepare('PRAGMA table_info(agent_host_activity_evidence)').all() as Array<{
+    name: string; type: string; notnull: number; pk: number;
+  }>;
+  const expectedColumns = [
+    ['id', 'TEXT', 0, 1], ['installation_id', 'TEXT', 1, 0],
+    ['activation_run_id', 'TEXT', 1, 0], ['agent_id', 'TEXT', 1, 0],
+    ['host_variant', 'TEXT', 1, 0], ['component_key', 'TEXT', 1, 0], ['signal_name', 'TEXT', 1, 0],
+    ['tide_mind_version', 'TEXT', 1, 0], ['adapter_version', 'TEXT', 1, 0],
+    ['projection_version', 'TEXT', 1, 0], ['host_version', 'TEXT', 1, 0],
+    ['evidence_hash', 'TEXT', 1, 0], ['observed_at', 'TEXT', 1, 0],
+  ];
+  const actualColumns = columns.map(column => [column.name, column.type.toUpperCase(), column.notnull, column.pk]);
+  if (JSON.stringify(actualColumns) !== JSON.stringify(expectedColumns)) {
+    throw new Error('activity ledger columns are not the authoritative v34 shape');
+  }
+  const foreignKeys = db.prepare('PRAGMA foreign_key_list(agent_host_activity_evidence)').all() as Array<{
+    table: string; from: string; to: string; on_delete: string;
+  }>;
+  if (!foreignKeys.some(key => key.table === 'agent_installations'
+    && key.from === 'installation_id' && key.to === 'id' && key.on_delete.toUpperCase() === 'CASCADE')) {
+    throw new Error('activity ledger installation foreign key is not authoritative');
+  }
+  if (!foreignKeys.some(key => key.table === 'reconcile_runs'
+    && key.from === 'activation_run_id' && key.to === 'id' && key.on_delete.toUpperCase() === 'CASCADE')) {
+    throw new Error('activity ledger activation run foreign key is not authoritative');
+  }
+  const indexes = db.prepare('PRAGMA index_list(agent_host_activity_evidence)').all() as Array<{
+    name: string; unique: number; origin: string;
+  }>;
+  const uniqueIndex = indexes.find(index => index.unique === 1 && index.origin === 'u');
+  const uniqueColumns = uniqueIndex
+    ? (db.prepare(`PRAGMA index_info(${JSON.stringify(uniqueIndex.name)})`).all() as Array<{ name: string }>).map(row => row.name)
+    : [];
+  const expectedUnique = [
+    'activation_run_id', 'installation_id', 'component_key', 'signal_name', 'tide_mind_version',
+    'adapter_version', 'projection_version', 'host_version',
+  ];
+  if (JSON.stringify(uniqueColumns) !== JSON.stringify(expectedUnique)) {
+    throw new Error('activity ledger uniqueness constraint is not authoritative');
+  }
+  const tableSql = (db.prepare(`
+    SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_host_activity_evidence'
+  `).get() as { sql?: string } | undefined)?.sql?.replace(/\s/gu, '').toLowerCase() ?? '';
+  for (const marker of [
+    "component_keyin('memory_tools','lifecycle')",
+    "'brain_prepare','brain_recall','brain_digest'",
+    "'session_start','pre_compact','session_end','post_compact'",
+  ]) {
+    if (!tableSql.includes(marker)) throw new Error('activity ledger CHECK constraints are not authoritative');
+  }
+  return { schemaVersion: 34, fingerprintInput: { actualColumns, foreignKeys, uniqueColumns, checks: 'v34' } };
+}
+
+function agentHostActivityEvidenceTableSql(tableName: string): string {
+  return AGENT_HOST_ACTIVITY_EVIDENCE_TABLE_SQL.replace(
+    'CREATE TABLE IF NOT EXISTS agent_host_activity_evidence',
+    `CREATE TABLE ${tableName}`,
+  );
+}
+
 const AGENT_INTEGRATION_APPLY_TASK_FEED_TRIGGERS = [
   {
     name: 'trg_agent_apply_tasks_feed_insert',
@@ -449,37 +552,7 @@ ${VERIFICATION_RESULTS_TABLE_SQL}
 -- Runtime host activity is local verification evidence, not a memory/business
 -- event. Keep only the latest invocation for an exact version binding so tool
 -- use cannot grow the database without bound.
-CREATE TABLE IF NOT EXISTS agent_host_activity_evidence (
-    id TEXT PRIMARY KEY,
-    installation_id TEXT NOT NULL REFERENCES agent_installations(id) ON DELETE CASCADE,
-    agent_id TEXT NOT NULL,
-    host_variant TEXT NOT NULL,
-    component_key TEXT NOT NULL
-      CHECK(component_key IN ('memory_tools','lifecycle')),
-    signal_name TEXT NOT NULL
-      CHECK(signal_name IN (
-        'brain_prepare','brain_recall','brain_digest',
-        'session_start','pre_compact','post_compact'
-      )),
-    tide_mind_version TEXT NOT NULL,
-    adapter_version TEXT NOT NULL,
-    projection_version TEXT NOT NULL,
-    host_version TEXT NOT NULL,
-    evidence_hash TEXT NOT NULL,
-    observed_at TEXT NOT NULL,
-    CHECK(
-      (component_key = 'memory_tools' AND signal_name IN (
-        'brain_prepare','brain_recall','brain_digest'
-      )) OR
-      (component_key = 'lifecycle' AND signal_name IN (
-        'session_start','pre_compact','post_compact'
-      ))
-    ),
-    UNIQUE(
-      installation_id, component_key, signal_name, tide_mind_version,
-      adapter_version, projection_version, host_version
-    )
-);
+${AGENT_HOST_ACTIVITY_EVIDENCE_TABLE_SQL}
 CREATE INDEX IF NOT EXISTS idx_agent_host_activity_lookup
   ON agent_host_activity_evidence(
     installation_id, component_key, host_variant, observed_at
@@ -557,6 +630,67 @@ function ensureColumn(db: Database.Database, table: string, column: string, defi
   if (!columns.some(candidate => candidate.name === column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
+}
+
+function restoreHostActivitySignalConstraints(db: Database.Database): boolean {
+  const tableSql = (db.prepare(`
+    SELECT sql FROM sqlite_master
+    WHERE type = 'table' AND name = 'agent_host_activity_evidence'
+  `).get() as { sql?: string } | undefined)?.sql ?? '';
+  const normalized = tableSql.replace(/\s/gu, '').toLowerCase();
+  const legacyColumns = [
+    'id', 'installation_id', 'agent_id', 'host_variant', 'component_key',
+    'signal_name', 'tide_mind_version', 'adapter_version', 'projection_version',
+    'host_version', 'evidence_hash', 'observed_at',
+  ];
+  const columns = db.prepare('PRAGMA table_info(agent_host_activity_evidence)').all() as Array<{
+    name: string;
+    pk: number;
+  }>;
+  const canonicalColumns = [
+    'id', 'installation_id', 'activation_run_id', 'agent_id', 'host_variant',
+    'component_key', 'signal_name', 'tide_mind_version', 'adapter_version',
+    'projection_version', 'host_version', 'evidence_hash', 'observed_at',
+  ];
+  const canonicalShape = columns.length === canonicalColumns.length
+    && canonicalColumns.every((name, index) => columns[index]?.name === name)
+    && columns[0]?.pk === 1
+    && normalized.includes("'session_end'")
+    && normalized.includes('activation_run_idtextnotnullreferencesreconcile_runs(id)ondeletecascade');
+  if (canonicalShape) return false;
+
+  const knownPreCausalShape = columns.length === legacyColumns.length
+    && legacyColumns.every((name, index) => columns[index]?.name === name)
+    && columns[0]?.pk === 1
+    && normalized.includes("'session_start','pre_compact','post_compact'");
+  const count = Number((db.prepare('SELECT COUNT(*) AS count FROM agent_host_activity_evidence')
+    .get() as { count: number }).count);
+  if (!knownPreCausalShape) {
+    if (count !== 0) {
+      throw new Error('unsafe partial agent_host_activity_evidence schema contains rows');
+    }
+    db.exec('DROP TABLE agent_host_activity_evidence;');
+    db.exec(AGENT_HOST_ACTIVITY_EVIDENCE_TABLE_SQL);
+    return false;
+  }
+
+  // Pre-causal v34 evidence cannot be assigned to an activation run without
+  // guessing. It is transient verification evidence, so invalidate it by
+  // rebuilding the canonical table empty; a real host event will repopulate it.
+  const replacement = 'agent_host_activity_evidence_v34_rebuild';
+  db.exec(`DROP TABLE IF EXISTS ${replacement};`);
+  db.exec(agentHostActivityEvidenceTableSql(replacement));
+  db.exec(`
+    DROP TABLE agent_host_activity_evidence;
+    ALTER TABLE ${replacement} RENAME TO agent_host_activity_evidence;
+    CREATE INDEX idx_agent_host_activity_lookup
+      ON agent_host_activity_evidence(
+        installation_id, component_key, host_variant, observed_at
+      );
+    CREATE INDEX idx_agent_host_activity_agent
+      ON agent_host_activity_evidence(agent_id, observed_at);
+  `);
+  return true;
 }
 
 function verificationResultsHasCanonicalConstraints(db: Database.Database): boolean {
@@ -786,6 +920,10 @@ export function ensureAgentIntegrationSchema(db: Database.Database): void {
   ].some(column => !verificationColumnsBeforeRepair.has(column));
   // Repair pre-release/partially-created v34 databases as well as fresh schema.
   db.transaction(() => {
+  // Rebuilding a populated pre-causal table and revoking every verification
+  // that cites it must be one transaction. A crash must not leave a verified
+  // Installation whose only runtime evidence was just discarded.
+  const invalidatedPreCausalHostActivity = restoreHostActivitySignalConstraints(db);
   ensureColumn(db, 'writer_fences', 'scope_mode', "TEXT NOT NULL DEFAULT 'legacy' CHECK(scope_mode IN ('legacy','managed'))");
   ensureColumn(db, 'reconcile_runs', 'prepared_plan_json', "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn(db, 'reconcile_runs', 'desired_capability', 'INTEGER NOT NULL DEFAULT 0 CHECK(desired_capability BETWEEN 0 AND 4)');
@@ -934,6 +1072,38 @@ export function ensureAgentIntegrationSchema(db: Database.Database): void {
         updated_at = CURRENT_TIMESTAMP
     WHERE id = ? AND desired_state = 'managed'
   `);
+  if (invalidatedPreCausalHostActivity) {
+    const hostActivityVerificationRows = db.prepare(`
+      SELECT id, installation_id, run_id
+      FROM verification_results
+      WHERE invalidated_at IS NULL
+        AND (
+          method LIKE 'host_activity_recognized:%'
+          OR evidence_ref LIKE 'host-activity:%'
+        )
+    `).all() as Array<{
+      id: string; installation_id: string; run_id: string | null
+    }>;
+    const invalidateHostActivityVerification = db.prepare(`
+      UPDATE verification_results
+      SET invalidated_at = CURRENT_TIMESTAMP,
+          invalidation_reason = 'pre_causal_host_activity_invalidated'
+      WHERE id = ? AND invalidated_at IS NULL
+    `);
+    for (const row of hostActivityVerificationRows) {
+      if (row.run_id && cancelUnsafeVerifiedRun.run(row.run_id).changes > 0) {
+        markInstallationRecovery.run(row.installation_id);
+      }
+      invalidateHostActivityVerification.run(row.id);
+      affectedInstallations.add(row.installation_id);
+      for (const component of staleLinkedComponents.all(row.id) as Array<{ installation_id: string }>) {
+        affectedInstallations.add(component.installation_id);
+      }
+      for (const installation of detachInstallationEvidence.all(row.id) as Array<{ id: string }>) {
+        affectedInstallations.add(installation.id);
+      }
+    }
+  }
   for (const row of quarantineRows) {
     // Any ambiguous evidence invalidates a verified token. A verified run is
     // finalizer-only during startup recovery, so leaving it verified could
@@ -1019,8 +1189,10 @@ export function ensureAgentIntegrationSchema(db: Database.Database): void {
     affectedInstallations.add(run.installation_id);
   }
   const componentStatuses = db.prepare(`
-    SELECT component_key, verification_status FROM installation_components
-    WHERE installation_id = ? AND desired_state = 'managed'
+    SELECT component.component_key, component.verification_status, installation.host_variant
+    FROM installation_components component
+    JOIN agent_installations installation ON installation.id = component.installation_id
+    WHERE component.installation_id = ? AND component.desired_state = 'managed'
   `);
   const updateInstallationSummary = db.prepare(`
     UPDATE agent_installations
@@ -1029,17 +1201,23 @@ export function ensureAgentIntegrationSchema(db: Database.Database): void {
   `);
   for (const installationId of affectedInstallations) {
     const components = componentStatuses.all(installationId) as Array<{
-      component_key: string; verification_status: string
+      component_key: string; verification_status: string; host_variant: string
     }>;
     const statuses = new Set(components.map(component => component.verification_status));
     const verified = new Set(components
       .filter(component => component.verification_status === 'verified')
       .map(component => component.component_key));
-    const capability = verified.has('instruction') && verified.has('memory_tools') && verified.has('lifecycle')
+    const observedCapability = verified.has('instruction') && verified.has('memory_tools') && verified.has('lifecycle')
       ? 4
       : verified.has('instruction') && verified.has('memory_tools')
         ? 3
         : verified.has('memory_tools') ? 2 : verified.has('instruction') ? 1 : 0;
+    // A user-selected Custom MCP surface has memory tools only. Repaired rows
+    // must not manufacture instruction/lifecycle trust from legacy component
+    // combinations that predate the C2 ceiling.
+    const capability = components[0]?.host_variant === 'custom-local-mcp'
+      ? Math.min(observedCapability, 2)
+      : observedCapability;
     const summary = components.length === 0
       ? 'unverified'
       : statuses.size === 1 ? [...statuses][0] : 'mixed';

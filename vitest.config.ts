@@ -19,10 +19,10 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     globals: true,
     pool: 'forks',
-    poolOptions: {
-      forks: {
-        isolate: true,
-      },
-    },
+    // The suite includes native SQLite, Argon2 and real child-process tests.
+    // Leaving Vitest at its CPU-derived default can exhaust the host and turn
+    // deterministic tests into timeouts in the same way in local health and CI.
+    maxWorkers: 2,
+    isolate: true,
   },
 });

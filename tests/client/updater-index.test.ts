@@ -209,6 +209,8 @@ describe('runUpdateCheck — manifest 状态分支', () => {
     queryAndVerifyManifestMock.mockResolvedValueOnce({ status: 'no-update', version: '0.1.0' });
     await mod.runUpdateCheck();
     expect(mod.getUpdaterState().status).toBe('up-to-date');
+    expect(checkForUpdatesMock).not.toHaveBeenCalled();
+    expect(downloadUpdateMock).not.toHaveBeenCalled();
   });
 
   it('fetch-error → state=error', async () => {

@@ -21,16 +21,32 @@ if (rootPackage.name !== 'tidemind' || typeof rootPackage.version !== 'string' |
   throw new Error('[build-bin] root package name/version is invalid')
 }
 const bundledTideMindVersion = rootPackage.version.trim()
+const bundledSourceCommit = (process.env.TIDEMIND_SOURCE_COMMIT ?? 'development-unbound').trim()
+if (bundledSourceCommit !== 'development-unbound' && !/^[a-f0-9]{40,64}$/u.test(bundledSourceCommit)) {
+  throw new Error('[build-bin] TIDEMIND_SOURCE_COMMIT must be a full hexadecimal commit SHA')
+}
 
 // 保持 external 的只有 native 模块——它们必须在运行时由 node 从 node_modules 里加载
 // Electron-as-node 下会从脚本同级目录向上解析 node_modules，
 // client/node_modules（含 better-sqlite3、sqlite-vec）在 dev 和 packaged 下都能找到
-const NATIVE_EXTERNALS = ['better-sqlite3', 'sqlite-vec']
+const NATIVE_EXTERNALS = ['better-sqlite3', 'sqlite-vec', 'electron']
 
 const entries = [
   {
+    entry: path.join(CLIENT_ROOT, 'electron', 'agent-integration', 'host-target-metadata-export.ts'),
+    out: 'agent-host-target-metadata-export.cjs',
+  },
+  {
+    entry: path.join(REPO_ROOT, 'src', 'agent-host-activity-export.ts'),
+    out: 'agent-host-activity-export.cjs',
+  },
+  {
     entry: path.join(REPO_ROOT, 'src', 'hook-session-start.ts'),
     out: 'hook-session-start.cjs',
+  },
+  {
+    entry: path.join(REPO_ROOT, 'src', 'hook-kimi-session-start-activity.ts'),
+    out: 'hook-kimi-session-start-activity.cjs',
   },
   {
     entry: path.join(REPO_ROOT, 'src', 'hook-pre-compact.ts'),
@@ -39,6 +55,30 @@ const entries = [
   {
     entry: path.join(REPO_ROOT, 'src', 'hook-post-compact.ts'),
     out: 'hook-post-compact.cjs',
+  },
+  {
+    entry: path.join(REPO_ROOT, 'src', 'hook-session-end.ts'),
+    out: 'hook-session-end.cjs',
+  },
+  {
+    entry: path.join(REPO_ROOT, 'src', 'hook-cursor-lifecycle.ts'),
+    out: 'hook-cursor-lifecycle.cjs',
+  },
+  {
+    entry: path.join(REPO_ROOT, 'src', 'hook-windsurf-lifecycle.ts'),
+    out: 'hook-windsurf-lifecycle.cjs',
+  },
+  {
+    entry: path.join(REPO_ROOT, 'src', 'hook-qwenwork-lifecycle.ts'),
+    out: 'hook-qwenwork-lifecycle.cjs',
+  },
+  {
+    entry: path.join(REPO_ROOT, 'src', 'hook-pi-lifecycle.ts'),
+    out: 'hook-pi-lifecycle.cjs',
+  },
+  {
+    entry: path.join(REPO_ROOT, 'src', 'hook-openclaw-lifecycle.ts'),
+    out: 'hook-openclaw-lifecycle.cjs',
   },
   {
     entry: path.join(REPO_ROOT, 'src', 'index.ts'),
@@ -61,6 +101,11 @@ const entries = [
 
 async function main() {
   fs.mkdirSync(OUT_DIR, { recursive: true })
+  fs.writeFileSync(path.join(OUT_DIR, 'build-provenance.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    appVersion: bundledTideMindVersion,
+    sourceCommit: bundledSourceCommit,
+  })}\n`)
 
   for (const { entry, out } of entries) {
     if (!fs.existsSync(entry)) {
@@ -68,7 +113,8 @@ async function main() {
       process.exit(1)
     }
 
-    await build({
+    const nodeMetadataExporter = out === 'agent-host-target-metadata-export.cjs'
+    const result = await build({
       entryPoints: [entry],
       bundle: true,
       platform: 'node',
@@ -76,6 +122,19 @@ async function main() {
       format: 'cjs', // 使用 CJS 避免 require/import 混用的 interop 陷阱
       outfile: path.join(OUT_DIR, out),
       external: NATIVE_EXTERNALS,
+      metafile: nodeMetadataExporter,
+      // The read-only exporter runs with ELECTRON_RUN_AS_NODE. Its imported
+      // production module also declares GUI functions, but unused Electron
+      // imports must not become runtime require("electron") side effects.
+      plugins: nodeMetadataExporter ? [{
+        name: 'metadata-exporter-no-electron-runtime',
+        setup(build) {
+          build.onResolve({ filter: /^electron$/ }, () => ({ path: 'electron', external: true, sideEffects: false }))
+        },
+      }] : [],
+      alias: {
+        '@server': path.join(REPO_ROOT, 'src'),
+      },
       sourcemap: false,
       minify: false,
       // 把 ESM 语法替换成 CJS 等价物：import.meta.url 在 CJS 里无效，
@@ -87,12 +146,17 @@ async function main() {
       define: {
         'import.meta.url': '__tm_bundle_url__',
         '__TIDEMIND_BUNDLED_VERSION__': JSON.stringify(bundledTideMindVersion),
+        '__TIDEMIND_BUNDLED_SOURCE_COMMIT__': JSON.stringify(bundledSourceCommit),
       },
       banner: {
         js: '"use strict"; const __tm_bundle_url__ = require("node:url").pathToFileURL(__filename).href;',
       },
       logLevel: 'warning',
     })
+    if (nodeMetadataExporter && Object.values(result.metafile.outputs)
+      .some(output => output.imports.some(entry => entry.path === 'electron'))) {
+      throw new Error('target metadata exporter must not depend on the Electron GUI runtime')
+    }
 
     const size = (fs.statSync(path.join(OUT_DIR, out)).size / 1024).toFixed(1)
     console.log(`[build-bin] ✓ ${out} (${size} KB)`)

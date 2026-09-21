@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   ChevronDown,
@@ -6,6 +6,7 @@ import {
   ChevronRight,
   ChevronUp,
   History,
+  Plus,
   RefreshCw,
   Search,
   ServerOff,
@@ -23,11 +24,13 @@ import type {
   AgentIntegrationScanResultDto,
   AgentIntegrationSnapshotDto,
   AgentIntegrationSupportProductDto,
+  AgentIntegrationClaudeCoworkPreflightDto,
 } from '../../lib/api-contract'
 import { useIPC } from '../../hooks/useIPC'
 import { useFormatters } from '../../hooks/useFormatters'
 import { acquireModalInert } from '../../lib/modal-inert'
 import { BatchConnectDialog } from './agent-integration-managed/BatchConnectDialog'
+import { CustomLocalAgentDialog } from './agent-integration-managed/CustomLocalAgentDialog'
 import { ManagedAgentDetail } from './agent-integration-managed/ManagedAgentDetail'
 import { ManagedFamilyList } from './agent-integration-managed/ManagedFamilyList'
 import {
@@ -75,6 +78,53 @@ function AgentOverviewMetric({
   )
 }
 
+type AgentIntegrationReleasePolicyMode = NonNullable<
+  AgentIntegrationSnapshotDto['releasePolicy']
+>['mode']
+
+export function AgentIntegrationReleasePolicyBanner({
+  mode,
+  title,
+  description,
+}: {
+  mode: AgentIntegrationReleasePolicyMode | undefined
+  title: string
+  description: string
+}) {
+  if (!mode || mode === 'active') return null
+
+  const invalidManifest = mode === 'invalid_manifest'
+  const titleId = `agent-release-policy-${mode}-title`
+  const descriptionId = `agent-release-policy-${mode}-description`
+
+  return (
+    <div
+      data-agent-release-policy={mode}
+      className="glass-card mt-4 rounded-xl"
+      role={invalidManifest ? 'alert' : 'status'}
+      aria-live={invalidManifest ? 'assertive' : 'polite'}
+      aria-atomic="true"
+      aria-labelledby={titleId}
+      aria-describedby={descriptionId}
+    >
+      <div className={`flex items-start gap-3 border-l-4 px-4 py-3 ${invalidManifest
+        ? 'border-red-400/30 bg-red-400/[0.06]'
+        : 'border-amber-400/30 bg-amber-400/[0.06]'}`}
+      >
+        {invalidManifest ? (
+          <AlertTriangle size={17} className="mt-0.5 shrink-0 text-red-400" aria-hidden />
+        ) : (
+          <ServerOff size={17} className="mt-0.5 shrink-0 text-amber-400" aria-hidden />
+        )}
+        <div className="min-w-0">
+          <h3 id={titleId} className="text-xs font-semibold text-gray-100">{title}</h3>
+          <p id={descriptionId} className="mt-1 text-xs leading-relaxed text-gray-300">{description}</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function historyFamily(installation: AgentIntegrationInstallationDto): AgentIntegrationFamilyDto {
   return {
     id: `history:${installation.id}`,
@@ -98,20 +148,43 @@ function historyDetailSnapshot(
   }
 }
 
-function SupportCatalogDialog({
+export function SupportCatalogDialog({
   open,
   onClose,
+  onCoworkPrepared,
 }: {
   open: boolean
   onClose: () => void
+  onCoworkPrepared: (installationId: string) => void
 }) {
   const { t } = useTranslation('settings')
   const [products, setProducts] = useState<AgentIntegrationSupportProductDto[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
+  const [coworkPreflight, setCoworkPreflight] = useState<AgentIntegrationClaudeCoworkPreflightDto | null>(null)
+  const [coworkBusy, setCoworkBusy] = useState(false)
+  const [coworkError, setCoworkError] = useState<string | null>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
+  const coworkReviewRef = useRef<HTMLElement>(null)
   const previousFocusRef = useRef<HTMLElement | null>(null)
+  const openRef = useRef(open)
+  const coworkSessionSequence = useRef(0)
+  const coworkRequestSequence = useRef(0)
+  openRef.current = open
+
+  const resetCoworkFlow = useCallback(() => {
+    coworkSessionSequence.current += 1
+    coworkRequestSequence.current += 1
+    setCoworkPreflight(null)
+    setCoworkBusy(false)
+    setCoworkError(null)
+  }, [])
+
+  const close = useCallback(() => {
+    resetCoworkFlow()
+    onClose()
+  }, [onClose, resetCoworkFlow])
 
   const load = useCallback(async () => {
     setError(null)
@@ -128,15 +201,21 @@ function SupportCatalogDialog({
 
   useEffect(() => {
     if (!open) return
-    return acquireModalInert(document.getElementById('root'))
-  }, [open])
+    resetCoworkFlow()
+    const releaseInert = acquireModalInert(document.getElementById('root'))
+    return () => {
+      coworkSessionSequence.current += 1
+      coworkRequestSequence.current += 1
+      releaseInert()
+    }
+  }, [open, resetCoworkFlow])
 
   useEffect(() => {
     if (!open) return
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.stopPropagation()
-        onClose()
+        close()
         return
       }
       if (event.key !== 'Tab') return
@@ -156,7 +235,12 @@ function SupportCatalogDialog({
     }
     window.addEventListener('keydown', handleKeyDown, true)
     return () => window.removeEventListener('keydown', handleKeyDown, true)
-  }, [onClose, open])
+  }, [close, open])
+
+  useEffect(() => {
+    if (!open || !coworkPreflight) return
+    requestAnimationFrame(() => coworkReviewRef.current?.focus())
+  }, [coworkPreflight, open])
 
   useEffect(() => {
     if (open) {
@@ -169,17 +253,54 @@ function SupportCatalogDialog({
   }, [open])
 
   if (!open) return null
+  const previewCowork = async () => {
+    const session = coworkSessionSequence.current
+    const request = ++coworkRequestSequence.current
+    const isCurrent = () => openRef.current
+      && coworkSessionSequence.current === session
+      && coworkRequestSequence.current === request
+    setCoworkBusy(true)
+    setCoworkError(null)
+    try {
+      const preflight = await agentIntegrationsApi().previewClaudeCoworkSetup()
+      if (isCurrent()) setCoworkPreflight(preflight)
+    } catch (previewError) {
+      if (isCurrent()) setCoworkError(previewError instanceof Error ? previewError.message : t('agent.managed.unknownError'))
+    } finally {
+      if (isCurrent()) setCoworkBusy(false)
+    }
+  }
+  const prepareCowork = async () => {
+    if (!coworkPreflight) return
+    const session = coworkSessionSequence.current
+    const request = ++coworkRequestSequence.current
+    const isCurrent = () => openRef.current
+      && coworkSessionSequence.current === session
+      && coworkRequestSequence.current === request
+    setCoworkBusy(true)
+    setCoworkError(null)
+    try {
+      const prepared = await agentIntegrationsApi().prepareClaudeCoworkSetup(coworkPreflight.preflightHash)
+      if (!isCurrent()) return
+      setCoworkPreflight(null)
+      onCoworkPrepared(prepared.installationId)
+    } catch (prepareError) {
+      if (isCurrent()) setCoworkError(prepareError instanceof Error ? prepareError.message : t('agent.managed.unknownError'))
+    } finally {
+      if (isCurrent()) setCoworkBusy(false)
+    }
+  }
   const filtered = (products ?? []).filter(product => matchesSupportQuery(product, query))
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="theme-modal-overlay absolute inset-0 backdrop-blur-sm" onClick={onClose} aria-hidden />
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="support-catalog-title" className="theme-popup-surface relative flex max-h-[80vh] w-full max-w-lg flex-col rounded-2xl border">
+      <div className="theme-modal-overlay absolute inset-0 backdrop-blur-sm" onClick={close} aria-hidden />
+      <div ref={dialogRef} data-support-catalog-dialog role="dialog" aria-modal="true" aria-labelledby="support-catalog-title" className="theme-popup-surface relative flex max-h-[80vh] w-full max-w-lg flex-col rounded-2xl border">
         <header className="flex items-start justify-between border-b border-white/[0.07] p-4">
           <div>
             <h3 id="support-catalog-title" className="text-sm font-semibold text-gray-100">{t('agent.managed.supportCatalog')}</h3>
             <p className="mt-1 text-xs text-gray-400">{t('agent.managed.supportCatalogDescription')}</p>
           </div>
-          <button ref={closeRef} type="button" onClick={onClose} aria-label={t('agent.managed.close')} className="rounded p-1 text-gray-500 hover:bg-white/5 hover:text-gray-200"><X size={16} aria-hidden /></button>
+          <button ref={closeRef} type="button" onClick={close} aria-label={t('agent.managed.close')} className="rounded p-1 text-gray-500 hover:bg-white/5 hover:text-gray-200"><X size={16} aria-hidden /></button>
         </header>
         <div className="border-b border-white/[0.06] p-4">
           <label className="flex items-center gap-2 rounded-lg border border-white/[0.07] bg-white/[0.03] px-3 py-2">
@@ -189,6 +310,31 @@ function SupportCatalogDialog({
           </label>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          {coworkPreflight && (
+            <section
+              ref={coworkReviewRef}
+              data-cowork-guided-review
+              className="mb-3 rounded-xl border border-indigo-400/20 bg-indigo-400/[0.07] p-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/60"
+              aria-labelledby="cowork-guided-title"
+              aria-live="polite"
+              role="status"
+              tabIndex={-1}
+            >
+              <h4 id="cowork-guided-title" className="text-xs font-semibold text-gray-100">{t('agent.managed.coworkGuided.title')}</h4>
+              <p className="mt-1 text-xs text-gray-300">{t('agent.managed.coworkGuided.summary', { version: coworkPreflight.hostVersion })}</p>
+              <ul className="mt-2 space-y-1 text-xs text-gray-400">
+                <li>{t('agent.managed.coworkGuided.noDesktopWrite')}</li>
+                <li>{t('agent.managed.coworkGuided.manualUpload')}</li>
+                <li>{t('agent.managed.coworkGuided.runtimeProof')}</li>
+              </ul>
+              {coworkError && <p className="mt-2 text-xs text-red-300" role="alert">{coworkError}</p>}
+              <div className="mt-3 flex justify-end gap-2">
+                <button type="button" disabled={coworkBusy} onClick={() => setCoworkPreflight(null)} className="rounded-lg border border-white/[0.08] px-3 py-1.5 text-xs text-gray-300 disabled:opacity-50">{t('agent.managed.back')}</button>
+                <button data-cowork-guided-confirm type="button" disabled={coworkBusy} onClick={() => void prepareCowork()} className="theme-confirm-primary rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50">{coworkBusy ? t('agent.managed.loadingPlan') : t('agent.managed.coworkGuided.confirm')}</button>
+              </div>
+            </section>
+          )}
+          {!coworkPreflight && coworkError && <p className="mb-3 text-xs text-red-300" role="alert">{coworkError}</p>}
           {error ? (
             <div className="text-xs text-red-300" role="alert">
               <p>{error}</p>
@@ -206,7 +352,12 @@ function SupportCatalogDialog({
                 <section key={product.id} className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3">
                   <h4 className="text-xs font-medium text-gray-200">{product.displayName}</h4>
                   <div className="mt-2 flex flex-wrap gap-1.5">
-                    {product.variants.map(variant => (
+                    {product.variants.map(variant => variant.id === 'claude-cowork-local' ? (
+                      <div key={variant.id} className="flex w-full items-center justify-between gap-3 rounded-lg bg-white/[0.04] px-2 py-1.5">
+                        <span className="text-xs text-gray-400">{variant.displayName} · {t(`agent.managed.maturity.${variant.maturity}`)}</span>
+                        <button data-cowork-guided-start type="button" disabled={coworkBusy} onClick={() => void previewCowork()} className="shrink-0 rounded-md border border-indigo-400/20 bg-indigo-400/10 px-2 py-1 text-xs text-indigo-200 hover:bg-indigo-400/15 disabled:opacity-50">{t('agent.managed.coworkGuided.start')}</button>
+                      </div>
+                    ) : (
                       <span key={variant.id} className="rounded-md bg-white/[0.04] px-2 py-1 text-xs text-gray-400">
                         {variant.displayName} · {t(`agent.managed.maturity.${variant.maturity}`)}
                       </span>
@@ -238,8 +389,11 @@ export function AgentIntegration() {
   const [batchOpen, setBatchOpen] = useState(false)
   const [requestedInstallationIds, setRequestedInstallationIds] = useState<readonly string[] | undefined>()
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [customAgentOpen, setCustomAgentOpen] = useState(false)
+  const [customLegacyInstallationId, setCustomLegacyInstallationId] = useState<string | null>(null)
   const [selectedHistoryInstallationId, setSelectedHistoryInstallationId] = useState<string | null>(null)
   const [supportOpen, setSupportOpen] = useState(false)
+  const [pendingCoworkInstallationId, setPendingCoworkInstallationId] = useState<string | null>(null)
   const [applyTask, setApplyTask] = useState<AgentIntegrationApplyTaskDto | null>(null)
   const applyTaskRef = useRef<AgentIntegrationApplyTaskDto | null>(null)
   const [applyTasks, setApplyTasks] = useState<AgentIntegrationApplyTaskDto[]>([])
@@ -400,6 +554,12 @@ export function AgentIntegration() {
   const selectedHistoryInstallation = snapshot?.historyInstallations.find(
     installation => installation.id === selectedHistoryInstallationId,
   ) ?? null
+  const customSourceInstallations = useMemo(() => snapshot?.installations.filter(installation => (
+    installation.familyId !== 'custom-local-agent'
+    && installation.hostVariant !== 'custom-local-mcp'
+    && installation.manageable
+    && installation.statusGroup !== 'disconnected'
+  )) ?? [], [snapshot])
 
   useEffect(() => {
     const installationId = searchParams.get('installation')
@@ -487,6 +647,14 @@ export function AgentIntegration() {
     setBatchOpen(true)
   }
 
+  useEffect(() => {
+    if (!pendingCoworkInstallationId
+      || !snapshot?.installations.some(item => item.id === pendingCoworkInstallationId)) return
+    setRequestedInstallationIds([pendingCoworkInstallationId])
+    setBatchOpen(true)
+    setPendingCoworkInstallationId(null)
+  }, [pendingCoworkInstallationId, snapshot])
+
   return (
     <div ref={layoutRef} className="w-full max-w-[1280px] space-y-5">
       <section className="glass-card rounded-xl p-5" aria-labelledby="managed-overview-title">
@@ -505,6 +673,16 @@ export function AgentIntegration() {
             {scanning ? t('agent.managed.scanning') : t('agent.managed.recheck')}
           </button>
         </header>
+
+        <AgentIntegrationReleasePolicyBanner
+          mode={snapshot?.releasePolicy?.mode}
+          title={t(snapshot?.releasePolicy?.mode === 'invalid_manifest'
+            ? 'agent.managed.releasePolicy.invalidManifestTitle'
+            : 'agent.managed.releasePolicy.emergencyReadOnlyTitle')}
+          description={t(snapshot?.releasePolicy?.mode === 'invalid_manifest'
+            ? 'agent.managed.releasePolicy.invalidManifestDescription'
+            : 'agent.managed.releasePolicy.emergencyReadOnlyDescription')}
+        />
 
         {summary && (
           <>
@@ -553,13 +731,17 @@ export function AgentIntegration() {
         const failed = applyTaskSummary.failed > 0 || applyTaskSummary.needsRecovery > 0
         const pendingVerification = !failed && applyTask.state === 'completed' && applyTaskSummary.awaitingVerification > 0
         const interrupted = !failed && applyTaskSummary.interrupted > 0
+        const superseded = !failed && !pendingVerification && !interrupted
+          && applyTaskSummary.otherAttention === 0 && applyTaskSummary.superseded > 0
         const tone = applyTask.state === 'running'
           ? 'border-indigo-400/15 bg-indigo-400/[0.06] text-indigo-200'
           : failed
             ? 'border-red-400/15 bg-red-400/[0.06] text-red-200'
             : interrupted || pendingVerification || applyTaskSummary.otherAttention > 0
               ? 'border-amber-400/15 bg-amber-400/[0.06] text-amber-200'
-              : 'border-emerald-400/15 bg-emerald-400/[0.06] text-emerald-200'
+              : superseded
+                ? 'border-white/[0.08] bg-white/[0.03] text-gray-300'
+                : 'border-emerald-400/15 bg-emerald-400/[0.06] text-emerald-200'
         return (
           <div
             data-task-feed-key={applyTask.feedKey ?? `task:${applyTask.id}`}
@@ -572,7 +754,9 @@ export function AgentIntegration() {
                 ? 'critical'
                 : interrupted || pendingVerification || applyTaskSummary.otherAttention > 0
                   ? 'attention'
-                  : 'success'}
+                  : superseded
+                    ? 'superseded'
+                    : 'success'}
             className={`rounded-xl border px-4 py-3 text-xs ${tone}`}
             role={failed ? 'alert' : 'status'}
             aria-live="polite"
@@ -658,6 +842,7 @@ export function AgentIntegration() {
               <p className="mt-1">
                 {applyTaskSummary.committed} {t('agent.managed.execution.committed')}
                 {' · '}{applyTaskSummary.awaitingVerification} {t('agent.managed.execution.awaiting_verification')}
+                {' · '}{applyTaskSummary.superseded} {t('agent.managed.execution.superseded')}
                 {' · '}{applyTaskSummary.failed} {t('agent.managed.execution.failed')}
                 {' · '}{applyTaskSummary.needsRecovery} {t('agent.managed.execution.needs_recovery')}
                 {' · '}{applyTaskSummary.interrupted} {t('agent.managed.execution.interrupted')}
@@ -854,10 +1039,37 @@ export function AgentIntegration() {
         </button>
         {advancedOpen && (
           <div id="agent-advanced-connections" className="mt-2 space-y-3">
-            <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
-              <h4 className="text-xs font-medium text-gray-300">{t('agent.managed.customAgent')}</h4>
-              <p className="mt-1 text-xs leading-relaxed text-gray-400">{t('agent.managed.customAgentDescription')}</p>
-              <p className="mt-2 text-xs text-gray-400">{t('agent.managed.customAgentUnavailable')}</p>
+            <div className="glass-card rounded-xl p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h4 className="text-xs font-medium text-gray-200">{t('agent.managed.customAgent')}</h4>
+                  <p className="mt-1 max-w-2xl text-xs leading-relaxed text-gray-400">{t('agent.managed.customAgentDescription')}</p>
+                  <p className="mt-2 text-[11px] text-gray-500">{t('agent.managed.customAgentBoundary')}</p>
+                </div>
+                <button
+                  data-custom-agent-open
+                  type="button"
+                  onClick={() => { setCustomLegacyInstallationId(null); setCustomAgentOpen(true) }}
+                  disabled={Boolean(snapshot?.releasePolicy
+                    && (snapshot.releasePolicy.mode !== 'active' || !snapshot.releasePolicy.customLocalAgentEnabled))}
+                  className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-indigo-400/25 bg-indigo-400/10 px-3 py-2 text-xs font-medium text-indigo-200 hover:bg-indigo-400/15 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Plus size={13} aria-hidden />
+                  {t('agent.managed.customAgentAdd')}
+                </button>
+              </div>
+              {snapshot?.installations.filter(item => item.familyId === 'custom-local-agent'
+                && item.hostVariant === 'custom-local-mcp' && item.version === null
+                && item.desiredState === 'unmanaged').map(item => (
+                <button key={item.id} type="button" onClick={() => { setCustomLegacyInstallationId(item.id); setCustomAgentOpen(true) }} className="mt-3 rounded-lg border border-indigo-400/20 bg-indigo-400/[0.06] px-3 py-2 text-xs text-indigo-200 hover:bg-indigo-400/10">
+                  {t('agent.managed.custom.continueLegacy', { name: item.displayName })}
+                </button>
+              ))}
+              {snapshot?.releasePolicy && (snapshot.releasePolicy.mode !== 'active' || !snapshot.releasePolicy.customLocalAgentEnabled) && (
+                <p className="mt-3 rounded-lg border border-amber-400/15 bg-amber-400/[0.06] px-3 py-2 text-xs text-amber-200" role="status">
+                  {t('agent.managed.customAgentReadOnly')}
+                </p>
+              )}
             </div>
             <section className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4" aria-labelledby="agent-connection-history-title">
               <div className="flex items-start gap-2">
@@ -942,7 +1154,35 @@ export function AgentIntegration() {
           fallbackFocusRef={localAgentsHeadingRef}
         />
       )}
-      <SupportCatalogDialog open={supportOpen} onClose={() => setSupportOpen(false)} />
+      <SupportCatalogDialog
+        open={supportOpen}
+        onClose={() => setSupportOpen(false)}
+        onCoworkPrepared={installationId => {
+          setSupportOpen(false)
+          setPendingCoworkInstallationId(installationId)
+          refetch()
+        }}
+      />
+      {snapshot && (
+        <CustomLocalAgentDialog
+          open={customAgentOpen}
+          sourceInstallations={customSourceInstallations}
+          legacyCustomInstallations={snapshot.installations.filter(item => item.familyId === 'custom-local-agent'
+            && item.hostVariant === 'custom-local-mcp' && item.version === null
+            && item.desiredState === 'unmanaged')}
+          initialLegacyInstallationId={customLegacyInstallationId}
+          onClose={() => setCustomAgentOpen(false)}
+          onComplete={refetch}
+          onReviewResult={installationId => {
+            const installation = snapshot.installations.find(item => item.id === installationId)
+            setCustomAgentOpen(false)
+            setSelectedHistoryInstallationId(null)
+            setSelectedFamilyId(installation?.familyId ?? 'custom-local-agent')
+            setSelectedInstallationId(installationId)
+            requestAnimationFrame(() => localAgentsHeadingRef.current?.focus())
+          }}
+        />
+      )}
     </div>
   )
 }

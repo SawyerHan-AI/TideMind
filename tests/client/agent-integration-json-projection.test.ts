@@ -124,4 +124,64 @@ describe('selector-level managed JSON projection', () => {
     expect(() => inspectJsonProjection(target, ['mcpServers', 'tidemind'])).toThrow(/malformed/)
     expect(() => inspectJsonProjection(target, ['__proto__'])).toThrow(/invalid_json_selector/)
   })
+
+  it('creates, updates and removes a JSONC selector while preserving unrelated bytes', () => {
+    target = path.join(root, 'opencode.jsonc')
+    const original = '{\n  // keep this exact comment\n  "theme" : "dark",\n  "mcp": {\n    "other": { "type": "remote" }, // keep sibling\n  },\n}\n'
+    fs.writeFileSync(target, original)
+    const desired = { type: 'local', command: ['/app/tm-node', '/app/mcp.cjs'], enabled: true }
+    const create = planJsonProjection({
+      targetPath: target,
+      selector: ['mcp', 'tidemind-eb_1'],
+      desiredFragment: desired,
+      ownedFragmentHash: null,
+    })
+    expect(create.action).toBe('create')
+    applyJsonProjection(create)
+    const created = fs.readFileSync(target, 'utf8')
+    expect(created).toContain('// keep this exact comment')
+    expect(created).toContain('"theme" : "dark"')
+    expect(created).toContain('// keep sibling')
+
+    const update = planJsonProjection({
+      targetPath: target,
+      selector: ['mcp', 'tidemind-eb_1'],
+      desiredFragment: { ...desired, enabled: false },
+      ownedFragmentHash: sha256Json(desired),
+    })
+    expect(update.action).toBe('update')
+    applyJsonProjection(update)
+
+    const remove = planJsonProjection({
+      targetPath: target,
+      selector: ['mcp', 'tidemind-eb_1'],
+      desiredFragment: undefined,
+      ownedFragmentHash: sha256Json({ ...desired, enabled: false }),
+    })
+    expect(remove.action).toBe('remove')
+    applyJsonProjection(remove)
+    expect(fs.readFileSync(target, 'utf8')).toBe(original)
+  })
+
+  it('rejects malformed JSONC without changing it', () => {
+    target = path.join(root, 'opencode.jsonc')
+    fs.writeFileSync(target, '{ // unterminated\n  "mcp": {')
+    expect(() => inspectJsonProjection(target, ['mcp', 'tidemind'])).toThrow(/malformed/)
+    expect(fs.readFileSync(target, 'utf8')).toBe('{ // unterminated\n  "mcp": {')
+  })
+
+  it('retains whole-container CAS protection for JSONC edits', () => {
+    target = path.join(root, 'opencode.jsonc')
+    fs.writeFileSync(target, '{\n  // user setting\n  "theme": "dark",\n}\n')
+    const plan = planJsonProjection({
+      targetPath: target,
+      selector: ['mcp', 'tidemind'],
+      desiredFragment: { type: 'local' },
+      ownedFragmentHash: null,
+    })
+    fs.writeFileSync(target, '{\n  // concurrent user setting\n  "theme": "light",\n}\n')
+
+    expect(() => applyJsonProjection(plan)).toThrow(/container_precondition_changed/)
+    expect(fs.readFileSync(target, 'utf8')).toContain('concurrent user setting')
+  })
 })

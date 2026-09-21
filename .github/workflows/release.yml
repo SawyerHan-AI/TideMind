@@ -1,27 +1,90 @@
 name: Release
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('{0} {1}', inputs.candidate_only && 'Candidate' || 'Preflight', inputs.request_id) || format('Release {0}', github.ref_name) }}
 
 on:
   workflow_dispatch:
+    inputs:
+      candidate_only:
+        description: Build a signed Apple Silicon candidate for host acceptance without publishing
+        type: boolean
+        default: false
+      source_sha:
+        description: Private source SHA from the synchronized main commit (required for candidates)
+        type: string
+        required: false
+      request_id:
+        description: Unique request identifier supplied by the release CLI to bind this run
+        type: string
+        required: false
   push:
     tags:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  admit-source:
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.admit.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      # This job receives no Apple secrets and executes no repository code.
+      # Manual RC packaging is allowed only from the exact main workflow ref;
+      # tag pushes remain the sole path that can create a draft Release.
+      - name: Admit release source before secrets
+        id: admit
+        shell: bash
+        env:
+          CANDIDATE_ONLY: ${{ inputs.candidate_only }}
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            [ "$GITHUB_REF" = refs/heads/main ]
+            [ "$GITHUB_REF_TYPE" = branch ]
+            [ "$GITHUB_REF_NAME" = main ]
+          elif [ "$GITHUB_EVENT_NAME" = push ]; then
+            [ "$GITHUB_REF_TYPE" = tag ]
+            [[ "$GITHUB_REF" == refs/tags/v* ]]
+          else
+            echo "::error::unsupported release event $GITHUB_EVENT_NAME"
+            exit 1
+          fi
+          source_commit="$(git log -1 --format='%(trailers:key=TideMind-Source-Commit,valueonly)')"
+          [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]]
+          if [ "$CANDIDATE_ONLY" = true ]; then
+            [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]
+            [ "$REQUESTED_SOURCE_SHA" = "$source_commit" ]
+          fi
+          echo "source_sha=$source_commit" >> "$GITHUB_OUTPUT"
+
   build-mac:
+    needs: admit-source
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: arm64
             runner: macos-15
-          - arch: x64
-            runner: macos-15-intel
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      TIDEMIND_SOURCE_COMMIT: ${{ needs.admit-source.outputs.source_sha }}
     steps:
+      - name: Verify native hosted runner
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = github-hosted ]
+          [ "$RUNNER_OS" = macOS ]
+          [ "$RUNNER_ARCH" = ARM64 ]
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Bind release tag to package version
         if: github.ref_type == 'tag'
@@ -53,9 +116,56 @@ jobs:
               exit 1
             fi
           done
+          [ "$APPLE_TEAM_ID" = Z4U232GXH5 ]
 
       - name: Install root dependencies
         run: npm ci
+
+      # Real-host acceptance is a release artifact copied by release.mjs after
+      # the private source checkout is frozen. The OSS commit trailer binds the
+      # evidence bundle back to that exact private source commit.
+      - name: Verify real-host Agent Integration acceptance
+        if: inputs.candidate_only != true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          source_commit="$(git log -1 --format='%(trailers:key=TideMind-Source-Commit,valueonly)')"
+          if [[ ! "$source_commit" =~ ^[0-9a-f]{40,64}$ ]]; then
+            echo "::error::release commit is missing TideMind-Source-Commit binding"
+            exit 1
+          fi
+          transfer_dir="$RUNNER_TEMP/agent-host-candidate-transfer"
+          mkdir -p "$transfer_dir"
+          declare -a verifier_args=()
+          for architecture in arm64; do
+            receipt="release-evidence/agent-integration-host-candidate-transfer/$version-$architecture.json"
+            transfer_tag="$(node -p "JSON.parse(require('fs').readFileSync('$receipt','utf8')).transferTag")"
+            asset_name="$(node -p "JSON.parse(require('fs').readFileSync('$receipt','utf8')).assetName")"
+            extract_dir="$RUNNER_TEMP/agent-host-candidate-extracted-$architecture"
+            gh release download "$transfer_tag" --repo "$GITHUB_REPOSITORY" \
+              --pattern "$asset_name" --dir "$transfer_dir"
+            candidate_app="$(node scripts/agent-host-candidate-transfer.mjs extract \
+              --architecture "$architecture" \
+              --receipt "$receipt" \
+              --archive "$transfer_dir/$asset_name" \
+              --index "release-evidence/agent-integration-host-acceptance/$version/index.json" \
+              --destination "$extract_dir" \
+              --source-commit "$source_commit" \
+              --app-version "$version")"
+            verifier_args+=("--candidate-app-$architecture" "$candidate_app")
+            if [ "$architecture" = '${{ matrix.arch }}' ]; then
+              echo "TIDEMIND_ACCEPTED_APP=$candidate_app" >> "$GITHUB_ENV"
+            fi
+          done
+          node scripts/verify-agent-integration-host-acceptance.mjs \
+            --index "release-evidence/agent-integration-host-acceptance/$version/index.json" \
+            --app-version "$version" \
+            --source-commit "$source_commit" \
+            "${verifier_args[@]}"
+          echo "TIDEMIND_SOURCE_COMMIT=$source_commit" >> "$GITHUB_ENV"
 
       # macOS 打包配置 sanity check(2026-05-21 v0.2.72 audit C HIGH-1 修复)。
       # 必须在 client build 之前跑,防止 helper entitlement 错误进入 build → 用户启动 SIGKILL。
@@ -69,6 +179,11 @@ jobs:
 
       - name: Install client dependencies
         run: cd client && npm ci
+
+      # This runs in the architecture job and cannot be
+      # bypassed by the local release command's --skip-health escape hatch.
+      - name: Verify Agent Integration release manifest
+        run: npm run verify:agent-integration-release
 
       - name: Build client
         run: cd client && npm run build
@@ -98,8 +213,12 @@ jobs:
       #   APPLE_TEAM_ID                    10 字符 Team ID(在 developer.apple.com Membership 看)
       #
       # 详细配置步骤见 SECURITY.md §Apple Code Signing。
+      # --prepackaged creates distribution containers from the accepted .app;
+      # it skips app rebuilding/signing. Final ZIP/DMG contents are independently
+      # extracted below and must preserve the accepted physical bundle hash.
       - name: Package macOS
-        run: cd client && npx electron-builder --mac --${{ matrix.arch }} --publish never
+        if: inputs.candidate_only != true
+        run: cd client && npx electron-builder --mac --${{ matrix.arch }} --prepackaged "$TIDEMIND_ACCEPTED_APP" --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.MAC_CERTIFICATE }}
@@ -108,8 +227,20 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      # electron-builder公证并staple .app，但不会为随后生成的DMG提交独立票据。
-      # 在验证和上传前公证exact架构DMG，并把票据装订到最终分发文件。
+      - name: Package signed and notarized candidate
+        if: inputs.candidate_only == true
+        run: |
+          (cd client && npx electron-builder --mac --arm64 --publish never)
+          echo "TIDEMIND_ACCEPTED_APP=$GITHUB_WORKSPACE/client/release/mac-arm64/Tide Mind.app" >> "$GITHUB_ENV"
+        env:
+          CSC_LINK: ${{ secrets.MAC_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # 候选 .app 在真实宿主验收前已公证/staple，封装阶段不得再改变它。
+      # 在验证和上传前另外公证exact架构DMG，并把票据装订到最终分发文件。
       - name: Notarize and staple architecture DMG
         shell: bash
         env:
@@ -143,26 +274,43 @@ jobs:
           const receipt = JSON.parse(fs.readFileSync(process.env.RECEIPT_PATH, 'utf8'))
           if (receipt.provenance?.gitHead !== process.env.GITHUB_SHA) throw new Error('performance receipt SHA mismatch')
           if (receipt.thresholdEvaluation?.status !== 'passed') throw new Error('performance receipt did not pass')
-          const candidates = [
-            'client/release/mac-arm64/Tide Mind.app/Contents/Resources/app.asar.unpacked/out/bin/metabolism-worker.cjs',
-            'client/release/mac/Tide Mind.app/Contents/Resources/app.asar.unpacked/out/bin/metabolism-worker.cjs',
-          ]
-          const worker = candidates.find(fs.existsSync)
-          if (!worker) throw new Error('release Worker bundle is missing')
+          const worker = path.join(process.env.TIDEMIND_ACCEPTED_APP, 'Contents/Resources/app.asar.unpacked/out/bin/metabolism-worker.cjs')
+          if (!fs.existsSync(worker)) throw new Error('accepted release Worker bundle is missing')
           const actual = crypto.createHash('sha256').update(fs.readFileSync(worker)).digest('hex')
           if (actual !== receipt.provenance.sourceWorkerSha256) throw new Error('release Worker differs from performance candidate')
           NODE
 
       - name: Verify signed/notarized package and native architecture
-        run: node scripts/verify-mac-release-assets.mjs --release-dir client/release --arch ${{ matrix.arch }}
+        if: inputs.candidate_only != true
+        run: |
+          mkdir -p client/release/provenance
+          node scripts/verify-mac-release-assets.mjs \
+            --release-dir client/release \
+            --arch ${{ matrix.arch }} \
+            --app "$TIDEMIND_ACCEPTED_APP" \
+            --acceptance-index "release-evidence/agent-integration-host-acceptance/$(node -p "require('./package.json').version")/index.json" \
+            --source-commit "$TIDEMIND_SOURCE_COMMIT" \
+            --receipt "client/release/provenance/mac-${{ matrix.arch }}.json"
+
+      - name: Verify signed notarized candidate and containers
+        if: inputs.candidate_only == true
+        run: |
+          mkdir -p "$RUNNER_TEMP/mac-rc"
+          node scripts/verify-mac-release-assets.mjs \
+            --private-rc-candidate \
+            --release-dir client/release \
+            --arch arm64 \
+            --source-commit "$TIDEMIND_SOURCE_COMMIT" \
+            --receipt "$RUNNER_TEMP/mac-rc/candidate-verification.json"
 
       - name: Run packaged Worker and CLI teardown smoke
-        run: node scripts/smoke-packaged-metabolism-worker.mjs --arch ${{ matrix.arch }}
+        run: node scripts/smoke-packaged-metabolism-worker.mjs --arch ${{ matrix.arch }} --app "$TIDEMIND_ACCEPTED_APP"
 
       - name: Rename architecture metadata
         run: mv client/release/latest-mac.yml client/release/latest-mac-${{ matrix.arch }}.yml
 
       - name: Stage architecture assets
+        if: inputs.candidate_only != true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: mac-release-${{ matrix.arch }}
@@ -171,12 +319,82 @@ jobs:
             client/release/*.zip
             client/release/*.blockmap
             client/release/latest-mac-${{ matrix.arch }}.yml
+            client/release/provenance/mac-${{ matrix.arch }}.json
           if-no-files-found: error
           retention-days: 1
+
+      - name: Stage signed candidate
+        if: inputs.candidate_only == true
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/mac-rc"
+          version="$(node -p "require('./client/package.json').version")"
+          ditto -c -k --keepParent "$TIDEMIND_ACCEPTED_APP" "$stage/Tide.Mind-$version-arm64-stapled-app.zip"
+          cp "client/release/Tide.Mind-$version-arm64.dmg" "$stage/"
+          cp "client/release/Tide.Mind-$version-arm64.zip" "$stage/"
+          cp "client/release/Tide.Mind-$version-arm64.dmg.blockmap" "$stage/"
+          cp client/release/latest-mac-arm64.yml "$stage/"
+          (cd "$stage" && shasum -a 256 -- * > files.sha256)
+
+      - name: Upload immutable candidate
+        if: inputs.candidate_only == true
+        id: upload-candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mac-rc-arm64-${{ needs.admit-source.outputs.source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mac-rc/*
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+          overwrite: false
+
+      - name: Create immutable upload receipt
+        if: inputs.candidate_only == true
+        env:
+          ARTIFACT_ID: ${{ steps.upload-candidate.outputs.artifact-id }}
+          ARTIFACT_URL: ${{ steps.upload-candidate.outputs.artifact-url }}
+          ARTIFACT_DIGEST: ${{ steps.upload-candidate.outputs.artifact-digest }}
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs')
+          for (const key of ['ARTIFACT_ID', 'ARTIFACT_URL', 'ARTIFACT_DIGEST', 'TIDEMIND_SOURCE_COMMIT', 'GITHUB_SHA', 'GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT']) {
+            if (!process.env[key]) throw new Error(`missing ${key}`)
+          }
+          if (!/^[a-f0-9]{64}$/.test(process.env.ARTIFACT_DIGEST)) throw new Error('invalid artifact digest')
+          const expectedUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}/artifacts/${process.env.ARTIFACT_ID}`
+          if (process.env.ARTIFACT_URL !== expectedUrl) throw new Error('artifact URL is not bound to this run')
+          const receipt = {
+            schemaVersion: 1,
+            purpose: 'mac_rc_upload',
+            sourceCommit: process.env.TIDEMIND_SOURCE_COMMIT,
+            publicCommit: process.env.GITHUB_SHA,
+            appVersion: require('./client/package.json').version,
+            architecture: 'arm64',
+            repository: process.env.GITHUB_REPOSITORY,
+            runId: process.env.GITHUB_RUN_ID,
+            runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            artifactId: process.env.ARTIFACT_ID,
+            artifactUrl: process.env.ARTIFACT_URL,
+            artifactDigest: process.env.ARTIFACT_DIGEST,
+          }
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/mac-rc-upload-receipt.json`, `${JSON.stringify(receipt, null, 2)}\n`, { flag: 'wx' })
+          NODE
+
+      - name: Upload candidate receipt
+        if: inputs.candidate_only == true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mac-rc-upload-receipt-${{ needs.admit-source.outputs.source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mac-rc-upload-receipt.json
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: false
 
   publish-draft:
     if: github.event_name == 'push'
     needs: build-mac
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -195,6 +413,18 @@ jobs:
           pattern: mac-release-*
           path: client/release
           merge-multiple: true
+
+      - name: Verify source-to-bundle receipts for supported architectures
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_commit="$(git log -1 --format='%(trailers:key=TideMind-Source-Commit,valueonly)')"
+          version="$(node -p "require('./package.json').version")"
+          node scripts/verify-agent-host-release-artifacts.mjs \
+            --release-dir client/release \
+            --acceptance-index "release-evidence/agent-integration-host-acceptance/$version/index.json" \
+            --app-version "$version" \
+            --source-commit "$source_commit"
 
       - name: Merge and verify update metadata
         run: node scripts/merge-mac-update-metadata.mjs client/release

@@ -6,7 +6,6 @@
 import { useEffect, useId, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
-import { brand, btnText } from '../../lib/tokens'
 import { acquireModalInert } from '../../lib/modal-inert'
 
 interface ConfirmDialogProps {
@@ -19,6 +18,7 @@ interface ConfirmDialogProps {
   confirmText?: string
   cancelText?: string
   danger?: boolean
+  confirmDisabled?: boolean
 }
 
 export function ConfirmDialog({
@@ -31,6 +31,7 @@ export function ConfirmDialog({
   confirmText,
   cancelText,
   danger = false,
+  confirmDisabled = false,
 }: ConfirmDialogProps) {
   const { t } = useTranslation('common')
   const resolvedConfirmText = confirmText ?? t('actions.confirm')
@@ -96,7 +97,7 @@ export function ConfirmDialog({
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       {/* Backdrop */}
       <div
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+        className="theme-modal-overlay absolute inset-0 backdrop-blur-sm"
         onClick={onCancel}
         aria-hidden
       />
@@ -107,8 +108,7 @@ export function ConfirmDialog({
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={description ? descriptionId : undefined}
-        className="relative w-full max-w-md mx-4 rounded-xl p-6 shadow-2xl border border-white/[0.08]"
-        style={{ background: 'var(--theme-glass-bg, #1a1a2e)' }}
+        className="theme-popup-surface relative mx-4 w-full max-w-md rounded-xl border p-6"
       >
         <h3 id={titleId} className="text-sm font-semibold text-gray-100 mb-2">{title}</h3>
         {description && (
@@ -128,20 +128,10 @@ export function ConfirmDialog({
           <button
             type="button"
             onClick={onConfirm}
-            className="px-4 py-2 rounded-lg text-xs font-medium transition-all"
-            style={
-              danger
-                ? {
-                    background: 'rgba(239, 68, 68, 0.15)',
-                    border: '1px solid rgba(239, 68, 68, 0.3)',
-                    color: '#f87171',
-                  }
-                : {
-                    background: brand.gradientAlpha,
-                    border: `1px solid ${brand.secondary}4d`,
-                    color: btnText.onBrand,
-                  }
-            }
+            disabled={confirmDisabled}
+            className={`rounded-lg px-4 py-2 text-xs font-medium transition-all ${danger
+              ? 'border border-red-400/30 bg-red-400/15 text-red-300 hover:bg-red-400/20'
+              : 'theme-confirm-primary'} disabled:cursor-not-allowed disabled:opacity-50`}
           >
             {resolvedConfirmText}
           </button>

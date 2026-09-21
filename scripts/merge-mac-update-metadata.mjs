@@ -3,9 +3,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import yaml from 'js-yaml'
+import { releaseMacArchitectures } from './release.mjs'
 
 const releaseDir = path.resolve(process.argv[2] ?? 'client/release')
-const documents = ['x64', 'arm64'].map((arch) => {
+const armMetadata = yaml.load(fs.readFileSync(path.join(releaseDir, 'latest-mac-arm64.yml'), 'utf8'))
+const architectures = releaseMacArchitectures(armMetadata?.version)
+const documents = ['x64', 'arm64'].filter(arch => architectures.includes(arch)).map((arch) => {
   const file = path.join(releaseDir, `latest-mac-${arch}.yml`)
   const document = yaml.load(fs.readFileSync(file, 'utf8'))
   if (!document || typeof document !== 'object' || !Array.isArray(document.files)) {
@@ -51,13 +54,13 @@ for (const entry of files) {
   }
 }
 
-const x64Zip = files.find((entry) => entry.url.endsWith('-x64.zip'))
+const primaryZip = files.find((entry) => entry.url.endsWith(`-${architectures.includes('x64') ? 'x64' : 'arm64'}.zip`))
 const releaseDates = documents.map(({ document }) => document.releaseDate).filter(Boolean).sort()
 const merged = {
   version: documents[0].document.version,
   files,
-  path: x64Zip.url,
-  sha512: x64Zip.sha512,
+  path: primaryZip.url,
+  sha512: primaryZip.sha512,
   releaseDate: releaseDates.at(-1),
 }
 fs.writeFileSync(path.join(releaseDir, 'latest-mac.yml'), yaml.dump(merged, { lineWidth: -1, noRefs: true }))

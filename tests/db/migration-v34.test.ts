@@ -112,6 +112,149 @@ describe('migration v34 — local Agent managed persistence', () => {
     expect(db.prepare('SELECT value FROM metadata WHERE key = ?')
       .get(AGENT_INTEGRATION_MINIMUM_WRITER_PROTOCOL_KEY))
       .toEqual({ value: String(AGENT_INTEGRATION_WRITER_PROTOCOL) })
+    const activitySql = (db.prepare(`
+      SELECT sql FROM sqlite_master
+      WHERE type = 'table' AND name = 'agent_host_activity_evidence'
+    `).get() as { sql: string }).sql
+    expect(activitySql).toContain("'session_end'")
+  })
+
+  it('invalidates pre-causal evidence while widening the lifecycle signal constraint', () => {
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const now = '2026-09-02T00:00:00.000Z'
+    db.prepare(`
+      INSERT INTO agent_installations (
+        id, family, host_variant, install_key, display_name, agent_id,
+        desired_state, verified_capability, verification_summary,
+        created_at, updated_at
+      ) VALUES ('cursor-old', 'cursor', 'cursor-desktop', 'cursor:old', 'Cursor',
+        'eb_cursor_old', 'managed', 4, 'verified', ?, ?)
+    `).run(now, now)
+    db.prepare(`
+      INSERT INTO installation_components (
+        installation_id, component_key, desired_state, verification_status,
+        created_at, updated_at
+      ) VALUES ('cursor-old', 'lifecycle', 'managed', 'verified', ?, ?)
+    `).run(now, now)
+    db.prepare(`
+      INSERT INTO reconcile_runs (
+        id, installation_id, operation_type, execution_plan_hash, state,
+        recovery_strategy, adapter_version, catalog_version, projection_version,
+        selector_schema_version, prepared_plan_json, desired_capability,
+        created_at, updated_at
+      ) VALUES (
+        'cursor-old-run', 'cursor-old', 'connect', 'plan-old', 'committed',
+        'readback_before_replay', '1', '1', '2', '1', '{}', 4, ?, ?
+      )
+    `).run(now, now)
+    db.prepare(`
+      INSERT INTO verification_results (
+        id, run_id, installation_id, component_key, family, host_variant,
+        runtime_realm, adapter_version, catalog_version, projection_version,
+        verification_manifest_version, method, identity_assertion, evidence_ref,
+        evidence_hash, result, invalidation_keys_json, verified_at, created_at
+      ) VALUES (
+        'cursor-old-verification', 'cursor-old-run', 'cursor-old', 'lifecycle',
+        'cursor', 'cursor-desktop', 'local_macos', '1', '1', '2', '1',
+        'host_activity_recognized:session_start', 'eb_cursor_old',
+        'host-activity:old-activity', 'verification-hash', 'verified', '[]', ?, ?
+      )
+    `).run(now, now)
+    db.prepare(`
+      UPDATE installation_components
+      SET verification_result_id = 'cursor-old-verification'
+      WHERE installation_id = 'cursor-old' AND component_key = 'lifecycle'
+    `).run()
+    db.prepare(`
+      UPDATE agent_installations
+      SET verification_result_id = 'cursor-old-verification'
+      WHERE id = 'cursor-old'
+    `).run()
+    db.exec(`
+      DROP TABLE agent_host_activity_evidence;
+      CREATE TABLE agent_host_activity_evidence (
+        id TEXT PRIMARY KEY,
+        installation_id TEXT NOT NULL REFERENCES agent_installations(id) ON DELETE CASCADE,
+        agent_id TEXT NOT NULL,
+        host_variant TEXT NOT NULL,
+        component_key TEXT NOT NULL CHECK(component_key IN ('memory_tools','lifecycle')),
+        signal_name TEXT NOT NULL CHECK(signal_name IN (
+          'brain_prepare','brain_recall','brain_digest',
+          'session_start','pre_compact','post_compact'
+        )),
+        tide_mind_version TEXT NOT NULL,
+        adapter_version TEXT NOT NULL,
+        projection_version TEXT NOT NULL,
+        host_version TEXT NOT NULL,
+        evidence_hash TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        CHECK(
+          (component_key = 'memory_tools' AND signal_name IN (
+            'brain_prepare','brain_recall','brain_digest'
+          )) OR
+          (component_key = 'lifecycle' AND signal_name IN (
+            'session_start','pre_compact','post_compact'
+          ))
+        ),
+        UNIQUE(
+          installation_id, component_key, signal_name, tide_mind_version,
+          adapter_version, projection_version, host_version
+        )
+      );
+    `)
+    db.prepare(`
+      INSERT INTO agent_host_activity_evidence VALUES (
+        'old-activity', 'cursor-old', 'eb_cursor_old', 'cursor-desktop',
+        'lifecycle', 'session_start', '0.2.91', '1', '2', '2.1.0',
+        'old-hash', ?
+      )
+    `).run(now)
+
+    ensureAgentIntegrationSchema(db)
+
+    expect(db.prepare(`
+      SELECT id, signal_name FROM agent_host_activity_evidence WHERE id = 'old-activity'
+    `).get()).toBeUndefined()
+    expect(db.prepare(`
+      SELECT invalidated_at IS NOT NULL AS invalidated, invalidation_reason
+      FROM verification_results WHERE id = 'cursor-old-verification'
+    `).get()).toEqual({
+      invalidated: 1,
+      invalidation_reason: 'pre_causal_host_activity_invalidated',
+    })
+    expect(db.prepare(`
+      SELECT verification_status, verification_result_id
+      FROM installation_components
+      WHERE installation_id = 'cursor-old' AND component_key = 'lifecycle'
+    `).get()).toEqual({ verification_status: 'stale', verification_result_id: null })
+    expect(db.prepare(`
+      SELECT verified_capability, verification_summary, verification_result_id
+      FROM agent_installations WHERE id = 'cursor-old'
+    `).get()).toEqual({
+      verified_capability: 0,
+      verification_summary: 'stale',
+      verification_result_id: null,
+    })
+    db.prepare(`
+      INSERT INTO reconcile_runs (
+        id, installation_id, operation_type, execution_plan_hash, state,
+        recovery_strategy, adapter_version, catalog_version, projection_version,
+        selector_schema_version, prepared_plan_json, desired_capability,
+        created_at, updated_at
+      ) VALUES (
+        'cursor-causal-run', 'cursor-old', 'connect', 'plan-causal', 'committed',
+        'readback_before_replay', '1', '1', '2', '1', '{}', 4, ?, ?
+      )
+    `).run(now, now)
+    expect(() => db.prepare(`
+      INSERT INTO agent_host_activity_evidence VALUES (
+        'end-activity', 'cursor-old', 'cursor-causal-run', 'eb_cursor_old', 'cursor-desktop',
+        'lifecycle', 'session_end', '0.2.91', '1', '2', '2.1.0',
+        'end-hash', ?
+      )
+    `).run(now)).not.toThrow()
+    expect(() => ensureAgentIntegrationSchema(db)).not.toThrow()
   })
 
   it('repairs pre-correlation apply-task items with an exact run foreign key and unique binding', () => {
@@ -685,6 +828,104 @@ describe('migration v34 — local Agent managed persistence', () => {
     })
     expect(db.prepare(`SELECT state FROM reconcile_runs WHERE id = 'run-verified'`).get())
       .toEqual({ state: 'cancelled' })
+  })
+
+  it('keeps repaired Custom MCP memory-only capability at C2 across a physical restart', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'v34-custom-capability-repair-'))
+    const databasePath = path.join(directory, 'external-brain.sqlite')
+    const now = '2026-08-25T00:00:00.000Z'
+    try {
+      const db = new Database(databasePath)
+      ensureSchema(db)
+      db.prepare(`
+        INSERT INTO agent_installations (
+          id, family, host_variant, install_key, display_name, desired_state,
+          verified_capability, verification_summary, reconcile_state, created_at, updated_at
+        ) VALUES ('custom-i1', 'custom-local-agent', 'custom-local-mcp',
+          'custom-local-mcp:i1', 'Custom MCP', 'managed', 3, 'verified',
+          'verifying', ?, ?)
+      `).run(now, now)
+      db.prepare(`
+        INSERT INTO installation_components (
+          installation_id, component_key, desired_state, verification_status,
+          created_at, updated_at
+        ) VALUES
+          ('custom-i1', 'instruction', 'managed', 'verified', ?, ?),
+          ('custom-i1', 'memory_tools', 'managed', 'verified', ?, ?),
+          ('custom-i1', 'lifecycle', 'managed', 'verified', ?, ?)
+      `).run(now, now, now, now, now, now)
+      db.prepare(`
+        INSERT INTO reconcile_runs (
+          id, installation_id, operation_type, execution_plan_hash, state,
+          recovery_strategy, created_at, updated_at
+        ) VALUES
+          ('custom-instruction-run', 'custom-i1', 'connect', 'instruction-plan', 'committed',
+            'read_back_then_resume', ?, ?),
+          ('custom-good-run', 'custom-i1', 'connect', 'good-plan', 'committed',
+            'read_back_then_resume', ?, ?),
+          ('custom-bad-run', 'custom-i1', 'repair', 'bad-plan', 'verified',
+            'read_back_then_resume', ?, ?)
+      `).run(now, now, now, now, now, now)
+      db.prepare(`
+        INSERT INTO verification_results (
+          id, run_id, installation_id, component_key, family, host_variant,
+          runtime_realm, adapter_version, catalog_version,
+          verification_manifest_version, method, identity_assertion, result,
+          evidence_hash, invalidation_keys_json, verified_at, created_at
+        ) VALUES ('custom-instruction', 'custom-instruction-run', 'custom-i1', 'instruction',
+          'custom-local-agent', 'custom-local-mcp', 'local_macos', '1', '1',
+          '1', 'adapter_verification', 'custom-agent', 'verified', 'instruction-evidence',
+          '[]', ?, ?)
+      `).run(now, now)
+      db.prepare(`
+        INSERT INTO verification_results (
+          id, run_id, installation_id, component_key, family, host_variant,
+          runtime_realm, adapter_version, catalog_version,
+          verification_manifest_version, method, identity_assertion, result,
+          evidence_hash, invalidation_keys_json, verified_at, created_at
+        ) VALUES ('custom-good', 'custom-good-run', 'custom-i1', 'memory_tools',
+          'custom-local-agent', 'custom-local-mcp', 'local_macos', '1', '1',
+          '1', 'adapter_verification', 'custom-agent', 'verified', 'good-evidence',
+          '[]', ?, ?)
+      `).run(now, now)
+      db.prepare(`
+        INSERT INTO verification_results (
+          id, run_id, installation_id, component_key, family, host_variant,
+          runtime_realm, adapter_version, catalog_version,
+          verification_manifest_version, method, result, evidence_hash,
+          verified_at, created_at
+        ) VALUES ('custom-incomplete', 'custom-bad-run', 'custom-i1', 'lifecycle',
+          '', '', 'local_macos', '', '', '', '', 'failed', '', '', '')
+      `).run()
+      db.prepare(`UPDATE installation_components
+        SET verification_result_id = CASE component_key
+          WHEN 'instruction' THEN 'custom-instruction'
+          WHEN 'memory_tools' THEN 'custom-good'
+          ELSE 'custom-incomplete'
+        END
+        WHERE installation_id = 'custom-i1'`).run()
+      db.prepare(`UPDATE agent_installations
+        SET verification_result_id = 'custom-good' WHERE id = 'custom-i1'`).run()
+
+      ensureAgentIntegrationSchema(db)
+      expect(db.prepare(`SELECT verified_capability, verification_summary
+        FROM agent_installations WHERE id = 'custom-i1'`).get()).toEqual({
+        verified_capability: 2,
+        verification_summary: 'mixed',
+      })
+      db.close()
+
+      const restarted = new Database(databasePath)
+      ensureAgentIntegrationSchema(restarted)
+      expect(restarted.prepare(`SELECT verified_capability, verification_summary
+        FROM agent_installations WHERE id = 'custom-i1'`).get()).toEqual({
+        verified_capability: 2,
+        verification_summary: 'mixed',
+      })
+      restarted.close()
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   it('cancels an interrupted-repair verified token with no run-bound evidence', () => {

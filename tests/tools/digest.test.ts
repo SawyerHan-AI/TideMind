@@ -416,6 +416,29 @@ describe('digest - correction mode', () => {
     ).get(n1.id, n2.id) as { deleted: number };
     expect(soft.deleted).toBe(1);
   });
+
+  it('should reject unlink when no active link exists without logging a digest operation', async () => {
+    const n1 = seedNode(db, { content: 'node without a link A' });
+    const n2 = seedNode(db, { content: 'node without a link B' });
+    const operationCountBefore = (db.prepare(
+      "SELECT COUNT(*) AS count FROM operation_log WHERE operation = 'digest'",
+    ).get() as { count: number }).count;
+
+    const result = await digest(repo, {
+      content: 'unlink missing relationship',
+      intent: 'correction',
+      target_link: { from: n1.id, to: n2.id },
+      async: false,
+    });
+
+    expect(result).toMatchObject({
+      status: 'rejected',
+      reject_reason: expect.stringContaining('没有可断开的活跃链接'),
+    });
+    expect((db.prepare(
+      "SELECT COUNT(*) AS count FROM operation_log WHERE operation = 'digest'",
+    ).get() as { count: number }).count).toBe(operationCountBefore);
+  });
 });
 
 // ===== 归档模式 =====
@@ -450,6 +473,61 @@ describe('digest - archive mode', () => {
       "SELECT * FROM operation_log WHERE operation = 'digest' AND input_summary LIKE '%archive%'",
     ).all();
     expect(ops.length).toBe(1);
+  });
+
+  it('rejects an already archived node without changing its row or operation log', async () => {
+    const node = seedNode(db, { content: 'already archived target' });
+    expect(repo.nodes.archiveNode(node.id)).toBe(true);
+    const before = getNode(db, node.id)!;
+    const operationCountBefore = (db.prepare(
+      "SELECT COUNT(*) AS count FROM operation_log WHERE operation = 'digest'",
+    ).get() as { count: number }).count;
+
+    const result = await digest(repo, {
+      content: 'archive the same target again',
+      intent: 'archive',
+      target_node: node.id,
+      async: false,
+    });
+
+    expect(result).toMatchObject({
+      status: 'rejected',
+      reject_reason: expect.stringContaining('已归档'),
+    });
+    expect(getNode(db, node.id)).toMatchObject({
+      archived: before.archived,
+      heat: before.heat,
+      edit_seq: before.edit_seq,
+      updated: before.updated,
+    });
+    expect((db.prepare(
+      "SELECT COUNT(*) AS count FROM operation_log WHERE operation = 'digest'",
+    ).get() as { count: number }).count).toBe(operationCountBefore);
+  });
+
+  it('rejects when another writer archives between the read and guarded update', async () => {
+    const node = seedNode(db, { content: 'concurrent archive target' });
+    const originalGetNode = repo.nodes.getNode.bind(repo.nodes);
+    vi.spyOn(repo.nodes, 'getNode').mockImplementationOnce((id) => {
+      const visible = originalGetNode(id);
+      expect(repo.nodes.archiveNode(id)).toBe(true);
+      return visible;
+    });
+
+    const result = await digest(repo, {
+      content: 'archive after another writer won',
+      intent: 'archive',
+      target_node: node.id,
+      async: false,
+    });
+
+    expect(result).toMatchObject({
+      status: 'rejected',
+      reject_reason: expect.stringContaining('已归档'),
+    });
+    expect(db.prepare(
+      "SELECT COUNT(*) AS count FROM operation_log WHERE operation = 'digest'",
+    ).get()).toEqual({ count: 0 });
   });
 });
 

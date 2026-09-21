@@ -73,6 +73,9 @@
   /* ── 品牌色（与 tokens.ts 同步，供 CSS 中引用）── */
   --brand-primary: #818cf8;
   --brand-secondary: #a78bfa;
+  /* Compact primary actions on elevated dialog surfaces. */
+  --theme-confirm-primary-bg: #818cf8;
+  --theme-confirm-primary-fg: #111827;
 
   /* ── 图表 UI 色（深色主题值）── */
   --chart-tick: #6b7280;
@@ -144,6 +147,11 @@
   --theme-shimmer-from: rgba(0, 0, 80, 0.03);
   --theme-shimmer-via: rgba(0, 0, 0, 0.07);
   --theme-shimmer-to: rgba(0, 0, 80, 0.03);
+
+  /* The light surface needs the stronger indigo already used by light-theme
+     interactive text; white on the translucent brand gradient is below AA. */
+  --theme-confirm-primary-bg: #4f46e5;
+  --theme-confirm-primary-fg: #ffffff;
 
   /* ── 图表 UI 色（浅色主题值）── */
   --chart-tick: #9ca3af;
@@ -328,6 +336,16 @@ body {
   background: var(--theme-modal-overlay) !important;
 }
 
+.theme-confirm-primary {
+  background: var(--theme-confirm-primary-bg);
+  border: 1px solid var(--theme-confirm-primary-bg);
+  color: var(--theme-confirm-primary-fg);
+}
+
+.theme-confirm-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
 /* 面板 sticky header */
 .panel-header {
   background: var(--theme-panel-header);
@@ -480,21 +498,21 @@ input[type="checkbox"] {
 [data-theme="light"] .text-teal-300 { color: #0d9488 !important; }
 [data-theme="light"] .text-purple-300 { color: #7c3aed !important; }
 [data-theme="light"] .text-purple-400 { color: #7c3aed !important; }
-[data-theme="light"] .text-emerald-300 { color: #059669 !important; }
+[data-theme="light"] .text-emerald-300 { color: #047857 !important; }
 [data-theme="light"] .text-emerald-200 { color: #047857 !important; }
 [data-theme="light"] .text-amber-100,
 [data-theme="light"] .text-amber-100\/70,
 [data-theme="light"] .text-amber-200,
 [data-theme="light"] .text-amber-200\/80 { color: #92400e !important; }
-[data-theme="light"] .text-amber-300 { color: #d97706 !important; }
-[data-theme="light"] .text-amber-400 { color: #d97706 !important; }
+[data-theme="light"] .text-amber-300 { color: #92400e !important; }
+[data-theme="light"] .text-amber-400 { color: #92400e !important; }
 [data-theme="light"] .text-sky-200 { color: #0369a1 !important; }
-[data-theme="light"] .text-sky-300 { color: #0284c7 !important; }
+[data-theme="light"] .text-sky-300 { color: #0369a1 !important; }
 [data-theme="light"] .text-indigo-200 { color: #4338ca !important; }
 [data-theme="light"] .text-violet-300 { color: #7c3aed !important; }
 [data-theme="light"] .text-slate-300 { color: #475569 !important; }
-[data-theme="light"] .text-green-300 { color: #16a34a !important; }
-[data-theme="light"] .text-green-400 { color: #16a34a !important; }
+[data-theme="light"] .text-green-300 { color: #15803d !important; }
+[data-theme="light"] .text-green-400 { color: #15803d !important; }
 [data-theme="light"] .text-red-300 { color: #dc2626 !important; }
 [data-theme="light"] .text-red-200,
 [data-theme="light"] .text-red-300\/80 { color: #b91c1c !important; }

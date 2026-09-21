@@ -7,26 +7,30 @@
  * 1. SKILL.md 使用指南全文
  * 2. brain_prepare 返回的用户上下文（画像、索引、行为指导）
  *
- * 用法：node hook-session-start.js --agent-id eb_xxx --skill-path /path/to/SKILL.md [--tool claude-code] [--once-per-session]
+ * 用法：node hook-session-start.js --agent-id eb_xxx --skill-path /path/to/SKILL.md [--tool claude-code] [--once-per-session] [--suppress-session-start-activity]
  * 输出：JSON { hookSpecificOutput: { additionalContext: "..." } }（codex/gemini）或纯文本（claude-code/kimi-code 等）
  *
  * --once-per-session：为 Kimi Code 的 UserPromptSubmit hook 准备——该事件对每条
  * 用户消息都触发,此参数保证每个 session 只注入一次(从 stdin payload 读
  * session_id,tmpdir 下 marker 文件去重;无 session_id 时降级为照常注入)。
+ * 只有命令冻结并验证了 exact managed Skill SHA，成功 stdout 注入后才记录
+ * SessionStart evidence；0.2.91 Kimi 旧命令仍可注入，但永久不能写 lifecycle evidence。
  */
 
 import { loadConfig, ensureDataDirs } from './config.js';
 import { getDb, closeDb } from './db/connection.js';
 import { SqliteRepository } from './db/sqlite-repository.js';
 import { recordHookActivityEvidence } from './db/agent-host-activity.js';
+import { shouldRecordSessionStartActivity } from './hook-session-start-policy.js';
 import { prepare } from './tools/prepare.js';
 import { readFileSync, fstatSync } from 'node:fs';
 import { formatProfileSection, formatRestSections, assembleSessionContext } from './hook-session-format.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { createLogger } from './utils/logger.js';
-import { writeHookOutput as outputHook } from './hook-output.js';
+import { writeHookOutput as outputHook, writeHookOutputBeforeEvidence } from './hook-output.js';
 import { hasSessionMarker, createSessionMarker } from './hook-once-session.js';
 import { getTideMindVersion } from './utils/app-version.js';
+import { matchesExpectedInstructionSha256 } from './agent-integration-recognition.js';
 
 /**
  * 异步读取 stdin JSON payload（Codex 0.120+ 会传 `session_start_reason` 等字段）。
@@ -96,12 +100,23 @@ async function readStdinPayload(): Promise<Record<string, unknown> | null> {
 const migrationLog = createLogger('migrate');
 
 // --- 解析命令行参数 ---
-function parseArgs(): { agentId: string; skillPath: string; tool: string; oncePerSession: boolean } {
+function parseArgs(): {
+  agentId: string;
+  skillPath: string;
+  tool: string;
+  oncePerSession: boolean;
+  suppressSessionStartActivity: boolean;
+  activityGenerationToken: string;
+  expectedSkillSha256: string | null;
+} {
   const args = process.argv.slice(2);
   let agentId = '';
   let skillPath = '';
   let tool = 'claude-code';
   let oncePerSession = false;
+  let suppressSessionStartActivity = false;
+  let activityGenerationToken = '';
+  let expectedSkillSha256: string | null = null;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--agent-id' && args[i + 1]) {
@@ -115,6 +130,14 @@ function parseArgs(): { agentId: string; skillPath: string; tool: string; oncePe
       i++;
     } else if (args[i] === '--once-per-session') {
       oncePerSession = true;
+    } else if (args[i] === '--suppress-session-start-activity') {
+      suppressSessionStartActivity = true;
+    } else if (args[i] === '--activity-generation-token' && args[i + 1]) {
+      activityGenerationToken = args[i + 1];
+      i++;
+    } else if (args[i] === '--expected-skill-sha256' && args[i + 1]) {
+      expectedSkillSha256 = args[i + 1].toLowerCase();
+      i++;
     }
   }
 
@@ -124,8 +147,41 @@ function parseArgs(): { agentId: string; skillPath: string; tool: string; oncePe
   if (!skillPath) {
     throw new Error('Missing --skill-path');
   }
+  // Tide Mind 0.2.91 already installed Kimi's UserPromptSubmit projection
+  // without an activity generation.  The app bundle path is stable across an
+  // update, so that legacy command can execute this newer hook before the
+  // coordinator has adopted/upgraded its config.  Keep context delivery
+  // compatible for exactly that non-evidence path; shouldRecordSessionStartActivity
+  // permanently rejects every kimi-code + once-per-session invocation below.
+  // Match the exact argv projection emitted by 0.2.91. A partially rendered
+  // current command must not lose its generation token and then inherit this
+  // compatibility exception merely because it still has the two broad Kimi
+  // flags. Any current-only, duplicate, reordered or unknown argument keeps
+  // the invocation on the generation-bound path below.
+  const legacyKimiPromptInjection = args.length === 7
+    && args[0] === '--agent-id'
+    && args[1] === agentId
+    && args[2] === '--skill-path'
+    && args[3] === skillPath
+    && args[4] === '--tool'
+    && args[5] === 'kimi-code'
+    && args[6] === '--once-per-session';
+  if (!activityGenerationToken && !legacyKimiPromptInjection) {
+    throw new Error('Missing --activity-generation-token');
+  }
+  if (expectedSkillSha256 !== null && !/^[a-f0-9]{64}$/u.test(expectedSkillSha256)) {
+    throw new Error('Invalid --expected-skill-sha256');
+  }
 
-  return { agentId, skillPath, tool, oncePerSession };
+  return {
+    agentId,
+    skillPath,
+    tool,
+    oncePerSession,
+    suppressSessionStartActivity,
+    activityGenerationToken,
+    expectedSkillSha256,
+  };
 }
 
 // 注入正文格式化 + G1 预算安全网已拆到 ./hook-session-format.ts(纯函数,零副作用,供单测)。
@@ -143,7 +199,15 @@ async function main(): Promise<void> {
     // 迁移失败不阻断 hook，降级走正常流程
   }
 
-  const { agentId, skillPath, tool, oncePerSession } = parseArgs();
+  const {
+    agentId,
+    skillPath,
+    tool,
+    oncePerSession,
+    suppressSessionStartActivity,
+    activityGenerationToken,
+    expectedSkillSha256,
+  } = parseArgs();
 
   // 不同 CLI 给 SessionStart hook 传的字段名不同：
   //   - Codex 0.120+：`session_start_reason`
@@ -166,8 +230,15 @@ async function main(): Promise<void> {
 
   // 读取 SKILL.md（即使后续步骤失败，至少有使用指南）
   let skillContent: string;
+  let exactSkillGenerationLoaded = false;
   try {
     skillContent = readFileSync(skillPath, 'utf-8');
+    if (expectedSkillSha256 !== null) {
+      exactSkillGenerationLoaded = matchesExpectedInstructionSha256(skillContent, expectedSkillSha256);
+      if (!exactSkillGenerationLoaded) {
+        process.stderr.write('[eb:hook-session-start] managed skill generation hash mismatch; instruction evidence suppressed\n');
+      }
+    }
     // 去掉 YAML frontmatter（仅当文件以 --- 开头时）
     if (skillContent.startsWith('---')) {
       const fmEnd = skillContent.indexOf('---', 3);
@@ -220,28 +291,42 @@ async function main(): Promise<void> {
   // 拼合输出（G1 预算安全网在 assembleSessionContext 内统一施加）
   const content = assembleSessionContext({ skillContent, profileSection, restSection });
 
-  // The hook reaching this point is host-runtime evidence. Reopen the local DB
-  // after prepare's independent lifetime and record only if the exact managed
-  // Installation/component/version binding still authorizes it.
-  try {
-    loadConfig();
-    ensureDataDirs();
-    const activity = recordHookActivityEvidence(getDb(), {
-      agentId,
+  // A successful stdout write is the strongest observable boundary available
+  // to the hook: recording before it would let a failed injection prove that
+  // the host loaded the managed instruction.  Write first, then reopen the
+  // local DB and bind activity to the exact managed generation.
+  const hostOutput = tool === 'openclaw'
+    ? JSON.stringify({ protocol: 'tidemind-openclaw-context-v1', content, evidenceEligible: exactSkillGenerationLoaded })
+    : content;
+  await writeHookOutputBeforeEvidence(hostOutput, tool, 'SessionStart', () => {
+    // The native OpenClaw plugin must acknowledge the actual model-input
+    // boundary. A successful pipe write only prepares its pending context.
+    if (tool === 'openclaw') return;
+    if (!shouldRecordSessionStartActivity({
       tool,
-      signalName: 'session_start',
-      tideMindVersion: getTideMindVersion(),
-    });
-    if (activity.status === 'rejected') {
-      process.stderr.write(`[eb:hook-session-start] activity evidence rejected — ${activity.reason}\n`);
+      oncePerSession,
+      suppressSessionStartActivity,
+      exactSkillGenerationLoaded,
+    })) return;
+    try {
+      loadConfig();
+      ensureDataDirs();
+      const activity = recordHookActivityEvidence(getDb(), {
+        agentId,
+        tool,
+        signalName: 'session_start',
+        tideMindVersion: getTideMindVersion(),
+        activityGenerationToken,
+      });
+      if (activity.status === 'rejected') {
+        process.stderr.write(`[eb:hook-session-start] activity evidence rejected — ${activity.reason}\n`);
+      }
+    } catch (error) {
+      process.stderr.write(`[eb:hook-session-start] activity evidence unavailable — ${error instanceof Error ? error.message : String(error)}\n`);
+    } finally {
+      try { closeDb(); } catch { /* ignore */ }
     }
-  } catch (error) {
-    process.stderr.write(`[eb:hook-session-start] activity evidence unavailable — ${error instanceof Error ? error.message : String(error)}\n`);
-  } finally {
-    try { closeDb(); } catch { /* ignore */ }
-  }
-
-  outputHook(content, tool);
+  });
 
   // 仅在成功输出后创建 marker;失败路径(上方 throw / 最终 catch)不建 marker,
   // 下一条 prompt 会重试注入。marker 创建本身失败不阻断输出(下次重复注入兜底)。
@@ -252,7 +337,7 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: unknown) => {
+main().catch(async (err: unknown) => {
   // 最终兜底
   const stack = err instanceof Error ? err.stack ?? err.message : String(err);
   process.stderr.write(`[eb:hook-session-start] fatal error: ${stack}\n`);
@@ -268,5 +353,10 @@ main().catch((err: unknown) => {
       if (args[i] === '--tool' && args[i + 1]) { tool = args[i + 1]; break; }
     }
   } catch { /* ignore */ }
-  outputHook(`Tide Mind 启动失败。请手动调用 brain_prepare 工具加载上下文。[internal error: HOOK_SESSION_START_FATAL/${code}]`, tool);
+  try {
+    await outputHook(`Tide Mind 启动失败。请手动调用 brain_prepare 工具加载上下文。[internal error: HOOK_SESSION_START_FATAL/${code}]`, tool);
+  } catch (outputError) {
+    process.stderr.write(`[eb:hook-session-start] fallback output failed — ${outputError instanceof Error ? outputError.message : String(outputError)}\n`);
+    process.exitCode = 1;
+  }
 });

@@ -277,6 +277,16 @@ const api: AppApi = {
     copyComponentPath: (installationId, componentKey) => ipcRenderer.invoke('agent-integrations:copy-component-path', installationId, componentKey),
     revealComponentPath: (installationId, componentKey) => ipcRenderer.invoke('agent-integrations:reveal-component-path', installationId, componentKey),
     supportCatalog: () => ipcRenderer.invoke('agent-integrations:support-catalog'),
+    previewClaudeCoworkSetup: () => ipcRenderer.invoke('agent-integrations:preview-claude-cowork-setup'),
+    prepareClaudeCoworkSetup: preflightHash => ipcRenderer.invoke('agent-integrations:prepare-claude-cowork-setup', preflightHash),
+    pickCustomPath: kind => ipcRenderer.invoke('agent-integrations:pick-custom-path', kind),
+    previewCustomInstallation: request => ipcRenderer.invoke('agent-integrations:preview-custom-installation', request),
+    prepareCustomConnect: (preflightHash, includeTechnicalDetails) => ipcRenderer.invoke('agent-integrations:prepare-custom-connect', preflightHash, includeTechnicalDetails),
+    copyCustomMcpConfiguration: preflightHash => ipcRenderer.invoke('agent-integrations:copy-custom-mcp-configuration', preflightHash),
+    reviewCodexHookTrust: installationId => ipcRenderer.invoke('agent-integrations:review-codex-hook-trust', installationId),
+    confirmCodexHookTrust: actionHash => ipcRenderer.invoke('agent-integrations:confirm-codex-hook-trust', actionHash),
+    reviewGuidedRemoval: installationId => ipcRenderer.invoke('agent-integrations:review-guided-removal', installationId),
+    confirmGuidedRemoval: actionHash => ipcRenderer.invoke('agent-integrations:confirm-guided-removal', actionHash),
   },
 }
 

@@ -9,6 +9,7 @@ import type {
 } from './types'
 import type {
   AgentIntegrationApplyResultDto,
+  AgentIntegrationRequiredUserActionDto,
   AgentIntegrationSupportProductDto,
 } from '../../../lib/api-contract'
 import { installationsForFamily } from './types'
@@ -30,7 +31,8 @@ const STATUS_TOKENS: Readonly<Record<ManagedStatusGroup, PresentationToken>> = {
 }
 
 const REASON_KEY_BY_VALUE: Readonly<Record<string, string>> = {
-  verified: 'verified', instruction_only: 'instructionOnly', capability_ceiling: 'capabilityCeiling',
+  verified: 'verified', legacy_callable_unmanaged: 'legacyCallableUnmanaged',
+  instruction_only: 'instructionOnly', capability_ceiling: 'capabilityCeiling',
   awaiting_consent: 'awaitingConsent', incompatible: 'incompatible', unverified: 'unverified',
   verification_stale: 'verificationStale', connecting: 'connecting', verifying: 'verifying',
   repairing: 'repairing', disconnecting: 'disconnecting', new_session: 'newSession',
@@ -42,6 +44,12 @@ const REASON_KEY_BY_VALUE: Readonly<Record<string, string>> = {
   host_uninstalled: 'hostUninstalled', detect_only: 'detectOnly',
   executable_proof_too_large: 'executableProofTooLarge',
   executable_metadata_unavailable: 'executableMetadataUnavailable',
+  release_entry_missing: 'releaseEntryMissing',
+  release_mode_detect_only: 'releaseModeDetectOnly',
+  release_distribution_not_accepted: 'releaseDistributionNotAccepted',
+  release_version_unverified: 'releaseVersionUnverified',
+  release_version_not_accepted: 'releaseVersionNotAccepted',
+  release_artifact_not_accepted: 'releaseArtifactNotAccepted',
 }
 
 const EVENT_TITLES: Readonly<Record<string, { key: string; fallback: string }>> = {
@@ -68,6 +76,10 @@ const EVENT_TITLES: Readonly<Record<string, { key: string; fallback: string }>> 
   legacy_adoption_scan_failed: {
     key: 'agent.managed.event.legacyAdoptionScanFailed',
     fallback: 'Existing connections could not be checked',
+  },
+  user_confirmed_guided_removal: {
+    key: 'agent.managed.event.userConfirmedGuidedRemoval',
+    fallback: 'Qwen Work removal was confirmed by the user',
   },
 }
 
@@ -124,7 +136,14 @@ export function statusReasonKey(reason: string): string {
 }
 
 export function managementUnavailableHelpKey(reason: string): string {
-  return reason === 'executable_proof_too_large' || reason === 'executable_metadata_unavailable'
+  return reason === 'executable_proof_too_large'
+    || reason === 'executable_metadata_unavailable'
+    || reason === 'release_entry_missing'
+    || reason === 'release_mode_detect_only'
+    || reason === 'release_distribution_not_accepted'
+    || reason === 'release_version_unverified'
+    || reason === 'release_version_not_accepted'
+    || reason === 'release_artifact_not_accepted'
     ? statusReasonKey(reason)
     : 'agent.managed.supportMode.detectableHelp'
 }
@@ -150,6 +169,93 @@ export function componentLabelKey(key: ManagedComponentKey): string {
 
 export function componentStatusPresentation(status: ManagedComponentStatus): PresentationToken {
   return COMPONENT_STATUS[status]
+}
+
+export interface RequiredUserActionPresentation {
+  labelKey: string
+  count?: number
+  componentKey?: ManagedComponentKey
+}
+
+export function requiredUserActionPresentation(action: string): RequiredUserActionPresentation {
+  const [kind, detail] = action.split(':', 2)
+  const count = Number.parseInt(detail ?? '', 10)
+  if (kind === 'confirm_enable_existing_zcode_hooks') {
+    return {
+      labelKey: 'agent.managed.userAction.enableExistingZcodeHooks',
+      count: Number.isFinite(count) ? count : 1,
+    }
+  }
+  if (kind === 'confirm_disable_shared_zcode_hooks') {
+    return {
+      labelKey: 'agent.managed.userAction.disableSharedZcodeHooks',
+      count: Number.isFinite(count) ? count : 1,
+    }
+  }
+  const exact: Readonly<Record<string, string>> = {
+    qwenwork_mcp_gui_connect_required: 'agent.managed.userAction.qwenWorkConnect',
+    qwenwork_mcp_gui_disconnect_required: 'agent.managed.userAction.qwenWorkDisconnect',
+    claude_cowork_plugin_upload_required: 'agent.managed.userAction.claudeCoworkUpload',
+    claude_cowork_plugin_remove_required: 'agent.managed.userAction.claudeCoworkRemove',
+    codex_hook_trust_required: 'agent.managed.userAction.codexHookTrust',
+    codex_hook_trust_binding_unavailable: 'agent.managed.userAction.codexHookTrustUnavailable',
+    codex_hook_trust_verification_unavailable: 'agent.managed.userAction.codexHookTrustUnavailable',
+    manually_remove_owned_document: 'agent.managed.userAction.manualDocumentRemoval',
+  }
+  const exactLabelKey = Object.hasOwn(exact, kind) ? exact[kind] : undefined
+  if (exactLabelKey) return { labelKey: exactLabelKey }
+  if (kind === 'component_requires_other_projection') {
+    const componentKey = detail === 'instruction' || detail === 'memory_tools' || detail === 'lifecycle'
+      ? detail
+      : undefined
+    return {
+      labelKey: componentKey
+        ? 'agent.managed.userAction.componentRequiresOtherProjection'
+        : 'agent.managed.userAction.manualReview',
+      ...(componentKey ? { componentKey } : {}),
+    }
+  }
+  return { labelKey: 'agent.managed.userAction.manualReview' }
+}
+
+export function requiredUserActionDetailKey(action: AgentIntegrationRequiredUserActionDto): string {
+  switch (action.kind) {
+    case 'codex_hook_trust':
+      return `${action.kind}:${action.hookKeyHash}`
+    case 'claude_cowork_plugin_upload':
+      return `${action.kind}:${action.operation}:${action.packageHash}`
+    case 'qwenwork_mcp_gui':
+    case 'custom_mcp_import':
+      return `${action.kind}:${action.operation}:${action.connectorConfigurationHash}`
+    case 'mcp_activation':
+      return `${action.kind}:${action.hostVariant}:${action.serverName}:${action.reason}`
+    case 'manual_file_removal':
+      return `${action.kind}:${action.componentKey}:${action.ownedFragmentHash}`
+    case 'kimi_instruction_conflict':
+      return `${action.kind}:${action.reason}:${action.sourceLabel}:${action.targetLabel}`
+  }
+}
+
+export type CustomApplyOutcome = 'committed' | 'awaiting_verification' | 'needs_recovery' | 'failed'
+
+export function customApplyOutcome(result: AgentIntegrationApplyResultDto): CustomApplyOutcome {
+  if (result.results.some(item => item.status === 'needs_recovery')) return 'needs_recovery'
+  if (result.results.length === 0 || result.results.some(item => (
+    item.status === 'failed'
+    || item.status === 'interrupted'
+    || item.status === 'paused'
+    || item.status === 'awaiting_consent'
+    || item.status === 'superseded'
+  ))) return 'failed'
+  if (result.results.some(item => item.status === 'awaiting_verification')) return 'awaiting_verification'
+  return 'committed'
+}
+
+export function isValidCustomSelectorKey(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(value)
+    && value !== '__proto__'
+    && value !== 'prototype'
+    && value !== 'constructor'
 }
 
 export function primaryInstallation(
@@ -264,6 +370,7 @@ export interface ExecutionSummary {
   total: number
   committed: number
   awaitingVerification: number
+  superseded: number
   failed: number
   needsRecovery: number
   interrupted: number
@@ -278,6 +385,7 @@ export function summarizeExecutionResults(results: AgentIntegrationApplyResultDt
   const otherAttention = results.filter(item => (
     item.status !== 'committed'
     && item.status !== 'awaiting_verification'
+    && item.status !== 'superseded'
     && item.status !== 'failed'
     && item.status !== 'needs_recovery'
     && item.status !== 'interrupted'
@@ -286,6 +394,7 @@ export function summarizeExecutionResults(results: AgentIntegrationApplyResultDt
     total: results.length,
     committed: results.filter(item => item.status === 'committed').length,
     awaitingVerification: results.filter(item => item.status === 'awaiting_verification').length,
+    superseded: results.filter(item => item.status === 'superseded').length,
     failed,
     needsRecovery,
     interrupted,

@@ -39,6 +39,22 @@ afterEach(() => {
 })
 
 describe('macOS update metadata merger', () => {
+  it('merges an Apple Silicon-only 0.2.92 release without Intel metadata', () => {
+    const directory = fixture()
+    const metadataPath = path.join(directory, 'latest-mac-arm64.yml')
+    const metadata = yaml.load(fs.readFileSync(metadataPath, 'utf8')) as { version: string }
+    metadata.version = '0.2.92'
+    fs.writeFileSync(metadataPath, yaml.dump(metadata))
+    fs.unlinkSync(path.join(directory, 'latest-mac-x64.yml'))
+    execFileSync(process.execPath, ['scripts/merge-mac-update-metadata.mjs', directory])
+    const merged = yaml.load(fs.readFileSync(path.join(directory, 'latest-mac.yml'), 'utf8')) as {
+      path: string; files: Array<{ url: string }>
+    }
+    expect(merged.path).toContain('-arm64.zip')
+    expect(merged.files).toHaveLength(2)
+    expect(merged.files.every(entry => entry.url.includes('-arm64.'))).toBe(true)
+  })
+
   it('preserves both architectures and the legacy x64 primary path', () => {
     const directory = fixture()
     execFileSync(process.execPath, ['scripts/merge-mac-update-metadata.mjs', directory])

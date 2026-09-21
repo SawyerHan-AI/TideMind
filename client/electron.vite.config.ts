@@ -40,6 +40,9 @@ export default defineConfig({
     },
     plugins: [react()],
     resolve: {
+      // TypeScript source must win even if a developer tool left an ignored
+      // source-adjacent JavaScript artifact behind.
+      extensions: ['.tsx', '.ts', '.mts', '.mjs', '.jsx', '.js', '.json'],
       alias: {
         '@': resolve(__dirname, 'src')
       }

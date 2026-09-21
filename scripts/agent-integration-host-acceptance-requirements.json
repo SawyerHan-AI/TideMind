@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 3,
+  "appVersion": "0.2.92",
+  "releaseMacArchitectures": ["arm64"],
+  "upgradeFromAppVersions": [
+    "0.2.89",
+    "0.2.91"
+  ],
+  "stepPolicy": {
+    "base": [
+      "official_host_version",
+      "distribution_identity",
+      "connect",
+      "read_back",
+      "restart_persistence",
+      "disconnect"
+    ],
+    "byComponent": {
+      "instruction": ["instruction_loaded"],
+      "memory_tools": ["brain_prepare", "brain_recall", "brain_digest"],
+      "lifecycle": []
+    },
+    "byDisposition": {
+      "managed": ["recovery", "conflict", "pause_resume"],
+      "guided": [],
+      "migration": [
+        "official_host_version",
+        "distribution_identity",
+        "legacy_selector_identity",
+        "read_back",
+        "restart_persistence",
+        "history_callable"
+      ]
+    },
+    "byCatalog": {
+      "openclaw-local": [
+        "official_plugins_list",
+        "official_plugin_inspect",
+        "plugin_runtime"
+      ]
+    }
+  },
+  "customPaths": [
+    "nonstandard_config_root",
+    "manual_mcp_client"
+  ],
+  "customGuidedTargets": [
+    { "schemaKind": "standard_mcp_servers", "selectorKey": "tidemind" },
+    { "schemaKind": "nested_mcp_servers", "selectorKey": "tidemind_nested" },
+    { "schemaKind": "opencode_mcp", "selectorKey": "tidemind_opencode" }
+  ]
+}

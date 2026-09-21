@@ -63,10 +63,34 @@ describe('isolated Electron UI E2E real HOME guard', () => {
     })
   }
 
-  it('covers the actual ZCode Skill and MCP production targets', () => {
+  it('covers every P0 UI flow actual production target exercised by the isolated audit', () => {
     const paths = protectedRealAgentPaths('/Users/test')
+    expect(paths).toEqual(expect.arrayContaining([
+      '/Users/test/.agents/skills/tidemind',
+      '/Users/test/.qwenworkcn/skills/tidemind',
+      '/Users/test/.qwenworkcn/settings.json',
+      '/Users/test/.kimi-code/skills/tidemind',
+      '/Users/test/.kimi-code/mcp.json',
+      '/Users/test/.kimi-code/config.toml',
+      '/Users/test/.codex/config.toml',
+      '/Users/test/.codex/hooks.json',
+      '/Users/test/.cursor/skills/tidemind',
+      '/Users/test/.cursor/mcp.json',
+      '/Users/test/.cursor/hooks.json',
+      '/Users/test/.config/opencode/opencode.json',
+      '/Users/test/.config/opencode/opencode.jsonc',
+      '/Users/test/.config/opencode/plugins/tidemind-v1.ts',
+      '/Users/test/.config/opencode/plugins/tidemind-v2.ts',
+      '/Users/test/.tidemind/ui-audit-custom-client/config.json',
+    ]))
     expect(paths).toContain('/Users/test/.zcode/skills/tidemind')
     expect(paths).toContain('/Users/test/.zcode/cli/config.json')
     expect(paths).toContain('/Users/test/.zcode-default/config.json')
+    expect(paths).toContain('/Users/test/Library/Application Support/Claude/claude_desktop_config.json')
+    expect(paths).toContain('/Users/test/Library/Application Support/Claude/plugins')
+    expect(paths).toContain('/Users/test/Library/Application Support/Claude/cowork')
+    expect(paths).toContain('/Users/test/.claude/plugins')
+    expect(paths).toContain('/Users/test/.claude/cowork')
+    expect(paths).toContain('/Users/test/Library/Application Support/Tide Mind/agent-integration/claude-cowork')
   })
 })

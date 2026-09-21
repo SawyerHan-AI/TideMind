@@ -1,8 +1,37 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import {
   gateCodexCapabilities,
   parseCodexFeatureList,
 } from '../../../src/llm/cli/gate-codex.js';
-import type { CodexCapabilityManifest } from '../../../src/llm/cli/catalogs.js';
+import {
+  CODEX_CAPABILITY_MANIFESTS,
+  type CodexCapabilityManifest,
+} from '../../../src/llm/cli/catalogs.js';
+
+const codex01534Features = readFileSync(fileURLToPath(new URL(
+  '../../fixtures/llm-cli/codex-0.153.4-features.txt',
+  import.meta.url,
+)), 'utf8');
+
+// Captured with an isolated HOME/CODEX_HOME from OpenAI's official arm64
+// rust-v0.153.4 archive (SHA-256
+// 8cf911ea676523bfb2121ec561848d2aba564890ad536db4d8a3353f2b9850b1).
+// Keep the complete feature output above and the safety-bearing help rows below
+// as the reviewed contract.
+const codex01534ExecHelp = [
+  'Usage: codex exec [OPTIONS] [PROMPT]',
+  '--strict-config',
+  '--skip-git-repo-check',
+  '--ephemeral',
+  '--ignore-user-config',
+  '--ignore-rules',
+  '--json',
+].join('\n');
+const codex01534PromptInputHelp = [
+  'Render the model-visible prompt input list as JSON',
+  'Usage: codex debug prompt-input [OPTIONS] [PROMPT]',
+].join('\n');
 
 const manifest: CodexCapabilityManifest = {
   version: '1.2.3',
@@ -31,6 +60,26 @@ describe('Codex capability gate', () => {
       ]),
     );
     expect(gateCodexCapabilities(evidence, [manifest]).fingerprint).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('accepts the real official 0.153.4 capability contract', () => {
+    const result = gateCodexCapabilities({
+      version: '0.153.4',
+      execHelp: codex01534ExecHelp,
+      promptInputHelp: codex01534PromptInputHelp,
+      featuresList: codex01534Features,
+    });
+
+    expect(result.manifest.version).toBe('0.153.4');
+    expect([...result.manifest.disableFeatures].sort()).toEqual(
+      [...parseCodexFeatureList(codex01534Features)]
+        .filter(([, state]) => state.enabled)
+        .map(([name]) => name)
+        .sort(),
+    );
+    expect(result.fingerprint).toMatch(/^[a-f0-9]{64}$/u);
+    expect(CODEX_CAPABILITY_MANIFESTS.map(candidate => candidate.version))
+      .toContain('0.153.4');
   });
 
   it('rejects versions, flags, and feature snapshot drift', () => {

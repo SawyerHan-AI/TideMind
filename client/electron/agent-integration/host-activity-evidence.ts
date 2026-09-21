@@ -13,6 +13,7 @@ import type {
 interface EvidenceRow {
   id: string
   installation_id: string
+  activation_run_id: string
   agent_id: string
   host_variant: HostActivityEvidenceRecord['hostVariant']
   component_key: HostActivityEvidenceRecord['componentKey']
@@ -30,7 +31,7 @@ export class SqliteHostActivityEvidenceReader implements HostActivityEvidenceRea
   constructor(private readonly db: Database.Database) {}
 
   find(query: HostActivityEvidenceQuery): readonly HostActivityEvidenceRecord[] {
-    if (query.signalNames.length === 0) return []
+    if (query.signalNames.length === 0 || !query.activationRunId || !query.activityGenerationToken) return []
     const placeholders = query.signalNames.map(() => '?').join(',')
     const rows = this.db.prepare(`
       SELECT evidence.*
@@ -40,14 +41,18 @@ export class SqliteHostActivityEvidenceReader implements HostActivityEvidenceRea
        AND installation.agent_id = evidence.agent_id
        AND installation.host_variant = evidence.host_variant
        AND installation.detected_version = evidence.host_version
+      JOIN reconcile_runs activation_run
+        ON activation_run.id = evidence.activation_run_id
+       AND activation_run.installation_id = evidence.installation_id
       JOIN installation_components component
         ON component.installation_id = installation.id
        AND component.component_key = evidence.component_key
-      JOIN artifact_consumers consumer
+      LEFT JOIN artifact_consumers consumer
         ON consumer.installation_id = component.installation_id
        AND consumer.component_key = component.component_key
        AND consumer.artifact_id = component.artifact_id
       WHERE evidence.installation_id = ?
+        AND evidence.activation_run_id = ?
         AND evidence.agent_id = ?
         AND evidence.host_variant = ?
         AND evidence.component_key = ?
@@ -56,18 +61,75 @@ export class SqliteHostActivityEvidenceReader implements HostActivityEvidenceRea
         AND evidence.adapter_version = ?
         AND evidence.projection_version = ?
         AND evidence.host_version = ?
+        AND activation_run.operation_type != 'disconnect'
+        AND activation_run.state IN ('applied_unverified','verified','committed')
+        AND activation_run.consent_envelope_id = installation.consent_envelope_id
+        AND activation_run.adapter_version = evidence.adapter_version
+        AND activation_run.projection_version = evidence.projection_version
+        AND json_extract(activation_run.prepared_plan_json, '$.activityGenerationToken') = ?
+        AND json_extract(activation_run.prepared_plan_json, '$.executionPlan.activityGenerationTokenHash') = ?
+        AND EXISTS (
+          SELECT 1 FROM json_each(
+            CASE WHEN json_valid(activation_run.prepared_plan_json)
+              THEN activation_run.prepared_plan_json ELSE '{}' END,
+            '$.componentKeys'
+          ) activation_component
+          WHERE activation_component.value = evidence.component_key
+        )
         AND evidence.observed_at >= ?
         AND evidence.evidence_hash != ''
         AND installation.desired_state = 'managed'
         AND installation.tombstoned_at IS NULL
         AND installation.health_state = 'discovered'
         AND component.desired_state = 'managed'
-        AND consumer.state = 'active'
         AND (
-          consumer.desired_state = 'managed'
-          OR (
-            consumer.desired_state = 'disabled'
+          (
+            component.delivery_mode = 'managed'
+            AND consumer.state = 'active'
+            AND component.consent_envelope_id = installation.consent_envelope_id
             AND consumer.consent_envelope_id = installation.consent_envelope_id
+            AND EXISTS (
+              SELECT 1 FROM agent_consents managed_consent
+              WHERE managed_consent.id = installation.consent_envelope_id
+                AND managed_consent.installation_id = installation.id
+                AND managed_consent.status = 'active'
+            )
+            AND (
+              consumer.desired_state = 'managed'
+              OR (
+                consumer.desired_state = 'disabled'
+                AND consumer.consent_envelope_id = installation.consent_envelope_id
+                AND component.consent_envelope_id = installation.consent_envelope_id
+                AND EXISTS (
+                  SELECT 1 FROM agent_consents consent
+                  WHERE consent.id = installation.consent_envelope_id
+                    AND consent.installation_id = installation.id
+                    AND consent.status = 'active'
+                )
+                AND EXISTS (
+                  SELECT 1 FROM reconcile_runs pending
+                  WHERE pending.installation_id = installation.id
+                    AND pending.consent_envelope_id = installation.consent_envelope_id
+                    AND pending.operation_type != 'disconnect'
+                    AND pending.state = 'applied_unverified'
+                    AND pending.adapter_version = evidence.adapter_version
+                    AND pending.projection_version = evidence.projection_version
+                    AND EXISTS (
+                      SELECT 1 FROM json_each(
+                        CASE WHEN json_valid(pending.prepared_plan_json)
+                          THEN pending.prepared_plan_json ELSE '{}' END,
+                        '$.componentKeys'
+                      ) pending_component
+                      WHERE pending_component.value = component.component_key
+                    )
+                )
+              )
+            )
+          )
+          OR (
+            component.delivery_mode = 'guided'
+            AND component.artifact_id IS NULL
+            AND consumer.artifact_id IS NULL
             AND component.consent_envelope_id = installation.consent_envelope_id
             AND EXISTS (
               SELECT 1 FROM agent_consents consent
@@ -76,20 +138,23 @@ export class SqliteHostActivityEvidenceReader implements HostActivityEvidenceRea
                 AND consent.status = 'active'
             )
             AND EXISTS (
-              SELECT 1 FROM reconcile_runs pending
-              WHERE pending.installation_id = installation.id
-                AND pending.consent_envelope_id = installation.consent_envelope_id
-                AND pending.operation_type != 'disconnect'
-                AND pending.state = 'applied_unverified'
-                AND pending.adapter_version = evidence.adapter_version
-                AND pending.projection_version = evidence.projection_version
+              SELECT 1 FROM reconcile_runs guided_run
+              WHERE guided_run.id = ?
+                AND guided_run.installation_id = installation.id
+                AND guided_run.consent_envelope_id = installation.consent_envelope_id
+                AND guided_run.operation_type != 'disconnect'
+                AND guided_run.state IN ('applied_unverified','verified','committed')
+                AND guided_run.adapter_version = evidence.adapter_version
+                AND guided_run.projection_version = evidence.projection_version
+                AND json_extract(guided_run.prepared_plan_json, '$.activityGenerationToken') = ?
+                AND json_extract(guided_run.prepared_plan_json, '$.executionPlan.activityGenerationTokenHash') = ?
                 AND EXISTS (
                   SELECT 1 FROM json_each(
-                    CASE WHEN json_valid(pending.prepared_plan_json)
-                      THEN pending.prepared_plan_json ELSE '{}' END,
+                    CASE WHEN json_valid(guided_run.prepared_plan_json)
+                      THEN guided_run.prepared_plan_json ELSE '{}' END,
                     '$.componentKeys'
-                  ) pending_component
-                  WHERE pending_component.value = component.component_key
+                  ) guided_component
+                  WHERE guided_component.value = component.component_key
                 )
             )
           )
@@ -97,6 +162,7 @@ export class SqliteHostActivityEvidenceReader implements HostActivityEvidenceRea
       ORDER BY evidence.observed_at DESC, evidence.id DESC
     `).all(
       query.installationId,
+      query.activationRunId,
       query.agentId,
       query.hostVariant,
       query.componentKey,
@@ -105,11 +171,30 @@ export class SqliteHostActivityEvidenceReader implements HostActivityEvidenceRea
       query.adapterVersion,
       query.projectionVersion,
       query.hostVersion,
+      query.activityGenerationToken,
+      sha256Json(query.activityGenerationToken),
       query.observedAfter,
+      query.activationRunId,
+      query.activityGenerationToken,
+      sha256Json(query.activityGenerationToken),
     ) as EvidenceRow[]
-    return rows.map(row => ({
+    return rows.filter(row => row.evidence_hash === sha256Json([
+      row.installation_id,
+      row.activation_run_id,
+      row.agent_id,
+      row.host_variant,
+      row.component_key,
+      row.signal_name,
+      row.tide_mind_version,
+      row.adapter_version,
+      row.projection_version,
+      row.host_version,
+      query.activityGenerationToken,
+      row.observed_at,
+    ])).map(row => ({
       id: row.id,
       installationId: row.installation_id,
+      activationRunId: row.activation_run_id,
       agentId: row.agent_id,
       hostVariant: row.host_variant,
       componentKey: row.component_key,
@@ -131,6 +216,28 @@ export interface VerifyHostActivityOptions {
 }
 
 /**
+ * A user-visible verified memory component promises both read and write.
+ * Session preparation alone cannot prove either promise, and one successful
+ * direction cannot prove the other, so every host adapter shares this exact
+ * runtime evidence contract.
+ */
+export const MEMORY_READ_WRITE_ACTIVITY_SIGNALS = Object.freeze([
+  'brain_recall',
+  'brain_digest',
+] as const)
+
+export function verifyMemoryReadWriteActivity(
+  context: AdapterOperationContext,
+  request: AdapterVerificationRequest,
+): Promise<ComponentVerificationResult> {
+  return verifyHostActivity(context, request, {
+    componentKey: 'memory_tools',
+    signalNames: MEMORY_READ_WRITE_ACTIVITY_SIGNALS,
+    require: 'all',
+  })
+}
+
+/**
  * Converts fresh runtime invocations into a component verification result.
  * Static file presence remains a separate Adapter precondition.
  */
@@ -140,17 +247,20 @@ export async function verifyHostActivity(
   options: VerifyHostActivityOptions,
 ): Promise<ComponentVerificationResult> {
   const binding = request.activityBinding
-  if (!context.hostActivityEvidence || !binding) {
+  if (!context.hostActivityEvidence || !binding || !binding.activityGenerationToken) {
     return unverified(options.componentKey, 'host_activity_evidence_reader_unavailable')
   }
   if (!binding.hostVersion) {
     return unverified(options.componentKey, 'host_version_unproven')
   }
   const freshnessStartMs = Date.parse(binding.observedAfter)
+  const activationMs = Date.parse(binding.activationEpoch ?? binding.observedAfter)
   const verificationMs = Date.parse(binding.verifiedAt)
   if (!Number.isFinite(freshnessStartMs)
+    || !Number.isFinite(activationMs)
     || !Number.isFinite(verificationMs)
-    || verificationMs <= freshnessStartMs) {
+    || verificationMs <= freshnessStartMs
+    || activationMs > verificationMs) {
     return unverified(options.componentKey, 'host_activity_freshness_binding_invalid')
   }
   const records = (await context.hostActivityEvidence.find({
@@ -163,6 +273,8 @@ export async function verifyHostActivity(
     adapterVersion: binding.adapterVersion,
     projectionVersion: binding.projectionVersion,
     hostVersion: binding.hostVersion,
+    activationRunId: binding.activationRunId ?? '',
+    activityGenerationToken: binding.activityGenerationToken,
     observedAfter: binding.observedAfter,
   })).filter(record => {
     const observedMs = Date.parse(record.observedAt)
@@ -171,6 +283,7 @@ export async function verifyHostActivity(
     // bound prevents a clock-skewed/future row from proving the current run.
     return Number.isFinite(observedMs)
       && observedMs > freshnessStartMs
+      && observedMs >= activationMs
       && observedMs <= verificationMs
   })
   const present = new Set(records.map(record => record.signalName))

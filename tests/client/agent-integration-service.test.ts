@@ -3,18 +3,34 @@ import Database from 'better-sqlite3'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { ensureSchema } from '../../src/db/schema.js'
 import {
   CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,
   MAX_CLI_EXECUTABLE_PROOF_BYTES,
+  type DiscoveredInstallation,
 } from '../../client/electron/agent-integration/discovery.js'
-import { AgentIntegrationRepository } from '../../client/electron/agent-integration/repository.js'
-import { AgentIntegrationService } from '../../client/electron/agent-integration/service.js'
+import { canonicalizeInstallationIdentity } from '../../client/electron/agent-integration/identity.js'
+import {
+  AgentIntegrationRepository,
+  persistedComponentConfigFiles,
+  persistedComponentConfigRoots,
+  persistedDistribution,
+  persistedProjectionSurfaceFingerprint,
+} from '../../client/electron/agent-integration/repository.js'
+import { AgentIntegrationService, isCustomInstallationManagementContractValid } from '../../client/electron/agent-integration/service.js'
+import {
+  AGENT_INTEGRATION_RELEASE_ENTRY_MAP,
+  type AgentReleaseEntry,
+} from '../../client/electron/agent-integration/release-manifest.js'
 import type { PreparedCoordinatorPlan } from '../../client/electron/agent-integration/planner.js'
 import type {
   ApplyPreparedRequest,
   PreviewRequest,
 } from '../../client/electron/agent-integration/coordinator.js'
+import type { CatalogId, ComponentKey } from '../../client/electron/agent-integration/types.js'
+import { SqliteCoordinatorRepository } from '../../client/electron/agent-integration/coordinator-repository.js'
+import { ManagedAgentReconciler } from '../../client/electron/agent-integration/reconciler.js'
 
 vi.mock('../../src/strategy/loader.js', () => ({
   getParam: (_strategy: string, _parameter: string, fallback: number) => fallback,
@@ -29,6 +45,10 @@ function setup(
   enabledCatalogIds?: readonly [],
   homeDir = '/Users/alice',
   afterDisconnect?: () => Promise<void>,
+  connectOptionalComponents?: ReadonlyMap<'cursor-desktop', readonly ('lifecycle')[]>,
+  afterResume?: () => Promise<void>,
+  releaseEntries?: ReadonlyMap<CatalogId, AgentReleaseEntry>,
+  implementedComponents?: ReadonlyMap<CatalogId, readonly ComponentKey[]>,
 ) {
   const db = new Database(':memory:')
   ensureSchema(db)
@@ -84,6 +104,10 @@ function setup(
     homeDir,
     enabledCatalogIds,
     afterDisconnect,
+    afterResume,
+    connectOptionalComponents,
+    releaseEntries,
+    implementedComponents,
   })
   return { db, repository, service, preview, applyPrepared }
 }
@@ -104,6 +128,7 @@ function listAllApplyTasks(service: AgentIntegrationService, limit = 1) {
 
 function plan(request: PreviewRequest): PreparedCoordinatorPlan {
   const disconnect = request.operation === 'disconnect'
+  const activityGenerationToken = request.frozenActivityGenerationToken ?? 'fixture-activity-generation'
   const plannedMutation = {
     operationId: 'operation-1',
     componentKey: 'memory_tools' as const,
@@ -160,13 +185,800 @@ function plan(request: PreviewRequest): PreparedCoordinatorPlan {
       adapterVersion: 1,
       projectionVersion: 1,
       createdAt: T0,
+      activityGenerationTokenHash: createHash('sha256')
+        .update(JSON.stringify(activityGenerationToken)).digest('hex'),
       mutations: [mutation],
     },
     executionPlanHash: 'execution-hash',
+    activityGenerationToken,
   }
 }
 
 describe('AgentIntegrationService', () => {
+  it('creates a Cowork Installation only after an explicit signed-app preflight is rechecked', async () => {
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const repository = new AgentIntegrationRepository(db)
+    let candidate: DiscoveredInstallation | null = {
+      catalogId: 'claude-cowork-local',
+      displayName: 'Claude Cowork',
+      identity: canonicalizeInstallationIdentity({
+        runtimeRealm: 'local_macos',
+        osUserIdentity: 'usr_fixture_501',
+        productFamilyId: 'claude-cowork',
+        hostVariant: 'claude-cowork-local',
+        configRoot: '/Users/alice/Library/Application Support/Claude',
+        distribution: {
+          distributionId: 'com.anthropic.claudefordesktop',
+          executableRealpath: '/Applications/Claude.app/Contents/MacOS/Claude',
+          packageProvenance: 'signed_app:com.anthropic.claudefordesktop:Q6L2SF6YDW',
+          capabilityFingerprint: `desktop-bundle-surface-v1:${'a'.repeat(64)}`,
+        },
+      }),
+      configRoot: '/Users/alice/Library/Application Support/Claude',
+      executablePath: '/Applications/Claude.app/Contents/MacOS/Claude',
+      appPath: '/Applications/Claude.app',
+      detectedVersion: '1.2.3',
+      versionDetectionMethod: 'bundle_plist',
+      provenance: ['signed Claude.app'],
+      evidence: [{ kind: 'distribution', source: '/Applications/Claude.app', value: 'Q6L2SF6YDW' }],
+    }
+    const scanner = {
+      scan: async () => ({ installations: [], unresolved: [], diagnostics: [] }),
+      previewGuidedInstallation: vi.fn(async () => candidate),
+    }
+    const service = new AgentIntegrationService({
+      repository,
+      scanner,
+      execution: {
+        preview: vi.fn(async (request: PreviewRequest) => plan(request)),
+        applyPrepared: vi.fn(async () => ({ status: 'committed' as const, runId: 'unused', verification: [] })),
+      },
+      now: () => new Date(T0),
+      installationId: () => 'cowork-installation',
+      agentId: () => 'eb_cowork',
+      homeDir: '/Users/alice',
+      enabledCatalogIds: ['claude-cowork-local'],
+      implementedComponents: new Map([
+        ['claude-cowork-local', ['instruction', 'memory_tools'] as const],
+      ]),
+      coworkGuidedRuntime: {
+        applicationDataDir: '/Users/alice/Library/Application Support/Tide Mind',
+      },
+    })
+
+    const preview = await service.previewClaudeCoworkSetup()
+
+    expect(repository.listInstallations()).toHaveLength(0)
+    expect(preview).toMatchObject({
+      displayName: 'Claude Cowork',
+      hostVersion: '1.2.3',
+      componentKeys: ['instruction', 'memory_tools'],
+    })
+    expect(preview.warnings.join('\n')).toContain('does not prove that Cowork has loaded the plugin')
+    expect(preview.warnings.join('\n')).toContain('will not modify Claude Desktop configuration')
+
+    const prepared = await service.prepareClaudeCoworkSetup(preview.preflightHash)
+    const row = repository.getInstallation(prepared.installationId)!
+    const expectedExportRoot = '/Users/alice/Library/Application Support/Tide Mind/agent-integration/claude-cowork/cowork-installation'
+    const expectedPlugin = `${expectedExportRoot}/tidemind-cowork.plugin`
+
+    expect(prepared.installationId).toBe('cowork-installation')
+    expect(row).toMatchObject({
+      id: 'cowork-installation',
+      host_variant: 'claude-cowork-local',
+      profile_id: 'cowork-user-guided',
+      agent_id: 'eb_cowork',
+      supported_capability: 3,
+      desired_state: 'unmanaged',
+      health_state: 'discovered',
+      config_root: '/Users/alice/Library/Application Support/Claude',
+    })
+    expect(persistedComponentConfigRoots(row)).toEqual({
+      instruction: expectedExportRoot,
+      memory_tools: expectedExportRoot,
+    })
+    expect(persistedComponentConfigFiles(row)).toEqual({
+      instruction: expectedPlugin,
+      memory_tools: expectedPlugin,
+    })
+    expect(persistedDistribution(row)).toMatchObject({
+      packageProvenance: 'signed_app:com.anthropic.claudefordesktop:Q6L2SF6YDW',
+      capabilityFingerprint: `desktop-bundle-surface-v1:${'a'.repeat(64)}`,
+    })
+    expect(JSON.parse(row.metadata_json)).toMatchObject({
+      guidedInstallation: {
+        kind: 'claude_cowork_plugin_upload',
+        state: 'user_started_unverified',
+        hostLoaded: false,
+      },
+    })
+    expect(row.metadata_json).not.toContain('claude_desktop_config')
+
+    await service.scan()
+    expect(repository.getInstallation('cowork-installation')?.health_state).toBe('discovered')
+
+    candidate = null
+    await service.scan()
+    expect(repository.getInstallation('cowork-installation')?.health_state).toBe('inaccessible')
+  })
+
+  it('does not create a Cowork Installation when the signed app surface changes after preview', async () => {
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const repository = new AgentIntegrationRepository(db)
+    const candidate = (surface: string): DiscoveredInstallation => ({
+      catalogId: 'claude-cowork-local',
+      displayName: 'Claude Cowork',
+      identity: canonicalizeInstallationIdentity({
+        runtimeRealm: 'local_macos', osUserIdentity: 'usr_fixture_501', productFamilyId: 'claude-cowork',
+        hostVariant: 'claude-cowork-local', configRoot: '/Users/alice/Library/Application Support/Claude',
+        distribution: {
+          distributionId: 'com.anthropic.claudefordesktop',
+          executableRealpath: '/Applications/Claude.app/Contents/MacOS/Claude',
+          packageProvenance: 'signed_app:com.anthropic.claudefordesktop:Q6L2SF6YDW',
+          capabilityFingerprint: `desktop-bundle-surface-v1:${surface}`,
+        },
+      }),
+      configRoot: '/Users/alice/Library/Application Support/Claude',
+      executablePath: '/Applications/Claude.app/Contents/MacOS/Claude',
+      appPath: '/Applications/Claude.app', detectedVersion: '1.2.3', versionDetectionMethod: 'bundle_plist',
+      provenance: ['signed Claude.app'], evidence: [],
+    })
+    let current = candidate('a'.repeat(64))
+    const service = new AgentIntegrationService({
+      repository,
+      scanner: {
+        scan: async () => ({ installations: [], unresolved: [], diagnostics: [] }),
+        previewGuidedInstallation: async () => current,
+      },
+      execution: {
+        preview: vi.fn(async (request: PreviewRequest) => plan(request)),
+        applyPrepared: vi.fn(async () => ({ status: 'committed' as const, runId: 'unused', verification: [] })),
+      },
+      now: () => new Date(T0), installationId: () => 'cowork-installation', agentId: () => 'eb_cowork',
+      homeDir: '/Users/alice', enabledCatalogIds: ['claude-cowork-local'],
+      coworkGuidedRuntime: { applicationDataDir: '/Users/alice/Library/Application Support/Tide Mind' },
+    })
+
+    const preview = await service.previewClaudeCoworkSetup()
+    current = candidate('b'.repeat(64))
+
+    await expect(service.prepareClaudeCoworkSetup(preview.preflightHash))
+      .rejects.toThrow('Claude changed after preview')
+    expect(repository.listInstallations()).toHaveLength(0)
+  })
+
+  it('records Codex /hooks trust only after an exact frozen read-only recheck', async () => {
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const repository = new AgentIntegrationRepository(db)
+    const sourcePath = '/Users/alice/.codex/hooks.json'
+    const hookKey = `${sourcePath}:hooks.SessionStart.0`
+    const ownedFragmentHash = 'a'.repeat(64)
+    const hostCurrentHash = `sha256:${'b'.repeat(64)}`
+    repository.upsertDiscoveredInstallation({
+      id: 'codex-installation', family: 'codex', hostVariant: 'codex-cli',
+      installKey: 'codex:default', provenance: 'test', osUserIdentity: '501',
+      displayName: 'Codex', configRoot: '/Users/alice/.codex',
+      executablePath: '/usr/local/bin/codex', detectedVersion: '1.2.3',
+      versionDetectionMethod: 'npm-package', agentId: 'eb_codex',
+      supportedCapability: 4, lastDetectedAt: T0,
+    })
+    repository.setInstallationIntent('codex-installation', 'managed', T0)
+    db.prepare(`
+      INSERT INTO managed_artifacts (
+        id, component_type, target_path, ownership_key, mutation_domain,
+        projection_version, selector_schema_version, owned_fragment_hash,
+        desired_fragment_hash, state, created_at, updated_at
+      ) VALUES ('codex-hook-artifact', 'hook', ?, 'hooks.SessionStart',
+        'codex-hooks', '1', '1', ?, ?, 'healthy', ?, ?)
+    `).run(sourcePath, ownedFragmentHash, ownedFragmentHash, T0, T0)
+    db.prepare(`
+      INSERT INTO installation_components (
+        installation_id, component_key, desired_state, desired_capability,
+        delivery_mode, verification_status, artifact_id, visibility_state,
+        created_at, updated_at
+      ) VALUES ('codex-installation', 'lifecycle', 'managed', 4, 'managed',
+        'unverified', 'codex-hook-artifact', 'dedicated', ?, ?)
+    `).run(T0, T0)
+    db.prepare(`
+      INSERT INTO artifact_consumers (
+        artifact_id, installation_id, component_key, required_capability,
+        desired_state, discover_reachability, state, added_at, updated_at
+      ) VALUES ('codex-hook-artifact', 'codex-installation', 'lifecycle', 4,
+        'managed', 'dedicated', 'active', ?, ?)
+    `).run(T0, T0)
+
+    const action = {
+      kind: 'codex_hook_trust' as const,
+      componentKey: 'lifecycle' as const,
+      installationId: 'codex-installation',
+      agentId: 'eb_codex',
+      hostVariant: 'codex-cli' as const,
+      sourcePath,
+      hookKey,
+      sourcePathHash: createHash('sha256').update(sourcePath).digest('hex'),
+      hookKeyHash: createHash('sha256').update(hookKey).digest('hex'),
+      ownedFragmentHash,
+      hostCurrentHash,
+      tideMindVersion: '0.2.92',
+      adapterVersion: '1',
+      projectionVersion: '1',
+      hostVersion: '1.2.3',
+      instruction: '在 Codex 中运行 /hooks，选择 Tide Mind 的 SessionStart Hook 并确认信任。完成后返回 Tide Mind 重新校验。',
+    }
+    const preview = vi.fn(async (request: PreviewRequest): Promise<PreparedCoordinatorPlan> => ({
+      operation: request.operation,
+      componentKeys: ['lifecycle'],
+      inspection: {
+        catalogId: 'codex-cli', detected: true, distribution: {}, components: [], provenance: [], diagnostics: [],
+      },
+      adapterPlan: {
+        catalogId: 'codex-cli', installationKey: 'codex:default', adapterVersion: '1', projectionVersion: '1',
+        mutations: [], requiredUserActions: ['codex_hook_trust_required'], requiredUserActionDetails: [action], diagnostics: [],
+      },
+      adapterPlanHash: 'codex-adapter-plan',
+      executionPlan: {
+        installationId: 'codex-installation', operation: 'connect', componentKeys: ['lifecycle'],
+        catalogVersion: 1, adapterVersion: 1, projectionVersion: 1, createdAt: T0,
+        mutations: [], installationSurfaceFingerprint: 'c'.repeat(64), liveTrustProofFingerprint: 'd'.repeat(64),
+      },
+      executionPlanHash: 'codex-execution-plan',
+    }))
+    let trusted = false
+    const trustResults: boolean[] = []
+    const physicalTrustFile = path.join(os.tmpdir(), `tidemind-codex-trust-${createHash('sha256').update(String(Math.random())).digest('hex')}`)
+    fs.writeFileSync(physicalTrustFile, 'untrusted')
+    let mutateTrustFileAfterRead = false
+    let expireActionAfterRead = false
+    let currentTime = T0
+    const attestationResults: boolean[] = []
+    const attestInstallation = vi.fn(async (_row, expectedProof: string) => {
+      expect(expectedProof).toBe('d'.repeat(64))
+      return attestationResults.shift() ?? true
+    })
+    const verifyCodexHookTrust = vi.fn(async () => {
+      const physicallyTrusted = fs.readFileSync(physicalTrustFile, 'utf8') === 'trusted'
+      const result = trustResults.shift() ?? (trusted && physicallyTrusted)
+      if (mutateTrustFileAfterRead) {
+        mutateTrustFileAfterRead = false
+        fs.writeFileSync(physicalTrustFile, 'modified')
+      }
+      if (expireActionAfterRead) {
+        expireActionAfterRead = false
+        currentTime = '2026-08-26T00:00:00.000Z'
+      }
+      return result ? {
+          trusted: true as const,
+          sourcePath,
+          hookKey,
+          hostCurrentHash,
+          hooksFileFingerprint: 'e'.repeat(64),
+          trustConfigFingerprint: 'f'.repeat(64),
+        }
+        : null
+    })
+    const afterCodexHookTrust = vi.fn(async () => { throw new Error('maintenance temporarily unavailable') })
+    const service = new AgentIntegrationService({
+      repository,
+      scanner: { scan: async () => ({ installations: [], unresolved: [], diagnostics: [] }) },
+      execution: { preview, applyPrepared: vi.fn() },
+      now: () => new Date(currentTime), homeDir: '/Users/alice',
+      attestInstallation,
+      verifyCodexHookTrust,
+      afterCodexHookTrust,
+    })
+
+    const review = await service.reviewCodexHookTrust('codex-installation')
+    expect(review).toMatchObject({
+      status: 'action_required', sourceLabel: '~/.codex/hooks.json',
+      hookKeyHash: action.hookKeyHash, ownedFragmentHash, hostCurrentHash,
+    })
+    expect(JSON.stringify(review)).not.toContain(sourcePath)
+
+    expect(await service.confirmCodexHookTrust(review.actionHash!)).toMatchObject({
+      status: 'not_trusted', receiptId: null,
+    })
+    expect(repository.findCodexHookTrustEvidence(action)).toBeNull()
+    expect(verifyCodexHookTrust).toHaveBeenLastCalledWith(expect.objectContaining({
+      liveTrustProofFingerprint: 'd'.repeat(64),
+    }))
+
+    trusted = true
+    fs.writeFileSync(physicalTrustFile, 'trusted')
+    attestationResults.push(true, true)
+    mutateTrustFileAfterRead = true
+    await expect(service.confirmCodexHookTrust(review.actionHash!))
+      .rejects.toThrow('Codex hook trust state changed before receipt')
+    expect(repository.findCodexHookTrustEvidence(action)).toBeNull()
+
+    fs.writeFileSync(physicalTrustFile, 'trusted')
+    attestationResults.push(true, false)
+    await expect(service.confirmCodexHookTrust(review.actionHash!))
+      .rejects.toThrow('Codex distribution trust changed before receipt')
+    expect(repository.findCodexHookTrustEvidence(action)).toBeNull()
+    expect(afterCodexHookTrust).not.toHaveBeenCalled()
+
+    attestationResults.push(true, true)
+    fs.writeFileSync(physicalTrustFile, 'trusted')
+    const [completed, concurrent] = await Promise.all([
+      service.confirmCodexHookTrust(review.actionHash!),
+      service.confirmCodexHookTrust(review.actionHash!),
+    ])
+    expect(completed).toMatchObject({ status: 'trust_recorded', hostCurrentHash })
+    expect(concurrent).toEqual(completed)
+    expect(completed.receiptId).toMatch(/^aie_/u)
+    expect(repository.findCodexHookTrustEvidence(action)).toMatchObject({
+      id: completed.receiptId, artifactId: 'codex-hook-artifact',
+    })
+    expect(afterCodexHookTrust).toHaveBeenCalledOnce()
+    expect(repository.listEvents({ limit: 20 })).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'post_codex_trust_maintenance_failed',
+        severity: 'error',
+      }),
+    ]))
+    await expect(service.confirmCodexHookTrust(review.actionHash!)).rejects.toThrow(/unknown or has expired/)
+    const secondReview = await service.reviewCodexHookTrust('codex-installation')
+    const originalRecordEvent = repository.recordEvent.bind(repository)
+    const recordEvent = vi.spyOn(repository, 'recordEvent').mockImplementation(input => {
+      if (input.kind === 'post_codex_trust_maintenance_failed') throw new Error('event store unavailable')
+      return originalRecordEvent(input)
+    })
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    await expect(service.confirmCodexHookTrust(secondReview.actionHash!)).resolves.toMatchObject({
+      status: 'trust_recorded',
+      receiptId: completed.receiptId,
+    })
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining('failed to persist post-Codex-trust maintenance diagnostic'),
+      expect.objectContaining({ receiptId: completed.receiptId }),
+    )
+    recordEvent.mockRestore()
+    consoleError.mockRestore()
+
+    const expiringReview = await service.reviewCodexHookTrust('codex-installation')
+    const receiptsBeforeExpiry = repository.listEvents({ limit: 50 })
+      .filter(event => event.kind === 'codex_hook_trust_verified').length
+    expireActionAfterRead = true
+    await expect(service.confirmCodexHookTrust(expiringReview.actionHash!))
+      .rejects.toThrow('Codex trust review changed or expired before receipt')
+    expect(repository.listEvents({ limit: 50 })
+      .filter(event => event.kind === 'codex_hook_trust_verified')).toHaveLength(receiptsBeforeExpiry)
+    fs.rmSync(physicalTrustFile, { force: true })
+    db.close()
+  })
+
+  it('keeps a non-standard-root Custom target read-only until the user continues to coordinator preview', async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tidemind-custom-root-'))
+    const sourceRoot = path.join(homeDir, '.cursor')
+    const customRoot = path.join(homeDir, '.cursor-work')
+    fs.mkdirSync(sourceRoot)
+    fs.mkdirSync(customRoot)
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const repository = new AgentIntegrationRepository(db)
+    const sourceIdentity = canonicalizeInstallationIdentity({
+      runtimeRealm: 'local_macos', osUserIdentity: 'local-user', productFamilyId: 'cursor',
+      hostVariant: 'cursor-desktop', configRoot: sourceRoot,
+      componentConfigRoots: { lifecycle: sourceRoot },
+      componentConfigFiles: { lifecycle: path.join(sourceRoot, 'hooks.json') },
+      distribution: { distributionId: 'cursor-test', capabilityFingerprint: 'surface-test' },
+    })
+    repository.upsertDiscoveredInstallation({
+      id: 'source-installation', family: 'cursor', hostVariant: 'cursor-desktop',
+      installKey: sourceIdentity.installKey, distributionId: 'cursor-test',
+      provenance: 'signed test', osUserIdentity: sourceIdentity.osUserIdentity,
+      displayName: 'Cursor', configRoot: sourceRoot,
+      executablePath: '/Applications/Cursor.app/Contents/MacOS/Cursor', agentId: 'eb_source',
+      supportedCapability: 4, lastDetectedAt: T0,
+      metadata: {
+        distribution: { distributionId: 'cursor-test', capabilityFingerprint: 'surface-test' },
+        componentConfigRoots: { lifecycle: sourceRoot },
+        componentConfigFiles: { lifecycle: path.join(sourceRoot, 'hooks.json') },
+        resourceRoots: { cursor_resources: path.join(sourceRoot, 'resources') },
+      },
+    })
+    const preview = vi.fn(async (request: PreviewRequest) => plan(request))
+    let customRootPresent = true
+    const probeCustomInstallation = vi.fn(async () => customRootPresent)
+    const service = new AgentIntegrationService({
+      repository,
+      scanner: { scan: async () => ({
+        installations: [{
+          catalogId: 'cursor-desktop', displayName: 'Cursor', identity: sourceIdentity,
+          configRoot: sourceRoot,
+          componentConfigRoots: { lifecycle: sourceRoot },
+          componentConfigFiles: { lifecycle: path.join(sourceRoot, 'hooks.json') },
+          resourceRoots: { cursor_resources: path.join(sourceRoot, 'resources') },
+          executablePath: '/Applications/Cursor.app/Contents/MacOS/Cursor',
+          provenance: ['signed test'], evidence: [],
+        }],
+        unresolved: [], diagnostics: [],
+      }) },
+      execution: { preview, applyPrepared: async () => ({ status: 'committed', runId: 'run-custom' }) },
+      now: () => new Date(T0),
+      installationId: () => 'custom-installation',
+      agentId: () => 'eb_custom',
+      homeDir,
+      releasePolicy: {
+        manifestVersion: '0.2.92', mode: 'active', customLocalAgentEnabled: true, diagnostics: [],
+      },
+      releaseEntries: AGENT_INTEGRATION_RELEASE_ENTRY_MAP,
+      probeCustomInstallation,
+    })
+
+    const preflight = await service.previewCustomInstallation({
+      mode: 'nonstandard_config_root', displayName: 'Cursor Work',
+      sourceInstallationId: 'source-installation', configRoot: customRoot,
+    })
+    expect(preflight).toMatchObject({
+      mode: 'nonstandard_config_root', displayName: 'Cursor Work',
+      targetLabel: `~/${path.basename(customRoot)}`, agentId: 'eb_custom',
+    })
+    expect(repository.getInstallation('custom-installation')).toBeUndefined()
+    expect(preview).not.toHaveBeenCalled()
+
+    await service.prepareCustomConnect(preflight.preflightHash)
+    const persisted = repository.getInstallation('custom-installation')
+    expect(persisted).toMatchObject({
+      family: 'custom-local-agent', host_variant: 'cursor-desktop',
+      config_root: fs.realpathSync(customRoot), agent_id: 'eb_custom', desired_state: 'unmanaged',
+    })
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({
+      installation: expect.objectContaining({
+        id: 'custom-installation',
+        identity: expect.objectContaining({
+          hostVariant: 'cursor-desktop',
+          canonicalConfigRoot: fs.realpathSync(customRoot),
+          componentConfigRoots: { lifecycle: fs.realpathSync(customRoot) },
+          componentConfigFiles: { lifecycle: path.join(fs.realpathSync(customRoot), 'hooks.json') },
+        }),
+      }),
+    }))
+
+    expect(isCustomInstallationManagementContractValid(
+      repository.getInstallation('custom-installation')!,
+      repository,
+      AGENT_INTEGRATION_RELEASE_ENTRY_MAP,
+    )).toBe(true)
+
+    await service.scan()
+    const afterScanCustom = repository.getInstallation('custom-installation')!
+    const afterScanSource = repository.getInstallation('source-installation')!
+    const customMetadata = JSON.parse(afterScanCustom.metadata_json)
+    expect(persistedProjectionSurfaceFingerprint(afterScanSource))
+      .toBe(customMetadata.customInstallation.sourceSurfaceFingerprint)
+    expect(afterScanSource.install_key).toBe(customMetadata.customInstallation.sourceInstallKey)
+    expect(afterScanCustom.distribution_id).toBe(afterScanSource.distribution_id)
+    expect(afterScanSource).toMatchObject({
+      health_state: 'discovered', desired_state: 'unmanaged', host_variant: 'cursor-desktop',
+      os_user_identity: afterScanCustom.os_user_identity,
+    })
+    expect(customMetadata.customInstallation.sourceHostVariant).toBe('cursor-desktop')
+    expect(isCustomInstallationManagementContractValid(
+      afterScanCustom, repository,
+      AGENT_INTEGRATION_RELEASE_ENTRY_MAP,
+    )).toBe(true)
+    await service.scan()
+    expect(repository.getInstallation('custom-installation')).toMatchObject({
+      health_state: 'discovered',
+      status_reason: null,
+    })
+    expect(probeCustomInstallation).toHaveBeenCalledTimes(2)
+
+    customRootPresent = false
+    await service.scan()
+    expect(repository.getInstallation('custom-installation')?.health_state).toBe('inaccessible')
+    await service.scan()
+    expect(repository.getInstallation('custom-installation')).toMatchObject({
+      health_state: 'absent',
+      status_reason: 'host_uninstalled',
+    })
+    db.close()
+    fs.rmSync(homeDir, { recursive: true, force: true })
+  })
+
+  it('rejects a Custom root for an Adapter whose managed artifacts use a shared physical domain', async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tidemind-custom-shared-root-'))
+    const sourceRoot = path.join(homeDir, '.codex')
+    const customRoot = path.join(homeDir, '.codex-work')
+    fs.mkdirSync(sourceRoot)
+    fs.mkdirSync(customRoot)
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const repository = new AgentIntegrationRepository(db)
+    repository.upsertDiscoveredInstallation({
+      id: 'codex-source', family: 'codex', hostVariant: 'codex-cli',
+      installKey: 'codex:trusted', provenance: 'verified npm metadata', osUserIdentity: '501',
+      displayName: 'Codex', configRoot: sourceRoot,
+      executablePath: path.join(homeDir, 'bin', 'codex'), agentId: 'eb_codex_source',
+      supportedCapability: 4, lastDetectedAt: T0,
+      metadata: { distribution: { distributionId: 'cli:codex-cli', capabilityFingerprint: 'surface-test' } },
+    })
+    const preview = vi.fn(async (request: PreviewRequest) => plan(request))
+    const service = new AgentIntegrationService({
+      repository,
+      scanner: { scan: async () => ({ installations: [], unresolved: [], diagnostics: [] }) },
+      execution: { preview, applyPrepared: async () => ({ status: 'committed', runId: 'never' }) },
+      homeDir,
+      releasePolicy: { manifestVersion: '0.2.92', mode: 'active', customLocalAgentEnabled: true, diagnostics: [] },
+      releaseEntries: AGENT_INTEGRATION_RELEASE_ENTRY_MAP,
+    })
+
+    await expect(service.previewCustomInstallation({
+      mode: 'nonstandard_config_root', displayName: 'Codex Work',
+      sourceInstallationId: 'codex-source', configRoot: customRoot,
+    })).rejects.toThrow(/does not support an isolated custom configuration root/)
+    expect(preview).not.toHaveBeenCalled()
+    db.close()
+    fs.rmSync(homeDir, { recursive: true, force: true })
+  })
+
+  it('keeps Claude Desktop legacy migration-only even if an exact version is accepted', async () => {
+    const legacy = AGENT_INTEGRATION_RELEASE_ENTRY_MAP.get('claude-desktop-legacy')!
+    const releaseEntries = new Map<CatalogId, AgentReleaseEntry>([[
+      'claude-desktop-legacy',
+      { ...legacy, releaseAcceptedExactVersions: ['1.24012.1'] },
+    ]])
+    const { repository, service, preview } = setup(
+      undefined,
+      '/Users/alice',
+      undefined,
+      undefined,
+      undefined,
+      releaseEntries,
+      new Map([['claude-desktop-legacy', ['memory_tools'] as const]]),
+    )
+    repository.upsertDiscoveredInstallation({
+      id: 'legacy-installation', family: 'claude-desktop-legacy', hostVariant: 'claude-desktop-legacy',
+      installKey: 'claude-desktop:legacy', provenance: 'signed legacy app', osUserIdentity: '501',
+      displayName: 'Claude Desktop (Legacy)', configRoot: '/Users/alice/Library/Application Support/Claude',
+      executablePath: '/Applications/Claude.app/Contents/MacOS/Claude', agentId: 'eb_legacy',
+      detectedVersion: '1.24012.1', supportedCapability: 2, lastDetectedAt: T0,
+    })
+
+    const variant = service.supportCatalog()
+      .find(product => product.id === 'claude-desktop-legacy')?.variants[0]
+    expect(variant).toMatchObject({ maturity: 'detectable', maximumAccessLevel: 'unconnected' })
+    await expect(service.previewConnect(['legacy-installation'])).rejects.toThrow(/not enabled/)
+    await expect(service.previewCustomInstallation({
+      mode: 'nonstandard_config_root',
+      displayName: 'Legacy custom',
+      sourceInstallationId: 'legacy-installation',
+      configRoot: '/Users/alice/.claude-legacy-custom',
+    })).rejects.toThrow(/not currently trusted and manageable/)
+    expect(preview).not.toHaveBeenCalled()
+  })
+
+  it('retires a legacy non-Cursor Custom root without probing or reopening recovery authority', async () => {
+    const { db, repository } = setup()
+    repository.upsertDiscoveredInstallation({
+      id: 'codex-source', family: 'codex', hostVariant: 'codex-cli',
+      installKey: 'codex:source', provenance: 'legacy fixture', osUserIdentity: 'local-user',
+      displayName: 'Codex', configRoot: '/Users/alice/.codex', distributionId: 'cli:codex-cli',
+      executablePath: '/Users/alice/bin/codex', agentId: 'eb_codex_source',
+      supportedCapability: 4, lastDetectedAt: T0,
+      metadata: { distribution: { distributionId: 'cli:codex-cli', capabilityFingerprint: 'codex-surface' } },
+    })
+    repository.upsertDiscoveredInstallation({
+      id: 'legacy-custom-codex', family: 'custom-local-agent', hostVariant: 'codex-cli',
+      installKey: 'custom-local:legacy-wide-allowlist', provenance: 'legacy fixture', osUserIdentity: 'local-user',
+      displayName: 'Legacy Codex Work', configRoot: '/Users/alice/.codex-work', distributionId: 'cli:codex-cli',
+      executablePath: '/Users/alice/bin/codex', agentId: 'eb_legacy_custom_codex',
+      supportedCapability: 4, lastDetectedAt: T0,
+      metadata: {
+        distribution: { distributionId: 'cli:codex-cli', capabilityFingerprint: 'codex-surface' },
+        // Shape emitted by the old broad allowlist: it lacks the newly frozen
+        // source host variant and install key and is no longer releasable.
+        customInstallation: {
+          kind: 'nonstandard_config_root',
+          sourceInstallationId: 'codex-source',
+          sourceSurfaceFingerprint: 'legacy-source-surface',
+          configFingerprint: 'legacy-config-root',
+        },
+      },
+    })
+    repository.setInstallationIntent('legacy-custom-codex', 'managed', T0)
+    const probeCustomInstallation = vi.fn(async () => true)
+    const service = new AgentIntegrationService({
+      repository,
+      scanner: { scan: async () => ({ installations: [], unresolved: [], diagnostics: [] }) },
+      execution: { preview: async request => plan(request), applyPrepared: async () => ({ status: 'committed', runId: 'never' }) },
+      homeDir: '/Users/alice',
+      releaseEntries: AGENT_INTEGRATION_RELEASE_ENTRY_MAP,
+      enabledCatalogIds: ['codex-cli'],
+      probeCustomInstallation,
+    })
+
+    expect(service.detail('legacy-custom-codex').installation.manageable).toBe(false)
+    await expect(service.previewConnect(['legacy-custom-codex'])).rejects.toThrow(/not enabled/)
+    await service.scan()
+    expect(repository.getInstallation('legacy-custom-codex')?.health_state).toBe('inaccessible')
+    await service.scan()
+    expect(repository.getInstallation('legacy-custom-codex')).toMatchObject({
+      health_state: 'absent', status_reason: 'host_uninstalled',
+    })
+    expect(probeCustomInstallation).not.toHaveBeenCalled()
+  })
+
+  it('freezes an explicit local MCP executable, JSONC file, schema and selector without exposing config contents', async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tidemind-custom-mcp-'))
+    const executable = path.join(homeDir, 'local-client')
+    const configFile = path.join(homeDir, 'client.jsonc')
+    fs.writeFileSync(executable, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+    fs.writeFileSync(configFile, '{\n  // user setting stays intact\n  "existing": true\n}\n', { mode: 0o600 })
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const repository = new AgentIntegrationRepository(db)
+    const service = new AgentIntegrationService({
+      repository,
+      scanner: { scan: async () => ({ installations: [], unresolved: [], diagnostics: [] }) },
+      execution: { preview: async request => plan(request), applyPrepared: async () => ({ status: 'committed', runId: 'run-custom' }) },
+      now: () => new Date(T0),
+      installationId: () => 'custom-mcp-installation',
+      agentId: () => 'eb_custom_mcp',
+      homeDir,
+      customMcpRuntime: { shimPath: '/Applications/Tide Mind.app/shim', mcpServerPath: '/Applications/Tide Mind.app/mcp.js' },
+      releasePolicy: {
+        manifestVersion: '0.2.92', mode: 'active', customLocalAgentEnabled: true, diagnostics: [],
+      },
+    })
+
+    const preflight = await service.previewCustomInstallation({
+      mode: 'manual_mcp_client', displayName: 'Private Client',
+      clientExecutablePath: executable, configFilePath: configFile,
+      schemaKind: 'nested_mcp_servers', selectorKey: 'tidemind-work',
+    })
+    expect(preflight).toMatchObject({
+      mode: 'manual_mcp_client', displayName: 'Private Client',
+      schemaKind: 'nested_mcp_servers', selectorKey: 'tidemind-work', agentId: 'eb_custom_mcp',
+    })
+    expect(JSON.stringify(preflight)).not.toContain(configFile)
+    expect(repository.getInstallation('custom-mcp-installation')).toBeUndefined()
+    expect(() => service.customMcpConfiguration(preflight.preflightHash))
+      .toThrow(/continue to authorization/)
+    await service.prepareCustomConnect(preflight.preflightHash)
+    const generated = JSON.parse(service.customMcpConfiguration(preflight.preflightHash))
+    expect(generated.mcp.servers['tidemind-work']).toMatchObject({
+      command: '/Applications/Tide Mind.app/shim',
+      args: ['/Applications/Tide Mind.app/mcp.js'],
+      env: { EB_AGENT_ID: 'eb_custom_mcp', EB_HOST_VARIANT: 'custom-local-mcp' },
+    })
+    await expect(service.previewCustomInstallation({
+      mode: 'manual_mcp_client', displayName: 'Remote',
+      clientExecutablePath: 'https://example.test/client', configFilePath: configFile,
+      schemaKind: 'standard_mcp_servers', selectorKey: 'tidemind',
+    })).rejects.toThrow(/absolute local path/)
+    db.close()
+    fs.rmSync(homeDir, { recursive: true, force: true })
+  })
+
+  it('continues an identity-only legacy Custom Agent on the same Installation and Agent identity', async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tidemind-custom-legacy-continue-'))
+    const executable = path.join(homeDir, 'legacy-client')
+    const configFile = path.join(homeDir, 'legacy-client.json')
+    fs.writeFileSync(executable, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+    fs.writeFileSync(configFile, '{"userSetting":true}\n', { mode: 0o600 })
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const repository = new AgentIntegrationRepository(db)
+    db.prepare(`INSERT INTO agents (id, name, tool_type, archived, last_active, created)
+      VALUES ('eb_legacy_custom', 'Legacy Client', 'other', 0, ?, ?)`)
+      .run('2026-08-24T00:00:00.000Z', T0)
+    repository.adoptLegacyCustomInstallation({
+      legacy: repository.listLegacyAgents()[0], runtimeRealm: 'local_macos', adoptedAt: T0,
+    })
+    const legacy = repository.getInstallationByAgentIdOrAlias('eb_legacy_custom')!
+    const preview = vi.fn(async (request: PreviewRequest) => plan(request))
+    const service = new AgentIntegrationService({
+      repository,
+      scanner: { scan: async () => ({ installations: [], unresolved: [], diagnostics: [] }) },
+      execution: { preview, applyPrepared: async () => ({ status: 'committed', runId: 'run-custom' }) },
+      now: () => new Date(T0),
+      installationId: () => 'must-not-create-another-installation',
+      agentId: () => 'must-not-create-another-agent',
+      homeDir,
+      customMcpRuntime: { shimPath: '/Applications/Tide Mind.app/shim', mcpServerPath: '/Applications/Tide Mind.app/mcp.js' },
+      releasePolicy: { manifestVersion: '0.2.92', mode: 'active', customLocalAgentEnabled: true, diagnostics: [] },
+    })
+
+    const preflight = await service.previewCustomInstallation({
+      mode: 'manual_mcp_client', displayName: 'Legacy Client', legacyInstallationId: legacy.id,
+      clientExecutablePath: executable, configFilePath: configFile,
+      schemaKind: 'standard_mcp_servers', selectorKey: 'tidemind-legacy',
+    })
+    expect(preflight).toMatchObject({
+      reusedLegacyInstallationId: legacy.id,
+      agentId: 'eb_legacy_custom',
+    })
+    await service.prepareCustomConnect(preflight.preflightHash)
+    expect(repository.listInstallations()).toHaveLength(1)
+    expect(repository.getInstallation(legacy.id)).toMatchObject({
+      id: legacy.id,
+      agent_id: 'eb_legacy_custom',
+      profile_id: 'custom-mcp:standard_mcp_servers:tidemind-legacy',
+      config_root: fs.realpathSync(homeDir),
+      executable_path: fs.realpathSync(executable),
+      health_state: 'discovered',
+      desired_state: 'unmanaged',
+      supported_capability: 2,
+    })
+    expect(JSON.parse(repository.getInstallation(legacy.id)!.metadata_json)).toMatchObject({
+      legacyIdentity: { kind: 'legacy_identity_only', sourceAgentId: 'eb_legacy_custom' },
+      customInstallation: {
+        kind: 'manual_mcp_client',
+        schemaKind: 'standard_mcp_servers',
+        selectorKey: 'tidemind-legacy',
+        legacySourceAgentId: 'eb_legacy_custom',
+      },
+    })
+    expect(repository.getInstallationByLegacyAgentAlias('eb_legacy_custom', 'local_macos')?.id).toBe(legacy.id)
+    expect(preview).toHaveBeenCalledOnce()
+    expect(db.prepare('SELECT COUNT(*) AS count FROM agent_consents').get()).toEqual({ count: 0 })
+    expect(db.prepare('SELECT COUNT(*) AS count FROM writer_fences').get()).toEqual({ count: 0 })
+    expect(JSON.parse(fs.readFileSync(configFile, 'utf8'))).toEqual({ userSetting: true })
+    db.close()
+    fs.rmSync(homeDir, { recursive: true, force: true })
+  })
+
+  it('fails closed when a selected legacy Custom identity or frozen surface changes before continue', async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tidemind-custom-legacy-cas-'))
+    const executable = path.join(homeDir, 'client')
+    const configFile = path.join(homeDir, 'client.json')
+    fs.writeFileSync(executable, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+    fs.writeFileSync(configFile, '{}\n')
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const repository = new AgentIntegrationRepository(db)
+    db.prepare(`INSERT INTO agents (id, name, tool_type, archived, created)
+      VALUES ('eb_legacy_cas', 'Legacy', 'other', 0, ?)`)
+      .run(T0)
+    repository.adoptLegacyCustomInstallation({
+      legacy: repository.listLegacyAgents()[0], runtimeRealm: 'local_macos', adoptedAt: T0,
+    })
+    const legacy = repository.getInstallationByAgentIdOrAlias('eb_legacy_cas')!
+    const service = new AgentIntegrationService({
+      repository,
+      scanner: { scan: async () => ({ installations: [], unresolved: [], diagnostics: [] }) },
+      execution: { preview: async request => plan(request), applyPrepared: async () => ({ status: 'committed', runId: 'never' }) },
+      now: () => new Date(T0), homeDir,
+      customMcpRuntime: { shimPath: '/shim', mcpServerPath: '/mcp' },
+      releasePolicy: { manifestVersion: '0.2.92', mode: 'active', customLocalAgentEnabled: true, diagnostics: [] },
+    })
+    const preflight = await service.previewCustomInstallation({
+      mode: 'manual_mcp_client', displayName: 'Legacy', legacyInstallationId: legacy.id,
+      clientExecutablePath: executable, configFilePath: configFile,
+      schemaKind: 'standard_mcp_servers', selectorKey: 'tidemind',
+    })
+    db.prepare(`UPDATE agent_installations SET metadata_json = '{"changed":true}' WHERE id = ?`).run(legacy.id)
+    await expect(service.prepareCustomConnect(preflight.preflightHash)).rejects.toThrow(/not an unconfigured legacy Custom identity|changed after preview/)
+    expect(repository.getInstallation(legacy.id)).toMatchObject({
+      profile_id: 'legacy-unconfigured', provenance: 'legacy_identity_only', health_state: 'identity_only',
+    })
+    expect(db.prepare('SELECT COUNT(*) AS count FROM installation_components').get()).toEqual({ count: 0 })
+    expect(JSON.parse(fs.readFileSync(configFile, 'utf8'))).toEqual({})
+    db.close()
+    fs.rmSync(homeDir, { recursive: true, force: true })
+  })
+
+  it('rejects Custom preflight in emergency read-only mode', async () => {
+    const { repository } = setup()
+    const service = new AgentIntegrationService({
+      repository,
+      scanner: { scan: async () => ({ installations: [], unresolved: [], diagnostics: [] }) },
+      execution: { preview: async request => plan(request), applyPrepared: async () => ({ status: 'committed', runId: 'never' }) },
+      releasePolicy: {
+        manifestVersion: '0.2.92', mode: 'emergency_read_only', customLocalAgentEnabled: true, diagnostics: [],
+      },
+    })
+    await expect(service.previewCustomInstallation({
+      mode: 'nonstandard_config_root', displayName: 'Blocked',
+      sourceInstallationId: 'installation-1', configRoot: '/Users/alice/custom',
+    })).rejects.toThrow(/not enabled/)
+  })
+
   it('restores exact component config files from persisted discovery metadata for Adapter preview', async () => {
     const { repository, service, preview } = setup()
     repository.upsertDiscoveredInstallation({
@@ -183,13 +995,21 @@ describe('AgentIntegrationService', () => {
       supportedCapability: 4,
       lastDetectedAt: '2026-08-25T00:01:00.000Z',
       metadata: {
-        componentConfigFiles: { memory_tools: '/Users/alice/.cursor/custom-mcp.json' },
+        componentConfigRoots: { lifecycle: '/Users/alice/.cursor-lifecycle' },
+        componentConfigFiles: {
+          memory_tools: '/Users/alice/.cursor/custom-mcp.json',
+          lifecycle: '/Users/alice/.cursor-lifecycle/hooks.json',
+        },
       },
     })
 
     await service.previewConnect(['installation-1'])
+    expect(preview.mock.calls[0][0].installation.identity.componentConfigRoots).toEqual({
+      lifecycle: '/Users/alice/.cursor-lifecycle',
+    })
     expect(preview.mock.calls[0][0].installation.identity.componentConfigFiles).toEqual({
       memory_tools: '/Users/alice/.cursor/custom-mcp.json',
+      lifecycle: '/Users/alice/.cursor-lifecycle/hooks.json',
     })
   })
 
@@ -209,11 +1029,12 @@ describe('AgentIntegrationService', () => {
       supportedCapability: 4,
       lastDetectedAt: '2026-08-25T00:01:00.000Z',
       metadata: {
+        componentConfigRoots: { memory_tools: '/Users/alice/expected-root' },
         componentConfigFiles: { memory_tools: '/Users/alice/outside.json' },
       },
     })
 
-    await expect(service.previewConnect(['installation-1'])).rejects.toThrow(/outside the Installation config root/)
+    await expect(service.previewConnect(['installation-1'])).rejects.toThrow(/outside its component config root/)
     expect(preview).not.toHaveBeenCalled()
   })
 
@@ -245,6 +1066,50 @@ describe('AgentIntegrationService', () => {
     expect(JSON.stringify(technical)).not.toContain('/Users/alice')
   })
 
+  it('reopens pending guided actions from the latest authoritative coordinator run only', () => {
+    const { db, service } = setup()
+    const prepared = plan({
+      installation: {} as never,
+      operation: 'connect',
+      componentKeys: ['memory_tools'],
+      desiredCapability: 2,
+    })
+    prepared.adapterPlan.requiredUserActionDetails = [{
+      kind: 'qwenwork_mcp_gui', componentKey: 'memory_tools', operation: 'connect',
+      installationId: 'installation-1', agentId: 'eb_test', hostVariant: 'qwenwork-desktop',
+      hostVersion: '1', tideMindVersion: '0.2.92', adapterVersion: '1', projectionVersion: '1',
+      installationBindingHash: 'binding', connectorName: 'Tide Mind', serverType: 'STDIO',
+      command: '/Users/alice/.tidemind/bin/mcp', args: ['--stdio'],
+      environment: {
+        EB_AGENT_ID: 'eb_test', EB_HOST_VARIANT: 'qwenwork-desktop',
+        EB_ACTIVITY_GENERATION_TOKEN: 'fixture-activity-generation',
+      },
+      configurationJson: '{"mcpServers":{}}', connectorConfigurationHash: 'hash',
+      steps: ['backend step'], instruction: 'backend instruction',
+    }]
+    db.prepare(`
+      INSERT INTO reconcile_runs (
+        id, installation_id, operation_type, execution_plan_hash, state,
+        recovery_strategy, prepared_plan_json, created_at, updated_at
+      ) VALUES ('pending-guided', 'installation-1', 'connect', 'pending-plan',
+        'applied_unverified', 'resume', ?, ?, ?)
+    `).run(JSON.stringify(prepared), T0, T0)
+
+    expect(service.detail('installation-1').requiredUserActionDetails).toMatchObject([{
+      kind: 'qwenwork_mcp_gui', connectorName: 'Tide Mind', steps: ['backend step'],
+    }])
+    expect(service.detail('installation-1').requiredUserActionDetails?.[0]).not.toHaveProperty('installationBindingHash')
+
+    db.prepare(`
+      INSERT INTO reconcile_runs (
+        id, installation_id, operation_type, execution_plan_hash, state,
+        recovery_strategy, prepared_plan_json, created_at, updated_at
+      ) VALUES ('newer-disconnect', 'installation-1', 'disconnect', 'disconnect-plan',
+        'committed', 'resume', '{}', '2026-08-25T00:01:00.000Z', '2026-08-25T00:01:00.000Z')
+    `).run()
+    expect(service.detail('installation-1').requiredUserActionDetails).toEqual([])
+  })
+
   it('exposes detect-only Installations as non-manageable and rejects a write preview', async () => {
     const { service } = setup([])
     expect(service.snapshot()).toMatchObject({
@@ -260,6 +1125,37 @@ describe('AgentIntegrationService', () => {
       maximumAccessLevel: 'unconnected',
     })
     await expect(service.previewConnect(['installation-1'])).rejects.toThrow(/not enabled/)
+  })
+
+  it('does not advertise Catalog management until an exact version is release-accepted', () => {
+    const cursor = AGENT_INTEGRATION_RELEASE_ENTRY_MAP.get('cursor-desktop')!
+    const releaseEntries = (acceptedVersions: readonly string[]) => new Map<CatalogId, AgentReleaseEntry>([[
+      'cursor-desktop',
+      { ...cursor, releaseAcceptedExactVersions: acceptedVersions },
+    ]])
+    const unavailable = setup(
+      undefined,
+      '/Users/alice',
+      undefined,
+      undefined,
+      undefined,
+      releaseEntries([]),
+      new Map([['cursor-desktop', ['instruction', 'memory_tools', 'lifecycle'] as const]]),
+    )
+    const available = setup(
+      undefined,
+      '/Users/alice',
+      undefined,
+      undefined,
+      undefined,
+      releaseEntries(['3.10.20']),
+      new Map([['cursor-desktop', ['instruction', 'memory_tools', 'lifecycle'] as const]]),
+    )
+
+    expect(unavailable.service.supportCatalog().find(product => product.id === 'cursor')?.variants[0])
+      .toMatchObject({ maturity: 'detectable', maximumAccessLevel: 'unconnected' })
+    expect(available.service.supportCatalog().find(product => product.id === 'cursor')?.variants[0])
+      .toMatchObject({ maturity: 'managed', maximumAccessLevel: 'complete' })
   })
 
   it('preserves OpenClaw CLI eligibility across list, detail, and preview without creating write authority', async () => {
@@ -374,7 +1270,7 @@ describe('AgentIntegrationService', () => {
   })
 
   it('freezes a redacted preview and applies exactly the approved Installation set', async () => {
-    const { db, service, applyPrepared } = setup()
+    const { db, service, preview: previewExecution, applyPrepared } = setup()
     const preview = await service.previewConnect(['installation-1'])
     expect(preview.planHash).toMatch(/^[a-f0-9]{64}$/)
     expect(preview.installations[0].targets[0]).toMatchObject({
@@ -392,10 +1288,128 @@ describe('AgentIntegrationService', () => {
     const result = await service.applyConnect(preview.planHash, ['installation-1'])
     expect(result.results).toEqual([{ installationId: 'installation-1', status: 'committed', runId: 'run-1' }])
     expect(applyPrepared).toHaveBeenCalledTimes(1)
+    expect(previewExecution.mock.calls[1]?.[0].frozenActivityGenerationToken)
+      .toBe('fixture-activity-generation')
     expect(db.prepare('SELECT installation_id, maximum_risk FROM agent_consents').get())
       .toEqual({ installation_id: 'installation-1', maximum_risk: 'low' })
     await expect(service.applyConnect(preview.planHash, ['installation-1']))
       .rejects.toThrow(/unknown or has expired/)
+  })
+
+  it('publishes every structured user action without leaking raw configuration paths', async () => {
+    const { service, preview } = setup()
+    preview.mockImplementationOnce(async (request: PreviewRequest) => {
+      const prepared = plan(request)
+      return {
+        ...prepared,
+        adapterPlan: {
+          ...prepared.adapterPlan,
+          requiredUserActions: [
+            'configure_qwenwork_mcp',
+            'allow_qwen_mcp_server:tidemind-eb_test',
+            'manually_remove_owned_document',
+            'review_kimi_instruction_migration_conflict',
+          ],
+          requiredUserActionDetails: [{
+            kind: 'qwenwork_mcp_gui' as const,
+            componentKey: 'memory_tools' as const,
+            operation: 'connect' as const,
+            installationId: 'installation-1',
+            agentId: 'eb_test',
+            hostVariant: 'qwenwork-desktop' as const,
+            hostVersion: '1.0.3',
+            tideMindVersion: '0.2.92',
+            adapterVersion: '1',
+            projectionVersion: '1',
+            installationBindingHash: 'a'.repeat(64),
+            connectorName: 'Tide Mind - eb_test',
+            serverType: 'STDIO' as const,
+            command: '/Applications/Tide Mind.app/Contents/MacOS/tidemind-mcp',
+            args: ['--stdio'],
+            environment: {
+              EB_AGENT_ID: 'eb_test', EB_HOST_VARIANT: 'qwenwork-desktop',
+              EB_ACTIVITY_GENERATION_TOKEN: 'fixture-activity-generation',
+            },
+            configurationJson: JSON.stringify({
+              mcpServers: {
+                'Tide Mind - eb_test': {
+                  command: '/Applications/Tide Mind.app/Contents/MacOS/tidemind-mcp',
+                  args: ['--stdio'],
+                  env: {
+                    EB_AGENT_ID: 'eb_test', EB_HOST_VARIANT: 'qwenwork-desktop',
+                    EB_ACTIVITY_GENERATION_TOKEN: 'fixture-activity-generation',
+                  },
+                },
+              },
+            }, null, 2),
+            connectorConfigurationHash: 'b'.repeat(64),
+            steps: ['Open connectors', 'Add the exact command'],
+            instruction: 'Add the Tide Mind connector in QwenWork.',
+          }, {
+            kind: 'mcp_activation' as const,
+            componentKey: 'memory_tools' as const,
+            operation: 'connect' as const,
+            hostVariant: 'qwen-code-cli' as const,
+            serverName: 'tidemind-eb_test',
+            configPath: '/Users/alice/.qwen/settings.json',
+            reason: 'not_allowed' as const,
+            instruction: 'Add tidemind-eb_test to mcp.allowed in /Users/alice/.qwen/settings.json, then recheck.',
+          }, {
+            kind: 'manual_file_removal' as const,
+            componentKey: 'instruction' as const,
+            operation: 'disconnect' as const,
+            physicalTarget: '/Users/alice/.omp/skills/tidemind/SKILL.md',
+            ownedFragmentHash: 'c'.repeat(64),
+            instruction: 'Remove /Users/alice/.omp/skills/tidemind/SKILL.md, then recheck.',
+          }, {
+            kind: 'kimi_instruction_conflict' as const,
+            componentKey: 'instruction' as const,
+            operation: 'connect' as const,
+            reason: 'target_occupied' as const,
+            sourcePath: '/Users/alice/.kimi-code/skills/tidemind-old/SKILL.md',
+            targetPath: '/Users/alice/.kimi-code/skills/tidemind/SKILL.md',
+            targetVisibility: 'dedicated' as const,
+            instruction: 'Review /Users/alice/.kimi-code/skills/tidemind-old/SKILL.md and /Users/alice/.kimi-code/skills/tidemind/SKILL.md.',
+            steps: ['Keep the wanted file outside /Users/alice/.kimi-code/skills/tidemind/SKILL.md.', 'Check again.'],
+          }],
+        },
+      }
+    })
+
+    const result = await service.previewConnect(['installation-1'])
+    expect(result.installations[0].requiredUserActionDetails).toEqual([
+      expect.objectContaining({
+        kind: 'qwenwork_mcp_gui',
+        connectorName: 'Tide Mind - eb_test',
+        command: '/Applications/Tide Mind.app/Contents/MacOS/tidemind-mcp',
+        args: ['--stdio'],
+        environment: {
+          EB_AGENT_ID: 'eb_test', EB_HOST_VARIANT: 'qwenwork-desktop',
+          EB_ACTIVITY_GENERATION_TOKEN: 'fixture-activity-generation',
+        },
+        configurationJson: expect.stringContaining('"mcpServers"'),
+        steps: ['Open connectors', 'Add the exact command'],
+      }),
+      expect.objectContaining({
+        kind: 'mcp_activation',
+        configLabel: '~/.qwen/settings.json',
+        instruction: 'Add tidemind-eb_test to mcp.allowed in ~/.qwen/settings.json, then recheck.',
+      }),
+      expect.objectContaining({
+        kind: 'manual_file_removal',
+        physicalTargetLabel: '~/.omp/skills/tidemind/SKILL.md',
+        instruction: 'Remove ~/.omp/skills/tidemind/SKILL.md, then recheck.',
+      }),
+      expect.objectContaining({
+        kind: 'kimi_instruction_conflict',
+        reason: 'target_occupied',
+        sourceLabel: '~/.kimi-code/skills/tidemind-old/SKILL.md',
+        targetLabel: '~/.kimi-code/skills/tidemind/SKILL.md',
+        instruction: 'Review ~/.kimi-code/skills/tidemind-old/SKILL.md and ~/.kimi-code/skills/tidemind/SKILL.md.',
+        steps: ['Keep the wanted file outside ~/.kimi-code/skills/tidemind/SKILL.md.', 'Check again.'],
+      }),
+    ])
+    expect(JSON.stringify(result.installations[0].requiredUserActionDetails)).not.toContain('/Users/alice')
   })
 
   it('lets each selected Installation omit lifecycle while keeping memory tools managed', async () => {
@@ -415,6 +1429,19 @@ describe('AgentIntegrationService', () => {
     await expect(service.previewConnect(['installation-1'], false, undefined, {
       withoutLifecycleInstallationIds: ['installation-other'],
     })).rejects.toThrow(/subset/)
+  })
+
+  it('rejects lifecycle exclusion when the concrete Adapter exposes an atomic aggregate', async () => {
+    const { service, preview } = setup(undefined, '/Users/alice', undefined, new Map([
+      ['cursor-desktop', []],
+    ]))
+
+    await expect(service.previewConnect(['installation-1'], false, undefined, {
+      withoutLifecycleInstallationIds: ['installation-1'],
+    })).rejects.toThrow(/lifecycle cannot be excluded/)
+    expect(preview).not.toHaveBeenCalled()
+    const normal = await service.previewConnect(['installation-1'])
+    expect(normal.installations[0].optionalComponentKeys).toEqual([])
   })
 
   it('publishes durable per-item task progress while apply continues independently of the dialog', async () => {
@@ -739,12 +1766,80 @@ describe('AgentIntegrationService', () => {
       'run-old-failed',
       'run-old-attention',
     ])
+    expect(tasks[0]).toMatchObject({
+      results: [{ installationId: 'installation-1', status: 'failed', runId: 'run-old-cancelled' }],
+    })
     expect(tasks[2]).toMatchObject({
       results: [{ installationId: 'installation-1', status: 'needs_recovery', runId: 'run-old-attention' }],
     })
     expect(tasks.slice(3).flatMap(task => task.results.map(result => result.runId))).toContain(
       'run-new-success-3',
     )
+  })
+
+  it('presents only disconnect-superseded cancelled runs as a neutral completion across restart', () => {
+    const { db, repository } = setup()
+    repository.createApplyTask({
+      id: 'batch-superseded',
+      planHash: 'batch-superseded-plan',
+      startedAt: '2026-08-25T00:00:00.000Z',
+      items: [{ installationId: 'installation-1', executionPlanHash: 'superseded-execution' }],
+    })
+    repository.markApplyTaskItemRunning('batch-superseded', 'installation-1', '2026-08-25T00:00:01.000Z')
+    repository.createReconcileRun({
+      id: 'run-superseded', installationId: 'installation-1', operationType: 'connect',
+      executionPlanHash: 'superseded-execution', recoveryStrategy: 'resume',
+      createdAt: '2026-08-25T00:00:01.000Z',
+    })
+    db.prepare(`UPDATE reconcile_runs SET state = 'cancelled', failure_code = 'superseded_by_disconnect',
+      completed_at = '2026-08-25T00:00:02.000Z', updated_at = '2026-08-25T00:00:02.000Z'
+      WHERE id = 'run-superseded'`).run()
+    db.prepare(`UPDATE agent_integration_apply_task_items SET run_id = 'run-superseded'
+      WHERE task_id = 'batch-superseded' AND installation_id = 'installation-1'`).run()
+    repository.completeApplyTaskItem('batch-superseded', 'installation-1', {
+      installationId: 'installation-1', status: 'awaiting_verification', runId: 'run-superseded',
+    }, '2026-08-25T00:00:02.000Z')
+    repository.completeApplyTask('batch-superseded', '2026-08-25T00:00:02.000Z')
+
+    const dependencies = {
+      repository,
+      scanner: { scan: async () => ({ installations: [], unresolved: [], diagnostics: [] }) },
+      execution: { preview: async (request: any) => plan(request), applyPrepared: async () => ({ status: 'committed' as const, runId: 'unexpected' }) },
+      now: () => new Date('2026-08-25T00:10:00.000Z'),
+      homeDir: '/Users/alice',
+    }
+    for (const service of [new AgentIntegrationService(dependencies), new AgentIntegrationService(dependencies)]) {
+      const page = service.listApplyTasks({ limit: 10 })
+      expect(page).toMatchObject({ attentionCount: 0, activeCount: 0, totalCount: 1 })
+      expect(page.tasks[0]).toMatchObject({
+        id: 'batch-superseded', state: 'completed',
+        results: [{
+          installationId: 'installation-1', status: 'superseded', runId: 'run-superseded',
+        }],
+      })
+      expect(service.getApplyTask('task:batch-superseded')).toMatchObject({
+        state: 'completed',
+        results: [{ status: 'superseded', runId: 'run-superseded' }],
+      })
+    }
+
+    repository.createApplyTask({
+      id: 'batch-forged-superseded', planHash: 'forged-superseded-plan',
+      startedAt: '2026-08-25T00:01:00.000Z',
+      items: [{ installationId: 'installation-1', executionPlanHash: 'forged-superseded-execution' }],
+    })
+    repository.markApplyTaskItemRunning(
+      'batch-forged-superseded', 'installation-1', '2026-08-25T00:01:00.000Z',
+    )
+    repository.completeApplyTaskItem('batch-forged-superseded', 'installation-1', {
+      installationId: 'installation-1', status: 'superseded',
+    }, '2026-08-25T00:01:01.000Z')
+    repository.completeApplyTask('batch-forged-superseded', '2026-08-25T00:01:01.000Z')
+    const failClosed = new AgentIntegrationService(dependencies)
+    expect(failClosed.listApplyTasks({ limit: 10 }).attentionCount).toBe(1)
+    expect(failClosed.getApplyTask('task:batch-forged-superseded')).toMatchObject({
+      state: 'completed', results: [{ status: 'interrupted' }],
+    })
   })
 
   it('keeps unlimited durable attention without spending the pure-success limit or splitting a restarted batch', () => {
@@ -1862,6 +2957,13 @@ describe('AgentIntegrationService', () => {
   it('exposes only fresh exact-bound host activity as real use', () => {
     const { db, repository, service } = setup()
     const observedAt = '2026-08-24T23:59:30.000Z'
+    repository.createConsent({
+      id: 'activity-consent', installationId: 'installation-1', policyVersion: '1',
+      allowedComponents: ['memory_tools'], allowedScopes: ['/Users/alice/.cursor/mcp.json'],
+      normalizedTargets: ['/Users/alice/.cursor/mcp.json'], selectorSchemaVersion: '1',
+      selectorResolution: { 'mcpServers.tidemind-eb_test': 'mcpServers.tidemind-eb_test' },
+      executableRealpaths: [], commandCategories: ['file_write'], maximumRisk: 'low', confirmedAt: T0,
+    })
     repository.createManagedArtifact({
       id: 'activity-artifact', componentType: 'mcp', targetPath: '/Users/alice/.cursor/mcp.json',
       ownershipKey: 'mcpServers.tidemind-eb_test',
@@ -1872,23 +2974,41 @@ describe('AgentIntegrationService', () => {
     repository.upsertComponent({
       installationId: 'installation-1', componentKey: 'memory_tools', desiredState: 'managed',
       desiredCapability: 2, deliveryMode: 'managed', verificationStatus: 'unverified',
-      artifactId: 'activity-artifact', visibilityState: 'dedicated',
+      artifactId: 'activity-artifact', visibilityState: 'dedicated', consentEnvelopeId: 'activity-consent',
     }, T0)
     db.prepare(`INSERT INTO artifact_consumers (
       artifact_id, installation_id, component_key, required_capability, desired_state,
-      discover_reachability, state, added_at, updated_at
-    ) VALUES (?, ?, 'memory_tools', 2, 'managed', 'dedicated', 'active', ?, ?)`)
-      .run('activity-artifact', 'installation-1', T0, T0)
+      discover_reachability, state, consent_envelope_id, added_at, updated_at
+    ) VALUES (?, ?, 'memory_tools', 2, 'managed', 'dedicated', 'active', ?, ?, ?)`)
+      .run('activity-artifact', 'installation-1', 'activity-consent', T0, T0)
     db.prepare(`UPDATE agent_installations
-      SET desired_state = 'managed', detected_version = '1.0.0', health_state = 'discovered'
+      SET desired_state = 'managed', detected_version = '1.0.0', health_state = 'discovered',
+          consent_envelope_id = 'activity-consent'
       WHERE id = 'installation-1'`).run()
+    db.prepare(`INSERT INTO reconcile_runs (
+      id, installation_id, operation_type, execution_plan_hash, state,
+      recovery_strategy, adapter_version, catalog_version, projection_version,
+      selector_schema_version, prepared_plan_json, desired_capability,
+      consent_envelope_id, created_at, updated_at
+    ) VALUES (
+      'activity-run-1', 'installation-1', 'connect', 'activity-plan-1', 'committed',
+      'readback_before_replay', 'adapter-1', '1', 'projection-1', '1', ?, 2,
+      'activity-consent', ?, ?
+    )`).run(JSON.stringify({
+      componentKeys: ['memory_tools'],
+      activityGenerationToken: 'activity-generation-1',
+      executionPlan: {
+        activityGenerationTokenHash: createHash('sha256')
+          .update(JSON.stringify('activity-generation-1')).digest('hex'),
+      },
+    }), T0, T0)
     db.prepare(`INSERT INTO agent_host_activity_evidence (
-      id, installation_id, agent_id, host_variant, component_key, signal_name,
+      id, installation_id, activation_run_id, agent_id, host_variant, component_key, signal_name,
       tide_mind_version, adapter_version, projection_version, host_version,
       evidence_hash, observed_at
-    ) VALUES (?, ?, ?, ?, 'memory_tools', 'brain_recall', ?, ?, ?, ?, ?, ?)`)
+    ) VALUES (?, ?, ?, ?, ?, 'memory_tools', 'brain_recall', ?, ?, ?, ?, ?, ?)`)
       .run(
-        'activity-evidence-1', 'installation-1', 'eb_test', 'cursor-desktop',
+        'activity-evidence-1', 'installation-1', 'activity-run-1', 'eb_test', 'cursor-desktop',
         '1.0.0', 'adapter-1', 'projection-1', '1.0.0', 'evidence-hash', observedAt,
       )
     repository.recordVerificationResult({
@@ -1903,6 +3023,22 @@ describe('AgentIntegrationService', () => {
     })
 
     expect(service.detail('installation-1').installation.lastRealUseAt).toBe(observedAt)
+
+    db.prepare(`UPDATE agent_consents SET status = 'revoked' WHERE id = 'activity-consent'`).run()
+    expect(service.detail('installation-1').installation.lastRealUseAt).toBeNull()
+    db.prepare(`UPDATE agent_consents SET status = 'active' WHERE id = 'activity-consent'`).run()
+    repository.createConsent({
+      id: 'activity-consent-new', installationId: 'installation-1', policyVersion: '1',
+      allowedComponents: ['memory_tools'], allowedScopes: ['/Users/alice/.cursor/mcp.json'],
+      normalizedTargets: ['/Users/alice/.cursor/mcp.json'], selectorSchemaVersion: '1',
+      selectorResolution: { 'mcpServers.tidemind-eb_test': 'mcpServers.tidemind-eb_test' },
+      executableRealpaths: [], commandCategories: ['file_write'], maximumRisk: 'low', confirmedAt: T0,
+    })
+    db.prepare(`UPDATE agent_installations SET consent_envelope_id = 'activity-consent-new'
+      WHERE id = 'installation-1'`).run()
+    expect(service.detail('installation-1').installation.lastRealUseAt).toBeNull()
+    db.prepare(`UPDATE agent_installations SET consent_envelope_id = 'activity-consent'
+      WHERE id = 'installation-1'`).run()
 
     db.prepare(`UPDATE verification_results
       SET expires_at = '2026-08-24T23:59:59.000Z'
@@ -2060,7 +3196,10 @@ describe('AgentIntegrationService', () => {
 
   it('routes disconnect through a separate frozen plan and keeps pause/resume semantic', async () => {
     const afterDisconnect = vi.fn(async () => {})
-    const { db, repository, service, preview } = setup(undefined, '/Users/alice', afterDisconnect)
+    const afterResume = vi.fn(async () => {})
+    const { db, repository, service, preview } = setup(
+      undefined, '/Users/alice', afterDisconnect, undefined, afterResume,
+    )
     repository.setInstallationIntent('installation-1', 'managed', T0)
     db.prepare(`
       INSERT INTO managed_artifacts (
@@ -2086,7 +3225,8 @@ describe('AgentIntegrationService', () => {
     `).run(T0, T0)
     const paused = service.pause('installation-1')
     expect(paused.desiredState).toBe('disabled')
-    expect(service.resume('installation-1').desiredState).toBe('managed')
+    expect((await service.resume('installation-1')).desiredState).toBe('managed')
+    expect(afterResume).toHaveBeenCalledOnce()
 
     const disconnect = await service.previewDisconnect('installation-1')
     expect(disconnect.operation).toBe('disconnect')
@@ -2095,7 +3235,7 @@ describe('AgentIntegrationService', () => {
     expect(afterDisconnect).toHaveBeenCalledTimes(1)
 
     repository.setInstallationIntent('installation-1', 'removed', T0, 'user_disconnect')
-    expect(() => service.resume('installation-1')).toThrow(/only a paused Installation/)
+    await expect(service.resume('installation-1')).rejects.toThrow(/only a paused Installation/)
   })
 
   it('keeps a committed disconnect truthful when immediate maintenance scheduling fails', async () => {
@@ -2362,6 +3502,265 @@ describe('AgentIntegrationService', () => {
     expect(a).toEqual(b)
     expect(scanner.scan).toHaveBeenCalledTimes(1)
     expect(repository.getInstallation('installation-kimi')?.agent_id).toBe('eb_kimi')
+  })
+
+  it('keeps an exact user-authorized Custom MCP target alive only while its scoped probe passes', async () => {
+    const { repository } = setup()
+    repository.upsertDiscoveredInstallation({
+      id: 'custom-scan',
+      family: 'custom-local-agent',
+      hostVariant: 'custom-local-mcp',
+      installKey: 'custom-local:scan',
+      provenance: 'user_selected_local_executable',
+      osUserIdentity: 'local-user',
+      displayName: 'Private Client',
+      configRoot: '/Users/alice/.private-client',
+      executablePath: '/Users/alice/bin/private-client',
+      detectedVersion: 'custom-deadbeefdeadbeef',
+      versionDetectionMethod: 'user_selected_executable_fingerprint',
+      agentId: 'eb_custom_scan',
+      supportedCapability: 2,
+      lastDetectedAt: T0,
+    })
+    let trusted = true
+    const probe = vi.fn(async () => trusted)
+    const service = new AgentIntegrationService({
+      repository,
+      scanner: { scan: async () => ({ installations: [], unresolved: [], diagnostics: [] }) },
+      execution: {
+        preview: async request => plan(request),
+        applyPrepared: async () => ({ status: 'committed', runId: 'unused' }),
+      },
+      now: () => new Date(T0),
+      probeCustomInstallation: probe,
+    })
+
+    await service.scan()
+    expect(repository.getInstallation('custom-scan')?.health_state).toBe('discovered')
+    trusted = false
+    await service.scan()
+    expect(repository.getInstallation('custom-scan')).toMatchObject({
+      health_state: 'inaccessible',
+      status_reason: 'verification_stale',
+    })
+    // A single miss remains uncertainty. The normal two-scan uninstall
+    // threshold still applies to Custom targets rather than trusting one
+    // transient read failure as authoritative removal.
+    await service.scan()
+    expect(repository.getInstallation('custom-scan')).toMatchObject({
+      health_state: 'absent',
+      status_reason: 'host_uninstalled',
+    })
+    expect(probe).toHaveBeenCalledTimes(3)
+  })
+
+  it('downgrades the obsolete Custom MCP C3 projection without creating write authority', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-custom-c3-upgrade-'))
+    const dbPath = path.join(root, 'brain.sqlite')
+    const hostConfigPath = path.join(root, 'client.json')
+    const originalHostConfig = JSON.stringify({ userOwned: true }, null, 2)
+    fs.writeFileSync(hostConfigPath, originalHostConfig, { mode: 0o600 })
+    let db = new Database(dbPath)
+    ensureSchema(db)
+    let repository = new AgentIntegrationRepository(db)
+    repository.upsertDiscoveredInstallation({
+      id: 'custom-old-c3',
+      family: 'custom-local-agent',
+      hostVariant: 'custom-local-mcp',
+      installKey: 'custom-local:old-c3',
+      provenance: 'user_selected_local_executable',
+      osUserIdentity: 'local-user',
+      displayName: 'Old Custom Client',
+      configRoot: '/Users/alice/.old-custom-client',
+      executablePath: '/Users/alice/bin/old-custom-client',
+      detectedVersion: 'custom-deadbeefdeadbeef',
+      versionDetectionMethod: 'user_selected_executable_fingerprint',
+      agentId: 'eb_custom_old',
+      supportedCapability: 3,
+      lastDetectedAt: T0,
+    })
+    db.prepare(`
+      INSERT INTO agent_consents (
+        id, installation_id, policy_version, allowed_components_json,
+        allowed_scopes_json, normalized_targets_json, selector_schema_version,
+        selector_resolution_json, executable_realpaths_json,
+        command_categories_json, maximum_risk, exception_scope,
+        exceptions_json, status, confirmed_at, created_at
+      ) VALUES (
+        'custom-old-consent', 'custom-old-c3', 'legacy', '["memory_tools"]',
+        '[]', '[]', '1', '{}', '[]', '[]', 'low', 'installation',
+        '{}', 'active', ?, ?
+      )
+    `).run(T0, T0)
+    db.prepare(`
+      UPDATE agent_installations
+      SET desired_capability = 3, verified_capability = 3,
+          verification_summary = 'verified', desired_state = 'managed',
+          consent_envelope_id = 'custom-old-consent'
+      WHERE id = 'custom-old-c3'
+    `).run()
+    db.prepare(`
+      INSERT INTO managed_artifacts (
+        id, component_type, target_path, ownership_key, mutation_domain,
+        projection_version, selector_schema_version, owned_fragment_hash,
+        desired_fragment_hash, observed_fragment_hash, state, created_at, updated_at
+      ) VALUES (
+        'custom-old-artifact', 'mcp', ?, 'mcpServers.tidemind', ?,
+        '1', '1', 'owned', 'owned', 'owned', 'healthy', ?, ?
+      )
+    `).run(hostConfigPath, `local_macos:file:${hostConfigPath}:document`, T0, T0)
+    db.prepare(`
+      INSERT INTO installation_components (
+        installation_id, component_key, desired_state, desired_capability,
+        delivery_mode, verification_status, artifact_id, visibility_state,
+        consent_envelope_id, created_at, updated_at
+      ) VALUES (
+        'custom-old-c3', 'memory_tools', 'managed', 3, 'managed', 'verified',
+        'custom-old-artifact', 'dedicated', 'custom-old-consent', ?, ?
+      )
+    `).run(T0, T0)
+    db.prepare(`
+      INSERT INTO artifact_consumers (
+        artifact_id, installation_id, component_key, required_capability,
+        desired_state, discover_reachability, consent_envelope_id, state,
+        added_at, updated_at
+      ) VALUES (
+        'custom-old-artifact', 'custom-old-c3', 'memory_tools', 3,
+        'managed', 'dedicated', 'custom-old-consent', 'active', ?, ?
+      )
+    `).run(T0, T0)
+    db.prepare(`
+      INSERT INTO reconcile_runs (
+        id, installation_id, operation_type, execution_plan_hash,
+        consent_envelope_id, state, recovery_strategy, prepared_plan_json,
+        desired_capability, created_at, updated_at
+      ) VALUES (
+        'custom-old-run', 'custom-old-c3', 'connect', 'old-plan',
+        'custom-old-consent', 'applying', 'readback_before_replay', ?, 3, ?, ?
+      )
+    `).run(JSON.stringify({ componentKeys: ['memory_tools'] }), T0, T0)
+    db.prepare(`
+      INSERT INTO reconcile_runs (
+        id, installation_id, operation_type, execution_plan_hash,
+        consent_envelope_id, state, recovery_strategy, prepared_plan_json,
+        desired_capability, created_at, completed_at, updated_at
+      ) VALUES (
+        'custom-old-history', 'custom-old-c3', 'connect', 'old-history-plan',
+        'custom-old-consent', 'committed', 'readback_before_replay', ?, 3, ?, ?, ?
+      )
+    `).run(JSON.stringify({ componentKeys: ['memory_tools'] }), T0, T0, T0)
+    db.close()
+
+    db = new Database(dbPath)
+    ensureSchema(db)
+    repository = new AgentIntegrationRepository(db)
+    const probe = vi.fn(async () => true)
+    const service = new AgentIntegrationService({
+      repository,
+      scanner: { scan: async () => ({ installations: [], unresolved: [], diagnostics: [] }) },
+      execution: {
+        preview: async request => plan(request),
+        applyPrepared: async () => ({ status: 'committed', runId: 'unused' }),
+      },
+      now: () => new Date(T0),
+      probeCustomInstallation: probe,
+    })
+    try {
+      expect(service.snapshot().installations.find(item => item.id === 'custom-old-c3')?.accessLevel)
+        .toBe('partial')
+      const bridge = new SqliteCoordinatorRepository(db, repository, { now: () => new Date(T0) })
+      // Startup recovery itself performs the normalization before it can
+      // expose any replayable execution, even if a discovery scan has not run.
+      expect(bridge.listRecoverableExecutions()).toEqual([])
+      await service.scan()
+      expect(repository.getInstallation('custom-old-c3')).toMatchObject({
+        supported_capability: 2,
+        desired_capability: 2,
+        verified_capability: 2,
+        consent_envelope_id: null,
+        reconcile_state: 'needs_recovery',
+      })
+      expect(db.prepare(`SELECT desired_capability FROM installation_components`).get())
+        .toEqual({ desired_capability: 2 })
+      expect(db.prepare(`SELECT required_capability FROM artifact_consumers`).get())
+        .toEqual({ required_capability: 2 })
+      expect(db.prepare(`
+        SELECT state, desired_capability, failure_code FROM reconcile_runs
+        WHERE id = 'custom-old-run'
+      `).get())
+        .toEqual({
+          state: 'cancelled', desired_capability: 2,
+          failure_code: 'custom_capability_ceiling_changed',
+        })
+      expect(db.prepare(`
+        SELECT state, desired_capability FROM reconcile_runs
+        WHERE id = 'custom-old-history'
+      `).get()).toEqual({ state: 'committed', desired_capability: 3 })
+      expect(db.prepare(`SELECT status FROM agent_consents WHERE id = 'custom-old-consent'`).get())
+        .toEqual({ status: 'revoked' })
+      expect(service.snapshot().installations.find(item => item.id === 'custom-old-c3')?.accessLevel)
+        .toBe('partial')
+      expect(probe).toHaveBeenCalledOnce()
+
+      expect(bridge.listRecoverableExecutions()).toEqual([])
+      const maintenanceCandidates = bridge.listManagedReconcileCandidates()
+      expect(maintenanceCandidates).toEqual([
+        expect.objectContaining({ desiredCapability: 2, consentId: null }),
+      ])
+      const repairPreview = vi.fn()
+      const repairApply = vi.fn()
+      const reconciler = new ManagedAgentReconciler({
+        coordinator: { preview: repairPreview, applyPrepared: repairApply },
+        repository: bridge,
+        notifications: { deliver: vi.fn(async () => undefined) },
+        clock: { now: () => new Date(T0) },
+        ids: { next: prefix => `${prefix}-custom-old` },
+      })
+      const candidate = maintenanceCandidates[0]!
+      await reconciler.reconcileArtifact({
+        artifactId: candidate.artifactId,
+        installation: candidate.installation,
+        installationDesiredState: candidate.installation.desiredState,
+        componentKey: candidate.componentKey,
+        componentKeys: candidate.componentKeys,
+        componentName: candidate.componentName,
+        desiredCapability: candidate.desiredCapability,
+        consentId: candidate.consentId,
+        observation: {
+          kind: 'exact_missing', selectorEmpty: true,
+          ownershipBaselineVerified: true, containerResolvable: true,
+          observedFingerprint: null, diagnostics: [],
+        },
+      })
+      expect(repairPreview).not.toHaveBeenCalled()
+      expect(repairApply).not.toHaveBeenCalled()
+      expect(() => repository.upsertComponent({
+        installationId: 'custom-old-c3', componentKey: 'memory_tools',
+        desiredState: 'managed', desiredCapability: 3, deliveryMode: 'managed',
+      }, T0)).toThrow(/cannot exceed C2/)
+      expect(() => repository.addArtifactConsumer({
+        artifactId: 'custom-old-artifact', installationId: 'custom-old-c3',
+        componentKey: 'memory_tools', requiredCapability: 3,
+        discoverReachability: 'dedicated', ownershipFingerprint: 'owned', addedAt: T0,
+      })).toThrow(/cannot exceed C2/)
+      const forgedPlan = plan({
+        operation: 'connect', componentKeys: ['memory_tools'],
+      } as PreviewRequest)
+      expect(() => bridge.prepareExecution({
+        runId: 'forged-custom-c3', installationId: 'custom-old-c3',
+        operation: 'connect', planHash: forgedPlan.executionPlanHash,
+        consentId: 'custom-old-consent', preparedPlan: forgedPlan,
+        desiredCapability: 3, mutations: [], expectedDesiredState: 'managed',
+        intentAfterPrepare: 'managed', createdAt: T0,
+      })).toThrow(/memory-only C2 contract/)
+      expect(db.prepare(`SELECT COUNT(*) AS count FROM reconcile_runs`).get())
+        .toEqual({ count: 2 })
+      expect(repository.normalizeCustomMcpCapabilityCeiling(T0)).toBe(0)
+      expect(fs.readFileSync(hostConfigPath, 'utf8')).toBe(originalHostConfig)
+    } finally {
+      db.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('persists and delivers a first-discovery action while ordinary info remains non-actionable', async () => {

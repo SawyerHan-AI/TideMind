@@ -127,14 +127,25 @@ describe('runSynapticScaling', () => {
   });
 
   it('每个正常节点批次都给前台SQLite waiter一个5ms公平窗口', async () => {
-    for (let index = 0; index < 1001; index++) seedNode(db, { heat: 1 });
+    // This tests batch fairness, not createNode's per-row prepare/read-back work.
+    // Keep seedNode's active-fact defaults while preparing the 1001-row fixture once.
+    const insertNode = db.prepare(`
+      INSERT INTO nodes (id, type, content, heat, maturity_score, created, updated, edit_seq, decay_gen)
+      VALUES (?, 'fact', ?, 1, 0.2, '2026-09-21T00:00:00.000Z', '2026-09-21T00:00:00.000Z', 1, 0)
+    `);
+    db.transaction(() => {
+      for (let index = 0; index < 1001; index++) {
+        insertNode.run(`fairness-node-${index}`, `fairness node ${index}`);
+      }
+    })();
     const fairnessPauses: number[] = [];
 
-    await runSynapticScalingCooperatively(db, async () => {}, {
+    const result = await runSynapticScalingCooperatively(db, async () => {}, {
       nodeBatchDurationMs: () => 0,
       pauseForFairness: async delayMs => { fairnessPauses.push(delayMs); },
     });
 
+    expect(result.decayed).toBe(1001);
     expect(fairnessPauses).toEqual([5, 5, 5, 5, 5, 5]);
   });
 

@@ -96,14 +96,17 @@ export function deleteNodeCompletely(
   })();
 }
 
-export function archiveNodeWithVectors(db: Database.Database, nodeId: string): void {
+export function archiveNodeWithVectors(db: Database.Database, nodeId: string): boolean {
   // UPDATE 与 deleteVector 必须原子:中间崩溃会留下 archived=1 但向量仍活
   // 的状态,vector search 路径靠 isNodeVisibleToVectorSearch 兜底过滤,但
   // 任何绕过它直接读 nodes_vec 的代码(包括历史 v15/v16 清理 SQL)都会再次
   // 受影响。
-  db.transaction(() => {
-    db.prepare('UPDATE nodes SET archived = 1, heat = 0.02, edit_seq = edit_seq + 1, updated = ? WHERE id = ?').run(now(), nodeId);
-    deleteVector(db, nodeId);
+  return db.transaction(() => {
+    const result = db.prepare(
+      'UPDATE nodes SET archived = 1, heat = 0.02, edit_seq = edit_seq + 1, updated = ? WHERE id = ? AND archived = 0',
+    ).run(now(), nodeId);
+    if (result.changes > 0) deleteVector(db, nodeId);
+    return result.changes > 0;
   })();
 }
 

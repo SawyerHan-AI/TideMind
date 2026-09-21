@@ -4,12 +4,22 @@ import path from 'node:path'
 import type Database from 'better-sqlite3'
 import type { DiscoveredInstallation, LocalDiscoveryReport } from './agent-integration/discovery.js'
 import { sha256Json } from './agent-integration/fingerprint.js'
+import { createP0HostAdapters } from './agent-integration/hosts/p0-adapter-registry.js'
+import type {
+  CodexOfficialHookMetadata,
+  CodexOfficialHooksPort,
+  CodexOfficialHooksSnapshot,
+} from './agent-integration/hosts/codex-lifecycle-adapter.js'
+import { PORTABLE_TIDEMIND_SKILL_SHA256 } from './agent-integration/hosts/portable-skill.js'
 import { readStableFileSnapshot } from './agent-integration/passive-cli-version.js'
+import { shellArgument } from './agent-integration/shell-argument.js'
 import type { ProductionAgentIntegrationOptions } from './agent-integration/production-service.js'
 import {
   AgentIntegrationRepository,
+  persistedComponentConfigRoots,
   persistedDistribution,
   persistedHostOwnedIdentity,
+  persistedManagementEligibility,
   persistedProjectionSurfaceFingerprint,
   type AgentInstallationRow,
 } from './agent-integration/repository.js'
@@ -98,9 +108,30 @@ export function createUiAuditAgentIntegrationOptions(
 ): ProductionAgentIntegrationOptions {
   const repository = new AgentIntegrationRepository(db)
   const auditHome = path.join(root, 'home')
+  const runtimeRoot = path.join(root, 'runtime')
+  const runtimeContext = {
+    runtimeRealm: 'local_macos' as const,
+    homeDir: auditHome,
+    applicationDataDir: path.join(root, 'user-data'),
+    shimPath: path.join(runtimeRoot, 'tm-node'),
+    mcpServerPath: path.join(runtimeRoot, 'mcp-server.cjs'),
+    hookScriptPath: path.join(runtimeRoot, 'hook-session-start.cjs'),
+    preCompactScriptPath: path.join(runtimeRoot, 'hook-pre-compact.cjs'),
+    postCompactScriptPath: path.join(runtimeRoot, 'hook-post-compact.cjs'),
+    tideMindVersion: '0.2.92',
+    catalogVersion: 'ui-audit',
+    projectionVersion: '1',
+  }
+  let codexHooksTrusted = false
+  const codexHooksPort: CodexOfficialHooksPort = {
+    list: async context => uiAuditCodexHooks(context, codexHooksTrusted),
+    preview: async context => uiAuditCodexHooks(context, codexHooksTrusted),
+  }
   return {
     homeDir: auditHome,
     applicationDataDir: path.join(root, 'user-data'),
+    runtimeContext,
+    adapters: createP0HostAdapters({ codexHooksPort }),
     observeOnly: false,
     autoRestore: false,
     startRuntime: false,
@@ -109,14 +140,40 @@ export function createUiAuditAgentIntegrationOptions(
     enabledAdapterIds: [
       'codex-cli', 'codex-desktop', 'cursor-desktop', 'kimi-code-cli',
       'openclaw-local', 'qwen-code-cli', 'zcode-desktop', 'opencode-v1-cli',
-      'opencode-v2-beta-cli', 'pi-official-cli', 'omp-cli',
+      'opencode-v2-beta-cli', 'pi-official-cli', 'omp-cli', 'claude-cowork-local',
+      'qwenwork-desktop',
     ],
     canManageInstallation: row => uiAuditInstallationManageable(row, root, auditHome),
     liveTrustAttestor: row => uiAuditLiveTrustProof(row, root, auditHome),
+    codexHookTrustVerifier: async ({ action }) => {
+      if (!pathInside(auditHome, action.sourcePath)
+        || path.basename(action.sourcePath) !== 'hooks.json'
+        || !action.hookKey.startsWith(`${action.sourcePath}:`)
+        || !/^[a-f0-9]{64}$/u.test(action.ownedFragmentHash)
+        || !/^sha256:[a-f0-9]{64}$/u.test(action.hostCurrentHash)) return null
+      codexHooksTrusted = true
+      return {
+        trusted: true,
+        sourcePath: action.sourcePath,
+        hookKey: action.hookKey,
+        hostCurrentHash: action.hostCurrentHash,
+        hooksFileFingerprint: sha256Json({ fixture: 'hooks', actionHash: action.hostCurrentHash }),
+        trustConfigFingerprint: sha256Json({ fixture: 'trust', actionHash: action.hostCurrentHash }),
+      }
+    },
     scanner: {
       async scan(): Promise<LocalDiscoveryReport> {
-        const installations = repository.listInstallations({ includeRemoved: false })
+        const installations = repository.listInstallations({ includeRemoved: true })
+          // Disconnecting management does not uninstall the host. Only the
+          // fixture's explicit historical state removes it from discovery.
+          .filter(row => row.health_state !== 'absent' && row.status_reason !== 'host_uninstalled')
           .filter(row => row.config_root !== null)
+          // Custom targets and user-guided Cowork rows are deliberately not
+          // rediscovered by a generic scanner. Production retains them only
+          // through their exact scoped probes; mirror that boundary here so
+          // the audit cannot fabricate a changed projection surface.
+          .filter(row => row.host_variant !== 'custom-local-mcp'
+            && row.host_variant !== 'claude-cowork-local')
           .map(row => {
             if (!pathInside(auditHome, row.config_root!)) {
               throw new Error(`UI audit fixture escaped isolated HOME: ${row.id}`)
@@ -142,8 +199,10 @@ export function createUiAuditAgentIntegrationOptions(
               configRoot: row.config_root!,
               executablePath: row.executable_path ?? undefined,
               appPath: row.app_path ?? undefined,
+              componentConfigRoots: persistedComponentConfigRoots(row),
               detectedVersion: row.detected_version ?? undefined,
               versionDetectionMethod,
+              managementEligibility: persistedManagementEligibility(row) ?? undefined,
               provenance: ['isolated_ui_audit_fixture'],
               evidence: [{
                 kind: 'config_root' as const,
@@ -154,7 +213,89 @@ export function createUiAuditAgentIntegrationOptions(
           })
         return { installations, unresolved: [], diagnostics: [] }
       },
+      async previewGuidedInstallation(catalogId): Promise<DiscoveredInstallation | null> {
+        if (catalogId !== 'claude-cowork-local') return null
+        const appPath = path.join(root, 'apps', 'Claude.app')
+        const executablePath = path.join(appPath, 'Contents', 'MacOS', 'Claude')
+        const configRoot = path.join(auditHome, 'Library', 'Application Support', 'Claude')
+        return {
+          catalogId,
+          displayName: 'Claude Cowork',
+          identity: {
+            runtimeRealm: 'local_macos',
+            osUserIdentity: 'ui-audit-user',
+            productFamilyId: 'claude-cowork',
+            hostVariant: catalogId,
+            canonicalConfigRoot: configRoot,
+            explicitProfile: 'cowork-user-guided',
+            distribution: {
+              distributionId: 'com.anthropic.claudefordesktop',
+              executableRealpath: executablePath,
+              packageProvenance: 'signed_app:com.anthropic.claudefordesktop:Q6L2SF6YDW',
+              capabilityFingerprint: `desktop-bundle-surface-v1:${'c'.repeat(64)}`,
+            },
+            installKey: `claude-cowork-local:ui-audit:${configRoot}`,
+          },
+          configRoot,
+          executablePath,
+          appPath,
+          detectedVersion: '1.24012.1',
+          versionDetectionMethod: 'bundle_plist',
+          provenance: ['isolated_ui_audit_signed_app_fixture'],
+          evidence: [{ kind: 'distribution', source: appPath, value: 'Q6L2SF6YDW' }],
+        }
+      },
     },
+  }
+}
+
+function uiAuditCodexHooks(
+  context: Parameters<CodexOfficialHooksPort['list']>[0],
+  trusted: boolean,
+): CodexOfficialHooksSnapshot {
+  const sourcePath = fs.realpathSync(path.join(context.installation.canonicalConfigRoot, 'hooks.json'))
+  const instructionPath = path.join(context.runtime.homeDir, '.agents', 'skills', 'tidemind', 'SKILL.md')
+  const definitions = [
+    { eventName: 'sessionStart', matcher: 'startup|resume', scriptPath: context.runtime.hookScriptPath, includeSkill: true },
+    { eventName: 'preCompact', matcher: 'manual|auto', scriptPath: context.runtime.preCompactScriptPath, includeSkill: false },
+    { eventName: 'postCompact', matcher: 'manual|auto', scriptPath: context.runtime.postCompactScriptPath, includeSkill: false },
+    { eventName: 'sessionEnd', matcher: 'exit|archive', scriptPath: path.join(path.dirname(context.runtime.hookScriptPath), 'hook-session-end.cjs'), includeSkill: false },
+  ] as const
+  const hooks: CodexOfficialHookMetadata[] = definitions.map((definition, index) => {
+    const args = [
+      context.runtime.shimPath,
+      definition.scriptPath,
+      '--agent-id', context.agentId,
+      ...(definition.includeSkill ? [
+        '--skill-path', instructionPath,
+        '--expected-skill-sha256', PORTABLE_TIDEMIND_SKILL_SHA256,
+      ] : []),
+      '--tool', 'codex',
+      ...(context.activityGenerationToken
+        ? ['--activity-generation-token', context.activityGenerationToken]
+        : []),
+    ]
+    const command = args.map(shellArgument).join(' ')
+    return {
+      key: `${sourcePath}:${definition.eventName}:${index}:0`,
+      eventName: definition.eventName,
+      handlerType: 'command',
+      matcher: definition.matcher,
+      command,
+      timeoutSec: 15,
+      statusMessage: definition.includeSkill ? '正在加载 Tide Mind 记忆…' : null,
+      sourcePath,
+      source: 'isolated_ui_audit_fixture',
+      enabled: true,
+      isManaged: true,
+      currentHash: `sha256:${sha256Json({ eventName: definition.eventName, command })}`,
+      trustStatus: trusted ? 'trusted' : 'untrusted',
+    }
+  })
+  return {
+    hooks,
+    hooksFileFingerprint: sha256Json({ fixture: 'hooks', hooks }),
+    trustConfigFingerprint: sha256Json({ fixture: 'trust', trusted }),
   }
 }
 

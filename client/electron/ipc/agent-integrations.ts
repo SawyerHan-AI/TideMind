@@ -1,10 +1,112 @@
-import { clipboard, ipcMain, shell } from 'electron'
+import path from 'node:path'
+import { clipboard, dialog, ipcMain, shell, type OpenDialogOptions } from 'electron'
 import type { AgentIntegrationService } from '../agent-integration/service.js'
-import type { AgentIntegrationComponentKey } from '../../src/lib/api-contract.js'
+import type {
+  AgentIntegrationComponentKey,
+  AgentIntegrationCustomRequestDto,
+} from '../../src/lib/api-contract.js'
 import type { IpcValidationError, ValidationResult } from './_schemas.js'
+import { getAppLanguage, type AppLanguage } from '../app-language.js'
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u
 const PLAN_HASH_RE = /^[a-f0-9]{64}$/u
+
+type CustomPathKind = 'config_root' | 'config_file' | 'client_executable'
+
+const CUSTOM_PATH_DIALOG_COPY: Record<AppLanguage, {
+  configRootTitle: string
+  configFileTitle: string
+  executableTitle: string
+  jsonFilterName: string
+}> = {
+  en: {
+    configRootTitle: 'Select the local Agent configuration folder',
+    configFileTitle: 'Select the local Agent JSON configuration file',
+    executableTitle: 'Select the local Agent executable',
+    jsonFilterName: 'JSON / JSONC configuration',
+  },
+  'zh-CN': {
+    configRootTitle: '选择本机 Agent 配置文件夹',
+    configFileTitle: '选择本机 Agent JSON 配置文件',
+    executableTitle: '选择本机 Agent 可执行文件',
+    jsonFilterName: 'JSON / JSONC 配置',
+  },
+  'zh-TW': {
+    configRootTitle: '選擇本機 Agent 設定資料夾',
+    configFileTitle: '選擇本機 Agent JSON 設定檔',
+    executableTitle: '選擇本機 Agent 執行檔',
+    jsonFilterName: 'JSON / JSONC 設定',
+  },
+  ja: {
+    configRootTitle: 'ローカル Agent の設定フォルダを選択',
+    configFileTitle: 'ローカル Agent の JSON 設定ファイルを選択',
+    executableTitle: 'ローカル Agent の実行ファイルを選択',
+    jsonFilterName: 'JSON / JSONC 設定',
+  },
+  ko: {
+    configRootTitle: '로컬 Agent 구성 폴더 선택',
+    configFileTitle: '로컬 Agent JSON 구성 파일 선택',
+    executableTitle: '로컬 Agent 실행 파일 선택',
+    jsonFilterName: 'JSON / JSONC 구성',
+  },
+  fr: {
+    configRootTitle: 'Sélectionner le dossier de configuration de l’Agent local',
+    configFileTitle: 'Sélectionner le fichier de configuration JSON de l’Agent local',
+    executableTitle: 'Sélectionner l’exécutable de l’Agent local',
+    jsonFilterName: 'Configuration JSON / JSONC',
+  },
+  es: {
+    configRootTitle: 'Seleccionar la carpeta de configuración del Agent local',
+    configFileTitle: 'Seleccionar el archivo de configuración JSON del Agent local',
+    executableTitle: 'Seleccionar el ejecutable del Agent local',
+    jsonFilterName: 'Configuración JSON / JSONC',
+  },
+  de: {
+    configRootTitle: 'Konfigurationsordner des lokalen Agents auswählen',
+    configFileTitle: 'JSON-Konfigurationsdatei des lokalen Agents auswählen',
+    executableTitle: 'Ausführbare Datei des lokalen Agents auswählen',
+    jsonFilterName: 'JSON-/JSONC-Konfiguration',
+  },
+  'pt-BR': {
+    configRootTitle: 'Selecionar a pasta de configuração do Agent local',
+    configFileTitle: 'Selecionar o arquivo de configuração JSON do Agent local',
+    executableTitle: 'Selecionar o executável do Agent local',
+    jsonFilterName: 'Configuração JSON / JSONC',
+  },
+  ru: {
+    configRootTitle: 'Выберите папку конфигурации локального Agent',
+    configFileTitle: 'Выберите файл конфигурации JSON локального Agent',
+    executableTitle: 'Выберите исполняемый файл локального Agent',
+    jsonFilterName: 'Конфигурация JSON / JSONC',
+  },
+  it: {
+    configRootTitle: 'Seleziona la cartella di configurazione dell’Agent locale',
+    configFileTitle: 'Seleziona il file di configurazione JSON dell’Agent locale',
+    executableTitle: 'Seleziona l’eseguibile dell’Agent locale',
+    jsonFilterName: 'Configurazione JSON / JSONC',
+  },
+  tr: {
+    configRootTitle: 'Yerel Agent yapılandırma klasörünü seçin',
+    configFileTitle: 'Yerel Agent JSON yapılandırma dosyasını seçin',
+    executableTitle: 'Yerel Agent yürütülebilir dosyasını seçin',
+    jsonFilterName: 'JSON / JSONC yapılandırması',
+  },
+}
+
+export function customPathDialogOptions(kind: CustomPathKind): OpenDialogOptions {
+  const copy = CUSTOM_PATH_DIALOG_COPY[getAppLanguage()]
+  return {
+    title: kind === 'config_root'
+      ? copy.configRootTitle
+      : kind === 'config_file'
+        ? copy.configFileTitle
+        : copy.executableTitle,
+    properties: kind === 'config_root' ? ['openDirectory'] : ['openFile'],
+    ...(kind === 'config_file'
+      ? { filters: [{ name: copy.jsonFilterName, extensions: ['json', 'jsonc'] }] }
+      : {}),
+  }
+}
 
 type AgentIntegrationServicePort = Pick<AgentIntegrationService,
   | 'snapshot'
@@ -28,6 +130,15 @@ type AgentIntegrationServicePort = Pick<AgentIntegrationService,
   | 'markInstallationEventsRead'
   | 'componentTargetPath'
   | 'supportCatalog'
+  | 'previewClaudeCoworkSetup'
+  | 'prepareClaudeCoworkSetup'
+  | 'previewCustomInstallation'
+  | 'prepareCustomConnect'
+  | 'customMcpConfiguration'
+  | 'reviewCodexHookTrust'
+  | 'confirmCodexHookTrust'
+  | 'reviewGuidedRemoval'
+  | 'confirmGuidedRemoval'
 >
 
 interface InvokeEventLike {
@@ -75,7 +186,10 @@ function requireTrustedRenderer<T>(
 
 export function registerAgentIntegrationHandlers(
   service: AgentIntegrationServicePort,
-  options: { expectedRendererUrl?: string } = {},
+  options: {
+    expectedRendererUrl?: string
+    pickCustomPath?: (kind: 'config_root' | 'config_file' | 'client_executable') => Promise<string | null>
+  } = {},
 ): void {
   const taskSubscribers = new Map<string, NonNullable<InvokeEventLike['sender']>>()
   service.onApplyTaskProgress(task => {
@@ -235,6 +349,155 @@ export function registerAgentIntegrationHandlers(
     return true
   })))
   ipcMain.handle('agent-integrations:support-catalog', event => trusted(event, () => service.supportCatalog()))
+  ipcMain.handle('agent-integrations:preview-claude-cowork-setup', event => trusted(event, () => (
+    service.previewClaudeCoworkSetup()
+  )))
+  ipcMain.handle('agent-integrations:prepare-claude-cowork-setup', (event, preflightHash: unknown) => trusted(event, () => {
+    const parsedHash = parsePlanHash(preflightHash)
+    return parsedHash.ok ? service.prepareClaudeCoworkSetup(parsedHash.data) : parsedHash.error
+  }))
+  ipcMain.handle('agent-integrations:pick-custom-path', (event, kind: unknown) => trusted(event, async () => {
+    const parsedKind = parseCustomPathKind(kind)
+    if (!parsedKind.ok) return parsedKind.error
+    if (options.pickCustomPath) return options.pickCustomPath(parsedKind.data)
+    const result = await dialog.showOpenDialog(customPathDialogOptions(parsedKind.data))
+    return result.canceled ? null : result.filePaths[0] ?? null
+  }))
+  ipcMain.handle('agent-integrations:preview-custom-installation', (event, request: unknown) => trusted(event, () => {
+    const parsed = parseCustomRequest(request)
+    return parsed.ok ? service.previewCustomInstallation(parsed.data) : parsed.error
+  }))
+  ipcMain.handle('agent-integrations:prepare-custom-connect', (
+    event,
+    preflightHash: unknown,
+    technical?: unknown,
+  ) => trusted(event, () => {
+    const parsedHash = parsePlanHash(preflightHash)
+    if (!parsedHash.ok) return parsedHash.error
+    const parsedTechnical = parseOptionalTechnical(technical)
+    if (!parsedTechnical.ok) return parsedTechnical.error
+    return service.prepareCustomConnect(parsedHash.data, parsedTechnical.data)
+  }))
+  ipcMain.handle('agent-integrations:copy-custom-mcp-configuration', (
+    event,
+    preflightHash: unknown,
+  ) => trusted(event, () => {
+    const parsedHash = parsePlanHash(preflightHash)
+    if (!parsedHash.ok) return parsedHash.error
+    clipboard.writeText(service.customMcpConfiguration(parsedHash.data))
+    return true
+  }))
+  ipcMain.handle('agent-integrations:review-codex-hook-trust', (event, id: unknown) => trusted(event, () => (
+    delegateId(id, value => service.reviewCodexHookTrust(value))
+  )))
+  ipcMain.handle('agent-integrations:confirm-codex-hook-trust', (event, actionHash: unknown) => trusted(event, () => {
+    const parsedHash = parsePlanHash(actionHash)
+    if (!parsedHash.ok) return parsedHash.error
+    return service.confirmCodexHookTrust(parsedHash.data)
+  }))
+  ipcMain.handle('agent-integrations:review-guided-removal', (event, id: unknown) => trusted(event, () => (
+    delegateId(id, value => service.reviewGuidedRemoval(value))
+  )))
+  ipcMain.handle('agent-integrations:confirm-guided-removal', (event, actionHash: unknown) => trusted(event, () => {
+    const parsedHash = parsePlanHash(actionHash)
+    if (!parsedHash.ok) return parsedHash.error
+    return service.confirmGuidedRemoval(parsedHash.data)
+  }))
+}
+
+export function parseCustomPathKind(
+  value: unknown,
+): ValidationResult<'config_root' | 'config_file' | 'client_executable'> {
+  return value === 'config_root' || value === 'config_file' || value === 'client_executable'
+    ? valid(value)
+    : invalid('custom path kind is invalid')
+}
+
+export function parseCustomRequest(value: unknown): ValidationResult<AgentIntegrationCustomRequestDto> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return invalid('custom Agent request must be an object')
+  }
+  const raw = value as Record<string, unknown>
+  const displayName = parseCustomDisplayName(raw.displayName)
+  if (!displayName.ok) return displayName
+  if (raw.mode === 'nonstandard_config_root') {
+    if (!hasExactKeys(raw, ['mode', 'displayName', 'sourceInstallationId', 'configRoot'])) {
+      return invalid('nonstandard config root request contains unsupported fields')
+    }
+    const source = parseInstallationId(raw.sourceInstallationId)
+    if (!source.ok) return source
+    const root = parseAbsoluteLocalPath(raw.configRoot, 'configRoot')
+    if (!root.ok) return root
+    return valid({
+      mode: raw.mode,
+      displayName: displayName.data,
+      sourceInstallationId: source.data,
+      configRoot: root.data,
+    })
+  }
+  if (raw.mode === 'manual_mcp_client') {
+    const expectedKeys = [
+      'mode', 'displayName', 'clientExecutablePath', 'configFilePath', 'schemaKind', 'selectorKey',
+    ]
+    const expectedWithLegacy = [...expectedKeys, 'legacyInstallationId']
+    if (!hasExactKeys(raw, expectedKeys) && !hasExactKeys(raw, expectedWithLegacy)
+      && !hasExactKeys(raw, [...expectedKeys, 'configurationOwnership'])
+      && !hasExactKeys(raw, [...expectedWithLegacy, 'configurationOwnership'])) {
+      return invalid('manual MCP client request contains unsupported fields')
+    }
+    const executable = parseAbsoluteLocalPath(raw.clientExecutablePath, 'clientExecutablePath')
+    if (!executable.ok) return executable
+    if (raw.configurationOwnership !== undefined && raw.configurationOwnership !== 'user'
+      && raw.configurationOwnership !== 'tidemind') return invalid('invalid configuration ownership')
+    const configFile = raw.configurationOwnership === 'user'
+      ? valid('') : parseAbsoluteLocalPath(raw.configFilePath, 'configFilePath')
+    if (!configFile.ok) return configFile
+    if (raw.schemaKind !== 'standard_mcp_servers'
+      && raw.schemaKind !== 'nested_mcp_servers'
+      && raw.schemaKind !== 'opencode_mcp') return invalid('custom MCP schema is invalid')
+    if (typeof raw.selectorKey !== 'string'
+      || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(raw.selectorKey)
+      || raw.selectorKey === '__proto__'
+      || raw.selectorKey === 'prototype'
+      || raw.selectorKey === 'constructor') {
+      return invalid('selectorKey must contain only letters, numbers, underscore, or hyphen')
+    }
+    const legacyInstallation = raw.legacyInstallationId === undefined
+      ? valid<string | undefined>(undefined)
+      : parseInstallationId(raw.legacyInstallationId)
+    if (!legacyInstallation.ok) return legacyInstallation
+    return valid({
+      mode: raw.mode,
+      displayName: displayName.data,
+      ...(legacyInstallation.data ? { legacyInstallationId: legacyInstallation.data } : {}),
+      clientExecutablePath: executable.data,
+      ...(raw.configurationOwnership === 'user' ? { configurationOwnership: 'user' as const } : {}),
+      configFilePath: configFile.data,
+      schemaKind: raw.schemaKind,
+      selectorKey: raw.selectorKey,
+    })
+  }
+  return invalid('custom Agent mode is invalid')
+}
+
+function parseCustomDisplayName(value: unknown): ValidationResult<string> {
+  if (typeof value !== 'string') return invalid('displayName must be a string')
+  const normalized = value.trim().replace(/\s+/gu, ' ')
+  if (normalized.length < 1 || normalized.length > 80 || /[\p{Cc}\p{Cf}]/u.test(normalized)) {
+    return invalid('displayName must contain 1 to 80 visible characters')
+  }
+  return valid(normalized)
+}
+
+function parseAbsoluteLocalPath(value: unknown, field: string): ValidationResult<string> {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 4096
+    || value.includes('\0') || !path.isAbsolute(value)) return invalid(`${field} must be an absolute local path`)
+  return valid(path.normalize(value))
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort()
+  return JSON.stringify(actual) === JSON.stringify([...expected].sort())
 }
 
 export function parseInstallationId(value: unknown): ValidationResult<string> {

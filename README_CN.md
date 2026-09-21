@@ -61,7 +61,7 @@ TideMind 是一个跨越所有工具的记忆层——一张活的知识图谱�
 
 最简单的方式。下载、安装、开始使用。
 
-**[下载 macOS 版（Apple Silicon）— 测试版](https://github.com/SawyerHan-AI/TideMind/releases/tag/v0.1.0)**
+**[下载 macOS 版（Apple Silicon）— 测试版](https://github.com/SawyerHan-AI/TideMind/releases/latest)**
 
 打开应用后，在「设置」中一键对接你的 AI 工具和笔记系统。
 

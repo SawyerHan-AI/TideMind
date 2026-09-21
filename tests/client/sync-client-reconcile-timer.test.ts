@@ -25,9 +25,9 @@ vi.mock('../../client/electron/cloud/auth-client.js', () => ({
 
 // reconciler 是 dynamic-import 进来的;mock 整模块让 runAll 不真跑 SQL
 vi.mock('../../client/electron/cloud/reconciler.js', () => ({
-  Reconciler: vi.fn().mockImplementation(() => ({
+  Reconciler: vi.fn().mockImplementation(function () { return ({
     runAll: vi.fn(async () => []),
-  })),
+  }) }),
 }));
 
 // outbox / cache-manager / device 不参与本测试,稳态 noop 即可
@@ -38,10 +38,10 @@ vi.mock('../../client/electron/cloud/outbox.js', () => ({
   getOutboxCount: () => 0,
 }));
 vi.mock('../../client/electron/cloud/cache-manager.js', () => ({
-  CacheManager: vi.fn().mockImplementation(() => ({
+  CacheManager: vi.fn().mockImplementation(function () { return ({
     applyChanges: vi.fn(),
     getLastSyncedVersion: () => 0,
-  })),
+  }) }),
 }));
 vi.mock('../../client/electron/cloud/device.js', () => ({
   registerDevice: vi.fn(async () => {}),

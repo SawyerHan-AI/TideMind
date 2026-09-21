@@ -17,7 +17,9 @@ export function partitionManageableInstallationIds(
 export function applyTaskPresentationPriority(task: AgentIntegrationApplyTaskDto): number {
   if (task.state === 'running') return 0
   if (task.results.some(result => (
-    result.status !== 'committed' && result.status !== 'awaiting_verification'
+    result.status !== 'committed'
+    && result.status !== 'superseded'
+    && result.status !== 'awaiting_verification'
   )) || task.results.length === 0) return 1
   if (task.results.some(result => result.status === 'awaiting_verification')) return 2
   return 3

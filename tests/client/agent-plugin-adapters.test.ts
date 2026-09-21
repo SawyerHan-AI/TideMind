@@ -270,6 +270,7 @@ describe('kimi-code agent plugin adapter', () => {
     expect(cmd).toContain(`--agent-id "${AGENT_ID}"`)
     expect(cmd).toContain(`--skill-path "${skillFilePath()}"`)
     expect(cmd).toContain('--tool "kimi-code" --once-per-session')
+    expect(cmd).toContain('--suppress-session-start-activity')
 
     expect(kimiCodeAdapter.getPath(ctx)).toBe(skillDir())
 
