@@ -349,6 +349,20 @@ describe('packaged metabolism performance gate', () => {
     expect(writerBlock).toContain("window.off('blur', markWriterFocusLost)")
   })
 
+  it('establishes the baseline after the same renderer used by the Worker is ready', () => {
+    const harness = fs.readFileSync(path.join(repoRoot, 'scripts', 'metabolism-worker-electron-performance-harness.ts'), 'utf8')
+    const loaded = harness.indexOf("await window.loadURL('data:text/html")
+    const rendererGuard = harness.indexOf("throw new Error('performance baseline requires a loaded visible renderer')")
+    const stableCpu = harness.indexOf("await waitForStableCpuBoundary('packaged harness start')")
+    const baseline = harness.indexOf("const baseline = createFixture(")
+    const worker = harness.indexOf('await startDaemon()')
+    expect(loaded).toBeGreaterThan(0)
+    expect(rendererGuard).toBeGreaterThan(loaded)
+    expect(stableCpu).toBeGreaterThan(rendererGuard)
+    expect(baseline).toBeGreaterThan(stableCpu)
+    expect(worker).toBeGreaterThan(baseline)
+  })
+
   it('enters actual background mode before the full backlog workload', () => {
     const harness = fs.readFileSync(path.join(repoRoot, 'scripts', 'metabolism-worker-electron-performance-harness.ts'), 'utf8')
     const hide = harness.indexOf('window.hide()')
