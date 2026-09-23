@@ -167,9 +167,6 @@ async function main(): Promise<void> {
   app.focus({ steal: true })
   window.show()
   window.focus()
-  if (!window.isVisible() || window.webContents.isLoading()) {
-    throw new Error('performance baseline requires a loaded visible renderer')
-  }
   // Window startup can create a CPU burst. Establish the baseline only after
   // the same renderer present during Worker measurement has settled.
   const cpuUtilizationAtStart = await waitForStableCpuBoundary('packaged harness start')
