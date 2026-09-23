@@ -518,6 +518,25 @@ jobs:
           test -s client/release/Tide.Mind-0.2.92-arm64.zip.blockmap
           test "$(shasum -a 256 client/release/Tide.Mind-0.2.92-arm64.dmg | cut -d ' ' -f 1)" = 186516c5efc2a446dee748f1dbf39b2bea5271ec82572351e4e7c811b7bf1e6d
           test "$(shasum -a 256 client/release/Tide.Mind-0.2.92-arm64.zip | cut -d ' ' -f 1)" = e221b4cff7834ecaa358ad84ec497988b3ae28674517e8662b3c89f216165307
+      - name: Recheck containers with the production macOS verifier
+        run: |
+          node scripts/verify-mac-release-assets.mjs \
+            --private-rc-candidate \
+            --release-dir client/release \
+            --arch arm64 \
+            --app "$RUNNER_TEMP/deferred-candidate-app/Tide Mind.app" \
+            --source-commit '${{ needs.admit-source.outputs.source_sha }}' \
+            --receipt "$RUNNER_TEMP/deferred-reverification.json"
+          node - <<'NODE'
+          const fs = require('node:fs')
+          const waiver = JSON.parse(fs.readFileSync('release-evidence/deferred-host-acceptance/0.2.92.json'))
+          const receipt = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/deferred-reverification.json`))
+          for (const key of ['candidateBundleSha256', 'executableSha256', 'teamId', 'cdhash', 'dmgSha256', 'zipSha256']) {
+            if (receipt[key] !== waiver[key]) throw new Error(`final ${key} differs from frozen candidate`)
+          }
+          NODE
+          node scripts/smoke-packaged-metabolism-worker.mjs \
+            --arch arm64 --app "$RUNNER_TEMP/deferred-candidate-app/Tide Mind.app"
       - name: Upload exact verified candidate assets as Draft
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
