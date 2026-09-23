@@ -41,7 +41,9 @@ describe('metabolism Worker packaged candidate', () => {
     expect(builder).not.toContain('arch: [x64, arm64]')
     expect(workflow).toContain('smoke-packaged-metabolism-worker.mjs --arch ${{ matrix.arch }}')
     expect(workflow).toContain('merge-mac-update-metadata.mjs')
-    expect(workflow).toContain('needs: build-mac')
+    expect(workflow).toContain('needs: [admit-source, build-mac]')
+    expect(workflow).toContain("publish-draft:\n    if: github.event_name == 'push' && needs.admit-source.outputs.deferred_host_acceptance != 'true'")
+    expect(workflow).toContain('Recheck containers with the production macOS verifier')
   })
 
   it('produces the actual non-empty Worker bundle', () => {

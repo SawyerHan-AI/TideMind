@@ -233,7 +233,13 @@ describe('release script helpers', () => {
     expect(workflow).toContain('[[ "$GITHUB_REF" == refs/tags/v* ]]');
     expect(workflow).toContain('build-mac:\n    needs: admit-source');
     expect(workflow).toContain('permissions:\n  contents: read');
-    expect(workflow).toContain('publish-draft:\n    if: github.event_name == \'push\'\n    needs: build-mac\n    permissions:\n      contents: write');
+    expect(workflow).toContain("publish-draft:\n    if: github.event_name == 'push' && needs.admit-source.outputs.deferred_host_acceptance != 'true'\n    needs: [admit-source, build-mac]\n    permissions:\n      contents: write");
+    expect(workflow).toContain("build-mac:\n    needs: admit-source\n    if: needs.admit-source.outputs.deferred_host_acceptance != 'true'");
+    expect(workflow).toContain("deferred-host-release:\n    # 0.2.92 only");
+    expect(workflow).toContain('node scripts/verify-deferred-host-release-candidate.mjs');
+    expect(workflow).toContain('node scripts/verify-mac-release-assets.mjs');
+    expect(workflow).toContain('--private-rc-candidate');
+    expect(workflow).toContain('node scripts/smoke-packaged-metabolism-worker.mjs');
     expect(workflowHostGate).toBeGreaterThan(0);
     expect(workflowGate).toBeGreaterThan(workflowHostGate);
     expect(clientBuild).toBeGreaterThan(workflowGate);
