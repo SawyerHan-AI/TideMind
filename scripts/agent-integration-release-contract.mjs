@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import ts from 'typescript'
 
 const ALL_AGENT_COMPONENTS = Object.freeze(['instruction', 'memory_tools', 'lifecycle'])
 const CORE_AGENT_COMPONENTS = Object.freeze(['instruction', 'memory_tools'])
@@ -16,9 +17,32 @@ function maskNonCode(source) {
   let escaped = false
   let regexCharacterClass = false
   let previousSignificant = null
+  // A template can contain executable interpolation with nested strings or
+  // templates. Keep all of it masked, but follow its braces so the closing
+  // backtick cannot mask later top-level declarations in the bundled app.
+  const templateFrames = []
   for (let index = 0; index < source.length; index += 1) {
     const character = source[index]
     const next = source[index + 1]
+    if (state === 'template') {
+      result.push(character === '\n' ? '\n' : ' ')
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '$' && next === '{') {
+        result.push(' ')
+        index += 1
+        const frame = templateFrames.at(-1)
+        frame.inExpression = true
+        frame.braceDepth = 0
+        state = 'code'
+        previousSignificant = null
+      } else if (character === '`') {
+        templateFrames.pop()
+        state = 'code'
+        previousSignificant = 'value'
+      }
+      continue
+    }
     if (state === 'line_comment') {
       if (character === '\n') {
         state = 'code'
@@ -51,13 +75,21 @@ function maskNonCode(source) {
       if (escaped) escaped = false
       else if (character === '\\') escaped = true
       else if ((state === 'single' && character === "'")
-        || (state === 'double' && character === '"')
-        || (state === 'template' && character === '`')) {
+        || (state === 'double' && character === '"')) {
         state = 'code'
         previousSignificant = 'value'
       }
       continue
     }
+    const templateExpression = templateFrames.at(-1)
+    if (character === '}' && templateExpression?.inExpression && templateExpression.braceDepth === 0) {
+      result.push(' ')
+      templateExpression.inExpression = false
+      state = 'template'
+      continue
+    }
+    if (character === '{' && templateExpression?.inExpression) templateExpression.braceDepth += 1
+    if (character === '}' && templateExpression?.inExpression) templateExpression.braceDepth -= 1
     if (character === '/' && next === '/') {
       result.push('  ')
       index += 1
@@ -79,9 +111,10 @@ function maskNonCode(source) {
       state = 'double'
     } else if (character === '`') {
       result.push(' ')
+      templateFrames.push({ inExpression: false, braceDepth: 0 })
       state = 'template'
     } else {
-      result.push(character)
+      result.push(templateExpression ? (character === '\n' ? '\n' : ' ') : character)
       if (!/\s/u.test(character)) previousSignificant = character
     }
   }
@@ -101,7 +134,8 @@ function parseDeclaredLiteral(source, marker, pattern, label) {
 function validateReleaseHelper(source) {
   const marker = 'function release('
   const body = uniqueFunctionBody(source, marker, 'release helper')
-  const exactBody = /^\s*return\s+(?:freezeEntry|Object\.freeze)\(\{\s*catalogId,\s*disposition,\s*targetCapability,\s*requiredComponents,\s*\.\.\.details,\s*customConfigRoot:\s*\{\s*supported:\s*CUSTOM_CONFIG_ROOT_RELOCATABLE_CATALOG_IDS\.includes\(catalogId\s+as\s+never\)\s*\},\s*enabledByDefault:\s*details\.releaseMode\s*===\s*["']production["'],?\s*\}\)\s*;?\s*$/u
+  // `as never` is a TypeScript-only cast and disappears in the packaged JS.
+  const exactBody = /^\s*return\s+(?:freezeEntry|Object\.freeze)\(\{\s*catalogId,\s*disposition,\s*targetCapability,\s*requiredComponents,\s*\.\.\.details,\s*customConfigRoot:\s*\{\s*supported:\s*CUSTOM_CONFIG_ROOT_RELOCATABLE_CATALOG_IDS\.includes\(catalogId(?:\s+as\s+never)?\)\s*\},\s*enabledByDefault:\s*details\.releaseMode\s*===\s*["']production["'],?\s*\}\)\s*;?\s*$/u
   if (!exactBody.test(body)) throw new Error('Agent release manifest has invalid release helper binding')
 }
 
@@ -206,12 +240,60 @@ function observeOnlyEntry(catalogId, notes, details) {
   })
 }
 
+function parseBundledLiteral(expression) {
+  if (expression.length > 1024 * 1024) throw new Error('literal too large')
+  const file = ts.createSourceFile('release-details.js', `(${expression})`, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
+  const statement = file.statements[0]
+  if (file.parseDiagnostics.length !== 0 || file.statements.length !== 1
+    || !ts.isExpressionStatement(statement) || !ts.isParenthesizedExpression(statement.expression)) {
+    throw new Error('not one literal expression')
+  }
+  let nodeCount = 0
+  const read = (node, depth) => {
+    if (++nodeCount > 10_000 || depth > 32) throw new Error('literal exceeds bounds')
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text
+    if (ts.isNumericLiteral(node)) {
+      const raw = node.getText(file)
+      if (!/^(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/u.test(raw)
+        || !Number.isFinite(Number(raw))) throw new Error('invalid number literal')
+      return Number(raw)
+    }
+    if (node.kind === ts.SyntaxKind.TrueKeyword) return true
+    if (node.kind === ts.SyntaxKind.FalseKeyword) return false
+    if (node.kind === ts.SyntaxKind.NullKeyword) return null
+    if (ts.isArrayLiteralExpression(node)) {
+      return node.elements.map(element => read(element, depth + 1))
+    }
+    if (ts.isObjectLiteralExpression(node)) {
+      const value = Object.create(null)
+      for (const property of node.properties) {
+        if (!ts.isPropertyAssignment(property)
+          || (!ts.isIdentifier(property.name) && !ts.isStringLiteral(property.name))) {
+          throw new Error('non-data property')
+        }
+        const key = property.name.text
+        if (['__proto__', 'constructor', 'prototype'].includes(key) || Object.hasOwn(value, key)) {
+          throw new Error('unsafe or duplicate property')
+        }
+        value[key] = read(property.initializer, depth + 1)
+      }
+      return value
+    }
+    throw new Error('non-literal expression')
+  }
+  return read(statement.expression.expression, 0)
+}
+
 function parseDetails(expression, label) {
   let details
   try {
     details = JSON.parse(expression)
   } catch {
-    throw new Error(`Agent release manifest has invalid ${label} details`)
+    // Rollup may serialize an otherwise frozen JSON value using single-quoted
+    // JavaScript strings. Decode data-only syntax; never evaluate bundled code.
+    try { details = parseBundledLiteral(expression) } catch {
+      throw new Error(`Agent release manifest has invalid ${label} details`)
+    }
   }
   if (!details || typeof details !== 'object' || Array.isArray(details)) {
     throw new Error(`Agent release manifest has invalid ${label} details`)

@@ -10,7 +10,7 @@ import {
   inspectPackagedAgentIntegrationReleaseManifest,
 } from '../../scripts/verify-mac-release-assets.mjs'
 // @ts-expect-error local plain-ESM release helper has no declaration file
-import { parseSourceAgentIntegrationReleaseContract, portableArtifactFingerprint } from '../../scripts/agent-integration-release-contract.mjs'
+import { codeMarkerCount, parseSourceAgentIntegrationReleaseContract, portableArtifactFingerprint } from '../../scripts/agent-integration-release-contract.mjs'
 
 const sourceManifest = fs.readFileSync(path.resolve(
   'client/electron/agent-integration/release-manifest.ts',
@@ -518,6 +518,26 @@ describe('packaged Agent Integration release manifest gate', () => {
       entryCount: 20,
       defaultEntryCount: 19,
     })
+  })
+
+  it('keeps nested template text masked before a real bundled manifest', () => {
+    const marker = 'AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION ='
+    const prefix = 'const earlier = `outer ${(() => `inner "quote ${"x"}`)()}`;\n'
+    expect(codeMarkerCount(prefix, marker)).toBe(0)
+    expect(codeMarkerCount(prefix + bundle(), marker)).toBe(1)
+    expect(inspectPackagedAgentIntegrationReleaseManifest(prefix + bundle(), sourceContract).entryCount).toBe(20)
+  })
+
+  it('accepts data-only JavaScript literals after bundling without executing expressions', () => {
+    const emitted = bundle().replace('catalogId as never', 'catalogId')
+      .replace('"releaseMode":"production"', '"releaseMode":\'production\'')
+    expect(inspectPackagedAgentIntegrationReleaseManifest(emitted, sourceContract).entryCount).toBe(20)
+    const executable = bundle().replace('"releaseMode":"production"', '"releaseMode":invokeReleaseMode()')
+    expect(() => inspectPackagedAgentIntegrationReleaseManifest(executable, sourceContract))
+      .toThrow(/invalid claude-code-cli details/u)
+    const duplicate = bundle().replace('"releaseMode":"production"', '"releaseMode":\'production\',"releaseMode":"production"')
+    expect(() => inspectPackagedAgentIntegrationReleaseManifest(duplicate, sourceContract))
+      .toThrow(/invalid claude-code-cli details/u)
   })
 
   it('rejects version/schema drift and an empty default surface', () => {
