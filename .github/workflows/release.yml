@@ -28,6 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       source_sha: ${{ steps.admit.outputs.source_sha }}
+      deferred_host_acceptance: ${{ steps.admit.outputs.deferred_host_acceptance }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -62,9 +63,19 @@ jobs:
             [ "$REQUESTED_SOURCE_SHA" = "$source_commit" ]
           fi
           echo "source_sha=$source_commit" >> "$GITHUB_OUTPUT"
+          # One version-specific, explicitly documented release exception. The
+          # candidate path remains unchanged; no host evidence is fabricated.
+          version="$(node -p "require('./package.json').version")"
+          if [ "$CANDIDATE_ONLY" != true ] && [ "$version" = 0.2.92 ] \
+            && [ -f release-evidence/deferred-host-acceptance/0.2.92.json ]; then
+            echo "deferred_host_acceptance=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deferred_host_acceptance=false" >> "$GITHUB_OUTPUT"
+          fi
 
   build-mac:
     needs: admit-source
+    if: needs.admit-source.outputs.deferred_host_acceptance != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -391,8 +402,8 @@ jobs:
           overwrite: false
 
   publish-draft:
-    if: github.event_name == 'push'
-    needs: build-mac
+    if: github.event_name == 'push' && needs.admit-source.outputs.deferred_host_acceptance != 'true'
+    needs: [admit-source, build-mac]
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -437,6 +448,85 @@ jobs:
             client/release/*.dmg
             client/release/*.zip
             client/release/*.blockmap
+            client/release/latest-mac.yml
+          draft: true
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deferred-host-release:
+    # 0.2.92 only: the user directed publication before real-host acceptance.
+    # Reuse the exact immutable, already signed/notarized candidate; retain
+    # every other source, signature, performance and package identity check.
+    if: needs.admit-source.outputs.deferred_host_acceptance == 'true'
+    needs: admit-source
+    permissions:
+      actions: read
+      contents: write
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Verify native hosted runner
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = github-hosted ]
+          [ "$RUNNER_OS" = macOS ]
+          [ "$RUNNER_ARCH" = ARM64 ]
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Bind tag to exact version
+        if: github.ref_type == 'tag'
+        run: test "$GITHUB_REF_NAME" = v0.2.92
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install locked verification tools
+        run: |
+          npm ci --ignore-scripts
+          npm --prefix client ci --ignore-scripts
+      - name: Download the immutable signed candidate and receipt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/SawyerHan-AI/TideMind/actions/artifacts/10741682400/zip > "$RUNNER_TEMP/candidate-artifact.zip"
+          gh api repos/SawyerHan-AI/TideMind/actions/artifacts/10741193722/zip > "$RUNNER_TEMP/candidate-upload-receipt.zip"
+      - name: Verify exact candidate, signing, notarization and containers
+        run: |
+          node scripts/verify-deferred-host-release-candidate.mjs \
+            --waiver release-evidence/deferred-host-acceptance/0.2.92.json \
+            --source-commit '${{ needs.admit-source.outputs.source_sha }}' \
+            --artifact-zip "$RUNNER_TEMP/candidate-artifact.zip" \
+            --upload-receipt-zip "$RUNNER_TEMP/candidate-upload-receipt.zip" \
+            --stage "$RUNNER_TEMP/deferred-candidate"
+      - name: Stage exact candidate containers and build updater blockmap
+        run: |
+          set -euo pipefail
+          mkdir -p client/release
+          cp "$RUNNER_TEMP/deferred-candidate/Tide.Mind-0.2.92-arm64.dmg" client/release/
+          cp "$RUNNER_TEMP/deferred-candidate/Tide.Mind-0.2.92-arm64.zip" client/release/
+          cp "$RUNNER_TEMP/deferred-candidate/Tide.Mind-0.2.92-arm64.dmg.blockmap" client/release/
+          cp "$RUNNER_TEMP/deferred-candidate/latest-mac-arm64.yml" client/release/
+          node - <<'NODE'
+          const path = require('node:path')
+          const { buildBlockMap } = require(path.resolve('client/node_modules/app-builder-lib/out/targets/blockmap/blockmap.js'))
+          const zip = path.resolve('client/release/Tide.Mind-0.2.92-arm64.zip')
+          buildBlockMap(zip, 'gzip', `${zip}.blockmap`).catch(error => { console.error(error); process.exitCode = 1 })
+          NODE
+          node scripts/merge-mac-update-metadata.mjs client/release
+          test -s client/release/Tide.Mind-0.2.92-arm64.zip.blockmap
+          test "$(shasum -a 256 client/release/Tide.Mind-0.2.92-arm64.dmg | cut -d ' ' -f 1)" = 186516c5efc2a446dee748f1dbf39b2bea5271ec82572351e4e7c811b7bf1e6d
+          test "$(shasum -a 256 client/release/Tide.Mind-0.2.92-arm64.zip | cut -d ' ' -f 1)" = e221b4cff7834ecaa358ad84ec497988b3ae28674517e8662b3c89f216165307
+      - name: Upload exact verified candidate assets as Draft
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
+        with:
+          files: |
+            client/release/Tide.Mind-0.2.92-arm64.dmg
+            client/release/Tide.Mind-0.2.92-arm64.dmg.blockmap
+            client/release/Tide.Mind-0.2.92-arm64.zip
+            client/release/Tide.Mind-0.2.92-arm64.zip.blockmap
             client/release/latest-mac.yml
           draft: true
           generate_release_notes: false

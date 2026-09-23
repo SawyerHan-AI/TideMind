@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "kind": "deferred_real_host_acceptance",
+  "appVersion": "0.2.92",
+  "sourceCommit": "e57c7589c2b77d9fa3a8cab0cc47e4f4a1b33447",
+  "candidatePublicCommit": "18dbab8f7dbd144f052571f5d20ab44438dfab77",
+  "candidateRunId": "35841255325",
+  "candidateRunAttempt": "1",
+  "artifactId": "10741682400",
+  "artifactDigest": "98e5da69bcc131ba39231127a8b683ff89fc54980a0347f9d5ed19fad689773f",
+  "uploadReceiptArtifactId": "10741193722",
+  "uploadReceiptArtifactDigest": "cfe1d3bbb2fbeae5e6c89d0e73ae696862ebfa5967b977ddcaf19f5d020628ae",
+  "candidateBundleSha256": "dcfe40b643e288b2dd4f43564a863c8d5e19bbd031f7d0916069be9bd01f47d8",
+  "executableSha256": "76441162132e9e3ef34fc96e3bb2efd55bef005728229a0f683bc5df0b4649d9",
+  "teamId": "Z4U232GXH5",
+  "cdhash": "5d82f683add78d7d640ee702d7b0a217dbcb60e1",
+  "dmgSha256": "186516c5efc2a446dee748f1dbf39b2bea5271ec82572351e4e7c811b7bf1e6d",
+  "zipSha256": "e221b4cff7834ecaa358ad84ec497988b3ae28674517e8662b3c89f216165307",
+  "acceptanceStatus": "not_performed",
+  "decision": "User directed publication of 0.2.92 after all other release gates, without waiting for real-host acceptance on 2026-09-23. This record is not real-host evidence."
+}
