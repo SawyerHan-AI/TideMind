@@ -484,7 +484,8 @@ jobs:
           cache: 'npm'
       - name: Install locked verification tools
         run: |
-          npm ci --ignore-scripts
+          npm ci
+          npm run build
           npm --prefix client ci --ignore-scripts
       - name: Download the immutable signed candidate and receipt
         env:
