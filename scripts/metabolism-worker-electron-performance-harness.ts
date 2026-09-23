@@ -153,9 +153,25 @@ async function main(): Promise<void> {
     cpuUtilizationSamples.push(utilization)
     return utilization
   }
-  // Starting the packaged Electron host loads native modules and can create a
-  // short CPU burst even when the wrapper was previously idle. Establish the
-  // retained baseline only after that process-local startup has settled.
+  // Compare the synchronous baseline and Worker with the same live renderer.
+  // Previously the baseline ran before app.whenReady/BrowserWindow, while the
+  // Worker ran after window startup; renderer/GPU load affected only one side.
+  await app.whenReady()
+  const window = new BrowserWindow({
+    show: true,
+    width: 640,
+    height: 480,
+    webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false },
+  })
+  await window.loadURL('data:text/html,<html><body>metabolism performance harness</body></html>')
+  app.focus({ steal: true })
+  window.show()
+  window.focus()
+  if (!window.isVisible() || window.webContents.isLoading()) {
+    throw new Error('performance baseline requires a loaded visible renderer')
+  }
+  // Window startup can create a CPU burst. Establish the baseline only after
+  // the same renderer present during Worker measurement has settled.
   const cpuUtilizationAtStart = await waitForStableCpuBoundary('packaged harness start')
   const mainBaselineRunsMs: number[] = []
   const mainBaselineEventLoopDelaysMs: number[] = []
@@ -218,18 +234,6 @@ async function main(): Promise<void> {
   })
   fs.mkdirSync(path.join(canonicalRoot, 'notes'))
   setOnlyTasksDue(db, ['synaptic-decay'])
-
-  await app.whenReady()
-  const window = new BrowserWindow({
-    show: true,
-    width: 640,
-    height: 480,
-    webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false },
-  })
-  await window.loadURL('data:text/html,<html><body>metabolism performance harness</body></html>')
-  app.focus({ steal: true })
-  window.show()
-  window.focus()
 
   ipcMain.handle('perf:writer', (_event, kind: string, sequence: number) => {
     if (kind === 'renderer') {
