@@ -12,6 +12,8 @@ import {
 } from '../dist/db/worker-initialized-database.js'
 import { CURRENT_SCHEMA_VERSION, ensureSchema, ensureVectorTable } from '../dist/db/schema.js'
 import { checkCliEnvironment } from '../dist/llm/cli/readiness.js'
+import { claudeAliasCatalog } from '../dist/llm/cli/catalogs.js'
+import { refreshCliModelCatalog } from '../dist/llm/cli/model-catalog.js'
 import { ALL_TASKS } from '../dist/metabolism/tasks.js'
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
@@ -69,7 +71,7 @@ try {
     const args = process.argv.slice(2)
     if (args.includes('--version')) { process.stdout.write('2.1.215 (Claude Code)\\n'); process.exit(0) }
     if (args[0] === 'auth' && args[1] === 'status' && args.includes('--json')) {
-      process.stdout.write(JSON.stringify({ loggedIn: true, authMethod: 'oauth', apiProvider: 'firstParty', email: 'fixture@example.com' })); process.exit(0)
+      process.stdout.write(JSON.stringify({ loggedIn: true, authMethod: 'oauth', apiProvider: 'firstParty', email: 'fixture@example.com', orgId: 'packaged-smoke-fixture-org' })); process.exit(0)
     }
     if (args[0] === 'auth' && args[1] === 'status' && args.includes('--help')) { process.stdout.write('--json\\n'); process.exit(0) }
     if (args.includes('--help')) {
@@ -86,7 +88,7 @@ try {
     sourceEnv: workerEnv,
     homeDir: temp,
   })
-  const modelAlias = cliEnvironment.candidateModels[0]
+  const modelAlias = claudeAliasCatalog()[0]?.id
   if (!modelAlias) throw new Error('packaged CLI smoke has no candidate model')
 
   const graphDir = path.join(temp, 'graph')
@@ -124,11 +126,19 @@ try {
     ) VALUES (?, ?, 'claude-cli', '{}', 'online', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     'mc_packaged_cli', 'Packaged CLI smoke', new Date().toISOString(),
-    JSON.stringify(cliEnvironment.candidateModels), JSON.stringify([modelAlias]),
+    null, null,
     cliEnvironment.validationFingerprint, cliEnvironment.authFingerprint,
     cliEnvironment.resolved.path, cliEnvironment.resolved.version,
     cliEnvironment.auth.method, cliEnvironment.checkedAt,
   )
+  // Populate the current scope/epoch and catalog tables through the production
+  // refresh path. Legacy model arrays no longer grant background admission.
+  const catalog = await refreshCliModelCatalog(db, {
+    connectionId: 'mc_packaged_cli', dataDir: canonicalDataDir, environment: cliEnvironment,
+  })
+  if (catalog.status !== 'refreshed' || cliEnvironment.auth.scopeState !== 'known') {
+    throw new Error('packaged CLI smoke requires a scoped alias catalog')
+  }
   const startupAuthority = {
     controllerReceiptId: 'packaged-smoke-receipt',
     dataScopeFingerprint,
@@ -153,8 +163,8 @@ try {
     runtimeConfigSnapshot: config,
     runtimeConnectionSnapshot: { connections: [{
       id: 'mc_packaged_cli', name: 'Packaged CLI smoke', providerType: 'claude-cli', archived: false,
-      status: 'online', statusReason: null, candidateModels: JSON.stringify(cliEnvironment.candidateModels),
-      availableModels: JSON.stringify([modelAlias]), validationFingerprint: cliEnvironment.validationFingerprint,
+      status: 'online', statusReason: null, candidateModels: null,
+      availableModels: null, validationFingerprint: cliEnvironment.validationFingerprint,
       authFingerprint: cliEnvironment.authFingerprint, modelValidationJson: null, credentials: {},
     }] },
     strategySnapshot: {},
