@@ -52,6 +52,7 @@ import {
   verifyStablePackageTree,
 } from './passive-cli-version.js'
 import { sha256Json } from './fingerprint.js'
+import { verifyNpmComponentLookupTopologySync } from './npm-component-topology.js'
 import {
   desktopSignatureReceiptFingerprint,
   inspectMacAppSignature,
@@ -1503,6 +1504,7 @@ function stableCliProofSurfaceSync(
 ): boolean {
   const criticalPackageNodes = packageNodes.filter(node => (
     node.role !== 'npm_package_file'
+    && node.role !== 'npm_component_file'
     && node.role !== 'openclaw_package_file'
     && node.role !== 'qwen_package_file'
   ))
@@ -1513,7 +1515,8 @@ function stableCliProofSurfaceSync(
   if (nodes.some(node => !path.isAbsolute(node.path) || path.resolve(node.path) !== node.path)) return false
   const opened: Array<{ path: string; proof: StableFileFingerprint; fd: number }> = []
   try {
-    if (!stableNpmPackageTreePathsSync(packageNodes)) return false
+    if (!verifyNpmComponentLookupTopologySync(executablePath, packageNodes)
+      || !stableNpmPackageTreePathsSync(packageNodes)) return false
     if (!stableOpenClawWrapperAliasesSync(executablePath, packageNodes, homeDir)) return false
     for (const node of nodes) {
       opened.push({
@@ -1530,7 +1533,8 @@ function stableCliProofSurfaceSync(
     for (const node of [...opened].reverse()) {
       if (!stableCliProofNodeMatches(node.fd, node.path, node.proof)) return false
     }
-    return stableNpmPackageTreePathsSync(packageNodes)
+    return verifyNpmComponentLookupTopologySync(executablePath, packageNodes)
+      && stableNpmPackageTreePathsSync(packageNodes)
       && stableOpenClawWrapperAliasesSync(executablePath, packageNodes, homeDir)
   } catch {
     return false
@@ -1607,32 +1611,58 @@ function stableOpenClawWrapperAliasesSync(
  * the asynchronous package-tree snapshots completed.
  */
 function stableNpmPackageTreePathsSync(packageNodes: readonly PackageMetadataProofNode[]): boolean {
-  const hasTreeProof = packageNodes.some(node => node.entryType !== undefined)
-  if (!hasTreeProof) return true
+  const treeNodes = packageNodes.filter(node => node.entryType !== undefined)
+  if (treeNodes.length === 0) return true
+  if (treeNodes.length > MAX_PACKAGE_TREE_FILES
+    || new Set(treeNodes.map(node => node.path)).size !== treeNodes.length) return false
   const includeNodeModules = packageNodes.some(node => node.role === 'qwen_standalone_manifest')
-  const manifest = packageNodes.find(node => node.role === 'package_manifest')
-  if (!manifest) return false
-  const packageRoot = path.dirname(manifest.path)
-  const expectedPaths = packageNodes
-    .filter(node => node.entryType !== undefined)
-    .map(node => node.path)
+  const manifests = packageNodes.filter(node => (
+    node.role === 'package_manifest' || node.role === 'npm_component_manifest'
+  ))
+  if (manifests.filter(node => node.role === 'package_manifest').length !== 1
+    || (includeNodeModules && manifests.length !== 1)
+    || manifests.some(node => node.entryType !== 'file'
+      || path.basename(node.path) !== 'package.json'
+      || !path.isAbsolute(node.path)
+      || path.resolve(node.path) !== node.path)) return false
+  const roots = manifests.map(node => path.dirname(node.path))
+  if (new Set(roots).size !== roots.length) return false
+  // The passive inspector already proved the composed package topology. Recheck
+  // each frozen owned tree, without treating sibling/nested platform packages as
+  // files owned by the root package or letting them escape their own tree.
+  const belongsTo = (root: string, node: PackageMetadataProofNode): boolean => (
+    isPathWithin(root, node.path)
+    && (includeNodeModules || !path.relative(root, node.path).split(path.sep).includes('node_modules'))
+  )
+  if (treeNodes.some(node => roots.filter(root => belongsTo(root, node)).length !== 1)) return false
+  const budget = { directories: 0 }
+  return roots.every(root => stableNpmOwnedTreePathsSync(
+    treeNodes.filter(node => belongsTo(root, node)), root, includeNodeModules, budget,
+  ))
+}
+
+function stableNpmOwnedTreePathsSync(
+  packageNodes: readonly PackageMetadataProofNode[],
+  packageRoot: string,
+  includeNodeModules: boolean,
+  budget: { directories: number },
+): boolean {
+  const expectedPaths = packageNodes.map(node => node.path)
     .sort((left, right) => left.localeCompare(right))
-  if (expectedPaths.length === 0 || expectedPaths.length > MAX_PACKAGE_TREE_FILES
-    || !expectedPaths.includes(manifest.path)
-    || expectedPaths.some(filePath => !isPathWithin(packageRoot, filePath))) return false
+  if (expectedPaths.length === 0
+    || !expectedPaths.includes(path.join(packageRoot, 'package.json'))) return false
 
   const actualPaths: string[] = []
   const expectedByPath = new Map(expectedPaths.map(filePath => [
     filePath,
     packageNodes.find(node => node.path === filePath && node.entryType !== undefined)!,
   ]))
-  let directoryCount = 0
   const maxDirectories = includeNodeModules
     ? MAX_STANDALONE_PACKAGE_TREE_DIRECTORIES
     : MAX_PACKAGE_TREE_DIRECTORIES
   const visit = (directory: string, depth: number): boolean => {
-    directoryCount += 1
-    if (directoryCount > maxDirectories || depth > MAX_PACKAGE_TREE_DEPTH) return false
+    budget.directories += 1
+    if (budget.directories > maxDirectories || depth > MAX_PACKAGE_TREE_DEPTH) return false
     const directoryNode = fsSync.lstatSync(directory, { bigint: true })
     if (!directoryNode.isDirectory()
       || directoryNode.isSymbolicLink()
@@ -1676,8 +1706,9 @@ function stableNpmPackageTreePathsSync(packageNodes: readonly PackageMetadataPro
     }
     return true
   }
-  return visit(packageRoot, 0)
-    && actualPaths.length === expectedPaths.length
+  if (!visit(packageRoot, 0)) return false
+  actualPaths.sort((left, right) => left.localeCompare(right))
+  return actualPaths.length === expectedPaths.length
     && actualPaths.every((filePath, index) => filePath === expectedPaths[index])
 }
 

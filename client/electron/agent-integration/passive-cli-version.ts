@@ -11,6 +11,7 @@ import type {
   VersionCommandResult,
 } from './discovery'
 import { npmComposedDistributionSpec } from './npm-distribution-topology'
+import { locateNpmComposedComponent } from './npm-component-topology'
 
 const VERSION = /^(\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?)$/u
 const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u
@@ -1174,16 +1175,16 @@ async function inspectNpmPackageMetadata(
           !== compositionSpec.rootExecutableRelativePath) return detected()
         const components = []
         const componentProofNodes: PackageMetadataProofNode[] = []
+        const resolvedComponents = new Map<string, string>()
+        const lookupContext = { ...npm, spec: compositionSpec, resolvedComponents }
         for (const component of compositionSpec.components) {
-          const lockSuffix = `node_modules/${component.installName}`
-          const lockKeys = Object.keys(lock.packages ?? {}).filter(candidate => (
-            candidate === lockSuffix || candidate.endsWith(`/${lockSuffix}`)
-          ))
-          if (lockKeys.length !== 1) return detected()
-          const lockKey = lockKeys[0]!
-          const packageRelative = lockKey.slice('node_modules/'.length)
+          const packageRoot = await locateNpmComposedComponent(lookupContext, component, fs)
+          if (!packageRoot) return detected()
+          // Bind the lock entry at the runtime-resolved path, never an arbitrary
+          // same-name suffix elsewhere in the installation lock.
+          const packageRelative = path.relative(npm.nodeModulesRoot, packageRoot).split(path.sep).join('/')
           if (!packageRelative || packageRelative.split('/').includes('..')) return detected()
-          const packageRoot = path.join(npm.nodeModulesRoot, ...packageRelative.split('/'))
+          const lockKey = `node_modules/${packageRelative}`
           const packageJson = path.join(packageRoot, 'package.json')
           const lockComponent = lock.packages?.[lockKey]
           if (lockComponent?.version !== component.version
@@ -1202,7 +1203,9 @@ async function inspectNpmPackageMetadata(
           const componentTree = await fs.readStablePackageTree(packageRoot)
           const manifestNode = componentTree.proofNodes.find(node => node.path === packageJson)
           if (manifestNode?.fingerprint !== manifest.fingerprint
-            || !await fs.verifyStablePackageTree(packageRoot, componentTree)) return detected()
+            || !await fs.verifyStablePackageTree(packageRoot, componentTree)
+            || await locateNpmComposedComponent(lookupContext, component, fs) !== packageRoot) return detected()
+          resolvedComponents.set(component.installName, packageRoot)
           let native = null
           if (component.nativeExecutableRelativePath) {
             const nativePath = path.join(packageRoot, ...component.nativeExecutableRelativePath.split('/'))
@@ -1319,61 +1322,6 @@ async function inspectNpmPackageMetadata(
   }
 }
 
-async function isCanonicalArtifactDirectory(fs: PassiveVersionFileSystem, directory: string): Promise<boolean> {
-  const node = await fs.lstat(directory)
-  return node?.kind === 'directory' && isSafeArtifactOwned(node)
-    && path.resolve(await fs.realpath(directory)) === directory
-}
-
-/**
- * Locates one composed component of a lockless npm install the way Node
- * resolves it from the root entry: nested `<packageRoot>/node_modules/<name>`
- * (npm global / non-deduped layout) or hoisted `<nodeModulesRoot>/<name>`.
- * Exactly one of the two npm layouts may exist, it must be the first match on
- * Node's lookup chain (nothing shadows it), must be a real directory, and each
- * directory between the lookup root and the component must be canonical and
- * not writable by group/other.
- */
-async function locateLocklessNpmComponent(
-  npm: NpmPackageLocation,
-  installName: string,
-  fs: PassiveVersionFileSystem,
-): Promise<string | null> {
-  const segments = installName.split('/')
-  if (!PACKAGE_NAME.test(installName) || segments.some(segment => segment === '.' || segment === '..')) return null
-  const nestedRoot = path.join(npm.packageRoot, 'node_modules')
-  const nested = path.join(nestedRoot, ...segments)
-  const hoisted = path.join(npm.nodeModulesRoot, ...segments)
-  const lookupRoots: string[] = []
-  for (let directory = path.dirname(npm.executableRealpath);
-    isPathWithin(npm.nodeModulesRoot, directory);
-    directory = path.dirname(directory)) {
-    if (path.basename(directory) !== 'node_modules') lookupRoots.push(path.join(directory, 'node_modules'))
-  }
-  lookupRoots.push(npm.nodeModulesRoot)
-  let selected: { lookupRoot: string; packageRoot: string } | null = null
-  for (const lookupRoot of lookupRoots) {
-    const candidate = path.join(lookupRoot, ...segments)
-    const node = await fs.lstat(candidate)
-    if (node === undefined) continue
-    if (node.kind !== 'directory' || (candidate !== nested && candidate !== hoisted)) return null
-    selected = { lookupRoot, packageRoot: candidate }
-    break
-  }
-  if (!selected) return null
-  const other = selected.packageRoot === nested ? hoisted : nested
-  if (await fs.lstat(other) !== undefined) return null
-  const directories = [selected.lookupRoot]
-  for (let index = 1; index < segments.length; index += 1) {
-    directories.push(path.join(selected.lookupRoot, ...segments.slice(0, index)))
-  }
-  directories.push(selected.packageRoot)
-  for (const directory of directories) {
-    if (!await isCanonicalArtifactDirectory(fs, directory)) return null
-  }
-  return selected.packageRoot
-}
-
 /**
  * Lockless npm surface (no hidden-lockfile integrity is available, e.g. every
  * `npm install -g`). Every other safety condition of the locked surface still
@@ -1439,8 +1387,10 @@ async function inspectLocklessNpmPackage(
   const components = []
   const componentLocations: string[] = []
   const componentProofNodes: PackageMetadataProofNode[] = []
+  const resolvedComponents = new Map<string, string>()
+  const lookupContext = { ...npm, spec: compositionSpec, resolvedComponents }
   for (const component of compositionSpec.components) {
-    const packageRoot = await locateLocklessNpmComponent(npm, component.installName, fs)
+    const packageRoot = await locateNpmComposedComponent(lookupContext, component, fs)
     if (!packageRoot) return detected()
     const packageJson = path.join(packageRoot, 'package.json')
     const manifest = await fs.readStableFileSnapshot(packageJson, MAX_NPM_MANIFEST_BYTES)
@@ -1457,7 +1407,8 @@ async function inspectLocklessNpmPackage(
     const manifestNode = componentTree.proofNodes.find(node => node.path === packageJson)
     if (manifestNode?.fingerprint !== manifest.fingerprint
       || !await fs.verifyStablePackageTree(packageRoot, componentTree)
-      || await locateLocklessNpmComponent(npm, component.installName, fs) !== packageRoot) return detected()
+      || await locateNpmComposedComponent(lookupContext, component, fs) !== packageRoot) return detected()
+    resolvedComponents.set(component.installName, packageRoot)
     let native = null
     if (component.nativeExecutableRelativePath) {
       const nativePath = path.join(packageRoot, ...component.nativeExecutableRelativePath.split('/'))

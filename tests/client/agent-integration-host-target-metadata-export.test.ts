@@ -1,11 +1,13 @@
+import Database from 'better-sqlite3'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   assertNativeAgentHostAcceptanceExecutionEnvironment,
   exportAgentHostTargetMetadata,
+  currentUserOwnedCustomActivityProof,
   directoryIdentitySha256,
   inspectAgentHostAcceptanceExecutionEnvironment,
   readAgentHostPhysicalDistribution,
@@ -16,10 +18,25 @@ import type { DiscoveredInstallation } from '../../client/electron/agent-integra
 import type { AgentInstallationRow } from '../../client/electron/agent-integration/repository'
 import { metadataEvidenceRuntimeContext } from '../../client/electron/agent-integration/production-service'
 
+import * as productionService from '../../client/electron/agent-integration/production-service'
+import { ensureSchema } from '../../src/db/schema'
+import { recordHostActivityEvidence } from '../../src/db/agent-host-activity'
+import { customMcpConfiguration, type CustomMcpSchema } from '../../client/electron/agent-integration/hosts/custom-mcp-configuration'
+import { readStableFileFingerprint } from '../../client/electron/agent-integration/passive-cli-version'
+import { AGENT_INTEGRATION_RELEASE_MANIFEST as manifest } from '../../client/electron/agent-integration/release-manifest'
+
+vi.mock('../../client/node_modules/better-sqlite3/lib/index.js', async () => {
+  const { createRequire } = await import('node:module')
+  return { default: createRequire(import.meta.url)('better-sqlite3') }
+})
+const databases: Database.Database[] = []
+
 const roots: string[] = []
 const hash = (value: string) => crypto.createHash('sha256').update(value).digest('hex')
 
 afterEach(() => {
+  databases.splice(0).forEach(db => db.close())
+  vi.restoreAllMocks(); vi.unstubAllGlobals()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
@@ -340,4 +357,163 @@ describe('formal host target metadata exporter', () => {
     })).rejects.toThrow()
     expect(fs.existsSync(path.join(data.root, 'missing'))).toBe(false)
   })
+})
+
+const T0 = '2026-09-05T00:00:00.000Z', T1 = '2026-09-05T00:01:00.000Z', T2 = '2026-09-05T00:02:00.000Z'
+const runtime = metadataEvidenceRuntimeContext('/fixture/home', '/fixture/Tide Mind.app/Contents/MacOS/Tide Mind')
+
+function userOwnedActivityFixture(schemaKind: CustomMcpSchema = 'standard_mcp_servers', selectorKey = 'tidemind') {
+  const db = new Database(':memory:'); databases.push(db); ensureSchema(db)
+  db.prepare("INSERT INTO agents(id,name,tool_type,created) VALUES('eb_custom','Custom','custom',?)").run(T0)
+  db.prepare(`INSERT INTO agent_installations(id,family,host_variant,profile_id,install_key,display_name,
+    agent_id,detected_version,desired_state,health_state,metadata_json,created_at,updated_at)
+    VALUES('custom','custom-local-agent','custom-local-mcp',?,'custom','Custom',
+      'eb_custom','custom-123','managed','discovered',?,?,?)`)
+    .run(`custom-guided:${schemaKind}:${selectorKey}`, JSON.stringify({ customInstallation: {
+      kind: 'manual_mcp_client', configurationOwnership: 'user', schemaKind, selectorKey,
+    } }), T0, T0)
+  db.prepare(`INSERT INTO agent_consents(id,installation_id,policy_version,allowed_components_json,
+    allowed_scopes_json,normalized_targets_json,selector_schema_version,selector_resolution_json,
+    executable_realpaths_json,command_categories_json,maximum_risk,status,confirmed_at,created_at)
+    VALUES('consent','custom','1','["memory_tools"]','[]','[]','1','{}','[]','[]','low','active',?,?)`).run(T0,T0)
+  db.prepare("UPDATE agent_installations SET consent_envelope_id='consent'").run()
+  db.prepare(`INSERT INTO installation_components(installation_id,component_key,desired_state,delivery_mode,
+    verification_status,visibility_state,consent_envelope_id,created_at,updated_at)
+    VALUES('custom','memory_tools','managed','guided','verified','unknown','consent',?,?)`).run(T0,T0)
+  const token = 'generation-custom'
+  const environment = { EB_AGENT_ID: 'eb_custom', EB_HOST_VARIANT: 'custom-local-mcp', EB_ACTIVITY_GENERATION_TOKEN: token }
+  const configuration = JSON.parse(customMcpConfiguration(schemaKind, selectorKey, 'eb_custom', runtime, token))
+  const prepared = { componentKeys: ['memory_tools'], activityGenerationToken: token,
+    executionPlan: { activityGenerationTokenHash: sha256Json(token) },
+    adapterPlan: { requiredUserActionDetails: [{ kind: 'custom_mcp_import', operation: 'connect',
+      installationId: 'custom', agentId: 'eb_custom', hostVariant: 'custom-local-mcp', hostVersion: 'custom-123',
+      tideMindVersion: runtime.tideMindVersion, adapterVersion: '1', projectionVersion: runtime.projectionVersion,
+      command: runtime.shimPath, args: [runtime.mcpServerPath], environment,
+      connectorName: selectorKey,
+      configurationJson: JSON.stringify(configuration), connectorConfigurationHash: sha256Json(configuration),
+    }] } }
+  db.prepare(`INSERT INTO reconcile_runs(id,installation_id,operation_type,execution_plan_hash,state,recovery_strategy,
+    consent_envelope_id,adapter_version,projection_version,prepared_plan_json,created_at,updated_at)
+    VALUES('run-custom','custom','connect','hash','committed','readback_before_replay','consent','1','1',?,?,?)`)
+    .run(JSON.stringify(prepared),T0,T0)
+  const row = db.prepare("SELECT * FROM agent_installations WHERE id='custom'").get() as AgentInstallationRow
+  const record = (signalName: 'brain_recall' | 'brain_digest') => recordHostActivityEvidence(db, {
+    agentId: row.agent_id!, hostVariant: row.host_variant, componentKey: 'memory_tools', signalName,
+    tideMindVersion: runtime.tideMindVersion, activityGenerationToken: token, observedAt: T1,
+  })
+  return { db, row, record, prepared, proof: (allowAbsent = false) => currentUserOwnedCustomActivityProof(db, row, runtime, new Date(T2), allowAbsent) }
+}
+
+
+describe('0.2.93 explicit no-auth user-owned metadata boundary', () => {
+  it.each(['standard_mcp_servers', 'nested_mcp_servers', 'opencode_mcp'] as const)(
+    '%s allows an absent observation only explicitly and preserves partial/full evidence', schema => {
+      const data = userOwnedActivityFixture(schema, 'memory_bank')
+      expect(() => data.proof()).toThrow('lacks current brain_recall')
+      expect(data.proof(true)).toBeNull()
+      expect(data.record('brain_recall').status).toBe('recorded')
+      expect(() => data.proof(true)).toThrow('lacks current brain_digest')
+      expect(data.record('brain_digest').status).toBe('recorded')
+      const full = data.proof()
+      expect(data.proof(true)).toEqual(full)
+      expect(full!.evidence.map(record => record.signalName)).toEqual(['brain_recall', 'brain_digest'])
+      expect(data.db.prepare('SELECT count(*) AS n FROM agent_host_activity_evidence').get()).toEqual({ n: 2 })
+    },
+  )
+
+  it.each(['runtime', 'generation', 'connector', 'configuration', 'ownership', 'activation', 'revoked-consent', 'archived-agent'])(
+    'still rejects static %s drift with no runtime activity', drift => {
+      const data = userOwnedActivityFixture()
+      const action = data.prepared.adapterPlan.requiredUserActionDetails[0]
+      if (drift === 'runtime') action.command = '/other/runtime'
+      if (drift === 'generation') data.prepared.activityGenerationToken = 'other-generation'
+      if (drift === 'connector') action.connectorName = 'another-connector'
+      if (drift === 'configuration') action.configurationJson = '{}'
+      data.db.prepare('UPDATE reconcile_runs SET prepared_plan_json=?').run(JSON.stringify(data.prepared))
+      if (drift === 'ownership') {
+        const metadata = JSON.parse(data.row.metadata_json)
+        metadata.customInstallation.configurationOwnership = 'tidemind'
+        data.row.metadata_json = JSON.stringify(metadata)
+      }
+      if (drift === 'activation') data.db.prepare("UPDATE reconcile_runs SET state='applied_unverified'").run()
+      if (drift === 'revoked-consent') data.db.prepare("UPDATE agent_consents SET status='revoked'").run()
+      if (drift === 'archived-agent') data.db.prepare("UPDATE agents SET archived=1 WHERE id='eb_custom'").run()
+      expect(() => data.proof(true)).toThrow()
+    },
+  )
+
+  it('does not erase existing activity when its evidence has become invalid', () => {
+    const data = userOwnedActivityFixture()
+    data.record('brain_recall'); data.record('brain_digest')
+    data.db.prepare("UPDATE agent_host_activity_evidence SET evidence_hash='tampered'").run()
+    expect(() => data.proof(true)).toThrow()
+    expect(data.db.prepare('SELECT count(*) AS n FROM agent_host_activity_evidence').get()).toEqual({ n: 2 })
+  })
+
+  it.each(['manual_mcp_client', 'nonstandard_config_root', 'codex-cli:arm64:cli%3Acodex-cli'])(
+    'rejects explicit no-auth mode for the wrong target %s before output', async targetKey => {
+      const data = fixture()
+      const outputPath = path.join(data.root, 'wrong-mode.json')
+      await expect(exportAgentHostTargetMetadata({
+        targetKey, acceptanceMode: 'partial-auth-runtime-0.2.93', candidateBundleSha256: hash('candidate'),
+        sourceCommit: 'a'.repeat(40), releaseContractSha256: hash('contract'), outputPath,
+        fixture: { receipt: data.receipt, row: data.row, discovered: data.discovered,
+          liveTrustProof: hash('attestation'), physicalDistribution: data.physicalDistribution,
+          osVersion: '15.6.1', hostIdentitySha256: hash('anonymous-host') },
+      })).rejects.toThrow('no-auth metadata mode is restricted')
+      expect(fs.existsSync(outputPath)).toBe(false)
+    },
+  )
+
+  it.each(['standard_mcp_servers', 'nested_mcp_servers', 'opencode_mcp'] as const)(
+    'exports zero-activity %s through real SQLite without promoting a fixture to real evidence', async schemaKind => {
+      const data = userOwnedActivityFixture(schemaKind, 'memory_bank')
+      const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'custom-no-auth-export-'))); roots.push(root)
+      const executable = path.join(root, 'client')
+      fs.writeFileSync(executable, 'fixture client; never executed', { mode: 0o700 })
+      const proof = await readStableFileFingerprint(executable, 1024)
+      const metadata = JSON.parse(data.row.metadata_json)
+      metadata.customInstallation.executableFingerprint = proof.fingerprint
+      metadata.componentConfigFiles = {}
+      metadata.distribution = { distributionId: 'custom-fixture', packageProvenance: 'user_selected_local_executable' }
+      data.db.prepare('UPDATE agent_installations SET config_root=?, executable_path=?, metadata_json=?')
+        .run(root, executable, JSON.stringify(metadata))
+      const databasePath = path.join(root, 'brain.sqlite'); await data.db.backup(databasePath)
+      vi.spyOn(productionService, 'metadataEvidenceRuntimeContext').mockReturnValue(runtime)
+      vi.spyOn(productionService, 'createProductionAgentHostMetadataEvidenceRuntime').mockReturnValue({
+        scan: async () => { throw new Error('must not scan unrelated hosts') },
+        attest: async () => null, attestCustom: async () => sha256Json('trust-fixture'),
+        inspectCliVersion: async () => ({ exitCode: 1, stdout: '', stderr: '' }),
+        readExecutable: () => readStableFileFingerprint(executable, 1024),
+        inspect: async () => ({ catalogId: 'custom-local-mcp', detected: true, components: [], provenance: [], diagnostics: [] }),
+      })
+      const sourceCommit = 'a'.repeat(40); vi.stubGlobal('__TIDEMIND_BUNDLED_SOURCE_COMMIT__', sourceCommit)
+      const releaseContractSha256 = hash(JSON.stringify({
+        version: manifest.appVersion, schemaVersion: manifest.schemaVersion, entries: manifest.entries,
+        customEnabled: manifest.features.customLocalAgent.enabledByDefault, customModes: manifest.features.customLocalAgent.modes,
+      }))
+      const architecture = process.arch === 'x64' ? 'x64' : 'arm64'
+      const options = {
+        targetKey: `manual_mcp_client:${schemaKind}:memory_bank`, candidateBundleSha256: hash('candidate'),
+        sourceCommit, releaseContractSha256, databasePath, homeDir: root, now: () => new Date(T2),
+        customHostFixture: { executionEnvironment: { processArchitecture: architecture,
+          hardwareArchitecture: architecture === 'x64' ? 'x86_64' as const : 'arm64' as const,
+          translationMode: 'not_translated' as const }, osVersion: '15.0.0', hostIdentitySha256: hash('fixture-host') },
+      }
+      const defaultOutput = path.join(root, 'default.json')
+      await expect(exportAgentHostTargetMetadata({ ...options, outputPath: defaultOutput }))
+        .rejects.toThrow('lacks current brain_recall')
+      expect(fs.existsSync(defaultOutput)).toBe(false)
+      const outputPath = path.join(root, 'partial.json')
+      await exportAgentHostTargetMetadata({ ...options, outputPath, acceptanceMode: 'partial-auth-runtime-0.2.93' })
+      const output = JSON.parse(fs.readFileSync(outputPath, 'utf8'))
+      expect(output.evidenceClass).toBe('fixture')
+      expect(output.targetMetadata.customBinding).toMatchObject({ configurationOwnership: 'user', activityBinding: null })
+      fs.writeFileSync(executable, 'tampered fixture executable', { mode: 0o700 })
+      const tamperedOutput = path.join(root, 'tampered.json')
+      await expect(exportAgentHostTargetMetadata({ ...options, outputPath: tamperedOutput, acceptanceMode: 'partial-auth-runtime-0.2.93' }))
+        .rejects.toThrow('no longer matches its approved physical identity')
+      expect(fs.existsSync(tamperedOutput)).toBe(false)
+    },
+  )
 })

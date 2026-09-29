@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { load as loadYaml } from 'js-yaml';
 import { readReleaseWorkflow } from '../helpers/release-workflow';
 
 // The release script is intentionally plain Node ESM so it can run without a build step.
@@ -12,6 +13,10 @@ import {
   classifyReleaseTagPreflight,
   assertExactSnapshot,
   assertReleaseBypassesAllowed,
+  assertPartialAuthReleaseOptions,
+  assertPartialReleaseBinding,
+  assertPartialReleaseNotes,
+  releaseTagArguments,
   assertRequestedVersion,
   assertSigningKeyMatchesEmbeddedPublicKey,
   commandToString,
@@ -77,6 +82,45 @@ describe('release script helpers', () => {
       timeoutMinutes: 7,
       help: false,
     });
+  });
+
+  it('requires a complete, explicit, version-scoped partial auth release request', () => {
+    const inputs = ['--partial-auth-report', '/tmp/report.json', '--candidate-artifact-zip', '/tmp/artifact.zip',
+      '--candidate-upload-receipt-zip', '/tmp/receipt.zip', '--candidate-performance-zip', '/tmp/performance.zip'];
+    const opts = parseArgs(inputs);
+    expect(assertPartialAuthReleaseOptions('0.2.93', opts)).toBe(true);
+    expect(assertPartialAuthReleaseOptions('0.2.93', parseArgs([]))).toBe(false);
+    for (const version of ['0.2.92', '0.2.94']) {
+      expect(() => assertPartialAuthReleaseOptions(version, opts)).toThrow('0.2.93');
+    }
+    expect(() => assertPartialAuthReleaseOptions('0.2.93', parseArgs(inputs.slice(0, 2)))).toThrow('all four');
+    for (const incompatible of [['--prepare-candidate'], ['--agent-host-evidence', '/tmp/index.json'],
+      ['--agent-host-candidate-app-arm64', '/tmp/RC.app']]) {
+      expect(() => assertPartialAuthReleaseOptions('0.2.93', parseArgs([...inputs, ...incompatible]))).toThrow('cannot be combined');
+    }
+    expect(() => assertReleaseBypassesAllowed('0.2.93', { ...opts, skipHealth: true })).toThrow('--skip-health');
+    expect(() => assertReleaseBypassesAllowed('0.2.93', { ...opts, allowUnsigned: true })).toThrow('--allow-unsigned');
+  });
+
+  it('rejects metadata-only results and changed evidence or disclosure across release stages', () => {
+    const notes = Buffer.from('0.2.93 reviewed disclosure');
+    const binding = { status: 'eligible_under_0.2.93_auth_runtime_exception', appVersion: '0.2.93', physicalVerified: true,
+      fullHostAcceptance: false, sourceCommit: 'a'.repeat(40), candidateBundleSha256: 'b'.repeat(64),
+      reportBodySha256: 'c'.repeat(64), evidenceManifestSha256: 'd'.repeat(64), releaseNotesSha256: crypto.createHash('sha256').update(notes).digest('hex') };
+    expect(() => assertPartialReleaseBinding(binding, { ...binding })).not.toThrow();
+    for (const key of ['sourceCommit', 'candidateBundleSha256', 'reportBodySha256', 'evidenceManifestSha256', 'releaseNotesSha256']) {
+      expect(() => assertPartialReleaseBinding(binding, { ...binding, [key]: 'e'.repeat(64) })).toThrow('changed');
+    }
+    expect(() => assertPartialReleaseBinding(binding, { ...binding, physicalVerified: false })).toThrow('physical');
+    expect(() => assertPartialReleaseNotes(binding, notes)).not.toThrow();
+    expect(() => assertPartialReleaseNotes(binding, Buffer.from('different disclosure'))).toThrow('disclosure');
+  });
+
+  it('uses an explicit annotated tag only for the authorized partial release', () => {
+    expect(releaseTagArguments('v0.2.93', false)).toEqual(['tag', 'v0.2.93']);
+    expect(releaseTagArguments('v0.2.93', true)).toEqual(['tag', '-a', 'v0.2.93', '-m',
+      'Release v0.2.93\n\nTideMind-Acceptance: partial-auth-runtime-0.2.93']);
+    expect(() => releaseTagArguments('v0.2.94', true)).toThrow('v0.2.93');
   });
 
   it('handles help as parsed state instead of exiting during import or tests', () => {
@@ -240,9 +284,15 @@ describe('release script helpers', () => {
     expect(workflow).toContain('[ "$GITHUB_REF" = refs/heads/main ]');
     expect(workflow).toContain('elif [ "$GITHUB_EVENT_NAME" = push ]; then');
     expect(workflow).toContain('[[ "$GITHUB_REF" == refs/tags/v* ]]');
-    expect(workflow).toContain('build-mac:\n    needs: admit-source');
+    const jobs = (loadYaml(workflow) as { jobs: Record<string, { needs: string | string[]; if: string; permissions?: Record<string, string> }> }).jobs;
+    expect(jobs['build-mac'].needs).toBe('admit-source');
+    expect(jobs['build-mac'].if).toBe("needs.admit-source.outputs.partial_auth_runtime != 'true'");
     expect(workflow).toContain('permissions:\n  contents: read');
-    expect(workflow).toContain('publish-draft:\n    if: github.event_name == \'push\'\n    needs: build-mac\n    permissions:\n      contents: write');
+    expect(jobs['publish-draft'].needs).toEqual(['admit-source', 'build-mac']);
+    expect(jobs['publish-draft'].if).toBe("github.event_name == 'push' && needs.admit-source.outputs.partial_auth_runtime != 'true'");
+    expect(jobs['publish-draft'].permissions?.contents).toBe('write');
+    expect(jobs['partial-auth-runtime-release'].needs).toBe('admit-source');
+    expect(jobs['partial-auth-runtime-release'].if).toBe("needs.admit-source.outputs.partial_auth_runtime == 'true'");
     expect(workflowHostGate).toBeGreaterThan(0);
     expect(workflowGate).toBeGreaterThan(workflowHostGate);
     expect(clientBuild).toBeGreaterThan(workflowGate);

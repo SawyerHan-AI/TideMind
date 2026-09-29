@@ -41,6 +41,7 @@ import {
 } from '../../client/electron/agent-integration/production-service'
 import {
   inspectPassiveCliVersion,
+  inspectPassiveCliVersionForArchitecture,
   kimiNativeExecutablePortableArtifactFingerprint,
   normalizedQwenLauncherBytes,
   readStableFileFingerprint,
@@ -227,6 +228,23 @@ function physicalDiscoveryFileSystem(): DiscoveryDependencies['fs'] {
   }
 }
 
+/** Complete physical npm topology; fixture executables are never invoked. */
+function writeCodexPlatformFixture(packageJson: string, version = '1.2.3'): void {
+  const architecture = process.arch === 'x64' ? 'x64' : 'arm64'
+  const packageRoot = path.dirname(packageJson)
+  const componentRoot = path.join(packageRoot, 'node_modules', '@openai', `codex-darwin-${architecture}`)
+  const triple = architecture === 'x64' ? 'x86_64-apple-darwin' : 'aarch64-apple-darwin'
+  const native = path.join(componentRoot, 'vendor', triple, 'bin', 'codex')
+  fs.mkdirSync(path.dirname(native), { recursive: true, mode: 0o700 })
+  fs.writeFileSync(native, 'isolated native fixture; never executed\n', { mode: 0o755 })
+  fs.writeFileSync(path.join(componentRoot, 'package.json'), JSON.stringify({
+    name: '@openai/codex', version: `${version}-darwin-${architecture}`, os: ['darwin'], cpu: [architecture],
+  }), { mode: 0o600 })
+  fs.writeFileSync(packageJson, JSON.stringify({
+    name: '@openai/codex', version, bin: { codex: 'bin/codex.js' },
+  }), { mode: 0o600 })
+}
+
 function cliPostMetadataBarrierFixture(kind: 'npm' | 'qwen') {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `agent-cli-final-cas-${kind}-`)))
   const home = path.join(root, 'home')
@@ -265,6 +283,7 @@ function cliPostMetadataBarrierFixture(kind: 'npm' | 'qwen') {
     fs.writeFileSync(executable, '#!/usr/bin/env node\n', { mode: 0o700 })
   }
   fs.writeFileSync(packageJson, JSON.stringify({ name: packageName, version: '1.2.3' }), { mode: 0o600 })
+  if (kind === 'npm') writeCodexPlatformFixture(packageJson)
   const fileSystem = {
     ...physicalDiscoveryFileSystem(),
     readStableFileSnapshot,
@@ -292,12 +311,9 @@ function cliPostMetadataBarrierFixture(kind: 'npm' | 'qwen') {
       const result = await inspectPassiveCliVersion(targetPath, fileSystem)
       if (armed) {
         armedMetadataCalls += 1
-        // Owned-package surfaces are read once and finish with a synchronous
-        // exact-tree CAS. Legacy manifest-only npm fixtures retain the older
-        // two-read barrier. Mutate after the relevant completed metadata read,
-        // never by relying on an unrelated internal package-tree call count.
-        if ((kind === 'qwen' && armedMetadataCalls === 1)
-          || (kind === 'npm' && armedMetadataCalls === 2)) {
+        // Both fixtures now have complete owned-package proof. Mutate after
+        // its final metadata snapshot, immediately before synchronous tree CAS.
+        if (armedMetadataCalls === 1) {
           armed = false
           mutateLastProofNode()
         }
@@ -908,7 +924,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     const packageRoot = packageName.startsWith('@')
       ? path.join(root, 'node_modules', ...packageName.split('/'))
       : path.join(root, 'node_modules', packageName)
-    const executable = path.join(packageRoot, 'bin', command)
+    const executable = path.join(packageRoot, 'bin', `${command}.exe`)
     fs.mkdirSync(path.dirname(executable), { recursive: true, mode: 0o700 })
     fs.mkdirSync(path.join(home, '.config', 'opencode'), { recursive: true, mode: 0o700 })
     fs.mkdirSync(appData, { recursive: true, mode: 0o700 })
@@ -924,6 +940,26 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       name: packageName,
       version: '1.2.3',
     }), { mode: 0o600 })
+    const architecture = process.arch === 'x64' ? 'x64' : 'arm64'
+    const leafBase = packageName === 'opencode-ai'
+      ? `opencode-darwin-${architecture}` : `@opencode-ai/cli-darwin-${architecture}`
+    for (const leafName of architecture === 'x64' ? [leafBase, `${leafBase}-baseline`] : [leafBase]) {
+      const leafRoot = path.join(packageRoot, 'node_modules', ...leafName.split('/'))
+      const native = path.join(leafRoot, 'bin', command)
+      fs.mkdirSync(path.dirname(native), { recursive: true, mode: 0o700 })
+      fs.copyFileSync(executable, native)
+      if (packageName === '@opencode-ai/cli' && leafName.endsWith('-baseline')) {
+        // V2 installs distinct modern/baseline binaries; the root executable
+        // must match exactly one leaf. V1 intentionally requires both copies.
+        const baselineFd = fs.openSync(native, 'r+')
+        try { fs.writeSync(baselineFd, Buffer.from([1]), 0, 1, 20 * 1024 * 1024 - 1) }
+        finally { fs.closeSync(baselineFd) }
+      }
+      fs.chmodSync(native, 0o700)
+      fs.writeFileSync(path.join(leafRoot, 'package.json'), JSON.stringify({
+        name: leafName, version: '1.2.3', os: ['darwin'], cpu: [architecture],
+      }), { mode: 0o600 })
+    }
     const db = new Database(':memory:')
     ensureSchema(db)
     const fake = adapter(home, catalogId)
@@ -938,20 +974,11 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     }])
     const fingerprintReads: string[] = []
     const fileSystem = {
-      lstat: async (targetPath: string) => {
-        try {
-          const stat = fs.lstatSync(targetPath)
-          return { kind: stat.isSymbolicLink() ? 'symbolic_link' as const : stat.isFile() ? 'file' as const : stat.isDirectory() ? 'directory' as const : 'other' as const }
-        } catch { return undefined }
-      },
-      realpath: async (targetPath: string) => fs.realpathSync(targetPath),
-      readTextFile: async (targetPath: string, maxBytes: number) => fs.readFileSync(targetPath, 'utf8').slice(0, maxBytes),
-      readStableFileSnapshot,
+      ...physicalDiscoveryFileSystem(),
       readStableFileFingerprint: async (targetPath: string, maxBytes: number) => {
         fingerprintReads.push(targetPath)
         return readStableFileFingerprint(targetPath, maxBytes)
       },
-      readStableFileMetadata,
     }
     const composition = createProductionAgentIntegrationComposition(db, {
       homeDir: home,
@@ -1103,13 +1130,130 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     }
   })
 
+  async function composedNpmLiveTrustFixture(layout: 'sibling' | 'nested') {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-live-composed-npm-')))
+    const architecture = process.arch === 'x64' ? 'x64' : 'arm64'
+    const triple = architecture === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin'
+    const nodeModules = path.join(root, 'node_modules')
+    const packageRoot = path.join(nodeModules, '@openai', 'codex')
+    const componentRoot = layout === 'nested'
+      ? path.join(packageRoot, 'node_modules', '@openai', `codex-darwin-${architecture}`)
+      : path.join(nodeModules, '@openai', `codex-darwin-${architecture}`)
+    const executable = path.join(packageRoot, 'bin', 'codex.js')
+    const rootPayload = path.join(packageRoot, 'lib', 'root-owned.js')
+    const native = path.join(componentRoot, 'vendor', triple, 'bin', 'codex')
+    const componentPayload = path.join(componentRoot, 'lib', 'payload.js')
+    const componentAlias = path.join(componentRoot, 'lib', 'local-alias.js')
+    for (const file of [executable, rootPayload, native, componentPayload]) {
+      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    }
+    fs.writeFileSync(executable, '#!/usr/bin/env node\n// isolated wrapper fixture; never executed\n', { mode: 0o755 })
+    fs.writeFileSync(rootPayload, 'export const root = true\n', { mode: 0o600 })
+    fs.writeFileSync(native, 'isolated native fixture; never executed\n', { mode: 0o755 })
+    fs.writeFileSync(componentPayload, 'export const payload = true\n', { mode: 0o600 })
+    fs.symlinkSync('payload.js', componentAlias)
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
+      name: '@openai/codex', version: '0.156.1', bin: { codex: 'bin/codex.js' },
+    }), { mode: 0o600 })
+    fs.writeFileSync(path.join(componentRoot, 'package.json'), JSON.stringify({
+      name: '@openai/codex', version: `0.156.1-darwin-${architecture}`, os: ['darwin'], cpu: [architecture],
+    }), { mode: 0o600 })
+    // Full-path locale ordering differs from DFS order for a/file and a.txt.
+    // Both owned trees must compare normalized path sets, not traversal order.
+    for (const ownedRoot of [packageRoot, componentRoot]) {
+      fs.mkdirSync(path.join(ownedRoot, 'a'), { mode: 0o700 })
+      fs.writeFileSync(path.join(ownedRoot, 'a', 'file'), 'nested owned file\n', { mode: 0o600 })
+      fs.writeFileSync(path.join(ownedRoot, 'a.txt'), 'sibling owned file\n', { mode: 0o600 })
+    }
+    const db = new Database(':memory:')
+    ensureSchema(db)
+    const repository = new AgentIntegrationRepository(db)
+    const fileSystem = physicalDiscoveryFileSystem()
+    const inspect = () => inspectPassiveCliVersionForArchitecture(executable, fileSystem, architecture)
+    try {
+      const metadata = await inspect()
+      expect(metadata.portableArtifactFingerprint).toMatch(/^[a-f0-9]{64}$/u)
+      expect(metadata.packageProofNodes).toContainEqual(expect.objectContaining({
+        role: 'npm_component_manifest', path: path.join(componentRoot, 'package.json'), entryType: 'file',
+      }))
+      expect(metadata.packageProofNodes).toContainEqual(expect.objectContaining({
+        path: componentAlias, entryType: 'symlink', symlinkTarget: 'payload.js',
+      }))
+      repository.upsertDiscoveredInstallation({
+        id: 'composed-codex', family: 'codex', hostVariant: 'codex-cli', installKey: `codex:${layout}`,
+        distributionId: 'cli:codex-cli', provenance: 'fixture', osUserIdentity: 'usr_fixture_1234',
+        displayName: 'Composed Codex fixture', configRoot: path.join(root, '.codex'), executablePath: executable,
+        detectedVersion: '0.156.1', agentId: 'agent-composed-codex', supportedCapability: 4,
+        lastDetectedAt: '2026-09-29T00:00:00.000Z', metadata: {
+          managementEligibility: freshCliManagementEligibility(fs.statSync(executable).size),
+          distribution: {
+            distributionId: 'cli:codex-cli', executableRealpath: executable,
+            packageProvenance: 'npm_metadata:@openai/codex',
+            portableArtifactFingerprint: metadata.portableArtifactFingerprint,
+          },
+        },
+      })
+      let afterFrozenMetadata: (() => void) | undefined
+      const attest = createProductionLiveTrustAttestor({
+        fs: fileSystem,
+        which: async () => undefined,
+        execVersion: async () => {
+          const frozen = await inspect()
+          // A real filesystem mutation after the final awaited package snapshot
+          // forces the production synchronous tree/CAS boundary to reject it.
+          afterFrozenMetadata?.()
+          afterFrozenMetadata = undefined
+          return frozen
+        },
+      })
+      return {
+        root, packageRoot, componentRoot, componentPayload, componentAlias, rootPayload,
+        attest: () => attest(repository.getInstallation('composed-codex')!),
+        mutateAfterMetadata: (mutation: () => void) => { afterFrozenMetadata = mutation },
+        close: () => { db.close(); fs.rmSync(root, { recursive: true, force: true }) },
+      }
+    } catch (error) {
+      db.close()
+      fs.rmSync(root, { recursive: true, force: true })
+      throw error
+    }
+  }
+
+  it.each(['sibling', 'nested'] as const)(
+    'accepts live npm composed trust for the %s platform package and its own relative symlink', async (layout) => {
+      const fixture = await composedNpmLiveTrustFixture(layout)
+      try { expect(await fixture.attest()).toMatch(/^[a-f0-9]{64}$/u) } finally { fixture.close() }
+    },
+  )
+
+  it.each((['sibling', 'nested'] as const).flatMap(layout => (
+    ['tamper', 'add', 'delete', 'cross-package-symlink'].map(mutation => ({ layout, mutation }))
+  )))(
+    'rejects $mutation after the final snapshot in the $layout platform package', async ({ layout, mutation }) => {
+      const fixture = await composedNpmLiveTrustFixture(layout)
+      try {
+        expect(await fixture.attest()).toMatch(/^[a-f0-9]{64}$/u)
+        fixture.mutateAfterMetadata(() => {
+          if (mutation === 'tamper') fs.writeFileSync(fixture.componentPayload, 'export const payload = false\n')
+          else if (mutation === 'add') fs.writeFileSync(path.join(fixture.componentRoot, 'injected.js'), 'injected\n')
+          else if (mutation === 'delete') fs.unlinkSync(fixture.componentPayload)
+          else {
+            fs.unlinkSync(fixture.componentAlias)
+            fs.symlinkSync(path.relative(path.dirname(fixture.componentAlias), fixture.rootPayload), fixture.componentAlias)
+          }
+        })
+        expect(await fixture.attest()).toBeNull()
+      } finally { fixture.close() }
+    },
+  )
+
   it('binds an official npm CLI to the exact canonical manifest and fails closed when it changes or disappears', async () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-live-npm-proof-')))
     const executable = path.join(root, 'node_modules', '@openai', 'codex', 'bin', 'codex.js')
     const packageJson = path.join(root, 'node_modules', '@openai', 'codex', 'package.json')
     fs.mkdirSync(path.dirname(executable), { recursive: true, mode: 0o700 })
     fs.writeFileSync(executable, '#!/usr/bin/env node\n', { mode: 0o700 })
-    fs.writeFileSync(packageJson, JSON.stringify({ name: '@openai/codex', version: '1.2.3' }), { mode: 0o600 })
+    writeCodexPlatformFixture(packageJson)
     const db = new Database(':memory:')
     ensureSchema(db)
     const repository = new AgentIntegrationRepository(db)
@@ -1136,18 +1280,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
         },
       },
     })
-    const fileSystem = {
-      lstat: async (targetPath: string) => {
-        try {
-          const stat = fs.lstatSync(targetPath)
-          return { kind: stat.isSymbolicLink() ? 'symbolic_link' as const : stat.isFile() ? 'file' as const : stat.isDirectory() ? 'directory' as const : 'other' as const }
-        } catch { return undefined }
-      },
-      realpath: async (targetPath: string) => fs.realpathSync(targetPath),
-      readTextFile: async (targetPath: string, maxBytes: number) => fs.readFileSync(targetPath, 'utf8').slice(0, maxBytes),
-      readStableFileSnapshot,
-      readStableFileFingerprint,
-    }
+    const fileSystem = physicalDiscoveryFileSystem()
     const attest = createProductionLiveTrustAttestor({
       fs: fileSystem,
       which: async () => undefined,
@@ -1172,7 +1305,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       expect(await attest(row)).toMatch(/^[a-f0-9]{64}$/)
       expect(await attest(row)).not.toBe(first)
 
-      fs.writeFileSync(packageJson, JSON.stringify({ name: '@openai/codex', version: '1.2.4' }), { mode: 0o600 })
+      writeCodexPlatformFixture(packageJson, '1.2.4')
       expect(await attest(row)).not.toBe(first)
 
       fs.unlinkSync(packageJson)
@@ -1623,7 +1756,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     const packageJson = path.join(root, 'node_modules', '@openai', 'codex', 'package.json')
     fs.mkdirSync(path.dirname(executable), { recursive: true, mode: 0o700 })
     fs.writeFileSync(executable, '#!/usr/bin/env node\n', { mode: 0o700 })
-    fs.writeFileSync(packageJson, JSON.stringify({ name: '@openai/codex', version: '1.2.3' }), { mode: 0o600 })
+    writeCodexPlatformFixture(packageJson)
     const db = new Database(':memory:')
     ensureSchema(db)
     const repository = new AgentIntegrationRepository(db)
@@ -1642,18 +1775,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
         },
       },
     })
-    const fileSystem = {
-      lstat: async (targetPath: string) => {
-        try {
-          const stat = fs.lstatSync(targetPath)
-          return { kind: stat.isSymbolicLink() ? 'symbolic_link' as const : stat.isFile() ? 'file' as const : stat.isDirectory() ? 'directory' as const : 'other' as const }
-        } catch { return undefined }
-      },
-      realpath: async (targetPath: string) => fs.realpathSync(targetPath),
-      readTextFile: async (targetPath: string, maxBytes: number) => fs.readFileSync(targetPath, 'utf8').slice(0, maxBytes),
-      readStableFileSnapshot,
-      readStableFileFingerprint,
-    }
+    const fileSystem = physicalDiscoveryFileSystem()
     let replaceDuringProof: 'executable' | 'manifest' | null = 'executable'
     const attest = createProductionLiveTrustAttestor({
       fs: fileSystem,
@@ -1667,7 +1789,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
           fs.renameSync(replacement, executable)
         } else if (replaceDuringProof === 'manifest') {
           replaceDuringProof = null
-          fs.writeFileSync(packageJson, JSON.stringify({ name: '@openai/codex', version: '1.2.4' }), { mode: 0o600 })
+          writeCodexPlatformFixture(packageJson, '1.2.4')
         }
         return result
       },

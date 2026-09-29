@@ -1,10 +1,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-export function resolveReleaseWorkflowPath(repoRoot: string): string {
+export function resolveReleaseWorkflowPath(repoRoot: string, workflowName: 'release.yml' | 'host-no-auth-acceptance.yml' = 'release.yml'): string {
   const candidates = [
-    path.join(repoRoot, 'oss-release', '.github', 'workflows', 'release.yml'),
-    path.join(repoRoot, '.github', 'workflows', 'release.yml'),
+    path.join(repoRoot, 'oss-release', '.github', 'workflows', workflowName),
+    path.join(repoRoot, '.github', 'workflows', workflowName),
   ]
   const existing = candidates.filter((candidate) => fs.existsSync(candidate))
   if (existing.length === 0) {
@@ -21,6 +21,6 @@ export function resolveReleaseWorkflowPath(repoRoot: string): string {
   return workflowPath
 }
 
-export function readReleaseWorkflow(repoRoot: string): string {
-  return fs.readFileSync(resolveReleaseWorkflowPath(repoRoot), 'utf8')
+export function readReleaseWorkflow(repoRoot: string, workflowName: 'release.yml' | 'host-no-auth-acceptance.yml' = 'release.yml'): string {
+  return fs.readFileSync(resolveReleaseWorkflowPath(repoRoot, workflowName), 'utf8')
 }

@@ -404,7 +404,7 @@ export function distributionArtifactReceiptSha256(receipt) {
   return sha256Bytes(Buffer.from(JSON.stringify(receipt)))
 }
 
-function validateDistribution(raw, label, acceptedDistributions, acceptedArtifacts, hostVersion, architecture, allowMissingReceipt = false) {
+export function validateDistribution(raw, label, acceptedDistributions, acceptedArtifacts, hostVersion, architecture, allowMissingReceipt = false) {
   const distribution = record(raw, `${label} distribution`)
   exactKeys(distribution, [
     'distributionId', 'packageProvenance', 'artifactReceiptSha256', 'portableArtifactFingerprint',

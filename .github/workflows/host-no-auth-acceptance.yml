@@ -1,0 +1,234 @@
+name: Signed host no-auth observations
+run-name: No-auth observations for candidate ${{ inputs.candidate_run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: Successful Release candidate workflow run ID
+        type: string
+        required: true
+      artifact_id:
+        description: Immutable mac-rc candidate artifact ID
+        type: string
+        required: true
+      artifact_digest:
+        description: Candidate artifact SHA-256 (64 lowercase hex characters)
+        type: string
+        required: true
+      source_commit:
+        description: Exact private source SHA recorded by this synchronized main commit
+        type: string
+        required: true
+      capture_nonce:
+        description: Nonce from the pending acceptance capture (64 lowercase hex characters)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  observe:
+    if: github.repository == 'SawyerHan-AI/TideMind' && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        catalog_id: [codex-desktop, claude-cowork-local, claude-desktop-legacy]
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      OBSERVED_CATALOG_ID: ${{ matrix.catalog_id }}
+    steps:
+      - name: Verify native isolated hosted runner
+        run: |
+          set -euo pipefail
+          [ "$RUNNER_ENVIRONMENT" = github-hosted ]
+          [ "$RUNNER_OS" = macOS ]
+          [ "$RUNNER_ARCH" = ARM64 ]
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      # Only built-in Node/Git and GitHub API calls run before provenance admission.
+      - name: Admit exact candidate and download immutable artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          CANDIDATE_ARTIFACT_ID: ${{ inputs.artifact_id }}
+          CANDIDATE_ARTIFACT_DIGEST: ${{ inputs.artifact_digest }}
+          REQUESTED_SOURCE: ${{ inputs.source_commit }}
+          CAPTURE_NONCE: ${{ inputs.capture_nonce }}
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs'), crypto = require('node:crypto')
+          const { execFileSync } = require('node:child_process')
+          const e = process.env
+          for (const key of ['CANDIDATE_RUN_ID', 'CANDIDATE_ARTIFACT_ID']) {
+            if (!/^[1-9][0-9]*$/.test(e[key] || '')) throw new Error('invalid numeric candidate identity')
+          }
+          for (const key of ['CANDIDATE_ARTIFACT_DIGEST', 'CAPTURE_NONCE']) {
+            if (!/^[a-f0-9]{64}$/.test(e[key] || '')) throw new Error('invalid candidate digest/capture nonce')
+          }
+          if (!/^[a-f0-9]{40}$/.test(e.REQUESTED_SOURCE || '') || !/^[a-f0-9]{40}$/.test(e.GITHUB_SHA || '')
+            || e.GITHUB_EVENT_NAME !== 'workflow_dispatch' || e.GITHUB_REF !== 'refs/heads/main'
+            || e.GITHUB_REPOSITORY !== 'SawyerHan-AI/TideMind') throw new Error('invalid source scope')
+          const trailer = execFileSync('git', ['log', '-1', '--format=%(trailers:key=TideMind-Source-Commit,valueonly)'], { encoding: 'utf8' }).trim()
+          if (trailer !== e.REQUESTED_SOURCE) throw new Error('source trailer mismatch')
+          const api = endpoint => JSON.parse(execFileSync('gh', ['api', endpoint], { encoding: 'utf8' }))
+          const base = 'repos/SawyerHan-AI/TideMind/actions'
+          const run = api(base + '/runs/' + e.CANDIDATE_RUN_ID)
+          if (String(run.id) !== e.CANDIDATE_RUN_ID || run.head_sha !== e.GITHUB_SHA || run.head_branch !== 'main'
+            || run.event !== 'workflow_dispatch' || run.status !== 'completed' || run.conclusion !== 'success'
+            || run.path !== '.github/workflows/release.yml' || !Number.isSafeInteger(run.run_attempt) || run.run_attempt < 1) {
+            throw new Error('candidate run does not match this exact workflow source')
+          }
+          const artifact = api(base + '/artifacts/' + e.CANDIDATE_ARTIFACT_ID)
+          if (String(artifact.id) !== e.CANDIDATE_ARTIFACT_ID || artifact.expired !== false
+            || artifact.name !== 'mac-rc-arm64-' + e.REQUESTED_SOURCE + '-' + e.CANDIDATE_RUN_ID + '-' + run.run_attempt
+            || artifact.digest !== 'sha256:' + e.CANDIDATE_ARTIFACT_DIGEST
+            || String(artifact.workflow_run?.id) !== e.CANDIDATE_RUN_ID
+            || artifact.workflow_run?.head_sha !== e.GITHUB_SHA) throw new Error('candidate artifact provenance mismatch')
+          const file = e.RUNNER_TEMP + '/host-candidate-artifact.zip'
+          const fd = fs.openSync(file, 'wx', 0o600)
+          try { execFileSync('gh', ['api', base + '/artifacts/' + e.CANDIDATE_ARTIFACT_ID + '/zip'], { stdio: ['ignore', fd, 'inherit'] }) }
+          finally { fs.closeSync(fd) }
+          const digest = crypto.createHash('sha256'), input = fs.openSync(file, 'r'), buffer = Buffer.alloc(1024 * 1024)
+          try { let size; while ((size = fs.readSync(input, buffer, 0, buffer.length, null)) > 0) digest.update(buffer.subarray(0, size)) }
+          finally { fs.closeSync(input) }
+          if (digest.digest('hex') !== e.CANDIDATE_ARTIFACT_DIGEST) throw new Error('downloaded candidate bytes mismatch')
+          fs.writeFileSync(e.RUNNER_TEMP + '/host-candidate-api-binding.json', JSON.stringify({
+            sourceCommit: e.REQUESTED_SOURCE, publicCommit: e.GITHUB_SHA, runId: run.id, runAttempt: run.run_attempt,
+            artifactId: artifact.id, artifactDigest: e.CANDIDATE_ARTIFACT_DIGEST, captureNonce: e.CAPTURE_NONCE,
+          }, null, 2), { flag: 'wx', mode: 0o600 })
+          NODE
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install locked preparation and observation tools
+        run: |
+          npm ci
+          npm run build
+          test -f scripts/run-signed-host-no-auth.mjs
+          test -f scripts/prepare-host-no-auth-samples.mjs
+      - name: Stage and physically verify original signed candidate
+        env:
+          CANDIDATE_ARTIFACT_DIGEST: ${{ inputs.artifact_digest }}
+          REQUESTED_SOURCE: ${{ inputs.source_commit }}
+        run: |
+          node scripts/stage-signed-host-acceptance.mjs \
+            --artifact-zip "$RUNNER_TEMP/host-candidate-artifact.zip" \
+            --artifact-digest "$CANDIDATE_ARTIFACT_DIGEST" \
+            --source-commit "$REQUESTED_SOURCE" --stage "$RUNNER_TEMP/host-candidate-stage"
+      - name: Prepare reviewed frozen desktop samples without launching them
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs'), path = require('node:path')
+          const requested = path.join(process.env.RUNNER_TEMP, 'host-no-auth-workspace')
+          fs.mkdirSync(requested, { mode: 0o700 })
+          const workspace = fs.realpathSync(requested)
+          if (workspace.includes('\n') || workspace.includes('\r')) throw new Error('invalid workspace')
+          fs.appendFileSync(process.env.GITHUB_ENV, 'HOST_NO_AUTH_WORKSPACE=' + workspace + '\n')
+          NODE
+          workspace="$(node -p "require('node:fs').realpathSync(process.env.RUNNER_TEMP + '/host-no-auth-workspace')")"
+          node scripts/prepare-host-no-auth-samples.mjs \
+            --workspace "$workspace" \
+            --output "$workspace/host-no-auth-samples.json" --catalog-id "$OBSERVED_CATALOG_ID"
+      - name: Observe fixed desktop targets with no workflow credentials
+        env:
+          REQUESTED_SOURCE: ${{ inputs.source_commit }}
+          CAPTURE_NONCE: ${{ inputs.capture_nonce }}
+        run: |
+          node --input-type=module - <<'NODE'
+          import fs from 'node:fs'
+          import path from 'node:path'
+          import { spawnSync } from 'node:child_process'
+          import { loadAgentHostAcceptanceRequirements } from './scripts/verify-agent-integration-host-acceptance.mjs'
+          const base = process.env.RUNNER_TEMP
+          const staged = JSON.parse(fs.readFileSync(base + '/host-candidate-stage/candidate-identity.json'))
+          const workspace = process.env.HOST_NO_AUTH_WORKSPACE
+          if (!workspace || fs.realpathSync(workspace) !== workspace) throw new Error('workspace is not canonical')
+          const samples = JSON.parse(fs.readFileSync(path.join(workspace, 'host-no-auth-samples.json')))
+          if (samples.workspace !== workspace) throw new Error('sample workspace mismatch')
+          const allowed = ['claude-cowork-local', 'claude-desktop-legacy', 'codex-desktop']
+          if (!allowed.includes(process.env.OBSERVED_CATALOG_ID)) throw new Error('unreviewed matrix target')
+          const expected = [process.env.OBSERVED_CATALOG_ID]
+          if (!Array.isArray(samples.targets) || JSON.stringify(samples.targets.map(t => t.catalogId).sort()) !== JSON.stringify(expected)) {
+            throw new Error('sample target scope differs from the reviewed three desktop targets')
+          }
+          const requirements = loadAgentHostAcceptanceRequirements()
+          if (staged.identity.sourceCommit !== process.env.REQUESTED_SOURCE || staged.identity.version !== requirements.appVersion
+            || staged.status !== 'signed_candidate_staged_not_host_acceptance') throw new Error('staged source mismatch')
+          const output = path.join(base, 'host-no-auth-observations')
+          const home = path.join(workspace, 'home'), tmp = path.join(workspace, 'tmp')
+          fs.mkdirSync(tmp, { recursive: true, mode: 0o700 }); fs.mkdirSync(output, { mode: 0o700 })
+          fs.copyFileSync(base + '/host-candidate-api-binding.json', output + '/candidate-api-binding.json')
+          fs.copyFileSync(base + '/host-candidate-stage/candidate-identity.json', output + '/candidate-identity.json')
+          fs.copyFileSync(path.join(workspace, 'host-no-auth-samples.json'), output + '/sample-preparation.json')
+          let failed = false
+          for (const sample of samples.targets) {
+            const target = requirements.targets.find(t => t.catalogId === sample.catalogId
+              && t.officialDistributions?.some(d => d.distributionId === sample.distributionId))
+            if (!target || !sample.appPath || !path.isAbsolute(sample.appPath)
+              || !sample.appPath.startsWith(path.join(home, 'Applications') + path.sep)) throw new Error('sample scope/source mismatch')
+            const result = spawnSync(process.execPath, ['scripts/run-signed-host-no-auth.mjs',
+              '--candidate-app', staged.app, '--app-version', staged.identity.version, '--source-commit', staged.identity.sourceCommit,
+              '--candidate-bundle-sha256', staged.identity.bundleSha256, '--workspace', workspace,
+              '--output-dir', path.join(output, sample.catalogId), '--capture-nonce', process.env.CAPTURE_NONCE,
+              '--catalog-id', sample.catalogId, '--distribution-id', sample.distributionId], {
+              cwd: process.cwd(), env: { HOME: home, TMPDIR: tmp, USER: process.env.USER || 'runner', LOGNAME: process.env.LOGNAME || 'runner', PATH: process.env.PATH },
+              stdio: 'inherit', timeout: 15 * 60 * 1000,
+            })
+            if (result.error || result.status !== 0) failed = true
+          }
+          // Raw observations are not passed assertions. A failed operation stays failed.
+          if (failed) throw new Error('one or more no-auth observations failed; inspect uploaded raw records')
+          NODE
+      - name: Prepare frozen historical signed App inputs without executing them
+        run: |
+          node --input-type=module - <<'NODE'
+          import fs from 'node:fs'
+          import path from 'node:path'
+          import { prepareHistoricalUpgradeApps } from './scripts/historical-upgrade-apps.mjs'
+          const requested=path.join(process.env.RUNNER_TEMP,'historical-upgrade-inputs')
+          fs.mkdirSync(requested,{mode:0o700})
+          const workspace=fs.realpathSync(requested)
+          await prepareHistoricalUpgradeApps({workspace,output:path.join(workspace,'inputs.json')})
+          NODE
+      - name: Observe three historical upgrades on this target's same native host
+        env:
+          REQUESTED_SOURCE: ${{ inputs.source_commit }}
+          CAPTURE_NONCE: ${{ inputs.capture_nonce }}
+        run: |
+          node --input-type=module - <<'NODE'
+          import fs from 'node:fs'
+          import path from 'node:path'
+          import { spawnSync } from 'node:child_process'
+          const base=fs.realpathSync(process.env.RUNNER_TEMP)
+          const staged=JSON.parse(fs.readFileSync(path.join(base,'host-candidate-stage/candidate-identity.json'),'utf8'))
+          const catalog=process.env.OBSERVED_CATALOG_ID
+          if(!['claude-cowork-local','claude-desktop-legacy','codex-desktop'].includes(catalog))throw new Error('unreviewed upgrade target')
+          const workspace=path.join(base,'upgrade-profiles');fs.mkdirSync(workspace,{mode:0o700})
+          const tmp=path.join(workspace,'tmp');fs.mkdirSync(tmp,{mode:0o700})
+          const result=spawnSync(process.execPath,['scripts/run-signed-upgrade-no-auth.mjs',
+            '--candidate-app',staged.app,'--candidate-bundle-sha256',staged.identity.bundleSha256,
+            '--source-commit',process.env.REQUESTED_SOURCE,'--capture-nonce',process.env.CAPTURE_NONCE,
+            '--historical-inputs',path.join(base,'historical-upgrade-inputs/inputs.json'),
+            '--host-samples',path.join(process.env.HOST_NO_AUTH_WORKSPACE,'host-no-auth-samples.json'),
+            '--workspace',workspace,'--output-dir',path.join(base,'host-no-auth-observations','upgrades-'+catalog),
+            '--catalog-id',catalog],{cwd:process.cwd(),env:{PATH:process.env.PATH,HOME:path.join(workspace,'home'),TMPDIR:tmp},stdio:'inherit',timeout:75*60*1000})
+          if(result.error||result.status!==0)throw new Error('actual signed-App upgrade observation failed; retain raw failure')
+          NODE
+      - name: Upload raw observations only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signed-host-no-auth-observations-${{ matrix.catalog_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/host-no-auth-observations/
+            !${{ runner.temp }}/host-no-auth-observations/**/before-backup/**
+            !${{ runner.temp }}/host-no-auth-observations/**/after-backup/**
+          if-no-files-found: warn
+          retention-days: 30
