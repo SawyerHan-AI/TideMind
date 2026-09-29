@@ -11,6 +11,8 @@ import {
   execIgnoringDuplicateColumn,
 } from '@server/db/migration-helpers.js'
 import { ensureAgentIntegrationSchema } from '@server/db/agent-integration-schema.js'
+import { migrateExistingDatabaseIfNeeded } from '@server/db/pre-migration.js'
+import { ensureModelDiscoverySchema } from '@server/db/model-discovery-schema.js'
 import { createOutboxTable } from './cloud/outbox.js'
 
 let db: Database.Database | null = null
@@ -193,6 +195,11 @@ export function getClientDb(forcedDataDir?: string): Database.Database {
   ensureDataDirs(dataDir)
 
   const dbPath = path.join(dataDir, 'graph', 'brain.sqlite')
+
+  // Existing databases must be backed up and migrated before repair/default-file writes.
+  migrateExistingDatabaseIfNeeded(dbPath, forcedDataDir
+    ? path.join(dataDir, 'config.toml')
+    : path.join(os.homedir(), '.tidemind', 'config.toml'))
 
   // 如果数据库不存在，创建一个空的（带 schema）
   if (!fs.existsSync(dbPath)) {
@@ -484,6 +491,8 @@ export function getClientDb(forcedDataDir?: string): Database.Database {
     `)
     // 本机 Agent 托管表与 daemon 共用唯一 schema；不会创建 cloud sync trigger。
     ensureAgentIntegrationSchema(newDb)
+    // 模型目录/认证绑定/调用观察（v35）同样只有一份权威 SQL。
+    ensureModelDiscoverySchema(newDb)
     newDb.close()
   }
 
@@ -712,6 +721,7 @@ export function getClientDb(forcedDataDir?: string): Database.Database {
   `)
   // repair/fallback 路径也必须补齐 v34 本机 Agent 表与最低 writer protocol。
   ensureAgentIntegrationSchema(tmpDb)
+  ensureModelDiscoverySchema(tmpDb)
   // 迁移：补齐可能缺失的列(幂等)。
   // **不要**写成 `try { ALTER } catch {}` —— 空 catch 会同时吞 "duplicate column"
   // (合法)和 SQLITE_BUSY / SQLITE_FULL / SQLITE_CORRUPT(真错),导致磁盘满 / 数据

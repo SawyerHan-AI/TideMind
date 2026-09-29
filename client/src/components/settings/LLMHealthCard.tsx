@@ -93,7 +93,29 @@ export function LLMHealthCard() {
             <Metric label={t('model.serviceStatus.lastSuccess')} value={formatRelative(health.lastSuccessAt)} icon={<Clock size={11} />} />
           </div>
 
-          {errors.length === 0 && !health.metabolismWorkerDegradedReason ? (
+          {(health.routeFaults?.length ?? 0) > 0 && (
+            <div className="space-y-1.5">
+              <div className="text-[11px] text-gray-400">{t('model.serviceStatus.routeFaults')}</div>
+              {health.routeFaults!.map(fault => (
+                <div key={`${fault.tier}-${fault.connectionId}`} className="rounded-lg border border-amber-500/15 bg-amber-500/[0.07] px-3 py-2">
+                  <div className="flex items-center gap-2 text-xs text-gray-200">
+                    <AlertCircle size={13} className="shrink-0 text-amber-400" />
+                    <span className="truncate">
+                      {t(`model.catalog.tier.${fault.tier}`)} · {fault.connectionName} · {fault.modelId === 'default' ? t('model.selection.followDefault') : fault.modelId}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 break-words text-[11px] text-amber-300">
+                    {t(`model.catalog.admission.${fault.reason}`, {
+                      retryAt: fault.retryAt ? new Date(fault.retryAt).toLocaleString() : '—',
+                      time: '—',
+                    })}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {errors.length === 0 && (health.routeFaults?.length ?? 0) === 0 && !health.metabolismWorkerDegradedReason ? (
             <div className="flex items-center gap-2 rounded-lg border border-emerald-500/15 bg-emerald-500/[0.07] px-3 py-2 text-xs text-emerald-300">
               <CheckCircle2 size={13} />
               {t('model.serviceStatus.statusHealthy')}

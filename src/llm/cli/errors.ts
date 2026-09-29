@@ -14,6 +14,8 @@ export type CliLLMErrorKind =
   | 'process_crash'
   | 'output_limit'
   | 'protocol'
+  | 'scope_unknown'
+  | 'model_mismatch'
   | 'transient';
 
 export class CliLLMError extends Error {
@@ -27,11 +29,32 @@ export class CliLLMError extends Error {
       needsUserAction?: boolean;
       retryAt?: number;
       promptCommitted?: boolean;
+      /** Admission block reason when the call was refused before submission. */
+      admissionReason?: string;
       cause?: unknown;
     } = {},
   ) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
   }
+}
+
+/**
+ * Provider refusals that the CLI reported explicitly (exit code + recognized error
+ * text): the request was rejected, no generation result exists, and retrying later
+ * cannot double-bill. Unlike crashes, timeouts or unparseable output after prompt
+ * submission, these are definite failures and must stay model/connection scoped
+ * instead of pausing the whole connection as ambiguous (design §5.4, §7.1).
+ */
+export const DEFINITIVE_PROVIDER_REJECTIONS: ReadonlySet<CliLLMErrorKind> = new Set([
+  'model_unavailable',
+  'quota',
+  'rate_limit',
+  'not_authenticated',
+  'wrong_auth_method',
+]);
+
+export function isDefinitiveProviderRejection(error: unknown): boolean {
+  return error instanceof CliLLMError && DEFINITIVE_PROVIDER_REJECTIONS.has(error.kind);
 }
 
 export function classifyCliFailure(message: string): CliLLMErrorKind {

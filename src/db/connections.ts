@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { deleteModelDiscoveryRows } from './model-discovery.js';
 import { now } from '../utils/time.js';
 import { randomBytes } from 'node:crypto';
 import type { LLMProviderType } from '../llm/provider-types.js';
@@ -155,71 +156,48 @@ export interface CliConnectionEnvironmentUpdate {
   cliVersion: string | null;
   authMethod: string | null;
   authFingerprint: string | null;
-  candidateModels: string[];
+  /** CLI generation (legacy validation_fingerprint column). */
+  cliGeneration?: string | null;
   environmentCheckedAt: string;
 }
 
 /**
- * 保存 CLI 环境探测；影响 validation fingerprint 的环境变化与验证失效同事务提交。
+ * 保存 CLI 环境探测结果。
+ *
+ * 不再因路径、版本或认证变化清空模型验证/历史：模型证据按 scope/epoch 存在独立表中，
+ * 环境变化只让旧 epoch 的观察退为历史（design §6、§8）。旧 candidate/available 列
+ * 不再写入，只保留为降级兼容与历史展示。
  */
 export function updateCliConnectionEnvironment(
   db: Database.Database,
   id: string,
   update: CliConnectionEnvironmentUpdate,
-): { validationInvalidated: boolean } {
-  const tx = db.transaction(() => {
-    const previous = db.prepare(`
-      SELECT cli_path, cli_version, auth_method, auth_fingerprint, candidate_models
-      FROM model_connections WHERE id = ?
-    `).get(id) as Pick<
-      ModelConnection,
-      'cli_path' | 'cli_version' | 'auth_method' | 'auth_fingerprint' | 'candidate_models'
-    > | undefined;
-    if (!previous) throw new Error(`Model connection not found: ${id}`);
-
-    const candidateModels = JSON.stringify(update.candidateModels);
-    const validationInvalidated =
-      previous.cli_path !== update.cliPath
-      || previous.cli_version !== update.cliVersion
-      || previous.auth_method !== update.authMethod
-      || previous.auth_fingerprint !== update.authFingerprint
-      || previous.candidate_models !== candidateModels;
-
-    db.prepare(`
-      UPDATE model_connections
-      SET status = ?,
-          status_reason = ?,
-          cli_path = ?,
-          cli_version = ?,
-          auth_method = ?,
-          auth_fingerprint = ?,
-          environment_checked_at = ?,
-          candidate_models = ?,
-          available_models = CASE WHEN ? THEN NULL ELSE available_models END,
-          validation_fingerprint = CASE WHEN ? THEN NULL ELSE validation_fingerprint END,
-          model_validation_json = CASE WHEN ? THEN NULL ELSE model_validation_json END,
-          last_tested_at = CASE WHEN ? THEN NULL ELSE last_tested_at END,
-          last_test_summary = CASE WHEN ? THEN NULL ELSE last_test_summary END
-      WHERE id = ?
-    `).run(
-      update.status,
-      update.statusReason,
-      update.cliPath,
-      update.cliVersion,
-      update.authMethod,
-      update.authFingerprint,
-      update.environmentCheckedAt,
-      candidateModels,
-      validationInvalidated ? 1 : 0,
-      validationInvalidated ? 1 : 0,
-      validationInvalidated ? 1 : 0,
-      validationInvalidated ? 1 : 0,
-      validationInvalidated ? 1 : 0,
-      id,
-    );
-    return { validationInvalidated };
-  });
-  return tx();
+): void {
+  const result = db.prepare(`
+    UPDATE model_connections
+    SET status = ?,
+        status_reason = ?,
+        cli_path = ?,
+        cli_version = ?,
+        auth_method = ?,
+        auth_fingerprint = ?,
+        validation_fingerprint = COALESCE(?, validation_fingerprint),
+        environment_checked_at = ?,
+        last_checked = ?
+    WHERE id = ?
+  `).run(
+    update.status,
+    update.statusReason,
+    update.cliPath,
+    update.cliVersion,
+    update.authMethod,
+    update.authFingerprint,
+    update.cliGeneration ?? null,
+    update.environmentCheckedAt,
+    update.environmentCheckedAt,
+    id,
+  );
+  if (result.changes === 0) throw new Error(`Model connection not found: ${id}`);
 }
 
 export function archiveConnection(db: Database.Database, id: string): void {
@@ -231,5 +209,8 @@ export function unarchiveConnection(db: Database.Database, id: string): void {
 }
 
 export function deleteConnection(db: Database.Database, id: string): void {
-  db.prepare('DELETE FROM model_connections WHERE id = ?').run(id);
+  db.transaction(() => {
+    db.prepare('DELETE FROM model_connections WHERE id = ?').run(id);
+    deleteModelDiscoveryRows(db, id);
+  })();
 }

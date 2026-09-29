@@ -17,7 +17,7 @@ const INVOCATION_NAME = /^inv_[a-zA-Z0-9_-]{8,128}$/;
 export interface CliRuntimeDirectory {
   root: string;
   invocationDir: string;
-  createPrivateFile(name: 'system.txt' | 'schema.json' | 'mcp-empty.json', content: string): string;
+  createPrivateFile(name: 'system.txt' | 'schema.json' | 'mcp-empty.json' | 'model-catalog.json', content: string): string;
   cleanup(): void;
 }
 
@@ -56,7 +56,7 @@ export function createCliRuntimeDirectory(
     root,
     invocationDir,
     createPrivateFile(name, content) {
-      if (!['system.txt', 'schema.json', 'mcp-empty.json'].includes(name)) {
+      if (!['system.txt', 'schema.json', 'mcp-empty.json', 'model-catalog.json'].includes(name)) {
         throw new Error('unsupported CLI runtime file');
       }
       const path = join(invocationDir, name);

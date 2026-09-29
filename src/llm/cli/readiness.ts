@@ -3,11 +3,18 @@ import { createHash } from 'node:crypto';
 import { lstatSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
-import { CLI_MODEL_CATALOGS } from './catalogs.js';
-import { probeCliAuth } from './auth-probe.js';
+import { prepareCodexToolCatalog } from './codex-tool-catalog.js';
+import { CODEX_EXEC_CONFIG_OVERRIDES } from './catalogs.js';
+import { codexIdentityFromAccount, probeCliAuth } from './auth-probe.js';
+import { readCodexMetadata } from './codex-app-server.js';
 import { CliLLMError } from './errors.js';
 import { sanitizeCliEnvironment } from './environment.js';
-import { gateCodexCapabilities, type CodexCapabilityGateResult } from './gate-codex.js';
+import {
+  codexDisableArgs,
+  planCodexContract,
+  verifyCodexContract,
+  type CodexExecutionContract,
+} from './gate-codex.js';
 import { gateClaudeCapabilities } from './gate-claude.js';
 import { resolveCli, type ResolveCliOptions } from './resolve-cli.js';
 import type {
@@ -52,12 +59,18 @@ export interface CliEnvironmentCheck {
   status: 'untested';
   resolved: ResolvedCli;
   auth: CliAuthIdentity;
+  /** Non-secret stat signal of the auth store; a re-probe trigger, never an identity. */
+  authStoreSignal: string | null;
+  /** Hash of method + scope key; changes only when the observed scope changes. */
   authFingerprint: string;
+  /** CLI generation: path, version, binary identity and verified contract. */
+  cliGeneration: string;
+  /** Kept for the legacy column; equals cliGeneration. */
   validationFingerprint: string;
   capabilityFingerprint: string;
   capabilityStatus: 'verified';
-  candidateModels: string[];
-  codexGate?: CodexCapabilityGateResult;
+  codexContract?: CodexExecutionContract;
+  codexToolCatalogJson?: string;
   checkedAt: string;
 }
 
@@ -66,17 +79,24 @@ export interface CheckCliEnvironmentOptions {
   allowLoginShell?: boolean;
   sourceEnv?: NodeJS.ProcessEnv;
   homeDir?: string;
+  /** Needed for the Codex account/read metadata session (private runtime dir). */
+  dataDir?: string;
   resolveOptions?: Partial<ResolveCliOptions>;
   exec?: ProbeExec;
   platform?: NodeJS.Platform;
   signal?: AbortSignal;
+  /** Test seam for the Codex metadata session. */
+  readCodexAccount?: typeof readCodexMetadata;
+  /** Invocation boundaries must read the official account snapshot, never a TTL cache. */
+  freshAuth?: boolean;
+  prepareCodexCatalog?: typeof prepareCodexToolCatalog;
 }
 
 function kindForProvider(providerType: CliProviderType): CliKind {
   return providerType === 'claude-cli' ? 'claude' : 'codex';
 }
 
-function authStoreStat(providerType: CliProviderType, home: string): string | null {
+export function authStoreSignal(providerType: CliProviderType, home: string): string | null {
   const candidates = providerType === 'codex-cli'
     ? [join(home, '.codex', 'auth.json')]
     : [
@@ -133,9 +153,12 @@ export async function checkCliEnvironment(
     ...options.resolveOptions,
   });
   throwIfAborted();
+  const storeSignal = authStoreSignal(options.providerType, home);
   let auth: CliAuthIdentity;
   try {
-    auth = await probeCliAuth(resolved, sourceEnv, undefined, options.signal);
+    auth = kind === 'codex'
+      ? await probeCodexAuth(resolved, sourceEnv, storeSignal, options)
+      : await probeCliAuth(resolved, sourceEnv, undefined, options.signal);
   } catch (error) {
     throwIfAborted();
     throw error;
@@ -144,7 +167,8 @@ export async function checkCliEnvironment(
   const exec = options.exec ?? defaultExec;
   const env = sanitizeCliEnvironment(sourceEnv, resolved.path, resolved.controlledPath);
   let capabilityFingerprint: string;
-  let codexGate: CodexCapabilityGateResult | undefined;
+  let codexContract: CodexExecutionContract | undefined;
+  let codexToolCatalogJson: string | undefined;
 
   if (kind === 'claude') {
     const [help, authStatusHelp] = await Promise.all([
@@ -174,31 +198,49 @@ export async function checkCliEnvironment(
         needsUserAction: true,
       });
     }
-    codexGate = gateCodexCapabilities({
+    const evidence = {
       version: resolved.version,
       execHelp: `${execHelp.stdout}\n${execHelp.stderr}`,
       promptInputHelp: `${promptHelp.stdout}\n${promptHelp.stderr}`,
       featuresList: `${features.stdout}\n${features.stderr}`,
+    };
+    const { disableFeatures } = planCodexContract(evidence);
+    // Read back the effective feature state with exactly the inference disables and
+    // overrides; only this proves the disables took effect on this CLI generation.
+    const effective = await exec(
+      resolved.path,
+      [...codexDisableArgs(disableFeatures), ...CODEX_EXEC_CONFIG_OVERRIDES, 'features', 'list'],
+      env,
+      options.signal,
+    );
+    throwIfAborted();
+    if (effective.exitCode !== 0) {
+      throw new CliLLMError('unsupported_version', 'Codex rejected the isolation overrides', {
+        needsUserAction: true,
+      });
+    }
+    codexContract = verifyCodexContract(
+      evidence,
+      disableFeatures,
+      `${effective.stdout}\n${effective.stderr}`,
+    );
+    if (!options.dataDir) throw new CliLLMError('unsupported_version', 'Codex execution isolation requires a private runtime directory');
+    codexToolCatalogJson = await (options.prepareCodexCatalog ?? prepareCodexToolCatalog)({
+      resolved, contract: codexContract, dataDir: options.dataDir, sourceEnv, signal: options.signal,
     });
-    capabilityFingerprint = codexGate.fingerprint;
+    capabilityFingerprint = codexContract.fingerprint;
   }
 
-  const storeStat = authStoreStat(options.providerType, home);
   const authFingerprint = digest([
     options.providerType,
-    resolved.path,
-    resolved.version,
-    resolved.identity,
     auth.method,
-    auth.accountIdentifier,
-    storeStat,
+    auth.scopeKey,
   ]);
-  const validationFingerprint = digest([
+  const cliGeneration = digest([
     options.providerType,
     resolved.path,
     resolved.version,
-    resolved.identity,
-    authFingerprint,
+    resolved.identity.sha256,
     capabilityFingerprint,
   ]);
   return {
@@ -206,14 +248,71 @@ export async function checkCliEnvironment(
     status: 'untested',
     resolved,
     auth,
+    authStoreSignal: storeSignal,
     authFingerprint,
-    validationFingerprint,
+    cliGeneration,
+    validationFingerprint: cliGeneration,
     capabilityFingerprint,
     capabilityStatus: 'verified',
-    candidateModels: [...CLI_MODEL_CATALOGS[options.providerType]],
-    codexGate,
+    codexContract,
+    codexToolCatalogJson,
     checkedAt: new Date().toISOString(),
   };
+}
+
+const CODEX_ACCOUNT_CACHE_MS = 5 * 60_000;
+const codexAccountCache = new Map<string, { at: number; auth: CliAuthIdentity }>();
+
+/** Test helper. */
+export function clearCodexAccountCache(): void {
+  codexAccountCache.clear();
+}
+
+/**
+ * Codex identity from the official app-server account/read (no token refresh).
+ * A known identity is cached briefly only while the file-based auth store signal and
+ * the CLI binary are unchanged; Keychain-only stores (no signal) always re-read.
+ * Older CLIs without account/read fall back to `login status` with an unknown scope.
+ */
+async function probeCodexAuth(
+  resolved: ResolvedCli,
+  sourceEnv: NodeJS.ProcessEnv,
+  storeSignal: string | null,
+  options: CheckCliEnvironmentOptions,
+): Promise<CliAuthIdentity> {
+  const cacheKey = storeSignal
+    ? `${resolved.path}\0${resolved.identity.sha256}\0${storeSignal}`
+    : null;
+  const cached = cacheKey ? codexAccountCache.get(cacheKey) : undefined;
+  if (!options.freshAuth && cached && Date.now() - cached.at < CODEX_ACCOUNT_CACHE_MS) return cached.auth;
+  if (options.dataDir) {
+    try {
+      const metadata = await (options.readCodexAccount ?? readCodexMetadata)({
+        resolved,
+        dataDir: options.dataDir,
+        includeModels: false,
+        sourceEnv,
+        signal: options.signal,
+      });
+      if (metadata.account) {
+        const auth = codexIdentityFromAccount(metadata.account);
+        if (cacheKey && auth.scopeState === 'known') {
+          codexAccountCache.set(cacheKey, { at: Date.now(), auth });
+        }
+        return auth;
+      }
+    } catch (error) {
+      if (
+        error instanceof CliLLMError
+        && (error.kind === 'not_authenticated' || error.kind === 'wrong_auth_method' || error.kind === 'aborted')
+      ) {
+        throw error;
+      }
+      // Metadata transport failed: fall through to the legacy status probe. The scope
+      // is then unknown, which keeps unattended background inference closed.
+    }
+  }
+  return probeCliAuth(resolved, sourceEnv, undefined, options.signal);
 }
 
 export function cliUserActionCommand(

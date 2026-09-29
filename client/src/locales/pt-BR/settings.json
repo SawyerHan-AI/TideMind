@@ -194,7 +194,18 @@
       ,"connectionUnavailable": "Esta conexão salva não existe mais"
       ,"modelUnavailable": "Este modelo salvo não foi verificado"
       ,"savedConnectionInvalid": "A conexão salva não está disponível. Selecione outra conexão."
-      ,"savedModelInvalid": "O modelo salvo não está disponível. Selecione um modelo verificado."
+      ,"savedModelInvalid": "O modelo salvo não está disponível. Selecione um modelo verificado.",
+      "followDefault": "Padrão isolado (integrado à CLI)",
+      "isolatedDefaultHint": "Usa o modelo padrão integrado à CLI em um ambiente isolado, sem seguir as recomendações do catálogo da conta ou as configurações pessoais locais.",
+      "aliasPending": "alias, ainda não verificado",
+      "catalogDefaultBadge": "padrão recomendado pelo catálogo",
+      "upgradeHint": "o provedor sugere {{model}}",
+      "notListed": "fora do catálogo atual; seleção mantida",
+      "manualEntry": "Inserir um ID de modelo manualmente…",
+      "manualPlaceholder": "ID do modelo",
+      "manualApply": "Usar",
+      "manualCancel": "Cancelar",
+      "manualInvalid": "Formato de ID de modelo inválido"
     },
     "serviceStatus": {
       "title": "Status do serviço de IA",
@@ -214,7 +225,65 @@
       "needsAttention": "Needs attention",
       "unknownConnection": "Unknown connection",
       "collapseErrors": "Collapse errors",
-      "expandErrors": "Show {{count}} more"
+      "expandErrors": "Show {{count}} more",
+      "routeFaults": "Falhas em rotas em uso"
+    },
+    "catalog": {
+      "scope": "Escopo da conta",
+      "scopeNotChecked": "Ainda não verificado",
+      "scopeUnknown": "Não é possível confirmar (apenas testes manuais, sem tarefas em segundo plano)",
+      "scopeKnown": "Confirmado",
+      "title": "Catálogo de modelos",
+      "refresh": "Atualizar lista de modelos",
+      "refreshFailed": "Falha ao atualizar ({{kind}}); o último catálogo completo foi mantido",
+      "none": "Ainda não há catálogo de modelos",
+      "unsupported": "Esta versão da CLI não lista modelos; siga o padrão ou insira um ID de modelo",
+      "aliasesOnly": "{{count}} aliases oficiais (não verificados) / {{verified}} verificados recentemente; IDs de modelo manuais permitidos",
+      "summary": "{{count}} modelos descobertos / {{verified}} verificados recentemente",
+      "updatedAt": "Catálogo atualizado {{time}}",
+      "outdated": "Catálogo sem atualização há mais de 24 horas",
+      "lastAttemptFailed": "Falha ao atualizar às {{time}} ({{kind}})",
+      "inUse": "Rotas em uso",
+      "inUseNone": "Nenhuma rota de modelo usa esta conexão",
+      "tier": {
+        "light": "Leve",
+        "standard": "Padrão",
+        "heavy": "Pesado"
+      },
+      "testTargets": "Testar modelos específicos",
+      "testScopeUnknownNote": "Usa o login atual da CLI; a conta não pode ser confirmada e este resultado não habilitará tarefas em segundo plano",
+      "testCostNote": "Faz uma chamada real por modelo ({{count}}), o que consome sua cota",
+      "testSelected": "Testar modelos selecionados",
+      "observations": "Observações de chamadas da conta atual",
+      "showHistory": "Ver histórico de testes ({{count}})",
+      "hideHistory": "Ocultar histórico",
+      "historicalEpoch": "época de autenticação anterior {{epoch}}",
+      "attributionUnconfirmed": "A CLI ou o login mudou durante o teste; os resultados ficaram sem atribuição e foram mantidos como histórico",
+      "admission": {
+        "firstCall": "Aguardando a primeira chamada",
+        "allowed": "Última chamada bem-sucedida ({{time}})",
+        "connection_busy": "A conexão está sendo verificada ou testada",
+        "connection_unavailable": "Ambiente de conexão indisponível; verifique o ambiente",
+        "ambiguous_outcome": "Resultado da última chamada desconhecido; segundo plano pausado até um teste ser bem-sucedido",
+        "scope_unknown": "Não é possível confirmar o escopo da conta conectada; chamadas em segundo plano pausadas",
+        "invalid_model_id": "ID de modelo inválido",
+        "model_rejected": "Esta conta não pode usar o modelo; teste novamente ou escolha outro",
+        "model_mismatch": "O modelo fixado retornou outro modelo real; teste novamente de forma explícita",
+        "backoff": "Falha temporária; aguardando até {{retryAt}}"
+      },
+      "outcome": {
+        "success": "Bem-sucedida",
+        "mismatch": "O modelo real difere da escolha fixada",
+        "model_rejected": "Sem acesso ou modelo não encontrado",
+        "temporary_failure": "Falha temporária (limite de taxa/cota/rede)",
+        "connection_failure": "Erro no ambiente de conexão",
+        "unclassified_failure": "A chamada falhou, motivo não reconhecido",
+        "ambiguous": "Resultado desconhecido"
+      },
+      "source": {
+        "business": "chamada de negócio",
+        "test": "teste de conexão"
+      }
     }
   },
   "data": {
@@ -1064,6 +1133,23 @@
       }
     },
     "managed": {
+      "sourceVerification": {
+        "title": "Origem da instalação",
+        "description": "A verificação da origem não confirma o carregamento no host nem uma chamada de memória bem-sucedida.",
+        "states": {
+          "trusted": "Origem verificada",
+          "pending": "Verificação pendente",
+          "confirmation_required": "Confirmar origem",
+          "rejected": "Origem rejeitada",
+          "user_managed": "Configuração gerenciada pelo usuário"
+        },
+        "evidence": {
+          "tested_sample": "Artefato de versão testado",
+          "signed_identity": "Assinatura oficial",
+          "npm_registry": "Pacote npm oficial verificado",
+          "npm_registry_cache": "Verificação oficial do npm em cache"
+        }
+      },
       "title": "Conexões com Agents",
       "subtitle": "Detecta e mantém automaticamente os Agents locais compatíveis neste Mac.",
       "summary": "{{products}} produtos Agent · {{installations}} instalações · {{available}} disponíveis",
@@ -1228,9 +1314,12 @@
         "releaseEntryMissing": "Esta versão do Tide Mind não contém um contrato de conexão lançado para este Agent. Atualize o Tide Mind e verifique novamente; se você já usa a versão mais recente, este Agent ainda não pode ser configurado.",
         "releaseModeDetectOnly": "Esta versão do Tide Mind permite apenas detectar este Agent. A configuração automática não está disponível; atualize o Tide Mind e verifique novamente quando o suporte for lançado.",
         "releaseDistributionNotAccepted": "Esta origem de instalação não foi validada para lançamento. Instale o Agent pela distribuição oficial e verifique novamente; o Tide Mind não modificará esta instalação.",
-        "releaseArtifactNotAccepted": "Os arquivos locais deste Agent não correspondem ao pacote oficial validado para esta versão do Tide Mind. Reinstale-o pelo canal oficial e verifique novamente.",
+        "releaseArtifactNotAccepted": "Este resultado de verificação dos arquivos de instalação foi registrado por uma versão anterior do Tide Mind e está aguardando uma nova verificação. Verifique novamente para atualizá-lo agora.",
         "releaseVersionUnverified": "O Tide Mind não conseguiu verificar a versão do Agent. Reinstale-o ou atualize-o pela distribuição oficial e verifique novamente.",
-        "releaseVersionNotAccepted": "Esta versão exata do Agent não foi validada para lançamento. Atualize o Agent e verifique novamente; se já for a versão mais recente, aguarde uma atualização do Tide Mind.",
+        "releaseVersionNotAccepted": "Este resultado de verificação de versão foi registrado por uma versão anterior do Tide Mind e está aguardando uma nova verificação. Verifique novamente para atualizá-lo agora.",
+        "sourceVerificationPending": "O Tide Mind ainda está confirmando a origem oficial deste Agent e não consegue concluir a verificação agora; a configuração automática está pausada. Uma nova tentativa será feita automaticamente quando você estiver online.",
+        "sourceNotOfficial": "A instalação local deste Agent não corresponde ao conteúdo oficial publicado; a configuração automática foi interrompida. Reinstale-o pelo canal oficial e verifique novamente.",
+        "sourceConfirmationRequired": "O Tide Mind não consegue verificar automaticamente a origem oficial deste tipo de instalação. Reinstale o Agent pelo canal oficial ou conecte-o manualmente em “Adicionar um Agent local personalizado”.",
         "unverified": "Ainda não verificado.",
         "verificationStale": "As evidências anteriores são obsoletas.",
         "connecting": "Aplicando o plano de conexão aprovado.",
@@ -1249,7 +1338,8 @@
         "circuitBreaker": "O reparo automático foi interrompido após remoções repetidas.",
         "disconnectVerified": "Os componentes Tide Mind foram verificados ausentes.",
         "hostUninstalled": "O Agent não está mais instalado.",
-        "unknown": "Veja detalhes dos últimos fatos verificados."
+        "unknown": "Veja detalhes dos últimos fatos verificados.",
+        "customConfigOwnedByDiscoveredHost": "Este arquivo de configuração (ou a pasta dele) já pertence a um Agent que o Tide Mind detectou. Conecte esse Agent diretamente em vez de adicioná-lo como cliente personalizado."
       },
       "access": {
         "complete": "Conexão completa",
@@ -1323,7 +1413,7 @@
         "legacyConnectionAdopted": "Uma conexão Tide Mind existente foi reconhecida",
         "legacyConnectionNeedsConfirmation": "Uma conexão existente precisa da sua confirmação",
         "legacyAdoptionScanFailed": "Não foi possível verificar as conexões existentes",
-        "userConfirmedGuidedRemoval": "A remoção no Qwen Work foi confirmada pelo usuário"
+        "userConfirmedGuidedRemoval": "Uma remoção guiada foi confirmada pelo usuário"
       },
       "management": "Gerenciar conexão",
       "supportMode": {
@@ -1407,7 +1497,8 @@
         "codexHookTrustUnavailable": "A confiança do gancho Codex não pôde ser verificada. Revise o host e tente novamente.",
         "manualDocumentRemoval": "Remova manualmente o arquivo de instruções de propriedade de Tide Mind e verifique novamente.",
         "componentRequiresOtherProjection": "{{component}} requer um método de conexão compatível diferente.",
-        "manualReview": "Essa alteração requer uma etapa manual. Revise os detalhes guiados antes de continuar."
+        "manualReview": "Essa alteração requer uma etapa manual. Revise os detalhes guiados antes de continuar.",
+        "hostManualRemoval": "A origem deste host não está confirmada no momento, então o Tide Mind não executará os programas dele. Remova você mesmo o componente do Tide Mind no host; o Tide Mind parou de fornecer memória a este Agent."
       },
       "currentRequiredAction": "Ação ainda necessária",
       "openCurrentRequiredAction": "Abrir instruções atuais",
@@ -1420,13 +1511,18 @@
         "confirm": "Removi o conector do Qwen Work conforme as instruções",
         "userConfirmedNotice": "O resultado será registrado como confirmado pelo usuário, não como uma verificação automática do host.",
         "confirmed": "Remoção confirmada por você. O Tide Mind salvou a confirmação e verificou novamente esta remoção específica.",
-        "notReady": "O Skill do Tide Mind ainda está presente. Remova o Skill e o conector do Qwen Work e confirme novamente."
+        "notReady": "O Skill do Tide Mind ainda está presente. Remova o Skill e o conector do Qwen Work e confirme novamente.",
+        "coworkExplanation": "Depois de remover o plugin do Tide Mind no Claude Cowork (Customize → Plugins) e excluir o arquivo .plugin exportado, confirme explicitamente a etapa guiada concluída.",
+        "coworkDescription": "O Claude Cowork não expõe um registro de plugins legível por máquina. O Tide Mind registrará sua confirmação para esta remoção pendente.",
+        "coworkConfirm": "Removi o plugin do Tide Mind do Claude Cowork conforme instruído",
+        "coworkNotReady": "O arquivo do plugin do Tide Mind exportado ainda existe. Exclua-o, remova o plugin no Claude Cowork e confirme novamente."
       },
       "actionDetail": {
         "instruction": {
           "mcpActivation": "Permita {{server}} em {{config}} e verifique a conexão novamente.",
           "manualFileRemoval": "Remova o arquivo gerenciado pelo Tide Mind em {{target}} e verifique a conexão novamente.",
-          "kimiConflict": "O Tide Mind não alterou nenhum Skill porque os caminhos antigo e gerenciado não podem ser migrados com segurança."
+          "kimiConflict": "O Tide Mind não alterou nenhum Skill porque os caminhos antigo e gerenciado não podem ser migrados com segurança.",
+          "manualHostRemoval": "Remova o componente do Tide Mind “{{selector}}” no {{host}} usando o gerenciador de plugins ou extensões do próprio host."
         },
         "guidance": {
           "claudeCowork": {
@@ -1459,6 +1555,11 @@
             "step1": "Revise o Skill antigo {{source}} e o destino gerenciado {{target}}.",
             "step2": "Preserve o conteúdo necessário movendo ou renomeando o arquivo que o Tide Mind não deve gerenciar. O Tide Mind não substituirá nem excluirá um arquivo não verificado.",
             "step3": "Volte ao Tide Mind e execute a verificação novamente."
+          },
+          "manualHostRemoval": {
+            "step1": "Abra o {{host}} e encontre o componente do Tide Mind “{{selector}}” na lista de plugins ou extensões.",
+            "step2": "Remova-o apenas para este Agent e depois reinicie o {{host}} ou inicie uma nova sessão para que ele não seja mais carregado.",
+            "step3": "O Tide Mind já parou de fornecer memória a este Agent e pausou a manutenção. Retome a manutenção somente se quiser manter a conexão."
           }
         },
         "source": "Fonte",
@@ -1488,7 +1589,8 @@
           "legacy_not_exact": "O arquivo no caminho legado não é um Tide Mind legado Skill exato.",
           "legacy_changed": "O legado Skill mudou após ser inspecionado.",
           "target_occupied": "O novo destino Tide Mind Skill está ocupado por um arquivo não gerenciado."
-        }
+        },
+        "hostComponent": "Componente do host"
       },
       "previewDescription": "Revise os alvos gerenciados e os riscos antes de conectar.",
       "changeSummary": "{{components}} componentes · {{targets}} metas gerenciadas",
@@ -1538,7 +1640,12 @@
       "startupSummaryBody": "{{count}} atualização(ões) não lida(s) de conexões com Agents aguardam análise.",
       "viewDetails": "Ver detalhes",
       "dismiss": "Liberar",
-      "unreadUpdates": "{{count}} atualização(ões) não lida(s) de conexões com Agents"
+      "unreadUpdates": "{{count}} atualização(ões) não lida(s) de conexões com Agents",
+      "deactivation": {
+        "awaitingReload": "O Tide Mind removeu sua configuração e parou de fornecer memória a este Agent. Um host já em execução pode manter os componentes antigos até você reiniciá-lo ou iniciar uma nova sessão; entradas antigas sem geração não são bloqueadas automaticamente.",
+        "deactivatedVerified": "Desativação verificada: a configuração foi removida e o host foi recarregado.",
+        "bridgeStopped": "O Tide Mind parou de fornecer memória a este Agent. Os componentes podem continuar carregados no host; remova-os manualmente no host."
+      }
     }
   },
   "account": {

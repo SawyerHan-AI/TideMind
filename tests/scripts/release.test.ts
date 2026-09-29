@@ -97,9 +97,12 @@ describe('release script helpers', () => {
     ['skipWebsite', '--skip-website'],
     ['skipCloudVerify', '--skip-cloud-verify'],
     ['skipUpdateVerify', '--skip-update-verify'],
+    ['allowUnsigned', '--allow-unsigned'],
   ] as const)('rejects the 0.2.92 release bypass %s', (option, flag) => {
     expect(() => assertReleaseBypassesAllowed('0.2.92', { [option]: true }))
       .toThrow(`0.2.92 cannot be released with ${flag}`);
+    expect(() => assertReleaseBypassesAllowed('0.2.93', { [option]: true }))
+      .toThrow(`0.2.93 cannot be released with ${flag}`);
     expect(() => assertReleaseBypassesAllowed('0.2.91', { [option]: true }))
       .not.toThrow();
   });
@@ -127,6 +130,12 @@ describe('release script helpers', () => {
       .toThrow(/both are always verified/);
     expect(resolveUpdatePreviousVersions('0.2.84', null)).toEqual(['0.2.83']);
     expect(resolveUpdatePreviousVersions('0.2.84', '0.2.80')).toEqual(['0.2.80']);
+  });
+
+  it('verifies every frozen 0.2.93 upgrade origin even when a single previous version is supplied', () => {
+    expect(resolveUpdatePreviousVersions('0.2.93')).toEqual(['0.2.89', '0.2.91', '0.2.92']);
+    expect(resolveUpdatePreviousVersions('0.2.93', '0.2.92')).toEqual(['0.2.89', '0.2.91', '0.2.92']);
+    expect(() => resolveUpdatePreviousVersions('0.2.93', '0.2.90')).toThrow(/all are always verified/);
   });
 
   it('rejects a stale local or remote release tag before external release writes', () => {
@@ -233,13 +242,7 @@ describe('release script helpers', () => {
     expect(workflow).toContain('[[ "$GITHUB_REF" == refs/tags/v* ]]');
     expect(workflow).toContain('build-mac:\n    needs: admit-source');
     expect(workflow).toContain('permissions:\n  contents: read');
-    expect(workflow).toContain("publish-draft:\n    if: github.event_name == 'push' && needs.admit-source.outputs.deferred_host_acceptance != 'true'\n    needs: [admit-source, build-mac]\n    permissions:\n      contents: write");
-    expect(workflow).toContain("build-mac:\n    needs: admit-source\n    if: needs.admit-source.outputs.deferred_host_acceptance != 'true'");
-    expect(workflow).toContain("deferred-host-release:\n    # 0.2.92 only");
-    expect(workflow).toContain('node scripts/verify-deferred-host-release-candidate.mjs');
-    expect(workflow).toContain('node scripts/verify-mac-release-assets.mjs');
-    expect(workflow).toContain('--private-rc-candidate');
-    expect(workflow).toContain('node scripts/smoke-packaged-metabolism-worker.mjs');
+    expect(workflow).toContain('publish-draft:\n    if: github.event_name == \'push\'\n    needs: build-mac\n    permissions:\n      contents: write');
     expect(workflowHostGate).toBeGreaterThan(0);
     expect(workflowGate).toBeGreaterThan(workflowHostGate);
     expect(clientBuild).toBeGreaterThan(workflowGate);
@@ -376,6 +379,9 @@ describe('release script helpers', () => {
 
   it('requires only Apple Silicon artifacts for 0.2.92 while preserving older dual-architecture contracts', () => {
     expect(releaseMacArchitectures('0.2.92')).toEqual(['arm64']);
+    expect(releaseMacArchitectures('0.2.93')).toEqual(['arm64']);
+    expect(releaseMacArchitectures('0.2.89')).toEqual(['arm64', 'x64']);
+    expect(expectedReleaseAssetNames('0.2.93').some((name: string) => name.includes('x64'))).toBe(false);
     expect(releaseMacArchitectures('0.2.91')).toEqual(['arm64', 'x64']);
     expect(expectedReleaseAssetNames('0.2.92').some((name: string) => name.includes('x64'))).toBe(false);
     expect(expectedReleaseAssetNames('0.2.91').some((name: string) => name.includes('x64'))).toBe(true);
@@ -394,43 +400,43 @@ describe('release script helpers', () => {
     }
   });
 
-  it('requires 0.2.92 notes to disclose every P0 family, level, limitations, and Custom boundaries', () => {
+  it.each(['0.2.92', '0.2.93'])('requires %s notes to disclose every P0 family, level, limitations, and Custom boundaries', (version) => {
     const families = [
       'Claude Code', 'Claude Cowork', 'Codex', 'Cursor', 'Devin Desktop', 'Gemini CLI',
       'Kimi Code', 'OpenClaw', 'Qwen Code', 'ZCode', 'OpenCode', 'Pi', 'Oh My Pi / OMP', 'QwenWork',
     ];
     const valid = [
-      '## TideMind v0.2.92',
+      `## TideMind v${version}`,
       '### Host limitations',
       ...families.map(name => `- ${name}: Complete integration — limitations disclosed.`),
       '- Custom local Agent: non-standard configuration root and manual MCP are supported capability boundaries.',
     ].join('\n');
-    expect(() => validateReleaseNotesContent('0.2.92', valid)).not.toThrow();
-    expect(() => validateReleaseNotesContent('0.2.92', valid.replace(
+    expect(() => validateReleaseNotesContent(version, valid)).not.toThrow();
+    expect(() => validateReleaseNotesContent(version, valid.replace(
       '- QwenWork: Complete integration — limitations disclosed.\n',
       '',
     ))).toThrow(/connection level for QwenWork/);
-    expect(() => validateReleaseNotesContent('0.2.92', valid.replace('manual MCP', 'custom connector')))
+    expect(() => validateReleaseNotesContent(version, valid.replace('manual MCP', 'custom connector')))
       .toThrow(/both Custom local Agent boundaries/);
-    expect(() => ensureNotesFile('0.2.92', null)).toThrow(/requires an explicit --notes-file/);
+    expect(() => ensureNotesFile(version, null)).toThrow(/requires an explicit --notes-file/);
   });
 
   describe('verifyUpdateApi', () => {
-    it('verifies arm64 updates and requires Intel clients to retain their installed version', async () => {
+    it.each(['0.2.92', '0.2.93'])('verifies %s arm64 updates and requires Intel clients to retain their installed version', async (version) => {
       let offerIntel = false;
       vi.stubGlobal('fetch', vi.fn(async (url: string) => {
         const params = new URL(url).searchParams;
         const installed = params.get('version');
         const intel = params.get('arch') === 'x64';
-        const noUpdate = installed === '0.2.92' || (intel && !offerIntel);
+        const noUpdate = installed === version || (intel && !offerIntel);
         return { ok: true, json: async () => ({
-          version: noUpdate ? installed : '0.2.92',
-          url: noUpdate ? null : `https://github.com/SawyerHan-AI/TideMind/releases/download/v0.2.92/Tide.Mind-0.2.92-${intel ? 'x64' : 'arm64'}.dmg`,
+          version: noUpdate ? installed : version,
+          url: noUpdate ? null : `https://github.com/SawyerHan-AI/TideMind/releases/download/v${version}/Tide.Mind-${version}-${intel ? 'x64' : 'arm64'}.dmg`,
         }) };
       }));
-      await expect(verifyUpdateApi('0.2.92', ['0.2.89', '0.2.91'], true)).resolves.toBeUndefined();
+      await expect(verifyUpdateApi(version, resolveUpdatePreviousVersions(version), true)).resolves.toBeUndefined();
       offerIntel = true;
-      await expect(verifyUpdateApi('0.2.92', ['0.2.89', '0.2.91'], true)).rejects.toThrow(/unsupported x64/);
+      await expect(verifyUpdateApi(version, resolveUpdatePreviousVersions(version), true)).rejects.toThrow(/unsupported x64/);
     });
 
     const keypair = crypto.generateKeyPairSync('ed25519');

@@ -22,7 +22,7 @@ const mocks = vi.hoisted(() => {
       start: vi.fn(async () => { order.push('worker-start') }),
       setScheduleContext: vi.fn(),
       trigger: vi.fn(),
-      requestRestart: vi.fn(async () => undefined),
+      requestRestart: vi.fn(async () => { order.push('runtime-restart') }),
       shutdown: vi.fn(async () => { order.push('worker-shutdown') }),
       on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
         listeners.set(event, [...(listeners.get(event) ?? []), listener])
@@ -51,7 +51,7 @@ const mocks = vi.hoisted(() => {
     ensureDataDirs: vi.fn(() => { order.push('ensure-data-dirs') }),
     getConfig: vi.fn(() => ({ general: { data_dir: '/tmp/test-daemon-dir' } })),
     getDataDir: vi.fn(() => '/tmp/test-daemon-dir'),
-    db: { name: '/tmp/test-daemon-dir/graph/brain.sqlite', pragma: vi.fn() },
+    db: { name: '/tmp/test-daemon-dir/graph/brain.sqlite', pragma: vi.fn(), prepare: vi.fn((sql: string) => ({ run: vi.fn(() => { if (sql.includes("'invalid'")) order.push('runtime-invalid'); else order.push('runtime-published') }) })) },
     getDb: vi.fn(() => { order.push('get-db'); return mocks.db }),
     closeDb: vi.fn(() => { order.push('close-db') }),
     initVec: vi.fn(async () => { order.push('init-vec'); return 'unavailable' as const }),
@@ -269,6 +269,7 @@ describe('Electron daemon Worker production path', () => {
     const manager = mocks.managers[0]
     await mocks.mutationRestart?.('config')
     expect(manager.requestRestart).toHaveBeenCalledTimes(1)
+    expect(mocks.order.indexOf('runtime-invalid')).toBeLessThan(mocks.order.indexOf('runtime-restart'))
     const message = { protocolVersion: 1, lifecycleGeneration: 1, kind: 'health_changed', scope: 'llm' }
     manager.emit('message', message)
     await vi.waitFor(() => expect(mocks.applyStatus).toHaveBeenCalledWith(mocks.db, message))

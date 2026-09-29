@@ -40,7 +40,9 @@ export function RequiredUserActionDetail({ action }: { action: AgentIntegrationR
           ? t('agent.managed.actionDetail.instruction.mcpActivation', { server: action.serverName, config: safeDisplayTarget(action.configLabel) })
           : action.kind === 'manual_file_removal'
             ? t('agent.managed.actionDetail.instruction.manualFileRemoval', { target: safeDisplayTarget(action.physicalTargetLabel) })
-            : t('agent.managed.actionDetail.instruction.kimiConflict')
+            : action.kind === 'manual_host_removal'
+              ? t('agent.managed.actionDetail.instruction.manualHostRemoval', { host: action.hostLabel, selector: action.ownershipKey })
+              : t('agent.managed.actionDetail.instruction.kimiConflict')
 
   const steps = action.kind === 'custom_mcp_import'
     ? (action.operation === 'connect' ? ['guidedImportStep', 'guidedVerifyStep'] : ['guidedRemoveStep'])
@@ -57,7 +59,12 @@ export function RequiredUserActionDetail({ action }: { action: AgentIntegrationR
             source: safeDisplayTarget(action.sourceLabel),
             target: safeDisplayTarget(action.targetLabel),
           }))
-        : []
+        : action.kind === 'manual_host_removal'
+          ? [1, 2, 3].map(index => t(`agent.managed.actionDetail.guidance.manualHostRemoval.step${index}`, {
+              host: action.hostLabel,
+              selector: action.ownershipKey,
+            }))
+          : []
 
   return (
     <div className="mt-2 space-y-2 rounded-lg border border-amber-400/15 bg-amber-400/[0.055] p-2.5 text-xs leading-relaxed text-amber-200">
@@ -109,6 +116,17 @@ export function RequiredUserActionDetail({ action }: { action: AgentIntegrationR
         <dl className="space-y-1">
           <Fact label={t('agent.managed.actionDetail.component')} value={t(componentLabelKey(action.componentKey))} />
           <Fact label={t('agent.managed.actionDetail.target')} value={safeDisplayTarget(action.physicalTargetLabel)} mono />
+        </dl>
+      )}
+
+      {action.kind === 'manual_host_removal' && (
+        <dl className="space-y-1">
+          <Fact
+            label={t('agent.managed.actionDetail.component')}
+            value={action.componentKeys.map(componentKey => t(componentLabelKey(componentKey))).join(' · ')}
+          />
+          <Fact label={t('agent.managed.actionDetail.hostComponent')} value={action.ownershipKey} mono />
+          <Fact label={t('agent.managed.actionDetail.source')} value={safeDisplayTarget(action.targetLabel)} mono />
         </dl>
       )}
 

@@ -24,6 +24,7 @@ import type { PrepareOutput } from './types.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { createLogger } from './utils/logger.js';
 import { writeHookOutput as outputHook, writeHookOutputBeforeEvidence } from './hook-output.js';
+import { hookBridgeRejection } from './hook-bridge-guard.js';
 import { getTideMindVersion } from './utils/app-version.js';
 
 const migrationLog = createLogger('migrate');
@@ -115,6 +116,13 @@ async function main(): Promise<void> {
   }
 
   const { agentId, tool, activityGenerationToken } = parseArgs();
+
+  if (hookBridgeRejection({ scope: 'hook-post-compact', agentId, activityGenerationToken })) {
+    await outputHook(tool === 'openclaw'
+      ? JSON.stringify({ protocol: 'tidemind-openclaw-context-v1', content: '', evidenceEligible: false })
+      : '', tool, 'PostCompact');
+    return;
+  }
 
   let briefText: string;
   let contextPrepared = false;

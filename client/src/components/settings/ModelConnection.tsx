@@ -8,6 +8,7 @@ import {
 import { useIPC } from '../../hooks/useIPC'
 import { Section, Field, inputClass, ComingSoonBadge } from './shared'
 import { safeJsonParse } from '../../lib/json'
+import { CliModelCatalogPanel } from './CliModelCatalogPanel'
 
 // ============================================================
 // Provider 类型定义
@@ -154,6 +155,24 @@ function CliFact({
 // 连接详情面板
 // ============================================================
 
+type TestResultView = {
+    online: boolean
+    models: string[]
+    error?: string
+    successCount?: number
+    totalCount?: number
+    cancelled?: boolean
+    results?: Array<{
+      model: string
+      success: boolean
+      actualModel?: string | null
+      mismatch?: boolean
+      error?: string
+    }>
+    scopeState?: 'known' | 'unknown'
+    attributionUnconfirmed?: boolean
+  }
+
 function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefresh: () => void }) {
   const { t } = useTranslation('settings')
   const isCli = conn.provider_type === 'claude-cli' || conn.provider_type === 'codex-cli'
@@ -161,15 +180,8 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
   const [editing, setEditing] = useState(false)
   const [editName, setEditName] = useState(conn.name)
   const [testing, setTesting] = useState(false)
-  const [testResult, setTestResult] = useState<{
-    online: boolean
-    models: string[]
-    error?: string
-    successCount?: number
-    totalCount?: number
-    cancelled?: boolean
-    results?: Array<{ model: string; success: boolean; actualModel?: string | null; error?: string }>
-  } | null>(null)
+  const [testResult, setTestResult] = useState<TestResultView | null>(null)
+  const [catalogRefreshKey, setCatalogRefreshKey] = useState(0)
   const [checkingEnvironment, setCheckingEnvironment] = useState(false)
   const [environmentResult, setEnvironmentResult] = useState<{
     status: string
@@ -177,7 +189,10 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
     error?: { kind: string; message: string; copyCommand?: string }
   } | null>(null)
   const [progress, setProgress] = useState<{ currentModel: string; completed: number; total: number } | null>(null)
-  const persistedTestResult = useMemo(() => {
+  const persistedTestResult = useMemo((): TestResultView | null => {
+    // CLI 连接的按模型结果在独立观察表中（CliModelCatalogPanel 展示）；旧
+    // model_validation_json 只是降级前的历史，不再还原成“当前测试结果”。
+    if (isCli) return null
     const summary = safeJsonParse<{
       success?: number
       total?: number
@@ -204,7 +219,7 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
       results,
       error: undefined,
     }
-  }, [conn.last_test_summary, conn.model_validation_json])
+  }, [conn.last_test_summary, conn.model_validation_json, isCli])
   const displayTestResult = testResult ?? persistedTestResult
   const isolationState = useMemo(() => {
     const failedStatuses = new Set([
@@ -344,19 +359,24 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
   // 'us-central1' / ollamaUrl 'http://localhost:11434') 非空,会走 merge 路径
   // 覆盖 DB 已存的 region / LAN URL,probe 用错凭证。useEffect 异步回填前点测试
   // 触发此 race。跟 handleSaveCredentials 对齐:加 guard,按钮在加载完成前 disabled。
-  const handleTest = async () => {
+  const handleTest = async (models?: string[]) => {
     if (creds === null) return
     setTesting(true)
     setProgress(null)
     setTestResult(null)
     try {
-      const result = await window.api.connections.test(conn.id, buildFormOverride())
+      const result = await window.api.connections.test(
+        conn.id,
+        buildFormOverride(),
+        isCli && models ? { models } : undefined,
+      )
       setTestResult(result)
     } catch (e) {
       setTestResult({ online: false, models: [], error: (e as Error).message })
     }
     setTesting(false)
     setProgress(null)
+    setCatalogRefreshKey(key => key + 1)
     onRefresh()
   }
 
@@ -366,6 +386,7 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
     try {
       const result = await window.api.connections.checkEnvironment(conn.id)
       setEnvironmentResult(result)
+      setCatalogRefreshKey(key => key + 1)
       onRefresh()
     } catch (error) {
       setEnvironmentResult({ status: 'error', error: { kind: 'ipc', message: (error as Error).message } })
@@ -434,9 +455,6 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
             value={t(`model.connection.isolation${isolationState[0].toUpperCase()}${isolationState.slice(1)}`)}
           />
           <CliFact label={t('model.connection.lastTested')} value={conn.last_tested_at ? new Date(conn.last_tested_at).toLocaleString() : '—'} />
-          <CliFact label={t('model.connection.testScope')} value={t('model.connection.allCandidateModels', {
-            count: safeJsonParse<string[]>(conn.candidate_models, []).length,
-          })} />
           {(environmentResult?.error || conn.status_reason) && (
             <div className="col-span-2 flex items-start justify-between gap-3 rounded-md border border-red-500/20 bg-red-500/10 px-2.5 py-2 text-[11px] text-red-300">
               <span>{environmentResult?.error?.message ?? conn.status_reason}</span>
@@ -453,6 +471,15 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
             </div>
           )}
         </div>
+      )}
+
+      {isCli && (
+        <CliModelCatalogPanel
+          connectionId={conn.id}
+          busy={testing || checkingEnvironment}
+          refreshKey={catalogRefreshKey}
+          onTest={models => { void handleTest(models) }}
+        />
       )}
 
       {conn.provider_type === 'anthropic' && (
@@ -537,11 +564,14 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
             {t('model.connection.checkEnvironment')}
           </button>
         )}
-        <button onClick={testing && isCli ? handleCancelTest : handleTest} disabled={creds === null || (testing && isCli && !window.api.connections.cancelTest)}
-          className="flex items-center gap-2 px-3 py-1.5 text-xs bg-white/5 hover:bg-white/10 rounded-lg text-gray-300 transition-colors disabled:opacity-50">
-          {testing && <Loader2 size={12} className="animate-spin" />}
-          {testing && isCli ? t('model.connection.cancelTest') : t('model.connection.testConnection')}
-        </button>
+        {/* CLI 连接的测试目标在模型目录面板中明确选择；这里只保留取消入口。 */}
+        {(!isCli || testing) && (
+          <button onClick={testing && isCli ? handleCancelTest : () => { void handleTest() }} disabled={creds === null || (testing && isCli && !window.api.connections.cancelTest)}
+            className="flex items-center gap-2 px-3 py-1.5 text-xs bg-white/5 hover:bg-white/10 rounded-lg text-gray-300 transition-colors disabled:opacity-50">
+            {testing && <Loader2 size={12} className="animate-spin" />}
+            {testing && isCli ? t('model.connection.cancelTest') : t('model.connection.testConnection')}
+          </button>
+        )}
         <button onClick={handleArchive}
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded-lg transition-colors">
           <Archive size={11} /> {t('model.connection.archive')}
@@ -609,12 +639,24 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
                   }`}
                 >
                   <span className="font-medium">{result.model}</span>
+                  {result.actualModel && result.actualModel !== result.model && (
+                    <span className="ml-1 text-gray-400">→ {result.actualModel}</span>
+                  )}
+                  {result.mismatch && (
+                    <p className="mt-0.5 text-red-300/90">{t('model.catalog.outcome.mismatch')}</p>
+                  )}
                   {!result.success && result.error && (
                     <p className="mt-0.5 break-words text-red-300/90">{result.error}</p>
                   )}
                 </div>
               ))}
             </div>
+          )}
+          {isCli && displayTestResult.scopeState === 'unknown' && (
+            <p className="mt-1.5 text-amber-300">{t('model.catalog.testScopeUnknownNote')}</p>
+          )}
+          {isCli && displayTestResult.attributionUnconfirmed && (
+            <p className="mt-1.5 text-amber-300">{t('model.catalog.attributionUnconfirmed')}</p>
           )}
           {isCli && displayTestResult.error && (
             <p className="mt-1.5 text-red-300">{displayTestResult.error}</p>
@@ -844,7 +886,9 @@ export function ModelConnection() {
 
             {activeConns.map((conn: Connection) => {
               const status = getStatusInfo(conn)
-              const models = safeJsonParse<string[]>(conn.available_models, [])
+              // CLI 连接的模型数来自动态目录（详情面板）；旧 available_models 只是降级历史。
+              const connIsCli = conn.provider_type === 'claude-cli' || conn.provider_type === 'codex-cli'
+              const models = connIsCli ? [] : safeJsonParse<string[]>(conn.available_models, [])
               const usages = getUsages(conn.id)
               const isExpanded = expandedId === conn.id
 

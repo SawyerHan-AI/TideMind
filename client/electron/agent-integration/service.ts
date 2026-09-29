@@ -29,14 +29,22 @@ import type {
   AgentIntegrationCodexTrustReviewDto,
   AgentIntegrationCodexTrustResultDto,
   AgentIntegrationGuidedRemovalReviewDto,
+  AgentIntegrationDeactivationDto,
+  AgentIntegrationManualHostRemovalActionDto,
   AgentIntegrationGuidedRemovalResultDto,
 } from '../../src/lib/api-contract.js'
 import { AGENT_CATALOG, getCatalogProduct, getCatalogVariant } from './catalog.js'
 import {
-  agentReleaseSurfaceEligibilityReason,
   isAgentReleaseGateReason,
   type AgentReleaseEntry,
 } from './release-manifest.js'
+import {
+  currentArchitecture,
+  evaluateRuntimeSource,
+  isDefinitiveSourceRejection,
+  isRuntimeSourceReason,
+  runtimeSourceReason,
+} from './runtime-compatibility.js'
 import {
   MAX_CLI_EXECUTABLE_PROOF_BYTES,
   P0_DISCOVERY_CATALOG_IDS,
@@ -57,6 +65,9 @@ import type { PreparedCoordinatorPlan } from './planner.js'
 import {
   frozenPlanInstallationSurfaceFingerprint,
   frozenPlanLiveTrustProofFingerprint,
+  frozenPlanOwnershipOnlyBinding,
+  frozenPlanSharedDomainBinding,
+  OWNERSHIP_ONLY_REQUIRES_HOST_COMMAND,
   type AgentIntegrationCoordinator,
   type ApplyPreparedRequest,
   type CoordinatorInstallation,
@@ -72,12 +83,14 @@ import {
   persistedManagementEligibility,
   persistedProjectionSurfaceFingerprint,
   type ApplyTaskRunRow,
+  type GuidedRemovalAction,
   type DurableApplyTaskRow,
   type AgentInstallationRow,
   type DiscoverInstallationInput,
   type DisconnectArtifactScope,
 } from './repository.js'
 import { readStableFileFingerprint, readStableFileSnapshot } from './passive-cli-version.js'
+import { deactivationMethodsForComponents, variantDeclarationFor } from './variant-declarations.js'
 import { parseJsoncObject } from './jsonc-document.js'
 import {
   COMPONENT_KEYS,
@@ -107,6 +120,8 @@ const STATUS_REASONS = new Set<StatusReason>([
   'executable_proof_too_large', 'executable_metadata_unavailable',
   'release_entry_missing', 'release_mode_detect_only', 'release_distribution_not_accepted',
   'release_version_unverified', 'release_version_not_accepted', 'release_artifact_not_accepted',
+  'source_verification_pending', 'source_not_official', 'source_confirmation_required',
+  'custom_config_owned_by_discovered_host',
 ])
 
 export interface AgentIntegrationScannerPort {
@@ -201,6 +216,20 @@ interface CachedPlanItem {
   prepared: PreparedCoordinatorPlan
   maintenanceScopes: NoopMaintenanceScope[]
   disconnectScopes: DisconnectArtifactScope[]
+  /** Disconnect planned without source trust: Ledger ownership + live CAS only. */
+  trustMode?: 'ownership_only'
+}
+
+/**
+ * Disconnect of an untrusted host whose carrier can only be removed by running the
+ * host's own program. Nothing is planned for the host; applying it stops only the
+ * Tide Mind bridge (and maintenance) and returns exact manual removal steps.
+ */
+interface BridgeOnlyDisconnectItem {
+  installation: CoordinatorInstallation
+  installationSurfaceFingerprint: string
+  reason: StatusReason
+  manualActions: AgentIntegrationManualHostRemovalActionDto[]
 }
 
 interface NoopMaintenanceScope {
@@ -229,6 +258,7 @@ interface CachedPlanBundle {
   operation: 'connect' | 'disconnect'
   installationIds: string[]
   items: CachedPlanItem[]
+  bridgeOnlyItems?: BridgeOnlyDisconnectItem[]
   expiresAtMs: number
   consentIds: Map<string, string>
 }
@@ -288,7 +318,8 @@ interface CachedGuidedRemovalAction {
   installationSurfaceFingerprint: string
   runId: string
   activityGenerationToken: string
-  connectorAction: QwenWorkMcpRequiredUserAction | import('./types.js').CustomMcpImportRequiredUserAction
+  connectorAction: GuidedRemovalAction
+  connectorName: string
   fileAction: ManualFileRemovalRequiredUserAction | null
 }
 
@@ -527,6 +558,11 @@ export class AgentIntegrationService {
       const configExtension = path.extname(configFilePath).toLowerCase()
       if (!userOwned && configExtension !== '.json' && configExtension !== '.jsonc') {
         throw new Error('only an explicit JSON or JSONC configuration file is supported')
+      }
+      // Custom is the user-managed path; it must never re-own (launder) the
+      // configuration of a host Tide Mind already discovered (design §3.2).
+      if (!userOwned && this.discoveredHostOwningConfigFile(configFilePath)) {
+        throw new Error(CUSTOM_CONFIG_OWNED_BY_DISCOVERED_HOST)
       }
       const configSnapshot = userOwned ? null : await readStableFileSnapshot(configFilePath, 1024 * 1024)
       const configSource = configSnapshot ? Buffer.from(configSnapshot.content).toString('utf8') : '{}'
@@ -929,14 +965,18 @@ export class AgentIntegrationService {
   reviewGuidedRemoval(installationId: string): AgentIntegrationGuidedRemovalReviewDto {
     this.requireInteractiveManagementEnabled()
     const row = this.dependencies.repository.getInstallation(installationId)
+    // Hosts whose removal happens in their own UI and has no machine-readable
+    // registry: QwenWork's connector, user-owned Custom imports and the Cowork
+    // plugin. The user's explicit receipt is the only completion evidence (C0).
     if (!row || (row.host_variant !== 'qwenwork-desktop'
+      && row.host_variant !== 'claude-cowork-local'
       && !(row.host_variant === 'custom-local-mcp' && row.profile_id.startsWith('custom-guided:')))
       || row.desired_state !== 'removed') {
-      throw new Error('QwenWork guided removal is not pending')
+      throw new Error('guided removal is not pending')
     }
-    if (!row.config_root) throw new Error('QwenWork guided removal config root is unavailable')
+    if (!row.config_root) throw new Error('guided removal config root is unavailable')
     const pending = this.dependencies.repository.getPendingGuidedRemovalAction(installationId)
-    if (!pending) throw new Error('QwenWork guided removal action is unavailable')
+    if (!pending) throw new Error('guided removal action is unavailable')
     const installationSurfaceFingerprint = persistedProjectionSurfaceFingerprint(row)
     const expiresAtMs = this.now().getTime() + PLAN_TTL_MS
     const hash = sha256Json({
@@ -944,7 +984,7 @@ export class AgentIntegrationService {
       installationSurfaceFingerprint,
       runId: pending.runId,
       activityGenerationToken: pending.activityGenerationToken,
-      connectorName: pending.connectorAction.connectorName,
+      connectorName: pending.connectorName,
       configRoot: row.config_root,
       physicalTarget: pending.fileAction?.physicalTarget ?? null,
       ownedFragmentHash: pending.fileAction?.ownedFragmentHash ?? null,
@@ -962,7 +1002,7 @@ export class AgentIntegrationService {
       status: 'action_required',
       actionHash: hash,
       runId: pending.runId,
-      connectorName: pending.connectorAction.connectorName,
+      connectorName: pending.connectorName,
       instruction: pending.connectorAction.instruction,
       expiresAt: new Date(expiresAtMs).toISOString(),
     }
@@ -1002,10 +1042,22 @@ export class AgentIntegrationService {
       throw new Error('guided removal action changed; review again')
     }
     if (cached.fileAction) {
-      const root = fs.realpathSync(row.config_root)
+      // The file must live under a root frozen at discovery: the host config root,
+      // or (Cowork) the Tide Mind export root recorded as a component root.
       const target = path.resolve(cached.fileAction.physicalTarget)
-      const relative = path.relative(root, target)
-      if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+      const frozenRoots = [row.config_root, ...Object.values(persistedComponentConfigRoots(row) ?? {})]
+      const contained = frozenRoots.some(candidate => {
+        if (!candidate || !path.isAbsolute(candidate)) return false
+        let root: string
+        try {
+          root = fs.realpathSync(candidate)
+        } catch {
+          return false
+        }
+        const relative = path.relative(root, target)
+        return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative)
+      })
+      if (!contained) {
         throw new Error('guided removal target is outside the frozen config root')
       }
       try {
@@ -1022,7 +1074,7 @@ export class AgentIntegrationService {
       componentKey: 'memory_tools',
       activationRunId: cached.runId,
       activityGenerationToken: cached.activityGenerationToken,
-      connectorName: cached.connectorAction.connectorName,
+      connectorName: cached.connectorName,
       confirmedAt: this.now().toISOString(),
     })
     this.guidedRemovalActions.delete(actionHash)
@@ -1251,6 +1303,8 @@ export class AgentIntegrationService {
     const row = this.requireInstallation(installationId)
     if (row.desired_state !== 'disabled') throw new Error('only a paused Installation can resume management')
     this.dependencies.repository.setInstallationIntent(installationId, 'managed', this.now().toISOString())
+    // Resuming undoes a disconnect that could only stop the bridge (manual host removal pending).
+    this.dependencies.repository.restoreBridgeAfterPendingManualRemoval(installationId, this.now().toISOString())
     try {
       await this.dependencies.afterResume?.()
     } catch (error) {
@@ -1469,12 +1523,14 @@ export class AgentIntegrationService {
         // merely what projector code happens to be bundled. A production entry
         // without an accepted exact version remains detect-only until the
         // release contract is frozen.
+        // Deliverability follows the production release entry and Adapter
+        // availability. Exact tested versions are evidence labels, not a
+        // precondition (runtime source compatibility, design §3.1).
         const releaseAccepted = this.releaseEntries === null || Boolean(
           releaseEntry
           && releaseEntry.releaseMode === 'production'
           && releaseEntry.disposition !== 'observe_only'
-          && releaseEntry.disposition !== 'migration'
-          && releaseEntry.releaseAcceptedExactVersions.length > 0,
+          && releaseEntry.disposition !== 'migration',
         )
         const deliverable = adapterEnabled && implemented && implemented.size > 0 && releaseAccepted
         const maturity = deliverable
@@ -1685,15 +1741,24 @@ export class AgentIntegrationService {
         id: identityMatch.kind === 'matched' ? identityMatch.record.installationId : this.installationId(),
         lastDetectedAt: detectedAt,
       })
+      const priorMatchedRow = identityMatch.kind === 'matched' && identityMatch.reason === 'install_key'
+        ? this.dependencies.repository.getInstallation(identityMatch.record.installationId)
+        : undefined
       const persisted = this.dependencies.repository.upsertDiscoveredInstallation({
         ...input,
         agentId: identityMatch.kind === 'new' ? this.agentId() : null,
-        supportedCapability: isAgentReleaseGateReason(installation.managementEligibility?.reason)
+        // Only a definitive source rejection is "incompatible"; a pending official
+        // verification or a needed source confirmation keeps the product capability.
+        supportedCapability: isDefinitiveSourceRejection(installation.managementEligibility?.reason)
           ? 0
           : this.releaseEntries?.get(installation.catalogId)?.targetCapability
             ?? getCatalogVariant(installation.catalogId).maxCapability,
       })
       seenInstallationIds.add(persisted.id)
+      if (priorMatchedRow?.status_reason === 'conflict' && priorMatchedRow.health_state === 'inaccessible') {
+        // Earlier builds treated a version/CDHash change as a different source.
+        this.dependencies.repository.resolveGenerationIdentityConflict(persisted.id, detectedAt)
+      }
       const actuallyCreated = identityMatch.kind === 'new' && persisted.id === input.id
       if (actuallyCreated) newlyDiscoveredCount += 1
       if (actuallyCreated && this.isManageableInstallation(persisted)) {
@@ -1795,6 +1860,7 @@ export class AgentIntegrationService {
     const ids = uniqueIds(installationIds)
     if (ids.length === 0) throw new Error('at least one Installation is required')
     const items: CachedPlanItem[] = []
+    const bridgeOnlyItems: BridgeOnlyDisconnectItem[] = []
     for (const id of ids) {
       const row = this.requireInstallation(id)
       if (operation === 'connect' && row.desired_state === 'disabled') {
@@ -1810,7 +1876,19 @@ export class AgentIntegrationService {
         throw new Error(`an unconnected Installation cannot be disconnected: ${id}`)
       }
       const installation = toCoordinatorInstallation(row)
-      if (!this.isManageableInstallation(row)) {
+      if (operation === 'connect' && row.host_variant === 'custom-local-mcp'
+        && row.profile_id.startsWith('custom-mcp:')) {
+        const configFile = persistedComponentConfigFiles(row)?.memory_tools
+        if (configFile && this.discoveredHostOwningConfigFile(configFile, row.id)) {
+          throw new Error(CUSTOM_CONFIG_OWNED_BY_DISCOVERED_HOST)
+        }
+      }
+      // Design §3.5: disconnect is not blocked by the runtime source decision, but
+      // an untrusted host's own programs are never executed for it.
+      const ownershipOnly = operation === 'disconnect'
+        && !this.isManageableInstallation(row)
+        && this.ownershipOnlyDisconnectEligible(row)
+      if (!this.isManageableInstallation(row) && !ownershipOnly) {
         const eligibilityReason = this.managementEligibilityReason(row)
         if (eligibilityReason) {
           throw new Error(`managed integration is unavailable: ${eligibilityReason}`)
@@ -1833,13 +1911,33 @@ export class AgentIntegrationService {
       const requestedCapability = operation === 'disconnect'
         ? 0
         : capabilityForComponents(componentKeys)
+      if (ownershipOnly) {
+        const declaration = variantDeclarationFor(
+          installation.identity.hostVariant,
+          installation.identity.distribution.distributionId ?? row.distribution_id,
+        )
+        if (!declaration || deactivationMethodsForComponents(declaration, componentKeys).includes('host_command')) {
+          bridgeOnlyItems.push(this.bridgeOnlyDisconnectItem(row, installation, componentKeys))
+          continue
+        }
+      }
       const request: PreviewRequest = {
         installation,
         operation,
         componentKeys,
         desiredCapability: requestedCapability,
+        ...(ownershipOnly ? { trustMode: 'ownership_only' as const } : {}),
       }
-      const prepared = await this.dependencies.execution.preview(request)
+      let prepared: PreparedCoordinatorPlan
+      try {
+        prepared = await this.dependencies.execution.preview(request)
+      } catch (error) {
+        if (ownershipOnly && error instanceof Error && error.message === OWNERSHIP_ONLY_REQUIRES_HOST_COMMAND) {
+          bridgeOnlyItems.push(this.bridgeOnlyDisconnectItem(row, installation, componentKeys))
+          continue
+        }
+        throw error
+      }
       const desiredCapability = operation === 'disconnect'
         ? 0
         : capabilityForComponents(prepared.componentKeys)
@@ -1847,7 +1945,14 @@ export class AgentIntegrationService {
       const disconnectScopes = operation === 'disconnect'
         ? this.disconnectScopes(installation, prepared, maintenanceScopes)
         : []
-      items.push({ installation, desiredCapability, prepared, maintenanceScopes, disconnectScopes })
+      items.push({
+        installation,
+        desiredCapability,
+        prepared,
+        maintenanceScopes,
+        disconnectScopes,
+        ...(ownershipOnly ? { trustMode: 'ownership_only' as const } : {}),
+      })
     }
     const hash = sha256Json({
       operation,
@@ -1857,7 +1962,16 @@ export class AgentIntegrationService {
         adapterPlanHash: item.prepared.adapterPlanHash,
         maintenanceScopes: item.maintenanceScopes,
         disconnectScopes: item.disconnectScopes.map(disconnectScopeHashInput),
+        ...(item.trustMode ? { trustMode: item.trustMode } : {}),
       })),
+      ...(bridgeOnlyItems.length > 0 ? {
+        bridgeOnly: bridgeOnlyItems.map(item => ({
+          installationId: item.installation.id,
+          installationSurfaceFingerprint: item.installationSurfaceFingerprint,
+          reason: item.reason,
+          manualActions: item.manualActions,
+        })),
+      } : {}),
     })
     const expiresAtMs = this.now().getTime() + PLAN_TTL_MS
     const bundle: CachedPlanBundle = {
@@ -1865,6 +1979,7 @@ export class AgentIntegrationService {
       operation,
       installationIds: ids,
       items,
+      ...(bridgeOnlyItems.length > 0 ? { bridgeOnlyItems } : {}),
       expiresAtMs,
       consentIds: new Map(),
     }
@@ -1880,7 +1995,10 @@ export class AgentIntegrationService {
     return {
       planHash: bundle.hash,
       operation: bundle.operation,
-      installations: bundle.items.map(item => this.toPlanInstallationDto(item, includeTechnicalDetails)),
+      installations: [
+        ...bundle.items.map(item => this.toPlanInstallationDto(item, includeTechnicalDetails)),
+        ...(bundle.bridgeOnlyItems ?? []).map(item => bridgeOnlyPlanInstallationDto(item)),
+      ],
       expiresAt: new Date(bundle.expiresAtMs).toISOString(),
     }
   }
@@ -1902,8 +2020,11 @@ export class AgentIntegrationService {
         if (liveRow.health_state !== 'discovered' || liveRow.status_reason === 'conflict') {
           throw new Error('Installation is not authoritatively present; scan and preview again')
         }
+        const ownershipOnly = item.trustMode === 'ownership_only'
         if ((this.enabledCatalogIds && !this.enabledCatalogIds.has(item.installation.identity.hostVariant))
-          || this.dependencies.canManageInstallation?.(liveRow) === false) {
+          || (ownershipOnly
+            ? !this.ownershipOnlyDisconnectEligible(liveRow)
+            : this.dependencies.canManageInstallation?.(liveRow) === false)) {
           throw new Error(`managed integration is no longer enabled for ${item.installation.identity.hostVariant}`)
         }
         const liveInstallation = toCoordinatorInstallation(liveRow)
@@ -1916,12 +2037,18 @@ export class AgentIntegrationService {
           componentKeys: item.prepared.componentKeys,
           desiredCapability: item.desiredCapability,
           frozenActivityGenerationToken: item.prepared.activityGenerationToken,
+          ...(ownershipOnly ? { trustMode: 'ownership_only' as const } : {}),
         })
         if (preparedLiveEvidence(fresh) !== preparedLiveEvidence(item.prepared)) {
           throw new Error('Installation configuration changed after preview; preview again')
         }
         const expectedProof = frozenPlanLiveTrustProofFingerprint(item.prepared)
-        if (this.dependencies.attestInstallation) {
+        if (ownershipOnly) {
+          // Never a live source proof: the plan must carry the ownership binding instead.
+          if (expectedProof || !frozenPlanOwnershipOnlyBinding(item.prepared)) {
+            throw new Error('ownership-only disconnect binding is missing; preview again')
+          }
+        } else if (this.dependencies.attestInstallation) {
           if (!expectedProof || !await this.dependencies.attestInstallation(liveRow, expectedProof)) {
             throw new Error('Installation source trust changed before consent; scan and preview again')
           }
@@ -1970,6 +2097,17 @@ export class AgentIntegrationService {
         results.push(result)
         onResult?.(result)
       }
+    }
+    for (const item of bundle.bridgeOnlyItems ?? []) {
+      let result: AgentIntegrationApplyItemDto
+      try {
+        onItemStarted?.(item.installation.id)
+        result = this.applyBridgeOnlyDisconnect(item)
+      } catch (error) {
+        result = { installationId: item.installation.id, status: 'failed', reason: safeErrorMessage(error) }
+      }
+      results.push(result)
+      onResult?.(result)
     }
     return { planHash: bundle.hash, results }
   }
@@ -2268,15 +2406,113 @@ export class AgentIntegrationService {
       && (this.dependencies.canManageInstallation?.(row) ?? true)
   }
 
+  /**
+   * Ownership-only disconnect eligibility (design §3.5, matrix §7-3): the only
+   * reason this Installation is unmanageable is its runtime source decision, and
+   * Tide Mind owns something to revoke (consent or a Ledger artifact).
+   */
+  private ownershipOnlyDisconnectEligible(row: AgentInstallationRow): boolean {
+    if (row.host_variant === 'claude-desktop-legacy'
+      || (row.desired_state !== 'managed' && row.desired_state !== 'disabled')) return false
+    if (this.enabledCatalogIds && !this.enabledCatalogIds.has(row.host_variant as CatalogId)) return false
+    if (!isCustomInstallationManagementContractValid(row, this.dependencies.repository, this.releaseEntries)) return false
+    if (!isRuntimeSourceReason(this.managementEligibilityReason(row))) return false
+    return row.consent_envelope_id !== null
+      || this.dependencies.repository.listInstallationComponentDetails(row.id).some(component => component.artifact_id)
+  }
+
+  private bridgeOnlyDisconnectItem(
+    row: AgentInstallationRow,
+    installation: CoordinatorInstallation,
+    componentKeys: readonly ComponentKey[],
+  ): BridgeOnlyDisconnectItem {
+    const hostLabel = getCatalogVariant(installation.identity.hostVariant).displayName
+    const groups = new Map<string, { componentKeys: ComponentKey[]; targetPath: string; ownershipKey: string }>()
+    for (const component of this.dependencies.repository.listInstallationComponentDetails(row.id)) {
+      const componentKey = component.component_key as ComponentKey
+      if (!componentKeys.includes(componentKey) || typeof component.target_path !== 'string') continue
+      const ownershipKey = typeof component.ownership_key === 'string' ? component.ownership_key : ''
+      const key = `${component.target_path}\u0000${ownershipKey}`
+      const group = groups.get(key) ?? { componentKeys: [], targetPath: component.target_path, ownershipKey }
+      group.componentKeys.push(componentKey)
+      groups.set(key, group)
+    }
+    const manualActions = [...groups.values()].map((group): AgentIntegrationManualHostRemovalActionDto => ({
+      kind: 'manual_host_removal',
+      componentKey: group.componentKeys[0],
+      componentKeys: [...group.componentKeys].sort(),
+      operation: 'disconnect',
+      instruction: `Remove the Tide Mind component "${group.ownershipKey}" in ${hostLabel} with the host's own plugin manager. Tide Mind does not run this host's programs because its source is not currently trusted.`,
+      hostLabel,
+      targetLabel: redactPath(group.targetPath, this.homeDir) ?? path.basename(group.targetPath),
+      ownershipKey: group.ownershipKey,
+    }))
+    return {
+      installation,
+      installationSurfaceFingerprint: persistedProjectionSurfaceFingerprint(row),
+      reason: (this.managementEligibilityReason(row) ?? 'source_verification_pending') as StatusReason,
+      manualActions,
+    }
+  }
+
+  private applyBridgeOnlyDisconnect(item: BridgeOnlyDisconnectItem): AgentIntegrationApplyItemDto {
+    const liveRow = this.requireInstallation(item.installation.id)
+    if (persistedProjectionSurfaceFingerprint(liveRow) !== item.installationSurfaceFingerprint
+      || sha256Json(toCoordinatorInstallation(liveRow)) !== sha256Json(item.installation)) {
+      throw new Error('Installation identity changed after preview; scan and preview again')
+    }
+    if (!this.ownershipOnlyDisconnectEligible(liveRow)) {
+      throw new Error('Installation no longer needs an ownership-only disconnect; preview again')
+    }
+    const at = this.now().toISOString()
+    this.dependencies.repository.stopBridgePendingManualRemoval(liveRow.id, at)
+    this.dependencies.repository.recordEvent({
+      installationId: liveRow.id,
+      kind: 'bridge_stopped_pending_manual_removal',
+      severity: 'warning',
+      dedupeKey: `bridge_stopped_pending_manual_removal:${liveRow.id}:${item.installationSurfaceFingerprint}`,
+      payload: { reason: item.reason, components: item.manualActions.flatMap(action => action.componentKeys) },
+      createdAt: at,
+    })
+    return {
+      installationId: liveRow.id,
+      status: 'paused',
+      reason: HOST_MANUAL_REMOVAL_REQUIRED,
+      requiredUserActionDetails: item.manualActions,
+    }
+  }
+
+  /**
+   * A non-Custom Installation whose managed component configuration file, or whose
+   * configuration root, is the selected Custom JSON file / its folder.
+   */
+  private discoveredHostOwningConfigFile(configFilePath: string, excludeInstallationId?: string): AgentInstallationRow | null {
+    const target = canonicalOrResolved(configFilePath)
+    const targetDirectory = path.dirname(target)
+    for (const row of this.dependencies.repository.listInstallations({ includeRemoved: true })) {
+      if (row.id === excludeInstallationId
+        || row.host_variant === 'custom-local-mcp'
+        || row.family === 'custom-local-agent') continue
+      const files = Object.values(persistedComponentConfigFiles(row) ?? {})
+      const roots = [row.config_root, ...Object.values(persistedComponentConfigRoots(row) ?? {})]
+      if (files.some(file => typeof file === 'string' && path.isAbsolute(file) && canonicalOrResolved(file) === target)
+        || roots.some(root => typeof root === 'string' && path.isAbsolute(root)
+          && canonicalOrResolved(root) === targetDirectory)) {
+        return row
+      }
+    }
+    return null
+  }
+
   private managementEligibilityReason(row: AgentInstallationRow): StatusReason | null {
     if (this.dependencies.enforceReleaseAcceptance && row.host_variant !== 'custom-local-mcp') {
       const distribution = persistedDistribution(row)
-      const releaseReason = agentReleaseSurfaceEligibilityReason({
+      const releaseReason = runtimeSourceReason({
         catalogId: row.host_variant as CatalogId,
         detectedVersion: row.detected_version,
         distributionId: distribution.distributionId ?? row.distribution_id,
         packageProvenance: distribution.packageProvenance,
-        architecture: process.arch === 'x64' ? 'x64' : 'arm64',
+        architecture: currentArchitecture(),
         portableArtifactFingerprint: distribution.portableArtifactFingerprint,
       }, this.dependencies.releaseEntries?.get(row.host_variant as CatalogId))
       if (releaseReason) return releaseReason
@@ -2293,7 +2529,16 @@ export class AgentIntegrationService {
     // CLI distribution. A persisted eligibility record must therefore remain
     // authoritative for every host kind.
     if (!eligibility && !hasCliDistributionProbe) return null
-    if (isAgentReleaseGateReason(eligibility?.reason)) return eligibility.reason
+    if (isRuntimeSourceReason(eligibility?.reason)) {
+      // Hermetic scanners: the persisted scan decision is authoritative. With
+      // enforcement the scan overwrote `eligible`, so the persisted reason keeps
+      // blocking until the next scan persists a fresh decision (fail closed).
+      if (!this.dependencies.enforceReleaseAcceptance) return eligibility!.reason!
+    } else if (isAgentReleaseGateReason(eligibility?.reason)) {
+      // Exact-version/receipt reasons persisted by builds before runtime source
+      // compatibility are stale inventory, not a permanent block: wait for a rescan.
+      return 'source_verification_pending'
+    }
     if (!hasExactPersistedExecutableSurface(row)
       || !eligibility
       || eligibility.proofLimitBytes !== this.dependencies.cliManagementProofLimitBytes) {
@@ -2342,6 +2587,7 @@ export class AgentIntegrationService {
       profileLabel: row.profile_id || null,
       version: row.detected_version,
       manageable,
+      disconnectable: manageable || (!historicalRecord && this.ownershipOnlyDisconnectEligible(row)),
       desiredState: row.desired_state,
       // A detectable Catalog entry is not waiting for consent when the
       // production Adapter is unavailable or its distribution is untrusted.
@@ -2375,6 +2621,25 @@ export class AgentIntegrationService {
       lastRealUseAt: historicalRecord
         ? null
         : this.dependencies.repository.latestVerifiedHostActivityAt(row.id, this.now().toISOString()),
+      deactivation: installationDeactivation(row),
+      sourceVerification: row.host_variant === 'custom-local-mcp'
+        ? { state: 'user_managed', evidence: 'none', checkedAt: null }
+        : (() => {
+            const distribution = persistedDistribution(row)
+            const result = evaluateRuntimeSource({
+              catalogId: row.host_variant as CatalogId,
+              detectedVersion: row.detected_version,
+              distributionId: distribution.distributionId ?? row.distribution_id,
+              packageProvenance: distribution.packageProvenance,
+              architecture: currentArchitecture(),
+              portableArtifactFingerprint: distribution.portableArtifactFingerprint,
+            }, this.dependencies.releaseEntries?.get(row.host_variant as CatalogId))
+            return {
+              state: result.state,
+              evidence: result.evidence,
+              checkedAt: result.checkedAt ?? (result.state === 'trusted' ? row.last_detected_at : null),
+            }
+          })(),
     }
   }
 
@@ -2713,6 +2978,42 @@ function sharedImpactDto(scope: DisconnectArtifactScope): NonNullable<AgentInteg
   }
 }
 
+export const CUSTOM_CONFIG_OWNED_BY_DISCOVERED_HOST = 'custom_config_owned_by_discovered_host'
+export const HOST_MANUAL_REMOVAL_REQUIRED = 'host_manual_removal_required'
+
+function bridgeOnlyPlanInstallationDto(item: BridgeOnlyDisconnectItem): AgentIntegrationPlanInstallationDto {
+  return {
+    installationId: item.installation.id,
+    displayName: item.installation.displayName,
+    desiredCapability: 0,
+    componentKeys: [...new Set(item.manualActions.flatMap(action => action.componentKeys))].sort(),
+    targets: [],
+    requiredUserActions: [HOST_MANUAL_REMOVAL_REQUIRED],
+    requiredUserActionDetails: item.manualActions.map(action => ({ ...action, componentKeys: [...action.componentKeys] })),
+    diagnostics: ['ownership_only_disconnect_requires_host_manual_removal', item.reason],
+  }
+}
+
+/** Three independent deactivation facts (design §3.5); pause is never widened into removal. */
+export function installationDeactivation(row: AgentInstallationRow): AgentIntegrationDeactivationDto {
+  return {
+    maintenance: row.desired_state === 'disabled' ? 'paused' : 'active',
+    bridge: row.bridge_state === 'stopped' ? 'stopped' : 'serving',
+    hostComponents: row.host_components_state === 'awaiting_reload'
+      || row.host_components_state === 'deactivated_verified'
+      ? row.host_components_state
+      : 'loaded_unknown',
+  }
+}
+
+function canonicalOrResolved(target: string): string {
+  try {
+    return fs.realpathSync(target)
+  } catch {
+    return path.resolve(target)
+  }
+}
+
 function preparedLiveEvidence(plan: PreparedCoordinatorPlan): string {
   return sha256Json({
     operation: plan.operation,
@@ -2737,6 +3038,8 @@ function preparedLiveEvidence(plan: PreparedCoordinatorPlan): string {
       projectionVersion: plan.executionPlan.projectionVersion,
       installationSurfaceFingerprint: frozenPlanInstallationSurfaceFingerprint(plan),
       liveTrustProofFingerprint: frozenPlanLiveTrustProofFingerprint(plan),
+      sharedDomainBinding: frozenPlanSharedDomainBinding(plan),
+      ownershipOnlyDisconnectBinding: frozenPlanOwnershipOnlyBinding(plan),
     },
   })
 }

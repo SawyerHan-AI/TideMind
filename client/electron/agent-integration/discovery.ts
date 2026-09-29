@@ -108,6 +108,9 @@ export type ManagementEligibilityReason =
   | 'release_version_unverified'
   | 'release_version_not_accepted'
   | 'release_artifact_not_accepted'
+  | 'source_verification_pending'
+  | 'source_not_official'
+  | 'source_confirmation_required'
 
 export interface ManagementEligibility {
   schemaVersion: typeof CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION
@@ -212,7 +215,8 @@ export interface VersionCommandResult {
       installName: string
       manifestName: string
       version: string
-      integrity: string
+      /** Registry integrity from the hidden lockfile; absent for the lockless surface. */
+      integrity?: string
       ownedPackageSha256: string
       ownedEntryCount: number
       ownedTotalBytes: number
@@ -357,7 +361,7 @@ export interface LocalDiscoveryContext {
   environment?: Readonly<Record<string, string | undefined>>
   applicationRoots?: readonly string[]
   operationTimeoutMs?: number
-  /** Platform signature verification is bounded separately from ordinary path probes. */
+  /** Per-codesign/content-proof budget; the full strict attestation gets up to 3x (max 60s). */
   signatureTimeoutMs?: number
 }
 
@@ -1256,11 +1260,39 @@ function makeInstallation(
   }
 }
 
+type ProofScheduler = <T>(operation: () => Promise<T>) => Promise<T>
+
+function createProofScheduler(limit: number): ProofScheduler {
+  let active = 0
+  const waiting: Array<() => void> = []
+  return async operation => {
+    await new Promise<void>(resolve => {
+      if (active < limit) { active += 1; resolve() }
+      else waiting.push(resolve)
+    })
+    try {
+      return await operation()
+    } finally {
+      const next = waiting.shift()
+      if (next) next() // Hand the reserved slot directly to the next waiter.
+      else active -= 1
+    }
+  }
+}
+
 async function discoverCli(
   definition: CliProbeDefinition,
   context: LocalDiscoveryContext,
   dependencies: DiscoveryDependencies,
   timeoutMs: number,
+  /**
+   * Budget for content proofs and code signatures (package-tree hashing of hundreds of
+   * MB, two `codesign --verify` runs). The short per-operation budget is for metadata
+   * syscalls only; using it here made proofs time out under normal scan load and
+   * silently dropped the source identity (real-host probe, 2026-09-25).
+   */
+  proofTimeoutMs: number = timeoutMs,
+  scheduleProof: ProofScheduler = operation => operation(),
 ): Promise<ProbeResult> {
   const result = EMPTY_RESULT()
   const unresolvedCatalogIds = definition.detectOnlyFallbackCatalogId
@@ -1424,10 +1456,10 @@ async function discoverCli(
       && observedExecutable.realpath === path.posix.join(context.homeDir, '.kimi-code', 'bin', 'kimi')
     if (!isKimiNativeSurface) {
       try {
-        const versionResult = await withTimeout(
-          dependencies.execVersion(observedExecutable.realpath, ['--version'], { timeoutMs }),
-          timeoutMs,
-        )
+        const versionResult = await scheduleProof(() => withTimeout(
+          dependencies.execVersion(observedExecutable.realpath, ['--version'], { timeoutMs: proofTimeoutMs }),
+          proofTimeoutMs,
+        ))
         const versionOutput = `${versionResult.stdout}\n${versionResult.stderr}`.slice(0, 4096)
         verifiedPackageProvenance = versionResult.verifiedPackageProvenance
         versionDetectionMethod = 'cli_version'
@@ -1467,12 +1499,12 @@ async function discoverCli(
                 observedExecutable.realpath,
                 MAX_CLI_EXECUTABLE_PROOF_BYTES,
               ),
-              timeoutMs,
+              proofTimeoutMs,
             )
           : undefined
-        const signature = await withTimeout(
-          dependencies.inspectAppSignature(observedExecutable.realpath, {
-            timeoutMs,
+        const signature = await scheduleProof(() => withTimeout(
+          dependencies.inspectAppSignature!(observedExecutable.realpath, {
+            timeoutMs: proofTimeoutMs,
             beforeFinalVerification: async () => {
               const currentRealpath = await dependencies.fs.realpath(observedExecutable!.realpath)
               if (currentRealpath !== observedExecutable!.realpath) {
@@ -1490,7 +1522,7 @@ async function discoverCli(
                     observedExecutable!.realpath,
                     MAX_CLI_EXECUTABLE_PROOF_BYTES,
                   ),
-                  timeoutMs,
+                  proofTimeoutMs,
                 )
                 if (currentExecutable.fingerprint !== signedExecutableBefore.fingerprint) {
                   throw new Error('signed_cli_executable_changed_during_signature')
@@ -1498,15 +1530,15 @@ async function discoverCli(
               }
             },
           }),
-          timeoutMs,
-        )
+          Math.min(60_000, 3 * proofTimeoutMs),
+        ))
         const signedExecutableAfter = signedExecutableBefore && dependencies.fs.readStableFileFingerprint
           ? await withTimeout(
               dependencies.fs.readStableFileFingerprint(
                 observedExecutable.realpath,
                 MAX_CLI_EXECUTABLE_PROOF_BYTES,
               ),
-              timeoutMs,
+              proofTimeoutMs,
             )
           : undefined
         const receiptFingerprint = codeSignatureReceiptFingerprint(signature)
@@ -1514,7 +1546,7 @@ async function discoverCli(
         const kimiArchitecture = isKimiNative && dependencies.inspectExecutableArchitecture
           ? await withTimeout(
               dependencies.inspectExecutableArchitecture(observedExecutable.realpath),
-              timeoutMs,
+              proofTimeoutMs,
             )
           : null
         const kimiLookupFingerprint = isKimiNative
@@ -1800,6 +1832,7 @@ async function discoverApp(
   dependencies: DiscoveryDependencies,
   timeoutMs: number,
   signatureTimeoutMs: number,
+  scheduleProof: ProofScheduler = operation => operation(),
 ): Promise<ProbeResult> {
   const result = EMPTY_RESULT()
   const applicationRoots = context.applicationRoots ?? [
@@ -1907,11 +1940,11 @@ async function discoverApp(
                 bundleSurface.executableRealpath,
                 MAX_CLI_EXECUTABLE_PROOF_BYTES,
               ),
-              timeoutMs,
+              signatureTimeoutMs,
             )
           : undefined
-        signature = await withTimeout(
-          dependencies.inspectAppSignature(app.realpath, {
+        signature = await scheduleProof(() => withTimeout(
+          dependencies.inspectAppSignature!(app.realpath, {
             timeoutMs: signatureTimeoutMs,
             beforeFinalVerification: async () => {
               const currentSurface = await inspectStableDesktopBundleSurface(
@@ -1928,7 +1961,7 @@ async function discoverApp(
                     bundleSurface.executableRealpath,
                     MAX_CLI_EXECUTABLE_PROOF_BYTES,
                   ),
-                  timeoutMs,
+                  signatureTimeoutMs,
                 )
                 if (currentExecutable.fingerprint !== executableArtifactBefore.fingerprint) {
                   throw new Error('desktop_bundle_executable_changed_during_signature')
@@ -1936,8 +1969,8 @@ async function discoverApp(
               }
             },
           }),
-          signatureTimeoutMs,
-        )
+          Math.min(60_000, 3 * signatureTimeoutMs),
+        ))
       } catch (error) {
         const surfaceChanged = error instanceof Error
           && error.message.startsWith('desktop_bundle_')
@@ -1967,7 +2000,7 @@ async function discoverApp(
                 bundleSurface.executableRealpath,
                 MAX_CLI_EXECUTABLE_PROOF_BYTES,
               ),
-              timeoutMs,
+              signatureTimeoutMs,
             )
           : undefined
         if (surfaceAfterSignature.fingerprint !== bundleSurface.fingerprint) {
@@ -2152,10 +2185,14 @@ export async function discoverLocalP0Agents(
     timeoutMs,
     Math.min(context.signatureTimeoutMs ?? timeoutMs, 60_000),
   )
+  // Keep absent/inaccessible metadata probes parallel: queuing them multiplies
+  // the latency of a disconnected path. Only costly hashing/signature phases
+  // share a bounded pool, and their budgets start after admission to that pool.
+  const scheduleProof = createProofScheduler(3)
   const results = await Promise.all(P0_DISCOVERY_PROBES.map(probe =>
     probe.kind === 'cli'
-      ? discoverCli(probe, context, dependencies, timeoutMs)
-      : discoverApp(probe, context, dependencies, timeoutMs, signatureTimeoutMs),
+      ? discoverCli(probe, context, dependencies, timeoutMs, signatureTimeoutMs, scheduleProof)
+      : discoverApp(probe, context, dependencies, timeoutMs, signatureTimeoutMs, scheduleProof),
   ))
   return stabilizeReport(results)
 }

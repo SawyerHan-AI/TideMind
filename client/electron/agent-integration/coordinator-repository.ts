@@ -19,6 +19,7 @@ import {
   additionalPhysicalMutationDomains,
   frozenPlanInstallationSurfaceFingerprint,
   frozenPlanLiveTrustProofFingerprint,
+  frozenPlanOwnershipOnlyBinding,
   physicalMutationDomain,
   supplementalConsentClaims,
 } from './coordinator'
@@ -636,7 +637,16 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
         // A guided host surface is deliberately not readable/writable by Tide
         // Mind. Persist its desired state and frozen action in the run, but do
         // not fabricate an owned Artifact/consumer for an external GUI action.
-        if (isGuidedNoMutationComponent(input, componentKey)) continue
+        if (isGuidedNoMutationComponent(input, componentKey)) {
+          // A guided host surface exported from a Tide Mind-owned aggregate
+          // artifact (Cowork's plugin) still holds a consumer edge on that
+          // artifact; a disconnect must stage it like the rest of the aggregate.
+          if (input.operation === 'disconnect') {
+            const domain = this.stageGuidedOwnedConsumerRemoval(input, componentKey)
+            if (domain) managedDomains.add(domain)
+          }
+          continue
+        }
         if (input.operation === 'disconnect' && isManualRemovalPendingComponent(input, componentKey)) {
           managedDomains.add(this.stageManualRemovalPendingConsumer(input, componentKey))
         } else {
@@ -729,6 +739,11 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
             verified_capability = CASE WHEN ? THEN 0 ELSE verified_capability END,
             verification_summary = CASE WHEN ? THEN 'unverified' ELSE verification_summary END,
             verification_result_id = CASE WHEN ? THEN NULL ELSE verification_result_id END,
+            bridge_state = CASE WHEN ? = 'removed' THEN 'stopped'
+              WHEN ? = 'repair' THEN bridge_state ELSE 'serving' END,
+            bridge_state_reason = CASE WHEN ? = 'removed' THEN 'disconnected'
+              WHEN ? = 'repair' THEN bridge_state_reason ELSE NULL END,
+            host_components_state = CASE WHEN ? = 'removed' THEN 'awaiting_reload' ELSE 'loaded_unknown' END,
             updated_at = ?
         WHERE id = ?
       `).run(
@@ -744,6 +759,11 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
         reconnectFromRemoved ? 1 : 0,
         reconnectFromRemoved ? 1 : 0,
         reconnectFromRemoved ? 1 : 0,
+        input.intentAfterPrepare,
+        input.operation,
+        input.intentAfterPrepare,
+        input.operation,
+        input.intentAfterPrepare,
         input.createdAt,
         input.installationId,
       )
@@ -1889,6 +1909,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
             installationId: run.installation_id,
             installationSurfaceFingerprint: frozenPlanInstallationSurfaceFingerprint(preparedPlan),
             liveTrustProofFingerprint: frozenPlanLiveTrustProofFingerprint(preparedPlan),
+            ownershipOnlyDisconnectBinding: frozenPlanOwnershipOnlyBinding(preparedPlan),
           })
         } catch (error) {
           this.quarantineVerifiedRecoveryEnvelope(run, error)
@@ -2579,6 +2600,31 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
         WHERE id = ?
       `).run(input.createdAt, owned.id)
     }
+    return owned.mutation_domain
+  }
+
+  private stageGuidedOwnedConsumerRemoval(input: PrepareExecutionInput, componentKey: ComponentKey): string | null {
+    const owned = this.db.prepare(`
+      SELECT a.id, a.mutation_domain
+      FROM installation_components ic
+      JOIN managed_artifacts a ON a.id = ic.artifact_id
+      JOIN artifact_consumers c
+        ON c.artifact_id = a.id AND c.installation_id = ic.installation_id
+       AND c.component_key = ic.component_key
+      WHERE ic.installation_id = ? AND ic.component_key = ?
+        AND c.state = 'active' AND c.desired_state IN ('managed','disabled')
+        AND c.tombstoned_at IS NULL
+    `).get(input.installationId, componentKey) as { id: string; mutation_domain: string } | undefined
+    if (!owned) return null
+    this.db.prepare(`
+      UPDATE artifact_consumers
+      SET desired_state = 'removal_pending', state = 'removal_pending',
+          tombstoned_at = COALESCE(tombstoned_at, ?), tombstone_reason = 'user_disconnect',
+          consent_envelope_id = ?, updated_at = ?
+      WHERE artifact_id = ? AND installation_id = ? AND component_key = ?
+        AND state = 'active' AND desired_state IN ('managed','disabled')
+        AND tombstoned_at IS NULL
+    `).run(input.createdAt, input.consentId, input.createdAt, owned.id, input.installationId, componentKey)
     return owned.mutation_domain
   }
 
@@ -3276,6 +3322,34 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       `).run(
         sharedVisibilityRemaining ? 'shared_visibility_remaining' : 'disconnect_verified',
         at,
+        at,
+        run.installation_id,
+        run.consent_envelope_id,
+      )
+      // Host-side state (design §3.5): read-back absence alone only means the
+      // request succeeded — a running host may still hold the component until it
+      // reloads. Only when every physical removal also carries Tide Mind's own
+      // host-reload receipt (OpenClaw gateway restart) is deactivation verified.
+      const hostReload = this.db.prepare(`
+        SELECT COUNT(*) AS total,
+               SUM(CASE WHEN state = 'committed'
+                 AND json_valid(apply_receipt_json)
+                 AND json_extract(apply_receipt_json, '$.adapterReceipt.hostReceipt.gatewayRestarted') = 1
+                 THEN 1 ELSE 0 END) AS reloaded
+        FROM projection_mutations
+        WHERE run_id = ? AND idempotency_strategy != 'consumer_detach_only'
+      `).get(runId) as { total: number; reloaded: number | null }
+      const deactivationVerified = !sharedVisibilityRemaining
+        && hostReload.total > 0
+        && hostReload.reloaded === hostReload.total
+      this.db.prepare(`
+        UPDATE agent_installations
+        SET host_components_state = ?, bridge_state = 'stopped',
+            bridge_state_reason = COALESCE(bridge_state_reason, 'disconnected'), updated_at = ?
+        WHERE id = ? AND desired_state = 'removed' AND tombstoned_at IS NOT NULL
+          AND consent_envelope_id = ?
+      `).run(
+        deactivationVerified ? 'deactivated_verified' : 'awaiting_reload',
         at,
         run.installation_id,
         run.consent_envelope_id,

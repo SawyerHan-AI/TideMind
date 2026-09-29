@@ -263,7 +263,7 @@ describe('migration v33 — connection-aware LLM persistence', () => {
     });
   });
 
-  it('CLI credentials 固定为空，环境指纹变化会原子失效旧模型验证', () => {
+  it('CLI credentials 固定为空，环境变化不再清空旧模型验证（证据按 scope/epoch 退为历史）', () => {
     const db = new Database(':memory:');
     ensureSchema(db);
     const connection = createConnection(db, {
@@ -283,6 +283,8 @@ describe('migration v33 — connection-aware LLM persistence', () => {
       WHERE id = ?
     `).run(connection.id);
 
+    // design §6/§8：CLI 路径、版本、认证变化只让旧 epoch 的观察退为历史；
+    // 旧 candidate/available 列不再写入也不再清空（仅作历史展示）。
     const result = updateCliConnectionEnvironment(db, connection.id, {
       status: 'untested',
       statusReason: null,
@@ -290,18 +292,50 @@ describe('migration v33 — connection-aware LLM persistence', () => {
       cliVersion: '0.145.0',
       authMethod: 'chatgpt',
       authFingerprint: 'account-a',
-      candidateModels: ['gpt-5'],
       environmentCheckedAt: '2026-07-29T00:00:00.000Z',
     });
-    expect(result.validationInvalidated).toBe(true);
+    expect(result).toBeUndefined();
     expect(getConnection(db, connection.id)).toMatchObject({
       credentials: '{}',
       status: 'untested',
-      available_models: null,
-      validation_fingerprint: null,
-      model_validation_json: null,
-      last_tested_at: null,
-      last_test_summary: null,
+      cli_path: '/opt/homebrew/bin/codex',
+      cli_version: '0.145.0',
+      auth_method: 'chatgpt',
+      auth_fingerprint: 'account-a',
+      environment_checked_at: '2026-07-29T00:00:00.000Z',
+      last_checked: '2026-07-29T00:00:00.000Z',
+      available_models: '["gpt-5"]',
+      // cliGeneration 缺省时保留旧 validation_fingerprint（COALESCE）。
+      validation_fingerprint: 'old',
+      model_validation_json: '{}',
+      last_tested_at: 'old',
+      last_test_summary: '{}',
     });
+
+    updateCliConnectionEnvironment(db, connection.id, {
+      status: 'untested',
+      statusReason: null,
+      cliPath: '/opt/homebrew/bin/codex',
+      cliVersion: '0.156.1',
+      authMethod: 'chatgpt',
+      authFingerprint: 'account-a',
+      cliGeneration: 'generation-2',
+      environmentCheckedAt: '2026-07-30T00:00:00.000Z',
+    });
+    expect(getConnection(db, connection.id)).toMatchObject({
+      cli_version: '0.156.1',
+      validation_fingerprint: 'generation-2',
+      available_models: '["gpt-5"]',
+    });
+
+    expect(() => updateCliConnectionEnvironment(db, 'mc_missing', {
+      status: 'untested',
+      statusReason: null,
+      cliPath: null,
+      cliVersion: null,
+      authMethod: null,
+      authFingerprint: null,
+      environmentCheckedAt: '2026-07-30T00:00:00.000Z',
+    })).toThrow(/not found/);
   });
 });

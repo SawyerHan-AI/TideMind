@@ -182,11 +182,13 @@ async function startDaemonInternal(generation: number): Promise<void> {
   })
   workerHandoffIssuer = handoffIssuer
   const manager = new MetabolismWorkerGenerationManager({
-    buildBootstrap: async workerGeneration => handoffIssuer.build(
-      getConfig(),
-      workerGeneration,
-      runtimeRevisions.allocate(),
-    ),
+    buildBootstrap: async workerGeneration => {
+      const revision = runtimeRevisions.allocate()
+      const bootstrap = handoffIssuer.build(getConfig(), workerGeneration, revision)
+      db.prepare("INSERT INTO metadata (key, value) VALUES ('metabolism_worker_runtime_revision', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .run(String(revision))
+      return bootstrap
+    },
     createController: () => new MetabolismWorkerController({
       workerPath: getMetabolismWorkerPath(),
       structureHolesHandler: async () => runStructureHolesInWorker(db),
@@ -225,8 +227,13 @@ async function startDaemonInternal(generation: number): Promise<void> {
   manager.on('degraded', reason => {
     publishWorkerDegraded(db, reason, '代谢Worker不可用，已停止后台调度且不会回退main')
   })
+  const invalidateRuntimeRevision = (): void => {
+    // Synchronous DB invalidation fences stdin commits before asynchronous drain delivery.
+    db.prepare("INSERT INTO metadata (key, value) VALUES ('metabolism_worker_runtime_revision', 'invalid') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run()
+  }
   unbindRuntimeMutation = bindMetabolismWorkerRuntimeMutationRestart(
     async () => {
+      invalidateRuntimeRevision()
       runtimeSourceWatcher?.acknowledgeCurrent()
       await manager.requestRestart()
     },
@@ -235,6 +242,7 @@ async function startDaemonInternal(generation: number): Promise<void> {
     },
   )
   runtimeSourceWatcher = watchMetabolismWorkerExternalRuntimeSources(getDataDir(), () => {
+    invalidateRuntimeRevision()
     void manager.requestRestart().catch(error => {
       publishWorkerDegraded(db, error, '代谢Worker外部runtime source换代失败')
     })

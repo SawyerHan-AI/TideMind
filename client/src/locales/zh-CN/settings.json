@@ -194,7 +194,18 @@
       ,"connectionUnavailable": "已保存的连接不存在"
       ,"modelUnavailable": "已保存的模型尚未验证通过"
       ,"savedConnectionInvalid": "已保存的连接不可用。请选择其他连接以更新此路由。"
-      ,"savedModelInvalid": "已保存的模型不可用。请选择已验证模型以更新此路由。"
+      ,"savedModelInvalid": "已保存的模型不可用。请选择已验证模型以更新此路由。",
+      "followDefault": "隔离调用默认（CLI 内置）",
+      "isolatedDefaultHint": "使用隔离环境中的 CLI 内置默认模型；不会跟随账号目录推荐或本机个人配置。",
+      "aliasPending": "别名，待验证",
+      "catalogDefaultBadge": "目录推荐默认",
+      "upgradeHint": "上游建议升级到 {{model}}",
+      "notListed": "当前目录未列出，保留原选择",
+      "manualEntry": "手动输入模型 ID…",
+      "manualPlaceholder": "输入模型 ID",
+      "manualApply": "使用",
+      "manualCancel": "取消",
+      "manualInvalid": "模型 ID 格式无效"
     },
     "serviceStatus": {
       "title": "AI 服务状态",
@@ -214,7 +225,65 @@
       "needsAttention": "需要处理",
       "unknownConnection": "未知连接",
       "collapseErrors": "收起错误",
-      "expandErrors": "展开其余 {{count}} 条"
+      "expandErrors": "展开其余 {{count}} 条",
+      "routeFaults": "在用路由故障"
+    },
+    "catalog": {
+      "scope": "账号范围",
+      "scopeNotChecked": "尚未检查",
+      "scopeUnknown": "无法确认（只能手动测试，不运行后台任务）",
+      "scopeKnown": "已确认",
+      "title": "模型目录",
+      "refresh": "刷新模型列表",
+      "refreshFailed": "刷新失败（{{kind}}），保留上次完整目录",
+      "none": "尚未获取模型目录",
+      "unsupported": "该 CLI 版本不提供模型列表；可跟随默认或手动输入模型 ID",
+      "aliasesOnly": "官方别名 {{count}} 个（待验证）/ 最近验证 {{verified}} 个；可手动输入模型 ID",
+      "summary": "发现 {{count}} 个模型 / 最近验证 {{verified}} 个",
+      "updatedAt": "目录更新于 {{time}}",
+      "outdated": "目录已超过 24 小时未更新",
+      "lastAttemptFailed": "{{time}} 刷新失败（{{kind}}）",
+      "inUse": "在用路由",
+      "inUseNone": "没有模型路由使用此连接",
+      "tier": {
+        "light": "轻量",
+        "standard": "常规",
+        "heavy": "重度"
+      },
+      "testTargets": "测试指定模型",
+      "testScopeUnknownNote": "将使用 CLI 当前登录，无法确认账号；本次结果不会解锁后台任务",
+      "testCostNote": "将对 {{count}} 个模型各发起一次真实调用，会消耗额度",
+      "testSelected": "测试所选模型",
+      "observations": "当前账号下的调用观察",
+      "showHistory": "查看历史测试（{{count}}）",
+      "hideHistory": "收起历史",
+      "historicalEpoch": "历史认证代次 {{epoch}}",
+      "attributionUnconfirmed": "测试期间 CLI 或登录账号发生变化，本次结果归属未确认，已记为历史",
+      "admission": {
+        "firstCall": "待首次调用验证",
+        "allowed": "最近调用成功（{{time}}）",
+        "connection_busy": "连接正在检查或测试",
+        "connection_unavailable": "连接环境不可用，请检查环境",
+        "ambiguous_outcome": "上次调用结果不明，后台已暂停；完成测试后恢复",
+        "scope_unknown": "无法确认登录账号范围，后台调用已暂停",
+        "invalid_model_id": "模型 ID 无效",
+        "model_rejected": "当前账号明确无法使用该模型；可复测或更换",
+        "model_mismatch": "固定模型返回了非预期的实际模型；需显式复测",
+        "backoff": "暂时失败，冷却至 {{retryAt}}"
+      },
+      "outcome": {
+        "success": "调用成功",
+        "mismatch": "实际模型与固定选择不一致",
+        "model_rejected": "账号无权限或模型不存在",
+        "temporary_failure": "暂时失败（限流/配额/网络）",
+        "connection_failure": "连接环境错误",
+        "unclassified_failure": "调用失败，原因未识别",
+        "ambiguous": "结果不明"
+      },
+      "source": {
+        "business": "业务调用",
+        "test": "连接测试"
+      }
     }
   },
   "data": {
@@ -1064,6 +1133,23 @@
       }
     },
     "managed": {
+      "sourceVerification": {
+        "title": "安装来源",
+        "description": "来源核验不代表宿主已加载组件或记忆调用成功。",
+        "states": {
+          "trusted": "来源已核验",
+          "pending": "等待来源核验",
+          "confirmation_required": "需要确认来源",
+          "rejected": "来源未通过核验",
+          "user_managed": "用户自管配置"
+        },
+        "evidence": {
+          "tested_sample": "已测试的发行制品",
+          "signed_identity": "官方签名",
+          "npm_registry": "已核对 npm 官方包",
+          "npm_registry_cache": "已缓存的 npm 官方核验"
+        }
+      },
       "title": "Agent 对接",
       "subtitle": "自动发现并维护这台 Mac 上兼容的本机 Agent。",
       "summary": "{{products}} 个 Agent 产品 · {{installations}} 个安装实例 · {{available}} 个可用",
@@ -1222,9 +1308,12 @@
         "releaseEntryMissing": "当前 Tide Mind 版本没有这个 Agent 的正式接入契约。请先更新 Tide Mind 再重新检查；如果已是最新版，则暂不支持配置。",
         "releaseModeDetectOnly": "当前 Tide Mind 版本只能发现这个 Agent，不能自动配置。请在后续支持版本发布后更新 Tide Mind 并重新检查。",
         "releaseDistributionNotAccepted": "这个安装来源未通过发版验证。请从 Agent 官方渠道重新安装，然后点击“重新检查”；Tide Mind 不会修改当前安装。",
-        "releaseArtifactNotAccepted": "这个 Agent 的本机文件与 Tide Mind 验证过的官方安装包不一致。请从官方渠道重新安装后再检查。",
+        "releaseArtifactNotAccepted": "这是旧版 Tide Mind 留下的安装文件检查记录，正在等待重新检查。点击“重新检查”可立即更新。",
         "releaseVersionUnverified": "Tide Mind 无法确认这个 Agent 的版本。请从官方渠道重新安装或更新，然后点击“重新检查”。",
-        "releaseVersionNotAccepted": "这个 Agent 的精确版本未通过发版验证。请更新 Agent 后重新检查；如果已是最新版，请等待 Tide Mind 更新。",
+        "releaseVersionNotAccepted": "这是旧版 Tide Mind 留下的版本检查记录，正在等待重新检查。点击“重新检查”可立即更新。",
+        "sourceVerificationPending": "正在核对这个 Agent 的官方来源，暂时无法完成检查，当前不会自动配置。联网后会自动重试。",
+        "sourceNotOfficial": "这个 Agent 的本机安装与官方发布内容不一致，已停止自动配置。请从官方渠道重新安装后点击“重新检查”。",
+        "sourceConfirmationRequired": "这种安装方式无法自动核验官方来源，当前不会自动配置。请从官方渠道重新安装，或改用“添加自定义本机 Agent”手动接入。",
         "unverified": "尚未完成验证。",
         "verificationStale": "之前的验证证据已失效。",
         "connecting": "正在应用已批准的连接计划。",
@@ -1243,7 +1332,8 @@
         "circuitBreaker": "组件反复被移除，自动恢复已停止。",
         "disconnectVerified": "已验证 Tide Mind 组件不存在。",
         "hostUninstalled": "该 Agent 已不在本机。",
-        "unknown": "请在详情中查看最近验证的事实。"
+        "unknown": "请在详情中查看最近验证的事实。",
+        "customConfigOwnedByDiscoveredHost": "该配置文件（或其所在文件夹）已属于 Tide Mind 发现的某个 Agent。请直接接入该 Agent，不要作为自定义客户端添加。"
       },
       "access": {
         "complete": "完整接入",
@@ -1317,7 +1407,7 @@
         "legacyConnectionAdopted": "已识别旧连接，等待确认托管",
         "legacyConnectionNeedsConfirmation": "发现旧连接，需要你确认",
         "legacyAdoptionScanFailed": "暂时无法检查旧连接",
-        "userConfirmedGuidedRemoval": "Qwen Work 移除操作已由用户确认"
+        "userConfirmedGuidedRemoval": "引导式移除已由用户确认"
       },
       "management": "管理连接",
       "supportMode": {
@@ -1383,7 +1473,8 @@
         "codexHookTrustUnavailable": "暂时无法验证 Codex Hook 信任状态，请核对宿主后重试。",
         "manualDocumentRemoval": "请手动移除 Tide Mind 所有的说明文件，然后重新验证。",
         "componentRequiresOtherProjection": "{{component}} 需要改用另一种受支持的接入方式。",
-        "manualReview": "这项变更需要手动操作，请先核对引导详情再继续。"
+        "manualReview": "这项变更需要手动操作，请先核对引导详情再继续。",
+        "hostManualRemoval": "该宿主当前来源未通过确认，Tide Mind 不会运行它的程序。请在宿主中手动移除 Tide Mind 组件；Tide Mind 已停止为该 Agent 提供记忆。"
       },
       "currentRequiredAction": "当前待办",
       "openCurrentRequiredAction": "查看当前操作指引",
@@ -1396,13 +1487,18 @@
         "confirm": "我已按指引从 Qwen Work 移除连接，确认完成",
         "userConfirmedNotice": "此操作记录的是“用户已确认”，不是宿主自动验证结果。",
         "confirmed": "已由你确认移除。Tide Mind 已记录确认，并重新检查了本次移除操作。",
-        "notReady": "Tide Mind Skill 仍然存在。请先移除 Skill 和 Qwen Work 连接器，然后再次确认。"
+        "notReady": "Tide Mind Skill 仍然存在。请先移除 Skill 和 Qwen Work 连接器，然后再次确认。",
+        "coworkExplanation": "在 Claude Cowork（Customize → Plugins）中移除 Tide Mind 插件并删除导出的 .plugin 文件后，请明确确认已完成该引导步骤。",
+        "coworkDescription": "Claude Cowork 没有可供机器读取的插件注册表。Tide Mind 会为这次待确认的移除记录你的确认。",
+        "coworkConfirm": "我已按说明从 Claude Cowork 中移除 Tide Mind 插件",
+        "coworkNotReady": "导出的 Tide Mind 插件文件仍然存在。请删除该文件并在 Claude Cowork 中移除插件，然后再次确认。"
       },
       "actionDetail": {
         "instruction": {
           "mcpActivation": "请在 {{config}} 中允许 {{server}}，然后重新检查连接。",
           "manualFileRemoval": "请移除 Tide Mind 在 {{target}} 中管理的文件，然后重新检查连接。",
-          "kimiConflict": "旧版 Skill 路径与受管路径无法安全迁移，因此 Tide Mind 未修改任一文件。"
+          "kimiConflict": "旧版 Skill 路径与受管路径无法安全迁移，因此 Tide Mind 未修改任一文件。",
+          "manualHostRemoval": "请使用 {{host}} 自带的插件或扩展管理功能，移除 Tide Mind 组件“{{selector}}”。"
         },
         "guidance": {
           "claudeCowork": {
@@ -1413,7 +1509,12 @@
             "connect": {"step1":"打开 Qwen Work，进入“扩展”→“连接器”。","step2":"选择 JSON 配置入口，粘贴下方完整的 mcpServers JSON。","step3":"确认 command、args 和 env 是分离字段，然后应用配置。","step4":"启用连接器，新建一个对话，并在同一对话中分别成功调用 Tide Mind 的 brain_recall 与 brain_digest。"},
             "disconnect": {"step1":"打开 Qwen Work，进入“扩展”→“连接器”→“已安装”。","step2":"在“自定义”区域找到“{{connector}}”，点击删除图标并确认。","step3":"新建一个对话，然后返回 Tide Mind 重新检查。"}
           },
-          "kimiConflict": {"step1":"核对旧版 Skill {{source}} 与受管目标 {{target}}。","step2":"如需保留内容，请移动或重命名 Tide Mind 不应管理的文件。Tide Mind 不会覆盖或删除未经验证的文件。","step3":"返回 Tide Mind，重新运行检查。"}
+          "kimiConflict": {"step1":"核对旧版 Skill {{source}} 与受管目标 {{target}}。","step2":"如需保留内容，请移动或重命名 Tide Mind 不应管理的文件。Tide Mind 不会覆盖或删除未经验证的文件。","step3":"返回 Tide Mind，重新运行检查。"},
+          "manualHostRemoval": {
+            "step1": "打开 {{host}}，在其插件或扩展列表中找到 Tide Mind 组件“{{selector}}”。",
+            "step2": "仅移除当前 Agent 对应的组件，然后重启 {{host}} 或新建会话，使其不再加载。",
+            "step3": "Tide Mind 已停止为该 Agent 提供记忆并暂停维护。只有想保留连接时才恢复维护。"
+          }
         },
         "source": "来源",
         "package": "插件包",
@@ -1442,7 +1543,8 @@
           "legacy_not_exact": "旧路径文件不是可精确识别的 Tide Mind 旧版 Skill。",
           "legacy_changed": "旧版 Skill 在检查后已发生变化。",
           "target_occupied": "新的 Tide Mind Skill 目标路径已有未受管文件。"
-        }
+        },
+        "hostComponent": "宿主组件"
       },
       "previewDescription": "连接前请核对受管目标和风险。",
       "changeSummary": "{{components}} 个组件 · {{targets}} 个受管目标",
@@ -1492,7 +1594,12 @@
       "startupSummaryBody": "有 {{count}} 条未读 Agent 连接动态待查看。",
       "viewDetails": "查看详情",
       "dismiss": "暂不查看",
-      "unreadUpdates": "{{count}} 条未读 Agent 连接动态"
+      "unreadUpdates": "{{count}} 条未读 Agent 连接动态",
+      "deactivation": {
+        "awaitingReload": "Tide Mind 已移除自己的配置，并停止为该 Agent 提供记忆。已在运行的宿主可能仍保留旧组件，需重启宿主或新建会话后才会卸载；未携带 generation 的旧入口不会被自动拦截。",
+        "deactivatedVerified": "已验证停用：配置已移除，且宿主已重新加载。",
+        "bridgeStopped": "Tide Mind 已停止为该 Agent 提供记忆。宿主中的组件可能仍在加载，请在宿主中手动移除。"
+      }
     }
   },
   "account": {

@@ -194,7 +194,18 @@
       ,"connectionUnavailable": "Kaydedilmiş bağlantı artık mevcut değil"
       ,"modelUnavailable": "Kaydedilmiş model doğrulanmadı"
       ,"savedConnectionInvalid": "Kaydedilmiş bağlantı kullanılamıyor. Başka bir bağlantı seçin."
-      ,"savedModelInvalid": "Kaydedilmiş model kullanılamıyor. Doğrulanmış bir model seçin."
+      ,"savedModelInvalid": "Kaydedilmiş model kullanılamıyor. Doğrulanmış bir model seçin.",
+      "followDefault": "Yalıtılmış varsayılan (CLI yerleşik)",
+      "isolatedDefaultHint": "Yalıtılmış ortamda CLI yerleşik varsayılan modeli kullanılır; hesap kataloğu önerileri veya kişisel yerel ayarlar izlenmez.",
+      "aliasPending": "takma ad, henüz doğrulanmadı",
+      "catalogDefaultBadge": "katalog tarafından önerilen varsayılan",
+      "upgradeHint": "sağlayıcı {{model}} öneriyor",
+      "notListed": "geçerli katalogda yok; seçim korundu",
+      "manualEntry": "Model kimliğini elle girin…",
+      "manualPlaceholder": "Model kimliği",
+      "manualApply": "Kullan",
+      "manualCancel": "İptal",
+      "manualInvalid": "Geçersiz model kimliği biçimi"
     },
     "serviceStatus": {
       "title": "AI Servis Durumu",
@@ -214,7 +225,65 @@
       "needsAttention": "Needs attention",
       "unknownConnection": "Unknown connection",
       "collapseErrors": "Collapse errors",
-      "expandErrors": "Show {{count}} more"
+      "expandErrors": "Show {{count}} more",
+      "routeFaults": "Kullanımdaki rota hataları"
+    },
+    "catalog": {
+      "scope": "Hesap kapsamı",
+      "scopeNotChecked": "Henüz kontrol edilmedi",
+      "scopeUnknown": "Doğrulanamıyor (yalnızca elle testler, arka plan görevi yok)",
+      "scopeKnown": "Doğrulandı",
+      "title": "Model kataloğu",
+      "refresh": "Model listesini yenile",
+      "refreshFailed": "Yenileme başarısız ({{kind}}); son eksiksiz katalog korunuyor",
+      "none": "Henüz model kataloğu yok",
+      "unsupported": "Bu CLI sürümü modelleri listelemiyor; varsayılanı izleyin veya bir model kimliği girin",
+      "aliasesOnly": "{{count}} resmi takma ad (doğrulanmamış) / {{verified}} yakın zamanda doğrulandı; elle model kimliği girilebilir",
+      "summary": "{{count}} model bulundu / {{verified}} yakın zamanda doğrulandı",
+      "updatedAt": "Katalog güncellendi: {{time}}",
+      "outdated": "Katalog 24 saatten uzun süredir güncellenmedi",
+      "lastAttemptFailed": "{{time}} yenilemesi başarısız ({{kind}})",
+      "inUse": "Kullanımdaki rotalar",
+      "inUseNone": "Bu bağlantıyı kullanan model rotası yok",
+      "tier": {
+        "light": "Hafif",
+        "standard": "Standart",
+        "heavy": "Ağır"
+      },
+      "testTargets": "Belirli modelleri test et",
+      "testScopeUnknownNote": "CLI'nin geçerli oturumunu kullanır; hesap doğrulanamaz ve bu sonuç arka plan görevlerini etkinleştirmez",
+      "testCostNote": "Her model için bir gerçek çağrı yapar ({{count}}); kotanızı kullanır",
+      "testSelected": "Seçili modelleri test et",
+      "observations": "Geçerli hesap için çağrı gözlemleri",
+      "showHistory": "Test geçmişini göster ({{count}})",
+      "hideHistory": "Geçmişi gizle",
+      "historicalEpoch": "önceki kimlik doğrulama dönemi {{epoch}}",
+      "attributionUnconfirmed": "Test sırasında CLI veya oturum değişti; sonuçlar ilişkilendirilemedi ve geçmiş olarak saklandı",
+      "admission": {
+        "firstCall": "İlk çağrı bekleniyor",
+        "allowed": "Son çağrı başarılı ({{time}})",
+        "connection_busy": "Bağlantı kontrol ediliyor veya test ediliyor",
+        "connection_unavailable": "Bağlantı ortamı kullanılamıyor; ortamı kontrol edin",
+        "ambiguous_outcome": "Son çağrının sonucu bilinmiyor; bir test başarılı olana kadar arka plan duraklatıldı",
+        "scope_unknown": "Oturum hesabı kapsamı doğrulanamıyor; arka plan çağrıları duraklatıldı",
+        "invalid_model_id": "Geçersiz model kimliği",
+        "model_rejected": "Bu hesap modeli kullanamıyor; yeniden test edin veya başka bir model seçin",
+        "model_mismatch": "Sabitlenen model farklı bir gerçek model döndürdü; açıkça yeniden test edin",
+        "backoff": "Geçici hata; {{retryAt}} zamanına kadar bekleniyor"
+      },
+      "outcome": {
+        "success": "Başarılı",
+        "mismatch": "Gerçek model sabitlenen seçimden farklı",
+        "model_rejected": "Erişim yok veya model bulunamadı",
+        "temporary_failure": "Geçici hata (hız sınırı/kota/ağ)",
+        "connection_failure": "Bağlantı ortamı hatası",
+        "unclassified_failure": "Çağrı başarısız, neden tanınmadı",
+        "ambiguous": "Sonuç bilinmiyor"
+      },
+      "source": {
+        "business": "iş çağrısı",
+        "test": "bağlantı testi"
+      }
     }
   },
   "data": {
@@ -1064,6 +1133,23 @@
       }
     },
     "managed": {
+      "sourceVerification": {
+        "title": "Kurulum kaynağı",
+        "description": "Kaynak doğrulaması, ana uygulamada yüklemeyi veya başarılı bir bellek çağrısını doğrulamaz.",
+        "states": {
+          "trusted": "Kaynak doğrulandı",
+          "pending": "Doğrulama bekleniyor",
+          "confirmation_required": "Kaynağı onaylayın",
+          "rejected": "Kaynak reddedildi",
+          "user_managed": "Kullanıcı tarafından yönetilen yapılandırma"
+        },
+        "evidence": {
+          "tested_sample": "Test edilmiş sürüm dosyası",
+          "signed_identity": "Resmî imza",
+          "npm_registry": "Resmî npm paketi doğrulandı",
+          "npm_registry_cache": "Önbellekteki resmî npm doğrulaması"
+        }
+      },
       "title": "Agent bağlantıları",
       "subtitle": "Bu Mac'teki uyumlu yerel Agent'ları otomatik olarak keşfeder ve yönetir.",
       "summary": "{{products}} Agent ürünleri · {{installations}} kurulumları · {{available}} mevcut",
@@ -1214,9 +1300,12 @@
         "releaseEntryMissing": "Bu Tide Mind yapısında bu Agent için yayımlanmış bir bağlantı sözleşmesi yok. Tide Mind'ı güncelleyip yeniden kontrol edin; zaten en son sürümdeyse bu Agent henüz yapılandırılamaz.",
         "releaseModeDetectOnly": "Bu Tide Mind sürümü yalnızca bu Agent için algılamayı destekler. Otomatik yapılandırma mevcut değildir; Tide Mind'yi güncelleyin ve destek yayınlandıktan sonra tekrar kontrol edin.",
         "releaseDistributionNotAccepted": "Bu yükleme kaynağının sürüm doğrulaması yapılmadı. Agent'ı resmi dağıtımından yükleyip yeniden kontrol edin; Tide Mind bu kurulumu değiştirmez.",
-        "releaseArtifactNotAccepted": "Bu Agent'ın yerel dosyaları, bu Tide Mind sürümü için doğrulanan resmi paketle eşleşmiyor. Agent'ı resmi kanaldan yeniden yükleyip kontrolü tekrarlayın.",
+        "releaseArtifactNotAccepted": "Bu, önceki bir Tide Mind sürümünün kaydettiği kurulum dosyası kontrolü sonucudur ve yeniden kontrol edilmeyi bekliyor. Hemen güncellemek için kontrolü tekrarlayın.",
         "releaseVersionUnverified": "Tide Mind, Agent sürümünü doğrulayamadı. Resmi dağıtımdan yeniden yükleyin veya güncelleyin, ardından Check'i tekrar çalıştırın.",
-        "releaseVersionNotAccepted": "Bu tam Agent sürümünün yayın doğrulaması yapılmamıştır. Agent güncelleyin ve Kontrolü tekrar çalıştırın; zaten en son sürümse Tide Mind güncellemesini bekleyin.",
+        "releaseVersionNotAccepted": "Bu, önceki bir Tide Mind sürümünün kaydettiği sürüm kontrolü sonucudur ve yeniden kontrol edilmeyi bekliyor. Hemen güncellemek için kontrolü tekrarlayın.",
+        "sourceVerificationPending": "Tide Mind bu Agent'ın resmi kaynağını hâlâ doğruluyor ve kontrolü henüz tamamlayamıyor; otomatik yapılandırma beklemede. Çevrimiçi olduğunuzda otomatik olarak yeniden denenecek.",
+        "sourceNotOfficial": "Bu Agent'ın yerel kurulumu resmi sürümün içeriğiyle eşleşmiyor; otomatik yapılandırma durduruldu. Agent'ı resmi kanaldan yeniden yükleyip kontrolü tekrarlayın.",
+        "sourceConfirmationRequired": "Bu kurulum yönteminde Tide Mind resmi kaynağı otomatik olarak doğrulayamıyor. Agent'ı resmi kanaldan yeniden yükleyin veya “Özel bir yerel Agent ekleyin” ile manuel olarak bağlayın.",
         "unverified": "Henüz doğrulanmadı.",
         "verificationStale": "Önceki kanıtlar bayat.",
         "connecting": "Onaylanan bağlantı planının uygulanması.",
@@ -1235,7 +1324,8 @@
         "circuitBreaker": "Tekrar tekrar çıkarmanın ardından otomatik onarım durduruldu.",
         "disconnectVerified": "Tide Mind bileşenlerinin bulunmadığı doğrulandı.",
         "hostUninstalled": "Agent artık yüklü değil.",
-        "unknown": "Doğrulanmış en son gerçekler için ayrıntılara bakın."
+        "unknown": "Doğrulanmış en son gerçekler için ayrıntılara bakın.",
+        "customConfigOwnedByDiscoveredHost": "Bu yapılandırma dosyası (veya klasörü) Tide Mind'ın algıladığı bir Agent'a ait. Özel istemci olarak eklemek yerine o Agent'ı doğrudan bağlayın."
       },
       "access": {
         "complete": "Bağlantıyı tamamlayın",
@@ -1309,7 +1399,7 @@
         "legacyConnectionAdopted": "Mevcut bir Tide Mind bağlantısı tanındı",
         "legacyConnectionNeedsConfirmation": "Mevcut bir bağlantının onayınıza ihtiyacı var",
         "legacyAdoptionScanFailed": "Mevcut bağlantılar kontrol edilemedi",
-        "userConfirmedGuidedRemoval": "Qwen Work kaldırma işlemi kullanıcı tarafından onaylandı"
+        "userConfirmedGuidedRemoval": "Yönlendirmeli bir kaldırma kullanıcı tarafından onaylandı"
       },
       "management": "Bağlantıyı yönet",
       "supportMode": {
@@ -1375,7 +1465,8 @@
         "codexHookTrustUnavailable": "Codex kanca güveni doğrulanamadı. Ana makineyi inceleyin ve tekrar deneyin.",
         "manualDocumentRemoval": "Tide Mind'ye ait talimat dosyasını manuel olarak kaldırın ve tekrar doğrulayın.",
         "componentRequiresOtherProjection": "{{component}} farklı bir desteklenen bağlantı yöntemi gerektirir.",
-        "manualReview": "Bu değişiklik manuel bir adım gerektirir. Devam etmeden önce rehberli ayrıntıları inceleyin."
+        "manualReview": "Bu değişiklik manuel bir adım gerektirir. Devam etmeden önce rehberli ayrıntıları inceleyin.",
+        "hostManualRemoval": "Bu ana bilgisayarın kaynağı şu anda doğrulanmadığı için Tide Mind programlarını çalıştırmaz. Tide Mind bileşenini ana bilgisayarda kendiniz kaldırın; Tide Mind bu Agent'a bellek sağlamayı durdurdu."
       },
       "currentRequiredAction": "Hâlâ işlem gerekiyor",
       "openCurrentRequiredAction": "Geçerli talimatları aç",
@@ -1388,21 +1479,32 @@
         "confirm": "Bağlayıcıyı talimatlara uygun olarak Qwen Work'ten kaldırdım",
         "userConfirmedNotice": "Bu sonuç, otomatik ana makine doğrulaması olarak değil kullanıcı tarafından onaylanmış olarak kaydedilir.",
         "confirmed": "Kaldırma işlemini onayladınız. Tide Mind onayı kaydetti ve bu kaldırma işlemini yeniden kontrol etti.",
-        "notReady": "Tide Mind Skill hâlâ mevcut. Skill'i ve Qwen Work bağlayıcısını kaldırıp yeniden onaylayın."
+        "notReady": "Tide Mind Skill hâlâ mevcut. Skill'i ve Qwen Work bağlayıcısını kaldırıp yeniden onaylayın.",
+        "coworkExplanation": "Claude Cowork'te (Customize → Plugins) Tide Mind eklentisini kaldırıp dışa aktarılan .plugin dosyasını sildikten sonra, tamamlanan yönlendirmeli adımı açıkça onaylayın.",
+        "coworkDescription": "Claude Cowork makine tarafından okunabilir bir eklenti kaydı sunmaz. Tide Mind bu bekleyen kaldırma için onayınızı kaydeder.",
+        "coworkConfirm": "Tide Mind eklentisini talimatlara göre Claude Cowork'ten kaldırdım",
+        "coworkNotReady": "Dışa aktarılan Tide Mind eklenti dosyası hâlâ mevcut. Dosyayı silin ve Claude Cowork'te eklentiyi kaldırın, ardından tekrar onaylayın."
       },
       "actionDetail": {
-        "instruction": {"mcpActivation":"{{config}} içinde {{server}} için izin verin, ardından bağlantıyı yeniden kontrol edin.","manualFileRemoval":"{{target}} konumundaki Tide Mind yönetimli dosyayı kaldırın, ardından bağlantıyı yeniden kontrol edin.","kimiConflict":"Eski ve yönetilen yollar güvenle taşınamadığı için Tide Mind hiçbir Skill dosyasını değiştirmedi."},
+        "instruction": {"mcpActivation":"{{config}} içinde {{server}} için izin verin, ardından bağlantıyı yeniden kontrol edin.","manualFileRemoval":"{{target}} konumundaki Tide Mind yönetimli dosyayı kaldırın, ardından bağlantıyı yeniden kontrol edin.","kimiConflict":"Eski ve yönetilen yollar güvenle taşınamadığı için Tide Mind hiçbir Skill dosyasını değiştirmedi.",
+        "manualHostRemoval": "{{host}} içindeki “{{selector}}” Tide Mind bileşenini ana bilgisayarın kendi eklenti veya uzantı yöneticisiyle kaldırın."},
         "guidance": {
           "claudeCowork": {"connect":{"step1":"Onaydan sonra Tide Mind bileşen ayrıntılarından oluşturulan .plugin dosyasını açın.","step2":"Claude Cowork içinde Customize → Plugins bölümünü açın, .plugin dosyasını yükleyip etkinleştirin. Claude Desktop MCP ayarlarına eklemeyin.","step3":"Yeni bir yerel Cowork görevi oluşturun ve aynı görevde Tide Mind brain_recall ile brain_digest çağrılarını başarıyla yapın. Bulut Cowork yerel MCP çalıştıramaz.","step4":"Tide Mind'a dönüp yeniden kontrol edin. Temel entegrasyon yalnızca yeni okuma ve yazma çağrısı kanıtı algılandığında görünür."},"disconnect":{"step1":"Claude Cowork içinde Customize → Plugins bölümünü açın.","step2":"Yalnızca bu Agent'a ait Tide Mind eklentisini kaldırın. Diğer Tide Mind Agent eklentilerini kaldırmayın.","step3":"Tide Mind'a dönüp yeniden kontrol edin. Cowork okunabilir bir eklenti kaydı sunmadığından kaldırma durumu onay bekler."}},
           "qwenWork": {"connect":{"step1":"Qwen Work içinde Uzantılar → Bağlayıcılar bölümünü açın.","step2":"JSON yapılandırmasını seçip aşağıdaki tam mcpServers JSON metnini yapıştırın.","step3":"command, args ve env alanlarının ayrı olduğunu doğrulayıp yapılandırmayı uygulayın.","step4":"Bağlayıcıyı etkinleştirin, yeni bir konuşma oluşturun ve aynı konuşmada Tide Mind brain_recall ile brain_digest çağrılarını başarıyla yapın."},"disconnect":{"step1":"Qwen Work içinde Uzantılar → Bağlayıcılar → Yüklü bölümünü açın.","step2":"Özel bölümünde {{connector}} öğesini bulun, sil simgesine basıp onaylayın.","step3":"Yeni bir konuşma oluşturun, Tide Mind'a dönüp yeniden kontrol edin."}},
-          "kimiConflict": {"step1":"Eski Skill {{source}} ile yönetilen hedef {{target}} öğesini inceleyin.","step2":"Gerekli içeriği, Tide Mind'ın yönetmemesi gereken dosyayı taşıyarak veya yeniden adlandırarak koruyun. Tide Mind doğrulanmamış dosyayı değiştirmez veya silmez.","step3":"Tide Mind'a dönüp kontrolü yeniden çalıştırın."}
+          "kimiConflict": {"step1":"Eski Skill {{source}} ile yönetilen hedef {{target}} öğesini inceleyin.","step2":"Gerekli içeriği, Tide Mind'ın yönetmemesi gereken dosyayı taşıyarak veya yeniden adlandırarak koruyun. Tide Mind doğrulanmamış dosyayı değiştirmez veya silmez.","step3":"Tide Mind'a dönüp kontrolü yeniden çalıştırın."},
+          "manualHostRemoval": {
+            "step1": "{{host}} uygulamasını açın ve eklenti veya uzantı listesinde “{{selector}}” Tide Mind bileşenini bulun.",
+            "step2": "Yalnızca bu Agent için kaldırın, ardından artık yüklenmemesi için {{host}} uygulamasını yeniden başlatın veya yeni oturum açın.",
+            "step3": "Tide Mind bu Agent'a bellek sağlamayı zaten durdurdu ve bakımını duraklattı. Bağlantıyı korumak istiyorsanız yalnızca o zaman bakımı sürdürün."
+          }
         },
         "source": "Kaynak", "package": "Eklenti paketi", "connector": "Bağlayıcı adı", "serverType": "Sunucu türü",
         "command": "Komut", "environment": "Ortam değişkenleri", "mcpConfiguration": "MCP yapılandırması (JSON)", "server": "Sunucu adı", "config": "Yapılandırma dosyası",
         "reason": "Neden eyleme ihtiyaç var?", "component": "Bileşen", "target": "Kaldırılacak dosya", "steps": "Adımlar",
         "copy": "Kopyala", "copied": "Kopyalandı", "copyValue": "{{label}}'yi kopyala", "copyFailed": "Kopyalanamadı. Değeri seçin ve manuel olarak kopyalayın.",
         "activationReason": {"excluded": "Sunucu, Agent yapılandırması tarafından hariç tutulmuştur.", "not_allowed": "Sunucu, Agent izin verilenler listesinde değil.", "invalid_policy": "Agent etkinleştirme politikası geçersiz."},
-        "kimiConflictReason": {"legacy_unowned": "Sahipliği doğrulanabilir olmayan eski bir Tide Mind Skill bulundu.", "legacy_not_exact": "Eski yoldaki dosya tam bir Tide Mind eski Skill değil.", "legacy_changed": "Eski Skill incelendikten sonra değişti.", "target_occupied": "Yeni Tide Mind Skill hedefi yönetilmeyen bir dosya tarafından kullanılıyor."}
+        "kimiConflictReason": {"legacy_unowned": "Sahipliği doğrulanabilir olmayan eski bir Tide Mind Skill bulundu.", "legacy_not_exact": "Eski yoldaki dosya tam bir Tide Mind eski Skill değil.", "legacy_changed": "Eski Skill incelendikten sonra değişti.", "target_occupied": "Yeni Tide Mind Skill hedefi yönetilmeyen bir dosya tarafından kullanılıyor."},
+        "hostComponent": "Ana bilgisayar bileşeni"
       },
       "previewDescription": "Bağlanmadan önce yönetilen hedefleri ve riski inceleyin.",
       "changeSummary": "{{components}} bileşenleri · {{targets}} yönetilen hedefler",
@@ -1452,7 +1554,12 @@
       "startupSummaryBody": "{{count}} okunmamış Agent bağlantısı güncellemesi incelenmeyi bekliyor.",
       "viewDetails": "Ayrıntıları görüntüle",
       "dismiss": "Reddet",
-      "unreadUpdates": "{{count}} okunmamış Agent bağlantısı güncellemesi"
+      "unreadUpdates": "{{count}} okunmamış Agent bağlantısı güncellemesi",
+      "deactivation": {
+        "awaitingReload": "Tide Mind kendi yapılandırmasını kaldırdı ve bu Agent'a bellek sağlamayı durdurdu. Zaten çalışan bir ana bilgisayar, yeniden başlatana veya yeni oturum açana kadar eski bileşenleri tutabilir; generation içermeyen eski girişler otomatik olarak engellenmez.",
+        "deactivatedVerified": "Devre dışı bırakma doğrulandı: yapılandırma kaldırıldı ve ana bilgisayar yeniden yüklendi.",
+        "bridgeStopped": "Tide Mind bu Agent'a bellek sağlamayı durdurdu. Ana bilgisayardaki bileşenler hâlâ yüklü olabilir; bunları ana bilgisayarda elle kaldırın."
+      }
     }
   },
   "account": {

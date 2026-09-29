@@ -18,6 +18,7 @@ export const AGENT_INTEGRATION_TABLES = [
   'agent_aliases',
   'writer_fences',
   'agent_integration_events',
+  'agent_npm_official_verifications',
 ] as const;
 
 const VERIFICATION_RESULTS_TABLE_SQL = `
@@ -91,13 +92,16 @@ CREATE TABLE IF NOT EXISTS agent_host_activity_evidence (
 
 /** Read-only semantic parity check used by the signed acceptance exporter. */
 export function inspectAgentHostActivityEvidenceV34Schema(db: Database.Database): {
-  schemaVersion: 34;
+  /** v35 only adds model-discovery tables; the evidence ledger keeps its v34 shape. */
+  schemaVersion: 34 | 35;
   fingerprintInput: unknown;
 } {
   const schemaVersion = Number((db.prepare(
     "SELECT value FROM metadata WHERE key = 'schema_version'",
   ).get() as { value?: string } | undefined)?.value);
-  if (schemaVersion !== 34) throw new Error(`activity ledger database schema is ${schemaVersion}, expected 34`);
+  if (schemaVersion !== 34 && schemaVersion !== 35) {
+    throw new Error(`activity ledger database schema is ${schemaVersion}, expected 34 or 35`);
+  }
   const columns = db.prepare('PRAGMA table_info(agent_host_activity_evidence)').all() as Array<{
     name: string; type: string; notnull: number; pk: number;
   }>;
@@ -148,7 +152,7 @@ export function inspectAgentHostActivityEvidenceV34Schema(db: Database.Database)
   ]) {
     if (!tableSql.includes(marker)) throw new Error('activity ledger CHECK constraints are not authoritative');
   }
-  return { schemaVersion: 34, fingerprintInput: { actualColumns, foreignKeys, uniqueColumns, checks: 'v34' } };
+  return { schemaVersion: schemaVersion as 34 | 35, fingerprintInput: { actualColumns, foreignKeys, uniqueColumns, checks: 'v34' } };
 }
 
 function agentHostActivityEvidenceTableSql(tableName: string): string {
@@ -619,6 +623,25 @@ CREATE INDEX IF NOT EXISTS idx_agent_integration_events_inbox
   ON agent_integration_events(state, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_integration_events_installation
   ON agent_integration_events(installation_id, created_at);
+
+-- 本机 npm 分发的官方 registry 核验结果缓存（按本机精确制品 fingerprint 定位）。
+-- 只存 verified / mismatch；暂时无法检查（离线、超时等）不落库。本机专属，无 cloud_dirty trigger。
+CREATE TABLE IF NOT EXISTS agent_npm_official_verifications (
+    distribution_id TEXT NOT NULL,
+    package_provenance TEXT NOT NULL,
+    version TEXT NOT NULL,
+    architecture TEXT NOT NULL CHECK(architecture IN ('arm64','x64')),
+    local_portable_fingerprint TEXT NOT NULL,
+    verifier_version TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('verified','mismatch')),
+    official_fingerprint TEXT NOT NULL,
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY (
+      distribution_id, package_provenance, version, architecture,
+      local_portable_fingerprint, verifier_version
+    )
+);
 `;
 
 export const AGENT_INTEGRATION_MINIMUM_WRITER_PROTOCOL_KEY =
@@ -930,6 +953,12 @@ export function ensureAgentIntegrationSchema(db: Database.Database): void {
   ensureColumn(db, 'agent_integration_apply_task_items', 'run_id', 'TEXT REFERENCES reconcile_runs(id) ON DELETE SET NULL');
   ensureColumn(db, 'projection_mutations', 'planned_mutation_json', "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn(db, 'projection_mutations', 'journal_version', 'INTEGER NOT NULL DEFAULT 0 CHECK(journal_version >= 0)');
+  // Deactivation semantics (adaptive compatibility design §3.5): pausing
+  // maintenance (desired_state), stopping the Tide Mind bridge and the host-side
+  // component state are three independent facts.
+  ensureColumn(db, 'agent_installations', 'bridge_state', "TEXT NOT NULL DEFAULT 'serving' CHECK(bridge_state IN ('serving','stopped'))");
+  ensureColumn(db, 'agent_installations', 'bridge_state_reason', 'TEXT');
+  ensureColumn(db, 'agent_installations', 'host_components_state', "TEXT NOT NULL DEFAULT 'loaded_unknown' CHECK(host_components_state IN ('loaded_unknown','awaiting_reload','deactivated_verified'))");
   ensureColumn(db, 'verification_results', 'artifact_hash', 'TEXT');
   ensureColumn(db, 'verification_results', 'run_id', 'TEXT');
   ensureColumn(db, 'verification_results', 'family', "TEXT NOT NULL DEFAULT ''");

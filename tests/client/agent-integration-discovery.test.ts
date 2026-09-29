@@ -1845,7 +1845,8 @@ describe('P0 local Agent discovery', () => {
     })
     const inspect = runtime.dependencies.inspectAppSignature!
     runtime.dependencies.inspectAppSignature = async (targetPath, options) => {
-      await new Promise(resolve => setTimeout(resolve, 30))
+      // Two strict passes plus receipt reads must not share one per-pass deadline.
+      await new Promise(resolve => setTimeout(resolve, 120))
       return inspect(targetPath, options)
     }
 
@@ -1860,6 +1861,51 @@ describe('P0 local Agent discovery', () => {
       reason: 'distribution_identity_unproven',
     }))
   })
+
+  it('retains every CLI identity when concurrent content proofs would overload the host', async () => {
+    const runtime = fakeRuntime()
+    for (const [command, packageName] of [
+      ['codex', '@openai/codex'], ['gemini', '@google/gemini-cli'],
+      ['qwen', '@qwen-code/qwen-code'], ['opencode', 'opencode-ai'],
+    ]) addCommand(runtime, command, { verifiedPackageProvenance: `npm_metadata:${packageName}` })
+    const inspect = runtime.dependencies.execVersion
+    let active = 0
+    runtime.dependencies.execVersion = async (...args) => {
+      active += 1
+      try {
+        if (active > 3) throw new Error('content_proof_overloaded')
+        await new Promise(resolve => setTimeout(resolve, 20))
+        return await inspect(...args)
+      } finally { active -= 1 }
+    }
+    const report = await discoverLocalP0Agents(context({ signatureTimeoutMs: 200 }), runtime.dependencies)
+    for (const catalogId of ['codex-cli', 'gemini-cli', 'qwen-code-cli', 'opencode-v1-cli']) {
+      expect(report.installations).toContainEqual(expect.objectContaining({ catalogId, detectedVersion: '1.2.3' }))
+    }
+    expect(report.diagnostics).toEqual([])
+  }, 30_000)
+
+  it('uses the proof budget for CLI package hashing without weakening metadata timeouts', async () => {
+    const runtime = fakeRuntime()
+    addCommand(runtime, 'codex', {
+      output: 'codex 0.156.1',
+      verifiedPackageProvenance: 'npm_metadata:@openai/codex',
+    })
+    const inspect = runtime.dependencies.execVersion
+    runtime.dependencies.execVersion = async (executable, args, options) => {
+      await new Promise(resolve => setTimeout(resolve, 30))
+      return inspect(executable, args, options)
+    }
+    const report = await discoverLocalP0Agents(context({
+      operationTimeoutMs: 10,
+      signatureTimeoutMs: 200,
+    }), runtime.dependencies)
+    expect(report.installations).toContainEqual(expect.objectContaining({
+      catalogId: 'codex-cli', detectedVersion: '0.156.1',
+    }))
+    expect(report.diagnostics).not.toContain('codex-cli:version:codex:timeout')
+    expect(runtime.calls).toContain('execVersion:/fixture/bin/codex:--version:200')
+  }, 30_000)
 
   it('preserves prior app state when a bundle location cannot be inspected', async () => {
     const runtime = fakeRuntime()

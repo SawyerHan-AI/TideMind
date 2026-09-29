@@ -14,7 +14,9 @@ import {
   componentLabelKey,
   customApplyOutcome,
   isValidCustomSelectorKey,
+  knownReasonCodeIn,
   safeDisplayTarget,
+  statusReasonKey,
 } from './presentation'
 import { agentIntegrationsApi } from './types'
 import { RequiredUserActionDetail } from './RequiredUserActionDetail'
@@ -200,6 +202,11 @@ export function CustomLocalAgentDialog({
 
   if (!open) return null
 
+  const localizedFailure = (message: string): string => {
+    const reason = knownReasonCodeIn(message)
+    return reason ? t(statusReasonKey(reason)) : message
+  }
+
   const pick = async (kind: 'config_root' | 'config_file' | 'client_executable') => {
     setLoading(true); setError(null)
     try {
@@ -209,7 +216,7 @@ export function CustomLocalAgentDialog({
       else if (kind === 'config_file') setConfigFilePath(selected)
       else setClientExecutablePath(selected)
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : t('agent.managed.unknownError'))
+      setError(failure instanceof Error ? localizedFailure(failure.message) : t('agent.managed.unknownError'))
     } finally {
       setLoading(false)
     }
@@ -227,7 +234,7 @@ export function CustomLocalAgentDialog({
           })
       setPreflight(next); setStep('preflight')
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : t('agent.managed.unknownError'))
+      setError(failure instanceof Error ? localizedFailure(failure.message) : t('agent.managed.unknownError'))
     } finally { setLoading(false) }
   }
 
@@ -238,7 +245,7 @@ export function CustomLocalAgentDialog({
       setPlan(await agentIntegrationsApi().prepareCustomConnect(preflight.preflightHash, false))
       setApproved(false); setStep('authorize')
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : t('agent.managed.unknownError'))
+      setError(failure instanceof Error ? localizedFailure(failure.message) : t('agent.managed.unknownError'))
     } finally { setLoading(false) }
   }
 
@@ -250,7 +257,7 @@ export function CustomLocalAgentDialog({
       const next = await agentIntegrationsApi().applyConnect(plan.planHash, installationIds)
       setResult(next); setStep('result'); onComplete()
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : t('agent.managed.unknownError'))
+      setError(failure instanceof Error ? localizedFailure(failure.message) : t('agent.managed.unknownError'))
     } finally { setLoading(false) }
   }
 

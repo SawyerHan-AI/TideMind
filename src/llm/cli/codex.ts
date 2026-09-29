@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import type { CodexCapabilityManifest } from './catalogs.js';
+import { sanitizeCodexToolCatalog } from './codex-tool-catalog.js';
+import { CODEX_EXEC_CONFIG_OVERRIDES } from './catalogs.js';
 import { CliChildProcessRunner } from './child-process-runner.js';
-import { CliLLMError } from './errors.js';
+import { CliLLMError, isDefinitiveProviderRejection } from './errors.js';
+import { codexDisableArgs, type CodexExecutionContract } from './gate-codex.js';
 import { sanitizeCliEnvironment } from './environment.js';
 import { parseCodexJsonLines } from './parser-codex.js';
 import { createCliRuntimeDirectory } from './runtime-dir.js';
@@ -17,7 +19,8 @@ import type {
 
 export interface CodexCliAdapterOptions {
   resolved: ResolvedCli;
-  manifest: CodexCapabilityManifest;
+  contract: CodexExecutionContract;
+  toolCatalogJson: string;
   dataDir: string;
   runner: CliChildProcessRunner;
   preflight: () => void | Promise<void>;
@@ -41,8 +44,8 @@ export class CodexCliAdapter implements CliAdapter {
 
   constructor(private readonly options: CodexCliAdapterOptions) {
     if (options.resolved.kind !== 'codex') throw new Error('Codex adapter requires codex CLI');
-    if (options.manifest.version !== options.resolved.version) {
-      throw new CliLLMError('unsupported_version', 'Codex manifest does not match CLI version');
+    if (options.contract.cliVersion !== options.resolved.version) {
+      throw new CliLLMError('unsupported_version', 'Codex execution contract does not match CLI version');
     }
   }
 
@@ -68,6 +71,9 @@ export class CodexCliAdapter implements CliAdapter {
           'Return only the requested text. Do not invoke tools, commands, applications, browsers, search, skills, plugins, hooks, MCP servers, memory, or sub-agents.',
         ].filter(Boolean).join('\n\n'),
       );
+      const catalog = sanitizeCodexToolCatalog(this.options.toolCatalogJson);
+      if (catalog !== this.options.toolCatalogJson) throw new CliLLMError('unsupported_version', 'Codex execution catalog is not tool-free');
+      const modelCatalogPath = runtime.createPrivateFile('model-catalog.json', catalog);
       const args = [
         'exec',
         '--ignore-user-config',
@@ -82,23 +88,10 @@ export class CodexCliAdapter implements CliAdapter {
         'read-only',
       ];
       if (request.modelAlias !== 'default') args.push('-m', request.modelAlias);
-      for (const feature of this.options.manifest.disableFeatures) {
-        args.push('--disable', feature);
-      }
+      args.push(...codexDisableArgs(this.options.contract.disableFeatures));
       args.push(
-        '-c', 'approval_policy="never"',
-        '-c', 'skills.include_instructions=false',
-        '-c', 'mcp_servers={}',
-        '-c', 'hooks={}',
-        '-c', 'notify=[]',
-        '-c', 'marketplaces={}',
-        '-c', 'plugins={}',
-        '-c', 'apps={}',
-        '-c', 'web_search="disabled"',
-        '-c', 'include_environment_context=false',
-        '-c', 'include_permissions_instructions=false',
-        '-c', 'include_apps_instructions=false',
-        '-c', 'include_collaboration_mode_instructions=false',
+        ...CODEX_EXEC_CONFIG_OVERRIDES,
+        '-c', `model_catalog_json=${tomlString(modelCatalogPath)}`,
         '-c', `model_instructions_file=${tomlString(instructionFile)}`,
         '-',
       );
@@ -132,7 +125,8 @@ export class CodexCliAdapter implements CliAdapter {
         if (
           result.promptCommitted &&
           (request.purpose ?? 'background') === 'background' &&
-          error instanceof CliLLMError
+          error instanceof CliLLMError &&
+          !isDefinitiveProviderRejection(error)
         ) {
           outcome = 'ambiguous_outcome';
           throw new CliLLMError(

@@ -437,7 +437,9 @@ export async function readStableFileFingerprint(
     if (!before.isFile()) throw new Error('stable_fingerprint_not_regular_file')
     if (before.size > BigInt(maxBytes)) throw new Error('stable_fingerprint_exceeds_supported_distribution_limit')
     const hash = createHash('sha256')
-    const buffer = Buffer.allocUnsafe(1024 * 1024)
+    // Size the read buffer to the file: package trees hash tens of thousands of
+    // small files and a fixed 1 MiB allocation per file dominated the cost.
+    const buffer = Buffer.allocUnsafe(Math.max(1, Math.min(1024 * 1024, Number(before.size))))
     let offset = 0n
     while (offset < before.size) {
       const remaining = before.size - offset
@@ -1099,13 +1101,27 @@ async function inspectNpmPackageMetadata(
           || path.resolve(await fs.realpath(directory)) !== directory) return detected()
       }
       const lockNode = await fs.lstat(npm.installLock)
-      if (lockNode?.kind !== 'file' || !isSafeArtifactOwned(lockNode)
+      // `npm install -g` never writes a hidden lockfile, so a global install
+      // has no registry integrity to bind. It may still produce the distinct
+      // lockless portable surface, which only an official registry
+      // verification can turn into trust (it can never equal a frozen receipt).
+      if (lockNode === undefined) {
+        return await inspectLocklessNpmPackage(npm, fs, architecture, parsed.version as string, manifestBefore, detected)
+      }
+      if (lockNode.kind !== 'file' || !isSafeArtifactOwned(lockNode)
         || path.resolve(await fs.realpath(npm.installLock)) !== npm.installLock) return detected()
       const lockBefore = await fs.readStableFileSnapshot(npm.installLock, 16 * 1024 * 1024)
       if (!isSafeArtifactOwned(lockBefore)) return detected()
       const lock = JSON.parse(Buffer.from(lockBefore.content).toString('utf8')) as {
         lockfileVersion?: unknown
         packages?: Record<string, { version?: unknown; integrity?: unknown }>
+      }
+      if (typeof lock.lockfileVersion === 'number' && lock.lockfileVersion >= 2
+        && lock.packages && typeof lock.packages === 'object' && !Array.isArray(lock.packages)
+        && !Object.prototype.hasOwnProperty.call(lock.packages, npm.installLockKey)) {
+        // A valid hidden lockfile that does not describe this package carries
+        // no integrity for it: same lockless surface as a missing lockfile.
+        return await inspectLocklessNpmPackage(npm, fs, architecture, parsed.version as string, manifestBefore, detected)
       }
       const lockEntry = lock.packages?.[npm.installLockKey]
       const integrity = lockEntry?.integrity
@@ -1301,6 +1317,241 @@ async function inspectNpmPackageMetadata(
   } catch {
     return unavailable('package_metadata_unavailable')
   }
+}
+
+async function isCanonicalArtifactDirectory(fs: PassiveVersionFileSystem, directory: string): Promise<boolean> {
+  const node = await fs.lstat(directory)
+  return node?.kind === 'directory' && isSafeArtifactOwned(node)
+    && path.resolve(await fs.realpath(directory)) === directory
+}
+
+/**
+ * Locates one composed component of a lockless npm install the way Node
+ * resolves it from the root entry: nested `<packageRoot>/node_modules/<name>`
+ * (npm global / non-deduped layout) or hoisted `<nodeModulesRoot>/<name>`.
+ * Exactly one of the two npm layouts may exist, it must be the first match on
+ * Node's lookup chain (nothing shadows it), must be a real directory, and each
+ * directory between the lookup root and the component must be canonical and
+ * not writable by group/other.
+ */
+async function locateLocklessNpmComponent(
+  npm: NpmPackageLocation,
+  installName: string,
+  fs: PassiveVersionFileSystem,
+): Promise<string | null> {
+  const segments = installName.split('/')
+  if (!PACKAGE_NAME.test(installName) || segments.some(segment => segment === '.' || segment === '..')) return null
+  const nestedRoot = path.join(npm.packageRoot, 'node_modules')
+  const nested = path.join(nestedRoot, ...segments)
+  const hoisted = path.join(npm.nodeModulesRoot, ...segments)
+  const lookupRoots: string[] = []
+  for (let directory = path.dirname(npm.executableRealpath);
+    isPathWithin(npm.nodeModulesRoot, directory);
+    directory = path.dirname(directory)) {
+    if (path.basename(directory) !== 'node_modules') lookupRoots.push(path.join(directory, 'node_modules'))
+  }
+  lookupRoots.push(npm.nodeModulesRoot)
+  let selected: { lookupRoot: string; packageRoot: string } | null = null
+  for (const lookupRoot of lookupRoots) {
+    const candidate = path.join(lookupRoot, ...segments)
+    const node = await fs.lstat(candidate)
+    if (node === undefined) continue
+    if (node.kind !== 'directory' || (candidate !== nested && candidate !== hoisted)) return null
+    selected = { lookupRoot, packageRoot: candidate }
+    break
+  }
+  if (!selected) return null
+  const other = selected.packageRoot === nested ? hoisted : nested
+  if (await fs.lstat(other) !== undefined) return null
+  const directories = [selected.lookupRoot]
+  for (let index = 1; index < segments.length; index += 1) {
+    directories.push(path.join(selected.lookupRoot, ...segments.slice(0, index)))
+  }
+  directories.push(selected.packageRoot)
+  for (const directory of directories) {
+    if (!await isCanonicalArtifactDirectory(fs, directory)) return null
+  }
+  return selected.packageRoot
+}
+
+/**
+ * Lockless npm surface (no hidden-lockfile integrity is available, e.g. every
+ * `npm install -g`). Every other safety condition of the locked surface still
+ * applies: canonical owned directories, exact manifest identity, stable tree
+ * read + metadata CAS, executable entry node and the frozen composed topology.
+ * The schemas are distinct from the locked ones, contain no integrity, and
+ * are therefore never equal to a frozen release receipt: they only become
+ * trusted through an official registry verification of the same surface.
+ */
+async function inspectLocklessNpmPackage(
+  npm: NpmPackageLocation,
+  fs: PassiveVersionFileSystem,
+  architecture: 'arm64' | 'x64',
+  version: string,
+  manifestBefore: StableFileSnapshot,
+  detected: () => VersionCommandResult,
+): Promise<VersionCommandResult> {
+  if (!fs.readStablePackageTree || !fs.verifyStablePackageTree) return detected()
+  const tree = await fs.readStablePackageTree(npm.packageRoot)
+  const manifestAfter = await fs.readStableFileSnapshot(npm.packageJson, MAX_NPM_MANIFEST_BYTES)
+  const treeManifest = tree.proofNodes.find(node => node.path === npm.packageJson)
+  const treeExecutable = tree.proofNodes.find(node => node.path === npm.executableRealpath)
+  if (manifestAfter.fingerprint !== manifestBefore.fingerprint
+    || treeManifest?.fingerprint !== manifestAfter.fingerprint
+    || !treeExecutable?.executable
+    || !await hasNoLockEntry(npm, fs)
+    || !await fs.verifyStablePackageTree(npm.packageRoot, tree)) return detected()
+  const executableRelative = path.relative(npm.packageRoot, npm.executableRealpath).split(path.sep).join('/')
+  const proofNodes = tree.proofNodes.map(node => ({
+    ...node,
+    role: node.path === npm.packageJson
+      ? 'package_manifest' as const
+      : node.path === npm.executableRealpath
+        ? 'npm_package_executable' as const
+        : 'npm_package_file' as const,
+  }))
+  const compositionSpec = npmComposedDistributionSpec(npm.packageName, version, architecture, 'modern')
+  if (!compositionSpec) {
+    return success(
+      version,
+      `npm_metadata:${npm.packageName}`,
+      portableFingerprint({
+        schema: 'npm-package-install-lockless-physical-v1',
+        packageName: npm.packageName,
+        version,
+        packageTree: tree.physicalTreeFingerprint,
+      }),
+      proofNodes,
+      portableFingerprint({
+        schema: 'npm-owned-package-surface-lockless-v1',
+        version,
+        packageName: npm.packageName,
+        executable: portableFile(executableRelative, treeExecutable),
+        ownedPackageSha256: tree.packageTreeSha256,
+        ownedEntryCount: tree.ownedEntryCount,
+        ownedTotalBytes: tree.ownedTotalBytes,
+      }),
+      tree.packageTreeSha256,
+    )
+  }
+
+  if (executableRelative !== compositionSpec.rootExecutableRelativePath) return detected()
+  const components = []
+  const componentLocations: string[] = []
+  const componentProofNodes: PackageMetadataProofNode[] = []
+  for (const component of compositionSpec.components) {
+    const packageRoot = await locateLocklessNpmComponent(npm, component.installName, fs)
+    if (!packageRoot) return detected()
+    const packageJson = path.join(packageRoot, 'package.json')
+    const manifest = await fs.readStableFileSnapshot(packageJson, MAX_NPM_MANIFEST_BYTES)
+    const manifestValue = JSON.parse(Buffer.from(manifest.content).toString('utf8')) as {
+      name?: unknown
+      version?: unknown
+      os?: unknown
+      cpu?: unknown
+    }
+    if (manifestValue.name !== component.manifestName || manifestValue.version !== component.version
+      || (Array.isArray(manifestValue.os) && !manifestValue.os.includes('darwin'))
+      || (Array.isArray(manifestValue.cpu) && !manifestValue.cpu.includes(architecture))) return detected()
+    const componentTree = await fs.readStablePackageTree(packageRoot)
+    const manifestNode = componentTree.proofNodes.find(node => node.path === packageJson)
+    if (manifestNode?.fingerprint !== manifest.fingerprint
+      || !await fs.verifyStablePackageTree(packageRoot, componentTree)
+      || await locateLocklessNpmComponent(npm, component.installName, fs) !== packageRoot) return detected()
+    let native = null
+    if (component.nativeExecutableRelativePath) {
+      const nativePath = path.join(packageRoot, ...component.nativeExecutableRelativePath.split('/'))
+      native = componentTree.proofNodes.find(node => node.path === nativePath) ?? null
+      if (!native || native.entryType === 'symlink'
+        || (compositionSpec.entryRule !== 'js_entry_loads_platform_native_v1' && !native.executable)) return detected()
+    }
+    componentLocations.push(path.relative(npm.nodeModulesRoot, packageRoot).split(path.sep).join('/'))
+    componentProofNodes.push(...componentTree.proofNodes.map(node => ({
+      ...node,
+      role: node.path === packageJson
+        ? 'npm_component_manifest' as const
+        : node.path === native?.path
+          ? 'npm_component_native_executable' as const
+          : 'npm_component_file' as const,
+    })))
+    components.push({
+      role: component.role,
+      installName: component.installName,
+      manifestName: component.manifestName,
+      version: component.version,
+      ownedPackageSha256: componentTree.packageTreeSha256,
+      ownedEntryCount: componentTree.ownedEntryCount,
+      ownedTotalBytes: componentTree.ownedTotalBytes,
+      nativeExecutableRelativePath: component.nativeExecutableRelativePath,
+      nativeExecutableSha256: native?.sha256 ?? null,
+      nativeExecutableSizeBytes: native?.size ?? null,
+    })
+  }
+  const leaves = components.filter(component => component.role === 'platform_leaf')
+  if (leaves.length === 0 || leaves.some(leaf => (
+    !leaf.nativeExecutableSha256 || !leaf.nativeExecutableSizeBytes
+  ))) return detected()
+  if (compositionSpec.entryRule === 'copy_platform_binary_v1') {
+    const matches = leaves.filter(leaf => (
+      treeExecutable.sha256 === leaf.nativeExecutableSha256
+        && treeExecutable.size === leaf.nativeExecutableSizeBytes
+    ))
+    const isOpenCodeV1X64 = architecture === 'x64' && npm.packageName === 'opencode-ai'
+    const isOpenCodeV2X64 = architecture === 'x64' && npm.packageName === '@opencode-ai/cli'
+    if ((isOpenCodeV1X64 && (leaves.length !== 2 || matches.length !== 2))
+      || (isOpenCodeV2X64 && (leaves.length !== 2 || matches.length !== 1))
+      || (!isOpenCodeV1X64 && !isOpenCodeV2X64 && matches.length !== 1)) return detected()
+  }
+  const composed = { entryRule: compositionSpec.entryRule, components }
+  return success(
+    version,
+    `npm_metadata:${npm.packageName}`,
+    portableFingerprint({
+      schema: 'npm-composed-install-lockless-physical-v1',
+      rootPackage: tree.physicalTreeFingerprint,
+      componentLocations,
+      components: componentProofNodes.map(node => node.fingerprint),
+    }),
+    [...proofNodes, ...componentProofNodes],
+    portableFingerprint({
+      schema: 'npm-composed-platform-surface-lockless-v1',
+      version,
+      packageName: npm.packageName,
+      executable: portableFile(executableRelative, treeExecutable),
+      ownedPackageSha256: tree.packageTreeSha256,
+      ownedEntryCount: tree.ownedEntryCount,
+      ownedTotalBytes: tree.ownedTotalBytes,
+      ...composed,
+    }),
+    portableFingerprint({
+      schema: 'npm-composed-owned-packages-lockless-v1',
+      root: {
+        packageName: npm.packageName,
+        ownedPackageSha256: tree.packageTreeSha256,
+        ownedEntryCount: tree.ownedEntryCount,
+        ownedTotalBytes: tree.ownedTotalBytes,
+      },
+      ...composed,
+    }),
+    composed,
+  )
+}
+
+/** Re-check after the tree read: a hidden lockfile that appeared must still not describe the package. */
+async function hasNoLockEntry(npm: NpmPackageLocation, fs: PassiveVersionFileSystem): Promise<boolean> {
+  const lockNode = await fs.lstat(npm.installLock)
+  if (lockNode === undefined) return true
+  if (lockNode.kind !== 'file' || !isSafeArtifactOwned(lockNode)
+    || path.resolve(await fs.realpath(npm.installLock)) !== npm.installLock) return false
+  const snapshot = await fs.readStableFileSnapshot(npm.installLock, 16 * 1024 * 1024)
+  const lock = JSON.parse(Buffer.from(snapshot.content).toString('utf8')) as {
+    lockfileVersion?: unknown
+    packages?: unknown
+  }
+  return isSafeArtifactOwned(snapshot)
+    && typeof lock.lockfileVersion === 'number' && lock.lockfileVersion >= 2
+    && Boolean(lock.packages) && typeof lock.packages === 'object' && !Array.isArray(lock.packages)
+    && !Object.prototype.hasOwnProperty.call(lock.packages, npm.installLockKey)
 }
 
 function success(

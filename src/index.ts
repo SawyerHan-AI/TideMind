@@ -19,6 +19,7 @@ import type { DigestInput, PrepareInput, DigestIntent, DetailLevel } from './typ
 
 import { getAgent } from './db/agents.js';
 import { recordHostActivityEvidence, type HostActivitySignal } from './db/agent-host-activity.js';
+import { BRIDGE_REJECTED_MESSAGE, evaluateBridgeAdmission } from './agent-bridge-guard.js';
 import { createLogger } from './utils/logger.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { shutdownLLMClient } from './llm/client.js';
@@ -75,6 +76,23 @@ function recordMcpActivity(db: ReturnType<typeof getDb>, signalName: HostActivit
       log.warn(`MCP 宿主活动证据不可用：${reason}`);
     }
   }
+}
+
+// Bridge generation guard: a generation-bound entry of a removed/stopped or
+// definitively rejected Installation no longer receives memory. Unbound legacy
+// entries and unmanaged legacy Installations are unaffected.
+const bridgeRejectionsLogged = new Set<string>();
+function bridgeRejectedResult(db: ReturnType<typeof getDb>) {
+  const admission = evaluateBridgeAdmission(db, { agentId, activityGenerationToken });
+  if (admission.allowed) return null;
+  if (!bridgeRejectionsLogged.has(admission.reason)) {
+    bridgeRejectionsLogged.add(admission.reason);
+    log.warn(`Tide Mind 桥接拒绝为 Agent 提供记忆：${admission.reason}`);
+  }
+  return {
+    isError: true as const,
+    content: [{ type: 'text' as const, text: `${BRIDGE_REJECTED_MESSAGE} [${admission.reason}]` }],
+  };
 }
 
 const server = new McpServer({
@@ -139,6 +157,8 @@ server.tool(
     try {
       try {
         const db = getDb();
+        const rejected = bridgeRejectedResult(db);
+        if (rejected) return rejected;
         const repo = new SqliteRepository(db);
         const input: PrepareInput = {
           tool: params.tool,
@@ -185,6 +205,8 @@ server.tool(
     try {
     try {
       const db = getDb();
+      const rejected = bridgeRejectedResult(db);
+      if (rejected) return rejected;
       const repo = new SqliteRepository(db);
       // 推导 source_tool
       let sourceTool: string | undefined;
@@ -277,6 +299,8 @@ server.tool(
     try {
     try {
       const db = getDb();
+      const rejected = bridgeRejectedResult(db);
+      if (rejected) return rejected;
       const repo = new SqliteRepository(db);
       const input: DigestInput = {
         content: params.content,

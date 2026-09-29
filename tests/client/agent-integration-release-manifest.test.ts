@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { CODEX_CAPABILITY_MANIFESTS } from '../../src/llm/cli/catalogs'
+import { CODEX_REQUIRED_EXEC_HELP } from '../../src/llm/cli/catalogs'
+import { planCodexContract } from '../../src/llm/cli/gate-codex'
 import { AGENT_CATALOG } from '../../client/electron/agent-integration/catalog'
 import { P0_DISCOVERY_PROBES } from '../../client/electron/agent-integration/discovery'
 import { createP0HostAdapters } from '../../client/electron/agent-integration/hosts/p0-adapter-registry'
@@ -55,7 +56,7 @@ function releasedAdapterSurface(): ReadonlyMap<CatalogId, AgentHostAdapter> {
     } as AgentHostAdapter]))
 }
 
-describe('0.2.92 Agent release manifest', () => {
+describe('0.2.93 Agent release manifest', () => {
   it.each([
     ['opencode-v1-cli', false],
     ['opencode-v2-beta-cli', true],
@@ -80,10 +81,10 @@ describe('0.2.92 Agent release manifest', () => {
         ? [probe.detectOnlyFallbackCatalogId]
         : []),
     ])
-    expect(AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION).toBe('0.2.92')
+    expect(AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION).toBe('0.2.93')
     expect(AGENT_INTEGRATION_RELEASE_MANIFEST).toMatchObject({
       schemaVersion: 4,
-      appVersion: '0.2.92',
+      appVersion: '0.2.93',
       features: {
         customLocalAgent: {
           enabledByDefault: true,
@@ -169,9 +170,10 @@ describe('0.2.92 Agent release manifest', () => {
     }
   })
 
-  it('keeps every observed or release-accepted Codex CLI version inside the runtime capability gate', () => {
+  it('keeps every observed or release-accepted Codex CLI version acceptable to the runtime execution contract', () => {
+    // The CLI inference gate no longer pins exact versions (design §4): a version only
+    // needs a well-formed shape; the contract is proven by help/feature read-back.
     const codex = AGENT_INTEGRATION_RELEASE_ENTRIES.find(entry => entry.catalogId === 'codex-cli')
-    const runtimeVersions = new Set(CODEX_CAPABILITY_MANIFESTS.map(manifest => manifest.version))
 
     expect(codex).toBeDefined()
     expect(codex?.observedExactVersions).toEqual(['0.153.4'])
@@ -179,7 +181,12 @@ describe('0.2.92 Agent release manifest', () => {
       ...(codex?.observedExactVersions ?? []),
       ...(codex?.releaseAcceptedExactVersions ?? []),
     ]) {
-      expect(runtimeVersions).toContain(version)
+      expect(() => planCodexContract({
+        version,
+        execHelp: CODEX_REQUIRED_EXEC_HELP.join('\n'),
+        promptInputHelp: 'codex debug prompt-input',
+        featuresList: 'shell_tool stable true\n',
+      }), version).not.toThrow()
     }
   })
 

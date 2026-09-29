@@ -12,6 +12,8 @@ import {
 import { clearClientCache } from '../../../src/llm/client'
 import { getMetabolismWorkerDegradedReason, restartMetabolismWorkerAndTriggerImmediate } from '../daemon'
 import { createLogger } from '../../../src/utils/logger'
+import { getConfig } from '../../../src/config'
+import { buildConnectionModelsView } from '../../../src/llm/model-catalog-view'
 import { MetabolismWorkerActiveTaskMirror } from '../workers/metabolism-worker-active-task-mirror'
 import type { MetabolismWorkerToMainMessage } from '../workers/metabolism-worker-protocol'
 
@@ -31,6 +33,17 @@ export interface ConnectionHealthItem {
   cooldownMs: number
 }
 
+export interface RouteFaultItem {
+  tier: 'light' | 'standard' | 'heavy'
+  connectionId: string
+  connectionName: string
+  modelId: string
+  reason: string
+  retryAt: string | null
+  observedAt: string | null
+  message: string | null
+}
+
 export interface LLMHealthSnapshot {
   // Legacy fields remain during the renderer migration.
   circuitState: 'closed' | 'open' | 'half-open'
@@ -43,6 +56,12 @@ export interface LLMHealthSnapshot {
   availableCount: number
   needsAttentionCount: number
   errors: ConnectionHealthItem[]
+  /**
+   * In-use route faults (design §7.2): a specific tier's model is currently refused by
+   * the unified admission. Kept separate from connection-environment errors; recovering
+   * one route never clears another route's fault.
+   */
+  routeFaults: RouteFaultItem[]
   activeTask: ActiveLLMTask | null
   metabolismWorkerDegradedReason: string | null
 }
@@ -118,15 +137,43 @@ export function readLLMHealthSnapshot(db: Database.Database): LLMHealthSnapshot 
     }
   }
 
+  const routeFaults: RouteFaultItem[] = []
+  const routeFaultReasons = new Set([
+    'model_rejected', 'model_mismatch', 'backoff', 'scope_unknown', 'invalid_model_id',
+  ])
+  let config: ReturnType<typeof getConfig> | null = null
+  try { config = getConfig() } catch { config = null }
+  if (config) {
+    for (const connection of connections) {
+      if (connection.provider_type !== 'claude-cli' && connection.provider_type !== 'codex-cli') continue
+      const view = buildConnectionModelsView(db, connection, config)
+      for (const route of view.inUse) {
+        if (route.admission.allowed || !routeFaultReasons.has(route.admission.reason)) continue
+        routeFaults.push({
+          tier: route.tier,
+          connectionId: connection.id,
+          connectionName: connection.name,
+          modelId: route.modelId,
+          reason: route.admission.reason,
+          retryAt: route.admission.retryAt ?? null,
+          observedAt: route.observation?.updatedAt ?? null,
+          message: route.observation?.errorMessage ?? null,
+        })
+      }
+    }
+  }
+
   errors.sort((a, b) => {
     if (a.needsUserAction !== b.needsUserAction) return a.needsUserAction ? -1 : 1
     return b.occurredAt - a.occurredAt
   })
-  // “可用”与模型选择采用同一口径：只有至少一个模型通过真实测试，
-  // 连接才会进入 online/degraded。环境检查成功但尚未测试的 untested
-  // 不能被统计为可用，否则状态卡会和 verified-only 下拉菜单互相矛盾。
-  const callableStatuses = new Set(['online', 'degraded'])
-  const availableCount = connections.filter(row => callableStatuses.has(row.status)).length
+  // 与统一调用准入同一口径：CLI 连接环境已验证（untested/online）即可承担首次
+  // 业务调用；某个模型的故障记在 routeFaults，不把整条连接算作不可用。
+  const availableCount = connections.filter(row => (
+    row.provider_type === 'claude-cli' || row.provider_type === 'codex-cli'
+      ? row.status === 'online' || row.status === 'untested'
+      : row.status === 'online' || row.status === 'degraded'
+  )).length
   const lastSuccessAt = health.reduce(
     (max, item) => Math.max(max, item.lastSuccessAt ?? 0),
     0,
@@ -144,8 +191,9 @@ export function readLLMHealthSnapshot(db: Database.Database): LLMHealthSnapshot 
     lastError: errors[0]?.message ?? null,
     lastErrorAt: errors[0]?.occurredAt ?? 0,
     availableCount,
-    needsAttentionCount: errors.length,
+    needsAttentionCount: errors.length + routeFaults.length,
     errors,
+    routeFaults,
     activeTask,
     metabolismWorkerDegradedReason: getMetabolismWorkerDegradedReason(),
   }

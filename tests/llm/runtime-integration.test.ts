@@ -75,6 +75,12 @@ import {
   startCliInvocation,
 } from '../../src/llm/cli/invocation-state.js';
 import { markPendingDigestAmbiguous } from '../../src/db/pending-digests.js';
+import {
+  getAuthBinding,
+  reconcileAuthBinding,
+  recordModelObservation,
+} from '../../src/db/model-discovery.js';
+import type { CliAuthIdentity } from '../../src/llm/cli/types.js';
 import { CliLLMError } from '../../src/llm/cli/errors.js';
 import {
   callLLM,
@@ -92,9 +98,32 @@ function freshDb(): Database.Database {
   return db;
 }
 
+function cliAuth(
+  providerType: 'claude-cli' | 'codex-cli',
+  scopeState: 'known' | 'unknown',
+  scope = 'xinghai-org',
+): CliAuthIdentity {
+  const scopeKey = scopeState === 'known' ? `${providerType}:${scope}` : `${providerType}:unknown`;
+  return {
+    providerType,
+    method: providerType === 'claude-cli' ? 'claude.ai' : 'chatgpt',
+    accountIdentifier: null,
+    accountScope: scopeState === 'known' ? scopeKey : `${providerType}:local-login`,
+    scopeState,
+    scopeKey,
+    scopeLabel: null,
+  };
+}
+
+/**
+ * A CLI connection after a successful environment check under the new semantics:
+ * status online + an auth binding. No legacy candidate/available columns are written;
+ * admission must not depend on them.
+ */
 function configureCliConnection(
   db: Database.Database,
   providerType: 'claude-cli' | 'codex-cli' = 'claude-cli',
+  options: { scopeState?: 'known' | 'unknown' | null } = {},
 ): string {
   const connection = createConnection(db, {
     name: `Local ${providerType}`,
@@ -103,15 +132,20 @@ function configureCliConnection(
   db.prepare(`
     UPDATE model_connections
     SET status = 'online',
-        candidate_models = ?,
-        available_models = ?,
-        validation_fingerprint = 'validated-fixture'
+        candidate_models = NULL,
+        available_models = NULL,
+        validation_fingerprint = 'generation-fixture'
     WHERE id = ?
-  `).run(
-    JSON.stringify(['claude-sonnet-4-6']),
-    JSON.stringify(['claude-sonnet-4-6']),
-    connection.id,
-  );
+  `).run(connection.id);
+  const scopeState = options.scopeState === undefined ? 'known' : options.scopeState;
+  if (scopeState) {
+    reconcileAuthBinding(db, {
+      connectionId: connection.id,
+      auth: cliAuth(providerType, scopeState),
+      cliGeneration: 'generation-fixture',
+      authStoreSignal: null,
+    });
+  }
   return connection.id;
 }
 
@@ -138,7 +172,7 @@ describe('显式 connection + model 路由', () => {
     db.close();
   });
 
-  it('严格使用连接 provider 和已验证模型，归档或 provider 不一致均不可回退', () => {
+  it('严格使用连接 provider 和已选模型（不再要求 available_models），归档或 provider 不一致均不可回退', () => {
     const db = freshDb();
     const connectionId = configureCliConnection(db, 'claude-cli');
     configState.current.llm.standard_connection = connectionId;
@@ -150,6 +184,7 @@ describe('显式 connection + model 路由', () => {
       providerType: 'claude-cli',
       modelAlias: 'claude-sonnet-4-6',
       sourceType: 'local_subscription',
+      admission: { allowed: true, selectionMode: 'pinned_id', firstCall: true },
     });
     expect(() => assertRouteCallable(route)).not.toThrow();
 
@@ -445,6 +480,178 @@ describe('invocation 冷启动恢复与 ambiguous digest', () => {
     expect(db.prepare(
       "SELECT resolution FROM cli_invocations WHERE id = 'inv_digest_ambiguous'",
     ).get()).toEqual({ resolution: 'user_revalidated' });
+    db.close();
+  });
+});
+
+describe('统一模型准入（route，design §5.4）', () => {
+  function route(db: Database.Database) {
+    return resolveLLMRoute('standard', db);
+  }
+  function observe(
+    db: Database.Database,
+    connectionId: string,
+    modelId: string,
+    outcome: Parameters<typeof recordModelObservation>[1]['outcome'],
+    extra: { backoffUntil?: string | null } = {},
+  ) {
+    const binding = getAuthBinding(db, connectionId)!;
+    recordModelObservation(db, {
+      connectionId,
+      scopeKey: binding.scopeKey,
+      authEpoch: binding.authEpoch,
+      modelId,
+      selectionMode: 'pinned_id',
+      outcome,
+      source: 'business',
+      backoffUntil: extra.backoffUntil ?? null,
+    });
+  }
+
+  it('新发现或手动输入、已被选入路由的模型允许首次后台调用（firstCall）', async () => {
+    const db = freshDb();
+    const connectionId = configureCliConnection(db, 'codex-cli');
+    configState.current.llm.standard_connection = connectionId;
+    configState.current.llm.standard_provider = 'codex-cli';
+    configState.current.llm.standard_model = 'gpt-9.9-datapilot-preview';
+    expect(route(db).admission).toEqual({ allowed: true, selectionMode: 'pinned_id', firstCall: true });
+
+    setUsageDb(db);
+    runCliLLMMock.mockResolvedValue({
+      text: 'first-call-ok',
+      selectedModelAlias: 'gpt-9.9-datapilot-preview',
+      actualModel: 'gpt-9.9-datapilot-preview',
+      inputTokens: 1,
+      cachedInputTokens: 0,
+      outputTokens: 1,
+      reasoningTokens: 0,
+      providerUsage: null,
+    });
+    await expect(callLLM({ prompt: 'x', model: 'standard', operationName: 'first-call' }))
+      .resolves.toBe('first-call-ok');
+    expect(runCliLLMMock).toHaveBeenCalledTimes(1);
+    expect(runCliLLMMock.mock.calls[0][2]).toMatchObject({ modelAlias: 'gpt-9.9-datapilot-preview' });
+
+    // A historical success in the same scope/epoch: allowed, no longer a first call.
+    observe(db, connectionId, 'gpt-9.9-datapilot-preview', 'success');
+    expect(route(db).admission).toEqual({ allowed: true, selectionMode: 'pinned_id', firstCall: false });
+    db.close();
+  });
+
+  it('scope unknown 阻断后台调用且不调用模型', async () => {
+    const db = freshDb();
+    const connectionId = configureCliConnection(db, 'claude-cli', { scopeState: 'unknown' });
+    configState.current.llm.standard_connection = connectionId;
+    configState.current.llm.standard_provider = 'claude-cli';
+    const resolved = route(db);
+    expect(resolved.admission).toMatchObject({ allowed: false, reason: 'scope_unknown' });
+    expect(() => assertRouteCallable(resolved)).toThrowError(
+      expect.objectContaining({ kind: 'scope_unknown', connectionId }),
+    );
+    setUsageDb(db);
+    await expect(callLLM({ prompt: 'x', model: 'standard' }))
+      .rejects.toMatchObject({ kind: 'scope_unknown' });
+    expect(runCliLLMMock).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it('模型级故障只阻断该模型：mismatch / model_rejected / backoff；同连接其他模型不受影响', () => {
+    const db = freshDb();
+    const connectionId = configureCliConnection(db, 'claude-cli');
+    configState.current.llm.standard_connection = connectionId;
+    configState.current.llm.standard_provider = 'claude-cli';
+    configState.current.llm.standard_model = 'claude-sonnet-4-6';
+
+    observe(db, connectionId, 'claude-sonnet-4-6', 'mismatch');
+    expect(() => assertRouteCallable(route(db))).toThrowError(
+      expect.objectContaining({ kind: 'model_mismatch' }),
+    );
+    observe(db, connectionId, 'claude-sonnet-4-6', 'model_rejected');
+    expect(() => assertRouteCallable(route(db))).toThrowError(
+      expect.objectContaining({ kind: 'model_unavailable' }),
+    );
+    const retryAt = new Date(Date.now() + 60_000).toISOString();
+    observe(db, connectionId, 'claude-sonnet-4-6', 'temporary_failure', { backoffUntil: retryAt });
+    const backedOff = route(db);
+    expect(backedOff.admission).toMatchObject({ allowed: false, reason: 'backoff', retryAt });
+    expect(() => assertRouteCallable(backedOff)).toThrowError(
+      expect.objectContaining({ kind: 'model_backoff' }),
+    );
+    observe(db, connectionId, 'claude-sonnet-4-6', 'temporary_failure', {
+      backoffUntil: new Date(Date.now() - 1_000).toISOString(),
+    });
+    expect(() => assertRouteCallable(route(db))).not.toThrow();
+
+    observe(db, connectionId, 'claude-sonnet-4-6', 'model_rejected');
+    configState.current.llm.standard_model = 'claude-opus-4-1';
+    expect(() => assertRouteCallable(route(db))).not.toThrow();
+    expect(db.prepare('SELECT status FROM model_connections WHERE id = ?').get(connectionId))
+      .toEqual({ status: 'online' });
+    db.close();
+  });
+
+  it('epoch 变化后旧 epoch 的模型故障只作历史，不再阻断', () => {
+    const db = freshDb();
+    const connectionId = configureCliConnection(db, 'claude-cli');
+    configState.current.llm.standard_connection = connectionId;
+    configState.current.llm.standard_provider = 'claude-cli';
+    observe(db, connectionId, 'claude-sonnet-4-6', 'model_rejected');
+    expect(route(db).admission).toMatchObject({ allowed: false, reason: 'model_rejected' });
+    reconcileAuthBinding(db, {
+      connectionId,
+      auth: cliAuth('claude-cli', 'known', 'datapilot-org'),
+      cliGeneration: 'generation-fixture',
+      authStoreSignal: null,
+    });
+    expect(route(db).admission).toEqual({ allowed: true, selectionMode: 'pinned_id', firstCall: true });
+    db.close();
+  });
+
+  it('环境状态阻断：checking/testing → busy，ambiguous，环境失败 → unavailable', () => {
+    const db = freshDb();
+    const connectionId = configureCliConnection(db, 'claude-cli');
+    configState.current.llm.standard_connection = connectionId;
+    configState.current.llm.standard_provider = 'claude-cli';
+    const expectations: Array<[string, string]> = [
+      ['checking', 'connection_busy'],
+      ['testing', 'connection_busy'],
+      ['ambiguous', 'ambiguous_outcome'],
+      ['not_authenticated', 'connection_unavailable'],
+      ['unsupported_version', 'connection_unavailable'],
+      ['offline', 'connection_unavailable'],
+      ['unconfigured', 'connection_unavailable'],
+    ];
+    for (const [status, kind] of expectations) {
+      db.prepare('UPDATE model_connections SET status = ? WHERE id = ?').run(status, connectionId);
+      expect(() => assertRouteCallable(route(db)), status).toThrowError(expect.objectContaining({ kind }));
+    }
+    for (const status of ['untested', 'online', 'degraded']) {
+      db.prepare('UPDATE model_connections SET status = ? WHERE id = ?').run(status, connectionId);
+      expect(() => assertRouteCallable(route(db)), status).not.toThrow();
+    }
+    db.close();
+  });
+
+  it('尚无认证绑定（升级后未复检）的 CLI 连接：route 不预判 scope，交给 service 建立绑定后在租约内再准入', async () => {
+    const db = freshDb();
+    const connectionId = configureCliConnection(db, 'claude-cli', { scopeState: null });
+    configState.current.llm.standard_connection = connectionId;
+    configState.current.llm.standard_provider = 'claude-cli';
+    expect(getAuthBinding(db, connectionId)).toBeNull();
+    setUsageDb(db);
+    runCliLLMMock.mockResolvedValue({
+      text: 'ok',
+      selectedModelAlias: 'default',
+      actualModel: null,
+      inputTokens: null,
+      cachedInputTokens: null,
+      outputTokens: null,
+      reasoningTokens: null,
+      providerUsage: null,
+    });
+    await expect(callLLM({ prompt: 'x', model: 'standard', operationName: 'post-upgrade' }))
+      .resolves.toBe('ok');
+    expect(runCliLLMMock).toHaveBeenCalledTimes(1);
     db.close();
   });
 });

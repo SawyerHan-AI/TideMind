@@ -718,7 +718,9 @@ function validateFrozenLifecycleActivityReceipt(raw, expected, assertionObserved
   if (activity.exportHash !== hostActivityLedgerExportHash(activity)) {
     throw new Error(`${label} activity export hash mismatch`)
   }
-  if (activity.databaseSchemaVersion !== 34) throw new Error(`${label} activity database schema is not v34`)
+  if (activity.databaseSchemaVersion !== 34 && activity.databaseSchemaVersion !== 35) {
+    throw new Error(`${label} activity database schema is not v34/v35`)
+  }
   return activity
 }
 

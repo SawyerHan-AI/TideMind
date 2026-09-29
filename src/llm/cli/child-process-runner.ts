@@ -134,7 +134,7 @@ function signalProcessGroup(child: ChildProcessWithoutNullStreams, signal: NodeJ
   }
 }
 
-function signalProcessGroupId(group: number, signal: NodeJS.Signals): void {
+export function signalProcessGroupId(group: number, signal: NodeJS.Signals): void {
   try {
     process.kill(-group, signal);
   } catch {
@@ -142,7 +142,7 @@ function signalProcessGroupId(group: number, signal: NodeJS.Signals): void {
   }
 }
 
-function isProcessGroupAlive(group: number): boolean {
+export function isProcessGroupAlive(group: number): boolean {
   if (process.platform === 'win32') return false;
   try {
     process.kill(-group, 0);
@@ -152,7 +152,7 @@ function isProcessGroupAlive(group: number): boolean {
   }
 }
 
-async function waitForProcessGroupExit(group: number, timeoutMs: number): Promise<void> {
+export async function waitForProcessGroupExit(group: number, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline && isProcessGroupAlive(group)) {
     await new Promise<void>((resolve) => {

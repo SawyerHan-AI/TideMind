@@ -26,6 +26,7 @@ import type {
   ReconcileState,
 } from './types'
 import { isMutationDomainKind } from './types'
+import { variantDeclarationFor } from './variant-declarations'
 
 export interface CoordinatorInstallation {
   id: string
@@ -100,6 +101,8 @@ export interface VerifiedRecoverableExecution {
   installationId: string
   installationSurfaceFingerprint: string | null
   liveTrustProofFingerprint: string | null
+  /** Set only for an ownership-only disconnect finalizer (no live source proof). */
+  ownershipOnlyDisconnectBinding?: string | null
 }
 
 export interface MutableRecoverableExecution {
@@ -242,11 +245,75 @@ export interface CoordinatorDependencies {
   /** Production composition rechecks exact current source trust at host/evidence boundaries. */
   authorizeEffect?(
     installation: CoordinatorInstallation,
-    binding: { installationSurfaceFingerprint: string | null; liveTrustProofFingerprint: string | null },
+    binding: EffectTrustBinding,
+    scope?: EffectAuthorizationScope,
   ): boolean | Promise<boolean>
+  /**
+   * Other registered consumers (active or removal_pending, paused included) of the
+   * physical artifact/container a mutation writes (design §3.3.1). Absent means the
+   * composition has no shared-domain ledger and no shared-write gate applies.
+   */
+  sharedDomainConsumers?(
+    installation: CoordinatorInstallation,
+    mutation: PlannedMutation,
+  ): readonly SharedDomainConsumer[] | Promise<readonly SharedDomainConsumer[]>
   hostActivityEvidence?: HostActivityEvidenceReader
   codexHookTrustEvidence?: AdapterOperationContext['codexHookTrustEvidence']
   guidedRemovalEvidence?: AdapterOperationContext['guidedRemovalEvidence']
+}
+
+export interface SharedDomainConsumer {
+  installationId: string
+  /** Opaque per-consumer generation bound into the write CAS. */
+  generation: string
+  /** Non-null when a shared write could affect an incompatible/untrusted consumer. */
+  blockingReason: string | null
+}
+
+export const SHARED_DOMAIN_SET_CHANGED = 'shared_consumer_set_changed'
+
+/** Frozen trust material of a plan, rechecked at every effect/evidence boundary. */
+export interface EffectTrustBinding {
+  installationSurfaceFingerprint: string | null
+  liveTrustProofFingerprint: string | null
+  /** Ownership-only disconnect (design §3.5); never a claim that the source is trusted. */
+  ownershipOnlyDisconnectBinding?: string | null
+}
+
+/** What is about to happen, so an ownership-only disconnect can be scoped narrowly. */
+export interface EffectAuthorizationScope {
+  operation: PlanOperation
+  /** The physical mutation domain, or null for read-only verification/finalization. */
+  mutationDomain: PlannedMutation['domainKind'] | null
+}
+
+/**
+ * `ownership_only`: a disconnect of Tide Mind-owned file fragments while the host
+ * source is not (or no longer) trusted. No host program is inspected or run; the
+ * plan binds ownership selectors, targets and current bytes instead of a live
+ * source proof, and every effect still needs Ledger ownership plus live CAS.
+ */
+export type PreviewTrustMode = 'source_trusted' | 'ownership_only'
+
+export const OWNERSHIP_ONLY_REQUIRES_HOST_COMMAND = 'ownership_only_disconnect_requires_host_command'
+
+/** Reads the ownership-only disconnect binding covered by executionPlanHash. */
+export function frozenPlanOwnershipOnlyBinding(plan: PreparedCoordinatorPlan): string | null {
+  const value = plan.executionPlan.ownershipOnlyDisconnectBinding
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : null
+}
+
+/** A disconnect planned without source trust: bound only to ownership and live bytes. */
+export function isOwnershipOnlyDisconnectPlan(plan: PreparedCoordinatorPlan): boolean {
+  return plan.operation === 'disconnect'
+    && frozenPlanOwnershipOnlyBinding(plan) !== null
+    && frozenPlanLiveTrustProofFingerprint(plan) === null
+}
+
+/** Reads the shared-domain consumer binding covered by executionPlanHash. */
+export function frozenPlanSharedDomainBinding(plan: PreparedCoordinatorPlan): string | null {
+  const value = plan.executionPlan.sharedDomainBinding
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : null
 }
 
 const HOST_ACTIVITY_FRESHNESS_MS = 30 * 24 * 60 * 60 * 1_000
@@ -280,7 +347,10 @@ export interface RecoveryOptions {
    * Replaying an idempotent Adapter effect requires current production write
    * authority as well as the persisted consent/state checks below.
    */
-  canReplayEffect?(installation: CoordinatorInstallation): boolean | Promise<boolean>
+  canReplayEffect?(
+    installation: CoordinatorInstallation,
+    execution?: MutableRecoverableExecution,
+  ): boolean | Promise<boolean>
   /**
    * Every recovery state, including read-only verification and finalization,
    * must still belong to the exact currently trusted Installation.
@@ -298,6 +368,8 @@ export interface PreviewRequest {
    * the user-approved plan. This is never accepted from renderer input.
    */
   frozenActivityGenerationToken?: string
+  /** Defaults to `source_trusted`; `ownership_only` is valid only for disconnect. */
+  trustMode?: PreviewTrustMode
 }
 
 export interface ApplyPreparedRequest {
@@ -326,6 +398,18 @@ export class AgentIntegrationCoordinator {
     assertInstallation(request.installation)
     assertHostCapabilityCeiling(request.installation, request.operation, request.desiredCapability)
     const adapter = this.requireAdapter(request.installation.identity.hostVariant)
+    const ownershipOnly = request.trustMode === 'ownership_only'
+    if (ownershipOnly) {
+      if (request.operation !== 'disconnect') throw new Error('ownership_only_requires_disconnect')
+      // Decide before inspect: a host-command/plugin-manager Adapter would have to
+      // run the untrusted host program even to read its state.
+      for (const componentKey of request.componentKeys) {
+        const domain = adapter.componentContracts?.[componentKey]?.mutationDomain
+        if (domain !== 'file_fragment' && domain !== 'none') {
+          throw new Error(OWNERSHIP_ONLY_REQUIRES_HOST_COMMAND)
+        }
+      }
+    }
     const ownedArtifacts = await this.dependencies.repository.listOwnedArtifactBaselines(request.installation.id)
     const verificationDependencies = request.operation === 'repair'
       && request.componentKeys.length === 1 && request.componentKeys[0] === 'instruction'
@@ -365,7 +449,7 @@ export class AgentIntegrationCoordinator {
       ? { ...observedInspection, detectedVersion: persistedHostVersion ?? undefined }
       : observedInspection
     const implementedComponents = new Set(inspection.components.map(component => component.componentKey))
-    const componentKeys = requestedComponents.filter(component => implementedComponents.has(component))
+    let componentKeys = requestedComponents.filter(component => implementedComponents.has(component))
     if (componentKeys.length === 0) {
       throw new Error(`no enabled component projection for ${request.installation.identity.hostVariant}`)
     }
@@ -412,6 +496,68 @@ export class AgentIntegrationCoordinator {
       })
     }
 
+    // Shared physical domains (design §3.3.1): a write that could affect another
+    // registered consumer happens only while every such consumer is compatible.
+    // Otherwise the whole atomic group is left out, the last known content stays,
+    // and the diagnostic names the blocking consumer.
+    let sharedDomainBinding: string | null = null
+    if (request.operation !== 'disconnect' && this.dependencies.sharedDomainConsumers) {
+      const snapshot = await this.sharedDomainSnapshot(request.installation, adapterPlan.mutations)
+      if (snapshot.blocked.size > 0) {
+        const blockedComponents = new Set(adapterPlan.mutations
+          .filter(mutation => snapshot.blocked.has(mutation.operationId))
+          .flatMap(mutation => mutationComponentKeys(mutation)))
+        const reasons = [...new Set([...snapshot.blocked.values()].flat())].sort()
+        const declaration = variantDeclarationFor(
+          request.installation.identity.hostVariant,
+          request.installation.identity.distribution.distributionId,
+        )
+        // Physical carriers are indivisible even when an Adapter emitted several
+        // mutations for them. A retained subset must also be a verified bundle.
+        for (const group of declaration?.atomicGroups ?? []) {
+          if (group.components.some(component => blockedComponents.has(component))) {
+            for (const component of group.components) blockedComponents.add(component)
+          }
+        }
+        componentKeys = componentKeys.filter(component => !blockedComponents.has(component))
+        if (request.operation !== 'repair' && (!declaration
+          || !declaration.supportedBundles.some(bundle => bundle.length === componentKeys.length
+            && bundle.every(component => componentKeys.includes(component))))) {
+          throw new Error(reasons[0])
+        }
+        // A repair exists only to rewrite its requested components; dropping any of
+        // them leaves nothing meaningful to approve.
+        if (componentKeys.length === 0
+          || (request.operation === 'repair'
+            && request.componentKeys.some(component => blockedComponents.has(component)))) {
+          throw new Error(reasons[0])
+        }
+        adapterPlan = {
+          ...adapterPlan,
+          mutations: adapterPlan.mutations.filter(mutation => (
+            !mutationComponentKeys(mutation).some(component => blockedComponents.has(component))
+          )),
+          ...(adapterPlan.requiredUserActionDetails ? {
+            requiredUserActionDetails: adapterPlan.requiredUserActionDetails
+              .filter(detail => !blockedComponents.has(detail.componentKey)),
+          } : {}),
+          diagnostics: [...new Set([...adapterPlan.diagnostics, ...reasons])],
+        }
+      }
+      sharedDomainBinding = sharedDomainBindingFor(snapshot.entries
+        .filter(entry => adapterPlan.mutations.some(mutation => mutation.operationId === entry.operationId)))
+    }
+
+    if (ownershipOnly && adapterPlan.mutations.some(mutation => (
+      mutation.domainKind !== 'file_fragment'
+      || mutation.operation === 'host_command'
+      || (mutation.frozenCommands?.length ?? 0) > 0
+      || mutation.executableRealpath !== undefined
+      || (mutation.additionalFenceTargets ?? []).some(target => target.domainKind !== 'file_fragment')
+    ))) {
+      throw new Error(OWNERSHIP_ONLY_REQUIRES_HOST_COMMAND)
+    }
+
     assertLedgerOwnership(adapterPlan.mutations, ownedArtifacts, request.operation)
     const prepared = buildExecutionPlan({
       installationId: request.installation.id,
@@ -430,15 +576,25 @@ export class AgentIntegrationCoordinator {
     if (this.dependencies.installationSurfaceFingerprint && !surfaceFingerprint) {
       throw new Error('Installation projection surface could not be frozen')
     }
-    const liveTrustProofFingerprint = await this.dependencies.liveTrustProof?.(request.installation)
-    if (this.dependencies.liveTrustProof && !liveTrustProofFingerprint) {
+    const liveTrustProofFingerprint = ownershipOnly
+      ? null
+      : await this.dependencies.liveTrustProof?.(request.installation)
+    if (!ownershipOnly && this.dependencies.liveTrustProof && !liveTrustProofFingerprint) {
       throw new Error('Installation live distribution trust could not be proved')
     }
-    if (!surfaceFingerprint && !liveTrustProofFingerprint) return prepared
+    // Ownership selectors, targets and current bytes — not the host executable.
+    const ownershipOnlyDisconnectBinding = ownershipOnly
+      ? ownershipOnlyBindingFor(request.installation, surfaceFingerprint ?? null, ownedArtifacts, inspection, adapterPlan.mutations)
+      : null
+    if (!surfaceFingerprint && !liveTrustProofFingerprint && !sharedDomainBinding && !ownershipOnlyDisconnectBinding) {
+      return prepared
+    }
     const executionPlan = {
       ...prepared.executionPlan,
       ...(surfaceFingerprint ? { installationSurfaceFingerprint: surfaceFingerprint } : {}),
       ...(liveTrustProofFingerprint ? { liveTrustProofFingerprint } : {}),
+      ...(sharedDomainBinding ? { sharedDomainBinding } : {}),
+      ...(ownershipOnlyDisconnectBinding ? { ownershipOnlyDisconnectBinding } : {}),
     }
     return {
       ...prepared,
@@ -850,6 +1006,7 @@ export class AgentIntegrationCoordinator {
         installationId: execution.installation.id,
         installationSurfaceFingerprint: frozenPlanInstallationSurfaceFingerprint(execution.preparedPlan),
         liveTrustProofFingerprint: frozenPlanLiveTrustProofFingerprint(execution.preparedPlan),
+        ownershipOnlyDisconnectBinding: frozenPlanOwnershipOnlyBinding(execution.preparedPlan),
       }, 'recovery_source_trust_changed')
     }
     const finalGenerationFailure = this.generationFailure(execution.preparedPlan, adapter)
@@ -860,6 +1017,7 @@ export class AgentIntegrationCoordinator {
         installationId: execution.installation.id,
         installationSurfaceFingerprint: frozenPlanInstallationSurfaceFingerprint(execution.preparedPlan),
         liveTrustProofFingerprint: frozenPlanLiveTrustProofFingerprint(execution.preparedPlan),
+        ownershipOnlyDisconnectBinding: frozenPlanOwnershipOnlyBinding(execution.preparedPlan),
       }, finalGenerationFailure)
     }
     await this.dependencies.repository.setRunState(execution.runId, 'committed', updatedAt)
@@ -881,6 +1039,14 @@ export class AgentIntegrationCoordinator {
     const hostVersion = frozenPlanHostVersion(input.preparedPlan)
     if (!await this.currentHostVersionMatches(input.installation.id, input.preparedPlan)) {
       return this.needsRecovery(input, 'host_version_changed', 'host_version')
+    }
+    if (!input.recovery) {
+      // Shared-domain CAS: the consumer set and every consumer generation must still
+      // equal what the approved plan froze. A change abandons this write (no retry
+      // loop). Recovery may still commit an effect that already happened by exact
+      // read-back; only a replay is re-gated (checkRecoveryReplay/effect boundary).
+      const sharedFailure = await this.sharedDomainCasFailure(input.installation, input.preparedPlan)
+      if (sharedFailure) return this.needsRecovery(input, sharedFailure, 'shared_domain_cas')
     }
     const operationById = new Map(input.preparedPlan.adapterPlan.mutations.map(mutation => [mutation.operationId, mutation]))
     if (!input.recovery) {
@@ -941,6 +1107,7 @@ export class AgentIntegrationCoordinator {
               if (await this.dependencies.authorizeEffect?.(
                 input.installation,
                 this.trustBinding(input.preparedPlan),
+                { operation: input.preparedPlan.operation, mutationDomain: plannedMutation.domainKind },
               ) === false) {
                 throw new Error('Installation source trust changed before mutation claim')
               }
@@ -958,6 +1125,7 @@ export class AgentIntegrationCoordinator {
               if (await this.dependencies.authorizeEffect?.(
                 input.installation,
                 this.trustBinding(input.preparedPlan),
+                { operation: input.preparedPlan.operation, mutationDomain: plannedMutation.domainKind },
               ) === false) {
                 throw new Error('Installation source trust changed before physical effect')
               }
@@ -984,10 +1152,13 @@ export class AgentIntegrationCoordinator {
               if (await this.dependencies.authorizeEffect?.(
                 input.installation,
                 this.trustBinding(input.preparedPlan),
+                { operation: input.preparedPlan.operation, mutationDomain: plannedMutation.domainKind },
               ) === false) {
                 throw new Error('Installation source trust changed at physical effect boundary')
               }
               await this.assertCurrentHostVersion(input.installation.id, input.preparedPlan)
+              const sharedFailure = await this.sharedDomainCasFailure(input.installation, input.preparedPlan)
+              if (sharedFailure) throw new Error(sharedFailure)
               applyReceipt = await adapter.apply(context, plannedMutation)
             },
             readBack: async () => {
@@ -1100,6 +1271,7 @@ export class AgentIntegrationCoordinator {
         installationId: input.installation.id,
         installationSurfaceFingerprint: frozenPlanInstallationSurfaceFingerprint(input.preparedPlan),
         liveTrustProofFingerprint: frozenPlanLiveTrustProofFingerprint(input.preparedPlan),
+        ownershipOnlyDisconnectBinding: frozenPlanOwnershipOnlyBinding(input.preparedPlan),
       }, 'installation_source_trust_changed')
     }
     const finalGenerationFailure = this.generationFailure(input.preparedPlan, adapter)
@@ -1110,6 +1282,7 @@ export class AgentIntegrationCoordinator {
         installationId: input.installation.id,
         installationSurfaceFingerprint: frozenPlanInstallationSurfaceFingerprint(input.preparedPlan),
         liveTrustProofFingerprint: frozenPlanLiveTrustProofFingerprint(input.preparedPlan),
+        ownershipOnlyDisconnectBinding: frozenPlanOwnershipOnlyBinding(input.preparedPlan),
       }, finalGenerationFailure)
     }
     await this.dependencies.repository.setRunState(input.runId, 'committed', nowIso(this.dependencies.clock))
@@ -1238,7 +1411,7 @@ export class AgentIntegrationCoordinator {
   ): Promise<{ allowed: true } | { allowed: false; reason: string }> {
     try {
       await this.assertRecoveryAuthorized(execution, options)
-      if (await options.canReplayEffect?.(execution.installation) === false) {
+      if (await options.canReplayEffect?.(execution.installation, execution) === false) {
         return { allowed: false, reason: 'recovery_write_gate_closed' }
       }
       const control = await this.dependencies.repository.getInstallationControl(execution.installation.id)
@@ -1270,9 +1443,59 @@ export class AgentIntegrationCoordinator {
       const adapter = this.requireAdapter(execution.installation.identity.hostVariant)
       const generationFailure = this.generationFailure(execution.preparedPlan, adapter)
       if (generationFailure) return { allowed: false, reason: generationFailure }
+      const sharedFailure = await this.sharedDomainCasFailure(execution.installation, execution.preparedPlan)
+      if (sharedFailure) return { allowed: false, reason: sharedFailure }
       return { allowed: true }
     } catch {
       return { allowed: false, reason: 'recovery_replay_guard_failed' }
+    }
+  }
+
+  private async sharedDomainSnapshot(
+    installation: CoordinatorInstallation,
+    mutations: readonly PlannedMutation[],
+  ): Promise<{ blocked: Map<string, string[]>; entries: SharedDomainEntry[] }> {
+    const blocked = new Map<string, string[]>()
+    const entries: SharedDomainEntry[] = []
+    const resolve = this.dependencies.sharedDomainConsumers
+    if (!resolve) return { blocked, entries }
+    for (const mutation of mutations) {
+      const consumers = (await resolve(installation, mutation))
+        .filter(consumer => consumer.installationId !== installation.id)
+      if (consumers.length === 0) continue
+      const reasons = [...new Set(consumers.flatMap(consumer => consumer.blockingReason ? [consumer.blockingReason] : []))]
+      if (reasons.length > 0) blocked.set(mutation.operationId, reasons.sort())
+      entries.push({
+        operationId: mutation.operationId,
+        physicalTarget: mutation.physicalTarget,
+        ownershipKey: mutation.ownershipKey,
+        consumers: consumers
+          .map(consumer => ({
+            installationId: consumer.installationId,
+            generation: consumer.generation,
+            blockingReason: consumer.blockingReason,
+          }))
+          .sort((left, right) => left.installationId.localeCompare(right.installationId)),
+      })
+    }
+    return { blocked, entries }
+  }
+
+  /** Null when the frozen shared-domain binding still holds for every planned write. */
+  private async sharedDomainCasFailure(
+    installation: CoordinatorInstallation,
+    plan: PreparedCoordinatorPlan,
+  ): Promise<string | null> {
+    if (plan.operation === 'disconnect' || !this.dependencies.sharedDomainConsumers) return null
+    try {
+      const snapshot = await this.sharedDomainSnapshot(installation, plan.adapterPlan.mutations)
+      const blocked = [...snapshot.blocked.values()].flat().sort()
+      if (blocked.length > 0) return blocked[0]
+      return sharedDomainBindingFor(snapshot.entries) === frozenPlanSharedDomainBinding(plan)
+        ? null
+        : SHARED_DOMAIN_SET_CHANGED
+    } catch {
+      return SHARED_DOMAIN_SET_CHANGED
     }
   }
 
@@ -1300,13 +1523,11 @@ export class AgentIntegrationCoordinator {
     if (failure) throw new FrozenGenerationChangedError(failure)
   }
 
-  private trustBinding(preparedPlan: PreparedCoordinatorPlan): {
-    installationSurfaceFingerprint: string | null
-    liveTrustProofFingerprint: string | null
-  } {
+  private trustBinding(preparedPlan: PreparedCoordinatorPlan): EffectTrustBinding {
     return {
       installationSurfaceFingerprint: frozenPlanInstallationSurfaceFingerprint(preparedPlan),
       liveTrustProofFingerprint: frozenPlanLiveTrustProofFingerprint(preparedPlan),
+      ownershipOnlyDisconnectBinding: frozenPlanOwnershipOnlyBinding(preparedPlan),
     }
   }
 
@@ -1314,7 +1535,11 @@ export class AgentIntegrationCoordinator {
     installation: CoordinatorInstallation,
     preparedPlan: PreparedCoordinatorPlan,
   ): Promise<void> {
-    if (await this.dependencies.authorizeEffect?.(installation, this.trustBinding(preparedPlan)) === false) {
+    if (await this.dependencies.authorizeEffect?.(
+      installation,
+      this.trustBinding(preparedPlan),
+      { operation: preparedPlan.operation, mutationDomain: null },
+    ) === false) {
       throw new InstallationTrustChangedError()
     }
   }
@@ -1594,6 +1819,79 @@ function assertLedgerOwnership(
       }
     }
   }
+}
+
+interface SharedDomainEntry {
+  operationId: string
+  physicalTarget: string
+  ownershipKey: string
+  consumers: readonly SharedDomainConsumer[]
+}
+
+/**
+ * Operation IDs are regenerated by every preview, so the binding keys on the
+ * physical target/selector instead; it covers the consumer set and generations.
+ */
+function ownershipOnlyBindingFor(
+  installation: CoordinatorInstallation,
+  installationSurfaceFingerprint: string | null,
+  ownedArtifacts: readonly OwnedArtifactBaseline[],
+  inspection: {
+    components: readonly {
+      componentKey: ComponentKey
+      observedTarget?: string
+      observedFragmentHash?: string
+      visibility: string
+    }[]
+  },
+  mutations: readonly PlannedMutation[],
+): string {
+  const key = (...parts: string[]) => parts.join('\u0000')
+  return sha256Json({
+    schemaVersion: 1,
+    mode: 'ownership_only_disconnect',
+    installationId: installation.id,
+    installKey: installation.identity.installKey,
+    agentId: installation.agentId,
+    installationSurfaceFingerprint,
+    ownership: [...ownedArtifacts]
+      .map(artifact => ({
+        componentKey: artifact.componentKey,
+        physicalTarget: artifact.physicalTarget,
+        ownershipKey: artifact.ownershipKey,
+        ownedFragmentHash: artifact.ownedFragmentHash,
+      }))
+      .sort((left, right) => key(left.componentKey, left.physicalTarget, left.ownershipKey)
+        .localeCompare(key(right.componentKey, right.physicalTarget, right.ownershipKey))),
+    live: inspection.components
+      .map(component => ({
+        componentKey: component.componentKey,
+        observedTarget: component.observedTarget ?? null,
+        observedFragmentHash: component.observedFragmentHash ?? null,
+        visibility: component.visibility,
+      }))
+      .sort((left, right) => left.componentKey.localeCompare(right.componentKey)),
+    removals: mutations
+      .map(mutation => ({
+        physicalTarget: mutation.physicalTarget,
+        ownershipKey: mutation.ownershipKey,
+        preconditionHash: mutation.preconditionHash ?? null,
+        containerPreconditionHash: mutation.containerPreconditionHash ?? null,
+      }))
+      .sort((left, right) => key(left.physicalTarget, left.ownershipKey)
+        .localeCompare(key(right.physicalTarget, right.ownershipKey))),
+  })
+}
+
+function sharedDomainBindingFor(entries: readonly SharedDomainEntry[]): string | null {
+  if (entries.length === 0) return null
+  return sha256Json({
+    schemaVersion: 1,
+    domains: entries
+      .map(({ physicalTarget, ownershipKey, consumers }) => ({ physicalTarget, ownershipKey, consumers }))
+      .sort((left, right) => `${left.physicalTarget}\u0000${left.ownershipKey}`
+        .localeCompare(`${right.physicalTarget}\u0000${right.ownershipKey}`)),
+  })
 }
 
 function mutationComponentKeys(mutation: PlannedMutation): readonly ComponentKey[] {

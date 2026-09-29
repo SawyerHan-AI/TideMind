@@ -105,10 +105,11 @@ describe('migration v34 — local Agent managed persistence', () => {
     const db = new Database(':memory:')
     ensureSchema(db)
 
-    expect(CURRENT_SCHEMA_VERSION).toBe(34)
+    // v35 起 schema 版本继续递增；本文件只锁定 v34 引入的表与协议标记。
+    expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(34)
     expect(tableNames(db)).toEqual(expect.arrayContaining([...AGENT_TABLES]))
     expect(db.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get())
-      .toEqual({ value: '34' })
+      .toEqual({ value: String(CURRENT_SCHEMA_VERSION) })
     expect(db.prepare('SELECT value FROM metadata WHERE key = ?')
       .get(AGENT_INTEGRATION_MINIMUM_WRITER_PROTOCOL_KEY))
       .toEqual({ value: String(AGENT_INTEGRATION_WRITER_PROTOCOL) })
@@ -386,7 +387,7 @@ describe('migration v34 — local Agent managed persistence', () => {
           .toEqual({ count: table === 'agent_integration_apply_task_feed_state' ? 1 : 0 })
       }
       expect(db.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get())
-        .toEqual({ value: '34' })
+        .toEqual({ value: String(CURRENT_SCHEMA_VERSION) })
       expect(db.prepare('SELECT value FROM metadata WHERE key = ?')
         .get(AGENT_INTEGRATION_MINIMUM_WRITER_PROTOCOL_KEY))
         .toEqual({ value: String(AGENT_INTEGRATION_WRITER_PROTOCOL) })

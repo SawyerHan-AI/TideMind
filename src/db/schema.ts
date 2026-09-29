@@ -16,6 +16,7 @@ import {
   AGENT_INTEGRATION_SCHEMA_SQL,
   ensureAgentIntegrationSchema,
 } from './agent-integration-schema.js';
+import { ensureModelDiscoverySchema } from './model-discovery-schema.js';
 
 const log = createLogger('schema');
 
@@ -27,7 +28,7 @@ function generateSourceId(): string {
  * 当前 schema 版本。每次新增 migration 时递增。
  * export 给 connection.ts 的迁移前备份判定用,避免那边硬编码版本号失效。
  */
-export const CURRENT_SCHEMA_VERSION = 34;
+export const CURRENT_SCHEMA_VERSION = 35;
 
 /**
  * 实时上行(M6):脏集表 + 回声抑制 guard + nodes/links 写触发器。
@@ -2164,6 +2165,16 @@ const MIGRATIONS: Migration[] = [
       log.info('迁移 v34 完成: 本机外部 Agent 托管数据底座已就位');
     },
   },
+  {
+    version: 35,
+    description: '模型连接动态目录、认证 scope/epoch 与按模型调用观察（独立增量表）',
+    up: (db) => {
+      // 只新增独立表；不把旧 available_models / model_validation_json 迁移为“当前通过”。
+      // 旧列保留为历史展示，新版本启动后按当前 CLI/认证重新建立绑定与观察。
+      ensureModelDiscoverySchema(db);
+      log.info('迁移 v35 完成: 模型目录/认证绑定/调用观察表已就位');
+    },
+  },
 ];
 
 /**
@@ -2318,6 +2329,7 @@ export function ensureSchema(db: Database.Database): void {
   // 建表（IF NOT EXISTS 保证幂等）
   db.exec(SCHEMA_SQL);
   ensureAgentIntegrationSchema(db);
+  ensureModelDiscoverySchema(db);
 
   // FTS5
   db.exec(FTS_SQL);

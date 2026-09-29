@@ -19,7 +19,6 @@ import {
   readStableFileMetadata,
   readStableFileSnapshot,
   readStablePackageTree,
-  verifyStablePackageTree,
 } from '../client/electron/agent-integration/passive-cli-version.js'
 import {
   inspectStableDesktopBundleSurface,
@@ -34,8 +33,19 @@ import { readStableDistributionTree } from '../client/electron/agent-integration
 import {
   npmComposedDistributionSpec,
   type NpmComposedComponentSpec,
-  type NpmComposedDistributionSpec,
 } from '../client/electron/agent-integration/npm-distribution-topology.js'
+import {
+  createPassiveVersionFileSystem,
+  inspectStableArtifact,
+  isWithinOrEqual,
+  materializeCopiedPlatformBinary,
+  safeRelativePath,
+  sha512FileIntegrity,
+  stageNpmTarball,
+  staticallyCompleteOpenClawPackageLifecycle as staticallyCompleteSharedOpenClawPackageLifecycle,
+  type OpenClawLifecycleEvidence,
+  type StableArtifact,
+} from '../client/electron/agent-integration/npm-tarball-staging.js'
 // The release parser deliberately remains executable JavaScript so the release
 // gate does not depend on a TypeScript runtime.
 // @ts-expect-error no declaration file is emitted for this release-only module
@@ -232,16 +242,6 @@ interface OpenClawReleaseAuthority {
   lifecycleContractSha256: string
   postinstallScriptSha256: string
   postinstallInventorySha256: string
-}
-
-interface OpenClawLifecycleEvidence {
-  schema: 'openclaw-static-postinstall-v1'
-  markerRemoved: '.openclaw-lifecycle-pending'
-  inventoryEntryCount: number
-  rawOwnedPackageSha256: string
-  postinstallOwnedPackageSha256: string
-  postinstallOwnedEntryCount: number
-  postinstallOwnedTotalBytes: number
 }
 
 const KIMI_0_41_0_ASSET_ROOT = 'https://github.com/MoonshotAI/kimi-code/releases/download/%40moonshot-ai/kimi-code%400.41.0'
@@ -898,78 +898,13 @@ async function staticallyCompleteOpenClawPackageLifecycle(
   packageRoot: string,
   authority: OpenClawReleaseAuthority,
 ): Promise<OpenClawLifecycleEvidence> {
-  const manifestPath = path.join(packageRoot, 'package.json')
-  const markerPath = path.join(packageRoot, '.openclaw-lifecycle-pending')
-  const contractPath = path.join(packageRoot, 'scripts', 'lib', 'package-lifecycle-marker.mjs')
-  const postinstallPath = path.join(packageRoot, 'scripts', 'postinstall-bundled-plugins.mjs')
-  const inventoryPath = path.join(packageRoot, 'dist', 'postinstall-inventory.json')
-  const [manifest, marker, contract, postinstall, inventory] = await Promise.all([
-    readStableFileSnapshot(manifestPath, 512 * 1024),
-    readStableFileSnapshot(markerPath, 64),
-    readStableFileSnapshot(contractPath, 64 * 1024),
-    readStableFileSnapshot(postinstallPath, 512 * 1024),
-    readStableFileSnapshot(inventoryPath, MAX_LISTING_BYTES),
-  ])
-  const parsedManifest = JSON.parse(Buffer.from(manifest.content).toString('utf8')) as {
-    name?: unknown
-    version?: unknown
-    scripts?: { preinstall?: unknown; postinstall?: unknown }
-  }
-  if (parsedManifest.name !== 'openclaw' || parsedManifest.version !== '2026.9.1'
-    || parsedManifest.scripts?.preinstall !== 'node scripts/preinstall-package-manager-warning.mjs'
-    || parsedManifest.scripts.postinstall !== 'node scripts/postinstall-bundled-plugins.mjs'
-    || marker.sha256 !== authority.lifecycleMarkerSha256
-    || contract.sha256 !== authority.lifecycleContractSha256
-    || postinstall.sha256 !== authority.postinstallScriptSha256
-    || inventory.sha256 !== authority.postinstallInventorySha256) {
-    throw new Error('openclaw_package_lifecycle_contract_mismatch')
-  }
-
-  const expectedDistFiles = JSON.parse(Buffer.from(inventory.content).toString('utf8')) as unknown
-  if (!Array.isArray(expectedDistFiles)
-    || expectedDistFiles.some(entry => typeof entry !== 'string'
-      || !entry.startsWith('dist/') || entry === 'dist/postinstall-inventory.json'
-      || !safeRelativePath(entry))
-    || new Set(expectedDistFiles).size !== expectedDistFiles.length) {
-    throw new Error('openclaw_postinstall_inventory_invalid')
-  }
-  const distTree = await readStablePackageTree(path.join(packageRoot, 'dist'), { includeNodeModules: true })
-  if (distTree.proofNodes.some(node => node.entryType !== 'file')) {
-    throw new Error('openclaw_postinstall_dist_symlink_invalid')
-  }
-  const actualDistFiles = distTree.proofNodes
-    .map(node => path.relative(packageRoot, node.path).split(path.sep).join('/'))
-    .filter(relativePath => relativePath !== 'dist/postinstall-inventory.json')
-    .sort((left, right) => left.localeCompare(right))
-  if (actualDistFiles.some(relativePath => relativePath === 'dist/openclaw-install-guard'
-    || /^dist\/extensions\/[^/]+\/(?:node_modules|\.openclaw-install-stage(?:-[^/]+)?)(?:\/|$)/iu.test(relativePath))) {
-    throw new Error('openclaw_postinstall_requires_non_marker_mutation')
-  }
-  const expectedSorted = (expectedDistFiles as string[]).toSorted((left, right) => left.localeCompare(right))
-  if (JSON.stringify(actualDistFiles) !== JSON.stringify(expectedSorted)) {
-    throw new Error('openclaw_postinstall_inventory_does_not_match_dist')
-  }
-
-  const rawTree = await readStablePackageTree(packageRoot)
-  await fs.unlink(markerPath)
-  if (await fs.lstat(markerPath).then(() => true).catch(error => {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
-    throw error
-  })) throw new Error('openclaw_lifecycle_marker_removal_failed')
-  const postinstallTree = await readStablePackageTree(packageRoot)
-  if (postinstallTree.ownedEntryCount !== rawTree.ownedEntryCount - 1
-    || postinstallTree.ownedTotalBytes !== rawTree.ownedTotalBytes - marker.size) {
-    throw new Error('openclaw_static_postinstall_changed_unexpected_nodes')
-  }
-  return {
-    schema: 'openclaw-static-postinstall-v1',
-    markerRemoved: '.openclaw-lifecycle-pending',
-    inventoryEntryCount: expectedSorted.length,
-    rawOwnedPackageSha256: rawTree.packageTreeSha256,
-    postinstallOwnedPackageSha256: postinstallTree.packageTreeSha256,
-    postinstallOwnedEntryCount: postinstallTree.ownedEntryCount,
-    postinstallOwnedTotalBytes: postinstallTree.ownedTotalBytes,
-  }
+  return staticallyCompleteSharedOpenClawPackageLifecycle(packageRoot, {
+    expectedVersion: '2026.9.1',
+    lifecycleMarkerSha256: authority.lifecycleMarkerSha256,
+    lifecycleContractSha256: authority.lifecycleContractSha256,
+    postinstallScriptSha256: authority.postinstallScriptSha256,
+    postinstallInventorySha256: authority.postinstallInventorySha256,
+  })
 }
 
 async function generateSignedReceipt(
@@ -1315,92 +1250,6 @@ function finalizeReceipt(
     throw new Error('runtime_and_release_portable_fingerprint_mismatch')
   }
   return receipt
-}
-
-async function stageNpmTarball(
-  tarball: string,
-  tempRoot: string,
-  packageName: string,
-  integrity: string,
-  installName = packageName,
-): Promise<{ packageRoot: string; executableForBin(name: string): string }> {
-  const artifact = await inspectArtifact(tarball)
-  if (await sha512Integrity(tarball) !== integrity) throw new Error('npm_tarball_integrity_mismatch')
-  const extractRoot = await extractArchive(tarball, 'tgz', path.join(tempRoot, 'tarball'))
-  const sourcePackage = exactMember(extractRoot, 'package')
-  const nodeModulesRoot = path.join(tempRoot, 'node_modules')
-  const packageRoot = path.join(nodeModulesRoot, ...installName.split('/'))
-  await fs.mkdir(path.dirname(packageRoot), { recursive: true, mode: 0o700 })
-  await fs.rename(sourcePackage, packageRoot)
-  const lockPath = path.join(nodeModulesRoot, '.package-lock.json')
-  const existingLock = await fs.readFile(lockPath, 'utf8').then(value => JSON.parse(value)).catch(() => ({ lockfileVersion: 3, packages: {} }))
-  existingLock.packages[`node_modules/${installName}`] = {
-    version: JSON.parse(await fs.readFile(path.join(packageRoot, 'package.json'), 'utf8')).version,
-    integrity,
-  }
-  await fs.writeFile(lockPath, JSON.stringify(existingLock), { mode: 0o600 })
-  await readStablePackageTree(packageRoot)
-  const after = await inspectArtifact(tarball)
-  if (after.physicalFingerprint !== artifact.physicalFingerprint) throw new Error('npm_tarball_changed_during_extract')
-  return {
-    packageRoot,
-    executableForBin(name: string): string {
-      const manifest = JSON.parse(fsSync.readFileSync(path.join(packageRoot, 'package.json'), 'utf8')) as { name?: unknown; bin?: unknown }
-      if (manifest.name !== packageName) throw new Error('npm_package_name_mismatch')
-      const relative = typeof manifest.bin === 'string'
-        ? (name === packageName.split('/').at(-1) ? manifest.bin : undefined)
-        : manifest.bin && typeof manifest.bin === 'object' && !Array.isArray(manifest.bin)
-          ? (manifest.bin as Record<string, unknown>)[name]
-          : undefined
-      const normalized = typeof relative === 'string' ? normalizedNpmBinRelativePath(relative) : undefined
-      if (!normalized) throw new Error('npm_package_bin_mismatch')
-      const executable = path.resolve(packageRoot, normalized)
-      if (!isWithinOrEqual(packageRoot, executable)) throw new Error('npm_package_bin_escape')
-      return executable
-    },
-  }
-}
-
-async function materializeCopiedPlatformBinary(
-  rootPackage: string,
-  executablePath: string,
-  composition: NpmComposedDistributionSpec,
-  components: readonly { spec: NpmComposedComponentSpec; packageRoot: string }[],
-): Promise<void> {
-  const executableRelative = path.relative(rootPackage, executablePath).split(path.sep).join('/')
-  const copySources = components.filter(component => (
-    component.spec.role === 'platform_leaf'
-      && component.spec.installName === composition.copySourceInstallName
-  ))
-  if (composition.entryRule !== 'copy_platform_binary_v1'
-    || executableRelative !== composition.rootExecutableRelativePath
-    || !composition.copySourceInstallName
-    || copySources.length !== 1 || !copySources[0]?.spec.nativeExecutableRelativePath) {
-    throw new Error('npm_copy_platform_binary_topology_invalid')
-  }
-  const destinationNode = await fs.lstat(executablePath)
-  if (!destinationNode.isFile() || destinationNode.isSymbolicLink()
-    || path.resolve(await fs.realpath(executablePath)) !== executablePath) {
-    throw new Error('npm_copy_platform_binary_destination_invalid')
-  }
-  const leaf = copySources[0]
-  const sourcePath = path.join(
-    leaf.packageRoot, ...leaf.spec.nativeExecutableRelativePath.split('/'),
-  )
-  const sourceBefore = await readStableFileFingerprint(sourcePath, MAX_ARTIFACT_BYTES)
-  if (!sourceBefore.executable) throw new Error('npm_copy_platform_binary_source_not_executable')
-  await fs.copyFile(sourcePath, executablePath)
-  await fs.chmod(executablePath, sourceBefore.mode & 0o777)
-  const sourceAfter = await readStableFileFingerprint(sourcePath, MAX_ARTIFACT_BYTES)
-  const destinationAfter = await readStableFileFingerprint(executablePath, MAX_ARTIFACT_BYTES)
-  if (sourceAfter.fingerprint !== sourceBefore.fingerprint
-    || destinationAfter.sha256 !== sourceBefore.sha256
-    || destinationAfter.size !== sourceBefore.size
-    || destinationAfter.mode !== (sourceBefore.mode & 0o777)
-    || !destinationAfter.executable
-    || path.resolve(await fs.realpath(executablePath)) !== executablePath) {
-    throw new Error('npm_copy_platform_binary_readback_mismatch')
-  }
 }
 
 async function verifiedRegistryMetadata(
@@ -2191,29 +2040,7 @@ function receiptProofNode(
 }
 
 function passiveFileSystem() {
-  return {
-    async lstat(targetPath: string) {
-      try {
-        const stat = await fs.lstat(targetPath)
-        return {
-          kind: stat.isSymbolicLink() ? 'symbolic_link' as const
-            : stat.isDirectory() ? 'directory' as const
-              : stat.isFile() ? 'file' as const : 'other' as const,
-          mode: stat.mode & 0o7777,
-          ownerUid: String(stat.uid),
-          groupGid: String(stat.gid),
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
-        throw error
-      }
-    },
-    realpath: (targetPath: string) => fs.realpath(targetPath),
-    readStableFileSnapshot,
-    readStableFileFingerprint,
-    readStablePackageTree,
-    verifyStablePackageTree,
-  }
+  return createPassiveVersionFileSystem()
 }
 
 function desktopDependencies(): DiscoveryDependencies {
@@ -2232,41 +2059,8 @@ function desktopDependencies(): DiscoveryDependencies {
   }
 }
 
-export async function inspectArtifact(inputPath: string): Promise<{
-  path: string
-  sha256: string
-  sizeBytes: number
-  physicalFingerprint: string
-  device: string
-  inode: string
-  mode: number
-  linkCount: string
-  mtimeNs: string
-  ctimeNs: string
-  ownerUid?: string
-  groupGid?: string
-}> {
-  if (!path.isAbsolute(inputPath)) throw new Error('artifact_path_must_be_absolute')
-  const requested = path.resolve(inputPath)
-  const requestedStat = await fs.lstat(requested)
-  if (!requestedStat.isFile() || requestedStat.isSymbolicLink()) throw new Error('artifact_must_be_regular_file')
-  const canonical = path.resolve(await fs.realpath(requested))
-  const fingerprint = await readStableFileFingerprint(canonical, MAX_ARTIFACT_BYTES)
-  if (fingerprint.size <= 0) throw new Error('artifact_empty')
-  return {
-    path: canonical,
-    sha256: fingerprint.sha256,
-    sizeBytes: fingerprint.size,
-    physicalFingerprint: fingerprint.fingerprint,
-    device: fingerprint.device,
-    inode: fingerprint.inode,
-    mode: fingerprint.mode,
-    linkCount: fingerprint.linkCount,
-    mtimeNs: fingerprint.mtimeNs,
-    ctimeNs: fingerprint.ctimeNs,
-    ownerUid: fingerprint.ownerUid,
-    groupGid: fingerprint.groupGid,
-  }
+export async function inspectArtifact(inputPath: string): Promise<StableArtifact> {
+  return inspectStableArtifact(inputPath, MAX_ARTIFACT_BYTES)
 }
 
 export function assertReceiptArtifactUnchanged(
@@ -2282,31 +2076,7 @@ export function assertReceiptArtifactUnchanged(
 }
 
 async function sha512Integrity(filePath: string): Promise<string> {
-  const handle = await fs.open(filePath, fsSync.constants.O_RDONLY | fsSync.constants.O_NOFOLLOW)
-  try {
-    const before = await handle.stat({ bigint: true })
-    if (!before.isFile() || before.size <= 0n || before.size > BigInt(MAX_ARTIFACT_BYTES)) {
-      throw new Error('artifact_size_invalid')
-    }
-    const hash = createHash('sha512')
-    const buffer = Buffer.allocUnsafe(1024 * 1024)
-    let offset = 0n
-    while (offset < before.size) {
-      const length = Number((before.size - offset) > BigInt(buffer.length) ? BigInt(buffer.length) : before.size - offset)
-      const { bytesRead } = await handle.read(buffer, 0, length, Number(offset))
-      if (bytesRead === 0) throw new Error('artifact_short_read')
-      hash.update(buffer.subarray(0, bytesRead))
-      offset += BigInt(bytesRead)
-    }
-    const after = await handle.stat({ bigint: true })
-    if ([before.dev, before.ino, before.mode, before.size, before.nlink, before.mtimeNs, before.ctimeNs].join(':')
-      !== [after.dev, after.ino, after.mode, after.size, after.nlink, after.mtimeNs, after.ctimeNs].join(':')) {
-      throw new Error('artifact_changed_during_integrity_read')
-    }
-    return `sha512-${hash.digest('base64')}`
-  } finally {
-    await handle.close()
-  }
+  return sha512FileIntegrity(filePath, MAX_ARTIFACT_BYTES)
 }
 
 function exactReleaseDistribution(entries: ReleaseTarget[], options: GenerateReceiptOptions): {
@@ -2364,24 +2134,6 @@ function validateOptions(options: GenerateReceiptOptions): void {
     throw new Error('receipt_identity_invalid')
   }
   if (options.outputPath && !path.isAbsolute(options.outputPath)) throw new Error('output_path_must_be_absolute')
-}
-
-function safeRelativePath(value: string): boolean {
-  if (!value || value === '.' || path.posix.isAbsolute(value)) return false
-  const parts = value.split('/')
-  return parts.every(part => part.length > 0 && part !== '.' && part !== '..')
-}
-
-function normalizedNpmBinRelativePath(value: string): string | undefined {
-  const normalized = value.startsWith('./') ? value.slice(2) : value
-  if (!normalized || normalized.startsWith('./') || normalized.includes('\\')
-    || !safeRelativePath(normalized)) return undefined
-  return normalized
-}
-
-function isWithinOrEqual(root: string, target: string): boolean {
-  const relative = path.relative(path.resolve(root), path.resolve(target))
-  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
 }
 
 function run(command: string, args: readonly string[], maxBuffer = 64 * 1024): string {

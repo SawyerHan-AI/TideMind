@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { CliLLMError } from './errors.js';
 import { sanitizeCliEnvironment } from './environment.js';
+import type { CodexAccountSnapshot } from './codex-app-server.js';
 import type { CliAuthIdentity, CliKind, ResolvedCli } from './types.js';
 
 type ProbeExec = (
@@ -75,21 +76,35 @@ export function parseClaudeAuth(stdout: string): CliAuthIdentity {
   }
   const method = typeof status.authMethod === 'string' ? status.authMethod.trim().toLowerCase() : '';
   const provider = typeof status.apiProvider === 'string' ? status.apiProvider.trim().toLowerCase() : '';
+  // Claude Code 2.1.x reports subscription login as authMethod "claude.ai" (with
+  // email/orgId/subscriptionType). "oauth"/"subscription" are kept for older
+  // builds. "oauth_token" cannot distinguish a setup-token subscription from a
+  // third-party gateway bearer token and stays rejected: this change does not
+  // widen the accepted billing path.
   if (
-    !new Set(['oauth', 'subscription']).has(method) ||
+    !new Set(['claude.ai', 'oauth', 'subscription']).has(method) ||
     !new Set(['firstparty', 'first-party', 'anthropic']).has(provider)
   ) {
     throw new CliLLMError('wrong_auth_method', 'Claude CLI is not using subscription OAuth', {
       needsUserAction: true,
     });
   }
-  const identifier =
-    typeof status.email === 'string'
-      ? status.email.trim().toLowerCase()
-      : typeof status.accountId === 'string'
-        ? status.accountId
-        : null;
-  return identity('claude-cli', method, identifier);
+  const email = typeof status.email === 'string' && status.email.trim()
+    ? status.email.trim().toLowerCase()
+    : null;
+  const orgId = typeof status.orgId === 'string' && status.orgId.trim()
+    ? status.orgId.trim()
+    : typeof status.accountId === 'string' && status.accountId.trim()
+      ? status.accountId.trim()
+      : null;
+  const label = typeof status.subscriptionType === 'string'
+    ? status.subscriptionType.slice(0, 64)
+    : typeof status.orgName === 'string'
+      ? status.orgName.slice(0, 64)
+      : null;
+  // Only an organization/account id identifies the permission scope; an email
+  // alone distinguishes users but not the organization's model entitlements.
+  return identity('claude-cli', method, email, orgId ? `${orgId}|${email ?? ''}` : null, label);
 }
 
 export function parseCodexAuth(stdout: string): CliAuthIdentity {
@@ -107,18 +122,48 @@ export function parseCodexAuth(stdout: string): CliAuthIdentity {
       needsUserAction: true,
     });
   }
-  return identity('codex-cli', 'chatgpt', null);
+  // `login status` carries no account identity: the scope stays unknown.
+  return identity('codex-cli', 'chatgpt', null, null, null);
+}
+
+/** Build a Codex identity from the app-server account/read snapshot (no tokens). */
+export function codexIdentityFromAccount(account: CodexAccountSnapshot): CliAuthIdentity {
+  if (account.kind === 'none') {
+    throw new CliLLMError('not_authenticated', 'Codex CLI is not logged in', { needsUserAction: true });
+  }
+  if (account.kind !== 'chatgpt') {
+    throw new CliLLMError('wrong_auth_method', 'Codex CLI is not using ChatGPT-managed auth', {
+      needsUserAction: true,
+    });
+  }
+  return identity(
+    'codex-cli',
+    'chatgpt',
+    account.email,
+    account.accountId ? `${account.accountId}|${account.email ?? ''}` : null,
+    account.planType,
+  );
 }
 
 function identity(
   providerType: 'claude-cli' | 'codex-cli',
   method: string,
   identifier: string | null,
+  scopeMaterial: string | null,
+  scopeLabel: string | null,
 ): CliAuthIdentity {
-  const accountScope = identifier
-    ? `${providerType}:${createHash('sha256').update(identifier).digest('hex')}`
-    : `${providerType}:local-login`;
-  return { providerType, method, accountIdentifier: identifier, accountScope };
+  const scopeKey = scopeMaterial
+    ? `${providerType}:${createHash('sha256').update(scopeMaterial).digest('hex')}`
+    : `${providerType}:unknown`;
+  return {
+    providerType,
+    method,
+    accountIdentifier: identifier,
+    accountScope: scopeMaterial ? scopeKey : `${providerType}:local-login`,
+    scopeState: scopeMaterial ? 'known' : 'unknown',
+    scopeKey,
+    scopeLabel,
+  };
 }
 
 export const AUTH_PROBE_KINDS: readonly CliKind[] = ['claude', 'codex'];

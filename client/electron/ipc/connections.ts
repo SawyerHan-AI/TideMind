@@ -23,7 +23,72 @@ import {
   updateCliConnectionEnvironment,
   type ModelConnectionStatus,
 } from '../../../src/db/connections.js'
-import { resolveAmbiguousConnection } from '../../../src/llm/cli/invocation-state.js'
+import { deleteModelDiscoveryRows, reconcileAuthBinding } from '../../../src/db/model-discovery.js'
+import { refreshCliModelCatalog } from '../../../src/llm/cli/model-catalog.js'
+import { FOLLOW_DEFAULT_MODEL, isValidManualModelId } from '../../../src/llm/cli/catalogs.js'
+import { buildConnectionModelsView, routesUsingConnection } from '../../../src/llm/model-catalog-view.js'
+import { getConfig } from '../../../src/config.js'
+import { getCatalogSnapshot } from '../../../src/db/model-discovery.js'
+import { CATALOG_FRESHNESS } from '../../../src/llm/cli/model-catalog.js'
+import { createLogger } from '../../../src/utils/logger.js'
+
+const catalogLog = createLogger('model-catalog')
+let catalogFreshnessTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * Background catalog freshness (design §6): only connections that an in-use route
+ * references, roughly every 6 hours with jitter, metadata only. Runs only while the
+ * app is running; never wakes an exited app and never tries models. Skips any
+ * connection with a user check/test in progress and never changes its status.
+ */
+function scheduleCatalogFreshness(dataDir: string): void {
+  if (catalogFreshnessTimer) return
+  const tick = async () => {
+    try {
+      const db = getClientDb()
+      const config = getConfig()
+      const rows = db.prepare(`
+        SELECT id, provider_type FROM model_connections
+        WHERE archived = 0 AND provider_type IN ('claude-cli', 'codex-cli')
+          AND status IN ('online', 'untested')
+      `).all() as Array<{ id: string; provider_type: CliProviderType }>
+      for (const row of rows) {
+        if (cliOperations.has(row.id)) continue
+        if (routesUsingConnection(config, row.id).length === 0) continue
+        const snapshot = getCatalogSnapshot(db, row.id)
+        const age = snapshot ? Date.now() - Date.parse(snapshot.fetchedAt) : Infinity
+        if (Number.isFinite(age) && age >= 0 && age < CATALOG_FRESHNESS.backgroundEveryMs) continue
+        const operation = beginCliOperation(row.id, 'environment')
+        try {
+          const environment = await checkCliEnvironment({
+            providerType: row.provider_type,
+            allowLoginShell: false,
+            dataDir,
+            signal: operation.controller.signal,
+          })
+          await refreshCliModelCatalog(db, {
+            connectionId: row.id,
+            dataDir,
+            environment,
+            signal: operation.controller.signal,
+          })
+        } catch (error) {
+          catalogLog.warn(`background catalog refresh skipped for ${row.id}: ${(error as Error).message}`)
+        } finally {
+          finishCliOperation(row.id, operation)
+        }
+      }
+    } catch (error) {
+      catalogLog.warn(`background catalog freshness failed: ${(error as Error).message}`)
+    } finally {
+      const jitter = Math.floor(Math.random() * 20 * 60_000)
+      catalogFreshnessTimer = setTimeout(() => { void tick() }, 60 * 60_000 + jitter)
+      catalogFreshnessTimer.unref?.()
+    }
+  }
+  catalogFreshnessTimer = setTimeout(() => { void tick() }, 5 * 60_000 + Math.floor(Math.random() * 10 * 60_000))
+  catalogFreshnessTimer.unref?.()
+}
 import { broadcastLLMHealth } from './llm-health.js'
 import { notifyMetabolismWorkerRuntimeMutation } from '../workers/metabolism-worker-runtime-mutations.js'
 
@@ -54,6 +119,21 @@ type CliOperation = {
   controller: AbortController
 }
 const cliOperations = new Map<string, CliOperation>()
+
+/** Explicit test targets from the renderer: at most 10 bounded model ids. */
+function parseTestTargets(raw: unknown): string[] | null {
+  if (!raw || typeof raw !== 'object') return null
+  const models = (raw as { models?: unknown }).models
+  if (models === undefined) return null
+  if (!Array.isArray(models) || models.length === 0 || models.length > 10) {
+    throw new Error('测试目标无效')
+  }
+  const unique = [...new Set(models)]
+  for (const model of unique) {
+    if (typeof model !== 'string' || !isValidManualModelId(model)) throw new Error('测试目标无效')
+  }
+  return unique as string[]
+}
 
 function isCliProvider(value: string): value is CliProviderType {
   return value === 'claude-cli' || value === 'codex-cli'
@@ -136,6 +216,7 @@ function safeParseCredentials(raw: string | null | undefined): Record<string, un
 }
 
 export function registerConnectionHandlers(dataDir: string): void {
+  scheduleCatalogFreshness(dataDir)
   ipcMain.handle('connections:provider-catalog', () =>
     LLM_PROVIDER_CATALOG.map(provider => ({
       id: provider.id,
@@ -293,12 +374,15 @@ export function registerConnectionHandlers(dataDir: string): void {
     const validId = validateConnectionId(id)
     cancelCliOperation(validId, '连接已删除')
     const db = getClientDb()
-    db.prepare('DELETE FROM model_connections WHERE id = ?').run(validId)
+    db.transaction(() => {
+      db.prepare('DELETE FROM model_connections WHERE id = ?').run(validId)
+      deleteModelDiscoveryRows(db, validId)
+    })()
     notifyMetabolismWorkerRuntimeMutation('connection')
     broadcastLLMHealth(db)
   })
 
-  ipcMain.handle('connections:check-environment', async (_e, connectionId: unknown) => {
+  const runEnvironmentCheck = async (connectionId: unknown) => {
     const validId = validateConnectionId(connectionId)
     const db = getClientDb()
     const connection = db.prepare(`
@@ -325,14 +409,15 @@ export function registerConnectionHandlers(dataDir: string): void {
       const environment = await checkCliEnvironment({
         providerType: connection.provider_type,
         allowLoginShell: true,
+        dataDir,
         signal: operation.controller.signal,
       })
       if (!operationIsCurrent(validId, operation) || operation.controller.signal.aborted) {
         throw new CliLLMError('aborted', '环境检查已取消')
       }
+      // Environment status only; model evidence is per model and never cleared here.
       const preservedStatus = (
         connection.status === 'online'
-        || connection.status === 'degraded'
         || connection.status === 'ambiguous'
       ) ? connection.status : 'untested'
       updateCliConnectionEnvironment(db, validId, {
@@ -342,8 +427,15 @@ export function registerConnectionHandlers(dataDir: string): void {
         cliVersion: environment.resolved.version,
         authMethod: environment.auth.method,
         authFingerprint: environment.authFingerprint,
-        candidateModels: environment.candidateModels,
+        cliGeneration: environment.cliGeneration,
         environmentCheckedAt: environment.checkedAt,
+      })
+      // Metadata-only catalog refresh bound to the same CLI and account scope.
+      const refresh = await refreshCliModelCatalog(db, {
+        connectionId: validId,
+        dataDir,
+        environment,
+        signal: operation.controller.signal,
       })
       return {
         status: preservedStatus,
@@ -351,7 +443,15 @@ export function registerConnectionHandlers(dataDir: string): void {
         cliVersion: environment.resolved.version,
         authMethod: environment.auth.method,
         capabilityStatus: environment.capabilityStatus,
-        candidateModels: environment.candidateModels,
+        scopeState: environment.auth.scopeState,
+        scopeLabel: environment.auth.scopeLabel,
+        catalog: {
+          status: refresh.status,
+          source: refresh.snapshot?.source ?? null,
+          count: refresh.snapshot?.items.length ?? 0,
+          fetchedAt: refresh.snapshot?.fetchedAt ?? null,
+          errorKind: refresh.errorKind ?? null,
+        },
         checkedAt: environment.checkedAt,
       }
     } catch (error) {
@@ -359,10 +459,12 @@ export function registerConnectionHandlers(dataDir: string): void {
         ? error
         : new CliLLMError('transient', (error as Error).message, { cause: error })
       if (operationIsCurrent(validId, operation)) {
-        const status = cliError.kind === 'aborted'
+        // An environment failure never clears an unresolved ambiguous invocation.
+        const keepPrevious = cliError.kind === 'aborted' || connection.status === 'ambiguous'
+        const status = keepPrevious
           ? connection.status
           : cliStatusForError(cliError)
-        const reason = cliError.kind === 'aborted'
+        const reason = keepPrevious
           ? connection.status_reason
           : cliError.message.slice(0, 500)
         db.prepare(`
@@ -372,7 +474,9 @@ export function registerConnectionHandlers(dataDir: string): void {
         `).run(status, reason, now(), validId)
       }
       return {
-        status: cliError.kind === 'aborted' ? connection.status : cliStatusForError(cliError),
+        status: cliError.kind === 'aborted' || connection.status === 'ambiguous'
+          ? connection.status
+          : cliStatusForError(cliError),
         error: {
           kind: cliError.kind,
           message: cliError.message,
@@ -383,6 +487,23 @@ export function registerConnectionHandlers(dataDir: string): void {
       broadcastLLMHealth(db)
       finishCliOperation(validId, operation)
     }
+  }
+
+  ipcMain.handle('connections:check-environment', (_e, connectionId: unknown) =>
+    runEnvironmentCheck(connectionId))
+
+  // “刷新模型列表”：与检查环境同一受控流程（重新确认 CLI 与账号后只读列目录）。
+  ipcMain.handle('connections:refresh-models', (_e, connectionId: unknown) =>
+    runEnvironmentCheck(connectionId))
+
+  ipcMain.handle('connections:models', (_e, connectionId: unknown) => {
+    const validId = validateConnectionId(connectionId)
+    const db = getClientDb()
+    const connection = db.prepare(`
+      SELECT id, provider_type, status FROM model_connections WHERE id = ?
+    `).get(validId) as { id: string; provider_type: string; status: string | null } | undefined
+    if (!connection) throw new Error('模型连接不存在')
+    return buildConnectionModelsView(db, connection, getConfig())
   })
 
   ipcMain.handle('connections:cancel-test', (_e, connectionId: unknown) => {
@@ -391,7 +512,7 @@ export function registerConnectionHandlers(dataDir: string): void {
   })
 
   // 统一测试连接入口
-  ipcMain.handle('connections:test', async (_e, connectionId: unknown, formOverride?: unknown) => {
+  ipcMain.handle('connections:test', async (_e, connectionId: unknown, formOverride?: unknown, testOptions?: unknown) => {
     const validId = validateConnectionId(connectionId)
     // 修复(2026-05-21):允许 renderer 把当前编辑中的 form 值作为 override 传进来。
     // 解决"新建 connection → 输入 base_url 但没保存就测试 → 报 Base URL not configured"
@@ -417,6 +538,25 @@ export function registerConnectionHandlers(dataDir: string): void {
       if (conn.archived) {
         return { online: false, models: [], error: '模型连接已归档' }
       }
+      // 测试目标必须明确（design §6/§7.2）：不再遍历候选全测。未指定时，只有一个在用
+      // 模型则测它；没有在用路由测 CLI 默认；多个在用模型要求 UI 让用户选择目标。
+      const requested = parseTestTargets(testOptions)
+      let targets: string[]
+      if (requested) {
+        targets = requested
+      } else {
+        const inUse = [...new Set(routesUsingConnection(getConfig(), validId).map(route => route.modelId))]
+        if (inUse.length > 1) {
+          return {
+            online: false,
+            models: [],
+            error: '该连接被多个模型路由使用，请选择要测试的模型',
+            errorKind: 'test_target_required',
+            inUseModels: inUse,
+          }
+        }
+        targets = inUse.length === 1 ? inUse : [FOLLOW_DEFAULT_MODEL]
+      }
       const operation = beginCliOperation(validId, 'test')
       db.prepare(`
         UPDATE model_connections
@@ -425,52 +565,52 @@ export function registerConnectionHandlers(dataDir: string): void {
       `).run(validId)
       const startedAt = Date.now()
       let environment: CliEnvironmentCheck | null = null
-      let environmentInvalidated = false
-      const previousValidation = {
-        status: conn.status,
-        statusReason: conn.status_reason,
-        availableModels: conn.available_models,
-        validationFingerprint: conn.validation_fingerprint,
-        modelValidationJson: conn.model_validation_json,
-        lastTestedAt: conn.last_tested_at,
-        lastTestSummary: conn.last_test_summary,
-      }
+      const previous = { status: conn.status, statusReason: conn.status_reason }
       const results: Array<{
         model: string
         success: boolean
         actualModel?: string | null
+        mismatch?: boolean
         error?: string
         errorKind?: string
       }> = []
+      const restorePrevious = () => {
+        db.prepare(`
+          UPDATE model_connections
+          SET status = ?, status_reason = ?, last_checked = ?
+          WHERE id = ? AND archived = 0 AND status = 'testing'
+        `).run(previous.status, previous.statusReason, now(), validId)
+      }
       try {
         environment = await checkCliEnvironment({
           providerType: conn.provider_type,
           allowLoginShell: true,
+          dataDir,
           signal: operation.controller.signal,
         })
         if (!operationIsCurrent(validId, operation)) {
           throw new CliLLMError('aborted', '测试已取消')
         }
-        const environmentUpdate = updateCliConnectionEnvironment(db, validId, {
+        updateCliConnectionEnvironment(db, validId, {
           status: 'testing',
           statusReason: null,
           cliPath: environment.resolved.path,
           cliVersion: environment.resolved.version,
           authMethod: environment.auth.method,
           authFingerprint: environment.authFingerprint,
-          candidateModels: environment.candidateModels,
+          cliGeneration: environment.cliGeneration,
           environmentCheckedAt: environment.checkedAt,
         })
-        environmentInvalidated = environmentUpdate.validationInvalidated
-        for (const model of environment.candidateModels) {
+        for (const model of targets) {
           if (!operationIsCurrent(validId, operation) || operation.controller.signal.aborted) break
           broadcastTestProgress({
             connectionId: validId,
             currentModel: model,
             completed: results.length,
-            total: environment.candidateModels.length,
+            total: targets.length,
           })
           try {
+            // runCliLLM records the per-model observation under the current scope/epoch.
             const result = await runCliLLM(
               db,
               dataDir,
@@ -497,10 +637,13 @@ export function registerConnectionHandlers(dataDir: string): void {
                 '模型未返回连接测试标记，不能判定为可用',
               )
             }
+            const view = buildConnectionModelsView(db, { id: validId, provider_type: conn.provider_type, status: 'testing' }, getConfig())
+            const observed = view.observations.find(item => item.modelId === model)
             results.push({
               model,
-              success: true,
+              success: observed?.lastOutcome !== 'mismatch',
               actualModel: result.actualModel,
+              mismatch: observed?.lastOutcome === 'mismatch',
             })
           } catch (error) {
             const cliError = error instanceof CliLLMError
@@ -518,38 +661,31 @@ export function registerConnectionHandlers(dataDir: string): void {
             connectionId: validId,
             currentModel: model,
             completed: results.length,
-            total: environment.candidateModels.length,
+            total: targets.length,
           })
         }
 
         const cancelled = !operationIsCurrent(validId, operation)
           || operation.controller.signal.aborted
+        let attributionUnconfirmed = false
         if (!cancelled) {
+          // Re-read the environment: if the CLI generation or account scope changed
+          // during the test, the binding moves to a new epoch and the recorded
+          // observations stay in history (attribution unconfirmed).
           const finalEnvironment = await checkCliEnvironment({
             providerType: conn.provider_type,
             allowLoginShell: true,
+            dataDir,
             signal: operation.controller.signal,
           })
-          if (finalEnvironment.validationFingerprint !== environment.validationFingerprint) {
-            const finalUpdate = updateCliConnectionEnvironment(db, validId, {
-              status: 'untested',
-              statusReason: 'CLI 路径、版本或登录状态在测试期间发生变化，请重新测试',
-              cliPath: finalEnvironment.resolved.path,
-              cliVersion: finalEnvironment.resolved.version,
-              authMethod: finalEnvironment.auth.method,
-              authFingerprint: finalEnvironment.authFingerprint,
-              candidateModels: finalEnvironment.candidateModels,
-              environmentCheckedAt: finalEnvironment.checkedAt,
-            })
-            environmentInvalidated ||= finalUpdate.validationInvalidated
-            throw new CliLLMError(
-              'aborted',
-              'CLI 路径、版本或登录状态在测试期间发生变化，请重新测试',
-              { needsUserAction: true },
-            )
-          }
+          const reconciled = reconcileAuthBinding(db, {
+            connectionId: validId,
+            auth: finalEnvironment.auth,
+            cliGeneration: finalEnvironment.cliGeneration,
+            authStoreSignal: finalEnvironment.authStoreSignal,
+          })
+          attributionUnconfirmed = reconciled.epochChanged
         }
-        // Archive/delete removes the operation token before the child exits.
         const current = db.prepare(
           'SELECT archived FROM model_connections WHERE id = ?',
         ).get(validId) as { archived: number } | undefined
@@ -558,78 +694,59 @@ export function registerConnectionHandlers(dataDir: string): void {
             online: false,
             models: [],
             successCount: 0,
-            totalCount: environment.candidateModels.length,
+            totalCount: targets.length,
             cancelled: true,
             results,
           }
         }
-
         if (cancelled) {
-          if (!environmentInvalidated) {
-            db.prepare(`
-              UPDATE model_connections
-              SET status = ?,
-                  status_reason = ?,
-                  available_models = ?,
-                  validation_fingerprint = ?,
-                  model_validation_json = ?,
-                  last_tested_at = ?,
-                  last_test_summary = ?,
-                  last_checked = ?
-              WHERE id = ? AND archived = 0
-            `).run(
-              previousValidation.status,
-              previousValidation.statusReason,
-              previousValidation.availableModels,
-              previousValidation.validationFingerprint,
-              previousValidation.modelValidationJson,
-              previousValidation.lastTestedAt,
-              previousValidation.lastTestSummary,
-              now(),
-              validId,
-            )
-          } else {
-            db.prepare(`
-              UPDATE model_connections
-              SET status = 'untested',
-                  status_reason = '测试已取消；CLI 环境已变化，请重新测试',
-                  last_checked = ?
-              WHERE id = ? AND archived = 0
-            `).run(now(), validId)
-          }
+          restorePrevious()
           return {
             online: false,
             models: [],
             successCount: results.filter(item => item.success).length,
-            totalCount: environment.candidateModels.length,
+            totalCount: targets.length,
             cancelled: true,
             results,
           }
         }
 
-        const successfulModels = results.filter(item => item.success).map(item => item.model)
-        const validations = Object.fromEntries(results.map(item => [
-          item.model,
-          {
-            success: item.success,
-            actualModel: item.actualModel ?? null,
-            error: item.error ?? null,
-            errorKind: item.errorKind ?? null,
-            checkedAt: now(),
-          },
-        ]))
-        const coveredAll = results.length === environment.candidateModels.length
-        const status = !coveredAll
-          ? successfulModels.length > 0 ? 'degraded' : 'untested'
-          : successfulModels.length === environment.candidateModels.length
+        const successfulModels = attributionUnconfirmed
+          ? []
+          : results.filter(item => item.success).map(item => item.model)
+        const connectionFailure = results.find(item => (
+          item.errorKind === 'not_authenticated'
+          || item.errorKind === 'wrong_auth_method'
+          || item.errorKind === 'unsupported_version'
+          || item.errorKind === 'not_installed'
+        ))
+        // A new test proves this model works now; it cannot establish whether an
+        // earlier committed request ran or authorize replay of its queued digest.
+        const hasUnresolvedInvocation = Boolean(db.prepare(`
+          SELECT 1 FROM cli_invocations
+          WHERE connection_id = ? AND outcome = 'ambiguous' AND resolution IS NULL
+          LIMIT 1
+        `).get(validId))
+        const status: string = hasUnresolvedInvocation
+          ? 'ambiguous'
+          : successfulModels.length > 0
             ? 'online'
-            : successfulModels.length > 0
-              ? 'degraded'
-              : 'offline'
+          : previous.status === 'ambiguous'
+            ? 'ambiguous'
+          : attributionUnconfirmed
+            ? 'untested'
+            : connectionFailure
+              ? cliStatusForError(new CliLLMError(connectionFailure.errorKind as never, ''))
+              : previous.status === 'online'
+                ? 'online'
+                : 'untested'
         const summary = {
           operationId: operation.token,
           success: successfulModels.length,
-          total: environment.candidateModels.length,
+          total: targets.length,
+          targets,
+          scopeState: environment.auth.scopeState,
+          attributionUnconfirmed,
           durationMs: Date.now() - startedAt,
           cancelled: false,
         }
@@ -638,36 +755,29 @@ export function registerConnectionHandlers(dataDir: string): void {
             UPDATE model_connections
             SET status = ?,
                 status_reason = ?,
-                available_models = ?,
-                validation_fingerprint = ?,
-                model_validation_json = ?,
                 last_tested_at = ?,
                 last_test_summary = ?,
                 last_checked = ?
             WHERE id = ? AND archived = 0
           `).run(
             status,
-            status === 'offline' ? '所有候选模型测试失败' : null,
-            JSON.stringify(successfulModels),
-            environment!.validationFingerprint,
-            JSON.stringify(validations),
+            attributionUnconfirmed
+              ? 'CLI 或登录账号在测试期间发生变化，本次结果归属未确认'
+              : connectionFailure?.error ?? (status === 'ambiguous' ? previous.statusReason : null),
             now(),
             JSON.stringify(summary),
             now(),
             validId,
           )
-          if (successfulModels.length > 0) {
-            // 模型验证结果与“解除 ambiguous 并重排 pending digest”必须原子提交；
-            // 否则应用在两步之间退出会出现 UI 已在线、后台仍永久暂停。
-            resolveAmbiguousConnection(db, validId)
-          }
         })()
         return {
           online: successfulModels.length > 0,
           models: successfulModels,
           successCount: successfulModels.length,
-          totalCount: environment.candidateModels.length,
+          totalCount: targets.length,
           cancelled: false,
+          scopeState: environment.auth.scopeState,
+          attributionUnconfirmed,
           results,
         }
       } catch (error) {
@@ -675,36 +785,15 @@ export function registerConnectionHandlers(dataDir: string): void {
           ? error
           : new CliLLMError('transient', (error as Error).message, { cause: error })
         if (operationIsCurrent(validId, operation)) {
-          if (cliError.kind === 'aborted' && !environmentInvalidated) {
-            db.prepare(`
-              UPDATE model_connections
-              SET status = ?,
-                  status_reason = ?,
-                  available_models = ?,
-                  validation_fingerprint = ?,
-                  model_validation_json = ?,
-                  last_tested_at = ?,
-                  last_test_summary = ?,
-                  last_checked = ?
-              WHERE id = ? AND archived = 0
-            `).run(
-              previousValidation.status,
-              previousValidation.statusReason,
-              previousValidation.availableModels,
-              previousValidation.validationFingerprint,
-              previousValidation.modelValidationJson,
-              previousValidation.lastTestedAt,
-              previousValidation.lastTestSummary,
-              now(),
-              validId,
-            )
+          if (cliError.kind === 'aborted' || previous.status === 'ambiguous') {
+            restorePrevious()
           } else {
             db.prepare(`
               UPDATE model_connections
               SET status = ?, status_reason = ?, last_checked = ?
               WHERE id = ? AND archived = 0
             `).run(
-              cliError.kind === 'aborted' ? 'untested' : cliStatusForError(cliError),
+              cliStatusForError(cliError),
               cliError.message.slice(0, 500),
               now(),
               validId,
@@ -715,8 +804,9 @@ export function registerConnectionHandlers(dataDir: string): void {
           online: false,
           models: results.filter(item => item.success).map(item => item.model),
           error: cliError.message,
+          errorKind: cliError.kind,
           successCount: results.filter(item => item.success).length,
-          totalCount: environment?.candidateModels.length ?? 0,
+          totalCount: targets.length,
           cancelled: cliError.kind === 'aborted',
           results,
         }

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { CliChildProcessRunner } from './child-process-runner.js';
-import { CliLLMError } from './errors.js';
+import { CliLLMError, isDefinitiveProviderRejection } from './errors.js';
 import { sanitizeCliEnvironment } from './environment.js';
 import { parseClaudeResult } from './parser-claude.js';
 import { createCliRuntimeDirectory } from './runtime-dir.js';
@@ -100,7 +100,8 @@ export class ClaudeCliAdapter implements CliAdapter {
         if (
           result.promptCommitted &&
           (request.purpose ?? 'background') === 'background' &&
-          error instanceof CliLLMError
+          error instanceof CliLLMError &&
+          !isDefinitiveProviderRejection(error)
         ) {
           outcome = 'ambiguous_outcome';
           throw new CliLLMError(

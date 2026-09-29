@@ -2246,3 +2246,183 @@ describe('AgentIntegrationCoordinator', () => {
     expect(test.repository.calls).not.toContain('adapter:verify')
   })
 })
+
+describe('AgentIntegrationCoordinator ownership-only disconnect (design §3.5)', () => {
+  const fileContracts = {
+    memory_tools: { deliveryMode: 'managed' as const, artifactTypes: ['mcp' as const], mutationDomain: 'file_fragment' as const, reload: 'reload' as const },
+  }
+
+  it('is valid only for disconnect and refuses a host-command carrier before inspecting the host', async () => {
+    const test = harness()
+    await expect(test.coordinator.preview({
+      installation, operation: 'connect', componentKeys: ['memory_tools'], desiredCapability: 3, trustMode: 'ownership_only',
+    })).rejects.toThrow('ownership_only_requires_disconnect')
+    ;(test.adapter as { componentContracts?: unknown }).componentContracts = {
+      memory_tools: { deliveryMode: 'managed', artifactTypes: ['plugin'], mutationDomain: 'plugin_manager', reload: 'new_session' },
+    }
+    await expect(test.coordinator.preview({
+      installation: { ...installation, desiredState: 'managed' },
+      operation: 'disconnect', componentKeys: ['memory_tools'], desiredCapability: 0, trustMode: 'ownership_only',
+    })).rejects.toThrow('ownership_only_disconnect_requires_host_command')
+    expect(test.adapter.inspect).not.toHaveBeenCalled()
+  })
+
+  it('binds ownership and live bytes instead of a source proof and authorizes only file-fragment disconnect effects', async () => {
+    const test = harness()
+    ;(test.adapter as { componentContracts?: unknown }).componentContracts = fileContracts
+    test.repository.baselines = [{
+      componentKey: 'memory_tools', physicalTarget: '/tmp/tidemind/config.json', ownershipKey: 'mcpServers.tidemind',
+      ownedFragmentHash: 'desired', selectorSchemaVersion: 1,
+    }]
+    test.setLive('desired')
+    const liveTrustProof = vi.fn(async () => 'f'.repeat(64))
+    const authorizeEffect = vi.fn(async (_installation: unknown, binding: { liveTrustProofFingerprint: string | null; ownershipOnlyDisconnectBinding?: string | null }, scope?: { operation: string; mutationDomain: string | null }) => (
+      binding.liveTrustProofFingerprint === null
+      && typeof binding.ownershipOnlyDisconnectBinding === 'string'
+      && scope?.operation === 'disconnect'
+      && (scope.mutationDomain === null || scope.mutationDomain === 'file_fragment')
+    ))
+    test.dependencies.liveTrustProof = liveTrustProof
+    test.dependencies.authorizeEffect = authorizeEffect
+    const managed = { ...installation, desiredState: 'managed' as const }
+    test.repository.control = { ...test.repository.control, desiredState: 'managed' }
+    const plan = await test.coordinator.preview({
+      installation: managed, operation: 'disconnect', componentKeys: ['memory_tools'], desiredCapability: 0, trustMode: 'ownership_only',
+    })
+    expect(liveTrustProof).not.toHaveBeenCalled()
+    expect(plan.executionPlan.liveTrustProofFingerprint).toBeUndefined()
+    expect(plan.executionPlan.ownershipOnlyDisconnectBinding).toMatch(/^[a-f0-9]{64}$/)
+    const outcome = await test.coordinator.applyPrepared({ installation: managed, preparedPlan: plan, consentId: consent.id, desiredCapability: 0 })
+    expect(outcome).toMatchObject({ status: 'committed' })
+    expect(test.apply).toHaveBeenCalledOnce()
+    expect(authorizeEffect.mock.calls.map(call => call[2])).toEqual(expect.arrayContaining([
+      { operation: 'disconnect', mutationDomain: 'file_fragment' },
+      { operation: 'disconnect', mutationDomain: null },
+    ]))
+  })
+})
+
+describe('AgentIntegrationCoordinator shared physical domains (design §3.3.1)', () => {
+  const sharedConsumer = (generation: string, blockingReason: string | null = null) => ({
+    installationId: 'installation-other', generation, blockingReason,
+  })
+
+  it.each(['instruction', 'lifecycle'] as const)('only retains a declared bundle when shared %s is blocked', async (blockedComponent) => {
+    const test = harness()
+    test.adapter.inspect = vi.fn(async () => ({
+      ...inspection(null),
+      components: [
+        ...inspection(null).components,
+        { componentKey: 'instruction' as const, visibility: 'absent' as const, verificationStatus: 'unverified' as const },
+        { componentKey: 'lifecycle' as const, visibility: 'absent' as const, verificationStatus: 'unverified' as const },
+      ],
+    }))
+    const basePlan = test.adapter.plan
+    test.adapter.plan = vi.fn(async (context, request) => {
+      const plan = await basePlan(context, request)
+      return {
+        ...plan,
+        mutations: [...plan.mutations, {
+          ...plan.mutations[0],
+          operationId: 'write-skill',
+          componentKey: 'instruction' as const,
+          physicalTarget: '/tmp/tidemind/shared/SKILL.md',
+          ownershipKey: 'document',
+        }, {
+          ...plan.mutations[0], operationId: 'write-hook', componentKey: 'lifecycle' as const,
+          physicalTarget: '/tmp/tidemind/hooks.json', ownershipKey: 'hook',
+        }],
+      }
+    })
+    test.dependencies.sharedDomainConsumers = (_installation, mutation) => (
+      mutation.componentKey === blockedComponent
+        ? [sharedConsumer('g1', 'shared_consumer_not_compatible:installation-other')]
+        : []
+    )
+    const pending = test.coordinator.preview({
+      installation, operation: 'connect', componentKeys: ['memory_tools', 'instruction', 'lifecycle'], desiredCapability: 4,
+    })
+    if (blockedComponent === 'instruction') {
+      await expect(pending).rejects.toThrow('shared_consumer_not_compatible:installation-other')
+      expect(test.apply).not.toHaveBeenCalled()
+      return
+    }
+    const plan = await pending
+    expect(plan.componentKeys).toEqual(['instruction', 'memory_tools'])
+    expect(plan.adapterPlan.mutations.map(mutation => mutation.operationId)).toEqual(['write-mcp', 'write-skill'])
+    expect(plan.adapterPlan.diagnostics).toContain('shared_consumer_not_compatible:installation-other')
+    expect(plan.executionPlan.sharedDomainBinding).toBeUndefined()
+  })
+
+  it('refuses a plan whose only write targets a shared domain with a rejected consumer', async () => {
+    const test = harness()
+    test.dependencies.sharedDomainConsumers = () => [
+      sharedConsumer('g1', 'shared_consumer_not_compatible:installation-other'),
+    ]
+    await expect(preview(test)).rejects.toThrow('shared_consumer_not_compatible:installation-other')
+    expect(test.apply).not.toHaveBeenCalled()
+  })
+
+  it('freezes the consumer set and generations and applies while they are unchanged', async () => {
+    const test = harness()
+    test.dependencies.sharedDomainConsumers = () => [sharedConsumer('g1')]
+    const plan = await preview(test)
+    expect(plan.executionPlan.sharedDomainBinding).toMatch(/^[a-f0-9]{64}$/)
+    const outcome = await test.coordinator.applyPrepared({ installation, preparedPlan: plan, consentId: consent.id, desiredCapability: 3 })
+    expect(outcome).toMatchObject({ status: 'committed' })
+    expect(test.apply).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['a consumer generation changes', () => [sharedConsumer('g2')], 'shared_consumer_set_changed'],
+    ['a new consumer registers', () => [sharedConsumer('g1'), { ...sharedConsumer('g1'), installationId: 'installation-third' }], 'shared_consumer_set_changed'],
+    ['the consumer becomes incompatible', () => [sharedConsumer('g1', 'shared_consumer_not_compatible:installation-other')], 'shared_consumer_not_compatible:installation-other'],
+  ])('abandons the approved write when %s after planning', async (_label, after, reason) => {
+    const test = harness()
+    let consumers = [sharedConsumer('g1')]
+    test.dependencies.sharedDomainConsumers = () => consumers
+    const plan = await preview(test)
+    consumers = after()
+    const outcome = await test.coordinator.applyPrepared({ installation, preparedPlan: plan, consentId: consent.id, desiredCapability: 3 })
+    expect(outcome).toMatchObject({ status: 'needs_recovery', reason })
+    expect(test.apply).not.toHaveBeenCalled()
+    expect(test.repository.calls).not.toContain('effect:claim')
+  })
+
+  it('re-checks the binding at the physical effect boundary and in recovery replay', async () => {
+    const test = harness()
+    let consumers = [sharedConsumer('g1')]
+    test.dependencies.sharedDomainConsumers = () => consumers
+    const plan = await preview(test)
+    // The consumer changes while the mutation waits on its claim/precondition.
+    test.repository.afterEffectRevalidate = () => { consumers = [sharedConsumer('g2')] }
+    const outcome = await test.coordinator.applyPrepared({ installation, preparedPlan: plan, consentId: consent.id, desiredCapability: 3 })
+    expect(outcome).toMatchObject({ status: 'needs_recovery' })
+    expect(test.apply).not.toHaveBeenCalled()
+
+    test.repository.afterEffectRevalidate = undefined
+    test.repository.control = { ...test.repository.control, desiredState: 'managed', tombstoned: false }
+    test.repository.recoverable = [{
+      runId: 'run-shared-replay',
+      runState: 'needs_recovery',
+      installation: { ...installation, desiredState: 'managed' },
+      consentId: consent.id,
+      desiredCapability: 3,
+      preparedPlan: plan,
+      mutations: [{
+        operationId: 'write-mcp',
+        mutationDomain: 'local_macos:file:/tmp/tidemind/config.json:document',
+        plannedMutation: plan.adapterPlan.mutations[0],
+        journal: {
+          id: 'mutation-shared-replay', state: 'needs_recovery', journalVersion: 2, attemptCount: 1,
+          idempotent: true, beforeFingerprint: null, desiredFingerprint: 'desired', postEffectFingerprint: null,
+          compensationPrecondition: null, receiptJson: null, failureCode: 'effect_failed_or_unknown',
+          failureStage: 'effect', updatedAt: T0.toISOString(),
+        },
+      }],
+    }]
+    const [recovered] = await test.coordinator.recoverNonTerminalRuns({ canReplayEffect: () => true })
+    expect(recovered).toMatchObject({ status: 'needs_recovery', reason: 'shared_consumer_set_changed' })
+    expect(test.apply).not.toHaveBeenCalled()
+  })
+})

@@ -50,12 +50,45 @@ export interface ResolvedCli {
   };
 }
 
+export type CliScopeState = 'known' | 'unknown';
+
+/**
+ * Non-secret authentication observation. `scopeKey` is a hash of official,
+ * non-token account metadata (Codex account/read workspace id, Claude orgId).
+ * `unknown` means the CLI only reports "logged in": such connections may run
+ * an explicit user test but never unattended background inference (design §6.1).
+ */
 export interface CliAuthIdentity {
   providerType: CliProviderType;
   method: string;
   accountIdentifier: string | null;
+  /** Capacity-lease key; `<provider>:local-login` when unknown. */
   accountScope: string;
+  scopeState: CliScopeState;
+  /** `<provider>:<sha256>` when known, `<provider>:unknown` otherwise. */
+  scopeKey: string;
+  /** Short non-secret display hint (plan type / org name). */
+  scopeLabel: string | null;
 }
+
+export type CliCatalogItemKind = 'model' | 'alias';
+
+/** One discovered (or fallback) model entry. Untrusted upstream data, validated on parse. */
+export interface CliCatalogModel {
+  /** Catalog key and the value users select/persist. */
+  id: string;
+  /** Value passed as the CLI model argument (independent argv element). */
+  invocationId: string;
+  displayName: string;
+  kind: CliCatalogItemKind;
+  isDefault: boolean;
+  hidden: boolean;
+  upgrade: string | null;
+  retirementAt: number | null;
+  reasoningEfforts: string[];
+}
+
+export type CliCatalogSource = 'codex_app_server' | 'claude_aliases' | 'unsupported';
 
 export interface CliInvocationHooks {
   beforePromptCommit?: (request: CliLLMRequest) => void | Promise<void>;

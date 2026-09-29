@@ -16,6 +16,7 @@ import { prepare } from './tools/prepare.js';
 import { getTideMindVersion } from './utils/app-version.js';
 import { createLogger } from './utils/logger.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
+import { hookBridgeRejection } from './hook-bridge-guard.js';
 
 const STDIN_TIMEOUT_MS = 2_000;
 const MAX_STDIN_BYTES = 4 * 1024 * 1024;
@@ -276,6 +277,10 @@ async function main(): Promise<void> {
   }
 
   if (args.event === 'SessionStart') {
+    if (hookBridgeRejection({ scope: 'hook-qwenwork-lifecycle', agentId: args.agentId, activityGenerationToken: args.activityGenerationToken })) {
+      await writeStdout(formatQwenWorkLifecycleHookOutput(args.event))
+      return
+    }
     const prepared = await buildSessionStartContext(
       args.agentId,
       args.skillPath!,

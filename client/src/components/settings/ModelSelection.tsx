@@ -5,7 +5,11 @@ import { useIPC } from '../../hooks/useIPC'
 import { safeJsonParse } from '../../lib/json'
 import { Field, Section } from './shared'
 import { SettingsListbox, type SettingsListboxGroup } from './SettingsListbox'
+import { admissionLabelKey } from './CliModelCatalogPanel'
+import type { ConnectionModelsView } from '../../lib/api-contract'
 
+// Display labels only. API model lists come from each provider's own listing
+// (available_models); these tables never filter what the provider returned.
 const CLAUDE_MODELS = [
   ['claude-opus-4-7', 'Claude Opus 4.7'],
   ['claude-opus-4-6', 'Claude Opus 4.6'],
@@ -74,9 +78,21 @@ function sourceFor(provider: string): Connection['source_type'] {
   return 'cloud_service'
 }
 
-function modelsFor(connection: Connection, embedding = false): ModelChoice[] {
+const MANUAL_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/@[\]-]{0,127}$/
+
+function isCliConnection(connection: Connection): boolean {
+  return connection.provider_type === 'claude-cli' || connection.provider_type === 'codex-cli'
+}
+
+function modelsFor(
+  connection: Connection,
+  embedding: boolean,
+  catalogs: ReadonlyMap<string, ConnectionModelsView>,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): ModelChoice[] {
   const verified = safeJsonParse<string[]>(connection.available_models, [])
   if (embedding) {
+    // Embedding model/dimension selection stays independent of generation catalogs.
     if (connection.provider_type === 'vertex' || connection.provider_type === 'gemini') {
       return [{ value: 'gemini-embedding-001', label: 'Gemini Embedding 001 (3072 dim)' }]
     }
@@ -85,23 +101,32 @@ function modelsFor(connection: Connection, embedding = false): ModelChoice[] {
     }
     return []
   }
-  if (connection.provider_type === 'claude-cli') {
-    return verified.map(model => ({ value: model, label: model === 'default' ? 'Default' : `Claude ${model[0].toUpperCase()}${model.slice(1)}` }))
+  if (isCliConnection(connection)) {
+    // Dynamic catalog (Codex model/list) or official aliases (Claude): suggestions,
+    // not an allowlist. "Follow the CLI default" is a selection mode, not a model.
+    const catalog = catalogs.get(connection.id)?.catalog
+    const items = (catalog?.items ?? []).filter(item => !item.hidden)
+    return [
+      { value: 'default', label: t('model.selection.followDefault') },
+      ...items.map(item => ({
+        value: item.id,
+        label: [
+          item.displayName,
+          item.kind === 'alias' ? t('model.selection.aliasPending') : null,
+          item.isDefault ? t('model.selection.catalogDefaultBadge') : null,
+          item.upgrade ? t('model.selection.upgradeHint', { model: item.upgrade }) : null,
+        ].filter(Boolean).join(' · '),
+      })),
+    ]
   }
-  if (connection.provider_type === 'codex-cli') {
-    return verified.map(model => ({ value: model, label: model === 'default' ? 'Default' : model }))
-  }
-  if (connection.provider_type === 'anthropic' || connection.provider_type === 'vertex') {
-    return CLAUDE_MODELS
-      .filter(([id]) => verified.includes(id))
-      .map(([value, label]) => ({ value, label }))
-  }
-  if (connection.provider_type === 'gemini') {
-    return GEMINI_MODELS
-      .filter(([id]) => verified.includes(id))
-      .map(([value, label]) => ({ value, label }))
-  }
-  return verified.map(model => ({ value: model, label: model }))
+  const labels = new Map<string, string>(
+    connection.provider_type === 'gemini'
+      ? GEMINI_MODELS.map(([id, label]) => [id, label])
+      : connection.provider_type === 'anthropic' || connection.provider_type === 'vertex'
+        ? CLAUDE_MODELS.map(([id, label]) => [id, label])
+        : [],
+  )
+  return verified.map(model => ({ value: model, label: labels.get(model) ?? model }))
 }
 
 function sourceLabel(source: Connection['source_type'], t: (key: string) => string) {
@@ -114,25 +139,43 @@ function ModelRouteFields({
   value,
   onChange,
   connections,
+  catalogs,
+  tier,
   embedding = false,
 }: {
   value: string
   onChange: (value: string) => void
   connections: Connection[]
+  catalogs: ReadonlyMap<string, ConnectionModelsView>
+  tier?: 'light' | 'standard' | 'heavy'
   embedding?: boolean
 }) {
   const { t } = useTranslation('settings')
+  const [manualOpen, setManualOpen] = useState(false)
+  const [manualValue, setManualValue] = useState('')
   const selected = decode(value)
-  const eligible = connections.filter(connection => !connection.archived && modelsFor(connection, embedding).length > 0)
+  const eligible = connections.filter(connection => (
+    !connection.archived
+    && (isCliConnection(connection) && !embedding
+      ? true
+      : modelsFor(connection, embedding, catalogs, t).length > 0)
+  ))
   const selectedStored = connections.find(connection => connection.id === selected.connectionId)
   const selectedConnection = eligible.find(connection => connection.id === selected.connectionId)
-  const selectedModels = selectedConnection ? modelsFor(selectedConnection, embedding) : []
+  const selectedModels = selectedConnection ? modelsFor(selectedConnection, embedding, catalogs, t) : []
+  const selectedIsCli = Boolean(selectedConnection && isCliConnection(selectedConnection))
   const invalidConnection = Boolean(selected.connectionId && !selectedConnection)
-  const invalidModel = Boolean(
+  const unlisted = Boolean(
     selectedConnection &&
     selected.model &&
     !selectedModels.some(model => model.value === selected.model),
   )
+  // A pinned CLI model missing from the current catalog is kept, not invalidated:
+  // absence is not retirement (design §5.3). API routes keep the previous rule.
+  const invalidModel = unlisted && !selectedIsCli
+  const routeView = selectedIsCli && tier
+    ? catalogs.get(selected.connectionId)?.inUse.find(route => route.tier === tier && route.modelId === selected.model)
+    : undefined
 
   const connectionGroups: SettingsListboxGroup[] = [
     ...(invalidConnection ? [{
@@ -159,6 +202,11 @@ function ModelRouteFields({
   const modelGroups: SettingsListboxGroup[] = selectedConnection || (invalidConnection && selected.model) ? [{
     label: selectedConnection?.name ?? selectedStored?.name ?? t('model.selection.savedRouteProblem'),
     options: [
+      ...(unlisted && selectedIsCli ? [{
+        value: selected.model,
+        label: selected.model,
+        description: t('model.selection.notListed'),
+      }] : []),
       ...((invalidModel || invalidConnection) && selected.model ? [{
         value: selected.model,
         label: selected.model,
@@ -174,7 +222,7 @@ function ModelRouteFields({
 
   const changeConnection = (connectionId: string) => {
     const connection = eligible.find(item => item.id === connectionId)
-    const firstModel = connection ? modelsFor(connection, embedding)[0]?.value : ''
+    const firstModel = connection ? modelsFor(connection, embedding, catalogs, t)[0]?.value : ''
     onChange(encode(connectionId, firstModel ?? ''))
   }
 
@@ -197,6 +245,56 @@ function ModelRouteFields({
           ariaLabel={t('model.selection.modelLabel')}
         />
       </div>
+      {selectedIsCli && !embedding && selected.model === 'default' && (
+        <p className="text-[10px] text-gray-500">{t('model.selection.isolatedDefaultHint')}</p>
+      )}
+      {selectedIsCli && !embedding && (
+        manualOpen ? (
+          <div className="flex items-center gap-1.5">
+            <input
+              value={manualValue}
+              onChange={event => setManualValue(event.target.value.trim())}
+              placeholder={t('model.selection.manualPlaceholder')}
+              className="flex-1 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-gray-200"
+              spellCheck={false}
+            />
+            <button
+              type="button"
+              disabled={!MANUAL_MODEL_ID.test(manualValue)}
+              onClick={() => {
+                onChange(encode(selected.connectionId, manualValue))
+                setManualOpen(false)
+                setManualValue('')
+              }}
+              className="px-2 py-1 text-[11px] bg-white/5 hover:bg-white/10 rounded-md text-gray-300 disabled:opacity-40"
+            >
+              {t('model.selection.manualApply')}
+            </button>
+            <button type="button" onClick={() => setManualOpen(false)} className="text-[11px] text-gray-500 hover:text-gray-300">
+              {t('model.selection.manualCancel')}
+            </button>
+          </div>
+        ) : (
+          <button type="button" onClick={() => setManualOpen(true)} className="text-[10px] text-gray-500 hover:text-gray-300">
+            {t('model.selection.manualEntry')}
+          </button>
+        )
+      )}
+      {manualOpen && manualValue && !MANUAL_MODEL_ID.test(manualValue) && (
+        <p className="text-[10px] text-red-400">{t('model.selection.manualInvalid')}</p>
+      )}
+      {routeView && (
+        <p className={`text-[10px] ${routeView.admission.allowed ? 'text-gray-500' : 'text-amber-300'}`}>
+          {t(admissionLabelKey(routeView.admission), {
+            time: routeView.observation?.lastSuccessAt
+              ? new Date(routeView.observation.lastSuccessAt).toLocaleString()
+              : '—',
+            retryAt: !routeView.admission.allowed && routeView.admission.retryAt
+              ? new Date(routeView.admission.retryAt).toLocaleString()
+              : '—',
+          })}
+        </p>
+      )}
       {(invalidConnection || invalidModel) && (
         <p className="flex items-center gap-1 text-[10px] text-red-400">
           <AlertTriangle size={10} />
@@ -221,6 +319,23 @@ export function ModelSelection() {
   const { data: reembedStatus, refetch: recheckReembed } = useIPC(fetchReembedStatus)
   const connections = (connectionData ?? []) as Connection[]
   const connMap = useMemo(() => new Map(connections.map(connection => [connection.id, connection])), [connections])
+  const [catalogs, setCatalogs] = useState<ReadonlyMap<string, ConnectionModelsView>>(new Map())
+  const cliConnectionIds = useMemo(
+    () => connections.filter(connection => !connection.archived && isCliConnection(connection)).map(connection => connection.id).join(','),
+    [connections],
+  )
+  useEffect(() => {
+    let cancelled = false
+    const ids = cliConnectionIds ? cliConnectionIds.split(',') : []
+    void Promise.all(ids.map(id => window.api.connections.models(id)
+      .then(view => [id, view] as const)
+      .catch(() => null)))
+      .then(entries => {
+        if (cancelled) return
+        setCatalogs(new Map(entries.filter((entry): entry is readonly [string, ConnectionModelsView] => entry !== null)))
+      })
+    return () => { cancelled = true }
+  }, [cliConnectionIds, config])
 
   const [lightValue, setLightValue] = useState('')
   const [standardValue, setStandardValue] = useState('')
@@ -323,7 +438,13 @@ export function ModelSelection() {
           ].map(([key, label, tip, usage, value, onChange]) => (
             <div key={key as string} className="space-y-2">
               <Field label={label as string} tip={tip as string}>
-                <ModelRouteFields value={value as string} onChange={onChange as (value: string) => void} connections={connections} />
+                <ModelRouteFields
+                  value={value as string}
+                  onChange={onChange as (value: string) => void}
+                  connections={connections}
+                  catalogs={catalogs}
+                  tier={key as 'light' | 'standard' | 'heavy'}
+                />
               </Field>
               <p className="text-[10px] text-gray-500">{usage as string}</p>
             </div>
@@ -334,7 +455,7 @@ export function ModelSelection() {
       <Section title="Embedding">
         <div className="space-y-3">
           <Field label={t('model.selection.embeddingModel')} tip={t('model.selection.embeddingModelTip')}>
-            <ModelRouteFields value={embValue} onChange={userSetter(setEmbValue)} connections={connections} embedding />
+            <ModelRouteFields value={embValue} onChange={userSetter(setEmbValue)} connections={connections} catalogs={catalogs} embedding />
           </Field>
           <div className="flex items-center gap-4 text-[10px] text-gray-500">
             <span>{t('model.selection.dimensions')}: {embeddingDimensions}</span>

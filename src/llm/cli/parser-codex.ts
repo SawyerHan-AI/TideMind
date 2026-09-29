@@ -21,6 +21,22 @@ const SAFE_EVENTS = new Set([
   'item.completed',
 ]);
 
+/**
+ * Startup notices Codex reports as `item.type: "error"` *before* the turn starts, caused
+ * by Tide Mind's own isolation overrides (P0 evidence, codex 0.156.1): disabling the
+ * code-mode host, or setting an already-deprecated feature flag. Only these reviewed
+ * notices, and only before `turn.started`, are ignored; every other error item, and
+ * any error item after the turn started, still fails the invocation (fail closed).
+ */
+const REVIEWED_PRE_TURN_NOTICES: readonly RegExp[] = [
+  /^Code Mode is unavailable because code-mode host is disabled\. Code mode will fail closed/,
+  /^`\[features\]\.[a-z0-9_.]+` is deprecated\b/,
+];
+
+function isReviewedPreTurnNotice(message: string): boolean {
+  return REVIEWED_PRE_TURN_NOTICES.some((pattern) => pattern.test(message));
+}
+
 export function parseCodexJsonLines(
   stdout: string,
   selectedModelAlias: string,
@@ -39,6 +55,7 @@ export function parseCodexJsonLines(
   let completed = false;
   let usage: Record<string, unknown> | null = null;
   let actualModel: string | null = null;
+  let turnStarted = false;
 
   for (const line of lines) {
     let event: Record<string, unknown> | null;
@@ -70,6 +87,9 @@ export function parseCodexJsonLines(
             : typeof item.text === 'string'
               ? item.text
               : 'Codex turn failed';
+        if (!turnStarted && event.type === 'item.completed' && isReviewedPreTurnNotice(message)) {
+          continue;
+        }
         const kind = classifyCliFailure(message);
         throw new CliLLMError(kind, 'Codex turn failed', {
           needsUserAction: ['not_authenticated', 'quota', 'permission_policy'].includes(kind),
@@ -90,6 +110,7 @@ export function parseCodexJsonLines(
         messages.push(item.text);
       }
     }
+    if (event.type === 'turn.started') turnStarted = true;
     if (event.type === 'thread.started') {
       actualModel =
         typeof event.model === 'string'

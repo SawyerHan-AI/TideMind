@@ -121,13 +121,14 @@ describe('OpenCode V1 lifecycle Plugin adapter', () => {
       .rejects.toThrow(/lifecycle_target_not_frozen|lifecycle_root_not_frozen/)
   })
 
-  it('emits official Plugin hooks with exact runtime-version and Agent binding', () => {
+  it('emits official Plugin hooks bound to the v1 API major line (not one exact build) and the Agent', () => {
     const ctx = context()
     const source = openCodeV1PluginContent(ctx)
     expect(source).toContain('import type { Plugin } from "@opencode-ai/plugin"')
-    expect(source).toContain('const EXPECTED_HOST_VERSION = "1.8.0"')
+    expect(source).toContain('const EXPECTED_HOST_MAJOR_PREFIX = "1."')
+    expect(source).not.toContain('1.8.0')
     expect(source).toContain('await client.global.health()')
-    expect(source).toContain('health.data.version !== EXPECTED_HOST_VERSION')
+    expect(source).toContain('!version.startsWith(EXPECTED_HOST_MAJOR_PREFIX)')
     expect(source).toContain('"experimental.chat.system.transform"')
     expect(source).toContain('output.system[0] = [output.system[0], context]')
     expect(source).not.toContain('output.system.push(context)')

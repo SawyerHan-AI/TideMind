@@ -25,7 +25,7 @@ import {
   MAX_CLI_EXECUTABLE_PROOF_BYTES,
   type ManagementEligibilityReason,
 } from './discovery.js'
-import { buildLegacyInstallKey } from './identity.js'
+import { buildLegacyInstallKey, EXACT_INSTALL_KEY_DISTRIBUTION_CONFLICT_REASON } from './identity.js'
 import type { PreparedCoordinatorPlan } from './planner.js'
 
 const AGENT_INTEGRATION_LAST_SUCCESSFUL_SCAN_AT_KEY = 'agent_integration_last_successful_scan_at'
@@ -142,6 +142,11 @@ export interface AgentInstallationRow {
   verification_result_id: string | null
   last_repaired_at: string | null
   metadata_json: string
+  /** Tide Mind-side bridge (MCP/hook entries) for this Installation's generation. */
+  bridge_state?: 'serving' | 'stopped'
+  bridge_state_reason?: string | null
+  /** Host-side component state; only read-back plus a host reload proves deactivation. */
+  host_components_state?: 'loaded_unknown' | 'awaiting_reload' | 'deactivated_verified'
   created_at: string
   updated_at: string
 }
@@ -538,7 +543,10 @@ export function persistedManagementEligibility(
     && rawReason !== 'release_distribution_not_accepted'
     && rawReason !== 'release_version_unverified'
     && rawReason !== 'release_version_not_accepted'
-    && rawReason !== 'release_artifact_not_accepted') {
+    && rawReason !== 'release_artifact_not_accepted'
+    && rawReason !== 'source_verification_pending'
+    && rawReason !== 'source_not_official'
+    && rawReason !== 'source_confirmation_required') {
     return invalid
   }
   const reason: PersistedManagementEligibility['reason'] = rawReason === 'executable_proof_too_large'
@@ -553,6 +561,9 @@ export function persistedManagementEligibility(
           || rawReason === 'release_version_unverified'
           || rawReason === 'release_version_not_accepted'
           || rawReason === 'release_artifact_not_accepted'
+          || rawReason === 'source_verification_pending'
+          || rawReason === 'source_not_official'
+          || rawReason === 'source_confirmation_required'
           ? rawReason
           : undefined
   const result: PersistedManagementEligibility = {
@@ -578,7 +589,10 @@ export function persistedManagementEligibility(
     || result.reason === 'release_distribution_not_accepted'
     || result.reason === 'release_version_unverified'
     || result.reason === 'release_version_not_accepted'
-    || result.reason === 'release_artifact_not_accepted') {
+    || result.reason === 'release_artifact_not_accepted'
+    || result.reason === 'source_verification_pending'
+    || result.reason === 'source_not_official'
+    || result.reason === 'source_confirmation_required') {
     // Release acceptance is independent from executable-size eligibility. The
     // size remains optional inventory, but must already satisfy the generic
     // structural validation above when present.
@@ -614,6 +628,26 @@ const frozenProjectionSurfaceFingerprints = new WeakMap<DistributionIdentity, st
  * every identity, distribution, capability and host path fact that can change
  * Adapter target selection is included.
  */
+export type GuidedRemovalAction = Extract<
+  import('./types.js').RequiredUserActionDetail,
+  { kind: 'qwenwork_mcp_gui' | 'custom_mcp_import' | 'claude_cowork_plugin_upload' }
+>
+
+function isGuidedRemovalActionKind(kind: string): boolean {
+  return kind === 'qwenwork_mcp_gui' || kind === 'custom_mcp_import' || kind === 'claude_cowork_plugin_upload'
+}
+
+function isGuidedRemovalAction(
+  action: import('./types.js').RequiredUserActionDetail,
+): action is GuidedRemovalAction {
+  return isGuidedRemovalActionKind(action.kind)
+}
+
+/** The host-side name a guided removal receipt binds to. */
+export function guidedRemovalConnectorName(action: GuidedRemovalAction): string {
+  return action.kind === 'claude_cowork_plugin_upload' ? action.packageName : action.connectorName
+}
+
 export function persistedProjectionSurfaceFingerprint(row: AgentInstallationRow): string {
   const metadata = safeJsonObject(row.metadata_json)
   const distribution = safeJsonObject(metadata.distribution)
@@ -643,6 +677,69 @@ export function persistedProjectionSurfaceFingerprint(row: AgentInstallationRow)
     managementEligibility: persistedManagementEligibility(row),
   })
 }
+
+/**
+ * The approval (consent) scope of an Installation: identity, source channel and every
+ * host path an approved projection may target. Unlike the full projection surface it
+ * excludes per-generation facts (version, versioned executable path, code/artifact
+ * fingerprints, eligibility). A host upgrade therefore ends the old generation's
+ * plans and invalidates verification, but keeps the user's approval (design §3.4).
+ */
+export function persistedConsentSurfaceFingerprint(row: AgentInstallationRow): string {
+  const metadata = safeJsonObject(row.metadata_json)
+  const distribution = safeJsonObject(metadata.distribution)
+  return sha256Json({
+    family: row.family,
+    hostVariant: row.host_variant,
+    runtimeRealm: row.runtime_realm,
+    profileId: row.profile_id || 'default',
+    installKey: row.install_key,
+    osUserIdentity: row.os_user_identity,
+    configRoot: row.config_root,
+    appPath: row.app_path,
+    hostOwnedIdentity: stringOrUndefined(metadata.hostOwnedIdentity) ?? null,
+    distribution: {
+      distributionId: stringOrUndefined(distribution.distributionId) ?? row.distribution_id ?? null,
+      packageProvenance: stringOrUndefined(distribution.packageProvenance) ?? null,
+    },
+    componentConfigFiles: stableStringRecord(metadata.componentConfigFiles),
+    componentConfigRoots: stableStringRecord(metadata.componentConfigRoots),
+    resourceRoots: stableStringRecord(metadata.resourceRoots),
+  })
+}
+
+/**
+ * An approval that authorized host commands is bound to the exact executables it
+ * named. When an upgrade moves the executable (npm prefix / Node version switch), the
+ * approval no longer covers the new binary: revoke it so the user is asked again,
+ * instead of leaving an active consent that every repair would fail against.
+ */
+function activeConsentCoversExecutable(db: Database.Database, row: AgentInstallationRow): boolean {
+  const consents = db.prepare(`
+    SELECT executable_realpaths_json FROM agent_consents
+    WHERE installation_id = ? AND status = 'active'
+  `).all(row.id) as Array<{ executable_realpaths_json: string }>
+  if (consents.length === 0) return true
+  const distribution = persistedDistribution(row)
+  const current = [row.executable_path, distribution.executableRealpath]
+    .filter((value): value is string => Boolean(value))
+    .map(value => path.resolve(value))
+  return consents.every(consent => {
+    let named: unknown
+    try {
+      named = JSON.parse(consent.executable_realpaths_json)
+    } catch {
+      return false
+    }
+    if (!Array.isArray(named) || named.length === 0) return true
+    const approved = named.filter((value): value is string => typeof value === 'string')
+      .map(value => path.resolve(value))
+    return current.some(value => approved.includes(value))
+  })
+}
+
+/** Identity-conflict rule generation; conflicts raised before it carried no marker. */
+const IDENTITY_CONFLICT_RULE_VERSION = 2
 
 /** Fingerprint frozen on Coordinator Installations materialized from SQLite. */
 export function frozenProjectionSurfaceFingerprint(distribution: DistributionIdentity): string | null {
@@ -969,7 +1066,14 @@ export class AgentIntegrationRepository {
       const nonVersionProjectionSurfaceChanged = priorInstallation !== undefined
         && persistedProjectionSurfaceFingerprint({ ...priorInstallation, detected_version: detectedVersion })
           !== persistedProjectionSurfaceFingerprint(persisted)
+      const consentSurfaceChanged = priorInstallation !== undefined
+        && (persistedConsentSurfaceFingerprint(priorInstallation)
+          !== persistedConsentSurfaceFingerprint(persisted)
+          || !activeConsentCoversExecutable(this.db, persisted))
       const installationSurfaceChanged = installKeyChanged || projectionSurfaceChanged
+      // Only a change of the approval scope (identity, source channel, target paths)
+      // revokes consent; a generation change is re-checked under the same approval.
+      const consentScopeChanged = installKeyChanged || consentSurfaceChanged
       const versionChanged = priorInstallation !== undefined
         && priorInstallation.detected_version !== null
         && priorInstallation.detected_version !== detectedVersion
@@ -1006,7 +1110,7 @@ export class AgentIntegrationRepository {
               updated_at = ?
           WHERE id = ?
         `).run(now, persisted.id)
-        if (installationSurfaceChanged) {
+        if (consentScopeChanged) {
           this.db.prepare(`
             UPDATE agent_consents
             SET status = 'revoked', revoked_at = COALESCE(revoked_at, ?)
@@ -1246,6 +1350,67 @@ export class AgentIntegrationRepository {
       .get(id) as AgentInstallationRow | undefined
   }
 
+  /**
+   * Installations still registered (active or removal_pending, paused included) as
+   * consumers of any owned artifact at the given physical targets. A shared
+   * artifact and a shared container file (per-agent selectors) both count: a write
+   * to either may affect how the other consumer's host reads that target.
+   */
+  listSharedTargetConsumerInstallationIds(input: {
+    runtimeRealm: string
+    targets: readonly string[]
+    excludeInstallationId: string
+  }): string[] {
+    const targets = [...new Set(input.targets.filter(target => target.length > 0))]
+    if (targets.length === 0) return []
+    const rows = this.db.prepare(`
+      SELECT DISTINCT consumer.installation_id
+      FROM managed_artifacts artifact
+      JOIN artifact_consumers consumer ON consumer.artifact_id = artifact.id
+      WHERE artifact.runtime_realm = ?
+        AND artifact.target_path IN (${targets.map(() => '?').join(',')})
+        AND consumer.state IN ('active','removal_pending')
+        AND consumer.installation_id != ?
+      ORDER BY consumer.installation_id
+    `).all(input.runtimeRealm, ...targets, input.excludeInstallationId) as Array<{ installation_id: string }>
+    return rows.map(row => row.installation_id)
+  }
+
+  /**
+   * Tide Mind-side part of a disconnect that cannot run the untrusted host's own
+   * removal command: pause maintenance and stop the bridge for this Installation.
+   * Host components are untouched and stay `loaded_unknown`.
+   */
+  stopBridgePendingManualRemoval(installationId: string, at: string): void {
+    this.db.transaction(() => {
+      const row = this.getInstallation(installationId)
+      if (!row) throw new Error(`unknown Installation: ${installationId}`)
+      if (row.desired_state === 'managed') this.setInstallationIntent(installationId, 'disabled', at)
+      this.db.prepare(`
+        UPDATE agent_installations
+        SET bridge_state = 'stopped', bridge_state_reason = 'disconnect_pending_manual_removal', updated_at = ?
+        WHERE id = ?
+      `).run(at, installationId)
+    }).immediate()
+  }
+
+  /** Undo only a bridge stop that was requested as part of such a pending disconnect. */
+  restoreBridgeAfterPendingManualRemoval(installationId: string, at: string): void {
+    this.db.prepare(`
+      UPDATE agent_installations
+      SET bridge_state = 'serving', bridge_state_reason = NULL, updated_at = ?
+      WHERE id = ? AND bridge_state = 'stopped'
+        AND bridge_state_reason = 'disconnect_pending_manual_removal'
+    `).run(at, installationId)
+  }
+
+  getManagedArtifactTarget(artifactId: string): { runtimeRealm: string; targetPath: string } | null {
+    const row = this.db.prepare(`
+      SELECT runtime_realm, target_path FROM managed_artifacts WHERE id = ?
+    `).get(artifactId) as { runtime_realm: string; target_path: string } | undefined
+    return row ? { runtimeRealm: row.runtime_realm, targetPath: row.target_path } : null
+  }
+
   getInstallationByInstallKey(runtimeRealm: string, installKey: string): AgentInstallationRow | undefined {
     return this.db.prepare(`
       SELECT * FROM agent_installations WHERE runtime_realm = ? AND install_key = ?
@@ -1298,6 +1463,69 @@ export class AgentIntegrationRepository {
     })
   }
 
+  /**
+   * Release an Installation-identity conflict that earlier builds raised for a
+   * generation-only difference (versioned executable path, CDHash/Info.plist
+   * fingerprint). Called only after the current matcher accepted the exact install
+   * key with the same distribution and provenance. Artifact-level conflicts
+   * (drifted/owned-modified files) are separate rows and are never touched here;
+   * verification stays stale and consent is not recreated.
+   */
+  resolveGenerationIdentityConflict(installationId: string, detectedAt: string): boolean {
+    const GENERATION_ONLY_CONFLICT_REASON = EXACT_INSTALL_KEY_DISTRIBUTION_CONFLICT_REASON
+    return this.db.transaction(() => {
+      const result = this.db.prepare(`
+        UPDATE agent_installations
+        SET status_reason = 'verification_stale',
+            reconcile_state = CASE
+              WHEN desired_state = 'disabled' THEN 'paused'
+              WHEN desired_state = 'managed' AND consent_envelope_id IS NULL THEN 'awaiting_consent'
+              ELSE 'idle'
+            END,
+            updated_at = ?
+        WHERE id = ? AND status_reason = 'conflict' AND reconcile_state = 'paused'
+          -- Only the exact-install-key distribution conflict can stem from a pure
+          -- generation change under the old strong-field rule; ambiguous identities
+          -- and every other conflict stay sticky until the user resolves them.
+          AND EXISTS (
+            SELECT 1 FROM agent_integration_events
+            WHERE installation_id = ? AND kind = 'discovery_identity_conflict'
+              AND json_extract(payload_json, '$.reason') = ?
+              AND json_extract(payload_json, '$.ruleVersion') IS NULL
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM agent_integration_events
+            WHERE installation_id = ? AND kind = 'discovery_identity_conflict'
+              AND (COALESCE(json_extract(payload_json, '$.reason'), '') != ?
+                OR json_extract(payload_json, '$.ruleVersion') IS NOT NULL)
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM artifact_consumers c
+            JOIN managed_artifacts a ON a.id = c.artifact_id
+            WHERE c.installation_id = ? AND a.state IN ('conflict', 'drifted')
+          )
+      `).run(
+        detectedAt,
+        installationId,
+        installationId,
+        GENERATION_ONLY_CONFLICT_REASON,
+        installationId,
+        GENERATION_ONLY_CONFLICT_REASON,
+        installationId,
+      )
+      if (result.changes !== 1) return false
+      this.recordEvent({
+        installationId,
+        kind: 'discovery_identity_conflict_resolved',
+        severity: 'info',
+        dedupeKey: `${installationId}:distribution_identity_conflict_resolved:${detectedAt}`,
+        payload: { reason: 'generation_only_difference' },
+        createdAt: detectedAt,
+      })
+      return true
+    }).immediate()
+  }
+
   markInstallationIdentityConflict(installationId: string, detectedAt: string, reason: string): void {
     this.db.transaction(() => {
       const installation = this.getInstallation(installationId)
@@ -1324,8 +1552,10 @@ export class AgentIntegrationRepository {
         installationId,
         kind: 'discovery_identity_conflict',
         severity: 'warning',
-        dedupeKey: `${installationId}:distribution_identity_conflict`,
-        payload: { reason },
+        // Rule-versioned: conflicts raised by the generation-aware matcher are never
+        // auto-released (see resolveGenerationIdentityConflict).
+        dedupeKey: `${installationId}:distribution_identity_conflict:rule-${IDENTITY_CONFLICT_RULE_VERSION}`,
+        payload: { reason, ruleVersion: IDENTITY_CONFLICT_RULE_VERSION },
         createdAt: detectedAt,
       })
     }).immediate()
@@ -3765,15 +3995,15 @@ export class AgentIntegrationRepository {
         throw new Error('guided removal generation changed')
       }
       const action = prepared.adapterPlan.requiredUserActionDetails?.find(detail => (
-        (detail.kind === 'qwenwork_mcp_gui' || detail.kind === 'custom_mcp_import')
+        isGuidedRemovalAction(detail)
         && detail.operation === 'disconnect'
         && detail.componentKey === 'memory_tools'
       ))
-      if (!action || (action.kind !== 'qwenwork_mcp_gui' && action.kind !== 'custom_mcp_import')
+      if (!action || !isGuidedRemovalAction(action)
         || action.installationId !== input.installationId
         || action.agentId !== input.agentId
         || action.hostVariant !== input.hostVariant
-        || action.connectorName !== input.connectorName) {
+        || guidedRemovalConnectorName(action) !== input.connectorName) {
         throw new Error('guided removal action binding changed')
       }
       const ledger = this.db.prepare(`
@@ -3795,7 +4025,9 @@ export class AgentIntegrationRepository {
         WHERE installation.id = ? AND installation.desired_state = 'removed'
           AND installation.tombstoned_at IS NOT NULL
           AND memory.desired_state = 'removed' AND memory.delivery_mode = 'guided'
-          AND memory.artifact_id IS NULL
+          -- Cowork's guided plugin is exported from a Tide Mind-owned archive
+          -- artifact; every other guided connector has no owned artifact.
+          AND (memory.artifact_id IS NULL OR installation.host_variant = 'claude-cowork-local')
       `).get(input.installationId) as {
         agent_id: string | null
         host_variant: string
@@ -3810,7 +4042,8 @@ export class AgentIntegrationRepository {
         || ledger.host_variant !== input.hostVariant
         || (action.kind === 'qwenwork_mcp_gui' && (ledger.instruction_desired_state !== 'removed'
           || ledger.instruction_artifact_state !== 'removal_pending'
-          || ledger.instruction_consumer_state !== 'removal_pending'))) {
+          || ledger.instruction_consumer_state !== 'removal_pending'))
+        || (action.kind === 'claude_cowork_plugin_upload' && ledger.instruction_desired_state !== 'removed')) {
         throw new Error('guided removal ledger is no longer pending')
       }
       return this.recordEvent({
@@ -3848,9 +4081,10 @@ export class AgentIntegrationRepository {
         ON component.installation_id = event.installation_id
        AND component.component_key = 'memory_tools'
        AND component.delivery_mode = 'guided'
-       AND component.artifact_id IS NULL
        AND component.desired_state = 'removed'
+      JOIN agent_installations installation ON installation.id = event.installation_id
       WHERE event.kind = 'user_confirmed_guided_removal'
+        AND (component.artifact_id IS NULL OR installation.host_variant = 'claude-cowork-local')
         AND event.installation_id = ?
         AND json_extract(event.payload_json, '$.schemaVersion') = 1
         AND json_extract(event.payload_json, '$.agentId') = ?
@@ -3875,7 +4109,9 @@ export class AgentIntegrationRepository {
   getPendingGuidedRemovalAction(installationId: string): {
     runId: string
     activityGenerationToken: string
-    connectorAction: Extract<import('./types.js').RequiredUserActionDetail, { kind: 'qwenwork_mcp_gui' | 'custom_mcp_import' }>
+    connectorAction: GuidedRemovalAction
+    /** Stable host-side name the user removes (connector, or Cowork plugin package). */
+    connectorName: string
     fileAction: Extract<import('./types.js').RequiredUserActionDetail, { kind: 'manual_file_removal' }> | null
   } | null {
     const row = this.db.prepare(`
@@ -3886,15 +4122,16 @@ export class AgentIntegrationRepository {
     if (!row) return null
     const prepared = JSON.parse(row.prepared_plan_json) as PreparedCoordinatorPlan
     const connectorAction = prepared.adapterPlan.requiredUserActionDetails?.find(detail => (
-      (detail.kind === 'qwenwork_mcp_gui' || detail.kind === 'custom_mcp_import') && detail.operation === 'disconnect'
+      isGuidedRemovalAction(detail) && detail.operation === 'disconnect'
     ))
     const fileAction = prepared.adapterPlan.requiredUserActionDetails?.find(detail => (
       detail.kind === 'manual_file_removal' && detail.operation === 'disconnect'
     ))
     if (!prepared.activityGenerationToken
-      || !connectorAction || (connectorAction.kind !== 'qwenwork_mcp_gui' && connectorAction.kind !== 'custom_mcp_import')
+      || !connectorAction || !isGuidedRemovalAction(connectorAction)
       || (connectorAction.kind === 'qwenwork_mcp_gui' && (!fileAction || fileAction.kind !== 'manual_file_removal'))) return null
     return { runId: row.id, activityGenerationToken: prepared.activityGenerationToken, connectorAction,
+      connectorName: guidedRemovalConnectorName(connectorAction),
       fileAction: fileAction?.kind === 'manual_file_removal' ? fileAction : null }
   }
 

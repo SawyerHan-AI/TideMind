@@ -50,6 +50,10 @@ const REASON_KEY_BY_VALUE: Readonly<Record<string, string>> = {
   release_version_unverified: 'releaseVersionUnverified',
   release_version_not_accepted: 'releaseVersionNotAccepted',
   release_artifact_not_accepted: 'releaseArtifactNotAccepted',
+  source_verification_pending: 'sourceVerificationPending',
+  source_not_official: 'sourceNotOfficial',
+  source_confirmation_required: 'sourceConfirmationRequired',
+  custom_config_owned_by_discovered_host: 'customConfigOwnedByDiscoveredHost',
 }
 
 const EVENT_TITLES: Readonly<Record<string, { key: string; fallback: string }>> = {
@@ -79,7 +83,7 @@ const EVENT_TITLES: Readonly<Record<string, { key: string; fallback: string }>> 
   },
   user_confirmed_guided_removal: {
     key: 'agent.managed.event.userConfirmedGuidedRemoval',
-    fallback: 'Qwen Work removal was confirmed by the user',
+    fallback: 'A guided removal was confirmed by the user',
   },
 }
 
@@ -135,6 +139,28 @@ export function statusReasonKey(reason: string): string {
   return suffix ? `agent.managed.reason.${suffix}` : 'agent.managed.reason.unknown'
 }
 
+/**
+ * Service/IPC failures carry stable reason codes inside their message (IPC wraps
+ * the original Error text). Returns the first known status reason, if any.
+ */
+export function knownReasonCodeIn(message: string): string | null {
+  const match = message.match(/[a-z][a-z0-9]*(?:_[a-z0-9]+)+/g) ?? []
+  return match.find(token => Object.hasOwn(REASON_KEY_BY_VALUE, token)) ?? null
+}
+
+/**
+ * Honest host-side deactivation wording: a stopped bridge or read-back absence
+ * never claims that an already running host has unloaded Tide Mind components.
+ */
+export function deactivationNoticeKey(installation: Pick<ManagedInstallationDto, 'deactivation'>): string | null {
+  const deactivation = installation.deactivation
+  if (!deactivation) return null
+  if (deactivation.hostComponents === 'deactivated_verified') return 'agent.managed.deactivation.deactivatedVerified'
+  if (deactivation.hostComponents === 'awaiting_reload') return 'agent.managed.deactivation.awaitingReload'
+  if (deactivation.bridge === 'stopped') return 'agent.managed.deactivation.bridgeStopped'
+  return null
+}
+
 export function managementUnavailableHelpKey(reason: string): string {
   return reason === 'executable_proof_too_large'
     || reason === 'executable_metadata_unavailable'
@@ -144,6 +170,9 @@ export function managementUnavailableHelpKey(reason: string): string {
     || reason === 'release_version_unverified'
     || reason === 'release_version_not_accepted'
     || reason === 'release_artifact_not_accepted'
+    || reason === 'source_verification_pending'
+    || reason === 'source_not_official'
+    || reason === 'source_confirmation_required'
     ? statusReasonKey(reason)
     : 'agent.managed.supportMode.detectableHelp'
 }
@@ -201,6 +230,7 @@ export function requiredUserActionPresentation(action: string): RequiredUserActi
     codex_hook_trust_binding_unavailable: 'agent.managed.userAction.codexHookTrustUnavailable',
     codex_hook_trust_verification_unavailable: 'agent.managed.userAction.codexHookTrustUnavailable',
     manually_remove_owned_document: 'agent.managed.userAction.manualDocumentRemoval',
+    host_manual_removal_required: 'agent.managed.userAction.hostManualRemoval',
   }
   const exactLabelKey = Object.hasOwn(exact, kind) ? exact[kind] : undefined
   if (exactLabelKey) return { labelKey: exactLabelKey }
@@ -233,6 +263,8 @@ export function requiredUserActionDetailKey(action: AgentIntegrationRequiredUser
       return `${action.kind}:${action.componentKey}:${action.ownedFragmentHash}`
     case 'kimi_instruction_conflict':
       return `${action.kind}:${action.reason}:${action.sourceLabel}:${action.targetLabel}`
+    case 'manual_host_removal':
+      return `${action.kind}:${action.componentKeys.join(',')}:${action.ownershipKey}`
   }
 }
 

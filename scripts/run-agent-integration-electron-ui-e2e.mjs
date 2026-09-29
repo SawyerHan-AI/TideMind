@@ -32,6 +32,7 @@ const tsxBin = path.join(projectRoot, 'node_modules', '.bin', 'tsx')
 const fixtureScript = path.join(scriptDir, 'create-agent-integration-ui-audit-fixture.ts')
 const runnerScript = fileURLToPath(import.meta.url)
 const IS_GUARD_CHILD = process.argv.includes('--real-home-guard-child')
+const MODEL_CATALOG_ONLY = process.argv.includes('--model-catalog-only')
 const KEEP_ROOT = process.argv.includes('--keep') || process.env.TIDEMIND_UI_E2E_KEEP === '1'
 const HARD_TIMEOUT_MS = Number(process.env.TIDEMIND_UI_E2E_TIMEOUT_MS ?? 90_000)
 const RECEIPT_PATH = optionPath('--receipt')
@@ -94,12 +95,17 @@ async function main() {
   hardTimeout.unref()
   try {
     createFixture()
+    if (MODEL_CATALOG_ONLY) seedModelCatalogFixture()
     verifyFrozenCodexFixtureGeneration()
     fixtureBaselineScanAt = readFixtureLastScanAt()
     fs.mkdirSync(artifactsDir)
     fs.mkdirSync(tmpDir)
 
-    ;({ electron, cdp } = await launchAuditElectron())
+    ;({ electron, cdp } = await launchAuditElectron(MODEL_CATALOG_ONLY ? { TIDEMIND_MODEL_UI_AUDIT: '1' } : {}))
+    if (MODEL_CATALOG_ONLY) {
+      await exerciseModelCatalogSelection(cdp)
+      return
+    }
 
     await waitFor(cdp, `(() => document.readyState === 'complete'
     && location.hash.includes('/settings?tab=external&sub=agent')
@@ -219,6 +225,9 @@ async function main() {
     }
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
   } catch (error) {
+    if (MODEL_CATALOG_ONLY && cdp) {
+      try { process.stderr.write(`Model renderer: ${await value(cdp, 'document.body.innerText')}\n`); await screenshot(cdp, path.join(artifactsDir, 'model-failure.png')) } catch {}
+    }
     const suffix = electron ? `\nElectron log tail:\n${captureTail}` : ''
     process.stderr.write(`${error instanceof Error ? error.stack : String(error)}${suffix}\n`)
     // Only the isolated fixture DB is opened; omit paths, plans and payloads.
@@ -314,6 +323,88 @@ async function launchAuditElectron(extraEnvironment = {}) {
   await client.send('Emulation.setFocusEmulationEnabled', { enabled: true })
   await client.send('Page.bringToFront')
   return { electron: child, cdp: client }
+}
+
+function seedModelCatalogFixture() {
+  const db = new Database(dbPath)
+  const now = new Date().toISOString()
+  db.prepare(`INSERT INTO model_connections (id, name, provider_type, credentials, status, created)
+    VALUES ('mc_ui_audit_codex', 'UI Audit Codex', 'codex-cli', '{}', 'untested', ?)`).run(now)
+  db.prepare(`INSERT INTO llm_connection_auth_bindings
+    (connection_id, scope_state, scope_key, auth_epoch, observed_at, epoch_started_at)
+    VALUES ('mc_ui_audit_codex', 'known', 'fixture-account', 1, ?, ?)`).run(now, now)
+  db.prepare(`INSERT INTO llm_model_catalog_snapshots
+    (connection_id, scope_key, auth_epoch, source, items_json, fetched_at)
+    VALUES ('mc_ui_audit_codex', 'fixture-account', 1, 'codex_app_server', ?, ?)`).run(JSON.stringify([
+      { id: 'fixture-future-2099', displayName: 'Future Model 2099', hidden: false, isDefault: true },
+    ]), now)
+  db.close()
+  fs.writeFileSync(path.join(home, '.tidemind', 'config.toml'), `onboarding_completed = true
+language = "zh-CN"
+[llm]
+provider = "codex-cli"
+light_connection = "mc_ui_audit_codex"
+standard_connection = "mc_ui_audit_codex"
+heavy_connection = "mc_ui_audit_codex"
+light_model = "default"
+standard_model = "default"
+heavy_model = "default"
+[embedding]
+provider = "vertex"
+model = "gemini-embedding-001"
+dimensions = 3072
+`)
+}
+
+async function exerciseModelCatalogSelection(client) {
+  await waitFor(client, `document.readyState === 'complete' && document.body.textContent.includes('ZCode')`, 'initial isolated renderer')
+  await waitFor(client, 'Boolean(window.api?.connections?.models)', 'model preload')
+  await client.evaluate(`location.hash = '/settings?tab=model&sub=selection'`)
+  await waitFor(client, `document.body.textContent.includes('UI Audit Codex') && /手动|manually/.test(document.body.textContent)`, 'model selection rendered')
+  const view = await value(client, `window.api.connections.models('mc_ui_audit_codex')`)
+  assert.equal(view.catalog.items[0].id, 'fixture-future-2099')
+  assert.equal(view.inUse.length, 3)
+  assert.equal(view.inUse.every(route => route.modelId === 'default'), true, 'catalog recommendation must not rewrite isolated default selection')
+  assert.equal(await value(client, `/CLI built-in default|CLI 内置默认/.test(document.body.textContent)`), true)
+  assert.equal(view.inUse.every(route => route.admission.allowed), true)
+  await client.evaluate(`Array.from(document.querySelectorAll('button[role="combobox"]')).find(button => /Isolated default|隔离调用默认/.test(button.textContent))?.click()`)
+  await waitFor(client, `Array.from(document.querySelectorAll('[role="option"]')).some(option => option.textContent.includes('Future Model 2099'))`, 'dynamic model option rendered')
+  await client.evaluate(`Array.from(document.querySelectorAll('[role="option"]')).find(option => option.textContent.includes('Future Model 2099'))?.click()`)
+  await waitFor(client, `window.api.config.get().then(config => config.llm.light_model === 'fixture-future-2099')`, 'dynamic model saved')
+  await client.evaluate(`Array.from(document.querySelectorAll('button')).find(button => /手动输入|Enter a model ID manually/.test(button.textContent))?.click()`)
+  await waitFor(client, `Boolean(document.querySelector('input[spellcheck="false"]'))`, 'manual model input')
+  await client.evaluate(`(() => {
+    const input = document.querySelector('input[spellcheck="false"]')
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'fixture-manual-2100')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  await client.evaluate(`Array.from(document.querySelectorAll('button')).find(button => /^(使用|Use)$/.test(button.textContent.trim()))?.click()`)
+  await waitFor(client, `window.api.config.get().then(config => config.llm.light_model === 'fixture-manual-2100')`, 'manual model persisted through IPC')
+  const config = await value(client, 'window.api.config.get()')
+  assert.equal(config.embedding.model, 'gemini-embedding-001')
+  assert.equal(config.embedding.dimensions, 3072)
+  await screenshot(client, path.join(artifactsDir, 'model-selection-manual.png'))
+  const fixtureDb = new Database(dbPath)
+  fixtureDb.prepare("UPDATE llm_connection_auth_bindings SET scope_state = 'unknown' WHERE connection_id = 'mc_ui_audit_codex'").run()
+  fixtureDb.close()
+  await client.evaluate(`location.hash = '/settings?tab=external&sub=agent'`)
+  await waitFor(client, `Boolean(document.querySelector('[data-agent-family-trigger="zcode"]'))`, 'agent source fixture list')
+  await client.evaluate(`document.querySelector('[data-agent-family-trigger="zcode"]')?.click()`)
+  await waitFor(client, `Boolean(document.querySelector('[data-source-state]'))`, 'source verification displayed')
+  const source = await value(client, `(() => { const node = document.querySelector('[data-source-state]'); return {state:node.dataset.sourceState,text:node.textContent} })()`)
+  assert.ok(/source|来源/i.test(source.text))
+  assert.ok(/does not|不代表/.test(source.text), 'source verification must not claim successful host activity')
+  await client.evaluate(`document.querySelector('[data-source-state]')?.scrollIntoView({block:'center'})`)
+  await screenshot(client, path.join(artifactsDir, 'agent-source-verification.png'))
+  await client.evaluate(`location.hash = '/settings?tab=model&sub=selection'`)
+  await waitFor(client, `/background calls paused|后台调用暂停/.test(document.body.textContent)`, 'unknown account blocks background in real UI')
+  const blocked = await value(client, `window.api.connections.models('mc_ui_audit_codex')`)
+  assert.equal(blocked.inUse.every(route => !route.admission.allowed && route.admission.reason === 'scope_unknown'), true)
+  await screenshot(client, path.join(artifactsDir, 'model-scope-unknown.png'))
+  const report = { kind: 'isolated-model-selection-ui', root, rendererPreloadIpcDb: true, dynamicCatalog: true,
+    manualModelPersisted: true, embeddingUnchanged: true, unknownAccountPaused: true, sourceVerification: source.state, providerExecution: false }
+  fs.writeFileSync(path.join(root, 'model-ui-report.json'), JSON.stringify(report, null, 2))
+  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
 }
 
 async function exerciseReleasePolicyBanner(artifactRoot) {
