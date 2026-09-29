@@ -12,110 +12,31 @@ function sha256Text(value) {
 
 function maskNonCode(source) {
   if (source === lastMaskedSource) return lastMaskedCode
-  const result = []
-  let state = 'code'
-  let escaped = false
-  let regexCharacterClass = false
-  let previousSignificant = null
-  // A template can contain executable interpolation with nested strings or
-  // templates. Keep all of it masked, but follow its braces so the closing
-  // backtick cannot mask later top-level declarations in the bundled app.
-  const templateFrames = []
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index]
-    const next = source[index + 1]
-    if (state === 'template') {
-      result.push(character === '\n' ? '\n' : ' ')
-      if (escaped) escaped = false
-      else if (character === '\\') escaped = true
-      else if (character === '$' && next === '{') {
-        result.push(' ')
-        index += 1
-        const frame = templateFrames.at(-1)
-        frame.inExpression = true
-        frame.braceDepth = 0
-        state = 'code'
-        previousSignificant = null
-      } else if (character === '`') {
-        templateFrames.pop()
-        state = 'code'
-        previousSignificant = 'value'
-      }
-      continue
+  const parsed = ts.createSourceFile('release-contract.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const result = source.split('')
+  const blank = (start, end) => {
+    for (let index = start; index < end; index += 1) {
+      if (source[index] !== '\n' && source[index] !== '\r') result[index] = ' '
     }
-    if (state === 'line_comment') {
-      if (character === '\n') {
-        state = 'code'
-        result.push('\n')
-      } else result.push(' ')
-      continue
+  }
+  // Regex-vs-division and nested template interpolation require a real parser.
+  // A character heuristic misclassified regexes after `return` in real bundles
+  // and hid every declaration following them. Parse only; never evaluate code.
+  const visit = node => {
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)
+      || ts.isTemplateExpression(node) || ts.isRegularExpressionLiteral(node)) {
+      blank(node.getStart(parsed), node.end)
+      return
     }
-    if (state === 'block_comment') {
-      if (character === '*' && next === '/') {
-        result.push('  ')
-        index += 1
-        state = 'code'
-      } else result.push(character === '\n' ? '\n' : ' ')
-      continue
-    }
-    if (state === 'regex') {
-      result.push(character === '\n' ? '\n' : ' ')
-      if (escaped) escaped = false
-      else if (character === '\\') escaped = true
-      else if (character === '[') regexCharacterClass = true
-      else if (character === ']') regexCharacterClass = false
-      else if (character === '/' && !regexCharacterClass) {
-        state = 'code'
-        previousSignificant = 'value'
-      }
-      continue
-    }
-    if (state !== 'code') {
-      result.push(character === '\n' ? '\n' : ' ')
-      if (escaped) escaped = false
-      else if (character === '\\') escaped = true
-      else if ((state === 'single' && character === "'")
-        || (state === 'double' && character === '"')) {
-        state = 'code'
-        previousSignificant = 'value'
-      }
-      continue
-    }
-    const templateExpression = templateFrames.at(-1)
-    if (character === '}' && templateExpression?.inExpression && templateExpression.braceDepth === 0) {
-      result.push(' ')
-      templateExpression.inExpression = false
-      state = 'template'
-      continue
-    }
-    if (character === '{' && templateExpression?.inExpression) templateExpression.braceDepth += 1
-    if (character === '}' && templateExpression?.inExpression) templateExpression.braceDepth -= 1
-    if (character === '/' && next === '/') {
-      result.push('  ')
-      index += 1
-      state = 'line_comment'
-    } else if (character === '/' && next === '*') {
-      result.push('  ')
-      index += 1
-      state = 'block_comment'
-    } else if (character === '/'
-      && (previousSignificant === null || /[([{,:;=!?&|+*%^~<>-]/u.test(previousSignificant))) {
-      result.push(' ')
-      state = 'regex'
-      regexCharacterClass = false
-    } else if (character === "'") {
-      result.push(' ')
-      state = 'single'
-    } else if (character === '"') {
-      result.push(' ')
-      state = 'double'
-    } else if (character === '`') {
-      result.push(' ')
-      templateFrames.push({ inExpression: false, braceDepth: 0 })
-      state = 'template'
-    } else {
-      result.push(templateExpression ? (character === '\n' ? '\n' : ' ') : character)
-      if (!/\s/u.test(character)) previousSignificant = character
+    ts.forEachChild(node, visit)
+  }
+  visit(parsed)
+  // Literals are already blank, so comment-like bytes inside a regex/string
+  // cannot confuse this trivia pass. Preserve UTF-16 offsets into original text.
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, result.join(''))
+  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+    if (token === ts.SyntaxKind.SingleLineCommentTrivia || token === ts.SyntaxKind.MultiLineCommentTrivia) {
+      blank(scanner.getTokenPos(), scanner.getTextPos())
     }
   }
   const masked = result.join('')
@@ -191,23 +112,11 @@ export function uniqueFunctionBody(source, marker, label) {
 }
 
 function contentsFromOpeningDelimiter(source, openIndex, open, close, label) {
+  const masked = maskNonCode(source)
   let depth = 1
-  let quote = null
-  let escaped = false
-  for (let index = openIndex + 1; index < source.length; index += 1) {
-    const character = source[index]
-    if (quote !== null) {
-      if (escaped) escaped = false
-      else if (character === '\\') escaped = true
-      else if (character === quote) quote = null
-      continue
-    }
-    if (character === "'" || character === '"' || character === '`') {
-      quote = character
-      continue
-    }
-    if (character === open) depth += 1
-    else if (character === close) {
+  for (let index = openIndex + 1; index < masked.length; index += 1) {
+    if (masked[index] === open) depth += 1
+    else if (masked[index] === close) {
       depth -= 1
       if (depth === 0) return source.slice(openIndex + 1, index)
     }

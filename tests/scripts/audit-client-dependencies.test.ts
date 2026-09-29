@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   allowedVulnerability,
+  assertReviewedElectronVersion,
   assertExpectedRouterVersions,
   assertPatchedBraceVersions,
   containsRscUsage,
@@ -69,4 +70,10 @@ describe('client dependency audit exceptions', () => {
     };
     expect(() => validateAuditReport(report, safeLock, 'client/src')).toThrow(/new-package/);
   });
+});
+
+it('rejects the vulnerable Electron runtime even when the registry audit feed is empty', () => {
+  expect(() => assertReviewedElectronVersion({ packages: { 'node_modules/electron': { version: '41.10.5' } } })).toThrow(/security review/);
+  expect(() => assertReviewedElectronVersion({ packages: { 'node_modules/electron': { version: '41.10.7' } } })).not.toThrow();
+  expect(() => assertReviewedElectronVersion({ packages: {} })).toThrow(/missing/);
 });

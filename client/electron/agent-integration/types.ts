@@ -174,6 +174,10 @@ export type StatusReason =
   | 'release_version_unverified'
   | 'release_version_not_accepted'
   | 'release_artifact_not_accepted'
+  | 'source_verification_pending'
+  | 'source_not_official'
+  | 'source_confirmation_required'
+  | 'custom_config_owned_by_discovered_host'
 
 export type MutationDomainKind =
   | 'file_fragment'
@@ -399,7 +403,7 @@ export interface HostActivityEvidenceReader {
 export interface GuidedRemovalEvidenceQuery {
   installationId: string
   agentId: string
-  hostVariant: 'qwenwork-desktop' | 'custom-local-mcp'
+  hostVariant: 'qwenwork-desktop' | 'custom-local-mcp' | 'claude-cowork-local'
   componentKey: 'memory_tools'
   activationRunId: string
   activityGenerationToken: string

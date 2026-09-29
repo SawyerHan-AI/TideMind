@@ -43,12 +43,27 @@ export type InstallationIdentityMatch =
   | { kind: 'ambiguous'; candidates: readonly InstallationIdentityRecord[]; reason: string }
   | { kind: 'distribution_conflict'; candidates: readonly InstallationIdentityRecord[]; reason: string }
 
+export const EXACT_INSTALL_KEY_DISTRIBUTION_CONFLICT_REASON =
+  'Exact install key has conflicting distribution provenance.'
+
 const STRONG_DISTRIBUTION_FIELDS = [
   'distributionId',
   'executableRealpath',
   'packageProvenance',
   'capabilityFingerprint',
 ] as const satisfies readonly (keyof DistributionIdentity)[]
+
+/**
+ * Fields whose disagreement means a *different source* at the same install key.
+ * executableRealpath (versioned native paths) and capabilityFingerprint (CDHash,
+ * Info.plist inode, ...) change on every normal host upgrade: they identify the
+ * generation, not the Installation (design §3.1). A replaced or unofficial binary is
+ * still caught because discovery then reports a different provenance/distribution.
+ */
+const SOURCE_IDENTITY_FIELDS = [
+  'distributionId',
+  'packageProvenance',
+] as const satisfies readonly (typeof STRONG_DISTRIBUTION_FIELDS)[number][]
 
 function normalizeRequiredSegment(value: string, label: string): string {
   const normalized = value.trim().normalize('NFC')
@@ -241,18 +256,26 @@ export function assessDistributionIdentity(
   expected?: DistributionIdentity,
   requiresStrongIdentity = false,
 ): DistributionIdentityAssessment {
-  const piOfficialScopeMigration = expected
-    ? equivalentPiOfficialDistribution(observed, expected)
-    : false
   const missingFields = requiresStrongIdentity
     ? STRONG_DISTRIBUTION_FIELDS.filter(field => !observed[field])
     : []
+  // Without a source identity on both sides (legacy/incomplete records) an executable
+  // or code-fingerprint change cannot be told apart from a replacement: stay strict.
+  // Provenance is the verified source claim (signature/npm owner); a bare
+  // distributionId alone is not enough to relax executable/code-fingerprint checks.
+  const sourceIdentityKnown = Boolean(
+    expected
+    && expected.packageProvenance
+    && observed.packageProvenance,
+  )
+  const conflictFields: readonly (typeof STRONG_DISTRIBUTION_FIELDS)[number][] = sourceIdentityKnown
+    ? SOURCE_IDENTITY_FIELDS
+    : STRONG_DISTRIBUTION_FIELDS
   const conflictingFields = expected
-    ? STRONG_DISTRIBUTION_FIELDS.filter(field =>
+    ? conflictFields.filter(field =>
       Boolean(observed[field])
       && Boolean(expected[field])
-      && !equivalentDistributionField(field, observed[field]!, expected[field]!)
-      && !(field === 'executableRealpath' && piOfficialScopeMigration),
+      && !equivalentDistributionField(field, observed[field]!, expected[field]!),
     )
     : []
 
@@ -273,31 +296,6 @@ const PI_OFFICIAL_PACKAGE_PROVENANCE = new Set([
   'npm_metadata:@mariozechner/pi-coding-agent',
   'npm_metadata:@earendil-works/pi-coding-agent',
 ])
-
-function piOfficialPackage(distribution: DistributionIdentity): string | undefined {
-  const provenance = distribution.packageProvenance
-  if (!provenance || !PI_OFFICIAL_PACKAGE_PROVENANCE.has(provenance)) return undefined
-  const packageName = provenance.slice('npm_metadata:'.length)
-  if (distribution.distributionId !== `pi-official:${packageName}`) return undefined
-  return packageName
-}
-
-function executableBelongsToPackage(executableRealpath: string, packageName: string): boolean {
-  return executableRealpath.includes(`/node_modules/${packageName}/`)
-}
-
-function equivalentPiOfficialDistribution(
-  observed: DistributionIdentity,
-  expected: DistributionIdentity,
-): boolean {
-  const observedPackage = piOfficialPackage(observed)
-  const expectedPackage = piOfficialPackage(expected)
-  if (!observedPackage || !expectedPackage) return false
-  if (observed.capabilityFingerprint !== expected.capabilityFingerprint) return false
-  if (!observed.executableRealpath || !expected.executableRealpath) return false
-  return executableBelongsToPackage(observed.executableRealpath, observedPackage)
-    && executableBelongsToPackage(expected.executableRealpath, expectedPackage)
-}
 
 function equivalentDistributionField(
   field: (typeof STRONG_DISTRIBUTION_FIELDS)[number],
@@ -365,7 +363,7 @@ export function matchInstallationIdentity(
     return { kind: 'matched', record: exactCompatible[0], reason: 'install_key' }
   }
   if (exact.length > 0 && exactCompatible.length === 0) {
-    return { kind: 'distribution_conflict', candidates: exact, reason: 'Exact install key has conflicting distribution provenance.' }
+    return { kind: 'distribution_conflict', candidates: exact, reason: EXACT_INSTALL_KEY_DISTRIBUTION_CONFLICT_REASON }
   }
   const legacyInstallKey = buildLegacyInstallKey(observed)
   const componentRootEnrichment = scoped.filter(record =>

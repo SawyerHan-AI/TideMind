@@ -23,6 +23,8 @@ export type LLMConnectionErrorKind =
   | 'quota'
   | 'rate_limit'
   | 'model_unavailable'
+  | 'model_mismatch'
+  | 'scope_unknown'
   | 'permission_policy'
   | 'timeout'
   | 'aborted'
@@ -271,7 +273,10 @@ export function recordConnectionSuccess(
 }
 
 function shouldIgnoreFailure(kind: LLMConnectionErrorKind): boolean {
-  return kind === 'aborted' || kind === 'capacity' || kind === 'model_unavailable';
+  // Model-level outcomes belong to per-model observations / route faults, not to the
+  // connection circuit (design §7.2): one unused or rejected model must not open it.
+  return kind === 'aborted' || kind === 'capacity' || kind === 'model_unavailable'
+    || kind === 'model_mismatch';
 }
 
 function isPermanent(kind: LLMConnectionErrorKind): boolean {
@@ -279,6 +284,7 @@ function isPermanent(kind: LLMConnectionErrorKind): boolean {
     || kind === 'unsupported_version'
     || kind === 'not_authenticated'
     || kind === 'wrong_auth_method'
+    || kind === 'scope_unknown'
     || kind === 'permission_policy'
     || kind === 'protocol'
     || kind === 'capability'

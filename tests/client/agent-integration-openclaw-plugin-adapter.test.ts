@@ -347,9 +347,66 @@ describe('OpenClaw native Plugin adapter', () => {
       ownedArtifacts: aggregateBaselines(connected.mutations[0]),
     })
     expect(disconnect.mutations).toHaveLength(1)
+    expect(disconnect.mutations[0].metadata).toMatchObject({
+      unsetPermissionKeys: ['allowPromptInjection', 'allowConversationAccess'],
+    })
     await adapter.apply(context, disconnect.mutations[0])
-    expect(fake.calls.filter(call => ['uninstall', 'restart'].includes(call.args[1] ?? '')).map(call => call.args[1])).toEqual(['uninstall', 'restart'])
+    // This fake host keeps plugins.entries.<id> after uninstall, so the two
+    // Tide Mind-set permissions are unset explicitly before the restart.
+    expect(fake.calls.filter(call => ['uninstall', 'unset', 'restart'].includes(call.args[1] ?? '')).map(call => call.args.slice(1, 3).join(' ')))
+      .toEqual([
+        'uninstall tidemind-eb-openclaw-1234',
+        'unset plugins.entries.tidemind-eb-openclaw-1234.hooks.allowPromptInjection',
+        'unset plugins.entries.tidemind-eb-openclaw-1234.hooks.allowConversationAccess',
+        'restart --safe',
+      ])
+    const config = JSON.parse(fs.readFileSync(context.installation.componentConfigFiles?.memory_tools
+      ?? path.join(context.installation.canonicalConfigRoot, 'openclaw.json'), 'utf8'))
+    expect(config.plugins.entries['tidemind-eb-openclaw-1234'].hooks).toEqual({})
     expect(await adapter.readBack(context, disconnect.mutations[0])).toMatchObject({ matchesDesired: true, visibility: 'absent' })
+  })
+
+  it('does not run config unset when the host uninstall already dropped the plugin entry', async () => {
+    const adapter = createOpenClawPluginHostAdapter({ adapterVersion: '1', dependencies: fake.dependencies })
+    const connected = await connectPlan()
+    await adapter.apply(context, connected.mutations[0])
+    fake.state.uninstallDropsEntry = true
+    fake.calls.length = 0
+    const disconnect = await adapter.disconnect(context, {
+      componentKeys: ['instruction', 'memory_tools', 'lifecycle'],
+      observed: await adapter.inspect(context),
+      ownedArtifacts: aggregateBaselines(connected.mutations[0]),
+    })
+    const receipt = await adapter.apply(context, disconnect.mutations[0])
+    expect(fake.calls.some(call => call.args[1] === 'unset')).toBe(false)
+    expect(receipt.hostReceipt).toMatchObject({ promptPermissionsUnset: [], promptPermissionsRetained: [] })
+  })
+
+  it('keeps a permission the user changed after planning and reports it', async () => {
+    const adapter = createOpenClawPluginHostAdapter({ adapterVersion: '1', dependencies: fake.dependencies })
+    const connected = await connectPlan()
+    await adapter.apply(context, connected.mutations[0])
+    const disconnect = await adapter.disconnect(context, {
+      componentKeys: ['instruction', 'memory_tools', 'lifecycle'],
+      observed: await adapter.inspect(context),
+      ownedArtifacts: aggregateBaselines(connected.mutations[0]),
+    })
+    fake.state.afterUninstall = configPath => {
+      const document = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+      document.plugins.entries['tidemind-eb-openclaw-1234'].hooks.allowConversationAccess = false
+      fs.writeFileSync(configPath, JSON.stringify(document))
+    }
+    fake.calls.length = 0
+    const receipt = await adapter.apply(context, disconnect.mutations[0])
+    expect(fake.calls.filter(call => call.args[1] === 'unset').map(call => call.args[2]))
+      .toEqual(['plugins.entries.tidemind-eb-openclaw-1234.hooks.allowPromptInjection'])
+    expect(receipt.hostReceipt).toMatchObject({
+      promptPermissionsUnset: ['allowPromptInjection'],
+      promptPermissionsRetained: ['allowConversationAccess'],
+    })
+    const config = JSON.parse(fs.readFileSync(context.installation.componentConfigFiles?.memory_tools
+      ?? path.join(context.installation.canonicalConfigRoot, 'openclaw.json'), 'utf8'))
+    expect(config.plugins.entries['tidemind-eb-openclaw-1234'].hooks).toEqual({ allowConversationAccess: false })
   })
 
   it('does not claim C4 from static inspect and requires fresh version-bound tool and lifecycle activity', async () => {
@@ -503,10 +560,24 @@ function aggregateBaselines(mutation: { physicalTarget: string; ownershipKey: st
 
 function fakeOpenClaw(context: AdapterOperationContext): {
   dependencies: OpenClawPluginAdapterDependencies
-  state: { installed: boolean; enabled: boolean; root: string; version: string }
+  state: {
+    installed: boolean
+    enabled: boolean
+    root: string
+    version: string
+    uninstallDropsEntry: boolean
+    afterUninstall?: (configPath: string) => void
+  }
   calls: Array<{ executable: string; args: string[]; env: Readonly<Record<string, string>> }>
 } {
-  const state = { installed: false, enabled: false, root: '', version: '' }
+  const state: {
+    installed: boolean
+    enabled: boolean
+    root: string
+    version: string
+    uninstallDropsEntry: boolean
+    afterUninstall?: (configPath: string) => void
+  } = { installed: false, enabled: false, root: '', version: '', uninstallDropsEntry: false }
   const calls: Array<{ executable: string; args: string[]; env: Readonly<Record<string, string>> }> = []
   const dependencies: OpenClawPluginAdapterDependencies = {
     async run(executable, args, options) {
@@ -538,7 +609,33 @@ function fakeOpenClaw(context: AdapterOperationContext): {
         fs.writeFileSync(target, JSON.stringify(document))
         return success('{}')
       }
-      if (args[0] === 'plugins' && args[1] === 'uninstall') { state.installed = false; state.enabled = false; return success('{}') }
+      if (args[0] === 'config' && args[1] === 'unset') {
+        const target = options.env.OPENCLAW_CONFIG_PATH
+        const document = fs.existsSync(target) ? JSON.parse(fs.readFileSync(target, 'utf8')) : {}
+        const segments = args[2].split('.')
+        let cursor = document
+        for (const segment of segments.slice(0, -1)) {
+          cursor = cursor?.[segment]
+          if (!cursor || typeof cursor !== 'object') return failure(`Config path not found: ${args[2]}`)
+        }
+        if (!Object.hasOwn(cursor, segments.at(-1)!)) return failure(`Config path not found: ${args[2]}`)
+        delete cursor[segments.at(-1)!]
+        fs.writeFileSync(target, JSON.stringify(document))
+        return success('{}')
+      }
+      if (args[0] === 'plugins' && args[1] === 'uninstall') {
+        state.installed = false
+        state.enabled = false
+        const target = options.env.OPENCLAW_CONFIG_PATH
+        if (state.uninstallDropsEntry && fs.existsSync(target)) {
+          // OpenClaw 2026.8.x removes plugins.entries.<id> as part of uninstall.
+          const document = JSON.parse(fs.readFileSync(target, 'utf8'))
+          delete document.plugins?.entries?.[args[2]]
+          fs.writeFileSync(target, JSON.stringify(document))
+        }
+        state.afterUninstall?.(target)
+        return success('{}')
+      }
       if (args[0] === 'gateway' && args[1] === 'restart') return success(JSON.stringify({ ok: true }))
       return failure('unexpected command')
     },

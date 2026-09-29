@@ -934,3 +934,259 @@ describe('passive Agent CLI version inspection', () => {
     expect(fakeUv.verifiedPackageProvenance).toBeUndefined()
   })
 })
+
+describe('lockless npm install surface (no hidden lockfile, e.g. npm install -g)', () => {
+  const IO_TIMEOUT = 30_000
+  const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex')
+
+  function writeFiles(packageRoot: string, files: Record<string, { data: string; mode?: number }>) {
+    for (const [relative, file] of Object.entries(files)) {
+      const target = path.join(packageRoot, ...relative.split('/'))
+      fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o755 })
+      fs.writeFileSync(target, file.data, { mode: file.mode ?? 0o644 })
+      fs.chmodSync(target, file.mode ?? 0o644)
+    }
+  }
+
+  function tempPrefix(label: string) {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `agent-lockless-${label}-`)))
+    fs.chmodSync(root, 0o755)
+    const nodeModules = path.join(root, 'lib', 'node_modules')
+    fs.mkdirSync(nodeModules, { recursive: true, mode: 0o755 })
+    return { root, nodeModules }
+  }
+
+  it('produces the distinct integrity-free single-package surface only when no lock describes the package', async () => {
+    const { root, nodeModules } = tempPrefix('single')
+    const packageName = '@google/gemini-cli'
+    const version = '0.39.1'
+    const packageRoot = path.join(nodeModules, '@google', 'gemini-cli')
+    const executable = path.join(packageRoot, 'bundle', 'gemini.js')
+    writeFiles(packageRoot, {
+      'package.json': { data: JSON.stringify({ name: packageName, version, bin: { gemini: 'bundle/gemini.js' } }) },
+      'bundle/gemini.js': { data: '#!/usr/bin/env node\nimport("./chunk.js")\n', mode: 0o755 },
+      'bundle/chunk.js': { data: 'export default "星海科技"\n' },
+      'node_modules/@lydell/node-pty/index.js': { data: 'optional dependency v1\n' },
+    })
+    try {
+      const first = await inspectPassiveCliVersionForArchitecture(executable, physicalPort(), 'arm64')
+      expect(first).toMatchObject({
+        exitCode: 0,
+        stdout: version,
+        verifiedPackageProvenance: `npm_metadata:${packageName}`,
+        portableArtifactFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      })
+      expect(first.packageProofNodes?.some(node => node.role === 'npm_install_lock')).toBe(false)
+      expect(first.packageProofNodes).toContainEqual(expect.objectContaining({ role: 'npm_package_executable', path: executable }))
+      // Schema definition: owned tree + executable, no registry integrity.
+      const tree = await readStablePackageTree(packageRoot)
+      const executableBytes = fs.readFileSync(executable)
+      expect(first.portableArtifactFingerprint).toBe(sha256(JSON.stringify({
+        schema: 'npm-owned-package-surface-lockless-v1',
+        version,
+        packageName,
+        executable: {
+          relativePath: 'bundle/gemini.js',
+          sha256: sha256(executableBytes),
+          sizeBytes: executableBytes.length,
+          executable: true,
+        },
+        ownedPackageSha256: tree.packageTreeSha256,
+        ownedEntryCount: tree.ownedEntryCount,
+        ownedTotalBytes: tree.ownedTotalBytes,
+      })))
+      expect(first.packageTreeSha256).toBe(tree.packageTreeSha256)
+
+      // Dependencies below node_modules are not part of the package identity.
+      fs.writeFileSync(path.join(packageRoot, 'node_modules', '@lydell', 'node-pty', 'index.js'), 'optional dependency v2\n')
+      expect((await inspectPassiveCliVersionForArchitecture(executable, physicalPort(), 'arm64')).portableArtifactFingerprint)
+        .toBe(first.portableArtifactFingerprint)
+
+      // A valid hidden lockfile that does not describe the package keeps the lockless surface.
+      const lockPath = path.join(nodeModules, '.package-lock.json')
+      fs.writeFileSync(lockPath, JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/other': { version: '1.0.0' } } }), { mode: 0o644 })
+      expect((await inspectPassiveCliVersionForArchitecture(executable, physicalPort(), 'arm64')).portableArtifactFingerprint)
+        .toBe(first.portableArtifactFingerprint)
+
+      // With registry integrity the locked (receipt) schema is produced instead: never equal.
+      fs.writeFileSync(lockPath, JSON.stringify({
+        lockfileVersion: 3,
+        packages: { [`node_modules/${packageName}`]: { version, integrity: 'sha512-ZGF0YXBpbG90' } },
+      }), { mode: 0o644 })
+      const locked = await inspectPassiveCliVersionForArchitecture(executable, physicalPort(), 'arm64')
+      expect(locked.portableArtifactFingerprint).toMatch(/^[a-f0-9]{64}$/u)
+      expect(locked.portableArtifactFingerprint).not.toBe(first.portableArtifactFingerprint)
+      expect(locked.packageProofNodes?.some(node => node.role === 'npm_install_lock')).toBe(true)
+      // An entry without integrity is not lockless: it stays manifest-only (unchanged behavior).
+      fs.writeFileSync(lockPath, JSON.stringify({
+        lockfileVersion: 3, packages: { [`node_modules/${packageName}`]: { version } },
+      }), { mode: 0o644 })
+      expect((await inspectPassiveCliVersionForArchitecture(executable, physicalPort(), 'arm64')).portableArtifactFingerprint)
+        .toBeUndefined()
+      // An unreadable lock never falls back to the lockless surface.
+      fs.writeFileSync(lockPath, '{not json', { mode: 0o644 })
+      expect((await inspectPassiveCliVersionForArchitecture(executable, physicalPort(), 'arm64')).portableArtifactFingerprint)
+        .toBeUndefined()
+      fs.unlinkSync(lockPath)
+
+      // Owned content tampering changes the lockless surface.
+      fs.writeFileSync(path.join(packageRoot, 'bundle', 'chunk.js'), 'export default "tampered"\n')
+      const tampered = await inspectPassiveCliVersionForArchitecture(executable, physicalPort(), 'arm64')
+      expect(tampered.portableArtifactFingerprint).toMatch(/^[a-f0-9]{64}$/u)
+      expect(tampered.portableArtifactFingerprint).not.toBe(first.portableArtifactFingerprint)
+
+      // Unsafe ownership/permissions still fail closed.
+      fs.chmodSync(path.join(packageRoot, 'bundle', 'chunk.js'), 0o666)
+      expect((await inspectPassiveCliVersionForArchitecture(executable, physicalPort(), 'arm64')).portableArtifactFingerprint)
+        .toBeUndefined()
+      fs.chmodSync(path.join(packageRoot, 'bundle', 'chunk.js'), 0o644)
+      fs.chmodSync(executable, 0o644)
+      expect((await inspectPassiveCliVersionForArchitecture(executable, physicalPort(), 'arm64')).portableArtifactFingerprint)
+        .toBeUndefined()
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }, IO_TIMEOUT)
+
+  describe('composed Codex-style platform package', () => {
+    const packageName = '@openai/codex'
+    const leafName = '@openai/codex-darwin-arm64'
+    const version = '0.156.1'
+    const leafFiles = (native = 'native codex for DataPilot\n') => ({
+      'package.json': { data: JSON.stringify({ name: packageName, version: `${version}-darwin-arm64`, os: ['darwin'], cpu: ['arm64'] }) },
+      'vendor/aarch64-apple-darwin/bin/codex': { data: native, mode: 0o755 },
+      'vendor/aarch64-apple-darwin/codex-resources/zsh/bin/zsh': { data: 'zsh\n', mode: 0o755 },
+    })
+
+    function writeCodex(layout: 'nested' | 'hoisted', options: { leafVersion?: string; native?: string } = {}) {
+      const prefix = tempPrefix(`codex-${layout}`)
+      const packageRoot = path.join(prefix.nodeModules, '@openai', 'codex')
+      writeFiles(packageRoot, {
+        'package.json': { data: JSON.stringify({ name: packageName, version, bin: { codex: 'bin/codex.js' } }) },
+        'bin/codex.js': { data: '#!/usr/bin/env node\n// selects the platform leaf\n', mode: 0o755 },
+      })
+      const leafRoot = layout === 'nested'
+        ? path.join(packageRoot, 'node_modules', '@openai', 'codex-darwin-arm64')
+        : path.join(prefix.nodeModules, '@openai', 'codex-darwin-arm64')
+      const files = leafFiles(options.native)
+      if (options.leafVersion) {
+        files['package.json'].data = JSON.stringify({ name: packageName, version: options.leafVersion, os: ['darwin'], cpu: ['arm64'] })
+      }
+      writeFiles(leafRoot, files)
+      return { ...prefix, packageRoot, leafRoot, executable: path.join(packageRoot, 'bin', 'codex.js') }
+    }
+
+    const inspect = (executable: string) => inspectPassiveCliVersionForArchitecture(executable, physicalPort(), 'arm64')
+
+    it('binds the nested and hoisted npm layouts to one integrity-free composed surface', async () => {
+      const nested = writeCodex('nested')
+      const hoisted = writeCodex('hoisted')
+      try {
+        const fromNested = await inspect(nested.executable)
+        const fromHoisted = await inspect(hoisted.executable)
+        expect(fromNested).toMatchObject({
+          exitCode: 0,
+          stdout: version,
+          verifiedPackageProvenance: `npm_metadata:${packageName}`,
+          portableArtifactFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
+          npmComposition: {
+            entryRule: 'js_wrapper_selects_platform_binary_v1',
+            components: [expect.objectContaining({
+              role: 'platform_leaf',
+              installName: leafName,
+              manifestName: packageName,
+              version: `${version}-darwin-arm64`,
+              nativeExecutableRelativePath: 'vendor/aarch64-apple-darwin/bin/codex',
+              nativeExecutableSha256: sha256('native codex for DataPilot\n'),
+            })],
+          },
+        })
+        expect(fromNested.npmComposition?.components.every(component => !('integrity' in component))).toBe(true)
+        expect(fromNested.packageProofNodes?.some(node => node.role === 'npm_install_lock')).toBe(false)
+        expect(fromNested.packageProofNodes).toContainEqual(expect.objectContaining({
+          role: 'npm_component_native_executable',
+          path: path.join(nested.leafRoot, 'vendor', 'aarch64-apple-darwin', 'bin', 'codex'),
+        }))
+        // Layout is npm's placement choice, not content: both prove the same surface.
+        expect(fromHoisted.portableArtifactFingerprint).toBe(fromNested.portableArtifactFingerprint)
+        expect(fromHoisted.packageMetadataFingerprint).not.toBe(fromNested.packageMetadataFingerprint)
+
+        // Schema definition of the composed lockless surface.
+        const rootTree = await readStablePackageTree(nested.packageRoot)
+        const leafTree = await readStablePackageTree(nested.leafRoot)
+        const entry = fs.readFileSync(nested.executable)
+        const native = Buffer.from('native codex for DataPilot\n')
+        expect(fromNested.portableArtifactFingerprint).toBe(sha256(JSON.stringify({
+          schema: 'npm-composed-platform-surface-lockless-v1',
+          version,
+          packageName,
+          executable: { relativePath: 'bin/codex.js', sha256: sha256(entry), sizeBytes: entry.length, executable: true },
+          ownedPackageSha256: rootTree.packageTreeSha256,
+          ownedEntryCount: rootTree.ownedEntryCount,
+          ownedTotalBytes: rootTree.ownedTotalBytes,
+          entryRule: 'js_wrapper_selects_platform_binary_v1',
+          components: [{
+            role: 'platform_leaf',
+            installName: leafName,
+            manifestName: packageName,
+            version: `${version}-darwin-arm64`,
+            ownedPackageSha256: leafTree.packageTreeSha256,
+            ownedEntryCount: leafTree.ownedEntryCount,
+            ownedTotalBytes: leafTree.ownedTotalBytes,
+            nativeExecutableRelativePath: 'vendor/aarch64-apple-darwin/bin/codex',
+            nativeExecutableSha256: sha256(native),
+            nativeExecutableSizeBytes: native.length,
+          }],
+        })))
+
+        // Any change of the leaf's owned files changes the surface.
+        fs.writeFileSync(path.join(nested.leafRoot, 'vendor', 'aarch64-apple-darwin', 'bin', 'codex'), 'patched native\n')
+        const tampered = await inspect(nested.executable)
+        expect(tampered.portableArtifactFingerprint).toMatch(/^[a-f0-9]{64}$/u)
+        expect(tampered.portableArtifactFingerprint).not.toBe(fromNested.portableArtifactFingerprint)
+      } finally {
+        fs.rmSync(nested.root, { recursive: true, force: true })
+        fs.rmSync(hoisted.root, { recursive: true, force: true })
+      }
+    }, IO_TIMEOUT)
+
+    it('fails closed for ambiguous, shadowed, linked, unsafe or off-topology leaves', async () => {
+      const cases: Array<[string, (install: ReturnType<typeof writeCodex>) => void, Parameters<typeof writeCodex>[1]?]> = [
+        ['both layouts present', install => {
+          writeFiles(path.join(install.nodeModules, '@openai', 'codex-darwin-arm64'), leafFiles())
+        }],
+        ['shadowed on the Node lookup chain', install => {
+          writeFiles(path.join(install.packageRoot, 'bin', 'node_modules', '@openai', 'codex-darwin-arm64'), leafFiles('shadow\n'))
+        }],
+        ['symlinked leaf', install => {
+          const target = path.join(install.root, 'elsewhere')
+          fs.renameSync(install.leafRoot, target)
+          fs.symlinkSync(target, install.leafRoot)
+        }],
+        ['group-writable nested node_modules', install => {
+          fs.chmodSync(path.join(install.packageRoot, 'node_modules'), 0o775)
+        }],
+        ['missing leaf', install => {
+          fs.rmSync(install.leafRoot, { recursive: true, force: true })
+        }],
+        ['leaf version off topology', () => undefined, { leafVersion: '0.156.0-darwin-arm64' }],
+        ['non-executable native', install => {
+          fs.chmodSync(path.join(install.leafRoot, 'vendor', 'aarch64-apple-darwin', 'bin', 'codex'), 0o644)
+        }],
+      ]
+      for (const [label, mutate, options] of cases) {
+        const install = writeCodex('nested', options)
+        try {
+          mutate(install)
+          const result = await inspect(install.executable)
+          expect(result.exitCode, label).toBe(0)
+          expect(result.portableArtifactFingerprint, label).toBeUndefined()
+          expect(result.npmComposition, label).toBeUndefined()
+          expect(result.packageProofNodes, label).toHaveLength(1)
+        } finally {
+          fs.rmSync(install.root, { recursive: true, force: true })
+        }
+      }
+    }, IO_TIMEOUT)
+  })
+})

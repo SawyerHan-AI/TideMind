@@ -31,6 +31,7 @@ import { writeHookOutput as outputHook, writeHookOutputBeforeEvidence } from './
 import { hasSessionMarker, createSessionMarker } from './hook-once-session.js';
 import { getTideMindVersion } from './utils/app-version.js';
 import { matchesExpectedInstructionSha256 } from './agent-integration-recognition.js';
+import { hookBridgeRejection } from './hook-bridge-guard.js';
 
 /**
  * 异步读取 stdin JSON payload（Codex 0.120+ 会传 `session_start_reason` 等字段）。
@@ -220,6 +221,15 @@ async function main(): Promise<void> {
   // 降级为不过滤、照常注入(重复注入比丢上下文好)。
   const sessionId = typeof stdinPayload?.session_id === 'string' ? stdinPayload.session_id : null;
   if (oncePerSession && sessionId && hasSessionMarker(sessionId)) {
+    return;
+  }
+
+  // Generation-bound entry of a removed/stopped/rejected Installation: inject
+  // nothing (no Skill, no memory) and record no evidence.
+  if (hookBridgeRejection({ scope: 'hook-session-start', agentId, activityGenerationToken })) {
+    await outputHook(tool === 'openclaw'
+      ? JSON.stringify({ protocol: 'tidemind-openclaw-context-v1', content: '', evidenceEligible: false })
+      : '', tool);
     return;
   }
 

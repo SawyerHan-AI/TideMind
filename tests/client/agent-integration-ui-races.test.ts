@@ -34,24 +34,48 @@ it.skipIf(process.platform !== 'darwin' && !process.env.DISPLAY)(
       await writeFile(path.join(temp, 'main.cjs'), `
         const { app, BrowserWindow } = require('electron');
         app.setPath('userData', ${JSON.stringify(path.join(temp, 'profile'))});
+        const startedAt = Date.now();
+        const phase = name => process.stderr.write('REGRESSION_PHASE=' + name + ':' + (Date.now() - startedAt) + '\\n');
         app.whenReady().then(async () => {
+          phase('ready');
           const window = new BrowserWindow({ width: 640, height: 800, show: false,
             webPreferences: { backgroundThrottling: false, contextIsolation: true, nodeIntegration: false } });
           await window.loadFile(${JSON.stringify(path.join(temp, 'index.html'))});
+          phase('loaded');
           const result = await window.webContents.executeJavaScript('window.regressionResult');
-          process.stdout.write('REGRESSION_RESULT=' + JSON.stringify(result) + '\\n');
+          phase('result');
+          window.destroy();
+          phase('window-destroyed');
+          await new Promise(resolve => process.stdout.write('REGRESSION_RESULT=' + JSON.stringify(result) + '\\n', resolve));
+          phase('stdout-flushed');
           app.exit(result?.ok ? 0 : 1);
         }).catch(error => { process.stderr.write(error.stack); app.exit(1); });
       `)
       const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
-        const child = spawn(electron, [path.join(temp, 'main.cjs')], { env: { ...process.env, ELECTRON_RUN_AS_NODE: undefined } })
+        const child = spawn(electron, [path.join(temp, 'main.cjs')], { detached: process.platform !== 'win32', env: { ...process.env, ELECTRON_RUN_AS_NODE: undefined } })
         let output = ''
+        const spawnedAt = Date.now()
+        child.on('exit', (code, signal) => { output += `\nREGRESSION_EXIT=${code}:${signal}:${Date.now() - spawnedAt}ms\n` })
         child.stdout.on('data', chunk => { output += chunk })
         child.stderr.on('data', chunk => { output += chunk })
-        const timeout = setTimeout(() => { child.kill('SIGKILL') }, 20_000)
+        // This is a lifecycle watchdog, not a performance assertion. Heavy native
+        // Electron tests share CI CPU; phase/exit markers distinguish slow startup
+        // from teardown failures. Kill the whole isolated process group on timeout.
+        const timeout = setTimeout(() => {
+          output += `\nREGRESSION_TIMEOUT=${Date.now() - spawnedAt}ms\n`
+          try {
+            if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL')
+            else child.kill('SIGKILL')
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ESRCH') output += String(error)
+          }
+        }, 45_000)
         child.on('error', error => { clearTimeout(timeout); reject(error) })
         child.on('close', code => { clearTimeout(timeout); resolve({ code, output }) })
       })
+      if (process.env.TIDEMIND_UI_RACE_DIAGNOSTICS === '1') {
+        process.stdout.write(result.output.split('\n').filter(line => /^REGRESSION_(PHASE|EXIT|TIMEOUT)=/.test(line)).join('\n') + '\n')
+      }
       expect(result.code, result.output).toBe(0)
       expect(result.output).toContain('"coworkDelayedSessions":true')
       expect(result.output).toContain('"narrowPendingAndFailedBackNavigation":true')
@@ -60,5 +84,5 @@ it.skipIf(process.platform !== 'darwin' && !process.env.DISPLAY)(
     } finally {
       await rm(temp, { recursive: true, force: true })
     }
-  }, 30_000,
+  }, 60_000,
 )

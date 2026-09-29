@@ -111,36 +111,56 @@ export function assertRequestedVersion(requestedVersion, packageVersion) {
   }
 }
 
-const V0_2_92_FORBIDDEN_BYPASSES = [
+const RELEASE_FORBIDDEN_BYPASSES = [
   ['forceTag', '--force-tag'],
   ['skipHealth', '--skip-health'],
   ['skipWebsite', '--skip-website'],
   ['skipCloudVerify', '--skip-cloud-verify'],
   ['skipUpdateVerify', '--skip-update-verify'],
+  ['allowUnsigned', '--allow-unsigned'],
 ];
+
+// Published contracts must not change when the active candidate is frozen.
+const HISTORICAL_RELEASE_CONTRACTS = Object.freeze({
+  '0.2.92': Object.freeze({ macArchitectures: ['arm64'], upgradeFromAppVersions: ['0.2.89', '0.2.91'] }),
+});
+
+function releaseAcceptanceRequirements() {
+  return readJson(path.join(repoRoot, 'scripts/agent-integration-host-acceptance-requirements.json'));
+}
+
+function requiresAgentReleaseContract(version) {
+  return Object.hasOwn(HISTORICAL_RELEASE_CONTRACTS, version)
+    || version === releaseAcceptanceRequirements().appVersion;
+}
 
 export function assertReleaseBypassesAllowed(version, opts) {
   if (opts.allowNonMain && !opts.dryRun) {
     throw new Error('--allow-non-main requires --dry-run');
   }
-  if (version !== '0.2.92') return;
-  const requested = V0_2_92_FORBIDDEN_BYPASSES
+  if (!requiresAgentReleaseContract(version)) return;
+  const requested = RELEASE_FORBIDDEN_BYPASSES
     .filter(([key]) => opts[key])
     .map(([, flag]) => flag);
   if (requested.length > 0) {
-    throw new Error(`0.2.92 cannot be released with ${requested.join(', ')}`);
+    throw new Error(`${version} cannot be released with ${requested.join(', ')}`);
   }
 }
 
 export function resolveUpdatePreviousVersions(version, requestedVersion = null) {
-  if (version === '0.2.92') {
-    const required = ['0.2.89', '0.2.91'];
-    if (requestedVersion !== null && !required.includes(requestedVersion)) {
-      throw new Error(
-        '--previous-version for 0.2.92 must be 0.2.89 or 0.2.91; both are always verified',
-      );
+  const historical = HISTORICAL_RELEASE_CONTRACTS[version];
+  const requirements = releaseAcceptanceRequirements();
+  const required = historical?.upgradeFromAppVersions
+    ?? (version === requirements.appVersion ? requirements.upgradeFromAppVersions : null);
+  if (required !== null) {
+    if (!Array.isArray(required) || required.length === 0 || new Set(required).size !== required.length
+      || required.some(origin => typeof origin !== 'string' || !origin.trim())) {
+      throw new Error('invalid upgradeFromAppVersions in acceptance requirements');
     }
-    return required;
+    if (requestedVersion !== null && !required.includes(requestedVersion)) {
+      throw new Error(`--previous-version for ${version} must be ${required.join(' or ')}; ${required.length === 2 ? 'both' : 'all'} are always verified`);
+    }
+    return [...required];
   }
   const previousVersion = requestedVersion ?? previousPatch(version);
   return previousVersion ? [previousVersion] : [];
@@ -152,17 +172,17 @@ function printHelp() {
 Options:
   --version X.Y.Z          Version to release. Defaults to root package.json.
   --previous-version X.Y.Z Version used to verify update API. Defaults to previous patch;
-                           0.2.92 always verifies both 0.2.89 and 0.2.91.
+                           the active release verifies every origin in its acceptance requirements.
   --oss-repo PATH          OSS repo path. Defaults to ../tidemind or TIDEMIND_OSS_REPO.
   --oss-message TEXT       Public OSS commit message.
-  --notes-file PATH        Release notes markdown. Required for 0.2.92; older versions
+  --notes-file PATH        Release notes markdown. Required for the active Agent release; older versions
                            default to /tmp/notes-vX.Y.Z.md.
   --agent-host-evidence PATH
                            Real-host Agent acceptance index. Required for a real release;
                            may also be set with TIDEMIND_AGENT_HOST_ACCEPTANCE_INDEX.
   --agent-host-candidate-app-arm64 PATH
   --agent-host-candidate-app-x64 PATH
-                           Exact signed RC apps for each supported release architecture (0.2.92: arm64);
+                           Exact signed RC apps for each supported release architecture (active contract in acceptance requirements);
                            physical bytes, executable architecture and identity are re-verified.
   --timeout-minutes N      Release workflow wait timeout. Defaults to 20.
   --yes, -y                Pass --yes to sync-oss.sh.
@@ -188,7 +208,9 @@ function readJson(file) {
 }
 
 export function releaseMacArchitectures(version) {
-  const requirements = readJson(path.join(repoRoot, 'scripts/agent-integration-host-acceptance-requirements.json'));
+  const historical = HISTORICAL_RELEASE_CONTRACTS[version];
+  if (historical) return [...historical.macArchitectures];
+  const requirements = releaseAcceptanceRequirements();
   if (version !== requirements.appVersion) return ['arm64', 'x64'];
   const architectures = requirements.releaseMacArchitectures;
   if (!Array.isArray(architectures) || architectures.length === 0
@@ -319,11 +341,11 @@ const RELEASE_0_2_92_AGENT_DISCLOSURES = Object.freeze([
 ]);
 
 export function validateReleaseNotesContent(version, content) {
-  if (version !== '0.2.92') return;
+  if (!requiresAgentReleaseContract(version)) return;
   if (/supports? (?:all )?(?:major|mainstream) agents?|支持(?:全部|所有|主流)\s*Agent/iu.test(content)) {
-    throw new Error('0.2.92 release notes use a vague Agent support claim');
+    throw new Error(`${version} release notes use a vague Agent support claim`);
   }
-  if (!content.includes(version)) throw new Error(`0.2.92 release notes do not name version ${version}`);
+  if (!content.includes(version)) throw new Error(`${version} release notes do not name version ${version}`);
   const level = /完整接入|基础接入|部分接入|未接入|complete integration|full integration|basic integration|partial integration|not integrated/iu;
   const lines = content.split(/\r?\n/u);
   for (const [name, matcher] of RELEASE_0_2_92_AGENT_DISCLOSURES) {
@@ -331,24 +353,24 @@ export function validateReleaseNotesContent(version, content) {
       && level.test(line)
       && !(name === 'Pi' && /Oh My Pi|\bOMP\b/iu.test(line)));
     if (!disclosed) {
-      throw new Error(`0.2.92 release notes must disclose the actual connection level for ${name}`);
+      throw new Error(`${version} release notes must disclose the actual connection level for ${name}`);
     }
   }
   if (!/自定义本机\s*Agent|Custom local Agent/iu.test(content)) {
-    throw new Error('0.2.92 release notes must disclose Custom local Agent support');
+    throw new Error(`${version} release notes must disclose Custom local Agent support`);
   }
   if (!/非标准配置根|non-?standard config(?:uration)? root/iu.test(content)
     || !/手动\s*MCP|manual MCP/iu.test(content)) {
-    throw new Error('0.2.92 release notes must disclose both Custom local Agent boundaries');
+    throw new Error(`${version} release notes must disclose both Custom local Agent boundaries`);
   }
   if (!/限制|局限|能力边界|host limitations?|limitations?/iu.test(content)) {
-    throw new Error('0.2.92 release notes must include host limitations or capability boundaries');
+    throw new Error(`${version} release notes must include host limitations or capability boundaries`);
   }
 }
 
 export function ensureNotesFile(version, explicitPath, allowTemplate = false) {
-  if (version === '0.2.92' && !explicitPath && !allowTemplate) {
-    throw new Error('0.2.92 requires an explicit --notes-file with per-Agent connection levels and limitations');
+  if (requiresAgentReleaseContract(version) && !explicitPath && !allowTemplate) {
+    throw new Error(`${version} requires an explicit --notes-file with per-Agent connection levels and limitations`);
   }
   const file = explicitPath ?? path.join(os.tmpdir(), `notes-v${version}.md`);
   if (!fs.existsSync(file)) {
@@ -364,7 +386,7 @@ export function ensureNotesFile(version, explicitPath, allowTemplate = false) {
     ].join('\n'));
     console.log(`Created default release notes: ${file}`);
   }
-  if (!(version === '0.2.92' && allowTemplate && !explicitPath)) {
+  if (!(requiresAgentReleaseContract(version) && allowTemplate && !explicitPath)) {
     validateReleaseNotesContent(version, fs.readFileSync(file, 'utf8'));
   }
   return file;
@@ -1097,9 +1119,6 @@ async function main() {
     throw new Error('Could not infer --previous-version from --version; pass it explicitly');
   }
   const tagName = `v${version}`;
-  if (version === '0.2.92' && opts.allowUnsigned) {
-    throw new Error('0.2.92 cannot be released with --allow-unsigned');
-  }
   const notesFile = opts.prepareCandidate ? null : ensureNotesFile(version, opts.notesFile, opts.dryRun);
   const ossMessage = opts.ossMessage ?? `sync ${version}: release maintenance updates`;
 

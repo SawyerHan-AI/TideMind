@@ -103,6 +103,12 @@ interface OpenClawMutationMetadata {
   beforePluginFingerprint: string | null
   beforeAggregateFingerprint: string
   commandStepIds: readonly string[]
+  /**
+   * Remove direction only: prompt-hook permissions that held exactly the value
+   * Tide Mind sets (`true`) when the disconnect was planned. Only these may be
+   * unset, and only if still `true` at apply; anything else is the user's.
+   */
+  unsetPermissionKeys?: readonly OpenClawPermissionKey[]
   legacyTransfer?: {
     physicalTarget: string
     ownershipKey: string
@@ -111,6 +117,13 @@ interface OpenClawMutationMetadata {
     containerPreconditionHash: string
     canonicalPath: string
   }
+}
+
+type OpenClawPermissionKey = 'allowPromptInjection' | 'allowConversationAccess'
+const OPENCLAW_PERMISSION_KEYS: readonly OpenClawPermissionKey[] = ['allowPromptInjection', 'allowConversationAccess']
+const PERMISSION_UNSET_STEP: Readonly<Record<OpenClawPermissionKey, string>> = {
+  allowPromptInjection: 'plugin_prompt_permission_unset',
+  allowConversationAccess: 'plugin_delivery_permission_unset',
 }
 
 const execFileAsync = promisify(execFile)
@@ -201,7 +214,13 @@ export function createOpenClawPluginHostAdapter(spec: OpenClawPluginHostSpec): A
         } else if (!baseline) diagnostics.push('openclaw_plugin_disconnect_requires_ownership')
         else if (baseline.ownedFragmentHash !== current.fingerprint) {
           diagnostics.push('openclaw_plugin_disconnect_ownership_baseline_mismatch')
-        } else mutations.push(pluginMutation(context, desired, current, baseline, direction))
+        } else {
+          const permissions = inspectPromptPermissions(context, desired)
+          if (permissions.retained.length > 0) {
+            diagnostics.push('openclaw_prompt_hooks_permission_retained_user_modified')
+          }
+          mutations.push(pluginMutation(context, desired, current, baseline, direction, undefined, undefined, permissions.unset))
+        }
       } else if (current.exact) {
         if (!baseline) diagnostics.push('openclaw_plugin_exact_state_requires_aggregate_ownership')
       } else if (current.plugin.state === 'conflict' || current.plugin.state === 'unknown') {
@@ -268,6 +287,7 @@ export function createOpenClawPluginHostAdapter(spec: OpenClawPluginHostSpec): A
         throw new Error('openclaw_plugin_aggregate_precondition_changed')
       }
 
+      const permissionOutcome: { unset: OpenClawPermissionKey[]; retained: OpenClawPermissionKey[] } = { unset: [], retained: [] }
       if (metadata.direction === 'install') {
         if (metadata.legacyTransfer) removeLegacyMcp(context, metadata)
         applyPayloadBundle(context, desired, metadata)
@@ -292,6 +312,18 @@ export function createOpenClawPluginHostAdapter(spec: OpenClawPluginHostSpec): A
           const removed = await inspectPlugin(context, desired, dependencies)
           if (removed.state !== 'absent') throw new Error(removed.diagnostics.join(';') || 'openclaw_plugin_uninstall_readback_failed')
         }
+        for (const key of metadata.unsetPermissionKeys ?? []) {
+          // Re-read immediately before each unset: only a still-`true` value
+          // (Tide Mind's own) is removed; an absent key needs nothing, and any
+          // other value was changed by the user and is kept.
+          const live = inspectPromptPermissions(context, desired)
+          if (live.values[key] === true) {
+            await runFrozenCommand(context, mutation, metadata, dependencies, PERMISSION_UNSET_STEP[key])
+            permissionOutcome.unset.push(key)
+          } else if (live.values[key] !== undefined) {
+            permissionOutcome.retained.push(key)
+          }
+        }
         await runFrozenCommand(context, mutation, metadata, dependencies, 'gateway_restart')
         removeOwnedBundle(context, desired, metadata)
       }
@@ -309,6 +341,10 @@ export function createOpenClawPluginHostAdapter(spec: OpenClawPluginHostSpec): A
           pluginRoot: desired.pluginRoot,
           runtimeInspectConfirmed: metadata.direction === 'install',
           gatewayRestarted: true,
+          ...(metadata.direction === 'remove' ? {
+            promptPermissionsUnset: permissionOutcome.unset,
+            promptPermissionsRetained: permissionOutcome.retained,
+          } : {}),
         } as Readonly<Record<string, JsonValue>>,
       }
     },
@@ -780,6 +816,7 @@ function pluginMutation(
   direction: OpenClawMutationMetadata['direction'],
   legacyTransfer?: NonNullable<OpenClawMutationMetadata['legacyTransfer']>,
   transferBaseline?: OwnedArtifactBaseline,
+  unsetPermissionKeys: readonly OpenClawPermissionKey[] = [],
 ): PlannedMutation {
   const commands = commandSequence(context.installation.distribution.executableRealpath!, desired, direction)
   const metadata: OpenClawMutationMetadata = {
@@ -797,6 +834,7 @@ function pluginMutation(
     beforePluginFingerprint: current.plugin.fingerprint,
     beforeAggregateFingerprint: current.fingerprint,
     commandStepIds: commands.map(command => command.stepId),
+    ...(direction === 'remove' ? { unsetPermissionKeys: [...unsetPermissionKeys] } : {}),
     ...(legacyTransfer ? { legacyTransfer } : {}),
   }
   return {
@@ -843,8 +881,13 @@ function commandSequence(
   desired: DesiredPlugin,
   direction: OpenClawMutationMetadata['direction'],
 ): Array<FrozenHostCommand & { stepId: string }> {
+  // `plugins uninstall` (verified in 2026.8.x) drops plugins.entries.<id>
+  // entirely. The frozen unset steps only run when a Tide Mind-set `true`
+  // permission is still present afterwards (older/newer hosts may keep it).
   if (direction === 'remove') return [
     { stepId: 'plugin_uninstall', category: 'plugin_install', executableRealpath, args: ['plugins', 'uninstall', desired.pluginId, '--force'] },
+    { stepId: PERMISSION_UNSET_STEP.allowPromptInjection, category: 'host_cli', executableRealpath, args: ['config', 'unset', `plugins.entries.${desired.pluginId}.hooks.allowPromptInjection`] },
+    { stepId: PERMISSION_UNSET_STEP.allowConversationAccess, category: 'host_cli', executableRealpath, args: ['config', 'unset', `plugins.entries.${desired.pluginId}.hooks.allowConversationAccess`] },
     { stepId: 'gateway_restart', category: 'host_cli', executableRealpath, args: ['gateway', 'restart', '--safe', '--json'] },
   ]
   return [
@@ -988,6 +1031,36 @@ async function inspectPlugin(
     }
   }
   return { state: 'exact', fingerprint: desired.hostHash, diagnostics: [] }
+}
+
+/**
+ * Current prompt-hook permission values under plugins.entries.<id>.hooks.
+ * `unset` lists keys holding exactly Tide Mind's value (`true`); `retained` lists
+ * keys the user set to something else, which disconnect must leave in place.
+ */
+function inspectPromptPermissions(
+  context: AdapterOperationContext,
+  desired: DesiredPlugin,
+): {
+  values: Partial<Record<OpenClawPermissionKey, unknown>>
+  unset: OpenClawPermissionKey[]
+  retained: OpenClawPermissionKey[]
+} {
+  const projection = inspectJsonProjection(
+    desired.configPath,
+    ['plugins', 'entries', desired.pluginId, 'hooks'],
+    context.installation.canonicalConfigRoot,
+  )
+  const hooks = projection.fragmentExists && isRecord(projection.fragment) ? projection.fragment : {}
+  const values: Partial<Record<OpenClawPermissionKey, unknown>> = {}
+  for (const key of OPENCLAW_PERMISSION_KEYS) {
+    if (Object.hasOwn(hooks, key)) values[key] = hooks[key]
+  }
+  return {
+    values,
+    unset: OPENCLAW_PERMISSION_KEYS.filter(key => values[key] === true),
+    retained: OPENCLAW_PERMISSION_KEYS.filter(key => values[key] !== undefined && values[key] !== true),
+  }
 }
 
 function normalizePluginRecord(record: Record<string, unknown>): { root: string; version: string; enabled: boolean; fingerprint: string } | null {
@@ -1206,6 +1279,10 @@ function parseMetadata(mutation: PlannedMutation): OpenClawMutationMetadata {
     || (value.beforePluginFingerprint !== null && typeof value.beforePluginFingerprint !== 'string')
     || typeof value.beforeAggregateFingerprint !== 'string'
     || !Array.isArray(value.commandStepIds) || !value.commandStepIds.every(item => typeof item === 'string')
+    || (value.unsetPermissionKeys !== undefined && (value.direction !== 'remove'
+      || !Array.isArray(value.unsetPermissionKeys)
+      || !value.unsetPermissionKeys.every(key => OPENCLAW_PERMISSION_KEYS.includes(key))
+      || new Set(value.unsetPermissionKeys).size !== value.unsetPermissionKeys.length))
     || (value.legacyTransfer !== undefined && !validLegacyTransfer(value.legacyTransfer))) {
     throw new Error('openclaw_plugin_mutation_metadata_invalid')
   }

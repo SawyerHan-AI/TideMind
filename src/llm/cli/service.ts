@@ -2,10 +2,11 @@ import type Database from 'better-sqlite3';
 import { getMetabolismWorkerConnectionSnapshot, getMetabolismWorkerRuntimeContext } from '../../metabolism/worker-runtime-context.js';
 import { createLogger } from '../../utils/logger.js';
 import { getLLMInvocationContext } from '../invocation-context.js';
-import { CliChildProcessRunner, CliProcessRegistry } from './child-process-runner.js';
+import { CliChildProcessRunner } from './child-process-runner.js';
+import { cliProcessRegistry } from './runtime-process-registry.js';
 import { ClaudeCliAdapter } from './claude.js';
 import { CodexCliAdapter } from './codex.js';
-import { CliLLMError } from './errors.js';
+import { CliLLMError, isDefinitiveProviderRejection } from './errors.js';
 import {
   assertCliCapacityFence,
   withCliCapacityLease,
@@ -17,13 +18,29 @@ import {
   startCliInvocation,
 } from './invocation-state.js';
 import { checkCliEnvironment, type CliEnvironmentCheck } from './readiness.js';
+import { pinnedModelMatches } from './catalogs.js';
+import {
+  authBindingMatches,
+  getCatalogSnapshot,
+  getModelObservation,
+  reconcileAuthBinding,
+  recordModelObservation,
+  type ObservationOutcome,
+} from '../../db/model-discovery.js';
+import {
+  BACKOFF_MS,
+  CONNECTION_LEVEL_ERROR_KINDS,
+  TEMPORARY_ERROR_KINDS,
+  evaluateModelAdmission,
+  type AdmissionBlockReason,
+} from '../model-admission.js';
 import type {
   CliInvocationPurpose,
   CliLLMRequest,
   CliLLMResult,
 } from './types.js';
 
-const registry = new CliProcessRegistry();
+const registry = cliProcessRegistry;
 const runner = new CliChildProcessRunner(registry);
 const log = createLogger('llm-cli');
 
@@ -32,148 +49,124 @@ type ConnectionRow = {
   provider_type: string;
   archived: number;
   status: string;
-  candidate_models: string | null;
-  available_models: string | null;
-  validation_fingerprint: string | null;
-  model_validation_json: string | null;
 };
 
-function parseArray(raw: string | null): string[] {
-  try {
-    const parsed = JSON.parse(raw ?? '[]');
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is string => typeof item === 'string')
-      : [];
-  } catch {
-    return [];
-  }
-}
+const ENVIRONMENT_HEALABLE = new Set([
+  'unconfigured',
+  'not_installed',
+  'not_authenticated',
+  'wrong_auth_method',
+  'unsupported_version',
+  'offline',
+  'degraded',
+]);
 
-function parseValidation(
-  raw: string | null,
-): Record<string, Record<string, unknown>> {
-  try {
-    const parsed = JSON.parse(raw ?? '{}');
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, Record<string, unknown>>
-      : {};
-  } catch {
-    return {};
-  }
-}
-
+/**
+ * Persist the freshly verified environment. Unlike the previous implementation this
+ * never clears model history: a CLI or auth change only moves observations to a new
+ * epoch (reconcileAuthBinding). An environment status that the check just disproved
+ * is healed to 'untested'; 'ambiguous' is kept until explicitly resolved.
+ */
 function saveEnvironment(
   db: Database.Database,
-  connection: ConnectionRow,
+  connectionId: string,
   environment: CliEnvironmentCheck,
 ): void {
-  db.transaction(() => {
-    const fingerprintChanged = (
-      connection.validation_fingerprint !== null
-      && connection.validation_fingerprint !== environment.validationFingerprint
-    );
-    const columns = [
-      'cli_path = ?',
-      'cli_version = ?',
-      'auth_method = ?',
-      'auth_fingerprint = ?',
-      'environment_checked_at = ?',
-      'candidate_models = ?',
-      'last_checked = ?',
-    ];
-    const params: unknown[] = [
-      environment.resolved.path,
-      environment.resolved.version,
-      environment.auth.method,
-      environment.authFingerprint,
-      environment.checkedAt,
-      JSON.stringify(environment.candidateModels),
-      environment.checkedAt,
-    ];
-    if (fingerprintChanged) {
-      columns.push(
-        "status = 'untested'",
-        'status_reason = NULL',
-        'available_models = NULL',
-        'validation_fingerprint = NULL',
-        'model_validation_json = NULL',
-        'last_tested_at = NULL',
-        'last_test_summary = NULL',
-      );
-    } else if (connection.status === 'unconfigured') {
-      columns.push("status = 'untested'", 'status_reason = NULL');
-    }
-    params.push(connection.id);
-    db.prepare(
-      `UPDATE model_connections SET ${columns.join(', ')} WHERE id = ? AND archived = 0`,
-    ).run(...params);
-  })();
-}
-
-function updateAliasAfterBackgroundResult(
-  db: Database.Database,
-  connectionId: string,
-  modelAlias: string,
-  result: CliLLMResult | null,
-  error: CliLLMError | null,
-): void {
-  const row = db.prepare(`
-    SELECT status, candidate_models, available_models, model_validation_json
-    FROM model_connections WHERE id = ?
-  `).get(connectionId) as {
-    status: string;
-    candidate_models: string | null;
-    available_models: string | null;
-    model_validation_json: string | null;
-  } | undefined;
-  if (!row) return;
-  const candidates = parseArray(row.candidate_models);
-  const available = new Set(parseArray(row.available_models));
-  const validations = parseValidation(row.model_validation_json);
-  if (result) {
-    available.add(modelAlias);
-    validations[modelAlias] = {
-      success: true,
-      actualModel: result.actualModel,
-      checkedAt: new Date().toISOString(),
-    };
-  } else if (error?.kind === 'model_unavailable') {
-    available.delete(modelAlias);
-    validations[modelAlias] = {
-      success: false,
-      errorKind: error.kind,
-      error: error.message.slice(0, 500),
-      checkedAt: new Date().toISOString(),
-    };
-  } else {
-    return;
-  }
-
-  const covered = candidates.length > 0
-    && candidates.every(candidate => validations[candidate] !== undefined);
-  let status = row.status;
-  if (row.status !== 'ambiguous' && error?.kind === 'model_unavailable') {
-    if (available.size > 0) status = 'degraded';
-    else if (covered) status = 'offline';
-    else status = 'untested';
-  } else if (row.status === 'untested') {
-    // A single background success verifies the alias, not the full catalog.
-    status = 'untested';
-  }
   db.prepare(`
     UPDATE model_connections
-    SET status = ?,
-        status_reason = ?,
-        available_models = ?,
-        model_validation_json = ?
+    SET cli_path = ?,
+        cli_version = ?,
+        auth_method = ?,
+        auth_fingerprint = ?,
+        validation_fingerprint = ?,
+        environment_checked_at = ?,
+        last_checked = ?,
+        status = CASE WHEN status IN (${[...ENVIRONMENT_HEALABLE].map(() => '?').join(', ')})
+                      THEN 'untested' ELSE status END,
+        status_reason = CASE WHEN status IN (${[...ENVIRONMENT_HEALABLE].map(() => '?').join(', ')})
+                             THEN NULL ELSE status_reason END
     WHERE id = ? AND archived = 0
   `).run(
-    status,
-    error?.kind === 'model_unavailable' ? error.message.slice(0, 500) : null,
-    JSON.stringify([...available]),
-    JSON.stringify(validations),
+    environment.resolved.path,
+    environment.resolved.version,
+    environment.auth.method,
+    environment.authFingerprint,
+    environment.cliGeneration,
+    environment.checkedAt,
+    environment.checkedAt,
+    ...ENVIRONMENT_HEALABLE,
+    ...ENVIRONMENT_HEALABLE,
     connectionId,
   );
+}
+
+function admissionError(reason: AdmissionBlockReason, modelId: string, retryAt?: string): CliLLMError {
+  switch (reason) {
+    case 'scope_unknown':
+      return new CliLLMError(
+        'scope_unknown',
+        '无法确认 CLI 当前登录的账号范围，后台调用已暂停；可在设置中对指定模型做一次测试',
+        { needsUserAction: true, admissionReason: reason },
+      );
+    case 'model_mismatch':
+      return new CliLLMError(
+        'model_mismatch',
+        `固定模型 ${modelId} 上次返回了非预期的实际模型，后台已停用该选择；请在设置中复测该模型`,
+        { needsUserAction: true, admissionReason: reason },
+      );
+    case 'model_rejected':
+      return new CliLLMError(
+        'model_unavailable',
+        `当前账号无法使用模型 ${modelId}（已被明确拒绝）；可在设置中复测或更换模型`,
+        { needsUserAction: true, admissionReason: reason },
+      );
+    case 'backoff':
+      return new CliLLMError(
+        'transient',
+        `模型 ${modelId} 最近暂时失败，冷却中`,
+        { retryable: true, retryAt: retryAt ? Date.parse(retryAt) : undefined, admissionReason: reason },
+      );
+    case 'invalid_model_id':
+      return new CliLLMError('model_unavailable', `模型 ID ${modelId.slice(0, 80)} 无效`, {
+        needsUserAction: true,
+        admissionReason: reason,
+      });
+    case 'connection_busy':
+      return new CliLLMError('capacity', '模型连接正在检查或测试', { retryable: true, admissionReason: reason });
+    case 'ambiguous_outcome':
+      return new CliLLMError('ambiguous_outcome', '上次调用结果不明，后台调用已暂停', {
+        needsUserAction: true,
+        admissionReason: reason,
+      });
+    case 'connection_unavailable':
+    default:
+      return new CliLLMError('unsupported_version', '模型连接环境不可用，请在设置中检查环境', {
+        needsUserAction: true,
+        admissionReason: reason,
+      });
+  }
+}
+
+function observationForError(
+  error: CliLLMError,
+  now: number,
+): { outcome: ObservationOutcome; backoffUntil: string | null } | null {
+  if (error.kind === 'aborted' || error.kind === 'capacity') return null;
+  if (error.kind === 'ambiguous_outcome') return { outcome: 'ambiguous', backoffUntil: null };
+  if (error.kind === 'model_unavailable') return { outcome: 'model_rejected', backoffUntil: null };
+  if (CONNECTION_LEVEL_ERROR_KINDS.has(error.kind)) {
+    return { outcome: 'connection_failure', backoffUntil: null };
+  }
+  if (TEMPORARY_ERROR_KINDS.has(error.kind)) {
+    const ms = error.kind === 'quota' ? BACKOFF_MS.quota : BACKOFF_MS.temporary;
+    const retryAt = error.options.retryAt && error.options.retryAt > now ? error.options.retryAt : now + ms;
+    return { outcome: 'temporary_failure', backoffUntil: new Date(retryAt).toISOString() };
+  }
+  // Generic exit 1 and other unrecognized failures: never read as "model retired".
+  return {
+    outcome: 'unclassified_failure',
+    backoffUntil: new Date(now + BACKOFF_MS.unclassified).toISOString(),
+  };
 }
 
 export async function runCliLLM(
@@ -184,67 +177,78 @@ export async function runCliLLM(
     purpose?: CliInvocationPurpose;
     allowLoginShell?: boolean;
     environment?: CliEnvironmentCheck;
+    /** Re-check the selected route immediately before stdin submission. */
+    validateRoute?: () => void;
     _testHooks?: {
       afterProviderCompleted?: () => void;
       beforeOutcomePersistence?: () => void;
+      beforePromptCommit?: () => void;
+      recheckEnvironment?: () => Promise<CliEnvironmentCheck>;
     };
   } = {},
 ): Promise<CliLLMResult> {
   const row = db.prepare(`
-    SELECT id, provider_type, archived, status, candidate_models,
-           available_models, validation_fingerprint, model_validation_json
+    SELECT id, provider_type, archived, status
     FROM model_connections WHERE id = ?
   `).get(request.connectionId) as ConnectionRow | undefined;
   const workerContext = getMetabolismWorkerRuntimeContext();
   const workerConnection = workerContext ? getMetabolismWorkerConnectionSnapshot(request.connectionId) : null;
-  if ((!row && !workerConnection) || (workerContext && !workerConnection) || (workerConnection ? workerConnection.archived : row!.archived !== 0)) {
+  if ((!row && !workerConnection) || (workerContext && !workerConnection) || (row ? row.archived !== 0 : workerConnection!.archived)) {
     throw new CliLLMError('protocol', '模型连接不存在或已归档', {
       needsUserAction: true,
     });
   }
-  const effectiveRow: ConnectionRow = row ?? {
-    id: workerConnection!.id,
-    provider_type: workerConnection!.providerType,
-    archived: workerConnection!.archived ? 1 : 0,
-    status: workerConnection!.status,
-    candidate_models: workerConnection!.candidateModels,
-    available_models: workerConnection!.availableModels,
-    validation_fingerprint: workerConnection!.validationFingerprint,
-    model_validation_json: workerConnection!.modelValidationJson,
-  };
-  if ((workerConnection?.providerType ?? effectiveRow.provider_type) !== request.providerType) {
+  if ((row?.provider_type ?? workerConnection!.providerType) !== request.providerType) {
     throw new CliLLMError('protocol', '模型连接 provider 不匹配', {
       needsUserAction: true,
     });
   }
 
+  const purpose = options.purpose ?? request.purpose ?? 'background';
   const environment = options.environment ?? await checkCliEnvironment({
     providerType: request.providerType,
     allowLoginShell: options.allowLoginShell ?? false,
+    dataDir,
     signal: request.signal,
   });
-  const purpose = options.purpose ?? request.purpose ?? 'background';
-  if (purpose === 'background') {
-    if (effectiveRow.validation_fingerprint !== environment.validationFingerprint) {
-      saveEnvironment(db, effectiveRow, environment);
-      throw new CliLLMError(
-        'unsupported_version',
-        'CLI 路径、版本或登录状态已变化，请重新测试连接',
-        { needsUserAction: true },
-      );
-    }
-    if (!parseArray(effectiveRow.available_models).includes(request.modelAlias)) {
-      throw new CliLLMError(
-        'model_unavailable',
-        `模型 ${request.modelAlias} 尚未在当前 CLI 环境中验证成功`,
-        { needsUserAction: true },
-      );
-    }
-  }
-  saveEnvironment(db, effectiveRow, environment);
-  if (!environment.candidateModels.includes(request.modelAlias)) {
-    throw new CliLLMError('model_unavailable', `模型 ${request.modelAlias} 不在当前 CLI 候选目录`);
-  }
+  saveEnvironment(db, request.connectionId, environment);
+  const { binding } = reconcileAuthBinding(db, {
+    connectionId: request.connectionId,
+    auth: environment.auth,
+    cliGeneration: environment.cliGeneration,
+    authStoreSignal: environment.authStoreSignal,
+  });
+
+  const liveStatus = (db.prepare('SELECT status FROM model_connections WHERE id = ?')
+    .get(request.connectionId) as { status: string } | undefined)?.status
+    ?? row?.status
+    ?? workerConnection?.status
+    ?? 'unconfigured';
+  const modelId = request.modelAlias;
+  const admissionFor = () => evaluateModelAdmission({
+    purpose,
+    providerType: request.providerType,
+    connectionStatus: purpose === 'background'
+      ? ((db.prepare('SELECT status FROM model_connections WHERE id = ?')
+        .get(request.connectionId) as { status: string } | undefined)?.status ?? liveStatus)
+      : liveStatus,
+    scopeState: binding.scopeState,
+    modelId,
+    observation: getModelObservation(db, request.connectionId, binding.scopeKey, binding.authEpoch, modelId),
+  });
+  const admission = admissionFor();
+  if (!admission.allowed) throw admissionError(admission.reason, modelId, admission.retryAt);
+  const selectionMode = admission.selectionMode;
+
+  // The catalog may map a selection key to a different CLI argument; manual ids and
+  // aliases pass through unchanged. Either way the value is one independent argv item.
+  const catalog = getCatalogSnapshot(db, request.connectionId);
+  const catalogItem = catalog?.scopeKey === binding.scopeKey
+    && catalog.authEpoch === binding.authEpoch
+    && catalog.cliGeneration === environment.cliGeneration
+    ? catalog.items.find((item) => item.id === modelId) ?? null
+    : null;
+  const invocationModel = catalogItem?.invocationId ?? modelId;
 
   const context = getLLMInvocationContext();
   const invocation = startCliInvocation(db, {
@@ -253,10 +257,77 @@ export async function runCliLLM(
     accountScope: environment.auth.accountScope,
     taskId: context?.workItemId ?? context?.taskId ?? null,
     operationName: request.operationName ?? context?.operation ?? null,
-    modelAlias: request.modelAlias,
+    modelAlias: modelId,
   });
   let promptCommitted = false;
   let providerCompleted = false;
+
+  const recordObservation = (
+    outcome: ObservationOutcome,
+    extra: { errorKind?: string; errorMessage?: string; actualModel?: string | null; backoffUntil?: string | null } = {},
+  ): void => {
+    // Only record evidence while the binding still carries the scope/epoch the call was
+    // admitted under; otherwise the result's account attribution is unconfirmed.
+    if (!authBindingMatches(db, request.connectionId, binding.scopeKey, binding.authEpoch)) return;
+    recordModelObservation(db, {
+      connectionId: request.connectionId,
+      scopeKey: binding.scopeKey,
+      authEpoch: binding.authEpoch,
+      modelId,
+      selectionMode,
+      outcome,
+      source: purpose === 'background' ? 'business' : 'test',
+      errorKind: extra.errorKind ?? null,
+      errorMessage: extra.errorMessage ?? null,
+      actualModel: extra.actualModel ?? null,
+      backoffUntil: extra.backoffUntil ?? null,
+    });
+  };
+
+  const assertCurrentRoute = (): void => {
+    const liveConnection = db.prepare('SELECT archived, provider_type FROM model_connections WHERE id = ?')
+      .get(request.connectionId) as { archived: number; provider_type: string } | undefined;
+    if (!liveConnection || liveConnection.archived !== 0 || liveConnection.provider_type !== request.providerType) {
+      throw new CliLLMError('aborted', '模型连接已删除、归档或改变，本次未提交');
+    }
+    if (workerContext) {
+      const revision = db.prepare("SELECT value FROM metadata WHERE key = 'metabolism_worker_runtime_revision'")
+        .get() as { value: string } | undefined;
+      if (revision?.value !== String(workerContext.runtimeRevision)) {
+        throw new CliLLMError('aborted', 'Worker 模型路由快照已失效，本次未提交');
+      }
+    }
+    options.validateRoute?.();
+  };
+
+  const recheckBinding = async (): Promise<void> => {
+    const fresh = await (options._testHooks?.recheckEnvironment?.() ?? checkCliEnvironment({
+      providerType: request.providerType,
+      allowLoginShell: options.allowLoginShell ?? false,
+      dataDir,
+      signal: request.signal,
+      freshAuth: true,
+    }));
+    // A fresh official observation is required even when the auth-store stat is stable.
+    // Never restore an old response into a newer binding.
+    if (fresh.auth.scopeKey !== binding.scopeKey
+      || fresh.auth.scopeState !== binding.scopeState
+      || fresh.cliGeneration !== environment.cliGeneration
+      || fresh.auth.method !== environment.auth.method) {
+      reconcileAuthBinding(db, {
+        connectionId: request.connectionId,
+        auth: fresh.auth,
+        cliGeneration: fresh.cliGeneration,
+        authStoreSignal: fresh.authStoreSignal,
+      });
+      throw new CliLLMError('not_authenticated', 'CLI 或账号范围发生变化，调用归属无法确认', {
+        needsUserAction: true,
+      });
+    }
+    if (!authBindingMatches(db, request.connectionId, binding.scopeKey, binding.authEpoch)) {
+      throw new CliLLMError('not_authenticated', 'CLI 认证绑定已失效', { needsUserAction: true });
+    }
+  };
 
   try {
     const result = await withCliCapacityLease(
@@ -269,10 +340,29 @@ export async function runCliLLM(
       },
       async (lease, signal) => {
         const hooks = {
-          beforePromptCommit: () => assertCliCapacityFence(db, lease),
+          beforePromptCommit: async () => {
+            assertCliCapacityFence(db, lease);
+            options._testHooks?.beforePromptCommit?.();
+            await recheckBinding();
+            assertCliCapacityFence(db, lease);
+            assertCurrentRoute();
+            // Final re-check under the lease, immediately before the prompt is
+            // committed: auth scope/epoch unchanged and admission still granted
+            // (a concurrent test, ambiguity or rejection may have landed meanwhile).
+            if (!authBindingMatches(db, request.connectionId, binding.scopeKey, binding.authEpoch)) {
+              throw new CliLLMError('not_authenticated', 'CLI 登录范围在提交前发生变化，本次未提交', {
+                needsUserAction: false,
+              });
+            }
+            const final = admissionFor();
+            if (!final.allowed) throw admissionError(final.reason, modelId, final.retryAt);
+          },
           onPromptCommitted: () => {
-            markCliPromptCommitted(db, invocation.id, lease);
-            promptCommitted = true;
+            db.transaction(() => {
+              assertCurrentRoute();
+              markCliPromptCommitted(db, invocation.id, lease);
+              promptCommitted = true;
+            }).immediate();
           },
         };
         const common = {
@@ -287,16 +377,20 @@ export async function runCliLLM(
           ? new ClaudeCliAdapter(common)
           : new CodexCliAdapter({
               ...common,
-              manifest: environment.codexGate?.manifest
-                ?? (() => { throw new CliLLMError('unsupported_version', 'Codex capability manifest missing'); })(),
+              toolCatalogJson: environment.codexToolCatalogJson
+                ?? (() => { throw new CliLLMError('unsupported_version', 'Codex tool isolation catalog missing'); })(),
+              contract: environment.codexContract
+                ?? (() => { throw new CliLLMError('unsupported_version', 'Codex execution contract missing'); })(),
             });
         const result = await adapter.run({
           ...request,
+          modelAlias: invocationModel,
           purpose,
           signal,
         });
         providerCompleted = true;
         options._testHooks?.afterProviderCompleted?.();
+        await recheckBinding();
         try {
           assertCliCapacityFence(db, lease);
         } catch (error) {
@@ -309,8 +403,16 @@ export async function runCliLLM(
           }
           throw error;
         }
+        const mismatch = selectionMode === 'pinned_id'
+          && result.actualModel !== null
+          && !pinnedModelMatches(invocationModel, result.actualModel);
         db.transaction(() => {
           assertCliCapacityFence(db, lease);
+          if (!authBindingMatches(db, request.connectionId, binding.scopeKey, binding.authEpoch)) {
+            throw new CliLLMError('ambiguous_outcome', 'CLI result binding changed before persistence', {
+              needsUserAction: true, promptCommitted: true,
+            });
+          }
           if (!finishCliInvocationFenced(db, {
             invocationId: invocation.id,
             outcome: 'success',
@@ -322,19 +424,48 @@ export async function runCliLLM(
               { needsUserAction: true, promptCommitted: true },
             );
           }
-          if (purpose === 'background') {
-            updateAliasAfterBackgroundResult(
+          if (mismatch) {
+            recordObservation('mismatch', {
+              errorKind: 'model_mismatch',
+              errorMessage: `requested ${invocationModel}, actual ${result.actualModel}`,
+              actualModel: result.actualModel,
+            });
+          } else {
+            const previous = getModelObservation(
               db,
               request.connectionId,
-              request.modelAlias,
-              result,
-              null,
+              binding.scopeKey,
+              binding.authEpoch,
+              modelId,
             );
+            // An explicit test clears a pinned mismatch only when the actual model is
+            // known and matches; unknown actual keeps the mismatch (design §5.4).
+            const keepsMismatch = previous?.lastOutcome === 'mismatch'
+              && selectionMode === 'pinned_id'
+              && result.actualModel === null;
+            if (!keepsMismatch) {
+              recordObservation('success', { actualModel: result.actualModel });
+            }
           }
         }).immediate();
+        if (mismatch && purpose === 'background') {
+          // The call happened and is accounted for, but a pinned model was silently
+          // substituted: the result is not adopted and the task is not replayed.
+          throw new CliLLMError(
+            'model_mismatch',
+            `固定模型 ${invocationModel} 实际返回 ${result.actualModel}，结果未被采用`,
+            { needsUserAction: true },
+          );
+        }
         return result;
       },
     );
+    if (purpose === 'background' && liveStatus === 'untested') {
+      db.prepare(`
+        UPDATE model_connections SET status = 'online', status_reason = NULL
+        WHERE id = ? AND archived = 0 AND status = 'untested'
+      `).run(request.connectionId);
+    }
     return result;
   } catch (error) {
     let cliError = error instanceof CliLLMError
@@ -344,6 +475,8 @@ export async function runCliLLM(
       purpose === 'background'
       && (providerCompleted || promptCommitted)
       && cliError.kind !== 'ambiguous_outcome'
+      && cliError.kind !== 'model_mismatch'
+      && !(isDefinitiveProviderRejection(cliError) && !providerCompleted)
     ) {
       cliError = new CliLLMError(
         'ambiguous_outcome',
@@ -359,15 +492,19 @@ export async function runCliLLM(
       ? 'ambiguous'
       : cliError.kind === 'aborted'
         ? 'aborted'
-        : 'definite_failure';
+        : cliError.kind === 'model_mismatch'
+          ? null
+          : 'definite_failure';
     try {
       options._testHooks?.beforeOutcomePersistence?.();
       db.transaction(() => {
-        finishCliInvocation(db, {
-          invocationId: invocation.id,
-          outcome,
-          errorKind: cliError.kind,
-        });
+        if (outcome) {
+          finishCliInvocation(db, {
+            invocationId: invocation.id,
+            outcome,
+            errorKind: cliError.kind,
+          });
+        }
         if (cliError.kind === 'ambiguous_outcome') {
           db.prepare(`
             UPDATE model_connections
@@ -385,14 +522,17 @@ export async function runCliLLM(
               WHERE id = ? AND status IN ('pending', 'processing')
             `).run(invocation.id, cliError.message.slice(0, 500), context.workItemId);
           }
-        } else if (purpose === 'background') {
-          updateAliasAfterBackgroundResult(
-            db,
-            request.connectionId,
-            request.modelAlias,
-            null,
-            cliError,
-          );
+        }
+        // Admission refusals made before submission are not new observations.
+        if (!cliError.options.admissionReason && cliError.kind !== 'model_mismatch') {
+          const observed = observationForError(cliError, Date.now());
+          if (observed) {
+            recordObservation(observed.outcome, {
+              errorKind: cliError.kind,
+              errorMessage: cliError.message,
+              backoffUntil: observed.backoffUntil,
+            });
+          }
         }
       }).immediate();
     } catch (persistenceError) {

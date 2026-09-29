@@ -7,7 +7,7 @@ const name = basename(process.argv[1] ?? '');
 const kind = name.includes('claude') ? 'claude' : name.includes('codex') ? 'codex' : 'fake';
 
 if (args.includes('--version')) {
-  process.stdout.write(kind === 'claude' ? '2.1.215 (Claude Code)\\n' : 'codex-cli 0.145.0-alpha.18\\n');
+  process.stdout.write(kind === 'claude' ? '2.1.215 (Claude Code)\n' : 'codex-cli 0.145.0-alpha.18\n');
   process.exit(0);
 }
 
@@ -22,7 +22,7 @@ if (args[0] === 'auth' && args[1] === 'status') {
 }
 
 if (args[0] === 'login' && args[1] === 'status') {
-  process.stdout.write('Logged in using ChatGPT\\n');
+  process.stdout.write('Logged in using ChatGPT\n');
   process.exit(0);
 }
 
@@ -44,6 +44,14 @@ if (stdin.startsWith('QUOTA')) {
   process.stderr.write('You have insufficient quota');
   process.exit(1);
 }
+if (stdin.startsWith('MODEL_UNAVAILABLE')) {
+  process.stderr.write('Error: model not found for this account');
+  process.exit(1);
+}
+if (stdin.startsWith('EXIT1')) {
+  process.stderr.write('something unexpected happened');
+  process.exit(1);
+}
 if (stdin.startsWith('GRANDCHILD')) {
   const grandchild = spawn(process.execPath, [
     '-e',
@@ -53,6 +61,20 @@ if (stdin.startsWith('GRANDCHILD')) {
   process.exit(0);
 }
 
+// Reported ("actual") model control:
+//   ACTUAL=<id> …  report <id>;  ACTUAL=ECHO …  report the requested --model / -m value;
+//   NOMODEL …     report no model at all (actual unknown).
+const requestedModel = (() => {
+  const index = args.findIndex((value) => value === '--model' || value === '-m');
+  return index >= 0 ? args[index + 1] : null;
+})();
+const actualMatch = /^ACTUAL=(\S+)/.exec(stdin);
+const reportedModel = stdin.startsWith('NOMODEL')
+  ? null
+  : actualMatch
+    ? (actualMatch[1] === 'ECHO' ? requestedModel : actualMatch[1])
+    : null;
+
 const inspection = JSON.stringify({
   argv: args,
   cwd: process.cwd(),
@@ -61,7 +83,9 @@ const inspection = JSON.stringify({
 });
 
 if (args[0] === 'exec') {
-  process.stdout.write(`${JSON.stringify({ type: 'thread.started', model: 'gpt-fixture' })}\n`);
+  process.stdout.write(`${JSON.stringify(stdin.startsWith('NOMODEL')
+    ? { type: 'thread.started' }
+    : { type: 'thread.started', model: reportedModel ?? 'gpt-fixture' })}\n`);
   process.stdout.write(`${JSON.stringify({ type: 'turn.started' })}\n`);
   if (stdin.startsWith('TOOL')) {
     process.stdout.write(`${JSON.stringify({
@@ -89,7 +113,7 @@ if (args[0] === 'exec') {
     subtype: 'success',
     is_error: false,
     result: inspection,
-    model: 'claude-fixture',
+    ...(stdin.startsWith('NOMODEL') ? {} : { model: reportedModel ?? 'claude-fixture' }),
     usage: { input_tokens: 11, cache_read_input_tokens: 2, output_tokens: 7 },
   }));
 }

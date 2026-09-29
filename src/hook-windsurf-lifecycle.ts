@@ -16,6 +16,7 @@ import { getTideMindVersion } from './utils/app-version.js';
 import { createLogger } from './utils/logger.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { matchesExpectedInstructionSha256 } from './agent-integration-recognition.js';
+import { hookBridgeRejection } from './hook-bridge-guard.js';
 import { writeSerializedHookOutput, writeSerializedHookOutputBeforeEvidence } from './hook-output.js';
 
 const STDIN_TIMEOUT_MS = 2_000;
@@ -191,6 +192,11 @@ async function main(): Promise<void> {
       recordActivity(args);
     });
     return;
+  }
+
+  if (hookBridgeRejection({ scope: 'hook-windsurf-lifecycle', agentId: args.agentId, activityGenerationToken: args.activityGenerationToken })) {
+    await writeSerializedHookOutput(formatWindsurfLifecycleHookOutput(args.event))
+    return
   }
 
   let prepared: { context: string; skillVerified: boolean };

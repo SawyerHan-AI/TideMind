@@ -51,6 +51,16 @@ export function allowedVulnerability(name, vulnerabilities) {
   return allCausesAllowed(name, vulnerabilities) && reachesAllowedAdvisory(name, vulnerabilities);
 }
 
+// npm audit did not report the upstream Electron sandbox advisories on
+// 2026-09-29. Keep the reviewed runtime explicit instead of trusting that feed
+// alone: GHSA-gr2m-v5gq-v685 and GHSA-9qh4-3jw8-366w affect <41.10.6.
+export function assertReviewedElectronVersion(lock) {
+  const version = lock.packages?.['node_modules/electron']?.version;
+  if (version !== '41.10.7') {
+    throw new Error(`Electron runtime requires renewed upstream security review; expected 41.10.7, found ${version ?? 'missing'}`);
+  }
+}
+
 export function assertPatchedBraceVersions(lock) {
   const versions = Object.entries(lock.packages ?? {})
     .filter(([key]) => key === 'node_modules/brace-expansion' || key.endsWith('/node_modules/brace-expansion'))
@@ -132,6 +142,7 @@ function main() {
     throw new Error(`npm audit did not return JSON:\n${raw}`);
   }
   const lock = JSON.parse(readFileSync(path.join(clientRoot, 'package-lock.json'), 'utf8'));
+  assertReviewedElectronVersion(lock);
   const accepted = validateAuditReport(report, lock, path.join(clientRoot, 'src'));
   if (accepted.length === 0) {
     console.log('✓ client dependency audit clean');

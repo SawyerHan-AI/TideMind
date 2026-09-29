@@ -240,7 +240,7 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
       testOnlyAllowUnacceptedRelease: true,
     })
     expect(result).toMatchObject({
-      appVersion: '0.2.92',
+      appVersion: '0.2.93',
       recordedStepCount: 0,
       requiredUpgradePaths: expect.arrayContaining([
         'opencode-v2-beta-cli:arm64:cli%3Aopencode-v2-beta-cli%3Adarwin-arm64/0.2.89',
@@ -287,7 +287,7 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
         activityBinding: {
           installationId: 'installation-custom', agentId: 'eb_custom', activationRunId: 'run-custom',
           generationSha256: sha256('generation'), connectorConfigurationSha256: sha256('configuration'),
-          runtimeBindingSha256: sha256('runtime'), tideMindVersion: '0.2.92', adapterVersion: '1', projectionVersion: '1', hostVersion: 'custom-123',
+          runtimeBindingSha256: sha256('runtime'), tideMindVersion: '0.2.93', adapterVersion: '1', projectionVersion: '1', hostVersion: 'custom-123',
           schemaKind, selectorKey,
           evidence: ['brain_recall','brain_digest'].map(signalName => ({
             id: `aha_${sha256(signalName).slice(0,24)}`, signalName, evidenceHash: sha256(signalName), observedAt: '2026-09-05T00:00:00.000Z',
@@ -600,7 +600,7 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
         targetKey: target.targetKey,
         targetId: target.targetId,
         fromAppVersion,
-        toAppVersion: '0.2.92',
+        toAppVersion: '0.2.93',
         sourceCommit: state.sourceCommit,
         releaseContractSha256: state.releaseContractSha256,
         candidateBundleSha256: state.candidateAppsByArchitecture[target.environment.architecture].bundleSha256,

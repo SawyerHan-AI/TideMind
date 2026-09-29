@@ -1,241 +1,119 @@
-import type { CliProviderType } from './types.js';
-
-export const CLAUDE_MODEL_ALIASES = ['default', 'haiku', 'sonnet', 'opus', 'fable'] as const;
-export const CODEX_MODEL_ALIASES = [
-  'default',
-  'gpt-5.6-sol',
-  'gpt-5.6-terra',
-  'gpt-5.6-luna',
-  'gpt-5.5',
-  'gpt-5.2',
-] as const;
-
-export const CLI_MODEL_CATALOGS: Readonly<Record<CliProviderType, readonly string[]>> = {
-  'claude-cli': CLAUDE_MODEL_ALIASES,
-  'codex-cli': CODEX_MODEL_ALIASES,
-};
+import type { CliCatalogModel, CliProviderType } from './types.js';
 
 /**
- * Codex capability snapshots are deliberately exact. An unknown version or
- * feature is unsupported until its help/features fixtures are reviewed.
+ * 模型选择与执行合同的静态部分。
+ *
+ * 这里不再是模型权限名单（design §5）：
+ * - Codex 的模型目录来自所选 CLI 的 app-server model/list；
+ * - Claude Code 在 SDK 认证准入未被证明前（design §5.1 / B5）只提供官方 family alias
+ *   作为选择建议，并允许用户手动输入模型 ID，UI 标注“别名/自定义、待验证”。
  */
-export interface CodexCapabilityManifest {
-  version: string;
-  requiredExecHelp: readonly string[];
-  requiredPromptInputHelp: readonly string[];
-  knownFeatures: Readonly<Record<string, Readonly<{ stage: string; enabled: boolean }>>>;
-  disableFeatures: readonly string[];
+
+/** Tide Mind selection mode meaning "use the CLI's own default model". Not a real model. */
+export const FOLLOW_DEFAULT_MODEL = 'default';
+
+/** Official Claude Code family aliases offered as suggestions (not an allowlist). */
+export const CLAUDE_FAMILY_ALIASES = ['sonnet', 'opus', 'haiku', 'fable'] as const;
+
+export function claudeAliasCatalog(): CliCatalogModel[] {
+  return CLAUDE_FAMILY_ALIASES.map((alias) => ({
+    id: alias,
+    invocationId: alias,
+    displayName: alias.charAt(0).toUpperCase() + alias.slice(1),
+    kind: 'alias' as const,
+    isDefault: false,
+    hidden: false,
+    upgrade: null,
+    retirementAt: null,
+    reasoningEfforts: [],
+  }));
 }
 
-function featureSnapshot(
-  rows: readonly [name: string, stage: string, enabled: boolean][],
-): Readonly<Record<string, Readonly<{ stage: string; enabled: boolean }>>> {
-  return Object.fromEntries(
-    rows.map(([name, stage, enabled]) => [name, { stage, enabled }]),
-  );
+export type ModelSelectionMode = 'follow_default' | 'alias' | 'pinned_id';
+
+/**
+ * Derive the selection mode from a persisted route value. Claude family aliases are
+ * lowercase words (optionally with a `[1m]` context suffix); anything else is a pinned id.
+ */
+export function selectionModeFor(providerType: string, modelId: string): ModelSelectionMode {
+  if (modelId === FOLLOW_DEFAULT_MODEL) return 'follow_default';
+  if (providerType === 'claude-cli' && /^[a-z]+(?:\[1m\])?$/.test(modelId)) return 'alias';
+  return 'pinned_id';
 }
 
-function evolveFeatureSnapshot(
-  base: Readonly<Record<string, Readonly<{ stage: string; enabled: boolean }>>>,
-  rows: readonly [name: string, stage: string, enabled: boolean][],
-): Readonly<Record<string, Readonly<{ stage: string; enabled: boolean }>>> {
-  return Object.freeze({ ...base, ...featureSnapshot(rows) });
+/**
+ * Whether an actual model reported by the CLI can be proven equivalent to a pinned id.
+ * Only identity or a dated snapshot suffix of the same id qualifies; everything else is a
+ * mismatch (design §5.3). Callers must treat `actual === null` as unknown, not equal.
+ */
+export function pinnedModelMatches(requested: string, actual: string): boolean {
+  if (actual === requested) return true;
+  return actual.startsWith(`${requested}-`) && /^-\d{8}$/.test(actual.slice(requested.length));
 }
 
-function enabledFeatures(
-  snapshot: Readonly<Record<string, Readonly<{ stage: string; enabled: boolean }>>>,
-): readonly string[] {
-  return Object.freeze(
-    Object.entries(snapshot)
-      .filter(([, state]) => state.enabled)
-      .map(([name]) => name),
-  );
+const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@[\]-]{0,127}$/;
+
+/** Manual model ids are passed as an independent argv element; still bound them. */
+export function isValidManualModelId(value: string): boolean {
+  return MODEL_ID_PATTERN.test(value);
 }
 
-const CODEX_0145_FEATURES = featureSnapshot([
-  ['apply_patch_freeform', 'removed', false],
-  ['apply_patch_streaming_events', 'under development', false],
-  ['apps', 'stable', true],
-  ['apps_mcp_path_override', 'removed', false],
-  ['artifact', 'under development', false],
-  ['auth_elicitation', 'stable', true],
-  ['browser_use', 'stable', true],
-  ['browser_use_external', 'stable', true],
-  ['browser_use_full_cdp_access', 'stable', true],
-  ['chronicle', 'under development', false],
-  ['code_mode', 'under development', false],
-  ['code_mode_host', 'stable', true],
-  ['code_mode_only', 'under development', false],
-  ['codex_git_commit', 'removed', false],
-  ['collaboration_modes', 'removed', true],
-  ['computer_use', 'stable', true],
-  ['concurrent_reasoning_summaries', 'under development', false],
-  ['current_time_reminder', 'under development', false],
-  ['default_mode_request_user_input', 'under development', false],
-  ['deferred_executor', 'under development', false],
-  ['elevated_windows_sandbox', 'removed', false],
-  ['enable_fanout', 'under development', false],
-  ['enable_mcp_apps', 'under development', false],
-  ['enable_request_compression', 'stable', true],
-  ['exec_permission_approvals', 'under development', false],
-  ['experimental_windows_sandbox', 'removed', false],
-  ['external_agent_memory_import', 'under development', false],
-  ['external_migration', 'removed', false],
-  ['fast_mode', 'stable', true],
-  ['goals', 'stable', true],
-  ['guardian_approval', 'stable', true],
-  ['hooks', 'stable', true],
-  ['image_detail_original', 'removed', false],
-  ['image_generation', 'stable', true],
-  ['in_app_browser', 'stable', true],
-  ['item_ids', 'under development', false],
-  ['js_repl', 'removed', false],
-  ['js_repl_tools_only', 'removed', false],
-  ['local_thread_store_compression', 'under development', false],
-  ['memories', 'stable', true],
-  ['mentions_v2', 'stable', true],
-  ['multi_agent', 'stable', true],
-  ['multi_agent_mode', 'removed', false],
-  ['multi_agent_v2', 'under development', false],
-  ['network_proxy', 'experimental', false],
-  ['non_prefixed_mcp_tool_names', 'under development', false],
-  ['personality', 'stable', true],
-  ['plugin_hooks', 'removed', false],
-  ['plugin_sharing', 'stable', true],
-  ['plugins', 'stable', true],
-  ['prevent_idle_sleep', 'experimental', false],
-  ['realtime_conversation', 'under development', false],
-  ['remote_compaction_v2', 'stable', true],
-  ['remote_control', 'removed', false],
-  ['remote_models', 'removed', false],
-  ['remote_plugin', 'stable', true],
-  ['request_permissions_tool', 'under development', false],
-  ['request_rule', 'removed', false],
-  ['resize_all_images', 'removed', true],
-  ['respect_system_proxy', 'under development', false],
-  ['responses_websockets', 'removed', false],
-  ['responses_websockets_v2', 'removed', false],
-  ['rollout_budget', 'under development', false],
-  ['runtime_metrics', 'under development', false],
-  ['search_tool', 'removed', false],
-  ['secret_auth_storage', 'stable', false],
-  ['shell_snapshot', 'stable', true],
-  ['shell_tool', 'stable', true],
-  ['shell_zsh_fork', 'under development', false],
-  ['skill_env_var_dependency_prompt', 'removed', false],
-  ['skill_mcp_dependency_install', 'stable', true],
-  ['skill_search', 'stable', true],
-  ['sqlite', 'removed', true],
-  ['standalone_web_search', 'under development', false],
-  ['steer', 'removed', true],
-  ['terminal_resize_reflow', 'removed', true],
-  ['terminal_visualization_instructions', 'under development', false],
-  ['token_budget', 'under development', false],
-  ['tool_call_mcp_elicitation', 'stable', true],
-  ['tool_search', 'removed', false],
-  ['tool_search_always_defer_mcp_tools', 'removed', true],
-  ['tool_suggest', 'stable', true],
-  ['tui_app_server', 'removed', true],
-  ['unavailable_dummy_tools', 'removed', false],
-  ['undo', 'removed', false],
-  ['unified_exec', 'stable', true],
-  ['unified_exec_zsh_fork', 'under development', false],
-  ['use_agent_identity', 'under development', false],
-  ['use_legacy_landlock', 'deprecated', false],
-  ['use_linux_sandbox_bwrap', 'removed', false],
-  ['web_search_cached', 'deprecated', false],
-  ['web_search_request', 'deprecated', false],
-  ['workspace_dependencies', 'stable', true],
-  ['workspace_owner_usage_nudge', 'removed', false],
-]);
+export const CLI_PROVIDER_TYPES: readonly CliProviderType[] = ['claude-cli', 'codex-cli'];
 
-// Captured from the official OpenAI 0.153.4 arm64 release binary. This is an
-// exact evolution of the previously reviewed snapshot: omitted rows retain
-// their 0.145 state, while every added or changed row is frozen below.
-const CODEX_0153_FEATURES = evolveFeatureSnapshot(CODEX_0145_FEATURES, [
-  ['apply_patch_preserve_line_endings', 'under development', false],
-  ['background_paginated_rollout_migration', 'under development', false],
-  ['bedrock_setup_wizard', 'under development', false],
-  ['code_mode_buffered_exec', 'removed', false],
-  ['code_mode_interrupt', 'under development', false],
-  ['code_mode_prewarm', 'under development', false],
-  ['compaction_image_budget', 'stable', true],
-  ['content_item_kinds', 'stable', true],
-  ['context_management', 'under development', false],
-  ['cwd_relative_turn_diffs', 'under development', false],
-  ['deferred_tool_world_state', 'under development', false],
-  ['enable_fanout', 'removed', false],
-  ['executed_tool_call_metadata', 'under development', false],
-  ['executor_capability_discovery', 'under development', false],
-  ['guardian_enhanced_node_repl_transcripts', 'under development', false],
-  ['guardian_ext', 'under development', false],
-  ['guardian_node_repl_transcript_images', 'under development', false],
-  ['guardian_reuse_parent_compaction', 'under development', false],
-  ['guardianv2', 'under development', false],
-  ['image_resize_notice', 'under development', false],
-  ['in_app_chat', 'stable', true],
-  ['in_app_dictation', 'stable', true],
-  ['in_app_local_automation', 'stable', true],
-  ['in_app_updates', 'stable', true],
-  ['item_ids', 'removed', true],
-  ['local_thread_store_shared_compression', 'removed', false],
-  ['mcp_2026_07_28', 'under development', false],
-  ['mcp_oauth_refresh_coordination', 'under development', false],
-  ['memories', 'stable', false],
-  ['multi_agent_v2', 'stable', false],
-  ['omit_app_server_notification_media', 'under development', false],
-  ['powershell_shell_version', 'under development', false],
-  ['psp', 'under development', false],
-  ['recommended_plugins', 'stable', false],
-  ['retain_client_developer_messages', 'under development', false],
-  ['send_async_message', 'removed', false],
-  ['shell_snapshot_v2', 'under development', false],
-  ['skip_host_skill_discovery', 'under development', false],
-  ['sleep_tool', 'stable', true],
-  ['step_model_switching', 'under development', false],
-  ['transcript_v2', 'under development', false],
-  ['unbounded_connection_retries', 'stable', true],
-  ['unified_exec_zsh_fork', 'removed', true],
-  ['unified_image_budget', 'under development', false],
-  ['view_image', 'stable', true],
-  ['write_stdin_approval', 'under development', false],
-]);
+/**
+ * Codex execution contract (design §4). Replaces the exact version + full feature
+ * snapshot equality. Evidence: P0 CLI evidence doc §3.
+ *
+ * Every listed feature is passed as `--disable`, then the *effective* feature list is
+ * read back with the same overrides. A feature that remains enabled must appear here
+ * with the external boundary that constrains it; any other residual (in particular an
+ * unreviewed name) blocks the inference channel as `unknown_active_feature`.
+ */
+export const CODEX_EXECUTION_CONTRACT_VERSION = 2;
 
-// The account-backed CLI is used as a text-only model transport. Disable every
-// feature that the reviewed binary reports as enabled; retaining a subjective
-// "dangerous" subset would let newly understood remote/tool behavior execute
-// before the output parser can reject it.
-const DISABLED_CODEX_FEATURES = Object.freeze(
-  enabledFeatures(CODEX_0145_FEATURES),
-);
+export const CODEX_REQUIRED_EXEC_HELP = [
+  '--ignore-user-config',
+  '--ignore-rules',
+  '--ephemeral',
+  '--json',
+  '--skip-git-repo-check',
+  '--strict-config',
+] as const;
 
-export const CODEX_CAPABILITY_MANIFESTS: readonly CodexCapabilityManifest[] = [
-  {
-    version: '0.145.0-alpha.18',
-    requiredExecHelp: [
-      '--ignore-user-config',
-      '--ignore-rules',
-      '--ephemeral',
-      '--json',
-      '--skip-git-repo-check',
-      '--strict-config',
-    ],
-    requiredPromptInputHelp: ['prompt-input'],
-    knownFeatures: CODEX_0145_FEATURES,
-    disableFeatures: DISABLED_CODEX_FEATURES,
-  },
-  {
-    version: '0.153.4',
-    requiredExecHelp: [
-      '--ignore-user-config',
-      '--ignore-rules',
-      '--ephemeral',
-      '--json',
-      '--skip-git-repo-check',
-      '--strict-config',
-    ],
-    requiredPromptInputHelp: ['prompt-input'],
-    knownFeatures: CODEX_0153_FEATURES,
-    disableFeatures: enabledFeatures(CODEX_0153_FEATURES),
-  },
-];
+export const CODEX_REQUIRED_PROMPT_INPUT_HELP = ['prompt-input'] as const;
+
+export const CODEX_FORCED_FEATURE_BOUNDARIES: Readonly<Record<string, string>> = Object.freeze({
+  // Removed-stage flags whose behavior is folded into core and cannot be disabled.
+  item_ids: 'event item identifiers only',
+  resize_all_images: 'image input scaling; no image input is sent',
+  terminal_resize_reflow: 'interactive TUI only; exec is non-interactive',
+  tui_app_server: 'interactive TUI only; exec is non-interactive',
+  tool_search_always_defer_mcp_tools: 'MCP deferral; mcp_servers={} leaves no MCP tools',
+  collaboration_modes: 'mode prompts disabled by include_collaboration_mode_instructions=false',
+  steer: 'interactive steering only; stdin prompt is committed once',
+  sqlite: 'local state store; --ephemeral keeps no session',
+  // Official rust-v0.157.1 tools/spec_plan.rs:add_shell_tools returns before any
+  // registration when ShellTool is false. gate-codex requires that effective state.
+  unified_exec: 'shell_tool=false prevents registering exec_command/write_stdin',
+  unified_exec_zsh_fork: 'shell_tool=false prevents shell registration',
+
+});
+
+/** Static `-c` overrides shared by inference and contract verification. */
+export const CODEX_EXEC_CONFIG_OVERRIDES = [
+  '-c', 'approval_policy="never"',
+  '-c', 'tools.experimental_request_user_input.enabled=false',
+  '-c', 'tools.update_plan.enabled=false',
+  '-c', 'skills.include_instructions=false',
+  '-c', 'mcp_servers={}',
+  '-c', 'hooks={}',
+  '-c', 'notify=[]',
+  '-c', 'marketplaces={}',
+  '-c', 'plugins={}',
+  '-c', 'apps={}',
+  '-c', 'web_search="disabled"',
+  '-c', 'include_environment_context=false',
+  '-c', 'include_permissions_instructions=false',
+  '-c', 'include_apps_instructions=false',
+  '-c', 'include_collaboration_mode_instructions=false',
+] as const;

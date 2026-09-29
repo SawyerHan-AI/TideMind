@@ -16,7 +16,9 @@ import {
   type CoordinatorIdFactory,
   type CoordinatorInstallation,
   type RecoverableExecution,
+  type SharedDomainConsumer,
   frozenPlanInstallationSurfaceFingerprint,
+  isOwnershipOnlyDisconnectPlan,
   frozenPlanLiveTrustProofFingerprint,
 } from './coordinator.js'
 import {
@@ -67,13 +69,21 @@ import {
   AGENT_INTEGRATION_RELEASE_ENTRY_MAP,
   AGENT_INTEGRATION_RELEASE_MANIFEST,
   applyAgentReleaseGateToReport,
-  agentReleaseEligibilityReason,
-  agentReleaseSurfaceEligibilityReason,
   isAgentReleaseGateReason,
   resolveAcceptedKimiNativeReceipt,
   resolveAgentIntegrationReleasePolicy,
   type AgentIntegrationReleasePolicyMode,
 } from './release-manifest.js'
+import {
+  applyRuntimeCompatibilityToReport,
+  currentArchitecture,
+  isRuntimeSourceReason,
+  runtimeSourceReason,
+  runtimeSourceSurfaceOf,
+  setSourceVerificationStore,
+  type SourceVerifier,
+} from './runtime-compatibility.js'
+import { createProductionSourceVerification } from './source-verification-queue.js'
 import { kimiNativeReceiptLookupFingerprint } from './distribution-artifact.js'
 import {
   AgentIntegrationService,
@@ -283,19 +293,56 @@ export function createProductionAgentIntegrationComposition(
   const runtimeContext = options.runtimeContext ?? defaultRuntimeContext(homeDir, applicationDataDir)
   const distributionCanManageInstallation = options.canManageInstallation
     ?? (row => isProductionInstallationTrusted(row, homeDir))
+  // Runtime source compatibility (implementation notes §2). With the production
+  // composition the decision is recomputed from the persisted surface every time, so a
+  // stale persisted reason from an earlier build never becomes a permanent block; the
+  // hermetic test seams keep honoring the persisted scan decision.
   const currentReleaseReason = (row: AgentInstallationRow) => {
     const persistedReason = persistedManagementEligibility(row)?.reason
-    if (isAgentReleaseGateReason(persistedReason)) return persistedReason
-    if (!enforceReleaseAcceptance || row.host_variant === 'custom-local-mcp') return null
+    if (!enforceReleaseAcceptance || row.host_variant === 'custom-local-mcp') {
+      return isRuntimeSourceReason(persistedReason) || isAgentReleaseGateReason(persistedReason)
+        ? persistedReason
+        : null
+    }
     const distribution = persistedDistribution(row)
-    return agentReleaseSurfaceEligibilityReason({
+    return runtimeSourceReason({
       catalogId: row.host_variant as CatalogId,
       detectedVersion: row.detected_version,
       distributionId: distribution.distributionId ?? row.distribution_id,
       packageProvenance: distribution.packageProvenance,
-      architecture: process.arch === 'x64' ? 'x64' : 'arm64',
+      architecture: currentArchitecture(),
       portableArtifactFingerprint: distribution.portableArtifactFingerprint,
     })
+  }
+  // Shared physical domains (design §3.3.1). Every other registered consumer of a
+  // written artifact/container — paused ones included, since the host may still read
+  // it — contributes its generation to the write CAS; any consumer lacking
+  // current compatibility evidence blocks the shared write.
+  const sharedConsumerFacts = (
+    runtimeRealm: string,
+    targets: readonly string[],
+    excludeInstallationId: string,
+  ): SharedDomainConsumer[] => repository.listSharedTargetConsumerInstallationIds({
+    runtimeRealm,
+    targets,
+    excludeInstallationId,
+  }).map(installationId => {
+    const row = repository.getInstallation(installationId)
+    if (!row) {
+      return { installationId, generation: 'missing', blockingReason: `shared_consumer_not_compatible:${installationId}` }
+    }
+    const incompatible = !canManageInstallation(row) || row.supported_capability === 0
+    return {
+      installationId,
+      generation: persistedProjectionSurfaceFingerprint(row),
+      blockingReason: incompatible ? `shared_consumer_not_compatible:${installationId}` : null,
+    }
+  })
+  const sharedArtifactBlockReason = (candidate: ManagedReconcileCandidate): string | null => {
+    const target = repository.getManagedArtifactTarget(candidate.artifactId)
+    if (!target) return null
+    return sharedConsumerFacts(target.runtimeRealm, [target.targetPath], candidate.installation.id)
+      .find(consumer => consumer.blockingReason !== null)?.blockingReason ?? null
   }
   const canManageInstallation = (row: AgentInstallationRow): boolean => (
     isCustomInstallationManagementContractValid(row, repository, AGENT_INTEGRATION_RELEASE_ENTRY_MAP)
@@ -346,6 +393,28 @@ export function createProductionAgentIntegrationComposition(
       ? proof
       : null
   }
+  // Ownership-only disconnect (design §3.5): the source is not trusted, so no live
+  // source proof exists. Authority is limited to the exact Installation whose
+  // discovery surface is unchanged since the approved plan; the coordinator
+  // additionally enforces Ledger ownership and live CAS for every effect.
+  const canOwnershipOnlyDisconnect = (
+    installation: CoordinatorInstallation,
+    expectedSurface: string | null,
+  ): boolean => {
+    const current = repository.getInstallation(installation.id)
+    return Boolean(
+      current
+      && expectedSurface
+      && expectedSurface === persistedProjectionSurfaceFingerprint(current)
+      && current.install_key === installation.identity.installKey
+      && current.agent_id === installation.agentId
+      && current.host_variant === installation.identity.hostVariant
+      && current.runtime_realm === installation.identity.runtimeRealm
+      && current.host_variant !== 'claude-desktop-legacy'
+      && isCustomInstallationManagementContractValid(current, repository, AGENT_INTEGRATION_RELEASE_ENTRY_MAP)
+      && recoveryAdapters.get(installation.identity.hostVariant) !== undefined,
+    )
+  }
   const attestCurrentInstallation = async (
     installation: CoordinatorInstallation,
     expectedProofFingerprint?: string,
@@ -377,11 +446,27 @@ export function createProductionAgentIntegrationComposition(
       frozenProjectionSurfaceFingerprint(installation.identity.distribution)
     ),
     liveTrustProof: installation => attestCurrentInstallation(installation),
-    authorizeEffect: async (installation, binding) => Boolean(
-      binding.installationSurfaceFingerprint
-      && binding.liveTrustProofFingerprint
-      && canManageCurrentInstallation(installation)
-      && await attestCurrentInstallation(installation, binding.liveTrustProofFingerprint),
+    authorizeEffect: async (installation, binding, scope) => {
+      if (binding.liveTrustProofFingerprint) {
+        return Boolean(
+          binding.installationSurfaceFingerprint
+          && canManageCurrentInstallation(installation)
+          && await attestCurrentInstallation(installation, binding.liveTrustProofFingerprint),
+        )
+      }
+      // Without source trust only a disconnect of Tide Mind-owned file fragments
+      // (or its read-only verification/finalization) may proceed.
+      return Boolean(
+        binding.ownershipOnlyDisconnectBinding
+        && scope?.operation === 'disconnect'
+        && (scope.mutationDomain === null || scope.mutationDomain === 'file_fragment')
+        && canOwnershipOnlyDisconnect(installation, binding.installationSurfaceFingerprint),
+      )
+    },
+    sharedDomainConsumers: (installation, mutation) => sharedConsumerFacts(
+      installation.identity.runtimeRealm,
+      [mutation.physicalTarget, ...(mutation.additionalFenceTargets ?? []).map(target => target.physicalTarget)],
+      installation.id,
     ),
     hostActivityEvidence: new SqliteHostActivityEvidenceReader(db),
     codexHookTrustEvidence: repository,
@@ -404,7 +489,24 @@ export function createProductionAgentIntegrationComposition(
     observeOnly,
     autoRestore: releasePolicy.autoRestore,
     canManageInstallation: installation => attestCurrentInstallation(installation).then(Boolean),
+    sharedArtifactBlockReason,
     canContinueRecovery: async execution => {
+      if (execution.runState === 'verified' && !execution.liveTrustProofFingerprint
+        && execution.ownershipOnlyDisconnectBinding) {
+        const current = repository.getInstallation(execution.installationId)
+        return Boolean(
+          current
+          && execution.installationSurfaceFingerprint
+          && execution.installationSurfaceFingerprint === persistedProjectionSurfaceFingerprint(current)
+          && current.desired_state === 'removed',
+        )
+      }
+      if (execution.runState !== 'verified' && isOwnershipOnlyDisconnectPlan(execution.preparedPlan)) {
+        return canOwnershipOnlyDisconnect(
+          execution.installation,
+          frozenPlanInstallationSurfaceFingerprint(execution.preparedPlan),
+        )
+      }
       if (execution.runState === 'verified') {
         const current = repository.getInstallation(execution.installationId)
         return Boolean(
@@ -428,9 +530,22 @@ export function createProductionAgentIntegrationComposition(
       )
     },
   })
+  // npm official-source verification (A-WP2): the runtime decision reads the local
+  // cache synchronously; the scanner only enqueues background checks, and a durable
+  // result triggers a rescan. Hermetic compositions keep no store (npm stays pending
+  // unless a tested sample matches).
+  const sourceVerification = enforceReleaseAcceptance
+    ? createProductionSourceVerification(db, () => {
+        void service.scan().catch(() => undefined)
+      })
+    : null
+  setSourceVerificationStore(sourceVerification?.store ?? null)
   const scanner = options.scanner ?? (options.discoveryDependencies
     ? createProductionScanner(homeDir, discoveryDependencies)
-    : releaseGatedScanner(createProductionScanner(homeDir, discoveryDependencies)))
+    : releaseGatedScanner(
+        createProductionScanner(homeDir, discoveryDependencies),
+        sourceVerification?.verifier.enqueue ?? null,
+      ))
   const configRootWatcher = new AgentConfigRootWatcher({
     allowedRoots: [homeDir, applicationDataDir],
     onChange: () => service.scan().then(() => undefined),
@@ -811,7 +926,7 @@ export function isProductionInstallationTrusted(
   // Every writable channel must wait for one authoritative fresh scan.
   if (row.health_state !== 'discovered') return false
   const eligibility = persistedManagementEligibility(row)
-  if (isAgentReleaseGateReason(eligibility?.reason)) return false
+  if (isAgentReleaseGateReason(eligibility?.reason) || isRuntimeSourceReason(eligibility?.reason)) return false
   if (row.host_variant === 'custom-local-mcp') {
     return customMcpTrustBinding(row, homeDir) !== null
   }
@@ -869,6 +984,12 @@ function persistedExplicitExecutableRealpath(row: AgentInstallationRow): string 
  * CLI trust comes only from the exact adjacent npm manifest; Desktop trust
  * comes only from the platform code-signing verifier on the canonical bundle.
  */
+// Strict codesign traversals on current official desktop bundles take ~9s on
+// the acceptance host. Keep the same strict identity/CAS checks with a realistic
+// per-step budget. The final synchronous check can block the main thread for
+// this duration; moving that boundary requires a separate lifecycle design.
+const LIVE_TRUST_PROOF_TIMEOUT_MS = 20_000
+
 export function createProductionLiveTrustAttestor(
   dependencies: DiscoveryDependencies,
   options: {
@@ -894,7 +1015,7 @@ export function createProductionLiveTrustAttestor(
       try {
         const executablePath = path.resolve(executable)
         if (!isExactDesktopMainExecutable(appPath, executablePath)) return null
-        const surfaceBefore = await inspectStableDesktopBundleSurface(dependencies, appPath, 2_000)
+        const surfaceBefore = await inspectStableDesktopBundleSurface(dependencies, appPath, LIVE_TRUST_PROOF_TIMEOUT_MS)
         const frozenSurfaceFingerprint = `${DESKTOP_BUNDLE_SURFACE_SCHEMA}:${surfaceBefore.fingerprint}`
         if (surfaceBefore.appRealpath !== appPath
           || surfaceBefore.executableRealpath !== executablePath
@@ -906,9 +1027,9 @@ export function createProductionLiveTrustAttestor(
           : undefined
         const physicalSurfaceBefore = stableDesktopSurfaceIdentityProofSync(appPath, executablePath)
         const signature = await dependencies.inspectAppSignature(appPath, {
-          timeoutMs: 2_000,
+          timeoutMs: LIVE_TRUST_PROOF_TIMEOUT_MS,
           beforeFinalVerification: async () => {
-            const surfaceAfter = await inspectStableDesktopBundleSurface(dependencies, appPath, 2_000)
+            const surfaceAfter = await inspectStableDesktopBundleSurface(dependencies, appPath, LIVE_TRUST_PROOF_TIMEOUT_MS)
             const appAfter = await stableCanonicalNodeProof(appPath, 'directory')
             const executableAfter = await stableDesktopExecutableProof(executablePath)
             const portableExecutableDuring = portableExecutableBefore && dependencies.fs.readStableFileFingerprint
@@ -923,7 +1044,7 @@ export function createProductionLiveTrustAttestor(
             }
           },
         })
-        const surfaceFinal = await inspectStableDesktopBundleSurface(dependencies, appPath, 2_000)
+        const surfaceFinal = await inspectStableDesktopBundleSurface(dependencies, appPath, LIVE_TRUST_PROOF_TIMEOUT_MS)
         const appFinal = await stableCanonicalNodeProof(appPath, 'directory')
         const executableFinal = await stableDesktopExecutableProof(executablePath)
         const portableExecutableFinal = portableExecutableBefore && dependencies.fs.readStableFileFingerprint
@@ -937,7 +1058,7 @@ export function createProductionLiveTrustAttestor(
         // The earlier awaited receipt binds publisher identity. This final
         // production-owned recursive verifier is synchronous so queued work
         // cannot mutate sealed resources before the following surface CAS.
-        const finalSignature = dependencies.finalVerifyAppSignatureSync(appPath, 2_000)
+        const finalSignature = dependencies.finalVerifyAppSignatureSync(appPath, LIVE_TRUST_PROOF_TIMEOUT_MS)
         // No await is permitted after the platform's final recursive
         // attestation. This CAS binds the path now present to the
         // exact App/Info.plist/CFBundleExecutable generation frozen above.
@@ -996,7 +1117,7 @@ export function createProductionLiveTrustAttestor(
           : null
         if (row.host_variant === 'kimi-code-native' && !kimiArchitecture) return null
         const signature = await dependencies.inspectAppSignature(executablePath, {
-          timeoutMs: 2_000,
+          timeoutMs: LIVE_TRUST_PROOF_TIMEOUT_MS,
           beforeFinalVerification: async () => {
             const currentRealpath = path.resolve(await dependencies.fs.realpath(executablePath))
             const executableDuring = await readExecutableFingerprint(
@@ -1014,7 +1135,7 @@ export function createProductionLiveTrustAttestor(
           MAX_CLI_EXECUTABLE_PROOF_BYTES,
         )
         if (executableAfter.fingerprint !== executableBefore.fingerprint) return null
-        const finalSignature = dependencies.finalVerifyAppSignatureSync(executablePath, 2_000)
+        const finalSignature = dependencies.finalVerifyAppSignatureSync(executablePath, LIVE_TRUST_PROOF_TIMEOUT_MS)
         // No await after the final platform verifier. Bind the path entry and
         // open descriptor to the exact executable generation frozen above.
         if (!stableCliProofSurfaceSync(
@@ -1108,7 +1229,7 @@ export function createProductionLiveTrustAttestor(
         MAX_CLI_EXECUTABLE_PROOF_BYTES,
       )
       if (!executableBefore.executable) return null
-      const metadataBefore = await dependencies.execVersion(executablePath, [], { timeoutMs: 2_000 })
+      const metadataBefore = await dependencies.execVersion(executablePath, [], { timeoutMs: LIVE_TRUST_PROOF_TIMEOUT_MS })
       if (metadataBefore.exitCode !== 0
         || metadataBefore.verifiedPackageProvenance !== provenance
         || !metadataBefore.packageMetadataFingerprint
@@ -1127,7 +1248,7 @@ export function createProductionLiveTrustAttestor(
       const hasOwnedPackageProof = metadataBefore.packageProofNodes.some(node => node.entryType !== undefined)
       const metadataAfter = hasOwnedPackageProof
         ? metadataBefore
-        : await dependencies.execVersion(executablePath, [], { timeoutMs: 2_000 })
+        : await dependencies.execVersion(executablePath, [], { timeoutMs: LIVE_TRUST_PROOF_TIMEOUT_MS })
       if (metadataAfter.exitCode !== 0
         || metadataAfter.stdout !== metadataBefore.stdout
         || metadataAfter.verifiedPackageProvenance !== metadataBefore.verifiedPackageProvenance
@@ -1673,6 +1794,8 @@ interface RuntimeDependencies {
   autoRestore: boolean
   canManageInstallation(installation: CoordinatorInstallation): Promise<boolean>
   canContinueRecovery(execution: RecoverableExecution): Promise<boolean>
+  /** Non-null when auto-restoring this shared artifact could affect an incompatible consumer. */
+  sharedArtifactBlockReason?(candidate: ManagedReconcileCandidate): string | null
 }
 
 export class ProductionAgentIntegrationRuntime {
@@ -1781,10 +1904,14 @@ export class ProductionAgentIntegrationRuntime {
     await this.dependencies.coordinator.recoverNonTerminalRuns({
       // Read-back/finalization remains available through the recovery Adapter,
       // but replaying adapter.apply requires both current production gates.
-      canReplayEffect: installation => (
-        this.dependencies.adapters.get(installation.identity.hostVariant) !== undefined
-          ? this.dependencies.canManageInstallation(installation)
-          : false
+      canReplayEffect: (installation, execution) => (
+        this.dependencies.adapters.get(installation.identity.hostVariant) === undefined
+          ? false
+          // An ownership-only disconnect never had source trust; its replay is
+          // bound to the unchanged Installation surface plus Ledger/CAS instead.
+          : execution && isOwnershipOnlyDisconnectPlan(execution.preparedPlan)
+            ? this.dependencies.canContinueRecovery(execution)
+            : this.dependencies.canManageInstallation(installation)
       ),
       canContinueRecovery: execution => this.dependencies.canContinueRecovery(execution),
     })
@@ -1833,6 +1960,16 @@ export class ProductionAgentIntegrationRuntime {
     // replaces the Installation identity or removes its trusted provenance.
     // Do not let that stale observation mutate health, episodes, events or plans.
     if (!await this.dependencies.canManageInstallation(candidate.installation)) return
+    const observation = observationFor(candidate, inspection)
+    if (observation.kind === 'exact_missing') {
+      // Auto-restore rewrites a possibly shared artifact. It must satisfy the same
+      // shared-consumer compatibility as an interactive write (design §3.3.1).
+      const blocked = this.dependencies.sharedArtifactBlockReason?.(candidate) ?? null
+      if (blocked) {
+        this.recordSharedRestoreSkipped(candidate, blocked)
+        return
+      }
+    }
     await this.dependencies.reconciler.reconcileArtifact({
       artifactId: candidate.artifactId,
       installation: candidate.installation,
@@ -1842,8 +1979,23 @@ export class ProductionAgentIntegrationRuntime {
       componentName: candidate.componentName,
       desiredCapability: candidate.desiredCapability,
       consentId: candidate.consentId,
-      observation: observationFor(candidate, inspection),
+      observation,
       affectedConsumers: candidate.affectedConsumers,
+    })
+  }
+
+  private recordSharedRestoreSkipped(candidate: ManagedReconcileCandidate, reason: string): void {
+    this.dependencies.coordinatorRepository.recordEvent({
+      id: `event_${randomUUID()}`,
+      installationId: candidate.installation.id,
+      componentKey: candidate.componentKey,
+      artifactId: candidate.artifactId,
+      kind: 'shared_restore_blocked_by_consumer',
+      severity: 'warning',
+      episodeId: null,
+      dedupeKey: `shared_restore_blocked_by_consumer:${candidate.artifactId}:${reason}`,
+      payload: { reason, artifactId: candidate.artifactId },
+      createdAt: new Date().toISOString(),
     })
   }
 
@@ -2056,13 +2208,16 @@ function observationFor(
   }
 }
 
-function releaseGatedScanner(scanner: AgentIntegrationScannerPort): AgentIntegrationScannerPort {
+function releaseGatedScanner(
+  scanner: AgentIntegrationScannerPort,
+  verifier: SourceVerifier | null = null,
+): AgentIntegrationScannerPort {
   return {
-    scan: async () => applyAgentReleaseGateToReport(await scanner.scan()),
+    scan: async () => applyRuntimeCompatibilityToReport(await scanner.scan(), { verifier }),
     ...(scanner.previewGuidedInstallation ? {
       previewGuidedInstallation: async catalogId => {
         const installation = await scanner.previewGuidedInstallation!(catalogId)
-        return installation && agentReleaseEligibilityReason(installation) === null
+        return installation && runtimeSourceReason(runtimeSourceSurfaceOf(installation)) === null
           ? installation
           : null
       },
@@ -2110,6 +2265,8 @@ export function createProductionAgentHostMetadataEvidenceRuntime(
   fixture?: { runtimeContext: AdapterRuntimeContext },
 ): {
   scan(): Promise<ReturnType<typeof applyAgentReleaseGateToReport>>
+  /** Read-only runtime diagnostics; never substitutes for signed release acceptance. */
+  scanRuntime(): ReturnType<typeof applyRuntimeCompatibilityToReport>
   attest(row: AgentInstallationRow): Promise<string | null>
   inspectCliVersion(executableRealpath: string): ReturnType<DiscoveryDependencies['execVersion']>
   readExecutable(executableRealpath: string): Promise<StableFileFingerprint>
@@ -2124,6 +2281,7 @@ export function createProductionAgentHostMetadataEvidenceRuntime(
   const evidenceRuntime = () => fixture?.runtimeContext ?? metadataEvidenceRuntimeContext(homeDir)
   return Object.freeze({
     scan: async () => applyAgentReleaseGateToReport(await scanner.scan()),
+    scanRuntime: async () => applyRuntimeCompatibilityToReport(await scanner.scan()),
     attest,
     inspectCliVersion: executableRealpath => dependencies.execVersion(
       executableRealpath,

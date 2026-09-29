@@ -20,6 +20,7 @@ import type {
   MutationReadBack,
   OwnedArtifactBaseline,
   PlannedMutation,
+  RequiredUserActionDetail,
 } from '../types'
 
 const CATALOG_ID = 'claude-cowork-local' as const
@@ -190,14 +191,36 @@ function buildPlan(
   const desired = desiredPlugin(context)
   const action = guidedAction(context, adapterVersion, operation, desired)
   if (operation === 'disconnect') {
+    // Tide Mind never unlinks whole files automatically. The exact owned export
+    // is listed for manual removal (read back before the user's receipt is
+    // accepted); the Cowork-side plugin removal is confirmed by the user (C0).
+    const baseline = aggregateBaseline(request.ownedArtifacts, desired.targetPath)
+    const observed = inspectRegularFileWithinRoot(desired.targetPath, desired.allowedRoot)
+    const requiredUserActions = ['claude_cowork_plugin_remove_required']
+    const requiredUserActionDetails: RequiredUserActionDetail[] = [action]
+    if (observed.containerHash !== null) {
+      if (baseline.kind === 'owned' && baseline.hash === observed.containerHash) {
+        requiredUserActions.push('manually_remove_owned_document')
+        requiredUserActionDetails.push({
+          kind: 'manual_file_removal',
+          componentKey: 'instruction',
+          operation: 'disconnect',
+          physicalTarget: observed.canonicalPath,
+          ownedFragmentHash: baseline.hash,
+          instruction: `Remove the Tide Mind-owned Cowork plugin export at ${observed.canonicalPath}, then confirm the Cowork removal.`,
+        })
+      } else {
+        diagnostics.push('claude_cowork_plugin_archive_changed_outside_tidemind')
+      }
+    }
     return {
       catalogId: CATALOG_ID,
       installationKey: context.installation.installKey,
       adapterVersion,
       projectionVersion: context.runtime.projectionVersion,
       mutations: [],
-      requiredUserActions: ['claude_cowork_plugin_remove_required'],
-      requiredUserActionDetails: [action],
+      requiredUserActions,
+      requiredUserActionDetails,
       diagnostics: [...diagnostics, 'claude_cowork_plugin_registry_not_readable_guided_only'],
     }
   }
@@ -260,7 +283,37 @@ async function verifyCowork(
 ): Promise<readonly ComponentVerificationResult[]> {
   const requested = COMPONENTS.filter(component => request.componentKeys.includes(component))
   if (request.expectedCapability === 0) {
-    return requested.map(componentKey => unverified(componentKey, 'claude_cowork_plugin_removal_not_machine_readable'))
+    // Cowork's plugin registry is private. The only completion evidence is the
+    // user's explicit receipt for this exact pending disconnect generation (C0),
+    // exactly like QwenWork's GUI connector and user-owned Custom imports.
+    const binding = request.activityBinding
+    const receipt = binding?.activationRunId
+      && binding.activityGenerationToken
+      && context.installationId
+      && context.guidedRemovalEvidence
+      ? await context.guidedRemovalEvidence.findGuidedRemovalEvidence({
+          installationId: context.installationId,
+          agentId: context.agentId,
+          hostVariant: CATALOG_ID,
+          componentKey: 'memory_tools',
+          activationRunId: binding.activationRunId,
+          activityGenerationToken: binding.activityGenerationToken,
+          connectorName: path.basename(requiredTarget(context)),
+        })
+      : null
+    if (!receipt) {
+      return requested.map(componentKey => unverified(componentKey, 'claude_cowork_plugin_removal_not_machine_readable'))
+    }
+    return requested.map(componentKey => ({
+      componentKey,
+      status: 'verified' as const,
+      verifiedCapability: 0 as const,
+      evidenceRef: `user-confirmed-guided-removal:${receipt.id}`,
+      evidenceHash: sha256Json(receipt),
+      identityAssertion: context.agentId,
+      invalidationKeys: ['consent', 'activity_generation', 'host_version'],
+      diagnostics: ['user_confirmed_guided_removal'],
+    }))
   }
   const desired = desiredPlugin(context)
   const observed = inspectRegularFileWithinRoot(desired.targetPath, desired.allowedRoot)

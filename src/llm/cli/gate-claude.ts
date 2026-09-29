@@ -37,9 +37,15 @@ export function gateClaudeCapabilities(evidence: {
       needsUserAction: true,
     });
   }
+  // Generation identity only: version + the proven safety surface. Unrelated help
+  // text changes must not invalidate history (design §6).
   return {
     fingerprint: createHash('sha256')
-      .update(JSON.stringify(evidence))
+      .update(JSON.stringify({
+        version: evidence.version,
+        markers: REQUIRED_CLAUDE_HELP_MARKERS,
+        jsonAuthStatus: true,
+      }))
       .digest('hex'),
   };
 }

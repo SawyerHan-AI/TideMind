@@ -1,6 +1,8 @@
 import type Database from 'better-sqlite3';
 import { getConfig } from '../config.js';
 import { getMetabolismWorkerConnectionSnapshot, getMetabolismWorkerRuntimeContext } from '../metabolism/worker-runtime-context.js';
+import { getAuthBinding, getModelObservation } from '../db/model-discovery.js';
+import { evaluateModelAdmission, isCliProvider, type AdmissionDecision } from './model-admission.js';
 import {
   getLLMProviderDefinition,
   isLLMProviderType,
@@ -32,6 +34,9 @@ export type RouteErrorKind =
   | 'connection_busy'
   | 'connection_unavailable'
   | 'model_unavailable'
+  | 'model_mismatch'
+  | 'model_backoff'
+  | 'scope_unknown'
   | 'ambiguous_outcome';
 
 export class LLMRouteError extends Error {
@@ -56,10 +61,12 @@ export interface ResolvedLLMRoute {
   modelAlias: string;
   status: ModelConnectionStatus | 'legacy';
   statusReason: string | null;
-  candidateModels: string[];
-  availableModels: string[];
-  validationFingerprint: string | null;
-  authFingerprint: string | null;
+  /**
+   * Unified admission for a background call (design §5.4). null for legacy routes.
+   * Computed from the live auth binding and the model's observation under the current
+   * scope/epoch; the CLI service re-evaluates it under the capacity lease.
+   */
+  admission: AdmissionDecision | null;
 }
 
 type ConnectionRow = {
@@ -69,22 +76,7 @@ type ConnectionRow = {
   status: string | null;
   status_reason: string | null;
   archived: number;
-  candidate_models: string | null;
-  available_models: string | null;
-  validation_fingerprint: string | null;
-  auth_fingerprint: string | null;
 };
-
-function parseStringArray(raw: string | null): string[] {
-  if (!raw) return [];
-  try {
-    const value = JSON.parse(raw);
-    if (!Array.isArray(value)) return [];
-    return value.filter((item): item is string => typeof item === 'string');
-  } catch {
-    return [];
-  }
-}
 
 function tierConfig(tier: LLMTier): {
   connectionId: string | undefined;
@@ -142,10 +134,7 @@ export function resolveLLMRoute(
       modelAlias: selected.modelAlias,
       status: 'legacy',
       statusReason: null,
-      candidateModels: [],
-      availableModels: [],
-      validationFingerprint: null,
-      authFingerprint: null,
+      admission: null,
     };
   }
 
@@ -158,9 +147,7 @@ export function resolveLLMRoute(
   }
 
   const row = db.prepare(`
-    SELECT id, name, provider_type, status, status_reason, archived,
-           candidate_models, available_models, validation_fingerprint,
-           auth_fingerprint
+    SELECT id, name, provider_type, status, status_reason, archived
     FROM model_connections
     WHERE id = ?
   `).get(selected.connectionId) as ConnectionRow | undefined;
@@ -183,13 +170,9 @@ export function resolveLLMRoute(
     status: workerConnection!.status,
     status_reason: workerConnection!.statusReason,
     archived: workerConnection!.archived ? 1 : 0,
-    candidate_models: workerConnection!.candidateModels,
-    available_models: workerConnection!.availableModels,
-    validation_fingerprint: workerConnection!.validationFingerprint,
-    auth_fingerprint: workerConnection!.authFingerprint,
   };
-  const archived = workerConnection ? workerConnection.archived : effectiveRow.archived !== 0;
-  const providerType = workerConnection?.providerType ?? effectiveRow.provider_type;
+  const archived = row ? row.archived !== 0 : workerConnection!.archived;
+  const providerType = row?.provider_type ?? workerConnection!.providerType;
   if (archived) {
     throw new LLMRouteError(
       'connection_archived',
@@ -216,6 +199,18 @@ export function resolveLLMRoute(
   }
 
   const definition = getLLMProviderDefinition(providerType);
+  const status = (effectiveRow.status ?? 'unconfigured') as ModelConnectionStatus;
+  const binding = isCliProvider(providerType) ? getAuthBinding(db, effectiveRow.id) : null;
+  const admission = evaluateModelAdmission({
+    purpose: 'background',
+    providerType,
+    connectionStatus: status,
+    scopeState: binding?.scopeState ?? null,
+    modelId: selected.modelAlias,
+    observation: binding
+      ? getModelObservation(db, effectiveRow.id, binding.scopeKey, binding.authEpoch, selected.modelAlias)
+      : null,
+  });
   return {
     tier,
     connectionId: effectiveRow.id,
@@ -225,66 +220,56 @@ export function resolveLLMRoute(
     sourceType: definition.sourceType,
     billingMode: definition.billingMode,
     modelAlias: selected.modelAlias,
-    status: (effectiveRow.status ?? 'unconfigured') as ModelConnectionStatus,
+    status,
     statusReason: effectiveRow.status_reason,
-    candidateModels: parseStringArray(effectiveRow.candidate_models),
-    availableModels: parseStringArray(effectiveRow.available_models),
-    validationFingerprint: effectiveRow.validation_fingerprint,
-    authFingerprint: effectiveRow.auth_fingerprint,
+    admission,
   };
 }
 
 export function assertRouteCallable(route: ResolvedLLMRoute): void {
-  if (route.status === 'legacy') return;
-
-  const isCli = route.providerType === 'claude-cli' || route.providerType === 'codex-cli';
-  if (!isCli) {
-    if (route.status === 'offline') {
+  if (route.status === 'legacy' || !route.admission || route.admission.allowed) return;
+  const name = route.connectionName ?? route.connectionId;
+  const reason = route.admission.reason;
+  switch (reason) {
+    case 'connection_busy':
+      throw new LLMRouteError('connection_busy', `模型连接 ${name} 正在检查或测试`, route.connectionId);
+    case 'ambiguous_outcome':
       throw new LLMRouteError(
-        'connection_unavailable',
-        route.statusReason ?? `模型连接 ${route.connectionName ?? route.connectionId} 不可用`,
+        'ambiguous_outcome',
+        route.statusReason ?? '上次调用结果不明，完成检查环境和测试连接后才能恢复',
         route.connectionId,
       );
-    }
-    return;
-  }
-
-  if (route.status === 'checking' || route.status === 'testing') {
-    throw new LLMRouteError(
-      'connection_busy',
-      `模型连接 ${route.connectionName ?? route.connectionId} 正在检查或测试`,
-      route.connectionId,
-    );
-  }
-  if (route.status === 'ambiguous') {
-    throw new LLMRouteError(
-      'ambiguous_outcome',
-      route.statusReason ?? '上次调用结果不明，完成检查环境和测试连接后才能恢复',
-      route.connectionId,
-    );
-  }
-  if (
-    route.status === 'not_installed'
-    || route.status === 'not_authenticated'
-    || route.status === 'wrong_auth_method'
-    || route.status === 'unsupported_version'
-    || route.status === 'offline'
-    || route.status === 'unconfigured'
-  ) {
-    throw new LLMRouteError(
-      'connection_unavailable',
-      route.statusReason ?? `模型连接 ${route.connectionName ?? route.connectionId} 不可用`,
-      route.connectionId,
-    );
-  }
-
-  // 候选目录只定义“测试哪些模型”，不能作为后台可调用授权。只有完整连接
-  // 测试中真实成功并写入 available_models 的 alias 才允许被任务路由使用。
-  if (!route.availableModels.includes(route.modelAlias)) {
-    throw new LLMRouteError(
-      'model_unavailable',
-      `模型 ${route.modelAlias} 在连接 ${route.connectionName ?? route.connectionId} 中不可用`,
-      route.connectionId,
-    );
+    case 'connection_unavailable':
+      throw new LLMRouteError(
+        'connection_unavailable',
+        route.statusReason ?? `模型连接 ${name} 不可用`,
+        route.connectionId,
+      );
+    case 'scope_unknown':
+      throw new LLMRouteError(
+        'scope_unknown',
+        `无法确认模型连接 ${name} 当前登录的账号范围，后台调用已暂停`,
+        route.connectionId,
+      );
+    case 'model_mismatch':
+      throw new LLMRouteError(
+        'model_mismatch',
+        `固定模型 ${route.modelAlias} 上次返回了非预期的实际模型，请在设置中复测`,
+        route.connectionId,
+      );
+    case 'backoff':
+      throw new LLMRouteError(
+        'model_backoff',
+        `模型 ${route.modelAlias} 最近暂时失败，冷却至 ${route.admission.retryAt ?? ''}`,
+        route.connectionId,
+      );
+    case 'model_rejected':
+    case 'invalid_model_id':
+    default:
+      throw new LLMRouteError(
+        'model_unavailable',
+        `模型 ${route.modelAlias} 在连接 ${name} 中不可用`,
+        route.connectionId,
+      );
   }
 }

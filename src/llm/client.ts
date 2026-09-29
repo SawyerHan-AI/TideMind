@@ -894,6 +894,8 @@ function healthErrorFrom(error: unknown): {
       'rate_limit',
       'capacity',
       'model_unavailable',
+      'model_mismatch',
+      'scope_unknown',
       'permission_policy',
       'timeout',
       'aborted',
@@ -1062,6 +1064,16 @@ export async function callLLM(options: {
           operationName: options.operationName,
           signal: callSignal,
           purpose: 'background',
+        }, {
+          validateRoute: () => {
+            const current = resolveLLMRoute(tier, usageDb);
+            if (current.connectionId !== route.connectionId
+              || current.providerType !== route.providerType
+              || current.modelAlias !== route.modelAlias) {
+              throw new CliLLMError('aborted', '模型路由已更改，本次未提交');
+            }
+            assertRouteCallable(current);
+          },
         });
         try {
           logUsage(

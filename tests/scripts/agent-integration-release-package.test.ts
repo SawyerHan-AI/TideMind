@@ -50,7 +50,7 @@ function bundle(overrides: {
   customModes?: string[]
   bindProductionPolicy?: boolean
 } = {}): string {
-  const version = overrides.version ?? '0.2.92'
+  const version = overrides.version ?? sourceContract.version
   const schemaVersion = overrides.schemaVersion ?? 4
   const defaultEntries = overrides.defaultEntries ?? frozenEntriesSource()
   const customEnabled = overrides.customEnabled ?? true
@@ -454,7 +454,7 @@ describe('packaged Agent Integration release manifest gate', () => {
 
   it('derives the package contract from the single source release manifest', () => {
     expect(sourceContract).toMatchObject({
-      version: '0.2.92',
+      version: sourceContract.version,
       schemaVersion: 4,
       customEnabled: true,
       customModes: ['nonstandard_config_root', 'manual_mcp_client'],
@@ -513,7 +513,7 @@ describe('packaged Agent Integration release manifest gate', () => {
 
   it('accepts a versioned, non-empty manifest bound to production', () => {
     expect(inspectPackagedAgentIntegrationReleaseManifest(bundle(), sourceContract)).toEqual({
-      version: '0.2.92',
+      version: sourceContract.version,
       schemaVersion: 4,
       entryCount: 20,
       defaultEntryCount: 19,
@@ -525,6 +525,12 @@ describe('packaged Agent Integration release manifest gate', () => {
     const prefix = 'const earlier = `outer ${(() => `inner "quote ${"x"}`)()}`;\n'
     expect(codeMarkerCount(prefix, marker)).toBe(0)
     expect(codeMarkerCount(prefix + bundle(), marker)).toBe(1)
+    expect(inspectPackagedAgentIntegrationReleaseManifest(prefix + bundle(), sourceContract).entryCount).toBe(20)
+  })
+
+  it('keeps declarations after return-regex literals visible without evaluating bundled code', () => {
+    const prefix = "const emoji = \"🐚\"; function earlier(value) { return /[`\"{}]/u.test(value); }\n"
+    expect(codeMarkerCount(prefix + bundle(), 'function createProductionAgentIntegrationComposition(')).toBe(1)
     expect(inspectPackagedAgentIntegrationReleaseManifest(prefix + bundle(), sourceContract).entryCount).toBe(20)
   })
 
@@ -544,7 +550,7 @@ describe('packaged Agent Integration release manifest gate', () => {
     expect(() => inspectPackagedAgentIntegrationReleaseManifest(
       bundle({ version: '0.2.91' }),
       sourceContract,
-    )).toThrow(/version 0\.2\.91 does not match app 0\.2\.92/)
+    )).toThrow(`version 0.2.91 does not match app ${sourceContract.version}`)
     expect(() => inspectPackagedAgentIntegrationReleaseManifest(
       bundle({ schemaVersion: 1 }),
       sourceContract,

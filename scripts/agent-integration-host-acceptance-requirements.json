@@ -1,10 +1,13 @@
 {
   "schemaVersion": 3,
-  "appVersion": "0.2.92",
-  "releaseMacArchitectures": ["arm64"],
+  "appVersion": "0.2.93",
+  "releaseMacArchitectures": [
+    "arm64"
+  ],
   "upgradeFromAppVersions": [
     "0.2.89",
-    "0.2.91"
+    "0.2.91",
+    "0.2.92"
   ],
   "stepPolicy": {
     "base": [
@@ -16,12 +19,22 @@
       "disconnect"
     ],
     "byComponent": {
-      "instruction": ["instruction_loaded"],
-      "memory_tools": ["brain_prepare", "brain_recall", "brain_digest"],
+      "instruction": [
+        "instruction_loaded"
+      ],
+      "memory_tools": [
+        "brain_prepare",
+        "brain_recall",
+        "brain_digest"
+      ],
       "lifecycle": []
     },
     "byDisposition": {
-      "managed": ["recovery", "conflict", "pause_resume"],
+      "managed": [
+        "recovery",
+        "conflict",
+        "pause_resume"
+      ],
       "guided": [],
       "migration": [
         "official_host_version",
@@ -45,8 +58,17 @@
     "manual_mcp_client"
   ],
   "customGuidedTargets": [
-    { "schemaKind": "standard_mcp_servers", "selectorKey": "tidemind" },
-    { "schemaKind": "nested_mcp_servers", "selectorKey": "tidemind_nested" },
-    { "schemaKind": "opencode_mcp", "selectorKey": "tidemind_opencode" }
+    {
+      "schemaKind": "standard_mcp_servers",
+      "selectorKey": "tidemind"
+    },
+    {
+      "schemaKind": "nested_mcp_servers",
+      "selectorKey": "tidemind_nested"
+    },
+    {
+      "schemaKind": "opencode_mcp",
+      "selectorKey": "tidemind_opencode"
+    }
   ]
 }

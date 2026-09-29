@@ -8,23 +8,23 @@ import yaml from 'js-yaml'
 
 const temporaryDirectories: string[] = []
 
-function fixture(): string {
+function fixture(version = '0.2.89'): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mac-release-metadata-'))
   temporaryDirectories.push(directory)
   for (const [arch, offset] of [['x64', 1], ['arm64', 2]] as const) {
-    const zipName = `Tide.Mind-0.2.89-${arch}.zip`
-    const dmgName = `Tide.Mind-0.2.89-${arch}.dmg`
+    const zipName = `Tide.Mind-${version}-${arch}.zip`
+    const dmgName = `Tide.Mind-${version}-${arch}.dmg`
     const zip = Buffer.from(`${arch}-zip-asset`)
     const dmg = Buffer.from(`${arch}-dmg-asset`)
     fs.writeFileSync(path.join(directory, zipName), zip)
     fs.writeFileSync(path.join(directory, dmgName), dmg)
     fs.writeFileSync(path.join(directory, `latest-mac-${arch}.yml`), yaml.dump({
-      version: '0.2.89',
+      version,
       files: [
         { url: zipName, sha512: crypto.createHash('sha512').update(zip).digest('base64'), size: zip.length },
         { url: dmgName, sha512: crypto.createHash('sha512').update(dmg).digest('base64'), size: dmg.length },
       ],
-      path: `Tide.Mind-0.2.89-${arch}.zip`,
+      path: `Tide.Mind-${version}-${arch}.zip`,
       sha512: `${arch}-zip`,
       releaseDate: `2026-08-12T00:00:0${offset}.000Z`,
     }))
@@ -39,12 +39,8 @@ afterEach(() => {
 })
 
 describe('macOS update metadata merger', () => {
-  it('merges an Apple Silicon-only 0.2.92 release without Intel metadata', () => {
-    const directory = fixture()
-    const metadataPath = path.join(directory, 'latest-mac-arm64.yml')
-    const metadata = yaml.load(fs.readFileSync(metadataPath, 'utf8')) as { version: string }
-    metadata.version = '0.2.92'
-    fs.writeFileSync(metadataPath, yaml.dump(metadata))
+  it.each(['0.2.92', '0.2.93'])('merges an Apple Silicon-only %s release without Intel metadata', (version) => {
+    const directory = fixture(version)
     fs.unlinkSync(path.join(directory, 'latest-mac-x64.yml'))
     execFileSync(process.execPath, ['scripts/merge-mac-update-metadata.mjs', directory])
     const merged = yaml.load(fs.readFileSync(path.join(directory, 'latest-mac.yml'), 'utf8')) as {

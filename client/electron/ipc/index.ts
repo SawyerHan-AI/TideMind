@@ -1,3 +1,4 @@
+import { registerModelCatalogUiAuditHandlers } from '../model-ui-audit.js'
 import type Database from 'better-sqlite3'
 import { app, ipcMain } from 'electron'
 import fs from 'node:fs'
@@ -76,6 +77,7 @@ export function registerAgentIntegrationUiAuditHandlers(
   dataDir: string,
   agentIntegration: ProductionAgentIntegrationOptions,
 ): void {
+  if (process.env.TIDEMIND_MODEL_UI_AUDIT === '1') registerModelCatalogUiAuditHandlers(db, dataDir)
   ipcMain.handle('config:get', () => {
     try {
       const configPath = path.join(dataDir, 'config.toml')

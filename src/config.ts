@@ -156,6 +156,11 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
 // 拿默认配置,需要保持"显式 load 后续返回该 load 内容"的行为。
 let cachedConfigSource: string | null = null;
 
+/** File that supplied the loaded routes, including a custom data-directory setup. */
+export function getLoadedConfigSourcePath(): string | null {
+  return cachedConfigSource;
+}
+
 export function loadConfig(configPath?: string): AppConfig {
   const workerRuntime = getMetabolismWorkerRuntimeContext();
   if (workerRuntime) {

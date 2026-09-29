@@ -71,6 +71,102 @@ export interface NoteSourceInitSnapshot {
   canDiscard: boolean
 }
 
+/** Result of a CLI environment check / model catalog refresh (connections:check-environment). */
+export interface CliEnvironmentCheckResult {
+  status: string
+  cliPath?: string
+  cliVersion?: string
+  authMethod?: string
+  capabilityStatus?: string
+  scopeState?: 'known' | 'unknown'
+  scopeLabel?: string | null
+  catalog?: {
+    status: 'refreshed' | 'unsupported' | 'failed' | 'discarded'
+    source: 'codex_app_server' | 'claude_aliases' | 'unsupported' | null
+    count: number
+    fetchedAt: string | null
+    errorKind: string | null
+  }
+  checkedAt?: string
+  error?: { kind: string; message: string; copyCommand?: string }
+}
+
+export interface CatalogModelItem {
+  id: string
+  invocationId: string
+  displayName: string
+  kind: 'model' | 'alias'
+  isDefault: boolean
+  hidden: boolean
+  upgrade: string | null
+  retirementAt: number | null
+  reasoningEfforts: string[]
+}
+
+export type ModelSelectionModeDto = 'follow_default' | 'alias' | 'pinned_id'
+
+export interface ModelObservationDto {
+  modelId: string
+  scopeKey: string
+  authEpoch: number
+  selectionMode: ModelSelectionModeDto
+  lastOutcome: 'success' | 'mismatch' | 'model_rejected' | 'temporary_failure'
+    | 'connection_failure' | 'unclassified_failure' | 'ambiguous'
+  errorKind: string | null
+  errorMessage: string | null
+  actualModel: string | null
+  lastSource: 'business' | 'test'
+  lastSuccessAt: string | null
+  lastFailureAt: string | null
+  backoffUntil: string | null
+  updatedAt: string
+}
+
+export type ModelAdmissionDto =
+  | { allowed: true; selectionMode: ModelSelectionModeDto; firstCall: boolean }
+  | {
+      allowed: false
+      selectionMode: ModelSelectionModeDto
+      reason: 'connection_busy' | 'connection_unavailable' | 'ambiguous_outcome' | 'scope_unknown'
+        | 'invalid_model_id' | 'model_rejected' | 'model_mismatch' | 'backoff'
+      retryAt?: string
+    }
+
+/** connections:models — catalog, auth binding, observations and in-use routes. */
+export interface ConnectionModelsView {
+  connectionId: string
+  providerType: string
+  binding: {
+    scopeState: 'known' | 'unknown'
+    authEpoch: number
+    observedAt: string
+    epochStartedAt: string
+    epochReason: string | null
+  } | null
+  catalog: {
+    source: 'codex_app_server' | 'claude_aliases' | 'unsupported'
+    revision: number
+    items: CatalogModelItem[]
+    defaultModelId: string | null
+    fetchedAt: string
+    lastAttemptAt: string | null
+    lastAttemptErrorKind: string | null
+    lastAttemptError: string | null
+  } | null
+  catalogAgeMs: number | null
+  catalogStale: boolean
+  catalogOutdated: boolean
+  observations: ModelObservationDto[]
+  history: ModelObservationDto[]
+  inUse: Array<{
+    tier: 'light' | 'standard' | 'heavy'
+    modelId: string
+    selectionMode: ModelSelectionModeDto
+    admission: ModelAdmissionDto
+    observation: ModelObservationDto | null
+  }>
+}
+
 export interface LLMHealthSnapshot {
   /** 'closed' = LLM 工作正常; 'open' = 熔断中（冷却到期前跳过 LLM 任务）; 'half-open' = 冷却到期，准备放探测任务 */
   circuitState: 'closed' | 'open' | 'half-open'
@@ -100,6 +196,16 @@ export interface LLMHealthSnapshot {
     circuitState?: 'closed' | 'open' | 'half-open'
     openedAt?: number | null
     cooldownMs?: number
+  }>
+  routeFaults?: Array<{
+    tier: 'light' | 'standard' | 'heavy'
+    connectionId: string
+    connectionName: string
+    modelId: string
+    reason: string
+    retryAt: string | null
+    observedAt: string | null
+    message: string | null
   }>
   activeTask?: { taskId: string; tier: string; connectionId: string } | null
   metabolismWorkerDegradedReason?: string | null
@@ -169,6 +275,12 @@ export interface AgentIntegrationInstallationDto {
   desiredState: 'unmanaged' | 'managed' | 'disabled' | 'removed'
   /** True only when the production composition has an enabled, writable adapter for this host. */
   manageable: boolean
+  /**
+   * True when a disconnect is available even though the host is not manageable:
+   * its source is not (or no longer) trusted but Tide Mind owns something to revoke
+   * (design §3.5). Such a disconnect never runs the host's programs.
+   */
+  disconnectable?: boolean
   statusGroup: AgentIntegrationStatusGroup
   statusReason: string
   accessLevel: AgentIntegrationAccessLevel
@@ -180,6 +292,24 @@ export interface AgentIntegrationInstallationDto {
   lastRepairedAt: string | null
   /** Latest still-valid runtime evidence bound to this exact managed Installation. */
   lastRealUseAt: string | null
+  /**
+   * Three independent deactivation facts (design §3.5): pausing maintenance,
+   * stopping the Tide Mind bridge, and the host-side component state. Only a
+   * read-back plus a host reload marks host components as deactivated.
+   */
+  deactivation?: AgentIntegrationDeactivationDto
+  /** Source evidence is separate from configuration, host loading and real calls. */
+  sourceVerification?: {
+    state: 'trusted' | 'pending' | 'confirmation_required' | 'rejected' | 'user_managed'
+    evidence: 'tested_sample' | 'signed_identity' | 'npm_registry' | 'npm_registry_cache' | 'none'
+    checkedAt: string | null
+  }
+}
+
+export interface AgentIntegrationDeactivationDto {
+  maintenance: 'active' | 'paused'
+  bridge: 'serving' | 'stopped'
+  hostComponents: 'loaded_unknown' | 'awaiting_reload' | 'deactivated_verified'
 }
 
 export interface AgentIntegrationFamilyDto {
@@ -272,6 +402,7 @@ export type AgentIntegrationRequiredUserActionDto = AgentIntegrationCodexTrustAc
   | AgentIntegrationMcpActivationActionDto
   | AgentIntegrationManualFileRemovalActionDto
   | AgentIntegrationKimiInstructionConflictActionDto
+  | AgentIntegrationManualHostRemovalActionDto
 
 export interface AgentIntegrationCodexTrustActionDto {
   kind: 'codex_hook_trust'
@@ -327,6 +458,22 @@ export interface AgentIntegrationManualFileRemovalActionDto {
   instruction: string
   physicalTargetLabel: string
   ownedFragmentHash: string
+}
+
+/**
+ * Ownership-only disconnect of a host-command carrier (plugin/extension manager)
+ * while the host source is not trusted: Tide Mind never runs that host program, so
+ * the user removes the component in the host; Tide Mind only stops its bridge.
+ */
+export interface AgentIntegrationManualHostRemovalActionDto {
+  kind: 'manual_host_removal'
+  componentKey: AgentIntegrationComponentKey
+  componentKeys: AgentIntegrationComponentKey[]
+  operation: 'disconnect'
+  instruction: string
+  hostLabel: string
+  targetLabel: string
+  ownershipKey: string
 }
 
 export interface AgentIntegrationKimiInstructionConflictActionDto {
@@ -750,16 +897,29 @@ export interface AppApi {
     archive: (id: string) => Promise<void>
     unarchive: (id: string) => Promise<void>
     delete: (id: string) => Promise<void>
-    test: (connectionId: string, formOverride?: Record<string, string>) => Promise<{
+    test: (connectionId: string, formOverride?: Record<string, string>, options?: { models?: string[] }) => Promise<{
       online: boolean
       models: string[]
       error?: string
+      errorKind?: string
       region?: string
       successCount?: number
       totalCount?: number
       cancelled?: boolean
-      results?: Array<{ model: string; success: boolean; actualModel?: string | null; error?: string }>
+      scopeState?: 'known' | 'unknown'
+      attributionUnconfirmed?: boolean
+      inUseModels?: string[]
+      results?: Array<{
+        model: string
+        success: boolean
+        actualModel?: string | null
+        mismatch?: boolean
+        error?: string
+        errorKind?: string
+      }>
     }>
+    models: (connectionId: string) => Promise<ConnectionModelsView>
+    refreshModels: (connectionId: string) => Promise<CliEnvironmentCheckResult>
     providerCatalog: () => Promise<Array<{
       id: string
       labelKey: string
@@ -769,16 +929,7 @@ export interface AppApi {
       supportsLlm: boolean
       supportsEmbedding: boolean
     }>>
-    checkEnvironment: (connectionId: string) => Promise<{
-      status: string
-      cliPath?: string
-      cliVersion?: string
-      authMethod?: string
-      capabilityStatus?: string
-      candidateModels?: string[]
-      checkedAt?: string
-      error?: { kind: string; message: string; copyCommand?: string }
-    }>
+    checkEnvironment: (connectionId: string) => Promise<CliEnvironmentCheckResult>
     cancelTest: (connectionId: string) => Promise<{ cancelled: boolean }>
     onTestProgress: (cb: (progress: {
       connectionId: string

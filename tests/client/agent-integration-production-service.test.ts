@@ -1365,6 +1365,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       which: async () => undefined,
       execVersion: async () => ({ exitCode: 126, stdout: '', stderr: 'not used' }),
       inspectAppSignature: async (_targetPath, options) => {
+        expect(options.timeoutMs).toBe(20_000)
         await options.beforeFinalVerification?.()
         if (replaceDuringSignature) {
           const replacement = path.join(root, `replacement-${executableName}`)
@@ -1373,7 +1374,10 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
         }
         return signature()
       },
-      finalVerifyAppSignatureSync: signature,
+      finalVerifyAppSignatureSync: (_targetPath, timeoutMs) => {
+        expect(timeoutMs).toBe(20_000)
+        return signature()
+      },
     })
     try {
       const row = repository.getInstallation(`${catalogId}-proof`)!
@@ -1967,6 +1971,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       which: async () => undefined,
       execVersion: async () => ({ exitCode: 126, stdout: '', stderr: 'not used' }),
       inspectAppSignature: async (_targetPath, options) => {
+        expect(options.timeoutMs).toBe(20_000)
         await options.beforeFinalVerification?.()
         if (finalIdentityMutation === 'app_mode') fs.chmodSync(appPath, appMode ^ 0o020)
         if (finalIdentityMutation === 'executable_mode') fs.chmodSync(executable, executableMode ^ 0o020)
@@ -1979,12 +1984,10 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
           verificationBoundary: 'strict_final' as const,
         }
       },
-      finalVerifyAppSignatureSync: () => ({
-        ...zcodeSignature(),
-        teamIdentifier,
-        cdHash,
-        designatedRequirement,
-      }),
+      finalVerifyAppSignatureSync: (_targetPath, timeoutMs) => {
+        expect(timeoutMs).toBe(20_000)
+        return { ...zcodeSignature(), teamIdentifier, cdHash, designatedRequirement }
+      },
     })
     try {
       const row = repository.getInstallation('zcode-proof')!
@@ -2958,7 +2961,7 @@ describe('production Agent integration composition', () => {
     fs.rmSync(root, { recursive: true, force: true })
   })
 
-  it('blocks a pre-0.2.92 eligible row before the first scan and during recovery', async () => {
+  it('trusts a signed official App at an untested version by signed identity, but blocks an unofficial provenance before the first scan and during recovery', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-pre-manifest-row-'))
     const db = new Database(':memory:')
     ensureSchema(db)
@@ -2993,7 +2996,9 @@ describe('production Agent integration composition', () => {
       metadata: {
         distribution: {
           distributionId: 'com.todesktop.230313mzl4w4u92',
+          executableRealpath: path.join(root, 'Cursor.app', 'Contents', 'MacOS', 'Cursor'),
           packageProvenance: 'signed_app:com.todesktop.230313mzl4w4u92:VDXQ22DGB9',
+          capabilityFingerprint: `${DESKTOP_BUNDLE_SURFACE_SCHEMA}:fixture-cursor`,
         },
         managementEligibility: freshCliManagementEligibility(),
       },
@@ -3004,12 +3009,27 @@ describe('production Agent integration composition', () => {
       return []
     })
     try {
+      // Runtime source compatibility: an untested version of the official signed App
+      // is not blocked by a version allowlist (design §3.1).
+      expect(composition.service.snapshot().installations[0]).toMatchObject({ manageable: true })
+      expect(composition.service.snapshot().installations[0].statusReason)
+        .not.toMatch(/^release_|^source_/)
+      // A different signing identity is a different source and stays blocked.
+      const row = composition.repository.getInstallation(candidate.id)!
+      const metadata = JSON.parse(row.metadata_json) as { distribution: Record<string, string> }
+      db.prepare('UPDATE agent_installations SET metadata_json = ? WHERE id = ?').run(JSON.stringify({
+        ...metadata,
+        distribution: {
+          ...metadata.distribution,
+          packageProvenance: 'signed_app:com.todesktop.230313mzl4w4u92:UNOFFICIAL1',
+        },
+      }), candidate.id)
       expect(composition.service.snapshot().installations[0]).toMatchObject({
         manageable: false,
-        statusReason: 'release_version_not_accepted',
+        statusReason: 'release_distribution_not_accepted',
       })
       await expect(composition.service.previewConnect([candidate.id]))
-        .rejects.toThrow('managed integration is unavailable: release_version_not_accepted')
+        .rejects.toThrow('managed integration is unavailable: release_distribution_not_accepted')
       await composition.runtime.markScanCompleted()
       expect(await replayAllowed).toBe(false)
       expect(db.prepare('SELECT COUNT(*) AS count FROM agent_consents').get()).toEqual({ count: 0 })
@@ -3573,18 +3593,18 @@ describe('production Agent integration composition', () => {
           managementEligibility: {
             schemaVersion: CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,
             eligible: false,
-            reason: 'release_version_not_accepted',
+            reason: 'source_not_official',
             proofLimitBytes: MAX_CLI_EXECUTABLE_PROOF_BYTES,
           },
         },
       })
       expect(composition.service.snapshot().installations[0]).toMatchObject({
         manageable: false,
-        statusReason: 'release_version_not_accepted',
+        statusReason: 'source_not_official',
       })
       expect(composition.service.detail(base.id).installation).toMatchObject({
         manageable: false,
-        statusReason: 'release_version_not_accepted',
+        statusReason: 'source_not_official',
       })
 
       composition.repository.upsertDiscoveredInstallation({
@@ -4269,7 +4289,7 @@ describe('production Agent integration composition', () => {
 
   it.each([
     'package provenance disappears',
-    'the persisted exact version loses release acceptance',
+    'the persisted source loses official verification',
   ])('atomically blocks a real verified finalizer when %s before restart recovery', async revocation => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-verified-trust-loss-'))
     const db = new Database(':memory:')
@@ -4329,7 +4349,7 @@ describe('production Agent integration composition', () => {
             managementEligibility: {
               schemaVersion: CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,
               eligible: false,
-              reason: 'release_version_not_accepted',
+              reason: 'source_not_official',
               proofLimitBytes: MAX_CLI_EXECUTABLE_PROOF_BYTES,
             },
           }),
@@ -4338,7 +4358,7 @@ describe('production Agent integration composition', () => {
         )
         expect(composition.service.snapshot().installations[0]).toMatchObject({
           manageable: false,
-          statusReason: 'release_version_not_accepted',
+          statusReason: 'source_not_official',
         })
       }
       fake.inspect.mockClear()
@@ -4724,6 +4744,97 @@ describe('production Agent integration composition', () => {
         .toBe('cursor-desktop:b-trusted')
       if (gateClosed) expect(blocked.inspect).not.toHaveBeenCalled()
     } finally {
+      composition.runtime.stop()
+      db.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    ['source_verification_pending', false],
+    ['source_confirmation_required', false],
+  ] as const)('blocks shared writes while another consumer has %s', async (reason, gateClosed) => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-shared-runtime-selection-')))
+    const dbPath = path.join(root, 'brain.sqlite')
+    const db = new Database(dbPath)
+    ensureSchema(db)
+    const cursor = adapter(root)
+    const blocked = gateClosed ? adapter(root, 'codex-cli') : cursor
+    const composition = createProductionAgentIntegrationComposition(db, {
+      homeDir: root,
+      applicationDataDir: path.join(root, 'app-data'),
+      runtimeContext: runtimeContext(root),
+      adapters: new Map([
+        ['cursor-desktop', cursor.host],
+        ...(gateClosed ? [['codex-cli', blocked.host] as const] : []),
+      ]),
+      fixtureMode: 'isolated_ui_audit',
+      canManageInstallation: () => true,
+      enabledAdapterIds: ['cursor-desktop'],
+      observeOnly: false,
+      autoRestore: true,
+      startRuntime: false,
+    })
+    const artifactId = 'artifact-shared-instruction'
+    const target = path.join(root, '.cursor', 'mcp.json')
+    composition.repository.createManagedArtifact({
+      id: artifactId,
+      componentType: 'mcp',
+      targetPath: target,
+      ownershipKey: 'document',
+      mutationDomain: `local_macos:file:${target}:document`,
+      projectionVersion: '1',
+      selectorSchemaVersion: '1',
+      ownedFragmentHash: 'shared-owned',
+      desiredFragmentHash: 'shared-desired',
+      observedFragmentHash: 'shared-owned',
+    }, '2026-08-25T00:00:00.000Z')
+    for (const [index, installationId] of ['a-blocked', 'b-trusted'].entries()) {
+      const hostVariant = index === 0 && gateClosed ? 'codex-cli' : 'cursor-desktop'
+      composition.repository.upsertDiscoveredInstallation({
+        id: installationId,
+        family: hostVariant === 'codex-cli' ? 'codex' : 'cursor',
+        hostVariant,
+        installKey: `${hostVariant}:${installationId}`,
+        distributionId: hostVariant,
+        provenance: 'fixture',
+        osUserIdentity: 'usr_fixture_1234',
+        displayName: installationId,
+        configRoot: path.join(root, installationId),
+        agentId: `agent-${installationId}`,
+        supportedCapability: 3,
+        lastDetectedAt: `2026-08-25T00:0${index}:00.000Z`,
+        metadata: {
+          distribution: { distributionId: hostVariant, packageProvenance: 'fixture:trusted' },
+          ...(index === 0 ? { managementEligibility: { ...freshCliManagementEligibility(), eligible: false, reason } } : {}),
+        },
+      })
+      db.prepare(`UPDATE agent_installations SET desired_state = 'managed' WHERE id = ?`).run(installationId)
+      composition.repository.upsertComponent({
+        installationId,
+        componentKey: 'memory_tools',
+        desiredState: 'managed',
+        desiredCapability: 1,
+        deliveryMode: 'managed',
+        artifactId,
+      }, `2026-08-25T00:0${index}:00.000Z`)
+      composition.repository.addArtifactConsumer({
+        artifactId,
+        installationId,
+        componentKey: 'memory_tools',
+        requiredCapability: 1,
+        discoverReachability: 'shared_visible',
+        ownershipFingerprint: 'shared-owned',
+        addedAt: `2026-08-25T00:0${index}:00.000Z`,
+      })
+    }
+    const unbind = bindAgentIntegrationExecutionPort(composition.coordinator)
+    try {
+      await expect(composition.service.previewConnect(['b-trusted']))
+        .rejects.toThrow('shared_consumer_not_compatible:a-blocked')
+      expect(cursor.apply).not.toHaveBeenCalled()
+    } finally {
+      unbind()
       composition.runtime.stop()
       db.close()
       fs.rmSync(root, { recursive: true, force: true })

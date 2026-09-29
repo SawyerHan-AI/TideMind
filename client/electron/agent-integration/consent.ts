@@ -79,6 +79,16 @@ export interface ExecutionPlan {
   installationSurfaceFingerprint?: string
   /** Side-effect-free live package/signature proof observed for this plan. */
   liveTrustProofFingerprint?: string
+  /**
+   * Shared physical-domain CAS (design §3.3.1): other consumers of every written
+   * shared artifact/container and their generations, frozen at preview.
+   */
+  sharedDomainBinding?: string
+  /**
+   * Ownership-only disconnect binding (design §3.5): ownership selectors, targets
+   * and current bytes. Present instead of liveTrustProofFingerprint, never with it.
+   */
+  ownershipOnlyDisconnectBinding?: string
   /** Hash only: the clear token lives in the frozen host projection plan. */
   activityGenerationTokenHash?: string
   createdAt: string

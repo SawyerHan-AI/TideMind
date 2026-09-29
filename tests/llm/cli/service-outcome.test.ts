@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createTestDb } from '../../../src/db/connection.js';
 import { createConnection } from '../../../src/db/connections.js';
+import { listModelObservations, reconcileAuthBinding } from '../../../src/db/model-discovery.js';
 import { captureCliIdentity } from '../../../src/llm/cli/resolve-cli.js';
 import { runCliLLM, shutdownCliRuntime } from '../../../src/llm/cli/service.js';
 import type { CliEnvironmentCheck } from '../../../src/llm/cli/readiness.js';
@@ -31,15 +32,19 @@ async function setup() {
     },
     auth: {
       providerType: 'claude-cli',
-      method: 'oauth:firstParty',
+      method: 'claude.ai',
       accountIdentifier: 'fixture@example.com',
-      accountScope: 'claude:fixture',
+      accountScope: 'claude-cli:fixture-scope',
+      scopeState: 'known',
+      scopeKey: 'claude-cli:fixture-scope',
+      scopeLabel: 'max',
     },
+    authStoreSignal: null,
     authFingerprint: 'auth-fixture',
-    validationFingerprint: 'validation-fixture',
+    cliGeneration: 'generation-fixture',
+    validationFingerprint: 'generation-fixture',
     capabilityFingerprint: 'capability-fixture',
     capabilityStatus: 'verified',
-    candidateModels: ['default'],
     checkedAt: new Date().toISOString(),
   };
   const db = createTestDb();
@@ -50,11 +55,16 @@ async function setup() {
   db.prepare(`
     UPDATE model_connections
     SET status = 'online',
-        candidate_models = '["default"]',
-        available_models = '["default"]',
         validation_fingerprint = ?
     WHERE id = ?
-  `).run(environment.validationFingerprint, connection.id);
+  `).run(environment.cliGeneration, connection.id);
+  // Same binding the environment check would establish (known scope, epoch 1).
+  reconcileAuthBinding(db, {
+    connectionId: connection.id,
+    auth: environment.auth,
+    cliGeneration: environment.cliGeneration,
+    authStoreSignal: environment.authStoreSignal,
+  });
   return { db, dataDir, environment, connectionId: connection.id };
 }
 
@@ -77,6 +87,7 @@ describe('CLI service post-provider durability boundary', () => {
       purpose: 'background',
       environment: state.environment,
       _testHooks: {
+        recheckEnvironment: async () => state.environment,
         afterProviderCompleted: () => {
           throw new Error('simulated finalize failure');
         },
@@ -90,6 +101,9 @@ describe('CLI service post-provider durability boundary', () => {
     });
     expect(state.db.prepare('SELECT status FROM model_connections WHERE id = ?')
       .get(state.connectionId)).toEqual({ status: 'ambiguous' });
+    // An ambiguous outcome is not a success observation for the model.
+    expect(listModelObservations(state.db, state.connectionId).map(o => o.lastOutcome))
+      .not.toContain('success');
     state.db.close();
     rmSync(state.dataDir, { recursive: true, force: true });
   }, 20_000);
@@ -108,6 +122,7 @@ describe('CLI service post-provider durability boundary', () => {
       purpose: 'background',
       environment: state.environment,
       _testHooks: {
+        recheckEnvironment: async () => state.environment,
         beforeOutcomePersistence: () => {
           throw new Error('simulated ambiguous persistence failure');
         },

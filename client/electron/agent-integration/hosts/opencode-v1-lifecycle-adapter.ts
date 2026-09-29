@@ -9,7 +9,7 @@ import type {
   ComponentVerificationResult,
 } from '../types'
 
-export const OPENCODE_V1_LIFECYCLE_ADAPTER_VERSION = '1'
+export const OPENCODE_V1_LIFECYCLE_ADAPTER_VERSION = '2'
 
 /**
  * OpenCode V1 and V2 can read the same resource directory. This Adapter owns
@@ -93,6 +93,11 @@ export function openCodeV1PluginContent(context: AdapterOperationContext): strin
   assertOpenCodeV1(context)
   const hostVersion = context.hostVersion?.trim()
   if (!hostVersion) throw new Error('opencode_v1_host_version_not_frozen')
+  // The plugin API contract is the OpenCode v1 major line, not one exact build:
+  // an exact-version guard silently disabled the plugin after every host update
+  // (design §3.1). The major guard still keeps it inert under a different API line.
+  const hostMajor = /^(\d+)\./.exec(hostVersion)?.[1]
+  if (!hostMajor) throw new Error('opencode_v1_host_version_unparseable')
   const activityGenerationToken = context.activityGenerationToken?.trim()
   if (!activityGenerationToken) throw new Error('opencode_v1_activity_generation_not_frozen')
   const skillPath = context.installation.componentConfigFiles?.instruction
@@ -104,7 +109,7 @@ export function openCodeV1PluginContent(context: AdapterOperationContext): strin
   const postCompactScript = JSON.stringify(context.runtime.postCompactScriptPath)
   const agentId = JSON.stringify(context.agentId)
   const skill = JSON.stringify(skillPath)
-  const expectedHostVersion = JSON.stringify(hostVersion)
+  const expectedHostMajor = JSON.stringify(`${hostMajor}.`)
   const generationToken = JSON.stringify(activityGenerationToken)
   const expectedSkillSha256 = JSON.stringify(sha256Bytes(normalizeContent(PORTABLE_TIDEMIND_SKILL)))
 
@@ -115,7 +120,7 @@ import type { Plugin } from "@opencode-ai/plugin";
 const execFileAsync = promisify(execFile);
 const SHIM = ${shim};
 const AGENT_ID = ${agentId};
-const EXPECTED_HOST_VERSION = ${expectedHostVersion};
+const EXPECTED_HOST_MAJOR_PREFIX = ${expectedHostMajor};
 const ACTIVITY_GENERATION_TOKEN = ${generationToken};
 const EXPECTED_SKILL_SHA256 = ${expectedSkillSha256};
 const sessionContexts = new Map<string, Promise<string | null>>();
@@ -153,7 +158,8 @@ async function sessionContext(sessionID: string): Promise<string | null> {
 const TideMindPlugin: Plugin = async ({ client }) => {
   try {
     const health = await client.global.health();
-    if (!health.data?.healthy || health.data.version !== EXPECTED_HOST_VERSION) return {};
+    const version = typeof health.data?.version === "string" ? health.data.version : "";
+    if (!health.data?.healthy || !version.startsWith(EXPECTED_HOST_MAJOR_PREFIX)) return {};
   } catch {
     return {};
   }

@@ -194,7 +194,18 @@
       ,"connectionUnavailable": "Cette connexion enregistrée n’existe plus"
       ,"modelUnavailable": "Ce modèle enregistré n’est pas vérifié"
       ,"savedConnectionInvalid": "La connexion enregistrée est indisponible. Sélectionnez-en une autre."
-      ,"savedModelInvalid": "Le modèle enregistré est indisponible. Sélectionnez un modèle vérifié."
+      ,"savedModelInvalid": "Le modèle enregistré est indisponible. Sélectionnez un modèle vérifié.",
+      "followDefault": "Défaut isolé (intégré à la CLI)",
+      "isolatedDefaultHint": "Utilise le modèle par défaut intégré à la CLI dans un environnement isolé, sans suivre les recommandations du catalogue du compte ni les réglages personnels locaux.",
+      "aliasPending": "alias, pas encore vérifié",
+      "catalogDefaultBadge": "défaut recommandé du catalogue",
+      "upgradeHint": "l’amont suggère {{model}}",
+      "notListed": "absent du catalogue actuel ; sélection conservée",
+      "manualEntry": "Saisir un ID de modèle manuellement…",
+      "manualPlaceholder": "ID de modèle",
+      "manualApply": "Utiliser",
+      "manualCancel": "Annuler",
+      "manualInvalid": "Format d’ID de modèle invalide"
     },
     "serviceStatus": {
       "title": "État du service IA",
@@ -214,7 +225,65 @@
       "needsAttention": "Needs attention",
       "unknownConnection": "Unknown connection",
       "collapseErrors": "Collapse errors",
-      "expandErrors": "Show {{count}} more"
+      "expandErrors": "Show {{count}} more",
+      "routeFaults": "Défaillances des routes utilisées"
+    },
+    "catalog": {
+      "scope": "Périmètre du compte",
+      "scopeNotChecked": "Pas encore vérifié",
+      "scopeUnknown": "Impossible à confirmer (tests manuels uniquement, aucune tâche en arrière-plan)",
+      "scopeKnown": "Confirmé",
+      "title": "Catalogue de modèles",
+      "refresh": "Actualiser la liste des modèles",
+      "refreshFailed": "Échec de l’actualisation ({{kind}}) ; le dernier catalogue complet est conservé",
+      "none": "Aucun catalogue de modèles pour l’instant",
+      "unsupported": "Cette version de la CLI ne liste pas les modèles ; suivez le défaut ou saisissez un ID de modèle",
+      "aliasesOnly": "{{count}} alias officiels (non vérifiés) / {{verified}} vérifiés récemment ; ID de modèle manuels autorisés",
+      "summary": "{{count}} modèles découverts / {{verified}} vérifiés récemment",
+      "updatedAt": "Catalogue mis à jour {{time}}",
+      "outdated": "Catalogue non mis à jour depuis plus de 24 heures",
+      "lastAttemptFailed": "Échec de l’actualisation à {{time}} ({{kind}})",
+      "inUse": "Routes utilisées",
+      "inUseNone": "Aucune route de modèle n’utilise cette connexion",
+      "tier": {
+        "light": "Léger",
+        "standard": "Standard",
+        "heavy": "Lourd"
+      },
+      "testTargets": "Tester des modèles précis",
+      "testScopeUnknownNote": "Utilise la connexion actuelle de la CLI ; le compte ne peut pas être confirmé et ce résultat n’activera pas les tâches en arrière-plan",
+      "testCostNote": "Effectue un appel réel par modèle ({{count}}), ce qui consomme votre quota",
+      "testSelected": "Tester les modèles sélectionnés",
+      "observations": "Observations d’appels pour le compte actuel",
+      "showHistory": "Afficher l’historique des tests ({{count}})",
+      "hideHistory": "Masquer l’historique",
+      "historicalEpoch": "époque d’authentification antérieure {{epoch}}",
+      "attributionUnconfirmed": "La CLI ou la connexion a changé pendant le test ; résultats non attribués, conservés dans l’historique",
+      "admission": {
+        "firstCall": "En attente du premier appel",
+        "allowed": "Dernier appel réussi ({{time}})",
+        "connection_busy": "Connexion en cours de vérification ou de test",
+        "connection_unavailable": "Environnement de connexion indisponible ; vérifiez l’environnement",
+        "ambiguous_outcome": "Résultat du dernier appel inconnu ; arrière-plan en pause jusqu’à la réussite d’un test",
+        "scope_unknown": "Périmètre du compte connecté impossible à confirmer ; appels en arrière-plan en pause",
+        "invalid_model_id": "ID de modèle invalide",
+        "model_rejected": "Ce compte ne peut pas utiliser le modèle ; retestez ou choisissez-en un autre",
+        "model_mismatch": "Le modèle épinglé a renvoyé un autre modèle réel ; retestez explicitement",
+        "backoff": "Échec temporaire ; temporisation jusqu’à {{retryAt}}"
+      },
+      "outcome": {
+        "success": "Réussi",
+        "mismatch": "Le modèle réel diffère du choix épinglé",
+        "model_rejected": "Aucun accès ou modèle introuvable",
+        "temporary_failure": "Échec temporaire (limite de débit/quota/réseau)",
+        "connection_failure": "Erreur de l’environnement de connexion",
+        "unclassified_failure": "Échec de l’appel, cause non reconnue",
+        "ambiguous": "Résultat inconnu"
+      },
+      "source": {
+        "business": "appel métier",
+        "test": "test de connexion"
+      }
     }
   },
   "data": {
@@ -1064,6 +1133,23 @@
       }
     },
     "managed": {
+      "sourceVerification": {
+        "title": "Origine de l’installation",
+        "description": "La vérification de l’origine ne confirme ni le chargement par l’hôte ni un appel mémoire réussi.",
+        "states": {
+          "trusted": "Origine vérifiée",
+          "pending": "Vérification en attente",
+          "confirmation_required": "Confirmer l’origine",
+          "rejected": "Origine rejetée",
+          "user_managed": "Configuration gérée par l’utilisateur"
+        },
+        "evidence": {
+          "tested_sample": "Artefact de version testé",
+          "signed_identity": "Signature officielle",
+          "npm_registry": "Paquet npm officiel vérifié",
+          "npm_registry_cache": "Vérification npm officielle en cache"
+        }
+      },
       "title": "Connexions aux Agents",
       "subtitle": "Détecte et maintient automatiquement les Agents locaux compatibles sur ce Mac.",
       "summary": "{{products}} produits Agent · {{installations}} installations · {{available}} disponibles",
@@ -1228,9 +1314,12 @@
         "releaseEntryMissing": "Cette version de Tide Mind ne contient aucun contrat de connexion publié pour cet Agent. Mettez Tide Mind à jour et vérifiez à nouveau ; si vous utilisez déjà la dernière version, cet Agent ne peut pas encore être configuré.",
         "releaseModeDetectOnly": "Cette version de Tide Mind permet uniquement de détecter cet Agent. La configuration automatique n’est pas disponible ; mettez Tide Mind à jour et vérifiez à nouveau lorsque la prise en charge sera publiée.",
         "releaseDistributionNotAccepted": "Cette source d’installation n’a pas été validée pour la publication. Installez l’Agent depuis sa distribution officielle, puis vérifiez à nouveau ; Tide Mind ne modifiera pas cette installation.",
-        "releaseArtifactNotAccepted": "Les fichiers locaux de cet Agent ne correspondent pas au paquet officiel validé pour cette version de Tide Mind. Réinstallez-le depuis le canal officiel, puis vérifiez à nouveau.",
+        "releaseArtifactNotAccepted": "Ce résultat de vérification des fichiers d’installation a été enregistré par une version antérieure de Tide Mind et attend une nouvelle vérification. Vérifiez à nouveau pour l’actualiser maintenant.",
         "releaseVersionUnverified": "Tide Mind n’a pas pu vérifier la version de l’Agent. Réinstallez-le ou mettez-le à jour depuis la distribution officielle, puis vérifiez à nouveau.",
-        "releaseVersionNotAccepted": "Cette version exacte de l’Agent n’a pas été validée pour la publication. Mettez l’Agent à jour et vérifiez à nouveau ; s’il s’agit déjà de la dernière version, attendez une mise à jour de Tide Mind.",
+        "releaseVersionNotAccepted": "Ce résultat de vérification de version a été enregistré par une version antérieure de Tide Mind et attend une nouvelle vérification. Vérifiez à nouveau pour l’actualiser maintenant.",
+        "sourceVerificationPending": "Tide Mind vérifie encore la source officielle de cet Agent et ne peut pas encore terminer la vérification ; la configuration automatique est suspendue. Une nouvelle tentative aura lieu automatiquement dès que vous serez en ligne.",
+        "sourceNotOfficial": "L’installation locale de cet Agent ne correspond pas à la publication officielle ; la configuration automatique a été arrêtée. Réinstallez-le depuis le canal officiel, puis vérifiez à nouveau.",
+        "sourceConfirmationRequired": "Tide Mind ne peut pas vérifier automatiquement la source officielle de ce type d’installation. Réinstallez l’Agent depuis son canal officiel ou connectez-le manuellement via « Ajouter un Agent local personnalisé ».",
         "unverified": "Pas encore vérifié.",
         "verificationStale": "Les preuves antérieures sont obsolètes.",
         "connecting": "Appliquer le plan de raccordement approuvé.",
@@ -1249,7 +1338,8 @@
         "circuitBreaker": "La réparation automatique s'est arrêtée après des retraits répétés.",
         "disconnectVerified": "Les composants Tide Mind ont été vérifiés absents.",
         "hostUninstalled": "L’Agent n’est plus installé.",
-        "unknown": "Voir les détails pour les derniers faits vérifiés."
+        "unknown": "Voir les détails pour les derniers faits vérifiés.",
+        "customConfigOwnedByDiscoveredHost": "Ce fichier de configuration (ou son dossier) appartient déjà à un Agent détecté par Tide Mind. Connectez cet Agent directement au lieu de l’ajouter comme client personnalisé."
       },
       "access": {
         "complete": "Connexion complète",
@@ -1323,7 +1413,7 @@
         "legacyConnectionAdopted": "Une connexion Tide Mind existante a été reconnue",
         "legacyConnectionNeedsConfirmation": "Une connexion existante nécessite votre confirmation",
         "legacyAdoptionScanFailed": "Les connexions existantes n'ont pas pu être vérifiées",
-        "userConfirmedGuidedRemoval": "La suppression dans Qwen Work a été confirmée par l’utilisateur"
+        "userConfirmedGuidedRemoval": "Une suppression guidée a été confirmée par l’utilisateur"
       },
       "management": "Gérer la connexion",
       "supportMode": {
@@ -1407,7 +1497,8 @@
         "codexHookTrustUnavailable": "La confiance du hook Codex n’a pas pu être vérifiée. Vérifiez l'hôte et réessayez.",
         "manualDocumentRemoval": "Supprimez manuellement le fichier d'instructions appartenant à Tide Mind, puis vérifiez à nouveau.",
         "componentRequiresOtherProjection": "{{component}} nécessite une méthode de connexion prise en charge différente.",
-        "manualReview": "Ce changement nécessite une étape manuelle. Passez en revue les détails guidés avant de continuer."
+        "manualReview": "Ce changement nécessite une étape manuelle. Passez en revue les détails guidés avant de continuer.",
+        "hostManualRemoval": "La source de cet hôte n’est pas confirmée pour le moment ; Tide Mind n’exécutera donc pas ses programmes. Supprimez vous-même le composant Tide Mind dans l’hôte ; Tide Mind ne fournit plus de mémoire à cet Agent."
       },
       "currentRequiredAction": "Action encore requise",
       "openCurrentRequiredAction": "Ouvrir les instructions actuelles",
@@ -1420,13 +1511,18 @@
         "confirm": "J’ai supprimé le connecteur de Qwen Work comme indiqué",
         "userConfirmedNotice": "Le résultat sera enregistré comme confirmé par l’utilisateur, et non comme une vérification automatique de l’hôte.",
         "confirmed": "Suppression confirmée par vous. Tide Mind a enregistré la confirmation et revérifié cette suppression précise.",
-        "notReady": "Le Skill Tide Mind est toujours présent. Supprimez le Skill et le connecteur Qwen Work, puis confirmez à nouveau."
+        "notReady": "Le Skill Tide Mind est toujours présent. Supprimez le Skill et le connecteur Qwen Work, puis confirmez à nouveau.",
+        "coworkExplanation": "Après avoir supprimé le plugin Tide Mind dans Claude Cowork (Customize → Plugins) et supprimé le fichier .plugin exporté, confirmez explicitement l’étape guidée terminée.",
+        "coworkDescription": "Claude Cowork n’expose pas de registre de plugins lisible par machine. Tide Mind enregistrera votre confirmation pour cette suppression en attente.",
+        "coworkConfirm": "J’ai supprimé le plugin Tide Mind de Claude Cowork comme indiqué",
+        "coworkNotReady": "Le fichier du plugin Tide Mind exporté est toujours présent. Supprimez-le, retirez le plugin dans Claude Cowork, puis confirmez à nouveau."
       },
       "actionDetail": {
         "instruction": {
           "mcpActivation": "Autorisez {{server}} dans {{config}}, puis revérifiez la connexion.",
           "manualFileRemoval": "Supprimez le fichier géré par Tide Mind dans {{target}}, puis revérifiez la connexion.",
-          "kimiConflict": "Tide Mind n'a modifié aucun Skill, car les chemins existant et géré ne peuvent pas être migrés en toute sécurité."
+          "kimiConflict": "Tide Mind n'a modifié aucun Skill, car les chemins existant et géré ne peuvent pas être migrés en toute sécurité.",
+          "manualHostRemoval": "Supprimez le composant Tide Mind « {{selector}} » dans {{host}} avec son propre gestionnaire de plugins ou d’extensions."
         },
         "guidance": {
           "claudeCowork": {
@@ -1459,6 +1555,11 @@
             "step1": "Vérifiez l'ancien Skill {{source}} et la cible gérée {{target}}.",
             "step2": "Conservez le contenu utile en déplaçant ou renommant le fichier que Tide Mind ne doit pas gérer. Tide Mind n'écrasera ni ne supprimera un fichier non vérifié.",
             "step3": "Revenez dans Tide Mind et relancez la vérification."
+          },
+          "manualHostRemoval": {
+            "step1": "Ouvrez {{host}} et trouvez le composant Tide Mind « {{selector}} » dans sa liste de plugins ou d’extensions.",
+            "step2": "Supprimez-le uniquement pour cet Agent, puis redémarrez {{host}} ou ouvrez une nouvelle session pour qu’il ne soit plus chargé.",
+            "step3": "Tide Mind a déjà cessé de fournir de la mémoire à cet Agent et a suspendu sa maintenance. Ne reprenez la maintenance que si vous souhaitez garder la connexion."
           }
         },
         "source": "Source",
@@ -1488,7 +1589,8 @@
           "legacy_not_exact": "Le fichier situé sur le chemin d'accès hérité n'est pas exactement un ancien Tide Mind Skill.",
           "legacy_changed": "L'ancien Skill a changé après son inspection.",
           "target_occupied": "La nouvelle cible Tide Mind Skill est occupée par un fichier non géré."
-        }
+        },
+        "hostComponent": "Composant de l’hôte"
       },
       "previewDescription": "Examinez les objectifs gérés et les risques avant de vous connecter.",
       "changeSummary": "Composants {{components}} · Cibles gérées {{targets}}",
@@ -1538,7 +1640,12 @@
       "startupSummaryBody": "{{count}} mise(s) à jour non lue(s) des connexions aux Agents attendent votre validation.",
       "viewDetails": "Afficher les détails",
       "dismiss": "Rejeter",
-      "unreadUpdates": "{{count}} mise(s) à jour non lue(s) des connexions aux Agents"
+      "unreadUpdates": "{{count}} mise(s) à jour non lue(s) des connexions aux Agents",
+      "deactivation": {
+        "awaitingReload": "Tide Mind a supprimé sa configuration et ne fournit plus de mémoire à cet Agent. Un hôte déjà en cours d’exécution peut conserver les anciens composants jusqu’à son redémarrage ou une nouvelle session ; les anciennes entrées sans génération ne sont pas bloquées automatiquement.",
+        "deactivatedVerified": "Désactivation vérifiée : la configuration est supprimée et l’hôte a été rechargé.",
+        "bridgeStopped": "Tide Mind ne fournit plus de mémoire à cet Agent. Ses composants peuvent encore être chargés dans l’hôte ; supprimez-les manuellement dans l’hôte."
+      }
     }
   },
   "account": {

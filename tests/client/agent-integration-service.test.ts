@@ -1127,35 +1127,30 @@ describe('AgentIntegrationService', () => {
     await expect(service.previewConnect(['installation-1'])).rejects.toThrow(/not enabled/)
   })
 
-  it('does not advertise Catalog management until an exact version is release-accepted', () => {
+  it('advertises Catalog management from the production entry, not from an exact-version allowlist', () => {
     const cursor = AGENT_INTEGRATION_RELEASE_ENTRY_MAP.get('cursor-desktop')!
-    const releaseEntries = (acceptedVersions: readonly string[]) => new Map<CatalogId, AgentReleaseEntry>([[
+    const releaseEntries = (entry: Partial<AgentReleaseEntry>) => new Map<CatalogId, AgentReleaseEntry>([[
       'cursor-desktop',
-      { ...cursor, releaseAcceptedExactVersions: acceptedVersions },
+      { ...cursor, ...entry },
     ]])
-    const unavailable = setup(
-      undefined,
-      '/Users/alice',
-      undefined,
-      undefined,
-      undefined,
-      releaseEntries([]),
-      new Map([['cursor-desktop', ['instruction', 'memory_tools', 'lifecycle'] as const]]),
+    const components = new Map([['cursor-desktop', ['instruction', 'memory_tools', 'lifecycle'] as const]])
+    const untested = setup(
+      undefined, '/Users/alice', undefined, undefined, undefined,
+      releaseEntries({ releaseAcceptedExactVersions: [] }),
+      components,
     )
-    const available = setup(
-      undefined,
-      '/Users/alice',
-      undefined,
-      undefined,
-      undefined,
-      releaseEntries(['3.10.20']),
-      new Map([['cursor-desktop', ['instruction', 'memory_tools', 'lifecycle'] as const]]),
+    const detectOnly = setup(
+      undefined, '/Users/alice', undefined, undefined, undefined,
+      releaseEntries({ releaseMode: 'detect_only', enabledByDefault: false }),
+      components,
     )
 
-    expect(unavailable.service.supportCatalog().find(product => product.id === 'cursor')?.variants[0])
-      .toMatchObject({ maturity: 'detectable', maximumAccessLevel: 'unconnected' })
-    expect(available.service.supportCatalog().find(product => product.id === 'cursor')?.variants[0])
+    // Runtime source compatibility (design §3.1): tested exact versions are evidence
+    // labels; an empty list no longer demotes a production entry to detect-only.
+    expect(untested.service.supportCatalog().find(product => product.id === 'cursor')?.variants[0])
       .toMatchObject({ maturity: 'managed', maximumAccessLevel: 'complete' })
+    expect(detectOnly.service.supportCatalog().find(product => product.id === 'cursor')?.variants[0])
+      .toMatchObject({ maturity: 'detectable', maximumAccessLevel: 'unconnected' })
   })
 
   it('preserves OpenClaw CLI eligibility across list, detail, and preview without creating write authority', async () => {

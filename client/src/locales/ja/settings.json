@@ -194,7 +194,18 @@
       ,"connectionUnavailable": "保存された接続は存在しません"
       ,"modelUnavailable": "保存されたモデルは未検証です"
       ,"savedConnectionInvalid": "保存された接続は利用できません。別の接続を選択してください。"
-      ,"savedModelInvalid": "保存されたモデルは利用できません。検証済みモデルを選択してください。"
+      ,"savedModelInvalid": "保存されたモデルは利用できません。検証済みモデルを選択してください。",
+      "followDefault": "分離実行の既定（CLI 組み込み）",
+      "isolatedDefaultHint": "分離環境で CLI 組み込みの既定モデルを使用します。アカウントのカタログ推奨やローカルの個人設定には追従しません。",
+      "aliasPending": "エイリアス（未検証）",
+      "catalogDefaultBadge": "カタログの推奨既定",
+      "upgradeHint": "上流は {{model}} へのアップグレードを推奨",
+      "notListed": "現在のカタログにありません。選択は保持されます",
+      "manualEntry": "モデル ID を手動入力…",
+      "manualPlaceholder": "モデル ID",
+      "manualApply": "使用",
+      "manualCancel": "キャンセル",
+      "manualInvalid": "モデル ID の形式が無効です"
     },
     "serviceStatus": {
       "title": "AI サービスステータス",
@@ -214,7 +225,65 @@
       "needsAttention": "Needs attention",
       "unknownConnection": "Unknown connection",
       "collapseErrors": "Collapse errors",
-      "expandErrors": "Show {{count}} more"
+      "expandErrors": "Show {{count}} more",
+      "routeFaults": "使用中ルートの障害"
+    },
+    "catalog": {
+      "scope": "アカウント範囲",
+      "scopeNotChecked": "未確認",
+      "scopeUnknown": "確認できません（手動テストのみ、バックグラウンドタスクは実行しません）",
+      "scopeKnown": "確認済み",
+      "title": "モデルカタログ",
+      "refresh": "モデル一覧を更新",
+      "refreshFailed": "更新に失敗しました（{{kind}}）。前回の完全なカタログを保持します",
+      "none": "モデルカタログはまだありません",
+      "unsupported": "この CLI バージョンはモデル一覧を提供しません。デフォルトに従うか、モデル ID を手動入力してください",
+      "aliasesOnly": "公式エイリアス {{count}} 件（未検証）/ 最近検証済み {{verified}} 件。モデル ID の手動入力が可能です",
+      "summary": "{{count}} 件のモデルを検出 / 最近検証済み {{verified}} 件",
+      "updatedAt": "カタログ更新：{{time}}",
+      "outdated": "カタログが 24 時間以上更新されていません",
+      "lastAttemptFailed": "{{time}} の更新に失敗（{{kind}}）",
+      "inUse": "使用中のルート",
+      "inUseNone": "この接続を使用しているモデルルートはありません",
+      "tier": {
+        "light": "軽量",
+        "standard": "標準",
+        "heavy": "ヘビー"
+      },
+      "testTargets": "特定のモデルをテスト",
+      "testScopeUnknownNote": "CLI の現在のログインを使用します。アカウントを確認できないため、この結果でバックグラウンドタスクは有効になりません",
+      "testCostNote": "{{count}} 個のモデルそれぞれに実際の呼び出しを 1 回行い、利用枠を消費します",
+      "testSelected": "選択したモデルをテスト",
+      "observations": "現在のアカウントでの呼び出し状況",
+      "showHistory": "テスト履歴を表示（{{count}}）",
+      "hideHistory": "履歴を閉じる",
+      "historicalEpoch": "以前の認証世代 {{epoch}}",
+      "attributionUnconfirmed": "テスト中に CLI またはログインアカウントが変更されました。結果の帰属は未確認のため履歴として記録しました",
+      "admission": {
+        "firstCall": "初回呼び出しで検証待ち",
+        "allowed": "前回の呼び出しは成功（{{time}}）",
+        "connection_busy": "接続を確認中またはテスト中",
+        "connection_unavailable": "接続環境が利用できません。環境を確認してください",
+        "ambiguous_outcome": "前回の呼び出し結果が不明なため、バックグラウンドを一時停止中。テスト成功後に再開します",
+        "scope_unknown": "ログインアカウントの範囲を確認できないため、バックグラウンド呼び出しを一時停止中",
+        "invalid_model_id": "モデル ID が無効です",
+        "model_rejected": "このアカウントではこのモデルを使用できません。再テストするか別のモデルを選択してください",
+        "model_mismatch": "固定モデルが想定外の実モデルを返しました。明示的に再テストしてください",
+        "backoff": "一時的に失敗中。{{retryAt}} まで待機します"
+      },
+      "outcome": {
+        "success": "成功",
+        "mismatch": "実際のモデルが固定した選択と一致しません",
+        "model_rejected": "アクセス権がないか、モデルが存在しません",
+        "temporary_failure": "一時的な失敗（レート制限/利用枠/ネットワーク）",
+        "connection_failure": "接続環境エラー",
+        "unclassified_failure": "呼び出しに失敗、原因は特定できません",
+        "ambiguous": "結果不明"
+      },
+      "source": {
+        "business": "業務呼び出し",
+        "test": "接続テスト"
+      }
     }
   },
   "data": {
@@ -1064,6 +1133,23 @@
       }
     },
     "managed": {
+      "sourceVerification": {
+        "title": "インストール元",
+        "description": "提供元の検証は、ホストでの読み込みやメモリ呼び出しの成功を意味しません。",
+        "states": {
+          "trusted": "提供元を検証済み",
+          "pending": "検証待ち",
+          "confirmation_required": "提供元の確認が必要",
+          "rejected": "提供元の検証に失敗",
+          "user_managed": "ユーザー管理の設定"
+        },
+        "evidence": {
+          "tested_sample": "テスト済みリリース成果物",
+          "signed_identity": "公式署名",
+          "npm_registry": "公式 npm パッケージと照合済み",
+          "npm_registry_cache": "キャッシュ済みの公式 npm 検証"
+        }
+      },
       "title": "Agent接続",
       "subtitle": "この Mac 上で互換性のあるローカル Agentを自動的に検出して維持します。",
       "summary": "{{products}} Agent製品 · {{installations}} インストール · {{available}} が利用可能",
@@ -1214,9 +1300,12 @@
         "releaseEntryMissing": "この Tide Mind ビルドには、この Agent 向けにリリースされた接続契約がありません。Tide Mind を更新して再確認してください。すでに最新版の場合、この Agent はまだ設定できません。",
         "releaseModeDetectOnly": "この Tide Mind リリースでは、このAgentの検出のみがサポートされています。自動構成は利用できません。 Tide Mind を更新し、サポートがリリースされた後に再度確認してください。",
         "releaseDistributionNotAccepted": "このインストール ソースはリリース検証されていません。公式ディストリビューションからAgentをインストールし、Check を再度実行します。 Tide Mind はこのインストールを変更しません。",
-        "releaseArtifactNotAccepted": "このインストール ソースはリリース検証されていません。公式ディストリビューションからAgentをインストールし、Check を再度実行します。 Tide Mind はこのインストールを変更しません。",
+        "releaseArtifactNotAccepted": "これは以前の Tide Mind が記録したインストール ファイル確認の結果で、再確認を待っています。「再確認」を実行するとすぐに更新されます。",
         "releaseVersionUnverified": "Tide Mind はAgentのバージョンを確認できませんでした。再インストールするか、公式ディストリビューションから更新してから、もう一度チェックを実行してください。",
-        "releaseVersionNotAccepted": "この正確なAgent バージョンはリリース検証されていません。Agentを更新し、チェックを再度実行します。すでに最新バージョンの場合は、Tide Mind アップデートを待ちます。",
+        "releaseVersionNotAccepted": "これは以前の Tide Mind が記録したバージョン確認の結果で、再確認を待っています。「再確認」を実行するとすぐに更新されます。",
+        "sourceVerificationPending": "Tide Mind はこのAgentの公式ソースを確認中のため、まだチェックを完了できません。自動設定は保留中です。オンラインになると自動的に再試行します。",
+        "sourceNotOfficial": "このAgentのローカル インストールが公式リリースの内容と一致しないため、自動設定を停止しました。公式チャネルから再インストールしてから「再確認」を実行してください。",
+        "sourceConfirmationRequired": "このインストール方法では、Tide Mind が公式ソースを自動的に確認できません。公式チャネルからAgentを再インストールするか、「カスタムローカルAgentを追加する」から手動で接続してください。",
         "unverified": "まだ検証されていません。",
         "verificationStale": "以前の証拠は古い。",
         "connecting": "承認された接続プランを適用します。",
@@ -1235,7 +1324,8 @@
         "circuitBreaker": "取り外しを繰り返すと自動修復が停止しました。",
         "disconnectVerified": "Tide Mind コンポーネントが存在しないことが確認されました。",
         "hostUninstalled": "Agentはインストールされなくなりました。",
-        "unknown": "最新の検証事実については詳細をご覧ください。"
+        "unknown": "最新の検証事実については詳細をご覧ください。",
+        "customConfigOwnedByDiscoveredHost": "この設定ファイル（またはそのフォルダー）は、Tide Mind が検出した Agent のものです。カスタムクライアントとして追加せず、その Agent を直接接続してください。"
       },
       "access": {
         "complete": "接続完了",
@@ -1309,7 +1399,7 @@
         "legacyConnectionAdopted": "既存の Tide Mind 接続が認識されました",
         "legacyConnectionNeedsConfirmation": "既存の接続には確認が必要です",
         "legacyAdoptionScanFailed": "既存の接続を確認できませんでした",
-        "userConfirmedGuidedRemoval": "Qwen Work の削除がユーザーにより確認されました"
+        "userConfirmedGuidedRemoval": "ガイド付きの削除がユーザーにより確認されました"
       },
       "management": "接続の管理",
       "supportMode": {
@@ -1375,7 +1465,8 @@
         "codexHookTrustUnavailable": "Codex フックの信頼性を検証できませんでした。ホストを確認して再試行してください。",
         "manualDocumentRemoval": "Tide Mind が所有する命令ファイルを手動で削除し、再度確認してください。",
         "componentRequiresOtherProjection": "{{component}} には、サポートされている別の接続方法が必要です。",
-        "manualReview": "この変更には手動の手順が必要です。続行する前に、ガイドに従って詳細を確認してください。"
+        "manualReview": "この変更には手動の手順が必要です。続行する前に、ガイドに従って詳細を確認してください。",
+        "hostManualRemoval": "このホストの提供元は現在確認されていないため、Tide Mind はそのプログラムを実行しません。ホストで Tide Mind コンポーネントを手動で削除してください。Tide Mind はこの Agent へのメモリ提供を停止しました。"
       },
       "currentRequiredAction": "現在必要な操作",
       "openCurrentRequiredAction": "現在の手順を開く",
@@ -1388,21 +1479,32 @@
         "confirm": "案内どおり Qwen Work からコネクターを削除しました",
         "userConfirmedNotice": "これはユーザー確認済みの結果として記録され、ホストによる自動検証ではありません。",
         "confirmed": "あなたによる削除確認を記録しました。Tide Mind はこの削除操作を再確認しました。",
-        "notReady": "Tide Mind Skill がまだ残っています。Skill と Qwen Work のコネクターを削除してから、もう一度確認してください。"
+        "notReady": "Tide Mind Skill がまだ残っています。Skill と Qwen Work のコネクターを削除してから、もう一度確認してください。",
+        "coworkExplanation": "Claude Cowork（Customize → Plugins）で Tide Mind プラグインを削除し、エクスポートされた .plugin ファイルを削除したら、ガイド手順の完了を明示的に確認してください。",
+        "coworkDescription": "Claude Cowork には機械可読なプラグインレジストリがありません。Tide Mind はこの保留中の削除に対するあなたの確認を記録します。",
+        "coworkConfirm": "指示どおり Claude Cowork から Tide Mind プラグインを削除しました",
+        "coworkNotReady": "エクスポートされた Tide Mind プラグインファイルがまだ残っています。ファイルを削除し、Claude Cowork でプラグインを削除してから、もう一度確認してください。"
       },
       "actionDetail": {
-        "instruction": {"mcpActivation":"{{config}} で {{server}} を許可し、接続を再確認してください。","manualFileRemoval":"{{target}} にある Tide Mind 管理ファイルを削除し、接続を再確認してください。","kimiConflict":"旧 Skill と管理対象のパスを安全に移行できないため、Tide Mind はどちらのファイルも変更していません。"},
+        "instruction": {"mcpActivation":"{{config}} で {{server}} を許可し、接続を再確認してください。","manualFileRemoval":"{{target}} にある Tide Mind 管理ファイルを削除し、接続を再確認してください。","kimiConflict":"旧 Skill と管理対象のパスを安全に移行できないため、Tide Mind はどちらのファイルも変更していません。",
+        "manualHostRemoval": "{{host}} 自身のプラグイン／拡張機能マネージャーで Tide Mind コンポーネント「{{selector}}」を削除してください。"},
         "guidance": {
           "claudeCowork": {"connect":{"step1":"承認後、Tide Mind のコンポーネント詳細から生成された .plugin ファイルを開きます。","step2":"Claude Cowork の Customize → Plugins で .plugin ファイルをアップロードして有効化します。Claude Desktop の MCP 設定には追加しないでください。","step3":"新しいローカル Cowork タスクを作成し、同じタスク内で Tide Mind の brain_recall と brain_digest を両方成功させます。クラウド Cowork ではローカル MCP を実行できません。","step4":"Tide Mind に戻って再確認します。新しい読み取り・書き込み呼び出しの証拠が検出された場合のみ「基本接続」と表示されます。"},"disconnect":{"step1":"Claude Cowork の Customize → Plugins を開きます。","step2":"この Agent 用の Tide Mind プラグインだけを削除します。他の Tide Mind Agent のプラグインは削除しないでください。","step3":"Tide Mind に戻って再確認します。Cowork には読み取り可能なプラグイン登録情報がないため、削除状態は確認待ちのままになります。"}},
           "qwenWork": {"connect":{"step1":"Qwen Work で 拡張機能 → コネクタ を開きます。","step2":"JSON 設定を選び、下の完全な mcpServers JSON を貼り付けます。","step3":"command、args、env が別々のフィールドであることを確認し、設定を適用します。","step4":"コネクタを有効化して新しい会話を作成し、同じ会話内で Tide Mind の brain_recall と brain_digest を両方成功させます。"},"disconnect":{"step1":"Qwen Work で 拡張機能 → コネクタ → インストール済み を開きます。","step2":"カスタム欄で「{{connector}}」を見つけ、削除アイコンを選んで確定します。","step3":"新しい会話を作成し、Tide Mind に戻って再確認します。"}},
-          "kimiConflict": {"step1":"旧 Skill {{source}} と管理対象 {{target}} を確認します。","step2":"必要な内容は、Tide Mind が管理すべきでないファイルを移動または改名して保存します。未検証のファイルを上書き・削除することはありません。","step3":"Tide Mind に戻り、再確認を実行します。"}
+          "kimiConflict": {"step1":"旧 Skill {{source}} と管理対象 {{target}} を確認します。","step2":"必要な内容は、Tide Mind が管理すべきでないファイルを移動または改名して保存します。未検証のファイルを上書き・削除することはありません。","step3":"Tide Mind に戻り、再確認を実行します。"},
+          "manualHostRemoval": {
+            "step1": "{{host}} を開き、プラグイン／拡張機能の一覧で Tide Mind コンポーネント「{{selector}}」を探します。",
+            "step2": "この Agent の分だけを削除し、{{host}} を再起動するか新しいセッションを開始して、読み込まれない状態にします。",
+            "step3": "Tide Mind はすでにこの Agent へのメモリ提供を停止し、保守を一時停止しています。接続を残したい場合のみ保守を再開してください。"
+          }
         },
         "source": "ソース", "package": "プラグインパッケージ", "connector": "コネクタ名", "serverType": "サーバーの種類",
         "command": "コマンド", "environment": "環境変数", "mcpConfiguration": "MCP 構成 (JSON)", "server": "サーバー名", "config": "設定ファイル",
         "reason": "なぜ行動が必要なのか", "component": "コンポーネント", "target": "削除するファイル", "steps": "ステップ",
         "copy": "コピー", "copied": "コピーされました", "copyValue": "{{label}}をコピー", "copyFailed": "コピーできませんでした。値を選択して手動でコピーしてください。",
         "activationReason": {"excluded": "サーバーはAgent構成によって除外されます。", "not_allowed": "サーバーはAgentの許可リストに載っていません。", "invalid_policy": "Agentのアクティブ化ポリシーが無効です。"},
-        "kimiConflictReason": {"legacy_unowned": "レガシー Tide Mind Skill が、検証可能な所有権なしで見つかりました。", "legacy_not_exact": "レガシー パスにあるファイルは、正確な Tide Mind レガシー Skill ではありません。", "legacy_changed": "従来のSkillは検査後に変更されました。", "target_occupied": "新しい Tide Mind Skill ターゲットは、管理されていないファイルによって占有されています。"}
+        "kimiConflictReason": {"legacy_unowned": "レガシー Tide Mind Skill が、検証可能な所有権なしで見つかりました。", "legacy_not_exact": "レガシー パスにあるファイルは、正確な Tide Mind レガシー Skill ではありません。", "legacy_changed": "従来のSkillは検査後に変更されました。", "target_occupied": "新しい Tide Mind Skill ターゲットは、管理されていないファイルによって占有されています。"},
+        "hostComponent": "ホスト側コンポーネント"
       },
       "previewDescription": "接続する前に、管理対象とリスクを確認してください。",
       "changeSummary": "{{components}} コンポーネント · {{targets}} 管理対象ターゲット",
@@ -1452,7 +1554,12 @@
       "startupSummaryBody": "{{count}} 未読のAgent接続更新がレビューを待っています。",
       "viewDetails": "詳細を見る",
       "dismiss": "解雇する",
-      "unreadUpdates": "{{count}} 未読のAgent接続更新"
+      "unreadUpdates": "{{count}} 未読のAgent接続更新",
+      "deactivation": {
+        "awaitingReload": "Tide Mind は自身の設定を削除し、この Agent へのメモリ提供を停止しました。実行中のホストは再起動するか新しいセッションを開始するまで古いコンポーネントを保持する場合があります。generation を持たない古いエントリは自動ではブロックされません。",
+        "deactivatedVerified": "停止を確認しました：設定は削除され、ホストは再読み込みされました。",
+        "bridgeStopped": "Tide Mind はこの Agent へのメモリ提供を停止しました。ホスト側のコンポーネントはまだ読み込まれている可能性があります。ホストで手動で削除してください。"
+      }
     }
   },
   "account": {

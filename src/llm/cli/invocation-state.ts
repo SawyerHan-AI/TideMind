@@ -295,34 +295,16 @@ export function reconcileCliRuntimeState(
         .run(lease.account_scope);
     }
 
+    // A crash during check/test leaves a transient status. Settle it from the
+    // environment facts only; per-model evidence lives in llm_model_observations
+    // and is never promoted to a connection-level verdict here.
     const unstable = db.prepare(`
-      SELECT id, candidate_models, available_models, model_validation_json,
-             validation_fingerprint, environment_checked_at
+      SELECT id, environment_checked_at
       FROM model_connections
       WHERE status IN ('checking', 'testing') AND archived = 0
-    `).all() as Array<{
-      id: string;
-      candidate_models: string | null;
-      available_models: string | null;
-      model_validation_json: string | null;
-      validation_fingerprint: string | null;
-      environment_checked_at: string | null;
-    }>;
+    `).all() as Array<{ id: string; environment_checked_at: string | null }>;
     for (const connection of unstable) {
-      let available: string[] = [];
-      let candidates: string[] = [];
-      let validations: Record<string, { success?: boolean }> = {};
-      try { available = JSON.parse(connection.available_models ?? '[]'); } catch { /* invalid legacy JSON */ }
-      try { candidates = JSON.parse(connection.candidate_models ?? '[]'); } catch { /* invalid legacy JSON */ }
-      try { validations = JSON.parse(connection.model_validation_json ?? '{}'); } catch { /* invalid legacy JSON */ }
-      let status = 'unconfigured';
-      if (connection.validation_fingerprint && available.length > 0) {
-        const covered = candidates.length > 0
-          && candidates.every(model => validations[model] !== undefined);
-        status = covered && available.length === candidates.length ? 'online' : 'degraded';
-      } else if (connection.environment_checked_at && candidates.length > 0) {
-        status = 'untested';
-      }
+      const status = connection.environment_checked_at ? 'untested' : 'unconfigured';
       db.prepare(`
         UPDATE model_connections
         SET status = ?, status_reason = NULL

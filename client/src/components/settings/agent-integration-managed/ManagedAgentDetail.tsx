@@ -35,6 +35,7 @@ import {
   requiredUserActionPresentation,
   safeDisplayTarget,
   statusReasonKey,
+  deactivationNoticeKey,
   summarizeExecutionResults,
 } from './presentation'
 import { RequiredUserActionDetail } from './RequiredUserActionDetail'
@@ -513,6 +514,14 @@ export function ManagedAgentDetail({
                 ? t(statusReasonKey(installation.statusReason))
                 : managementUnavailableHelp}
             </p>
+            {deactivationNoticeKey(installation) && (
+              <p
+                data-deactivation-state={`${installation.deactivation?.bridge}:${installation.deactivation?.hostComponents}`}
+                className="mt-1 text-xs leading-relaxed text-amber-200"
+              >
+                {t(deactivationNoticeKey(installation)!)}
+              </p>
+            )}
           </div>
           <StatusBadge
             group={installation.statusGroup}
@@ -635,12 +644,17 @@ export function ManagedAgentDetail({
                   <RequiredUserActionDetail key={requiredUserActionDetailKey(action)} action={action} />
                 ))}
                 {detail.requiredUserActionDetails?.some(action => (
-                  (action.kind === 'qwenwork_mcp_gui' || action.kind === 'custom_mcp_import') && action.operation === 'disconnect'
+                  (action.kind === 'qwenwork_mcp_gui'
+                    || action.kind === 'custom_mcp_import'
+                    || action.kind === 'claude_cowork_plugin_upload') && action.operation === 'disconnect'
                 )) && (
                   <div className="mt-3 border-t border-amber-400/15 pt-3">
                     <p className="mb-2 text-xs leading-relaxed text-gray-300">
                       {t(installation.hostVariant === 'custom-local-mcp'
-                        ? 'agent.managed.custom.guidedRemoveStep' : 'agent.managed.guidedRemoval.explanation')}
+                        ? 'agent.managed.custom.guidedRemoveStep'
+                        : installation.hostVariant === 'claude-cowork-local'
+                          ? 'agent.managed.guidedRemoval.coworkExplanation'
+                          : 'agent.managed.guidedRemoval.explanation')}
                     </p>
                     <button
                       data-guided-removal-review
@@ -664,7 +678,9 @@ export function ManagedAgentDetail({
             className={`rounded-lg border border-white/[0.07] bg-white/[0.025] p-3 text-xs ${guidedRemovalResult.status === 'removal_confirmed' ? 'text-emerald-300' : 'text-amber-200'}`}
             role="status"
           >
-            {t(`agent.managed.guidedRemoval.${guidedRemovalResult.status === 'removal_confirmed' ? 'confirmed' : 'notReady'}`)}
+            {t(`agent.managed.guidedRemoval.${guidedRemovalResult.status === 'removal_confirmed'
+              ? 'confirmed'
+              : installation.hostVariant === 'claude-cowork-local' ? 'coworkNotReady' : 'notReady'}`)}
           </p>
         )}
 
@@ -729,6 +745,19 @@ export function ManagedAgentDetail({
             {t('agent.managed.healthAndActivity')}
           </h4>
           <dl className="grid grid-cols-1 gap-2 text-xs min-[420px]:grid-cols-2">
+            {installation.sourceVerification && (
+              <div className="rounded-lg border border-white/5 bg-white/[0.025] p-2.5" data-source-state={installation.sourceVerification.state}>
+                <dt className="text-gray-400">{t('agent.managed.sourceVerification.title')}</dt>
+                <dd className="mt-1 text-gray-300">
+                  {t(`agent.managed.sourceVerification.states.${installation.sourceVerification.state}`)}
+                  {installation.sourceVerification.evidence !== 'none' && (
+                    <> · {t(`agent.managed.sourceVerification.evidence.${installation.sourceVerification.evidence}`)}</>
+                  )}
+                  {installation.sourceVerification.checkedAt && <> · {timeAgo(installation.sourceVerification.checkedAt)}</>}
+                </dd>
+                <p className="mt-1 text-gray-500">{t('agent.managed.sourceVerification.description')}</p>
+              </div>
+            )}
             <div className="rounded-lg border border-white/5 bg-white/[0.025] p-2.5">
               <dt className="text-gray-400">{t('agent.managed.lastVerified')}</dt>
               <dd className="mt-1 text-gray-300">{installation.lastVerifiedAt ? timeAgo(installation.lastVerifiedAt) : t('agent.managed.neverVerified')}</dd>
@@ -788,14 +817,14 @@ export function ManagedAgentDetail({
             >
               <RefreshCw size={11} aria-hidden /> {t('agent.managed.recheck')}
             </button>
-            {!installation.manageable ? (
+            {!installation.manageable && !installation.disconnectable ? (
               <span
                 className="inline-flex items-center rounded-lg border border-white/10 px-3 py-1.5 text-xs text-gray-400"
                 title={managementUnavailableHelp}
               >
                 {t('agent.managed.supportMode.detectable')}
               </span>
-            ) : installation.statusReason === 'circuit_breaker' ? (
+            ) : installation.manageable && installation.statusReason === 'circuit_breaker' ? (
               <button
                 type="button"
                 onClick={() => void openCircuitReset()}
@@ -845,7 +874,8 @@ export function ManagedAgentDetail({
               >
                 <Play size={11} aria-hidden /> {t('agent.managed.reconnect')}
               </button>
-            ) : installation.manageable && (installation.desiredState === 'managed' || installation.desiredState === 'disabled') ? (
+            ) : (installation.manageable || installation.disconnectable)
+              && (installation.desiredState === 'managed' || installation.desiredState === 'disabled') ? (
               <button
                 type="button"
                 onClick={() => void openDisconnect()}
@@ -873,8 +903,15 @@ export function ManagedAgentDetail({
                   {' · '}{summary.needsAttention} {t('agent.managed.needsAttention')}
                 </p>
                 {disconnectResult.results.map(result => result.reason && (
-                  <p key={result.installationId} className="mt-1 break-words text-amber-300">{result.reason}</p>
+                  <p key={result.installationId} className="mt-1 break-words text-amber-300">
+                    {result.reason === 'host_manual_removal_required'
+                      ? t('agent.managed.userAction.hostManualRemoval')
+                      : result.reason}
+                  </p>
                 ))}
+                {disconnectResult.results.flatMap(result => result.requiredUserActionDetails ?? [])
+                  .filter(action => action.kind === 'manual_host_removal')
+                  .map(action => <RequiredUserActionDetail key={requiredUserActionDetailKey(action)} action={action} />)}
               </div>
             )
           })()}
@@ -1034,9 +1071,15 @@ export function ManagedAgentDetail({
           connector: guidedRemovalReview?.connectorName ?? 'Tide Mind',
         })}
         description={t(installation.hostVariant === 'custom-local-mcp'
-          ? 'agent.managed.guidedRemoval.userConfirmedNotice' : 'agent.managed.guidedRemoval.description')}
+          ? 'agent.managed.guidedRemoval.userConfirmedNotice'
+          : installation.hostVariant === 'claude-cowork-local'
+            ? 'agent.managed.guidedRemoval.coworkDescription'
+            : 'agent.managed.guidedRemoval.description')}
         confirmText={t(installation.hostVariant === 'custom-local-mcp'
-          ? 'agent.managed.guidedRemoval.reviewConfirmation' : 'agent.managed.guidedRemoval.confirm')}
+          ? 'agent.managed.guidedRemoval.reviewConfirmation'
+          : installation.hostVariant === 'claude-cowork-local'
+            ? 'agent.managed.guidedRemoval.coworkConfirm'
+            : 'agent.managed.guidedRemoval.confirm')}
         confirmDisabled={busyAction !== null}
       >
         <p className="text-xs leading-relaxed text-gray-300">

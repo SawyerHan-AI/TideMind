@@ -579,6 +579,59 @@ describe('SqliteCoordinatorRepository', () => {
     ])
   })
 
+  it.each([
+    ['read-back only', false, 'awaiting_reload'],
+    ['read-back plus a Tide Mind-executed host reload', true, 'deactivated_verified'],
+  ] as const)('keeps pause, bridge and host-component state independent across disconnect (%s)', (
+    _label,
+    hostReloaded,
+    expectedHostState,
+  ) => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    const state = () => db.prepare(`
+      SELECT desired_state, bridge_state, bridge_state_reason, host_components_state
+      FROM agent_installations WHERE id = 'i1'
+    `).get()
+    expect(state()).toEqual({
+      desired_state: 'unmanaged', bridge_state: 'serving', bridge_state_reason: null, host_components_state: 'loaded_unknown',
+    })
+    prepare(bridge, 'i1', 'run-deactivation-connect', mutation())
+    commitRun(db, bridge, 'run-deactivation-connect')
+    // Pausing maintenance never stops the bridge or claims host deactivation.
+    repository.setInstallationIntent('i1', 'disabled', T0)
+    expect(state()).toEqual({
+      desired_state: 'disabled', bridge_state: 'serving', bridge_state_reason: null, host_components_state: 'loaded_unknown',
+    })
+    repository.setInstallationIntent('i1', 'managed', T0)
+
+    prepare(bridge, 'i1', 'run-deactivation-disconnect', {
+      ...mutation('remove'),
+      operationId: 'remove-deactivation',
+    }, 'disconnect')
+    // The request itself only stops the Tide Mind bridge; the host may still hold it.
+    expect(state()).toEqual({
+      desired_state: 'removed', bridge_state: 'stopped', bridge_state_reason: 'disconnected', host_components_state: 'awaiting_reload',
+    })
+    markMutationsCommitted(db, 'run-deactivation-disconnect')
+    if (hostReloaded) {
+      db.prepare(`
+        UPDATE projection_mutations
+        SET apply_receipt_json = json_object(
+          'fingerprint', after_hash,
+          'adapterReceipt', json_object('hostReceipt', json_object('gatewayRestarted', json('true'))))
+        WHERE run_id = 'run-deactivation-disconnect'
+      `).run()
+    }
+    markApplied(bridge, 'run-deactivation-disconnect')
+    recordRunVerification(db, bridge, 'run-deactivation-disconnect')
+    bridge.setRunState('run-deactivation-disconnect', 'verified', T0)
+    bridge.setRunState('run-deactivation-disconnect', 'committed', T0)
+    expect(state()).toEqual({
+      desired_state: 'removed', bridge_state: 'stopped', bridge_state_reason: 'disconnected', host_components_state: expectedHostState,
+    })
+  })
+
   it('commits the reconcile run and exact apply-task binding in one immediate transaction', () => {
     const { db, repository, bridge } = setup()
     discover(repository, 'i1')
