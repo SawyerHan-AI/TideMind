@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "appVersion": "0.2.93",
+  "samples": [
+    {
+      "catalogIds": [
+        "codex-desktop"
+      ],
+      "appName": "ChatGPT.app",
+      "sourceUrl": "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-26.901.41600.zip",
+      "receipt": {
+        "distributionId": "com.openai.codex",
+        "packageProvenance": "signed_app:com.openai.codex:2DC432GLL2",
+        "version": "26.901.41600",
+        "architecture": "arm64",
+        "artifactSha256": "789062d54b39770d770035758373963a562997b277fc5a957ddf2cd1aaf76913",
+        "artifactSizeBytes": 594524373,
+        "executableSha256": "2aed62628cef36238aae8a527bf2d0ed5ce59846206aecea52a0ae8649ac224f",
+        "executableSizeBytes": 69984,
+        "distributionSha256": "fdfc5b9962e473d763cb2b5ab851ea226c73ce433343383b04da6a63a62d63d9",
+        "distributionSizeBytes": 1427728351,
+        "portableFingerprintSchema": "signed-code-v1",
+        "portableArtifactFingerprint": "1abf9326ea1ad47556a61ab7f6c21a93ccd73dfbdd7c5b2bea5fcbaffa6e21fa",
+        "signedCode": {
+          "identifier": "com.openai.codex",
+          "teamIdentifier": "2DC432GLL2",
+          "cdhash": "f459aefd3b5bfa8844d8216c284a4cb7eaa43821",
+          "designatedRequirement": "identifier \"com.openai.codex\" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = \"2DC432GLL2\""
+        },
+        "npmPackage": null
+      }
+    },
+    {
+      "catalogIds": [
+        "claude-cowork-local",
+        "claude-desktop-legacy"
+      ],
+      "appName": "Claude.app",
+      "sourceUrl": "https://downloads.claude.ai/releases/darwin/universal/1.46388.3/Claude-f1b512995860e5f5e88248c50bd938885b4adb88.zip",
+      "receipt": {
+        "distributionId": "com.anthropic.claudefordesktop",
+        "packageProvenance": "signed_app:com.anthropic.claudefordesktop:Q6L2SF6YDW",
+        "version": "1.46388.3",
+        "architecture": "arm64",
+        "artifactSha256": "51f3295b33dbbfc7d7314523d6de3b0ae2eee79ed4fdbf91a6c3599f2ef77f6f",
+        "artifactSizeBytes": 355651318,
+        "executableSha256": "0d02ce9eac32dbc8d809c89ad9b5387c7a23ab4b57c1fcd493e1bf30ce333fbb",
+        "executableSizeBytes": 120064,
+        "distributionSha256": "35d481fa97ebd3277caedd1ccc6c1ab4dd0d367360e2249ce5e8ac54bd12313f",
+        "distributionSizeBytes": 865243627,
+        "portableFingerprintSchema": "signed-code-v1",
+        "portableArtifactFingerprint": "f871ef616b3aaa1d53870cd091f3bae60db06bd2e05a1ac27bfe3d2a980073b5",
+        "signedCode": {
+          "identifier": "com.anthropic.claudefordesktop",
+          "teamIdentifier": "Q6L2SF6YDW",
+          "cdhash": "6ec4ee0bb532bec524fff752be901dab2ee38ed7",
+          "designatedRequirement": "identifier \"com.anthropic.claudefordesktop\" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = Q6L2SF6YDW"
+        },
+        "npmPackage": null
+      }
+    }
+  ]
+}

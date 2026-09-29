@@ -8,6 +8,10 @@ on:
         description: Build a signed Apple Silicon candidate for host acceptance without publishing
         type: boolean
         default: false
+      partial_auth_runtime:
+        description: Explicit 0.2.93 release with reviewed login and real-call acceptance deferral
+        type: boolean
+        default: false
       source_sha:
         description: Private source SHA from the synchronized main commit (required for candidates)
         type: string
@@ -28,6 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       source_sha: ${{ steps.admit.outputs.source_sha }}
+      partial_auth_runtime: ${{ steps.admit.outputs.partial_auth_runtime }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -41,6 +46,7 @@ jobs:
         shell: bash
         env:
           CANDIDATE_ONLY: ${{ inputs.candidate_only }}
+          PARTIAL_AUTH_RUNTIME: ${{ inputs.partial_auth_runtime }}
           REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           set -euo pipefail
@@ -61,9 +67,38 @@ jobs:
             [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]
             [ "$REQUESTED_SOURCE_SHA" = "$source_commit" ]
           fi
+          partial=false
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$PARTIAL_AUTH_RUNTIME" = true ]; then
+            [ "$CANDIDATE_ONLY" != true ]
+            partial=true
+          elif [ "$GITHUB_EVENT_NAME" = push ]; then
+            git fetch --no-tags origin "$GITHUB_REF:$GITHUB_REF"
+            [ "$(git rev-parse "$GITHUB_REF^{commit}")" = "$GITHUB_SHA" ]
+            if [ "$(git cat-file -t "$GITHUB_REF")" = tag ]; then
+              marker="$(git for-each-ref --format='%(contents)' "$GITHUB_REF" | sed -n '/^TideMind-Acceptance:/p')"
+              if [ -n "$marker" ]; then
+                [ "$marker" = 'TideMind-Acceptance: partial-auth-runtime-0.2.93' ]
+                [ "$GITHUB_REF_NAME" = v0.2.93 ]
+                partial=true
+              fi
+            fi
+          fi
+          if [ "$partial" = true ]; then
+            node - <<'NODE'
+          const fs = require('node:fs')
+          for (const file of ['package.json', 'client/package.json']) {
+            const stat = fs.lstatSync(file)
+            if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) throw new Error('invalid package metadata file')
+            if (JSON.parse(fs.readFileSync(file, 'utf8')).version !== '0.2.93') throw new Error('partial release version must be 0.2.93')
+          }
+          NODE
+            test -f release-evidence/partial-auth-runtime/0.2.93/report.json
+          fi
+          echo "partial_auth_runtime=$partial" >> "$GITHUB_OUTPUT"
           echo "source_sha=$source_commit" >> "$GITHUB_OUTPUT"
 
   build-mac:
+    if: needs.admit-source.outputs.partial_auth_runtime != 'true'
     needs: admit-source
     strategy:
       fail-fast: false
@@ -391,8 +426,8 @@ jobs:
           overwrite: false
 
   publish-draft:
-    if: github.event_name == 'push'
-    needs: build-mac
+    if: github.event_name == 'push' && needs.admit-source.outputs.partial_auth_runtime != 'true'
+    needs: [admit-source, build-mac]
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -437,6 +472,178 @@ jobs:
             client/release/*.dmg
             client/release/*.zip
             client/release/*.blockmap
+            client/release/latest-mac.yml
+          draft: true
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  partial-auth-runtime-release:
+    # Explicit owner-authorized 0.2.93 exception only. No target or failed local
+    # safety check can be relabeled as an authentication-dependent deferral.
+    if: needs.admit-source.outputs.partial_auth_runtime == 'true'
+    needs: admit-source
+    permissions:
+      actions: read
+      contents: write
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      TIDEMIND_SOURCE_COMMIT: ${{ needs.admit-source.outputs.source_sha }}
+    steps:
+      - name: Verify native hosted runner
+        run: |
+          [ "$RUNNER_ENVIRONMENT" = github-hosted ]
+          [ "$RUNNER_OS" = macOS ]
+          [ "$RUNNER_ARCH" = ARM64 ]
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Read bounded candidate anchor without running repository code
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs')
+          const file = 'release-evidence/partial-auth-runtime/0.2.93/report.json'
+          const stat = fs.lstatSync(file)
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 10 * 1024 * 1024) throw new Error('invalid report file')
+          const report = JSON.parse(fs.readFileSync(file, 'utf8'))
+          const candidate = report.candidate?.publicCommit
+          if (report.appVersion !== '0.2.93' || report.sourceCommit !== process.env.TIDEMIND_SOURCE_COMMIT
+            || !/^[a-f0-9]{40}$/.test(candidate)) throw new Error('invalid candidate source anchor')
+          fs.appendFileSync(process.env.GITHUB_ENV, `CANDIDATE_PUBLIC_COMMIT=${candidate}\n`)
+          NODE
+      - name: Reject source drift after the immutable candidate
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$CANDIDATE_PUBLIC_COMMIT"
+          [ "$(git log -1 --format='%(trailers:key=TideMind-Source-Commit,valueonly)' "$CANDIDATE_PUBLIC_COMMIT")" = "$TIDEMIND_SOURCE_COMMIT" ]
+          node - <<'NODE'
+          const { execFileSync } = require('node:child_process')
+          const delta = execFileSync('git', ['-c', 'core.quotepath=false', 'diff', '--name-status', '--no-renames', process.env.CANDIDATE_PUBLIC_COMMIT, 'HEAD'], { encoding: 'utf8' }).trim()
+          if (!delta) throw new Error('partial release must add its sealed evidence after candidate construction')
+          for (const line of delta.split('\n')) {
+            const [status, name, extra] = line.split('\t')
+            if (status !== 'A' || extra || !name?.startsWith('release-evidence/partial-auth-runtime/0.2.93/')) {
+              throw new Error('source changed after candidate construction')
+            }
+          }
+          NODE
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install locked verification tools
+        run: |
+          npm ci
+          npm run build
+          npm --prefix client ci --ignore-scripts
+      - name: Verify sealed partial report before fetching artifacts
+        run: |
+          node --input-type=module - <<'NODE'
+          import fs from 'node:fs'
+          import { getPartialAuthReleaseFetchBinding } from './scripts/verify-partial-auth-release.mjs'
+          const binding = await getPartialAuthReleaseFetchBinding(
+            'release-evidence/partial-auth-runtime/0.2.93/report.json',
+            { expectedSourceCommit: process.env.TIDEMIND_SOURCE_COMMIT },
+          )
+          if (binding.candidatePublicCommit !== process.env.CANDIDATE_PUBLIC_COMMIT) throw new Error('candidate anchor changed')
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/partial-fetch-binding.json`, JSON.stringify(binding))
+          NODE
+      - name: Download exact immutable candidate and CI performance evidence
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs')
+          const { execFileSync } = require('node:child_process')
+          const b = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/partial-fetch-binding.json`))
+          const run = JSON.parse(execFileSync('gh', ['api', `repos/SawyerHan-AI/TideMind/actions/runs/${b.candidateRunId}/attempts/${b.candidateRunAttempt}`], { encoding: 'utf8' }))
+          if (run.head_sha !== b.candidatePublicCommit || String(run.run_attempt) !== String(b.candidateRunAttempt)
+            || run.event !== 'workflow_dispatch' || run.status !== 'completed' || run.conclusion !== 'success'
+            || run.path !== '.github/workflows/release.yml') throw new Error('candidate run binding failed')
+          for (const [id, digest, name] of [[b.artifactId, b.artifactDigest, 'candidate'],
+            [b.uploadReceiptArtifactId, b.uploadReceiptArtifactDigest, 'upload-receipt'],
+            [b.performanceArtifactId, b.performanceArtifactDigest, 'performance']]) {
+            if (!/^[1-9][0-9]*$/.test(String(id)) || !/^[a-f0-9]{64}$/.test(digest)) throw new Error('invalid artifact binding')
+            const metadata = JSON.parse(execFileSync('gh', ['api', `repos/SawyerHan-AI/TideMind/actions/artifacts/${id}`], { encoding: 'utf8' }))
+            if (metadata.expired || metadata.digest !== `sha256:${digest}` || String(metadata.workflow_run?.id) !== String(b.candidateRunId)
+              || metadata.workflow_run?.head_sha !== b.candidatePublicCommit) throw new Error('artifact metadata binding failed')
+            const fd = fs.openSync(`${process.env.RUNNER_TEMP}/${name}.zip`, 'wx', 0o600)
+            try { execFileSync('gh', ['api', `repos/SawyerHan-AI/TideMind/actions/artifacts/${id}/zip`], { stdio: ['ignore', fd, 'inherit'] }) }
+            finally { fs.closeSync(fd) }
+          }
+          NODE
+      - name: Verify original CI performance receipt bytes
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs'), crypto = require('node:crypto'), path = require('node:path')
+          const { execFileSync } = require('node:child_process')
+          const b = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/partial-fetch-binding.json`))
+          const zip = path.join(process.env.RUNNER_TEMP, 'performance.zip')
+          const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex')
+          if (hash(fs.readFileSync(zip)) !== b.performanceArtifactDigest) throw new Error('performance artifact digest mismatch')
+          const entries = execFileSync('unzip', ['-Z1', zip], { encoding: 'utf8' }).trim().split('\n')
+          if (JSON.stringify(entries) !== JSON.stringify(['metabolism-performance-receipt.json'])) throw new Error('unexpected performance artifact files')
+          const bytes = execFileSync('unzip', ['-p', zip, entries[0]])
+          if (hash(bytes) !== b.performanceReceiptSha256) throw new Error('performance evidence differs from original CI artifact')
+          NODE
+      - name: Verify partial coverage and exact signed candidate
+        run: |
+          node scripts/verify-partial-auth-release.mjs \
+            --report release-evidence/partial-auth-runtime/0.2.93/report.json \
+            --source-commit "$TIDEMIND_SOURCE_COMMIT" \
+            --artifact-zip "$RUNNER_TEMP/candidate.zip" \
+            --upload-receipt-zip "$RUNNER_TEMP/upload-receipt.zip" \
+            --performance-artifact-zip "$RUNNER_TEMP/performance.zip" \
+            --stage "$RUNNER_TEMP/partial-candidate" > "$RUNNER_TEMP/partial-result.json"
+          cat "$RUNNER_TEMP/partial-result.json"
+      - name: Stage unchanged candidate bytes and updater blockmap
+        run: |
+          set -euo pipefail
+          mkdir -p client/release
+          for file in Tide.Mind-0.2.93-arm64.dmg Tide.Mind-0.2.93-arm64.zip Tide.Mind-0.2.93-arm64.dmg.blockmap latest-mac-arm64.yml; do
+            cp "$RUNNER_TEMP/partial-candidate/assets/$file" client/release/
+          done
+          node - <<'NODE'
+          const path = require('node:path')
+          const { buildBlockMap } = require(path.resolve('client/node_modules/app-builder-lib/out/targets/blockmap/blockmap.js'))
+          const zip = path.resolve('client/release/Tide.Mind-0.2.93-arm64.zip')
+          buildBlockMap(zip, 'gzip', `${zip}.blockmap`).catch(error => { console.error(error); process.exitCode = 1 })
+          NODE
+          node scripts/merge-mac-update-metadata.mjs client/release
+          test -s client/release/Tide.Mind-0.2.93-arm64.zip.blockmap
+      - name: Recheck final containers and signed Worker shutdown
+        run: |
+          node scripts/verify-mac-release-assets.mjs \
+            --private-rc-candidate --release-dir client/release --arch arm64 \
+            --app "$RUNNER_TEMP/partial-candidate/app/Tide Mind.app" \
+            --source-commit "$TIDEMIND_SOURCE_COMMIT" \
+            --receipt "$RUNNER_TEMP/partial-container-recheck.json"
+          node - <<'NODE'
+          const fs = require('node:fs')
+          const report = JSON.parse(fs.readFileSync('release-evidence/partial-auth-runtime/0.2.93/report.json'))
+          const actual = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/partial-container-recheck.json`))
+          if (actual.dmgSha256 !== report.candidate.dmgSha256 || actual.zipSha256 !== report.candidate.zipSha256
+            || actual.candidateBundleSha256 !== report.candidate.app.bundleSha256) throw new Error('staged bytes differ from accepted candidate')
+          NODE
+          node scripts/smoke-packaged-metabolism-worker.mjs --arch arm64 \
+            --app "$RUNNER_TEMP/partial-candidate/app/Tide Mind.app"
+      - name: Verify and stage precomputed public update signatures
+        run: |
+          node scripts/verify-update-signature-file.mjs \
+            --file release-evidence/partial-auth-runtime/0.2.93/evidence/update-signatures.json \
+            --version 0.2.93 --emit-directory client/release
+      - name: Upload original verified candidate as Draft
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
+        with:
+          files: |
+            client/release/Tide.Mind-0.2.93-arm64.dmg
+            client/release/Tide.Mind-0.2.93-arm64.dmg.blockmap
+            client/release/Tide.Mind-0.2.93-arm64.zip
+            client/release/Tide.Mind-0.2.93-arm64.zip.blockmap
+            client/release/update-manifest-darwin-*.sig*
             client/release/latest-mac.yml
           draft: true
           generate_release_notes: false

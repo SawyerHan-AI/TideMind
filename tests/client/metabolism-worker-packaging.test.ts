@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import yaml from 'js-yaml'
 import { describe, expect, it } from 'vitest'
 import { readReleaseWorkflow } from '../helpers/release-workflow.js'
 
@@ -41,7 +42,8 @@ describe('metabolism Worker packaged candidate', () => {
     expect(builder).not.toContain('arch: [x64, arm64]')
     expect(workflow).toContain('smoke-packaged-metabolism-worker.mjs --arch ${{ matrix.arch }}')
     expect(workflow).toContain('merge-mac-update-metadata.mjs')
-    expect(workflow).toContain('needs: build-mac')
+    const jobs = (yaml.load(workflow) as { jobs: Record<string, { needs?: string | string[] }> }).jobs
+    expect(jobs['publish-draft'].needs).toEqual(['admit-source', 'build-mac'])
   })
 
   it('produces the actual non-empty Worker bundle', () => {

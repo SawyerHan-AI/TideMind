@@ -379,6 +379,7 @@ export function currentUserOwnedCustomActivityProof(
   row: AgentInstallationRow,
   runtime: AdapterRuntimeContext,
   now = new Date(),
+  allowAbsentRuntimeActivity = false,
 ) {
   if (row.host_variant !== 'custom-local-mcp' || !row.profile_id.startsWith('custom-guided:')
     || customInstallationMetadata(row).configurationOwnership !== 'user' || !row.agent_id || !row.detected_version) {
@@ -424,12 +425,23 @@ export function currentUserOwnedCustomActivityProof(
     || canonicalSha256Json(action.environment) !== canonicalSha256Json(environment)) {
     throw new Error('user-owned Custom connector does not match the candidate runtime and generation');
   }
-  const component = database.prepare(`SELECT delivery_mode, artifact_id FROM installation_components
+  const component = database.prepare(`SELECT delivery_mode, artifact_id, desired_state, consent_envelope_id FROM installation_components
     WHERE installation_id = ? AND component_key = 'memory_tools'`).get(row.id) as {
-    delivery_mode: string; artifact_id: string | null;
+    delivery_mode: string; artifact_id: string | null; desired_state: string; consent_envelope_id: string | null;
   } | undefined;
   if (component?.delivery_mode !== 'guided' || component.artifact_id !== null) {
     throw new Error('user-owned Custom target must not claim a managed artifact');
+  }
+  if (allowAbsentRuntimeActivity) {
+    const consent = database.prepare(`SELECT consent.id FROM agent_consents consent
+      JOIN agents agent ON agent.id = ? AND agent.archived = 0
+      WHERE consent.id = ? AND consent.installation_id = ? AND consent.status = 'active'`)
+      .get(row.agent_id, row.consent_envelope_id, row.id);
+    if (!consent || row.desired_state !== 'managed' || row.tombstoned_at !== null
+      || row.health_state !== 'discovered' || component.desired_state !== 'managed'
+      || component.consent_envelope_id !== row.consent_envelope_id) {
+      throw new Error('user-owned Custom no-auth export requires current active consent and managed intent');
+    }
   }
   const afterMs = Math.max(Date.parse(run.created_at), now.getTime() - 30 * 24 * 60 * 60 * 1000);
   const records = new SqliteHostActivityEvidenceReader(database).find({
@@ -438,6 +450,16 @@ export function currentUserOwnedCustomActivityProof(
     adapterVersion: run.adapter_version, projectionVersion: runtime.projectionVersion, hostVersion: row.detected_version,
     activationRunId: run.id, activityGenerationToken: token, observedAfter: new Date(afterMs).toISOString(),
   }).filter(record => Date.parse(record.observedAt) > afterMs && Date.parse(record.observedAt) <= now.getTime());
+  // Only the version-scoped no-auth exporter may omit an entirely absent
+  // runtime observation. A partial or malformed existing observation is never
+  // silently erased; the ordinary full proof checks below still apply.
+  if (allowAbsentRuntimeActivity && records.length === 0) {
+    const existing = database.prepare(`SELECT id FROM agent_host_activity_evidence
+      WHERE installation_id = ? AND activation_run_id = ? AND component_key = 'memory_tools'
+        AND signal_name IN ('brain_recall', 'brain_digest') LIMIT 1`).get(row.id, run.id);
+    if (existing) throw new Error('existing user-owned Custom activity failed current proof validation');
+    return null;
+  }
   const evidence = (['brain_recall', 'brain_digest'] as const).map(signal => {
     const record = records.find(candidate => candidate.signalName === signal);
     if (!record) throw new Error(`user-owned Custom target lacks current ${signal} activity`);
@@ -546,6 +568,7 @@ export interface AgentHostTargetMetadataExportOptions {
   sourceCommit: string;
   releaseContractSha256: string;
   outputPath: string;
+  acceptanceMode?: 'partial-auth-runtime-0.2.93';
   databasePath?: string;
   homeDir?: string;
   now?: () => Date;
@@ -587,6 +610,12 @@ export async function exportAgentHostTargetMetadata(options: AgentHostTargetMeta
     throw new Error('target export does not match this candidate build');
   }
   const parsedTarget = parseTargetKey(options.targetKey);
+  if (options.acceptanceMode && (options.acceptanceMode !== 'partial-auth-runtime-0.2.93'
+    || AGENT_INTEGRATION_RELEASE_MANIFEST.appVersion !== '0.2.93'
+    || parsedTarget.kind !== 'custom' || parsedTarget.mode !== 'manual_mcp_client'
+    || parsedTarget.configurationOwnership !== 'user')) {
+    throw new Error('no-auth metadata mode is restricted to 0.2.93 user-owned Custom targets');
+  }
   if (options.fixture && options.customHostFixture) {
     throw new Error('target export cannot combine release and Custom fixtures');
   }
@@ -772,6 +801,7 @@ export async function exportAgentHostTargetMetadata(options: AgentHostTargetMeta
               configurationOwnership: 'user',
               activityBinding: currentUserOwnedCustomActivityProof(
                 database, row, metadataEvidenceRuntimeContext(homeDir), (options.now ?? (() => new Date()))(),
+                options.acceptanceMode === 'partial-auth-runtime-0.2.93',
               ),
             } : {}),
           };
@@ -837,7 +867,8 @@ export async function exportAgentHostTargetMetadata(options: AgentHostTargetMeta
   };
   const binding = {
     exporterVersion: 1,
-    evidenceClass: options.fixture || options.customHostFixture ? 'fixture' : 'real_host',
+    evidenceClass: options.fixture || options.customHostFixture ? 'fixture'
+      : options.acceptanceMode ? 'real_host_no_auth_0.2.93' : 'real_host',
     candidateBundleSha256: options.candidateBundleSha256,
     sourceCommit: options.sourceCommit,
     releaseContractSha256: options.releaseContractSha256,
@@ -864,12 +895,15 @@ export async function exportAgentHostTargetMetadata(options: AgentHostTargetMeta
 
 async function main(): Promise<void> {
   const allowed = new Set([
-    '--target-key', '--candidate-bundle-sha256', '--source-commit', '--release-contract-sha256', '--output',
+    '--target-key', '--candidate-bundle-sha256', '--source-commit', '--release-contract-sha256', '--output', '--acceptance-mode',
   ]);
   for (let index = 2; index < process.argv.length; index += 2) {
     if (!allowed.has(process.argv[index]) || !process.argv[index + 1]) throw new Error('invalid target metadata exporter arguments');
   }
+  const mode = process.argv.includes('--acceptance-mode') ? arg('--acceptance-mode') : undefined;
+  if (mode !== undefined && mode !== 'partial-auth-runtime-0.2.93') throw new Error('invalid acceptance mode');
   await exportAgentHostTargetMetadata({
+    acceptanceMode: mode,
     targetKey: arg('--target-key'),
     candidateBundleSha256: arg('--candidate-bundle-sha256'),
     sourceCommit: arg('--source-commit'),

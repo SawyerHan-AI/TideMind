@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { verifyUpdateSignatureFile } from './verify-update-signature-file.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), '..');
@@ -28,6 +29,10 @@ export function parseArgs(argv) {
     ossMessage: null,
     notesFile: null,
     agentHostEvidence: null,
+    partialAuthReport: null,
+    candidateArtifactZip: null,
+    candidateUploadReceiptZip: null,
+    candidatePerformanceZip: null,
     agentHostCandidateApp: null,
     yes: false,
     dryRun: false,
@@ -55,6 +60,10 @@ export function parseArgs(argv) {
       case '--oss-repo': opts.ossRepo = path.resolve(next()); break;
       case '--oss-message': opts.ossMessage = next(); break;
       case '--notes-file': opts.notesFile = path.resolve(next()); break;
+      case '--partial-auth-report': opts.partialAuthReport = path.resolve(next()); break;
+      case '--candidate-artifact-zip': opts.candidateArtifactZip = path.resolve(next()); break;
+      case '--candidate-upload-receipt-zip': opts.candidateUploadReceiptZip = path.resolve(next()); break;
+      case '--candidate-performance-zip': opts.candidatePerformanceZip = path.resolve(next()); break;
       case '--agent-host-evidence': opts.agentHostEvidence = path.resolve(next()); break;
       case '--agent-host-candidate-app-arm64': opts.agentHostCandidateAppArm64 = path.resolve(next()); break;
       case '--agent-host-candidate-app-x64': opts.agentHostCandidateAppX64 = path.resolve(next()); break;
@@ -134,6 +143,45 @@ function requiresAgentReleaseContract(version) {
     || version === releaseAcceptanceRequirements().appVersion;
 }
 
+export function assertPartialAuthReleaseOptions(version, opts) {
+  const inputs = [opts.partialAuthReport, opts.candidateArtifactZip, opts.candidateUploadReceiptZip, opts.candidatePerformanceZip];
+  if (!inputs.some(Boolean)) return false;
+  if (version !== '0.2.93' || !inputs.every(Boolean)) {
+    throw new Error('Partial auth/runtime acceptance requires version 0.2.93 and all four explicit report/artifact inputs');
+  }
+  if (opts.prepareCandidate || opts.agentHostEvidence || opts.agentHostCandidateAppArm64 || opts.agentHostCandidateAppX64) {
+    throw new Error('Partial auth/runtime release cannot be combined with candidate creation or full-host evidence inputs');
+  }
+  return true;
+}
+
+export function assertPartialReleaseBinding(expected, actual) {
+  for (const summary of [expected, actual]) {
+    if (summary?.status !== 'eligible_under_0.2.93_auth_runtime_exception' || summary.appVersion !== '0.2.93'
+      || summary.physicalVerified !== true || summary.fullHostAcceptance !== false) {
+      throw new Error('partial release requires completed physical verification, not metadata validation or a template');
+    }
+  }
+  for (const key of ['sourceCommit', 'candidateBundleSha256', 'reportBodySha256', 'evidenceManifestSha256', 'releaseNotesSha256']) {
+    if (typeof expected?.[key] !== 'string' || expected[key] !== actual?.[key]) {
+      throw new Error(`partial release evidence changed: ${key}`);
+    }
+  }
+}
+
+export function assertPartialReleaseNotes(summary, bytes) {
+  if (!/^[a-f0-9]{64}$/u.test(summary?.releaseNotesSha256 ?? '')
+    || crypto.createHash('sha256').update(bytes).digest('hex') !== summary.releaseNotesSha256) {
+    throw new Error('release notes differ from the independently reviewed disclosure');
+  }
+}
+
+export function releaseTagArguments(tagName, partialAuthRelease) {
+  if (!partialAuthRelease) return ['tag', tagName];
+  if (tagName !== 'v0.2.93') throw new Error('Partial auth/runtime release tag must be v0.2.93');
+  return ['tag', '-a', tagName, '-m', 'Release v0.2.93\n\nTideMind-Acceptance: partial-auth-runtime-0.2.93'];
+}
+
 export function assertReleaseBypassesAllowed(version, opts) {
   if (opts.allowNonMain && !opts.dryRun) {
     throw new Error('--allow-non-main requires --dry-run');
@@ -177,6 +225,11 @@ Options:
   --oss-message TEXT       Public OSS commit message.
   --notes-file PATH        Release notes markdown. Required for the active Agent release; older versions
                            default to /tmp/notes-vX.Y.Z.md.
+  --partial-auth-report PATH
+  --candidate-artifact-zip PATH
+  --candidate-upload-receipt-zip PATH
+  --candidate-performance-zip PATH
+                           Explicit 0.2.93-only auth/runtime deferral; all other gates remain mandatory.
   --agent-host-evidence PATH
                            Real-host Agent acceptance index. Required for a real release;
                            may also be set with TIDEMIND_AGENT_HOST_ACCEPTANCE_INDEX.
@@ -1114,6 +1167,7 @@ async function main() {
   assertRequestedVersion(opts.version, rootPkg.version);
   const version = opts.version ?? rootPkg.version;
   assertReleaseBypassesAllowed(version, opts);
+  const partialAuthRelease = assertPartialAuthReleaseOptions(version, opts);
   const previousVersions = resolveUpdatePreviousVersions(version, opts.previousVersion);
   if (previousVersions.length === 0 && !opts.skipUpdateVerify) {
     throw new Error('Could not infer --previous-version from --version; pass it explicitly');
@@ -1150,7 +1204,7 @@ async function main() {
       ? path.resolve(process.env.TIDEMIND_AGENT_HOST_CANDIDATE_APP_X64) : null),
   };
   const architectures = releaseMacArchitectures(version);
-  if ((!agentHostEvidence || architectures.some(arch => !agentHostCandidateApps[arch])) && !opts.dryRun && !opts.prepareCandidate) {
+  if ((!agentHostEvidence || architectures.some(arch => !agentHostCandidateApps[arch])) && !opts.dryRun && !opts.prepareCandidate && !partialAuthRelease) {
     throw new Error(`A real release requires real-host evidence and exact signed ${architectures.join('/')} candidate apps`);
   }
   const acceptanceIndex = agentHostEvidence
@@ -1166,10 +1220,36 @@ async function main() {
   ];
   // This is an external release acceptance gate, not a unit/health check. It
   // remains mandatory when --skip-health is used and rejects fixture evidence.
-  if (!opts.prepareCandidate) run('node', acceptanceVerifierArgs, {
-    label: 'verify real-host Agent Integration acceptance',
-    dryRun: opts.dryRun,
+  const partialVerifierArgs = stage => [
+    'scripts/verify-partial-auth-release.mjs', '--report', opts.partialAuthReport,
+    '--source-commit', expectedRootHead, '--artifact-zip', opts.candidateArtifactZip,
+    '--upload-receipt-zip', opts.candidateUploadReceiptZip,
+    '--performance-artifact-zip', opts.candidatePerformanceZip, '--stage', stage,
+  ];
+  const partialTemp = partialAuthRelease
+    ? (opts.dryRun ? path.join(os.tmpdir(), 'tidemind-partial-auth-dry-run')
+      : fs.mkdtempSync(path.join(os.tmpdir(), 'tidemind-partial-auth-release-')))
+    : null;
+  if (partialTemp && !opts.dryRun) process.once('exit', () => {
+    try { fs.rmSync(partialTemp, { recursive: true, force: true }); } catch { /* retain on cleanup failure */ }
   });
+  let partialAcceptanceBinding = null;
+  if (!opts.prepareCandidate) {
+    if (partialAuthRelease) {
+      if (opts.dryRun) run('node', partialVerifierArgs(path.join(partialTemp, 'preflight')), {
+        label: 'verify explicitly authorized partial auth/runtime acceptance', dryRun: true,
+      });
+      else {
+        partialAcceptanceBinding = parseJsonOutput('node', partialVerifierArgs(path.join(partialTemp, 'preflight')), repoRoot);
+        assertPartialReleaseBinding(partialAcceptanceBinding, partialAcceptanceBinding);
+        assertPartialReleaseNotes(partialAcceptanceBinding, fs.readFileSync(notesFile));
+        console.log(JSON.stringify(partialAcceptanceBinding));
+      }
+    } else run('node', acceptanceVerifierArgs, {
+      label: 'verify real-host Agent Integration acceptance',
+      dryRun: opts.dryRun,
+    });
+  }
 
   // Release website assets must be built from the exact lockfile, not whatever
   // happens to remain in a long-lived local node_modules directory.
@@ -1202,8 +1282,14 @@ async function main() {
   // not merely before the public tag. A bad key must not leave private main,
   // the website, or OSS main advanced by an otherwise doomed release attempt.
   let signingKeys = { privateKey: null, secondaryKey: null, source: null };
+  let suppliedUpdateSignatures = null;
   if (!opts.dryRun && !opts.prepareCandidate) {
-    signingKeys = loadSigningKeys(opts.allowUnsigned);
+    if (partialAuthRelease) {
+      suppliedUpdateSignatures = verifyUpdateSignatureFile(path.join(path.dirname(opts.partialAuthReport), 'evidence', 'update-signatures.json'), {
+        version, architectures, publicKeys: readEmbeddedUpdatePublicKeys(),
+      });
+      console.log('Verified precomputed public update signatures; no private key loaded on this host.');
+    } else signingKeys = loadSigningKeys(opts.allowUnsigned);
     assertRepoSnapshot(repoRoot, 'ExternaBrain', expectedRootHead);
     assertReleaseTagPreflight(version, expectedRootHead, opts.ossRepo, opts.forceTag);
   }
@@ -1283,14 +1369,20 @@ async function main() {
     'agent-integration-host-acceptance',
     version,
   );
-  if (!opts.prepareCandidate) run('node', [...acceptanceVerifierArgs, '--copy-to', ossAcceptanceDirectory], {
-    label: 'stage verified real-host Agent acceptance for release CI',
-    dryRun: opts.dryRun,
-  });
-  const candidateTransferTemp = opts.dryRun || opts.prepareCandidate
+  if (!opts.prepareCandidate) {
+    if (partialAuthRelease) {
+      const copyArgs = [...partialVerifierArgs(path.join(partialTemp, 'copy-check')), '--copy-to', path.join(opts.ossRepo, 'release-evidence', 'partial-auth-runtime', version)];
+      if (opts.dryRun) run('node', copyArgs, { label: 'stage reviewed partial auth/runtime evidence', dryRun: true });
+      else assertPartialReleaseBinding(partialAcceptanceBinding, parseJsonOutput('node', copyArgs, repoRoot));
+    } else run('node', [...acceptanceVerifierArgs, '--copy-to', ossAcceptanceDirectory], {
+      label: 'stage verified real-host Agent acceptance for release CI',
+      dryRun: opts.dryRun,
+    });
+  }
+  const candidateTransferTemp = opts.dryRun || opts.prepareCandidate || partialAuthRelease
     ? path.join(os.tmpdir(), 'tidemind-agent-host-candidate-dry-run')
     : fs.mkdtempSync(path.join(os.tmpdir(), 'tidemind-agent-host-candidate-'));
-  const candidateTransfers = Object.fromEntries((opts.prepareCandidate ? [] : architectures).map(architecture => {
+  const candidateTransfers = Object.fromEntries((opts.prepareCandidate || partialAuthRelease ? [] : architectures).map(architecture => {
     const archive = path.join(candidateTransferTemp, `Tide.Mind-${version}-${architecture}-${expectedRootHead.slice(0, 12)}.zip`);
     const receipt = path.join(
       opts.ossRepo,
@@ -1350,7 +1442,7 @@ async function main() {
   // GitHub-hosted runners cannot see a path on the release Mac. Transfer the
   // exact signed candidate through a private draft release asset; the committed
   // receipt binds archive bytes to source, version and accepted app bundle hash.
-  if (!opts.dryRun) {
+  if (!opts.dryRun && !partialAuthRelease) {
     const transfers = Object.values(candidateTransfers).map(({ archive, receipt }) => ({
       archive,
       receipt: readJson(receipt),
@@ -1394,7 +1486,8 @@ async function main() {
   const packagePreflightStartedAt = Date.now() - 60_000;
   const packagePreflightRequestId = crypto.randomUUID();
   run('gh', ['workflow', 'run', 'release.yml', '--repo', 'SawyerHan-AI/TideMind', '--ref', 'main',
-    '-f', 'candidate_only=false', '-f', `request_id=${packagePreflightRequestId}`], {
+    '-f', 'candidate_only=false', '-f', `request_id=${packagePreflightRequestId}`,
+    ...(partialAuthRelease ? ['-f', 'partial_auth_runtime=true'] : [])], {
     cwd: opts.ossRepo,
     label: 'start macOS package preflight',
     dryRun: opts.dryRun,
@@ -1430,9 +1523,16 @@ async function main() {
     run('git', ['tag', '-f', tagName], { cwd: opts.ossRepo, label: `move ${tagName}`, dryRun: opts.dryRun });
     run('git', ['push', 'origin', `:refs/tags/${tagName}`], { cwd: opts.ossRepo, label: `delete remote ${tagName}`, dryRun: opts.dryRun });
   } else if (tagAction === 'create') {
-    run('git', ['tag', tagName], { cwd: opts.ossRepo, label: `create ${tagName}`, dryRun: opts.dryRun });
+    run('git', releaseTagArguments(tagName, partialAuthRelease), { cwd: opts.ossRepo, label: `create ${tagName}`, dryRun: opts.dryRun });
   } else {
     console.log(`\n> ${tagName} already points at OSS HEAD`);
+  }
+  if (partialAuthRelease && !opts.dryRun) {
+    const tagType = capture('git', ['cat-file', '-t', `refs/tags/${tagName}`], opts.ossRepo).stdout;
+    const tagBody = capture('git', ['for-each-ref', '--format=%(contents)', `refs/tags/${tagName}`], opts.ossRepo).stdout;
+    if (tagType !== 'tag' || !tagBody.split(/\r?\n/u).includes('TideMind-Acceptance: partial-auth-runtime-0.2.93')) {
+      throw new Error('Partial release requires the explicit annotated-tag acceptance marker');
+    }
   }
   // 记录 push tag 的时刻,用于过滤掉 --force-tag 场景下同名旧 run。
   // 减去 60s buffer 容忍本地/GitHub 服务器时钟偏差,确保不会误排除本次刚触发的新 run;
@@ -1476,12 +1576,28 @@ async function main() {
     // 快照 → 全量拒更,正是 v0.2.66 事故)。对 draft release 上传 asset 是允许的,
     // 且签名内容用 hardcoded 稳定 URL(见 signReleaseAssets 注释),与 release state
     // 无关,所以先签完全安全。私钥已在 push tag 之前 fail-fast 解析(signingKeys)。
-    signReleaseAssets(version, opts.ossRepo, signingKeys);
+    if (partialAuthRelease) {
+      if (!suppliedUpdateSignatures?.primaryVerified) throw new Error('verified update signatures are missing');
+      for (const signature of suppliedUpdateSignatures.files) {
+        const uploaded = capture('gh', ['release', 'download', tagName, '--repo', 'SawyerHan-AI/TideMind',
+          '--pattern', signature.name, '--output', '-'], opts.ossRepo).stdout;
+        if (uploaded !== signature.content) throw new Error(`uploaded update signature differs: ${signature.name}`);
+      }
+      assertPartialReleaseNotes(partialAcceptanceBinding, fs.readFileSync(notesFile));
+    } else signReleaseAssets(version, opts.ossRepo, signingKeys);
     run('gh', ['release', 'edit', tagName, '--repo', 'SawyerHan-AI/TideMind', '--notes-file', notesFile, '--draft=false', '--latest'], {
       cwd: opts.ossRepo,
       label: 'publish GitHub release',
     });
-    verifyRelease(version, opts.ossRepo, !opts.allowUnsigned, Boolean(signingKeys.secondaryKey));
+    verifyRelease(version, opts.ossRepo, !opts.allowUnsigned, Boolean(suppliedUpdateSignatures?.hasSecondary || signingKeys.secondaryKey));
+    if (partialAuthRelease) {
+      const published = parseJsonOutput('gh', ['release', 'view', tagName, '--repo', 'SawyerHan-AI/TideMind', '--json', 'body'], opts.ossRepo);
+      const reviewedNotes = fs.readFileSync(notesFile, 'utf8');
+      assertPartialReleaseNotes(partialAcceptanceBinding, Buffer.from(reviewedNotes));
+      if (published.body?.replace(/\r\n/gu, '\n').trimEnd() !== reviewedNotes.replace(/\r\n/gu, '\n').trimEnd()) {
+        throw new Error('published disclosure differs from the reviewed release notes');
+      }
+    }
     if (!opts.skipCloudVerify) await verifyCloud(version);
     if (!opts.skipUpdateVerify) await verifyUpdateApi(
       version,
@@ -1489,11 +1605,14 @@ async function main() {
       opts.allowUnsigned,
       readEmbeddedUpdatePublicKeys(),
     );
-    const transfer = readJson(candidateTransfers.arm64.receipt);
-    run('gh', [
-      'release', 'delete', transfer.transferTag,
-      '--repo', 'SawyerHan-AI/TideMind', '--cleanup-tag', '--yes',
-    ], { cwd: opts.ossRepo, label: 'remove completed private candidate transfer' });
+    if (!partialAuthRelease) {
+      const transfer = readJson(candidateTransfers.arm64.receipt);
+      run('gh', [
+        'release', 'delete', transfer.transferTag,
+        '--repo', 'SawyerHan-AI/TideMind', '--cleanup-tag', '--yes',
+      ], { cwd: opts.ossRepo, label: 'remove completed private candidate transfer' });
+    }
+    if (partialTemp) fs.rmSync(partialTemp, { recursive: true, force: true });
   }
 
   console.log(`\nRelease ${tagName} completed.`);
