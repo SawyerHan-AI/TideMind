@@ -319,7 +319,11 @@ jobs:
           const path = require('node:path')
           const receipt = JSON.parse(fs.readFileSync(process.env.RECEIPT_PATH, 'utf8'))
           if (receipt.provenance?.gitHead !== process.env.GITHUB_SHA) throw new Error('performance receipt SHA mismatch')
-          if (receipt.thresholdEvaluation?.status !== 'passed') throw new Error('performance receipt did not pass')
+          const appVersion = JSON.parse(fs.readFileSync('client/package.json', 'utf8')).version
+          const rootVersion = JSON.parse(fs.readFileSync('package.json', 'utf8')).version
+          if (appVersion !== rootVersion) throw new Error('performance release version mismatch')
+          const { assertPerformanceReleaseAccepted } = require('./scripts/metabolism-performance-release-exception.mjs')
+          assertPerformanceReleaseAccepted(receipt, { appVersion, packaged: true })
           const worker = path.join(process.env.TIDEMIND_ACCEPTED_APP, 'Contents/Resources/app.asar.unpacked/out/bin/metabolism-worker.cjs')
           if (!fs.existsSync(worker)) throw new Error('accepted release Worker bundle is missing')
           const actual = crypto.createHash('sha256').update(fs.readFileSync(worker)).digest('hex')
