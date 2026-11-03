@@ -346,6 +346,8 @@ export interface AdapterRuntimeContext {
   runtimeRealm: RuntimeRealm
   homeDir: string
   applicationDataDir: string
+  /** Exact old Codex generator path from the trusted core configuration. */
+  legacyCodexSkillPath?: string
   shimPath: string
   mcpServerPath: string
   hookScriptPath: string

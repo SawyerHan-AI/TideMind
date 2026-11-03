@@ -164,6 +164,47 @@ describe('Codex lifecycle Host Adapter', () => {
     expect(isExactCodexFourToFiveRecipeUpgrade(changed,five,'generation-codex','generation-codex')).toBe(false)
   })
 
+  it.each(['.tidemind', 'custom data root'])('recognizes the historical core skill under %s when Electron userData differs', dataDirectory => {
+    const dataDir=path.join(tempDir,dataDirectory)
+    context.runtime.applicationDataDir=path.join(tempDir,'Library','Application Support','TideMind')
+    context.runtime.shimPath=path.join(tempDir,'.tidemind','bin','tm-node')
+    const skillPath=path.join(dataDir,'skill','codex-skill.md')
+    context.runtime.legacyCodexSkillPath=skillPath
+    const entry={matcher:'startup',hooks:[{type:'command',
+      command:[JSON.stringify(context.runtime.shimPath),JSON.stringify(context.runtime.hookScriptPath),'--agent-id',JSON.stringify(context.agentId),'--skill-path',JSON.stringify(skillPath),'--tool','codex'].join(' '),
+      statusMessage:'加载外脑上下文...',timeoutSec:15}]}
+    const write=(entries:unknown[])=>fs.writeFileSync(hooksFile,JSON.stringify({hooks:{SessionStart:entries}}))
+    write([entry])
+    expect(inspectLegacyCodexHookProof(context,[context.agentId])?.entries).toHaveLength(1)
+    for(const alternate of [
+      path.join(context.installation.canonicalConfigRoot,'skills','tidemind-'+context.agentId,'SKILL.md'),
+      path.join(context.runtime.applicationDataDir,'skill','codex-skill.md'),
+    ]){
+      write([{...entry,hooks:[{...entry.hooks[0],command:entry.hooks[0].command.replace(JSON.stringify(skillPath),JSON.stringify(alternate))}]}])
+      expect(inspectLegacyCodexHookProof(context,[context.agentId])?.entries).toHaveLength(1)
+    }
+    for(const changed of [
+      {...entry,hooks:[{...entry.hooks[0],command:entry.hooks[0].command.replace(JSON.stringify(skillPath),JSON.stringify(path.join(tempDir,'unrelated','codex-skill.md')))}]},
+      {...entry,hooks:[{...entry.hooks[0],command:entry.hooks[0].command.replace(JSON.stringify(context.runtime.hookScriptPath),JSON.stringify(path.join(tempDir,'other-app','hook-session-start.cjs')))}]},
+      {...entry,hooks:[{...entry.hooks[0],command:entry.hooks[0].command+' --extra'}]},
+      {...entry,hooks:[{...entry.hooks[0],timeoutSec:16}]},
+    ]){
+      write([changed])
+      expect(()=>inspectLegacyCodexHookProof(context,[context.agentId])).toThrow(/modified/)
+    }
+    write([entry,entry])
+    expect(()=>inspectLegacyCodexHookProof(context,[context.agentId])).toThrow(/Duplicate/)
+    write([entry])
+    for(const invalidPath of [undefined,'relative/skill/codex-skill.md',path.join(tempDir,'other-data','skill','codex-skill.md')]){
+      context.runtime.legacyCodexSkillPath=invalidPath
+      expect(()=>inspectLegacyCodexHookProof(context,[context.agentId])).toThrow(/modified/)
+    }
+    context.runtime.legacyCodexSkillPath=skillPath
+    write([entry])
+    context.runtime.hookScriptPath=path.join(tempDir,'candidate-app','hook-session-start.cjs')
+    expect(()=>inspectLegacyCodexHookProof(context,[context.agentId])).toThrow(/modified/)
+  })
+
   it('retains exact legacy recognition of the former SessionEnd matcher but rejects modified shapes', async () => {
     const adapter=createAdapter('codex-cli')
     const plan=await adapter.plan(context,await request(adapter))

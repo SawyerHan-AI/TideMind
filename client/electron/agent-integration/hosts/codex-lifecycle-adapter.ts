@@ -194,6 +194,13 @@ export function inspectLegacyCodexHookProof(context:AdapterOperationContext, age
         }
         if(event.eventName==='SessionStart'){
           const skillPaths=[path.join(context.installation.canonicalConfigRoot,'skills','tidemind-'+agentId,'SKILL.md'),path.join(context.runtime.applicationDataDir,'skill','codex-skill.md')]
+          // Core dataDir can differ from both Electron userData and the fixed
+          // HOME shim directory. Trust only the injected historical generator
+          // path, never a path learned from the legacy command itself.
+          const legacySkillPath=context.runtime.legacyCodexSkillPath
+          if(legacySkillPath && path.isAbsolute(legacySkillPath)){
+            skillPaths.push(legacySkillPath)
+          }
           exact ||= skillPaths.some(skillPath=>sha256Json(entry)===sha256Json({matcher:'startup',hooks:[{type:'command',
             command:[JSON.stringify(context.runtime.shimPath),JSON.stringify(context.runtime.hookScriptPath),'--agent-id',JSON.stringify(agentId),'--skill-path',JSON.stringify(skillPath),'--tool','codex'].join(' '),
             statusMessage:'加载外脑上下文...',timeoutSec:15}]}))
