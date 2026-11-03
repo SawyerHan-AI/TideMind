@@ -262,6 +262,16 @@ jobs:
       # --prepackaged creates distribution containers from the accepted .app;
       # it skips app rebuilding/signing. Final ZIP/DMG contents are independently
       # extracted below and must preserve the accepted physical bundle hash.
+      # Reported ticket-delivery HTTP/3 drops: actions/runner-images#14924.
+      # Add a dedicated anchor; do not replace the runner's existing PF rules.
+      - name: Use TCP for Apple ticket delivery
+        if: runner.environment == 'github-hosted' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          sudo pfctl -sr | grep -Fq 'anchor "com.apple/*"'
+          printf '%s\n' 'block return out quick proto udp from any to any port 443' | sudo pfctl -a com.apple/tidemind-ticket-tcp -f -
+          sudo pfctl -E
+
       - name: Package macOS
         if: inputs.candidate_only != true
         run: cd client && npx electron-builder --mac --${{ matrix.arch }} --prepackaged "$TIDEMIND_ACCEPTED_APP" --publish never
