@@ -37,6 +37,12 @@ export function materializeMetabolismPerformanceRunner(source, repoRoot) {
   )
   materialized = replaceExactlyOnce(
     materialized,
+    "import { performanceReleaseException, assertPerformanceReleaseAccepted } from './metabolism-performance-release-exception.mjs'",
+    `import { performanceReleaseException, assertPerformanceReleaseAccepted } from ${JSON.stringify(pathToFileURL(path.join(canonicalRepoRoot, 'scripts', 'metabolism-performance-release-exception.mjs')).href)}`,
+    'release exception',
+  )
+  materialized = replaceExactlyOnce(
+    materialized,
     "import {\n  createCpuUtilizationSampler,\n  externalCpuUtilizationBetween,\n} from './cpu-utilization-sampler.mjs'",
     `import { createCpuUtilizationSampler, externalCpuUtilizationBetween } from ${JSON.stringify(pathToFileURL(path.join(canonicalRepoRoot, 'scripts', 'cpu-utilization-sampler.mjs')).href)}`,
     'CPU utilization sampler',

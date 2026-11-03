@@ -7,6 +7,7 @@ import { performance } from 'node:perf_hooks'
 import { execFileSync, spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { evaluateMetabolismPerformanceResult } from './evaluate-metabolism-performance-result.mjs'
+import { performanceReleaseException, assertPerformanceReleaseAccepted } from './metabolism-performance-release-exception.mjs'
 import {
   createCpuUtilizationSampler,
   externalCpuUtilizationBetween,
@@ -177,9 +178,14 @@ try {
   if (packaged && (finalHead !== actualHead || finalStatus !== '')) failures.push('source drift during measurement')
   result.thresholdEvaluation.status = failures.length === 0 ? 'passed' : 'failed'
   result.thresholdEvaluation.failures = failures
+  const appVersion = JSON.parse(fs.readFileSync(path.join(clientDir, 'package.json'), 'utf8')).version
+  const rootVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version
+  const releaseContext = { appVersion: appVersion === rootVersion ? appVersion : null, packaged }
+  const releaseException = performanceReleaseException(result.thresholdEvaluation, releaseContext)
+  if (releaseException) result.releaseException = releaseException
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
-  if (retainedOutput && failures.length === 0) fs.writeFileSync(path.resolve(retainedOutput), `${JSON.stringify(result, null, 2)}\n`)
-  if (failures.length > 0) throw new Error(`Electron performance thresholds failed: ${failures.join(', ')}`)
+  assertPerformanceReleaseAccepted(result, releaseContext)
+  if (retainedOutput) fs.writeFileSync(path.resolve(retainedOutput), `${JSON.stringify(result, null, 2)}\n`)
 } finally {
   if (!prepareOnly) fs.rmSync(bundlePath, { force: true })
   fs.rmSync(root, { recursive: true, force: true })

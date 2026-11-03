@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { materializeMetabolismPerformanceRunner } from './materialize-metabolism-performance-runner.mjs'
+import { assertPerformanceReleaseAccepted } from './metabolism-performance-release-exception.mjs'
 import {
   createCpuUtilizationSampler,
   externalCpuUtilizationBetween,
@@ -114,6 +115,10 @@ try {
     stdio: 'inherit',
   })
   assertExactHead(exactHead)
+  const receipt = JSON.parse(fs.readFileSync(temporaryResult, 'utf8'))
+  const appVersion = JSON.parse(fs.readFileSync(path.join(clientDir, 'package.json'), 'utf8')).version
+  const rootVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version
+  assertPerformanceReleaseAccepted(receipt, { appVersion: appVersion === rootVersion ? appVersion : null, packaged: true })
   if (forwarded.length > 0) {
     fs.copyFileSync(temporaryResult, retainedOutput, fs.constants.COPYFILE_EXCL)
   }
