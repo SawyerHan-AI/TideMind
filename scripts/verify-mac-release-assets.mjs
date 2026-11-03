@@ -31,7 +31,7 @@ function argument(name, fallback = null) {
  * entry point or trusting source-tree files outside the signed app.
  */
 export function inspectPackagedAgentIntegrationReleaseManifest(source, expectedContract) {
-  const packagedContract = parseSourceAgentIntegrationReleaseContract(source)
+  const packagedContract = parseSourceAgentIntegrationReleaseContract(source, source)
   const { version, schemaVersion, entries } = packagedContract
   if (version !== expectedContract.version) {
     throw new Error(`packaged Agent release manifest version ${version} does not match app ${expectedContract.version}`)

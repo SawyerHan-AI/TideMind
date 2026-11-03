@@ -24,6 +24,7 @@ import { customGuidedProjection, customMcpConfiguration } from './hosts/custom-m
 import {
   AGENT_INTEGRATION_RELEASE_ENTRY_MAP,
   AGENT_INTEGRATION_RELEASE_MANIFEST,
+  agentReleasePhysicalReceiptPairs,
   type AgentReleaseDistributionArtifactReceipt,
   type AgentReleaseMacArchitecture,
 } from './release-manifest.js';
@@ -526,14 +527,14 @@ export async function readAgentHostPhysicalDistribution(
     };
   }
   const inspected = await runtime.inspectCliVersion(executable);
-  const expectedPackageTree = receipt.portableFingerprintSchema === 'npm-composed-platform-surface-v1'
-    ? receipt.distributionSha256
-    : receipt.npmPackage?.ownedPackageSha256;
+  const matchedPair = agentReleasePhysicalReceiptPairs(receipt).find(pair => (
+    pair.portableArtifactFingerprint === inspected.portableArtifactFingerprint
+      && pair.packageTreeSha256 === inspected.packageTreeSha256
+  ));
   if (inspected.exitCode !== 0
     || inspected.stdout !== receipt.version
     || inspected.verifiedPackageProvenance !== receipt.packageProvenance
-    || inspected.portableArtifactFingerprint !== receipt.portableArtifactFingerprint
-    || inspected.packageTreeSha256 !== expectedPackageTree
+    || !matchedPair
     || !inspected.packageProofNodes?.length) {
     throw new Error('fresh npm distribution proof does not match its immutable release receipt');
   }
@@ -541,7 +542,23 @@ export async function readAgentHostPhysicalDistribution(
     .filter(node => node.entryType !== undefined)
     .reduce((sum, node) => sum + node.size, 0);
   if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) throw new Error('fresh npm distribution size is invalid');
-  const distributionSha256 = inspected.packageTreeSha256;
+  const composed = receipt.portableFingerprintSchema === 'npm-composed-platform-surface-v1';
+  if (composed && (executableProof.sha256 !== receipt.executableSha256
+    || executableProof.size !== receipt.executableSizeBytes || sizeBytes !== receipt.distributionSizeBytes
+    || inspected.packageProofNodes.filter(node => node.entryType !== undefined).length !== receipt.npmPackage!.ownedEntryCount
+      + receipt.npmPackage!.composition!.components.reduce((count, component) => count + component.ownedEntryCount, 0)
+    || receipt.npmPackage!.proofNodes.some(expected => {
+      const nodes = inspected.packageProofNodes!.filter(node => node.role === expected.role);
+      return nodes.length !== 1 || nodes[0].sha256 !== expected.sha256
+        || nodes[0].size !== expected.sizeBytes || nodes[0].executable !== expected.executable
+        || !nodes[0].path.endsWith('/' + expected.relativePath)
+        || (expected.role === 'npm_package_executable'
+          && (nodes[0].path !== executable || nodes[0].fingerprint !== executableProof.fingerprint));
+    }))) {
+    throw new Error('fresh composed npm executable or size differs from its immutable release receipt');
+  }
+  // Normalize only after the same surface/tree pair and actual byte sizes match.
+  const distributionSha256 = composed ? receipt.distributionSha256 : inspected.packageTreeSha256;
   if (!distributionSha256) throw new Error('fresh npm distribution hash is invalid');
   let portableExecutable: Buffer | undefined;
   if (receipt.portableFingerprintSchema === 'qwen-standalone-surface-v1'
@@ -935,7 +952,7 @@ export async function exportAgentHostTargetMetadata(options: AgentHostTargetMeta
       throw new Error('immutable release receipt does not match the target identity');
     }
     if (discovered.identity.distribution.packageProvenance !== receipt.packageProvenance
-      || discovered.identity.distribution.portableArtifactFingerprint !== receipt.portableArtifactFingerprint
+      || !agentReleasePhysicalReceiptPairs(receipt).some(pair => pair.portableArtifactFingerprint === discovered.identity.distribution.portableArtifactFingerprint)
       || physical.executableSha256 !== receipt.executableSha256
       || physical.executableSizeBytes !== receipt.executableSizeBytes
       || physical.distributionSha256 !== receipt.distributionSha256
@@ -961,6 +978,15 @@ export async function exportAgentHostTargetMetadata(options: AgentHostTargetMeta
         options.codexContextRestore);
     } finally { database.close(); }
   }
+  // Business evidence uses the existing canonical shared identity; the target
+  // and its raw Installation identity remain distinct. Fixture-only exports
+  // without a database retain their historical unshared behavior.
+  let agentId = row.agent_id;
+  if (!options.fixture || options.databasePath) {
+    const database = new Database(options.databasePath ?? resolveRealProfileDatabase(), { readonly: true, fileMustExist: true });
+    try { agentId = new AgentIntegrationRepository(database).coordinatorAgentIdentity(row.id).agentId; }
+    finally { database.close(); }
+  }
   const targetMetadata = {
     targetKey: options.targetKey,
     targetId: parsedTarget.kind === 'release' ? parsedTarget.catalogId : parsedTarget.mode,
@@ -983,7 +1009,7 @@ export async function exportAgentHostTargetMetadata(options: AgentHostTargetMeta
       hostIdentitySha256: anonymousHostIdentity,
     },
     installationId: row.id,
-    agentId: row.agent_id,
+    agentId,
     ...(customBinding ? { customBinding } : {}),
     ...(codexContextRestore ? { codexContextRestore } : {}),
   };

@@ -292,9 +292,52 @@ export function agentReleaseSurfaceEligibilityReason(
       && receipt.packageProvenance === surface.packageProvenance
       && receipt.version === surface.detectedVersion
       && receipt.architecture === surface.architecture
-      && receipt.portableArtifactFingerprint === surface.portableArtifactFingerprint
+      && agentReleasePhysicalReceiptPairs(receipt).some(pair => pair.portableArtifactFingerprint === surface.portableArtifactFingerprint)
     ))) return 'release_artifact_not_accepted'
   return null
+}
+
+/** Exact physical alternatives of a valid frozen composed npm receipt; no IO or registry lookup. */
+export function agentReleasePhysicalReceiptPairs(receipt: AgentReleaseDistributionArtifactReceipt): readonly {
+  portableArtifactFingerprint: string
+  packageTreeSha256: string | undefined
+}[] {
+  const canonical = {
+    portableArtifactFingerprint: receipt.portableArtifactFingerprint,
+    packageTreeSha256: receipt.portableFingerprintSchema === 'npm-composed-platform-surface-v1'
+      ? receipt.distributionSha256 : receipt.npmPackage?.ownedPackageSha256,
+  }
+  if (receipt.portableFingerprintSchema !== 'npm-composed-platform-surface-v1') return [canonical]
+  const entry = AGENT_INTEGRATION_RELEASE_ENTRIES.find(entry => entry.acceptedDistributionArtifacts.some(frozen => (
+    frozen.portableArtifactFingerprint === receipt.portableArtifactFingerprint
+      && JSON.stringify(frozen) === JSON.stringify(receipt)
+  )))
+  if (!entry || !validArtifactReceipt(receipt, entry)) return []
+  const npm = receipt.npmPackage!
+  const composition = npm.composition!
+  const executable = npm.proofNodes.find(node => node.role === 'npm_package_executable')!
+  const packageName = receipt.packageProvenance.slice('npm_metadata:'.length)
+  const components = composition.components.map(component => ({
+    role: component.role, installName: component.installName, manifestName: component.manifestName,
+    version: component.version, ownedPackageSha256: component.ownedPackageSha256,
+    ownedEntryCount: component.ownedEntryCount, ownedTotalBytes: component.ownedTotalBytes,
+    nativeExecutableRelativePath: component.nativeExecutableRelativePath,
+    nativeExecutableSha256: component.nativeExecutableSha256,
+    nativeExecutableSizeBytes: component.nativeExecutableSizeBytes,
+  }))
+  const root = { packageName, ownedPackageSha256: npm.ownedPackageSha256,
+    ownedEntryCount: npm.ownedEntryCount, ownedTotalBytes: npm.ownedTotalBytes }
+  return [canonical, {
+    portableArtifactFingerprint: sha256Json({
+      schema: 'npm-composed-platform-surface-lockless-v1', version: receipt.version, packageName,
+      executable: { relativePath: executable.relativePath, sha256: executable.sha256,
+        sizeBytes: executable.sizeBytes, executable: true },
+      ownedPackageSha256: npm.ownedPackageSha256, ownedEntryCount: npm.ownedEntryCount,
+      ownedTotalBytes: npm.ownedTotalBytes, entryRule: composition.entryRule, components,
+    }),
+    packageTreeSha256: sha256Json({ schema: 'npm-composed-owned-packages-lockless-v1', root,
+      entryRule: composition.entryRule, components }),
+  }]
 }
 
 /** Resolve Kimi's version only from one exact frozen signed-binary receipt. */

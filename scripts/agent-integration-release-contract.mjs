@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import fs from 'node:fs'
 import ts from 'typescript'
 
 const ALL_AGENT_COMPONENTS = Object.freeze(['instruction', 'memory_tools', 'lifecycle'])
@@ -134,6 +135,74 @@ function releasedEntry(catalogId, disposition, targetCapability, requiredCompone
     customConfigRoot: Object.freeze({ supported: relocatableCatalogIds.has(catalogId) }),
     enabledByDefault: details.releaseMode === 'production',
   })
+}
+
+// Only the current Catalog's literal p0Components declarations are supported.
+// This is data parsing, not execution of Catalog or packaged application code.
+function catalogComponentDeclarations(source) {
+  const parsed = ts.createSourceFile('catalog.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const declarations = parsed.statements.filter(ts.isVariableStatement)
+    .flatMap(statement => [...statement.declarationList.declarations])
+    .filter(declaration => ts.isIdentifier(declaration.name) && declaration.name.text === 'P0_COMPONENTS')
+  if (declarations.length !== 1 || !declarations[0].initializer
+    || !ts.isObjectLiteralExpression(declarations[0].initializer)) throw new Error('Catalog requires one literal P0_COMPONENTS declaration')
+  const supported = uniqueFunctionBody(source, 'function supportedComponent(', 'Catalog supportedComponent')
+  if (!/return\s*\{\s*componentKey,\s*applicability:\s*['"]supported['"],\s*deliveryMode,\s*artifactTypes,\s*mutationDomain,\s*risk,\s*reload,\s*actions,?\s*\}\s*;?\s*$/u.test(supported)) {
+    throw new Error('unsupported Catalog supportedComponent projection')
+  }
+  const factory = uniqueFunctionBody(source, 'function p0Components(', 'Catalog p0Components')
+  const factories = parsed.statements.filter(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'p0Components')
+  if (factories.length !== 1 || factories[0].parameters.length !== 2
+    || !ts.isIdentifier(factories[0].parameters[1].name)) throw new Error('unsupported Catalog p0Components parameters')
+  // Rollup can rename this parameter (e.g. options2); bind references to the
+  // actual declaration rather than accepting an arbitrary options-like name.
+  const optionsName = factories[0].parameters[1].name.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const components = [['instruction', 'instruction', 'instruction'], ['memory_tools', 'memoryTools', 'memory'], ['lifecycle', 'lifecycle', 'lifecycle']]
+  for (const [key, mode, prefix] of components) {
+    const call = new RegExp(`supportedComponent\\(\\s*['"]${key}['"],\\s*${mode},\\s*${optionsName}\\.${prefix}Artifacts\\s*\\?\\?\\s*\\[[^\\]]*\\],\\s*${optionsName}\\.${prefix}Domain\\s*\\?\\?\\s*['"]file_fragment['"]`, 'u')
+    if (!call.test(factory)) throw new Error(`unsupported Catalog ${key} projection`)
+  }
+  const result = new Map()
+  for (const property of declarations[0].initializer.properties) {
+    if (!ts.isPropertyAssignment(property) || !ts.isStringLiteral(property.name)
+      || !ts.isCallExpression(property.initializer) || !ts.isIdentifier(property.initializer.expression)
+      || property.initializer.expression.text !== 'p0Components'
+      || property.initializer.arguments.length < 1 || property.initializer.arguments.length > 2) throw new Error('unsupported Catalog component declaration')
+    const id = property.name.text
+    if (result.has(id)) throw new Error('duplicate Catalog component declaration')
+    const modes = parseBundledLiteral(property.initializer.arguments[0].getText(parsed))
+    const options = property.initializer.arguments[1] ? parseBundledLiteral(property.initializer.arguments[1].getText(parsed)) : {}
+    if (!Array.isArray(modes) || modes.length !== 3
+      || modes.some(mode => !['managed', 'guided', 'detectable', 'cataloged', 'not_applicable'].includes(mode))
+      || !options || Array.isArray(options) || typeof options !== 'object') throw new Error('invalid Catalog component modes/options')
+    result.set(id, new Map(components.map(([key, , prefix], index) => {
+      const domain = options[`${prefix}Domain`] ?? 'file_fragment'
+      if (!['file_fragment', 'directory', 'host_registry', 'plugin_manager', 'none'].includes(domain)) throw new Error('invalid Catalog mutation domain')
+      return [key, { applicability: modes[index] === 'not_applicable' ? 'not_applicable' : 'supported', deliveryMode: modes[index], mutationDomain: domain }]
+    })))
+  }
+  return result
+}
+
+function enrichCatalogComponents(entries, source, catalogSource) {
+  if (!/return\s+freezeEntry\(/u.test(uniqueFunctionBody(source, 'function release(', 'release helper'))) return entries
+  // Bundles must prove their own Catalog; never substitute this checkout's data.
+  const parsed = ts.createSourceFile('release.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const catalogImport = parsed.statements.some(statement => ts.isImportDeclaration(statement)
+    && ts.isStringLiteral(statement.moduleSpecifier) && /^\.\/catalog(?:\.js)?$/u.test(statement.moduleSpecifier.text)
+    && statement.importClause?.namedBindings && ts.isNamedImports(statement.importClause.namedBindings)
+    && statement.importClause.namedBindings.elements.some(element => element.name.text === 'AGENT_CATALOG'))
+  const catalog = catalogComponentDeclarations(catalogImport
+    ? catalogSource ?? fs.readFileSync(new URL('../client/electron/agent-integration/catalog.ts', import.meta.url), 'utf8')
+    : source)
+  return Object.freeze(entries.map(entry => Object.freeze({
+    ...entry,
+    components: Object.freeze(entry.components.map(component => {
+      const declaration = catalog.get(entry.catalogId)?.get(component.componentKey)
+      if (!declaration || declaration.applicability !== 'supported') throw new Error(`Release component is not supported by Catalog: ${entry.catalogId}:${component.componentKey}`)
+      return Object.freeze({ ...component, ...declaration })
+    })),
+  })))
 }
 
 function observeOnlyEntry(catalogId, notes, details) {
@@ -736,7 +805,7 @@ export function parseAgentIntegrationReleaseEntries(source) {
   return Object.freeze(entries)
 }
 
-export function parseSourceAgentIntegrationReleaseContract(source) {
+export function parseSourceAgentIntegrationReleaseContract(source, catalogSource) {
   const version = parseDeclaredLiteral(
     source,
     'AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION =',
@@ -782,7 +851,7 @@ export function parseSourceAgentIntegrationReleaseContract(source) {
   return Object.freeze({
     version,
     schemaVersion,
-    entries: parseAgentIntegrationReleaseEntries(source),
+    entries: enrichCatalogComponents(parseAgentIntegrationReleaseEntries(source), source, catalogSource),
     customEnabled: true,
     customModes: Object.freeze(customModes),
   })
