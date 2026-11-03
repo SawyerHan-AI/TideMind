@@ -50,3 +50,37 @@ jobs:
 
       - name: Security audit
         run: npm audit --audit-level=high || true
+
+  # Temporary diagnostic branch only. Do not merge this job into main.
+  diagnose-writer-latency:
+    if: github.head_ref == 'codex/diagnose-094-writer-latency' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Confirm comparable hosted hardware
+        run: |
+          node - <<'NODE'
+          const os = require('node:os');
+          const machine = { arch: process.arch, cores: os.cpus().length, memoryBytes: os.totalmem() };
+          console.log(JSON.stringify(machine));
+          if (machine.arch !== 'arm64' || machine.cores !== 3 || machine.memoryBytes !== 7516192768) {
+            throw new Error('Diagnostic requires the same 3-core 7GiB runner class as the failed candidate');
+          }
+          NODE
+      - run: npm ci
+      - run: npm run build
+      - run: cd client && npm ci
+      - run: node client/node_modules/electron/install.js
+      - run: npm --prefix client run build
+      - name: Diagnose packaged writer latency without signing or publication
+        run: npm run measure:metabolism:packaged
