@@ -221,6 +221,11 @@ jobs:
       - name: Install client dependencies
         run: cd client && npm ci
 
+      # Electron 43 downloads its runtime lazily. Explicitly install it rather
+      # than relying on build tools before performance checks the executable.
+      - name: Install locked Electron runtime
+        run: cd client && node node_modules/electron/install.js
+
       # This runs in the architecture job and cannot be
       # bypassed by the local release command's --skip-health escape hatch.
       - name: Verify Agent Integration release manifest
