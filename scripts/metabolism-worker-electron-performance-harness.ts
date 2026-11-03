@@ -233,6 +233,7 @@ async function main(): Promise<void> {
   setOnlyTasksDue(db, ['synaptic-decay'])
 
   ipcMain.handle('perf:writer', (_event, kind: string, sequence: number) => {
+    const mainWriteStartedAt = performance.now()
     if (kind === 'renderer') {
       db.prepare('UPDATE nodes SET title = ?, edit_seq = edit_seq + 1, updated = ? WHERE id = ?')
         .run(`renderer-${sequence}`, new Date().toISOString(), `node-${sequence % NODE_COUNT}`)
@@ -243,20 +244,44 @@ async function main(): Promise<void> {
     } else {
       throw new Error('unknown performance writer')
     }
-    return true
+    // Includes synchronous helper work and SQLite waiting, not just SQL execution.
+    return { mainWriteMs: performance.now() - mainWriteStartedAt }
   })
 
   type WriterKind = 'renderer' | 'note' | 'cloud'
   type DelaySummary = { p50: number; p95: number; p99: number; max: number }
   type WriterDelaySummary = DelaySummary & { count: number }
-  const runWriter = async (kind: WriterKind, samples: Record<WriterKind, number[]>, run: number): Promise<void> => {
+  type WriterDiagnostic = {
+    run: number
+    kind: WriterKind
+    sequence: number
+    roundTripMs: number
+    mainWriteMs: number
+    outsideHandlerMs: number
+  }
+  type WriterDiagnosticSummary = {
+    count: number
+    mainWriteMs: Pick<DelaySummary, 'p99' | 'max'>
+    outsideHandlerMs: Pick<DelaySummary, 'p99' | 'max'>
+    slowestRoundTrips: WriterDiagnostic[]
+  }
+  const runWriter = async (kind: WriterKind, samples: Record<WriterKind, number[]>, run: number,
+    diagnostics: Record<WriterKind, WriterDiagnostic[]>): Promise<void> => {
     for (let sequence = 0; sequence < WRITES_PER_KIND; sequence++) {
       const startedAt = performance.now()
-      await window.webContents.executeJavaScript(
+      const response = await window.webContents.executeJavaScript(
         `require('electron').ipcRenderer.invoke('perf:writer', ${JSON.stringify(kind)}, ${run * WRITES_PER_KIND + sequence})`,
         true,
       )
-      samples[kind].push(performance.now() - startedAt)
+      const roundTripMs = performance.now() - startedAt
+      samples[kind].push(roundTripMs)
+      // Diagnostic only: the original end-to-end samples still drive the gates.
+      // The remainder includes IPC and scheduling; it does not identify lock waits.
+      const mainWriteMs = response.mainWriteMs as number
+      diagnostics[kind].push({
+        run: run + 1, kind, sequence: run * WRITES_PER_KIND + sequence,
+        roundTripMs, mainWriteMs, outsideHandlerMs: roundTripMs - mainWriteMs,
+      })
       await new Promise(resolve => setImmediate(resolve))
     }
   }
@@ -329,6 +354,7 @@ async function main(): Promise<void> {
   const contentionRuns: Array<{
     eventLoopDelayMs: DelaySummary
     foregroundWriterDelayMs: Record<WriterKind, WriterDelaySummary>
+    writerTimingDiagnostics: Record<WriterKind, WriterDiagnosticSummary>
   }> = []
   try {
     for (let run = 0; run < 3; run++) {
@@ -336,12 +362,13 @@ async function main(): Promise<void> {
       resetSynapticFixture()
       const eventLoop = monitorEventLoopDelay({ resolution: 1 })
       const writerSamples: Record<WriterKind, number[]> = { renderer: [], note: [], cloud: [] }
+      const writerDiagnostics: Record<WriterKind, WriterDiagnostic[]> = { renderer: [], note: [], cloud: [] }
       eventLoop.enable()
       try {
         const writerPromises = [
-          runWriter('renderer', writerSamples, run),
-          runWriter('note', writerSamples, run),
-          runWriter('cloud', writerSamples, run),
+          runWriter('renderer', writerSamples, run, writerDiagnostics),
+          runWriter('note', writerSamples, run, writerDiagnostics),
+          runWriter('cloud', writerSamples, run, writerDiagnostics),
         ]
         const contentionTiming = beginWorkerTiming()
         await triggerImmediateSchedulerTick()
@@ -367,7 +394,17 @@ async function main(): Promise<void> {
           ...summarizeDelays(values),
         }]),
       ) as Record<WriterKind, WriterDelaySummary>
-      contentionRuns.push({ eventLoopDelayMs, foregroundWriterDelayMs })
+      const writerTimingDiagnostics = Object.fromEntries(
+        Object.entries(writerDiagnostics).map(([kind, values]) => [kind, {
+          count: values.length,
+          ...Object.fromEntries((['mainWriteMs', 'outsideHandlerMs'] as const).map(field => [field, {
+            p99: percentile(values.map(value => value[field]), 0.99),
+            max: percentile(values.map(value => value[field]), 1),
+          }])),
+          slowestRoundTrips: [...values].sort((left, right) => right.roundTripMs - left.roundTripMs).slice(0, 5),
+        }]),
+      ) as Record<WriterKind, WriterDiagnosticSummary>
+      contentionRuns.push({ eventLoopDelayMs, foregroundWriterDelayMs, writerTimingDiagnostics })
     }
     focusedRendererIpcWrites = true
   } finally {
