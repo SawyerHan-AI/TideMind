@@ -7,6 +7,7 @@ import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { app } from 'electron'
+import { getDataDir } from '@server/config.js'
 import type Database from 'better-sqlite3'
 import { CATALOG_SCHEMA_VERSION, CATALOG_VERSION } from './catalog.js'
 import { AgentConfigRootWatcher } from './config-root-watcher.js'
@@ -2104,6 +2105,7 @@ function defaultRuntimeContext(homeDir: string, applicationDataDir: string): Ada
     runtimeRealm: 'local_macos',
     homeDir,
     applicationDataDir,
+    legacyCodexSkillPath: path.join(getDataDir(), 'skill', 'codex-skill.md'),
     shimPath: getShimPath(),
     mcpServerPath: getMcpServerScriptPath(),
     hookScriptPath: getHookScriptPath(),
