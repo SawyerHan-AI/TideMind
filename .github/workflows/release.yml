@@ -276,7 +276,7 @@ jobs:
       - name: Package signed and notarized candidate
         if: inputs.candidate_only == true
         run: |
-          (cd client && npx electron-builder --mac --arm64 --publish never)
+          (cd client && bash ../.github/scripts/retry-apple-ticket.sh npx electron-builder --mac --arm64 --publish never)
           echo "TIDEMIND_ACCEPTED_APP=$GITHUB_WORKSPACE/client/release/mac-arm64/Tide Mind.app" >> "$GITHUB_ENV"
         env:
           CSC_LINK: ${{ secrets.MAC_CERTIFICATE }}
@@ -302,7 +302,7 @@ jobs:
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait
-          xcrun stapler staple "$dmg"
+          bash .github/scripts/retry-apple-ticket.sh xcrun stapler staple "$dmg"
           node scripts/refresh-mac-dmg-update-metadata.mjs \
             --release-dir client/release \
             --arch "${{ matrix.arch }}" \
@@ -334,7 +334,7 @@ jobs:
         if: inputs.candidate_only != true
         run: |
           mkdir -p client/release/provenance
-          node scripts/verify-mac-release-assets.mjs \
+          bash .github/scripts/retry-apple-ticket.sh node scripts/verify-mac-release-assets.mjs \
             --release-dir client/release \
             --arch ${{ matrix.arch }} \
             --app "$TIDEMIND_ACCEPTED_APP" \
@@ -346,7 +346,7 @@ jobs:
         if: inputs.candidate_only == true
         run: |
           mkdir -p "$RUNNER_TEMP/mac-rc"
-          node scripts/verify-mac-release-assets.mjs \
+          bash .github/scripts/retry-apple-ticket.sh node scripts/verify-mac-release-assets.mjs \
             --private-rc-candidate \
             --release-dir client/release \
             --arch arm64 \
