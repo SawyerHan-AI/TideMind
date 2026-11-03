@@ -200,6 +200,12 @@ jobs:
             --app-version "$version" \
             --source-commit "$source_commit" \
             "${verifier_args[@]}"
+          if [ "$version" = '0.2.94' ]; then
+            node scripts/verify-local-subscription-acceptance.mjs \
+              --index "release-evidence/local-subscription-acceptance/$version/index.json" \
+              --app-version "$version" --source-commit "$source_commit" \
+              "${verifier_args[@]}"
+          fi
           echo "TIDEMIND_SOURCE_COMMIT=$source_commit" >> "$GITHUB_ENV"
 
       # macOS 打包配置 sanity check(2026-05-21 v0.2.72 audit C HIGH-1 修复)。
@@ -458,6 +464,7 @@ jobs:
           node scripts/verify-agent-host-release-artifacts.mjs \
             --release-dir client/release \
             --acceptance-index "release-evidence/agent-integration-host-acceptance/$version/index.json" \
+            --subscription-index "release-evidence/local-subscription-acceptance/$version/index.json" \
             --app-version "$version" \
             --source-commit "$source_commit"
 

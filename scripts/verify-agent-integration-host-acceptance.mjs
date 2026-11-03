@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { validateDatabaseMigrationEvidence, assertSharedMigrationBatches } from './agent-database-migration-evidence.mjs'
+import { isCodexContextRestoreStep, validateCodexContextRestore, rejectReusedCodexRestoreRuns } from './codex-context-restore-evidence.mjs'
+import { validateAgentMemoryClosure } from './agent-memory-closure.mjs'
 import crypto from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import fs from 'node:fs'
@@ -8,7 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseSourceAgentIntegrationReleaseContract } from './agent-integration-release-contract.mjs'
 import { inspectPhysicalTideMindCandidateApp } from './tidemind-candidate-app-identity.mjs'
 
-export const AGENT_HOST_ACCEPTANCE_SCHEMA_VERSION = 3
+export const AGENT_HOST_ACCEPTANCE_SCHEMA_VERSION = 4
 export const DEFAULT_AGENT_HOST_ACCEPTANCE_REQUIREMENTS = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   'agent-integration-host-acceptance-requirements.json',
@@ -239,14 +242,19 @@ function unique(values, label) {
 export function loadAgentHostAcceptanceRequirements(
   requirementsPath = DEFAULT_AGENT_HOST_ACCEPTANCE_REQUIREMENTS,
   releaseManifestPath = DEFAULT_AGENT_INTEGRATION_RELEASE_MANIFEST,
+  { historicalAppVersion } = {},
 ) {
   const absolute = path.resolve(requirementsPath)
   const { value, bytes } = readJsonFile(absolute)
   const requirements = record(value, 'acceptance requirements')
   exactKeys(requirements, [
     'schemaVersion', 'appVersion', 'releaseMacArchitectures', 'upgradeFromAppVersions', 'stepPolicy', 'customPaths', 'customGuidedTargets',
+    ...(requirements.appVersion === '0.2.94' ? ['realHostPolicy'] : []),
   ], 'acceptance requirements')
-  if (requirements.schemaVersion !== AGENT_HOST_ACCEPTANCE_SCHEMA_VERSION) {
+  if (historicalAppVersion !== undefined && historicalAppVersion !== '0.2.93') throw new Error('unsupported historical acceptance version')
+  const expectedSchemaVersion = historicalAppVersion === '0.2.93' ? 3 : AGENT_HOST_ACCEPTANCE_SCHEMA_VERSION
+  if (historicalAppVersion && requirements.appVersion !== historicalAppVersion) throw new Error('historical acceptance app version mismatch')
+  if (requirements.schemaVersion !== expectedSchemaVersion) {
     throw new Error(`unsupported acceptance requirements schema: ${String(requirements.schemaVersion)}`)
   }
   nonEmptyString(requirements.appVersion, 'requirements appVersion')
@@ -256,6 +264,18 @@ export function loadAgentHostAcceptanceRequirements(
     throw new Error('requirements releaseMacArchitectures must contain supported Mac architectures')
   }
   unique(requirements.releaseMacArchitectures, 'requirements releaseMacArchitectures')
+  let realHostPolicy = null
+  if (requirements.appVersion === '0.2.94') {
+    const policy = record(requirements.realHostPolicy, '0.2.94 real-host policy')
+    exactKeys(policy, ['id', 'requiredCatalogIds', 'otherCatalogs', 'customPaths', 'reason'], '0.2.94 real-host policy')
+    if (policy.id !== '0.2.94-codex-only'
+      || JSON.stringify(policy.requiredCatalogIds) !== JSON.stringify(['codex-cli', 'codex-desktop'])
+      || policy.otherCatalogs !== 'deferred' || policy.customPaths !== 'deferred') {
+      throw new Error('0.2.94 real-host scope must require Codex CLI/Desktop and defer other Agent/Custom validation')
+    }
+    nonEmptyString(policy.reason, '0.2.94 real-host deferral reason')
+    realHostPolicy = Object.freeze({ ...policy, requiredCatalogIds: Object.freeze([...policy.requiredCatalogIds]) })
+  }
   const releaseMacArchitectures = Object.freeze([...requirements.releaseMacArchitectures].sort())
   if (!Array.isArray(requirements.upgradeFromAppVersions)
     || requirements.upgradeFromAppVersions.length < 1) {
@@ -308,6 +328,9 @@ export function loadAgentHostAcceptanceRequirements(
     .filter(entry => entry.enabledByDefault && entry.disposition !== 'observe_only')
     .map(entry => Object.freeze({ ...entry, requiredComponents: Object.freeze([...entry.requiredComponents]) })))
   const enabledCatalogIds = new Set(entries.map(entry => entry.catalogId))
+  if (realHostPolicy && realHostPolicy.requiredCatalogIds.some(id => !enabledCatalogIds.has(id))) {
+    throw new Error('0.2.94 required Codex catalog is missing from the release contract')
+  }
   for (const catalogId of Object.keys(stepPolicy.byCatalog)) {
     if (!enabledCatalogIds.has(catalogId)) throw new Error(`requirements catalog steps target is not enabled: ${catalogId}`)
   }
@@ -355,6 +378,7 @@ export function loadAgentHostAcceptanceRequirements(
     releaseMacArchitectures,
     upgradeFromAppVersions: Object.freeze([...requirements.upgradeFromAppVersions]),
     stepPolicy,
+    realHostPolicy,
     entries: Object.freeze(entries),
     targets,
     customPaths: Object.freeze([...requirements.customPaths]),
@@ -366,9 +390,53 @@ export function loadAgentHostAcceptanceRequirements(
   })
 }
 
+/** Only the explicitly authorized 0.2.94 runtime scope; migration targets stay complete. */
+export function realHostAcceptanceDeferral(requirements, target) {
+  if (!requirements.realHostPolicy) return null
+  const id = target.targetId ?? target.catalogId
+  if (target.disposition !== 'custom' && requirements.realHostPolicy.requiredCatalogIds.includes(id)) return null
+  return { status: 'deferred', policyId: requirements.realHostPolicy.id, reason: requirements.realHostPolicy.reason }
+}
+
+export function deferredHostAcceptanceTarget(requirements, target) {
+  const realHostDeferral = realHostAcceptanceDeferral(requirements, target)
+  if (!realHostDeferral) return null
+  const custom = target.disposition === 'custom' || requirements.customTargets.some(item => item.targetKey === target.targetKey)
+  const architecture = target.architecture ?? (requirements.releaseMacArchitectures.length === 1 ? requirements.releaseMacArchitectures[0] : null)
+  if (!architecture) throw new Error('deferred upgrade target needs one contract architecture')
+  return {
+    targetKey: target.targetKey,
+    targetId: target.targetId ?? target.catalogId,
+    sourceCatalogId: null,
+    disposition: custom ? 'custom' : target.disposition,
+    targetCapability: custom ? (target.targetId === 'manual_mcp_client' ? 2 : null) : target.targetCapability,
+    architecture,
+    realHostDeferral,
+  }
+}
+
+export function validateDeferredHostAcceptanceTarget(raw, expected) {
+  exactKeys(record(raw, 'deferred target'), Object.keys(expected), 'deferred target')
+  for (const key of Object.keys(expected)) {
+    if (JSON.stringify(raw[key]) !== JSON.stringify(expected[key])) throw new Error(`deferred target contract ${key} mismatch`)
+  }
+}
+
+export function upgradeTargetIdentityDigest(target, releaseContractSha256) {
+  if (!target.realHostDeferral) return hostAcceptanceTargetIdentityDigest(target)
+  // This is a contract surface binding, never an assertion that a real host ran.
+  return sha256Bytes(Buffer.from(JSON.stringify(['0.2.94-deferred-upgrade-contract', releaseContractSha256,
+    target.targetKey, target.targetId, target.sourceCatalogId ?? null, target.disposition, target.targetCapability,
+    target.architecture, target.realHostDeferral])))
+}
+
+export function requiredRealHostAcceptanceSteps(requirements, target) {
+  return realHostAcceptanceDeferral(requirements, target) ? Object.freeze([]) : requiredHostAcceptanceSteps(requirements, target)
+}
+
 export function requiredHostAcceptanceSteps(requirements, target) {
   if (target.targetId === 'manual_mcp_client' && target.configurationOwnership === 'user') {
-    return Object.freeze(['official_host_version', 'distribution_identity', 'connect', 'brain_recall', 'brain_digest',
+    return Object.freeze(['official_host_version', 'distribution_identity', 'connect', 'brain_prepare', 'brain_recall', 'brain_digest', 'memory_closure',
       'scan_persistence', 'restart_persistence', 'pause_resume', 'disconnect'])
   }
   const requiresLifecycle = target.requiredComponents.includes('lifecycle')
@@ -506,7 +574,11 @@ export function validateAgentHostAcceptanceEnvironment(raw, label) {
   if (!SHA256.test(environment.hostIdentitySha256 ?? '')) throw new Error(`${label} host identity SHA-256 is invalid`)
 }
 
-export function validateUserOwnedCustomActivityBinding(raw, expected, label = 'user-owned Custom activity') {
+export function validateUserOwnedCustomActivityBinding(raw, expected, label = 'user-owned Custom activity', { historicalAppVersion } = {}) {
+  if (historicalAppVersion !== undefined && (historicalAppVersion !== '0.2.93' || expected.tideMindVersion !== '0.2.93')) {
+    throw new Error('unsupported historical Custom activity version')
+  }
+  const signalsRequired = historicalAppVersion === '0.2.93' ? ['brain_recall', 'brain_digest'] : ['brain_prepare', 'brain_recall', 'brain_digest']
   const value = record(raw, label)
   exactKeys(value, ['installationId', 'agentId', 'activationRunId', 'generationSha256',
     'connectorConfigurationSha256', 'runtimeBindingSha256', 'tideMindVersion', 'adapterVersion',
@@ -523,17 +595,17 @@ export function validateUserOwnedCustomActivityBinding(raw, expected, label = 'u
     || ['__proto__','prototype','constructor'].includes(value.selectorKey)) throw new Error(`${label} schema/selector invalid`)
   const targetKey = `manual_mcp_client:${value.schemaKind}:${value.selectorKey}`
   if (expected.targetKey !== undefined && expected.targetKey !== targetKey) throw new Error(`${label} schema/selector targetKey mismatch`)
-  if (!Array.isArray(value.evidence) || value.evidence.length !== 2) throw new Error(`${label} requires recall and digest`)
+  if (!Array.isArray(value.evidence) || value.evidence.length !== signalsRequired.length) throw new Error(`${label} requires prepare, recall and digest`)
   const signals = new Set(), ids = new Set()
   for (const event of value.evidence) {
     exactKeys(record(event, label), ['id', 'signalName', 'evidenceHash', 'observedAt'], label)
     if (!/^aha_[a-f0-9]{24}$/u.test(event.id ?? '') || !SHA256.test(event.evidenceHash ?? '')
-      || !['brain_recall', 'brain_digest'].includes(event.signalName)) throw new Error(`${label} event is invalid`)
+      || !signalsRequired.includes(event.signalName)) throw new Error(`${label} event is invalid`)
     const observed = isoTimestamp(event.observedAt, `${label} observedAt`)
     if (expected.exportedAt !== undefined && observed > expected.exportedAt) throw new Error(`${label} event occurs after export`)
     signals.add(event.signalName); ids.add(event.id)
   }
-  if (signals.size !== 2 || ids.size !== 2) throw new Error(`${label} requires distinct recall and digest`)
+  if (signals.size !== signalsRequired.length || ids.size !== signalsRequired.length) throw new Error(`${label} requires distinct prepare, recall and digest`)
   return value
 }
 
@@ -718,8 +790,8 @@ function validateFrozenLifecycleActivityReceipt(raw, expected, assertionObserved
   if (activity.exportHash !== hostActivityLedgerExportHash(activity)) {
     throw new Error(`${label} activity export hash mismatch`)
   }
-  if (activity.databaseSchemaVersion !== 34 && activity.databaseSchemaVersion !== 35) {
-    throw new Error(`${label} activity database schema is not v34/v35`)
+  if (activity.databaseSchemaVersion !== 34 && activity.databaseSchemaVersion !== 35 && activity.databaseSchemaVersion !== 45) {
+    throw new Error(`${label} activity database schema is not v34/v35/v45`)
   }
   return activity
 }
@@ -730,6 +802,8 @@ function validateFrozenStepAssertion(raw, expected, label) {
     'schemaVersion', 'targetKey', 'targetId', 'stepId', 'sourceCommit', 'releaseContractSha256',
     'candidateBundleSha256', 'installationId', 'agentId', 'outcome', 'assertionSource',
     'assertedBy', 'observedAt', 'assertions', 'activityReceipt',
+    ...(expected.stepId === 'memory_closure' ? ['memoryClosure'] : []),
+    ...(isCodexContextRestoreStep(expected.stepId) ? ['codexContextRestore'] : []),
   ], `${label} assertion`)
   if (assertion.schemaVersion !== 2 || assertion.outcome !== 'passed') {
     throw new Error(`${label} assertion schema or outcome is invalid`)
@@ -778,7 +852,11 @@ function validateTarget(
   exactKeys(target, [
     'targetKey', 'targetId', 'sourceCatalogId', 'disposition', 'targetCapability', 'hostVersion', 'distribution', 'environment',
     'installationId', 'agentId', 'customBinding', 'metadataExport', 'steps',
+    ...(expected.realHostDeferral ? ['realHostDeferral'] : []),
   ], label)
+  if (expected.realHostDeferral && JSON.stringify(target.realHostDeferral) !== JSON.stringify(expected.realHostDeferral)) {
+    throw new Error(`${label} must explicitly disclose its exact real-host deferral`)
+  }
   if (target.targetKey !== expected.targetKey) throw new Error(`${label} targetKey mismatch`)
   if (target.targetId !== expected.targetId) throw new Error(`${label} targetId mismatch`)
   if (target.sourceCatalogId !== (expected.sourceCatalogId ?? null)) {
@@ -858,6 +936,8 @@ function validateTarget(
     exactKeys(step, [
       'id', 'status', 'observedAt', 'assertionSource', 'assertedBy', 'assertions',
       'receipt', 'evidenceFiles',
+      ...(step.id === 'memory_closure' ? ['memoryClosure'] : []),
+      ...(isCodexContextRestoreStep(step.id) ? ['codexContextRestore'] : []),
     ], `${label} step ${String(step.id)}`)
     if (!requiredSteps.includes(step.id)) throw new Error(`${label} has an unknown step: ${String(step.id)}`)
     if (step.status !== 'passed') throw new Error(`${label} step ${step.id} did not pass`)
@@ -928,6 +1008,32 @@ function validateTarget(
       },
       `${label} step ${step.id}`,
     )
+    if (step.id === 'memory_closure') {
+      if (JSON.stringify(step.memoryClosure) !== JSON.stringify(frozenAssertion.assertion.memoryClosure)) {
+        throw new Error('memory closure differs from its frozen assertion')
+      }
+      const supporting = new Map(step.evidenceFiles.slice(2).map(file => [
+        fileHashes.get(file), fs.readFileSync(path.join(root, ...file.split('/'))),
+      ]))
+      validateAgentMemoryClosure(step.memoryClosure, {
+        targetKey: target.targetKey, installationId: target.installationId, agentId: target.agentId,
+        sourceCommit, releaseContractSha256, candidateBundleSha256,
+        hostVariant: target.sourceCatalogId ?? target.targetId, hostVersion: target.hostVersion,
+        captureCreatedAt, observedAt: step.observedAt, allowFixtureActivity,
+      }, supporting)
+    }
+    if (isCodexContextRestoreStep(step.id)) {
+      if (JSON.stringify(step.codexContextRestore) !== JSON.stringify(frozenAssertion.assertion.codexContextRestore)) {
+        throw new Error('Codex restore differs from its frozen assertion')
+      }
+      validateCodexContextRestore(step.codexContextRestore, {
+        stepId: step.id, targetKey: target.targetKey, installationId: target.installationId, agentId: target.agentId,
+        sourceCommit, releaseContractSha256, candidateBundleSha256, captureNonce,
+        hostVariant: target.sourceCatalogId ?? target.targetId, hostVersion: target.hostVersion,
+        distribution: target.distribution, environment: target.environment,
+        captureCreatedAt, observedAt: step.observedAt,
+      }, new Map(step.evidenceFiles.slice(2).map(file => [fileHashes.get(file), fs.readFileSync(path.join(root, ...file.split('/')))])))
+    }
     const evidenceIds = step.evidenceFiles.slice(1).map(file => fileHashes.get(file))
     if (evidenceIds.some(value => !value)
       || JSON.stringify(receipt.evidenceIds) !== JSON.stringify(evidenceIds)) {
@@ -972,13 +1078,14 @@ function validateUpgradePath(
   appVersion,
   candidateBundleSha256,
   releaseContractSha256,
+  deferred = false,
 ) {
   const label = `acceptance upgrade path ${fromAppVersion}`
   const upgrade = record(raw, label)
   exactKeys(upgrade, [
     'targetKey', 'targetId', 'fromAppVersion', 'toAppVersion', 'status', 'observedAt', 'assertionSource', 'assertedBy',
     'assertions', 'installationId', 'originalAgentId', 'migratedAgentId', 'historyPreserved',
-    'statisticsPreserved', 'targetIdentitySha256', 'receipt', 'evidenceFiles',
+    'statisticsPreserved', 'targetIdentitySha256', 'receipt', 'evidenceFiles', 'databaseMigration',
   ], label)
   if (upgrade.targetKey !== targetKey) throw new Error(`${label} targetKey mismatch`)
   if (upgrade.targetId !== targetId) throw new Error(`${label} target mismatch`)
@@ -1000,7 +1107,7 @@ function validateUpgradePath(
   }
   upgrade.assertions.forEach((assertion, index) => nonEmptyString(assertion, `${label} assertion ${index}`))
   unique(upgrade.assertions, `${label} assertions`)
-  nonEmptyString(upgrade.installationId, `${label} installationId`)
+  if ((!deferred && targetId !== 'codex-desktop') || upgrade.installationId !== null) nonEmptyString(upgrade.installationId, `${label} installationId`)
   nonEmptyString(upgrade.originalAgentId, `${label} originalAgentId`)
   nonEmptyString(upgrade.migratedAgentId, `${label} migratedAgentId`)
   if (upgrade.originalAgentId !== upgrade.migratedAgentId) {
@@ -1061,7 +1168,7 @@ function validateUpgradePath(
     'schemaVersion', 'targetKey', 'targetId', 'fromAppVersion', 'toAppVersion', 'sourceCommit',
     'releaseContractSha256', 'candidateBundleSha256', 'targetIdentitySha256', 'outcome',
     'assertionSource', 'assertedBy', 'observedAt', 'assertions', 'installationId',
-    'originalAgentId', 'migratedAgentId', 'historyPreserved', 'statisticsPreserved',
+    'originalAgentId', 'migratedAgentId', 'historyPreserved', 'statisticsPreserved', 'databaseMigration',
   ], `${label} assertion`)
   if (assertion.schemaVersion !== 2 || assertion.outcome !== 'passed') {
     throw new Error(`${label} assertion schema or outcome is invalid`)
@@ -1089,6 +1196,13 @@ function validateUpgradePath(
   if (JSON.stringify(assertion.assertions) !== JSON.stringify(upgrade.assertions)) {
     throw new Error(`${label} assertion text does not match the frozen upgrade`)
   }
+  if (JSON.stringify(assertion.databaseMigration) !== JSON.stringify(upgrade.databaseMigration)) {
+    throw new Error('database migration differs from the frozen upgrade assertion')
+  }
+  validateDatabaseMigrationEvidence(upgrade.databaseMigration, { captureCreatedAt, observedAt: upgrade.observedAt,
+    ...(targetId === 'codex-desktop' ? { codexDatabaseUpgrade: true, originalAgentId: upgrade.originalAgentId, migratedAgentId: upgrade.migratedAgentId, installationId: upgrade.installationId } : {}),
+    ...(deferred ? { deferredTargetId: targetId, originalAgentId: upgrade.originalAgentId, migratedAgentId: upgrade.migratedAgentId, installationId: upgrade.installationId } : {}) },
+    new Map(upgrade.evidenceFiles.slice(2).map(file => [fileHashes.get(file), fs.readFileSync(path.join(root, ...file.split('/')))])))
   const evidenceIds = upgrade.evidenceFiles.slice(1).map(file => fileHashes.get(file))
   if (evidenceIds.some(value => !value)
     || JSON.stringify(receipt.evidenceIds) !== JSON.stringify(evidenceIds)) {
@@ -1161,8 +1275,9 @@ export function verifyAgentIntegrationHostAcceptance({
     'sourceCommit', 'captureCreatedAt', 'captureNonce',
     'generatedAt', 'requirementsSha256', 'candidateAppsByArchitecture', 'review',
     'releaseContractSha256',
-    'entries', 'customPaths', 'upgradePaths', 'files',
+    'entries', 'customPaths', 'upgradePaths', 'databaseRecoveryPaths', 'files',
   ], 'acceptance index')
+  rejectReusedCodexRestoreRuns([...(index.entries ?? []), ...(index.customPaths ?? [])])
   const requirements = loadAgentHostAcceptanceRequirements(requirementsPath, releaseManifestPath)
   if (index.schemaVersion !== AGENT_HOST_ACCEPTANCE_SCHEMA_VERSION) throw new Error('acceptance schema version mismatch')
   nonEmptyString(index.acceptanceId, 'acceptanceId')
@@ -1250,8 +1365,11 @@ export function verifyAgentIntegrationHostAcceptance({
   for (const entry of requirements.targets) {
     const raw = indexedEntries.get(entry.targetKey)
     if (!raw) throw new Error(`acceptance is missing release entry: ${entry.targetKey}`)
+    const deferred = deferredHostAcceptanceTarget(requirements, entry)
+    if (deferred) { validateDeferredHostAcceptanceTarget(raw, deferred); continue }
     const validated = validateTarget(raw, {
       targetKey: entry.targetKey,
+      realHostDeferral: realHostAcceptanceDeferral(requirements, entry),
       targetId: entry.catalogId,
       architecture: entry.architecture,
       sourceCatalogId: null,
@@ -1260,7 +1378,7 @@ export function verifyAgentIntegrationHostAcceptance({
       officialDistributions: entry.officialDistributions,
       acceptedDistributionArtifacts: entry.acceptedDistributionArtifacts,
       releaseAcceptedExactVersions: entry.releaseAcceptedExactVersions,
-    }, requiredHostAcceptanceSteps(requirements, entry), filePaths, fileHashes, root, captureCreatedAt, generatedAt,
+    }, requiredRealHostAcceptanceSteps(requirements, entry), filePaths, fileHashes, root, captureCreatedAt, generatedAt,
     index.sourceCommit, index.appVersion, candidateApps[entry.architecture].bundleSha256, requirements.releaseContractSha256,
     index.captureNonce, index.evidenceClass === 'fixture',
     `acceptance entry ${entry.targetKey}`)
@@ -1277,6 +1395,8 @@ export function verifyAgentIntegrationHostAcceptance({
     const mode = definition.targetId
     const raw = indexedCustom.get(definition.targetKey)
     if (!raw) throw new Error(`acceptance is missing Custom path: ${definition.targetKey}`)
+    const deferred = deferredHostAcceptanceTarget(requirements, { ...definition, disposition: 'custom' })
+    if (deferred) { validateDeferredHostAcceptanceTarget(raw, deferred); continue }
     if ((raw.customBinding?.configurationOwnership === 'user') !== (definition.configurationOwnership === 'user')) {
       throw new Error(`acceptance Custom configuration ownership mismatch: ${definition.targetKey}`)
     }
@@ -1317,6 +1437,7 @@ export function verifyAgentIntegrationHostAcceptance({
         })()
     const validated = validateTarget(raw, {
       targetKey: expected.targetKey,
+      realHostDeferral: realHostAcceptanceDeferral(requirements, expected),
       targetId: expected.targetId,
       sourceCatalogId: expected.sourceCatalogId,
       disposition: expected.disposition,
@@ -1325,18 +1446,14 @@ export function verifyAgentIntegrationHostAcceptance({
       acceptedDistributionArtifacts: expected.acceptedDistributionArtifacts,
       releaseAcceptedExactVersions: expected.releaseAcceptedExactVersions,
       requireArtifactReceipt: expected.requireArtifactReceipt,
-    }, requiredHostAcceptanceSteps(requirements, expected), filePaths, fileHashes, root, captureCreatedAt, generatedAt,
+    }, requiredRealHostAcceptanceSteps(requirements, expected), filePaths, fileHashes, root, captureCreatedAt, generatedAt,
     index.sourceCommit, index.appVersion, candidateApps[raw.environment.architecture].bundleSha256, requirements.releaseContractSha256,
     index.captureNonce, index.evidenceClass === 'fixture',
     `acceptance Custom path ${mode}`)
     referenced.push(...validated.referenced)
     validated.assertors.forEach(assertor => assertors.add(assertor))
   }
-  const upgradeTargets = requirements.targets.map(entry => ({
-    targetKey: entry.targetKey,
-    targetId: entry.catalogId,
-    architecture: entry.architecture,
-  }))
+  const upgradeTargets = [...indexedEntries.values(), ...indexedCustom.values()]
   const expectedUpgradeCount = requirements.upgradeFromAppVersions.length * upgradeTargets.length
   if (!Array.isArray(index.upgradePaths) || index.upgradePaths.length !== expectedUpgradeCount) {
     throw new Error('acceptance upgrade path count mismatch')
@@ -1356,7 +1473,7 @@ export function verifyAgentIntegrationHostAcceptance({
         raw,
         target.targetKey,
         target.targetId,
-        hostAcceptanceTargetIdentityDigest(indexedEntries.get(target.targetKey)),
+        upgradeTargetIdentityDigest(target, requirements.releaseContractSha256),
         fromAppVersion,
         filePaths,
         fileHashes,
@@ -1365,13 +1482,39 @@ export function verifyAgentIntegrationHostAcceptance({
         generatedAt,
         index.sourceCommit,
         index.appVersion,
-        candidateApps[target.architecture].bundleSha256,
+        candidateApps[target.realHostDeferral ? target.architecture : target.environment.architecture].bundleSha256,
         requirements.releaseContractSha256,
+        Boolean(target.realHostDeferral),
       )
       referenced.push(...validated.referenced)
       assertors.add(validated.assertedBy)
     }
   }
+  assertSharedMigrationBatches(index.upgradePaths)
+  if (!Array.isArray(index.databaseRecoveryPaths) || index.databaseRecoveryPaths.length !== 1) {
+    throw new Error('one independent observed schema41 recovery is required')
+  }
+  const recovery = index.databaseRecoveryPaths[0]
+  exactKeys(recovery, ['id', 'architecture', 'sourceCommit', 'candidateBundleSha256', 'releaseContractSha256',
+    'observedAt', 'assertedBy', 'assertionSource', 'databaseMigration', 'evidenceFiles'], 'database recovery')
+  if (recovery.id !== 'observed_schema41' || !['human', 'external'].includes(recovery.assertionSource)
+    || recovery.sourceCommit !== index.sourceCommit || recovery.releaseContractSha256 !== requirements.releaseContractSha256
+    || recovery.candidateBundleSha256 !== candidateApps[recovery.architecture]?.bundleSha256
+    || recovery.databaseMigration?.sourceSchemaVersion !== 41) throw new Error('database recovery candidate/source mismatch')
+  nonEmptyString(recovery.assertedBy, 'database recovery assertedBy')
+  if (isoTimestamp(recovery.observedAt, 'database recovery observedAt') > generatedAt) throw new Error('database recovery occurs after index')
+  if (!Array.isArray(recovery.evidenceFiles) || recovery.evidenceFiles.length < 3) throw new Error('database recovery evidence missing')
+  for (const file of recovery.evidenceFiles) {
+    safeRelativeFile(file, 'database recovery evidence')
+    if (!filePaths.has(file)) throw new Error('database recovery references unindexed evidence')
+  }
+  const { evidenceFiles: _files, ...recoveryAssertion } = recovery
+  const frozenRecovery = readJsonFile(path.join(root, ...recovery.evidenceFiles[0].split('/')), MAX_EVIDENCE_FILE_BYTES).value
+  if (JSON.stringify(frozenRecovery) !== JSON.stringify(recoveryAssertion)) throw new Error('database recovery differs from frozen assertion')
+  validateDatabaseMigrationEvidence(recovery.databaseMigration, { captureCreatedAt, observedAt: recovery.observedAt },
+    new Map(recovery.evidenceFiles.slice(1).map(file => [fileHashes.get(file), fs.readFileSync(path.join(root, ...file.split('/')))])))
+  referenced.push(...recovery.evidenceFiles)
+  assertors.add(recovery.assertedBy)
   const referencedSet = new Set(referenced)
   const unreferenced = [...filePaths].filter(file => !referencedSet.has(file))
   if (unreferenced.length > 0) throw new Error(`acceptance contains unreferenced evidence: ${unreferenced.join(',')}`)
@@ -1390,6 +1533,12 @@ export function verifyAgentIntegrationHostAcceptance({
     acceptanceId: index.acceptanceId,
     appVersion: index.appVersion,
     sourceCommit: index.sourceCommit,
+    ...(requirements.realHostPolicy ? {
+      realHostPolicyId: requirements.realHostPolicy.id,
+      deferredTargets: [...index.entries, ...index.customPaths].filter(target => target.realHostDeferral)
+        .map(target => ({ targetKey: target.targetKey, ...target.realHostDeferral })),
+      realHostAcceptedTargetKeys: index.entries.filter(target => !target.realHostDeferral).map(target => target.targetKey),
+    } : {}),
     entryCount: index.entries.length,
     customPathCount: index.customPaths.length,
     upgradePathCount: index.upgradePaths.length,

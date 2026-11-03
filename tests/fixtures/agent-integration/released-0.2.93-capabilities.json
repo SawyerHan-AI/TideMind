@@ -1,0 +1,916 @@
+{
+  "sourceCommit": "a1cfe523439f29917d68fcaa60b785854646ac0f",
+  "appVersion": "0.2.93",
+  "customEnabled": true,
+  "customModes": [
+    "nonstandard_config_root",
+    "manual_mcp_client"
+  ],
+  "entries": [
+    {
+      "catalogId": "claude-code-cli",
+      "disposition": "managed",
+      "targetCapability": 4,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools",
+        "lifecycle"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "managed",
+          "artifactTypes": [
+            "plugin",
+            "skill"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "managed",
+          "artifactTypes": [
+            "plugin",
+            "mcp"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "lifecycle",
+          "disposition": "managed",
+          "artifactTypes": [
+            "plugin",
+            "hook"
+          ],
+          "reload": "new_session"
+        }
+      ],
+      "requiredLifecycle": {
+        "signals": [
+          "session_start",
+          "pre_compact",
+          "post_compact"
+        ],
+        "require": "all"
+      },
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "claude-code-native",
+      "disposition": "managed",
+      "targetCapability": 4,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools",
+        "lifecycle"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "managed",
+          "artifactTypes": [
+            "plugin",
+            "skill"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "managed",
+          "artifactTypes": [
+            "plugin",
+            "mcp"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "lifecycle",
+          "disposition": "managed",
+          "artifactTypes": [
+            "plugin",
+            "hook"
+          ],
+          "reload": "new_session"
+        }
+      ],
+      "requiredLifecycle": {
+        "signals": [
+          "session_start",
+          "pre_compact",
+          "post_compact"
+        ],
+        "require": "all"
+      },
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "claude-desktop-legacy",
+      "disposition": "migration",
+      "targetCapability": 2,
+      "requiredComponents": [
+        "memory_tools"
+      ],
+      "components": [
+        {
+          "componentKey": "memory_tools",
+          "disposition": "migration",
+          "artifactTypes": [
+            "mcp"
+          ],
+          "reload": "restart_host"
+        }
+      ],
+      "requiredLifecycle": null,
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "codex-cli",
+      "disposition": "managed",
+      "targetCapability": 4,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools",
+        "lifecycle"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "managed",
+          "artifactTypes": [
+            "skill"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "managed",
+          "artifactTypes": [
+            "mcp"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "lifecycle",
+          "disposition": "managed",
+          "artifactTypes": [
+            "hook"
+          ],
+          "reload": "new_session"
+        }
+      ],
+      "requiredLifecycle": {
+        "signals": [
+          "session_start",
+          "pre_compact",
+          "post_compact",
+          "session_end"
+        ],
+        "require": "all"
+      },
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "codex-desktop",
+      "disposition": "managed",
+      "targetCapability": 4,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools",
+        "lifecycle"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "managed",
+          "artifactTypes": [
+            "skill"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "managed",
+          "artifactTypes": [
+            "mcp"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "lifecycle",
+          "disposition": "managed",
+          "artifactTypes": [
+            "hook"
+          ],
+          "reload": "new_session"
+        }
+      ],
+      "requiredLifecycle": {
+        "signals": [
+          "session_start",
+          "pre_compact",
+          "post_compact",
+          "session_end"
+        ],
+        "require": "all"
+      },
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "cursor-desktop",
+      "disposition": "managed",
+      "targetCapability": 4,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools",
+        "lifecycle"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "managed",
+          "artifactTypes": [
+            "skill"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "managed",
+          "artifactTypes": [
+            "mcp"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "lifecycle",
+          "disposition": "managed",
+          "artifactTypes": [
+            "hook"
+          ],
+          "reload": "new_session"
+        }
+      ],
+      "requiredLifecycle": {
+        "signals": [
+          "session_start",
+          "pre_compact",
+          "session_end"
+        ],
+        "require": "all"
+      },
+      "customConfigRoot": {
+        "supported": true
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "windsurf-desktop",
+      "disposition": "managed",
+      "targetCapability": 4,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools",
+        "lifecycle"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "managed",
+          "artifactTypes": [
+            "skill"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "managed",
+          "artifactTypes": [
+            "mcp"
+          ],
+          "reload": "version_dependent"
+        },
+        {
+          "componentKey": "lifecycle",
+          "disposition": "managed",
+          "artifactTypes": [
+            "hook"
+          ],
+          "reload": "restart_host"
+        }
+      ],
+      "requiredLifecycle": {
+        "signals": [
+          "session_start",
+          "session_end"
+        ],
+        "require": "all"
+      },
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "gemini-cli",
+      "disposition": "managed",
+      "targetCapability": 4,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools",
+        "lifecycle"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "managed",
+          "artifactTypes": [
+            "plugin",
+            "skill"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "managed",
+          "artifactTypes": [
+            "plugin",
+            "mcp"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "lifecycle",
+          "disposition": "managed",
+          "artifactTypes": [
+            "plugin",
+            "hook"
+          ],
+          "reload": "new_session"
+        }
+      ],
+      "requiredLifecycle": {
+        "signals": [
+          "session_start",
+          "pre_compact",
+          "session_end"
+        ],
+        "require": "all"
+      },
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "kimi-code-cli",
+      "disposition": "managed",
+      "targetCapability": 4,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools",
+        "lifecycle"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "managed",
+          "artifactTypes": [
+            "skill"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "managed",
+          "artifactTypes": [
+            "mcp"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "lifecycle",
+          "disposition": "managed",
+          "artifactTypes": [
+            "hook"
+          ],
+          "reload": "new_session"
+        }
+      ],
+      "requiredLifecycle": {
+        "signals": [
+          "session_start",
+          "pre_compact",
+          "post_compact",
+          "session_end"
+        ],
+        "require": "all"
+      },
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "kimi-code-native",
+      "disposition": "managed",
+      "targetCapability": 4,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools",
+        "lifecycle"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "managed",
+          "artifactTypes": [
+            "skill"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "managed",
+          "artifactTypes": [
+            "mcp"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "lifecycle",
+          "disposition": "managed",
+          "artifactTypes": [
+            "hook"
+          ],
+          "reload": "new_session"
+        }
+      ],
+      "requiredLifecycle": {
+        "signals": [
+          "session_start",
+          "pre_compact",
+          "post_compact",
+          "session_end"
+        ],
+        "require": "all"
+      },
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "openclaw-local",
+      "disposition": "managed",
+      "targetCapability": 4,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools",
+        "lifecycle"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "managed",
+          "artifactTypes": [
+            "plugin",
+            "skill"
+          ],
+          "reload": "restart_host"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "managed",
+          "artifactTypes": [
+            "plugin"
+          ],
+          "reload": "restart_host"
+        },
+        {
+          "componentKey": "lifecycle",
+          "disposition": "managed",
+          "artifactTypes": [
+            "plugin",
+            "hook"
+          ],
+          "reload": "restart_host"
+        }
+      ],
+      "requiredLifecycle": {
+        "signals": [
+          "session_start",
+          "pre_compact",
+          "post_compact",
+          "session_end"
+        ],
+        "require": "all"
+      },
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "qwen-code-cli",
+      "disposition": "managed",
+      "targetCapability": 4,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools",
+        "lifecycle"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "managed",
+          "artifactTypes": [
+            "skill"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "managed",
+          "artifactTypes": [
+            "mcp"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "lifecycle",
+          "disposition": "managed",
+          "artifactTypes": [
+            "hook"
+          ],
+          "reload": "new_session"
+        }
+      ],
+      "requiredLifecycle": {
+        "signals": [
+          "session_start",
+          "pre_compact",
+          "session_end"
+        ],
+        "require": "all"
+      },
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "zcode-desktop",
+      "disposition": "managed",
+      "targetCapability": 4,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools",
+        "lifecycle"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "managed",
+          "artifactTypes": [
+            "skill"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "managed",
+          "artifactTypes": [
+            "mcp"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "lifecycle",
+          "disposition": "managed",
+          "artifactTypes": [
+            "hook"
+          ],
+          "reload": "new_session"
+        }
+      ],
+      "requiredLifecycle": {
+        "signals": [
+          "session_start"
+        ],
+        "require": "all"
+      },
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "zcode-cli",
+      "disposition": "observe_only",
+      "targetCapability": 0,
+      "requiredComponents": [],
+      "components": [],
+      "requiredLifecycle": null,
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "detect_only",
+      "enabledByDefault": false
+    },
+    {
+      "catalogId": "opencode-v1-cli",
+      "disposition": "managed",
+      "targetCapability": 4,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools",
+        "lifecycle"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "managed",
+          "artifactTypes": [
+            "skill"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "managed",
+          "artifactTypes": [
+            "mcp"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "lifecycle",
+          "disposition": "managed",
+          "artifactTypes": [
+            "plugin"
+          ],
+          "reload": "restart_host"
+        }
+      ],
+      "requiredLifecycle": {
+        "signals": [
+          "session_start",
+          "pre_compact",
+          "post_compact"
+        ],
+        "require": "all"
+      },
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "opencode-v2-beta-cli",
+      "disposition": "guided",
+      "targetCapability": 3,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "managed",
+          "artifactTypes": [
+            "skill"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "managed",
+          "artifactTypes": [
+            "mcp"
+          ],
+          "reload": "new_session"
+        }
+      ],
+      "requiredLifecycle": null,
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "pi-official-cli",
+      "disposition": "managed",
+      "targetCapability": 4,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools",
+        "lifecycle"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "managed",
+          "artifactTypes": [
+            "plugin",
+            "skill"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "managed",
+          "artifactTypes": [
+            "plugin"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "lifecycle",
+          "disposition": "managed",
+          "artifactTypes": [
+            "plugin"
+          ],
+          "reload": "new_session"
+        }
+      ],
+      "requiredLifecycle": {
+        "signals": [
+          "session_start",
+          "pre_compact",
+          "post_compact",
+          "session_end"
+        ],
+        "require": "all"
+      },
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "omp-cli",
+      "disposition": "managed",
+      "targetCapability": 4,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools",
+        "lifecycle"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "managed",
+          "artifactTypes": [
+            "skill"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "managed",
+          "artifactTypes": [
+            "mcp"
+          ],
+          "reload": "reload"
+        },
+        {
+          "componentKey": "lifecycle",
+          "disposition": "managed",
+          "artifactTypes": [
+            "plugin"
+          ],
+          "reload": "restart_host"
+        }
+      ],
+      "requiredLifecycle": {
+        "signals": [
+          "session_start",
+          "pre_compact",
+          "post_compact",
+          "session_end"
+        ],
+        "require": "all"
+      },
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "qwenwork-desktop",
+      "disposition": "managed",
+      "targetCapability": 4,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools",
+        "lifecycle"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "managed",
+          "artifactTypes": [
+            "skill"
+          ],
+          "reload": "new_session"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "guided",
+          "artifactTypes": [
+            "mcp"
+          ],
+          "reload": "user_confirmation"
+        },
+        {
+          "componentKey": "lifecycle",
+          "disposition": "managed",
+          "artifactTypes": [
+            "hook"
+          ],
+          "reload": "restart_host"
+        }
+      ],
+      "requiredLifecycle": {
+        "signals": [
+          "session_start",
+          "pre_compact",
+          "session_end"
+        ],
+        "require": "all"
+      },
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    },
+    {
+      "catalogId": "claude-cowork-local",
+      "disposition": "guided",
+      "targetCapability": 3,
+      "requiredComponents": [
+        "instruction",
+        "memory_tools"
+      ],
+      "components": [
+        {
+          "componentKey": "instruction",
+          "disposition": "guided",
+          "artifactTypes": [
+            "plugin",
+            "skill"
+          ],
+          "reload": "user_confirmation"
+        },
+        {
+          "componentKey": "memory_tools",
+          "disposition": "guided",
+          "artifactTypes": [
+            "plugin",
+            "mcp"
+          ],
+          "reload": "user_confirmation"
+        }
+      ],
+      "requiredLifecycle": null,
+      "customConfigRoot": {
+        "supported": false
+      },
+      "releaseMode": "production",
+      "enabledByDefault": true
+    }
+  ]
+}

@@ -54,7 +54,7 @@ const runtimeRoot = path.join(root, 'runtime')
 fs.mkdirSync(runtimeRoot)
 for (const name of [
   'tm-node', 'mcp-server.cjs', 'hook-session-start.cjs', 'hook-pre-compact.cjs',
-  'hook-post-compact.cjs', 'hook-session-end.cjs', 'hook-kimi-session-start-activity.cjs',
+  'hook-post-compact.cjs', 'hook-session-end.cjs', 'hook-codex-user-prompt-submit.cjs', 'hook-kimi-session-start-activity.cjs',
 ]) fs.writeFileSync(path.join(runtimeRoot, name), '// isolated UI audit fixture\n', { mode: 0o700 })
 
 const db = new Database(path.join(graphDir, 'brain.sqlite'))
@@ -97,7 +97,8 @@ function codexLifecycleFixture(
     { eventName: 'SessionStart', matcher: 'startup|resume', script: 'hook-session-start.cjs', includeSkill: true },
     { eventName: 'PreCompact', matcher: 'manual|auto', script: 'hook-pre-compact.cjs', includeSkill: false },
     { eventName: 'PostCompact', matcher: 'manual|auto', script: 'hook-post-compact.cjs', includeSkill: false },
-    { eventName: 'SessionEnd', matcher: 'exit|archive', script: 'hook-session-end.cjs', includeSkill: false },
+    { eventName: 'SessionEnd', matcher: undefined, script: 'hook-session-end.cjs', includeSkill: false },
+    { eventName: 'UserPromptSubmit', matcher: undefined, script: 'hook-codex-user-prompt-submit.cjs', includeSkill: false },
   ] as const
   const entries = definitions.map(definition => {
     const args = [
@@ -111,12 +112,12 @@ function codexLifecycleFixture(
       '--activity-generation-token', activityGenerationToken,
     ]
     return [definition.eventName, {
-      matcher: definition.matcher,
+      ...(definition.matcher !== undefined ? { matcher: definition.matcher } : {}),
       hooks: [{
         type: 'command',
         command: args.map(shellArgument).join(' '),
         ...(definition.includeSkill ? { statusMessage: '正在加载 Tide Mind 记忆…' } : {}),
-        timeout: 15,
+        timeout: definition.eventName === 'UserPromptSubmit' ? 3 : 15,
       }],
     }] as const
   })

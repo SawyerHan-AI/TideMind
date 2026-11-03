@@ -1,3 +1,5 @@
+import Ajv from 'ajv'
+import fs from 'node:fs'
 import { EventEmitter } from 'node:events'
 import Database from 'better-sqlite3'
 import { describe, expect, it, vi } from 'vitest'
@@ -70,6 +72,26 @@ function lifecycleEvidenceDb(): Database.Database {
 }
 
 describe('formatHookOutput', () => {
+  it.each(['PreCompact','PostCompact'] as const)('matches the official Codex 0.157.1 %s schema without context injection',event=>{
+    const file=event==='PreCompact'?'pre':'post'
+    const schema=JSON.parse(fs.readFileSync(new URL('./fixtures/codex-rust-v0.157.1/'+file+'-compact.command.output.schema.json',import.meta.url),'utf8'))
+    const validate=new Ajv().compile(schema)
+    const output=JSON.parse(formatHookOutput('private context must not become a UI warning','codex',event))
+    expect(output).toEqual({})
+    expect(validate(output)).toBe(true)
+    expect(validate({hookSpecificOutput:{hookEventName:event,additionalContext:'old invalid shape'}})).toBe(false)
+    expect(validate({continue:'true'})).toBe(false)
+  })
+
+  it.each(['gemini','qwen-code','zcode'])('preserves compact JSON context for %s',tool=>{
+    for(const event of ['PreCompact','PostCompact'] as const)expect(JSON.parse(formatHookOutput('context',tool,event)))
+      .toEqual({hookSpecificOutput:{hookEventName:event,additionalContext:'context'}})
+  })
+
+  it.each(['claude-code','opencode','unknown-tool'])('preserves compact plain text for %s',tool=>{
+    for(const event of ['PreCompact','PostCompact'] as const)expect(formatHookOutput('context',tool,event)).toBe('context')
+  })
+
   it('returns plain text for Claude Code (default)', () => {
     expect(formatHookOutput('hello', 'claude-code')).toBe('hello')
   })

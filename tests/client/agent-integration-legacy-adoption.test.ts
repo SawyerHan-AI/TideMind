@@ -181,6 +181,166 @@ describe('legacy Agent adoption', () => {
     }, null, 2)}\n`)
   }
 
+
+  function sharedCodexFixture(agentIds = ['eb_codex_shared']) {
+    const configRoot = path.join(root, '.codex')
+    fs.mkdirSync(configRoot, { recursive: true })
+    for (const id of agentIds) db.prepare("INSERT INTO agents(id,name,tool_type,created) VALUES (?,?,'codex',?)").run(id,id,T0)
+    for (const variant of ['codex-cli','codex-desktop'] as const) repository.upsertDiscoveredInstallation({
+      id:variant,family:'codex',hostVariant:variant,runtimeRealm:'local_macos',
+      installKey:variant,distributionId:variant,provenance:'fixture',displayName:variant,
+      configRoot,agentId:'original-'+variant,supportedCapability:4,lastDetectedAt:T0,
+    })
+    const configFile=path.join(configRoot,'config.toml')
+    fs.writeFileSync(configFile,agentIds.map(id=>[
+      '[mcp_servers.tidemind-'+id+']','enabled = true',
+      'command = '+JSON.stringify(runtime.shimPath),
+      'args = ['+JSON.stringify(runtime.mcpServerPath)+']',
+      'env = { EB_AGENT_ID = '+JSON.stringify(id)+' }','',
+    ].join('\n')).join('\n'))
+    return {configFile,adapters:createP0HostAdapters()}
+  }
+
+  it('adopts one exact legacy Codex carrier for two surfaces without merging Installation IDs',async()=>{
+    const {configFile,adapters}=sharedCodexFixture()
+    const bytes=fs.readFileSync(configFile)
+    const result=await adoptProvableLegacyConnections({repository,adapters,runtime,now:T0})
+    expect(result.adopted).toBe(1)
+    expect(result.needsConfirmation).toBe(0)
+    for(const id of ['codex-cli','codex-desktop']){
+      expect(repository.getInstallation(id)?.agent_id).toBe('original-'+id)
+      expect(repository.resolveAgentIdentity(id).canonicalAgentId).toBe('eb_codex_shared')
+    }
+    expect(db.prepare('SELECT COUNT(*) AS n FROM managed_artifacts').get()).toEqual({n:1})
+    expect(db.prepare('SELECT COUNT(*) AS n FROM artifact_consumers').get()).toEqual({n:2})
+    expect(db.prepare('SELECT COUNT(*) AS n FROM agent_consents').get()).toEqual({n:0})
+    expect(fs.readFileSync(configFile)).toEqual(bytes)
+    const again=await adoptProvableLegacyConnections({repository,adapters,runtime,now:T0})
+    expect(again.alreadyAdopted).toBe(1)
+    expect(again.needsConfirmation).toBe(0)
+    db.exec("UPDATE agent_installations SET desired_state='managed' WHERE family='codex'")
+    // Activation replaces the old carrier; legacy scanning must not demand it back.
+    fs.writeFileSync(configFile,'# synthetic managed configuration')
+    const managed=await adoptProvableLegacyConnections({repository,adapters,runtime,now:T0})
+    expect(managed.alreadyAdopted).toBe(1)
+    expect(managed.needsConfirmation).toBe(0)
+
+  })
+
+  it('does not choose between two legacy identities in the same shared Codex domain',async()=>{
+    const {adapters}=sharedCodexFixture(['eb_codex_a','eb_codex_b'])
+    const result=await adoptProvableLegacyConnections({repository,adapters,runtime,now:T0})
+    expect(result.adopted).toBe(0)
+    expect(result.needsConfirmation).toBe(2)
+    expect(db.prepare('SELECT COUNT(*) AS n FROM agent_identity_bindings').get()).toEqual({n:0})
+  })
+
+  it('does not persist a shared binding if the physical proof changes during confirmation',async()=>{
+    const {adapters}=sharedCodexFixture()
+    const adapter=adapters.get('codex-desktop')!
+    const inspect=adapter.inspectAdoptableArtifacts!.bind(adapter)
+    vi.spyOn(adapter,'inspectAdoptableArtifacts').mockImplementation(async context=>{
+      const observations=await inspect(context)
+      return context.operationId.endsWith(':shared_confirm') ? [] : observations
+    })
+    const result=await adoptProvableLegacyConnections({repository,adapters,runtime,now:T0})
+    expect(result.adopted).toBe(0)
+    expect(result.needsConfirmation).toBe(1)
+    expect(db.prepare('SELECT COUNT(*) AS n FROM agent_identity_bindings').get()).toEqual({n:0})
+    expect(db.prepare('SELECT COUNT(*) AS n FROM managed_artifacts').get()).toEqual({n:0})
+  })
+
+
+  it('rechecks an unmanaged shared member without re-adopting the managed peer',async()=>{
+    const {configFile,adapters}=sharedCodexFixture()
+    const original=fs.readFileSync(configFile)
+    await adoptProvableLegacyConnections({repository,adapters,runtime,now:T0})
+    db.exec("UPDATE agent_installations SET desired_state='managed' WHERE id='codex-cli'")
+    const repeat=await adoptProvableLegacyConnections({repository,adapters,runtime,now:T0})
+    expect(repeat.needsConfirmation).toBe(0)
+    expect(repository.getInstallation('codex-desktop')?.status_reason).toBe('legacy_callable_unmanaged')
+    fs.writeFileSync(configFile,'# removed legacy carrier')
+    const stale=await adoptProvableLegacyConnections({repository,adapters,runtime,now:T0})
+    expect(stale.needsConfirmation).toBe(1)
+    expect(repository.getInstallation('codex-desktop')?.verified_capability).toBe(0)
+    expect(repository.getInstallation('codex-cli')?.desired_state).toBe('managed')
+    fs.writeFileSync(configFile,original)
+    await adoptProvableLegacyConnections({repository,adapters,runtime,now:T0})
+    expect(repository.getInstallation('codex-desktop')?.verified_capability).toBeGreaterThan(0)
+  })
+
+  it.each(['owner','alias'])('rolls back shared adoption if a third Installation claims the identity during probe (%s)',async kind=>{
+    const {adapters}=sharedCodexFixture()
+    const adapter=adapters.get('codex-desktop')!
+    const original=adapter.inspectAdoptableArtifacts!.bind(adapter)
+    vi.spyOn(adapter,'inspectAdoptableArtifacts').mockImplementation(async context=>{
+      const observed=await original(context)
+      if(context.operationId.endsWith(':shared_confirm')){
+        installation('third',path.join(root,'.third'))
+        if(kind==='owner') db.prepare('UPDATE agent_installations SET agent_id=? WHERE id=?').run('eb_codex_shared','third')
+        else repository.addAlias({id:'competing-alias',aliasType:'legacy_agent_id',aliasValue:'eb_codex_shared',
+          canonicalAgentId:'eb_codex_shared',installationId:'third',runtimeRealm:'local_macos',reason:'test',createdAt:T0})
+      }
+      return observed
+    })
+    const result=await adoptProvableLegacyConnections({repository,adapters,runtime,now:T0})
+    expect(result.adopted).toBe(0)
+    expect(result.needsConfirmation).toBe(1)
+    expect(db.prepare('SELECT COUNT(*) AS n FROM agent_identity_bindings').get()).toEqual({n:0})
+    expect(db.prepare('SELECT COUNT(*) AS n FROM managed_artifacts').get()).toEqual({n:0})
+  })
+
+  it('does not pause a proven shared domain because another obsolete identity has no owned artifact',async()=>{
+    const {adapters}=sharedCodexFixture()
+    db.prepare("INSERT INTO agents(id,name,tool_type,created) VALUES ('eb_obsolete','old','codex',?)").run(T0)
+    const result=await adoptProvableLegacyConnections({repository,adapters,runtime,now:T0})
+    expect(result.adopted).toBe(1)
+    for(const id of ['codex-cli','codex-desktop'])expect(repository.getInstallation(id)?.status_reason).toBe('legacy_callable_unmanaged')
+  })
+
+  it('continues unrelated adoption when one host inspection throws', async () => {
+    legacy(); installation(); exactMcp(path.join(root, '.cursor'))
+    legacyKimi(); kimiInstallation()
+    const adapters = createP0HostAdapters()
+    vi.spyOn(adapters.get('kimi-code-cli')!, 'inspectAdoptableArtifacts').mockRejectedValue(new Error('unreadable host configuration'))
+    const result = await adoptProvableLegacyConnections({ repository, adapters, runtime, now: T0 })
+    expect(result.adopted).toBe(1)
+    expect(result.needsConfirmation).toBe(1)
+    expect(repository.getInstallation('cursor-1')?.agent_id).toBe('eb_legacy01')
+    expect(repository.getInstallation('kimi-1')?.agent_id).toBe('generated-kimi-1')
+  })
+
+  it('does not turn a failed competing installation probe into unique identity proof', async () => {
+    legacy(); installation(); installation('cursor-2', path.join(root, '.cursor-two'))
+    exactMcp(path.join(root, '.cursor'))
+    const adapters = createP0HostAdapters()
+    const adapter = adapters.get('cursor-desktop')!
+    const original = adapter.inspectAdoptableArtifacts!.bind(adapter)
+    vi.spyOn(adapter, 'inspectAdoptableArtifacts').mockImplementation(async context => {
+      if (context.installation.canonicalConfigRoot.endsWith('.cursor-two')) throw new Error('unreadable')
+      return original(context)
+    })
+    const result = await adoptProvableLegacyConnections({ repository, adapters, runtime, now: T0 })
+    expect(result.adopted).toBe(0)
+    expect(result.needsConfirmation).toBe(1)
+    expect(repository.getInstallation('cursor-1')?.agent_id).toBe('generated-cursor-1')
+  })
+
+  it('keeps identity unchanged when confirmation inspection fails', async () => {
+    legacy(); installation(); exactMcp(path.join(root, '.cursor'))
+    const adapters = createP0HostAdapters()
+    const adapter = adapters.get('cursor-desktop')!
+    const original = adapter.inspectAdoptableArtifacts!.bind(adapter)
+    vi.spyOn(adapter, 'inspectAdoptableArtifacts').mockImplementation(async context => {
+      if (context.operationId.endsWith(':confirm')) throw new Error('host disappeared')
+      return original(context)
+    })
+    const result = await adoptProvableLegacyConnections({ repository, adapters, runtime, now: T0 })
+    expect(result.adopted).toBe(0)
+    expect(result.needsConfirmation).toBe(1)
+    expect(repository.getInstallation('cursor-1')?.agent_id).toBe('generated-cursor-1')
+  })
+
   it.each([false, true])('preserves legacy authority through real scans and a SQLite restart (identity conflict: %s)', async conflict => {
     const databasePath = path.join(root, 'scan-adoption.sqlite')
     let physicalDb = new Database(databasePath)

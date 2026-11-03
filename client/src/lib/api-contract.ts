@@ -292,6 +292,12 @@ export interface AgentIntegrationInstallationDto {
   lastRepairedAt: string | null
   /** Latest still-valid runtime evidence bound to this exact managed Installation. */
   lastRealUseAt: string | null
+  /** Shared carrier activity is not exact per-host verification. */
+  sharedConnection?: {
+    memberCount: number
+    status: 'waiting_for_call' | 'call_observed' | 'inactive'
+    evidenceAt: string | null
+  }
   /**
    * Three independent deactivation facts (design §3.5): pausing maintenance,
    * stopping the Tide Mind bridge, and the host-side component state. Only a
@@ -524,6 +530,8 @@ export interface AgentIntegrationGuidedRemovalResultDto {
 }
 
 export interface AgentIntegrationPlanPreviewDto {
+  legacySelection?: {selectedAgentId:string;removedAgentIds:string[]}
+
   planHash: string
   operation: 'connect' | 'disconnect'
   installations: AgentIntegrationPlanInstallationDto[]
@@ -1054,6 +1062,9 @@ export interface AppApi {
     markSkillCopied: (agentId: string, toolType?: string) => Promise<{ success: boolean; error?: string }>
   }
   agentIntegrations: {
+    reviewCodexLegacySelection: (installationId:string)=>Promise<{candidates:{agentId:string;name:string}[];installationIds:string[]}>
+    previewCodexLegacySelection: (installationId:string,selectedAgentId:string)=>Promise<AgentIntegrationPlanPreviewDto>
+
     onOpenInstallation: (callback: (installationId: string) => void) => () => void
     onTaskProgress: (callback: (task: AgentIntegrationApplyTaskDto) => void) => () => void
     onNotification: (callback: (notification: AgentIntegrationUserNotificationDto) => void) => () => void

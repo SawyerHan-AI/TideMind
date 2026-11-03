@@ -13,15 +13,67 @@ import { pathToFileURL, fileURLToPath } from 'node:url'
 import { inspectHistoricalUpgradeApp } from './historical-upgrade-apps.mjs'
 import { inspectPhysicalTideMindCandidateApp } from './tidemind-candidate-app-identity.mjs'
 
+export const currentCandidateVersion = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex')
 const inside = (root, value) => value === root || value.startsWith(root + path.sep)
 export function historicalDesktopRecipe(version, catalog) {
-  if (!['0.2.89','0.2.91','0.2.92'].includes(version)) throw new Error('unknown historical Desktop version')
+  if (!['0.2.89','0.2.90','0.2.91','0.2.92','0.2.93'].includes(version)) throw new Error('unknown historical Desktop version')
   if (catalog === 'claude-desktop-legacy') return 'desktop-legacy'
-  if (catalog === 'codex-desktop') return 'codex-legacy'
-  if (catalog === 'claude-cowork-local') return version === '0.2.92' ? 'cowork-guided' : 'unsupported-cowork'
+  if (catalog === 'codex-desktop') return version === '0.2.89' ? 'codex-legacy' : 'codex-managed'
+  if (catalog === 'claude-cowork-local') return ['0.2.92','0.2.93'].includes(version) ? 'cowork-guided' : 'unsupported-cowork'
   throw new Error('unknown historical Desktop target')
+}
+// The signed 0.2.90–0.2.93 preloads expose managed scan/detail/preview/task APIs;
+// their legacy generate-plugin handlers explicitly refuse Codex writes.
+export async function createHistoricalCodexManagedBaseline(invoke, home, record, wait = delay, now = Date.now) {
+  validateIsolatedProfilePaths(home)
+  for (const file of ['config.toml', 'hooks.json']) {
+    if (fs.existsSync(path.join(home, '.codex', file))) throw new Error('historical baseline requires new isolated host configuration')
+  }
+  const scan = await invoke('scan'), snapshot = scan?.snapshot
+  if (!snapshot || snapshot.fixtureMode || snapshot.releasePolicy?.mode !== 'active' || !Array.isArray(snapshot.installations)) throw new Error('historical Codex requires active real managed discovery')
+  const matching = []
+  for (const item of snapshot.installations.filter(item => item.hostVariant === 'codex-desktop')) {
+    const detail = await invoke('detail', item.id, true)
+    if (detail?.installation?.id === item.id && detail.installation.hostVariant === 'codex-desktop'
+      && detail.configRootLabel === '~/.codex') matching.push(detail)
+  }
+  if (matching.length !== 1) throw new Error('expected exactly one isolated Codex Desktop installation')
+  const selected = matching[0], id = selected.installation.id
+  if (!selected.installation.manageable || selected.installation.sourceVerification?.state !== 'trusted'
+    || typeof selected.technical?.distributionId !== 'string' || !selected.technical.distributionId) throw new Error('historical Codex source is not manageable and trusted')
+  const preview = await invoke('previewConnect', [id], true)
+  if (preview.installations?.length !== 1 || preview.installations[0].installationId !== id) throw new Error('historical Codex preview changed target')
+  const files = validateNoAuthPlan(preview, home)
+  record('historical_codex_config_before', fileObservations(files, home))
+  let task = await invoke('startApplyConnect', preview.planHash, [id])
+  // Old Desktop signature verification can outlast the former 120-poll budget.
+  // Bound wall time, including an outstanding public IPC, without treating a
+  // projected awaiting_verification result as a completed apply task.
+  const deadline = now() + 600_000
+  while (task.state === 'running' && now() < deadline) {
+    await wait(Math.min(500, deadline - now()))
+    const remaining = deadline - now()
+    if (remaining <= 0) break
+    let timeout
+    try {
+      task = await Promise.race([
+        invoke('getApplyTask', task.id),
+        new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('historical Codex observation exceeded 600 seconds')), remaining) }),
+      ])
+    } finally { clearTimeout(timeout) }
+  }
+  if (task.state !== 'completed' || !Array.isArray(task.results) || task.results.length !== 1
+    || task.results[0].installationId !== id || !['committed','awaiting_verification'].includes(task.results[0].status)) throw new Error('historical Codex setup did not complete local configuration')
+  const detail = await invoke('detail', id, true)
+  record('historical_codex_active_checkpoint', detail)
+  if (detail.installation?.id !== id || detail.installation.hostVariant !== 'codex-desktop'
+    || detail.configRootLabel !== '~/.codex' || detail.installation.desiredState !== 'managed'
+    || typeof detail.technical?.agentId !== 'string' || !detail.technical.agentId) throw new Error('historical Codex baseline has no real managed Desktop identity')
+  record('historical_baseline_identity', { catalogId: 'codex-desktop', agentId: detail.technical.agentId, installationId: id, configurationPaths: files, supported: true })
+  record('historical_codex_config_after', fileObservations(files, home))
 }
 export function parseOperatorArgs(args) {
   const allowed = new Set(['candidate-app', 'candidate-bundle-sha256', 'source-commit', 'workspace', 'capture-nonce', 'catalog-id', 'output-dir', 'distribution-id', 'app-version', 'mode', 'capture-purpose'])
@@ -34,11 +86,11 @@ export function parseOperatorArgs(args) {
   for (const key of ['candidate-app', 'candidate-bundle-sha256', 'source-commit', 'workspace', 'capture-nonce', 'output-dir']) if (!out[key]) throw new Error('missing --' + key)
   if (!/^[a-f0-9]{40}$/.test(out['source-commit']) || !/^[a-f0-9]{64}$/.test(out['candidate-bundle-sha256'])) throw new Error('invalid candidate binding')
   if (!/^[A-Za-z0-9_-]{16,128}$/.test(out['capture-nonce'])) throw new Error('invalid capture nonce')
-  out.mode ??= 'lifecycle'; out['app-version'] ??= '0.2.93'
+  out.mode ??= 'lifecycle'; out['app-version'] ??= currentCandidateVersion
   if (!['lifecycle', 'snapshot-only', 'historical-upgrade-snapshot', 'historical-upgrade-baseline', 'historical-upgrade-prime', 'upgrade-observe'].includes(out.mode) || !/^0\.2\.\d+$/.test(out['app-version'])) throw new Error('invalid mode/version')
-  if (out.mode === 'upgrade-observe' && (out['app-version'] !== '0.2.93' || !['codex-desktop','claude-cowork-local','claude-desktop-legacy'].includes(out['catalog-id']))) throw new Error('upgrade observation requires current candidate and a reviewed Desktop target')
-  if (out.mode === 'lifecycle' && (!out['catalog-id'] || out['app-version'] !== '0.2.93')) throw new Error('lifecycle requires 0.2.93 catalog target')
-  if (out.mode.startsWith('historical-upgrade-') && !['0.2.89','0.2.91','0.2.92'].includes(out['app-version'])) throw new Error('historical mode requires frozen historical version')
+  if (out.mode === 'upgrade-observe' && (out['app-version'] !== currentCandidateVersion || !['codex-desktop','claude-cowork-local','claude-desktop-legacy'].includes(out['catalog-id']))) throw new Error('upgrade observation requires current candidate and a reviewed Desktop target')
+  if (out.mode === 'lifecycle' && (!out['catalog-id'] || out['app-version'] !== currentCandidateVersion)) throw new Error('lifecycle requires current candidate catalog target')
+  if (out.mode.startsWith('historical-upgrade-') && !['0.2.89','0.2.90','0.2.91','0.2.92','0.2.93'].includes(out['app-version'])) throw new Error('historical mode requires frozen historical version')
   if (out.mode === 'historical-upgrade-baseline' && !['claude-desktop-legacy','codex-desktop','claude-cowork-local'].includes(out['catalog-id'])) throw new Error('historical baseline supports only the three frozen Desktop recipes')
   out['capture-purpose'] ??= 'candidate_no_auth'
   if (!['candidate_no_auth', 'operator_self_check_old_candidate'].includes(out['capture-purpose']) || (out['capture-purpose'] === 'operator_self_check_old_candidate' && out.mode !== 'snapshot-only')) throw new Error('invalid capture purpose')
@@ -301,9 +353,12 @@ export async function runOperator(options) {
       if (options.mode === 'historical-upgrade-baseline') {
         const catalog = options['catalog-id'], recipe = historicalDesktopRecipe(options['app-version'], catalog)
         record('historical_recipe', { catalogId: catalog, appVersion: options['app-version'], recipe, acceptanceStatus: 'not_evaluated' })
-        if (recipe === 'cowork-guided' || recipe === 'unsupported-cowork') {
+        if (recipe === 'codex-managed') {
+          if (!available) throw new Error('historical Codex managed API unavailable')
+          await createHistoricalCodexManagedBaseline(invoke, home, record)
+        } else if (recipe === 'cowork-guided' || recipe === 'unsupported-cowork') {
           if (recipe === 'unsupported-cowork') {
-            // Verified official .89/.91 ASAR: old `cowork` is Desktop Legacy, not this target.
+            // Verified official .89/.90/.91 ASAR: old `cowork` is Desktop Legacy, not this target.
             record('unsupported_historical_capability', { catalogId: catalog, appVersion: options['app-version'], supported: false, reason: 'official historical App has no real Cowork guided setup adapter/API; no Agent or installation fabricated', evidence: 'docs/Codex-guides/historical-desktop-baseline-api-evidence.md' })
           } else {
             const preflight = await invoke('previewClaudeCoworkSetup')

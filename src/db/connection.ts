@@ -25,10 +25,15 @@ export function getDb(): Database.Database {
 
   migrateExistingDatabaseIfNeeded(dbPath, getLoadedConfigSourcePath() ?? undefined);
 
-  db = new Database(dbPath);
-  db.pragma('busy_timeout = 10000');
-
-  ensureSchema(db);
+  const opened = new Database(dbPath);
+  try {
+    opened.pragma('busy_timeout = 10000');
+    ensureSchema(opened);
+  } catch (error) {
+    opened.close();
+    throw error;
+  }
+  db = opened;
   setUsageDb(db);
   log.info(`数据库已连接: ${dbPath}`);
 

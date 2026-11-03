@@ -1,3 +1,7 @@
+import { isExactCodexFourToFiveRecipeUpgrade, type CodexRecipeUpgradeProof } from './hosts/codex-lifecycle-adapter.js'
+import { freshCodexIdentityFingerprint, type CodexFreshIdentityPlan } from './codex-fresh-identity'
+import { evaluateBridgeAdmission } from '@server/agent-bridge-guard.js'
+import { agentIdentityDomainKey, sharedAgentActivityKey, getSharedAgentConsumers, resolveInstallationAgentIdentity, confirmSharedAgentIdentity, type ConfirmSharedIdentityInput } from '@server/db/agent-identity-binding.js'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import type Database from 'better-sqlite3'
@@ -26,7 +30,9 @@ import {
   type ManagementEligibilityReason,
 } from './discovery.js'
 import { buildLegacyInstallKey, EXACT_INSTALL_KEY_DISTRIBUTION_CONFLICT_REASON } from './identity.js'
-import type { PreparedCoordinatorPlan } from './planner.js'
+import { assertPersistedPreparedPlanShape, type PreparedCoordinatorPlan } from './planner.js'
+import { executionPlanHash, type CompletedGenerationTakeover } from './consent.js'
+import { buildLegacyMutationDomain } from './legacy-writer.js'
 
 const AGENT_INTEGRATION_LAST_SUCCESSFUL_SCAN_AT_KEY = 'agent_integration_last_successful_scan_at'
 
@@ -813,6 +819,125 @@ export class AgentIntegrationRepository {
 
   constructor(private readonly db: Database.Database) {}
 
+  getSharedIdentity(agentId: string) {
+    return getSharedAgentConsumers(this.db, agentId)
+  }
+
+  sharedConnectionStatus(installationId: string): {
+    memberCount: number; status: 'waiting_for_call' | 'call_observed' | 'inactive'; evidenceAt: string | null
+  } | undefined {
+    try {
+    if (!this.getInstallation(installationId)?.agent_id) return undefined
+    const identity = this.resolveAgentIdentity(installationId)
+    if (!identity.bindingId) return undefined
+    const shared = this.getSharedIdentity(identity.canonicalAgentId)!
+    const own = shared.consumers.find(member => member.id === installationId)!
+    const active = shared.consumers.filter(member => member.desired_state !== 'removed' && !member.tombstoned_at)
+    const inactive = own.desired_state === 'removed' || own.tombstoned_at !== null || own.bridge_state === 'stopped'
+    const base = { memberCount: active.length, status: inactive ? 'inactive' as const : 'waiting_for_call' as const, evidenceAt: null }
+    if (inactive) return base
+    const carriers = this.db.prepare(`SELECT DISTINCT json_extract(run.prepared_plan_json,'$.activityGenerationToken') AS token
+      FROM agent_identity_binding_members member
+      JOIN artifact_consumers consumer ON consumer.installation_id=member.installation_id
+      JOIN projection_mutations mutation ON mutation.artifact_id=consumer.artifact_id
+      JOIN reconcile_runs run ON run.id=mutation.run_id
+      WHERE member.binding_id=? AND consumer.component_key='memory_tools'
+        AND mutation.state='committed' AND mutation.idempotency_strategy!='consumer_detach_only'`)
+      .all(shared.bindingId) as Array<{token:string|null}>
+    let admitted = false
+    for (const carrier of carriers) {
+      if (!carrier.token || !evaluateBridgeAdmission(this.db, { agentId: identity.canonicalAgentId, activityGenerationToken: carrier.token, componentKey: 'memory_tools' }).allowed) continue
+      admitted = true
+      const keys = ['brain_prepare','brain_recall','brain_digest'].map(signal =>
+        sharedAgentActivityKey(shared.bindingId, shared.generation, 'memory_tools', signal, carrier.token!))
+      const receipt = this.db.prepare(`SELECT MAX(created_at) AS evidence_at FROM agent_integration_events
+        WHERE kind='shared_agent_activity' AND dedupe_key IN (?,?,?)`).get(...keys) as {evidence_at:string|null}
+      if (receipt.evidence_at) return { memberCount: active.length, status: 'call_observed', evidenceAt: receipt.evidence_at }
+    }
+    return carriers.length > 0 && !admitted ? { ...base, status: 'inactive' } : base
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Shared identity domain changed')) {
+        return { memberCount: 0, status: 'inactive', evidenceAt: null }
+      }
+      throw error
+    }
+  }
+
+  resolveAgentIdentity(installationId: string) {
+    return resolveInstallationAgentIdentity(this.db, installationId)
+  }
+
+  coordinatorAgentIdentity(installationId: string): { agentId: string; installationAgentId?: string; sharedIdentityBinding?: string } {
+    const identity = this.resolveAgentIdentity(installationId)
+    return identity.bindingId ? {
+      agentId: identity.canonicalAgentId,
+      installationAgentId: identity.installationAgentId,
+      sharedIdentityBinding: sha256Json(identity),
+    } : { agentId: identity.installationAgentId }
+  }
+
+
+  /** Read-only fresh-domain proposal. Existing managed unbound identities need explicit disconnect/reconnect. */
+  previewFreshCodexIdentity(installationId: string, proposedCanonicalAgentId?: string): CodexFreshIdentityPlan | null {
+    const own = this.getInstallation(installationId)
+    if (!own || own.family !== 'codex' || !['codex-cli', 'codex-desktop'].includes(own.host_variant)) return null
+    if (this.resolveAgentIdentity(own.id).bindingId) return null
+    const domainKey = agentIdentityDomainKey(own)
+    const members = this.listInstallations({ includeRemoved: true }).filter(row => {
+      try { return agentIdentityDomainKey(row) === domainKey } catch { return false }
+    }).sort((a,b) => a.id.localeCompare(b.id))
+    const binding = this.db.prepare('SELECT * FROM agent_identity_bindings WHERE domain_key=?').get(domainKey) as
+      { id:string; canonical_agent_id:string; generation:number } | undefined
+    const unbound = members.filter(row => !this.resolveAgentIdentity(row.id).bindingId)
+    // A formerly adopted member losing its binding is drift, never a fresh join.
+    if (unbound.some(row => row.id===own.id && this.listComponents(row.id).some(component => component.desired_state !== 'removed'))) return null
+    if (unbound.some(row => !['unmanaged','removed'].includes(row.desired_state)
+      || (row.id !== own.id && row.desired_state === 'removed')
+      || row.status_reason === 'legacy_confirmation_required')) {
+      throw new Error('codex_shared_identity_requires_disconnect_reconnect')
+    }
+    if (members.some(row => !row.agent_id) || new Set(members.map(row=>row.host_variant)).size !== members.length) {
+      throw new Error('codex_shared_identity_domain_conflict')
+    }
+    if (proposedCanonicalAgentId && !binding && !members.some(row=>row.agent_id===proposedCanonicalAgentId && (!row.tombstoned_at || row.id===own.id))) throw new Error('Fresh canonical identity is outside approved domain')
+    const carrier = binding ? members.find(row => this.resolveAgentIdentity(row.id).bindingId === binding.id
+      && ['managed','disabled'].includes(row.desired_state) && !row.tombstoned_at) : undefined
+    return { domainKey, bindingId:binding?.id ?? 'binding_'+domainKey,
+      canonicalAgentId:binding?.canonical_agent_id ?? proposedCanonicalAgentId ?? own.agent_id!, generation:binding?.generation ?? 1,
+      existingBinding:Boolean(binding), carrierInstallationId:carrier?.id ?? null,
+      members:members.map(row=>({id:row.id,agentId:row.agent_id!,installKey:row.install_key,domainKey,
+        desiredState:row.desired_state,tombstonedAt:row.tombstoned_at})) }
+  }
+
+  /** Called only inside prepareExecution's transaction, before any desired state changes. */
+  prepareFreshCodexIdentity(installationId: string, expected: CodexFreshIdentityPlan, at: string): void {
+    const live = this.previewFreshCodexIdentity(installationId, expected.canonicalAgentId)
+    if (!live || freshCodexIdentityFingerprint(live) !== freshCodexIdentityFingerprint(expected)) {
+      throw new Error('Fresh Codex shared identity changed before prepare')
+    }
+    if (!expected.existingBinding) {
+      const owner = this.getInstallation(installationId)!
+      this.db.prepare('INSERT OR IGNORE INTO agents(id,name,tool_type,created) VALUES (?,?,?,?)')
+        .run(expected.canonicalAgentId,owner.display_name,'codex',at)
+      const agent = this.db.prepare('SELECT archived FROM agents WHERE id=?').get(expected.canonicalAgentId) as {archived:number}
+      if (agent.archived !== 0) throw new Error('Fresh canonical Agent is archived')
+      this.db.prepare(`INSERT INTO agent_identity_bindings
+        (id,domain_key,canonical_agent_id,generation,evidence_hash,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`)
+        .run(expected.bindingId,expected.domainKey,expected.canonicalAgentId,expected.generation,
+          freshCodexIdentityFingerprint(expected),at,at)
+    }
+    for (const member of expected.members) {
+      this.db.prepare('INSERT OR IGNORE INTO agent_identity_binding_members(installation_id,binding_id) VALUES (?,?)')
+        .run(member.id,expected.bindingId)
+      if (this.resolveAgentIdentity(member.id).bindingId !== expected.bindingId) throw new Error('Fresh Codex member changed')
+    }
+  }
+
+  confirmSharedIdentity(input: ConfirmSharedIdentityInput): void {
+    confirmSharedAgentIdentity(this.db, input)
+  }
+
+
   /**
    * 0.2.91 briefly persisted manual MCP clients with a C3 ceiling even though
    * their contract can prove only memory read/write activity. Correct that
@@ -1212,7 +1337,7 @@ export class AgentIntegrationRepository {
              i.distribution_id AS current_distribution_id,
              i.runtime_realm AS current_runtime_realm,
              i.detected_version AS current_host_version,
-             i.agent_id AS current_agent_id,
+             COALESCE((SELECT b.canonical_agent_id FROM agent_identity_binding_members m JOIN agent_identity_bindings b ON b.id=m.binding_id WHERE m.installation_id=i.id), i.agent_id) AS current_agent_id,
              a.observed_fragment_hash AS current_artifact_hash,
              a.state AS current_artifact_state,
              a.selector_schema_version AS current_selector_schema_version
@@ -1561,6 +1686,280 @@ export class AgentIntegrationRepository {
     }).immediate()
   }
 
+  /** Exact four-to-five transition only; all shared waits are one approved physical scope. */
+  private codexRecipeUpgradeTakeovers(installationId: string, plan: PreparedCoordinatorPlan): CompletedGenerationTakeover[] | null {
+    const proof = codexFourToFivePlanProof(plan)
+    const own = this.getInstallation(installationId)
+    if (!proof || !own || own.family !== 'codex' || own.desired_state !== 'managed'
+      || own.tombstoned_at || own.health_state !== 'discovered' || own.status_reason === 'conflict'
+      || plan.executionPlan.installationId!==installationId || plan.adapterPlan.installationKey!==own.install_key
+      || plan.inspection.catalogId!==own.host_variant || !plan.inspection.detected) return null
+    const identity = this.resolveAgentIdentity(installationId)
+    if (!identity.bindingId || this.coordinatorAgentIdentity(installationId).sharedIdentityBinding !== plan.executionPlan.sharedIdentityBinding
+      || plan.executionPlan.installationSurfaceFingerprint !== persistedProjectionSurfaceFingerprint(own)
+      || !plan.executionPlan.liveTrustProofFingerprint) return null
+    const readScopes = (id: string) => this.db.prepare(`SELECT c.component_key,a.id AS artifact_id,
+      a.target_path,a.ownership_key,a.mutation_domain,a.owned_fragment_hash,a.observed_fragment_hash,a.desired_fragment_hash,
+      a.selector_schema_version,a.projection_version,a.state AS artifact_state,c.consent_envelope_id,c.desired_state AS consumer_desired_state
+      FROM installation_components ic JOIN managed_artifacts a ON a.id=ic.artifact_id
+      JOIN artifact_consumers c ON c.artifact_id=a.id AND c.installation_id=ic.installation_id AND c.component_key=ic.component_key
+      JOIN agent_consents consent ON consent.id=c.consent_envelope_id AND consent.installation_id=c.installation_id
+      WHERE ic.installation_id=? AND ic.desired_state='managed' AND ic.tombstoned_at IS NULL
+        AND ic.consent_envelope_id=c.consent_envelope_id AND consent.status='active'
+        AND c.state='active' AND c.desired_state IN ('managed','disabled') AND c.tombstoned_at IS NULL
+      ORDER BY c.component_key`).all(id) as Array<Record<string,unknown>>
+    const scopes = readScopes(installationId)
+    if (scopes.length !== plan.componentKeys.length || scopes.some(scope => {
+      const observed=plan.inspection.components.find(component=>component.componentKey===scope.component_key)
+      const replacement=plan.adapterPlan.mutations.find(mutation=>mutation.componentKey===scope.component_key)
+      return !['healthy','needs_recovery'].includes(String(scope.artifact_state))
+        || !scope.owned_fragment_hash || scope.desired_fragment_hash !== scope.owned_fragment_hash
+        || scope.observed_fragment_hash !== scope.owned_fragment_hash
+        || scope.consent_envelope_id !== own.consent_envelope_id
+        || !observed || observed.observedTarget !== scope.target_path || observed.observedFragmentHash !== scope.owned_fragment_hash
+        || (replacement && (replacement.physicalTarget !== scope.target_path || replacement.ownershipKey !== scope.ownership_key
+          || replacement.preconditionHash !== scope.owned_fragment_hash))
+        || (scope.component_key==='lifecycle' && scope.owned_fragment_hash!==proof.oldFragmentHash)
+    })) return null
+    const affected = new Set<string>([installationId])
+    for(const scope of scopes) for(const consumer of this.db.prepare(`SELECT installation_id,state,desired_state,tombstoned_at
+      FROM artifact_consumers WHERE artifact_id=? AND state IN ('active','removal_pending')`).all(scope.artifact_id) as Array<Record<string,unknown>>) {
+      if(consumer.state!=='active'||!['managed','disabled'].includes(String(consumer.desired_state))||consumer.tombstoned_at!==null)return null
+      affected.add(String(consumer.installation_id))
+    }
+    const results: CompletedGenerationTakeover[]=[]
+    for(const id of [...affected].sort()){
+      const member=this.getInstallation(id), memberIdentity=this.resolveAgentIdentity(id)
+      if(!member || member.family!=='codex' || !['codex-cli','codex-desktop'].includes(member.host_variant)
+        || member.desired_state!=='managed'||member.tombstoned_at||member.health_state!=='discovered'
+        || member.status_reason==='conflict'||memberIdentity.bindingId!==identity.bindingId
+        || memberIdentity.canonicalAgentId!==identity.canonicalAgentId)return null
+      const memberScopes=readScopes(id)
+      if(memberScopes.length!==scopes.length || memberScopes.some((scope,index)=>
+        scope.artifact_id!==scopes[index].artifact_id || scope.component_key!==scopes[index].component_key
+        || scope.consent_envelope_id!==member.consent_envelope_id))return null
+      const candidates=this.db.prepare(`SELECT * FROM reconcile_runs WHERE installation_id=?
+        AND state IN ('planned','preconditions_checked','applying','applied_unverified','verified','compensating','needs_recovery')
+        ORDER BY id`).all(id) as Array<Record<string,unknown>>
+      if(!candidates.length && memberScopes.some(scope=>scope.consumer_desired_state==='disabled'))return null
+      for(const row of candidates){
+        if(!['applied_unverified','needs_recovery'].includes(String(row.state))
+          || !['connect','repair'].includes(String(row.operation_type)) || row.failure_code==='journal_decode_failed'
+          || row.consent_envelope_id!==member.consent_envelope_id)return null
+        const old=JSON.parse(String(row.prepared_plan_json)) as PreparedCoordinatorPlan
+        assertPersistedPreparedPlanShape(old)
+        if(old.executionPlan.installationId!==id || old.executionPlanHash!==row.execution_plan_hash
+          || executionPlanHash(old.executionPlan)!==row.execution_plan_hash || sha256Json(old.adapterPlan)!==old.adapterPlanHash
+          || old.adapterPlan.adapterVersion!=='1+1+1' || old.adapterPlan.projectionVersion!==plan.adapterPlan.projectionVersion
+          || old.executionPlan.projectionVersion!==plan.executionPlan.projectionVersion
+          || old.executionPlan.catalogVersion!==plan.executionPlan.catalogVersion
+          || old.adapterPlan.installationKey!==member.install_key || old.inspection.catalogId!==member.host_variant
+          || old.executionPlan.sharedIdentityBinding!==this.coordinatorAgentIdentity(id).sharedIdentityBinding
+          || old.executionPlan.installationSurfaceFingerprint!==persistedProjectionSurfaceFingerprint(member)
+          || !old.executionPlan.liveTrustProofFingerprint || old.executionPlan.hostVersion!==member.detected_version
+          || old.activityGenerationToken!==proof.oldGenerationToken
+          || sha256Json([...old.componentKeys].sort())!==sha256Json([...plan.componentKeys].sort()))return null
+        const effects=this.db.prepare(`SELECT pm.*,a.target_path,a.ownership_key,a.owned_fragment_hash
+          FROM projection_mutations pm JOIN managed_artifacts a ON a.id=pm.artifact_id
+          WHERE pm.run_id=? ORDER BY pm.id`).all(row.id) as Array<Record<string,unknown>>
+        if(effects.length!==old.adapterPlan.mutations.length)return null
+        const covered=new Set<string>()
+        for(const effect of effects){
+          const previous=JSON.parse(String(effect.planned_mutation_json)) as import('./types').PlannedMutation
+          const receipt=effect.apply_receipt_json?JSON.parse(String(effect.apply_receipt_json)):null
+          const scoped=memberScopes.find(scope=>scope.component_key===effect.component_key)
+          if(!scoped || scoped.consumer_desired_state!=='managed' || effect.artifact_id!==scoped.artifact_id || effect.installation_id!==id
+            || effect.state!=='committed'||!effect.after_hash||effect.post_effect_fingerprint!==effect.after_hash
+            || effect.compensation_precondition!==effect.after_hash || Number(effect.journal_version)<4
+            || !Number.isSafeInteger(effect.attempt_count) || Number(effect.attempt_count)<1
+            || effect.failure_code!==null || effect.failure_stage!==null
+            || receipt?.fingerprint!==effect.after_hash || effect.owned_fragment_hash!==effect.after_hash
+            || effect.before_hash!==(previous.preconditionHash??null) || effect.after_hash!==previous.desiredFragmentHash
+            || previous.ownershipTransferFrom || previous.physicalTarget!==scoped.target_path || previous.ownershipKey!==scoped.ownership_key
+            || effect.target!==previous.physicalTarget || effect.operation_id!==previous.operationId
+            || effect.mutation_domain!==scoped.mutation_domain || effect.idempotency_strategy!=='readback_exact_then_replay'
+            || !old.adapterPlan.mutations.some(mutation=>sha256Json(mutation)===sha256Json(previous)))return null
+          for(const key of previous.coveredComponentKeys??[previous.componentKey])covered.add(key)
+        }
+        for(const scope of memberScopes)if(!covered.has(String(scope.component_key))){
+          const observed=old.inspection.components.find(component=>component.componentKey===scope.component_key)
+          if(!observed || observed.observedTarget!==scope.target_path||observed.observedFragmentHash!==scope.owned_fragment_hash)return null
+        }
+        const mutationDomains=[...new Set(memberScopes.map(scope=>String(scope.mutation_domain)))].sort()
+        const frozenDomains=JSON.parse(String(row.writer_fence_snapshot_json)).mutationDomains
+        if(!Array.isArray(frozenDomains)||sha256Json(frozenDomains)!==sha256Json(mutationDomains))return null
+        results.push({kind:'codex_lifecycle_4_to_5',installationId:id,runId:String(row.id),executionPlanHash:String(row.execution_plan_hash),
+          mutationDomains,effectSnapshotHash:sha256Json({identity:memberIdentity,consent:this.getConsent(String(row.consent_envelope_id)),
+            scopes:memberScopes.map(({artifact_state,...scope})=>{void artifact_state;return scope}),effects})})
+      }
+    }
+    return results.sort((a,b)=>a.runId.localeCompare(b.runId))
+  }
+
+  /** Read-only, consent-bound candidates for an explicit same-source host upgrade. */
+  completedGenerationTakeovers(installationId: string, plan: PreparedCoordinatorPlan): CompletedGenerationTakeover[] {
+    if (codexFourToFivePlanProof(plan)) {
+      let takeovers: CompletedGenerationTakeover[] | null
+      try { takeovers=this.codexRecipeUpgradeTakeovers(installationId,plan) } catch { takeovers=null }
+      if(takeovers===null)throw new Error('Codex recipe upgrade preconditions changed; preview again')
+      return takeovers
+    }
+    const installation = this.getInstallation(installationId)
+    const next = plan.executionPlan
+    if (!installation || installation.desired_state !== 'managed' || installation.tombstoned_at
+      || installation.health_state !== 'discovered' || plan.operation !== 'connect'
+      || next.installationId !== installationId || !plan.inspection.detected
+      || !next.liveTrustProofFingerprint || !next.installationSurfaceFingerprint
+      || next.installationSurfaceFingerprint !== persistedProjectionSurfaceFingerprint(installation)
+      || plan.adapterPlan.diagnostics.length > 0 || plan.adapterPlan.mutations.length === 0) return []
+    // A new confirmation is not a generic escape from unrelated identity conflicts.
+    if (installation.status_reason === 'conflict' && this.db.prepare(`
+      SELECT 1 FROM agent_integration_events WHERE installation_id=? AND kind='discovery_identity_conflict'
+        AND COALESCE(json_extract(payload_json,'$.reason'),'') != ? LIMIT 1
+    `).get(installationId, EXACT_INSTALL_KEY_DISTRIBUTION_CONFLICT_REASON)) return []
+    const currentSource = plan.inspection.distribution
+    if (!currentSource.packageProvenance || !currentSource.distributionId) return []
+    const candidates = this.db.prepare(`
+      SELECT id,execution_plan_hash,prepared_plan_json,writer_fence_snapshot_json FROM reconcile_runs
+      WHERE installation_id=? AND operation_type IN ('connect','repair','upgrade')
+        AND state IN ('applied_unverified','needs_recovery') ORDER BY id
+    `).all(installationId) as Array<{id:string;execution_plan_hash:string;prepared_plan_json:string;writer_fence_snapshot_json:string}>
+    const scopes = this.db.prepare(`
+      SELECT c.component_key,a.id AS artifact_id,a.target_path,a.ownership_key,a.mutation_domain,
+             a.owned_fragment_hash,a.selector_schema_version,a.projection_version,a.state AS artifact_state
+      FROM installation_components ic JOIN managed_artifacts a ON a.id=ic.artifact_id
+      JOIN artifact_consumers c ON c.artifact_id=a.id AND c.installation_id=ic.installation_id AND c.component_key=ic.component_key
+      WHERE ic.installation_id=? AND ic.desired_state='managed' AND c.state='active' AND c.desired_state='managed'
+        AND c.tombstoned_at IS NULL ORDER BY c.component_key
+    `).all(installationId) as Array<Record<string, unknown>>
+    if (scopes.length !== plan.componentKeys.length || scopes.some(scope => {
+      const observed = plan.inspection.components.find(component => component.componentKey === scope.component_key)
+      const replacement = plan.adapterPlan.mutations.find(mutation => mutation.physicalTarget === scope.target_path
+        && mutation.ownershipKey === scope.ownership_key)
+      const writesComponent = plan.adapterPlan.mutations.some(mutation => (mutation.coveredComponentKeys ?? [mutation.componentKey])
+        .includes(scope.component_key as ComponentKey))
+      return !['healthy','needs_recovery'].includes(String(scope.artifact_state)) || !scope.owned_fragment_hash
+        || !observed || observed.observedTarget !== scope.target_path || observed.observedFragmentHash !== scope.owned_fragment_hash
+        || (replacement ? replacement.preconditionHash !== scope.owned_fragment_hash : writesComponent)
+    })) return []
+    return candidates.flatMap(row => {
+      try {
+        const old = JSON.parse(row.prepared_plan_json) as PreparedCoordinatorPlan
+        assertPersistedPreparedPlanShape(old)
+        if (old.executionPlan.installationId !== installationId
+          || old.executionPlanHash !== row.execution_plan_hash || executionPlanHash(old.executionPlan) !== row.execution_plan_hash
+          || old.adapterPlanHash !== sha256Json(old.adapterPlan)
+          || old.adapterPlan.installationKey !== plan.adapterPlan.installationKey
+          || old.inspection.catalogId !== plan.inspection.catalogId
+          || old.inspection.distribution.packageProvenance !== currentSource.packageProvenance
+          || old.inspection.distribution.distributionId !== currentSource.distributionId
+          || !old.executionPlan.liveTrustProofFingerprint || !old.executionPlan.installationSurfaceFingerprint
+          || (old.executionPlan.liveTrustProofFingerprint === next.liveTrustProofFingerprint
+            && old.executionPlan.installationSurfaceFingerprint === next.installationSurfaceFingerprint)
+          || sha256Json([...old.componentKeys].sort()) !== sha256Json([...plan.componentKeys].sort())) return []
+        const effects = this.db.prepare(`
+          SELECT pm.id,pm.component_key,pm.artifact_id,pm.mutation_domain,pm.state,pm.after_hash,pm.post_effect_fingerprint,
+                 pm.apply_receipt_json,pm.planned_mutation_json,a.target_path,a.ownership_key,
+                 a.owned_fragment_hash,a.state AS artifact_state
+          FROM projection_mutations pm LEFT JOIN managed_artifacts a ON a.id=pm.artifact_id
+          WHERE pm.run_id=? ORDER BY pm.id
+        `).all(row.id) as Array<Record<string, unknown>>
+        if (!effects.length || effects.length !== old.adapterPlan.mutations.length) return []
+        const covered = new Set<ComponentKey>()
+        const domains = new Set(scopes.map(scope => String(scope.mutation_domain)))
+        for (const effect of effects) {
+          const previous = JSON.parse(String(effect.planned_mutation_json)) as import('./types').PlannedMutation
+          if (effect.state !== 'committed' || !effect.artifact_id || !effect.after_hash || !effect.apply_receipt_json
+            || effect.post_effect_fingerprint !== effect.after_hash || effect.owned_fragment_hash !== effect.after_hash
+            || !['healthy','needs_recovery'].includes(String(effect.artifact_state)) || previous.ownershipTransferFrom
+            || previous.physicalTarget !== effect.target_path || previous.ownershipKey !== effect.ownership_key
+            || !old.adapterPlan.mutations.some(mutation => sha256Json(mutation) === sha256Json(previous))) return []
+          domains.add(String(effect.mutation_domain))
+          for (const fence of previous.additionalFenceTargets ?? []) {
+            domains.add(fence.domainKind === 'file_fragment' && installation.runtime_realm === 'local_macos'
+              ? buildLegacyMutationDomain({ adapterId: installation.host_variant, target: fence.physicalTarget, selector: 'document' })
+              : `${installation.runtime_realm}:${fence.domainKind}:${fence.physicalTarget}`)
+          }
+          for (const componentKey of previous.coveredComponentKeys ?? [previous.componentKey]) {
+            const observation = plan.inspection.components.find(component => component.componentKey === componentKey)
+            if (observation?.observedTarget !== effect.target_path || observation.observedFragmentHash !== effect.after_hash
+              || !this.db.prepare(`SELECT 1 FROM artifact_consumers WHERE artifact_id=? AND installation_id=?
+                AND component_key=? AND state='active' AND desired_state='managed' AND tombstoned_at IS NULL`)
+                .get(effect.artifact_id,installationId,componentKey)) return []
+            covered.add(componentKey)
+          }
+        }
+        // A prior no-op is still an owned scope; do not manufacture a Skill rewrite.
+        for (const scope of scopes) if (!covered.has(scope.component_key as ComponentKey)) {
+          const previous = old.inspection.components.find(component => component.componentKey === scope.component_key)
+          if (!previous || previous.observedTarget !== scope.target_path || previous.observedFragmentHash !== scope.owned_fragment_hash) return []
+        }
+        const mutationDomains = [...domains].sort()
+        const frozenDomains = JSON.parse(row.writer_fence_snapshot_json).mutationDomains
+        if (!Array.isArray(frozenDomains) || sha256Json([...new Set(frozenDomains)].sort()) !== sha256Json(mutationDomains)) return []
+        return [{ runId: row.id, executionPlanHash: row.execution_plan_hash,
+          mutationDomains, effectSnapshotHash: sha256Json({ mutationDomains,
+            effects: effects.map(({ artifact_state, ...effect }) => { void artifact_state; return effect }),
+            scopes: scopes.map(({ artifact_state, ...scope }) => { void artifact_state; return scope }),
+          }) }]
+      } catch { return [] }
+    })
+  }
+
+  /** Read-only proof for the approved second item after this recipe's first writer. */
+  isCodexRecipeBatchCarrierCurrent(installationId: string, runId: string, approved: PreparedCoordinatorPlan): boolean {
+    try {
+      if(!codexFourToFivePlanProof(approved))return false
+      const run=this.db.prepare(`SELECT * FROM reconcile_runs WHERE id=? AND operation_type='connect'
+        AND state IN ('applied_unverified','verified','committed')`).get(runId) as Record<string,unknown>|undefined
+      if(!run)return false
+      const first=JSON.parse(String(run.prepared_plan_json)) as PreparedCoordinatorPlan
+      assertPersistedPreparedPlanShape(first)
+      const own=this.resolveAgentIdentity(installationId),writer=this.resolveAgentIdentity(String(run.installation_id))
+      if(!own.bindingId || own.bindingId!==writer.bindingId || own.canonicalAgentId!==writer.canonicalAgentId
+        || !codexFourToFivePlanProof(first) || first.executionPlanHash!==run.execution_plan_hash
+        || executionPlanHash(first.executionPlan)!==run.execution_plan_hash || sha256Json(first.adapterPlan)!==first.adapterPlanHash
+        || first.activityGenerationToken!==approved.activityGenerationToken
+        || first.executionPlan.sharedIdentityBinding!==this.coordinatorAgentIdentity(String(run.installation_id)).sharedIdentityBinding
+        || this.getInstallation(String(run.installation_id))?.consent_envelope_id!==run.consent_envelope_id
+        || this.getConsent(String(run.consent_envelope_id))?.status!=='active')return false
+      const effects=this.db.prepare('SELECT * FROM projection_mutations WHERE run_id=? ORDER BY id').all(runId) as Array<Record<string,unknown>>
+      if(!effects.length || effects.length!==first.adapterPlan.mutations.length)return false
+      for(const effect of effects){
+        const mutation=JSON.parse(String(effect.planned_mutation_json)) as import('./types').PlannedMutation
+        const expected=approved.adapterPlan.mutations.find(item=>item.componentKey===mutation.componentKey)
+        const receipt=effect.apply_receipt_json?JSON.parse(String(effect.apply_receipt_json)):null
+        if(!expected || mutation.physicalTarget!==expected.physicalTarget || mutation.ownershipKey!==expected.ownershipKey
+          || mutation.desiredFragmentHash!==expected.desiredFragmentHash
+          || !first.adapterPlan.mutations.some(item=>sha256Json(item)===sha256Json(mutation))
+          || effect.installation_id!==run.installation_id || effect.operation_id!==mutation.operationId
+          || effect.component_key!==mutation.componentKey || effect.target!==mutation.physicalTarget
+          || effect.before_hash!==(mutation.preconditionHash??null)
+          || effect.adapter_version!==first.adapterPlan.adapterVersion || String(effect.catalog_version)!==String(first.executionPlan.catalogVersion)
+          || effect.projection_version!==first.adapterPlan.projectionVersion || Number(effect.selector_schema_version)!==mutation.selectorSchemaVersion
+          || effect.state!=='committed'||effect.after_hash!==expected.desiredFragmentHash
+          || !Number.isSafeInteger(effect.journal_version)||Number(effect.journal_version)<4
+          || !Number.isSafeInteger(effect.attempt_count)||Number(effect.attempt_count)<1
+          || effect.compensation_precondition!==effect.after_hash||effect.failure_code!==null||effect.failure_stage!==null
+          || effect.idempotency_strategy!=='readback_exact_then_replay'
+          || effect.post_effect_fingerprint!==effect.after_hash || receipt?.fingerprint!==effect.after_hash
+          || !this.db.prepare(`SELECT 1 FROM managed_artifacts artifact
+            JOIN artifact_consumers consumer ON consumer.artifact_id=artifact.id
+            WHERE artifact.id=? AND artifact.state='healthy' AND artifact.owned_fragment_hash=?
+              AND artifact.observed_fragment_hash=? AND consumer.installation_id=? AND consumer.state='active'
+              AND consumer.desired_state='managed' AND consumer.consent_envelope_id=? AND consumer.tombstoned_at IS NULL
+          `).get(effect.artifact_id,effect.after_hash,effect.after_hash,run.installation_id,run.consent_envelope_id))return false
+      }
+      return true
+    }catch{return false}
+  }
+
+  isCompletedGenerationTakeoverCurrent(installationId: string, plan: PreparedCoordinatorPlan): boolean {
+    const approved = plan.executionPlan.completedGenerationTakeovers
+    try { return Boolean(approved?.length && sha256Json(approved) === sha256Json(this.completedGenerationTakeovers(installationId, plan))) }
+    catch { return false }
+  }
+
   /**
    * A probe error is neither an authoritative absence nor fresh presence.
    * Invalidate live capability and prevent startup recovery from trusting the
@@ -1731,6 +2130,7 @@ export class AgentIntegrationRepository {
    * summary, but never grants consent or creates managed verification.
    */
   recheckLegacyAdoption(input: {
+    sharedBindingId?: string
     legacyAgentId: string
     legacyToolType: string
     installationId: string
@@ -1748,8 +2148,11 @@ export class AgentIntegrationRepository {
         SELECT installation_id FROM agent_aliases
         WHERE alias_type = 'legacy_agent_id' AND alias_value = ? AND runtime_realm = ?
       `).get(input.legacyAgentId, installation.runtime_realm) as { installation_id: string } | undefined : undefined
+      const shared = input.sharedBindingId && installation ? this.resolveAgentIdentity(installation.id) : null
+      const hasBinding = shared ? shared.bindingId === input.sharedBindingId && shared.canonicalAgentId === input.legacyAgentId
+        : alias?.installation_id === installation?.id
       if (!legacy || legacy.tool_type !== input.legacyToolType || legacy.archived !== 0
-        || !installation || alias?.installation_id !== installation.id) {
+        || !installation || !hasBinding) {
         throw new Error('legacy adoption identity changed before read-only recheck')
       }
       // Explicit intent and unresolved identity/maintenance conflicts take
@@ -2011,7 +2414,7 @@ export class AgentIntegrationRepository {
        AND verification.component_key = component.component_key
        AND verification.host_variant = installation.host_variant
        AND verification.host_version = installation.detected_version
-       AND verification.identity_assertion = installation.agent_id
+       AND verification.identity_assertion = COALESCE((SELECT b.canonical_agent_id FROM agent_identity_binding_members m JOIN agent_identity_bindings b ON b.id=m.binding_id WHERE m.installation_id=installation.id), installation.agent_id)
        AND verification.tide_mind_version = evidence.tide_mind_version
        AND verification.adapter_version = evidence.adapter_version
        AND verification.projection_version = evidence.projection_version
@@ -3095,7 +3498,7 @@ export class AgentIntegrationRepository {
         const installation = this.db.prepare(`
           SELECT agent_id FROM agent_installations WHERE id = ?
         `).get(input.installationId) as { agent_id: string | null } | undefined
-        if (!installation?.agent_id || input.identityAssertion !== installation.agent_id) {
+        if (!installation?.agent_id || input.identityAssertion !== this.resolveAgentIdentity(input.installationId).canonicalAgentId) {
           throw new Error('verified evidence identity assertion does not match the current Installation')
         }
       }
@@ -3502,7 +3905,28 @@ export class AgentIntegrationRepository {
    * grants maintenance consent and never mutates a host: it only preserves the
    * old identity plus proven Tide Mind-owned fragments in the local Ledger.
    */
+  adoptSharedLegacyInstallations(input: {
+    binding: ConfirmSharedIdentityInput
+    installations: readonly Parameters<AgentIntegrationRepository['adoptLegacyInstallation']>[0][]
+  }): 'adopted' | 'already_adopted' {
+    return this.db.transaction(() => {
+      this.confirmSharedIdentity(input.binding)
+      if (input.installations.length !== 2
+        || new Set(input.installations.map(item => item.installationId)).size !== 2
+        || input.installations.some(item => item.legacyAgentId !== input.binding.canonicalAgentId
+          || !input.binding.members.some(member => member.installationId === item.installationId))) {
+        throw new Error('Shared legacy adoption members changed')
+      }
+      let adopted = false
+      for (const item of input.installations) {
+        if (this.adoptLegacyInstallation({ ...item, sharedBindingId: input.binding.id }) === 'adopted') adopted = true
+      }
+      return adopted ? 'adopted' : 'already_adopted'
+    }).immediate()
+  }
+
   adoptLegacyInstallation(input: {
+    sharedBindingId?: string
     legacyAgentId: string
     legacyToolType: string
     installationId: string
@@ -3545,11 +3969,22 @@ export class AgentIntegrationRepository {
 
       const installation = this.getInstallation(input.installationId)
       if (!installation) throw new Error('legacy adoption target disappeared')
+      const shared = input.sharedBindingId ? this.resolveAgentIdentity(installation.id) : null
+      if (shared && (shared.bindingId !== input.sharedBindingId || shared.canonicalAgentId !== input.legacyAgentId)) {
+        throw new Error('Shared legacy identity binding changed')
+      }
+      if (shared) {
+        const previous = safeJsonObject(safeJsonObject(installation.metadata_json).legacyAdoption)
+        if (previous.sourceAgentId === input.legacyAgentId) {
+          if (previous.evidenceHash !== input.evidenceHash) throw new Error('Shared legacy ownership changed')
+          return 'already_adopted'
+        }
+      }
       const existingAlias = this.db.prepare(`
         SELECT installation_id FROM agent_aliases
         WHERE alias_type = 'legacy_agent_id' AND alias_value = ? AND runtime_realm = ?
       `).get(input.legacyAgentId, installation.runtime_realm) as { installation_id: string } | undefined
-      if (existingAlias) {
+      if (existingAlias && !shared) {
         if (existingAlias.installation_id !== installation.id) {
           throw new Error('legacy Agent is already bound to another Installation')
         }
@@ -3578,9 +4013,9 @@ export class AgentIntegrationRepository {
       const identityOwner = this.db.prepare(`
         SELECT id FROM agent_installations WHERE agent_id = ? AND id != ?
       `).get(input.legacyAgentId, installation.id) as { id: string } | undefined
-      if (identityOwner) throw new Error('legacy Agent identity is already owned')
+      if (identityOwner && !shared) throw new Error('legacy Agent identity is already owned')
 
-      if (installation.agent_id !== null && installation.agent_id !== input.legacyAgentId) {
+      if (!shared && installation.agent_id !== null && installation.agent_id !== input.legacyAgentId) {
         const boundState = this.db.prepare(`
           SELECT
             (SELECT COUNT(*) FROM agent_consents WHERE installation_id = ?) AS consents,
@@ -3607,7 +4042,7 @@ export class AgentIntegrationRepository {
             metadata_json = ?, updated_at = ?
         WHERE id = ? AND desired_state = 'unmanaged' AND tombstoned_at IS NULL
       `).run(
-        input.legacyAgentId,
+        shared ? installation.agent_id : input.legacyAgentId,
         historicalCapability,
         input.adoptedAt,
         json({
@@ -3631,7 +4066,7 @@ export class AgentIntegrationRepository {
         installation.id,
       )
 
-      this.db.prepare(`
+      if (!shared) this.db.prepare(`
         INSERT INTO agent_aliases (
           id, alias_type, alias_value, runtime_realm, canonical_agent_id,
           installation_id, reason, created_at
@@ -3644,7 +4079,7 @@ export class AgentIntegrationRepository {
         installation.id,
         input.adoptedAt,
       )
-      if (previousAgentId && previousAgentId !== input.legacyAgentId) {
+      if (!shared && previousAgentId && previousAgentId !== input.legacyAgentId) {
         this.db.prepare(`
           INSERT OR IGNORE INTO agent_aliases (
             id, alias_type, alias_value, runtime_realm, canonical_agent_id,
@@ -3778,7 +4213,7 @@ export class AgentIntegrationRepository {
         installationId: installation.id,
         kind: 'legacy_connection_adopted',
         severity: 'info',
-        dedupeKey: `${input.legacyAgentId}:legacy-adopted`,
+        dedupeKey: shared ? `${input.legacyAgentId}:legacy-adopted:${installation.id}` : `${input.legacyAgentId}:legacy-adopted`,
         payload: {
           legacyAgentId: input.legacyAgentId,
           legacyToolType: input.legacyToolType,
@@ -3847,11 +4282,14 @@ export class AgentIntegrationRepository {
       detected_version: string | null
     } | undefined
     if (!installation
-      || installation.agent_id !== input.agentId
+      || this.resolveAgentIdentity(input.installationId).canonicalAgentId !== input.agentId
       || installation.host_variant !== input.hostVariant
       || installation.detected_version !== input.hostVersion) {
       throw new Error('Codex hook trust Installation binding changed')
     }
+    // No-write connect stages an active consumer as disabled until full runtime
+    // verification. Native trust may be recorded for that exact current run,
+    // without enabling the consumer or treating a genuinely paused host as active.
     const artifact = this.db.prepare(`
       SELECT artifact.target_path, artifact.owned_fragment_hash, artifact.projection_version
       FROM managed_artifacts artifact
@@ -3860,7 +4298,31 @@ export class AgentIntegrationRepository {
        AND consumer.installation_id = ?
        AND consumer.component_key = 'lifecycle'
        AND consumer.state = 'active'
-       AND consumer.desired_state = 'managed'
+       AND (consumer.desired_state = 'managed' OR (
+         consumer.desired_state = 'disabled' AND EXISTS (
+           SELECT 1 FROM reconcile_runs run
+           JOIN agent_installations current ON current.id=run.installation_id
+           JOIN agent_consents consent ON consent.id=run.consent_envelope_id
+           JOIN installation_components component ON component.installation_id=current.id
+             AND component.component_key='lifecycle' AND component.artifact_id=artifact.id
+           WHERE run.installation_id=consumer.installation_id
+             AND run.operation_type='connect' AND run.state='applied_unverified'
+             AND current.desired_state='managed' AND current.tombstoned_at IS NULL
+             AND component.desired_state='managed' AND component.tombstoned_at IS NULL
+             AND current.consent_envelope_id=consent.id AND consumer.consent_envelope_id=consent.id
+             AND component.consent_envelope_id=consent.id
+             AND consent.status='active' AND consent.installation_id=current.id
+             AND json_extract(run.prepared_plan_json,'$.executionPlanHash')=run.execution_plan_hash
+             AND json_array_length(run.prepared_plan_json,'$.adapterPlan.mutations')=0
+             AND NOT EXISTS (SELECT 1 FROM projection_mutations mutation WHERE mutation.run_id=run.id)
+             AND EXISTS (
+               SELECT 1 FROM json_each(run.prepared_plan_json,'$.inspection.components') observed
+               WHERE json_extract(observed.value,'$.componentKey')='lifecycle'
+                 AND json_extract(observed.value,'$.observedTarget')=artifact.target_path
+                 AND json_extract(observed.value,'$.observedFragmentHash')=artifact.owned_fragment_hash
+             )
+         )
+       ))
        AND consumer.tombstoned_at IS NULL
       WHERE artifact.id = ? AND artifact.state = 'healthy'
     `).get(input.installationId, input.artifactId) as {
@@ -3919,7 +4381,7 @@ export class AgentIntegrationRepository {
       FROM agent_integration_events event
       JOIN agent_installations installation
         ON installation.id = event.installation_id
-       AND installation.agent_id = json_extract(event.payload_json, '$.agentId')
+       AND COALESCE((SELECT b.canonical_agent_id FROM agent_identity_binding_members m JOIN agent_identity_bindings b ON b.id=m.binding_id WHERE m.installation_id=installation.id), installation.agent_id) = json_extract(event.payload_json, '$.agentId')
        AND installation.host_variant = json_extract(event.payload_json, '$.hostVariant')
        AND installation.detected_version = json_extract(event.payload_json, '$.hostVersion')
        AND installation.desired_state = 'managed'
@@ -4517,13 +4979,13 @@ export class AgentIntegrationRepository {
         .get(artifactId) as { state: ArtifactState } | undefined
       const result = this.db.prepare(`
         UPDATE managed_artifacts
-        SET state = 'healthy', missing_episode_id = NULL, paused_reason = NULL,
+        SET state = 'healthy', observed_fragment_hash = owned_fragment_hash, missing_episode_id = NULL, paused_reason = NULL,
             last_verified_at = ?, updated_at = ?
         WHERE id = ? AND state IN ('healthy','missing','needs_recovery','drifted')
       `).run(verifiedAt, verifiedAt, artifactId)
       if (result.changes !== 1) return false
       if (prior?.state === 'healthy') {
-        const revived = this.db.prepare(`
+        this.db.prepare(`
           UPDATE installation_components AS component
           SET verification_status = 'verified', updated_at = ?
           WHERE component.artifact_id = ? AND component.verification_status = 'stale'
@@ -4539,7 +5001,7 @@ export class AgentIntegrationRepository {
                 AND verification.family = installation.family
                 AND verification.host_variant = installation.host_variant
                 AND verification.runtime_realm = installation.runtime_realm
-                AND verification.identity_assertion = installation.agent_id
+                AND verification.identity_assertion = COALESCE((SELECT b.canonical_agent_id FROM agent_identity_binding_members m JOIN agent_identity_bindings b ON b.id=m.binding_id WHERE m.installation_id=installation.id), installation.agent_id)
                 AND (verification.host_version IS installation.detected_version)
                 AND (
                   NOT EXISTS (
@@ -4550,7 +5012,6 @@ export class AgentIntegrationRepository {
                 )
             )
         `).run(verifiedAt, artifactId)
-        if (revived.changes === 0) return true
         const affected = this.db.prepare(`
           SELECT DISTINCT installation_id AS id
           FROM installation_components WHERE artifact_id = ?
@@ -4579,19 +5040,35 @@ export class AgentIntegrationRepository {
               AND status_reason = 'verification_stale'
           `).run(summary, summary, verifiedAt, installation.id)
         }
-      } else if (prior?.state === 'drifted') {
-        this.db.prepare(`
-          UPDATE agent_installations
-          SET status_reason = 'verification_stale', updated_at = ?
-          WHERE id IN (
-            SELECT installation_id FROM artifact_consumers
-            WHERE artifact_id = ? AND state = 'active' AND tombstoned_at IS NULL
-          )
-            AND desired_state = 'managed'
-            AND reconcile_state = 'idle'
-            AND status_reason IN ('conflict','permission')
-        `).run(verifiedAt, artifactId)
       }
+      // Recovery may have replaced drifted with needs_recovery (or an earlier
+      // read-back already set healthy). Clear only artifact-origin attention,
+      // after every active artifact is healthy; identity/user conflicts stay gated.
+      this.db.prepare(`
+        UPDATE agent_installations
+        SET status_reason = 'verification_stale', updated_at = ?
+        WHERE id IN (
+          SELECT installation_id FROM artifact_consumers
+          WHERE artifact_id = ? AND state = 'active' AND tombstoned_at IS NULL
+        )
+          AND desired_state = 'managed' AND health_state = 'discovered' AND tombstoned_at IS NULL
+          AND reconcile_state IN ('idle','needs_recovery','backoff')
+          AND status_reason IN ('conflict','permission')
+          AND (? = 1 OR EXISTS (
+            SELECT 1 FROM agent_integration_events event
+            JOIN installation_components component ON component.artifact_id = event.artifact_id
+            WHERE component.installation_id = agent_installations.id
+              AND component.desired_state = 'managed'
+              AND event.kind IN ('artifact_drifted','artifact_inaccessible')
+          ))
+          AND NOT EXISTS (
+            SELECT 1 FROM installation_components component
+            JOIN managed_artifacts artifact ON artifact.id = component.artifact_id
+            WHERE component.installation_id = agent_installations.id
+              AND component.desired_state = 'managed'
+              AND artifact.state NOT IN ('healthy','removed')
+          )
+      `).run(verifiedAt, artifactId, prior?.state === 'drifted' ? 1 : 0)
       return true
     }).immediate()
   }
@@ -4841,7 +5318,7 @@ function assertCodexTrustHash(value: string, label: string, prefixed = false): v
 function applyTaskFeedRunPriority(run: ApplyTaskRunRow): number {
   if (FEED_RUNNING_RUN_STATES.has(run.state)) return 0
   if (run.state === 'applied_unverified') return 2
-  if (run.state === 'cancelled' && run.failure_code === 'superseded_by_disconnect') return 3
+  if (run.state === 'cancelled' && ['superseded_by_disconnect','superseded_by_confirmed_generation'].includes(run.failure_code ?? '')) return 3
   return run.state === 'committed' ? 3 : 1
 }
 
@@ -4963,4 +5440,23 @@ function isSafeCustomMcpPersistedPlan(operation: string, rawPlan: string): boole
   } catch {
     return false
   }
+}
+
+/** A narrow, hash-bound discriminator; never a generic source-generation bypass. */
+export function codexFourToFivePlanProof(plan: PreparedCoordinatorPlan): CodexRecipeUpgradeProof | null {
+  if(plan.operation!=='connect'||plan.executionPlan.operation!=='connect'||!['codex-cli','codex-desktop'].includes(plan.inspection.catalogId)
+    ||plan.adapterPlan.adapterVersion!=='1+1+2'||!plan.activityGenerationToken
+    ||!plan.executionPlan.sharedIdentityBinding||plan.adapterPlan.diagnostics.length
+    ||sha256Json([...plan.componentKeys].sort())!==sha256Json(['instruction','lifecycle','memory_tools']))return null
+  const lifecycle=plan.adapterPlan.mutations.filter(mutation=>mutation.componentKey==='lifecycle')
+  if(lifecycle.length!==1 || plan.adapterPlan.mutations.some(mutation=>
+    !['memory_tools','lifecycle'].includes(mutation.componentKey)||mutation.operation!=='update'||mutation.ownershipTransferFrom
+    ||mutation.domainKind!=='file_fragment'||!mutation.idempotent||mutation.additionalFenceTargets?.length))return null
+  const mutation=lifecycle[0]
+  const proof=mutation.metadata?.codexRecipeUpgrade as unknown as CodexRecipeUpgradeProof|undefined
+  if(!proof||proof.kind!=='codex_lifecycle_4_to_5'||proof.oldGenerationToken===plan.activityGenerationToken
+    ||proof.oldFragmentHash!==sha256Json(proof.oldFragment)||mutation.preconditionHash!==proof.oldFragmentHash
+    ||mutation.desiredFragmentHash!==sha256Json(mutation.metadata?.desiredFragment)
+    ||!isExactCodexFourToFiveRecipeUpgrade(proof.oldFragment,mutation.metadata?.desiredFragment,proof.oldGenerationToken,plan.activityGenerationToken))return null
+  return proof
 }

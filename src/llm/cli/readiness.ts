@@ -31,9 +31,9 @@ type ProbeExec = (
   signal?: AbortSignal,
 ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 
-const defaultExec: ProbeExec = (executable, args, env, signal) =>
-  new Promise(resolve => {
-    execFile(
+export const executeCliCapabilityProbe: ProbeExec = (executable, args, env, signal) =>
+  new Promise((resolve, reject) => {
+    const child = execFile(
       executable,
       [...args],
       {
@@ -45,6 +45,24 @@ const defaultExec: ProbeExec = (executable, args, env, signal) =>
         signal,
       },
       (error, stdout, stderr) => {
+        if (signal?.aborted) {
+          reject(new CliLLMError('aborted', 'CLI capability probe was cancelled', { cause: error }));
+          return;
+        }
+        if (error?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+          reject(new CliLLMError('output_limit', 'CLI capability probe exceeded its output limit', { cause: error }));
+          return;
+        }
+        // execFile can destroy buffered stdio on timeout yet report code 0 and
+        // error=null when the event loop resumes after the child already exited.
+        // Such output is not capability evidence, even if the callback looks successful.
+        if (child.killed) {
+          reject(new CliLLMError('timeout', 'CLI capability probe timed out', {
+            retryable: true,
+            cause: error,
+          }));
+          return;
+        }
         resolve({
           stdout,
           stderr,
@@ -164,7 +182,7 @@ export async function checkCliEnvironment(
     throw error;
   }
   throwIfAborted();
-  const exec = options.exec ?? defaultExec;
+  const exec = options.exec ?? executeCliCapabilityProbe;
   const env = sanitizeCliEnvironment(sourceEnv, resolved.path, resolved.controlledPath);
   let capabilityFingerprint: string;
   let codexContract: CodexExecutionContract | undefined;
@@ -202,7 +220,9 @@ export async function checkCliEnvironment(
       version: resolved.version,
       execHelp: `${execHelp.stdout}\n${execHelp.stderr}`,
       promptInputHelp: `${promptHelp.stdout}\n${promptHelp.stderr}`,
-      featuresList: `${features.stdout}\n${features.stderr}`,
+      // Feature rows are structured stdout; stderr may contain legitimate diagnostics.
+      // Keep the table grammar strict rather than treating warnings as feature data.
+      featuresList: features.stdout,
     };
     const { disableFeatures } = planCodexContract(evidence);
     // Read back the effective feature state with exactly the inference disables and
@@ -222,7 +242,7 @@ export async function checkCliEnvironment(
     codexContract = verifyCodexContract(
       evidence,
       disableFeatures,
-      `${effective.stdout}\n${effective.stderr}`,
+      effective.stdout,
     );
     if (!options.dataDir) throw new CliLLMError('unsupported_version', 'Codex execution isolation requires a private runtime directory');
     codexToolCatalogJson = await (options.prepareCodexCatalog ?? prepareCodexToolCatalog)({

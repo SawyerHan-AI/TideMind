@@ -24,7 +24,9 @@ def main():
  try:
   tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
   version=int(db.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()[0])
-  if version<1 or version>=35:raise ValueError('corpus preparation is limited to the actual old schema, never the candidate DB')
+  # Verified 0.2.93 input uses schema 35; candidate 0.2.94 uses 45.
+  # Keep unknown/newer schemas excluded rather than following the candidate ceiling.
+  if version<1 or version>35:raise ValueError('corpus preparation is limited to the actual old schema, never the candidate DB')
   if a.agent_id and not db.execute('SELECT id FROM agents WHERE id=? AND archived=0',(a.agent_id,)).fetchone():raise ValueError('Agent ID must be actually created by the old App')
   protected=lambda:{t:hash_value(db.execute('SELECT * FROM '+t+' ORDER BY rowid').fetchall()) for t in PROTECTED if t in tables}
   before=protected();timestamp=datetime.now(timezone.utc).isoformat();node_id='synthetic_upgrade_'+hashlib.sha256((str(w)+(a.agent_id or '')).encode()).hexdigest()[:24]

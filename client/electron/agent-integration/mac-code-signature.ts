@@ -12,6 +12,51 @@ export type CodesignSyncRunner = (
   timeoutMs: number,
 ) => { stdout: string; stderr: string }
 
+export const DESKTOP_SIGNATURE_VERIFY_TIMEOUT_MS = 60_000
+
+/** A denied check that could not finish, not evidence of changed source bytes. */
+export class DesktopSourceVerificationUnavailable extends Error {
+  readonly code = 'DESKTOP_SOURCE_CHECK_UNAVAILABLE'
+  constructor(readonly reason: 'timeout' | 'terminated' | 'unavailable') {
+    super(`Desktop source verification is temporarily unavailable; check again later (${reason})`)
+    this.name = 'DesktopSourceVerificationUnavailable'
+  }
+}
+
+export function desktopSourceVerificationUnavailable(error: unknown): DesktopSourceVerificationUnavailable | null {
+  if(error instanceof DesktopSourceVerificationUnavailable)return error
+  const value=error as {name?:unknown;code?:unknown;killed?:unknown;signal?:unknown}|null
+  if(value?.name==='DiscoveryTimeoutError'||value?.code==='ETIMEDOUT')return new DesktopSourceVerificationUnavailable('timeout')
+  if(value?.killed===true||typeof value?.signal==='string')return new DesktopSourceVerificationUnavailable('terminated')
+  if(['EACCES','EPERM','EBUSY','EAGAIN','EMFILE','ENFILE','ENOBUFS','ERR_CHILD_PROCESS_STDIO_MAXBUFFER'].includes(String(value?.code)))return new DesktopSourceVerificationUnavailable('unavailable')
+  return null
+}
+
+/** Desktop only: one verified snapshot, not a final synchronous resource boundary. */
+export async function inspectMacDesktopSignatureSnapshot(
+  appBundleRealpath: string,
+  options: { readTimeoutMs: number },
+  codesign: CodesignRunner = runCodesign,
+): Promise<AppCodeSignatureResult> {
+  try {
+    const before=await readMacAppSignatureReceipt(appBundleRealpath,options.readTimeoutMs,codesign)
+    await codesign(['--verify','--deep','--strict',appBundleRealpath],DESKTOP_SIGNATURE_VERIFY_TIMEOUT_MS)
+    const after=await readMacAppSignatureReceipt(appBundleRealpath,options.readTimeoutMs,codesign)
+    if(before.identifier!==after.identifier||before.teamIdentifier!==after.teamIdentifier
+      ||desktopSignatureReceiptFingerprint(before)!==desktopSignatureReceiptFingerprint(after)) {
+      throw new Error('desktop_signature_receipt_changed_during_verification')
+    }
+    return {valid:true,...after,verificationBoundary:'desktop_snapshot'}
+  }catch(error){
+    const unavailable=desktopSourceVerificationUnavailable(error)
+    if(unavailable)throw unavailable
+    // ENOENT here is failure to execute the platform verifier, not a missing
+    // bundle: codesign reports an absent target with its ordinary exit status.
+    if((error as {code?:unknown}|null)?.code==='ENOENT')throw new DesktopSourceVerificationUnavailable('unavailable')
+    throw error
+  }
+}
+
 export async function inspectMacAppSignature(
   appBundleRealpath: string,
   options: { timeoutMs: number; beforeFinalVerification?: () => Promise<void> },

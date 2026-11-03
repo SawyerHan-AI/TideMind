@@ -1,3 +1,4 @@
+import { inspectCodexLegacySelection } from './codex-legacy-selection.js'
 import fs from 'node:fs/promises'
 import fsSync from 'node:fs'
 import { constants as fsConstants, type BigIntStats, type Dir, type Dirent } from 'node:fs'
@@ -32,6 +33,7 @@ import {
   inspectStableDesktopBundleSurface,
   MAX_CLI_EXECUTABLE_PROOF_BYTES,
   signedCodePortableArtifactFingerprint,
+  desktopSnapshotPortableArtifactFingerprint,
   signedKimiPortableArtifactFingerprint,
   type DiscoveryDependencies,
   type PackageMetadataProofNode,
@@ -57,6 +59,8 @@ import {
   desktopSignatureReceiptFingerprint,
   inspectMacAppSignature,
   inspectMacAppSignatureSync,
+  inspectMacDesktopSignatureSnapshot,
+  desktopSourceVerificationUnavailable,
 } from './mac-code-signature.js'
 export { inspectMacAppSignature, inspectMacAppSignatureSync } from './mac-code-signature.js'
 import { parseJsoncObject } from './jsonc-document.js'
@@ -368,7 +372,9 @@ export function createProductionAgentIntegrationComposition(
       && frozenSurface !== null
       && frozenSurface === persistedProjectionSurfaceFingerprint(current)
       && current.install_key === installation.identity.installKey
-      && current.agent_id === installation.agentId
+      && (current.agent_id === (installation.installationAgentId ?? installation.agentId)
+        && repository.coordinatorAgentIdentity(current.id).agentId === installation.agentId
+        && repository.coordinatorAgentIdentity(current.id).sharedIdentityBinding === installation.sharedIdentityBinding)
       && current.host_variant === installation.identity.hostVariant
       && current.runtime_realm === installation.identity.runtimeRealm
       && currentReleaseReason(current) === null
@@ -408,7 +414,9 @@ export function createProductionAgentIntegrationComposition(
       && expectedSurface
       && expectedSurface === persistedProjectionSurfaceFingerprint(current)
       && current.install_key === installation.identity.installKey
-      && current.agent_id === installation.agentId
+      && (current.agent_id === (installation.installationAgentId ?? installation.agentId)
+        && repository.coordinatorAgentIdentity(current.id).agentId === installation.agentId
+        && repository.coordinatorAgentIdentity(current.id).sharedIdentityBinding === installation.sharedIdentityBinding)
       && current.host_variant === installation.identity.hostVariant
       && current.runtime_realm === installation.identity.runtimeRealm
       && current.host_variant !== 'claude-desktop-legacy'
@@ -578,6 +586,7 @@ export function createProductionAgentIntegrationComposition(
   }
   const service = new AgentIntegrationService({
     repository,
+    inspectCodexLegacySelection:(installationId,selectedAgentId)=>inspectCodexLegacySelection({repository,adapters:allAdapters,runtime:runtimeContext,installationId,selectedAgentId,now:clock.now().toISOString()}),
     scanner,
     execution: lazyExecutionPort,
     beforeScan: () => runtime.markScanStarted(),
@@ -637,7 +646,7 @@ export function createProductionAgentIntegrationComposition(
     attestInstallation: async (row, expectedProof) => Boolean(
       await attestCurrentRow(row, expectedProof),
     ),
-    verifyCodexHookTrust: options.codexHookTrustVerifier ?? (async ({ installation, hostVersion, action }) => (
+    verifyCodexHookTrust: options.codexHookTrustVerifier ?? (async ({ installation, hostVersion, action, activityGenerationToken }) => (
       verifyCodexHookTrustAction({
         runtime: runtimeContext,
         installation: installation.identity,
@@ -646,6 +655,7 @@ export function createProductionAgentIntegrationComposition(
         agentId: installation.agentId,
         operationId: ids.next('operation'),
         codexHookTrustEvidence: repository,
+        activityGenerationToken,
       }, action)
     )),
     afterCodexHookTrust: () => runtime.runMaintenance(),
@@ -1011,7 +1021,7 @@ export function createProductionLiveTrustAttestor(
     const bundleIds = TRUSTED_APP_BUNDLE_IDS[row.host_variant as CatalogId]
     if (bundleIds) {
       if (!row.app_path || !executable || !provenance
-        || !dependencies.inspectAppSignature || !dependencies.finalVerifyAppSignatureSync) return null
+        || !dependencies.inspectDesktopSignatureSnapshot) return null
       const appPath = path.resolve(row.app_path)
       try {
         const executablePath = path.resolve(executable)
@@ -1027,23 +1037,8 @@ export function createProductionLiveTrustAttestor(
           ? await dependencies.fs.readStableFileFingerprint(executablePath, MAX_CLI_EXECUTABLE_PROOF_BYTES)
           : undefined
         const physicalSurfaceBefore = stableDesktopSurfaceIdentityProofSync(appPath, executablePath)
-        const signature = await dependencies.inspectAppSignature(appPath, {
-          timeoutMs: LIVE_TRUST_PROOF_TIMEOUT_MS,
-          beforeFinalVerification: async () => {
-            const surfaceAfter = await inspectStableDesktopBundleSurface(dependencies, appPath, LIVE_TRUST_PROOF_TIMEOUT_MS)
-            const appAfter = await stableCanonicalNodeProof(appPath, 'directory')
-            const executableAfter = await stableDesktopExecutableProof(executablePath)
-            const portableExecutableDuring = portableExecutableBefore && dependencies.fs.readStableFileFingerprint
-              ? await dependencies.fs.readStableFileFingerprint(executablePath, MAX_CLI_EXECUTABLE_PROOF_BYTES)
-              : undefined
-            if (surfaceAfter.fingerprint !== surfaceBefore.fingerprint
-              || surfaceAfter.executableRealpath !== executablePath
-              || appAfter !== appBefore || executableAfter !== executableBefore
-              || (portableExecutableBefore
-                && portableExecutableDuring?.fingerprint !== portableExecutableBefore.fingerprint)) {
-              throw new Error('desktop_trust_physical_identity_changed_during_signature')
-            }
-          },
+        const signature = await dependencies.inspectDesktopSignatureSnapshot(appPath, {
+          readTimeoutMs: LIVE_TRUST_PROOF_TIMEOUT_MS,
         })
         const surfaceFinal = await inspectStableDesktopBundleSurface(dependencies, appPath, LIVE_TRUST_PROOF_TIMEOUT_MS)
         const appFinal = await stableCanonicalNodeProof(appPath, 'directory')
@@ -1056,31 +1051,21 @@ export function createProductionLiveTrustAttestor(
           || appFinal !== appBefore || executableFinal !== executableBefore
           || (portableExecutableBefore
             && portableExecutableFinal?.fingerprint !== portableExecutableBefore.fingerprint)) return null
-        // The earlier awaited receipt binds publisher identity. This final
-        // production-owned recursive verifier is synchronous so queued work
-        // cannot mutate sealed resources before the following surface CAS.
-        const finalSignature = dependencies.finalVerifyAppSignatureSync(appPath, LIVE_TRUST_PROOF_TIMEOUT_MS)
-        // No await is permitted after the platform's final recursive
-        // attestation. This CAS binds the path now present to the
-        // exact App/Info.plist/CFBundleExecutable generation frozen above.
+        // Bind the observable installation snapshot after async verification.
+        // This does not claim an uninterruptible strict-final resource window.
         const physicalSurfaceFinal = stableDesktopSurfaceIdentityProofSync(appPath, executablePath)
         if (physicalSurfaceFinal !== physicalSurfaceBefore) return null
-        if (!signature.valid || signature.verificationBoundary !== 'strict_final'
-          || !signature.identifier || !signature.teamIdentifier
-          || !finalSignature.valid || finalSignature.verificationBoundary !== 'strict_final'
-          || finalSignature.identifier !== signature.identifier
-          || finalSignature.teamIdentifier !== signature.teamIdentifier) return null
+        if (!signature.valid || signature.verificationBoundary !== 'desktop_snapshot'
+          || !signature.identifier || !signature.teamIdentifier) return null
         const liveProvenance = `signed_app:${signature.identifier}:${signature.teamIdentifier}`
         if (liveProvenance !== provenance || !bundleIds.includes(signature.identifier)) return null
         const signatureReceiptFingerprint = desktopSignatureReceiptFingerprint(signature)
-        const finalSignatureReceiptFingerprint = desktopSignatureReceiptFingerprint(finalSignature)
-        const livePortableArtifactFingerprint = signedCodePortableArtifactFingerprint({
+        const livePortableArtifactFingerprint = desktopSnapshotPortableArtifactFingerprint({
           version: row.detected_version ?? undefined,
           executable: portableExecutableFinal,
-          signature: finalSignature,
+          signature,
         })
         if (!signatureReceiptFingerprint
-          || finalSignatureReceiptFingerprint !== signatureReceiptFingerprint
           || (distribution.portableArtifactFingerprint !== undefined
             && livePortableArtifactFingerprint !== distribution.portableArtifactFingerprint)) return null
         return sha256Json({
@@ -1094,7 +1079,9 @@ export function createProductionLiveTrustAttestor(
           teamIdentifier: signature.teamIdentifier,
           signatureReceiptFingerprint,
         })
-      } catch {
+      } catch (error) {
+        const unavailable=desktopSourceVerificationUnavailable(error)
+        if(unavailable)throw unavailable
         return null
       }
     }
@@ -1991,6 +1978,10 @@ export class ProductionAgentIntegrationRuntime {
     // replaces the Installation identity or removes its trusted provenance.
     // Do not let that stale observation mutate health, episodes, events or plans.
     if (!await this.dependencies.canManageInstallation(candidate.installation)) return
+    // Trust alone does not bind the Artifact baseline. A confirmed plan can
+    // replace owned bytes/consent/consumers while inspect awaits host I/O.
+    // Discard every stale outcome before health, missing episodes or events.
+    if (!this.dependencies.coordinatorRepository.isManagedReconcileCandidateCurrent(candidate)) return
     const observation = observationFor(candidate, inspection)
     if (observation.kind === 'exact_missing') {
       // Auto-restore rewrites a possibly shared artifact. It must satisfy the same
@@ -2192,7 +2183,16 @@ function observationFor(
   candidate: ManagedReconcileCandidate,
   inspection: AdapterInspection,
 ): ManagedArtifactObservation {
-  const component = inspection.components.find(item => item.componentKey === candidate.componentKey)
+  const scopedComponents = inspection.components.filter(item => candidate.componentKeys?.includes(item.componentKey))
+  const aggregateScope = (candidate.componentKeys?.length ?? 1) > 1
+    && scopedComponents.length === candidate.componentKeys.length
+    && scopedComponents.every(item => Array.isArray(item.details?.aggregateComponentKeys)
+      && JSON.stringify([...item.details.aggregateComponentKeys].sort()) === JSON.stringify([...candidate.componentKeys].sort())
+      && item.observedTarget === scopedComponents[0].observedTarget)
+  // One physical JSON Artifact owns both selectors. A surviving selector still
+  // observes that aggregate when its sibling was removed.
+  const component = (aggregateScope ? scopedComponents.find(item => item.observedFragmentHash !== undefined) : undefined)
+    ?? inspection.components.find(item => item.componentKey === candidate.componentKey)
   const relevantDiagnostics = inspection.diagnostics.filter(diagnostic => (
     diagnostic !== 'qwenwork_connector_registry_not_readable_guided_only'
   ))
@@ -2205,6 +2205,19 @@ function observationFor(
       selectorEmpty: false,
       ownershipBaselineVerified: false,
       containerResolvable: false,
+      observedFingerprint: component?.observedFragmentHash ?? null,
+      diagnostics: inspection.diagnostics,
+    }
+  }
+  // Activation is separate from the owned fragment hash (host switches/policy
+  // are user-owned). Equal bytes must not hide an explicitly inactive host.
+  if (aggregateScope && scopedComponents.some(item => item.details?.activation === 'explicitly_disabled'
+    || (item.details?.activation === 'missing' && scopedComponents.some(part => part.observedFragmentHash !== undefined)))) {
+    return {
+      kind: 'conflicted',
+      selectorEmpty: false,
+      ownershipBaselineVerified: false,
+      containerResolvable: true,
       observedFingerprint: component?.observedFragmentHash ?? null,
       diagnostics: inspection.diagnostics,
     }
@@ -2485,6 +2498,7 @@ function productionDiscoveryDependencies(homeDir: string): DiscoveryDependencies
       readStablePackageTree,
       verifyStablePackageTree,
     }),
+    inspectDesktopSignatureSnapshot: inspectMacDesktopSignatureSnapshot,
     inspectAppSignature: inspectMacAppSignature,
     finalVerifyAppSignatureSync: inspectMacAppSignatureSync,
     inspectExecutableArchitecture: async executableRealpath => {

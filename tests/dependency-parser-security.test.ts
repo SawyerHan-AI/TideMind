@@ -29,7 +29,8 @@ describe('dependency parser security regressions', () => {
       for (const input of ['a=[1 #', 'a={b=1 #']) {
         assert.throws(() => parse(input), TomlError)
       }
-      assert.deepEqual(parse('a=[1] # trailing comment'), { a: [1] })
+      // Parser 1.9 uses null-prototype tables; this regression checks syntax and values.
+      assert.deepEqual({ ...parse('a=[1] # trailing comment') }, { a: [1] })
       console.log('ok')
     `)
   }, 10_000)

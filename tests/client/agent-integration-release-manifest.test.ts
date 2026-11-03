@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import released093 from '../fixtures/agent-integration/released-0.2.93-capabilities.json'
 import { describe, expect, it } from 'vitest'
 import { CODEX_REQUIRED_EXEC_HELP } from '../../src/llm/cli/catalogs'
 import { planCodexContract } from '../../src/llm/cli/gate-codex'
@@ -56,7 +57,23 @@ function releasedAdapterSurface(): ReadonlyMap<CatalogId, AgentHostAdapter> {
     } as AgentHostAdapter]))
 }
 
-describe('0.2.93 Agent release manifest', () => {
+describe('0.2.94 Agent release manifest', () => {
+  it('preserves the published 0.2.93 Agent and Custom capability commitments', () => {
+    // Frozen from the actually published private source, not today's discovery
+    // list. Distribution versions/hashes may evolve without shrinking features.
+    expect(released093.sourceCommit).toBe('a1cfe523439f29917d68fcaa60b785854646ac0f')
+    expect(AGENT_INTEGRATION_RELEASE_ENTRIES.map(entry => entry.catalogId).sort())
+      .toEqual(released093.entries.map(entry => entry.catalogId).sort())
+    for (const expected of released093.entries) {
+      expect(AGENT_INTEGRATION_RELEASE_ENTRIES.find(entry => entry.catalogId === expected.catalogId))
+        .toMatchObject(expected)
+    }
+    expect(AGENT_INTEGRATION_RELEASE_MANIFEST.features.customLocalAgent).toEqual({
+      enabledByDefault: released093.customEnabled,
+      modes: released093.customModes,
+    })
+  })
+
   it.each([
     ['opencode-v1-cli', false],
     ['opencode-v2-beta-cli', true],
@@ -81,10 +98,10 @@ describe('0.2.93 Agent release manifest', () => {
         ? [probe.detectOnlyFallbackCatalogId]
         : []),
     ])
-    expect(AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION).toBe('0.2.93')
+    expect(AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION).toBe('0.2.94')
     expect(AGENT_INTEGRATION_RELEASE_MANIFEST).toMatchObject({
       schemaVersion: 4,
-      appVersion: '0.2.93',
+      appVersion: '0.2.94',
       features: {
         customLocalAgent: {
           enabledByDefault: true,
@@ -147,15 +164,15 @@ describe('0.2.93 Agent release manifest', () => {
       ['claude-code-cli', ['2.1.261']],
       ['claude-code-native', ['2.1.261']],
       ['claude-desktop-legacy', ['1.46388.3']],
-      ['codex-cli', ['0.153.4']],
-      ['codex-desktop', ['26.901.41600']],
+      ['codex-cli', ['0.153.4', '0.157.1']],
+      ['codex-desktop', ['26.901.41600', '26.1027.30824']],
       ['cursor-desktop', ['3.19.7']],
       ['windsurf-desktop', ['3.8.20']],
       ['gemini-cli', ['0.58.0']],
       ['kimi-code-cli', ['0.41.0']],
-      ['kimi-code-native', ['0.41.0']],
+      ['kimi-code-native', ['0.41.0', '2.0.0']],
       ['openclaw-local', ['2026.9.1']],
-      ['qwen-code-cli', ['0.23.0']],
+      ['qwen-code-cli', ['0.21.13', '0.23.0', '0.26.1']],
       ['zcode-desktop', ['3.11.2']],
       ['opencode-v1-cli', ['1.18.29']],
       ['opencode-v2-beta-cli', ['0.0.0-beta-19157']],
@@ -176,7 +193,7 @@ describe('0.2.93 Agent release manifest', () => {
     const codex = AGENT_INTEGRATION_RELEASE_ENTRIES.find(entry => entry.catalogId === 'codex-cli')
 
     expect(codex).toBeDefined()
-    expect(codex?.observedExactVersions).toEqual(['0.153.4'])
+    expect(codex?.observedExactVersions).toEqual(['0.153.4', '0.157.1'])
     for (const version of [
       ...(codex?.observedExactVersions ?? []),
       ...(codex?.releaseAcceptedExactVersions ?? []),
@@ -400,6 +417,27 @@ describe('0.2.93 Agent release manifest', () => {
         npmPackage: { integrity: 'sha512-YQ==', ownedPackageSha256: 'e'.repeat(64), ownedEntryCount: 1, ownedTotalBytes: 1, proofNodes: [] },
       }],
     })).toBeNull()
+  })
+
+  it('retains historical Kimi native receipts and resolves captured 2.0.0 binaries on their exact architectures', () => {
+    const entry = AGENT_INTEGRATION_RELEASE_ENTRIES.find(value => value.catalogId === 'kimi-code-native')!
+    expect(entry.releaseAcceptedExactVersions).toEqual(['0.41.0', '2.0.0'])
+    for (const architecture of ['arm64', 'x64'] as const) {
+      expect(entry.acceptedDistributionArtifacts.some(receipt => receipt.version === '0.41.0' && receipt.architecture === architecture)).toBe(true)
+      const receipt = entry.acceptedDistributionArtifacts.find(value => value.version === '2.0.0' && value.architecture === architecture)!
+      expect(receipt.executableSha256).toBe(architecture === 'arm64'
+        ? '3f13b6b47e10ed2c862e244c0d4b892d5a0fff4e1c5fbf8b7c7d22656e052899'
+        : 'fb75c8abd56ec66e1652c1876cdf310f5ef8e58e8fe1d9931fef994a63566552')
+      const lookupFingerprint = kimiNativeReceiptLookupFingerprint({
+        architecture, executableSha256: receipt.executableSha256,
+        executableSizeBytes: receipt.executableSizeBytes,
+        identifier: receipt.signedCode!.identifier, teamIdentifier: receipt.signedCode!.teamIdentifier,
+        cdHash: receipt.signedCode!.cdhash, designatedRequirement: receipt.signedCode!.designatedRequirement,
+      })
+      expect(resolveAcceptedKimiNativeReceipt({ architecture, lookupFingerprint }, entry))
+        .toMatchObject({ version: '2.0.0', portableArtifactFingerprint: receipt.portableArtifactFingerprint })
+      expect(resolveAcceptedKimiNativeReceipt({ architecture, lookupFingerprint: '0'.repeat(64) }, entry)).toBeNull()
+    }
   })
 
   it('resolves Kimi version only from one internally consistent frozen signed receipt', () => {

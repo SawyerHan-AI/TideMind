@@ -1,3 +1,4 @@
+import { DESKTOP_SIGNATURE_VERIFY_TIMEOUT_MS, DesktopSourceVerificationUnavailable, desktopSourceVerificationUnavailable } from './mac-code-signature.js'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { getCatalogVariant } from './catalog'
@@ -235,8 +236,8 @@ export interface AppCodeSignatureResult {
   cdHash?: string
   /** Exact designated requirement emitted by the platform verifier. */
   designatedRequirement?: string
-  /** Proof that strict verification was the final platform operation. */
-  verificationBoundary?: 'strict_final'
+  /** Distinguish a verified Desktop snapshot from the unchanged strict CLI boundary. */
+  verificationBoundary?: 'strict_final' | 'desktop_snapshot'
 }
 
 export interface AppCodeSignatureOptions {
@@ -283,17 +284,27 @@ const SIGNED_ARTIFACT_VERSION = /^(\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?)$/u
  * inode/time metadata and user ownership remain local CAS inputs and are
  * intentionally excluded from the release-frozen digest.
  */
-export function signedCodePortableArtifactFingerprint(input: {
+type SignedCodePortableInput = {
   version: string | undefined
   executable: StableFileFingerprint | undefined
   signature: AppCodeSignatureResult
-}): string | undefined {
+}
+
+export function signedCodePortableArtifactFingerprint(input: SignedCodePortableInput): string | undefined {
+  return signedCodePortableFingerprint(input,'strict_final')
+}
+
+export function desktopSnapshotPortableArtifactFingerprint(input: SignedCodePortableInput): string | undefined {
+  return signedCodePortableFingerprint(input,'desktop_snapshot')
+}
+
+function signedCodePortableFingerprint(input: SignedCodePortableInput, boundary: 'strict_final' | 'desktop_snapshot'): string | undefined {
   const cdHash = input.signature.cdHash?.trim().toLowerCase()
   const designatedRequirement = input.signature.designatedRequirement?.trim()
   if (!input.version || !SIGNED_ARTIFACT_VERSION.test(input.version)
     || !input.executable?.executable
     || !input.signature.valid
-    || input.signature.verificationBoundary !== 'strict_final'
+    || input.signature.verificationBoundary !== boundary
     || !input.signature.identifier || !input.signature.teamIdentifier
     || !cdHash || !/^[a-f0-9]{20,128}$/u.test(cdHash)
     || !designatedRequirement || designatedRequirement.length > 8 * 1024) return undefined
@@ -327,6 +338,11 @@ export interface DiscoveryDependencies {
     args: readonly string[],
     options: { timeoutMs: number },
   ): Promise<VersionCommandResult>
+  /** Desktop snapshot path only; signed CLI keeps inspectAppSignature unchanged. */
+  inspectDesktopSignatureSnapshot?(
+    appBundleRealpath: string,
+    options: { readTimeoutMs: number },
+  ): Promise<AppCodeSignatureResult>
   /** Verifies a canonical app bundle with the platform code-signing service. */
   inspectAppSignature?(
     appBundleRealpath: string,
@@ -914,6 +930,7 @@ function evidenceProvenance(evidence: readonly DiscoveryEvidence[]): readonly st
 
 function stableErrorCode(error: unknown): string {
   if (error instanceof Error && error.name === 'DiscoveryTimeoutError') return 'timeout'
+  if(error instanceof DesktopSourceVerificationUnavailable)return error.reason
   const code = (error as { code?: unknown } | null)?.code
   return typeof code === 'string' && /^[A-Z0-9_]+$/u.test(code) ? code : 'unavailable'
 }
@@ -1892,7 +1909,8 @@ async function discoverApp(
     try {
       bundleSurface = await inspectStableDesktopBundleSurface(dependencies, app.realpath, timeoutMs)
     } catch (error) {
-      const errorCode = error instanceof Error ? error.message : stableErrorCode(error)
+      const unavailable=desktopSourceVerificationUnavailable(error)
+      const errorCode = unavailable ? unavailable.reason : error instanceof Error ? error.message : stableErrorCode(error)
       result.diagnostics.push(`${definition.catalogId}:bundle_surface:${errorCode}`)
       result.unresolved.push({
         catalogIds: [definition.catalogId],
@@ -1919,7 +1937,7 @@ async function discoverApp(
     let signingTeamIdentifier: string | undefined
     let signedPortableArtifactFingerprint: string | undefined
     if (definition.requiredSigningTeamIds && definition.requiredSigningTeamIds.length > 0) {
-      if (!dependencies.inspectAppSignature) {
+      if (!dependencies.inspectDesktopSignatureSnapshot) {
         result.unresolved.push({
           catalogIds: [definition.catalogId],
           reason: 'distribution_identity_unproven',
@@ -1944,32 +1962,9 @@ async function discoverApp(
             )
           : undefined
         signature = await scheduleProof(() => withTimeout(
-          dependencies.inspectAppSignature!(app.realpath, {
-            timeoutMs: signatureTimeoutMs,
-            beforeFinalVerification: async () => {
-              const currentSurface = await inspectStableDesktopBundleSurface(
-                dependencies,
-                app.realpath,
-                timeoutMs,
-              )
-              if (currentSurface.fingerprint !== bundleSurface.fingerprint) {
-                throw new Error('desktop_bundle_surface_changed_during_signature')
-              }
-              if (executableArtifactBefore && dependencies.fs.readStableFileFingerprint) {
-                const currentExecutable = await withTimeout(
-                  dependencies.fs.readStableFileFingerprint(
-                    bundleSurface.executableRealpath,
-                    MAX_CLI_EXECUTABLE_PROOF_BYTES,
-                  ),
-                  signatureTimeoutMs,
-                )
-                if (currentExecutable.fingerprint !== executableArtifactBefore.fingerprint) {
-                  throw new Error('desktop_bundle_executable_changed_during_signature')
-                }
-              }
-            },
-          }),
-          Math.min(60_000, 3 * signatureTimeoutMs),
+          dependencies.inspectDesktopSignatureSnapshot!(app.realpath, {readTimeoutMs:signatureTimeoutMs}),
+          // 60s belongs to the one deep verify, not to the entire receipt chain.
+          DESKTOP_SIGNATURE_VERIFY_TIMEOUT_MS + 4 * signatureTimeoutMs,
         ))
       } catch (error) {
         const surfaceChanged = error instanceof Error
@@ -2010,18 +2005,21 @@ async function discoverApp(
           && executableArtifactAfter?.fingerprint !== executableArtifactBefore.fingerprint) {
           throw new Error('desktop_bundle_executable_changed_after_signature')
         }
-        signedPortableArtifactFingerprint = signedCodePortableArtifactFingerprint({
+        signedPortableArtifactFingerprint = desktopSnapshotPortableArtifactFingerprint({
           version: bundleSurface.version,
           executable: executableArtifactAfter,
           signature,
         })
       } catch (error) {
-        const errorCode = error instanceof Error ? error.message : stableErrorCode(error)
+        const unavailable=desktopSourceVerificationUnavailable(error)
+        const errorCode = unavailable ? unavailable.reason : error instanceof Error ? error.message : stableErrorCode(error)
         result.diagnostics.push(`${definition.catalogId}:bundle_surface_post_signature:${errorCode}`)
         result.unresolved.push({
           catalogIds: [definition.catalogId],
           reason: 'surface_identity_unproven',
-          summary: `${path.posix.basename(app.requestedPath)} changed while Tide Mind verified its signed main executable.`,
+          summary: unavailable
+            ? `${path.posix.basename(app.requestedPath)} source verification is temporarily unavailable; check again later.`
+            : `${path.posix.basename(app.requestedPath)} changed while Tide Mind verified its signed main executable.`,
           evidence: stableEvidence([
             { kind: 'app_bundle', source: app.requestedPath, value: app.realpath },
             { kind: 'bundle_id', source: 'Info.plist', value: bundleSurface.bundleId },
@@ -2030,7 +2028,7 @@ async function discoverApp(
         continue
       }
       signingTeamIdentifier = signature.teamIdentifier
-      if (!signature.valid
+      if (!signature.valid || signature.verificationBoundary !== 'desktop_snapshot'
         || signature.identifier !== bundleSurface.bundleId
         || !signingTeamIdentifier
         || !definition.requiredSigningTeamIds.includes(signingTeamIdentifier)) {

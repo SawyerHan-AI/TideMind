@@ -448,6 +448,10 @@ export interface CodexHookTrustEvidenceReader {
 }
 
 export interface AdapterOperationContext {
+  codexLegacySelection?: import('./codex-legacy-selection').CodexLegacySelection
+
+  /** Shared carrier identity; a static file cannot assert the consuming surface. */
+  sharedIdentityBinding?: string
   runtime: AdapterRuntimeContext
   installation: InstallationIdentity
   /** Durable Installation row bound by the coordinator; required for Codex trust receipts. */

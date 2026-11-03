@@ -1148,7 +1148,7 @@ describe('official Agent distribution receipt capture', () => {
     }, kimiDependencies)).rejects.toThrow(/kimi_github_release_asset_mismatch|kimi_release_manifest_binary_mismatch/u)
   })
 
-  it('generates the Qwen standalone receipt from an isolated relocatable prefix', async () => {
+  it.each(['0.21.13', '0.23.0'])('generates the Qwen %s standalone receipt from an isolated relocatable prefix', async version => {
     const root = tempRoot()
     const payload = path.join(root, 'source', 'payload')
     writeExecutable(path.join(payload, 'bin', 'qwen'), normalizedQwenLauncherBytes().toString('utf8'))
@@ -1159,15 +1159,15 @@ describe('official Agent distribution receipt capture', () => {
     const nestedRuntime = path.join(packageRoot, 'lib', 'node_modules', '@qwen-code', 'runtime.js')
     fs.mkdirSync(path.dirname(nestedRuntime), { recursive: true })
     fs.writeFileSync(nestedRuntime, 'export const runtime = true\n')
-    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@qwen-code/qwen-code', version: '0.23.0' }))
+    fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({ name: '@qwen-code/qwen-code', version }))
     fs.writeFileSync(path.join(packageRoot, 'manifest.json'), JSON.stringify({
-      name: '@qwen-code/qwen-code', version: '0.23.0', target: `darwin-${architecture}`, runtime: 'node', nodeArchive: `node-darwin-${architecture}.tar.gz`,
+      name: '@qwen-code/qwen-code', version, target: `darwin-${architecture}`, ...(version === '0.21.13' ? {} : { runtime: 'node' }), nodeArchive: `node-darwin-${architecture}.tar.gz`,
     }))
     const artifact = path.join(root, 'qwen.tgz')
     archiveDirectory(path.dirname(payload), 'payload', artifact)
     const envelope = await generateAgentDistributionReceipt({
       kind: 'qwen-standalone', catalogId: 'qwen-code-cli', distributionId: 'cli:qwen-code-cli:standalone',
-      version: '0.23.0', artifactPath: artifact, sourceUrl: 'https://qwen.example/qwen-standalone.tgz',
+      version, artifactPath: artifact, sourceUrl: 'https://qwen.example/qwen-standalone.tgz',
       memberPath: 'payload', archiveFormat: 'tgz', ...baseOptions(root),
     }, fakeSignedDependencies)
     const receipt = envelope.receipt as Record<string, any>

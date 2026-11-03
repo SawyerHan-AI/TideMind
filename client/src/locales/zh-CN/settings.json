@@ -1133,6 +1133,17 @@
       }
     },
     "managed": {
+      "codexSharedIdentityReconnect": "这个 Codex 连接仍使用旧身份。请在 Agent 详情中断开现有 Codex 连接，完成移除后，再重新连接 Codex，让 Desktop 与 CLI 共用一个 Tide Mind 身份。",
+      "codexExistingIdentityReview": "检测到需要先处理的 Codex 旧连接。请打开 Codex 详情，先解决旧身份冲突，再重新检查并连接。",
+      "legacyChoice": {
+        "description": "选择 Codex CLI 和桌面版继续使用的旧 Tide Mind 身份，所有历史记忆保持不变。",
+        "review": "查看并选择旧身份",
+        "select": "旧身份",
+        "preview": "预览改动",
+        "remove": "仅移除下列 Tide Mind 旧连接配置；保留历史记忆和其他配置：",
+        "connect": "确认后将连接并允许 Tide Mind 维护当前安装。另一个 Codex 安装共用此身份，可随后单独连接。",
+        "confirm": "确认选择并连接"
+      },
       "sourceVerification": {
         "title": "安装来源",
         "description": "来源核验不代表宿主已加载组件或记忆调用成功。",
@@ -1322,7 +1333,7 @@
         "disconnecting": "正在移除 Tide Mind 拥有的组件。",
         "newSession": "打开新的 Agent 会话后完成加载。",
         "hostConfirmation": "需要在 Agent 内确认变更。",
-        "legacyConfirmationRequired": "检测到无法唯一归属的旧 Tide Mind 连接。请只保留要继续使用的旧连接，然后重新检查。",
+        "legacyConfirmationRequired": "旧 Tide Mind 连接需要确认身份。请查看下方可用的选择入口；若没有可用选项，请按具体配置冲突提示处理后重新检查。",
         "conflict": "受管目标与其他变更发生冲突。",
         "permission": "无法访问所需目标。",
         "verificationFailed": "Agent 未通过验证。",
@@ -1396,6 +1407,13 @@
       "lastUsed": "最近真实使用",
       "noRecord": "暂无记录",
       "noReliableUsage": "暂无可靠使用证据",
+      "sharedConnection": {
+        "title": "共享记忆连接",
+        "call_observed": "当前共享连接已收到记忆工具调用",
+        "waiting_for_call": "等待共享连接的调用记录",
+        "inactive": "此安装实例的共享连接未启用",
+        "scope": "CLI 与 Desktop 共用此配置。共享调用记录不等于任一宿主已独立验证。"
+      },
       "recentEvents": "最近事件",
       "unreadEvents": "{{count}} 条新事件",
       "noEvents": "暂无最近事件。",
@@ -1558,7 +1576,7 @@
         "awaiting_verification": "等待验证",
         "paused": "已暂停",
         "committed": "已连接并验证",
-        "superseded": "已被后续断开取代",
+        "superseded": "已被后续操作取代",
         "needs_recovery": "需要恢复",
         "failed": "失败",
         "interrupted": "已中断，请重新检查并确认新方案"

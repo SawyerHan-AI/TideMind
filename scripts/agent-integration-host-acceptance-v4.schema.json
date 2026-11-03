@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://tidemind.ai/schemas/agent-integration-host-acceptance-v3.schema.json",
+  "$id": "https://tidemind.ai/schemas/agent-integration-host-acceptance-v4.schema.json",
   "title": "Tide Mind real-host Agent Integration acceptance index",
   "type": "object",
   "additionalProperties": false,
@@ -21,10 +21,11 @@
     "entries",
     "customPaths",
     "upgradePaths",
+    "databaseRecoveryPaths",
     "files"
   ],
   "properties": {
-    "schemaVersion": { "const": 3 },
+    "schemaVersion": { "const": 4 },
     "acceptanceId": { "type": "string", "minLength": 1 },
     "evidenceClass": { "const": "real_host" },
     "appVersion": { "type": "string", "minLength": 1 },
@@ -45,6 +46,7 @@
     "entries": { "type": "array", "items": { "$ref": "#/$defs/acceptanceTarget" } },
     "customPaths": { "type": "array", "minItems": 5, "maxItems": 5, "items": { "$ref": "#/$defs/acceptanceTarget" } },
     "upgradePaths": { "type": "array", "items": { "$ref": "#/$defs/upgradePath" } },
+    "databaseRecoveryPaths": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "$ref": "#/$defs/databaseRecovery" } },
     "files": { "type": "array", "items": { "$ref": "#/$defs/file" } }
   },
   "$defs": {
@@ -138,10 +140,10 @@
         "projectionVersion": { "type": "string", "minLength": 1 }, "hostVersion": { "type": "string", "minLength": 1 },
         "schemaKind": { "enum": ["standard_mcp_servers", "nested_mcp_servers", "opencode_mcp"] },
         "selectorKey": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", "not": { "enum": ["__proto__", "prototype", "constructor"] } },
-        "evidence": { "type": "array", "minItems": 2, "maxItems": 2, "items": {
+        "evidence": { "type": "array", "minItems": 3, "maxItems": 3, "items": {
           "type": "object", "additionalProperties": false, "required": ["id", "signalName", "evidenceHash", "observedAt"],
           "properties": { "id": { "type": "string", "pattern": "^aha_[a-f0-9]{24}$" },
-            "signalName": { "enum": ["brain_recall", "brain_digest"] }, "evidenceHash": { "$ref": "#/$defs/sha256" },
+            "signalName": { "enum": ["brain_prepare", "brain_recall", "brain_digest"] }, "evidenceHash": { "$ref": "#/$defs/sha256" },
             "observedAt": { "type": "string", "format": "date-time" } }
         } }
       }
@@ -240,12 +242,15 @@
         "outcomeDigest": { "$ref": "#/$defs/sha256" }
       }
     },
+    "memoryClosure": {"type": "object", "additionalProperties": false, "required": ["schemaVersion", "validationMode", "modelSource", "modelId", "marker", "transcriptSha256", "rawTranscriptSha256", "readbackSha256"], "properties": {"schemaVersion": {"const": 1}, "validationMode": {"const": "real_model"}, "modelSource": {"enum": ["local_model", "official_subscription", "third_party_api"]}, "modelId": {"type": "string", "minLength": 1}, "marker": {"type": "string", "minLength": 1}, "transcriptSha256": {"$ref": "#/$defs/sha256"}, "rawTranscriptSha256": {"$ref": "#/$defs/sha256"}, "readbackSha256": {"$ref": "#/$defs/sha256"}}},
     "step": {
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "status", "observedAt", "assertionSource", "assertedBy", "assertions", "receipt", "evidenceFiles"],
+      "allOf": [{"if": {"properties": {"id": {"const": "memory_closure"}}}, "then": {"required": ["memoryClosure"]}, "else": {"not": {"required": ["memoryClosure"]}}}],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
+        "memoryClosure": { "$ref": "#/$defs/memoryClosure" },
         "status": { "const": "passed" },
         "observedAt": { "type": "string", "format": "date-time" },
         "assertionSource": { "$ref": "#/$defs/assertionSource" },
@@ -265,26 +270,9 @@
         }
       }
     },
-    "acceptanceTarget": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["targetKey", "targetId", "sourceCatalogId", "disposition", "targetCapability", "hostVersion", "distribution", "environment", "installationId", "agentId", "customBinding", "metadataExport", "steps"],
-      "properties": {
-        "targetKey": { "type": "string", "minLength": 1 },
-        "targetId": { "type": "string", "minLength": 1 },
-        "sourceCatalogId": { "type": ["string", "null"], "minLength": 1 },
-        "disposition": { "enum": ["managed", "guided", "migration", "custom"] },
-        "targetCapability": { "type": "integer", "minimum": 0, "maximum": 4 },
-        "hostVersion": { "type": "string", "minLength": 1 },
-        "distribution": { "$ref": "#/$defs/distribution" },
-        "environment": { "$ref": "#/$defs/environment" },
-        "installationId": { "type": "string", "minLength": 1 },
-        "customBinding": { "$ref": "#/$defs/customBinding" },
-        "metadataExport": { "$ref": "#/$defs/targetMetadataExport" },
-        "agentId": { "type": "string", "minLength": 1 },
-        "steps": { "type": "array", "items": { "$ref": "#/$defs/step" } }
-      }
-    },
+    "acceptanceTarget": {"oneOf": [{"$ref": "#/$defs/observedAcceptanceTarget"}, {"$ref": "#/$defs/deferredAcceptanceTarget"}]},
+    "deferredAcceptanceTarget": {"type": "object", "additionalProperties": false, "required": ["targetKey", "targetId", "sourceCatalogId", "disposition", "targetCapability", "architecture", "realHostDeferral"], "properties": {"targetKey": {"type": "string", "minLength": 1}, "targetId": {"type": "string", "minLength": 1}, "sourceCatalogId": {"type": "null"}, "disposition": {"enum": ["managed", "guided", "migration", "custom"]}, "targetCapability": {"type": ["integer", "null"], "minimum": 0, "maximum": 4}, "architecture": {"const": "arm64"}, "realHostDeferral": {"type": "object", "additionalProperties": false, "required": ["status", "policyId", "reason"], "properties": {"status": {"const": "deferred"}, "policyId": {"const": "0.2.94-codex-only"}, "reason": {"type": "string", "minLength": 1}}}}},
+    "observedAcceptanceTarget": {"type": "object", "additionalProperties": false, "required": ["targetKey", "targetId", "sourceCatalogId", "disposition", "targetCapability", "hostVersion", "distribution", "environment", "installationId", "agentId", "customBinding", "metadataExport", "steps"], "properties": {"targetKey": {"type": "string", "minLength": 1}, "targetId": {"type": "string", "minLength": 1}, "sourceCatalogId": {"type": ["string", "null"], "minLength": 1}, "disposition": {"enum": ["managed", "guided", "migration", "custom"]}, "targetCapability": {"type": "integer", "minimum": 0, "maximum": 4}, "hostVersion": {"type": "string", "minLength": 1}, "distribution": {"$ref": "#/$defs/distribution"}, "environment": {"$ref": "#/$defs/environment"}, "installationId": {"type": "string", "minLength": 1}, "customBinding": {"$ref": "#/$defs/customBinding"}, "metadataExport": {"$ref": "#/$defs/targetMetadataExport"}, "agentId": {"type": "string", "minLength": 1}, "steps": {"type": "array", "items": {"$ref": "#/$defs/step"}}}},
     "upgradeReceipt": {
       "type": "object",
       "additionalProperties": false,
@@ -302,7 +290,7 @@
         "candidateBundleSha256": { "$ref": "#/$defs/sha256" },
         "releaseContractSha256": { "$ref": "#/$defs/sha256" },
         "targetIdentitySha256": { "$ref": "#/$defs/sha256" },
-        "installationId": { "type": "string", "minLength": 1 },
+        "installationId": { "type": ["string", "null"], "minLength": 1 },
         "originalAgentId": { "type": "string", "minLength": 1 },
         "migratedAgentId": { "type": "string", "minLength": 1 },
         "evidenceIds": {
@@ -312,15 +300,18 @@
         "outcomeDigest": { "$ref": "#/$defs/sha256" }
       }
     },
+    "databaseMigration": {"type": "object", "additionalProperties": false, "required": ["schemaVersion", "batchId", "evidenceOrigin", "sourceSchemaVersion", "sourceLineage", "targetSchemaVersion", "targetLineage", "path", "beforeEvidenceSha256", "afterEvidenceSha256", "backupEvidenceSha256"], "properties": {"schemaVersion": {"const": 1}, "batchId": {"type": "string", "minLength": 1}, "evidenceOrigin": {"enum": ["isolated_history_fixture", "user_database"]}, "sourceSchemaVersion": {"type": "integer", "minimum": 0, "maximum": 41}, "sourceLineage": {"type": ["string", "null"]}, "targetSchemaVersion": {"const": 45}, "targetLineage": {"const": "stable-0.2.94"}, "path": {"enum": ["stable_upgrade", "observed_schema41_recovery"]}, "beforeEvidenceSha256": {"$ref": "#/$defs/sha256"}, "afterEvidenceSha256": {"$ref": "#/$defs/sha256"}, "backupEvidenceSha256": {"$ref": "#/$defs/sha256"}}},
+    "databaseRecovery": {"type": "object", "additionalProperties": false, "required": ["id", "architecture", "sourceCommit", "candidateBundleSha256", "releaseContractSha256", "observedAt", "assertedBy", "assertionSource", "databaseMigration", "evidenceFiles"], "properties": {"id": {"const": "observed_schema41"}, "architecture": {"enum": ["arm64", "x64"]}, "sourceCommit": {"type": "string", "pattern": "^[a-f0-9]{40,64}$"}, "candidateBundleSha256": {"$ref": "#/$defs/sha256"}, "releaseContractSha256": {"$ref": "#/$defs/sha256"}, "observedAt": {"type": "string", "format": "date-time"}, "assertedBy": {"type": "string", "minLength": 1}, "assertionSource": {"$ref": "#/$defs/assertionSource"}, "databaseMigration": {"$ref": "#/$defs/databaseMigration"}, "evidenceFiles": {"type": "array", "minItems": 3, "items": {"type": "string", "minLength": 1}}}},
     "upgradePath": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "targetKey", "targetId", "fromAppVersion", "toAppVersion", "status", "observedAt", "assertionSource", "assertedBy",
         "assertions", "installationId", "originalAgentId", "migratedAgentId", "historyPreserved",
-        "statisticsPreserved", "targetIdentitySha256", "receipt", "evidenceFiles"
+        "statisticsPreserved", "targetIdentitySha256", "receipt", "evidenceFiles", "databaseMigration"
       ],
       "properties": {
+        "databaseMigration": { "$ref": "#/$defs/databaseMigration" },
         "targetKey": { "type": "string", "minLength": 1 },
         "targetId": { "type": "string", "minLength": 1 },
         "fromAppVersion": { "type": "string", "minLength": 1 },
@@ -333,7 +324,7 @@
           "type": "array", "minItems": 1, "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 }
         },
-        "installationId": { "type": "string", "minLength": 1 },
+        "installationId": { "type": ["string", "null"], "minLength": 1 },
         "originalAgentId": { "type": "string", "minLength": 1 },
         "migratedAgentId": { "type": "string", "minLength": 1 },
         "historyPreserved": { "const": true },

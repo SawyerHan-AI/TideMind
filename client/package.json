@@ -1,6 +1,6 @@
 {
   "name": "tidemind-client",
-  "version": "0.2.93",
+  "version": "0.2.94",
   "description": "Tide Mind 桌面客户端",
   "main": "./out/main/index.js",
   "scripts": {
@@ -58,7 +58,7 @@
     "@vitejs/plugin-react": "^4.3.0",
     "autoprefixer": "^10.4.20",
     "cross-env": "^10.1.0",
-    "electron": "41.10.7",
+    "electron": "43.8.4",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "esbuild": "^0.28.1",
@@ -70,6 +70,6 @@
     "tmp": "^0.2.7",
     "esbuild": "^0.28.1",
     "browserslist": "4.28.7",
-    "postcss-selector-parser": "6.1.4"
+    "postcss-selector-parser": "6.1.5"
   }
 }

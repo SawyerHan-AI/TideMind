@@ -1133,6 +1133,17 @@
       }
     },
     "managed": {
+      "codexSharedIdentityReconnect": "This Codex connection uses an older identity. In the Agent details, disconnect the existing Codex connection and complete its removal, then connect Codex again so Desktop and CLI share one Tide Mind identity.",
+      "codexExistingIdentityReview": "Existing Tide Mind connections for Codex need review before connecting. Open the Codex details and resolve the old identity conflict first, then check again and reconnect.",
+      "legacyChoice": {
+        "description": "Choose the existing Tide Mind identity to keep for Codex CLI and Desktop. History is preserved.",
+        "review": "Review existing identities",
+        "select": "Existing identity",
+        "preview": "Preview changes",
+        "remove": "Remove only the listed Tide Mind connection entries; keep all history and other configuration:",
+        "connect": "This also enables Tide Mind management for this installation. The other Codex surface shares the identity and can be connected separately.",
+        "confirm": "Confirm selection and connect"
+      },
       "sourceVerification": {
         "title": "Installationsquelle",
         "description": "Die Quellenprüfung bestätigt weder das Laden im Host noch einen erfolgreichen Speicheraufruf.",
@@ -1402,6 +1413,13 @@
       "lastUsed": "Letzte echte Verwendung",
       "noRecord": "Keine Aufzeichnung",
       "noReliableUsage": "Keine verlässlichen Nutzungsnachweise",
+      "sharedConnection": {
+        "title": "Shared memory connection",
+        "call_observed": "Memory tool activity received on the current shared connection",
+        "waiting_for_call": "Waiting for activity on the shared connection",
+        "inactive": "Shared connection is inactive for this installation",
+        "scope": "CLI and Desktop share this configuration. Shared activity does not independently verify either host."
+      },
       "recentEvents": "Aktuelle Ereignisse",
       "unreadEvents": "{{count}} neue Veranstaltung(en)",
       "noEvents": "Keine aktuellen Ereignisse.",
@@ -1604,7 +1622,7 @@
         "awaiting_verification": "Warten auf Bestätigung",
         "paused": "Angehalten",
         "committed": "Verbunden und verifiziert",
-        "superseded": "Wird durch eine spätere Trennung ersetzt",
+        "superseded": "Durch einen späteren Vorgang ersetzt",
         "needs_recovery": "Braucht Erholung",
         "failed": "Fehlgeschlagen",
         "interrupted": "Unterbrochen – noch einmal überprüfen und in der Vorschau anzeigen"

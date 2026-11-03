@@ -1,3 +1,5 @@
+import { migrateExistingDatabaseIfNeeded } from '../db/pre-migration.js';
+import { parse as parseToml } from 'smol-toml';
 /**
  * 启动时配置自动迁移
  *
@@ -72,6 +74,11 @@ export function migrateConfigIfNeeded(log: Logger, configPath?: string): boolean
   });
 
   if (renames.length === 0) return false;
+
+  // Resolve the same configured data root before changing routes or backups.
+  const parsed = parseToml(raw) as { general?: { data_dir?: string } };
+  const dataDir = (parsed.general?.data_dir ?? path.join(os.homedir(), '.tidemind')).replace(/^~(?=$|\/)/, os.homedir());
+  migrateExistingDatabaseIfNeeded(path.join(dataDir, 'graph', 'brain.sqlite'), file);
 
   // 同日多次启动只备份一次,避免覆盖原始备份
   const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');

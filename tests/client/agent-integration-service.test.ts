@@ -459,7 +459,9 @@ describe('AgentIntegrationService', () => {
         }
         : null
     })
-    const afterCodexHookTrust = vi.fn(async () => { throw new Error('maintenance temporarily unavailable') })
+    let rejectMaintenance!: (error: Error) => void
+    const pendingMaintenance = new Promise<void>((_resolve, reject) => { rejectMaintenance = reject })
+    const afterCodexHookTrust = vi.fn(() => pendingMaintenance)
     const service = new AgentIntegrationService({
       repository,
       scanner: { scan: async () => ({ installations: [], unresolved: [], diagnostics: [] }) },
@@ -502,10 +504,19 @@ describe('AgentIntegrationService', () => {
 
     attestationResults.push(true, true)
     fs.writeFileSync(physicalTrustFile, 'trusted')
-    const [completed, concurrent] = await Promise.all([
+    let returnedWhileMaintenancePending = false
+    const confirmations = Promise.all([
       service.confirmCodexHookTrust(review.actionHash!),
       service.confirmCodexHookTrust(review.actionHash!),
-    ])
+    ]).then(results => { returnedWhileMaintenancePending = true; return results })
+    try {
+      await vi.waitFor(() => expect(returnedWhileMaintenancePending).toBe(true), { timeout: 1000 })
+      expect(repository.findCodexHookTrustEvidence(action)).not.toBeNull()
+    } finally {
+      // A later rejection must be observed and diagnosed, never left unhandled.
+      rejectMaintenance(new Error('maintenance temporarily unavailable'))
+    }
+    const [completed, concurrent] = await confirmations
     expect(completed).toMatchObject({ status: 'trust_recorded', hostCurrentHash })
     expect(concurrent).toEqual(completed)
     expect(completed.receiptId).toMatch(/^aie_/u)
@@ -520,6 +531,7 @@ describe('AgentIntegrationService', () => {
       }),
     ]))
     await expect(service.confirmCodexHookTrust(review.actionHash!)).rejects.toThrow(/unknown or has expired/)
+    afterCodexHookTrust.mockImplementationOnce(() => { throw new Error('synchronous maintenance failure') })
     const secondReview = await service.reviewCodexHookTrust('codex-installation')
     const originalRecordEvent = repository.recordEvent.bind(repository)
     const recordEvent = vi.spyOn(repository, 'recordEvent').mockImplementation(input => {

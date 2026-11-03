@@ -257,6 +257,55 @@ function productionKimiReleaseAuthority(
   version: string,
   architecture: Architecture,
 ): KimiReleaseAuthority | null {
+  // Verified official 2.0.0 release artifacts; preserve the historical 0.41.0 authority.
+  if (version === '2.0.0' && architecture === 'arm64') return {
+  "releaseId": 390453984,
+  "manifest": {
+    "id": 569542442,
+    "name": "manifest.json",
+    "url": "https://github.com/MoonshotAI/kimi-code/releases/download/%40moonshot-ai/kimi-code%402.0.0/manifest.json",
+    "sizeBytes": 2021,
+    "sha256": "81c75c0de3bdafdfdb3846d219c3fe8b1e77d7158e950063ef7196c694ca2560"
+  },
+  "archive": {
+    "id": 569542203,
+    "name": "kimi-code-darwin-arm64.zip",
+    "url": "https://github.com/MoonshotAI/kimi-code/releases/download/%40moonshot-ai/kimi-code%402.0.0/kimi-code-darwin-arm64.zip",
+    "sizeBytes": 59719391,
+    "sha256": "d6cafa5ccc4405e7159b45ae06f249e80a1975dd3ffa5be1365fa2f2569dfcb5"
+  },
+  "checksum": {
+    "id": 569542202,
+    "name": "kimi-code-darwin-arm64.zip.sha256",
+    "url": "https://github.com/MoonshotAI/kimi-code/releases/download/%40moonshot-ai/kimi-code%402.0.0/kimi-code-darwin-arm64.zip.sha256",
+    "sizeBytes": 93,
+    "sha256": "3a048b25dc7569ce3c0211b79875b5a71179b1ab25096b4d188e0ba46833c01e"
+  }
+}
+  if (version === '2.0.0' && architecture === 'x64') return {
+  "releaseId": 390453984,
+  "manifest": {
+    "id": 569542442,
+    "name": "manifest.json",
+    "url": "https://github.com/MoonshotAI/kimi-code/releases/download/%40moonshot-ai/kimi-code%402.0.0/manifest.json",
+    "sizeBytes": 2021,
+    "sha256": "81c75c0de3bdafdfdb3846d219c3fe8b1e77d7158e950063ef7196c694ca2560"
+  },
+  "archive": {
+    "id": 569542224,
+    "name": "kimi-code-darwin-x64.zip",
+    "url": "https://github.com/MoonshotAI/kimi-code/releases/download/%40moonshot-ai/kimi-code%402.0.0/kimi-code-darwin-x64.zip",
+    "sizeBytes": 60731397,
+    "sha256": "652a28a3645de9f6cc84990c368b92af8e3d4cb08cfceb5878ac10b54cfce6f2"
+  },
+  "checksum": {
+    "id": 569542260,
+    "name": "kimi-code-darwin-x64.zip.sha256",
+    "url": "https://github.com/MoonshotAI/kimi-code/releases/download/%40moonshot-ai/kimi-code%402.0.0/kimi-code-darwin-x64.zip.sha256",
+    "sizeBytes": 91,
+    "sha256": "37e5370b0a7dc23563eeacb00f51bb912a9c6a730cbe3186922703343a5b1f32"
+  }
+}
   if (version !== '0.41.0') return null
   const architectureAssets = architecture === 'arm64'
     ? {

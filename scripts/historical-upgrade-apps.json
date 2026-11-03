@@ -20,6 +20,23 @@
       }
     },
     {
+      "version": "0.2.90",
+      "assetName": "Tide.Mind-0.2.90-arm64.zip",
+      "sourceUrl": "https://github.com/SawyerHan-AI/TideMind/releases/download/v0.2.90/Tide.Mind-0.2.90-arm64.zip",
+      "artifactSha256": "7704001a330cdd18be56b6febd4ca8c70390f1f4e9af719ba4f0797b10a5bce9",
+      "artifactSizeBytes": 132630307,
+      "appIdentity": {
+        "version": "0.2.90",
+        "bundleId": "com.tidemind.app",
+        "architecture": "arm64",
+        "bundleSha256": "da7ce83b58ad1624f4d8f5170c943ad925645ae36e9d6af83937ede192909437",
+        "executableSha256": "2bb15ccff03ed9d96d44dc230012ddf2ee4eec2e1b426d244c78a722309fe8b7",
+        "teamId": "Z4U232GXH5",
+        "cdhash": "231c9d574c517be29d2051590e69e50b9dffc9ab",
+        "signingIdentity": "Developer ID Application: sawyer han (Z4U232GXH5)"
+      }
+    },
+    {
       "version": "0.2.91",
       "assetName": "Tide.Mind-0.2.91-arm64.zip",
       "sourceUrl": "https://github.com/SawyerHan-AI/TideMind/releases/download/v0.2.91/Tide.Mind-0.2.91-arm64.zip",
@@ -50,6 +67,23 @@
         "executableSha256": "76441162132e9e3ef34fc96e3bb2efd55bef005728229a0f683bc5df0b4649d9",
         "teamId": "Z4U232GXH5",
         "cdhash": "5d82f683add78d7d640ee702d7b0a217dbcb60e1",
+        "signingIdentity": "Developer ID Application: sawyer han (Z4U232GXH5)"
+      }
+    },
+    {
+      "version": "0.2.93",
+      "assetName": "Tide.Mind-0.2.93-arm64.zip",
+      "sourceUrl": "https://github.com/SawyerHan-AI/TideMind/releases/download/v0.2.93/Tide.Mind-0.2.93-arm64.zip",
+      "artifactSha256": "b01ccff96717e6693466e74a1d483182299971c12d5421a627f6c90bcd887416",
+      "artifactSizeBytes": 133535754,
+      "appIdentity": {
+        "version": "0.2.93",
+        "bundleId": "com.tidemind.app",
+        "architecture": "arm64",
+        "bundleSha256": "9e3c49d13ff87dd1865947591c7e2360597df01cdd33e3e11d1e417eb7369de4",
+        "executableSha256": "e94ae0910b7413ea17f3316ee21fbfe06ccbd8459445e5280af74f0edce15f63",
+        "teamId": "Z4U232GXH5",
+        "cdhash": "8a8744cb815d4abf0454f53d37424bc6c1148848",
         "signingIdentity": "Developer ID Application: sawyer han (Z4U232GXH5)"
       }
     }

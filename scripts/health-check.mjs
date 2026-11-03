@@ -17,7 +17,7 @@ const checks = [
   // suite instead of relying on stale ignored client/out artifacts.
   { name: 'worker bundle', cwd: path.join(repoRoot, 'client'), command: 'npm', args: ['run', 'build:bin'] },
   { name: 'root test', cwd: repoRoot, command: 'npm', args: ['test'] },
-  { name: 'root audit', cwd: repoRoot, command: 'npm', args: ['audit', '--audit-level=moderate'] },
+  { name: 'root audit', cwd: repoRoot, command: 'node', args: ['scripts/audit-client-dependencies.mjs', '--root'] },
   { name: 'cloud typecheck', cwd: path.join(repoRoot, 'pro/cloud-server'), command: 'npx', args: ['tsc', '--noEmit'] },
   { name: 'cloud test', cwd: path.join(repoRoot, 'pro/cloud-server'), command: 'npm', args: ['test'] },
   { name: 'cloud audit', cwd: path.join(repoRoot, 'pro/cloud-server'), command: 'npm', args: ['audit', '--audit-level=moderate'] },

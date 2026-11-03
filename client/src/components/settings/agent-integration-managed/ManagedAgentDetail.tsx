@@ -116,6 +116,9 @@ export function ManagedAgentDetail({
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [confirmPauseInstallationId, setConfirmPauseInstallationId] = useState<string | null>(null)
+  const [legacyCandidates,setLegacyCandidates]=useState<{agentId:string;name:string}[]>([])
+  const [legacySelected,setLegacySelected]=useState('')
+  const [legacyPreview,setLegacyPreview]=useState<AgentIntegrationPlanPreviewDto|null>(null)
   const [disconnectPreview, setDisconnectPreview] = useState<AgentIntegrationPlanPreviewDto | null>(null)
   const [circuitResetPreview, setCircuitResetPreview] = useState<AgentIntegrationCircuitResetPreviewDto | null>(null)
   const [disconnectResult, setDisconnectResult] = useState<AgentIntegrationApplyResultDto | null>(null)
@@ -157,6 +160,9 @@ export function ManagedAgentDetail({
     actionRequestSequence.current += 1
     setTechnical(null)
     setTechnicalOpen(false)
+    setLegacyCandidates([])
+    setLegacySelected('')
+    setLegacyPreview(null)
     setDisconnectPreview(null)
     setCircuitResetPreview(null)
     setDisconnectResult(null)
@@ -330,6 +336,28 @@ export function ManagedAgentDetail({
       if (activeInstallationId.current === targetInstallationId
         && actionRequestSequence.current === requestSequence) setBusyAction(null)
     }
+  }
+
+  const runLegacySelection = async (action:'review'|'preview'|'apply') => {
+    const id=installation.id
+    const sequence=++actionRequestSequence.current
+    setBusyAction('legacy-'+action);setActionError(null)
+    try{
+      if(action==='review'){
+        const review=await agentIntegrationsApi().reviewCodexLegacySelection(id)
+        if(activeInstallationId.current===id && actionRequestSequence.current===sequence){setLegacyCandidates(review.candidates);setLegacySelected(review.candidates[0]?.agentId ?? '');setLegacyPreview(null)}
+      }else if(action==='preview'){
+        const preview=await agentIntegrationsApi().previewCodexLegacySelection(id,legacySelected)
+        if(activeInstallationId.current===id && actionRequestSequence.current===sequence)setLegacyPreview(preview)
+      }else if(legacyPreview){
+        const preview=legacyPreview;setLegacyPreview(null)
+        const result=await agentIntegrationsApi().applyConnect(preview.planHash,[id])
+        const failure=result.results.find(item=>item.status==='failed')
+        if(failure)throw new Error(failure.reason)
+        if(activeInstallationId.current===id && actionRequestSequence.current===sequence){setLegacyCandidates([]);refreshAfterAction()}
+      }
+    }catch(error){if(activeInstallationId.current===id && actionRequestSequence.current===sequence)setActionError(error instanceof Error?error.message:t('agent.managed.unknownError'))}
+    finally{if(activeInstallationId.current===id && actionRequestSequence.current===sequence)setBusyAction(null)}
   }
 
   const executeDisconnect = async (preview: AgentIntegrationPlanPreviewDto) => {
@@ -541,6 +569,24 @@ export function ManagedAgentDetail({
               : managementUnavailableHelp} · ${accessDetail}`}
           />
         </div>
+        {installation.statusReason === 'legacy_confirmation_required' && ['codex-cli','codex-desktop'].includes(installation.hostVariant) && (
+          <div className="mt-3 space-y-2 rounded border border-amber-400/30 p-3 text-xs">
+            <p>{t('agent.managed.legacyChoice.description','Choose the existing Tide Mind identity to keep for Codex CLI and Desktop. History is preserved.')}</p>
+            {!legacyCandidates.length ? <button disabled={busyAction!==null} onClick={()=>void runLegacySelection('review')}>{t('agent.managed.legacyChoice.review','Review existing identities')}</button> : <>
+              <select aria-label={t('agent.managed.legacyChoice.select','Existing identity')} value={legacySelected} disabled={busyAction!==null}
+                onChange={event=>{setLegacySelected(event.target.value);setLegacyPreview(null)}}>
+                {legacyCandidates.map(item=><option key={item.agentId} value={item.agentId}>{item.name} ({item.agentId})</option>)}
+              </select>
+              <button disabled={busyAction!==null || !legacySelected} onClick={()=>void runLegacySelection('preview')}>{t('agent.managed.legacyChoice.preview','Preview changes')}</button>
+            </>}
+            {legacyPreview && <>
+              <p>{t('agent.managed.legacyChoice.remove','Remove only the listed Tide Mind connection entries; keep all history and other configuration:')} {legacyPreview.legacySelection?.removedAgentIds.join(', ')}</p>
+              <p>{t('agent.managed.legacyChoice.connect','This also enables Tide Mind management for this installation. The other Codex surface shares the identity and can be connected separately.')}</p>
+              <ul>{legacyPreview.installations.flatMap(item=>item.targets.map((target,index)=><li key={item.installationId+index}>{t(componentLabelKey(target.componentKey))} · {target.targetLabel}</li>))}</ul>
+              <button disabled={busyAction!==null} onClick={()=>void runLegacySelection('apply')}>{t('agent.managed.legacyChoice.confirm','Confirm selection and connect')}</button>
+            </>}
+          </div>
+        )}
         {installations.length > 1 && (
           <div ref={tabListRef} className="mt-3 flex flex-wrap gap-1" role="tablist" aria-label={t('agent.managed.installations')}>
             {installations.map((item, index) => {
@@ -770,6 +816,13 @@ export function ManagedAgentDetail({
               <dt className="text-gray-400">{t('agent.managed.lastDetected')}</dt>
               <dd className="mt-1 text-gray-300">{installation.lastDetectedAt ? timeAgo(installation.lastDetectedAt) : t('agent.managed.noRecord')}</dd>
             </div>
+            {installation.sharedConnection && (
+              <div className="rounded-lg border border-white/5 bg-white/[0.025] p-2.5" data-shared-connection={installation.sharedConnection.status}>
+                <dt className="text-gray-400">{t('agent.managed.sharedConnection.title')}</dt>
+                <dd className="mt-1 text-gray-300">{t(`agent.managed.sharedConnection.${installation.sharedConnection.status}`)}</dd>
+                <p className="mt-1 text-gray-500">{t('agent.managed.sharedConnection.scope')}</p>
+              </div>
+            )}
             <div className="rounded-lg border border-white/5 bg-white/[0.025] p-2.5">
               <dt className="text-gray-400">{t('agent.managed.lastUsed')}</dt>
               <dd className="mt-1 text-gray-300">{installation.lastRealUseAt ? timeAgo(installation.lastRealUseAt) : t('agent.managed.noReliableUsage')}</dd>

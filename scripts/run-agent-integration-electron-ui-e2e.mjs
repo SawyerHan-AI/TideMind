@@ -2279,10 +2279,18 @@ function verifyFrozenCodexFixtureGeneration() {
       assert.ok(artifact, `${installationId} lifecycle artifact is missing`)
       const document = JSON.parse(fs.readFileSync(artifact.target_path, 'utf8'))
       const entries = Object.entries(document.hooks ?? {})
+      assert.deepEqual(entries.map(([eventName]) => eventName).sort(),
+        ['SessionStart', 'PreCompact', 'PostCompact', 'SessionEnd', 'UserPromptSubmit'].sort(),
+        `${installationId} fixture does not match the five-event Codex lifecycle contract`)
       const fragment = Object.fromEntries(entries.map(([eventName, eventEntries]) => {
         assert.equal(Array.isArray(eventEntries) && eventEntries.length === 1, true,
           `${installationId} fixture has an ambiguous ${eventName} hook`)
         const entry = eventEntries[0]
+        if (eventName === 'SessionEnd' || eventName === 'UserPromptSubmit') {
+          assert.equal(Object.hasOwn(entry, 'matcher'), false, `${installationId} ${eventName} must have no matcher`)
+        }
+        assert.equal(entry.hooks?.[0]?.timeout, eventName === 'UserPromptSubmit' ? 3 : 15,
+          `${installationId} ${eventName} hook timeout differs from the production contract`)
         const commands = entry?.hooks?.map(hook => hook.command) ?? []
         assert.equal(commands.length, 1, `${installationId} fixture has an ambiguous ${eventName} command`)
         assert.ok(commands[0].includes(`'--activity-generation-token' '${token}'`),

@@ -1,0 +1,143 @@
+{
+  "tag": "rust-v0.157.1",
+  "evidence": [
+    {
+      "source": "https://raw.githubusercontent.com/openai/codex/rust-v0.157.1/codex-rs/core/src/session/turn.rs",
+      "sha256": "9bac4139db5bd362f5975c25cf41af16e0debc1328febfd136c0a0e05b20a7af",
+      "matches": [
+        {
+          "line": 320,
+          "excerpt": "    else {\n        return Ok(None);\n    };\n\n    if run_pending_session_start_hooks(&sess, &turn_context).await {\n        return Ok(None);\n    }\n    if crate::guardian::is_basic_session_source(&turn_context.session_source)\n        && let Err(error) = crate::guardian::finalize_guardian_input(\n            &sess,\n            &first_step_context,\n            &mut input,\n            codex_guardian_context::HistoryTruncation::Preserve,\n        )\n        .await\n    {"
+        },
+        {
+          "line": 366,
+          "excerpt": "        )\n        .await?;\n    }\n    let mut can_drain_pending_input = input.is_empty();\n    if run_hooks_and_record_inputs(\n        &sess,\n        &turn_context,\n        &first_step_context.settings.model_info,\n        &input,\n        PersistContext::TurnStart,\n    )\n    .await\n    {\n        return Ok(None);\n    }\n"
+        },
+        {
+          "line": 436,
+          "excerpt": "        } else {\n            Vec::new()\n        };\n\n        if run_hooks_and_record_inputs(\n            &sess,\n            &turn_context,\n            &turn_context.capture_current_model_info(),\n            &pending_input,\n            PersistContext::SteeredUserInput,\n        )\n        .await\n        {\n            break;\n        }\n"
+        },
+        {
+          "line": 441,
+          "excerpt": "            &sess,\n            &turn_context,\n            &turn_context.capture_current_model_info(),\n            &pending_input,\n            PersistContext::SteeredUserInput,\n        )\n        .await\n        {\n            break;\n        }\n\n        // Input and turn-start injections are recorded before recovery can continue this turn.\n        turn_context.extension_data.insert(RecordedTurnInput);\n        let window_id = sess.current_window_id().await;\n        super::rollout_budget::maybe_record_reminder(\n            sess.as_ref(),"
+        },
+        {
+          "line": 633,
+          "excerpt": "                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())\n                            .await;\n                        return Ok(None);\n                    }\n                    if run_pending_session_start_hooks(&sess, &turn_context).await {\n                        return Ok(None);\n                    }\n                    can_drain_pending_input = !model_needs_follow_up;\n                    continue;\n                }\n\n                if !needs_follow_up {\n                    last_agent_message = sampling_request_last_agent_message;\n                    let stop_outcome = run_turn_stop_hooks(\n                        &sess,\n                        &step_context,"
+        },
+        {
+          "line": 191,
+          "excerpt": "        // Compaction runs before the new input is recorded, so preserve it on every failure.\n        run_hooks_and_record_inputs(\n            &sess,\n            &turn_context,\n            &turn_context.capture_current_model_info(),\n            &input,\n            PersistContext::Standard,\n        )\n        .await;\n        if matches!(err.details(), CodexErrorDetails::TurnAborted) {\n            return Err(err);\n        }\n        if matches!(err.details(), CodexErrorDetails::ToolCollision(_)) {\n            return Err(err);\n        }\n        let error = err.to_codex_protocol_error();\n        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())"
+        }
+      ]
+    },
+    {
+      "source": "https://raw.githubusercontent.com/openai/codex/rust-v0.157.1/codex-rs/core/src/hook_runtime.rs",
+      "sha256": "7c1d358b03fbe9d9069ba54c2251368d6f59afa7dedf071b26d2c80d65339dd5",
+      "matches": [
+        {
+          "line": 145,
+          "excerpt": "                ) =>\n            {\n                let context = subagent_hook_context(sess, agent_role);\n                StartHookTarget::SubagentStart {\n                    turn_id: turn_context.sub_id.clone(),\n                    agent_id: context.agent_id,\n                    agent_type: context.agent_type,\n                }\n            }\n            SessionSource::SubAgent(_) => return false,\n            _ => StartHookTarget::SessionStart {\n                source: session_start_source,\n            },\n        };\n        let request = codex_hooks::SessionStartRequest {\n            session_id: sess.session_id().into(),"
+        },
+        {
+          "line": 198,
+          "excerpt": ") -> PreToolUseHookResult {\n    let turn_context = &step_context.turn;\n    let request = PreToolUseRequest {\n        session_id: sess.session_id().into(),\n        turn_id: turn_context.sub_id.clone(),\n        subagent: thread_spawn_subagent_hook_context(sess, turn_context),\n        cwd: tool_hook_cwd(&step_context.environments, turn_context),\n        transcript_path: sess.hook_transcript_path().await,\n        model: step_context.settings.model_info.slug.clone(),\n        permission_mode: hook_permission_mode(step_context.settings.approval_policy()),\n        tool_name: tool_name.name().to_string(),\n        matcher_aliases: tool_name.matcher_aliases().to_vec(),\n        tool_use_id,\n        tool_input: tool_input.clone(),\n    };\n    let hooks = sess.hooks();"
+        },
+        {
+          "line": 267,
+          "excerpt": ") -> Option<PermissionRequestDecision> {\n    let turn_context = review_context.turn();\n    let request = PermissionRequestRequest {\n        session_id: sess.session_id().into(),\n        turn_id: turn_context.sub_id.clone(),\n        subagent: thread_spawn_subagent_hook_context(sess, turn_context),\n        cwd: tool_hook_cwd(review_context.environments(), turn_context).to_path_buf(),\n        transcript_path: sess.hook_transcript_path().await,\n        model: review_context.model_info.slug.clone(),\n        permission_mode: hook_permission_mode(review_context.approval_policy),\n        tool_name: payload.tool_name.name().to_string(),\n        matcher_aliases: payload.tool_name.matcher_aliases().to_vec(),\n        run_id_suffix: run_id_suffix.to_string(),\n        tool_input: payload.tool_input,\n    };\n    let hooks = sess.hooks();"
+        },
+        {
+          "line": 309,
+          "excerpt": ") -> PostToolUseOutcome {\n    let turn_context = &step_context.turn;\n    let request = PostToolUseRequest {\n        session_id: sess.session_id().into(),\n        turn_id: turn_context.sub_id.clone(),\n        subagent: thread_spawn_subagent_hook_context(sess, turn_context),\n        cwd: tool_hook_cwd(&step_context.environments, turn_context),\n        transcript_path: sess.hook_transcript_path().await,\n        model: step_context.settings.model_info.slug.clone(),\n        permission_mode: hook_permission_mode(step_context.settings.approval_policy()),\n        tool_name,\n        matcher_aliases,\n        tool_use_id,\n        tool_input,\n        tool_response,\n    };"
+        },
+        {
+          "line": 450,
+          "excerpt": "    };\n    let request_metadata = build_request_metadata(Some(step_context), turn_context);\n    let request = codex_hooks::StopRequest {\n        session_id: sess.session_id().into(),\n        turn_id: turn_context.sub_id.clone(),\n        #[allow(deprecated)]\n        cwd: turn_context.cwd.clone(),\n        transcript_path,\n        model: turn_context.model_info().slug.clone(),\n        permission_mode: hook_permission_mode(turn_context.approval_policy()),\n        request_metadata: (!request_metadata.is_empty()).then_some(request_metadata),\n        stop_hook_active,\n        last_assistant_message,\n        target,\n    };\n    let executor_hook_sources = executor_hook_sources_for_step(step_context);"
+        },
+        {
+          "line": 488,
+          "excerpt": "    }\n\n    let request = codex_hooks::SessionEndRequest {\n        session_id: sess.session_id().into(),\n        turn_id: turn_context.sub_id.clone(),\n        #[allow(deprecated)]\n        cwd: turn_context.cwd.clone(),\n        transcript_path: sess.hook_transcript_path().await,\n    };\n    if let Err(err) = sess.flush_rollout().await {\n        tracing::warn!(\"failed to flush transcript before SessionEnd hook: {err}\");\n    }\n    emit_hook_started_events(sess, &turn_context, preview_runs).await;\n\n    let outcome = hooks.run_session_end(request).await;\n    emit_hook_completed_events(sess, &turn_context, outcome.hook_events).await;"
+        },
+        {
+          "line": 527,
+          "excerpt": "\n    let request_metadata = build_request_metadata(last_known_step_context.as_deref(), turn_context);\n    let request = InterruptRequest {\n        session_id: sess.session_id().into(),\n        turn_id: turn_context.sub_id.clone(),\n        #[allow(deprecated)]\n        cwd: turn_context.cwd.clone(),\n        transcript_path: sess.hook_transcript_path().await,\n        model: turn_context.model_info().slug.clone(),\n        permission_mode: hook_permission_mode(turn_context.approval_policy()),\n        request_metadata: (!request_metadata.is_empty()).then_some(request_metadata),\n    };\n    if let Err(err) = sess.flush_rollout().await {\n        tracing::warn!(\"failed to flush transcript before Interrupt hook: {err}\");\n    }\n    emit_hook_started_events(sess, turn_context, preview_runs).await;"
+        },
+        {
+          "line": 551,
+          "excerpt": "    trigger: CompactionTrigger,\n) -> PreCompactHookOutcome {\n    let request = codex_hooks::PreCompactRequest {\n        session_id: sess.session_id().into(),\n        turn_id: turn_context.sub_id.clone(),\n        subagent: thread_spawn_subagent_hook_context(sess, turn_context),\n        #[allow(deprecated)]\n        cwd: turn_context.cwd.clone(),\n        transcript_path: sess.hook_transcript_path().await,\n        model: turn_context.model_info().slug.clone(),\n        trigger: compaction_trigger_label(trigger).to_string(),\n    };\n    let preview_runs = sess.hooks().preview_pre_compact(&request);\n    emit_hook_started_events(sess, turn_context, preview_runs).await;\n\n    let outcome = sess.hooks().run_pre_compact(request).await;"
+        },
+        {
+          "line": 588,
+          "excerpt": "    trigger: CompactionTrigger,\n) -> PostCompactHookOutcome {\n    let request = codex_hooks::PostCompactRequest {\n        session_id: sess.session_id().into(),\n        turn_id: turn_context.sub_id.clone(),\n        subagent: thread_spawn_subagent_hook_context(sess, turn_context),\n        #[allow(deprecated)]\n        cwd: turn_context.cwd.clone(),\n        transcript_path: sess.hook_transcript_path().await,\n        model: turn_context.model_info().slug.clone(),\n        trigger: compaction_trigger_label(trigger).to_string(),\n    };\n    let preview_runs = sess.hooks().preview_post_compact(&request);\n    emit_hook_started_events(sess, turn_context, preview_runs).await;\n\n    let outcome = sess.hooks().run_post_compact(request).await;"
+        },
+        {
+          "line": 634,
+          "excerpt": "            triggered_at: chrono::Utc::now(),\n            hook_event: codex_hooks::HookEvent::AfterAgent {\n                event: codex_hooks::HookEventAfterAgent {\n                    thread_id: sess.thread_id,\n                    turn_id: turn_context.sub_id.clone(),\n                    input_messages,\n                    last_assistant_message,\n                },\n            },\n        })\n        .await\n    {\n        let hook_name = hook_outcome.hook_name;\n        let (error, should_abort) = match hook_outcome.result {\n            codex_hooks::HookResult::Success => continue,\n            codex_hooks::HookResult::FailedContinue(error) => (error, false),"
+        },
+        {
+          "line": 686,
+          "excerpt": "    match pending_input_item {\n        TurnInput::UserInput { content, .. } => {\n            let request = UserPromptSubmitRequest {\n                session_id: sess.session_id().into(),\n                turn_id: turn_context.sub_id.clone(),\n                subagent: thread_spawn_subagent_hook_context(sess, turn_context),\n                #[allow(deprecated)]\n                cwd: turn_context.cwd.clone(),\n                transcript_path: sess.hook_transcript_path().await,\n                model: turn_context.model_info().slug.clone(),\n                permission_mode: hook_permission_mode(turn_context.approval_policy()),\n                prompt: UserMessageItem::new(content).message(),\n            };\n            let hooks = sess.hooks();\n            let preview_runs = hooks.preview_user_prompt_submit(&request);\n            run_context_injecting_hook("
+        },
+        {
+          "line": 701,
+          "excerpt": "            run_context_injecting_hook(\n                sess,\n                turn_context,\n                preview_runs,\n                hooks.run_user_prompt_submit(request),\n            )\n            .await\n        }\n        TurnInput::ResponseItem(_) | TurnInput::FunctionCallOutput(_) => HookRuntimeOutcome {\n            should_stop: false,\n            additional_contexts: Vec::new(),\n        },\n        TurnInput::InterAgentCommunication(_) => HookRuntimeOutcome {\n            should_stop: false,\n            additional_contexts: Vec::new(),\n        },"
+        }
+      ]
+    },
+    {
+      "source": "https://raw.githubusercontent.com/openai/codex/rust-v0.157.1/codex-rs/hooks/src/events/common.rs",
+      "sha256": "0bf6568d921b2584a1e827d216772b55cd471d0e965ccef7449726c62508414e",
+      "matches": [
+        {
+          "line": 112,
+          "excerpt": "    run.id = format!(\"{}:{tool_use_id}\", run.id);\n    run\n}\n\npub(crate) fn matcher_pattern_for_event(\n    event_name: HookEventName,\n    matcher: Option<&str>,\n) -> Option<&str> {\n    match event_name {\n        HookEventName::PreToolUse\n        | HookEventName::PermissionRequest\n        | HookEventName::PostToolUse\n        | HookEventName::SessionStart\n        | HookEventName::SessionEnd\n        | HookEventName::SubagentStart\n        | HookEventName::SubagentStop\n        | HookEventName::PreCompact\n        | HookEventName::PostCompact => matcher,\n        HookEventName::UserPromptSubmit | HookEventName::Stop | HookEventName::Interrupt => None,\n    }\n}\n\npub(crate) fn validate_matcher_pattern(matcher: &str) -> Result<(), regex::Error> {\n    if is_match_all_matcher(matcher) || is_exact_matcher(matcher) {\n        return Ok(());\n    }\n    regex::Regex::new(matcher).map(|_| ())\n}\n\npub(crate) fn matches_matcher(matcher: Option<&str>, input: Option<&str>) -> bool {\n    match matcher {\n        None => true,\n        Some(matcher) if is_match_all_matcher(matcher) => true,\n        Some(matcher) if is_exact_matcher(matcher) => input\n            .map(|input| matcher.split('|').any(|candidate| candidate == input))\n            .unwrap_or(false),\n        Some(matcher) => input\n            .and_then(|input| {\n                regex::Regex::new(matcher)\n                    .ok()"
+        }
+      ]
+    }
+  ],
+  "interpretation": {
+    "normal": "Pending SessionStart precedes initial UPS input processing on normal turn path.",
+    "exceptions": "Error/cancellation input preservation paths are not an ordering guarantee.",
+    "turnIdentity": "Steered user input reuses current turn context; revision + turn required."
+  },
+  "autoCompactionContract": {
+    "source": "https://raw.githubusercontent.com/openai/codex/rust-v0.157.1/codex-rs/core/config.schema.json",
+    "sha256": "17fbda7e71603aa6a83e986608f2e13c27ea46ce1a4b889196ba81a07c39d907",
+    "properties": {
+      "model_auto_compact_token_limit": {
+        "description": "Token usage threshold triggering auto-compaction of conversation history.",
+        "format": "int64",
+        "type": "integer"
+      },
+      "model_auto_compact_token_limit_scope": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/AutoCompactTokenLimitScope"
+          }
+        ],
+        "description": "Controls whether the auto-compaction limit applies to the full context or only to tokens after the carried prefix in the current compaction window."
+      }
+    },
+    "scopeDefinition": {
+      "description": "Selects which part of the active context is charged against `model_auto_compact_token_limit`.",
+      "oneOf": [
+        {
+          "description": "Count the full active context against the limit.",
+          "enum": [
+            "total"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Count sampled output and later growth after the carried window prefix.",
+          "enum": [
+            "body_after_prefix"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "nativeTriggerExecuted": false
+  }
+}

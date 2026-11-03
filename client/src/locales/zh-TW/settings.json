@@ -1133,6 +1133,17 @@
       }
     },
     "managed": {
+      "codexSharedIdentityReconnect": "This Codex connection uses an older identity. In the Agent details, disconnect the existing Codex connection and complete its removal, then connect Codex again so Desktop and CLI share one Tide Mind identity.",
+      "codexExistingIdentityReview": "Existing Tide Mind connections for Codex need review before connecting. Open the Codex details and resolve the old identity conflict first, then check again and reconnect.",
+      "legacyChoice": {
+        "description": "選擇 Codex CLI 和桌面版繼續使用的舊 Tide Mind 身分，所有歷史記憶保持不變。",
+        "review": "查看並選擇舊身分",
+        "select": "舊身分",
+        "preview": "預覽變更",
+        "remove": "僅移除下列 Tide Mind 舊連線設定；保留歷史記憶和其他設定：",
+        "connect": "確認後將連線並允許 Tide Mind 維護目前安裝。另一個 Codex 安裝共用此身分，可隨後單獨連線。",
+        "confirm": "確認選擇並連線"
+      },
       "sourceVerification": {
         "title": "安裝來源",
         "description": "來源驗證不代表宿主已載入元件或記憶呼叫成功。",
@@ -1320,7 +1331,7 @@
         "disconnecting": "正在移除 Tide Mind 擁有的元件。",
         "newSession": "開啟新的 Agent 工作階段以完成載入。",
         "hostConfirmation": "需要在 Agent 內確認變更。",
-        "legacyConfirmationRequired": "檢測到無法唯一歸屬的舊 Tide Mind 連線。請只保留要繼續使用的舊連線，然後重新檢查。",
+        "legacyConfirmationRequired": "舊 Tide Mind 連線需要確認身分。請查看下方可用的選擇入口；若沒有可用選項，請依具體設定衝突提示處理後重新檢查。",
         "conflict": "受管目標與其他變更發生衝突。",
         "permission": "無法訪問所需目標。",
         "verificationFailed": "Agent 未通過驗證。",
@@ -1394,6 +1405,13 @@
       "lastUsed": "最近真實使用",
       "noRecord": "暫無記錄",
       "noReliableUsage": "暫無可靠使用證據",
+      "sharedConnection": {
+        "title": "共用記憶連線",
+        "call_observed": "目前共用連線已收到記憶工具呼叫",
+        "waiting_for_call": "等待共用連線的呼叫紀錄",
+        "inactive": "此安裝實例的共用連線未啟用",
+        "scope": "CLI 與 Desktop 共用此設定。共用呼叫紀錄不等於任一宿主已獨立驗證。"
+      },
       "recentEvents": "最近事件",
       "unreadEvents": "{{count}} 則新事件",
       "noEvents": "暫無最近事件。",
@@ -1524,7 +1542,7 @@
         "awaiting_verification": "待驗證",
         "paused": "已暫停",
         "committed": "已連線並驗證",
-        "superseded": "已被後續中斷取代",
+        "superseded": "已由後續操作取代",
         "needs_recovery": "需要恢復",
         "failed": "失敗",
         "interrupted": "已中斷，請重新檢查並確認新方案"

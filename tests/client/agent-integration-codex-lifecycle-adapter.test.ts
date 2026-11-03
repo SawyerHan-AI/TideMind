@@ -5,12 +5,16 @@ import { createHash } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   codexLifecycleUserFacingText,
+  inspectLegacyCodexHookProof,
+  isExactCodexFourToFiveRecipeUpgrade,
   createCodexLifecycleHostAdapter,
   createOfficialCodexHooksPort,
   verifyCodexHookTrustAction,
   type CodexOfficialHookMetadata,
   type CodexOfficialHooksPort,
 } from '../../client/electron/agent-integration/hosts/codex-lifecycle-adapter'
+import {createP0HostAdapters} from '../../client/electron/agent-integration/hosts/p0-adapter-registry'
+import {sha256Json} from '../../client/electron/agent-integration/fingerprint'
 import type {
   AdapterOperationContext,
   AdapterPlanRequest,
@@ -50,7 +54,7 @@ describe('Codex lifecycle Host Adapter', () => {
     fs.rmSync(tempDir, { recursive: true, force: true })
   })
 
-  it('plans one CAS-managed four-hook fragment and a version/hash-bound explicit trust action', async () => {
+  it('plans one CAS-managed five-hook fragment and a version/hash-bound explicit trust action', async () => {
     const adapter = createAdapter('codex-cli')
     const plan = await adapter.plan(context, await request(adapter))
 
@@ -84,6 +88,96 @@ describe('Codex lifecycle Host Adapter', () => {
     })
     expect(plan.requiredUserActionDetails?.[0]?.sourcePathHash).toMatch(/^[a-f0-9]{64}$/u)
     expect(plan.requiredUserActionDetails?.[0]?.hookKeyHash).toMatch(/^[a-f0-9]{64}$/u)
+  })
+
+  it('observes the official 0.157.1 SessionEnd reason other without filtering reasons', async () => {
+    // rust-v0.157.1 codex-rs/hooks/src/events/session_end.rs:
+    // SESSION_END_REASON="other"; select_handlers(..., Some(SESSION_END_REASON)).
+    const adapter=createAdapter('codex-cli')
+    const plan=await adapter.plan(context,await request(adapter))
+    await adapter.apply(context,plan.mutations[0]!)
+    const entry=((readHooks().hooks as Record<string,JsonValue>).SessionEnd as JsonValue[])[0] as Record<string,JsonValue>
+    expect(entry).not.toHaveProperty('matcher')
+    const ups=((readHooks().hooks as Record<string,JsonValue>).UserPromptSubmit as JsonValue[])[0] as Record<string,JsonValue>
+    expect(ups).not.toHaveProperty('matcher')
+    expect((ups.hooks as Array<Record<string,JsonValue>>)[0]).toMatchObject({type:'command',timeout:3})
+    expect((ups.hooks as Array<Record<string,JsonValue>>)[0].command).toContain('hook-codex-user-prompt-submit.cjs')
+    const official=await createOfficialCodexHooksPort({managedPolicyPaths:[]}).list(context)
+    expect(official.hooks.find(hook=>hook.eventName==='sessionEnd')?.matcher).toBeNull()
+    const nativeReason='other'
+    expect(entry.matcher===undefined || new RegExp(String(entry.matcher)).test(nativeReason)).toBe(true)
+    expect(new RegExp('exit|archive').test(nativeReason)).toBe(false)
+  })
+
+  it('versions only the Codex lifecycle component and requires native trust for the fifth event', async () => {
+    const registry=createP0HostAdapters({codexHooksPort:createOfficialCodexHooksPort({managedPolicyPaths:[]})})
+    expect(registry.get('codex-cli')?.adapterVersion).toBe('1+1+2')
+    expect(registry.get('codex-desktop')?.adapterVersion).toBe('1+1+2')
+    expect(context.runtime.projectionVersion).toBe('projection-7')
+    const port=createOfficialCodexHooksPort({managedPolicyPaths:[]})
+    const adapter=createCodexLifecycleHostAdapter({catalogId:'codex-cli',adapterVersion:'2',hooksPort:port})
+    const plan=await adapter.plan(context,await request(adapter))
+    await adapter.apply(context,plan.mutations[0])
+    const snapshot=await port.list(context)
+    expect(snapshot.hooks).toHaveLength(5)
+    const writeTrust=(hooks:readonly CodexOfficialHookMetadata[])=>fs.writeFileSync(path.join(configRoot,'config.toml'),
+      hooks.map(hook=>'[hooks.state.'+JSON.stringify(hook.key)+']\ntrusted_hash = '+JSON.stringify(hook.currentHash)+'\n').join('\n'))
+    writeTrust(snapshot.hooks.filter(hook=>hook.eventName!=='userPromptSubmit'))
+    await expect(verifyCodexHookTrustAction(context,plan.requiredUserActionDetails![0] as never,port)).resolves.toBeNull()
+    writeTrust(snapshot.hooks)
+    await expect(verifyCodexHookTrustAction(context,plan.requiredUserActionDetails![0] as never,port)).resolves.toMatchObject({trusted:true})
+  })
+
+  it('binds an exact four-to-five recipe proof to owned old bytes across a new generation', async () => {
+    const adapter=createAdapter('codex-cli')
+    const created=await adapter.plan(context,await request(adapter))
+    const five=created.mutations[0].metadata!.desiredFragment as Record<string,JsonValue>
+    const {UserPromptSubmit: _ups,...four}=five
+    const oldHash=sha256Json(four)
+    fs.writeFileSync(hooksFile,JSON.stringify({hooks:Object.fromEntries(Object.entries(four).map(([event,entry])=>[event,[entry]]))}))
+    const next={...context,activityGenerationToken:'generation-next'}
+    const inspection=await adapter.inspect(next)
+    expect(inspection.components[0]).toMatchObject({visibility:'dedicated',observedFragmentHash:oldHash})
+    const upgraded=await adapter.plan(next,await request(adapter,[ownedBaseline(oldHash)],next))
+    expect(upgraded.diagnostics).toEqual([])
+    const mutation=upgraded.mutations[0]
+    expect(mutation.preconditionHash).toBe(oldHash)
+    expect(mutation.metadata?.codexRecipeUpgrade).toEqual({kind:'codex_lifecycle_4_to_5',
+      oldFragment:four,oldGenerationToken:'generation-codex',oldFragmentHash:oldHash})
+    expect(isExactCodexFourToFiveRecipeUpgrade(four,mutation.metadata?.desiredFragment,'generation-codex','generation-next')).toBe(true)
+    await adapter.apply(next,mutation)
+    expect(await adapter.readBack(next,mutation)).toMatchObject({matchesDesired:true})
+    expect(Object.keys(readHooks().hooks as object)).toHaveLength(5)
+  })
+
+  it('rejects partial, changed and wrong fifth-event recipe deltas', async () => {
+    const adapter=createAdapter('codex-cli')
+    const plan=await adapter.plan(context,await request(adapter))
+    const five=plan.mutations[0].metadata!.desiredFragment as Record<string,JsonValue>
+    const {UserPromptSubmit: _ups,...four}=five
+    expect(isExactCodexFourToFiveRecipeUpgrade(four,five,'generation-codex','generation-codex')).toBe(true)
+    const partial={...four};delete partial.PreCompact
+    expect(isExactCodexFourToFiveRecipeUpgrade(partial,five,'generation-codex','generation-codex')).toBe(false)
+    expect(isExactCodexFourToFiveRecipeUpgrade(four,{...five,UserPromptSubmit:{matcher:'anything',hooks:[]}},'generation-codex','generation-codex')).toBe(false)
+    expect(isExactCodexFourToFiveRecipeUpgrade(four,five,'wrong-generation','generation-codex')).toBe(false)
+    const changed=JSON.parse(JSON.stringify(four));changed.PreCompact.hooks[0].timeout=16
+    expect(isExactCodexFourToFiveRecipeUpgrade(changed,five,'generation-codex','generation-codex')).toBe(false)
+  })
+
+  it('retains exact legacy recognition of the former SessionEnd matcher but rejects modified shapes', async () => {
+    const adapter=createAdapter('codex-cli')
+    const plan=await adapter.plan(context,await request(adapter))
+    await adapter.apply(context,plan.mutations[0]!)
+    const document=readHooks()
+    const entry=((document.hooks as Record<string,JsonValue>).SessionEnd as JsonValue[])[0] as Record<string,JsonValue>
+    entry.matcher='exit|archive'
+    fs.writeFileSync(hooksFile,JSON.stringify(document))
+    expect(inspectLegacyCodexHookProof({...context,activityGenerationToken:'new-generation'},[context.agentId])?.entries
+      .some(item=>item.eventName==='SessionEnd')).toBe(true)
+    entry.matcher='unproven-custom-reason'
+    fs.writeFileSync(hooksFile,JSON.stringify(document))
+    expect(()=>inspectLegacyCodexHookProof({...context,activityGenerationToken:'new-generation'},[context.agentId]))
+      .toThrow('Legacy Codex hook was modified')
   })
 
   it('preserves user hooks, applies idempotently, and removes only the exact owned entry', async () => {
@@ -151,6 +245,7 @@ describe('Codex lifecycle Host Adapter', () => {
 
     const result = await adapter.verify(context, verificationRequest())
     expect(result[0]).toMatchObject({ status: 'verified', verifiedCapability: 3 })
+    expect(result[0]?.invalidationKeys).not.toContain('activity_freshness')
     expect(result[0]?.diagnostics).toContain('codex_hook_not_trusted:sessionStart:untrusted')
   })
 
@@ -197,6 +292,8 @@ describe('Codex lifecycle Host Adapter', () => {
       verifiedCapability: 4,
       evidenceRef: expect.stringContaining('codex-hook-trust:trust-event-1'),
     })
+    expect(result[0]?.evidenceRef).toMatch(/^host-activity:/u)
+    expect(result[0]?.invalidationKeys).toContain('activity_freshness')
     expect(result[0]?.diagnostics).toContain('codex_user_layer_trust_receipt_present')
     expect(result[0]?.diagnostics).toContain('codex_effective_lifecycle_activity_verified')
     expect(result[0]?.diagnostics).toContain('host_activity_recognized:post_compact,pre_compact,session_end,session_start')
@@ -222,6 +319,53 @@ describe('Codex lifecycle Host Adapter', () => {
       ...action!,
       hostCurrentHash: sha256Prefixed('f'),
     }, hooksPort)).resolves.toBeNull()
+  })
+
+  it.each(['codex-cli', 'codex-desktop'] as const)(
+    'previews first-time %s hooks through the official port without creating the missing config root',
+    async catalogId => {
+      fs.rmdirSync(configRoot)
+      context = createContext(catalogId)
+      const adapter = createCodexLifecycleHostAdapter({
+        catalogId,
+        adapterVersion: '7',
+        hooksPort: createOfficialCodexHooksPort({ managedPolicyPaths: [] }),
+      })
+      const plan = await adapter.plan(context, await request(adapter))
+      expect(plan.diagnostics).toEqual([])
+      expect(plan.mutations).toHaveLength(1)
+      expect(plan.mutations[0]).toMatchObject({ operation: 'create', physicalTarget: hooksFile })
+      expect(plan.requiredUserActions).toContain('codex_hook_trust_required')
+      expect(plan.requiredUserActionDetails?.[0]).toMatchObject({
+        kind: 'codex_hook_trust', hostVariant: catalogId, sourcePath: hooksFile,
+      })
+      expect(fs.existsSync(configRoot)).toBe(false)
+      expect(fs.readdirSync(tempDir)).toEqual([])
+    },
+  )
+
+  it('rejects alternate and out-of-root proposed hook paths even when the config root is missing', async () => {
+    fs.rmdirSync(configRoot)
+    const port = createOfficialCodexHooksPort({ managedPolicyPaths: [] })
+    await expect(port.preview(context, path.join(configRoot, 'other.json'), { hooks: {} }))
+      .rejects.toThrow('codex_hooks_target_must_be_canonical_root_hooks_json')
+    await expect(port.preview(context, path.join(tempDir, 'hooks.json'), { hooks: {} }))
+      .rejects.toThrow('outside approved root')
+    expect(fs.existsSync(configRoot)).toBe(false)
+  })
+
+  it.each(['root', 'file'] as const)('rejects a symbolic-link %s in official hook preview', async target => {
+    const outside = path.join(tempDir, 'outside')
+    fs.mkdirSync(outside)
+    if (target === 'root') {
+      fs.rmdirSync(configRoot)
+      fs.symlinkSync(outside, configRoot)
+    } else {
+      fs.writeFileSync(path.join(outside, 'hooks.json'), '{}')
+      fs.symlinkSync(path.join(outside, 'hooks.json'), hooksFile)
+    }
+    const port = createOfficialCodexHooksPort({ managedPolicyPaths: [] })
+    await expect(port.preview(context, hooksFile, { hooks: {} })).rejects.toThrow('symbolic-link')
   })
 
   it('verifies trust from stable official state files without executing the discovered Codex path', async () => {
@@ -490,6 +634,7 @@ function metadataFromDocument(
     ['PreCompact', 'preCompact', 'pre_compact', 'b'],
     ['PostCompact', 'postCompact', 'post_compact', 'c'],
     ['SessionEnd', 'sessionEnd', 'session_end', 'd'],
+    ['UserPromptSubmit', 'userPromptSubmit', 'user_prompt_submit', 'e'],
   ] as const
   const root = document.hooks as Record<string, JsonValue>
   return definitions.map(([event, canonicalEvent, keyEvent, hashCharacter]) => {
@@ -500,7 +645,7 @@ function metadataFromDocument(
       key: `${sourcePath}:${keyEvent}:0:0`,
       eventName: canonicalEvent,
       handlerType: 'command',
-      matcher: entry.matcher as string,
+      matcher: typeof entry.matcher === 'string' ? entry.matcher : null,
       command: command as string,
       timeoutSec: 15,
       statusMessage: event === 'SessionStart' ? codexLifecycleUserFacingText().statusMessage : null,
@@ -515,7 +660,7 @@ function metadataFromDocument(
 }
 
 function officialHookKeys(sourcePath: string): string[] {
-  return ['session_start', 'pre_compact', 'post_compact', 'session_end']
+  return ['session_start', 'pre_compact', 'post_compact', 'session_end', 'user_prompt_submit']
     .map(event => `${sourcePath}:${event}:0:0`)
 }
 

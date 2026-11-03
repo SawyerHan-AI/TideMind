@@ -336,6 +336,71 @@ describe('OpenClaw native Plugin adapter', () => {
     expect(await adapterV2.readBack(context, plan.mutations[0])).toMatchObject({ matchesDesired: true })
   })
 
+  it('keeps owned target and hash observable across a host-version upgrade and rejects real drift', async () => {
+    const adapter = createOpenClawPluginHostAdapter({ adapterVersion: '1', dependencies: fake.dependencies })
+    const installed = (await connectPlan()).mutations[0]
+    await adapter.apply(context, installed)
+    const readBack = await adapter.readBack(context, installed)
+    expect(readBack).toMatchObject({ matchesDesired: true, observedFragmentHash: installed.desiredFragmentHash })
+    const ownedArtifacts = aggregateBaselines(installed)
+    const assertOwnedObservation = async () => {
+      const observed = await adapter.inspect(context)
+      expect(observed.components).toHaveLength(ownedArtifacts.length)
+      for (const owned of ownedArtifacts) {
+        expect(observed.components.find(component => component.componentKey === owned.componentKey)).toMatchObject({
+          observedTarget: owned.physicalTarget,
+          observedFragmentHash: owned.ownedFragmentHash,
+        })
+      }
+      return observed
+    }
+    await assertOwnedObservation()
+
+    context = { ...context, hostVersion: '2026.8.2', operationId: 'operation_host_upgrade' }
+    const observed = await assertOwnedObservation()
+    const upgraded = await adapter.plan(context, {
+      desiredCapability: 4,
+      desiredComponents: ['instruction', 'memory_tools', 'lifecycle'],
+      observed,
+      ownedArtifacts,
+    })
+    expect(upgraded.diagnostics).toEqual([])
+    expect(upgraded.mutations).toHaveLength(1)
+    const mutation = upgraded.mutations[0]
+    expect(mutation.physicalTarget).toBe(installed.physicalTarget)
+    expect(mutation.preconditionHash).toBe(readBack.observedFragmentHash)
+    expect(mutation.desiredFragmentHash).not.toBe(installed.desiredFragmentHash)
+
+    const pluginRoot = (mutation.metadata as { pluginRoot: string }).pluginRoot
+    const sourcePath = path.join(pluginRoot, 'index.js')
+    const original = fs.readFileSync(sourcePath, 'utf8')
+    fs.appendFileSync(sourcePath, '\n// user modification')
+    const drifted = await adapter.inspect(context)
+    expect(drifted.components.every(component => component.observedFragmentHash !== installed.desiredFragmentHash)).toBe(true)
+    const blocked = await adapter.plan(context, {
+      desiredCapability: 4,
+      desiredComponents: ['instruction', 'memory_tools', 'lifecycle'],
+      observed: drifted,
+      ownedArtifacts,
+    })
+    expect(blocked.mutations).toEqual([])
+    expect(blocked.diagnostics).toContain('openclaw_plugin_ownership_baseline_mismatch')
+    fake.calls.length = 0
+    await expect(adapter.apply(context, mutation)).rejects.toThrow(/precondition/)
+    expect(fake.calls.some(call => call.args[1] === 'install')).toBe(false)
+
+    fs.writeFileSync(sourcePath, original)
+    await adapter.apply(context, mutation)
+    expect(await adapter.readBack(context, mutation)).toMatchObject({
+      matchesDesired: true, observedFragmentHash: mutation.desiredFragmentHash,
+    })
+    for (const component of (await adapter.inspect(context)).components) {
+      expect(component).toMatchObject({
+        observedTarget: mutation.physicalTarget, observedFragmentHash: mutation.desiredFragmentHash,
+      })
+    }
+  })
+
   it('disconnects only an exact owned plugin and performs uninstall before restart', async () => {
     const adapter = createOpenClawPluginHostAdapter({ adapterVersion: '1', dependencies: fake.dependencies })
     const connected = await connectPlan()

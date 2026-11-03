@@ -33,6 +33,8 @@ let taskListener: ((task: Record<string, unknown>) => void) | null = null
 
 function serviceMock() {
   return {
+    reviewCodexLegacySelection:vi.fn(()=>({candidates:[]})),
+    previewCodexLegacySelection:vi.fn(()=>({planHash:'a'.repeat(64)})),
     snapshot: vi.fn(() => ({ families: [] })),
     scan: vi.fn(() => ({ detectedCount: 0 })),
     previewConnect: vi.fn(() => ({ planHash: 'a'.repeat(64) })),
@@ -132,6 +134,19 @@ describe('agent integrations IPC contract', () => {
     expect(electronMock.dialog.showOpenDialog).not.toHaveBeenCalled()
   })
 
+  it('routes explicit Codex legacy choices through service preview and rejects invalid selection payloads',async()=>{
+    const service=serviceMock()
+    registerAgentIntegrationHandlers(service as never,trustedOptions)
+    const review=electronMock.handlers.get('agent-integrations:review-codex-legacy-selection')!
+    const preview=electronMock.handlers.get('agent-integrations:preview-codex-legacy-selection')!
+    await review(trustedEvent,'installation-1')
+    expect(service.reviewCodexLegacySelection).toHaveBeenCalledWith('installation-1')
+    await preview(trustedEvent,'installation-1','eb_selected')
+    expect(service.previewCodexLegacySelection).toHaveBeenCalledWith('installation-1','eb_selected')
+    expect(await preview(trustedEvent,'installation-1',{agentId:'eb_selected'})).toMatchObject({error:'invalid_arguments'})
+    expect(service.previewCodexLegacySelection).toHaveBeenCalledTimes(1)
+  })
+
   it('registers the complete frozen renderer channel surface', () => {
     registerAgentIntegrationHandlers(serviceMock() as never, trustedOptions)
     expect([...electronMock.handlers.keys()].sort()).toEqual([
@@ -153,6 +168,7 @@ describe('agent integrations IPC contract', () => {
       'agent-integrations:prepare-claude-cowork-setup',
       'agent-integrations:prepare-custom-connect',
       'agent-integrations:preview-claude-cowork-setup',
+      'agent-integrations:preview-codex-legacy-selection',
       'agent-integrations:preview-connect',
       'agent-integrations:preview-custom-installation',
       'agent-integrations:preview-disconnect',
@@ -161,6 +177,7 @@ describe('agent integrations IPC contract', () => {
       'agent-integrations:resume',
       'agent-integrations:reveal-component-path',
       'agent-integrations:review-codex-hook-trust',
+      'agent-integrations:review-codex-legacy-selection',
       'agent-integrations:review-guided-removal',
       'agent-integrations:scan',
       'agent-integrations:snapshot',

@@ -41,6 +41,7 @@ describe('OpenCode V1/V2 shared Skill production composition', () => {
     ['progressive runtime evidence', ['opencode-v1-cli', 'opencode-v2-beta-cli'] as const, 'opencode-v1-cli' as const, 'progressive'],
     ['single MCP repair', ['opencode-v1-cli', 'opencode-v2-beta-cli'] as const, 'opencode-v1-cli' as const, 'repair'],
     ['missing shared Skill disconnect', ['opencode-v1-cli', 'opencode-v2-beta-cli'] as const, 'opencode-v1-cli' as const, 'missing_shared'],
+    ['shared repair waiting mixed disconnect', ['opencode-v1-cli', 'opencode-v2-beta-cli'] as const, 'opencode-v2-beta-cli' as const, 'shared_repair_wait'],
     ['instruction dependency drift', ['opencode-v1-cli', 'opencode-v2-beta-cli'] as const, 'opencode-v1-cli' as const, 'dependency_drift'],
   ])('connect/disconnect order %s survives restart without deleting the remaining consumer Skill', async (_label, connectOrder, firstDisconnect, scenario) => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-shared-production-')))
@@ -265,6 +266,17 @@ describe('OpenCode V1/V2 shared Skill production composition', () => {
         return
       }
 
+      let waitingRepair: Record<string,unknown> | undefined
+      let repairedSkill: Buffer | undefined
+      if (scenario === 'shared_repair_wait') {
+        fs.unlinkSync(sharedSkill)
+        await composition.runtime.runMaintenance()
+        waitingRepair=db.prepare("SELECT * FROM reconcile_runs WHERE operation_type='repair'").get() as Record<string,unknown>
+        expect(waitingRepair).toMatchObject({installation_id:installationIds['opencode-v1-cli'],state:'applied_unverified'})
+        expect(db.prepare('SELECT component_key,state FROM projection_mutations WHERE run_id=?').all(waitingRepair.id)).toEqual([{component_key:'instruction',state:'committed'}])
+        expect(fs.existsSync(sharedSkill)).toBe(true)
+        repairedSkill=fs.readFileSync(sharedSkill)
+      }
       // V1's dedicated lifecycle document requires explicit cleanup, while the
       // shared Skill must remain for whichever consumer stays connected.
       if (firstDisconnect === 'opencode-v1-cli') fs.unlinkSync(path.join(pluginsRoot, 'tidemind-v1.ts'))
@@ -273,6 +285,12 @@ describe('OpenCode V1/V2 shared Skill production composition', () => {
       const firstResult = await composition.service.disconnect(firstPreview.planHash, installationIds[firstDisconnect])
       expect(firstResult.results[0], JSON.stringify(firstResult.results[0], null, 2)).toMatchObject({ status: 'committed' })
       expect(fs.existsSync(sharedSkill)).toBe(true)
+      if (waitingRepair) {
+        expect(fs.readFileSync(sharedSkill)).toEqual(repairedSkill)
+        expect(db.prepare('SELECT * FROM reconcile_runs WHERE id=?').get(waitingRepair.id)).toEqual(waitingRepair)
+        expect(JSON.parse(fs.readFileSync(sharedMcp,'utf8')).mcp['tidemind-eb_opencode_v2_beta_cli']).toBeUndefined()
+        return
+      }
       const remaining = firstDisconnect === 'opencode-v1-cli' ? 'opencode-v2-beta-cli' : 'opencode-v1-cli'
       expect(db.prepare(`
         SELECT state FROM artifact_consumers

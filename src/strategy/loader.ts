@@ -1,6 +1,6 @@
+import { openCompatibleDatabase } from '../db/schema-compatibility.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import Database from 'better-sqlite3';
 import { getDataDir } from '../config.js';
 import { createLogger } from '../utils/logger.js';
 import { getMetabolismWorkerRuntimeContext } from '../metabolism/worker-runtime-context.js';
@@ -268,7 +268,7 @@ function recordFileChangeVersion(strategyName: string, content: string): void {
   try {
     const dbPath = path.join(getDataDir(), 'graph', 'brain.sqlite');
     if (!fs.existsSync(dbPath)) return;
-    const db = new Database(dbPath);
+    const db = openCompatibleDatabase(dbPath);
     db.pragma('journal_mode = WAL');
     db.pragma('busy_timeout = 5000');
 

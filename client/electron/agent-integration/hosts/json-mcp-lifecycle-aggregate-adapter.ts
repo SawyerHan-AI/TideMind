@@ -125,7 +125,8 @@ export function createJsonMcpLifecycleAggregateAdapter(spec: AggregateSpec): Age
             observedTarget: current.file.canonicalPath,
             observedFragmentHash: current.memoryFragment === undefined
               ? undefined
-              : sha256Json(current.memoryFragment),
+              : current.fragmentHash ?? undefined,
+            details: { aggregateComponentKeys: [...COMPONENTS], activation: mcpGate?.allowed === false ? 'explicitly_disabled' : 'enabled' },
           },
           {
             componentKey: 'lifecycle',
@@ -136,8 +137,9 @@ export function createJsonMcpLifecycleAggregateAdapter(spec: AggregateSpec): Age
             observedTarget: current.file.canonicalPath,
             observedFragmentHash: current.lifecycleFragment === undefined
               ? undefined
-              : sha256Json(current.lifecycleFragment),
+              : current.fragmentHash ?? undefined,
             details: {
+              aggregateComponentKeys: [...COMPONENTS],
               activation: current.activation,
               hasUnmanagedEntries: current.hasUnmanagedHooks,
             },

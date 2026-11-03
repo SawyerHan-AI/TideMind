@@ -1,3 +1,4 @@
+import { assertSupportedDatabaseFile } from '../db/schema-compatibility.js';
 /**
  * 数据目录一次性迁移：~/.external-brain/ → ~/.tidemind/
  *
@@ -149,6 +150,8 @@ export function migrateDataDirIfNeeded(
   if (!fs.existsSync(oldDir)) {
     return { migrated: false, oldDir, newDir, reason: 'no-old-dir' };
   }
+
+  assertSupportedDatabaseFile(path.join(oldDir, 'graph', 'brain.sqlite'));
 
   // 情况 3：需要迁移
   const ts =

@@ -172,11 +172,64 @@ describe('Claude Code official aggregate plugin adapter', () => {
     }))
   }
 
+  it('observes the owned aggregate across runtime projection changes', async () => {
+    const ctx = context()
+    const host = adapter()
+    const mutation = (await plan(ctx)).mutations[0]
+    await host.apply(ctx, mutation)
+    const readBack = await host.readBack(ctx, mutation)
+    const assertOwned = async () => {
+      const before = cli.calls.length
+      const inspection = await host.inspect(ctx)
+      expect(inspection.diagnostics).toEqual([])
+      for (const component of inspection.components) expect(component).toMatchObject({
+        visibility: 'dedicated', observedTarget: mutation.physicalTarget,
+        observedFragmentHash: mutation.desiredFragmentHash,
+      })
+      expect(inspection.components[0].observedFragmentHash).toBe(readBack.observedFragmentHash)
+      expect(cli.calls.slice(before)).toEqual([['plugin', 'marketplace', 'list', '--json'], ['plugin', 'list', '--json']])
+    }
+    await assertOwned()
+    ctx.runtime.mcpServerPath += '-new-runtime'
+    ctx.runtime.tideMindVersion = '0.2.94-next'
+    await assertOwned()
+    const verification = await host.verify(ctx, { componentKeys: ['instruction'], expectedCapability: 1, inspection: await host.inspect(ctx) })
+    expect(verification[0].diagnostics).toContain('claude_plugin_static_projection_not_exact')
+  })
+
+  it.each(['bundle', 'unexpected-file', 'registration', 'plugin-removed', 'disabled', 'version', 'source', 'unreadable'])(
+    'does not hide actual %s changes behind the owned hash', async defect => {
+      const ctx = context()
+      const host = adapter()
+      const mutation = (await plan(ctx)).mutations[0]
+      await host.apply(ctx, mutation)
+      const [marketplace, marketplaceRoot] = [...cli.marketplaces][0]
+      const [qualified, state] = [...cli.plugins][0]
+      if (defect === 'bundle') fs.appendFileSync(path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'), '\n')
+      if (defect === 'unexpected-file') fs.writeFileSync(path.join(marketplaceRoot, 'foreign.txt'), 'foreign')
+      if (defect === 'registration') cli.marketplaces.clear()
+      if (defect === 'plugin-removed') cli.plugins.clear()
+      if (defect === 'disabled') state.enabled = false
+      if (defect === 'version') state.version = '9.9.9'
+      if (defect === 'source') cli.marketplaces.set(marketplace, marketplaceRoot + '-foreign')
+      if (defect === 'unreadable') cli.run = async () => fail('unreadable')
+      const inspection = await host.inspect(ctx)
+      expect(inspection.components[0].observedTarget).toBe(mutation.physicalTarget)
+      expect(inspection.components[0].observedFragmentHash).not.toBe(mutation.desiredFragmentHash)
+      expect(inspection.components[0].visibility).not.toBe('absent')
+      if (['disabled', 'version', 'source', 'unreadable'].includes(defect)) {
+        expect(inspection.diagnostics.length).toBeGreaterThan(0)
+        expect(inspection.components[0].visibility).toBe('unknown')
+      }
+      expect(qualified).toBe(mutation.ownershipKey)
+    },
+  )
+
   it('plans one aggregate artifact with all frozen commands, fences and three components', async () => {
     const ctx = context()
     const result = await plan(ctx)
 
-    expect(cli.calls).toEqual([])
+    expect(cli.calls).toEqual([['plugin', 'marketplace', 'list', '--json'], ['plugin', 'list', '--json']])
     expect(result.mutations).toHaveLength(1)
     expect(result.mutations[0]).toMatchObject({
       componentKey: 'instruction',

@@ -1,3 +1,5 @@
+import { ensureSchema } from '@server/db/schema.js'
+import { openCompatibleDatabase } from '@server/db/schema-compatibility.js'
 import Database from 'better-sqlite3'
 import path from 'node:path'
 import os from 'node:os'
@@ -154,7 +156,7 @@ function copyDefaultFiles(dataDir: string): void {
   let hashStore: ReturnType<typeof createSyncHashStoreFromDb> | undefined
   try {
     if (fs.existsSync(dbPath)) {
-      skillDb = new Database(dbPath)
+      skillDb = openCompatibleDatabase(dbPath)
       skillDb.pragma('journal_mode = WAL')
       skillDb.pragma('busy_timeout = 5000')
       // createSyncHashStoreFromDb 会执行 CREATE TABLE IF NOT EXISTS，
@@ -186,13 +188,17 @@ function copyDefaultFiles(dataDir: string): void {
  */
 export function getClientDb(forcedDataDir?: string): Database.Database {
   if (db) return db
+  const initializing: Database.Database[] = []
+  const openInitializing = (filename: string): Database.Database => {
+    const connection = openCompatibleDatabase(filename)
+    initializing.push(connection)
+    return connection
+  }
+  try {
 
   // Hermetic UI audit supplies a canonical fixture directory and must not
   // consult config.toml's general.data_dir or run the ordinary HOME migration.
   const dataDir = resolveClientDataDir(forcedDataDir)
-
-  // 确保目录存在
-  ensureDataDirs(dataDir)
 
   const dbPath = path.join(dataDir, 'graph', 'brain.sqlite')
 
@@ -201,13 +207,18 @@ export function getClientDb(forcedDataDir?: string): Database.Database {
     ? path.join(dataDir, 'config.toml')
     : path.join(os.homedir(), '.tidemind', 'config.toml'))
 
+  ensureDataDirs(dataDir)
+
   // 如果数据库不存在，创建一个空的（带 schema）
   if (!fs.existsSync(dbPath)) {
-    const newDb = new Database(dbPath)
+    const newDb = openInitializing(dbPath)
     newDb.pragma('journal_mode = WAL')
     newDb.pragma('foreign_keys = ON')
-    // 创建完整表结构（与 daemon 的 SCHEMA_SQL 保持一致）
-    // 若客户端先建库，daemon 启动时会检测到已有 schema 并跳过迁移
+    // Finish the authoritative core schema and version/lineage before the UI
+    // keeps a connection open. Otherwise daemon/MCP sees version -1 and attempts
+    // an exclusive migration against this live first-run database.
+    ensureSchema(newDb)
+    // Keep the existing idempotent client declarations; they no longer own fresh schema initialization.
     newDb.exec(`
       CREATE TABLE IF NOT EXISTS nodes (
         id TEXT PRIMARY KEY,
@@ -500,7 +511,7 @@ export function getClientDb(forcedDataDir?: string): Database.Database {
   copyDefaultFiles(dataDir)
 
   // 确保所有表在已有数据库上也存在（与 daemon SCHEMA_SQL 保持一致）
-  const tmpDb = new Database(dbPath)
+  const tmpDb = openInitializing(dbPath)
   tmpDb.pragma('journal_mode = WAL')
   tmpDb.pragma('busy_timeout = 5000')
   tmpDb.pragma('foreign_keys = ON')
@@ -801,20 +812,27 @@ export function getClientDb(forcedDataDir?: string): Database.Database {
   tmpDb.close()
 
   // 统一的读写连接
-  db = new Database(dbPath)
-  db.pragma('journal_mode = WAL')
-  db.pragma('foreign_keys = ON')
-  db.pragma('busy_timeout = 10000')
+  const readyDb = openInitializing(dbPath)
+  readyDb.pragma('journal_mode = WAL')
+  readyDb.pragma('foreign_keys = ON')
+  readyDb.pragma('busy_timeout = 10000')
   // The daemon normally owns frequent PASSIVE maintenance so foreground
   // commits do not inherit it. Keep a high, bounded per-connection fallback in
   // case daemon startup/degradation removes that owner while UI writes remain.
-  db.pragma('wal_autocheckpoint = 10000')
+  readyDb.pragma('wal_autocheckpoint = 10000')
 
   // Cloud sync 的本地 outbox/dead-letter 表。放在核心 schema 之后而不是
   // core schema 里,是因为 outbox 属于客户端 sync 基础设施。
-  createOutboxTable(db)
+  createOutboxTable(readyDb)
 
+  db = readyDb
   return db
+  } catch (error) {
+    for (const connection of initializing) {
+      if (connection.open) connection.close()
+    }
+    throw error
+  }
 }
 
 export function resolveClientDataDir(forcedDataDir?: string): string {

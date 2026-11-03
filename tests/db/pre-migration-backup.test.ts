@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { once } from 'node:events';
-import { ensureSchema } from '../../src/db/schema.js';
+import { ensureSchema, CURRENT_SCHEMA_VERSION } from '../../src/db/schema.js';
 import { migrateExistingDatabaseIfNeeded } from '../../src/db/pre-migration.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { backupDbIfNeeded, getDb, closeDb } from '../../src/db/connection.js';
@@ -136,7 +136,7 @@ describe('pre-migration backup (formal rollback point)', () => {
     });
     try { migrateExistingDatabaseIfNeeded(dbPath); } finally { copySpy.mockRestore(); }
     const upgraded = new Database(dbPath, { readonly: true });
-    expect(upgraded.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get()).toEqual({ value: '35' });
+    expect(upgraded.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get()).toEqual({ value: String(CURRENT_SCHEMA_VERSION) });
     expect(upgraded.prepare("SELECT name FROM sqlite_master WHERE name = 'llm_model_catalog_snapshots'").get()).toBeDefined();
     upgraded.close();
     const backup = fs.readdirSync(graphDir).find(name => name.startsWith('brain.backup-'))!;
@@ -209,7 +209,7 @@ describe('pre-migration backup (formal rollback point)', () => {
     expect(attempts).toEqual(['after-vacuum', 'schema-wal']);
     const reopened = new Database(dbPath);
     expect(reopened.pragma('journal_mode', { simple: true })).toBe('wal');
-    expect(reopened.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get()).toEqual({ value: '35' });
+    expect(reopened.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get()).toEqual({ value: String(CURRENT_SCHEMA_VERSION) });
     reopened.close();
   });
 
@@ -240,7 +240,7 @@ describe('pre-migration backup (formal rollback point)', () => {
     try { migrateExistingDatabaseIfNeeded(dbPath); } finally { pragmaSpy.mockRestore(); homeSpy.mockRestore(); }
     expect(checkedV6).toBe(true);
     const upgraded = new Database(dbPath);
-    expect(upgraded.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get()).toEqual({ value: '35' });
+    expect(upgraded.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get()).toEqual({ value: String(CURRENT_SCHEMA_VERSION) });
     expect(upgraded.pragma('integrity_check', { simple: true })).toBe('ok');
     expect(upgraded.prepare("SELECT from_id, to_id FROM links WHERE id = 'legacy-link'").get()).toEqual({ from_id: 'legacy-a', to_id: 'legacy-b' });
     expect(upgraded.pragma('foreign_key_check')).toEqual([]);

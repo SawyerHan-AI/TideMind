@@ -57,6 +57,10 @@ const entries = [
     out: 'hook-post-compact.cjs',
   },
   {
+    entry: path.join(REPO_ROOT, 'src', 'hook-codex-user-prompt-submit.ts'),
+    out: 'hook-codex-user-prompt-submit.cjs',
+  },
+  {
     entry: path.join(REPO_ROOT, 'src', 'hook-session-end.ts'),
     out: 'hook-session-end.cjs',
   },

@@ -944,7 +944,9 @@ async function inspectOfficialQwenLauncher(
     if (standalone.name !== '@qwen-code/qwen-code'
       || standalone.version !== parsed.version
       || standalone.target !== `darwin-${architecture}`
-      || standalone.runtime !== 'node'
+      // Official v0.21.13 archives predate the explicit runtime field; the
+      // exact launcher, nodeArchive and complete bundled Node tree still bind it.
+      || !(standalone.runtime === 'node' || (parsed.version === '0.21.13' && standalone.runtime === undefined))
       || typeof standalone.nodeArchive !== 'string'
       || !standalone.nodeArchive.includes(`darwin-${architecture}`)) return detected()
 

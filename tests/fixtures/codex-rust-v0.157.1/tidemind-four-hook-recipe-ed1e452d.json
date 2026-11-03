@@ -1,0 +1,52 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'<ROOT>/bin/node' '<ROOT>/bin/start.cjs' '--agent-id' 'agent-a-owner' '--skill-path' '<ROOT>/home/.agents/skills/tidemind/SKILL.md' '--expected-skill-sha256' '850795df439dd93ff09177fdbe0ec6442a032ee6e5163ad7ba777bdb174f4512' '--tool' 'codex' '--activity-generation-token' '<GENERATION>'",
+            "statusMessage": "正在加载 Tide Mind 记忆…",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'<ROOT>/bin/node' '<ROOT>/bin/pre.cjs' '--agent-id' 'agent-a-owner' '--tool' 'codex' '--activity-generation-token' '<GENERATION>'",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'<ROOT>/bin/node' '<ROOT>/bin/post.cjs' '--agent-id' 'agent-a-owner' '--tool' 'codex' '--activity-generation-token' '<GENERATION>'",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'<ROOT>/bin/node' '<ROOT>/bin/hook-session-end.cjs' '--agent-id' 'agent-a-owner' '--tool' 'codex' '--activity-generation-token' '<GENERATION>'",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

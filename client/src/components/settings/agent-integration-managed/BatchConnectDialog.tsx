@@ -25,6 +25,16 @@ import { agentIntegrationsApi } from './types'
 
 type DialogStep = 'select' | 'preview' | 'execute'
 
+function batchConnectErrorText(error: unknown, translate: (key: string) => string): string {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : null
+  if (message === null) return translate('agent.managed.unknownError')
+  // Electron wraps rejected IPC errors; match the final exact code, not arbitrary substrings.
+  const code = /(?:^|:\s*)(codex_shared_identity_requires_disconnect_reconnect|existing_codex_connection_requires_review)$/.exec(message.trim())?.[1]
+  if (code === 'codex_shared_identity_requires_disconnect_reconnect') return translate('agent.managed.codexSharedIdentityReconnect')
+  if (code === 'existing_codex_connection_requires_review') return translate('agent.managed.codexExistingIdentityReview')
+  return message
+}
+
 function isLowRiskDefault(item: AgentIntegrationPlanInstallationDto): boolean {
   return item.requiredUserActions.length === 0
     && item.targets.length > 0
@@ -177,7 +187,7 @@ export function BatchConnectDialog({
       setInitialPreview(preview)
       setSelected(new Set(preview.installations.filter(isLowRiskDefault).map(item => item.installationId)))
     } catch (previewError) {
-      if (isCurrent()) setError(previewError instanceof Error ? previewError.message : t('agent.managed.unknownError'))
+      if (isCurrent()) setError(batchConnectErrorText(previewError, t))
     } finally {
       if (isCurrent()) setLoading(false)
     }
@@ -311,7 +321,7 @@ export function BatchConnectDialog({
       setConfirmedIds(ids)
       setStep('preview')
     } catch (previewError) {
-      if (isCurrent()) setError(previewError instanceof Error ? previewError.message : t('agent.managed.unknownError'))
+      if (isCurrent()) setError(batchConnectErrorText(previewError, t))
     } finally {
       if (isCurrent()) setLoading(false)
     }
@@ -344,7 +354,7 @@ export function BatchConnectDialog({
         setExecution({ planHash: latest.planHash, results: latest.results })
       }
     } catch (applyError) {
-      if (isCurrent()) setError(applyError instanceof Error ? applyError.message : t('agent.managed.unknownError'))
+      if (isCurrent()) setError(batchConnectErrorText(applyError, t))
     } finally {
       if (isCurrent()) setLoading(false)
     }
@@ -368,7 +378,7 @@ export function BatchConnectDialog({
       invalidateTechnical()
       setStep('select')
     } catch (retryError) {
-      if (isCurrent()) setError(retryError instanceof Error ? retryError.message : t('agent.managed.unknownError'))
+      if (isCurrent()) setError(batchConnectErrorText(retryError, t))
     } finally {
       if (isCurrent()) setLoading(false)
     }
@@ -392,7 +402,7 @@ export function BatchConnectDialog({
       invalidateTechnical()
       setStep('select')
     } catch (recoveryError) {
-      if (isCurrent()) setError(recoveryError instanceof Error ? recoveryError.message : t('agent.managed.unknownError'))
+      if (isCurrent()) setError(batchConnectErrorText(recoveryError, t))
     } finally {
       if (isCurrent()) setLoading(false)
     }
@@ -419,7 +429,7 @@ export function BatchConnectDialog({
       setSelected(new Set(ids))
       setWithoutLifecycle(current => new Set([...current].filter(id => ids.includes(id))))
     } catch (retryError) {
-      if (isCurrent()) setError(retryError instanceof Error ? retryError.message : t('agent.managed.unknownError'))
+      if (isCurrent()) setError(batchConnectErrorText(retryError, t))
     } finally {
       if (isCurrent()) setLoading(false)
     }
@@ -463,7 +473,7 @@ export function BatchConnectDialog({
         && dialogSessionSequence.current === sessionSequence
         && technicalRequestSequence.current === requestSequence
         && confirmedPlanHashRef.current === frozenPlanHash) {
-        setError(previewError instanceof Error ? previewError.message : t('agent.managed.unknownError'))
+        setError(batchConnectErrorText(previewError, t))
         setTechnicalOpen(new Set())
       }
     } finally {
@@ -707,7 +717,7 @@ export function BatchConnectDialog({
                         <span className={`text-xs ${resultTone(item.status)}`}>{t(`agent.managed.execution.${item.status}`)}</span>
                       </div>
                       {'reason' in item && item.reason && (
-                        <p className="mt-1 break-words pl-[22px] text-xs leading-relaxed text-gray-400">{item.reason}</p>
+                        <p className="mt-1 break-words pl-[22px] text-xs leading-relaxed text-gray-400">{batchConnectErrorText(item.reason, t)}</p>
                       )}
                       {item.requiredUserActionDetails?.map(action => (
                         <RequiredUserActionDetail key={requiredUserActionDetailKey(action)} action={action} />
@@ -811,4 +821,4 @@ export function BatchConnectDialog({
   )
 }
 
-export { isLowRiskDefault, requestedConnectCandidateIds }
+export { batchConnectErrorText, isLowRiskDefault, requestedConnectCandidateIds }

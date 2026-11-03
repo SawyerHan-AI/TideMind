@@ -18,6 +18,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
+import os from 'node:os';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -33,9 +34,11 @@ interface RunResult {
 }
 
 async function runHook(args: string[]): Promise<RunResult> {
+  const home=fs.mkdtempSync(path.join(os.tmpdir(),'tidemind-precompact-test-'));
   try {
     const { stdout, stderr } = await execFileAsync('node', [HOOK_SCRIPT, ...args], {
       timeout: 10_000,
+      env: {...process.env,HOME:home},
     });
     return { stdout: String(stdout), stderr: String(stderr), exitCode: 0 };
   } catch (err) {
@@ -45,7 +48,7 @@ async function runHook(args: string[]): Promise<RunResult> {
       stderr: e.stderr ? String(e.stderr) : '',
       exitCode: typeof e.code === 'number' ? e.code : 1,
     };
-  }
+  } finally { fs.rmSync(home,{recursive:true,force:true}); }
 }
 
 describe('hook-pre-compact subprocess', { timeout: 30_000 }, () => {
@@ -70,14 +73,12 @@ describe('hook-pre-compact subprocess', { timeout: 30_000 }, () => {
     expect(() => JSON.parse(r.stdout)).toThrow();
   });
 
-  it('--tool codex → stdout 是 JSON 含 hookSpecificOutput', async () => {
+  it('--tool codex → stdout 是空 JSON，不宣称注入上下文', async () => {
     if (!fs.existsSync(HOOK_SCRIPT)) return;
     const r = await runHook(['--agent-id', 'eb_codex', '--tool', 'codex']);
     expect(r.exitCode).toBe(0);
     const parsed = JSON.parse(r.stdout);
-    expect(parsed.hookSpecificOutput).toBeDefined();
-    expect(parsed.hookSpecificOutput.hookEventName).toBe('PreCompact');
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('TIDE MIND');
+    expect(parsed).toEqual({});
   });
 
   it('--tool gemini → JSON 包装,hookEventName=PreCompact', async () => {
@@ -104,7 +105,7 @@ describe('hook-pre-compact subprocess', { timeout: 30_000 }, () => {
     // stdout 必须是合法 JSON(codex 协议),不是纯文本
     expect(() => JSON.parse(r.stdout)).not.toThrow();
     const parsed = JSON.parse(r.stdout);
-    expect(parsed.hookSpecificOutput.hookEventName).toBe('PreCompact');
+    expect(parsed).toEqual({});
   });
 
   it('完全无参数 → 默认 tool=claude-code + warn missing agent-id + 输出仍生成', async () => {

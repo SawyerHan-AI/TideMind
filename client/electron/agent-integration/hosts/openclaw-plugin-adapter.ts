@@ -166,7 +166,7 @@ export function createOpenClawPluginHostAdapter(spec: OpenClawPluginHostSpec): A
         componentKey,
         visibility,
         verificationStatus: 'unverified',
-        observedTarget: desired.pluginRoot,
+        observedTarget: pluginPhysicalTarget(desired),
         observedFragmentHash: aggregate.fingerprint,
         details: {
           implementation: 'openclaw_native_plugin',

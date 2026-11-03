@@ -1,3 +1,4 @@
+import { inspectMacDesktopSignatureSnapshot, DesktopSourceVerificationUnavailable } from '../../client/electron/agent-integration/mac-code-signature'
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('electron', () => ({
@@ -57,6 +58,7 @@ import {
   inspectStableDesktopBundleSurface,
   MAX_CLI_EXECUTABLE_PROOF_BYTES,
   signedCodePortableArtifactFingerprint,
+  desktopSnapshotPortableArtifactFingerprint,
   signedKimiPortableArtifactFingerprint,
 } from '../../client/electron/agent-integration/discovery'
 import type { DiscoveredInstallation, DiscoveryDependencies } from '../../client/electron/agent-integration/discovery'
@@ -396,27 +398,23 @@ async function desktopPostFinalReceiptBarrierFixture() {
   const signedContent = Buffer.from('signed-nested-content')
   fs.writeFileSync(nestedTarget, signedContent)
   let armed = false
+  let unavailable = false
   const discoveryDependencies: DiscoveryDependencies = {
     fs: physicalDiscoveryFileSystem(),
     which: async () => undefined,
     execVersion: async () => ({ exitCode: 126, stdout: '', stderr: 'not used' }),
-    inspectAppSignature: async (_targetPath, options) => {
-      await options.beforeFinalVerification?.()
+    inspectDesktopSignatureSnapshot: async () => {
+      if(unavailable)throw new DesktopSourceVerificationUnavailable('timeout')
       if (armed) {
-        armed = false
-        // This models a mutation queued after the awaited receipt verifier has
-        // resolved but before its caller can resume. The production-owned
-        // synchronous codesign boundary below must observe it.
-        queueMicrotask(() => fs.writeFileSync(nestedTarget, 'post-final-receipt-tamper'))
+        armed=false
+        // A changed nested resource is observed by the complete verifier.
+        // No claim is made about arbitrary writes after a verified snapshot.
+        fs.writeFileSync(nestedTarget,'changed-before-snapshot-verification')
       }
-      return zcodeSignature()
+      if(!fs.readFileSync(nestedTarget).equals(signedContent))throw new Error('code object is not signed at all')
+      return {...zcodeSignature(),verificationBoundary:'desktop_snapshot'}
     },
-    finalVerifyAppSignatureSync: () => {
-      if (!fs.readFileSync(nestedTarget).equals(signedContent)) {
-        throw new Error('code object is not signed at all')
-      }
-      return zcodeSignature()
-    },
+    finalVerifyAppSignatureSync: () => { throw new Error('Desktop must not invoke synchronous full verification') },
   }
   const fake = adapter(home, 'zcode-desktop')
   const composition = createProductionAgentIntegrationComposition(db, {
@@ -440,6 +438,7 @@ async function desktopPostFinalReceiptBarrierFixture() {
     composition,
     installationId: 'zcode-ui-proof',
     arm() { armed = true },
+    makeUnavailable() { unavailable=true },
     close() {
       unbind()
       composition.runtime.stop()
@@ -829,7 +828,7 @@ describe('production Agent Integration discovery environment', () => {
 })
 
 describe('production Agent Integration live distribution trust', { timeout: 30_000 }, () => {
-  it('ends the production Desktop signature proof with a synchronous recursive verification', () => {
+  it('preserves the unchanged strict signed-CLI synchronous helper', () => {
     const calls: string[][] = []
     const runner = vi.fn((args: readonly string[]) => {
       calls.push([...args])
@@ -853,7 +852,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     expect(calls.at(-1)).toEqual(['--verify', '--deep', '--strict', '/tmp/ZCode.app'])
   })
 
-  it('reads an identical Desktop signature receipt around verification and finishes with strict verification', async () => {
+  it('preserves the unchanged strict signed-CLI asynchronous helper', async () => {
     const calls: string[][] = []
     const runner = vi.fn(async (args: readonly string[]) => {
       calls.push([...args])
@@ -1862,7 +1861,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       try {
         const preview = await fixture.composition.service.previewConnect([fixture.installationId])
         const applied = await fixture.composition.service.applyConnect(preview.planHash, [fixture.installationId])
-        expect(applied.results[0]).toMatchObject({ status: 'awaiting_verification' })
+        expect(applied.results[0], JSON.stringify(applied.results[0])).toMatchObject({ status: 'awaiting_verification' })
         expect(fixture.fake.apply).toHaveBeenCalledTimes(1)
         fixture.arm()
         await fixture.composition.runtime.markScanCompleted()
@@ -1920,7 +1919,66 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     },
   )
 
-  it('rejects a nested Desktop mutation queued after the awaited receipt at preview', async () => {
+  it('keeps an applied Desktop wait healthy when source checking becomes unavailable after adapter verification', async () => {
+    const fixture=await desktopPostFinalReceiptBarrierFixture()
+    try {
+      const preview=await fixture.composition.service.previewConnect([fixture.installationId])
+      const applied=await fixture.composition.service.applyConnect(preview.planHash,[fixture.installationId])
+      expect(applied.results[0]).toMatchObject({status:'awaiting_verification'})
+      const runId=applied.results[0].runId!
+      const oldRun=fixture.db.prepare('SELECT * FROM reconcile_runs WHERE id=?').get(runId)
+      const artifacts=fixture.db.prepare('SELECT * FROM managed_artifacts ORDER BY id').all()
+      const effects=fixture.db.prepare('SELECT * FROM projection_mutations ORDER BY id').all()
+      const verify=fixture.fake.host.verify.bind(fixture.fake.host)
+      const lateVerify=vi.spyOn(fixture.fake.host,'verify').mockImplementation(async (...args)=>{
+        const result=await verify(...args)
+        fixture.makeUnavailable()
+        return result
+      })
+      await fixture.composition.runtime.markScanCompleted()
+      expect(lateVerify).toHaveBeenCalledTimes(1)
+      expect(fixture.db.prepare('SELECT * FROM reconcile_runs WHERE id=?').get(runId)).toEqual(oldRun)
+      expect(fixture.db.prepare('SELECT * FROM managed_artifacts ORDER BY id').all()).toEqual(artifacts)
+      expect(fixture.db.prepare('SELECT * FROM projection_mutations ORDER BY id').all()).toEqual(effects)
+      expect(fixture.fake.apply).toHaveBeenCalledTimes(1)
+      const execution=fixture.composition.coordinatorRepository.acquireExecutionFence(runId)
+      expect(execution).not.toBeNull();execution!.release()
+      for(const row of fixture.db.prepare('SELECT DISTINCT mutation_domain FROM projection_mutations').all() as {mutation_domain:string}[]){
+        const writer=fixture.composition.coordinatorRepository.acquireWriterFence(row.mutation_domain)
+        expect(writer).not.toBeNull();writer!.release()
+      }
+    } finally { fixture.close() }
+  })
+
+  it('preserves an applied Desktop wait and healthy artifact when recovery source checking is temporarily unavailable', async () => {
+    const fixture=await desktopPostFinalReceiptBarrierFixture()
+    try {
+      const preview=await fixture.composition.service.previewConnect([fixture.installationId])
+      const result=await fixture.composition.service.applyConnect(preview.planHash,[fixture.installationId])
+      expect(result.results[0]).toMatchObject({status:'awaiting_verification'})
+      const runId=result.results[0].runId!
+      const run=fixture.db.prepare('SELECT * FROM reconcile_runs WHERE id=?').get(runId)
+      const artifacts=fixture.db.prepare('SELECT * FROM managed_artifacts ORDER BY id').all()
+      const effects=fixture.db.prepare('SELECT * FROM projection_mutations ORDER BY id').all()
+      expect(artifacts).toEqual([expect.objectContaining({state:'healthy'})])
+      fixture.makeUnavailable()
+      await expect(fixture.composition.service.previewConnect([fixture.installationId]))
+        .rejects.toMatchObject({name:'DesktopSourceVerificationUnavailable',reason:'timeout'})
+      await fixture.composition.runtime.markScanCompleted()
+      expect(fixture.db.prepare('SELECT * FROM reconcile_runs WHERE id=?').get(runId)).toEqual(run)
+      expect(fixture.db.prepare('SELECT * FROM managed_artifacts ORDER BY id').all()).toEqual(artifacts)
+      expect(fixture.db.prepare('SELECT * FROM projection_mutations ORDER BY id').all()).toEqual(effects)
+      expect(fixture.fake.apply).toHaveBeenCalledTimes(1)
+      const execution=fixture.composition.coordinatorRepository.acquireExecutionFence(runId)
+      expect(execution).not.toBeNull();execution!.release()
+      for(const row of fixture.db.prepare('SELECT DISTINCT mutation_domain FROM projection_mutations').all() as {mutation_domain:string}[]){
+        const writer=fixture.composition.coordinatorRepository.acquireWriterFence(row.mutation_domain)
+        expect(writer).not.toBeNull();writer!.release()
+      }
+    } finally { fixture.close() }
+  })
+
+  it('rejects a nested Desktop mutation observed by the snapshot verifier at preview', async () => {
     const fixture = await desktopPostFinalReceiptBarrierFixture()
     try {
       fixture.arm()
@@ -1935,7 +1993,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     }
   })
 
-  it('rejects a nested Desktop mutation queued after the awaited receipt at the effect fence', async () => {
+  it('rejects a nested Desktop mutation observed by the snapshot verifier at the effect fence', async () => {
     const fixture = await desktopPostFinalReceiptBarrierFixture()
     const readBack = deferredBarrier()
     const originalReadBack = fixture.fake.host.readBack.bind(fixture.fake.host)
@@ -1963,7 +2021,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     }
   })
 
-  it('rejects a nested Desktop mutation queued after the awaited receipt during recovery', async () => {
+  it('rejects a nested Desktop mutation observed by the snapshot verifier during recovery', async () => {
     const fixture = await desktopPostFinalReceiptBarrierFixture()
     try {
       const preview = await fixture.composition.service.previewConnect([fixture.installationId])
@@ -1982,7 +2040,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     }
   })
 
-  it('rejects a nested Desktop mutation queued after the awaited receipt before finalizer commit', async () => {
+  it('rejects a nested Desktop mutation observed by the snapshot verifier before finalizer commit', async () => {
     const fixture = await desktopPostFinalReceiptBarrierFixture()
     fixture.fake.host.verify = vi.fn(async context => [{
       componentKey: 'memory_tools' as const,
@@ -2040,7 +2098,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       execVersion: async () => ({ exitCode: 126, stdout: '', stderr: 'not used' }),
     }, appPath, 2_000)
     const executableProof = await readStableFileFingerprint(executable, MAX_CLI_EXECUTABLE_PROOF_BYTES)
-    const portableArtifactFingerprint = signedCodePortableArtifactFingerprint({
+    const portableArtifactFingerprint = desktopSnapshotPortableArtifactFingerprint({
       version: '3.10.2',
       executable: executableProof,
       signature: {
@@ -2049,7 +2107,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
         teamIdentifier: '8A5X4JJ39T',
         cdHash: '0123456789abcdef0123456789abcdef01234567',
         designatedRequirement: 'identifier "dev.zcode.app" and anchor apple generic',
-        verificationBoundary: 'strict_final',
+        verificationBoundary: 'desktop_snapshot',
       },
     })!
     const db = new Database(':memory:')
@@ -2092,10 +2150,9 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       fs: desktopFs,
       which: async () => undefined,
       execVersion: async () => ({ exitCode: 126, stdout: '', stderr: 'not used' }),
-      inspectAppSignature: async (_targetPath, options) => {
-        expect(options.timeoutMs).toBe(20_000)
-        await options.beforeFinalVerification?.()
-        if (finalIdentityMutation === 'app_mode') fs.chmodSync(appPath, appMode ^ 0o020)
+      inspectDesktopSignatureSnapshot: async (_targetPath, options) => {
+        expect(options.readTimeoutMs).toBe(20_000)
+          if (finalIdentityMutation === 'app_mode') fs.chmodSync(appPath, appMode ^ 0o020)
         if (finalIdentityMutation === 'executable_mode') fs.chmodSync(executable, executableMode ^ 0o020)
         return {
           valid: true,
@@ -2103,7 +2160,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
           teamIdentifier,
           cdHash,
           designatedRequirement,
-          verificationBoundary: 'strict_final' as const,
+          verificationBoundary: 'desktop_snapshot' as const,
         }
       },
       finalVerifyAppSignatureSync: (_targetPath, timeoutMs) => {
@@ -2161,22 +2218,21 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       which: async () => undefined,
       execVersion: async () => ({ exitCode: 126, stdout: '', stderr: 'not used' }),
     }, appPath, 2_000)
-    const inspectAppSignature = vi.fn(async (_targetPath: string, options: { beforeFinalVerification?: () => Promise<void> }) => {
-      await options.beforeFinalVerification?.()
+    const inspectDesktopSignatureSnapshot = vi.fn(async (_targetPath: string, options: { readTimeoutMs: number }) => {
       return {
         valid: true,
         identifier: 'dev.zcode.app',
         teamIdentifier: '8A5X4JJ39T',
         cdHash: '0123456789abcdef0123456789abcdef01234567',
         designatedRequirement: 'identifier "dev.zcode.app" and anchor apple generic',
-        verificationBoundary: 'strict_final' as const,
+        verificationBoundary: 'desktop_snapshot' as const,
       }
     })
     const discoveryDependencies: DiscoveryDependencies = {
       fs: desktopFs,
       which: async () => undefined,
       execVersion: async () => ({ exitCode: 126, stdout: '', stderr: 'not used' }),
-      inspectAppSignature,
+      inspectDesktopSignatureSnapshot,
       finalVerifyAppSignatureSync: () => zcodeSignature(),
     }
     const db = new Database(':memory:')
@@ -2214,7 +2270,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
 
       await expect(composition.service.previewConnect(['zcode-main-switch']))
         .rejects.toThrow(/live distribution trust|trust proof|not enabled/i)
-      expect(inspectAppSignature).not.toHaveBeenCalled()
+      expect(inspectDesktopSignatureSnapshot).not.toHaveBeenCalled()
       expect(db.prepare(`SELECT COUNT(*) AS count FROM agent_consents`).get()).toEqual({ count: 0 })
       expect(db.prepare(`SELECT COUNT(*) AS count FROM reconcile_runs`).get()).toEqual({ count: 0 })
       expect(db.prepare(`SELECT COUNT(*) AS count FROM projection_mutations`).get()).toEqual({ count: 0 })
@@ -2248,15 +2304,14 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       fs: desktopFs,
       which: async () => undefined,
       execVersion: async () => ({ exitCode: 126, stdout: '', stderr: 'not used' }),
-      inspectAppSignature: async (_targetPath, options) => {
-        await options.beforeFinalVerification?.()
-        return {
+      inspectDesktopSignatureSnapshot: async (_targetPath, options) => {
+          return {
           valid: true,
           identifier: 'dev.zcode.app',
           teamIdentifier: '8A5X4JJ39T',
           cdHash: '0123456789abcdef0123456789abcdef01234567',
           designatedRequirement: 'identifier "dev.zcode.app" and anchor apple generic',
-          verificationBoundary: 'strict_final',
+          verificationBoundary: 'desktop_snapshot',
         }
       },
     }
@@ -2514,13 +2569,13 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
         },
       },
     })
-    const inspectAppSignature = vi.fn(async () => ({
+    const inspectDesktopSignatureSnapshot = vi.fn(async () => ({
       valid: true,
       identifier: 'dev.zcode.app',
       teamIdentifier: '8A5X4JJ39T',
       cdHash: '0123456789abcdef0123456789abcdef01234567',
       designatedRequirement: 'identifier "dev.zcode.app" and anchor apple generic',
-      verificationBoundary: 'strict_final' as const,
+      verificationBoundary: 'desktop_snapshot' as const,
     }))
     const attest = createProductionLiveTrustAttestor({
       fs: {
@@ -2532,7 +2587,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       },
       which: async () => undefined,
       execVersion: async () => ({ exitCode: 126, stdout: '', stderr: 'not used' }),
-      inspectAppSignature,
+      inspectDesktopSignatureSnapshot,
     })
     try {
       const row = composition.repository.getInstallation('zcode-no-executable')!
@@ -2542,7 +2597,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       })
       expect(composition.service.detail(row.id).installation.manageable).toBe(false)
       expect(await attest(row)).toBeNull()
-      expect(inspectAppSignature).not.toHaveBeenCalled()
+      expect(inspectDesktopSignatureSnapshot).not.toHaveBeenCalled()
       await expect(composition.service.previewConnect([row.id]))
         .rejects.toThrow('managed integration is unavailable: release_version_unverified')
       expect(db.prepare(`SELECT COUNT(*) AS count FROM agent_consents`).get()).toEqual({ count: 0 })
@@ -2555,7 +2610,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     }
   })
 
-  it('uses recursive strict codesign verification at both Desktop trust boundaries', async () => {
+  it('keeps recursive strict verification in the legacy signed-CLI helper', async () => {
     const appPath = '/Applications/ZCode.app'
     const calls: string[][] = []
     const codesign = vi.fn(async (args: readonly string[]) => {
@@ -2619,17 +2674,16 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       fs: physicalDiscoveryFileSystem(),
       which: async () => undefined,
       execVersion: async () => ({ exitCode: 126, stdout: '', stderr: 'not used' }),
-      inspectAppSignature: async (_targetPath: string, options: { timeoutMs: number; beforeFinalVerification?: () => Promise<void> }) => {
+      inspectDesktopSignatureSnapshot: async (_targetPath: string, options: { readTimeoutMs: number }) => {
         signatureCalls += 1
         if (signatureCalls === 2) mutatePhysicalApp()
-        await options.beforeFinalVerification?.()
-        return {
+          return {
           valid: true,
           identifier: 'dev.zcode.app',
           teamIdentifier: '8A5X4JJ39T',
           cdHash: '0123456789abcdef0123456789abcdef01234567',
           designatedRequirement: 'identifier "dev.zcode.app" and anchor apple generic',
-          verificationBoundary: 'strict_final' as const,
+          verificationBoundary: 'desktop_snapshot' as const,
         }
       },
       finalVerifyAppSignatureSync: () => zcodeSignature(),
@@ -2706,17 +2760,14 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       fs: physicalDiscoveryFileSystem(),
       which: async () => undefined,
       execVersion: async () => ({ exitCode: 126, stdout: '', stderr: 'not used' }),
-      inspectAppSignature: async (_targetPath, options) => {
-        await options.beforeFinalVerification?.()
-        return zcodeSignature()
+      inspectDesktopSignatureSnapshot: async () => {
+        if(armed)replaceWithValidApp()
+        const signature=armed?zcodeSignature({teamIdentifier:replacementTeam,cdHash:replacementCdHash}):zcodeSignature()
+        return {...signature,verificationBoundary:'desktop_snapshot'}
       },
-      finalVerifyAppSignatureSync: () => {
-        if (armed) replaceWithValidApp()
-        return armed
-          ? zcodeSignature({ teamIdentifier: replacementTeam, cdHash: replacementCdHash })
-          : zcodeSignature()
-      },
+      finalVerifyAppSignatureSync: () => { throw new Error('Desktop must not invoke synchronous full verification') },
     }
+
     const composition = createProductionAgentIntegrationComposition(db, {
       homeDir: home,
       applicationDataDir: appData,
@@ -2771,8 +2822,8 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     ['resources_app_asar', 'Contents/Resources/app.asar'],
     ['nested_framework', 'Contents/Frameworks/Helper.framework/Versions/A/Helper'],
     ['nested_plugin', 'Contents/PlugIns/Test.plugin/Contents/MacOS/Test'],
-  ] as const)('blocks %s mutation after every codesign await window before consent or mutation intent', async (_label, relativeTarget) => {
-    for (const mutationWindow of [1, 2, 3, 4, 5, 6, 7]) {
+  ] as const)('blocks %s mutation observed by the one Desktop verifier before new intent', async (_label, relativeTarget) => {
+    {
       const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-live-app-nested-race-')))
       const home = path.join(root, 'home')
       const appData = path.join(root, 'app-data')
@@ -2791,6 +2842,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       let calls = 0
       const codesign = vi.fn(async (args: readonly string[]) => {
         calls += 1
+        if(args.includes('--verify') && calls>5)fs.writeFileSync(nestedTarget,'tampered-content')
         if (!fs.readFileSync(nestedTarget).equals(original)) throw new Error('code object is not signed at all')
         let result = { stdout: '', stderr: '' }
         if (args.includes('--verbose=4')) result = {
@@ -2801,36 +2853,15 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
           stdout: '',
           stderr: 'designated => identifier "dev.zcode.app" and anchor apple generic\n',
         }
-        if (mutationWindow <= 5 && calls === 6 + mutationWindow) {
-          fs.writeFileSync(nestedTarget, 'tampered-content')
-        }
         return result
       })
       const discoveryDependencies = {
         fs: physicalDiscoveryFileSystem(),
         which: async () => undefined,
         execVersion: async () => ({ exitCode: 126, stdout: '', stderr: 'not used' }),
-        inspectAppSignature: async (targetPath: string, options: { timeoutMs: number; beforeFinalVerification?: () => Promise<void> }) => {
-          const signature = await inspectMacAppSignature(targetPath, {
-            ...options,
-            beforeFinalVerification: async () => {
-              await options.beforeFinalVerification?.()
-              if (mutationWindow === 6 && calls === 11) {
-                fs.writeFileSync(nestedTarget, 'tampered-content')
-              }
-            },
-          }, codesign)
-          if (mutationWindow === 7 && calls === 12) {
-            fs.writeFileSync(nestedTarget, 'tampered-content')
-          }
-          return signature
-        },
-        finalVerifyAppSignatureSync: () => {
-          if (!fs.readFileSync(nestedTarget).equals(original)) {
-            throw new Error('code object is not signed at all')
-          }
-          return zcodeSignature()
-        },
+        inspectDesktopSignatureSnapshot: (targetPath: string, options: {readTimeoutMs:number}) =>
+          inspectMacDesktopSignatureSnapshot(targetPath,options,codesign),
+        finalVerifyAppSignatureSync: () => { throw new Error('Desktop must not invoke synchronous full verification') },
       }
       const composition = createProductionAgentIntegrationComposition(db, {
         homeDir: home,
@@ -2849,10 +2880,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
         const preview = await composition.service.previewConnect(['zcode-ui-proof'])
         const result = await composition.service.applyConnect(preview.planHash, ['zcode-ui-proof'])
         expect(result.results[0]).toMatchObject({ installationId: 'zcode-ui-proof', status: 'failed' })
-        // Each injected drift is rejected by the immediately following
-        // recursive verification boundary, including the seventh window after
-        // the first complete receipt has returned.
-        expect(calls).toBeGreaterThanOrEqual(mutationWindow)
+        expect(calls).toBe(8)
         expect(fake.apply).not.toHaveBeenCalled()
         expect(db.prepare(`SELECT COUNT(*) AS count FROM agent_consents`).get()).toEqual({ count: 0 })
         expect(db.prepare(`SELECT COUNT(*) AS count FROM reconcile_runs`).get()).toEqual({ count: 0 })
@@ -4583,6 +4611,56 @@ describe('production Agent integration composition', () => {
       fs.rmSync(root, { recursive: true, force: true })
     }
   })
+
+  it.each(['healthy', 'drifted', 'missing', 'consent', 'consumer', 'unchanged'] as const)(
+    'discards stale reconcile publication after %s inspection while allowing a current observation', async scenario => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-stale-artifact-'))
+      const db = new Database(':memory:'); ensureSchema(db)
+      const fake = adapter(root)
+      const composition = createProductionAgentIntegrationComposition(db, {
+        homeDir: root, applicationDataDir: path.join(root, 'app-data'), runtimeContext: runtimeContext(root),
+        adapters: new Map([['cursor-desktop', fake.host]]), fixtureMode: 'isolated_ui_audit',
+        canManageInstallation: hasFixturePackageTrust, enabledAdapterIds: ['cursor-desktop'],
+        observeOnly: false, autoRestore: true, startRuntime: false,
+      })
+      discoverCursorWithPackageProvenance(composition, root, 'fixture:trusted')
+      const base = managedCursorCandidate(root)
+      const frozen = freezeCandidateSurface(composition, { ...base, installation: {
+        ...base.installation, agentId: 'agent-cursor', identity: {
+          ...base.installation.identity, distribution: { distributionId: 'cursor' }, installKey: 'cursor:test',
+        },
+      } })
+      let current = frozen
+      vi.spyOn(composition.coordinator, 'recoverNonTerminalRuns').mockResolvedValue([])
+      vi.spyOn(composition.coordinatorRepository, 'listManagedReconcileCandidates').mockImplementation(() => [current])
+      const gate = deferredBarrier()
+      let started!: () => void
+      const inspecting = new Promise<void>(resolve => { started = resolve })
+      fake.inspect.mockImplementationOnce(async () => {
+        started(); await gate.wait
+        return { catalogId: 'cursor-desktop', detected: true, distribution: { distributionId: 'cursor' },
+          components: [{ componentKey: 'memory_tools', visibility: scenario === 'missing' ? 'absent' : 'dedicated',
+            verificationStatus: 'unverified', observedFragmentHash: scenario === 'missing' ? undefined
+              : scenario === 'drifted' ? 'new-owned' : frozen.ownedFragmentHash }], provenance: ['fixture'], diagnostics: [] }
+      })
+      const healthy = vi.spyOn(composition.coordinatorRepository, 'markArtifactHealthyAfterReadback').mockReturnValue(true)
+      const attention = vi.spyOn(composition.coordinatorRepository, 'markArtifactNeedsAttention').mockReturnValue(true)
+      const missing = vi.spyOn(composition.coordinatorRepository, 'beginMissingEpisode')
+      const preview = vi.spyOn(composition.coordinator, 'preview')
+      try {
+        const pending = composition.runtime.markScanCompleted(); await inspecting
+        if (scenario === 'consent') current = { ...frozen, consentId: 'new-consent' }
+        else if (scenario === 'consumer') current = { ...frozen, affectedConsumers: [...frozen.affectedConsumers,
+          { installationId: 'new-consumer', displayName: 'New consumer' }] }
+        else if (scenario !== 'unchanged') current = { ...frozen, ownedFragmentHash: 'new-owned', desiredFragmentHash: 'new-owned' }
+        gate.release(); await pending
+        expect(healthy).toHaveBeenCalledTimes(scenario === 'unchanged' ? 1 : 0)
+        expect(attention).not.toHaveBeenCalled(); expect(missing).not.toHaveBeenCalled()
+        expect(preview).not.toHaveBeenCalled(); expect(fake.apply).not.toHaveBeenCalled()
+        expect(db.prepare('SELECT COUNT(*) AS count FROM agent_integration_events').get()).toEqual({ count: 0 })
+      } finally { gate.release(); composition.runtime.stop(); db.close(); fs.rmSync(root, { recursive: true, force: true }) }
+    },
+  )
 
   it('drops an inspection result when exact current trust disappears across the await and continues', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-inspect-trust-race-'))
@@ -6481,4 +6559,42 @@ describe('production Agent integration composition', () => {
       fs.rmSync(root, { recursive: true, force: true })
     }
   })
+})
+
+it('recovers the original committed-effect run after drift attention became needs_recovery', async () => {
+  const fixture = cliPostMetadataBarrierFixture('qwen')
+  try {
+    const { composition, db } = fixture
+    const preview = await composition.service.previewConnect([fixture.installationId])
+    const applied = await composition.service.applyConnect(preview.planHash, [fixture.installationId])
+    expect(applied.results[0]).toMatchObject({ status: 'awaiting_verification' })
+    const original = db.prepare('SELECT id FROM reconcile_runs').get() as { id: string }
+    const artifact = db.prepare('SELECT artifact_id FROM projection_mutations WHERE run_id=?').get(original.id) as { artifact_id: string }
+    const at = () => new Date().toISOString()
+    composition.repository.markArtifactNeedsAttention({
+      artifactId: artifact.artifact_id, artifactState: 'drifted', statusReason: 'conflict',
+      invalidationReason: 'artifact_drifted', observedFingerprint: 'wrong-local-component-hash', observedAt: at(),
+    })
+    composition.repository.recordEvent({ installationId: fixture.installationId, artifactId: artifact.artifact_id,
+      kind: 'artifact_drifted', severity: 'warning', payload: {}, createdAt: at() })
+    await composition.coordinator.recoverNonTerminalRuns()
+    expect(db.prepare('SELECT state,failure_code FROM reconcile_runs WHERE id=?').get(original.id))
+      .toEqual({ state: 'needs_recovery', failure_code: 'host_not_authoritatively_present' })
+    expect(db.prepare('SELECT state FROM managed_artifacts WHERE id=?').get(artifact.artifact_id)).toEqual({ state: 'needs_recovery' })
+
+    // The same owned projection is present again. Read-only healthy reconciliation
+    // must release only its stale attention, not perform a second apply.
+    composition.repository.markArtifactHealthyAfterReadback(artifact.artifact_id, at())
+    expect(composition.repository.getInstallation(fixture.installationId)?.status_reason).toBe('verification_stale')
+    expect(db.prepare('SELECT observed_fragment_hash,owned_fragment_hash FROM managed_artifacts WHERE id=?').get(artifact.artifact_id))
+      .toEqual({ observed_fragment_hash: 'desired', owned_fragment_hash: 'desired' })
+    fixture.fake.host.verify = vi.fn(async context => [{
+      componentKey: 'memory_tools', status: 'verified', verifiedCapability: 2,
+      identityAssertion: context.agentId, evidenceHash: 'fresh-recovery-evidence', invalidationKeys: [], diagnostics: [],
+    }])
+    await composition.coordinator.recoverNonTerminalRuns()
+    expect(db.prepare('SELECT id,state FROM reconcile_runs').all()).toEqual([{ id: original.id, state: 'committed' }])
+    expect(fixture.fake.apply).toHaveBeenCalledTimes(1)
+    expect(db.prepare('SELECT attempt_count FROM projection_mutations').all()).toEqual([{ attempt_count: 1 }])
+  } finally { fixture.close() }
 })

@@ -1,3 +1,6 @@
+import { getSharedAgentConsumers, sharedAgentActivityKey } from './agent-identity-binding.js';
+import { evaluateBridgeAdmission } from '../agent-bridge-guard.js';
+import { sanitizeAgentIntegrationEventPersistence } from './agent-integration-event-sanitizer.js';
 import { createHash, randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { touchAgent } from './agents.js';
@@ -14,9 +17,11 @@ export type HostActivitySignal =
 
 export type RecordHostActivityResult =
   | { status: 'recorded'; evidenceId: string; installationId: string }
+  | { status: 'shared_recorded'; bindingId: string }
   | {
       status: 'rejected';
       reason:
+        | 'shared_host_unattributed'
         | 'unknown_agent'
         | 'agent_archived'
         | 'installation_removed'
@@ -137,6 +142,9 @@ export function recordHookActivityEvidence(
 ): RecordHostActivityResult {
   const agentId = input.agentId.trim();
   if (!agentId) return { status: 'rejected', reason: 'version_binding_missing' };
+  if (getSharedAgentConsumers(db, agentId)) {
+    return recordHostActivityEvidence(db, { ...input, componentKey: 'lifecycle', hostVariant: 'shared', activityGenerationToken: input.activityGenerationToken });
+  }
   const installation = db.prepare(`
     SELECT host_variant FROM agent_installations WHERE agent_id = ? LIMIT 1
   `).get(agentId) as { host_variant: string } | undefined;
@@ -186,6 +194,25 @@ export function recordHostActivityEvidence(
   }
 
   return db.transaction((): RecordHostActivityResult => {
+    const shared = getSharedAgentConsumers(db, agentId);
+    if (shared) {
+      const canonical = db.prepare('SELECT archived FROM agents WHERE id=?').get(agentId) as { archived:number } | undefined;
+      if (!canonical || canonical.archived !== 0) return { status: 'rejected', reason: 'agent_archived' };
+      const admission = evaluateBridgeAdmission(db, { agentId, activityGenerationToken, componentKey: input.componentKey });
+      if (!admission.allowed) return { status: 'rejected', reason: 'activity_generation_mismatch' };
+      // Static EB_HOST_VARIANT in a shared file is not evidence of which surface
+      // executed it. Record one domain event, never duplicate per-host receipts.
+      const event = sanitizeAgentIntegrationEventPersistence({
+        kind: 'shared_agent_activity',
+        dedupeKey: sharedAgentActivityKey(shared.bindingId, shared.generation, input.componentKey, input.signalName, activityGenerationToken),
+        payload: { binding_id: shared.bindingId, agent_id: agentId, signal_name: input.signalName, reason: 'shared_host_unattributed' },
+      });
+      db.prepare(`INSERT OR IGNORE INTO agent_integration_events
+        (id,kind,severity,dedupe_key,payload_json,created_at) VALUES (?,'shared_agent_activity','info',?,?,?)`)
+        .run(`aie_${randomBytes(12).toString('hex')}`, event.dedupeKey, event.payloadJson, observedAt);
+      touchAgent(db, agentId);
+      return { status: 'shared_recorded', bindingId: shared.bindingId };
+    }
     const installation = db.prepare(`
       SELECT i.id AS installation_id, i.host_variant, i.desired_state,
              i.tombstoned_at, i.health_state, i.detected_version,

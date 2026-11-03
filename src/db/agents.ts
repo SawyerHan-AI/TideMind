@@ -1,3 +1,4 @@
+import { getSharedAgentConsumers } from './agent-identity-binding.js';
 import type Database from 'better-sqlite3';
 import { now } from '../utils/time.js';
 import { randomBytes } from 'node:crypto';
@@ -40,6 +41,11 @@ function getManagedIdentitySuppression(
 ): { reason: 'removed' | 'tombstoned'; installationId: string } | null {
   if (!tableExists(db, 'agent_installations')) return null;
   try {
+    const shared = getSharedAgentConsumers(db, agentId);
+    if (shared) {
+      if (shared.consumers.some(row => row.desired_state !== 'removed' && !row.tombstoned_at)) return null;
+      return { reason: 'removed', installationId: shared.consumers[0]?.id ?? shared.bindingId };
+    }
     let row = db.prepare(`
       SELECT id, desired_state, tombstoned_at
       FROM agent_installations

@@ -1,3 +1,4 @@
+import Database from 'better-sqlite3';
 /**
  * migrateDataDirIfNeeded 单元测试
  *
@@ -109,7 +110,11 @@ describe('migrateDataDirIfNeeded', () => {
       fs.mkdirSync(path.join(oldDir, 'crystal', 'nested'), { recursive: true });
 
       fs.writeFileSync(path.join(oldDir, 'config.toml'), 'root\n');
-      fs.writeFileSync(path.join(oldDir, 'graph', 'brain.sqlite'), 'fake-db-bytes');
+      const dbPath = path.join(oldDir, 'graph', 'brain.sqlite');
+      const db = new Database(dbPath);
+      db.exec("CREATE TABLE preserved (value TEXT); INSERT INTO preserved VALUES ('data')");
+      db.close();
+      const originalDb = fs.readFileSync(dbPath);
       fs.writeFileSync(path.join(oldDir, 'strategies', 'annotate.system.md'), '# annotate\n');
       fs.writeFileSync(path.join(oldDir, 'crystal', 'nested', 'deep.md'), 'deep');
 
@@ -122,7 +127,7 @@ describe('migrateDataDirIfNeeded', () => {
 
       const newDir = path.join(tmpHome, '.tidemind');
       expect(fs.readFileSync(path.join(newDir, 'config.toml'), 'utf-8')).toBe('root\n');
-      expect(fs.readFileSync(path.join(newDir, 'graph', 'brain.sqlite'), 'utf-8')).toBe('fake-db-bytes');
+      expect(fs.readFileSync(path.join(newDir, 'graph', 'brain.sqlite'))).toEqual(originalDb);
       expect(
         fs.readFileSync(path.join(newDir, 'strategies', 'annotate.system.md'), 'utf-8'),
       ).toBe('# annotate\n');
@@ -130,7 +135,7 @@ describe('migrateDataDirIfNeeded', () => {
 
       // 备份里也要有完整结构
       const backup = path.join(tmpHome, '.external-brain.backup-ts');
-      expect(fs.readFileSync(path.join(backup, 'graph', 'brain.sqlite'), 'utf-8')).toBe('fake-db-bytes');
+      expect(fs.readFileSync(path.join(backup, 'graph', 'brain.sqlite'))).toEqual(originalDb);
       expect(fs.readFileSync(path.join(backup, 'crystal', 'nested', 'deep.md'), 'utf-8')).toBe('deep');
     });
 

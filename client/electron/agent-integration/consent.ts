@@ -66,7 +66,23 @@ export interface ExecutionMutationPlan {
   reversible: boolean
 }
 
+export interface CompletedGenerationTakeover {
+  /** Only this exact recipe permits approved peer waits in the shared Codex domain. */
+  kind?: 'codex_lifecycle_4_to_5'
+  installationId?: string
+  runId: string
+  executionPlanHash: string
+  effectSnapshotHash: string
+  mutationDomains: string[]
+}
+
 export interface ExecutionPlan {
+  /** Exact completed effects whose obsolete waiting generation this approval replaces. */
+  completedGenerationTakeovers?: CompletedGenerationTakeover[]
+  sharedBatchApprovalHash?: string
+  codexFreshIdentityHash?: string
+  codexLegacySelectionHash?: string
+
   installationId: string
   operation: PlanOperation
   componentKeys: ComponentKey[]
@@ -84,6 +100,8 @@ export interface ExecutionPlan {
    * shared artifact/container and their generations, frozen at preview.
    */
   sharedDomainBinding?: string
+  /** Canonical identity and binding generation frozen at preview. */
+  sharedIdentityBinding?: string
   /**
    * Ownership-only disconnect binding (design §3.5): ownership selectors, targets
    * and current bytes. Present instead of liveTrustProofFingerprint, never with it.
@@ -229,6 +247,19 @@ export function assertExecutionPlanShape(plan: ExecutionPlan): void {
 }
 
 function validatePlanShape(plan: ExecutionPlan, reasons: string[]): void {
+  const takeovers = plan.completedGenerationTakeovers
+  if (takeovers !== undefined && (
+    plan.operation !== 'connect' || !Array.isArray(takeovers) || takeovers.length === 0
+    || takeovers.some(item => !item || typeof item.runId !== 'string' || !item.runId
+      || (item.kind !== undefined && item.kind !== 'codex_lifecycle_4_to_5')
+      || (item.kind === 'codex_lifecycle_4_to_5'
+        ? typeof item.installationId !== 'string' || !item.installationId
+        : item.installationId !== undefined)
+      || !/^[a-f0-9]{64}$/.test(item.executionPlanHash) || !/^[a-f0-9]{64}$/.test(item.effectSnapshotHash)
+      || !Array.isArray(item.mutationDomains) || !item.mutationDomains.length
+      || item.mutationDomains.some(domain => typeof domain !== 'string' || !domain))
+    || new Set(takeovers.map(item => item.runId)).size !== takeovers.length
+  )) reasons.push('completed_generation_takeovers_invalid')
   if (!isPlanOperation(plan.operation)) reasons.push('operation_invalid')
   if (!Array.isArray(plan.componentKeys) || plan.componentKeys.length === 0) {
     reasons.push('component_keys_missing')
