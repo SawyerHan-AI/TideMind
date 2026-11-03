@@ -25,6 +25,7 @@ import {
   AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION,
   applyAgentReleaseGateToReport,
   agentReleaseSurfaceEligibilityReason,
+  agentReleasePhysicalReceiptPairs,
   defaultReleasedAdapterIds,
   resolveAcceptedKimiNativeReceipt,
   resolveAgentIntegrationReleasePolicy,
@@ -34,6 +35,38 @@ import {
 import { kimiNativeReceiptLookupFingerprint } from '../../client/electron/agent-integration/distribution-artifact'
 import type { AgentHostAdapter, CatalogId } from '../../client/electron/agent-integration/types'
 import type { DiscoveredInstallation } from '../../client/electron/agent-integration/discovery'
+
+describe('frozen composed npm lockless physical equivalence', () => {
+  const entry = AGENT_INTEGRATION_RELEASE_ENTRIES.find(entry => entry.catalogId === 'codex-cli')!
+  const receipt = entry.acceptedDistributionArtifacts.find(receipt => receipt.version === '0.157.1' && receipt.architecture === 'arm64')!
+  it('derives the observed official Codex lockless surface and preserves canonical eligibility', () => {
+    const pairs = agentReleasePhysicalReceiptPairs(receipt)
+    expect(pairs).toHaveLength(2)
+    expect(pairs[0]).toEqual({portableArtifactFingerprint: receipt.portableArtifactFingerprint, packageTreeSha256: receipt.distributionSha256})
+    expect(pairs[0].portableArtifactFingerprint).toBe('2cc4dbdbfe682adb72037421d5a7e4436159523ab2900ffbfc954aa51ab64c4d')
+    expect(pairs[1].portableArtifactFingerprint).toBe('3a73bbb1d3b6c223dab0b371fffcb7c4bdc6aaec3225adfcf288e9447481edfc')
+    expect(pairs[1].packageTreeSha256).not.toBe(pairs[0].packageTreeSha256)
+    for (const pair of pairs) expect(agentReleaseSurfaceEligibilityReason({catalogId:'codex-cli',
+      detectedVersion:receipt.version,distributionId:receipt.distributionId,packageProvenance:receipt.packageProvenance,
+      architecture:receipt.architecture,portableArtifactFingerprint:pair.portableArtifactFingerprint})).toBeNull()
+  })
+  it.each(['root', 'leaf', 'native', 'version', 'architecture', 'size'])('does not derive equivalence from a changed %s receipt', field => {
+    const changed = structuredClone(receipt)
+    if (field==='root') changed.npmPackage!.ownedPackageSha256='0'.repeat(64)
+    if (field==='leaf') changed.npmPackage!.composition!.components[0].ownedPackageSha256='0'.repeat(64)
+    if (field==='native') changed.npmPackage!.composition!.components[0].nativeExecutableSha256='0'.repeat(64)
+    if (field==='version') changed.version='0.157.2'
+    if (field==='architecture') changed.architecture='x64'
+    if (field==='size') changed.distributionSizeBytes++
+    expect(agentReleasePhysicalReceiptPairs(changed)).toEqual([])
+  })
+  it('adds no alternative for non-composed schemas', () => {
+    for (const receipt of AGENT_INTEGRATION_RELEASE_ENTRIES.flatMap(entry=>entry.acceptedDistributionArtifacts)
+      .filter(receipt=>receipt.portableFingerprintSchema!=='npm-composed-platform-surface-v1')) {
+      expect(agentReleasePhysicalReceiptPairs(receipt)).toEqual([{portableArtifactFingerprint:receipt.portableArtifactFingerprint,packageTreeSha256:receipt.npmPackage?.ownedPackageSha256}])
+    }
+  })
+})
 
 function releasedAdapterSurface(): ReadonlyMap<CatalogId, AgentHostAdapter> {
   return new Map(AGENT_INTEGRATION_RELEASE_ENTRIES

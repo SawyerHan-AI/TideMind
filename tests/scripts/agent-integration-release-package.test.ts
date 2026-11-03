@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { AGENT_INTEGRATION_RELEASE_MANIFEST } from '../../client/electron/agent-integration/release-manifest'
 
 // @ts-expect-error local plain-ESM release helper has no declaration file
 import {
@@ -16,6 +17,53 @@ const sourceManifest = fs.readFileSync(path.resolve(
   'client/electron/agent-integration/release-manifest.ts',
 ), 'utf8')
 const sourceContract = parseSourceAgentIntegrationReleaseContract(sourceManifest)
+const catalogSource = fs.readFileSync(path.resolve('client/electron/agent-integration/catalog.ts'), 'utf8')
+
+describe('source release contract matches the actual runtime manifest', () => {
+  it('matches every serialized field and insertion order, including Catalog-derived components', () => {
+    const manifest = AGENT_INTEGRATION_RELEASE_MANIFEST
+    const runtimeContract = {
+      version: manifest.appVersion,
+      schemaVersion: manifest.schemaVersion,
+      entries: manifest.entries,
+      customEnabled: manifest.features.customLocalAgent.enabledByDefault,
+      customModes: manifest.features.customLocalAgent.modes,
+    }
+    expect(JSON.stringify(sourceContract)).toBe(JSON.stringify(runtimeContract))
+  })
+
+  it('reads embedded Catalog facts for bundles, even when an external Catalog differs', () => {
+    const embedded = catalogSource.replace("memoryDomain: 'none'", "memoryDomain: 'host_registry'")
+      + '\n' + sourceManifest.replace("import { AGENT_CATALOG } from './catalog'", '')
+    const parsed = parseSourceAgentIntegrationReleaseContract(embedded, catalogSource)
+    const component = parsed.entries.find(entry => entry.catalogId === 'qwenwork-desktop')?.components.find(component => component.componentKey === 'memory_tools')
+    expect(component).toMatchObject({ applicability: 'supported', deliveryMode: 'guided', mutationDomain: 'host_registry' })
+    expect(() => parseSourceAgentIntegrationReleaseContract(sourceManifest.replace("import { AGENT_CATALOG } from './catalog'", ''), catalogSource))
+      .toThrow(/P0_COMPONENTS/)
+    // A packaged input retaining a source-style import must not read this checkout's Catalog.
+    expect(() => inspectPackagedAgentIntegrationReleaseManifest(sourceManifest, sourceContract))
+      .toThrow(/P0_COMPONENTS/)
+  })
+
+  it('preserves parity when the bundle renames the Catalog options parameter', () => {
+    const renamedCatalog = catalogSource.replace(/\boptions\b/g, 'options2')
+    const embedded = renamedCatalog + '\n' + sourceManifest.replace("import { AGENT_CATALOG } from './catalog'", '')
+    expect(JSON.stringify(parseSourceAgentIntegrationReleaseContract(embedded, embedded))).toBe(JSON.stringify(sourceContract))
+    const mismatched = renamedCatalog.replace('options2.instructionDomain', 'options.instructionDomain')
+    expect(() => parseSourceAgentIntegrationReleaseContract(sourceManifest, mismatched)).toThrow(/unsupported Catalog instruction projection/)
+  })
+
+  it('rejects unsupported components, ambiguous declarations and unknown Catalog syntax', () => {
+    const unsupported = catalogSource.replace("'codex-cli': p0Components(['managed', 'managed', 'managed']", "'codex-cli': p0Components(['managed', 'managed', 'not_applicable']")
+    expect(() => parseSourceAgentIntegrationReleaseContract(sourceManifest, unsupported)).toThrow(/not supported by Catalog/)
+    expect(() => parseSourceAgentIntegrationReleaseContract(sourceManifest, catalogSource + '\nconst P0_COMPONENTS = {}'))
+      .toThrow(/one literal P0_COMPONENTS/)
+    expect(() => parseSourceAgentIntegrationReleaseContract(sourceManifest, catalogSource.replace("'codex-cli': p0Components(", "'codex-cli': otherFactory(")))
+      .toThrow(/unsupported Catalog component declaration/)
+    expect(() => parseSourceAgentIntegrationReleaseContract(sourceManifest, catalogSource.replace("options.memoryDomain ?? 'file_fragment'", "options.memoryDomain ?? 'directory'")))
+      .toThrow(/unsupported Catalog memory_tools projection/)
+  })
+})
 
 function frozenEntriesSource(entries = sourceContract.entries): string {
   const expressions = new Map([

@@ -21,10 +21,11 @@ import { metadataEvidenceRuntimeContext } from '../../client/electron/agent-inte
 
 import * as productionService from '../../client/electron/agent-integration/production-service'
 import { ensureSchema } from '../../src/db/schema'
+import { agentIdentityDomainKey } from '../../src/db/agent-identity-binding'
 import { recordHostActivityEvidence } from '../../src/db/agent-host-activity'
 import { customMcpConfiguration, type CustomMcpSchema } from '../../client/electron/agent-integration/hosts/custom-mcp-configuration'
 import { readStableFileFingerprint } from '../../client/electron/agent-integration/passive-cli-version'
-import { AGENT_INTEGRATION_RELEASE_MANIFEST as manifest } from '../../client/electron/agent-integration/release-manifest'
+import { AGENT_INTEGRATION_RELEASE_MANIFEST as manifest, agentReleasePhysicalReceiptPairs } from '../../client/electron/agent-integration/release-manifest'
 
 vi.mock('../../client/node_modules/better-sqlite3/lib/index.js', async () => {
   const { createRequire } = await import('node:module')
@@ -161,6 +162,83 @@ function fixture() {
 }
 
 describe('formal host target metadata exporter', () => {
+  it.each([false, true])('exports the CLI target with its resolved business identity (shared=%s)', async shared => {
+    const data=fixture(),databasePath=path.join(data.root,'identity.sqlite')
+    const db=new Database(databasePath);databases.push(db);ensureSchema(db)
+    const repository=new AgentIntegrationRepository(db),at='2026-11-03T00:00:00Z'
+    for(const [id,variant,raw] of [[data.row.id,'codex-cli',data.row.agent_id],['desktop-member','codex-desktop','raw-desktop']] as const){
+      repository.upsertDiscoveredInstallation({id,family:'codex',hostVariant:variant,runtimeRealm:'local_macos',
+        osUserIdentity:data.row.os_user_identity!,installKey:id,distributionId:id===data.row.id?data.receipt.distributionId:'desktop-distribution',
+        provenance:'fixture',displayName:id,configRoot:data.row.config_root!,executablePath:data.row.executable_path!,
+        detectedVersion:data.receipt.version,agentId:raw!,supportedCapability:4,lastDetectedAt:at})
+    }
+    if(shared){
+      db.prepare('INSERT INTO agents(id,name,tool_type,created) VALUES (?,?,?,?)').run('canonical-history','Synthetic Codex history','codex',at)
+      repository.confirmSharedIdentity({id:'shared-binding',canonicalAgentId:'canonical-history',evidenceHash:'a'.repeat(64),confirmedAt:at,
+        members:[data.row.id,'desktop-member'].map(id=>{const row=repository.getInstallation(id)!;return {
+          installationId:id,installationAgentId:row.agent_id!,installKey:row.install_key,domainKey:agentIdentityDomainKey(row),
+        }})})
+    }
+    const before=db.prepare('SELECT id,agent_id,host_variant FROM agent_installations ORDER BY id').all()
+    const outputPath=path.join(data.root,'identity-export.json')
+    const options={targetKey:`codex-cli:${data.architecture}:${encodeURIComponent(data.receipt.distributionId)}`,
+      candidateBundleSha256:hash('candidate'),sourceCommit:'a'.repeat(40),releaseContractSha256:hash('contract'),databasePath,outputPath,
+      fixture:{receipt:data.receipt,row:repository.getInstallation(data.row.id)!,discovered:data.discovered,
+        liveTrustProof:hash('attestation'),physicalDistribution:data.physicalDistribution,osVersion:'15.6.1',hostIdentitySha256:hash('anonymous-host')}}
+    await exportAgentHostTargetMetadata(options)
+    const output=JSON.parse(fs.readFileSync(outputPath,'utf8'))
+    expect(output.targetMetadata).toMatchObject({targetId:'codex-cli',installationId:data.row.id,
+      agentId:shared?'canonical-history':data.row.agent_id})
+    expect(db.prepare('SELECT id,agent_id,host_variant FROM agent_installations ORDER BY id').all()).toEqual(before)
+    if(shared){
+      db.prepare("UPDATE agent_installations SET profile_id='changed-profile' WHERE id=?").run(data.row.id)
+      const driftedOutput=path.join(data.root,'drifted-identity.json')
+      await expect(exportAgentHostTargetMetadata({...options,outputPath:driftedOutput})).rejects.toThrow(/Shared identity domain changed/)
+      expect(fs.existsSync(driftedOutput)).toBe(false)
+    }
+  })
+
+  function composedFixture(pairIndex = 1) {
+    const receipt = manifest.entries.find(entry=>entry.catalogId==='codex-cli')!.acceptedDistributionArtifacts
+      .find(receipt=>receipt.version==='0.157.1'&&receipt.architecture==='arm64')!
+    const pair=agentReleasePhysicalReceiptPairs(receipt)[pairIndex]
+    const root='/fixture/node_modules/@openai/codex'
+    const nodes=receipt.npmPackage!.proofNodes.map(node=>({role:node.role,path:path.join(root,node.relativePath),
+      sha256:node.sha256,size:node.sizeBytes,executable:node.executable,fingerprint:hash(node.relativePath),entryType:'file'}))
+    const totalCount=receipt.npmPackage!.ownedEntryCount+receipt.npmPackage!.composition!.components.reduce((n,c)=>n+c.ownedEntryCount,0)
+    const remainder=receipt.distributionSizeBytes-nodes.reduce((n,node)=>n+node.size,0)
+    while(nodes.length<totalCount)nodes.push({role:'npm_component_file',path:`/fixture/leaf/file-${nodes.length}`,
+      sha256:hash('leaf'),size:nodes.length===totalCount-1?remainder:0,executable:false,fingerprint:hash('leaf'),entryType:'file'})
+    const executable=nodes.find(node=>node.role==='npm_package_executable')!
+    const inspected={exitCode:0,stdout:receipt.version,stderr:'',verifiedPackageProvenance:receipt.packageProvenance,
+      portableArtifactFingerprint:pair.portableArtifactFingerprint,packageTreeSha256:pair.packageTreeSha256,packageProofNodes:nodes}
+    const proof={sha256:receipt.executableSha256,size:receipt.executableSizeBytes,executable:true,fingerprint:executable.fingerprint}
+    const runtime={readExecutable:async()=>proof,inspectCliVersion:async()=>inspected}
+    const discovered={executablePath:executable.path} as DiscoveredInstallation
+    return {receipt,inspected,proof,runtime,discovered}
+  }
+
+  it.each([0,1])('normalizes a matched composed physical pair %s to canonical receipt fields', async pairIndex=>{
+    const f=composedFixture(pairIndex)
+    const actual=await readAgentHostPhysicalDistribution(f.receipt,f.discovered,f.runtime as never)
+    expect(actual.distributionSha256).toBe(f.receipt.distributionSha256)
+    expect(actual.distributionSizeBytes).toBe(f.receipt.distributionSizeBytes)
+    expect(f.inspected.packageTreeSha256).toBe(agentReleasePhysicalReceiptPairs(f.receipt)[pairIndex].packageTreeSha256)
+  })
+
+  it.each(['mixed-tree','mixed-surface','version','provenance','executable','size','proof-node','proof-count'])('rejects altered composed physical evidence: %s', change=>{
+    const f=composedFixture(),canonical=agentReleasePhysicalReceiptPairs(f.receipt)[0]
+    if(change==='mixed-tree')f.inspected.packageTreeSha256=canonical.packageTreeSha256
+    if(change==='mixed-surface')f.inspected.portableArtifactFingerprint=canonical.portableArtifactFingerprint
+    if(change==='version')f.inspected.stdout='0.157.2'
+    if(change==='provenance')f.inspected.verifiedPackageProvenance='npm_metadata:another-package'
+    if(change==='executable')f.proof.sha256='0'.repeat(64)
+    if(change==='size')f.inspected.packageProofNodes.at(-1)!.size++
+    if(change==='proof-node')f.inspected.packageProofNodes[0].sha256='0'.repeat(64)
+    if(change==='proof-count')f.inspected.packageProofNodes.splice(2,1)
+    return expect(readAgentHostPhysicalDistribution(f.receipt,f.discovered,f.runtime as never)).rejects.toThrow(/receipt/)
+  })
+
   it.runIf(process.platform === 'darwin')('reads the current physical macOS execution environment', () => {
     const environment = inspectAgentHostAcceptanceExecutionEnvironment()
     expect(environment.processArchitecture).toBe(process.arch === 'x64' ? 'x64' : 'arm64')
