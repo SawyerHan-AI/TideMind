@@ -1,3 +1,4 @@
+import { agentIdentityDomainKey } from '@server/db/agent-identity-binding.js'
 import { CATALOG_ALIASES } from './catalog.js'
 import { sha256Json } from './fingerprint.js'
 import { buildLegacyMutationDomain } from './legacy-writer.js'
@@ -51,11 +52,45 @@ export async function adoptProvableLegacyConnections(input: {
     possible: AgentInstallationRow[]
     proven: Array<{ installation: AgentInstallationRow; observations: readonly AdoptableArtifactObservation[] }>
     knownSecondary: boolean
+    inspectionFailed: boolean
   }> = []
 
   for (const legacy of input.repository.listLegacyAgents()) {
     if (legacy.archived !== 0) {
       report.skippedArchived += 1
+      continue
+    }
+    // Managed consumers already have their own reconciliation/verification path.
+    // The old no-generation carrier need not remain present after activation.
+    try {
+      const shared = input.repository.getSharedIdentity(legacy.id)
+      if (shared) {
+        let stale = false
+        for (const member of shared.consumers) {
+          const row = input.repository.getInstallation(member.id)!
+          if (row.desired_state !== 'unmanaged' || row.tombstoned_at) continue
+          let observedEvidenceHash: string | null = null
+          try {
+            const observations = (await input.adapters.get(row.host_variant as CatalogId)!.inspectAdoptableArtifacts!({
+              runtime: input.runtime, installation: installationIdentity(row), agentId: legacy.id,
+              operationId: `legacy_adoption_${legacy.id}:shared_recheck`,
+            })).filter(o => o.identityAssertion === legacy.id)
+            if (observations.length) observedEvidenceHash = legacyEvidenceHash(legacy, row, observations)
+          } catch { /* Missing proof revokes only historical availability. */ }
+          const result = input.repository.recheckLegacyAdoption({
+            sharedBindingId: shared.bindingId, legacyAgentId: legacy.id, legacyToolType: legacy.tool_type,
+            installationId: row.id, observedEvidenceHash,
+            observedHostBinding: legacyAdoptionHostBinding(row), checkedAt: input.now,
+          })
+          stale ||= result === 'stale'
+        }
+        if (stale) report.needsConfirmation += 1
+        else report.alreadyAdopted += 1
+        continue
+      }
+    } catch {
+      report.needsConfirmation += 1
+      recordNeedsConfirmation(input.repository, legacy, [], [], input.now, 'shared_identity_domain_changed')
       continue
     }
     const historical = input.repository.getInstallationByLegacyAgentAlias(legacy.id, input.runtime.runtimeRealm)
@@ -155,6 +190,7 @@ export async function adoptProvableLegacyConnections(input: {
       installation: AgentInstallationRow
       observations: readonly AdoptableArtifactObservation[]
     }> = []
+    let inspectionFailed = false
     for (const installation of possible) {
       if (!installation.config_root || installation.runtime_realm !== input.runtime.runtimeRealm) continue
       const adapter = input.adapters.get(installation.host_variant as CatalogId)
@@ -165,10 +201,13 @@ export async function adoptProvableLegacyConnections(input: {
         agentId: legacy.id,
         operationId: `legacy_adoption_${legacy.id}`,
       }
-      const observations = (await adapter.inspectAdoptableArtifacts(context))
-        .filter(observation => observation.identityAssertion === legacy.id)
-      if (observations.length > 0) {
-        proven.push({ installation, observations })
+      try {
+        const observations = (await adapter.inspectAdoptableArtifacts(context))
+          .filter(observation => observation.identityAssertion === legacy.id)
+        if (observations.length > 0) proven.push({ installation, observations })
+      } catch {
+        // Missing evidence is not evidence that this Installation has no claim.
+        inspectionFailed = true
       }
     }
 
@@ -176,15 +215,28 @@ export async function adoptProvableLegacyConnections(input: {
       legacy,
       possible,
       proven,
+      inspectionFailed,
       knownSecondary: proven.length === 1
         && persistedCanonicalSelection(proven[0].installation)?.canonicalAgentId !== legacy.id
         && persistedCanonicalSelection(proven[0].installation)?.candidateLegacyAgentIds.includes(legacy.id) === true,
     })
   }
 
+  // A failed probe may conceal a competing identity. Quarantine that local
+  // candidate group, while letting unrelated products continue their scan.
+  const uncertainInstallations = new Set(candidates.filter(c => c.inspectionFailed)
+    .flatMap(c => c.possible.map(i => i.id)))
+  const usableCandidates = candidates.filter(candidate => {
+    if (!candidate.inspectionFailed && !candidate.possible.some(i => uncertainInstallations.has(i.id))) return true
+    report.needsConfirmation += 1
+    recordNeedsConfirmation(input.repository, candidate.legacy, candidate.possible, candidate.proven,
+      input.now, 'legacy_inspection_failed')
+    return false
+  })
+
   const legacyCountByInstallation = new Map<string, number>()
   const claimantsByInstallation = new Map<string, typeof candidates>()
-  for (const candidate of candidates) {
+  for (const candidate of usableCandidates) {
     if (candidate.knownSecondary) continue
     for (const installationId of new Set(candidate.proven.map(item => item.installation.id))) {
       legacyCountByInstallation.set(
@@ -211,8 +263,19 @@ export async function adoptProvableLegacyConnections(input: {
   const claimedInstallations = new Set(
     canonicalByInstallation.keys(),
   )
+  for (const candidate of usableCandidates) {
+    if (candidate.proven.length !== 2 || candidate.possible.length !== 2
+      || !candidate.proven.every(item => ['codex-cli','codex-desktop'].includes(item.installation.host_variant)
+        && (legacyCountByInstallation.get(item.installation.id) ?? 0) === 1)) continue
+    try {
+      if (new Set(candidate.proven.map(item => agentIdentityDomainKey(item.installation))).size === 1) {
+        candidate.proven.forEach(item => claimedInstallations.add(item.installation.id))
+      }
+    } catch { /* Different products/domains are not shared candidates. */ }
+  }
 
-  for (const { legacy, possible, proven, knownSecondary } of candidates) {
+
+  for (const { legacy, possible, proven, knownSecondary } of usableCandidates) {
     if (knownSecondary) {
       try {
         const result = input.repository.adoptLegacyIdentityOnlyInstallation({
@@ -228,6 +291,48 @@ export async function adoptProvableLegacyConnections(input: {
           input.repository, legacy, possible, proven, input.now,
           error instanceof Error ? error.message : String(error), false,
         )
+      }
+      continue
+    }
+
+    if (proven.length === 2
+      && possible.length === 2
+      && proven.every(item => (legacyCountByInstallation.get(item.installation.id) ?? 0) === 1)
+      && proven.every(item => ['codex-cli', 'codex-desktop'].includes(item.installation.host_variant))
+      && new Set(proven.map(item => item.installation.host_variant)).size === 2) {
+      try {
+        const domainKeys = proven.map(item => agentIdentityDomainKey(item.installation))
+        if (new Set(domainKeys).size !== 1) throw new Error('legacy_codex_domains_differ')
+        const physicalProof = (observations: readonly AdoptableArtifactObservation[]) =>
+          observations.map(({ containerHash: _container, ...owned }) => owned)
+            .sort((a, b) => sha256Json(a).localeCompare(sha256Json(b)))
+        if (sha256Json(physicalProof(proven[0].observations)) !== sha256Json(physicalProof(proven[1].observations))) {
+          throw new Error('legacy_codex_artifacts_differ')
+        }
+        for (const item of proven) {
+          const fresh = (await input.adapters.get(item.installation.host_variant as CatalogId)!.inspectAdoptableArtifacts!({
+            runtime: input.runtime, installation: installationIdentity(item.installation),
+            agentId: legacy.id, operationId: `legacy_adoption_${legacy.id}:shared_confirm`,
+          })).filter(o => o.identityAssertion === legacy.id)
+          if (sha256Json(fresh) !== sha256Json(item.observations)) throw new Error('evidence_changed_during_adoption')
+        }
+        const outcome = input.repository.adoptSharedLegacyInstallations({
+          binding: {
+            id: `binding_${domainKeys[0]}`, canonicalAgentId: legacy.id,
+            evidenceHash: sha256Json({ agentId: legacy.id, domainKey: domainKeys[0], observations: physicalProof(proven[0].observations) }),
+            members: proven.map(item => ({ installationId: item.installation.id,
+              installationAgentId: item.installation.agent_id!, installKey: item.installation.install_key,
+              domainKey: agentIdentityDomainKey(item.installation) })),
+            confirmedAt: input.now,
+          },
+          installations: proven.map(item => adoptionInput(legacy, item, item.observations, input.now)),
+        })
+        if (outcome === 'adopted') report.adopted += 1
+        else report.alreadyAdopted += 1
+      } catch (error) {
+        report.needsConfirmation += 1
+        recordNeedsConfirmation(input.repository, legacy, possible, proven, input.now,
+          error instanceof Error ? error.message : String(error))
       }
       continue
     }
@@ -284,66 +389,28 @@ export async function adoptProvableLegacyConnections(input: {
     }
     const candidate = proven[0]
     const adapter = input.adapters.get(candidate.installation.host_variant as CatalogId)!
-    const currentObservations = (await adapter.inspectAdoptableArtifacts!({
-      runtime: input.runtime,
-      installation: installationIdentity(candidate.installation),
-      agentId: legacy.id,
-      operationId: `legacy_adoption_${legacy.id}:confirm`,
-    })).filter(observation => observation.identityAssertion === legacy.id)
+    let currentObservations: readonly AdoptableArtifactObservation[]
+    try {
+      currentObservations = (await adapter.inspectAdoptableArtifacts!({
+        runtime: input.runtime,
+        installation: installationIdentity(candidate.installation),
+        agentId: legacy.id,
+        operationId: `legacy_adoption_${legacy.id}:confirm`,
+      })).filter(observation => observation.identityAssertion === legacy.id)
+    } catch {
+      report.needsConfirmation += 1
+      recordNeedsConfirmation(input.repository, legacy, possible, [], input.now, 'legacy_inspection_failed')
+      continue
+    }
     if (sha256Json(currentObservations) !== sha256Json(candidate.observations)) {
       report.needsConfirmation += 1
       recordNeedsConfirmation(input.repository, legacy, possible, [], input.now, 'evidence_changed_during_adoption')
       continue
     }
-    const evidenceHash = legacyEvidenceHash(legacy, candidate.installation, candidate.observations)
     try {
-      const result = input.repository.adoptLegacyInstallation({
-        legacyAgentId: legacy.id,
-        legacyToolType: legacy.tool_type,
-        installationId: candidate.installation.id,
-        expectedHostVariant: candidate.installation.host_variant,
-        expectedRuntimeRealm: candidate.installation.runtime_realm,
-        expectedConfigRoot: candidate.installation.config_root!,
-        expectedDistributionId: candidate.installation.distribution_id,
-        expectedInstallKey: candidate.installation.install_key,
-        expectedProfileId: candidate.installation.profile_id,
-        expectedOsUserIdentity: candidate.installation.os_user_identity,
-        expectedProvenance: candidate.installation.provenance,
-        expectedExecutablePath: candidate.installation.executable_path,
-        expectedAppPath: candidate.installation.app_path,
-        expectedDetectedVersion: candidate.installation.detected_version,
-        expectedVersionDetectionMethod: candidate.installation.version_detection_method,
-        expectedMetadataJson: candidate.installation.metadata_json,
-        evidenceHash,
-        evidenceVersion: 2,
-        canonicalSelectionBasis: canonicalSelection?.basis,
-        candidateLegacyAgentIds: canonicalSelection?.claimantAgentIds,
-        artifacts: currentObservations.map(observation => ({
-          id: `artifact_${sha256Json({
-            runtimeRealm: candidate.installation.runtime_realm,
-            target: observation.physicalTarget,
-            ownershipKey: observation.ownershipKey,
-          }).slice(0, 32)}`,
-          componentKey: observation.componentKey,
-          artifactType: observation.artifactType,
-          targetPath: observation.physicalTarget,
-          ownershipKey: observation.ownershipKey,
-          mutationDomain: observation.domainKind === 'file_fragment'
-            && candidate.installation.runtime_realm === 'local_macos'
-            ? buildLegacyMutationDomain({
-                adapterId: legacy.tool_type,
-                target: observation.physicalTarget,
-                selector: 'document',
-              })
-            : `${candidate.installation.runtime_realm}:${observation.domainKind}:${observation.physicalTarget}`,
-          projectionVersion: observation.projectionVersion,
-          selectorSchemaVersion: String(observation.selectorSchemaVersion),
-          containerHash: observation.containerHash ?? null,
-          fragmentHash: observation.fragmentHash,
-          discoverReachability: observation.discoverReachability,
-        })),
-        adoptedAt: input.now,
-      })
+      const result = input.repository.adoptLegacyInstallation(
+        adoptionInput(legacy, candidate, currentObservations, input.now, canonicalSelection),
+      )
       if (result === 'adopted') report.adopted += 1
       else report.alreadyAdopted += 1
     } catch (error) {
@@ -452,7 +519,7 @@ function legacyEvidenceHash(
   })
 }
 
-function installationIdentity(row: AgentInstallationRow): InstallationIdentity {
+export function installationIdentity(row: AgentInstallationRow): InstallationIdentity {
   return {
     runtimeRealm: row.runtime_realm as InstallationIdentity['runtimeRealm'],
     osUserIdentity: row.os_user_identity ?? 'local-user',
@@ -503,4 +570,61 @@ function recordNeedsConfirmation(
       createdAt,
     })
   }
+}
+
+export function adoptionInput(
+  legacy: LegacyAgentRow,
+  candidate: { installation: AgentInstallationRow; observations: readonly AdoptableArtifactObservation[] },
+  observations: readonly AdoptableArtifactObservation[],
+  adoptedAt: string,
+  canonicalSelection: CanonicalLegacySelection<unknown> | null = null,
+): Parameters<AgentIntegrationRepository['adoptLegacyInstallation']>[0] {
+  const evidenceHash = legacyEvidenceHash(legacy, candidate.installation, candidate.observations)
+  return {
+        legacyAgentId: legacy.id,
+        legacyToolType: legacy.tool_type,
+        installationId: candidate.installation.id,
+        expectedHostVariant: candidate.installation.host_variant,
+        expectedRuntimeRealm: candidate.installation.runtime_realm,
+        expectedConfigRoot: candidate.installation.config_root!,
+        expectedDistributionId: candidate.installation.distribution_id,
+        expectedInstallKey: candidate.installation.install_key,
+        expectedProfileId: candidate.installation.profile_id,
+        expectedOsUserIdentity: candidate.installation.os_user_identity,
+        expectedProvenance: candidate.installation.provenance,
+        expectedExecutablePath: candidate.installation.executable_path,
+        expectedAppPath: candidate.installation.app_path,
+        expectedDetectedVersion: candidate.installation.detected_version,
+        expectedVersionDetectionMethod: candidate.installation.version_detection_method,
+        expectedMetadataJson: candidate.installation.metadata_json,
+        evidenceHash,
+        evidenceVersion: 2,
+        canonicalSelectionBasis: canonicalSelection?.basis,
+        candidateLegacyAgentIds: canonicalSelection?.claimantAgentIds,
+        artifacts: observations.map(observation => ({
+          id: `artifact_${sha256Json({
+            runtimeRealm: candidate.installation.runtime_realm,
+            target: observation.physicalTarget,
+            ownershipKey: observation.ownershipKey,
+          }).slice(0, 32)}`,
+          componentKey: observation.componentKey,
+          artifactType: observation.artifactType,
+          targetPath: observation.physicalTarget,
+          ownershipKey: observation.ownershipKey,
+          mutationDomain: observation.domainKind === 'file_fragment'
+            && candidate.installation.runtime_realm === 'local_macos'
+            ? buildLegacyMutationDomain({
+                adapterId: legacy.tool_type,
+                target: observation.physicalTarget,
+                selector: 'document',
+              })
+            : `${candidate.installation.runtime_realm}:${observation.domainKind}:${observation.physicalTarget}`,
+          projectionVersion: observation.projectionVersion,
+          selectorSchemaVersion: String(observation.selectorSchemaVersion),
+          containerHash: observation.containerHash ?? null,
+          fragmentHash: observation.fragmentHash,
+          discoverReachability: observation.discoverReachability,
+        })),
+        adoptedAt: adoptedAt,
+      }
 }

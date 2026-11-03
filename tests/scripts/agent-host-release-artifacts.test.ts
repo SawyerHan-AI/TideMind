@@ -5,6 +5,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { readReleaseWorkflow } from '../helpers/release-workflow'
+// @ts-expect-error plain ESM helper
+import { releaseMacArchitectures } from '../../scripts/release.mjs'
 // @ts-expect-error plain ESM release verifier
 import { assertAcceptedReleaseCandidate, verifyAcceptedReleaseArtifacts } from '../../scripts/verify-agent-host-release-artifacts.mjs'
 
@@ -29,6 +31,28 @@ const input = { index, receipt, architecture: 'arm64', appVersion, sourceCommit,
 }
 
 describe('accepted candidate release artifacts', () => {
+  it('blocks a 0.2.94 artifact-only release without the separate B evidence', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'accepted-b-required-'))
+    try {
+      const version = '0.2.94'
+      fs.mkdirSync(path.join(directory, 'provenance'))
+      const updatedCandidate = { ...candidate, version }
+      const architectures = releaseMacArchitectures(version)
+      const updatedIndex = { ...index, appVersion: version, candidateAppsByArchitecture: Object.fromEntries(architectures.map((arch: string) => [arch, updatedCandidate])) }
+      const indexPath = path.join(directory, 'index.json')
+      fs.writeFileSync(indexPath, JSON.stringify(updatedIndex))
+      for (const architecture of architectures) {
+        fs.writeFileSync(path.join(directory, `provenance/mac-${architecture}.json`), JSON.stringify({ ...receipt, appVersion: version, architecture }))
+        for (const extension of ['dmg', 'zip'] as const) fs.writeFileSync(path.join(directory, `Tide.Mind-${version}-${architecture}.${extension}`), artifacts[extension])
+      }
+      const args = ['scripts/verify-agent-host-release-artifacts.mjs', '--release-dir', directory,
+        '--acceptance-index', indexPath, '--app-version', version, '--source-commit', sourceCommit]
+      expect(() => execFileSync(process.execPath, args, { stdio: 'pipe' })).toThrow(/missing --subscription-index/)
+      const missing = path.join(directory, 'missing-B.json')
+      expect(() => execFileSync(process.execPath, [...args, '--subscription-index', missing], { stdio: 'pipe' })).toThrow(/missing-B.json/)
+    } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+  })
+
   it('accepts the arm64-only release through the CLI and rejects missing arm64 evidence', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'accepted-arm64-release-'))
     try {

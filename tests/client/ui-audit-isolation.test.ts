@@ -220,6 +220,14 @@ describe('isolated Electron UI audit mode', () => {
     ]))
     expect(plan.mutations).toHaveLength(1)
     expect(plan.diagnostics).toEqual([])
+    expect(plan.requiredUserActionDetails?.[0]).toMatchObject({
+      hookKey: expect.stringContaining(':userPromptSubmit:'),
+    })
+    const fragment=plan.mutations[0].metadata?.desiredFragment as Record<string, {matcher?:string;hooks:Array<{command:string;timeout:number}>}>
+    expect(fragment.UserPromptSubmit).not.toHaveProperty('matcher')
+    expect(fragment.UserPromptSubmit.hooks[0]).toMatchObject({
+      command: expect.stringContaining('hook-codex-user-prompt-submit.cjs'), timeout: 3,
+    })
     expect(plan).toMatchObject({
       requiredUserActions: ['codex_hook_trust_required'],
       requiredUserActionDetails: [

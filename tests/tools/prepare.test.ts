@@ -54,6 +54,7 @@ vi.mock('../../src/llm/client.js', () => ({
 import type Database from 'better-sqlite3';
 import { setupTestDb, seedNode, seedLink } from '../helpers/test-db.js';
 import { prepare } from '../../src/tools/prepare.js';
+import { callLLM } from '../../src/llm/client.js';
 import { maybeRunMaintenance } from '../../src/metabolism/scheduler.js';
 import { invalidateGateCache } from '../../src/db/stats.js';
 import { SqliteRepository } from '../../src/db/sqlite-repository.js';
@@ -470,5 +471,25 @@ describe('prepare - operation log', () => {
       "SELECT * FROM strategy_feedback WHERE strategy_name = 'prepare-assemble'",
     ).all() as Array<{ strategy_name: string; feedback_signal: number }>;
     expect(feedback.length).toBe(1);
+  });
+});
+
+
+describe('prepare - internal read-only context', () => {
+  it('reads saved context without database writes or maintenance, preserving normal MCP behavior', async () => {
+    seedNode(db, { content: 'saved context for the next prompt' });
+    const before = db.prepare('SELECT total_changes() AS n').get();
+    const result = await prepare(repo, { tool: 'codex', detail_level: 'brief' }, { readOnly: true });
+    expect(result.recent).toHaveLength(1);
+    expect(db.prepare('SELECT total_changes() AS n').get()).toEqual(before);
+    expect(maybeRunMaintenance).not.toHaveBeenCalled();
+    expect(callLLM).not.toHaveBeenCalled();
+
+    const normal = await prepare(repo, { tool: 'codex', detail_level: 'brief' });
+    expect(normal.recent).toEqual(result.recent);
+    expect(normal.profile.text).toBe(result.profile.text);
+    expect(maybeRunMaintenance).toHaveBeenCalledTimes(1);
+    expect(db.prepare("SELECT count(*) AS n FROM operation_log WHERE operation='prepare'").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT count(*) AS n FROM strategy_feedback WHERE strategy_name='prepare-assemble'").get()).toEqual({ n: 1 });
   });
 });

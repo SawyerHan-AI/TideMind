@@ -1133,6 +1133,17 @@
       }
     },
     "managed": {
+      "codexSharedIdentityReconnect": "This Codex connection uses an older identity. In the Agent details, disconnect the existing Codex connection and complete its removal, then connect Codex again so Desktop and CLI share one Tide Mind identity.",
+      "codexExistingIdentityReview": "Existing Tide Mind connections for Codex need review before connecting. Open the Codex details and resolve the old identity conflict first, then check again and reconnect.",
+      "legacyChoice": {
+        "description": "Choose the existing Tide Mind identity to keep for Codex CLI and Desktop. History is preserved.",
+        "review": "Review existing identities",
+        "select": "Existing identity",
+        "preview": "Preview changes",
+        "remove": "Remove only the listed Tide Mind connection entries; keep all history and other configuration:",
+        "connect": "This also enables Tide Mind management for this installation. The other Codex surface shares the identity and can be connected separately.",
+        "confirm": "Confirm selection and connect"
+      },
       "sourceVerification": {
         "title": "Origine de l’installation",
         "description": "La vérification de l’origine ne confirme ni le chargement par l’hôte ni un appel mémoire réussi.",
@@ -1402,6 +1413,13 @@
       "lastUsed": "Dernière utilisation réelle",
       "noRecord": "Aucun enregistrement",
       "noReliableUsage": "Aucune preuve d'utilisation fiable",
+      "sharedConnection": {
+        "title": "Shared memory connection",
+        "call_observed": "Memory tool activity received on the current shared connection",
+        "waiting_for_call": "Waiting for activity on the shared connection",
+        "inactive": "Shared connection is inactive for this installation",
+        "scope": "CLI and Desktop share this configuration. Shared activity does not independently verify either host."
+      },
       "recentEvents": "Événements récents",
       "unreadEvents": "{{count}} nouveaux événements",
       "noEvents": "Aucun événement récent.",
@@ -1604,7 +1622,7 @@
         "awaiting_verification": "En attente de vérification",
         "paused": "En pause",
         "committed": "Connecté et vérifié",
-        "superseded": "Remplacé par une déconnexion ultérieure",
+        "superseded": "Remplacé par une opération ultérieure",
         "needs_recovery": "A besoin de récupération",
         "failed": "Échoué",
         "interrupted": "Interrompu – révisez et prévisualisez à nouveau"

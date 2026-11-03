@@ -1672,6 +1672,35 @@ describe('AgentIntegrationCoordinator', () => {
     expect(test.apply).not.toHaveBeenCalled()
   })
 
+  it('rejects absent file read-back even when it claims the non-null desired hash matches', async () => {
+    const test = harness()
+    const plan = await preview(test)
+    vi.mocked(test.adapter.readBack).mockResolvedValue({
+      operationId: 'write-mcp', observed: false, visibility: 'absent',
+      matchesDesired: true, observedFragmentHash: 'desired', diagnostics: [],
+    })
+    const result = await test.coordinator.applyPrepared({
+      installation, preparedPlan: plan, consentId: consent.id, desiredCapability: 3,
+    })
+    expect(result).toMatchObject({ status: 'needs_recovery', reason: 'effect_read_back_mismatch' })
+    expect(test.repository.calls).not.toContain('run:committed')
+  })
+
+  it('commits ordinary file removal with a null desired fingerprint', async () => {
+    const test = harness()
+    test.setLive('desired')
+    test.repository.control = { ...test.repository.control, desiredState: 'managed' }
+    test.repository.baselines = [{ componentKey: 'memory_tools', physicalTarget: '/tmp/tidemind/config.json',
+      ownershipKey: 'mcpServers.tidemind', ownedFragmentHash: 'desired' }]
+    const managed = { ...installation, desiredState: 'managed' as const }
+    const plan = await test.coordinator.preview({ installation: managed, operation: 'disconnect',
+      componentKeys: ['memory_tools'], desiredCapability: 0 })
+    const result = await test.coordinator.applyPrepared({ installation: managed, preparedPlan: plan,
+      consentId: consent.id, desiredCapability: 0 })
+    expect(result).toMatchObject({ status: 'committed' })
+    expect([...test.repository.mutationRecords.values()][0].desiredFingerprint).toBeNull()
+  })
+
   it('passes exact Ledger baselines to disconnect planning', async () => {
     const test = harness()
     test.repository.baselines = [{
@@ -2426,3 +2455,17 @@ describe('AgentIntegrationCoordinator shared physical domains (design §3.3.1)',
     expect(test.apply).not.toHaveBeenCalled()
   })
 })
+
+
+describe('canonical identity plan binding',()=>{
+ it('freezes the binding in preview and rejects a changed binding before apply',async()=>{
+  const test=harness();
+  const shared={...installation,agentId:'canonical',installationAgentId:installation.agentId,sharedIdentityBinding:'a'.repeat(64)};
+  test.repository.control={...test.repository.control,agentId:'canonical',installationAgentId:installation.agentId,sharedIdentityBinding:shared.sharedIdentityBinding};
+  const prepared=await test.coordinator.preview({installation:shared,operation:'connect',componentKeys:['memory_tools'],desiredCapability:3});
+  expect(prepared.executionPlan.sharedIdentityBinding).toBe(shared.sharedIdentityBinding);
+  test.repository.control.sharedIdentityBinding='b'.repeat(64);
+  await expect(test.coordinator.applyPrepared({installation:shared,preparedPlan:prepared,consentId:consent.id,desiredCapability:3})).rejects.toThrow(/identity changed/);
+  expect(test.repository.calls).not.toContain('adapter:apply');
+ });
+});

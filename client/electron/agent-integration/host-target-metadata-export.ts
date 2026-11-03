@@ -5,6 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { parse as parseToml } from 'smol-toml';
+import {createContextRestoreStore,contextRestoreKey} from '../../../src/hook-codex-context-restore.js';
+import {CODEX_RESTORE_CAPTURE_NONCE} from '../../../src/hook-codex-restore-capture.js';
+import {evaluateBridgeAdmission} from '@server/agent-bridge-guard.js';
+import {SqliteCoordinatorRepository} from './coordinator-repository.js';
+import {createCodexLifecycleHostAdapter,createOfficialCodexHooksPort,verifyCodexHookTrustAction} from './hosts/codex-lifecycle-adapter.js';
 import { inspectAgentHostActivityEvidenceV34Schema } from '@server/db/agent-integration-schema.js';
 import { readStableDistributionTree } from './distribution-artifact.js';
 import {
@@ -29,6 +34,9 @@ import {
   readStableFileFingerprint,
 } from './passive-cli-version.js';
 import {
+  AgentIntegrationRepository,
+  persistedComponentConfigRoots,
+  persistedHostOwnedIdentity,
   persistedComponentConfigFiles,
   persistedDistribution,
   type AgentInstallationRow,
@@ -446,7 +454,7 @@ export function currentUserOwnedCustomActivityProof(
   const afterMs = Math.max(Date.parse(run.created_at), now.getTime() - 30 * 24 * 60 * 60 * 1000);
   const records = new SqliteHostActivityEvidenceReader(database).find({
     installationId: row.id, agentId: row.agent_id, hostVariant: 'custom-local-mcp', componentKey: 'memory_tools',
-    signalNames: ['brain_recall', 'brain_digest'], tideMindVersion: runtime.tideMindVersion,
+    signalNames: ['brain_prepare', 'brain_recall', 'brain_digest'], tideMindVersion: runtime.tideMindVersion,
     adapterVersion: run.adapter_version, projectionVersion: runtime.projectionVersion, hostVersion: row.detected_version,
     activationRunId: run.id, activityGenerationToken: token, observedAfter: new Date(afterMs).toISOString(),
   }).filter(record => Date.parse(record.observedAt) > afterMs && Date.parse(record.observedAt) <= now.getTime());
@@ -456,11 +464,11 @@ export function currentUserOwnedCustomActivityProof(
   if (allowAbsentRuntimeActivity && records.length === 0) {
     const existing = database.prepare(`SELECT id FROM agent_host_activity_evidence
       WHERE installation_id = ? AND activation_run_id = ? AND component_key = 'memory_tools'
-        AND signal_name IN ('brain_recall', 'brain_digest') LIMIT 1`).get(row.id, run.id);
+        AND signal_name IN ('brain_prepare', 'brain_recall', 'brain_digest') LIMIT 1`).get(row.id, run.id);
     if (existing) throw new Error('existing user-owned Custom activity failed current proof validation');
     return null;
   }
-  const evidence = (['brain_recall', 'brain_digest'] as const).map(signal => {
+  const evidence = (['brain_prepare', 'brain_recall', 'brain_digest'] as const).map(signal => {
     const record = records.find(candidate => candidate.signalName === signal);
     if (!record) throw new Error(`user-owned Custom target lacks current ${signal} activity`);
     return { id: record.id, signalName: record.signalName, evidenceHash: record.evidenceHash, observedAt: record.observedAt };
@@ -562,6 +570,103 @@ export async function readAgentHostPhysicalDistribution(
   };
 }
 
+
+/** Read current ledger + physical five-hook state; request IDs are selectors, not proof. */
+export async function currentCodexContextRestoreProof(
+  database: Database.Database,
+  row: AgentInstallationRow,
+  runtime: AdapterRuntimeContext,
+  request: { sessionId: string; captureNonce: string },
+) {
+  if (!CODEX_RESTORE_CAPTURE_NONCE.test(request.captureNonce) || !request.sessionId.trim()
+    || request.sessionId.length > 4096 || !['codex-cli','codex-desktop'].includes(row.host_variant)
+    || !row.agent_id || !row.config_root || row.desired_state!=='managed' || row.tombstoned_at) {
+    throw new Error('Codex restore export selector or Installation is invalid');
+  }
+  const repository=new AgentIntegrationRepository(database);
+  const coordinator=new SqliteCoordinatorRepository(database,repository);
+  const identity=repository.coordinatorAgentIdentity(row.id);
+  const generation=coordinator.getCurrentActivityGenerationToken(row.id,['lifecycle']);
+  if (!generation || !evaluateBridgeAdmission(database,{agentId:identity.agentId,activityGenerationToken:generation,componentKey:'lifecycle'}).allowed) {
+    throw new Error('Codex restore export has no current admitted carrier');
+  }
+  const owned=()=>{
+    const artifact=database.prepare(`
+      SELECT a.id,a.target_path,a.owned_fragment_hash,a.projection_version
+      FROM managed_artifacts a JOIN installation_components component ON component.artifact_id=a.id
+      JOIN artifact_consumers consumer ON consumer.artifact_id=a.id AND consumer.installation_id=component.installation_id
+        AND consumer.component_key=component.component_key
+      JOIN agent_installations installation ON installation.id=component.installation_id
+      JOIN agent_consents consent ON consent.id=installation.consent_envelope_id
+      WHERE component.installation_id=? AND component.component_key='lifecycle'
+        AND installation.desired_state='managed' AND installation.tombstoned_at IS NULL
+        AND component.desired_state='managed' AND component.tombstoned_at IS NULL
+        AND component.consent_envelope_id=consent.id AND consumer.consent_envelope_id=consent.id
+        AND consumer.state='active' AND consumer.desired_state IN ('managed','disabled') AND consumer.tombstoned_at IS NULL
+        AND consent.status='active' AND consent.installation_id=installation.id
+        AND a.state='healthy' AND a.owned_fragment_hash IS NOT NULL
+    `).get(row.id) as {id:string;target_path:string;owned_fragment_hash:string;projection_version:string}|undefined;
+    if(!artifact)throw new Error('Codex restore lifecycle ownership is not current');
+    return artifact;
+  };
+  const artifact=owned();
+  const binding=()=>canonicalSha256Json({row:repository.getInstallation(row.id),identity:repository.coordinatorAgentIdentity(row.id),
+    generation:coordinator.getCurrentActivityGenerationToken(row.id,['lifecycle']),artifact:owned()});
+  const beforeBinding=binding();
+  const context={
+    runtime,installation:{
+      runtimeRealm:row.runtime_realm as 'local_macos',osUserIdentity:row.os_user_identity ?? 'local-user',
+      productFamilyId:row.family as never,hostVariant:row.host_variant as 'codex-cli'|'codex-desktop',
+      canonicalConfigRoot:row.config_root,componentConfigRoots:persistedComponentConfigRoots(row),
+      componentConfigFiles:persistedComponentConfigFiles(row),explicitProfile:row.profile_id||'default',
+      hostOwnedIdentity:persistedHostOwnedIdentity(row),distribution:persistedDistribution(row),installKey:row.install_key,
+    },installationId:row.id,agentId:identity.agentId,activityGenerationToken:generation,
+    hostVersion:row.detected_version ?? '',operationId:'codex-restore-evidence-readback',
+  };
+  const port=createOfficialCodexHooksPort();
+  const adapter=createCodexLifecycleHostAdapter({catalogId:context.installation.hostVariant,adapterVersion:'2',hooksPort:port});
+  const inspection=await adapter.inspect(context);
+  const plan=await adapter.plan(context,{desiredCapability:4,desiredComponents:['lifecycle'],observed:inspection,
+    ownedArtifacts:[{componentKey:'lifecycle',physicalTarget:artifact.target_path,ownershipKey:'hooks.tidemind-'+identity.agentId,
+      ownedFragmentHash:artifact.owned_fragment_hash,selectorSchemaVersion:1}]});
+  const action=plan.requiredUserActionDetails?.find(item=>item.kind==='codex_hook_trust');
+  if(plan.mutations.length || plan.diagnostics.length || !action || action.kind!=='codex_hook_trust'
+    || action.ownedFragmentHash!==artifact.owned_fragment_hash || artifact.projection_version!==runtime.projectionVersion) {
+    throw new Error('Codex restore export requires exact current five-hook candidate projection');
+  }
+  const verified=await verifyCodexHookTrustAction(context,action,port);
+  if(!verified)throw new Error('Codex restore five-hook trust binding changed');
+  const snapshot=await port.list(context);
+  if(snapshot.hooksFileFingerprint!==verified.hooksFileFingerprint || snapshot.trustConfigFingerprint!==verified.trustConfigFingerprint) {
+    throw new Error('Codex restore native state changed after exact trust verification');
+  }
+  // The existing exact verifier already proves all five command/event/trust bindings.
+  if(path.resolve(verified.sourcePath)!==fs.realpathSync(artifact.target_path)) {
+    throw new Error('Codex restore native source differs from owned physical target');
+  }
+  const upsScript=path.join(path.dirname(runtime.hookScriptPath),'hook-codex-user-prompt-submit.cjs');
+  const script=await readStableFileFingerprint(upsScript,32*1024*1024);
+  const after=await port.list(context);
+  if(after.hooksFileFingerprint!==snapshot.hooksFileFingerprint || after.trustConfigFingerprint!==snapshot.trustConfigFingerprint
+    || binding()!==beforeBinding
+    || !evaluateBridgeAdmission(database,{agentId:identity.agentId,activityGenerationToken:generation,componentKey:'lifecycle'}).allowed) {
+    throw new Error('Codex restore export binding changed during read-back');
+  }
+  const canonicalDataDir=fs.realpathSync(path.dirname(path.dirname(path.resolve(database.name))));
+  const scope={canonicalDataDir,agentId:identity.agentId,generation,sessionId:request.sessionId};
+  const state=createContextRestoreStore(database).readState(scope);
+  if(!state)throw new Error('Codex restore export has no valid state for the selected session');
+  return {
+    schemaVersion:1,captureNonce:request.captureNonce,scopeKey:contextRestoreKey(scope),
+    generationSha256:canonicalSha256Json(generation),sessionIdSha256:canonicalSha256Json(request.sessionId),
+    pendingRevision:state.pendingRevision,deliveredRevision:state.deliveredRevision,
+    deliveredTurnIdHash:state.deliveredTurnIdHash ?? null,
+    updatedAt:state.updatedAt,expiresAt:state.expiresAt,
+    hookSourcePathSha256:canonicalSha256Json(path.resolve(verified.sourcePath)),
+    hookDefinitionSha256:artifact.owned_fragment_hash,upsScriptSha256:script.sha256,
+  };
+}
+
 export interface AgentHostTargetMetadataExportOptions {
   targetKey: string;
   candidateBundleSha256: string;
@@ -569,11 +674,13 @@ export interface AgentHostTargetMetadataExportOptions {
   releaseContractSha256: string;
   outputPath: string;
   acceptanceMode?: 'partial-auth-runtime-0.2.93';
+  codexContextRestore?: { sessionId: string; captureNonce: string };
   databasePath?: string;
   homeDir?: string;
   now?: () => Date;
   /** Automated tests only; formal CLI never exposes this seam. */
   fixture?: {
+    restoreRuntimeContext?: AdapterRuntimeContext;
     receipt: AgentReleaseDistributionArtifactReceipt;
     row: AgentInstallationRow;
     discovered: DiscoveredInstallation;
@@ -840,6 +947,20 @@ export async function exportAgentHostTargetMetadata(options: AgentHostTargetMeta
   if (!receipt && (!persisted.distributionId || !persisted.packageProvenance)) {
     throw new Error('Custom target persisted distribution identity is incomplete');
   }
+  let codexContextRestore: Awaited<ReturnType<typeof currentCodexContextRestoreProof>> | undefined;
+  if (options.codexContextRestore) {
+    const database=new Database(options.databasePath ?? resolveRealProfileDatabase(),{readonly:true,fileMustExist:true});
+    try {
+      const current=database.prepare('SELECT * FROM agent_installations WHERE id=?').get(row.id) as AgentInstallationRow | undefined;
+      if(!current || current.host_variant!==row.host_variant || current.agent_id!==row.agent_id
+        || current.config_root!==row.config_root || current.detected_version!==row.detected_version) {
+        throw new Error('Codex restore target changed before evidence export');
+      }
+      codexContextRestore=await currentCodexContextRestoreProof(database,current,
+        options.fixture?.restoreRuntimeContext ?? metadataEvidenceRuntimeContext(options.homeDir ?? os.homedir()),
+        options.codexContextRestore);
+    } finally { database.close(); }
+  }
   const targetMetadata = {
     targetKey: options.targetKey,
     targetId: parsedTarget.kind === 'release' ? parsedTarget.catalogId : parsedTarget.mode,
@@ -864,6 +985,7 @@ export async function exportAgentHostTargetMetadata(options: AgentHostTargetMeta
     installationId: row.id,
     agentId: row.agent_id,
     ...(customBinding ? { customBinding } : {}),
+    ...(codexContextRestore ? { codexContextRestore } : {}),
   };
   const binding = {
     exporterVersion: 1,
@@ -895,15 +1017,19 @@ export async function exportAgentHostTargetMetadata(options: AgentHostTargetMeta
 
 async function main(): Promise<void> {
   const allowed = new Set([
-    '--target-key', '--candidate-bundle-sha256', '--source-commit', '--release-contract-sha256', '--output', '--acceptance-mode',
+    '--target-key', '--candidate-bundle-sha256', '--source-commit', '--release-contract-sha256', '--output', '--acceptance-mode', '--codex-restore-session-id', '--codex-restore-capture-nonce',
   ]);
   for (let index = 2; index < process.argv.length; index += 2) {
     if (!allowed.has(process.argv[index]) || !process.argv[index + 1]) throw new Error('invalid target metadata exporter arguments');
   }
   const mode = process.argv.includes('--acceptance-mode') ? arg('--acceptance-mode') : undefined;
   if (mode !== undefined && mode !== 'partial-auth-runtime-0.2.93') throw new Error('invalid acceptance mode');
+  const restoreSession=process.argv.includes('--codex-restore-session-id');
+  const restoreNonce=process.argv.includes('--codex-restore-capture-nonce');
+  if(restoreSession!==restoreNonce)throw new Error('Codex restore session and nonce must be supplied together');
   await exportAgentHostTargetMetadata({
     acceptanceMode: mode,
+    ...(restoreSession ? {codexContextRestore:{sessionId:arg('--codex-restore-session-id'),captureNonce:arg('--codex-restore-capture-nonce')}} : {}),
     targetKey: arg('--target-key'),
     candidateBundleSha256: arg('--candidate-bundle-sha256'),
     sourceCommit: arg('--source-commit'),

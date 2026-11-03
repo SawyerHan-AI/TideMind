@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Stopped-profile raw migration observations only. Never launches an App or emits passed receipts."""
-import argparse, hashlib, json, os, sqlite3, subprocess
+import argparse, hashlib, json, os, sqlite3, subprocess, shutil
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -59,7 +59,8 @@ def main():
   if integrity!='ok':raise RuntimeError('DB integrity failure')
   db.execute('BEGIN')
   names={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-  schema=dict(db.execute("SELECT key,value FROM metadata WHERE key='schema_version'")) if 'metadata' in names else {}
+  schema=dict(db.execute("SELECT key,value FROM metadata WHERE key IN ('schema_version','schema_lineage','schema_recovered_from')")) if 'metadata' in names else {}
+  schema_objects=[dict(zip(['type','name','tbl_name','sql'],r)) for r in db.execute("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name")] if schema.get('schema_version')=='41' else None
   tables={}
   for table,preferred in TABLES.items():
    if table not in names:tables[table]={'present':False};continue
@@ -69,8 +70,10 @@ def main():
    rows=list(db.execute('SELECT '+','.join(selected)+' FROM '+table))
    row_hashes=sorted(digest(canonical(row)) for row in rows)
    item={'present':True,'columns':selected,'rowCount':len(rows),'rowsSha256':digest(canonical(row_hashes)),'rowHashes':row_hashes}
-   if table=='agents':item['identities']=[{'id':r[0]} for r in db.execute('SELECT id FROM agents ORDER BY id')]
+   if table=='agents':item['identities']=[{'id':r[0],'toolType':r[1]} for r in db.execute('SELECT id,tool_type FROM agents ORDER BY id')]
    if table=='agent_installations':item['identities']=[dict(zip(['id','agentId','hostVariant','desiredState'],r)) for r in db.execute('SELECT id,agent_id,host_variant,desired_state FROM agent_installations ORDER BY id')]
+   if table=='artifact_consumers':item['ownership']=[dict(zip(['artifactId','installationId','state','desiredState'],r)) for r in db.execute('SELECT artifact_id,installation_id,state,desired_state FROM artifact_consumers')]
+   if table=='managed_artifacts':item['ownership']=[dict(zip(['id','state'],r)) for r in db.execute('SELECT id,state FROM managed_artifacts')]
    tables[table]=item
   backup=None
   if a.backup_dir:
@@ -84,7 +87,10 @@ def main():
     with (target/'config.toml').open('xb') as f:f.write(config)
     os.chmod(target/'config.toml',0o600)
    backup={'path':str(target),'databaseSha256':digest((target/'brain.sqlite').read_bytes()),'configurationPresent':config is not None,'configurationSha256':digest(config) if config is not None else None}
-  observed={'kind':'upgrade_raw_observation','status':'not_an_acceptance_assertion','phase':a.phase,'workspace':str(w),'observedAt':datetime.now(timezone.utc).isoformat(),'schema':schema,'integrity':integrity,'configurationSha256':digest(c.read_bytes()) if c.exists() else None,'tables':tables,'backup':backup}
+  node=shutil.which('node')
+  if not node:raise RuntimeError('existing Node runtime required for configuration observation')
+  codex_configuration=json.loads(subprocess.check_output([node,str(Path(__file__).resolve().with_name('codex-upgrade-baseline.mjs')),str(w/'home')],text=True,timeout=10))
+  observed={'kind':'upgrade_raw_observation','status':'not_an_acceptance_assertion','phase':a.phase,'workspace':str(w),'observedAt':datetime.now(timezone.utc).isoformat(),'schema':schema,'schemaObjects':schema_objects,'integrity':integrity,'configurationSha256':digest(c.read_bytes()) if c.exists() else None,'tables':tables,'backup':backup,'codexConfiguration':codex_configuration}
   if baseline:
    observed['comparison']={t:{'beforePresent':v.get('present'),'afterPresent':tables.get(t,{}).get('present'),'sameRows':v.get('rowsSha256')==tables.get(t,{}).get('rowsSha256'),'beforeRowsRetained':all(tables.get(t,{}).get('rowHashes',[]).count(x)>=v.get('rowHashes',[]).count(x) for x in set(v.get('rowHashes',[]))),'beforeCount':v.get('rowCount'),'afterCount':tables.get(t,{}).get('rowCount')} for t,v in baseline['tables'].items()}
   with output.open('x') as f:json.dump(observed,f,ensure_ascii=False,indent=2);f.write('\n')

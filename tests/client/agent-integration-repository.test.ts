@@ -105,6 +105,39 @@ function componentAndConsumer(
 }
 
 describe('AgentIntegrationRepository', () => {
+  it.each(['another-artifact', 'later-identity-conflict', 'already-healthy-recovery'])('clears only recovered artifact attention: %s', scenario => {
+    const { db, repository } = setup()
+    try {
+      discover(repository, 'i1'); consent(repository, 'i1', 'consent-i1'); artifact(repository, 'a1')
+      componentAndConsumer(repository, 'i1', 'a1', 'consent-i1')
+      repository.setInstallationIntent('i1', 'managed', T0)
+      repository.markArtifactNeedsAttention({ artifactId: 'a1', artifactState: 'drifted', statusReason: 'conflict',
+        invalidationReason: 'artifact_drifted', observedFingerprint: 'old-drift', observedAt: T0 })
+      repository.recordEvent({ installationId: 'i1', artifactId: 'a1', kind: 'artifact_drifted',
+        severity: 'warning', payload: {}, createdAt: T0 })
+      if (scenario === 'another-artifact') {
+        artifact(repository, 'a2')
+        repository.upsertComponent({ installationId: 'i1', componentKey: 'memory_tools', desiredState: 'managed',
+          desiredCapability: 2, deliveryMode: 'managed', artifactId: 'a2' }, T0)
+        repository.markArtifactNeedsAttention({ artifactId: 'a2', artifactState: 'conflict', statusReason: 'conflict',
+          invalidationReason: 'artifact_conflicted', observedFingerprint: 'other-conflict', observedAt: T0 })
+      } else if (scenario === 'later-identity-conflict') {
+        repository.markArtifactHealthyAfterReadback('a1', T0)
+        repository.markInstallationIdentityConflict('i1', T0, 'new_distribution_identity')
+      } else {
+        // Persisted r6 shape: an earlier read-back set healthy but left old attention/hash.
+        db.prepare("UPDATE managed_artifacts SET state='healthy' WHERE id='a1'").run()
+      }
+      repository.markArtifactHealthyAfterReadback('a1', '2026-08-25T00:02:00.000Z')
+      expect(repository.getInstallation('i1')?.status_reason)
+        .toBe(scenario === 'already-healthy-recovery' ? 'verification_stale' : 'conflict')
+      expect(db.prepare("SELECT observed_fragment_hash FROM managed_artifacts WHERE id='a1'").get())
+        .toEqual({ observed_fragment_hash: 'desired-a1' })
+      if (scenario === 'later-identity-conflict') expect(repository.getInstallation('i1'))
+        .toMatchObject({ reconcile_state: 'paused', health_state: 'inaccessible' })
+    } finally { db.close() }
+  })
+
   it('retains local preflight and migration metadata while replacing stale discovery evidence', () => {
     const { db, repository } = setup()
     try {

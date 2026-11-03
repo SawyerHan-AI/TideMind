@@ -31,6 +31,23 @@ describe('actual signed upgrade orchestration boundaries',()=>{
   fs.writeFileSync(file,'[mcp_servers.tidemind]\nenv = { EB_AGENT_ID = "new-agent" }\n')
   expect(()=>targetConfigurationBindings(root,[file],'old-agent','codex-desktop')).toThrow('does not bind the original Agent ID')
  })
+ it.runIf(process.platform==='darwin').each([35,36,45,99])('bounds old-schema corpus at verified 0.2.93 schema 35 (schema %s)',version=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'upgrade-schema-boundary-')));roots.push(root)
+  const graph=path.join(root,'home/.tidemind/graph');fs.mkdirSync(graph,{recursive:true})
+  fs.writeFileSync(path.join(root,'.tidemind-upgrade-profile'),'isolated-tidemind-upgrade-v1\n')
+  const dbpath=path.join(graph,'brain.sqlite'),output=path.join(root,'corpus.json');let db=new Database(dbpath)
+  db.exec(`CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);INSERT INTO metadata VALUES('schema_version','${version}');
+    CREATE TABLE nodes(id TEXT PRIMARY KEY,type TEXT,content TEXT,archived INTEGER);
+    CREATE TABLE llm_usage_log(id INTEGER PRIMARY KEY,model TEXT,operation TEXT,input_tokens INTEGER,output_tokens INTEGER);`);db.close()
+  const seed=()=>execFileSync('/usr/bin/python3',['scripts/seed-upgrade-corpus.py','--workspace',root,'--output',output],{stdio:'pipe'})
+  if(version===35){seed();expect(JSON.parse(fs.readFileSync(output,'utf8'))).toMatchObject({oldSchemaVersion:35,isRealCall:false,isHostActivityEvidence:false,protectedTablesUnchanged:true})}
+  else {expect(seed).toThrow(/limited to the actual old schema/);expect(fs.existsSync(output)).toBe(false)}
+  db=new Database(dbpath)
+  try{expect(db.prepare("SELECT value FROM metadata WHERE key='schema_version'").get()).toEqual({value:String(version)})
+    expect(db.prepare('SELECT COUNT(*) AS n FROM nodes').get()).toEqual({n:version===35?1:0})
+    expect(db.prepare('SELECT COUNT(*) AS n FROM llm_usage_log').get()).toEqual({n:version===35?1:0})
+  }finally{db.close()}
+ })
  it.runIf(process.platform==='darwin')('seeds only labelled non-activity data, snapshots it, and restores a matched stopped profile',()=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'upgrade-operator-fixture-')));roots.push(root)
   const workspace=path.join(root,'workspace'),output=path.join(root,'output'),data=path.join(workspace,'home/.tidemind'),graph=path.join(data,'graph')

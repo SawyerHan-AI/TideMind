@@ -3,7 +3,8 @@
  *
  * 不同 CLI 给 SessionStart / PostCompact / PreCompact 等 hook 的 stdout 协议不同:
  *   - Claude Code:纯文本 stdout 直接注入为上下文
- *   - Codex 0.126+ / Gemini CLI 0.26+ / Qwen Code / ZCode:必须输出严格 JSON
+ *   - Codex PreCompact/PostCompact:仅观察生命周期，输出 {}；不支持 additionalContext。
+ *   - Codex SessionStart / Gemini CLI 0.26+ / Qwen Code / ZCode:输出严格 JSON
  *     `{hookSpecificOutput: {hookEventName: "<EventName>", additionalContext: "..."}}`
  *     stdout 不能掺杂任何非 JSON 文本,且 hookEventName 必须严格匹配触发事件
  *
@@ -13,13 +14,18 @@
  * 现在把事件名作为参数显式传入。
  */
 
-export type HookEventName = 'SessionStart' | 'SessionEnd' | 'PostCompact' | 'PreCompact' | 'PreCompress';
+export type HookEventName = 'SessionStart' | 'SessionEnd' | 'UserPromptSubmit' | 'PostCompact' | 'PreCompact' | 'PreCompress';
 
 export function formatHookOutput(
   content: string,
   tool: string,
   hookEventName: HookEventName = 'SessionStart',
 ): string {
+  // Codex rust-v0.157.1 compact output schemas reject hookSpecificOutput.
+  // An empty success object observes lifecycle only; it injects no model context.
+  if (tool === 'codex' && (hookEventName === 'PreCompact' || hookEventName === 'PostCompact')) {
+    return '{}';
+  }
   if (tool === 'codex' || tool === 'gemini' || tool === 'qwen-code' || tool === 'zcode') {
     return JSON.stringify({
       hookSpecificOutput: {

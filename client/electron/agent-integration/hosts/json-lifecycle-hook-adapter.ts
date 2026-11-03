@@ -30,6 +30,7 @@ import { PORTABLE_TIDEMIND_SKILL_SHA256 } from './portable-skill'
 
 export type LifecycleEventName =
   | 'SessionStart'
+  | 'UserPromptSubmit'
   | 'SessionEnd'
   | 'PreCompact'
   | 'PostCompact'
@@ -46,7 +47,7 @@ type ActivationMode = 'always_enabled' | 'qwen_default_enabled' | 'zcode_explici
 
 export interface ManagedHookEvent {
   eventName: LifecycleEventName
-  signalName: Extract<HostActivitySignal, 'session_start' | 'pre_compact' | 'post_compact' | 'session_end'>
+  signalName?: Extract<HostActivitySignal, 'session_start' | 'pre_compact' | 'post_compact' | 'session_end'>
   entry: JsonValue
 }
 
@@ -323,7 +324,7 @@ export function createJsonLifecycleHookHostAdapter(spec: JsonLifecycleHookHostSp
       }
       const activity = await verifyHostActivity(context, request, {
         componentKey: 'lifecycle',
-        signalNames: spec.events(context).map(event => event.signalName),
+        signalNames: spec.events(context).flatMap(event => event.signalName ? [event.signalName] : []),
         // Static read-back proves every configured event entry. Each host spec
         // selects whether one fresh event or its complete event set is needed
         // to prove the host loaded this exact managed generation.

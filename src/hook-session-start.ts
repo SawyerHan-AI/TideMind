@@ -98,6 +98,9 @@ async function readStdinPayload(): Promise<Record<string, unknown> | null> {
   }
 }
 
+import { codexRestoreInput, openCodexRestoreRuntime, readCodexHookPayload } from './hook-codex-restore-runtime.js';
+
+let stdoutStarted = false;
 const migrationLog = createLogger('migrate');
 
 // --- 解析命令行参数 ---
@@ -214,7 +217,7 @@ async function main(): Promise<void> {
   //   - Codex 0.120+：`session_start_reason`
   //   - Gemini CLI 0.26+：`source`
   // 字段值都是 startup / resume / clear 三个枚举，下游判断逻辑一致。
-  const stdinPayload = await readStdinPayload();
+  const stdinPayload = tool === 'codex' ? await readCodexHookPayload() : await readStdinPayload();
 
   // --once-per-session(Kimi Code UserPromptSubmit):每会话只注入一次。
   // marker 已存在 → 静默退出(无任何 stdout);无 session_id(异常场景)→
@@ -227,6 +230,7 @@ async function main(): Promise<void> {
   // Generation-bound entry of a removed/stopped/rejected Installation: inject
   // nothing (no Skill, no memory) and record no evidence.
   if (hookBridgeRejection({ scope: 'hook-session-start', agentId, activityGenerationToken })) {
+    stdoutStarted = tool === 'codex';
     await outputHook(tool === 'openclaw'
       ? JSON.stringify({ protocol: 'tidemind-openclaw-context-v1', content: '', evidenceEligible: false })
       : '', tool);
@@ -260,6 +264,17 @@ async function main(): Promise<void> {
     skillContent = '（Skill 文件读取失败，请通过 MCP 工具 brain_prepare/recall/digest 与外脑交互）';
   }
 
+  const restoreInput = tool === 'codex' ? codexRestoreInput(stdinPayload, 'SessionStart') : null;
+  let observedRestoreRevision: number | null = null;
+  if (restoreInput) {
+    try {
+      const runtime = openCodexRestoreRuntime(agentId, activityGenerationToken, restoreInput.sessionId);
+      try { if (runtime.admitted()) observedRestoreRevision = runtime.store.readPending(runtime.scope)?.pendingRevision ?? null; }
+      finally { runtime.close(); }
+    } catch { /* restore bookkeeping must not suppress existing SessionStart delivery */ }
+  }
+  let savedContextPrepared = false;
+
   // 画像段与其余段分离,供 G1 预算按段截断。/clear 与错误路径无画像、用静态短文本走 restSection。
   let profileSection = '';
   let restSection: string;
@@ -282,6 +297,7 @@ async function main(): Promise<void> {
 
       profileSection = formatProfileSection(result);
       restSection = formatRestSections(result);
+      savedContextPrepared = true;
     } catch (err) {
       // 之前这里是裸 catch {} — prepare() 的任何异常(DB 损坏、OOM、代码 bug、
       // strategy loader 抛错)都会被吞成同一句静态 fallback,hook 行为看起来
@@ -308,6 +324,7 @@ async function main(): Promise<void> {
   const hostOutput = tool === 'openclaw'
     ? JSON.stringify({ protocol: 'tidemind-openclaw-context-v1', content, evidenceEligible: exactSkillGenerationLoaded })
     : content;
+  stdoutStarted = tool === 'codex';
   await writeHookOutputBeforeEvidence(hostOutput, tool, 'SessionStart', () => {
     // The native OpenClaw plugin must acknowledge the actual model-input
     // boundary. A successful pipe write only prepares its pending context.
@@ -338,6 +355,14 @@ async function main(): Promise<void> {
     }
   });
 
+  if (restoreInput && savedContextPrepared && observedRestoreRevision !== null) {
+    try {
+      const runtime = openCodexRestoreRuntime(agentId, activityGenerationToken, restoreInput.sessionId);
+      try { if (runtime.admitted()) runtime.store.satisfyFromSessionStart(runtime.scope, observedRestoreRevision); }
+      finally { runtime.close(); }
+    } catch { process.stderr.write('[eb:hook-session-start] codex_restore_ack_unavailable\n'); }
+  }
+
   // 仅在成功输出后创建 marker;失败路径(上方 throw / 最终 catch)不建 marker,
   // 下一条 prompt 会重试注入。marker 创建本身失败不阻断输出(下次重复注入兜底)。
   if (oncePerSession && sessionId) {
@@ -348,6 +373,10 @@ async function main(): Promise<void> {
 }
 
 main().catch(async (err: unknown) => {
+  if (stdoutStarted) {
+    process.stderr.write('[eb:hook-session-start] output_or_evidence_failed\n');
+    return;
+  }
   // 最终兜底
   const stack = err instanceof Error ? err.stack ?? err.message : String(err);
   process.stderr.write(`[eb:hook-session-start] fatal error: ${stack}\n`);

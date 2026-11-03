@@ -48,18 +48,18 @@ if (!agentId) {
   // 必须在启动阶段 warn 出来，让部署者能发现环境变量漏配的问题。
   log.warn('EB_AGENT_ID 未设置：不会生成宿主活动验证证据');
 }
-if (!hostVariant) log.warn('EB_HOST_VARIANT 未设置：不会生成宿主活动验证证据');
+// Shared carriers intentionally omit a static host hint; the ledger resolves their scope.
 if (!activityGenerationToken) log.warn('EB_ACTIVITY_GENERATION_TOKEN 未设置：不会生成宿主活动验证证据');
 
 const tideMindVersion = getTideMindVersion();
 const activityWarnings = new Set<string>();
 
 function recordMcpActivity(db: ReturnType<typeof getDb>, signalName: HostActivitySignal): void {
-  if (!agentId || !hostVariant || !activityGenerationToken) return;
+  if (!agentId || !activityGenerationToken) return;
   try {
     const result = recordHostActivityEvidence(db, {
       agentId,
-      hostVariant,
+      hostVariant: hostVariant ?? 'shared',
       componentKey: 'memory_tools',
       signalName,
       tideMindVersion,

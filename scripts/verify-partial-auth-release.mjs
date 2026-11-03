@@ -89,7 +89,11 @@ export const PARTIAL_AUTH_RELEASE_POLICY = deepFreeze({
 })
 export const PARTIAL_AUTH_RELEASE_POLICY_SHA256 = hash(canonical(PARTIAL_AUTH_RELEASE_POLICY))
 
-export function buildPartialAuthReleasePlan(requirements = loadAgentHostAcceptanceRequirements(), nonstandardSourceCatalogId) {
+function historicalRequirements(requirementsPath, releaseManifestPath) {
+  return loadAgentHostAcceptanceRequirements(requirementsPath, releaseManifestPath, { historicalAppVersion: VERSION })
+}
+
+export function buildPartialAuthReleasePlan(requirements = historicalRequirements(), nonstandardSourceCatalogId) {
   equal(requirements.appVersion, VERSION, 'partial policy version')
   equal(requirements.releaseMacArchitectures, ['arm64'], 'partial architectures')
   equal(requirements.upgradeFromAppVersions, ['0.2.89', '0.2.91', '0.2.92'], 'upgrade origins')
@@ -106,7 +110,10 @@ export function buildPartialAuthReleasePlan(requirements = loadAgentHostAcceptan
   const planned = targets.map(target => ({ targetKey: target.targetKey, targetId: target.targetId,
     sourceCatalogId: target.sourceCatalogId, officialDistributions: target.officialDistributions ?? [],
     acceptedDistributionArtifacts: target.acceptedDistributionArtifacts ?? [], releaseAcceptedExactVersions: target.releaseAcceptedExactVersions,
-    userOwned: target.configurationOwnership === 'user', steps: requiredHostAcceptanceSteps(requirements, target).map(id => {
+    userOwned: target.configurationOwnership === 'user', steps: (target.configurationOwnership === 'user'
+      ? ['official_host_version', 'distribution_identity', 'connect', 'brain_recall', 'brain_digest',
+        'scan_persistence', 'restart_persistence', 'pause_resume', 'disconnect']
+      : requiredHostAcceptanceSteps(requirements, target)).map(id => {
       const policy = PARTIAL_AUTH_RELEASE_POLICY.steps[id]
       if (!policy) throw new Error(`no reviewed partial policy for step ${id}`)
       return { id, ...policy }
@@ -122,7 +129,7 @@ const pending = id => ({ id, status: 'pending', receipt: null, evidenceFiles: []
 const deferred = id => ({ id, status: 'deferred', reason: 'user_authorized_login_or_real_invocation_only', explanation: '待补充此项需要登录或真实调用的具体边界', receipt: null, evidenceFiles: [] })
 export function buildPartialAuthReleaseTemplate({ expectedSourceCommit, requirementsPath, releaseManifestPath, nonstandardSourceCatalogId } = {}) {
   if (!COMMIT.test(expectedSourceCommit ?? '')) throw new Error('template source commit invalid')
-  const requirements = loadAgentHostAcceptanceRequirements(requirementsPath, releaseManifestPath)
+  const requirements = historicalRequirements(requirementsPath, releaseManifestPath)
   const plan = buildPartialAuthReleasePlan(requirements, nonstandardSourceCatalogId)
   return {
     schemaVersion: 1, kind: 'partial_auth_runtime_acceptance', appVersion: VERSION, sourceCommit: expectedSourceCommit,
@@ -179,7 +186,7 @@ function validatePartialCustomBinding(value, expected, metadata, allowMissingAct
     // Only the authenticated activity portion may be absent under this exception.
     if (value.activityBinding === null && !allowMissingActivity) throw new Error('missing activity requires explicit 0.2.93 user-owned Custom no-auth export')
     if (value.activityBinding !== null) validateUserOwnedCustomActivityBinding(value.activityBinding, { targetKey: metadata.targetKey,
-      installationId: metadata.installationId, agentId: metadata.agentId, hostVersion: metadata.hostVersion, tideMindVersion: VERSION })
+      installationId: metadata.installationId, agentId: metadata.agentId, hostVersion: metadata.hostVersion, tideMindVersion: VERSION }, 'historical user-owned Custom activity', { historicalAppVersion: VERSION })
   } else {
     digest(value.readBackProofSha256, 'Custom readback')
     if (expected.targetId === 'nonstandard_config_root') {
@@ -199,7 +206,7 @@ export function validatePartialAuthReleaseReport(report, { expectedSourceCommit,
   equal(report.schemaVersion, 1, 'report schema'); equal(report.kind, 'partial_auth_runtime_acceptance', 'report kind'); equal(report.appVersion, VERSION, 'report version')
   if (!COMMIT.test(expectedSourceCommit ?? '')) throw new Error('expected source commit invalid')
   equal(report.sourceCommit, expectedSourceCommit, 'report source')
-  const requirements = loadAgentHostAcceptanceRequirements(requirementsPath, releaseManifestPath)
+  const requirements = historicalRequirements(requirementsPath, releaseManifestPath)
   const plan = buildPartialAuthReleasePlan(requirements, report.nonstandardSourceCatalogId)
   equal(report.requirementsSha256, requirements.sha256, 'requirements hash'); equal(report.releaseContractSha256, requirements.releaseContractSha256, 'contract hash')
   equal(report.policySha256, PARTIAL_AUTH_RELEASE_POLICY_SHA256, 'policy hash')

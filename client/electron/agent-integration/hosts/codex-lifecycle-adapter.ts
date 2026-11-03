@@ -4,7 +4,7 @@ import { shellArgument } from '../shell-argument'
 import { parse as parseToml } from 'smol-toml'
 import { sha256Bytes, sha256Json } from '../fingerprint'
 import { verifyHostActivity } from '../host-activity-evidence'
-import { inspectRegularFileWithinRoot } from '../safe-file'
+import { inspectRegularFileWithinRoot, writeRegularFileAtomicCas } from '../safe-file'
 import type {
   AdapterInspection,
   AdapterOperationContext,
@@ -74,15 +74,161 @@ export interface CodexHookTrustVerification {
   trustConfigFingerprint: string
 }
 
-const TRUST_INSTRUCTION = '在 Codex 中运行 /hooks，依次选择 Tide Mind 的 SessionStart、PreCompact、PostCompact 和 SessionEnd Hook 并确认信任。完成后返回 Tide Mind 重新校验。'
+const TRUST_INSTRUCTION = '在 Codex 中运行 /hooks，依次选择 Tide Mind 的 SessionStart、PreCompact、PostCompact、SessionEnd 和 UserPromptSubmit Hook 并确认信任。完成后返回 Tide Mind 重新校验。'
 const STATUS_MESSAGE = '正在加载 Tide Mind 记忆…'
 
 interface CodexLifecycleEvent {
-  eventName: 'SessionStart' | 'PreCompact' | 'PostCompact' | 'SessionEnd'
-  canonicalEventName: 'sessionStart' | 'preCompact' | 'postCompact' | 'sessionEnd'
-  signalName: 'session_start' | 'pre_compact' | 'post_compact' | 'session_end'
-  matcher: string
+  eventName: 'SessionStart' | 'PreCompact' | 'PostCompact' | 'SessionEnd' | 'UserPromptSubmit'
+  canonicalEventName: 'sessionStart' | 'preCompact' | 'postCompact' | 'sessionEnd' | 'userPromptSubmit'
+  signalName?: 'session_start' | 'pre_compact' | 'post_compact' | 'session_end'
+  keyName?: 'user_prompt_submit'
+  matcher?: string
   scriptPath: string
+}
+
+
+export interface CodexRecipeUpgradeProof {
+  kind: 'codex_lifecycle_4_to_5'
+  oldFragment: Record<string, JsonValue>
+  oldGenerationToken: string
+  oldFragmentHash: string
+}
+
+/** Pure recipe delta check; caller separately proves versions, ownership and consent. */
+export function isExactCodexFourToFiveRecipeUpgrade(
+  oldValue: unknown, newValue: unknown, oldGenerationToken: string, newGenerationToken: string,
+): boolean {
+  const oldFragment=asObject(oldValue),newFragment=asObject(newValue)
+  const four=['PostCompact','PreCompact','SessionEnd','SessionStart']
+  if(!oldFragment || !newFragment || !oldGenerationToken || !newGenerationToken
+    || JSON.stringify(Object.keys(oldFragment).sort())!==JSON.stringify(four)
+    || JSON.stringify(Object.keys(newFragment).sort())!==JSON.stringify([...four,'UserPromptSubmit'].sort()))return false
+  const suffix=(token:string)=>' '+shellArgument('--activity-generation-token')+' '+shellArgument(token)
+  for(const event of four){
+    const oldEntry=asObject(oldFragment[event]),newEntry=asObject(newFragment[event])
+    if(!oldEntry || !newEntry || !Array.isArray(oldEntry.hooks) || !Array.isArray(newEntry.hooks)
+      || oldEntry.hooks.length!==1 || newEntry.hooks.length!==1)return false
+    const oldHandler=asObject(oldEntry.hooks[0]),newHandler=asObject(newEntry.hooks[0])
+    if(!oldHandler || !newHandler || typeof oldHandler.command!=='string' || typeof newHandler.command!=='string'
+      || !oldHandler.command.endsWith(suffix(oldGenerationToken)) || !newHandler.command.endsWith(suffix(newGenerationToken)))return false
+    const expectedMatcher=event==='SessionStart'?'startup|resume':event==='SessionEnd'?undefined:'manual|auto'
+    const newExpected={...(expectedMatcher?{matcher:expectedMatcher}:{}),hooks:[{
+      type:'command',command:newHandler.command,...(event==='SessionStart'?{statusMessage:STATUS_MESSAGE}:{}),timeout:15,
+    }]}
+    if(sha256Json(newEntry)!==sha256Json(newExpected))return false
+    const normalizedOld:Record<string,JsonValue>={...oldEntry,hooks:[{...oldHandler,command:oldHandler.command.slice(0,-suffix(oldGenerationToken).length)+suffix(newGenerationToken)}]}
+    if(event==='SessionEnd' && normalizedOld.matcher==='exit|archive')delete normalizedOld.matcher
+    if(sha256Json(normalizedOld)!==sha256Json(newEntry))return false
+  }
+  const end=asObject((asObject(newFragment.SessionEnd)!.hooks as JsonValue[])[0])!
+  const endCommand=String(end.command)
+  if(endCommand.split('hook-session-end.cjs').length!==2)return false
+  const expectedUps={hooks:[{type:'command',command:endCommand.replace('hook-session-end.cjs','hook-codex-user-prompt-submit.cjs'),timeout:3}]}
+  return sha256Json(newFragment.UserPromptSubmit)===sha256Json(expectedUps)
+}
+
+/** Read-only exact old recipe, including its generation; no ownership is inferred here. */
+function inspectFourHookRecipe(context:AdapterOperationContext): (CodexRecipeUpgradeProof & {canonicalPath:string;containerHash:string}) | null {
+  const file=inspectRegularFileWithinRoot(codexHooksFile(context),context.installation.canonicalConfigRoot)
+  if(!file.exists)return null
+  const document=asObject(JSON.parse(fs.readFileSync(file.canonicalPath,'utf8')))
+  if(!document || document.disableAllHooks===true)return null
+  const hooks=asObject(document.hooks)
+  if(!hooks)return null
+  const unboundContext={...context,activityGenerationToken:undefined}
+  const own=(event:string)=>Array.isArray(hooks[event])
+    ? (hooks[event] as JsonValue[]).filter(entry=>identifiesTideMindEntry(entry,unboundContext)) : []
+  if(own('UserPromptSubmit').length)return null
+  const fragment:Record<string,JsonValue>={}
+  for(const event of ['SessionStart','PreCompact','PostCompact','SessionEnd']){
+    const entries=own(event);if(entries.length!==1)return null
+    fragment[event]=entries[0]
+  }
+  const start=asObject((asObject(fragment.SessionStart)!.hooks as JsonValue[])[0])
+  const generation=typeof start?.command==='string'?start.command.match(/'--activity-generation-token' '([^']+)'$/)?.[1]:undefined
+  if(!generation)return null
+  const next=desiredFragment({...context,activityGenerationToken:context.activityGenerationToken??generation})
+  if(!isExactCodexFourToFiveRecipeUpgrade(fragment,next,generation,context.activityGenerationToken??generation))return null
+  return {kind:'codex_lifecycle_4_to_5',oldFragment:fragment,oldGenerationToken:generation,oldFragmentHash:sha256Json(fragment),
+    canonicalPath:file.canonicalPath,containerHash:file.containerHash!}
+}
+
+export interface CodexLegacyHookProof {
+  canonicalPath:string
+  containerHash:string
+  entries:{eventName:string;agentId:string;entry:JsonValue}[]
+}
+
+/** Exact historical generator/managed shapes, never a command-substring deletion. */
+export function inspectLegacyCodexHookProof(context:AdapterOperationContext, agentIds:readonly string[]): CodexLegacyHookProof | null {
+  const file=inspectRegularFileWithinRoot(codexHooksFile(context),context.installation.canonicalConfigRoot)
+  if(!file.exists)return null
+  const document=JSON.parse(fs.readFileSync(file.canonicalPath,'utf8')) as Record<string,JsonValue>
+  if(document.disableAllHooks===true)return null
+  if(document.disableAllHooks!==undefined && document.disableAllHooks!==false)throw new Error('Invalid Codex hook activation flag')
+  const hooks=asObject(document.hooks)
+  if(!hooks)return null
+  const entries:CodexLegacyHookProof['entries']=[]
+  for(const event of lifecycleEvents(context)){
+    const groups=hooks[event.eventName]
+    if(groups===undefined)continue
+    if(!Array.isArray(groups))throw new Error('Invalid legacy Codex hook event')
+    for(const entry of groups){
+      const commands=asObject(entry)?.hooks
+      if(!Array.isArray(commands))continue
+      for(const agentId of agentIds){
+        const command=asObject(commands[0])?.command
+        if(typeof command!=='string')continue
+        const mentions=commands.some(hook=>{
+          const value=asObject(hook)?.command
+          return typeof value==='string' && (value.includes('--agent-id '+JSON.stringify(agentId)) || value.includes(shellArgument('--agent-id')+' '+shellArgument(agentId)))
+        })
+        if(!mentions)continue
+        const token=command.match(/'--activity-generation-token' '([^']+)'/)?.[1]
+        if(token && token===context.activityGenerationToken)continue
+        const candidateContext={...context,agentId,activityGenerationToken:token}
+        let exact=sha256Json(entry)===sha256Json(desiredEntry(candidateContext,event))
+        if(event.eventName==='SessionEnd'){
+          // Keep exact recognition of our prior generated shape for owned migration.
+          exact ||= sha256Json(entry)===sha256Json({...asObject(desiredEntry(candidateContext,event))!,matcher:'exit|archive'})
+        }
+        if(event.eventName==='SessionStart'){
+          const skillPaths=[path.join(context.installation.canonicalConfigRoot,'skills','tidemind-'+agentId,'SKILL.md'),path.join(context.runtime.applicationDataDir,'skill','codex-skill.md')]
+          exact ||= skillPaths.some(skillPath=>sha256Json(entry)===sha256Json({matcher:'startup',hooks:[{type:'command',
+            command:[JSON.stringify(context.runtime.shimPath),JSON.stringify(context.runtime.hookScriptPath),'--agent-id',JSON.stringify(agentId),'--skill-path',JSON.stringify(skillPath),'--tool','codex'].join(' '),
+            statusMessage:'加载外脑上下文...',timeoutSec:15}]}))
+        }
+        if(!exact)throw new Error('Legacy Codex hook was modified; explicit configuration review is required')
+        if(entries.some(item=>item.eventName===event.eventName && item.agentId===agentId))throw new Error('Duplicate legacy Codex hook entries')
+        entries.push({eventName:event.eventName,agentId,entry})
+      }
+    }
+  }
+  return entries.length?{canonicalPath:file.canonicalPath,containerHash:file.containerHash!,entries}:null
+}
+
+function legacyHookHash(proof:CodexLegacyHookProof,agentId:string):string {
+  return sha256Json(Object.fromEntries(proof.entries.filter(item=>item.agentId===agentId).map(item=>[item.eventName,item.entry])))
+}
+
+function removeLegacyHooks(document:Record<string,JsonValue>,proof:CodexLegacyHookProof):void {
+  const hooks=asObject(document.hooks)
+  if(!hooks)throw new Error('Legacy Codex hooks disappeared')
+  for(const item of proof.entries){
+    const entries=hooks[item.eventName]
+    if(!Array.isArray(entries))throw new Error('Legacy Codex hook event changed')
+    const matches=entries.map((entry,index)=>sha256Json(entry)===sha256Json(item.entry)?index:-1).filter(index=>index>=0)
+    if(matches.length!==1)throw new Error('Legacy Codex hook ownership changed')
+    entries.splice(matches[0],1)
+  }
+}
+
+function legacyHooksAbsent(context:AdapterOperationContext,proof:CodexLegacyHookProof):boolean {
+  const file=inspectRegularFileWithinRoot(codexHooksFile(context),context.installation.canonicalConfigRoot)
+  if(!file.exists)return true
+  const document=JSON.parse(fs.readFileSync(file.canonicalPath,'utf8')) as Record<string,JsonValue>
+  const hooks=asObject(document.hooks)
+  return !proof.entries.some(item=>Array.isArray(hooks?.[item.eventName]) && (hooks![item.eventName] as JsonValue[]).some(entry=>sha256Json(entry)===sha256Json(item.entry)))
 }
 
 /**
@@ -111,8 +257,71 @@ export function createCodexLifecycleHostAdapter(spec: CodexLifecycleHostSpec): A
 
   return {
     ...base,
+    async inspect(context){
+      const inspection=await base.inspect(context)
+      let old: ReturnType<typeof inspectFourHookRecipe>
+      try { old=inspectFourHookRecipe(context) } catch { return inspection }
+      if(!old)return inspection
+      return {...inspection,diagnostics:inspection.diagnostics.filter(item=>item!=='managed_lifecycle_fragment_partial'),
+        components:inspection.components.map(component=>component.componentKey==='lifecycle'
+          ? {...component,visibility:'dedicated' as const,observedTarget:old.canonicalPath,observedFragmentHash:old.oldFragmentHash}
+          : component)}
+    },
+    async inspectAdoptableArtifacts(context){
+      const current=await base.inspectAdoptableArtifacts!(context)
+      if(current.length)return current
+      const proof=inspectLegacyCodexHookProof(context,[context.agentId])
+      if(!proof)return []
+      return [{componentKey:'lifecycle',artifactType:'hook',domainKind:'file_fragment',physicalTarget:proof.canonicalPath,
+        ownershipKey:'hooks.tidemind-'+context.agentId,selectorSchemaVersion:1,projectionVersion:context.runtime.projectionVersion,
+        containerHash:proof.containerHash,fragmentHash:legacyHookHash(proof,context.agentId),identityAssertion:context.agentId,discoverReachability:'dedicated'}]
+    },
+    async apply(context,mutation){
+      const proof=mutation.metadata?.codexLegacyHooks as unknown as CodexLegacyHookProof | undefined
+      if(!proof)return base.apply(context,mutation)
+      const file=inspectRegularFileWithinRoot(codexHooksFile(context),context.installation.canonicalConfigRoot)
+      if(file.canonicalPath!==proof.canonicalPath || file.containerHash!==proof.containerHash)throw new Error('Legacy Codex hook container changed')
+      const document=proposedDocument(context,proof.canonicalPath,proof)
+      writeRegularFileAtomicCas(file.canonicalPath,JSON.stringify(document,null,2)+'\n',{expectedCanonicalPath:proof.canonicalPath,expectedContainerHash:proof.containerHash})
+      const readback=await base.readBack(context,mutation)
+      if(!readback.matchesDesired || !legacyHooksAbsent(context,proof))throw new Error('Legacy Codex hook migration readback failed')
+      return {operationId:mutation.operationId,effectObserved:true,postEffectFingerprint:readback.observedFragmentHash}
+    },
+    async readBack(context,mutation){
+      const result=await base.readBack(context,mutation)
+      const proof=mutation.metadata?.codexLegacyHooks as unknown as CodexLegacyHookProof | undefined
+      if(!proof)return result
+      const file=inspectRegularFileWithinRoot(codexHooksFile(context),context.installation.canonicalConfigRoot)
+      if(!result.matchesDesired && file.canonicalPath===proof.canonicalPath && file.containerHash===proof.containerHash){
+        const document=JSON.parse(fs.readFileSync(file.canonicalPath,'utf8')) as Record<string,JsonValue>
+        removeLegacyHooks(document,proof)
+        const selectedPresent=proof.entries.some(item=>item.agentId===context.agentId)
+        return {...result,observed:selectedPresent,visibility:selectedPresent?'dedicated':'absent',observedFragmentHash:selectedPresent?legacyHookHash(proof,context.agentId):undefined,matchesDesired:false}
+      }
+      return {...result,matchesDesired:result.matchesDesired && legacyHooksAbsent(context,proof)}
+    },
     async plan(context, request): Promise<AdapterPlan> {
-      const plan = await base.plan(context, request)
+      let plan = await base.plan(context, request)
+      if(request.desiredCapability > 0 && request.desiredComponents.includes('lifecycle')){
+        const proof=context.codexLegacySelection?.hookProof ?? inspectLegacyCodexHookProof(context,[context.agentId])
+        if(proof){
+          const baseline=request.ownedArtifacts.find(item=>item.componentKey==='lifecycle' && item.ownershipKey==='hooks.tidemind-'+context.agentId)
+          if(baseline ? baseline.ownedFragmentHash!==legacyHookHash(proof,context.agentId) : (!context.codexLegacySelection || proof.entries.some(item=>item.agentId===context.agentId)))throw new Error('Legacy Codex hook needs proven ownership before migration')
+          plan={...plan,mutations:plan.mutations.map(mutation=>mutation.componentKey!=='lifecycle'?mutation:{...mutation,
+            operation:baseline?'update':'create',preconditionHash:baseline?.ownedFragmentHash,containerPreconditionHash:proof.containerHash,
+            metadata:{...mutation.metadata,codexLegacyHooks:proof as unknown as JsonValue}})}
+        }
+      }
+      const oldRecipe=inspectFourHookRecipe(context)
+      if(oldRecipe){
+        const baseline=request.ownedArtifacts.find(item=>item.componentKey==='lifecycle'
+          && item.physicalTarget===oldRecipe.canonicalPath && item.ownershipKey==='hooks.tidemind-'+context.agentId)
+        if(baseline?.ownedFragmentHash===oldRecipe.oldFragmentHash)plan={...plan,mutations:plan.mutations.map(mutation=>
+          mutation.componentKey!=='lifecycle'?mutation:{...mutation,metadata:{...mutation.metadata,codexRecipeUpgrade:{
+            kind:oldRecipe.kind,oldFragment:oldRecipe.oldFragment,oldGenerationToken:oldRecipe.oldGenerationToken,
+            oldFragmentHash:oldRecipe.oldFragmentHash,
+          } as unknown as JsonValue}})}
+      }
       if (!request.desiredComponents.includes('lifecycle')
         || request.desiredCapability === 0
         || plan.diagnostics.length > 0) return plan
@@ -195,7 +404,7 @@ export function createCodexLifecycleHostAdapter(spec: CodexLifecycleHostSpec): A
       }
       return [{
         ...activity,
-        evidenceRef: `codex-hook-trust:${trustReceipt.id};${activity.evidenceRef ?? 'host-activity'}`,
+        evidenceRef: `${activity.evidenceRef};codex-hook-trust:${trustReceipt.id}`,
         evidenceHash: sha256Json({
           activityEvidenceHash: activity.evidenceHash ?? null,
           hookCurrentHashes: hooks.map(hook => hook.currentHash),
@@ -236,7 +445,7 @@ async function attachTrustAction(
   let hooks: readonly CodexOfficialHookMetadata[]
   try {
     if (plan.mutations.some(mutation => mutation.componentKey === 'lifecycle')) {
-      hooks = (await hooksPort.preview(context, sourcePath, proposedDocument(context, sourcePath))).hooks
+      hooks = (await hooksPort.preview(context, sourcePath, proposedDocument(context, sourcePath, plan.mutations.find(item=>item.componentKey==='lifecycle')?.metadata?.codexLegacyHooks as unknown as CodexLegacyHookProof | undefined))).hooks
     } else {
       hooks = (await hooksPort.list(context)).hooks
     }
@@ -358,7 +567,8 @@ function staticResult(
     verifiedCapability: capability,
     evidenceHash,
     identityAssertion: context.agentId,
-    invalidationKeys: codexInvalidationKeys(),
+    // Static readback proves installation only; activity freshness applies to C4.
+    invalidationKeys: codexInvalidationKeys().filter(key => key !== 'activity_freshness'),
     diagnostics,
   }
 }
@@ -413,8 +623,14 @@ function lifecycleEvents(context: AdapterOperationContext): readonly CodexLifecy
       eventName: 'SessionEnd',
       canonicalEventName: 'sessionEnd',
       signalName: 'session_end',
-      matcher: 'exit|archive',
+      // Codex 0.157.1 supplies reason 'other'; no matcher observes all SessionEnd reasons.
       scriptPath: path.join(path.dirname(context.runtime.hookScriptPath), 'hook-session-end.cjs'),
+    },
+    {
+      eventName: 'UserPromptSubmit',
+      canonicalEventName: 'userPromptSubmit',
+      keyName: 'user_prompt_submit',
+      scriptPath: path.join(path.dirname(context.runtime.hookScriptPath), 'hook-codex-user-prompt-submit.cjs'),
     },
   ]
 }
@@ -436,12 +652,12 @@ function desiredCommand(context: AdapterOperationContext, event: CodexLifecycleE
 
 function desiredEntry(context: AdapterOperationContext, event: CodexLifecycleEvent): JsonValue {
   return {
-    matcher: event.matcher,
+    ...(event.matcher !== undefined ? { matcher: event.matcher } : {}),
     hooks: [{
       type: 'command',
       command: desiredCommand(context, event),
       ...(event.eventName === 'SessionStart' ? { statusMessage: STATUS_MESSAGE } : {}),
-      timeout: 15,
+      timeout: event.eventName === 'UserPromptSubmit' ? 3 : 15,
     }],
   }
 }
@@ -466,6 +682,7 @@ function identifiesTideMindEntry(candidate: JsonValue, context: AdapterOperation
 function proposedDocument(
   context: AdapterOperationContext,
   sourcePath: string,
+  legacyProof?: CodexLegacyHookProof,
 ): Readonly<Record<string, JsonValue>> {
   let document: Record<string, JsonValue> = {}
   if (fs.existsSync(sourcePath)) {
@@ -474,6 +691,7 @@ function proposedDocument(
     if (!root) throw new Error('managed_hook_json_root_not_object')
     document = structuredClone(root)
   }
+  if(legacyProof)removeLegacyHooks(document,legacyProof)
   const hooks = document.hooks === undefined ? {} : asObject(document.hooks)
   if (!hooks) throw new Error('hook_selector_parent_not_object:hooks')
   document.hooks = hooks
@@ -583,9 +801,11 @@ function assertCanonicalCodexHooksTarget(
   context: AdapterOperationContext,
   explicitTarget = codexHooksFile(context),
 ): string {
-  const canonicalRoot = fs.realpathSync(context.installation.canonicalConfigRoot)
-  const expected = path.join(canonicalRoot, 'hooks.json')
-  const observed = inspectRegularFileWithinRoot(explicitTarget, canonicalRoot).canonicalPath
+  const configRoot = context.installation.canonicalConfigRoot
+  // First-time previews must remain read-only even when CODEX_HOME is absent.
+  // Use the same ancestor/symlink checks as the planned file mutation.
+  const expected = inspectRegularFileWithinRoot(path.join(configRoot, 'hooks.json'), configRoot).canonicalPath
+  const observed = inspectRegularFileWithinRoot(explicitTarget, configRoot).canonicalPath
   if (observed !== expected) throw new Error('codex_hooks_target_must_be_canonical_root_hooks_json')
   return observed
 }
@@ -675,7 +895,7 @@ function codexHookMetadataFromDocuments(
         if (statusMessage === undefined) {
           throw new Error(`official_hook_status_message_invalid:${event.eventName}:${groupIndex}`)
         }
-        const key = `${sourcePath}:${event.signalName}:${groupIndex}:${handlerIndex}`
+        const key = `${sourcePath}:${event.keyName ?? event.signalName}:${groupIndex}:${handlerIndex}`
         const currentHash = codexHookCurrentHash(event, matcher, handler, timeoutSec, statusMessage)
         const hookState = asObject(state[key])
         const trustedHash = hookState?.trusted_hash
@@ -725,13 +945,13 @@ function codexHookCurrentHash(
     async: handler.async === true,
   }
   if (statusMessage !== null) normalizedHandler.statusMessage = statusMessage
-  if (event.eventName === 'SessionStart'
+  if ((event.eventName === 'SessionStart' || event.eventName === 'UserPromptSubmit')
     && typeof handler.additionalContextLimit === 'number'
     && handler.additionalContextLimit !== 2_500) {
     normalizedHandler.additionalContextLimit = handler.additionalContextLimit
   }
   const identity: Record<string, JsonValue> = {
-    event_name: event.signalName,
+    event_name: event.keyName ?? event.signalName!,
     hooks: [normalizedHandler],
   }
   if (matcher !== null) identity.matcher = matcher

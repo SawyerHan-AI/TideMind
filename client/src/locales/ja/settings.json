@@ -1133,6 +1133,17 @@
       }
     },
     "managed": {
+      "codexSharedIdentityReconnect": "This Codex connection uses an older identity. In the Agent details, disconnect the existing Codex connection and complete its removal, then connect Codex again so Desktop and CLI share one Tide Mind identity.",
+      "codexExistingIdentityReview": "Existing Tide Mind connections for Codex need review before connecting. Open the Codex details and resolve the old identity conflict first, then check again and reconnect.",
+      "legacyChoice": {
+        "description": "Choose the existing Tide Mind identity to keep for Codex CLI and Desktop. History is preserved.",
+        "review": "Review existing identities",
+        "select": "Existing identity",
+        "preview": "Preview changes",
+        "remove": "Remove only the listed Tide Mind connection entries; keep all history and other configuration:",
+        "connect": "This also enables Tide Mind management for this installation. The other Codex surface shares the identity and can be connected separately.",
+        "confirm": "Confirm selection and connect"
+      },
       "sourceVerification": {
         "title": "インストール元",
         "description": "提供元の検証は、ホストでの読み込みやメモリ呼び出しの成功を意味しません。",
@@ -1388,6 +1399,13 @@
       "lastUsed": "最後に実際に使用したのは",
       "noRecord": "記録なし",
       "noReliableUsage": "信頼できる使用証拠がない",
+      "sharedConnection": {
+        "title": "Shared memory connection",
+        "call_observed": "Memory tool activity received on the current shared connection",
+        "waiting_for_call": "Waiting for activity on the shared connection",
+        "inactive": "Shared connection is inactive for this installation",
+        "scope": "CLI and Desktop share this configuration. Shared activity does not independently verify either host."
+      },
       "recentEvents": "最近の出来事",
       "unreadEvents": "{{count}} 新しいイベント",
       "noEvents": "最近の出来事はありません。",
@@ -1518,7 +1536,7 @@
         "awaiting_verification": "検証待ち",
         "paused": "一時停止中",
         "committed": "接続され、検証されました",
-        "superseded": "後の切断によって置き換えられます",
+        "superseded": "後の操作に置き換えられました",
         "needs_recovery": "回復が必要です",
         "failed": "失敗しました",
         "interrupted": "中断されました — 内容を確認して再度プレビューしてください"

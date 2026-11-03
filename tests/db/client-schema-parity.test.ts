@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import { AGENT_INTEGRATION_TABLES as AGENT_TABLES } from '../../src/db/agent-integration-schema.js';
+import { AGENT_INTEGRATION_TABLES as AGENT_TABLES, AGENT_INTEGRATION_SCHEMA_SQL, inspectAgentHostActivityEvidenceV34Schema } from '../../src/db/agent-integration-schema.js';
 
 const RUNTIME_TABLES = [
   'model_connections',
@@ -33,10 +33,6 @@ const clientSource = readFileSync(
 );
 const migrationHelperSource = readFileSync(
   fileURLToPath(new URL('../../src/db/migration-helpers.ts', import.meta.url)),
-  'utf8',
-);
-const agentIntegrationSchemaSource = readFileSync(
-  fileURLToPath(new URL('../../src/db/agent-integration-schema.ts', import.meta.url)),
   'utf8',
 );
 
@@ -116,7 +112,7 @@ describe('core/client local Agent schema parity', () => {
   it('keeps one authoritative definition for every managed Agent table', () => {
     for (const table of AGENT_TABLES) {
       expect(
-        new RegExp(`CREATE TABLE IF NOT EXISTS\\s+${table}\\s*\\(`).test(agentIntegrationSchemaSource),
+        new RegExp(`CREATE TABLE IF NOT EXISTS\\s+${table}\\s*\\(`).test(AGENT_INTEGRATION_SCHEMA_SQL),
         table,
       ).toBe(true);
     }
@@ -128,5 +124,35 @@ describe('core/client local Agent schema parity', () => {
     expect(coreSource.match(/ensureAgentIntegrationSchema\(db\)/g)).toHaveLength(2);
     expect(clientSource.match(/ensureAgentIntegrationSchema\(newDb\)/g)).toHaveLength(1);
     expect(clientSource.match(/ensureAgentIntegrationSchema\(tmpDb\)/g)).toHaveLength(1);
+  });
+});
+
+describe('activity export schema compatibility', () => {
+  function fixture(version: number, lineage?: string) {
+    const db = new Database(':memory:');
+    db.exec("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT);");
+    db.prepare("INSERT INTO metadata VALUES ('schema_version', ?)").run(String(version));
+    if (lineage !== undefined) db.prepare("INSERT INTO metadata VALUES ('schema_lineage', ?)").run(lineage);
+    db.exec(AGENT_INTEGRATION_SCHEMA_SQL);
+    return db;
+  }
+
+  it.each([34, 35, 45])('exports the unchanged ledger shape from supported schema %i', version => {
+    const db = fixture(version, version === 45 ? 'stable-0.2.94' : undefined);
+    try {
+      expect(inspectAgentHostActivityEvidenceV34Schema(db).schemaVersion).toBe(version);
+    } finally { db.close(); }
+  });
+
+  it.each([
+    [33, undefined], [41, undefined], [46, undefined],
+    [45, undefined], [45, 'unknown-lineage'],
+  ] as const)('rejects unsupported schema/lineage %s %s without changing metadata', (version, lineage) => {
+    const db = fixture(version, lineage);
+    try {
+      const before = db.prepare('SELECT * FROM metadata ORDER BY key').all();
+      expect(() => inspectAgentHostActivityEvidenceV34Schema(db)).toThrow();
+      expect(db.prepare('SELECT * FROM metadata ORDER BY key').all()).toEqual(before);
+    } finally { db.close(); }
   });
 });

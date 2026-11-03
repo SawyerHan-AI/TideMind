@@ -50,6 +50,23 @@ function plan(overrides: Partial<ExecutionPlan> = {}): ExecutionPlan {
 }
 
 describe('execution plan consent boundary', () => {
+  it('binds the exact recipe predecessor installation into the approval hash', () => {
+    const takeover = {kind:'codex_lifecycle_4_to_5' as const,installationId:'peer-a',runId:'old-run',
+      executionPlanHash:'a'.repeat(64),effectSnapshotHash:'b'.repeat(64),mutationDomains:['local_macos:file:/owned/hooks.json']}
+    const approved=plan({completedGenerationTakeovers:[takeover]})
+    expect(checkPlanAgainstConsent(approved,consent).allowed).toBe(true)
+    expect(executionPlanHash(approved)).not.toBe(executionPlanHash(plan({completedGenerationTakeovers:[{...takeover,installationId:'peer-b'}]})))
+  })
+
+  it('rejects peer installation fields without the narrow recipe discriminator', () => {
+    const prior={runId:'old-run',executionPlanHash:'a'.repeat(64),effectSnapshotHash:'b'.repeat(64),mutationDomains:['owned-domain']}
+    for(const entry of [{...prior,installationId:'peer'}, {...prior,kind:'codex_lifecycle_4_to_5'}]){
+      expect(checkPlanAgainstConsent(plan({completedGenerationTakeovers:[entry as NonNullable<ExecutionPlan['completedGenerationTakeovers']>[number]]}),consent).reasons)
+        .toContain('completed_generation_takeovers_invalid')
+    }
+    expect(checkPlanAgainstConsent(plan({completedGenerationTakeovers:[prior]}),consent).allowed).toBe(true)
+  })
+
   it('allows an exact, lower-risk plan inside the approved target scope', () => {
     const result = checkPlanAgainstConsent(plan(), consent)
     expect(result).toMatchObject({ allowed: true, reasons: [] })

@@ -67,7 +67,7 @@ function fixture(schemaKind: CustomMcpSchema = 'standard_mcp_servers', selectorK
     VALUES('run-custom','custom','connect','hash','committed','readback_before_replay','consent','1','1',?,?,?)`)
     .run(JSON.stringify(prepared),T0,T0)
   const row = db.prepare("SELECT * FROM agent_installations WHERE id='custom'").get() as AgentInstallationRow
-  const record = (signalName: 'brain_recall' | 'brain_digest') => recordHostActivityEvidence(db, {
+  const record = (signalName: 'brain_prepare' | 'brain_recall' | 'brain_digest') => recordHostActivityEvidence(db, {
     agentId: row.agent_id!, hostVariant: row.host_variant, componentKey: 'memory_tools', signalName,
     tideMindVersion: runtime.tideMindVersion, activityGenerationToken: token, observedAt: T1,
   })
@@ -76,7 +76,7 @@ function fixture(schemaKind: CustomMcpSchema = 'standard_mcp_servers', selectorK
 
 describe('user-owned Custom real-activity acceptance binding', () => {
   it.each(['standard_mcp_servers','nested_mcp_servers','opencode_mcp'] as const)('runs the full %s metadata exporter against a real SQLite fixture', async schemaKind => {
-    const data = fixture(schemaKind, 'memory_bank'); data.record('brain_recall'); data.record('brain_digest')
+    const data = fixture(schemaKind, 'memory_bank'); data.record('brain_prepare'); data.record('brain_recall'); data.record('brain_digest')
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'custom-guided-export-'))); roots.push(root)
     const executable = path.join(root, 'client'); fs.writeFileSync(executable, 'fixture client', { mode: 0o700 })
     const proof = await readStableFileFingerprint(executable, 1024)
@@ -125,20 +125,25 @@ describe('user-owned Custom real-activity acceptance binding', () => {
   })
   it.each(['standard_mcp_servers','nested_mcp_servers','opencode_mcp'] as const)('exports %s from real recorder/reader evidence without any config file or artifact', schemaKind => {
     const data = fixture(schemaKind, 'memory_bank')
+    expect(data.record('brain_prepare').status).toBe('recorded')
     expect(data.record('brain_recall').status).toBe('recorded')
     expect(data.record('brain_digest').status).toBe('recorded')
     expect(data.proof()).toMatchObject({ installationId: 'custom', agentId: 'eb_custom', activationRunId: 'run-custom',
       generationSha256: sha256Json('generation-custom'), tideMindVersion: runtime.tideMindVersion, schemaKind, selectorKey: 'memory_bank' })
-    expect(data.proof().evidence.map(record => record.signalName)).toEqual(['brain_recall','brain_digest'])
+    expect(data.proof().evidence.map(record => record.signalName)).toEqual(['brain_prepare','brain_recall','brain_digest'])
     expect(data.db.prepare('SELECT count(*) AS n FROM managed_artifacts').get()).toEqual({ n: 0 })
+  })
+  it('requires prepare even when recall and digest succeeded', () => {
+    const data = fixture(); data.record('brain_recall'); data.record('brain_digest')
+    expect(data.proof).toThrow('lacks current brain_prepare')
   })
   it('does not accept a recall-only connector', () => {
     const data = fixture(); data.record('brain_recall')
-    expect(data.proof).toThrow('lacks current brain_digest')
+    expect(data.proof).toThrow('lacks current brain_prepare')
   })
   it('keeps the published JSON schema aligned with guided null-file/null-read-back bindings', () => {
-    const data = fixture(); data.record('brain_recall'); data.record('brain_digest')
-    const schema = JSON.parse(fs.readFileSync(new URL('../../scripts/agent-integration-host-acceptance-v3.schema.json', import.meta.url), 'utf8'))
+    const data = fixture(); data.record('brain_prepare'); data.record('brain_recall'); data.record('brain_digest')
+    const schema = JSON.parse(fs.readFileSync(new URL('../../scripts/agent-integration-host-acceptance-v4.schema.json', import.meta.url), 'utf8'))
     const validate = new Ajv2020({ strict: false, validateFormats: false }).compile({
       $schema: schema.$schema, $defs: schema.$defs, $ref: '#/$defs/customBinding',
     })
@@ -155,7 +160,7 @@ describe('user-owned Custom real-activity acceptance binding', () => {
     expect(validate({ ...binding, configurationOwnership: undefined, activityBinding: undefined })).toBe(false)
   })
   it.each(['identity','runtime','generation','revoked','future','tampered','selector','schema','configuration'])('rejects %s drift', kind => {
-    const data = fixture(); data.record('brain_recall'); data.record('brain_digest')
+    const data = fixture(); data.record('brain_prepare'); data.record('brain_recall'); data.record('brain_digest')
     if (kind === 'identity') data.prepared.adapterPlan.requiredUserActionDetails[0].agentId = 'other'
     if (kind === 'runtime') data.prepared.adapterPlan.requiredUserActionDetails[0].command = '/another/runtime'
     if (kind === 'generation') data.prepared.activityGenerationToken = 'new-generation'

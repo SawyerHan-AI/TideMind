@@ -1,3 +1,5 @@
+import { migrateExistingDatabaseIfNeeded } from './db/pre-migration.js';
+import { assertSupportedDatabaseFile, openCompatibleDatabase } from './db/schema-compatibility.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -269,6 +271,7 @@ export function isLlmConfigured(): boolean {
 export function ensureDataDirs(): void {
   if (getMetabolismWorkerRuntimeContext()) throw new Error('metabolism Worker禁止创建数据目录');
   const dataDir = getDataDir();
+  migrateExistingDatabaseIfNeeded(path.join(dataDir, 'graph', 'brain.sqlite'), getLoadedConfigSourcePath() ?? undefined);
   const dirs = [
     dataDir,
     path.join(dataDir, 'stream'),
@@ -342,7 +345,7 @@ function copyDefaultFiles(dataDir: string): void {
   try {
     const dbPath = path.join(dataDir, 'graph', 'brain.sqlite');
     if (fs.existsSync(dbPath)) {
-      skillDb = new Database(dbPath);
+      skillDb = openCompatibleDatabase(dbPath);
       skillDb.pragma('journal_mode = WAL');
       skillDb.pragma('busy_timeout = 5000');
       // createSyncHashStoreFromDb 会执行 CREATE TABLE IF NOT EXISTS，
@@ -373,12 +376,13 @@ function fileHash(content: string): string {
 }
 
 function syncStrategyParams(sourceDir: string, targetDir: string): void {
+  assertSupportedDatabaseFile(path.join(getDataDir(), 'graph', 'brain.sqlite'));
   // 打开 DB 获取/写入 sync_hashes（尽力而为）
   let db: Database.Database | null = null;
   try {
     const dbPath = path.join(getDataDir(), 'graph', 'brain.sqlite');
     if (fs.existsSync(dbPath)) {
-      db = new Database(dbPath);
+      db = openCompatibleDatabase(dbPath);
       db.pragma('journal_mode = WAL');
       db.pragma('busy_timeout = 5000');
       db.exec('CREATE TABLE IF NOT EXISTS sync_hashes (file_name TEXT PRIMARY KEY, source_hash TEXT NOT NULL, synced_at TEXT NOT NULL)');
@@ -474,7 +478,7 @@ function recordStrategyUpgrade(strategyName: string, content: string): void {
   try {
     const dbPath = path.join(getDataDir(), 'graph', 'brain.sqlite');
     if (!fs.existsSync(dbPath)) return;
-    db = new Database(dbPath);
+    db = openCompatibleDatabase(dbPath);
     db.pragma('journal_mode = WAL');
     db.pragma('busy_timeout = 5000');
     const tableExists = db.prepare(
@@ -516,7 +520,7 @@ export function backfillSyncHashes(): void {
   try {
     const dbPath = path.join(getDataDir(), 'graph', 'brain.sqlite');
     if (!fs.existsSync(dbPath)) return;
-    const db = new Database(dbPath);
+    const db = openCompatibleDatabase(dbPath);
     db.pragma('journal_mode = WAL');
     db.pragma('busy_timeout = 5000');
     db.exec('CREATE TABLE IF NOT EXISTS sync_hashes (file_name TEXT PRIMARY KEY, source_hash TEXT NOT NULL, synced_at TEXT NOT NULL)');

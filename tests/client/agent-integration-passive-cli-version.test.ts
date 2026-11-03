@@ -497,7 +497,7 @@ describe('passive Agent CLI version inspection', () => {
     })
   })
 
-  it('binds the exact official Qwen 0.23.0 relative-root launcher and complete standalone root', async () => {
+  it.each(['0.21.13', '0.23.0'])('binds the exact official Qwen %s relative-root launcher and complete standalone root', async version => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "qwen-'local-launcher-")))
     const installerBin = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'qwen-installer-bin-')))
     const launcher = path.join(root, 'bin', 'qwen')
@@ -513,12 +513,12 @@ describe('passive Agent CLI version inspection', () => {
     fs.mkdirSync(path.dirname(nodeRuntime), { recursive: true })
     const officialLauncher = normalizedQwenLauncherBytes()
     fs.writeFileSync(launcher, officialLauncher, { mode: 0o700 })
-    fs.writeFileSync(packageJson, JSON.stringify({ name: '@qwen-code/qwen-code', version: '0.23.0' }))
+    fs.writeFileSync(packageJson, JSON.stringify({ name: '@qwen-code/qwen-code', version }))
     fs.writeFileSync(standaloneManifest, JSON.stringify({
       name: '@qwen-code/qwen-code',
-      version: '0.23.0',
+      version,
       target: `darwin-${process.arch === 'x64' ? 'x64' : 'arm64'}`,
-      runtime: 'node',
+      ...(version === '0.21.13' ? {} : { runtime: 'node' }),
       nodeArchive: `node-v22.0.0-darwin-${process.arch === 'x64' ? 'x64' : 'arm64'}.tar.gz`,
     }))
     fs.writeFileSync(cliEntry, 'export async function main() {}\n')
@@ -543,7 +543,7 @@ describe('passive Agent CLI version inspection', () => {
       const first = await inspectPassiveCliVersion(launcher, port)
       expect(first).toMatchObject({
         exitCode: 0,
-        stdout: '0.23.0',
+        stdout: version,
         stderr: '',
         verifiedPackageProvenance: 'npm_metadata:@qwen-code/qwen-code',
         packageMetadataFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
@@ -564,7 +564,7 @@ describe('passive Agent CLI version inspection', () => {
       const installed = await inspectPassiveCliVersion(installerShim, port)
       expect(installed).toMatchObject({
         exitCode: 0,
-        stdout: '0.23.0',
+        stdout: version,
         portableArtifactFingerprint: first.portableArtifactFingerprint,
         packageTreeSha256: first.packageTreeSha256,
         packageProofNodes: expect.arrayContaining([
@@ -590,9 +590,9 @@ describe('passive Agent CLI version inspection', () => {
       const crossArchitecture = process.arch === 'x64' ? 'arm64' : 'x64'
       fs.writeFileSync(standaloneManifest, JSON.stringify({
         name: '@qwen-code/qwen-code',
-        version: '0.23.0',
+        version,
         target: `darwin-${crossArchitecture}`,
-        runtime: 'node',
+        ...(version === '0.21.13' ? {} : { runtime: 'node' }),
         nodeArchive: `node-v22.0.0-darwin-${crossArchitecture}.tar.gz`,
       }))
       const crossArchitectureResult = await inspectPassiveCliVersionForArchitecture(
@@ -602,7 +602,7 @@ describe('passive Agent CLI version inspection', () => {
       )
       expect(crossArchitectureResult).toMatchObject({
         exitCode: 0,
-        stdout: '0.23.0',
+        stdout: version,
         portableArtifactFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
         packageProofNodes: expect.arrayContaining([
           expect.objectContaining({ role: 'qwen_node_runtime', path: nodeRuntime }),
@@ -610,9 +610,9 @@ describe('passive Agent CLI version inspection', () => {
       })
       fs.writeFileSync(standaloneManifest, JSON.stringify({
         name: '@qwen-code/qwen-code',
-        version: '0.23.0',
+        version,
         target: `darwin-${process.arch === 'x64' ? 'x64' : 'arm64'}`,
-        runtime: 'node',
+        ...(version === '0.21.13' ? {} : { runtime: 'node' }),
         nodeArchive: `node-v22.0.0-darwin-${process.arch === 'x64' ? 'x64' : 'arm64'}.tar.gz`,
       }))
 
@@ -639,6 +639,18 @@ describe('passive Agent CLI version inspection', () => {
       expect(changedOwnedRoot.portableArtifactFingerprint).toMatch(/^[a-f0-9]{64}$/u)
       expect(changedOwnedRoot.portableArtifactFingerprint).not.toBe(first.portableArtifactFingerprint)
       fs.rmSync(path.join(packageRoot, 'unexpected-command.sh'))
+
+      const originalManifest = fs.readFileSync(standaloneManifest, 'utf8')
+      if (version !== '0.21.13') {
+        const missingRuntime = JSON.parse(originalManifest)
+        delete missingRuntime.runtime
+        fs.writeFileSync(standaloneManifest, JSON.stringify(missingRuntime))
+        expect((await inspectPassiveCliVersion(launcher, port)).portableArtifactFingerprint).toBeUndefined()
+      }
+      const wrongRuntime = { ...JSON.parse(originalManifest), runtime: 'bun' }
+      fs.writeFileSync(standaloneManifest, JSON.stringify(wrongRuntime))
+      expect((await inspectPassiveCliVersion(launcher, port)).portableArtifactFingerprint).toBeUndefined()
+      fs.writeFileSync(standaloneManifest, originalManifest)
 
       const tamperedLaunchers = [
         `${officialLauncher.toString('utf8')}echo injected\n`,

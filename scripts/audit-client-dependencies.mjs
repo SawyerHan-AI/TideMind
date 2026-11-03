@@ -20,8 +20,13 @@ export const ALLOWED_ADVISORIES = new Set([
 
 const EXPECTED_BRACE_VERSIONS = new Set(['1.1.17', '2.1.3', '5.0.8']);
 const EXPECTED_ROUTER_VERSION = '7.18.2';
+const MINIMATCH_ADVISORY = 'https://github.com/advisories/GHSA-g3hv-75wg-m249';
+const MINIMATCH_VERSIONS = {
+  root: new Set(['10.2.5']),
+  client: new Set(['3.1.5', '5.1.9', '9.0.9', '10.2.6']),
+};
 
-function allCausesAllowed(name, vulnerabilities, visiting = new Set()) {
+function allCausesAllowed(name, vulnerabilities, visiting = new Set(), allowed = ALLOWED_ADVISORIES) {
   const vulnerability = vulnerabilities[name];
   if (visiting.has(name)) return true;
   if (!vulnerability || !Array.isArray(vulnerability.via) || vulnerability.via.length === 0) {
@@ -30,34 +35,35 @@ function allCausesAllowed(name, vulnerabilities, visiting = new Set()) {
   const nextVisiting = new Set(visiting);
   nextVisiting.add(name);
   return vulnerability.via.every((cause) => {
-    if (typeof cause === 'string') return allCausesAllowed(cause, vulnerabilities, nextVisiting);
-    return typeof cause?.url === 'string' && ALLOWED_ADVISORIES.has(cause.url);
+    if (typeof cause === 'string') return allCausesAllowed(cause, vulnerabilities, nextVisiting, allowed);
+    return typeof cause?.url === 'string' && allowed.has(cause.url);
   });
 }
 
-function reachesAllowedAdvisory(name, vulnerabilities, visiting = new Set()) {
+function reachesAllowedAdvisory(name, vulnerabilities, visiting = new Set(), allowed = ALLOWED_ADVISORIES) {
   if (visiting.has(name)) return false;
   const vulnerability = vulnerabilities[name];
   if (!vulnerability || !Array.isArray(vulnerability.via)) return false;
   const nextVisiting = new Set(visiting);
   nextVisiting.add(name);
   return vulnerability.via.some((cause) => {
-    if (typeof cause === 'string') return reachesAllowedAdvisory(cause, vulnerabilities, nextVisiting);
-    return typeof cause?.url === 'string' && ALLOWED_ADVISORIES.has(cause.url);
+    if (typeof cause === 'string') return reachesAllowedAdvisory(cause, vulnerabilities, nextVisiting, allowed);
+    return typeof cause?.url === 'string' && allowed.has(cause.url);
   });
 }
 
-export function allowedVulnerability(name, vulnerabilities) {
-  return allCausesAllowed(name, vulnerabilities) && reachesAllowedAdvisory(name, vulnerabilities);
+export function allowedVulnerability(name, vulnerabilities, allowed = ALLOWED_ADVISORIES) {
+  return allCausesAllowed(name, vulnerabilities, new Set(), allowed) && reachesAllowedAdvisory(name, vulnerabilities, new Set(), allowed);
 }
 
-// npm audit did not report the upstream Electron sandbox advisories on
-// 2026-09-29. Keep the reviewed runtime explicit instead of trusting that feed
-// alone: GHSA-gr2m-v5gq-v685 and GHSA-9qh4-3jw8-366w affect <41.10.6.
+// Reviewed 2026-10-28: stable Electron 43.8.4 includes Node 24.22.1 and the
+// eMudhra mitigation (GHSA-jr5w-w6x2-84p9). Keep the reviewed runtime exact;
+// npm audit alone does not establish the bundled Chromium/Node security state.
+// https://github.com/electron/electron/releases/tag/v43.8.4
 export function assertReviewedElectronVersion(lock) {
   const version = lock.packages?.['node_modules/electron']?.version;
-  if (version !== '41.10.7') {
-    throw new Error(`Electron runtime requires renewed upstream security review; expected 41.10.7, found ${version ?? 'missing'}`);
+  if (version !== '43.8.4') {
+    throw new Error(`Electron runtime requires renewed upstream security review; expected 43.8.4, found ${version ?? 'missing'}`);
   }
 }
 
@@ -113,13 +119,46 @@ export function assertNoClientRscUsage(sourceRoot = path.join(clientRoot, 'src')
   }
 }
 
-export function validateAuditReport(report, lock, sourceRoot) {
-  const vulnerabilities = report.vulnerabilities ?? {};
-  const unexpected = Object.keys(vulnerabilities)
-    .filter((name) => !allowedVulnerability(name, vulnerabilities));
-  if (unexpected.length > 0) {
-    throw new Error(`unapproved client audit findings: ${unexpected.join(', ')}`);
+// User-approved 0.2.94-only build-time exception; never inherited by a later release.
+function assertMinimatchException(vulnerabilities, lock, scope, packageVersion) {
+  const affected = Object.keys(vulnerabilities).filter((name) =>
+    reachesAllowedAdvisory(name, vulnerabilities, new Set(), new Set([MINIMATCH_ADVISORY])));
+  if (affected.length === 0) return;
+  if (packageVersion !== '0.2.94' || lock.version !== '0.2.94' || lock.packages?.['']?.version !== '0.2.94') {
+    throw new Error('minimatch build exception is limited to release 0.2.94');
   }
+  const packages = lock.packages ?? {};
+  const minimatches = Object.entries(packages).filter(([key]) =>
+    key === 'node_modules/minimatch' || key.endsWith('/node_modules/minimatch'));
+  if (minimatches.length === 0 || minimatches.some(([, value]) =>
+    value.dev !== true || !MINIMATCH_VERSIONS[scope]?.has(value.version))) {
+    throw new Error(`minimatch exception requires reviewed ${scope} versions and dev-only dependencies`);
+  }
+  for (const name of affected) {
+    const finding = vulnerabilities[name];
+    if (finding.severity !== 'moderate' || !Array.isArray(finding.nodes) || finding.nodes.length === 0
+      || finding.nodes.some((node) => packages[node]?.dev !== true)
+      || finding.via.some((cause) => typeof cause !== 'string'
+        && cause?.url === MINIMATCH_ADVISORY
+        && (cause.severity !== 'moderate' || cause.name !== 'minimatch' || cause.dependency !== 'minimatch'))) {
+      throw new Error(`minimatch exception requires moderate dev-only findings: ${name}`);
+    }
+  }
+}
+
+export function validateAuditReport(report, lock, sourceRoot, scope = 'client', packageVersion = lock.packages?.['']?.version) {
+  if (!['client', 'root'].includes(scope)) throw new Error('unknown audit scope');
+  if (!report || report.error || !report.vulnerabilities || typeof report.vulnerabilities !== 'object'
+    || Array.isArray(report.vulnerabilities)) throw new Error('invalid npm audit report');
+  const vulnerabilities = report.vulnerabilities;
+  const allowed = new Set(scope === 'client' ? ALLOWED_ADVISORIES : []);
+  allowed.add(MINIMATCH_ADVISORY);
+  const unexpected = Object.keys(vulnerabilities)
+    .filter((name) => !allowedVulnerability(name, vulnerabilities, allowed));
+  if (unexpected.length > 0) {
+    throw new Error(`unapproved ${scope} audit findings: ${unexpected.join(', ')}`);
+  }
+  assertMinimatchException(vulnerabilities, lock, scope, packageVersion);
   if (Object.hasOwn(vulnerabilities, 'brace-expansion')) assertPatchedBraceVersions(lock);
   if (Object.hasOwn(vulnerabilities, 'react-router')) {
     assertExpectedRouterVersions(lock);
@@ -129,8 +168,10 @@ export function validateAuditReport(report, lock, sourceRoot) {
 }
 
 function main() {
+  const scope = process.argv.includes('--root') ? 'root' : 'client';
+  const auditRoot = scope === 'root' ? repoRoot : clientRoot;
   const audit = spawnSync('npm', ['audit', '--json'], {
-    cwd: clientRoot,
+    cwd: auditRoot,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -141,17 +182,24 @@ function main() {
   } catch {
     throw new Error(`npm audit did not return JSON:\n${raw}`);
   }
-  const lock = JSON.parse(readFileSync(path.join(clientRoot, 'package-lock.json'), 'utf8'));
-  assertReviewedElectronVersion(lock);
-  const accepted = validateAuditReport(report, lock, path.join(clientRoot, 'src'));
+  if (audit.error || audit.signal || ![0, 1].includes(audit.status) || report.auditReportVersion !== 2
+    || (audit.status === 1 && Object.keys(report.vulnerabilities ?? {}).length === 0)) {
+    throw new Error('npm audit failed to produce a complete vulnerability report');
+  }
+  const lock = JSON.parse(readFileSync(path.join(auditRoot, 'package-lock.json'), 'utf8'));
+  const manifest = JSON.parse(readFileSync(path.join(auditRoot, 'package.json'), 'utf8'));
+  if (scope === 'client') assertReviewedElectronVersion(lock);
+  const accepted = validateAuditReport(report, lock, path.join(clientRoot, 'src'), scope, manifest.version);
   if (accepted.length === 0) {
-    console.log('✓ client dependency audit clean');
+    console.log(`✓ ${scope} dependency audit clean`);
     return;
   }
-  console.log('✓ client dependency audit has only reviewed, fail-closed exceptions');
-  console.log(`  - ${accepted.length} transitive findings resolve exclusively to two accepted advisories`);
-  console.log('  - brace-expansion instances are pinned to patched versions 1.1.17 / 2.1.3 / 5.0.8');
-  console.log('  - React Router 7.18.2 RSC-only advisory accepted; client source contains no RSC/direct react-router usage');
+  console.log(`✓ ${scope} dependency audit passed with reviewed exceptions (${accepted.length} transitive findings)`);
+  if (accepted.some((name) => reachesAllowedAdvisory(name, report.vulnerabilities, new Set(), new Set([MINIMATCH_ADVISORY])))) {
+    console.log('  - 0.2.94 only: GHSA-g3hv-75wg-m249 moderate minimatch build-time risk accepted; reviewed dev versions, trusted build inputs required');
+  }
+  if (accepted.includes('brace-expansion')) console.log('  - brace-expansion pinned to patched versions 1.1.17 / 2.1.3 / 5.0.8');
+  if (accepted.includes('react-router')) console.log('  - React Router 7.18.2 RSC-only advisory accepted; no RSC/direct react-router usage');
 }
 
 const isCli = process.argv[1]

@@ -1133,6 +1133,17 @@
       }
     },
     "managed": {
+      "codexSharedIdentityReconnect": "This Codex connection uses an older identity. In the Agent details, disconnect the existing Codex connection and complete its removal, then connect Codex again so Desktop and CLI share one Tide Mind identity.",
+      "codexExistingIdentityReview": "Existing Tide Mind connections for Codex need review before connecting. Open the Codex details and resolve the old identity conflict first, then check again and reconnect.",
+      "legacyChoice": {
+        "description": "Choose the existing Tide Mind identity to keep for Codex CLI and Desktop. History is preserved.",
+        "review": "Review existing identities",
+        "select": "Existing identity",
+        "preview": "Preview changes",
+        "remove": "Remove only the listed Tide Mind connection entries; keep all history and other configuration:",
+        "connect": "This also enables Tide Mind management for this installation. The other Codex surface shares the identity and can be connected separately.",
+        "confirm": "Confirm selection and connect"
+      },
       "sourceVerification": {
         "title": "Installation source",
         "description": "Source verification does not confirm host loading or a successful memory call.",
@@ -1320,7 +1331,7 @@
         "disconnecting": "Removing Tide Mind-owned components.",
         "newSession": "Open a new Agent session to finish loading.",
         "hostConfirmation": "Confirm the change in the Agent.",
-        "legacyConfirmationRequired": "An existing Tide Mind connection is ambiguous. Keep only the intended legacy connection, then run the check again.",
+        "legacyConfirmationRequired": "Existing Tide Mind connections need identity confirmation. Review the available choices below; if none are available, check the reported configuration conflict and scan again.",
         "conflict": "A managed target conflicts with another change.",
         "permission": "A required target cannot be accessed.",
         "verificationFailed": "The Agent did not pass verification.",
@@ -1394,6 +1405,13 @@
       "lastUsed": "Last real use",
       "noRecord": "No record",
       "noReliableUsage": "No reliable usage evidence",
+      "sharedConnection": {
+        "title": "Shared memory connection",
+        "call_observed": "Memory tool activity received on the current shared connection",
+        "waiting_for_call": "Waiting for activity on the shared connection",
+        "inactive": "Shared connection is inactive for this installation",
+        "scope": "CLI and Desktop share this configuration. Shared activity does not independently verify either host."
+      },
       "recentEvents": "Recent events",
       "unreadEvents": "{{count}} new event(s)",
       "noEvents": "No recent events.",
@@ -1556,7 +1574,7 @@
         "awaiting_verification": "Awaiting verification",
         "paused": "Paused",
         "committed": "Connected and verified",
-        "superseded": "Superseded by a later disconnect",
+        "superseded": "Superseded by a later operation",
         "needs_recovery": "Needs recovery",
         "failed": "Failed",
         "interrupted": "Interrupted — review and preview again"

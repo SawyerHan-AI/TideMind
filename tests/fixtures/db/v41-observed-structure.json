@@ -1,0 +1,1362 @@
+{
+  "source": "historical schema41 backup; structure only; no application rows",
+  "schemaVersion": "41",
+  "objects": [
+    {
+      "type": "index",
+      "name": "idx_agent_aliases_installation",
+      "table": "agent_aliases",
+      "sql": "CREATE INDEX idx_agent_aliases_installation\n  ON agent_aliases(installation_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_consents_installation",
+      "table": "agent_consents",
+      "sql": "CREATE INDEX idx_agent_consents_installation\n  ON agent_consents(installation_id, status)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_host_activity_agent",
+      "table": "agent_host_activity_evidence",
+      "sql": "CREATE INDEX idx_agent_host_activity_agent\n  ON agent_host_activity_evidence(agent_id, observed_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_host_activity_lookup",
+      "table": "agent_host_activity_evidence",
+      "sql": "CREATE INDEX idx_agent_host_activity_lookup\n  ON agent_host_activity_evidence(\n    installation_id, component_key, host_variant, observed_at\n  )"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_installations_detected",
+      "table": "agent_installations",
+      "sql": "CREATE INDEX idx_agent_installations_detected\n  ON agent_installations(last_detected_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_installations_family",
+      "table": "agent_installations",
+      "sql": "CREATE INDEX idx_agent_installations_family\n  ON agent_installations(family, host_variant)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_installations_state",
+      "table": "agent_installations",
+      "sql": "CREATE INDEX idx_agent_installations_state\n  ON agent_installations(desired_state, reconcile_state)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_integration_apply_task_items_legacy_null",
+      "table": "agent_integration_apply_task_items",
+      "sql": "CREATE INDEX idx_agent_integration_apply_task_items_legacy_null\n      ON agent_integration_apply_task_items(task_id, installation_id, execution_plan_hash)\n      WHERE run_id IS NULL"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_integration_apply_task_items_run",
+      "table": "agent_integration_apply_task_items",
+      "sql": "CREATE UNIQUE INDEX idx_agent_integration_apply_task_items_run\n      ON agent_integration_apply_task_items(run_id)\n      WHERE run_id IS NOT NULL"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_integration_apply_task_items_state",
+      "table": "agent_integration_apply_task_items",
+      "sql": "CREATE INDEX idx_agent_integration_apply_task_items_state\n  ON agent_integration_apply_task_items(task_id, state, ordinal)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_integration_apply_tasks_recent",
+      "table": "agent_integration_apply_tasks",
+      "sql": "CREATE INDEX idx_agent_integration_apply_tasks_recent\n  ON agent_integration_apply_tasks(updated_at, started_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_integration_events_dedupe",
+      "table": "agent_integration_events",
+      "sql": "CREATE UNIQUE INDEX idx_agent_integration_events_dedupe\n  ON agent_integration_events(kind, dedupe_key)\n  WHERE dedupe_key IS NOT NULL"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_integration_events_inbox",
+      "table": "agent_integration_events",
+      "sql": "CREATE INDEX idx_agent_integration_events_inbox\n  ON agent_integration_events(state, created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_integration_events_installation",
+      "table": "agent_integration_events",
+      "sql": "CREATE INDEX idx_agent_integration_events_installation\n  ON agent_integration_events(installation_id, created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_agent_integration_events_missing_episode",
+      "table": "agent_integration_events",
+      "sql": "CREATE UNIQUE INDEX idx_agent_integration_events_missing_episode\n  ON agent_integration_events(artifact_id, episode_id)\n  WHERE artifact_id IS NOT NULL AND episode_id IS NOT NULL"
+    },
+    {
+      "type": "index",
+      "name": "idx_artifact_consumers_installation",
+      "table": "artifact_consumers",
+      "sql": "CREATE INDEX idx_artifact_consumers_installation\n  ON artifact_consumers(installation_id, component_key)"
+    },
+    {
+      "type": "index",
+      "name": "idx_artifact_consumers_state",
+      "table": "artifact_consumers",
+      "sql": "CREATE INDEX idx_artifact_consumers_state\n  ON artifact_consumers(artifact_id, state, desired_state)"
+    },
+    {
+      "type": "index",
+      "name": "idx_artifact_contributions_active",
+      "table": "artifact_contributions",
+      "sql": "CREATE INDEX idx_artifact_contributions_active\n  ON artifact_contributions(artifact_kind, artifact_id, active, generation)"
+    },
+    {
+      "type": "index",
+      "name": "idx_change_feed_scope",
+      "table": "change_feed",
+      "sql": "CREATE INDEX idx_change_feed_scope\n  ON change_feed(scope, entity_id, sequence)"
+    },
+    {
+      "type": "index",
+      "name": "idx_cli_capacity_leases_expiry",
+      "table": "cli_capacity_leases",
+      "sql": "CREATE INDEX idx_cli_capacity_leases_expiry ON cli_capacity_leases(lease_expires_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_cli_invocations_connection",
+      "table": "cli_invocations",
+      "sql": "CREATE INDEX idx_cli_invocations_connection ON cli_invocations(connection_id, started_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_cli_invocations_envelope",
+      "table": "cli_invocations",
+      "sql": "CREATE INDEX idx_cli_invocations_envelope\n          ON cli_invocations(invocation_envelope_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_cli_invocations_outcome",
+      "table": "cli_invocations",
+      "sql": "CREATE INDEX idx_cli_invocations_outcome ON cli_invocations(outcome, started_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_cli_invocations_task",
+      "table": "cli_invocations",
+      "sql": "CREATE INDEX idx_cli_invocations_task ON cli_invocations(task_id, started_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_dead_letter_version",
+      "table": "cloud_sync_dead_letters",
+      "sql": "CREATE INDEX idx_dead_letter_version ON cloud_sync_dead_letters(sync_version)"
+    },
+    {
+      "type": "index",
+      "name": "idx_foreground_commands_claim",
+      "table": "foreground_commands",
+      "sql": "CREATE INDEX idx_foreground_commands_claim\n  ON foreground_commands(status, admission_seq)"
+    },
+    {
+      "type": "index",
+      "name": "idx_foreground_pending_admission",
+      "table": "foreground_pending_projection",
+      "sql": "CREATE INDEX idx_foreground_pending_admission\n  ON foreground_pending_projection(first_admission_seq, last_admission_seq)"
+    },
+    {
+      "type": "index",
+      "name": "idx_initialization_overlays_projection",
+      "table": "initialization_overlays",
+      "sql": "CREATE INDEX idx_initialization_overlays_projection\n  ON initialization_overlays(entity_kind, entity_id, status, overlay_generation)"
+    },
+    {
+      "type": "index",
+      "name": "idx_installation_components_artifact",
+      "table": "installation_components",
+      "sql": "CREATE INDEX idx_installation_components_artifact\n  ON installation_components(artifact_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_installation_components_status",
+      "table": "installation_components",
+      "sql": "CREATE INDEX idx_installation_components_status\n  ON installation_components(desired_state, verification_status)"
+    },
+    {
+      "type": "index",
+      "name": "idx_links_from",
+      "table": "links",
+      "sql": "CREATE INDEX idx_links_from ON links(from_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_links_status",
+      "table": "links",
+      "sql": "CREATE INDEX idx_links_status ON links(status)"
+    },
+    {
+      "type": "index",
+      "name": "idx_links_to",
+      "table": "links",
+      "sql": "CREATE INDEX idx_links_to ON links(to_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_llm_connection_health_connection",
+      "table": "llm_connection_health",
+      "sql": "CREATE INDEX idx_llm_connection_health_connection ON llm_connection_health(connection_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_llm_invocation_outcome",
+      "table": "llm_invocation_attempts",
+      "sql": "CREATE INDEX idx_llm_invocation_outcome\n  ON llm_invocation_attempts(outcome, updated_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_llm_invocation_task",
+      "table": "llm_invocation_attempts",
+      "sql": "CREATE INDEX idx_llm_invocation_task\n  ON llm_invocation_attempts(task_run_id, created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_llm_invocation_workflow",
+      "table": "llm_invocation_attempts",
+      "sql": "CREATE INDEX idx_llm_invocation_workflow\n  ON llm_invocation_attempts(workflow_run_id, created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_llm_model_observations_connection",
+      "table": "llm_model_observations",
+      "sql": "CREATE INDEX idx_llm_model_observations_connection\n  ON llm_model_observations(connection_id, auth_epoch)"
+    },
+    {
+      "type": "index",
+      "name": "idx_llm_usage_connection",
+      "table": "llm_usage_log",
+      "sql": "CREATE INDEX idx_llm_usage_connection ON llm_usage_log(connection_id, created)"
+    },
+    {
+      "type": "index",
+      "name": "idx_llm_usage_created",
+      "table": "llm_usage_log",
+      "sql": "CREATE INDEX idx_llm_usage_created ON llm_usage_log(created)"
+    },
+    {
+      "type": "index",
+      "name": "idx_llm_usage_invocation",
+      "table": "llm_usage_log",
+      "sql": "CREATE INDEX idx_llm_usage_invocation\n          ON llm_usage_log(invocation_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_llm_usage_model",
+      "table": "llm_usage_log",
+      "sql": "CREATE INDEX idx_llm_usage_model ON llm_usage_log(model)"
+    },
+    {
+      "type": "index",
+      "name": "idx_llm_usage_source",
+      "table": "llm_usage_log",
+      "sql": "CREATE INDEX idx_llm_usage_source ON llm_usage_log(source_type, created)"
+    },
+    {
+      "type": "index",
+      "name": "idx_llm_usage_workflow",
+      "table": "llm_usage_log",
+      "sql": "CREATE INDEX idx_llm_usage_workflow\n          ON llm_usage_log(workflow_run_id, created)"
+    },
+    {
+      "type": "index",
+      "name": "idx_maintenance_intents_claim",
+      "table": "maintenance_intents",
+      "sql": "CREATE INDEX idx_maintenance_intents_claim\n  ON maintenance_intents(status, eligible_at, priority_class, admitted_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_managed_artifacts_domain",
+      "table": "managed_artifacts",
+      "sql": "CREATE INDEX idx_managed_artifacts_domain\n  ON managed_artifacts(mutation_domain)"
+    },
+    {
+      "type": "index",
+      "name": "idx_managed_artifacts_state",
+      "table": "managed_artifacts",
+      "sql": "CREATE INDEX idx_managed_artifacts_state\n  ON managed_artifacts(state)"
+    },
+    {
+      "type": "index",
+      "name": "idx_managed_artifacts_target",
+      "table": "managed_artifacts",
+      "sql": "CREATE INDEX idx_managed_artifacts_target\n  ON managed_artifacts(runtime_realm, target_path)"
+    },
+    {
+      "type": "index",
+      "name": "idx_mutation_journal_owner",
+      "table": "mutation_journal",
+      "sql": "CREATE INDEX idx_mutation_journal_owner\n      ON mutation_journal(\n        run_id, phase_id, work_item_id, source_retry_item_id,\n        mutation_batch_id, mutation_seq\n      )"
+    },
+    {
+      "type": "index",
+      "name": "idx_mutation_journal_rollback",
+      "table": "mutation_journal",
+      "sql": "CREATE INDEX idx_mutation_journal_rollback\n  ON mutation_journal(run_id, rollback_status, mutation_seq DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_nodes_active_heat",
+      "table": "nodes",
+      "sql": "CREATE INDEX idx_nodes_active_heat ON nodes(archived, is_superseded, heat DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_nodes_active_updated",
+      "table": "nodes",
+      "sql": "CREATE INDEX idx_nodes_active_updated ON nodes(archived, is_superseded, updated DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_nodes_archived",
+      "table": "nodes",
+      "sql": "CREATE INDEX idx_nodes_archived ON nodes(archived)"
+    },
+    {
+      "type": "index",
+      "name": "idx_nodes_heat",
+      "table": "nodes",
+      "sql": "CREATE INDEX idx_nodes_heat ON nodes(heat)"
+    },
+    {
+      "type": "index",
+      "name": "idx_nodes_is_crystal",
+      "table": "nodes",
+      "sql": "CREATE INDEX idx_nodes_is_crystal ON nodes(is_crystal)"
+    },
+    {
+      "type": "index",
+      "name": "idx_nodes_is_meta",
+      "table": "nodes",
+      "sql": "CREATE INDEX idx_nodes_is_meta ON nodes(is_meta)"
+    },
+    {
+      "type": "index",
+      "name": "idx_nodes_is_tag",
+      "table": "nodes",
+      "sql": "CREATE INDEX idx_nodes_is_tag ON nodes(is_tag)"
+    },
+    {
+      "type": "index",
+      "name": "idx_nodes_keystone",
+      "table": "nodes",
+      "sql": "CREATE INDEX idx_nodes_keystone ON nodes(is_keystone)"
+    },
+    {
+      "type": "index",
+      "name": "idx_nodes_type",
+      "table": "nodes",
+      "sql": "CREATE INDEX idx_nodes_type ON nodes(type)"
+    },
+    {
+      "type": "index",
+      "name": "idx_notion_pending_retry_source",
+      "table": "notion_pending_retry",
+      "sql": "CREATE INDEX idx_notion_pending_retry_source\n      ON notion_pending_retry(source_id, status)"
+    },
+    {
+      "type": "index",
+      "name": "idx_notion_pending_target",
+      "table": "notion_pending_relations",
+      "sql": "CREATE INDEX idx_notion_pending_target\n          ON notion_pending_relations(target_page_id, source_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_operation_log_invocation",
+      "table": "operation_log",
+      "sql": "CREATE INDEX idx_operation_log_invocation\n          ON operation_log(invocation_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_param_feedback_strategy",
+      "table": "param_feedback",
+      "sql": "CREATE INDEX idx_param_feedback_strategy ON param_feedback(strategy_name, created)"
+    },
+    {
+      "type": "index",
+      "name": "idx_pending_digests_status",
+      "table": "pending_digests",
+      "sql": "CREATE INDEX idx_pending_digests_status\n  ON pending_digests(status, next_retry_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_projection_mutations_domain",
+      "table": "projection_mutations",
+      "sql": "CREATE INDEX idx_projection_mutations_domain\n  ON projection_mutations(mutation_domain, state)"
+    },
+    {
+      "type": "index",
+      "name": "idx_projection_mutations_recovery",
+      "table": "projection_mutations",
+      "sql": "CREATE INDEX idx_projection_mutations_recovery\n  ON projection_mutations(state, next_recovery_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_projection_mutations_run",
+      "table": "projection_mutations",
+      "sql": "CREATE INDEX idx_projection_mutations_run\n  ON projection_mutations(run_id, created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_reconcile_runs_installation",
+      "table": "reconcile_runs",
+      "sql": "CREATE INDEX idx_reconcile_runs_installation\n  ON reconcile_runs(installation_id, created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_reconcile_runs_legacy_correlation",
+      "table": "reconcile_runs",
+      "sql": "CREATE INDEX idx_reconcile_runs_legacy_correlation\n  ON reconcile_runs(operation_type, installation_id, execution_plan_hash, id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_reconcile_runs_recovery",
+      "table": "reconcile_runs",
+      "sql": "CREATE INDEX idx_reconcile_runs_recovery\n  ON reconcile_runs(state, updated_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_recovery_actions_claim",
+      "table": "recovery_actions",
+      "sql": "CREATE INDEX idx_recovery_actions_claim\n  ON recovery_actions(recovery_report_id, status, priority, ordinal)"
+    },
+    {
+      "type": "index",
+      "name": "idx_recovery_barriers_active",
+      "table": "recovery_barriers",
+      "sql": "CREATE INDEX idx_recovery_barriers_active\n  ON recovery_barriers(status, created_at, barrier_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_recovery_barriers_owner",
+      "table": "recovery_barriers",
+      "sql": "CREATE INDEX idx_recovery_barriers_owner\n  ON recovery_barriers(\n    owner_run_id, owner_attempt_id, owner_fencing_token, status\n  )"
+    },
+    {
+      "type": "index",
+      "name": "idx_recovery_reports_episode",
+      "table": "recovery_reports",
+      "sql": "CREATE INDEX idx_recovery_reports_episode\n  ON recovery_reports(recovery_episode_id, created_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_run_attempts_control",
+      "table": "run_attempts",
+      "sql": "CREATE INDEX idx_run_attempts_control\n  ON run_attempts(control_state, heartbeat_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_run_attempts_run",
+      "table": "run_attempts",
+      "sql": "CREATE INDEX idx_run_attempts_run\n  ON run_attempts(run_id, started_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_runtime_instances_expiry",
+      "table": "runtime_instances",
+      "sql": "CREATE INDEX idx_runtime_instances_expiry\n  ON runtime_instances(status, expires_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_runtime_shutdowns_status",
+      "table": "runtime_shutdowns",
+      "sql": "CREATE INDEX idx_runtime_shutdowns_status\n  ON runtime_shutdowns(status, updated_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_source_retry_claim",
+      "table": "source_retry_items",
+      "sql": "CREATE INDEX idx_source_retry_claim\n  ON source_retry_items(source_id, status, next_retry_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_strategy_versions_name",
+      "table": "strategy_versions",
+      "sql": "CREATE INDEX idx_strategy_versions_name ON strategy_versions(strategy_name)"
+    },
+    {
+      "type": "index",
+      "name": "idx_tag_usage_count",
+      "table": "tag_usage",
+      "sql": "CREATE INDEX idx_tag_usage_count ON tag_usage(node_count DESC)"
+    },
+    {
+      "type": "index",
+      "name": "idx_task_runs_retry",
+      "table": "task_runs",
+      "sql": "CREATE INDEX idx_task_runs_retry\n  ON task_runs(status, next_retry_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_task_scope_generations_dirty",
+      "table": "task_scope_generations",
+      "sql": "CREATE INDEX idx_task_scope_generations_dirty\n  ON task_scope_generations(task_id, required_generation, evaluated_generation)"
+    },
+    {
+      "type": "index",
+      "name": "idx_timeline_created",
+      "table": "timeline_events",
+      "sql": "CREATE INDEX idx_timeline_created ON timeline_events(created)"
+    },
+    {
+      "type": "index",
+      "name": "idx_timeline_outbox_delivery",
+      "table": "timeline_outbox",
+      "sql": "CREATE INDEX idx_timeline_outbox_delivery\n  ON timeline_outbox(delivery_status, outbox_id)"
+    },
+    {
+      "type": "index",
+      "name": "idx_timeline_type",
+      "table": "timeline_events",
+      "sql": "CREATE INDEX idx_timeline_type ON timeline_events(type)"
+    },
+    {
+      "type": "index",
+      "name": "idx_verification_results_component",
+      "table": "verification_results",
+      "sql": "CREATE INDEX idx_verification_results_component\n      ON verification_results(installation_id, component_key, verified_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_verification_results_freshness",
+      "table": "verification_results",
+      "sql": "CREATE INDEX idx_verification_results_freshness\n      ON verification_results(invalidated_at, expires_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_verification_results_run_component",
+      "table": "verification_results",
+      "sql": "CREATE UNIQUE INDEX idx_verification_results_run_component\n      ON verification_results(run_id, component_key) WHERE run_id IS NOT NULL"
+    },
+    {
+      "type": "index",
+      "name": "idx_work_items_unresolved",
+      "table": "work_items",
+      "sql": "CREATE INDEX idx_work_items_unresolved\n  ON work_items(status, next_retry_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_workflow_runs_active",
+      "table": "workflow_runs",
+      "sql": "CREATE UNIQUE INDEX idx_workflow_runs_active\n  ON workflow_runs(workflow_kind, IFNULL(source_id, ''))\n  WHERE status IN (\n    'queued','blocked_preflight','running','retry_wait_holding',\n    'short_retry_holding','user_cancel_requested','paused_shutdown',\n    'rolling_back','rollback_retry_wait','rollback_blocked',\n    'rollback_failed_needs_recovery','crash_recovering'\n  )"
+    },
+    {
+      "type": "index",
+      "name": "idx_workflow_runs_recovery",
+      "table": "workflow_runs",
+      "sql": "CREATE INDEX idx_workflow_runs_recovery\n  ON workflow_runs(status, lease_expires_at)"
+    },
+    {
+      "type": "index",
+      "name": "idx_writer_fences_lease",
+      "table": "writer_fences",
+      "sql": "CREATE INDEX idx_writer_fences_lease\n  ON writer_fences(state, lease_expires_at)"
+    },
+    {
+      "type": "table",
+      "name": "agent_aliases",
+      "table": "agent_aliases",
+      "sql": "CREATE TABLE agent_aliases (\n    id TEXT PRIMARY KEY,\n    alias_type TEXT NOT NULL\n      CHECK(alias_type IN ('legacy_agent_id','agent_id','config_root','profile','install_path','executable_path')),\n    alias_value TEXT NOT NULL,\n    runtime_realm TEXT NOT NULL DEFAULT 'local_macos',\n    canonical_agent_id TEXT,\n    installation_id TEXT NOT NULL REFERENCES agent_installations(id) ON DELETE CASCADE,\n    reason TEXT NOT NULL,\n    created_at TEXT NOT NULL,\n    UNIQUE(alias_type, alias_value, runtime_realm)\n)"
+    },
+    {
+      "type": "table",
+      "name": "agent_consents",
+      "table": "agent_consents",
+      "sql": "CREATE TABLE agent_consents (\n    id TEXT PRIMARY KEY,\n    installation_id TEXT NOT NULL REFERENCES agent_installations(id) ON DELETE CASCADE,\n    policy_version TEXT NOT NULL,\n    allowed_components_json TEXT NOT NULL DEFAULT '[]',\n    allowed_scopes_json TEXT NOT NULL DEFAULT '[]',\n    normalized_targets_json TEXT NOT NULL DEFAULT '[]',\n    selector_schema_version TEXT NOT NULL,\n    selector_resolution_json TEXT NOT NULL DEFAULT '{}',\n    executable_realpaths_json TEXT NOT NULL DEFAULT '[]',\n    command_categories_json TEXT NOT NULL DEFAULT '[]',\n    maximum_risk TEXT NOT NULL\n      CHECK(maximum_risk IN ('read_only','low','elevated','high')),\n    status TEXT NOT NULL DEFAULT 'active'\n      CHECK(status IN ('active','superseded','revoked')),\n    exception_scope TEXT NOT NULL DEFAULT 'installation'\n      CHECK(exception_scope IN ('global','installation')),\n    exceptions_json TEXT NOT NULL DEFAULT '{}',\n    confirmed_at TEXT NOT NULL,\n    revoked_at TEXT,\n    created_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "agent_host_activity_evidence",
+      "table": "agent_host_activity_evidence",
+      "sql": "CREATE TABLE agent_host_activity_evidence (\n    id TEXT PRIMARY KEY,\n    installation_id TEXT NOT NULL REFERENCES agent_installations(id) ON DELETE CASCADE,\n    activation_run_id TEXT NOT NULL REFERENCES reconcile_runs(id) ON DELETE CASCADE,\n    agent_id TEXT NOT NULL,\n    host_variant TEXT NOT NULL,\n    component_key TEXT NOT NULL\n      CHECK(component_key IN ('memory_tools','lifecycle')),\n    signal_name TEXT NOT NULL\n      CHECK(signal_name IN (\n        'brain_prepare','brain_recall','brain_digest',\n        'session_start','pre_compact','session_end','post_compact'\n      )),\n    tide_mind_version TEXT NOT NULL,\n    adapter_version TEXT NOT NULL,\n    projection_version TEXT NOT NULL,\n    host_version TEXT NOT NULL,\n    evidence_hash TEXT NOT NULL,\n    observed_at TEXT NOT NULL,\n    CHECK(\n      (component_key = 'memory_tools' AND signal_name IN (\n        'brain_prepare','brain_recall','brain_digest'\n      )) OR\n      (component_key = 'lifecycle' AND signal_name IN (\n        'session_start','pre_compact','session_end','post_compact'\n      ))\n    ),\n    UNIQUE(\n      activation_run_id, installation_id, component_key, signal_name, tide_mind_version,\n      adapter_version, projection_version, host_version\n    )\n)"
+    },
+    {
+      "type": "table",
+      "name": "agent_installations",
+      "table": "agent_installations",
+      "sql": "CREATE TABLE agent_installations (\n    id TEXT PRIMARY KEY,\n    family TEXT NOT NULL,\n    host_variant TEXT NOT NULL,\n    runtime_realm TEXT NOT NULL DEFAULT 'local_macos',\n    profile_id TEXT NOT NULL DEFAULT '',\n    install_key TEXT NOT NULL,\n    distribution_id TEXT,\n    provenance TEXT NOT NULL DEFAULT 'unknown',\n    os_user_identity TEXT,\n    display_name TEXT NOT NULL,\n    display_alias TEXT,\n    config_root TEXT,\n    executable_path TEXT,\n    app_path TEXT,\n    detected_version TEXT,\n    version_detection_method TEXT,\n    agent_id TEXT UNIQUE,\n    desired_state TEXT NOT NULL DEFAULT 'unmanaged'\n      CHECK(desired_state IN ('unmanaged','managed','disabled','removed')),\n    tombstoned_at TEXT,\n    tombstone_reason TEXT,\n    consent_envelope_id TEXT REFERENCES agent_consents(id),\n    consented_at TEXT,\n    supported_capability INTEGER NOT NULL DEFAULT 0\n      CHECK(supported_capability BETWEEN 0 AND 4),\n    desired_capability INTEGER NOT NULL DEFAULT 0\n      CHECK(desired_capability BETWEEN 0 AND 4),\n    verified_capability INTEGER NOT NULL DEFAULT 0\n      CHECK(verified_capability BETWEEN 0 AND 4),\n    delivery_summary TEXT NOT NULL DEFAULT 'cataloged'\n      CHECK(delivery_summary IN ('cataloged','detectable','guided','hybrid','fully_managed')),\n    verification_summary TEXT NOT NULL DEFAULT 'unverified'\n      CHECK(verification_summary IN ('unverified','verifying','verified','stale','failed','mixed')),\n    health_state TEXT NOT NULL DEFAULT 'discovered',\n    status_reason TEXT,\n    reconcile_state TEXT NOT NULL DEFAULT 'idle'\n      CHECK(reconcile_state IN (\n        'idle','planning','awaiting_consent','applying','verifying','compensating',\n        'needs_recovery','backoff','paused'\n      )),\n    last_detected_at TEXT,\n    last_verified_at TEXT,\n    verification_result_id TEXT REFERENCES verification_results(id),\n    last_repaired_at TEXT,\n    metadata_json TEXT NOT NULL DEFAULT '{}',\n    created_at TEXT NOT NULL,\n    updated_at TEXT NOT NULL, bridge_state TEXT NOT NULL DEFAULT 'serving' CHECK(bridge_state IN ('serving','stopped')), bridge_state_reason TEXT, host_components_state TEXT NOT NULL DEFAULT 'loaded_unknown' CHECK(host_components_state IN ('loaded_unknown','awaiting_reload','deactivated_verified')),\n    UNIQUE(runtime_realm, install_key)\n)"
+    },
+    {
+      "type": "table",
+      "name": "agent_integration_apply_task_feed_state",
+      "table": "agent_integration_apply_task_feed_state",
+      "sql": "CREATE TABLE agent_integration_apply_task_feed_state (\n    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),\n    revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0)\n)"
+    },
+    {
+      "type": "table",
+      "name": "agent_integration_apply_task_items",
+      "table": "agent_integration_apply_task_items",
+      "sql": "CREATE TABLE agent_integration_apply_task_items (\n    task_id TEXT NOT NULL REFERENCES agent_integration_apply_tasks(id) ON DELETE CASCADE,\n    installation_id TEXT NOT NULL REFERENCES agent_installations(id),\n    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),\n    execution_plan_hash TEXT NOT NULL,\n    state TEXT NOT NULL DEFAULT 'pending'\n      CHECK(state IN ('pending','running','terminal','interrupted')),\n    result_json TEXT,\n    started_at TEXT,\n    completed_at TEXT,\n    updated_at TEXT NOT NULL, run_id TEXT REFERENCES reconcile_runs(id) ON DELETE SET NULL,\n    PRIMARY KEY(task_id, installation_id),\n    UNIQUE(task_id, ordinal)\n)"
+    },
+    {
+      "type": "table",
+      "name": "agent_integration_apply_tasks",
+      "table": "agent_integration_apply_tasks",
+      "sql": "CREATE TABLE agent_integration_apply_tasks (\n    id TEXT PRIMARY KEY,\n    plan_hash TEXT NOT NULL,\n    operation_type TEXT NOT NULL DEFAULT 'connect'\n      CHECK(operation_type IN ('connect')),\n    state TEXT NOT NULL DEFAULT 'running'\n      CHECK(state IN ('running','completed')),\n    started_at TEXT NOT NULL,\n    completed_at TEXT,\n    updated_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "agent_integration_events",
+      "table": "agent_integration_events",
+      "sql": "CREATE TABLE agent_integration_events (\n    id TEXT PRIMARY KEY,\n    installation_id TEXT REFERENCES agent_installations(id) ON DELETE CASCADE,\n    component_key TEXT,\n    artifact_id TEXT REFERENCES managed_artifacts(id) ON DELETE CASCADE,\n    kind TEXT NOT NULL,\n    severity TEXT NOT NULL DEFAULT 'info'\n      CHECK(severity IN ('info','warning','error')),\n    episode_id TEXT,\n    dedupe_key TEXT,\n    state TEXT NOT NULL DEFAULT 'unread'\n      CHECK(state IN ('unread','read','archived')),\n    payload_json TEXT NOT NULL DEFAULT '{}',\n    created_at TEXT NOT NULL,\n    read_at TEXT,\n    FOREIGN KEY(installation_id, component_key)\n      REFERENCES installation_components(installation_id, component_key)\n)"
+    },
+    {
+      "type": "table",
+      "name": "agent_npm_official_verifications",
+      "table": "agent_npm_official_verifications",
+      "sql": "CREATE TABLE agent_npm_official_verifications (\n    distribution_id TEXT NOT NULL,\n    package_provenance TEXT NOT NULL,\n    version TEXT NOT NULL,\n    architecture TEXT NOT NULL CHECK(architecture IN ('arm64','x64')),\n    local_portable_fingerprint TEXT NOT NULL,\n    verifier_version TEXT NOT NULL,\n    status TEXT NOT NULL CHECK(status IN ('verified','mismatch')),\n    official_fingerprint TEXT NOT NULL,\n    evidence_json TEXT NOT NULL DEFAULT '{}',\n    checked_at TEXT NOT NULL,\n    PRIMARY KEY (\n      distribution_id, package_provenance, version, architecture,\n      local_portable_fingerprint, verifier_version\n    )\n)"
+    },
+    {
+      "type": "table",
+      "name": "agents",
+      "table": "agents",
+      "sql": "CREATE TABLE agents (\n      id TEXT PRIMARY KEY,\n      name TEXT NOT NULL,\n      tool_type TEXT NOT NULL,\n      archived INTEGER DEFAULT 0,\n      last_active TEXT,\n      created TEXT NOT NULL\n    )"
+    },
+    {
+      "type": "table",
+      "name": "ai_service_status",
+      "table": "ai_service_status",
+      "sql": "CREATE TABLE ai_service_status (\n  entity_id TEXT PRIMARY KEY,\n  aggregate_status TEXT NOT NULL,\n  reason_code TEXT,\n  active_run_id TEXT,\n  projection_epoch INTEGER NOT NULL DEFAULT 0,\n  updated_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "artifact_consumers",
+      "table": "artifact_consumers",
+      "sql": "CREATE TABLE artifact_consumers (\n    artifact_id TEXT NOT NULL REFERENCES managed_artifacts(id) ON DELETE CASCADE,\n    installation_id TEXT NOT NULL,\n    component_key TEXT NOT NULL,\n    required_capability INTEGER NOT NULL DEFAULT 0\n      CHECK(required_capability BETWEEN 0 AND 4),\n    desired_state TEXT NOT NULL DEFAULT 'managed'\n      CHECK(desired_state IN ('managed','disabled','removal_pending','removed')),\n    discover_reachability TEXT NOT NULL DEFAULT 'dedicated'\n      CHECK(discover_reachability IN ('dedicated','shared_visible','per_host_ignorable')),\n    component_exception TEXT,\n    tombstoned_at TEXT,\n    tombstone_reason TEXT,\n    consent_envelope_id TEXT REFERENCES agent_consents(id),\n    state TEXT NOT NULL DEFAULT 'active'\n      CHECK(state IN ('active','removal_pending','removed')),\n    added_at TEXT NOT NULL,\n    removed_at TEXT,\n    updated_at TEXT NOT NULL,\n    PRIMARY KEY(artifact_id, installation_id, component_key),\n    FOREIGN KEY(installation_id, component_key)\n      REFERENCES installation_components(installation_id, component_key) ON DELETE CASCADE\n)"
+    },
+    {
+      "type": "table",
+      "name": "artifact_contributions",
+      "table": "artifact_contributions",
+      "sql": "CREATE TABLE artifact_contributions (\n  artifact_kind TEXT NOT NULL,\n  artifact_id TEXT NOT NULL,\n  owner_kind TEXT NOT NULL,\n  owner_id TEXT NOT NULL,\n  run_id TEXT NOT NULL,\n  item_id TEXT,\n  contribution_version INTEGER NOT NULL,\n  generation INTEGER NOT NULL,\n  active INTEGER NOT NULL DEFAULT 0 CHECK(active IN (0,1)),\n  payload TEXT,\n  created_at TEXT NOT NULL,\n  updated_at TEXT NOT NULL,\n  PRIMARY KEY(artifact_kind, artifact_id, owner_kind, owner_id, run_id, contribution_version)\n)"
+    },
+    {
+      "type": "table",
+      "name": "background_schema_capabilities",
+      "table": "background_schema_capabilities",
+      "sql": "CREATE TABLE background_schema_capabilities (\n  singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),\n  protocol_version INTEGER NOT NULL,\n  scheduler_worker_enabled INTEGER NOT NULL DEFAULT 0\n    CHECK(scheduler_worker_enabled IN (0,1)),\n  graph_write_guard_enabled INTEGER NOT NULL DEFAULT 0\n    CHECK(graph_write_guard_enabled IN (0,1)),\n  recovery_barrier INTEGER NOT NULL DEFAULT 0 CHECK(recovery_barrier IN (0,1)),\n  recovery_reason TEXT,\n  created_at TEXT NOT NULL,\n  updated_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "change_feed",
+      "table": "change_feed",
+      "sql": "CREATE TABLE change_feed (\n  sequence INTEGER PRIMARY KEY AUTOINCREMENT,\n  scope TEXT NOT NULL,\n  entity_id TEXT NOT NULL,\n  change_kind TEXT NOT NULL,\n  run_id TEXT,\n  payload_schema_version INTEGER NOT NULL,\n  payload TEXT NOT NULL,\n  created_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "cli_capacity_leases",
+      "table": "cli_capacity_leases",
+      "sql": "CREATE TABLE cli_capacity_leases (\n      account_scope TEXT PRIMARY KEY,\n      owner_id TEXT NOT NULL,\n      owner_pid INTEGER NOT NULL,\n      fencing_token INTEGER NOT NULL,\n      lease_expires_at INTEGER NOT NULL,\n      heartbeat_at INTEGER NOT NULL,\n      connection_id TEXT NOT NULL,\n      invocation_id TEXT NOT NULL\n    )"
+    },
+    {
+      "type": "table",
+      "name": "cli_invocations",
+      "table": "cli_invocations",
+      "sql": "CREATE TABLE cli_invocations (\n      id TEXT PRIMARY KEY,\n      connection_id TEXT NOT NULL,\n      provider_type TEXT NOT NULL,\n      account_scope TEXT NOT NULL,\n      task_id TEXT,\n      operation_name TEXT,\n      model_alias TEXT,\n      actual_model TEXT,\n      prompt_committed INTEGER NOT NULL DEFAULT 0,\n      outcome TEXT NOT NULL DEFAULT 'running',\n      resolution TEXT,\n      started_at TEXT NOT NULL,\n      finished_at TEXT,\n      error_kind TEXT\n    , invocation_envelope_id TEXT, workflow_run_id TEXT, rollback_disposition TEXT NOT NULL DEFAULT 'active')"
+    },
+    {
+      "type": "table",
+      "name": "cloud_dirty",
+      "table": "cloud_dirty",
+      "sql": "CREATE TABLE cloud_dirty (\n    tbl TEXT NOT NULL,\n    id TEXT NOT NULL,\n    PRIMARY KEY (tbl, id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "cloud_sync_dead_letters",
+      "table": "cloud_sync_dead_letters",
+      "sql": "CREATE TABLE cloud_sync_dead_letters (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    resource_table TEXT NOT NULL,\n    resource_id TEXT NOT NULL,\n    sync_version INTEGER NOT NULL,\n    payload TEXT NOT NULL,\n    error_message TEXT NOT NULL,\n    created TEXT NOT NULL DEFAULT (datetime('now')),\n    UNIQUE (resource_table, resource_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "foreground_commands",
+      "table": "foreground_commands",
+      "sql": "CREATE TABLE foreground_commands (\n  admission_seq INTEGER PRIMARY KEY AUTOINCREMENT,\n  command_id TEXT NOT NULL UNIQUE,\n  kind TEXT NOT NULL,\n  payload TEXT NOT NULL,\n  payload_schema_version INTEGER NOT NULL,\n  target_id TEXT,\n  expected_edit_seq INTEGER,\n  status TEXT NOT NULL DEFAULT 'queued'\n    CHECK(status IN ('queued','running','succeeded','needs_attention','ambiguous','cancelled')),\n  leader_instance_id TEXT,\n  leader_epoch INTEGER,\n  owner_instance_id TEXT,\n  attempt_id TEXT,\n  fencing_token INTEGER,\n  result TEXT,\n  admitted_at INTEGER NOT NULL,\n  started_at INTEGER,\n  finished_at INTEGER,\n  error_kind TEXT,\n  error_message TEXT\n)"
+    },
+    {
+      "type": "table",
+      "name": "foreground_pending_projection",
+      "table": "foreground_pending_projection",
+      "sql": "CREATE TABLE foreground_pending_projection (\n  target_kind TEXT NOT NULL,\n  target_id TEXT NOT NULL,\n  first_admission_seq INTEGER NOT NULL,\n  last_admission_seq INTEGER NOT NULL,\n  folded_kind TEXT NOT NULL,\n  folded_payload TEXT NOT NULL,\n  projection_version INTEGER NOT NULL DEFAULT 1,\n  status TEXT NOT NULL DEFAULT 'pending'\n    CHECK(status IN ('pending','needs_attention')),\n  reason_code TEXT,\n  updated_at TEXT NOT NULL,\n  PRIMARY KEY(target_kind, target_id),\n  FOREIGN KEY(first_admission_seq) REFERENCES foreground_commands(admission_seq),\n  FOREIGN KEY(last_admission_seq) REFERENCES foreground_commands(admission_seq)\n)"
+    },
+    {
+      "type": "table",
+      "name": "foreground_queue_status",
+      "table": "foreground_queue_status",
+      "sql": "CREATE TABLE foreground_queue_status (\n  entity_id TEXT PRIMARY KEY,\n  aggregate_status TEXT NOT NULL,\n  reason_code TEXT,\n  active_run_id TEXT,\n  queued_count INTEGER NOT NULL DEFAULT 0,\n  oldest_admitted_at INTEGER,\n  projection_epoch INTEGER NOT NULL DEFAULT 0,\n  updated_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "graph_projection_head",
+      "table": "graph_projection_head",
+      "sql": "CREATE TABLE graph_projection_head (\n  scope TEXT PRIMARY KEY,\n  active_initialization_generation INTEGER NOT NULL DEFAULT 0,\n  active_run_id TEXT,\n  projection_epoch INTEGER NOT NULL DEFAULT 0,\n  updated_at TEXT NOT NULL,\n  FOREIGN KEY(active_run_id) REFERENCES workflow_runs(run_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "graph_scope_generations",
+      "table": "graph_scope_generations",
+      "sql": "CREATE TABLE graph_scope_generations (\n  scope TEXT PRIMARY KEY,\n  active_generation INTEGER NOT NULL DEFAULT 0,\n  updated_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "initialization_overlays",
+      "table": "initialization_overlays",
+      "sql": "CREATE TABLE initialization_overlays (\n  overlay_id INTEGER PRIMARY KEY AUTOINCREMENT,\n  run_id TEXT NOT NULL,\n  entity_kind TEXT NOT NULL,\n  entity_id TEXT NOT NULL,\n  operation TEXT NOT NULL CHECK(operation IN ('insert','update','delete')),\n  base_version INTEGER,\n  base_generation INTEGER NOT NULL,\n  overlay_generation INTEGER NOT NULL,\n  payload_ref TEXT,\n  before_hash TEXT,\n  before_image TEXT,\n  after_image TEXT,\n  status TEXT NOT NULL DEFAULT 'provisional'\n    CHECK(status IN ('provisional','active','compacted','discarded')),\n  created_at TEXT NOT NULL,\n  activated_at TEXT,\n  compacted_at TEXT,\n  UNIQUE(run_id, entity_kind, entity_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "installation_components",
+      "table": "installation_components",
+      "sql": "CREATE TABLE installation_components (\n    installation_id TEXT NOT NULL REFERENCES agent_installations(id) ON DELETE CASCADE,\n    component_key TEXT NOT NULL,\n    desired_state TEXT NOT NULL DEFAULT 'unmanaged'\n      CHECK(desired_state IN ('unmanaged','managed','disabled','removed')),\n    desired_capability INTEGER NOT NULL DEFAULT 0\n      CHECK(desired_capability BETWEEN 0 AND 4),\n    delivery_mode TEXT NOT NULL DEFAULT 'cataloged'\n      CHECK(delivery_mode IN ('cataloged','detectable','guided','managed')),\n    verification_status TEXT NOT NULL DEFAULT 'unverified'\n      CHECK(verification_status IN ('unverified','verifying','verified','stale','failed')),\n    verification_result_id TEXT REFERENCES verification_results(id),\n    artifact_id TEXT REFERENCES managed_artifacts(id),\n    visibility_state TEXT NOT NULL DEFAULT 'unknown'\n      CHECK(visibility_state IN ('absent','dedicated','shared_visible','hidden','unknown')),\n    tombstoned_at TEXT,\n    tombstone_reason TEXT,\n    consent_envelope_id TEXT REFERENCES agent_consents(id),\n    created_at TEXT NOT NULL,\n    updated_at TEXT NOT NULL,\n    PRIMARY KEY(installation_id, component_key)\n)"
+    },
+    {
+      "type": "table",
+      "name": "links",
+      "table": "links",
+      "sql": "CREATE TABLE \"links\" (\n            id TEXT PRIMARY KEY,\n            from_id TEXT NOT NULL REFERENCES nodes(id),\n            to_id TEXT NOT NULL REFERENCES nodes(id),\n            relation TEXT NOT NULL,\n            strength REAL DEFAULT 0.5,\n            note TEXT,\n            auto INTEGER DEFAULT 1,\n            status TEXT DEFAULT 'confirmed' CHECK(status IN ('confirmed','pending','rejected_by_user')),\n            created TEXT NOT NULL,\n            updated TEXT\n        , refined INTEGER DEFAULT 0, edit_seq INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0)"
+    },
+    {
+      "type": "table",
+      "name": "llm_connection_auth_bindings",
+      "table": "llm_connection_auth_bindings",
+      "sql": "CREATE TABLE llm_connection_auth_bindings (\n    connection_id TEXT PRIMARY KEY,\n    scope_state TEXT NOT NULL CHECK (scope_state IN ('known', 'unknown')),\n    scope_key TEXT NOT NULL,\n    auth_epoch INTEGER NOT NULL CHECK (auth_epoch >= 1),\n    auth_method TEXT,\n    binding_mode TEXT NOT NULL DEFAULT 'snapshot_checked',\n    cli_generation TEXT,\n    auth_store_signal TEXT,\n    observed_at TEXT NOT NULL,\n    epoch_started_at TEXT NOT NULL,\n    epoch_reason TEXT\n)"
+    },
+    {
+      "type": "table",
+      "name": "llm_connection_health",
+      "table": "llm_connection_health",
+      "sql": "CREATE TABLE llm_connection_health (\n      scope_id TEXT PRIMARY KEY,\n      connection_id TEXT,\n      provider_type TEXT NOT NULL,\n      circuit_state TEXT NOT NULL DEFAULT 'closed',\n      failure_count INTEGER NOT NULL DEFAULT 0,\n      opened_at INTEGER,\n      cooldown_ms INTEGER NOT NULL DEFAULT 300000,\n      last_success_at INTEGER,\n      last_error_kind TEXT,\n      last_error_message TEXT,\n      last_error_at INTEGER,\n      needs_user_action INTEGER NOT NULL DEFAULT 0,\n      retry_at INTEGER,\n      updated_at TEXT NOT NULL\n    )"
+    },
+    {
+      "type": "table",
+      "name": "llm_connection_probe_leases",
+      "table": "llm_connection_probe_leases",
+      "sql": "CREATE TABLE llm_connection_probe_leases (\n      scope_id TEXT PRIMARY KEY,\n      owner_id TEXT NOT NULL,\n      expires_at INTEGER NOT NULL\n    )"
+    },
+    {
+      "type": "table",
+      "name": "llm_invocation_attempts",
+      "table": "llm_invocation_attempts",
+      "sql": "CREATE TABLE llm_invocation_attempts (\n  invocation_id TEXT PRIMARY KEY,\n  provider_kind TEXT NOT NULL,\n  connection_id TEXT,\n  workflow_run_id TEXT,\n  task_run_id TEXT,\n  work_item_id TEXT,\n  attempt_id TEXT,\n  request_fingerprint TEXT NOT NULL,\n  model_config_fingerprint TEXT NOT NULL,\n  send_state TEXT NOT NULL DEFAULT 'prepared'\n    CHECK(send_state IN ('prepared','committed','sent','definitely_not_sent','unknown')),\n  response_state TEXT NOT NULL DEFAULT 'pending'\n    CHECK(response_state IN ('pending','received','definite_failure','unknown')),\n  finalize_state TEXT NOT NULL DEFAULT 'pending'\n    CHECK(finalize_state IN ('pending','finalized','failed','unknown')),\n  outcome TEXT NOT NULL DEFAULT 'running'\n    CHECK(outcome IN ('running','success','definite_failure','ambiguous','cancelled')),\n  rollback_disposition TEXT NOT NULL DEFAULT 'active'\n    CHECK(rollback_disposition IN ('active','rolled_back','retained_audit')),\n  created_at TEXT NOT NULL,\n  updated_at TEXT NOT NULL,\n  FOREIGN KEY(workflow_run_id) REFERENCES workflow_runs(run_id),\n  FOREIGN KEY(task_run_id) REFERENCES task_runs(task_run_id),\n  FOREIGN KEY(work_item_id) REFERENCES work_items(work_item_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "llm_model_catalog_snapshots",
+      "table": "llm_model_catalog_snapshots",
+      "sql": "CREATE TABLE llm_model_catalog_snapshots (\n    connection_id TEXT PRIMARY KEY,\n    scope_key TEXT NOT NULL,\n    auth_epoch INTEGER NOT NULL,\n    cli_generation TEXT,\n    source TEXT NOT NULL,\n    revision INTEGER NOT NULL DEFAULT 1,\n    items_json TEXT NOT NULL,\n    default_model_id TEXT,\n    fetched_at TEXT NOT NULL,\n    last_attempt_at TEXT,\n    last_attempt_error_kind TEXT,\n    last_attempt_error TEXT\n)"
+    },
+    {
+      "type": "table",
+      "name": "llm_model_observations",
+      "table": "llm_model_observations",
+      "sql": "CREATE TABLE llm_model_observations (\n    connection_id TEXT NOT NULL,\n    scope_key TEXT NOT NULL,\n    auth_epoch INTEGER NOT NULL,\n    model_id TEXT NOT NULL,\n    selection_mode TEXT NOT NULL CHECK (selection_mode IN ('follow_default', 'alias', 'pinned_id')),\n    last_outcome TEXT NOT NULL CHECK (last_outcome IN (\n      'success', 'mismatch', 'model_rejected', 'temporary_failure',\n      'connection_failure', 'unclassified_failure', 'ambiguous'\n    )),\n    error_kind TEXT,\n    error_message TEXT,\n    actual_model TEXT,\n    last_source TEXT NOT NULL CHECK (last_source IN ('business', 'test')),\n    last_success_at TEXT,\n    last_failure_at TEXT,\n    backoff_until TEXT,\n    updated_at TEXT NOT NULL,\n    PRIMARY KEY (connection_id, scope_key, auth_epoch, model_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "llm_usage_log",
+      "table": "llm_usage_log",
+      "sql": "CREATE TABLE llm_usage_log (\n      id INTEGER PRIMARY KEY AUTOINCREMENT,\n      model TEXT NOT NULL,\n      operation TEXT,\n      input_tokens INTEGER DEFAULT 0,\n      output_tokens INTEGER DEFAULT 0,\n      thinking_tokens INTEGER DEFAULT 0,\n      created TEXT NOT NULL\n    , estimated_cost REAL DEFAULT 0, provider_type TEXT, connection_id TEXT, connection_name_snapshot TEXT, source_type TEXT, billing_mode TEXT, estimated_cost_kind TEXT, pricing_table_version TEXT, provider_reported_cost REAL, provider_reported_cost_kind TEXT, cached_input_tokens INTEGER DEFAULT 0, reasoning_tokens INTEGER DEFAULT 0, invocation_outcome TEXT, invocation_id TEXT, workflow_run_id TEXT, rollback_disposition TEXT NOT NULL DEFAULT 'active')"
+    },
+    {
+      "type": "table",
+      "name": "local_outbox",
+      "table": "local_outbox",
+      "sql": "CREATE TABLE local_outbox (\n    id TEXT PRIMARY KEY,\n    operation TEXT NOT NULL,\n    payload TEXT NOT NULL,\n    source TEXT,\n    created TEXT NOT NULL DEFAULT (datetime('now')),\n    retry_count INTEGER DEFAULT 0\n  , last_error TEXT)"
+    },
+    {
+      "type": "table",
+      "name": "local_outbox_dead",
+      "table": "local_outbox_dead",
+      "sql": "CREATE TABLE local_outbox_dead (\n    id TEXT PRIMARY KEY,\n    operation TEXT NOT NULL,\n    payload TEXT NOT NULL,\n    source TEXT,\n    created TEXT NOT NULL,\n    failed_at TEXT NOT NULL DEFAULT (datetime('now')),\n    retry_count INTEGER NOT NULL,\n    last_error TEXT\n  )"
+    },
+    {
+      "type": "table",
+      "name": "logseq_sync",
+      "table": "logseq_sync",
+      "sql": "CREATE TABLE \"logseq_sync\" (\n          file_path TEXT NOT NULL,\n          source_id TEXT NOT NULL DEFAULT '__default__',\n          content_hash TEXT,\n          mtime INTEGER,\n          size INTEGER,\n          last_synced TEXT,\n          node_ids TEXT DEFAULT '[]',\n          segment_hashes TEXT DEFAULT '[]',\n          PRIMARY KEY (file_path, source_id)\n        )"
+    },
+    {
+      "type": "table",
+      "name": "maintenance_intents",
+      "table": "maintenance_intents",
+      "sql": "CREATE TABLE maintenance_intents (\n  intent_id TEXT PRIMARY KEY,\n  source_runtime TEXT NOT NULL,\n  kind TEXT NOT NULL,\n  payload_version INTEGER NOT NULL,\n  payload TEXT,\n  priority_class TEXT NOT NULL\n    CHECK(priority_class IN ('recovery','foreground','initialization','source','scheduler')),\n  status TEXT NOT NULL DEFAULT 'queued'\n    CHECK(status IN ('queued','claimed','completed','cancelled','failed')),\n  admitted_at INTEGER NOT NULL,\n  eligible_at INTEGER NOT NULL,\n  claimed_run_id TEXT,\n  claimed_attempt_id TEXT,\n  finished_at INTEGER,\n  error TEXT\n)"
+    },
+    {
+      "type": "table",
+      "name": "managed_artifacts",
+      "table": "managed_artifacts",
+      "sql": "CREATE TABLE managed_artifacts (\n    id TEXT PRIMARY KEY,\n    runtime_realm TEXT NOT NULL DEFAULT 'local_macos',\n    component_type TEXT NOT NULL\n      CHECK(component_type IN ('skill','mcp','hook','plugin','rule')),\n    target_path TEXT NOT NULL,\n    ownership_key TEXT NOT NULL DEFAULT '',\n    mutation_domain TEXT NOT NULL,\n    projection_version TEXT NOT NULL,\n    selector_schema_version TEXT NOT NULL,\n    container_precondition_hash TEXT,\n    owned_fragment_hash TEXT,\n    desired_fragment_hash TEXT,\n    observed_fragment_hash TEXT,\n    previous_snapshot_ref TEXT,\n    state TEXT NOT NULL DEFAULT 'healthy'\n      CHECK(state IN (\n        'healthy','missing','drifted','conflict','paused','removal_pending','removed','needs_recovery'\n      )),\n    missing_episode_id TEXT,\n    missing_window_started_at TEXT,\n    missing_event_count INTEGER NOT NULL DEFAULT 0 CHECK(missing_event_count >= 0),\n    paused_reason TEXT,\n    user_reset_at TEXT,\n    last_applied_at TEXT,\n    last_verified_at TEXT,\n    created_at TEXT NOT NULL,\n    updated_at TEXT NOT NULL,\n    UNIQUE(runtime_realm, target_path, ownership_key)\n)"
+    },
+    {
+      "type": "table",
+      "name": "metadata",
+      "table": "metadata",
+      "sql": "CREATE TABLE metadata (\n    key TEXT PRIMARY KEY,\n    value TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "model_connections",
+      "table": "model_connections",
+      "sql": "CREATE TABLE model_connections (\n    id TEXT PRIMARY KEY,\n    name TEXT NOT NULL,\n    provider_type TEXT NOT NULL,\n    credentials TEXT NOT NULL DEFAULT '{}',\n    status TEXT DEFAULT 'unconfigured',\n    available_models TEXT,\n    last_checked TEXT,\n    archived INTEGER DEFAULT 0,\n    created TEXT NOT NULL\n, status_reason TEXT, cli_path TEXT, cli_version TEXT, auth_method TEXT, auth_fingerprint TEXT, environment_checked_at TEXT, candidate_models TEXT, validation_fingerprint TEXT, model_validation_json TEXT, last_tested_at TEXT, last_test_summary TEXT)"
+    },
+    {
+      "type": "table",
+      "name": "mutation_journal",
+      "table": "mutation_journal",
+      "sql": "CREATE TABLE mutation_journal (\n  run_id TEXT NOT NULL,\n  leader_instance_id TEXT NOT NULL,\n  leader_epoch INTEGER NOT NULL,\n  owner_instance_id TEXT NOT NULL,\n  attempt_id TEXT NOT NULL,\n  task_run_id TEXT,\n  work_item_id TEXT,\n  source_retry_item_id TEXT,\n  phase_id TEXT NOT NULL,\n  mutation_batch_id TEXT NOT NULL,\n  fencing_token INTEGER NOT NULL,\n  mutation_seq INTEGER NOT NULL,\n  table_name TEXT NOT NULL,\n  primary_key TEXT NOT NULL,\n  operation TEXT NOT NULL CHECK(operation IN ('insert','update','delete')),\n  before_image TEXT,\n  before_hash TEXT,\n  after_hash TEXT,\n  journal_disposition TEXT NOT NULL DEFAULT 'retained'\n    CHECK(journal_disposition IN (\n      'provisional','retained','rollback_required','rolled_back'\n    )),\n  rollback_status TEXT NOT NULL DEFAULT 'pending'\n    CHECK(rollback_status IN ('pending','rolled_back','retained','failed')),\n  rolled_back_at TEXT,\n  created_at TEXT NOT NULL,\n  PRIMARY KEY(run_id, mutation_seq)\n)"
+    },
+    {
+      "type": "table",
+      "name": "mutation_lane",
+      "table": "mutation_lane",
+      "sql": "CREATE TABLE mutation_lane (\n  singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),\n  monotonic_fence_counter INTEGER NOT NULL DEFAULT 0,\n  leader_instance_id TEXT,\n  leader_epoch INTEGER,\n  current_owner_instance TEXT,\n  workflow_run_id TEXT,\n  attempt_id TEXT,\n  fencing_token INTEGER,\n  lease_expires_at INTEGER,\n  heartbeat_at INTEGER,\n  user_cancel_requested_at INTEGER,\n  shutdown_requested_at INTEGER,\n  updated_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "node_segments",
+      "table": "node_segments",
+      "sql": "CREATE TABLE node_segments (\n      segment_id TEXT PRIMARY KEY,\n      node_id TEXT NOT NULL,\n      segment_index INTEGER NOT NULL,\n      UNIQUE(node_id, segment_index)\n    )"
+    },
+    {
+      "type": "table",
+      "name": "node_versions",
+      "table": "node_versions",
+      "sql": "CREATE TABLE node_versions (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    node_id TEXT NOT NULL REFERENCES nodes(id),\n    version INTEGER NOT NULL,\n    content TEXT NOT NULL,\n    change_reason TEXT,\n    changed_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "nodes",
+      "table": "nodes",
+      "sql": "CREATE TABLE \"nodes\" (\n            id TEXT PRIMARY KEY,\n            type TEXT NOT NULL CHECK(type IN ('fact','context','preference','idea','crystal','meta')),\n            content TEXT NOT NULL,\n            heat REAL DEFAULT 1.0,\n            refinement REAL DEFAULT 0.0,\n            connectivity REAL DEFAULT 0.0,\n            independence REAL DEFAULT 0.0,\n            specificity REAL DEFAULT 0.5,\n            subjectivity REAL DEFAULT 0.5,\n            actuality REAL DEFAULT 0.5,\n            is_crystal INTEGER DEFAULT 0,\n            is_tag INTEGER DEFAULT 0,\n            is_meta INTEGER DEFAULT 0,\n            source_tool TEXT,\n            source_session TEXT,\n            source_stream TEXT,\n            source_timestamp TEXT,\n            tags TEXT,\n            created TEXT NOT NULL,\n            last_reconsolidated TEXT,\n            version INTEGER DEFAULT 1,\n            archived INTEGER DEFAULT 0,\n            is_keystone INTEGER DEFAULT 0,\n            maturity_score REAL DEFAULT 0.0\n        , is_superseded INTEGER DEFAULT 0, title TEXT, source_device TEXT DEFAULT 'local', updated TEXT, edit_seq INTEGER NOT NULL DEFAULT 0, decay_gen INTEGER NOT NULL DEFAULT 0)"
+    },
+    {
+      "type": "table",
+      "name": "nodes_fts",
+      "table": "nodes_fts",
+      "sql": "CREATE VIRTUAL TABLE nodes_fts USING fts5(\n  title,\n  content,\n  tags,\n  content=nodes,\n  content_rowid=rowid\n)"
+    },
+    {
+      "type": "table",
+      "name": "nodes_fts_config",
+      "table": "nodes_fts_config",
+      "sql": "CREATE TABLE 'nodes_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "nodes_fts_data",
+      "table": "nodes_fts_data",
+      "sql": "CREATE TABLE 'nodes_fts_data'(id INTEGER PRIMARY KEY, block BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "nodes_fts_docsize",
+      "table": "nodes_fts_docsize",
+      "sql": "CREATE TABLE 'nodes_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)"
+    },
+    {
+      "type": "table",
+      "name": "nodes_fts_idx",
+      "table": "nodes_fts_idx",
+      "sql": "CREATE TABLE 'nodes_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID"
+    },
+    {
+      "type": "table",
+      "name": "nodes_vec",
+      "table": "nodes_vec",
+      "sql": "CREATE VIRTUAL TABLE nodes_vec USING vec0(\n        id TEXT PRIMARY KEY,\n        embedding FLOAT[3072]\n    )"
+    },
+    {
+      "type": "table",
+      "name": "nodes_vec_chunks",
+      "table": "nodes_vec_chunks",
+      "sql": "CREATE TABLE \"nodes_vec_chunks\"(chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,size INTEGER NOT NULL,validity BLOB NOT NULL,rowids BLOB NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "nodes_vec_info",
+      "table": "nodes_vec_info",
+      "sql": "CREATE TABLE \"nodes_vec_info\" (key text primary key, value any)"
+    },
+    {
+      "type": "table",
+      "name": "nodes_vec_rowids",
+      "table": "nodes_vec_rowids",
+      "sql": "CREATE TABLE \"nodes_vec_rowids\"(rowid INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE NOT NULL,chunk_id INTEGER,chunk_offset INTEGER)"
+    },
+    {
+      "type": "table",
+      "name": "nodes_vec_vector_chunks00",
+      "table": "nodes_vec_vector_chunks00",
+      "sql": "CREATE TABLE \"nodes_vec_vector_chunks00\"(rowid PRIMARY KEY,vectors BLOB NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "note_sources",
+      "table": "note_sources",
+      "sql": "CREATE TABLE note_sources (\n      id TEXT PRIMARY KEY,\n      name TEXT NOT NULL,\n      tool_type TEXT NOT NULL,\n      path TEXT NOT NULL,\n      poll_interval INTEGER DEFAULT 60,\n      archived INTEGER DEFAULT 0,\n      initialized INTEGER DEFAULT 0,\n      created TEXT NOT NULL,\n      last_synced TEXT\n    )"
+    },
+    {
+      "type": "table",
+      "name": "notion_pending_relations",
+      "table": "notion_pending_relations",
+      "sql": "CREATE TABLE notion_pending_relations (\n          source_page_id TEXT NOT NULL,\n          target_page_id TEXT NOT NULL,\n          source_node_id TEXT NOT NULL,\n          property_name TEXT NOT NULL,\n          source_id TEXT NOT NULL DEFAULT '',\n          created TEXT NOT NULL,\n          PRIMARY KEY (source_page_id, target_page_id, property_name, source_id)\n        )"
+    },
+    {
+      "type": "table",
+      "name": "notion_pending_retry",
+      "table": "notion_pending_retry",
+      "sql": "CREATE TABLE notion_pending_retry (\n      page_id TEXT NOT NULL,\n      source_id TEXT NOT NULL,\n      attempts INTEGER NOT NULL DEFAULT 0,\n      last_attempt TEXT NOT NULL,\n      last_error TEXT,\n      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','dead_letter')),\n      PRIMARY KEY (page_id, source_id)\n    )"
+    },
+    {
+      "type": "table",
+      "name": "notion_sync",
+      "table": "notion_sync",
+      "sql": "CREATE TABLE notion_sync (\n          page_id TEXT NOT NULL,\n          content_hash TEXT NOT NULL,\n          last_edited_time TEXT NOT NULL,\n          page_type TEXT NOT NULL DEFAULT 'page',\n          last_synced TEXT NOT NULL,\n          node_ids TEXT,\n          source_id TEXT DEFAULT '',\n          PRIMARY KEY (page_id, source_id)\n        )"
+    },
+    {
+      "type": "table",
+      "name": "operation_log",
+      "table": "operation_log",
+      "sql": "CREATE TABLE operation_log (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    operation TEXT NOT NULL,\n    input_summary TEXT,\n    context TEXT,\n    output_node_ids TEXT,\n    tool TEXT,\n    session TEXT,\n    created TEXT NOT NULL\n, agent_id TEXT, exact_count INTEGER, related_count INTEGER, fallback_chain TEXT, vector_unavailable INTEGER, invocation_id TEXT, workflow_run_id TEXT, rollback_disposition TEXT NOT NULL DEFAULT 'active')"
+    },
+    {
+      "type": "table",
+      "name": "overlay_compaction_checkpoints",
+      "table": "overlay_compaction_checkpoints",
+      "sql": "CREATE TABLE overlay_compaction_checkpoints (\n  run_id TEXT NOT NULL,\n  entity_kind TEXT NOT NULL,\n  cursor TEXT,\n  status TEXT NOT NULL DEFAULT 'queued'\n    CHECK(status IN ('queued','running','paused','completed','failed')),\n  attempt_id TEXT,\n  fencing_token INTEGER,\n  updated_at TEXT NOT NULL,\n  error_kind TEXT,\n  error_message TEXT,\n  PRIMARY KEY(run_id, entity_kind),\n  FOREIGN KEY(run_id) REFERENCES workflow_runs(run_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "param_adjustments",
+      "table": "param_adjustments",
+      "sql": "CREATE TABLE param_adjustments (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    strategy_name TEXT NOT NULL,\n    param_name TEXT NOT NULL,\n    signal_type TEXT,\n    old_value REAL NOT NULL,\n    new_value REAL NOT NULL,\n    reason TEXT,\n    status TEXT NOT NULL DEFAULT 'active',\n    pre_avg REAL,\n    post_avg REAL,\n    monitoring_start TEXT,\n    monitoring_end TEXT,\n    created TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "param_feedback",
+      "table": "param_feedback",
+      "sql": "CREATE TABLE param_feedback (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    strategy_name TEXT NOT NULL,\n    param_name TEXT,\n    signal_type TEXT NOT NULL,\n    signal_value REAL NOT NULL,\n    context TEXT,\n    created TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "pending_digests",
+      "table": "pending_digests",
+      "sql": "CREATE TABLE pending_digests (\n    id TEXT PRIMARY KEY,\n    trace_id TEXT NOT NULL,\n    input_json TEXT NOT NULL,\n    status TEXT NOT NULL DEFAULT 'pending'\n      CHECK(status IN ('pending','processing','failed','ambiguous')),\n    error_message TEXT,\n    retry_count INTEGER DEFAULT 0,\n    created TEXT NOT NULL,\n    next_retry_at TEXT NOT NULL,\n    completed_at TEXT,\n    processing_started_at TEXT,\n    ambiguous_invocation_id TEXT\n)"
+    },
+    {
+      "type": "table",
+      "name": "projection_mutations",
+      "table": "projection_mutations",
+      "sql": "CREATE TABLE projection_mutations (\n    id TEXT PRIMARY KEY,\n    run_id TEXT NOT NULL REFERENCES reconcile_runs(id) ON DELETE CASCADE,\n    operation_id TEXT NOT NULL,\n    installation_id TEXT REFERENCES agent_installations(id),\n    component_key TEXT,\n    artifact_id TEXT REFERENCES managed_artifacts(id),\n    mutation_domain TEXT NOT NULL,\n    target TEXT NOT NULL,\n    before_hash TEXT,\n    after_hash TEXT,\n    precondition_json TEXT NOT NULL DEFAULT '{}',\n    adapter_version TEXT,\n    catalog_version TEXT,\n    projection_version TEXT,\n    selector_schema_version TEXT,\n    planned_mutation_json TEXT NOT NULL DEFAULT '{}',\n    writer_fence_epoch INTEGER,\n    writer_generation INTEGER,\n    idempotency_strategy TEXT NOT NULL,\n    readback_strategy TEXT NOT NULL,\n    post_effect_fingerprint TEXT,\n    compensation_precondition TEXT,\n    apply_receipt_json TEXT,\n    verification_result_json TEXT,\n    compensation_result_json TEXT,\n    state TEXT NOT NULL DEFAULT 'prepared'\n      CHECK(state IN (\n        'prepared','effect_started','effect_observed','receipt_persisted','verified','committed',\n        'compensating','compensated','needs_recovery','failed'\n      )),\n    failure_code TEXT,\n    failure_stage TEXT,\n    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),\n    next_recovery_at TEXT,\n    effect_started_at TEXT,\n    effect_observed_at TEXT,\n    receipt_persisted_at TEXT,\n    verified_at TEXT,\n    committed_at TEXT,\n    created_at TEXT NOT NULL,\n    updated_at TEXT NOT NULL, journal_version INTEGER NOT NULL DEFAULT 0 CHECK(journal_version >= 0),\n    FOREIGN KEY(installation_id, component_key)\n      REFERENCES installation_components(installation_id, component_key),\n    UNIQUE(run_id, operation_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "reconcile_runs",
+      "table": "reconcile_runs",
+      "sql": "CREATE TABLE reconcile_runs (\n    id TEXT PRIMARY KEY,\n    installation_id TEXT REFERENCES agent_installations(id),\n    operation_type TEXT NOT NULL,\n    execution_plan_hash TEXT NOT NULL,\n    consent_envelope_id TEXT REFERENCES agent_consents(id),\n    state TEXT NOT NULL DEFAULT 'planned'\n      CHECK(state IN (\n        'planned','preconditions_checked','applying','applied_unverified','verified','committed',\n        'compensating','needs_recovery','failed','cancelled'\n      )),\n    recovery_strategy TEXT NOT NULL,\n    writer_fence_snapshot_json TEXT NOT NULL DEFAULT '{}',\n    adapter_version TEXT,\n    catalog_version TEXT,\n    projection_version TEXT,\n    selector_schema_version TEXT,\n    prepared_plan_json TEXT NOT NULL DEFAULT '{}',\n    desired_capability INTEGER NOT NULL DEFAULT 0\n      CHECK(desired_capability BETWEEN 0 AND 4),\n    failure_code TEXT,\n    failure_stage TEXT,\n    created_at TEXT NOT NULL,\n    started_at TEXT,\n    completed_at TEXT,\n    updated_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "recovery_actions",
+      "table": "recovery_actions",
+      "sql": "CREATE TABLE recovery_actions (\n  recovery_action_id TEXT PRIMARY KEY,\n  recovery_report_id TEXT NOT NULL,\n  priority INTEGER NOT NULL,\n  ordinal INTEGER NOT NULL,\n  entity_kind TEXT NOT NULL,\n  entity_id TEXT NOT NULL,\n  observed_state TEXT,\n  observed_revision_vector TEXT NOT NULL DEFAULT '{}',\n  invocation_evidence TEXT NOT NULL DEFAULT '{\"invocations\":[]}',\n  action_kind TEXT NOT NULL,\n  invocation_certainty TEXT,\n  target_state TEXT,\n  status TEXT NOT NULL DEFAULT 'pending'\n    CHECK(status IN ('pending','running','succeeded','blocked','needs_attention','failed')),\n  owner_attempt_id TEXT,\n  owner_fencing_token INTEGER,\n  evidence TEXT,\n  error TEXT,\n  created_at INTEGER NOT NULL,\n  updated_at INTEGER NOT NULL, recovery_executor_attempt_id TEXT, recovery_generation INTEGER NOT NULL DEFAULT 0, target_run_id TEXT, target_previous_attempt_id TEXT, target_rebound_attempt_id TEXT, target_revision TEXT, superseded_at INTEGER,\n  UNIQUE(recovery_report_id, ordinal),\n  FOREIGN KEY(recovery_report_id) REFERENCES recovery_reports(recovery_report_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "recovery_barriers",
+      "table": "recovery_barriers",
+      "sql": "CREATE TABLE recovery_barriers (\n  barrier_id TEXT PRIMARY KEY,\n  owner_run_id TEXT NOT NULL,\n  reason_code TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT 'active'\n    CHECK(status IN ('active','cleared')),\n  recovery_episode_id TEXT NOT NULL,\n  evidence TEXT NOT NULL,\n  owner_leader_instance_id TEXT NOT NULL,\n  owner_leader_epoch INTEGER NOT NULL,\n  owner_instance_id TEXT NOT NULL,\n  owner_attempt_id TEXT NOT NULL,\n  owner_fencing_token INTEGER NOT NULL,\n  created_at INTEGER NOT NULL,\n  clear_evidence TEXT,\n  cleared_at INTEGER,\n  CHECK(\n    (status = 'active' AND clear_evidence IS NULL AND cleared_at IS NULL)\n    OR\n    (status = 'cleared' AND clear_evidence IS NOT NULL AND cleared_at IS NOT NULL)\n  )\n)"
+    },
+    {
+      "type": "table",
+      "name": "recovery_control_commands",
+      "table": "recovery_control_commands",
+      "sql": "CREATE TABLE recovery_control_commands (\n  command_id TEXT PRIMARY KEY,\n  request_fingerprint TEXT NOT NULL,\n  session_id TEXT NOT NULL,\n  leader_instance_id TEXT NOT NULL,\n  leader_epoch INTEGER NOT NULL,\n  expected_owner_instance_id TEXT,\n  expected_attempt_id TEXT,\n  expected_fencing_token INTEGER,\n  owner_loss_proof_kind TEXT NOT NULL,\n  owner_loss_proof TEXT NOT NULL,\n  old_worker_terminal INTEGER NOT NULL\n    CHECK(old_worker_terminal IN (0,1)),\n  status TEXT NOT NULL\n    CHECK(status IN ('committed','sealed_exit_required','rejected')),\n  recovery_episode_id TEXT NOT NULL,\n  recovery_report_id TEXT NOT NULL,\n  recovery_action_id TEXT NOT NULL,\n  fencing_token INTEGER,\n  ack_payload TEXT NOT NULL,\n  created_at INTEGER NOT NULL,\n  updated_at INTEGER NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "recovery_episodes",
+      "table": "recovery_episodes",
+      "sql": "CREATE TABLE recovery_episodes (\n  recovery_episode_id TEXT PRIMARY KEY,\n  leader_instance_id TEXT NOT NULL,\n  leader_epoch INTEGER NOT NULL,\n  current_generation INTEGER NOT NULL DEFAULT 0,\n  current_report_id TEXT,\n  revision INTEGER NOT NULL DEFAULT 0,\n  status TEXT NOT NULL DEFAULT 'active'\n    CHECK(status IN ('active','completed','needs_recovery')),\n  created_at INTEGER NOT NULL,\n  updated_at INTEGER NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "recovery_reports",
+      "table": "recovery_reports",
+      "sql": "CREATE TABLE recovery_reports (\n  recovery_report_id TEXT PRIMARY KEY,\n  recovery_episode_id TEXT NOT NULL,\n  leader_instance_id TEXT NOT NULL,\n  leader_epoch INTEGER NOT NULL,\n  recovery_generation INTEGER NOT NULL DEFAULT 0,\n  phase TEXT NOT NULL DEFAULT 'post_fence'\n    CHECK(phase IN ('pre_fence','post_fence')),\n  plan_hash TEXT NOT NULL,\n  observed_revision_vector TEXT NOT NULL DEFAULT '{}',\n  barrier_snapshot TEXT NOT NULL DEFAULT '[]',\n  action_summary TEXT NOT NULL DEFAULT '{}',\n  replan_needed INTEGER NOT NULL DEFAULT 0\n    CHECK(replan_needed IN (0,1)),\n  superseded_at INTEGER,\n  status TEXT NOT NULL\n    CHECK(status IN ('planning','ready','executing','completed','blocked','failed')),\n  created_at INTEGER NOT NULL,\n  completed_at INTEGER\n)"
+    },
+    {
+      "type": "table",
+      "name": "run_attempts",
+      "table": "run_attempts",
+      "sql": "CREATE TABLE run_attempts (\n  attempt_id TEXT PRIMARY KEY,\n  run_id TEXT,\n  attempt_kind TEXT NOT NULL,\n  leader_instance_id TEXT,\n  leader_epoch INTEGER,\n  owner_instance_id TEXT NOT NULL,\n  fencing_token INTEGER,\n  control_state TEXT NOT NULL DEFAULT 'running'\n    CHECK(control_state IN (\n      'running','pause_requested_system','paused_system',\n      'pause_requested_shutdown','finished'\n    )),\n  heartbeat_at INTEGER NOT NULL,\n  checkpoint_schema_version INTEGER,\n  checkpoint_payload TEXT,\n  started_at TEXT NOT NULL,\n  finished_at TEXT,\n  error_kind TEXT,\n  error_message TEXT,\n  FOREIGN KEY(run_id) REFERENCES workflow_runs(run_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "runtime_instances",
+      "table": "runtime_instances",
+      "sql": "CREATE TABLE runtime_instances (\n  instance_id TEXT PRIMARY KEY,\n  runtime_kind TEXT NOT NULL CHECK(runtime_kind IN ('electron','worker','standalone','mcp','test')),\n  build_version TEXT NOT NULL,\n  protocol_version INTEGER NOT NULL,\n  boot_id TEXT NOT NULL,\n  process_id INTEGER NOT NULL,\n  process_started_at INTEGER NOT NULL,\n  leader_epoch INTEGER NOT NULL DEFAULT 0,\n  heartbeat_at INTEGER NOT NULL,\n  expires_at INTEGER NOT NULL,\n  status TEXT NOT NULL DEFAULT 'active'\n    CHECK(status IN ('active','suspect','unresponsive','stopped')),\n  created_at TEXT NOT NULL,\n  updated_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "runtime_leader",
+      "table": "runtime_leader",
+      "sql": "CREATE TABLE runtime_leader (\n  singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),\n  leader_instance_id TEXT,\n  leader_epoch INTEGER NOT NULL DEFAULT 0,\n  protocol_version INTEGER NOT NULL,\n  acquired_at INTEGER,\n  heartbeat_at INTEGER,\n  expires_at INTEGER,\n  FOREIGN KEY(leader_instance_id) REFERENCES runtime_instances(instance_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "runtime_readiness",
+      "table": "runtime_readiness",
+      "sql": "CREATE TABLE runtime_readiness (\n  singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),\n  transport_ready INTEGER NOT NULL DEFAULT 0\n    CHECK(transport_ready IN (0,1)),\n  recovery_report_id TEXT,\n  recovery_episode_id TEXT,\n  recovery_phase TEXT,\n  recovery_generation INTEGER NOT NULL DEFAULT 0,\n  recovery_reconciled INTEGER NOT NULL DEFAULT 0\n    CHECK(recovery_reconciled IN (0,1)),\n  normal_claims_allowed INTEGER NOT NULL DEFAULT 0\n    CHECK(normal_claims_allowed IN (0,1)),\n  leader_instance_id TEXT,\n  leader_epoch INTEGER,\n  updated_at INTEGER NOT NULL,\n  CHECK(normal_claims_allowed = 0 OR recovery_reconciled = 1),\n  CHECK(recovery_reconciled = 0 OR transport_ready = 1),\n  CHECK(recovery_phase IS NULL OR recovery_phase IN ('transport','pre_fence','post_fence')),\n  FOREIGN KEY(recovery_report_id) REFERENCES recovery_reports(recovery_report_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "runtime_shutdowns",
+      "table": "runtime_shutdowns",
+      "sql": "CREATE TABLE runtime_shutdowns (\n  shutdown_id TEXT PRIMARY KEY,\n  intent TEXT NOT NULL\n    CHECK(intent IN ('quit','quit_and_install','controlled_relaunch')),\n  deadline_monotonic_ms REAL NOT NULL,\n  leader_instance_id TEXT NOT NULL,\n  leader_epoch INTEGER NOT NULL,\n  fencing_token INTEGER NOT NULL,\n  status TEXT NOT NULL\n    CHECK(status IN (\n      'admission_stopped','checkpointed','mutation_closed',\n      'coordinator_closed','exiting'\n    )),\n  requested_at INTEGER NOT NULL,\n  updated_at INTEGER NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "runtime_status",
+      "table": "runtime_status",
+      "sql": "CREATE TABLE runtime_status (\n  entity_id TEXT PRIMARY KEY,\n  aggregate_status TEXT NOT NULL,\n  reason_code TEXT,\n  active_run_id TEXT,\n  projection_epoch INTEGER NOT NULL DEFAULT 0,\n  updated_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "source_retry_items",
+      "table": "source_retry_items",
+      "sql": "CREATE TABLE source_retry_items (\n  source_id TEXT NOT NULL,\n  stable_item_id TEXT NOT NULL,\n  input_version TEXT NOT NULL,\n  content_hash TEXT NOT NULL,\n  failure_stage TEXT NOT NULL,\n  status TEXT NOT NULL,\n  next_retry_at INTEGER,\n  current_attempt_run_id TEXT,\n  predecessor_version TEXT,\n  disposition TEXT,\n  disposition_by TEXT,\n  disposition_at TEXT,\n  superseded_by TEXT,\n  created_at TEXT NOT NULL,\n  updated_at TEXT NOT NULL,\n  error_kind TEXT,\n  error_message TEXT,\n  PRIMARY KEY(source_id, stable_item_id, input_version, content_hash, failure_stage)\n)"
+    },
+    {
+      "type": "table",
+      "name": "source_status_projection",
+      "table": "source_status_projection",
+      "sql": "CREATE TABLE source_status_projection (\n  source_id TEXT PRIMARY KEY,\n  aggregate_status TEXT NOT NULL,\n  reason_code TEXT,\n  reason_entity_id TEXT,\n  active_workflow_kind TEXT,\n  active_run_id TEXT,\n  initialized INTEGER NOT NULL DEFAULT 0 CHECK(initialized IN (0,1)),\n  full_scan_complete INTEGER NOT NULL DEFAULT 0 CHECK(full_scan_complete IN (0,1)),\n  unresolved_count INTEGER NOT NULL DEFAULT 0,\n  progress_numerator INTEGER NOT NULL DEFAULT 0,\n  progress_denominator INTEGER NOT NULL DEFAULT 0,\n  projection_epoch INTEGER NOT NULL DEFAULT 0,\n  updated_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "source_workflow_status",
+      "table": "source_workflow_status",
+      "sql": "CREATE TABLE source_workflow_status (\n  source_id TEXT NOT NULL,\n  workflow_kind TEXT NOT NULL,\n  aggregate_status TEXT NOT NULL,\n  reason_code TEXT,\n  reason_entity_id TEXT,\n  active_run_id TEXT,\n  progress_numerator INTEGER NOT NULL DEFAULT 0,\n  progress_denominator INTEGER NOT NULL DEFAULT 0,\n  unresolved_count INTEGER NOT NULL DEFAULT 0,\n  projection_epoch INTEGER NOT NULL DEFAULT 0,\n  updated_at TEXT NOT NULL,\n  PRIMARY KEY(source_id, workflow_kind)\n)"
+    },
+    {
+      "type": "table",
+      "name": "sqlite_sequence",
+      "table": "sqlite_sequence",
+      "sql": "CREATE TABLE sqlite_sequence(name,seq)"
+    },
+    {
+      "type": "table",
+      "name": "strategy_feedback",
+      "table": "strategy_feedback",
+      "sql": "CREATE TABLE strategy_feedback (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    strategy_name TEXT NOT NULL,\n    operation_id INTEGER REFERENCES operation_log(id),\n    node_id TEXT REFERENCES nodes(id),\n    was_used INTEGER,\n    feedback_signal REAL,\n    created TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "strategy_versions",
+      "table": "strategy_versions",
+      "sql": "CREATE TABLE strategy_versions (\n      id INTEGER PRIMARY KEY AUTOINCREMENT,\n      strategy_name TEXT NOT NULL,\n      version INTEGER NOT NULL,\n      content TEXT NOT NULL,\n      change_reason TEXT,\n      changed_by TEXT DEFAULT 'user',\n      created TEXT NOT NULL\n    )"
+    },
+    {
+      "type": "table",
+      "name": "structure_holes_cache",
+      "table": "structure_holes_cache",
+      "sql": "CREATE TABLE structure_holes_cache (\n    id INTEGER PRIMARY KEY CHECK (id = 1),\n    payload TEXT NOT NULL,\n    computed_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "sync_apply_guard",
+      "table": "sync_apply_guard",
+      "sql": "CREATE TABLE sync_apply_guard (\n    k INTEGER PRIMARY KEY CHECK (k = 0),\n    applying INTEGER NOT NULL DEFAULT 0\n)"
+    },
+    {
+      "type": "table",
+      "name": "sync_hashes",
+      "table": "sync_hashes",
+      "sql": "CREATE TABLE sync_hashes (\n    file_name TEXT PRIMARY KEY,\n    source_hash TEXT NOT NULL,\n    synced_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "table",
+      "name": "tag_usage",
+      "table": "tag_usage",
+      "sql": "CREATE TABLE tag_usage (\n    tag TEXT PRIMARY KEY,\n    node_count INTEGER NOT NULL DEFAULT 0,\n    last_updated TEXT\n)"
+    },
+    {
+      "type": "table",
+      "name": "task_runs",
+      "table": "task_runs",
+      "sql": "CREATE TABLE task_runs (\n  task_run_id TEXT PRIMARY KEY,\n  run_id TEXT NOT NULL,\n  task_id TEXT NOT NULL,\n  task_ordinal INTEGER NOT NULL DEFAULT 0,\n  attempt_id TEXT NOT NULL,\n  leader_instance_id TEXT,\n  leader_epoch INTEGER,\n  owner_instance_id TEXT,\n  fencing_token INTEGER,\n  status TEXT NOT NULL CHECK(status IN (\n    'queued','running','completed','retry_wait','blocked','cancelled',\n    'failed','legacy_unknown'\n  )),\n  outcome TEXT CHECK(outcome IS NULL OR outcome IN (\n    'not_due','success','no_op','partial_with_durable_retry',\n    'failed_retryable','ambiguous','blocked','cancelled','fatal'\n  )),\n  last_success_at TEXT,\n  last_attempt_at TEXT,\n  next_retry_at INTEGER,\n  failure_count INTEGER NOT NULL DEFAULT 0,\n  blocked_by TEXT,\n  partial_visibility TEXT,\n  failure_atomic_no_commit INTEGER NOT NULL DEFAULT 0 CHECK(failure_atomic_no_commit IN (0,1)),\n  rows_scanned INTEGER NOT NULL DEFAULT 0,\n  rows_committed INTEGER NOT NULL DEFAULT 0,\n  consumed_generation_vector TEXT,\n  checkpoint_schema_version INTEGER,\n  checkpoint_payload TEXT,\n  started_at TEXT,\n  finished_at TEXT,\n  error_kind TEXT,\n  error_message TEXT,\n  UNIQUE(run_id, task_id, attempt_id),\n  FOREIGN KEY(run_id) REFERENCES workflow_runs(run_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "task_scope_generations",
+      "table": "task_scope_generations",
+      "sql": "CREATE TABLE task_scope_generations (\n  task_id TEXT NOT NULL,\n  scope TEXT NOT NULL,\n  required_generation INTEGER NOT NULL DEFAULT 0,\n  evaluated_generation INTEGER NOT NULL DEFAULT 0,\n  required_by_run_id TEXT,\n  evaluated_by_run_id TEXT,\n  updated_at TEXT NOT NULL,\n  PRIMARY KEY(task_id, scope),\n  CHECK(evaluated_generation <= required_generation)\n)"
+    },
+    {
+      "type": "table",
+      "name": "timeline_events",
+      "table": "timeline_events",
+      "sql": "CREATE TABLE timeline_events (\n      id INTEGER PRIMARY KEY AUTOINCREMENT,\n      type TEXT NOT NULL,\n      subtype TEXT NOT NULL,\n      title TEXT NOT NULL,\n      detail TEXT,\n      node_ids TEXT,\n      important INTEGER DEFAULT 0,\n      created TEXT NOT NULL\n    , actor TEXT DEFAULT 'brain')"
+    },
+    {
+      "type": "table",
+      "name": "timeline_outbox",
+      "table": "timeline_outbox",
+      "sql": "CREATE TABLE timeline_outbox (\n  outbox_id INTEGER PRIMARY KEY AUTOINCREMENT,\n  event_scope TEXT NOT NULL,\n  episode_key TEXT NOT NULL,\n  transition_seq INTEGER NOT NULL,\n  event_kind TEXT NOT NULL,\n  workflow_run_id TEXT,\n  payload_schema_version INTEGER NOT NULL,\n  payload TEXT NOT NULL,\n  delivery_status TEXT NOT NULL DEFAULT 'pending'\n    CHECK(delivery_status IN ('pending','delivered','failed')),\n  created_at TEXT NOT NULL,\n  delivered_at TEXT,\n  error_message TEXT,\n  UNIQUE(event_scope, episode_key, event_kind, transition_seq),\n  FOREIGN KEY(workflow_run_id) REFERENCES workflow_runs(run_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "verification_results",
+      "table": "verification_results",
+      "sql": "CREATE TABLE verification_results (\n    id TEXT PRIMARY KEY,\n    run_id TEXT REFERENCES reconcile_runs(id) ON DELETE CASCADE,\n    installation_id TEXT NOT NULL,\n    component_key TEXT NOT NULL,\n    family TEXT NOT NULL,\n    host_variant TEXT NOT NULL,\n    distribution_id TEXT,\n    runtime_realm TEXT NOT NULL,\n    host_version TEXT,\n    os_version TEXT,\n    tide_mind_version TEXT,\n    adapter_version TEXT NOT NULL,\n    catalog_version TEXT NOT NULL,\n    projection_version TEXT,\n    selector_schema_version TEXT,\n    verification_manifest_version TEXT NOT NULL,\n    method TEXT NOT NULL,\n    identity_assertion TEXT,\n    artifact_hash TEXT,\n    reload_generation TEXT,\n    invalidation_keys_json TEXT NOT NULL DEFAULT '[]',\n    result TEXT NOT NULL CHECK(result IN ('verified','failed')),\n    evidence_ref TEXT,\n    evidence_hash TEXT NOT NULL,\n    verified_at TEXT NOT NULL,\n    expires_at TEXT,\n    invalidated_at TEXT,\n    invalidation_reason TEXT,\n    created_at TEXT NOT NULL,\n    FOREIGN KEY(installation_id, component_key)\n      REFERENCES installation_components(installation_id, component_key) ON DELETE CASCADE\n)"
+    },
+    {
+      "type": "table",
+      "name": "work_items",
+      "table": "work_items",
+      "sql": "CREATE TABLE work_items (\n  work_item_id TEXT PRIMARY KEY,\n  run_id TEXT NOT NULL,\n  phase_id TEXT NOT NULL,\n  item_kind TEXT NOT NULL,\n  stable_item_id TEXT NOT NULL,\n  input_version TEXT NOT NULL,\n  attempt_id TEXT NOT NULL,\n  leader_instance_id TEXT,\n  leader_epoch INTEGER,\n  owner_instance_id TEXT,\n  fencing_token INTEGER,\n  status TEXT NOT NULL CHECK(status IN (\n    'pending','running','succeeded','retry_wait','needs_attention',\n    'ambiguous','skipped_by_rule','quarantined_by_user','cancelled'\n  )),\n  outcome TEXT CHECK(outcome IS NULL OR outcome IN (\n    'success','no_op','failed_retryable','ambiguous','blocked',\n    'cancelled','fatal'\n  )),\n  next_retry_at INTEGER,\n  checkpoint_schema_version INTEGER,\n  checkpoint_payload TEXT,\n  artifact_generation INTEGER,\n  quarantine_reason TEXT,\n  created_at TEXT NOT NULL,\n  updated_at TEXT NOT NULL,\n  finished_at TEXT,\n  error_kind TEXT,\n  error_message TEXT,\n  UNIQUE(run_id, phase_id, stable_item_id, input_version),\n  FOREIGN KEY(run_id) REFERENCES workflow_runs(run_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "workflow_inputs",
+      "table": "workflow_inputs",
+      "sql": "CREATE TABLE workflow_inputs (\n  run_id TEXT NOT NULL,\n  ordinal INTEGER NOT NULL,\n  stable_item_id TEXT NOT NULL,\n  source_version TEXT NOT NULL,\n  source_stat_or_remote_version TEXT,\n  content_hash TEXT NOT NULL,\n  classification TEXT,\n  normalized_payload_ref TEXT NOT NULL,\n  input_schema_version INTEGER NOT NULL,\n  PRIMARY KEY(run_id, ordinal),\n  UNIQUE(run_id, stable_item_id, source_version),\n  FOREIGN KEY(run_id) REFERENCES workflow_runs(run_id)\n)"
+    },
+    {
+      "type": "table",
+      "name": "workflow_runs",
+      "table": "workflow_runs",
+      "sql": "CREATE TABLE workflow_runs (\n  run_id TEXT PRIMARY KEY,\n  workflow_kind TEXT NOT NULL,\n  source_id TEXT,\n  trigger_kind TEXT NOT NULL,\n  status TEXT NOT NULL CHECK(status IN (\n    'queued','blocked_preflight','running','retry_wait_holding',\n    'short_retry_holding','user_cancel_requested','paused_shutdown',\n    'rolling_back','rollback_retry_wait','rollback_blocked',\n    'rollback_failed_needs_recovery','crash_recovering','succeeded',\n    'rolled_back_after_failure','rolled_back_after_cancel',\n    'completed_success','completed_partial','retry_scheduled',\n    'blocked_released','failed'\n  )),\n  current_phase TEXT,\n  input_fingerprint TEXT,\n  leader_instance_id TEXT,\n  leader_epoch INTEGER,\n  owner_instance_id TEXT,\n  owner_process_id INTEGER,\n  attempt_id TEXT,\n  fencing_token INTEGER,\n  lease_expires_at INTEGER,\n  heartbeat_at INTEGER,\n  user_cancel_requested_at INTEGER,\n  shutdown_requested_at INTEGER,\n  hold_started_at INTEGER,\n  hold_deadline INTEGER,\n  hold_attempt_budget INTEGER,\n  predecessor_run_id TEXT,\n  terminal_outcome TEXT,\n  created_at TEXT NOT NULL,\n  started_at TEXT,\n  finished_at TEXT,\n  error_kind TEXT,\n  error_message TEXT\n)"
+    },
+    {
+      "type": "table",
+      "name": "writer_fences",
+      "table": "writer_fences",
+      "sql": "CREATE TABLE writer_fences (\n    mutation_domain TEXT PRIMARY KEY,\n    scope_mode TEXT NOT NULL DEFAULT 'legacy'\n      CHECK(scope_mode IN ('legacy','managed')),\n    minimum_writer_protocol INTEGER NOT NULL DEFAULT 1 CHECK(minimum_writer_protocol >= 1),\n    writer_generation INTEGER NOT NULL DEFAULT 0 CHECK(writer_generation >= 0),\n    owner_instance_id TEXT,\n    epoch INTEGER NOT NULL DEFAULT 0 CHECK(epoch >= 0),\n    lease_expires_at INTEGER,\n    state TEXT NOT NULL DEFAULT 'released' CHECK(state IN ('active','released')),\n    metadata_json TEXT NOT NULL DEFAULT '{}',\n    created_at TEXT NOT NULL,\n    updated_at TEXT NOT NULL\n)"
+    },
+    {
+      "type": "trigger",
+      "name": "nodes_ad",
+      "table": "nodes",
+      "sql": "CREATE TRIGGER nodes_ad AFTER DELETE ON nodes BEGIN\n  INSERT INTO nodes_fts(nodes_fts, rowid, title, content, tags)\n  VALUES('delete', old.rowid, old.title, old.content, old.tags);\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "nodes_ai",
+      "table": "nodes",
+      "sql": "CREATE TRIGGER nodes_ai AFTER INSERT ON nodes BEGIN\n  INSERT INTO nodes_fts(rowid, title, content, tags)\n  VALUES (new.rowid, new.title, new.content, new.tags);\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "nodes_au",
+      "table": "nodes",
+      "sql": "CREATE TRIGGER nodes_au AFTER UPDATE OF title, content, tags ON nodes BEGIN\n            INSERT INTO nodes_fts(nodes_fts, rowid, title, content, tags)\n            VALUES('delete', old.rowid, old.title, old.content, old.tags);\n            INSERT INTO nodes_fts(rowid, title, content, tags)\n            VALUES (new.rowid, new.title, new.content, new.tags);\n        END"
+    },
+    {
+      "type": "trigger",
+      "name": "tm_recovery_barrier_protect_active_delete",
+      "table": "recovery_barriers",
+      "sql": "CREATE TRIGGER tm_recovery_barrier_protect_active_delete\nBEFORE DELETE ON recovery_barriers\nWHEN OLD.status = 'active'\nBEGIN\n  SELECT RAISE(ABORT, 'active recovery barriers cannot be deleted');\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "tm_recovery_barrier_protect_active_update",
+      "table": "recovery_barriers",
+      "sql": "CREATE TRIGGER tm_recovery_barrier_protect_active_update\nBEFORE UPDATE ON recovery_barriers\nWHEN OLD.status = 'active' AND NOT (\n  (\n    tm_recovery_barrier_mode() = 'clear'\n    AND tm_recovery_barrier_id() = OLD.barrier_id\n    AND tm_recovery_barrier_expected_evidence() = OLD.evidence\n    AND OLD.owner_leader_instance_id = tm_recovery_barrier_leader_instance()\n    AND OLD.owner_leader_epoch = tm_recovery_barrier_leader_epoch()\n    AND OLD.owner_instance_id = tm_recovery_barrier_owner_instance()\n    AND OLD.owner_attempt_id = tm_recovery_barrier_attempt()\n    AND OLD.owner_fencing_token = tm_recovery_barrier_fence()\n    AND NEW.status = 'cleared'\n    AND NEW.clear_evidence = tm_recovery_barrier_clear_evidence()\n    AND NEW.barrier_id = OLD.barrier_id\n    AND NEW.owner_run_id = OLD.owner_run_id\n    AND NEW.reason_code = OLD.reason_code\n    AND NEW.recovery_episode_id = OLD.recovery_episode_id\n    AND NEW.evidence = OLD.evidence\n    AND NEW.owner_leader_instance_id = OLD.owner_leader_instance_id\n    AND NEW.owner_leader_epoch = OLD.owner_leader_epoch\n    AND NEW.owner_instance_id = OLD.owner_instance_id\n    AND NEW.owner_attempt_id = OLD.owner_attempt_id\n    AND NEW.owner_fencing_token = OLD.owner_fencing_token\n  )\n  OR\n  (\n    tm_recovery_barrier_mode() = 'rebind'\n    AND tm_recovery_barrier_id() = OLD.barrier_id\n    AND tm_recovery_barrier_expected_evidence() = OLD.evidence\n    AND tm_recovery_barrier_expected_leader_instance() = OLD.owner_leader_instance_id\n    AND tm_recovery_barrier_expected_leader_epoch() = OLD.owner_leader_epoch\n    AND tm_recovery_barrier_expected_owner_instance() = OLD.owner_instance_id\n    AND tm_recovery_barrier_expected_attempt() = OLD.owner_attempt_id\n    AND tm_recovery_barrier_expected_fence() = OLD.owner_fencing_token\n    AND NEW.status = 'active'\n    AND NEW.barrier_id = OLD.barrier_id\n    AND NEW.owner_run_id = OLD.owner_run_id\n    AND NEW.reason_code = OLD.reason_code\n    AND NEW.recovery_episode_id = OLD.recovery_episode_id\n    AND NEW.evidence = OLD.evidence\n    AND NEW.owner_leader_instance_id = tm_recovery_barrier_leader_instance()\n    AND NEW.owner_leader_epoch = tm_recovery_barrier_leader_epoch()\n    AND NEW.owner_instance_id = tm_recovery_barrier_owner_instance()\n    AND NEW.owner_attempt_id = tm_recovery_barrier_attempt()\n    AND NEW.owner_fencing_token = tm_recovery_barrier_fence()\n    AND NEW.clear_evidence IS NULL\n    AND NEW.cleared_at IS NULL\n  )\n)\nBEGIN\n  SELECT RAISE(ABORT, 'active recovery barrier requires fenced Store mutation context');\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "tm_recovery_barrier_protect_projection",
+      "table": "background_schema_capabilities",
+      "sql": "CREATE TRIGGER tm_recovery_barrier_protect_projection\nBEFORE UPDATE OF recovery_barrier, recovery_reason\nON background_schema_capabilities\nWHEN (\n  NEW.recovery_barrier IS NOT OLD.recovery_barrier\n  OR NEW.recovery_reason IS NOT OLD.recovery_reason\n) AND (\n  tm_recovery_barrier_mode() IS NULL\n  OR NEW.recovery_barrier IS NOT (\n    SELECT CASE WHEN EXISTS (\n      SELECT 1 FROM recovery_barriers WHERE status = 'active'\n    ) THEN 1 ELSE 0 END\n  )\n  OR NEW.recovery_reason IS NOT (\n    SELECT reason_code\n    FROM recovery_barriers\n    WHERE status = 'active'\n    ORDER BY created_at, barrier_id\n    LIMIT 1\n  )\n)\nBEGIN\n  SELECT RAISE(ABORT, 'recovery barrier singleton is a read-only projection');\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "tm_recovery_barrier_sync_delete",
+      "table": "recovery_barriers",
+      "sql": "CREATE TRIGGER tm_recovery_barrier_sync_delete\nAFTER DELETE ON recovery_barriers\nBEGIN\n  UPDATE background_schema_capabilities\n  SET recovery_barrier = CASE\n        WHEN EXISTS (\n          SELECT 1 FROM recovery_barriers WHERE status = 'active'\n        ) THEN 1 ELSE 0 END,\n      recovery_reason = (\n        SELECT reason_code\n        FROM recovery_barriers\n        WHERE status = 'active'\n        ORDER BY created_at, barrier_id\n        LIMIT 1\n      ),\n      updated_at = datetime('now')\n  WHERE singleton_id = 1;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "tm_recovery_barrier_sync_insert",
+      "table": "recovery_barriers",
+      "sql": "CREATE TRIGGER tm_recovery_barrier_sync_insert\nAFTER INSERT ON recovery_barriers\nBEGIN\n  UPDATE background_schema_capabilities\n  SET recovery_barrier = CASE\n        WHEN EXISTS (\n          SELECT 1 FROM recovery_barriers WHERE status = 'active'\n        ) THEN 1 ELSE 0 END,\n      recovery_reason = (\n        SELECT reason_code\n        FROM recovery_barriers\n        WHERE status = 'active'\n        ORDER BY created_at, barrier_id\n        LIMIT 1\n      ),\n      updated_at = datetime('now')\n  WHERE singleton_id = 1;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "tm_recovery_barrier_sync_update",
+      "table": "recovery_barriers",
+      "sql": "CREATE TRIGGER tm_recovery_barrier_sync_update\nAFTER UPDATE OF status, reason_code ON recovery_barriers\nBEGIN\n  UPDATE background_schema_capabilities\n  SET recovery_barrier = CASE\n        WHEN EXISTS (\n          SELECT 1 FROM recovery_barriers WHERE status = 'active'\n        ) THEN 1 ELSE 0 END,\n      recovery_reason = (\n        SELECT reason_code\n        FROM recovery_barriers\n        WHERE status = 'active'\n        ORDER BY created_at, barrier_id\n        LIMIT 1\n      ),\n      updated_at = datetime('now')\n  WHERE singleton_id = 1;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "tm_validate_task_state_insert",
+      "table": "task_runs",
+      "sql": "CREATE TRIGGER tm_validate_task_state_insert\nBEFORE INSERT ON task_runs\nWHEN NEW.status NOT IN (\n  'queued','running','completed','retry_wait','blocked','cancelled',\n  'failed','legacy_unknown'\n) OR (\n  NEW.outcome IS NOT NULL AND NEW.outcome NOT IN (\n    'not_due','success','no_op','partial_with_durable_retry',\n    'failed_retryable','ambiguous','blocked','cancelled','fatal'\n  )\n)\nBEGIN\n  SELECT RAISE(ABORT, 'invalid task state');\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "tm_validate_task_state_update",
+      "table": "task_runs",
+      "sql": "CREATE TRIGGER tm_validate_task_state_update\nBEFORE UPDATE OF status, outcome ON task_runs\nWHEN NEW.status NOT IN (\n  'queued','running','completed','retry_wait','blocked','cancelled',\n  'failed','legacy_unknown'\n) OR (\n  NEW.outcome IS NOT NULL AND NEW.outcome NOT IN (\n    'not_due','success','no_op','partial_with_durable_retry',\n    'failed_retryable','ambiguous','blocked','cancelled','fatal'\n  )\n)\nBEGIN\n  SELECT RAISE(ABORT, 'invalid task state');\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "tm_validate_work_item_state_insert",
+      "table": "work_items",
+      "sql": "CREATE TRIGGER tm_validate_work_item_state_insert\nBEFORE INSERT ON work_items\nWHEN NEW.status NOT IN (\n  'pending','running','succeeded','retry_wait','needs_attention',\n  'ambiguous','skipped_by_rule','quarantined_by_user','cancelled'\n) OR (\n  NEW.outcome IS NOT NULL AND NEW.outcome NOT IN (\n    'success','no_op','failed_retryable','ambiguous','blocked',\n    'cancelled','fatal'\n  )\n)\nBEGIN\n  SELECT RAISE(ABORT, 'invalid work item state');\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "tm_validate_work_item_state_update",
+      "table": "work_items",
+      "sql": "CREATE TRIGGER tm_validate_work_item_state_update\nBEFORE UPDATE OF status, outcome ON work_items\nWHEN NEW.status NOT IN (\n  'pending','running','succeeded','retry_wait','needs_attention',\n  'ambiguous','skipped_by_rule','quarantined_by_user','cancelled'\n) OR (\n  NEW.outcome IS NOT NULL AND NEW.outcome NOT IN (\n    'success','no_op','failed_retryable','ambiguous','blocked',\n    'cancelled','fatal'\n  )\n)\nBEGIN\n  SELECT RAISE(ABORT, 'invalid work item state');\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "tm_validate_workflow_status_insert",
+      "table": "workflow_runs",
+      "sql": "CREATE TRIGGER tm_validate_workflow_status_insert\nBEFORE INSERT ON workflow_runs\nWHEN NEW.status NOT IN (\n  'queued','blocked_preflight','running','retry_wait_holding',\n  'short_retry_holding','user_cancel_requested','paused_shutdown',\n  'rolling_back','rollback_retry_wait','rollback_blocked',\n  'rollback_failed_needs_recovery','crash_recovering','succeeded',\n  'rolled_back_after_failure','rolled_back_after_cancel',\n  'completed_success','completed_partial','retry_scheduled',\n  'blocked_released','failed'\n)\nBEGIN\n  SELECT RAISE(ABORT, 'invalid workflow status');\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "tm_validate_workflow_status_update",
+      "table": "workflow_runs",
+      "sql": "CREATE TRIGGER tm_validate_workflow_status_update\nBEFORE UPDATE OF status ON workflow_runs\nWHEN NEW.status NOT IN (\n  'queued','blocked_preflight','running','retry_wait_holding',\n  'short_retry_holding','user_cancel_requested','paused_shutdown',\n  'rolling_back','rollback_retry_wait','rollback_blocked',\n  'rollback_failed_needs_recovery','crash_recovering','succeeded',\n  'rolled_back_after_failure','rolled_back_after_cancel',\n  'completed_success','completed_partial','retry_scheduled',\n  'blocked_released','failed'\n)\nBEGIN\n  SELECT RAISE(ABORT, 'invalid workflow status');\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_agent_apply_items_feed_delete",
+      "table": "agent_integration_apply_task_items",
+      "sql": "CREATE TRIGGER trg_agent_apply_items_feed_delete\nAFTER DELETE ON agent_integration_apply_task_items BEGIN\n  UPDATE agent_integration_apply_task_feed_state SET revision = revision + 1 WHERE singleton = 1;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_agent_apply_items_feed_insert",
+      "table": "agent_integration_apply_task_items",
+      "sql": "CREATE TRIGGER trg_agent_apply_items_feed_insert\nAFTER INSERT ON agent_integration_apply_task_items BEGIN\n  UPDATE agent_integration_apply_task_feed_state SET revision = revision + 1 WHERE singleton = 1;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_agent_apply_items_feed_update",
+      "table": "agent_integration_apply_task_items",
+      "sql": "CREATE TRIGGER trg_agent_apply_items_feed_update\nAFTER UPDATE ON agent_integration_apply_task_items BEGIN\n  UPDATE agent_integration_apply_task_feed_state SET revision = revision + 1 WHERE singleton = 1;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_agent_apply_tasks_feed_delete",
+      "table": "agent_integration_apply_tasks",
+      "sql": "CREATE TRIGGER trg_agent_apply_tasks_feed_delete\nAFTER DELETE ON agent_integration_apply_tasks BEGIN\n  UPDATE agent_integration_apply_task_feed_state SET revision = revision + 1 WHERE singleton = 1;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_agent_apply_tasks_feed_insert",
+      "table": "agent_integration_apply_tasks",
+      "sql": "CREATE TRIGGER trg_agent_apply_tasks_feed_insert\nAFTER INSERT ON agent_integration_apply_tasks BEGIN\n  UPDATE agent_integration_apply_task_feed_state SET revision = revision + 1 WHERE singleton = 1;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_agent_apply_tasks_feed_update",
+      "table": "agent_integration_apply_tasks",
+      "sql": "CREATE TRIGGER trg_agent_apply_tasks_feed_update\nAFTER UPDATE ON agent_integration_apply_tasks BEGIN\n  UPDATE agent_integration_apply_task_feed_state SET revision = revision + 1 WHERE singleton = 1;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_agent_connect_runs_feed_delete",
+      "table": "reconcile_runs",
+      "sql": "CREATE TRIGGER trg_agent_connect_runs_feed_delete\nAFTER DELETE ON reconcile_runs WHEN OLD.operation_type = 'connect' BEGIN\n  UPDATE agent_integration_apply_task_feed_state SET revision = revision + 1 WHERE singleton = 1;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_agent_connect_runs_feed_insert",
+      "table": "reconcile_runs",
+      "sql": "CREATE TRIGGER trg_agent_connect_runs_feed_insert\nAFTER INSERT ON reconcile_runs WHEN NEW.operation_type = 'connect' BEGIN\n  UPDATE agent_integration_apply_task_feed_state SET revision = revision + 1 WHERE singleton = 1;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_agent_connect_runs_feed_update",
+      "table": "reconcile_runs",
+      "sql": "CREATE TRIGGER trg_agent_connect_runs_feed_update\nAFTER UPDATE ON reconcile_runs WHEN OLD.operation_type = 'connect' OR NEW.operation_type = 'connect' BEGIN\n  UPDATE agent_integration_apply_task_feed_state SET revision = revision + 1 WHERE singleton = 1;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_links_dirty_ins",
+      "table": "links",
+      "sql": "CREATE TRIGGER trg_links_dirty_ins AFTER INSERT ON links\n    WHEN (SELECT applying FROM sync_apply_guard WHERE k = 0) = 0\n    BEGIN INSERT OR IGNORE INTO cloud_dirty (tbl, id) VALUES ('links', NEW.id); END"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_links_dirty_upd",
+      "table": "links",
+      "sql": "CREATE TRIGGER trg_links_dirty_upd AFTER UPDATE ON links\n    WHEN (SELECT applying FROM sync_apply_guard WHERE k = 0) = 0\n    BEGIN INSERT OR IGNORE INTO cloud_dirty (tbl, id) VALUES ('links', NEW.id); END"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_nodes_dirty_ins",
+      "table": "nodes",
+      "sql": "CREATE TRIGGER trg_nodes_dirty_ins AFTER INSERT ON nodes\n    WHEN (SELECT applying FROM sync_apply_guard WHERE k = 0) = 0\n    BEGIN INSERT OR IGNORE INTO cloud_dirty (tbl, id) VALUES ('nodes', NEW.id); END"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_nodes_dirty_upd",
+      "table": "nodes",
+      "sql": "CREATE TRIGGER trg_nodes_dirty_upd AFTER UPDATE ON nodes\n    WHEN (SELECT applying FROM sync_apply_guard WHERE k = 0) = 0\n    BEGIN INSERT OR IGNORE INTO cloud_dirty (tbl, id) VALUES ('nodes', NEW.id); END"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_nodes_heat_clamp_insert",
+      "table": "nodes",
+      "sql": "CREATE TRIGGER trg_nodes_heat_clamp_insert\nAFTER INSERT ON nodes\nWHEN NEW.heat < 0 OR NEW.heat > 1\nBEGIN\n    UPDATE nodes SET heat = MAX(0, MIN(1, NEW.heat)) WHERE id = NEW.id;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_nodes_heat_clamp_update",
+      "table": "nodes",
+      "sql": "CREATE TRIGGER trg_nodes_heat_clamp_update\nAFTER UPDATE OF heat ON nodes\nWHEN NEW.heat < 0 OR NEW.heat > 1\nBEGIN\n    UPDATE nodes SET heat = MAX(0, MIN(1, NEW.heat)) WHERE id = NEW.id;\nEND"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_reconcile_runs_verification_delete",
+      "table": "reconcile_runs",
+      "sql": "CREATE TRIGGER trg_reconcile_runs_verification_delete\n    AFTER DELETE ON reconcile_runs\n    BEGIN\n      DELETE FROM verification_results WHERE run_id = OLD.id;\n    END"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_tag_usage_after_delete",
+      "table": "nodes",
+      "sql": "CREATE TRIGGER trg_tag_usage_after_delete\n        AFTER DELETE ON nodes\n        WHEN OLD.tags IS NOT NULL\n          AND COALESCE(OLD.archived, 0) = 0\n          AND COALESCE(OLD.is_superseded, 0) = 0\n        BEGIN\n            UPDATE tag_usage SET\n                node_count = node_count - 1,\n                last_updated = datetime('now')\n            WHERE tag IN (\n                SELECT value FROM json_each(CASE WHEN json_valid(OLD.tags) = 1 THEN OLD.tags ELSE '[]' END) WHERE typeof(value) = 'text'\n            );\n            DELETE FROM tag_usage WHERE node_count <= 0;\n        END"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_tag_usage_after_insert",
+      "table": "nodes",
+      "sql": "CREATE TRIGGER trg_tag_usage_after_insert\n        AFTER INSERT ON nodes\n        WHEN NEW.tags IS NOT NULL\n          AND COALESCE(NEW.archived, 0) = 0\n          AND COALESCE(NEW.is_superseded, 0) = 0\n        BEGIN\n            INSERT INTO tag_usage(tag, node_count, last_updated)\n            SELECT DISTINCT value, 1, datetime('now')\n            FROM json_each(CASE WHEN json_valid(NEW.tags) = 1 THEN NEW.tags ELSE '[]' END)\n            WHERE typeof(value) = 'text' AND length(value) > 0\n            ON CONFLICT(tag) DO UPDATE SET\n                node_count = node_count + 1,\n                last_updated = datetime('now');\n        END"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_tag_usage_after_update",
+      "table": "nodes",
+      "sql": "CREATE TRIGGER trg_tag_usage_after_update\n        AFTER UPDATE OF tags, archived, is_superseded ON nodes\n        BEGIN\n            UPDATE tag_usage SET\n                node_count = node_count - 1,\n                last_updated = datetime('now')\n            WHERE COALESCE(OLD.archived, 0) = 0\n              AND COALESCE(OLD.is_superseded, 0) = 0\n              AND tag IN (\n                  SELECT value FROM json_each(CASE WHEN json_valid(COALESCE(OLD.tags, '[]')) = 1 THEN COALESCE(OLD.tags, '[]') ELSE '[]' END)\n                  WHERE typeof(value) = 'text'\n              );\n            INSERT INTO tag_usage(tag, node_count, last_updated)\n            SELECT DISTINCT value, 1, datetime('now')\n            FROM json_each(CASE WHEN json_valid(COALESCE(NEW.tags, '[]')) = 1 THEN COALESCE(NEW.tags, '[]') ELSE '[]' END)\n            WHERE typeof(value) = 'text'\n              AND length(value) > 0\n              AND COALESCE(NEW.archived, 0) = 0\n              AND COALESCE(NEW.is_superseded, 0) = 0\n            ON CONFLICT(tag) DO UPDATE SET\n                node_count = node_count + 1,\n                last_updated = datetime('now');\n            DELETE FROM tag_usage WHERE node_count <= 0;\n        END"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_verification_results_run_insert",
+      "table": "verification_results",
+      "sql": "CREATE TRIGGER trg_verification_results_run_insert\n    BEFORE INSERT ON verification_results\n    WHEN NEW.run_id IS NOT NULL\n      AND NOT EXISTS (SELECT 1 FROM reconcile_runs WHERE id = NEW.run_id)\n    BEGIN\n      SELECT RAISE(ABORT, 'verification run does not exist');\n    END"
+    },
+    {
+      "type": "trigger",
+      "name": "trg_verification_results_run_update",
+      "table": "verification_results",
+      "sql": "CREATE TRIGGER trg_verification_results_run_update\n    BEFORE UPDATE OF run_id ON verification_results\n    WHEN NEW.run_id IS NOT NULL\n      AND NOT EXISTS (SELECT 1 FROM reconcile_runs WHERE id = NEW.run_id)\n    BEGIN\n      SELECT RAISE(ABORT, 'verification run does not exist');\n    END"
+    }
+  ]
+}

@@ -1,3 +1,5 @@
+import { databaseMigrationFixture } from '../fixtures/agent-integration/database-migration-fixture.js'
+import { memoryClosureFixture } from '../fixtures/agent-integration/memory-closure-fixture.js'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -20,6 +22,11 @@ import {
   hostActivityLedgerExportHash,
   loadAgentHostAcceptanceRequirements,
   requiredHostAcceptanceSteps,
+  requiredRealHostAcceptanceSteps,
+  realHostAcceptanceDeferral,
+  deferredHostAcceptanceTarget,
+  validateDeferredHostAcceptanceTarget,
+  upgradeTargetIdentityDigest,
   verifyAgentIntegrationHostAcceptance,
 } from '../../scripts/verify-agent-integration-host-acceptance.mjs'
 
@@ -41,7 +48,7 @@ function sha256(value: string | Buffer): string {
   return crypto.createHash('sha256').update(value).digest('hex')
 }
 
-function testReleaseManifest(): string {
+function testReleaseManifest(includeCodex = false): string {
   const artifactReceipt = (architecture: string, distributionId = 'official:test-agent') => {
     const proofNodes = [
       { role: 'npm_package_executable', relativePath: 'bin/test-agent.js', sha256: sha256(`executable:${architecture}`), sizeBytes: 101, executable: true, normalization: 'raw' },
@@ -112,6 +119,7 @@ const AGENT_INTEGRATION_RELEASE_ENTRIES = Object.freeze([
   release('claude-desktop-legacy', 'migration', 2, ['memory_tools'], ${details(['memory_tools'])}),
   release('opencode-v2-beta-cli', 'guided', 3, CORE_COMPONENTS, ${details(['instruction', 'memory_tools'])}),
   release('cursor-desktop', 'managed', 4, ALL_COMPONENTS, ${details(['instruction', 'memory_tools', 'lifecycle'])}),
+  ${includeCodex ? `release('codex-desktop', 'managed', 4, ALL_COMPONENTS, ${details(['instruction','memory_tools','lifecycle'])}),` : ''}
   release('openclaw-local', 'managed', 4, ALL_COMPONENTS, ${details(
     ['instruction', 'memory_tools', 'lifecycle'],
     ['cli:openclaw-local:portable-wrapper', 'cli:openclaw-local:npm-global'],
@@ -131,14 +139,14 @@ export const AGENT_INTEGRATION_RELEASE_MANIFEST = Object.freeze({
 `
 }
 
-function writeTestContract(outer: string, releaseMacArchitectures = ['arm64', 'x64']) {
+function writeTestContract(outer: string, releaseMacArchitectures = ['arm64', 'x64'], includeCodex = false) {
   const contractRoot = path.join(outer, 'contract')
   fs.mkdirSync(contractRoot)
   const releaseManifestPath = path.join(contractRoot, 'release-manifest.ts')
-  fs.writeFileSync(releaseManifestPath, testReleaseManifest())
+  fs.writeFileSync(releaseManifestPath, testReleaseManifest(includeCodex))
   const requirementsPath = path.join(contractRoot, 'requirements.json')
   fs.writeFileSync(requirementsPath, `${JSON.stringify({
-    schemaVersion: 3,
+    schemaVersion: 4,
     appVersion: '0.2.92',
     releaseMacArchitectures,
     upgradeFromAppVersions: ['0.2.89', '0.2.91'],
@@ -146,7 +154,7 @@ function writeTestContract(outer: string, releaseMacArchitectures = ['arm64', 'x
       base: ['connect'],
       byComponent: {
         instruction: ['instruction_loaded'],
-        memory_tools: ['brain_prepare'],
+        memory_tools: ['brain_prepare', 'memory_closure'],
         lifecycle: [],
       },
       byDisposition: {
@@ -172,12 +180,13 @@ function fixture(
   evidenceClass: 'fixture' | 'real_host' = 'fixture',
   activityLedgerSource?: 'fixture' | 'real_profile',
   releaseMacArchitectures = ['arm64', 'x64'],
+  codexDataOnly: false | 'valid' | 'missing-facts' | 'lost-agent' = false,
 ) {
   const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-host-acceptance-'))
   roots.push(outer)
   const root = path.join(outer, 'bundle')
   fs.mkdirSync(root)
-  const contract = writeTestContract(outer, releaseMacArchitectures)
+  const contract = writeTestContract(outer, releaseMacArchitectures, Boolean(codexDataOnly))
   const requirements = loadAgentHostAcceptanceRequirements(contract.requirementsPath, contract.releaseManifestPath)
   const files: Array<{ path: string; bytes: number; sha256: string }> = []
   const captureNonce = '9'.repeat(64)
@@ -259,7 +268,7 @@ function fixture(
           connectorConfigurationSha256: sha256('configuration'), runtimeBindingSha256: sha256('runtime'),
           tideMindVersion: requirements.appVersion, adapterVersion: '1', projectionVersion: '1', hostVersion,
           schemaKind: guidedDefinition!.schemaKind, selectorKey: guidedDefinition!.selectorKey,
-          evidence: ['brain_recall', 'brain_digest'].map(signalName => ({
+          evidence: ['brain_prepare', 'brain_recall', 'brain_digest'].map(signalName => ({
             id: `aha_${sha256(signalName).slice(0,24)}`, signalName, evidenceHash: sha256(signalName), observedAt: OBSERVED_AT,
           })),
         },
@@ -334,6 +343,20 @@ function fixture(
           activityReceipt.evidenceHash = hostActivityLedgerEvidenceHash(activityReceipt)
           activityReceipt.exportHash = hostActivityLedgerExportHash(activityReceipt)
         }
+        const closure = id === 'memory_closure' ? memoryClosureFixture({
+          targetKey, installationId, agentId, sourceCommit: SOURCE_COMMIT,
+          releaseContractSha256: requirements.releaseContractSha256,
+          candidateBundleSha256: candidateApp.bundleSha256,
+          hostVariant: sourceCatalogId ?? targetId, hostVersion,
+        }, CAPTURE_CREATED_AT, OBSERVED_AT) : null
+        const closureFiles = closure ? [...closure.files].map(([hash, bytes], fileIndex) => {
+          const relative = `targets/${targetKey}/${id}.${fileIndex}.json`
+          const absolute = path.join(root, ...relative.split('/'))
+          fs.mkdirSync(path.dirname(absolute), { recursive: true })
+          fs.writeFileSync(absolute, bytes)
+          files.push({ path: relative, bytes: bytes.length, sha256: hash })
+          return relative
+        }) : []
         const assertionContent = `${JSON.stringify({
           schemaVersion: 2,
           targetKey,
@@ -350,6 +373,7 @@ function fixture(
           observedAt: OBSERVED_AT,
           assertions: [`${id} completed on the real host`],
           activityReceipt,
+          ...(closure ? { memoryClosure: closure.receipt } : {}),
         })}\n`
         const assertionAbsolute = path.join(root, ...assertionRelative.split('/'))
         fs.mkdirSync(path.dirname(assertionAbsolute), { recursive: true })
@@ -359,7 +383,7 @@ function fixture(
           bytes: Buffer.byteLength(assertionContent),
           sha256: sha256(assertionContent),
         })
-        const evidenceIds = [sha256(assertionContent)]
+        const evidenceIds = [sha256(assertionContent), ...(closure ? [...closure.files.keys()] : [])]
         const assertions = [`${id} completed on the real host`]
         const receipt = {
           targetKey,
@@ -399,31 +423,19 @@ function fixture(
         files.push({ path: relative, bytes: Buffer.byteLength(content), sha256: sha256(content) })
         return {
           id,
+          ...(closure ? { memoryClosure: closure.receipt } : {}),
           status: 'passed',
           observedAt: OBSERVED_AT,
           assertionSource: 'human',
           assertedBy: `operator-${targetId}`,
           assertions,
           receipt,
-          evidenceFiles: [relative, assertionRelative],
+          evidenceFiles: [relative, assertionRelative, ...closureFiles],
         }
       }),
     }
   }
-  const index = {
-    schemaVersion: 3,
-    acceptanceId: 'acceptance-fixture-1',
-    evidenceClass,
-    appVersion: requirements.appVersion,
-    upgradeFromAppVersions: requirements.upgradeFromAppVersions,
-    sourceCommit: SOURCE_COMMIT,
-    captureCreatedAt: CAPTURE_CREATED_AT,
-    captureNonce,
-    generatedAt: GENERATED_AT,
-    requirementsSha256: requirements.sha256,
-    releaseContractSha256: requirements.releaseContractSha256,
-    candidateAppsByArchitecture,
-    entries: requirements.targets.map((entry: {
+  const acceptanceEntries = requirements.targets.map((entry: {
       targetKey: string
       architecture: 'arm64' | 'x64'
       catalogId: string
@@ -439,8 +451,8 @@ function fixture(
       entry.targetCapability,
       [...entry.requiredComponents],
       entry.requiredLifecycle,
-    )),
-    customPaths: requirements.customTargets.map((definition: { targetId: string; targetKey: string; configurationOwnership?: string; schemaKind: string; selectorKey: string }) => {
+    ))
+  const acceptanceCustom = requirements.customTargets.map((definition: { targetId: string; targetKey: string; configurationOwnership?: string; schemaKind: string; selectorKey: string }) => {
       const mode = definition.targetId
       if (mode === 'manual_mcp_client') {
         return target(definition.targetKey, mode, 'arm64', 'custom', 2, ['memory_tools'], null, 'guided', null,
@@ -459,44 +471,79 @@ function fixture(
         source.disposition,
         source.catalogId,
       )
-    }),
-    upgradePaths: requirements.targets
-      .flatMap((entry: { targetKey: string; catalogId: string; architecture: 'arm64' | 'x64' }) => requirements.upgradeFromAppVersions.map((fromAppVersion: string) => {
+    })
+  const recoveryFixture = databaseMigrationFixture(CAPTURE_CREATED_AT, OBSERVED_AT, 41)
+  const recoveryAssertion = {
+    id: 'observed_schema41', architecture: 'arm64', sourceCommit: SOURCE_COMMIT,
+    candidateBundleSha256: candidateAppsByArchitecture.arm64.bundleSha256,
+    releaseContractSha256: requirements.releaseContractSha256, observedAt: OBSERVED_AT,
+    assertedBy: 'synthetic-recovery-operator', assertionSource: 'external',
+    databaseMigration: recoveryFixture.receipt,
+  }
+  const recoveryFileInputs = [Buffer.from(JSON.stringify(recoveryAssertion)), ...recoveryFixture.files.values()]
+  const recoveryFiles = recoveryFileInputs.map((bytes, fileIndex) => {
+    const relative = `database-recovery/proof-${fileIndex}.json`
+    fs.mkdirSync(path.join(root, 'database-recovery'), { recursive: true })
+    fs.writeFileSync(path.join(root, relative), bytes)
+    files.push({ path: relative, bytes: bytes.length, sha256: sha256(bytes) })
+    return relative
+  })
+  const index = {
+    schemaVersion: 4,
+    acceptanceId: 'acceptance-fixture-1',
+    evidenceClass,
+    appVersion: requirements.appVersion,
+    upgradeFromAppVersions: requirements.upgradeFromAppVersions,
+    sourceCommit: SOURCE_COMMIT,
+    captureCreatedAt: CAPTURE_CREATED_AT,
+    captureNonce,
+    generatedAt: GENERATED_AT,
+    requirementsSha256: requirements.sha256,
+    releaseContractSha256: requirements.releaseContractSha256,
+    candidateAppsByArchitecture,
+    entries: acceptanceEntries,
+    customPaths: acceptanceCustom,
+    upgradePaths: [...acceptanceEntries, ...acceptanceCustom]
+      .flatMap(entry => requirements.upgradeFromAppVersions.map((fromAppVersion: string) => {
       const targetKey = entry.targetKey
-      const targetId = entry.catalogId
-      const candidateApp = candidateAppsByArchitecture[entry.architecture]
-      const artifactReceipt = requirements.targets.find((candidate: { targetKey: string }) => candidate.targetKey === targetKey)
-        .acceptedDistributionArtifacts[0]
-      const targetIdentitySha256 = hostAcceptanceTargetIdentityDigest({
-        targetKey,
-        targetId,
-        hostVersion: '1.2.3',
-        distribution: {
-          distributionId: artifactReceipt.distributionId,
-          packageProvenance: artifactReceipt.packageProvenance,
-          artifactReceiptSha256: distributionArtifactReceiptSha256(artifactReceipt),
-          portableArtifactFingerprint: artifactReceipt.portableArtifactFingerprint,
-          executableSha256: artifactReceipt.executableSha256,
-          executableSizeBytes: artifactReceipt.executableSizeBytes,
-          rawExecutableSha256: artifactReceipt.executableSha256,
-          rawExecutableSizeBytes: artifactReceipt.executableSizeBytes,
-          distributionSha256: artifactReceipt.distributionSha256,
-          distributionSizeBytes: artifactReceipt.distributionSizeBytes,
-        },
-        environment: {
-          platform: 'darwin',
-          architecture: entry.architecture,
-          processArchitecture: entry.architecture,
-          hardwareArchitecture: entry.architecture === 'x64' ? 'x86_64' : 'arm64',
-          translationMode: 'not_translated',
-          osVersion: '15.6.1',
-          hostIdentitySha256: sha256(`host:${targetId}`),
-        },
-      })
+      const targetId = entry.targetId
+      const candidateApp = candidateAppsByArchitecture[entry.environment.architecture as 'arm64' | 'x64']
+      const targetIdentitySha256 = hostAcceptanceTargetIdentityDigest(entry)
       const assertionRelative = `upgrades/${targetKey}/${fromAppVersion}.assertion.txt`
       const assertions = [`Upgrade from ${fromAppVersion} retained Agent identity, history, and statistics`]
-      const installationId = `upgrade-installation-${targetId}-${fromAppVersion}`
+      const installationId = targetId === 'codex-desktop' && codexDataOnly ? null : `upgrade-installation-${targetId}-${fromAppVersion}`
       const originalAgentId = `eb_upgrade_${targetId}_${fromAppVersion.replaceAll('.', '_')}`
+      const migration = databaseMigrationFixture(CAPTURE_CREATED_AT, OBSERVED_AT)
+      if (targetId === 'codex-desktop') {
+        for (const observation of [migration.before, migration.after] as any[]) {
+          observation.tables.agents.identities = [{id: originalAgentId,toolType:'codex'}]
+          observation.tables.agent_installations = {present:true,identities:[{id:installationId,agentId:originalAgentId,hostVariant:'codex-desktop',desiredState:'managed'}]}
+          observation.codexConfiguration = {schemaVersion:1,catalogId:'codex-desktop',invalid:false,legacySkillsObserved:true,
+            files:['.codex/config.toml','.codex/hooks.json','.agents/skills/tidemind/SKILL.md'].map(p=>({path:p,state:'regular',sha256:'a'.repeat(64)})),
+            bindings:[{selector:'tidemind-fixture',agentId:originalAgentId}],secondaryAgentIds:[originalAgentId],secondaryPresent:true}
+        }
+        if (codexDataOnly) {
+          for (const observation of [migration.before,migration.after] as any[]) {
+            observation.tables.agent_installations.identities = []
+            observation.codexConfiguration.files.forEach((file:any)=>{file.state='absent';delete file.sha256})
+            observation.codexConfiguration.bindings=[];observation.codexConfiguration.secondaryAgentIds=[];observation.codexConfiguration.secondaryPresent=false
+            if (codexDataOnly==='missing-facts')delete observation.codexConfiguration
+          }
+          if (codexDataOnly==='lost-agent')(migration.after.tables.agents as any).identities=[]
+        }
+        migration.files.clear()
+        migration.receipt.beforeEvidenceSha256 = migration.add(migration.before)
+        migration.receipt.backupEvidenceSha256 = migration.receipt.beforeEvidenceSha256
+        migration.receipt.afterEvidenceSha256 = migration.add(migration.after)
+      }
+      migration.receipt.batchId += ':' + fromAppVersion + (targetId === 'codex-desktop' ? ':' + targetKey : '')
+      const migrationFiles = [...migration.files].map(([hash, bytes], fileIndex) => {
+        const relative = `upgrades/${targetKey}/${fromAppVersion}.db-${fileIndex}.json`
+        const absolute = path.join(root, ...relative.split('/'))
+        fs.mkdirSync(path.dirname(absolute), { recursive: true }); fs.writeFileSync(absolute, bytes)
+        files.push({ path: relative, bytes: bytes.length, sha256: hash })
+        return relative
+      })
       const assertionContent = `${JSON.stringify({
         schemaVersion: 2,
         targetKey,
@@ -517,6 +564,7 @@ function fixture(
         migratedAgentId: originalAgentId,
         historyPreserved: true,
         statisticsPreserved: true,
+        databaseMigration: migration.receipt,
       })}\n`
       const assertionAbsolute = path.join(root, ...assertionRelative.split('/'))
       fs.mkdirSync(path.dirname(assertionAbsolute), { recursive: true })
@@ -526,7 +574,7 @@ function fixture(
         bytes: Buffer.byteLength(assertionContent),
         sha256: sha256(assertionContent),
       })
-      const evidenceIds = [sha256(assertionContent)]
+      const evidenceIds = [sha256(assertionContent), ...migration.files.keys()]
       const digestInput = {
         targetKey,
         targetId,
@@ -542,6 +590,7 @@ function fixture(
         migratedAgentId: originalAgentId,
         historyPreserved: true,
         statisticsPreserved: true,
+        databaseMigration: migration.receipt,
         targetIdentitySha256,
         evidenceIds,
       }
@@ -574,8 +623,9 @@ function fixture(
         sha256: sha256(receiptContent),
       })
       const { evidenceIds: _evidenceIds, ...upgrade } = digestInput
-      return { ...upgrade, receipt, evidenceFiles: [receiptRelative, assertionRelative] }
+      return { ...upgrade, receipt, evidenceFiles: [receiptRelative, assertionRelative, ...migrationFiles] }
     })),
+    databaseRecoveryPaths: [{ ...recoveryAssertion, evidenceFiles: recoveryFiles }],
     files,
     review: null as null | {
       reviewer: string
@@ -635,6 +685,16 @@ describe('real-host Agent Integration acceptance verifier', () => {
     expect(requirements.entries.some((entry: { officialDistributions: Array<{ supportedMacArchitectures: string[] }> }) =>
       entry.officialDistributions.some(distribution => distribution.supportedMacArchitectures.includes('x64')))).toBe(true)
   })
+  it('accepts Codex database-only null association only from matching before/after facts',()=>{
+    const built=fixture('fixture',undefined,['arm64'],'valid')
+    expect(verify(built.indexPath).status).toBe('passed')
+    const upgrades=built.index.upgradePaths.filter((item:any)=>item.targetId==='codex-desktop')
+    expect(upgrades.length).toBeGreaterThan(0);expect(upgrades.every((item:any)=>item.installationId===null)).toBe(true)
+  })
+  it.each(['missing-facts','lost-agent'] as const)('rejects formal Codex null with %s',mode=>{
+    const built=fixture('fixture',undefined,['arm64'],mode)
+    expect(()=>verify(built.indexPath)).toThrow(/Codex upgrade baseline/)
+  })
   it('accepts a complete version/source-bound fixture only in unit-test mode', () => {
     const built = fixture()
     expect(verify(built.indexPath)).toMatchObject({
@@ -643,7 +703,7 @@ describe('real-host Agent Integration acceptance verifier', () => {
       sourceCommit: SOURCE_COMMIT,
       entryCount: built.requirements.targets.length,
       customPathCount: 5,
-      upgradePathCount: built.requirements.targets.length * built.requirements.upgradeFromAppVersions.length,
+      upgradePathCount: (built.requirements.targets.length + built.requirements.customTargets.length) * built.requirements.upgradeFromAppVersions.length,
       evidenceFileCount: built.index.files.length,
     })
     expect(() => verify(built.indexPath, false)).toThrow(/requires real_host evidence/)
@@ -787,6 +847,35 @@ describe('real-host Agent Integration acceptance verifier', () => {
     expect(() => verify(missingCustom.indexPath)).toThrow(/Custom path count mismatch/)
   })
 
+  it.each([
+    'nonstandard_config_root', 'manual_mcp_client',
+    'manual_mcp_client:standard_mcp_servers:tidemind',
+    'manual_mcp_client:nested_mcp_servers:tidemind_nested',
+    'manual_mcp_client:opencode_mcp:tidemind_opencode',
+  ])('requires distinct upgrade evidence for Custom %s', targetKey => {
+    const built = fixture()
+    const upgrades = built.index.upgradePaths.filter(upgrade => upgrade.targetKey === targetKey)
+    expect(upgrades.map(upgrade => upgrade.fromAppVersion)).toEqual(built.requirements.upgradeFromAppVersions)
+    built.index.upgradePaths = built.index.upgradePaths.filter(upgrade => upgrade !== upgrades[0])
+    built.write()
+    expect(() => verify(built.indexPath)).toThrow(/upgrade path count mismatch/)
+  })
+
+  it('requires independent schema41 recovery in addition to all host upgrades', () => {
+    const built = fixture()
+    built.index.databaseRecoveryPaths = []
+    built.write()
+    expect(() => verify(built.indexPath)).toThrow(/independent observed schema41 recovery/)
+  })
+
+  it('rejects a v3 receipt even if its app version is relabeled 0.2.94', () => {
+    const built = fixture()
+    built.index.schemaVersion = 3
+    built.index.appVersion = '0.2.94'
+    built.write()
+    expect(() => verify(built.indexPath)).toThrow(/acceptance schema version mismatch/)
+  })
+
   it('rejects a missing required upgrade baseline', () => {
     const missingUpgrade = fixture()
     missingUpgrade.index.upgradePaths.pop()
@@ -801,6 +890,7 @@ describe('real-host Agent Integration acceptance verifier', () => {
     ))
     expect(migration.steps.map((step: { id: string }) => step.id)).toEqual([
       'brain_prepare',
+      'memory_closure',
       'official_host_version',
       'distribution_identity',
       'legacy_selector_identity',
@@ -892,9 +982,9 @@ describe('real-host Agent Integration acceptance verifier', () => {
     expect(() => verify(built.indexPath)).toThrow(/agentId mismatch/)
   })
 
-  it('publishes a v3 schema that requires all five Custom matrix receipts', () => {
+  it('publishes a v4 schema that requires all five Custom matrix receipts', () => {
     const built = fixture('real_host')
-    const schema = JSON.parse(fs.readFileSync(new URL('../../scripts/agent-integration-host-acceptance-v3.schema.json', import.meta.url), 'utf8'))
+    const schema = JSON.parse(fs.readFileSync(new URL('../../scripts/agent-integration-host-acceptance-v4.schema.json', import.meta.url), 'utf8'))
     const validate = new Ajv2020({ strict: false, validateFormats: false }).compile(schema)
     expect(validate(built.index), JSON.stringify(validate.errors)).toBe(true)
     const translated = structuredClone(built.index)
@@ -908,7 +998,7 @@ describe('real-host Agent Integration acceptance verifier', () => {
     expect(validate(built.index)).toBe(false)
   })
 
-  it.each(['schema','selector','pause_resume','scan_persistence'])('rejects a folded or incomplete guided Custom matrix: %s', defect => {
+  it.each(['schema','selector','brain_prepare','pause_resume','scan_persistence'])('rejects a folded or incomplete guided Custom matrix: %s', defect => {
     const built = fixture('real_host')
     const manual = built.index.customPaths.find((entry: { targetKey: string }) => entry.targetKey === 'manual_mcp_client:nested_mcp_servers:tidemind_nested')
     if (defect === 'schema') manual.customBinding.activityBinding.schemaKind = 'standard_mcp_servers'
@@ -924,11 +1014,11 @@ describe('real-host Agent Integration acceptance verifier', () => {
     const built = fixture('real_host', 'real_profile')
     const manual = built.index.customPaths.find((entry: { targetKey: string }) => entry.targetKey === 'manual_mcp_client:standard_mcp_servers:tidemind')
     if (kind === 'readback') manual.customBinding.readBackProofSha256 = sha256('invented-read-back')
-    else manual.customBinding.activityBinding.evidence.pop()
+    else manual.customBinding.activityBinding.evidence = manual.customBinding.activityBinding.evidence.filter((event: { signalName: string }) => event.signalName !== 'brain_prepare')
     manual.metadataExport.targetMetadata.customBinding = manual.customBinding
     manual.metadataExport.exportHash = hostAcceptanceTargetMetadataExportHash(manual.metadataExport)
     built.write()
-    expect(() => verify(built.indexPath)).toThrow(/user-owned Custom binding|requires recall and digest/)
+    expect(() => verify(built.indexPath)).toThrow(/user-owned Custom binding|requires prepare, recall and digest/)
   })
 
   it('rejects a formal Custom binding with the wrong physical proof shape', () => {
@@ -1170,5 +1260,58 @@ describe('real-host Agent Integration acceptance verifier', () => {
     })).toMatchObject({ status: 'passed', sourceCommit: SOURCE_COMMIT })
     contracts.set(path.join(destination, 'index.json'), sourceContract)
     expect(verify(path.join(destination, 'index.json')).status).toBe('passed')
+  })
+})
+
+
+describe('0.2.94 authorized Codex real-host policy', () => {
+  it('keeps full catalog and migration matrix while requiring only Codex runtime steps', () => {
+    const requirements = loadAgentHostAcceptanceRequirements()
+    expect(requirements.entries).toHaveLength(19)
+    expect(requirements.customTargets).toHaveLength(5)
+    expect(requirements.upgradeFromAppVersions).toEqual(['0.2.89','0.2.90','0.2.91','0.2.92','0.2.93'])
+    for (const target of requirements.targets) {
+      if (['codex-cli','codex-desktop'].includes(target.catalogId)) {
+        expect(realHostAcceptanceDeferral(requirements, target)).toBeNull()
+        expect(requiredRealHostAcceptanceSteps(requirements, target)).toEqual(requiredHostAcceptanceSteps(requirements, target))
+        expect(requiredRealHostAcceptanceSteps(requirements, target)).toContain('memory_closure')
+      } else {
+        expect(realHostAcceptanceDeferral(requirements, target)).toMatchObject({status:'deferred',policyId:'0.2.94-codex-only'})
+        expect(requiredRealHostAcceptanceSteps(requirements, target)).toEqual([])
+        expect(requiredHostAcceptanceSteps(requirements, target).length).toBeGreaterThan(0)
+      }
+    }
+    for (const target of requirements.customTargets) {
+      expect(realHostAcceptanceDeferral(requirements, {...target, disposition:'custom', catalogId:'codex-cli'})).toMatchObject({status:'deferred'})
+    }
+  })
+  it.each(['missing-policy','omit-desktop','add-claude','mark-passed','old-exception'] as const)('rejects altered scope: %s', mutation => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'host-policy-')); roots.push(root)
+    const requirements = JSON.parse(fs.readFileSync('scripts/agent-integration-host-acceptance-requirements.json','utf8'))
+    if (mutation === 'missing-policy') delete requirements.realHostPolicy
+    if (mutation === 'omit-desktop') requirements.realHostPolicy.requiredCatalogIds = ['codex-cli']
+    if (mutation === 'add-claude') requirements.realHostPolicy.requiredCatalogIds.push('claude-code-cli')
+    if (mutation === 'mark-passed') requirements.realHostPolicy.otherCatalogs = 'passed'
+    if (mutation === 'old-exception') requirements.realHostPolicy.id = 'partial-auth-runtime-0.2.93'
+    const file = path.join(root, 'requirements.json'); fs.writeFileSync(file,JSON.stringify(requirements))
+    expect(() => loadAgentHostAcceptanceRequirements(file)).toThrow()
+  })
+})
+
+
+describe('deferred targets are contract declarations, not host observations', () => {
+  it('rejects fabricated metadata, steps, omission and changed contract fields', () => {
+    const requirements = loadAgentHostAcceptanceRequirements()
+    const entry = requirements.targets.find((target: {catalogId:string}) => target.catalogId === 'cursor-desktop')
+    const target = deferredHostAcceptanceTarget(requirements, entry)
+    expect(() => validateDeferredHostAcceptanceTarget(target, target)).not.toThrow()
+    for (const key of ['hostVersion','environment','installationId','agentId','metadataExport','customBinding','steps']) {
+      expect(() => validateDeferredHostAcceptanceTarget({...target,[key]: key === 'steps' ? [] : 'invented'},target)).toThrow()
+    }
+    const missing = {...target}; delete missing.realHostDeferral
+    expect(() => validateDeferredHostAcceptanceTarget(missing,target)).toThrow()
+    expect(() => validateDeferredHostAcceptanceTarget({...target,realHostDeferral:{...target.realHostDeferral,status:'passed'}},target)).toThrow()
+    expect(upgradeTargetIdentityDigest(target,requirements.releaseContractSha256)).not.toBe(upgradeTargetIdentityDigest({...target,targetKey:'other'},requirements.releaseContractSha256))
+    expect(upgradeTargetIdentityDigest(target,requirements.releaseContractSha256)).not.toBe(upgradeTargetIdentityDigest(target,'0'.repeat(64)))
   })
 })

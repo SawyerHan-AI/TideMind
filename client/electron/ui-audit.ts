@@ -259,7 +259,8 @@ function uiAuditCodexHooks(
     { eventName: 'sessionStart', matcher: 'startup|resume', scriptPath: context.runtime.hookScriptPath, includeSkill: true },
     { eventName: 'preCompact', matcher: 'manual|auto', scriptPath: context.runtime.preCompactScriptPath, includeSkill: false },
     { eventName: 'postCompact', matcher: 'manual|auto', scriptPath: context.runtime.postCompactScriptPath, includeSkill: false },
-    { eventName: 'sessionEnd', matcher: 'exit|archive', scriptPath: path.join(path.dirname(context.runtime.hookScriptPath), 'hook-session-end.cjs'), includeSkill: false },
+    { eventName: 'sessionEnd', matcher: null, scriptPath: path.join(path.dirname(context.runtime.hookScriptPath), 'hook-session-end.cjs'), includeSkill: false },
+    { eventName: 'userPromptSubmit', matcher: null, scriptPath: path.join(path.dirname(context.runtime.hookScriptPath), 'hook-codex-user-prompt-submit.cjs'), includeSkill: false },
   ] as const
   const hooks: CodexOfficialHookMetadata[] = definitions.map((definition, index) => {
     const args = [
@@ -282,7 +283,7 @@ function uiAuditCodexHooks(
       handlerType: 'command',
       matcher: definition.matcher,
       command,
-      timeoutSec: 15,
+      timeoutSec: definition.eventName === 'userPromptSubmit' ? 3 : 15,
       statusMessage: definition.includeSkill ? '正在加载 Tide Mind 记忆…' : null,
       sourcePath,
       source: 'isolated_ui_audit_fixture',

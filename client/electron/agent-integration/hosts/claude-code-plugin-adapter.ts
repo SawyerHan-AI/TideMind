@@ -143,17 +143,27 @@ export function createClaudeCodePluginHostAdapter(spec: ClaudeCodePluginHostSpec
     async inspect(context): Promise<AdapterInspection> {
       const bundle = desiredBundle(context)
       const diagnostics: string[] = []
-      let source: BundleInspection
+      const manageable = manageableDistribution(spec.catalogId, context)
+      let observation: AggregateObservation | undefined
+      let observedVersion: string | null = null
+      if (!manageable.ok) diagnostics.push(manageable.reason)
       try {
-        source = inspectBundle(bundle.marketplaceRoot, bundle.files, context.runtime.applicationDataDir)
+        const source = inspectBundle(bundle.marketplaceRoot, bundle.files, context.runtime.applicationDataDir)
         diagnostics.push(...source.diagnostics)
+        observedVersion = bundleVersion(source, bundle, context.agentId)
+        if (source.state === 'safe' && observedVersion === null) diagnostics.push('claude_plugin_manifest_identity_unproven')
+        if (manageable.ok) {
+          // Inspect installed state, independently of a newly rendered runtime projection.
+          // The aggregate reader issues list commands only; no mutation is applied.
+          const mutation = aggregateMutation(context, bundle, source, undefined, null, 'install')
+          const metadata = { ...parseMetadata(mutation), pluginVersion: observedVersion ?? '' }
+          observation = await aggregateObservation(context, mutation, metadata, dependencies)
+          diagnostics.push(...observation.diagnostics.filter(diagnostic => !diagnostics.includes(diagnostic)))
+        }
       } catch (error) {
-        source = { state: 'unsafe', fingerprint: null, fileHashes: {}, diagnostics: [] }
         diagnostics.push(errorMessage(error))
       }
-      const manageable = manageableDistribution(spec.catalogId, context)
-      if (!manageable.ok) diagnostics.push(manageable.reason)
-      const visibility = source.state === 'safe' ? 'dedicated' : source.state === 'absent' ? 'absent' : 'unknown'
+      const visibility = diagnostics.length > 0 || !observation ? 'unknown' : observation.absent ? 'absent' : 'dedicated'
       return {
         catalogId: spec.catalogId,
         detected: executableExists(context),
@@ -162,13 +172,13 @@ export function createClaudeCodePluginHostAdapter(spec: ClaudeCodePluginHostSpec
           componentKey,
           visibility,
           verificationStatus: 'unverified',
-          observedTarget: bundle.marketplaceRoot,
-          observedFragmentHash: source.fingerprint ?? undefined,
+          observedTarget: `claude:user:${bundle.qualifiedPlugin}`,
+          observedFragmentHash: observation?.bundle.state === 'unsafe' ? undefined : observation?.fingerprint,
           details: {
             implementation: 'claude_code_official_plugin',
             marketplaceId: bundle.marketplaceId,
             qualifiedPlugin: bundle.qualifiedPlugin,
-            pluginVersion: bundle.pluginVersion,
+            pluginVersion: observedVersion,
           },
         })),
         provenance: [bundle.marketplaceRoot],

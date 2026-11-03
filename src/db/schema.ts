@@ -1,3 +1,5 @@
+import { addRecoveryAuthColumns, RECOVERY_LINEAGE } from './schema41-recovery.js';
+import { assertSupportedDatabaseSchema, CURRENT_SCHEMA_VERSION } from './schema-compatibility.js';
 import type Database from 'better-sqlite3';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -28,7 +30,7 @@ function generateSourceId(): string {
  * 当前 schema 版本。每次新增 migration 时递增。
  * export 给 connection.ts 的迁移前备份判定用,避免那边硬编码版本号失效。
  */
-export const CURRENT_SCHEMA_VERSION = 35;
+export { CURRENT_SCHEMA_VERSION } from './schema-compatibility.js';
 
 /**
  * 实时上行(M6):脏集表 + 回声抑制 guard + nodes/links 写触发器。
@@ -2175,6 +2177,14 @@ const MIGRATIONS: Migration[] = [
       log.info('迁移 v35 完成: 模型目录/认证绑定/调用观察表已就位');
     },
   },
+  {
+    version: 45,
+    description: '正式迁移线汇合标记与认证历史列补齐（不启动旧后台）',
+    up: (db) => {
+      addRecoveryAuthColumns(db);
+      db.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('schema_lineage', ?)").run(RECOVERY_LINEAGE);
+    },
+  },
 ];
 
 /**
@@ -2293,7 +2303,22 @@ function addLegacyNodesColumns(db: Database.Database): void {
   addColumnIfMissing(db, 'nodes', 'updated', 'ALTER TABLE nodes ADD COLUMN updated TEXT');
 }
 
-export function ensureSchema(db: Database.Database): void {
+export function ensureSchema(db: Database.Database, recoverSchema41 = false): void {
+  const sourceVersion = assertSupportedDatabaseSchema(db, CURRENT_SCHEMA_VERSION, recoverSchema41);
+  if (sourceVersion === 41) {
+    // Only the backed-up pre-migration path opts in. All DDL and version changes
+    // are rolled back together if the ordinary schema setup fails.
+    db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
+    db.transaction(() => {
+      addRecoveryAuthColumns(db);
+      db.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('schema_lineage', ?)").run(RECOVERY_LINEAGE);
+      db.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('schema_recovered_from', 'observed-dormant-41')").run();
+      setSchemaVersion(db, CURRENT_SCHEMA_VERSION);
+      ensureSchema(db);
+    })();
+    return;
+  }
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
 
@@ -2340,6 +2365,7 @@ export function ensureSchema(db: Database.Database): void {
 
   if (currentVersion === -1) {
     // 走到这里只剩"全新库"（nodes 由 SCHEMA_SQL 刚建出，带 updated 列），直接盖戳。
+    db.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('schema_lineage', ?)").run(RECOVERY_LINEAGE);
     setSchemaVersion(db, CURRENT_SCHEMA_VERSION);
     log.info(`新数据库，schema 版本: v${CURRENT_SCHEMA_VERSION}`);
   } else if (currentVersion < CURRENT_SCHEMA_VERSION) {

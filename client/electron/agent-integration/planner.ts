@@ -1,3 +1,5 @@
+import { freshCodexIdentityFingerprint, type CodexFreshIdentityPlan } from './codex-fresh-identity'
+import { codexSelectionFingerprint } from './codex-legacy-selection'
 import path from 'node:path'
 import {
   assertExecutionPlanShape,
@@ -22,6 +24,11 @@ import { COMPONENT_KEYS, isMutationDomainKind } from './types'
  * adapter to silently regenerate a potentially broader plan at apply time.
  */
 export interface PreparedCoordinatorPlan {
+  /** Internal preview seed; reused only when checking the cached approved plan. */
+  operationId?: string
+  codexFreshIdentity?: CodexFreshIdentityPlan
+  codexLegacySelection?: import('./codex-legacy-selection').CodexLegacySelection
+
   operation: PlanOperation
   componentKeys: readonly ComponentKey[]
   inspection: AdapterInspection
@@ -171,6 +178,12 @@ export function assertFrozenMutationDomains(adapterPlan: AdapterPlan, executionP
 /** Runtime guard for the complete persisted plan that can reach Adapter.apply. */
 export function assertPersistedPreparedPlanShape(plan: PreparedCoordinatorPlan): void {
   assertExecutionPlanShape(plan.executionPlan)
+  if (plan.codexFreshIdentity
+    ? freshCodexIdentityFingerprint(plan.codexFreshIdentity) !== plan.executionPlan.codexFreshIdentityHash
+    : plan.executionPlan.codexFreshIdentityHash !== undefined) throw new Error('Persisted fresh Codex identity changed')
+  if(plan.codexLegacySelection
+    ? codexSelectionFingerprint(plan.codexLegacySelection)!==plan.executionPlan.codexLegacySelectionHash
+    : plan.executionPlan.codexLegacySelectionHash!==undefined) throw new Error('Persisted Codex legacy selection changed')
   if (!PLAN_OPERATIONS.includes(plan.operation)) throw new Error('persisted plan has invalid operation')
   if (plan.operation !== plan.executionPlan.operation) throw new Error('persisted plan operation projection changed')
   if (!Array.isArray(plan.componentKeys) || plan.componentKeys.length === 0

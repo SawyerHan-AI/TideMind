@@ -29,6 +29,7 @@ export function parseArgs(argv) {
     ossMessage: null,
     notesFile: null,
     agentHostEvidence: null,
+    subscriptionEvidence: null,
     partialAuthReport: null,
     candidateArtifactZip: null,
     candidateUploadReceiptZip: null,
@@ -64,6 +65,7 @@ export function parseArgs(argv) {
       case '--candidate-artifact-zip': opts.candidateArtifactZip = path.resolve(next()); break;
       case '--candidate-upload-receipt-zip': opts.candidateUploadReceiptZip = path.resolve(next()); break;
       case '--candidate-performance-zip': opts.candidatePerformanceZip = path.resolve(next()); break;
+      case '--subscription-evidence': opts.subscriptionEvidence = path.resolve(next()); break;
       case '--agent-host-evidence': opts.agentHostEvidence = path.resolve(next()); break;
       case '--agent-host-candidate-app-arm64': opts.agentHostCandidateAppArm64 = path.resolve(next()); break;
       case '--agent-host-candidate-app-x64': opts.agentHostCandidateAppX64 = path.resolve(next()); break;
@@ -132,6 +134,7 @@ const RELEASE_FORBIDDEN_BYPASSES = [
 // Published contracts must not change when the active candidate is frozen.
 const HISTORICAL_RELEASE_CONTRACTS = Object.freeze({
   '0.2.92': Object.freeze({ macArchitectures: ['arm64'], upgradeFromAppVersions: ['0.2.89', '0.2.91'] }),
+  '0.2.93': Object.freeze({ macArchitectures: ['arm64'], upgradeFromAppVersions: ['0.2.89', '0.2.91', '0.2.92'] }),
 });
 
 function releaseAcceptanceRequirements() {
@@ -141,6 +144,17 @@ function releaseAcceptanceRequirements() {
 function requiresAgentReleaseContract(version) {
   return Object.hasOwn(HISTORICAL_RELEASE_CONTRACTS, version)
     || version === releaseAcceptanceRequirements().appVersion;
+}
+
+// B is independently required for 0.2.94. Candidate preparation has no
+// acceptance yet; historical release policies remain unchanged.
+export function subscriptionAcceptanceArguments(version, opts, sourceCommit, candidateApps) {
+  if (version !== '0.2.94' || opts.prepareCandidate) return null;
+  const index = opts.subscriptionEvidence ?? process.env.TIDEMIND_SUBSCRIPTION_EVIDENCE
+    ?? path.join(repoRoot, 'release-evidence', 'local-subscription-acceptance', version, 'index.json');
+  return ['scripts/verify-local-subscription-acceptance.mjs', '--index', path.resolve(index),
+    '--app-version', version, '--source-commit', sourceCommit,
+    '--candidate-app-arm64', candidateApps.arm64 ?? path.join(repoRoot, '.dry-run-arm64-candidate.app')];
 }
 
 export function assertPartialAuthReleaseOptions(version, opts) {
@@ -225,6 +239,7 @@ Options:
   --oss-message TEXT       Public OSS commit message.
   --notes-file PATH        Release notes markdown. Required for the active Agent release; older versions
                            default to /tmp/notes-vX.Y.Z.md.
+  --subscription-evidence PATH  Required B1-B7 evidence for 0.2.94 formal release
   --partial-auth-report PATH
   --candidate-artifact-zip PATH
   --candidate-upload-receipt-zip PATH
@@ -1209,6 +1224,7 @@ async function main() {
   }
   const acceptanceIndex = agentHostEvidence
     ?? path.join(repoRoot, 'release-evidence', 'agent-integration-host-acceptance', version, 'index.json');
+  const subscriptionVerifierArgs = subscriptionAcceptanceArguments(version, opts, expectedRootHead, agentHostCandidateApps);
   const acceptanceVerifierArgs = [
     'scripts/verify-agent-integration-host-acceptance.mjs',
     '--index', acceptanceIndex,
@@ -1247,6 +1263,10 @@ async function main() {
       }
     } else run('node', acceptanceVerifierArgs, {
       label: 'verify real-host Agent Integration acceptance',
+      dryRun: opts.dryRun,
+    });
+    if (subscriptionVerifierArgs) run('node', subscriptionVerifierArgs, {
+      label: 'verify required local subscriptions B1-B7 and explicit deferrals',
       dryRun: opts.dryRun,
     });
   }
@@ -1376,6 +1396,11 @@ async function main() {
       else assertPartialReleaseBinding(partialAcceptanceBinding, parseJsonOutput('node', copyArgs, repoRoot));
     } else run('node', [...acceptanceVerifierArgs, '--copy-to', ossAcceptanceDirectory], {
       label: 'stage verified real-host Agent acceptance for release CI',
+      dryRun: opts.dryRun,
+    });
+    if (subscriptionVerifierArgs) run('node', [...subscriptionVerifierArgs, '--copy-to',
+      path.join(opts.ossRepo, 'release-evidence', 'local-subscription-acceptance', version)], {
+      label: 'reverify and stage local subscription acceptance and deferral records',
       dryRun: opts.dryRun,
     });
   }

@@ -93,8 +93,8 @@ export function createP0HostAdapters(options: { codexHooksPort?: CodexOfficialHo
   const lifecycleAdapters = new Map<CatalogId, AgentHostAdapter>([
     ['cursor-desktop', createCursorLifecycleHostAdapter()],
     ['windsurf-desktop', createWindsurfLifecycleHostAdapter()],
-    ['codex-cli', createCodexLifecycleHostAdapter({ catalogId: 'codex-cli', adapterVersion: '1', hooksPort: options.codexHooksPort })],
-    ['codex-desktop', createCodexLifecycleHostAdapter({ catalogId: 'codex-desktop', adapterVersion: '1', hooksPort: options.codexHooksPort })],
+    ['codex-cli', createCodexLifecycleHostAdapter({ catalogId: 'codex-cli', adapterVersion: '2', hooksPort: options.codexHooksPort })],
+    ['codex-desktop', createCodexLifecycleHostAdapter({ catalogId: 'codex-desktop', adapterVersion: '2', hooksPort: options.codexHooksPort })],
     ['kimi-code-cli', createKimiCodeLifecycleHostAdapter({
       catalogId: 'kimi-code-cli',
       adapterVersion: '1',

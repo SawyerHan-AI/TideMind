@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   assertNativeAgentHostAcceptanceExecutionEnvironment,
   exportAgentHostTargetMetadata,
+  currentCodexContextRestoreProof,
   currentUserOwnedCustomActivityProof,
   directoryIdentitySha256,
   inspectAgentHostAcceptanceExecutionEnvironment,
@@ -15,7 +16,7 @@ import {
 import { sha256Json } from '../../client/electron/agent-integration/fingerprint'
 import type { AgentReleaseDistributionArtifactReceipt } from '../../client/electron/agent-integration/release-manifest'
 import type { DiscoveredInstallation } from '../../client/electron/agent-integration/discovery'
-import type { AgentInstallationRow } from '../../client/electron/agent-integration/repository'
+import { AgentIntegrationRepository,type AgentInstallationRow } from '../../client/electron/agent-integration/repository'
 import { metadataEvidenceRuntimeContext } from '../../client/electron/agent-integration/production-service'
 
 import * as productionService from '../../client/electron/agent-integration/production-service'
@@ -29,6 +30,10 @@ vi.mock('../../client/node_modules/better-sqlite3/lib/index.js', async () => {
   const { createRequire } = await import('node:module')
   return { default: createRequire(import.meta.url)('better-sqlite3') }
 })
+import * as codexLifecycle from '../../client/electron/agent-integration/hosts/codex-lifecycle-adapter'
+import {createContextRestoreStore,contextRestoreKey} from '../../src/hook-codex-context-restore'
+import {codexContextRestoreFixture} from '../fixtures/agent-integration/codex-context-restore-fixture'
+import {validateCodexContextRestore} from '../../scripts/codex-context-restore-evidence.mjs'
 const databases: Database.Database[] = []
 
 const roots: string[] = []
@@ -397,7 +402,7 @@ function userOwnedActivityFixture(schemaKind: CustomMcpSchema = 'standard_mcp_se
     VALUES('run-custom','custom','connect','hash','committed','readback_before_replay','consent','1','1',?,?,?)`)
     .run(JSON.stringify(prepared),T0,T0)
   const row = db.prepare("SELECT * FROM agent_installations WHERE id='custom'").get() as AgentInstallationRow
-  const record = (signalName: 'brain_recall' | 'brain_digest') => recordHostActivityEvidence(db, {
+  const record = (signalName: 'brain_prepare' | 'brain_recall' | 'brain_digest') => recordHostActivityEvidence(db, {
     agentId: row.agent_id!, hostVariant: row.host_variant, componentKey: 'memory_tools', signalName,
     tideMindVersion: runtime.tideMindVersion, activityGenerationToken: token, observedAt: T1,
   })
@@ -409,15 +414,16 @@ describe('0.2.93 explicit no-auth user-owned metadata boundary', () => {
   it.each(['standard_mcp_servers', 'nested_mcp_servers', 'opencode_mcp'] as const)(
     '%s allows an absent observation only explicitly and preserves partial/full evidence', schema => {
       const data = userOwnedActivityFixture(schema, 'memory_bank')
-      expect(() => data.proof()).toThrow('lacks current brain_recall')
+      expect(() => data.proof()).toThrow('lacks current brain_prepare')
       expect(data.proof(true)).toBeNull()
+      expect(data.record('brain_prepare').status).toBe('recorded')
       expect(data.record('brain_recall').status).toBe('recorded')
       expect(() => data.proof(true)).toThrow('lacks current brain_digest')
       expect(data.record('brain_digest').status).toBe('recorded')
       const full = data.proof()
       expect(data.proof(true)).toEqual(full)
-      expect(full!.evidence.map(record => record.signalName)).toEqual(['brain_recall', 'brain_digest'])
-      expect(data.db.prepare('SELECT count(*) AS n FROM agent_host_activity_evidence').get()).toEqual({ n: 2 })
+      expect(full!.evidence.map(record => record.signalName)).toEqual(['brain_prepare', 'brain_recall', 'brain_digest'])
+      expect(data.db.prepare('SELECT count(*) AS n FROM agent_host_activity_evidence').get()).toEqual({ n: 3 })
     },
   )
 
@@ -444,10 +450,10 @@ describe('0.2.93 explicit no-auth user-owned metadata boundary', () => {
 
   it('does not erase existing activity when its evidence has become invalid', () => {
     const data = userOwnedActivityFixture()
-    data.record('brain_recall'); data.record('brain_digest')
+    data.record('brain_prepare'); data.record('brain_recall'); data.record('brain_digest')
     data.db.prepare("UPDATE agent_host_activity_evidence SET evidence_hash='tampered'").run()
     expect(() => data.proof(true)).toThrow()
-    expect(data.db.prepare('SELECT count(*) AS n FROM agent_host_activity_evidence').get()).toEqual({ n: 2 })
+    expect(data.db.prepare('SELECT count(*) AS n FROM agent_host_activity_evidence').get()).toEqual({ n: 3 })
   })
 
   it.each(['manual_mcp_client', 'nonstandard_config_root', 'codex-cli:arm64:cli%3Acodex-cli'])(
@@ -466,7 +472,7 @@ describe('0.2.93 explicit no-auth user-owned metadata boundary', () => {
   )
 
   it.each(['standard_mcp_servers', 'nested_mcp_servers', 'opencode_mcp'] as const)(
-    'exports zero-activity %s through real SQLite without promoting a fixture to real evidence', async schemaKind => {
+    'rejects historical no-auth export for current %s even with valid isolated SQLite evidence', async schemaKind => {
       const data = userOwnedActivityFixture(schemaKind, 'memory_bank')
       const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'custom-no-auth-export-'))); roots.push(root)
       const executable = path.join(root, 'client')
@@ -502,18 +508,117 @@ describe('0.2.93 explicit no-auth user-owned metadata boundary', () => {
       }
       const defaultOutput = path.join(root, 'default.json')
       await expect(exportAgentHostTargetMetadata({ ...options, outputPath: defaultOutput }))
-        .rejects.toThrow('lacks current brain_recall')
+        .rejects.toThrow('lacks current brain_prepare')
       expect(fs.existsSync(defaultOutput)).toBe(false)
       const outputPath = path.join(root, 'partial.json')
-      await exportAgentHostTargetMetadata({ ...options, outputPath, acceptanceMode: 'partial-auth-runtime-0.2.93' })
-      const output = JSON.parse(fs.readFileSync(outputPath, 'utf8'))
-      expect(output.evidenceClass).toBe('fixture')
-      expect(output.targetMetadata.customBinding).toMatchObject({ configurationOwnership: 'user', activityBinding: null })
+      await expect(exportAgentHostTargetMetadata({ ...options, outputPath, acceptanceMode: 'partial-auth-runtime-0.2.93' }))
+        .rejects.toThrow('no-auth metadata mode is restricted to 0.2.93')
+      expect(fs.existsSync(outputPath)).toBe(false)
       fs.writeFileSync(executable, 'tampered fixture executable', { mode: 0o700 })
       const tamperedOutput = path.join(root, 'tampered.json')
       await expect(exportAgentHostTargetMetadata({ ...options, outputPath: tamperedOutput, acceptanceMode: 'partial-auth-runtime-0.2.93' }))
-        .rejects.toThrow('no longer matches its approved physical identity')
+        .rejects.toThrow('no-auth metadata mode is restricted to 0.2.93')
       expect(fs.existsSync(tamperedOutput)).toBe(false)
     },
   )
+})
+
+async function codexRestoreExportFixture() {
+ const f=fixture(),home=path.join(f.root,'home'),dataDir=path.join(home,'.tidemind'),databasePath=path.join(dataDir,'graph','brain.sqlite')
+ fs.mkdirSync(path.dirname(databasePath),{recursive:true});fs.mkdirSync(f.row.config_root!,{recursive:true})
+ const db=new Database(databasePath);databases.push(db);ensureSchema(db)
+ const repo=new AgentIntegrationRepository(db),generation='restore-fixture-generation',session='native-session',turn='restore-turn'
+ repo.upsertDiscoveredInstallation({id:f.row.id,family:'codex',hostVariant:'codex-cli',runtimeRealm:'local_macos',
+  osUserIdentity:f.row.os_user_identity!,installKey:f.row.install_key,distributionId:f.receipt.distributionId,
+  provenance:'fixture',displayName:'Codex',configRoot:f.row.config_root!,executablePath:f.row.executable_path!,
+  detectedVersion:f.receipt.version,agentId:f.row.agent_id!,supportedCapability:4,lastDetectedAt:new Date().toISOString(),
+  metadata:{distribution:f.discovered.identity.distribution}})
+ const at=new Date().toISOString(),consent='restore-consent'
+ db.prepare("INSERT INTO agent_consents(id,installation_id,policy_version,selector_schema_version,maximum_risk,confirmed_at,created_at) VALUES (?,?,'1','1','low',?,?)").run(consent,f.row.id,at,at)
+ db.prepare("UPDATE agent_installations SET desired_state='managed',health_state='discovered',consent_envelope_id=? WHERE id=?").run(consent,f.row.id)
+ const runtime=metadataEvidenceRuntimeContext(home,path.join(f.root,'Tide Mind.app','Contents','MacOS','Tide Mind'))
+ const ups=path.join(path.dirname(runtime.hookScriptPath),'hook-codex-user-prompt-submit.cjs')
+ fs.mkdirSync(path.dirname(ups),{recursive:true});fs.writeFileSync(ups,'// exact candidate UPS fixture\n')
+ const context={runtime,installation:f.discovered.identity,installationId:f.row.id,agentId:f.row.agent_id!,
+  activityGenerationToken:generation,hostVersion:f.receipt.version,operationId:'restore-export-fixture'}
+ const port=codexLifecycle.createOfficialCodexHooksPort({managedPolicyPaths:[]})
+ const adapter=codexLifecycle.createCodexLifecycleHostAdapter({catalogId:'codex-cli',adapterVersion:'2',hooksPort:port})
+ const plan=await adapter.plan(context,{desiredCapability:4,desiredComponents:['lifecycle'],observed:await adapter.inspect(context),ownedArtifacts:[]})
+ const mutation=plan.mutations[0];await adapter.apply(context,mutation)
+ const hooksFile=fs.realpathSync(mutation.physicalTarget)
+ const trust=async()=>{
+  const snapshot=await port.list(context)
+  fs.writeFileSync(path.join(f.row.config_root!,'config.toml'),snapshot.hooks.map(h=>'[hooks.state.'+JSON.stringify(h.key)+']\ntrusted_hash = '+JSON.stringify(h.currentHash)+'\n').join('\n'))
+ }
+ await trust()
+ db.prepare("INSERT INTO managed_artifacts(id,component_type,target_path,ownership_key,mutation_domain,projection_version,selector_schema_version,owned_fragment_hash,desired_fragment_hash,observed_fragment_hash,state,created_at,updated_at) VALUES ('restore-hook','hook',?,?,'fixture-domain','1','1',?,?,?,'healthy',?,?)")
+  .run(mutation.physicalTarget,'hooks.tidemind-'+f.row.agent_id,mutation.desiredFragmentHash,mutation.desiredFragmentHash,mutation.desiredFragmentHash,at,at)
+ db.prepare("INSERT INTO installation_components(installation_id,component_key,desired_state,desired_capability,delivery_mode,verification_status,artifact_id,visibility_state,consent_envelope_id,created_at,updated_at) VALUES (?,'lifecycle','managed',4,'managed','verified','restore-hook','dedicated',?,?,?)").run(f.row.id,consent,at,at)
+ db.prepare("INSERT INTO artifact_consumers(artifact_id,installation_id,component_key,required_capability,desired_state,discover_reachability,consent_envelope_id,state,added_at,updated_at) VALUES ('restore-hook',?,'lifecycle',4,'managed','dedicated',?,'active',?,?)").run(f.row.id,consent,at,at)
+ db.prepare("INSERT INTO reconcile_runs(id,installation_id,operation_type,execution_plan_hash,state,recovery_strategy,adapter_version,catalog_version,projection_version,selector_schema_version,prepared_plan_json,created_at,updated_at) VALUES ('restore-carrier',?,'connect','fixture','committed','readback_before_replay','1+1+2','1','1','1',?,?,?)")
+  .run(f.row.id,JSON.stringify({componentKeys:['lifecycle'],activityGenerationToken:generation,executionPlan:{activityGenerationTokenHash:sha256Json(generation)}}),at,at)
+ const scope={canonicalDataDir:fs.realpathSync(dataDir),agentId:f.row.agent_id!,generation,sessionId:session}
+ const store=createContextRestoreStore(db);store.markPending(scope);store.markEmitted(scope,store.claimPending(scope,turn)!)
+ const current=repo.getInstallation(f.row.id)!
+ const nonce='fixture_export_nonce_001'
+ const options={targetKey:`codex-cli:${f.architecture}:${encodeURIComponent(f.receipt.distributionId)}`,
+  candidateBundleSha256:'b'.repeat(64),sourceCommit:'a'.repeat(40),releaseContractSha256:'c'.repeat(64),
+  outputPath:path.join(f.root,'restore-export.json'),databasePath,homeDir:home,codexContextRestore:{sessionId:session,captureNonce:nonce},
+  fixture:{receipt:f.receipt,row:current,discovered:f.discovered,physicalDistribution:f.physicalDistribution,
+    liveTrustProof:'d'.repeat(64),hostIdentitySha256:'e'.repeat(64),osVersion:'14.5',restoreRuntimeContext:runtime}}
+ return {f,db,repo,scope,store,context,port,trust,hooksFile,options,session,turn}
+}
+
+describe('Codex restore actual builtin metadata binding',()=>{
+ it('exports exact delivered state and passes the scripts contract with fixture-labelled native evidence',async()=>{
+  const f=await codexRestoreExportFixture()
+  await exportAgentHostTargetMetadata(f.options)
+  const actual=JSON.parse(fs.readFileSync(f.options.outputPath,'utf8')),summary=actual.targetMetadata.codexContextRestore
+  expect(actual.evidenceClass).toBe('fixture')
+  expect(summary).toMatchObject({generationSha256:sha256Json(f.scope.generation),sessionIdSha256:sha256Json(f.session),
+    scopeKey:contextRestoreKey(f.scope),deliveredRevision:1,deliveredTurnIdHash:sha256Json(f.turn),
+    hookSourcePathSha256:sha256Json(path.resolve(f.hooksFile))})
+  expect(JSON.stringify(summary)).not.toContain(f.scope.generation)
+  const native=codexContextRestoreFixture('manual'),now=summary.updatedAt
+  Object.assign(native.metadata,actual)
+  Object.assign(native.expected,{targetKey:actual.targetMetadata.targetKey,installationId:actual.targetMetadata.installationId,
+    agentId:actual.targetMetadata.agentId,hostVersion:actual.targetMetadata.hostVersion,hostVariant:'codex-cli',
+    sourceCommit:actual.sourceCommit,releaseContractSha256:actual.releaseContractSha256,candidateBundleSha256:actual.candidateBundleSha256,
+    captureNonce:summary.captureNonce,captureCreatedAt:now-100,observedAt:Date.now()+1000,allowFixtureActivity:true})
+  Object.assign(native.sidecar,{captureNonce:summary.captureNonce,observedAt:new Date(now-18).toISOString(),
+    generationSha256:summary.generationSha256,scopeKey:summary.scopeKey,revision:summary.deliveredRevision})
+  for(const event of native.native){
+    if(event.params?.run){
+      event.params.run.sourcePath=f.hooksFile
+      const post=event.params.run.eventName==='postCompact'
+      event.params.run.startedAt=Math.floor((post?now-20:now-1)/1000)
+      if(event.params.run.completedAt!==undefined)event.params.run.completedAt=Math.floor((post?now-15:now+2)/1000)
+    }
+  }
+  native.rollout[1].timestamp=new Date(now+3).toISOString()
+  expect(()=>validateCodexContextRestore(native.value,native.expected,native.build())).not.toThrow()
+  expect(()=>validateCodexContextRestore(native.value,{...native.expected,allowFixtureActivity:false},native.build())).toThrow()
+  await expect(currentCodexContextRestoreProof(f.db,f.repo.getInstallation(f.f.row.id)!,f.context.runtime,
+    {sessionId:'not-the-selected-session',captureNonce:summary.captureNonce})).rejects.toThrow('no valid state')
+ })
+ it('rejects hooks changed and re-trusted after plan instead of exporting the old definition hash',async()=>{
+  const f=await codexRestoreExportFixture()
+  const original=codexLifecycle.createOfficialCodexHooksPort
+  let calls=0
+  vi.spyOn(codexLifecycle,'createOfficialCodexHooksPort').mockImplementation(options=>{
+    const port=original(options)
+    return {...port,list:async context=>{
+      calls++
+      if(calls===2){
+        const document=JSON.parse(fs.readFileSync(f.hooksFile,'utf8'))
+        document.hooks.UserPromptSubmit[0].hooks[0].command+=' --changed-after-plan'
+        fs.writeFileSync(f.hooksFile,JSON.stringify(document))
+        await f.trust()
+      }
+      return port.list(context)
+    }}
+  })
+  await expect(exportAgentHostTargetMetadata(f.options)).rejects.toThrow(/trust binding changed|candidate projection/)
+  expect(fs.existsSync(f.options.outputPath)).toBe(false)
+ })
 })

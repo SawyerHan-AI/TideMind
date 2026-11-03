@@ -79,7 +79,7 @@ vi.mock('../../src/llm/cli/model-catalog.js', async importOriginal => {
 
 // Deterministic config: defaults (never the developer's real config.toml) plus the
 // routes a test declares.
-vi.mock('../../src/config.js', async importOriginal => {
+vi.mock('@server/config.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/config.js')>();
   return {
     ...actual,

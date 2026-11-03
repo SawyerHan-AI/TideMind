@@ -15,12 +15,13 @@ import { sanitizeProfileContent } from '../evolution/profile-parse.js';
 
 const log = createLogger('prepare');
 
-/**
- * brain_prepare — 主动准备认知包
- *
- * 返回：用户画像 + 枢纽节点 + 标签索引 + 结晶 + 最近活跃 + 行为指导
- */
-export async function prepare(repo: IRepository, input: PrepareInput): Promise<PrepareOutput> {
+/** Internal execution option; not exposed by the MCP input schema. */
+export interface PrepareExecutionOptions {
+  readOnly?: boolean;
+}
+
+/** Assemble saved context; normal MCP calls also record usage and schedule maintenance. */
+export async function prepare(repo: IRepository, input: PrepareInput, options: PrepareExecutionOptions = {}): Promise<PrepareOutput> {
   log.info(`tool=${input.tool} detail=${input.detail_level ?? 'standard'}`);
 
   const db = repo.rawDb; // 过渡期：未迁移的外部函数仍需 raw db
@@ -55,23 +56,25 @@ export async function prepare(repo: IRepository, input: PrepareInput): Promise<P
     guidance += `\n\n🔄 ${digestStatus.pending} 条 digest 正在等待重试处理`;
   }
 
-  // 记录操作
-  const opId = repo.log.logOperation({
-    operation: 'prepare',
-    input_summary: `tool=${input.tool}`,
-    context: input.hint,
-    tool: input.tool,
-    agent_id: input.agent_id,
-  });
+  if (!options.readOnly) {
+    // Normal MCP calls retain their operation records and maintenance trigger.
+    const opId = repo.log.logOperation({
+      operation: 'prepare',
+      input_summary: `tool=${input.tool}`,
+      context: input.hint,
+      tool: input.tool,
+      agent_id: input.agent_id,
+    });
 
-  repo.log.logStrategyFeedback({
-    strategy_name: 'prepare-assemble',
-    operation_id: opId,
-    feedback_signal: 0.5,
-  });
+    repo.log.logStrategyFeedback({
+      strategy_name: 'prepare-assemble',
+      operation_id: opId,
+      feedback_signal: 0.5,
+    });
 
-  // --- 搭便车维护：fire-and-forget，不阻塞 prepare 返回 ---
-  maybeRunMaintenance(db, ALL_TASKS);
+    // --- 搭便车维护：fire-and-forget，不阻塞 prepare 返回 ---
+    maybeRunMaintenance(db, ALL_TASKS);
+  }
 
   log.debug(`keystones=${keystones.length} tags=${tags.length} crystals=${crystals.highlighted.length}+${crystals.others.length} recent=${recent.length}`);
   return { profile, keystones, tags, crystals, recent, guidance };

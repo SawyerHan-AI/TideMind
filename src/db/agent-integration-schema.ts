@@ -1,9 +1,13 @@
+import { AGENT_IDENTITY_BINDING_SQL } from './agent-identity-binding.js';
 import type Database from 'better-sqlite3';
+import { assertSupportedDatabaseSchema, CURRENT_SCHEMA_VERSION } from './schema-compatibility.js';
 import { scrubPersistedAgentIntegrationEvents } from './agent-integration-event-sanitizer.js';
 
-/** Canonical v34 table inventory shared by migration and schema-parity tests. */
+/** Canonical Agent table inventory shared by migration and schema-parity tests. */
 export const AGENT_INTEGRATION_TABLES = [
   'agent_installations',
+  'agent_identity_bindings',
+  'agent_identity_binding_members',
   'installation_components',
   'managed_artifacts',
   'artifact_consumers',
@@ -92,15 +96,13 @@ CREATE TABLE IF NOT EXISTS agent_host_activity_evidence (
 
 /** Read-only semantic parity check used by the signed acceptance exporter. */
 export function inspectAgentHostActivityEvidenceV34Schema(db: Database.Database): {
-  /** v35 only adds model-discovery tables; the evidence ledger keeps its v34 shape. */
-  schemaVersion: 34 | 35;
+  /** Supported migration lines retain the authoritative v34 ledger shape. */
+  schemaVersion: 34 | 35 | 45;
   fingerprintInput: unknown;
 } {
-  const schemaVersion = Number((db.prepare(
-    "SELECT value FROM metadata WHERE key = 'schema_version'",
-  ).get() as { value?: string } | undefined)?.value);
-  if (schemaVersion !== 34 && schemaVersion !== 35) {
-    throw new Error(`activity ledger database schema is ${schemaVersion}, expected 34 or 35`);
+  const schemaVersion = assertSupportedDatabaseSchema(db, CURRENT_SCHEMA_VERSION);
+  if (schemaVersion !== 34 && schemaVersion !== 35 && schemaVersion !== 45) {
+    throw new Error(`activity ledger database schema is ${schemaVersion}, expected 34, 35 or 45`);
   }
   const columns = db.prepare('PRAGMA table_info(agent_host_activity_evidence)').all() as Array<{
     name: string; type: string; notnull: number; pk: number;
@@ -152,7 +154,7 @@ export function inspectAgentHostActivityEvidenceV34Schema(db: Database.Database)
   ]) {
     if (!tableSql.includes(marker)) throw new Error('activity ledger CHECK constraints are not authoritative');
   }
-  return { schemaVersion: schemaVersion as 34 | 35, fingerprintInput: { actualColumns, foreignKeys, uniqueColumns, checks: 'v34' } };
+  return { schemaVersion: schemaVersion as 34 | 35 | 45, fingerprintInput: { actualColumns, foreignKeys, uniqueColumns, checks: 'v34' } };
 }
 
 function agentHostActivityEvidenceTableSql(tableName: string): string {
@@ -642,6 +644,8 @@ CREATE TABLE IF NOT EXISTS agent_npm_official_verifications (
       local_portable_fingerprint, verifier_version
     )
 );
+
+${AGENT_IDENTITY_BINDING_SQL}
 `;
 
 export const AGENT_INTEGRATION_MINIMUM_WRITER_PROTOCOL_KEY =

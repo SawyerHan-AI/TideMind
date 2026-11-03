@@ -17,7 +17,7 @@
  *
  * 协议适配(2026-05-09):历史直接 process.stdout.write 纯文本,Codex 0.126+ /
  * Gemini 0.26+ 严格按 JSON 解析 hook stdout,纯文本会被解析失败 → 整段提示丢失。
- * 现在统一走 hook-output.ts::writeHookOutput,带 hookEventName='PreCompact'。
+ * 统一走 hook-output.ts；Codex PreCompact 仅输出 {} 观察生命周期，不能注入此提示。
  */
 
 import { writeHookOutputBeforeEvidence, type HookEventName } from './hook-output.js';

@@ -495,6 +495,31 @@ function prepareManualRemovalDisconnect(
 }
 
 describe('SqliteCoordinatorRepository', () => {
+  it.each(['none','pending-consumer','pending-intent','revoked-consent','changed-intent','missing-readback','pending-disconnect'] as const)(
+    'only clears historical removal state with current successful write proof: %s', blocker => {
+      const { db, repository, bridge } = setup()
+      discover(repository, 'i1')
+      if (blocker === 'pending-disconnect') {
+        discover(repository, 'i2')
+        prepare(bridge, 'i2', 'run-prior')
+        commitRun(db, bridge, 'run-prior')
+      }
+      prepare(bridge, 'i1', 'run-reopen')
+      markMutationsCommitted(db, 'run-reopen')
+      // Synthetic historical residue / concurrent intent at the successful readback boundary.
+      db.prepare("UPDATE managed_artifacts SET state='removal_pending'").run()
+      if (blocker === 'pending-disconnect') db.prepare("UPDATE reconcile_runs SET operation_type='disconnect',state='needs_recovery' WHERE id='run-prior'").run()
+      if (blocker === 'pending-consumer') db.prepare("UPDATE artifact_consumers SET state='removal_pending'").run()
+      if (blocker === 'pending-intent') db.prepare("UPDATE artifact_consumers SET desired_state='removal_pending'").run()
+      if (blocker === 'revoked-consent') db.prepare("UPDATE agent_consents SET status='revoked'").run()
+      if (blocker === 'changed-intent') db.prepare("UPDATE agent_installations SET desired_state='removed',tombstoned_at=?").run(T0)
+      if (blocker === 'missing-readback') db.prepare("UPDATE projection_mutations SET post_effect_fingerprint=NULL").run()
+      markApplied(bridge, 'run-reopen')
+      expect(db.prepare('SELECT state FROM managed_artifacts').get()).toEqual({state:blocker === 'none' ? 'healthy' : 'removal_pending'})
+      db.close()
+    },
+  )
+
   it('uses SQLite causal insertion order when same-timestamp generations supersede random run ids', () => {
     const { db, repository, bridge } = setup()
     discover(repository, 'i1')
@@ -1419,6 +1444,57 @@ describe('SqliteCoordinatorRepository', () => {
         { run_id: null, evidence_ref: 'host-activity:first', invalidation_reason: 'verification_retry_superseded' },
         { run_id: execution.runId, evidence_ref: 'host-activity:second', invalidation_reason: null },
       ])
+    db.close()
+  })
+
+  it('advances Codex lifecycle static evidence through trust waiting to fresh C4 on the same run', () => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    prepare(bridge, 'i1', 'run-codex-static')
+    markApplied(bridge, 'run-codex-static')
+    const execution = bridge.listRecoverableExecutions()[0]!
+    if (execution.runState === 'verified') throw new Error('expected mutable execution')
+    const installation = {
+      ...execution.installation,
+      identity: { ...execution.installation.identity, productFamilyId: 'codex' as const, hostVariant: 'codex-cli' as const },
+    }
+    db.prepare("UPDATE agent_installations SET host_variant='codex-cli' WHERE id='i1'").run()
+    const row = db.prepare('SELECT prepared_plan_json FROM reconcile_runs WHERE id=?').get(execution.runId) as { prepared_plan_json: string }
+    const plan = JSON.parse(row.prepared_plan_json)
+    plan.componentKeys = ['lifecycle']
+    db.prepare('UPDATE reconcile_runs SET prepared_plan_json=? WHERE id=?').run(JSON.stringify(plan), execution.runId)
+    db.prepare("INSERT INTO installation_components (installation_id,component_key,created_at,updated_at) VALUES ('i1','lifecycle',?,?)").run(T0,T0)
+    const input = {
+      runId: execution.runId, installation,
+      adapterVersion: '7', catalogVersion: '3', projectionVersion: '9', expectedHostVersion: null,
+      verifiedAt: T0,
+      result: {
+        componentKey: 'lifecycle' as const, status: 'verified' as const, verifiedCapability: 3 as const,
+        identityAssertion: 'agent-i1', invalidationKeys: ['artifact_hash', 'host_hook_trust'],
+        diagnostics: ['static_readback_passed', 'codex_hook_not_trusted'],
+        evidenceHash: 'static-fragment',
+      },
+    }
+    bridge.recordVerification(input)
+    bridge.recordVerification(input)
+    expect(db.prepare('SELECT COUNT(*) AS n FROM verification_results').get()).toEqual({ n: 1 })
+    const waiting = { ...input, verifiedAt: '2026-08-25T00:01:00.000Z',
+      result: { ...input.result, diagnostics: ['static_readback_passed', 'codex_hook_trust_receipt_missing'] } }
+    expect(() => bridge.recordVerification({ ...waiting, adapterVersion: '8' })).toThrow(/evidence changed/)
+    expect(() => bridge.recordVerification({ ...waiting, result: { ...waiting.result, evidenceHash: 'drift' } })).toThrow(/evidence changed/)
+    expect(() => bridge.recordVerification(waiting)).not.toThrow()
+    const active = { ...input, verifiedAt: '2026-08-25T00:02:00.000Z',
+      result: { ...input.result, verifiedCapability: 4 as const,
+        diagnostics: ['static_readback_passed', 'codex_effective_lifecycle_activity_verified'],
+        invalidationKeys: [...input.result.invalidationKeys, 'activity_freshness'],
+        evidenceRef: 'host-activity:event;codex-hook-trust:receipt', evidenceHash: 'real-activity',
+        expiresAt: '2026-08-25T01:00:00.000Z',
+      } }
+    expect(() => bridge.recordVerification({ ...active, result: { ...active.result, expiresAt: T0 } })).toThrow(/evidence changed/)
+    expect(() => bridge.recordVerification(active)).not.toThrow()
+    expect(db.prepare('SELECT COUNT(*) AS n FROM verification_results WHERE run_id=?').get(execution.runId)).toEqual({ n: 1 })
+    expect(db.prepare('SELECT evidence_ref FROM verification_results WHERE run_id=?').get(execution.runId))
+      .toEqual({ evidence_ref: 'host-activity:event;codex-hook-trust:receipt' })
     db.close()
   })
 

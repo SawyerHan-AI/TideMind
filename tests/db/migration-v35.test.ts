@@ -33,11 +33,10 @@ function schemaVersion(db: Database.Database): string {
 }
 
 describe('migration v35 — model discovery / auth binding / observations', () => {
-  it('fresh schema is v35 and creates the three local-only tables', () => {
+  it('fresh schema includes v35 model discovery and creates the three local-only tables', () => {
     const db = new Database(':memory:');
     ensureSchema(db);
-    expect(CURRENT_SCHEMA_VERSION).toBe(35);
-    expect(schemaVersion(db)).toBe('35');
+    expect(schemaVersion(db)).toBe(String(CURRENT_SCHEMA_VERSION));
     expect(tableNames(db)).toEqual(expect.arrayContaining([...MODEL_DISCOVERY_TABLES]));
     // 本机数据：不进入云同步脏集 trigger。
     const triggers = (db.prepare(`
@@ -67,7 +66,7 @@ describe('migration v35 — model discovery / auth binding / observations', () =
 
     ensureSchema(db);
 
-    expect(schemaVersion(db)).toBe('35');
+    expect(schemaVersion(db)).toBe(String(CURRENT_SCHEMA_VERSION));
     expect(tableNames(db)).toEqual(expect.arrayContaining([...MODEL_DISCOVERY_TABLES]));
     for (const table of MODEL_DISCOVERY_TABLES) {
       expect(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table).toEqual({ count: 0 });
@@ -86,7 +85,7 @@ describe('migration v35 — model discovery / auth binding / observations', () =
     // Idempotent re-open.
     expect(() => ensureSchema(db)).not.toThrow();
     expect(() => db.exec(MODEL_DISCOVERY_SCHEMA_SQL)).not.toThrow();
-    expect(schemaVersion(db)).toBe('35');
+    expect(schemaVersion(db)).toBe(String(CURRENT_SCHEMA_VERSION));
     expect(db.pragma('integrity_check')).toEqual([{ integrity_check: 'ok' }]);
     db.close();
   });

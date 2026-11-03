@@ -13,7 +13,7 @@ afterEach(() => roots.splice(0).forEach(p => fs.rmSync(p, { recursive: true, for
 describe('historical signed upgrade inputs', () => {
   it('freezes exactly the three old ARM signed releases, independently of new candidate provenance', () => {
     const data = loadHistoricalUpgradeApps()
-    expect(data.map((item: any) => item.version)).toEqual(['0.2.89', '0.2.91', '0.2.92'])
+    expect(data.map((item: any) => item.version)).toEqual(['0.2.89', '0.2.90', '0.2.91', '0.2.92', '0.2.93'])
     expect(data.every((item: any) => item.appIdentity.teamId === 'Z4U232GXH5' && item.appIdentity.architecture === 'arm64')).toBe(true)
     expect(data.every((item: any) => !('sourceCommit' in item.appIdentity))).toBe(true)
   })

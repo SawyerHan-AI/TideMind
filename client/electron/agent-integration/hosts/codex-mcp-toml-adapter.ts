@@ -47,6 +47,8 @@ interface TomlInspection {
 }
 
 interface CodexMcpMutationMetadata {
+  legacyRemovals?: {agentId:string; fragmentHash:string}[]
+
   canonicalPath: string
   containerPreconditionHash: string | null
   liveFragmentHash: string | null
@@ -140,6 +142,7 @@ export function createCodexMcpTomlHostAdapter(spec: CodexMcpTomlHostSpec): Agent
     if (action.kind === 'noop') return { ...base, mutations: [], diagnostics: [] }
 
     const metadata: CodexMcpMutationMetadata = {
+      ...(context.codexLegacySelection ? {legacyRemovals:context.codexLegacySelection.candidates.filter(candidate=>candidate.agentId !== context.agentId).map(candidate=>({agentId:candidate.agentId,fragmentHash:candidate.observations.find(item=>item.componentKey==='memory_tools')!.fragmentHash}))} : {}),
       canonicalPath: projection.file.canonicalPath,
       containerPreconditionHash: projection.file.containerHash,
       liveFragmentHash: projection.block?.hash ?? null,
@@ -226,7 +229,16 @@ export function createCodexMcpTomlHostAdapter(spec: CodexMcpTomlHostSpec): Agent
         throw new CodexMcpTomlConflictError('fragment_precondition_changed')
       }
 
-      const desiredDocument = mutateDocument(current, metadata)
+      const removals=(metadata.legacyRemovals ?? []).map(proof=>{
+        const legacyContext={...context,agentId:proof.agentId,activityGenerationToken:undefined}
+        const legacy=inspectToml(legacyContext)
+        if (proof.agentId === context.agentId || legacy.file.containerHash !== current.file.containerHash
+          || legacy.block?.hash !== proof.fragmentHash || !isExactAdoptableEntry(legacy.block.entry,legacyContext)) {
+          throw new CodexMcpTomlConflictError('legacy_selection_proof_changed')
+        }
+        return legacy.block
+      })
+      const desiredDocument = removals.length ? mutateSelectedDocument(current,metadata,removals) : mutateDocument(current, metadata)
       assertValidToml(desiredDocument, 'desired_codex_mcp_document_invalid')
       ensureSafeParentDirectoryWithinRoot(mutation.physicalTarget, context.installation.canonicalConfigRoot)
       writeRegularFileAtomicCas(mutation.physicalTarget, desiredDocument, {
@@ -235,7 +247,7 @@ export function createCodexMcpTomlHostAdapter(spec: CodexMcpTomlHostSpec): Agent
       })
       const after = inspectToml(context)
       const expectedHash = metadata.remove ? null : (mutation.desiredFragmentHash ?? null)
-      if ((after.block?.hash ?? null) !== expectedHash) {
+      if ((after.block?.hash ?? null) !== expectedHash || (metadata.legacyRemovals ?? []).some(proof=>inspectToml({...context,agentId:proof.agentId}).block)) {
         throw new CodexMcpTomlConflictError('fragment_read_back_mismatch')
       }
       return {
@@ -256,7 +268,8 @@ export function createCodexMcpTomlHostAdapter(spec: CodexMcpTomlHostSpec): Agent
         return {
           operationId: mutation.operationId,
           observed: after.block !== undefined,
-          matchesDesired: (after.block?.hash ?? null) === expectedHash,
+          matchesDesired: (after.block?.hash ?? null) === expectedHash
+            && !(metadata.legacyRemovals ?? []).some(proof=>inspectToml({...context,agentId:proof.agentId}).block),
           observedFragmentHash: after.block?.hash,
           visibility: after.block ? 'dedicated' : 'absent',
           diagnostics: [],
@@ -361,6 +374,20 @@ function inspectToml(context: AdapterOperationContext): TomlInspection {
   }
 }
 
+function mutateSelectedDocument(current: TomlInspection, metadata: CodexMcpMutationMetadata, removals: TomlTableBlock[]): string {
+  if (!current.block || !metadata.desiredBlock || metadata.remove) throw new CodexMcpTomlConflictError('invalid_legacy_selection')
+  const edits=[...removals.map(block=>({block,replacement:[] as string[]})),{block:current.block,replacement:metadata.desiredBlock.split('\n')}]
+    .sort((a,b)=>b.block.start-a.block.start)
+  const lines=current.source.split('\n')
+  let previousStart=lines.length
+  for(const {block,replacement} of edits){
+    if(block.end>previousStart)throw new CodexMcpTomlConflictError('overlapping_legacy_selectors')
+    lines.splice(block.start,block.end-block.start,...replacement)
+    previousStart=block.start
+  }
+  return normalizeDocument(lines.join('\n'))
+}
+
 function mutateDocument(current: TomlInspection, metadata: CodexMcpMutationMetadata): string {
   const lines = current.source.split('\n')
   if (metadata.remove) {
@@ -425,7 +452,7 @@ function desiredEntry(context: AdapterOperationContext): JsonValue {
     args: [context.runtime.mcpServerPath],
     env: {
       EB_AGENT_ID: context.agentId,
-      EB_HOST_VARIANT: context.installation.hostVariant,
+      ...(context.sharedIdentityBinding ? {} : { EB_HOST_VARIANT: context.installation.hostVariant }),
       ...(context.activityGenerationToken ? { EB_ACTIVITY_GENERATION_TOKEN: context.activityGenerationToken } : {}),
     },
   }
@@ -480,6 +507,9 @@ function parseMetadata(mutation: PlannedMutation): CodexMcpMutationMetadata {
     || typeof metadata.canonicalPath !== 'string'
     || !(metadata.containerPreconditionHash === null || typeof metadata.containerPreconditionHash === 'string')
     || !(metadata.liveFragmentHash === null || typeof metadata.liveFragmentHash === 'string')
+    || (metadata.legacyRemovals !== undefined && (!Array.isArray(metadata.legacyRemovals)
+      || metadata.legacyRemovals.some(item=>!item || typeof item.agentId !== 'string' || typeof item.fragmentHash !== 'string')
+      || new Set(metadata.legacyRemovals.map(item=>item.agentId)).size !== metadata.legacyRemovals.length))
     || typeof metadata.remove !== 'boolean'
     || (!metadata.remove && typeof metadata.desiredBlock !== 'string')) {
     throw new CodexMcpTomlConflictError('invalid_codex_mcp_mutation_metadata')

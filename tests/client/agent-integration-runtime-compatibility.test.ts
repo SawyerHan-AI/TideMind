@@ -1001,3 +1001,17 @@ describe('runtime source reasons in the UI', () => {
     }
   })
 })
+
+it('preserves Qwen 0.23.0 receipts and accepts only the captured 0.21.13 standalone source fingerprint', () => {
+  const qwen = entry('qwen-code-cli')
+  expect(qwen.acceptedDistributionArtifacts.filter(item => item.version === '0.23.0')).toHaveLength(4)
+  const captured = qwen.acceptedDistributionArtifacts.find(item => item.version === '0.21.13'
+    && item.architecture === 'arm64' && item.distributionId === 'cli:qwen-code-cli:standalone')!
+  expect(captured.portableArtifactFingerprint).toBe('89cb3ffa94a9667d35ca97fbf3a2f6587d394cabed40ca3ef2df77101d5f2454')
+  const source = { catalogId: 'qwen-code-cli' as const, detectedVersion: '0.21.13',
+    distributionId: captured.distributionId, packageProvenance: captured.packageProvenance,
+    architecture: 'arm64' as const, portableArtifactFingerprint: captured.portableArtifactFingerprint }
+  expect(evaluateRuntimeSource(source)).toMatchObject({ state: 'trusted', evidence: 'tested_sample' })
+  expect(evaluateRuntimeSource({ ...source, portableArtifactFingerprint: '0'.repeat(64) }))
+    .toMatchObject({ state: 'confirmation_required', reason: 'source_confirmation_required' })
+})

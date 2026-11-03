@@ -1,3 +1,6 @@
+import { codexFourToFivePlanProof } from './repository.js'
+import { assertFreshCodexConfig, freshCodexIdentityFingerprint, prospectiveFreshCodexIdentity } from './codex-fresh-identity'
+import { codexSelectionFingerprint, prospectiveCodexIdentity, type CodexLegacySelection } from './codex-legacy-selection'
 import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
@@ -54,7 +57,7 @@ import {
 } from './discovery.js'
 import { sha256Json } from './fingerprint.js'
 import { customMcpConfiguration } from './hosts/custom-mcp-configuration.js'
-import { CURRENT_CONSENT_POLICY_VERSION } from './consent.js'
+import { executionPlanHash, CURRENT_CONSENT_POLICY_VERSION } from './consent.js'
 import { canonicalizeInstallationIdentity, matchInstallationIdentity } from './identity.js'
 import {
   newInstallationNotification,
@@ -104,7 +107,6 @@ import {
   type CommandCategory,
   type MutationRisk,
   type JsonValue,
-  type QwenWorkMcpRequiredUserAction,
   type ManualFileRemovalRequiredUserAction,
   type StatusReason,
 } from './types.js'
@@ -134,6 +136,7 @@ export type AgentIntegrationExecutionPort = Pick<AgentIntegrationCoordinator, 'p
 
 export interface AgentIntegrationServiceDependencies {
   repository: AgentIntegrationRepository
+  inspectCodexLegacySelection?(installationId:string, selectedAgentId?:string): Promise<CodexLegacySelection>
   scanner: AgentIntegrationScannerPort
   execution: AgentIntegrationExecutionPort
   now?(): Date
@@ -192,6 +195,7 @@ export interface AgentIntegrationServiceDependencies {
   coworkGuidedRuntime?: { applicationDataDir: string }
   /** Read-only official persisted-state verifier for one exact frozen Codex action. */
   verifyCodexHookTrust?(input: {
+    activityGenerationToken?: string
     installation: CoordinatorInstallation
     hostVersion: string
     action: CodexHookTrustRequiredUserAction
@@ -211,6 +215,8 @@ export interface AgentIntegrationServiceDependencies {
 }
 
 interface CachedPlanItem {
+  /** Frozen batch scope; never inferred from an Agent ID alone. */
+  codexBatchKey?: string
   installation: CoordinatorInstallation
   desiredCapability: CapabilityLevel
   prepared: PreparedCoordinatorPlan
@@ -301,6 +307,7 @@ interface CachedCoworkPreflight {
 }
 
 interface CachedCodexTrustAction {
+  activityGenerationToken?: string
   hash: string
   expiresAtMs: number
   installation: CoordinatorInstallation
@@ -768,7 +775,7 @@ export class AgentIntegrationService {
   async reviewCodexHookTrust(installationId: string): Promise<AgentIntegrationCodexTrustReviewDto> {
     this.requireInteractiveManagementEnabled()
     const row = this.requireCodexManagedInstallation(installationId)
-    const installation = toCoordinatorInstallation(row)
+    const installation = toCoordinatorInstallation(row, this.dependencies.repository)
     const prepared = await this.dependencies.execution.preview({
       installation,
       operation: 'connect',
@@ -814,9 +821,11 @@ export class AgentIntegrationService {
       liveTrustProofFingerprint,
       artifactId,
       action,
+      activityGenerationToken: prepared.activityGenerationToken,
     })
     this.pruneCodexTrustActions()
     this.codexTrustActions.set(hash, {
+      activityGenerationToken: prepared.activityGenerationToken,
       hash,
       expiresAtMs,
       installation,
@@ -863,7 +872,7 @@ export class AgentIntegrationService {
     const cached = this.requireCodexTrustAction(actionHash)
     const row = this.requireCodexManagedInstallation(cached.installation.id)
     if (persistedProjectionSurfaceFingerprint(row) !== cached.installationSurfaceFingerprint
-      || sha256Json(toCoordinatorInstallation(row)) !== sha256Json(cached.installation)) {
+      || sha256Json(toCoordinatorInstallation(row, this.dependencies.repository)) !== sha256Json(cached.installation)) {
       throw new Error('Codex Installation identity changed; check trust again')
     }
     if (this.dependencies.attestInstallation
@@ -875,6 +884,7 @@ export class AgentIntegrationService {
       throw new Error('Codex lifecycle ownership changed; check trust again')
     }
     const verified = await this.dependencies.verifyCodexHookTrust?.({
+      activityGenerationToken: cached.activityGenerationToken,
       installation: cached.installation,
       hostVersion: cached.hostVersion,
       action: cached.action,
@@ -898,6 +908,7 @@ export class AgentIntegrationService {
       throw new Error('Codex distribution trust changed before receipt; check trust again')
     }
     const receiptVerification = await this.dependencies.verifyCodexHookTrust?.({
+      activityGenerationToken: cached.activityGenerationToken,
       installation: cached.installation,
       hostVersion: cached.hostVersion,
       action: cached.action,
@@ -931,9 +942,7 @@ export class AgentIntegrationService {
       verifiedAt: this.now().toISOString(),
     })
     this.codexTrustActions.delete(actionHash)
-    try {
-      await this.dependencies.afterCodexHookTrust?.()
-    } catch (error) {
+    const reportMaintenanceFailure = (error: unknown): void => {
       try {
         this.dependencies.repository.recordEvent({
           installationId: row.id,
@@ -953,6 +962,13 @@ export class AgentIntegrationService {
           error: safeErrorMessage(auditError),
         })
       }
+    }
+    // Trust confirmation is already durable. Request the existing maintenance
+    // pass, but do not make the IPC result wait for its global drain promise.
+    try {
+      void this.dependencies.afterCodexHookTrust?.().catch(reportMaintenanceFailure)
+    } catch (error) {
+      reportMaintenanceFailure(error)
     }
     return {
       installationId: row.id,
@@ -1080,6 +1096,19 @@ export class AgentIntegrationService {
     this.guidedRemovalActions.delete(actionHash)
     await this.dependencies.afterGuidedRemoval?.()
     return { installationId: row.id, runId: cached.runId, status: 'removal_confirmed', receiptId }
+  }
+
+  async reviewCodexLegacySelection(installationId: string) {
+    const selection=await this.dependencies.inspectCodexLegacySelection?.(installationId)
+    if(!selection) throw new Error('Codex legacy selection unavailable')
+    return {candidates:selection.candidates.map(item=>({agentId:item.agentId,name:item.name})),
+      installationIds:selection.members.map(item=>item.id)}
+  }
+
+  async previewCodexLegacySelection(installationId: string, selectedAgentId: string): Promise<AgentIntegrationPlanPreviewDto> {
+    const selection=await this.dependencies.inspectCodexLegacySelection?.(installationId,selectedAgentId)
+    if(!selection) throw new Error('Codex legacy selection unavailable')
+    return this.preview('connect',[installationId],true,new Set(),selection)
   }
 
   async previewConnect(
@@ -1851,11 +1880,29 @@ export class AgentIntegrationService {
       === persistedDistribution(existing).capabilityFingerprint
   }
 
+  private codexReconnectBatchKey(row: AgentInstallationRow): string | undefined {
+    if (row.family !== 'codex' || !['codex-cli','codex-desktop'].includes(row.host_variant)
+      || row.desired_state !== 'removed') return undefined
+    // resolveAgentIdentity also verifies realm/user/config/profile against the binding domain.
+    const identity = this.dependencies.repository.resolveAgentIdentity(row.id)
+    return identity.bindingId ? 'reconnect:' + sha256Json({bindingId:identity.bindingId,
+      generation:identity.bindingGeneration,canonical:identity.canonicalAgentId}) : undefined
+  }
+
+  private codexRecipeUpgradeBatchKey(row: AgentInstallationRow): string | undefined {
+    if(row.family!=='codex'||!['codex-cli','codex-desktop'].includes(row.host_variant)
+      ||row.desired_state!=='managed'||row.tombstoned_at)return undefined
+    const identity=this.dependencies.repository.resolveAgentIdentity(row.id)
+    return identity.bindingId?'recipe-4-to-5:'+sha256Json({bindingId:identity.bindingId,
+      generation:identity.bindingGeneration,canonical:identity.canonicalAgentId}):undefined
+  }
+
   private async preview(
     operation: 'connect' | 'disconnect',
     installationIds: readonly string[],
     includeTechnicalDetails: boolean,
     withoutLifecycle = new Set<string>(),
+    legacySelection?: CodexLegacySelection,
   ): Promise<AgentIntegrationPlanPreviewDto> {
     const ids = uniqueIds(installationIds)
     if (ids.length === 0) throw new Error('at least one Installation is required')
@@ -1866,7 +1913,7 @@ export class AgentIntegrationService {
       if (operation === 'connect' && row.desired_state === 'disabled') {
         throw new Error(`paused Installation must resume management instead of reconnecting: ${id}`)
       }
-      if (operation === 'connect' && row.status_reason === 'legacy_confirmation_required') {
+      if (operation === 'connect' && row.status_reason === 'legacy_confirmation_required' && !legacySelection) {
         throw new Error(`legacy connection ambiguity must be resolved before connecting: ${id}`)
       }
       if (operation === 'disconnect' && row.desired_state === 'removed') {
@@ -1875,7 +1922,18 @@ export class AgentIntegrationService {
       if (operation === 'disconnect' && row.desired_state === 'unmanaged') {
         throw new Error(`an unconnected Installation cannot be disconnected: ${id}`)
       }
-      const installation = toCoordinatorInstallation(row)
+      let freshIdentity = operation === 'connect' && !legacySelection
+        ? this.dependencies.repository.previewFreshCodexIdentity(row.id) : null
+      if (freshIdentity) assertFreshCodexConfig(freshIdentity,row.config_root!)
+      let codexBatchKey = freshIdentity ? 'fresh:' + freshIdentity.domainKey
+        : operation === 'connect' && !legacySelection ? this.codexReconnectBatchKey(row) : undefined
+      const recipeBatchKey = operation==='connect' && !freshIdentity && !legacySelection ? this.codexRecipeUpgradeBatchKey(row) : undefined
+      const earlierShared = items.find(item=>item.codexBatchKey!==undefined
+        && item.codexBatchKey===(codexBatchKey??recipeBatchKey))
+      if (freshIdentity && earlierShared) freshIdentity = this.dependencies.repository.previewFreshCodexIdentity(row.id,earlierShared.installation.agentId)
+      const installation = {...toCoordinatorInstallation(row, this.dependencies.repository),
+        ...(freshIdentity ? prospectiveFreshCodexIdentity(freshIdentity,row.id) : {}),
+        ...(legacySelection ? prospectiveCodexIdentity(legacySelection,row.id) : {})}
       if (operation === 'connect' && row.host_variant === 'custom-local-mcp'
         && row.profile_id.startsWith('custom-mcp:')) {
         const configFile = persistedComponentConfigFiles(row)?.memory_tools
@@ -1902,11 +1960,17 @@ export class AgentIntegrationService {
       if (withoutLifecycle.has(id) && !mayExcludeLifecycle) {
         throw new Error(`lifecycle cannot be excluded from the ${installation.identity.hostVariant} aggregate projection`)
       }
+      const disconnectComponents = operation === 'disconnect'
+        ? new Set(this.dependencies.repository.listComponents(row.id)
+            .filter(component => component.artifact_id != null || ['managed','disabled','removal_pending'].includes(String(component.desired_state)))
+            .map(component => String(component.component_key)))
+        : null
       const componentKeys = variant.components
         .filter(component => component.applicability === 'supported')
         .filter(component => component.actions.includes(operation === 'disconnect' ? 'disconnect' : 'connect'))
         .filter(component => implemented ? implemented.has(component.componentKey) : true)
         .filter(component => !(component.componentKey === 'lifecycle' && withoutLifecycle.has(id)))
+        .filter(component => !disconnectComponents || disconnectComponents.has(component.componentKey))
         .map(component => component.componentKey)
       const requestedCapability = operation === 'disconnect'
         ? 0
@@ -1922,6 +1986,9 @@ export class AgentIntegrationService {
         }
       }
       const request: PreviewRequest = {
+        ...(freshIdentity ? {codexFreshIdentity:freshIdentity} : {}),
+        ...(earlierShared ? {frozenActivityGenerationToken:earlierShared.prepared.activityGenerationToken} : {}),
+        ...(legacySelection ? {codexLegacySelection:legacySelection} : {}),
         installation,
         operation,
         componentKeys,
@@ -1938,6 +2005,9 @@ export class AgentIntegrationService {
         }
         throw error
       }
+      prepared = this.bindCompletedGenerationTakeovers(row.id, prepared)
+      if(recipeBatchKey && codexFourToFivePlanProof(prepared)) codexBatchKey=recipeBatchKey
+      else if(earlierShared?.codexBatchKey?.startsWith('recipe-4-to-5:')) throw new Error('Shared recipe upgrade changed during preview')
       const desiredCapability = operation === 'disconnect'
         ? 0
         : capabilityForComponents(prepared.componentKeys)
@@ -1946,6 +2016,7 @@ export class AgentIntegrationService {
         ? this.disconnectScopes(installation, prepared, maintenanceScopes)
         : []
       items.push({
+        codexBatchKey,
         installation,
         desiredCapability,
         prepared,
@@ -1995,6 +2066,8 @@ export class AgentIntegrationService {
     return {
       planHash: bundle.hash,
       operation: bundle.operation,
+      ...(bundle.items[0]?.prepared.codexLegacySelection ? {legacySelection:{selectedAgentId:bundle.items[0].prepared.codexLegacySelection.selectedAgentId,
+        removedAgentIds:bundle.items[0].prepared.codexLegacySelection.candidates.filter(candidate=>candidate.agentId !== bundle.items[0].prepared.codexLegacySelection!.selectedAgentId).map(candidate=>candidate.agentId)}} : {}),
       installations: [
         ...bundle.items.map(item => this.toPlanInstallationDto(item, includeTechnicalDetails)),
         ...(bundle.bridgeOnlyItems ?? []).map(item => bridgeOnlyPlanInstallationDto(item)),
@@ -2013,11 +2086,13 @@ export class AgentIntegrationService {
     // and preview so stale preconditions cannot be replayed from the renderer.
     this.plans.delete(bundle.hash)
     const results: AgentIntegrationApplyItemDto[] = []
+    const sharedBatchCarriers = new Map<string,{token:string;canonical:string;files:Map<string,string>;runId:string}>()
     for (const item of bundle.items) {
       try {
         onItemStarted?.(item.installation.id)
         const liveRow = this.requireInstallation(item.installation.id)
-        if (liveRow.health_state !== 'discovered' || liveRow.status_reason === 'conflict') {
+        if (liveRow.health_state !== 'discovered' || (liveRow.status_reason === 'conflict'
+          && !this.dependencies.repository.isCompletedGenerationTakeoverCurrent(liveRow.id, item.prepared))) {
           throw new Error('Installation is not authoritatively present; scan and preview again')
         }
         const ownershipOnly = item.trustMode === 'ownership_only'
@@ -2027,19 +2102,75 @@ export class AgentIntegrationService {
             : this.dependencies.canManageInstallation?.(liveRow) === false)) {
           throw new Error(`managed integration is no longer enabled for ${item.installation.identity.hostVariant}`)
         }
-        const liveInstallation = toCoordinatorInstallation(liveRow)
+        let freshIdentity = item.prepared.codexFreshIdentity
+        const batchCarrier = item.codexBatchKey ? sharedBatchCarriers.get(item.codexBatchKey) : undefined
+        let approvedBatchHash: string | undefined
+        if (freshIdentity) {
+          const liveFresh = this.dependencies.repository.previewFreshCodexIdentity(liveRow.id,freshIdentity.canonicalAgentId)
+          if (liveFresh) assertFreshCodexConfig(liveFresh,liveRow.config_root!)
+          if (!liveFresh && batchCarrier && batchCarrier.canonical===item.installation.agentId
+            && batchCarrier.token===item.prepared.activityGenerationToken
+            && this.dependencies.repository.coordinatorAgentIdentity(liveRow.id).sharedIdentityBinding===item.installation.sharedIdentityBinding) {
+            for (const [target,hash] of batchCarrier.files) {
+              if (fs.lstatSync(target).isSymbolicLink() || createHash('sha256').update(fs.readFileSync(target)).digest('hex')!==hash) throw new Error('Shared batch carrier changed after first connection')
+            }
+            approvedBatchHash=item.prepared.executionPlanHash
+            freshIdentity=undefined
+          } else if (!liveFresh || freshCodexIdentityFingerprint(liveFresh) !== freshCodexIdentityFingerprint(freshIdentity)) throw new Error('Fresh Codex identity changed after preview')
+        }
+        if (!freshIdentity && item.codexBatchKey?.startsWith('reconnect:')) {
+          if (this.codexReconnectBatchKey(liveRow) !== item.codexBatchKey) throw new Error('Shared reconnect binding changed after preview')
+          if (batchCarrier) {
+            if (batchCarrier.canonical !== item.installation.agentId
+              || batchCarrier.token !== item.prepared.activityGenerationToken) throw new Error('Shared reconnect generation changed after preview')
+            for (const [target,hash] of batchCarrier.files) {
+              if (fs.lstatSync(target).isSymbolicLink() || createHash('sha256').update(fs.readFileSync(target)).digest('hex') !== hash) throw new Error('Shared batch carrier changed after first connection')
+            }
+            approvedBatchHash = item.prepared.executionPlanHash
+          }
+        }
+        if(item.codexBatchKey?.startsWith('recipe-4-to-5:')){
+          if(this.codexRecipeUpgradeBatchKey(liveRow)!==item.codexBatchKey || !codexFourToFivePlanProof(item.prepared)) throw new Error('Shared recipe upgrade binding changed')
+          if(batchCarrier){
+            if(batchCarrier.canonical!==item.installation.agentId || batchCarrier.token!==item.prepared.activityGenerationToken
+              || !this.dependencies.repository.isCodexRecipeBatchCarrierCurrent(liveRow.id,batchCarrier.runId,item.prepared)) throw new Error('Shared recipe upgrade carrier is not complete')
+            for(const [target,hash] of batchCarrier.files)if(fs.lstatSync(target).isSymbolicLink()
+              ||createHash('sha256').update(fs.readFileSync(target)).digest('hex')!==hash)throw new Error('Shared batch carrier changed after first connection')
+            approvedBatchHash=item.prepared.executionPlanHash
+          }
+        }
+        const pending=item.prepared.codexLegacySelection
+        if(pending){
+          const observed=await this.dependencies.inspectCodexLegacySelection?.(liveRow.id,pending.selectedAgentId)
+          if(!observed || codexSelectionFingerprint(observed)!==codexSelectionFingerprint(pending)) throw new Error('Legacy selection changed after preview')
+        }
+        const liveInstallation = {...toCoordinatorInstallation(liveRow, this.dependencies.repository),...(pending ? prospectiveCodexIdentity(pending,liveRow.id) : {}),...(freshIdentity ? prospectiveFreshCodexIdentity(freshIdentity,liveRow.id) : {})}
         if (sha256Json(liveInstallation) !== sha256Json(item.installation)) {
           throw new Error('Installation identity changed after preview; scan and preview again')
         }
-        const fresh = await this.dependencies.execution.preview({
+        const fresh = this.bindCompletedGenerationTakeovers(liveRow.id, await this.dependencies.execution.preview({
+          ...(pending ? {codexLegacySelection:pending} : {}),
+          ...(freshIdentity ? {codexFreshIdentity:freshIdentity} : {}),
           installation: liveInstallation,
           operation: item.prepared.operation,
           componentKeys: item.prepared.componentKeys,
           desiredCapability: item.desiredCapability,
           frozenActivityGenerationToken: item.prepared.activityGenerationToken,
+          frozenOperationId: item.prepared.operationId,
           ...(ownershipOnly ? { trustMode: 'ownership_only' as const } : {}),
-        })
-        if (preparedLiveEvidence(fresh) !== preparedLiveEvidence(item.prepared)) {
+        }))
+        if (approvedBatchHash) {
+          if (fresh.adapterPlan.mutations.length !== 0
+            || fresh.componentKeys.length!==item.prepared.componentKeys.length
+            || fresh.componentKeys.some(key=>!item.prepared.componentKeys.includes(key))
+            || fresh.adapterPlan.diagnostics.length!==0
+            || item.prepared.adapterPlan.mutations.some(mutation=>!fresh.inspection.components.some(observed=>
+              observed.componentKey===mutation.componentKey && observed.observedTarget===mutation.physicalTarget
+              && observed.observedFragmentHash===mutation.desiredFragmentHash))) throw new Error('Shared batch connection no longer matches approved desired state')
+          const executionPlan={...fresh.executionPlan,sharedBatchApprovalHash:approvedBatchHash}
+          item.prepared={...fresh,executionPlan,executionPlanHash:executionPlanHash(executionPlan)}
+          item.maintenanceScopes=this.noopMaintenanceScopes(liveInstallation,item.prepared)
+        } else if (preparedLiveEvidence(fresh) !== preparedLiveEvidence(item.prepared)) {
           throw new Error('Installation configuration changed after preview; preview again')
         }
         const expectedProof = frozenPlanLiveTrustProofFingerprint(item.prepared)
@@ -2070,6 +2201,7 @@ export class AgentIntegrationService {
                 taskId: applyTaskId,
                 installationId: item.installation.id,
                 executionPlanHash: item.prepared.executionPlanHash,
+                ...(approvedBatchHash ? {approvedExecutionPlanHash:approvedBatchHash} : {}),
               }
             : undefined,
         }
@@ -2086,6 +2218,17 @@ export class AgentIntegrationService {
           )) : undefined,
           item.prepared.adapterPlan.requiredUserActionDetails?.flatMap(action => userActionDto(action, this.homeDir)),
         )
+        if (item.codexBatchKey && ['awaiting_verification','committed'].includes(result.status)
+          && bundle.items.some(peer => peer !== item
+            && peer.codexBatchKey === item.codexBatchKey
+            && !results.some(completed => completed.installationId === peer.installation.id))) {
+          const files=new Map<string,string>()
+          for(const mutation of item.prepared.adapterPlan.mutations) if(mutation.physicalTarget) {
+            files.set(mutation.physicalTarget,createHash('sha256').update(fs.readFileSync(mutation.physicalTarget)).digest('hex'))
+          }
+          sharedBatchCarriers.set(item.codexBatchKey,{canonical:item.installation.agentId,
+            token:item.prepared.activityGenerationToken!,files,runId:result.runId!})
+        }
         results.push(result)
         onResult?.(result)
       } catch (error) {
@@ -2184,6 +2327,13 @@ export class AgentIntegrationService {
     return id
   }
 
+  private bindCompletedGenerationTakeovers(installationId: string, plan: PreparedCoordinatorPlan): PreparedCoordinatorPlan {
+    const completedGenerationTakeovers = this.dependencies.repository.completedGenerationTakeovers(installationId, plan)
+    if (!completedGenerationTakeovers.length) return plan
+    const executionPlan = { ...plan.executionPlan, completedGenerationTakeovers }
+    return { ...plan, executionPlan, executionPlanHash: executionPlanHash(executionPlan) }
+  }
+
   private connectableComponentKeys(hostVariant: CatalogId): ComponentKey[] {
     const variant = getCatalogVariant(hostVariant)
     const implemented = this.implementedComponents?.get(hostVariant)
@@ -2229,7 +2379,7 @@ export class AgentIntegrationService {
     action: CodexHookTrustRequiredUserAction,
   ): void {
     if (action.installationId !== row.id
-      || action.agentId !== row.agent_id
+      || action.agentId !== this.dependencies.repository.resolveAgentIdentity(row.id).canonicalAgentId
       || action.hostVariant !== row.host_variant
       || action.hostVersion !== row.detected_version
       || action.sourcePathHash !== sha256String(path.resolve(action.sourcePath))
@@ -2458,7 +2608,7 @@ export class AgentIntegrationService {
   private applyBridgeOnlyDisconnect(item: BridgeOnlyDisconnectItem): AgentIntegrationApplyItemDto {
     const liveRow = this.requireInstallation(item.installation.id)
     if (persistedProjectionSurfaceFingerprint(liveRow) !== item.installationSurfaceFingerprint
-      || sha256Json(toCoordinatorInstallation(liveRow)) !== sha256Json(item.installation)) {
+      || sha256Json(toCoordinatorInstallation(liveRow, this.dependencies.repository)) !== sha256Json(item.installation)) {
       throw new Error('Installation identity changed after preview; scan and preview again')
     }
     if (!this.ownershipOnlyDisconnectEligible(liveRow)) {
@@ -2621,6 +2771,7 @@ export class AgentIntegrationService {
       lastRealUseAt: historicalRecord
         ? null
         : this.dependencies.repository.latestVerifiedHostActivityAt(row.id, this.now().toISOString()),
+      sharedConnection: historicalRecord ? undefined : this.dependencies.repository.sharedConnectionStatus(row.id),
       deactivation: installationDeactivation(row),
       sourceVerification: row.host_variant === 'custom-local-mcp'
         ? { state: 'user_managed', evidence: 'none', checkedAt: null }
@@ -2689,11 +2840,12 @@ export class AgentIntegrationService {
     maintenanceScopes: readonly NoopMaintenanceScope[],
   ): DisconnectArtifactScope[] {
     const targets = [
-      ...prepared.adapterPlan.mutations.map(mutation => ({
-        componentKey: mutation.componentKey,
-        targetPath: mutation.physicalTarget,
-        ownershipKey: mutation.ownershipKey,
-      })),
+      ...prepared.adapterPlan.mutations.flatMap(mutation =>
+        (mutation.coveredComponentKeys ?? [mutation.componentKey]).map(componentKey => ({
+          componentKey,
+          targetPath: mutation.physicalTarget,
+          ownershipKey: mutation.ownershipKey,
+        }))),
       ...maintenanceScopes.map(scope => ({
         componentKey: scope.componentKey,
         targetPath: scope.targetPath,
@@ -2716,7 +2868,7 @@ export class AgentIntegrationService {
     installation: CoordinatorInstallation,
     prepared: PreparedCoordinatorPlan,
   ): NoopMaintenanceScope[] {
-    const mutated = new Set(prepared.executionPlan.mutations.map(mutation => mutation.componentKey))
+    const mutated = new Set(prepared.executionPlan.mutations.flatMap(mutation => mutation.coveredComponentKeys ?? [mutation.componentKey]))
     const noMutationComponents = prepared.componentKeys.filter(componentKey => !mutated.has(componentKey))
     const ownedScopes = this.dependencies.repository.listOwnedArtifactConsentScopes(
       installation.id,
@@ -2805,7 +2957,7 @@ export function isCustomInstallationManagementContractValid(
   )
 }
 
-function toCoordinatorInstallation(row: AgentInstallationRow): CoordinatorInstallation {
+function toCoordinatorInstallation(row: AgentInstallationRow, repository: AgentIntegrationRepository): CoordinatorInstallation {
   if (!row.agent_id) throw new Error(`Installation has no persisted Agent identity: ${row.id}`)
   if (!row.config_root) throw new Error(`Installation has no canonical config root: ${row.id}`)
   if (row.runtime_realm !== 'local_macos' && row.runtime_realm !== 'wsl' && row.runtime_realm !== 'ssh' && row.runtime_realm !== 'dev_container') {
@@ -2815,7 +2967,7 @@ function toCoordinatorInstallation(row: AgentInstallationRow): CoordinatorInstal
     id: row.id,
     displayName: row.display_alias ?? row.display_name,
     desiredState: row.desired_state,
-    agentId: row.agent_id,
+    ...repository.coordinatorAgentIdentity(row.id),
     identity: {
       runtimeRealm: row.runtime_realm,
       osUserIdentity: row.os_user_identity ?? 'local-user',
@@ -3040,6 +3192,7 @@ function preparedLiveEvidence(plan: PreparedCoordinatorPlan): string {
       liveTrustProofFingerprint: frozenPlanLiveTrustProofFingerprint(plan),
       sharedDomainBinding: frozenPlanSharedDomainBinding(plan),
       ownershipOnlyDisconnectBinding: frozenPlanOwnershipOnlyBinding(plan),
+      completedGenerationTakeovers: plan.executionPlan.completedGenerationTakeovers,
     },
   })
 }
@@ -3356,7 +3509,7 @@ function recoveredApplyResult(run: ApplyTaskRunRow, homeDir: string): AgentInteg
       ...(run.failure_code ? { reason: run.failure_code } : {}),
     }
   }
-  if (run.state === 'cancelled' && run.failure_code === 'superseded_by_disconnect') {
+  if (run.state === 'cancelled' && ['superseded_by_disconnect','superseded_by_confirmed_generation'].includes(run.failure_code ?? '')) {
     return {
       installationId: run.installation_id,
       status: 'superseded',

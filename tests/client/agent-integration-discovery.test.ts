@@ -203,6 +203,10 @@ function fakeRuntime(): FakeRuntime {
     async inspectAppSignature(appBundleRealpath) {
       return fs.signatures.get(appBundleRealpath) ?? { valid: false }
     },
+    async inspectDesktopSignatureSnapshot(appBundleRealpath) {
+      const signature=fs.signatures.get(appBundleRealpath)
+      return signature?{...signature,verificationBoundary:'desktop_snapshot'}:{valid:false}
+    },
     async inspectExecutableArchitecture() {
       return 'arm64'
     },
@@ -1263,7 +1267,7 @@ describe('P0 local Agent discovery', () => {
       executable: 'Old',
       signature: { valid: true, identifier: 'dev.zcode.app', teamIdentifier: '8A5X4JJ39T' },
     })
-    runtime.dependencies.inspectAppSignature = async (_targetPath, options) => {
+    runtime.dependencies.inspectDesktopSignatureSnapshot = async (_targetPath, options) => {
       if (scenario === 'old_to_new_main') {
         const nextPlist = [
           '<plist><dict>',
@@ -1282,12 +1286,11 @@ describe('P0 local Agent discovery', () => {
         runtime.fs.fileInodes.set(infoPath, 'replacement-info-inode')
         runtime.fs.fileInodes.set(oldExecutable, 'replacement-executable-inode')
       }
-      await options.beforeFinalVerification?.()
       return {
         valid: true,
         identifier: 'dev.zcode.app',
         teamIdentifier: '8A5X4JJ39T',
-        verificationBoundary: 'strict_final',
+        verificationBoundary: 'desktop_snapshot',
       }
     }
 
@@ -1843,9 +1846,9 @@ describe('P0 local Agent discovery', () => {
         teamIdentifier: '8A5X4JJ39T',
       },
     })
-    const inspect = runtime.dependencies.inspectAppSignature!
-    runtime.dependencies.inspectAppSignature = async (targetPath, options) => {
-      // Two strict passes plus receipt reads must not share one per-pass deadline.
+    const inspect = runtime.dependencies.inspectDesktopSignatureSnapshot!
+    runtime.dependencies.inspectDesktopSignatureSnapshot = async (targetPath, options) => {
+      // Desktop deep verification has its own 60s budget, independent of metadata reads.
       await new Promise(resolve => setTimeout(resolve, 120))
       return inspect(targetPath, options)
     }

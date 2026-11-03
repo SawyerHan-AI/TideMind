@@ -1,3 +1,4 @@
+import { getSharedAgentConsumers, type SharedAgentConsumers } from './db/agent-identity-binding.js';
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 
@@ -71,6 +72,8 @@ export function evaluateBridgeAdmission(
   if (!agentId || !token) return { allowed: true };
   let row: GuardRow | undefined;
   try {
+    const shared = getSharedAgentConsumers(db, agentId);
+    if (shared) return evaluateSharedBridgeAdmission(db, shared, token, input.componentKey ?? 'memory_tools');
     row = readGuardRow(db, agentId);
   } catch {
     // Locked, closed or malformed managed ledgers cannot prove admission.
@@ -119,3 +122,43 @@ export function evaluateBridgeAdmission(
 
 export const BRIDGE_REJECTED_MESSAGE =
   'Tide Mind 已停止为此 Agent 提供记忆（连接已断开、桥接已停止或宿主来源未通过确认）。请在宿主中移除 Tide Mind 组件，或在 Tide Mind 中重新连接。';
+
+
+/** Admit the actual shared carrier, not whichever Installation owns an old ID. */
+function evaluateSharedBridgeAdmission(db: Database.Database, shared: SharedAgentConsumers, token: string, componentKey: 'memory_tools' | 'lifecycle'): BridgeAdmission {
+  const canonical = db.prepare('SELECT a.archived FROM agent_identity_bindings b JOIN agents a ON a.id=b.canonical_agent_id WHERE b.id=?').get(shared.bindingId) as { archived:number } | undefined;
+  if (!canonical || canonical.archived !== 0) return { allowed: false, reason: 'installation_removed' };
+  const active = shared.consumers.filter(row => row.desired_state !== 'removed' && !row.tombstoned_at);
+  if (!active.length) return { allowed: false, reason: 'installation_removed' };
+  const hash = createHash('sha256').update(JSON.stringify(token)).digest('hex');
+  for (const member of active) {
+    const row = readGuardRow(db, member.agent_id!);
+    if (!row || row.bridge_state === 'stopped' || (row.eligibility_reason && DEFINITIVE_SOURCE_REJECTIONS.has(row.eligibility_reason))) continue;
+    const artifacts = db.prepare(`SELECT a.id, a.owned_fragment_hash FROM artifact_consumers c
+      JOIN managed_artifacts a ON a.id=c.artifact_id
+      JOIN installation_components component ON component.installation_id=c.installation_id
+        AND component.component_key=c.component_key AND component.artifact_id=a.id
+      JOIN agent_consents consent ON consent.id=c.consent_envelope_id AND consent.installation_id=c.installation_id
+      WHERE c.installation_id=? AND c.component_key=? AND c.state='active' AND c.tombstoned_at IS NULL
+        AND c.desired_state IN ('managed','disabled') AND component.desired_state IN ('managed','disabled')
+        AND component.tombstoned_at IS NULL AND consent.status='active'
+        AND component.consent_envelope_id=consent.id
+        AND consent.id=(SELECT consent_envelope_id FROM agent_installations WHERE id=c.installation_id)
+        AND a.state IN ('healthy','paused')`).all(member.id, componentKey) as Array<{id:string;owned_fragment_hash:string|null}>;
+    for (const artifact of artifacts) {
+      // Read the latest committed physical write across ALL consumers. Filtering
+      // by member first would incorrectly resurrect an older shared token.
+      const carrier = db.prepare(`SELECT p.after_hash, r.installation_id, r.operation_type, r.state AS run_state, r.failure_code,
+          json_extract(r.prepared_plan_json,'$.activityGenerationToken') AS token,
+          json_extract(r.prepared_plan_json,'$.executionPlan.activityGenerationTokenHash') AS hash
+        FROM projection_mutations p JOIN reconcile_runs r ON r.id=p.run_id
+        WHERE p.artifact_id=? AND p.state='committed' AND p.idempotency_strategy != 'consumer_detach_only'
+        ORDER BY p.committed_at DESC, p.rowid DESC LIMIT 1`).get(artifact.id) as
+        {after_hash:string|null;installation_id:string;operation_type:string;run_state:string;failure_code:string|null;token:string;hash:string}|undefined;
+      if (carrier && carrier.operation_type !== 'disconnect' && (['applied_unverified','verified','committed'].includes(carrier.run_state) || (carrier.run_state === 'cancelled' && ['superseded_by_shared_disconnect','superseded_by_same_generation_connect'].includes(carrier.failure_code ?? ''))) && carrier.after_hash !== null
+        && carrier.after_hash === artifact.owned_fragment_hash && carrier.token === token && carrier.hash === hash
+        && shared.consumers.some(c => c.id === carrier.installation_id)) return { allowed: true };
+    }
+  }
+  return { allowed: false, reason: 'activity_generation_mismatch' };
+}

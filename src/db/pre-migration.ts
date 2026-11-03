@@ -1,3 +1,4 @@
+import { assertSupportedDatabaseSchema } from './schema-compatibility.js';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -73,17 +74,6 @@ export function backupDbIfNeeded(dbPath: string, routeConfigPath?: string, conne
 }
 
 
-/** Return the on-disk schema without running any repair or creating tables. */
-function readVersion(db: Database.Database): number {
-  try {
-    const row = db.prepare("SELECT value FROM metadata WHERE key = 'schema_version'").get() as { value: string } | undefined;
-    return row ? Number(row.value) : -1;
-  } catch (error) {
-    if (error instanceof Error && /no such table: metadata/.test(error.message)) return -1;
-    throw error;
-  }
-}
-
 /**
  * Shared daemon/Electron preflight. SQLite itself owns the exclusion boundary,
  * including older clients that do not know any new process/lockfile protocol.
@@ -94,7 +84,10 @@ function readVersion(db: Database.Database): number {
  */
 export function migrateExistingDatabaseIfNeeded(dbPath: string, routeConfigPath?: string): void {
   if (!fs.existsSync(dbPath)) return;
-  const db = new Database(dbPath);
+  const probe = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try { assertSupportedDatabaseSchema(probe, CURRENT_SCHEMA_VERSION, true); }
+  finally { probe.close(); }
+  const db = new Database(dbPath, { fileMustExist: true });
   let restoreMode: string | null = null;
   let completed = false;
   let failure: unknown;
@@ -108,7 +101,7 @@ export function migrateExistingDatabaseIfNeeded(dbPath: string, routeConfigPath?
     }
   };
   try {
-    const version = readVersion(db);
+    const version = assertSupportedDatabaseSchema(db, CURRENT_SCHEMA_VERSION, true);
     if (Number.isFinite(version) && version >= CURRENT_SCHEMA_VERSION) return;
     db.pragma('busy_timeout = 1000');
     const originalMode = String(db.pragma('journal_mode', { simple: true })).toLowerCase();
@@ -132,12 +125,12 @@ export function migrateExistingDatabaseIfNeeded(dbPath: string, routeConfigPath?
       throw error;
     }
     // A competing upgrade may have completed before our exclusive acquisition.
-    const lockedVersion = readVersion(db);
+    const lockedVersion = assertSupportedDatabaseSchema(db, CURRENT_SCHEMA_VERSION, true);
     if (!Number.isFinite(lockedVersion) || lockedVersion < CURRENT_SCHEMA_VERSION) {
       // The same connection must create the snapshot: another connection would
       // correctly be blocked by the retained exclusive lock.
       backupDbIfNeeded(dbPath, routeConfigPath, db);
-      ensureSchema(db);
+      ensureSchema(db, lockedVersion === 41);
     }
     completed = true;
   } catch (error) {

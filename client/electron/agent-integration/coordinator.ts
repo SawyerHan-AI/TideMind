@@ -1,3 +1,6 @@
+import { DesktopSourceVerificationUnavailable } from './mac-code-signature'
+import { freshCodexIdentityFingerprint, type CodexFreshIdentityPlan } from './codex-fresh-identity'
+import { codexSelectionFingerprint, selectedCodexBaselines, prospectiveCodexIdentity, type CodexLegacySelection } from './codex-legacy-selection'
 import {
   executionPlanHash,
   checkPlanAgainstConsent,
@@ -35,6 +38,8 @@ export interface CoordinatorInstallation {
   identity: InstallationIdentity
   /** Stable, persisted EB_AGENT_ID. Never derive this from discovery metadata. */
   agentId: string
+  installationAgentId?: string
+  sharedIdentityBinding?: string
 }
 
 export interface InstallationControlState {
@@ -44,6 +49,8 @@ export interface InstallationControlState {
   statusReason: string | null
   installKey: string
   agentId: string
+  installationAgentId?: string
+  sharedIdentityBinding?: string
   hostVariant: CatalogId
   consentId: string | null
 }
@@ -91,11 +98,14 @@ export interface PrepareExecutionInput {
     taskId: string
     installationId: string
     executionPlanHash: string
+    approvedExecutionPlanHash?: string
   }
   createdAt: string
 }
 
 export interface VerifiedRecoverableExecution {
+  codexLegacySelectionReadBack?: {installation:CoordinatorInstallation;preparedPlan:PreparedCoordinatorPlan}
+
   runId: string
   runState: 'verified'
   installationId: string
@@ -140,12 +150,19 @@ export interface WriterFenceLease extends WriterFencePort {
 }
 
 export interface CoordinatorRepositoryPort extends IntegrationEventRepositoryPort {
+  pendingAppliedRemovalCandidates?(runId: string): readonly {mutationId:string;snapshot:string}[] | Promise<readonly {mutationId:string;snapshot:string}[]>
+  reconcileAppliedRemovalCandidates?(runId: string, expected: readonly {mutationId:string;snapshot:string}[], at: string): boolean | Promise<boolean>
+  recipeUpgradePredecessorTrust?(runId: string, installationId: string, planHash: string): {
+    installation: CoordinatorInstallation; preparedPlan: PreparedCoordinatorPlan
+  } | null | Promise<{ installation: CoordinatorInstallation; preparedPlan: PreparedCoordinatorPlan } | null>
+  isCompletedGenerationTakeoverCurrent?(installationId: string, plan: PreparedCoordinatorPlan): boolean | Promise<boolean>
   getInstallationControl(installationId: string): InstallationControlState | null | Promise<InstallationControlState | null>
   listOwnedArtifactBaselines(installationId: string): readonly OwnedArtifactBaseline[] | Promise<readonly OwnedArtifactBaseline[]>
   getInstallationHostVersion(installationId: string): string | null | Promise<string | null>
   getCurrentActivityGenerationToken?(
     installationId: string,
     componentKeys: readonly ComponentKey[],
+    forDisconnect?: boolean,
   ): string | null | Promise<string | null>
   getConsent(consentId: string): ConsentEnvelope | null | Promise<ConsentEnvelope | null>
   setInstallationReconcileState(
@@ -359,6 +376,11 @@ export interface RecoveryOptions {
 }
 
 export interface PreviewRequest {
+  /** Internal re-preview only; never supplied by renderer input. */
+  frozenOperationId?: string
+  codexFreshIdentity?: CodexFreshIdentityPlan
+  codexLegacySelection?: CodexLegacySelection
+
   installation: CoordinatorInstallation
   operation: PlanOperation
   componentKeys: readonly ComponentKey[]
@@ -410,7 +432,9 @@ export class AgentIntegrationCoordinator {
         }
       }
     }
-    const ownedArtifacts = await this.dependencies.repository.listOwnedArtifactBaselines(request.installation.id)
+    const ownedArtifacts = request.codexLegacySelection
+      ? selectedCodexBaselines(request.codexLegacySelection, request.installation.id)
+      : await this.dependencies.repository.listOwnedArtifactBaselines(request.codexFreshIdentity?.carrierInstallationId ?? request.installation.id)
     const verificationDependencies = request.operation === 'repair'
       && request.componentKeys.length === 1 && request.componentKeys[0] === 'instruction'
       ? [...(adapter.verificationDependencies?.instruction ?? [])]
@@ -422,11 +446,16 @@ export class AgentIntegrationCoordinator {
     }
     const requestedComponents = [...new Set([...request.componentKeys, ...verificationDependencies])]
     const persistedHostVersion = await this.dependencies.repository.getInstallationHostVersion(request.installation.id)
-    const operationId = this.dependencies.ids.next('operation')
-    const currentActivityToken = request.installation.desiredState === 'managed'
+    const frozenOperationId = request.frozenOperationId?.trim()
+    if (request.frozenOperationId !== undefined && !frozenOperationId) throw new Error('Frozen operation ID is invalid')
+    const operationId = frozenOperationId ?? this.dependencies.ids.next('operation')
+    const currentActivityToken = (request.installation.desiredState === 'managed' || request.installation.sharedIdentityBinding)
       ? await this.dependencies.repository.getCurrentActivityGenerationToken?.(
-          request.installation.id,
-          verificationDependencies.length > 0 ? verificationDependencies : request.componentKeys,
+          request.codexFreshIdentity?.carrierInstallationId ?? request.installation.id,
+          request.installation.sharedIdentityBinding
+            ? [...new Set([...request.componentKeys, ...verificationDependencies])]
+            : verificationDependencies.length > 0 ? verificationDependencies : request.componentKeys,
+          request.operation === 'disconnect',
         ) ?? null
       : null
     const frozenActivityGenerationToken = request.frozenActivityGenerationToken?.trim()
@@ -440,12 +469,13 @@ export class AgentIntegrationCoordinator {
       persistedHostVersion ?? null,
       activityGenerationToken,
     )
+    if (request.codexLegacySelection) context.codexLegacySelection = request.codexLegacySelection
     const observedInspection = await adapter.inspect(context)
     if (observedInspection.detectedVersion !== undefined
       && observedInspection.detectedVersion !== persistedHostVersion) {
       throw new Error('Installation host version changed during preview')
     }
-    const inspection = observedInspection.detectedVersion === undefined
+    let inspection = observedInspection.detectedVersion === undefined
       ? { ...observedInspection, detectedVersion: persistedHostVersion ?? undefined }
       : observedInspection
     const implementedComponents = new Set(inspection.components.map(component => component.componentKey))
@@ -488,6 +518,16 @@ export class AgentIntegrationCoordinator {
         persistedHostVersion ?? null,
         activityGenerationToken,
       )
+      // Inspection details may include desired generation-derived metadata
+      // (Claude plugin version). Freeze the same context that re-preview uses.
+      const refreshedInspection = await adapter.inspect(context)
+      if (refreshedInspection.detectedVersion !== undefined
+        && refreshedInspection.detectedVersion !== persistedHostVersion) {
+        throw new Error('Installation host version changed during preview')
+      }
+      inspection = refreshedInspection.detectedVersion === undefined
+        ? { ...refreshedInspection, detectedVersion: persistedHostVersion ?? undefined }
+        : refreshedInspection
       adapterPlan = await adapter.plan(context, {
         desiredCapability: request.desiredCapability,
         desiredComponents: componentKeys,
@@ -501,7 +541,7 @@ export class AgentIntegrationCoordinator {
     // Otherwise the whole atomic group is left out, the last known content stays,
     // and the diagnostic names the blocking consumer.
     let sharedDomainBinding: string | null = null
-    if (request.operation !== 'disconnect' && this.dependencies.sharedDomainConsumers) {
+    if (!request.codexLegacySelection && request.operation !== 'disconnect' && this.dependencies.sharedDomainConsumers) {
       const snapshot = await this.sharedDomainSnapshot(request.installation, adapterPlan.mutations)
       if (snapshot.blocked.size > 0) {
         const blockedComponents = new Set(adapterPlan.mutations
@@ -578,7 +618,7 @@ export class AgentIntegrationCoordinator {
     }
     const liveTrustProofFingerprint = ownershipOnly
       ? null
-      : await this.dependencies.liveTrustProof?.(request.installation)
+      : await this.dependencies.liveTrustProof?.((request.codexLegacySelection || request.codexFreshIdentity) ? {...request.installation,agentId:request.installation.installationAgentId!,installationAgentId:undefined,sharedIdentityBinding:undefined} : request.installation)
     if (!ownershipOnly && this.dependencies.liveTrustProof && !liveTrustProofFingerprint) {
       throw new Error('Installation live distribution trust could not be proved')
     }
@@ -586,11 +626,14 @@ export class AgentIntegrationCoordinator {
     const ownershipOnlyDisconnectBinding = ownershipOnly
       ? ownershipOnlyBindingFor(request.installation, surfaceFingerprint ?? null, ownedArtifacts, inspection, adapterPlan.mutations)
       : null
-    if (!surfaceFingerprint && !liveTrustProofFingerprint && !sharedDomainBinding && !ownershipOnlyDisconnectBinding) {
+    if (!surfaceFingerprint && !liveTrustProofFingerprint && !sharedDomainBinding && !ownershipOnlyDisconnectBinding && !request.installation.sharedIdentityBinding) {
       return prepared
     }
     const executionPlan = {
       ...prepared.executionPlan,
+      ...(request.codexFreshIdentity ? {codexFreshIdentityHash:freshCodexIdentityFingerprint(request.codexFreshIdentity)} : {}),
+      ...(request.codexLegacySelection ? {codexLegacySelectionHash:codexSelectionFingerprint(request.codexLegacySelection)} : {}),
+      ...(request.installation.sharedIdentityBinding ? { sharedIdentityBinding: request.installation.sharedIdentityBinding } : {}),
       ...(surfaceFingerprint ? { installationSurfaceFingerprint: surfaceFingerprint } : {}),
       ...(liveTrustProofFingerprint ? { liveTrustProofFingerprint } : {}),
       ...(sharedDomainBinding ? { sharedDomainBinding } : {}),
@@ -598,6 +641,9 @@ export class AgentIntegrationCoordinator {
     }
     return {
       ...prepared,
+      operationId,
+      ...(request.codexFreshIdentity ? {codexFreshIdentity:request.codexFreshIdentity} : {}),
+      ...(request.codexLegacySelection ? {codexLegacySelection:request.codexLegacySelection} : {}),
       executionPlan,
       executionPlanHash: executionPlanHash(executionPlan),
     }
@@ -613,11 +659,25 @@ export class AgentIntegrationCoordinator {
     assertPreparedPlan(request.installation, request.preparedPlan)
     const control = await this.dependencies.repository.getInstallationControl(request.installation.id)
     if (!control) throw new Error(`unknown Installation: ${request.installation.id}`)
-    assertControlIdentity(request.installation, control)
+    if (request.preparedPlan.codexLegacySelection) {
+      const selection=request.preparedPlan.codexLegacySelection
+      if (codexSelectionFingerprint(selection) !== request.preparedPlan.executionPlan.codexLegacySelectionHash) throw new Error('Legacy selection hash changed')
+      const original=selection.members.find(row=>row.id === request.installation.id)
+      if (!original || control.agentId !== original.agent_id || control.sharedIdentityBinding || control.desiredState !== 'unmanaged') throw new Error('Legacy selection identity changed')
+      assertControlIdentity({...request.installation,agentId:original.agent_id!,installationAgentId:undefined,sharedIdentityBinding:undefined},control)
+    } else if (request.preparedPlan.codexFreshIdentity) {
+      const pending = request.preparedPlan.codexFreshIdentity
+      if (freshCodexIdentityFingerprint(pending) !== request.preparedPlan.executionPlan.codexFreshIdentityHash) throw new Error('Fresh Codex identity hash changed')
+      assertControlIdentity({...request.installation,agentId:request.installation.installationAgentId!,installationAgentId:undefined,sharedIdentityBinding:undefined},control)
+    } else assertControlIdentity(request.installation, control)
     if (!await this.currentHostVersionMatches(request.installation.id, request.preparedPlan)) {
       return this.awaitConsent(request, ['host_version_changed'], control)
     }
-    if (control.healthState !== 'discovered' || control.statusReason === 'conflict') {
+    const generationTakeovers = request.preparedPlan.executionPlan.completedGenerationTakeovers
+    const confirmedGeneration = generationTakeovers?.length
+      && await this.dependencies.repository.isCompletedGenerationTakeoverCurrent?.(request.installation.id, request.preparedPlan) === true
+    if (generationTakeovers?.length && !confirmedGeneration) throw new Error('Completed generation takeover changed before apply')
+    if (control.healthState !== 'discovered' || (control.statusReason === 'conflict' && !confirmedGeneration)) {
       return { status: 'paused', reason: 'host_not_authoritatively_present' }
     }
     if (control.desiredState === 'disabled' && request.preparedPlan.operation !== 'disconnect') {
@@ -642,7 +702,8 @@ export class AgentIntegrationCoordinator {
       supplementalConsentClaims(
         request.installation,
         request.preparedPlan,
-        await this.dependencies.repository.listOwnedArtifactBaselines(request.installation.id),
+        request.preparedPlan.codexLegacySelection ? selectedCodexBaselines(request.preparedPlan.codexLegacySelection, request.installation.id)
+          : await this.dependencies.repository.listOwnedArtifactBaselines(request.installation.id),
       ),
     )
     if (!coverage.allowed || coverage.executionPlanHash !== request.preparedPlan.executionPlanHash) {
@@ -664,7 +725,60 @@ export class AgentIntegrationCoordinator {
     const createdAt = nowIso(this.dependencies.clock)
     const executionFence = this.dependencies.repository.acquireExecutionFence(runId)
     if (!executionFence) throw new WriterFenceUnavailableError(`execution fence unavailable: ${runId}`)
+    const priorExecutionFences: Array<{ assertOwned(): void; release(): void }> = []
+    let generationLeases: WriterFenceLease[] | undefined
+    const recipePeerTrust: Array<{ installation: CoordinatorInstallation; preparedPlan: PreparedCoordinatorPlan }> = []
+    const assertRecipePeerTrust = async (): Promise<void> => {
+      for (const peer of recipePeerTrust) if (!this.dependencies.authorizeEffect || !await this.dependencies.authorizeEffect(
+        peer.installation,this.trustBinding(peer.preparedPlan),{operation:'connect',mutationDomain:null},
+      )) throw new Error('Recipe upgrade peer source trust changed')
+    }
     try {
+      if (confirmedGeneration) {
+        for (const prior of generationTakeovers!) {
+          const fence = this.dependencies.repository.acquireExecutionFence(prior.runId)
+          if (!fence) throw new WriterFenceUnavailableError(`prior generation is executing: ${prior.runId}`)
+          priorExecutionFences.push(fence)
+          if (prior.kind === 'codex_lifecycle_4_to_5' && prior.installationId !== request.installation.id) {
+            const peer = await this.dependencies.repository.recipeUpgradePredecessorTrust?.(prior.runId,prior.installationId!,prior.executionPlanHash)
+            if (!peer) throw new Error('Recipe upgrade peer proof changed')
+            if (!recipePeerTrust.some(existing => existing.installation.id === peer.installation.id)) recipePeerTrust.push(peer)
+          }
+        }
+        generationLeases = await acquireWriterFences(this.dependencies.repository,
+          [...new Set([...preparedMutations.flatMap(allPhysicalMutationDomains),
+            ...generationTakeovers!.flatMap(prior => prior.mutationDomains)])].sort())
+        if (!this.dependencies.authorizeEffect || !await this.dependencies.authorizeEffect(
+          request.installation, this.trustBinding(request.preparedPlan), { operation: request.preparedPlan.operation, mutationDomain: null },
+        )) throw new Error('Installation source trust changed before generation takeover')
+        const sharedFailure = await this.sharedDomainCasFailure(request.installation, request.preparedPlan)
+        if (sharedFailure) throw new Error(sharedFailure)
+        const adapter = this.requireAdapter(request.installation.identity.hostVariant)
+        const currentInspection = await adapter.inspect(this.context(request.installation,
+          request.preparedPlan.operationId ?? 'generation-readback', frozenPlanHostVersion(request.preparedPlan),
+          request.preparedPlan.activityGenerationToken))
+        for (const componentKey of request.preparedPlan.componentKeys) {
+          const frozen = request.preparedPlan.inspection.components.find(component => component.componentKey === componentKey)
+          const current = currentInspection.components.find(component => component.componentKey === componentKey)
+          if (!frozen?.observedFragmentHash || !current || current.observedTarget !== frozen.observedTarget
+            || current.observedFragmentHash !== frozen.observedFragmentHash) throw new Error('Owned generation scope changed before takeover')
+        }
+        for (const mutation of request.preparedPlan.adapterPlan.mutations) {
+          await assertLivePrecondition(adapter, this.context(request.installation, mutation.operationId,
+            frozenPlanHostVersion(request.preparedPlan), request.preparedPlan.activityGenerationToken), mutation)
+        }
+        for (const fence of priorExecutionFences) fence.assertOwned()
+        await assertWriterFencesOwned(generationLeases)
+        if (!await this.dependencies.authorizeEffect(request.installation, this.trustBinding(request.preparedPlan),
+          { operation: request.preparedPlan.operation, mutationDomain: null })) throw new Error('Installation source trust could not be verified at generation takeover')
+        await assertRecipePeerTrust()
+        if (generationTakeovers!.some(prior => prior.kind === 'codex_lifecycle_4_to_5')) {
+          // Peer attestation is asynchronous; recheck held authority before the
+          // prepare transaction can retire any predecessor or bind a new run.
+          await assertWriterFencesOwned(generationLeases)
+          for (const fence of priorExecutionFences) fence.assertOwned()
+        }
+      }
       const prepared = await this.dependencies.repository.prepareExecution({
         runId,
         installationId: request.installation.id,
@@ -690,9 +804,11 @@ export class AgentIntegrationCoordinator {
         mutations: prepared.mutations,
         desiredCapability: request.desiredCapability,
         recovery: false,
+        ...(generationLeases ? { recoveryLeases: generationLeases } : {}),
       })
     } finally {
-      executionFence.release()
+      try { if (generationLeases) await releaseWriterFences(generationLeases) }
+      finally { releaseExecutionFences([executionFence, ...priorExecutionFences]) }
     }
   }
 
@@ -744,7 +860,10 @@ export class AgentIntegrationCoordinator {
     let recoveryAuthorized: boolean
     try {
       recoveryAuthorized = await options.canContinueRecovery?.(execution) !== false
-    } catch {
+    } catch (error) {
+      if(error instanceof DesktopSourceVerificationUnavailable) {
+        return {status:'needs_recovery',runId:execution.runId,reason:'desktop_source_verification_unavailable'}
+      }
       recoveryAuthorized = false
     }
     if (!recoveryAuthorized) {
@@ -753,6 +872,10 @@ export class AgentIntegrationCoordinator {
         : await this.failRecovery(execution, 'recovery_source_trust_changed')
     }
     if (execution.runState === 'verified') {
+      if(execution.codexLegacySelectionReadBack){
+        try{await this.assertCodexSelectionReadBack(execution.codexLegacySelectionReadBack)}
+        catch{return this.blockVerifiedRecovery(execution,'codex_legacy_selection_changed')}
+      }
       return this.finalizeVerifiedExecution(execution)
     }
     try {
@@ -773,7 +896,7 @@ export class AgentIntegrationCoordinator {
       return this.failRecovery(execution, 'persisted_plan_hash_mismatch')
     }
     if (execution.runState === 'applied_unverified') {
-      return this.retryAppliedVerification(execution, options)
+      return this.retryAppliedVerification(execution, options, recoveryLeases)
     }
     return this.executePreparedRun({
       runId: execution.runId,
@@ -792,6 +915,9 @@ export class AgentIntegrationCoordinator {
     execution: RecoverableExecution,
     error: unknown,
   ): Promise<CoordinatorOutcome> {
+    if(error instanceof DesktopSourceVerificationUnavailable) {
+      return {status:'needs_recovery',runId:execution.runId,reason:'desktop_source_verification_unavailable'}
+    }
     const reason = 'recovery_execution_failed'
     const failedAt = nowIso(this.dependencies.clock)
     const installationId = execution.runState === 'verified'
@@ -919,6 +1045,7 @@ export class AgentIntegrationCoordinator {
   private async retryAppliedVerification(
     execution: MutableRecoverableExecution,
     options: RecoveryOptions,
+    recoveryLeases: WriterFenceLease[],
   ): Promise<CoordinatorOutcome> {
     const control = await this.dependencies.repository.getInstallationControl(execution.installation.id)
     if (!control) return this.failRecovery(execution, 'installation_missing_during_verification')
@@ -957,6 +1084,54 @@ export class AgentIntegrationCoordinator {
     const adapter = this.requireAdapter(execution.installation.identity.hostVariant)
     const generationFailure = this.generationFailure(execution.preparedPlan, adapter)
     if (generationFailure) return this.failRecovery(execution, generationFailure)
+    if (execution.preparedPlan.operation === 'connect') {
+      const candidates=await this.dependencies.repository.pendingAppliedRemovalCandidates?.(execution.runId) ?? []
+      if (candidates.length>0) {
+        // Healthy runs need no additional read-back. Stale observations are
+        // discarded; a current physical failure retains the recovery diagnostic.
+        try {
+          let readBackFailed=false
+          let readBackError: unknown
+          for (const candidate of candidates) {
+            const mutation=execution.mutations.find(item=>item.journal.id===candidate.mutationId)
+            if (!mutation || mutation.journal.state!=='committed' || mutation.effectDisposition==='consumer_detach') {
+              return this.failRecovery(execution,'applied_run_has_uncommitted_mutation')
+            }
+            await this.assertRecoveryAuthorized(execution,options)
+            await this.assertCurrentHostVersion(execution.installation.id,execution.preparedPlan)
+            await assertWriterFencesOwned(recoveryLeases)
+            try {
+              const observation=await adapter.readBack(this.context(execution.installation,mutation.operationId,
+                frozenPlanHostVersion(execution.preparedPlan),execution.preparedPlan.activityGenerationToken),mutation.plannedMutation)
+              assertReadBackVisibilityKnown(observation,mutation.plannedMutation)
+              if (!observation.matchesDesired || observation.observedFragmentHash!==mutation.journal.desiredFingerprint) readBackFailed=true
+            } catch (error) { if(error instanceof DesktopSourceVerificationUnavailable)throw error; readBackFailed=true; readBackError=error }
+            const current=await this.dependencies.repository.pendingAppliedRemovalCandidates?.(execution.runId) ?? []
+            if (sha256Json(current)!==sha256Json(candidates)) {
+              return {status:'awaiting_verification',runId:execution.runId,verification:[]}
+            }
+          }
+          if (readBackError instanceof FrozenGenerationChangedError || readBackError instanceof InstallationTrustChangedError) throw readBackError
+          await this.assertRecoveryAuthorized(execution,options)
+          await this.assertCurrentHostVersion(execution.installation.id,execution.preparedPlan)
+          await assertWriterFencesOwned(recoveryLeases)
+          this.assertFrozenGenerations(execution.preparedPlan,adapter)
+          const current=await this.dependencies.repository.pendingAppliedRemovalCandidates?.(execution.runId) ?? []
+          if (sha256Json(current)!==sha256Json(candidates)) return {status:'awaiting_verification',runId:execution.runId,verification:[]}
+          if (readBackFailed) return this.needsRecovery(execution,'verification_failed','host_verification')
+          if (!await this.dependencies.repository.reconcileAppliedRemovalCandidates?.(execution.runId,candidates,nowIso(this.dependencies.clock))) {
+            return {status:'awaiting_verification',runId:execution.runId,verification:[]}
+          }
+        } catch (error) {
+          if(error instanceof DesktopSourceVerificationUnavailable)throw error
+          const current=await this.dependencies.repository.pendingAppliedRemovalCandidates?.(execution.runId) ?? []
+          if (sha256Json(current)!==sha256Json(candidates)) return {status:'awaiting_verification',runId:execution.runId,verification:[]}
+          if (error instanceof FrozenGenerationChangedError) return this.failRecovery(execution,error.reason)
+          if (error instanceof InstallationTrustChangedError) return this.failRecovery(execution,'recovery_source_trust_changed')
+          return this.needsRecovery(execution,'verification_failed','host_verification')
+        }
+      }
+    }
     const detachedComponents = new Set(execution.mutations
       .filter(mutation => mutation.effectDisposition === 'consumer_detach')
       .flatMap(mutation => mutationComponentKeys(mutation.plannedMutation)))
@@ -974,6 +1149,7 @@ export class AgentIntegrationCoordinator {
             execution.activationEpoch ?? latestMutationEpoch(execution.mutations),
           )
     } catch (error) {
+      if(error instanceof DesktopSourceVerificationUnavailable)throw error
       if (error instanceof FrozenGenerationChangedError) {
         return this.failRecovery(execution, error.reason)
       }
@@ -990,7 +1166,8 @@ export class AgentIntegrationCoordinator {
     }
     try {
       await this.assertRecoveryAuthorized(execution, options)
-    } catch {
+    } catch (error) {
+      if(error instanceof DesktopSourceVerificationUnavailable)throw error
       return this.failRecovery(execution, 'recovery_source_trust_changed')
     }
     const preCommitGenerationFailure = this.generationFailure(execution.preparedPlan, adapter)
@@ -999,7 +1176,8 @@ export class AgentIntegrationCoordinator {
     await this.dependencies.repository.setRunState(execution.runId, 'verified', updatedAt)
     try {
       await this.assertRecoveryAuthorized(execution, options)
-    } catch {
+    } catch (error) {
+      if(error instanceof DesktopSourceVerificationUnavailable)throw error
       return this.blockVerifiedRecovery({
         runId: execution.runId,
         runState: 'verified',
@@ -1070,7 +1248,7 @@ export class AgentIntegrationCoordinator {
       }
       let leases: WriterFenceLease[] = input.recoveryLeases ?? []
       const mutationDomains = allPhysicalMutationDomains(persisted)
-      if (!input.recovery) {
+      if (!input.recovery && !input.recoveryLeases) {
         try {
           leases = await acquireWriterFences(this.dependencies.repository, mutationDomains)
         } catch {
@@ -1233,6 +1411,7 @@ export class AgentIntegrationCoordinator {
             activationEpoch,
           )
     } catch (error) {
+      if(error instanceof DesktopSourceVerificationUnavailable)throw error
       if (error instanceof FrozenGenerationChangedError) {
         return this.needsRecovery(input, error.reason, 'verification')
       }
@@ -1256,7 +1435,8 @@ export class AgentIntegrationCoordinator {
     }
     try {
       await this.assertCurrentInstallationAuthorized(input.installation, input.preparedPlan)
-    } catch {
+    } catch (error) {
+      if(error instanceof DesktopSourceVerificationUnavailable)throw error
       return this.needsRecovery(input, 'installation_source_trust_changed', 'verification')
     }
     const preCommitGenerationFailure = this.generationFailure(input.preparedPlan, adapter)
@@ -1264,7 +1444,8 @@ export class AgentIntegrationCoordinator {
     await this.dependencies.repository.setRunState(input.runId, 'verified', nowIso(this.dependencies.clock))
     try {
       await this.assertCurrentInstallationAuthorized(input.installation, input.preparedPlan)
-    } catch {
+    } catch (error) {
+      if(error instanceof DesktopSourceVerificationUnavailable)throw error
       return this.blockVerifiedRecovery({
         runId: input.runId,
         runState: 'verified',
@@ -1289,6 +1470,14 @@ export class AgentIntegrationCoordinator {
     return { status: 'committed', runId: input.runId, verification }
   }
 
+  private async assertCodexSelectionReadBack(input:{installation:CoordinatorInstallation;preparedPlan:PreparedCoordinatorPlan}): Promise<void> {
+    const mutations=input.preparedPlan.adapterPlan.mutations.filter(item=>(input.preparedPlan.codexLegacySelection && item.componentKey==='memory_tools') || item.metadata?.codexLegacyHooks!==undefined)
+    if(!mutations.length)return
+    const adapter=this.requireAdapter(input.installation.identity.hostVariant)
+    const context=this.context(input.installation,'legacy_selection_readback',frozenPlanHostVersion(input.preparedPlan),input.preparedPlan.activityGenerationToken)
+    for(const mutation of mutations)if(!(await adapter.readBack(context,mutation)).matchesDesired)throw new Error('codex_legacy_selection_changed')
+  }
+
   private async verify(
     input: {
       runId: string
@@ -1301,6 +1490,7 @@ export class AgentIntegrationCoordinator {
     assertAuthorized: () => Promise<void>,
     activationEpoch?: string,
   ): Promise<readonly ComponentVerificationResult[]> {
+    await this.assertCodexSelectionReadBack(input)
     const hostVersion = frozenPlanHostVersion(input.preparedPlan)
     await this.assertCurrentHostVersion(input.installation.id, input.preparedPlan)
     const context = this.context(
@@ -1489,6 +1679,19 @@ export class AgentIntegrationCoordinator {
     if (plan.operation === 'disconnect' || !this.dependencies.sharedDomainConsumers) return null
     try {
       const snapshot = await this.sharedDomainSnapshot(installation, plan.adapterPlan.mutations)
+      if(plan.codexLegacySelection){
+        const selection=plan.codexLegacySelection
+        if(codexSelectionFingerprint(selection)!==plan.executionPlan.codexLegacySelectionHash)return SHARED_DOMAIN_SET_CHANGED
+        for(const entry of snapshot.entries)for(const consumer of entry.consumers){
+          const member=selection.members.find(row=>row.id===consumer.installationId)
+          if(!member || consumer.blockingReason)return SHARED_DOMAIN_SET_CHANGED
+          const control=await this.dependencies.repository.getInstallationControl(member.id)
+          if(!control || control.desiredState!=='unmanaged' || control.tombstoned || control.healthState!=='discovered')return SHARED_DOMAIN_SET_CHANGED
+          const identity=prospectiveCodexIdentity(selection,member.id)
+          if(control.installKey!==member.install_key || control.agentId!==identity.agentId || control.sharedIdentityBinding!==identity.sharedIdentityBinding)return SHARED_DOMAIN_SET_CHANGED
+        }
+        return null
+      }
       const blocked = [...snapshot.blocked.values()].flat().sort()
       if (blocked.length > 0) return blocked[0]
       return sharedDomainBindingFor(snapshot.entries) === frozenPlanSharedDomainBinding(plan)
@@ -1623,6 +1826,7 @@ export class AgentIntegrationCoordinator {
       runtime: this.dependencies.runtime,
       installation: installation.identity,
       installationId: installation.id,
+      ...(installation.sharedIdentityBinding ? { sharedIdentityBinding: installation.sharedIdentityBinding } : {}),
       ...(hostVersion ? { hostVersion } : {}),
       agentId: installation.agentId,
       operationId,
@@ -1666,7 +1870,7 @@ export function supplementalConsentClaims(
   ownedArtifacts: readonly OwnedArtifactBaseline[],
 ): SupplementalConsentClaim[] {
   const mutatedComponents = new Set(
-    preparedPlan.executionPlan.mutations.map(mutation => mutation.componentKey),
+    preparedPlan.executionPlan.mutations.flatMap(mutation => mutation.coveredComponentKeys ?? [mutation.componentKey]),
   )
   const requested = new Set(preparedPlan.componentKeys)
   const eligible = ownedArtifacts
@@ -1709,12 +1913,15 @@ function assertControlIdentity(
 ): void {
   if (control.installKey !== installation.identity.installKey
     || control.agentId !== installation.agentId
+    || (control.installationAgentId ?? control.agentId) !== (installation.installationAgentId ?? installation.agentId)
+    || control.sharedIdentityBinding !== installation.sharedIdentityBinding
     || control.hostVariant !== installation.identity.hostVariant) {
     throw new Error(`Installation identity changed: ${installation.id}`)
   }
 }
 
 function assertPreparedPlan(installation: CoordinatorInstallation, plan: PreparedCoordinatorPlan): void {
+  if (plan.executionPlan.sharedIdentityBinding !== installation.sharedIdentityBinding) throw new Error('prepared shared identity changed');
   if (plan.executionPlan.installationId !== installation.id) throw new Error('prepared plan belongs to another Installation')
   if (plan.adapterPlan.installationKey !== installation.identity.installKey) {
     throw new Error('prepared plan Installation key no longer matches')
@@ -2005,6 +2212,14 @@ async function releaseWriterFences(leases: readonly WriterFenceLease[]): Promise
   if (failed) throw new Error('writer fence release failed')
 }
 
+function releaseExecutionFences(fences: readonly { release(): void }[]): void {
+  let failed = false
+  for (const fence of [...fences].reverse()) {
+    try { fence.release() } catch { failed = true }
+  }
+  if (failed) throw new Error('execution fence release failed')
+}
+
 async function assertLivePrecondition(
   adapter: AgentHostAdapter,
   context: AdapterOperationContext,
@@ -2038,7 +2253,7 @@ function mutationEffectReadBack(
       safeToResumeFrom: readBack.safeToResumeFrom!.fingerprint,
     }
   }
-  const fingerprint = readBackFingerprint(readBack, desiredFingerprint(mutation))
+  const fingerprint = readBackFingerprint(readBack, desiredFingerprint(mutation), mutation)
   return { fingerprint }
 }
 
@@ -2057,9 +2272,16 @@ function exactFrozenResumeState(
 function readBackFingerprint(
   readBack: Awaited<ReturnType<AgentHostAdapter['readBack']>>,
   desired: string | null,
+  mutation: PlannedMutation,
 ): string | null {
   assertReadBackVisibilityKnown(readBack)
-  if (readBack.visibility === 'absent') return null
+  if (readBack.visibility === 'absent') {
+    // Aggregate host-command removal has an explicit absent-state fingerprint.
+    // Ordinary file removal still uses null as its desired state.
+    if (mutation.operation === 'host_command' && mutation.domainKind === 'plugin_manager'
+      && desired !== null && readBack.matchesDesired && readBack.observedFragmentHash === desired) return desired
+    return null
+  }
   if (readBack.matchesDesired) return readBack.observedFragmentHash ?? desired ?? 'observed:unknown'
   // Never infer the planned before hash from a hashless observation. Recovery
   // may replay only when read-back positively proves that exact fingerprint.

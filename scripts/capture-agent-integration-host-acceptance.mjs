@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { validateDatabaseMigrationEvidence, assertSharedMigrationBatches } from './agent-database-migration-evidence.mjs'
+import { isCodexContextRestoreStep, validateCodexContextRestore, rejectReusedCodexRestoreRuns } from './codex-context-restore-evidence.mjs'
+import { validateAgentMemoryClosure } from './agent-memory-closure.mjs'
 import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -16,14 +19,17 @@ import {
   hostActivityLedgerEvidenceHash,
   hostActivityLedgerExportHash,
   loadAgentHostAcceptanceRequirements,
-  requiredHostAcceptanceSteps,
+  requiredRealHostAcceptanceSteps,
+  realHostAcceptanceDeferral,
+  deferredHostAcceptanceTarget,
+  upgradeTargetIdentityDigest,
   validateAgentHostAcceptanceEnvironment,
   verifyAgentIntegrationHostAcceptance,
   validateUserOwnedCustomActivityBinding,
 } from './verify-agent-integration-host-acceptance.mjs'
 import { inspectPhysicalTideMindCandidateApp } from './tidemind-candidate-app-identity.mjs'
 
-const CAPTURE_SCHEMA_VERSION = 2
+const CAPTURE_SCHEMA_VERSION = 3
 const STATE_FILE = '.capture-state.json'
 const MAX_INPUT_BYTES = 10 * 1024 * 1024
 const MAX_TEXT_SCAN_BYTES = 1024 * 1024
@@ -206,13 +212,14 @@ function captureTarget(requirements, definition) {
     targetKey: definition.targetKey ?? definition.targetId,
     targetId: definition.catalogId ?? definition.targetId,
     configurationOwnership: definition.configurationOwnership ?? null,
-    architecture: definition.architecture ?? null,
+    architecture: definition.architecture ?? (requirements.releaseMacArchitectures.length === 1 ? requirements.releaseMacArchitectures[0] : null),
     sourceCatalogId: definition.sourceCatalogId ?? null,
     disposition: definition.disposition,
     targetCapability: definition.targetCapability,
+    realHostDeferral: realHostAcceptanceDeferral(requirements, definition),
     requiredSteps: definition.targetCapability === null
       ? []
-      : [...requiredHostAcceptanceSteps(requirements, definition)],
+      : [...requiredRealHostAcceptanceSteps(requirements, definition)],
     releaseAcceptedExactVersions: Array.isArray(definition.releaseAcceptedExactVersions)
       ? [...definition.releaseAcceptedExactVersions]
       : [],
@@ -292,6 +299,7 @@ export function initializeAgentHostAcceptanceCapture({
     entries: requirements.targets.map(entry => captureTarget(requirements, entry)),
     customPaths: requirements.customTargets.map(definition => captureTarget(requirements, customTarget(definition))),
     upgradePaths: [],
+    databaseRecoveryPaths: [],
     activityExports: [],
     preparedEvidenceManifestSha256: null,
   }
@@ -311,6 +319,7 @@ export function exportAgentHostActivityReceipt({
   const target = findTarget(state, targetId)
   if (!target.environment) throw new Error('target metadata must be recorded before activity export')
   if (!state.candidateAppPathsByArchitecture) throw new Error('activity export requires the exact physical candidate app')
+  if (target.realHostDeferral) throw new Error('deferred target does not accept real-host activity')
   const candidateAppPath = state.candidateAppPathsByArchitecture[target.environment.architecture]
   const candidateApp = state.candidateAppsByArchitecture[target.environment.architecture]
   const exporter = path.join(
@@ -352,7 +361,7 @@ function validateExportedActivityReceipt(value, state) {
     || value.sourceCommit !== state.sourceCommit
     || value.releaseContractSha256 !== state.releaseContractSha256
     || value.ledgerSource !== (state.allowFixtureActivity ? 'fixture' : 'real_profile')
-    || (value.databaseSchemaVersion !== 34 && value.databaseSchemaVersion !== 35)
+    || (value.databaseSchemaVersion !== 34 && value.databaseSchemaVersion !== 35 && value.databaseSchemaVersion !== 45)
     || value.exportHash !== hostActivityLedgerExportHash(value)) {
     throw new Error('activity receipt was not exported for this frozen candidate capture')
   }
@@ -465,7 +474,7 @@ function invalidatePreparation(state) {
 }
 
 function candidateForTarget(state, target) {
-  const architecture = target.environment?.architecture
+  const architecture = target.realHostDeferral ? target.architecture : target.environment?.architecture
   const candidate = architecture && state.candidateAppsByArchitecture?.[architecture]
   if (!candidate) throw new Error(`no frozen Tide Mind candidate for target architecture: ${String(architecture)}`)
   return candidate
@@ -474,6 +483,7 @@ function candidateForTarget(state, target) {
 function recordAgentHostAcceptanceTargetValue({ workspace: workspaceInput, targetId: targetKey, metadata, metadataExport = null }) {
   const { workspace, state, requirements } = loadState(workspaceInput)
   const target = findTarget(state, targetKey)
+  if (target.realHostDeferral) throw new Error('deferred target does not accept real-host metadata')
   if (target.steps.length > 0) throw new Error('target metadata cannot change after step evidence is recorded')
   const validatedMetadata = validateTargetMetadata(
     metadata,
@@ -492,7 +502,7 @@ function recordAgentHostAcceptanceTargetValue({ workspace: workspaceInput, targe
     target.requiredLifecycle = source.requiredLifecycle
       ? { signals: [...source.requiredLifecycle.signals], require: 'all' }
       : null
-    target.requiredSteps = [...requiredHostAcceptanceSteps(requirements, {
+    target.requiredSteps = [...requiredRealHostAcceptanceSteps(requirements, {
       ...source,
       targetId: target.targetId,
       disposition: 'custom',
@@ -543,7 +553,7 @@ function recordAgentHostAcceptanceTargetValue({ workspace: workspaceInput, targe
   target.agentId = validatedMetadata.agentId
   target.customBinding = validatedMetadata.customBinding ?? null
   if (target.targetId === 'manual_mcp_client') {
-    target.requiredSteps = [...requiredHostAcceptanceSteps(requirements, {
+    target.requiredSteps = [...requiredRealHostAcceptanceSteps(requirements, {
       ...customTarget({ targetId: target.targetId, targetKey: target.targetKey, configurationOwnership: target.configurationOwnership }),
     })]
   }
@@ -610,6 +620,7 @@ export function exportAndRecordAgentHostAcceptanceTarget({
 }) {
   const { state } = loadState(workspaceInput)
   const target = findTarget(state, targetKey)
+  if (target.realHostDeferral) throw new Error('deferred target does not accept real-host metadata')
   if (!state.releaseContractReady || !state.candidateAppPathsByArchitecture) {
     throw new Error('formal target metadata export requires a frozen release contract and physical candidate')
   }
@@ -704,6 +715,8 @@ function validateAssertion(raw, expected) {
     'schemaVersion', 'targetKey', 'targetId', 'stepId', 'sourceCommit', 'releaseContractSha256',
     'candidateBundleSha256', 'installationId', 'agentId', 'outcome', 'assertionSource',
     'assertedBy', 'observedAt', 'assertions', 'activityReceipt',
+    ...(expected.stepId === 'memory_closure' ? ['memoryClosure'] : []),
+    ...(isCodexContextRestoreStep(expected.stepId) ? ['codexContextRestore'] : []),
   ], 'step assertion')
   if (value.schemaVersion !== 2) throw new Error('unsupported step assertion schema')
   if (value.targetKey !== expected.targetKey || value.targetId !== expected.targetId || value.stepId !== expected.stepId) {
@@ -773,7 +786,7 @@ function validateUpgradeAssertion(raw, expected) {
     'schemaVersion', 'targetKey', 'targetId', 'fromAppVersion', 'toAppVersion', 'sourceCommit',
     'releaseContractSha256', 'candidateBundleSha256', 'targetIdentitySha256', 'outcome', 'assertionSource',
     'assertedBy', 'observedAt', 'assertions', 'installationId', 'originalAgentId',
-    'migratedAgentId', 'historyPreserved', 'statisticsPreserved',
+    'migratedAgentId', 'historyPreserved', 'statisticsPreserved', 'databaseMigration',
   ], 'upgrade assertion')
   if (value.schemaVersion !== 2) throw new Error('unsupported upgrade assertion schema')
   if (value.targetKey !== expected.targetKey || value.targetId !== expected.targetId
@@ -791,7 +804,7 @@ function validateUpgradeAssertion(raw, expected) {
     throw new Error('upgrade assertion predates capture creation')
   }
   uniqueStrings(value.assertions, 'upgrade assertions')
-  nonEmpty(value.installationId, 'upgrade assertion installationId')
+  if ((!expected.deferred && expected.targetId !== 'codex-desktop') || value.installationId !== null) nonEmpty(value.installationId, 'upgrade assertion installationId')
   nonEmpty(value.originalAgentId, 'upgrade assertion originalAgentId')
   nonEmpty(value.migratedAgentId, 'upgrade assertion migratedAgentId')
   if (value.originalAgentId !== value.migratedAgentId) throw new Error('upgrade assertion did not preserve Agent ID')
@@ -872,6 +885,7 @@ export function recordAgentHostAcceptanceStep({
   const { workspace, state } = loadState(workspaceInput)
   const target = findTarget(state, targetKey)
   const candidateApp = candidateForTarget(state, target)
+  if (target.realHostDeferral) throw new Error('deferred target does not accept real-host steps')
   if (!target.hostVersion) throw new Error('target metadata must be recorded before step evidence')
   if (!target.requiredSteps.includes(stepId)) throw new Error(`step is not required for ${targetKey}: ${stepId}`)
   if (target.steps.some(step => step.id === stepId)) throw new Error(`step evidence already exists: ${targetKey}/${stepId}`)
@@ -908,6 +922,28 @@ export function recordAgentHostAcceptanceStep({
     }
   }
   const evidenceInputs = loadEvidenceInputs(evidencePaths)
+  if (stepId === 'memory_closure') {
+    validateAgentMemoryClosure(assertion.memoryClosure, {
+      targetKey, installationId: target.installationId, agentId: target.agentId,
+      sourceCommit: state.sourceCommit, releaseContractSha256: state.releaseContractSha256,
+      candidateBundleSha256: candidateApp.bundleSha256,
+      hostVariant: target.sourceCatalogId ?? target.targetId, hostVersion: target.hostVersion,
+      captureCreatedAt: state.createdAt, observedAt: assertion.observedAt,
+      allowFixtureActivity: state.candidateAppPathsByArchitecture === null,
+    }, new Map(evidenceInputs.map(input => [input.sha256, input.bytes])))
+  }
+  if (isCodexContextRestoreStep(stepId)) {
+    validateCodexContextRestore(assertion.codexContextRestore, {
+      stepId, targetKey, installationId: target.installationId, agentId: target.agentId,
+      sourceCommit: state.sourceCommit, releaseContractSha256: state.releaseContractSha256,
+      candidateBundleSha256: candidateApp.bundleSha256, captureNonce: state.captureNonce,
+      hostVariant: target.sourceCatalogId ?? target.targetId, hostVersion: target.hostVersion,
+      distribution: target.distribution, environment: target.environment,
+      captureCreatedAt: state.createdAt, observedAt: assertion.observedAt,
+    }, new Map(evidenceInputs.map(input => [input.sha256, input.bytes])))
+    rejectReusedCodexRestoreRuns([...state.entries, ...state.customPaths,
+      { steps: [{ id: stepId, codexContextRestore: assertion.codexContextRestore }] }])
+  }
   const attestationInput = readJson(attestationPath, 'redaction attestation')
   validateAttestation(attestationInput.value, evidenceInputs)
   const namespace = ['targets', targetKey, stepId]
@@ -953,6 +989,8 @@ export function recordAgentHostAcceptanceStep({
   const receiptPath = writeReceipt(workspace, namespace, receipt)
   target.steps.push({
     id: stepId,
+    ...(stepId === 'memory_closure' ? { memoryClosure: assertion.memoryClosure } : {}),
+    ...(isCodexContextRestoreStep(stepId) ? { codexContextRestore: assertion.codexContextRestore } : {}),
     status: 'passed',
     observedAt: assertion.observedAt,
     assertionSource: assertion.assertionSource,
@@ -980,20 +1018,21 @@ export function recordAgentHostAcceptanceUpgrade({
   if (!requirements.upgradeFromAppVersions.includes(fromAppVersion)) {
     throw new Error(`upgrade source version is not required: ${fromAppVersion}`)
   }
-  const upgradeTarget = state.entries.find(target => target.targetKey === targetKey)
-  if (!upgradeTarget) throw new Error(`upgrade target is not a released P0 surface: ${targetKey}`)
+  const upgradeTarget = [...state.entries, ...state.customPaths].find(target => target.targetKey === targetKey)
+  if (!upgradeTarget) throw new Error(`upgrade target is not a required acceptance surface: ${targetKey}`)
   const candidateApp = candidateForTarget(state, upgradeTarget)
-  if (!upgradeTarget.hostVersion || !upgradeTarget.distribution || !upgradeTarget.environment) {
+  if (!upgradeTarget.realHostDeferral && (!upgradeTarget.hostVersion || !upgradeTarget.distribution || !upgradeTarget.environment)) {
     throw new Error(`upgrade target metadata must be recorded first: ${targetKey}`)
   }
   if (state.upgradePaths.some(upgrade => upgrade.targetKey === targetKey && upgrade.fromAppVersion === fromAppVersion)) {
     throw new Error(`upgrade evidence already exists: ${targetKey}/${fromAppVersion}`)
   }
   const assertionInput = readJson(assertionPath, 'upgrade assertion')
-  const targetIdentitySha256 = hostAcceptanceTargetIdentityDigest(upgradeTarget)
+  const targetIdentitySha256 = upgradeTargetIdentityDigest(upgradeTarget, state.releaseContractSha256)
   const assertion = validateUpgradeAssertion(assertionInput.value, {
     targetKey,
     targetId: upgradeTarget.targetId,
+    deferred: Boolean(upgradeTarget.realHostDeferral),
     fromAppVersion,
     toAppVersion: state.appVersion,
     sourceCommit: state.sourceCommit,
@@ -1003,8 +1042,14 @@ export function recordAgentHostAcceptanceUpgrade({
     captureCreatedAt: state.createdAt,
   })
   const evidenceInputs = loadEvidenceInputs(evidencePaths)
+  validateDatabaseMigrationEvidence(assertion.databaseMigration, {
+    captureCreatedAt: state.createdAt, observedAt: assertion.observedAt,
+    ...(upgradeTarget.targetId === 'codex-desktop' ? { codexDatabaseUpgrade: true, originalAgentId: assertion.originalAgentId, migratedAgentId: assertion.migratedAgentId, installationId: assertion.installationId } : {}),
+    ...(upgradeTarget.realHostDeferral ? { deferredTargetId: upgradeTarget.targetId, originalAgentId: assertion.originalAgentId, migratedAgentId: assertion.migratedAgentId, installationId: assertion.installationId } : {}),
+  }, new Map(evidenceInputs.map(input => [input.sha256, input.bytes])))
   const attestationInput = readJson(attestationPath, 'redaction attestation')
   validateAttestation(attestationInput.value, evidenceInputs)
+  assertSharedMigrationBatches([...state.upgradePaths, { fromAppVersion, databaseMigration: assertion.databaseMigration }])
   const namespace = ['upgrades', targetKey, fromAppVersion]
   const copied = copyEvidenceSet(workspace, namespace, {
     ...assertionInput,
@@ -1029,6 +1074,7 @@ export function recordAgentHostAcceptanceUpgrade({
     migratedAgentId: assertion.migratedAgentId,
     historyPreserved: assertion.historyPreserved,
     statisticsPreserved: assertion.statisticsPreserved,
+    databaseMigration: assertion.databaseMigration,
     targetIdentitySha256,
     evidenceIds,
   }
@@ -1064,6 +1110,32 @@ export function recordAgentHostAcceptanceUpgrade({
   return { targetKey, targetId: upgradeTarget.targetId, fromAppVersion, outcomeDigest: receipt.outcomeDigest, evidenceFileCount: copied.length + 1 }
 }
 
+export function recordAgentDatabaseRecovery({ workspace: workspaceInput, assertionPath, attestationPath, evidencePaths }) {
+  const { workspace, state } = loadState(workspaceInput)
+  if (state.databaseRecoveryPaths.length) throw new Error('database recovery already recorded')
+  const input = readJson(assertionPath, 'database recovery assertion')
+  const value = input.value
+  exactKeys(value, ['id', 'architecture', 'sourceCommit', 'candidateBundleSha256', 'releaseContractSha256',
+    'observedAt', 'assertedBy', 'assertionSource', 'databaseMigration'], 'database recovery assertion')
+  if (value.id !== 'observed_schema41' || !['human', 'external'].includes(value.assertionSource)
+    || value.sourceCommit !== state.sourceCommit || value.releaseContractSha256 !== state.releaseContractSha256
+    || value.candidateBundleSha256 !== state.candidateAppsByArchitecture[value.architecture]?.bundleSha256
+    || value.databaseMigration?.sourceSchemaVersion !== 41) throw new Error('database recovery candidate/source mismatch')
+  nonEmpty(value.assertedBy, 'database recovery assertedBy')
+  const evidenceInputs = loadEvidenceInputs(evidencePaths)
+  validateDatabaseMigrationEvidence(value.databaseMigration, {
+    captureCreatedAt: state.createdAt, observedAt: value.observedAt,
+  }, new Map(evidenceInputs.map(item => [item.sha256, item.bytes])))
+  const attestation = readJson(attestationPath, 'redaction attestation')
+  validateAttestation(attestation.value, evidenceInputs)
+  const copied = copyEvidenceSet(workspace, ['database-recovery', value.id],
+    { ...input, basename: 'assertion.json' }, { ...attestation, basename: 'redaction-attestation.json' }, evidenceInputs)
+  state.databaseRecoveryPaths.push({ ...value, evidenceFiles: copied })
+  invalidatePreparation(state)
+  writeState(workspace, state)
+  return { id: value.id, evidenceOrigin: value.databaseMigration.evidenceOrigin }
+}
+
 function captureStatus(state) {
   const targets = [...state.entries, ...state.customPaths]
   return {
@@ -1072,12 +1144,16 @@ function captureStatus(state) {
     sourceCommit: state.sourceCommit,
     targetCount: targets.length,
     completedTargetCount: targets.filter(target => (
-      target.hostVersion && target.steps.length === target.requiredSteps.length
+      !target.realHostDeferral && target.hostVersion && target.steps.length === target.requiredSteps.length
     )).length,
+    deferredTargets: targets.filter(target => target.realHostDeferral).map(target => ({ targetKey: target.targetKey, ...target.realHostDeferral })),
+    requiredRealHostTargetCount: targets.filter(target => !target.realHostDeferral).length,
     requiredStepCount: targets.reduce((sum, target) => sum + target.requiredSteps.length, 0),
     recordedStepCount: targets.reduce((sum, target) => sum + target.steps.length, 0),
-    requiredUpgradePaths: state.entries
+    requiredUpgradePaths: targets
       .flatMap(target => state.upgradeFromAppVersions.map(fromAppVersion => `${target.targetKey}/${fromAppVersion}`)),
+    requiredDatabaseRecoveryPaths: ['observed_schema41'],
+    recordedDatabaseRecoveryPaths: state.databaseRecoveryPaths.map(value => value.id),
     recordedUpgradePaths: state.upgradePaths.map(upgrade => `${upgrade.targetKey}/${upgrade.fromAppVersion}`),
     preparedEvidenceManifestSha256: state.preparedEvidenceManifestSha256,
     releaseContractReady: state.releaseContractReady,
@@ -1088,7 +1164,8 @@ export function agentHostAcceptanceCaptureStatus(workspaceInput) {
   return captureStatus(loadState(workspaceInput).state)
 }
 
-function finalTarget(target) {
+function finalTarget(target, requirements) {
+  if (target.realHostDeferral) return deferredHostAcceptanceTarget(requirements, target)
   return {
     targetKey: target.targetKey,
     targetId: target.targetId,
@@ -1102,6 +1179,7 @@ function finalTarget(target) {
     agentId: target.agentId,
     customBinding: target.customBinding ?? null,
     metadataExport: target.metadataExport ?? null,
+    ...(target.realHostDeferral ? { realHostDeferral: target.realHostDeferral } : {}),
     steps: target.steps.map(({ redactionAttestedBy: _redactionAttestedBy, ...step }) => step),
   }
 }
@@ -1118,17 +1196,18 @@ function finalUpgrade(upgrade) {
 function completeCapture(state) {
   const missing = []
   for (const target of [...state.entries, ...state.customPaths]) {
-    if (!target.hostVersion) missing.push(`${target.targetKey}:metadata`)
+    if (!target.realHostDeferral && !target.hostVersion) missing.push(`${target.targetKey}:metadata`)
     const recorded = new Set(target.steps.map(step => step.id))
     for (const step of target.requiredSteps) if (!recorded.has(step)) missing.push(`${target.targetKey}:${step}`)
   }
-  for (const target of state.entries) {
+  for (const target of [...state.entries, ...state.customPaths]) {
     for (const version of state.upgradeFromAppVersions) {
       if (!state.upgradePaths.some(upgrade => (
         upgrade.targetKey === target.targetKey && upgrade.fromAppVersion === version
       ))) missing.push(`upgrade:${target.targetKey}/${version}`)
     }
   }
+  if (state.databaseRecoveryPaths.length !== 1 || state.databaseRecoveryPaths[0].id !== 'observed_schema41') missing.push('database-recovery:observed_schema41')
   if (missing.length > 0) throw new Error(`capture is incomplete: ${missing.join(', ')}`)
 }
 
@@ -1137,6 +1216,7 @@ function referencedFiles(state) {
     ...state.entries.flatMap(target => target.steps.flatMap(step => step.evidenceFiles)),
     ...state.customPaths.flatMap(target => target.steps.flatMap(step => step.evidenceFiles)),
     ...state.upgradePaths.flatMap(upgrade => upgrade.evidenceFiles),
+    ...state.databaseRecoveryPaths.flatMap(recovery => recovery.evidenceFiles),
   ]
 }
 
@@ -1218,7 +1298,7 @@ export function freezeAgentHostAcceptanceCapture({
   outputDirectory,
   now = () => new Date(),
 }) {
-  const { workspace, state } = loadState(workspaceInput)
+  const { workspace, state, requirements } = loadState(workspaceInput)
   const { files, manifestSha256 } = evidenceManifest(workspace, state)
   if (!state.preparedEvidenceManifestSha256
     || state.preparedEvidenceManifestSha256 !== manifestSha256) {
@@ -1262,9 +1342,10 @@ export function freezeAgentHostAcceptanceCapture({
       releaseContractSha256: state.releaseContractSha256,
       candidateAppsByArchitecture: state.candidateAppsByArchitecture,
       review,
-      entries: state.entries.map(finalTarget),
-      customPaths: state.customPaths.map(finalTarget),
+      entries: state.entries.map(target => finalTarget(target, requirements)),
+      customPaths: state.customPaths.map(target => finalTarget(target, requirements)),
       upgradePaths: state.upgradePaths.map(finalUpgrade),
+      databaseRecoveryPaths: state.databaseRecoveryPaths,
       files,
     }
     writeJsonExclusive(path.join(staging, 'index.json'), index)
@@ -1307,6 +1388,7 @@ function usage() {
     '  capture-agent-integration-host-acceptance.mjs export-activity --workspace ABS --target TARGET_KEY --event-id ID --output ABS_FILE',
     '  capture-agent-integration-host-acceptance.mjs step --workspace ABS --target ID --step ID --assertion FILE --attestation FILE --evidence FILE [--evidence FILE...]',
     '  capture-agent-integration-host-acceptance.mjs upgrade --workspace ABS --target ID --from-app-version VERSION --assertion FILE --attestation FILE --evidence FILE [--evidence FILE...]',
+    '  capture-agent-integration-host-acceptance.mjs database-recovery --workspace ABS --assertion FILE --attestation FILE --evidence FILE [--evidence FILE...]',
     '  capture-agent-integration-host-acceptance.mjs status --workspace ABS',
     '  capture-agent-integration-host-acceptance.mjs prepare-review --workspace ABS --output ABS_FILE',
     '  capture-agent-integration-host-acceptance.mjs freeze --workspace ABS --review FILE --output ABS_DIR',
@@ -1383,6 +1465,13 @@ export function runAgentHostAcceptanceCaptureCli(argv) {
       assertionPath: flags.assertion,
       attestationPath: flags.attestation,
       evidencePaths: flags.evidence,
+    })
+  }
+  if (command === 'database-recovery') {
+    const keys = ['workspace', 'assertion', 'attestation', 'evidence']
+    assertCommandFlags(flags, keys, keys, command)
+    return recordAgentDatabaseRecovery({
+      workspace: flags.workspace, assertionPath: flags.assertion, attestationPath: flags.attestation, evidencePaths: flags.evidence,
     })
   }
   if (command === 'status') {

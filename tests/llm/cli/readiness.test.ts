@@ -56,15 +56,31 @@ function trustedHome(kind: 'codex' | 'claude'): { home: string; executable: stri
 
 type ExecCall = { args: readonly string[] };
 
-function codexExec(options: { effective?: string; versionOutput?: string } = {}) {
+function codexExec(options: {
+  effective?: string;
+  versionOutput?: string;
+  features?: string;
+  featuresStderr?: string;
+  effectiveStderr?: string;
+  featuresExitCode?: number;
+  effectiveExitCode?: number;
+} = {}) {
   const calls: ExecCall[] = [];
   const exec = vi.fn(async (_file: string, args: readonly string[]) => {
     calls.push({ args });
     if (args[0] === 'exec' && args[1] === '--help') return { stdout: EXEC_HELP, stderr: '', exitCode: 0 };
     if (args[0] === 'debug') return { stdout: 'Usage: codex debug prompt-input', stderr: '', exitCode: 0 };
-    if (args.length === 2 && args[0] === 'features') return { stdout: features01561, stderr: '', exitCode: 0 };
+    if (args.length === 2 && args[0] === 'features') return {
+      stdout: options.features ?? features01561,
+      stderr: options.featuresStderr ?? '',
+      exitCode: options.featuresExitCode ?? 0,
+    };
     if (args.at(-2) === 'features' && args.at(-1) === 'list') {
-      return { stdout: options.effective ?? features01561Disabled, stderr: '', exitCode: 0 };
+      return {
+        stdout: options.effective ?? features01561Disabled,
+        stderr: options.effectiveStderr ?? '',
+        exitCode: options.effectiveExitCode ?? 0,
+      };
     }
     return { stdout: '', stderr: 'unexpected', exitCode: 2 };
   });
@@ -113,6 +129,96 @@ describe('checkCliEnvironment — Codex execution contract and identity', () => 
     expect(environment.validationFingerprint).toBe(environment.cliGeneration);
     expect(environment.authStoreSignal).toBeNull();
   }, 30_000);
+
+  // A real 0.157.1 metadata-only probe returned valid stdout with a PATH warning
+  // on stderr. This covers that channel boundary, not the lost original App row.
+  const featureWarning = 'WARNING: proceeding, even though we could not create PATH aliases: temporary directory unavailable';
+
+  it('accepts feature stdout with stderr warnings in both phases without changing the verified contract', async () => {
+    const { home, executable } = trustedHome('codex');
+    const run = (exec: ReturnType<typeof codexExec>['exec']) => checkCliEnvironment({
+      providerType: 'codex-cli',
+      homeDir: home,
+      sourceEnv: { HOME: home },
+      dataDir: home,
+      platform: 'darwin',
+      resolveOptions: resolveOptions(executable, 'codex-cli 0.156.1'),
+      exec,
+      readCodexAccount: (async () => ({ account: CHATGPT, accountAfter: null, models: null })) as never,
+    });
+    const baseline = await run(codexExec().exec);
+    const warned = await run(codexExec({
+      featuresStderr: featureWarning,
+      effectiveStderr: featureWarning,
+    }).exec);
+    expect(warned.capabilityStatus).toBe('verified');
+    expect(warned.codexContract).toEqual(baseline.codexContract);
+    expect(warned.cliGeneration).toBe(baseline.cliGeneration);
+  });
+
+  it.each([
+    {
+      name: 'empty initial stdout',
+      probe: { features: '', featuresStderr: features01561 },
+      message: 'Codex feature list is empty',
+    },
+    {
+      name: 'unknown initial stdout row',
+      probe: { features: features01561 + '\n' + featureWarning, featuresStderr: features01561 },
+      message: 'Codex feature list contains an unrecognized row',
+    },
+    {
+      name: 'empty effective stdout',
+      probe: { effective: '', effectiveStderr: features01561Disabled },
+      message: 'Codex feature list is empty',
+    },
+    {
+      name: 'unknown effective stdout row',
+      probe: { effective: features01561Disabled + '\n' + featureWarning, effectiveStderr: features01561Disabled },
+      message: 'Codex feature list contains an unrecognized row',
+    },
+    {
+      name: 'shell still enabled in effective stdout',
+      probe: {
+        effective: features01561Disabled.replace(/^shell_tool(\s+.+?\s+)false$/m, 'shell_tool$1true'),
+        effectiveStderr: features01561Disabled,
+      },
+      message: 'Codex shell_tool must be explicitly disabled',
+    },
+    {
+      name: 'unreviewed residual feature in effective stdout',
+      probe: {
+        effective: features01561Disabled.replace(/^hooks_v2(\s+.+?\s+)false$/m, 'hooks_v2$1true'),
+        effectiveStderr: featureWarning,
+      },
+      message: 'Codex has active features that cannot be disabled or constrained: hooks_v2',
+    },
+    {
+      name: 'nonzero initial exit with valid stdout',
+      probe: { featuresExitCode: 3, featuresStderr: featureWarning },
+      message: 'Codex CLI capability probe failed',
+    },
+    {
+      name: 'nonzero effective exit with valid stdout',
+      probe: { effectiveExitCode: 3, effectiveStderr: featureWarning },
+      message: 'Codex rejected the isolation overrides',
+    },
+  ])('rejects $name without accepting capability evidence from stderr', async ({ probe, message }) => {
+    const { home, executable } = trustedHome('codex');
+    const prepareCatalog = vi.fn(async () => '{"models":[]}');
+    await expect(checkCliEnvironment({
+      providerType: 'codex-cli',
+      homeDir: home,
+      sourceEnv: { HOME: home },
+      dataDir: home,
+      platform: 'darwin',
+      resolveOptions: resolveOptions(executable, 'codex-cli 0.156.1'),
+      exec: codexExec(probe).exec,
+      readCodexAccount: (async () => ({ account: CHATGPT, accountAfter: null, models: null })) as never,
+      prepareCodexCatalog: prepareCatalog,
+    })).rejects.toMatchObject({ kind: 'unsupported_version', message });
+    expect(prepareCatalog).not.toHaveBeenCalled();
+  });
 
   it('cli generation is stable for the same binary/contract and changes with the version', async () => {
     const { home, executable } = trustedHome('codex');

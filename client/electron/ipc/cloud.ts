@@ -1,6 +1,6 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import type Database from 'better-sqlite3'
-import { getConfig, reloadConfig } from '../../../src/config.js'
+import { getConfig, reloadConfig } from '@server/config.js'
 import { createLogger } from '../../../src/utils/logger.js'
 import { parseRequiredBoolean } from './_schemas.js'
 import { getOutboxDiagnostics } from '../cloud/outbox.js'
@@ -164,7 +164,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
     const path = await import('node:path');
     const { parse: parseToml } = await import('smol-toml');
     const { stringify: stringifyToml } = await import('smol-toml');
-    const { getDataDir } = await import('../../../src/config.js');
+    const { getDataDir } = await import('@server/config.js');
 
     const configPath = path.join(getDataDir(), 'config.toml');
 
@@ -283,7 +283,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
     const fs = await import('node:fs');
     const path = await import('node:path');
     const { parse: parseToml, stringify: stringifyToml } = await import('smol-toml');
-    const { getDataDir } = await import('../../../src/config.js');
+    const { getDataDir } = await import('@server/config.js');
 
     const configPath = path.join(getDataDir(), 'config.toml');
     let current: Record<string, unknown> = {};

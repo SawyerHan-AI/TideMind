@@ -1133,6 +1133,17 @@
       }
     },
     "managed": {
+      "codexSharedIdentityReconnect": "This Codex connection uses an older identity. In the Agent details, disconnect the existing Codex connection and complete its removal, then connect Codex again so Desktop and CLI share one Tide Mind identity.",
+      "codexExistingIdentityReview": "Existing Tide Mind connections for Codex need review before connecting. Open the Codex details and resolve the old identity conflict first, then check again and reconnect.",
+      "legacyChoice": {
+        "description": "Choose the existing Tide Mind identity to keep for Codex CLI and Desktop. History is preserved.",
+        "review": "Review existing identities",
+        "select": "Existing identity",
+        "preview": "Preview changes",
+        "remove": "Remove only the listed Tide Mind connection entries; keep all history and other configuration:",
+        "connect": "This also enables Tide Mind management for this installation. The other Codex surface shares the identity and can be connected separately.",
+        "confirm": "Confirm selection and connect"
+      },
       "sourceVerification": {
         "title": "설치 출처",
         "description": "출처 검증은 호스트 로드 또는 메모리 호출 성공을 확인하지 않습니다.",
@@ -1388,6 +1399,13 @@
       "lastUsed": "마지막 실제 사용",
       "noRecord": "기록 없음",
       "noReliableUsage": "신뢰할 수 있는 사용 증거가 없습니다.",
+      "sharedConnection": {
+        "title": "Shared memory connection",
+        "call_observed": "Memory tool activity received on the current shared connection",
+        "waiting_for_call": "Waiting for activity on the shared connection",
+        "inactive": "Shared connection is inactive for this installation",
+        "scope": "CLI and Desktop share this configuration. Shared activity does not independently verify either host."
+      },
       "recentEvents": "최근 이벤트",
       "unreadEvents": "{{count}} 새 이벤트",
       "noEvents": "최근 이벤트가 없습니다.",
@@ -1518,7 +1536,7 @@
         "awaiting_verification": "확인 대기 중",
         "paused": "일시중지됨",
         "committed": "연결 및 확인됨",
-        "superseded": "나중에 연결 해제로 대체됨",
+        "superseded": "후속 작업으로 대체됨",
         "needs_recovery": "회복이 필요함",
         "failed": "실패",
         "interrupted": "중단됨 — 내용을 검토하고 다시 미리 보세요"

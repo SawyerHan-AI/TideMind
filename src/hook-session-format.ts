@@ -74,7 +74,7 @@ export function formatRestSections(result: PrepareOutput): string {
 }
 
 /** 在 maxLen 内、尽量在段落边界(\n\n)截断一段文本,并追加 marker。 */
-function truncateAtParagraph(text: string, maxLen: number, marker: string): string {
+export function truncateAtParagraph(text: string, maxLen: number, marker: string): string {
   if (text.length <= maxLen) return text;
   // 防御:maxLen 小到放不下 marker 时,硬切到 maxLen、不追加 marker(保证输出 ≤ maxLen)。
   // 当前 G1 装配不会走到这里(调用方传的 maxLen 都 ≥ PROFILE_FLOOR_CHARS=500 ≫ marker),

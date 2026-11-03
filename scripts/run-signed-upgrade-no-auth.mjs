@@ -4,9 +4,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { parse as parseToml } from 'smol-toml'
+import { assertCodexUpgradeIdentity, codexUpgradeConfigurationScope } from './codex-upgrade-baseline.mjs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { runOperator, parseOperatorArgs, assertNoAuthSchedulerGuard } from './run-signed-host-no-auth.mjs'
+import { runOperator, parseOperatorArgs, assertNoAuthSchedulerGuard, currentCandidateVersion } from './run-signed-host-no-auth.mjs'
 import { loadHistoricalUpgradeApps, inspectHistoricalUpgradeApp } from './historical-upgrade-apps.mjs'
 import { inspectPhysicalTideMindCandidateApp, hashPhysicalAppBundle } from './tidemind-candidate-app-identity.mjs'
 import { loadHostNoAuthSamples } from './prepare-host-no-auth-samples.mjs'
@@ -35,7 +36,16 @@ function snapshot(workspace, phase, output, baseline, backup) {
   execFileSync('/usr/bin/python3',args,{cwd:root,encoding:'utf8',timeout:120000,stdio:['ignore','pipe','pipe']})
   return readJson(output)
 }
-function assertStopped(workspace) {
+export function assertUpgradeStopped(workspace, knownProcessIds = []) {
+  workspace = canonicalDirectory(workspace)
+  for (const pid of knownProcessIds) {
+    check(Number.isSafeInteger(pid) && pid > 1, 'invalid known upgrade process PID')
+    try { process.kill(pid, 0) } catch (error) {
+      if (error.code === 'ESRCH') continue
+      throw new Error('cannot confirm known upgrade process stopped: ' + pid)
+    }
+    throw new Error('known host/helper/restart process is still running: ' + pid)
+  }
   const marker=path.join(workspace,'.tidemind-upgrade-profile')
   check(fs.realpathSync(marker)===marker&&fs.lstatSync(marker).isFile()&&!fs.lstatSync(marker).isSymbolicLink(),'profile marker must be canonical and regular')
   for(const suffix of ['', '-wal', '-shm', '-journal']){
@@ -49,8 +59,8 @@ function assertStopped(workspace) {
   const result=spawnSync('/usr/sbin/lsof',['-t','--',...files],{encoding:'utf8',timeout:10000})
   check(!result.error&&[0,1].includes(result.status)&&!result.stderr.trim()&&!result.stdout.trim(),'profile must be fully stopped before restore')
 }
-export function restoreUpgradeProfile(workspace, before, output) {
-  workspace=canonicalDirectory(workspace);output=canonicalDirectory(output);assertStopped(workspace)
+export function restoreUpgradeProfile(workspace, before, output, knownProcessIds = []) {
+  workspace=canonicalDirectory(workspace);output=canonicalDirectory(output);assertUpgradeStopped(workspace, knownProcessIds)
   check(fs.readFileSync(path.join(workspace,'.tidemind-upgrade-profile'),'utf8')==='isolated-tidemind-upgrade-v1\n','isolated upgrade marker missing')
   const home=canonicalDirectory(path.join(workspace,'home')),data=canonicalDirectory(path.join(home,'.tidemind')),graph=canonicalDirectory(path.join(data,'graph'))
   const backup=canonicalDirectory(before.backup.path),backupDb=path.join(backup,'brain.sqlite')
@@ -74,7 +84,11 @@ export function restoreUpgradeProfile(workspace, before, output) {
 export function compareUpgradeObservations(before, after, agentId, catalogId) {
   const agents=after.tables.agents?.identities??[],installations=after.tables.agent_installations?.identities??[]
   const tableChecks=Object.fromEntries(['nodes','node_versions','timeline_events','links','llm_usage_log'].map(table=>[table,after.comparison?.[table]??{beforePresent:false}]))
-  return {agentIdPreserved:agentId?agents.some(row=>row.id===agentId):null,
+  const oldAgents=before.tables.agents?.identities??[],oldInstallations=(before.tables.agent_installations?.identities??[]).filter(row=>row.agentId===agentId)
+  const inAgents=oldAgents.some(row=>row.id===agentId)
+  const preserved=(inAgents||oldInstallations.length>0)&&(!inAgents||agents.some(row=>row.id===agentId))
+    &&oldInstallations.every(old=>installations.some(row=>row.id===old.id&&row.agentId===old.agentId&&row.hostVariant===old.hostVariant))
+  return {agentIdPreserved:agentId?Boolean(preserved):null,
     installation:agentId?installations.find(row=>row.hostVariant===catalogId&&row.agentId===agentId)??null:null,
     tableChecks,nonzeroSyntheticUsageHistoryExercised:(before.tables.llm_usage_log?.rowCount??0)>0,statisticsInputOrigin:'synthetic_migration_corpus',realBillingHistoryClaimed:false,
     limitations:['raw comparisons are not independent acceptance assertions','synthetic statistics do not represent real model calls or charges','login and real calls are not executed']}
@@ -109,6 +123,72 @@ async function appRun(options, app, version, workspace, output, mode, expectedBu
   return runOperator(parseOperatorArgs(['--candidate-app',app,'--candidate-bundle-sha256',expectedBundle,'--source-commit',options['source-commit'],
     '--capture-nonce',options['capture-nonce'],'--workspace',workspace,'--output-dir',output,'--app-version',version,'--catalog-id',options['catalog-id'],'--mode',mode]))
 }
+/** Existing prepared profiles only: no prime/create/connect and no host installation. */
+export async function runPreparedCodexUpgrade(options, { fromAppVersion, profile, originalAgentId }) {
+  check(process.platform === 'darwin' && process.arch === 'arm64', 'native macOS ARM64 required')
+  check(options['catalog-id'] === 'codex-desktop', 'prepared database path is Codex-only')
+  check(/^[a-f0-9]{40}$/.test(options['source-commit'] ?? '') && /^[a-f0-9]{64}$/.test(options['capture-nonce'] ?? ''), 'invalid prepared source/capture binding')
+  profile = canonicalDirectory(profile)
+  assertUpgradeStopped(profile)
+  assertNoAuthSchedulerGuard(path.join(profile, 'home'))
+  const output = path.resolve(options['output-dir'])
+  check(!fs.existsSync(output) && fs.realpathSync(path.dirname(output)) === path.dirname(output), 'new canonical output required')
+  const history = readJson(options['historical-inputs'])
+  const old = history.records?.find(item => item.version === fromAppVersion)
+  check(old && loadHistoricalUpgradeApps().some(item => item.version === fromAppVersion), 'unreviewed historical input')
+  const identity = inspectHistoricalUpgradeApp(old.app, old.version)
+  check(identity.bundleSha256 === old.identity.bundleSha256, 'historical App differs from bound input')
+  const candidate = inspectPhysicalTideMindCandidateApp(options['candidate-app'], currentCandidateVersion, options['source-commit'], 'arm64')
+  check(candidate.bundleSha256 === options['candidate-bundle-sha256'], 'candidate differs from frozen binding')
+  fs.mkdirSync(output, { mode: 0o700 })
+  const report = { kind:'upgrade_raw_observation_batch', status:'running', fromAppVersion, toAppVersion:currentCandidateVersion,
+    workspace:profile, originalAgentId, sourceCommit:options['source-commit'], candidateBundleSha256:candidate.bundleSha256,
+    realHostInvocationVerified:false, acceptanceStatus:'not_evaluated' }
+  const save = () => fs.writeFileSync(path.join(output,'upgrade-observations.json'), JSON.stringify(report,null,2)+'\n')
+  save()
+  try {
+    const input = snapshot(profile,'before',path.join(output,'prepared-input.json'))
+    const inputRows = (input.tables.agent_installations?.identities ?? []).filter(row => row.agentId === originalAgentId)
+    assertCodexUpgradeIdentity(input,input,originalAgentId,inputRows[0]?.id ?? null)
+    report.migrationScope = codexUpgradeConfigurationScope(input,originalAgentId)
+    report.oldConfigurationObservation = input.codexConfiguration
+    const nodeRowCount = input.tables.nodes?.rowCount, usageRowCount = input.tables.llm_usage_log?.rowCount
+    check(input.tables.nodes?.present && Number.isSafeInteger(nodeRowCount) && nodeRowCount > 0
+      && input.tables.llm_usage_log?.present && Number.isSafeInteger(usageRowCount) && usageRowCount > 0,
+    'existing profile must contain already prepared history and usage before opening an App')
+    report.preparedInput = { nodeRowCount, usageRowCount, sourceSchemaVersion: input.schema.schema_version,
+      observedAt: input.observedAt, seededByThisRun: false }
+    await appRun(options,old.app,old.version,profile,path.join(output,'old-corpus-readback'),'historical-upgrade-snapshot',identity.bundleSha256)
+    const beforePath=path.join(output,'before.json')
+    const before=snapshot(profile,'before',beforePath,null,path.join(output,'backup'))
+    check(codexUpgradeConfigurationScope(before,originalAgentId)===report.migrationScope,'old App changed baseline coverage')
+    report.oldConfigurationBindings=report.migrationScope==='configured_host'
+      ? targetConfigurationBindings(profile,before.codexConfiguration.files.filter(file=>file.state==='regular').map(file=>path.join(profile,'home',file.path)),originalAgentId,'codex-desktop') : []
+    await appRun(options,options['candidate-app'],currentCandidateVersion,profile,path.join(output,'new-migration'),'upgrade-observe',candidate.bundleSha256)
+    const after=snapshot(profile,'after',path.join(output,'after.json'),beforePath,path.join(output,'after-backup'))
+    const installed=(after.tables.agent_installations?.identities??[]).filter(row=>row.agentId===originalAgentId&&row.hostVariant==='codex-desktop')
+    report.installationId=installed[0]?.id??null
+    assertCodexUpgradeIdentity(before,after,originalAgentId,report.installationId)
+    if(report.migrationScope==='configured_host')check(report.installationId!==null,'configured upgrade did not retain an Installation')
+    report.comparison=compareUpgradeObservations(before,after,originalAgentId,'codex-desktop')
+    for(const table of ['agents','nodes','node_versions','operation_log','timeline_events','links','llm_usage_log']) if(before.tables[table]?.present)check(after.comparison?.[table]?.beforeRowsRetained===true,`prior ${table} rows were not preserved`)
+    check(after.schema.schema_version==='45'&&after.schema.schema_lineage==='stable-0.2.94','candidate schema/lineage mismatch')
+    check(report.comparison.nonzeroSyntheticUsageHistoryExercised,'nonzero statistics not exercised')
+    if(report.migrationScope==='configured_host')report.newConfigurationBindings=targetConfigurationBindings(profile,report.oldConfigurationBindings.map(item=>item.path),originalAgentId,'codex-desktop')
+    let refused=false
+    try{restoreUpgradeProfile(profile,{...before,backup:{...before.backup,databaseSha256:'0'.repeat(64)}},output)}catch{refused=true}
+    check(refused,'altered recovery binding accepted')
+    report.restore=restoreUpgradeProfile(profile,before,output)
+    await appRun(options,old.app,old.version,profile,path.join(output,'old-restored'),'historical-upgrade-snapshot',identity.bundleSha256)
+    const restored=snapshot(profile,'restored',path.join(output,'restored.json'),beforePath)
+    const restoredRows=(restored.tables.agent_installations?.identities??[]).filter(row=>row.agentId===originalAgentId&&row.hostVariant==='codex-desktop')
+    assertCodexUpgradeIdentity(before,restored,originalAgentId,restoredRows[0]?.id??null)
+    check(restored.schema.schema_version===before.schema.schema_version,'restore schema mismatch')
+    for(const table of ['agents','nodes','node_versions','operation_log','timeline_events','links','llm_usage_log']) if(before.tables[table]?.present)check(restored.comparison?.[table]?.beforeRowsRetained===true,`restored ${table} changed`)
+    report.status='database_identity_history_statistics_and_restore_observed'
+  } catch(error) { report.status='failed';report.error=error.message;save();throw error }
+  save();return report
+}
 export async function runSignedUpgradeBatch(options) {
   check(process.platform==='darwin'&&process.arch==='arm64','signed upgrade operator requires native macOS ARM64')
   const workspace=canonicalDirectory(options.workspace),output=path.resolve(options['output-dir'])
@@ -119,7 +199,7 @@ export async function runSignedUpgradeBatch(options) {
   const sample=samples.targets?.find(t=>t.catalogId===options['catalog-id'])
   const approved=loadHostNoAuthSamples().find(s=>s.catalogIds.includes(options['catalog-id']))
   check(sample&&approved&&sample.distributionId===approved.receipt.distributionId&&fs.realpathSync(sample.appPath)===sample.appPath&&within(path.join(samples.workspace,'home/Applications'),sample.appPath),'host sample path/scope invalid')
-  const candidate=inspectPhysicalTideMindCandidateApp(options['candidate-app'],'0.2.93',options['source-commit'],'arm64')
+  const candidate=inspectPhysicalTideMindCandidateApp(options['candidate-app'],currentCandidateVersion,options['source-commit'],'arm64')
   check(candidate.bundleSha256===options['candidate-bundle-sha256'],'upgrade candidate does not match frozen binding')
   const report={schemaVersion:1,kind:'signed_app_upgrade_raw_observations',acceptanceStatus:'not_evaluated',sourceCommit:options['source-commit'],candidate,captureNonce:options['capture-nonce'],catalogId:options['catalog-id'],paths:[],omitted:['login','real_model_calls','passed_receipts']}
   const save=()=>fs.writeFileSync(path.join(output,'upgrade-observations.json'),JSON.stringify(report,null,2)+'\n',{mode:0o600})
@@ -136,7 +216,7 @@ export async function runSignedUpgradeBatch(options) {
     } catch(error) { throw new Error('host sample clone/copy failed (check available disk space): '+error.message) }
     check(hashPhysicalAppBundle(hostApp)===expectedHostBytes,'copied host App bytes/links/modes changed')
     execFileSync('/usr/bin/codesign',['--verify','--deep','--strict',hostApp],{stdio:['ignore','pipe','pipe'],timeout:120000})
-    const record={fromAppVersion:old.version,toAppVersion:'0.2.93',workspace:profile,status:'running'};report.paths.push(record);save()
+    const record={fromAppVersion:old.version,toAppVersion:currentCandidateVersion,workspace:profile,status:'running'};report.paths.push(record);save()
     try{
       const identity=inspectHistoricalUpgradeApp(old.app,old.version)
       await appRun(options,old.app,old.version,profile,path.join(caseOutput,'old-prime'),'historical-upgrade-prime',identity.bundleSha256)
@@ -159,8 +239,12 @@ export async function runSignedUpgradeBatch(options) {
       // The actual historical App must read its nonzero test corpus before upgrade.
       await appRun(options,old.app,old.version,profile,path.join(caseOutput,'old-corpus-readback'),'historical-upgrade-snapshot',identity.bundleSha256)
       const beforePath=path.join(caseOutput,'before.json'),before=snapshot(profile,'before',beforePath,null,path.join(caseOutput,'before-backup'))
+      // These fresh profiles never launch the external host App or a restart service.
+      // Existing-host workflows must pass their known PIDs to assertUpgradeStopped.
+      assertUpgradeStopped(profile)
+      record.switchBarrier = { scope: 'isolated_gui_only', externalHostStarted: false, restartServiceStarted: false }
       // Capture automatic migration before any explicit new consent/lifecycle operation.
-      await appRun(options,options['candidate-app'],'0.2.93',profile,path.join(caseOutput,'new-migration'),'upgrade-observe',candidate.bundleSha256)
+      await appRun(options,options['candidate-app'],currentCandidateVersion,profile,path.join(caseOutput,'new-migration'),'upgrade-observe',candidate.bundleSha256)
       const after=snapshot(profile,'after',path.join(caseOutput,'after.json'),beforePath,path.join(caseOutput,'after-backup'))
       record.comparison=compareUpgradeObservations(before,after,record.originalAgentId,options['catalog-id'])
       if(unsupported){const targets=(after.tables.agent_installations?.identities??[]).filter(row=>row.hostVariant===options['catalog-id']);record.unsupportedTargetObservation={targetRows:targets,automaticManagedIntentObserved:targets.some(row=>row.desiredState==='managed')};check(!record.unsupportedTargetObservation.automaticManagedIntentObserved,'historically unsupported target was automatically enabled')}
@@ -168,7 +252,7 @@ export async function runSignedUpgradeBatch(options) {
       check(record.comparison.nonzeroSyntheticUsageHistoryExercised,'synthetic nonzero statistics corpus was not present')
       if(!unsupported){
         check(record.comparison.agentIdPreserved,'original Agent ID lost')
-        await appRun(options,options['candidate-app'],'0.2.93',profile,path.join(caseOutput,'new-target-observation'),'lifecycle',candidate.bundleSha256)
+        await appRun(options,options['candidate-app'],currentCandidateVersion,profile,path.join(caseOutput,'new-target-observation'),'lifecycle',candidate.bundleSha256)
         const targetAfter=snapshot(profile,'after',path.join(caseOutput,'after-target-observation.json'),beforePath)
         record.targetComparison=compareUpgradeObservations(before,targetAfter,record.originalAgentId,options['catalog-id'])
         check(record.targetComparison.installation,'target production installation did not retain the old Agent ID')

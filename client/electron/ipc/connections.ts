@@ -27,7 +27,7 @@ import { deleteModelDiscoveryRows, reconcileAuthBinding } from '../../../src/db/
 import { refreshCliModelCatalog } from '../../../src/llm/cli/model-catalog.js'
 import { FOLLOW_DEFAULT_MODEL, isValidManualModelId } from '../../../src/llm/cli/catalogs.js'
 import { buildConnectionModelsView, routesUsingConnection } from '../../../src/llm/model-catalog-view.js'
-import { getConfig } from '../../../src/config.js'
+import { getConfig } from '@server/config.js'
 import { getCatalogSnapshot } from '../../../src/db/model-discovery.js'
 import { CATALOG_FRESHNESS } from '../../../src/llm/cli/model-catalog.js'
 import { createLogger } from '../../../src/utils/logger.js'

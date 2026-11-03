@@ -23,7 +23,7 @@ function hashFile(file) {
 }
 export function loadHistoricalUpgradeApps() {
   const data = JSON.parse(fs.readFileSync(recipe, 'utf8'))
-  check(data.schemaVersion === 1 && JSON.stringify(data.samples.map(item => item.version)) === JSON.stringify(['0.2.89', '0.2.91', '0.2.92']), 'invalid historical version scope')
+  check(data.schemaVersion === 1 && JSON.stringify(data.samples.map(item => item.version)) === JSON.stringify(['0.2.89', '0.2.90', '0.2.91', '0.2.92', '0.2.93']), 'invalid historical version scope')
   for (const item of data.samples) {
     check(item.assetName === `Tide.Mind-${item.version}-arm64.zip` && item.sourceUrl === `https://github.com/SawyerHan-AI/TideMind/releases/download/v${item.version}/${item.assetName}`, 'historical source URL/name mismatch')
     check(/^[a-f0-9]{64}$/.test(item.artifactSha256) && Number.isSafeInteger(item.artifactSizeBytes) && item.artifactSizeBytes > 0 && item.artifactSizeBytes < 2 ** 31, 'historical archive binding invalid')

@@ -109,6 +109,8 @@ export function customPathDialogOptions(kind: CustomPathKind): OpenDialogOptions
 }
 
 type AgentIntegrationServicePort = Pick<AgentIntegrationService,
+  | 'reviewCodexLegacySelection'
+  | 'previewCodexLegacySelection'
   | 'snapshot'
   | 'scan'
   | 'previewConnect'
@@ -230,6 +232,16 @@ export function registerAgentIntegrationHandlers(
       parsedFrozenPlanHash.data,
       parsedOptions.data,
     )
+  }))
+  ipcMain.handle('agent-integrations:review-codex-legacy-selection',(event,id:unknown)=>trusted(event,()=>{
+    const parsed=parseInstallationIds([id]);if(!parsed.ok)return parsed.error
+    return service.reviewCodexLegacySelection(parsed.data[0])
+  }))
+  ipcMain.handle('agent-integrations:preview-codex-legacy-selection',(event,id:unknown,selected:unknown)=>trusted(event,()=>{
+    const parsed=parseInstallationIds([id]);if(!parsed.ok)return parsed.error
+    const selectedResult=typeof selected === 'string' && selected.trim() && selected.length<=256 ? valid(selected) : invalid('Invalid legacy Agent ID')
+    if(!selectedResult.ok)return selectedResult.error
+    return service.previewCodexLegacySelection(parsed.data[0],selectedResult.data)
   }))
   ipcMain.handle('agent-integrations:apply-connect', (event, hash: unknown, ids: unknown) => trusted(event, () => {
     const parsedHash = parsePlanHash(hash)

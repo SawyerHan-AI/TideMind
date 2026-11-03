@@ -8,6 +8,7 @@ import type {
   AgentIntegrationSupportProductDto,
 } from '../../client/src/lib/api-contract'
 import {
+  batchConnectErrorText,
   isLowRiskDefault,
   requestedConnectCandidateIds,
 } from '../../client/src/components/settings/agent-integration-managed/BatchConnectDialog'
@@ -423,5 +424,21 @@ describe('managed Agent locale resources', () => {
     expect(confirmSource).not.toContain('#f87171')
     expect(listSource).toContain('aria-describedby={summaryId}')
     expect(listSource).toContain('className="sr-only"')
+  })
+})
+
+
+describe('batch connect Codex recovery guidance', () => {
+  it.each(['en', 'zh-CN'])('renders actionable %s guidance for direct and wrapped IPC errors', locale => {
+    const managed = JSON.parse(readFileSync(resolve(process.cwd(), `client/src/locales/${locale}/settings.json`), 'utf8')).agent.managed
+    const t = (key: string) => managed[key.replace('agent.managed.', '')]
+    expect(batchConnectErrorText(new Error('codex_shared_identity_requires_disconnect_reconnect'), t)).toBe(managed.codexSharedIdentityReconnect)
+    expect(batchConnectErrorText(new Error("Error invoking remote method 'agent-integrations:preview-connect': Error: existing_codex_connection_requires_review"), t)).toBe(managed.codexExistingIdentityReview)
+    expect(batchConnectErrorText('existing_codex_connection_requires_review', t)).toBe(managed.codexExistingIdentityReview)
+    expect(batchConnectErrorText(new Error('unrelated failure'), t)).toBe('unrelated failure')
+    expect(batchConnectErrorText(new Error('not_existing_codex_connection_requires_review'), t)).toBe('not_existing_codex_connection_requires_review')
+    expect(batchConnectErrorText(null, t)).toBe(managed.unknownError)
+    expect(managed.codexSharedIdentityReconnect).toMatch(locale === 'en' ? /disconnect.*removal.*connect/ : /断开.*移除.*重新连接/)
+    expect(managed.codexExistingIdentityReview).toMatch(locale === 'en' ? /identity conflict/ : /身份冲突/)
   })
 })

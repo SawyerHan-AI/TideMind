@@ -12,9 +12,17 @@ const hash = (value: string | Buffer) => crypto.createHash('sha256').update(valu
 const source = 'a'.repeat(40), publicCommit = 'b'.repeat(40), H = 'c'.repeat(64)
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
+// Frozen source contract from a800d11dbb0591c10a00e5bae9b944826550c425.
+// Historical exceptions must never inherit new current-release requirements.
+function historicalContract() {
+  return {
+    requirementsPath: new URL('../fixtures/partial-auth-release-0.2.93/requirements.json', import.meta.url).pathname,
+    releaseManifestPath: new URL('../fixtures/partial-auth-release-0.2.93/release-manifest.ts.txt', import.meta.url).pathname,
+  }
+}
 function fixture(bundleSha256 = H) {
-  const report: any = buildPartialAuthReleaseTemplate({ expectedSourceCommit: source })
-  const requirements = loadAgentHostAcceptanceRequirements(), plan: any = buildPartialAuthReleasePlan(requirements)
+  const report: any = buildPartialAuthReleaseTemplate({ ...historicalContract(), expectedSourceCommit: source })
+  const requirements = loadAgentHostAcceptanceRequirements(historicalContract().requirementsPath, historicalContract().releaseManifestPath, { historicalAppVersion: '0.2.93' }), plan: any = buildPartialAuthReleasePlan(requirements)
   report.captureCreatedAt = '2026-09-29T01:00:00.000Z'; report.generatedAt = '2026-09-29T02:00:00.000Z'
   report.authorization.authorizedAt = '2026-09-29T00:00:00.000Z'; report.collectedBy = 'fixture-collector'
   Object.assign(report.candidate, { publicCommit, runId: '11', runAttempt: '1', artifactId: '12', artifactDigest: H,
@@ -97,10 +105,18 @@ function fixture(bundleSha256 = H) {
   return state
 }
 function validate(state: ReturnType<typeof fixture>) {
-  return validatePartialAuthReleaseReport(state.report, { expectedSourceCommit: source, documents: state.documents, reviewDocument: state.reviewDocument })
+  return validatePartialAuthReleaseReport(state.report, { ...historicalContract(), expectedSourceCommit: source, documents: state.documents, reviewDocument: state.reviewDocument })
 }
 
 describe('0.2.93 partial auth/runtime release policy', () => {
+  it('keeps v3 historical requirements outside current full acceptance', () => {
+    const options = historicalContract()
+    expect(() => loadAgentHostAcceptanceRequirements(options.requirementsPath, options.releaseManifestPath))
+      .toThrow(/unsupported acceptance requirements schema/)
+    expect(() => buildPartialAuthReleaseTemplate({ expectedSourceCommit: source }))
+      .toThrow(/historical acceptance app version mismatch/)
+  })
+
   it('keeps all source-derived targets, required steps and 63 upgrades without claiming physical acceptance', () => {
     const state = fixture(), result = validate(state)
     expect(result).toMatchObject({ status: 'validated_partial_report_only', physicalVerified: false, fullHostAcceptance: false, targetCount: 26, upgradeCount: 63 })
@@ -109,9 +125,9 @@ describe('0.2.93 partial auth/runtime release policy', () => {
     expect(result.deferredRuntime).toBeGreaterThan(0)
   })
   it('generates only a pending template, never passed evidence', () => {
-    const template = buildPartialAuthReleaseTemplate({ expectedSourceCommit: source })
+    const template = buildPartialAuthReleaseTemplate({ ...historicalContract(), expectedSourceCommit: source })
     expect(template.targets.every((target: any) => target.steps.every((step: any) => step.noAuth.every((check: any) => check.status === 'pending')))).toBe(true)
-    expect(() => validatePartialAuthReleaseReport(template, { expectedSourceCommit: source })).toThrow()
+    expect(() => validatePartialAuthReleaseReport(template, { ...historicalContract(), expectedSourceCommit: source })).toThrow()
   })
   it.each([
     ['future version reuse', (r: any) => { r.appVersion = '0.2.94' }],
@@ -188,12 +204,13 @@ describe('0.2.93 partial auth/runtime release policy', () => {
       expect(() => validate(state)).toThrow(failure === 'notes' ? /disclosure/ : /performance/)
     }
   })
-  it('CLI emits only pending templates and exposes no fixture/skip switch', () => {
+  it('CLI rejects the historical partial template on a current checkout and exposes no fixture/skip switch', () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'partial-template-cli-'))); roots.push(root)
     const out = path.join(root, 'report.json')
-    const output = execFileSync(process.execPath, ['scripts/verify-partial-auth-release.mjs', '--template', '--source-commit', source, '--output', out], { encoding: 'utf8' })
-    expect(JSON.parse(output)).toMatchObject({ status: 'pending_template_not_release_evidence', targets: 26, upgrades: 63 })
-    expect(JSON.parse(fs.readFileSync(out, 'utf8')).generatedAt).toBeNull()
+    const output = spawnSync(process.execPath, ['scripts/verify-partial-auth-release.mjs', '--template', '--source-commit', source, '--output', out], { encoding: 'utf8' })
+    expect(output.status).not.toBe(0)
+    expect(output.stderr).toContain('historical acceptance app version mismatch')
+    expect(fs.existsSync(out)).toBe(false)
     expect(spawnSync(process.execPath, ['scripts/verify-partial-auth-release.mjs', '--allow-fixture']).status).not.toBe(0)
   })
   it('binds the immutable upload and candidate receipts to exact source/run/artifact bytes', () => {
@@ -233,11 +250,11 @@ describe('0.2.93 partial auth/runtime release policy', () => {
       fs.writeFileSync(path.join(input, 'report.json'), JSON.stringify(state.report))
     }
     writeBundle(original)
-    const loaded = loadPartialAuthReleaseReport(path.join(input, 'report.json'), { expectedSourceCommit: source })
+    const loaded = loadPartialAuthReleaseReport(path.join(input, 'report.json'), { ...historicalContract(), expectedSourceCommit: source })
     writeBundle(replacement)
-    expect(loadPartialAuthReleaseReport(path.join(input, 'report.json'), { expectedSourceCommit: source }).summary.candidateBundleSha256).toBe('e'.repeat(64))
-    const copiedPath = copyPartialAuthReleaseSnapshot(loaded, path.join(root, 'copied'), { expectedSourceCommit: source })
-    const copied = loadPartialAuthReleaseReport(copiedPath, { expectedSourceCommit: source })
+    expect(loadPartialAuthReleaseReport(path.join(input, 'report.json'), { ...historicalContract(), expectedSourceCommit: source }).summary.candidateBundleSha256).toBe('e'.repeat(64))
+    const copiedPath = copyPartialAuthReleaseSnapshot(loaded, path.join(root, 'copied'), { ...historicalContract(), expectedSourceCommit: source })
+    const copied = loadPartialAuthReleaseReport(copiedPath, { ...historicalContract(), expectedSourceCommit: source })
     expect(copied.summary.candidateBundleSha256).toBe(H)
     expect(copied.summary.reportBodySha256).toBe(loaded.summary.reportBodySha256)
     expect(copied.summary.evidenceManifestSha256).toBe(loaded.summary.evidenceManifestSha256)
@@ -279,12 +296,12 @@ with zipfile.ZipFile(sys.argv[1],'w') as z:
     for (const [name, bytes] of state.documents) { fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true }); fs.writeFileSync(path.join(root, name), bytes) }
     fs.writeFileSync(path.join(root, state.report.review.path), state.reviewDocument)
     const reportPath = path.join(root, 'report.json'); fs.writeFileSync(reportPath, JSON.stringify(state.report))
-    expect(loadPartialAuthReleaseReport(reportPath, { expectedSourceCommit: source }).summary.physicalVerified).toBe(false)
+    expect(loadPartialAuthReleaseReport(reportPath, { ...historicalContract(), expectedSourceCommit: source }).summary.physicalVerified).toBe(false)
     fs.writeFileSync(path.join(root, 'extra'), 'unlisted')
-    expect(() => loadPartialAuthReleaseReport(reportPath, { expectedSourceCommit: source })).toThrow(/file set/)
+    expect(() => loadPartialAuthReleaseReport(reportPath, { ...historicalContract(), expectedSourceCommit: source })).toThrow(/file set/)
     fs.unlinkSync(path.join(root, 'extra'))
     fs.renameSync(path.join(root, 'raw-observation.txt'), path.join(root, 'moved-raw'))
     fs.symlinkSync('moved-raw', path.join(root, 'raw-observation.txt'))
-    expect(() => loadPartialAuthReleaseReport(reportPath, { expectedSourceCommit: source })).toThrow()
+    expect(() => loadPartialAuthReleaseReport(reportPath, { ...historicalContract(), expectedSourceCommit: source })).toThrow()
   })
 })

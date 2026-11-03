@@ -12,6 +12,9 @@
  *   - detail_level 用 'brief' 而非 'standard'，避免压缩后立刻又吞大量 token
  *   - 输出格式更精简：一句画像 + 最多 3 个枢纽 + 最多 3 个结晶 + 最多 3 条最近活跃
  *
+ * Codex PostCompact 的官方合同不支持 additionalContext；该宿主仅输出 {}，
+ * 不能将本脚本执行/活动记录视为画像重注成功。
+ *
  * 用法：node hook-post-compact.js --agent-id eb_xxx [--tool claude-code]
  */
 
@@ -20,13 +23,18 @@ import { getDb, closeDb } from './db/connection.js';
 import { SqliteRepository } from './db/sqlite-repository.js';
 import { recordHookActivityEvidence } from './db/agent-host-activity.js';
 import { prepare } from './tools/prepare.js';
-import type { PrepareOutput } from './types.js';
+import { formatBriefContext } from './hook-brief-context.js';
+export { formatBriefContext } from './hook-brief-context.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { createLogger } from './utils/logger.js';
 import { writeHookOutput as outputHook, writeHookOutputBeforeEvidence } from './hook-output.js';
 import { hookBridgeRejection } from './hook-bridge-guard.js';
 import { getTideMindVersion } from './utils/app-version.js';
 
+import { recordCodexPostCompactCapture } from './hook-codex-restore-capture.js';
+import { codexRestoreInput, openCodexRestoreRuntime, readCodexHookPayload } from './hook-codex-restore-runtime.js';
+
+let codexOutputStarted = false;
 const migrationLog = createLogger('migrate');
 
 function parseArgs(): { agentId: string; tool: string; activityGenerationToken: string } {
@@ -56,59 +64,34 @@ function parseArgs(): { agentId: string; tool: string; activityGenerationToken: 
   return { agentId, tool, activityGenerationToken };
 }
 
-/**
- * 压缩后重注的上下文要控制体积。和 SessionStart 的全量 formatPrepareOutput 不同，
- * 这里只取每类最多 3 条，画像用 profile.text 的第一段。
- *
- * 导出供单元测试覆盖（tests/hook-formatters.test.ts）—— 本函数纯字符串拼接,
- * 不碰 IO/网络/DB,是 hook-post-compact 中最易隔离测的部分。
- */
-export function formatBriefContext(result: PrepareOutput): string {
-  const sections: string[] = [];
-
-  if (result.profile?.text) {
-    const firstPara = result.profile.text.split(/\n\n/)[0]?.trim();
-    if (firstPara) sections.push(`## 用户画像\n${firstPara}`);
-  }
-
-  if (result.keystones.length > 0) {
-    // title 用 || 而非 ?? 兜底:?? 只在 null/undefined 时切到 id,空字符串 ""
-    // 会被原样保留,渲染出 "- （id: xxx）" 这种空标题。|| 把 "" 视为 falsy,
-    // 同样落回 id,得到 "- xxx（id: xxx）"。
-    const lines = result.keystones.slice(0, 3).map(k =>
-      `- ${k.title || k.id}（id: ${k.id}）`
-    );
-    sections.push(`## 关键枢纽\n${lines.join('\n')}`);
-  }
-
-  // 结晶：优先 highlighted（含 snippet 可摘要显示），不足 3 条再补 others（只有 title）
-  const crystalLines: string[] = [];
-  for (const c of result.crystals.highlighted) {
-    if (crystalLines.length >= 3) break;
-    // 同上,?? → ||:title="" 时回退到 snippet
-    crystalLines.push(`- ${c.title || c.snippet}（id: ${c.id}）`);
-  }
-  for (const c of result.crystals.others) {
-    if (crystalLines.length >= 3) break;
-    crystalLines.push(`- ${c.title || c.id}（id: ${c.id}）`);
-  }
-  if (crystalLines.length > 0) {
-    sections.push(`## 近期结晶\n${crystalLines.join('\n')}`);
-  }
-
-  if (result.recent.length > 0) {
-    const lines = result.recent.slice(0, 3).map(r =>
-      `- ${r.title || r.id}（id: ${r.id}）`
-    );
-    sections.push(`## 最近活跃\n${lines.join('\n')}`);
-  }
-
-  return sections.join('\n\n');
-}
-
 // 协议适配见 hook-output.ts（已在文件顶部 import）。
 
+async function codexPostCompact(agentId: string, generation: string): Promise<void> {
+  const input = codexRestoreInput(await readCodexHookPayload(), 'PostCompact');
+  if (!input) process.stderr.write('[eb:hook-post-compact] codex_input_invalid\n');
+  const runtime = input ? openCodexRestoreRuntime(agentId, generation, input.sessionId) : null;
+  try {
+    const admitted = runtime?.admitted() ?? false;
+    if (runtime && admitted && input) {
+      const revision = runtime.store.markPending(runtime.scope);
+      recordCodexPostCompactCapture(runtime.scope, input, revision);
+    }
+    codexOutputStarted = true;
+    await outputHook('', 'codex', 'PostCompact');
+    if (runtime && admitted && runtime.admitted()) recordHookActivityEvidence(runtime.db, {
+      agentId, tool: 'codex', signalName: 'post_compact',
+      tideMindVersion: getTideMindVersion(), activityGenerationToken: generation,
+    });
+  } finally { runtime?.close(); }
+}
+
 async function main(): Promise<void> {
+  const toolIndex = process.argv.indexOf('--tool');
+  if (toolIndex >= 0 && process.argv[toolIndex + 1] === 'codex') {
+    const parsed = parseArgs();
+    await codexPostCompact(parsed.agentId, parsed.activityGenerationToken);
+    return;
+  }
   try {
     migrateDataDirIfNeeded(migrationLog);
   } catch {
@@ -188,6 +171,10 @@ ${briefText}
 }
 
 main().catch(async (err: unknown) => {
+  if (codexOutputStarted) {
+    process.stderr.write('[eb:hook-post-compact] codex_output_or_evidence_failed\n');
+    return;
+  }
   const stack = err instanceof Error ? err.stack ?? err.message : String(err);
   process.stderr.write(`[eb:hook-post-compact] fatal error: ${stack}\n`);
   // 错误标识符嵌入 fallback 文案中，方便用户关联到 stderr 中的真实 stack。
