@@ -851,7 +851,7 @@ describe('0.2.94 explicit deferred real-host scope', () => {
     expect(target.realHostDeferral).toMatchObject({status: 'deferred', policyId: '0.2.94-codex-only'})
     const status = agentHostAcceptanceCaptureStatus(workspace)
     expect(status.completedTargetCount).toBe(0)
-    expect(status.requiredRealHostTargetCount).toBe(requirements.targets.filter((entry: {catalogId: string}) => ['codex-cli','codex-desktop'].includes(entry.catalogId)).length)
+    expect(status.requiredRealHostTargetCount).toBe(requirements.targets.filter((entry: {catalogId: string}) => entry.catalogId === 'codex-cli').length)
     expect(status.requiredUpgradePaths).toHaveLength((requirements.targets.length + requirements.customTargets.length) * 5)
     expect(() => recordAgentHostAcceptanceStep({workspace, targetId, stepId: 'brain_prepare',
       assertionPath: '/not-read', attestationPath: '/not-read', evidencePaths: []})).toThrow(/deferred target does not accept real-host steps/)

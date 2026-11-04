@@ -155,7 +155,9 @@ function evaluateSharedBridgeAdmission(db: Database.Database, shared: SharedAgen
         WHERE p.artifact_id=? AND p.state='committed' AND p.idempotency_strategy != 'consumer_detach_only'
         ORDER BY p.committed_at DESC, p.rowid DESC LIMIT 1`).get(artifact.id) as
         {after_hash:string|null;installation_id:string;operation_type:string;run_state:string;failure_code:string|null;token:string;hash:string}|undefined;
-      if (carrier && carrier.operation_type !== 'disconnect' && (['applied_unverified','verified','committed'].includes(carrier.run_state) || (carrier.run_state === 'cancelled' && ['superseded_by_shared_disconnect','superseded_by_same_generation_connect'].includes(carrier.failure_code ?? ''))) && carrier.after_hash !== null
+      // Retiring a proved run need not remove its shared physical configuration.
+      // Admission still requires a current consumer/consent and this latest write.
+      if (carrier && carrier.operation_type !== 'disconnect' && (['applied_unverified','verified','committed'].includes(carrier.run_state) || (carrier.run_state === 'cancelled' && ['superseded_by_shared_disconnect','superseded_by_same_generation_connect','superseded_by_confirmed_generation','superseded_by_disconnect'].includes(carrier.failure_code ?? ''))) && carrier.after_hash !== null
         && carrier.after_hash === artifact.owned_fragment_hash && carrier.token === token && carrier.hash === hash
         && shared.consumers.some(c => c.id === carrier.installation_id)) return { allowed: true };
     }

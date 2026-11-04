@@ -339,7 +339,14 @@ describe('Codex shared identity through service and physical files',()=>{
    expect(firstResult.results[0],JSON.stringify(firstResult.results[0])).not.toMatchObject({status:'failed'})
    expect(fs.readFileSync(configFile,'utf8')).toBe(beforeDisconnect)
    if(hooksBefore!==null)expect(fs.readFileSync(hooksFile,'utf8')).toBe(hooksBefore)
-   if(mode!=='completed-waits')expect(evaluateBridgeAdmission(db,{agentId:canonical,activityGenerationToken:token,componentKey:'memory_tools'})).toEqual({allowed:true})
+   if(mode!=='completed-waits' || firstDisconnect==='codex-cli'){
+    for(const componentKey of (fullLifecycle?['memory_tools','lifecycle']:['memory_tools']) as Array<'memory_tools'|'lifecycle'>){
+     expect(evaluateBridgeAdmission(db,{agentId:canonical,activityGenerationToken:token,componentKey})).toEqual({allowed:true})
+    }
+   }else{
+    // Detaching the zero-write peer cannot approve the still-unrecovered physical writer.
+    expect(evaluateBridgeAdmission(db,{agentId:canonical,activityGenerationToken:token,componentKey:'memory_tools'})).toEqual({allowed:false,reason:'activity_generation_mismatch'})
+   }
    if(mode==='completed-waits'){
     expect(db.prepare("SELECT * FROM reconcile_runs WHERE installation_id=?").get(peerId)).toEqual(oldPeer)
     expect(db.prepare('SELECT * FROM projection_mutations WHERE run_id IN (?,?) ORDER BY id').all(...oldRuns.map(run=>run.id))).toEqual(oldMutations)
