@@ -116,10 +116,10 @@ jobs:
           mv client/release/latest-mac.yml client/release/latest-mac-arm64.yml
           ditto -c -k --sequesterRsrc --keepParent "$SIGN_APP" client/release/Tide.Mind-0.2.94-arm64-stapled-app.zip
           cd client/release
-          shasum -a 256 Tide.Mind-0.2.94-arm64.dmg Tide.Mind-0.2.94-arm64.dmg.blockmap Tide.Mind-0.2.94-arm64.zip Tide.Mind-0.2.94-arm64-stapled-app.zip candidate-verification.json latest-mac-arm64.yml > files.sha256
+          shasum -a 256 Tide.Mind-0.2.94-arm64.dmg Tide.Mind-0.2.94-arm64.dmg.blockmap Tide.Mind-0.2.94-arm64.zip Tide.Mind-0.2.94-arm64.zip.blockmap Tide.Mind-0.2.94-arm64-stapled-app.zip candidate-verification.json latest-mac-arm64.yml > files.sha256
       - name: Save signed outputs to the same private draft
         run: |
-          gh release upload "$TRANSFER_TAG" client/release/Tide.Mind-0.2.94-arm64.dmg client/release/Tide.Mind-0.2.94-arm64.dmg.blockmap client/release/Tide.Mind-0.2.94-arm64.zip client/release/Tide.Mind-0.2.94-arm64-stapled-app.zip client/release/candidate-verification.json client/release/latest-mac-arm64.yml client/release/files.sha256
+          gh release upload "$TRANSFER_TAG" client/release/Tide.Mind-0.2.94-arm64.dmg client/release/Tide.Mind-0.2.94-arm64.dmg.blockmap client/release/Tide.Mind-0.2.94-arm64.zip client/release/Tide.Mind-0.2.94-arm64.zip.blockmap client/release/Tide.Mind-0.2.94-arm64-stapled-app.zip client/release/candidate-verification.json client/release/latest-mac-arm64.yml client/release/files.sha256
       - name: Remove temporary signing keychain
         if: always()
         run: |
