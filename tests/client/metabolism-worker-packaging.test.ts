@@ -27,7 +27,7 @@ describe('metabolism Worker packaged candidate', () => {
   it('pins release actions and verifies each architecture before publishing', () => {
     const workflow = readReleaseWorkflow(process.cwd())
     const builder = fs.readFileSync(path.join(process.cwd(), 'client/electron-builder.yml'), 'utf8')
-    expect(workflow).toContain('runner: macos-15')
+    expect(workflow).toContain('runner: macos-26')
     expect(workflow).not.toContain('runner: macos-15-intel')
     expect(workflow).not.toMatch(/uses:\s+[^\s]+@v\d+/)
     expect(workflow).toContain('Require Apple signing and notarization secrets')

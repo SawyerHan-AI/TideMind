@@ -551,7 +551,7 @@ describe('Agent Integration deterministic performance gate', { timeout: 30_000 }
     const macJobStart = workflow.indexOf('  mac-packaging:')
     expect(macJobStart).toBeGreaterThan(-1)
     const macJob = workflow.slice(macJobStart, workflow.indexOf('  website:'))
-    expect(macJob).toContain("github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'macos-15'")
+    expect(macJob).toContain("github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'macos-26'")
     expect(macJob).toContain('HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}')
     expect(macJob).toContain('[ "$GITHUB_EVENT_NAME" != pull_request ] || [ "$HEAD_REPOSITORY" = "$GITHUB_REPOSITORY" ]')
     expect(macJob).toContain('ref: ${{ env.TIDEMIND_CI_SOURCE_HEAD }}')

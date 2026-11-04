@@ -637,6 +637,23 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
               executionPlanHash: input.planHash }, createdAt: input.createdAt,
           })
         }
+        if (input.preparedPlan.adapterPlan.mutations.length === 0
+          && takeovers!.every(prior => !prior.kind)) {
+          // The confirmed takeover rechecked these owned scopes under the writer fences.
+          // A no-op has no apply receipt to clear physical recovery; host verification stays pending.
+          for (const observed of input.preparedPlan.inspection.components
+            .filter(component => input.preparedPlan.componentKeys.includes(component.componentKey))) this.db.prepare(`
+            UPDATE managed_artifacts SET state='healthy',updated_at=?
+            WHERE state='needs_recovery' AND target_path=? AND owned_fragment_hash=?
+              AND observed_fragment_hash=owned_fragment_hash AND desired_fragment_hash=owned_fragment_hash
+              AND id IN (SELECT ic.artifact_id FROM installation_components ic
+                JOIN artifact_consumers c ON c.artifact_id=ic.artifact_id
+                  AND c.installation_id=ic.installation_id AND c.component_key=ic.component_key
+                WHERE ic.installation_id=? AND ic.component_key=? AND ic.desired_state='managed'
+                  AND c.state='active' AND c.desired_state='managed' AND c.tombstoned_at IS NULL)
+          `).run(input.createdAt,observed.observedTarget,observed.observedFragmentHash,
+            input.installationId,observed.componentKey)
+        }
         this.db.prepare(`UPDATE agent_installations SET status_reason='verification_stale',reconcile_state='idle',updated_at=?
           WHERE id=? AND status_reason='conflict'`).run(input.createdAt,input.installationId)
       }

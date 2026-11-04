@@ -95,5 +95,17 @@
       "releaseNotesDisclosureRequired": false,
       "reason": "User authorized deferring Codex Desktop complete real-host acceptance for 0.2.94 based on CLI verification, without a release-notes disclosure for this item. Implementation regressions, upgrades and signed-candidate checks remain required."
     }
+  },
+  "migrationAcceptanceDeferral": {
+    "policyId": "0.2.94-single-user-manual-migration",
+    "appVersion": "0.2.94",
+    "audience": "single_user",
+    "status": "deferred_to_installation",
+    "execution": "manual_after_release",
+    "scopes": [
+      "upgrade_matrix",
+      "observed_schema41"
+    ],
+    "reason": "The sole beta user authorized manual database migration after release during installation; migration evidence is not claimed passed."
   }
 }

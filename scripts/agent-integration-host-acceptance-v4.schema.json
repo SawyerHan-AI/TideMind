@@ -46,9 +46,11 @@
     "entries": { "type": "array", "items": { "$ref": "#/$defs/acceptanceTarget" } },
     "customPaths": { "type": "array", "minItems": 5, "maxItems": 5, "items": { "$ref": "#/$defs/acceptanceTarget" } },
     "upgradePaths": { "type": "array", "items": { "$ref": "#/$defs/upgradePath" } },
-    "databaseRecoveryPaths": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "$ref": "#/$defs/databaseRecovery" } },
+    "databaseRecoveryPaths": { "type": "array", "maxItems": 1, "items": { "$ref": "#/$defs/databaseRecovery" } },
+    "migrationAcceptanceDeferral": {"type": "object", "additionalProperties": false, "required": ["policyId", "appVersion", "audience", "status", "execution", "scopes", "reason"], "properties": {"policyId": {"const": "0.2.94-single-user-manual-migration"}, "appVersion": {"const": "0.2.94"}, "audience": {"const": "single_user"}, "status": {"const": "deferred_to_installation"}, "execution": {"const": "manual_after_release"}, "scopes": {"const": ["upgrade_matrix", "observed_schema41"]}, "reason": {"type": "string", "minLength": 1}}},
     "files": { "type": "array", "items": { "$ref": "#/$defs/file" } }
   },
+  "allOf": [{"if": {"required": ["migrationAcceptanceDeferral"]}, "then": {"properties": {"appVersion": {"const": "0.2.94"}}}, "else": {"properties": {"databaseRecoveryPaths": {"minItems": 1}}}}],
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "assertionSource": { "enum": ["human", "external"] },

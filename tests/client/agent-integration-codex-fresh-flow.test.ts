@@ -117,6 +117,8 @@ describe('Fresh Codex domain through production service',()=>{
       await composition.runtime.markScanCompleted()
       expect(db.prepare('SELECT state,failure_code FROM reconcile_runs WHERE id=?').get(old.id)).toEqual({state:'needs_recovery',failure_code:'recovery_source_trust_changed'})
       expect(db.prepare('SELECT state FROM reconcile_runs WHERE id=?').get(peer.id)).toEqual({state:'applied_unverified'})
+      // Preserve the physical recovery state left by source invalidation until explicit takeover.
+      db.prepare("UPDATE managed_artifacts SET state='needs_recovery' WHERE id IN (SELECT artifact_id FROM installation_components WHERE installation_id=? AND component_key='instruction')").run(first)
       if(late==='source-noop-partial')db.prepare("UPDATE projection_mutations SET state='effect_started' WHERE run_id=? AND component_key='memory_tools'").run(old.id)
       if(late==='source-noop-drift')fs.writeFileSync(configFile,fs.readFileSync(configFile,'utf8').replace(runtime.shimPath,runtime.shimPath+'-externally-changed'))
       const beforeConfirm=physical.map(file=>fs.readFileSync(file))
@@ -146,8 +148,16 @@ describe('Fresh Codex domain through production service',()=>{
       expect(plan.executionPlan.hostVersion).toBe('26.1029.61003')
       expect(plan.executionPlan.completedGenerationTakeovers).toEqual([expect.objectContaining({runId:old.id,mutationDomains:JSON.parse(old.writer_fence_snapshot_json).mutationDomains})])
       expect(db.prepare('SELECT count(*) AS n FROM projection_mutations WHERE run_id=?').get(current.id)).toEqual({n:0})
-      await composition.runtime.runMaintenance()
+      // No maintenance pass may be needed: staged consumers are not selected for observation.
       expect(db.prepare('SELECT DISTINCT state FROM managed_artifacts').all()).toEqual([{state:'healthy'}])
+      expect(db.prepare("SELECT count(*) AS n FROM reconcile_runs WHERE state='verified'").get()).toEqual({n:0})
+      const peerRetryPreview=await composition.service.previewConnect([second],true)
+      const peerRetry=await composition.service.applyConnect(peerRetryPreview.planHash,[second])
+      expect(peerRetry.results[0],JSON.stringify(peerRetry)).toMatchObject({status:'awaiting_verification'})
+      for(const apply of applySpies)expect(apply).not.toHaveBeenCalled()
+      expect(db.prepare('SELECT * FROM projection_mutations WHERE run_id=? ORDER BY id').all(old.id)).toEqual(oldEffects)
+      expect(physical.map(file=>fs.readFileSync(file))).toEqual(before)
+      expect(db.prepare("SELECT count(*) AS n FROM reconcile_runs WHERE state='verified'").get()).toEqual({n:0})
       const token=JSON.parse(old.prepared_plan_json).activityGenerationToken
       for(const componentKey of ['memory_tools','lifecycle'] as const){
         expect(evaluateBridgeAdmission(db,{agentId:canonical,activityGenerationToken:token,componentKey})).toEqual({allowed:true})

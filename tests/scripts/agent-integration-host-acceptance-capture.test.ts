@@ -305,22 +305,17 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
     expect(result).toMatchObject({
       appVersion: '0.2.94',
       recordedStepCount: 0,
-      requiredUpgradePaths: expect.arrayContaining([
-        'opencode-v2-beta-cli:arm64:cli%3Aopencode-v2-beta-cli%3Adarwin-arm64/0.2.89',
-        'opencode-v2-beta-cli:arm64:cli%3Aopencode-v2-beta-cli%3Adarwin-arm64/0.2.91',
-      ]),
+      requiredUpgradePaths: [],
+      requiredDatabaseRecoveryPaths: [],
+      migrationAcceptanceDeferral: requirements.migrationAcceptanceDeferral,
     })
     const state = JSON.parse(fs.readFileSync(path.join(workspace, '.capture-state.json'), 'utf8'))
     const restartBoundTargets = state.entries.filter((target: { realHostDeferral: unknown }) => !target.realHostDeferral)
     expect(restartBoundTargets.every((target: { requiredSteps: string[] }) => (
       target.requiredSteps.includes('restart_persistence')
     ))).toBe(true)
-    expect(result.requiredUpgradePaths).toHaveLength(
-      (state.entries.length + state.customPaths.length) * requirements.upgradeFromAppVersions.length,
-    )
-    expect(result.requiredUpgradePaths.some((upgrade: string) => (
-      upgrade.startsWith('nonstandard_config_root/') || upgrade.startsWith('manual_mcp_client/')
-    ))).toBe(true)
+    expect(state.migrationAcceptanceDeferral).toEqual(requirements.migrationAcceptanceDeferral)
+    expect(state.upgradeFromAppVersions).toHaveLength(5)
     expect(fs.readFileSync(fakeAgentConfig)).toEqual(before)
     expect(fs.statSync(path.join(workspace, '.capture-state.json')).mode & 0o777).toBe(0o600)
   })
@@ -756,7 +751,8 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
       evidencePaths: [evidencePath, ...paths],
     })
     expect(agentHostAcceptanceCaptureStatus(workspace)).toMatchObject({
-      requiredUpgradePaths: expect.arrayContaining([`${targetId}/0.2.89`, `${targetId}/0.2.91`]),
+      requiredUpgradePaths: [],
+      migrationAcceptanceDeferral: {status:'deferred_to_installation'},
       recordedUpgradePaths: [`${targetId}/0.2.89`],
     })
     expect(() => recordAgentHostAcceptanceUpgrade({
@@ -790,7 +786,7 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
     expect(execute).toThrow(/already recorded/)
   })
 
-  it('blocks review preparation when ordinary upgrades are complete but Custom upgrades are absent', () => {
+  it('permits explicitly deferred migrations but still requires every Codex step', () => {
     const { root, workspace } = initialized()
     const statePath = path.join(workspace, '.capture-state.json')
     const state = JSON.parse(fs.readFileSync(statePath, 'utf8'))
@@ -800,14 +796,16 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
       target.hostVersion = 'fixture'
       target.steps = target.requiredSteps.map((id: string) => ({ id, evidenceFiles: [] }))
     }
-    state.upgradePaths = state.entries.flatMap((target: { targetKey: string }) =>
-      state.upgradeFromAppVersions.map((fromAppVersion: string) => ({ targetKey: target.targetKey, fromAppVersion })),
-    )
+    state.upgradePaths = []
+    state.databaseRecoveryPaths = []
     fs.writeFileSync(statePath, JSON.stringify(state))
-    expect(() => prepareAgentHostAcceptanceReview({
-      workspace, outputPath: path.join(root, 'review-request.json'),
-    })).toThrow(/capture is incomplete: upgrade:nonstandard_config_root\/0.2.89/)
-    expect(fs.existsSync(path.join(root, 'review-request.json'))).toBe(false)
+    const result=prepareAgentHostAcceptanceReview({workspace,outputPath:path.join(root,'review-request.json')})
+    expect(result.migrationAcceptanceDeferral).toMatchObject({status:'deferred_to_installation'})
+    const observed=state.entries.find((target:any)=>!target.realHostDeferral)
+    observed.steps=[]
+    fs.writeFileSync(statePath,JSON.stringify(state))
+    expect(()=>prepareAgentHostAcceptanceReview({workspace,outputPath:path.join(root,'missing-codex-review.json')})).toThrow(/capture is incomplete/)
+
   })
 
   it('rejects a prior v3 acceptance capture state under the v4 contract', () => {
@@ -852,7 +850,8 @@ describe('0.2.94 explicit deferred real-host scope', () => {
     const status = agentHostAcceptanceCaptureStatus(workspace)
     expect(status.completedTargetCount).toBe(0)
     expect(status.requiredRealHostTargetCount).toBe(requirements.targets.filter((entry: {catalogId: string}) => entry.catalogId === 'codex-cli').length)
-    expect(status.requiredUpgradePaths).toHaveLength((requirements.targets.length + requirements.customTargets.length) * 5)
+    expect(status.requiredUpgradePaths).toEqual([])
+    expect(status.migrationAcceptanceDeferral).toMatchObject({status:'deferred_to_installation'})
     expect(() => recordAgentHostAcceptanceStep({workspace, targetId, stepId: 'brain_prepare',
       assertionPath: '/not-read', attestationPath: '/not-read', evidencePaths: []})).toThrow(/deferred target does not accept real-host steps/)
     expect(() => prepareAgentHostAcceptanceReview({workspace, outputPath: path.join(root, 'review.json')})).toThrow(/capture is incomplete/)

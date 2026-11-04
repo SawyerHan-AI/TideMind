@@ -181,12 +181,21 @@ function fixture(
   activityLedgerSource?: 'fixture' | 'real_profile',
   releaseMacArchitectures = ['arm64', 'x64'],
   codexDataOnly: false | 'valid' | 'missing-facts' | 'lost-agent' = false,
+  manualMigrationDeferral = false,
 ) {
   const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-host-acceptance-'))
   roots.push(outer)
   const root = path.join(outer, 'bundle')
   fs.mkdirSync(root)
-  const contract = writeTestContract(outer, releaseMacArchitectures, Boolean(codexDataOnly))
+  const contract = writeTestContract(outer, releaseMacArchitectures, Boolean(codexDataOnly) || manualMigrationDeferral)
+  if(manualMigrationDeferral){
+    const production=JSON.parse(fs.readFileSync('scripts/agent-integration-host-acceptance-requirements.json','utf8'))
+    const raw=JSON.parse(fs.readFileSync(contract.requirementsPath,'utf8'))
+    Object.assign(raw,{appVersion:'0.2.94',realHostPolicy:production.realHostPolicy,migrationAcceptanceDeferral:production.migrationAcceptanceDeferral})
+    fs.writeFileSync(contract.requirementsPath,JSON.stringify(raw))
+    fs.writeFileSync(contract.releaseManifestPath,fs.readFileSync(contract.releaseManifestPath,'utf8')
+      .replace("VERSION = '0.2.92'","VERSION = '0.2.94'").replace("release('codex-desktop'","release('codex-cli'"))
+  }
   const requirements = loadAgentHostAcceptanceRequirements(contract.requirementsPath, contract.releaseManifestPath)
   const files: Array<{ path: string; bytes: number; sha256: string }> = []
   const captureNonce = '9'.repeat(64)
@@ -635,6 +644,16 @@ function fixture(
       candidateAppsSha256: string
       releaseContractSha256: string
     },
+  }
+  if(manualMigrationDeferral){
+    Object.assign(index,{migrationAcceptanceDeferral:requirements.migrationAcceptanceDeferral})
+    index.entries=index.entries.map((entry:any)=>deferredHostAcceptanceTarget(requirements,entry)??entry)
+    index.customPaths=index.customPaths.map((entry:any)=>deferredHostAcceptanceTarget(requirements,entry)??entry)
+    index.upgradePaths=[];index.databaseRecoveryPaths=[]
+    const used=new Set(index.entries.flatMap((entry:any)=>entry.steps?.flatMap((step:any)=>step.evidenceFiles)??[]))
+    for(const file of [...files])if(!used.has(file.path)){
+      fs.rmSync(path.join(root,file.path));files.splice(files.indexOf(file),1)
+    }
   }
   index.review = {
     reviewer: 'independent-release-auditor',
@@ -1318,5 +1337,37 @@ describe('deferred targets are contract declarations, not host observations', ()
     expect(() => validateDeferredHostAcceptanceTarget({...target,realHostDeferral:{...target.realHostDeferral,status:'passed'}},target)).toThrow()
     expect(upgradeTargetIdentityDigest(target,requirements.releaseContractSha256)).not.toBe(upgradeTargetIdentityDigest({...target,targetKey:'other'},requirements.releaseContractSha256))
     expect(upgradeTargetIdentityDigest(target,requirements.releaseContractSha256)).not.toBe(upgradeTargetIdentityDigest(target,'0'.repeat(64)))
+  })
+})
+
+
+describe('single-user 0.2.94 migration deferral', () => {
+  it.each(['future-version','multiple-users','passed','extra-scope'] as const)('rejects unauthorized policy %s', mode => {
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'migration-deferral-'));roots.push(root)
+    const raw=JSON.parse(fs.readFileSync('scripts/agent-integration-host-acceptance-requirements.json','utf8'))
+    if(mode==='future-version')raw.appVersion='0.2.95'
+    if(mode==='multiple-users')raw.migrationAcceptanceDeferral.audience='public'
+    if(mode==='passed')raw.migrationAcceptanceDeferral.status='passed'
+    if(mode==='extra-scope')raw.migrationAcceptanceDeferral.scopes.push('codex_runtime')
+    const file=path.join(root,'requirements.json');fs.writeFileSync(file,JSON.stringify(raw))
+    expect(()=>loadAgentHostAcceptanceRequirements(file)).toThrow()
+  })
+  it('requires explicit index deferral, preserves version list and signed candidate checks',()=>{
+    const built=fixture('fixture',undefined,['arm64'],false,true)
+    const contract=contracts.get(built.indexPath)!
+    const requirements=built.requirements
+    const index:any=built.index
+    const check=()=>{built.write();return verifyAgentIntegrationHostAcceptance({indexPath:built.indexPath,expectedAppVersion:'0.2.94',expectedSourceCommit:SOURCE_COMMIT,...contract,allowFixture:true})}
+    expect(check()).toMatchObject({status:'passed',migrationAcceptanceDeferral:{status:'deferred_to_installation',execution:'manual_after_release'},upgradePathCount:0})
+    expect(index.upgradeFromAppVersions).toEqual(['0.2.89','0.2.91'])
+    delete index.migrationAcceptanceDeferral
+    expect(check).toThrow(/migration deferral/)
+    index.migrationAcceptanceDeferral=requirements.migrationAcceptanceDeferral
+    const cli=index.entries.find((entry:any)=>entry.targetId==='codex-cli')
+    const saved=cli.steps;cli.steps=[]
+    expect(check).toThrow(/required step/)
+    cli.steps=saved
+    delete index.candidateAppsByArchitecture.arm64
+    expect(check).toThrow(/candidate/)
   })
 })
