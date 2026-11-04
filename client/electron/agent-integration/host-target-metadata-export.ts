@@ -494,6 +494,19 @@ export interface AgentHostPhysicalDistribution {
   distributionSizeBytes: number;
 }
 
+/** Desktop discovery omits the CLI-only proof flag; signed-app trust is attested below. */
+export function assertAgentHostExportDiscoveryEligibility(discovered: DiscoveredInstallation): void {
+  if (discovered.managementEligibility?.eligible === true) return;
+  const distribution = discovered.identity.distribution;
+  const signedDesktop = typeof discovered.appPath === 'string' && path.isAbsolute(discovered.appPath)
+    && AGENT_INTEGRATION_RELEASE_ENTRY_MAP.get(discovered.catalogId)?.officialDistributions.some(expected => (
+      expected.channel === 'signed_app' && expected.distributionId === distribution.distributionId
+        && expected.packageProvenance === distribution.packageProvenance
+    ));
+  if (discovered.managementEligibility === undefined && signedDesktop) return;
+  throw new Error(`fresh production discovery is not release-eligible: ${discovered.managementEligibility?.reason ?? 'unknown'}`);
+}
+
 export async function readAgentHostPhysicalDistribution(
   receipt: AgentReleaseDistributionArtifactReceipt,
   discovered: DiscoveredInstallation,
@@ -811,9 +824,7 @@ export async function exportAgentHostTargetMetadata(options: AgentHostTargetMeta
         const matches = report.installations.filter(candidate => sameInstallation(row, candidate));
         if (matches.length !== 1) throw new Error('fresh production discovery does not uniquely match the v34 Installation');
         [discovered] = matches;
-        if (discovered.managementEligibility?.eligible !== true) {
-          throw new Error(`fresh production discovery is not release-eligible: ${discovered.managementEligibility?.reason ?? 'unknown'}`);
-        }
+        assertAgentHostExportDiscoveryEligibility(discovered);
         const attestation = await runtime.attest(row);
         if (!attestation || !SHA256.test(attestation)) throw new Error('live production trust attestation failed');
         liveTrustProof = attestation;

@@ -90,6 +90,19 @@
     ],
     "otherCatalogs": "deferred",
     "customPaths": "deferred",
-    "reason": "User authorized Codex-only real-host acceptance for 0.2.94; other Agent and Custom real-host validation is deferred. Implementations, regressions, upgrades and signed-candidate requirements remain required."
+    "reason": "User authorized Codex-only real-host acceptance for 0.2.94; other Agent and Custom real-host validation is deferred. Implementations, regressions, upgrades and signed-candidate requirements remain required.",
+    "desktopLifecycle": {
+      "status": "deferred",
+      "stepIds": [
+        "lifecycle_session_start",
+        "lifecycle_pre_compact",
+        "lifecycle_post_compact",
+        "lifecycle_session_end",
+        "codex_context_restore_manual",
+        "codex_context_restore_auto"
+      ],
+      "releaseNotesDisclosureRequired": false,
+      "reason": "User explicitly authorized deferring Codex Desktop full lifecycle acceptance for 0.2.94 on 2026-11-04, without a release-notes disclosure for this item. Other Desktop checks, CLI acceptance, subscriptions, upgrades and signed-candidate checks remain required."
+    }
   }
 }
