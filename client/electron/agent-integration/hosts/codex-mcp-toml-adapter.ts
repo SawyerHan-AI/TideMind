@@ -459,12 +459,16 @@ function desiredEntry(context: AdapterOperationContext): JsonValue {
 }
 
 function isExactAdoptableEntry(entry: JsonValue, context: AdapterOperationContext): boolean {
+  // Codex defaults omitted enabled to true; compare that meaning without
+  // changing the original block bytes used for ownership and CAS.
+  const comparable = entry !== null && typeof entry === 'object' && !Array.isArray(entry)
+    && !Object.hasOwn(entry, 'enabled') ? { ...entry, enabled: true } : entry
   const desired = desiredEntry(context)
-  if (sha256Json(entry) === sha256Json(desired)) return true
+  if (sha256Json(comparable) === sha256Json(desired)) return true
   const desiredRecord = desired as Record<string, JsonValue>
   const legacyEnvironment = { ...(desiredRecord.env as Record<string, JsonValue>) }
   delete legacyEnvironment.EB_HOST_VARIANT
-  return sha256Json(entry) === sha256Json({ ...desiredRecord, env: legacyEnvironment })
+  return sha256Json(comparable) === sha256Json({ ...desiredRecord, env: legacyEnvironment })
 }
 
 function planAction(input: {

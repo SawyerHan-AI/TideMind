@@ -182,7 +182,7 @@ describe('legacy Agent adoption', () => {
   }
 
 
-  function sharedCodexFixture(agentIds = ['eb_codex_shared']) {
+  function sharedCodexFixture(agentIds = ['eb_codex_shared'], omitEnabled = false) {
     const configRoot = path.join(root, '.codex')
     fs.mkdirSync(configRoot, { recursive: true })
     for (const id of agentIds) db.prepare("INSERT INTO agents(id,name,tool_type,created) VALUES (?,?,'codex',?)").run(id,id,T0)
@@ -193,16 +193,16 @@ describe('legacy Agent adoption', () => {
     })
     const configFile=path.join(configRoot,'config.toml')
     fs.writeFileSync(configFile,agentIds.map(id=>[
-      '[mcp_servers.tidemind-'+id+']','enabled = true',
+      '[mcp_servers.tidemind-'+id+']',...(omitEnabled?[]:['enabled = true']),
       'command = '+JSON.stringify(runtime.shimPath),
       'args = ['+JSON.stringify(runtime.mcpServerPath)+']',
-      'env = { EB_AGENT_ID = '+JSON.stringify(id)+' }','',
+      ...(omitEnabled?['','[mcp_servers.tidemind-'+id+'.env]','EB_AGENT_ID = '+JSON.stringify(id)]:['env = { EB_AGENT_ID = '+JSON.stringify(id)+' }']),'',
     ].join('\n')).join('\n'))
     return {configFile,adapters:createP0HostAdapters()}
   }
 
-  it('adopts one exact legacy Codex carrier for two surfaces without merging Installation IDs',async()=>{
-    const {configFile,adapters}=sharedCodexFixture()
+  it.each([false,true])('adopts one exact legacy Codex carrier for two surfaces without merging Installation IDs (omit enabled: %s)',async omitEnabled=>{
+    const {configFile,adapters}=sharedCodexFixture(['eb_codex_shared'],omitEnabled)
     const bytes=fs.readFileSync(configFile)
     const result=await adoptProvableLegacyConnections({repository,adapters,runtime,now:T0})
     expect(result.adopted).toBe(1)
