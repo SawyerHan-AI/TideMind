@@ -54,6 +54,37 @@ describe('shared identity runtime carrier',()=>{
   db.exec("UPDATE agent_consents SET status='revoked'")
   expect(evaluateBridgeAdmission(db,request).allowed).toBe(false)
  })
+ it.each(['superseded_by_confirmed_generation','superseded_by_disconnect'])(
+  'keeps current authority checks after the physical carrier is retired by %s',reason=>{
+   db.prepare("UPDATE reconcile_runs SET state='cancelled',failure_code=? WHERE id='run_cli'").run(reason)
+   expect(evaluateBridgeAdmission(db,request)).toEqual({allowed:true})
+   expect(evaluateBridgeAdmission(db,{...request,activityGenerationToken:'old-token'}).allowed).toBe(false)
+   db.exec("UPDATE agent_consents SET status='revoked'")
+   expect(evaluateBridgeAdmission(db,request).allowed).toBe(false)
+   db.exec("UPDATE agent_consents SET status='active'; UPDATE managed_artifacts SET state='needs_recovery' WHERE id='artifact_cli'")
+   expect(evaluateBridgeAdmission(db,request).allowed).toBe(false)
+   db.exec("UPDATE managed_artifacts SET state='healthy' WHERE id='artifact_cli'; UPDATE reconcile_runs SET failure_code='unrelated_cancel' WHERE id='run_cli'")
+   expect(evaluateBridgeAdmission(db,request).allowed).toBe(false)
+   db.prepare("UPDATE reconcile_runs SET failure_code=? WHERE id='run_cli'").run(reason)
+   db.exec(`INSERT INTO projection_mutations(id,run_id,operation_id,installation_id,component_key,artifact_id,mutation_domain,target,after_hash,idempotency_strategy,readback_strategy,state,committed_at,created_at,updated_at)
+     VALUES ('replacement','run_desktop','replace','installation_desktop','lifecycle','artifact_cli','domain','/fixture/cli','new','test','test','committed','2026-01-02','now','now');
+     UPDATE managed_artifacts SET owned_fragment_hash='new' WHERE id='artifact_cli';`)
+   const latestRequest={...request,activityGenerationToken:'generation_desktop'}
+   expect(evaluateBridgeAdmission(db,request).allowed).toBe(false)
+   expect(evaluateBridgeAdmission(db,latestRequest)).toEqual({allowed:true})
+   const previous=db.prepare("SELECT * FROM reconcile_runs WHERE id='run_cli'").get() as Record<string,unknown>
+   for(const next of [{...previous,id:'physical_disconnect',operation_type:'disconnect',state:'committed'},
+     {...previous,id:'waiting_reconnect',operation_type:'connect',state:'planned'}]){
+    db.prepare(`INSERT INTO reconcile_runs (${Object.keys(next).join(',')}) VALUES (${Object.keys(next).map(()=>'?').join(',')})`).run(...Object.values(next))
+   }
+   db.exec(`INSERT INTO projection_mutations(id,run_id,operation_id,installation_id,component_key,artifact_id,mutation_domain,target,after_hash,idempotency_strategy,readback_strategy,state,committed_at,created_at,updated_at)
+     VALUES ('physical-removal','physical_disconnect','remove','installation_cli','lifecycle','artifact_cli','domain','/fixture/cli','new','test','test','committed','2026-02-01','now','now');`)
+   // A planned reconnect cannot revive the pre-removal token, even if a cached
+   // consumer and Artifact have already been reopened.
+   expect(evaluateBridgeAdmission(db,request).allowed).toBe(false)
+   expect(evaluateBridgeAdmission(db,latestRequest).allowed).toBe(false)
+  },
+ )
  it('records a shared event once without treating a static surface hint as exact host evidence',()=>{
   const input={...request,signalName:'session_start' as const,tideMindVersion:'test',hostVariant:'codex-cli'}
   expect(recordHostActivityEvidence(db,input)).toEqual({status:'shared_recorded',bindingId:'binding'})

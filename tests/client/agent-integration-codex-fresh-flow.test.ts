@@ -8,6 +8,7 @@ import path from 'node:path'
 import Database from 'better-sqlite3'
 import { parse } from 'smol-toml'
 import { ensureSchema } from '../../src/db/schema'
+import { evaluateBridgeAdmission } from '../../src/agent-bridge-guard'
 import { bindAgentIntegrationExecutionPort,createProductionAgentIntegrationComposition } from '../../client/electron/agent-integration/production-service'
 import { createOfficialCodexHooksPort } from '../../client/electron/agent-integration/hosts/codex-lifecycle-adapter'
 import { createP0HostAdapters } from '../../client/electron/agent-integration/hosts/p0-adapter-registry'
@@ -17,6 +18,7 @@ import type { AdapterRuntimeContext } from '../../client/electron/agent-integrat
 
 describe('Fresh Codex domain through production service',()=>{
  it.each([
+  ...['source-noop','source-noop-partial','source-noop-drift','source-noop-different-source'].map(mode=>['codex-desktop',mode] as const),
   ['codex-cli','reconnect-batch-disconnect-fence'],
   ['codex-cli','reconnect-batch-recovery-disconnect'],
   ...['verify','partial','drift'].map(mode=>['codex-cli','reconnect-batch-recovery-'+mode] as const),
@@ -39,13 +41,13 @@ describe('Fresh Codex domain through production service',()=>{
     canManageInstallation:()=>true,scanner:{scan:async()=>({installations:[],unresolved:[],diagnostics:[]})},notifications:{deliver:vi.fn()}})
   const unbind=bindAgentIntegrationExecutionPort(composition.coordinator)
   const discoveredIdentities=new Map<string,ReturnType<typeof canonicalizeInstallationIdentity>>()
-  const discover=(variant:'codex-cli'|'codex-desktop',domainRoot=configRoot,versionOverride?:string)=>{
+  const discover=(variant:'codex-cli'|'codex-desktop',domainRoot=configRoot,versionOverride?:string,provenanceOverride?:string)=>{
     const installationId=variant
     // Public batching sorts IDs; swap host assignments to exercise both physical writers.
     if(String(late).startsWith('reconnect-batch') && first==='codex-desktop')variant=variant==='codex-cli'?'codex-desktop':'codex-cli'
     const executable=path.join(root,'bin',variant);fs.writeFileSync(executable,'#!/bin/sh\nexit 0\n',{mode:0o700})
     const identity=canonicalizeInstallationIdentity({runtimeRealm:'local_macos',osUserIdentity:'synthetic-user',
-     productFamilyId:'codex',hostVariant:variant,configRoot:domainRoot,distribution:{distributionId:'cli:'+variant,executableRealpath:executable,packageProvenance:'fixture',capabilityFingerprint:'fixture-'+variant}})
+     productFamilyId:'codex',hostVariant:variant,configRoot:domainRoot,distribution:{distributionId:'cli:'+variant,executableRealpath:executable,packageProvenance:provenanceOverride ?? 'fixture',capabilityFingerprint:'fixture-'+variant}})
     discoveredIdentities.set(installationId,identity)
     composition.repository.upsertDiscoveredInstallation({id:installationId,family:'codex',hostVariant:variant,runtimeRealm:'local_macos',
       osUserIdentity:'synthetic-user',installKey:identity.installKey,distributionId:'cli:'+variant,provenance:'fixture',displayName:variant,
@@ -57,9 +59,9 @@ describe('Fresh Codex domain through production service',()=>{
   try {
     const second=first==='codex-cli'?'codex-desktop':'codex-cli'
     const reconnectBatch=String(late).startsWith('reconnect-batch')
-    const options=(ids:string[])=>(reconnectBatch || String(late).startsWith('applied-') || String(late).startsWith('native-trust-'))?undefined:{withoutLifecycleInstallationIds:ids}
+    const options=(ids:string[])=>(reconnectBatch || String(late).startsWith('applied-') || String(late).startsWith('native-trust-') || String(late).startsWith('source-noop'))?undefined:{withoutLifecycleInstallationIds:ids}
     discover(first)
-    if(reconnectBatch || late===false || late==='competing' || String(late).startsWith('batch'))discover(second)
+    if(String(late).startsWith('source-noop') || reconnectBatch || late===false || late==='competing' || String(late).startsWith('batch'))discover(second)
     expect(fs.existsSync(configRoot)).toBe(false)
     if(late==='unknown-carrier'){
       fs.mkdirSync(configRoot)
@@ -98,6 +100,61 @@ describe('Fresh Codex domain through production service',()=>{
     expect(result.results.every(item=>item.status==='awaiting_verification'),JSON.stringify(result)).toBe(true)
     priorBehavior?.mockRestore()
     const configFile=path.join(configRoot,'config.toml')
+    if(String(late).startsWith('source-noop')){
+      const joinPreview=await composition.service.previewConnect([second],true)
+      const join=await composition.service.applyConnect(joinPreview.planHash,[second])
+      expect(join.results[0],JSON.stringify(join)).toMatchObject({status:'awaiting_verification'})
+      const old=db.prepare('SELECT * FROM reconcile_runs WHERE installation_id=?').get(first) as Record<string,string>
+      const peer=db.prepare('SELECT * FROM reconcile_runs WHERE installation_id=?').get(second) as Record<string,string>
+      expect(db.prepare('SELECT count(*) AS n FROM projection_mutations WHERE run_id=?').get(peer.id)).toEqual({n:0})
+      expect(JSON.parse(peer.writer_fence_snapshot_json).mutationDomains).toEqual(JSON.parse(old.writer_fence_snapshot_json).mutationDomains)
+      const oldEffects=db.prepare('SELECT * FROM projection_mutations WHERE run_id=? ORDER BY id').all(old.id)
+      expect(oldEffects).toHaveLength(3)
+      expect(oldEffects.every((row:any)=>row.state==='committed')).toBe(true)
+      const physical=[configFile,path.join(configRoot,'hooks.json'),path.join(home,'.agents/skills/tidemind/SKILL.md')]
+      const before=physical.map(file=>fs.readFileSync(file))
+      discover(first,configRoot,'26.1029.61003',late==='source-noop-different-source'?'other-publisher':undefined)
+      await composition.runtime.markScanCompleted()
+      expect(db.prepare('SELECT state,failure_code FROM reconcile_runs WHERE id=?').get(old.id)).toEqual({state:'needs_recovery',failure_code:'recovery_source_trust_changed'})
+      expect(db.prepare('SELECT state FROM reconcile_runs WHERE id=?').get(peer.id)).toEqual({state:'applied_unverified'})
+      if(late==='source-noop-partial')db.prepare("UPDATE projection_mutations SET state='effect_started' WHERE run_id=? AND component_key='memory_tools'").run(old.id)
+      if(late==='source-noop-drift')fs.writeFileSync(configFile,fs.readFileSync(configFile,'utf8').replace(runtime.shimPath,runtime.shimPath+'-externally-changed'))
+      const beforeConfirm=physical.map(file=>fs.readFileSync(file))
+      const runCount=(db.prepare('SELECT count(*) AS n FROM reconcile_runs').get() as {n:number}).n
+      const applySpies=[...adapters.values()].map(adapter=>vi.spyOn(adapter,'apply'))
+      const preview=await composition.service.previewConnect([first],true)
+      const next=await composition.service.applyConnect(preview.planHash,[first])
+      for(const apply of applySpies)expect(apply).not.toHaveBeenCalled()
+      if(late!=='source-noop'){
+        expect(next.results[0].status,JSON.stringify(next)).not.toBe('awaiting_verification')
+        expect(db.prepare('SELECT state FROM reconcile_runs WHERE id=?').get(old.id)).toEqual({state:'needs_recovery'})
+        expect(db.prepare('SELECT count(*) AS n FROM reconcile_runs').get()).toEqual({n:runCount})
+        expect(db.prepare("SELECT count(*) AS n FROM agent_integration_events WHERE kind='completed_generation_superseded'").get()).toEqual({n:0})
+        expect(physical.map(file=>fs.readFileSync(file))).toEqual(beforeConfirm)
+        expect(db.prepare('SELECT state,consent_envelope_id,execution_plan_hash FROM reconcile_runs WHERE id=?').get(peer.id)).toEqual({state:'applied_unverified',consent_envelope_id:peer.consent_envelope_id,execution_plan_hash:peer.execution_plan_hash})
+        return
+      }
+      expect(next.results[0],JSON.stringify(next)).toMatchObject({status:'awaiting_verification'})
+      expect(db.prepare('SELECT state,failure_code FROM reconcile_runs WHERE id=?').get(old.id)).toEqual({state:'cancelled',failure_code:'superseded_by_confirmed_generation'})
+      expect(db.prepare('SELECT * FROM projection_mutations WHERE run_id=? ORDER BY id').all(old.id)).toEqual(oldEffects)
+      expect(db.prepare('SELECT state,consent_envelope_id,execution_plan_hash FROM reconcile_runs WHERE id=?').get(peer.id)).toEqual({state:'applied_unverified',consent_envelope_id:peer.consent_envelope_id,execution_plan_hash:peer.execution_plan_hash})
+      expect(physical.map(file=>fs.readFileSync(file))).toEqual(before)
+      const current=db.prepare('SELECT id,prepared_plan_json,writer_fence_snapshot_json FROM reconcile_runs WHERE installation_id=? AND id!=?').get(first,old.id) as {id:string;prepared_plan_json:string;writer_fence_snapshot_json:string}
+      expect(JSON.parse(current.writer_fence_snapshot_json).mutationDomains).toEqual(JSON.parse(old.writer_fence_snapshot_json).mutationDomains)
+      const plan=JSON.parse(current.prepared_plan_json)
+      expect(plan.adapterPlan.mutations).toEqual([])
+      expect(plan.executionPlan.hostVersion).toBe('26.1029.61003')
+      expect(plan.executionPlan.completedGenerationTakeovers).toEqual([expect.objectContaining({runId:old.id,mutationDomains:JSON.parse(old.writer_fence_snapshot_json).mutationDomains})])
+      expect(db.prepare('SELECT count(*) AS n FROM projection_mutations WHERE run_id=?').get(current.id)).toEqual({n:0})
+      await composition.runtime.runMaintenance()
+      expect(db.prepare('SELECT DISTINCT state FROM managed_artifacts').all()).toEqual([{state:'healthy'}])
+      const token=JSON.parse(old.prepared_plan_json).activityGenerationToken
+      for(const componentKey of ['memory_tools','lifecycle'] as const){
+        expect(evaluateBridgeAdmission(db,{agentId:canonical,activityGenerationToken:token,componentKey})).toEqual({allowed:true})
+        expect(evaluateBridgeAdmission(db,{agentId:canonical,activityGenerationToken:'stale-token',componentKey})).toEqual({allowed:false,reason:'activity_generation_mismatch'})
+      }
+      return
+    }
     if(String(late).startsWith('native-trust-')){
       // Native trust state fixture; exercise the production verifier wiring, without an override.
       const join=String(late).startsWith('native-trust-join')

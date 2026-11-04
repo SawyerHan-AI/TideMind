@@ -267,21 +267,20 @@ export function loadAgentHostAcceptanceRequirements(
   let realHostPolicy = null
   if (requirements.appVersion === '0.2.94') {
     const policy = record(requirements.realHostPolicy, '0.2.94 real-host policy')
-    exactKeys(policy, ['id', 'requiredCatalogIds', 'otherCatalogs', 'customPaths', 'reason', 'desktopLifecycle'], '0.2.94 real-host policy')
+    exactKeys(policy, ['id', 'requiredCatalogIds', 'otherCatalogs', 'customPaths', 'reason', 'desktopAcceptance'], '0.2.94 real-host policy')
     if (policy.id !== '0.2.94-codex-only'
-      || JSON.stringify(policy.requiredCatalogIds) !== JSON.stringify(['codex-cli', 'codex-desktop'])
+      || JSON.stringify(policy.requiredCatalogIds) !== JSON.stringify(['codex-cli'])
       || policy.otherCatalogs !== 'deferred' || policy.customPaths !== 'deferred') {
-      throw new Error('0.2.94 real-host scope must require Codex CLI/Desktop and defer other Agent/Custom validation')
+      throw new Error('0.2.94 real-host scope must require Codex CLI and defer Desktop/other Agent/Custom validation')
     }
     nonEmptyString(policy.reason, '0.2.94 real-host deferral reason')
-    const desktop = record(policy.desktopLifecycle, '0.2.94 Desktop lifecycle deferral')
-    exactKeys(desktop, ['status', 'stepIds', 'releaseNotesDisclosureRequired', 'reason'], '0.2.94 Desktop lifecycle deferral')
-    if (desktop.status !== 'deferred' || desktop.releaseNotesDisclosureRequired !== false
-      || JSON.stringify(desktop.stepIds) !== JSON.stringify(CODEX_DESKTOP_DEFERRED_LIFECYCLE_STEPS)) {
-      throw new Error('0.2.94 Desktop lifecycle deferral must match the authorized six steps')
+    const desktop = record(policy.desktopAcceptance, '0.2.94 Desktop acceptance deferral')
+    exactKeys(desktop, ['status', 'releaseNotesDisclosureRequired', 'reason'], '0.2.94 Desktop acceptance deferral')
+    if (desktop.status !== 'deferred' || desktop.releaseNotesDisclosureRequired !== false) {
+      throw new Error('0.2.94 Desktop acceptance must remain explicitly deferred')
     }
-    nonEmptyString(desktop.reason, '0.2.94 Desktop lifecycle deferral reason')
-    Object.freeze(desktop.stepIds); Object.freeze(desktop)
+    nonEmptyString(desktop.reason, '0.2.94 Desktop acceptance deferral reason')
+    Object.freeze(desktop)
     realHostPolicy = Object.freeze({ ...policy, requiredCatalogIds: Object.freeze([...policy.requiredCatalogIds]) })
   }
   const releaseMacArchitectures = Object.freeze([...requirements.releaseMacArchitectures].sort())
@@ -403,6 +402,8 @@ export function realHostAcceptanceDeferral(requirements, target) {
   if (!requirements.realHostPolicy) return null
   const id = target.targetId ?? target.catalogId
   if (target.disposition !== 'custom' && requirements.realHostPolicy.requiredCatalogIds.includes(id)) return null
+  if (target.disposition !== 'custom' && id === 'codex-desktop') return { status: 'deferred', policyId: requirements.realHostPolicy.id,
+    reason: requirements.realHostPolicy.desktopAcceptance.reason, releaseNotesDisclosureRequired: false }
   return { status: 'deferred', policyId: requirements.realHostPolicy.id, reason: requirements.realHostPolicy.reason }
 }
 
@@ -438,21 +439,8 @@ export function upgradeTargetIdentityDigest(target, releaseContractSha256) {
     target.architecture, target.realHostDeferral])))
 }
 
-const CODEX_DESKTOP_DEFERRED_LIFECYCLE_STEPS = Object.freeze([
-  'lifecycle_session_start', 'lifecycle_pre_compact', 'lifecycle_post_compact', 'lifecycle_session_end',
-  'codex_context_restore_manual', 'codex_context_restore_auto',
-])
-
-export function realHostDeferredStepIds(requirements, target) {
-  return requirements.appVersion === '0.2.94' && requirements.realHostPolicy?.desktopLifecycle?.status === 'deferred'
-    && target.disposition !== 'custom' && (target.targetId ?? target.catalogId) === 'codex-desktop'
-    ? CODEX_DESKTOP_DEFERRED_LIFECYCLE_STEPS : Object.freeze([])
-}
-
 export function requiredRealHostAcceptanceSteps(requirements, target) {
-  if (realHostAcceptanceDeferral(requirements, target)) return Object.freeze([])
-  const deferred = realHostDeferredStepIds(requirements, target)
-  return Object.freeze(requiredHostAcceptanceSteps(requirements, target).filter(step => !deferred.includes(step)))
+  return realHostAcceptanceDeferral(requirements, target) ? Object.freeze([]) : requiredHostAcceptanceSteps(requirements, target)
 }
 
 export function requiredHostAcceptanceSteps(requirements, target) {
@@ -1570,11 +1558,7 @@ export function verifyAgentIntegrationHostAcceptance({
       realHostPolicyId: requirements.realHostPolicy.id,
       deferredTargets: [...index.entries, ...index.customPaths].filter(target => target.realHostDeferral)
         .map(target => ({ targetKey: target.targetKey, ...target.realHostDeferral })),
-      realHostAcceptedTargetKeys: index.entries.filter(target => !target.realHostDeferral && !realHostDeferredStepIds(requirements, target).length).map(target => target.targetKey),
-      partiallyAcceptedTargets: index.entries.filter(target => realHostDeferredStepIds(requirements, target).length)
-        .map(target => ({ targetKey: target.targetKey, deferredSteps: [...realHostDeferredStepIds(requirements, target)],
-          status: 'lifecycle_deferred', reason: requirements.realHostPolicy.desktopLifecycle.reason,
-          releaseNotesDisclosureRequired: false })),
+      realHostAcceptedTargetKeys: index.entries.filter(target => !target.realHostDeferral).map(target => target.targetKey),
     } : {}),
     entryCount: index.entries.length,
     customPathCount: index.customPaths.length,

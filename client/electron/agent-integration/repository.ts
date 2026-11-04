@@ -1811,7 +1811,7 @@ export class AgentIntegrationRepository {
       || next.installationId !== installationId || !plan.inspection.detected
       || !next.liveTrustProofFingerprint || !next.installationSurfaceFingerprint
       || next.installationSurfaceFingerprint !== persistedProjectionSurfaceFingerprint(installation)
-      || plan.adapterPlan.diagnostics.length > 0 || plan.adapterPlan.mutations.length === 0) return []
+      || plan.adapterPlan.diagnostics.length > 0) return []
     // A new confirmation is not a generic escape from unrelated identity conflicts.
     if (installation.status_reason === 'conflict' && this.db.prepare(`
       SELECT 1 FROM agent_integration_events WHERE installation_id=? AND kind='discovery_identity_conflict'
