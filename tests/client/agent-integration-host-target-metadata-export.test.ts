@@ -6,6 +6,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   assertNativeAgentHostAcceptanceExecutionEnvironment,
+  assertAgentHostExportDiscoveryEligibility,
   exportAgentHostTargetMetadata,
   currentCodexContextRestoreProof,
   currentUserOwnedCustomActivityProof,
@@ -162,6 +163,47 @@ function fixture() {
 }
 
 describe('formal host target metadata exporter', () => {
+  function signedDesktopDiscovery(): DiscoveredInstallation {
+    const data=fixture()
+    const distribution=manifest.entries.find(entry=>entry.catalogId==='codex-desktop')!.officialDistributions
+      .find(distribution=>distribution.channel==='signed_app')!
+    return {...data.discovered,catalogId:'codex-desktop',appPath:path.join(data.root,'Codex.app'),managementEligibility:undefined,
+      identity:{...data.discovered.identity,hostVariant:'codex-desktop',distribution:{...data.discovered.identity.distribution,
+        distributionId:distribution.distributionId,packageProvenance:distribution.packageProvenance}}}
+  }
+
+  it('allows the missing CLI eligibility flag only for a frozen signed Desktop distribution', () => {
+    expect(()=>assertAgentHostExportDiscoveryEligibility(signedDesktopDiscovery())).not.toThrow()
+  })
+
+  it('preserves explicit Desktop release-gate rejection', () => {
+    const desktop=signedDesktopDiscovery()
+    desktop.managementEligibility={eligible:false,reason:'release_version_not_accepted'} as never
+    expect(()=>assertAgentHostExportDiscoveryEligibility(desktop)).toThrow(/release_version_not_accepted/)
+  })
+
+  it('retains explicit CLI eligibility', () => {
+    const cli=fixture().discovered
+    cli.managementEligibility={eligible:true} as never
+    expect(()=>assertAgentHostExportDiscoveryEligibility(cli)).not.toThrow()
+  })
+
+  it.each(['missing','false'])('rejects CLI eligibility=%s even with an appPath', state => {
+    const cli=fixture().discovered
+    cli.appPath='/Applications/AnApp.app'
+    cli.managementEligibility=state==='missing'?undefined:{eligible:false,reason:'unverified'} as never
+    expect(()=>assertAgentHostExportDiscoveryEligibility(cli)).toThrow(/not release-eligible/)
+  })
+
+  it.each(['no-app','relative-app','wrong-distribution','wrong-provenance'])('rejects incomplete signed Desktop classification: %s', change => {
+    const desktop=signedDesktopDiscovery()
+    if(change==='no-app')desktop.appPath=undefined
+    if(change==='relative-app')desktop.appPath='Codex.app'
+    if(change==='wrong-distribution')desktop.identity.distribution.distributionId='unreviewed-app'
+    if(change==='wrong-provenance')desktop.identity.distribution.packageProvenance='npm_metadata:fake'
+    expect(()=>assertAgentHostExportDiscoveryEligibility(desktop)).toThrow(/not release-eligible/)
+  })
+
   it.each([false, true])('exports the CLI target with its resolved business identity (shared=%s)', async shared => {
     const data=fixture(),databasePath=path.join(data.root,'identity.sqlite')
     const db=new Database(databasePath);databases.push(db);ensureSchema(db)

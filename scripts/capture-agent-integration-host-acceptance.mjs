@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { validateDatabaseMigrationEvidence, assertSharedMigrationBatches } from './agent-database-migration-evidence.mjs'
-import { isCodexContextRestoreStep, validateCodexContextRestore, rejectReusedCodexRestoreRuns } from './codex-context-restore-evidence.mjs'
+import { isCodexContextRestoreStep, validateCodexContextRestore, rejectReusedCodexRestoreRuns, isCodexNativeLifecycleReceipt, validateCodexNativeLifecycleReceiptShape, validateCodexNativeLifecycleReceipt } from './codex-context-restore-evidence.mjs'
 import { validateAgentMemoryClosure } from './agent-memory-closure.mjs'
 import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
@@ -739,6 +739,7 @@ function validateAssertion(raw, expected) {
 }
 
 function validateLifecycleActivityReceipt(raw, expected, assertionObservedAt) {
+  if (isCodexNativeLifecycleReceipt(raw)) return validateCodexNativeLifecycleReceiptShape(raw, expected)
   const lifecycleSignal = expected.stepId.startsWith('lifecycle_')
     ? expected.stepId.slice('lifecycle_'.length)
     : null
@@ -906,10 +907,11 @@ export function recordAgentHostAcceptanceStep({
     captureNonce: state.captureNonce,
     allowFixtureActivity: state.candidateAppPathsByArchitecture === null,
   })
-  const activityExport = assertion.activityReceipt
+  const nativeLifecycle = isCodexNativeLifecycleReceipt(assertion.activityReceipt)
+  const activityExport = assertion.activityReceipt && !nativeLifecycle
     ? state.activityExports.find(entry => entry.eventId === assertion.activityReceipt.id)
     : null
-  if (assertion.activityReceipt && (!activityExport
+  if (assertion.activityReceipt && !nativeLifecycle && (!activityExport
     || activityExport.consumed
     || activityExport.targetKey !== targetKey
     || activityExport.exportHash !== assertion.activityReceipt.exportHash)) {
@@ -922,6 +924,16 @@ export function recordAgentHostAcceptanceStep({
     }
   }
   const evidenceInputs = loadEvidenceInputs(evidencePaths)
+  if (nativeLifecycle) validateCodexNativeLifecycleReceipt(assertion.activityReceipt, {
+    appVersion: state.appVersion, targetId: target.targetId, stepId, targetKey,
+    installationId: target.installationId, agentId: target.agentId,
+    sourceCommit: state.sourceCommit, releaseContractSha256: state.releaseContractSha256,
+    candidateBundleSha256: candidateApp.bundleSha256, captureNonce: state.captureNonce,
+    hostVariant: target.sourceCatalogId ?? target.targetId, hostVersion: target.hostVersion,
+    distribution: target.distribution, environment: target.environment,
+    captureCreatedAt: state.createdAt, observedAt: assertion.observedAt,
+    allowFixtureActivity: state.candidateAppPathsByArchitecture === null,
+  }, new Map(evidenceInputs.map(input => [input.sha256, input.bytes])))
   if (stepId === 'memory_closure') {
     validateAgentMemoryClosure(assertion.memoryClosure, {
       targetKey, installationId: target.installationId, agentId: target.agentId,

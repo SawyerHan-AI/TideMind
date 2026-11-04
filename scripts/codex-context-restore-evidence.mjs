@@ -108,3 +108,66 @@ export function rejectReusedCodexRestoreRuns(targets) {
     used.add(key)
   }
 }
+
+// CLI shared identities intentionally have no per-Installation aha row. Reuse the
+// already-required real compact/restore session, including its candidate proof.
+const lifecycleEvents = Object.freeze({ lifecycle_session_start: 'sessionStart', lifecycle_pre_compact: 'preCompact',
+  lifecycle_post_compact: 'postCompact', lifecycle_session_end: 'sessionEnd' })
+export const isCodexNativeLifecycleReceipt = value => value?.ledgerSource === 'codex_native_hooks'
+export const codexNativeLifecycleEvidenceHash = value => hash(Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'evidenceHash')))
+export function validateCodexNativeLifecycleReceiptShape(value, expected) {
+  check(expected.appVersion === '0.2.94' && expected.targetId === 'codex-cli' && expected.hostVariant === 'codex-cli'
+    && lifecycleEvents[expected.stepId], 'native lifecycle path is only for 0.2.94 Codex CLI lifecycle')
+  const keys = ['ledgerSource','restoreReceipt','runId','turnId','evidenceHash']
+  check(value && Object.keys(value).length === keys.length && keys.every(key => key in value)
+    && isCodexNativeLifecycleReceipt(value) && text(value.runId) && text(value.turnId)
+    && value.restoreReceipt && sha.test(value.evidenceHash) && value.evidenceHash === codexNativeLifecycleEvidenceHash(value), 'native lifecycle receipt shape/hash mismatch')
+  return value
+}
+export function validateCodexNativeLifecycleReceipt(value, expected, files) {
+  validateCodexNativeLifecycleReceiptShape(value, expected)
+  const restore = value.restoreReceipt
+  validateCodexContextRestore(restore, { ...expected, stepId: `codex_context_restore_${restore.trigger}` }, files)
+  const metadata = JSON.parse(bytes(files, restore.metadataExportSha256))
+  const state = metadata.targetMetadata.codexContextRestore
+  const native = records(bytes(files, restore.nativeNotificationsSha256))
+  const eventName = lifecycleEvents[expected.stepId]
+  function pair(id, event, turn) {
+    const matches = x => x.params?.threadId === restore.sessionId && x.params.turnId === turn
+      && x.params.run?.id === id && x.params.run.eventName === event
+    const starts = native.filter(x => x.method === 'hook/started' && matches(x))
+    const ends = native.filter(x => x.method === 'hook/completed' && matches(x))
+    check(starts.length === 1 && ends.length === 1, 'native lifecycle run absent or ambiguous')
+    const a = starts[0].params.run, b = ends[0].params.run
+    for (const run of [a,b]) check(run.handlerType === 'command' && hash(run.sourcePath) === state.hookSourcePathSha256,
+      'native lifecycle Hook source mismatch')
+    check(b.status === 'completed' && a.startedAt === b.startedAt && Number.isSafeInteger(b.startedAt)
+      && Number.isSafeInteger(b.completedAt) && b.completedAt >= b.startedAt && b.startedAt >= 0
+      && Number.isSafeInteger((b.completedAt + 1) * 1000), 'native lifecycle Hook did not complete')
+    check((b.startedAt + 1) * 1000 > time(expected.captureCreatedAt) && b.completedAt * 1000 <= time(expected.observedAt),
+      'native lifecycle outside capture window')
+    const start = native.indexOf(starts[0]), end = native.indexOf(ends[0])
+    check(start < end, 'native lifecycle notification order mismatch')
+    return { start, end, run: b }
+  }
+  const selected = pair(value.runId, eventName, value.turnId)
+  const sidecar = JSON.parse(bytes(files, restore.postCompactInputSha256))
+  const post = pair(restore.postCompactRunId, 'postCompact', sidecar.turnId)
+  const ups = pair(restore.restoreRunId, 'userPromptSubmit', restore.restoreTurnId)
+  if (eventName === 'preCompact') check(value.turnId === sidecar.turnId && selected.end < post.start, 'PreCompact must precede the real PostCompact')
+  if (eventName === 'postCompact') check(value.runId === restore.postCompactRunId && value.turnId === sidecar.turnId, 'PostCompact is not the real restored compaction')
+  if (eventName === 'sessionEnd') check(selected.start > ups.end, 'SessionEnd must complete after the restored turn')
+  if (eventName === 'sessionStart') {
+    check(selected.end < post.start, 'SessionStart must precede compaction')
+    const contexts = selected.run.entries?.filter(x => x.kind === 'context' && text(x.text)) ?? []
+    check(contexts.length > 0, 'SessionStart context missing')
+    const rollout = records(bytes(files, restore.rolloutSha256))
+    for (const context of contexts) check(rollout.some(x => x.type === 'response_item' && x.payload?.role === 'developer'
+      && x.payload.internal_chat_message_metadata_passthrough?.turn_id === value.turnId
+      && time(x.timestamp) >= selected.run.startedAt * 1000 && time(x.timestamp) <= time(expected.observedAt)
+      && x.payload.content?.some((c,i) => c.type === 'input_text' && c.text === context.text
+        && x.payload.internal_chat_message_metadata_passthrough.content_item_kinds?.[i] === 'hooks.additional_context')),
+    'SessionStart context absent from native model input')
+  }
+  return value
+}

@@ -23,6 +23,7 @@ import {
   loadAgentHostAcceptanceRequirements,
   requiredHostAcceptanceSteps,
   requiredRealHostAcceptanceSteps,
+  realHostDeferredStepIds,
   realHostAcceptanceDeferral,
   deferredHostAcceptanceTarget,
   validateDeferredHostAcceptanceTarget,
@@ -1273,7 +1274,18 @@ describe('0.2.94 authorized Codex real-host policy', () => {
     for (const target of requirements.targets) {
       if (['codex-cli','codex-desktop'].includes(target.catalogId)) {
         expect(realHostAcceptanceDeferral(requirements, target)).toBeNull()
-        expect(requiredRealHostAcceptanceSteps(requirements, target)).toEqual(requiredHostAcceptanceSteps(requirements, target))
+        const deferred = realHostDeferredStepIds(requirements, target)
+        expect(requiredRealHostAcceptanceSteps(requirements, target)).toEqual(requiredHostAcceptanceSteps(requirements, target).filter((step: string) => !deferred.includes(step)))
+        if (target.catalogId === 'codex-cli') {
+          expect(deferred).toEqual([])
+          expect(requiredRealHostAcceptanceSteps(requirements, target)).toContain('lifecycle_session_end')
+          expect(requiredRealHostAcceptanceSteps(requirements, target)).toContain('codex_context_restore_auto')
+        } else {
+          expect(deferred).toEqual(['lifecycle_session_start','lifecycle_pre_compact','lifecycle_post_compact','lifecycle_session_end','codex_context_restore_manual','codex_context_restore_auto'])
+          for (const step of ['official_host_version','distribution_identity','connect','read_back','brain_prepare','brain_recall','brain_digest','restart_persistence','disconnect']) {
+            expect(requiredRealHostAcceptanceSteps(requirements, target)).toContain(step)
+          }
+        }
         expect(requiredRealHostAcceptanceSteps(requirements, target)).toContain('memory_closure')
       } else {
         expect(realHostAcceptanceDeferral(requirements, target)).toMatchObject({status:'deferred',policyId:'0.2.94-codex-only'})
@@ -1285,7 +1297,7 @@ describe('0.2.94 authorized Codex real-host policy', () => {
       expect(realHostAcceptanceDeferral(requirements, {...target, disposition:'custom', catalogId:'codex-cli'})).toMatchObject({status:'deferred'})
     }
   })
-  it.each(['missing-policy','omit-desktop','add-claude','mark-passed','old-exception'] as const)('rejects altered scope: %s', mutation => {
+  it.each(['missing-policy','omit-desktop','add-claude','mark-passed','old-exception','omit-lifecycle-policy','defer-memory','claim-lifecycle-passed'] as const)('rejects altered scope: %s', mutation => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'host-policy-')); roots.push(root)
     const requirements = JSON.parse(fs.readFileSync('scripts/agent-integration-host-acceptance-requirements.json','utf8'))
     if (mutation === 'missing-policy') delete requirements.realHostPolicy
@@ -1293,6 +1305,9 @@ describe('0.2.94 authorized Codex real-host policy', () => {
     if (mutation === 'add-claude') requirements.realHostPolicy.requiredCatalogIds.push('claude-code-cli')
     if (mutation === 'mark-passed') requirements.realHostPolicy.otherCatalogs = 'passed'
     if (mutation === 'old-exception') requirements.realHostPolicy.id = 'partial-auth-runtime-0.2.93'
+    if (mutation === 'omit-lifecycle-policy') delete requirements.realHostPolicy.desktopLifecycle
+    if (mutation === 'defer-memory') requirements.realHostPolicy.desktopLifecycle.stepIds.push('memory_closure')
+    if (mutation === 'claim-lifecycle-passed') requirements.realHostPolicy.desktopLifecycle.status = 'passed'
     const file = path.join(root, 'requirements.json'); fs.writeFileSync(file,JSON.stringify(requirements))
     expect(() => loadAgentHostAcceptanceRequirements(file)).toThrow()
   })

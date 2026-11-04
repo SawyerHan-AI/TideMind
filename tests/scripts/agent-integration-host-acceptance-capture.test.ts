@@ -1,5 +1,8 @@
 import { databaseMigrationFixture } from '../fixtures/agent-integration/database-migration-fixture.js'
 import { memoryClosureFixture } from '../fixtures/agent-integration/memory-closure-fixture.js'
+import { codexContextRestoreFixture } from '../fixtures/agent-integration/codex-context-restore-fixture.js'
+// @ts-expect-error acceptance-only ESM helper
+import { codexNativeLifecycleEvidenceHash } from '../../scripts/codex-context-restore-evidence.mjs'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -513,7 +516,40 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
     })).toThrow(/candidateBundleSha256 binding mismatch/)
   })
 
-  it('requires a hash-valid activity-ledger event for every lifecycle signal', () => {
+  it('records CLI native lifecycle evidence without requiring a fabricated shared-identity ledger row', () => {
+    const { root, workspace } = initialized()
+    recordTargetMetadata(workspace, root, 'codex-cli')
+    const state = JSON.parse(fs.readFileSync(path.join(workspace, '.capture-state.json'), 'utf8'))
+    const target = state.entries.find((entry: { targetId: string }) => entry.targetId === 'codex-cli')
+    const stepId = 'lifecycle_post_compact'
+    const inputs = stepInputs(root, workspace, target.targetKey, stepId)
+    const f = codexContextRestoreFixture()
+    f.summary.captureNonce = state.captureNonce; f.sidecar.captureNonce = state.captureNonce
+    Object.assign(f.metadata, { evidenceClass: 'fixture', sourceCommit: state.sourceCommit,
+      candidateBundleSha256: state.candidateAppsByArchitecture.arm64.bundleSha256, releaseContractSha256: state.releaseContractSha256 })
+    Object.assign(f.metadata.targetMetadata, { targetKey: target.targetKey, targetId: target.targetId,
+      installationId: target.installationId, agentId: target.agentId, hostVersion: target.hostVersion,
+      distribution: target.distribution, environment: target.environment })
+    const files = f.build()
+    const activity:any = {ledgerSource:'codex_native_hooks',restoreReceipt:f.value,runId:'post-run',turnId:'compact-turn'}
+    activity.evidenceHash = codexNativeLifecycleEvidenceHash(activity)
+    const assertion = JSON.parse(fs.readFileSync(inputs.assertionPath,'utf8'))
+    assertion.activityReceipt = activity; assertion.observedAt = new Date(f.expected.observedAt).toISOString()
+    writeJson(inputs.assertionPath,assertion)
+    const evidencePaths = [...files.values()].map((bytes: any,index:number)=>{
+      const file=path.join(root,`native-proof-${index}.json`);fs.writeFileSync(file,bytes);return file
+    })
+    const attestation=JSON.parse(fs.readFileSync(inputs.attestationPath,'utf8'))
+    attestation.files=evidencePaths.map(file=>({name:path.basename(file),sha256:sha256(fs.readFileSync(file))}))
+    writeJson(inputs.attestationPath,attestation)
+    expect(recordAgentHostAcceptanceStep({workspace,targetId:target.targetKey,stepId,
+      assertionPath:inputs.assertionPath,attestationPath:inputs.attestationPath,evidencePaths})).toMatchObject({stepId})
+    const saved=JSON.parse(fs.readFileSync(path.join(workspace,'.capture-state.json'),'utf8'))
+    expect(saved.activityExports).toEqual([])
+    expect(saved.entries.find((entry:any)=>entry.targetId==='codex-cli').steps).toHaveLength(1)
+  })
+
+  it('requires a hash-valid activity-ledger event when no native lifecycle proof is supplied', () => {
     const { root, workspace } = initialized()
     recordTargetMetadata(workspace, root, 'codex-cli')
     const state = JSON.parse(fs.readFileSync(path.join(workspace, '.capture-state.json'), 'utf8'))
