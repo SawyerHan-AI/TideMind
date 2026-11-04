@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
@@ -137,6 +138,49 @@ describe('Codex MCP TOML Host Adapter', () => {
     ))
     expect(await adapter.inspectAdoptableArtifacts?.(context)).toEqual([])
   })
+
+  it('adopts the 0.2.89 default-enabled nested-env shape without rewriting its owned bytes', async () => {
+    const legacy = [
+      '[mcp_servers.tidemind-agent-codex]',
+      `command = ${JSON.stringify(context.runtime.shimPath)}`,
+      `args = [${JSON.stringify(context.runtime.mcpServerPath)}]`,
+      '', '[mcp_servers.tidemind-agent-codex.env]', 'EB_AGENT_ID = "agent-codex"', '',
+    ].join('\n')
+    const userTable = '\n[features] # keep user table\ncodex_hooks = true\n'
+    fs.writeFileSync(configFile, legacy + userTable)
+    const adapter = createAdapter('codex-cli')
+    const observations = await adapter.inspectAdoptableArtifacts?.({ ...context, activityGenerationToken: undefined })
+    expect(observations).toHaveLength(1)
+    expect(observations![0].fragmentHash).toBe(createHash('sha256').update(legacy).digest('hex'))
+    expect(fs.readFileSync(configFile,'utf8')).toBe(legacy + userTable)
+    const baseline = ownedBaseline(observations![0].fragmentHash)
+    const update = await adapter.plan(context, await request(adapter, [baseline]))
+    expect(update.mutations).toHaveLength(1)
+    expect(update.mutations[0].preconditionHash).toBe(observations![0].fragmentHash)
+    await adapter.apply(context, update.mutations[0])
+    expect(parseToml(fs.readFileSync(configFile,'utf8')).mcp_servers).toMatchObject({
+      'tidemind-agent-codex': { enabled:true, env:{EB_AGENT_ID:'agent-codex'} },
+    })
+    expect(fs.readFileSync(configFile,'utf8')).toContain(userTable.trimStart())
+  })
+
+  it.each(['disabled','wrong-type','null','wrong-agent','wrong-command','wrong-args','extra-field','extra-env'])(
+    'does not normalize an explicitly different legacy entry: %s', async variant => {
+      const source = [
+        '[mcp_servers.tidemind-agent-codex]',
+        ...(variant==='disabled'?['enabled = false']:variant==='wrong-type'?['enabled = "true"']:variant==='null'?['enabled = null']:[]),
+        `command = ${JSON.stringify(context.runtime.shimPath+(variant==='wrong-command'?'-other':''))}`,
+        `args = ${JSON.stringify([context.runtime.mcpServerPath,...(variant==='wrong-args'?['--other']:[])])}`,
+        ...(variant==='extra-field'?['startup_timeout_sec = 60']:[]),
+        '', '[mcp_servers.tidemind-agent-codex.env]',
+        `EB_AGENT_ID = ${JSON.stringify(variant==='wrong-agent'?'another-agent':'agent-codex')}`,
+        ...(variant==='extra-env'?['USER_CUSTOM = "preserve"']:[]), '',
+      ].join('\n')
+      fs.writeFileSync(configFile,source)
+      expect(await createAdapter('codex-cli').inspectAdoptableArtifacts?.({ ...context,activityGenerationToken:undefined })).toEqual([])
+      expect(fs.readFileSync(configFile,'utf8')).toBe(source)
+    },
+  )
 
   it('upgrades an adopted legacy nested-env table without consuming the following user table', async () => {
     fs.writeFileSync(configFile, [
