@@ -65,26 +65,26 @@ jobs:
           echo "SIGN_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
           echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
           rm "$RUNNER_TEMP/certificate.p12"
-      - name: Sign the prebuilt app without rebuilding it
-        working-directory: client
-        run: |
-          node <<'JS'
-          const fs = require('node:fs'); const path = require('node:path');
-          const { signAsync } = require('@electron/osx-sign');
-          const app = process.env.SIGN_APP;
-          const provenance = JSON.parse(fs.readFileSync(path.join(app,'Contents/Resources/app.asar.unpacked/out/bin/build-provenance.json')));
-          if (provenance.sourceCommit !== process.env.SOURCE_COMMIT || provenance.appVersion !== '0.2.94') throw Error('wrong prebuilt source');
-          signAsync({app, platform:'darwin', type:'distribution', identity:process.env.SIGN_IDENTITY,
-            version:require('electron/package.json').version, gatekeeperAssess:false,
-            keychain:process.env.SIGN_KEYCHAIN, provisioningProfile:path.resolve('resources/embedded.provisionprofile'),
-            optionsForFile:file=>({hardenedRuntime:true,entitlements:path.resolve(file===app?'resources/entitlements.mac.plist':'resources/entitlements.mac.inherit.plist')})
-          }).catch(error=>{console.error(error.message);process.exitCode=1});
-          JS
       - name: Use existing Apple ticket TCP workaround
         run: |
           sudo pfctl -sr | grep -Fq 'anchor "com.apple/*"'
           printf '%s\n' 'block return out quick proto udp from any to any port 443' | sudo pfctl -a com.apple/tidemind-ticket-tcp -f -
           sudo pfctl -E
+      - name: Sign the prebuilt app without rebuilding it
+        working-directory: client
+        run: |
+          node <<'JS'
+          const fs = require('node:fs'); const path = require('node:path');
+          const { sign } = require('app-builder-lib/out/codeSign/macCodeSign');
+          const app = process.env.SIGN_APP;
+          const provenance = JSON.parse(fs.readFileSync(path.join(app,'Contents/Resources/app.asar.unpacked/out/bin/build-provenance.json')));
+          if (provenance.sourceCommit !== process.env.SOURCE_COMMIT || provenance.appVersion !== '0.2.94') throw Error('wrong prebuilt source');
+          sign({app, platform:'darwin', type:'distribution', identity:process.env.SIGN_IDENTITY,
+            version:require('electron/package.json').version, gatekeeperAssess:false,
+            keychain:process.env.SIGN_KEYCHAIN, provisioningProfile:path.resolve('resources/embedded.provisionprofile'),
+            optionsForFile:file=>({hardenedRuntime:true,entitlements:path.resolve(file===app?'resources/entitlements.mac.plist':'resources/entitlements.mac.inherit.plist')})
+          }).catch(error=>{console.error(error.message);process.exitCode=1});
+          JS
       - name: Notarize and staple the app
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
