@@ -159,6 +159,7 @@ function loadState(workspaceInput) {
   const requirements = loadAgentHostAcceptanceRequirements()
   if (state.acceptanceSchemaVersion !== AGENT_HOST_ACCEPTANCE_SCHEMA_VERSION
     || state.appVersion !== requirements.appVersion
+    || JSON.stringify(state.migrationAcceptanceDeferral ?? null) !== JSON.stringify(requirements.migrationAcceptanceDeferral)
     || state.requirementsSha256 !== requirements.sha256
     || state.releaseContractSha256 !== requirements.releaseContractSha256
     || JSON.stringify(state.upgradeFromAppVersions) !== JSON.stringify(requirements.upgradeFromAppVersions)) {
@@ -286,6 +287,7 @@ export function initializeAgentHostAcceptanceCapture({
     evidenceClass: 'real_host',
     appVersion: requirements.appVersion,
     upgradeFromAppVersions: [...requirements.upgradeFromAppVersions],
+    ...(requirements.migrationAcceptanceDeferral ? { migrationAcceptanceDeferral: requirements.migrationAcceptanceDeferral } : {}),
     sourceCommit,
     createdAt: now().toISOString(),
     captureNonce: crypto.randomBytes(32).toString('hex'),
@@ -1162,9 +1164,10 @@ function captureStatus(state) {
     requiredRealHostTargetCount: targets.filter(target => !target.realHostDeferral).length,
     requiredStepCount: targets.reduce((sum, target) => sum + target.requiredSteps.length, 0),
     recordedStepCount: targets.reduce((sum, target) => sum + target.steps.length, 0),
-    requiredUpgradePaths: targets
+    ...(state.migrationAcceptanceDeferral ? { migrationAcceptanceDeferral: state.migrationAcceptanceDeferral } : {}),
+    requiredUpgradePaths: (state.migrationAcceptanceDeferral ? [] : targets)
       .flatMap(target => state.upgradeFromAppVersions.map(fromAppVersion => `${target.targetKey}/${fromAppVersion}`)),
-    requiredDatabaseRecoveryPaths: ['observed_schema41'],
+    requiredDatabaseRecoveryPaths: state.migrationAcceptanceDeferral ? [] : ['observed_schema41'],
     recordedDatabaseRecoveryPaths: state.databaseRecoveryPaths.map(value => value.id),
     recordedUpgradePaths: state.upgradePaths.map(upgrade => `${upgrade.targetKey}/${upgrade.fromAppVersion}`),
     preparedEvidenceManifestSha256: state.preparedEvidenceManifestSha256,
@@ -1212,14 +1215,14 @@ function completeCapture(state) {
     const recorded = new Set(target.steps.map(step => step.id))
     for (const step of target.requiredSteps) if (!recorded.has(step)) missing.push(`${target.targetKey}:${step}`)
   }
-  for (const target of [...state.entries, ...state.customPaths]) {
+  for (const target of (state.migrationAcceptanceDeferral ? [] : [...state.entries, ...state.customPaths])) {
     for (const version of state.upgradeFromAppVersions) {
       if (!state.upgradePaths.some(upgrade => (
         upgrade.targetKey === target.targetKey && upgrade.fromAppVersion === version
       ))) missing.push(`upgrade:${target.targetKey}/${version}`)
     }
   }
-  if (state.databaseRecoveryPaths.length !== 1 || state.databaseRecoveryPaths[0].id !== 'observed_schema41') missing.push('database-recovery:observed_schema41')
+  if (!state.migrationAcceptanceDeferral && (state.databaseRecoveryPaths.length !== 1 || state.databaseRecoveryPaths[0].id !== 'observed_schema41')) missing.push('database-recovery:observed_schema41')
   if (missing.length > 0) throw new Error(`capture is incomplete: ${missing.join(', ')}`)
 }
 
@@ -1262,6 +1265,7 @@ export function prepareAgentHostAcceptanceReview({ workspace: workspaceInput, ou
     evidenceClass: 'real_host',
     appVersion: state.appVersion,
     upgradeFromAppVersions: [...state.upgradeFromAppVersions],
+    ...(state.migrationAcceptanceDeferral ? { migrationAcceptanceDeferral: state.migrationAcceptanceDeferral } : {}),
     sourceCommit: state.sourceCommit,
     preparedAt: now().toISOString(),
     requirementsSha256: state.requirementsSha256,
@@ -1346,6 +1350,7 @@ export function freezeAgentHostAcceptanceCapture({
       evidenceClass: 'real_host',
       appVersion: state.appVersion,
       upgradeFromAppVersions: [...state.upgradeFromAppVersions],
+      ...(state.migrationAcceptanceDeferral ? { migrationAcceptanceDeferral: state.migrationAcceptanceDeferral } : {}),
       sourceCommit: state.sourceCommit,
       captureCreatedAt: state.createdAt,
       captureNonce: state.captureNonce,

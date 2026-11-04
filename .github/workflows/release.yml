@@ -105,7 +105,7 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            runner: macos-15
+            runner: macos-26
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:

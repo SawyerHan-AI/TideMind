@@ -250,6 +250,7 @@ export function loadAgentHostAcceptanceRequirements(
   exactKeys(requirements, [
     'schemaVersion', 'appVersion', 'releaseMacArchitectures', 'upgradeFromAppVersions', 'stepPolicy', 'customPaths', 'customGuidedTargets',
     ...(requirements.appVersion === '0.2.94' ? ['realHostPolicy'] : []),
+    ...(requirements.appVersion === '0.2.94' && requirements.migrationAcceptanceDeferral ? ['migrationAcceptanceDeferral'] : []),
   ], 'acceptance requirements')
   if (historicalAppVersion !== undefined && historicalAppVersion !== '0.2.93') throw new Error('unsupported historical acceptance version')
   const expectedSchemaVersion = historicalAppVersion === '0.2.93' ? 3 : AGENT_HOST_ACCEPTANCE_SCHEMA_VERSION
@@ -282,6 +283,19 @@ export function loadAgentHostAcceptanceRequirements(
     nonEmptyString(desktop.reason, '0.2.94 Desktop acceptance deferral reason')
     Object.freeze(desktop)
     realHostPolicy = Object.freeze({ ...policy, requiredCatalogIds: Object.freeze([...policy.requiredCatalogIds]) })
+  }
+  let migrationAcceptanceDeferral = null
+  if (requirements.migrationAcceptanceDeferral) {
+    const policy = record(requirements.migrationAcceptanceDeferral, 'migration acceptance deferral')
+    exactKeys(policy, ['policyId','appVersion','audience','status','execution','scopes','reason'], 'migration acceptance deferral')
+    if (requirements.appVersion !== '0.2.94' || policy.appVersion !== '0.2.94'
+      || policy.policyId !== '0.2.94-single-user-manual-migration' || policy.audience !== 'single_user'
+      || policy.status !== 'deferred_to_installation' || policy.execution !== 'manual_after_release'
+      || JSON.stringify(policy.scopes) !== JSON.stringify(['upgrade_matrix','observed_schema41'])) {
+      throw new Error('migration deferral is only authorized for 0.2.94 single-user installation')
+    }
+    nonEmptyString(policy.reason, 'migration deferral reason')
+    migrationAcceptanceDeferral = Object.freeze({ ...policy, scopes: Object.freeze([...policy.scopes]) })
   }
   const releaseMacArchitectures = Object.freeze([...requirements.releaseMacArchitectures].sort())
   if (!Array.isArray(requirements.upgradeFromAppVersions)
@@ -386,6 +400,7 @@ export function loadAgentHostAcceptanceRequirements(
     upgradeFromAppVersions: Object.freeze([...requirements.upgradeFromAppVersions]),
     stepPolicy,
     realHostPolicy,
+    migrationAcceptanceDeferral,
     entries: Object.freeze(entries),
     targets,
     customPaths: Object.freeze([...requirements.customPaths]),
@@ -1297,9 +1312,13 @@ export function verifyAgentIntegrationHostAcceptance({
     'generatedAt', 'requirementsSha256', 'candidateAppsByArchitecture', 'review',
     'releaseContractSha256',
     'entries', 'customPaths', 'upgradePaths', 'databaseRecoveryPaths', 'files',
+    ...(Object.hasOwn(index, 'migrationAcceptanceDeferral') ? ['migrationAcceptanceDeferral'] : []),
   ], 'acceptance index')
   rejectReusedCodexRestoreRuns([...(index.entries ?? []), ...(index.customPaths ?? [])])
   const requirements = loadAgentHostAcceptanceRequirements(requirementsPath, releaseManifestPath)
+  if (JSON.stringify(index.migrationAcceptanceDeferral ?? null) !== JSON.stringify(requirements.migrationAcceptanceDeferral)) {
+    throw new Error('acceptance migration deferral must explicitly match the authorized contract')
+  }
   if (index.schemaVersion !== AGENT_HOST_ACCEPTANCE_SCHEMA_VERSION) throw new Error('acceptance schema version mismatch')
   nonEmptyString(index.acceptanceId, 'acceptanceId')
   if (index.evidenceClass !== 'real_host' && !(allowFixture && index.evidenceClass === 'fixture')) {
@@ -1476,7 +1495,7 @@ export function verifyAgentIntegrationHostAcceptance({
   }
   const upgradeTargets = [...indexedEntries.values(), ...indexedCustom.values()]
   const expectedUpgradeCount = requirements.upgradeFromAppVersions.length * upgradeTargets.length
-  if (!Array.isArray(index.upgradePaths) || index.upgradePaths.length !== expectedUpgradeCount) {
+  if (!Array.isArray(index.upgradePaths) || (requirements.migrationAcceptanceDeferral ? index.upgradePaths.length > expectedUpgradeCount : index.upgradePaths.length !== expectedUpgradeCount)) {
     throw new Error('acceptance upgrade path count mismatch')
   }
   const indexedUpgrades = new Map(index.upgradePaths.map(upgrade => [
@@ -1486,9 +1505,14 @@ export function verifyAgentIntegrationHostAcceptance({
   if (indexedUpgrades.size !== index.upgradePaths.length) {
     throw new Error('acceptance upgrade paths contain duplicates')
   }
+  for (const upgrade of index.upgradePaths) {
+    if (!upgradeTargets.some(target => target.targetKey === upgrade.targetKey)
+      || !requirements.upgradeFromAppVersions.includes(upgrade.fromAppVersion)) throw new Error('unknown acceptance upgrade path')
+  }
   for (const target of upgradeTargets) {
     for (const fromAppVersion of requirements.upgradeFromAppVersions) {
       const raw = indexedUpgrades.get(`${target.targetKey}:${fromAppVersion}`)
+      if (!raw && requirements.migrationAcceptanceDeferral) continue
       if (!raw) throw new Error(`acceptance is missing upgrade path: ${target.targetKey}/${fromAppVersion}`)
       const validated = validateUpgradePath(
         raw,
@@ -1512,30 +1536,32 @@ export function verifyAgentIntegrationHostAcceptance({
     }
   }
   assertSharedMigrationBatches(index.upgradePaths)
-  if (!Array.isArray(index.databaseRecoveryPaths) || index.databaseRecoveryPaths.length !== 1) {
+  if (!Array.isArray(index.databaseRecoveryPaths) || (requirements.migrationAcceptanceDeferral ? index.databaseRecoveryPaths.length > 1 : index.databaseRecoveryPaths.length !== 1)) {
     throw new Error('one independent observed schema41 recovery is required')
   }
-  const recovery = index.databaseRecoveryPaths[0]
-  exactKeys(recovery, ['id', 'architecture', 'sourceCommit', 'candidateBundleSha256', 'releaseContractSha256',
-    'observedAt', 'assertedBy', 'assertionSource', 'databaseMigration', 'evidenceFiles'], 'database recovery')
-  if (recovery.id !== 'observed_schema41' || !['human', 'external'].includes(recovery.assertionSource)
-    || recovery.sourceCommit !== index.sourceCommit || recovery.releaseContractSha256 !== requirements.releaseContractSha256
-    || recovery.candidateBundleSha256 !== candidateApps[recovery.architecture]?.bundleSha256
-    || recovery.databaseMigration?.sourceSchemaVersion !== 41) throw new Error('database recovery candidate/source mismatch')
-  nonEmptyString(recovery.assertedBy, 'database recovery assertedBy')
-  if (isoTimestamp(recovery.observedAt, 'database recovery observedAt') > generatedAt) throw new Error('database recovery occurs after index')
-  if (!Array.isArray(recovery.evidenceFiles) || recovery.evidenceFiles.length < 3) throw new Error('database recovery evidence missing')
-  for (const file of recovery.evidenceFiles) {
-    safeRelativeFile(file, 'database recovery evidence')
-    if (!filePaths.has(file)) throw new Error('database recovery references unindexed evidence')
+  if (index.databaseRecoveryPaths.length) {
+    const recovery = index.databaseRecoveryPaths[0]
+    exactKeys(recovery, ['id', 'architecture', 'sourceCommit', 'candidateBundleSha256', 'releaseContractSha256',
+      'observedAt', 'assertedBy', 'assertionSource', 'databaseMigration', 'evidenceFiles'], 'database recovery')
+    if (recovery.id !== 'observed_schema41' || !['human', 'external'].includes(recovery.assertionSource)
+      || recovery.sourceCommit !== index.sourceCommit || recovery.releaseContractSha256 !== requirements.releaseContractSha256
+      || recovery.candidateBundleSha256 !== candidateApps[recovery.architecture]?.bundleSha256
+      || recovery.databaseMigration?.sourceSchemaVersion !== 41) throw new Error('database recovery candidate/source mismatch')
+    nonEmptyString(recovery.assertedBy, 'database recovery assertedBy')
+    if (isoTimestamp(recovery.observedAt, 'database recovery observedAt') > generatedAt) throw new Error('database recovery occurs after index')
+    if (!Array.isArray(recovery.evidenceFiles) || recovery.evidenceFiles.length < 3) throw new Error('database recovery evidence missing')
+    for (const file of recovery.evidenceFiles) {
+      safeRelativeFile(file, 'database recovery evidence')
+      if (!filePaths.has(file)) throw new Error('database recovery references unindexed evidence')
+    }
+    const { evidenceFiles: _files, ...recoveryAssertion } = recovery
+    const frozenRecovery = readJsonFile(path.join(root, ...recovery.evidenceFiles[0].split('/')), MAX_EVIDENCE_FILE_BYTES).value
+    if (JSON.stringify(frozenRecovery) !== JSON.stringify(recoveryAssertion)) throw new Error('database recovery differs from frozen assertion')
+    validateDatabaseMigrationEvidence(recovery.databaseMigration, { captureCreatedAt, observedAt: recovery.observedAt },
+      new Map(recovery.evidenceFiles.slice(1).map(file => [fileHashes.get(file), fs.readFileSync(path.join(root, ...file.split('/')))])))
+    referenced.push(...recovery.evidenceFiles)
+    assertors.add(recovery.assertedBy)
   }
-  const { evidenceFiles: _files, ...recoveryAssertion } = recovery
-  const frozenRecovery = readJsonFile(path.join(root, ...recovery.evidenceFiles[0].split('/')), MAX_EVIDENCE_FILE_BYTES).value
-  if (JSON.stringify(frozenRecovery) !== JSON.stringify(recoveryAssertion)) throw new Error('database recovery differs from frozen assertion')
-  validateDatabaseMigrationEvidence(recovery.databaseMigration, { captureCreatedAt, observedAt: recovery.observedAt },
-    new Map(recovery.evidenceFiles.slice(1).map(file => [fileHashes.get(file), fs.readFileSync(path.join(root, ...file.split('/')))])))
-  referenced.push(...recovery.evidenceFiles)
-  assertors.add(recovery.assertedBy)
   const referencedSet = new Set(referenced)
   const unreferenced = [...filePaths].filter(file => !referencedSet.has(file))
   if (unreferenced.length > 0) throw new Error(`acceptance contains unreferenced evidence: ${unreferenced.join(',')}`)
@@ -1550,6 +1576,7 @@ export function verifyAgentIntegrationHostAcceptance({
 
   return Object.freeze({
     status: 'passed',
+    ...(requirements.migrationAcceptanceDeferral ? { migrationAcceptanceDeferral: requirements.migrationAcceptanceDeferral } : {}),
     schemaVersion: index.schemaVersion,
     acceptanceId: index.acceptanceId,
     appVersion: index.appVersion,
