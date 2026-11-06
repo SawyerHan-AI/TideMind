@@ -12,8 +12,17 @@ import { codexDiagnosticSandbox, prepareCodexDiagnostic as prepareNativeCodexDia
 import type { NativeDiagnosticInput } from '../../client/electron/agent-integration/native-diagnostic-adapter'
 
 const mocks = vi.hoisted(() => ({ metadata: vi.fn(), start: vi.fn(), metadataShutdown: vi.fn() }))
-const prepareCodexDiagnostic = (input: NativeDiagnosticInput, systemConfigPaths: readonly string[] = []) =>
-  prepareNativeCodexDiagnostic(input, { systemConfigPaths })
+async function prepareCodexDiagnostic(input: NativeDiagnosticInput, systemConfigPaths: readonly string[] = [],
+  fixturePlatform: NodeJS.Platform = 'darwin') {
+  // The child-process runner and app-server below are synthetic on every host.
+  const hostPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!
+  Object.defineProperty(process, 'platform', { ...hostPlatform, value: fixturePlatform })
+  try {
+    return await prepareNativeCodexDiagnostic(input, { systemConfigPaths })
+  } finally {
+    Object.defineProperty(process, 'platform', hostPlatform)
+  }
+}
 vi.mock('@server/llm/cli/child-process-runner.js', () => ({
   CliProcessRegistry: class { shutdown = mocks.metadataShutdown }, CliChildProcessRunner: class { run = mocks.metadata },
 }))
@@ -102,6 +111,16 @@ beforeEach(() => {
   })
 })
 afterEach(()=>{fs.rmSync(root,{recursive:true,force:true})})
+
+it('rejects the native adapter on Linux before inspecting billing settings or spawning', async () => {
+  fs.writeFileSync(configPath, `openai_base_url = "https://fixture.invalid"\n${configuration}`)
+  await expect(prepareCodexDiagnostic(input, [], 'linux')).rejects.toMatchObject({
+    code: 'codex_diagnostic_version_unsupported',
+  })
+  expect(input.attest).not.toHaveBeenCalled()
+  expect(mocks.metadata).not.toHaveBeenCalled()
+  expect(mocks.start).not.toHaveBeenCalled()
+})
 
 it.each(['openai_base_url', 'chatgpt_base_url'])('blocks explicit %s before starting metadata or app-server', async key => {
   fs.writeFileSync(configPath, `${key} = "https://fixture.invalid"\n${configuration}`)
