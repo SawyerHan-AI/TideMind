@@ -139,12 +139,19 @@ describe('Codex context restore real scripts', {timeout:30000},()=>{
  })
  it('Skill-only SessionStart fallback does not consume pending recovery',async()=>{
   await pc()
-  db.exec("CREATE TRIGGER fail_prepare BEFORE INSERT ON operation_log BEGIN SELECT RAISE(ABORT,'fixture prepare unavailable'); END")
-  const start=await run('hook-session-start','SessionStart')
+  // SessionStart now uses read-only prepare; a write trigger no longer causes
+  // a preparation failure. Inject that failure at the real entry's boundary.
+  const outfile=path.join(home,'hook-session-start-failure.cjs')
+  await build({entryPoints:[path.resolve('src/hook-session-start.ts')],bundle:true,platform:'node',target:'node20',format:'cjs',outfile,
+   external:['better-sqlite3','sqlite-vec','electron'],alias:{'@server':path.resolve('src')},
+   define:{'import.meta.url':'__tm_bundle_url__','__TIDEMIND_BUNDLED_VERSION__':JSON.stringify('0.2.94-test'),'__TIDEMIND_BUNDLED_SOURCE_COMMIT__':JSON.stringify('prepare-failure-fixture')},
+   banner:{js:'const __tm_bundle_url__ = require("node:url").pathToFileURL(__filename).href;'},logLevel:'silent',
+   plugins:[{name:'prepare-failure',setup(builder){builder.onLoad({filter:/[/\\]tools[/\\]prepare\.ts$/},()=>({contents:'export async function prepare() { throw new Error("fixture prepare unavailable") }',loader:'ts'}))}}]})
+  const start=await run('hook-session-start','SessionStart',{bundle:outfile})
   expect(start.stdout).toContain('skill-only fixture')
   expect(start.stdout).not.toContain('SAVED_PROFILE_V1')
   expect(createContextRestoreStore(db).readPending(scope())).not.toBeNull()
-  expect((await ups()).stdout).toContain('SAVED_PROFILE_V1') // readOnly path never hits the write trigger
+  expect((await ups()).stdout).toContain('SAVED_PROFILE_V1') // the independent restore entry remains healthy
  })
  it('concurrent processes consume at most one normal emission',async()=>{
   await pc();const results=await Promise.all([ups(),ups()])

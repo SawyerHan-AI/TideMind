@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { handleDiagnosticHook, isDiagnosticRequested } from './agent-diagnostic-runtime.js';
 import { loadConfig, ensureDataDirs } from './config.js';
 import { getDb, closeDb } from './db/connection.js';
 import { recordHookActivityEvidence } from './db/agent-host-activity.js';
@@ -32,8 +33,9 @@ function parseArgs(): { agentId: string; tool: string; activityGenerationToken: 
   return { agentId, tool, activityGenerationToken };
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const args = parseArgs();
+  if (isDiagnosticRequested() && await handleDiagnosticHook('session_end', args, 'SessionEnd')) return;
   try {
     migrateDataDirIfNeeded(migrationLog);
     loadConfig();
@@ -54,9 +56,7 @@ function main(): void {
   }
 }
 
-try {
-  main();
-} catch (error) {
+void main().catch((error: unknown) => {
   process.stderr.write(`[eb:hook-session-end] fatal error — ${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
-}
+});

@@ -12,14 +12,15 @@ import {
 import { clearClientCache } from '../../../src/llm/client'
 import { getMetabolismWorkerDegradedReason, restartMetabolismWorkerAndTriggerImmediate } from '../daemon'
 import { createLogger } from '../../../src/utils/logger'
-import { getConfig } from '../../../src/config'
-import { buildConnectionModelsView } from '../../../src/llm/model-catalog-view'
+import { getConfig } from '@server/config.js'
+import { buildConnectionModelsView, routesUsingConnection } from '../../../src/llm/model-catalog-view'
 import { MetabolismWorkerActiveTaskMirror } from '../workers/metabolism-worker-active-task-mirror'
 import type { MetabolismWorkerToMainMessage } from '../workers/metabolism-worker-protocol'
 
 const log = createLogger('ipc:llm-health')
 
 export interface ConnectionHealthItem {
+  affectedTiers?: Array<'light' | 'standard' | 'heavy'>
   connectionId: string
   connectionName: string
   providerType: string
@@ -50,6 +51,7 @@ export interface LLMHealthSnapshot {
   failures: number
   openedAt: number
   cooldownMs: number
+  lastTestSuccessAt?: number
   lastSuccessAt: number
   lastError: string | null
   lastErrorAt: number
@@ -71,7 +73,7 @@ const activeTaskMirror = new MetabolismWorkerActiveTaskMirror()
 
 export function readLLMHealthSnapshot(db: Database.Database): LLMHealthSnapshot {
   const connections = db.prepare(`
-    SELECT id, name, provider_type, status, status_reason, archived
+    SELECT id, name, provider_type, status, status_reason, archived, last_tested_at, last_test_summary
     FROM model_connections
     WHERE archived = 0
   `).all() as Array<{
@@ -80,10 +82,12 @@ export function readLLMHealthSnapshot(db: Database.Database): LLMHealthSnapshot 
     provider_type: string
     status: string
     status_reason: string | null
+    last_tested_at: string | null
+    last_test_summary: string | null
     archived: number
   }>
   const connectionById = new Map(connections.map(row => [row.id, row]))
-  const health = listConnectionHealth(db)
+  const health = listConnectionHealth(db).filter(item => item.connectionId && connectionById.has(item.connectionId))
   const errors: ConnectionHealthItem[] = []
   const healthConnections = new Set<string>()
 
@@ -91,8 +95,8 @@ export function readLLMHealthSnapshot(db: Database.Database): LLMHealthSnapshot 
     if (!item.connectionId) continue
     const connection = connectionById.get(item.connectionId)
     if (!connection) continue
-    healthConnections.add(item.connectionId)
     if (!item.lastErrorKind || !item.lastErrorMessage) continue
+    healthConnections.add(item.connectionId)
     errors.push({
       connectionId: item.connectionId,
       connectionName: connection.name,
@@ -119,7 +123,8 @@ export function readLLMHealthSnapshot(db: Database.Database): LLMHealthSnapshot 
   for (const connection of connections) {
     if (
       unavailableStatuses.has(connection.status)
-      && !healthConnections.has(connection.id)
+      && (!healthConnections.has(connection.id)
+        || (connection.status === 'ambiguous' && !errors.some(error => error.connectionId === connection.id && ['ambiguous', 'ambiguous_outcome'].includes(error.kind))))
     ) {
       errors.push({
         connectionId: connection.id,
@@ -163,13 +168,27 @@ export function readLLMHealthSnapshot(db: Database.Database): LLMHealthSnapshot 
     }
   }
 
+  if (config) {
+    for (const error of errors) {
+      const connection = connectionById.get(error.connectionId)
+      if (!connection) continue
+      // An open connection circuit blocks every route, even if the model itself is admitted.
+      if (error.circuitState === 'open') {
+        error.affectedTiers = routesUsingConnection(config, connection.id).map(route => route.tier)
+      } else if (['claude-cli', 'codex-cli'].includes(connection.provider_type)) {
+        const view = buildConnectionModelsView(db, connection, config)
+        error.affectedTiers = view.inUse.filter(route => !route.admission.allowed).map(route => route.tier)
+      }
+    }
+  }
+
   errors.sort((a, b) => {
     if (a.needsUserAction !== b.needsUserAction) return a.needsUserAction ? -1 : 1
     return b.occurredAt - a.occurredAt
   })
   // 与统一调用准入同一口径：CLI 连接环境已验证（untested/online）即可承担首次
   // 业务调用；某个模型的故障记在 routeFaults，不把整条连接算作不可用。
-  const availableCount = connections.filter(row => (
+  const availableCount = connections.filter(row => !errors.some(error => error.connectionId === row.id) && (
     row.provider_type === 'claude-cli' || row.provider_type === 'codex-cli'
       ? row.status === 'online' || row.status === 'untested'
       : row.status === 'online' || row.status === 'degraded'
@@ -188,6 +207,14 @@ export function readLLMHealthSnapshot(db: Database.Database): LLMHealthSnapshot 
     openedAt: worst?.openedAt ?? 0,
     cooldownMs: worst?.cooldownMs ?? 5 * 60_000,
     lastSuccessAt,
+    lastTestSuccessAt: connections.reduce((latest, row) => {
+      try {
+        const summary = JSON.parse(row.last_test_summary ?? '{}')
+        const at = Date.parse(row.last_tested_at ?? '')
+        return summary.success > 0 && !summary.cancelled && !summary.attributionUnconfirmed && Number.isFinite(at)
+          ? Math.max(latest, at) : latest
+      } catch { return latest }
+    }, 0),
     lastError: errors[0]?.message ?? null,
     lastErrorAt: errors[0]?.occurredAt ?? 0,
     availableCount,

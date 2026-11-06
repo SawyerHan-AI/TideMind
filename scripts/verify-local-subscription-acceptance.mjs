@@ -28,17 +28,20 @@ const list = (value, label) => {
   if (!Array.isArray(value)) throw new Error(`${label} must be an array`)
   return value
 }
-export function loadSubscriptionRequirements() {
-  const bytes = fs.readFileSync(requirementsPath)
+export function loadSubscriptionRequirements(appVersion) {
+  const file = appVersion === '0.2.94'
+    ? path.join(here, 'local-subscription-acceptance-requirements-0.2.94.json')
+    : requirementsPath
+  const bytes = fs.readFileSync(file)
   return { ...JSON.parse(bytes), sha256: digest(bytes) }
 }
 /** The .94 release narrows real acceptance only; both provider contracts remain. */
 export function subscriptionCaptureScope(requirements = loadSubscriptionRequirements()) {
+  same(requirements.providers, ['codex-cli', 'claude-cli'], 'supported provider contracts')
   if (requirements.appVersion !== '0.2.94') {
     if (requirements.releaseAcceptance) throw new Error('release acceptance policy is only valid for 0.2.94')
     return { providers: requirements.providers, deferredProviders: [] }
   }
-  same(requirements.providers, ['codex-cli', 'claude-cli'], 'supported provider contracts')
   same(requirements.releaseAcceptance, {
     requiredProviders: ['codex-cli'], deferredProviders: ['claude-cli'],
   }, '0.2.94 release acceptance policy')
@@ -344,7 +347,7 @@ function verifyBundle({ indexPath, expectedAppVersion, expectedSourceCommit }, a
   same(Object.keys(index.candidateAppsByArchitecture ?? {}), ['arm64'], 'candidate architectures')
   same(index.candidateAppsByArchitecture, acceptedCandidates, 'accepted signed candidate')
   const result = validateSubscriptionAcceptance(index, {
-    expectedAppVersion, expectedSourceCommit,
+    expectedAppVersion, expectedSourceCommit, requirements: loadSubscriptionRequirements(expectedAppVersion),
     readEvidence: name => {
       if (!files.has(name)) throw new Error(`unindexed evidence: ${name}`)
       return files.get(name)

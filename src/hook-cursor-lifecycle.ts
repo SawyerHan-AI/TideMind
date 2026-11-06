@@ -137,7 +137,7 @@ async function buildSessionStartContext(agentId: string, skillPath: string, expe
     tool: 'cursor',
     agent_id: agentId,
     detail_level: 'standard',
-  });
+  }, { readOnly: true });
   return {
     context: assembleSessionContext({
       skillContent,
@@ -195,7 +195,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (hookBridgeRejection({ scope: 'hook-cursor-lifecycle', agentId: args.agentId, activityGenerationToken: args.activityGenerationToken })) {
+  if (hookBridgeRejection({ scope: 'hook-cursor-lifecycle', agentId: args.agentId, activityGenerationToken: args.activityGenerationToken, keepDatabaseOpen: true })) {
     await writeSerializedHookOutput(formatCursorLifecycleHookOutput(args.event))
     return
   }
@@ -210,8 +210,6 @@ async function main(): Promise<void> {
       'Tide Mind 用户上下文加载失败，请手动调用 brain_prepare。',
     ));
     return;
-  } finally {
-    try { closeDb(); } catch { /* best effort */ }
   }
   await writeSerializedHookOutputBeforeEvidence(
     formatCursorLifecycleHookOutput(args.event, prepared.context),
@@ -230,6 +228,8 @@ main().catch(async (error: unknown) => {
   } catch {
     process.exitCode = 1;
   }
+}).finally(() => {
+  try { closeDb(); } catch { /* best effort */ }
 });
 
 function message(error: unknown): string {

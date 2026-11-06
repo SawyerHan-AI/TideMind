@@ -121,7 +121,8 @@ describe('core/client local Agent schema parity', () => {
   it('wires the shared definition into daemon fresh/migration and both Electron entrypoints', () => {
     expect(coreSource).toContain('${AGENT_INTEGRATION_SCHEMA_SQL}');
     expect(coreSource).toContain('version: 34');
-    expect(coreSource.match(/ensureAgentIntegrationSchema\(db\)/g)).toHaveLength(2);
+    expect(coreSource).toContain('version: 47');
+    expect(coreSource.match(/ensureAgentIntegrationSchema\(db\)/g)).toHaveLength(4);
     expect(clientSource.match(/ensureAgentIntegrationSchema\(newDb\)/g)).toHaveLength(1);
     expect(clientSource.match(/ensureAgentIntegrationSchema\(tmpDb\)/g)).toHaveLength(1);
   });

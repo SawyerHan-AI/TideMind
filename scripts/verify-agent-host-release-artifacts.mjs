@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { TIDEMIND_RELEASE_TEAM_ID } from './tidemind-candidate-app-identity.mjs'
-import { releaseMacArchitectures } from './release.mjs'
+import { releaseMacArchitectures, requiresSubscriptionAcceptance } from './release.mjs'
 import { verifySubscriptionReleaseEvidence } from './verify-local-subscription-acceptance.mjs'
 
 /** Bind the shipped app to the exact signed app exercised by real-host tests. */
@@ -60,7 +60,7 @@ function main() {
       readArtifact: extension => fs.readFileSync(path.join(releaseDir, `Tide.Mind-${appVersion}-${architecture}.${extension}`)),
     })
   }
-  if (appVersion === '0.2.94') {
+  if (requiresSubscriptionAcceptance(appVersion)) {
     verifySubscriptionReleaseEvidence({
       indexPath: path.resolve(argument('--subscription-index')),
       expectedAppVersion: appVersion, expectedSourceCommit: sourceCommit,

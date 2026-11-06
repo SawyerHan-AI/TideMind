@@ -18,6 +18,7 @@
  * 用法：node hook-post-compact.js --agent-id eb_xxx [--tool claude-code]
  */
 
+import { handleDiagnosticHook, isDiagnosticRequested } from './agent-diagnostic-runtime.js';
 import { loadConfig, ensureDataDirs } from './config.js';
 import { getDb, closeDb } from './db/connection.js';
 import { SqliteRepository } from './db/sqlite-repository.js';
@@ -86,6 +87,7 @@ async function codexPostCompact(agentId: string, generation: string): Promise<vo
 }
 
 async function main(): Promise<void> {
+  if (isDiagnosticRequested() && await handleDiagnosticHook('post_compact', parseArgs(), 'PostCompact')) return;
   const toolIndex = process.argv.indexOf('--tool');
   if (toolIndex >= 0 && process.argv[toolIndex + 1] === 'codex') {
     const parsed = parseArgs();

@@ -11,8 +11,42 @@ import {
 
 export type PlanOperation = 'connect' | 'upgrade' | 'repair' | 'disconnect'
 export const CURRENT_CONSENT_POLICY_VERSION = 1
+export const DEFAULT_AUTO_CONNECTION_POLICY_VERSION = 1
+
+export type ConsentOrigin = 'explicit_user' | 'default_auto_policy' | 'legacy'
+export interface AutomaticConsentContext {
+  policyVersion: number
+  connectionKey: string
+  domainKey: string
+  intentRevision: number
+  executionPlanHash: string
+  installationSurfaceFingerprint: string
+  sharedIdentityBinding?: string
+}
+
+export function isAutomaticConsentContext(value: unknown): value is AutomaticConsentContext {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const context = value as Partial<AutomaticConsentContext>
+  return context.policyVersion === DEFAULT_AUTO_CONNECTION_POLICY_VERSION
+    && typeof context.connectionKey === 'string' && /^(binding|installation):.+$/u.test(context.connectionKey)
+    && typeof context.domainKey === 'string' && context.domainKey.length > 0
+    && Number.isSafeInteger(context.intentRevision) && context.intentRevision! >= 0
+    && typeof context.executionPlanHash === 'string' && /^[a-f0-9]{64}$/u.test(context.executionPlanHash)
+    && typeof context.installationSurfaceFingerprint === 'string' && /^[a-f0-9]{64}$/u.test(context.installationSurfaceFingerprint)
+    && (context.sharedIdentityBinding === undefined || /^[a-f0-9]{64}$/u.test(context.sharedIdentityBinding))
+}
+
+export function automaticPlanAuthorizationKey(consentId: string, planHash: string): string {
+  return `sha256:${sha256Json([consentId, planHash])}`
+}
 
 export interface ConsentEnvelope {
+  origin?: ConsentOrigin
+  nativePermissionPlanHash?: string
+  automaticContext?: AutomaticConsentContext
+  /** A separately recorded exact maintenance plan, still bounded by this envelope's original scopes. */
+  automaticPlanAuthorization?: AutomaticConsentContext
+
   id: string
   installationId: string
   componentKeys: string[]
@@ -64,6 +98,17 @@ export interface ExecutionMutationPlan {
   containerPreconditionHash: string | null
   desiredFragmentHash: string | null
   reversible: boolean
+}
+
+/** Permissions granted by the native host, separate from routine Tide Mind configuration. */
+export function nativePermissionsForPlan(plan: Pick<ExecutionPlan, 'mutations'>): Array<'gemini_extension' | 'openclaw_capabilities'> {
+  const permissions = new Set<'gemini_extension' | 'openclaw_capabilities'>()
+  for (const mutation of plan.mutations) for (const command of mutation.commands ?? (mutation.command ? [mutation.command] : [])) {
+    if (command.args[0] === 'extensions' && command.args.includes('--consent')) permissions.add('gemini_extension')
+    if (command.args.includes('--accept-capabilities') || (command.args[0] === 'config' && command.args[1] === 'set'
+      && /\.hooks\.allow(PromptInjection|ConversationAccess)$/u.test(command.args[2] ?? '') && command.args[3] === 'true')) permissions.add('openclaw_capabilities')
+  }
+  return [...permissions]
 }
 
 export interface CompletedGenerationTakeover {
@@ -152,6 +197,16 @@ export function checkPlanAgainstConsent(
   const reasons: string[] = []
   validatePlanShape(plan, reasons)
 
+  if (consent.origin !== undefined && !['explicit_user','default_auto_policy','legacy'].includes(consent.origin)) reasons.push('consent_origin_invalid')
+  if (consent.origin === 'default_auto_policy') {
+    const context = consent.automaticPlanAuthorization ?? consent.automaticContext
+    if (!isAutomaticConsentContext(context)) reasons.push('automatic_consent_context_invalid')
+    else {
+      if (context.executionPlanHash !== executionPlanHash(plan)) reasons.push('automatic_consent_plan_changed')
+      if (context.installationSurfaceFingerprint !== plan.installationSurfaceFingerprint) reasons.push('automatic_consent_identity_changed')
+      if (context.sharedIdentityBinding !== plan.sharedIdentityBinding) reasons.push('automatic_consent_binding_changed')
+    }
+  }
   if (consent.revokedAt !== null) reasons.push('consent_revoked')
   if (consent.policyVersion !== CURRENT_CONSENT_POLICY_VERSION) {
     reasons.push(`consent_policy_changed:${consent.policyVersion}->${CURRENT_CONSENT_POLICY_VERSION}`)

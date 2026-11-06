@@ -18,8 +18,9 @@ export const ALLOWED_ADVISORIES = new Set([
   'https://github.com/advisories/GHSA-qwww-vcr4-c8h2',
 ]);
 
-const EXPECTED_BRACE_VERSIONS = new Set(['1.1.17', '2.1.3', '5.0.8']);
+const EXPECTED_BRACE_VERSIONS = new Set(['1.1.21', '2.1.7', '5.0.12']);
 const EXPECTED_ROUTER_VERSION = '7.18.2';
+const EXPECTED_ELECTRON_VERSION = '43.8.7';
 const MINIMATCH_ADVISORY = 'https://github.com/advisories/GHSA-g3hv-75wg-m249';
 const MINIMATCH_VERSIONS = {
   root: new Set(['10.2.5']),
@@ -56,14 +57,15 @@ export function allowedVulnerability(name, vulnerabilities, allowed = ALLOWED_AD
   return allCausesAllowed(name, vulnerabilities, new Set(), allowed) && reachesAllowedAdvisory(name, vulnerabilities, new Set(), allowed);
 }
 
-// Reviewed 2026-10-28: stable Electron 43.8.4 includes Node 24.22.1 and the
-// eMudhra mitigation (GHSA-jr5w-w6x2-84p9). Keep the reviewed runtime exact;
-// npm audit alone does not establish the bundled Chromium/Node security state.
-// https://github.com/electron/electron/releases/tag/v43.8.4
+// Reviewed 2026-11-07: Electron 43.8.7 includes the 43.8.5/43.8.6 Chromium
+// security backports (#55495, #55517), the eMudhra mitigation
+// (GHSA-jr5w-w6x2-84p9), and Node 24.22.1. npm audit does not cover the
+// bundled Chromium/Node runtime.
+// https://github.com/electron/electron/releases/tag/v43.8.7
 export function assertReviewedElectronVersion(lock) {
   const version = lock.packages?.['node_modules/electron']?.version;
-  if (version !== '43.8.4') {
-    throw new Error(`Electron runtime requires renewed upstream security review; expected 43.8.4, found ${version ?? 'missing'}`);
+  if (version !== EXPECTED_ELECTRON_VERSION) {
+    throw new Error(`Electron runtime requires renewed upstream security review; expected ${EXPECTED_ELECTRON_VERSION}, found ${version ?? 'missing'}`);
   }
 }
 
@@ -198,7 +200,7 @@ function main() {
   if (accepted.some((name) => reachesAllowedAdvisory(name, report.vulnerabilities, new Set(), new Set([MINIMATCH_ADVISORY])))) {
     console.log('  - 0.2.94 only: GHSA-g3hv-75wg-m249 moderate minimatch build-time risk accepted; reviewed dev versions, trusted build inputs required');
   }
-  if (accepted.includes('brace-expansion')) console.log('  - brace-expansion pinned to patched versions 1.1.17 / 2.1.3 / 5.0.8');
+  if (accepted.includes('brace-expansion')) console.log('  - brace-expansion pinned to patched versions 1.1.21 / 2.1.7 / 5.0.12');
   if (accepted.includes('react-router')) console.log('  - React Router 7.18.2 RSC-only advisory accepted; no RSC/direct react-router usage');
 }
 

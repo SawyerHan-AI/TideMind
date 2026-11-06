@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
+import { getRuntimeDiagnosticContext } from './config.js';
+import { assertDiagnosticBridge } from './agent-diagnostic-contract.js';
+import { assertDiagnosticDatabase, countDiagnosticToolCall, validateDiagnosticInput, completeDiagnosticPrepare,
+  completeDiagnosticDigest, completeDiagnosticRecall, diagnosticToolMarker, diagnosticServerName, DIAGNOSTIC_TOOL_DESCRIPTIONS } from './agent-diagnostic-receipts.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { BRAIN_TOOL_INPUT_SHAPES, DEFAULT_BRAIN_TOOL_DESCRIPTIONS as defaultDescriptions } from './mcp-tool-contracts.js';
@@ -52,9 +56,13 @@ if (!agentId) {
 if (!activityGenerationToken) log.warn('EB_ACTIVITY_GENERATION_TOKEN 未设置：不会生成宿主活动验证证据');
 
 const tideMindVersion = getTideMindVersion();
+const diagnosticContext = getRuntimeDiagnosticContext();
+const diagnosticCaller = { agentId: agentId ?? '', activityGenerationToken: activityGenerationToken ?? '' };
+if (diagnosticContext) assertDiagnosticBridge(diagnosticContext, { ...diagnosticCaller, componentKey: 'memory_tools' });
 const activityWarnings = new Set<string>();
 
 function recordMcpActivity(db: ReturnType<typeof getDb>, signalName: HostActivitySignal): void {
+  if (diagnosticContext) return;
   if (!agentId || !activityGenerationToken) return;
   try {
     const result = recordHostActivityEvidence(db, {
@@ -83,6 +91,11 @@ function recordMcpActivity(db: ReturnType<typeof getDb>, signalName: HostActivit
 // entries and unmanaged legacy Installations are unaffected.
 const bridgeRejectionsLogged = new Set<string>();
 function bridgeRejectedResult(db: ReturnType<typeof getDb>) {
+  if (diagnosticContext) {
+    assertDiagnosticBridge(diagnosticContext, { ...diagnosticCaller, componentKey: 'memory_tools' });
+    assertDiagnosticDatabase(db, diagnosticContext);
+    return null;
+  }
   const admission = evaluateBridgeAdmission(db, { agentId, activityGenerationToken });
   if (admission.allowed) return null;
   if (!bridgeRejectionsLogged.has(admission.reason)) {
@@ -96,7 +109,7 @@ function bridgeRejectedResult(db: ReturnType<typeof getDb>) {
 }
 
 const server = new McpServer({
-  name: 'tidemind',
+  name: diagnosticContext ? diagnosticServerName(diagnosticContext) : 'tidemind',
   version: tideMindVersion,
 });
 let mcpStopping = false;
@@ -130,6 +143,8 @@ const mcpStoppingResult = {
 // --- 加载 MCP 工具描述（可在客户端编辑）---
 
 function loadMcpDescriptions(): Record<string, string> {
+  if (diagnosticContext) return Object.fromEntries(Object.entries(DIAGNOSTIC_TOOL_DESCRIPTIONS)
+    .map(([name, description]) => [name, `${diagnosticToolMarker(diagnosticContext)} ${description}`]));
   try {
     const config = getConfig();
     const descPath = join(config.general.data_dir, 'mcp-descriptions.json');
@@ -159,6 +174,7 @@ server.tool(
         const db = getDb();
         const rejected = bridgeRejectedResult(db);
         if (rejected) return rejected;
+        await initVec();
         const repo = new SqliteRepository(db);
         const input: PrepareInput = {
           tool: params.tool,
@@ -167,7 +183,11 @@ server.tool(
           detail_level: params.detail_level as DetailLevel | undefined,
           agent_id: agentId ?? undefined,
         };
-        const result = await prepare(repo, input);
+        if (diagnosticContext) validateDiagnosticInput(db, diagnosticContext, diagnosticCaller, 'brain_prepare', params);
+        const result = diagnosticContext
+          ? await prepare(repo, { tool: 'diagnostic', detail_level: 'brief' }, { readOnly: true })
+          : await prepare(repo, input);
+        if (diagnosticContext) completeDiagnosticPrepare(db, diagnosticContext, diagnosticCaller);
         // OpenCode V2 has no lifecycle API.  For that exact host, a generic
         // prepare call proves only MCP availability; it becomes instruction
         // recognition evidence only when the managed Skill supplied its
@@ -207,6 +227,7 @@ server.tool(
       const db = getDb();
       const rejected = bridgeRejectedResult(db);
       if (rejected) return rejected;
+      await initVec();
       const repo = new SqliteRepository(db);
       // 推导 source_tool
       let sourceTool: string | undefined;
@@ -251,7 +272,9 @@ server.tool(
       // 4. normalizeInput: 兼容字段映射到新字段
       const input = normalizeRecallInput(p, agentId, sourceTool);
 
-      const result = await recall(repo, input);
+      if (diagnosticContext) validateDiagnosticInput(db, diagnosticContext, diagnosticCaller, 'brain_recall', params);
+      const result = await recall(repo, diagnosticContext ? { node_id: input.node_id, mode: 'detail', limit: 1 } : input);
+      if (diagnosticContext) completeDiagnosticRecall(db, diagnosticContext, diagnosticCaller, result);
       recordMcpActivity(db, 'brain_recall');
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
@@ -301,6 +324,7 @@ server.tool(
       const db = getDb();
       const rejected = bridgeRejectedResult(db);
       if (rejected) return rejected;
+      await initVec();
       const repo = new SqliteRepository(db);
       const input: DigestInput = {
         content: params.content,
@@ -315,7 +339,9 @@ server.tool(
         agent_id: agentId ?? undefined,
       };
       // 传入 server 让 digest 在归类模糊时可通过 MCP elicitation 向用户追问
-      const result = await digest(repo, input, { server });
+      if (diagnosticContext) validateDiagnosticInput(db, diagnosticContext, diagnosticCaller, 'brain_digest', params);
+      const result = await digest(repo, diagnosticContext ? { content: input.content, async: false, intent: 'new', source: { tool: 'diagnostic', session: diagnosticContext.runId } } : input, { server });
+      if (diagnosticContext) completeDiagnosticDigest(db, diagnosticContext, diagnosticCaller, result);
       if (digestResultProducedActivity(result)) {
         recordMcpActivity(db, 'brain_digest');
       }
@@ -337,10 +363,43 @@ server.tool(
 // 启动服务器
 // ============================================================
 async function main() {
-  // 加载 sqlite-vec 扩展，启用向量搜索 + 着陆连接
-  await initVec();
+  // DB stays lazy at transport startup. Authorized handlers initialize vec
+  // after getDb(), so first calls cannot silently skip extension loading.
 
   const transport = new StdioServerTransport();
+  if (diagnosticContext) {
+    const start = transport.start.bind(transport);
+    transport.start = async () => {
+      const receive = transport.onmessage;
+      transport.onmessage = message => {
+        // Native clients may expose generic MCP resource helpers even when
+        // this server has none. Diagnostic mode never delegates resource reads.
+        if ('method' in message && message.method.startsWith('resources/') && 'id' in message) {
+          try {
+            assertDiagnosticBridge(diagnosticContext, { ...diagnosticCaller, componentKey: 'memory_tools' });
+            const result = message.method === 'resources/list' ? { resources: [] }
+              : message.method === 'resources/templates/list' ? { resourceTemplates: [] } : null;
+            void transport.send(result ? { jsonrpc: '2.0', id: message.id, result }
+              : { jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'Diagnostic resources are unavailable' } })
+              .catch(() => { process.exitCode = 1; });
+          } catch {
+            void transport.send({ jsonrpc: '2.0', id: message.id, error: { code: -32000, message: 'Diagnostic call rejected' } })
+              .catch(() => { process.exitCode = 1; });
+          }
+          return;
+        }
+        if ('method' in message && message.method === 'tools/call' && 'id' in message) {
+          try { countDiagnosticToolCall(getDb(), diagnosticContext, diagnosticCaller, message.params?.name); }
+          catch {
+            void transport.send({ jsonrpc: '2.0', id: message.id, error: { code: -32000, message: 'Diagnostic call rejected' } }).catch(() => { process.exitCode = 1; });
+            return;
+          }
+        }
+        receive?.(message);
+      };
+      await start();
+    };
+  }
   await server.connect(transport);
 
   // 优雅退出：先停止 MCP admission，再关闭 LLM runtime 并排空脱离请求的后台

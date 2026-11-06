@@ -116,8 +116,8 @@ const lifecycleEvents = Object.freeze({ lifecycle_session_start: 'sessionStart',
 export const isCodexNativeLifecycleReceipt = value => value?.ledgerSource === 'codex_native_hooks'
 export const codexNativeLifecycleEvidenceHash = value => hash(Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'evidenceHash')))
 export function validateCodexNativeLifecycleReceiptShape(value, expected) {
-  check(expected.appVersion === '0.2.94' && expected.targetId === 'codex-cli' && expected.hostVariant === 'codex-cli'
-    && lifecycleEvents[expected.stepId], 'native lifecycle path is only for 0.2.94 Codex CLI lifecycle')
+  check(['0.2.94', '0.2.95'].includes(expected.appVersion) && expected.targetId === 'codex-cli' && expected.hostVariant === 'codex-cli'
+    && lifecycleEvents[expected.stepId], 'native lifecycle path is only for 0.2.94/0.2.95 Codex CLI lifecycle')
   const keys = ['ledgerSource','restoreReceipt','runId','turnId','evidenceHash']
   check(value && Object.keys(value).length === keys.length && keys.every(key => key in value)
     && isCodexNativeLifecycleReceipt(value) && text(value.runId) && text(value.turnId)

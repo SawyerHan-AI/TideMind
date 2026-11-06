@@ -2,6 +2,7 @@ import { DesktopSourceVerificationUnavailable } from './mac-code-signature'
 import { freshCodexIdentityFingerprint, type CodexFreshIdentityPlan } from './codex-fresh-identity'
 import { codexSelectionFingerprint, selectedCodexBaselines, prospectiveCodexIdentity, type CodexLegacySelection } from './codex-legacy-selection'
 import {
+  nativePermissionsForPlan,
   executionPlanHash,
   checkPlanAgainstConsent,
   type ConsentEnvelope,
@@ -76,6 +77,13 @@ export interface DisconnectScopeExpectation {
   consumerKeys: readonly string[]
 }
 
+export interface FileRepairWait {
+  runId: string
+  installation: CoordinatorInstallation
+  preparedPlan: PreparedCoordinatorPlan
+  desiredCapability: CapabilityLevel
+}
+
 export interface PrepareExecutionInput {
   runId: string
   installationId: string
@@ -100,6 +108,7 @@ export interface PrepareExecutionInput {
     executionPlanHash: string
     approvedExecutionPlanHash?: string
   }
+  fileRepairPeerProofs?: readonly { runId: string; planHash: string }[]
   createdAt: string
 }
 
@@ -150,6 +159,11 @@ export interface WriterFenceLease extends WriterFencePort {
 }
 
 export interface CoordinatorRepositoryPort extends IntegrationEventRepositoryPort {
+  completedFileRepairWait?(installationId: string, componentKeys: readonly ComponentKey[]): FileRepairWait | null
+  fileRepairPeers?(installationId: string, plan: PreparedCoordinatorPlan): readonly FileRepairWait[]
+  reusableMemoryVerification?(runId: string, at: string, tideMindVersion: string, catalogVersion: string): { verificationId: string; result: ComponentVerificationResult } | null
+  isRunConnectionIntentCurrent?(runId: string): boolean
+  refreshRecoveryConnectionIntent?(runId: string, at: string): boolean
   pendingAppliedRemovalCandidates?(runId: string): readonly {mutationId:string;snapshot:string}[] | Promise<readonly {mutationId:string;snapshot:string}[]>
   reconcileAppliedRemovalCandidates?(runId: string, expected: readonly {mutationId:string;snapshot:string}[], at: string): boolean | Promise<boolean>
   recipeUpgradePredecessorTrust?(runId: string, installationId: string, planHash: string): {
@@ -163,8 +177,9 @@ export interface CoordinatorRepositoryPort extends IntegrationEventRepositoryPor
     installationId: string,
     componentKeys: readonly ComponentKey[],
     forDisconnect?: boolean,
+    forRepair?: boolean,
   ): string | null | Promise<string | null>
-  getConsent(consentId: string): ConsentEnvelope | null | Promise<ConsentEnvelope | null>
+  getConsent(consentId: string, planHash?: string): ConsentEnvelope | null | Promise<ConsentEnvelope | null>
   setInstallationReconcileState(
     installationId: string,
     state: ReconcileState,
@@ -212,6 +227,7 @@ export interface CoordinatorRepositoryPort extends IntegrationEventRepositoryPor
     projectionVersion: string
     expectedHostVersion: string | null
     verifiedAt: string
+    reusedVerificationId?: string
   }): void | Promise<void>
   recordVerificationBatch(inputs: readonly {
     runId: string
@@ -223,6 +239,7 @@ export interface CoordinatorRepositoryPort extends IntegrationEventRepositoryPor
     projectionVersion: string
     expectedHostVersion: string | null
     verifiedAt: string
+    reusedVerificationId?: string
   }[]): void | Promise<void>
   blockVerifiedFinalization(input: {
     runId: string
@@ -246,6 +263,7 @@ export interface CoordinatorIdFactory {
 }
 
 export interface CoordinatorDependencies {
+  authorizeAutomaticMaintenancePlan?(request: ApplyPreparedRequest): void | Promise<void>
   runtime: AdapterRuntimeContext
   adapters: AdapterResolverPort
   repository: CoordinatorRepositoryPort
@@ -412,6 +430,10 @@ export type CoordinatorOutcome =
   | { status: 'committed'; runId: string; verification: readonly ComponentVerificationResult[] }
   | { status: 'needs_recovery'; runId: string; reason: string }
 
+export class ConnectionIntentChangedError extends Error {
+  constructor() { super('connection_intent_changed') }
+}
+
 export class AgentIntegrationCoordinator {
   constructor(private readonly dependencies: CoordinatorDependencies) {}
 
@@ -435,6 +457,9 @@ export class AgentIntegrationCoordinator {
     const ownedArtifacts = request.codexLegacySelection
       ? selectedCodexBaselines(request.codexLegacySelection, request.installation.id)
       : await this.dependencies.repository.listOwnedArtifactBaselines(request.codexFreshIdentity?.carrierInstallationId ?? request.installation.id)
+    const repairWait = request.operation === 'repair'
+      ? this.dependencies.repository.completedFileRepairWait?.(request.installation.id, request.componentKeys) ?? null : null
+    const sameGenerationWait = repairWait && !this.generationFailure(repairWait.preparedPlan, adapter) ? repairWait : null
     const verificationDependencies = request.operation === 'repair'
       && request.componentKeys.length === 1 && request.componentKeys[0] === 'instruction'
       ? [...(adapter.verificationDependencies?.instruction ?? [])]
@@ -456,13 +481,14 @@ export class AgentIntegrationCoordinator {
             ? [...new Set([...request.componentKeys, ...verificationDependencies])]
             : verificationDependencies.length > 0 ? verificationDependencies : request.componentKeys,
           request.operation === 'disconnect',
+          request.operation === 'repair',
         ) ?? null
       : null
     const frozenActivityGenerationToken = request.frozenActivityGenerationToken?.trim()
     if (request.frozenActivityGenerationToken !== undefined && !frozenActivityGenerationToken) {
       throw new Error('Frozen activity generation token is invalid')
     }
-    let activityGenerationToken = frozenActivityGenerationToken ?? currentActivityToken ?? operationId
+    let activityGenerationToken = frozenActivityGenerationToken ?? sameGenerationWait?.preparedPlan.activityGenerationToken ?? currentActivityToken ?? operationId
     let context = this.context(
       request.installation,
       operationId,
@@ -479,7 +505,18 @@ export class AgentIntegrationCoordinator {
       ? { ...observedInspection, detectedVersion: persistedHostVersion ?? undefined }
       : observedInspection
     const implementedComponents = new Set(inspection.components.map(component => component.componentKey))
-    let componentKeys = requestedComponents.filter(component => implementedComponents.has(component))
+    let sameGenerationMissing: ComponentKey[] | null = null
+    if (sameGenerationWait) {
+      const missing = sameGenerationWait.preparedPlan.componentKeys.filter(key => {
+        const observed = inspection.components.find(item => item.componentKey === key)
+        return adapter.componentContracts?.[key]?.mutationDomain === 'file_fragment'
+          && observed?.visibility === 'absent' && !observed.observedFragmentHash
+          && ownedArtifacts.some(owned => owned.componentKey === key)
+      })
+      if (request.componentKeys.every(key => missing.includes(key))) sameGenerationMissing = missing
+    }
+    let componentKeys = (sameGenerationMissing ? sameGenerationWait!.preparedPlan.componentKeys : requestedComponents)
+      .filter(component => implementedComponents.has(component))
     if (componentKeys.length === 0) {
       throw new Error(`no enabled component projection for ${request.installation.identity.hostVariant}`)
     }
@@ -490,12 +527,28 @@ export class AgentIntegrationCoordinator {
           ownedArtifacts,
         })
       : await adapter.plan(context, {
-          desiredCapability: request.desiredCapability,
+          desiredCapability: sameGenerationMissing ? sameGenerationWait!.desiredCapability : request.desiredCapability,
           desiredComponents: componentKeys,
           observed: inspection,
           ownedArtifacts,
         })
-    if (verificationDependencies.length > 0 && (!currentActivityToken
+    if (sameGenerationMissing) {
+      if (componentKeys.length !== sameGenerationWait!.preparedPlan.componentKeys.length
+        || adapterPlan.mutations.length === 0
+        || adapterPlan.mutations.some(mutation => !['create','update'].includes(mutation.operation)
+          || mutation.domainKind !== 'file_fragment' || mutation.commandCategory !== 'file_write'
+          || mutation.ownershipTransferFrom || (mutation.frozenCommands?.length ?? 0) > 0
+          || mutationComponentKeys(mutation).some(key => !sameGenerationMissing!.includes(key))
+          || !ownedArtifacts.some(owned => owned.componentKey === mutation.componentKey
+            && owned.physicalTarget === mutation.physicalTarget && owned.ownershipKey === mutation.ownershipKey
+            && owned.ownedFragmentHash === mutation.desiredFragmentHash))) throw new Error('same_generation_file_repair_changed')
+      for (const key of componentKeys.filter(key => !sameGenerationMissing!.includes(key))) {
+        const observed = inspection.components.find(item => item.componentKey === key)
+        if (!ownedArtifacts.some(owned => owned.componentKey === key && owned.physicalTarget === observed?.observedTarget
+          && owned.ownedFragmentHash === observed?.observedFragmentHash)) throw new Error('Unrepaired predecessor component changed')
+      }
+    }
+    if (!sameGenerationMissing && verificationDependencies.length > 0 && (!currentActivityToken
       || verificationDependencies.some(component => !componentKeys.includes(component))
       || adapterPlan.mutations.some(mutation => mutationComponentKeys(mutation)
         .some(component => verificationDependencies.includes(component))))) {
@@ -506,7 +559,7 @@ export class AgentIntegrationCoordinator {
     // A stable, already-loaded projection keeps its generation across ordinary
     // scans. Only a real connect/repair mutation rotates the token, then the
     // exact same observed surface is replanned with the new frozen generation.
-    if (request.operation !== 'disconnect'
+    if (!sameGenerationMissing && request.operation !== 'disconnect'
       && currentActivityToken
       && !frozenActivityGenerationToken
       && verificationDependencies.length === 0
@@ -651,6 +704,16 @@ export class AgentIntegrationCoordinator {
 
   async applyPrepared(request: ApplyPreparedRequest): Promise<CoordinatorOutcome> {
     assertInstallation(request.installation)
+    if (request.preparedPlan.operation === 'repair') {
+      const predecessor = this.dependencies.repository.completedFileRepairWait?.(request.installation.id, request.preparedPlan.componentKeys)
+      // Only the replacement of a completed wait inherits its full verification
+      // target. Ordinary repairs retain the requested capability, including an
+      // instruction-only repair with read-only MCP verification dependencies.
+      if (predecessor && predecessor.preparedPlan.activityGenerationToken === request.preparedPlan.activityGenerationToken
+        && predecessor.preparedPlan.componentKeys.length === request.preparedPlan.componentKeys.length) request = {
+        ...request, desiredCapability: Math.max(request.desiredCapability, predecessor.desiredCapability) as CapabilityLevel,
+      }
+    }
     assertHostCapabilityCeiling(
       request.installation,
       request.preparedPlan.operation,
@@ -694,7 +757,10 @@ export class AgentIntegrationCoordinator {
     }
 
     if (!request.consentId) return this.awaitConsent(request, ['consent_missing'], control)
-    const consent = await this.dependencies.repository.getConsent(request.consentId)
+    if (request.preparedPlan.operation === 'repair' || request.preparedPlan.operation === 'upgrade') {
+      await this.dependencies.authorizeAutomaticMaintenancePlan?.(request)
+    }
+    const consent = await this.dependencies.repository.getConsent(request.consentId, request.preparedPlan.executionPlanHash)
     if (!consent) return this.awaitConsent(request, ['consent_missing'], control)
     const coverage = checkPlanAgainstConsent(
       request.preparedPlan.executionPlan,
@@ -733,7 +799,20 @@ export class AgentIntegrationCoordinator {
         peer.installation,this.trustBinding(peer.preparedPlan),{operation:'connect',mutationDomain:null},
       )) throw new Error('Recipe upgrade peer source trust changed')
     }
+    const fileRepairPeerProofs: Array<{ runId: string; planHash: string }> = []
     try {
+      if (request.preparedPlan.operation === 'repair') {
+        for (const peer of this.dependencies.repository.fileRepairPeers?.(request.installation.id, request.preparedPlan) ?? []) {
+          const fence = this.dependencies.repository.acquireExecutionFence(peer.runId)
+          if (!fence) throw new WriterFenceUnavailableError(`repair peer is executing: ${peer.runId}`)
+          priorExecutionFences.push(fence)
+          await this.assertCurrentHostVersion(peer.installation.id, peer.preparedPlan)
+          if (this.generationFailure(peer.preparedPlan, this.requireAdapter(peer.installation.identity.hostVariant))) throw new Error('Repair peer generation changed')
+          await this.assertCurrentInstallationAuthorized(peer.installation, peer.preparedPlan)
+          fence.assertOwned()
+          fileRepairPeerProofs.push({ runId: peer.runId, planHash: peer.preparedPlan.executionPlanHash })
+        }
+      }
       if (confirmedGeneration) {
         for (const prior of generationTakeovers!) {
           const fence = this.dependencies.repository.acquireExecutionFence(prior.runId)
@@ -793,6 +872,7 @@ export class AgentIntegrationCoordinator {
         reconnectFromRemoved,
         disconnectScopeExpectations: request.disconnectScopeExpectations,
         applyTaskBinding: request.applyTaskBinding,
+        fileRepairPeerProofs,
         createdAt,
       })
 
@@ -872,6 +952,7 @@ export class AgentIntegrationCoordinator {
         : await this.failRecovery(execution, 'recovery_source_trust_changed')
     }
     if (execution.runState === 'verified') {
+      this.dependencies.repository.refreshRecoveryConnectionIntent?.(execution.runId, nowIso(this.dependencies.clock))
       if(execution.codexLegacySelectionReadBack){
         try{await this.assertCodexSelectionReadBack(execution.codexLegacySelectionReadBack)}
         catch{return this.blockVerifiedRecovery(execution,'codex_legacy_selection_changed')}
@@ -895,7 +976,9 @@ export class AgentIntegrationCoordinator {
     } catch {
       return this.failRecovery(execution, 'persisted_plan_hash_mismatch')
     }
+    const intentAuthorized = this.dependencies.repository.refreshRecoveryConnectionIntent?.(execution.runId, nowIso(this.dependencies.clock)) !== false
     if (execution.runState === 'applied_unverified') {
+      if (!intentAuthorized) return { status: 'paused', reason: 'disabled' }
       return this.retryAppliedVerification(execution, options, recoveryLeases)
     }
     return this.executePreparedRun({
@@ -907,7 +990,9 @@ export class AgentIntegrationCoordinator {
       desiredCapability: execution.preparedPlan.operation === 'disconnect' ? 0 : execution.desiredCapability,
       recovery: true,
       recoveryLeases,
-      recoveryReplayGuard: () => this.checkRecoveryReplay(execution, options),
+      recoveryReplayGuard: () => intentAuthorized
+        ? this.checkRecoveryReplay(execution, options)
+        : Promise.resolve({ allowed: false as const, reason: 'connection_intent_changed' }),
     })
   }
 
@@ -984,12 +1069,7 @@ export class AgentIntegrationCoordinator {
    */
   private async finalizeVerifiedExecution(execution: VerifiedRecoverableExecution): Promise<CoordinatorOutcome> {
     try {
-      await this.dependencies.repository.setRunState(
-        execution.runId,
-        'committed',
-        nowIso(this.dependencies.clock),
-      )
-      return { status: 'committed', runId: execution.runId, verification: [] }
+      return await this.commitVerifiedRun(execution.runId, nowIso(this.dependencies.clock), [])
     } catch (error) {
       const createdAt = nowIso(this.dependencies.clock)
       await this.dependencies.repository.recordEvent({
@@ -1009,6 +1089,20 @@ export class AgentIntegrationCoordinator {
       // into a generic replay-capable recovery state.
       return { status: 'needs_recovery', runId: execution.runId, reason: 'verified_finalization_blocked' }
     }
+  }
+
+  private async commitVerifiedRun(
+    runId: string,
+    at: string,
+    verification: readonly ComponentVerificationResult[],
+  ): Promise<CoordinatorOutcome> {
+    try {
+      await this.dependencies.repository.setRunState(runId, 'committed', at)
+    } catch (error) {
+      if (error instanceof ConnectionIntentChangedError) return { status: 'paused', reason: 'disabled' }
+      throw error
+    }
+    return { status: 'committed', runId, verification }
   }
 
   private async blockVerifiedRecovery(
@@ -1058,7 +1152,7 @@ export class AgentIntegrationCoordinator {
     if (control.healthState !== 'discovered' || control.statusReason === 'conflict') {
       return this.failRecovery(execution, 'host_not_authoritatively_present')
     }
-    const consent = await this.dependencies.repository.getConsent(execution.consentId)
+    const consent = await this.dependencies.repository.getConsent(execution.consentId, execution.preparedPlan.executionPlanHash)
     const coverage = consent
       ? checkPlanAgainstConsent(execution.preparedPlan.executionPlan, consent)
       : null
@@ -1149,6 +1243,7 @@ export class AgentIntegrationCoordinator {
             execution.activationEpoch ?? latestMutationEpoch(execution.mutations),
           )
     } catch (error) {
+      if (this.dependencies.repository.isRunConnectionIntentCurrent?.(execution.runId) === false) return { status: 'paused', reason: 'disabled' }
       if(error instanceof DesktopSourceVerificationUnavailable)throw error
       if (error instanceof FrozenGenerationChangedError) {
         return this.failRecovery(execution, error.reason)
@@ -1198,8 +1293,7 @@ export class AgentIntegrationCoordinator {
         ownershipOnlyDisconnectBinding: frozenPlanOwnershipOnlyBinding(execution.preparedPlan),
       }, finalGenerationFailure)
     }
-    await this.dependencies.repository.setRunState(execution.runId, 'committed', updatedAt)
-    return { status: 'committed', runId: execution.runId, verification }
+    return this.commitVerifiedRun(execution.runId, updatedAt, verification)
   }
 
   private async executePreparedRun(input: {
@@ -1337,6 +1431,13 @@ export class AgentIntegrationCoordinator {
               await this.assertCurrentHostVersion(input.installation.id, input.preparedPlan)
               const sharedFailure = await this.sharedDomainCasFailure(input.installation, input.preparedPlan)
               if (sharedFailure) throw new Error(sharedFailure)
+              if (this.dependencies.repository.isRunConnectionIntentCurrent?.(input.runId) === false) throw new ConnectionIntentChangedError()
+              if (nativePermissionsForPlan(input.preparedPlan.executionPlan).length) {
+                const permission = await this.dependencies.repository.getConsent(input.consentId, input.preparedPlan.executionPlanHash)
+                // Legacy recovery continues only its existing frozen user-approved operation.
+                if (!permission || (permission.origin && permission.origin !== 'legacy'
+                  && (permission.origin !== 'explicit_user' || permission.nativePermissionPlanHash !== input.preparedPlan.executionPlanHash))) throw new Error('native_permission_required')
+              }
               applyReceipt = await adapter.apply(context, plannedMutation)
             },
             readBack: async () => {
@@ -1375,6 +1476,7 @@ export class AgentIntegrationCoordinator {
 
     const activationEpoch = nowIso(this.dependencies.clock)
     await this.dependencies.repository.setRunState(input.runId, 'applied_unverified', activationEpoch)
+    if (this.dependencies.repository.isRunConnectionIntentCurrent?.(input.runId) === false) return { status: 'paused', reason: 'disabled' }
     const verificationControl = await this.dependencies.repository.getInstallationControl(input.installation.id)
     if (!verificationControl) return this.needsRecovery(input, 'installation_missing_before_verification', 'verification')
     try {
@@ -1411,6 +1513,7 @@ export class AgentIntegrationCoordinator {
             activationEpoch,
           )
     } catch (error) {
+      if (this.dependencies.repository.isRunConnectionIntentCurrent?.(input.runId) === false) return { status: 'paused', reason: 'disabled' }
       if(error instanceof DesktopSourceVerificationUnavailable)throw error
       if (error instanceof FrozenGenerationChangedError) {
         return this.needsRecovery(input, error.reason, 'verification')
@@ -1466,8 +1569,7 @@ export class AgentIntegrationCoordinator {
         ownershipOnlyDisconnectBinding: frozenPlanOwnershipOnlyBinding(input.preparedPlan),
       }, finalGenerationFailure)
     }
-    await this.dependencies.repository.setRunState(input.runId, 'committed', nowIso(this.dependencies.clock))
-    return { status: 'committed', runId: input.runId, verification }
+    return this.commitVerifiedRun(input.runId, nowIso(this.dependencies.clock), verification)
   }
 
   private async assertCodexSelectionReadBack(input:{installation:CoordinatorInstallation;preparedPlan:PreparedCoordinatorPlan}): Promise<void> {
@@ -1531,7 +1633,19 @@ export class AgentIntegrationCoordinator {
         verifiedAt: verificationAt,
       },
     })
-    const results = normalizeGuidedPendingVerification(input.preparedPlan, rawResults)
+    let results = normalizeGuidedPendingVerification(input.preparedPlan, rawResults)
+    let reusedVerificationId: string | undefined
+    const memory = results.find(result => result.componentKey === 'memory_tools')
+    if (input.preparedPlan.operation === 'repair' && memory?.status === 'unverified'
+      && memory.diagnostics.includes('static_readback_passed')
+      && memory.diagnostics.includes('fresh_host_activity_evidence_missing')) {
+      const reusable = this.dependencies.repository.reusableMemoryVerification?.(input.runId, verificationAt, this.dependencies.runtime.tideMindVersion, this.dependencies.runtime.catalogVersion)
+      if (reusable) {
+        reusedVerificationId = reusable.verificationId
+        results = results.map(result => result.componentKey === 'memory_tools' ? reusable.result : result)
+      }
+    }
+    if (this.dependencies.repository.isRunConnectionIntentCurrent?.(input.runId) === false) throw new ConnectionIntentChangedError()
     await this.assertCurrentHostVersion(input.installation.id, input.preparedPlan)
     await assertAuthorized()
     this.assertFrozenGenerations(input.preparedPlan, adapter)
@@ -1567,6 +1681,7 @@ export class AgentIntegrationCoordinator {
       projectionVersion: input.preparedPlan.adapterPlan.projectionVersion,
       expectedHostVersion: hostVersion,
       verifiedAt: verificationAt,
+      ...(result.componentKey === 'memory_tools' && reusedVerificationId ? { reusedVerificationId } : {}),
     })))
     await assertAuthorized()
     this.assertFrozenGenerations(input.preparedPlan, adapter)
@@ -1600,6 +1715,7 @@ export class AgentIntegrationCoordinator {
     options: RecoveryOptions,
   ): Promise<{ allowed: true } | { allowed: false; reason: string }> {
     try {
+      if (this.dependencies.repository.isRunConnectionIntentCurrent?.(execution.runId) === false) return { allowed: false, reason: 'connection_intent_changed' }
       await this.assertRecoveryAuthorized(execution, options)
       if (await options.canReplayEffect?.(execution.installation, execution) === false) {
         return { allowed: false, reason: 'recovery_write_gate_closed' }
@@ -1622,7 +1738,7 @@ export class AgentIntegrationCoordinator {
         return { allowed: false, reason: 'host_not_authoritatively_present' }
       }
 
-      const consent = await this.dependencies.repository.getConsent(execution.consentId)
+      const consent = await this.dependencies.repository.getConsent(execution.consentId, execution.preparedPlan.executionPlanHash)
       const coverage = consent
         ? checkPlanAgainstConsent(execution.preparedPlan.executionPlan, consent)
         : null

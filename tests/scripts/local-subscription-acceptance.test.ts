@@ -8,12 +8,12 @@ import { loadSubscriptionRequirements, subscriptionCaptureScope, validateSubscri
 // @ts-expect-error plain ESM script
 import { parseArgs, subscriptionAcceptanceArguments } from '../../scripts/release.mjs'
 
-function capture() {
-  const requirements = loadSubscriptionRequirements()
+function capture(appVersion = '0.2.95') {
+  const requirements = loadSubscriptionRequirements(appVersion)
   const files = new Map<string, any>()
   let serial = 0
   const index: any = {
-    schemaVersion: 1, evidenceClass: 'real_subscription', appVersion: '0.2.94',
+    schemaVersion: 1, evidenceClass: 'real_subscription', appVersion,
     sourceCommit: 'a'.repeat(40), requirementsSha256: requirements.sha256,
     captureNonce: 'b'.repeat(64), captureCreatedAt: '2026-10-23T01:00:00.000Z',
     collectedBy: 'operator', reviewedBy: 'reviewer', reviewedAt: '2026-10-23T03:00:00.000Z',
@@ -99,7 +99,7 @@ function capture() {
     index.providers.push({ provider, binding, steps })
   }
   const check = () => validateSubscriptionAcceptance(index, {
-    expectedAppVersion: '0.2.94', expectedSourceCommit: 'a'.repeat(40),
+    expectedAppVersion: appVersion, expectedSourceCommit: 'a'.repeat(40), requirements,
     readEvidence: (name: string) => {
       if (!files.has(name)) throw new Error('missing evidence')
       return Buffer.from(JSON.stringify(files.get(name)))
@@ -117,14 +117,14 @@ describe('independent local subscription acceptance semantics', () => {
     expect(test.check()).toMatchObject({ providerCount: 2, stepCount: 14 })
   })
   it('initializes the .94 Codex scope with Claude explicitly deferred and both contracts retained', () => {
-    const requirements = loadSubscriptionRequirements()
+    const requirements = loadSubscriptionRequirements('0.2.94')
     expect(requirements.providers).toEqual(['codex-cli', 'claude-cli'])
     expect(requirements.selectionModes['claude-cli']).toEqual(['follow_default', 'alias', 'pinned_id'])
     expect(subscriptionCaptureScope(requirements)).toEqual({ providers: ['codex-cli'], deferredProviders: ['claude-cli'] })
     expect(() => subscriptionCaptureScope({ ...requirements, appVersion: '0.2.93' })).toThrow('only valid for 0.2.94')
   })
   it('accepts all seven Codex steps with explicit Claude deferral, never a Codex deferral', () => {
-    const test = capture()
+    const test = capture('0.2.94')
     test.index.providers.pop()
     test.index.deferredProviders = ['claude-cli']
     expect(test.check()).toMatchObject({ providerCount: 1, stepCount: 7, deferredProviders: ['claude-cli'] })
@@ -133,26 +133,26 @@ describe('independent local subscription acceptance semantics', () => {
     expect(test.check).toThrow('provider matrix')
   })
   it('rejects unknown or falsely completed deferred providers and policy changes', () => {
-    const test = capture(); test.index.providers.pop()
+    const test = capture('0.2.94'); test.index.providers.pop()
     for (const deferred of [['unknown'], [{ provider: 'claude-cli', status: 'passed' }], ['claude-cli', 'claude-cli']]) {
       test.index.deferredProviders = deferred
       expect(test.check).toThrow('deferred provider matrix')
     }
-    const requirements = loadSubscriptionRequirements()
+    const requirements = loadSubscriptionRequirements('0.2.94')
     expect(() => subscriptionCaptureScope({ ...requirements, releaseAcceptance: {
       requiredProviders: [], deferredProviders: ['codex-cli', 'claude-cli'],
     } })).toThrow('0.2.94 release acceptance policy')
   })
   it('keeps requirements hash, candidate identity and every Codex step mandatory in the narrowed scope', () => {
     for (const step of ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7']) {
-      const test = capture(); test.index.providers.pop(); test.index.deferredProviders = ['claude-cli']
+      const test = capture('0.2.94'); test.index.providers.pop(); test.index.deferredProviders = ['claude-cli']
       delete test.entry.steps[step]
       expect(test.check).toThrow('B1-B7')
     }
-    const test = capture(); test.index.providers.pop(); test.index.deferredProviders = ['claude-cli']
+    const test = capture('0.2.94'); test.index.providers.pop(); test.index.deferredProviders = ['claude-cli']
     test.index.requirementsSha256 = '0'.repeat(64)
     expect(test.check).toThrow('requirements hash')
-    test.index.requirementsSha256 = loadSubscriptionRequirements().sha256
+    test.index.requirementsSha256 = loadSubscriptionRequirements('0.2.94').sha256
     test.step('B1').candidateBundleSha256 = '0'.repeat(64)
     expect(test.check).toThrow('receipt candidate')
   })
@@ -161,8 +161,15 @@ describe('independent local subscription acceptance semantics', () => {
     expect(test.check).toThrow('evidence class')
   })
   it('rejects undeclared provider omission or an incomplete B matrix', () => {
+    const requirements = loadSubscriptionRequirements()
+    expect(requirements.appVersion).toBe('0.2.95')
+    expect(subscriptionCaptureScope(requirements)).toEqual({ providers: ['codex-cli', 'claude-cli'], deferredProviders: [] })
     const test = capture(); test.index.providers.pop()
-    expect(test.check).toThrow('deferred provider matrix')
+    expect(test.check).toThrow('provider matrix')
+    const deferred = capture(); deferred.index.deferredProviders = ['claude-cli']
+    expect(deferred.check).toThrow('deferred provider matrix')
+    expect(() => subscriptionCaptureScope({ ...loadSubscriptionRequirements('0.2.94'), appVersion: '0.2.95' }))
+      .toThrow('only valid for 0.2.94')
     const incomplete = capture(); delete incomplete.entry.steps.B6
     expect(incomplete.check).toThrow('B1-B7')
   })
@@ -264,12 +271,12 @@ describe('independent local subscription acceptance semantics', () => {
 })
 
 describe('release B gate integration', () => {
-  it('requires B for .94 but does not change historical release or candidate preparation', () => {
+  it.each(['0.2.94', '0.2.95'])('requires B for %s formal release', version => {
     const options = parseArgs(['--subscription-evidence', '/tmp/B/index.json'])
-    expect(subscriptionAcceptanceArguments('0.2.94', options, 'source', { arm64: '/tmp/RC.app' }))
+    expect(subscriptionAcceptanceArguments(version, options, 'source', { arm64: '/tmp/RC.app' }))
       .toContain('/tmp/B/index.json')
     expect(subscriptionAcceptanceArguments('0.2.93', options, 'source', {})).toBeNull()
-    expect(subscriptionAcceptanceArguments('0.2.94', { ...options, prepareCandidate: true }, 'source', {})).toBeNull()
+    expect(subscriptionAcceptanceArguments(version, { ...options, prepareCandidate: true }, 'source', {})).toBeNull()
   })
   it('pairs A and B at initial validation and evidence copying', () => {
     const source = fs.readFileSync(path.resolve('scripts/release.mjs'), 'utf8')
@@ -293,7 +300,7 @@ describe('subscription evidence bundle and publish CI binding', () => {
       })
       const indexPath = path.join(root, 'index.json')
       fs.writeFileSync(indexPath, JSON.stringify(test.index))
-      const options = { indexPath, expectedAppVersion: '0.2.94', expectedSourceCommit: test.index.sourceCommit }
+      const options = { indexPath, expectedAppVersion: test.index.appVersion, expectedSourceCommit: test.index.sourceCommit }
       expect(verifySubscriptionReleaseEvidence(options, test.index.candidateAppsByArchitecture)).toMatchObject({ status: 'passed', stepCount: 14 })
       expect(() => verifySubscriptionReleaseEvidence(options, { arm64: { bundleSha256: '9'.repeat(64) } })).toThrow('accepted signed candidate')
       fs.appendFileSync(path.join(root, test.index.files[0].path), 'tampered')
@@ -327,10 +334,11 @@ describe('subscription evidence bundle and publish CI binding', () => {
     const privateWorkflow = path.resolve('oss-release/.github/workflows/release.yml')
     const workflow = fs.readFileSync(fs.existsSync(privateWorkflow)
       ? privateWorkflow : path.resolve('.github/workflows/release.yml'), 'utf8')
+    expect(workflow).toContain('requiresSubscriptionAcceptance(process.argv[1])')
     expect(workflow).toContain('node scripts/verify-local-subscription-acceptance.mjs')
     expect(workflow).toContain('--subscription-index "release-evidence/local-subscription-acceptance/$version/index.json"')
     const verifier = fs.readFileSync(path.resolve('scripts/verify-agent-host-release-artifacts.mjs'), 'utf8')
-    expect(verifier).toContain("if (appVersion === '0.2.94')")
+    expect(verifier).toContain('if (requiresSubscriptionAcceptance(appVersion))')
     expect(verifier).toContain("argument('--subscription-index')")
   })
 })

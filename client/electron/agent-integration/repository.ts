@@ -1,3 +1,6 @@
+import { isAutomaticConsentContext, type AutomaticConsentContext, type ConsentOrigin } from './consent'
+import { changeConnectionIntent, connectionIntentDomain, isPausedVerifiedRun, readConnectionIntent, type ConnectionIntent } from './connection-intent'
+import { readSharedConnectionEvidence } from './shared-connection-evidence.js'
 import { isExactCodexFourToFiveRecipeUpgrade, type CodexRecipeUpgradeProof } from './hosts/codex-lifecycle-adapter.js'
 import { freshCodexIdentityFingerprint, type CodexFreshIdentityPlan } from './codex-fresh-identity'
 import { evaluateBridgeAdmission } from '@server/agent-bridge-guard.js'
@@ -35,6 +38,37 @@ import { executionPlanHash, type CompletedGenerationTakeover } from './consent.j
 import { buildLegacyMutationDomain } from './legacy-writer.js'
 
 const AGENT_INTEGRATION_LAST_SUCCESSFUL_SCAN_AT_KEY = 'agent_integration_last_successful_scan_at'
+
+// A no-write connect stages a consumer as disabled until runtime verification.
+// Trust receipts for that exact pending run must be readable without enabling
+// the consumer. Keep the same ledger proof at both receipt boundaries.
+const CODEX_HOOK_TRUST_CONSUMER_ELIGIBILITY = `(
+  consumer.desired_state = 'managed' OR (
+    consumer.desired_state = 'disabled' AND EXISTS (
+      SELECT 1 FROM reconcile_runs run
+      JOIN agent_installations current ON current.id=run.installation_id
+      JOIN agent_consents consent ON consent.id=run.consent_envelope_id
+      JOIN installation_components component ON component.installation_id=current.id
+        AND component.component_key='lifecycle' AND component.artifact_id=artifact.id
+      WHERE run.installation_id=consumer.installation_id
+        AND run.operation_type='connect' AND run.state='applied_unverified'
+        AND current.desired_state='managed' AND current.tombstoned_at IS NULL
+        AND component.desired_state='managed' AND component.tombstoned_at IS NULL
+        AND current.consent_envelope_id=consent.id AND consumer.consent_envelope_id=consent.id
+        AND component.consent_envelope_id=consent.id
+        AND consent.status='active' AND consent.installation_id=current.id
+        AND json_extract(run.prepared_plan_json,'$.executionPlanHash')=run.execution_plan_hash
+        AND json_array_length(run.prepared_plan_json,'$.adapterPlan.mutations')=0
+        AND NOT EXISTS (SELECT 1 FROM projection_mutations mutation WHERE mutation.run_id=run.id)
+        AND EXISTS (
+          SELECT 1 FROM json_each(run.prepared_plan_json,'$.inspection.components') observed
+          WHERE json_extract(observed.value,'$.componentKey')='lifecycle'
+            AND json_extract(observed.value,'$.observedTarget')=artifact.target_path
+            AND json_extract(observed.value,'$.observedFragmentHash')=artifact.owned_fragment_hash
+        )
+    )
+  )
+)`
 
 export interface LegacyAgentRow {
   id: string
@@ -240,6 +274,9 @@ export interface ManagedArtifactInput {
 }
 
 export interface ConsentInput {
+  origin?: ConsentOrigin
+  automaticContext?: AutomaticConsentContext
+  nativePermissionPlanHash?: string
   id: string
   installationId: string
   policyVersion: string
@@ -353,6 +390,7 @@ interface ApplyTaskFeedCursorPayload {
 }
 
 interface ApplyTaskFeedItemFact {
+  superseded_by_run_id?: string | null
   task_id: string
   installation_id: string
   state: string
@@ -383,6 +421,7 @@ export interface DurableApplyTaskRow {
   completed_at: string | null
   updated_at: string
   items: Array<{
+    superseded_by_run_id?: string | null
     installation_id: string
     run_id: string | null
     execution_plan_hash: string
@@ -819,6 +858,130 @@ export class AgentIntegrationRepository {
 
   constructor(private readonly db: Database.Database) {}
 
+  connectionIntent(installationId: string): ConnectionIntent {
+    const row = this.getInstallation(installationId)
+    if (!row) throw new Error('Unknown connection member')
+    return readConnectionIntent(this.db, connectionIntentDomain(row))
+  }
+
+  connectionMembers(connectionId: string): AgentInstallationRow[] {
+    const members = this.listInstallations({ includeRemoved: true }).filter(row =>
+      this.connectionIdentity(row.id).key === connectionId)
+    if (!members.length || members.some(row => !this.connectionIdentity(row.id).valid)
+      || new Set(members.map(connectionIntentDomain)).size !== 1) throw new Error('Connection identity changed; refresh and retry')
+    return members
+  }
+
+  pauseConnection(connectionId: string, at: string, allowPending = false): ConnectionIntent {
+    return this.db.transaction(() => {
+      this.preserveUserConnectionChoices()
+      const members = this.connectionMembers(connectionId)
+      const intent = this.connectionIntent(members[0].id)
+      if (intent.state === 'disconnected') throw new Error('Disconnected connection must be explicitly reconnected')
+      if (intent.state === 'paused') return intent
+      const paused = members.filter(row => row.desired_state === 'managed' || (allowPending && row.desired_state === 'unmanaged')).map(row => row.id)
+      const pending = members.filter(row => paused.includes(row.id) && row.desired_state === 'unmanaged').map(row => row.id)
+      if (!paused.length && !allowPending) throw new Error('No active connection maintenance to pause')
+      const next = changeConnectionIntent(this.db, intent.domainKey, previous => ({ ...previous,
+        state: 'paused', pausedMemberIds: paused, pausedUnmanagedMemberIds: pending }))
+      for (const id of paused) this.setInstallationIntent(id, 'disabled', at)
+      return next
+    })()
+  }
+
+  resumeConnection(connectionId: string, at: string): ConnectionIntent {
+    return this.db.transaction(() => {
+      const members = this.connectionMembers(connectionId)
+      const intent = this.connectionIntent(members[0].id)
+      if (intent.state !== 'paused') throw new Error('Connection maintenance is not paused')
+      const next = changeConnectionIntent(this.db, intent.domainKey, previous => ({ ...previous,
+        state: 'active', pausedMemberIds: [], pausedUnmanagedMemberIds: [] }))
+      for (const row of members) {
+        if (intent.pausedMemberIds.includes(row.id) && !intent.excludedMemberIds.includes(row.id)
+          && row.desired_state === 'disabled') {
+          if (intent.pausedUnmanagedMemberIds?.includes(row.id)) this.db.prepare(`UPDATE agent_installations
+            SET desired_state='unmanaged',reconcile_state='idle',status_reason='awaiting_consent',updated_at=? WHERE id=? AND desired_state='disabled'`).run(at,row.id)
+          else this.setInstallationIntent(row.id, 'managed', at)
+        }
+      }
+      return next
+    })()
+  }
+
+  setMemberUserIntent(installationId: string, desired: 'managed' | 'disabled', at: string): ConnectionIntent {
+    return this.db.transaction(() => {
+      this.preserveUserConnectionChoices()
+      const intent = this.connectionIntent(installationId)
+      if (desired === 'managed' && intent.state !== 'active') throw new Error('Resume the shared connection before this member')
+      const next = changeConnectionIntent(this.db, intent.domainKey, previous => ({ ...previous,
+        pausedMemberIds: previous.pausedMemberIds.filter(id => id !== installationId),
+        excludedMemberIds: desired === 'disabled' ? [...new Set([...previous.excludedMemberIds, installationId])]
+          : previous.excludedMemberIds.filter(id => id !== installationId) }))
+      this.setInstallationIntent(installationId, desired, at)
+      return next
+    })()
+  }
+
+  preserveUserConnectionChoices(): void {
+    const domains = new Map<string, string[]>()
+    for (const row of this.listInstallations({ includeRemoved: true })) {
+      if (row.desired_state !== 'disabled' && !(row.desired_state === 'removed' && row.tombstone_reason === 'user_disconnect')) continue
+      const intent = this.connectionIntent(row.id)
+      if (intent.revision !== 0) continue
+      if (intent.pausedMemberIds.includes(row.id) || intent.excludedMemberIds.includes(row.id)) continue
+      domains.set(intent.domainKey, [...(domains.get(intent.domainKey) ?? []), row.id])
+    }
+    for (const [domain, ids] of domains) changeConnectionIntent(this.db, domain, previous => ({ ...previous,
+      excludedMemberIds: [...new Set([...previous.excludedMemberIds, ...ids])] }))
+  }
+
+  allowExplicitConnection(installationIds: readonly string[]): void {
+    this.db.transaction(() => {
+      this.preserveUserConnectionChoices()
+      const domains = new Map<string, string[]>()
+      for (const id of installationIds) {
+        const intent = this.connectionIntent(id)
+        if (intent.state === 'paused') throw new Error('Resume connection maintenance before reconnecting')
+        domains.set(intent.domainKey, [...(domains.get(intent.domainKey) ?? []), id])
+      }
+      for (const [domain, ids] of domains) {
+        const previous = readConnectionIntent(this.db, domain)
+        if (previous.state === 'active' && !previous.excludedMemberIds.some(id => ids.includes(id))) continue
+        changeConnectionIntent(this.db, domain, current => ({ ...current, state: 'active',
+          excludedMemberIds: current.excludedMemberIds.filter(id => !ids.includes(id)) }))
+      }
+    })()
+  }
+
+  recordDisconnectIntent(installationIds: readonly string[], wholeConnection: boolean): ConnectionIntent {
+    this.preserveUserConnectionChoices()
+    if (!installationIds.length) throw new Error('No connection members to disconnect')
+    const intents = installationIds.map(id => this.connectionIntent(id))
+    if (new Set(intents.map(intent => intent.domainKey)).size !== 1) throw new Error('Disconnect spans independent connections')
+    return changeConnectionIntent(this.db, intents[0].domainKey, previous => ({ ...previous,
+      state: wholeConnection ? 'disconnected' : previous.state,
+      pausedMemberIds: previous.pausedMemberIds.filter(id => !installationIds.includes(id)),
+      excludedMemberIds: [...new Set([...previous.excludedMemberIds, ...installationIds])],
+    }))
+  }
+
+  connectionIdentity(installationId: string): { key: string; shared: boolean; generation: number | null; valid: boolean } {
+    const binding = this.db.prepare(`SELECT b.id,b.generation FROM agent_identity_binding_members m
+      JOIN agent_identity_bindings b ON b.id=m.binding_id WHERE m.installation_id=?`).get(installationId) as { id: string; generation: number } | undefined
+    if (!binding) return { key: `installation:${installationId}`, shared: false, generation: null, valid: true }
+    try {
+      const identity = this.resolveAgentIdentity(installationId)
+      this.getSharedIdentity(identity.canonicalAgentId)
+      return { key: `binding:${binding.id}`, shared: true, generation: binding.generation, valid: true }
+    } catch {
+      return { key: `binding:${binding.id}`, shared: true, generation: binding.generation, valid: false }
+    }
+  }
+
+  sharedConnectionEvidence(installationId: string, at: string) {
+    return readSharedConnectionEvidence(this.db, installationId, at)
+  }
+
   getSharedIdentity(agentId: string) {
     return getSharedAgentConsumers(this.db, agentId)
   }
@@ -850,7 +1013,7 @@ export class AgentIntegrationRepository {
       admitted = true
       const keys = ['brain_prepare','brain_recall','brain_digest'].map(signal =>
         sharedAgentActivityKey(shared.bindingId, shared.generation, 'memory_tools', signal, carrier.token!))
-      const receipt = this.db.prepare(`SELECT MAX(created_at) AS evidence_at FROM agent_integration_events
+      const receipt = this.db.prepare(`SELECT MAX(COALESCE(json_extract(payload_json,'$.lastObservedAt'),created_at)) AS evidence_at FROM agent_integration_events
         WHERE kind='shared_agent_activity' AND dedupe_key IN (?,?,?)`).get(...keys) as {evidence_at:string|null}
       if (receipt.evidence_at) return { memberCount: active.length, status: 'call_observed', evidenceAt: receipt.evidence_at }
     }
@@ -1323,6 +1486,7 @@ export class AgentIntegrationRepository {
       current_agent_id: string | null
       current_artifact_hash: string | null
       current_artifact_state: string | null
+      current_noop_verification_pending: number
       current_selector_schema_version: string | null
     }
     const candidateQuery = this.db.prepare(`
@@ -1340,6 +1504,30 @@ export class AgentIntegrationRepository {
              COALESCE((SELECT b.canonical_agent_id FROM agent_identity_binding_members m JOIN agent_identity_bindings b ON b.id=m.binding_id WHERE m.installation_id=i.id), i.agent_id) AS current_agent_id,
              a.observed_fragment_hash AS current_artifact_hash,
              a.state AS current_artifact_state,
+             EXISTS (
+               SELECT 1 FROM reconcile_runs run
+               JOIN agent_consents consent ON consent.id = run.consent_envelope_id
+               JOIN artifact_consumers consumer ON consumer.artifact_id = a.id
+                 AND consumer.installation_id = i.id AND consumer.component_key = c.component_key
+               WHERE run.id = v.run_id AND run.installation_id = i.id
+                 AND run.state = 'applied_unverified' AND run.operation_type IN ('connect','repair')
+                 AND run.consent_envelope_id = i.consent_envelope_id
+                 AND consent.installation_id = i.id AND consent.status = 'active'
+                 AND consumer.consent_envelope_id = consent.id
+                 AND consumer.state = 'active' AND consumer.desired_state = 'disabled'
+                 AND consumer.tombstoned_at IS NULL
+                 AND a.owned_fragment_hash = a.observed_fragment_hash
+                 AND a.desired_fragment_hash = a.observed_fragment_hash
+                 AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(run.prepared_plan_json) THEN run.prepared_plan_json ELSE '{}' END, '$.componentKeys')
+                             WHERE value = c.component_key)
+                 AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(run.prepared_plan_json) THEN run.prepared_plan_json ELSE '{}' END, '$.inspection.components')
+                             WHERE json_extract(CASE WHEN type = 'object' THEN value ELSE '{}' END, '$.componentKey') = c.component_key
+                               AND json_extract(CASE WHEN type = 'object' THEN value ELSE '{}' END, '$.observedTarget') = a.target_path
+                               AND json_extract(CASE WHEN type = 'object' THEN value ELSE '{}' END, '$.observedFragmentHash') = a.observed_fragment_hash)
+                 AND NOT EXISTS (SELECT 1 FROM projection_mutations mutation
+                                 WHERE mutation.artifact_id = a.id
+                                   AND (mutation.run_id = run.id OR mutation.state != 'committed'))
+             ) AS current_noop_verification_pending,
              a.selector_schema_version AS current_selector_schema_version
       FROM verification_results v
       JOIN agent_installations i ON i.id = v.installation_id
@@ -1390,7 +1578,8 @@ export class AgentIntegrationRepository {
           && row.selector_schema_version !== row.current_selector_schema_version) {
           reason = 'selector_schema_changed'
         } else if (invalidationKeys.has('artifact_hash')
-          && (row.current_artifact_state !== 'healthy'
+          && ((row.current_artifact_state !== 'healthy'
+              && !(row.current_artifact_state === 'needs_recovery' && row.current_noop_verification_pending === 1))
             || row.artifact_hash !== row.current_artifact_hash)) {
           reason = 'artifact_hash_changed'
         } else if (invalidationKeys.has('reload_generation')
@@ -1824,12 +2013,15 @@ export class AgentIntegrationRepository {
       WHERE installation_id=? AND operation_type IN ('connect','repair','upgrade')
         AND state IN ('applied_unverified','needs_recovery') ORDER BY id
     `).all(installationId) as Array<{id:string;execution_plan_hash:string;prepared_plan_json:string;writer_fence_snapshot_json:string}>
+    // Unchanged owned components are staged disabled until host verification.
+    // Installation/component intent must still be managed; changed effects
+    // retain their stricter active-managed consumer check below.
     const scopes = this.db.prepare(`
       SELECT c.component_key,a.id AS artifact_id,a.target_path,a.ownership_key,a.mutation_domain,
              a.owned_fragment_hash,a.selector_schema_version,a.projection_version,a.state AS artifact_state
       FROM installation_components ic JOIN managed_artifacts a ON a.id=ic.artifact_id
       JOIN artifact_consumers c ON c.artifact_id=a.id AND c.installation_id=ic.installation_id AND c.component_key=ic.component_key
-      WHERE ic.installation_id=? AND ic.desired_state='managed' AND c.state='active' AND c.desired_state='managed'
+      WHERE ic.installation_id=? AND ic.desired_state='managed' AND c.state='active' AND c.desired_state IN ('managed','disabled')
         AND c.tombstoned_at IS NULL ORDER BY c.component_key
     `).all(installationId) as Array<Record<string, unknown>>
     if (scopes.length !== plan.componentKeys.length || scopes.some(scope => {
@@ -1964,6 +2156,9 @@ export class AgentIntegrationRepository {
    * A probe error is neither an authoritative absence nor fresh presence.
    * Invalidate live capability and prevent startup recovery from trusting the
    * previous process' discovered bit without incrementing uninstall misses.
+   * An exact Codex user-layer Hook trust decision can outlive a failed source
+   * probe. Keep explicit rejection as well as approval so a newer rejection
+   * still supersedes older shared trust. Neither observation authorizes writes.
    */
   markInstallationProbeUncertain(
     installationId: string,
@@ -1973,17 +2168,55 @@ export class AgentIntegrationRepository {
     this.db.transaction(() => {
       const installation = this.getInstallation(installationId)
       if (!installation || installation.desired_state === 'removed') return
+      const probeUnavailable = reasons.length > 0 && reasons.every(reason => reason === 'probe_inaccessible')
+      const nativeTrust = probeUnavailable && ['codex-cli', 'codex-desktop'].includes(installation.host_variant)
+        ? this.db.prepare(`
+          SELECT verification.id
+          FROM agent_installations installation
+          JOIN installation_components component ON component.installation_id = installation.id
+            AND component.component_key = 'lifecycle' AND component.desired_state = 'managed'
+            AND component.tombstoned_at IS NULL
+          JOIN verification_results verification ON verification.id = component.verification_result_id
+            AND verification.installation_id = installation.id AND verification.component_key = component.component_key
+          JOIN managed_artifacts artifact ON artifact.id = component.artifact_id AND artifact.state = 'healthy'
+            AND artifact.owned_fragment_hash = artifact.observed_fragment_hash
+            AND artifact.owned_fragment_hash = artifact.desired_fragment_hash
+            AND artifact.owned_fragment_hash = verification.artifact_hash
+            AND artifact.projection_version = verification.projection_version
+          JOIN artifact_consumers consumer ON consumer.artifact_id = artifact.id
+            AND consumer.installation_id = installation.id AND consumer.component_key = component.component_key
+            AND consumer.state = 'active' AND consumer.tombstoned_at IS NULL
+            AND ${CODEX_HOOK_TRUST_CONSUMER_ELIGIBILITY}
+          JOIN agent_consents consent ON consent.id = installation.consent_envelope_id
+            AND consent.id = component.consent_envelope_id AND consent.id = consumer.consent_envelope_id
+            AND consent.installation_id = installation.id AND consent.status = 'active'
+          WHERE installation.id = ? AND installation.desired_state = 'managed' AND installation.tombstoned_at IS NULL
+            AND component.verification_status = 'verified' AND verification.result = 'verified'
+            AND verification.invalidated_at IS NULL AND (verification.expires_at IS NULL OR verification.expires_at > ?)
+            AND verification.family = installation.family AND verification.runtime_realm = installation.runtime_realm
+            AND verification.distribution_id IS installation.distribution_id
+            AND verification.host_variant = installation.host_variant AND verification.host_version = installation.detected_version
+            AND verification.identity_assertion = COALESCE((
+              SELECT binding.canonical_agent_id FROM agent_identity_binding_members member
+              JOIN agent_identity_bindings binding ON binding.id = member.binding_id
+              WHERE member.installation_id = installation.id
+            ), installation.agent_id)
+            AND (instr(',' || verification.method || ',', ',codex_user_layer_trust_receipt_present,') > 0
+              OR instr(',' || verification.method || ',', ',codex_hook_not_trusted:') > 0)
+        `).get(installationId, scannedAt) as { id: string } | undefined
+        : undefined
       this.db.prepare(`
         UPDATE verification_results
         SET invalidated_at = COALESCE(invalidated_at, ?),
             invalidation_reason = COALESCE(invalidation_reason, 'host_probe_uncertain')
-        WHERE installation_id = ?
-      `).run(scannedAt, installationId)
+        WHERE installation_id = ? AND id IS NOT ?
+      `).run(scannedAt, installationId, nativeTrust?.id ?? null)
       this.db.prepare(`
         UPDATE installation_components
         SET verification_status = 'stale', updated_at = ?
         WHERE installation_id = ? AND verification_status != 'unverified'
-      `).run(scannedAt, installationId)
+          AND (? IS NULL OR verification_result_id IS NOT ?)
+      `).run(scannedAt, installationId, nativeTrust?.id ?? null, nativeTrust?.id ?? null)
       this.db.prepare(`
         UPDATE agent_installations
         SET verified_capability = 0,
@@ -2273,6 +2506,8 @@ export class AgentIntegrationRepository {
     const resuming = existing.desired_state === 'disabled' && desiredState === 'managed'
     this.db.transaction(() => {
       if (resuming) {
+        // A paused run can still hold current evidence for its read-only
+        // finalizer. Keep that evidence; historical committed evidence goes stale.
         this.db.prepare(`
           UPDATE installation_components
           SET verification_status = CASE
@@ -2281,7 +2516,20 @@ export class AgentIntegrationRepository {
               END,
               updated_at = ?
           WHERE installation_id = ? AND desired_state IN ('managed','disabled')
-        `).run(updatedAt, installationId)
+            AND NOT EXISTS (
+              SELECT 1 FROM verification_results evidence JOIN reconcile_runs run ON run.id=evidence.run_id
+              WHERE evidence.id=installation_components.verification_result_id
+                AND evidence.installation_id=installation_components.installation_id
+                AND evidence.component_key=installation_components.component_key
+                AND evidence.result='verified' AND evidence.invalidated_at IS NULL
+                AND (evidence.expires_at IS NULL OR evidence.expires_at>?)
+                AND run.installation_id=evidence.installation_id
+                AND run.state IN ('applied_unverified','verified')
+                AND run.operation_type!='disconnect'
+                AND run.consent_envelope_id=installation_components.consent_envelope_id
+                AND run.consent_envelope_id=?
+            )
+        `).run(updatedAt, installationId, updatedAt, existing.consent_envelope_id)
       }
       this.db.prepare(`
         UPDATE agent_installations
@@ -2382,9 +2630,17 @@ export class AgentIntegrationRepository {
       SELECT c.*, a.component_type, a.target_path, a.ownership_key,
              a.projection_version, a.selector_schema_version, a.state AS artifact_state,
              a.owned_fragment_hash, a.observed_fragment_hash,
-             a.last_applied_at, a.last_verified_at AS artifact_last_verified_at
+             a.last_applied_at, a.last_verified_at AS artifact_last_verified_at,
+             COALESCE((SELECT MAX(p.committed_at) FROM projection_mutations p
+               WHERE p.artifact_id=a.id AND p.state='committed' AND p.idempotency_strategy!='consumer_detach_only'), a.created_at) AS configuration_applied_at,
+             v.method AS verification_method, v.invalidation_keys_json AS verification_invalidation_keys,
+             v.invalidated_at AS verification_invalidated_at, v.verified_at AS verification_observed_at,
+             consent.status AS current_consent_status
       FROM installation_components c
       LEFT JOIN managed_artifacts a ON a.id = c.artifact_id
+      LEFT JOIN verification_results v ON v.id=c.verification_result_id
+        AND v.installation_id=c.installation_id AND v.component_key=c.component_key
+      LEFT JOIN agent_consents consent ON consent.id=c.consent_envelope_id AND consent.installation_id=c.installation_id
       WHERE c.installation_id = ?
       ORDER BY c.component_key
     `).all(installationId) as Array<Record<string, unknown>>
@@ -2674,6 +2930,7 @@ export class AgentIntegrationRepository {
       `).all() as Array<{ id: string; state: DurableApplyTaskRow['state']; started_at: string }>
         const itemFacts = this.db.prepare(`
         SELECT item.task_id, item.installation_id, item.state, item.run_id,
+               ${preparationFailureSuccessorSql()} AS superseded_by_run_id,
                CASE WHEN json_valid(item.result_json) = 1
                  AND COALESCE(json_type(item.result_json, '$'), '') = 'object'
                  THEN json_extract(item.result_json, '$.status') ELSE NULL END AS payload_status,
@@ -2777,7 +3034,7 @@ export class AgentIntegrationRepository {
           refs,
           runsById,
           attentionCount: refs.filter(ref => ref.priority === 1).length,
-          activeCount: refs.filter(ref => ref.priority === 0 || ref.priority === 2).length,
+          activeCount: refs.filter(ref => ref.priority === 0).length,
         }
         this.applyTaskFeedTraversalCache = traversal
       }
@@ -3084,6 +3341,7 @@ export class AgentIntegrationRepository {
     const items = this.db.prepare(`
       SELECT item.task_id, item.installation_id, item.run_id, item.execution_plan_hash, item.state,
              item.result_json, item.started_at, item.ordinal,
+             ${preparationFailureSuccessorSql()} AS superseded_by_run_id,
              CASE
                WHEN run.id IS NULL OR run.installation_id != item.installation_id
                  OR run.execution_plan_hash != item.execution_plan_hash
@@ -3298,6 +3556,7 @@ export class AgentIntegrationRepository {
   }
 
   createConsent(input: ConsentInput): void {
+    if (input.origin === 'default_auto_policy' && !isAutomaticConsentContext(input.automaticContext)) throw new Error('Automatic consent requires current policy context')
     this.db.transaction(() => {
       if (input.expectedInstallationSurfaceFingerprint !== undefined) {
         const installation = this.getInstallation(input.installationId)
@@ -3312,8 +3571,8 @@ export class AgentIntegrationRepository {
           id, installation_id, policy_version, allowed_components_json, allowed_scopes_json,
           normalized_targets_json, selector_schema_version, selector_resolution_json,
           executable_realpaths_json, command_categories_json, maximum_risk, exception_scope,
-          exceptions_json, confirmed_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          exceptions_json, confirmed_at, created_at, authorization_origin, authorization_context_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         input.id,
         input.installationId,
@@ -3330,6 +3589,8 @@ export class AgentIntegrationRepository {
         json(input.exceptions, {}),
         input.confirmedAt,
         input.confirmedAt,
+        input.origin ?? 'legacy',
+        input.automaticContext ? JSON.stringify(input.automaticContext) : input.nativePermissionPlanHash ? JSON.stringify({ nativePermissionPlanHash: input.nativePermissionPlanHash }) : null,
       )
     }).immediate()
   }
@@ -4287,9 +4548,6 @@ export class AgentIntegrationRepository {
       || installation.detected_version !== input.hostVersion) {
       throw new Error('Codex hook trust Installation binding changed')
     }
-    // No-write connect stages an active consumer as disabled until full runtime
-    // verification. Native trust may be recorded for that exact current run,
-    // without enabling the consumer or treating a genuinely paused host as active.
     const artifact = this.db.prepare(`
       SELECT artifact.target_path, artifact.owned_fragment_hash, artifact.projection_version
       FROM managed_artifacts artifact
@@ -4298,31 +4556,7 @@ export class AgentIntegrationRepository {
        AND consumer.installation_id = ?
        AND consumer.component_key = 'lifecycle'
        AND consumer.state = 'active'
-       AND (consumer.desired_state = 'managed' OR (
-         consumer.desired_state = 'disabled' AND EXISTS (
-           SELECT 1 FROM reconcile_runs run
-           JOIN agent_installations current ON current.id=run.installation_id
-           JOIN agent_consents consent ON consent.id=run.consent_envelope_id
-           JOIN installation_components component ON component.installation_id=current.id
-             AND component.component_key='lifecycle' AND component.artifact_id=artifact.id
-           WHERE run.installation_id=consumer.installation_id
-             AND run.operation_type='connect' AND run.state='applied_unverified'
-             AND current.desired_state='managed' AND current.tombstoned_at IS NULL
-             AND component.desired_state='managed' AND component.tombstoned_at IS NULL
-             AND current.consent_envelope_id=consent.id AND consumer.consent_envelope_id=consent.id
-             AND component.consent_envelope_id=consent.id
-             AND consent.status='active' AND consent.installation_id=current.id
-             AND json_extract(run.prepared_plan_json,'$.executionPlanHash')=run.execution_plan_hash
-             AND json_array_length(run.prepared_plan_json,'$.adapterPlan.mutations')=0
-             AND NOT EXISTS (SELECT 1 FROM projection_mutations mutation WHERE mutation.run_id=run.id)
-             AND EXISTS (
-               SELECT 1 FROM json_each(run.prepared_plan_json,'$.inspection.components') observed
-               WHERE json_extract(observed.value,'$.componentKey')='lifecycle'
-                 AND json_extract(observed.value,'$.observedTarget')=artifact.target_path
-                 AND json_extract(observed.value,'$.observedFragmentHash')=artifact.owned_fragment_hash
-             )
-         )
-       ))
+       AND ${CODEX_HOOK_TRUST_CONSUMER_ELIGIBILITY}
        AND consumer.tombstoned_at IS NULL
       WHERE artifact.id = ? AND artifact.state = 'healthy'
     `).get(input.installationId, input.artifactId) as {
@@ -4396,7 +4630,7 @@ export class AgentIntegrationRepository {
        AND consumer.installation_id = installation.id
        AND consumer.component_key = 'lifecycle'
        AND consumer.state = 'active'
-       AND consumer.desired_state = 'managed'
+       AND ${CODEX_HOOK_TRUST_CONSUMER_ELIGIBILITY}
        AND consumer.tombstoned_at IS NULL
       WHERE event.kind = 'codex_hook_trust_verified'
         AND event.installation_id = ?
@@ -4597,6 +4831,57 @@ export class AgentIntegrationRepository {
       fileAction: fileAction?.kind === 'manual_file_removal' ? fileAction : null }
   }
 
+  /** One durable episode per current connection issue; read/dismiss never changes health. */
+  syncConnectionIssues(issues: readonly { connectionId: string; installationId: string; reason: string; fingerprint: string }[], at: string): Map<string, { eventId: string; reason: string; dismissed: boolean }> {
+    // Reserve the writer before reading so a concurrent Hook commit cannot
+    // invalidate the WAL snapshot when an issue needs to be updated.
+    return this.db.transaction(() => {
+      const active = this.db.prepare(`SELECT id,state,payload_json FROM agent_integration_events
+        WHERE kind='connection_issue' AND state!='archived'`).all() as Array<{ id: string; state: string; payload_json: string }>
+      const current = new Map(issues.map(issue => [issue.connectionId, issue]))
+      const result = new Map<string, { eventId: string; reason: string; dismissed: boolean }>()
+      for (const row of active) {
+        const previous = JSON.parse(row.payload_json) as { connectionId: string; fingerprint: string; reason: string }
+        const issue = current.get(previous.connectionId)
+        if (!issue || issue.fingerprint !== previous.fingerprint || result.has(previous.connectionId)) {
+          this.db.prepare(`UPDATE agent_integration_events SET state='archived' WHERE id=?`).run(row.id)
+        } else {
+          result.set(issue.connectionId, { eventId: row.id, reason: issue.reason, dismissed: row.state === 'read' })
+        }
+      }
+      for (const issue of issues) {
+        if (result.has(issue.connectionId)) continue
+        const eventId = this.recordEvent({ installationId: issue.installationId, kind: 'connection_issue',
+          severity: 'warning', episodeId: randomUUID(), payload: issue, createdAt: at })
+        result.set(issue.connectionId, { eventId, reason: issue.reason, dismissed: false })
+      }
+      return result
+    }).immediate()
+  }
+
+  hasAutomaticConnectionFailure(fingerprint: string): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM agent_integration_events
+      WHERE kind='automatic_connection_failure_attempt' AND dedupe_key=?`).get(`sha256:${fingerprint}`))
+  }
+
+  recordAutomaticConnectionFailureAttempt(ids: readonly string[], fingerprint: string, planHash: string | null, at: string): boolean {
+    const id = `aie_${randomUUID()}`
+    return this.recordEvent({ id, installationId: ids[0], kind: 'automatic_connection_failure_attempt',
+      dedupeKey: `sha256:${fingerprint}`, payload: { installationIds: ids, planHash }, createdAt: at }) === id
+  }
+
+  recordAutomaticConnectionFailure(installationId: string, intentRevision: number, expectedConsentIds: readonly (string | null)[], message: string, at: string): void {
+    this.db.transaction(() => {
+      const current = this.getInstallation(installationId)
+      if (!current || !['managed','unmanaged','removed'].includes(current.desired_state)
+        || !expectedConsentIds.includes(current.consent_envelope_id) || this.connectionIntent(installationId).revision !== intentRevision) return
+      this.db.prepare(`UPDATE agent_installations SET status_reason=?,updated_at=?
+        WHERE id=? AND reconcile_state NOT IN ('planning','applying','verifying')`).run(message.split(',').includes('native_permission_required') ? 'native_permission_required' : 'automatic_configuration_failed', at, installationId)
+      this.recordEvent({ installationId, kind: 'automatic_connection_failed', severity: 'warning',
+        dedupeKey: sha256Json([installationId, intentRevision, message]), payload: { message }, createdAt: at })
+    })()
+  }
+
   recordEvent(input: IntegrationEventInput): string {
     const id = input.id ?? `aie_${randomUUID()}`
     const sanitized = sanitizeAgentIntegrationEventPersistence({
@@ -4652,7 +4937,7 @@ export class AgentIntegrationRepository {
 
   listInstallationEvents(
     installationId: string,
-    options: { state?: 'unread' | 'read' | 'archived'; limit?: number } = {},
+    options: { state?: 'unread' | 'read' | 'archived'; limit?: number; includeConnectionIssues?: boolean } = {},
   ): Array<Record<string, unknown>> {
     const limit = options.limit ?? 100
     if (!Number.isInteger(limit) || limit < 1 || limit > 1_000) {
@@ -4662,9 +4947,10 @@ export class AgentIntegrationRepository {
       SELECT * FROM agent_integration_events
       WHERE installation_id = @installationId
         AND (@state IS NULL OR state = @state)
+        AND (@includeConnectionIssues = 1 OR kind != 'connection_issue')
       ORDER BY created_at DESC, id DESC
       LIMIT @limit
-    `).all({ installationId, state: options.state ?? null, limit }) as Array<Record<string, unknown>>
+    `).all({ installationId, state: options.state ?? null, limit, includeConnectionIssues: options.includeConnectionIssues === false ? 0 : 1 }) as Array<Record<string, unknown>>
   }
 
   markEventRead(eventId: string, readAt: string): boolean {
@@ -4677,10 +4963,11 @@ export class AgentIntegrationRepository {
   }
 
   markInstallationEventsRead(installationId: string, readAt: string): number {
+    // Viewing installation history does not dismiss the current connection issue.
     const result = this.db.prepare(`
       UPDATE agent_integration_events
       SET state = 'read', read_at = COALESCE(read_at, ?)
-      WHERE installation_id = ? AND state = 'unread'
+      WHERE installation_id = ? AND state = 'unread' AND kind != 'connection_issue'
     `).run(readAt, installationId)
     return result.changes
   }
@@ -4818,17 +5105,35 @@ export class AgentIntegrationRepository {
     if (!Number.isFinite(observedAtMs)) throw new Error(`invalid observedAt: ${input.observedAt}`)
     const tx = this.db.transaction(() => {
       const artifact = this.db.prepare(`
-        SELECT state, missing_window_started_at, missing_event_count
+        SELECT state, missing_window_started_at, missing_event_count, missing_episode_id
         FROM managed_artifacts WHERE id = ?
       `).get(input.artifactId) as {
         state: ArtifactState
         missing_window_started_at: string | null
         missing_event_count: number
+        missing_episode_id: string | null
       } | undefined
       if (!artifact) throw new Error(`unknown artifact: ${input.artifactId}`)
-      // 只有 healthy -> missing 的边沿产生 episode。重复 watcher/scan/retry 不计数，
-      // 但同一 durable missing episode 仍可重试尚未完成的自动恢复。
-      if (artifact.state !== 'healthy') {
+      // A host-verification failure may have marked completed configuration
+      // effects needs_recovery. Exact absence can still start a missing episode;
+      // prepare separately proves/retire the old wait before any repair effect.
+      const completedVerificationWait = artifact.state === 'needs_recovery' && Boolean(this.db.prepare(`
+        SELECT 1 FROM projection_mutations p JOIN reconcile_runs r ON r.id=p.run_id
+        WHERE p.artifact_id=? AND r.operation_type IN ('connect','repair')
+          AND (r.state='applied_unverified' OR (r.state='needs_recovery' AND r.failure_code='verification_failed'))
+          AND NOT EXISTS (SELECT 1 FROM projection_mutations pending WHERE pending.run_id=r.id AND pending.state!='committed')
+          AND NOT EXISTS (SELECT 1 FROM projection_mutations pending JOIN reconcile_runs owner ON owner.id=pending.run_id
+            WHERE pending.artifact_id=? AND pending.state!='committed' AND owner.state NOT IN ('committed','cancelled'))
+      `).get(input.artifactId,input.artifactId))
+      if (completedVerificationWait && artifact.missing_episode_id) {
+        const circuitBroken = artifact.missing_event_count >= 2
+        this.db.prepare(`UPDATE managed_artifacts SET state=? WHERE id=? AND state='needs_recovery'`)
+          .run(circuitBroken ? 'paused' : 'missing', input.artifactId)
+        return { changed: false, eventCount: artifact.missing_event_count,
+          shouldAutoRestore: artifact.missing_event_count === 1, circuitBroken }
+      }
+      // Repeated watcher/scan/retry does not increment the same missing episode.
+      if (artifact.state !== 'healthy' && !completedVerificationWait) {
         return {
           changed: false,
           eventCount: artifact.missing_event_count,
@@ -4849,7 +5154,7 @@ export class AgentIntegrationRepository {
         UPDATE managed_artifacts
         SET state = ?, missing_episode_id = ?, missing_window_started_at = ?,
             missing_event_count = ?, paused_reason = ?, updated_at = ?
-        WHERE id = ? AND state = 'healthy'
+        WHERE id = ? AND state = ?
       `).run(
         nextState,
         input.episodeId,
@@ -4858,6 +5163,7 @@ export class AgentIntegrationRepository {
         nextState === 'paused' ? 'missing_circuit_breaker' : null,
         input.observedAt,
         input.artifactId,
+        artifact.state,
       )
       if (update.changes !== 1) {
         return { changed: false, eventCount, shouldAutoRestore: false, circuitBroken: false }
@@ -5316,10 +5622,30 @@ function assertCodexTrustHash(value: string, label: string, prefixed = false): v
 }
 
 function applyTaskFeedRunPriority(run: ApplyTaskRunRow): number {
+  if (isPausedVerifiedRun(run)) return 3
   if (FEED_RUNNING_RUN_STATES.has(run.state)) return 0
   if (run.state === 'applied_unverified') return 2
-  if (run.state === 'cancelled' && ['superseded_by_disconnect','superseded_by_confirmed_generation'].includes(run.failure_code ?? '')) return 3
+  if (run.state === 'cancelled' && ['superseded_by_disconnect','superseded_by_confirmed_generation','superseded_by_same_generation_repair'].includes(run.failure_code ?? '')) return 3
   return run.state === 'committed' ? 3 : 1
+}
+
+/** A newer applied connect supersedes an earlier failed preparation, not its history. */
+function preparationFailureSuccessorSql(): string {
+  return `CASE WHEN item.run_id IS NULL AND item.state='terminal'
+    AND task.state='completed' AND task.operation_type='connect'
+    AND json_valid(item.result_json)=1 THEN
+    CASE WHEN json_extract(item.result_json,'$.status')='failed'
+      AND json_extract(item.result_json,'$.installationId')=item.installation_id
+      AND COALESCE(json_type(item.result_json,'$.runId'),'null')='null'
+      THEN (SELECT newer.id FROM reconcile_runs newer
+        WHERE newer.installation_id=item.installation_id AND newer.operation_type='connect'
+          AND newer.state IN ('applied_unverified','verified','committed') AND newer.failure_code IS NULL
+          AND julianday(newer.created_at)>julianday(task.started_at)
+          AND NOT EXISTS (SELECT 1 FROM reconcile_runs own_run
+            WHERE own_run.installation_id=item.installation_id
+              AND own_run.execution_plan_hash=item.execution_plan_hash)
+        ORDER BY newer.created_at DESC,newer.id DESC LIMIT 1)
+    END END`
 }
 
 function applyTaskFeedItemPriority(
@@ -5327,6 +5653,7 @@ function applyTaskFeedItemPriority(
   overlay: ApplyTaskRunRow | null,
 ): number {
   if (overlay) return applyTaskFeedRunPriority(overlay)
+  if (fact.superseded_by_run_id) return 3
   if (fact.exact_run_correlation === 1 && fact.run_id && fact.run_state) {
     if ((fact.state === 'terminal' || fact.state === 'interrupted')
       && ((fact.payload_installation_id !== null

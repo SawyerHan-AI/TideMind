@@ -1,3 +1,8 @@
+import { probeAgentAuthentication, type AgentAuthenticationResult } from './agent-authentication'
+import { createDiagnosticService } from './diagnostic-service'
+import { prepareClaudeDiagnostic } from './claude-diagnostic-adapter'
+import { prepareCodexDiagnostic } from './codex-diagnostic-adapter'
+import { NativeDiagnosticError } from './native-diagnostic-adapter'
 import { inspectCodexLegacySelection } from './codex-legacy-selection.js'
 import fs from 'node:fs/promises'
 import fsSync from 'node:fs'
@@ -57,6 +62,7 @@ import {
 import { sha256Json } from './fingerprint.js'
 import { verifyNpmComponentLookupTopologySync } from './npm-component-topology.js'
 import {
+  DesktopSourceVerificationUnavailable,
   desktopSignatureReceiptFingerprint,
   inspectMacAppSignature,
   inspectMacAppSignatureSync,
@@ -88,6 +94,7 @@ import {
   runtimeSourceSurfaceOf,
   setSourceVerificationStore,
   type SourceVerifier,
+  type SourceVerificationKey,
 } from './runtime-compatibility.js'
 import { createProductionSourceVerification } from './source-verification-queue.js'
 import { kimiNativeReceiptLookupFingerprint } from './distribution-artifact.js'
@@ -150,6 +157,8 @@ const lazyExecutionPort: AgentIntegrationExecutionPort = {
 }
 
 export interface ProductionAgentIntegrationOptions {
+  diagnosticFixture?: AgentIntegrationServiceDependencies['diagnostics']
+  authenticationProbe?: (row: AgentInstallationRow, signal: AbortSignal) => Promise<AgentAuthenticationResult>
   homeDir?: string
   applicationDataDir?: string
   runtimeContext?: AdapterRuntimeContext
@@ -161,6 +170,7 @@ export interface ProductionAgentIntegrationOptions {
   enabledAdapterIds?: readonly CatalogId[]
   observeOnly?: boolean
   autoRestore?: boolean
+  automaticConnections?: boolean
   notifications?: NotificationPort
   notificationLocale?: string | (() => string)
   onOpenInstallation?: (installationId: string) => void | Promise<void>
@@ -216,6 +226,7 @@ export function createProductionAgentIntegrationComposition(
   options: ProductionAgentIntegrationOptions = {},
 ): ProductionAgentIntegrationComposition {
   const injectedTrustSeams = [
+    options.diagnosticFixture && 'diagnosticFixture',
     options.canManageInstallation && 'canManageInstallation',
     options.liveTrustAttestor && 'liveTrustAttestor',
     options.codexHookTrustVerifier && 'codexHookTrustVerifier',
@@ -443,6 +454,7 @@ export function createProductionAgentIntegrationComposition(
     lockDirectoryTrustRoot: homeDir,
   })
   const coordinator = new AgentIntegrationCoordinator({
+    authorizeAutomaticMaintenancePlan: request => service.authorizeAutomaticMaintenancePlan(request),
     runtime: runtimeContext,
     adapters: recoveryAdapters,
     repository: coordinatorRepository,
@@ -501,6 +513,17 @@ export function createProductionAgentIntegrationComposition(
     canManageInstallation: installation => attestCurrentInstallation(installation).then(Boolean),
     sharedArtifactBlockReason,
     canContinueRecovery: async execution => {
+      const observedSource = repository.getInstallation(execution.runState === 'verified'
+        ? execution.installationId : execution.installation.id)
+      const ownershipOnly = execution.runState === 'verified'
+        ? Boolean(execution.ownershipOnlyDisconnectBinding && !execution.liveTrustProofFingerprint)
+        : isOwnershipOnlyDisconnectPlan(execution.preparedPlan)
+      // A failed scan is not evidence that the approved source changed.
+      // Defer recovery without rewriting the durable run as a trust conflict.
+      if (observedSource?.health_state === 'inaccessible'
+        && !ownershipOnly) {
+        throw new DesktopSourceVerificationUnavailable('unavailable')
+      }
       if (execution.runState === 'verified' && !execution.liveTrustProofFingerprint
         && execution.ownershipOnlyDisconnectBinding) {
         const current = repository.getInstallation(execution.installationId)
@@ -545,10 +568,11 @@ export function createProductionAgentIntegrationComposition(
   // result triggers a rescan. Hermetic compositions keep no store (npm stays pending
   // unless a tested sample matches).
   const sourceVerification = enforceReleaseAcceptance
-    ? createProductionSourceVerification(db, () => {
-        void service.scan().catch(() => undefined)
-      })
+    ? createProductionSourceVerification(db,
+        () => service.requestSourceRescan(),
+        () => service.notifyStateChanged())
     : null
+  runtime.onStop(() => sourceVerification?.verifier.stop())
   setSourceVerificationStore(sourceVerification?.store ?? null)
   const scanner = options.scanner ?? (options.discoveryDependencies
     ? createProductionScanner(homeDir, discoveryDependencies)
@@ -585,13 +609,51 @@ export function createProductionAgentIntegrationComposition(
       adapterVersion: hostVariant => allAdapters.get(hostVariant as CatalogId)?.adapterVersion,
     })
   }
-  const service = new AgentIntegrationService({
+  const sourceKey = (row: AgentInstallationRow): (SourceVerificationKey & { catalogId: CatalogId }) | null => {
+    const distribution = persistedDistribution(row)
+    if (!distribution.distributionId || !distribution.packageProvenance || !row.detected_version || !distribution.portableArtifactFingerprint) return null
+    return { catalogId: row.host_variant as CatalogId, distributionId: distribution.distributionId,
+      packageProvenance: distribution.packageProvenance, version: row.detected_version,
+      architecture: currentArchitecture(), portableArtifactFingerprint: distribution.portableArtifactFingerprint }
+  }
+  const service: AgentIntegrationService = new AgentIntegrationService({
+    diagnostics: options.fixtureMode ? options.diagnosticFixture : observeOnly ? undefined : createDiagnosticService(db, {
+      homeDir, applicationDataDir, runtimeVersion: runtimeContext.tideMindVersion, runtime: runtimeContext,
+      launch: { executable: process.execPath,
+        args: [path.join(path.dirname(runtimeContext.mcpServerPath), 'agent-diagnostic-runner.cjs')],
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } },
+      attest: async row => Boolean(await attestCurrentRow(row)),
+      changed: () => service.notifyStateChanged(),
+      prepare: input => {
+        if (input.binding.hostVariant === 'codex-cli') return prepareCodexDiagnostic(input)
+        if (['claude-code-cli', 'claude-code-native'].includes(input.binding.hostVariant)) return prepareClaudeDiagnostic(input)
+        return Promise.reject(new NativeDiagnosticError('native_diagnostic_unsupported'))
+      },
+    }),
+    automaticConnections: { enabled: !observeOnly && (options.automaticConnections ?? (enforceReleaseAcceptance && !options.fixtureMode)),
+      applicationDataDir: runtimeContext.applicationDataDir, runtimeVersion: runtimeContext.tideMindVersion },
+    probeAuthentication: options.authenticationProbe ?? (options.fixtureMode ? undefined : async (row, signal) => {
+      const distribution = persistedDistribution(row)
+      const executable = distribution.executableRealpath
+      if (!executable || !row.config_root) return { status: 'unavailable', billing: 'unknown', reason: 'source_attestation_required' }
+      return probeAgentAuthentication({ target: { installationId: row.id, hostVariant: row.host_variant,
+        executable, configRoot: row.config_root, homeDir }, dataDir: applicationDataDir, signal,
+        attest: async (_target, abortSignal) => !abortSignal.aborted && Boolean(await attestCurrentRow(row)) })
+    }),
+    sourceVerificationProgress: row => {
+      const key = sourceKey(row)
+      return key ? sourceVerification?.verifier.status(key) ?? null : null
+    },
+    retrySourceVerification: async row => {
+      const key = sourceKey(row)
+      return key && sourceVerification ? sourceVerification.verifier.retry(key) : { status: 'unsupported' }
+    },
     repository,
     inspectCodexLegacySelection:(installationId,selectedAgentId)=>inspectCodexLegacySelection({repository,adapters:allAdapters,runtime:runtimeContext,installationId,selectedAgentId,now:clock.now().toISOString()}),
     scanner,
     execution: lazyExecutionPort,
     beforeScan: () => runtime.markScanStarted(),
-    afterScan: async () => {
+    afterDiscovery: async () => {
       try {
         await adoptProvableLegacyConnections({
           repository,
@@ -612,9 +674,11 @@ export function createProductionAgentIntegrationComposition(
         // version/generation drift from this fresh scan before allowing that
         // finalizer to promote the ledger.
         refreshVerificationFreshness()
-        await runtime.markScanCompleted()
-        refreshConfigRootWatches()
       }
+    },
+    afterScan: async () => {
+      await runtime.markScanCompleted()
+      refreshConfigRootWatches()
     },
     afterCircuitReset: () => runtime.runMaintenance(),
     afterDisconnect: () => runtime.runMaintenance(),
@@ -667,6 +731,10 @@ export function createProductionAgentIntegrationComposition(
         : probeNonstandardCustomInstallation(row, homeDir, repository, attestCurrentRow)
       : undefined,
   })
+  runtime.onMaintenanceCompleted(() => {
+    try { service.snapshot() } finally { service.notifyStateChanged() }
+  })
+  runtime.onStop(() => service.stopAutomaticRescans())
   runtime.configureScheduler(
     () => service.scan().then(() => undefined),
     options.maintenanceIntervalMs ?? DEFAULT_MAINTENANCE_INTERVAL_MS,
@@ -1032,7 +1100,7 @@ export function createProductionLiveTrustAttestor(
         if (surfaceBefore.appRealpath !== appPath
           || surfaceBefore.executableRealpath !== executablePath
           || distribution.capabilityFingerprint !== frozenSurfaceFingerprint) return null
-        const appBefore = await stableCanonicalNodeProof(appPath, 'directory')
+        const appBefore = await stableCanonicalNodeProof(appPath, 'directory', false)
         const executableBefore = await stableDesktopExecutableProof(executablePath)
         const portableExecutableBefore = dependencies.fs.readStableFileFingerprint
           ? await dependencies.fs.readStableFileFingerprint(executablePath, MAX_CLI_EXECUTABLE_PROOF_BYTES)
@@ -1042,7 +1110,7 @@ export function createProductionLiveTrustAttestor(
           readTimeoutMs: LIVE_TRUST_PROOF_TIMEOUT_MS,
         })
         const surfaceFinal = await inspectStableDesktopBundleSurface(dependencies, appPath, LIVE_TRUST_PROOF_TIMEOUT_MS)
-        const appFinal = await stableCanonicalNodeProof(appPath, 'directory')
+        const appFinal = await stableCanonicalNodeProof(appPath, 'directory', false)
         const executableFinal = await stableDesktopExecutableProof(executablePath)
         const portableExecutableFinal = portableExecutableBefore && dependencies.fs.readStableFileFingerprint
           ? await dependencies.fs.readStableFileFingerprint(executablePath, MAX_CLI_EXECUTABLE_PROOF_BYTES)
@@ -1827,6 +1895,7 @@ export class ProductionAgentIntegrationRuntime {
   private stopped = false
   private freshScanReady = false
   private stopCallbacks: Array<() => void> = []
+  private maintenanceCompleted: (() => void) | null = null
 
   constructor(private readonly dependencies: RuntimeDependencies) {}
 
@@ -1838,6 +1907,10 @@ export class ProductionAgentIntegrationRuntime {
     this.scheduledScan = scan
     this.intervalMs = Math.max(60_000, intervalMs)
     this.scanLifecycleManagedExternally = lifecycleManagedExternally
+  }
+
+  onMaintenanceCompleted(callback: () => void): void {
+    this.maintenanceCompleted = callback
   }
 
   onStop(callback: () => void): void {
@@ -1872,6 +1945,7 @@ export class ProductionAgentIntegrationRuntime {
         while (this.maintenanceRequested && !this.stopped && this.freshScanReady) {
           this.maintenanceRequested = false
           await this.performMaintenance()
+          this.maintenanceCompleted?.()
         }
       } finally {
         this.maintenance = null
@@ -2416,6 +2490,7 @@ export function metadataEvidenceRuntimeContext(homeDir: string, candidateExecuta
 
 function productionDiscoveryDependencies(homeDir: string): DiscoveryDependencies {
   const executableDirectories = productionAgentDiscoveryExecutableDirectories(homeDir)
+  const whichAll = (command: string) => findExecutablesForAgentDiscovery(command, executableDirectories)
   return {
     fs: {
       async lstat(targetPath) {
@@ -2469,11 +2544,11 @@ function productionDiscoveryDependencies(homeDir: string): DiscoveryDependencies
       readStablePackageTree,
       verifyStablePackageTree,
     },
-    which: command => findExecutableForAgentDiscovery(command, executableDirectories),
-    whichAll: command => findExecutablesForAgentDiscovery(command, executableDirectories),
+    which: async command => (await whichAll(command))[0],
+    whichAll,
     // Read only bounded package/release metadata adjacent to the already
     // canonical executable. Discovery never starts an arbitrary PATH binary.
-    execVersion: executableRealpath => inspectPassiveCliVersion(executableRealpath, {
+    execVersion: (executableRealpath, _args, options) => inspectPassiveCliVersion(executableRealpath, {
       async lstat(targetPath) {
         try {
           const stat = await fs.lstat(targetPath)
@@ -2499,7 +2574,7 @@ function productionDiscoveryDependencies(homeDir: string): DiscoveryDependencies
       readStableFileFingerprint,
       readStablePackageTree,
       verifyStablePackageTree,
-    }),
+    }, options.signal),
     inspectDesktopSignatureSnapshot: inspectMacDesktopSignatureSnapshot,
     inspectAppSignature: inspectMacAppSignature,
     finalVerifyAppSignatureSync: inspectMacAppSignatureSync,
@@ -2532,6 +2607,7 @@ function productionDiscoveryDependencies(homeDir: string): DiscoveryDependencies
 async function stableCanonicalNodeProof(
   targetPath: string,
   expectedKind: 'directory' | 'file',
+  includeVolatileMetadata = true,
 ): Promise<string> {
   const canonicalPath = path.resolve(targetPath)
   const before = await fs.lstat(canonicalPath, { bigint: true })
@@ -2547,7 +2623,11 @@ async function stableCanonicalNodeProof(
   if (beforeIdentity !== desktopNodeIdentity(after)) {
     throw new Error('desktop_trust_node_changed_during_snapshot')
   }
-  return sha256Json({ canonicalPath, expectedKind, identity: beforeIdentity })
+  // App-directory timestamps change during ordinary macOS use. Keep the
+  // full metadata comparison above (and the cross-verification surface check),
+  // but do not persist those timestamps as the signed App's long-lived identity.
+  const identity = includeVolatileMetadata ? beforeIdentity : [before.dev, before.ino, before.mode].join(':')
+  return sha256Json({ canonicalPath, expectedKind, identity })
 }
 
 async function stableDesktopExecutableProof(executablePath: string): Promise<string> {
@@ -2711,20 +2791,24 @@ export async function findExecutablesForAgentDiscovery(
   executableDirectories: readonly string[],
 ): Promise<readonly string[]> {
   if (!/^[A-Za-z0-9._+-]{1,128}$/u.test(command)) return []
-  const matches: string[] = []
-  for (const directory of executableDirectories.slice(0, 256)) {
-    const candidate = path.join(directory, command)
-    if (matches.includes(candidate)) continue
-    try {
-      await fs.access(candidate, 1)
-      // Preserve each PATH entry itself. Discovery resolves and proves every
-      // candidate separately, including launcher symlinks such as OpenClaw.
-      matches.push(candidate)
-    } catch {
-      continue
+  const candidates = [...new Set(executableDirectories.slice(0, 256).map(directory => path.join(directory, command)))]
+  const accessible = new Set<string>()
+  let next = 0
+  const check = async (): Promise<void> => {
+    while (next < candidates.length) {
+      const candidate = candidates[next++]!
+      try {
+        await fs.access(candidate, fsConstants.X_OK)
+        accessible.add(candidate)
+      } catch {
+        continue
+      }
     }
   }
-  return matches
+  await Promise.all(Array.from({ length: Math.min(8, candidates.length) }, check))
+  // Preserve PATH priority and each original entry, including aliases that
+  // point at the same executable. Discovery resolves and proves them separately.
+  return candidates.filter(candidate => accessible.has(candidate))
 }
 
 export async function findExecutableForAgentDiscovery(

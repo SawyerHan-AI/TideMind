@@ -1,3 +1,4 @@
+import { setSourceVerificationStore } from '../../client/electron/agent-integration/runtime-compatibility.js'
 import { describe, expect, it, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import fs from 'node:fs'
@@ -195,6 +196,108 @@ function plan(request: PreviewRequest): PreparedCoordinatorPlan {
 }
 
 describe('AgentIntegrationService', () => {
+  it('shows native permissions in the frozen review and binds approval only to that exact plan', async () => {
+    const { service, repository, preview, db } = setup()
+    preview.mockImplementation(async request => {
+      const prepared = plan(request)
+      prepared.executionPlanHash = 'a'.repeat(64)
+      prepared.executionPlan.hostVersion = '1.0.0'
+      prepared.executionPlan.mutations[0].command = { category: 'plugin_install', executablePath: '/fixture/gemini',
+        args: ['extensions','install','/Users/alice/data/gemini-fixture','--consent','--skip-settings'] }
+      prepared.adapterPlan = { ...prepared.adapterPlan, mutations: prepared.adapterPlan.mutations.map(mutation => ({ ...mutation,
+        metadata: { extensionName: 'tidemind-fixture', extensionVersion: '1.0.23', stagingRoot: '/Users/alice/data/gemini-fixture' } })) }
+      return prepared
+    })
+    const review = await service.previewConnect(['installation-1'])
+    expect(review.installations[0]).toMatchObject({ nativePermissions: ['gemini_extension'], hostVersion: '1.0.0',
+      nativePlugin: { name: 'tidemind-fixture', version: '1.0.23', sourceLabel: '~/data/gemini-fixture' } })
+    await service.applyConnect(review.planHash, ['installation-1'])
+    const granted = repository.getConsent('consent-1')!
+    expect(granted.authorization_origin).toBe('explicit_user')
+    expect(JSON.parse(String(granted.authorization_context_json))).toEqual({ nativePermissionPlanHash: 'a'.repeat(64) })
+    const request = preview.mock.calls[0][0]
+    const prepared = await preview(request)
+    prepared.operation = 'repair'
+    prepared.executionPlanHash = 'b'.repeat(64)
+    expect(() => service.authorizeAutomaticMaintenancePlan({ installation: request.installation, preparedPlan: prepared,
+      consentId: 'consent-1', desiredCapability: request.desiredCapability })).toThrow('native_permission_required')
+    expect(repository.getInstallation('installation-1')?.status_reason).toBe('native_permission_required')
+    db.close()
+  })
+
+  it('does not render a static verified lifecycle receipt as observed host activity', () => {
+    const { repository, service, db } = setup()
+    const component = { component_key: 'lifecycle', desired_state: 'managed', artifact_state: 'healthy',
+      verification_status: 'verified', verification_invalidation_keys: '[]', visibility_state: 'present' }
+    vi.spyOn(repository, 'listInstallationComponentDetails').mockReturnValue([component])
+    const state = () => service.snapshot().installations[0].components.find(item => item.key === 'lifecycle')!.state
+    expect(state()).toBe('configured')
+    component.verification_invalidation_keys = '["activity_freshness"]'
+    expect(state()).toBe('verified')
+    Object.assign(component, { verification_invalidated_at: T0 })
+    expect(state()).toBe('verification_stale')
+    db.close()
+  })
+
+  it('persists ignored issue episodes and creates a new episode after background resolution', () => {
+    const { repository, db } = setup()
+    const issue = { connectionId: 'installation:installation-1', installationId: 'installation-1', reason: 'host_confirmation', fingerprint: 'same-cause' }
+    const first = repository.syncConnectionIssues([issue], T0).get(issue.connectionId)!
+    const history = repository.recordEvent({ installationId: 'installation-1', kind: 'fixture_history', createdAt: T0 })
+    expect(repository.markInstallationEventsRead('installation-1', T0)).toBe(1)
+    expect(db.prepare('SELECT state FROM agent_integration_events WHERE id=?').get(history)).toEqual({ state: 'read' })
+    expect(repository.syncConnectionIssues([issue], T0).get(issue.connectionId)).toEqual(first)
+    repository.markEventRead(first.eventId, T0)
+    expect(repository.syncConnectionIssues([issue], T0).get(issue.connectionId)).toEqual({ ...first, dismissed: true })
+    repository.syncConnectionIssues([], T0)
+    const recurrence = repository.syncConnectionIssues([issue], T0).get(issue.connectionId)!
+    expect(recurrence.eventId).not.toBe(first.eventId)
+    expect(recurrence.dismissed).toBe(false)
+    expect(db.prepare('SELECT state FROM agent_integration_events WHERE id=?').get(first.eventId)).toEqual({ state: 'archived' })
+    expect(repository.getInstallation('installation-1')?.desired_state).toBe('unmanaged')
+    db.close()
+  })
+
+  it('reserves the WAL writer before reading connection issue episodes', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-connection-issue-wal-'))
+    const file = path.join(dir, 'fixture.sqlite')
+    const db = new Database(file)
+    const writer = new Database(file, { timeout: 0 })
+    try {
+      ensureSchema(db)
+      const repository = new AgentIntegrationRepository(db)
+      repository.upsertDiscoveredInstallation({
+        id: 'fixture-1', family: 'cursor', hostVariant: 'cursor-desktop',
+        installKey: 'fixture:cursor', provenance: 'test', displayName: 'Cursor', lastDetectedAt: T0,
+      })
+      const issue = { connectionId: 'installation:fixture-1', installationId: 'fixture-1', reason: 'host_confirmation', fingerprint: 'fixture' }
+      repository.syncConnectionIssues([issue], T0)
+
+      const competingWrite = writer.prepare("INSERT INTO metadata(key,value) VALUES ('fixture_writer','active')")
+      let competingError: unknown
+      const prepare = db.prepare.bind(db)
+      vi.spyOn(db, 'prepare').mockImplementation(sql => {
+        const statement = prepare(sql)
+        if (sql.includes("WHERE kind='connection_issue' AND state!='archived'")) {
+          const all = statement.all.bind(statement)
+          vi.spyOn(statement, 'all').mockImplementationOnce((...params) => {
+            const rows = all(...params)
+            try { competingWrite.run() } catch (error) { competingError = error }
+            return rows
+          })
+        }
+        return statement
+      })
+      expect(repository.syncConnectionIssues([], T0).size).toBe(0)
+      expect(competingError).toMatchObject({ code: 'SQLITE_BUSY' })
+      expect(competingWrite.run().changes).toBe(1)
+    } finally {
+      writer.close()
+      db.close()
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('creates a Cowork Installation only after an explicit signed-app preflight is rechecked', async () => {
     const db = new Database(':memory:')
     ensureSchema(db)
@@ -753,7 +856,9 @@ describe('AgentIntegrationService', () => {
 
     const variant = service.supportCatalog()
       .find(product => product.id === 'claude-desktop-legacy')?.variants[0]
-    expect(variant).toMatchObject({ maturity: 'detectable', maximumAccessLevel: 'unconnected' })
+    expect(variant).toBeUndefined()
+    expect(service.snapshot().installations.some(item => item.id === 'legacy-installation')).toBe(false)
+    expect(service.snapshot().historyInstallations.some(item => item.id === 'legacy-installation')).toBe(true)
     await expect(service.previewConnect(['legacy-installation'])).rejects.toThrow(/not enabled/)
     await expect(service.previewCustomInstallation({
       mode: 'nonstandard_config_root',
@@ -4177,4 +4282,100 @@ describe('AgentIntegrationService', () => {
       lastScanAt: scannedAt,
     })
   })
+})
+
+
+it('refreshes source identity before retrying and preserves the retry time in its DTO', async () => {
+  const { db, repository } = setup()
+  const entry = AGENT_INTEGRATION_RELEASE_ENTRY_MAP.get('codex-cli')!
+  const distribution = entry.officialDistributions.find(item => item.channel === 'npm')!
+  repository.upsertDiscoveredInstallation({
+    id: 'source-retry', family: 'codex', hostVariant: 'codex-cli', installKey: 'codex:source-retry',
+    provenance: 'fixture', osUserIdentity: 'usr_retry_fixture', displayName: 'Codex',
+    configRoot: '/Users/alice/.codex', executablePath: '/fixture/codex', agentId: 'agent-source-retry',
+    distributionId: distribution.distributionId, detectedVersion: '9.9.1', supportedCapability: 4, lastDetectedAt: T0,
+    metadata: { distribution: { distributionId: distribution.distributionId, packageProvenance: distribution.packageProvenance,
+      executableRealpath: '/fixture/codex', portableArtifactFingerprint: 'a'.repeat(64) },
+      managementEligibility: { schemaVersion: CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION, eligible: false,
+        reason: 'source_verification_pending', executableSizeBytes: 1024, proofLimitBytes: MAX_CLI_EXECUTABLE_PROOF_BYTES } },
+  })
+  const retry = vi.fn(async () => ({ status: 'throttled' as const, retryAt: Date.parse(T0) + 10_000 }))
+  const service = new AgentIntegrationService({ repository,
+    scanner: { scan: async () => ({ installations: [], unresolved: [], diagnostics: [] }) },
+    execution: { preview: vi.fn(), applyPrepared: vi.fn() } as never,
+    enforceReleaseAcceptance: true, releaseEntries: AGENT_INTEGRATION_RELEASE_ENTRY_MAP,
+    retrySourceVerification: retry,
+    cliManagementProofLimitBytes: MAX_CLI_EXECUTABLE_PROOF_BYTES,
+  })
+  vi.spyOn(service, 'scan').mockImplementation(async () => {
+    db.prepare("UPDATE agent_installations SET detected_version='9.9.2' WHERE id='source-retry'").run()
+    return { snapshot: service.snapshot(), detectedCount: 1, newlyDiscoveredCount: 0, unresolved: [] }
+  })
+  expect(await service.retrySourceCheck('source-retry')).toEqual({ status: 'throttled', retryAt: '2026-08-25T00:00:10.000Z' })
+  expect(retry).toHaveBeenCalledWith(expect.objectContaining({ id: 'source-retry', detected_version: '9.9.2' }))
+  setSourceVerificationStore({ lookup: () => ({ status: 'verified', checkedAt: T0 }) })
+  try {
+    expect(service.snapshot().installations.find(item => item.id === 'source-retry')?.manageable).toBe(true)
+  } finally { setSourceVerificationStore(null) }
+
+  db.prepare("UPDATE agent_installations SET status_reason='conflict',health_state='inaccessible' WHERE id='source-retry'").run()
+  expect(service.snapshot().installations.find(item => item.id === 'source-retry')).toMatchObject({ statusGroup: 'needs_attention', statusReason: 'conflict' })
+  expect(await service.retrySourceCheck('source-retry')).toEqual({ status: 'unavailable' })
+  expect(retry).toHaveBeenCalledTimes(1)
+})
+
+
+it('distinguishes discovery from maintenance and only advances successful scan time after completion', async () => {
+  const { repository } = setup()
+  let now = Date.parse(T0)
+  let finishMaintenance!: () => void
+  let enteredMaintenance!: () => void
+  const started = new Promise<void>(resolve => { enteredMaintenance = resolve })
+  const gate = new Promise<void>(resolve => { finishMaintenance = resolve })
+  const scanner = { scan: vi.fn(async () => ({ installations: [], unresolved: [], diagnostics: [] })) }
+  const service = new AgentIntegrationService({ repository, scanner,
+    execution: { preview: vi.fn(), applyPrepared: vi.fn() } as never, now: () => new Date(now),
+    afterScan: async () => { enteredMaintenance(); await gate },
+  })
+  const phases: Array<string | undefined> = []
+  service.onStateChanged(() => { phases.push(service.snapshot().scanProgress?.phase) })
+  const scan = service.scan()
+  expect(service.snapshot().scanProgress?.phase).toBe('discovery')
+  await started
+  expect(service.snapshot().scanProgress).toEqual({ phase: 'maintenance', startedAt: T0, completedAt: null })
+  expect(repository.getLastSuccessfulScanAt()).toBeNull()
+  now += 30_000
+  finishMaintenance()
+  const complete = await scan
+  expect(complete.snapshot.scanProgress?.phase).toBe('idle')
+  expect(complete.snapshot.lastScanAt).toBe('2026-08-25T00:00:30.000Z')
+  scanner.scan.mockRejectedValueOnce(new Error('fixture discovery failed'))
+  now += 10_000
+  await expect(service.scan()).rejects.toThrow('fixture discovery failed')
+  expect(service.snapshot().scanProgress?.phase).toBe('failed')
+  expect(service.snapshot().lastScanAt).toBe('2026-08-25T00:00:30.000Z')
+  expect(phases).toEqual(['discovery', 'maintenance', 'idle', 'discovery', 'failed'])
+})
+
+
+it('coalesces source results into one scan after the current scan and drops queued rescans on stop', async () => {
+  const { repository } = setup()
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let calls = 0
+  const service = new AgentIntegrationService({ repository,
+    scanner: { scan: async () => { calls += 1; if (calls === 1) await gate; return { installations: [], unresolved: [], diagnostics: [] } } },
+    execution: { preview: vi.fn(), applyPrepared: vi.fn() } as never,
+  })
+  const first = service.scan()
+  service.requestSourceRescan()
+  service.requestSourceRescan()
+  expect(calls).toBe(1)
+  release()
+  await first
+  await service.scan()
+  expect(calls).toBe(2)
+  service.stopAutomaticRescans()
+  service.requestSourceRescan()
+  expect(calls).toBe(2)
 })

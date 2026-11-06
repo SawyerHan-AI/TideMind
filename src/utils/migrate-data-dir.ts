@@ -1,3 +1,4 @@
+import { isDiagnosticRequested } from '../agent-diagnostic-contract.js';
 import { assertSupportedDatabaseFile } from '../db/schema-compatibility.js';
 /**
  * 数据目录一次性迁移：~/.external-brain/ → ~/.tidemind/
@@ -140,6 +141,7 @@ export function migrateDataDirIfNeeded(
   const home = options.homeDir ?? os.homedir();
   const oldDir = path.join(home, OLD_DIR_NAME);
   const newDir = path.join(home, NEW_DIR_NAME);
+  if (isDiagnosticRequested()) return { migrated: false, oldDir, newDir, reason: 'diagnostic_runtime' };
 
   // 情况 1：新目录已存在 → 已迁移或全新安装
   if (fs.existsSync(newDir)) {

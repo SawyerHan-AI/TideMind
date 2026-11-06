@@ -30,6 +30,7 @@ export function parseArgs(argv) {
     notesFile: null,
     agentHostEvidence: null,
     subscriptionEvidence: null,
+    localCiEvidence: null,
     partialAuthReport: null,
     candidateArtifactZip: null,
     candidateUploadReceiptZip: null,
@@ -66,6 +67,7 @@ export function parseArgs(argv) {
       case '--candidate-upload-receipt-zip': opts.candidateUploadReceiptZip = path.resolve(next()); break;
       case '--candidate-performance-zip': opts.candidatePerformanceZip = path.resolve(next()); break;
       case '--subscription-evidence': opts.subscriptionEvidence = path.resolve(next()); break;
+      case '--local-ci-evidence': opts.localCiEvidence = path.resolve(next()); break;
       case '--agent-host-evidence': opts.agentHostEvidence = path.resolve(next()); break;
       case '--agent-host-candidate-app-arm64': opts.agentHostCandidateAppArm64 = path.resolve(next()); break;
       case '--agent-host-candidate-app-x64': opts.agentHostCandidateAppX64 = path.resolve(next()); break;
@@ -135,6 +137,7 @@ const RELEASE_FORBIDDEN_BYPASSES = [
 const HISTORICAL_RELEASE_CONTRACTS = Object.freeze({
   '0.2.92': Object.freeze({ macArchitectures: ['arm64'], upgradeFromAppVersions: ['0.2.89', '0.2.91'] }),
   '0.2.93': Object.freeze({ macArchitectures: ['arm64'], upgradeFromAppVersions: ['0.2.89', '0.2.91', '0.2.92'] }),
+  '0.2.94': Object.freeze({ macArchitectures: ['arm64'], upgradeFromAppVersions: ['0.2.89', '0.2.90', '0.2.91', '0.2.92', '0.2.93'] }),
 });
 
 function releaseAcceptanceRequirements() {
@@ -146,10 +149,13 @@ function requiresAgentReleaseContract(version) {
     || version === releaseAcceptanceRequirements().appVersion;
 }
 
-// B is independently required for 0.2.94. Candidate preparation has no
-// acceptance yet; historical release policies remain unchanged.
+export function requiresSubscriptionAcceptance(version) {
+  return version === '0.2.94' || version === '0.2.95';
+}
+
+// B is independent of Agent host acceptance. Candidate preparation precedes both.
 export function subscriptionAcceptanceArguments(version, opts, sourceCommit, candidateApps) {
-  if (version !== '0.2.94' || opts.prepareCandidate) return null;
+  if (!requiresSubscriptionAcceptance(version) || opts.prepareCandidate) return null;
   const index = opts.subscriptionEvidence ?? process.env.TIDEMIND_SUBSCRIPTION_EVIDENCE
     ?? path.join(repoRoot, 'release-evidence', 'local-subscription-acceptance', version, 'index.json');
   return ['scripts/verify-local-subscription-acceptance.mjs', '--index', path.resolve(index),
@@ -239,7 +245,9 @@ Options:
   --oss-message TEXT       Public OSS commit message.
   --notes-file PATH        Release notes markdown. Required for the active Agent release; older versions
                            default to /tmp/notes-vX.Y.Z.md.
-  --subscription-evidence PATH  Required B1-B7 evidence for 0.2.94 formal release
+  --subscription-evidence PATH  Required B1-B7 evidence for 0.2.94 and 0.2.95 formal releases
+  --local-ci-evidence PATH  Verify a private exact-source local CI evidence directory instead of
+                           waiting for private GitHub CI. All other release gates remain required.
   --partial-auth-report PATH
   --candidate-artifact-zip PATH
   --candidate-upload-receipt-zip PATH
@@ -1182,6 +1190,9 @@ async function main() {
   assertRequestedVersion(opts.version, rootPkg.version);
   const version = opts.version ?? rootPkg.version;
   assertReleaseBypassesAllowed(version, opts);
+  if (opts.localCiEvidence && (opts.skipHealth || (opts.allowNonMain && !opts.dryRun))) {
+    throw new Error('--local-ci-evidence requires the health gate and a main checkout for a real release');
+  }
   const partialAuthRelease = assertPartialAuthReleaseOptions(version, opts);
   const previousVersions = resolveUpdatePreviousVersions(version, opts.previousVersion);
   if (previousVersions.length === 0 && !opts.skipUpdateVerify) {
@@ -1208,6 +1219,10 @@ async function main() {
   assertCleanRepo(repoRoot, 'ExternaBrain', opts.dryRun);
   assertCleanRepo(opts.ossRepo, 'TideMind OSS', opts.dryRun);
   const expectedRootHead = capture('git', ['rev-parse', 'HEAD'], repoRoot).stdout;
+  if (opts.localCiEvidence) run('node', [
+    'scripts/local-release-ci.mjs', 'verify', '--evidence-dir', opts.localCiEvidence,
+    '--source-commit', expectedRootHead, '--version', version,
+  ], { label: 'verify local macOS release CI evidence (including health)', dryRun: opts.dryRun });
   const agentHostEvidence = opts.agentHostEvidence
     ?? (process.env.TIDEMIND_AGENT_HOST_ACCEPTANCE_INDEX
       ? path.resolve(process.env.TIDEMIND_AGENT_HOST_ACCEPTANCE_INDEX)
@@ -1293,7 +1308,7 @@ async function main() {
   run('node', ['scripts/check-mac-packaging.mjs'], { label: 'check mac packaging', dryRun: opts.dryRun });
   run('git', ['diff', '--check'], { label: 'git diff --check', dryRun: opts.dryRun });
   if (!opts.skipHealth) {
-    run('npm', ['run', 'health'], { label: 'npm run health', dryRun: opts.dryRun });
+    if (!opts.localCiEvidence) run('npm', ['run', 'health'], { label: 'npm run health', dryRun: opts.dryRun });
   }
 
   if (!opts.dryRun) assertRepoSnapshot(repoRoot, 'ExternaBrain', expectedRootHead);
@@ -1317,24 +1332,26 @@ async function main() {
   run('git', ['push', 'origin', 'main'], { label: 'push ExternaBrain main', dryRun: opts.dryRun });
   if (!opts.dryRun) {
     assertRemoteMainAt(repoRoot, expectedRootHead);
-    const privateCiRunId = await getPrivateCiRunId(expectedRootHead, opts.timeoutMinutes * 60_000);
-    run('gh', ['run', 'watch', privateCiRunId, '--exit-status'], {
-      cwd: repoRoot,
-      label: `wait private exact-SHA CI ${privateCiRunId}`,
-      timeoutMs: opts.timeoutMinutes * 60_000,
-    });
-    const privateCi = parseJsonOutput('gh', [
-      'run', 'view', privateCiRunId,
-      '--json', 'headBranch,headSha,event,status,conclusion',
-    ], repoRoot);
-    if (privateCi.headBranch !== 'main'
-      || privateCi.headSha !== expectedRootHead
-      || privateCi.event !== 'push'
-      || privateCi.status !== 'completed'
-      || privateCi.conclusion !== 'success') {
-      throw new Error(`private CI ${privateCiRunId} is not successful at exact source commit ${expectedRootHead}`);
+    if (!opts.localCiEvidence) {
+      const privateCiRunId = await getPrivateCiRunId(expectedRootHead, opts.timeoutMinutes * 60_000);
+      run('gh', ['run', 'watch', privateCiRunId, '--exit-status'], {
+        cwd: repoRoot,
+        label: `wait private exact-SHA CI ${privateCiRunId}`,
+        timeoutMs: opts.timeoutMinutes * 60_000,
+      });
+      const privateCi = parseJsonOutput('gh', [
+        'run', 'view', privateCiRunId,
+        '--json', 'headBranch,headSha,event,status,conclusion',
+      ], repoRoot);
+      if (privateCi.headBranch !== 'main'
+        || privateCi.headSha !== expectedRootHead
+        || privateCi.event !== 'push'
+        || privateCi.status !== 'completed'
+        || privateCi.conclusion !== 'success') {
+        throw new Error(`private CI ${privateCiRunId} is not successful at exact source commit ${expectedRootHead}`);
+      }
+      assertRemoteMainAt(repoRoot, expectedRootHead);
     }
-    assertRemoteMainAt(repoRoot, expectedRootHead);
   }
 
   if (!opts.skipWebsite && !opts.prepareCandidate) {

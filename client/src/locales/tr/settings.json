@@ -158,7 +158,17 @@
       "cancelTest": "Testi iptal et",
       "testSummary": "{{success}} / {{total}} model kullanılabilir",
       "testCancelledSummary": "Test iptal edildi · {{success}} / {{total}} başarıyla tamamlandı",
-      "copyCommand": "Komutu kopyala"
+      "copyCommand": "Komutu kopyala",
+      "resumeFutureCalls": "Sonraki istekleri sürdür",
+      "resumeFutureCallsDescription": "Bu işlem yalnızca sonraki istekleri sürdürür. Önceki istekler kotayı zaten tüketmiş olabilir ve yeniden gönderilmez.",
+      "resumeFutureCallsFeedback": {
+        "succeeded": "Önceki isteğin sonucu doğrulanamadığı için uygulanan duraklatma kaldırıldı. Diğer bağlantı veya model sınırları geçerliliğini koruyor.",
+        "busy": "Bu bağlantıda hâlâ bir işlem sürüyor. İşlem tamamlandıktan sonra tekrar deneyin.",
+        "process": "Önceki CLI işleminin sona erdiği doğrulanamadı. Yeniden denemeden önce işlemin sona erdiğini kontrol edin.",
+        "environment": "CLI ortamı veya oturum açılan hesap doğrulanamadı. Bağlantı ortamını kontrol edip tekrar deneyin.",
+        "failed": "Sonraki istekler sürdürülemedi. Bağlantıyı kontrol edip tekrar deneyin."
+      },
+      "catalogOutdatedShort": "Güncel değil"
     },
     "selection": {
       "loadingModels": "Kullanılabilir modeller yükleniyor...",
@@ -208,6 +218,7 @@
       "manualInvalid": "Geçersiz model kimliği biçimi"
     },
     "serviceStatus": {
+      "lastTestSuccess": "Son başarılı bağlantı testi",
       "title": "AI Servis Durumu",
       "never": "Hiç",
       "currentStatus": "Mevcut durum",
@@ -215,7 +226,7 @@
       "statusHealthy": "Sağlıklı",
       "lastSuccess": "Son başarılı çağrı",
       "lastError": "Son hata",
-      "hint": "Tanılamak veya bağlantıları test etmek için aşağıdaki \"Model Bağlantıları\" bölümünü kullanın.",
+      "hint": "Aşağıdan ilgili bağlantının ayrıntılarını açın ve soruna uygun yönergeleri izleyin.",
       "statusPausedCountdown": "Duraklatıldı (kalan {{time}})",
       "retryNow": "Şimdi yeniden dene",
       "retrySuccess": "Devre kesici sıfırlandı",
@@ -226,7 +237,11 @@
       "unknownConnection": "Unknown connection",
       "collapseErrors": "Collapse errors",
       "expandErrors": "Show {{count}} more",
-      "routeFaults": "Kullanımdaki rota hataları"
+      "routeFaults": "Kullanımdaki rota hataları",
+      "unconfirmedResult": "Son istek gönderildi ancak sonucu doğrulanamadı. Yeni çağrılar duraklatıldı. Sorunu gidermek için bağlantı ayrıntılarını açın.",
+      "connectionIssue": "Bu bağlantıda bir sorun var. Sorunu gidermek için bağlantı ayrıntılarını açın.",
+      "technicalDetails": "Teknik ayrıntılar",
+      "pausedRoutes": "{{name}} çağrıları duraklatıldı. Etkilenen rotalar: {{tiers}}."
     },
     "catalog": {
       "scope": "Hesap kapsamı",
@@ -1133,6 +1148,11 @@
       }
     },
     "managed": {
+      "memoryVerified": "MCP Tools doğrulandı",
+      "fullyVerified": "Tamamen doğrulandı",
+      "optionalConnections": "İsteğe bağlı bağlantılar",
+      "connectionTaskHistory": "Bağlantı görevleri ve geçmişi ({{count}})",
+
       "codexSharedIdentityReconnect": "This Codex connection uses an older identity. In the Agent details, disconnect the existing Codex connection and complete its removal, then connect Codex again so Desktop and CLI share one Tide Mind identity.",
       "codexExistingIdentityReview": "Existing Tide Mind connections for Codex need review before connecting. Open the Codex details and resolve the old identity conflict first, then check again and reconnect.",
       "legacyChoice": {
@@ -1159,7 +1179,14 @@
           "signed_identity": "Resmî imza",
           "npm_registry": "Resmî npm paketi doğrulandı",
           "npm_registry_cache": "Önbellekteki resmî npm doğrulaması"
-        }
+        },
+        "retry": "Kaynak denetimini yeniden dene",
+        "queued": "Kaynak denetimi sırada",
+        "checking": "Kaynak denetleniyor…",
+        "unavailable": "Kaynak denetimi tamamlanamadı. Yeniden deneyin.",
+        "unsupported": "Bu kurulum yöntemi otomatik kaynak doğrulamayı desteklemiyor.",
+        "requested": "Kaynak denetimi yeniden istendi.",
+        "retryAt": "{{time}} sonrasında yeniden deneyin."
       },
       "title": "Agent bağlantıları",
       "subtitle": "Bu Mac'teki uyumlu yerel Agent'ları otomatik olarak keşfeder ve yönetir.",
@@ -1167,6 +1194,8 @@
       "lastChecked": "Son kontrol edilen {{time}}",
       "notCheckedYet": "Henüz kontrol edilmedi",
       "scanning": "Kontrol ediliyor…",
+      "checkingSources": "Kurulum kaynakları denetleniyor…",
+      "checkingConnections": "Mevcut bağlantılar denetleniyor…",
       "recheck": "Tekrar kontrol et",
       "scanComplete": "Kontrol tamamlandı: {{detected}} algılandı, {{newCount}} yeni, {{failed}} çözümlenmedi.",
       "scanFailed": "Kontrol başarısız oldu.",
@@ -1175,7 +1204,7 @@
       "regeneratePlan": "Planı yeniden oluştur",
       "needsAttention": "Dikkat edilmesi gerekiyor",
       "newAgentsFound": "{{count}} yerel Agent kurulumu incelenmeyi bekliyor.",
-      "existingIssues": "{{count}} kurulumunun/kurulumlarının dikkat edilmesi gerekiyor.",
+      "existingIssues": "{{count}} bağlantı işlem gerektiriyor.",
       "reviewAndConnect": "İnceleyin ve bağlanın",
       "reviewAndEnableMaintenance": "Bakımı inceleyin ve etkinleştirin",
       "localAgents": "Yerel Acenteler",
@@ -1199,11 +1228,11 @@
       "custom": {
         "manageFile": "Tide Mind'ın uyumlu bir JSON yapılandırma dosyasını yönetmesine izin ver",
         "userOwnedNotice": "Varsayılan olarak yapılandırmayı kopyalayıp yerel Agent'ına içe aktarırsın. Yapılandırmayı sen yönetirsin; Tide Mind değiştirmez veya otomatik olarak geri yüklemez.",
-        "guidedConnect": "MCP yapılandırmasını yerel Agent'ına içe aktar ve kullanım kılavuzunu talimatlarına veya Skill'lerine ekle. Bu ayarları sen yönetirsin.",
-        "guidedDisconnect": "Yerel Agent'ından {{connector}} bağlantısını ve Tide Mind kullanım kılavuzunu kaldır, ardından tamamlandığını onayla. Bu işlem otomatik doğrulama değil, senin onayının kaydıdır.",
+        "guidedConnect": "MCP yapılandırmasını yerel Agent'ına içe aktar ve Skillnu talimatlarına veya Skill'lerine ekle. Bu ayarları sen yönetirsin.",
+        "guidedDisconnect": "Yerel Agent'ından {{connector}} bağlantısını ve Tide Mind Skillnu kaldır, ardından tamamlandığını onayla. Bu işlem otomatik doğrulama değil, senin onayının kaydıdır.",
         "guidedImportStep": "JSON'u içe aktar veya command, args ve env alanlarını ayrı ayrı doldur.",
         "guidedVerifyStep": "Yeni bir oturum başlatıp brain_recall ve brain_digest çağrılarını başarıyla çalıştır. Ardından Tide Mind'da yeniden kontrol et.",
-        "guidedRemoveStep": "MCP bağlantısını ve kullanım kılavuzunu kaldır, uygulamayı yeniden başlat veya yeni bir oturum aç, ardından kaldırmayı onayla.",
+        "guidedRemoveStep": "MCP bağlantısını ve Skillnu kaldır, uygulamayı yeniden başlat veya yeni bir oturum aç, ardından kaldırmayı onayla.",
         "dialogTitle": "Özel bir yerel Agent ekleyin",
         "dialogDescription": "Tam bir yerel hedef seçin, dondurulmuş hedefi inceleyin ve ardından koordinatör planını onaylayın.",
         "chooseMode": "Bağlantı türü",
@@ -1300,9 +1329,9 @@
         "disconnected": "Bağlantı kesildi"
       },
       "reason": {
-        "verified": "Çekirdek bellek araçları doğrulandı.",
+        "verified": "Çekirdek MCP Tools doğrulandı.",
         "legacyCallableUnmanaged": "Bu mevcut bağlantı çağrılabilir. Otomatik bakım siz onaylayana kadar kapalı kalır.",
-        "instructionOnly": "Yalnızca kullanım kılavuzu mevcuttur.",
+        "instructionOnly": "Yalnızca Skill mevcuttur.",
         "capabilityCeiling": "Bu Agent tarafından desteklenen en yüksek yetenek.",
         "awaitingConsent": "İlk değişiklikten önce onay bekleniyor.",
         "incompatible": "Bu sürüm henüz bağlanamıyor.",
@@ -1314,7 +1343,7 @@
         "releaseArtifactNotAccepted": "Bu, önceki bir Tide Mind sürümünün kaydettiği kurulum dosyası kontrolü sonucudur ve yeniden kontrol edilmeyi bekliyor. Hemen güncellemek için kontrolü tekrarlayın.",
         "releaseVersionUnverified": "Tide Mind, Agent sürümünü doğrulayamadı. Resmi dağıtımdan yeniden yükleyin veya güncelleyin, ardından Check'i tekrar çalıştırın.",
         "releaseVersionNotAccepted": "Bu, önceki bir Tide Mind sürümünün kaydettiği sürüm kontrolü sonucudur ve yeniden kontrol edilmeyi bekliyor. Hemen güncellemek için kontrolü tekrarlayın.",
-        "sourceVerificationPending": "Tide Mind bu Agent'ın resmi kaynağını hâlâ doğruluyor ve kontrolü henüz tamamlayamıyor; otomatik yapılandırma beklemede. Çevrimiçi olduğunuzda otomatik olarak yeniden denenecek.",
+        "sourceVerificationPending": "Kurulum kaynağı yeniden kontrol ediliyor. Değişiklikler bekletilir; mevcut bağlantı durumu ayrı gösterilir.",
         "sourceNotOfficial": "Bu Agent'ın yerel kurulumu resmi sürümün içeriğiyle eşleşmiyor; otomatik yapılandırma durduruldu. Agent'ı resmi kanaldan yeniden yükleyip kontrolü tekrarlayın.",
         "sourceConfirmationRequired": "Bu kurulum yönteminde Tide Mind resmi kaynağı otomatik olarak doğrulayamıyor. Agent'ı resmi kanaldan yeniden yükleyin veya “Özel bir yerel Agent ekleyin” ile manuel olarak bağlayın.",
         "unverified": "Henüz doğrulanmadı.",
@@ -1336,7 +1365,10 @@
         "disconnectVerified": "Tide Mind bileşenlerinin bulunmadığı doğrulandı.",
         "hostUninstalled": "Agent artık yüklü değil.",
         "unknown": "Doğrulanmış en son gerçekler için ayrıntılara bakın.",
-        "customConfigOwnedByDiscoveredHost": "Bu yapılandırma dosyası (veya klasörü) Tide Mind'ın algıladığı bir Agent'a ait. Özel istemci olarak eklemek yerine o Agent'ı doğrudan bağlayın."
+        "customConfigOwnedByDiscoveredHost": "Bu yapılandırma dosyası (veya klasörü) Tide Mind'ın algıladığı bir Agent'a ait. Özel istemci olarak eklemek yerine o Agent'ı doğrudan bağlayın.",
+        "automaticConfigurationFailed": "Otomatik kurulum tamamlanmadı. Ayrıntıları inceleyin, sorunu giderin ve yeniden deneyin.",
+        "nativePermissionRequired": "Aracı eklenti izinleri istiyor. Devam etmek için inceleyin.",
+        "authenticationRequired": "Oturum açık değil. Bu Agent içinde oturum açın ve yeniden kontrol edin."
       },
       "access": {
         "complete": "Bağlantıyı tamamlayın",
@@ -1351,8 +1383,8 @@
         "unconnected": "Bağlı değil"
       },
       "accessInfo": {
-        "complete": "Bellek okuma/yazma ve otomatik oturum bağlantısı doğrulanır.",
-        "basic": "Bellek okuma/yazma doğrulandı; otomatik oturum bağlantısı değildir.",
+        "complete": "Bellek okuma/yazma ve otomatik Hook doğrulanır.",
+        "basic": "Bellek okuma/yazma doğrulandı; otomatik Hook değildir.",
         "partial": "Yalnızca bazı yetenekler mevcuttur. Bileşen gerçeklerini kontrol edin.",
         "unconnected": "Doğrulanmış hiçbir Tide Mind bağlantısı etkin değil."
       },
@@ -1360,9 +1392,9 @@
       "accessMixed": "Bağlantılar farklı",
       "mixed": "Kurulumlar arasında farklı",
       "component": {
-        "instruction": "Kullanım kılavuzu",
-        "memoryTools": "Bellek araçları",
-        "lifecycle": "Oturum bağlantısı"
+        "instruction": "Skill",
+        "memoryTools": "MCP Tools",
+        "lifecycle": "Hook"
       },
       "componentStatus": {
         "verified": "Doğrulandı",
@@ -1396,6 +1428,13 @@
       "lastVerified": "Son doğrulandı",
       "lastRepair": "Son onarım",
       "lastDetected": "Son tespit edildi",
+      "checkPending": "Kontrol bekleniyor",
+      "activityLabel": "Son etkinlik",
+      "noActivity": "Etkinlik kaydı yok",
+      "checkLabel": "Son kontrol",
+      "modelTestLabel": "Otomatik model testi",
+      "testTimeLabel": "Test zamanı",
+      "activityScope": "Yalnızca gerçek MCP çağrıları veya Hook olayları; arka plan yapılandırma kontrolleri hariç.",
       "lastUsed": "Son gerçek kullanım",
       "noRecord": "Kayıt yok",
       "noReliableUsage": "Güvenilir kullanım kanıtı yok",
@@ -1552,14 +1591,14 @@
       "recheckUnavailableInterruptedCount": "Artık mevcut olmayan kesintiye uğramış öğeleri yeniden kontrol edin ({{count}})",
       "requestedInstallationsUnavailable": "Bu yüklemeler kaldırılmıştır, artık güvenilir değildir veya şu anda yönetilemez durumdadır. Yeni bir plan oluşturmadan önce yeniden kontrol edin.",
       "planChanged": "Bağlantı planı değişti. Güncellenen planı iade edin ve onaylayın.",
-      "includeLifecycle": "Otomatik oturum bağlantısını dahil et",
-      "includeLifecycleHelp": "Bu kurulum için isteğe bağlıdır. Bu kapalıyken bellek araçları kullanılabilir durumda kalır.",
+      "includeLifecycle": "Otomatik Hooknı dahil et",
+      "includeLifecycleHelp": "Bu kurulum için isteğe bağlıdır. Bu kapalıyken MCP Tools kullanılabilir durumda kalır.",
       "backgroundProgress": "Yerel Agent'lar arka planda bağlanıyor: {{completed}} / {{total}} tamamlandı.",
       "backgroundComplete": "{{total}} kurulum için arka plan Agent bağlantısı tamamlandı.",
       "backgroundTaskPosition": "{{total}}'nin {{current}} görevi",
       "backgroundTaskPinnedOutsidePage": "Sabitlenen görev sayfa dışında; geçerli sayfaya göz atın",
-      "backgroundTaskActiveCount": "{{count}} arka plan görevi çalışıyor veya doğrulama bekliyor",
-      "backgroundTaskAttentionCount": "{{count}} arka plan görevlerine dikkat edilmesi gerekiyor",
+      "backgroundTaskActiveCount": "Tide Mind arka planda {{count}} görev yürütüyor. İşlem yapmanız gerekmiyor.",
+      "backgroundTaskAttentionCount": "{{count}} geçmiş görevde hata veya kesinti kaydı var; işlem gerekip gerekmediği için Agent’ın güncel durumuna bakın.",
       "backgroundTasksUpdated": "Arka plan görevleri güncellendi",
       "backgroundTaskPageLoading": "Arka plan görevleri yükleniyor",
       "backgroundTaskPageLoadFailed": "Arka plan görevleri yüklenemedi",
@@ -1577,6 +1616,60 @@
         "awaitingReload": "Tide Mind kendi yapılandırmasını kaldırdı ve bu Agent'a bellek sağlamayı durdurdu. Zaten çalışan bir ana bilgisayar, yeniden başlatana veya yeni oturum açana kadar eski bileşenleri tutabilir; generation içermeyen eski girişler otomatik olarak engellenmez.",
         "deactivatedVerified": "Devre dışı bırakma doğrulandı: yapılandırma kaldırıldı ve ana bilgisayar yeniden yüklendi.",
         "bridgeStopped": "Tide Mind bu Agent'a bellek sağlamayı durdurdu. Ana bilgisayardaki bileşenler hâlâ yüklü olabilir; bunları ana bilgisayarda elle kaldırın."
+      },
+      "sharedConnectionScope": "CLI ve Desktop bu bağlantıyı paylaşır. Göstergeler ortak yapılandırmayı ve gerçek çağrıları gösterir.",
+      "hostEvidenceScope": "Aynı paylaşılan yapılandırmada Skill ve MCP Tools bağlantının doğrulamasını kullanır. Aşağıdaki Hook olayları seçili uygulamaya özeldir.",
+      "disconnectConnection": "Ortak bağlantıyı kes",
+      "pauseMember": "Bu uygulamayı duraklat",
+      "resumeMember": "Bu uygulamayı sürdür",
+      "disconnectMember": "Bu uygulamanın bağlantısını kes",
+      "disconnectConnectionTitle": "{{name}} bağlantısı tüm bağlı uygulamalardan kesilsin mi?",
+      "disconnectConnectionDescription": "Bu yapılandırmayı paylaşan tüm uygulamaların bağlantısını keser. Yalnızca Tide Mind girdileri kaldırılır; diğer ayarlar ve anılar korunur.",
+      "retryAutomaticConnection": "Kurulumu yeniden dene",
+      "automaticRetryUnavailable": "Otomatik kurulum şu anda kullanılamıyor. Ayrıntılarda gösterilen sorunu giderip yeniden deneyin.",
+      "reviewNativePermissions": "Eklenti izinlerini incele",
+      "authorizeNativeAndConnect": "İzin ver ve bağlan",
+      "nativePermissionVersion": "Ana uygulama sürümü: {{version}}",
+      "diagnostic": {
+        "title": "Okuma/yazma doğrulaması",
+        "scope": "Yalnızca doğrulanmış aboneliği kullanır; tüm bağlantılar için günde en fazla 3 test yapılır. Test verileri anılarınızdan ayrı tutulur.",
+        "retry": "Model doğrulamasını yeniden çalıştır",
+        "checking": "Bağlantı doğrulanıyor…",
+        "passed": "Okuma ve yazma doğrulandı.",
+        "uncertain": "Test gönderildi ancak sonuç doğrulanamadı. Yeniden denemeden önce Agent’ı kontrol edin; abonelik kotası kullanılabilir.",
+        "cancelled": "Doğrulama durduruldu. Hazır olduğunuzda yeniden deneyebilirsiniz.",
+        "login": "Agent’ta oturum açıp yeniden deneyin.",
+        "metered": "Bu bağlantı kullandıkça ödemeli; otomatik model testi yapılmaz. Doğrulamak için Agent’ta Tide Mind kullanın.",
+        "billing": "Abonelik doğrulanamadı; model testi gönderilmedi. Doğrulamak için Agent’ta Tide Mind kullanın.",
+        "dailyLimit": "Günlük 3 test sınırına ulaşıldı. Yarın deneyin veya Agent’ta Tide Mind kullanın.",
+        "alreadyTested": "Bu yapılandırma zaten otomatik test edildi. Elle yeniden denemeden önce Agent’ı kontrol edin.",
+        "permission": "Agent’ın yerel araç izinlerini kontrol edip yeniden deneyin.",
+        "unsupported": "Bu sürüm veya yapılandırma otomatik testi desteklemiyor. Agent’ta başarılı okuma ve yazma bağlantıyı doğrular.",
+        "waiting": "Doğrulama bekleniyor. Agent’ta Tide Mind kullanın veya burada yeniden deneyin.",
+        "failed": "Doğrulama tamamlanamadı. Agent’ın Tide Mind kullanabildiğini kontrol edip yeniden deneyin."
+      },
+      "authentication": {
+        "title": "Agent oturum kontrolü",
+        "recheck": "Oturumu yeniden kontrol et",
+        "scope": "Oturum durumu, modelin veya MCP Toolsnın doğrulamadan geçtiği anlamına gelmez.",
+        "status": {
+          "not_checked": "Oturum durumu henüz kontrol edilmedi",
+          "checking": "Oturum durumu kontrol ediliyor",
+          "authenticated": "Oturum açık",
+          "explicitly_unauthenticated": "Oturum açık değil. Bu Agent içinde oturum açın ve yeniden kontrol edin.",
+          "unsupported": "Bu Agent otomatik oturum kontrolünü desteklemiyor.",
+          "unavailable": "Şu anda kontrol edilemiyor. Agent’ın normal çalıştığından emin olun ve yeniden deneyin.",
+          "cancelled": "Kontrol iptal edildi. Agent’ın normal çalıştığından emin olun ve yeniden deneyin."
+        },
+        "billing": {
+          "confirmed_subscription": "Abonelik doğrulandı. Bu oturum kontrolü modeli çağırmaz.",
+          "metered": "Kullanıma göre ücretlendirilen hesap. Otomatik oturum kontrolleri modeli çağırmaz.",
+          "unknown": "Ücretlendirme yöntemi bilinmiyor. Otomatik oturum kontrolleri modeli çağırmaz."
+        }
+      },
+      "nativePermissions": {
+        "gemini_extension": "Yerel Tide Mind uzantısını kur: yerel kod çalıştırma, bellek talimatlarını yükleme, araç ve kancaları bağlama. Bu işlem Gemini uzantı güvenlik bildirimini kabul eder.",
+        "openclaw_capabilities": "Yerel Tide Mind eklentisini kur ve etkinleştir; konuşma bağlamını okuma ve istemlere bellek ekleme izni ver, ardından ağ geçidini yeniden başlat."
       }
     }
   },

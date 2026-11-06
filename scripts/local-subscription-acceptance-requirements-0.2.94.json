@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "appVersion": "0.2.94",
+  "providers": [
+    "codex-cli",
+    "claude-cli"
+  ],
+  "steps": [
+    "B1",
+    "B2",
+    "B3",
+    "B4",
+    "B5",
+    "B6",
+    "B7"
+  ],
+  "selectionModes": {
+    "codex-cli": [
+      "follow_default",
+      "pinned_id"
+    ],
+    "claude-cli": [
+      "follow_default",
+      "alias",
+      "pinned_id"
+    ]
+  },
+  "recoveries": [
+    "logout_login",
+    "account_switch",
+    "cli_change",
+    "catalog_expiry",
+    "pause_resume"
+  ],
+  "controlledNegativeRegressions": {
+    "account_switch": [
+      {
+        "testFile": "tests/llm/cli/service-model-observation.test.ts",
+        "title": "does not adopt or authorize a response after an external account switch"
+      }
+    ],
+    "cli_change": [
+      {
+        "testFile": "tests/llm/cli/readiness.test.ts",
+        "title": "cli generation is stable for the same binary/contract and changes with the version"
+      },
+      {
+        "testFile": "tests/db/model-discovery.test.ts",
+        "title": "cli_generation_changed increments the epoch"
+      }
+    ]
+  },
+  "releaseAcceptance": {
+    "requiredProviders": [
+      "codex-cli"
+    ],
+    "deferredProviders": [
+      "claude-cli"
+    ]
+  }
+}

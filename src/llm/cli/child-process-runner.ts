@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
-import { CliLLMError } from './errors.js';
+import { CliLLMError, CliProcessExitUnconfirmedError } from './errors.js';
 import type { CliInvocationPurpose } from './types.js';
 
 export interface CliProcessSpec {
@@ -79,7 +79,7 @@ export class CliProcessRegistry {
       await waitForProcessGroupExit(group, graceMs);
     }
     if (isProcessGroupAlive(group)) {
-      throw new CliLLMError('process_crash', 'CLI process group survived cleanup');
+      throw new CliProcessExitUnconfirmedError();
     }
     this.processGroups.delete(group);
   }
@@ -120,6 +120,12 @@ export class CliProcessRegistry {
   get activeCount(): number {
     return this.children.size;
   }
+
+  /** Includes a process group whose parent exited but cleanup was not confirmed. */
+  get hasOutstandingWork(): boolean {
+    return this.pendingAdmissions > 0 || this.children.size > 0
+      || [...this.processGroups].some(isProcessGroupAlive);
+  }
 }
 
 function signalProcessGroup(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
@@ -147,8 +153,8 @@ export function isProcessGroupAlive(group: number): boolean {
   try {
     process.kill(-group, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
   }
 }
 

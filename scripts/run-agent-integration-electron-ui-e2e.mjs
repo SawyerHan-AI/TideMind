@@ -123,7 +123,7 @@ async function main() {
     assert.equal(await value(cdp, 'document.querySelectorAll(\'[role="alert"]\').length'), 0, 'renderer reported an error')
     const initialScan = await waitForExactInitialScan(cdp)
     const defaultList = await assertDefaultListLayout(cdp)
-    const startupNotification = await exerciseStartupNotification(cdp, artifactsDir)
+    const currentConnectionIssue = await exerciseCurrentConnectionIssue(cdp, artifactsDir)
     const interruptedRestart = await exerciseInterruptedRestartTask(cdp)
     await screenshot(cdp, path.join(artifactsDir, '01-wide-agent-list.png'))
 
@@ -146,7 +146,7 @@ async function main() {
       screenshotStem: 'kimi-conflict',
     })
     const batchFocus = await openAndExerciseConnectDialog(cdp, artifactsDir)
-    const liveTaskAdvancement = await exerciseLiveTaskAdvancement(cdp, artifactsDir)
+    const liveTaskAdvancement = await exerciseLiveTaskAdvancement(cdp)
     const modalInert = await exerciseSupportCatalogModal(cdp)
     const customAgent = await exerciseCustomAgentFlow(cdp, artifactsDir)
     await exerciseCustomAgentFlow(cdp, artifactsDir, true)
@@ -174,6 +174,7 @@ async function main() {
     })
     const qwenWorkRemoval = await exerciseQwenWorkGuidedRemoval(cdp, artifactsDir, 'qwenwork-guided')
     const codexTrust = await exerciseCodexTrustFlow(cdp, artifactsDir)
+    const sharedControls = await exerciseSharedConnectionControls(cdp, artifactsDir)
     await exerciseNarrowLayout(cdp, artifactsDir)
     const responsive = await exerciseResponsiveBreakpoints(cdp, artifactsDir)
     const history = await exerciseConnectionHistory(cdp, artifactsDir)
@@ -196,7 +197,7 @@ async function main() {
         initialScan,
         defaultList,
         accessInfo,
-        startupNotification,
+        currentConnectionIssue,
         interruptedRestart,
         liveTaskAdvancement,
         modalInert,
@@ -207,6 +208,7 @@ async function main() {
         guidedActionAfterRestart,
         qwenWorkRemoval,
         codexTrust,
+        sharedControls,
         releasePolicy,
         batchFocus,
         responsive,
@@ -450,18 +452,23 @@ async function waitForExactInitialScan(client) {
     return typeof scanAt === 'string'
       && scanAt !== ${baseline}
       && snapshot.installations.length > 0
-      && snapshot.installations.every(item => item.lastDetectedAt === scanAt)
+      && snapshot.scanProgress?.phase === 'idle'
+      && snapshot.scanProgress.completedAt === scanAt
+      && snapshot.installations.every(item => item.lastDetectedAt === snapshot.installations[0].lastDetectedAt)
+      && snapshot.installations[0].lastDetectedAt >= snapshot.scanProgress.startedAt
+      && snapshot.installations[0].lastDetectedAt <= scanAt
       && zcode?.hostVariant === 'zcode-desktop'
       && zcode.manageable === true
       && zcode.desiredState === 'unmanaged'
       && zcode.statusGroup === 'awaiting_connection'
   })()`, 'exact initial scan generation and trusted ZCode projection')
   const snapshot = await value(client, `window.api.agentIntegrations.snapshot()`)
-  assert.equal(snapshot.installations.every(item => item.lastDetectedAt === snapshot.lastScanAt), true,
+  assert.equal(snapshot.installations.every(item => item.lastDetectedAt === snapshot.installations[0].lastDetectedAt), true,
     `renderer snapshot mixed scan generations: ${JSON.stringify(snapshot)}`)
   return {
     baselineLastScanAt: fixtureBaselineScanAt,
     completedLastScanAt: snapshot.lastScanAt,
+    observedScanAt: snapshot.installations[0].lastDetectedAt,
     exactGeneration: true,
     zcodeStrongIdentityManageable: snapshot.installations.find(item => item.id === 'zcode-default')?.manageable === true,
   }
@@ -529,109 +536,53 @@ async function assertDefaultListLayout(client) {
   return result
 }
 
-async function exerciseStartupNotification(client, artifactRoot) {
-  await waitFor(client, `(() => {
-    const toast = document.querySelector('[data-agent-integration-notification]')
-    return Boolean(toast && document.querySelector('#settings-tab-external .bg-red-400'))
-  })()`, 'startup Agent notification and Settings unread dot')
-  const expectedBackground = UI_THEME === 'light' ? 'rgba(250, 249, 254, 0.97)' : 'rgba(22, 22, 26, 0.97)'
-  const expectedTitleColor = UI_THEME === 'light' ? 'rgb(17, 24, 39)' : 'rgb(243, 244, 246)'
-  const colors = await value(client, `(() => {
-    const toast = document.querySelector('[data-agent-integration-notification]')
-    const title = toast?.querySelector('p')
-    return {
-      background: toast ? getComputedStyle(toast).backgroundColor : null,
-      title: title ? getComputedStyle(title).color : null,
-    }
-  })()`)
-  assert.equal(colors.background, expectedBackground, `startup notification surface ignored ${UI_THEME} theme: ${JSON.stringify(colors)}`)
-  assert.equal(colors.title, expectedTitleColor, `startup notification title ignored ${UI_THEME} theme: ${JSON.stringify(colors)}`)
-  await screenshot(client, path.join(artifactRoot, '00-startup-notification.png'))
-  const point = await value(client, `(() => {
-    const toast = document.querySelector('[data-agent-integration-notification]')
-    const button = toast?.querySelector('button')
-    if (!(button instanceof HTMLButtonElement)) throw new Error('startup notification detail action missing')
-    button.scrollIntoView({ block: 'center', inline: 'center' })
-    const rect = button.getBoundingClientRect()
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
-  })()`)
-  await mouseClick(client, point)
-  await waitFor(client, `document.querySelector('#components-opencode-conflict') !== null`, 'notification exact Installation detail')
-  await waitFor(client, `!document.querySelector('#settings-tab-external .bg-red-400')`, 'ordinary info does not keep the Settings action dot')
-  const inbox = await value(client, `window.api.agentIntegrations.inbox(10)`)
-  assert.ok(inbox.unreadCount > 0, `expected the ordinary unread fixture event to remain: ${JSON.stringify(inbox)}`)
-  assert.equal(inbox.actionableUnreadCount, 0, `ordinary info was still actionable: ${JSON.stringify(inbox)}`)
-  return {
-    toastVisible: true,
-    unreadDotVisible: true,
-    exactInstallationOpened: 'opencode-conflict',
-    ordinaryInfoDidNotKeepDot: true,
-    colors,
-  }
+async function exerciseCurrentConnectionIssue(client, artifactRoot) {
+  const target = await value(client, `window.api.agentIntegrations.snapshot().then(snapshot => {
+    const connection = snapshot.connections.find(item => item.actionInstallationIds.includes('opencode-conflict'))
+    return connection ? { id: connection.id, reason: connection.attentionReason, installationId: connection.actionInstallationIds[0] } : null
+  })`)
+  assert.ok(target?.reason, 'fixture did not expose the current OpenCode action')
+  assert.equal(target.installationId, 'opencode-conflict', 'fixture did not prioritize the OpenCode action target')
+  const issue = `[data-agent-current-issue="${target.id}"]`
+  await waitFor(client, `Boolean(document.querySelector(${JSON.stringify(issue)})?.textContent?.trim())`, 'current Agent issue on its connection row')
+  assert.equal(await value(client, `document.querySelector('[data-agent-action-notice], [data-agent-integration-notification]') === null`), true,
+    'current issues belong to connection rows and historical events must not open a startup toast')
+  await screenshot(client, path.join(artifactRoot, '00-current-connection-issue.png'))
+  await client.evaluate(`document.querySelector(${JSON.stringify(`[data-agent-connection-trigger="${target.id}"]`)})?.click()`)
+  await waitFor(client, `document.getElementById(${JSON.stringify(`components-${target.installationId}`)}) !== null`, 'current issue opens its exact Installation detail')
+  await screenshot(client, path.join(artifactRoot, '00-action-detail.png'))
+  return { historicalToastAbsent: true, issueVisibleOnConnection: true, exactInstallationOpened: target.installationId }
 }
 
 async function exerciseInterruptedRestartTask(client) {
-  const expectedAttentionColor = UI_THEME === 'light' ? 'rgb(146, 64, 14)' : 'rgb(253, 230, 138)'
-  await waitFor(client, `(() => {
-    const task = [...document.querySelectorAll('[role="status"]')]
-      .find(element => /中断|interrupted/iu.test(element.textContent ?? ''))
-    const action = [...(task?.querySelectorAll('button') ?? [])]
-      .find(button => /生成新方案|generate a new plan/iu.test(button.textContent ?? ''))
-    const recheck = [...(task?.querySelectorAll('button') ?? [])]
-      .find(button => /不可用|no longer available/iu.test(button.textContent ?? ''))
-    return Boolean(task && action
-      && recheck
-      && task.getAttribute('data-tone') === 'attention'
-      && getComputedStyle(task).color === ${JSON.stringify(expectedAttentionColor)}
-      && getComputedStyle(task).color !== 'rgb(167, 243, 208)')
-  })()`, 'interrupted restart task amber attention card')
-  const actionPoint = await value(client, `(() => {
-    const task = [...document.querySelectorAll('[role="status"]')]
-      .find(element => /中断|interrupted/iu.test(element.textContent ?? ''))
-    const action = [...(task?.querySelectorAll('button') ?? [])]
-      .find(button => /生成新方案|generate a new plan/iu.test(button.textContent ?? ''))
-    if (!(action instanceof HTMLButtonElement)) throw new Error('interrupted fresh-preview action missing')
-    globalThis.__tidemindInterruptedTaskTrigger = action
-    action.scrollIntoView({ block: 'center', inline: 'center' })
-    const rect = action.getBoundingClientRect()
-    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+  const result = await value(client, `(async () => {
+    const advanced = document.querySelector('button[aria-controls="agent-advanced-connections"]')
+    if (advanced?.getAttribute('aria-expanded') !== 'true') advanced?.click()
+    const api = window.api.agentIntegrations
+    const page = await api.listApplyTasks({ limit: 20 })
+    const recovered = await api.getApplyTask('task:audit-interrupted-restart-task')
+    const snapshot = await api.snapshot()
+    return {
+      taskVisible: Boolean(document.querySelector('#agent-task-history, [data-task-feed-key]')),
+      presentInFeed: page.tasks.some(task => task.feedKey === recovered.feedKey),
+      state: recovered.state,
+      pendingInstallationIds: recovered.pendingInstallationIds,
+      results: recovered.results.map(({ installationId, status }) => ({ installationId, status })),
+      zcodeState: snapshot.installations.find(item => item.id === 'zcode-default')?.desiredState,
+      historicalInstallation: snapshot.historyInstallations.some(item => item.id === 'claude-history'),
+    }
   })()`)
-  await mouseClick(client, actionPoint)
-  await waitFor(client, `(() => {
-    const dialog = document.querySelector('[role="dialog"]')
-    const labels = [...(dialog?.querySelectorAll('label') ?? [])]
-    const zcodeName = [...(dialog?.querySelectorAll('label span') ?? [])]
-      .find(candidate => candidate.textContent?.trim() === 'ZCode')
-    const zcodeInput = zcodeName?.closest('label')?.querySelector('input[type="checkbox"]')
-    const otherAgent = labels.some(candidate => /Cursor|Kimi Code|OpenCode|Codex/iu.test(candidate.textContent ?? ''))
-    return dialog?.getAttribute('aria-busy') === 'false'
-      && zcodeInput instanceof HTMLInputElement
-      && !otherAgent
-  })()`, 'fresh preview for exact interrupted Installation')
-  await key(client, 'Escape', 27)
-  await waitFor(client, `document.querySelector('[role="dialog"]') === null
-    && document.getElementById('root')?.inert === false
-    && document.activeElement === globalThis.__tidemindInterruptedTaskTrigger`,
-  'interrupted fresh preview Escape close and focus restoration')
-  const taskPage = await value(client, `window.api.agentIntegrations.listApplyTasks({ limit: 20 })`)
-  const tasks = taskPage.tasks
-  const recovered = tasks.find(task => task.id === 'audit-interrupted-restart-task')
-  assert.deepEqual(recovered?.results?.map(result => ({
-    installationId: result.installationId,
-    status: result.status,
-  })), [
+  assert.equal(result.taskVisible, false, 'task history must remain out of the product UI')
+  assert.equal(result.presentInFeed, true, 'interrupted task did not persist through the IPC feed')
+  assert.equal(result.state, 'completed', 'interrupted task was treated as running')
+  assert.deepEqual(result.pendingInstallationIds, [], 'interrupted task has a pending replay')
+  assert.deepEqual(result.results, [
     { installationId: 'zcode-default', status: 'interrupted' },
     { installationId: 'claude-history', status: 'interrupted' },
-  ],
-  `interrupted task did not remain exact after fresh preview cancellation: ${JSON.stringify(tasks)}`)
-  return {
-    amberAttention: true,
-    stableAttentionTone: expectedAttentionColor,
-    exactInstallationIds: ['zcode-default'],
-    unavailableInstallationIds: ['claude-history'],
-    freshPreviewOnly: true,
-    oldPlanNotReplayed: true,
-  }
+  ])
+  assert.equal(result.zcodeState, 'unmanaged', 'old interrupted plan was reapplied at startup')
+  assert.equal(result.historicalInstallation, true, 'historical task target appeared as a current installation')
+  return { retainedInIpc: true, hiddenInProductUi: true, oldPlanNotReplayed: true }
 }
 
 async function waitForRendererTarget(port, child, logs) {
@@ -654,8 +605,10 @@ async function waitForRendererTarget(port, child, logs) {
 
 async function exerciseAccessInfo(client, artifactRoot) {
   await assertDocumentFocused(client)
+  await client.evaluate(`document.querySelector('[data-agent-family-trigger="cursor"]')?.click()`)
+  await waitFor(client, `document.getElementById('components-cursor-work') !== null`, 'Cursor detail access explanation')
   await value(client, `(() => {
-    const section = document.querySelector('section[aria-labelledby="managed-local-agents-title"]')
+    const section = document.querySelector('[data-agent-detail-pane]')
     const button = [...(section?.querySelectorAll('button[aria-expanded][aria-controls]') ?? [])]
       .find(candidate => {
         const rect = candidate.getBoundingClientRect()
@@ -845,7 +798,7 @@ async function openAndExerciseConnectDialog(client, artifactRoot) {
   // The renderer mounts from the durable snapshot before its mandatory first
   // discovery scan finishes. Wait for that scan to publish the actionable
   // pending Installation instead of racing the button on faster/slower hosts.
-  await waitFor(client, `Boolean(document.querySelector('section[aria-labelledby="managed-attention-title"] button'))`,
+  await waitFor(client, `Boolean(document.querySelector('section[aria-labelledby="managed-local-agents-title"] button'))`,
     'review-and-connect action after initial scan')
   const pendingDetailPoint = await value(client, `(() => {
     const button = document.querySelector('[data-agent-family-trigger="zcode"]')
@@ -863,7 +816,7 @@ async function openAndExerciseConnectDialog(client, artifactRoot) {
       && !labels.some(label => /^(disconnect|断开)$/iu.test(label))
   })()`), true, 'unmanaged pending detail exposed a disconnect action instead of approval')
   const reviewPoint = await value(client, `(() => {
-    const button = document.querySelector('section[aria-labelledby="managed-attention-title"] button')
+    const button = document.querySelector('section[aria-labelledby="managed-local-agents-title"] button')
     if (!(button instanceof HTMLButtonElement)) throw new Error('review-and-connect button missing')
     button.scrollIntoView({ block: 'center', inline: 'center' })
     const rect = button.getBoundingClientRect()
@@ -971,21 +924,18 @@ async function openAndExerciseConnectDialog(client, artifactRoot) {
   await waitFor(client, `document.activeElement?.id === 'managed-local-agents-title'`,
     'connect dialog stable fallback focus after its trigger disappears')
   await waitForZCodeAwaitingHostRecognition(client)
-  await waitFor(client, `(() => {
-    const task = [...document.querySelectorAll('[role="status"]')]
-      .find(element => /中断|interrupted/iu.test(element.textContent ?? ''))
-    const previous = task?.querySelector('button svg.lucide-chevron-left')?.closest('button')
-    const next = task?.querySelector('button svg.lucide-chevron-right')?.closest('button')
-    return Boolean(task && previous?.disabled && next && !next.disabled)
-  })()`, 'interrupted attention remains ahead of awaiting-verification task with queue navigation')
+  await waitFor(client, `(async () => {
+    const page = await window.api.agentIntegrations.listApplyTasks({ limit: 20 })
+    return page.tasks.some(task => task.state === 'completed' && task.results.some(result =>
+      result.installationId === 'zcode-default' && result.status === 'awaiting_verification' && Boolean(result.runId)))
+  })()`, 'fresh ZCode application is durable and waiting for host evidence through IPC')
   return {
     focusInsideAfterPreviewCommit: true,
     focusInsideAfterExecuteCommit: true,
     focusRestoredAfterTriggerRemoval: true,
     backgroundTaskReportedRealResults: true,
     projectionAppliedAwaitingHostRecognition: true,
-    attentionPrecedesAwaitingAfterCompletion: true,
-    taskQueueNavigationVisible: true,
+    resultReadBackThroughIpc: true,
   }
 }
 
@@ -1003,7 +953,7 @@ async function waitForZCodeAwaitingHostRecognition(client) {
   })()`, 'ZCode projection applied and awaiting host recognition before Electron shutdown', 30_000)
 }
 
-async function exerciseLiveTaskAdvancement(client, artifactRoot) {
+async function exerciseLiveTaskAdvancement(client) {
   const taskId = 'audit-live-progress-task'
   const runId = 'audit-live-progress-run'
   const executionPlanHash = crypto.createHash('sha256').update(taskId).digest('hex')
@@ -1101,226 +1051,49 @@ async function exerciseLiveTaskAdvancement(client, artifactRoot) {
     assert.ok(pagination.progressStartIndex >= 20,
       `awaiting progress fixture was not placed beyond page one: ${JSON.stringify(pagination)}`)
 
-    // Existing awaiting work keeps the mounted renderer polling. Once the new
-    // revision reaches it, walk the actual queue across the page boundary and
-    // pin the exact page-two task before its coordinator run advances.
-    await waitFor(client, `document.querySelector('[data-task-feed-key]') !== null`, 'task feed card')
-    await waitFor(client, `Number(document.querySelector('[data-task-feed-key]')
-      ?.getAttribute('data-task-feed-total')) >= ${pagination.seenCount}`,
-    'mounted renderer refreshes the cross-page revision', 10_000)
-    // Normalize the visible selection to the last item on page one even when
-    // a previously pinned task currently lives on page two.
-    for (let index = 0; index < 100; index += 1) {
-      const selected = await value(client, `document.querySelector('[data-task-feed-key]')?.getAttribute('data-task-feed-key')`)
-      const selectedPage = await value(client, `(() => {
-        const card = document.querySelector('[data-task-feed-key]')
-        return {
-          startIndex: Number(card?.getAttribute('data-task-feed-start-index')),
-          pageIndex: Number(card?.getAttribute('data-task-feed-page-index')),
-        }
-      })()`)
-      if (selectedPage.startIndex === 0 && selectedPage.pageIndex === 19) break
-      const direction = selectedPage.startIndex > 0 && selectedPage.pageIndex >= 0 ? 'left' : 'right'
-      const point = await value(client, `(() => {
-        const card = document.querySelector('[data-task-feed-key]')
-        const button = [...(card?.querySelectorAll('button') ?? [])]
-          .find(candidate => !candidate.disabled && candidate.querySelector(
-            ${JSON.stringify(`svg.lucide-chevron-${direction}`)}))
-        if (!(button instanceof HTMLButtonElement)) return null
-        button.scrollIntoView({ block: 'center', inline: 'center' })
-        const rect = button.getBoundingClientRect()
-        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
-      })()`)
-      assert.ok(point, 'task queue could not normalize to the first-page boundary')
-      await mouseClick(client, point)
-      await waitFor(client, `document.querySelector('[data-task-feed-key]')
-        ?.getAttribute('data-task-feed-key') !== ${JSON.stringify(selected)}`,
-      'task queue normalizes one bounded item', 5_000)
-    }
-    const firstPageBoundary = await value(client, `(() => {
-      const card = document.querySelector('[data-task-feed-key]')
-      return {
-        key: card?.getAttribute('data-task-feed-key'),
-        startIndex: Number(card?.getAttribute('data-task-feed-start-index')),
-        pageIndex: Number(card?.getAttribute('data-task-feed-page-index')),
-      }
+    const boundaries = await value(client, `(async () => {
+      const api = window.api.agentIntegrations
+      const first = await api.listApplyTasks({ limit: 20 })
+      const second = await api.listApplyTasks({ limit: 20, cursor: first.nextCursor })
+      const previous = await api.listApplyTasks({ limit: 20, cursor: second.previousCursor })
+      const exact = await api.getApplyTask(${JSON.stringify(`task:${taskId}`)})
+      return { nextCursor: first.nextCursor,
+        reversedToFirst: first.tasks.map(task => task.feedKey).join() === previous.tasks.map(task => task.feedKey).join(),
+        awaitingExact: exact.results.some(item => item.runId === ${JSON.stringify(runId)} && item.status === 'awaiting_verification') }
     })()`)
-    assert.deepEqual({ startIndex: firstPageBoundary.startIndex, pageIndex: firstPageBoundary.pageIndex },
-      { startIndex: 0, pageIndex: 19 }, 'task queue did not reach the first-page boundary')
+    assert.ok(boundaries.nextCursor && boundaries.reversedToFirst && boundaries.awaitingExact,
+      'IPC cursor roundtrip or exact awaiting task lookup failed')
 
-    // Break only the isolated fixture's feed-state table for one cursor
-    // request. This is a real main-process SQLite/IPC failure, not a renderer
-    // mock, and verifies retained content, visible retry, and initiating focus.
+    // Fault injection is confined to the isolated SQLite fixture. Exercise
+    // preload/main error propagation and successful retry of the same cursor.
     db.exec(`ALTER TABLE agent_integration_apply_task_feed_state
       RENAME TO agent_integration_apply_task_feed_state_ui_blocked`)
+    const readOldCursor = `window.api.agentIntegrations.listApplyTasks({
+      limit: 20, cursor: ${JSON.stringify(boundaries.nextCursor)}
+    })`
     try {
-      const failingNextPoint = await value(client, `(() => {
-        const card = document.querySelector('[data-task-feed-key]')
-        const button = [...(card?.querySelectorAll('button') ?? [])]
-          .find(candidate => !candidate.disabled && candidate.querySelector('svg.lucide-chevron-right'))
-        if (!(button instanceof HTMLButtonElement)) return null
-        button.focus()
-        const rect = button.getBoundingClientRect()
-        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
-      })()`)
-      assert.ok(failingNextPoint, 'first-page boundary did not expose the next-page request')
-      await mouseClick(client, failingNextPoint)
-      await waitFor(client, `(() => [...document.querySelectorAll('[role="alert"]')].some(alert =>
-        [...alert.querySelectorAll('button')].some(button =>
-          /重试加载后台任务|Retry loading background tasks/iu.test(button.textContent ?? ''))))()` ,
-      'non-stale task page failure remains visible with retry', 5_000)
-      assert.equal(await value(client, `document.querySelector('[data-task-feed-key]')?.getAttribute('data-task-feed-key')`),
-        firstPageBoundary.key, 'failed page request replaced the retained task card')
-      assert.equal(await value(client, `Boolean(document.activeElement instanceof HTMLButtonElement
-        && document.activeElement.querySelector('svg.lucide-chevron-right'))`), true,
-      'failed page request did not restore keyboard focus to the initiating arrow')
+      await assert.rejects(value(client, readOldCursor), /agent_integration_apply_task_feed_state/u)
     } finally {
       db.exec(`ALTER TABLE agent_integration_apply_task_feed_state_ui_blocked
         RENAME TO agent_integration_apply_task_feed_state`)
     }
-    await screenshot(client, path.join(artifactRoot, '05-task-page-error.png'))
-    const retryPoint = await value(client, `(() => {
-      const alert = [...document.querySelectorAll('[role="alert"]')].find(candidate =>
-        [...candidate.querySelectorAll('button')].some(button =>
-          /重试加载后台任务|Retry loading background tasks/iu.test(button.textContent ?? '')))
-      const button = [...(alert?.querySelectorAll('button') ?? [])].find(candidate =>
-        /重试加载后台任务|Retry loading background tasks/iu.test(candidate.textContent ?? ''))
-      if (!(button instanceof HTMLButtonElement)) return null
-      const rect = button.getBoundingClientRect()
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
-    })()`)
-    assert.ok(retryPoint, 'task page failure did not expose an actionable retry button')
-    await mouseClick(client, retryPoint)
-    await waitFor(client, `![...document.querySelectorAll('[role="alert"]')].some(alert =>
-      [...alert.querySelectorAll('button')].some(button =>
-        /重试加载后台任务|Retry loading background tasks/iu.test(button.textContent ?? '')))`,
-    'task page retry succeeds after the isolated database fault clears', 5_000)
-    await waitFor(client, `(() => {
-      const card = document.querySelector('[data-task-feed-key]')
-      const next = [...(card?.querySelectorAll('button') ?? [])]
-        .find(button => button.querySelector('svg.lucide-chevron-right'))
-      return Boolean(next && next.getAttribute('aria-busy') !== 'true' && !next.disabled)
-    })()`, 'task page retry finishes and restores navigation', 5_000)
+    const retriedPage = await value(client, readOldCursor)
+    assert.equal(retriedPage.startIndex, 20, 'retry did not reopen the same task page')
 
-    for (let index = 0; index < 100; index += 1) {
-      const selected = await value(client, `document.querySelector('[data-task-feed-key]')?.getAttribute('data-task-feed-key')`)
-      if (selected === `task:${taskId}`) break
-      const point = await value(client, `(() => {
-        const card = document.querySelector('[data-task-feed-key]')
-        const button = [...(card?.querySelectorAll('button') ?? [])]
-          .find(candidate => !candidate.disabled && candidate.querySelector('svg.lucide-chevron-right'))
-        if (!(button instanceof HTMLButtonElement)) return null
-        const rect = button.getBoundingClientRect()
-        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
-      })()`)
-      if (!point) {
-        const state = await value(client, `(async () => {
-          const card = document.querySelector('[data-task-feed-key]')
-          const first = await window.api.agentIntegrations.listApplyTasks({ limit: 20 })
-          const second = first.nextCursor
-            ? await window.api.agentIntegrations.listApplyTasks({ limit: 20, cursor: first.nextCursor })
-            : null
-          return {
-            key: card?.getAttribute('data-task-feed-key'),
-            total: card?.getAttribute('data-task-feed-total'),
-            startIndex: card?.getAttribute('data-task-feed-start-index'),
-            pageIndex: card?.getAttribute('data-task-feed-page-index'),
-            firstKeys: first.tasks.map(task => task.feedKey),
-            secondKeys: second?.tasks.map(task => task.feedKey),
-            buttons: [...(card?.querySelectorAll('button') ?? [])].map(button => ({
-              disabled: button.disabled, text: button.textContent,
-              left: Boolean(button.querySelector('svg.lucide-chevron-left')),
-              right: Boolean(button.querySelector('svg.lucide-chevron-right')),
-            })),
-          }
-        })()`)
-        assert.fail(`task queue could not reach the page-two awaiting task: ${JSON.stringify(state)}`)
-      }
-      await mouseClick(client, point)
-      await waitFor(client, `document.querySelector('[data-task-feed-key]')
-        ?.getAttribute('data-task-feed-key') !== ${JSON.stringify(selected)}`,
-      'task queue advances one bounded item', 5_000)
-    }
-    assert.equal(await value(client, `document.querySelector('[data-task-feed-key]')?.getAttribute('data-task-feed-key')`),
-      `task:${taskId}`, 'renderer did not pin the exact page-two awaiting task')
-
-    db.transaction(() => {
-      db.prepare(`
-        UPDATE reconcile_runs
-        SET state = 'needs_recovery', failure_code = 'ui_e2e_progression',
-            failure_stage = 'verification', completed_at = ?, updated_at = ?
-        WHERE id = ? AND state = 'applied_unverified'
-      `).run(createdAt, createdAt, runId)
-      // Keep one first-page task active. After the renderer leaves the exact
-      // off-page pin, its polling cadence must not let the stale pin ref take
-      // selection back from the task the user deliberately chose.
-      db.prepare(`
-        UPDATE agent_integration_apply_tasks
-        SET state = 'running', completed_at = NULL, updated_at = ?
-        WHERE id = ?
-      `).run(createdAt, pagingTaskIds[0])
-    }).immediate()
-
-    await waitFor(client, `(async () => {
-      const task = await window.api.agentIntegrations.getApplyTask('task:${taskId}')
-      return task?.results.some(result => result.runId === ${JSON.stringify(runId)}
-        && result.status === 'needs_recovery')
-    })()`, 'authoritative task progression visible through IPC', 10_000)
-
-    // The revision invalidates page two, so the controlled refresh returns to
-    // page one while retaining one exact pinned task. Its 5s cadence must still
-    // advance that off-page pin without a remount or a live task event.
-    await waitFor(client, `(() => {
-      const card = document.querySelector('[data-task-feed-key="task:${taskId}"]')
-      return Boolean(card && card.getAttribute('data-task-feed-page-index') === '-1'
-        && [...card.querySelectorAll('button')].some(button =>
-        /重新检查并生成新方案|Review and generate a new plan/iu.test(button.textContent ?? '')))
-    })()`, 'page-two pinned task progression without remount', 12_000)
-    assert.equal(await value(client, `document.querySelector('[data-tone]')?.getAttribute('data-tone')`), 'critical')
-    await screenshot(client, path.join(artifactRoot, '05-live-task-needs-recovery.png'))
-
-    const leavePinnedPoint = await value(client, `(() => {
-      const card = document.querySelector('[data-task-feed-key="task:${taskId}"]')
-      const button = [...(card?.querySelectorAll('button') ?? [])]
-        .find(candidate => !candidate.disabled && candidate.hasAttribute('aria-label')
-          && candidate.querySelector('svg.lucide-chevron-right'))
-      if (!(button instanceof HTMLButtonElement)) return null
-      button.focus()
-      const rect = button.getBoundingClientRect()
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
-    })()`)
-    assert.ok(leavePinnedPoint, 'off-page pin did not expose a return-to-page action')
-    await mouseClick(client, leavePinnedPoint)
-    await waitFor(client, `document.querySelector('[data-task-feed-key]')
-      ?.getAttribute('data-task-feed-key') !== 'task:${taskId}'`,
-    'user leaves the exact off-page pin', 5_000)
-    await new Promise(resolve => setTimeout(resolve, 250))
-    const focusAfterLeaving = await value(client, `(() => ({
-      right: Boolean(document.activeElement instanceof HTMLButtonElement
-        && document.activeElement.querySelector('svg.lucide-chevron-right')),
-      tag: document.activeElement?.tagName,
-      className: document.activeElement?.getAttribute('class'),
-      disabled: document.activeElement instanceof HTMLButtonElement ? document.activeElement.disabled : null,
-      nav: [...(document.querySelector('[data-task-feed-key]')?.querySelectorAll('button[aria-label]') ?? [])]
-        .map(button => ({ label: button.getAttribute('aria-label'), busy: button.getAttribute('aria-busy'), disabled: button.disabled })),
-    }))()`)
-    assert.equal(focusAfterLeaving.right, true,
-      `return-from-pin arrow did not receive focus: ${JSON.stringify(focusAfterLeaving)}`)
-    const selectedAfterLeavingPin = await value(client,
-      `document.querySelector('[data-task-feed-key]')?.getAttribute('data-task-feed-key')`)
-    await new Promise(resolve => setTimeout(resolve, 3_500))
-    assert.equal(await value(client,
-      `document.querySelector('[data-task-feed-key]')?.getAttribute('data-task-feed-key')`),
-    selectedAfterLeavingPin, 'background polling stole selection back to the stale off-page pin')
-    const focusAfterPolling = await value(client, `(() => ({
-      right: Boolean(document.activeElement instanceof HTMLButtonElement
-        && document.activeElement.querySelector('svg.lucide-chevron-right')),
-      tag: document.activeElement?.tagName,
-      className: document.activeElement?.getAttribute('class'),
-      disabled: document.activeElement instanceof HTMLButtonElement ? document.activeElement.disabled : null,
-    }))()`)
-    assert.equal(focusAfterPolling.right, true,
-      `returning from an off-page pin did not preserve navigation focus through polling: ${JSON.stringify(focusAfterPolling)}`)
+    const transition = db.prepare(`
+      UPDATE reconcile_runs
+      SET state = 'needs_recovery', failure_code = 'ui_e2e_progression',
+          failure_stage = 'verification', completed_at = ?, updated_at = ?
+      WHERE id = ? AND state = 'applied_unverified'
+    `).run(createdAt, createdAt, runId)
+    assert.equal(transition.changes, 1, 'fixture run changed before the controlled transition')
+    await assert.rejects(value(client, readOldCursor), /stale_task_feed_cursor/u)
+    const progressed = await value(client, `window.api.agentIntegrations.getApplyTask(${JSON.stringify(`task:${taskId}`)})`)
+    assert.equal(progressed.state, 'completed')
+    assert.deepEqual(progressed.results.map(({ installationId, runId, status }) => ({ installationId, runId, status })),
+      [{ installationId: 'zcode-default', runId, status: 'needs_recovery' }])
+    assert.equal(await value(client, `document.querySelector('#agent-task-history, [data-task-feed-key]') === null`), true,
+      'task progression surfaced the removed task UI')
   } finally {
     db.transaction(() => {
       for (const pagingTaskId of pagingTaskIds) {
@@ -1340,12 +1113,12 @@ async function exerciseLiveTaskAdvancement(client, artifactRoot) {
     exactTaskId: taskId,
     exactRunId: runId,
     progressedTo: 'needs_recovery',
-    freshPreviewCtaVisible: true,
     crossPageTraversal: true,
-    pageTwoPinnedProgression: true,
-    leavingPinnedSelectionStableThroughPolling: true,
-    nonStalePageErrorVisible: true,
-    failedPageFocusPreserved: true,
+    reverseCursorRoundtrip: true,
+    staleCursorRejected: true,
+    exactProgressionThroughIpc: true,
+    pageErrorAndRetryThroughIpc: true,
+    taskHistoryAbsentFromUi: true,
     boundedPageLimit: 20,
   }
 }
@@ -2011,8 +1784,175 @@ function removeFrozenQwenWorkSkillTarget(installationId) {
   }
 }
 
+async function exerciseSharedConnectionControls(client, artifactRoot) {
+  const sharedRoot = path.join(home, '.codex-shared-controls')
+  assertInsideRoot(sharedRoot)
+  fs.mkdirSync(sharedRoot, { recursive: true })
+  const fixtureDb = new Database(dbPath)
+  try {
+    for (const variant of ['codex-cli', 'codex-desktop']) {
+      const original = fixtureDb.prepare('SELECT * FROM agent_installations WHERE id=?').get(variant)
+      const executable = path.join(sharedRoot, `fixture-${variant}`)
+      fs.writeFileSync(executable, '#!/bin/sh\nexit 1\n', { mode: 0o700 })
+      const row = { ...original, id: `shared-${variant}`, install_key: `${variant}:shared-controls`,
+        agent_id: `eb_ui_shared_${variant.replaceAll('-', '_')}`, profile_id: 'shared-controls', config_root: sharedRoot, executable_path: executable,
+        desired_state: 'unmanaged', consent_envelope_id: null, consented_at: null, tombstoned_at: null, tombstone_reason: null,
+        verified_capability: 0, desired_capability: 0, verification_summary: 'unverified', verification_result_id: null,
+        status_reason: null, reconcile_state: 'idle', last_verified_at: null, bridge_state: 'serving',
+        metadata_json: JSON.stringify({ componentConfigRoots: { instruction: sharedRoot, lifecycle: sharedRoot },
+          distribution: { distributionId: original.distribution_id, executableRealpath: executable, packageProvenance: 'fixture', capabilityFingerprint: `fixture-${variant}` },
+          managementEligibility: { schemaVersion: 1, eligible: true, executableSizeBytes: fs.statSync(executable).size, proofLimitBytes: 512 * 1024 * 1024 } }) }
+      fixtureDb.prepare(`INSERT INTO agent_installations (${Object.keys(row).join(',')}) VALUES (${Object.keys(row).map(() => '?').join(',')})`).run(...Object.values(row))
+    }
+  } finally { fixtureDb.close() }
+  const result = await value(client, `(async () => {
+    const ids=['shared-codex-cli','shared-codex-desktop']
+    const preview=await window.api.agentIntegrations.previewConnect(ids)
+    return window.api.agentIntegrations.applyConnect(preview.planHash,ids)
+  })()`)
+  assert.ok(result.results.every(item => ['committed', 'awaiting_verification'].includes(item.status)), JSON.stringify(result))
+  await client.evaluate('location.reload()')
+  await waitFor(client, `document.querySelector('[data-agent-family-list]') !== null`, 'shared connection list after setup')
+  const connectionId = await value(client, `(async () => (await window.api.agentIntegrations.snapshot()).connections.find(item => item.installationIds.includes('shared-codex-cli'))?.id)()`)
+  assert.ok(connectionId?.startsWith('binding:'), 'synthetic real configuration did not create a shared binding')
+  await client.evaluate(`document.querySelector('[data-agent-connection-trigger="${connectionId}"]')?.click()`)
+  await waitFor(client, `document.querySelector('[data-connection-actions="${connectionId}"]') !== null`, 'shared connection controls')
+  const clickAction = async text => value(client, `(() => {
+    const button=[...document.querySelector('[data-connection-actions="${connectionId}"]').querySelectorAll('button')].find(item=>item.textContent.trim()===${JSON.stringify(text)})
+    if(!button || button.disabled)throw Error('shared action unavailable')
+    button.focus();button.click();return true
+  })()`)
+  await clickAction('Pause maintenance')
+  await waitFor(client, `(async () => (await window.api.agentIntegrations.snapshot()).connections.find(item=>item.id==='${connectionId}')?.intentState==='paused')()`, 'whole connection pause')
+  const paused = await value(client, `(async () => (await window.api.agentIntegrations.snapshot()).installations.filter(item=>item.id.startsWith('shared-codex')).map(item=>item.desiredState))()`)
+  assert.deepEqual(paused, ['disabled','disabled'])
+  await waitFor(client, `document.querySelector('[data-connection-actions="${connectionId}"]')?.textContent.includes('Resume maintenance')`, 'resume whole connection control')
+  await clickAction('Resume maintenance')
+  await waitFor(client, `(async () => (await window.api.agentIntegrations.snapshot()).connections.find(item=>item.id==='${connectionId}')?.intentState==='active')()`, 'whole connection resume')
+  await waitFor(client, `!document.querySelector('[data-connection-actions="${connectionId}"] button')?.disabled`, 'shared controls settled')
+  await screenshot(client, path.join(artifactRoot, '09-shared-connection-controls.png'))
+  const authentication = await exerciseSharedConnectionAuthentication(client, artifactRoot, connectionId)
+  await clickAction('Disconnect shared connection')
+  await waitFor(client, `document.querySelector('[role="dialog"]') !== null`, 'whole connection removal review')
+  await value(client, `(() => {const dialog=document.querySelector('[role="dialog"]');const button=[...dialog.querySelectorAll('button')].find(item=>item.textContent.trim()==='Disconnect Tide Mind');if(!button)throw Error('disconnect confirmation missing');button.click();return true})()`)
+  await waitFor(client, `(async () => {
+    const snapshot=await window.api.agentIntegrations.snapshot()
+    const connection=snapshot.connections.find(item=>item.id==='${connectionId}')
+    return connection?.intentState==='disconnected' && connection.statusGroup==='disconnected'
+  })()`, 'whole connection bridge stopped')
+  const final = await value(client, `(async () => (await window.api.agentIntegrations.snapshot()).connections.find(item=>item.id==='${connectionId}'))()`)
+  assert.equal(final.memoryCallsVerified, false)
+  await screenshot(client, path.join(artifactRoot, '10-shared-connection-disconnected.png'))
+  return { connectionId, realSharedBinding: true, pausedBothMembers: true, resumedBothMembers: true,
+    authentication, stoppedWholeConnection: true }
+}
+
+async function exerciseSharedConnectionAuthentication(client, artifactRoot, connectionId) {
+  await value(client, `(() => {
+    const tab = document.querySelector('[data-installation-tab-id="shared-codex-cli"]')
+    if (!(tab instanceof HTMLButtonElement)) throw Error('shared Codex CLI tab missing')
+    tab.click()
+    return true
+  })()`)
+  await waitFor(client, `(() => {
+    const panel = document.getElementById('installation-panel-shared-codex-cli')
+    const button = panel?.querySelector('[data-agent-authentication-recheck]')
+    return document.querySelector('[data-installation-tab-id="shared-codex-cli"]')?.getAttribute('aria-selected') === 'true'
+      && button instanceof HTMLButtonElement && !button.disabled
+  })()`, 'shared CLI authentication control after resume')
+  const before = await value(client, `(async () => {
+    const snapshot = await window.api.agentIntegrations.snapshot()
+    const installation = snapshot.installations.find(item => item.id === 'shared-codex-cli')
+    const connection = snapshot.connections.find(item => item.id === ${JSON.stringify(connectionId)})
+    return { authentication: installation?.authentication,
+      memoryState: connection?.components.find(component => component.key === 'memory_tools')?.state,
+      memoryCallsVerified: connection?.memoryCallsVerified }
+  })()`)
+  assert.equal(before.authentication?.status, 'not_checked', 'shared CLI account was already checked without the UI action')
+  assert.equal(before.memoryState, 'configured', 'shared authentication fixture needs configured, unverified memory tools')
+  assert.equal(before.memoryCallsVerified, false, 'shared fixture invented memory calls before authentication')
+
+  const point = await value(client, `(() => {
+    const button = document.querySelector('#installation-panel-shared-codex-cli [data-agent-authentication-recheck]')
+    if (!(button instanceof HTMLButtonElement) || button.disabled) throw Error('authentication recheck unavailable')
+    button.scrollIntoView({ block: 'center', inline: 'center' })
+    const rect = button.getBoundingClientRect()
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+  })()`)
+  await mouseClick(client, point)
+  await waitFor(client, `(() => {
+    const panel = document.querySelector('#installation-panel-shared-codex-cli [data-agent-authentication="authenticated"]')
+    const button = panel?.querySelector('[data-agent-authentication-recheck]')
+    return panel && button instanceof HTMLButtonElement && !button.disabled
+  })()`, 'synthetic account result through actual authentication IPC')
+  const after = await value(client, `(async () => {
+    const snapshot = await window.api.agentIntegrations.snapshot()
+    const installation = snapshot.installations.find(item => item.id === 'shared-codex-cli')
+    const connection = snapshot.connections.find(item => item.id === ${JSON.stringify(connectionId)})
+    const pane = document.getElementById('installation-panel-shared-codex-cli')
+    return { authentication: installation?.authentication,
+      memoryState: connection?.components.find(component => component.key === 'memory_tools')?.state,
+      memoryCallsVerified: connection?.memoryCallsVerified,
+      accountText: pane?.querySelector('[data-agent-authentication]')?.textContent ?? '',
+      componentLabels: [...(pane?.querySelectorAll('[aria-label]') ?? [])].map(element => element.getAttribute('aria-label')) }
+  })()`)
+  assert.equal(after.authentication?.status, 'authenticated')
+  assert.equal(after.authentication.billing, 'unknown')
+  assert.ok(after.authentication.checkedAt, 'account check did not record its observation time')
+  assert.equal(after.memoryState, 'configured', 'account login incorrectly verified shared memory tools')
+  assert.equal(after.memoryCallsVerified, false, 'account login invented shared memory activity')
+  assert.ok(after.componentLabels.includes('MCP Tools：Configured'), 'loaded CLI detail lost the unconfirmed memory indicator')
+  assert.equal(after.componentLabels.includes('MCP Tools：Verified'), false, 'loaded CLI detail falsely showed verified memory')
+  assert.ok(after.accountText.includes('Sign-in status does not confirm that the model or MCP Tools have passed verification.'), 'account panel omitted the verification boundary')
+  assert.ok(after.accountText.includes('Billing method unknown. Automatic sign-in checks do not call a model.'), 'account panel omitted unknown billing and no-model-call explanation')
+  assert.equal(after.accountText.includes('isolated_ui_audit_account'), false, 'account panel rendered the internal probe reason')
+  await client.evaluate(`document.querySelector('#installation-panel-shared-codex-cli [data-agent-authentication]')?.scrollIntoView({ block: 'center' })`)
+  await screenshot(client, path.join(artifactRoot, '09a-shared-cli-authentication.png'))
+  const diagnosticPoint = await value(client, `(() => {
+    const button = document.querySelector('#installation-panel-shared-codex-cli [data-agent-diagnostic-recheck]')
+    if (!(button instanceof HTMLButtonElement) || button.disabled) throw Error('diagnostic retry unavailable')
+    button.scrollIntoView({ block: 'center' })
+    const rect = button.getBoundingClientRect()
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+  })()`)
+  await mouseClick(client, diagnosticPoint)
+  await waitFor(client, `(() => {
+    const panel = document.querySelector('#installation-panel-shared-codex-cli [data-agent-diagnostic]')
+    return panel?.textContent.includes('Subscription billing could not be confirmed.')
+      && !panel.querySelector('[data-agent-diagnostic-recheck]')?.disabled
+  })()`, 'diagnostic retry reports no-model billing boundary')
+  const diagnostic = await value(client, `(async () => {
+    const snapshot = await window.api.agentIntegrations.snapshot()
+    const connection = snapshot.connections.find(item => item.id === ${JSON.stringify(connectionId)})
+    const text = document.querySelector('#installation-panel-shared-codex-cli [data-agent-diagnostic]')?.textContent ?? ''
+    return { verified: connection?.memoryCallsVerified, text }
+  })()`)
+  assert.equal(diagnostic.verified, false, 'unconfirmed billing invented memory verification')
+  assert.ok(diagnostic.text.includes('at most 3 tests per day'), 'diagnostic retry omitted its subscription budget')
+  assert.ok(!diagnostic.text.includes('billing_unconfirmed'), 'diagnostic UI leaked an internal reason code')
+  await screenshot(client, path.join(artifactRoot, '09b-shared-cli-diagnostic.png'))
+  return { installationId: 'shared-codex-cli', isolatedProbe: true, authenticated: true, billing: 'unknown',
+    memoryRemainedConfigured: true, realCliOrModelInvoked: false }
+}
+
 async function exerciseCodexTrustFlow(client, artifactRoot) {
-  await client.evaluate(`document.querySelector('[data-agent-family-trigger="codex"]')?.click()`)
+  const connectionRows = await value(client, `(async () => {
+    const snapshot = await window.api.agentIntegrations.snapshot()
+    return { codex: snapshot.connections.filter(item => item.familyId === 'codex').map(item => item.id),
+      lifecycle: snapshot.installations.filter(item => item.familyId === 'codex').map(item => ({
+        id: item.id, component: item.components.find(component => component.key === 'lifecycle'),
+      })),
+      visible: [...document.querySelectorAll('[data-agent-family-row="codex"]')].map(row => row.dataset.agentConnectionRow) }
+  })()`)
+  assert.deepEqual(connectionRows.codex.sort(), ['installation:codex-cli', 'installation:codex-desktop'])
+  assert.deepEqual(connectionRows.visible.sort(), connectionRows.codex, 'independent Codex roots must have separate visible connection rows')
+  for (const { id, component } of connectionRows.lifecycle) {
+    assert.ok(component, `${id} lifecycle projection is missing before native trust review`)
+    assert.equal(component.hostRecognitionVerified, false, `${id} fixture must not claim native trust before the review flow`)
+    assert.equal(component.state, 'confirmation_required', `${id} fixture must show the isolated native trust rejection`)
+  }
+
+  await client.evaluate(`document.querySelector('[data-agent-connection-trigger="installation:codex-desktop"]')?.click()`)
   await waitFor(client, `document.querySelector('[data-agent-detail-pane]') !== null`, 'Codex detail pane')
   await client.evaluate(`(() => {
     const pane = document.querySelector('[data-agent-detail-pane]')
@@ -2271,12 +2211,25 @@ function verifyFrozenCodexFixtureGeneration() {
         `${installationId} committed generation is not bound to lifecycle`)
 
       const artifact = db.prepare(`
-        SELECT artifact.target_path, artifact.owned_fragment_hash
+        SELECT artifact.target_path, artifact.owned_fragment_hash,
+               component.verification_status, verification.method,
+               verification.artifact_hash, verification.invalidation_keys_json
         FROM installation_components component
         JOIN managed_artifacts artifact ON artifact.id = component.artifact_id
+        JOIN verification_results verification ON verification.id = component.verification_result_id
+          AND verification.installation_id = component.installation_id AND verification.component_key = component.component_key
         WHERE component.installation_id = ? AND component.component_key = 'lifecycle'
       `).get(installationId)
       assert.ok(artifact, `${installationId} lifecycle artifact is missing`)
+      assert.equal(artifact.verification_status, 'verified', `${installationId} fixture lacks a static Hook readback`)
+      assert.equal(artifact.method, 'static_readback_passed,codex_hook_not_trusted:SessionStart:untrusted',
+        `${installationId} fixture must start with a static rejection only`)
+      assert.equal(artifact.artifact_hash, artifact.owned_fragment_hash)
+      assert.equal(JSON.parse(artifact.invalidation_keys_json).includes('activity_freshness'), false)
+      assert.equal(db.prepare(`SELECT count(*) FROM agent_host_activity_evidence WHERE installation_id=?`).pluck().get(installationId), 0,
+        `${installationId} fixture must not seed host activity`)
+      assert.equal(db.prepare(`SELECT count(*) FROM agent_integration_events WHERE installation_id=? AND kind='codex_hook_trust_verified'`)
+        .pluck().get(installationId), 0, `${installationId} fixture must not seed a positive trust receipt`)
       const document = JSON.parse(fs.readFileSync(artifact.target_path, 'utf8'))
       const entries = Object.entries(document.hooks ?? {})
       assert.deepEqual(entries.map(([eventName]) => eventName).sort(),

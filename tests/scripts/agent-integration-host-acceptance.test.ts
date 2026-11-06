@@ -1,5 +1,6 @@
 import { databaseMigrationFixture } from '../fixtures/agent-integration/database-migration-fixture.js'
 import { memoryClosureFixture } from '../fixtures/agent-integration/memory-closure-fixture.js'
+import { historical094RequirementsPath, writeHistorical094HostManifest } from '../fixtures/agent-integration/historical-host-acceptance.js'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -189,7 +190,7 @@ function fixture(
   fs.mkdirSync(root)
   const contract = writeTestContract(outer, releaseMacArchitectures, Boolean(codexDataOnly) || manualMigrationDeferral)
   if(manualMigrationDeferral){
-    const production=JSON.parse(fs.readFileSync('scripts/agent-integration-host-acceptance-requirements.json','utf8'))
+    const production=JSON.parse(fs.readFileSync(historical094RequirementsPath,'utf8'))
     const raw=JSON.parse(fs.readFileSync(contract.requirementsPath,'utf8'))
     Object.assign(raw,{appVersion:'0.2.94',realHostPolicy:production.realHostPolicy,migrationAcceptanceDeferral:production.migrationAcceptanceDeferral})
     fs.writeFileSync(contract.requirementsPath,JSON.stringify(raw))
@@ -698,6 +699,7 @@ describe('real-host Agent Integration acceptance verifier', () => {
 
   it('freezes the current release to Apple Silicon without deleting host distribution architecture metadata', () => {
     const requirements = loadAgentHostAcceptanceRequirements()
+    expect(requirements.appVersion).toBe('0.2.95')
     expect(requirements.releaseMacArchitectures).toEqual(['arm64'])
     expect(requirements.targets.length).toBeGreaterThan(0)
     expect(requirements.targets.every((target: { architecture: string }) => target.architecture === 'arm64')).toBe(true)
@@ -1285,7 +1287,8 @@ describe('real-host Agent Integration acceptance verifier', () => {
 
 describe('0.2.94 authorized Codex real-host policy', () => {
   it('keeps full catalog and migration matrix while requiring only Codex runtime steps', () => {
-    const requirements = loadAgentHostAcceptanceRequirements()
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'host-policy-')); roots.push(root)
+    const requirements = loadAgentHostAcceptanceRequirements(historical094RequirementsPath, writeHistorical094HostManifest(root))
     expect(requirements.entries).toHaveLength(19)
     expect(requirements.customTargets).toHaveLength(5)
     expect(requirements.upgradeFromAppVersions).toEqual(['0.2.89','0.2.90','0.2.91','0.2.92','0.2.93'])
@@ -1309,7 +1312,7 @@ describe('0.2.94 authorized Codex real-host policy', () => {
   })
   it.each(['missing-policy','require-desktop','add-claude','mark-passed','old-exception','omit-desktop-policy','claim-desktop-passed'] as const)('rejects altered scope: %s', mutation => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'host-policy-')); roots.push(root)
-    const requirements = JSON.parse(fs.readFileSync('scripts/agent-integration-host-acceptance-requirements.json','utf8'))
+    const requirements = JSON.parse(fs.readFileSync(historical094RequirementsPath,'utf8'))
     if (mutation === 'missing-policy') delete requirements.realHostPolicy
     if (mutation === 'require-desktop') requirements.realHostPolicy.requiredCatalogIds = ['codex-cli','codex-desktop']
     if (mutation === 'add-claude') requirements.realHostPolicy.requiredCatalogIds.push('claude-code-cli')
@@ -1318,14 +1321,15 @@ describe('0.2.94 authorized Codex real-host policy', () => {
     if (mutation === 'omit-desktop-policy') delete requirements.realHostPolicy.desktopAcceptance
     if (mutation === 'claim-desktop-passed') requirements.realHostPolicy.desktopAcceptance.status = 'passed'
     const file = path.join(root, 'requirements.json'); fs.writeFileSync(file,JSON.stringify(requirements))
-    expect(() => loadAgentHostAcceptanceRequirements(file)).toThrow()
+    expect(() => loadAgentHostAcceptanceRequirements(file, writeHistorical094HostManifest(root))).toThrow()
   })
 })
 
 
 describe('deferred targets are contract declarations, not host observations', () => {
   it('rejects fabricated metadata, steps, omission and changed contract fields', () => {
-    const requirements = loadAgentHostAcceptanceRequirements()
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'host-policy-')); roots.push(root)
+    const requirements = loadAgentHostAcceptanceRequirements(historical094RequirementsPath, writeHistorical094HostManifest(root))
     const entry = requirements.targets.find((target: {catalogId:string}) => target.catalogId === 'cursor-desktop')
     const target = deferredHostAcceptanceTarget(requirements, entry)
     expect(() => validateDeferredHostAcceptanceTarget(target, target)).not.toThrow()
@@ -1344,13 +1348,13 @@ describe('deferred targets are contract declarations, not host observations', ()
 describe('single-user 0.2.94 migration deferral', () => {
   it.each(['future-version','multiple-users','passed','extra-scope'] as const)('rejects unauthorized policy %s', mode => {
     const root=fs.mkdtempSync(path.join(os.tmpdir(),'migration-deferral-'));roots.push(root)
-    const raw=JSON.parse(fs.readFileSync('scripts/agent-integration-host-acceptance-requirements.json','utf8'))
+    const raw=JSON.parse(fs.readFileSync(historical094RequirementsPath,'utf8'))
     if(mode==='future-version')raw.appVersion='0.2.95'
     if(mode==='multiple-users')raw.migrationAcceptanceDeferral.audience='public'
     if(mode==='passed')raw.migrationAcceptanceDeferral.status='passed'
     if(mode==='extra-scope')raw.migrationAcceptanceDeferral.scopes.push('codex_runtime')
     const file=path.join(root,'requirements.json');fs.writeFileSync(file,JSON.stringify(raw))
-    expect(()=>loadAgentHostAcceptanceRequirements(file)).toThrow()
+    expect(()=>loadAgentHostAcceptanceRequirements(file, writeHistorical094HostManifest(root))).toThrow()
   })
   it('requires explicit index deferral, preserves version list and signed candidate checks',()=>{
     const built=fixture('fixture',undefined,['arm64'],false,true)

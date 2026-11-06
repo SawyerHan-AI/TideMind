@@ -1,3 +1,4 @@
+import { projectConnection } from '../../client/electron/agent-integration/connection-projection'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -13,6 +14,8 @@ import {
   requestedConnectCandidateIds,
 } from '../../client/src/components/settings/agent-integration-managed/BatchConnectDialog'
 import {
+  installationNeedsAction,
+  installationNoticeKey,
   aggregateAccess,
   aggregateComponents,
   canShowGreenAvailability,
@@ -22,6 +25,7 @@ import {
   isValidCustomSelectorKey,
   matchesSupportQuery,
   managementUnavailableHelpKey,
+  managementStatusPresentation,
   nextRovingTabIndex,
   requiredUserActionDetailKey,
   requiredUserActionPresentation,
@@ -75,16 +79,21 @@ function snapshot(installations: AgentIntegrationInstallationDto[]): AgentIntegr
       needsAttentionCount: familyInstallations.filter(item => item.statusGroup === 'needs_attention').length,
     }
   })
+  const connections = installations.map(item => projectConnection({
+    identity: { key: `installation:${item.id}`, shared: false, generation: null, valid: true },
+    members: [item], displayName: item.displayName, activeInstallationIds: new Set(),
+  }))
   return {
+    connections,
     families,
     installations,
     historyInstallations: [],
     summary: {
       familyCount: families.length,
       installationCount: installations.length,
-      availableCount: installations.filter(item => item.statusGroup === 'available').length,
-      needsAttentionCount: installations.filter(item => item.statusGroup === 'needs_attention').length,
-      awaitingConnectionCount: installations.filter(item => item.statusGroup === 'awaiting_connection').length,
+      availableCount: connections.filter(item => item.statusGroup === 'available').length,
+      needsAttentionCount: connections.filter(item => item.actionInstallationIds.length > 0).length,
+      awaitingConnectionCount: connections.filter(item => item.statusGroup === 'awaiting_connection').length,
     },
     lastScanAt: '2026-08-25T00:00:00Z',
   }
@@ -175,7 +184,7 @@ describe('managed Agent presentation', () => {
     expect(summarizeSnapshot(data)).toEqual({
       productCount: 2,
       installationCount: 2,
-      availableCount: 1,
+      availableCount: 2,
       pendingCount: 0,
       attentionCount: 1,
     })
@@ -441,4 +450,30 @@ describe('batch connect Codex recovery guidance', () => {
     expect(managed.codexSharedIdentityReconnect).toMatch(locale === 'en' ? /disconnect.*removal.*connect/ : /断开.*移除.*重新连接/)
     expect(managed.codexExistingIdentityReview).toMatch(locale === 'en' ? /identity conflict/ : /身份冲突/)
   })
+})
+
+
+describe('current Agent action notices', () => {
+  it('does not turn optional connections, configured verification waits or unread history into incidents', () => {
+    expect(installationNeedsAction(installation('optional', { desiredState: 'unmanaged', statusGroup: 'awaiting_connection' }))).toBe(false)
+    expect(installationNeedsAction(installation('pending', { statusGroup: 'awaiting_verification', components: installation('pending').components.map(c => ({ ...c, state: 'configured' })) }))).toBe(false)
+    expect(installationNeedsAction(installation('healthy', { unreadEventCount: 100 }))).toBe(false)
+  })
+  it('keeps actionable component failures visible even if the aggregate status is awaiting verification', () => {
+    const affected = installation('affected', { statusGroup: 'awaiting_verification', components: installation('affected').components.map(c => c.key === 'memory_tools' ? { ...c, state: 'conflict' } : c) })
+    expect(installationNeedsAction(affected)).toBe(true)
+    expect(summarizeSnapshot(snapshot([affected])).attentionCount).toBe(1)
+    const key = installationNoticeKey(affected)
+    expect(installationNoticeKey({ ...affected, unreadEventCount: 20 })).toBe(key)
+    expect(installationNoticeKey({ ...affected, statusReason: 'permission' })).not.toBe(key)
+    expect(installationNeedsAction(affected)).toBe(true)
+  })
+})
+
+it('keeps temporary startup eligibility separate from current connection status', () => {
+  expect(managementStatusPresentation('available','source_verification_pending',true)).toMatchObject({tone:'green',labelKey:'agent.managed.status.available'})
+  expect(managementStatusPresentation('awaiting_verification','source_verification_pending',true)).toMatchObject({tone:'blue',labelKey:'agent.managed.status.awaitingVerification'})
+  expect(managementStatusPresentation('disconnected','source_verification_pending',true)).toMatchObject({tone:'blue',labelKey:'agent.managed.checkPending'})
+  expect(managementStatusPresentation('disconnected','source_confirmation_required',true)).toMatchObject({tone:'gray',labelKey:'agent.managed.supportMode.detectable'})
+  expect(managementStatusPresentation('needs_attention','conflict',true)).toMatchObject({labelKey:'agent.managed.status.needsAttention'})
 })

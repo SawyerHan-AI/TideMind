@@ -158,7 +158,17 @@
       "cancelTest": "テストをキャンセル",
       "testSummary": "{{success}} / {{total}} モデルが利用可能",
       "testCancelledSummary": "テストをキャンセルしました · {{success}} / {{total}} 件成功",
-      "copyCommand": "コマンドをコピー"
+      "copyCommand": "コマンドをコピー",
+      "resumeFutureCalls": "今後のリクエストを再開",
+      "resumeFutureCallsDescription": "この操作で再開するのは今後のリクエストのみです。以前のリクエストは利用枠を消費済みの可能性があり、再送されません。",
+      "resumeFutureCallsFeedback": {
+        "succeeded": "以前のリクエストの結果が未確認だったために発生した一時停止を解除しました。接続やモデルのその他の制限は引き続き適用されます。",
+        "busy": "この接続で別の操作が進行中です。完了後にもう一度お試しください。",
+        "process": "前回の CLI プロセスが終了したか確認できませんでした。プロセスの終了を確認してから、もう一度お試しください。",
+        "environment": "CLI 環境またはログイン中のアカウントを確認できませんでした。接続環境を確認してから、もう一度お試しください。",
+        "failed": "今後のリクエストを再開できませんでした。接続を確認してから、もう一度お試しください。"
+      },
+      "catalogOutdatedShort": "更新期限切れ"
     },
     "selection": {
       "loadingModels": "利用可能なモデルを読み込み中...",
@@ -208,6 +218,7 @@
       "manualInvalid": "モデル ID の形式が無効です"
     },
     "serviceStatus": {
+      "lastTestSuccess": "最後に成功した接続テスト",
       "title": "AI サービスステータス",
       "never": "なし",
       "currentStatus": "現在の状態",
@@ -215,7 +226,7 @@
       "statusHealthy": "正常",
       "lastSuccess": "前回の成功",
       "lastError": "前回のエラー",
-      "hint": "調査やテストを行うには、下の「モデル接続」セクションを使用してください。",
+      "hint": "下の該当する接続の詳細を開き、問題に応じた手順に従ってください。",
       "statusPausedCountdown": "一時停止中（残り {{time}}）",
       "retryNow": "今すぐ再試行",
       "retrySuccess": "サーキットブレーカーをリセットしました",
@@ -226,7 +237,11 @@
       "unknownConnection": "Unknown connection",
       "collapseErrors": "Collapse errors",
       "expandErrors": "Show {{count}} more",
-      "routeFaults": "使用中ルートの障害"
+      "routeFaults": "使用中ルートの障害",
+      "unconfirmedResult": "前回のリクエストは送信済みですが、結果を確認できません。新しい呼び出しは一時停止中です。接続の詳細を開いて対処してください。",
+      "connectionIssue": "この接続に問題があります。接続の詳細を開いて対処してください。",
+      "technicalDetails": "技術情報",
+      "pausedRoutes": "{{name}} への呼び出しは一時停止中です。影響を受けるルート：{{tiers}}。"
     },
     "catalog": {
       "scope": "アカウント範囲",
@@ -1133,6 +1148,11 @@
       }
     },
     "managed": {
+      "memoryVerified": "メモリツール検証済み",
+      "fullyVerified": "完全検証済み",
+      "optionalConnections": "任意の接続",
+      "connectionTaskHistory": "接続タスクと履歴（{{count}}）",
+
       "codexSharedIdentityReconnect": "This Codex connection uses an older identity. In the Agent details, disconnect the existing Codex connection and complete its removal, then connect Codex again so Desktop and CLI share one Tide Mind identity.",
       "codexExistingIdentityReview": "Existing Tide Mind connections for Codex need review before connecting. Open the Codex details and resolve the old identity conflict first, then check again and reconnect.",
       "legacyChoice": {
@@ -1159,7 +1179,14 @@
           "signed_identity": "公式署名",
           "npm_registry": "公式 npm パッケージと照合済み",
           "npm_registry_cache": "キャッシュ済みの公式 npm 検証"
-        }
+        },
+        "retry": "入手元の確認を再試行",
+        "queued": "入手元の確認は待機中",
+        "checking": "入手元を確認中…",
+        "unavailable": "入手元の確認を完了できませんでした。再試行してください。",
+        "unsupported": "このインストール方法は入手元の自動検証に対応していません。",
+        "requested": "入手元の再確認を要求しました。",
+        "retryAt": "{{time}} 以降に再試行してください。"
       },
       "title": "Agent接続",
       "subtitle": "この Mac 上で互換性のあるローカル Agentを自動的に検出して維持します。",
@@ -1167,6 +1194,8 @@
       "lastChecked": "最終確認：{{time}}",
       "notCheckedYet": "まだチェックされていません",
       "scanning": "確認中…",
+      "checkingSources": "インストール元を確認中…",
+      "checkingConnections": "既存の接続を確認中…",
       "recheck": "再確認",
       "scanComplete": "チェック完了: {{detected}} が検出され、{{newCount}} が新規、{{failed}} が未解決。",
       "scanFailed": "チェックに失敗しました。",
@@ -1175,7 +1204,7 @@
       "regeneratePlan": "計画を再生成する",
       "needsAttention": "注意が必要です",
       "newAgentsFound": "{{count}} 件のローカル Agent インストールが確認待ちです。",
-      "existingIssues": "{{count}} 件のインストールに対応が必要です。",
+      "existingIssues": "{{count}} 件の接続に対応が必要です。",
       "reviewAndConnect": "確認して接続する",
       "reviewAndEnableMaintenance": "メンテナンスを確認して有効にする",
       "localAgents": "ローカル Agent",
@@ -1302,7 +1331,7 @@
       "reason": {
         "verified": "コアメモリツールが検証されました。",
         "legacyCallableUnmanaged": "この既存の接続は呼び出し可能です。自動メンテナンスは承認されるまでオフのままです。",
-        "instructionOnly": "ご利用ガイドのみとなります。",
+        "instructionOnly": "Skillのみとなります。",
         "capabilityCeiling": "このAgentによってサポートされる最高の機能。",
         "awaitingConsent": "最初の変更の前に承認を待っています。",
         "incompatible": "このバージョンではまだ接続できません。",
@@ -1314,7 +1343,7 @@
         "releaseArtifactNotAccepted": "これは以前の Tide Mind が記録したインストール ファイル確認の結果で、再確認を待っています。「再確認」を実行するとすぐに更新されます。",
         "releaseVersionUnverified": "Tide Mind はAgentのバージョンを確認できませんでした。再インストールするか、公式ディストリビューションから更新してから、もう一度チェックを実行してください。",
         "releaseVersionNotAccepted": "これは以前の Tide Mind が記録したバージョン確認の結果で、再確認を待っています。「再確認」を実行するとすぐに更新されます。",
-        "sourceVerificationPending": "Tide Mind はこのAgentの公式ソースを確認中のため、まだチェックを完了できません。自動設定は保留中です。オンラインになると自動的に再試行します。",
+        "sourceVerificationPending": "インストール元を再確認中です。設定変更は待機し、既存の接続状態は別に表示されます。",
         "sourceNotOfficial": "このAgentのローカル インストールが公式リリースの内容と一致しないため、自動設定を停止しました。公式チャネルから再インストールしてから「再確認」を実行してください。",
         "sourceConfirmationRequired": "このインストール方法では、Tide Mind が公式ソースを自動的に確認できません。公式チャネルからAgentを再インストールするか、「カスタムローカルAgentを追加する」から手動で接続してください。",
         "unverified": "まだ検証されていません。",
@@ -1336,7 +1365,10 @@
         "disconnectVerified": "Tide Mind コンポーネントが存在しないことが確認されました。",
         "hostUninstalled": "Agentはインストールされなくなりました。",
         "unknown": "最新の検証事実については詳細をご覧ください。",
-        "customConfigOwnedByDiscoveredHost": "この設定ファイル（またはそのフォルダー）は、Tide Mind が検出した Agent のものです。カスタムクライアントとして追加せず、その Agent を直接接続してください。"
+        "customConfigOwnedByDiscoveredHost": "この設定ファイル（またはそのフォルダー）は、Tide Mind が検出した Agent のものです。カスタムクライアントとして追加せず、その Agent を直接接続してください。",
+        "automaticConfigurationFailed": "自動設定が完了しませんでした。詳細を確認し、問題を解決してから再試行してください。",
+        "nativePermissionRequired": "エージェントにはプラグインの権限が必要です。確認して続行してください。",
+        "authenticationRequired": "ログインしていません。この Agent でログインしてから再確認してください。"
       },
       "access": {
         "complete": "接続完了",
@@ -1351,8 +1383,8 @@
         "unconnected": "接続されていません"
       },
       "accessInfo": {
-        "complete": "メモリの読み書きと自動セッション連携を確認済みです。",
-        "basic": "メモリの読み取り/書き込みが検証されています。自動セッション連携はありません。",
+        "complete": "メモリの読み書きと自動Hookを確認済みです。",
+        "basic": "メモリの読み取り/書き込みが検証されています。自動Hookはありません。",
         "partial": "一部の機能のみが利用可能です。コンポーネントの事実を確認してください。",
         "unconnected": "アクティブな検証済みの Tide Mind 接続はありません。"
       },
@@ -1360,9 +1392,9 @@
       "accessMixed": "接続が異なります",
       "mixed": "インストールごとに異なる",
       "component": {
-        "instruction": "ご利用ガイド",
-        "memoryTools": "メモリーツール",
-        "lifecycle": "セッション連携"
+        "instruction": "Skill",
+        "memoryTools": "MCP Tools",
+        "lifecycle": "Hook"
       },
       "componentStatus": {
         "verified": "確認済み",
@@ -1396,6 +1428,13 @@
       "lastVerified": "最終確認済み",
       "lastRepair": "最後の修理",
       "lastDetected": "最後に検出された",
+      "checkPending": "確認待ち",
+      "activityLabel": "最近のアクティビティ",
+      "noActivity": "記録なし",
+      "checkLabel": "最終確認",
+      "modelTestLabel": "自動モデルテスト",
+      "testTimeLabel": "テスト日時",
+      "activityScope": "実際の MCP 呼び出しや Hook イベントのみ。バックグラウンド設定確認は含みません。",
       "lastUsed": "最後に実際に使用したのは",
       "noRecord": "記録なし",
       "noReliableUsage": "信頼できる使用証拠がない",
@@ -1552,14 +1591,14 @@
       "recheckUnavailableInterruptedCount": "中断され利用できなくなったアイテムを再確認します ({{count}})",
       "requestedInstallationsUnavailable": "これらのインストールはアンインストールされているか、信頼されなくなっているか、現在管理できません。新しい計画を作成する前に再確認してください。",
       "planChanged": "接続プランが変更されました。戻って更新後のプランを確認してください。",
-      "includeLifecycle": "自動セッション連携を含める",
+      "includeLifecycle": "自動Hookを含める",
       "includeLifecycleHelp": "このインストールではオプションです。これがオフの場合でも、メモリ ツールは使用可能なままになります。",
       "backgroundProgress": "バックグラウンドでのローカル Agentの接続: {{completed}} / {{total}} が完了しました。",
       "backgroundComplete": "{{total}} インストールに対するバックグラウンド Agent接続が完了しました。",
       "backgroundTaskPosition": "タスク {{current}}/{{total}}",
       "backgroundTaskPinnedOutsidePage": "固定中のタスクはページ外です。現在のページを参照できます",
-      "backgroundTaskActiveCount": "{{count}} 件のバックグラウンドタスクが実行中または検証待ちです",
-      "backgroundTaskAttentionCount": "{{count}} バックグラウンド タスクには注意が必要です",
+      "backgroundTaskActiveCount": "Tide Mind が {{count}} 件のバックグラウンドタスクを自動実行中です。操作は不要です。",
+      "backgroundTaskAttentionCount": "過去のタスク {{count}} 件に失敗または中断の記録があります。対応の要否は Agent の現在の状態をご確認ください。",
       "backgroundTasksUpdated": "バックグラウンドタスクが更新されました",
       "backgroundTaskPageLoading": "バックグラウンドタスクをロードしています",
       "backgroundTaskPageLoadFailed": "バックグラウンドタスクのロードに失敗しました",
@@ -1577,6 +1616,60 @@
         "awaitingReload": "Tide Mind は自身の設定を削除し、この Agent へのメモリ提供を停止しました。実行中のホストは再起動するか新しいセッションを開始するまで古いコンポーネントを保持する場合があります。generation を持たない古いエントリは自動ではブロックされません。",
         "deactivatedVerified": "停止を確認しました：設定は削除され、ホストは再読み込みされました。",
         "bridgeStopped": "Tide Mind はこの Agent へのメモリ提供を停止しました。ホスト側のコンポーネントはまだ読み込まれている可能性があります。ホストで手動で削除してください。"
+      },
+      "sharedConnectionScope": "CLI と Desktop はこの接続を共有します。アイコンは共有設定と実際の呼び出しの状態を示します。",
+      "hostEvidenceScope": "同じ共有設定の Skill と MCP Tools は接続の検証結果を使用します。以下の Hook イベントは選択中のホスト固有です。",
+      "disconnectConnection": "共有接続を切断",
+      "pauseMember": "このアプリを一時停止",
+      "resumeMember": "このアプリを再開",
+      "disconnectMember": "このアプリを切断",
+      "disconnectConnectionTitle": "接続中のすべてのアプリから {{name}} を切断しますか？",
+      "disconnectConnectionDescription": "この設定を共有するすべてのアプリを切断します。Tide Mind 所有の項目のみを削除し、他の設定と記憶は保持します。",
+      "retryAutomaticConnection": "設定を再試行",
+      "automaticRetryUnavailable": "現在、自動設定を実行できません。詳細に表示された問題を解決してから再試行してください。",
+      "reviewNativePermissions": "プラグイン権限を確認",
+      "authorizeNativeAndConnect": "権限を許可して接続",
+      "nativePermissionVersion": "ホストのバージョン：{{version}}",
+      "diagnostic": {
+        "title": "読み書きの検証",
+        "scope": "確認済みのサブスクリプションのみを使用し、全接続で1日3回までテストします。テストデータは個人の記憶と分離されます。",
+        "retry": "モデル検証を再実行",
+        "checking": "接続を検証中…",
+        "passed": "読み書きの検証に成功しました。",
+        "uncertain": "テストは送信済みですが、結果を確認できません。Agentの動作を確認してください。再試行は利用枠を消費する場合があります。",
+        "cancelled": "検証を停止しました。準備ができたら再試行できます。",
+        "login": "Agentにログインしてから再試行してください。",
+        "metered": "従量課金のため自動テストは行いません。AgentでTide Mindを使って検証してください。",
+        "billing": "サブスクリプションを確認できず、モデルテストは送信していません。AgentでTide Mindを使って検証してください。",
+        "dailyLimit": "本日の上限3回に達しました。明日再試行するか、AgentでTide Mindを使ってください。",
+        "alreadyTested": "この設定は自動テスト済みです。Agentを確認してから手動で再試行してください。",
+        "permission": "Agentのツール権限を確認してから再試行してください。",
+        "unsupported": "このバージョンまたは設定は自動テストに未対応です。AgentでTide Mindの読み書きに成功すると検証されます。",
+        "waiting": "検証待ちです。AgentでTide Mindを使うか、再試行してください。",
+        "failed": "検証を完了できませんでした。AgentでTide Mindを使用できるか確認してから再試行してください。"
+      },
+      "authentication": {
+        "title": "Agent のログイン確認",
+        "recheck": "ログインを再確認",
+        "scope": "ログイン状態だけでは、モデルやMCP Toolsの検証が完了したことにはなりません。",
+        "status": {
+          "not_checked": "ログイン状態は未確認です",
+          "checking": "ログイン状態を確認中",
+          "authenticated": "ログイン済み",
+          "explicitly_unauthenticated": "ログインしていません。この Agent でログインしてから再確認してください。",
+          "unsupported": "この Agent はログイン状態の自動確認に対応していません。",
+          "unavailable": "現在確認できません。Agent が正常に使えることを確認してから再試行してください。",
+          "cancelled": "確認をキャンセルしました。Agent が正常に使えることを確認してから再試行してください。"
+        },
+        "billing": {
+          "confirmed_subscription": "サブスクリプションを確認済みです。今回のログイン確認ではモデルを呼び出しません。",
+          "metered": "従量課金アカウントです。自動ログイン確認ではモデルを呼び出しません。",
+          "unknown": "課金方式は未確認です。自動ログイン確認ではモデルを呼び出しません。"
+        }
+      },
+      "nativePermissions": {
+        "gemini_extension": "ローカルの Tide Mind 拡張機能をインストールし、ローカルコードの実行、メモリ指示の読み込み、ツールとフックの接続を行います。Gemini の拡張機能のセキュリティ通知を承認します。",
+        "openclaw_capabilities": "ローカルの Tide Mind プラグインをインストールして有効にし、会話コンテキストの読み取りとプロンプトへのメモリ追加を許可して、ゲートウェイを再起動します。"
       }
     }
   },

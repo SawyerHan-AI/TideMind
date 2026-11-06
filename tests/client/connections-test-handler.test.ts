@@ -96,7 +96,9 @@ import {
   getAuthBinding,
   reconcileAuthBinding,
   recordModelObservation,
+  saveCatalogSnapshot,
 } from '../../src/db/model-discovery.js';
+import { reconcileCliRuntimeState } from '../../src/llm/cli/invocation-state.js';
 
 function seedConnection(db: Database.Database, opts: { available_models?: string | null } = {}): string {
   const id = 'mc_abcdef01';
@@ -280,6 +282,164 @@ describe('本地订阅 CLI 连接 IPC', () => {
     registerConnectionHandlers('/tmp/test-data');
   });
 
+  describe('connections:resume-future-calls', () => {
+    function seedSuspended() {
+      const db = dbHolder.db!;
+      const id = seedCliConnection(db, 'ambiguous', ['default']);
+      const environment = cliEnvironment();
+      const binding = bindEnvironment(db, id, environment);
+      const addInvocation = (invocationId: string, outcome = 'ambiguous') => db.prepare(`
+        INSERT INTO cli_invocations
+          (id, connection_id, provider_type, account_scope, task_id, model_alias, prompt_committed,
+           outcome, error_kind, started_at)
+        VALUES (?, ?, 'codex-cli', ?, 'digest-old', 'default', 1, ?, 'ambiguous_outcome', '2026-09-25')
+      `).run(invocationId, id, binding.scopeKey, outcome);
+      addInvocation('uncertain-old');
+      db.exec(`INSERT INTO pending_digests
+        (id, trace_id, input_json, status, created, next_retry_at, ambiguous_invocation_id)
+        VALUES ('digest-old', 'trace-old', '{}', 'ambiguous', '2026-09-25', '2026-09-25', 'uncertain-old')`);
+      return { db, id, environment, binding, addInvocation };
+    }
+
+    it('runs a fresh metadata check and resumes only future calls without rewriting history or queued work', async () => {
+      const { db, id, environment, binding } = seedSuspended();
+      db.prepare(`INSERT INTO llm_connection_health
+        (scope_id, connection_id, provider_type, circuit_state, last_success_at, last_error_kind, last_error_at, needs_user_action, updated_at)
+        VALUES (?, ?, 'codex-cli', 'open', 12, ?, 20, 1, '2026-09-25')`).run(id, id, 'ambiguous_outcome');
+      db.prepare(`INSERT INTO llm_connection_health
+        (scope_id, connection_id, provider_type, circuit_state, last_error_kind, last_error_at, needs_user_action, updated_at)
+        VALUES ('other-scope', ?, 'codex-cli', 'open', 'quota', 20, 1, '2026-09-25')`).run(id);
+      recordModelObservation(db, {
+        connectionId: id, scopeKey: binding.scopeKey, authEpoch: binding.authEpoch, modelId: 'pinned-model',
+        selectionMode: 'pinned_id', outcome: 'mismatch', source: 'business',
+      });
+      const previousDigest = db.prepare('SELECT * FROM pending_digests').get();
+      const previousObservations = db.prepare('SELECT * FROM llm_model_observations').all();
+      const previousInvocation = db.prepare('SELECT * FROM cli_invocations').get() as object;
+      const previousTestSummary = connectionRow(db, id).last_test_summary;
+      checkCliEnvironmentMock.mockImplementationOnce(async () => {
+        expect(connectionRow(db, id).status).toBe('ambiguous');
+        expect(db.prepare('SELECT * FROM cli_invocations').get()).toEqual(previousInvocation);
+        return environment;
+      });
+      await expect(handlers.get('connections:resume-future-calls')!(null, id, true)).resolves.toEqual({
+        status: 'untested', resolvedInvocationCount: 1,
+      });
+      expect(checkCliEnvironmentMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ freshAuth: true }));
+      expect(runCliLLMMock).not.toHaveBeenCalled();
+      expect(refreshCatalogMock).not.toHaveBeenCalled();
+      reconcileCliRuntimeState(db);
+      expect(connectionRow(db, id)).toMatchObject({ status: 'untested', last_test_summary: previousTestSummary });
+      expect(db.prepare('SELECT * FROM cli_invocations').get())
+        .toEqual({ ...previousInvocation, resolution: 'user_resumed_future_calls' });
+      expect(db.prepare('SELECT * FROM pending_digests').get()).toEqual(previousDigest);
+      expect(db.prepare('SELECT * FROM llm_model_observations').all()).toEqual(previousObservations);
+      expect(db.prepare('SELECT circuit_state, last_success_at, last_error_kind FROM llm_connection_health WHERE scope_id = ?').get(id))
+        .toEqual({ circuit_state: 'closed', last_success_at: 12, last_error_kind: null });
+      expect(db.prepare("SELECT circuit_state, last_error_kind FROM llm_connection_health WHERE scope_id = 'other-scope'").get())
+        .toEqual({ circuit_state: 'open', last_error_kind: 'quota' });
+    });
+
+    it.each(['running invocation', 'retained lease', 'pending old digest'])('blocks recovery for %s before probing', async blocker => {
+      const { db, id, binding, addInvocation } = seedSuspended();
+      if (blocker === 'running invocation') addInvocation('running-now', 'running');
+      if (blocker === 'retained lease') db.prepare(`
+        INSERT INTO cli_capacity_leases
+          (account_scope, owner_id, owner_pid, fencing_token, lease_expires_at, heartbeat_at, connection_id, invocation_id)
+        VALUES (?, 'fixture', ?, 1, 1, 1, ?, 'uncertain-old')
+      `).run(binding.scopeKey, process.pid, id);
+      if (blocker === 'pending old digest') db.exec("UPDATE pending_digests SET status='pending'");
+      await expect(handlers.get('connections:resume-future-calls')!(null, id, true))
+        .resolves.toEqual({ status: 'blocked', reason: 'previous_work_active' });
+      expect(checkCliEnvironmentMock).not.toHaveBeenCalled();
+      expect(connectionRow(db, id).status).toBe('ambiguous');
+    });
+
+    it('requires explicit confirmation and does not expose native error text', async () => {
+      const { db, id } = seedSuspended();
+      const resume = handlers.get('connections:resume-future-calls')!;
+      await expect(resume(null, id, false)).resolves.toEqual({ status: 'blocked', reason: 'confirmation_required' });
+      expect(checkCliEnvironmentMock).not.toHaveBeenCalled();
+      checkCliEnvironmentMock.mockRejectedValueOnce(new CliLLMError('not_authenticated', 'private native error'));
+      await expect(resume(null, id, true)).resolves.toEqual({ status: 'blocked', reason: 'environment_check_failed' });
+      expect(connectionRow(db, id).status).toBe('ambiguous');
+    });
+
+    it('keeps the newer ambiguous invocation and account binding protected across the async check', async () => {
+      const { db, id, environment, addInvocation } = seedSuspended();
+      const resume = handlers.get('connections:resume-future-calls')!;
+      checkCliEnvironmentMock.mockImplementationOnce(async () => {
+        addInvocation('uncertain-new');
+        return environment;
+      });
+      await expect(resume(null, id, true)).resolves.toEqual({ status: 'blocked', reason: 'state_changed' });
+      checkCliEnvironmentMock.mockResolvedValueOnce(cliEnvironment('codex-cli', { scope: 'changed-account' }));
+      await expect(resume(null, id, true)).resolves.toEqual({ status: 'blocked', reason: 'binding_changed' });
+      expect(connectionRow(db, id).status).toBe('ambiguous');
+      expect(db.prepare("SELECT COUNT(*) AS n FROM cli_invocations WHERE resolution IS NULL").get()).toEqual({ n: 2 });
+    });
+
+    it('keeps a worker cleanup failure blocked after the lease disappeared', async () => {
+      const { db, id } = seedSuspended();
+      db.exec("UPDATE cli_invocations SET error_kind='process_exit_unconfirmed'");
+      await expect(handlers.get('connections:resume-future-calls')!(null, id, true))
+        .resolves.toEqual({ status: 'blocked', reason: 'process_exit_unconfirmed' });
+      expect(checkCliEnvironmentMock).not.toHaveBeenCalled();
+      expect(db.prepare('SELECT outcome, resolution, error_kind FROM cli_invocations').get())
+        .toEqual({ outcome: 'ambiguous', resolution: null, error_kind: 'process_exit_unconfirmed' });
+    });
+
+    it.each(['checking', 'testing', 'untested', 'online'])('restores the old pause after restart from %s', status => {
+      const { db, id } = seedSuspended();
+      db.prepare("UPDATE model_connections SET status=?, environment_checked_at='2026-09-25' WHERE id=?").run(status, id);
+      expect(reconcileCliRuntimeState(db).stabilizedConnections).toContain(id);
+      expect(connectionRow(db, id).status).toBe('ambiguous');
+      expect(db.prepare('SELECT outcome, resolution FROM cli_invocations').get())
+        .toEqual({ outcome: 'ambiguous', resolution: null });
+    });
+
+    it('does not infer child exit when startup finds a stale committed invocation', async () => {
+      const { db, id } = seedSuspended();
+      db.exec("UPDATE cli_invocations SET outcome='running'");
+      expect(reconcileCliRuntimeState(db).ambiguousInvocations).toEqual(['uncertain-old']);
+      await expect(handlers.get('connections:resume-future-calls')!(null, id, true))
+        .resolves.toEqual({ status: 'blocked', reason: 'process_exit_unconfirmed' });
+      expect(checkCliEnvironmentMock).not.toHaveBeenCalled();
+    });
+
+    it.each(['success', 'failure'])('an older environment check %s cannot overwrite a newly ambiguous call', async outcome => {
+      const { db, id, environment, addInvocation } = seedSuspended();
+      db.exec("DELETE FROM cli_invocations");
+      db.prepare("UPDATE model_connections SET status='online', status_reason=NULL WHERE id=?").run(id);
+      checkCliEnvironmentMock.mockImplementationOnce(async () => {
+        addInvocation('uncertain-new');
+        db.prepare("UPDATE model_connections SET status='ambiguous', status_reason='newer outcome' WHERE id=?").run(id);
+        if (outcome === 'failure') throw new CliLLMError('timeout', 'fixture environment failure');
+        return environment;
+      });
+      await expect(handlers.get('connections:check-environment')!(null, id)).resolves.toMatchObject({ status: 'ambiguous' });
+      expect(connectionRow(db, id)).toMatchObject({ status: 'ambiguous', status_reason: 'newer outcome' });
+      expect(db.prepare('SELECT outcome, resolution FROM cli_invocations').get())
+        .toEqual({ outcome: 'ambiguous', resolution: null });
+    });
+  });
+
+  it('keeps the cached model count and marks an outdated CLI catalog', async () => {
+    const db = dbHolder.db!;
+    const id = seedCliConnection(db, 'online');
+    const binding = bindEnvironment(db, id);
+    saveCatalogSnapshot(db, {
+      connectionId: id, scopeKey: binding.scopeKey, authEpoch: binding.authEpoch, cliGeneration: binding.cliGeneration,
+      source: 'codex_app_server', now: new Date(Date.now() - 72 * 60 * 60_000).toISOString(),
+      items: [{
+        id: 'fixture-model', invocationId: 'fixture-model', displayName: 'Fixture Model', kind: 'model',
+        isDefault: false, hidden: false, upgrade: null, retirementAt: null, reasoningEfforts: [],
+      }],
+    });
+    const rows = await handlers.get('connections:list')!(null);
+    expect(rows).toEqual([expect.objectContaining({ id, cli_model_count: 1, cli_catalog_outdated: true })]);
+  });
+
   describe('connections:test 显式目标（design §6 / §7.2）', () => {
     it('不再遍历候选：只有一个在用模型时只测它', async () => {
       const id = seedCliConnection(dbHolder.db, 'online', ['default', 'fast']);
@@ -310,6 +470,22 @@ describe('本地订阅 CLI 连接 IPC', () => {
       // Legacy columns are no longer rewritten by a test.
       expect(JSON.parse(row.available_models!)).toEqual(['default', 'fast']);
       expect(JSON.parse(row.last_test_summary!)).toMatchObject({ success: 1, total: 1, targets: ['gpt-5.3-codex'] });
+    });
+
+    it('模型测试成功同步恢复旧调用故障，测试时间不冒充业务调用成功', async () => {
+      const id = seedCliConnection(dbHolder.db, 'online');
+      dbHolder.db.prepare(`INSERT INTO llm_connection_health
+        (scope_id, connection_id, provider_type, circuit_state, last_error_kind, last_error_message, last_error_at, needs_user_action, updated_at)
+        VALUES (?, ?, 'codex-cli', 'open', 'timeout', 'old timeout', 1, 1, '2026-07-30')`).run(id,id);
+      checkCliEnvironmentMock.mockResolvedValue(cliEnvironment());
+      runCliLLMMock.mockResolvedValue(OK);
+      await handlers.get('connections:test')!(null,id);
+      const health = await import('../../src/llm/connection-health.js');
+      expect(() => health.assertConnectionHealthCallable(dbHolder.db,id)).not.toThrow();
+      expect(health.getConnectionHealth(dbHolder.db,id)?.lastSuccessAt).toBeNull();
+      const snapshot = healthSendMock.mock.calls.filter(([channel]) => channel === 'llm-health-changed').at(-1)?.[1];
+      expect(snapshot.lastTestSuccessAt).toBeGreaterThan(0);
+      expect(snapshot.lastSuccessAt).toBe(0);
     });
 
     it('没有在用路由时测试 CLI 默认（default）', async () => {
@@ -590,6 +766,31 @@ describe('本地订阅 CLI 连接 IPC', () => {
   });
 
   describe('connections:check-environment / refresh-models / models', () => {
+    it('环境复测解除旧环境熔断，业务准入恢复但不伪造业务成功时间', async () => {
+      const id = seedCliConnection(dbHolder.db, 'online');
+      dbHolder.db.prepare(`INSERT INTO llm_connection_health
+        (scope_id, connection_id, provider_type, circuit_state, last_error_kind, last_error_message, last_error_at, needs_user_action, updated_at)
+        VALUES (?, ?, 'codex-cli', 'open', 'unsupported_version', 'old environment', 1, 1, '2026-07-30')`).run(id, id);
+      checkCliEnvironmentMock.mockResolvedValue(cliEnvironment());
+      await handlers.get('connections:check-environment')!(null, id);
+      const health = await import('../../src/llm/connection-health.js');
+      expect(() => health.assertConnectionHealthCallable(dbHolder.db, id)).not.toThrow();
+      expect(health.getConnectionHealth(dbHolder.db, id)?.lastSuccessAt).toBeNull();
+    });
+
+    it('环境检查不能清除模型调用结果不明或检查期间的新错误', async () => {
+      const id = seedCliConnection(dbHolder.db, 'online');
+      dbHolder.db.prepare(`INSERT INTO llm_connection_health
+        (scope_id, connection_id, provider_type, circuit_state, last_error_kind, last_error_message, last_error_at, needs_user_action, updated_at)
+        VALUES (?, ?, 'codex-cli', 'open', 'ambiguous_outcome', 'unknown outcome', 1, 1, '2026-07-30')`).run(id, id);
+      checkCliEnvironmentMock.mockResolvedValue(cliEnvironment());
+      await handlers.get('connections:check-environment')!(null, id);
+      expect(dbHolder.db.prepare('SELECT circuit_state FROM llm_connection_health WHERE scope_id = ?').get(id)).toEqual({ circuit_state: 'open' });
+      dbHolder.db.prepare("UPDATE llm_connection_health SET last_error_kind='unsupported_version', last_error_at=? WHERE scope_id=?").run(Date.now()+60000,id);
+      await handlers.get('connections:check-environment')!(null, id);
+      expect(dbHolder.db.prepare('SELECT circuit_state FROM llm_connection_health WHERE scope_id = ?').get(id)).toEqual({ circuit_state: 'open' });
+    });
+
     it('检查环境保留 online/ambiguous，其余置为 untested，并刷新同一环境的模型目录', async () => {
       const id = seedCliConnection(dbHolder.db, 'online', ['default']);
       const environment = cliEnvironment();

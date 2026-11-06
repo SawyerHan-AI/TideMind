@@ -6,6 +6,7 @@ import Database from 'better-sqlite3'
 import { AgentIntegrationRepository } from '../client/electron/agent-integration/repository.js'
 import { sha256Json } from '../client/electron/agent-integration/fingerprint.js'
 import { PORTABLE_TIDEMIND_SKILL_SHA256 } from '../client/electron/agent-integration/hosts/portable-skill.js'
+import { createP0HostAdapters } from '../client/electron/agent-integration/hosts/p0-adapter-registry.js'
 import { shellArgument } from '../client/electron/agent-integration/shell-argument.js'
 import type { CatalogId, ComponentKey, ProductFamilyId } from '../client/electron/agent-integration/types.js'
 import { uiAuditMarker } from '../client/electron/ui-audit.js'
@@ -64,6 +65,7 @@ ensureSchema(db)
 // catches accidental omissions in the broader fresh-schema composition.
 ensureAgentIntegrationSchema(db)
 const repository = new AgentIntegrationRepository(db)
+const adapters = createP0HostAdapters()
 const now = new Date()
 const iso = (minutesAgo: number) => new Date(now.getTime() - minutesAgo * 60_000).toISOString()
 
@@ -163,19 +165,21 @@ const fixtures: readonly FixtureInstallation[] = [
   {
     id: 'codex-cli', family: 'codex', hostVariant: 'codex-cli', displayName: 'Codex',
     profile: 'CLI', version: '0.145.0-alpha.18', desiredState: 'managed', verifiedCapability: 1,
-    verificationSummary: 'verified', statusReason: 'host_confirmation',
+    verificationSummary: 'mixed', statusReason: 'host_confirmation',
     components: [
       { key: 'instruction', status: 'verified', shared: true },
-      { key: 'lifecycle', status: 'verified' },
+      // The isolated native port reports a configured but untrusted Hook.
+      // No positive trust or runtime activity is seeded.
+      { key: 'lifecycle', status: 'unverified' },
     ],
   },
   {
     id: 'codex-desktop', family: 'codex', hostVariant: 'codex-desktop', displayName: 'Codex',
     profile: 'Desktop', version: '26.901.31953', desiredState: 'managed', verifiedCapability: 1,
-    verificationSummary: 'verified', statusReason: 'host_confirmation',
+    verificationSummary: 'mixed', statusReason: 'host_confirmation',
     components: [
       { key: 'instruction', status: 'verified', shared: true },
-      { key: 'lifecycle', status: 'verified' },
+      { key: 'lifecycle', status: 'unverified' },
     ],
   },
   {
@@ -405,6 +409,32 @@ for (const fixture of fixtures) {
       iso(180),
       iso(180),
     )
+    const hookArtifact = repository.getManagedArtifact(`artifact-${fixture.id}-lifecycle`)
+    const adapterVersion = adapters.get(fixture.hostVariant)?.adapterVersion
+    if (!hookArtifact?.owned_fragment_hash || !adapterVersion) throw new Error('Codex fixture hook artifact or adapter missing')
+    repository.recordVerificationResult({
+      id: `fixture-untrusted-hook-${fixture.id}`,
+      runId: `fixture-generation-${fixture.id}`,
+      installationId: fixture.id,
+      componentKey: 'lifecycle',
+      family: fixture.family,
+      hostVariant: fixture.hostVariant,
+      distributionId: distribution?.distributionId ?? `audit.${fixture.hostVariant}`,
+      runtimeRealm: 'local_macos',
+      hostVersion: fixture.version,
+      adapterVersion,
+      catalogVersion: 'ui-audit',
+      projectionVersion: '1',
+      selectorSchemaVersion: '1',
+      verificationManifestVersion: '1',
+      method: 'static_readback_passed,codex_hook_not_trusted:SessionStart:untrusted',
+      identityAssertion: `eb_audit_${fixture.id}`,
+      artifactHash: hookArtifact.owned_fragment_hash,
+      invalidationKeys: ['artifact_hash', 'host_version', 'adapter_version', 'projection_version'],
+      result: 'verified',
+      evidenceHash: hookArtifact.owned_fragment_hash,
+      verifiedAt: iso(5),
+    })
   }
 }
 
@@ -419,8 +449,8 @@ repository.recordEvent({
 
 // Simulate a process exit after a durable batch was accepted but before its
 // either item started. Production startup must mark both exact items
-// interrupted; the renderer may offer a fresh preview only for the still-live,
-// manageable ZCode Installation, never the uninstalled history fixture.
+// interrupted. The diagnostic task API retains both items, while the current
+// connection UI omits task history and keeps the uninstalled target in history.
 repository.createApplyTask({
   id: 'audit-interrupted-restart-task',
   planHash: 'audit-old-plan-must-not-replay',

@@ -178,7 +178,7 @@ export interface DiscoveryFileSystem {
    */
   readStableFileSnapshot?(targetPath: string, maxBytes: number): Promise<StableFileSnapshot>
   /** Streams large executables without allocating fileSize bytes. */
-  readStableFileFingerprint?(targetPath: string, maxBytes: number): Promise<StableFileFingerprint>
+  readStableFileFingerprint?(targetPath: string, maxBytes: number, signal?: AbortSignal): Promise<StableFileFingerprint>
   /** Bounded, no-symlink whole-package snapshot for immutable npm receipts. */
   readStablePackageTree?(targetPath: string): Promise<StablePackageTree>
   /** Metadata-only exact recheck of a previously content-hashed owned package. */
@@ -241,6 +241,7 @@ export interface AppCodeSignatureResult {
 }
 
 export interface AppCodeSignatureOptions {
+  signal?: AbortSignal
   timeoutMs: number
   /** Live trust may bind outer App/executable identity immediately before the final verify. */
   beforeFinalVerification?: () => Promise<void>
@@ -336,7 +337,7 @@ export interface DiscoveryDependencies {
   execVersion(
     executableRealpath: string,
     args: readonly string[],
-    options: { timeoutMs: number },
+    options: { timeoutMs: number; signal?: AbortSignal },
   ): Promise<VersionCommandResult>
   /** Desktop snapshot path only; signed CLI keeps inspectAppSignature unchanged. */
   inspectDesktopSignatureSnapshot?(
@@ -951,6 +952,26 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   }
 }
 
+async function withProofTimeout<T>(operation: (signal: AbortSignal) => Promise<T>, timeoutMs: number): Promise<T> {
+  const controller = new AbortController()
+  const work = Promise.resolve().then(() => operation(controller.signal))
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = Object.assign(new Error('Discovery proof timed out'), { name: 'DiscoveryTimeoutError' })
+      reject(error)
+      controller.abort(error)
+    }, timeoutMs)
+  })
+  try { return await Promise.race([work, timeout]) }
+  finally {
+    if (timer) clearTimeout(timer)
+    // Production proof ports honor the signal between bounded filesystem reads.
+    // Do not start another tree while cancelled readers still hold descriptors.
+    if (controller.signal.aborted) await work.catch(() => undefined)
+  }
+}
+
 async function observePath(
   dependencies: DiscoveryDependencies,
   targetPath: string,
@@ -1349,6 +1370,7 @@ async function discoverCli(
     if (executables.length === 0) continue
     const commandUnresolvedStart = result.unresolved.length
     const commandInstallationsStart = result.installations.length
+    const inspectedSurfaces = new Set<string>()
     for (const executable of executables) {
     if (!isSafeAbsolutePath(executable)) {
       result.unresolved.push({
@@ -1462,6 +1484,11 @@ async function discoverCli(
         }
       }
     }
+    if (initialExecutableMetadata) {
+      const surfaceKey = JSON.stringify([observedExecutable.realpath, initialExecutableMetadata])
+      if (inspectedSurfaces.has(surfaceKey)) continue
+      inspectedSurfaces.add(surfaceKey)
+    }
     let detectedVersion: string | undefined
     let verifiedPackageProvenance: string | undefined
     let packageProofNodes: readonly PackageMetadataProofNode[] | undefined
@@ -1473,8 +1500,8 @@ async function discoverCli(
       && observedExecutable.realpath === path.posix.join(context.homeDir, '.kimi-code', 'bin', 'kimi')
     if (!isKimiNativeSurface) {
       try {
-        const versionResult = await scheduleProof(() => withTimeout(
-          dependencies.execVersion(observedExecutable.realpath, ['--version'], { timeoutMs: proofTimeoutMs }),
+        const versionResult = await scheduleProof(() => withProofTimeout(
+          signal => dependencies.execVersion(observedExecutable.realpath, ['--version'], { timeoutMs: proofTimeoutMs, signal }),
           proofTimeoutMs,
         ))
         const versionOutput = `${versionResult.stdout}\n${versionResult.stderr}`.slice(0, 4096)
@@ -1493,6 +1520,15 @@ async function discoverCli(
         }
       } catch (error) {
         result.diagnostics.push(`${definition.catalogId}:version:${command}:${stableErrorCode(error)}`)
+        result.unresolved.push({
+          catalogIds: unresolvedCatalogIds,
+          reason: 'probe_inaccessible',
+          summary: `${command} is present, but its distribution proof could not be completed.`,
+          evidence: stableEvidence(evidence),
+        })
+        // An unavailable proof cannot identify a different distribution. Keep
+        // the prior Installation intact for a later successful observation.
+        continue
       }
     }
 
@@ -1519,9 +1555,10 @@ async function discoverCli(
               proofTimeoutMs,
             )
           : undefined
-        const signature = await scheduleProof(() => withTimeout(
-          dependencies.inspectAppSignature!(observedExecutable.realpath, {
+        const signature = await scheduleProof(() => withProofTimeout(
+          signal => dependencies.inspectAppSignature!(observedExecutable.realpath, {
             timeoutMs: proofTimeoutMs,
+            signal,
             beforeFinalVerification: async () => {
               const currentRealpath = await dependencies.fs.realpath(observedExecutable!.realpath)
               if (currentRealpath !== observedExecutable!.realpath) {
@@ -1538,6 +1575,7 @@ async function discoverCli(
                   dependencies.fs.readStableFileFingerprint(
                     observedExecutable!.realpath,
                     MAX_CLI_EXECUTABLE_PROOF_BYTES,
+                    signal,
                   ),
                   proofTimeoutMs,
                 )
@@ -1627,6 +1665,13 @@ async function discoverCli(
         }
       } catch (error) {
         result.diagnostics.push(`${definition.detectOnlyFallbackCatalogId}:signature:${command}:${stableErrorCode(error)}`)
+        result.unresolved.push({
+          catalogIds: unresolvedCatalogIds,
+          reason: 'probe_inaccessible',
+          summary: `${command} is present, but its code signature could not be checked.`,
+          evidence: stableEvidence(evidence),
+        })
+        continue
       }
     }
 

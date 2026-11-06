@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "appVersion": "0.2.94",
+  "appVersion": "0.2.95",
   "providers": [
     "codex-cli",
     "claude-cli"
@@ -48,14 +48,6 @@
         "testFile": "tests/db/model-discovery.test.ts",
         "title": "cli_generation_changed increments the epoch"
       }
-    ]
-  },
-  "releaseAcceptance": {
-    "requiredProviders": [
-      "codex-cli"
-    ],
-    "deferredProviders": [
-      "claude-cli"
     ]
   }
 }

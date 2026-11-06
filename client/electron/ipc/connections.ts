@@ -1,3 +1,4 @@
+import { recoverCliConnectionHealth, listConnectionHealth } from '../../../src/llm/connection-health.js'
 import { ipcMain, dialog, BrowserWindow } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -30,6 +31,8 @@ import { buildConnectionModelsView, routesUsingConnection } from '../../../src/l
 import { getConfig } from '@server/config.js'
 import { getCatalogSnapshot } from '../../../src/db/model-discovery.js'
 import { CATALOG_FRESHNESS } from '../../../src/llm/cli/model-catalog.js'
+import { hasUnresolvedCliInvocation, prepareCliFutureCallResume, resumeCliFutureCalls, type CliResumeFutureCallsResult } from '../../../src/llm/cli/invocation-state.js'
+import { cliProcessRegistry } from '../../../src/llm/cli/runtime-process-registry.js'
 import { createLogger } from '../../../src/utils/logger.js'
 
 const catalogLog = createLogger('model-catalog')
@@ -109,6 +112,8 @@ function now(): string {
 const MAX_CREDENTIALS_BYTES = 8192
 
 type ModelConnectionDbRow = Record<string, unknown> & {
+  id: string
+  status: string | null
   provider_type: string
   credentials: string | null
 }
@@ -190,7 +195,7 @@ function broadcastTestProgress(progress: {
   }
 }
 
-function cliStatusForError(error: CliLLMError): string {
+function cliStatusForError(error: CliLLMError): ModelConnectionStatus {
   if (
     error.kind === 'not_installed'
     || error.kind === 'not_authenticated'
@@ -234,12 +239,20 @@ export function registerConnectionHandlers(dataDir: string): void {
     const rows = includeArchived
       ? db.prepare('SELECT * FROM model_connections ORDER BY archived ASC, created DESC').all() as ModelConnectionDbRow[]
       : db.prepare('SELECT * FROM model_connections WHERE archived = 0 ORDER BY created DESC').all() as ModelConnectionDbRow[]
-    return rows.map(r => ({
-      ...r,
-      credentials: undefined,
-      hasCredentials: isCliProvider(r.provider_type) ? false : !!r.credentials,
-      source_type: sourceTypeFor(r.provider_type),
-    }))
+    const health = listConnectionHealth(db)
+    return rows.map(r => {
+      const cli = isCliProvider(r.provider_type)
+      const view = cli ? buildConnectionModelsView(db, r, getConfig()) : null
+      return {
+        ...r,
+        credentials: undefined,
+        hasCredentials: cli ? false : !!r.credentials,
+        source_type: sourceTypeFor(r.provider_type),
+        health_error: health.find(h => h.connectionId === r.id && h.lastErrorKind)?.lastErrorMessage ?? null,
+        cli_model_count: view?.catalog?.items.length ?? null,
+        cli_catalog_outdated: view?.catalogOutdated ?? false,
+      }
+    })
   })
 
   ipcMain.handle('connections:get', (_e, id: unknown) => {
@@ -400,11 +413,46 @@ export function registerConnectionHandlers(dataDir: string): void {
       throw new Error('只有本地订阅连接需要检查 CLI 环境')
     }
     const operation = beginCliOperation(validId, 'environment')
+    const startedAt = Date.now()
     db.prepare(`
       UPDATE model_connections
-      SET status = 'checking', status_reason = NULL
+      SET status = CASE WHEN status = 'ambiguous' OR EXISTS (
+        SELECT 1 FROM cli_invocations WHERE connection_id = model_connections.id
+          AND outcome = 'ambiguous' AND resolution IS NULL
+      ) THEN 'ambiguous' ELSE 'checking' END,
+          status_reason = CASE WHEN status = 'ambiguous' THEN status_reason ELSE NULL END
       WHERE id = ? AND archived = 0
     `).run(validId)
+    const persistCheck = (fallback: ModelConnectionStatus, fallbackReason: string | null, environment?: CliEnvironmentCheck) =>
+      db.transaction(() => {
+        const current = db.prepare(`
+          SELECT status, status_reason FROM model_connections WHERE id = ? AND archived = 0 AND provider_type = ?
+        `).get(validId, connection.provider_type) as { status: ModelConnectionStatus; status_reason: string | null } | undefined
+        if (!current) return null
+        const paused = current.status === 'ambiguous' || hasUnresolvedCliInvocation(db, validId)
+        if (!paused && current.status !== 'checking') return current.status
+        const status = paused ? 'ambiguous' : fallback
+        const reason = paused
+          ? (current.status === 'ambiguous' ? current.status_reason : null) ?? '上次调用结果不明，后台调用已暂停'
+          : fallbackReason
+        if (environment) {
+          updateCliConnectionEnvironment(db, validId, {
+            status,
+            statusReason: reason,
+            cliPath: environment.resolved.path,
+            cliVersion: environment.resolved.version,
+            authMethod: environment.auth.method,
+            authFingerprint: environment.authFingerprint,
+            cliGeneration: environment.cliGeneration,
+            environmentCheckedAt: environment.checkedAt,
+          })
+        } else {
+          db.prepare(`
+            UPDATE model_connections SET status = ?, status_reason = ?, last_checked = ? WHERE id = ?
+          `).run(status, reason, now(), validId)
+        }
+        return status
+      }).immediate()
     try {
       const environment = await checkCliEnvironment({
         providerType: connection.provider_type,
@@ -415,21 +463,9 @@ export function registerConnectionHandlers(dataDir: string): void {
       if (!operationIsCurrent(validId, operation) || operation.controller.signal.aborted) {
         throw new CliLLMError('aborted', '环境检查已取消')
       }
-      // Environment status only; model evidence is per model and never cleared here.
-      const preservedStatus = (
-        connection.status === 'online'
-        || connection.status === 'ambiguous'
-      ) ? connection.status : 'untested'
-      updateCliConnectionEnvironment(db, validId, {
-        status: preservedStatus,
-        statusReason: null,
-        cliPath: environment.resolved.path,
-        cliVersion: environment.resolved.version,
-        authMethod: environment.auth.method,
-        authFingerprint: environment.authFingerprint,
-        cliGeneration: environment.cliGeneration,
-        environmentCheckedAt: environment.checkedAt,
-      })
+      const preservedStatus = persistCheck(connection.status === 'online' ? 'online' : 'untested', null, environment)
+      if (!preservedStatus) throw new CliLLMError('aborted', '环境检查目标已改变')
+      if (preservedStatus !== 'ambiguous') recoverCliConnectionHealth(db, validId, startedAt)
       // Metadata-only catalog refresh bound to the same CLI and account scope.
       const refresh = await refreshCliModelCatalog(db, {
         connectionId: validId,
@@ -438,7 +474,7 @@ export function registerConnectionHandlers(dataDir: string): void {
         signal: operation.controller.signal,
       })
       return {
-        status: preservedStatus,
+        status: hasUnresolvedCliInvocation(db, validId) ? 'ambiguous' : preservedStatus,
         cliPath: environment.resolved.path,
         cliVersion: environment.resolved.version,
         authMethod: environment.auth.method,
@@ -458,25 +494,13 @@ export function registerConnectionHandlers(dataDir: string): void {
       const cliError = error instanceof CliLLMError
         ? error
         : new CliLLMError('transient', (error as Error).message, { cause: error })
-      if (operationIsCurrent(validId, operation)) {
-        // An environment failure never clears an unresolved ambiguous invocation.
-        const keepPrevious = cliError.kind === 'aborted' || connection.status === 'ambiguous'
-        const status = keepPrevious
-          ? connection.status
-          : cliStatusForError(cliError)
-        const reason = keepPrevious
-          ? connection.status_reason
-          : cliError.message.slice(0, 500)
-        db.prepare(`
-          UPDATE model_connections
-          SET status = ?, status_reason = ?, last_checked = ?
-          WHERE id = ? AND archived = 0
-        `).run(status, reason, now(), validId)
-      }
+      const cancelled = cliError.kind === 'aborted' || operation.controller.signal.aborted
+      const status = operationIsCurrent(validId, operation)
+        ? persistCheck(cancelled ? connection.status : cliStatusForError(cliError),
+          cancelled ? connection.status_reason : cliError.message.slice(0, 500)) ?? connection.status
+        : connection.status
       return {
-        status: cliError.kind === 'aborted' || connection.status === 'ambiguous'
-          ? connection.status
-          : cliStatusForError(cliError),
+        status,
         error: {
           kind: cliError.kind,
           message: cliError.message,
@@ -495,6 +519,52 @@ export function registerConnectionHandlers(dataDir: string): void {
   // “刷新模型列表”：与检查环境同一受控流程（重新确认 CLI 与账号后只读列目录）。
   ipcMain.handle('connections:refresh-models', (_e, connectionId: unknown) =>
     runEnvironmentCheck(connectionId))
+
+  ipcMain.handle('connections:resume-future-calls', async (
+    _e, connectionId: unknown, confirmed: unknown,
+  ): Promise<CliResumeFutureCallsResult> => {
+    if (confirmed !== true) return { status: 'blocked', reason: 'confirmation_required' }
+    let validId: string
+    try { validId = validateConnectionId(connectionId) }
+    catch { return { status: 'blocked', reason: 'not_ambiguous' } }
+    if (cliOperations.has(validId)) return { status: 'blocked', reason: 'operation_in_progress' }
+    const operation = beginCliOperation(validId, 'environment')
+    const signal = operation.controller.signal
+    try {
+      const db = getClientDb()
+      const prepared = prepareCliFutureCallResume(db, validId)
+      if (prepared.status === 'blocked') return prepared
+      if (cliProcessRegistry.hasOutstandingWork) return { status: 'blocked', reason: 'previous_work_active' }
+      let environment: CliEnvironmentCheck
+      try {
+        environment = await checkCliEnvironment({
+          providerType: prepared.providerType,
+          allowLoginShell: true,
+          dataDir,
+          signal,
+          freshAuth: true,
+        })
+      } catch (error) {
+        return { status: 'blocked', reason: signal.aborted || (error instanceof CliLLMError && error.kind === 'aborted')
+          ? 'cancelled' : 'environment_check_failed' }
+      }
+      if (signal.aborted || !operationIsCurrent(validId, operation)) return { status: 'blocked', reason: 'cancelled' }
+      if (cliProcessRegistry.hasOutstandingWork) return { status: 'blocked', reason: 'previous_work_active' }
+      const result = resumeCliFutureCalls(db, prepared, environment)
+      if (result.status === 'untested') {
+        // A UI refresh failure cannot undo the committed user's choice.
+        try {
+          notifyMetabolismWorkerRuntimeMutation('connection')
+          broadcastLLMHealth(db)
+        } catch { catalogLog.warn('future CLI calls resumed; health refresh failed') }
+      }
+      return result
+    } catch {
+      return { status: 'blocked', reason: 'recovery_failed' }
+    } finally {
+      finishCliOperation(validId, operation)
+    }
+  })
 
   ipcMain.handle('connections:models', (_e, connectionId: unknown) => {
     const validId = validateConnectionId(connectionId)
@@ -575,11 +645,15 @@ export function registerConnectionHandlers(dataDir: string): void {
         errorKind?: string
       }> = []
       const restorePrevious = () => {
-        db.prepare(`
-          UPDATE model_connections
-          SET status = ?, status_reason = ?, last_checked = ?
-          WHERE id = ? AND archived = 0 AND status = 'testing'
-        `).run(previous.status, previous.statusReason, now(), validId)
+        db.transaction(() => {
+          const paused = hasUnresolvedCliInvocation(db, validId)
+          db.prepare(`
+            UPDATE model_connections
+            SET status = ?, status_reason = ?, last_checked = ?
+            WHERE id = ? AND archived = 0 AND status = 'testing'
+          `).run(paused ? 'ambiguous' : previous.status,
+            paused ? previous.statusReason ?? '上次调用结果不明，后台调用已暂停' : previous.statusReason, now(), validId)
+        }).immediate()
       }
       try {
         environment = await checkCliEnvironment({
@@ -722,14 +796,7 @@ export function registerConnectionHandlers(dataDir: string): void {
         ))
         // A new test proves this model works now; it cannot establish whether an
         // earlier committed request ran or authorize replay of its queued digest.
-        const hasUnresolvedInvocation = Boolean(db.prepare(`
-          SELECT 1 FROM cli_invocations
-          WHERE connection_id = ? AND outcome = 'ambiguous' AND resolution IS NULL
-          LIMIT 1
-        `).get(validId))
-        const status: string = hasUnresolvedInvocation
-          ? 'ambiguous'
-          : successfulModels.length > 0
+        const testedStatus: ModelConnectionStatus = successfulModels.length > 0
             ? 'online'
           : previous.status === 'ambiguous'
             ? 'ambiguous'
@@ -750,7 +817,13 @@ export function registerConnectionHandlers(dataDir: string): void {
           durationMs: Date.now() - startedAt,
           cancelled: false,
         }
-        db.transaction(() => {
+        const status = db.transaction(() => {
+          const status = hasUnresolvedCliInvocation(db, validId) ? 'ambiguous' : testedStatus
+          const statusReason = status === 'ambiguous'
+            ? previous.statusReason ?? '上次调用结果不明，后台调用已暂停'
+            : attributionUnconfirmed
+              ? 'CLI 或登录账号在测试期间发生变化，本次结果归属未确认'
+              : connectionFailure?.error ?? null
           db.prepare(`
             UPDATE model_connections
             SET status = ?,
@@ -761,15 +834,17 @@ export function registerConnectionHandlers(dataDir: string): void {
             WHERE id = ? AND archived = 0
           `).run(
             status,
-            attributionUnconfirmed
-              ? 'CLI 或登录账号在测试期间发生变化，本次结果归属未确认'
-              : connectionFailure?.error ?? (status === 'ambiguous' ? previous.statusReason : null),
+            statusReason,
             now(),
             JSON.stringify(summary),
             now(),
             validId,
           )
-        })()
+          return status
+        }).immediate()
+        if (successfulModels.length > 0 && status !== 'ambiguous') {
+          recoverCliConnectionHealth(db, validId, startedAt, true)
+        }
         return {
           online: successfulModels.length > 0,
           models: successfulModels,
@@ -788,16 +863,19 @@ export function registerConnectionHandlers(dataDir: string): void {
           if (cliError.kind === 'aborted' || previous.status === 'ambiguous') {
             restorePrevious()
           } else {
-            db.prepare(`
-              UPDATE model_connections
-              SET status = ?, status_reason = ?, last_checked = ?
-              WHERE id = ? AND archived = 0
-            `).run(
-              cliStatusForError(cliError),
-              cliError.message.slice(0, 500),
-              now(),
-              validId,
-            )
+            db.transaction(() => {
+              const paused = hasUnresolvedCliInvocation(db, validId)
+              db.prepare(`
+                UPDATE model_connections
+                SET status = ?, status_reason = ?, last_checked = ?
+                WHERE id = ? AND archived = 0 AND status = 'testing'
+              `).run(
+                paused ? 'ambiguous' : cliStatusForError(cliError),
+                paused ? previous.statusReason ?? '上次调用结果不明，后台调用已暂停' : cliError.message.slice(0, 500),
+                now(),
+                validId,
+              )
+            }).immediate()
           }
         }
         return {

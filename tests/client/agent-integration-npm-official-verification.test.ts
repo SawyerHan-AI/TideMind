@@ -260,6 +260,26 @@ async function kimiScenario(options: { localOverrides?: Record<string, string> }
 }
 
 describe('npm official registry verification', () => {
+  it('cancels an in-flight registry request without caching a result or leaving staging data', async () => {
+    const scenario = await kimiScenario()
+    const controller = new AbortController()
+    const reason = new Error('stop source verification')
+    let started!: () => void
+    const requestStarted = new Promise<void>(resolve => { started = resolve })
+    const fetch: NpmOfficialVerificationFetch = async (_url, init) => {
+      started()
+      return new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }))
+    }
+    const running = verifyNpmOfficialDistribution(scenario.input, { ...scenario.deps, fetch, signal: controller.signal })
+    const rejected = expect(running).rejects.toBe(reason)
+    await requestStarted
+    controller.abort(reason)
+    await rejected
+    expect(scenario.cacheRows()).toEqual([])
+    expect(fs.readdirSync(scenario.stagingParent)).toEqual([])
+    scenario.db.close()
+  }, IO_TIMEOUT)
+
   it('verifies an exact unlisted version against the official tarball and then serves it from cache', async () => {
     const scenario = await kimiScenario()
     const first = await verifyNpmOfficialDistribution(scenario.input, scenario.deps)

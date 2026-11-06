@@ -1,5 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
+import { isAbsolute, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import {
   isProcessGroupAlive,
@@ -7,6 +9,7 @@ import {
   waitForProcessGroupExit,
 } from './child-process-runner.js';
 import { cliProcessRegistry } from './runtime-process-registry.js';
+import { checkCodexDeclaredRouting } from './codex-declared-routing.js';
 import { CliLLMError } from './errors.js';
 import { sanitizeCliEnvironment } from './environment.js';
 import { createCliRuntimeDirectory } from './runtime-dir.js';
@@ -18,7 +21,7 @@ import type { CliCatalogModel, ResolvedCli } from './types.js';
  *
  * P0 证据（docs/design/adaptive-agent-compatibility-and-model-discovery-p0-cli-evidence-2026-09-25.md）：
  * - 只允许 initialize / account/read / model/list 三个方法，不创建 thread，不发送生成 prompt；
- * - account/read 必须显式 refreshToken:false，不触发凭据刷新；
+ * - account/read 必须显式 refreshToken:false，不主动请求凭据刷新；
  * - app-server 不支持 --ignore-user-config，因此用 -c 覆盖 MCP/Hook/插件/Apps/Web 搜索；
  * - npm wrapper 会再 spawn 原生二进制，结束时必须终止整个进程组。
  *
@@ -72,6 +75,8 @@ export interface CodexMetadataOptions {
   limits?: Partial<typeof CODEX_METADATA_LIMITS>;
   /** Test seam. */
   spawnImpl?: typeof spawn;
+  /** Test-only paths for the system TOML layers. */
+  systemConfigPaths?: readonly string[];
 }
 
 class MethodNotFound extends Error {}
@@ -169,7 +174,23 @@ export function parseCodexModelPage(
 export async function readCodexMetadata(options: CodexMetadataOptions): Promise<CodexMetadataResult> {
   const limits = { ...CODEX_METADATA_LIMITS, ...options.limits };
   if (options.resolved.kind !== 'codex') throw new Error('Codex metadata requires the codex CLI');
-  await assertResolvedCliIdentity(options.resolved);
+  if (options.signal?.aborted) throw new CliLLMError('aborted', 'Codex metadata check was cancelled');
+  const env = sanitizeCliEnvironment(
+    options.sourceEnv ?? process.env, options.resolved.path, options.resolved.controlledPath,
+  );
+  // CODEX_HOME is deliberately excluded. Use the same HOME for preflight
+  // and spawn so the native startup account discovery sees the checked root.
+  env.HOME = env.HOME || homedir();
+  if (!isAbsolute(env.HOME)) throw new CliLLMError('scope_unknown', 'Codex account routing could not be verified');
+  const [routing] = await Promise.all([
+    checkCodexDeclaredRouting(join(env.HOME, '.codex'), options.systemConfigPaths),
+    assertResolvedCliIdentity(options.resolved),
+  ]);
+  if (options.signal?.aborted) throw new CliLLMError('aborted', 'Codex metadata check was cancelled');
+  if (routing === 'override') {
+    throw new CliLLMError('wrong_auth_method', 'Codex account routing overrides are not supported');
+  }
+  if (routing !== 'clear') throw new CliLLMError('scope_unknown', 'Codex account routing could not be verified');
   cliProcessRegistry.assertAccepting();
   const runtime = createCliRuntimeDirectory(options.dataDir, `meta_${randomUUID()}`);
   const spawnImpl = options.spawnImpl ?? spawn;
@@ -180,11 +201,7 @@ export async function readCodexMetadata(options: CodexMetadataOptions): Promise<
     ['app-server', '--listen', 'stdio://', ...METADATA_OVERRIDES],
     {
       cwd: runtime.invocationDir,
-      env: sanitizeCliEnvironment(
-        options.sourceEnv ?? process.env,
-        options.resolved.path,
-        options.resolved.controlledPath,
-      ),
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: true,
       shell: false,

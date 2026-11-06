@@ -25,7 +25,7 @@ describe('upgrade database raw observations', () => {
     ])).toThrow(/conflicting source version/)
   })
   it.each([33, 34, 35, 41])('accepts schema %i with actual lineage and preserved history', version => {
-    expect(fixture(version).validate()).toMatchObject({ sourceSchemaVersion: version, targetSchemaVersion: 45 })
+    expect(fixture(version).validate()).toMatchObject({ sourceSchemaVersion: version, targetSchemaVersion: 47 })
   })
   it.each([
     ['unknown-source', 'unsupported source schema'],

@@ -53,19 +53,8 @@ function AgentIntegrationNotificationRouter() {
     setNotification(next)
     window.dispatchEvent(new CustomEvent('agent-integration-inbox-changed'))
   }), [])
-  useEffect(() => {
-    void window.api.agentIntegrations.inbox(10).then(inbox => {
-      const latest = inbox.startupEvents[0]
-      if (!latest) return
-      setNotification({
-        title: t('agent.managed.startupSummaryTitle'),
-        body: t('agent.managed.startupSummaryBody', { count: inbox.startupUnreadCount }),
-        level: latest.severity,
-        eventId: latest.id,
-        installationId: latest.installationId,
-      })
-    }).catch(() => {})
-  }, [t])
+  // Past unread events remain in the Agent history; only live notifications toast.
+
 
   if (!notification) return null
   return (

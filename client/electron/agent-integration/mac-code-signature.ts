@@ -5,6 +5,7 @@ import { sha256Json } from './fingerprint.js'
 export type CodesignRunner = (
   args: readonly string[],
   timeoutMs: number,
+  signal?: AbortSignal,
 ) => Promise<{ stdout: string; stderr: string }>
 
 export type CodesignSyncRunner = (
@@ -59,18 +60,22 @@ export async function inspectMacDesktopSignatureSnapshot(
 
 export async function inspectMacAppSignature(
   appBundleRealpath: string,
-  options: { timeoutMs: number; beforeFinalVerification?: () => Promise<void> },
+  options: { timeoutMs: number; signal?: AbortSignal; beforeFinalVerification?: () => Promise<void> },
   codesign: CodesignRunner = runCodesign,
 ): Promise<AppCodeSignatureResult> {
-  const before = await readMacAppSignatureReceipt(appBundleRealpath, options.timeoutMs, codesign)
-  await codesign(['--verify', '--deep', '--strict', appBundleRealpath], options.timeoutMs)
-  const after = await readMacAppSignatureReceipt(appBundleRealpath, options.timeoutMs, codesign)
+  options.signal?.throwIfAborted()
+  const runner: CodesignRunner = (args, timeoutMs) => options.signal
+    ? codesign(args, timeoutMs, options.signal) : codesign(args, timeoutMs)
+  const before = await readMacAppSignatureReceipt(appBundleRealpath, options.timeoutMs, runner)
+  await runner(['--verify', '--deep', '--strict', appBundleRealpath], options.timeoutMs)
+  const after = await readMacAppSignatureReceipt(appBundleRealpath, options.timeoutMs, runner)
   if (desktopSignatureReceiptFingerprint(before) !== desktopSignatureReceiptFingerprint(after)) {
     throw new Error('desktop_signature_receipt_changed_during_verification')
   }
   await options.beforeFinalVerification?.()
+  options.signal?.throwIfAborted()
   // This must remain the last codesign operation on the successful async path.
-  await codesign(['--verify', '--deep', '--strict', appBundleRealpath], options.timeoutMs)
+  await runner(['--verify', '--deep', '--strict', appBundleRealpath], options.timeoutMs)
   return { valid: true, ...after, verificationBoundary: 'strict_final' }
 }
 
@@ -148,10 +153,12 @@ function readMacAppSignatureReceiptSync(
 function runCodesign(
   args: readonly string[],
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     execFile('/usr/bin/codesign', [...args], {
       timeout: timeoutMs,
+      signal,
       killSignal: 'SIGKILL',
       maxBuffer: 64 * 1024,
       encoding: 'utf8',

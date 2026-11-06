@@ -4,7 +4,6 @@ import {
   AlertCircle,
   CheckCircle2,
   CircleDashed,
-  Clock3,
   Info,
   MinusCircle,
   PauseCircle,
@@ -18,7 +17,8 @@ import {
   componentLabelKey,
   componentStatusPresentation,
   managementUnavailableHelpKey,
-  statusPresentation,
+  managementStatusPresentation,
+  isTemporaryManagementBlock,
   statusReasonKey,
 } from './presentation'
 import type {
@@ -62,8 +62,9 @@ export function StatusBadge({
   detectOnly?: boolean
 }) {
   const { t } = useTranslation('settings')
-  const token = statusPresentation(group)
-  if (detectOnly) {
+  const token = managementStatusPresentation(group, reason, detectOnly)
+  const tone = group === 'needs_attention' && ['conflict', 'verification_failed', 'disconnect_incomplete'].includes(reason) ? 'red' : token.tone
+  if (detectOnly && !isTemporaryManagementBlock(reason) && group !== 'needs_attention') {
     const helpKey = managementUnavailableHelpKey(reason)
     return (
       <div className="min-w-0">
@@ -84,7 +85,7 @@ export function StatusBadge({
   }
   return (
     <div className="min-w-0">
-      <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-medium ${TONE_CLASSES[token.tone]}`}>
+      <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-medium ${TONE_CLASSES[tone]}`}>
         <StatusIcon group={group} />
         {t(token.labelKey)}
       </span>
@@ -214,7 +215,7 @@ export function AccessBadge({
 
 function ComponentIcon({ status }: { status: ManagedComponentStatus }) {
   if (status === 'verified') return <CheckCircle2 size={12} aria-hidden />
-  if (status === 'configured') return <Clock3 size={12} aria-hidden />
+  if (status === 'configured') return <CircleDashed size={12} aria-hidden />
   if (status === 'missing' || status === 'conflict') return <AlertCircle size={12} aria-hidden />
   if (status === 'new_session' || status === 'confirmation_required' || status === 'verification_stale') {
     return <CircleDashed size={12} aria-hidden />
@@ -226,15 +227,24 @@ export function ComponentFact({
   componentKey,
   status,
   showStatusLabel = false,
+  onInspect,
 }: {
   componentKey: ManagedComponentKey
   status: ManagedComponentStatus
+  onInspect?: (event: React.MouseEvent<HTMLButtonElement>) => void
   showStatusLabel?: boolean
 }) {
   const { t } = useTranslation('settings')
   const token = componentStatusPresentation(status)
   const label = t(componentLabelKey(componentKey))
   const stateLabel = t(token.labelKey)
+  if (onInspect) return (
+    <button type="button" onClick={onInspect} aria-label={`${label}：${stateLabel}`} title={`${label}：${stateLabel}`}
+      className={`pointer-events-auto relative z-10 inline-flex min-h-6 items-center gap-1 rounded text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/60 ${TONE_CLASSES[token.tone].split(' ').at(-1)}`}>
+      <ComponentIcon status={status} /><span className="text-gray-400">{label}</span>
+      {showStatusLabel && <span>{stateLabel}</span>}
+    </button>
+  )
   return (
     <span
       className={`inline-flex items-center gap-1 text-xs ${TONE_CLASSES[token.tone].split(' ').at(-1)}`}

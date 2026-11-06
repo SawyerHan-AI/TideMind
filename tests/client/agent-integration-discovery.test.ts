@@ -1819,6 +1819,52 @@ describe('P0 local Agent discovery', () => {
     expect(report.diagnostics).toContain('codex-desktop:bundle_surface:desktop_bundle_info_plist_not_regular')
   })
 
+  it('aborts a timed-out version proof before allowing a stale result or fallback identity', async () => {
+    const runtime = fakeRuntime()
+    addCommand(runtime, 'qwen', { verifiedPackageProvenance: 'npm_metadata:@qwen-code/qwen-code' })
+    let aborted = false
+    runtime.dependencies.execVersion = async (_path, _args, options) => {
+      expect(options.signal).toBeDefined()
+      return await new Promise((_resolve, reject) => options.signal!.addEventListener('abort', () => {
+        aborted = true
+        reject(options.signal!.reason)
+      }, { once: true }))
+    }
+    const report = await discoverLocalP0Agents(context({ operationTimeoutMs: 10, signatureTimeoutMs: 20 }), runtime.dependencies)
+    expect(aborted).toBe(true)
+    expect(report.installations).toEqual([])
+    expect(report.diagnostics).toContain('qwen-code-cli:version:qwen:timeout')
+  }, 30_000)
+
+  it('hashes one unchanged canonical executable only once for duplicate PATH aliases in a scan', async () => {
+    const runtime = fakeRuntime()
+    const executable = addCommand(runtime, 'qwen', { verifiedPackageProvenance: 'npm_metadata:@qwen-code/qwen-code' })
+    const alias = '/fixture/alias/qwen'
+    runtime.fs.entries.set(alias, { kind: 'symbolic_link' })
+    runtime.fs.realpaths.set(alias, executable)
+    runtime.dependencies.whichAll = async command => command === 'qwen' ? [executable, alias] : []
+    await discoverLocalP0Agents(context(), runtime.dependencies)
+    expect(runtime.calls.filter(call => call.startsWith(`execVersion:${executable}:`))).toHaveLength(1)
+  })
+
+  it('does not invent an npm-global identity when a distribution proof fails', async () => {
+    const runtime = fakeRuntime()
+    addCommand(runtime, 'qwen', { verifiedPackageProvenance: 'npm_metadata:@qwen-code/qwen-code' })
+    runtime.dependencies.execVersion = async () => { throw Object.assign(new Error('proof timed out'), { name: 'DiscoveryTimeoutError' }) }
+    const report = await discoverLocalP0Agents(context(), runtime.dependencies)
+    expect(report.installations.filter(item => item.catalogId === 'qwen-code-cli')).toEqual([])
+    expect(report.unresolved).toContainEqual(expect.objectContaining({ catalogIds: ['qwen-code-cli'], reason: 'probe_inaccessible' }))
+  })
+
+  it('does not replace a signed native identity with an unproved fallback after signature I/O fails', async () => {
+    const runtime = fakeRuntime()
+    addCommand(runtime, 'claude', { output: '2.1.296' })
+    runtime.dependencies.inspectAppSignature = async () => { throw new Error('signature temporarily unavailable') }
+    const report = await discoverLocalP0Agents(context(), runtime.dependencies)
+    expect(report.installations.filter(item => item.catalogId.startsWith('claude-code'))).toEqual([])
+    expect(report.unresolved).toContainEqual(expect.objectContaining({ reason: 'probe_inaccessible' }))
+  })
+
   it('bounds a hung PATH probe and returns a stable diagnostic instead of hanging the scan', async () => {
     const runtime = fakeRuntime()
     runtime.dependencies.which = async command => {

@@ -22,7 +22,7 @@ export function databaseMigrationFixture(captureCreatedAt: string, observedAt: s
       configurationPresent: true, configurationSha256: closureHash('synthetic-config') },
   }
   const after = { ...structuredClone(before), phase: 'after', observedAt: at(.8), backup: null,
-    schema: { schema_version: '45', schema_lineage: 'stable-0.2.94',
+    schema: { schema_version: '47', schema_lineage: 'stable-0.2.94',
       ...(sourceVersion === 41 ? { schema_recovered_from: 'observed-dormant-41' } : {}) },
   }
   const files = new Map<string, Buffer>()
@@ -30,7 +30,7 @@ export function databaseMigrationFixture(captureCreatedAt: string, observedAt: s
   const beforeHash = add(before)
   const receipt = { schemaVersion: 1, batchId: 'synthetic-upgrade-' + sourceVersion,
     evidenceOrigin: 'isolated_history_fixture', sourceSchemaVersion: sourceVersion, sourceLineage: null,
-    targetSchemaVersion: 45, targetLineage: 'stable-0.2.94',
+    targetSchemaVersion: 47, targetLineage: 'stable-0.2.94',
     path: sourceVersion === 41 ? 'observed_schema41_recovery' : 'stable_upgrade',
     beforeEvidenceSha256: beforeHash, afterEvidenceSha256: add(after), backupEvidenceSha256: beforeHash }
   return { before, after, files, receipt, add }

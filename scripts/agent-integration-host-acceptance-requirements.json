@@ -1,6 +1,6 @@
 {
   "schemaVersion": 4,
-  "appVersion": "0.2.94",
+  "appVersion": "0.2.95",
   "releaseMacArchitectures": [
     "arm64"
   ],
@@ -9,7 +9,8 @@
     "0.2.90",
     "0.2.91",
     "0.2.92",
-    "0.2.93"
+    "0.2.93",
+    "0.2.94"
   ],
   "stepPolicy": {
     "base": [
@@ -81,31 +82,5 @@
       "schemaKind": "opencode_mcp",
       "selectorKey": "tidemind_opencode"
     }
-  ],
-  "realHostPolicy": {
-    "id": "0.2.94-codex-only",
-    "requiredCatalogIds": [
-      "codex-cli"
-    ],
-    "otherCatalogs": "deferred",
-    "customPaths": "deferred",
-    "reason": "User authorized Codex-only real-host acceptance for 0.2.94; other Agent and Custom real-host validation is deferred. Implementations, regressions, upgrades and signed-candidate requirements remain required.",
-    "desktopAcceptance": {
-      "status": "deferred",
-      "releaseNotesDisclosureRequired": false,
-      "reason": "User authorized deferring Codex Desktop complete real-host acceptance for 0.2.94 based on CLI verification, without a release-notes disclosure for this item. Implementation regressions, upgrades and signed-candidate checks remain required."
-    }
-  },
-  "migrationAcceptanceDeferral": {
-    "policyId": "0.2.94-single-user-manual-migration",
-    "appVersion": "0.2.94",
-    "audience": "single_user",
-    "status": "deferred_to_installation",
-    "execution": "manual_after_release",
-    "scopes": [
-      "upgrade_matrix",
-      "observed_schema41"
-    ],
-    "reason": "The sole beta user authorized manual database migration after release during installation; migration evidence is not claimed passed."
-  }
+  ]
 }

@@ -1,3 +1,4 @@
+import { isDiagnosticRequested } from '../agent-diagnostic-contract.js';
 import Database from 'better-sqlite3';
 import path from 'node:path';
 import { getConfig, getDataDir, getLoadedConfigSourcePath } from '../config.js';
@@ -42,6 +43,7 @@ export function getDb(): Database.Database {
 
 /** 异步加载 sqlite-vec 扩展，应在 getDb() 之后调用一次 */
 export async function initVec(): Promise<VecCapability> {
+  if (isDiagnosticRequested()) return 'unavailable';
   if (vecLoaded) return 'ready';
   if (!db) return 'unavailable';
   if (vecInitPromise) return vecInitPromise;

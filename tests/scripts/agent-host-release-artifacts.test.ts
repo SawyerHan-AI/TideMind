@@ -31,10 +31,9 @@ const input = { index, receipt, architecture: 'arm64', appVersion, sourceCommit,
 }
 
 describe('accepted candidate release artifacts', () => {
-  it('blocks a 0.2.94 artifact-only release without the separate B evidence', () => {
+  it.each(['0.2.94', '0.2.95'])('blocks a %s artifact-only release without the separate B evidence', version => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'accepted-b-required-'))
     try {
-      const version = '0.2.94'
       fs.mkdirSync(path.join(directory, 'provenance'))
       const updatedCandidate = { ...candidate, version }
       const architectures = releaseMacArchitectures(version)

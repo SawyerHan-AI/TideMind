@@ -158,7 +158,17 @@
       "cancelTest": "테스트 취소",
       "testSummary": "{{success}} / {{total}}개 모델 사용 가능",
       "testCancelledSummary": "테스트 취소됨 · {{success}} / {{total}}개 성공",
-      "copyCommand": "명령어 복사"
+      "copyCommand": "명령어 복사",
+      "resumeFutureCalls": "이후 요청 재개",
+      "resumeFutureCallsDescription": "이 작업은 이후 요청만 재개합니다. 이전 요청은 이미 사용량 한도를 소모했을 수 있으며 다시 전송되지 않습니다.",
+      "resumeFutureCallsFeedback": {
+        "succeeded": "이전 요청의 결과가 확인되지 않아 적용된 일시 중지를 해제했습니다. 다른 연결 또는 모델 제한은 계속 적용됩니다.",
+        "busy": "이 연결에서 작업이 진행 중입니다. 작업이 끝난 뒤 다시 시도하세요.",
+        "process": "이전 CLI 프로세스가 종료되었는지 확인할 수 없습니다. 프로세스가 종료되었는지 확인한 뒤 다시 시도하세요.",
+        "environment": "CLI 환경이나 로그인한 계정을 확인할 수 없습니다. 연결 환경을 확인한 뒤 다시 시도하세요.",
+        "failed": "이후 요청을 재개할 수 없습니다. 연결을 확인한 뒤 다시 시도하세요."
+      },
+      "catalogOutdatedShort": "갱신 필요"
     },
     "selection": {
       "loadingModels": "사용 가능한 모델 로딩 중...",
@@ -208,6 +218,7 @@
       "manualInvalid": "모델 ID 형식이 올바르지 않습니다"
     },
     "serviceStatus": {
+      "lastTestSuccess": "마지막으로 성공한 연결 테스트",
       "title": "AI 서비스 상태",
       "never": "없음",
       "currentStatus": "현재 상태",
@@ -215,7 +226,7 @@
       "statusHealthy": "정상",
       "lastSuccess": "마지막 성공 호출",
       "lastError": "마지막 오류",
-      "hint": "조사하거나 연결을 테스트하려면 아래 \"모델 연결\" 섹션을 사용하세요.",
+      "hint": "아래에서 해당 연결의 세부 정보를 열고 문제에 맞는 안내를 따르세요.",
       "statusPausedCountdown": "일시 중지 중 (남은 시간 {{time}})",
       "retryNow": "지금 재시도",
       "retrySuccess": "회로 차단기가 재설정되었습니다",
@@ -226,7 +237,11 @@
       "unknownConnection": "Unknown connection",
       "collapseErrors": "Collapse errors",
       "expandErrors": "Show {{count}} more",
-      "routeFaults": "사용 중인 라우트 장애"
+      "routeFaults": "사용 중인 라우트 장애",
+      "unconfirmedResult": "마지막 요청은 전송되었지만 결과를 확인하지 못했습니다. 새 호출은 일시 중지되었습니다. 연결 세부 정보를 열어 문제를 해결하세요.",
+      "connectionIssue": "이 연결에 문제가 있습니다. 연결 세부 정보를 열어 문제를 해결하세요.",
+      "technicalDetails": "기술 세부 정보",
+      "pausedRoutes": "{{name}} 호출이 일시 중지되었습니다. 영향을 받는 경로: {{tiers}}."
     },
     "catalog": {
       "scope": "계정 범위",
@@ -1133,6 +1148,11 @@
       }
     },
     "managed": {
+      "memoryVerified": "메모리 도구 검증됨",
+      "fullyVerified": "전체 검증 완료",
+      "optionalConnections": "선택적 연결",
+      "connectionTaskHistory": "연결 작업 및 기록 ({{count}})",
+
       "codexSharedIdentityReconnect": "This Codex connection uses an older identity. In the Agent details, disconnect the existing Codex connection and complete its removal, then connect Codex again so Desktop and CLI share one Tide Mind identity.",
       "codexExistingIdentityReview": "Existing Tide Mind connections for Codex need review before connecting. Open the Codex details and resolve the old identity conflict first, then check again and reconnect.",
       "legacyChoice": {
@@ -1159,7 +1179,14 @@
           "signed_identity": "공식 서명",
           "npm_registry": "공식 npm 패키지 검증됨",
           "npm_registry_cache": "캐시된 공식 npm 검증"
-        }
+        },
+        "retry": "출처 확인 다시 시도",
+        "queued": "출처 확인 대기 중",
+        "checking": "출처 확인 중…",
+        "unavailable": "출처 확인을 완료하지 못했습니다. 다시 시도하세요.",
+        "unsupported": "이 설치 방식은 자동 출처 검증을 지원하지 않습니다.",
+        "requested": "출처 재확인을 요청했습니다.",
+        "retryAt": "{{time}} 이후에 다시 시도하세요."
       },
       "title": "Agent 연결",
       "subtitle": "이 Mac에서 호환되는 로컬 Agent를 자동으로 검색하고 유지 관리합니다.",
@@ -1167,6 +1194,8 @@
       "lastChecked": "마지막 확인 {{time}}",
       "notCheckedYet": "아직 확인되지 않음",
       "scanning": "확인 중…",
+      "checkingSources": "설치 출처 확인 중…",
+      "checkingConnections": "기존 연결 확인 중…",
       "recheck": "다시 확인",
       "scanComplete": "확인 완료: {{detected}}가 감지됨, {{newCount}} 신규, {{failed}}가 해결되지 않음.",
       "scanFailed": "확인에 실패했습니다.",
@@ -1175,7 +1204,7 @@
       "regeneratePlan": "계획 재생성",
       "needsAttention": "주의가 필요함",
       "newAgentsFound": "로컬 Agent 설치 {{count}}개가 검토를 기다리고 있습니다.",
-      "existingIssues": "{{count}} 설치에 주의가 필요합니다.",
+      "existingIssues": "연결 {{count}}개에 조치가 필요합니다.",
       "reviewAndConnect": "검토 및 연결",
       "reviewAndEnableMaintenance": "유지 관리 검토 및 활성화",
       "localAgents": "로컬 Agent",
@@ -1302,7 +1331,7 @@
       "reason": {
         "verified": "핵심 메모리 도구가 검증되었습니다.",
         "legacyCallableUnmanaged": "이 기존 연결은 호출 가능합니다. 승인할 때까지 자동 유지 관리가 해제됩니다.",
-        "instructionOnly": "이용안내만 가능합니다.",
+        "instructionOnly": "Skill만 가능합니다.",
         "capabilityCeiling": "이 Agent가 지원하는 최고 기능입니다.",
         "awaitingConsent": "첫 번째 변경 전에 승인을 기다리는 중입니다.",
         "incompatible": "이 버전은 아직 연결할 수 없습니다.",
@@ -1314,7 +1343,7 @@
         "releaseArtifactNotAccepted": "이 항목은 이전 Tide Mind 버전이 기록한 설치 파일 확인 결과이며 다시 확인되기를 기다리고 있습니다. 다시 확인을 실행하면 바로 갱신됩니다.",
         "releaseVersionUnverified": "Tide Mind가 Agent 버전을 확인할 수 없습니다. 공식 배포판에서 다시 설치하거나 업데이트한 후 확인을 다시 실행하세요.",
         "releaseVersionNotAccepted": "이 항목은 이전 Tide Mind 버전이 기록한 버전 확인 결과이며 다시 확인되기를 기다리고 있습니다. 다시 확인을 실행하면 바로 갱신됩니다.",
-        "sourceVerificationPending": "Tide Mind가 이 Agent의 공식 출처를 확인하는 중이라 아직 확인을 완료할 수 없으므로 자동 구성이 보류되었습니다. 온라인 상태가 되면 자동으로 다시 시도합니다.",
+        "sourceVerificationPending": "설치 출처를 다시 확인 중입니다. 설정 변경은 대기하며 기존 연결 상태는 별도로 표시됩니다.",
         "sourceNotOfficial": "이 Agent의 로컬 설치가 공식 릴리스 내용과 일치하지 않아 자동 구성을 중지했습니다. 공식 채널에서 다시 설치한 후 다시 확인을 실행하세요.",
         "sourceConfirmationRequired": "이 설치 방식은 Tide Mind가 공식 출처를 자동으로 확인할 수 없습니다. 공식 채널에서 Agent를 다시 설치하거나 '사용자 정의 로컬 Agent 추가'로 수동 연결하세요.",
         "unverified": "아직 확인되지 않았습니다.",
@@ -1336,7 +1365,10 @@
         "disconnectVerified": "Tide Mind 구성 요소가 없는 것으로 확인되었습니다.",
         "hostUninstalled": "Agent가 더 이상 설치되지 않습니다.",
         "unknown": "최근 확인된 사실을 자세히 알아보세요.",
-        "customConfigOwnedByDiscoveredHost": "이 설정 파일(또는 해당 폴더)은 Tide Mind가 발견한 Agent에 속해 있습니다. 사용자 지정 클라이언트로 추가하지 말고 해당 Agent를 직접 연결하세요."
+        "customConfigOwnedByDiscoveredHost": "이 설정 파일(또는 해당 폴더)은 Tide Mind가 발견한 Agent에 속해 있습니다. 사용자 지정 클라이언트로 추가하지 말고 해당 Agent를 직접 연결하세요.",
+        "automaticConfigurationFailed": "자동 설정이 완료되지 않았습니다. 세부 정보를 확인하고 문제를 해결한 뒤 다시 시도하세요.",
+        "nativePermissionRequired": "에이전트에 플러그인 권한이 필요합니다. 확인 후 계속하세요.",
+        "authenticationRequired": "로그인하지 않았습니다. 이 Agent에서 로그인한 후 다시 확인하세요."
       },
       "access": {
         "complete": "완전한 연결",
@@ -1360,9 +1392,9 @@
       "accessMixed": "연결이 다름",
       "mixed": "설치마다 다름",
       "component": {
-        "instruction": "이용안내",
-        "memoryTools": "기억 도구",
-        "lifecycle": "세션 연계"
+        "instruction": "Skill",
+        "memoryTools": "MCP Tools",
+        "lifecycle": "Hook"
       },
       "componentStatus": {
         "verified": "확인됨",
@@ -1396,6 +1428,13 @@
       "lastVerified": "마지막 확인",
       "lastRepair": "마지막 수리",
       "lastDetected": "마지막으로 감지됨",
+      "checkPending": "점검 대기",
+      "activityLabel": "최근 활동",
+      "noActivity": "활동 기록 없음",
+      "checkLabel": "최근 점검",
+      "modelTestLabel": "자동 모델 테스트",
+      "testTimeLabel": "테스트 시간",
+      "activityScope": "실제 MCP 호출 또는 Hook 이벤트만 포함하며 백그라운드 설정 점검은 제외합니다.",
       "lastUsed": "마지막 실제 사용",
       "noRecord": "기록 없음",
       "noReliableUsage": "신뢰할 수 있는 사용 증거가 없습니다.",
@@ -1558,8 +1597,8 @@
       "backgroundComplete": "{{total}} 설치를 위한 백그라운드 Agent 연결이 완료되었습니다.",
       "backgroundTaskPosition": "{{total}}의 작업 {{current}}",
       "backgroundTaskPinnedOutsidePage": "고정된 작업이 페이지 밖에 있습니다. 현재 페이지를 탐색할 수 있습니다",
-      "backgroundTaskActiveCount": "백그라운드 작업 {{count}}개가 실행 중이거나 검증 대기 중입니다",
-      "backgroundTaskAttentionCount": "{{count}} 백그라운드 작업에 주의가 필요합니다.",
+      "backgroundTaskActiveCount": "Tide Mind가 백그라운드 작업 {{count}}개를 자동 실행 중입니다. 조치가 필요하지 않습니다.",
+      "backgroundTaskAttentionCount": "이전 작업 {{count}}개에 실패 또는 중단 기록이 있습니다. 조치 필요 여부는 Agent의 현재 상태를 확인하세요.",
       "backgroundTasksUpdated": "백그라운드 작업이 업데이트되었습니다.",
       "backgroundTaskPageLoading": "백그라운드 작업 로드 중",
       "backgroundTaskPageLoadFailed": "백그라운드 작업을 로드하지 못했습니다.",
@@ -1577,6 +1616,60 @@
         "awaitingReload": "Tide Mind가 자체 설정을 제거하고 이 Agent에 대한 메모리 제공을 중지했습니다. 이미 실행 중인 호스트는 재시작하거나 새 세션을 시작할 때까지 이전 구성 요소를 유지할 수 있으며, generation이 없는 이전 항목은 자동으로 차단되지 않습니다.",
         "deactivatedVerified": "비활성화 확인됨: 설정이 제거되었고 호스트가 다시 로드되었습니다.",
         "bridgeStopped": "Tide Mind가 이 Agent에 대한 메모리 제공을 중지했습니다. 호스트의 구성 요소는 아직 로드되어 있을 수 있으니 호스트에서 직접 제거하세요."
+      },
+      "sharedConnectionScope": "CLI와 Desktop은 이 연결을 공유합니다. 아이콘은 공유 설정과 실제 호출 상태를 나타냅니다.",
+      "hostEvidenceScope": "동일한 공유 설정의 Skill과 MCP Tools는 연결의 검증 결과를 사용합니다. 아래 Hook 이벤트는 선택한 호스트의 기록입니다.",
+      "disconnectConnection": "공유 연결 끊기",
+      "pauseMember": "이 앱 일시 중지",
+      "resumeMember": "이 앱 재개",
+      "disconnectMember": "이 앱 연결 끊기",
+      "disconnectConnectionTitle": "연결된 모든 앱에서 {{name}} 연결을 끊을까요?",
+      "disconnectConnectionDescription": "이 설정을 공유하는 모든 앱의 연결을 끊습니다. Tide Mind 소유 항목만 제거하며 다른 설정과 기억은 유지합니다.",
+      "retryAutomaticConnection": "설정 다시 시도",
+      "automaticRetryUnavailable": "현재 자동 설정을 사용할 수 없습니다. 세부 정보에 표시된 문제를 해결한 뒤 다시 시도하세요.",
+      "reviewNativePermissions": "플러그인 권한 검토",
+      "authorizeNativeAndConnect": "권한 허용 후 연결",
+      "nativePermissionVersion": "호스트 버전: {{version}}",
+      "diagnostic": {
+        "title": "읽기/쓰기 검증",
+        "scope": "확인된 구독만 사용하며 전체 연결에서 하루 최대 3회 테스트합니다. 테스트 데이터는 개인 기억과 분리됩니다.",
+        "retry": "모델 검증 다시 실행",
+        "checking": "연결 검증 중…",
+        "passed": "읽기/쓰기 검증을 통과했습니다.",
+        "uncertain": "테스트는 제출됐지만 결과를 확인하지 못했습니다. Agent가 정상 작동하는지 확인하세요. 재시도 시 구독 사용량이 차감될 수 있습니다.",
+        "cancelled": "검증이 중지되었습니다. 준비되면 재시도하세요.",
+        "login": "Agent에 로그인한 뒤 재시도하세요.",
+        "metered": "종량제 연결은 자동 모델 테스트를 실행하지 않습니다. Agent에서 Tide Mind를 사용해 검증하세요.",
+        "billing": "구독 과금을 확인하지 못해 모델 테스트를 제출하지 않았습니다. Agent에서 Tide Mind를 사용해 검증하세요.",
+        "dailyLimit": "오늘의 테스트 한도 3회에 도달했습니다. 내일 재시도하거나 Agent에서 Tide Mind를 사용하세요.",
+        "alreadyTested": "이 설정은 이미 자동 테스트했습니다. Agent를 확인한 뒤 수동으로 재시도하세요.",
+        "permission": "Agent의 도구 권한을 확인한 뒤 재시도하세요.",
+        "unsupported": "이 Agent 버전 또는 설정은 자동 테스트를 지원하지 않습니다. Agent에서 Tide Mind 읽기/쓰기에 성공하면 검증됩니다.",
+        "waiting": "검증 대기 중입니다. Agent에서 Tide Mind를 사용하거나 재시도하세요.",
+        "failed": "검증하지 못했습니다. Agent에서 Tide Mind를 사용할 수 있는지 확인한 뒤 재시도하세요."
+      },
+      "authentication": {
+        "title": "Agent 로그인 확인",
+        "recheck": "로그인 다시 확인",
+        "scope": "로그인 상태만으로 모델이나 메모리 도구의 검증이 완료된 것은 아닙니다.",
+        "status": {
+          "not_checked": "로그인 상태를 아직 확인하지 않았습니다",
+          "checking": "로그인 상태 확인 중",
+          "authenticated": "로그인됨",
+          "explicitly_unauthenticated": "로그인하지 않았습니다. 이 Agent에서 로그인한 후 다시 확인하세요.",
+          "unsupported": "이 Agent는 자동 로그인 확인을 지원하지 않습니다.",
+          "unavailable": "지금은 확인할 수 없습니다. Agent가 정상적으로 작동하는지 확인한 후 다시 시도하세요.",
+          "cancelled": "확인이 취소되었습니다. Agent가 정상적으로 작동하는지 확인한 후 다시 시도하세요."
+        },
+        "billing": {
+          "confirmed_subscription": "구독 계정으로 확인되었습니다. 이번 로그인 확인은 모델을 호출하지 않습니다.",
+          "metered": "사용량 기반 요금 계정입니다. 자동 로그인 확인은 모델을 호출하지 않습니다.",
+          "unknown": "요금 방식을 확인하지 못했습니다. 자동 로그인 확인은 모델을 호출하지 않습니다."
+        }
+      },
+      "nativePermissions": {
+        "gemini_extension": "로컬 Tide Mind 확장을 설치하여 로컬 코드 실행, 메모리 지침 로드, 도구 및 훅 연결을 허용합니다. Gemini의 확장 보안 안내에 동의합니다.",
+        "openclaw_capabilities": "로컬 Tide Mind 플러그인을 설치하고 활성화하며, 대화 맥락 읽기 및 프롬프트에 메모리 추가를 허용하고 게이트웨이를 재시작합니다."
       }
     }
   },

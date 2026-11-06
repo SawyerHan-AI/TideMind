@@ -13,6 +13,7 @@ import type {
   PreviewRequest,
 } from './coordinator'
 import type { CapabilityLevel, ComponentKey, DesiredState, JsonValue } from './types'
+import type { PreparedCoordinatorPlan } from './planner'
 
 export type ManagedArtifactObservationKind =
   | 'healthy'
@@ -39,6 +40,7 @@ export interface MissingEpisodeResult {
 }
 
 export interface ReconcilerRepositoryPort extends IntegrationEventRepositoryPort {
+  listFileRepairArtifacts?(installationId: string, plan: PreparedCoordinatorPlan): readonly { artifactId: string; componentKey: ComponentKey }[]
   beginMissingEpisode(input: {
     artifactId: string
     episodeId: string
@@ -184,6 +186,28 @@ export class ManagedAgentReconciler {
       return { status: 'needs_attention', reason: 'repair_plan_failed' }
     }
 
+    // Preview is read-only. Count additional missing artifacts only now, when
+    // this reconcile attempt is ready to submit the complete repair group.
+    const repairArtifacts = this.dependencies.repository.listFileRepairArtifacts?.(request.installation.id, prepared) ?? []
+    for (const artifact of repairArtifacts) {
+      if (artifact.artifactId === request.artifactId) continue
+      const extraEpisode = await this.dependencies.repository.beginMissingEpisode({
+        artifactId: artifact.artifactId, episodeId: this.dependencies.ids.next('episode'),
+        observedAt: this.dependencies.clock.now().toISOString(), windowMs: 24 * 60 * 60 * 1000,
+      })
+      if (!extraEpisode.shouldAutoRestore || extraEpisode.circuitBroken) {
+        await this.persistAttentionEvent({ ...request, artifactId: artifact.artifactId, componentKey: artifact.componentKey },
+          extraEpisode.circuitBroken ? 'auto_repair_circuit_broken' : 'artifact_missing_not_safe_to_restore')
+        return extraEpisode.circuitBroken ? { status: 'paused', reason: 'circuit_breaker' }
+          : { status: 'needs_attention', reason: 'missing_not_safe_to_restore' }
+      }
+    }
+    const markRepairedHealthy = async (): Promise<boolean> => {
+      for (const artifactId of new Set([request.artifactId, ...repairArtifacts.map(item => item.artifactId)])) {
+        if (!await this.dependencies.repository.markArtifactHealthyAfterReadback(artifactId, this.dependencies.clock.now().toISOString())) return false
+      }
+      return true
+    }
     const applyRequest: ApplyPreparedRequest = {
       installation: request.installation,
       preparedPlan: prepared,
@@ -192,10 +216,7 @@ export class ManagedAgentReconciler {
     }
     const result = await this.dependencies.coordinator.applyPrepared(applyRequest)
     if (result.status === 'awaiting_verification') {
-      const healthy = await this.dependencies.repository.markArtifactHealthyAfterReadback(
-        request.artifactId,
-        this.dependencies.clock.now().toISOString(),
-      )
+      const healthy = await markRepairedHealthy()
       if (!healthy) {
         await this.persistAttentionEvent(request, 'auto_repair_state_commit_failed', episodeId)
         return { status: 'needs_attention', reason: 'artifact_state_commit_failed' }
@@ -208,10 +229,7 @@ export class ManagedAgentReconciler {
       return { status: 'needs_attention', reason: result.status }
     }
 
-    const healthy = await this.dependencies.repository.markArtifactHealthyAfterReadback(
-      request.artifactId,
-      this.dependencies.clock.now().toISOString(),
-    )
+    const healthy = await markRepairedHealthy()
     if (!healthy) {
       await this.persistAttentionEvent(request, 'auto_repair_state_commit_failed', episodeId)
       return { status: 'needs_attention', reason: 'artifact_state_commit_failed' }

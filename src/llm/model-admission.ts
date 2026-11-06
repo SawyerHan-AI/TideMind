@@ -92,8 +92,8 @@ export function evaluateModelAdmission(input: AdmissionInput): AdmissionDecision
 
   const test = input.purpose === 'connection_test';
   if (!test) {
-    // An explicit test re-checks the environment itself and is the documented recovery
-    // path for ambiguous / environment failures; background work is not.
+    // Explicit tests can inspect the current environment, but do not resolve old
+    // ambiguous calls. Resuming future calls requires the separate explicit action.
     if (input.connectionStatus === 'checking' || input.connectionStatus === 'testing') {
       return block('connection_busy');
     }

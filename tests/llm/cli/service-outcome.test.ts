@@ -1,12 +1,15 @@
-import { chmodSync, copyFileSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdtempSync, realpathSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { vi } from 'vitest';
 import { createTestDb } from '../../../src/db/connection.js';
 import { createConnection } from '../../../src/db/connections.js';
 import { listModelObservations, reconcileAuthBinding } from '../../../src/db/model-discovery.js';
 import { captureCliIdentity } from '../../../src/llm/cli/resolve-cli.js';
 import { runCliLLM, shutdownCliRuntime } from '../../../src/llm/cli/service.js';
+import { CliProcessExitUnconfirmedError } from '../../../src/llm/cli/errors.js';
+import { cliProcessRegistry } from '../../../src/llm/cli/runtime-process-registry.js';
 import type { CliEnvironmentCheck } from '../../../src/llm/cli/readiness.js';
 
 const fixture = resolve(
@@ -93,6 +96,12 @@ describe('CLI service post-provider durability boundary', () => {
         },
       },
     })).rejects.toMatchObject({ kind: 'ambiguous_outcome' });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const logged = readFileSync(join(state.dataDir, 'logs', new Date().toISOString().slice(0, 10) + '.log'), 'utf8');
+    expect(logged).toContain('post_response_environment');
+    expect(logged).toContain('simulated finalize failure');
+    expect(logged).toContain('\"providerCompleted\":true');
+    expect(logged).toContain('invocationId');
     expect(state.db.prepare(`
       SELECT outcome, error_kind FROM cli_invocations ORDER BY started_at DESC LIMIT 1
     `).get()).toEqual({
@@ -134,4 +143,61 @@ describe('CLI service post-provider durability boundary', () => {
     state.db.close();
     rmSync(state.dataDir, { recursive: true, force: true });
   }, 20_000);
+
+  it('keeps unconfirmed child exit durable across the worker capacity lease release', async () => {
+    const state = await setup();
+    const unregister = cliProcessRegistry.unregister.bind(cliProcessRegistry);
+    const cleanup = vi.spyOn(cliProcessRegistry, 'unregister').mockImplementationOnce(async (...args) => {
+      await unregister(...args);
+      throw new CliProcessExitUnconfirmedError();
+    });
+    try {
+      await expect(runCliLLM(state.db, state.dataDir, {
+        connectionId: state.connectionId,
+        providerType: 'claude-cli',
+        modelAlias: 'default',
+        system: 'system',
+        prompt: 'success',
+        timeoutMs: 10_000,
+        purpose: 'background',
+      }, {
+        purpose: 'background',
+        environment: state.environment,
+        _testHooks: { recheckEnvironment: async () => state.environment },
+      })).rejects.toMatchObject({ kind: 'ambiguous_outcome' });
+      expect(state.db.prepare('SELECT outcome, error_kind FROM cli_invocations').get())
+        .toEqual({ outcome: 'ambiguous', error_kind: 'process_exit_unconfirmed' });
+      expect(state.db.prepare('SELECT * FROM cli_capacity_leases').all()).toEqual([]);
+    } finally {
+      cleanup.mockRestore();
+      state.db.close();
+      rmSync(state.dataDir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('does not admit new work when an older available status disagrees with the unresolved ledger', async () => {
+    const state = await setup();
+    try {
+      state.db.prepare(`INSERT INTO cli_invocations
+        (id, connection_id, provider_type, account_scope, model_alias, prompt_committed, outcome, started_at)
+        VALUES ('unresolved', ?, 'claude-cli', 'claude-cli:fixture-scope', 'default', 1, 'ambiguous', '2026-09-25')`)
+        .run(state.connectionId);
+      await expect(runCliLLM(state.db, state.dataDir, {
+        connectionId: state.connectionId,
+        providerType: 'claude-cli',
+        modelAlias: 'default',
+        system: 'system',
+        prompt: 'success',
+        timeoutMs: 10_000,
+        purpose: 'background',
+      }, {
+        environment: state.environment,
+      })).rejects.toMatchObject({ kind: 'ambiguous_outcome', options: { admissionReason: 'ambiguous_outcome' } });
+      expect(state.db.prepare('SELECT id, outcome, resolution FROM cli_invocations').all())
+        .toEqual([{ id: 'unresolved', outcome: 'ambiguous', resolution: null }]);
+    } finally {
+      state.db.close();
+      rmSync(state.dataDir, { recursive: true, force: true });
+    }
+  });
 });

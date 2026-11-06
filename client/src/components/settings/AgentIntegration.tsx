@@ -2,8 +2,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import {
   AlertTriangle,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   ChevronUp,
   History,
   Plus,
@@ -18,8 +16,6 @@ import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
 import type {
   AgentIntegrationFamilyDto,
-  AgentIntegrationApplyTaskDto,
-  AgentIntegrationApplyTaskPageDto,
   AgentIntegrationInstallationDto,
   AgentIntegrationScanResultDto,
   AgentIntegrationSnapshotDto,
@@ -34,20 +30,10 @@ import { CustomLocalAgentDialog } from './agent-integration-managed/CustomLocalA
 import { ManagedAgentDetail } from './agent-integration-managed/ManagedAgentDetail'
 import { ManagedFamilyList } from './agent-integration-managed/ManagedFamilyList'
 import {
-  applyTaskProgressRefreshDelay,
-  isStaleTaskFeedCursorError,
-  isUnknownApplyTaskError,
-  mergeApplyTaskProgress,
-  partitionManageableInstallationIds,
-  recoverVisibleApplyTask,
-} from './agent-integration-managed/apply-task-presentation'
-import {
-  executionInstallationIds,
   matchesSupportQuery,
-  summarizeExecutionResults,
   summarizeSnapshot,
 } from './agent-integration-managed/presentation'
-import { agentIntegrationsApi } from './agent-integration-managed/types'
+import { agentIntegrationsApi, connectionFamilies, connectionIdForInstallation } from './agent-integration-managed/types'
 
 function InitialSkeleton() {
   return (
@@ -394,22 +380,6 @@ export function AgentIntegration() {
   const [selectedHistoryInstallationId, setSelectedHistoryInstallationId] = useState<string | null>(null)
   const [supportOpen, setSupportOpen] = useState(false)
   const [pendingCoworkInstallationId, setPendingCoworkInstallationId] = useState<string | null>(null)
-  const [applyTask, setApplyTask] = useState<AgentIntegrationApplyTaskDto | null>(null)
-  const applyTaskRef = useRef<AgentIntegrationApplyTaskDto | null>(null)
-  const [applyTasks, setApplyTasks] = useState<AgentIntegrationApplyTaskDto[]>([])
-  const [applyTaskPage, setApplyTaskPage] = useState<Omit<AgentIntegrationApplyTaskPageDto, 'tasks'>>({
-    attentionCount: 0,
-    activeCount: 0,
-    totalCount: 0,
-    startIndex: 0,
-    hasMore: false,
-    hasPrevious: false,
-    nextCursor: null,
-    previousCursor: null,
-  })
-  const [applyTaskPageLoading, setApplyTaskPageLoading] = useState(false)
-  const [applyTaskPageError, setApplyTaskPageError] = useState(false)
-  const [applyTaskPageAnnouncement, setApplyTaskPageAnnouncement] = useState('')
   const [wideDetailLayout, setWideDetailLayout] = useState(false)
   const layoutRef = useRef<HTMLDivElement>(null)
   const initialScanStartedRef = useRef(false)
@@ -419,9 +389,6 @@ export function AgentIntegration() {
   const restoreDetailFocusRef = useRef(false)
   const restoreHistoryFocusRef = useRef(false)
   const localAgentsHeadingRef = useRef<HTMLHeadingElement>(null)
-  const previousTaskButtonRef = useRef<HTMLButtonElement>(null)
-  const nextTaskButtonRef = useRef<HTMLButtonElement>(null)
-  const restoreTaskPageFocusRef = useRef<'previous' | 'next' | null>(null)
 
   useEffect(() => {
     const element = layoutRef.current
@@ -433,124 +400,27 @@ export function AgentIntegration() {
     return () => observer.disconnect()
   }, [])
 
-  const loadApplyTaskPage = useCallback(async (
-    cursor?: string,
-    selectEdge?: 'first' | 'last',
-  ) => {
-    if (!restoreTaskPageFocusRef.current) {
-      if (document.activeElement === previousTaskButtonRef.current) {
-        restoreTaskPageFocusRef.current = 'previous'
-      } else if (document.activeElement === nextTaskButtonRef.current) {
-        restoreTaskPageFocusRef.current = 'next'
-      }
-    }
-    setApplyTaskPageLoading(true)
-    setApplyTaskPageError(false)
-    try {
-      let page: AgentIntegrationApplyTaskPageDto
-      try {
-        page = await agentIntegrationsApi().listApplyTasks({ limit: 20, ...(cursor ? { cursor } : {}) })
-      } catch (error) {
-        const stale = isStaleTaskFeedCursorError(error)
-        if (!cursor || !stale) throw error
-        // A cursor is authority-bound to one durable revision. Any stale or
-        // malformed cursor fails closed to a fresh first page.
-        page = await agentIntegrationsApi().listApplyTasks({ limit: 20 })
-        setApplyTaskPageAnnouncement(t('agent.managed.backgroundTasksUpdated'))
-      }
-      let pinnedExact: AgentIntegrationApplyTaskDto | null | undefined
-      const prior = applyTaskRef.current
-      if (!selectEdge && prior?.feedKey && !page.tasks.some(task => task.feedKey === prior.feedKey)) {
-        try {
-          pinnedExact = await agentIntegrationsApi().getApplyTask(prior.feedKey)
-        } catch (error) {
-          if (!isUnknownApplyTaskError(error)) throw error
-          // The recovered run may have become uniquely owned by a durable task;
-          // remove the stale pin and let the authoritative page choose again.
-          pinnedExact = null
-        }
-      }
-      setApplyTasks(page.tasks)
-      setApplyTaskPage({
-        attentionCount: page.attentionCount,
-        activeCount: page.activeCount,
-        totalCount: page.totalCount,
-        startIndex: page.startIndex,
-        hasMore: page.hasMore,
-        hasPrevious: page.hasPrevious,
-        nextCursor: page.nextCursor,
-        previousCursor: page.previousCursor,
-      })
-      setApplyTask(current => {
-        let next: AgentIntegrationApplyTaskDto | null
-        if (selectEdge && page.tasks.length > 0) {
-          next = page.tasks[selectEdge === 'first' ? 0 : page.tasks.length - 1] ?? current
-        } else if (pinnedExact !== undefined) {
-          next = pinnedExact ?? recoverVisibleApplyTask(null, page.tasks)
-        } else {
-          next = recoverVisibleApplyTask(current, page.tasks)
-        }
-        applyTaskRef.current = next
-        return next
-      })
-    } catch {
-      setApplyTaskPageError(true)
-    } finally {
-      setApplyTaskPageLoading(false)
-    }
-  }, [t])
-
-  const refreshApplyTasks = useCallback(() => {
-    void loadApplyTaskPage()
-  }, [loadApplyTaskPage])
+  useEffect(() => {
+    const stopState = agentIntegrationsApi().onStateChanged(refetch)
+    const stopProgress = agentIntegrationsApi().onTaskProgress(() => refetch())
+    return () => { stopState(); stopProgress() }
+  }, [refetch])
 
   useEffect(() => {
-    if (applyTaskPageLoading || !restoreTaskPageFocusRef.current) return
-    const target = restoreTaskPageFocusRef.current === 'previous'
-      ? previousTaskButtonRef.current
-      : nextTaskButtonRef.current
-    restoreTaskPageFocusRef.current = null
-    target?.focus()
-  }, [applyTask, applyTaskPageLoading, applyTasks])
+    if (!scanning && snapshot?.scanProgress?.phase !== 'discovery' && snapshot?.scanProgress?.phase !== 'maintenance') return
+    const timer = window.setTimeout(refetch, 2_000)
+    return () => window.clearTimeout(timer)
+  }, [scanning, snapshot, refetch])
 
-  useEffect(() => {
-    const unsubscribe = agentIntegrationsApi().onTaskProgress(task => {
-      // Keep at most one pinned task outside the bounded page. The durable feed
-      // is reloaded instead of infinitely prepending progress DTOs.
-      const pinned = { ...task, feedKey: task.feedKey ?? `task:${task.id}` }
-      setApplyTask(current => {
-        const next = mergeApplyTaskProgress(current, pinned)
-        applyTaskRef.current = next
-        return next
-      })
-      setApplyTaskPageAnnouncement(t('agent.managed.backgroundTasksUpdated'))
-      refreshApplyTasks()
-      if (task.state === 'completed') refetch()
-    })
-    refreshApplyTasks()
-    return unsubscribe
-  }, [refetch, refreshApplyTasks, t])
-
-  useEffect(() => {
-    const refreshDelay = applyTaskProgressRefreshDelay(applyTasks, applyTask)
-    if (refreshDelay === null) return
-    const timer = window.setInterval(refreshApplyTasks, refreshDelay)
-    return () => window.clearInterval(timer)
-  }, [applyTask, applyTasks, refreshApplyTasks])
-
+  const scanRunning = scanning || snapshot?.scanProgress?.phase === 'discovery' || snapshot?.scanProgress?.phase === 'maintenance'
   const summary = snapshot ? summarizeSnapshot(snapshot) : null
-  const applyTaskSummary = applyTask ? summarizeExecutionResults(applyTask.results) : null
-  const failedApplyIds = applyTask ? executionInstallationIds(applyTask.results, 'failed') : []
-  const recoveryApplyIds = applyTask ? executionInstallationIds(applyTask.results, 'needs_recovery') : []
-  const interruptedApplyIds = applyTask ? executionInstallationIds(applyTask.results, 'interrupted') : []
-  const interruptedPartitions = partitionManageableInstallationIds(
-    interruptedApplyIds,
-    snapshot?.installations ?? [],
-  )
-  const applyTaskIndex = applyTask ? applyTasks.findIndex(task => (
-    (task.feedKey ?? `task:${task.id}`) === (applyTask.feedKey ?? `task:${applyTask.id}`)
-  )) : -1
-  const selectedFamily = snapshot?.families.find(family => family.id === selectedFamilyId) ?? null
+  const selectedFamily = snapshot ? connectionFamilies(snapshot).find(family => family.id === selectedFamilyId)
+    ?? (selectedFamilyId && selectedInstallationId ? connectionFamilies(snapshot).find(family => family.installationIds.includes(selectedInstallationId)) : null) ?? null : null
+  useEffect(() => {
+    if (!selectedFamily || selectedFamily.id === selectedFamilyId) return
+    setSelectedFamilyId(selectedFamily.id)
+    if (detailTriggerRef.current) detailTriggerRef.current.familyId = selectedFamily.id
+  }, [selectedFamily, selectedFamilyId])
   const selectedHistoryInstallation = snapshot?.historyInstallations.find(
     installation => installation.id === selectedHistoryInstallationId,
   ) ?? null
@@ -569,7 +439,7 @@ export function AgentIntegration() {
     if (!target && !historyTarget) return
     if (target) {
       setSelectedHistoryInstallationId(null)
-      setSelectedFamilyId(target.familyId)
+      setSelectedFamilyId(connectionIdForInstallation(snapshot, target.id))
       setSelectedInstallationId(target.id)
     } else if (historyTarget) {
       setSelectedFamilyId(null)
@@ -591,7 +461,7 @@ export function AgentIntegration() {
     const liveTrigger = trigger?.element.isConnected
       ? trigger.element
       : [...document.querySelectorAll<HTMLButtonElement>('[data-agent-family-trigger]')]
-        .find(candidate => candidate.dataset.agentFamilyTrigger === trigger?.familyId)
+        .find(candidate => candidate.dataset.agentConnectionTrigger === trigger?.familyId)
     liveTrigger?.focus()
   }, [selectedFamilyId])
 
@@ -666,11 +536,13 @@ export function AgentIntegration() {
           <button
             type="button"
             onClick={() => void scan()}
-            disabled={scanning || loading}
+            disabled={scanRunning || loading}
             className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-indigo-400/20 bg-indigo-400/10 px-3 py-2 text-xs font-medium text-indigo-200 transition-colors hover:bg-indigo-400/15 disabled:cursor-wait disabled:opacity-50"
           >
-            <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} aria-hidden />
-            {scanning ? t('agent.managed.scanning') : t('agent.managed.recheck')}
+            <RefreshCw size={13} className={scanRunning ? 'animate-spin' : ''} aria-hidden />
+            {scanning || snapshot?.scanProgress?.phase === 'discovery' || snapshot?.scanProgress?.phase === 'maintenance'
+              ? t(snapshot?.scanProgress?.phase === 'maintenance' ? 'agent.managed.checkingConnections' : 'agent.managed.checkingSources')
+              : t('agent.managed.recheck')}
           </button>
         </header>
 
@@ -686,15 +558,16 @@ export function AgentIntegration() {
 
         {summary && (
           <>
-            <div className="mt-4 grid grid-cols-1 gap-2 min-[560px]:grid-cols-3">
+            <div className="mt-4 grid grid-cols-1 gap-2 min-[560px]:grid-cols-4">
+              <AgentOverviewMetric label={t('agent.managed.memoryVerified')} value={String(snapshot?.connections.filter(item => item.memoryCallsVerified).length ?? 0)} />
               <AgentOverviewMetric
-                label={t('agent.managed.status.available')}
-                value={String(summary.availableCount)}
+                label={t('agent.managed.fullyVerified')}
+                value={String(snapshot?.connections.filter(item => item.memoryCallsVerified && item.components.every(component => ['verified', 'unsupported'].includes(component.state))).length ?? 0)}
               />
               <AgentOverviewMetric
                 label={t('agent.managed.needsAttention')}
-                value={String(summary.pendingCount + summary.attentionCount + (scanReport?.unresolved.length ?? 0))}
-                warning={summary.pendingCount + summary.attentionCount + (scanReport?.unresolved.length ?? 0) > 0}
+                value={String(summary.attentionCount)}
+                warning={summary.attentionCount > 0}
               />
               <AgentOverviewMetric
                 label={t('agent.managed.lastChecked', { time: '' }).replace(/[：:]\s*$/, '').trim()}
@@ -713,201 +586,6 @@ export function AgentIntegration() {
 
         <div className="sr-only" aria-live="polite">{scanAnnouncement}</div>
         <div className="mt-4 space-y-3">
-
-        {applyTaskPageError && (
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-400/15 bg-amber-400/[0.06] px-4 py-3 text-xs text-amber-200" role="alert">
-          <span>{t('agent.managed.backgroundTaskPageLoadFailed')}</span>
-          <button
-            type="button"
-            className="shrink-0 rounded border border-current/20 px-2 py-1"
-            onClick={refreshApplyTasks}
-          >
-            {t('agent.managed.retryBackgroundTaskPage')}
-          </button>
-        </div>
-        )}
-
-        {applyTask && applyTaskSummary && (() => {
-        const failed = applyTaskSummary.failed > 0 || applyTaskSummary.needsRecovery > 0
-        const pendingVerification = !failed && applyTask.state === 'completed' && applyTaskSummary.awaitingVerification > 0
-        const interrupted = !failed && applyTaskSummary.interrupted > 0
-        const superseded = !failed && !pendingVerification && !interrupted
-          && applyTaskSummary.otherAttention === 0 && applyTaskSummary.superseded > 0
-        const tone = applyTask.state === 'running'
-          ? 'border-indigo-400/15 bg-indigo-400/[0.06] text-indigo-200'
-          : failed
-            ? 'border-red-400/15 bg-red-400/[0.06] text-red-200'
-            : interrupted || pendingVerification || applyTaskSummary.otherAttention > 0
-              ? 'border-amber-400/15 bg-amber-400/[0.06] text-amber-200'
-              : superseded
-                ? 'border-white/[0.08] bg-white/[0.03] text-gray-300'
-                : 'border-emerald-400/15 bg-emerald-400/[0.06] text-emerald-200'
-        return (
-          <div
-            data-task-feed-key={applyTask.feedKey ?? `task:${applyTask.id}`}
-            data-task-feed-total={applyTaskPage.totalCount}
-            data-task-feed-start-index={applyTaskPage.startIndex}
-            data-task-feed-page-index={applyTaskIndex}
-            data-tone={applyTask.state === 'running'
-              ? 'running'
-              : failed
-                ? 'critical'
-                : interrupted || pendingVerification || applyTaskSummary.otherAttention > 0
-                  ? 'attention'
-                  : superseded
-                    ? 'superseded'
-                    : 'success'}
-            className={`rounded-xl border px-4 py-3 text-xs ${tone}`}
-            role={failed ? 'alert' : 'status'}
-            aria-live="polite"
-          >
-            <span className="sr-only" aria-live="polite">{applyTaskPageAnnouncement}</span>
-            {applyTaskPage.activeCount > 0 && (
-              <p className="mb-2 text-indigo-200">
-                {t('agent.managed.backgroundTaskActiveCount', { count: applyTaskPage.activeCount })}
-              </p>
-            )}
-            {applyTaskPage.attentionCount > 0 && (
-              <p className="mb-2 text-amber-200">
-                {t('agent.managed.backgroundTaskAttentionCount', { count: applyTaskPage.attentionCount })}
-              </p>
-            )}
-            {(applyTaskIndex >= 0 ? applyTaskPage.totalCount > 1 : applyTasks.length > 0) && (
-              <div className="mb-2 flex items-center justify-end gap-2">
-                <button
-                  ref={previousTaskButtonRef}
-                  type="button"
-                  aria-label={t('agent.managed.previousBackgroundTask')}
-                  aria-busy={applyTaskPageLoading}
-                  disabled={applyTaskPageLoading || applyTaskIndex < 0
-                    || (applyTaskIndex === 0 && !applyTaskPage.hasPrevious)}
-                  onClick={() => {
-                    const previous = applyTasks[applyTaskIndex - 1]
-                    if (previous) {
-                      restoreTaskPageFocusRef.current = 'previous'
-                      applyTaskRef.current = previous
-                      setApplyTask(previous)
-                      window.setTimeout(() => previousTaskButtonRef.current?.focus(), 0)
-                    }
-                    else if (applyTaskPage.previousCursor) {
-                      restoreTaskPageFocusRef.current = 'previous'
-                      void loadApplyTaskPage(applyTaskPage.previousCursor, 'last')
-                    }
-                  }}
-                  className="rounded border border-current/20 p-1 disabled:opacity-30"
-                >
-                  <ChevronLeft size={13} aria-hidden />
-                </button>
-                <span>{applyTaskIndex < 0
-                  ? t('agent.managed.backgroundTaskPinnedOutsidePage')
-                  : t('agent.managed.backgroundTaskPosition', {
-                      current: applyTaskPage.startIndex + applyTaskIndex + 1,
-                      total: applyTaskPage.totalCount,
-                    })}</span>
-                <button
-                  ref={nextTaskButtonRef}
-                  type="button"
-                  aria-label={t('agent.managed.nextBackgroundTask')}
-                  aria-busy={applyTaskPageLoading}
-                  disabled={applyTaskPageLoading || applyTasks.length === 0
-                    || (applyTaskIndex >= applyTasks.length - 1 && !applyTaskPage.hasMore)}
-                  onClick={() => {
-                    const next = applyTasks[applyTaskIndex + 1]
-                    if (next) {
-                      restoreTaskPageFocusRef.current = 'next'
-                      applyTaskRef.current = next
-                      setApplyTask(next)
-                      window.setTimeout(() => nextTaskButtonRef.current?.focus(), 0)
-                    }
-                    else if (applyTaskPage.nextCursor) {
-                      restoreTaskPageFocusRef.current = 'next'
-                      void loadApplyTaskPage(applyTaskPage.nextCursor, 'first')
-                    }
-                  }}
-                  className="rounded border border-current/20 p-1 disabled:opacity-30"
-                >
-                  <ChevronRight size={13} aria-hidden />
-                </button>
-              </div>
-            )}
-            <p>
-              {applyTask.state === 'running'
-                ? t('agent.managed.backgroundProgress', {
-                    completed: applyTask.results.length,
-                    total: applyTask.installationIds.length,
-                  })
-                : t('agent.managed.backgroundComplete', { total: applyTask.installationIds.length })}
-            </p>
-            {applyTask.state === 'completed' && (
-              <p className="mt-1">
-                {applyTaskSummary.committed} {t('agent.managed.execution.committed')}
-                {' · '}{applyTaskSummary.awaitingVerification} {t('agent.managed.execution.awaiting_verification')}
-                {' · '}{applyTaskSummary.superseded} {t('agent.managed.execution.superseded')}
-                {' · '}{applyTaskSummary.failed} {t('agent.managed.execution.failed')}
-                {' · '}{applyTaskSummary.needsRecovery} {t('agent.managed.execution.needs_recovery')}
-                {' · '}{applyTaskSummary.interrupted} {t('agent.managed.execution.interrupted')}
-              </p>
-            )}
-            {applyTask.state === 'completed' && applyTask.results.length > 0 && (
-              <details className="mt-2">
-                <summary className="cursor-pointer text-current">{t('agent.managed.viewDetails')}</summary>
-                <ul className="mt-2 space-y-1 text-gray-300">
-                  {applyTask.results.map(result => {
-                    const installation = snapshot?.installations.find(item => item.id === result.installationId)
-                      ?? snapshot?.historyInstallations.find(item => item.id === result.installationId)
-                    return (
-                      <li key={result.installationId} className="break-words">
-                        {installation?.displayName ?? result.installationId}
-                        {' · '}{t(`agent.managed.execution.${result.status}`)}
-                        {result.reason ? ` · ${result.reason}` : ''}
-                      </li>
-                    )
-                  })}
-                </ul>
-              </details>
-            )}
-            {applyTask.state === 'completed' && failedApplyIds.length > 0 && (
-              <button
-                type="button"
-                onClick={() => openBatch(failedApplyIds)}
-                className="mt-2 rounded-lg border border-white/15 px-3 py-1.5 text-xs hover:bg-white/5"
-              >
-                {t('agent.managed.retryFailedCount', { count: failedApplyIds.length })}
-              </button>
-            )}
-            {applyTask.state === 'completed' && recoveryApplyIds.length > 0 && (
-              <button
-                type="button"
-                onClick={() => openBatch(recoveryApplyIds)}
-                className="mt-2 ml-2 rounded-lg border border-white/15 px-3 py-1.5 text-xs hover:bg-white/5"
-              >
-                {t('agent.managed.regenerateRecoveryCount', { count: recoveryApplyIds.length })}
-              </button>
-            )}
-            {applyTask.state === 'completed' && interruptedPartitions.retryable.length > 0 && (
-              <button
-                type="button"
-                onClick={() => openBatch(interruptedPartitions.retryable)}
-                className="mt-2 ml-2 rounded-lg border border-white/15 px-3 py-1.5 text-xs hover:bg-white/5"
-              >
-                {t('agent.managed.regenerateInterruptedCount', { count: interruptedPartitions.retryable.length })}
-              </button>
-            )}
-            {applyTask.state === 'completed' && interruptedPartitions.unavailable.length > 0 && (
-              <button
-                type="button"
-                onClick={() => void scan()}
-                disabled={scanning}
-                className="mt-2 ml-2 rounded-lg border border-white/15 px-3 py-1.5 text-xs hover:bg-white/5 disabled:cursor-wait disabled:opacity-50"
-              >
-                {t('agent.managed.recheckUnavailableInterruptedCount', {
-                  count: interruptedPartitions.unavailable.length,
-                })}
-              </button>
-            )}
-          </div>
-        )
-        })()}
 
         {snapshot?.fixtureMode === 'isolated_ui_audit' && (
         <div className="rounded-xl border border-sky-400/15 bg-sky-400/[0.06] px-4 py-3 text-xs text-sky-200" role="note">
@@ -933,54 +611,17 @@ export function AgentIntegration() {
         </div>
         )}
 
-        {snapshot && summary && (summary.pendingCount > 0 || summary.attentionCount > 0 || Boolean(scanReport?.unresolved.length)) && (
-        <section className="rounded-xl border border-amber-400/15 bg-amber-400/[0.06] p-4" aria-labelledby="managed-attention-title">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-start gap-3">
-              <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-300" aria-hidden />
-              <div>
-                <h3 id="managed-attention-title" className="text-xs font-medium text-amber-100">{t('agent.managed.needsAttention')}</h3>
-                <ul className="mt-1 space-y-1 text-xs text-amber-200/80">
-                  {summary.pendingCount > 0 && <li>{t('agent.managed.newAgentsFound', { count: summary.pendingCount })}</li>}
-                  {summary.attentionCount > 0 && <li>{t('agent.managed.existingIssues', { count: summary.attentionCount })}</li>}
-                  {scanReport && scanReport.unresolved.length > 0 && (
-                    <li>
-                      <details>
-                        <summary className="cursor-pointer">
-                          {t('agent.managed.scanComplete', {
-                            detected: scanReport.detectedCount,
-                            newCount: scanReport.newlyDiscoveredCount,
-                            failed: scanReport.unresolved.length,
-                          })}
-                        </summary>
-                        <ul className="mt-1 space-y-1 pl-4 text-amber-100/70">
-                          {scanReport.unresolved.map((item, index) => (
-                            <li key={`${item.hostVariants.join(':')}-${index}`} className="break-words">
-                              {item.hostVariants.length > 0 ? `${item.hostVariants.join(' / ')} · ` : ''}{item.summary}
-                            </li>
-                          ))}
-                        </ul>
-                      </details>
-                    </li>
-                  )}
-                </ul>
-              </div>
-            </div>
-            {summary.pendingCount > 0 && (
-              <button type="button" onClick={() => openBatch()} className="rounded-lg bg-amber-300 px-3 py-2 text-xs font-medium text-amber-950 hover:bg-amber-200">
-                {t('agent.managed.reviewAndConnect')}
-              </button>
-            )}
-          </div>
-        </section>
-        )}
+
         </div>
       </section>
 
       <section aria-labelledby="managed-local-agents-title">
         <div className="mb-2 flex items-center justify-between">
           <h3 ref={localAgentsHeadingRef} id="managed-local-agents-title" tabIndex={-1} className="text-sm font-medium text-gray-300 focus:outline-none">{t('agent.managed.localAgents')}</h3>
+          <div className="flex items-center gap-3">
+            {snapshot?.installations.some(item => item.manageable && !item.automaticConnectionEnabled && item.statusGroup === 'awaiting_connection') && <button type="button" onClick={() => openBatch()} className="text-xs text-indigo-300 hover:text-indigo-200">{t('agent.managed.reviewAndConnect')}</button>}
           <button type="button" onClick={() => setSupportOpen(true)} className="text-xs text-gray-400 hover:text-indigo-300">{t('agent.managed.viewSupport')}</button>
+          </div>
         </div>
 
         {((loading && !snapshot) || (scanning && snapshot?.lastScanAt === null && snapshot.families.length === 0)) ? <InitialSkeleton /> : snapshot && snapshot.families.length === 0 ? (
@@ -1000,7 +641,8 @@ export function AgentIntegration() {
                 detailTriggerRef.current = { familyId, element: trigger }
                 setSelectedHistoryInstallationId(null)
                 setSelectedFamilyId(familyId)
-                setSelectedInstallationId(null)
+                const target = connectionFamilies(snapshot).find(family => family.id === familyId)
+                setSelectedInstallationId(target?.connection?.actionInstallationIds[0] ?? target?.installationIds[0] ?? null)
               }} />
             </div>
             {selectedFamily && (
@@ -1039,6 +681,12 @@ export function AgentIntegration() {
         </button>
         {advancedOpen && (
           <div id="agent-advanced-connections" className="mt-2 space-y-3">
+            {Boolean(scanReport?.unresolved.length) && (
+              <details className="p-3 text-xs text-gray-400">
+                <summary className="cursor-pointer">{t('agent.managed.scanComplete', { detected: scanReport?.detectedCount, newCount: scanReport?.newlyDiscoveredCount, failed: scanReport?.unresolved.length })}</summary>
+                <ul className="mt-2 space-y-2">{scanReport?.unresolved.map((item, index) => <li key={index}>{item.hostVariants.join(' / ')} · {item.summary}</li>)}</ul>
+              </details>
+            )}
             <div className="glass-card rounded-xl p-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
@@ -1141,16 +789,7 @@ export function AgentIntegration() {
           requestedInstallationIds={requestedInstallationIds}
           onClose={() => setBatchOpen(false)}
           onComplete={refetch}
-          onTaskUpdate={task => {
-            const pinned = { ...task, feedKey: task.feedKey ?? `task:${task.id}` }
-            setApplyTask(current => {
-              const next = mergeApplyTaskProgress(current, pinned)
-              applyTaskRef.current = next
-              return next
-            })
-            setApplyTaskPageAnnouncement(t('agent.managed.backgroundTasksUpdated'))
-            refreshApplyTasks()
-          }}
+          onTaskUpdate={() => refetch()}
           fallbackFocusRef={localAgentsHeadingRef}
         />
       )}
@@ -1177,7 +816,7 @@ export function AgentIntegration() {
             const installation = snapshot.installations.find(item => item.id === installationId)
             setCustomAgentOpen(false)
             setSelectedHistoryInstallationId(null)
-            setSelectedFamilyId(installation?.familyId ?? 'custom-local-agent')
+            setSelectedFamilyId(snapshot && installation ? connectionIdForInstallation(snapshot, installation.id) : null)
             setSelectedInstallationId(installationId)
             requestAnimationFrame(() => localAgentsHeadingRef.current?.focus())
           }}

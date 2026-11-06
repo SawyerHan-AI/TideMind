@@ -16,6 +16,7 @@ import { useFormatters } from '../../../hooks/useFormatters'
 import { ConfirmDialog } from '../../shared/ConfirmDialog'
 import type {
   AgentIntegrationApplyResultDto,
+  AgentIntegrationSourceRetryDto,
   AgentIntegrationCircuitResetPreviewDto,
   AgentIntegrationCodexTrustReviewDto,
   AgentIntegrationCodexTrustResultDto,
@@ -111,10 +112,17 @@ export function ManagedAgentDetail({
     [installationId],
   )
   const { data: detail, loading, error, refetch } = useIPC(fetchDetail)
+  const sourceTaskState = detail?.installation.sourceVerification?.task?.state
+  useEffect(() => {
+    if (sourceTaskState !== 'checking' && sourceTaskState !== 'queued') return
+    const timer = window.setTimeout(refetch, 2_000)
+    return () => window.clearTimeout(timer)
+  }, [detail, sourceTaskState, refetch])
   const [technical, setTechnical] = useState<AgentIntegrationDetailDto['technical'] | null>(null)
   const [technicalOpen, setTechnicalOpen] = useState(false)
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [sourceRetry, setSourceRetry] = useState<{ installationId: string; result: AgentIntegrationSourceRetryDto } | null>(null)
   const [confirmPauseInstallationId, setConfirmPauseInstallationId] = useState<string | null>(null)
   const [legacyCandidates,setLegacyCandidates]=useState<{agentId:string;name:string}[]>([])
   const [legacySelected,setLegacySelected]=useState('')
@@ -145,7 +153,8 @@ export function ManagedAgentDetail({
   const actionRequestSequence = useRef(0)
   const pendingTabFocusInstallationId = useRef<string | null>(null)
   const activeInstallationId = useRef(installationId)
-  const detailSnapshotRef = useRef(snapshot)
+  const installationSnapshotState = JSON.stringify(snapshot.installations.find(item => item.id === installationId))
+  const detailSnapshotRef = useRef({ id: installationId, state: installationSnapshotState })
   activeInstallationId.current = installationId
   const acknowledgedInstallations = useRef(new Set<string>())
   const acknowledgingInstallations = useRef(new Set<string>())
@@ -176,10 +185,13 @@ export function ManagedAgentDetail({
   }, [installationId])
 
   useEffect(() => {
-    if (detailSnapshotRef.current === snapshot) return
-    detailSnapshotRef.current = snapshot
+    const previous = detailSnapshotRef.current
+    detailSnapshotRef.current = { id: installationId, state: installationSnapshotState }
+    // Selection changes already cause useIPC(fetchDetail) to reload. Background
+    // changes to another connection should not inspect this host again.
+    if (previous.id !== installationId || previous.state === installationSnapshotState) return
     refetch()
-  }, [refetch, snapshot])
+  }, [refetch, installationId, installationSnapshotState])
 
   useEffect(() => {
     if (codexTrustReview?.status !== 'action_required') return
@@ -277,6 +289,23 @@ export function ManagedAgentDetail({
   }
 
   const installation = detail.installation
+  // Only memory diagnostics are connection-wide. Account and lifecycle facts
+  // below remain attached to the selected host.
+  const diagnostic = family.connection?.shared ? family.connection.diagnostic : installation.diagnostic
+  const diagnosticMembers = family.connection?.shared
+    ? snapshot.installations.filter(member => family.connection!.installationIds.includes(member.id))
+    : [installation]
+  const diagnosticTarget = diagnosticMembers.find(member => member.manageable && member.desiredState === 'managed'
+    && member.deactivation?.bridge !== 'stopped' && member.deactivation?.maintenance !== 'paused'
+    && ['codex-cli', 'claude-code-cli', 'claude-code-native'].includes(member.hostVariant))
+  const hostLifecycle = installation.components.find(component => component.key === 'lifecycle')
+  const sharedLifecycle = family.connection?.components.find(component => component.key === 'lifecycle')
+  const nativeTrustKnown = family.connection?.shared
+    ? Boolean(sharedLifecycle?.hostRecognitionVerified && !sharedLifecycle.hostRecognitionRejected && sharedLifecycle.configurationFingerprint
+      && sharedLifecycle.configurationFingerprint === hostLifecycle?.configurationFingerprint)
+    : Boolean(hostLifecycle?.hostRecognitionVerified && !hostLifecycle.hostRecognitionRejected)
+  const currentRequiredActions = detail.requiredUserActionDetails?.filter(action => action.kind !== 'codex_hook_trust' || (installation.manageable && hostLifecycle?.state === 'confirmation_required' && !nativeTrustKnown)) ?? []
+
   const doAction = async (name: string, action: () => Promise<unknown>) => {
     const targetInstallationId = installation.id
     const requestSequence = ++actionRequestSequence.current
@@ -297,14 +326,16 @@ export function ManagedAgentDetail({
     }
   }
 
-  const openDisconnect = async () => {
+  const openDisconnect = async (wholeConnection = false) => {
     const targetInstallationId = installation.id
     const requestSequence = ++actionRequestSequence.current
     setBusyAction('disconnect-preview')
     setActionError(null)
     setDisconnectResult(null)
     try {
-      const preview = await agentIntegrationsApi().previewDisconnect(targetInstallationId, false)
+      const preview = wholeConnection && family.connection
+        ? await agentIntegrationsApi().previewConnectionDisconnect(family.connection.id)
+        : await agentIntegrationsApi().previewDisconnect(targetInstallationId, false)
       if (activeInstallationId.current === targetInstallationId
         && actionRequestSequence.current === requestSequence) setDisconnectPreview(preview)
     } catch (previewError) {
@@ -361,13 +392,16 @@ export function ManagedAgentDetail({
   }
 
   const executeDisconnect = async (preview: AgentIntegrationPlanPreviewDto) => {
-    const targetInstallationId = preview.installations[0]?.installationId
-    if (!targetInstallationId || targetInstallationId !== activeInstallationId.current) return
+    const targetInstallationId = preview.connectionId ? activeInstallationId.current : preview.installations[0]?.installationId
+    if (!targetInstallationId || targetInstallationId !== activeInstallationId.current
+      || (preview.connectionId && preview.connectionId !== family.connection?.id)) return
     const requestSequence = ++actionRequestSequence.current
     setBusyAction('disconnect')
     setActionError(null)
     try {
-      const result = await agentIntegrationsApi().disconnect(preview.planHash, targetInstallationId)
+      const result = preview.connectionId
+        ? await agentIntegrationsApi().disconnectConnection(preview.planHash, preview.connectionId)
+        : await agentIntegrationsApi().disconnect(preview.planHash, targetInstallationId)
       if (activeInstallationId.current === targetInstallationId
         && actionRequestSequence.current === requestSequence) {
         setDisconnectResult(result)
@@ -536,11 +570,11 @@ export function ManagedAgentDetail({
               {installation.version ? ` · v${installation.version}` : ''}
             </p>
             <p className="mt-1 text-xs leading-relaxed text-gray-400">
-              {historyOnly
-                ? t(statusReasonKey(installation.statusReason))
-                : installation.manageable
-                ? t(statusReasonKey(installation.statusReason))
-                : managementUnavailableHelp}
+              {family.connection?.shared
+                ? t(statusReasonKey(family.connection.statusReason))
+                : historyOnly || installation.manageable
+                  ? t(statusReasonKey(installation.statusReason))
+                  : managementUnavailableHelp}
             </p>
             {deactivationNoticeKey(installation) && (
               <p
@@ -552,14 +586,42 @@ export function ManagedAgentDetail({
             )}
           </div>
           <StatusBadge
-            group={installation.statusGroup}
-            reason={installation.statusReason}
+            group={family.connection?.statusGroup ?? installation.statusGroup}
+            reason={family.connection?.statusGroup !== 'needs_attention' && !installation.manageable
+              ? installation.statusReason : family.connection?.statusReason ?? installation.statusReason}
             compact
-            detectOnly={!installation.manageable && !historyOnly}
+            detectOnly={!historyOnly && (family.connection
+              ? installations.every(member => !member.manageable)
+              : !installation.manageable)}
           />
         </div>
-        <div className="mt-3">
-          <AccessBadge
+        {family.connection && (family.connection.shared || family.connection.intentState === 'paused' || family.connection.statusGroup === 'processing') && (
+          <div className="mt-3 space-y-2 rounded-lg border border-white/10 p-3 text-xs text-gray-400">
+            {family.connection.shared && <p>{t('agent.managed.sharedConnectionScope')}</p>}
+            <div className="flex flex-wrap gap-3">{family.connection.components.map(component =>
+              <ComponentFact key={component.key} componentKey={component.key} status={component.state} showStatusLabel />,
+            )}</div>
+            <div className="flex flex-wrap gap-2" data-connection-actions={family.connection.id}>
+              {family.connection.intentState === 'paused' ? (
+                <button type="button" disabled={busyAction !== null} className="rounded border border-white/10 px-2 py-1 text-emerald-300 disabled:opacity-50"
+                  onClick={() => void doAction('resume-connection', () => agentIntegrationsApi().resumeConnection(family.connection!.id))}>{t('agent.managed.resume')}</button>
+              ) : (family.connection.maintenance === 'active' || family.connection.statusGroup === 'processing') && family.connection.intentState !== 'disconnected' ? (
+                <button type="button" disabled={busyAction !== null} className="rounded border border-white/10 px-2 py-1 disabled:opacity-50"
+                  onClick={() => void doAction('pause-connection', () => agentIntegrationsApi().pauseConnection(family.connection!.id))}>{t('agent.managed.pause')}</button>
+              ) : null}
+              {family.connection.shared && family.connection.installationIds.some(id => snapshot.installations.some(member => member.id === id && ['managed', 'disabled'].includes(member.desiredState))) && (
+                <button type="button" disabled={busyAction !== null} className="rounded border border-red-400/20 px-2 py-1 text-red-300 disabled:opacity-50"
+                  onClick={() => void openDisconnect(true)}>{t('agent.managed.disconnectConnection')}</button>
+              )}
+            </div>
+            {family.connection.maintenance === 'paused' && <p>{t('agent.managed.reason.userDisabled')}</p>}
+            {family.connection.shared && <p>{t('agent.managed.hostEvidenceScope')}</p>}
+          </div>
+        )}
+        {!family.connection?.shared && <div className="mt-3">
+          {installation.accessLevel === 'unconnected' && installation.desiredState === 'managed'
+            ? <span className="text-xs text-sky-300">{t('agent.managed.componentStatus.configured')}</span>
+            : <AccessBadge
             level={installation.accessLevel}
             historical={installation.accessIsHistorical}
             detail={`${historyOnly
@@ -567,8 +629,8 @@ export function ManagedAgentDetail({
               : installation.manageable
               ? t(statusReasonKey(installation.statusReason))
               : managementUnavailableHelp} · ${accessDetail}`}
-          />
-        </div>
+          />}
+        </div>}
         {installation.statusReason === 'legacy_confirmation_required' && ['codex-cli','codex-desktop'].includes(installation.hostVariant) && (
           <div className="mt-3 space-y-2 rounded border border-amber-400/30 p-3 text-xs">
             <p>{t('agent.managed.legacyChoice.description','Choose the existing Tide Mind identity to keep for Codex CLI and Desktop. History is preserved.')}</p>
@@ -631,11 +693,19 @@ export function ManagedAgentDetail({
           <div className="space-y-2 rounded-xl border border-white/[0.06] bg-white/[0.025] p-3">
             {(['instruction', 'memory_tools', 'lifecycle'] as const).map(componentKey => {
               const component = installation.components.find(candidate => candidate.key === componentKey)
+              const sharedComponent = family.connection?.components.find(candidate => candidate.key === componentKey)
+              const sharedVerified = !historyOnly && family.connection?.shared
+                && family.connection.installationIds.includes(installation.id)
+                && componentKey !== 'lifecycle' && component?.configurationVerified
+                && ['configured', 'verification_stale', 'verified'].includes(component.state)
+                && component.configurationFingerprint
+                && component.configurationFingerprint === sharedComponent?.configurationFingerprint
+                && sharedComponent.state === 'verified'
               return (
                 <div key={componentKey} className="grid items-center gap-1 text-xs min-[520px]:grid-cols-[minmax(110px,.8fr)_minmax(100px,.8fr)_minmax(0,1.5fr)] min-[520px]:gap-2">
                   <ComponentFact
                     componentKey={componentKey}
-                    status={component?.state ?? 'unsupported'}
+                    status={sharedVerified ? 'verified' : componentKey === 'lifecycle' && nativeTrustKnown && component?.state === 'confirmation_required' ? 'configured' : component?.state ?? 'unsupported'}
                     showStatusLabel
                   />
                   <span className="truncate text-gray-400">
@@ -676,7 +746,7 @@ export function ManagedAgentDetail({
           </div>
         </section>
 
-        {(detail.requiredUserActionDetails?.length ?? 0) > 0 && (
+        {currentRequiredActions.length > 0 && (
           <section data-required-user-actions={installation.id} aria-labelledby={`required-actions-${installation.id}`}>
             <h4 id={`required-actions-${installation.id}`} className="mb-2 text-xs font-medium text-gray-300">
               {t('agent.managed.currentRequiredAction')}
@@ -686,10 +756,10 @@ export function ManagedAgentDetail({
                 {t('agent.managed.openCurrentRequiredAction')}
               </summary>
               <div className="mt-2">
-                {detail.requiredUserActionDetails?.map(action => (
+                {currentRequiredActions.map(action => (
                   <RequiredUserActionDetail key={requiredUserActionDetailKey(action)} action={action} />
                 ))}
-                {detail.requiredUserActionDetails?.some(action => (
+                {currentRequiredActions.some(action => (
                   (action.kind === 'qwenwork_mcp_gui'
                     || action.kind === 'custom_mcp_import'
                     || action.kind === 'claude_cowork_plugin_upload') && action.operation === 'disconnect'
@@ -732,8 +802,9 @@ export function ManagedAgentDetail({
 
         {!historyOnly
           && (installation.hostVariant === 'codex-cli' || installation.hostVariant === 'codex-desktop')
-          && installation.desiredState === 'managed'
-          && installation.accessLevel !== 'complete' && (
+          && installation.desiredState === 'managed' && installation.manageable
+          && (hostLifecycle?.state === 'confirmation_required' || codexTrustResult !== null || codexTrustReview !== null)
+          && installation.accessLevel !== 'complete' && (!nativeTrustKnown || codexTrustResult !== null || codexTrustReview !== null) && (
           <section data-codex-trust-section={installation.id} aria-labelledby={`codex-trust-${installation.id}`}>
             <h4 id={`codex-trust-${installation.id}`} className="mb-2 text-xs font-medium text-gray-300">
               {t('agent.managed.codexTrust.title')}
@@ -791,6 +862,55 @@ export function ManagedAgentDetail({
             {t('agent.managed.healthAndActivity')}
           </h4>
           <dl className="grid grid-cols-1 gap-2 text-xs min-[420px]:grid-cols-2">
+            {diagnostic && (
+              <div className="rounded-lg border border-white/5 bg-white/[0.025] p-2.5 min-[420px]:col-span-2" data-agent-diagnostic={diagnostic.status}>
+                <dt className="text-gray-400">{t('agent.managed.modelTestLabel')}</dt>
+                <dd className="mt-1 text-gray-300" role="status" aria-live="polite">
+                  {t(`agent.managed.diagnostic.${diagnosticMessage(diagnostic.status, diagnostic.reason)}`)}
+                </dd>
+                <p className="mt-1 text-gray-500">{t('agent.managed.diagnostic.scope')}</p>
+                {diagnostic.lastTestAt && <p className="mt-1 text-gray-400">{t('agent.managed.testTimeLabel')}：{timeAgo(diagnostic.lastTestAt)}</p>}
+                {!historyOnly && diagnosticTarget && diagnostic.status !== 'passed' && !family.connection?.memoryCallsVerified && (
+                  <button type="button" data-agent-diagnostic-recheck
+                    disabled={busyAction !== null || diagnostic.status === 'checking'
+                      || ['paused','disconnected','processing'].includes(family.connection?.statusGroup ?? '')
+                      || ['paused','disconnected'].includes(family.connection?.intentState ?? '')}
+                    className="mt-2 inline-flex items-center gap-1.5 rounded border border-white/10 px-2 py-1 text-xs text-indigo-300 hover:bg-white/5 disabled:opacity-50"
+                    onClick={() => void doAction('recheck-diagnostic', async () => {
+                      try { await agentIntegrationsApi().recheckDiagnostic(diagnosticTarget.id) }
+                      catch { throw new Error(t('agent.managed.diagnostic.failed')) }
+                    })}>
+                    <RefreshCw size={11} aria-hidden /> {t('agent.managed.diagnostic.retry')}
+                  </button>
+                )}
+              </div>
+            )}
+            {installation.authentication && !(installation.authentication.status === 'not_checked' && family.connection?.memoryCallsVerified) && (
+              <div className="rounded-lg border border-white/5 bg-white/[0.025] p-2.5 min-[420px]:col-span-2" data-agent-authentication={installation.authentication.status}>
+                <dt className="text-gray-400">{t('agent.managed.authentication.title')}</dt>
+                <dd className="mt-1 text-gray-300" role="status" aria-live="polite">
+                  {t(`agent.managed.authentication.status.${busyAction === 'recheck-authentication' ? 'checking' : installation.authentication.status}`)}
+                  {busyAction !== 'recheck-authentication' && installation.authentication.checkedAt && <> · {timeAgo(installation.authentication.checkedAt)}</>}
+                </dd>
+                <p className="mt-1 text-gray-400">{t(`agent.managed.authentication.billing.${installation.authentication.billing}`)}</p>
+                <p className="mt-1 text-gray-500">{t('agent.managed.authentication.scope')}</p>
+                {!historyOnly && (
+                  <button type="button" data-agent-authentication-recheck
+                    disabled={busyAction !== null || installation.authentication.status === 'checking'
+                      || ['disabled', 'removed'].includes(installation.desiredState)
+                      || ['paused', 'disconnected', 'processing'].includes(installation.statusGroup)
+                      || ['paused', 'disconnected'].includes(family.connection?.intentState ?? '')
+                      || ['paused', 'disconnected', 'processing'].includes(family.connection?.statusGroup ?? '')}
+                    className="mt-2 inline-flex items-center gap-1.5 rounded border border-white/10 px-2 py-1 text-xs text-indigo-300 hover:bg-white/5 disabled:opacity-50"
+                    onClick={() => void doAction('recheck-authentication', async () => {
+                      try { await agentIntegrationsApi().recheckAuthentication(installation.id) }
+                      catch { throw new Error(t('agent.managed.authentication.status.unavailable')) }
+                    })}>
+                    <RefreshCw size={11} aria-hidden /> {t('agent.managed.authentication.recheck')}
+                  </button>
+                )}
+              </div>
+            )}
             {installation.sourceVerification && (
               <div className="rounded-lg border border-white/5 bg-white/[0.025] p-2.5" data-source-state={installation.sourceVerification.state}>
                 <dt className="text-gray-400">{t('agent.managed.sourceVerification.title')}</dt>
@@ -802,11 +922,39 @@ export function ManagedAgentDetail({
                   {installation.sourceVerification.checkedAt && <> · {timeAgo(installation.sourceVerification.checkedAt)}</>}
                 </dd>
                 <p className="mt-1 text-gray-500">{t('agent.managed.sourceVerification.description')}</p>
+                {installation.sourceVerification.task && (
+                  <p className="mt-1 text-gray-400" role="status" data-source-check-task={installation.sourceVerification.task.state}>
+                    {t(`agent.managed.sourceVerification.${({
+                      queued: 'queued', checking: 'checking', unavailable: 'unavailable', unsupported: 'unsupported',
+                      verified: 'states.trusted', mismatch: 'states.rejected', stopped: 'unavailable',
+                    } as const)[installation.sourceVerification.task.state]}`)}
+                  </p>
+                )}
+                {!historyOnly && installation.sourceVerification.state === 'pending'
+                  && installation.sourceVerification.task?.state !== 'unsupported' && (
+                  <button type="button" data-source-check-retry
+                    disabled={busyAction !== null || sourceTaskState === 'checking' || sourceTaskState === 'queued'}
+                    className="mt-2 rounded border border-white/10 px-2 py-1 text-xs text-indigo-300 hover:bg-white/5 disabled:opacity-50"
+                    onClick={() => void doAction('retry-source', async () => {
+                      const result = await agentIntegrationsApi().retrySourceCheck(installation.id)
+                      if (activeInstallationId.current === installation.id) setSourceRetry({ installationId: installation.id, result })
+                    })}>
+                    {t('agent.managed.sourceVerification.retry')}
+                  </button>
+                )}
+                {sourceRetry?.installationId === installation.id && (
+                  <p className="mt-1 text-gray-400" role="status">
+                    {t(`agent.managed.sourceVerification.${({
+                      started: 'requested', in_progress: 'checking', throttled: 'retryAt', unsupported: 'unsupported',
+                      not_needed: 'states.trusted', stopped: 'unavailable', unavailable: 'unavailable',
+                    } as const)[sourceRetry.result.status]}`, { time: sourceRetry.result.retryAt ? new Date(sourceRetry.result.retryAt).toLocaleTimeString() : '' })}
+                  </p>
+                )}
               </div>
             )}
             <div className="rounded-lg border border-white/5 bg-white/[0.025] p-2.5">
-              <dt className="text-gray-400">{t('agent.managed.lastVerified')}</dt>
-              <dd className="mt-1 text-gray-300">{installation.lastVerifiedAt ? timeAgo(installation.lastVerifiedAt) : t('agent.managed.neverVerified')}</dd>
+              <dt className="text-gray-400">{t('agent.managed.checkLabel')}</dt>
+              <dd className="mt-1 text-gray-300">{installation.lastVerifiedAt ? timeAgo(installation.lastVerifiedAt) : t('agent.managed.noRecord')}</dd>
             </div>
             <div className="rounded-lg border border-white/5 bg-white/[0.025] p-2.5">
               <dt className="text-gray-400">{t('agent.managed.lastRepair')}</dt>
@@ -824,8 +972,9 @@ export function ManagedAgentDetail({
               </div>
             )}
             <div className="rounded-lg border border-white/5 bg-white/[0.025] p-2.5">
-              <dt className="text-gray-400">{t('agent.managed.lastUsed')}</dt>
-              <dd className="mt-1 text-gray-300">{installation.lastRealUseAt ? timeAgo(installation.lastRealUseAt) : t('agent.managed.noReliableUsage')}</dd>
+              <dt className="text-gray-400">{t('agent.managed.activityLabel')}</dt>
+              <dd className="mt-1 text-gray-300">{installation.lastRealUseAt ? timeAgo(installation.lastRealUseAt) : t('agent.managed.noActivity')}</dd>
+              <p className="mt-1 text-gray-500">{t('agent.managed.activityScope')}</p>
             </div>
           </dl>
         </section>
@@ -870,6 +1019,25 @@ export function ManagedAgentDetail({
             >
               <RefreshCw size={11} aria-hidden /> {t('agent.managed.recheck')}
             </button>
+            {installation.automaticConnectionEnabled && family.connection
+              && installation.statusReason !== 'native_permission_required'
+              && ['unmanaged','managed'].includes(installation.desiredState)
+              && (installation.desiredState === 'unmanaged' || installation.statusGroup === 'needs_attention') && (
+              <button type="button" data-automatic-connection-retry
+                disabled={busyAction !== null || family.connection.statusGroup === 'processing' || family.connection.intentState !== 'active'}
+                className="rounded-lg border border-indigo-400/20 px-3 py-1.5 text-xs text-indigo-300 disabled:opacity-50"
+                onClick={() => void doAction('retry-automatic', async () => {
+                  const result = await agentIntegrationsApi().retryAutomaticConnection(family.connection!.id)
+                  if (!result) throw new Error(t('agent.managed.automaticRetryUnavailable'))
+                })}>{t('agent.managed.retryAutomaticConnection')}</button>
+            )}
+            {installation.manageable && installation.statusReason === 'native_permission_required' && (
+              <button type="button" disabled={busyAction !== null || family.connection?.intentState === 'paused'}
+                onClick={() => onReconnect(installation.id)}
+                className="rounded-lg border border-amber-400/20 px-3 py-1.5 text-xs text-amber-300 disabled:opacity-50">
+                {t('agent.managed.reviewNativePermissions')}
+              </button>
+            )}
             {!installation.manageable && !installation.disconnectable ? (
               <span
                 className="inline-flex items-center rounded-lg border border-white/10 px-3 py-1.5 text-xs text-gray-400"
@@ -887,14 +1055,14 @@ export function ManagedAgentDetail({
               >
                 <RefreshCw size={11} aria-hidden /> {t('agent.managed.resetAutoRestore')}
               </button>
-            ) : installation.desiredState === 'disabled' ? (
+            ) : installation.desiredState === 'disabled' && family.connection?.intentState !== 'paused' ? (
               <button
                 type="button"
                 onClick={() => void doAction('resume', () => agentIntegrationsApi().resume(installation.id))}
                 disabled={busyAction !== null}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/20 px-3 py-1.5 text-xs text-emerald-300 hover:bg-emerald-400/10 disabled:opacity-50"
               >
-                <Play size={11} aria-hidden /> {t('agent.managed.resume')}
+                <Play size={11} aria-hidden /> {t(family.connection?.shared ? 'agent.managed.resumeMember' : 'agent.managed.resume')}
               </button>
             ) : installation.desiredState === 'managed' ? (
               <button
@@ -903,10 +1071,17 @@ export function ManagedAgentDetail({
                 disabled={busyAction !== null}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-xs text-gray-400 hover:bg-white/5 disabled:opacity-50"
               >
-                <Pause size={11} aria-hidden /> {t('agent.managed.pause')}
+                <Pause size={11} aria-hidden /> {t(family.connection?.shared ? 'agent.managed.pauseMember' : 'agent.managed.pause')}
               </button>
             ) : null}
-            {installation.manageable
+            {installation.manageable && (!installation.automaticConnectionEnabled || installation.statusReason === 'conflict') && installation.desiredState === 'managed'
+              && installation.statusGroup === 'needs_attention' && (
+              <button type="button" disabled={busyAction !== null} onClick={() => onReconnect(installation.id)}
+                className="rounded-lg border border-amber-400/20 px-3 py-1.5 text-xs text-amber-300 hover:bg-amber-400/10 disabled:opacity-50">
+                {t('agent.managed.reconnect')}
+              </button>
+            )}
+            {installation.manageable && !installation.automaticConnectionEnabled
             && installation.desiredState === 'unmanaged'
             && (installation.statusGroup === 'awaiting_connection'
               || installation.statusReason === 'legacy_callable_unmanaged') ? (
@@ -919,10 +1094,22 @@ export function ManagedAgentDetail({
                   ? 'agent.managed.reviewAndEnableMaintenance'
                   : 'agent.managed.reviewAndConnect')}
               </button>
-            ) : installation.manageable && installation.desiredState === 'removed' ? (
+            ) : installation.manageable && installation.desiredState === 'removed' && installation.statusReason !== 'native_permission_required' ? (
               <button
                 type="button"
-                onClick={() => onReconnect(installation.id)}
+                disabled={busyAction !== null}
+                onClick={() => installation.automaticConnectionEnabled
+                  ? void doAction('reconnect-automatic', async () => {
+                    const result = await agentIntegrationsApi().reconnectAutomaticInstallation(installation.id)
+                    if (!result) {
+                      const latest = await agentIntegrationsApi().snapshot()
+                      if (latest.installations.find(item => item.id === installation.id)?.statusReason === 'native_permission_required') {
+                        onReconnect(installation.id)
+                        return
+                      }
+                      throw new Error(t('agent.managed.automaticRetryUnavailable'))
+                    }
+                  }) : onReconnect(installation.id)}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-400/20 px-3 py-1.5 text-xs text-indigo-300 hover:bg-indigo-400/10"
               >
                 <Play size={11} aria-hidden /> {t('agent.managed.reconnect')}
@@ -935,7 +1122,7 @@ export function ManagedAgentDetail({
                 disabled={busyAction !== null}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-red-400/20 px-3 py-1.5 text-xs text-red-300 hover:bg-red-400/10 disabled:opacity-50"
               >
-                <Unplug size={11} aria-hidden /> {t('agent.managed.disconnect')}
+                <Unplug size={11} aria-hidden /> {t(family.connection?.shared ? 'agent.managed.disconnectMember' : 'agent.managed.disconnect')}
               </button>
             ) : null}
           </div>
@@ -963,7 +1150,6 @@ export function ManagedAgentDetail({
                   </p>
                 ))}
                 {disconnectResult.results.flatMap(result => result.requiredUserActionDetails ?? [])
-                  .filter(action => action.kind === 'manual_host_removal')
                   .map(action => <RequiredUserActionDetail key={requiredUserActionDetailKey(action)} action={action} />)}
               </div>
             )
@@ -1074,13 +1260,14 @@ export function ManagedAgentDetail({
           if (!preview) return
           void executeDisconnect(preview)
         }}
-        title={t('agent.managed.disconnectTitle', { name: installationLabel(installation, t('agent.managed.defaultProfile')) })}
-        description={t('agent.managed.disconnectDescription')}
+        title={t(disconnectPreview?.connectionId ? 'agent.managed.disconnectConnectionTitle' : 'agent.managed.disconnectTitle', { name: disconnectPreview?.connectionId ? family.displayName : installationLabel(installation, t('agent.managed.defaultProfile')) })}
+        description={t(disconnectPreview?.connectionId ? 'agent.managed.disconnectConnectionDescription' : 'agent.managed.disconnectDescription')}
         confirmText={t('agent.managed.disconnect')}
         danger
       >
         {disconnectPreview && (
           <div className="space-y-2 text-xs text-gray-400">
+            {disconnectPreview.connectionId && <p>{disconnectPreview.installations.map(item => item.displayName).join(' · ')}</p>}
             {disconnectPreview.installations.flatMap(item => item.requiredUserActions).map(action => (
               <div key={action} className="rounded border border-amber-400/20 bg-amber-400/[0.06] px-2 py-2 text-amber-200">
                 {requiredActionText(action)}
@@ -1141,6 +1328,22 @@ export function ManagedAgentDetail({
       </ConfirmDialog>
     </div>
   )
+}
+
+function diagnosticMessage(status: string, reason: string): string {
+  if (status === 'checking') return 'checking'
+  if (status === 'passed') return 'passed'
+  if (reason === 'native_permission_required') return 'permission'
+  if (/unsupported|unqualified|unproven|hooks_present|managed_policy|context_isolation_unavailable/.test(reason)) return 'unsupported'
+  if (status === 'uncertain') return 'uncertain'
+  if (status === 'cancelled') return 'cancelled'
+  if (reason === 'host_reports_not_authenticated') return 'login'
+  if (reason.includes('metered')) return 'metered'
+  if (reason.includes('billing') || reason === 'subscription_required') return 'billing'
+  if (reason === 'daily_budget_exhausted') return 'dailyLimit'
+  if (reason === 'configuration_already_submitted') return 'alreadyTested'
+  if (['awaiting_diagnostic','another_diagnostic_running'].includes(reason)) return 'waiting'
+  return 'failed'
 }
 
 function TrustFact({ label, value, mono = false }: { label: string; value: string | null; mono?: boolean }) {

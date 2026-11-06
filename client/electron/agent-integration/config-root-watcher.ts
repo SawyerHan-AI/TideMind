@@ -112,13 +112,16 @@ export class AgentConfigRootWatcher {
 
   private startWatch(canonicalRoot: string): void {
     let watcher: FSWatcher
+    const changed = (_eventType: string, filename: string | Buffer | null) => {
+      if (!isStandardHostRuntimeWrite(canonicalRoot, filename, this.canonicalAllowedRoots)) this.schedule()
+    }
     try {
-      watcher = this.dependencies.watch(canonicalRoot, { recursive: true, persistent: false }, () => this.schedule())
+      watcher = this.dependencies.watch(canonicalRoot, { recursive: true, persistent: false }, changed)
     } catch (error) {
       // Recursive watch is not supported on every platform.  Watching the
       // exact root still observes the common single-file configuration case.
       try {
-        watcher = this.dependencies.watch(canonicalRoot, { persistent: false }, () => this.schedule())
+        watcher = this.dependencies.watch(canonicalRoot, { persistent: false }, changed)
       } catch (fallbackError) {
         this.options.onDiagnostic?.(`config_root_watch_failed:${safeDiagnostic(fallbackError ?? error)}`)
         return
@@ -169,6 +172,26 @@ export class AgentConfigRootWatcher {
     this.debounceTimer = null
     this.maxWaitTimer = null
   }
+}
+
+// Standard hosts keep transcripts/databases beside configuration. Those writes
+// are not configuration changes and can otherwise schedule scans indefinitely.
+function isStandardHostRuntimeWrite(root: string, filename: string | Buffer | null, allowedRoots: readonly string[]): boolean {
+  if (filename == null) return false
+  const name = typeof filename === 'string' ? filename : filename.toString('utf8')
+  const relative = (path.isAbsolute(name) ? path.relative(root, name) : path.normalize(name)).replace(/\\/g, '/')
+  const standard = allowedRoots.map(home => path.relative(home, root).replace(/\\/g, '/'))
+  const head = relative.split('/')[0]
+  if (standard.includes('.codex')) {
+    return ['tmp', 'sessions', 'archived_sessions', 'worktrees', 'log', 'logs'].includes(head)
+      || ['history.jsonl', 'session_index.jsonl'].includes(relative)
+      // Desktop window/sidebar/chat state is not a managed MCP/Hook surface.
+      || /^\.{1,2}codex-global-state\.json(?:\.bak)?(?:\.tmp-[A-Za-z0-9-]+)?$/.test(relative)
+      || /^(?:state|logs)_\d+\.sqlite(?:-(?:wal|shm))?$/.test(relative)
+  }
+  if (standard.includes('.cursor')) return head === 'projects'
+  if (standard.includes('.zcode/cli')) return ['db', 'log', 'exec', 'rollout', 'image-cache'].includes(head)
+  return false
 }
 
 function nodeDependencies(): ConfigRootWatcherDependencies {

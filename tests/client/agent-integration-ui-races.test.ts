@@ -80,7 +80,11 @@ it.skipIf(process.platform !== 'darwin' && !process.env.DISPLAY)(
       expect(result.output).toContain('"coworkDelayedSessions":true')
       expect(result.output).toContain('"narrowPendingAndFailedBackNavigation":true')
       expect(result.output).toContain('"batchDelayedSessions":true')
+      expect(result.output).toContain('"loadedAuthenticationDetail":true')
       expect(result.output).toContain('"customDelayedFocusAndSchema":true')
+      expect(result.output).toContain('"backgroundTaskStateRefresh":true')
+      expect(result.output).toContain('"sharedStatusSummary":true')
+      expect(result.output).toContain('"availableConnectionIssue":true')
     } finally {
       await rm(temp, { recursive: true, force: true })
     }

@@ -1,3 +1,4 @@
+import { isDiagnosticRequested } from '../agent-diagnostic-contract.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import { getConfig, getDataDir } from '../config.js';
@@ -350,6 +351,7 @@ export interface GetEmbeddingOptions {
 }
 
 export async function getEmbedding(text: string, opts: GetEmbeddingOptions = {}): Promise<Float32Array | null> {
+  if (isDiagnosticRequested()) throw new Error('agent_diagnostic:embedding_calls_disabled');
   const config = getConfig();
   const timeoutMs = opts.timeoutMs ?? EMBEDDING_DEFAULT_TIMEOUT_MS;
   log.debug(`provider=${config.embedding.provider} textLen=${text.length} timeoutMs=${timeoutMs}`);
@@ -416,6 +418,7 @@ export async function getEmbeddings(texts: string[]): Promise<(Float32Array | nu
  * 检查 embedding 服务是否可用
  */
 export async function isEmbeddingAvailable(): Promise<boolean> {
+  if (isDiagnosticRequested()) return false;
   const now = Date.now();
   const ttl = available === false ? 10_000 : CHECK_TTL_MS; // Shorter TTL when service is down
   if (available !== null && now - availableCheckTime < ttl) {

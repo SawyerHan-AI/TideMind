@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import { assertRecoverableSchema41, RECOVERY_LINEAGE } from './schema41-recovery.js';
 
-export const CURRENT_SCHEMA_VERSION = 45;
+export const CURRENT_SCHEMA_VERSION = 47;
 
 /** Read only: run before setup PRAGMAs, schema repair or migration. */
 export function readPersistedSchemaVersion(db: Database.Database): number {
@@ -31,7 +31,7 @@ export function assertSupportedDatabaseSchema(db: Database.Database, supportedVe
     }
     assertRecoverableSchema41(db);
   }
-  if (actualVersion === 45) {
+  if (actualVersion >= 45) {
     const lineage = db.prepare("SELECT value FROM metadata WHERE key = 'schema_lineage'").get() as { value: string } | undefined;
     if (lineage?.value !== RECOVERY_LINEAGE) throw Object.assign(new Error('数据库迁移来源标记不匹配，已停止初始化。'), { code: 'DATABASE_LINEAGE_MISMATCH' });
   }

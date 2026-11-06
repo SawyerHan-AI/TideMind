@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { isDiagnosticRequested, assertDiagnosticBridge } from './agent-diagnostic-contract.js';
+import { getRuntimeDiagnosticContext } from './config.js';
 import { SqliteRepository } from './db/sqlite-repository.js';
 import { prepare } from './tools/prepare.js';
 import { formatCodexRestoredContext } from './hook-brief-context.js';
@@ -15,6 +17,12 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const value = (flag: string) => { const index = args.indexOf(flag); return index < 0 ? '' : args[index + 1] ?? ''; };
   if (value('--tool') !== 'codex') throw new Error('codex_restore_tool_invalid');
+  if (isDiagnosticRequested()) {
+    const context = getRuntimeDiagnosticContext();
+    if (!context) throw new Error('agent_diagnostic:credential_required');
+    assertDiagnosticBridge(context, { agentId: value('--agent-id'), activityGenerationToken: value('--activity-generation-token'), componentKey: 'lifecycle' });
+    await empty(); return;
+  }
   const input = codexRestoreInput(await readCodexHookPayload(), 'UserPromptSubmit');
   if (!input) { process.stderr.write('[eb:codex-restore] input_invalid\n'); await empty(); return; }
   const runtime = openCodexRestoreRuntime(value('--agent-id'), value('--activity-generation-token'), input.sessionId);
