@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { AlertCircle, CheckCircle2, ChevronDown, ChevronRight, Clock, Loader2, RotateCw } from 'lucide-react'
 import type { LLMHealthSnapshot } from '../../lib/api-contract'
 import { Section } from './shared'
+import { formatHealthRelativeTime } from '../../lib/health-relative-time'
 
 export function LLMHealthCard() {
   const { t, i18n } = useTranslation('settings')
@@ -31,16 +32,7 @@ export function LLMHealthCard() {
     }
   }, [])
 
-  const rtf = new Intl.RelativeTimeFormat(i18n.language, { numeric: 'auto' })
-  const formatRelative = (timestamp: number) => {
-    if (!timestamp) return t('model.serviceStatus.never')
-    const seconds = Math.round((Date.now() - timestamp) / 1000)
-    if (seconds < 60) return rtf.format(-seconds, 'second')
-    const minutes = Math.round(seconds / 60)
-    if (minutes < 60) return rtf.format(-minutes, 'minute')
-    const hours = Math.round(minutes / 60)
-    return hours < 24 ? rtf.format(-hours, 'hour') : rtf.format(-Math.round(hours / 24), 'day')
-  }
+  const formatRelative = (timestamp: number) => formatHealthRelativeTime(timestamp, i18n.language, t('model.serviceStatus.never'))
 
   const fallbackErrors: NonNullable<LLMHealthSnapshot['errors']> = health?.lastError ? [{
     connectionId: '',
@@ -87,9 +79,10 @@ export function LLMHealthCard() {
               </div>
             </div>
           )}
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2">
             <Metric label={t('model.serviceStatus.availableConnections')} value={String(health.availableCount ?? (health.circuitState === 'closed' ? 1 : 0))} />
             <Metric label={t('model.serviceStatus.needsAttention')} value={String(health.needsAttentionCount ?? errors.length)} warning={errors.length > 0} />
+            <Metric label={t('model.serviceStatus.lastTestSuccess')} value={formatRelative(health.lastTestSuccessAt ?? 0)} icon={<Clock size={11} />} />
             <Metric label={t('model.serviceStatus.lastSuccess')} value={formatRelative(health.lastSuccessAt)} icon={<Clock size={11} />} />
           </div>
 
@@ -133,7 +126,17 @@ export function LLMHealthCard() {
                         </span>
                         <span className="text-[10px] text-gray-600">{formatRelative(error.occurredAt)}</span>
                       </div>
-                      <p className="mt-0.5 break-words text-[11px] text-red-300">{error.message}</p>
+                      <p className="mt-0.5 break-words text-[11px] text-red-300">
+                        {t(['ambiguous', 'ambiguous_outcome'].includes(error.kind) ? 'model.serviceStatus.unconfirmedResult' : 'model.serviceStatus.connectionIssue')}
+                      </p>
+                      {Boolean(error.affectedTiers?.length) && <p className="mt-1 text-[11px] text-amber-300">
+                        {t('model.serviceStatus.pausedRoutes', { name: error.connectionName || error.providerType,
+                          tiers: error.affectedTiers!.map(tier => t(`model.catalog.tier.${tier}`)).join(' / ') })}
+                      </p>}
+                      <details className="mt-1 text-[11px] text-gray-400">
+                        <summary className="cursor-pointer">{t('model.serviceStatus.technicalDetails')}</summary>
+                        <p className="mt-1 break-words">{error.message}</p>
+                      </details>
                     </div>
                     {error.connectionId && retryableKinds.has(error.kind) && (
                       <button

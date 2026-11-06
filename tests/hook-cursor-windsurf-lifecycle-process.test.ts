@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import Database from 'better-sqlite3'
+import { createHash } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { ensureSchema } from '../src/db/schema.js'
 
@@ -26,6 +27,29 @@ describe('Cursor and Devin lifecycle stdout delivery boundary', { timeout: 30_00
   })
 
   afterAll(() => fs.rmSync(isolatedHome, { recursive: true, force: true }))
+
+  it('delivers Cursor startup context without launching prepare maintenance or writing prepare operations', async () => {
+    const skillPath = path.join(isolatedHome, 'startup-skill.md')
+    const content = 'Synthetic startup context instruction'
+    fs.writeFileSync(skillPath, content)
+    const hash = createHash('sha256').update(content).digest('hex')
+    const child = spawn(path.resolve('node_modules/.bin/tsx'), [path.resolve('src/hook-cursor-lifecycle.ts'),
+      '--event', 'sessionStart', '--agent-id', 'eb_cursor_epipe', '--activity-generation-token', 'generation_eb_cursor_epipe',
+      '--skill-path', skillPath, '--expected-skill-sha256', hash], {
+      cwd: path.resolve('.'), env: { ...process.env, HOME: isolatedHome }, stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    let output = ''; let error = ''
+    child.stdout.on('data', chunk => { output += String(chunk) })
+    child.stderr.on('data', chunk => { error += String(chunk) })
+    child.stdin.end(JSON.stringify({ hook_event_name: 'sessionStart', conversation_id: 'startup-probe', session_id: 'startup-probe', cursor_version: '3.10.20' }))
+    const code = await new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('close', resolve) })
+    expect(code, error).toBe(0)
+    expect(JSON.parse(output).additional_context, error).toContain(content)
+    expect((error.match(/数据库已连接:/g) ?? []).length).toBe(1)
+    const db = new Database(databasePath, { readonly: true })
+    try { expect(db.prepare("SELECT count(*) AS n FROM operation_log WHERE operation='prepare' AND agent_id='eb_cursor_epipe'").get()).toEqual({ n: 0 }) }
+    finally { db.close() }
+  })
 
   for (const fixture of [
     {

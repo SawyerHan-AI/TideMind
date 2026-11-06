@@ -55,21 +55,25 @@ export function Settings() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { t } = useTranslation()
   const tabRefs = useRef(new Map<string, HTMLButtonElement>())
-  const [agentUnreadCount, setAgentUnreadCount] = useState(0)
+  const [agentIssueCount, setAgentIssueCount] = useState(0)
 
   useEffect(() => {
     let active = true
+    let request = 0
     const refresh = () => {
-      void window.api.agentIntegrations.inbox(1).then(inbox => {
-        if (active) setAgentUnreadCount(inbox.actionableUnreadCount)
+      const current = ++request
+      void window.api.agentIntegrations.snapshot().then(snapshot => {
+        if (active && current === request) setAgentIssueCount(snapshot.summary.needsAttentionCount)
       }).catch(() => {})
     }
     refresh()
     const unsubscribe = window.api.agentIntegrations.onNotification(refresh)
+    const unsubscribeState = window.api.agentIntegrations.onStateChanged(refresh)
     const unsubscribeVisibleRefresh = subscribeAgentIntegrationInboxRefresh(window, document, refresh)
     return () => {
       active = false
       unsubscribe()
+      unsubscribeState()
       unsubscribeVisibleRefresh()
     }
   }, [])
@@ -169,10 +173,10 @@ export function Settings() {
               >
                 <tb.icon size={13} />
                 {t(tb.labelKey)}
-                {tb.id === 'external' && agentUnreadCount > 0 && (
+                {tb.id === 'external' && agentIssueCount > 0 && (
                   <>
                     <span className="h-1.5 w-1.5 rounded-full bg-red-400" aria-hidden />
-                    <span className="sr-only">{t('settings:agent.managed.unreadUpdates', { count: agentUnreadCount })}</span>
+                    <span className="sr-only">{t('settings:agent.managed.existingIssues', { count: agentIssueCount })}</span>
                   </>
                 )}
                 {tab === tb.id && (

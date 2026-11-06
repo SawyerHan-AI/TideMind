@@ -596,6 +596,38 @@ describe('production Agent Integration discovery environment', () => {
     }
   })
 
+  it('bounds parallel PATH checks while preserving order and executable aliases', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-parallel-path-')))
+    const directories = Array.from({ length: 20 }, (_, index) => path.join(root, String(index)))
+    const first = path.join(directories[1], 'qwen')
+    const blocked = path.join(directories[2], 'qwen')
+    const alias = path.join(directories[18], 'qwen')
+    const access = fs.promises.access
+    let active = 0
+    let peak = 0
+    const checks = vi.spyOn(fs.promises, 'access').mockImplementation(async (target, mode) => {
+      active += 1
+      peak = Math.max(peak, active)
+      try { await access(target, mode) }
+      finally { active -= 1 }
+    })
+    try {
+      for (const target of [first, blocked, alias]) fs.mkdirSync(path.dirname(target))
+      fs.writeFileSync(first, '#!/bin/sh\n', { mode: 0o700 })
+      fs.writeFileSync(blocked, '#!/bin/sh\n', { mode: 0o600 })
+      fs.symlinkSync(first, alias)
+      expect(await findExecutablesForAgentDiscovery('qwen', [directories[0], directories[1], ...directories]))
+        .toEqual([first, alias])
+      expect(peak).toBeGreaterThan(1)
+      expect(peak).toBeLessThanOrEqual(8)
+      expect(checks.mock.calls.filter(([target]) => target === first)).toHaveLength(1)
+      expect(checks).toHaveBeenCalledTimes(directories.length)
+    } finally {
+      checks.mockRestore()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('fails closed instead of partially reading an oversized version-manager registry', () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-production-version-bound-')))
     const home = path.join(root, 'home')
@@ -2143,7 +2175,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     let teamIdentifier = '8A5X4JJ39T'
     let cdHash: string | undefined = '0123456789abcdef0123456789abcdef01234567'
     let designatedRequirement: string | undefined = 'identifier "dev.zcode.app" and anchor apple generic'
-    let finalIdentityMutation: 'app_mode' | 'executable_mode' | null = null
+    let finalIdentityMutation: 'app_mode' | 'executable_mode' | 'app_timestamp' | null = null
     const appMode = fs.statSync(appPath).mode & 0o777
     const executableMode = fs.statSync(executable).mode & 0o777
     const attest = createProductionLiveTrustAttestor({
@@ -2153,6 +2185,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       inspectDesktopSignatureSnapshot: async (_targetPath, options) => {
         expect(options.readTimeoutMs).toBe(20_000)
           if (finalIdentityMutation === 'app_mode') fs.chmodSync(appPath, appMode ^ 0o020)
+        if (finalIdentityMutation === 'app_timestamp') fs.utimesSync(appPath, new Date(1), new Date(1))
         if (finalIdentityMutation === 'executable_mode') fs.chmodSync(executable, executableMode ^ 0o020)
         return {
           valid: true,
@@ -2170,7 +2203,15 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     })
     try {
       const row = repository.getInstallation('zcode-proof')!
-      expect(await attest(row)).toMatch(/^[a-f0-9]{64}$/)
+      const originalProof = await attest(row)
+      expect(originalProof).toMatch(/^[a-f0-9]{64}$/)
+      // Opening a signed App can update directory metadata without changing
+      // its executable, bundle surface, signature, or physical ownership.
+      fs.utimesSync(appPath, new Date(), new Date())
+      expect(await attest(row)).toBe(originalProof)
+      finalIdentityMutation = 'app_timestamp'
+      expect(await attest(row)).toBeNull()
+      finalIdentityMutation = null
       const metadata = JSON.parse(row.metadata_json) as { distribution: { portableArtifactFingerprint: string } }
       metadata.distribution.portableArtifactFingerprint = 'f'.repeat(64)
       expect(await attest({ ...row, metadata_json: JSON.stringify(metadata) })).toBeNull()
@@ -2363,11 +2404,11 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       expect(result.snapshot.installations[0]).toMatchObject({
         id: 'zcode-mode-scan',
         manageable: false,
-        statusReason: 'detect_only',
+        statusReason: 'source_verification_pending',
       })
       expect(composition.service.detail('zcode-mode-scan').installation.manageable).toBe(false)
       await expect(composition.service.previewConnect(['zcode-mode-scan']))
-        .rejects.toThrow('managed integration is not enabled')
+        .rejects.toThrow('managed integration is unavailable: source_verification_pending')
       expect(db.prepare(`SELECT COUNT(*) AS count FROM agent_consents`).get()).toEqual({ count: 0 })
       expect(db.prepare(`SELECT COUNT(*) AS count FROM reconcile_runs`).get()).toEqual({ count: 0 })
       expect(db.prepare(`SELECT COUNT(*) AS count FROM projection_mutations`).get()).toEqual({ count: 0 })
@@ -3357,15 +3398,21 @@ describe('production Agent integration composition', () => {
     })
     try {
       expect(composition.service.snapshot().installations[0].manageable).toBe(true)
+      const recovery = vi.spyOn(composition.coordinator, 'recoverNonTerminalRuns').mockImplementation(async options => {
+        await expect(options?.canContinueRecovery?.({ runState: 'applied_unverified', installation: { id: 'codex-cli-inaccessible' }, preparedPlan: {} } as never))
+          .rejects.toMatchObject({ code: 'DESKTOP_SOURCE_CHECK_UNAVAILABLE' })
+        return []
+      })
       const scan = await composition.service.scan()
+      expect(recovery).toHaveBeenCalled()
       expect(scan.snapshot.installations[0]).toMatchObject({
         id: 'codex-cli-inaccessible',
         manageable: false,
-        statusReason: 'detect_only',
+        statusReason: 'source_verification_pending',
       })
       expect(composition.service.detail('codex-cli-inaccessible').installation.manageable).toBe(false)
       await expect(composition.service.previewConnect(['codex-cli-inaccessible']))
-        .rejects.toThrow('managed integration is not enabled')
+        .rejects.toThrow('managed integration is unavailable: source_verification_pending')
       expect(db.prepare(`SELECT COUNT(*) AS count FROM agent_consents`).get()).toEqual({ count: 0 })
       expect(db.prepare(`SELECT COUNT(*) AS count FROM reconcile_runs`).get()).toEqual({ count: 0 })
       expect(db.prepare(`SELECT COUNT(*) AS count FROM projection_mutations`).get()).toEqual({ count: 0 })
@@ -3872,9 +3919,9 @@ describe('production Agent integration composition', () => {
         lastDetectedAt: '2026-08-25T00:02:45.000Z',
         metadata: { distribution: { packageProvenance: 'signed_app:com.exafunction.windsurf:ATTACKER' } },
       })
+      expect(composition.service.snapshot().historyInstallations.find(item => item.id === 'claude-desktop')?.manageable).toBe(false)
       expect(Object.fromEntries(composition.service.snapshot().installations.map(item => [item.id, item.manageable])))
         .toMatchObject({
-          'claude-desktop': false,
           'cursor-desktop': false,
           'codex-desktop': false,
           'windsurf-desktop': false,
@@ -3981,11 +4028,11 @@ describe('production Agent integration composition', () => {
           },
         },
       })
+      expect(composition.service.snapshot().historyInstallations.find(item => item.id === 'claude-desktop')?.manageable).toBe(false)
       expect(Object.fromEntries(composition.service.snapshot().installations.map(item => [item.id, item.manageable])))
         .toMatchObject({
           // Valid signing evidence may preserve/adopt a migrated record, but
           // Claude Desktop legacy is never a new managed-write surface.
-          'claude-desktop': false,
           'cursor-desktop': true,
           'codex-desktop': true,
           'windsurf-desktop': true,
@@ -6280,7 +6327,14 @@ describe('production Agent integration composition', () => {
       delete drifted.mcpServers['tidemind-private']
       fs.writeFileSync(configFile, JSON.stringify(drifted, null, 2), { mode: 0o600 })
       await composition.service.scan()
-      expect(JSON.parse(fs.readFileSync(configFile, 'utf8')).mcpServers['tidemind-private']).toBeDefined()
+      const repairedDocument = JSON.parse(fs.readFileSync(configFile, 'utf8'))
+      expect(repairedDocument.mcpServers['tidemind-private']).toBeDefined()
+      expect(repairedDocument.userSetting).toBe(true)
+      expect(repairedDocument.mcpServers['tidemind-private'].env.EB_ACTIVITY_GENERATION_TOKEN).not.toBe(activityGenerationToken)
+      expect(db.prepare("SELECT desired_capability FROM reconcile_runs WHERE installation_id=? AND operation_type='repair'").get(installationId))
+        .toEqual({ desired_capability: 2 })
+      expect(db.prepare("SELECT a.missing_event_count FROM managed_artifacts a JOIN artifact_consumers c ON c.artifact_id=a.id WHERE c.installation_id=? AND c.component_key='memory_tools'").get(installationId))
+        .toEqual({ missing_event_count: 1 })
 
       const disconnectPreview = await composition.service.previewDisconnect(installationId)
       const disconnected = await composition.service.disconnect(disconnectPreview.planHash, installationId)

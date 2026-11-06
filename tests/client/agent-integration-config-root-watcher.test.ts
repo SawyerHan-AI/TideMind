@@ -69,6 +69,43 @@ describe('AgentConfigRootWatcher', () => {
     expect(records[0].watcher.closed).toBe(true)
   })
 
+  it.each([
+    ['.codex', ['tmp/dev/brain.sqlite-wal', 'sessions/a.jsonl', 'worktrees/project/file.ts', 'state_5.sqlite-wal', 'history.jsonl'], 'config.toml'],
+    ['.codex', ['.codex-global-state.json', '.codex-global-state.json.bak', '..codex-global-state.json.tmp-123-abc', '..codex-global-state.json.bak.tmp-123-abc'], 'config.toml'],
+    ['.cursor', ['projects/work/agent-transcripts/session.jsonl'], 'hooks.json'],
+    ['.zcode/cli', ['db/state.sqlite-wal', 'log/session.jsonl', 'exec/task/output.log'], 'config.json'],
+  ] as const)('ignores runtime writes inside %s while retaining configuration notifications', async (relativeRoot, ignored, configFile) => {
+    vi.useFakeTimers()
+    const home = fixtureRoot(); const config = path.join(home, relativeRoot)
+    fs.mkdirSync(config, { recursive: true })
+    const records: Array<{ target: string; watcher: FakeWatcher }> = []
+    const onChange = vi.fn()
+    const watcher = new AgentConfigRootWatcher({ allowedRoots: [home], onChange, debounceMs: 10, maxWaitMs: 20, dependencies: dependencies(records) })
+    watcher.update([config])
+    for (const name of ignored) records[0].watcher.emit('change', 'change', Buffer.from(name))
+    await vi.advanceTimersByTimeAsync(30)
+    expect(onChange).not.toHaveBeenCalled()
+    records[0].watcher.emit('change', 'change', configFile)
+    await vi.advanceTimersByTimeAsync(10)
+    expect(onChange).toHaveBeenCalledTimes(1)
+    records[0].watcher.emit('change', 'change', 'skills/tidemind/SKILL.md')
+    await vi.advanceTimersByTimeAsync(10)
+    expect(onChange).toHaveBeenCalledTimes(2)
+    records[0].watcher.emit('change', 'change', null)
+    await vi.advanceTimersByTimeAsync(10)
+    expect(onChange).toHaveBeenCalledTimes(3)
+    watcher.close()
+  })
+
+  it('does not impose standard-host runtime exclusions on a custom configuration root', async () => {
+    vi.useFakeTimers()
+    const home = fixtureRoot(); const config = path.join(home, 'custom-agent', '.codex'); fs.mkdirSync(config, { recursive: true })
+    const records: Array<{ target: string; watcher: FakeWatcher }> = []; const onChange = vi.fn()
+    const watcher = new AgentConfigRootWatcher({ allowedRoots: [home], onChange, debounceMs: 10, dependencies: dependencies(records) })
+    watcher.update([config]); records[0].watcher.emit('change', 'change', 'tmp/config.json')
+    await vi.advanceTimersByTimeAsync(10); expect(onChange).toHaveBeenCalledTimes(1); watcher.close()
+  })
+
   it('debounce 合并事件，并在 callback 运行期间最多排队一次', async () => {
     vi.useFakeTimers()
     const home = fixtureRoot()

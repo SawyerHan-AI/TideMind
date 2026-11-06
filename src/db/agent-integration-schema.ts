@@ -1,3 +1,4 @@
+import { AGENT_DIAGNOSTIC_SCHEMA_SQL } from '../agent-diagnostic-contract.js';
 import { AGENT_IDENTITY_BINDING_SQL } from './agent-identity-binding.js';
 import type Database from 'better-sqlite3';
 import { assertSupportedDatabaseSchema, CURRENT_SCHEMA_VERSION } from './schema-compatibility.js';
@@ -6,6 +7,7 @@ import { scrubPersistedAgentIntegrationEvents } from './agent-integration-event-
 /** Canonical Agent table inventory shared by migration and schema-parity tests. */
 export const AGENT_INTEGRATION_TABLES = [
   'agent_installations',
+  'agent_diagnostic_runs',
   'agent_identity_bindings',
   'agent_identity_binding_members',
   'installation_components',
@@ -97,12 +99,12 @@ CREATE TABLE IF NOT EXISTS agent_host_activity_evidence (
 /** Read-only semantic parity check used by the signed acceptance exporter. */
 export function inspectAgentHostActivityEvidenceV34Schema(db: Database.Database): {
   /** Supported migration lines retain the authoritative v34 ledger shape. */
-  schemaVersion: 34 | 35 | 45;
+  schemaVersion: 34 | 35 | 45 | 46 | 47;
   fingerprintInput: unknown;
 } {
   const schemaVersion = assertSupportedDatabaseSchema(db, CURRENT_SCHEMA_VERSION);
-  if (schemaVersion !== 34 && schemaVersion !== 35 && schemaVersion !== 45) {
-    throw new Error(`activity ledger database schema is ${schemaVersion}, expected 34, 35 or 45`);
+  if (schemaVersion !== 34 && schemaVersion !== 35 && schemaVersion !== 45 && schemaVersion !== 46 && schemaVersion !== 47) {
+    throw new Error(`activity ledger database schema is ${schemaVersion}, expected 34, 35, 45, 46 or 47`);
   }
   const columns = db.prepare('PRAGMA table_info(agent_host_activity_evidence)').all() as Array<{
     name: string; type: string; notnull: number; pk: number;
@@ -154,7 +156,7 @@ export function inspectAgentHostActivityEvidenceV34Schema(db: Database.Database)
   ]) {
     if (!tableSql.includes(marker)) throw new Error('activity ledger CHECK constraints are not authoritative');
   }
-  return { schemaVersion: schemaVersion as 34 | 35 | 45, fingerprintInput: { actualColumns, foreignKeys, uniqueColumns, checks: 'v34' } };
+  return { schemaVersion, fingerprintInput: { actualColumns, foreignKeys, uniqueColumns, checks: 'v34' } };
 }
 
 function agentHostActivityEvidenceTableSql(tableName: string): string {
@@ -345,6 +347,9 @@ CREATE TABLE IF NOT EXISTS agent_consents (
     id TEXT PRIMARY KEY,
     installation_id TEXT NOT NULL REFERENCES agent_installations(id) ON DELETE CASCADE,
     policy_version TEXT NOT NULL,
+    authorization_origin TEXT NOT NULL DEFAULT 'legacy'
+      CHECK(authorization_origin IN ('explicit_user','default_auto_policy','legacy')),
+    authorization_context_json TEXT,
     allowed_components_json TEXT NOT NULL DEFAULT '[]',
     allowed_scopes_json TEXT NOT NULL DEFAULT '[]',
     normalized_targets_json TEXT NOT NULL DEFAULT '[]',
@@ -427,6 +432,7 @@ CREATE TABLE IF NOT EXISTS reconcile_runs (
     operation_type TEXT NOT NULL,
     execution_plan_hash TEXT NOT NULL,
     consent_envelope_id TEXT REFERENCES agent_consents(id),
+    automatic_intent_revision INTEGER,
     state TEXT NOT NULL DEFAULT 'planned'
       CHECK(state IN (
         'planned','preconditions_checked','applying','applied_unverified','verified','committed',
@@ -646,6 +652,8 @@ CREATE TABLE IF NOT EXISTS agent_npm_official_verifications (
 );
 
 ${AGENT_IDENTITY_BINDING_SQL}
+
+${AGENT_DIAGNOSTIC_SCHEMA_SQL}
 `;
 
 export const AGENT_INTEGRATION_MINIMUM_WRITER_PROTOCOL_KEY =
@@ -916,6 +924,10 @@ export function ensureAgentIntegrationSchema(db: Database.Database): void {
     }
   }
   db.exec(AGENT_INTEGRATION_SCHEMA_SQL);
+  ensureColumn(db, 'agent_consents', 'authorization_origin', "TEXT NOT NULL DEFAULT 'legacy' CHECK(authorization_origin IN ('explicit_user','default_auto_policy','legacy'))");
+  ensureColumn(db, 'agent_consents', 'authorization_context_json', 'TEXT');
+  ensureColumn(db, 'reconcile_runs', 'automatic_intent_revision', 'INTEGER');
+
   // Trigger names are part of the feed cursor protocol, not merely optional
   // indexes. A same-name pre-release or tampered trigger must never survive
   // `IF NOT EXISTS`, otherwise writes can leave an old renderer cursor valid.

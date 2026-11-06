@@ -415,7 +415,7 @@ describe('invocation 冷启动恢复与 ambiguous digest', () => {
       'SELECT outcome, error_kind FROM cli_invocations WHERE id = ?',
     ).get('inv_ambiguous')).toEqual({
       outcome: 'ambiguous',
-      error_kind: 'ambiguous_outcome',
+      error_kind: 'process_exit_unconfirmed',
     });
     expect(db.prepare(
       'SELECT status FROM model_connections WHERE id = ?',

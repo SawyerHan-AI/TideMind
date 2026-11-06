@@ -835,6 +835,22 @@ describe('SqliteCoordinatorRepository', () => {
     expect(run.mutations[0].journal.desiredFingerprint).toBe('desired')
   })
 
+  it('keeps the activation boundary at committed effects when recovery updates the run', () => {
+    const { db, repository, bridge } = setup()
+    discover(repository, 'i1')
+    prepare(bridge, 'i1', 'run-1')
+    markMutationsCommitted(db, 'run-1')
+    markApplied(bridge, 'run-1')
+    const appliedAt = '2026-08-25T00:01:00.000Z'
+    const recoveredAt = '2026-08-25T00:10:00.000Z'
+    db.prepare(`UPDATE projection_mutations SET updated_at = ? WHERE run_id = ?`)
+      .run(appliedAt, 'run-1')
+    db.prepare(`UPDATE reconcile_runs SET updated_at = ? WHERE id = ?`)
+      .run(recoveredAt, 'run-1')
+    const restarted = new SqliteCoordinatorRepository(db, repository, { ownerInstanceId: 'restart' })
+    expect(restarted.getRecoverableExecution('run-1')?.activationEpoch).toBe(appliedAt)
+  })
+
   // Each corruption case owns its fixture and default timeout. `setup()` builds the
   // complete application schema, so folding this matrix into one test makes its
   // timeout depend on aggregate schema-initialization speed rather than recovery.
@@ -2319,6 +2335,10 @@ describe('SqliteCoordinatorRepository', () => {
       WHERE c.installation_id = 'i1' AND c.component_key = 'memory_tools' AND c.state = 'active'
     `).get()
     expect(active).toEqual({ target_path: TARGET, state: 'needs_recovery', desired_state: 'disabled' })
+    db.prepare(`UPDATE reconcile_runs SET updated_at = ? WHERE id = 'run-noop-rekey'`)
+      .run('2026-08-25T00:10:00.000Z')
+    expect(bridge.getRecoverableExecution('run-noop-rekey')?.activationEpoch).toBe(T0)
+
     expect(db.prepare(`
       SELECT state, tombstone_reason FROM artifact_consumers
       WHERE artifact_id = 'old-noop-surface' AND installation_id = 'i1'
@@ -2384,7 +2404,24 @@ describe('SqliteCoordinatorRepository', () => {
       desiredCapability: 2, mutations: [], intentAfterPrepare: 'managed', createdAt: T0,
       expectedDesiredState: 'unmanaged',
     })
-    commitRun(db, bridge, 'run-memory-only')
+    markApplied(bridge, 'run-memory-only')
+    recordRunVerification(db, bridge, 'run-memory-only')
+    db.prepare(`UPDATE verification_results SET invalidation_keys_json = '["artifact_hash"]' WHERE run_id = 'run-memory-only'`).run()
+    const freshness = { now: T0, osVersion: os.release(), catalogVersion: '3', projectionVersion: '9', adapterVersion: () => '7' }
+    expect(repository.refreshVerificationFreshness(freshness)).toBe(0)
+    expect(db.prepare(`SELECT state FROM managed_artifacts WHERE id = 'pending-memory'`).get()).toEqual({ state: 'needs_recovery' })
+    expect(db.prepare(`SELECT desired_state FROM artifact_consumers WHERE artifact_id = 'pending-memory'`).get()).toEqual({ desired_state: 'disabled' })
+    db.prepare(`UPDATE agent_consents SET status = 'revoked' WHERE id = 'consent-i1'`).run()
+    expect(repository.refreshVerificationFreshness(freshness)).toBe(1)
+    db.prepare(`UPDATE agent_consents SET status = 'active' WHERE id = 'consent-i1'`).run()
+    recordRunVerification(db, bridge, 'run-memory-only')
+    db.prepare(`UPDATE verification_results SET invalidation_keys_json = '["artifact_hash"]' WHERE run_id = 'run-memory-only'`).run()
+    db.prepare(`UPDATE managed_artifacts SET observed_fragment_hash = 'external-edit' WHERE id = 'pending-memory'`).run()
+    expect(repository.refreshVerificationFreshness(freshness)).toBe(1)
+    db.prepare(`UPDATE managed_artifacts SET observed_fragment_hash = 'desired' WHERE id = 'pending-memory'`).run()
+    recordRunVerification(db, bridge, 'run-memory-only')
+    bridge.setRunState('run-memory-only', 'verified', T0)
+    bridge.setRunState('run-memory-only', 'committed', T0)
 
     expect(db.prepare(`
       SELECT artifact_id, desired_state FROM artifact_consumers ORDER BY artifact_id

@@ -1,8 +1,7 @@
-import { execFile } from 'node:child_process'
+import { runGeminiExtensionCommand } from './gemini-extension-command'
 import { shellArgument } from '../shell-argument'
 import fs from 'node:fs'
 import path from 'node:path'
-import { promisify } from 'node:util'
 import { sha256Bytes, sha256Json } from '../fingerprint'
 import { verifyHostActivity, verifyMemoryReadWriteActivity } from '../host-activity-evidence'
 import {
@@ -101,7 +100,6 @@ const SELECTOR_SCHEMA_VERSION = 1
 const INSTALL_METADATA = '.gemini-extension-install.json'
 const MAX_ENTRIES = 32
 const MAX_FILE_BYTES = 1024 * 1024
-const execFileAsync = promisify(execFile)
 
 /**
  * Installs one official Gemini CLI Extension that carries context/Skill, MCP
@@ -284,6 +282,7 @@ export function createGeminiExtensionHostAdapter(
       const startIndex = safeAbsentResume ? 1 : 0
       try {
         for (const command of commands.slice(startIndex)) {
+          if (command.args[0] === 'extensions' && command.args[1] === 'install') stagePackage(context, desired)
           const result = await dependencies.run(command.executableRealpath, command.args, {
             timeoutMs: COMMAND_TIMEOUT_MS,
             cwd: context.runtime.homeDir,
@@ -430,7 +429,7 @@ async function inspectLegacyGeminiExtension(
       cwd: context.runtime.homeDir,
       env: geminiEnvironment(context, executable),
     })
-    const listed = listResult.exitCode === 0 ? parseExtensionList(listResult.stdout) : null
+    const listed = listResult.exitCode === 0 ? parseExtensionList(listResult.stdout, listResult.stderr) : null
     if (!listed || !listed.ok) return []
     const matches = listed.extensions.filter(extension => extension.name === name)
     if (matches.length !== 1 || matches[0].version !== '1.0.0'
@@ -486,27 +485,7 @@ function legacyGeminiHooksMatch(
 }
 
 function productionDependencies(): GeminiExtensionAdapterDependencies {
-  return {
-    async run(executableRealpath, args, options) {
-      try {
-        const result = await execFileAsync(executableRealpath, [...args], {
-          timeout: options.timeoutMs,
-          cwd: options.cwd,
-          env: { ...options.env },
-          maxBuffer: 1024 * 1024,
-          windowsHide: true,
-        })
-        return { exitCode: 0, stdout: result.stdout, stderr: result.stderr }
-      } catch (error) {
-        const failure = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: number }
-        return {
-          exitCode: typeof failure.code === 'number' ? failure.code : 1,
-          stdout: failure.stdout ?? '',
-          stderr: failure.stderr ?? failure.message,
-        }
-      }
-    },
-  }
+  return { run: runGeminiExtensionCommand }
 }
 
 function desiredExtension(context: AdapterOperationContext): DesiredExtension {
@@ -701,7 +680,7 @@ async function inspectExtension(
       diagnostics: [`gemini_extensions_list_failed:${listResult.exitCode}:${bounded(listResult.stderr || listResult.stdout)}`],
     }
   }
-  const parsed = parseExtensionList(listResult.stdout)
+  const parsed = parseExtensionList(listResult.stdout, listResult.stderr)
   if (!parsed.ok) {
     return { state: 'unknown', observed: bundle.exists, fingerprint: bundle.fingerprint, diagnostics: [parsed.reason] }
   }
@@ -1031,10 +1010,17 @@ function installedStateHash(input: {
   })
 }
 
-function parseExtensionList(stdout: string): { ok: true; extensions: ListedExtension[] } | { ok: false; reason: string } {
+export function parseExtensionList(stdout: string, stderr = ''): { ok: true; extensions: ListedExtension[] } | { ok: false; reason: string } {
   let parsed: unknown
   try {
-    parsed = JSON.parse(stdout.trim() || '[]')
+    if (stdout.trim()) parsed = JSON.parse(stdout.trim())
+    else {
+      // Some Gemini versions route headless command JSON through the debug
+      // logger on stderr. Accept a complete JSON array, never empty output as [].
+      const start = stderr.search(/^[ \t]*\[(?![A-Za-z])/m)
+      if (start < 0) throw new Error('missing list JSON')
+      parsed = JSON.parse(stderr.slice(start).trim())
+    }
   } catch {
     return { ok: false, reason: 'gemini_extensions_list_json_invalid' }
   }

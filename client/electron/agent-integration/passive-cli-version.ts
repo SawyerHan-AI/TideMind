@@ -24,8 +24,8 @@ export interface PassiveVersionFileSystem {
     groupGid?: string
   } | undefined>
   realpath(targetPath: string): Promise<string>
-  readStableFileSnapshot(targetPath: string, maxBytes: number): Promise<StableFileSnapshot>
-  readStableFileFingerprint?(targetPath: string, maxBytes: number): Promise<StableFileFingerprint>
+  readStableFileSnapshot(targetPath: string, maxBytes: number, signal?: AbortSignal): Promise<StableFileSnapshot>
+  readStableFileFingerprint?(targetPath: string, maxBytes: number, signal?: AbortSignal): Promise<StableFileFingerprint>
   readStablePackageTree?(targetPath: string, options?: StablePackageTreeOptions): Promise<StablePackageTree>
   verifyStablePackageTree?(
     targetPath: string,
@@ -101,6 +101,7 @@ export function kimiNativeExecutablePortableArtifactFingerprint(
 }
 
 export interface StablePackageTreeOptions {
+  signal?: AbortSignal
   includeNodeModules?: boolean
 }
 
@@ -109,6 +110,7 @@ export async function readStablePackageTree(
   packageRoot: string,
   options: StablePackageTreeOptions = {},
 ): Promise<StablePackageTree> {
+  options.signal?.throwIfAborted()
   const canonicalRoot = path.resolve(packageRoot)
   const uid = expectedOwnerUid()
   if (!uid || path.resolve(await fs.realpath(canonicalRoot)) !== canonicalRoot) {
@@ -120,6 +122,7 @@ export async function readStablePackageTree(
     : MAX_PACKAGE_TREE_DIRECTORIES
   let directoryCount = 0
   const visit = async (directory: string, depth: number): Promise<void> => {
+    options.signal?.throwIfAborted()
     directoryCount += 1
     if (directoryCount > maxDirectories || depth > MAX_PACKAGE_TREE_DEPTH) {
       throw new Error('package_tree_directory_limit_exceeded')
@@ -137,6 +140,7 @@ export async function readStablePackageTree(
       throw new Error('package_tree_directory_entry_limit_exceeded')
     }
     for (const entry of entries) {
+      options.signal?.throwIfAborted()
       const targetPath = path.join(directory, entry.name)
       if (entry.isDirectory()) {
         if (!options.includeNodeModules && entry.name === 'node_modules') continue
@@ -156,6 +160,7 @@ export async function readStablePackageTree(
   }
   await visit(canonicalRoot, 0)
   const proofNodes = await mapWithConcurrency(pendingEntries, 32, async entry => {
+    options.signal?.throwIfAborted()
     if (entry.entryType === 'symlink') {
       const snapshot = await readStableOwnedSymlinkFingerprint(canonicalRoot, entry.path)
       // Linux reports symlink mode as 0777 because those permission bits are
@@ -171,7 +176,7 @@ export async function readStablePackageTree(
         symlinkTarget: snapshot.symlinkTarget,
       }
     }
-    const snapshot = await readStableFileFingerprint(entry.path, MAX_PACKAGE_TREE_FILE_BYTES)
+    const snapshot = await readStableFileFingerprint(entry.path, MAX_PACKAGE_TREE_FILE_BYTES, options.signal)
     if (!isSafeArtifactOwned(snapshot)) throw new Error('package_tree_file_permissions_invalid')
     return {
       ...packageProofNode('npm_package_file', entry.path, MAX_PACKAGE_TREE_FILE_BYTES, snapshot),
@@ -218,14 +223,17 @@ async function mapWithConcurrency<T, R>(
 ): Promise<R[]> {
   const result = new Array<R>(values.length)
   let nextIndex = 0
+  let failed = false
   const worker = async (): Promise<void> => {
-    while (nextIndex < values.length) {
+    while (!failed && nextIndex < values.length) {
       const index = nextIndex
       nextIndex += 1
-      result[index] = await mapper(values[index]!)
+      try { result[index] = await mapper(values[index]!) } catch (error) { failed = true; throw error }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, () => worker()))
+  const workers = await Promise.allSettled(Array.from({ length: Math.min(concurrency, values.length) }, () => worker()))
+  const rejection = workers.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+  if (rejection) throw rejection.reason
   return result
 }
 
@@ -235,6 +243,7 @@ export async function verifyStablePackageTree(
   snapshot: StablePackageTree,
   options: StablePackageTreeOptions = {},
 ): Promise<boolean> {
+  options.signal?.throwIfAborted()
   try {
     const canonicalRoot = path.resolve(packageRoot)
     const uid = expectedOwnerUid()
@@ -245,6 +254,7 @@ export async function verifyStablePackageTree(
       : MAX_PACKAGE_TREE_DIRECTORIES
     let directoryCount = 0
     const visit = async (directory: string, depth: number): Promise<boolean> => {
+      options.signal?.throwIfAborted()
       directoryCount += 1
       if (directoryCount > maxDirectories || depth > MAX_PACKAGE_TREE_DEPTH) return false
       const directoryNode = await fs.lstat(directory, { bigint: true })
@@ -256,6 +266,7 @@ export async function verifyStablePackageTree(
         .sort((left, right) => left.name.localeCompare(right.name))
       if (entries.length > MAX_PACKAGE_TREE_ENTRIES_PER_DIRECTORY) return false
       for (const entry of entries) {
+        options.signal?.throwIfAborted()
         const targetPath = path.join(directory, entry.name)
         if (entry.isDirectory()) {
           if (!options.includeNodeModules && entry.name === 'node_modules') continue
@@ -274,6 +285,7 @@ export async function verifyStablePackageTree(
       || actualPaths.some((targetPath, index) => targetPath !== expected[index]?.path)) return false
     const expectedByPath = new Map(expected.map(node => [node.path, node]))
     const results = await mapWithConcurrency(expected, 64, async proof => {
+      options.signal?.throwIfAborted()
       const node = await fs.lstat(proof.path, { bigint: true })
       if (proof.entryType === 'symlink') {
         if (!node.isSymbolicLink()) return false
@@ -364,7 +376,9 @@ async function readStableOwnedSymlinkFingerprint(
 export async function readStableFileSnapshot(
   targetPath: string,
   maxBytes: number,
+  signal?: AbortSignal,
 ): Promise<StableFileSnapshot> {
+  signal?.throwIfAborted()
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new Error('stable_snapshot_invalid_bound')
   const handle = await fs.open(targetPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
   try {
@@ -374,10 +388,12 @@ export async function readStableFileSnapshot(
     const content = Buffer.alloc(Number(before.size))
     let offset = 0
     while (offset < content.length) {
+      signal?.throwIfAborted()
       const { bytesRead } = await handle.read(content, offset, content.length - offset, offset)
       if (bytesRead === 0) throw new Error('stable_snapshot_short_read')
       offset += bytesRead
     }
+    signal?.throwIfAborted()
     const after = await handle.stat({ bigint: true })
     const beforeIdentity = fileStatIdentity(before)
     const afterIdentity = fileStatIdentity(after)
@@ -430,7 +446,9 @@ export async function readStableFileSnapshot(
 export async function readStableFileFingerprint(
   targetPath: string,
   maxBytes: number,
+  signal?: AbortSignal,
 ): Promise<StableFileFingerprint> {
+  signal?.throwIfAborted()
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new Error('stable_fingerprint_invalid_bound')
   const handle = await fs.open(targetPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
   try {
@@ -443,6 +461,7 @@ export async function readStableFileFingerprint(
     const buffer = Buffer.allocUnsafe(Math.max(1, Math.min(1024 * 1024, Number(before.size))))
     let offset = 0n
     while (offset < before.size) {
+      signal?.throwIfAborted()
       const remaining = before.size - offset
       const length = Number(remaining > BigInt(buffer.length) ? BigInt(buffer.length) : remaining)
       const { bytesRead } = await handle.read(buffer, 0, length, Number(offset))
@@ -450,6 +469,7 @@ export async function readStableFileFingerprint(
       hash.update(buffer.subarray(0, bytesRead))
       offset += BigInt(bytesRead)
     }
+    signal?.throwIfAborted()
     const after = await handle.stat({ bigint: true })
     if (fileStatIdentity(before) !== fileStatIdentity(after)) {
       throw new Error('stable_fingerprint_changed_during_read')
@@ -540,14 +560,44 @@ function fileStatIdentity(stat: BigIntStats): string {
 export async function inspectPassiveCliVersion(
   executableRealpath: string,
   fs: PassiveVersionFileSystem,
+  signal?: AbortSignal,
 ): Promise<VersionCommandResult> {
   return inspectPassiveCliVersionForArchitecture(
-    executableRealpath, fs, process.arch === 'x64' ? 'x64' : 'arm64',
+    executableRealpath, fs, process.arch === 'x64' ? 'x64' : 'arm64', signal,
   )
 }
 
 /** Explicit-architecture entry used by isolated receipt capture/tests. */
 export async function inspectPassiveCliVersionForArchitecture(
+  executableRealpath: string,
+  fs: PassiveVersionFileSystem,
+  architecture: 'arm64' | 'x64',
+  signal?: AbortSignal,
+): Promise<VersionCommandResult> {
+  signal?.throwIfAborted()
+  const result = await inspectPassiveVersion(executableRealpath, signal ? abortableFileSystem(fs, signal) : fs, architecture)
+  signal?.throwIfAborted()
+  return result
+}
+
+function abortableFileSystem(fs: PassiveVersionFileSystem, signal: AbortSignal): PassiveVersionFileSystem {
+  const guarded = async <T>(read: () => Promise<T>): Promise<T> => {
+    signal.throwIfAborted()
+    const result = await read()
+    signal.throwIfAborted()
+    return result
+  }
+  return {
+    lstat: target => guarded(() => fs.lstat(target)),
+    realpath: target => guarded(() => fs.realpath(target)),
+    readStableFileSnapshot: (target, maxBytes) => guarded(() => fs.readStableFileSnapshot(target, maxBytes, signal)),
+    ...(fs.readStableFileFingerprint ? { readStableFileFingerprint: (target: string, maxBytes: number) => guarded(() => fs.readStableFileFingerprint!(target, maxBytes, signal)) } : {}),
+    ...(fs.readStablePackageTree ? { readStablePackageTree: (target: string, options?: StablePackageTreeOptions) => guarded(() => fs.readStablePackageTree!(target, { ...options, signal })) } : {}),
+    ...(fs.verifyStablePackageTree ? { verifyStablePackageTree: (target: string, snapshot: StablePackageTree, options?: StablePackageTreeOptions) => guarded(() => fs.verifyStablePackageTree!(target, snapshot, { ...options, signal })) } : {}),
+  }
+}
+
+async function inspectPassiveVersion(
   executableRealpath: string,
   fs: PassiveVersionFileSystem,
   architecture: 'arm64' | 'x64',

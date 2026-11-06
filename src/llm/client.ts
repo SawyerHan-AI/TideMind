@@ -1,3 +1,4 @@
+import { isDiagnosticRequested } from '../agent-diagnostic-contract.js';
 import Anthropic from '@anthropic-ai/sdk';
 import AnthropicVertex from '@anthropic-ai/vertex-sdk';
 import type Database from 'better-sqlite3';
@@ -957,6 +958,7 @@ export async function callLLM(options: {
    */
   signal?: AbortSignal;
 }): Promise<string> {
+  if (isDiagnosticRequested()) throw new Error('agent_diagnostic:model_calls_disabled');
   if (llmRuntimeStopping) {
     throw new Error('LLM runtime is shutting down');
   }

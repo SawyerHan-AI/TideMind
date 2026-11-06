@@ -1,6 +1,6 @@
 {
   "name": "tidemind",
-  "version": "0.2.94",
+  "version": "0.2.95",
   "description": "Tide Mind — 基于活图的认知系统，通过 MCP 协议为 AI 工具提供记忆服务",
   "type": "module",
   "bin": {
@@ -61,6 +61,7 @@
     "vitest": "4.1.12"
   },
   "overrides": {
+    "minimatch@>=7.0.0 <11.0.1": "11.0.5",
     "gaxios": "^7.1.4",
     "esbuild": "^0.28.1"
   }

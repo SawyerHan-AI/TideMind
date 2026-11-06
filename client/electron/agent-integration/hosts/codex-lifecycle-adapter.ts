@@ -310,7 +310,16 @@ export function createCodexLifecycleHostAdapter(spec: CodexLifecycleHostSpec): A
     async plan(context, request): Promise<AdapterPlan> {
       let plan = await base.plan(context, request)
       if(request.desiredCapability > 0 && request.desiredComponents.includes('lifecycle')){
-        const proof=context.codexLegacySelection?.hookProof ?? inspectLegacyCodexHookProof(context,[context.agentId])
+        // Operation generations change desired commands, not ownership of the
+        // exact already-managed fragment. Legacy adoption is only needed when
+        // the regular owned observation cannot prove the existing bytes.
+        const observed=request.observed.components.find(item=>item.componentKey==='lifecycle')
+        const ownedCurrent=request.ownedArtifacts.some(item=>item.componentKey==='lifecycle'
+          && item.ownershipKey==='hooks.tidemind-'+context.agentId
+          && item.physicalTarget===observed?.observedTarget
+          && item.ownedFragmentHash===observed?.observedFragmentHash)
+        const proof=context.codexLegacySelection?.hookProof
+          ?? (ownedCurrent ? null : inspectLegacyCodexHookProof(context,[context.agentId]))
         if(proof){
           const baseline=request.ownedArtifacts.find(item=>item.componentKey==='lifecycle' && item.ownershipKey==='hooks.tidemind-'+context.agentId)
           if(baseline ? baseline.ownedFragmentHash!==legacyHookHash(proof,context.agentId) : (!context.codexLegacySelection || proof.entries.some(item=>item.agentId===context.agentId)))throw new Error('Legacy Codex hook needs proven ownership before migration')
@@ -681,8 +690,7 @@ function identifiesTideMindEntry(candidate: JsonValue, context: AdapterOperation
     return typeof command === 'string'
       && command.includes(`${shellArgument('--agent-id')} ${shellArgument(context.agentId)}`)
       && command.includes(`${shellArgument('--tool')} ${shellArgument('codex')}`)
-      && (!context.activityGenerationToken
-        || command.includes(`${shellArgument('--activity-generation-token')} ${shellArgument(context.activityGenerationToken)}`))
+
   })
 }
 

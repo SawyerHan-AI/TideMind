@@ -1202,3 +1202,31 @@ describe('lockless npm install surface (no hidden lockfile, e.g. npm install -g)
     }, IO_TIMEOUT)
   })
 })
+
+
+it('cancels an executable hash between bounded chunks and closes its descriptor', async () => {
+  const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'tm-proof-cancel-'))
+  const target = path.join(root, 'binary')
+  fs.writeFileSync(target, Buffer.alloc(4 * 1024 * 1024))
+  const controller = new AbortController()
+  const reason = new Error('cancel fixture proof')
+  const originalOpen = fs.promises.open.bind(fs.promises)
+  let handle: Awaited<ReturnType<typeof fs.promises.open>> | undefined
+  let reads = 0
+  const spy = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+    handle = await originalOpen(...args)
+    const read = handle.read.bind(handle)
+    handle.read = (async (...readArgs: unknown[]) => {
+      const result = await (read as (...args: unknown[]) => Promise<unknown>)(...readArgs)
+      reads += 1
+      controller.abort(reason)
+      return result
+    }) as typeof handle.read
+    return handle
+  })
+  try {
+    await expect(readStableFileFingerprint(target, 8 * 1024 * 1024, controller.signal)).rejects.toBe(reason)
+    expect(reads).toBe(1)
+    expect(handle?.fd).toBe(-1)
+  } finally { spy.mockRestore(); fs.rmSync(root, { recursive: true, force: true }) }
+}, 30_000)

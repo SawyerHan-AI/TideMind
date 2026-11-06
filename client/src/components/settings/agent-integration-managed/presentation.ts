@@ -22,10 +22,10 @@ export interface PresentationToken {
 const STATUS_TOKENS: Readonly<Record<ManagedStatusGroup, PresentationToken>> = {
   available: { labelKey: 'agent.managed.status.available', tone: 'green' },
   limited: { labelKey: 'agent.managed.status.limited', tone: 'amber' },
-  awaiting_connection: { labelKey: 'agent.managed.status.awaitingConnection', tone: 'blue' },
+  awaiting_connection: { labelKey: 'agent.managed.status.awaitingConnection', tone: 'gray' },
   awaiting_verification: { labelKey: 'agent.managed.status.awaitingVerification', tone: 'blue' },
-  processing: { labelKey: 'agent.managed.status.processing', tone: 'violet' },
-  needs_attention: { labelKey: 'agent.managed.status.needsAttention', tone: 'red' },
+  processing: { labelKey: 'agent.managed.status.processing', tone: 'blue' },
+  needs_attention: { labelKey: 'agent.managed.status.needsAttention', tone: 'amber' },
   paused: { labelKey: 'agent.managed.status.paused', tone: 'gray' },
   disconnected: { labelKey: 'agent.managed.status.disconnected', tone: 'gray' },
 }
@@ -38,7 +38,7 @@ const REASON_KEY_BY_VALUE: Readonly<Record<string, string>> = {
   repairing: 'repairing', disconnecting: 'disconnecting', new_session: 'newSession',
   host_confirmation: 'hostConfirmation', conflict: 'conflict', permission: 'permission',
   legacy_confirmation_required: 'legacyConfirmationRequired',
-  verification_failed: 'verificationFailed', disconnect_incomplete: 'disconnectIncomplete',
+  verification_failed: 'verificationFailed', automatic_configuration_failed: 'automaticConfigurationFailed', native_permission_required: 'nativePermissionRequired', authentication_required: 'authenticationRequired', disconnect_incomplete: 'disconnectIncomplete',
   shared_visibility_remaining: 'sharedVisibilityRemaining', user_disabled: 'userDisabled',
   circuit_breaker: 'circuitBreaker', disconnect_verified: 'disconnectVerified',
   host_uninstalled: 'hostUninstalled', detect_only: 'detectOnly',
@@ -110,7 +110,7 @@ const COMPONENT_KEYS: Readonly<Record<ManagedComponentKey, string>> = {
 const COMPONENT_STATUS: Readonly<Record<ManagedComponentStatus, PresentationToken>> = {
   verified: { labelKey: 'agent.managed.componentStatus.verified', tone: 'green' },
   configured: { labelKey: 'agent.managed.componentStatus.configured', tone: 'blue' },
-  verification_stale: { labelKey: 'agent.managed.componentStatus.stale', tone: 'amber' },
+  verification_stale: { labelKey: 'agent.managed.componentStatus.stale', tone: 'gray' },
   new_session: { labelKey: 'agent.managed.componentStatus.needsSession', tone: 'amber' },
   confirmation_required: { labelKey: 'agent.managed.componentStatus.needsConfirmation', tone: 'amber' },
   missing: { labelKey: 'agent.managed.componentStatus.missing', tone: 'red' },
@@ -159,6 +159,18 @@ export function deactivationNoticeKey(installation: Pick<ManagedInstallationDto,
   if (deactivation.hostComponents === 'awaiting_reload') return 'agent.managed.deactivation.awaitingReload'
   if (deactivation.bridge === 'stopped') return 'agent.managed.deactivation.bridgeStopped'
   return null
+}
+
+/** Write eligibility can be temporarily withheld without undoing connection facts. */
+export function isTemporaryManagementBlock(reason: string): boolean {
+  return ['source_verification_pending', 'executable_metadata_unavailable'].includes(reason)
+}
+
+export function managementStatusPresentation(group: ManagedStatusGroup, reason: string, detectOnly: boolean): PresentationToken {
+  if (!detectOnly || group === 'needs_attention') return statusPresentation(group)
+  if (!isTemporaryManagementBlock(reason)) return { labelKey: 'agent.managed.supportMode.detectable', tone: 'gray' }
+  if (['available', 'awaiting_verification', 'processing', 'paused'].includes(group)) return statusPresentation(group)
+  return { labelKey: 'agent.managed.checkPending', tone: 'blue' }
 }
 
 export function managementUnavailableHelpKey(reason: string): string {
@@ -320,6 +332,19 @@ export interface SnapshotSummary {
   attentionCount: number
 }
 
+/** Current actionable state only: historical events and optional hosts are not incidents. */
+export function installationNeedsAction(installation: ManagedInstallationDto): boolean {
+  if (installation.statusGroup === 'needs_attention') return true
+  return installation.desiredState === 'managed' && installation.components.some(component =>
+    ['missing', 'conflict', 'verification_stale', 'new_session', 'confirmation_required'].includes(component.state),
+  )
+}
+
+export function installationNoticeKey(installation: ManagedInstallationDto): string {
+  return JSON.stringify([installation.id, installation.version, installation.statusGroup,
+    installation.statusReason, installation.components.map(component => [component.key, component.state])])
+}
+
 export function summarizeSnapshot(snapshot: ManagedSnapshotDto): SnapshotSummary {
   return {
     productCount: snapshot.summary.familyCount,
@@ -327,9 +352,7 @@ export function summarizeSnapshot(snapshot: ManagedSnapshotDto): SnapshotSummary
     availableCount: snapshot.summary.availableCount,
     // Detect-only catalog entries remain visible, but must never advertise a
     // connect flow which production has deliberately gated off.
-    pendingCount: snapshot.installations.filter(item =>
-      item.manageable && item.statusGroup === 'awaiting_connection',
-    ).length,
+    pendingCount: snapshot.summary.awaitingConnectionCount,
     attentionCount: snapshot.summary.needsAttentionCount,
   }
 }

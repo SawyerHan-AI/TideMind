@@ -123,6 +123,7 @@ export function createUiAuditAgentIntegrationOptions(
     projectionVersion: '1',
   }
   let codexHooksTrusted = false
+  let diagnosticRetried = false
   const codexHooksPort: CodexOfficialHooksPort = {
     list: async context => uiAuditCodexHooks(context, codexHooksTrusted),
     preview: async context => uiAuditCodexHooks(context, codexHooksTrusted),
@@ -136,6 +137,27 @@ export function createUiAuditAgentIntegrationOptions(
     autoRestore: false,
     startRuntime: false,
     fixtureMode: 'isolated_ui_audit',
+    diagnosticFixture: {
+      state: row => row.id === 'shared-codex-cli' ? { status: 'waiting',
+        reason: diagnosticRetried ? 'billing_unconfirmed' : 'awaiting_diagnostic', runId: null } : undefined,
+      memorySuccess: () => null,
+      run: async row => {
+        if (row.id !== 'shared-codex-cli') throw new Error('isolated_ui_audit_diagnostic_not_configured')
+        diagnosticRetried = true
+        return { status: 'waiting', reason: 'billing_unconfirmed', runId: null }
+      },
+      cancel: () => undefined,
+    },
+    authenticationProbe: async (row, signal) => {
+      // Synthetic account evidence only inside the existing isolated factory.
+      // Never launch a CLI or read host credentials for this UI flow.
+      if (signal.aborted) return { status: 'cancelled', billing: 'unknown', reason: 'isolated_ui_audit_cancelled' }
+      if (row.id !== 'shared-codex-cli' || row.host_variant !== 'codex-cli'
+        || row.config_root !== path.join(auditHome, '.codex-shared-controls')) {
+        return { status: 'unsupported', billing: 'unknown', reason: 'isolated_ui_audit_auth_not_configured' }
+      }
+      return { status: 'authenticated', billing: 'unknown', reason: 'isolated_ui_audit_account' }
+    },
     notifications: { deliver: () => undefined },
     enabledAdapterIds: [
       'codex-cli', 'codex-desktop', 'cursor-desktop', 'kimi-code-cli',

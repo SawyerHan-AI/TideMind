@@ -62,8 +62,10 @@ describe('background official source verification', () => {
       { status: 'unavailable', reason: 'offline', checkedAt: 'T' }
     ))
     const onResult = vi.fn()
+    const states: ReturnType<BackgroundSourceVerifier['status']>[] = []
     const queue = new BackgroundSourceVerifier({
       cache: memoryCache(), onResult, verify, now: () => now, retryAfterUnavailableMs: 60_000,
+      onProgress: () => { states.push(queue.status(key)) },
     })
     await queue.enqueue(key)
     await settle()
@@ -71,6 +73,11 @@ describe('background official source verification', () => {
     await settle()
     expect(verify).toHaveBeenCalledTimes(1)
     expect(onResult).not.toHaveBeenCalled()
+    expect(states).toEqual([
+      { state: 'queued' },
+      { state: 'checking' },
+      { state: 'unavailable', reason: 'offline', retryAt: 61_000 },
+    ])
     now += 61_000
     await queue.enqueue(key)
     await settle()
@@ -87,6 +94,62 @@ describe('background official source verification', () => {
     await queue.enqueue(key)
     await settle()
     expect(onResult).not.toHaveBeenCalled()
+  })
+
+  it('manually retries unavailable checks immediately, coalesces active work and reports click throttling', async () => {
+    let now = 1_000
+    const verify = vi.fn(async (): Promise<NpmOfficialVerificationResult> => ({ status: 'unavailable', reason: 'offline', checkedAt: 'T' }))
+    const queue = new BackgroundSourceVerifier({ cache: memoryCache(), onResult: vi.fn(), verify, now: () => now })
+    await queue.enqueue(key)
+    await settle()
+    expect(queue.status(key)?.state).toBe('unavailable')
+    expect(await queue.retry(key)).toEqual({ status: 'started' })
+    await settle()
+    expect(verify).toHaveBeenCalledTimes(2)
+    expect(await queue.retry(key)).toEqual({ status: 'throttled', retryAt: 11_000 })
+    now = 11_000
+    expect(await queue.retry(key)).toEqual({ status: 'started' })
+    await settle()
+    expect(verify).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not rerun an unsupported source and exposes its precise reason', async () => {
+    const verify = vi.fn(async (): Promise<NpmOfficialVerificationResult> => ({ status: 'unsupported', reason: 'unreproducible_installation' }))
+    const onProgress = vi.fn()
+    const queue = new BackgroundSourceVerifier({ cache: memoryCache(), onResult: vi.fn(), onProgress, verify })
+    await queue.enqueue(key)
+    await settle()
+    expect(queue.status(key)).toEqual({ state: 'unsupported', reason: 'unreproducible_installation' })
+    expect(onProgress).toHaveBeenCalledTimes(3)
+    expect(await queue.retry(key)).toEqual({ status: 'unsupported' })
+    await queue.enqueue(key)
+    await settle()
+    expect(verify).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops the active verifier and rejects late cache writes and rescan callbacks', async () => {
+    const cache = memoryCache()
+    const onResult = vi.fn()
+    const onProgress = vi.fn()
+    let release!: () => void
+    let signal: AbortSignal | undefined
+    const queue = new BackgroundSourceVerifier({ cache, onResult, onProgress, verify: async (_input, deps) => {
+      signal = deps?.signal
+      await new Promise<void>(resolve => { release = resolve })
+      deps!.cache!.put({} as NpmOfficialVerificationCacheRecord)
+      return { status: 'verified', officialFingerprint: key.portableArtifactFingerprint, checkedAt: 'T', evidence: 'registry' }
+    } })
+    await queue.enqueue(key)
+    expect(await queue.retry(key)).toEqual({ status: 'in_progress' })
+    queue.stop()
+    onProgress.mockClear()
+    expect(signal?.aborted).toBe(true)
+    release()
+    await settle()
+    expect(cache.records).toEqual([])
+    expect(onResult).not.toHaveBeenCalled()
+    expect(onProgress).not.toHaveBeenCalled()
+    expect(await queue.retry(key)).toEqual({ status: 'stopped' })
   })
 
   it('maps cached verified/mismatch records to runtime lookups and fails closed on read errors', () => {

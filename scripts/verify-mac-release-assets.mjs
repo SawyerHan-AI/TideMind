@@ -101,6 +101,7 @@ export function assertAgentIntegrationReleaseAcceptance(contract) {
 }
 
 export const AGENT_RUNTIME_BUNDLES = Object.freeze([
+  'agent-diagnostic-runner.cjs',
   'agent-host-activity-export.cjs',
   'hook-session-start.cjs',
   'hook-kimi-session-start-activity.cjs',

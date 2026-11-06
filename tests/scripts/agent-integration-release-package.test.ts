@@ -529,6 +529,7 @@ describe('packaged Agent Integration release manifest gate', () => {
   it('requires the complete Gemini Extension runtime in every packaged app', () => {
     expect(AGENT_RUNTIME_BUNDLES).toContain('hook-session-start.cjs')
     expect(AGENT_RUNTIME_BUNDLES).toContain('mcp-server.cjs')
+    expect(AGENT_RUNTIME_BUNDLES).toContain('agent-diagnostic-runner.cjs')
   })
 
   it('requires the silent Kimi SessionStart activity runtime in every packaged app', () => {

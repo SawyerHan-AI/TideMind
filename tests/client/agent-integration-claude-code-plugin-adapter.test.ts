@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createClaudeCodePluginHostAdapter,
   type ClaudeCodeCommandResult,
@@ -19,11 +19,13 @@ class FakeClaudeCli implements ClaudeCodePluginAdapterDependencies {
   marketplaces = new Map<string, string>()
   plugins = new Map<string, { version: string; enabled: boolean }>()
   calls: string[][] = []
+  configRoots: (string | undefined)[] = []
   failAfterStep: string | null = null
   failBeforeStep: string | null = null
 
-  async run(_executable: string, args: readonly string[]): Promise<ClaudeCodeCommandResult> {
+  async run(_executable: string, args: readonly string[], options: Parameters<ClaudeCodePluginAdapterDependencies['run']>[2]): Promise<ClaudeCodeCommandResult> {
     this.calls.push([...args])
+    this.configRoots.push(options.env.CLAUDE_CONFIG_DIR)
     if (args.join(' ') === 'plugin marketplace list --json') {
       return ok([...this.marketplaces].map(([name, marketplacePath]) => ({ name, source: 'directory', path: marketplacePath, installLocation: marketplacePath })))
     }
@@ -91,7 +93,7 @@ describe('Claude Code official aggregate plugin adapter', () => {
   let cli: FakeClaudeCli
 
   beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-plugin-adapter-'))
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'claude-plugin-adapter-')))
     cli = new FakeClaudeCli()
   })
 
@@ -101,6 +103,7 @@ describe('Claude Code official aggregate plugin adapter', () => {
     catalogId: 'claude-code-cli' | 'claude-code-native' = 'claude-code-cli',
     evidence?: readonly HostActivityEvidenceRecord[],
     nativeProvenance = 'native_bundle:unproven',
+    configRoot = path.join(root, '.claude'),
   ): AdapterOperationContext {
     const executable = path.join(root, 'bin', 'claude')
     fs.mkdirSync(path.dirname(executable), { recursive: true })
@@ -110,7 +113,7 @@ describe('Claude Code official aggregate plugin adapter', () => {
       osUserIdentity: 'usr_01JCLAUDETEST',
       productFamilyId: 'claude-code',
       hostVariant: catalogId,
-      configRoot: path.join(root, '.claude'),
+      configRoot,
       distribution: {
         distributionId: catalogId,
         executableRealpath: executable,
@@ -249,6 +252,47 @@ describe('Claude Code official aggregate plugin adapter', () => {
       path.join(root, '.claude', 'plugins', 'installed_plugins.json'),
     ]))
     expect(result.mutations[0].safeResumeStates?.length).toBeGreaterThan(2)
+  })
+
+  it('uses the same nondefault root for native commands and frozen writer fences', async () => {
+    const configRoot = path.join(fs.realpathSync(root), '.claude-work')
+    fs.mkdirSync(configRoot)
+    const ctx = context('claude-code-cli', undefined, undefined, configRoot)
+    const mutation = (await plan(ctx)).mutations[0]
+    expect(mutation.additionalFenceTargets?.slice(2).every(fence => fence.physicalTarget.startsWith(configRoot + path.sep))).toBe(true)
+    expect(mutation.additionalFenceTargets?.some(fence => fence.physicalTarget === path.join(configRoot, 'settings.json'))).toBe(true)
+    const legacy = { ...mutation, additionalFenceTargets: mutation.additionalFenceTargets?.map(fence => ({
+      ...fence, physicalTarget: fence.physicalTarget.replace(configRoot, path.join(root, '.claude')),
+    })) }
+    const beforeApply = cli.calls.length
+    await expect(adapter().apply(ctx, legacy)).rejects.toThrow('claude_plugin_frozen_config_fences_changed')
+    expect(cli.calls).toHaveLength(beforeApply)
+    await adapter().apply(ctx, mutation)
+    expect(cli.configRoots.slice(beforeApply)).toEqual(Array(cli.calls.length - beforeApply).fill(configRoot))
+  })
+
+  it.each(['before first command', 'between commands'])('rejects a redirected Claude config root %s', async when => {
+    const ctx = context()
+    const configRoot = ctx.installation.canonicalConfigRoot
+    fs.mkdirSync(configRoot)
+    const mutation = (await plan(ctx)).mutations[0]
+    const redirect = () => {
+      const movedRoot = configRoot + '-moved'
+      fs.renameSync(configRoot, movedRoot)
+      fs.symlinkSync(movedRoot, configRoot, 'dir')
+    }
+    if (when === 'before first command') redirect()
+    else {
+      const original = cli.run.bind(cli)
+      vi.spyOn(cli, 'run').mockImplementation(async (...args) => {
+        const result = await original(...args)
+        if (args[1].slice(0, 3).join(' ') === 'plugin marketplace add') redirect()
+        return result
+      })
+    }
+    await expect(adapter().apply(ctx, mutation)).rejects.toThrow('claude_plugin_config_root_changed')
+    const writes = cli.calls.filter(args => !args.includes('list')).map(args => args.slice(0, 3))
+    expect(writes).toEqual(when === 'between commands' ? [['plugin', 'marketplace', 'add']] : [])
   })
 
   it.each([

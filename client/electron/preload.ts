@@ -168,6 +168,7 @@ const api: AppApi = {
     archive: (id: string) => ipcRenderer.invoke('connections:archive', id),
     unarchive: (id: string) => ipcRenderer.invoke('connections:unarchive', id),
     delete: (id: string) => ipcRenderer.invoke('connections:delete', id),
+    resumeFutureCalls: (connectionId, confirmed) => ipcRenderer.invoke('connections:resume-future-calls', connectionId, confirmed),
     test: (connectionId: string, formOverride?: Record<string, string>, options?: { models?: string[] }) => ipcRenderer.invoke('connections:test', connectionId, formOverride, options),
     models: (connectionId: string) => ipcRenderer.invoke('connections:models', connectionId),
     refreshModels: (connectionId: string) => ipcRenderer.invoke('connections:refresh-models', connectionId),
@@ -257,9 +258,15 @@ const api: AppApi = {
       return installationOpenBridge.subscribe(callback)
     },
     onTaskProgress: callback => applyTaskBridge.subscribe(callback),
+    onStateChanged: callback => {
+      const listener = () => callback()
+      ipcRenderer.on('agent-integration:state-changed', listener)
+      return () => { ipcRenderer.removeListener('agent-integration:state-changed', listener) }
+    },
     onNotification: callback => integrationNotificationBridge.subscribe(callback),
     snapshot: () => ipcRenderer.invoke('agent-integrations:snapshot'),
     scan: () => ipcRenderer.invoke('agent-integrations:scan'),
+    retrySourceCheck: (installationId: string) => ipcRenderer.invoke('agent-integrations:retry-source-check', installationId),
     reviewCodexLegacySelection: installationId=>ipcRenderer.invoke('agent-integrations:review-codex-legacy-selection',installationId),
     previewCodexLegacySelection: (installationId,selectedAgentId)=>ipcRenderer.invoke('agent-integrations:preview-codex-legacy-selection',installationId,selectedAgentId),
     previewConnect: (installationIds, includeTechnicalDetails, frozenPlanHash, options) => ipcRenderer.invoke('agent-integrations:preview-connect', installationIds, includeTechnicalDetails, frozenPlanHash, options),
@@ -268,6 +275,14 @@ const api: AppApi = {
     getApplyTask: taskId => ipcRenderer.invoke('agent-integrations:get-apply-task', taskId),
     listApplyTasks: request => ipcRenderer.invoke('agent-integrations:list-apply-tasks', request),
     inbox: limit => ipcRenderer.invoke('agent-integrations:inbox', limit),
+    previewConnectionDisconnect: connectionId => ipcRenderer.invoke('agent-integrations:preview-connection-disconnect', connectionId),
+    disconnectConnection: (planHash, connectionId) => ipcRenderer.invoke('agent-integrations:disconnect-connection', planHash, connectionId),
+    reconnectAutomaticInstallation: installationId => ipcRenderer.invoke('agent-integrations:reconnect-automatic-installation', installationId),
+    recheckAuthentication: installationId => ipcRenderer.invoke('agent-integrations:recheck-authentication', installationId),
+    recheckDiagnostic: installationId => ipcRenderer.invoke('agent-integrations:recheck-diagnostic', installationId),
+    retryAutomaticConnection: connectionId => ipcRenderer.invoke('agent-integrations:retry-automatic-connection', connectionId),
+    pauseConnection: connectionId => ipcRenderer.invoke('agent-integrations:pause-connection', connectionId),
+    resumeConnection: connectionId => ipcRenderer.invoke('agent-integrations:resume-connection', connectionId),
     pause: (installationId: string) => ipcRenderer.invoke('agent-integrations:pause', installationId),
     resume: (installationId: string) => ipcRenderer.invoke('agent-integrations:resume', installationId),
     previewResetAutoRestore: (installationId: string) => ipcRenderer.invoke('agent-integrations:preview-reset-auto-restore', installationId),

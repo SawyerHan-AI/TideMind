@@ -11,7 +11,7 @@ describe('bound hook bridge admission', () => {
   it('refuses memory injection when opening the admission database fails', () => {
     mocks.getDb.mockImplementation(() => { throw new Error('SQLITE_BUSY') })
     const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
-    expect(hookBridgeRejection({ scope: 'test', agentId: 'eb_bound', activityGenerationToken: 'generation' }))
+    expect(hookBridgeRejection({ scope: 'test', agentId: 'eb_bound', activityGenerationToken: 'generation', keepDatabaseOpen: true }))
       .toBe('guard_unavailable')
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining('bridge guard unavailable'))
     expect(mocks.closeDb).toHaveBeenCalled()

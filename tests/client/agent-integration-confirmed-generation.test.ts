@@ -123,6 +123,33 @@ describe('confirmed same-source host generation takeover through production comp
     } finally { f.close() }
   })
 
+  it('takes over a completed run whose unchanged instruction consumer is staged disabled', async () => {
+    const f = await fixture()
+    try {
+      await f.upgrade()
+      f.runtime.mcpServerPath = path.join(f.home, 'bin', 'replacement-mcp-server.cjs')
+      const first = await f.composition.service.previewConnect([f.id])
+      const applied = await f.composition.service.applyConnect(first.planHash, [f.id])
+      expect(applied.results[0].status, JSON.stringify(applied)).toBe('awaiting_verification')
+      const runId = applied.results[0].runId!
+      expect(f.db.prepare("SELECT desired_state FROM artifact_consumers WHERE installation_id=? AND component_key='instruction' AND state='active'").get(f.id))
+        .toEqual({ desired_state: 'disabled' })
+      expect(f.db.prepare("SELECT count(*) AS n FROM projection_mutations WHERE run_id=? AND component_key='instruction'").get(runId)).toEqual({ n: 0 })
+      const instruction = path.join(f.home, '.qwen/skills/tidemind/SKILL.md')
+      const beforeInstruction = fs.readFileSync(instruction, 'utf8')
+      f.discover('0.27.0')
+      await f.composition.runtime.markScanCompleted()
+      const next = await f.composition.service.previewConnect([f.id])
+      const result = await f.composition.service.applyConnect(next.planHash, [f.id])
+      expect(result.results[0].status, JSON.stringify(result)).toBe('awaiting_verification')
+      expect(f.db.prepare('SELECT state,failure_code FROM reconcile_runs WHERE id=?').get(runId))
+        .toEqual({ state: 'cancelled', failure_code: 'superseded_by_confirmed_generation' })
+      expect(fs.readFileSync(instruction, 'utf8')).toBe(beforeInstruction)
+      expect(JSON.parse(fs.readFileSync(f.settings, 'utf8')).unrelated).toEqual({ preserve: true })
+      f.assertOldUntouched()
+    } finally { f.close() }
+  })
+
   it.each(['partial','different-source','identity-conflict','owned-drift'] as const)('refuses %s without replacing the old wait', async failure => {
     const f = await fixture()
     try {

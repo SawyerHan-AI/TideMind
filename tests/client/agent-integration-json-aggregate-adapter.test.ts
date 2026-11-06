@@ -73,6 +73,44 @@ describe('Qwen/ZCode aggregate JSON adapter', () => {
     },
   )
 
+  it('retains the complete owned ZCode observation across operation generations', async () => {
+    const old = context('zcode-desktop')
+    const adapter = createZCodeDesktopJsonAggregateAdapter()
+    const initial = await adapter.plan(old, request(old))
+    await adapter.apply(old, initial.mutations[0])
+    const next = { ...old, activityGenerationToken: 'replacement-operation' }
+    const observed = await adapter.inspect(next)
+    for (const component of observed.components) {
+      expect(component.observedFragmentHash).toBe(initial.mutations[0].desiredFragmentHash)
+    }
+    const plan = await adapter.plan(next, { ...request(next), observed,
+      ownedArtifacts: owned(old, initial.mutations[0].desiredFragmentHash!) })
+    expect(plan.diagnostics).toEqual([])
+    expect(plan.mutations).toHaveLength(1)
+    await adapter.apply(next, plan.mutations[0])
+    expect(await adapter.readBack(next, plan.mutations[0])).toMatchObject({ matchesDesired: true })
+    const hooks = JSON.parse(fs.readFileSync(configFile(next), 'utf8')).hooks.events.SessionStart
+    expect(hooks).toHaveLength(1)
+  })
+
+  it('does not overwrite a changed old-generation ZCode hook during reconnect', async () => {
+    const old = context('zcode-desktop')
+    const adapter = createZCodeDesktopJsonAggregateAdapter()
+    const initial = await adapter.plan(old, request(old))
+    await adapter.apply(old, initial.mutations[0])
+    const target = configFile(old)
+    const document = JSON.parse(fs.readFileSync(target, 'utf8'))
+    document.hooks.events.SessionStart[0].hooks[0].command = '/user/custom-command'
+    fs.writeFileSync(target, JSON.stringify(document))
+    const before = fs.readFileSync(target, 'utf8')
+    const next = { ...old, activityGenerationToken: 'replacement-operation' }
+    const plan = await adapter.plan(next, { ...request(next), observed: await adapter.inspect(next),
+      ownedArtifacts: owned(old, initial.mutations[0].desiredFragmentHash!) })
+    expect(plan.mutations).toHaveLength(0)
+    expect(plan.diagnostics).toContain('owned_aggregate_fragment_modified')
+    expect(fs.readFileSync(target, 'utf8')).toBe(before)
+  })
+
   it('rejects a second writer-window change and preserves the external edit', async () => {
     const ctx = context('qwen-code-cli')
     const adapter = createQwenCodeJsonAggregateAdapter()

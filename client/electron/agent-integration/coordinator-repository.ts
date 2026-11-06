@@ -1,3 +1,5 @@
+import { automaticPlanAuthorizationKey, isAutomaticConsentContext } from './consent'
+import { allowsConnectionMaintenance } from './connection-intent'
 import { freshCodexIdentityFingerprint } from './codex-fresh-identity'
 import { codexSelectionFingerprint } from './codex-legacy-selection'
 import { randomUUID } from 'node:crypto'
@@ -10,6 +12,7 @@ import { AGENT_INTEGRATION_WRITER_PROTOCOL } from '@server/db/agent-integration-
 import { checkPlanAgainstConsent, type ConsentEnvelope } from './consent'
 import {
   type CoordinatorInstallation,
+  type FileRepairWait,
   type CoordinatorRepositoryPort,
   type InstallationControlState,
   type MutableRecoverableExecution,
@@ -19,6 +22,7 @@ import {
   type RecoverableExecution,
   type WriterFenceLease,
   additionalPhysicalMutationDomains,
+  ConnectionIntentChangedError,
   frozenPlanInstallationSurfaceFingerprint,
   frozenPlanLiveTrustProofFingerprint,
   frozenPlanOwnershipOnlyBinding,
@@ -107,6 +111,7 @@ interface RunRow {
   writer_fence_snapshot_json: string
   prepared_plan_json: string
   desired_capability: number
+  created_at: string
   updated_at: string
 }
 
@@ -252,6 +257,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     installationId: string,
     componentKeys: readonly ComponentKey[],
     forDisconnect = false,
+    forRepair = false,
   ): string | null {
     if (componentKeys.length === 0) return null
     const binding = this.repository.resolveAgentIdentity(installationId)
@@ -265,6 +271,10 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       )
         AND operation_type != 'disconnect'
         AND (state IN ('applied_unverified','verified','committed')
+          OR (state='cancelled' AND failure_code='superseded_by_same_generation_repair')
+          OR (? = 1 AND state='needs_recovery' AND failure_code='verification_failed'
+            AND json_extract(prepared_plan_json,'$.executionPlan.hostVersion') IS (SELECT detected_version FROM agent_installations WHERE id=?)
+            AND NOT EXISTS (SELECT 1 FROM projection_mutations p WHERE p.run_id=reconcile_runs.id AND p.state!='committed'))
           OR (? = 1 AND state = 'needs_recovery' AND NOT EXISTS (
             SELECT 1 FROM projection_mutations mutation
             WHERE mutation.run_id = reconcile_runs.id AND mutation.state != 'committed'
@@ -278,7 +288,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
         )
       ORDER BY rowid DESC
       LIMIT 1
-    `).get(installationId, binding.bindingId, binding.bindingId, forDisconnect ? 1 : 0, ...componentKeys) as { prepared_plan_json: string } | undefined
+    `).get(installationId, binding.bindingId, binding.bindingId, forRepair ? 1 : 0, installationId, forDisconnect ? 1 : 0, ...componentKeys) as { prepared_plan_json: string } | undefined
     if (!row) return null
     try {
       const prepared = JSON.parse(row.prepared_plan_json) as {
@@ -327,6 +337,102 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
         ? { activeConsumerCount: Number(row.active_consumer_count) }
         : {}),
     }))
+  }
+
+  /** Only a completed configuration wait may lend its exact scope/token to an absent-file repair. */
+  completedFileRepairWait(installationId: string, componentKeys: readonly ComponentKey[]): FileRepairWait | null {
+    const rows = this.db.prepare(`SELECT * FROM reconcile_runs WHERE installation_id=?
+      AND operation_type IN ('connect','repair')
+      AND (state='applied_unverified' OR (state='needs_recovery' AND failure_code='verification_failed'))
+      ORDER BY rowid DESC`).all(installationId) as RunRow[]
+    for (const row of rows) {
+      const wait = this.readCompletedFileRepairWait(row)
+      if (wait && componentKeys.every(key => wait.preparedPlan.componentKeys.includes(key))) return wait
+    }
+    return null
+  }
+
+  private readCompletedFileRepairWait(row: RunRow): FileRepairWait | null {
+    try {
+      const current = this.repository.getInstallation(row.installation_id)
+      if (!current || current.desired_state !== 'managed' || current.tombstoned_at
+        || current.health_state !== 'discovered' || current.status_reason === 'conflict'
+        || current.consent_envelope_id !== row.consent_envelope_id) return null
+      const preparedPlan = parseObject(row.prepared_plan_json, 'prepared plan') as unknown as PreparedCoordinatorPlan
+      assertPersistedPreparedPlanShape(preparedPlan); assertPersistedRunEnvelope(row, preparedPlan)
+      if (!preparedPlan.activityGenerationToken
+        || frozenPlanInstallationSurfaceFingerprint(preparedPlan) !== persistedProjectionSurfaceFingerprint(current)
+        || preparedPlan.executionPlan.hostVersion !== current.detected_version) return null
+      const installation = this.installationFromRow(current)
+      const consent = this.getConsent(row.consent_envelope_id, preparedPlan.executionPlanHash)
+      if (!consent || !checkPlanAgainstConsent(preparedPlan.executionPlan, consent,
+        supplementalConsentClaims(installation, preparedPlan, this.listOwnedArtifactBaselines(current.id))).allowed) return null
+      for (const { row: effect, plannedMutation } of this.loadValidatedRecoveryEnvelope(row, preparedPlan, installation)) {
+        assertVerifiedMutationJournal(effect, plannedMutation)
+        if (plannedMutation.ownershipTransferFrom) return null
+      }
+      return { runId: row.id, installation, preparedPlan, desiredCapability: capability(row.desired_capability) }
+    } catch { return null }
+  }
+
+  fileRepairPeers(installationId: string, plan: PreparedCoordinatorPlan): readonly FileRepairWait[] {
+    if (plan.operation !== 'repair' || !plan.executionPlan.sharedIdentityBinding || !plan.adapterPlan.mutations.length) return []
+    const rows = this.db.prepare(`SELECT r.* FROM reconcile_runs r
+      JOIN agent_identity_binding_members peer ON peer.installation_id=r.installation_id
+      JOIN agent_identity_binding_members own ON own.binding_id=peer.binding_id
+      WHERE own.installation_id=? AND r.installation_id!=? AND r.operation_type IN ('connect','repair')
+        AND (r.state='applied_unverified' OR (r.state='needs_recovery' AND r.failure_code='verification_failed'))`).all(installationId, installationId) as RunRow[]
+    return rows.flatMap(row => {
+      const wait = this.readCompletedFileRepairWait(row)
+      // The binding hash includes member identity; compare each member to its own
+      // live binding (readCompletedFileRepairWait), and use the SQL binding ID join across peers.
+      if (!wait || wait.preparedPlan.activityGenerationToken !== plan.activityGenerationToken) return []
+      const scopes = this.db.prepare(`SELECT c.component_key,a.target_path,a.ownership_key,a.owned_fragment_hash,a.mutation_domain
+        FROM installation_components c JOIN managed_artifacts a ON a.id=c.artifact_id
+        JOIN artifact_consumers consumer ON consumer.installation_id=c.installation_id
+          AND consumer.component_key=c.component_key AND consumer.artifact_id=a.id
+        WHERE c.installation_id=? AND c.consent_envelope_id=? AND c.tombstoned_at IS NULL
+          AND consumer.consent_envelope_id=? AND consumer.state='active' AND consumer.tombstoned_at IS NULL`).all(
+        row.installation_id,row.consent_envelope_id,row.consent_envelope_id,
+      ) as Array<{ component_key: ComponentKey; target_path: string; ownership_key: string; owned_fragment_hash: string; mutation_domain: string }>
+      const overlaps = plan.adapterPlan.mutations.some(mutation => scopes.some(scope => scope.target_path === mutation.physicalTarget && scope.ownership_key === mutation.ownershipKey))
+      if (!overlaps || !wait.preparedPlan.componentKeys.every(key => {
+        const scope = scopes.find(scope => scope.component_key === key)
+        const observed = plan.inspection.components.find(item => item.componentKey === key)
+        if (!scope || observed?.observedTarget !== scope.target_path) return false
+        const mutation = plan.adapterPlan.mutations.find(item => mutationComponentKeys(item).includes(key))
+        if (!mutation) return observed.observedFragmentHash === scope.owned_fragment_hash
+        return ['create','update'].includes(mutation.operation) && mutation.domainKind === 'file_fragment'
+          && mutation.commandCategory === 'file_write' && !mutation.ownershipTransferFrom
+          && !(mutation.frozenCommands?.length) && mutation.physicalTarget === scope.target_path
+          && mutation.ownershipKey === scope.ownership_key && mutation.desiredFragmentHash === scope.owned_fragment_hash
+          && observed.visibility === 'absent' && !observed.observedFragmentHash
+      })) return []
+      return [wait]
+    })
+  }
+
+  /** Resolve only the absent owned file effects actually selected by a repair, not its read-only verification scope. */
+  listFileRepairArtifacts(installationId: string, plan: PreparedCoordinatorPlan): readonly { artifactId: string; componentKey: ComponentKey }[] {
+    if (plan.operation !== 'repair') return []
+    const artifacts = new Map<string,{ artifactId: string; componentKey: ComponentKey }>()
+    for (const mutation of plan.adapterPlan.mutations) {
+      if (mutation.domainKind !== 'file_fragment' || !['create','update'].includes(mutation.operation)) continue
+      const observed = plan.inspection.components.find(item => item.componentKey === mutation.componentKey)
+      if (observed?.visibility !== 'absent' || observed.observedFragmentHash) continue
+      const row = this.db.prepare(`SELECT a.id FROM managed_artifacts a JOIN artifact_consumers c ON c.artifact_id=a.id
+        JOIN agent_installations i ON i.id=c.installation_id
+        WHERE c.installation_id=? AND c.component_key=? AND c.state='active' AND c.tombstoned_at IS NULL
+          AND c.consent_envelope_id=i.consent_envelope_id AND a.target_path=? AND a.ownership_key=?
+          AND a.owned_fragment_hash IS NOT NULL`).get(installationId,mutation.componentKey,
+        mutation.physicalTarget,mutation.ownershipKey) as { id: string } | undefined
+      // This lookup only identifies the existing missing episode. A normal
+      // repair of a committed MCP carrier rotates its token/desired hash;
+      // consent, owned baseline and same-generation proof belong to prepare.
+      if (!row) throw new Error('Missing file repair ownership changed')
+      artifacts.set(row.id,{artifactId:row.id,componentKey:mutation.componentKey})
+    }
+    return [...artifacts.values()]
   }
 
   /** Durable managed-ledger rows eligible for read-only inspection and repair orchestration. */
@@ -387,7 +493,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     const candidates: ManagedReconcileCandidate[] = []
     for (const row of rows) {
       const installation = this.repository.getInstallation(row.installation_id)
-      if (!installation) continue
+      if (!installation || !allowsConnectionMaintenance(this.repository.connectionIntent(row.installation_id), row.installation_id)) continue
       const scope = scopeByConsumer.get(`${row.artifact_id}\u0000${row.installation_id}`) ?? [row]
       candidates.push({
         artifactId: row.artifact_id,
@@ -453,12 +559,35 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     return this.repository.markArtifactNeedsAttention(input)
   }
 
-  getConsent(consentId: string): ConsentEnvelope | null {
+  getConsent(consentId: string, planHash?: string): ConsentEnvelope | null {
     const row = this.repository.getConsent(consentId)
     if (!row || row.status !== 'active') return null
+    let nativePermissionPlanHash: string | undefined
+    try { const value = JSON.parse(String(row.authorization_context_json))?.nativePermissionPlanHash; if (typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value)) nativePermissionPlanHash = value } catch { /* Legacy consent has no native permission context. */ }
+    let automaticContext: ConsentEnvelope['automaticContext']
+    if (row.authorization_origin === 'default_auto_policy') {
+      try { automaticContext = JSON.parse(String(row.authorization_context_json)) } catch { return null }
+      if (!isAutomaticConsentContext(automaticContext)) return null
+
+    }
+    let automaticPlanAuthorization: ConsentEnvelope['automaticPlanAuthorization']
+    if (automaticContext && planHash && planHash !== automaticContext.executionPlanHash) {
+      const event = this.db.prepare(`SELECT payload_json FROM agent_integration_events WHERE kind='automatic_plan_authorized' AND dedupe_key=?`)
+        .get(automaticPlanAuthorizationKey(consentId, planHash)) as { payload_json: string } | undefined
+      if (event) {
+        try {
+          const grant = JSON.parse(event.payload_json).policyGrant
+          if (isAutomaticConsentContext(grant) && grant.executionPlanHash === planHash && grant.domainKey === automaticContext.domainKey) automaticPlanAuthorization = grant
+        } catch { /* No usable additional grant. The exact-plan check will reject it. */ }
+      }
+    }
     return {
+      ...(nativePermissionPlanHash ? { nativePermissionPlanHash } : {}),
       id: String(row.id),
       installationId: String(row.installation_id),
+      ...(automaticPlanAuthorization ? { automaticPlanAuthorization } : {}),
+      origin: row.authorization_origin as ConsentEnvelope['origin'],
+      ...(automaticContext ? { automaticContext } : {}),
       componentKeys: stringArray(String(row.allowed_components_json)),
       targetScopes: stringArray(String(row.allowed_scopes_json)),
       selectorResolution: stringRecord(String(row.selector_resolution_json), 'selector resolution'),
@@ -470,6 +599,67 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       approvedAt: String(row.confirmed_at),
       revokedAt: typeof row.revoked_at === 'string' ? row.revoked_at : null,
     }
+  }
+
+  isAutomaticConsentIntentCurrent(consentId: string, revision?: number, planHash?: string): boolean {
+    const raw = this.repository.getConsent(consentId)
+    if (raw?.authorization_origin !== 'default_auto_policy') return true
+    const consent = this.getConsent(consentId, planHash)
+    if (!consent) return false
+    const context = consent.automaticPlanAuthorization ?? consent.automaticContext!
+    const intent = this.repository.connectionIntent(consent.installationId)
+    const installation = this.repository.getInstallation(consent.installationId)
+    return Boolean(installation && (!planHash || context.executionPlanHash === planHash) && intent.domainKey === context.domainKey
+      && intent.revision === (revision ?? context.intentRevision)
+      && allowsConnectionMaintenance(intent, installation.id))
+  }
+
+  isRunConnectionIntentCurrent(runId: string): boolean {
+    return this.runConnectionIntentProblem(runId) === null
+  }
+
+  private runConnectionIntentProblem(runId: string): 'connection_intent_changed' | 'automatic_authorization_changed' | null {
+    const run = this.db.prepare(`SELECT installation_id,operation_type,consent_envelope_id,automatic_intent_revision,execution_plan_hash
+      FROM reconcile_runs WHERE id=?`).get(runId) as {
+      installation_id: string | null; operation_type: string; consent_envelope_id: string | null
+      automatic_intent_revision: number | null; execution_plan_hash: string
+    } | undefined
+    if (!run?.installation_id || run.operation_type === 'disconnect') return null
+    const intent = this.repository.connectionIntent(run.installation_id)
+    if (!allowsConnectionMaintenance(intent, run.installation_id)) return 'connection_intent_changed'
+    if (!run.consent_envelope_id || this.repository.getConsent(run.consent_envelope_id)?.authorization_origin !== 'default_auto_policy') return null
+    if (run.automatic_intent_revision === null
+      || !this.isAutomaticConsentIntentCurrent(run.consent_envelope_id, intent.revision, run.execution_plan_hash)) return 'automatic_authorization_changed'
+    return run.automatic_intent_revision === intent.revision ? null : 'connection_intent_changed'
+  }
+
+  /** Called only by a new recovery attempt while holding the existing execution fence.
+   * The original exact-plan grant stays immutable; the journal records which
+   * current user choice permits this recovery attempt. Old in-flight work cannot renew itself.
+   */
+  refreshRecoveryConnectionIntent(runId: string, at: string): boolean {
+    return this.db.transaction(() => {
+      const run = this.db.prepare(`SELECT installation_id,operation_type,consent_envelope_id,automatic_intent_revision,state,execution_plan_hash
+        FROM reconcile_runs WHERE id=?`).get(runId) as { installation_id: string; operation_type: string; consent_envelope_id: string; automatic_intent_revision: number | null; state: string; execution_plan_hash: string } | undefined
+      if (!run) return false
+      if (run.operation_type === 'disconnect') return true
+      const intent = this.repository.connectionIntent(run.installation_id)
+      if (!allowsConnectionMaintenance(intent, run.installation_id)) return false
+      const raw = this.repository.getConsent(run.consent_envelope_id)
+      if (raw?.authorization_origin !== 'default_auto_policy') return true
+      const consent = this.getConsent(run.consent_envelope_id, run.execution_plan_hash)
+      if (!consent) return false
+      if (['committed','cancelled'].includes(run.state)) return this.isRunConnectionIntentCurrent(runId)
+      const installation = this.repository.getInstallation(run.installation_id)
+      if (installation?.desired_state !== 'managed' || installation.consent_envelope_id !== consent.id
+        || !this.isAutomaticConsentIntentCurrent(consent.id, intent.revision, run.execution_plan_hash)) return false
+      if (run.automatic_intent_revision !== intent.revision) {
+        this.db.prepare('UPDATE reconcile_runs SET automatic_intent_revision=? WHERE id=?').run(intent.revision, runId)
+        this.repository.recordEvent({ installationId: run.installation_id, kind: 'automatic_recovery_authorized',
+          dedupeKey: `${runId}:${intent.revision}`, payload: { runId, previousRevision: run.automatic_intent_revision, intentRevision: intent.revision }, createdAt: at })
+      }
+      return true
+    })()
   }
 
   setInstallationReconcileState(
@@ -586,7 +776,9 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       if (!consent || consent.status !== 'active' || consent.installation_id !== input.installationId) {
         throw new Error('active Installation consent is required')
       }
-      const consentEnvelope = this.getConsent(input.consentId)
+      if (input.operation !== 'disconnect' && (!allowsConnectionMaintenance(this.repository.connectionIntent(input.installationId), input.installationId)
+        || !this.isAutomaticConsentIntentCurrent(input.consentId, undefined, input.planHash))) throw new ConnectionIntentChangedError()
+      const consentEnvelope = this.getConsent(input.consentId, input.preparedPlan.executionPlanHash)
       const consentCoverage = consentEnvelope
         ? checkPlanAgainstConsent(
           input.preparedPlan.executionPlan,
@@ -604,6 +796,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       }
 
       this.retireSameGenerationConnect(input, priorLeases)
+      this.retireCompletedWaitForFileRepair(input, priorLeases)
 
       if (confirmedTakeover) {
         for (const prior of takeovers!) {
@@ -616,7 +809,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
             assertPersistedPreparedPlanShape(old)
             assertPersistedRunEnvelope(row,old)
             const oldInstallation=this.installationFromRow(this.repository.getInstallation(priorInstallationId),true)
-            const oldConsent=this.getConsent(row.consent_envelope_id)
+            const oldConsent=this.getConsent(row.consent_envelope_id, old.executionPlanHash)
             const coverage=oldConsent?checkPlanAgainstConsent(old.executionPlan,oldConsent,
               supplementalConsentClaims(oldInstallation,old,this.listOwnedArtifactBaselines(priorInstallationId))):null
             if(!coverage?.allowed || coverage.executionPlanHash!==row.execution_plan_hash) throw new Error('Recipe upgrade predecessor consent changed')
@@ -740,7 +933,8 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
               )
             )
         `).all(mutationDomain, input.operation, input.installationId, sharedJoinToken, sharedJoinToken, input.installationId) as Array<{ id: string }>
-        if ([...snapshotOverlap, ...mutationOverlap].some(run => !this.isCompletedSharedDetachPeer(input, run.id, mutationDomain, preparedArtifacts.filter(item => [item.mutation.mutationDomain, ...(item.mutation.additionalMutationDomains ?? [])].includes(mutationDomain)).every(item => item.artifact.effectDisposition === 'consumer_detach')))) {
+        if ([...snapshotOverlap, ...mutationOverlap].some(run => !this.isCompletedSharedDetachPeer(input, run.id, mutationDomain, preparedArtifacts.filter(item => [item.mutation.mutationDomain, ...(item.mutation.additionalMutationDomains ?? [])].includes(mutationDomain)).every(item => item.artifact.effectDisposition === 'consumer_detach'))
+          && !this.isProvedFileRepairPeer(input, run.id, mutationDomain))) {
           throw new Error(`mutation domain already has a non-terminal run: ${mutationDomain}`)
         }
         this.db.prepare(`
@@ -786,6 +980,11 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
         input.createdAt,
         input.createdAt,
       )
+
+      if (consentEnvelope?.origin === 'default_auto_policy') {
+        this.db.prepare('UPDATE reconcile_runs SET automatic_intent_revision=? WHERE id=?')
+          .run((consentEnvelope.automaticPlanAuthorization ?? consentEnvelope.automaticContext)!.intentRevision, input.runId)
+      }
 
       if (input.applyTaskBinding) {
         const binding = input.applyTaskBinding
@@ -1002,6 +1201,80 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
         try { lease.release() } catch (error) { releaseFailure ??= error }
       }
       if (!prepareFailed && releaseFailure) throw releaseFailure
+    }
+  }
+
+  private isProvedFileRepairPeer(input: PrepareExecutionInput, runId: string, mutationDomain: string): boolean {
+    const proof = input.fileRepairPeerProofs?.find(item => item.runId === runId)
+    if (!proof || input.operation !== 'repair') return false
+    const peer = this.fileRepairPeers(input.installationId, input.preparedPlan).find(item => item.runId === runId)
+    if (!peer || peer.preparedPlan.executionPlanHash !== proof.planHash) return false
+    // Only the exact domains named by this peer's original validated snapshot may overlap.
+    const row = this.db.prepare('SELECT writer_fence_snapshot_json FROM reconcile_runs WHERE id=?').get(runId) as { writer_fence_snapshot_json: string }
+    return (parseObject(row.writer_fence_snapshot_json, 'writer fence snapshot').mutationDomains as string[]).includes(mutationDomain)
+  }
+
+  /** A completed configuration wait does not own the file forever. A repair
+   * may replace that wait only for an absent, still-owned fragment of the same
+   * recipe; old effects and receipts remain immutable. */
+  private retireCompletedWaitForFileRepair(input: PrepareExecutionInput, leases: Array<{ assertOwned(): void; release(): void }>): void {
+    if (input.operation !== 'repair' || !input.mutations.length || !input.preparedPlan.activityGenerationToken) return
+    const restored = new Set<string>()
+    for (const { plannedMutation: mutation } of input.mutations) {
+      if (!['create','update'].includes(mutation.operation) || mutation.domainKind !== 'file_fragment'
+        || mutation.commandCategory !== 'file_write' || mutation.ownershipTransferFrom) return
+      const observed = input.preparedPlan.inspection.components.find(item => item.componentKey === mutation.componentKey)
+      if (observed?.visibility !== 'absent' || observed.observedFragmentHash) return
+      const artifact = this.db.prepare(`SELECT a.id,a.owned_fragment_hash FROM managed_artifacts a
+        JOIN artifact_consumers c ON c.artifact_id=a.id
+        WHERE c.installation_id=? AND c.component_key=? AND c.state='active' AND c.tombstoned_at IS NULL
+          AND c.consent_envelope_id=? AND a.target_path=? AND a.ownership_key=?`).get(
+        input.installationId, mutation.componentKey, input.consentId, mutation.physicalTarget, mutation.ownershipKey,
+      ) as { id: string; owned_fragment_hash: string } | undefined
+      if (!artifact || artifact.owned_fragment_hash !== mutation.desiredFragmentHash) return
+      restored.add(artifact.id)
+    }
+    const candidates = this.db.prepare(`SELECT r.* FROM reconcile_runs r
+      WHERE r.installation_id=? AND r.operation_type IN ('connect','repair')
+        AND (r.state='applied_unverified' OR (r.state='needs_recovery' AND r.failure_code='verification_failed'))
+        AND EXISTS (SELECT 1 FROM installation_components c, json_each(r.prepared_plan_json,'$.componentKeys') component
+          WHERE c.installation_id=r.installation_id AND c.component_key=component.value
+            AND c.artifact_id IN (${[...restored].map(() => '?').join(',')}))`).all(input.installationId, ...restored) as RunRow[]
+    for (const prior of candidates) {
+      const prepared = parseObject(prior.prepared_plan_json,'prepared plan') as unknown as PreparedCoordinatorPlan
+      assertPersistedPreparedPlanShape(prepared); assertPersistedRunEnvelope(prior,prepared)
+      if (prior.consent_envelope_id !== input.consentId
+        || prepared.componentKeys.some(key => !input.preparedPlan.componentKeys.includes(key))
+        || prepared.activityGenerationToken !== input.preparedPlan.activityGenerationToken
+        || ['hostVersion','adapterVersion','catalogVersion','projectionVersion','installationSurfaceFingerprint','liveTrustProofFingerprint','sharedIdentityBinding'].some(key =>
+          (prepared.executionPlan as unknown as Record<string,unknown>)[key] !== (input.preparedPlan.executionPlan as unknown as Record<string,unknown>)[key])) continue
+      const lease = this.acquireExecutionFence(prior.id)
+      if (!lease) throw new Error('Completed configuration verification is still running')
+      leases.push(lease)
+      const installation = this.installationFromRow(this.repository.getInstallation(input.installationId), true)
+      const effects = this.loadValidatedRecoveryEnvelope(prior, prepared, installation)
+      for (const { row, plannedMutation } of effects) {
+        assertVerifiedMutationJournal(row, plannedMutation)
+        if (plannedMutation.ownershipTransferFrom) throw new Error('Repair predecessor still has an ownership transfer')
+      }
+      for (const key of prepared.componentKeys) {
+        const artifact = this.db.prepare(`SELECT a.id,a.target_path,a.owned_fragment_hash FROM installation_components c
+          JOIN managed_artifacts a ON a.id=c.artifact_id WHERE c.installation_id=? AND c.component_key=?
+          AND c.consent_envelope_id=? AND c.tombstoned_at IS NULL`).get(input.installationId,key,input.consentId) as
+          { id: string; target_path: string; owned_fragment_hash: string } | undefined
+        if (!artifact) throw new Error('Repair predecessor component ownership changed')
+        if (restored.has(artifact.id)) continue
+        const observed = input.preparedPlan.inspection.components.find(item => item.componentKey === key)
+        if (observed?.observedTarget !== artifact.target_path || observed.observedFragmentHash !== artifact.owned_fragment_hash) throw new Error('Unrepaired predecessor component changed')
+        this.db.prepare(`UPDATE managed_artifacts SET state='healthy',observed_fragment_hash=owned_fragment_hash,updated_at=?
+          WHERE id=? AND state='needs_recovery' AND owned_fragment_hash=?`).run(input.createdAt,artifact.id,artifact.owned_fragment_hash)
+      }
+      lease.assertOwned()
+      const retired = this.db.prepare(`UPDATE reconcile_runs SET state='cancelled',failure_code='superseded_by_same_generation_repair',
+        failure_stage='file_repair',completed_at=?,updated_at=? WHERE id=? AND state IN ('applied_unverified','needs_recovery')`).run(input.createdAt,input.createdAt,prior.id)
+      if (retired.changes !== 1) throw new Error('Repair predecessor changed')
+      this.repository.recordEvent({ installationId: input.installationId, kind: 'same_generation_repair_superseded',
+        payload: { priorRunId: prior.id, runId: input.runId }, createdAt: input.createdAt })
     }
   }
 
@@ -1411,6 +1684,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     claimedAt: string
   }): boolean {
     return this.db.transaction(() => {
+    if (!this.isRunConnectionIntentCurrent(input.runId)) return false
     this.assertCanonicalIdentity(input.installation)
     const result = this.db.prepare(`
       UPDATE projection_mutations
@@ -1465,6 +1739,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     expectedDesiredState: 'managed' | 'removed'
   }): boolean {
     return this.db.transaction(() => {
+    if (!this.isRunConnectionIntentCurrent(input.runId)) return false
     this.assertCanonicalIdentity(input.installation)
     return Boolean(this.db.prepare(`
       SELECT 1
@@ -1547,6 +1822,13 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
             `).get(runId)
             if (unfinished) throw new Error(`verified run has unfinished mutation: ${runId}`)
             finalizationRejection = this.verificationFinalizationProblem(runId, updatedAt)
+            // A user pause blocks promotion but leaves this read-only
+            // finalizer and its already-applied bridge generation resumable.
+            if (finalizationRejection === 'connection_intent_changed') {
+              this.db.prepare(`UPDATE reconcile_runs SET failure_code='connection_intent_changed',failure_stage='finalization',updated_at=?
+                WHERE id=? AND COALESCE(failure_code,'')!='connection_intent_changed'`).run(updatedAt, runId)
+              return
+            }
           }
         }
         if (finalizationRejection && currentRun?.state === 'verified') {
@@ -1618,12 +1900,15 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
         `).run(updatedAt, updatedAt, runId)
       }
     }).immediate()
+    if (finalizationRejection === 'connection_intent_changed') throw new ConnectionIntentChangedError()
     if (finalizationRejection) {
       throw new Error(`verification evidence is not current at finalization: ${finalizationRejection}`)
     }
   }
 
   private verificationFinalizationProblem(runId: string, at: string): string | null {
+    const intentProblem = this.runConnectionIntentProblem(runId)
+    if (intentProblem) return intentProblem
     const run = this.db.prepare(`
       SELECT installation_id, operation_type, consent_envelope_id, prepared_plan_json
       FROM reconcile_runs WHERE id = ? AND state = 'verified'
@@ -2053,6 +2338,68 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     }
   }
 
+  /** Re-check an unchanged memory carrier without inventing another host invocation. */
+  reusableMemoryVerification(runId: string, at: string, tideMindVersion: string, catalogVersion: string): { verificationId: string; result: ComponentVerificationResult } | null {
+    const run = this.db.prepare(`SELECT r.* FROM reconcile_runs r WHERE r.id=? AND r.operation_type='repair'
+      AND r.state='applied_unverified' AND EXISTS (SELECT 1 FROM agent_integration_events e
+        WHERE e.kind='same_generation_repair_superseded' AND e.installation_id=r.installation_id
+          AND json_extract(e.payload_json,'$.runId')=r.id)
+      AND NOT EXISTS (SELECT 1 FROM projection_mutations p WHERE p.run_id=r.id
+        AND (p.component_key='memory_tools' OR EXISTS (SELECT 1 FROM json_each(p.planned_mutation_json,'$.coveredComponentKeys') c WHERE c.value='memory_tools')))`)
+      .get(runId) as RunRow | undefined
+    if (!run || !this.isRunConnectionIntentCurrent(runId)) return null
+    try {
+      const plan = parseObject(run.prepared_plan_json, 'prepared plan') as unknown as PreparedCoordinatorPlan
+      const current = this.repository.getInstallation(run.installation_id)
+      if (!current || current.desired_state !== 'managed' || current.tombstoned_at
+        || current.health_state !== 'discovered' || current.status_reason === 'conflict'
+        || current.consent_envelope_id !== run.consent_envelope_id
+        || !this.getConsent(run.consent_envelope_id, plan.executionPlanHash)
+        || frozenPlanInstallationSurfaceFingerprint(plan) !== persistedProjectionSurfaceFingerprint(current)) return null
+      const row = this.db.prepare(`SELECT v.*, a.owned_fragment_hash,a.observed_fragment_hash,a.desired_fragment_hash,
+          a.selector_schema_version AS current_selector, origin.prepared_plan_json AS origin_plan,
+          p.after_hash AS carrier_hash,p.committed_at AS carrier_at,carrier.prepared_plan_json AS carrier_plan
+        FROM installation_components c JOIN verification_results v ON v.id=c.verification_result_id
+        JOIN managed_artifacts a ON a.id=c.artifact_id
+        JOIN artifact_consumers consumer ON consumer.artifact_id=a.id AND consumer.installation_id=c.installation_id AND consumer.component_key=c.component_key
+        JOIN reconcile_runs origin ON origin.id=v.run_id
+        JOIN projection_mutations p ON p.id=(SELECT last.id FROM projection_mutations last
+          WHERE last.artifact_id=a.id AND last.state='committed' AND last.idempotency_strategy!='consumer_detach_only'
+          ORDER BY last.committed_at DESC,last.rowid DESC LIMIT 1)
+        JOIN reconcile_runs carrier ON carrier.id=p.run_id
+        WHERE c.installation_id=? AND c.component_key='memory_tools' AND c.desired_state='managed' AND c.tombstoned_at IS NULL
+          AND c.consent_envelope_id=? AND consumer.consent_envelope_id=? AND consumer.state='active'
+          AND consumer.desired_state='managed' AND consumer.tombstoned_at IS NULL
+          AND v.installation_id=c.installation_id AND v.component_key=c.component_key
+          AND v.result='verified' AND v.invalidated_at IS NULL AND v.expires_at>?
+          AND a.state='healthy' AND a.owned_fragment_hash=a.observed_fragment_hash AND a.desired_fragment_hash=a.owned_fragment_hash
+          AND origin.consent_envelope_id=?`).get(current.id,run.consent_envelope_id,run.consent_envelope_id,at,run.consent_envelope_id) as Record<string,unknown> | undefined
+      if (!row || typeof row.evidence_ref !== 'string' || !row.evidence_ref.startsWith('host-activity:')
+        || typeof row.evidence_hash !== 'string' || !row.evidence_hash
+        || row.artifact_hash !== row.owned_fragment_hash || row.carrier_hash !== row.owned_fragment_hash
+        || row.identity_assertion !== this.repository.resolveAgentIdentity(current.id).canonicalAgentId
+        || row.family !== current.family || row.host_variant !== current.host_variant
+        || row.distribution_id !== current.distribution_id || row.runtime_realm !== current.runtime_realm
+        || row.host_version !== current.detected_version || row.os_version !== os.release()
+        || row.tide_mind_version !== tideMindVersion || row.adapter_version !== plan.adapterPlan.adapterVersion
+        || row.projection_version !== plan.adapterPlan.projectionVersion
+        || String(row.catalog_version) !== catalogVersion
+        || String(row.selector_schema_version) !== String(row.current_selector)
+        || !(Date.parse(String(row.carrier_at)) <= Date.parse(String(row.verified_at)))
+        || !(Date.parse(String(row.verified_at)) <= Date.parse(at))) return null
+      const origin = parseObject(String(row.origin_plan), 'origin plan') as unknown as PreparedCoordinatorPlan
+      const carrier = parseObject(String(row.carrier_plan), 'carrier plan') as unknown as PreparedCoordinatorPlan
+      if (origin.activityGenerationToken !== plan.activityGenerationToken || carrier.activityGenerationToken !== plan.activityGenerationToken
+        || frozenPlanInstallationSurfaceFingerprint(origin) !== frozenPlanInstallationSurfaceFingerprint(plan)
+        || origin.executionPlan.sharedIdentityBinding !== plan.executionPlan.sharedIdentityBinding) return null
+      const keys = stringArray(String(row.invalidation_keys_json))
+      if (!keys.includes('activity_freshness') || keys.includes('reload_generation')) return null
+      return { verificationId: String(row.id), result: { componentKey: 'memory_tools', status: 'verified', verifiedCapability: 2,
+        identityAssertion: String(row.identity_assertion), evidenceRef: row.evidence_ref, evidenceHash: row.evidence_hash,
+        expiresAt: String(row.expires_at), invalidationKeys: keys, diagnostics: String(row.method).split(',') } }
+    } catch { return null }
+  }
+
   recordVerification(input: {
     runId: string
     installation: CoordinatorInstallation
@@ -2063,8 +2410,10 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     projectionVersion: string
     expectedHostVersion: string | null
     verifiedAt: string
+    reusedVerificationId?: string
   }): void {
     this.db.transaction(() => {
+    if (!this.isRunConnectionIntentCurrent(input.runId)) throw new ConnectionIntentChangedError()
     this.assertCanonicalIdentity(input.installation)
     const authorization = this.db.prepare(`
       SELECT r.operation_type, r.prepared_plan_json
@@ -2090,6 +2439,12 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     )
     if (!authorization) throw new Error('verification authorization changed before evidence commit')
     const result = input.result
+    if (input.reusedVerificationId) {
+      const proof = this.reusableMemoryVerification(input.runId,input.verifiedAt,input.tideMindVersion ?? '',input.catalogVersion)
+      if (!proof || proof.verificationId !== input.reusedVerificationId || sha256Json(proof.result) !== sha256Json(result)) {
+        throw new Error('Unchanged memory evidence changed before commit')
+      }
+    }
     if (result.status === 'verified'
       && result.invalidationKeys.includes('tide_mind_version')
       && !input.tideMindVersion?.trim()) {
@@ -2316,7 +2671,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     const runs = this.db.prepare(`
       SELECT id, installation_id, operation_type, execution_plan_hash,
              consent_envelope_id, state, recovery_strategy, writer_fence_snapshot_json,
-             prepared_plan_json, desired_capability, updated_at
+             prepared_plan_json, desired_capability, created_at, updated_at
       FROM reconcile_runs
       WHERE state IN ('planned','preconditions_checked','applying','applied_unverified','verified','compensating','needs_recovery')
         AND (? IS NULL OR id = ?)
@@ -2363,7 +2718,12 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
           installation,
           consentId: run.consent_envelope_id,
           desiredCapability: capability(run.desired_capability),
-          activationEpoch: run.updated_at,
+          // Run timestamps also change on transient failures and verification
+          // retries. Committed mutation journals are immutable; zero-write plans
+          // use their persisted creation boundary plus the exact generation.
+          activationEpoch: mutationRows.reduce((latest, { row }) =>
+            Date.parse(row.updated_at) > Date.parse(latest) ? row.updated_at : latest,
+          run.created_at),
           preparedPlan,
           mutations: mutationRows.map(({ row, plannedMutation }) => {
             return {
@@ -2892,7 +3252,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     }
     if (!artifact) throw new Error(`ownership_conflict:${componentKey}_adoption`)
 
-    const consent = this.getConsent(input.consentId)
+    const consent = this.getConsent(input.consentId, input.preparedPlan.executionPlanHash)
     const coverage = consent ? checkPlanAgainstConsent(
       input.preparedPlan.executionPlan,
       consent,
@@ -2910,6 +3270,15 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       throw new Error(`consent does not cover no-op activation: ${coverage?.reasons.join(',') ?? 'missing'}`)
     }
 
+    // A same-generation file repair is not a new activation of healthy siblings.
+    const preserveRepairConsumer = input.operation === 'repair' && Boolean(this.db.prepare(`SELECT 1
+      FROM artifact_consumers consumer JOIN managed_artifacts a ON a.id=consumer.artifact_id
+      WHERE consumer.artifact_id=? AND consumer.installation_id=? AND consumer.component_key=?
+        AND consumer.state='active' AND consumer.desired_state='managed' AND consumer.tombstoned_at IS NULL
+        AND consumer.consent_envelope_id=? AND a.state='healthy'
+        AND EXISTS (SELECT 1 FROM agent_integration_events e WHERE e.kind='same_generation_repair_superseded'
+          AND e.installation_id=? AND json_extract(e.payload_json,'$.runId')=?)`).get(
+      artifact.id,input.installationId,componentKey,input.consentId,input.installationId,input.runId))
     this.repository.addArtifactConsumer({
       artifactId: artifact.id,
       installationId: input.installationId,
@@ -2947,10 +3316,10 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     // claim. Keep the new consumer disabled (and a migrated Artifact in
     // needs_recovery) until host verification commits this exact run.
     const stagedConsumer = this.db.prepare(`
-      UPDATE artifact_consumers SET desired_state = 'disabled', updated_at = ?
+      UPDATE artifact_consumers SET desired_state = CASE WHEN ? THEN 'managed' ELSE 'disabled' END, updated_at = ?
       WHERE artifact_id = ? AND installation_id = ? AND component_key = ?
         AND state = 'active' AND consent_envelope_id = ?
-    `).run(input.createdAt, artifact.id, input.installationId, componentKey, input.consentId)
+    `).run(preserveRepairConsumer ? 1 : 0,input.createdAt, artifact.id, input.installationId, componentKey, input.consentId)
     if (stagedConsumer.changes !== 1) {
       throw new Error(`consumer activation could not be staged: ${componentKey}`)
     }

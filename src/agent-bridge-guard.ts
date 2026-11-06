@@ -95,7 +95,7 @@ export function evaluateBridgeAdmission(
              json_extract(prepared_plan_json, '$.executionPlan.activityGenerationTokenHash') AS hash
       FROM reconcile_runs
       WHERE installation_id = ? AND operation_type != 'disconnect'
-        AND state IN ('applied_unverified','verified','committed')
+        AND (state IN ('applied_unverified','verified','committed') OR (state='cancelled' AND failure_code='superseded_by_same_generation_repair'))
         -- A confirmed disconnect revokes earlier carriers even while reconnect
         -- has reopened the Installation but has not applied its new projection.
         AND rowid > COALESCE((
@@ -157,7 +157,7 @@ function evaluateSharedBridgeAdmission(db: Database.Database, shared: SharedAgen
         {after_hash:string|null;installation_id:string;operation_type:string;run_state:string;failure_code:string|null;token:string;hash:string}|undefined;
       // Retiring a proved run need not remove its shared physical configuration.
       // Admission still requires a current consumer/consent and this latest write.
-      if (carrier && carrier.operation_type !== 'disconnect' && (['applied_unverified','verified','committed'].includes(carrier.run_state) || (carrier.run_state === 'cancelled' && ['superseded_by_shared_disconnect','superseded_by_same_generation_connect','superseded_by_confirmed_generation','superseded_by_disconnect'].includes(carrier.failure_code ?? ''))) && carrier.after_hash !== null
+      if (carrier && carrier.operation_type !== 'disconnect' && (['applied_unverified','verified','committed'].includes(carrier.run_state) || (carrier.run_state === 'cancelled' && ['superseded_by_shared_disconnect','superseded_by_same_generation_connect','superseded_by_same_generation_repair','superseded_by_confirmed_generation','superseded_by_disconnect'].includes(carrier.failure_code ?? ''))) && carrier.after_hash !== null
         && carrier.after_hash === artifact.owned_fragment_hash && carrier.token === token && carrier.hash === hash
         && shared.consumers.some(c => c.id === carrier.installation_id)) return { allowed: true };
     }

@@ -91,6 +91,12 @@ export interface CliEnvironmentCheckResult {
   error?: { kind: string; message: string; copyCommand?: string }
 }
 
+export type ResumeFutureCallsResult =
+  | { status: 'untested'; resolvedInvocationCount: number }
+  | { status: 'blocked'; reason: 'confirmation_required' | 'not_ambiguous'
+      | 'operation_in_progress' | 'previous_work_active' | 'process_exit_unconfirmed' | 'environment_check_failed'
+      | 'binding_unconfirmed' | 'binding_changed' | 'state_changed' | 'cancelled' | 'recovery_failed' }
+
 export interface CatalogModelItem {
   id: string
   invocationId: string
@@ -177,6 +183,7 @@ export interface LLMHealthSnapshot {
   /** 当前熔断器冷却时长（ms） */
   cooldownMs: number
   /** 上次 LLM 调用成功的时间戳（ms）；从未成功过为 0 */
+  lastTestSuccessAt?: number
   lastSuccessAt: number
   /** 上次失败错误消息（截断 500 字符）；从未失败为 null */
   lastError: string | null
@@ -196,6 +203,7 @@ export interface LLMHealthSnapshot {
     circuitState?: 'closed' | 'open' | 'half-open'
     openedAt?: number | null
     cooldownMs?: number
+    affectedTiers?: Array<'light' | 'standard' | 'heavy'>
   }>
   routeFaults?: Array<{
     tier: 'light' | 'standard' | 'heavy'
@@ -262,9 +270,33 @@ export interface AgentIntegrationComponentDto {
   implementationTypes: string[]
   targetLabel: string | null
   lastVerifiedAt: string | null
+  /** Configuration and host recognition are separate from complete runtime activity. */
+  configurationFingerprint?: string
+  configurationVerified?: boolean
+  configurationAppliedAt?: string | null
+  hostRecognitionVerified?: boolean
+  hostRecognitionRejected?: boolean
+  hostRecognitionObservedAt?: string | null
+}
+
+export interface AgentIntegrationAuthenticationDto {
+  status: 'not_checked' | 'checking' | 'authenticated' | 'explicitly_unauthenticated' | 'unsupported' | 'unavailable' | 'cancelled'
+  billing: 'confirmed_subscription' | 'metered' | 'unknown'
+  reason: string
+  checkedAt: string | null
+}
+
+export interface AgentIntegrationDiagnosticDto {
+  lastTestAt?: string | null
+  status: 'checking' | 'passed' | 'waiting' | 'uncertain' | 'cancelled'
+  reason: string
+  runId: string | null
 }
 
 export interface AgentIntegrationInstallationDto {
+  diagnostic?: AgentIntegrationDiagnosticDto
+  authentication?: AgentIntegrationAuthenticationDto
+  automaticConnectionEnabled?: boolean
   id: string
   familyId: string
   hostVariant: string
@@ -309,6 +341,11 @@ export interface AgentIntegrationInstallationDto {
     state: 'trusted' | 'pending' | 'confirmation_required' | 'rejected' | 'user_managed'
     evidence: 'tested_sample' | 'signed_identity' | 'npm_registry' | 'npm_registry_cache' | 'none'
     checkedAt: string | null
+    task?: {
+      state: 'queued' | 'checking' | 'verified' | 'mismatch' | 'unavailable' | 'unsupported' | 'stopped'
+      reason?: string
+      retryAt?: string
+    }
   }
 }
 
@@ -316,6 +353,29 @@ export interface AgentIntegrationDeactivationDto {
   maintenance: 'active' | 'paused'
   bridge: 'serving' | 'stopped'
   hostComponents: 'loaded_unknown' | 'awaiting_reload' | 'deactivated_verified'
+}
+
+export interface AgentIntegrationConnectionDto {
+  diagnostic?: AgentIntegrationDiagnosticDto
+  id: string
+  familyId: string
+  displayName: string
+  installationIds: string[]
+  shared: boolean
+  bindingGeneration: number | null
+  configurationRevision: string
+  statusGroup: AgentIntegrationStatusGroup
+  statusReason: string
+  components: AgentIntegrationComponentDto[]
+  /** Successful read call + accepted write request; not a storage/semantic-quality claim. */
+  memoryCallsVerified: boolean
+  maintenance: 'active' | 'paused' | 'unmanaged'
+  intentRevision: number
+  intentState: 'active' | 'paused' | 'disconnected'
+  actionInstallationIds: string[]
+  attentionReason: string | null
+  issue: { eventId: string; reason: string; dismissed: boolean } | null
+  lastRealUseAt: string | null
 }
 
 export interface AgentIntegrationFamilyDto {
@@ -329,6 +389,7 @@ export interface AgentIntegrationFamilyDto {
 }
 
 export interface AgentIntegrationSnapshotDto {
+  automaticConnectionsEnabled?: boolean
   /** Present only in the hermetic visual-audit harness; never a host verification claim. */
   fixtureMode?: 'isolated_ui_audit'
   /** Signed-build integration policy; emergency/invalid modes are user-visible. */
@@ -341,6 +402,7 @@ export interface AgentIntegrationSnapshotDto {
   /** Confirmed-uninstalled Installations retained for read-only audit/history views. */
   historyInstallations: AgentIntegrationInstallationDto[]
   families: AgentIntegrationFamilyDto[]
+  connections: AgentIntegrationConnectionDto[]
   installations: AgentIntegrationInstallationDto[]
   summary: {
     familyCount: number
@@ -350,6 +412,16 @@ export interface AgentIntegrationSnapshotDto {
     awaitingConnectionCount: number
   }
   lastScanAt: string | null
+  scanProgress?: {
+    phase: 'idle' | 'discovery' | 'maintenance' | 'failed'
+    startedAt: string | null
+    completedAt: string | null
+  }
+}
+
+export interface AgentIntegrationSourceRetryDto {
+  status: 'started' | 'in_progress' | 'throttled' | 'unsupported' | 'not_needed' | 'stopped' | 'unavailable'
+  retryAt?: string
 }
 
 export interface AgentIntegrationScanResultDto {
@@ -389,6 +461,9 @@ export interface AgentIntegrationPlanTargetDto {
 }
 
 export interface AgentIntegrationPlanInstallationDto {
+  nativePermissions?: Array<'gemini_extension' | 'openclaw_capabilities'>
+  nativePlugin?: { name: string; version: string; sourceLabel: string }
+  hostVersion?: string | null
   installationId: string
   displayName: string
   desiredCapability: 0 | 1 | 2 | 3 | 4
@@ -530,6 +605,7 @@ export interface AgentIntegrationGuidedRemovalResultDto {
 }
 
 export interface AgentIntegrationPlanPreviewDto {
+  connectionId?: string
   legacySelection?: {selectedAgentId:string;removedAgentIds:string[]}
 
   planHash: string
@@ -873,6 +949,7 @@ export interface AppApi {
     list: (includeArchived?: boolean) => Promise<Array<{
       id: string; name: string; provider_type: string; credentials: string
       status: string; available_models: string | null; last_checked: string | null
+      cli_model_count: number | null; cli_catalog_outdated: boolean
       source_type?: 'cloud_service' | 'local_subscription' | 'local_model'
       candidate_models?: string | null; status_reason?: string | null
       cli_path?: string | null; cli_version?: string | null; auth_method?: string | null
@@ -905,6 +982,7 @@ export interface AppApi {
     archive: (id: string) => Promise<void>
     unarchive: (id: string) => Promise<void>
     delete: (id: string) => Promise<void>
+    resumeFutureCalls: (connectionId: string, confirmed: true) => Promise<ResumeFutureCallsResult>
     test: (connectionId: string, formOverride?: Record<string, string>, options?: { models?: string[] }) => Promise<{
       online: boolean
       models: string[]
@@ -1067,9 +1145,14 @@ export interface AppApi {
 
     onOpenInstallation: (callback: (installationId: string) => void) => () => void
     onTaskProgress: (callback: (task: AgentIntegrationApplyTaskDto) => void) => () => void
+    /** Read a snapshot first; main sends only an invalidation, never credentials or tool output. */
+    onStateChanged: (callback: () => void) => () => void
     onNotification: (callback: (notification: AgentIntegrationUserNotificationDto) => void) => () => void
     snapshot: () => Promise<AgentIntegrationSnapshotDto>
     scan: () => Promise<AgentIntegrationScanResultDto>
+    recheckAuthentication: (installationId: string) => Promise<AgentIntegrationAuthenticationDto>
+    recheckDiagnostic: (installationId: string) => Promise<AgentIntegrationDiagnosticDto>
+    retrySourceCheck: (installationId: string) => Promise<AgentIntegrationSourceRetryDto>
     previewConnect: (
       installationIds: string[],
       includeTechnicalDetails?: boolean,
@@ -1081,6 +1164,12 @@ export interface AppApi {
     getApplyTask: (taskId: string) => Promise<AgentIntegrationApplyTaskDto>
     listApplyTasks: (request?: AgentIntegrationApplyTaskPageRequestDto) => Promise<AgentIntegrationApplyTaskPageDto>
     inbox: (limit?: number) => Promise<AgentIntegrationInboxDto>
+    previewConnectionDisconnect: (connectionId: string) => Promise<AgentIntegrationPlanPreviewDto>
+    disconnectConnection: (planHash: string, connectionId: string) => Promise<AgentIntegrationApplyResultDto>
+    reconnectAutomaticInstallation: (installationId: string) => Promise<AgentIntegrationApplyTaskDto | null>
+    retryAutomaticConnection: (connectionId: string) => Promise<AgentIntegrationApplyTaskDto | null>
+    pauseConnection: (connectionId: string) => Promise<AgentIntegrationSnapshotDto>
+    resumeConnection: (connectionId: string) => Promise<AgentIntegrationSnapshotDto>
     pause: (installationId: string) => Promise<AgentIntegrationInstallationDto>
     resume: (installationId: string) => Promise<AgentIntegrationInstallationDto>
     previewResetAutoRestore: (installationId: string) => Promise<AgentIntegrationCircuitResetPreviewDto>

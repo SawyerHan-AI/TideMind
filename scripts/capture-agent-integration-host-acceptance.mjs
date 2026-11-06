@@ -363,7 +363,7 @@ function validateExportedActivityReceipt(value, state) {
     || value.sourceCommit !== state.sourceCommit
     || value.releaseContractSha256 !== state.releaseContractSha256
     || value.ledgerSource !== (state.allowFixtureActivity ? 'fixture' : 'real_profile')
-    || (value.databaseSchemaVersion !== 34 && value.databaseSchemaVersion !== 35 && value.databaseSchemaVersion !== 45)
+    || (value.databaseSchemaVersion !== 34 && value.databaseSchemaVersion !== 35 && value.databaseSchemaVersion !== 45 && value.databaseSchemaVersion !== 46 && value.databaseSchemaVersion !== 47)
     || value.exportHash !== hostActivityLedgerExportHash(value)) {
     throw new Error('activity receipt was not exported for this frozen candidate capture')
   }

@@ -238,6 +238,7 @@ describe('OpenCode V1/V2 shared Skill production composition', () => {
 
       if (scenario === 'repair') {
         const document = JSON.parse(fs.readFileSync(sharedMcp, 'utf8'))
+        const priorToken = document.mcp['tidemind-eb_opencode_v1_cli'].environment.EB_ACTIVITY_GENERATION_TOKEN
         delete document.mcp['tidemind-eb_opencode_v1_cli']
         fs.writeFileSync(sharedMcp, JSON.stringify(document))
         await composition.runtime.runMaintenance()
@@ -246,6 +247,9 @@ describe('OpenCode V1/V2 shared Skill production composition', () => {
         expect(repair.desired_capability).toBe(2)
         const token = JSON.parse(fs.readFileSync(sharedMcp, 'utf8'))
           .mcp['tidemind-eb_opencode_v1_cli'].environment.EB_ACTIVITY_GENERATION_TOKEN
+        expect(token).not.toBe(priorToken)
+        expect(db.prepare("SELECT a.missing_event_count FROM managed_artifacts a JOIN artifact_consumers c ON c.artifact_id=a.id WHERE c.installation_id=? AND c.component_key='memory_tools'").get(installationIds['opencode-v1-cli']))
+          .toEqual({ missing_event_count: 1 })
         for (const signalName of ['brain_prepare', 'brain_recall', 'brain_digest'] as const) {
           expect(recordHostActivityEvidence(db, {
             agentId: 'eb_opencode_v1_cli', hostVariant: 'opencode-v1-cli', componentKey: 'memory_tools',

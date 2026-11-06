@@ -3,6 +3,7 @@ import Database from 'better-sqlite3'
 import { describe, expect, it } from 'vitest'
 import { AgentIntegrationRepository } from '../../client/electron/agent-integration/repository.js'
 import { ensureSchema } from '../../src/db/schema.js'
+import { AgentIntegrationService } from '../../client/electron/agent-integration/service.js'
 
 const T0 = '2026-08-26T00:00:00.000Z'
 
@@ -104,6 +105,37 @@ function traverse(repository: AgentIntegrationRepository, limit: number) {
 }
 
 describe('Agent Integration bounded versioned task feed', () => {
+  it('supersedes an old preparation failure only after a newer connect is applied, without rewriting history', () => {
+    const { db, repository } = setup(); seedTasks(db, 1)
+    const original = db.prepare("SELECT result_json FROM agent_integration_apply_task_items WHERE task_id='task-000000'").get()
+    const later = new Date(Date.parse(T0) + 1000).toISOString()
+    repository.createReconcileRun({ id: 'new-connect', installationId: 'installation-1', operationType: 'connect', executionPlanHash: 'new-plan', recoveryStrategy: 'resume', createdAt: later })
+    db.prepare("UPDATE reconcile_runs SET state='applying' WHERE id='new-connect'").run()
+    const service = new AgentIntegrationService({ repository,
+      scanner: { scan: async () => { throw new Error('not used') } },
+      execution: { preview: async () => { throw new Error('not used') }, applyPrepared: async () => { throw new Error('not used') } },
+      now: () => new Date(Date.parse(T0) + 2000),
+    })
+    try {
+      expect(service.getApplyTask('task-000000').results[0].status).toBe('failed')
+      db.prepare("UPDATE reconcile_runs SET state='applied_unverified' WHERE id='new-connect'").run()
+      expect(repository.listApplyTaskFeedPage({ limit: 10, nowMs: Date.parse(T0) + 2000 }).attentionCount).toBe(0)
+      expect(service.getApplyTask('task-000000').results[0]).toMatchObject({ status: 'superseded', reason: 'fixture' })
+      expect(db.prepare("SELECT result_json FROM agent_integration_apply_task_items WHERE task_id='task-000000'").get()).toEqual(original)
+    } finally { db.close() }
+  })
+
+  it('does not supersede a failed task with an unbound own run even when a later connect exists', () => {
+    const { db, repository } = setup(); seedTasks(db, 1)
+    repository.createReconcileRun({ id: 'unbound-own', installationId: 'installation-1', operationType: 'connect', executionPlanHash: 'execution-0', recoveryStrategy: 'resume', createdAt: T0 })
+    repository.createReconcileRun({ id: 'new-connect', installationId: 'installation-1', operationType: 'connect', executionPlanHash: 'new-plan', recoveryStrategy: 'resume', createdAt: new Date(Date.parse(T0) + 1000).toISOString() })
+    db.prepare("UPDATE reconcile_runs SET state='applied_unverified' WHERE id='new-connect'").run()
+    try {
+      expect(repository.getApplyTaskFeedTask('task-000000')?.task.items[0].superseded_by_run_id ?? null).toBeNull()
+      expect(repository.listApplyTaskFeedPage({ limit: 10, nowMs: Date.parse(T0) + 2000 }).attentionCount).toBeGreaterThan(0)
+    } finally { db.close() }
+  })
+
   it('pages 10k attention tasks without gaps, duplicates, or full DTO pages', { timeout: 60_000 }, () => {
     const { db, repository } = setup()
     seedTasks(db, 10_000)
@@ -358,6 +390,19 @@ describe('Agent Integration bounded versioned task feed', () => {
     const page = repository.listApplyTaskFeedPage({ limit: 50, nowMs: Date.parse(T0) })
     expect(page.attentionCount).toBe(1)
     expect(page.entries).toEqual([expect.objectContaining({ key: 'task:task-forged', priority: 1 })])
+  })
+
+  it('does not count a completed configuration awaiting host evidence as running', () => {
+    const { repository } = setup()
+    repository.createReconcileRun({
+      id: 'run-awaiting-host', installationId: 'installation-1', operationType: 'connect',
+      executionPlanHash: 'execution-awaiting-host', recoveryStrategy: 'resume', createdAt: T0,
+    })
+    repository.transitionRunState('run-awaiting-host', 'planned', 'applied_unverified', T0)
+    const page = repository.listApplyTaskFeedPage({ limit: 50, nowMs: Date.parse(T0) })
+    expect(page.activeCount).toBe(0)
+    expect(page.attentionCount).toBe(0)
+    expect(page.entries).toContainEqual(expect.objectContaining({ key: 'run:run-awaiting-host', priority: 2 }))
   })
 
   it('keeps a running durable ledger first even when its exact run already committed', () => {

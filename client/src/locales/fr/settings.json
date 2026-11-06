@@ -158,7 +158,17 @@
       "cancelTest": "Annuler le test",
       "testSummary": "{{success}} / {{total}} modèles disponibles",
       "testCancelledSummary": "Test annulé · {{success}} / {{total}} terminés avec succès",
-      "copyCommand": "Copier la commande"
+      "copyCommand": "Copier la commande",
+      "resumeFutureCalls": "Reprendre les prochaines requêtes",
+      "resumeFutureCallsDescription": "Cette action reprend uniquement les prochaines requêtes. Les requêtes précédentes ont peut-être déjà consommé du quota et ne seront pas renvoyées.",
+      "resumeFutureCallsFeedback": {
+        "succeeded": "La suspension due au résultat non confirmé d’une requête précédente est levée. Les autres limites de connexion ou de modèle restent en vigueur.",
+        "busy": "Une opération est encore en cours sur cette connexion. Réessayez une fois qu’elle est terminée.",
+        "process": "Impossible de confirmer l’arrêt du processus CLI précédent. Vérifiez qu’il est terminé avant de réessayer.",
+        "environment": "Impossible de confirmer l’environnement CLI ou le compte connecté. Vérifiez l’environnement de la connexion, puis réessayez.",
+        "failed": "Impossible de reprendre les prochaines requêtes. Vérifiez la connexion, puis réessayez."
+      },
+      "catalogOutdatedShort": "Obsolète"
     },
     "selection": {
       "loadingModels": "Chargement des modeles disponibles...",
@@ -208,6 +218,7 @@
       "manualInvalid": "Format d’ID de modèle invalide"
     },
     "serviceStatus": {
+      "lastTestSuccess": "Dernier test de connexion réussi",
       "title": "État du service IA",
       "never": "Jamais",
       "currentStatus": "État actuel",
@@ -215,7 +226,7 @@
       "statusHealthy": "Sain",
       "lastSuccess": "Dernier appel réussi",
       "lastError": "Dernière erreur",
-      "hint": "Pour diagnostiquer ou tester, utilisez la section « Connexions de modèles » ci-dessous.",
+      "hint": "Ouvrez ci-dessous les détails de la connexion concernée et suivez les instructions correspondant au problème.",
       "statusPausedCountdown": "En pause ({{time}} restant)",
       "retryNow": "Réessayer maintenant",
       "retrySuccess": "Disjoncteur réinitialisé",
@@ -226,7 +237,11 @@
       "unknownConnection": "Unknown connection",
       "collapseErrors": "Collapse errors",
       "expandErrors": "Show {{count}} more",
-      "routeFaults": "Défaillances des routes utilisées"
+      "routeFaults": "Défaillances des routes utilisées",
+      "unconfirmedResult": "La dernière requête a été envoyée, mais son résultat reste incertain. Les nouveaux appels sont suspendus. Ouvrez les détails de cette connexion pour résoudre le problème.",
+      "connectionIssue": "Cette connexion rencontre un problème. Ouvrez ses détails pour le résoudre.",
+      "technicalDetails": "Détails techniques",
+      "pausedRoutes": "Les appels à {{name}} sont suspendus. Routages concernés : {{tiers}}."
     },
     "catalog": {
       "scope": "Périmètre du compte",
@@ -1133,6 +1148,11 @@
       }
     },
     "managed": {
+      "memoryVerified": "Outils mémoire vérifiés",
+      "fullyVerified": "Vérification complète",
+      "optionalConnections": "Connexions facultatives",
+      "connectionTaskHistory": "Tâches et historique des connexions ({{count}})",
+
       "codexSharedIdentityReconnect": "This Codex connection uses an older identity. In the Agent details, disconnect the existing Codex connection and complete its removal, then connect Codex again so Desktop and CLI share one Tide Mind identity.",
       "codexExistingIdentityReview": "Existing Tide Mind connections for Codex need review before connecting. Open the Codex details and resolve the old identity conflict first, then check again and reconnect.",
       "legacyChoice": {
@@ -1159,7 +1179,14 @@
           "signed_identity": "Signature officielle",
           "npm_registry": "Paquet npm officiel vérifié",
           "npm_registry_cache": "Vérification npm officielle en cache"
-        }
+        },
+        "retry": "Réessayer la vérification de la source",
+        "queued": "Vérification de la source en attente",
+        "checking": "Vérification de la source…",
+        "unavailable": "La vérification de la source a échoué. Réessayez.",
+        "unsupported": "Cette méthode d’installation ne permet pas la vérification automatique de la source.",
+        "requested": "Nouvelle vérification de la source demandée.",
+        "retryAt": "Réessayez après {{time}}."
       },
       "title": "Connexions aux Agents",
       "subtitle": "Détecte et maintient automatiquement les Agents locaux compatibles sur ce Mac.",
@@ -1167,6 +1194,8 @@
       "lastChecked": "Dernière vérification {{time}}",
       "notCheckedYet": "Pas encore vérifié",
       "scanning": "Vérification…",
+      "checkingSources": "Vérification des sources d’installation…",
+      "checkingConnections": "Vérification des connexions existantes…",
       "recheck": "Revérifier",
       "scanComplete": "Vérification terminée : {{detected}} détecté, {{newCount}} nouveau, {{failed}} non résolu.",
       "scanFailed": "La vérification a échoué.",
@@ -1175,7 +1204,7 @@
       "regeneratePlan": "Plan de régénération",
       "needsAttention": "A besoin d'attention",
       "newAgentsFound": "{{count}} installation(s) locale(s) d’Agent attendent votre validation.",
-      "existingIssues": "Les installations {{count}} nécessitent une attention particulière.",
+      "existingIssues": "{{count}} connexion(s) nécessitent une intervention.",
       "reviewAndConnect": "Examinez et connectez-vous",
       "reviewAndEnableMaintenance": "Vérifier et activer la maintenance",
       "localAgents": "Agents locaux",
@@ -1314,9 +1343,9 @@
         "disconnected": "Déconnecté"
       },
       "reason": {
-        "verified": "Les outils de mémoire de base ont été vérifiés.",
+        "verified": "Les MCP Tools de base ont été vérifiés.",
         "legacyCallableUnmanaged": "Cette connexion existante est appelable. La maintenance automatique reste désactivée jusqu'à ce que vous l'approuviez.",
-        "instructionOnly": "Seul le guide d'utilisation est disponible.",
+        "instructionOnly": "Seul le Skill est disponible.",
         "capabilityCeiling": "Niveau de capacité maximal pris en charge par cet Agent.",
         "awaitingConsent": "En attente d'approbation avant le premier changement.",
         "incompatible": "Cette version ne peut pas encore être connectée.",
@@ -1328,7 +1357,7 @@
         "releaseArtifactNotAccepted": "Ce résultat de vérification des fichiers d’installation a été enregistré par une version antérieure de Tide Mind et attend une nouvelle vérification. Vérifiez à nouveau pour l’actualiser maintenant.",
         "releaseVersionUnverified": "Tide Mind n’a pas pu vérifier la version de l’Agent. Réinstallez-le ou mettez-le à jour depuis la distribution officielle, puis vérifiez à nouveau.",
         "releaseVersionNotAccepted": "Ce résultat de vérification de version a été enregistré par une version antérieure de Tide Mind et attend une nouvelle vérification. Vérifiez à nouveau pour l’actualiser maintenant.",
-        "sourceVerificationPending": "Tide Mind vérifie encore la source officielle de cet Agent et ne peut pas encore terminer la vérification ; la configuration automatique est suspendue. Une nouvelle tentative aura lieu automatiquement dès que vous serez en ligne.",
+        "sourceVerificationPending": "La source est en cours de vérification. Les modifications attendent ; l’état de la connexion existante est affiché séparément.",
         "sourceNotOfficial": "L’installation locale de cet Agent ne correspond pas à la publication officielle ; la configuration automatique a été arrêtée. Réinstallez-le depuis le canal officiel, puis vérifiez à nouveau.",
         "sourceConfirmationRequired": "Tide Mind ne peut pas vérifier automatiquement la source officielle de ce type d’installation. Réinstallez l’Agent depuis son canal officiel ou connectez-le manuellement via « Ajouter un Agent local personnalisé ».",
         "unverified": "Pas encore vérifié.",
@@ -1350,7 +1379,10 @@
         "disconnectVerified": "Les composants Tide Mind ont été vérifiés absents.",
         "hostUninstalled": "L’Agent n’est plus installé.",
         "unknown": "Voir les détails pour les derniers faits vérifiés.",
-        "customConfigOwnedByDiscoveredHost": "Ce fichier de configuration (ou son dossier) appartient déjà à un Agent détecté par Tide Mind. Connectez cet Agent directement au lieu de l’ajouter comme client personnalisé."
+        "customConfigOwnedByDiscoveredHost": "Ce fichier de configuration (ou son dossier) appartient déjà à un Agent détecté par Tide Mind. Connectez cet Agent directement au lieu de l’ajouter comme client personnalisé.",
+        "automaticConfigurationFailed": "La configuration automatique n’a pas abouti. Consultez les détails, résolvez le problème et réessayez.",
+        "nativePermissionRequired": "L’agent demande des autorisations pour le module. Vérifiez-les pour continuer.",
+        "authenticationRequired": "Compte non connecté. Connectez-vous dans cet Agent, puis relancez la vérification."
       },
       "access": {
         "complete": "Connexion complète",
@@ -1374,9 +1406,9 @@
       "accessMixed": "Les connexions diffèrent",
       "mixed": "Différent selon les installations",
       "component": {
-        "instruction": "Guide d'utilisation",
-        "memoryTools": "Outils de mémoire",
-        "lifecycle": "Lien de session"
+        "instruction": "Skill",
+        "memoryTools": "MCP Tools",
+        "lifecycle": "Hook"
       },
       "componentStatus": {
         "verified": "Vérifié",
@@ -1410,6 +1442,13 @@
       "lastVerified": "Dernière vérification",
       "lastRepair": "Dernière réparation",
       "lastDetected": "Dernière détection",
+      "checkPending": "En attente de vérification",
+      "activityLabel": "Dernière activité",
+      "noActivity": "Aucune activité enregistrée",
+      "checkLabel": "Dernière vérification",
+      "modelTestLabel": "Test automatique du modèle",
+      "testTimeLabel": "Date du test",
+      "activityScope": "Appels MCP ou événements Hook réels uniquement, hors vérifications de configuration.",
       "lastUsed": "Dernière utilisation réelle",
       "noRecord": "Aucun enregistrement",
       "noReliableUsage": "Aucune preuve d'utilisation fiable",
@@ -1639,13 +1678,13 @@
       "requestedInstallationsUnavailable": "Ces installations sont désinstallées, ne sont plus fiables ou sont actuellement ingérables. Revérifiez avant de générer un nouveau plan.",
       "planChanged": "Le plan de connexion a changé. Renvoyez et confirmez le plan mis à jour.",
       "includeLifecycle": "Inclure la liaison automatique de session",
-      "includeLifecycleHelp": "Facultatif pour cette installation. Les outils de mémoire restent disponibles lorsque cette option est désactivée.",
+      "includeLifecycleHelp": "Facultatif pour cette installation. Les MCP Tools restent disponibles lorsque cette option est désactivée.",
       "backgroundProgress": "Connexion des Agents locaux en arrière-plan : {{completed}} / {{total}} terminés.",
       "backgroundComplete": "La connexion des Agents en arrière-plan est terminée pour {{total}} installation(s).",
       "backgroundTaskPosition": "Tâche {{current}} de {{total}}",
       "backgroundTaskPinnedOutsidePage": "Tâche épinglée ; parcourir la page actuelle",
-      "backgroundTaskActiveCount": "{{count}} tâches en arrière-plan sont en cours ou en attente de vérification",
-      "backgroundTaskAttentionCount": "Les tâches en arrière-plan {{count}} nécessitent une attention particulière",
+      "backgroundTaskActiveCount": "Tide Mind exécute {{count}} tâches en arrière-plan. Aucune action requise.",
+      "backgroundTaskAttentionCount": "{{count}} tâches passées ont des échecs ou interruptions enregistrés ; consultez l’état actuel des Agents pour les actions nécessaires.",
       "backgroundTasksUpdated": "Tâches en arrière-plan mises à jour",
       "backgroundTaskPageLoading": "Chargement des tâches en arrière-plan",
       "backgroundTaskPageLoadFailed": "Les tâches en arrière-plan n'ont pas pu être chargées",
@@ -1663,6 +1702,60 @@
         "awaitingReload": "Tide Mind a supprimé sa configuration et ne fournit plus de mémoire à cet Agent. Un hôte déjà en cours d’exécution peut conserver les anciens composants jusqu’à son redémarrage ou une nouvelle session ; les anciennes entrées sans génération ne sont pas bloquées automatiquement.",
         "deactivatedVerified": "Désactivation vérifiée : la configuration est supprimée et l’hôte a été rechargé.",
         "bridgeStopped": "Tide Mind ne fournit plus de mémoire à cet Agent. Ses composants peuvent encore être chargés dans l’hôte ; supprimez-les manuellement dans l’hôte."
+      },
+      "sharedConnectionScope": "CLI et Desktop partagent cette connexion. Les indicateurs décrivent la configuration et les appels partagés.",
+      "hostEvidenceScope": "Pour une même configuration partagée, Skill et MCP Tools utilisent la vérification de la connexion. Les événements Hook ci-dessous restent propres à l’hôte sélectionné.",
+      "disconnectConnection": "Déconnecter la connexion partagée",
+      "pauseMember": "Suspendre cette application",
+      "resumeMember": "Reprendre cette application",
+      "disconnectMember": "Déconnecter cette application",
+      "disconnectConnectionTitle": "Déconnecter {{name}} de toutes les applications connectées ?",
+      "disconnectConnectionDescription": "Déconnectez toutes les applications partageant cette configuration. Seules les entrées de Tide Mind sont supprimées ; les autres réglages et souvenirs sont conservés.",
+      "retryAutomaticConnection": "Réessayer la configuration",
+      "automaticRetryUnavailable": "La configuration automatique est indisponible pour le moment. Résolvez le problème indiqué dans les détails, puis réessayez.",
+      "reviewNativePermissions": "Examiner les autorisations",
+      "authorizeNativeAndConnect": "Autoriser et connecter",
+      "nativePermissionVersion": "Version de l’hôte : {{version}}",
+      "diagnostic": {
+        "title": "Vérification de lecture et d’écriture",
+        "scope": "Utilise uniquement un abonnement confirmé, avec 3 tests maximum par jour pour toutes les connexions. Les données de test restent séparées de vos souvenirs.",
+        "retry": "Relancer la vérification du modèle",
+        "checking": "Vérification de la connexion…",
+        "passed": "Lecture et écriture vérifiées.",
+        "uncertain": "Test envoyé, résultat non confirmé. Vérifiez l’Agent avant de réessayer ; cela peut consommer votre quota.",
+        "cancelled": "Vérification arrêtée. Vous pouvez réessayer.",
+        "login": "Connectez-vous à l’Agent, puis réessayez.",
+        "metered": "Facturation à l’usage : aucun test automatique du modèle. Utilisez Tide Mind dans l’Agent pour vérifier.",
+        "billing": "Abonnement non confirmé : aucun test du modèle envoyé. Utilisez Tide Mind dans l’Agent pour vérifier.",
+        "dailyLimit": "Limite de 3 tests atteinte aujourd’hui. Réessayez demain ou utilisez Tide Mind dans l’Agent.",
+        "alreadyTested": "Cette configuration a déjà été testée automatiquement. Vérifiez l’Agent avant de réessayer manuellement.",
+        "permission": "Vérifiez les autorisations natives des outils de l’Agent, puis réessayez.",
+        "unsupported": "Test automatique indisponible pour cette version ou configuration. Une lecture et une écriture réussies dans l’Agent confirmeront la connexion.",
+        "waiting": "En attente. Utilisez Tide Mind dans l’Agent ou réessayez ici.",
+        "failed": "Vérification incomplète. Vérifiez que l’Agent peut utiliser Tide Mind, puis réessayez."
+      },
+      "authentication": {
+        "title": "Vérification de la connexion au compte Agent",
+        "recheck": "Revérifier la connexion au compte",
+        "scope": "La connexion au compte ne confirme pas que le modèle ou les MCP Tools ont été validés.",
+        "status": {
+          "not_checked": "Connexion au compte non vérifiée",
+          "checking": "Vérification de la connexion au compte",
+          "authenticated": "Compte connecté",
+          "explicitly_unauthenticated": "Compte non connecté. Connectez-vous dans cet Agent, puis relancez la vérification.",
+          "unsupported": "Cet Agent ne permet pas de vérifier automatiquement la connexion au compte.",
+          "unavailable": "Vérification impossible pour le moment. Assurez-vous que l’Agent fonctionne normalement, puis réessayez.",
+          "cancelled": "Vérification annulée. Assurez-vous que l’Agent fonctionne normalement, puis réessayez."
+        },
+        "billing": {
+          "confirmed_subscription": "Abonnement confirmé. Cette vérification de connexion n’appelle aucun modèle.",
+          "metered": "Compte facturé à l’usage. Les vérifications automatiques de connexion n’appellent aucun modèle.",
+          "unknown": "Mode de facturation inconnu. Les vérifications automatiques de connexion n’appellent aucun modèle."
+        }
+      },
+      "nativePermissions": {
+        "gemini_extension": "Installer l’extension locale Tide Mind : exécuter du code local, charger les instructions mémoire et connecter les outils et hooks. Cela accepte l’avertissement de sécurité de Gemini.",
+        "openclaw_capabilities": "Installer et activer le module local Tide Mind, autoriser la lecture du contexte des conversations et l’ajout de mémoire aux prompts, puis redémarrer la passerelle."
       }
     }
   },

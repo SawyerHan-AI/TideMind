@@ -389,3 +389,21 @@ export function resetConnectionHealth(
   })();
   emitChange(null);
 }
+
+/** A fresh CLI check disproves only earlier environment failures, not uncertain calls. */
+export function recoverCliConnectionHealth(
+  db: Database.Database, connectionId: string, startedAt: number, modelTestSucceeded = false,
+): void {
+  const kinds = modelTestSucceeded
+    ? ['not_installed', 'unsupported_version', 'not_authenticated', 'wrong_auth_method', 'scope_unknown', 'quota', 'rate_limit', 'timeout', 'transient', 'process_crash', 'protocol', 'capability']
+    : ['not_installed', 'unsupported_version', 'not_authenticated', 'wrong_auth_method'];
+  const result = db.prepare(`
+    UPDATE llm_connection_health SET circuit_state='closed', failure_count=0,
+      opened_at=NULL, last_error_kind=NULL, last_error_message=NULL, last_error_at=NULL,
+      needs_user_action=0, retry_at=NULL, updated_at=?
+    WHERE connection_id=? AND provider_type IN ('codex-cli','claude-cli')
+      AND last_error_kind IN (${kinds.map(() => '?').join(',')}) AND last_error_at <= ?
+  `).run(new Date().toISOString(), connectionId, ...kinds, startedAt);
+  // last_success_at is business-call evidence; a check/test must not overwrite it.
+  if (result.changes) emitChange(null);
+}

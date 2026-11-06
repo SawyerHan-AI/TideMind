@@ -1,0 +1,5 @@
+{
+  "brain_prepare": "Read minimal synthetic context for this isolated connection check.",
+  "brain_digest": "Store exactly the diagnostic nonce text supplied by the controller. Returns a completed write and node ID.",
+  "brain_recall": "Read the diagnostic node using the exact node_id returned by brain_digest."
+}

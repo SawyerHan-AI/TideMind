@@ -347,3 +347,17 @@ describe('execution plan consent boundary', () => {
     }
   })
 })
+
+describe('automatic consent plan binding', () => {
+  it('requires the exact policy-approved plan even when a changed target remains inside the old scope', () => {
+    const planned = plan({ installationSurfaceFingerprint: 'b'.repeat(64) })
+    const automatic: ConsentEnvelope = { ...consent, origin: 'default_auto_policy', automaticContext: {
+      policyVersion: 1, connectionKey: 'installation:installation-1', domainKey: 'domain', intentRevision: 0,
+      executionPlanHash: executionPlanHash(planned), installationSurfaceFingerprint: 'b'.repeat(64),
+    } }
+    expect(checkPlanAgainstConsent(planned, automatic).allowed).toBe(true)
+    const changed = structuredClone(planned); changed.mutations[0].targetPath = '/Users/test/.agent/other.json'
+    expect(checkPlanAgainstConsent(changed, automatic).reasons).toContain('automatic_consent_plan_changed')
+    expect(checkPlanAgainstConsent(planned, { ...automatic, automaticContext: undefined }).allowed).toBe(false)
+  })
+})

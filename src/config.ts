@@ -1,3 +1,5 @@
+import { getTideMindVersion } from './utils/app-version.js';
+import { isDiagnosticRequested, readDiagnosticContext, type ValidatedDiagnosticContext } from './agent-diagnostic-contract.js';
 import { migrateExistingDatabaseIfNeeded } from './db/pre-migration.js';
 import { assertSupportedDatabaseFile, openCompatibleDatabase } from './db/schema-compatibility.js';
 import fs from 'node:fs';
@@ -163,8 +165,37 @@ export function getLoadedConfigSourcePath(): string | null {
   return cachedConfigSource;
 }
 
+/** Resolve only the configured control path before applying the child-only diagnostic route. */
+export function getRuntimeDiagnosticContext(configPath?: string): ValidatedDiagnosticContext | null {
+  if (!isDiagnosticRequested()) return null;
+  const source = configPath ?? cachedConfigSource ?? path.join(DEFAULT_CONFIG.general.data_dir, 'config.toml');
+  let raw: Record<string, unknown>;
+  try { raw = fs.existsSync(source) ? parseToml(fs.readFileSync(source, 'utf8')) as Record<string, unknown> : {}; }
+  catch { throw new Error('agent_diagnostic:control_configuration_unavailable'); }
+  const general = raw.general && typeof raw.general === 'object' ? raw.general as Record<string, unknown> : {};
+  if (general.data_dir !== undefined && typeof general.data_dir !== 'string') throw new Error('agent_diagnostic:control_configuration_invalid');
+  const configured = typeof general.data_dir === 'string' ? general.data_dir : DEFAULT_CONFIG.general.data_dir;
+  const dataDir = configured.startsWith('~') ? configured.replace('~', os.homedir()) : configured;
+  if (!path.isAbsolute(dataDir)) throw new Error('agent_diagnostic:control_path_invalid');
+  const context = readDiagnosticContext({ trustedControlDatabasePath: path.join(dataDir, 'graph', 'brain.sqlite') });
+  if (context && context.binding.runtimeVersion !== getTideMindVersion()) throw new Error('agent_diagnostic:runtime_version_mismatch');
+  return context;
+}
+
+function diagnosticConfiguration(context: ValidatedDiagnosticContext): AppConfig {
+  const isolated = structuredClone(DEFAULT_CONFIG);
+  isolated.general = { data_dir: context.dataDir, user_name: 'Tide Mind diagnostic' };
+  isolated.anthropic.api_key = '';
+  return isolated;
+}
+
 export function loadConfig(configPath?: string): AppConfig {
   const workerRuntime = getMetabolismWorkerRuntimeContext();
+  const diagnostic = getRuntimeDiagnosticContext(configPath);
+  if (diagnostic) {
+    if (workerRuntime && workerRuntime.dataDir !== diagnostic.dataDir) throw new Error('agent_diagnostic:worker_domain_mismatch');
+    return diagnosticConfiguration(diagnostic);
+  }
   if (workerRuntime) {
     if (configPath !== undefined) throw new Error('metabolism Worker禁止从文件重新加载配置');
     return workerRuntime.config;
@@ -218,6 +249,12 @@ export function reloadConfig(): void {
 }
 
 export function getDataDir(): string {
+  const diagnostic = getRuntimeDiagnosticContext();
+  if (diagnostic) {
+    const worker = getMetabolismWorkerRuntimeContext();
+    if (worker && worker.dataDir !== diagnostic.dataDir) throw new Error('agent_diagnostic:worker_domain_mismatch');
+    return diagnostic.dataDir;
+  }
   const workerRuntime = getMetabolismWorkerRuntimeContext();
   if (workerRuntime) return workerRuntime.dataDir;
   return getConfig().general.data_dir;
@@ -270,6 +307,12 @@ export function isLlmConfigured(): boolean {
 
 export function ensureDataDirs(): void {
   if (getMetabolismWorkerRuntimeContext()) throw new Error('metabolism Worker禁止创建数据目录');
+  const diagnostic = getRuntimeDiagnosticContext();
+  if (diagnostic) {
+    // No user strategies, profile, Skill synchronization or background watchers.
+    for (const name of ['', 'stream', 'graph', 'crystal', 'strategies', 'skill', 'exports']) fs.mkdirSync(path.join(diagnostic.dataDir, name), { recursive: true, mode: 0o700 });
+    return;
+  }
   const dataDir = getDataDir();
   migrateExistingDatabaseIfNeeded(path.join(dataDir, 'graph', 'brain.sqlite'), getLoadedConfigSourcePath() ?? undefined);
   const dirs = [

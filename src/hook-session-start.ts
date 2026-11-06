@@ -17,6 +17,7 @@
  * SessionStart evidence；0.2.91 Kimi 旧命令仍可注入，但永久不能写 lifecycle evidence。
  */
 
+import { handleDiagnosticHook, isDiagnosticRequested } from './agent-diagnostic-runtime.js';
 import { loadConfig, ensureDataDirs } from './config.js';
 import { getDb, closeDb } from './db/connection.js';
 import { SqliteRepository } from './db/sqlite-repository.js';
@@ -196,6 +197,7 @@ function parseArgs(): {
 
 // --- 主逻辑 ---
 async function main(): Promise<void> {
+  if (isDiagnosticRequested() && await handleDiagnosticHook('session_start', parseArgs(), 'SessionStart')) return;
   // 数据目录一次性迁移必须是第一步（在 loadConfig / getDb 之前）
   try {
     migrateDataDirIfNeeded(migrationLog);
@@ -293,7 +295,7 @@ async function main(): Promise<void> {
         tool,
         agent_id: agentId,
         detail_level: 'standard',
-      });
+      }, { readOnly: tool === 'codex' || tool === 'zcode' });
 
       profileSection = formatProfileSection(result);
       restSection = formatRestSections(result);

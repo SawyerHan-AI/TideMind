@@ -158,7 +158,17 @@
       "cancelTest": "取消測試",
       "testSummary": "{{success}} / {{total}} 個模型可用",
       "testCancelledSummary": "測試已取消 · 已完成 {{success}} / {{total}} 個模型",
-      "copyCommand": "複製命令"
+      "copyCommand": "複製命令",
+      "resumeFutureCalls": "恢復後續請求",
+      "resumeFutureCallsDescription": "此操作僅恢復後續請求。先前的請求可能已消耗額度，系統不會重新傳送。",
+      "resumeFutureCallsFeedback": {
+        "succeeded": "已解除先前請求結果未確認所造成的暫停。其他連線或模型限制仍適用。",
+        "busy": "此連線仍有操作正在進行，請在操作結束後重試。",
+        "process": "尚未確認上次的 CLI 程序已結束。請確認程序結束後重試。",
+        "environment": "無法確認 CLI 環境或目前登入的帳號。請檢查連線環境後重試。",
+        "failed": "無法恢復後續請求，請檢查連線後重試。"
+      },
+      "catalogOutdatedShort": "目錄過期"
     },
     "selection": {
       "loadingModels": "載入可用模型...",
@@ -213,9 +223,10 @@
       "currentStatus": "目前狀態",
       "statusDegraded": "近期失敗 {{count}} 次",
       "statusHealthy": "正常",
-      "lastSuccess": "上次成功呼叫",
+      "lastSuccess": "最近業務呼叫成功",
+      "lastTestSuccess": "最近連線測試成功",
       "lastError": "上次錯誤",
-      "hint": "如需排查或測試連線，請到下方「模型連線」分別測試每個 provider。",
+      "hint": "請開啟下方對應連線的詳細資料，依具體原因處理。",
       "statusPausedCountdown": "熔斷中（剩餘 {{time}}）",
       "retryNow": "立即重試",
       "retrySuccess": "已重置熔斷狀態",
@@ -226,7 +237,11 @@
       "unknownConnection": "Unknown connection",
       "collapseErrors": "Collapse errors",
       "expandErrors": "Show {{count}} more",
-      "routeFaults": "使用中路由故障"
+      "routeFaults": "使用中路由故障",
+      "unconfirmedResult": "上次請求已送出，但結果尚未確認。後續呼叫已暫停，請開啟此連線的詳細資料處理。",
+      "connectionIssue": "此連線目前有異常，請查看連線的詳細資料並處理。",
+      "technicalDetails": "技術詳情",
+      "pausedRoutes": "目前使用的 {{name}} 已暫停呼叫，影響：{{tiers}}。"
     },
     "catalog": {
       "scope": "帳號範圍",
@@ -1133,6 +1148,11 @@
       }
     },
     "managed": {
+      "memoryVerified": "MCP Tools 已驗證",
+      "fullyVerified": "完整驗證通過",
+      "optionalConnections": "可選連線",
+      "connectionTaskHistory": "連線任務與歷史（{{count}}）",
+
       "codexSharedIdentityReconnect": "This Codex connection uses an older identity. In the Agent details, disconnect the existing Codex connection and complete its removal, then connect Codex again so Desktop and CLI share one Tide Mind identity.",
       "codexExistingIdentityReview": "Existing Tide Mind connections for Codex need review before connecting. Open the Codex details and resolve the old identity conflict first, then check again and reconnect.",
       "legacyChoice": {
@@ -1159,7 +1179,14 @@
           "signed_identity": "官方簽章",
           "npm_registry": "已核對 npm 官方套件",
           "npm_registry_cache": "已快取的 npm 官方驗證"
-        }
+        },
+        "retry": "重試來源檢查",
+        "queued": "來源檢查已排程",
+        "checking": "正在檢查來源…",
+        "unavailable": "來源檢查未能完成，請重試。",
+        "unsupported": "目前安裝方式暫不支援自動來源驗證。",
+        "requested": "已要求重新檢查來源。",
+        "retryAt": "請於 {{time}} 後重試。"
       },
       "title": "Agent 對接",
       "subtitle": "自動偵測並維護這台 Mac 上相容的本機 Agent。",
@@ -1167,6 +1194,8 @@
       "lastChecked": "上次檢查：{{time}}",
       "notCheckedYet": "尚未檢查",
       "scanning": "正在檢查…",
+      "checkingSources": "正在檢查安裝來源…",
+      "checkingConnections": "正在核對現有連線…",
       "recheck": "重新檢查",
       "scanComplete": "檢查完成：發現 {{detected}} 個，新增 {{newCount}} 個，{{failed}} 個未解決。",
       "scanFailed": "檢查失敗。",
@@ -1175,7 +1204,7 @@
       "regeneratePlan": "重新產生方案",
       "needsAttention": "需要處理",
       "newAgentsFound": "有 {{count}} 個本機 Agent 安裝執行個體等待確認。",
-      "existingIssues": "{{count}} 個安裝執行個體需要處理。",
+      "existingIssues": "{{count}} 條連線需要處理。",
       "reviewAndConnect": "查看並連線",
       "reviewAndEnableMaintenance": "檢視並啟用自動維護",
       "localAgents": "本機 Agent",
@@ -1200,11 +1229,11 @@
         "dialogTitle": "添加自定義本機 Agent",
         "manageFile": "由 Tide Mind 託管相容的 JSON 設定檔",
         "userOwnedNotice": "預設複製並匯入本機 Agent。設定由你維護，Tide Mind 不會改寫或自動恢復。",
-        "guidedConnect": "在本機 Agent 中匯入 MCP 設定，並將使用說明加入指令或 Skill。設定由你維護。",
-        "guidedDisconnect": "請在本機 Agent 中移除 {{connector}} 與 Tide Mind 使用說明，再確認完成。此確認記錄你的移除聲明，不是機器驗證。",
+        "guidedConnect": "在本機 Agent 中匯入 MCP 設定，並將 Skill 加入指令或 Skill。設定由你維護。",
+        "guidedDisconnect": "請在本機 Agent 中移除 {{connector}} 與 Tide Mind Skill，再確認完成。此確認記錄你的移除聲明，不是機器驗證。",
         "guidedImportStep": "匯入 JSON，或分別填寫 command、args 和 env。",
         "guidedVerifyStep": "建立新會話，分別成功呼叫 brain_recall 與 brain_digest 後，返回 Tide Mind 重新校驗。",
-        "guidedRemoveStep": "移除 MCP 連線與使用說明，重新啟動宿主或建立新會話，然後確認已移除。",
+        "guidedRemoveStep": "移除 MCP 連線與 Skill，重新啟動宿主或建立新會話，然後確認已移除。",
         "dialogDescription": "選擇明確的本機目標，核對凍結內容後，再核准協調器產生的連線方案。",
         "chooseMode": "接入方式",
         "mode": {
@@ -1306,9 +1335,9 @@
         "disconnected": "已斷開"
       },
       "reason": {
-        "verified": "核心記憶工具已經驗證。",
+        "verified": "核心 MCP Tools 已經驗證。",
         "legacyCallableUnmanaged": "已識別現有可呼叫連線；自動維護仍未授權，需要你確認後才會開啟。",
-        "instructionOnly": "目前只有使用說明可用。",
+        "instructionOnly": "目前只有 Skill 可用。",
         "capabilityCeiling": "這是該 Agent 目前支援的最高能力。",
         "awaitingConsent": "首次變更前等待你的核准。",
         "incompatible": "檢測到的版本暫時無法連線。",
@@ -1320,7 +1349,7 @@
         "releaseArtifactNotAccepted": "這是舊版 Tide Mind 留下的安裝檔案檢查記錄，正在等待重新檢查。按一下「重新檢查」可立即更新。",
         "releaseVersionUnverified": "Tide Mind 無法確認這個 Agent 的版本。請從官方管道重新安裝或更新，然後按一下「重新檢查」。",
         "releaseVersionNotAccepted": "這是舊版 Tide Mind 留下的版本檢查記錄，正在等待重新檢查。按一下「重新檢查」可立即更新。",
-        "sourceVerificationPending": "正在核對這個 Agent 的官方來源，暫時無法完成檢查，目前不會自動設定。連線後會自動重試。",
+        "sourceVerificationPending": "正在重新核驗安裝來源；完成前暫不修改配置，既有連線狀態另行顯示。",
         "sourceNotOfficial": "這個 Agent 的本機安裝與官方發行內容不一致，已停止自動設定。請從官方管道重新安裝後按一下「重新檢查」。",
         "sourceConfirmationRequired": "這種安裝方式無法自動核驗官方來源，目前不會自動設定。請從官方管道重新安裝，或改用「添加自定義本機 Agent」手動接入。",
         "unverified": "尚未完成驗證。",
@@ -1342,7 +1371,10 @@
         "disconnectVerified": "已驗證 Tide Mind 元件不存在。",
         "hostUninstalled": "該 Agent 已不在本機。",
         "unknown": "請在詳情中查看最近驗證的事實。",
-        "customConfigOwnedByDiscoveredHost": "此設定檔（或其所在資料夾）已屬於 Tide Mind 偵測到的某個 Agent。請直接接入該 Agent，不要作為自訂用戶端新增。"
+        "customConfigOwnedByDiscoveredHost": "此設定檔（或其所在資料夾）已屬於 Tide Mind 偵測到的某個 Agent。請直接接入該 Agent，不要作為自訂用戶端新增。",
+        "automaticConfigurationFailed": "自動設定未完成，請查看具體原因，處理後重試。",
+        "nativePermissionRequired": "Agent 需要外掛權限，請查看並確認後繼續。",
+        "authenticationRequired": "未登入。請先在此 Agent 中登入，再重新檢查。"
       },
       "access": {
         "complete": "完整接入",
@@ -1366,9 +1398,9 @@
       "accessMixed": "接入不一致",
       "mixed": "安裝執行個體的狀態不同",
       "component": {
-        "instruction": "使用說明",
-        "memoryTools": "記憶工具",
-        "lifecycle": "會話聯動"
+        "instruction": "Skill",
+        "memoryTools": "MCP Tools",
+        "lifecycle": "Hook"
       },
       "componentStatus": {
         "verified": "已驗證",
@@ -1402,12 +1434,19 @@
       "lastVerified": "最近驗證",
       "lastRepair": "最近修復",
       "lastDetected": "最近發現",
+      "checkPending": "等待檢查",
+      "activityLabel": "最近活動",
+      "noActivity": "尚無活動記錄",
+      "checkLabel": "最近檢查",
+      "modelTestLabel": "自動模型測試",
+      "testTimeLabel": "測試時間",
+      "activityScope": "僅統計實際 MCP 呼叫或 Hook 事件，不包含背景配置檢查。",
       "lastUsed": "最近真實使用",
       "noRecord": "暫無記錄",
       "noReliableUsage": "暫無可靠使用證據",
       "sharedConnection": {
         "title": "共用記憶連線",
-        "call_observed": "目前共用連線已收到記憶工具呼叫",
+        "call_observed": "目前共用連線已收到 MCP Tools 呼叫",
         "waiting_for_call": "等待共用連線的呼叫紀錄",
         "inactive": "此安裝實例的共用連線未啟用",
         "scope": "CLI 與 Desktop 共用此設定。共用呼叫紀錄不等於任一宿主已獨立驗證。"
@@ -1447,7 +1486,7 @@
       "disconnectTitle": "斷開 {{name}} 與 Tide Mind？",
       "disconnectDescription": "只移除預覽中由 Tide Mind 擁有的元件；無關設定會保留。",
       "targetAction": {"create":"建立","update":"更新","remove":"移除","detach":"僅中斷目前 Agent","invoke":"維護"},
-      "sharedDisconnectStillVisible": "這個元件由多個 Agent 共用。Tide Mind 只會停止管理目前 Agent，並保留共用檔案；目前 Agent 仍可能看到其中的使用說明。",
+      "sharedDisconnectStillVisible": "這個元件由多個 Agent 共用。Tide Mind 只會停止管理目前 Agent，並保留共用檔案；目前 Agent 仍可能看到其中的 Skill。",
       "sharedDisconnectRetained": "這個元件由多個 Agent 共用。Tide Mind 只會停止管理目前 Agent，共用檔案會為其他 Agent 保留。",
       "sharedDisconnectConsumers": "目前共用此元件的 Agent：",
       "disconnectResult": "斷開結果",
@@ -1559,13 +1598,13 @@
       "requestedInstallationsUnavailable": "這些 Installation 已解除安裝、失去可信身分或目前不可管理。請重新檢查後再產生方案。",
       "planChanged": "連線方案已變更，請返回並確認更新後的方案。",
       "includeLifecycle": "啟用自動工作階段關聯",
-      "includeLifecycleHelp": "此 Installation 可選；關閉後仍可使用記憶工具。",
+      "includeLifecycleHelp": "此 Installation 可選；關閉後仍可使用 MCP Tools。",
       "backgroundProgress": "正在背景連接本機 Agent：已完成 {{completed}} / {{total}}。",
       "backgroundComplete": "已完成 {{total}} 個 Installation 的背景連接。",
       "backgroundTaskPosition": "工作 {{current}} / {{total}}",
       "backgroundTaskPinnedOutsidePage": "目前固定工作不在本頁，可瀏覽本頁工作",
-      "backgroundTaskActiveCount": "有 {{count}} 個背景工作正在執行或等待驗證",
-      "backgroundTaskAttentionCount": "有 {{count}} 個背景工作需要處理",
+      "backgroundTaskActiveCount": "Tide Mind 正在自動執行 {{count}} 個背景任務，無需你操作。",
+      "backgroundTaskAttentionCount": "{{count}} 個歷史任務有失敗或中斷記錄；是否需要處理，請以 Agent 目前狀態為準。",
       "backgroundTasksUpdated": "背景工作列表已更新",
       "backgroundTaskPageLoading": "正在載入背景工作",
       "backgroundTaskPageLoadFailed": "背景工作載入失敗",
@@ -1583,6 +1622,60 @@
         "awaitingReload": "Tide Mind 已移除自己的設定，並停止為此 Agent 提供記憶。已在執行的宿主可能仍保留舊元件，需重新啟動宿主或開新工作階段後才會卸載；未攜帶 generation 的舊入口不會被自動攔截。",
         "deactivatedVerified": "已驗證停用：設定已移除，且宿主已重新載入。",
         "bridgeStopped": "Tide Mind 已停止為此 Agent 提供記憶。宿主中的元件可能仍在載入，請在宿主中手動移除。"
+      },
+      "sharedConnectionScope": "CLI 與 Desktop 共用此連線。這裡的圖示表示共用設定及實際呼叫的狀態。",
+      "hostEvidenceScope": "同一份共用設定的 Skill 和 MCP Tools 使用連線的驗證結果；下方 Hook 事件仍依目前所選主機分別顯示。",
+      "disconnectConnection": "中斷整個連線",
+      "pauseMember": "暫停此應用程式",
+      "resumeMember": "恢復此應用程式",
+      "disconnectMember": "中斷此應用程式",
+      "disconnectConnectionTitle": "從所有已連線應用程式中斷 {{name}}？",
+      "disconnectConnectionDescription": "中斷共用此設定的所有應用程式，僅移除 Tide Mind 自有設定，保留其他設定和記憶。",
+      "retryAutomaticConnection": "重試設定",
+      "automaticRetryUnavailable": "目前無法自動設定，請先處理詳情中的問題，然後重試。",
+      "reviewNativePermissions": "查看外掛權限",
+      "authorizeNativeAndConnect": "授予這些權限並連線",
+      "nativePermissionVersion": "宿主版本：{{version}}",
+      "diagnostic": {
+        "title": "記憶讀寫驗證",
+        "scope": "僅使用已確認的訂閱額度，所有連線每天合計最多測試 3 次。測試資料與個人記憶分開。",
+        "retry": "重新執行模型驗證",
+        "checking": "正在驗證連線…",
+        "passed": "記憶讀寫驗證通過。",
+        "uncertain": "測試已提交，但結果尚未確認。請先檢查 Agent 是否正常；重試可能使用訂閱額度。",
+        "cancelled": "驗證已停止，準備好後可重試。",
+        "login": "請先在 Agent 中登入，再重試。",
+        "metered": "此連線採用按量計費，不自動呼叫模型測試。請在 Agent 中使用 Tide Mind 完成驗證。",
+        "billing": "尚不能確認訂閱計費，未提交模型測試。請在 Agent 中使用 Tide Mind 完成驗證。",
+        "dailyLimit": "今天已達到 3 次測試上限。請明天重試，或在 Agent 中使用 Tide Mind 完成驗證。",
+        "alreadyTested": "目前設定已自動測試過。請先檢查 Agent，再手動重試。",
+        "permission": "請檢查 Agent 原生工具權限，再重試。",
+        "unsupported": "此 Agent 版本或設定暫不支援自動測試。請在 Agent 中使用 Tide Mind，成功讀寫後會確認通過。",
+        "waiting": "等待驗證。可在 Agent 中使用 Tide Mind，或點選重試。",
+        "failed": "驗證未完成。請檢查 Agent 能否正常使用 Tide Mind，再重試。"
+      },
+      "authentication": {
+        "title": "Agent 登入檢查",
+        "recheck": "重新檢查登入",
+        "scope": "登入狀態不代表模型或 MCP Tools 已通過驗證。",
+        "status": {
+          "not_checked": "尚未檢查登入狀態",
+          "checking": "正在檢查登入狀態",
+          "authenticated": "已登入",
+          "explicitly_unauthenticated": "未登入。請先在此 Agent 中登入，再重新檢查。",
+          "unsupported": "此 Agent 暫不支援自動登入檢查。",
+          "unavailable": "暫時無法檢查。請確認 Agent 可正常使用後重試。",
+          "cancelled": "檢查已取消。請確認 Agent 可正常使用後重試。"
+        },
+        "billing": {
+          "confirmed_subscription": "已確認訂閱帳號。本次登入檢查不呼叫模型。",
+          "metered": "按量計費帳號。自動登入檢查不呼叫模型。",
+          "unknown": "計費方式尚未確認。自動登入檢查不呼叫模型。"
+        }
+      },
+      "nativePermissions": {
+        "gemini_extension": "安裝本機 Tide Mind 擴充功能：執行本機程式碼、載入記憶指令並連接 MCP Tools 與 Hook。這將確認 Gemini 的擴充功能安全提示。",
+        "openclaw_capabilities": "安裝並啟用本機 Tide Mind 外掛，允許讀取對話內容、向提示加入記憶內容，並重新啟動閘道。"
       }
     }
   },

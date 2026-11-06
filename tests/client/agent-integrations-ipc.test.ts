@@ -20,6 +20,7 @@ import {
   parseEventState,
   parseApplyTaskPageRequest,
   parseInstallationIds,
+  parseConnectionId,
   parsePlanHash,
   parseCustomRequest,
   customPathDialogOptions,
@@ -30,11 +31,20 @@ import { setAppLanguage, SUPPORTED_APP_LANGUAGES } from '../../client/electron/a
 const trustedEvent = { senderFrame: { url: 'file:///Applications/Tide%20Mind.app/Contents/Resources/renderer/index.html' } }
 const trustedOptions = { expectedRendererUrl: trustedEvent.senderFrame.url }
 let taskListener: ((task: Record<string, unknown>) => void) | null = null
+let stateListener: (() => void) | null = null
 
 function serviceMock() {
   return {
     reviewCodexLegacySelection:vi.fn(()=>({candidates:[]})),
     previewCodexLegacySelection:vi.fn(()=>({planHash:'a'.repeat(64)})),
+    retryAutomaticConnection: vi.fn(() => null),
+    recheckAuthentication: vi.fn(async () => ({ status: 'authenticated', billing: 'unknown', reason: 'billing_unconfirmed', checkedAt: null })),
+    recheckDiagnostic: vi.fn(async () => ({ status: 'waiting', reason: 'billing_unconfirmed', runId: null })),
+    reconnectAutomaticInstallation: vi.fn(() => null),
+    pauseConnection: vi.fn(() => ({ connections: [] })),
+    resumeConnection: vi.fn(() => ({ connections: [] })),
+    previewConnectionDisconnect: vi.fn(() => ({ planHash: 'a'.repeat(64) })),
+    disconnectConnection: vi.fn(() => ({ results: [] })),
     snapshot: vi.fn(() => ({ families: [] })),
     scan: vi.fn(() => ({ detectedCount: 0 })),
     previewConnect: vi.fn(() => ({ planHash: 'a'.repeat(64) })),
@@ -60,6 +70,10 @@ function serviceMock() {
       taskListener = listener
       return () => { taskListener = null }
     }),
+    onStateChanged: vi.fn((listener: () => void) => {
+      stateListener = listener
+      return () => { stateListener = null }
+    }),
     inbox: vi.fn(() => ({
       unreadCount: 0,
       actionableUnreadCount: 0,
@@ -78,6 +92,7 @@ function serviceMock() {
     markEventRead: vi.fn(() => true),
     markInstallationEventsRead: vi.fn(() => 1),
     componentTargetPath: vi.fn(() => '/Users/test/.zcode/skills/tidemind'),
+    retrySourceCheck: vi.fn(async () => ({ status: 'started' })),
     supportCatalog: vi.fn(() => []),
     previewCustomInstallation: vi.fn(() => ({ preflightHash: 'd'.repeat(64) })),
     prepareCustomConnect: vi.fn(() => ({ planHash: 'e'.repeat(64) })),
@@ -96,7 +111,25 @@ describe('agent integrations IPC contract', () => {
     electronMock.clipboard.writeText.mockClear()
     electronMock.shell.showItemInFolder.mockClear()
     taskListener = null
+    stateListener = null
     setAppLanguage('en')
+  })
+
+  it('invalidates trusted snapshot readers without sending state or account payloads', async () => {
+    const service = serviceMock()
+    registerAgentIntegrationHandlers(service as never, trustedOptions)
+    const snapshot = electronMock.handlers.get('agent-integrations:snapshot')!
+    let destroyed = false
+    const trustedSender = { send: vi.fn(), isDestroyed: () => destroyed }
+    const untrustedSender = { send: vi.fn(), isDestroyed: () => false }
+    await snapshot({ ...trustedEvent, sender: trustedSender })
+    await snapshot({ senderFrame: { url: 'https://untrusted.example' }, sender: untrustedSender })
+    stateListener!()
+    expect(trustedSender.send).toHaveBeenCalledExactlyOnceWith('agent-integration:state-changed')
+    expect(untrustedSender.send).not.toHaveBeenCalled()
+    destroyed = true
+    stateListener!()
+    expect(trustedSender.send).toHaveBeenCalledTimes(1)
   })
 
   it('maps native Custom Agent path dialogs from the main-process app locale', async () => {
@@ -147,6 +180,36 @@ describe('agent integrations IPC contract', () => {
     expect(service.previewCodexLegacySelection).toHaveBeenCalledTimes(1)
   })
 
+  it('validates the source retry target before forwarding it to the service', async () => {
+    const service = serviceMock()
+    registerAgentIntegrationHandlers(service as never, trustedOptions)
+    const retry = electronMock.handlers.get('agent-integrations:retry-source-check')!
+    expect(await retry(trustedEvent, { installationId: 'installation-1' })).toMatchObject({ error: 'invalid_arguments' })
+    expect(service.retrySourceCheck).not.toHaveBeenCalled()
+    expect(await retry(trustedEvent, 'installation-1')).toEqual({ status: 'started' })
+    expect(service.retrySourceCheck).toHaveBeenCalledWith('installation-1')
+  })
+
+  it('validates a login recheck target before starting any native process', async () => {
+    const service = serviceMock()
+    registerAgentIntegrationHandlers(service as never, trustedOptions)
+    const check = electronMock.handlers.get('agent-integrations:recheck-authentication')!
+    expect(await check(trustedEvent, { installationId: 'installation-1' })).toMatchObject({ error: 'invalid_arguments' })
+    expect(service.recheckAuthentication).not.toHaveBeenCalled()
+    expect(await check(trustedEvent, 'installation-1')).toMatchObject({ status: 'authenticated' })
+    expect(service.recheckAuthentication).toHaveBeenCalledWith('installation-1')
+  })
+
+  it('validates diagnostic retry IDs before any model test', async () => {
+    const service = serviceMock()
+    registerAgentIntegrationHandlers(service as never, trustedOptions)
+    const check = electronMock.handlers.get('agent-integrations:recheck-diagnostic')!
+    expect(await check(trustedEvent, { installationId: 'installation-1' })).toMatchObject({ error: 'invalid_arguments' })
+    expect(service.recheckDiagnostic).not.toHaveBeenCalled()
+    expect(await check(trustedEvent, 'installation-1')).toMatchObject({ status: 'waiting' })
+    expect(service.recheckDiagnostic).toHaveBeenCalledWith('installation-1')
+  })
+
   it('registers the complete frozen renderer channel surface', () => {
     registerAgentIntegrationHandlers(serviceMock() as never, trustedOptions)
     expect([...electronMock.handlers.keys()].sort()).toEqual([
@@ -157,6 +220,7 @@ describe('agent integrations IPC contract', () => {
       'agent-integrations:copy-custom-mcp-configuration',
       'agent-integrations:detail',
       'agent-integrations:disconnect',
+      'agent-integrations:disconnect-connection',
       'agent-integrations:get-apply-task',
       'agent-integrations:inbox',
       'agent-integrations:list-apply-tasks',
@@ -164,17 +228,25 @@ describe('agent integrations IPC contract', () => {
       'agent-integrations:mark-event-read',
       'agent-integrations:mark-installation-events-read',
       'agent-integrations:pause',
+      'agent-integrations:pause-connection',
       'agent-integrations:pick-custom-path',
       'agent-integrations:prepare-claude-cowork-setup',
       'agent-integrations:prepare-custom-connect',
       'agent-integrations:preview-claude-cowork-setup',
       'agent-integrations:preview-codex-legacy-selection',
       'agent-integrations:preview-connect',
+      'agent-integrations:preview-connection-disconnect',
       'agent-integrations:preview-custom-installation',
       'agent-integrations:preview-disconnect',
       'agent-integrations:preview-reset-auto-restore',
+      'agent-integrations:recheck-authentication',
+      'agent-integrations:recheck-diagnostic',
+      'agent-integrations:reconnect-automatic-installation',
       'agent-integrations:reset-auto-restore',
       'agent-integrations:resume',
+      'agent-integrations:resume-connection',
+      'agent-integrations:retry-automatic-connection',
+      'agent-integrations:retry-source-check',
       'agent-integrations:reveal-component-path',
       'agent-integrations:review-codex-hook-trust',
       'agent-integrations:review-codex-legacy-selection',
@@ -426,5 +498,23 @@ describe('agent integrations IPC contract', () => {
     expect(parseEventState('archived')).toEqual({ ok: true, data: 'archived' })
     expect(parseEventState('deleted').ok).toBe(false)
     expect(parseEventLimit(1_001).ok).toBe(false)
+  })
+})
+
+describe('shared connection action validation', () => {
+  it('accepts connection keys and rejects product names or malformed scope', () => {
+    expect(parseConnectionId('binding:binding-1')).toEqual({ ok: true, data: 'binding:binding-1' })
+    expect(parseConnectionId('installation:codex-cli')).toEqual({ ok: true, data: 'installation:codex-cli' })
+    for (const value of ['codex', 'binding:', 'binding:../outside', {}, null]) expect(parseConnectionId(value).ok).toBe(false)
+  })
+  it('passes only the validated connection scope to the trusted service', async () => {
+    const service = serviceMock()
+    registerAgentIntegrationHandlers(service as never, trustedOptions)
+    await electronMock.handlers.get('agent-integrations:pause-connection')!(trustedEvent, 'binding:shared')
+    expect(service.pauseConnection).toHaveBeenCalledWith('binding:shared')
+    await electronMock.handlers.get('agent-integrations:disconnect-connection')!(trustedEvent, 'a'.repeat(64), 'binding:shared')
+    expect(service.disconnectConnection).toHaveBeenCalledWith('a'.repeat(64), 'binding:shared')
+    await electronMock.handlers.get('agent-integrations:pause-connection')!(trustedEvent, 'codex')
+    expect(service.pauseConnection).toHaveBeenCalledTimes(1)
   })
 })

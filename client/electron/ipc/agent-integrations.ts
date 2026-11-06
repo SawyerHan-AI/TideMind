@@ -113,13 +113,23 @@ type AgentIntegrationServicePort = Pick<AgentIntegrationService,
   | 'previewCodexLegacySelection'
   | 'snapshot'
   | 'scan'
+  | 'retrySourceCheck'
+  | 'recheckAuthentication'
+  | 'recheckDiagnostic'
   | 'previewConnect'
   | 'applyConnect'
   | 'startApplyConnect'
   | 'getApplyTask'
   | 'listApplyTasks'
   | 'onApplyTaskProgress'
+  | 'onStateChanged'
   | 'inbox'
+  | 'previewConnectionDisconnect'
+  | 'disconnectConnection'
+  | 'reconnectAutomaticInstallation'
+  | 'retryAutomaticConnection'
+  | 'pauseConnection'
+  | 'resumeConnection'
   | 'pause'
   | 'resume'
   | 'previewResetAutoRestore'
@@ -194,6 +204,14 @@ export function registerAgentIntegrationHandlers(
   } = {},
 ): void {
   const taskSubscribers = new Map<string, NonNullable<InvokeEventLike['sender']>>()
+  const stateSubscribers = new Set<NonNullable<InvokeEventLike['sender']>>()
+  service.onStateChanged(() => {
+    for (const sender of stateSubscribers) {
+      if (sender.isDestroyed?.()) { stateSubscribers.delete(sender); continue }
+      try { sender.send('agent-integration:state-changed') }
+      catch { stateSubscribers.delete(sender) }
+    }
+  })
   service.onApplyTaskProgress(task => {
     const sender = taskSubscribers.get(task.id)
     if (!sender || sender.isDestroyed?.()) {
@@ -206,8 +224,18 @@ export function registerAgentIntegrationHandlers(
   const trusted = <T>(event: InvokeEventLike, action: () => T) => (
     requireTrustedRenderer(event, options.expectedRendererUrl, action)
   )
-  ipcMain.handle('agent-integrations:snapshot', event => trusted(event, () => service.snapshot()))
+  ipcMain.handle('agent-integrations:snapshot', event => trusted(event, () => {
+    // A trusted snapshot reader is already entitled to these payload-free
+    // invalidations. No second subscription authority or task identity is needed.
+    if (event.sender && !event.sender.isDestroyed?.()) stateSubscribers.add(event.sender)
+    return service.snapshot()
+  }))
   ipcMain.handle('agent-integrations:scan', event => trusted(event, () => service.scan()))
+  ipcMain.handle('agent-integrations:retry-source-check', (event, id: unknown) => trusted(event, () => {
+    const parsed = parseInstallationIds([id])
+    if (!parsed.ok) return parsed.error
+    return service.retrySourceCheck(parsed.data[0])
+  }))
   ipcMain.handle('agent-integrations:preview-connect', (
     event,
     ids: unknown,
@@ -284,6 +312,31 @@ export function registerAgentIntegrationHandlers(
     const parsedLimit = parseEventLimit(limit)
     if (!parsedLimit.ok) return parsedLimit.error
     return service.inbox(parsedLimit.data)
+  }))
+  ipcMain.handle('agent-integrations:preview-connection-disconnect', (event, id: unknown) => trusted(event, () => {
+    const parsed = parseConnectionId(id)
+    return parsed.ok ? service.previewConnectionDisconnect(parsed.data) : parsed.error
+  }))
+  ipcMain.handle('agent-integrations:disconnect-connection', (event, hash: unknown, id: unknown) => trusted(event, () => {
+    const parsedHash = parsePlanHash(hash)
+    if (!parsedHash.ok) return parsedHash.error
+    const parsed = parseConnectionId(id)
+    return parsed.ok ? service.disconnectConnection(parsedHash.data, parsed.data) : parsed.error
+  }))
+  ipcMain.handle('agent-integrations:recheck-authentication', (event, id: unknown) => trusted(event, () => delegateId(id, value => service.recheckAuthentication(value))))
+  ipcMain.handle('agent-integrations:recheck-diagnostic', (event, id: unknown) => trusted(event, () => delegateId(id, value => service.recheckDiagnostic(value))))
+  ipcMain.handle('agent-integrations:reconnect-automatic-installation', (event, id: unknown) => trusted(event, () => delegateId(id, value => service.reconnectAutomaticInstallation(value))))
+  ipcMain.handle('agent-integrations:retry-automatic-connection', (event, id: unknown) => trusted(event, () => {
+    const parsed = parseConnectionId(id)
+    return parsed.ok ? service.retryAutomaticConnection(parsed.data) : parsed.error
+  }))
+  ipcMain.handle('agent-integrations:pause-connection', (event, id: unknown) => trusted(event, () => {
+    const parsed = parseConnectionId(id)
+    return parsed.ok ? service.pauseConnection(parsed.data) : parsed.error
+  }))
+  ipcMain.handle('agent-integrations:resume-connection', (event, id: unknown) => trusted(event, () => {
+    const parsed = parseConnectionId(id)
+    return parsed.ok ? service.resumeConnection(parsed.data) : parsed.error
   }))
   ipcMain.handle('agent-integrations:pause', (event, id: unknown) => trusted(event, () => delegateId(id, value => service.pause(value))))
   ipcMain.handle('agent-integrations:resume', (event, id: unknown) => trusted(event, () => delegateId(id, value => service.resume(value))))
@@ -510,6 +563,13 @@ function parseAbsoluteLocalPath(value: unknown, field: string): ValidationResult
 function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
   const actual = Object.keys(value).sort()
   return JSON.stringify(actual) === JSON.stringify([...expected].sort())
+}
+
+export function parseConnectionId(value: unknown): ValidationResult<string> {
+  if (typeof value !== 'string' || !/^(?:binding|installation):[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value)) {
+    return invalid('connectionId is invalid')
+  }
+  return valid(value)
 }
 
 export function parseInstallationId(value: unknown): ValidationResult<string> {

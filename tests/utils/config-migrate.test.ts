@@ -11,6 +11,10 @@ import os from 'node:os';
 import { migrateConfigIfNeeded } from '../../src/utils/config-migrate.js';
 import type { Logger } from '../../src/utils/logger.js';
 
+vi.mock('../../src/db/pre-migration.js', () => ({
+  migrateExistingDatabaseIfNeeded: vi.fn(),
+}));
+
 // migrateConfigIfNeeded 接收 logger 参数,不依赖 createLogger,因此无需 vi.mock
 function makeLog(): Logger {
   return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };

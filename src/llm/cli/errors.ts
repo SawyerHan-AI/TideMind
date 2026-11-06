@@ -38,6 +38,25 @@ export class CliLLMError extends Error {
   }
 }
 
+export const CLI_PROCESS_EXIT_UNCONFIRMED = 'process_exit_unconfirmed';
+
+export class CliProcessExitUnconfirmedError extends CliLLMError {
+  constructor() {
+    super('process_crash', 'CLI process group survived cleanup');
+  }
+}
+
+/** Adapter and service errors retain the original cleanup failure in their cause. */
+export function hasUnconfirmedCliProcessExit(error: unknown): boolean {
+  const seen = new Set<Error>();
+  while (error instanceof Error && !seen.has(error)) {
+    if (error instanceof CliProcessExitUnconfirmedError) return true;
+    seen.add(error);
+    error = error.cause;
+  }
+  return false;
+}
+
 /**
  * Provider refusals that the CLI reported explicitly (exit code + recognized error
  * text): the request was rejected, no generation result exists, and retrying later

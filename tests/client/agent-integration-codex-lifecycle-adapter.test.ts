@@ -128,6 +128,36 @@ describe('Codex lifecycle Host Adapter', () => {
     await expect(verifyCodexHookTrustAction(context,plan.requiredUserActionDetails![0] as never,port)).resolves.toMatchObject({trusted:true})
   })
 
+  it('updates an exactly owned five-hook recipe across operation and runtime-path changes', async () => {
+    const adapter = createAdapter('codex-cli')
+    const initial = await adapter.plan(context, await request(adapter))
+    await adapter.apply(context, initial.mutations[0])
+    const next = { ...context, activityGenerationToken: 'generation-next',
+      runtime: { ...context.runtime, hookScriptPath: path.join(tempDir, 'new-runtime', 'hook-session-start.cjs') } }
+    const hash = initial.mutations[0].desiredFragmentHash!
+    expect((await adapter.inspect(next)).components[0].observedFragmentHash).toBe(hash)
+    const plan = await adapter.plan(next, await request(adapter, [ownedBaseline(hash)], next))
+    expect(plan.diagnostics).toEqual([])
+    expect(plan.mutations).toHaveLength(1)
+    await adapter.apply(next, plan.mutations[0])
+    expect(await adapter.readBack(next, plan.mutations[0])).toMatchObject({ matchesDesired: true })
+    expect(Object.values(readHooks().hooks as object).every(entries => entries.length === 1)).toBe(true)
+  })
+
+  it('preserves a user-modified owned five-hook recipe across a new generation', async () => {
+    const adapter = createAdapter('codex-cli')
+    const initial = await adapter.plan(context, await request(adapter))
+    await adapter.apply(context, initial.mutations[0])
+    const document = readHooks() as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> }
+    document.hooks.SessionStart[0].hooks[0].command += ' --user-custom-option'
+    fs.writeFileSync(hooksFile, JSON.stringify(document))
+    const before = fs.readFileSync(hooksFile, 'utf8')
+    const next = { ...context, activityGenerationToken: 'generation-next' }
+    await expect(adapter.plan(next, await request(adapter,
+      [ownedBaseline(initial.mutations[0].desiredFragmentHash!)], next))).rejects.toThrow(/modified/)
+    expect(fs.readFileSync(hooksFile, 'utf8')).toBe(before)
+  })
+
   it('binds an exact four-to-five recipe proof to owned old bytes across a new generation', async () => {
     const adapter=createAdapter('codex-cli')
     const created=await adapter.plan(context,await request(adapter))

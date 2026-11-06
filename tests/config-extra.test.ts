@@ -19,6 +19,7 @@ let tmpDir: string;
 beforeEach(() => {
   resetConfigCache();
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-config-extra-'));
+  loadConfig(path.join(tmpDir, 'missing-config.toml'));
 });
 
 afterEach(() => {

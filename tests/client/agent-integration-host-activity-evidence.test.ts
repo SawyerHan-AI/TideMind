@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import Database from 'better-sqlite3'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   SqliteHostActivityEvidenceReader,
   verifyHostActivity,
@@ -45,8 +45,8 @@ afterEach(() => {
   while (roots.length > 0) fs.rmSync(roots.pop()!, { recursive: true, force: true })
 })
 
-function setup(componentKey: 'memory_tools' | 'lifecycle' = 'memory_tools') {
-  const db = new Database(':memory:')
+function setup(componentKey: 'memory_tools' | 'lifecycle' = 'memory_tools', filename = ':memory:') {
+  const db = new Database(filename)
   databases.push(db)
   ensureSchema(db)
   db.prepare(`
@@ -187,6 +187,38 @@ function verificationRequest(
 }
 
 describe('managed host activity evidence', () => {
+  it('reserves the evidence write before reading when another connection writes concurrently', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'activity-write-race-')); roots.push(root)
+    const filename = path.join(root, 'brain.sqlite'); const db = setup('lifecycle', filename)
+    const other = new Database(filename, { timeout: 0 }); databases.push(other)
+    const prepare = db.prepare.bind(db); let attempted = false; let blocked = false
+    const spy = vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+      const statement = prepare(sql)
+      if (!sql.includes('sqlite_master')) return statement
+      return new Proxy(statement, {
+        get(target, key) {
+          if (key === 'get') return (...args: unknown[]) => {
+            const result = target.get(...args)
+            if (db.inTransaction && !attempted) {
+              attempted = true
+              try { other.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('concurrent_probe','1')").run() }
+              catch (error) { blocked = String((error as {code?: string}).code).startsWith('SQLITE_BUSY') }
+            }
+            return result
+          }
+          const value = Reflect.get(target, key, target)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      })
+    })
+    try {
+      expect(recordHookActivityEvidence(db, { agentId: AGENT_ID, tool: 'cursor', signalName: 'pre_compact', tideMindVersion: '0.2.89', observedAt: T1 }))
+        .toMatchObject({ status: 'recorded' })
+      expect(attempted).toBe(true); expect(blocked).toBe(true)
+      expect(() => other.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('concurrent_probe','2')").run()).not.toThrow()
+    } finally { spy.mockRestore() }
+  })
+
   it('records only the latest successful invocation in the local integration table', () => {
     const db = setup()
     const first = recordHostActivityEvidence(db, {

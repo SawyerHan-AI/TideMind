@@ -182,6 +182,15 @@ describe('release script helpers', () => {
     expect(() => resolveUpdatePreviousVersions('0.2.93', '0.2.90')).toThrow(/all are always verified/);
   });
 
+  it('keeps the published 0.2.94 contract and adds that upgrade origin to 0.2.95', () => {
+    const historicalOrigins = ['0.2.89', '0.2.90', '0.2.91', '0.2.92', '0.2.93'];
+    expect(resolveUpdatePreviousVersions('0.2.94')).toEqual(historicalOrigins);
+    expect(resolveUpdatePreviousVersions('0.2.95', '0.2.94')).toEqual([...historicalOrigins, '0.2.94']);
+    expect(() => resolveUpdatePreviousVersions('0.2.94', '0.2.94')).toThrow(/all are always verified/);
+    expect(releaseMacArchitectures('0.2.94')).toEqual(['arm64']);
+    expect(releaseMacArchitectures('0.2.95')).toEqual(['arm64']);
+  });
+
   it('rejects a stale local or remote release tag before external release writes', () => {
     const base = {
       localTagHead: '',

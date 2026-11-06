@@ -172,7 +172,7 @@ export async function runPreparedCodexUpgrade(options, { fromAppVersion, profile
     if(report.migrationScope==='configured_host')check(report.installationId!==null,'configured upgrade did not retain an Installation')
     report.comparison=compareUpgradeObservations(before,after,originalAgentId,'codex-desktop')
     for(const table of ['agents','nodes','node_versions','operation_log','timeline_events','links','llm_usage_log']) if(before.tables[table]?.present)check(after.comparison?.[table]?.beforeRowsRetained===true,`prior ${table} rows were not preserved`)
-    check(after.schema.schema_version==='45'&&after.schema.schema_lineage==='stable-0.2.94','candidate schema/lineage mismatch')
+    check(after.schema.schema_version==='47'&&after.schema.schema_lineage==='stable-0.2.94','candidate schema/lineage mismatch')
     check(report.comparison.nonzeroSyntheticUsageHistoryExercised,'nonzero statistics not exercised')
     if(report.migrationScope==='configured_host')report.newConfigurationBindings=targetConfigurationBindings(profile,report.oldConfigurationBindings.map(item=>item.path),originalAgentId,'codex-desktop')
     let refused=false

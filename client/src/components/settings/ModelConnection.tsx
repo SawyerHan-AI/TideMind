@@ -9,6 +9,7 @@ import { useIPC } from '../../hooks/useIPC'
 import { Section, Field, inputClass, ComingSoonBadge } from './shared'
 import { safeJsonParse } from '../../lib/json'
 import { CliModelCatalogPanel } from './CliModelCatalogPanel'
+import { ConfirmDialog } from '../shared/ConfirmDialog'
 
 // ============================================================
 // Provider 类型定义
@@ -56,6 +57,9 @@ interface Connection {
   provider_type: string
   credentials: string
   status: string
+  cli_model_count?: number | null
+  cli_catalog_outdated?: boolean
+  health_error?: string | null
   available_models: string | null
   last_checked: string | null
   source_type?: 'cloud_service' | 'local_subscription' | 'local_model'
@@ -183,6 +187,12 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
   const [testResult, setTestResult] = useState<TestResultView | null>(null)
   const [catalogRefreshKey, setCatalogRefreshKey] = useState(0)
   const [checkingEnvironment, setCheckingEnvironment] = useState(false)
+  const [showResumeConfirmation, setShowResumeConfirmation] = useState(false)
+  const [resuming, setResuming] = useState(false)
+  const [resumeFeedback, setResumeFeedback] = useState<'succeeded' | 'busy' | 'process' | 'environment' | 'failed' | null>(null)
+  const resumeInFlight = useRef(false)
+  const canResumeFutureCalls = isCli && conn.status === 'ambiguous'
+  const cliBusy = testing || checkingEnvironment || resuming
   const [environmentResult, setEnvironmentResult] = useState<{
     status: string
     capabilityStatus?: string
@@ -400,6 +410,36 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
     await window.api.connections.cancelTest(conn.id)
   }
 
+  const handleResumeFutureCalls = async () => {
+    if (!canResumeFutureCalls || cliBusy || resumeInFlight.current) return
+    resumeInFlight.current = true
+    setShowResumeConfirmation(false)
+    setResumeFeedback(null)
+    setResuming(true)
+    try {
+      const result = await window.api.connections.resumeFutureCalls(conn.id, true)
+      if (result.status === 'untested') {
+        setEnvironmentResult(null)
+        setCatalogRefreshKey(key => key + 1)
+        setResumeFeedback('succeeded')
+      } else if (result.reason === 'operation_in_progress' || result.reason === 'previous_work_active') {
+        setResumeFeedback('busy')
+      } else if (result.reason === 'process_exit_unconfirmed') {
+        setResumeFeedback('process')
+      } else if (['environment_check_failed', 'binding_unconfirmed', 'binding_changed'].includes(result.reason)) {
+        setResumeFeedback('environment')
+      } else {
+        setResumeFeedback('failed')
+      }
+    } catch {
+      setResumeFeedback('failed')
+    } finally {
+      resumeInFlight.current = false
+      setResuming(false)
+      onRefresh()
+    }
+  }
+
   const handleArchive = async () => {
     await window.api.connections.archive(conn.id)
     onRefresh()
@@ -476,7 +516,7 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
       {isCli && (
         <CliModelCatalogPanel
           connectionId={conn.id}
-          busy={testing || checkingEnvironment}
+          busy={cliBusy}
           refreshKey={catalogRefreshKey}
           onTest={models => { void handleTest(models) }}
         />
@@ -558,10 +598,18 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
           {t('model.connection.save')}
         </button>}
         {isCli && (
-          <button onClick={handleCheckEnvironment} disabled={checkingEnvironment || testing || !window.api.connections.checkEnvironment}
+          <button onClick={handleCheckEnvironment} disabled={cliBusy || !window.api.connections.checkEnvironment}
             className="flex items-center gap-2 px-3 py-1.5 text-xs bg-white/5 hover:bg-white/10 rounded-lg text-gray-300 transition-colors disabled:opacity-50">
             {checkingEnvironment && <Loader2 size={12} className="animate-spin" />}
             {t('model.connection.checkEnvironment')}
+          </button>
+        )}
+        {canResumeFutureCalls && (
+          <button type="button" onClick={() => setShowResumeConfirmation(true)}
+            disabled={cliBusy || !window.api.connections.resumeFutureCalls}
+            className="flex items-center gap-2 px-3 py-1.5 text-xs bg-amber-500/10 hover:bg-amber-500/20 rounded-lg text-amber-300 transition-colors disabled:opacity-50">
+            {resuming && <Loader2 size={12} className="animate-spin" />}
+            {t('model.connection.resumeFutureCalls')}
           </button>
         )}
         {/* CLI 连接的测试目标在模型目录面板中明确选择；这里只保留取消入口。 */}
@@ -572,14 +620,29 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
             {testing && isCli ? t('model.connection.cancelTest') : t('model.connection.testConnection')}
           </button>
         )}
-        <button onClick={handleArchive}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded-lg transition-colors">
+        <button onClick={handleArchive} disabled={resuming}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded-lg transition-colors disabled:opacity-50">
           <Archive size={11} /> {t('model.connection.archive')}
         </button>
         {saved && (
           <span className="flex items-center gap-1 text-[10px] text-emerald-400"><Check size={10} /> {t('model.connection.saved')}</span>
         )}
       </div>
+      {resumeFeedback && (
+        <p role={resumeFeedback === 'succeeded' ? 'status' : 'alert'}
+          className={resumeFeedback === 'succeeded' ? 'text-xs text-emerald-400' : 'text-xs text-red-300'}>
+          {t(`model.connection.resumeFutureCallsFeedback.${resumeFeedback}`)}
+        </p>
+      )}
+      <ConfirmDialog
+        open={showResumeConfirmation && canResumeFutureCalls}
+        onCancel={() => setShowResumeConfirmation(false)}
+        onConfirm={() => { void handleResumeFutureCalls() }}
+        confirmDisabled={cliBusy}
+        title={t('model.connection.resumeFutureCalls')}
+        description={t('model.connection.resumeFutureCallsDescription')}
+        confirmText={t('model.connection.resumeFutureCalls')}
+      />
 
       {progress && (
         <div className="space-y-1.5">
@@ -803,6 +866,7 @@ export function ModelConnection() {
   const fetchConfig = useCallback(() => window.api.config.get(), [])
   const fetchProviderCatalog = useCallback(() => window.api.connections.providerCatalog(), [])
   const { data: connections, refetch: refetchConnections } = useIPC(fetchConnections)
+  useEffect(() => window.api.llm.onHealthChanged(() => { void refetchConnections() }), [refetchConnections])
   const { data: config } = useIPC(fetchConfig)
   const { data: providerCatalog } = useIPC(fetchProviderCatalog)
   const providerTypes = useMemo<ProviderTypeDef[]>(() => (
@@ -842,6 +906,7 @@ export function ModelConnection() {
   }
 
   const getStatusInfo = (conn: Connection) => {
+    if (conn.health_error) return { color: 'bg-amber-400', textColor: 'text-amber-400', label: t('model.serviceStatus.needsAttention') }
     if (conn.status === 'online') return { color: 'bg-emerald-400', textColor: 'text-emerald-400', label: t('model.connection.status.online') }
     if (conn.status === 'degraded') return { color: 'bg-amber-400', textColor: 'text-amber-400', label: t('model.connection.status.degraded') }
     if (conn.status === 'testing' || conn.status === 'checking') return { color: 'bg-indigo-400', textColor: 'text-indigo-300', label: t(`model.connection.status.${conn.status}`) }
@@ -911,8 +976,12 @@ export function ModelConnection() {
                       <div className={`w-2 h-2 rounded-full ${status.color}`} />
                       <span className={`text-xs ${status.textColor}`}>{status.label}</span>
                     </div>
-                    <span className="text-xs text-gray-400 tabular-nums">
-                      {models.length > 0 ? t('model.connection.modelCount', { count: models.length }) : '-'}
+                    <span className="text-xs text-gray-400 tabular-nums"
+                      title={connIsCli && conn.cli_catalog_outdated ? t('model.catalog.outdated') : undefined}>
+                      {connIsCli ? (conn.cli_model_count == null ? '—' : t('model.connection.modelCount', { count: conn.cli_model_count })) : models.length > 0 ? t('model.connection.modelCount', { count: models.length }) : '-'}
+                      {connIsCli && conn.cli_catalog_outdated && (
+                        <span className="block truncate text-[10px] text-amber-300">{t('model.connection.catalogOutdatedShort')}</span>
+                      )}
                     </span>
                     <div className="flex gap-1">
                       {usages.map(u => (

@@ -62,7 +62,7 @@ export class SqliteHostActivityEvidenceReader implements HostActivityEvidenceRea
         AND evidence.projection_version = ?
         AND evidence.host_version = ?
         AND activation_run.operation_type != 'disconnect'
-        AND activation_run.state IN ('applied_unverified','verified','committed')
+        AND (activation_run.state IN ('applied_unverified','verified','committed') OR (activation_run.state='cancelled' AND activation_run.failure_code='superseded_by_same_generation_repair'))
         AND activation_run.consent_envelope_id = installation.consent_envelope_id
         AND activation_run.adapter_version = evidence.adapter_version
         AND activation_run.projection_version = evidence.projection_version

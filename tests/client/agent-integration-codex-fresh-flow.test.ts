@@ -9,21 +9,25 @@ import Database from 'better-sqlite3'
 import { parse } from 'smol-toml'
 import { ensureSchema } from '../../src/db/schema'
 import { evaluateBridgeAdmission } from '../../src/agent-bridge-guard'
+import { recordHookActivityEvidence } from '../../src/db/agent-host-activity'
 import { bindAgentIntegrationExecutionPort,createProductionAgentIntegrationComposition } from '../../client/electron/agent-integration/production-service'
 import { createOfficialCodexHooksPort } from '../../client/electron/agent-integration/hosts/codex-lifecycle-adapter'
 import { createP0HostAdapters } from '../../client/electron/agent-integration/hosts/p0-adapter-registry'
 import { canonicalizeInstallationIdentity } from '../../client/electron/agent-integration/identity'
 import { CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,MAX_CLI_EXECUTABLE_PROOF_BYTES } from '../../client/electron/agent-integration/discovery'
-import type { AdapterRuntimeContext } from '../../client/electron/agent-integration/types'
+import type { AdapterRuntimeContext, CatalogId } from '../../client/electron/agent-integration/types'
 
 describe('Fresh Codex domain through production service',()=>{
  it.each([
+  ['codex-cli','automatic-batch'], ['codex-cli','automatic-native-trust'], ['codex-cli','automatic-native-trust-peer'], ['codex-cli','automatic-native-trust-none'], ['codex-cli','automatic-late-peer'], ['codex-cli','automatic-repair'], ['codex-cli','automatic-repair-peer-source'], ['codex-cli','automatic-repair-peer-revoked'],
+  ['codex-cli','automatic-native-trust-probe-uncertain'],
+  ['codex-cli','whole-disconnect'], ['codex-desktop','whole-disconnect'], ['codex-cli','whole-disconnect-pause-race'], ['codex-cli','whole-disconnect-drift'], ['codex-cli','whole-disconnect-member-pause-race'],
   ...['source-noop','source-noop-partial','source-noop-drift','source-noop-different-source'].map(mode=>['codex-desktop',mode] as const),
   ['codex-cli','reconnect-batch-disconnect-fence'],
   ['codex-cli','reconnect-batch-recovery-disconnect'],
   ...['verify','partial','drift'].map(mode=>['codex-cli','reconnect-batch-recovery-'+mode] as const),
   ['codex-cli','reconnect-batch'],['codex-desktop','reconnect-batch'],['codex-cli','reconnect-batch-drift'],['codex-cli','reconnect-batch-pending-history'],['codex-cli','applied-pending'],['codex-cli','applied-pending-drift'],['codex-cli','applied-pending-readback-error'],['codex-cli','applied-pending-error-revoke'],['codex-cli','applied-pending-source'],['codex-cli','applied-pending-authorization-race'],['codex-cli','applied-pending-revoke'],['codex-cli','applied-pending-disconnect'],['codex-cli','applied-pending-manual'],['codex-cli','applied-healthy'],['codex-cli','native-trust-confirm'],['codex-cli','native-trust-confirm-drift'],['codex-cli','native-trust-join'],['codex-cli','native-trust-join-paused'],['codex-cli','native-trust-join-no-current-run'],['codex-cli','native-trust-join-revoked'],['codex-cli','native-trust-join-component-consent'],['codex-cli','reconnect-batch-profile'],['codex-cli','reconnect-batch-realm'],['codex-cli','reconnect-batch-root'],['codex-cli',false],['codex-desktop',false],['codex-cli',true],['codex-desktop',true],
-  ['codex-cli','batch'],['codex-desktop','batch'],['codex-cli','batch-drift'],['codex-cli','removed'],['codex-desktop','disabled'],['codex-desktop','old-unbound'],['codex-desktop','old-unbound-incomplete'],['codex-cli','competing'],['codex-cli','different-root'],['codex-cli','unknown-carrier'],
+  ['codex-desktop','native-trust-join'],['codex-cli','batch'],['codex-desktop','batch'],['codex-cli','batch-drift'],['codex-cli','removed'],['codex-desktop','disabled'],['codex-desktop','old-unbound'],['codex-desktop','old-unbound-incomplete'],['codex-cli','competing'],['codex-cli','different-root'],['codex-cli','unknown-carrier'],
  ] as const)('connects %s first, late discovery %s, without legacy seeds',async(first,late)=>{
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'codex-shared-flow-')))
   const home=path.join(root,'home'),configRoot=path.join(home,'.codex'),appData=path.join(root,'app-data')
@@ -36,9 +40,16 @@ describe('Fresh Codex domain through production service',()=>{
    postCompactScriptPath:path.join(root,'bin','post.cjs'),tideMindVersion:'0.2.94-test',catalogVersion:'1',projectionVersion:'1'}
 
   const adapters=createP0HostAdapters({codexHooksPort:createOfficialCodexHooksPort({managedPolicyPaths:[]})})
+  const unavailableHosts=new Set<CatalogId>()
   const composition=createProductionAgentIntegrationComposition(db,{homeDir:home,applicationDataDir:appData,runtimeContext:runtime,
     adapters,enabledAdapterIds:['codex-cli','codex-desktop'],observeOnly:false,startRuntime:false,fixtureMode:'isolated_ui_audit',
-    canManageInstallation:()=>true,scanner:{scan:async()=>({installations:[],unresolved:[],diagnostics:[]})},notifications:{deliver:vi.fn()}})
+    automaticConnections:String(late).startsWith('automatic-'), canManageInstallation:()=>true,scanner:{scan:async()=>({
+      installations:String(late).startsWith('automatic-')?[...discoveredIdentities.entries()].filter(([,identity])=>!unavailableHosts.has(identity.hostVariant)).map(([id,identity])=>{
+        const row=composition.repository.getInstallation(id)!
+        return {catalogId:identity.hostVariant,displayName:'Codex',identity,configRoot:identity.canonicalConfigRoot,
+          executablePath:identity.distribution.executableRealpath!,detectedVersion:row.detected_version!,
+          provenance:['fixture'],evidence:[],managementEligibility:JSON.parse(row.metadata_json).managementEligibility}
+      }):[],unresolved:unavailableHosts.size?[{catalogIds:[...unavailableHosts],reason:'probe_inaccessible',summary:'fixture passive proof timeout',evidence:[]}]:[],diagnostics:[]})},notifications:{deliver:vi.fn()}})
   const unbind=bindAgentIntegrationExecutionPort(composition.coordinator)
   const discoveredIdentities=new Map<string,ReturnType<typeof canonicalizeInstallationIdentity>>()
   const discover=(variant:'codex-cli'|'codex-desktop',domainRoot=configRoot,versionOverride?:string,provenanceOverride?:string)=>{
@@ -61,8 +72,161 @@ describe('Fresh Codex domain through production service',()=>{
     const reconnectBatch=String(late).startsWith('reconnect-batch')
     const options=(ids:string[])=>(reconnectBatch || String(late).startsWith('applied-') || String(late).startsWith('native-trust-') || String(late).startsWith('source-noop'))?undefined:{withoutLifecycleInstallationIds:ids}
     discover(first)
-    if(String(late).startsWith('source-noop') || reconnectBatch || late===false || late==='competing' || String(late).startsWith('batch'))discover(second)
+    if((String(late).startsWith('automatic-') && late!=='automatic-late-peer') || String(late).startsWith('whole-disconnect') || String(late).startsWith('source-noop') || reconnectBatch || late===false || late==='competing' || String(late).startsWith('batch'))discover(second)
     expect(fs.existsSync(configRoot)).toBe(false)
+    if(String(late).startsWith('automatic-')) {
+      await composition.service.scan()
+      await vi.waitFor(()=>expect(composition.service.listApplyTasks().tasks.filter(task=>task.state==='running')).toHaveLength(0),{timeout:5000})
+      expect(composition.repository.getInstallation(first)?.desired_state,JSON.stringify(composition.service.listApplyTasks())).toBe('managed')
+      if(late==='automatic-late-peer') {
+        discover(second)
+        const maintenance = composition.runtime.markScanCompleted.bind(composition.runtime)
+        let release!: () => void, entered=false
+        const gate=new Promise<void>(resolve=>{release=resolve})
+        vi.spyOn(composition.runtime,'markScanCompleted').mockImplementationOnce(async()=>{entered=true;await gate;await maintenance()})
+        const scan=composition.service.scan()
+        try {
+          await vi.waitFor(()=>expect(entered).toBe(true))
+          expect(composition.repository.getInstallation(second)?.desired_state).toBe('unmanaged')
+          expect(db.prepare("SELECT COUNT(*) n FROM agent_integration_events WHERE kind='automatic_connection_failure_attempt'").get()).toEqual({n:0})
+        } finally {release();await scan}
+        await vi.waitFor(()=>expect(composition.service.listApplyTasks().tasks.filter(task=>task.state==='running')).toHaveLength(0),{timeout:5000})
+      }
+      expect(composition.repository.getInstallation(second)?.desired_state).toBe('managed')
+      expect(db.prepare("SELECT COUNT(*) n FROM agent_consents WHERE authorization_origin='default_auto_policy'").get()).toEqual({n:2})
+      expect(composition.service.snapshot().connections).toHaveLength(1)
+      expect(composition.service.snapshot().connections[0].components.find(component=>component.key==='lifecycle')?.state).toBe('confirmation_required')
+      expect(composition.service.snapshot().connections[0].attentionReason).toBe('host_confirmation')
+      if(String(late).startsWith('automatic-native-trust')) {
+        await composition.service.scan()
+        const reviewTrust=vi.spyOn(composition.service,'reviewCodexHookTrust')
+        const confirmTrust=vi.spyOn(composition.service,'confirmCodexHookTrust')
+        if(late==='automatic-native-trust-peer'){
+          const adapter=adapters.get(first)!
+          const plan=adapter.plan.bind(adapter)
+          vi.spyOn(adapter,'plan').mockImplementation(async (context,request)=>{
+            const planned=await plan(context,request)
+            if(request.desiredComponents.length!==1 || request.desiredComponents[0]!=='lifecycle') return planned
+            return {...planned,mutations:[],diagnostics:['fixture_lifecycle_plan_unavailable'],
+              requiredUserActions:[],requiredUserActionDetails:[]}
+          })
+        }
+        const row=composition.repository.getInstallation(first)!
+        const run=db.prepare("SELECT prepared_plan_json FROM reconcile_runs WHERE installation_id=? AND operation_type='connect'").get(first) as {prepared_plan_json:string}
+        const token=JSON.parse(run.prepared_plan_json).activityGenerationToken
+        const hooks=await createOfficialCodexHooksPort({managedPolicyPaths:[]}).list({runtime,
+          installation:discoveredIdentities.get(first)!,installationId:first,agentId:row.agent_id,
+          operationId:'auto-trust-fixture',hostVersion:row.detected_version!,activityGenerationToken:token})
+        const file=path.join(configRoot,'config.toml')
+        const beforeTrust=fs.readFileSync(file)
+        if(late!=='automatic-native-trust-none'){
+          fs.appendFileSync(file,'\n'+hooks.hooks.map(hook=>'[hooks.state.'+JSON.stringify(hook.key)+']\ntrusted_hash = '+JSON.stringify(hook.currentHash)+'\n').join('\n'))
+        }
+        const before=fs.readFileSync(file)
+        await composition.service.scan()
+        expect(reviewTrust.mock.calls.map(([id])=>id)).toEqual(
+          late==='automatic-native-trust-peer' || late==='automatic-native-trust-none' ? [first,second] : [first])
+        expect(confirmTrust).toHaveBeenCalledTimes(late==='automatic-native-trust-none'?2:1)
+        const receipts=db.prepare("SELECT installation_id FROM agent_integration_events WHERE kind='codex_hook_trust_verified'").all()
+        expect(receipts).toEqual(late==='automatic-native-trust-none'?[]:[{installation_id:late==='automatic-native-trust-peer'?second:first}])
+        expect(fs.readFileSync(file)).toEqual(before)
+        await composition.runtime.runMaintenance()
+        expect(composition.service.snapshot().connections[0].components.find(component=>component.key==='lifecycle')).toMatchObject({
+          hostRecognitionVerified:late!=='automatic-native-trust-none',
+          state:late==='automatic-native-trust-none'?'confirmation_required':'configured',
+        })
+        if(late==='automatic-native-trust-none') return
+        await expect(composition.service.reviewCodexHookTrust(late==='automatic-native-trust-peer'?second:first))
+          .resolves.toMatchObject({status:'already_recorded',actionHash:null})
+        await composition.service.scan()
+        expect(db.prepare("SELECT COUNT(*) n FROM agent_integration_events WHERE kind='codex_hook_trust_verified'").get()).toEqual({n:1})
+        if(late==='automatic-native-trust-probe-uncertain'){
+          for(const signalName of ['session_start','pre_compact','post_compact','session_end'] as const) {
+            expect(recordHookActivityEvidence(db,{agentId:row.agent_id!,activityGenerationToken:token,
+              signalName,tideMindVersion:runtime.tideMindVersion,tool:'codex'}).status).toBe('shared_recorded')
+          }
+          const states=()=>Object.fromEntries(composition.service.snapshot().connections[0].components.map(component=>[component.key,component.state]))
+          expect(states()).toMatchObject({instruction:'verified',lifecycle:'verified'})
+          unavailableHosts.add('codex-cli')
+          await composition.service.scan()
+          expect(composition.repository.getInstallation(first)?.health_state).toBe('inaccessible')
+          expect(composition.service.snapshot().installations.find(member=>member.id===first)?.manageable).toBe(false)
+          await expect(composition.service.previewConnect([first])).rejects.toThrow('source_verification_pending')
+          expect(states()).toMatchObject({instruction:'verified',lifecycle:'verified'})
+          expect(composition.service.snapshot().connections[0].actionInstallationIds).toEqual([])
+          expect(db.prepare("SELECT COUNT(*) n FROM agent_integration_events WHERE kind='codex_hook_trust_verified'").get()).toEqual({n:1})
+          for(const drift of ['version','artifact'] as const){
+            db.exec('SAVEPOINT changed_trust_scope')
+            try {
+              if(drift==='version') db.prepare("UPDATE agent_installations SET detected_version='99.0.0' WHERE id=?").run(first)
+              else db.prepare(`UPDATE managed_artifacts SET observed_fragment_hash='fixture-changed'
+                WHERE id=(SELECT artifact_id FROM installation_components WHERE installation_id=? AND component_key='lifecycle')`).run(first)
+              composition.repository.markInstallationProbeUncertain(first,new Date().toISOString(),['probe_inaccessible'])
+              expect(composition.service.snapshot().connections[0].components.find(component=>component.key==='lifecycle')?.hostRecognitionVerified).toBe(false)
+            } finally {
+              db.exec('ROLLBACK TO changed_trust_scope; RELEASE changed_trust_scope')
+            }
+          }
+          fs.writeFileSync(file,beforeTrust)
+          await composition.service.scan()
+          expect(states()).toMatchObject({instruction:'configured',lifecycle:'confirmation_required'})
+          const facts=(id:string)=>composition.service.snapshot().installations.find(member=>member.id===id)
+            ?.components.find(component=>component.key==='lifecycle')
+          expect(facts(first)?.hostRecognitionVerified).toBe(true)
+          expect(facts(second)?.hostRecognitionRejected).toBe(true)
+          expect(Date.parse(facts(second)!.hostRecognitionObservedAt!))
+            .toBeGreaterThan(Date.parse(facts(first)!.hostRecognitionObservedAt!))
+          unavailableHosts.add('codex-desktop')
+          await composition.service.scan()
+          expect(composition.repository.getInstallation(second)?.health_state).toBe('inaccessible')
+          expect(facts(second)?.hostRecognitionRejected).toBe(true)
+          expect(states()).toMatchObject({instruction:'configured',lifecycle:'confirmation_required'})
+        }
+        return
+      }
+      if(String(late).startsWith('automatic-repair')) {
+        const beforeRuns=db.prepare('SELECT * FROM reconcile_runs ORDER BY installation_id').all() as Array<{id:string;installation_id:string;prepared_plan_json:string}>
+        const peer=beforeRuns.find(run=>run.installation_id==='codex-desktop')!
+        expect(db.prepare('SELECT COUNT(*) n FROM projection_mutations WHERE run_id=?').get(peer.id)).toEqual({n:0})
+        const effects=db.prepare('SELECT * FROM projection_mutations ORDER BY id').all()
+        const mcpFile=path.join(configRoot,'config.toml'),mcp=fs.readFileSync(mcpFile)
+        const skill=path.join(home,'.agents','skills','tidemind','SKILL.md')
+        if(late==='automatic-repair-peer-source') {
+          const row=composition.repository.getInstallation('codex-desktop')!
+          const metadata=JSON.parse(row.metadata_json)
+          metadata.distribution.packageProvenance='different-publisher'
+          db.prepare('UPDATE agent_installations SET metadata_json=? WHERE id=?').run(JSON.stringify(metadata),row.id)
+        }
+        if(late==='automatic-repair-peer-revoked') db.prepare("UPDATE agent_consents SET status='revoked' WHERE installation_id='codex-desktop'").run()
+        fs.unlinkSync(skill)
+        await composition.runtime.runMaintenance()
+        if(late==='automatic-repair-peer-source'||late==='automatic-repair-peer-revoked') {
+          expect(fs.existsSync(skill)).toBe(false)
+          expect(fs.readFileSync(mcpFile)).toEqual(mcp)
+          expect(db.prepare("SELECT COUNT(*) n FROM reconcile_runs WHERE failure_code='superseded_by_same_generation_repair'").get()).toEqual({n:0})
+          return
+        }
+        expect(fs.existsSync(skill),JSON.stringify(composition.repository.listEvents())).toBe(true)
+        expect(fs.readFileSync(mcpFile)).toEqual(mcp)
+        expect(db.prepare('SELECT state FROM reconcile_runs WHERE id=?').get(peer.id)).not.toEqual({state:'cancelled'})
+        for(const effect of effects as Array<{id:string}>)expect(db.prepare('SELECT * FROM projection_mutations WHERE id=?').get(effect.id)).toEqual(effect)
+        const server=Object.values((parse(mcp.toString()) as any).mcp_servers)[0] as {env:Record<string,string>}
+        expect(evaluateBridgeAdmission(db,{agentId:server.env.EB_AGENT_ID,activityGenerationToken:server.env.EB_ACTIVITY_GENERATION_TOKEN}).allowed).toBe(true)
+        const repaired=db.prepare("SELECT prepared_plan_json FROM reconcile_runs WHERE operation_type='repair'").get() as {prepared_plan_json:string}
+        expect(JSON.parse(repaired.prepared_plan_json).componentKeys.sort()).toEqual(['instruction','lifecycle','memory_tools'])
+        await composition.runtime.runMaintenance()
+        expect(db.prepare('SELECT state FROM reconcile_runs WHERE id=?').get(peer.id)).toEqual({state:'applied_unverified'})
+        expect(fs.existsSync(skill)).toBe(true)
+        return
+      }
+      const bytes=fs.readFileSync(path.join(configRoot,'config.toml'),'utf8')
+      const runs=db.prepare('SELECT COUNT(*) n FROM reconcile_runs').get()
+      await composition.service.scan()
+      expect(db.prepare('SELECT COUNT(*) n FROM reconcile_runs').get()).toEqual(runs)
+      expect(fs.readFileSync(path.join(configRoot,'config.toml'),'utf8')).toBe(bytes)
+      return
+    }
+
     if(late==='unknown-carrier'){
       fs.mkdirSync(configRoot)
       const bytes='[mcp_servers.tidemind-unrecognized]\ncommand="unknown-command"\n'
@@ -220,6 +384,19 @@ describe('Fresh Codex domain through production service',()=>{
       expect(confirmation.status,JSON.stringify(confirmation)).toBe(late==='native-trust-confirm-drift'?'not_trusted':'trust_recorded')
       expect(fs.readFileSync(configFile)).toEqual(configBefore)
       if(join){
+        const readTrust=vi.spyOn(composition.repository,'findCodexHookTrustEvidence')
+        await composition.runtime.markScanCompleted()
+        const trustRead=readTrust.mock.calls.find(([query])=>query.installationId===trustId)
+        expect(trustRead).toBeDefined()
+        expect(composition.repository.findCodexHookTrustEvidence(trustRead![0])?.id).toBe(confirmation.receiptId)
+        const snapshot=composition.service.snapshot()
+        const lifecycle=snapshot.installations.find(row=>row.id===trustId)?.components.find(component=>component.key==='lifecycle')
+        expect(lifecycle).toMatchObject({hostRecognitionVerified:true,state:'configured'})
+        expect(snapshot.connections[0].components.find(component=>component.key==='lifecycle')).toMatchObject({
+          hostRecognitionVerified:true,state:'configured',
+        })
+        expect(db.prepare("SELECT COUNT(*) AS n FROM agent_host_activity_evidence WHERE component_key='lifecycle'").get()).toEqual({n:0})
+        expect(db.prepare("SELECT COUNT(*) AS n FROM agent_integration_events WHERE kind='shared_agent_activity'").get()).toEqual({n:0})
         expect(db.prepare("SELECT state,desired_state FROM artifact_consumers WHERE installation_id=? AND component_key='lifecycle'").get(trustId)).toEqual({state:'active',desired_state:'disabled'})
         expect(db.prepare("SELECT state FROM reconcile_runs WHERE installation_id=? AND operation_type='connect'").get(trustId)).toEqual({state:'applied_unverified'})
       }
@@ -363,6 +540,46 @@ describe('Fresh Codex domain through production service',()=>{
     expect(composition.repository.getInstallation(second)?.agent_id).toBe('original-'+second)
     const retry=await composition.service.previewConnect([second],true,undefined,options([second]))
     expect((await composition.service.applyConnect(retry.planHash,[second])).results[0]).toMatchObject({status:'awaiting_verification'})
+    if (String(late).startsWith('whole-disconnect')) {
+      const connectionId=composition.repository.connectionIdentity(first).key
+      const whole=await composition.service.previewConnectionDisconnect(connectionId)
+      expect(whole.connectionId).toBe(connectionId)
+      expect(whole.installations).toHaveLength(2)
+      if(late==='whole-disconnect-pause-race') {
+        composition.service.pauseConnection(connectionId)
+        await expect(composition.service.disconnectConnection(whole.planHash,connectionId)).rejects.toThrow('Connection changed after preview')
+        expect(fs.readFileSync(configFile,'utf8')).toBe(beforeSecond)
+        return
+      }
+      let changedBytes:string|undefined
+      if(late==='whole-disconnect-drift' || late==='whole-disconnect-member-pause-race') {
+        const originalApply=(composition.service as any).apply.bind(composition.service)
+        let calls=0
+        vi.spyOn(composition.service as any,'apply').mockImplementation(async (...args:any[])=>{
+          const result=await originalApply(...args)
+          if(++calls===1) {
+            if(late==='whole-disconnect-drift') {
+              changedBytes=fs.readFileSync(configFile,'utf8').replace('tm-node','changed-node')
+              fs.writeFileSync(configFile,changedBytes)
+            } else composition.service.pause('codex-desktop')
+          }
+          return result
+        })
+      }
+      const removed=await composition.service.disconnectConnection(whole.planHash,connectionId)
+      if(late==='whole-disconnect-drift' || late==='whole-disconnect-member-pause-race') {
+        expect(removed.results[0].status).toBe('committed')
+        expect(removed.results[1].status).toBe('failed')
+        expect(composition.repository.getInstallation('codex-desktop')?.desired_state).not.toBe('removed')
+        if(changedBytes) expect(fs.readFileSync(configFile,'utf8')).toBe(changedBytes)
+        return
+      }
+      expect(removed.results.every(item=>item.status!=='failed'),JSON.stringify(removed)).toBe(true)
+      expect(Object.keys((parse(fs.readFileSync(configFile,'utf8')).mcp_servers ?? {}) as object)).toEqual([])
+      expect(composition.repository.connectionIntent(first).state).toBe('disconnected')
+      expect(composition.service.snapshot().connections.find(item=>item.id===connectionId)?.memoryCallsVerified).toBe(false)
+      return
+    }
     const disconnect=await composition.service.previewDisconnect(first)
     const detached=await composition.service.disconnect(disconnect.planHash,first)
     expect(detached.results[0],JSON.stringify(detached)).not.toMatchObject({status:'failed'})

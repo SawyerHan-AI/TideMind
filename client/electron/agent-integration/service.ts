@@ -1,3 +1,10 @@
+import type { AgentAuthenticationResult } from './agent-authentication'
+import { nativePermissionsForPlan } from './consent'
+import { checkDefaultConnectionPolicy } from './default-connection-policy'
+import { allowsAutomaticConnection, allowsConnectionMaintenance, isPausedVerifiedRun } from './connection-intent'
+import { projectConnection } from './connection-projection.js'
+import type { SourceVerificationProgress, SourceVerificationRetryResult } from './source-verification-queue.js'
+import { createLogger } from '@server/utils/logger.js'
 import { codexFourToFivePlanProof } from './repository.js'
 import { assertFreshCodexConfig, freshCodexIdentityFingerprint, prospectiveFreshCodexIdentity } from './codex-fresh-identity'
 import { codexSelectionFingerprint, prospectiveCodexIdentity, type CodexLegacySelection } from './codex-legacy-selection'
@@ -6,6 +13,8 @@ import os from 'node:os'
 import fs from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import type {
+  AgentIntegrationAuthenticationDto,
+  AgentIntegrationDiagnosticDto,
   AgentIntegrationApplyItemDto,
   AgentIntegrationApplyResultDto,
   AgentIntegrationApplyTaskDto,
@@ -21,6 +30,7 @@ import type {
   AgentIntegrationPlanPreviewDto,
   AgentIntegrationPlanTargetDto,
   AgentIntegrationScanResultDto,
+  AgentIntegrationSourceRetryDto,
   AgentIntegrationSnapshotDto,
   AgentIntegrationSupportProductDto,
   AgentIntegrationClaudeCoworkPreflightDto,
@@ -57,7 +67,7 @@ import {
 } from './discovery.js'
 import { sha256Json } from './fingerprint.js'
 import { customMcpConfiguration } from './hosts/custom-mcp-configuration.js'
-import { executionPlanHash, CURRENT_CONSENT_POLICY_VERSION } from './consent.js'
+import { executionPlanHash, CURRENT_CONSENT_POLICY_VERSION, DEFAULT_AUTO_CONNECTION_POLICY_VERSION, automaticPlanAuthorizationKey, isAutomaticConsentContext } from './consent.js'
 import { canonicalizeInstallationIdentity, matchInstallationIdentity } from './identity.js'
 import {
   newInstallationNotification,
@@ -115,7 +125,7 @@ const PLAN_TTL_MS = 15 * 60 * 1_000
 const STATUS_REASONS = new Set<StatusReason>([
   'verified', 'legacy_callable_unmanaged', 'instruction_only', 'capability_ceiling', 'awaiting_consent', 'incompatible',
   'unverified', 'verification_stale', 'connecting', 'verifying', 'repairing', 'disconnecting',
-  'new_session', 'host_confirmation', 'conflict', 'permission', 'verification_failed',
+  'new_session', 'host_confirmation', 'conflict', 'permission', 'verification_failed', 'automatic_configuration_failed', 'native_permission_required',
   'legacy_confirmation_required',
   'disconnect_incomplete', 'shared_visibility_remaining', 'user_disabled', 'circuit_breaker',
   'disconnect_verified', 'host_uninstalled',
@@ -135,9 +145,19 @@ export interface AgentIntegrationScannerPort {
 export type AgentIntegrationExecutionPort = Pick<AgentIntegrationCoordinator, 'preview' | 'applyPrepared'>
 
 export interface AgentIntegrationServiceDependencies {
+  diagnostics?: {
+    state(row: AgentInstallationRow): AgentIntegrationDiagnosticDto | undefined
+    memorySuccess(row: AgentInstallationRow): { verifiedAt: string } | null
+    run(row: AgentInstallationRow, mode: 'automatic' | 'manual'): Promise<AgentIntegrationDiagnosticDto>
+    cancel(domainKey?: string): void
+  }
+  automaticConnections?: { enabled: boolean; applicationDataDir: string; runtimeVersion?: string }
+  probeAuthentication?(row: AgentInstallationRow, signal: AbortSignal): Promise<AgentAuthenticationResult>
   repository: AgentIntegrationRepository
   inspectCodexLegacySelection?(installationId:string, selectedAgentId?:string): Promise<CodexLegacySelection>
   scanner: AgentIntegrationScannerPort
+  sourceVerificationProgress?(row: AgentInstallationRow): SourceVerificationProgress | null
+  retrySourceVerification?(row: AgentInstallationRow): Promise<SourceVerificationRetryResult>
   execution: AgentIntegrationExecutionPort
   now?(): Date
   installationId?(): string
@@ -167,6 +187,8 @@ export interface AgentIntegrationServiceDependencies {
     diagnostics: readonly string[]
   }
   /** Runs only after discovery rows have been durably upserted. */
+  /** Establish legacy identity and invalidate stale evidence before scheduling new connections. */
+  afterDiscovery?(): Promise<void>
   afterScan?(): Promise<void>
   /** Closes the startup/recovery latch before any discovery attempt begins. */
   beforeScan?(): void
@@ -260,6 +282,8 @@ interface ConsentAuthorizationTarget {
 }
 
 interface CachedPlanBundle {
+  automaticAuthority?: { domainKey: string; intentRevision: number; mode: 'initial' | 'maintenance' | 'explicit_reconnect' }
+  connectionScope?: { id: string; intentRevision: number; memberIdentityHash: string }
   hash: string
   operation: 'connect' | 'disconnect'
   installationIds: string[]
@@ -340,12 +364,21 @@ export class AgentIntegrationService {
   private readonly customPreflights = new Map<string, CachedCustomPreflight>()
   private readonly coworkPreflights = new Map<string, CachedCoworkPreflight>()
   private readonly codexTrustActions = new Map<string, CachedCodexTrustAction>()
+  private readonly authenticationObservations = new Map<string, { fingerprint: string; value: AgentIntegrationAuthenticationDto }>()
+  private readonly authenticationTasks = new Map<string, { domainKey: string; intentRevision: number; fingerprint: string;
+    controller: AbortController; promise: Promise<AgentIntegrationAuthenticationDto> }>()
+  private automaticTrustCheck: Promise<void> | null = null
   private readonly codexTrustConfirmations = new Map<string, Promise<AgentIntegrationCodexTrustResultDto>>()
   private readonly guidedRemovalActions = new Map<string, CachedGuidedRemovalAction>()
   private readonly guidedRemovalConfirmations = new Map<string, Promise<AgentIntegrationGuidedRemovalResultDto>>()
+  private readonly automaticDomains = new Set<string>()
   private readonly applyTasks = new Map<string, AgentIntegrationApplyTaskDto>()
   private readonly applyTaskListeners = new Set<(task: AgentIntegrationApplyTaskDto) => void>()
+  private readonly stateListeners = new Set<() => void>()
+  private rescanRequested = false
+  private automaticRescansEnabled = true
   private scanInFlight: Promise<AgentIntegrationScanResultDto> | null = null
+  private scanProgress: NonNullable<AgentIntegrationSnapshotDto['scanProgress']> = { phase: 'idle', startedAt: null, completedAt: null }
   private readonly now: () => Date
   private readonly installationId: () => string
   private readonly agentId: () => string
@@ -386,8 +419,8 @@ export class AgentIntegrationService {
     const allRows = this.dependencies.repository.listInstallations({ includeRemoved: true })
     // Confirmed host removals are retained in the local ledger for audit and
     // recovery, but they are history rather than currently installed Agents.
-    const historyRows = allRows.filter(isHistoricalInstallationRow)
-    const rows = allRows.filter(row => !isHistoricalInstallationRow(row))
+    const historyRows = allRows.filter(row => isHistoricalInstallationRow(row) || row.host_variant === 'claude-desktop-legacy')
+    const rows = allRows.filter(row => !isHistoricalInstallationRow(row) && row.host_variant !== 'claude-desktop-legacy')
     const installations = rows.map(row => this.toInstallationDto(row))
     const historyInstallations = historyRows
       .map(row => this.toInstallationDto(row))
@@ -413,6 +446,36 @@ export class AgentIntegrationService {
         unreadEventCount: members.reduce((total, item) => total + item.unreadEventCount, 0),
       }
     }).sort((left, right) => left.displayName.localeCompare(right.displayName))
+    const byConnection = new Map<string, { identity: ReturnType<AgentIntegrationRepository['connectionIdentity']>; members: AgentIntegrationInstallationDto[] }>()
+    for (const installation of installations) {
+      const identity = this.dependencies.repository.connectionIdentity(installation.id)
+      const group = byConnection.get(identity.key) ?? { identity, members: [] }
+      group.identity.valid &&= identity.valid
+      group.members.push(installation)
+      byConnection.set(identity.key, group)
+    }
+    const activeInstallationIds = new Set([...this.applyTasks.values()]
+      .filter(task => task.state === 'running').flatMap(task => task.pendingInstallationIds))
+    for (const member of installations) if (this.automaticDomains.has(this.dependencies.repository.connectionIntent(member.id).domainKey)) activeInstallationIds.add(member.id)
+    const connections = [...byConnection.values()].map(({ identity, members }) => {
+      const sorted = [...members].sort(compareInstallations)
+      const evidence = identity.shared && identity.valid
+        ? this.dependencies.repository.sharedConnectionEvidence(sorted[0].id, this.now().toISOString()) : undefined
+      return projectConnection({ identity, members: sorted,
+        displayName: safeProductName(sorted[0].familyId, sorted[0].displayName),
+        diagnosticMemorySuccess: sorted.map(member => this.dependencies.diagnostics?.memorySuccess(this.requireInstallation(member.id)))
+          .find((value): value is { verifiedAt: string } => Boolean(value)),
+        sharedEvidence: evidence, connectionIntent: this.dependencies.repository.connectionIntent(sorted[0].id), activeInstallationIds })
+    }).sort((left, right) => left.displayName.localeCompare(right.displayName) || left.id.localeCompare(right.id))
+    const issueEpisodes = this.dependencies.repository.syncConnectionIssues(connections.flatMap(connection => {
+      const actions = installations.filter(member => connection.actionInstallationIds.includes(member.id))
+      if (!actions.length) return []
+      const reason = connection.attentionReason ?? actions[0].statusReason
+      return [{ connectionId: connection.id, installationId: actions[0].id, reason,
+        fingerprint: sha256Json(actions.map(member => [member.id, member.statusReason,
+          member.components.map(component => [component.key, component.state])])) }]
+    }), this.now().toISOString())
+    for (const connection of connections) connection.issue = issueEpisodes.get(connection.id) ?? null
     const lastScanAt = this.dependencies.repository.getLastSuccessfulScanAt()
     return {
       ...(this.dependencies.fixtureMode ? { fixtureMode: this.dependencies.fixtureMode } : {}),
@@ -422,26 +485,396 @@ export class AgentIntegrationService {
           diagnostics: [...this.dependencies.releasePolicy.diagnostics],
         },
       } : {}),
+      automaticConnectionsEnabled: this.dependencies.automaticConnections?.enabled ?? false,
       historyInstallations,
+      connections,
       families,
       installations: installations.sort(compareInstallations),
       summary: {
         familyCount: families.length,
         installationCount: installations.length,
-        availableCount: installations.filter(item => item.statusGroup === 'available').length,
-        needsAttentionCount: installations.filter(item => item.statusGroup === 'needs_attention').length,
-        awaitingConnectionCount: installations.filter(item =>
-          item.manageable && item.statusGroup === 'awaiting_connection',
+        availableCount: connections.filter(item => item.statusGroup === 'available').length,
+        needsAttentionCount: connections.filter(item => item.actionInstallationIds.length > 0).length,
+        awaitingConnectionCount: connections.filter(item =>
+          item.statusGroup === 'awaiting_connection',
         ).length,
       },
       lastScanAt,
+      scanProgress: { ...this.scanProgress },
     }
+  }
+
+  /** Maintenance keeps the existing component/consumer envelope and adds one
+   * exact policy-approved plan. It never broadens that envelope's scopes. */
+  authorizeAutomaticMaintenancePlan(request: ApplyPreparedRequest): void {
+    if (!request.consentId) return
+    const consent = this.dependencies.repository.getConsent(request.consentId)
+    if (nativePermissionsForPlan(request.preparedPlan.executionPlan).length) {
+      let approvedHash: unknown
+      try { approvedHash = JSON.parse(String(consent?.authorization_context_json))?.nativePermissionPlanHash } catch { /* An older grant cannot authorize new native permissions. */ }
+      if (consent?.authorization_origin !== 'explicit_user' || approvedHash !== request.preparedPlan.executionPlanHash) {
+        const row = this.requireInstallation(request.installation.id)
+        this.dependencies.repository.recordAutomaticConnectionFailure(row.id, this.dependencies.repository.connectionIntent(row.id).revision,
+          [row.consent_envelope_id], 'native_permission_required', this.now().toISOString())
+        throw new Error('native_permission_required')
+      }
+    }
+    if (consent?.authorization_origin !== 'default_auto_policy') return
+    const settings = this.dependencies.automaticConnections
+    const row = this.requireInstallation(request.installation.id)
+    if (!settings?.enabled || !this.isManageableInstallation(row) || row.desired_state !== 'managed'
+      || row.consent_envelope_id !== request.consentId || consent.status !== 'active') throw new Error('automatic_maintenance_not_allowed')
+    const originalContext = JSON.parse(String(consent.authorization_context_json))
+    if (!isAutomaticConsentContext(originalContext)) throw new Error('automatic_policy_changed')
+    const intent = this.dependencies.repository.connectionIntent(row.id)
+    if (intent.domainKey !== originalContext.domainKey) throw new Error('automatic_connection_identity_changed')
+    const reasons = checkDefaultConnectionPolicy({ installation: request.installation, intent, mode: 'maintenance',
+      homeDir: this.homeDir, applicationDataDir: settings.applicationDataDir }, request.preparedPlan,
+      this.noopMaintenanceScopes(request.installation, request.preparedPlan))
+    if (reasons.length) throw new Error(reasons.join(','))
+    const surface = frozenPlanInstallationSurfaceFingerprint(request.preparedPlan)
+    if (!surface || surface !== persistedProjectionSurfaceFingerprint(row)) throw new Error('automatic_connection_identity_changed')
+    const policyGrant = { policyVersion: DEFAULT_AUTO_CONNECTION_POLICY_VERSION,
+      connectionKey: this.dependencies.repository.connectionIdentity(row.id).key, domainKey: intent.domainKey,
+      intentRevision: intent.revision, executionPlanHash: request.preparedPlan.executionPlanHash, installationSurfaceFingerprint: surface,
+      ...(request.preparedPlan.executionPlan.sharedIdentityBinding ? { sharedIdentityBinding: request.preparedPlan.executionPlan.sharedIdentityBinding } : {}) }
+    this.dependencies.repository.recordEvent({ installationId: row.id, kind: 'automatic_plan_authorized',
+      dedupeKey: automaticPlanAuthorizationKey(request.consentId, request.preparedPlan.executionPlanHash),
+      payload: { consentId: request.consentId, policyGrant }, createdAt: this.now().toISOString() })
+  }
+
+  private standardAutomaticInstallation(row: AgentInstallationRow): boolean {
+    return row.runtime_realm === 'local_macos' && row.family !== 'custom-local-agent'
+      && !['claude-desktop-legacy','claude-cowork-local','custom-local-mcp'].includes(row.host_variant)
+  }
+
+  private automaticDomainBusy(domainKey: string): boolean {
+    return this.automaticDomains.has(domainKey) || [...this.applyTasks.values()].some(task => task.state === 'running'
+      && task.installationIds.some(id => this.dependencies.repository.connectionIntent(id).domainKey === domainKey))
+  }
+
+  private async startAutomaticGroup(rows: AgentInstallationRow[], force = false, explicitReopen = false): Promise<AgentIntegrationApplyTaskDto | null> {
+    const settings = this.dependencies.automaticConnections
+    if (!this.automaticRescansEnabled || !settings?.enabled || this.dependencies.releasePolicy?.mode && this.dependencies.releasePolicy.mode !== 'active') return null
+    const first = rows[0]
+    if (!first) return null
+    const intent = this.dependencies.repository.connectionIntent(first.id)
+    if (this.automaticDomainBusy(intent.domainKey)) return null
+    const mode = explicitReopen ? 'explicit_reconnect' : rows.every(row => row.desired_state === 'managed') ? 'maintenance' : 'initial'
+    if (intent.state !== 'active' || (mode === 'initial' && !allowsAutomaticConnection(intent))) return null
+    if (rows.some(row => !this.standardAutomaticInstallation(row) || !this.isManageableInstallation(row)
+      || row.health_state !== 'discovered' || ['conflict','legacy_confirmation_required'].includes(row.status_reason ?? '')
+      || !['unmanaged','managed', ...(explicitReopen ? ['removed'] : [])].includes(row.desired_state) || intent.excludedMemberIds.includes(row.id))) return null
+    this.automaticDomains.add(intent.domainKey)
+    let started = false
+    let bundle: CachedPlanBundle | undefined
+    let attemptFingerprint: string | undefined
+    const ids = rows.map(row => row.id)
+    try {
+      const preview = await this.preview('connect', ids, false)
+      bundle = this.requirePlan(preview.planHash, 'connect', ids)
+      const fingerprint = sha256Json([DEFAULT_AUTO_CONNECTION_POLICY_VERSION, settings.runtimeVersion, intent.domainKey, intent.revision, rows.map(row => [row.id, persistedProjectionSurfaceFingerprint(row)]),
+        bundle.items.map(item => [item.prepared.adapterPlan.adapterVersion, item.prepared.adapterPlan.projectionVersion,
+          item.prepared.inspection.components.map(component => [component.componentKey, component.observedTarget, component.observedFragmentHash]),
+          item.prepared.executionPlan.mutations.map(mutation => [mutation.componentKey, mutation.action, mutation.targetPath, mutation.ownershipSelector])])])
+      attemptFingerprint = fingerprint
+      if (!this.automaticRescansEnabled || (!force && this.dependencies.repository.hasAutomaticConnectionFailure(fingerprint))) {
+        this.plans.delete(bundle.hash)
+        return null
+      }
+      const current = this.dependencies.repository.connectionIntent(first.id)
+      if (current.revision !== intent.revision || current.domainKey !== intent.domainKey) throw new Error('automatic_intent_changed')
+      for (const item of bundle.items) {
+        const reasons = checkDefaultConnectionPolicy({ installation: item.installation, intent: current, homeDir: this.homeDir,
+          applicationDataDir: settings.applicationDataDir, mode }, item.prepared, item.maintenanceScopes)
+        if (reasons.length) throw new Error(reasons.join(','))
+      }
+      this.plans.delete(bundle.hash)
+      bundle.automaticAuthority = { domainKey: intent.domainKey, intentRevision: intent.revision, mode }
+      bundle.hash = sha256Json([bundle.hash, 'default_auto_policy', DEFAULT_AUTO_CONNECTION_POLICY_VERSION, bundle.automaticAuthority])
+      this.plans.set(bundle.hash, bundle)
+      const approved = bundle
+      const task = this.startApplyBundle(bundle, completed => {
+        this.automaticDomains.delete(intent.domainKey)
+        if (!this.automaticRescansEnabled) return
+        if (completed.results.some(result => ['failed','awaiting_consent','needs_recovery'].includes(result.status))) {
+          this.dependencies.repository.recordAutomaticConnectionFailureAttempt(ids, fingerprint, approved.hash, this.now().toISOString())
+        }
+        for (const result of completed.results) {
+          if (!['failed','awaiting_consent','needs_recovery'].includes(result.status)) continue
+          this.dependencies.repository.recordAutomaticConnectionFailure(result.installationId, intent.revision,
+            [approved.consentIds.get(result.installationId) ?? null, rows.find(row => row.id === result.installationId)?.consent_envelope_id ?? null],
+            result.reason ?? result.status, this.now().toISOString())
+        }
+        // A resume scan can encounter this task's execution fence. Retry
+        // recovery after release when the user's choice already permits it.
+        if (completed.results.some(result => {
+          if (result.status !== 'paused' || result.reason !== 'disabled') return false
+          const choice = this.dependencies.repository.connectionIntent(result.installationId)
+          return choice.domainKey === intent.domainKey && choice.revision !== intent.revision
+            && choice.state === 'active' && !choice.excludedMemberIds.includes(result.installationId)
+        })) this.requestSourceRescan()
+        this.snapshot()
+        void this.checkExistingCodexTrustAutomatically().catch(() => {})
+        this.checkAuthenticationAutomatically()
+      })
+      started = true
+      return task
+    } catch (error) {
+      if (bundle) this.plans.delete(bundle.hash)
+      const reason = safeErrorMessage(error)
+      const key = attemptFingerprint ?? sha256Json([intent.domainKey, intent.revision, rows.map(row => [row.id, persistedProjectionSurfaceFingerprint(row)]), reason])
+      const recorded = this.automaticRescansEnabled && this.dependencies.repository.recordAutomaticConnectionFailureAttempt(ids, key, null, this.now().toISOString())
+      if (this.automaticRescansEnabled && (force || recorded)) {
+        for (const row of rows) this.dependencies.repository.recordAutomaticConnectionFailure(row.id, intent.revision, [row.consent_envelope_id], reason, this.now().toISOString())
+      }
+      return null
+    } finally { if (!started) this.automaticDomains.delete(intent.domainKey) }
+  }
+
+  private supportsAuthentication(row: AgentInstallationRow): boolean {
+    return Boolean(this.dependencies.probeAuthentication) && ['codex-cli','claude-code-cli','claude-code-native'].includes(row.host_variant)
+  }
+
+  private authenticationFingerprint(row: AgentInstallationRow): string {
+    return sha256Json([persistedProjectionSurfaceFingerprint(row), row.consent_envelope_id,
+      this.dependencies.repository.listInstallationComponentDetails(row.id).map(component =>
+        [component.component_key, component.artifact_id, component.owned_fragment_hash, component.configuration_applied_at])])
+  }
+
+  private authenticationState(row: AgentInstallationRow): AgentIntegrationAuthenticationDto | undefined {
+    if (!this.supportsAuthentication(row)) return undefined
+    const fingerprint = this.authenticationFingerprint(row)
+    const task = this.authenticationTasks.get(row.id)
+    if (task?.fingerprint === fingerprint) return { status: 'checking', billing: 'unknown', reason: 'checking', checkedAt: null }
+    const observation = this.authenticationObservations.get(row.id)
+    return observation?.fingerprint === fingerprint ? { ...observation.value }
+      : { status: 'not_checked', billing: 'unknown', reason: 'not_checked', checkedAt: null }
+  }
+
+  /** State invalidation only; no account/config/protocol payload crosses this event. */
+  onStateChanged(listener: () => void): () => void {
+    this.stateListeners.add(listener)
+    return () => { this.stateListeners.delete(listener) }
+  }
+
+  notifyStateChanged(): void {
+    for (const listener of this.stateListeners) {
+      try { listener() } catch { /* A renderer cannot fail a completed state transition. */ }
+    }
+  }
+
+  private cancelAuthentication(domainKey?: string): void {
+    this.dependencies.diagnostics?.cancel(domainKey)
+    for (const task of this.authenticationTasks.values()) if (!domainKey || task.domainKey === domainKey) task.controller.abort()
+  }
+
+  /** Rechecks native login without changing credentials or invoking a model. */
+  async recheckAuthentication(installationId: string): Promise<AgentIntegrationAuthenticationDto> {
+    const row = this.requireInstallation(installationId)
+    if (!this.supportsAuthentication(row)) return { status: 'unsupported', billing: 'unknown', reason: 'auth_probe_unsupported', checkedAt: null }
+    const intent = this.dependencies.repository.connectionIntent(row.id)
+    if (!this.automaticRescansEnabled || !this.isManageableInstallation(row) || !['managed','unmanaged'].includes(row.desired_state)
+      || intent.state !== 'active' || intent.excludedMemberIds.includes(row.id) || this.automaticDomainBusy(intent.domainKey)) {
+      throw new Error('authentication_check_unavailable')
+    }
+    const fingerprint = this.authenticationFingerprint(row)
+    const existing = this.authenticationTasks.get(row.id)
+    if (existing?.fingerprint === fingerprint && existing.intentRevision === intent.revision && !existing.controller.signal.aborted) return existing.promise
+    existing?.controller.abort()
+    const controller = new AbortController()
+    const promise = (async (): Promise<AgentIntegrationAuthenticationDto> => {
+      let outcome: AgentAuthenticationResult
+      try { outcome = await this.dependencies.probeAuthentication!(row, controller.signal) }
+      catch { outcome = { status: 'unavailable', billing: 'unknown', reason: 'auth_probe_failed' } }
+      const current = this.requireInstallation(row.id), choice = this.dependencies.repository.connectionIntent(row.id)
+      if (controller.signal.aborted || !this.automaticRescansEnabled || !['managed','unmanaged'].includes(current.desired_state)
+        || choice.domainKey !== intent.domainKey || choice.revision !== intent.revision || choice.state !== 'active'
+        || choice.excludedMemberIds.includes(row.id) || this.authenticationFingerprint(current) !== fingerprint) {
+        return { status: 'cancelled', billing: 'unknown', reason: 'authentication_target_changed', checkedAt: null }
+      }
+      const value = { ...outcome, checkedAt: this.now().toISOString() }
+      if (outcome.status !== 'cancelled') this.authenticationObservations.set(row.id, { fingerprint, value })
+      return value
+    })().finally(() => {
+      if (this.authenticationTasks.get(row.id)?.controller === controller) this.authenticationTasks.delete(row.id)
+      if (this.automaticRescansEnabled) {
+        this.snapshot()
+        this.notifyStateChanged()
+      }
+    })
+    this.authenticationTasks.set(row.id, { domainKey: intent.domainKey, intentRevision: intent.revision, fingerprint, controller, promise })
+    this.notifyStateChanged()
+    return promise
+  }
+
+  private checkAuthenticationAutomatically(): void {
+    this.checkDiagnosticsAutomatically()
+    if (!this.automaticRescansEnabled || !this.dependencies.automaticConnections?.enabled || !this.dependencies.probeAuthentication) return
+    for (const connection of this.snapshot().connections) {
+      if (connection.memoryCallsVerified || connection.intentState !== 'active') continue
+      const row = this.dependencies.repository.connectionMembers(connection.id).find(member =>
+        this.supportsAuthentication(member) && member.desired_state === 'managed' && this.isManageableInstallation(member))
+      if (!row || this.automaticDomainBusy(this.dependencies.repository.connectionIntent(row.id).domainKey)) continue
+      if (this.authenticationObservations.get(row.id)?.fingerprint === this.authenticationFingerprint(row)) continue
+      void this.recheckAuthentication(row.id).catch(() => {})
+    }
+  }
+
+  private diagnosticPump: Promise<void> | null = null
+  private diagnosticPumpRequested = false
+  private checkDiagnosticsAutomatically(): void {
+    if (!this.automaticRescansEnabled || !this.dependencies.automaticConnections?.enabled || !this.dependencies.diagnostics) return
+    if (this.diagnosticPump) { this.diagnosticPumpRequested = true; return }
+    this.diagnosticPump = (async () => {
+      for (const connection of this.snapshot().connections) {
+        if (!this.automaticRescansEnabled) break
+        if (connection.memoryCallsVerified || connection.intentState !== 'active') continue
+        const row = this.dependencies.repository.connectionMembers(connection.id).find(member =>
+          ['codex-cli','claude-code-cli','claude-code-native'].includes(member.host_variant)
+          && member.desired_state === 'managed' && this.isManageableInstallation(member))
+        if (!row || this.automaticDomainBusy(this.dependencies.repository.connectionIntent(row.id).domainKey)) continue
+        await this.dependencies.diagnostics!.run(row, 'automatic').catch(() => undefined)
+      }
+    })().finally(() => {
+      this.diagnosticPump = null
+      if (this.automaticRescansEnabled) this.snapshot()
+      if (this.diagnosticPumpRequested) {
+        this.diagnosticPumpRequested = false
+        this.checkDiagnosticsAutomatically()
+      }
+    })
+  }
+
+  async recheckDiagnostic(installationId: string): Promise<AgentIntegrationDiagnosticDto> {
+    const row = this.requireInstallation(installationId)
+    const intent = this.dependencies.repository.connectionIntent(row.id)
+    if (!this.dependencies.diagnostics || !this.automaticRescansEnabled || !this.isManageableInstallation(row)
+      || row.desired_state !== 'managed' || intent.state !== 'active' || intent.excludedMemberIds.includes(row.id)
+      || this.automaticDomainBusy(intent.domainKey)) throw new Error('diagnostic_check_unavailable')
+    return this.dependencies.diagnostics.run(row, 'manual')
+  }
+
+  /** Observe native permission already granted in Codex; never grant it here. */
+  private checkExistingCodexTrustAutomatically(): Promise<void> {
+    if (this.automaticTrustCheck) return this.automaticTrustCheck
+    const run = async () => {
+      if (!this.automaticRescansEnabled || !this.dependencies.automaticConnections?.enabled || !this.dependencies.verifyCodexHookTrust) return
+      for (const connection of this.snapshot().connections) {
+        if (connection.familyId !== 'codex' || connection.intentState !== 'active'
+          || connection.components.find(component => component.key === 'lifecycle')?.hostRecognitionVerified) continue
+        for (const { id } of this.dependencies.repository.connectionMembers(connection.id)) {
+          if (!this.automaticRescansEnabled) return
+          const row = this.dependencies.repository.getInstallation(id)
+          if (!row || !['codex-cli','codex-desktop'].includes(row.host_variant)
+            || row.desired_state !== 'managed' || !this.isManageableInstallation(row)) continue
+          const identity = this.dependencies.repository.connectionIdentity(id)
+          if (!identity.valid || identity.key !== connection.id) continue
+          const intent = this.dependencies.repository.connectionIntent(id)
+          if (!allowsConnectionMaintenance(intent, id)) continue
+          if (this.automaticDomainBusy(intent.domainKey)) break
+          try {
+            const review = await this.reviewCodexHookTrust(id)
+            if (review.status === 'already_recorded') break
+            if (!this.automaticRescansEnabled) return
+            if (!review.actionHash) continue
+            const confirmation = await this.confirmCodexHookTrust(review.actionHash, intent)
+            if (confirmation.status === 'trust_recorded') break
+          } catch { /* This member did not establish trust; another eligible peer can still prove it. */ }
+        }
+      }
+    }
+    this.automaticTrustCheck = run().finally(() => { this.automaticTrustCheck = null })
+    return this.automaticTrustCheck
+  }
+
+  private async connectDiscoveredAutomatically(deferExistingDomains = false, onlyDomains?: ReadonlySet<string>): Promise<Set<string>> {
+    const deferred = new Set<string>()
+    if (!this.automaticRescansEnabled || !this.dependencies.automaticConnections?.enabled) return deferred
+    this.dependencies.repository.preserveUserConnectionChoices()
+    const domains = new Map<string, AgentInstallationRow[]>()
+    const installations = this.dependencies.repository.listInstallations()
+    const existingDomains = new Set(installations.filter(row => ['managed','disabled'].includes(row.desired_state))
+      .map(row => this.dependencies.repository.connectionIntent(row.id).domainKey))
+    for (const row of installations) {
+      if (row.desired_state !== 'unmanaged' || !this.standardAutomaticInstallation(row) || !this.isManageableInstallation(row)
+        || row.health_state !== 'discovered' || ['conflict','legacy_confirmation_required'].includes(row.status_reason ?? '')) continue
+      const key = this.dependencies.repository.connectionIntent(row.id).domainKey
+      if (onlyDomains && !onlyDomains.has(key)) continue
+      domains.set(key, [...(domains.get(key) ?? []), row])
+    }
+    for (const [key, rows] of domains) {
+      // New siblings still follow their own domain's recovery; unrelated new
+      // connections need not wait for that domain's slow native inspection.
+      if (deferExistingDomains && existingDomains.has(key)) { deferred.add(key); continue }
+      await this.startAutomaticGroup(rows)
+    }
+    return deferred
+  }
+
+  async reconnectAutomaticInstallation(installationId: string): Promise<AgentIntegrationApplyTaskDto | null> {
+    const row = this.requireInstallation(installationId)
+    if (!this.dependencies.automaticConnections?.enabled || !this.standardAutomaticInstallation(row)
+      || !this.isManageableInstallation(row) || row.desired_state !== 'removed') return null
+    this.dependencies.repository.allowExplicitConnection([installationId])
+    return this.startAutomaticGroup([this.requireInstallation(installationId)], true, true)
+  }
+
+  async retryAutomaticConnection(connectionId: string): Promise<AgentIntegrationApplyTaskDto | null> {
+    const rows = this.dependencies.repository.connectionMembers(connectionId)
+      .filter(row => ['unmanaged','managed'].includes(row.desired_state))
+    const domain = rows[0] && this.dependencies.repository.connectionIntent(rows[0].id).domainKey
+    const running = domain && [...this.applyTasks.values()].find(task => task.state === 'running'
+      && task.installationIds.some(id => this.dependencies.repository.connectionIntent(id).domainKey === domain))
+    if (running) return cloneApplyTask(running)
+    return this.startAutomaticGroup(rows, true)
   }
 
   scan(): Promise<AgentIntegrationScanResultDto> {
     if (this.scanInFlight) return this.scanInFlight
-    this.scanInFlight = this.performScan().finally(() => { this.scanInFlight = null })
+    this.scanProgress = { phase: 'discovery', startedAt: this.now().toISOString(), completedAt: null }
+    this.scanInFlight = this.performScan().catch(error => {
+      this.scanProgress = { ...this.scanProgress, phase: 'failed', completedAt: this.now().toISOString() }
+      throw error
+    }).finally(() => {
+      this.scanInFlight = null
+      this.notifyStateChanged()
+      if (this.rescanRequested && this.automaticRescansEnabled) {
+        this.rescanRequested = false
+        void this.scan().catch(() => undefined)
+      }
+    })
+    this.notifyStateChanged()
     return this.scanInFlight
+  }
+
+  requestSourceRescan(): void {
+    if (!this.automaticRescansEnabled) return
+    if (this.scanInFlight) { this.rescanRequested = true; return }
+    void this.scan().catch(() => undefined)
+  }
+
+  stopAutomaticRescans(): void {
+    this.automaticRescansEnabled = false
+    this.rescanRequested = false
+    this.cancelAuthentication()
+  }
+
+  async retrySourceCheck(installationId: string): Promise<AgentIntegrationSourceRetryDto> {
+    const original = this.requireInstallation(installationId)
+    if (original.desired_state === 'removed' || isHistoricalInstallationRow(original)) return { status: 'unsupported' }
+    // Refresh the physical proof first. Never download/verify an obsolete key
+    // merely because a stale Installation was selected in the renderer.
+    await this.scan()
+    const current = this.requireInstallation(installationId)
+    if (current.desired_state === 'removed' || isHistoricalInstallationRow(current)) return { status: 'unsupported' }
+    if (current.health_state === 'inaccessible') return { status: 'unavailable' }
+    if (current.status_reason === 'conflict') return { status: 'unsupported' }
+    const reason = this.managementEligibilityReason(current)
+    if (reason === null) return { status: 'not_needed' }
+    if (reason !== 'source_verification_pending' || !this.dependencies.retrySourceVerification) return { status: 'unsupported' }
+    const result = await this.dependencies.retrySourceVerification(current)
+    return { status: result.status, ...(result.retryAt !== undefined ? { retryAt: new Date(result.retryAt).toISOString() } : {}) }
   }
 
   /**
@@ -791,7 +1224,8 @@ export class AgentIntegrationService {
     const actions = (prepared.adapterPlan.requiredUserActionDetails ?? [])
       .filter((action): action is CodexHookTrustRequiredUserAction => action.kind === 'codex_hook_trust')
     if (actions.length === 0) {
-      if (prepared.adapterPlan.requiredUserActions.some(action => action.includes('codex_hook_trust_'))) {
+      if (prepared.adapterPlan.diagnostics.length > 0
+        || prepared.adapterPlan.requiredUserActions.some(action => action.includes('codex_hook_trust_'))) {
         throw new Error('Codex could not provide an exact /hooks trust state; check the host and try again')
       }
       return {
@@ -853,10 +1287,10 @@ export class AgentIntegrationService {
    * the exact frozen action is now trusted. The repository independently
    * re-binds the receipt to the current healthy lifecycle Artifact.
    */
-  async confirmCodexHookTrust(actionHash: string): Promise<AgentIntegrationCodexTrustResultDto> {
+  async confirmCodexHookTrust(actionHash: string, automaticIntent?: { domainKey: string; revision: number }): Promise<AgentIntegrationCodexTrustResultDto> {
     const inFlight = this.codexTrustConfirmations.get(actionHash)
     if (inFlight) return inFlight
-    const confirmation = this.confirmCodexHookTrustOnce(actionHash)
+    const confirmation = this.confirmCodexHookTrustOnce(actionHash, automaticIntent)
     this.codexTrustConfirmations.set(actionHash, confirmation)
     try {
       return await confirmation
@@ -867,7 +1301,7 @@ export class AgentIntegrationService {
     }
   }
 
-  private async confirmCodexHookTrustOnce(actionHash: string): Promise<AgentIntegrationCodexTrustResultDto> {
+  private async confirmCodexHookTrustOnce(actionHash: string, automaticIntent?: { domainKey: string; revision: number }): Promise<AgentIntegrationCodexTrustResultDto> {
     this.requireInteractiveManagementEnabled()
     const cached = this.requireCodexTrustAction(actionHash)
     const row = this.requireCodexManagedInstallation(cached.installation.id)
@@ -923,6 +1357,11 @@ export class AgentIntegrationService {
     if (this.codexTrustActions.get(actionHash) !== cached
       || cached.expiresAtMs <= this.now().getTime()) {
       throw new Error('Codex trust review changed or expired before receipt; check again')
+    }
+    if (automaticIntent) {
+      const current = this.dependencies.repository.connectionIntent(row.id)
+      if (!this.automaticRescansEnabled || current.state !== 'active' || current.domainKey !== automaticIntent.domainKey
+        || current.revision !== automaticIntent.revision || current.excludedMemberIds.includes(row.id)) throw new Error('automatic_intent_changed')
     }
     const receiptId = this.dependencies.repository.recordCodexHookTrustEvidence({
       installationId: row.id,
@@ -1131,11 +1570,18 @@ export class AgentIntegrationService {
 
   async applyConnect(planHash: string, installationIds: readonly string[]): Promise<AgentIntegrationApplyResultDto> {
     const bundle = this.requirePlan(planHash, 'connect', installationIds)
+    this.dependencies.repository.allowExplicitConnection(installationIds)
     return this.apply(bundle)
   }
 
   startApplyConnect(planHash: string, installationIds: readonly string[]): AgentIntegrationApplyTaskDto {
     const bundle = this.requirePlan(planHash, 'connect', installationIds)
+    this.dependencies.repository.allowExplicitConnection(installationIds)
+    return this.startApplyBundle(bundle)
+  }
+
+  private startApplyBundle(bundle: CachedPlanBundle, onComplete?: (task: AgentIntegrationApplyTaskDto) => void): AgentIntegrationApplyTaskDto {
+    const planHash = bundle.hash
     const startedAt = this.now().toISOString()
     const task: AgentIntegrationApplyTaskDto = {
       id: `agent_apply_${randomUUID()}`,
@@ -1162,6 +1608,7 @@ export class AgentIntegrationService {
     })
     this.applyTasks.set(task.id, task)
     this.emitApplyTask(task)
+    if (bundle.automaticAuthority) this.notifyStateChanged()
     void this.apply(bundle, result => {
       this.dependencies.repository.completeApplyTaskItem(
         task.id,
@@ -1201,6 +1648,8 @@ export class AgentIntegrationService {
       }
       this.emitApplyTask(task)
       this.pruneApplyTasks()
+      try { onComplete?.(cloneApplyTask(task)) } catch { /* Durable task results remain available after shutdown. */ }
+      if (bundle.automaticAuthority) this.notifyStateChanged()
     })
     return cloneApplyTask(task)
   }
@@ -1300,6 +1749,8 @@ export class AgentIntegrationService {
 
   async disconnect(planHash: string, installationId: string): Promise<AgentIntegrationApplyResultDto> {
     const bundle = this.requirePlan(planHash, 'disconnect', [installationId])
+    this.dependencies.repository.recordDisconnectIntent([installationId], false)
+    this.cancelAuthentication(this.dependencies.repository.connectionIntent(installationId).domainKey)
     const result = await this.apply(bundle)
     if (result.results.some(item => item.status !== 'failed')) {
       try {
@@ -1321,17 +1772,99 @@ export class AgentIntegrationService {
     return result
   }
 
+  async previewConnectionDisconnect(connectionId: string): Promise<AgentIntegrationPlanPreviewDto> {
+    const members = this.dependencies.repository.connectionMembers(connectionId)
+    const ids = members.filter(row => row.desired_state === 'managed' || row.desired_state === 'disabled').map(row => row.id)
+    if (!ids.length) throw new Error('No connected members to disconnect')
+    const intent = this.dependencies.repository.connectionIntent(members[0].id)
+    const preview = await this.preview('disconnect', ids, false)
+    const bundle = this.requirePlan(preview.planHash, 'disconnect', ids)
+    const scope = { id: connectionId, intentRevision: intent.revision,
+      memberIdentityHash: connectionMemberIdentityHash(members) }
+    this.plans.delete(bundle.hash)
+    bundle.connectionScope = scope
+    bundle.hash = sha256Json([bundle.hash, scope])
+    this.plans.set(bundle.hash, bundle)
+    return this.planBundleDto(bundle, false)
+  }
+
+  async disconnectConnection(planHash: string, connectionId: string): Promise<AgentIntegrationApplyResultDto> {
+    const candidate = this.plans.get(planHash)
+    if (!candidate?.connectionScope || candidate.connectionScope.id !== connectionId) throw new Error('Unknown connection disconnect plan')
+    const bundle = this.requirePlan(planHash, 'disconnect', candidate.installationIds)
+    const scope = bundle.connectionScope!
+    const members = this.dependencies.repository.connectionMembers(connectionId)
+    if (connectionMemberIdentityHash(members) !== scope.memberIdentityHash
+      || this.dependencies.repository.connectionIntent(members[0].id).revision !== scope.intentRevision) {
+      throw new Error('Connection changed after preview; refresh and retry')
+    }
+    this.plans.delete(planHash)
+    const intent = this.dependencies.repository.recordDisconnectIntent(bundle.installationIds, true)
+    this.cancelAuthentication(intent.domainKey)
+    const results: AgentIntegrationApplyItemDto[] = []
+    // Each earlier detach changes the remaining consumer set. Rebuild that
+    // member's ordinary plan, but permit only the exact effects already shown
+    // in the whole-connection preview; all normal source/CAS/read-back remains.
+    for (const id of bundle.installationIds) {
+      try {
+        const current = this.dependencies.repository.connectionMembers(connectionId)
+        if (connectionMemberIdentityHash(current) !== scope.memberIdentityHash
+          || this.dependencies.repository.connectionIntent(id).revision !== intent.revision) throw new Error('Connection choice changed during disconnect')
+        const freshDto = await this.preview('disconnect', [id], false)
+        const fresh = this.requirePlan(freshDto.planHash, 'disconnect', [id])
+        if (!isApprovedConnectionDisconnect(bundle, fresh, id)) {
+          this.plans.delete(fresh.hash)
+          throw new Error('Connection removal targets changed; preview again')
+        }
+        if (this.dependencies.repository.connectionIntent(id).revision !== intent.revision) throw new Error('Connection choice changed during disconnect')
+        const result = await this.apply(fresh)
+        results.push(...result.results)
+      } catch (error) {
+        results.push({ installationId: id, status: 'failed', reason: safeErrorMessage(error) })
+      }
+    }
+    try { await this.dependencies.afterDisconnect?.() } catch (error) {
+      this.dependencies.repository.recordEvent({ kind: 'post_disconnect_maintenance_failed', severity: 'error',
+        payload: { message: safeErrorMessage(error) }, createdAt: this.now().toISOString() })
+    }
+    const stillServing = this.dependencies.repository.connectionMembers(connectionId).some(row =>
+      row.desired_state !== 'removed' && !row.tombstoned_at && row.bridge_state !== 'stopped')
+    if (!stillServing) for (const result of results) {
+      if (result.status === 'committed') result.completion = 'disconnected'
+    }
+    return { planHash, results }
+  }
+
+  pauseConnection(connectionId: string): AgentIntegrationSnapshotDto {
+    const members = this.dependencies.repository.connectionMembers(connectionId)
+    const pending = this.automaticDomainBusy(this.dependencies.repository.connectionIntent(members[0].id).domainKey)
+    this.dependencies.repository.pauseConnection(connectionId, this.now().toISOString(), pending)
+    this.cancelAuthentication(this.dependencies.repository.connectionIntent(members[0].id).domainKey)
+    return this.snapshot()
+  }
+
+  async resumeConnection(connectionId: string): Promise<AgentIntegrationSnapshotDto> {
+    this.dependencies.repository.resumeConnection(connectionId, this.now().toISOString())
+    if (this.scanInFlight) this.rescanRequested = true
+    try { await this.dependencies.afterResume?.() } catch (error) {
+      this.dependencies.repository.recordEvent({ kind: 'post_resume_scan_failed', severity: 'error',
+        payload: { connectionId, message: safeErrorMessage(error) }, createdAt: this.now().toISOString() })
+    }
+    return this.snapshot()
+  }
+
   pause(installationId: string): AgentIntegrationInstallationDto {
     const row = this.requireInstallation(installationId)
     if (row.desired_state !== 'managed') throw new Error('only a managed Installation can be paused')
-    this.dependencies.repository.setInstallationIntent(installationId, 'disabled', this.now().toISOString())
+    this.dependencies.repository.setMemberUserIntent(installationId, 'disabled', this.now().toISOString())
+    this.cancelAuthentication(this.dependencies.repository.connectionIntent(installationId).domainKey)
     return this.toInstallationDto(this.requireInstallation(installationId))
   }
 
   async resume(installationId: string): Promise<AgentIntegrationInstallationDto> {
     const row = this.requireInstallation(installationId)
     if (row.desired_state !== 'disabled') throw new Error('only a paused Installation can resume management')
-    this.dependencies.repository.setInstallationIntent(installationId, 'managed', this.now().toISOString())
+    this.dependencies.repository.setMemberUserIntent(installationId, 'managed', this.now().toISOString())
     // Resuming undoes a disconnect that could only stop the bridge (manual host removal pending).
     this.dependencies.repository.restoreBridgeAfterPendingManualRemoval(installationId, this.now().toISOString())
     try {
@@ -1543,7 +2076,7 @@ export class AgentIntegrationService {
   supportCatalog(): AgentIntegrationSupportProductDto[] {
     const supportedIds = new Set<CatalogId>(P0_DISCOVERY_CATALOG_IDS)
     return AGENT_CATALOG.products.map(product => {
-      const variants = product.variantIds.filter(id => supportedIds.has(id)).map(id => {
+      const variants = product.variantIds.filter(id => supportedIds.has(id) && id !== 'claude-desktop-legacy').map(id => {
         const variant = getCatalogVariant(id)
         const implemented = this.implementedComponents?.get(id)
         const adapterEnabled = this.enabledCatalogIds?.has(id) ?? true
@@ -1797,7 +2330,7 @@ export class AgentIntegrationService {
           installationId: persisted.id,
           componentKey: null,
           artifactId: null,
-          kind: 'installation_discovered_awaiting_consent',
+          kind: this.dependencies.automaticConnections?.enabled ? 'installation_discovered' : 'installation_discovered_awaiting_consent',
           severity: 'info' as const,
           episodeId: null,
           dedupeKey: `${persisted.id}:first-discovery`,
@@ -1805,7 +2338,7 @@ export class AgentIntegrationService {
           createdAt: detectedAt,
         }
         const notifications = this.dependencies.notifications
-        if (notifications) {
+        if (notifications && !this.dependencies.automaticConnections?.enabled) {
           const configuredLocale = this.dependencies.notificationLocale
           const locale = typeof configuredLocale === 'function' ? configuredLocale() : configuredLocale
           await publishIntegrationEvent(event, newInstallationNotification({
@@ -1823,6 +2356,7 @@ export class AgentIntegrationService {
       }
     }
     const uncertaintyByCatalog = new Map<CatalogId, string[]>()
+    if (report.diagnostics?.length) createLogger('agent-discovery').warn('Scan diagnostics', report.diagnostics)
     for (const item of report.unresolved) {
       for (const catalogId of item.catalogIds) {
         const reasons = uncertaintyByCatalog.get(catalogId) ?? []
@@ -1857,8 +2391,17 @@ export class AgentIntegrationService {
         this.dependencies.repository.markInstallationNotDetected(existing.id, detectedAt)
       }
     }
+    this.scanProgress = { ...this.scanProgress, phase: 'maintenance' }
+    this.notifyStateChanged()
+    await this.dependencies.afterDiscovery?.()
+    const deferredConnections = await this.connectDiscoveredAutomatically(true)
+    this.checkAuthenticationAutomatically()
     await this.dependencies.afterScan?.()
-    this.dependencies.repository.setLastSuccessfulScanAt(detectedAt)
+    if (deferredConnections.size) await this.connectDiscoveredAutomatically(false, deferredConnections)
+    await this.checkExistingCodexTrustAutomatically()
+    const completedAt = this.now().toISOString()
+    this.dependencies.repository.setLastSuccessfulScanAt(completedAt)
+    this.scanProgress = { ...this.scanProgress, phase: 'idle', completedAt }
     return {
       snapshot: this.snapshot(),
       detectedCount: report.installations.length,
@@ -2065,11 +2608,12 @@ export class AgentIntegrationService {
   ): AgentIntegrationPlanPreviewDto {
     return {
       planHash: bundle.hash,
+      ...(bundle.connectionScope ? { connectionId: bundle.connectionScope.id } : {}),
       operation: bundle.operation,
       ...(bundle.items[0]?.prepared.codexLegacySelection ? {legacySelection:{selectedAgentId:bundle.items[0].prepared.codexLegacySelection.selectedAgentId,
         removedAgentIds:bundle.items[0].prepared.codexLegacySelection.candidates.filter(candidate=>candidate.agentId !== bundle.items[0].prepared.codexLegacySelection!.selectedAgentId).map(candidate=>candidate.agentId)}} : {}),
       installations: [
-        ...bundle.items.map(item => this.toPlanInstallationDto(item, includeTechnicalDetails)),
+        ...bundle.items.map(item => this.toPlanInstallationDto(item, includeTechnicalDetails, bundle.connectionScope ? bundle.installationIds : undefined)),
         ...(bundle.bridgeOnlyItems ?? []).map(item => bridgeOnlyPlanInstallationDto(item)),
       ],
       expiresAt: new Date(bundle.expiresAtMs).toISOString(),
@@ -2296,6 +2840,25 @@ export class AgentIntegrationService {
     ]
     const selectorVersions = [...new Set(authorizationTargets.map(target => target.selectorSchemaVersion))]
     if (selectorVersions.length > 1) throw new Error('plan spans multiple selector schema versions')
+    const authority = bundle.automaticAuthority
+    let automaticContext: import('./consent').AutomaticConsentContext | undefined
+    if (authority) {
+      if (!this.automaticRescansEnabled) throw new Error('automatic_connection_stopped')
+      const currentIntent = this.dependencies.repository.connectionIntent(item.installation.id)
+      if (currentIntent.domainKey !== authority.domainKey || currentIntent.revision !== authority.intentRevision) throw new Error('automatic_intent_changed')
+      const reasons = checkDefaultConnectionPolicy({ installation: item.installation, intent: currentIntent,
+        homeDir: this.homeDir, applicationDataDir: this.dependencies.automaticConnections!.applicationDataDir,
+        mode: authority.mode }, item.prepared, item.maintenanceScopes)
+      if (reasons.length) throw new Error(reasons.join(','))
+      const surface = frozenPlanInstallationSurfaceFingerprint(item.prepared)
+      if (!surface) throw new Error('automatic_connection_identity_missing')
+      const identity = this.dependencies.repository.connectionIdentity(item.installation.id)
+      automaticContext = { policyVersion: DEFAULT_AUTO_CONNECTION_POLICY_VERSION,
+        connectionKey: item.prepared.codexFreshIdentity ? `binding:${item.prepared.codexFreshIdentity.bindingId}` : identity.key,
+        domainKey: authority.domainKey, intentRevision: authority.intentRevision,
+        executionPlanHash: item.prepared.executionPlanHash, installationSurfaceFingerprint: surface,
+        ...(item.prepared.executionPlan.sharedIdentityBinding ? { sharedIdentityBinding: item.prepared.executionPlan.sharedIdentityBinding } : {}) }
+    }
     const confirmedAt = this.now().toISOString()
     const id = this.consentId()
     const normalizedTargets = [...new Set([
@@ -2309,6 +2872,8 @@ export class AgentIntegrationService {
     const targetScopes = normalizedTargets.map(target => `file:${target}`)
     this.dependencies.repository.createConsent({
       id,
+      origin: automaticContext ? 'default_auto_policy' : 'explicit_user',
+      ...(automaticContext ? { automaticContext } : nativePermissionsForPlan(item.prepared.executionPlan).length ? { nativePermissionPlanHash: item.prepared.executionPlanHash } : {}),
       installationId: item.installation.id,
       policyVersion: String(CURRENT_CONSENT_POLICY_VERSION),
       allowedComponents: [...item.prepared.componentKeys],
@@ -2655,6 +3220,8 @@ export class AgentIntegrationService {
   }
 
   private managementEligibilityReason(row: AgentInstallationRow): StatusReason | null {
+    if (row.health_state === 'inaccessible') return 'source_verification_pending'
+    let runtimeSourceTrusted = false
     if (this.dependencies.enforceReleaseAcceptance && row.host_variant !== 'custom-local-mcp') {
       const distribution = persistedDistribution(row)
       const releaseReason = runtimeSourceReason({
@@ -2666,6 +3233,7 @@ export class AgentIntegrationService {
         portableArtifactFingerprint: distribution.portableArtifactFingerprint,
       }, this.dependencies.releaseEntries?.get(row.host_variant as CatalogId))
       if (releaseReason) return releaseReason
+      runtimeSourceTrusted = true
     }
     if (this.dependencies.cliManagementProofLimitBytes === undefined) return null
     const eligibility = persistedManagementEligibility(row)
@@ -2694,7 +3262,7 @@ export class AgentIntegrationService {
       || eligibility.proofLimitBytes !== this.dependencies.cliManagementProofLimitBytes) {
       return 'executable_metadata_unavailable'
     }
-    if (eligibility.eligible) return null
+    if (eligibility.eligible || (runtimeSourceTrusted && isRuntimeSourceReason(eligibility.reason))) return null
     return eligibility.reason === 'distribution_not_managed'
       ? 'incompatible'
       : eligibility.reason ?? 'executable_metadata_unavailable'
@@ -2702,8 +3270,18 @@ export class AgentIntegrationService {
 
   private toInstallationDto(row: AgentInstallationRow): AgentIntegrationInstallationDto {
     const rawComponents = this.dependencies.repository.listInstallationComponentDetails(row.id)
+    const authentication = this.authenticationState(row)
+    const storedDiagnostic = this.dependencies.diagnostics?.state(row)
+    const diagnostic = storedDiagnostic?.status === 'passed' && authentication?.status === 'explicitly_unauthenticated'
+      ? { ...storedDiagnostic, status: 'waiting' as const, reason: 'host_reports_not_authenticated' } : storedDiagnostic
     const historicalRecord = isHistoricalInstallationRow(row)
     const manageable = !historicalRecord && this.isManageableInstallation(row)
+    const authenticationRequired = manageable && row.desired_state === 'managed'
+      && authentication?.status === 'explicitly_unauthenticated'
+      && ['unverified','awaiting_host_verification','verification_stale','new_session','verified','awaiting_consent'].includes(row.status_reason ?? 'unverified')
+    const diagnosticPermissionRequired = manageable && row.desired_state === 'managed'
+      && diagnostic?.reason === 'native_permission_required'
+      && ['unverified','awaiting_host_verification','verification_stale','new_session','verified'].includes(row.status_reason ?? 'unverified')
     const managementEligibilityReason = this.managementEligibilityReason(row)
     // Fail closed in presentation before the first post-upgrade scan has had a
     // chance to normalize rows persisted by the earlier C3 contract.
@@ -2728,8 +3306,30 @@ export class AgentIntegrationService {
         : [],
     })
     const variant = getCatalogVariant(row.host_variant as CatalogId)
+    const components = COMPONENT_KEYS.map(key => componentDto(key, variant, rawComponents, row, this.homeDir,
+      this.implementedComponents?.get(row.host_variant as CatalogId), this.implementedArtifactTypes?.get(row.host_variant as CatalogId)))
+    const actionRun = this.dependencies.repository.getLatestRunUserActions(row.id)
+    if (row.desired_state === 'managed' && actionRun?.state === 'applied_unverified' && ['connect','repair'].includes(actionRun.operation_type)) {
+      for (const action of requiredUserActionsFromPreparedPlanJson(actionRun.prepared_plan_json, this.homeDir)) {
+        const component = components.find(item => item.key === action.componentKey)
+        if (!component || ['verified','conflict','missing','unsupported'].includes(component.state)) continue
+        if (action.kind === 'codex_hook_trust') {
+          const verification = rawComponents.find(item => item.component_key === 'lifecycle')
+          // The plan may have frozen an action which has since been completed.
+          // An unavailable read or stale proof does not request native trust.
+          if (row.health_state === 'discovered' && component.configurationVerified && !component.hostRecognitionVerified
+            && verification?.verification_status === 'verified' && verification.verification_invalidated_at == null
+            && String(verification.verification_method).split(',').includes('codex_hook_trust_receipt_missing')) {
+            component.state = 'confirmation_required'
+          }
+        } else if (action.kind === 'kimi_instruction_conflict') component.state = 'conflict'
+        else if (['qwenwork_mcp_gui','custom_mcp_import','claude_cowork_plugin_upload','mcp_activation'].includes(action.kind)) component.state = 'confirmation_required'
+      }
+    }
     return {
       id: row.id,
+      ...(diagnostic ? { diagnostic } : {}),
+      ...(authentication ? { authentication } : {}),
       familyId: row.family,
       hostVariant: row.host_variant,
       variantLabel: variant.displayName,
@@ -2737,14 +3337,18 @@ export class AgentIntegrationService {
       profileLabel: row.profile_id || null,
       version: row.detected_version,
       manageable,
+      automaticConnectionEnabled: Boolean(this.dependencies.automaticConnections?.enabled && manageable && this.standardAutomaticInstallation(row)),
       disconnectable: manageable || (!historicalRecord && this.ownershipOnlyDisconnectEligible(row)),
       desiredState: row.desired_state,
       // A detectable Catalog entry is not waiting for consent when the
       // production Adapter is unavailable or its distribution is untrusted.
       // Keep that truth in the DTO, not only in renderer-side CTA filtering.
-      statusGroup: historicalRecord ? 'disconnected' : manageable ? status.statusGroup : 'disconnected',
+      statusGroup: historicalRecord ? 'disconnected' : row.status_reason === 'conflict' || authenticationRequired || diagnosticPermissionRequired ? 'needs_attention' : manageable ? status.statusGroup : 'disconnected',
       statusReason: historicalRecord
         ? 'host_uninstalled'
+        : row.status_reason === 'conflict' ? 'conflict'
+        : authenticationRequired ? 'authentication_required'
+        : diagnosticPermissionRequired ? 'native_permission_required'
         : manageable
           ? status.statusReason
         : managementEligibilityReason
@@ -2752,17 +3356,10 @@ export class AgentIntegrationService {
             : 'detect_only',
       accessLevel: status.accessLevel,
       accessIsHistorical: historicalRecord || status.accessIsHistorical,
-      components: COMPONENT_KEYS.map(key => componentDto(
-        key,
-        variant,
-        rawComponents,
-        row,
-        this.homeDir,
-        this.implementedComponents?.get(row.host_variant as CatalogId),
-        this.implementedArtifactTypes?.get(row.host_variant as CatalogId),
-      )),
+      components,
       unreadEventCount: this.dependencies.repository.listInstallationEvents(row.id, {
         state: 'unread',
+        includeConnectionIssues: false,
         limit: 1_000,
       }).length,
       lastDetectedAt: row.last_detected_at,
@@ -2789,6 +3386,10 @@ export class AgentIntegrationService {
               state: result.state,
               evidence: result.evidence,
               checkedAt: result.checkedAt ?? (result.state === 'trusted' ? row.last_detected_at : null),
+              ...(() => {
+                const task = this.dependencies.sourceVerificationProgress?.(row)
+                return task ? { task: { state: task.state, reason: task.reason, ...(task.retryAt !== undefined ? { retryAt: new Date(task.retryAt).toISOString() } : {}) } } : {}
+              })(),
             }
           })(),
     }
@@ -2797,24 +3398,39 @@ export class AgentIntegrationService {
   private toPlanInstallationDto(
     item: CachedPlanItem,
     includeTechnicalDetails: boolean,
+    wholeConnectionMembers?: readonly string[],
   ): AgentIntegrationPlanInstallationDto {
+    const scopes = item.disconnectScopes.filter(scope => !wholeConnectionMembers
+      || scope.consumers.some(consumer => !wholeConnectionMembers.includes(consumer.installationId)))
     return {
       installationId: item.installation.id,
       displayName: item.installation.displayName,
       desiredCapability: item.desiredCapability,
       componentKeys: [...item.prepared.componentKeys],
+      nativePermissions: nativePermissionsForPlan(item.prepared.executionPlan),
+      ...(() => {
+        if (!nativePermissionsForPlan(item.prepared.executionPlan).length) return {}
+        const metadata = item.prepared.adapterPlan.mutations.find(mutation =>
+          mutation.metadata?.extensionName || mutation.metadata?.pluginId)?.metadata
+        const name = metadata?.extensionName ?? metadata?.pluginId
+        const version = metadata?.extensionVersion ?? metadata?.pluginVersion
+        const source = metadata?.stagingRoot ?? metadata?.pluginRoot
+        return typeof name === 'string' && typeof version === 'string' && typeof source === 'string'
+          ? { nativePlugin: { name, version, sourceLabel: redactPath(source, this.homeDir) ?? '—' } } : {}
+      })(),
+      hostVersion: item.prepared.executionPlan.hostVersion ?? null,
       targets: [
         ...item.prepared.executionPlan.mutations.map(mutation => planTargetDto(
           mutation,
           this.homeDir,
           includeTechnicalDetails,
-          item.disconnectScopes.find(scope => disconnectScopeMatches(scope, mutation.componentKey, mutation.targetPath, mutation.ownershipSelector)),
+          scopes.find(scope => disconnectScopeMatches(scope, mutation.componentKey, mutation.targetPath, mutation.ownershipSelector)),
         )),
         ...item.maintenanceScopes.map(scope => maintenanceTargetDto(
           scope,
           this.homeDir,
           includeTechnicalDetails,
-          item.disconnectScopes.find(disconnect => disconnectScopeMatches(
+          scopes.find(disconnect => disconnectScopeMatches(
             disconnect,
             scope.componentKey,
             scope.targetPath,
@@ -3002,16 +3618,42 @@ function componentDto(
   if (row) {
     const verification = String(row.verification_status ?? 'unverified')
     const artifactState = String(row.artifact_state ?? '')
-    if (artifactState === 'conflict' || artifactState === 'drifted') state = 'conflict'
+    let activityProof = false
+    try { activityProof = JSON.parse(String(row.verification_invalidation_keys ?? '[]')).includes('activity_freshness') } catch { /* No runtime proof. */ }
+    const staticOnly = (key === 'memory_tools' || key === 'lifecycle')
+      && typeof row.verification_invalidation_keys === 'string' && !activityProof
+    if (row.desired_state === 'removed' || installation.desired_state === 'removed') state = 'unconnected'
+    else if (artifactState === 'conflict' || artifactState === 'drifted') state = 'conflict'
     else if (artifactState === 'missing' || artifactState === 'paused') state = 'missing'
+    else if (row.verification_invalidated_at != null) state = 'verification_stale'
+    else if (verification === 'verified' && staticOnly) state = 'configured'
     else if (verification === 'verified') state = 'verified'
     else if (verification === 'stale') state = 'verification_stale'
     else if (row.visibility_state !== 'absent') state = 'configured'
     else if (installation.desired_state === 'managed') state = 'missing'
   }
+  const configurationVerified = Boolean(row
+    && ['managed','disabled'].includes(String(row.desired_state))
+    && row.current_consent_status === 'active' && row.consent_envelope_id === installation.consent_envelope_id
+    && row.artifact_state === 'healthy' && typeof row.owned_fragment_hash === 'string'
+    && row.owned_fragment_hash === row.observed_fragment_hash)
+  const hostRecognitionRejected = configurationVerified && row?.verification_invalidated_at == null
+    && String(row?.verification_method ?? '').split(',').some(method => method.startsWith('codex_hook_not_trusted:'))
+  if (hostRecognitionRejected && !['missing','conflict'].includes(state)) state = 'confirmation_required'
+  const hostRecognitionVerified = configurationVerified && row?.verification_status === 'verified'
+    && row.verification_invalidated_at == null
+    && (state === 'verified' || String(row.verification_method ?? '').split(',').includes('codex_user_layer_trust_receipt_present'))
   return {
     key,
     state,
+    configurationVerified,
+    ...(typeof row?.artifact_id === 'string' && typeof row.owned_fragment_hash === 'string' ? {
+      configurationFingerprint: sha256Json([row.artifact_id, row.owned_fragment_hash, row.configuration_applied_at]),
+    } : {}),
+    configurationAppliedAt: typeof row?.configuration_applied_at === 'string' ? row.configuration_applied_at : null,
+    hostRecognitionVerified,
+    hostRecognitionRejected,
+    hostRecognitionObservedAt: typeof row?.verification_observed_at === 'string' ? row.verification_observed_at : null,
     implementationTypes: (implementedArtifactTypes?.[key] ?? declaration.artifactTypes).map(value => String(value)),
     targetLabel: redactPath(typeof row?.target_path === 'string' ? row.target_path : null, homeDir),
     lastVerifiedAt: typeof row?.artifact_last_verified_at === 'string'
@@ -3331,7 +3973,7 @@ function durableApplyTask(task: DurableApplyTaskRow, homeDir: string): AgentInte
     }
     return [{
       installationId: item.installation_id,
-      status,
+      status: item.superseded_by_run_id && status === 'failed' ? 'superseded' as const : status,
       ...(parsed.completion === 'disconnected' || parsed.completion === 'detached_shared_visible'
         ? { completion: parsed.completion } : {}),
       ...(typeof parsed.reason === 'string' ? { reason: parsed.reason } : {}),
@@ -3339,7 +3981,7 @@ function durableApplyTask(task: DurableApplyTaskRow, homeDir: string): AgentInte
   })
   const exactRunningInstallationIds = task.items.flatMap(item => {
     const run = exactDurableItemRun(item)
-    return run && RUNNING_APPLY_STATES.has(run.state) ? [item.installation_id] : []
+    return run && isRunningApplyRun(run) ? [item.installation_id] : []
   })
   const pendingInstallationIds = [...new Set([
     ...task.items
@@ -3433,7 +4075,7 @@ function overlayRecoveredRun(
   run: ApplyTaskRunRow,
   homeDir: string,
 ): AgentIntegrationApplyTaskDto {
-  const running = RUNNING_APPLY_STATES.has(run.state)
+  const running = isRunningApplyRun(run)
   const result = recoveredApplyResult(run, homeDir)
   const results = task.results.filter(item => item.installationId !== run.installation_id)
   if (result) results.push(result)
@@ -3472,8 +4114,12 @@ const RUNNING_APPLY_STATES = new Set([
   'compensating',
 ])
 
+function isRunningApplyRun(run: ApplyTaskRunRow): boolean {
+  return RUNNING_APPLY_STATES.has(run.state) && !isPausedVerifiedRun(run)
+}
+
 function recoveredApplyTask(run: ApplyTaskRunRow, homeDir: string): AgentIntegrationApplyTaskDto {
-  const running = RUNNING_APPLY_STATES.has(run.state)
+  const running = isRunningApplyRun(run)
   const result = recoveredApplyResult(run, homeDir)
   return {
     id: `agent_recovered_${createHash('sha256').update(run.id).digest('hex').slice(0, 24)}`,
@@ -3488,7 +4134,8 @@ function recoveredApplyTask(run: ApplyTaskRunRow, homeDir: string): AgentIntegra
 }
 
 function recoveredApplyResult(run: ApplyTaskRunRow, homeDir: string): AgentIntegrationApplyItemDto | null {
-  if (RUNNING_APPLY_STATES.has(run.state)) return null
+  if (isRunningApplyRun(run)) return null
+  if (isPausedVerifiedRun(run)) return { installationId: run.installation_id, status: 'paused', reason: 'disabled', runId: run.id }
   if (run.state === 'committed') {
     return { installationId: run.installation_id, status: 'committed', runId: run.id }
   }
@@ -3509,7 +4156,7 @@ function recoveredApplyResult(run: ApplyTaskRunRow, homeDir: string): AgentInteg
       ...(run.failure_code ? { reason: run.failure_code } : {}),
     }
   }
-  if (run.state === 'cancelled' && ['superseded_by_disconnect','superseded_by_confirmed_generation'].includes(run.failure_code ?? '')) {
+  if (run.state === 'cancelled' && ['superseded_by_disconnect','superseded_by_confirmed_generation','superseded_by_same_generation_repair'].includes(run.failure_code ?? '')) {
     return {
       installationId: run.installation_id,
       status: 'superseded',
@@ -3861,4 +4508,46 @@ function statusRank(status: AgentIntegrationInstallationDto['statusGroup']): num
     available: 6,
     disconnected: 7,
   })[status]
+}
+
+function connectionMemberIdentityHash(members: readonly AgentInstallationRow[]): string {
+  return sha256Json(members.map(row => [row.id, row.install_key, row.agent_id, row.config_root, row.profile_id]).sort((a,b) => String(a[0]).localeCompare(String(b[0]))))
+}
+
+function isApprovedConnectionDisconnect(original: CachedPlanBundle, fresh: CachedPlanBundle, id: string): boolean {
+  const before = original.items.find(item => item.installation.id === id)
+  const after = fresh.items.find(item => item.installation.id === id)
+  if (!before || !after) return !before && !after && sha256Json(original.bridgeOnlyItems?.find(item => item.installation.id === id) ?? null)
+    === sha256Json(fresh.bridgeOnlyItems?.find(item => item.installation.id === id) ?? null)
+  if (sha256Json(before.installation) !== sha256Json(after.installation) || before.trustMode !== after.trustMode
+    || sha256Json(before.prepared.componentKeys) !== sha256Json(after.prepared.componentKeys)) return false
+  const mutationKey = ({ id: _id, containerPreconditionHash: _container, ...mutation }: PreparedCoordinatorPlan['executionPlan']['mutations'][number]) => {
+    void _id; void _container
+    return sha256Json(mutation)
+  }
+  const approved = before.prepared.executionPlan.mutations
+  const next = after.prepared.executionPlan.mutations
+  if (next.some(mutation => !approved.some(prior => mutationKey(prior) === mutationKey(mutation)))) return false
+  const actions = after.prepared.adapterPlan.requiredUserActionDetails ?? []
+  const approvedManualRemoval = (action: typeof actions[number]) => action.kind === 'manual_file_removal'
+    && action.operation === 'disconnect' && approved.some(mutation => mutation.action === 'remove'
+      && mutation.commandCategory === 'file_write' && mutation.componentKey === action.componentKey
+      && mutation.targetPath === action.physicalTarget && before.prepared.inspection.components.some(component =>
+        component.componentKey === action.componentKey && component.observedTarget === action.physicalTarget
+        && component.observedFragmentHash === action.ownedFragmentHash))
+  // Last-consumer document cleanup may become a manual step instead of an
+  // automatic removal. This narrows effects; no new file or command is allowed.
+  if (approved.some(mutation => !next.some(candidate => mutationKey(candidate) === mutationKey(mutation))
+    && !actions.some(action => approvedManualRemoval(action) && action.kind === 'manual_file_removal'
+      && action.componentKey === mutation.componentKey && action.physicalTarget === mutation.targetPath))) return false
+  if (actions.some(action => !approvedManualRemoval(action)
+    && !(before.prepared.adapterPlan.requiredUserActionDetails ?? []).some(prior => sha256Json(prior) === sha256Json(action)))) return false
+  if (after.maintenanceScopes.some(scope => !before.maintenanceScopes.some(prior => sha256Json(prior) === sha256Json(scope))
+    && !actions.some(action => approvedManualRemoval(action) && action.kind === 'manual_file_removal'
+      && action.componentKey === scope.componentKey && action.physicalTarget === scope.targetPath))) return false
+  const owned = (item: CachedPlanItem) => item.prepared.inspection.components.map(component =>
+    [component.componentKey, component.observedTarget, component.observedFragmentHash]).sort((a,b) => String(a[0]).localeCompare(String(b[0])))
+  const diagnostics = (item: CachedPlanItem) => item.prepared.adapterPlan.diagnostics.filter(value =>
+    !['shared_document_consumer_detach', 'managed_text_manual_cleanup_required'].includes(value))
+  return sha256Json(owned(before)) === sha256Json(owned(after)) && sha256Json(diagnostics(before)) === sha256Json(diagnostics(after))
 }

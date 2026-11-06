@@ -160,6 +160,8 @@ export type StatusReason =
   | 'conflict'
   | 'permission'
   | 'verification_failed'
+  | 'automatic_configuration_failed'
+  | 'native_permission_required'
   | 'disconnect_incomplete'
   | 'shared_visibility_remaining'
   | 'user_disabled'
@@ -849,6 +851,8 @@ const NEEDS_ATTENTION_REASONS: readonly StatusReason[] = [
   'conflict',
   'permission',
   'verification_failed',
+  'automatic_configuration_failed',
+  'native_permission_required',
   'disconnect_incomplete',
   'shared_visibility_remaining',
 ]
@@ -868,6 +872,9 @@ export function deriveInstallationStatus(input: InstallationStatusInput): Derive
     return { statusGroup: 'needs_attention', statusReason: 'host_uninstalled', accessLevel, accessIsHistorical }
   }
 
+  if (input.desiredState === 'removed' && input.blockingReasons?.includes('native_permission_required')) {
+    return { statusGroup: 'needs_attention', statusReason: 'native_permission_required', accessLevel, accessIsHistorical }
+  }
   if (input.desiredState === 'removed') {
     if (['planning', 'applying', 'verifying', 'compensating'].includes(input.reconcileState)) {
       return { statusGroup: 'processing', statusReason: 'disconnecting', accessLevel, accessIsHistorical }

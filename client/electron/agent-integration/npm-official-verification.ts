@@ -154,6 +154,7 @@ export type NpmOfficialVerificationFetch = (
 ) => Promise<Response>
 
 export interface NpmOfficialVerificationDependencies {
+  signal?: AbortSignal
   fetch?: NpmOfficialVerificationFetch
   /** Epoch milliseconds used for `checkedAt` and cache freshness. */
   now?: () => number
@@ -317,6 +318,10 @@ export async function verifyNpmOfficialDistribution(
     verifierVersion: NPM_OFFICIAL_VERIFIER_VERSION,
   }
   const flightKey = JSON.stringify([key, executableRelativePath ?? null])
+  deps.signal?.throwIfAborted()
+  // A cancellable queue owns its own single-flight lifetime. Do not attach a
+  // replacement queue to work which the previous owner has already cancelled.
+  if (deps.signal) return runVerification(target, key, executableRelativePath, deps)
   const existing = inFlight.get(flightKey)
   if (existing) return existing
   const running = runVerification(target, key, executableRelativePath, deps)
@@ -364,11 +369,13 @@ async function runVerification(
       checkedAt,
       evidence: outcome.evidence,
     }
+    deps.signal?.throwIfAborted()
     safeCachePut(cache, record)
     return outcome.matched
       ? { status: 'verified', officialFingerprint: outcome.officialFingerprint, checkedAt, evidence: 'registry' }
       : { status: 'mismatch', officialFingerprint: outcome.officialFingerprint, checkedAt }
   } catch (error) {
+    deps.signal?.throwIfAborted()
     if (error instanceof UnsupportedDuringVerification) return { status: 'unsupported', reason: error.reason }
     const failure = error instanceof VerificationFailure
       ? error
@@ -390,6 +397,7 @@ interface PackagePlan {
 }
 
 interface NetworkContext {
+  signal?: AbortSignal
   fetch: NpmOfficialVerificationFetch
   deadline: number
   downloadedBytes: number
@@ -416,12 +424,20 @@ async function verifyAgainstRegistry(
     })),
   ]
   const context: NetworkContext = {
+    signal: deps.signal,
     fetch: fetchImpl,
     deadline: Date.now() + limits.totalTimeoutMs,
     downloadedBytes: 0,
     limits,
   }
 
+  const cancellableStage = async <T>(step: () => Promise<T>): Promise<T> => {
+    deps.signal?.throwIfAborted()
+    const result = await stagingStep(step)
+    deps.signal?.throwIfAborted()
+    return result
+  }
+  deps.signal?.throwIfAborted()
   const workRoot = await createPrivateWorkRoot(deps.tempRoot ?? os.tmpdir())
   try {
     // 1. Official version documents for every package of the exact topology.
@@ -451,7 +467,7 @@ async function verifyAgainstRegistry(
     await fs.mkdir(stageRoot, { mode: 0o700 })
     const staged: Array<{ plan: PackagePlan; stage: StagedNpmPackage }> = []
     for (const [index, plan] of plans.entries()) {
-      const stage = await stagingStep(() => stageNpmTarball(
+      const stage = await cancellableStage(() => stageNpmTarball(
         tarballs[index]!.path, stageRoot, plan.manifestName, metadata[index]!.integrity, plan.installName,
         limits.extraction,
       ))
@@ -469,10 +485,10 @@ async function verifyAgainstRegistry(
       }
     }
 
-    const candidates = await stagingStep(async () => executableCandidates(target, root, executableRelativePath, limits))
+    const candidates = await cancellableStage(async () => executableCandidates(target, root, executableRelativePath, limits))
     if (target.composition?.entryRule === 'copy_platform_binary_v1') {
       const composition = target.composition
-      await stagingStep(() => materializeCopiedPlatformBinary(
+      await cancellableStage(() => materializeCopiedPlatformBinary(
         root.packageRoot,
         candidates[0]!,
         composition,
@@ -486,10 +502,10 @@ async function verifyAgainstRegistry(
     const passiveFs = createPassiveVersionFileSystem()
     const officialFingerprints: string[] = []
     for (const schema of target.candidateSchemas) {
-      if (isLocklessSchema(schema)) await stagingStep(() => removeStagedNpmHiddenLockfile(stageRoot))
+      if (isLocklessSchema(schema)) await cancellableStage(() => removeStagedNpmHiddenLockfile(stageRoot))
       for (const executable of candidates) {
-        const result = await stagingStep(() => inspectPassiveCliVersionForArchitecture(
-          executable, passiveFs, target.architecture,
+        const result = await cancellableStage(() => inspectPassiveCliVersionForArchitecture(
+          executable, passiveFs, target.architecture, deps.signal,
         ))
         if (result.exitCode !== 0 || result.stdout !== target.version
           || result.verifiedPackageProvenance !== target.packageProvenance
@@ -705,6 +721,7 @@ async function request(
   url: string,
   options: { accept: string; maxBytes: number; timeoutMs: number; sink: (chunk: Buffer) => Promise<void> },
 ): Promise<number> {
+  context.signal?.throwIfAborted()
   const budget = Math.min(options.timeoutMs, context.deadline - Date.now())
   if (budget <= 0) throw new VerificationFailure('timeout', 'total_budget_exhausted')
   const controller = new AbortController()
@@ -717,6 +734,12 @@ async function request(
     rejectTimeout(new VerificationFailure('timeout', 'request_timeout'))
   }, budget)
   timer.unref?.()
+  const abort = () => {
+    rejectTimeout(new VerificationFailure('offline', 'request_cancelled'))
+    controller.abort(context.signal?.reason)
+  }
+  context.signal?.addEventListener('abort', abort, { once: true })
+  if (context.signal?.aborted) abort()
   try {
     let response: Response
     try {
@@ -729,7 +752,7 @@ async function request(
       // Abort is advisory for injected transports and some stream adapters. A
       // hung transport must not monopolize the serialized verification queue.
       void pendingResponse.then(late => {
-        if (timedOut) void late.body?.cancel().catch(() => undefined)
+        if (timedOut || controller.signal.aborted) void late.body?.cancel().catch(() => undefined)
       }, () => undefined)
       response = await Promise.race([pendingResponse, timeout])
     } catch {
@@ -771,6 +794,7 @@ async function request(
     return total
   } finally {
     clearTimeout(timer)
+    context.signal?.removeEventListener('abort', abort)
   }
 }
 

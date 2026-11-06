@@ -23,9 +23,9 @@ const allowedReport = {
 
 const safeLock = {
   packages: {
-    'node_modules/brace-expansion': { version: '5.0.8' },
-    'node_modules/a/node_modules/brace-expansion': { version: '1.1.17' },
-    'node_modules/b/node_modules/brace-expansion': { version: '2.1.3' },
+    'node_modules/brace-expansion': { version: '5.0.12' },
+    'node_modules/a/node_modules/brace-expansion': { version: '1.1.21' },
+    'node_modules/b/node_modules/brace-expansion': { version: '2.1.7' },
     'node_modules/react-router': { version: '7.18.2' },
     'node_modules/react-router-dom': { version: '7.18.2' },
   },
@@ -43,10 +43,13 @@ describe('client dependency audit exceptions', () => {
     expect(allowedVulnerability('react-router', vulnerabilities)).toBe(false);
   });
 
-  it('requires the patched brace-expansion release in every major line', () => {
+  it('accepts the patched brace-expansion release in each installed major line', () => {
     expect(() => assertPatchedBraceVersions(safeLock)).not.toThrow();
+  });
+
+  it.each(['1.1.17', '2.1.3', '5.0.8'])('rejects the previously reviewed brace-expansion version %s', (version) => {
     const unsafe = structuredClone(safeLock);
-    unsafe.packages['node_modules/a/node_modules/brace-expansion'].version = '1.1.16';
+    unsafe.packages['node_modules/a/node_modules/brace-expansion'].version = version;
     expect(() => assertPatchedBraceVersions(unsafe)).toThrow(/unexpected brace-expansion/);
   });
 
@@ -76,7 +79,8 @@ it('rejects the vulnerable Electron runtime even when the registry audit feed is
   expect(() => assertReviewedElectronVersion({ packages: { 'node_modules/electron': { version: '41.10.5' } } })).toThrow(/security review/);
   expect(() => assertReviewedElectronVersion({ packages: { 'node_modules/electron': { version: '41.10.7' } } })).toThrow(/security review/);
   expect(() => assertReviewedElectronVersion({ packages: { 'node_modules/electron': { version: '43.8.3' } } })).toThrow(/security review/);
-  expect(() => assertReviewedElectronVersion({ packages: { 'node_modules/electron': { version: '43.8.4' } } })).not.toThrow();
+  expect(() => assertReviewedElectronVersion({ packages: { 'node_modules/electron': { version: '43.8.4' } } })).toThrow(/security review/);
+  expect(() => assertReviewedElectronVersion({ packages: { 'node_modules/electron': { version: '43.8.7' } } })).not.toThrow();
   expect(() => assertReviewedElectronVersion({ packages: {} })).toThrow(/missing/);
 });
 

@@ -1,13 +1,14 @@
 import { databaseMigrationFixture } from '../fixtures/agent-integration/database-migration-fixture.js'
 import { memoryClosureFixture } from '../fixtures/agent-integration/memory-closure-fixture.js'
 import { codexContextRestoreFixture } from '../fixtures/agent-integration/codex-context-restore-fixture.js'
+import { historical094RequirementsPath, writeHistorical094HostManifest } from '../fixtures/agent-integration/historical-host-acceptance.js'
 // @ts-expect-error acceptance-only ESM helper
 import { codexNativeLifecycleEvidenceHash } from '../../scripts/codex-context-restore-evidence.mjs'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // @ts-expect-error local plain-ESM capture CLI has no declaration file
 import {
@@ -21,6 +22,8 @@ import {
   recordAgentDatabaseRecovery,
   runAgentHostAcceptanceCaptureCli,
 } from '../../scripts/capture-agent-integration-host-acceptance.mjs'
+// @ts-expect-error local plain-ESM verifier has no declaration file
+import * as hostVerifier from '../../scripts/verify-agent-integration-host-acceptance.mjs'
 // @ts-expect-error local plain-ESM verifier has no declaration file
 import {
   distributionArtifactReceiptSha256,
@@ -37,6 +40,7 @@ const SOURCE_COMMIT = 'a'.repeat(40)
 const OBSERVED_AT = '2026-09-04T10:00:00.000Z'
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
@@ -82,8 +86,12 @@ function fixtureDistributionProof(
   }
 }
 
-function initialized() {
+function initialized(appVersion = '0.2.95') {
   const root = makeRoot()
+  if (appVersion === '0.2.94') {
+    const historical = loadAgentHostAcceptanceRequirements(historical094RequirementsPath, writeHistorical094HostManifest(root))
+    vi.spyOn(hostVerifier, 'loadAgentHostAcceptanceRequirements').mockReturnValue(historical)
+  }
   const workspace = path.join(root, 'capture')
   const requirements = loadAgentHostAcceptanceRequirements()
   const candidateMetadataPathsByArchitecture = Object.fromEntries(requirements.releaseMacArchitectures.map((architecture: string) => [architecture, writeJson(path.join(root, `candidate-${architecture}.json`), {
@@ -258,7 +266,7 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
   it('requires physical candidate apps after the release contract is frozen', () => {
     const root = makeRoot()
     const requirements = loadAgentHostAcceptanceRequirements()
-    expect(requirements.upgradeFromAppVersions).toEqual(['0.2.89','0.2.90','0.2.91','0.2.92','0.2.93'])
+    expect(requirements.upgradeFromAppVersions).toEqual(['0.2.89','0.2.90','0.2.91','0.2.92','0.2.93','0.2.94'])
     const candidatePath = writeJson(path.join(root, 'candidate.json'), {
       version: requirements.appVersion,
       sourceCommit: SOURCE_COMMIT,
@@ -284,7 +292,7 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
     fs.writeFileSync(fakeAgentConfig, '{"userOwned":true}\n')
     const before = fs.readFileSync(fakeAgentConfig)
     const requirements = loadAgentHostAcceptanceRequirements()
-    expect(requirements.upgradeFromAppVersions).toEqual(['0.2.89','0.2.90','0.2.91','0.2.92','0.2.93'])
+    expect(requirements.upgradeFromAppVersions).toEqual(['0.2.89','0.2.90','0.2.91','0.2.92','0.2.93','0.2.94'])
     const candidatePath = writeJson(path.join(root, 'candidate.json'), {
       version: requirements.appVersion,
       sourceCommit: SOURCE_COMMIT,
@@ -303,19 +311,21 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
       testOnlyAllowUnacceptedRelease: true,
     })
     expect(result).toMatchObject({
-      appVersion: '0.2.94',
+      appVersion: '0.2.95',
       recordedStepCount: 0,
-      requiredUpgradePaths: [],
-      requiredDatabaseRecoveryPaths: [],
-      migrationAcceptanceDeferral: requirements.migrationAcceptanceDeferral,
+      deferredTargets: [],
+      requiredRealHostTargetCount: requirements.targets.length + requirements.customTargets.length,
+      requiredDatabaseRecoveryPaths: ['observed_schema41'],
     })
+    expect(result.requiredUpgradePaths).toHaveLength(result.targetCount * 6)
+    expect(result.requiredUpgradePaths.filter((key: string) => key.endsWith('/0.2.94'))).toHaveLength(result.targetCount)
     const state = JSON.parse(fs.readFileSync(path.join(workspace, '.capture-state.json'), 'utf8'))
     const restartBoundTargets = state.entries.filter((target: { realHostDeferral: unknown }) => !target.realHostDeferral)
     expect(restartBoundTargets.every((target: { requiredSteps: string[] }) => (
       target.requiredSteps.includes('restart_persistence')
     ))).toBe(true)
-    expect(state.migrationAcceptanceDeferral).toEqual(requirements.migrationAcceptanceDeferral)
-    expect(state.upgradeFromAppVersions).toHaveLength(5)
+    expect(state).not.toHaveProperty('migrationAcceptanceDeferral')
+    expect(state.upgradeFromAppVersions).toHaveLength(6)
     expect(fs.readFileSync(fakeAgentConfig)).toEqual(before)
     expect(fs.statSync(path.join(workspace, '.capture-state.json')).mode & 0o777).toBe(0o600)
   })
@@ -323,7 +333,7 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
   it.each([
     ['standard_mcp_servers','tidemind'], ['nested_mcp_servers','tidemind_nested'], ['opencode_mcp','tidemind_opencode'],
   ])('keeps deferred user-owned %s upgrades without runtime metadata; activity validator remains strict', (schemaKind, selectorKey) => {
-    const { root, workspace } = initialized()
+    const { root, workspace } = initialized('0.2.94')
     const targetKey = `manual_mcp_client:${schemaKind}:${selectorKey}`
     const metadata = {
       targetKey, targetId: 'manual_mcp_client', hostVersion: 'custom-123',
@@ -409,7 +419,7 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
   })
 
   it.each(['codex-cli', 'cursor-desktop'])('records Custom config-root only for a supported source: %s', catalogId => {
-    const { root, workspace, requirements } = initialized()
+    const { root, workspace, requirements } = initialized('0.2.94')
     const unsupported = requirements.entries.find((entry: { catalogId: string }) => entry.catalogId === catalogId)
     expect(unsupported.customConfigRoot.supported).toBe(catalogId === 'cursor-desktop')
     const acceptedDistribution = unsupported.officialDistributions[0]
@@ -716,7 +726,7 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
         targetKey: target.targetKey,
         targetId: target.targetId,
         fromAppVersion,
-        toAppVersion: '0.2.94',
+        toAppVersion: state.appVersion,
         sourceCommit: state.sourceCommit,
         releaseContractSha256: state.releaseContractSha256,
         candidateBundleSha256: state.candidateAppsByArchitecture[target.environment.architecture].bundleSha256,
@@ -751,8 +761,7 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
       evidencePaths: [evidencePath, ...paths],
     })
     expect(agentHostAcceptanceCaptureStatus(workspace)).toMatchObject({
-      requiredUpgradePaths: [],
-      migrationAcceptanceDeferral: {status:'deferred_to_installation'},
+      requiredUpgradePaths: expect.arrayContaining([`${targetId}/0.2.94`]),
       recordedUpgradePaths: [`${targetId}/0.2.89`],
     })
     expect(() => recordAgentHostAcceptanceUpgrade({
@@ -787,7 +796,7 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
   })
 
   it('permits explicitly deferred migrations but still requires every Codex step', () => {
-    const { root, workspace } = initialized()
+    const { root, workspace } = initialized('0.2.94')
     const statePath = path.join(workspace, '.capture-state.json')
     const state = JSON.parse(fs.readFileSync(statePath, 'utf8'))
     // Exercise the completeness boundary in isolation; these are not real evidence.
@@ -840,7 +849,7 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
 
 describe('0.2.94 explicit deferred real-host scope', () => {
   it('does not count metadata-only deferred targets as completed and refuses their passed steps', () => {
-    const { root, workspace, requirements } = initialized()
+    const { root, workspace, requirements } = initialized('0.2.94')
     expect(() => recordTargetMetadata(workspace, root, 'cursor-desktop')).toThrow(/deferred target does not accept real-host metadata/)
     const state = JSON.parse(fs.readFileSync(path.join(workspace, '.capture-state.json'), 'utf8'))
     const target = state.entries.find((entry: {targetId: string}) => entry.targetId === 'cursor-desktop')

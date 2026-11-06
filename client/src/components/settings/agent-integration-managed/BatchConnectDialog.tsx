@@ -615,6 +615,13 @@ export function BatchConnectDialog({
                 {confirmedPreview.installations.map(item => (
                   <section key={item.installationId} className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-3">
                     <h4 className="text-xs font-medium text-gray-200">{item.displayName}</h4>
+                    {item.nativePermissions?.map(permission => (
+                      <div key={permission} className="mt-2 rounded-lg border border-amber-400/20 bg-amber-400/[0.06] p-2 text-xs leading-relaxed text-amber-200">
+                        <p>{t(`agent.managed.nativePermissions.${permission}`)}</p>
+                        <p className="mt-1">{t('agent.managed.nativePermissionVersion', { version: item.hostVersion ?? '—' })}</p>
+                        {item.nativePlugin && <p className="mt-1 break-all font-mono">{item.nativePlugin.name} · {item.nativePlugin.version}<br />{item.nativePlugin.sourceLabel}</p>}
+                      </div>
+                    ))}
                     <p className="mt-1 text-xs text-gray-400">
                       {installationIdentityLabel(snapshot, item.installationId, t('agent.managed.defaultProfile'))}
                     </p>
@@ -775,7 +782,8 @@ export function BatchConnectDialog({
               disabled={loading}
               className="theme-confirm-primary rounded-lg px-4 py-2 text-xs font-medium disabled:opacity-40"
             >
-              {t('agent.managed.connectCount', { count: confirmedIds.length })}
+              {confirmedPreview?.installations.some(item => item.nativePermissions?.length)
+                ? t('agent.managed.authorizeNativeAndConnect') : t('agent.managed.connectCount', { count: confirmedIds.length })}
             </button>
           )}
           {step === 'execute' && applyTask?.state !== 'running' && !loading && (

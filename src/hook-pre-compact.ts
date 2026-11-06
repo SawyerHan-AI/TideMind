@@ -20,6 +20,7 @@
  * 统一走 hook-output.ts；Codex PreCompact 仅输出 {} 观察生命周期，不能注入此提示。
  */
 
+import { handleDiagnosticHook, isDiagnosticRequested } from './agent-diagnostic-runtime.js';
 import { writeHookOutputBeforeEvidence, type HookEventName } from './hook-output.js';
 import { loadConfig, ensureDataDirs } from './config.js';
 import { getDb, closeDb } from './db/connection.js';
@@ -68,6 +69,7 @@ function parseArgs(): { agentId: string; tool: string; activityGenerationToken: 
 async function main(): Promise<void> {
   // parseArgs 已保证 tool 可用(不再因 agentId 缺失抛错)
   const { agentId, tool, activityGenerationToken, eventName } = parseArgs();
+  if (isDiagnosticRequested() && await handleDiagnosticHook('pre_compact', { agentId, tool, activityGenerationToken }, eventName)) return;
 
   const content = `[TIDE MIND — PRE-COMPACT CHECK]
 

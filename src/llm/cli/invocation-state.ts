@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { updateCliConnectionEnvironment } from '../../db/connections.js';
+import { getAuthBinding, type AuthBinding } from '../../db/model-discovery.js';
+import type { CliEnvironmentCheck } from './readiness.js';
+import { CLI_PROCESS_EXIT_UNCONFIRMED } from './errors.js';
 import type { CliProviderType } from './types.js';
 import type { CliCapacityLease } from './capacity-lease.js';
 
@@ -221,10 +225,10 @@ export function reconcileCliRuntimeState(
         db.prepare(`
           UPDATE cli_invocations
           SET outcome = 'ambiguous',
-              error_kind = 'ambiguous_outcome',
+              error_kind = ?,
               finished_at = ?
           WHERE id = ? AND outcome = 'running'
-        `).run(new Date(nowMs).toISOString(), invocation.id);
+        `).run(CLI_PROCESS_EXIT_UNCONFIRMED, new Date(nowMs).toISOString(), invocation.id);
         db.prepare(`
           UPDATE model_connections
           SET status = 'ambiguous',
@@ -295,21 +299,27 @@ export function reconcileCliRuntimeState(
         .run(lease.account_scope);
     }
 
-    // A crash during check/test leaves a transient status. Settle it from the
-    // environment facts only; per-model evidence lives in llm_model_observations
-    // and is never promoted to a connection-level verdict here.
+    // A crash during check/test must restore any old ambiguous pause before
+    // considering environment facts. A transient UI status is not a resolution.
     const unstable = db.prepare(`
-      SELECT id, environment_checked_at
-      FROM model_connections
-      WHERE status IN ('checking', 'testing') AND archived = 0
-    `).all() as Array<{ id: string; environment_checked_at: string | null }>;
+      SELECT connection.id, connection.environment_checked_at,
+        EXISTS (SELECT 1 FROM cli_invocations invocation
+          WHERE invocation.connection_id = connection.id
+            AND invocation.outcome = 'ambiguous' AND invocation.resolution IS NULL) AS unresolved
+      FROM model_connections connection
+      WHERE connection.archived = 0
+        AND (connection.status IN ('checking', 'testing')
+          OR (connection.provider_type IN ('codex-cli', 'claude-cli')
+            AND connection.status IN ('online', 'untested', 'degraded') AND unresolved))
+    `).all() as Array<{ id: string; environment_checked_at: string | null; unresolved: number }>;
     for (const connection of unstable) {
-      const status = connection.environment_checked_at ? 'untested' : 'unconfigured';
+      const status = connection.unresolved ? 'ambiguous'
+        : connection.environment_checked_at ? 'untested' : 'unconfigured';
       db.prepare(`
         UPDATE model_connections
-        SET status = ?, status_reason = NULL
-        WHERE id = ? AND status IN ('checking', 'testing')
-      `).run(status, connection.id);
+        SET status = ?, status_reason = ?
+        WHERE id = ?
+      `).run(status, connection.unresolved ? '上次调用结果不明，后台调用已暂停' : null, connection.id);
       result.stabilizedConnections.push(connection.id);
     }
   }).immediate();
@@ -324,6 +334,159 @@ function isProcessAlive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
+}
+
+export type CliResumeFutureCallsBlockReason = 'confirmation_required' | 'not_ambiguous'
+  | 'operation_in_progress' | 'previous_work_active' | 'environment_check_failed'
+  | 'binding_unconfirmed' | 'binding_changed' | 'state_changed' | 'cancelled' | 'recovery_failed'
+  | 'process_exit_unconfirmed';
+
+type CliResumeFutureCallsBlocked = { status: 'blocked'; reason: CliResumeFutureCallsBlockReason };
+
+export type CliResumeFutureCallsResult =
+  | CliResumeFutureCallsBlocked
+  | { status: 'untested'; resolvedInvocationCount: number };
+
+type FutureCallResumeSnapshot = {
+  status: 'ready';
+  connectionId: string;
+  providerType: CliProviderType;
+  binding: AuthBinding;
+  invocationIds: string[];
+  startedAt: number;
+};
+
+function readUnresolvedInvocations(db: Database.Database, connectionId: string): string[] {
+  const rows = db.prepare(`
+    SELECT id FROM cli_invocations
+    WHERE connection_id = ? AND outcome = 'ambiguous' AND resolution IS NULL
+    ORDER BY id
+  `).all(connectionId) as Array<{ id: string }>;
+  return rows.map(row => row.id);
+}
+
+export function hasUnresolvedCliInvocation(db: Database.Database, connectionId: string): boolean {
+  return Boolean(db.prepare(`
+    SELECT 1 FROM cli_invocations
+    WHERE connection_id = ? AND outcome = 'ambiguous' AND resolution IS NULL LIMIT 1
+  `).get(connectionId));
+}
+
+function cliResumeWorkPending(
+  db: Database.Database,
+  connectionId: string,
+  accountScope: string,
+  nowMs: number,
+): boolean {
+  return Boolean(db.prepare(`
+    SELECT 1 WHERE EXISTS (
+      SELECT 1 FROM cli_invocations WHERE connection_id = @connectionId AND outcome = 'running'
+    ) OR EXISTS (
+      SELECT 1 FROM cli_capacity_leases lease
+      WHERE lease.connection_id = @connectionId OR lease.account_scope = @accountScope
+        OR EXISTS (SELECT 1 FROM cli_invocations invocation
+          WHERE invocation.connection_id = @connectionId AND invocation.outcome = 'ambiguous'
+            AND invocation.resolution IS NULL AND invocation.account_scope = lease.account_scope)
+    ) OR EXISTS (
+      SELECT 1 FROM llm_connection_probe_leases lease
+      JOIN llm_connection_health health ON health.scope_id = lease.scope_id
+      WHERE health.connection_id = @connectionId AND lease.expires_at > @nowMs
+    ) OR EXISTS (
+      SELECT 1 FROM pending_digests digest
+      JOIN cli_invocations invocation ON invocation.task_id = digest.id
+        OR invocation.id = digest.ambiguous_invocation_id
+      WHERE invocation.connection_id = @connectionId AND invocation.outcome = 'ambiguous'
+        AND invocation.resolution IS NULL AND digest.status IN ('pending', 'processing')
+    )
+  `).get({ connectionId, accountScope, nowMs }));
+}
+
+/** Freeze the exact old block before checking the environment. Never repair or replay it here. */
+export function prepareCliFutureCallResume(
+  db: Database.Database,
+  connectionId: string,
+  startedAt = Date.now(),
+): FutureCallResumeSnapshot | CliResumeFutureCallsBlocked {
+  return db.transaction((): FutureCallResumeSnapshot | CliResumeFutureCallsBlocked => {
+    const connection = db.prepare(`
+      SELECT provider_type FROM model_connections WHERE id = ? AND status = 'ambiguous'
+        AND archived = 0 AND provider_type IN ('codex-cli', 'claude-cli')
+    `).get(connectionId) as { provider_type: CliProviderType } | undefined;
+    if (!connection) return { status: 'blocked', reason: 'not_ambiguous' };
+    const invocationIds = readUnresolvedInvocations(db, connectionId);
+    if (invocationIds.length === 0) return { status: 'blocked', reason: 'not_ambiguous' };
+    const binding = getAuthBinding(db, connectionId);
+    if (binding?.scopeState !== 'known' || !binding.cliGeneration) {
+      return { status: 'blocked', reason: 'binding_unconfirmed' };
+    }
+    if (db.prepare(`
+      SELECT 1 FROM cli_invocations WHERE error_kind = ? AND (connection_id = ? OR account_scope = ?)
+      LIMIT 1
+    `).get(CLI_PROCESS_EXIT_UNCONFIRMED, connectionId, binding.scopeKey)) {
+      return { status: 'blocked', reason: 'process_exit_unconfirmed' };
+    }
+    if (cliResumeWorkPending(db, connectionId, binding.scopeKey, startedAt)) {
+      return { status: 'blocked', reason: 'previous_work_active' };
+    }
+    return { status: 'ready', connectionId, providerType: connection.provider_type, binding, invocationIds, startedAt };
+  })();
+}
+
+/** Resume new calls only. Preserve the old outcome, model observations and queued work. */
+export function resumeCliFutureCalls(
+  db: Database.Database,
+  prepared: FutureCallResumeSnapshot,
+  environment: CliEnvironmentCheck,
+): CliResumeFutureCallsResult {
+  const { connectionId, providerType, binding, invocationIds, startedAt } = prepared;
+  if (environment.auth.scopeState !== 'known') return { status: 'blocked', reason: 'binding_unconfirmed' };
+  if (environment.providerType !== providerType || environment.auth.providerType !== providerType
+    || environment.auth.scopeKey !== binding.scopeKey || environment.auth.method !== binding.authMethod
+    || environment.auth.accountScope !== binding.scopeKey
+    || environment.cliGeneration !== binding.cliGeneration) {
+    return { status: 'blocked', reason: 'binding_changed' };
+  }
+  return db.transaction((): CliResumeFutureCallsResult => {
+    const current = prepareCliFutureCallResume(db, connectionId);
+    if (current.status === 'blocked') {
+      return current.reason === 'not_ambiguous' ? { status: 'blocked', reason: 'state_changed' } : current;
+    }
+    if (current.providerType !== providerType || current.binding.authEpoch !== binding.authEpoch
+      || current.binding.scopeKey !== binding.scopeKey || current.binding.authMethod !== binding.authMethod
+      || current.binding.cliGeneration !== binding.cliGeneration) {
+      return { status: 'blocked', reason: 'binding_changed' };
+    }
+    if (current.invocationIds.length !== invocationIds.length
+      || current.invocationIds.some((id, index) => id !== invocationIds[index])
+      || db.prepare(`
+        SELECT 1 FROM llm_connection_health WHERE connection_id = ?
+          AND last_error_kind = 'ambiguous_outcome' AND last_error_at > ?
+      `).get(connectionId, startedAt)) {
+      return { status: 'blocked', reason: 'state_changed' };
+    }
+    const resolved = db.prepare(`
+      UPDATE cli_invocations SET resolution = 'user_resumed_future_calls'
+      WHERE connection_id = ? AND outcome = 'ambiguous' AND resolution IS NULL
+    `).run(connectionId);
+    updateCliConnectionEnvironment(db, connectionId, {
+      status: 'untested',
+      statusReason: null,
+      cliPath: environment.resolved.path,
+      cliVersion: environment.resolved.version,
+      authMethod: environment.auth.method,
+      authFingerprint: environment.authFingerprint,
+      cliGeneration: environment.cliGeneration,
+      environmentCheckedAt: environment.checkedAt,
+    });
+    db.prepare(`
+      UPDATE llm_connection_health
+      SET circuit_state = 'closed', failure_count = 0, opened_at = NULL,
+          last_error_kind = NULL, last_error_message = NULL, last_error_at = NULL,
+          needs_user_action = 0, retry_at = NULL, updated_at = ?
+      WHERE connection_id = ? AND provider_type = ? AND last_error_kind = 'ambiguous_outcome'
+    `).run(environment.checkedAt, connectionId, providerType);
+    return { status: 'untested', resolvedInvocationCount: resolved.changes };
+  }).immediate();
 }
 
 export function resolveAmbiguousConnection(

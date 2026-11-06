@@ -200,7 +200,8 @@ jobs:
             --app-version "$version" \
             --source-commit "$source_commit" \
             "${verifier_args[@]}"
-          if [ "$version" = '0.2.94' ]; then
+          subscription_required="$(node --input-type=module -e 'import { requiresSubscriptionAcceptance } from "./scripts/release.mjs"; console.log(requiresSubscriptionAcceptance(process.argv[1]))' "$version")"
+          if [ "$subscription_required" = true ]; then
             node scripts/verify-local-subscription-acceptance.mjs \
               --index "release-evidence/local-subscription-acceptance/$version/index.json" \
               --app-version "$version" --source-commit "$source_commit" \

@@ -2185,6 +2185,16 @@ const MIGRATIONS: Migration[] = [
       db.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES ('schema_lineage', ?)").run(RECOVERY_LINEAGE);
     },
   },
+  {
+    version: 46,
+    description: 'Agent默认接入授权来源与精确策略上下文',
+    up: (db) => { ensureAgentIntegrationSchema(db); },
+  },
+  {
+    version: 47,
+    description: 'Agent隔离诊断能力与提交额度账本',
+    up: (db) => { ensureAgentIntegrationSchema(db); },
+  },
 ];
 
 /**

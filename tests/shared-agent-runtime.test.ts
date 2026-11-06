@@ -26,6 +26,26 @@ describe('shared identity runtime carrier',()=>{
       VALUES ('mutation','run_cli','op','installation_cli','lifecycle','artifact_cli','domain','/fixture/cli','owned','test','test','committed','2026-01-01','now','now');`)
  })
  afterEach(()=>db.close())
+ it('pauses the shared connection while keeping its bridge usable and restores only its own members',()=>{
+  const repository=new AgentIntegrationRepository(db)
+  repository.setMemberUserIntent('installation_desktop','disabled','2026-11-06T01:00:00Z')
+  const paused=repository.pauseConnection('binding:binding','2026-11-06T01:01:00Z')
+  expect(paused.pausedMemberIds).toEqual(['installation_cli'])
+  expect(paused.excludedMemberIds).toEqual(['installation_desktop'])
+  expect(evaluateBridgeAdmission(db,{agentId:'cli',activityGenerationToken:'generation_cli',componentKey:'lifecycle'})).toEqual({allowed:true})
+  repository.resumeConnection('binding:binding','2026-11-06T01:02:00Z')
+  expect(repository.getInstallation('installation_cli')?.desired_state).toBe('managed')
+  expect(repository.getInstallation('installation_desktop')?.desired_state).toBe('disabled')
+  expect(repository.connectionIntent('installation_cli').revision).toBe(3)
+ })
+ it('does not resurrect a member removed after a shared pause',()=>{
+  const repository=new AgentIntegrationRepository(db)
+  repository.pauseConnection('binding:binding','2026-11-06T01:00:00Z')
+  repository.setInstallationIntent('installation_desktop','removed','2026-11-06T01:01:00Z','user_disconnect')
+  repository.resumeConnection('binding:binding','2026-11-06T01:02:00Z')
+  expect(repository.getInstallation('installation_desktop')?.desired_state).toBe('removed')
+  expect(repository.getInstallation('installation_cli')?.desired_state).toBe('managed')
+ })
  const request={agentId:'cli',activityGenerationToken:'generation_cli',componentKey:'lifecycle' as const}
  it('keeps the carrier alive after its original owner disconnects but stops after the last consumer',()=>{
   expect(evaluateBridgeAdmission(db,request)).toEqual({allowed:true})
@@ -117,6 +137,50 @@ describe('shared identity runtime carrier',()=>{
   expect(repository.sharedConnectionStatus('installation_cli')?.status).toBe('inactive')
   db.exec("UPDATE agent_installations SET desired_state='removed' WHERE agent_id='cli'")
   expect(repository.sharedConnectionStatus('installation_cli')?.status).toBe('inactive')
+ })
+
+ it('preserves first shared observation while real repeated calls renew last observation',()=>{
+  const first='2026-01-02T00:00:00.000Z', last='2026-01-03T00:00:00.000Z'
+  const input={...request,signalName:'session_start' as const,tideMindVersion:'test',hostVariant:'shared'}
+  recordHostActivityEvidence(db,{...input,observedAt:first})
+  recordHostActivityEvidence(db,{...input,observedAt:last})
+  recordHostActivityEvidence(db,{...input,observedAt:first})
+  const row=db.prepare("SELECT created_at,payload_json FROM agent_integration_events WHERE kind='shared_agent_activity'").get() as {created_at:string;payload_json:string}
+  expect(row.created_at).toBe(first)
+  expect(JSON.parse(row.payload_json)).toMatchObject({firstObservedAt:first,lastObservedAt:last})
+  expect(db.prepare('SELECT COUNT(*) AS n FROM agent_host_activity_evidence').get()).toEqual({n:0})
+ })
+ it('projects only fresh read and write calls on a current carrier without inventing host evidence',()=>{
+  db.pragma('foreign_keys=OFF')
+  db.exec("UPDATE installation_components SET component_key='memory_tools'; UPDATE artifact_consumers SET component_key='memory_tools'; UPDATE projection_mutations SET component_key='memory_tools'; UPDATE managed_artifacts SET component_type='mcp'; UPDATE reconcile_runs SET prepared_plan_json=json_set(prepared_plan_json,'$.componentKeys',json('[\"memory_tools\"]'))")
+  db.pragma('foreign_keys=ON')
+  const repo=new AgentIntegrationRepository(db)
+  const at='2026-01-03T00:00:00.000Z'
+  const input={agentId:'cli',activityGenerationToken:'generation_cli',componentKey:'memory_tools' as const,hostVariant:'shared',tideMindVersion:'test',observedAt:'2026-01-02T00:00:00.000Z'}
+  recordHostActivityEvidence(db,{...input,signalName:'brain_prepare'})
+  expect(repo.sharedConnectionEvidence('installation_cli',at)?.components.memory_tools.signalsComplete).toBe(false)
+  recordHostActivityEvidence(db,{...input,signalName:'brain_recall'})
+  expect(repo.sharedConnectionEvidence('installation_cli',at)?.components.memory_tools.signalsComplete).toBe(false)
+  recordHostActivityEvidence(db,{...input,signalName:'brain_digest'})
+  const evidence=repo.sharedConnectionEvidence('installation_desktop',at)!
+  expect(evidence.components.memory_tools.signalsComplete).toBe(true)
+  expect(evidence.components.lifecycle.signalsComplete).toBe(false)
+  expect(evidence.memberIds).toEqual(['installation_cli','installation_desktop'])
+  expect(repo.sharedConnectionEvidence('installation_cli','2026-03-03T00:00:00.000Z')?.components.memory_tools.signalsComplete).toBe(false)
+  db.exec(`INSERT INTO projection_mutations(id,run_id,operation_id,installation_id,component_key,artifact_id,mutation_domain,target,after_hash,idempotency_strategy,readback_strategy,state,committed_at,created_at,updated_at)
+    VALUES ('replacement','run_desktop','replacement','installation_desktop','memory_tools','artifact_cli','domain','/fixture/cli','owned','test','test','committed','2026-01-02','now','now')`)
+  const replacement={...input,activityGenerationToken:'generation_desktop'}
+  recordHostActivityEvidence(db,{...replacement,signalName:'brain_digest'})
+  expect(repo.sharedConnectionEvidence('installation_desktop',at)?.components.memory_tools.signalsComplete).toBe(false)
+  expect(repo.sharedConnectionEvidence('installation_desktop',at)?.components.memory_tools.configurationRevision).not.toBe(evidence.components.memory_tools.configurationRevision)
+  recordHostActivityEvidence(db,{...replacement,signalName:'brain_recall'})
+  expect(repo.sharedConnectionEvidence('installation_desktop',at)?.components.memory_tools.signalsComplete).toBe(true)
+
+  db.exec("UPDATE agent_installations SET desired_state='removed',bridge_state='stopped' WHERE agent_id='cli'; UPDATE artifact_consumers SET state='removed' WHERE installation_id='installation_cli'; UPDATE agent_consents SET status='revoked' WHERE id='consent_cli'")
+  expect(repo.sharedConnectionEvidence('installation_desktop',at)?.components.memory_tools.signalsComplete).toBe(true)
+  db.exec("UPDATE agent_consents SET status='revoked'")
+  expect(repo.sharedConnectionEvidence('installation_desktop',at)?.components.memory_tools.signalsComplete).toBe(false)
+  expect(db.prepare('SELECT COUNT(*) AS n FROM agent_host_activity_evidence').get()).toEqual({n:0})
  })
 
 })

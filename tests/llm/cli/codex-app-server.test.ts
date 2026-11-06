@@ -2,6 +2,7 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -212,6 +213,15 @@ async function fakeCodex(config: FakeConfig): Promise<{
   };
 }
 
+function isolatedCodexOptions(fake: { resolved: ResolvedCli; dataDir: string }) {
+  return {
+    resolved: fake.resolved,
+    dataDir: fake.dataDir,
+    sourceEnv: { HOME: fake.dataDir },
+    systemConfigPaths: [],
+  };
+}
+
 function receivedRequests(entries: Array<Record<string, unknown>>) {
   return entries
     .map((entry) => entry.received as Record<string, unknown> | undefined)
@@ -237,6 +247,30 @@ async function waitUntilDead(pids: number[], timeoutMs = 10_000): Promise<boolea
 }
 
 describe('readCodexMetadata against a fake app-server', () => {
+  it.each(['user', 'profile', 'system config', 'requirements', 'managed config'])(
+    'blocks a %s endpoint override before native startup', async layer => {
+      const fake = await fakeCodex({ account: CHATGPT_ACCOUNT });
+      const home = join(fake.dataDir, 'home');
+      const configRoot = join(home, '.codex');
+      mkdirSync(configRoot, { recursive: true });
+      const systemNames: Record<string, string> = {
+        'system config': 'config.toml', requirements: 'requirements.toml', 'managed config': 'managed_config.toml',
+      };
+      const systemPath = systemNames[layer] ? join(fake.dataDir, systemNames[layer]) : null;
+      writeFileSync(systemPath ?? join(configRoot, 'config.toml'), layer === 'profile'
+        ? '[profiles.fixture]\nopenai_base_url = "https://fixture.invalid"\n'
+        : 'chatgpt_base_url = "https://fixture.invalid"\n');
+      await expect(readCodexMetadata({
+        resolved: fake.resolved,
+        dataDir: fake.dataDir,
+        includeModels: false,
+        sourceEnv: { HOME: home, CODEX_HOME: join(fake.dataDir, 'ignored') },
+        systemConfigPaths: systemPath ? [systemPath] : [],
+      })).rejects.toMatchObject({ kind: 'wrong_auth_method' });
+      expect(fake.log()).toEqual([]);
+    },
+  );
+
   it('paginates completely, reads the account before/after, and only uses the three allowed methods', async () => {
     const fake = await fakeCodex({
       account: CHATGPT_ACCOUNT,
@@ -248,8 +282,7 @@ describe('readCodexMetadata against a fake app-server', () => {
       ],
     });
     const result = await readCodexMetadata({
-      resolved: fake.resolved,
-      dataDir: fake.dataDir,
+      ...isolatedCodexOptions(fake),
       includeModels: true,
       sourceEnv: { HOME: fake.dataDir, OPENAI_API_KEY: 'must-not-leak' },
     });
@@ -300,7 +333,7 @@ describe('readCodexMetadata against a fake app-server', () => {
 
   it('account-only sessions never call model/list', async () => {
     const fake = await fakeCodex({ account: CHATGPT_ACCOUNT, pages: [] });
-    const result = await readCodexMetadata({ resolved: fake.resolved, dataDir: fake.dataDir, includeModels: false });
+    const result = await readCodexMetadata({ ...isolatedCodexOptions(fake), includeModels: false });
     expect(result).toEqual({ account: expect.objectContaining({ kind: 'chatgpt' }), accountAfter: null, models: null });
     expect(receivedRequests(fake.log()).map((r) => r.method)).toEqual(['initialize', 'initialized', 'account/read']);
   }, 30_000);
@@ -314,7 +347,7 @@ describe('readCodexMetadata against a fake app-server', () => {
         { data: [rawModel('b')], nextCursor: 'same' },
       ],
     });
-    await expect(readCodexMetadata({ resolved: fake.resolved, dataDir: fake.dataDir, includeModels: true }))
+    await expect(readCodexMetadata({ ...isolatedCodexOptions(fake), includeModels: true }))
       .rejects.toMatchObject({ kind: 'protocol', message: expect.stringContaining('cursor loop') });
   }, 30_000);
 
@@ -326,7 +359,7 @@ describe('readCodexMetadata against a fake app-server', () => {
         { cursor: 'p2', data: [rawModel('gpt-5')], nextCursor: null },
       ],
     });
-    await expect(readCodexMetadata({ resolved: fake.resolved, dataDir: fake.dataDir, includeModels: true }))
+    await expect(readCodexMetadata({ ...isolatedCodexOptions(fake), includeModels: true }))
       .rejects.toMatchObject({ kind: 'protocol', message: expect.stringContaining('duplicate') });
   }, 30_000);
 
@@ -338,8 +371,7 @@ describe('readCodexMetadata against a fake app-server', () => {
     }));
     const fake = await fakeCodex({ account: CHATGPT_ACCOUNT, pages });
     await expect(readCodexMetadata({
-      resolved: fake.resolved,
-      dataDir: fake.dataDir,
+      ...isolatedCodexOptions(fake),
       includeModels: true,
       limits: limits({ maxPages: 3 }),
     })).rejects.toMatchObject({ kind: 'protocol', message: expect.stringContaining('page limit') });
@@ -352,8 +384,7 @@ describe('readCodexMetadata against a fake app-server', () => {
       pages: [{ cursor: null, data: [rawModel('a'), rawModel('b'), rawModel('c')], nextCursor: null }],
     });
     await expect(readCodexMetadata({
-      resolved: fake.resolved,
-      dataDir: fake.dataDir,
+      ...isolatedCodexOptions(fake),
       includeModels: true,
       limits: limits({ maxModels: 2 }),
     })).rejects.toMatchObject({ kind: 'output_limit' });
@@ -367,13 +398,13 @@ describe('readCodexMetadata against a fake app-server', () => {
         { cursor: 'p2', data: [rawModel('bad id with spaces')], nextCursor: null },
       ],
     });
-    await expect(readCodexMetadata({ resolved: fake.resolved, dataDir: fake.dataDir, includeModels: true }))
+    await expect(readCodexMetadata({ ...isolatedCodexOptions(fake), includeModels: true }))
       .rejects.toMatchObject({ kind: 'protocol' });
   }, 30_000);
 
   it('model/list method-not-found (-32601) on the first page → models = null (older CLI)', async () => {
     const fake = await fakeCodex({ account: CHATGPT_ACCOUNT, methodNotFound: ['model/list'] });
-    const result = await readCodexMetadata({ resolved: fake.resolved, dataDir: fake.dataDir, includeModels: true });
+    const result = await readCodexMetadata({ ...isolatedCodexOptions(fake), includeModels: true });
     expect(result.models).toBeNull();
     expect(result.account).toMatchObject({ kind: 'chatgpt' });
   }, 30_000);
@@ -384,7 +415,7 @@ describe('readCodexMetadata against a fake app-server', () => {
       modelListNotFoundAfterFirst: true,
       pages: [{ cursor: null, data: [rawModel('gpt-5')], nextCursor: 'p2' }],
     });
-    await expect(readCodexMetadata({ resolved: fake.resolved, dataDir: fake.dataDir, includeModels: true }))
+    await expect(readCodexMetadata({ ...isolatedCodexOptions(fake), includeModels: true }))
       .rejects.toMatchObject({ kind: 'protocol', message: expect.stringContaining('mid-pagination') });
   }, 30_000);
 
@@ -393,17 +424,17 @@ describe('readCodexMetadata against a fake app-server', () => {
       methodNotFound: ['account/read'],
       pages: [{ cursor: null, data: [rawModel('gpt-5')], nextCursor: null }],
     });
-    const result = await readCodexMetadata({ resolved: noAccount.resolved, dataDir: noAccount.dataDir, includeModels: true });
+    const result = await readCodexMetadata({ ...isolatedCodexOptions(noAccount), includeModels: true });
     expect(result).toMatchObject({ account: null, accountAfter: null, models: [expect.objectContaining({ id: 'gpt-5' })] });
 
     const noInit = await fakeCodex({ methodNotFound: ['initialize'] });
-    await expect(readCodexMetadata({ resolved: noInit.resolved, dataDir: noInit.dataDir, includeModels: true }))
+    await expect(readCodexMetadata({ ...isolatedCodexOptions(noInit), includeModels: true }))
       .rejects.toMatchObject({ kind: 'unsupported_version' });
   }, 30_000);
 
   it('a JSON-RPC error on model/list or malformed output fails the whole read', async () => {
     const errored = await fakeCodex({ account: CHATGPT_ACCOUNT, modelListError: 'upstream 500' });
-    await expect(readCodexMetadata({ resolved: errored.resolved, dataDir: errored.dataDir, includeModels: true }))
+    await expect(readCodexMetadata({ ...isolatedCodexOptions(errored), includeModels: true }))
       .rejects.toMatchObject({ kind: 'protocol', message: expect.stringContaining('upstream 500') });
 
     const malformed = await fakeCodex({
@@ -411,7 +442,7 @@ describe('readCodexMetadata against a fake app-server', () => {
       rawModelLine: '{not json',
       pages: [{ cursor: null, data: [], nextCursor: null }],
     });
-    await expect(readCodexMetadata({ resolved: malformed.resolved, dataDir: malformed.dataDir, includeModels: true }))
+    await expect(readCodexMetadata({ ...isolatedCodexOptions(malformed), includeModels: true }))
       .rejects.toMatchObject({ kind: 'protocol', message: expect.stringContaining('malformed') });
   }, 30_000);
 
@@ -425,8 +456,7 @@ describe('readCodexMetadata against a fake app-server', () => {
       }],
     });
     await expect(readCodexMetadata({
-      resolved: fake.resolved,
-      dataDir: fake.dataDir,
+      ...isolatedCodexOptions(fake),
       includeModels: true,
       limits: limits({ maxTotalBytes: 8 * 1024 }),
     })).rejects.toMatchObject({ kind: 'output_limit' });
@@ -443,8 +473,7 @@ describe('readCodexMetadata against a fake app-server', () => {
     });
     const started = Date.now();
     await expect(readCodexMetadata({
-      resolved: fake.resolved,
-      dataDir: fake.dataDir,
+      ...isolatedCodexOptions(fake),
       includeModels: true,
       // Generous under release-machine peak load (CLAUDE.md rule 10): the fake must
       // have time to spawn its grandchild before the budget expires.
@@ -463,8 +492,7 @@ describe('readCodexMetadata against a fake app-server', () => {
     const fake = await fakeCodex({ account: CHATGPT_ACCOUNT, hang: ['model/list'], pages: [] });
     const controller = new AbortController();
     const pending = readCodexMetadata({
-      resolved: fake.resolved,
-      dataDir: fake.dataDir,
+      ...isolatedCodexOptions(fake),
       includeModels: true,
       signal: controller.signal,
     });
@@ -474,8 +502,7 @@ describe('readCodexMetadata against a fake app-server', () => {
     const preAborted = new AbortController();
     preAborted.abort();
     await expect(readCodexMetadata({
-      resolved: fake.resolved,
-      dataDir: fake.dataDir,
+      ...isolatedCodexOptions(fake),
       includeModels: true,
       signal: preAborted.signal,
     })).rejects.toMatchObject({ kind: 'aborted' });

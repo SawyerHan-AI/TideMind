@@ -1,12 +1,14 @@
 import type Database from 'better-sqlite3';
 import { getMetabolismWorkerConnectionSnapshot, getMetabolismWorkerRuntimeContext } from '../../metabolism/worker-runtime-context.js';
-import { createLogger } from '../../utils/logger.js';
+import { join } from 'node:path';
+import { cliErrorChain } from './failure-diagnostics.js';
+import { createLogger, enableFileLogging } from '../../utils/logger.js';
 import { getLLMInvocationContext } from '../invocation-context.js';
 import { CliChildProcessRunner } from './child-process-runner.js';
 import { cliProcessRegistry } from './runtime-process-registry.js';
 import { ClaudeCliAdapter } from './claude.js';
 import { CodexCliAdapter } from './codex.js';
-import { CliLLMError, isDefinitiveProviderRejection } from './errors.js';
+import { CLI_PROCESS_EXIT_UNCONFIRMED, CliLLMError, hasUnconfirmedCliProcessExit, isDefinitiveProviderRejection } from './errors.js';
 import {
   assertCliCapacityFence,
   withCliCapacityLease,
@@ -14,6 +16,7 @@ import {
 import {
   finishCliInvocation,
   finishCliInvocationFenced,
+  hasUnresolvedCliInvocation,
   markCliPromptCommitted,
   startCliInvocation,
 } from './invocation-state.js';
@@ -205,6 +208,9 @@ export async function runCliLLM(
   }
 
   const purpose = options.purpose ?? request.purpose ?? 'background';
+  if (purpose === 'background' && hasUnresolvedCliInvocation(db, request.connectionId)) {
+    throw admissionError('ambiguous_outcome', request.modelAlias);
+  }
   const environment = options.environment ?? await checkCliEnvironment({
     providerType: request.providerType,
     allowLoginShell: options.allowLoginShell ?? false,
@@ -229,8 +235,9 @@ export async function runCliLLM(
     purpose,
     providerType: request.providerType,
     connectionStatus: purpose === 'background'
-      ? ((db.prepare('SELECT status FROM model_connections WHERE id = ?')
-        .get(request.connectionId) as { status: string } | undefined)?.status ?? liveStatus)
+      ? (hasUnresolvedCliInvocation(db, request.connectionId) ? 'ambiguous'
+        : ((db.prepare('SELECT status FROM model_connections WHERE id = ?')
+          .get(request.connectionId) as { status: string } | undefined)?.status ?? liveStatus))
       : liveStatus,
     scopeState: binding.scopeState,
     modelId,
@@ -261,6 +268,17 @@ export async function runCliLLM(
   });
   let promptCommitted = false;
   let providerCompleted = false;
+  let stage = 'capacity_acquisition';
+  const logFailure = (error: unknown, failureStage = stage): void => {
+    try {
+      enableFileLogging(join(dataDir, 'logs'));
+      log.error('CLI invocation failed', JSON.stringify({
+        invocationId: invocation.id, connectionId: request.connectionId,
+        provider: request.providerType, stage: failureStage, promptCommitted, providerCompleted,
+        errors: cliErrorChain(error),
+      }));
+    } catch { /* Diagnostics must not replace the original failure. */ }
+  };
 
   const recordObservation = (
     outcome: ObservationOutcome,
@@ -343,7 +361,9 @@ export async function runCliLLM(
           beforePromptCommit: async () => {
             assertCliCapacityFence(db, lease);
             options._testHooks?.beforePromptCommit?.();
+            stage = 'pre_submit_environment';
             await recheckBinding();
+            stage = 'prompt_submission';
             assertCliCapacityFence(db, lease);
             assertCurrentRoute();
             // Final re-check under the lease, immediately before the prompt is
@@ -363,6 +383,7 @@ export async function runCliLLM(
               markCliPromptCommitted(db, invocation.id, lease);
               promptCommitted = true;
             }).immediate();
+            stage = 'model_execution';
           },
         };
         const common = {
@@ -382,6 +403,7 @@ export async function runCliLLM(
               contract: environment.codexContract
                 ?? (() => { throw new CliLLMError('unsupported_version', 'Codex execution contract missing'); })(),
             });
+        stage = 'model_execution';
         const result = await adapter.run({
           ...request,
           modelAlias: invocationModel,
@@ -389,6 +411,7 @@ export async function runCliLLM(
           signal,
         });
         providerCompleted = true;
+        stage = 'post_response_environment';
         options._testHooks?.afterProviderCompleted?.();
         await recheckBinding();
         try {
@@ -403,6 +426,7 @@ export async function runCliLLM(
           }
           throw error;
         }
+        stage = 'result_persistence';
         const mismatch = selectionMode === 'pinned_id'
           && result.actualModel !== null
           && !pinnedModelMatches(invocationModel, result.actualModel);
@@ -488,6 +512,7 @@ export async function runCliLLM(
         },
       );
     }
+    logFailure(cliError);
     const outcome = cliError.kind === 'ambiguous_outcome'
       ? 'ambiguous'
       : cliError.kind === 'aborted'
@@ -502,7 +527,7 @@ export async function runCliLLM(
           finishCliInvocation(db, {
             invocationId: invocation.id,
             outcome,
-            errorKind: cliError.kind,
+            errorKind: hasUnconfirmedCliProcessExit(cliError) ? CLI_PROCESS_EXIT_UNCONFIRMED : cliError.kind,
           });
         }
         if (cliError.kind === 'ambiguous_outcome') {
@@ -540,7 +565,7 @@ export async function runCliLLM(
       // ambiguous outcome must reach the scheduler even if SQLite is
       // temporarily unable to persist the pause; startup reconciliation can
       // repair a committed running invocation later.
-      log.error(`CLI outcome persistence failed: ${(persistenceError as Error).message}`);
+      logFailure(persistenceError, 'failure_persistence');
     }
     Object.assign(cliError, { invocationId: invocation.id });
     throw cliError;

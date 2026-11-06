@@ -1,3 +1,6 @@
+import { isDiagnosticRequested } from '../agent-diagnostic-contract.js';
+import { getRuntimeDiagnosticContext } from '../config.js';
+import { recordDiagnosticHook } from '../agent-diagnostic-receipts.js';
 import { getSharedAgentConsumers, sharedAgentActivityKey } from './agent-identity-binding.js';
 import { evaluateBridgeAdmission } from '../agent-bridge-guard.js';
 import { sanitizeAgentIntegrationEventPersistence } from './agent-integration-event-sanitizer.js';
@@ -140,6 +143,12 @@ export function recordHookActivityEvidence(
   db: Database.Database,
   input: RecordHookActivityInput,
 ): RecordHostActivityResult {
+  if (isDiagnosticRequested()) {
+    const context = getRuntimeDiagnosticContext();
+    if (!context) throw new Error('agent_diagnostic:credential_required');
+    recordDiagnosticHook(db, context, { agentId: input.agentId, activityGenerationToken: input.activityGenerationToken }, input.signalName);
+    return { status: 'recorded', evidenceId: `diagnostic:${context.runId}:${input.signalName}`, installationId: context.binding.installationId };
+  }
   const agentId = input.agentId.trim();
   if (!agentId) return { status: 'rejected', reason: 'version_binding_missing' };
   if (getSharedAgentConsumers(db, agentId)) {
@@ -177,6 +186,16 @@ export function recordHostActivityEvidence(
   db: Database.Database,
   input: RecordHostActivityInput,
 ): RecordHostActivityResult {
+  if (isDiagnosticRequested()) {
+    if (input.componentKey !== 'lifecycle' || !['session_start','pre_compact','post_compact','session_end'].includes(input.signalName)) {
+      throw new Error('agent_diagnostic:business_receipt_required');
+    }
+    const context = getRuntimeDiagnosticContext();
+    if (!context) throw new Error('agent_diagnostic:credential_required');
+    recordDiagnosticHook(db, context, { agentId: input.agentId, activityGenerationToken: input.activityGenerationToken },
+      input.signalName as 'session_start' | 'pre_compact' | 'post_compact' | 'session_end');
+    return { status: 'recorded', evidenceId: `diagnostic:${context.runId}:${input.signalName}`, installationId: context.binding.installationId };
+  }
   const agentId = input.agentId.trim();
   const tideMindVersion = input.tideMindVersion.trim();
   const hostVariant = input.hostVariant.trim();
@@ -193,6 +212,8 @@ export function recordHostActivityEvidence(
     return { status: 'rejected', reason: 'signal_component_mismatch' };
   }
 
+  // Reserve the short evidence write before reading its generation. In WAL mode,
+  // upgrading a stale deferred read transaction otherwise loses real hook events.
   return db.transaction((): RecordHostActivityResult => {
     const shared = getSharedAgentConsumers(db, agentId);
     if (shared) {
@@ -205,11 +226,20 @@ export function recordHostActivityEvidence(
       const event = sanitizeAgentIntegrationEventPersistence({
         kind: 'shared_agent_activity',
         dedupeKey: sharedAgentActivityKey(shared.bindingId, shared.generation, input.componentKey, input.signalName, activityGenerationToken),
-        payload: { binding_id: shared.bindingId, agent_id: agentId, signal_name: input.signalName, reason: 'shared_host_unattributed' },
+        payload: { binding_id: shared.bindingId, agent_id: agentId, signal_name: input.signalName, reason: 'shared_host_unattributed', firstObservedAt: observedAt, lastObservedAt: observedAt },
       });
       db.prepare(`INSERT OR IGNORE INTO agent_integration_events
         (id,kind,severity,dedupe_key,payload_json,created_at) VALUES (?,'shared_agent_activity','info',?,?,?)`)
         .run(`aie_${randomBytes(12).toString('hex')}`, event.dedupeKey, event.payloadJson, observedAt);
+      // Keep the original event/time for audit, while recording genuine repeat
+      // calls. A scan must never renew this activity freshness.
+      db.prepare(`UPDATE agent_integration_events
+        SET payload_json = json_set(payload_json,
+          '$.firstObservedAt', COALESCE(json_extract(payload_json, '$.firstObservedAt'), created_at),
+          '$.lastObservedAt', ?)
+        WHERE kind = 'shared_agent_activity' AND dedupe_key = ?
+          AND COALESCE(json_extract(payload_json, '$.lastObservedAt'), created_at) < ?`)
+        .run(observedAt, event.dedupeKey, observedAt);
       touchAgent(db, agentId);
       return { status: 'shared_recorded', bindingId: shared.bindingId };
     }
@@ -320,7 +350,7 @@ export function recordHostActivityEvidence(
       WHERE run.installation_id = ?
         AND run.operation_type != 'disconnect'
         AND (
-          (? = 0 AND run.state IN ('applied_unverified','verified','committed')
+          (? = 0 AND (run.state IN ('applied_unverified','verified','committed') OR (run.state='cancelled' AND run.failure_code='superseded_by_same_generation_repair'))
             AND run.consent_envelope_id = ?)
           OR (
             ? = 1 AND run.state = 'applied_unverified'
@@ -439,5 +469,5 @@ export function recordHostActivityEvidence(
       evidenceId: persisted.id,
       installationId: installation.installation_id,
     };
-  })();
+  }).immediate();
 }

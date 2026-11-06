@@ -46,9 +46,9 @@ export function validateDatabaseMigrationEvidence(value, expected, files) {
   need(typeof value.batchId === 'string' && value.batchId.trim(), 'batch identity missing')
   need(['isolated_history_fixture', 'user_database'].includes(value.evidenceOrigin), 'evidence origin missing')
   need(Number.isInteger(value.sourceSchemaVersion)
-    && ((value.sourceSchemaVersion >= 0 && value.sourceSchemaVersion <= 35) || value.sourceSchemaVersion === 41), 'unsupported source schema')
+    && ((value.sourceSchemaVersion >= 0 && value.sourceSchemaVersion <= 35) || value.sourceSchemaVersion === 41 || (value.sourceSchemaVersion === 45 || value.sourceSchemaVersion === 46)), 'unsupported source schema')
   need(value.sourceLineage === null || typeof value.sourceLineage === 'string', 'source lineage invalid')
-  need(value.targetSchemaVersion === 45 && value.targetLineage === 'stable-0.2.94', 'target schema/lineage mismatch')
+  need(value.targetSchemaVersion === 47 && value.targetLineage === 'stable-0.2.94', 'target schema/lineage mismatch')
   need(value.path === (value.sourceSchemaVersion === 41 ? 'observed_schema41_recovery' : 'stable_upgrade'), 'migration path does not match actual schema')
   const before = jsonEvidence(value.beforeEvidenceSha256, files), after = jsonEvidence(value.afterEvidenceSha256, files)
   const backup = jsonEvidence(value.backupEvidenceSha256, files)
@@ -62,7 +62,7 @@ export function validateDatabaseMigrationEvidence(value, expected, files) {
     && timestamp(after.observedAt) <= timestamp(expected.observedAt), 'observations outside acceptance window')
   need(Number(before.schema.schema_version) === value.sourceSchemaVersion
     && (before.schema.schema_lineage ?? null) === value.sourceLineage, 'source metadata mismatch')
-  need(Number(after.schema.schema_version) === 45 && after.schema.schema_lineage === value.targetLineage, 'target metadata mismatch')
+  need(Number(after.schema.schema_version) === 47 && after.schema.schema_lineage === value.targetLineage, 'target metadata mismatch')
   if (value.sourceSchemaVersion === 41) {
     inspectObserved41Objects(before.schemaObjects)
     need(after.schema.schema_recovered_from === 'observed-dormant-41', 'schema41 recovery marker missing')

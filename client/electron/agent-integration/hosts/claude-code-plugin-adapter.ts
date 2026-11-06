@@ -1,3 +1,4 @@
+import { claudeConfigRootEnvironment } from '../claude-config-environment'
 import { execFile } from 'node:child_process'
 import { shellArgument } from '../shell-argument'
 import fs from 'node:fs'
@@ -5,6 +6,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { sha256Bytes, sha256Json } from '../fingerprint'
 import { verifyHostActivity, verifyMemoryReadWriteActivity } from '../host-activity-evidence'
+import { canonicalMutationTarget } from '../legacy-writer'
 import {
   ensureSafeParentDirectoryWithinRoot,
   inspectRegularFileWithinRoot,
@@ -206,6 +208,10 @@ export function createClaudeCodePluginHostAdapter(spec: ClaudeCodePluginHostSpec
     async apply(context, mutation) {
       const metadata = parseMetadata(mutation)
       assertFrozenMutation(context, mutation, metadata)
+      const expectedFences = claudeFenceTargets(context, metadata, metadata.quarantineRoot)
+      if (sha256Json(mutation.additionalFenceTargets ?? []) !== sha256Json(expectedFences)) {
+        throw new Error('claude_plugin_frozen_config_fences_changed')
+      }
       if (metadata.direction === 'remove') {
         await applyDisconnect(context, mutation, metadata, dependencies)
       } else {
@@ -502,14 +508,15 @@ function commandSequence(
 
 function claudeFenceTargets(
   context: AdapterOperationContext,
-  bundle: DesiredBundle,
+  bundle: Pick<DesiredBundle, 'marketplaceRoot' | 'marketplaceId' | 'pluginName'>,
   quarantineRoot: string,
 ): NonNullable<PlannedMutation['additionalFenceTargets']> {
-  const pluginRoot = path.join(context.runtime.homeDir, '.claude', 'plugins')
+  const configRoot = context.installation.canonicalConfigRoot
+  const pluginRoot = path.join(configRoot, 'plugins')
   return [
     { domainKind: 'directory', physicalTarget: bundle.marketplaceRoot },
     { domainKind: 'directory', physicalTarget: quarantineRoot },
-    { domainKind: 'file_fragment', physicalTarget: path.join(context.runtime.homeDir, '.claude', 'settings.json') },
+    { domainKind: 'file_fragment', physicalTarget: path.join(configRoot, 'settings.json') },
     { domainKind: 'file_fragment', physicalTarget: path.join(pluginRoot, 'known_marketplaces.json') },
     { domainKind: 'file_fragment', physicalTarget: path.join(pluginRoot, 'installed_plugins.json') },
     { domainKind: 'directory', physicalTarget: path.join(pluginRoot, 'cache', bundle.marketplaceId, bundle.pluginName) },
@@ -624,9 +631,19 @@ async function runFrozenStep(
   const index = metadata.commandStepIds.indexOf(stepId)
   const command = mutation.frozenCommands?.[index]
   if (index < 0 || !command) throw new Error(`claude_plugin_unplanned_step:${stepId}`)
+  const env = claudeCliEnvironment(context, command.executableRealpath)
+  const root = context.installation.canonicalConfigRoot
+  const nativeRoot = env.CLAUDE_CONFIG_DIR ?? path.join(context.runtime.homeDir, '.claude')
+  const rootStat = fs.lstatSync(root, { throwIfNoEntry: false })
+  // The fence was acquired for this root. Recheck between native subcommands
+  // and allow a first install to create an otherwise canonical missing root.
+  if ((rootStat && !rootStat.isDirectory())
+    || canonicalMutationTarget(path.join(nativeRoot, 'settings.json')) !== path.join(root, 'settings.json')) {
+    throw new Error('claude_plugin_config_root_changed')
+  }
   const result = await dependencies.run(command.executableRealpath, command.args, {
     timeoutMs: COMMAND_TIMEOUT_MS,
-    env: claudeCliEnvironment(context, command.executableRealpath),
+    env,
   })
   if (result.exitCode !== 0) {
     throw new Error(`claude_plugin_command_failed:${stepId}:${result.exitCode}:${boundedDiagnostic(result.stderr || result.stdout)}`)
@@ -1027,7 +1044,7 @@ function claudeCliEnvironment(context: AdapterOperationContext, executable: stri
   if (nvm) directories.add(path.join(nvm, 'bin'))
   const env: Record<string, string> = {
     HOME: context.runtime.homeDir,
-    CLAUDE_CONFIG_DIR: context.installation.canonicalConfigRoot,
+    ...claudeConfigRootEnvironment(context.runtime.homeDir, context.installation.canonicalConfigRoot),
     PATH: [...directories].join(path.delimiter),
   }
   for (const key of ['LANG', 'LC_ALL', 'TERM', 'TMPDIR'] as const) if (process.env[key] !== undefined) env[key] = process.env[key]!

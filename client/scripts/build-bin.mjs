@@ -33,6 +33,10 @@ const NATIVE_EXTERNALS = ['better-sqlite3', 'sqlite-vec', 'electron']
 
 const entries = [
   {
+    entry: path.join(REPO_ROOT, 'src', 'agent-diagnostic-runner-entry.ts'),
+    out: 'agent-diagnostic-runner.cjs',
+  },
+  {
     entry: path.join(CLIENT_ROOT, 'electron', 'agent-integration', 'host-target-metadata-export.ts'),
     out: 'agent-host-target-metadata-export.cjs',
   },

@@ -2,11 +2,22 @@ import { act, StrictMode } from '../../client/node_modules/react/index.js'
 import { createRoot } from '../../client/node_modules/react-dom/client.js'
 import i18n from '../../client/node_modules/i18next/dist/esm/i18next.js'
 import { initReactI18next } from '../../client/node_modules/react-i18next/dist/es/index.js'
+import { MemoryRouter } from '../../client/node_modules/react-router-dom/dist/index.mjs'
 import settings from '../../client/src/locales/en/settings.json'
-import { SupportCatalogDialog } from '../../client/src/components/settings/AgentIntegration'
+import { AgentIntegration, SupportCatalogDialog } from '../../client/src/components/settings/AgentIntegration'
 import { ManagedAgentDetail } from '../../client/src/components/settings/agent-integration-managed/ManagedAgentDetail'
+import { ManagedFamilyList } from '../../client/src/components/settings/agent-integration-managed/ManagedFamilyList'
 import { BatchConnectDialog } from '../../client/src/components/settings/agent-integration-managed/BatchConnectDialog'
 import { CustomLocalAgentDialog } from '../../client/src/components/settings/agent-integration-managed/CustomLocalAgentDialog'
+import type {
+  AgentIntegrationApplyTaskDto,
+  AgentIntegrationAuthenticationDto,
+  AgentIntegrationConnectionDto,
+  AgentIntegrationDetailDto,
+  AgentIntegrationInstallationDto,
+  AgentIntegrationSnapshotDto,
+} from '../../client/src/lib/api-contract'
+import type { ManagedProductFamilyDto } from '../../client/src/components/settings/agent-integration-managed/types'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -27,6 +38,7 @@ async function run() {
   const prepares: ReturnType<typeof deferred>[] = []
   let detail = deferred()
   Object.assign(window, { api: { agentIntegrations: {
+    onStateChanged: () => () => {},
     detail: () => detail.promise,
     supportCatalog: async () => [{ id: 'claude', displayName: 'Claude', variants: [{ id: 'claude-cowork-local', displayName: 'Cowork', maturity: 'preview' }] }],
     previewClaudeCoworkSetup: () => { const next = deferred(); previews.push(next); return next.promise },
@@ -117,6 +129,247 @@ async function run() {
   assert(document.activeElement === backButton(), 'loading-to-error transition discarded navigation focus')
   await change(() => backButton()!.click())
   assert(returned && document.querySelector('[data-returned-to-list]'), 'failed detail request trapped the user')
+
+  // Exercise a fully loaded real detail component, not the loading/error shell.
+  // Authentication is an account fact and must not promote configured tools.
+  await change(() => root.render(null))
+  const rawAuthenticationReason = 'fixture_raw_authentication_reason_do_not_render'
+  let authInstallation: AgentIntegrationInstallationDto = {
+    id: 'authentication-installation', familyId: 'claude-code', hostVariant: 'claude-code-native',
+    displayName: 'Authentication fixture', variantLabel: 'Claude Code', profileLabel: 'Default', version: '1.0.0',
+    manageable: true, desiredState: 'managed', statusGroup: 'awaiting_verification', statusReason: 'unverified',
+    accessLevel: 'partial', accessIsHistorical: false, unreadEventCount: 0,
+    lastDetectedAt: null, lastVerifiedAt: null, lastRepairedAt: null, lastRealUseAt: null,
+    components: (['instruction', 'memory_tools', 'lifecycle'] as const).map<AgentIntegrationInstallationDto['components'][number]>(key => ({
+      key, state: key === 'lifecycle' ? 'unsupported' : 'configured',
+      implementationTypes: [], targetLabel: null, lastVerifiedAt: null,
+    })),
+    authentication: { status: 'not_checked', billing: 'unknown', reason: rawAuthenticationReason, checkedAt: null },
+  }
+  const authenticationComponents = authInstallation.components
+  let authConnection: AgentIntegrationConnectionDto = {
+    id: `installation:${authInstallation.id}`, familyId: authInstallation.familyId, displayName: authInstallation.displayName,
+    installationIds: [authInstallation.id], shared: false, bindingGeneration: null, configurationRevision: 'fixture-revision',
+    statusGroup: 'awaiting_verification', statusReason: 'unverified', components: authInstallation.components,
+    memoryCallsVerified: false, maintenance: 'active', intentRevision: 0, intentState: 'active',
+    actionInstallationIds: [], attentionReason: null, issue: null, lastRealUseAt: null,
+  }
+  const authenticationRequest = deferred<AgentIntegrationAuthenticationDto>()
+  const authenticationCalls: string[] = []
+  const authenticationDetailCalls: string[] = []
+  Object.assign(window.api.agentIntegrations, {
+    detail: async (id: string): Promise<AgentIntegrationDetailDto> => {
+      authenticationDetailCalls.push(id)
+      assert(id === authInstallation.id, 'authentication scene loaded the wrong installation')
+      return { installation: authInstallation, configRootLabel: '~/.claude', events: [], requiredUserActionDetails: [] }
+    },
+    recheckAuthentication: (id: string) => { authenticationCalls.push(id); return authenticationRequest.promise },
+  })
+  const renderAuthenticationDetail = () => {
+    const family: ManagedProductFamilyDto = {
+      id: authConnection.id, displayName: authInstallation.displayName, installationIds: [authInstallation.id],
+      connection: authConnection, statusGroup: authConnection.statusGroup, accessLevels: [authInstallation.accessLevel],
+      needsAttentionCount: 0, unreadEventCount: 0,
+    }
+    const snapshot: AgentIntegrationSnapshotDto = {
+      installations: [authInstallation], connections: [authConnection], families: [family], historyInstallations: [],
+      summary: { familyCount: 1, installationCount: 1, availableCount: 0, needsAttentionCount: 0, awaitingConnectionCount: 0 },
+      lastScanAt: null,
+    }
+    root.render(<ManagedAgentDetail family={family} snapshot={snapshot} selectedInstallationId={authInstallation.id}
+      onSelectInstallation={() => {}} onCloseMobile={() => {}} onChanged={() => {}} onReconnect={() => {}} showBackButton />)
+  }
+  const authenticationPanel = () => document.querySelector<HTMLElement>('[data-agent-authentication]')
+  const authenticationButton = () => document.querySelector<HTMLButtonElement>('[data-agent-authentication-recheck]')
+  const assertMemoryStillUnconfirmed = () => {
+    const memory = settings.agent.managed.component.memoryTools
+    const labels = [...document.querySelectorAll('[aria-label]')].map(element => element.getAttribute('aria-label'))
+    const expectedMemoryState = authInstallation.desiredState === 'removed' ? 'unconnected' : 'configured'
+    assert(labels.includes(`${memory}：${settings.agent.managed.componentStatus[expectedMemoryState]}`), 'login check changed the memory tool state')
+    assert(!labels.includes(`${memory}：${settings.agent.managed.componentStatus.verified}`), 'login status falsely verified memory tools')
+    assert(!document.body.textContent?.includes(rawAuthenticationReason), 'raw authentication reason leaked into rendered detail')
+  }
+  await change(renderAuthenticationDetail)
+  assert(authenticationDetailCalls.length > 0 && authenticationPanel(), 'authentication scene never loaded a real detail response')
+  assert(authenticationPanel()!.textContent?.includes(settings.agent.managed.authentication.title), 'login check title missing')
+  assert(authenticationPanel()!.textContent?.includes(settings.agent.managed.authentication.status.not_checked), 'unchecked account was reported as signed in')
+  assert(authenticationPanel()!.textContent?.includes(settings.agent.managed.authentication.billing.unknown), 'unknown billing omitted the no-model-call explanation')
+  assert(authenticationPanel()!.textContent?.includes(settings.agent.managed.authentication.scope), 'login check omitted its verification boundary')
+  assertMemoryStillUnconfirmed()
+  // Background snapshot invalidations should refresh a changed selected member,
+  // but an unrelated snapshot object must not re-inspect this host.
+  const unchangedCalls = authenticationDetailCalls.length
+  await change(renderAuthenticationDetail)
+  assert(authenticationDetailCalls.length === unchangedCalls, 'unchanged selected installation caused a duplicate detail read')
+  await change(() => {
+    authInstallation = { ...authInstallation, diagnostic: { status: 'checking', reason: 'checking', runId: 'synthetic-diagnostic' } }
+    renderAuthenticationDetail()
+  })
+  assert(authenticationDetailCalls.length === unchangedCalls + 1, 'background diagnostic start did not refresh selected detail')
+  assert(document.querySelector('[data-agent-diagnostic="checking"]'), 'background diagnostic checking state was not rendered')
+  await change(renderAuthenticationDetail)
+  assert(authenticationDetailCalls.length === unchangedCalls + 1, 'same checking state caused repeated detail reads')
+  await change(() => {
+    authInstallation = { ...authInstallation, diagnostic: { status: 'waiting', reason: 'billing_unconfirmed', runId: null } }
+    renderAuthenticationDetail()
+  })
+  assert(authenticationDetailCalls.length === unchangedCalls + 2, 'background diagnostic completion did not refresh selected detail')
+  assert(document.querySelector('[data-agent-diagnostic="waiting"]'), 'completed diagnostic remained in checking state')
+  await click('[data-agent-authentication-recheck]')
+  assert(authenticationCalls.length === 1 && authenticationCalls[0] === authInstallation.id, 'login recheck did not call the exact installation API once')
+  assert(authenticationButton()?.disabled, 'in-flight login recheck remained clickable')
+  assert(authenticationPanel()!.textContent?.includes(settings.agent.managed.authentication.status.checking), 'in-flight login check did not show its real busy state')
+  await change(() => {
+    const authentication: AgentIntegrationAuthenticationDto = {
+      status: 'authenticated', billing: 'metered', reason: rawAuthenticationReason, checkedAt: new Date().toISOString(),
+    }
+    authInstallation = { ...authInstallation, authentication }
+    authenticationRequest.resolve(authentication)
+  })
+  assert(authenticationDetailCalls.length > 1, 'login result was not read back through the loaded detail API')
+  assert(authenticationPanel()?.dataset.agentAuthentication === 'authenticated', 'successful login recheck did not refresh the detail state')
+  assert(authenticationPanel()!.textContent?.includes(settings.agent.managed.authentication.status.authenticated), 'authenticated account status missing')
+  assert(authenticationPanel()!.textContent?.includes(settings.agent.managed.authentication.billing.metered), 'metered billing omitted the no-model-call explanation')
+  assert(!authenticationButton()?.disabled, 'completed login recheck remained busy')
+  assertMemoryStillUnconfirmed()
+  for (const state of ['paused', 'disconnected', 'processing'] as const) {
+    await change(() => {
+      authInstallation = { ...authInstallation, statusGroup: state,
+        desiredState: state === 'paused' ? 'disabled' : state === 'disconnected' ? 'removed' : 'managed',
+        components: authenticationComponents.map(component => state === 'disconnected' && component.state !== 'unsupported'
+          ? { ...component, state: 'unconnected' } : component) }
+      authConnection = { ...authConnection, statusGroup: state,
+        components: authInstallation.components,
+        intentState: state === 'processing' ? 'active' : state,
+        maintenance: state === 'paused' ? 'paused' : state === 'disconnected' ? 'unmanaged' : 'active' }
+      renderAuthenticationDetail()
+    })
+    assert(authenticationPanel(), `${state}: detail disappeared instead of disabling login recheck`)
+    assert(authenticationButton()?.disabled, `${state}: login recheck must be disabled`)
+    await change(() => authenticationButton()!.click())
+    assert(authenticationCalls.length === 1, `${state}: disabled login recheck invoked the API`)
+    assertMemoryStillUnconfirmed()
+  }
+  await change(() => root.render(null))
+
+  // A shared memory check belongs to the connection, while account and
+  // lifecycle evidence still belong to the selected Desktop host.
+  const sharedDesktop: AgentIntegrationInstallationDto = { ...authInstallation, id: 'shared-desktop',
+    familyId: 'codex', hostVariant: 'codex-desktop', variantLabel: 'Desktop', desiredState: 'managed',
+    statusGroup: 'awaiting_verification', statusReason: 'unverified',
+    components: authenticationComponents.map(component => ({ ...component, configurationVerified: true,
+      configurationFingerprint: `shared-${component.key}`, ...(component.key === 'lifecycle' ? { state: 'configured' as const } : {}) })),
+    authentication: { status: 'not_checked', billing: 'unknown', reason: 'not_checked', checkedAt: null },
+    diagnostic: { status: 'waiting', reason: 'native_diagnostic_unsupported', runId: null } }
+  let sharedCli: AgentIntegrationInstallationDto = { ...sharedDesktop, id: 'shared-cli', hostVariant: 'codex-cli', variantLabel: 'CLI',
+    authentication: { status: 'authenticated', billing: 'confirmed_subscription', reason: 'authenticated', checkedAt: null },
+    diagnostic: { status: 'waiting', reason: 'billing_unconfirmed', runId: null } }
+  const unrelatedCli = { ...sharedCli, id: 'other-profile-cli', profileLabel: 'Other profile' }
+  let sharedConnection: AgentIntegrationConnectionDto = { ...authConnection, id: 'binding:shared-fixture', shared: true,
+    installationIds: [sharedDesktop.id, sharedCli.id], statusGroup: 'awaiting_verification', intentState: 'active',
+    maintenance: 'active', memoryCallsVerified: false, components: sharedDesktop.components, diagnostic: sharedCli.diagnostic }
+  const diagnosticCalls: string[] = []
+  Object.assign(window.api.agentIntegrations, {
+    detail: async (id: string) => {
+      assert(id === sharedDesktop.id, 'shared check switched the selected host detail')
+      return { installation: sharedDesktop, configRootLabel: '~/.codex', events: [], requiredUserActionDetails: [] }
+    },
+    recheckDiagnostic: async (id: string) => { diagnosticCalls.push(id); return sharedCli.diagnostic },
+  })
+  const renderSharedDiagnostic = () => {
+    const family: ManagedProductFamilyDto = { id: sharedConnection.id, displayName: 'Shared fixture',
+      installationIds: sharedConnection.installationIds, connection: sharedConnection, statusGroup: sharedConnection.statusGroup,
+      accessLevels: ['partial'], needsAttentionCount: 0, unreadEventCount: 0 }
+    const snapshot = { installations: [unrelatedCli, sharedDesktop, sharedCli], connections: [sharedConnection],
+      families: [family], historyInstallations: [], summary: { familyCount: 1, installationCount: 3,
+        availableCount: 0, needsAttentionCount: 0, awaitingConnectionCount: 0 }, lastScanAt: null }
+    root.render(<ManagedAgentDetail family={family} snapshot={snapshot} selectedInstallationId={sharedDesktop.id}
+      onSelectInstallation={() => {}} onCloseMobile={() => {}} onChanged={() => {}} onReconnect={() => {}} />)
+  }
+  await change(renderSharedDiagnostic)
+  assert(document.querySelector('[data-agent-diagnostic]')?.textContent?.includes(settings.agent.managed.diagnostic.billing),
+    'Desktop unsupported hid the shared CLI billing wait')
+  assert(document.querySelector('[data-agent-authentication]')?.getAttribute('data-agent-authentication') === 'not_checked',
+    'shared memory diagnostic borrowed the CLI account fact for Desktop')
+  await click('[data-agent-diagnostic-recheck]')
+  assert(diagnosticCalls.length === 1 && diagnosticCalls[0] === sharedCli.id, 'shared retry did not target its exact CLI member')
+  await change(() => { sharedConnection = { ...sharedConnection, diagnostic: { status: 'checking', reason: 'checking', runId: 'shared-run' } }; renderSharedDiagnostic() })
+  assert(document.querySelector('[data-agent-diagnostic="checking"]'), 'connection-only background diagnostic update did not render')
+  assert(document.querySelector<HTMLButtonElement>('[data-agent-diagnostic-recheck]')?.disabled, 'shared checking was retryable')
+  for (const patch of [{ desiredState: 'disabled' }, { desiredState: 'managed', manageable: false },
+    { desiredState: 'managed', manageable: true, deactivation: { maintenance: 'paused', bridge: 'stopped', hostComponents: 'loaded_unknown' } }] as const) {
+    await change(() => { sharedCli = { ...sharedCli, ...patch }; sharedConnection = { ...sharedConnection, diagnostic: sharedCli.diagnostic }; renderSharedDiagnostic() })
+    assert(!document.querySelector('[data-agent-diagnostic-recheck]'), 'inactive/unmanageable shared member remained a retry target')
+  }
+  await change(() => {
+    sharedCli = { ...sharedCli, desiredState: 'managed', manageable: true, deactivation: undefined }
+    sharedConnection = { ...sharedConnection, statusGroup: 'available', statusReason: 'verified', memoryCallsVerified: true,
+      components: sharedDesktop.components.map(component => component.key !== 'lifecycle' ? { ...component, state: 'verified' } : component) }
+    renderSharedDiagnostic()
+  })
+  const desktopComponents = document.querySelector('[aria-labelledby="components-shared-desktop"]')
+  const connectionHeader = desktopComponents?.closest('[role="tabpanel"]')?.previousElementSibling
+  assert(connectionHeader?.textContent?.includes(settings.agent.managed.status.available)
+    && connectionHeader.textContent.includes(settings.agent.managed.reason.verified)
+    && !connectionHeader.textContent.includes(settings.agent.managed.reason.unverified),
+  'shared connection header mixed available with the selected host’s unverified summary')
+  const lifecycleLabel = settings.agent.managed.component.lifecycle
+  const configuredLabel = settings.agent.managed.componentStatus.configured
+  const verifiedLabel = settings.agent.managed.componentStatus.verified
+  for (const label of [settings.agent.managed.component.instruction, settings.agent.managed.component.memoryTools]) {
+    assert(desktopComponents?.querySelector(`[aria-label="${label}：${verifiedLabel}"]`),
+      'same-configuration shared Skill/MCP proof was hidden behind a gray member status')
+  }
+  assert(connectionHeader.querySelector(`[aria-label="${lifecycleLabel}：${configuredLabel}"]`)
+    && desktopComponents?.querySelector(`[aria-label="${lifecycleLabel}：${configuredLabel}"]`)
+    && !desktopComponents.querySelector(`[aria-label="${lifecycleLabel}：${verifiedLabel}"]`),
+  'shared memory success promoted unobserved Desktop session linkage')
+  await change(() => {
+    sharedConnection = { ...sharedConnection, components: sharedConnection.components.map(component =>
+      component.key === 'lifecycle' ? { ...component, state: 'verified' } : component) }
+    renderSharedDiagnostic()
+  })
+  assert(document.querySelector('[aria-labelledby="components-shared-desktop"]')
+    ?.querySelector(`[aria-label="${lifecycleLabel}：${configuredLabel}"]`),
+  'shared Hook events were presented as selected-host event evidence')
+  await change(() => {
+    sharedConnection = { ...sharedConnection, components: sharedConnection.components.map(component =>
+      component.key === 'instruction' ? { ...component, configurationFingerprint: 'different-configuration' } : component) }
+    renderSharedDiagnostic()
+  })
+  assert(document.querySelector('[aria-labelledby="components-shared-desktop"]')
+    ?.querySelector(`[aria-label="${settings.agent.managed.component.instruction}：${configuredLabel}"]`),
+  'a different Skill configuration borrowed the shared verification result')
+  const availableWithHookAction: AgentIntegrationConnectionDto = {
+    ...sharedConnection, actionInstallationIds: [sharedDesktop.id], attentionReason: 'host_confirmation',
+    components: sharedConnection.components.map(component => component.key === 'lifecycle'
+      ? { ...component, state: 'confirmation_required', hostRecognitionVerified: false, hostRecognitionRejected: true }
+      : component),
+    issue: { eventId: 'fixture-hook-action', reason: 'host_confirmation', dismissed: true },
+  }
+  await change(() => root.render(<ManagedFamilyList snapshot={{
+    installations: [sharedDesktop, sharedCli], connections: [availableWithHookAction],
+    families: [], historyInstallations: [], lastScanAt: null,
+    summary: { familyCount: 1, installationCount: 2, availableCount: 1, needsAttentionCount: 1, awaitingConnectionCount: 0 },
+  }} selectedFamilyId={null} onSelect={() => {}} />))
+  const issueRow = document.querySelector('[data-agent-connection-row="binding:shared-fixture"]')
+  const rowTrigger = issueRow?.querySelector('[data-agent-connection-trigger]')
+  const accessibleSummary = document.getElementById(rowTrigger?.getAttribute('aria-describedby') ?? '')
+  const hookAction = settings.agent.managed.reason.hostConfirmation
+  assert(issueRow?.querySelector('[data-agent-current-issue]')?.textContent === hookAction
+    && accessibleSummary?.textContent?.includes(hookAction)
+    && Array.from(issueRow.querySelectorAll('span')).some(span => span.textContent === settings.agent.managed.status.available
+      && span.className.includes('text-emerald')),
+  'a current Hook action was hidden or replaced the available connection badge')
+  await change(() => {
+    sharedConnection = { ...sharedConnection, id: 'installation:desktop-independent', shared: false,
+      installationIds: [sharedDesktop.id], statusGroup: 'awaiting_verification', statusReason: 'unverified',
+      memoryCallsVerified: false, components: sharedDesktop.components, diagnostic: sharedDesktop.diagnostic }
+    renderSharedDiagnostic()
+  })
+  assert(!document.querySelector('[data-agent-diagnostic-recheck]'), 'independent Desktop borrowed another profile CLI for retry')
+  assert(diagnosticCalls.length === 1, 'disabled or independent scene submitted a diagnostic')
+  await change(() => root.render(null))
 
   // Keep the same mounted batch dialog while closing/reopening it. Each API
   // promise is independent, so old success, failure and finally paths can settle
@@ -214,6 +467,70 @@ async function run() {
     }
   }
   await change(() => root.render(null))
+  // Native permissions are reviewed separately from ordinary automatic setup.
+  const nativePlan = { ...plan('NATIVE_PLAN'), installations: [{ ...plan().installations[0],
+    nativePermissions: ['gemini_extension'], hostVersion: '1.2.3',
+    nativePlugin: { name: 'tidemind-fixture', version: '1.0.23', sourceLabel: '~/data/local-extension' },
+    targets: [{ ...plan().installations[0].targets[0], commandCategory: 'plugin_install' }],
+  }] }
+  let nativeCalls: any[] = []
+  Object.assign(window.api.agentIntegrations, {
+    previewConnect: async () => nativePlan,
+    startApplyConnect: async (...args: any[]) => { nativeCalls.push(args); return task('completed') },
+    getApplyTask: async () => task('completed'), onTaskProgress: () => () => {},
+  })
+  await change(() => root.render(<BatchConnectDialog open
+    snapshot={{ installations: [{ ...installation, manageable: true, statusGroup: 'awaiting_connection', variantLabel: 'Gemini' }] } as any}
+    onClose={() => {}} onComplete={() => {}} onTaskUpdate={() => {}} />))
+  const nativeCheckbox = document.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+  assert(nativeCheckbox && !nativeCheckbox.checked, 'native permission was selected automatically')
+  await change(() => nativeCheckbox.click())
+  await clickText('Continue with 1')
+  for (const text of ['tidemind-fixture', '1.0.23', '~/data/local-extension', 'Host version: 1.2.3', 'extension security notice']) {
+    assert(document.body.textContent?.includes(text), `native review omitted ${text}`)
+  }
+  assert(nativeCalls.length === 0, 'preview already granted native permissions')
+  await clickText('Authorize permissions and connect')
+  assert(nativeCalls.length === 1 && nativeCalls[0][0] === 'NATIVE_PLAN'
+    && JSON.stringify(nativeCalls[0][1]) === JSON.stringify([installation.id]), 'native approval lost the frozen plan binding')
+  await change(() => root.render(null))
+
+  const feedSnapshot: AgentIntegrationSnapshotDto = {
+    installations: [], connections: [], families: [], historyInstallations: [],
+    summary: { familyCount: 0, installationCount: 0, availableCount: 0, needsAttentionCount: 0, awaitingConnectionCount: 0 },
+    lastScanAt: null,
+  }
+  const stateListeners = new Set<() => void>()
+  let feedReads = 0
+  const progressListeners = new Set<(task: AgentIntegrationApplyTaskDto) => void>()
+  let snapshotReads = 0
+  Object.assign(window.api.agentIntegrations, {
+    snapshot: async () => { snapshotReads += 1; return feedSnapshot },
+    scan: async () => ({ snapshot: feedSnapshot, detectedCount: 0, newlyDiscoveredCount: 0, unresolved: [] }),
+    listApplyTasks: async () => { feedReads += 1; throw new Error('history must not load on the Agent page') },
+    onTaskProgress: (listener: (task: AgentIntegrationApplyTaskDto) => void) => {
+      progressListeners.add(listener)
+      return () => { progressListeners.delete(listener) }
+    },
+    onStateChanged: (listener: () => void) => {
+      stateListeners.add(listener)
+      return () => { stateListeners.delete(listener) }
+    },
+  })
+  await change(() => root.render(<MemoryRouter><AgentIntegration /></MemoryRouter>))
+  await click('[aria-controls="agent-advanced-connections"]')
+  const feedCard = () => document.querySelector('[data-task-feed-key]')
+  assert(!feedCard(), 'empty fixture unexpectedly has a background task')
+  const beforeInvalidation = snapshotReads
+  await change(() => { for (const listener of stateListeners) listener() })
+  assert(snapshotReads > beforeInvalidation, 'state invalidation did not refresh current Agent status')
+  const beforeProgress = snapshotReads
+  await change(() => { for (const listener of progressListeners) listener(task('completed')) })
+  assert(snapshotReads > beforeProgress, 'background progress did not refresh current Agent status')
+  assert(feedReads === 0 && !feedCard() && !document.querySelector('#agent-task-history'),
+    'Agent page still loads or renders global task history')
+  await change(() => root.render(null))
+
   // Delay frames deterministically: an opening/closing frame may arrive after
   // the next IPC result or even after reopening this dialog.
   const nativeRaf = window.requestAnimationFrame
@@ -262,7 +579,8 @@ async function run() {
   await change(() => root.unmount())
   window.requestAnimationFrame = nativeRaf
   window.cancelAnimationFrame = nativeCancelRaf
-  return { coworkDelayedSessions: true, narrowPendingAndFailedBackNavigation: true, batchDelayedSessions: true, customDelayedFocusAndSchema: true }
+  return { coworkDelayedSessions: true, narrowPendingAndFailedBackNavigation: true, loadedAuthenticationDetail: true, sharedDiagnosticTarget: true,
+    batchDelayedSessions: true, customDelayedFocusAndSchema: true, backgroundTaskStateRefresh: true, sharedStatusSummary: true, availableConnectionIssue: true }
 }
 
 Object.assign(window, { regressionResult: run().then(result => ({ ok: true, result }), error => ({ ok: false, error: error.stack })) })

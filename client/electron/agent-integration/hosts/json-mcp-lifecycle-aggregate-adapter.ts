@@ -486,7 +486,7 @@ function inspectAggregate(spec: AggregateSpec, context: AdapterOperationContext)
     const candidates = lifecycleContainer?.[event.eventName]
     if (candidates === undefined) continue
     if (!Array.isArray(candidates)) throw new Error(`hook_event_not_array:${event.eventName}`)
-    const managed = candidates.filter(candidate => spec.lifecycle.identifiesEntry(event, candidate, context))
+    const managed = candidates.filter(candidate => spec.lifecycle.identifiesEntry(event, candidate, ownershipContext(spec, context)))
     if (managed.length > 1) throw new Error(`duplicate_managed_hook_entries:${event.eventName}`)
     if (managed.length === 1) lifecycle[event.eventName] = managed[0]
   }
@@ -502,7 +502,7 @@ function inspectAggregate(spec: AggregateSpec, context: AdapterOperationContext)
         const event = spec.lifecycle.events(context).find(candidate => candidate.eventName === eventName)
         return count + (event === undefined
           ? value.length
-          : value.filter(candidate => !spec.lifecycle.identifiesEntry(event, candidate, context)).length)
+          : value.filter(candidate => !spec.lifecycle.identifiesEntry(event, candidate, ownershipContext(spec, context))).length)
       }, 0)
   const hasUnmanagedHooks = unmanagedHookCount > 0
   const fragment: AggregateFragment = {
@@ -561,6 +561,12 @@ function mutateMcp(
   pruneEmpty(document, selector.slice(0, -1))
 }
 
+// A new execution token is desired state, not the identity of an existing
+// owned fragment. Aggregate hashes and CAS still prove the exact old bytes.
+function ownershipContext(spec: AggregateSpec, context: AdapterOperationContext): AdapterOperationContext {
+  return spec.catalogId === 'zcode-desktop' ? { ...context, activityGenerationToken: undefined } : context
+}
+
 function mutateLifecycle(
   spec: AggregateSpec,
   context: AdapterOperationContext,
@@ -575,7 +581,7 @@ function mutateLifecycle(
     if (value !== undefined && !Array.isArray(value)) throw new Error(`hook_event_not_array:${event.eventName}`)
     const entries = value === undefined ? [] : [...value]
     const matches = entries
-      .map((candidate, index) => spec.lifecycle.identifiesEntry(event, candidate, context) ? index : -1)
+      .map((candidate, index) => spec.lifecycle.identifiesEntry(event, candidate, ownershipContext(spec, context)) ? index : -1)
       .filter(index => index >= 0)
     if (matches.length > 1) throw new Error(`duplicate_managed_hook_entries:${event.eventName}`)
     if (matches.length === 1) entries.splice(matches[0], 1)
