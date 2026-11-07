@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { verifyUpdateSignatureFile } from './verify-update-signature-file.mjs';
+import { localPackagedMetabolismReceiptPath, localPackagedMetabolismVersion, readLocalPackagedMetabolismReceipt } from './local-packaged-metabolism-evidence.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), '..');
@@ -31,6 +32,7 @@ export function parseArgs(argv) {
     agentHostEvidence: null,
     subscriptionEvidence: null,
     localCiEvidence: null,
+    localPackagedPerformanceEvidence: null,
     partialAuthReport: null,
     candidateArtifactZip: null,
     candidateUploadReceiptZip: null,
@@ -68,6 +70,10 @@ export function parseArgs(argv) {
       case '--candidate-performance-zip': opts.candidatePerformanceZip = path.resolve(next()); break;
       case '--subscription-evidence': opts.subscriptionEvidence = path.resolve(next()); break;
       case '--local-ci-evidence': opts.localCiEvidence = path.resolve(next()); break;
+      case '--local-packaged-performance-evidence':
+        if (opts.localPackagedPerformanceEvidence) throw new Error(`${arg} may only be supplied once`);
+        opts.localPackagedPerformanceEvidence = path.resolve(next());
+        break;
       case '--agent-host-evidence': opts.agentHostEvidence = path.resolve(next()); break;
       case '--agent-host-candidate-app-arm64': opts.agentHostCandidateAppArm64 = path.resolve(next()); break;
       case '--agent-host-candidate-app-x64': opts.agentHostCandidateAppX64 = path.resolve(next()); break;
@@ -248,6 +254,8 @@ Options:
   --subscription-evidence PATH  Required B1-B7 evidence for 0.2.94 and 0.2.95 formal releases
   --local-ci-evidence PATH  Verify a private exact-source local CI evidence directory instead of
                            waiting for private GitHub CI. All other release gates remain required.
+  --local-packaged-performance-evidence FILE  Use a verified 0.2.95 local packaged performance receipt
+                           in public candidate and final builds. The hosted gate remains the default.
   --partial-auth-report PATH
   --candidate-artifact-zip PATH
   --candidate-upload-receipt-zip PATH
@@ -1194,6 +1202,9 @@ async function main() {
     throw new Error('--local-ci-evidence requires the health gate and a main checkout for a real release');
   }
   const partialAuthRelease = assertPartialAuthReleaseOptions(version, opts);
+  if (opts.localPackagedPerformanceEvidence && version !== localPackagedMetabolismVersion) {
+    throw new Error(`--local-packaged-performance-evidence is only allowed for ${localPackagedMetabolismVersion}`);
+  }
   const previousVersions = resolveUpdatePreviousVersions(version, opts.previousVersion);
   if (previousVersions.length === 0 && !opts.skipUpdateVerify) {
     throw new Error('Could not infer --previous-version from --version; pass it explicitly');
@@ -1237,6 +1248,11 @@ async function main() {
   if ((!agentHostEvidence || architectures.some(arch => !agentHostCandidateApps[arch])) && !opts.dryRun && !opts.prepareCandidate && !partialAuthRelease) {
     throw new Error(`A real release requires real-host evidence and exact signed ${architectures.join('/')} candidate apps`);
   }
+  const localPackagedPerformance = opts.localPackagedPerformanceEvidence && !opts.dryRun
+    ? readLocalPackagedMetabolismReceipt(opts.localPackagedPerformanceEvidence, {
+      root: repoRoot, sourceCommit: expectedRootHead, app: opts.prepareCandidate ? undefined : agentHostCandidateApps.arm64,
+    })
+    : null;
   const acceptanceIndex = agentHostEvidence
     ?? path.join(repoRoot, 'release-evidence', 'agent-integration-host-acceptance', version, 'index.json');
   const subscriptionVerifierArgs = subscriptionAcceptanceArguments(version, opts, expectedRootHead, agentHostCandidateApps);
@@ -1399,6 +1415,14 @@ async function main() {
   if (!opts.dryRun) {
     assertRepoSnapshot(repoRoot, 'ExternaBrain', expectedRootHead);
     assertRemoteMainAt(repoRoot, expectedRootHead);
+  }
+  if (opts.localPackagedPerformanceEvidence) {
+    console.log('> Stage verified local packaged metabolism performance evidence');
+    if (localPackagedPerformance) {
+      const destination = path.join(opts.ossRepo, localPackagedMetabolismReceiptPath);
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.writeFileSync(destination, localPackagedPerformance, { flag: 'wx', mode: 0o600 });
+    }
   }
   const ossAcceptanceDirectory = path.join(
     opts.ossRepo,

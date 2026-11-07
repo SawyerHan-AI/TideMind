@@ -35,6 +35,15 @@ import {
 } from '../../scripts/release.mjs';
 
 describe('release script helpers', () => {
+  it('requires an explicit single packaged performance evidence file independent of local CI evidence', () => {
+    const options = parseArgs(['--local-ci-evidence', '/tmp/ci', '--local-packaged-performance-evidence', '/tmp/packaged.json']);
+    expect(options.localCiEvidence).toBe('/tmp/ci');
+    expect(options.localPackagedPerformanceEvidence).toBe('/tmp/packaged.json');
+    expect(parseArgs([]).localPackagedPerformanceEvidence).toBeNull();
+    expect(() => parseArgs(['--local-packaged-performance-evidence', '/tmp/one', '--local-packaged-performance-evidence', '/tmp/two']))
+      .toThrow(/only be supplied once/);
+  });
+
   it('derives the previous patch version when possible', () => {
     expect(previousPatch('0.2.51')).toBe('0.2.50');
     expect(previousPatch('1.0.0')).toBeNull();
