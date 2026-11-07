@@ -82,5 +82,31 @@
       "schemaKind": "opencode_mcp",
       "selectorKey": "tidemind_opencode"
     }
-  ]
+  ],
+  "realHostPolicy": {
+    "id": "0.2.95-codex-only",
+    "requiredCatalogIds": [
+      "codex-cli"
+    ],
+    "otherCatalogs": "deferred",
+    "customPaths": "deferred",
+    "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required.",
+    "desktopAcceptance": {
+      "status": "deferred",
+      "releaseNotesDisclosureRequired": true,
+      "reason": "Complete Codex Desktop lifecycle acceptance is deferred in the personal beta. CLI and shared-domain evidence do not constitute Desktop-specific acceptance; disclose this missing validation."
+    }
+  },
+  "migrationAcceptanceDeferral": {
+    "policyId": "0.2.95-single-user-manual-migration",
+    "appVersion": "0.2.95",
+    "audience": "single_user",
+    "status": "deferred_to_installation",
+    "execution": "manual_after_release",
+    "scopes": [
+      "upgrade_matrix",
+      "observed_schema41"
+    ],
+    "reason": "The user authorized the personal beta with local installation and upgrade validation. The historical upgrade matrix and schema41 recovery remain deferred, never passed; the actual local upgrade, preserved identity/history/statistics and post-install read-back are required to complete delivery."
+  }
 }

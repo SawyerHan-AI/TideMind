@@ -182,20 +182,21 @@ function fixture(
   activityLedgerSource?: 'fixture' | 'real_profile',
   releaseMacArchitectures = ['arm64', 'x64'],
   codexDataOnly: false | 'valid' | 'missing-facts' | 'lost-agent' = false,
-  manualMigrationDeferral = false,
+  manualMigrationDeferral: boolean | '0.2.95' = false,
 ) {
   const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-host-acceptance-'))
   roots.push(outer)
   const root = path.join(outer, 'bundle')
   fs.mkdirSync(root)
-  const contract = writeTestContract(outer, releaseMacArchitectures, Boolean(codexDataOnly) || manualMigrationDeferral)
+  const contract = writeTestContract(outer, releaseMacArchitectures, Boolean(codexDataOnly) || Boolean(manualMigrationDeferral))
   if(manualMigrationDeferral){
-    const production=JSON.parse(fs.readFileSync(historical094RequirementsPath,'utf8'))
+    const version = manualMigrationDeferral === '0.2.95' ? '0.2.95' : '0.2.94'
+    const production=JSON.parse(fs.readFileSync(version === '0.2.94' ? historical094RequirementsPath : 'scripts/agent-integration-host-acceptance-requirements.json','utf8'))
     const raw=JSON.parse(fs.readFileSync(contract.requirementsPath,'utf8'))
-    Object.assign(raw,{appVersion:'0.2.94',realHostPolicy:production.realHostPolicy,migrationAcceptanceDeferral:production.migrationAcceptanceDeferral})
+    Object.assign(raw,{appVersion:version,realHostPolicy:production.realHostPolicy,migrationAcceptanceDeferral:production.migrationAcceptanceDeferral})
     fs.writeFileSync(contract.requirementsPath,JSON.stringify(raw))
     fs.writeFileSync(contract.releaseManifestPath,fs.readFileSync(contract.releaseManifestPath,'utf8')
-      .replace("VERSION = '0.2.92'","VERSION = '0.2.94'").replace("release('codex-desktop'","release('codex-cli'"))
+      .replace("VERSION = '0.2.92'",`VERSION = '${version}'`).replace("release('codex-desktop'","release('codex-cli'"))
   }
   const requirements = loadAgentHostAcceptanceRequirements(contract.requirementsPath, contract.releaseManifestPath)
   const files: Array<{ path: string; bytes: number; sha256: string }> = []
@@ -1372,6 +1373,65 @@ describe('single-user 0.2.94 migration deferral', () => {
     expect(check).toThrow(/required step/)
     cli.steps=saved
     delete index.candidateAppsByArchitecture.arm64
+    expect(check).toThrow(/candidate/)
+  })
+})
+
+describe('0.2.95 explicitly authorized personal beta', () => {
+  it('requires every Codex CLI runtime step and explicitly records all deferred targets', () => {
+    const requirements = loadAgentHostAcceptanceRequirements()
+    expect(requirements.upgradeFromAppVersions).toEqual(['0.2.89','0.2.90','0.2.91','0.2.92','0.2.93','0.2.94'])
+    expect(requirements.entries).toHaveLength(19)
+    expect(requirements.customTargets).toHaveLength(5)
+    for (const target of [...requirements.targets, ...requirements.customTargets.map((item: any) => ({ ...item, disposition: 'custom' }))]) {
+      if (target.catalogId === 'codex-cli') {
+        expect(realHostAcceptanceDeferral(requirements, target)).toBeNull()
+        expect(requiredRealHostAcceptanceSteps(requirements, target)).toEqual(requiredHostAcceptanceSteps(requirements, target))
+        expect(requiredRealHostAcceptanceSteps(requirements, target)).toContain('memory_closure')
+        expect(requiredRealHostAcceptanceSteps(requirements, target)).toContain('codex_context_restore_auto')
+      } else {
+        expect(realHostAcceptanceDeferral(requirements, target)).toMatchObject({ status: 'deferred', policyId: '0.2.95-codex-only' })
+      }
+    }
+    const desktop = requirements.targets.find((target: any) => target.catalogId === 'codex-desktop')
+    expect(realHostAcceptanceDeferral(requirements, desktop)).toMatchObject({ releaseNotesDisclosureRequired: true })
+    expect(requirements.migrationAcceptanceDeferral).toMatchObject({ status: 'deferred_to_installation', appVersion: '0.2.95' })
+  })
+
+  it.each(['old-policy','future-version','desktop-passed','hidden-desktop','wrong-migration-version','migration-passed'] as const)('rejects policy drift %s', mutation => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'personal-beta-policy-')); roots.push(root)
+    const raw = JSON.parse(fs.readFileSync('scripts/agent-integration-host-acceptance-requirements.json', 'utf8'))
+    if (mutation === 'old-policy') raw.realHostPolicy.id = '0.2.94-codex-only'
+    if (mutation === 'future-version') raw.appVersion = '0.2.96'
+    if (mutation === 'desktop-passed') raw.realHostPolicy.desktopAcceptance.status = 'passed'
+    if (mutation === 'hidden-desktop') raw.realHostPolicy.desktopAcceptance.releaseNotesDisclosureRequired = false
+    if (mutation === 'wrong-migration-version') raw.migrationAcceptanceDeferral.appVersion = '0.2.94'
+    if (mutation === 'migration-passed') raw.migrationAcceptanceDeferral.status = 'passed'
+    const file = path.join(root, 'requirements.json')
+    fs.writeFileSync(file, JSON.stringify(raw))
+    expect(() => loadAgentHostAcceptanceRequirements(file)).toThrow()
+  })
+
+  it('preserves signed candidate binding and mandatory Codex evidence while migrations are explicitly deferred', () => {
+    const built = fixture('fixture', undefined, ['arm64'], false, '0.2.95')
+    const schema = JSON.parse(fs.readFileSync('scripts/agent-integration-host-acceptance-v4.schema.json', 'utf8'))
+    const validate = new Ajv2020({ strict: false, validateFormats: false }).compile(schema)
+    expect(validate({ ...built.index, evidenceClass: 'real_host' }), JSON.stringify(validate.errors)).toBe(true)
+    expect(validate({ ...built.index, evidenceClass: 'real_host', migrationAcceptanceDeferral: {
+      ...built.index.migrationAcceptanceDeferral, policyId: '0.2.94-single-user-manual-migration',
+    } })).toBe(false)
+    const check = () => {
+      built.write()
+      return verifyAgentIntegrationHostAcceptance({ indexPath: built.indexPath, expectedAppVersion: '0.2.95',
+        expectedSourceCommit: SOURCE_COMMIT, ...contracts.get(built.indexPath)!, allowFixture: true })
+    }
+    expect(check()).toMatchObject({ status: 'passed', upgradePathCount: 0, migrationAcceptanceDeferral: { status: 'deferred_to_installation' } })
+    const cli = built.index.entries.find((entry: any) => entry.targetId === 'codex-cli')
+    const original = cli.steps
+    cli.steps = []
+    expect(check).toThrow(/required step/)
+    cli.steps = original
+    delete built.index.candidateAppsByArchitecture.arm64
     expect(check).toThrow(/candidate/)
   })
 })

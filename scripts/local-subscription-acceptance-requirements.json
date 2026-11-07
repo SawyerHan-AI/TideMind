@@ -49,5 +49,13 @@
         "title": "cli_generation_changed increments the epoch"
       }
     ]
+  },
+  "releaseAcceptance": {
+    "requiredProviders": [
+      "codex-cli"
+    ],
+    "deferredProviders": [
+      "claude-cli"
+    ]
   }
 }

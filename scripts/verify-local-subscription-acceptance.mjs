@@ -35,16 +35,16 @@ export function loadSubscriptionRequirements(appVersion) {
   const bytes = fs.readFileSync(file)
   return { ...JSON.parse(bytes), sha256: digest(bytes) }
 }
-/** The .94 release narrows real acceptance only; both provider contracts remain. */
+/** Explicit personal-beta acceptance retains both provider contracts. */
 export function subscriptionCaptureScope(requirements = loadSubscriptionRequirements()) {
   same(requirements.providers, ['codex-cli', 'claude-cli'], 'supported provider contracts')
-  if (requirements.appVersion !== '0.2.94') {
-    if (requirements.releaseAcceptance) throw new Error('release acceptance policy is only valid for 0.2.94')
+  if (!['0.2.94', '0.2.95'].includes(requirements.appVersion)) {
+    if (requirements.releaseAcceptance) throw new Error('release acceptance policy is only valid for 0.2.94/0.2.95')
     return { providers: requirements.providers, deferredProviders: [] }
   }
   same(requirements.releaseAcceptance, {
     requiredProviders: ['codex-cli'], deferredProviders: ['claude-cli'],
-  }, '0.2.94 release acceptance policy')
+  }, `${requirements.appVersion} release acceptance policy`)
   return { providers: requirements.releaseAcceptance.requiredProviders,
     deferredProviders: requirements.releaseAcceptance.deferredProviders }
 }
