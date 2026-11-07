@@ -1,0 +1,277 @@
+{
+  "schemaVersion": 1,
+  "kind": "local-packaged-metabolism-performance",
+  "appVersion": "0.2.95",
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "architecture": "arm64",
+  "inputSha256": {
+    "package.json": "6bd6868ce5eae2b5f90e845f6ac77e3f2d20cffa52eed1a307473ecd439cc437",
+    "package-lock.json": "c486441e3c56d5a562a2ec6090858592e383d5e63981c472661271d8204ff95c",
+    "client/package.json": "296d5cec4eceb41458d9f3dbcf1b5f5e23c822fea2edb5ed1593ae09d580b727",
+    "client/package-lock.json": "74bca60ceeeca3eb39eb8e69846f0c2c1bf49b02dc2aac4f8ce14ea00e654fdc",
+    "client/electron-builder.yml": "327f9b560c8d2fab42b364c054d827622bac773482b4b033727d047bf97f72fc",
+    "client/scripts/build-bin.mjs": "f82efd11f3441c270e1f7c202869c0f145d4751e6a4578dc2dfb9c38b27fdd54",
+    "scripts/metabolism-worker-candidate-thresholds.json": "a7fd66a79d33ce8912978d026f0e7149e1bb8d4a9e494084486cbe2e5f638dfa",
+    "scripts/agent-integration-gate-provenance.mjs": "8a2666dda6990d6dc6b698a14b77e0abe9ca60452f745c15ddb92ab4fa60a816",
+    "scripts/cpu-utilization-sampler.mjs": "9fb367cbf08399a81ec2f7df07654468a6cfa613869bcf00ff06b231d360bd75",
+    "scripts/evaluate-metabolism-performance-result.mjs": "5398d440479289ee2e303b4f091c793d21eadb125133daf25f009afd90cbe3a3",
+    "scripts/local-packaged-metabolism-evidence.mjs": "0dabf6e747ab520591dbb486b3407219cec7555317c9e0b71a57c2bb6e2e59d8",
+    "scripts/materialize-metabolism-performance-runner.mjs": "7d612175b8f9d04db79ffe75469d61c7a0e5998de6fe2c187d712559687a35d5",
+    "scripts/metabolism-performance-release-exception.mjs": "7a4d1ea60e8f5af5b965cf7c21d0a96b80790295561ee470994d26cdb5219c71",
+    "scripts/metabolism-worker-electron-performance-harness.ts": "18f33e287985fe8f24f9c0e9836cb8dc62b6b5783f59e5164f5c99cdc7cf03a2",
+    "scripts/run-metabolism-worker-electron-performance.mjs": "e6149963d22a817a9e570ce67b43e41582862ac216802549194218942831f47c",
+    "scripts/run-packaged-metabolism-worker-performance.mjs": "aebf9f440e72ce3ea4e9334a7cb67cf89b4ed5fab0a026aeb2c94a1395bd0f7a",
+    "scripts/smoke-packaged-metabolism-worker.mjs": "99b3ae25de72c05db1812a3fc7b639d69531dcc0a05b1d99ccd38471022b1d1e",
+    "tests/client/metabolism-worker-forced-termination.test.ts": "3c0d13997a547224ceff0fc1e0ffc209e88bc941a41a5820f577674baed04dd5"
+  },
+  "result": {
+    "protocolVersion": 3,
+    "measuredAt": "2026-11-07T15:25:53.344Z",
+    "machine": {
+      "cpu": "Apple M1 Max",
+      "cpuCount": 10,
+      "loadAverageAtStart": [
+        4.857421875,
+        3.20458984375,
+        3.62548828125
+      ],
+      "loadAverageAtEnd": [
+        3.88525390625,
+        3.0927734375,
+        3.57470703125
+      ],
+      "cpuUtilizationGate": {
+        "start": 0.0149023,
+        "baselineHostMaximumObserved": 0.1315068493150685,
+        "baselineProcessMaximumObserved": 0.10038586301369863,
+        "baselineExternalMaximumObserved": 0.031120986301369866,
+        "baselineWindows": [
+          {
+            "host": 0.1315068493150685,
+            "process": 0.10038586301369863,
+            "external": 0.031120986301369866
+          },
+          {
+            "host": 0.07699999999999996,
+            "process": 0.05312240000000001,
+            "external": 0.023877599999999995
+          },
+          {
+            "host": 0.07092907092907097,
+            "process": 0.05520419580419581,
+            "external": 0.01572487512487512
+          }
+        ],
+        "beforeCandidate": 0.0037339339339339337,
+        "maximumObserved": 0.1160592561284869,
+        "end": 0.010316616616616616
+      },
+      "memoryBytes": 34359738368,
+      "os": "Darwin 25.5.0",
+      "arch": "arm64",
+      "electronVersion": "43.8.7"
+    },
+    "fixture": {
+      "nodeCount": 10000,
+      "linkCount": 20000,
+      "writesPerKind": 100,
+      "dataRoot": "ephemeral-temp-only"
+    },
+    "workloads": {
+      "focusedRendererIpcWrites": true,
+      "backgroundFullBacklog": true
+    },
+    "throughput": {
+      "mainBaselineRunsMs": [
+        339.12774999999965,
+        326.38345799999934,
+        325.9857919999995
+      ],
+      "workerRunsMs": [
+        335.7949580000004,
+        329.8209170000009,
+        330.47670899999866
+      ],
+      "mainBaselineMs": 326.38345799999934,
+      "workerRuntimeMs": 330.47670899999866,
+      "workerVsMainBaselineRatio": 0.9876141014221993
+    },
+    "mainBaselineEventLoopDelayMs": {
+      "p50": 326.38345799999934,
+      "p95": 339.12774999999965,
+      "p99": 339.12774999999965,
+      "max": 339.12774999999965
+    },
+    "backgroundFullBacklog": {
+      "durationMs": 485.9800830000022,
+      "llmAndEmbeddingTasksCircuitGated": true
+    },
+    "contentionRuns": [
+      {
+        "eventLoopDelayMs": {
+          "p50": 1.184767,
+          "p95": 1.215487,
+          "p99": 1.252351,
+          "max": 4.718591
+        },
+        "foregroundWriterDelayMs": {
+          "renderer": {
+            "count": 100,
+            "p50": 0.27012500000091677,
+            "p95": 2.475125000000844,
+            "p99": 4.1371670000007725,
+            "max": 4.1930410000004485
+          },
+          "note": {
+            "count": 100,
+            "p50": 0.2631660000006377,
+            "p95": 2.6054170000006707,
+            "p99": 4.16412500000115,
+            "max": 4.181875000000218
+          },
+          "cloud": {
+            "count": 100,
+            "p50": 0.27283299999908195,
+            "p95": 2.5504169999985606,
+            "p99": 4.1629159999993135,
+            "max": 4.187208000001192
+          }
+        }
+      },
+      {
+        "eventLoopDelayMs": {
+          "p50": 1.186815,
+          "p95": 1.219583,
+          "p99": 1.236991,
+          "max": 4.866047
+        },
+        "foregroundWriterDelayMs": {
+          "renderer": {
+            "count": 100,
+            "p50": 0.30133399999976973,
+            "p95": 0.40675000000010186,
+            "p99": 1.1311249999998836,
+            "max": 4.161040999999386
+          },
+          "note": {
+            "count": 100,
+            "p50": 0.2969169999996666,
+            "p95": 0.44304099999862956,
+            "p99": 1.1517499999990832,
+            "max": 4.145250000001397
+          },
+          "cloud": {
+            "count": 100,
+            "p50": 0.2967500000013388,
+            "p95": 0.40216700000019046,
+            "p99": 1.1568330000009155,
+            "max": 4.145958000000974
+          }
+        }
+      },
+      {
+        "eventLoopDelayMs": {
+          "p50": 1.183743,
+          "p95": 1.205247,
+          "p99": 1.247231,
+          "max": 7.434239
+        },
+        "foregroundWriterDelayMs": {
+          "renderer": {
+            "count": 100,
+            "p50": 0.2577080000010028,
+            "p95": 0.8829580000001442,
+            "p99": 4.09179100000074,
+            "max": 4.094291000001249
+          },
+          "note": {
+            "count": 100,
+            "p50": 0.25287500000013097,
+            "p95": 1.7072910000006232,
+            "p99": 4.098125000000437,
+            "max": 4.16399999999885
+          },
+          "cloud": {
+            "count": 100,
+            "p50": 0.2569999999996071,
+            "p95": 0.903334000000541,
+            "p99": 4.067874999998821,
+            "max": 4.106834000000163
+          }
+        }
+      }
+    ],
+    "eventLoopDelayMs": {
+      "p50": 1.184767,
+      "p95": 1.215487,
+      "p99": 1.247231,
+      "max": 4.866047
+    },
+    "resourceUsage": {
+      "cpuUserMs": 4641.215,
+      "cpuSystemMs": 717.292,
+      "walBytesBeforeCheckpoint": 62850632,
+      "checkpoint": {
+        "busy": 0,
+        "log": 15255,
+        "checkpointed": 15255
+      }
+    },
+    "foregroundWriterDelayMs": {
+      "renderer": {
+        "count": 100,
+        "p50": 0.27012500000091677,
+        "p95": 0.8829580000001442,
+        "p99": 4.09179100000074,
+        "max": 4.161040999999386
+      },
+      "note": {
+        "count": 100,
+        "p50": 0.2631660000006377,
+        "p95": 1.7072910000006232,
+        "p99": 4.098125000000437,
+        "max": 4.16399999999885
+      },
+      "cloud": {
+        "count": 100,
+        "p50": 0.27283299999908195,
+        "p95": 0.903334000000541,
+        "p99": 4.067874999998821,
+        "max": 4.145958000000974
+      }
+    },
+    "correctness": {
+      "foregroundSingleAttempt": true,
+      "suspendResume": true,
+      "workerOwnerTerminateReacquire": true,
+      "unexpectedSqliteBusyOrLocked": 0,
+      "concurrentSchedulerPasses": 1,
+      "mainThreadSchedulerTaskExecutions": 0,
+      "orphanCliProcessGroupsAfterShutdown": 0
+    },
+    "thresholdEvaluation": {
+      "protocolVersion": 3,
+      "status": "passed",
+      "failures": []
+    },
+    "provenance": {
+      "gitHead": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+      "thresholdSha256": "a7fd66a79d33ce8912978d026f0e7149e1bb8d4a9e494084486cbe2e5f638dfa",
+      "sourceWorkerSha256": "131e9acb89a2185e571a1e5cfcec8d5668c24f28ce74b9d6eb36b64f687dabce",
+      "assets": {
+        "executable": {
+          "bytes": 33968,
+          "sha256": "d362d27c6fc89d98d49ce29fd1aa74976eadaa4e3439f62f046cceecba95796a"
+        },
+        "appAsar": {
+          "bytes": 63330394,
+          "sha256": "82df63ef5b62f29f09c1f5c1ff5c7a55bf5f8774ac75643f17ebfa2714cdfa14"
+        },
+        "workerBundle": {
+          "bytes": 2892248,
+          "sha256": "131e9acb89a2185e571a1e5cfcec8d5668c24f28ce74b9d6eb36b64f687dabce"
+        }
+      }
+    }
+  }
+}
