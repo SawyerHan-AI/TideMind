@@ -237,7 +237,20 @@ jobs:
 
       - name: Run frozen packaged metabolism performance gate
         if: matrix.arch == 'arm64'
-        run: npm run measure:metabolism:packaged -- --output "$RUNNER_TEMP/metabolism-performance-receipt.json"
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          local_receipt="release-evidence/local-packaged-metabolism-performance/$version.json"
+          receipt="$RUNNER_TEMP/metabolism-performance-receipt.json"
+          if [ -e "$local_receipt" ] || [ -L "$local_receipt" ]; then
+            node scripts/local-packaged-metabolism-evidence.mjs \
+              --receipt "$local_receipt" --source-commit "$TIDEMIND_SOURCE_COMMIT" \
+              --worker client/out/bin/metabolism-worker.cjs --copy-to "$receipt"
+            echo "TIDEMIND_LOCAL_PACKAGED_METABOLISM_RECEIPT=true" >> "$GITHUB_ENV"
+          else
+            npm run measure:metabolism:packaged -- --output "$receipt"
+          fi
 
       - name: Retain packaged metabolism performance receipt
         if: matrix.arch == 'arm64'
@@ -321,9 +334,17 @@ jobs:
 
       - name: Bind release Worker to the performance receipt
         if: matrix.arch == 'arm64'
+        shell: bash
         env:
           RECEIPT_PATH: ${{ runner.temp }}/metabolism-performance-receipt.json
         run: |
+          set -euo pipefail
+          if [ "${TIDEMIND_LOCAL_PACKAGED_METABOLISM_RECEIPT:-}" = true ]; then
+            node scripts/local-packaged-metabolism-evidence.mjs \
+              --receipt "$RECEIPT_PATH" --source-commit "$TIDEMIND_SOURCE_COMMIT" \
+              --worker client/out/bin/metabolism-worker.cjs --app "$TIDEMIND_ACCEPTED_APP"
+            exit 0
+          fi
           node - <<'NODE'
           const fs = require('node:fs')
           const crypto = require('node:crypto')

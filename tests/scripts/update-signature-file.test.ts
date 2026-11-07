@@ -77,7 +77,7 @@ it('runs the real CLI with release.mjs imports, verifies and emits public signat
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tidemind-signature-cli-'))); dirs.push(dir);
   const scripts = path.join(dir, 'scripts'), ipc = path.join(dir, 'client/electron/ipc'), output = path.join(dir, 'public-signatures');
   fs.mkdirSync(scripts); fs.mkdirSync(ipc, { recursive: true }); fs.mkdirSync(output);
-  for (const name of ['verify-update-signature-file.mjs', 'release.mjs', 'agent-integration-host-acceptance-requirements.json']) {
+  for (const name of ['verify-update-signature-file.mjs', 'release.mjs', 'local-packaged-metabolism-evidence.mjs', 'evaluate-metabolism-performance-result.mjs', 'agent-integration-host-acceptance-requirements.json']) {
     fs.copyFileSync(fileURLToPath(new URL('../../scripts/' + name, import.meta.url)), path.join(scripts, name));
   }
   fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ version }));
