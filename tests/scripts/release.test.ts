@@ -302,10 +302,12 @@ describe('release script helpers', () => {
     expect(workflow).toContain('[ "$GITHUB_REF" = refs/heads/main ]');
     expect(workflow).toContain('elif [ "$GITHUB_EVENT_NAME" = push ]; then');
     expect(workflow).toContain('[[ "$GITHUB_REF" == refs/tags/v* ]]');
-    const jobs = (loadYaml(workflow) as { jobs: Record<string, { needs: string | string[]; if: string; permissions?: Record<string, string> }> }).jobs;
+    const jobs = (loadYaml(workflow) as { jobs: Record<string, { needs: string | string[]; if: string; permissions?: Record<string, string>; steps?: Array<{ name?: string; env?: Record<string, string> }> }> }).jobs;
     expect(jobs['build-mac'].needs).toBe('admit-source');
     expect(jobs['build-mac'].if).toBe("needs.admit-source.outputs.partial_auth_runtime != 'true'");
     expect(workflow).toContain('permissions:\n  contents: read');
+    expect(jobs['build-mac'].permissions).toEqual({ contents: 'write' });
+    expect(jobs['build-mac'].steps?.find(step => step.name === 'Package macOS')?.env).not.toHaveProperty('GH_TOKEN');
     expect(jobs['publish-draft'].needs).toEqual(['admit-source', 'build-mac']);
     expect(jobs['publish-draft'].if).toBe("github.event_name == 'push' && needs.admit-source.outputs.partial_auth_runtime != 'true'");
     expect(jobs['publish-draft'].permissions?.contents).toBe('write');
