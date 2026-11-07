@@ -100,6 +100,9 @@ jobs:
   build-mac:
     if: needs.admit-source.outputs.partial_auth_runtime != 'true'
     needs: admit-source
+    # GitHub draft release lookup/download requires repository push access.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -290,7 +293,6 @@ jobs:
         if: inputs.candidate_only != true
         run: cd client && npx electron-builder --mac --${{ matrix.arch }} --prepackaged "$TIDEMIND_ACCEPTED_APP" --publish never
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.MAC_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
