@@ -1,0 +1,6 @@
+{
+  "kind": "controlled_negative_regression",
+  "operation": "cli_change",
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "reportFile": "codex-cli/B7/controlled-regression-report.json"
+}

@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "attestedBy": "Codex /root",
+  "attestedAt": "2026-11-07T16:24:14.823Z",
+  "statement": "I verified that the evidence files contain no credentials, secrets, tokens, cookies, private keys, or authentication material.",
+  "files": [
+    {
+      "name": "disconnect-preview.json",
+      "sha256": "1d469b16ed615de2954b1af92c79fcd1841513a771a8dfbaee26d73513f7b477"
+    },
+    {
+      "name": "disconnect-interim-readback.json",
+      "sha256": "cabc252e8fa4eb6f3b017516747ea4de787027be107d945714cd39ab95a8da89"
+    },
+    {
+      "name": "disconnect-manual-instruction-removal.json",
+      "sha256": "dc2bc25f0969beea420e839e3c2ed0f3698d4a259f897d95c4805787ba0fd2c6"
+    },
+    {
+      "name": "disconnect-recheck-start.json",
+      "sha256": "0ff5c84ced544fa02a42ca0393624ad573c3059fbc5f82b680ec5fc22be6ee15"
+    },
+    {
+      "name": "disconnect-final-recheck.json",
+      "sha256": "2d6a488e626a0d19ee62923ac78407a5ac1618f340d1d9a29b903db46fcf9f77"
+    },
+    {
+      "name": "disconnect-file-readback.json",
+      "sha256": "d84d37b9dff06080f2dcefa510064b006038db0f205065f7c2978b346f9a7493"
+    }
+  ]
+}

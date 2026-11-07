@@ -1,0 +1,28 @@
+{
+  "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+  "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+  "agentId": "eb_74049455474d4440",
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+  "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+  "traceId": "jTESHEIVhfAcPaOlLtfdk",
+  "observedAt": "2026-11-07T15:53:23.477258+00:00",
+  "pendingAfter": [],
+  "operation": {
+    "id": 2,
+    "operation": "digest",
+    "agent_id": "eb_74049455474d4440",
+    "session": "01a1b6b6-abc1-7e31-bced-77828dd572e9",
+    "input_summary": "Project TM095_A_51b962131b55791c: the observatory door color is violet; the assigned test badge is I",
+    "output_node_ids": "[\"DTbyZfRbhqPHLvtRDA08K\"]",
+    "created": "2026-11-07T15:53:20.445Z"
+  },
+  "nodes": [
+    {
+      "id": "DTbyZfRbhqPHLvtRDA08K",
+      "content": "Project TM095_A_51b962131b55791c: the observatory door color is violet; the assigned test badge is IRIS-9271.",
+      "archived": 0,
+      "source_session": "01a1b6b6-abc1-7e31-bced-77828dd572e9"
+    }
+  ]
+}

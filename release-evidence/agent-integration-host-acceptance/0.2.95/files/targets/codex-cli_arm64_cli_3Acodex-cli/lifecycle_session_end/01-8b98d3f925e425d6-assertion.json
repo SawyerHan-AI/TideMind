@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 2,
+  "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+  "targetId": "codex-cli",
+  "stepId": "lifecycle_session_end",
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+  "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+  "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+  "agentId": "eb_74049455474d4440",
+  "outcome": "passed",
+  "assertionSource": "external",
+  "assertedBy": "Codex /root native proof verification",
+  "observedAt": "2026-11-07T15:54:48.163Z",
+  "assertions": [
+    "The frozen native proof validator verified lifecycle_session_end against the exact signed candidate, current capture and isolated target."
+  ],
+  "activityReceipt": {
+    "ledgerSource": "codex_native_hooks",
+    "restoreReceipt": {
+      "schemaVersion": 1,
+      "trigger": "manual",
+      "sessionId": "01a1b6b7-e61a-7b43-9832-cab96d1c3dcf",
+      "restoreTurnId": "01a1b6b8-0405-77b1-9b6a-e78b34aec754",
+      "metadataExportSha256": "70989f85edaf888d8ab61101b48d747f9c842cb3d0a187402791b43f019bc256",
+      "nativeNotificationsSha256": "30f01dcb22436bb8614e764a5a4522b13ff736da9bb7f0fc6bdb9c710653de28",
+      "rolloutSha256": "2448beda8c031bfee26f901502956613bbcdfd4b14271e9b4bbd650be4fb5ef3",
+      "postCompactInputSha256": "d1c86c65d80447b018a582cff2752bae8b6d90018883bea3fc68b7d76db1a995",
+      "postCompactRunId": "post-compact:1:/private/var/folders/ph/2llccqw5201_pxj9w6s9p3580000gn/T/tm095-a-9si3cxkx/home/.codex/hooks.json",
+      "restoreRunId": "user-prompt-submit:4:/private/var/folders/ph/2llccqw5201_pxj9w6s9p3580000gn/T/tm095-a-9si3cxkx/home/.codex/hooks.json"
+    },
+    "runId": "session-end:3:/private/var/folders/ph/2llccqw5201_pxj9w6s9p3580000gn/T/tm095-a-9si3cxkx/home/.codex/hooks.json",
+    "turnId": "auto-compact-1",
+    "evidenceHash": "5e5c2b845e86d5fc6414884cc2aa9925ea03951f979b469d6e79e714e4a0b7a1"
+  }
+}

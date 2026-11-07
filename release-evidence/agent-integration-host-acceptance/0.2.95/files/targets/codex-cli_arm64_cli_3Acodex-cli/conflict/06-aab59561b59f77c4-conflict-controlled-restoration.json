@@ -1,0 +1,6 @@
+{
+  "observedAt": "2026-11-07T16:10:43.276Z",
+  "method": "CAS restore of only the operator-injected edit to exact original bytes",
+  "restoredSha256": "850795df439dd93ff09177fdbe0ec6442a032ee6e5163ad7ba777bdb174f4512",
+  "originalSha256": "850795df439dd93ff09177fdbe0ec6442a032ee6e5163ad7ba777bdb174f4512"
+}

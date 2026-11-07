@@ -1,0 +1,22 @@
+{
+  "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+  "targetId": "codex-cli",
+  "stepId": "brain_prepare",
+  "appVersion": "0.2.95",
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+  "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+  "hostVersion": "0.157.1",
+  "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+  "agentId": "eb_74049455474d4440",
+  "evidenceIds": [
+    "86d7c8532bb0ff45ede4eb5bc584ba38def8bf0fd9de600e7f896d9d837e20a1",
+    "f27560502b40657996cec8697611abe844c2396eb21dfb75a04abf4b4dbc25c7",
+    "8ea7b6c55e440d3e32d12c3e7d89f5a1cdf42dc913fa478c07d9e82f53415e9c",
+    "f7a860f346acf092c1d2c9276629f84592e37837f5dc8d2e76da7ceaae735dfa",
+    "1491306f133fb5319c7d2589786150ff1c700c889b15b4444bbc55ced29c8e90",
+    "055916b47dfac0b7e9980747c6cd7ea3255f129bedc1586dc737c31d6c02d0a2",
+    "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511"
+  ],
+  "outcomeDigest": "35176ca22b21e49c5b40926210919813ae3e9792db20f8d6d5c1a1b6754c3d43"
+}

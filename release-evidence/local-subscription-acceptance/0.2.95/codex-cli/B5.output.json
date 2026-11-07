@@ -1,0 +1,7 @@
+{
+  "invocationId": "cli_d416bb8f-987c-4029-a219-06ef58b52124",
+  "text": "{\n  \"needs_update\": true,\n  \"updated_content\": \"B33-SYNTHETIC exhibit 7c19: The release exhibit theme is green. The fixed release marker is KITE-33 and the badge is quartz. This is a synthetic acceptance memory only.\",\n  \"conflict_detected\": true,\n  \"conflict_with_index\": 1,\n  \"new_independence\": 0.95,\n  \"reason\": \"上下文中的新决定明确将主题从 violet 改为 green；发布标记和徽章未变。\"\n}",
+  "actualModel": null,
+  "outputKind": "structured",
+  "modelObservability": "The real production result did not return a server model identifier. actualModel is null; no server model identity is inferred from the requested model ID."
+}

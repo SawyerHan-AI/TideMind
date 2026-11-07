@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 2,
+  "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+  "targetId": "codex-cli",
+  "stepId": "disconnect",
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+  "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+  "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+  "agentId": "eb_74049455474d4440",
+  "outcome": "passed",
+  "assertionSource": "external",
+  "assertedBy": "Codex /root",
+  "observedAt": "2026-11-07T16:24:14.823Z",
+  "assertions": [
+    "Last, normal shared-connection disconnect preview and apply revoked the anonymous Codex CLI/Desktop consumers and stopped the bridge. The product required manual removal of the exact owned Skill document; after verifying its hash and that no other active consumer depended on it, the operator followed that instruction. The original disconnect response exceeded the observer deadline; actual removed intent and stopped bridge were read back without repeating disconnect. After the manual removal, one normal product recheck finalized disconnect_verified with no remaining user actions. Physical read-back confirms the selected MCP selector, owned Hook marker and Skill document are absent. Native host cached loading is not claimed as directly observed."
+  ],
+  "activityReceipt": null
+}

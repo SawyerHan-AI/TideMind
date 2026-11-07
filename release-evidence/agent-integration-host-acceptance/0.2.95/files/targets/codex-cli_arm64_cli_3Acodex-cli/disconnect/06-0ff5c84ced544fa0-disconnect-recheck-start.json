@@ -1,0 +1,9 @@
+{
+  "observedAt": "2026-11-07T16:20:25.741Z",
+  "previousScan": {
+    "phase": "idle",
+    "startedAt": "2026-11-07T16:12:11.275Z",
+    "completedAt": "2026-11-07T16:18:59.135Z"
+  },
+  "method": "normal scan after following manual_file_removal; observer allows 600s, product timeouts unchanged"
+}

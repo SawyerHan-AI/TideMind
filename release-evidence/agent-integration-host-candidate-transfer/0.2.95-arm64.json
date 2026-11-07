@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "architecture": "arm64",
+  "appVersion": "0.2.95",
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+  "archiveSha256": "4e87ebf0cf12dbc8a9e02080ae03b19578837d3c0f86bc669ae5424c4f618774",
+  "archiveBytes": 156309617,
+  "transferTag": "agent-host-candidate-v0.2.95-33bb7d3f32f5",
+  "assetName": "Tide.Mind-0.2.95-arm64-33bb7d3f32f5.zip",
+  "appBundleName": "Tide Mind.app"
+}

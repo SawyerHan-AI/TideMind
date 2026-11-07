@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 2,
+  "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+  "targetId": "codex-cli",
+  "stepId": "connect",
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+  "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+  "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+  "agentId": "eb_74049455474d4440",
+  "outcome": "passed",
+  "assertionSource": "external",
+  "assertedBy": "Codex /root",
+  "observedAt": "2026-11-07T16:24:13.525Z",
+  "assertions": [
+    "The actual automatic connection created managed configuration with all three healthy owned components, verified by public detail readback. The task was read back after the controlled missing episode and reports needs_recovery; its original completion result and the exact cause of this later projection are not independently established. Subsequent already-collected real CLI memory and native Hook use succeeded under the canonical shared identity. The per-Installation awaiting_verification projection is preserved rather than relabeled as fully verified."
+  ],
+  "activityReceipt": null
+}

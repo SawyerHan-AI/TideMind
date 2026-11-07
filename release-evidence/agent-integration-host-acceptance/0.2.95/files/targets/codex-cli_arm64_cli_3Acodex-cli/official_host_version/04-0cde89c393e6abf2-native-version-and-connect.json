@@ -1,0 +1,58 @@
+{
+  "observedFrom": "actual native initialize and persisted public connection task",
+  "nativeWireSha256": "8ea7b6c55e440d3e32d12c3e7d89f5a1cdf42dc913fa478c07d9e82f53415e9c",
+  "initializeRequest": {
+    "observedAt": "2026-11-07T15:53:06.080Z",
+    "direction": "client",
+    "message": {
+      "id": 1,
+      "method": "initialize",
+      "params": {
+        "clientInfo": {
+          "name": "tidemind-memory-closure-acceptance",
+          "title": "Tide Mind memory closure acceptance",
+          "version": "1"
+        },
+        "capabilities": {
+          "experimentalApi": true
+        }
+      }
+    }
+  },
+  "initializeResponse": {
+    "observedAt": "2026-11-07T15:53:06.504Z",
+    "direction": "server",
+    "message": {
+      "id": 1,
+      "result": {
+        "userAgent": "tidemind-memory-closure-acceptance/0.157.1 (Mac OS 26.6.2; arm64) unknown (tidemind-memory-closure-acceptance; 1)",
+        "codexHome": "/private/var/folders/ph/2llccqw5201_pxj9w6s9p3580000gn/T/tm095-a-9si3cxkx/home/.codex",
+        "platformFamily": "unix",
+        "platformOs": "macos"
+      }
+    }
+  },
+  "connectionTask": {
+    "id": "agent_apply_d8ba1807-5906-4d9d-b540-9a5ac8936c7c",
+    "planHash": "e7093c9a831f2b31e7dab7765661a5313145d99b8ecc7e621715fb5c76cac2b2",
+    "installationIds": [
+      "installation_de65101e-9300-45ab-b0ee-47d8fe989d26"
+    ],
+    "pendingInstallationIds": [],
+    "results": [
+      {
+        "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+        "status": "needs_recovery",
+        "runId": "run_321acfcc-cf85-48a2-b7ce-643220116bc6",
+        "reason": "verification_failed"
+      }
+    ],
+    "state": "completed",
+    "startedAt": "2026-11-07T15:51:07.840Z",
+    "completedAt": "2026-11-07T15:51:09.472Z",
+    "feedKey": "task:agent_apply_d8ba1807-5906-4d9d-b540-9a5ac8936c7c"
+  },
+  "hostVersion": "0.157.1",
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387"
+}

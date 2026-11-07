@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "attestedBy": "Codex /root native proof verification",
+  "attestedAt": "2026-11-07T15:56:15.713Z",
+  "statement": "I verified that the evidence files contain no credentials, secrets, tokens, cookies, private keys, or authentication material.",
+  "files": [
+    {
+      "name": "manual-candidate-readback.json",
+      "sha256": "70989f85edaf888d8ab61101b48d747f9c842cb3d0a187402791b43f019bc256"
+    },
+    {
+      "name": "manual-native-protocol.json",
+      "sha256": "30f01dcb22436bb8614e764a5a4522b13ff736da9bb7f0fc6bdb9c710653de28"
+    },
+    {
+      "name": "manual-model-input.json",
+      "sha256": "2448beda8c031bfee26f901502956613bbcdfd4b14271e9b4bbd650be4fb5ef3"
+    },
+    {
+      "name": "manual-postcompact-input.json",
+      "sha256": "d1c86c65d80447b018a582cff2752bae8b6d90018883bea3fc68b7d76db1a995"
+    }
+  ]
+}

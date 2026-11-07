@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "attestedBy": "Codex /root",
+  "attestedAt": "2026-11-07T16:24:14.700Z",
+  "statement": "I verified that the evidence files contain no credentials, secrets, tokens, cookies, private keys, or authentication material.",
+  "files": [
+    {
+      "name": "conflict-controlled-edit.json",
+      "sha256": "f791eb5527727e658564ee576e3651a6f3f107d0aa16417ba392138eb7ffff7c"
+    },
+    {
+      "name": "conflict-preview.json",
+      "sha256": "3a1a80cd8f0451e5bcd68a9b4adc263314ad54f29d61685ed1df2dd8b4b4f33e"
+    },
+    {
+      "name": "conflict-observation-error.json",
+      "sha256": "4165a0ab17a7c5ef683fcd0edd89bad34e3c7ddc679b834b9e3a91bc9b0fcda1"
+    },
+    {
+      "name": "conflict-controlled-restoration.json",
+      "sha256": "aab59561b59f77c491032735075bfe146778b87465b39d9139c3dad12cc7556c"
+    },
+    {
+      "name": "post-restart-readback.json",
+      "sha256": "0a01a2da1b84ec35af751f4903146a3a1fe66dab23ee62ca6ca0dcf8e6c6b6f0"
+    }
+  ]
+}

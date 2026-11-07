@@ -1,0 +1,37 @@
+{
+  "exporterVersion": 1,
+  "evidenceClass": "real_host",
+  "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+  "targetMetadata": {
+    "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+    "targetId": "codex-cli",
+    "hostVersion": "0.157.1",
+    "distribution": {
+      "distributionId": "cli:codex-cli",
+      "packageProvenance": "npm_metadata:@openai/codex",
+      "artifactReceiptSha256": "3d8d74f9fba91d4d6d3833ad316e973049924171ae2c80f6da8845d63e2d7a33",
+      "portableArtifactFingerprint": "2cc4dbdbfe682adb72037421d5a7e4436159523ab2900ffbfc954aa51ab64c4d",
+      "rawExecutableSha256": "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+      "rawExecutableSizeBytes": 8790,
+      "executableSha256": "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+      "executableSizeBytes": 8790,
+      "distributionSha256": "715049a46d8c2c455a845168be40970e0c0c2f40dac06ec0f95bd659d01e8976",
+      "distributionSizeBytes": 328965476
+    },
+    "environment": {
+      "platform": "darwin",
+      "architecture": "arm64",
+      "processArchitecture": "arm64",
+      "hardwareArchitecture": "arm64",
+      "translationMode": "not_translated",
+      "osVersion": "26.6.2",
+      "hostIdentitySha256": "c3506661214caa5b3ec3ebfb066a6d806c8a511181e4a8121cadca84657b4d75"
+    },
+    "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+    "agentId": "eb_74049455474d4440"
+  },
+  "exportedAt": "2026-11-07T15:50:25.861Z",
+  "exportHash": "94fd132ce8656a2aad31823dd9cd9b796b2bd7ccb445bf1413ef0b11689ddc47"
+}

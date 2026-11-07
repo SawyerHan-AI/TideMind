@@ -1,0 +1,1962 @@
+{
+  "schemaVersion": 4,
+  "acceptanceId": "personal-beta-095-33bb7d3f-anonymous",
+  "evidenceClass": "real_host",
+  "appVersion": "0.2.95",
+  "upgradeFromAppVersions": [
+    "0.2.89",
+    "0.2.90",
+    "0.2.91",
+    "0.2.92",
+    "0.2.93",
+    "0.2.94"
+  ],
+  "migrationAcceptanceDeferral": {
+    "policyId": "0.2.95-single-user-manual-migration",
+    "appVersion": "0.2.95",
+    "audience": "single_user",
+    "status": "deferred_to_installation",
+    "execution": "manual_after_release",
+    "scopes": [
+      "upgrade_matrix",
+      "observed_schema41"
+    ],
+    "reason": "The user authorized the personal beta with local installation and upgrade validation. The historical upgrade matrix and schema41 recovery remain deferred, never passed; the actual local upgrade, preserved identity/history/statistics and post-install read-back are required to complete delivery."
+  },
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "captureCreatedAt": "2026-11-07T15:48:56.465Z",
+  "captureNonce": "51b962131b55791c8dd21c4dd3438652e6a594829e10360f48bcc036067c4145",
+  "generatedAt": "2026-11-07T16:33:22.712Z",
+  "requirementsSha256": "b07a3a13a4f846afa04a5645a2731aa42c749f452bc45d656ce6610956c72977",
+  "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+  "candidateAppsByArchitecture": {
+    "arm64": {
+      "version": "0.2.95",
+      "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+      "bundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+      "executableSha256": "394e63fe616d4aae48f4d3a65063d55e5c64ff27431cbf0d808905c9e2a43f3e",
+      "teamId": "Z4U232GXH5",
+      "signingIdentity": "Developer ID Application: sawyer han (Z4U232GXH5)",
+      "cdhash": "c8d9c7eea0d6c1d55787aaa9402197a0fb063ee7"
+    }
+  },
+  "review": {
+    "reviewer": "Codex /root/cleanup_review_lifecycle independent Sol review",
+    "reviewedAt": "2026-11-07T16:32:28.258Z",
+    "decision": "approved",
+    "evidenceManifestSha256": "f5554c30fff4c9569a100186f9e9487d7381ff5ce81634727f3581249bf8c2a0",
+    "candidateAppsSha256": "8c270817a81c4a55cc8c74af26fa35c8ec0eed17ea73bb7dee426b32d2878c32",
+    "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7"
+  },
+  "entries": [
+    {
+      "targetKey": "claude-code-cli:arm64:cli%3Aclaude-code-cli",
+      "targetId": "claude-code-cli",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "claude-code-native:arm64:cli%3Aclaude-code-native",
+      "targetId": "claude-code-native",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "claude-desktop-legacy:arm64:com.anthropic.claudefordesktop",
+      "targetId": "claude-desktop-legacy",
+      "sourceCatalogId": null,
+      "disposition": "migration",
+      "targetCapability": 2,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+      "targetId": "codex-cli",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "hostVersion": "0.157.1",
+      "distribution": {
+        "distributionId": "cli:codex-cli",
+        "packageProvenance": "npm_metadata:@openai/codex",
+        "artifactReceiptSha256": "3d8d74f9fba91d4d6d3833ad316e973049924171ae2c80f6da8845d63e2d7a33",
+        "portableArtifactFingerprint": "2cc4dbdbfe682adb72037421d5a7e4436159523ab2900ffbfc954aa51ab64c4d",
+        "rawExecutableSha256": "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+        "rawExecutableSizeBytes": 8790,
+        "executableSha256": "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+        "executableSizeBytes": 8790,
+        "distributionSha256": "715049a46d8c2c455a845168be40970e0c0c2f40dac06ec0f95bd659d01e8976",
+        "distributionSizeBytes": 328965476
+      },
+      "environment": {
+        "platform": "darwin",
+        "architecture": "arm64",
+        "processArchitecture": "arm64",
+        "hardwareArchitecture": "arm64",
+        "translationMode": "not_translated",
+        "osVersion": "26.6.2",
+        "hostIdentitySha256": "c3506661214caa5b3ec3ebfb066a6d806c8a511181e4a8121cadca84657b4d75"
+      },
+      "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+      "agentId": "eb_74049455474d4440",
+      "customBinding": null,
+      "metadataExport": {
+        "exporterVersion": 1,
+        "evidenceClass": "real_host",
+        "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+        "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+        "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+        "targetMetadata": {
+          "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+          "targetId": "codex-cli",
+          "hostVersion": "0.157.1",
+          "distribution": {
+            "distributionId": "cli:codex-cli",
+            "packageProvenance": "npm_metadata:@openai/codex",
+            "artifactReceiptSha256": "3d8d74f9fba91d4d6d3833ad316e973049924171ae2c80f6da8845d63e2d7a33",
+            "portableArtifactFingerprint": "2cc4dbdbfe682adb72037421d5a7e4436159523ab2900ffbfc954aa51ab64c4d",
+            "rawExecutableSha256": "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+            "rawExecutableSizeBytes": 8790,
+            "executableSha256": "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+            "executableSizeBytes": 8790,
+            "distributionSha256": "715049a46d8c2c455a845168be40970e0c0c2f40dac06ec0f95bd659d01e8976",
+            "distributionSizeBytes": 328965476
+          },
+          "environment": {
+            "platform": "darwin",
+            "architecture": "arm64",
+            "processArchitecture": "arm64",
+            "hardwareArchitecture": "arm64",
+            "translationMode": "not_translated",
+            "osVersion": "26.6.2",
+            "hostIdentitySha256": "c3506661214caa5b3ec3ebfb066a6d806c8a511181e4a8121cadca84657b4d75"
+          },
+          "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+          "agentId": "eb_74049455474d4440"
+        },
+        "exportedAt": "2026-11-07T15:50:25.861Z",
+        "exportHash": "94fd132ce8656a2aad31823dd9cd9b796b2bd7ccb445bf1413ef0b11689ddc47"
+      },
+      "steps": [
+        {
+          "id": "memory_closure",
+          "memoryClosure": {
+            "schemaVersion": 1,
+            "validationMode": "real_model",
+            "modelSource": "official_subscription",
+            "modelId": "gpt-6-sol",
+            "marker": "TM095_A_51b962131b55791c",
+            "transcriptSha256": "f7a860f346acf092c1d2c9276629f84592e37837f5dc8d2e76da7ceaae735dfa",
+            "rawTranscriptSha256": "8ea7b6c55e440d3e32d12c3e7d89f5a1cdf42dc913fa478c07d9e82f53415e9c",
+            "readbackSha256": "1491306f133fb5319c7d2589786150ff1c700c889b15b4444bbc55ced29c8e90"
+          },
+          "status": "passed",
+          "observedAt": "2026-11-07T15:54:13.480Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root",
+          "assertions": [
+            "Two distinct real Codex CLI sessions under the confirmed ChatGPT subscription completed prepare and synchronous digest, then query/detail recall of the exact same synthetic node and full marker content. The captured read-only SQLite observation matches the digest trace, Agent, session and stored product before session two. This establishes the core memory closure; no embedding or vector acceptance is claimed."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "memory_closure",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "d4642ccb92c157e8df400a827de0eecf7137b621e5531d6499e2112a5c73628b",
+              "f27560502b40657996cec8697611abe844c2396eb21dfb75a04abf4b4dbc25c7",
+              "8ea7b6c55e440d3e32d12c3e7d89f5a1cdf42dc913fa478c07d9e82f53415e9c",
+              "f7a860f346acf092c1d2c9276629f84592e37837f5dc8d2e76da7ceaae735dfa",
+              "1491306f133fb5319c7d2589786150ff1c700c889b15b4444bbc55ced29c8e90",
+              "055916b47dfac0b7e9980747c6cd7ea3255f129bedc1586dc737c31d6c02d0a2",
+              "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511"
+            ],
+            "outcomeDigest": "2e3593d8c8244f169ab526104dfc1982ee8d405a751d29c59e85de4840612598"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/memory_closure/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/memory_closure/01-d4642ccb92c157e8-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/memory_closure/02-f27560502b406579-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/memory_closure/03-8ea7b6c55e440d3e-native-wire.log",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/memory_closure/04-f7a860f346acf092-transcript.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/memory_closure/05-1491306f133fb531-readback.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/memory_closure/06-055916b47dfac0b7-normalization-provenance.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/memory_closure/07-429d0c53a8578895-target-metadata.json"
+          ]
+        },
+        {
+          "id": "brain_prepare",
+          "status": "passed",
+          "observedAt": "2026-11-07T15:54:13.480Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root",
+          "assertions": [
+            "The first real native session invoked brain_prepare through the current isolated Tide Mind MCP selector. Its completed product result contains profile, keystones, tags, crystals, recent and guidance. Native requests and actual responses were checked against the preserved wire."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "brain_prepare",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "86d7c8532bb0ff45ede4eb5bc584ba38def8bf0fd9de600e7f896d9d837e20a1",
+              "f27560502b40657996cec8697611abe844c2396eb21dfb75a04abf4b4dbc25c7",
+              "8ea7b6c55e440d3e32d12c3e7d89f5a1cdf42dc913fa478c07d9e82f53415e9c",
+              "f7a860f346acf092c1d2c9276629f84592e37837f5dc8d2e76da7ceaae735dfa",
+              "1491306f133fb5319c7d2589786150ff1c700c889b15b4444bbc55ced29c8e90",
+              "055916b47dfac0b7e9980747c6cd7ea3255f129bedc1586dc737c31d6c02d0a2",
+              "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511"
+            ],
+            "outcomeDigest": "35176ca22b21e49c5b40926210919813ae3e9792db20f8d6d5c1a1b6754c3d43"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_prepare/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_prepare/01-86d7c8532bb0ff45-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_prepare/02-f27560502b406579-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_prepare/03-8ea7b6c55e440d3e-native-wire.log",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_prepare/04-f7a860f346acf092-transcript.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_prepare/05-1491306f133fb531-readback.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_prepare/06-055916b47dfac0b7-normalization-provenance.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_prepare/07-429d0c53a8578895-target-metadata.json"
+          ]
+        },
+        {
+          "id": "brain_digest",
+          "status": "passed",
+          "observedAt": "2026-11-07T15:54:13.480Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root",
+          "assertions": [
+            "The first real native session invoked brain_digest with async false, intent new and its exact source session. The actual result is processed with the matching trace and created node. A subsequent read-only observation contains the exact digest operation, original Agent/session, stored synthetic node and no remaining pending row."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "brain_digest",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "0f7c55df439d37e3da0396db8eada903125a5a9ea333e3c15b4f6218e01c83da",
+              "f27560502b40657996cec8697611abe844c2396eb21dfb75a04abf4b4dbc25c7",
+              "8ea7b6c55e440d3e32d12c3e7d89f5a1cdf42dc913fa478c07d9e82f53415e9c",
+              "f7a860f346acf092c1d2c9276629f84592e37837f5dc8d2e76da7ceaae735dfa",
+              "1491306f133fb5319c7d2589786150ff1c700c889b15b4444bbc55ced29c8e90",
+              "055916b47dfac0b7e9980747c6cd7ea3255f129bedc1586dc737c31d6c02d0a2",
+              "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511"
+            ],
+            "outcomeDigest": "2680e275f6a33a4d34ba6a2761dee3b3d8f56e57f86d575ff7d0475b351187f6"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_digest/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_digest/01-0f7c55df439d37e3-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_digest/02-f27560502b406579-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_digest/03-8ea7b6c55e440d3e-native-wire.log",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_digest/04-f7a860f346acf092-transcript.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_digest/05-1491306f133fb531-readback.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_digest/06-055916b47dfac0b7-normalization-provenance.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_digest/07-429d0c53a8578895-target-metadata.json"
+          ]
+        },
+        {
+          "id": "brain_recall",
+          "status": "passed",
+          "observedAt": "2026-11-07T15:54:13.480Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root",
+          "assertions": [
+            "A separate second real native session invoked query/detail brain_recall for the unique synthetic marker and completed with the same stored node ID and full content in exact_matches. It used the isolated candidate selector and preserved real native requests/responses. Vector success is not claimed."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "brain_recall",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "0ea820dd65c4bb9c54839b4c9718d367058c3a859f304d3abd752187b772ec8c",
+              "f27560502b40657996cec8697611abe844c2396eb21dfb75a04abf4b4dbc25c7",
+              "8ea7b6c55e440d3e32d12c3e7d89f5a1cdf42dc913fa478c07d9e82f53415e9c",
+              "f7a860f346acf092c1d2c9276629f84592e37837f5dc8d2e76da7ceaae735dfa",
+              "1491306f133fb5319c7d2589786150ff1c700c889b15b4444bbc55ced29c8e90",
+              "055916b47dfac0b7e9980747c6cd7ea3255f129bedc1586dc737c31d6c02d0a2",
+              "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511"
+            ],
+            "outcomeDigest": "1c2c53d3c7cc279fadbfd4053ecc13f07c61c4df63dd21deee5b08eead1a4155"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_recall/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_recall/01-0ea820dd65c4bb9c-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_recall/02-f27560502b406579-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_recall/03-8ea7b6c55e440d3e-native-wire.log",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_recall/04-f7a860f346acf092-transcript.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_recall/05-1491306f133fb531-readback.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_recall/06-055916b47dfac0b7-normalization-provenance.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_recall/07-429d0c53a8578895-target-metadata.json"
+          ]
+        },
+        {
+          "id": "codex_context_restore_manual",
+          "codexContextRestore": {
+            "schemaVersion": 1,
+            "trigger": "manual",
+            "sessionId": "01a1b6b7-e61a-7b43-9832-cab96d1c3dcf",
+            "restoreTurnId": "01a1b6b8-0405-77b1-9b6a-e78b34aec754",
+            "metadataExportSha256": "70989f85edaf888d8ab61101b48d747f9c842cb3d0a187402791b43f019bc256",
+            "nativeNotificationsSha256": "30f01dcb22436bb8614e764a5a4522b13ff736da9bb7f0fc6bdb9c710653de28",
+            "rolloutSha256": "2448beda8c031bfee26f901502956613bbcdfd4b14271e9b4bbd650be4fb5ef3",
+            "postCompactInputSha256": "d1c86c65d80447b018a582cff2752bae8b6d90018883bea3fc68b7d76db1a995",
+            "postCompactRunId": "post-compact:1:/private/var/folders/ph/2llccqw5201_pxj9w6s9p3580000gn/T/tm095-a-9si3cxkx/home/.codex/hooks.json",
+            "restoreRunId": "user-prompt-submit:4:/private/var/folders/ph/2llccqw5201_pxj9w6s9p3580000gn/T/tm095-a-9si3cxkx/home/.codex/hooks.json"
+          },
+          "status": "passed",
+          "observedAt": "2026-11-07T15:54:48.163Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root native proof verification",
+          "assertions": [
+            "The frozen native proof validator verified codex_context_restore_manual against the exact signed candidate, current capture and isolated target."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "codex_context_restore_manual",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "f3f6a4a9448306df06227386d35468b52704af523e8042b24c76c3b120818388",
+              "693420701cdc5ed3114019aece944cdb8cab1e73dd31297ac253248832cfaa19",
+              "70989f85edaf888d8ab61101b48d747f9c842cb3d0a187402791b43f019bc256",
+              "30f01dcb22436bb8614e764a5a4522b13ff736da9bb7f0fc6bdb9c710653de28",
+              "2448beda8c031bfee26f901502956613bbcdfd4b14271e9b4bbd650be4fb5ef3",
+              "d1c86c65d80447b018a582cff2752bae8b6d90018883bea3fc68b7d76db1a995"
+            ],
+            "outcomeDigest": "109d524b8a0bbdcb5121b57517b2946ea40be7b5eff48c6ac485919f21c1da5a"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_manual/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_manual/01-f3f6a4a9448306df-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_manual/02-693420701cdc5ed3-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_manual/03-70989f85edaf888d-manual-candidate-readback.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_manual/04-30f01dcb22436bb8-manual-native-protocol.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_manual/05-2448beda8c031bfe-manual-model-input.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_manual/06-d1c86c65d80447b0-manual-postcompact-input.json"
+          ]
+        },
+        {
+          "id": "codex_context_restore_auto",
+          "codexContextRestore": {
+            "schemaVersion": 1,
+            "trigger": "auto",
+            "sessionId": "01a1b6b8-9e89-7713-bec2-4fe2804aafae",
+            "restoreTurnId": "01a1b6b8-b756-7c83-b0d6-a74a2784d775",
+            "metadataExportSha256": "c80d1dc3d7bfecad7a8cdde29802b3a84567e4fadab8af8c350e272f3e8df035",
+            "nativeNotificationsSha256": "f7f0159841ce7da9121ca7096e1ab3596ad6ab97149832afd511fa1d0ba617cc",
+            "rolloutSha256": "29d081b9eed24e6426344bffee718fc78d3bd393b0a40edb12923428cc65a85b",
+            "postCompactInputSha256": "043e1c13d88ba2b0203b2bfd006f43a4a268fe0d92d80d983593ca9de927ca00",
+            "postCompactRunId": "post-compact:1:/private/var/folders/ph/2llccqw5201_pxj9w6s9p3580000gn/T/tm095-a-9si3cxkx/home/.codex/hooks.json",
+            "restoreRunId": "user-prompt-submit:4:/private/var/folders/ph/2llccqw5201_pxj9w6s9p3580000gn/T/tm095-a-9si3cxkx/home/.codex/hooks.json"
+          },
+          "status": "passed",
+          "observedAt": "2026-11-07T15:55:40.538Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root native proof verification",
+          "assertions": [
+            "The frozen native proof validator verified codex_context_restore_auto against the exact signed candidate, current capture and isolated target."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "codex_context_restore_auto",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "e4b1c932ce7a643cb16534a713c2e6e0a887a548bffe312f11ee09ad09de061b",
+              "022789ee68993bc7fdc93552f385f1e17cfe87cbeef335378ef8c5464d21611f",
+              "c80d1dc3d7bfecad7a8cdde29802b3a84567e4fadab8af8c350e272f3e8df035",
+              "f7f0159841ce7da9121ca7096e1ab3596ad6ab97149832afd511fa1d0ba617cc",
+              "29d081b9eed24e6426344bffee718fc78d3bd393b0a40edb12923428cc65a85b",
+              "043e1c13d88ba2b0203b2bfd006f43a4a268fe0d92d80d983593ca9de927ca00"
+            ],
+            "outcomeDigest": "dc19f22d449f4f8f5bbf506d3aed8c9f9a41ed95878c507b5aa5308de2507f7b"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_auto/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_auto/01-e4b1c932ce7a643c-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_auto/02-022789ee68993bc7-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_auto/03-c80d1dc3d7bfecad-auto-candidate-readback.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_auto/04-f7f0159841ce7da9-auto-native-protocol.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_auto/05-29d081b9eed24e64-auto-model-input.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_auto/06-043e1c13d88ba2b0-auto-postcompact-input.json"
+          ]
+        },
+        {
+          "id": "lifecycle_session_start",
+          "status": "passed",
+          "observedAt": "2026-11-07T15:54:48.163Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root native proof verification",
+          "assertions": [
+            "The frozen native proof validator verified lifecycle_session_start against the exact signed candidate, current capture and isolated target."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "lifecycle_session_start",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "036b6389b59287cd52c7d50febe0d0cc824c58cbc472977d8644ffa3641e0026",
+              "693420701cdc5ed3114019aece944cdb8cab1e73dd31297ac253248832cfaa19",
+              "70989f85edaf888d8ab61101b48d747f9c842cb3d0a187402791b43f019bc256",
+              "30f01dcb22436bb8614e764a5a4522b13ff736da9bb7f0fc6bdb9c710653de28",
+              "2448beda8c031bfee26f901502956613bbcdfd4b14271e9b4bbd650be4fb5ef3",
+              "d1c86c65d80447b018a582cff2752bae8b6d90018883bea3fc68b7d76db1a995"
+            ],
+            "outcomeDigest": "f14c76695b20b4c7a09cb002a3170516eacacf5cf67cae7bf4c589adcd700aa9"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_start/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_start/01-036b6389b59287cd-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_start/02-693420701cdc5ed3-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_start/03-70989f85edaf888d-manual-candidate-readback.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_start/04-30f01dcb22436bb8-manual-native-protocol.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_start/05-2448beda8c031bfe-manual-model-input.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_start/06-d1c86c65d80447b0-manual-postcompact-input.json"
+          ]
+        },
+        {
+          "id": "lifecycle_pre_compact",
+          "status": "passed",
+          "observedAt": "2026-11-07T15:54:48.163Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root native proof verification",
+          "assertions": [
+            "The frozen native proof validator verified lifecycle_pre_compact against the exact signed candidate, current capture and isolated target."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "lifecycle_pre_compact",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "afeb4369497bd38202026c146fe024c5f0bbb5145b3a1a6b5e58c57474028f0e",
+              "693420701cdc5ed3114019aece944cdb8cab1e73dd31297ac253248832cfaa19",
+              "70989f85edaf888d8ab61101b48d747f9c842cb3d0a187402791b43f019bc256",
+              "30f01dcb22436bb8614e764a5a4522b13ff736da9bb7f0fc6bdb9c710653de28",
+              "2448beda8c031bfee26f901502956613bbcdfd4b14271e9b4bbd650be4fb5ef3",
+              "d1c86c65d80447b018a582cff2752bae8b6d90018883bea3fc68b7d76db1a995"
+            ],
+            "outcomeDigest": "45e4f052ab7fd45da740d0023e413cde5de7ab7fb5b3d7147ad5e7f97c17a198"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_pre_compact/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_pre_compact/01-afeb4369497bd382-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_pre_compact/02-693420701cdc5ed3-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_pre_compact/03-70989f85edaf888d-manual-candidate-readback.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_pre_compact/04-30f01dcb22436bb8-manual-native-protocol.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_pre_compact/05-2448beda8c031bfe-manual-model-input.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_pre_compact/06-d1c86c65d80447b0-manual-postcompact-input.json"
+          ]
+        },
+        {
+          "id": "lifecycle_post_compact",
+          "status": "passed",
+          "observedAt": "2026-11-07T15:54:48.163Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root native proof verification",
+          "assertions": [
+            "The frozen native proof validator verified lifecycle_post_compact against the exact signed candidate, current capture and isolated target."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "lifecycle_post_compact",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "7762804031963b764519ed62175e8d7c3118eb0bf89852396c0a791f212d0fbb",
+              "693420701cdc5ed3114019aece944cdb8cab1e73dd31297ac253248832cfaa19",
+              "70989f85edaf888d8ab61101b48d747f9c842cb3d0a187402791b43f019bc256",
+              "30f01dcb22436bb8614e764a5a4522b13ff736da9bb7f0fc6bdb9c710653de28",
+              "2448beda8c031bfee26f901502956613bbcdfd4b14271e9b4bbd650be4fb5ef3",
+              "d1c86c65d80447b018a582cff2752bae8b6d90018883bea3fc68b7d76db1a995"
+            ],
+            "outcomeDigest": "bd67fbb16abaa3d11a53bdbad8c08012a7d96b76289732d776f5e8588254398b"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_post_compact/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_post_compact/01-7762804031963b76-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_post_compact/02-693420701cdc5ed3-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_post_compact/03-70989f85edaf888d-manual-candidate-readback.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_post_compact/04-30f01dcb22436bb8-manual-native-protocol.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_post_compact/05-2448beda8c031bfe-manual-model-input.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_post_compact/06-d1c86c65d80447b0-manual-postcompact-input.json"
+          ]
+        },
+        {
+          "id": "lifecycle_session_end",
+          "status": "passed",
+          "observedAt": "2026-11-07T15:54:48.163Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root native proof verification",
+          "assertions": [
+            "The frozen native proof validator verified lifecycle_session_end against the exact signed candidate, current capture and isolated target."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "lifecycle_session_end",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "8b98d3f925e425d6ab37af0784f875f88e09fdf078b33ce603b7e1467ae00321",
+              "693420701cdc5ed3114019aece944cdb8cab1e73dd31297ac253248832cfaa19",
+              "70989f85edaf888d8ab61101b48d747f9c842cb3d0a187402791b43f019bc256",
+              "30f01dcb22436bb8614e764a5a4522b13ff736da9bb7f0fc6bdb9c710653de28",
+              "2448beda8c031bfee26f901502956613bbcdfd4b14271e9b4bbd650be4fb5ef3",
+              "d1c86c65d80447b018a582cff2752bae8b6d90018883bea3fc68b7d76db1a995"
+            ],
+            "outcomeDigest": "d78a9bad821c984fcabeb6ef29da7abe64a0f819107a788ceba3ef8ff8d45981"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_end/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_end/01-8b98d3f925e425d6-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_end/02-693420701cdc5ed3-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_end/03-70989f85edaf888d-manual-candidate-readback.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_end/04-30f01dcb22436bb8-manual-native-protocol.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_end/05-2448beda8c031bfe-manual-model-input.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_end/06-d1c86c65d80447b0-manual-postcompact-input.json"
+          ]
+        },
+        {
+          "id": "official_host_version",
+          "status": "passed",
+          "observedAt": "2026-11-07T16:24:12.512Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root",
+          "assertions": [
+            "The same signed candidate exporter matched the actual local Codex CLI 0.157.1 to its frozen official distribution. Existing real native initialize/session evidence and completed MCP calls use that exact CLI, source, candidate and isolated canonical Agent."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "official_host_version",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "9fab8eae4feeec9136e234e080f388cf4d1554e09dd1edd025e5bae8ddc54b5b",
+              "9bea1564e7955db8e7e1454381edc26a3db60fb928de17981a80a296d0a2f418",
+              "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511",
+              "0cde89c393e6abf2cfecb7b98af27802304799f000cde5e25702140588be1073"
+            ],
+            "outcomeDigest": "e021b8bb0570d9ce5c02d8b645425fe3feec2373340622b5ad29dd9091600601"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/official_host_version/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/official_host_version/01-9fab8eae4feeec91-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/official_host_version/02-9bea1564e7955db8-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/official_host_version/03-429d0c53a8578895-target-metadata.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/official_host_version/04-0cde89c393e6abf2-native-version-and-connect.json"
+          ]
+        },
+        {
+          "id": "distribution_identity",
+          "status": "passed",
+          "observedAt": "2026-11-07T16:24:13.283Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root",
+          "assertions": [
+            "The signed candidate exporter independently matched the live npm Codex distribution, artifact receipt and physical proof nodes to the frozen arm64 acceptance contract. This record is the current anonymous target export and retains its original export hash."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "distribution_identity",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "b057bbb37186dbc8c26639023119a60d8762c8801330324e0ad874be645c44b3",
+              "82514fafac00abecd3f1ced4c383fbb253d38e155c22139d7a630fc5cbba1586",
+              "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511"
+            ],
+            "outcomeDigest": "e45d5bfd194c4edaf3236fa50c733783839aac16f99690d2bcf78f7f06a8cd17"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/distribution_identity/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/distribution_identity/01-b057bbb37186dbc8-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/distribution_identity/02-82514fafac00abec-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/distribution_identity/03-429d0c53a8578895-target-metadata.json"
+          ]
+        },
+        {
+          "id": "read_back",
+          "status": "passed",
+          "observedAt": "2026-11-07T16:24:13.686Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root",
+          "assertions": [
+            "The candidate public detail API read back instruction, memory_tools and lifecycle with healthy artifacts and equal owned/observed hashes. The canonical shared business Agent is distinguished from the CLI raw Installation Agent using the real read-only binding relation. Readback after the normal restart reconfirmed all three owned components while its normal startup scan ran."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "read_back",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "bcaf3260c295ed75941878e620f12fe7a506becaca2649acb96e70b7c7c49198",
+              "b8e73bb139304d53105c71bf85fe18af0ed60f3244c13454ce9306e7a9156628",
+              "ebdef8f18f5ecb2016ee6e6179e9919a29ba7aa59100d83233e86f41e00162fe",
+              "0a01a2da1b84ec35af751f4903146a3a1fe66dab23ee62ca6ca0dcf8e6c6b6f0",
+              "03bbfd0cbe65e829111fa8839055db12f711d3dc7d5b370054cb15390f5f8456"
+            ],
+            "outcomeDigest": "f49ccb2415710f0a9c3a4435f32ca4f3fa0cc998a1278b213c7f37a99a98eb03"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/read_back/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/read_back/01-bcaf3260c295ed75-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/read_back/02-b8e73bb139304d53-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/read_back/03-ebdef8f18f5ecb20-before-readback.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/read_back/04-0a01a2da1b84ec35-post-restart-readback.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/read_back/05-03bbfd0cbe65e829-identity-binding-relation.json"
+          ]
+        },
+        {
+          "id": "instruction_loaded",
+          "status": "passed",
+          "observedAt": "2026-11-07T16:24:13.943Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root",
+          "assertions": [
+            "The existing actual native CLI rollout contains the Tide Mind Skill in the developer model-input catalog and the real SessionStart Tide Mind usage guide naming prepare, recall and digest. The relevant text is extracted verbatim with original record and rollout hashes; no new model turn was used."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "instruction_loaded",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "37868968e4ca81d0b30136eaae3eec5d8da1c439247fa25830b8d3077a95f9bb",
+              "64ed391356f072e72cf4bca775d4fe71110f84a324b5cfde068ff38ecfb0dd7c",
+              "bfc1d8c3454bd204616a2e9c697b81e156cd520555bff5c1c71cc832b9d81026",
+              "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511"
+            ],
+            "outcomeDigest": "0f960e54e1dd2f0b90629eb65105e4018428c5bddfdd2f8273c5b14066988ac3"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/instruction_loaded/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/instruction_loaded/01-37868968e4ca81d0-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/instruction_loaded/02-64ed391356f072e7-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/instruction_loaded/03-bfc1d8c3454bd204-instruction-loaded-native-extract.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/instruction_loaded/04-429d0c53a8578895-target-metadata.json"
+          ]
+        },
+        {
+          "id": "restart_persistence",
+          "status": "passed",
+          "observedAt": "2026-11-07T16:24:14.121Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root",
+          "assertions": [
+            "The exact anonymous candidate exited through Electron app.quit and normal before-quit cleanup, then restarted at the same App, HOME, userData and inspector ports with a different PID. Installation, projection identity, installKey and three owned/observed hashes persisted. Public readback after restart reconfirmed healthy equal hashes; no visible UI interaction is claimed."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "restart_persistence",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "1d0d049eaa77b0717b26231b9de734602eeaa33ae87e146bcfc51a2a2d2e792f",
+              "6d9ce612c405dcfd138110419fe162cb486168a7795b63f3e3543de09939ffc5",
+              "d51b3d91f91b1d3b4f77b1b7f5067c54c0bd0fb73adc4a7fa5fd586a00b064e4",
+              "1150937b7b30af7ad277a4f3aa15c77d39a1c3a4aca01115b3dcc4fa7dc39c8f",
+              "68153836326298c9bab4a9b9c74a795110d37fe0040e2d2a73b59f36f971f5ea",
+              "0a01a2da1b84ec35af751f4903146a3a1fe66dab23ee62ca6ca0dcf8e6c6b6f0"
+            ],
+            "outcomeDigest": "055f866def90f915214e982b3c77a4f3f74b6129c8ccdac00ae381375f19abf7"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/restart_persistence/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/restart_persistence/01-1d0d049eaa77b071-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/restart_persistence/02-6d9ce612c405dcfd-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/restart_persistence/03-d51b3d91f91b1d3b-restart-before.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/restart_persistence/04-1150937b7b30af7a-restart-new-process.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/restart_persistence/05-68153836326298c9-restart-after.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/restart_persistence/06-0a01a2da1b84ec35-post-restart-readback.json"
+          ]
+        },
+        {
+          "id": "pause_resume",
+          "status": "passed",
+          "observedAt": "2026-11-07T16:24:14.359Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root",
+          "assertions": [
+            "The normal public pauseConnection API changed the shared Codex connection maintenance to paused and both members to disabled while the bridge continued serving. The normal resumeConnection API restored active maintenance and intent. This proves the scoped maintenance pause/resume semantics without claiming native host unloading."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "pause_resume",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "d5fdeabac3b18052f30ff515f8f9958771db87065abcb3ab616aad309f964921",
+              "034dcd622d26fa977aa3122cfaf715a57e69ec4680f0c501265ff489d3154897",
+              "2666c005faa6d42bd98de96783d37f0c3f7ba1dbec521185c593da784b16ac75",
+              "5a260ebbfefb9b3025b0b4f968efd816b4f5dd3d656165b63b1afbe0bdbbc1ca"
+            ],
+            "outcomeDigest": "f08743a974004146a043e1f298ff447973e8d7dd941b34286035de1bdd3cc3e6"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/pause_resume/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/pause_resume/01-d5fdeabac3b18052-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/pause_resume/02-034dcd622d26fa97-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/pause_resume/03-2666c005faa6d42b-pause-after.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/pause_resume/04-5a260ebbfefb9b30-resume-after.json"
+          ]
+        },
+        {
+          "id": "recovery",
+          "status": "passed",
+          "observedAt": "2026-11-07T16:24:14.539Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root",
+          "assertions": [
+            "Only the isolated owned Skill document was deleted once to create a controlled missing episode. Normal automatic maintenance restored the exact original bytes with other owned component hashes unchanged. The full-scan observation timed out; later actual public readback and the file hash proved recovery without a second deletion, scan submission, or manual apply. The timeout and subsequent observation are retained."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "recovery",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "30cf7a1cc41509bc55ca61e01d468b91f03f7086cd725899db35d52b4f789b31",
+              "5487fa8713a75ed4ed928fcd4e3a2e70b1d9a063bc331db337245ccb23942d1b",
+              "3eba1a43ba2fc6d144cfbff5c1a0677d03915ba5b1641c915e47a574067441cb",
+              "041f765532c912221e934b15a1216c0ac90c01f81f3cf2643bb909873860fc5d",
+              "4e41b9c24cbc4dcba674b9db0f333fa0fcc3971aca4c1db82d5e9873ec7d9cbe"
+            ],
+            "outcomeDigest": "9e37ceb3e277bf09a74a92bcd0cd64757c5c521d12dc918f43dd8d1b325fa468"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/recovery/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/recovery/01-30cf7a1cc41509bc-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/recovery/02-5487fa8713a75ed4-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/recovery/03-3eba1a43ba2fc6d1-recovery-controlled-missing.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/recovery/04-041f765532c91222-recovery-after-observation-timeout.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/recovery/05-4e41b9c24cbc4dcb-recovery-completed.json"
+          ]
+        },
+        {
+          "id": "conflict",
+          "status": "passed",
+          "observedAt": "2026-11-07T16:24:14.700Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root",
+          "assertions": [
+            "A harmless bounded comment was appended only to the isolated owned Skill document. Normal public preview reported owned_document_modified, the live product projected needs_attention/verification_failed, and readback while the normal scan was still running proved the exact operator edit remained unchanged. The scanner response exceeded the observer deadline and that observation is retained. After this observation the operator CAS-restored only the injected edit to original bytes. Readback after a normal restart found healthy equal hashes."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "conflict",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "6a2cb7d42d2c3b3eedad683f1aa25e29c1ce50f3e46899fb7de151e830a4d64f",
+              "701051217cbd7f1c5e1446913ef3926543252d8656f4a05d7e77a9283b3e906d",
+              "f791eb5527727e658564ee576e3651a6f3f107d0aa16417ba392138eb7ffff7c",
+              "3a1a80cd8f0451e5bcd68a9b4adc263314ad54f29d61685ed1df2dd8b4b4f33e",
+              "4165a0ab17a7c5ef683fcd0edd89bad34e3c7ddc679b834b9e3a91bc9b0fcda1",
+              "aab59561b59f77c491032735075bfe146778b87465b39d9139c3dad12cc7556c",
+              "0a01a2da1b84ec35af751f4903146a3a1fe66dab23ee62ca6ca0dcf8e6c6b6f0"
+            ],
+            "outcomeDigest": "f1e953b21bd180f428071d219a4c2e67d0f43a464236677b4830960d3911d742"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/conflict/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/conflict/01-6a2cb7d42d2c3b3e-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/conflict/02-701051217cbd7f1c-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/conflict/03-f791eb5527727e65-conflict-controlled-edit.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/conflict/04-3a1a80cd8f0451e5-conflict-preview.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/conflict/05-4165a0ab17a7c5ef-conflict-observation-error.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/conflict/06-aab59561b59f77c4-conflict-controlled-restoration.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/conflict/07-0a01a2da1b84ec35-post-restart-readback.json"
+          ]
+        },
+        {
+          "id": "disconnect",
+          "status": "passed",
+          "observedAt": "2026-11-07T16:24:14.823Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root",
+          "assertions": [
+            "Last, normal shared-connection disconnect preview and apply revoked the anonymous Codex CLI/Desktop consumers and stopped the bridge. The product required manual removal of the exact owned Skill document; after verifying its hash and that no other active consumer depended on it, the operator followed that instruction. The original disconnect response exceeded the observer deadline; actual removed intent and stopped bridge were read back without repeating disconnect. After the manual removal, one normal product recheck finalized disconnect_verified with no remaining user actions. Physical read-back confirms the selected MCP selector, owned Hook marker and Skill document are absent. Native host cached loading is not claimed as directly observed."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "disconnect",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "091c94459d1c7b75b038435ef24a3a94c21e863d7682844108d33319fef511d0",
+              "360e253f207534f05723114b433b118cfc515ab83c6f317c2c88c6400ff362bf",
+              "1d469b16ed615de2954b1af92c79fcd1841513a771a8dfbaee26d73513f7b477",
+              "cabc252e8fa4eb6f3b017516747ea4de787027be107d945714cd39ab95a8da89",
+              "dc2bc25f0969beea420e839e3c2ed0f3698d4a259f897d95c4805787ba0fd2c6",
+              "0ff5c84ced544fa02a42ca0393624ad573c3059fbc5f82b680ec5fc22be6ee15",
+              "2d6a488e626a0d19ee62923ac78407a5ac1618f340d1d9a29b903db46fcf9f77",
+              "d84d37b9dff06080f2dcefa510064b006038db0f205065f7c2978b346f9a7493"
+            ],
+            "outcomeDigest": "3ac45e00dece09806fc6cadf23cb9ceb1376cda51f620c324994755d9a009517"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/01-091c94459d1c7b75-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/02-360e253f207534f0-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/03-1d469b16ed615de2-disconnect-preview.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/04-cabc252e8fa4eb6f-disconnect-interim-readback.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/05-dc2bc25f0969beea-disconnect-manual-instruction-removal.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/06-0ff5c84ced544fa0-disconnect-recheck-start.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/07-2d6a488e626a0d19-disconnect-final-recheck.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/08-d84d37b9dff06080-disconnect-file-readback.json"
+          ]
+        },
+        {
+          "id": "connect",
+          "status": "passed",
+          "observedAt": "2026-11-07T16:24:13.525Z",
+          "assertionSource": "external",
+          "assertedBy": "Codex /root",
+          "assertions": [
+            "The actual automatic connection created managed configuration with all three healthy owned components, verified by public detail readback. The task was read back after the controlled missing episode and reports needs_recovery; its original completion result and the exact cause of this later projection are not independently established. Subsequent already-collected real CLI memory and native Hook use succeeded under the canonical shared identity. The per-Installation awaiting_verification projection is preserved rather than relabeled as fully verified."
+          ],
+          "receipt": {
+            "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+            "targetId": "codex-cli",
+            "stepId": "connect",
+            "appVersion": "0.2.95",
+            "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+            "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+            "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+            "hostVersion": "0.157.1",
+            "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+            "agentId": "eb_74049455474d4440",
+            "evidenceIds": [
+              "41fabdfb7c2a3cf0858bf6d4f3f5cf4d8e3335d0050d9db9929188a3efb1fb34",
+              "c85e9c210abe82c6d2ab1803f2e3c6740092c04b0667f3b12e2e46a5e5348385",
+              "0cde89c393e6abf2cfecb7b98af27802304799f000cde5e25702140588be1073",
+              "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511",
+              "ebdef8f18f5ecb2016ee6e6179e9919a29ba7aa59100d83233e86f41e00162fe",
+              "03bbfd0cbe65e829111fa8839055db12f711d3dc7d5b370054cb15390f5f8456"
+            ],
+            "outcomeDigest": "45d2d9e8b76d485e35dafa90feaa01e7680896a648f9665ee704e9dcd9e203bd"
+          },
+          "evidenceFiles": [
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/connect/00-receipt.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/connect/01-41fabdfb7c2a3cf0-assertion.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/connect/02-c85e9c210abe82c6-redaction-attestation.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/connect/03-0cde89c393e6abf2-native-version-and-connect.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/connect/04-429d0c53a8578895-target-metadata.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/connect/05-ebdef8f18f5ecb20-before-readback.json",
+            "files/targets/codex-cli_arm64_cli_3Acodex-cli/connect/06-03bbfd0cbe65e829-identity-binding-relation.json"
+          ]
+        }
+      ]
+    },
+    {
+      "targetKey": "codex-desktop:arm64:com.openai.codex",
+      "targetId": "codex-desktop",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "Complete Codex Desktop lifecycle acceptance is deferred in the personal beta. CLI and shared-domain evidence do not constitute Desktop-specific acceptance; disclose this missing validation.",
+        "releaseNotesDisclosureRequired": true
+      }
+    },
+    {
+      "targetKey": "cursor-desktop:arm64:com.todesktop.230313mzl4w4u92",
+      "targetId": "cursor-desktop",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "windsurf-desktop:arm64:com.exafunction.windsurf",
+      "targetId": "windsurf-desktop",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "gemini-cli:arm64:cli%3Agemini-cli",
+      "targetId": "gemini-cli",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "kimi-code-cli:arm64:cli%3Akimi-code-cli",
+      "targetId": "kimi-code-cli",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "kimi-code-native:arm64:cli%3Akimi-code-native",
+      "targetId": "kimi-code-native",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "openclaw-local:arm64:cli%3Aopenclaw-local%3Aportable-wrapper",
+      "targetId": "openclaw-local",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "openclaw-local:arm64:cli%3Aopenclaw-local%3Anpm-global",
+      "targetId": "openclaw-local",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "qwen-code-cli:arm64:cli%3Aqwen-code-cli%3Astandalone",
+      "targetId": "qwen-code-cli",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "qwen-code-cli:arm64:cli%3Aqwen-code-cli%3Anpm-global",
+      "targetId": "qwen-code-cli",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "zcode-desktop:arm64:dev.zcode.app",
+      "targetId": "zcode-desktop",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "opencode-v1-cli:arm64:cli%3Aopencode-v1-cli%3Adarwin-arm64",
+      "targetId": "opencode-v1-cli",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "opencode-v2-beta-cli:arm64:cli%3Aopencode-v2-beta-cli%3Adarwin-arm64",
+      "targetId": "opencode-v2-beta-cli",
+      "sourceCatalogId": null,
+      "disposition": "guided",
+      "targetCapability": 3,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "pi-official-cli:arm64:pi-official%3A%40earendil-works%2Fpi-coding-agent",
+      "targetId": "pi-official-cli",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "omp-cli:arm64:omp%3Aoh-my-pi",
+      "targetId": "omp-cli",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "qwenwork-desktop:arm64:cn.qwenwork.desktop.mac",
+      "targetId": "qwenwork-desktop",
+      "sourceCatalogId": null,
+      "disposition": "managed",
+      "targetCapability": 4,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "claude-cowork-local:arm64:com.anthropic.claudefordesktop",
+      "targetId": "claude-cowork-local",
+      "sourceCatalogId": null,
+      "disposition": "guided",
+      "targetCapability": 3,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    }
+  ],
+  "customPaths": [
+    {
+      "targetKey": "nonstandard_config_root",
+      "targetId": "nonstandard_config_root",
+      "sourceCatalogId": null,
+      "disposition": "custom",
+      "targetCapability": null,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "manual_mcp_client",
+      "targetId": "manual_mcp_client",
+      "sourceCatalogId": null,
+      "disposition": "custom",
+      "targetCapability": 2,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "manual_mcp_client:standard_mcp_servers:tidemind",
+      "targetId": "manual_mcp_client",
+      "sourceCatalogId": null,
+      "disposition": "custom",
+      "targetCapability": 2,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "manual_mcp_client:nested_mcp_servers:tidemind_nested",
+      "targetId": "manual_mcp_client",
+      "sourceCatalogId": null,
+      "disposition": "custom",
+      "targetCapability": 2,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    },
+    {
+      "targetKey": "manual_mcp_client:opencode_mcp:tidemind_opencode",
+      "targetId": "manual_mcp_client",
+      "sourceCatalogId": null,
+      "disposition": "custom",
+      "targetCapability": 2,
+      "architecture": "arm64",
+      "realHostDeferral": {
+        "status": "deferred",
+        "policyId": "0.2.95-codex-only",
+        "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required."
+      }
+    }
+  ],
+  "upgradePaths": [],
+  "databaseRecoveryPaths": [],
+  "files": [
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_digest/00-receipt.json",
+      "bytes": 1137,
+      "sha256": "64ad9856a99e60aa291d6943a072bf099e9030e044ea64013b4fecf71050c923"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_digest/01-0f7c55df439d37e3-assertion.json",
+      "bytes": 1009,
+      "sha256": "0f7c55df439d37e3da0396db8eada903125a5a9ea333e3c15b4f6218e01c83da"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_digest/02-f27560502b406579-redaction-attestation.json",
+      "bytes": 924,
+      "sha256": "f27560502b40657996cec8697611abe844c2396eb21dfb75a04abf4b4dbc25c7"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_digest/03-8ea7b6c55e440d3e-native-wire.log",
+      "bytes": 129059,
+      "sha256": "8ea7b6c55e440d3e32d12c3e7d89f5a1cdf42dc913fa478c07d9e82f53415e9c"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_digest/04-f7a860f346acf092-transcript.json",
+      "bytes": 5071,
+      "sha256": "f7a860f346acf092c1d2c9276629f84592e37837f5dc8d2e76da7ceaae735dfa"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_digest/05-1491306f133fb531-readback.json",
+      "bytes": 1184,
+      "sha256": "1491306f133fb5319c7d2589786150ff1c700c889b15b4444bbc55ced29c8e90"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_digest/06-055916b47dfac0b7-normalization-provenance.json",
+      "bytes": 1956,
+      "sha256": "055916b47dfac0b7e9980747c6cd7ea3255f129bedc1586dc737c31d6c02d0a2"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_digest/07-429d0c53a8578895-target-metadata.json",
+      "bytes": 1752,
+      "sha256": "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_prepare/00-receipt.json",
+      "bytes": 1138,
+      "sha256": "639e925d206216b9aaea78a28357eb70963735b1c8189060f620970008b88106"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_prepare/01-86d7c8532bb0ff45-assertion.json",
+      "bytes": 957,
+      "sha256": "86d7c8532bb0ff45ede4eb5bc584ba38def8bf0fd9de600e7f896d9d837e20a1"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_prepare/02-f27560502b406579-redaction-attestation.json",
+      "bytes": 924,
+      "sha256": "f27560502b40657996cec8697611abe844c2396eb21dfb75a04abf4b4dbc25c7"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_prepare/03-8ea7b6c55e440d3e-native-wire.log",
+      "bytes": 129059,
+      "sha256": "8ea7b6c55e440d3e32d12c3e7d89f5a1cdf42dc913fa478c07d9e82f53415e9c"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_prepare/04-f7a860f346acf092-transcript.json",
+      "bytes": 5071,
+      "sha256": "f7a860f346acf092c1d2c9276629f84592e37837f5dc8d2e76da7ceaae735dfa"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_prepare/05-1491306f133fb531-readback.json",
+      "bytes": 1184,
+      "sha256": "1491306f133fb5319c7d2589786150ff1c700c889b15b4444bbc55ced29c8e90"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_prepare/06-055916b47dfac0b7-normalization-provenance.json",
+      "bytes": 1956,
+      "sha256": "055916b47dfac0b7e9980747c6cd7ea3255f129bedc1586dc737c31d6c02d0a2"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_prepare/07-429d0c53a8578895-target-metadata.json",
+      "bytes": 1752,
+      "sha256": "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_recall/00-receipt.json",
+      "bytes": 1137,
+      "sha256": "7e0608021cc494f38f7d0410b8c8da553125e3be3522e3c88b8214157e7179e8"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_recall/01-0ea820dd65c4bb9c-assertion.json",
+      "bytes": 977,
+      "sha256": "0ea820dd65c4bb9c54839b4c9718d367058c3a859f304d3abd752187b772ec8c"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_recall/02-f27560502b406579-redaction-attestation.json",
+      "bytes": 924,
+      "sha256": "f27560502b40657996cec8697611abe844c2396eb21dfb75a04abf4b4dbc25c7"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_recall/03-8ea7b6c55e440d3e-native-wire.log",
+      "bytes": 129059,
+      "sha256": "8ea7b6c55e440d3e32d12c3e7d89f5a1cdf42dc913fa478c07d9e82f53415e9c"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_recall/04-f7a860f346acf092-transcript.json",
+      "bytes": 5071,
+      "sha256": "f7a860f346acf092c1d2c9276629f84592e37837f5dc8d2e76da7ceaae735dfa"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_recall/05-1491306f133fb531-readback.json",
+      "bytes": 1184,
+      "sha256": "1491306f133fb5319c7d2589786150ff1c700c889b15b4444bbc55ced29c8e90"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_recall/06-055916b47dfac0b7-normalization-provenance.json",
+      "bytes": 1956,
+      "sha256": "055916b47dfac0b7e9980747c6cd7ea3255f129bedc1586dc737c31d6c02d0a2"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/brain_recall/07-429d0c53a8578895-target-metadata.json",
+      "bytes": 1752,
+      "sha256": "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_auto/00-receipt.json",
+      "bytes": 1079,
+      "sha256": "414d3efb3e46ade6c3c170777c3f4081637f640e864c03645b9107c431577677"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_auto/01-e4b1c932ce7a643c-assertion.json",
+      "bytes": 1721,
+      "sha256": "e4b1c932ce7a643cb16534a713c2e6e0a887a548bffe312f11ee09ad09de061b"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_auto/02-022789ee68993bc7-redaction-attestation.json",
+      "bytes": 845,
+      "sha256": "022789ee68993bc7fdc93552f385f1e17cfe87cbeef335378ef8c5464d21611f"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_auto/03-c80d1dc3d7bfecad-auto-candidate-readback.json",
+      "bytes": 2713,
+      "sha256": "c80d1dc3d7bfecad7a8cdde29802b3a84567e4fadab8af8c350e272f3e8df035"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_auto/04-f7f0159841ce7da9-auto-native-protocol.json",
+      "bytes": 16450,
+      "sha256": "f7f0159841ce7da9121ca7096e1ab3596ad6ab97149832afd511fa1d0ba617cc"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_auto/05-29d081b9eed24e64-auto-model-input.json",
+      "bytes": 19216,
+      "sha256": "29d081b9eed24e6426344bffee718fc78d3bd393b0a40edb12923428cc65a85b"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_auto/06-043e1c13d88ba2b0-auto-postcompact-input.json",
+      "bytes": 486,
+      "sha256": "043e1c13d88ba2b0203b2bfd006f43a4a268fe0d92d80d983593ca9de927ca00"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_manual/00-receipt.json",
+      "bytes": 1081,
+      "sha256": "d4855f2a380af2972c49996b3be1c8f4dec2fec8102d39a7890e2ad0e4d96a35"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_manual/01-f3f6a4a9448306df-assertion.json",
+      "bytes": 1727,
+      "sha256": "f3f6a4a9448306df06227386d35468b52704af523e8042b24c76c3b120818388"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_manual/02-693420701cdc5ed3-redaction-attestation.json",
+      "bytes": 853,
+      "sha256": "693420701cdc5ed3114019aece944cdb8cab1e73dd31297ac253248832cfaa19"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_manual/03-70989f85edaf888d-manual-candidate-readback.json",
+      "bytes": 2713,
+      "sha256": "70989f85edaf888d8ab61101b48d747f9c842cb3d0a187402791b43f019bc256"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_manual/04-30f01dcb22436bb8-manual-native-protocol.json",
+      "bytes": 13222,
+      "sha256": "30f01dcb22436bb8614e764a5a4522b13ff736da9bb7f0fc6bdb9c710653de28"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_manual/05-2448beda8c031bfe-manual-model-input.json",
+      "bytes": 8436,
+      "sha256": "2448beda8c031bfee26f901502956613bbcdfd4b14271e9b4bbd650be4fb5ef3"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/codex_context_restore_manual/06-d1c86c65d80447b0-manual-postcompact-input.json",
+      "bytes": 488,
+      "sha256": "d1c86c65d80447b018a582cff2752bae8b6d90018883bea3fc68b7d76db1a995"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/conflict/00-receipt.json",
+      "bytes": 1133,
+      "sha256": "4cb1da13e0f6949ac71c7e7aca9e67d3ecdf55c347287469e4315d7bdda81c34"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/conflict/01-6a2cb7d42d2c3b3e-assertion.json",
+      "bytes": 1218,
+      "sha256": "6a2cb7d42d2c3b3eedad683f1aa25e29c1ce50f3e46899fb7de151e830a4d64f"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/conflict/02-701051217cbd7f1c-redaction-attestation.json",
+      "bytes": 975,
+      "sha256": "701051217cbd7f1c5e1446913ef3926543252d8656f4a05d7e77a9283b3e906d"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/conflict/03-f791eb5527727e65-conflict-controlled-edit.json",
+      "bytes": 435,
+      "sha256": "f791eb5527727e658564ee576e3651a6f3f107d0aa16417ba392138eb7ffff7c"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/conflict/04-3a1a80cd8f0451e5-conflict-preview.json",
+      "bytes": 10867,
+      "sha256": "3a1a80cd8f0451e5bcd68a9b4adc263314ad54f29d61685ed1df2dd8b4b4f33e"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/conflict/05-4165a0ab17a7c5ef-conflict-observation-error.json",
+      "bytes": 8430,
+      "sha256": "4165a0ab17a7c5ef683fcd0edd89bad34e3c7ddc679b834b9e3a91bc9b0fcda1"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/conflict/06-aab59561b59f77c4-conflict-controlled-restoration.json",
+      "bytes": 309,
+      "sha256": "aab59561b59f77c491032735075bfe146778b87465b39d9139c3dad12cc7556c"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/conflict/07-0a01a2da1b84ec35-post-restart-readback.json",
+      "bytes": 9486,
+      "sha256": "0a01a2da1b84ec35af751f4903146a3a1fe66dab23ee62ca6ca0dcf8e6c6b6f0"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/connect/00-receipt.json",
+      "bytes": 1060,
+      "sha256": "cdf864be8c840ca15089a1d9511a0e2a656a1ea2e23e15fcfe6bd437ac8a530b"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/connect/01-41fabdfb7c2a3cf0-assertion.json",
+      "bytes": 1231,
+      "sha256": "41fabdfb7c2a3cf0858bf6d4f3f5cf4d8e3335d0050d9db9929188a3efb1fb34"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/connect/02-c85e9c210abe82c6-redaction-attestation.json",
+      "bytes": 819,
+      "sha256": "c85e9c210abe82c6d2ab1803f2e3c6740092c04b0667f3b12e2e46a5e5348385"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/connect/03-0cde89c393e6abf2-native-version-and-connect.json",
+      "bytes": 2024,
+      "sha256": "0cde89c393e6abf2cfecb7b98af27802304799f000cde5e25702140588be1073"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/connect/04-429d0c53a8578895-target-metadata.json",
+      "bytes": 1752,
+      "sha256": "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/connect/05-ebdef8f18f5ecb20-before-readback.json",
+      "bytes": 7659,
+      "sha256": "ebdef8f18f5ecb2016ee6e6179e9919a29ba7aa59100d83233e86f41e00162fe"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/connect/06-03bbfd0cbe65e829-identity-binding-relation.json",
+      "bytes": 474,
+      "sha256": "03bbfd0cbe65e829111fa8839055db12f711d3dc7d5b370054cb15390f5f8456"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/00-receipt.json",
+      "bytes": 1207,
+      "sha256": "d25224ba1a7bb257582b80ede9d45bda63b4d247df5972810b6c22eab59e571f"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/01-091c94459d1c7b75-assertion.json",
+      "bytes": 1430,
+      "sha256": "091c94459d1c7b75b038435ef24a3a94c21e863d7682844108d33319fef511d0"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/02-360e253f207534f0-redaction-attestation.json",
+      "bytes": 1130,
+      "sha256": "360e253f207534f05723114b433b118cfc515ab83c6f317c2c88c6400ff362bf"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/03-1d469b16ed615de2-disconnect-preview.json",
+      "bytes": 5953,
+      "sha256": "1d469b16ed615de2954b1af92c79fcd1841513a771a8dfbaee26d73513f7b477"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/04-cabc252e8fa4eb6f-disconnect-interim-readback.json",
+      "bytes": 8942,
+      "sha256": "cabc252e8fa4eb6f3b017516747ea4de787027be107d945714cd39ab95a8da89"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/05-dc2bc25f0969beea-disconnect-manual-instruction-removal.json",
+      "bytes": 1526,
+      "sha256": "dc2bc25f0969beea420e839e3c2ed0f3698d4a259f897d95c4805787ba0fd2c6"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/06-0ff5c84ced544fa0-disconnect-recheck-start.json",
+      "bytes": 297,
+      "sha256": "0ff5c84ced544fa02a42ca0393624ad573c3059fbc5f82b680ec5fc22be6ee15"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/07-2d6a488e626a0d19-disconnect-final-recheck.json",
+      "bytes": 39394,
+      "sha256": "2d6a488e626a0d19ee62923ac78407a5ac1618f340d1d9a29b903db46fcf9f77"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/disconnect/08-d84d37b9dff06080-disconnect-file-readback.json",
+      "bytes": 269,
+      "sha256": "d84d37b9dff06080f2dcefa510064b006038db0f205065f7c2978b346f9a7493"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/distribution_identity/00-receipt.json",
+      "bytes": 858,
+      "sha256": "afbc43abdfaac406f5eabc09bc1a46657020006451ba8156ac3e5b8d54ac139e"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/distribution_identity/01-b057bbb37186dbc8-assertion.json",
+      "bytes": 944,
+      "sha256": "b057bbb37186dbc8c26639023119a60d8762c8801330324e0ad874be645c44b3"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/distribution_identity/02-82514fafac00abec-redaction-attestation.json",
+      "bytes": 396,
+      "sha256": "82514fafac00abecd3f1ced4c383fbb253d38e155c22139d7a630fc5cbba1586"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/distribution_identity/03-429d0c53a8578895-target-metadata.json",
+      "bytes": 1752,
+      "sha256": "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/instruction_loaded/00-receipt.json",
+      "bytes": 927,
+      "sha256": "a85cb6c01618d1daa883c54924eb9a5ab935c177bbf9c129741284b114c18cc0"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/instruction_loaded/01-37868968e4ca81d0-assertion.json",
+      "bytes": 981,
+      "sha256": "37868968e4ca81d0b30136eaae3eec5d8da1c439247fa25830b8d3077a95f9bb"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/instruction_loaded/02-64ed391356f072e7-redaction-attestation.json",
+      "bytes": 548,
+      "sha256": "64ed391356f072e72cf4bca775d4fe71110f84a324b5cfde068ff38ecfb0dd7c"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/instruction_loaded/03-bfc1d8c3454bd204-instruction-loaded-native-extract.json",
+      "bytes": 6277,
+      "sha256": "bfc1d8c3454bd204616a2e9c697b81e156cd520555bff5c1c71cc832b9d81026"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/instruction_loaded/04-429d0c53a8578895-target-metadata.json",
+      "bytes": 1752,
+      "sha256": "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_post_compact/00-receipt.json",
+      "bytes": 1075,
+      "sha256": "a2866dfaeae72edabc6060899d9de057b86c2ccff392ddeb7e38823df206ce0c"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_post_compact/01-7762804031963b76-assertion.json",
+      "bytes": 2046,
+      "sha256": "7762804031963b764519ed62175e8d7c3118eb0bf89852396c0a791f212d0fbb"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_post_compact/02-693420701cdc5ed3-redaction-attestation.json",
+      "bytes": 853,
+      "sha256": "693420701cdc5ed3114019aece944cdb8cab1e73dd31297ac253248832cfaa19"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_post_compact/03-70989f85edaf888d-manual-candidate-readback.json",
+      "bytes": 2713,
+      "sha256": "70989f85edaf888d8ab61101b48d747f9c842cb3d0a187402791b43f019bc256"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_post_compact/04-30f01dcb22436bb8-manual-native-protocol.json",
+      "bytes": 13222,
+      "sha256": "30f01dcb22436bb8614e764a5a4522b13ff736da9bb7f0fc6bdb9c710653de28"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_post_compact/05-2448beda8c031bfe-manual-model-input.json",
+      "bytes": 8436,
+      "sha256": "2448beda8c031bfee26f901502956613bbcdfd4b14271e9b4bbd650be4fb5ef3"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_post_compact/06-d1c86c65d80447b0-manual-postcompact-input.json",
+      "bytes": 488,
+      "sha256": "d1c86c65d80447b018a582cff2752bae8b6d90018883bea3fc68b7d76db1a995"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_pre_compact/00-receipt.json",
+      "bytes": 1074,
+      "sha256": "8f786eca73f8b3d185c31ecf07ecac5e8a459f37ce933c63feeebc95a6f277fb"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_pre_compact/01-afeb4369497bd382-assertion.json",
+      "bytes": 2043,
+      "sha256": "afeb4369497bd38202026c146fe024c5f0bbb5145b3a1a6b5e58c57474028f0e"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_pre_compact/02-693420701cdc5ed3-redaction-attestation.json",
+      "bytes": 853,
+      "sha256": "693420701cdc5ed3114019aece944cdb8cab1e73dd31297ac253248832cfaa19"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_pre_compact/03-70989f85edaf888d-manual-candidate-readback.json",
+      "bytes": 2713,
+      "sha256": "70989f85edaf888d8ab61101b48d747f9c842cb3d0a187402791b43f019bc256"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_pre_compact/04-30f01dcb22436bb8-manual-native-protocol.json",
+      "bytes": 13222,
+      "sha256": "30f01dcb22436bb8614e764a5a4522b13ff736da9bb7f0fc6bdb9c710653de28"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_pre_compact/05-2448beda8c031bfe-manual-model-input.json",
+      "bytes": 8436,
+      "sha256": "2448beda8c031bfee26f901502956613bbcdfd4b14271e9b4bbd650be4fb5ef3"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_pre_compact/06-d1c86c65d80447b0-manual-postcompact-input.json",
+      "bytes": 488,
+      "sha256": "d1c86c65d80447b018a582cff2752bae8b6d90018883bea3fc68b7d76db1a995"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_end/00-receipt.json",
+      "bytes": 1074,
+      "sha256": "3c7cfbf1c7eb8ea2d1509ff6534d4951e35fb345d238af8b2d65039267192acc"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_end/01-8b98d3f925e425d6-assertion.json",
+      "bytes": 2021,
+      "sha256": "8b98d3f925e425d6ab37af0784f875f88e09fdf078b33ce603b7e1467ae00321"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_end/02-693420701cdc5ed3-redaction-attestation.json",
+      "bytes": 853,
+      "sha256": "693420701cdc5ed3114019aece944cdb8cab1e73dd31297ac253248832cfaa19"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_end/03-70989f85edaf888d-manual-candidate-readback.json",
+      "bytes": 2713,
+      "sha256": "70989f85edaf888d8ab61101b48d747f9c842cb3d0a187402791b43f019bc256"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_end/04-30f01dcb22436bb8-manual-native-protocol.json",
+      "bytes": 13222,
+      "sha256": "30f01dcb22436bb8614e764a5a4522b13ff736da9bb7f0fc6bdb9c710653de28"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_end/05-2448beda8c031bfe-manual-model-input.json",
+      "bytes": 8436,
+      "sha256": "2448beda8c031bfee26f901502956613bbcdfd4b14271e9b4bbd650be4fb5ef3"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_end/06-d1c86c65d80447b0-manual-postcompact-input.json",
+      "bytes": 488,
+      "sha256": "d1c86c65d80447b018a582cff2752bae8b6d90018883bea3fc68b7d76db1a995"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_start/00-receipt.json",
+      "bytes": 1076,
+      "sha256": "0dfe4975aa4d14c6481032bf9b30144c36f7b6278d49424de9e151af5c6320ef"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_start/01-036b6389b59287cd-assertion.json",
+      "bytes": 2049,
+      "sha256": "036b6389b59287cd52c7d50febe0d0cc824c58cbc472977d8644ffa3641e0026"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_start/02-693420701cdc5ed3-redaction-attestation.json",
+      "bytes": 853,
+      "sha256": "693420701cdc5ed3114019aece944cdb8cab1e73dd31297ac253248832cfaa19"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_start/03-70989f85edaf888d-manual-candidate-readback.json",
+      "bytes": 2713,
+      "sha256": "70989f85edaf888d8ab61101b48d747f9c842cb3d0a187402791b43f019bc256"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_start/04-30f01dcb22436bb8-manual-native-protocol.json",
+      "bytes": 13222,
+      "sha256": "30f01dcb22436bb8614e764a5a4522b13ff736da9bb7f0fc6bdb9c710653de28"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_start/05-2448beda8c031bfe-manual-model-input.json",
+      "bytes": 8436,
+      "sha256": "2448beda8c031bfee26f901502956613bbcdfd4b14271e9b4bbd650be4fb5ef3"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/lifecycle_session_start/06-d1c86c65d80447b0-manual-postcompact-input.json",
+      "bytes": 488,
+      "sha256": "d1c86c65d80447b018a582cff2752bae8b6d90018883bea3fc68b7d76db1a995"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/memory_closure/00-receipt.json",
+      "bytes": 1139,
+      "sha256": "0de96a865509c0ddd0f1fbe273da0b01c81763b7d1ef65c6abef5f39823011da"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/memory_closure/01-d4642ccb92c157e8-assertion.json",
+      "bytes": 1569,
+      "sha256": "d4642ccb92c157e8df400a827de0eecf7137b621e5531d6499e2112a5c73628b"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/memory_closure/02-f27560502b406579-redaction-attestation.json",
+      "bytes": 924,
+      "sha256": "f27560502b40657996cec8697611abe844c2396eb21dfb75a04abf4b4dbc25c7"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/memory_closure/03-8ea7b6c55e440d3e-native-wire.log",
+      "bytes": 129059,
+      "sha256": "8ea7b6c55e440d3e32d12c3e7d89f5a1cdf42dc913fa478c07d9e82f53415e9c"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/memory_closure/04-f7a860f346acf092-transcript.json",
+      "bytes": 5071,
+      "sha256": "f7a860f346acf092c1d2c9276629f84592e37837f5dc8d2e76da7ceaae735dfa"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/memory_closure/05-1491306f133fb531-readback.json",
+      "bytes": 1184,
+      "sha256": "1491306f133fb5319c7d2589786150ff1c700c889b15b4444bbc55ced29c8e90"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/memory_closure/06-055916b47dfac0b7-normalization-provenance.json",
+      "bytes": 1956,
+      "sha256": "055916b47dfac0b7e9980747c6cd7ea3255f129bedc1586dc737c31d6c02d0a2"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/memory_closure/07-429d0c53a8578895-target-metadata.json",
+      "bytes": 1752,
+      "sha256": "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/official_host_version/00-receipt.json",
+      "bytes": 930,
+      "sha256": "ae413340cf68c5bd0f8d4ff7c5ec04c6edbfad86f8f53aee28c831b760e403dc"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/official_host_version/01-9fab8eae4feeec91-assertion.json",
+      "bytes": 943,
+      "sha256": "9fab8eae4feeec9136e234e080f388cf4d1554e09dd1edd025e5bae8ddc54b5b"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/official_host_version/02-9bea1564e7955db8-redaction-attestation.json",
+      "bytes": 541,
+      "sha256": "9bea1564e7955db8e7e1454381edc26a3db60fb928de17981a80a296d0a2f418"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/official_host_version/03-429d0c53a8578895-target-metadata.json",
+      "bytes": 1752,
+      "sha256": "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/official_host_version/04-0cde89c393e6abf2-native-version-and-connect.json",
+      "bytes": 2024,
+      "sha256": "0cde89c393e6abf2cfecb7b98af27802304799f000cde5e25702140588be1073"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/pause_resume/00-receipt.json",
+      "bytes": 921,
+      "sha256": "f5156866a84516fc1eb53289cf553963abf407b54482dc1d758a83bceeb92361"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/pause_resume/01-d5fdeabac3b18052-assertion.json",
+      "bytes": 1009,
+      "sha256": "d5fdeabac3b18052f30ff515f8f9958771db87065abcb3ab616aad309f964921"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/pause_resume/02-034dcd622d26fa97-redaction-attestation.json",
+      "bytes": 523,
+      "sha256": "034dcd622d26fa977aa3122cfaf715a57e69ec4680f0c501265ff489d3154897"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/pause_resume/03-2666c005faa6d42b-pause-after.json",
+      "bytes": 40742,
+      "sha256": "2666c005faa6d42bd98de96783d37f0c3f7ba1dbec521185c593da784b16ac75"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/pause_resume/04-5a260ebbfefb9b30-resume-after.json",
+      "bytes": 41442,
+      "sha256": "5a260ebbfefb9b3025b0b4f968efd816b4f5dd3d656165b63b1afbe0bdbbc1ca"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/read_back/00-receipt.json",
+      "bytes": 990,
+      "sha256": "15dcbc65f9f09110d16e13c2947020ba0a18806f9af1113203190d9f12fa70c4"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/read_back/01-bcaf3260c295ed75-assertion.json",
+      "bytes": 1053,
+      "sha256": "bcaf3260c295ed75941878e620f12fe7a506becaca2649acb96e70b7c7c49198"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/read_back/02-b8e73bb139304d53-redaction-attestation.json",
+      "bytes": 680,
+      "sha256": "b8e73bb139304d53105c71bf85fe18af0ed60f3244c13454ce9306e7a9156628"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/read_back/03-ebdef8f18f5ecb20-before-readback.json",
+      "bytes": 7659,
+      "sha256": "ebdef8f18f5ecb2016ee6e6179e9919a29ba7aa59100d83233e86f41e00162fe"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/read_back/04-0a01a2da1b84ec35-post-restart-readback.json",
+      "bytes": 9486,
+      "sha256": "0a01a2da1b84ec35af751f4903146a3a1fe66dab23ee62ca6ca0dcf8e6c6b6f0"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/read_back/05-03bbfd0cbe65e829-identity-binding-relation.json",
+      "bytes": 474,
+      "sha256": "03bbfd0cbe65e829111fa8839055db12f711d3dc7d5b370054cb15390f5f8456"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/recovery/00-receipt.json",
+      "bytes": 989,
+      "sha256": "5568a62350dae5516d234d1a011102e09c2912170c96f7ef43444c2e50b4e4ab"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/recovery/01-30cf7a1cc41509bc-assertion.json",
+      "bytes": 1092,
+      "sha256": "30cf7a1cc41509bc55ca61e01d468b91f03f7086cd725899db35d52b4f789b31"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/recovery/02-5487fa8713a75ed4-redaction-attestation.json",
+      "bytes": 698,
+      "sha256": "5487fa8713a75ed4ed928fcd4e3a2e70b1d9a063bc331db337245ccb23942d1b"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/recovery/03-3eba1a43ba2fc6d1-recovery-controlled-missing.json",
+      "bytes": 429,
+      "sha256": "3eba1a43ba2fc6d144cfbff5c1a0677d03915ba5b1641c915e47a574067441cb"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/recovery/04-041f765532c91222-recovery-after-observation-timeout.json",
+      "bytes": 8181,
+      "sha256": "041f765532c912221e934b15a1216c0ac90c01f81f3cf2643bb909873860fc5d"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/recovery/05-4e41b9c24cbc4dcb-recovery-completed.json",
+      "bytes": 8405,
+      "sha256": "4e41b9c24cbc4dcba674b9db0f333fa0fcc3971aca4c1db82d5e9873ec7d9cbe"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/restart_persistence/00-receipt.json",
+      "bytes": 1072,
+      "sha256": "fe69ab4a9f7c89950e8eab7b4361c0d3c0b98790d1ca6966533d1797633aca57"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/restart_persistence/01-1d0d049eaa77b071-assertion.json",
+      "bytes": 1060,
+      "sha256": "1d0d049eaa77b0717b26231b9de734602eeaa33ae87e146bcfc51a2a2d2e792f"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/restart_persistence/02-6d9ce612c405dcfd-redaction-attestation.json",
+      "bytes": 805,
+      "sha256": "6d9ce612c405dcfd138110419fe162cb486168a7795b63f3e3543de09939ffc5"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/restart_persistence/03-d51b3d91f91b1d3b-restart-before.json",
+      "bytes": 9172,
+      "sha256": "d51b3d91f91b1d3b4f77b1b7f5067c54c0bd0fb73adc4a7fa5fd586a00b064e4"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/restart_persistence/04-1150937b7b30af7a-restart-new-process.json",
+      "bytes": 637,
+      "sha256": "1150937b7b30af7ad277a4f3aa15c77d39a1c3a4aca01115b3dcc4fa7dc39c8f"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/restart_persistence/05-68153836326298c9-restart-after.json",
+      "bytes": 8492,
+      "sha256": "68153836326298c9bab4a9b9c74a795110d37fe0040e2d2a73b59f36f971f5ea"
+    },
+    {
+      "path": "files/targets/codex-cli_arm64_cli_3Acodex-cli/restart_persistence/06-0a01a2da1b84ec35-post-restart-readback.json",
+      "bytes": 9486,
+      "sha256": "0a01a2da1b84ec35af751f4903146a3a1fe66dab23ee62ca6ca0dcf8e6c6b6f0"
+    }
+  ]
+}

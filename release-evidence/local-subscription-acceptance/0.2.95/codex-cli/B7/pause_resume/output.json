@@ -1,0 +1,7 @@
+{
+  "invocationId": "cli_6d679dcb-faab-4c65-9d34-2638eeeb96d2",
+  "text": "[{\"index\":1,\"specificity\":0.92,\"subjectivity\":0.04,\"actuality\":0.96,\"tags\":[\"synthetic-acceptance\"],\"title\":\"B33恢复暂停续传验收记录\"}]",
+  "actualModel": null,
+  "outputKind": "structured",
+  "modelObservability": "The actual production output did not return a server model identifier. actualModel remains null; requested model identity is not inferred as actual server identity."
+}

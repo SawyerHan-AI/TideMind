@@ -1,0 +1,1149 @@
+{
+  "observedAt": "2026-11-07T15:57:25.011Z",
+  "result": {
+    "releasePolicy": {
+      "manifestVersion": "0.2.95",
+      "mode": "active",
+      "customLocalAgentEnabled": true,
+      "diagnostics": []
+    },
+    "automaticConnectionsEnabled": true,
+    "historyInstallations": [
+      {
+        "id": "installation_e7cdb77a-e5d5-4565-b03e-c0d8b1b43f64",
+        "familyId": "claude-desktop-legacy",
+        "hostVariant": "claude-desktop-legacy",
+        "variantLabel": "Claude Desktop（遗留）",
+        "displayName": "Claude Desktop（遗留）",
+        "profileLabel": "default",
+        "version": "4.23118.0",
+        "manageable": false,
+        "automaticConnectionEnabled": false,
+        "disconnectable": false,
+        "desiredState": "unmanaged",
+        "statusGroup": "disconnected",
+        "statusReason": "detect_only",
+        "accessLevel": "unconnected",
+        "accessIsHistorical": false,
+        "components": [
+          {
+            "key": "instruction",
+            "state": "unsupported",
+            "implementationTypes": [],
+            "targetLabel": null,
+            "lastVerifiedAt": null
+          },
+          {
+            "key": "memory_tools",
+            "state": "unconnected",
+            "configurationVerified": false,
+            "configurationAppliedAt": null,
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "mcp"
+            ],
+            "targetLabel": null,
+            "lastVerifiedAt": null
+          },
+          {
+            "key": "lifecycle",
+            "state": "unsupported",
+            "implementationTypes": [],
+            "targetLabel": null,
+            "lastVerifiedAt": null
+          }
+        ],
+        "unreadEventCount": 0,
+        "lastDetectedAt": "2026-11-07T15:55:15.834Z",
+        "lastVerifiedAt": null,
+        "lastRepairedAt": null,
+        "lastRealUseAt": null,
+        "deactivation": {
+          "maintenance": "active",
+          "bridge": "serving",
+          "hostComponents": "loaded_unknown"
+        },
+        "sourceVerification": {
+          "state": "trusted",
+          "evidence": "signed_identity",
+          "checkedAt": "2026-11-07T15:55:15.834Z"
+        }
+      }
+    ],
+    "connections": [
+      {
+        "diagnostic": {
+          "status": "waiting",
+          "reason": "awaiting_diagnostic",
+          "runId": null
+        },
+        "id": "binding:binding_8433c83dd346f78da2bf80073257ba65821b5093693856fabd59c5dca4b061cf",
+        "familyId": "codex",
+        "displayName": "Codex",
+        "installationIds": [
+          "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+          "installation_3cc7a1df-8f0b-48a6-a85c-eb7d76ed6df9"
+        ],
+        "shared": true,
+        "bindingGeneration": 1,
+        "configurationRevision": "8a53e1f2818c94ef38c28f24396c15366ada8d4a381416724bb8aeb6a949d4f0",
+        "statusGroup": "available",
+        "statusReason": "verified",
+        "components": [
+          {
+            "key": "instruction",
+            "state": "verified",
+            "configurationVerified": true,
+            "configurationFingerprint": "5e9012d1a05d9b25233e6af90d798d0104598bb8adde794f7b7deeba97a061b1",
+            "configurationAppliedAt": "2026-11-07T15:49:35.649Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "skill"
+            ],
+            "targetLabel": "~/.agents/skills/tidemind/SKILL.md",
+            "lastVerifiedAt": "2026-11-07T15:55:17.989Z"
+          },
+          {
+            "key": "memory_tools",
+            "state": "verified",
+            "configurationVerified": true,
+            "configurationFingerprint": "e58facc13830d29136afe8a5368da007a32b40f33396141a502ce32350edcea4",
+            "configurationAppliedAt": "2026-11-07T15:49:49.962Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "mcp"
+            ],
+            "targetLabel": "~/.codex/config.toml",
+            "lastVerifiedAt": "2026-11-07T15:53:34.253Z"
+          },
+          {
+            "key": "lifecycle",
+            "state": "verified",
+            "configurationVerified": true,
+            "configurationFingerprint": "e5e826aaf3d279af163698c71b6a20342521e7173f9273ed227e0796cf953b8a",
+            "configurationAppliedAt": "2026-11-07T15:50:07.741Z",
+            "hostRecognitionVerified": true,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": "2026-11-07T15:54:27.079Z",
+            "implementationTypes": [
+              "hook"
+            ],
+            "targetLabel": "~/.codex/hooks.json",
+            "lastVerifiedAt": "2026-11-07T15:55:40.433Z"
+          }
+        ],
+        "memoryCallsVerified": true,
+        "maintenance": "active",
+        "intentRevision": 2,
+        "intentState": "active",
+        "actionInstallationIds": [],
+        "issue": null,
+        "attentionReason": null,
+        "lastRealUseAt": "2026-11-07T15:55:40.433Z"
+      },
+      {
+        "diagnostic": {
+          "status": "waiting",
+          "reason": "native_diagnostic_unsupported",
+          "runId": null
+        },
+        "id": "installation:installation_ddee8779-c60c-4461-8ada-23ff5cc741bd",
+        "familyId": "cursor",
+        "displayName": "Cursor",
+        "installationIds": [
+          "installation_ddee8779-c60c-4461-8ada-23ff5cc741bd"
+        ],
+        "shared": false,
+        "bindingGeneration": null,
+        "configurationRevision": "e4fda47a78c1914db32ce7d87327aa32f888b209234a3af80ecf8106d70d87bd",
+        "statusGroup": "awaiting_verification",
+        "statusReason": "unverified",
+        "components": [
+          {
+            "key": "instruction",
+            "state": "configured",
+            "configurationVerified": true,
+            "configurationFingerprint": "3529cd9102f95133f65731156b7df8f6692096b3de935fe57df9e2e58e929f95",
+            "configurationAppliedAt": "2026-11-07T15:49:35.215Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "skill"
+            ],
+            "targetLabel": "~/.cursor/skills/tidemind/SKILL.md",
+            "lastVerifiedAt": "2026-11-07T15:56:41.450Z"
+          },
+          {
+            "key": "memory_tools",
+            "state": "configured",
+            "configurationVerified": true,
+            "configurationFingerprint": "16e79b2d5be234b195de44963d5bd9e4303b2bdf9f8dcb65109a040f0efc4873",
+            "configurationAppliedAt": "2026-11-07T15:49:46.785Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "mcp"
+            ],
+            "targetLabel": "~/.cursor/mcp.json",
+            "lastVerifiedAt": "2026-11-07T15:56:47.017Z"
+          },
+          {
+            "key": "lifecycle",
+            "state": "configured",
+            "configurationVerified": true,
+            "configurationFingerprint": "e6a10dfe504489af649243ef40d6970762a01f8a715193be298e20969ccbe496",
+            "configurationAppliedAt": "2026-11-07T15:50:00.845Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "hook"
+            ],
+            "targetLabel": "~/.cursor/hooks.json",
+            "lastVerifiedAt": "2026-11-07T15:57:24.817Z"
+          }
+        ],
+        "memoryCallsVerified": false,
+        "maintenance": "active",
+        "intentRevision": 0,
+        "intentState": "active",
+        "actionInstallationIds": [],
+        "issue": null,
+        "attentionReason": null,
+        "lastRealUseAt": null
+      },
+      {
+        "id": "installation:installation_620601df-fd8d-4bdd-8f7f-1e7f6bd1280e",
+        "familyId": "gemini",
+        "displayName": "Gemini CLI",
+        "installationIds": [
+          "installation_620601df-fd8d-4bdd-8f7f-1e7f6bd1280e"
+        ],
+        "shared": false,
+        "bindingGeneration": null,
+        "configurationRevision": "4c3f934ba0329f42a33e73219c395a453f9a535dd261610e75931fb488a102ff",
+        "statusGroup": "needs_attention",
+        "statusReason": "native_permission_required",
+        "components": [
+          {
+            "key": "instruction",
+            "state": "unconnected",
+            "configurationVerified": false,
+            "configurationAppliedAt": null,
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "plugin",
+              "skill"
+            ],
+            "targetLabel": null,
+            "lastVerifiedAt": null
+          },
+          {
+            "key": "memory_tools",
+            "state": "unconnected",
+            "configurationVerified": false,
+            "configurationAppliedAt": null,
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "plugin",
+              "mcp"
+            ],
+            "targetLabel": null,
+            "lastVerifiedAt": null
+          },
+          {
+            "key": "lifecycle",
+            "state": "unconnected",
+            "configurationVerified": false,
+            "configurationAppliedAt": null,
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "plugin",
+              "hook"
+            ],
+            "targetLabel": null,
+            "lastVerifiedAt": null
+          }
+        ],
+        "memoryCallsVerified": false,
+        "maintenance": "unmanaged",
+        "intentRevision": 0,
+        "intentState": "active",
+        "actionInstallationIds": [
+          "installation_620601df-fd8d-4bdd-8f7f-1e7f6bd1280e"
+        ],
+        "issue": {
+          "eventId": "aie_e1af8d4d-78e1-45e1-8ea0-6afd8882f5d7",
+          "reason": "native_permission_required",
+          "dismissed": false
+        },
+        "attentionReason": "native_permission_required",
+        "lastRealUseAt": null
+      },
+      {
+        "diagnostic": {
+          "status": "waiting",
+          "reason": "native_diagnostic_unsupported",
+          "runId": null
+        },
+        "id": "installation:installation_235c45cb-8182-4811-b0fa-c40fc9af411e",
+        "familyId": "zcode",
+        "displayName": "ZCode",
+        "installationIds": [
+          "installation_235c45cb-8182-4811-b0fa-c40fc9af411e"
+        ],
+        "shared": false,
+        "bindingGeneration": null,
+        "configurationRevision": "16050f3ce0ea861705c14b25e0cb94c7c57c940bc80254ba68628dfbb156ffe1",
+        "statusGroup": "awaiting_verification",
+        "statusReason": "unverified",
+        "components": [
+          {
+            "key": "instruction",
+            "state": "configured",
+            "configurationVerified": true,
+            "configurationFingerprint": "3cd1a89af603308cc2b33aa6fd76e926c5e03be24be35a97ccbb1cd53a031207",
+            "configurationAppliedAt": "2026-11-07T15:49:25.252Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "skill"
+            ],
+            "targetLabel": "~/.zcode/skills/tidemind/SKILL.md",
+            "lastVerifiedAt": "2026-11-07T15:57:05.440Z"
+          },
+          {
+            "key": "memory_tools",
+            "state": "configured",
+            "configurationVerified": true,
+            "configurationFingerprint": "de6b4c885544e5431cfc842b512cf58c9f75273b465d7995948fcd0ccdebd219",
+            "configurationAppliedAt": "2026-11-07T15:49:30.743Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "mcp"
+            ],
+            "targetLabel": "~/.zcode/cli/config.json",
+            "lastVerifiedAt": "2026-11-07T15:57:07.529Z"
+          },
+          {
+            "key": "lifecycle",
+            "state": "configured",
+            "configurationVerified": true,
+            "configurationFingerprint": "de6b4c885544e5431cfc842b512cf58c9f75273b465d7995948fcd0ccdebd219",
+            "configurationAppliedAt": "2026-11-07T15:49:30.743Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "hook"
+            ],
+            "targetLabel": "~/.zcode/cli/config.json",
+            "lastVerifiedAt": "2026-11-07T15:57:07.529Z"
+          }
+        ],
+        "memoryCallsVerified": false,
+        "maintenance": "active",
+        "intentRevision": 0,
+        "intentState": "active",
+        "actionInstallationIds": [],
+        "issue": null,
+        "attentionReason": null,
+        "lastRealUseAt": null
+      }
+    ],
+    "families": [
+      {
+        "id": "codex",
+        "displayName": "Codex",
+        "installationIds": [
+          "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+          "installation_3cc7a1df-8f0b-48a6-a85c-eb7d76ed6df9"
+        ],
+        "statusGroup": "awaiting_verification",
+        "accessLevels": [
+          "unconnected"
+        ],
+        "needsAttentionCount": 0,
+        "unreadEventCount": 3
+      },
+      {
+        "id": "cursor",
+        "displayName": "Cursor",
+        "installationIds": [
+          "installation_ddee8779-c60c-4461-8ada-23ff5cc741bd"
+        ],
+        "statusGroup": "awaiting_verification",
+        "accessLevels": [
+          "unconnected"
+        ],
+        "needsAttentionCount": 0,
+        "unreadEventCount": 1
+      },
+      {
+        "id": "gemini",
+        "displayName": "Gemini CLI",
+        "installationIds": [
+          "installation_620601df-fd8d-4bdd-8f7f-1e7f6bd1280e"
+        ],
+        "statusGroup": "needs_attention",
+        "accessLevels": [
+          "unconnected"
+        ],
+        "needsAttentionCount": 1,
+        "unreadEventCount": 2
+      },
+      {
+        "id": "zcode",
+        "displayName": "ZCode",
+        "installationIds": [
+          "installation_235c45cb-8182-4811-b0fa-c40fc9af411e"
+        ],
+        "statusGroup": "awaiting_verification",
+        "accessLevels": [
+          "unconnected"
+        ],
+        "needsAttentionCount": 0,
+        "unreadEventCount": 1
+      }
+    ],
+    "installations": [
+      {
+        "id": "installation_620601df-fd8d-4bdd-8f7f-1e7f6bd1280e",
+        "familyId": "gemini",
+        "hostVariant": "gemini-cli",
+        "variantLabel": "Gemini CLI",
+        "displayName": "Gemini CLI",
+        "profileLabel": "default",
+        "version": "0.39.1",
+        "manageable": true,
+        "automaticConnectionEnabled": true,
+        "disconnectable": true,
+        "desiredState": "unmanaged",
+        "statusGroup": "needs_attention",
+        "statusReason": "native_permission_required",
+        "accessLevel": "unconnected",
+        "accessIsHistorical": false,
+        "components": [
+          {
+            "key": "instruction",
+            "state": "unconnected",
+            "configurationVerified": false,
+            "configurationAppliedAt": null,
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "plugin",
+              "skill"
+            ],
+            "targetLabel": null,
+            "lastVerifiedAt": null
+          },
+          {
+            "key": "memory_tools",
+            "state": "unconnected",
+            "configurationVerified": false,
+            "configurationAppliedAt": null,
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "plugin",
+              "mcp"
+            ],
+            "targetLabel": null,
+            "lastVerifiedAt": null
+          },
+          {
+            "key": "lifecycle",
+            "state": "unconnected",
+            "configurationVerified": false,
+            "configurationAppliedAt": null,
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "plugin",
+              "hook"
+            ],
+            "targetLabel": null,
+            "lastVerifiedAt": null
+          }
+        ],
+        "unreadEventCount": 2,
+        "lastDetectedAt": "2026-11-07T15:55:15.834Z",
+        "lastVerifiedAt": null,
+        "lastRepairedAt": null,
+        "lastRealUseAt": null,
+        "deactivation": {
+          "maintenance": "active",
+          "bridge": "serving",
+          "hostComponents": "loaded_unknown"
+        },
+        "sourceVerification": {
+          "state": "trusted",
+          "evidence": "npm_registry",
+          "checkedAt": "2026-11-07T15:49:50.050Z",
+          "task": {
+            "state": "verified"
+          }
+        }
+      },
+      {
+        "id": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+        "diagnostic": {
+          "status": "waiting",
+          "reason": "awaiting_diagnostic",
+          "runId": null
+        },
+        "authentication": {
+          "status": "unavailable",
+          "billing": "unknown",
+          "reason": "billing_settings_override",
+          "checkedAt": "2026-11-07T15:51:10.591Z"
+        },
+        "familyId": "codex",
+        "hostVariant": "codex-cli",
+        "variantLabel": "CLI",
+        "displayName": "CLI",
+        "profileLabel": "default",
+        "version": "0.157.1",
+        "manageable": true,
+        "automaticConnectionEnabled": true,
+        "disconnectable": true,
+        "desiredState": "managed",
+        "statusGroup": "awaiting_verification",
+        "statusReason": "unverified",
+        "accessLevel": "unconnected",
+        "accessIsHistorical": false,
+        "components": [
+          {
+            "key": "instruction",
+            "state": "configured",
+            "configurationVerified": true,
+            "configurationFingerprint": "5e9012d1a05d9b25233e6af90d798d0104598bb8adde794f7b7deeba97a061b1",
+            "configurationAppliedAt": "2026-11-07T15:49:35.649Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "skill"
+            ],
+            "targetLabel": "~/.agents/skills/tidemind/SKILL.md",
+            "lastVerifiedAt": "2026-11-07T15:56:55.061Z"
+          },
+          {
+            "key": "memory_tools",
+            "state": "configured",
+            "configurationVerified": true,
+            "configurationFingerprint": "e58facc13830d29136afe8a5368da007a32b40f33396141a502ce32350edcea4",
+            "configurationAppliedAt": "2026-11-07T15:49:49.962Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "mcp"
+            ],
+            "targetLabel": "~/.codex/config.toml",
+            "lastVerifiedAt": "2026-11-07T15:57:15.094Z"
+          },
+          {
+            "key": "lifecycle",
+            "state": "configured",
+            "configurationVerified": true,
+            "configurationFingerprint": "e5e826aaf3d279af163698c71b6a20342521e7173f9273ed227e0796cf953b8a",
+            "configurationAppliedAt": "2026-11-07T15:50:07.741Z",
+            "hostRecognitionVerified": true,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": "2026-11-07T15:54:27.079Z",
+            "implementationTypes": [
+              "hook"
+            ],
+            "targetLabel": "~/.codex/hooks.json",
+            "lastVerifiedAt": "2026-11-07T15:57:03.022Z"
+          }
+        ],
+        "unreadEventCount": 2,
+        "lastDetectedAt": "2026-11-07T15:55:15.834Z",
+        "lastVerifiedAt": null,
+        "lastRepairedAt": null,
+        "lastRealUseAt": null,
+        "sharedConnection": {
+          "memberCount": 2,
+          "status": "call_observed",
+          "evidenceAt": "2026-11-07T15:53:34.253Z"
+        },
+        "deactivation": {
+          "maintenance": "active",
+          "bridge": "serving",
+          "hostComponents": "loaded_unknown"
+        },
+        "sourceVerification": {
+          "state": "trusted",
+          "evidence": "npm_registry",
+          "checkedAt": "2026-11-07T15:49:06.838Z",
+          "task": {
+            "state": "verified"
+          }
+        }
+      },
+      {
+        "id": "installation_ddee8779-c60c-4461-8ada-23ff5cc741bd",
+        "diagnostic": {
+          "status": "waiting",
+          "reason": "native_diagnostic_unsupported",
+          "runId": null
+        },
+        "familyId": "cursor",
+        "hostVariant": "cursor-desktop",
+        "variantLabel": "Cursor",
+        "displayName": "Cursor",
+        "profileLabel": "default",
+        "version": "3.27.22",
+        "manageable": true,
+        "automaticConnectionEnabled": true,
+        "disconnectable": true,
+        "desiredState": "managed",
+        "statusGroup": "awaiting_verification",
+        "statusReason": "unverified",
+        "accessLevel": "unconnected",
+        "accessIsHistorical": false,
+        "components": [
+          {
+            "key": "instruction",
+            "state": "configured",
+            "configurationVerified": true,
+            "configurationFingerprint": "3529cd9102f95133f65731156b7df8f6692096b3de935fe57df9e2e58e929f95",
+            "configurationAppliedAt": "2026-11-07T15:49:35.215Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "skill"
+            ],
+            "targetLabel": "~/.cursor/skills/tidemind/SKILL.md",
+            "lastVerifiedAt": "2026-11-07T15:56:41.450Z"
+          },
+          {
+            "key": "memory_tools",
+            "state": "configured",
+            "configurationVerified": true,
+            "configurationFingerprint": "16e79b2d5be234b195de44963d5bd9e4303b2bdf9f8dcb65109a040f0efc4873",
+            "configurationAppliedAt": "2026-11-07T15:49:46.785Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "mcp"
+            ],
+            "targetLabel": "~/.cursor/mcp.json",
+            "lastVerifiedAt": "2026-11-07T15:56:47.017Z"
+          },
+          {
+            "key": "lifecycle",
+            "state": "configured",
+            "configurationVerified": true,
+            "configurationFingerprint": "e6a10dfe504489af649243ef40d6970762a01f8a715193be298e20969ccbe496",
+            "configurationAppliedAt": "2026-11-07T15:50:00.845Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "hook"
+            ],
+            "targetLabel": "~/.cursor/hooks.json",
+            "lastVerifiedAt": "2026-11-07T15:57:24.817Z"
+          }
+        ],
+        "unreadEventCount": 1,
+        "lastDetectedAt": "2026-11-07T15:55:15.834Z",
+        "lastVerifiedAt": null,
+        "lastRepairedAt": null,
+        "lastRealUseAt": null,
+        "deactivation": {
+          "maintenance": "active",
+          "bridge": "serving",
+          "hostComponents": "loaded_unknown"
+        },
+        "sourceVerification": {
+          "state": "trusted",
+          "evidence": "signed_identity",
+          "checkedAt": "2026-11-07T15:55:15.834Z"
+        }
+      },
+      {
+        "id": "installation_235c45cb-8182-4811-b0fa-c40fc9af411e",
+        "diagnostic": {
+          "status": "waiting",
+          "reason": "native_diagnostic_unsupported",
+          "runId": null
+        },
+        "familyId": "zcode",
+        "hostVariant": "zcode-desktop",
+        "variantLabel": "Desktop",
+        "displayName": "Desktop",
+        "profileLabel": "default",
+        "version": "3.10.2",
+        "manageable": true,
+        "automaticConnectionEnabled": true,
+        "disconnectable": true,
+        "desiredState": "managed",
+        "statusGroup": "awaiting_verification",
+        "statusReason": "unverified",
+        "accessLevel": "unconnected",
+        "accessIsHistorical": false,
+        "components": [
+          {
+            "key": "instruction",
+            "state": "configured",
+            "configurationVerified": true,
+            "configurationFingerprint": "3cd1a89af603308cc2b33aa6fd76e926c5e03be24be35a97ccbb1cd53a031207",
+            "configurationAppliedAt": "2026-11-07T15:49:25.252Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "skill"
+            ],
+            "targetLabel": "~/.zcode/skills/tidemind/SKILL.md",
+            "lastVerifiedAt": "2026-11-07T15:57:05.440Z"
+          },
+          {
+            "key": "memory_tools",
+            "state": "configured",
+            "configurationVerified": true,
+            "configurationFingerprint": "de6b4c885544e5431cfc842b512cf58c9f75273b465d7995948fcd0ccdebd219",
+            "configurationAppliedAt": "2026-11-07T15:49:30.743Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "mcp"
+            ],
+            "targetLabel": "~/.zcode/cli/config.json",
+            "lastVerifiedAt": "2026-11-07T15:57:07.529Z"
+          },
+          {
+            "key": "lifecycle",
+            "state": "configured",
+            "configurationVerified": true,
+            "configurationFingerprint": "de6b4c885544e5431cfc842b512cf58c9f75273b465d7995948fcd0ccdebd219",
+            "configurationAppliedAt": "2026-11-07T15:49:30.743Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "hook"
+            ],
+            "targetLabel": "~/.zcode/cli/config.json",
+            "lastVerifiedAt": "2026-11-07T15:57:07.529Z"
+          }
+        ],
+        "unreadEventCount": 1,
+        "lastDetectedAt": "2026-11-07T15:55:15.834Z",
+        "lastVerifiedAt": null,
+        "lastRepairedAt": null,
+        "lastRealUseAt": null,
+        "deactivation": {
+          "maintenance": "active",
+          "bridge": "serving",
+          "hostComponents": "loaded_unknown"
+        },
+        "sourceVerification": {
+          "state": "trusted",
+          "evidence": "signed_identity",
+          "checkedAt": "2026-11-07T15:55:15.834Z"
+        }
+      },
+      {
+        "id": "installation_3cc7a1df-8f0b-48a6-a85c-eb7d76ed6df9",
+        "diagnostic": {
+          "status": "waiting",
+          "reason": "native_diagnostic_unsupported",
+          "runId": null
+        },
+        "familyId": "codex",
+        "hostVariant": "codex-desktop",
+        "variantLabel": "Desktop",
+        "displayName": "Desktop",
+        "profileLabel": "default",
+        "version": "26.1103.41825",
+        "manageable": true,
+        "automaticConnectionEnabled": true,
+        "disconnectable": true,
+        "desiredState": "managed",
+        "statusGroup": "awaiting_verification",
+        "statusReason": "unverified",
+        "accessLevel": "unconnected",
+        "accessIsHistorical": false,
+        "components": [
+          {
+            "key": "instruction",
+            "state": "configured",
+            "configurationVerified": true,
+            "configurationFingerprint": "5e9012d1a05d9b25233e6af90d798d0104598bb8adde794f7b7deeba97a061b1",
+            "configurationAppliedAt": "2026-11-07T15:49:35.649Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "skill"
+            ],
+            "targetLabel": "~/.agents/skills/tidemind/SKILL.md",
+            "lastVerifiedAt": "2026-11-07T15:56:55.061Z"
+          },
+          {
+            "key": "memory_tools",
+            "state": "configured",
+            "configurationVerified": true,
+            "configurationFingerprint": "e58facc13830d29136afe8a5368da007a32b40f33396141a502ce32350edcea4",
+            "configurationAppliedAt": "2026-11-07T15:49:49.962Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": null,
+            "implementationTypes": [
+              "mcp"
+            ],
+            "targetLabel": "~/.codex/config.toml",
+            "lastVerifiedAt": "2026-11-07T15:57:15.094Z"
+          },
+          {
+            "key": "lifecycle",
+            "state": "confirmation_required",
+            "configurationVerified": true,
+            "configurationFingerprint": "e5e826aaf3d279af163698c71b6a20342521e7173f9273ed227e0796cf953b8a",
+            "configurationAppliedAt": "2026-11-07T15:50:07.741Z",
+            "hostRecognitionVerified": false,
+            "hostRecognitionRejected": false,
+            "hostRecognitionObservedAt": "2026-11-07T15:51:34.713Z",
+            "implementationTypes": [
+              "hook"
+            ],
+            "targetLabel": "~/.codex/hooks.json",
+            "lastVerifiedAt": "2026-11-07T15:57:03.022Z"
+          }
+        ],
+        "unreadEventCount": 1,
+        "lastDetectedAt": "2026-11-07T15:55:15.834Z",
+        "lastVerifiedAt": null,
+        "lastRepairedAt": null,
+        "lastRealUseAt": null,
+        "sharedConnection": {
+          "memberCount": 2,
+          "status": "call_observed",
+          "evidenceAt": "2026-11-07T15:53:34.253Z"
+        },
+        "deactivation": {
+          "maintenance": "active",
+          "bridge": "serving",
+          "hostComponents": "loaded_unknown"
+        },
+        "sourceVerification": {
+          "state": "trusted",
+          "evidence": "signed_identity",
+          "checkedAt": "2026-11-07T15:55:15.834Z"
+        }
+      }
+    ],
+    "summary": {
+      "familyCount": 4,
+      "installationCount": 5,
+      "availableCount": 1,
+      "needsAttentionCount": 1,
+      "awaitingConnectionCount": 0
+    },
+    "lastScanAt": "2026-11-07T15:57:24.880Z",
+    "scanProgress": {
+      "phase": "discovery",
+      "startedAt": "2026-11-07T15:57:24.908Z",
+      "completedAt": null
+    }
+  },
+  "connection": {
+    "diagnostic": {
+      "status": "waiting",
+      "reason": "awaiting_diagnostic",
+      "runId": null
+    },
+    "id": "binding:binding_8433c83dd346f78da2bf80073257ba65821b5093693856fabd59c5dca4b061cf",
+    "familyId": "codex",
+    "displayName": "Codex",
+    "installationIds": [
+      "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+      "installation_3cc7a1df-8f0b-48a6-a85c-eb7d76ed6df9"
+    ],
+    "shared": true,
+    "bindingGeneration": 1,
+    "configurationRevision": "8a53e1f2818c94ef38c28f24396c15366ada8d4a381416724bb8aeb6a949d4f0",
+    "statusGroup": "available",
+    "statusReason": "verified",
+    "components": [
+      {
+        "key": "instruction",
+        "state": "verified",
+        "configurationVerified": true,
+        "configurationFingerprint": "5e9012d1a05d9b25233e6af90d798d0104598bb8adde794f7b7deeba97a061b1",
+        "configurationAppliedAt": "2026-11-07T15:49:35.649Z",
+        "hostRecognitionVerified": false,
+        "hostRecognitionRejected": false,
+        "hostRecognitionObservedAt": null,
+        "implementationTypes": [
+          "skill"
+        ],
+        "targetLabel": "~/.agents/skills/tidemind/SKILL.md",
+        "lastVerifiedAt": "2026-11-07T15:55:17.989Z"
+      },
+      {
+        "key": "memory_tools",
+        "state": "verified",
+        "configurationVerified": true,
+        "configurationFingerprint": "e58facc13830d29136afe8a5368da007a32b40f33396141a502ce32350edcea4",
+        "configurationAppliedAt": "2026-11-07T15:49:49.962Z",
+        "hostRecognitionVerified": false,
+        "hostRecognitionRejected": false,
+        "hostRecognitionObservedAt": null,
+        "implementationTypes": [
+          "mcp"
+        ],
+        "targetLabel": "~/.codex/config.toml",
+        "lastVerifiedAt": "2026-11-07T15:53:34.253Z"
+      },
+      {
+        "key": "lifecycle",
+        "state": "verified",
+        "configurationVerified": true,
+        "configurationFingerprint": "e5e826aaf3d279af163698c71b6a20342521e7173f9273ed227e0796cf953b8a",
+        "configurationAppliedAt": "2026-11-07T15:50:07.741Z",
+        "hostRecognitionVerified": true,
+        "hostRecognitionRejected": false,
+        "hostRecognitionObservedAt": "2026-11-07T15:54:27.079Z",
+        "implementationTypes": [
+          "hook"
+        ],
+        "targetLabel": "~/.codex/hooks.json",
+        "lastVerifiedAt": "2026-11-07T15:55:40.433Z"
+      }
+    ],
+    "memoryCallsVerified": true,
+    "maintenance": "active",
+    "intentRevision": 2,
+    "intentState": "active",
+    "actionInstallationIds": [],
+    "issue": null,
+    "attentionReason": null,
+    "lastRealUseAt": "2026-11-07T15:55:40.433Z"
+  },
+  "detail": {
+    "installation": {
+      "id": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+      "diagnostic": {
+        "status": "waiting",
+        "reason": "awaiting_diagnostic",
+        "runId": null
+      },
+      "authentication": {
+        "status": "unavailable",
+        "billing": "unknown",
+        "reason": "billing_settings_override",
+        "checkedAt": "2026-11-07T15:51:10.591Z"
+      },
+      "familyId": "codex",
+      "hostVariant": "codex-cli",
+      "variantLabel": "CLI",
+      "displayName": "CLI",
+      "profileLabel": "default",
+      "version": "0.157.1",
+      "manageable": true,
+      "automaticConnectionEnabled": true,
+      "disconnectable": true,
+      "desiredState": "managed",
+      "statusGroup": "awaiting_verification",
+      "statusReason": "unverified",
+      "accessLevel": "unconnected",
+      "accessIsHistorical": false,
+      "components": [
+        {
+          "key": "instruction",
+          "state": "configured",
+          "configurationVerified": true,
+          "configurationFingerprint": "5e9012d1a05d9b25233e6af90d798d0104598bb8adde794f7b7deeba97a061b1",
+          "configurationAppliedAt": "2026-11-07T15:49:35.649Z",
+          "hostRecognitionVerified": false,
+          "hostRecognitionRejected": false,
+          "hostRecognitionObservedAt": null,
+          "implementationTypes": [
+            "skill"
+          ],
+          "targetLabel": "~/.agents/skills/tidemind/SKILL.md",
+          "lastVerifiedAt": "2026-11-07T15:56:55.061Z"
+        },
+        {
+          "key": "memory_tools",
+          "state": "configured",
+          "configurationVerified": true,
+          "configurationFingerprint": "e58facc13830d29136afe8a5368da007a32b40f33396141a502ce32350edcea4",
+          "configurationAppliedAt": "2026-11-07T15:49:49.962Z",
+          "hostRecognitionVerified": false,
+          "hostRecognitionRejected": false,
+          "hostRecognitionObservedAt": null,
+          "implementationTypes": [
+            "mcp"
+          ],
+          "targetLabel": "~/.codex/config.toml",
+          "lastVerifiedAt": "2026-11-07T15:57:15.094Z"
+        },
+        {
+          "key": "lifecycle",
+          "state": "configured",
+          "configurationVerified": true,
+          "configurationFingerprint": "e5e826aaf3d279af163698c71b6a20342521e7173f9273ed227e0796cf953b8a",
+          "configurationAppliedAt": "2026-11-07T15:50:07.741Z",
+          "hostRecognitionVerified": true,
+          "hostRecognitionRejected": false,
+          "hostRecognitionObservedAt": "2026-11-07T15:54:27.079Z",
+          "implementationTypes": [
+            "hook"
+          ],
+          "targetLabel": "~/.codex/hooks.json",
+          "lastVerifiedAt": "2026-11-07T15:57:03.022Z"
+        }
+      ],
+      "unreadEventCount": 2,
+      "lastDetectedAt": "2026-11-07T15:55:15.834Z",
+      "lastVerifiedAt": null,
+      "lastRepairedAt": null,
+      "lastRealUseAt": null,
+      "sharedConnection": {
+        "memberCount": 2,
+        "status": "call_observed",
+        "evidenceAt": "2026-11-07T15:53:34.253Z"
+      },
+      "deactivation": {
+        "maintenance": "active",
+        "bridge": "serving",
+        "hostComponents": "loaded_unknown"
+      },
+      "sourceVerification": {
+        "state": "trusted",
+        "evidence": "npm_registry",
+        "checkedAt": "2026-11-07T15:49:06.838Z",
+        "task": {
+          "state": "verified"
+        }
+      }
+    },
+    "configRootLabel": "~/.codex",
+    "events": [
+      {
+        "id": "aie_67c62531-b631-4d1f-8f14-9ca72ae7e8e7",
+        "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+        "componentKey": "lifecycle",
+        "kind": "codex_hook_trust_verified",
+        "severity": "info",
+        "state": "unread",
+        "createdAt": "2026-11-07T15:52:38.425Z",
+        "readAt": null
+      },
+      {
+        "id": "aie_8eb58ebd-ac86-45d0-a509-003047d8afbe",
+        "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+        "componentKey": null,
+        "kind": "connection_issue",
+        "severity": "warning",
+        "state": "archived",
+        "createdAt": "2026-11-07T15:51:09.483Z",
+        "readAt": null
+      },
+      {
+        "id": "aie_d4b537d5-d876-4c52-827d-6875ef5f1898",
+        "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+        "componentKey": null,
+        "kind": "legacy_adoption_artifact_changed",
+        "severity": "warning",
+        "state": "unread",
+        "createdAt": "2026-11-07T15:49:56.360Z",
+        "readAt": null
+      }
+    ],
+    "requiredUserActionDetails": [
+      {
+        "kind": "codex_hook_trust",
+        "componentKey": "lifecycle",
+        "instruction": "在 Codex 中运行 /hooks，依次选择 Tide Mind 的 SessionStart、PreCompact、PostCompact、SessionEnd 和 UserPromptSubmit Hook 并确认信任。完成后返回 Tide Mind 重新校验。",
+        "sourceLabel": "~/.codex/hooks.json",
+        "hookKeyHash": "7a6392050c605eba423bb108090628b5db6959167a13dac1cf1091bc64c2538b",
+        "ownedFragmentHash": "a27aa494882960cb2ff751b6a98425fbe0256fa0ae9d2d93c2584aa4e70890b2",
+        "hostCurrentHash": "sha256:c85ce2339f8fbab1d835bd5f75b0c7f8df5c1826cb9f8310b73842ab3bf99637"
+      }
+    ],
+    "technical": {
+      "agentId": "eb_eac3bb675d9b42a7",
+      "installKey": "installation:d4c8bd1f71c4c439",
+      "distributionId": "cli:codex-cli",
+      "reconcileState": "idle",
+      "latestRun": {
+        "planHash": "75818b32ab0ac74eaf3d76bae25ad6f45706ddcf9a81240b838da53675c6e295",
+        "state": "applied_unverified",
+        "adapterVersion": "1+1+2",
+        "catalogVersion": "2",
+        "projectionVersion": "1",
+        "selectorSchemaVersion": "1"
+      },
+      "components": [
+        {
+          "componentKey": "instruction",
+          "targetLabel": "~/.agents/skills/tidemind/SKILL.md",
+          "ownershipSelector": "document",
+          "projectionVersion": "1",
+          "selectorSchemaVersion": "1",
+          "artifactState": "healthy",
+          "ownedHash": "850795df439dd93ff09177fdbe0ec6442a032ee6e5163ad7ba777bdb174f4512",
+          "observedHash": "850795df439dd93ff09177fdbe0ec6442a032ee6e5163ad7ba777bdb174f4512",
+          "lastAppliedAt": "2026-11-07T15:50:07.743Z",
+          "lastReadAt": "2026-11-07T15:56:55.061Z"
+        },
+        {
+          "componentKey": "lifecycle",
+          "targetLabel": "~/.codex/hooks.json",
+          "ownershipSelector": "hooks.tidemind-eb_74049455474d4440",
+          "projectionVersion": "1",
+          "selectorSchemaVersion": "1",
+          "artifactState": "healthy",
+          "ownedHash": "a27aa494882960cb2ff751b6a98425fbe0256fa0ae9d2d93c2584aa4e70890b2",
+          "observedHash": "a27aa494882960cb2ff751b6a98425fbe0256fa0ae9d2d93c2584aa4e70890b2",
+          "lastAppliedAt": "2026-11-07T15:50:07.743Z",
+          "lastReadAt": "2026-11-07T15:57:03.022Z"
+        },
+        {
+          "componentKey": "memory_tools",
+          "targetLabel": "~/.codex/config.toml",
+          "ownershipSelector": "mcp_servers.tidemind-eb_74049455474d4440",
+          "projectionVersion": "1",
+          "selectorSchemaVersion": "1",
+          "artifactState": "healthy",
+          "ownedHash": "f4216a1fcf3b51dc279de8884dc0e4a50f17d30443b39bcaaf7f5094e685fced",
+          "observedHash": "f4216a1fcf3b51dc279de8884dc0e4a50f17d30443b39bcaaf7f5094e685fced",
+          "lastAppliedAt": "2026-11-07T15:50:07.743Z",
+          "lastReadAt": "2026-11-07T15:57:15.094Z"
+        }
+      ]
+    }
+  }
+}

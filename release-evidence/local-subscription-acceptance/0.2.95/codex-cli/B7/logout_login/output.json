@@ -1,0 +1,7 @@
+{
+  "invocationId": "cli_f4d319ab-81a3-4b64-ac53-2b08a3276bbc",
+  "text": "[{\"index\":1,\"specificity\":0.92,\"subjectivity\":0.05,\"actuality\":0.96,\"tags\":[\"synthetic-acceptance\"],\"title\":\"B33合成验收银色标签记录\"}]",
+  "actualModel": null,
+  "outputKind": "structured",
+  "modelObservability": "The actual production result did not return a server model identifier. actualModel remains null; requested model identity is not inferred as actual server identity."
+}

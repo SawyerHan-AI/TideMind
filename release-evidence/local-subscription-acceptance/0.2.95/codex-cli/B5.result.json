@@ -1,0 +1,31 @@
+{
+  "taskId": null,
+  "operationName": "reconsolidate",
+  "invocationId": "cli_d416bb8f-987c-4029-a219-06ef58b52124",
+  "state": "completed",
+  "resultSummary": "Public brain_recall with explicit no-longer-violet context adopted the actual model output: synthetic exhibit theme changed violet to green, version advanced 1 to 2, KITE-33 release marker and quartz badge preserved.",
+  "beforeNode": {
+    "id": "ME7ioMvufxNm-jYlat1h7",
+    "title": "B33 合成验收展示的发布标识与主题",
+    "content": "B33-SYNTHETIC exhibit 7c19: The release exhibit theme is violet. The fixed release marker is KITE-33 and the badge is quartz. This is a synthetic acceptance memory only.",
+    "version": 1,
+    "refinement": 0.1,
+    "heat": 0.95,
+    "archived": 0,
+    "is_superseded": 0,
+    "last_reconsolidated": null,
+    "updated": "2026-11-07T16:11:34.446Z"
+  },
+  "afterNode": {
+    "id": "ME7ioMvufxNm-jYlat1h7",
+    "title": "B33 合成验收展示的发布标识与主题",
+    "content": "B33-SYNTHETIC exhibit 7c19: The release exhibit theme is green. The fixed release marker is KITE-33 and the badge is quartz. This is a synthetic acceptance memory only.",
+    "version": 2,
+    "refinement": 0,
+    "heat": 1,
+    "archived": 0,
+    "is_superseded": 0,
+    "last_reconsolidated": "2026-11-07T16:13:22.848Z",
+    "updated": "2026-11-07T16:13:22.848Z"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "invocationId": "cli_41af7c53-89bf-4fbf-aead-6d8b8277debe",
+  "text": "[\n  {\n    \"index\": 1,\n    \"specificity\": 0.94,\n    \"subjectivity\": 0.02,\n    \"actuality\": 0.97,\n    \"tags\": [\"synthetic-acceptance\"],\n    \"title\": \"B33 账户切换恢复验收记录\"\n  },\n  {\n    \"index\": 2,\n    \"specificity\": 0.93,\n    \"subjectivity\": 0.02,\n    \"actuality\": 0.97,\n    \"tags\": [\"synthetic-acceptance\"]\n  }\n]",
+  "actualModel": null,
+  "outputKind": "structured",
+  "modelObservability": "The actual production output did not return a server model identifier. actualModel remains null; requested model identity is not inferred as actual server identity."
+}

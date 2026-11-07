@@ -1,0 +1,300 @@
+{
+  "observedAt": "2026-11-07T16:07:43.154Z",
+  "method": "window.api.agentIntegrations.previewConnect",
+  "preview": {
+    "planHash": "cbe6c3ce46c833a7eedfaa23ff9b4d27d2db6956344199397ff972f4f78a500e",
+    "operation": "connect",
+    "installations": [
+      {
+        "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+        "displayName": "CLI",
+        "desiredCapability": 4,
+        "componentKeys": [
+          "instruction",
+          "lifecycle",
+          "memory_tools"
+        ],
+        "nativePermissions": [],
+        "hostVersion": "0.157.1",
+        "targets": [
+          {
+            "componentKey": "instruction",
+            "action": "invoke",
+            "scope": "user",
+            "targetLabel": "~/.agents/skills/tidemind/SKILL.md",
+            "risk": "low",
+            "commandCategory": "file_write",
+            "reversible": true,
+            "selector": "document"
+          },
+          {
+            "componentKey": "lifecycle",
+            "action": "invoke",
+            "scope": "user",
+            "targetLabel": "~/.codex/hooks.json",
+            "risk": "low",
+            "commandCategory": "file_write",
+            "reversible": true,
+            "selector": "hooks.tidemind-eb_74049455474d4440"
+          },
+          {
+            "componentKey": "memory_tools",
+            "action": "invoke",
+            "scope": "user",
+            "targetLabel": "~/.codex/config.toml",
+            "risk": "low",
+            "commandCategory": "file_write",
+            "reversible": true,
+            "selector": "mcp_servers.tidemind-eb_74049455474d4440"
+          }
+        ],
+        "requiredUserActions": [],
+        "requiredUserActionDetails": [],
+        "diagnostics": [
+          "owned_document_modified"
+        ],
+        "optionalComponentKeys": [
+          "lifecycle"
+        ]
+      }
+    ],
+    "expiresAt": "2026-11-07T16:22:43.046Z"
+  },
+  "detail": {
+    "installation": {
+      "id": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+      "diagnostic": {
+        "status": "waiting",
+        "reason": "awaiting_diagnostic",
+        "runId": null
+      },
+      "authentication": {
+        "status": "not_checked",
+        "billing": "unknown",
+        "reason": "not_checked",
+        "checkedAt": null
+      },
+      "familyId": "codex",
+      "hostVariant": "codex-cli",
+      "variantLabel": "CLI",
+      "displayName": "CLI",
+      "profileLabel": "default",
+      "version": "0.157.1",
+      "manageable": true,
+      "automaticConnectionEnabled": true,
+      "disconnectable": true,
+      "desiredState": "managed",
+      "statusGroup": "awaiting_verification",
+      "statusReason": "unverified",
+      "accessLevel": "unconnected",
+      "accessIsHistorical": false,
+      "components": [
+        {
+          "key": "instruction",
+          "state": "configured",
+          "configurationVerified": true,
+          "configurationFingerprint": "ef5d1a830847338f6cb9a909635b2feba5e1bd0f2d740b576652324c1da8e9a4",
+          "configurationAppliedAt": "2026-11-07T16:00:20.855Z",
+          "hostRecognitionVerified": false,
+          "hostRecognitionRejected": false,
+          "hostRecognitionObservedAt": "2026-11-07T15:59:25.391Z",
+          "implementationTypes": [
+            "skill"
+          ],
+          "targetLabel": "~/.agents/skills/tidemind/SKILL.md",
+          "lastVerifiedAt": "2026-11-07T16:07:33.365Z"
+        },
+        {
+          "key": "memory_tools",
+          "state": "configured",
+          "configurationVerified": true,
+          "configurationFingerprint": "e58facc13830d29136afe8a5368da007a32b40f33396141a502ce32350edcea4",
+          "configurationAppliedAt": "2026-11-07T15:49:49.962Z",
+          "hostRecognitionVerified": false,
+          "hostRecognitionRejected": false,
+          "hostRecognitionObservedAt": null,
+          "implementationTypes": [
+            "mcp"
+          ],
+          "targetLabel": "~/.codex/config.toml",
+          "lastVerifiedAt": "2026-11-07T16:02:11.771Z"
+        },
+        {
+          "key": "lifecycle",
+          "state": "configured",
+          "configurationVerified": true,
+          "configurationFingerprint": "e5e826aaf3d279af163698c71b6a20342521e7173f9273ed227e0796cf953b8a",
+          "configurationAppliedAt": "2026-11-07T15:50:07.741Z",
+          "hostRecognitionVerified": true,
+          "hostRecognitionRejected": false,
+          "hostRecognitionObservedAt": "2026-11-07T16:05:56.407Z",
+          "implementationTypes": [
+            "hook"
+          ],
+          "targetLabel": "~/.codex/hooks.json",
+          "lastVerifiedAt": "2026-11-07T16:01:18.843Z"
+        }
+      ],
+      "unreadEventCount": 4,
+      "lastDetectedAt": "2026-11-07T16:03:49.359Z",
+      "lastVerifiedAt": null,
+      "lastRepairedAt": null,
+      "lastRealUseAt": null,
+      "sharedConnection": {
+        "memberCount": 2,
+        "status": "call_observed",
+        "evidenceAt": "2026-11-07T15:53:34.253Z"
+      },
+      "deactivation": {
+        "maintenance": "active",
+        "bridge": "serving",
+        "hostComponents": "loaded_unknown"
+      },
+      "sourceVerification": {
+        "state": "trusted",
+        "evidence": "npm_registry",
+        "checkedAt": "2026-11-07T15:49:06.838Z",
+        "task": {
+          "state": "verified"
+        }
+      }
+    },
+    "configRootLabel": "~/.codex",
+    "events": [
+      {
+        "id": "aie_16706e2e-3479-4bb9-9800-ed578672095b",
+        "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+        "componentKey": null,
+        "kind": "connection_issue",
+        "severity": "warning",
+        "state": "archived",
+        "createdAt": "2026-11-07T16:01:22.912Z",
+        "readAt": null
+      },
+      {
+        "id": "aie_f6cb176a-bc6f-4244-ac9f-044fcf32af07",
+        "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+        "componentKey": null,
+        "kind": "connection_issue",
+        "severity": "warning",
+        "state": "archived",
+        "createdAt": "2026-11-07T16:00:44.755Z",
+        "readAt": null
+      },
+      {
+        "id": "event_bf125c3f-6ada-4d13-af2d-bbc3aacb6a9f",
+        "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+        "componentKey": null,
+        "kind": "reconcile_needs_recovery",
+        "severity": "warning",
+        "state": "unread",
+        "createdAt": "2026-11-07T15:59:27.723Z",
+        "readAt": null
+      },
+      {
+        "id": "aie_6eee7da9-6c2f-4519-a13c-56228b5e583e",
+        "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+        "componentKey": null,
+        "kind": "automatic_recovery_authorized",
+        "severity": "info",
+        "state": "unread",
+        "createdAt": "2026-11-07T15:59:24.748Z",
+        "readAt": null
+      },
+      {
+        "id": "aie_67c62531-b631-4d1f-8f14-9ca72ae7e8e7",
+        "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+        "componentKey": "lifecycle",
+        "kind": "codex_hook_trust_verified",
+        "severity": "info",
+        "state": "unread",
+        "createdAt": "2026-11-07T15:52:38.425Z",
+        "readAt": null
+      },
+      {
+        "id": "aie_8eb58ebd-ac86-45d0-a509-003047d8afbe",
+        "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+        "componentKey": null,
+        "kind": "connection_issue",
+        "severity": "warning",
+        "state": "archived",
+        "createdAt": "2026-11-07T15:51:09.483Z",
+        "readAt": null
+      },
+      {
+        "id": "aie_d4b537d5-d876-4c52-827d-6875ef5f1898",
+        "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+        "componentKey": null,
+        "kind": "legacy_adoption_artifact_changed",
+        "severity": "warning",
+        "state": "unread",
+        "createdAt": "2026-11-07T15:49:56.360Z",
+        "readAt": null
+      }
+    ],
+    "requiredUserActionDetails": [
+      {
+        "kind": "codex_hook_trust",
+        "componentKey": "lifecycle",
+        "instruction": "在 Codex 中运行 /hooks，依次选择 Tide Mind 的 SessionStart、PreCompact、PostCompact、SessionEnd 和 UserPromptSubmit Hook 并确认信任。完成后返回 Tide Mind 重新校验。",
+        "sourceLabel": "~/.codex/hooks.json",
+        "hookKeyHash": "7a6392050c605eba423bb108090628b5db6959167a13dac1cf1091bc64c2538b",
+        "ownedFragmentHash": "a27aa494882960cb2ff751b6a98425fbe0256fa0ae9d2d93c2584aa4e70890b2",
+        "hostCurrentHash": "sha256:c85ce2339f8fbab1d835bd5f75b0c7f8df5c1826cb9f8310b73842ab3bf99637"
+      }
+    ],
+    "technical": {
+      "agentId": "eb_eac3bb675d9b42a7",
+      "installKey": "installation:d4c8bd1f71c4c439",
+      "distributionId": "cli:codex-cli",
+      "reconcileState": "idle",
+      "latestRun": {
+        "planHash": "75818b32ab0ac74eaf3d76bae25ad6f45706ddcf9a81240b838da53675c6e295",
+        "state": "applied_unverified",
+        "adapterVersion": "1+1+2",
+        "catalogVersion": "2",
+        "projectionVersion": "1",
+        "selectorSchemaVersion": "1"
+      },
+      "components": [
+        {
+          "componentKey": "instruction",
+          "targetLabel": "~/.agents/skills/tidemind/SKILL.md",
+          "ownershipSelector": "document",
+          "projectionVersion": "1",
+          "selectorSchemaVersion": "1",
+          "artifactState": "healthy",
+          "ownedHash": "850795df439dd93ff09177fdbe0ec6442a032ee6e5163ad7ba777bdb174f4512",
+          "observedHash": "850795df439dd93ff09177fdbe0ec6442a032ee6e5163ad7ba777bdb174f4512",
+          "lastAppliedAt": "2026-11-07T16:00:20.855Z",
+          "lastReadAt": "2026-11-07T16:07:33.365Z"
+        },
+        {
+          "componentKey": "lifecycle",
+          "targetLabel": "~/.codex/hooks.json",
+          "ownershipSelector": "hooks.tidemind-eb_74049455474d4440",
+          "projectionVersion": "1",
+          "selectorSchemaVersion": "1",
+          "artifactState": "healthy",
+          "ownedHash": "a27aa494882960cb2ff751b6a98425fbe0256fa0ae9d2d93c2584aa4e70890b2",
+          "observedHash": "a27aa494882960cb2ff751b6a98425fbe0256fa0ae9d2d93c2584aa4e70890b2",
+          "lastAppliedAt": "2026-11-07T15:50:07.743Z",
+          "lastReadAt": "2026-11-07T16:01:18.843Z"
+        },
+        {
+          "componentKey": "memory_tools",
+          "targetLabel": "~/.codex/config.toml",
+          "ownershipSelector": "mcp_servers.tidemind-eb_74049455474d4440",
+          "projectionVersion": "1",
+          "selectorSchemaVersion": "1",
+          "artifactState": "healthy",
+          "ownedHash": "f4216a1fcf3b51dc279de8884dc0e4a50f17d30443b39bcaaf7f5094e685fced",
+          "observedHash": "f4216a1fcf3b51dc279de8884dc0e4a50f17d30443b39bcaaf7f5094e685fced",
+          "lastAppliedAt": "2026-11-07T15:50:07.743Z",
+          "lastReadAt": "2026-11-07T16:02:11.771Z"
+        }
+      ]
+    }
+  },
+  "userEditPreserved": true
+}
