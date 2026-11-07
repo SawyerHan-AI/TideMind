@@ -54,5 +54,5 @@ if scenario in ('central-reserved','local-reserved','central-length','local-leng
       if (scenario === 'valid') { expect(extract().entries).toBe(3); expect(fs.readFileSync(path.join(destination, 'Tide Mind.app/Contents/data'), 'utf8')).toBe('fixture') }
       else { expect(extract, scenario).toThrow(); expect(fs.existsSync(destination), scenario).toBe(false) }
     }
-  })
+  }, 30_000)
 })

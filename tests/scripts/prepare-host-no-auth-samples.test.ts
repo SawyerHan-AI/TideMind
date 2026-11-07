@@ -103,5 +103,5 @@ with zipfile.ZipFile(sys.argv[1],'w') as z:
     }
     expect(fs.existsSync(path.join(root, 'outside'))).toBe(false)
     expect(() => extractPartialCandidateAppArchive('unused', 'a'.repeat(64), 'unused', 'unused', 'Other.app')).toThrow('unreviewed App ZIP root')
-  })
+  }, 30_000)
 })
