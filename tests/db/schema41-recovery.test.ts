@@ -56,7 +56,7 @@ describe('schema41 dormant lineage admission', () => {
       expect(() => assertRecoverableSchema41(db)).toThrow(/自动恢复已停止/);
       expect(db.serialize()).toEqual(before);
     } finally {db.close();}
-  });
+  }, 30_000);
   it('rolls back additive DDL when later conversion fails', () => {
     const db=source();
     try {

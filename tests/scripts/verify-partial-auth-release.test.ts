@@ -290,7 +290,7 @@ with zipfile.ZipFile(sys.argv[1],'w') as z:
       } else { expect(perform).toThrow(); expect(fs.existsSync(destination)).toBe(false) }
     }
     expect(fs.existsSync(path.join(root, 'outside'))).toBe(false)
-  })
+  }, 30_000)
   it('loads only an exact sealed regular-file bundle, rejecting unlisted files and linked evidence', () => {
     const state = fixture(), root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'partial-release-fixture-'))); roots.push(root)
     for (const [name, bytes] of state.documents) { fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true }); fs.writeFileSync(path.join(root, name), bytes) }

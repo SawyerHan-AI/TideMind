@@ -172,10 +172,18 @@ export async function runDiagnosticSupervisor(): Promise<void> {
       clearTimeout(initTimer);
       let cleanupFailed = false;
       if (child) {
+        let shutdownFailed = false;
         try {
           if (!childClosed) await registry.shutdown(300);
+        } catch { shutdownFailed = true; }
+        // close starts unregister before shutdown resumes. shutdown can see a
+        // still-present group while that cleanup is awaiting descendant exit.
+        // Always join it, even when shutdown's earlier observation failed; only
+        // its settled outcome and the final group check are exit evidence.
+        try {
           if (unregister) await unregister;
           else if (childClosed) await registry.unregister(child,300);
+          else cleanupFailed = shutdownFailed;
         } catch { cleanupFailed = true; }
       }
       const groupExited = !child || (childClosed && (!child.pid || !isProcessGroupAlive(child.pid)));
