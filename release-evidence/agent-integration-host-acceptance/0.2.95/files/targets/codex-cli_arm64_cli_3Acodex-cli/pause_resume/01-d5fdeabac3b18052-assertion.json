@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 2,
+  "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+  "targetId": "codex-cli",
+  "stepId": "pause_resume",
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+  "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+  "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+  "agentId": "eb_74049455474d4440",
+  "outcome": "passed",
+  "assertionSource": "external",
+  "assertedBy": "Codex /root",
+  "observedAt": "2026-11-07T16:24:14.359Z",
+  "assertions": [
+    "The normal public pauseConnection API changed the shared Codex connection maintenance to paused and both members to disabled while the bridge continued serving. The normal resumeConnection API restored active maintenance and intent. This proves the scoped maintenance pause/resume semantics without claiming native host unloading."
+  ],
+  "activityReceipt": null
+}

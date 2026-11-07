@@ -1,0 +1,11 @@
+{
+  "observedAt": "2026-11-07T16:14:00.575487+00:00",
+  "observationMethod": "read-only isolated SQLite binding relation and actual public installation detail",
+  "relation": {
+    "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+    "bindingId": "binding_8433c83dd346f78da2bf80073257ba65821b5093693856fabd59c5dca4b061cf",
+    "canonicalAgentId": "eb_74049455474d4440",
+    "installationAgentId": "eb_eac3bb675d9b42a7",
+    "bindingGeneration": 1
+  }
+}

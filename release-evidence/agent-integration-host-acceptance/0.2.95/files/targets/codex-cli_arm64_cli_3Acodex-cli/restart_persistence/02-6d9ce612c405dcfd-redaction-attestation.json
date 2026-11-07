@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "attestedBy": "Codex /root",
+  "attestedAt": "2026-11-07T16:24:14.121Z",
+  "statement": "I verified that the evidence files contain no credentials, secrets, tokens, cookies, private keys, or authentication material.",
+  "files": [
+    {
+      "name": "restart-before.json",
+      "sha256": "d51b3d91f91b1d3b4f77b1b7f5067c54c0bd0fb73adc4a7fa5fd586a00b064e4"
+    },
+    {
+      "name": "restart-new-process.json",
+      "sha256": "1150937b7b30af7ad277a4f3aa15c77d39a1c3a4aca01115b3dcc4fa7dc39c8f"
+    },
+    {
+      "name": "restart-after.json",
+      "sha256": "68153836326298c9bab4a9b9c74a795110d37fe0040e2d2a73b59f36f971f5ea"
+    },
+    {
+      "name": "post-restart-readback.json",
+      "sha256": "0a01a2da1b84ec35af751f4903146a3a1fe66dab23ee62ca6ca0dcf8e6c6b6f0"
+    }
+  ]
+}

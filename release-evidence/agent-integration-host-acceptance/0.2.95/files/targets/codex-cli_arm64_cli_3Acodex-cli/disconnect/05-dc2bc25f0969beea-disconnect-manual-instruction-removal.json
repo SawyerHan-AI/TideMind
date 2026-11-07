@@ -1,0 +1,32 @@
+{
+  "observedAt": "2026-11-07T16:18:41.164352+00:00",
+  "method": "Followed actual product manual_file_removal instruction; exact owned hash checked and no active consumer remained",
+  "action": {
+    "kind": "manual_file_removal",
+    "componentKey": "instruction",
+    "operation": "disconnect",
+    "instruction": "Remove the Tide Mind-owned file at ~/.agents/skills/tidemind/SKILL.md, then recheck the connection.",
+    "physicalTargetLabel": "~/.agents/skills/tidemind/SKILL.md",
+    "ownedFragmentHash": "850795df439dd93ff09177fdbe0ec6442a032ee6e5163ad7ba777bdb174f4512"
+  },
+  "consumers": [
+    {
+      "artifact_id": "artifact_0e7f1ec140a34bbfc0264acf6e5c031f",
+      "installation_id": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+      "desired_state": "removal_pending",
+      "state": "removal_pending",
+      "tombstoned_at": "2026-11-07T16:15:52.176Z"
+    },
+    {
+      "artifact_id": "artifact_0e7f1ec140a34bbfc0264acf6e5c031f",
+      "installation_id": "installation_3cc7a1df-8f0b-48a6-a85c-eb7d76ed6df9",
+      "desired_state": "removed",
+      "state": "removed",
+      "tombstoned_at": "2026-11-07T16:15:35.143Z"
+    }
+  ],
+  "removedTarget": "/private/var/folders/ph/2llccqw5201_pxj9w6s9p3580000gn/T/tm095-a-9si3cxkx/home/.agents/skills/tidemind/SKILL.md",
+  "removedSha256": "850795df439dd93ff09177fdbe0ec6442a032ee6e5163ad7ba777bdb174f4512",
+  "fileAbsent": true,
+  "applyObservation": "180-second observer timed out; no second disconnect submitted; actual product state and action read back"
+}

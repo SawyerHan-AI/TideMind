@@ -1,0 +1,7 @@
+{
+  "invocationId": "cli_4f401f85-4453-47f2-87ae-d15d903d1e05",
+  "text": "TIDEMIND_CONNECTION_OK",
+  "actualModel": null,
+  "outputKind": "text",
+  "modelObservability": "The actual production result did not return a server model identifier; actualModel remains null and the requested ID is not inferred as the executed server model."
+}

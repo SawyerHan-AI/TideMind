@@ -1,0 +1,51 @@
+[
+  {
+    "observedAt": "2026-11-07T16:11:15.336Z",
+    "message": {
+      "protocolVersion": 1,
+      "lifecycleGeneration": 6,
+      "kind": "scheduler_pass_started",
+      "executionThreadId": 6
+    }
+  },
+  {
+    "observedAt": "2026-11-07T16:11:15.347Z",
+    "message": {
+      "protocolVersion": 1,
+      "lifecycleGeneration": 6,
+      "kind": "task_started",
+      "taskId": "annotate"
+    }
+  },
+  {
+    "observedAt": "2026-11-07T16:11:15.358Z",
+    "message": {
+      "protocolVersion": 1,
+      "lifecycleGeneration": 6,
+      "kind": "active_llm_task_started",
+      "taskId": "annotate",
+      "origin": "scheduler-worker",
+      "purpose": "llm",
+      "tier": "light",
+      "connectionId": "mc_f9ebf397"
+    }
+  },
+  {
+    "observedAt": "2026-11-07T16:11:34.443Z",
+    "message": {
+      "protocolVersion": 1,
+      "lifecycleGeneration": 6,
+      "kind": "task_finished",
+      "taskId": "annotate"
+    }
+  },
+  {
+    "observedAt": "2026-11-07T16:11:34.533Z",
+    "message": {
+      "protocolVersion": 1,
+      "lifecycleGeneration": 6,
+      "kind": "scheduler_pass_finished",
+      "executionThreadId": 6
+    }
+  }
+]

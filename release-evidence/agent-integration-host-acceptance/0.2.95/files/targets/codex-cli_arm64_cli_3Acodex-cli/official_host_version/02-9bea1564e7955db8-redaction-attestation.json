@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "attestedBy": "Codex /root",
+  "attestedAt": "2026-11-07T16:24:12.512Z",
+  "statement": "I verified that the evidence files contain no credentials, secrets, tokens, cookies, private keys, or authentication material.",
+  "files": [
+    {
+      "name": "target-metadata.json",
+      "sha256": "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511"
+    },
+    {
+      "name": "native-version-and-connect.json",
+      "sha256": "0cde89c393e6abf2cfecb7b98af27802304799f000cde5e25702140588be1073"
+    }
+  ]
+}

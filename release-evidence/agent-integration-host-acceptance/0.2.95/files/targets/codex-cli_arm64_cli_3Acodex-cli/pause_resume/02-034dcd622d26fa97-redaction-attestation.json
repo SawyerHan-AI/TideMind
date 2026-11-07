@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "attestedBy": "Codex /root",
+  "attestedAt": "2026-11-07T16:24:14.359Z",
+  "statement": "I verified that the evidence files contain no credentials, secrets, tokens, cookies, private keys, or authentication material.",
+  "files": [
+    {
+      "name": "pause-after.json",
+      "sha256": "2666c005faa6d42bd98de96783d37f0c3f7ba1dbec521185c593da784b16ac75"
+    },
+    {
+      "name": "resume-after.json",
+      "sha256": "5a260ebbfefb9b3025b0b4f968efd816b4f5dd3d656165b63b1afbe0bdbbc1ca"
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+  "captureNonce": "51b962131b55791c8dd21c4dd3438652e6a594829e10360f48bcc036067c4145",
+  "collectedBy": "Codex /root",
+  "normalizedAndAssertedBy": "Codex /root",
+  "normalizedAt": "2026-11-07T15:54:13.480Z",
+  "sourceFiles": [
+    {
+      "name": "raw-summary.json",
+      "bytes": 1749,
+      "sha256": "d0489d2636be73bb45a4139b850f45e5ba852631494f378aac73541e47f71b00"
+    },
+    {
+      "name": "native-wire.jsonl",
+      "bytes": 131279,
+      "sha256": "9fdd1e9bfea50d45deab93a64e741e16adec85198049e63ab4727a7c935a4068"
+    },
+    {
+      "name": "database-write-readback.json",
+      "bytes": 800,
+      "sha256": "aabede58792f4ba0cec01541fbd3fdc4f3eebf190bd7a42e881a4a377963509b"
+    },
+    {
+      "name": "agent-target-anonymous.json",
+      "bytes": 1752,
+      "sha256": "429d0c53a8578895c88fcf3d752e1dcd82fcaf67ab06936ba174650313f57511"
+    },
+    {
+      "name": "anonymous-a-paths.json",
+      "bytes": 928,
+      "sha256": "dad5f1e5c8365f76161a24f35136727ae23f9acc070b2a4f3746437f298cff46"
+    }
+  ],
+  "publicRawSha256": "8ea7b6c55e440d3e32d12c3e7d89f5a1cdf42dc913fa478c07d9e82f53415e9c",
+  "redactions": {
+    "privatePaths": 0,
+    "personalFields": 9,
+    "emails": 0
+  },
+  "redactionRule": "Original private files retained byte-for-byte. Public copy redacts account/email metadata only. Real anonymous filesystem paths, native sourcePath/run IDs, RPC/session/tool requests and synthetic product semantics remain unchanged.",
+  "observations": {
+    "nativeSessionsCompleted": 2,
+    "mcpToolResultsCompleted": 3,
+    "digestStatus": "processed",
+    "traceId": "jTESHEIVhfAcPaOlLtfdk",
+    "nodeId": "DTbyZfRbhqPHLvtRDA08K",
+    "exactQueryReadback": true,
+    "embeddingAndVectorAcceptance": "not_claimed",
+    "finalIndependentReview": "pending"
+  }
+}

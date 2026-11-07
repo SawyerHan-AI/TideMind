@@ -1,0 +1,28 @@
+{
+  "kind": "persistence",
+  "validationMode": "real_subscription",
+  "appVersion": "0.2.95",
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "captureNonce": "2e23d4bf1fc84516f5ec2205bfc3ff2606c1a8aceaa545d086ce98e2bb4aecad",
+  "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+  "binding": {
+    "provider": "codex-cli",
+    "connectionId": "mc_f9ebf397",
+    "cliPath": "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js",
+    "cliVersion": "0.157.1",
+    "cliGeneration": "7960ecc6c570f3b13131a02b31960959854b10f3bdfb0c7d08da1379011af248",
+    "scopeState": "known",
+    "scopeKey": "codex-cli:e98aacd02ddbadb88db5e7edcf52997b3f47db40c8ee1e6649c51b3f25ec4088",
+    "authEpoch": 1
+  },
+  "billingSource": "official_subscription",
+  "authMethod": "chatgpt",
+  "observedAt": "2026-11-07T16:17:37.235Z",
+  "backgroundEnabledBeforeTest": false,
+  "backgroundEnabledAfterTest": false,
+  "saved": "codex-cli/configuration-saved.json",
+  "reopened": "codex-cli/configuration-reopened.json",
+  "restarted": "codex-cli/configuration-restarted.json",
+  "authorizationBasis": "Actual before/after configuration and models.inUse were recorded around the B3 UI batch, with all tier connection IDs empty. Light and standard were explicitly selected afterwards for B6 and B5; the test action did not authorize those routes.",
+  "supportingReadbackFile": "codex-cli/test-authorization-readback.json"
+}

@@ -1,0 +1,14 @@
+{
+  "id": "cli_f4d319ab-81a3-4b64-ac53-2b08a3276bbc",
+  "connection_id": "mc_f9ebf397",
+  "provider_type": "codex-cli",
+  "account_scope": "codex-cli:e98aacd02ddbadb88db5e7edcf52997b3f47db40c8ee1e6649c51b3f25ec4088",
+  "task_id": "annotate",
+  "operation_name": "annotate",
+  "model_alias": "gpt-6-sol",
+  "actual_model": null,
+  "prompt_committed": 1,
+  "outcome": "success",
+  "started_at": "2026-11-07T16:53:02.891Z",
+  "finished_at": "2026-11-07T16:53:13.631Z"
+}

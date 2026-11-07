@@ -1,0 +1,31 @@
+{
+  "taskId": "annotate",
+  "operationName": "annotate",
+  "invocationId": "cli_36656396-8708-463e-b030-c98883e1bc83",
+  "state": "completed",
+  "resultSummary": "A real annotate Worker pass completed with a structured output and success/committed ledger. The task-isolated node refinement was observed before at 0 and after at 0.1 with an updated title.",
+  "beforeNode": {
+    "id": "ME7ioMvufxNm-jYlat1h7",
+    "title": null,
+    "content": "B33-SYNTHETIC exhibit 7c19: The release exhibit theme is violet. The fixed release marker is KITE-33 and the badge is quartz. This is a synthetic acceptance memory only.",
+    "version": 1,
+    "refinement": 0.0,
+    "heat": 1.0,
+    "archived": 0,
+    "is_superseded": 0,
+    "last_reconsolidated": null,
+    "updated": "2026-11-07T16:09:35.889Z"
+  },
+  "afterNode": {
+    "id": "ME7ioMvufxNm-jYlat1h7",
+    "title": "B33 合成验收展示的发布标识与主题",
+    "content": "B33-SYNTHETIC exhibit 7c19: The release exhibit theme is violet. The fixed release marker is KITE-33 and the badge is quartz. This is a synthetic acceptance memory only.",
+    "version": 1,
+    "refinement": 0.1,
+    "heat": 0.95,
+    "archived": 0,
+    "is_superseded": 0,
+    "last_reconsolidated": null,
+    "updated": "2026-11-07T16:11:34.446Z"
+  }
+}

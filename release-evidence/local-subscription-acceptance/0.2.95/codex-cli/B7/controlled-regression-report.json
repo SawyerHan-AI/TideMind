@@ -1,0 +1,682 @@
+{
+  "numTotalTestSuites": 10,
+  "numPassedTestSuites": 10,
+  "numFailedTestSuites": 0,
+  "numPendingTestSuites": 0,
+  "numTotalTests": 52,
+  "numPassedTests": 52,
+  "numFailedTests": 0,
+  "numPendingTests": 0,
+  "numTodoTests": 0,
+  "snapshot": {
+    "added": 0,
+    "failure": false,
+    "filesAdded": 0,
+    "filesRemoved": 0,
+    "filesRemovedList": [],
+    "filesUnmatched": 0,
+    "filesUpdated": 0,
+    "matched": 0,
+    "total": 0,
+    "unchecked": 0,
+    "uncheckedKeysByFile": [],
+    "unmatched": 0,
+    "updated": 0,
+    "didUpdate": false
+  },
+  "startTime": 1794065275802,
+  "success": true,
+  "testResults": [
+    {
+      "assertionResults": [
+        {
+          "ancestorTitles": [
+            "auth binding scope / epoch rules (design §6.1)"
+          ],
+          "fullName": "auth binding scope / epoch rules (design §6.1) first binding starts at epoch 1 with reason initial and is not reported as a change",
+          "status": "passed",
+          "title": "first binding starts at epoch 1 with reason initial and is not reported as a change",
+          "duration": 13.06758400000001,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "auth binding scope / epoch rules (design §6.1)"
+          ],
+          "fullName": "auth binding scope / epoch rules (design §6.1) re-checking the same known scope keeps the epoch (even if the auth-store signal moved)",
+          "status": "passed",
+          "title": "re-checking the same known scope keeps the epoch (even if the auth-store signal moved)",
+          "duration": 7.287583000000012,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "auth binding scope / epoch rules (design §6.1)"
+          ],
+          "fullName": "auth binding scope / epoch rules (design §6.1) scope_changed increments the epoch",
+          "status": "passed",
+          "title": "scope_changed increments the epoch",
+          "duration": 7.041125000000022,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "auth binding scope / epoch rules (design §6.1)"
+          ],
+          "fullName": "auth binding scope / epoch rules (design §6.1) scope_changed increments the epoch",
+          "status": "passed",
+          "title": "scope_changed increments the epoch",
+          "duration": 6.948082999999997,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "auth binding scope / epoch rules (design §6.1)"
+          ],
+          "fullName": "auth binding scope / epoch rules (design §6.1) method_changed increments the epoch",
+          "status": "passed",
+          "title": "method_changed increments the epoch",
+          "duration": 6.923124999999999,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "auth binding scope / epoch rules (design §6.1)"
+          ],
+          "fullName": "auth binding scope / epoch rules (design §6.1) cli_generation_changed increments the epoch",
+          "status": "passed",
+          "title": "cli_generation_changed increments the epoch",
+          "duration": 7.739833000000004,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "auth binding scope / epoch rules (design §6.1)"
+          ],
+          "fullName": "auth binding scope / epoch rules (design §6.1) unknown scope: an auth-store signal change increments the epoch; an unchanged signal does not",
+          "status": "passed",
+          "title": "unknown scope: an auth-store signal change increments the epoch; an unchanged signal does not",
+          "duration": 7.791667000000018,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "auth binding scope / epoch rules (design §6.1)"
+          ],
+          "fullName": "auth binding scope / epoch rules (design §6.1) authBindingMatches is an exact scope + epoch CAS",
+          "status": "passed",
+          "title": "authBindingMatches is an exact scope + epoch CAS",
+          "duration": 6.841833000000008,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "catalog snapshots (design §5.2 / §6)"
+          ],
+          "fullName": "catalog snapshots (design §5.2 / §6) saves a complete snapshot, bumps the revision on replacement and derives the default",
+          "status": "passed",
+          "title": "saves a complete snapshot, bumps the revision on replacement and derives the default",
+          "duration": 7.264916999999997,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "catalog snapshots (design §5.2 / §6)"
+          ],
+          "fullName": "catalog snapshots (design §5.2 / §6) discards a late response after the epoch changed (CAS) and keeps the previous snapshot",
+          "status": "passed",
+          "title": "discards a late response after the epoch changed (CAS) and keeps the previous snapshot",
+          "duration": 6.998584000000022,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "catalog snapshots (design §5.2 / §6)"
+          ],
+          "fullName": "catalog snapshots (design §5.2 / §6) a refresh failure only records the attempt and never replaces a complete snapshot",
+          "status": "passed",
+          "title": "a refresh failure only records the attempt and never replaces a complete snapshot",
+          "duration": 7.400499999999994,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "catalog snapshots (design §5.2 / §6)"
+          ],
+          "fullName": "catalog snapshots (design §5.2 / §6) a first-time refresh failure does not create a successful empty catalog",
+          "status": "passed",
+          "title": "a first-time refresh failure does not create a successful empty catalog",
+          "duration": 7.004791999999981,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "catalog snapshots (design §5.2 / §6)"
+          ],
+          "fullName": "catalog snapshots (design §5.2 / §6) corrupt items_json reads back as an empty list instead of throwing",
+          "status": "passed",
+          "title": "corrupt items_json reads back as an empty list instead of throwing",
+          "duration": 6.808000000000021,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "model observations upsert semantics"
+          ],
+          "fullName": "model observations upsert semantics success writes last_success_at; a later failure keeps it and sets last_failure_at",
+          "status": "passed",
+          "title": "success writes last_success_at; a later failure keeps it and sets last_failure_at",
+          "duration": 8.299082999999996,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "model observations upsert semantics"
+          ],
+          "fullName": "model observations upsert semantics observations are keyed by scope + epoch; listing returns current and historical epochs newest first",
+          "status": "passed",
+          "title": "observations are keyed by scope + epoch; listing returns current and historical epochs newest first",
+          "duration": 6.589875000000006,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        }
+      ],
+      "startTime": 1794065277966,
+      "endTime": 1794065278080.5898,
+      "status": "passed",
+      "message": "",
+      "name": "/workspace/ExternaBrain/tests/db/model-discovery.test.ts"
+    },
+    {
+      "assertionResults": [
+        {
+          "ancestorTitles": [
+            "checkCliEnvironment — Codex execution contract and identity"
+          ],
+          "fullName": "checkCliEnvironment — Codex execution contract and identity reads back the effective features with every --disable plus the inference overrides",
+          "status": "passed",
+          "title": "reads back the effective features with every --disable plus the inference overrides",
+          "duration": 9.226042000000007,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "checkCliEnvironment — Codex execution contract and identity"
+          ],
+          "fullName": "checkCliEnvironment — Codex execution contract and identity accepts feature stdout with stderr warnings in both phases without changing the verified contract",
+          "status": "passed",
+          "title": "accepts feature stdout with stderr warnings in both phases without changing the verified contract",
+          "duration": 2.6030000000000086,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "checkCliEnvironment — Codex execution contract and identity"
+          ],
+          "fullName": "checkCliEnvironment — Codex execution contract and identity rejects 'empty initial stdout' without accepting capability evidence from stderr",
+          "status": "passed",
+          "title": "rejects 'empty initial stdout' without accepting capability evidence from stderr",
+          "duration": 1.8010000000000161,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "checkCliEnvironment — Codex execution contract and identity"
+          ],
+          "fullName": "checkCliEnvironment — Codex execution contract and identity rejects 'unknown initial stdout row' without accepting capability evidence from stderr",
+          "status": "passed",
+          "title": "rejects 'unknown initial stdout row' without accepting capability evidence from stderr",
+          "duration": 1.139792,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "checkCliEnvironment — Codex execution contract and identity"
+          ],
+          "fullName": "checkCliEnvironment — Codex execution contract and identity rejects 'empty effective stdout' without accepting capability evidence from stderr",
+          "status": "passed",
+          "title": "rejects 'empty effective stdout' without accepting capability evidence from stderr",
+          "duration": 1.3161249999999995,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "checkCliEnvironment — Codex execution contract and identity"
+          ],
+          "fullName": "checkCliEnvironment — Codex execution contract and identity rejects 'unknown effective stdout row' without accepting capability evidence from stderr",
+          "status": "passed",
+          "title": "rejects 'unknown effective stdout row' without accepting capability evidence from stderr",
+          "duration": 1.2862090000000137,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "checkCliEnvironment — Codex execution contract and identity"
+          ],
+          "fullName": "checkCliEnvironment — Codex execution contract and identity rejects 'shell still enabled in effective stdo…' without accepting capability evidence from stderr",
+          "status": "passed",
+          "title": "rejects 'shell still enabled in effective stdo…' without accepting capability evidence from stderr",
+          "duration": 1.166374999999988,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "checkCliEnvironment — Codex execution contract and identity"
+          ],
+          "fullName": "checkCliEnvironment — Codex execution contract and identity rejects 'unreviewed residual feature in effect…' without accepting capability evidence from stderr",
+          "status": "passed",
+          "title": "rejects 'unreviewed residual feature in effect…' without accepting capability evidence from stderr",
+          "duration": 1.1880000000000166,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "checkCliEnvironment — Codex execution contract and identity"
+          ],
+          "fullName": "checkCliEnvironment — Codex execution contract and identity rejects 'nonzero initial exit with valid stdout' without accepting capability evidence from stderr",
+          "status": "passed",
+          "title": "rejects 'nonzero initial exit with valid stdout' without accepting capability evidence from stderr",
+          "duration": 1.698500000000024,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "checkCliEnvironment — Codex execution contract and identity"
+          ],
+          "fullName": "checkCliEnvironment — Codex execution contract and identity rejects 'nonzero effective exit with valid std…' without accepting capability evidence from stderr",
+          "status": "passed",
+          "title": "rejects 'nonzero effective exit with valid std…' without accepting capability evidence from stderr",
+          "duration": 1.1410829999999805,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "checkCliEnvironment — Codex execution contract and identity"
+          ],
+          "fullName": "checkCliEnvironment — Codex execution contract and identity cli generation is stable for the same binary/contract and changes with the version",
+          "status": "passed",
+          "title": "cli generation is stable for the same binary/contract and changes with the version",
+          "duration": 2.408457999999996,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "checkCliEnvironment — Codex execution contract and identity"
+          ],
+          "fullName": "checkCliEnvironment — Codex execution contract and identity blocks when an unreviewed feature stays enabled after --disable",
+          "status": "passed",
+          "title": "blocks when an unreviewed feature stays enabled after --disable",
+          "duration": 1.5015410000000315,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "checkCliEnvironment — Codex execution contract and identity"
+          ],
+          "fullName": "checkCliEnvironment — Codex execution contract and identity falls back to `login status` with an unknown scope when the metadata session fails",
+          "status": "passed",
+          "title": "falls back to `login status` with an unknown scope when the metadata session fails",
+          "duration": 735.8361249999999,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "checkCliEnvironment — Codex execution contract and identity"
+          ],
+          "fullName": "checkCliEnvironment — Codex execution contract and identity propagates not_authenticated / wrong_auth_method from account/read without falling back",
+          "status": "passed",
+          "title": "propagates not_authenticated / wrong_auth_method from account/read without falling back",
+          "duration": 1.5116669999999885,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "checkCliEnvironment — Codex execution contract and identity"
+          ],
+          "fullName": "checkCliEnvironment — Codex execution contract and identity caches a known identity only while the auth-store signal is unchanged",
+          "status": "passed",
+          "title": "caches a known identity only while the auth-store signal is unchanged",
+          "duration": 2.7626249999999573,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "checkCliEnvironment — Codex execution contract and identity"
+          ],
+          "fullName": "checkCliEnvironment — Codex execution contract and identity only macOS is supported in this release",
+          "status": "passed",
+          "title": "only macOS is supported in this release",
+          "duration": 0.13574999999991633,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "checkCliEnvironment — Claude Code"
+          ],
+          "fullName": "checkCliEnvironment — Claude Code uses auth status (legacy oauth fixture → unknown scope) and a help-stable generation",
+          "status": "passed",
+          "title": "uses auth status (legacy oauth fixture → unknown scope) and a help-stable generation",
+          "duration": 965.010417,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "authStoreSignal"
+          ],
+          "fullName": "authStoreSignal is a non-secret stat signal and null for keychain-only stores",
+          "status": "passed",
+          "title": "is a non-secret stat signal and null for keychain-only stores",
+          "duration": 0.9903750000000855,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        }
+      ],
+      "startTime": 1794065276071,
+      "endTime": 1794065277803.9905,
+      "status": "passed",
+      "message": "",
+      "name": "/workspace/ExternaBrain/tests/llm/cli/readiness.test.ts"
+    },
+    {
+      "assertionResults": [
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) pinned model with a different actual: records mismatch, background throws model_mismatch (not ambiguous), later background refused",
+          "status": "passed",
+          "title": "pinned model with a different actual: records mismatch, background throws model_mismatch (not ambiguous), later background refused",
+          "duration": 973.321291,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) a dated snapshot of the pinned id is equivalent (success)",
+          "status": "passed",
+          "title": "a dated snapshot of the pinned id is equivalent (success)",
+          "duration": 833.4821670000001,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) an explicit test whose actual matches clears the mismatch; background is then admitted",
+          "status": "passed",
+          "title": "an explicit test whose actual matches clears the mismatch; background is then admitted",
+          "duration": 723.845542,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) an explicit test with an unknown actual (null) does not clear the mismatch",
+          "status": "passed",
+          "title": "an explicit test with an unknown actual (null) does not clear the mismatch",
+          "duration": 774.1485419999999,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) a pinned background call with an unknown actual is a protocol success but no mismatch",
+          "status": "passed",
+          "title": "a pinned background call with an unknown actual is a protocol success but no mismatch",
+          "duration": 659.2055410000003,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) follow_default and alias selections resolving to another concrete model are successes",
+          "status": "passed",
+          "title": "follow_default and alias selections resolving to another concrete model are successes",
+          "duration": 769.9825000000001,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) model_unavailable on one model (explicit test) is recorded per model: other models stay admitted, connection status unchanged",
+          "status": "passed",
+          "title": "model_unavailable on one model (explicit test) is recorded per model: other models stay admitted, connection status unchanged",
+          "duration": 751.3361670000004,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) an unclassified exit 1 is recorded as unclassified_failure with a cooldown, never as model_rejected",
+          "status": "passed",
+          "title": "an unclassified exit 1 is recorded as unclassified_failure with a cooldown, never as model_rejected",
+          "duration": 643.7236670000002,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) binding epoch change before prompt commit: prompt not submitted, definite failure (not ambiguous), no observation",
+          "status": "passed",
+          "title": "binding epoch change before prompt commit: prompt not submitted, definite failure (not ambiguous), no observation",
+          "duration": 10.120457999999417,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) admission is re-checked under the lease: a mismatch landing before commit blocks submission",
+          "status": "passed",
+          "title": "admission is re-checked under the lease: a mismatch landing before commit blocks submission",
+          "duration": 9.39679199999955,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) scope unknown: background refused before any invocation; an explicit test is allowed",
+          "status": "passed",
+          "title": "scope unknown: background refused before any invocation; an explicit test is allowed",
+          "duration": 582.1305419999999,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) re-reads official auth before submission even when the DB binding is unchanged",
+          "status": "passed",
+          "title": "re-reads official auth before submission even when the DB binding is unchanged",
+          "duration": 9.832083000000239,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) does not adopt or authorize a response after an external account switch",
+          "status": "passed",
+          "title": "does not adopt or authorize a response after an external account switch",
+          "duration": 620.756625,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) never rewrites a model using another account catalog",
+          "status": "passed",
+          "title": "never rewrites a model using another account catalog",
+          "duration": 615.2256659999994,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) stops a connection archived while waiting for the final auth check",
+          "status": "passed",
+          "title": "stops a connection archived while waiting for the final auth check",
+          "duration": 9.691875000000437,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) fences an old Worker revision before prompt submission, even before drain arrives",
+          "status": "passed",
+          "title": "fences an old Worker revision before prompt submission, even before drain arrives",
+          "duration": 9.554541000001336,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) invalid model ids are refused for both purposes before spawning",
+          "status": "passed",
+          "title": "invalid model ids are refused for both purposes before spawning",
+          "duration": 7.70904199999859,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) a transient known→unknown→known scope flap (same account) must not clear a pinned mismatch",
+          "status": "passed",
+          "title": "a transient known→unknown→known scope flap (same account) must not clear a pinned mismatch",
+          "duration": 682.248458,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "runCliLLM model observations (design §5.3 / §5.4 / §7.1)"
+          ],
+          "fullName": "runCliLLM model observations (design §5.3 / §5.4 / §7.1) background model-not-found after prompt commit should pause only that model, not the whole connection",
+          "status": "passed",
+          "title": "background model-not-found after prompt commit should pause only that model, not the whole connection",
+          "duration": 582.4879579999997,
+          "failureMessages": [],
+          "meta": {},
+          "tags": []
+        }
+      ],
+      "startTime": 1794065276322,
+      "endTime": 1794065285590.488,
+      "status": "passed",
+      "message": "",
+      "name": "/workspace/ExternaBrain/tests/llm/cli/service-model-observation.test.ts"
+    }
+  ]
+}

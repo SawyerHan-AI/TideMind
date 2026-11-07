@@ -1,0 +1,183 @@
+{
+  "observedAt": "2026-11-07T16:14:50.042Z",
+  "connection": {
+    "diagnostic": {
+      "status": "waiting",
+      "reason": "awaiting_diagnostic",
+      "runId": null
+    },
+    "id": "binding:binding_8433c83dd346f78da2bf80073257ba65821b5093693856fabd59c5dca4b061cf",
+    "familyId": "codex",
+    "displayName": "Codex",
+    "installationIds": [
+      "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+      "installation_3cc7a1df-8f0b-48a6-a85c-eb7d76ed6df9"
+    ],
+    "shared": true,
+    "bindingGeneration": 1,
+    "configurationRevision": "8a53e1f2818c94ef38c28f24396c15366ada8d4a381416724bb8aeb6a949d4f0",
+    "statusGroup": "available",
+    "statusReason": "verified",
+    "components": [
+      {
+        "key": "instruction",
+        "state": "configured",
+        "configurationVerified": true,
+        "configurationFingerprint": "ef5d1a830847338f6cb9a909635b2feba5e1bd0f2d740b576652324c1da8e9a4",
+        "configurationAppliedAt": "2026-11-07T16:00:20.855Z",
+        "hostRecognitionVerified": false,
+        "hostRecognitionRejected": false,
+        "hostRecognitionObservedAt": "2026-11-07T16:10:05.626Z",
+        "implementationTypes": [
+          "skill"
+        ],
+        "targetLabel": "~/.agents/skills/tidemind/SKILL.md",
+        "lastVerifiedAt": "2026-11-07T16:11:56.198Z"
+      },
+      {
+        "key": "memory_tools",
+        "state": "verified",
+        "configurationVerified": true,
+        "configurationFingerprint": "e58facc13830d29136afe8a5368da007a32b40f33396141a502ce32350edcea4",
+        "configurationAppliedAt": "2026-11-07T15:49:49.962Z",
+        "hostRecognitionVerified": false,
+        "hostRecognitionRejected": false,
+        "hostRecognitionObservedAt": null,
+        "implementationTypes": [
+          "mcp"
+        ],
+        "targetLabel": "~/.codex/config.toml",
+        "lastVerifiedAt": "2026-11-07T15:53:34.253Z"
+      },
+      {
+        "key": "lifecycle",
+        "state": "verified",
+        "configurationVerified": true,
+        "configurationFingerprint": "e5e826aaf3d279af163698c71b6a20342521e7173f9273ed227e0796cf953b8a",
+        "configurationAppliedAt": "2026-11-07T15:50:07.741Z",
+        "hostRecognitionVerified": true,
+        "hostRecognitionRejected": false,
+        "hostRecognitionObservedAt": "2026-11-07T16:06:15.238Z",
+        "implementationTypes": [
+          "hook"
+        ],
+        "targetLabel": "~/.codex/hooks.json",
+        "lastVerifiedAt": "2026-11-07T15:55:40.433Z"
+      }
+    ],
+    "memoryCallsVerified": true,
+    "maintenance": "active",
+    "intentRevision": 2,
+    "intentState": "active",
+    "actionInstallationIds": [],
+    "issue": null,
+    "attentionReason": null,
+    "lastRealUseAt": "2026-11-07T15:55:40.433Z"
+  },
+  "preview": {
+    "planHash": "789bab34fe61ed5b9a6cc43e4f21acf39f92f6aea5e16c20236dc3dbc33d4ca0",
+    "connectionId": "binding:binding_8433c83dd346f78da2bf80073257ba65821b5093693856fabd59c5dca4b061cf",
+    "operation": "disconnect",
+    "installations": [
+      {
+        "installationId": "installation_3cc7a1df-8f0b-48a6-a85c-eb7d76ed6df9",
+        "displayName": "Desktop",
+        "desiredCapability": 0,
+        "componentKeys": [
+          "instruction",
+          "lifecycle",
+          "memory_tools"
+        ],
+        "nativePermissions": [],
+        "hostVersion": "26.1103.41825",
+        "targets": [
+          {
+            "componentKey": "instruction",
+            "action": "remove",
+            "scope": "user",
+            "targetLabel": "~/.agents/skills/tidemind/SKILL.md",
+            "risk": "low",
+            "commandCategory": "file_write",
+            "reversible": false
+          },
+          {
+            "componentKey": "lifecycle",
+            "action": "remove",
+            "scope": "user",
+            "targetLabel": "~/.codex/hooks.json",
+            "risk": "low",
+            "commandCategory": "file_write",
+            "reversible": false
+          },
+          {
+            "componentKey": "memory_tools",
+            "action": "remove",
+            "scope": "user",
+            "targetLabel": "~/.codex/config.toml",
+            "risk": "low",
+            "commandCategory": "file_write",
+            "reversible": false
+          }
+        ],
+        "requiredUserActions": [],
+        "requiredUserActionDetails": [],
+        "diagnostics": [
+          "shared_document_consumer_detach"
+        ],
+        "optionalComponentKeys": [
+          "lifecycle"
+        ]
+      },
+      {
+        "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+        "displayName": "CLI",
+        "desiredCapability": 0,
+        "componentKeys": [
+          "instruction",
+          "lifecycle",
+          "memory_tools"
+        ],
+        "nativePermissions": [],
+        "hostVersion": "0.157.1",
+        "targets": [
+          {
+            "componentKey": "instruction",
+            "action": "remove",
+            "scope": "user",
+            "targetLabel": "~/.agents/skills/tidemind/SKILL.md",
+            "risk": "low",
+            "commandCategory": "file_write",
+            "reversible": false
+          },
+          {
+            "componentKey": "lifecycle",
+            "action": "remove",
+            "scope": "user",
+            "targetLabel": "~/.codex/hooks.json",
+            "risk": "low",
+            "commandCategory": "file_write",
+            "reversible": false
+          },
+          {
+            "componentKey": "memory_tools",
+            "action": "remove",
+            "scope": "user",
+            "targetLabel": "~/.codex/config.toml",
+            "risk": "low",
+            "commandCategory": "file_write",
+            "reversible": false
+          }
+        ],
+        "requiredUserActions": [],
+        "requiredUserActionDetails": [],
+        "diagnostics": [
+          "shared_document_consumer_detach"
+        ],
+        "optionalComponentKeys": [
+          "lifecycle"
+        ]
+      }
+    ],
+    "expiresAt": "2026-11-07T16:29:50.035Z"
+  }
+}

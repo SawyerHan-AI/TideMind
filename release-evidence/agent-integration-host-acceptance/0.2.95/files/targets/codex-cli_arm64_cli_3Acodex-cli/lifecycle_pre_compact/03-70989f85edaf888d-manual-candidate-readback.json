@@ -1,0 +1,52 @@
+{
+  "exporterVersion": 1,
+  "evidenceClass": "real_host",
+  "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+  "targetMetadata": {
+    "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+    "targetId": "codex-cli",
+    "hostVersion": "0.157.1",
+    "distribution": {
+      "distributionId": "cli:codex-cli",
+      "packageProvenance": "npm_metadata:@openai/codex",
+      "artifactReceiptSha256": "3d8d74f9fba91d4d6d3833ad316e973049924171ae2c80f6da8845d63e2d7a33",
+      "portableArtifactFingerprint": "2cc4dbdbfe682adb72037421d5a7e4436159523ab2900ffbfc954aa51ab64c4d",
+      "rawExecutableSha256": "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+      "rawExecutableSizeBytes": 8790,
+      "executableSha256": "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+      "executableSizeBytes": 8790,
+      "distributionSha256": "715049a46d8c2c455a845168be40970e0c0c2f40dac06ec0f95bd659d01e8976",
+      "distributionSizeBytes": 328965476
+    },
+    "environment": {
+      "platform": "darwin",
+      "architecture": "arm64",
+      "processArchitecture": "arm64",
+      "hardwareArchitecture": "arm64",
+      "translationMode": "not_translated",
+      "osVersion": "26.6.2",
+      "hostIdentitySha256": "c3506661214caa5b3ec3ebfb066a6d806c8a511181e4a8121cadca84657b4d75"
+    },
+    "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+    "agentId": "eb_74049455474d4440",
+    "codexContextRestore": {
+      "schemaVersion": 1,
+      "captureNonce": "51b962131b55791c8dd21c4dd3438652e6a594829e10360f48bcc036067c4145",
+      "scopeKey": "codex_context_restore:v1:ac589456d6d69e07302ec05c2b531eb4f1c55e29c5ac93ed259ae07a1753a563",
+      "generationSha256": "83ad99671b39f5aa241c58c8d57831dd2132d9f6532b4e5c74501cc3dc04ce79",
+      "sessionIdSha256": "76529ce44eaf0fb6494d1b76b2bb0681f9288db6da71662d8cc13a595b5bbf85",
+      "pendingRevision": 1,
+      "deliveredRevision": 1,
+      "deliveredTurnIdHash": "cee3d08ea52a43b807feec8cd0d687f95983dafcc021a5defffbe4e05fdf8286",
+      "updatedAt": 1794066875626,
+      "expiresAt": 1794671675626,
+      "hookSourcePathSha256": "3196c05e2edded3e9028c7bf1f5e8b69e8410e8522c7c998e98897fc70cb6e8d",
+      "hookDefinitionSha256": "a27aa494882960cb2ff751b6a98425fbe0256fa0ae9d2d93c2584aa4e70890b2",
+      "upsScriptSha256": "e92c5ace30920b99d5a9a9743978e2a2c2515809e1d4e4fe0ec6e4b65e2e0085"
+    }
+  },
+  "exportedAt": "2026-11-07T15:54:46.267Z",
+  "exportHash": "6989482b98fc2d5c70e9daa080b13987b02ec493bedc3f92c4b8f949e4fdb8c0"
+}

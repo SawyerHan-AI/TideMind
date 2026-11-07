@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "attestedBy": "Codex /root",
+  "attestedAt": "2026-11-07T16:24:14.539Z",
+  "statement": "I verified that the evidence files contain no credentials, secrets, tokens, cookies, private keys, or authentication material.",
+  "files": [
+    {
+      "name": "recovery-controlled-missing.json",
+      "sha256": "3eba1a43ba2fc6d144cfbff5c1a0677d03915ba5b1641c915e47a574067441cb"
+    },
+    {
+      "name": "recovery-after-observation-timeout.json",
+      "sha256": "041f765532c912221e934b15a1216c0ac90c01f81f3cf2643bb909873860fc5d"
+    },
+    {
+      "name": "recovery-completed.json",
+      "sha256": "4e41b9c24cbc4dcba674b9db0f333fa0fcc3971aca4c1db82d5e9873ec7d9cbe"
+    }
+  ]
+}

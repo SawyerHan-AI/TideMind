@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 2,
+  "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+  "targetId": "codex-cli",
+  "stepId": "codex_context_restore_auto",
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+  "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+  "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+  "agentId": "eb_74049455474d4440",
+  "outcome": "passed",
+  "assertionSource": "external",
+  "assertedBy": "Codex /root native proof verification",
+  "observedAt": "2026-11-07T15:55:40.538Z",
+  "assertions": [
+    "The frozen native proof validator verified codex_context_restore_auto against the exact signed candidate, current capture and isolated target."
+  ],
+  "activityReceipt": null,
+  "codexContextRestore": {
+    "schemaVersion": 1,
+    "trigger": "auto",
+    "sessionId": "01a1b6b8-9e89-7713-bec2-4fe2804aafae",
+    "restoreTurnId": "01a1b6b8-b756-7c83-b0d6-a74a2784d775",
+    "metadataExportSha256": "c80d1dc3d7bfecad7a8cdde29802b3a84567e4fadab8af8c350e272f3e8df035",
+    "nativeNotificationsSha256": "f7f0159841ce7da9121ca7096e1ab3596ad6ab97149832afd511fa1d0ba617cc",
+    "rolloutSha256": "29d081b9eed24e6426344bffee718fc78d3bd393b0a40edb12923428cc65a85b",
+    "postCompactInputSha256": "043e1c13d88ba2b0203b2bfd006f43a4a268fe0d92d80d983593ca9de927ca00",
+    "postCompactRunId": "post-compact:1:/private/var/folders/ph/2llccqw5201_pxj9w6s9p3580000gn/T/tm095-a-9si3cxkx/home/.codex/hooks.json",
+    "restoreRunId": "user-prompt-submit:4:/private/var/folders/ph/2llccqw5201_pxj9w6s9p3580000gn/T/tm095-a-9si3cxkx/home/.codex/hooks.json"
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+  "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+  "agentId": "eb_74049455474d4440",
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+  "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+  "hostVariant": "codex-cli",
+  "hostVersion": "0.157.1",
+  "validationMode": "real_model",
+  "modelSource": "official_subscription",
+  "modelId": "gpt-6-sol",
+  "rawTranscriptSha256": "8ea7b6c55e440d3e32d12c3e7d89f5a1cdf42dc913fa478c07d9e82f53415e9c",
+  "sessions": [
+    {
+      "id": "01a1b6b6-abc1-7e31-bced-77828dd572e9",
+      "startedAt": "2026-11-07T15:53:07.351Z",
+      "endedAt": "2026-11-07T15:53:23.162Z",
+      "calls": [
+        {
+          "tool": "brain_prepare",
+          "request": {
+            "tool": "brain_prepare",
+            "detail_level": "brief",
+            "hint": "Synthetic Tide Mind acceptance test for project TM095_A_51b962131b55791c"
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\n  \"profile\": {\n    \"text\": \"外脑刚刚启动，还没有记忆。\",\n    \"generated_at\": \"2026-11-07T15:53:17.278Z\"\n  },\n  \"keystones\": [],\n  \"tags\": [],\n  \"crystals\": {\n    \"highlighted\": [],\n    \"others\": []\n  },\n  \"recent\": [],\n  \"guidance\": \"外脑刚启动，请积极使用 brain_digest 存储本次对话中的关键决策、想法和发现。\\n当前记忆较少，向量搜索尚未激活。请持续积累记忆。\\n每次响应用户后，使用 brain_digest 记录本轮交互中的实质内容。\"\n}"
+              }
+            ],
+            "structuredContent": null,
+            "_meta": null
+          },
+          "observedAt": "2026-11-07T15:53:17.290Z"
+        },
+        {
+          "tool": "brain_digest",
+          "request": {
+            "async": false,
+            "intent": "new",
+            "source": {
+              "session": "01a1b6b6-abc1-7e31-bced-77828dd572e9",
+              "tool": "brain_digest"
+            },
+            "content": "Project TM095_A_51b962131b55791c: the observatory door color is violet; the assigned test badge is IRIS-9271."
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\n  \"status\": \"processed\",\n  \"trace_id\": \"jTESHEIVhfAcPaOlLtfdk\",\n  \"created_nodes\": [\n    {\n      \"id\": \"DTbyZfRbhqPHLvtRDA08K\",\n      \"content\": \"Project TM095_A_51b962131b55791c: the observatory door color is violet; the assigned test badge is IRIS-9271.\",\n      \"type\": \"fact\"\n    }\n  ]\n}"
+              }
+            ],
+            "structuredContent": null,
+            "_meta": null
+          },
+          "observedAt": "2026-11-07T15:53:20.447Z"
+        }
+      ]
+    },
+    {
+      "id": "01a1b6b6-ed53-7472-8d33-79befe0b4dae",
+      "startedAt": "2026-11-07T15:53:24.124Z",
+      "endedAt": "2026-11-07T15:53:36.308Z",
+      "calls": [
+        {
+          "tool": "brain_recall",
+          "request": {
+            "query": "TM095_A_51b962131b55791c",
+            "mode": "detail",
+            "context": "Retrieve the previously stored test project memory for this isolated acceptance session; report its exact fact and node ID."
+          },
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "{\n  \"exact_matches\": [\n    {\n      \"id\": \"DTbyZfRbhqPHLvtRDA08K\",\n      \"type\": \"fact\",\n      \"title\": \"Project TM095_A_51b9…\",\n      \"content\": \"Project TM095_A_51b962131b55791c: the observatory door color is violet; the assigned test badge is IRIS-9271.\",\n      \"maturity\": {\n        \"heat\": 0.5,\n        \"refinement\": 0,\n        \"connectivity\": 0,\n        \"independence\": 0\n      },\n      \"links\": [],\n      \"source_ref\": \"stream/2026-11-07.md#s-235320427-cpeivsJR6kKe\"\n    }\n  ],\n  \"related_matches\": [],\n  \"diagnostics\": {\n    \"exact_count\": 1,\n    \"related_count\": 0\n  },\n  \"nodes\": [\n    {\n      \"id\": \"DTbyZfRbhqPHLvtRDA08K\",\n      \"type\": \"fact\",\n      \"title\": \"Project TM095_A_51b9…\",\n      \"content\": \"Project TM095_A_51b962131b55791c: the observatory door color is violet; the assigned test badge is IRIS-9271.\",\n      \"maturity\": {\n        \"heat\": 0.5,\n        \"refinement\": 0,\n        \"connectivity\": 0,\n        \"independence\": 0\n      },\n      \"links\": [],\n      \"source_ref\": \"stream/2026-11-07.md#s-235320427-cpeivsJR6kKe\"\n    }\n  ],\n  \"mode\": \"detail\",\n  \"summary\": \"找到 1 条相关记忆（1 fact），主题包括 Project TM095_A_51b9…\"\n}"
+              }
+            ],
+            "structuredContent": null,
+            "_meta": null
+          },
+          "observedAt": "2026-11-07T15:53:34.258Z"
+        }
+      ]
+    }
+  ]
+}

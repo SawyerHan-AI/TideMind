@@ -1,0 +1,292 @@
+{
+  "schemaVersion": 1,
+  "evidenceClass": "real_subscription",
+  "appVersion": "0.2.95",
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "requirementsSha256": "648635abe48129d671eb014530c319d89142212989fa0bc6761569b682471e43",
+  "captureNonce": "2e23d4bf1fc84516f5ec2205bfc3ff2606c1a8aceaa545d086ce98e2bb4aecad",
+  "captureCreatedAt": "2026-11-07T16:00:05.754Z",
+  "collectedBy": "sol_merge_connections",
+  "reviewedBy": "codex-independent-final-reviewer:/root/b_acceptance_final_review",
+  "reviewedAt": "2026-11-07T17:01:18.136Z",
+  "candidateAppsByArchitecture": {
+    "arm64": {
+      "version": "0.2.95",
+      "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+      "bundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+      "executableSha256": "394e63fe616d4aae48f4d3a65063d55e5c64ff27431cbf0d808905c9e2a43f3e",
+      "teamId": "Z4U232GXH5",
+      "signingIdentity": "Developer ID Application: sawyer han (Z4U232GXH5)",
+      "cdhash": "c8d9c7eea0d6c1d55787aaa9402197a0fb063ee7"
+    }
+  },
+  "deferredProviders": [
+    "claude-cli"
+  ],
+  "providers": [
+    {
+      "provider": "codex-cli",
+      "binding": {
+        "provider": "codex-cli",
+        "connectionId": "mc_f9ebf397",
+        "cliPath": "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js",
+        "cliVersion": "0.157.1",
+        "cliGeneration": "7960ecc6c570f3b13131a02b31960959854b10f3bdfb0c7d08da1379011af248",
+        "scopeState": "known",
+        "scopeKey": "codex-cli:e98aacd02ddbadb88db5e7edcf52997b3f47db40c8ee1e6649c51b3f25ec4088",
+        "authEpoch": 1
+      },
+      "steps": {
+        "B1": "codex-cli/B1.json",
+        "B2": "codex-cli/B2.json",
+        "B3": "codex-cli/B3.json",
+        "B4": "codex-cli/B4.json",
+        "B5": "codex-cli/B5.json",
+        "B6": "codex-cli/B6.json",
+        "B7": "codex-cli/B7.json"
+      }
+    }
+  ],
+  "files": [
+    {
+      "path": "codex-cli/B1.json",
+      "bytes": 949,
+      "sha256": "5149420e954c7f7ad29e5293f8defcac6bd426d6d9e7b3852b6ea2d3b6a92e5a"
+    },
+    {
+      "path": "codex-cli/B2.json",
+      "bytes": 1100,
+      "sha256": "16f7f086b3bbfd010c52281fe96193bc1ab3dba77a89cb65b370c8d17948612f"
+    },
+    {
+      "path": "codex-cli/B3-default.invocation.json",
+      "bytes": 1691,
+      "sha256": "60c3c7bcd2f3425ca5bcb7af904c511a8a14e9791cb50d149efd1dd2bc385dc3"
+    },
+    {
+      "path": "codex-cli/B3-default.ledger.json",
+      "bytes": 466,
+      "sha256": "99eb7af6370b6efd6e140bd8beabd1487fb9a05f80d04b389ad5812a12b43b7a"
+    },
+    {
+      "path": "codex-cli/B3-default.output.json",
+      "bytes": 338,
+      "sha256": "149b9fa48943e71e1a533be386d68fdbebc12149e4a6846516b512bd526277b4"
+    },
+    {
+      "path": "codex-cli/B3-gpt-6-sol.invocation.json",
+      "bytes": 1699,
+      "sha256": "413d63e2284bd4903eaa9d7fae6929720d2440efe96d61455a51188bc5dec214"
+    },
+    {
+      "path": "codex-cli/B3-gpt-6-sol.ledger.json",
+      "bytes": 468,
+      "sha256": "410faab474932873599e2e74b3a5b05afa3231a65413687dba3ee9f4e76f3a1e"
+    },
+    {
+      "path": "codex-cli/B3-gpt-6-sol.output.json",
+      "bytes": 338,
+      "sha256": "6b535152632f231a58b76c1565f1339a207414d0939f82c91447cadfd85bc453"
+    },
+    {
+      "path": "codex-cli/B3.json",
+      "bytes": 1157,
+      "sha256": "a39166f4c9bd4a5ad724c6bb5a187ea5ddc9c663c4cc27ecfd682bd774afe860"
+    },
+    {
+      "path": "codex-cli/B4.json",
+      "bytes": 1455,
+      "sha256": "1267114d94b49675c173c5a3cefcf4373f770f5af69c2efb7622148868beb3a5"
+    },
+    {
+      "path": "codex-cli/B5.invocation.json",
+      "bytes": 1641,
+      "sha256": "cebabca682d992489d337ca4b1ad3da808db3af6e6676f1caa933a200f8340fa"
+    },
+    {
+      "path": "codex-cli/B5.json",
+      "bytes": 1311,
+      "sha256": "05a17eb4f88cd7b7cfb8e6c617d31c9b0228196a4020d17d89cb0f16b0513317"
+    },
+    {
+      "path": "codex-cli/B5.ledger.json",
+      "bytes": 466,
+      "sha256": "dbd0fe821308be861622cd2da769a6a9809daef96aef400cc696f507f595ae5c"
+    },
+    {
+      "path": "codex-cli/B5.output.json",
+      "bytes": 753,
+      "sha256": "e7118473386b612e599294d44c7dcc68346953737ebd7bd41368b1c12aca22b3"
+    },
+    {
+      "path": "codex-cli/B5.result.json",
+      "bytes": 1369,
+      "sha256": "3db7271d8223e9dc47667ad2a36c6b8b0fcbf9edc98b70eb1665e723afecc70e"
+    },
+    {
+      "path": "codex-cli/B6.invocation.json",
+      "bytes": 1642,
+      "sha256": "05e310c2ce23d1d0e4422ac429f91257f3434d88fff8118dd13c9d9293a0cd61"
+    },
+    {
+      "path": "codex-cli/B6.json",
+      "bytes": 1444,
+      "sha256": "86c4a361803b3af3a80ba0dbac4f30360a0c8e3b433d7a83350a991e9300070b"
+    },
+    {
+      "path": "codex-cli/B6.ledger.json",
+      "bytes": 467,
+      "sha256": "bb42fd91e4f0aa4b9666cd0427af816a7a7c9e2e703e2f87fc35b1b53b5b77dc"
+    },
+    {
+      "path": "codex-cli/B6.output.json",
+      "bytes": 750,
+      "sha256": "9fee2b4f7757c290ab113ec5ebefaaaccc3cbd3a0d7491b85ce01f599eaeeb34"
+    },
+    {
+      "path": "codex-cli/B6.result.json",
+      "bytes": 1284,
+      "sha256": "7dae2b4f66f593567ab80fc2044008c3d3728877ea253891b7a965f475a6ffe4"
+    },
+    {
+      "path": "codex-cli/B6.worker-events.json",
+      "bytes": 1135,
+      "sha256": "26246907c15b904b6197281e8e7513173ac6e30a09f3f5792b30e3cc04ac9a31"
+    },
+    {
+      "path": "codex-cli/B7.json",
+      "bytes": 5824,
+      "sha256": "547cfb633b3b42d40c5d992ebc3b416410a0eb00d68c00ad5cba1ecddc3b22aa"
+    },
+    {
+      "path": "codex-cli/B7/account_switch/invocation.json",
+      "bytes": 1677,
+      "sha256": "273324cf6194caa9d4b01740e9323470cb6a030a6b999b82213419144954951d"
+    },
+    {
+      "path": "codex-cli/B7/account_switch/ledger.json",
+      "bytes": 467,
+      "sha256": "1b758b514b47de977903ef8de42cffa5b24d19104dc7e7565b1b3ef8ae7bb6c1"
+    },
+    {
+      "path": "codex-cli/B7/account_switch/output.json",
+      "bytes": 693,
+      "sha256": "655d141cb726135767d95d32e7febe4ee516a78a823199810c36b7eb50410602"
+    },
+    {
+      "path": "codex-cli/B7/account_switch/regression.json",
+      "bytes": 208,
+      "sha256": "c2c384494ef949bc1cc9a75bf144e5b81be664783ecd74ca76f7a1f88eb82d97"
+    },
+    {
+      "path": "codex-cli/B7/catalog_expiry/invocation.json",
+      "bytes": 1677,
+      "sha256": "e6b53913e4f8e76ad0b3b69210f038c70efe6418b0cbcfea71fd9b3075d923fe"
+    },
+    {
+      "path": "codex-cli/B7/catalog_expiry/ledger.json",
+      "bytes": 467,
+      "sha256": "307eb4fcf82588933c79af691e7fbcd302a25a6c7f2794c27f07f20d69606636"
+    },
+    {
+      "path": "codex-cli/B7/catalog_expiry/output.json",
+      "bytes": 485,
+      "sha256": "7fc76ef93ad05183be9d02bfb8cd37c574041461e7e27b8167950fd790192e64"
+    },
+    {
+      "path": "codex-cli/B7/catalog_expiry/transition.json",
+      "bytes": 2219,
+      "sha256": "7eed24e34876ab1527aa2f2cf26dd750e4e6e1200b3dd10836cd56244dfde76a"
+    },
+    {
+      "path": "codex-cli/B7/cli_change/invocation.json",
+      "bytes": 1665,
+      "sha256": "f0372744c5036ce2cc6a3c2346aae1bd48a524b1b60d66de3591c5f98cbe7012"
+    },
+    {
+      "path": "codex-cli/B7/cli_change/ledger.json",
+      "bytes": 467,
+      "sha256": "7d8f243ce2a9dc1d184cb017cb2e728a2694d7fdcbe30171d69692722ec221cd"
+    },
+    {
+      "path": "codex-cli/B7/cli_change/output.json",
+      "bytes": 493,
+      "sha256": "63c227edfd30dc026beb5e399fa78adf312961830a79e91d87e1d38d9ea1788e"
+    },
+    {
+      "path": "codex-cli/B7/cli_change/regression.json",
+      "bytes": 204,
+      "sha256": "2f9d620e98befc6b14e62034ea84667f870adf4a115aa2400d475865bd703b5c"
+    },
+    {
+      "path": "codex-cli/B7/controlled-regression-report.json",
+      "bytes": 29531,
+      "sha256": "c9bae7d5d0d1874fe5a873dccc9abd78b61527ea8d3fb86a89890d65ef3cc505"
+    },
+    {
+      "path": "codex-cli/B7/logout_login/invocation.json",
+      "bytes": 1727,
+      "sha256": "d3036125552082e8a25a5f1fc30290de18f4835d2d6625243f488d9fde4b0a9b"
+    },
+    {
+      "path": "codex-cli/B7/logout_login/ledger.json",
+      "bytes": 467,
+      "sha256": "ff49206cb8436bcc66f2ada9414882f35fb258617fed8e12519993f2ef1b5632"
+    },
+    {
+      "path": "codex-cli/B7/logout_login/output.json",
+      "bytes": 485,
+      "sha256": "ec2c237033a81c235619520acb6722b78eca3a3e1d2c84556ebfabddddb68ec7"
+    },
+    {
+      "path": "codex-cli/B7/logout_login/transition.json",
+      "bytes": 2702,
+      "sha256": "3495803ef10ea03e8664c71dae57f6b35861bc8d1910f0225c86a8c43c3c9a24"
+    },
+    {
+      "path": "codex-cli/B7/pause_resume/invocation.json",
+      "bytes": 1671,
+      "sha256": "de836627f5994d03ea28c8eacfed9a862eaa4b8be9cc3c37acf277c60d5d7776"
+    },
+    {
+      "path": "codex-cli/B7/pause_resume/ledger.json",
+      "bytes": 467,
+      "sha256": "4e4ce5cec8c8d7da1d2088c3b566bef153f8ad7b00235345602dd7cb2b3900e1"
+    },
+    {
+      "path": "codex-cli/B7/pause_resume/output.json",
+      "bytes": 485,
+      "sha256": "1b92061561e1784d8ae553db9880c6a85f53be2f3337390b5119ddca5db75f16"
+    },
+    {
+      "path": "codex-cli/B7/pause_resume/transition.json",
+      "bytes": 2195,
+      "sha256": "ebdddaa9e377b2f6eca922abebe5947dc31202da974da23dc82bfe3262c81ba7"
+    },
+    {
+      "path": "codex-cli/catalog-refresh-readback.json",
+      "bytes": 4985,
+      "sha256": "9ee8c96abe6de55228ece4db38d7daad43b64834ea170ae26cb607bcc1b1488f"
+    },
+    {
+      "path": "codex-cli/configuration-reopened.json",
+      "bytes": 1454,
+      "sha256": "179a6caa62303cb8f27b047f52f26c587a33985d74556b418cb256d95642483b"
+    },
+    {
+      "path": "codex-cli/configuration-restarted.json",
+      "bytes": 1454,
+      "sha256": "be37ed25dae7054dc42f84494da793a01c974674ef10b83ee9b2c298e12e1d13"
+    },
+    {
+      "path": "codex-cli/configuration-saved.json",
+      "bytes": 1454,
+      "sha256": "2692074c4f75913b241ae6345f76860f11a6d49bda011d7d842e671cdbb722b7"
+    },
+    {
+      "path": "codex-cli/environment-readback.json",
+      "bytes": 1596,
+      "sha256": "1c04c839423849e6dd55ecf294c4a4a041d34dae1b11c500b346b69b5490388e"
+    }
+  ]
+}

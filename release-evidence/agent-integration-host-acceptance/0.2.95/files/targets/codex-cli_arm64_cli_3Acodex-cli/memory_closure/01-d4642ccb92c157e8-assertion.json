@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 2,
+  "targetKey": "codex-cli:arm64:cli%3Acodex-cli",
+  "targetId": "codex-cli",
+  "stepId": "memory_closure",
+  "installationId": "installation_de65101e-9300-45ab-b0ee-47d8fe989d26",
+  "agentId": "eb_74049455474d4440",
+  "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+  "releaseContractSha256": "1399fb0afc30fbe8b2f9fed64c334b538af7a9861806e63fb4d2b469d11938b7",
+  "candidateBundleSha256": "f60d22d7c881b9a30598f7f648cd76303b8fea65cd7cdab3b242fe265f52b387",
+  "outcome": "passed",
+  "assertionSource": "external",
+  "assertedBy": "Codex /root",
+  "observedAt": "2026-11-07T15:54:13.480Z",
+  "assertions": [
+    "Two distinct real Codex CLI sessions under the confirmed ChatGPT subscription completed prepare and synchronous digest, then query/detail recall of the exact same synthetic node and full marker content. The captured read-only SQLite observation matches the digest trace, Agent, session and stored product before session two. This establishes the core memory closure; no embedding or vector acceptance is claimed."
+  ],
+  "activityReceipt": null,
+  "memoryClosure": {
+    "schemaVersion": 1,
+    "validationMode": "real_model",
+    "modelSource": "official_subscription",
+    "modelId": "gpt-6-sol",
+    "marker": "TM095_A_51b962131b55791c",
+    "transcriptSha256": "f7a860f346acf092c1d2c9276629f84592e37837f5dc8d2e76da7ceaae735dfa",
+    "rawTranscriptSha256": "8ea7b6c55e440d3e32d12c3e7d89f5a1cdf42dc913fa478c07d9e82f53415e9c",
+    "readbackSha256": "1491306f133fb5319c7d2589786150ff1c700c889b15b4444bbc55ced29c8e90"
+  }
+}

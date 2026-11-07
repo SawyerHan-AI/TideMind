@@ -1,0 +1,13 @@
+{
+  "observedAt": "2026-11-07T16:12:08.197Z",
+  "previousPid": 90453,
+  "newPid": 98207,
+  "app": "/private/var/folders/ph/2llccqw5201_pxj9w6s9p3580000gn/T/tm095-a-9si3cxkx/candidate/app/Tide Mind.app",
+  "home": "/private/var/folders/ph/2llccqw5201_pxj9w6s9p3580000gn/T/tm095-a-9si3cxkx/home",
+  "argv": [
+    "/private/var/folders/ph/2llccqw5201_pxj9w6s9p3580000gn/T/tm095-a-9si3cxkx/candidate/app/Tide Mind.app/Contents/MacOS/Tide Mind",
+    "--inspect=127.0.0.1:19401",
+    "--remote-debugging-port=19402",
+    "--user-data-dir=/private/var/folders/ph/2llccqw5201_pxj9w6s9p3580000gn/T/tm095-a-9si3cxkx/home/electron-user-data"
+  ]
+}

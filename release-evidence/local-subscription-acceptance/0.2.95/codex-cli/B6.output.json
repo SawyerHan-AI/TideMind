@@ -1,0 +1,7 @@
+{
+  "invocationId": "cli_36656396-8708-463e-b030-c98883e1bc83",
+  "text": "[\n  {\n    \"index\": 1,\n    \"specificity\": 0.9,\n    \"subjectivity\": 0.05,\n    \"actuality\": 1.0,\n    \"tags\": [\"strategy-evolution\"],\n    \"title\": \"annotate v1 间隔参数更新为 0.1\"\n  },\n  {\n    \"index\": 2,\n    \"specificity\": 0.85,\n    \"subjectivity\": 0.05,\n    \"actuality\": 0.3,\n    \"tags\": [\"synthetic-acceptance\"],\n    \"title\": \"B33 合成验收展示的发布标识与主题\"\n  }\n]",
+  "actualModel": null,
+  "outputKind": "structured",
+  "modelObservability": "The real production result did not return a server model identifier. actualModel is null; no server model identity is inferred from the requested model ID."
+}

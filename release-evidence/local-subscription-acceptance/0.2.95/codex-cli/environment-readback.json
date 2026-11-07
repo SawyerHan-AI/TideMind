@@ -1,0 +1,42 @@
+{
+  "environmentCheck": {
+    "startedAt": "2026-11-07T16:01:57.514Z",
+    "observedAt": "2026-11-07T16:02:07.268Z",
+    "sourceCommit": "33bb7d3f32f515fe06d86c44cba320ae384d3fd0",
+    "pid": 94575,
+    "expressionSha256": "09d175e6e8b8821fdacf617c1d8ba266c5de27edcb125a9b518a7b5c029c81f2",
+    "value": {
+      "status": "untested",
+      "cliPath": "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js",
+      "cliVersion": "0.157.1",
+      "authMethod": "chatgpt",
+      "capabilityStatus": "verified",
+      "scopeState": "known",
+      "scopeLabel": "unknown",
+      "catalog": {
+        "status": "refreshed",
+        "source": "codex_app_server",
+        "count": 6,
+        "fetchedAt": "2026-11-07T16:02:07.261Z",
+        "errorKind": null
+      },
+      "checkedAt": "2026-11-07T16:02:04.532Z"
+    }
+  },
+  "connectionReadback": {
+    "id": "mc_f9ebf397",
+    "provider_type": "codex-cli",
+    "status": "online",
+    "archived": 0,
+    "cli_path": "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js",
+    "cli_version": "0.157.1",
+    "auth_method": "chatgpt",
+    "environment_checked_at": "2026-11-07T16:04:51.327Z"
+  },
+  "successfulInvocationIds": [
+    "cli_4f401f85-4453-47f2-87ae-d15d903d1e05",
+    "cli_f61184be-f16f-460c-93a8-0af045cccd7a"
+  ],
+  "readinessBasis": "Initial metadata check status was untested; actual connection is online after two distinct successful committed product tests. Environment capability verified, ChatGPT auth and known scope support the ready acceptance classification.",
+  "limitation": "No actual server model ID was returned."
+}
