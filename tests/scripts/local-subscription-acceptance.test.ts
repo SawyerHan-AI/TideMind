@@ -163,12 +163,16 @@ describe('independent local subscription acceptance semantics', () => {
   it('rejects undeclared provider omission or an incomplete B matrix', () => {
     const requirements = loadSubscriptionRequirements()
     expect(requirements.appVersion).toBe('0.2.95')
-    expect(subscriptionCaptureScope(requirements)).toEqual({ providers: ['codex-cli', 'claude-cli'], deferredProviders: [] })
+    expect(subscriptionCaptureScope(requirements)).toEqual({ providers: ['codex-cli'], deferredProviders: ['claude-cli'] })
     const test = capture(); test.index.providers.pop()
+    expect(test.check).toThrow('deferred provider matrix')
+    test.index.deferredProviders = ['claude-cli']
+    expect(test.check()).toMatchObject({ providerCount: 1, stepCount: 7, deferredProviders: ['claude-cli'] })
+    test.index.providers = []
     expect(test.check).toThrow('provider matrix')
     const deferred = capture(); deferred.index.deferredProviders = ['claude-cli']
     expect(deferred.check).toThrow('deferred provider matrix')
-    expect(() => subscriptionCaptureScope({ ...loadSubscriptionRequirements('0.2.94'), appVersion: '0.2.95' }))
+    expect(() => subscriptionCaptureScope({ ...loadSubscriptionRequirements('0.2.94'), appVersion: '0.2.96' }))
       .toThrow('only valid for 0.2.94')
     const incomplete = capture(); delete incomplete.entry.steps.B6
     expect(incomplete.check).toThrow('B1-B7')

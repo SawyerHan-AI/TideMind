@@ -313,18 +313,18 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
     expect(result).toMatchObject({
       appVersion: '0.2.95',
       recordedStepCount: 0,
-      deferredTargets: [],
-      requiredRealHostTargetCount: requirements.targets.length + requirements.customTargets.length,
-      requiredDatabaseRecoveryPaths: ['observed_schema41'],
+      requiredRealHostTargetCount: requirements.targets.filter((target: { catalogId: string }) => target.catalogId === 'codex-cli').length,
+      requiredDatabaseRecoveryPaths: [],
+      migrationAcceptanceDeferral: { status: 'deferred_to_installation', execution: 'manual_after_release' },
     })
-    expect(result.requiredUpgradePaths).toHaveLength(result.targetCount * 6)
-    expect(result.requiredUpgradePaths.filter((key: string) => key.endsWith('/0.2.94'))).toHaveLength(result.targetCount)
+    expect(result.requiredUpgradePaths).toEqual([])
+    expect(result.deferredTargets).toHaveLength(result.targetCount - result.requiredRealHostTargetCount)
     const state = JSON.parse(fs.readFileSync(path.join(workspace, '.capture-state.json'), 'utf8'))
     const restartBoundTargets = state.entries.filter((target: { realHostDeferral: unknown }) => !target.realHostDeferral)
     expect(restartBoundTargets.every((target: { requiredSteps: string[] }) => (
       target.requiredSteps.includes('restart_persistence')
     ))).toBe(true)
-    expect(state).not.toHaveProperty('migrationAcceptanceDeferral')
+    expect(state.migrationAcceptanceDeferral).toMatchObject({ appVersion: '0.2.95', policyId: '0.2.95-single-user-manual-migration' })
     expect(state.upgradeFromAppVersions).toHaveLength(6)
     expect(fs.readFileSync(fakeAgentConfig)).toEqual(before)
     expect(fs.statSync(path.join(workspace, '.capture-state.json')).mode & 0o777).toBe(0o600)
@@ -761,7 +761,7 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
       evidencePaths: [evidencePath, ...paths],
     })
     expect(agentHostAcceptanceCaptureStatus(workspace)).toMatchObject({
-      requiredUpgradePaths: expect.arrayContaining([`${targetId}/0.2.94`]),
+      requiredUpgradePaths: [],
       recordedUpgradePaths: [`${targetId}/0.2.89`],
     })
     expect(() => recordAgentHostAcceptanceUpgrade({

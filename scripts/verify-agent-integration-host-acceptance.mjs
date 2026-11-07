@@ -247,10 +247,11 @@ export function loadAgentHostAcceptanceRequirements(
   const absolute = path.resolve(requirementsPath)
   const { value, bytes } = readJsonFile(absolute)
   const requirements = record(value, 'acceptance requirements')
+  const singleUserRelease = ['0.2.94', '0.2.95'].includes(requirements.appVersion)
   exactKeys(requirements, [
     'schemaVersion', 'appVersion', 'releaseMacArchitectures', 'upgradeFromAppVersions', 'stepPolicy', 'customPaths', 'customGuidedTargets',
-    ...(requirements.appVersion === '0.2.94' ? ['realHostPolicy'] : []),
-    ...(requirements.appVersion === '0.2.94' && requirements.migrationAcceptanceDeferral ? ['migrationAcceptanceDeferral'] : []),
+    ...(singleUserRelease ? ['realHostPolicy'] : []),
+    ...(singleUserRelease && requirements.migrationAcceptanceDeferral ? ['migrationAcceptanceDeferral'] : []),
   ], 'acceptance requirements')
   if (historicalAppVersion !== undefined && historicalAppVersion !== '0.2.93') throw new Error('unsupported historical acceptance version')
   const expectedSchemaVersion = historicalAppVersion === '0.2.93' ? 3 : AGENT_HOST_ACCEPTANCE_SCHEMA_VERSION
@@ -266,21 +267,21 @@ export function loadAgentHostAcceptanceRequirements(
   }
   unique(requirements.releaseMacArchitectures, 'requirements releaseMacArchitectures')
   let realHostPolicy = null
-  if (requirements.appVersion === '0.2.94') {
-    const policy = record(requirements.realHostPolicy, '0.2.94 real-host policy')
-    exactKeys(policy, ['id', 'requiredCatalogIds', 'otherCatalogs', 'customPaths', 'reason', 'desktopAcceptance'], '0.2.94 real-host policy')
-    if (policy.id !== '0.2.94-codex-only'
+  if (singleUserRelease) {
+    const policy = record(requirements.realHostPolicy, `${requirements.appVersion} real-host policy`)
+    exactKeys(policy, ['id', 'requiredCatalogIds', 'otherCatalogs', 'customPaths', 'reason', 'desktopAcceptance'], 'single-user real-host policy')
+    if (policy.id !== `${requirements.appVersion}-codex-only`
       || JSON.stringify(policy.requiredCatalogIds) !== JSON.stringify(['codex-cli'])
       || policy.otherCatalogs !== 'deferred' || policy.customPaths !== 'deferred') {
-      throw new Error('0.2.94 real-host scope must require Codex CLI and defer Desktop/other Agent/Custom validation')
+      throw new Error(`${requirements.appVersion} real-host scope must require Codex CLI and defer Desktop/other Agent/Custom validation`)
     }
-    nonEmptyString(policy.reason, '0.2.94 real-host deferral reason')
-    const desktop = record(policy.desktopAcceptance, '0.2.94 Desktop acceptance deferral')
-    exactKeys(desktop, ['status', 'releaseNotesDisclosureRequired', 'reason'], '0.2.94 Desktop acceptance deferral')
-    if (desktop.status !== 'deferred' || desktop.releaseNotesDisclosureRequired !== false) {
-      throw new Error('0.2.94 Desktop acceptance must remain explicitly deferred')
+    nonEmptyString(policy.reason, `${requirements.appVersion} real-host deferral reason`)
+    const desktop = record(policy.desktopAcceptance, `${requirements.appVersion} Desktop acceptance deferral`)
+    exactKeys(desktop, ['status', 'releaseNotesDisclosureRequired', 'reason'], `${requirements.appVersion} Desktop acceptance deferral`)
+    if (desktop.status !== 'deferred' || desktop.releaseNotesDisclosureRequired !== (requirements.appVersion === '0.2.95')) {
+      throw new Error(`${requirements.appVersion} Desktop acceptance must remain explicitly deferred with its approved disclosure`)
     }
-    nonEmptyString(desktop.reason, '0.2.94 Desktop acceptance deferral reason')
+    nonEmptyString(desktop.reason, `${requirements.appVersion} Desktop acceptance deferral reason`)
     Object.freeze(desktop)
     realHostPolicy = Object.freeze({ ...policy, requiredCatalogIds: Object.freeze([...policy.requiredCatalogIds]) })
   }
@@ -288,11 +289,11 @@ export function loadAgentHostAcceptanceRequirements(
   if (requirements.migrationAcceptanceDeferral) {
     const policy = record(requirements.migrationAcceptanceDeferral, 'migration acceptance deferral')
     exactKeys(policy, ['policyId','appVersion','audience','status','execution','scopes','reason'], 'migration acceptance deferral')
-    if (requirements.appVersion !== '0.2.94' || policy.appVersion !== '0.2.94'
-      || policy.policyId !== '0.2.94-single-user-manual-migration' || policy.audience !== 'single_user'
+    if (!singleUserRelease || policy.appVersion !== requirements.appVersion
+      || policy.policyId !== `${requirements.appVersion}-single-user-manual-migration` || policy.audience !== 'single_user'
       || policy.status !== 'deferred_to_installation' || policy.execution !== 'manual_after_release'
       || JSON.stringify(policy.scopes) !== JSON.stringify(['upgrade_matrix','observed_schema41'])) {
-      throw new Error('migration deferral is only authorized for 0.2.94 single-user installation')
+      throw new Error('migration deferral is only authorized for matching 0.2.94/0.2.95 single-user installation')
     }
     nonEmptyString(policy.reason, 'migration deferral reason')
     migrationAcceptanceDeferral = Object.freeze({ ...policy, scopes: Object.freeze([...policy.scopes]) })
@@ -350,7 +351,7 @@ export function loadAgentHostAcceptanceRequirements(
     .map(entry => Object.freeze({ ...entry, requiredComponents: Object.freeze([...entry.requiredComponents]) })))
   const enabledCatalogIds = new Set(entries.map(entry => entry.catalogId))
   if (realHostPolicy && realHostPolicy.requiredCatalogIds.some(id => !enabledCatalogIds.has(id))) {
-    throw new Error('0.2.94 required Codex catalog is missing from the release contract')
+    throw new Error(`${requirements.appVersion} required Codex catalog is missing from the release contract`)
   }
   for (const catalogId of Object.keys(stepPolicy.byCatalog)) {
     if (!enabledCatalogIds.has(catalogId)) throw new Error(`requirements catalog steps target is not enabled: ${catalogId}`)
@@ -412,13 +413,14 @@ export function loadAgentHostAcceptanceRequirements(
   })
 }
 
-/** Only the explicitly authorized 0.2.94 runtime scope; migration targets stay complete. */
+/** Explicitly authorized personal-beta runtime scope; deferred targets retain their contract. */
 export function realHostAcceptanceDeferral(requirements, target) {
   if (!requirements.realHostPolicy) return null
   const id = target.targetId ?? target.catalogId
   if (target.disposition !== 'custom' && requirements.realHostPolicy.requiredCatalogIds.includes(id)) return null
   if (target.disposition !== 'custom' && id === 'codex-desktop') return { status: 'deferred', policyId: requirements.realHostPolicy.id,
-    reason: requirements.realHostPolicy.desktopAcceptance.reason, releaseNotesDisclosureRequired: false }
+    reason: requirements.realHostPolicy.desktopAcceptance.reason,
+    releaseNotesDisclosureRequired: requirements.realHostPolicy.desktopAcceptance.releaseNotesDisclosureRequired }
   return { status: 'deferred', policyId: requirements.realHostPolicy.id, reason: requirements.realHostPolicy.reason }
 }
 
@@ -449,7 +451,8 @@ export function validateDeferredHostAcceptanceTarget(raw, expected) {
 export function upgradeTargetIdentityDigest(target, releaseContractSha256) {
   if (!target.realHostDeferral) return hostAcceptanceTargetIdentityDigest(target)
   // This is a contract surface binding, never an assertion that a real host ran.
-  return sha256Bytes(Buffer.from(JSON.stringify(['0.2.94-deferred-upgrade-contract', releaseContractSha256,
+  const contractVersion = target.realHostDeferral.policyId === '0.2.95-codex-only' ? '0.2.95' : '0.2.94'
+  return sha256Bytes(Buffer.from(JSON.stringify([`${contractVersion}-deferred-upgrade-contract`, releaseContractSha256,
     target.targetKey, target.targetId, target.sourceCatalogId ?? null, target.disposition, target.targetCapability,
     target.architecture, target.realHostDeferral])))
 }
