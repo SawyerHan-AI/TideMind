@@ -210,6 +210,19 @@ afterEach(() => {
 // ============================================================
 
 describe('processFileQueue', () => {
+  it('uses defaults when optional queue fields are explicitly undefined', async () => {
+    const files = Array.from({ length: 11 }, (_, i) => writePage(tmpDir, `default-${i}`, `- Useful note number ${i}`));
+    await processFileQueue(db, files, tmpDir, {
+      concurrency: undefined, batchSize: undefined, delayBetweenBatches: undefined,
+    });
+    expect(getImportProgress()).toMatchObject({ phase: 'done', processedFiles: 11, failedFiles: 0 });
+    for (let i = 0; i < files.length; i++) {
+      const state = getFileState(db, `pages/default-${i}.md`);
+      expect(state?.node_ids.length).toBeGreaterThan(0);
+      expect(getNode(db, state!.node_ids[0])).not.toBeNull();
+    }
+  }, 30_000);
+
   it('processes new files and creates nodes', async () => {
     const file1 = writePage(tmpDir, 'test-page', '- Block one\n- Block two');
     const file2 = writePage(tmpDir, 'another-page', '- Hello world\n- Second block');

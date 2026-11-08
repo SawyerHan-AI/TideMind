@@ -34,6 +34,7 @@ const REVIEWED_PRE_TURN_NOTICES: readonly RegExp[] = [
 ];
 
 function isReviewedPreTurnNotice(message: string): boolean {
+  if (message === '`[features.guardianv2].thread_context` is deprecated and ignored. (Thread-owned Guardian context is always enabled. Remove `thread_context` from [features.guardianv2] in config.toml, including profile overrides.)') return true;
   return REVIEWED_PRE_TURN_NOTICES.some((pattern) => pattern.test(message));
 }
 

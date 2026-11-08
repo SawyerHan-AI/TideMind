@@ -71,6 +71,16 @@ describe('Codex startup notices caused by Tide Mind isolation (real 0.156.1 smok
     { type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 1 } },
   ];
 
+  const guardian = '`[features.guardianv2].thread_context` is deprecated and ignored. (Thread-owned Guardian context is always enabled. Remove `thread_context` from [features.guardianv2] in config.toml, including profile overrides.)';
+  it('accepts only the exact reviewed guardian startup notice before the turn', () => {
+    expect(parseCodexJsonLines(lines(notice(guardian), ...completedTurn), 'default').text).toBe('OK');
+    expect(() => parseCodexJsonLines(lines(completedTurn[0], notice(guardian), ...completedTurn.slice(1)), 'default')).toThrow();
+    expect(() => parseCodexJsonLines(lines(notice(guardian + ' Unexpected change'), ...completedTurn), 'default')).toThrow();
+  });
+  it('rejects metadata fallback even when followed by successful text', () => {
+    expect(() => parseCodexJsonLines(lines(notice('Model metadata for `gpt-6.1-terra` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.'), ...completedTurn), 'gpt-6.1-terra')).toThrow();
+  });
+
   it('ignores reviewed notices that arrive before turn.started', () => {
     const result = parseCodexJsonLines(lines(
       { type: 'thread.started', thread_id: 't' },

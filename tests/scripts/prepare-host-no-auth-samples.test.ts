@@ -1,9 +1,11 @@
+import { historical095RequirementsPath, historical095ManifestPath } from '../fixtures/agent-integration/historical-host-acceptance.js'
+import * as hostVerifier from '../../scripts/verify-agent-integration-host-acceptance.mjs'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadHostNoAuthSamples, validateHostSampleArtifact, prepareHostNoAuthSamples } from '../../scripts/prepare-host-no-auth-samples.mjs'
 import { loadAgentHostAcceptanceRequirements } from '../../scripts/verify-agent-integration-host-acceptance.mjs'
 import { extractPartialCandidateAppArchive } from '../../scripts/verify-partial-auth-release.mjs'
@@ -13,7 +15,11 @@ const hash = (bytes: Buffer | string) => crypto.createHash('sha256').update(byte
 function temp() { const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'host-no-auth-samples-'))); roots.push(root); return root }
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true })) })
 
-describe('frozen no-auth Desktop sample preparation', () => {
+describe('frozen 0.2.95 no-auth Desktop sample preparation', () => {
+  beforeEach(() => {
+    const historical = loadAgentHostAcceptanceRequirements(historical095RequirementsPath, historical095ManifestPath)
+    vi.spyOn(hostVerifier, 'loadAgentHostAcceptanceRequirements').mockReturnValue(historical)
+  })
   it('binds the two Apps / three targets to the actual complete frozen ARM receipts', () => {
     const samples = loadHostNoAuthSamples()
     const requirements = loadAgentHostAcceptanceRequirements()

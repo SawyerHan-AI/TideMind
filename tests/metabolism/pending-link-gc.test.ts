@@ -24,6 +24,7 @@ vi.mock('../../src/strategy/loader.js', () => ({
 import type Database from 'better-sqlite3';
 import { setupTestDb, seedNode, seedLink } from '../helpers/test-db.js';
 import { runPendingLinkGc, pendingLinkGcGate } from '../../src/metabolism/pending-link-gc.js';
+import { recordConnectionSuccess, recoverCliConnectionHealth } from '../../src/llm/connection-health.js';
 
 let db: Database.Database;
 
@@ -151,6 +152,33 @@ describe('runPendingLinkGc', () => {
 });
 
 describe('pendingLinkGcGate', () => {
+  const scopedSuccess = () => recordConnectionSuccess(db, {
+    scopeId: 'connection:fixture', connectionId: 'mc_fixture', providerType: 'codex-cli',
+    modelAlias: 'gpt-6.1-terra', outcome: 'success',
+  });
+  it.each([null, '1', 'invalid'])('accepts business success when legacy signal is %s', legacy => {
+    if (legacy !== null) db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)').run('llm_last_success_at', legacy);
+    scopedSuccess();
+    expect(pendingLinkGcGate(db)).toBe(true);
+    expect(db.prepare('SELECT value FROM metadata WHERE key=?').get('llm_last_success_at')).toEqual(legacy === null ? undefined : { value: legacy });
+  });
+  it('uses the newer real success and never changes a failing scope', () => {
+    scopedSuccess();
+    db.prepare("UPDATE llm_connection_health SET last_success_at=?, circuit_state='open', failure_count=3, last_error_kind='quota'").run(Date.now() - 10 * 86400000);
+    db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)').run('llm_last_success_at', '1');
+    const before = db.prepare('SELECT * FROM llm_connection_health').all();
+    expect(pendingLinkGcGate(db)).toBe(false);
+    db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES(?,?)').run('llm_last_success_at', String(Date.now()));
+    expect(pendingLinkGcGate(db)).toBe(true);
+    expect(db.prepare('SELECT * FROM llm_connection_health').all()).toEqual(before);
+  });
+  it('does not mistake a successful connection check for business success', () => {
+    db.prepare("INSERT INTO llm_connection_health(scope_id,connection_id,provider_type,circuit_state,last_error_kind,last_error_at,updated_at) VALUES(?,?,?,'open','not_installed',?,?)").run('connection:fixture', 'mc_fixture', 'codex-cli', Date.now() - 1000, new Date().toISOString());
+    recoverCliConnectionHealth(db, 'mc_fixture', Date.now(), true);
+    expect(db.prepare('SELECT circuit_state,last_success_at FROM llm_connection_health').get()).toEqual({ circuit_state: 'closed', last_success_at: null });
+    expect(pendingLinkGcGate(db)).toBe(false);
+  });
+
   function setMetadata(key: string, value: string): void {
     db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)').run(key, value);
   }

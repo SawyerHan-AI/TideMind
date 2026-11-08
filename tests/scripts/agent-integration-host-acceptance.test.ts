@@ -1,6 +1,6 @@
 import { databaseMigrationFixture } from '../fixtures/agent-integration/database-migration-fixture.js'
 import { memoryClosureFixture } from '../fixtures/agent-integration/memory-closure-fixture.js'
-import { historical094RequirementsPath, writeHistorical094HostManifest } from '../fixtures/agent-integration/historical-host-acceptance.js'
+import { historical094RequirementsPath, writeHistorical094HostManifest, historical095RequirementsPath, historical095ManifestPath } from '../fixtures/agent-integration/historical-host-acceptance.js'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -191,7 +191,7 @@ function fixture(
   const contract = writeTestContract(outer, releaseMacArchitectures, Boolean(codexDataOnly) || Boolean(manualMigrationDeferral))
   if(manualMigrationDeferral){
     const version = manualMigrationDeferral === '0.2.95' ? '0.2.95' : '0.2.94'
-    const production=JSON.parse(fs.readFileSync(version === '0.2.94' ? historical094RequirementsPath : 'scripts/agent-integration-host-acceptance-requirements.json','utf8'))
+    const production=JSON.parse(fs.readFileSync(version === '0.2.94' ? historical094RequirementsPath : historical095RequirementsPath,'utf8'))
     const raw=JSON.parse(fs.readFileSync(contract.requirementsPath,'utf8'))
     Object.assign(raw,{appVersion:version,realHostPolicy:production.realHostPolicy,migrationAcceptanceDeferral:production.migrationAcceptanceDeferral})
     fs.writeFileSync(contract.requirementsPath,JSON.stringify(raw))
@@ -698,8 +698,8 @@ describe('real-host Agent Integration acceptance verifier', () => {
     expect(() => verify(built.indexPath)).toThrow(/exact release candidate apps: arm64/)
   })
 
-  it('freezes the current release to Apple Silicon without deleting host distribution architecture metadata', () => {
-    const requirements = loadAgentHostAcceptanceRequirements()
+  it('freezes the historical 0.2.95 release to Apple Silicon without deleting host distribution architecture metadata', () => {
+    const requirements = loadAgentHostAcceptanceRequirements(historical095RequirementsPath, historical095ManifestPath)
     expect(requirements.appVersion).toBe('0.2.95')
     expect(requirements.releaseMacArchitectures).toEqual(['arm64'])
     expect(requirements.targets.length).toBeGreaterThan(0)
@@ -811,7 +811,7 @@ describe('real-host Agent Integration acceptance verifier', () => {
   })
 
   it('requires the real OpenClaw matrix to prove plugin discovery, inspection, runtime, restart, and lifecycle', () => {
-    const requirements = loadAgentHostAcceptanceRequirements()
+    const requirements = loadAgentHostAcceptanceRequirements(historical095RequirementsPath, historical095ManifestPath)
     const targets = requirements.targets.filter((target: { catalogId: string }) => target.catalogId === 'openclaw-local')
     expect(targets).toHaveLength(2)
     expect(targets.every((target: { architecture: string }) => target.architecture === 'arm64')).toBe(true)
@@ -1378,8 +1378,12 @@ describe('single-user 0.2.94 migration deferral', () => {
 })
 
 describe('0.2.95 explicitly authorized personal beta', () => {
+  it('refuses to reuse historical 0.2.95 requirements for the current 0.2.96 manifest', () => {
+    expect(() => loadAgentHostAcceptanceRequirements()).toThrow('acceptance requirements app version differs from release manifest')
+  })
+
   it('requires every Codex CLI runtime step and explicitly records all deferred targets', () => {
-    const requirements = loadAgentHostAcceptanceRequirements()
+    const requirements = loadAgentHostAcceptanceRequirements(historical095RequirementsPath, historical095ManifestPath)
     expect(requirements.upgradeFromAppVersions).toEqual(['0.2.89','0.2.90','0.2.91','0.2.92','0.2.93','0.2.94'])
     expect(requirements.entries).toHaveLength(19)
     expect(requirements.customTargets).toHaveLength(5)
@@ -1400,7 +1404,7 @@ describe('0.2.95 explicitly authorized personal beta', () => {
 
   it.each(['old-policy','future-version','desktop-passed','hidden-desktop','wrong-migration-version','migration-passed'] as const)('rejects policy drift %s', mutation => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'personal-beta-policy-')); roots.push(root)
-    const raw = JSON.parse(fs.readFileSync('scripts/agent-integration-host-acceptance-requirements.json', 'utf8'))
+    const raw = JSON.parse(fs.readFileSync(historical095RequirementsPath, 'utf8'))
     if (mutation === 'old-policy') raw.realHostPolicy.id = '0.2.94-codex-only'
     if (mutation === 'future-version') raw.appVersion = '0.2.96'
     if (mutation === 'desktop-passed') raw.realHostPolicy.desktopAcceptance.status = 'passed'
@@ -1409,7 +1413,7 @@ describe('0.2.95 explicitly authorized personal beta', () => {
     if (mutation === 'migration-passed') raw.migrationAcceptanceDeferral.status = 'passed'
     const file = path.join(root, 'requirements.json')
     fs.writeFileSync(file, JSON.stringify(raw))
-    expect(() => loadAgentHostAcceptanceRequirements(file)).toThrow()
+    expect(() => loadAgentHostAcceptanceRequirements(file, historical095ManifestPath)).toThrow()
   })
 
   it('preserves signed candidate binding and mandatory Codex evidence while migrations are explicitly deferred', () => {

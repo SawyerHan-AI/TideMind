@@ -73,6 +73,10 @@ export class CodexCliAdapter implements CliAdapter {
       );
       const catalog = sanitizeCodexToolCatalog(this.options.toolCatalogJson);
       if (catalog !== this.options.toolCatalogJson) throw new CliLLMError('unsupported_version', 'Codex execution catalog is not tool-free');
+      const executionModels = (JSON.parse(catalog) as { models: { slug: string }[] }).models;
+      if (request.modelAlias !== 'default' && !executionModels.some(model => model.slug === request.modelAlias)) {
+        throw new CliLLMError('unsupported_version', 'Selected model is absent from the verified Codex execution catalog; update Codex CLI', { needsUserAction: true });
+      }
       const modelCatalogPath = runtime.createPrivateFile('model-catalog.json', catalog);
       const args = [
         'exec',

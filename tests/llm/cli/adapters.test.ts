@@ -137,6 +137,7 @@ describe('CLI adapters with fake executables', () => {
     expect(argv.at(-1)).toBe('-');
     // follow_default passes no model argument.
     expect(argv).not.toContain('-m');
+    expect(argv).not.toContain('--worktree');
     expect(argv.join(' ')).not.toContain('prompt secret');
     expect(inspection.stdin).toBe('prompt secret');
     expect(inspection.envKeys).not.toContain('ANTHROPIC_API_KEY');
@@ -160,13 +161,29 @@ describe('CLI adapters with fake executables', () => {
     const result = await adapter.run({
       ...request,
       providerType: 'codex-cli',
-      modelAlias: 'gpt-5.3-codex; echo pwned',
+      modelAlias: 'fixture',
     });
     const argv = JSON.parse(result.text).argv as string[];
     const index = argv.indexOf('-m');
     expect(index).toBeGreaterThan(-1);
-    expect(argv[index + 1]).toBe('gpt-5.3-codex; echo pwned');
+    expect(argv[index + 1]).toBe('fixture');
   }, 30_000);
+
+  it('rejects a model outside the tool-free catalog before starting a process', async () => {
+    const setupResult = await setup('codex');
+    const run = vi.spyOn(setupResult.runner, 'run');
+    const beforePromptCommit = vi.fn();
+    const adapter = new CodexCliAdapter({
+      ...setupResult,
+      toolCatalogJson: JSON.stringify({ models: [{ slug: 'fixture', priority: 0, apply_patch_tool_type: null, experimental_supported_tools: [] }] }),
+      contract: codexContract(), preflight: () => undefined,
+      hooks: { beforePromptCommit }, invocationId: () => 'missingmodel1',
+    });
+    await expect(adapter.run({ ...request, providerType: 'codex-cli', modelAlias: 'gpt-6.1-terra' }))
+      .rejects.toMatchObject({ kind: 'unsupported_version' });
+    expect(run).not.toHaveBeenCalled();
+    expect(beforePromptCommit).not.toHaveBeenCalled();
+  });
 
   it('Codex refuses a contract verified for a different CLI version', async () => {
     const setupResult = await setup('codex');

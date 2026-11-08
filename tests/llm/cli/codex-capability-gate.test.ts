@@ -151,6 +151,16 @@ describe('verifyCodexContract (effective state after --disable)', () => {
       .toThrowError(expect.objectContaining({ message: expect.stringContaining('brand_new_agent_tool') }));
   });
 
+  it('accepts reviewed noninteractive residuals while rejecting any unknown residual', () => {
+    const ev = evidence({ version: '0.167.0', featuresList: 'shell_tool stable true\nworktrees removed true\nrealtime_conversation removed true' });
+    const { disableFeatures } = planCodexContract(ev);
+    const effective = 'shell_tool stable false\nworktrees removed true\nrealtime_conversation removed true';
+    expect(verifyCodexContract(ev, disableFeatures, effective).residualFeatures)
+      .toEqual(['realtime_conversation', 'worktrees']);
+    expect(() => verifyCodexContract(ev, disableFeatures, effective + '\nnew_control_channel stable true'))
+      .toThrowError(expect.objectContaining({ kind: 'unsupported_version' }));
+  });
+
   it('ignores unreviewed names once they are effectively disabled', () => {
     const ev = evidence();
     const { disableFeatures } = planCodexContract(ev);

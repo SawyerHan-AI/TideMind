@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import crypto from 'node:crypto'
 import { load as loadYaml } from 'js-yaml'
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import { readReleaseWorkflow } from '../helpers/release-workflow.js'
 // @ts-expect-error local plain-ESM script
 import { assertLockedLocalPackagedDependencies, localPackagedMetabolismIdentity, readLocalPackagedMetabolismReceipt, validateLocalPackagedMetabolismReceipt } from '../../scripts/local-packaged-metabolism-evidence.mjs'
@@ -380,11 +380,31 @@ describe('packaged metabolism performance gate', () => {
     expect(last).not.toContain('inputs.candidate_only')
   })
 
+  // Keep this historical exception's tests independent of the product version.
+  let localFixture: string | undefined
+  function localFixtureRoot() {
+    if (localFixture) return localFixture
+    localFixture = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'local-performance-095-fixture-')))
+    fs.cpSync(path.join(repoRoot, 'scripts'), path.join(localFixture, 'scripts'), { recursive: true })
+    for (const file of ['package.json', 'package-lock.json', 'client/package.json', 'client/package-lock.json', 'client/electron-builder.yml', 'client/scripts/build-bin.mjs', 'tests/client/metabolism-worker-forced-termination.test.ts']) {
+      const target = path.join(localFixture, file)
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      fs.copyFileSync(path.join(repoRoot, file), target)
+      if (file === 'package.json' || file === 'client/package.json') {
+        const value = JSON.parse(fs.readFileSync(target, 'utf8'))
+        value.version = '0.2.95'
+        fs.writeFileSync(target, JSON.stringify(value))
+      }
+    }
+    return localFixture
+  }
+  afterAll(() => { if (localFixture) fs.rmSync(localFixture, { recursive: true, force: true }) })
+
   const sourceCommit = 'a'.repeat(40)
   const workerBytes = Buffer.from('synthetic measured Worker')
   const workerHash = crypto.createHash('sha256').update(workerBytes).digest('hex')
   function localReceipt() {
-    const identity = localPackagedMetabolismIdentity(repoRoot, sourceCommit)
+    const identity = localPackagedMetabolismIdentity(localFixtureRoot(), sourceCommit)
     const lock = JSON.parse(fs.readFileSync(path.join(repoRoot, 'client/package-lock.json'), 'utf8'))
     const asset = { bytes: workerBytes.length, sha256: workerHash }
     const measured = validResult()
@@ -421,7 +441,7 @@ describe('packaged metabolism performance gate', () => {
   ])('rejects local packaged evidence with %s', (_name, mutate, error) => {
     const receipt = localReceipt()
     mutate(receipt)
-    expect(() => validateLocalPackagedMetabolismReceipt(receipt, { root: repoRoot, sourceCommit })).toThrow(error)
+    expect(() => validateLocalPackagedMetabolismReceipt(receipt, { root: localFixtureRoot(), sourceCommit })).toThrow(error)
   })
 
   it('binds a local measurement to both the fresh Worker and the Worker in the signed App', () => {
@@ -436,7 +456,7 @@ describe('packaged metabolism performance gate', () => {
       fs.writeFileSync(worker, workerBytes)
       const evidence = localReceiptBytes()
       fs.writeFileSync(file, evidence)
-      const options = { root: repoRoot, sourceCommit, worker, app }
+      const options = { root: localFixtureRoot(), sourceCommit, worker, app }
       expect(readLocalPackagedMetabolismReceipt(file, options)).toEqual(evidence)
       fs.writeFileSync(file, evidence.toString('utf8').replace('"schemaVersion": 1', '"schemaVersion": "private extra",\n  "schemaVersion": 1'))
       expect(() => readLocalPackagedMetabolismReceipt(file, options)).toThrow(/original producer JSON/)
@@ -507,7 +527,7 @@ exec "$TEST_NODE" "$@"
           PATH: `${path.join(temp, 'bin')}:${path.dirname(process.execPath)}:/usr/bin:/bin`,
           RUNNER_TEMP: path.join(temp, 'runner'), GITHUB_ENV: gateEnvironment,
           TIDEMIND_SOURCE_COMMIT: sourceCommit, TEST_HOSTED_GATE: hostedRan,
-          TEST_NODE: process.execPath, TEST_VERIFIER: path.join(repoRoot, 'scripts/local-packaged-metabolism-evidence.mjs'),
+          TEST_NODE: process.execPath, TEST_VERIFIER: path.join(localFixtureRoot(), 'scripts/local-packaged-metabolism-evidence.mjs'),
         },
         encoding: 'utf8',
       })

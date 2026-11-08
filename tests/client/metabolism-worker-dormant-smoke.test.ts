@@ -468,7 +468,7 @@ describe('dormant metabolism Worker', () => {
     config.cloud.metabolism_enabled = false
     let resolveRpc: ((value: Array<{ sourceId: string; targetId: string; score: number; reason: string }>) => void) | null = null
     const handler = vi.fn(() => new Promise<Array<{ sourceId: string; targetId: string; score: number; reason: string }>>(resolve => { resolveRpc = resolve }))
-    const controller = new MetabolismWorkerController({ workerPath: entry, workerFactory: (workerPath, workerData) => new Worker(workerPath, { workerData }) as WorkerLike, structureHolesHandler: handler })
+    const controller = new MetabolismWorkerController({ workerPath: entry, stoppedTimeoutMs: 20, workerFactory: (workerPath, workerData) => new Worker(workerPath, { workerData }) as WorkerLike, structureHolesHandler: handler })
     const ended = new Promise<number>(resolve => controller.once('generation-ended', resolve))
     await controller.start({
       protocolVersion: 1, lifecycleGeneration: 9, startupAuthority: authority, databaseIdentity: identity,
@@ -478,6 +478,8 @@ describe('dormant metabolism Worker', () => {
     }, 'background', 'active')
     await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1), { timeout: 10_000 })
     controller.drainForRestart()
+    await new Promise(resolve => setTimeout(resolve, 60))
+    expect(controller.getState()?.lifecycle).toBe('draining')
     resolveRpc?.([{ sourceId: 'restart-node-1', targetId: 'restart-node-2', score: 0.8, reason: 'restart' }])
     await expect(ended).resolves.toBe(9)
     expect(controller.getState()).toMatchObject({ lifecycle: 'exited', stoppedSettled: true, degradationReason: null })
