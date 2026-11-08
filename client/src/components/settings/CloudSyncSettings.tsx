@@ -566,6 +566,9 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
 
 function MetabolismSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
   const { t } = useTranslation()
+  const errorMessage = useSyncErrorMessage()
+  const [metabolismError, setMetabolismError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
   // 状态来源: cloud.metabolismEnabled(持久化)。本地 toggle 只做"意图 → IPC 调用"
   const metabolismEnabled = cloud.metabolismEnabled ?? false
   const [showEnableConfirm, setShowEnableConfirm] = useState(false)
@@ -584,18 +587,28 @@ function MetabolismSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus>
   const confirmMetabolismEnable = async () => {
     setShowEnableConfirm(false)
     try {
-      await window.api.cloud.setMetabolismEnabled(true)
+      setSaving(true)
+      setMetabolismError(null)
+      const result = await window.api.cloud.setMetabolismEnabled(true)
+      if (!result.success) setMetabolismError(errorMessage(result.error ?? 'sync_error'))
     } catch (e) {
-      console.error('set metabolism enabled failed:', (e as Error).message)
+      setMetabolismError(errorMessage('sync_error'))
+    } finally {
+      setSaving(false)
     }
   }
 
   const confirmMetabolismDisable = async () => {
     setShowDisableConfirm(false)
     try {
-      await window.api.cloud.setMetabolismEnabled(false)
+      setSaving(true)
+      setMetabolismError(null)
+      const result = await window.api.cloud.setMetabolismEnabled(false)
+      if (!result.success) setMetabolismError(errorMessage(result.error ?? 'sync_error'))
     } catch (e) {
-      console.error('set metabolism disabled failed:', (e as Error).message)
+      setMetabolismError(errorMessage('sync_error'))
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -631,12 +644,13 @@ function MetabolismSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus>
           <Toggle
             enabled={metabolismEnabled}
             onChange={handleToggle}
-            disabled={dataSyncOff}
+            disabled={dataSyncOff || saving}
             label={t('settings:cloud.metabolism.title', 'Cloud Metabolism')}
           />
         }
       >
         <div className="space-y-3">
+          {metabolismError && <p role="alert" className="text-xs text-red-500">{metabolismError}</p>}
           {isProPlus ? (
             <p className="text-xs text-gray-500">
               {t('settings:cloud.metabolism.proPlusDesc', 'Powered by TideMind managed LLM. No API key needed. Metabolism runs 24/7 in the cloud.')}

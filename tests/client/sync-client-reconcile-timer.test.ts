@@ -14,6 +14,11 @@ vi.mock('electron', () => ({
   Notification: { isSupported: () => false },
 }));
 
+// 本测试只验证 reconcile timer；开关上推门禁由独立 startup gate 测试覆盖。
+vi.mock('../../client/electron/cloud/metabolism-settings.js', () => ({
+  pushCloudMetabolismEnabled: vi.fn(async () => {}),
+}));
+
 // 阻塞所有 fetch — syncOnce 内部会调 refreshTokenIfNeeded(已 mock 为 null) → 直接 offline,不发请求
 vi.mock('../../client/electron/cloud/auth-client.js', () => ({
   initAuth: vi.fn(),

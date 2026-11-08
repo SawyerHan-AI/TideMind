@@ -7,8 +7,10 @@ import { getOutboxItems, removeOutboxItem, markOutboxFailed, deadLetterOutboxIte
 import { getCloudAuth, getCloudBaseUrl, refreshTokenIfNeeded, updateCloudAuth } from './auth-client.js';
 import { getActivityState } from '../activity-state.js';
 import { pumpReembedMissing } from './reembed-pump.js';
-import { pumpUplink } from './uplink.js';
+import { cancelActiveUplink, pumpUplink } from './uplink.js';
 import { withApplyGuard } from './local-apply.js';
+import { abortActiveReconcile } from './reconcile-lock.js';
+import { pushCloudMetabolismEnabled } from './metabolism-settings.js';
 import { recomputeToGeneration } from '../../../src/metabolism/generation-decay.js';
 
 const log = createLogger('cloud-sync');
@@ -128,9 +130,27 @@ export class CloudSyncClient {
   /** Audit-3 F14:public getter,避免 getOutboxCount 用 `as any` 强转。 */
   getDb(): Database.Database { return this.db; }
 
+  private metabolismPreferencePending = false;
+
   async start(): Promise<void> {
     log.info('starting sync client');
     this.stopped = false;
+    this.metabolismPreferencePending = true;
+    try {
+      await pushCloudMetabolismEnabled();
+      this.metabolismPreferencePending = false;
+    } catch (err) {
+      this.status = 'error';
+      this.lastErrorMessage = (err as Error).message;
+      if (!this.stopped && !this.firstSyncRetryTimer) {
+        this.firstSyncRetryTimer = setTimeout(() => {
+          this.firstSyncRetryTimer = null;
+          if (!this.stopped) this.start().catch(e => log.warn(`cloud preference startup retry failed: ${(e as Error).message}`));
+        }, FIRST_SYNC_RETRY_MS);
+      }
+      throw err;
+    }
+    if (this.stopped) return;
 
     // 注册/刷新设备(fire-and-forget)。历史遗留 bug:之前从未调用,devices 表永远空。
     // 服务端已改为幂等(按 user_id + name 去重),重复调用安全。
@@ -160,6 +180,8 @@ export class CloudSyncClient {
       log.warn(`initial syncOnce failed (will retry, ws/polling still established): ${(e as Error).message}`);
       this.scheduleFirstSyncRetry();
     }
+
+    if (this.stopped) return;
 
     // 启动 WebSocket 实时通知
     // P2-NEW-G: connectWebSocket 是 async，裸调用丢 Promise 会在上游触发
@@ -222,7 +244,7 @@ export class CloudSyncClient {
     // M6 实时上行:短 interval pump 本地脏集(空时快速返回)。跟随 polling 生命周期 + activity-state,
     // idle 时随 stopPolling 一起停,避免后台空转。
     this.uplinkTimer = setInterval(
-      () => { void pumpUplink(this.db); },
+      () => { void pumpUplink(this.db, () => this.stopped); },
       UPLINK_INTERVAL_MS,
     );
   }
@@ -272,6 +294,7 @@ export class CloudSyncClient {
     // 交错写同一组 metadata / 同一进度 channel;abort 也能命中本自动实例。
     const { runExclusive } = await import('./reconcile-lock.js');
     const { Reconciler } = await import('./reconciler.js');
+    if (this.stopped) return;
     const outcome = await runExclusive(async (register) => {
       const reconciler = new Reconciler(this.db);
       register(reconciler);
@@ -297,6 +320,8 @@ export class CloudSyncClient {
 
   stop(): void {
     this.stopped = true;
+    cancelActiveUplink(this.db);
+    abortActiveReconcile();
     this.stopPolling();
     if (this.slowRetryTimer) {
       clearInterval(this.slowRetryTimer);
@@ -366,6 +391,7 @@ export class CloudSyncClient {
       }
 
       const token = await refreshTokenIfNeeded();
+      if (this.stopped) return;
       if (!token) {
         log.info('no token available, skipping ws connect');
         return;
@@ -571,6 +597,11 @@ export class CloudSyncClient {
     // 队列里;进程退出前会 drain 一次,如果不挡 stopped 就会继续往 closeClientDb
     // 之后的 db 写,日志爆"database is closed"。
     if (this.stopped) return;
+    if (this.metabolismPreferencePending) {
+      await pushCloudMetabolismEnabled();
+      if (this.stopped) return;
+      this.metabolismPreferencePending = false;
+    }
     const token = await refreshTokenIfNeeded();
     if (this.stopped) return;
     if (!token) { this.status = 'offline'; return; }
@@ -581,7 +612,7 @@ export class CloudSyncClient {
       // local_outbox 永空、pushOutbox 永远空跑。实时上行走 M6 uplink(脏集)。
       // outbox.ts/pushOutbox/server /outbox 物理删除 + UI 切 cloud_dirty 见 backlog。
       // M6:pull 前先把本地脏集实时上行,确保 pull 拿到的是上行后状态(也兜底 uplinkTimer)。
-      const uplinked = await pumpUplink(this.db);
+      const uplinked = await pumpUplink(this.db, () => this.stopped);
       if (this.stopped) return;
       const pulled = await this.pullChanges(token);
       if (this.stopped) return;
@@ -608,6 +639,7 @@ export class CloudSyncClient {
       // pump 扫全部"active 有 content 缺向量"节点,失败已在内部 swallow(无凭证/熔断时静默)。
       void pumpReembedMissing(this.db);
     } catch (e) {
+      if (this.stopped) return;
       const msg = (e as Error).message;
       this.lastErrorMessage = msg;
       // Audit-3 F13 修复:catch 入口先清 syncNotReady。之前只在 404 分支 set true,
@@ -652,6 +684,7 @@ export class CloudSyncClient {
       if (this.stopped) return;
       log.info('cloud_not_available slow-retry: probing...');
       this.syncOnce().then(() => {
+        if (this.stopped) return;
         // 如果这次成功(cloudNotAvailable 被置 false),恢复正常轮询
         if (!this.cloudNotAvailable) {
           if (this.slowRetryTimer) {
@@ -703,6 +736,7 @@ export class CloudSyncClient {
         headers: { 'Authorization': `Bearer ${token}` },
         signal: AbortSignal.timeout(SYNC_FETCH_TIMEOUT_MS),
       });
+      if (this.stopped) break;
       if (!res.ok) {
         if (res.status === 403) {
           const body = await res.json().catch(() => ({}));
@@ -713,6 +747,7 @@ export class CloudSyncClient {
         throw new Error(`Pull failed: ${res.status}`);
       }
       const data = await res.json();
+      if (this.stopped) break;
       if (data.changes.length > 0) {
         await this.cacheManager.applyChanges(data.changes, token);
         totalPulled += data.changes.length;
@@ -742,6 +777,7 @@ export class CloudSyncClient {
   }
 
   async pushOutbox(token: string): Promise<number> {
+    if (this.stopped) return 0;
     const items = getOutboxItems(this.db, 50);
     if (items.length === 0) return 0;
 
@@ -805,6 +841,8 @@ export class CloudSyncClient {
     type ItemResult = { index: number; status: 'ok' | 'skipped' | 'failed' | 'quota_exhausted'; error?: string };
     const data = await res.json().catch(() => ({ processed: 0 })) as { processed: number; results?: ItemResult[] };
 
+    if (this.stopped) return 0;
+
     let removed = 0;
     let failed = 0;
     let deadLettered = 0;
@@ -850,8 +888,9 @@ export class CloudSyncClient {
       const res = await fetch(`${getCloudBaseUrl()}/api/v1/sync/version`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (!res.ok) return;
+      if (this.stopped || !res.ok) return;
       const data = await res.json() as { decay_generation?: number; decay_base?: number; decay_damping?: number };
+      if (this.stopped) return;
       const G = Number(data.decay_generation ?? 0);
       if (G > 0) {
         // M8 参数随锚点下发(审计 HIGH):存云端 decay 参数,recomputeToGeneration 据此衰减,与云端

@@ -754,7 +754,7 @@ describe('applyCloudNodeRow — M1 下行版本防护(字段分层)', () => {
     expect(row.specificity).toBe(0.2)
   })
 
-  it('情形 3 全部派生字段同步云端', () => {
+  it('情形 3 仅与内容无关的派生字段同步云端', () => {
     const db = setupTestDb()
     const id = seedLocalEdited(db, 'local')
     applyCloudNodeRow(db, {
@@ -766,11 +766,11 @@ describe('applyCloudNodeRow — M1 下行版本防护(字段分层)', () => {
       'SELECT heat, refinement, connectivity, independence, maturity_score, is_crystal, is_keystone FROM nodes WHERE id = ?',
     ).get(id) as Record<string, number>
     expect(row.heat).toBe(0.7)
-    expect(row.refinement).toBe(0.3)
+    expect(row.refinement).toBe(0)
     expect(row.connectivity).toBe(0.6)
     expect(row.independence).toBe(0.4)
     expect(row.maturity_score).toBe(0.55)
-    expect(row.is_crystal).toBe(1)
+    expect(row.is_crystal).toBe(0)
     expect(row.is_keystone).toBe(1)
   })
 
@@ -823,5 +823,48 @@ describe('applyCloudNodeRow — M1 下行版本防护(字段分层)', () => {
     applyCloudNodeRow(db, { id: 'brand-new', content: 'fresh', created: '2026-01-01T00:00:00Z', updated: '2026-01-01T00:00:00Z' })
     const row = db.prepare('SELECT content FROM nodes WHERE id = ?').get('brand-new') as { content: string }
     expect(row.content).toBe('fresh')
+  })
+})
+
+
+describe('applyCloudNodeRow — classification follows the winning content version', () => {
+  it.each(['older-clock', 'older-edit-seq'] as const)('preserves local classification and refinement against old cloud zeroes (%s)', (conflict) => {
+    const db = setupTestDb()
+    const node = seedNode(db, { content: 'fictional locally annotated memory' })
+    db.prepare(`UPDATE nodes SET edit_seq = 3, updated = '2026-11-08T12:00:00Z',
+      refinement = 0.8, is_tag = 1, is_meta = 1, is_crystal = 1,
+      last_reconsolidated = '2026-11-07T12:00:00Z' WHERE id = ?`).run(node.id)
+    applyCloudNodeRow(db, {
+      id: node.id, content: node.content, edit_seq: conflict === 'older-clock' ? 3 : 2,
+      updated: conflict === 'older-clock' ? '2026-11-01T12:00:00Z' : '2026-11-09T12:00:00Z',
+      refinement: 0, is_tag: false, is_meta: false, is_crystal: false,
+      last_reconsolidated: null, heat: 0.4,
+    })
+    expect(db.prepare(`SELECT refinement, is_tag, is_meta, is_crystal,
+      last_reconsolidated, heat FROM nodes WHERE id = ?`).get(node.id)).toEqual({
+      refinement: 0.8, is_tag: 1, is_meta: 1, is_crystal: 1,
+      last_reconsolidated: '2026-11-07T12:00:00Z', heat: 0.4,
+    })
+  })
+
+  it.each(['newer-clock', 'newer-edit-seq'] as const)('accepts classification removal and reclassification from a newer cloud version (%s)', (conflict) => {
+    const db = setupTestDb()
+    const node = seedNode(db, { content: 'fictional old classification' })
+    db.prepare(`UPDATE nodes SET edit_seq = 2, updated = '2026-11-08T12:00:00Z', refinement = 0.9,
+      is_tag = 1, is_meta = 1, is_crystal = 1 WHERE id = ?`).run(node.id)
+    applyCloudNodeRow(db, {
+      id: node.id, content: node.content, edit_seq: conflict === 'newer-clock' ? 2 : 3,
+      updated: '2026-11-09T12:00:00Z', refinement: 0,
+      is_tag: false, is_meta: false, is_crystal: false,
+    })
+    expect(db.prepare('SELECT refinement, is_tag, is_meta, is_crystal FROM nodes WHERE id = ?').get(node.id))
+      .toEqual({ refinement: 0, is_tag: 0, is_meta: 0, is_crystal: 0 })
+    applyCloudNodeRow(db, {
+      id: node.id, content: 'fictional classified cloud memory', edit_seq: 4,
+      updated: '2026-11-10T12:00:00Z', refinement: 0.7,
+      is_tag: true, is_meta: false, is_crystal: true,
+    })
+    expect(db.prepare('SELECT refinement, is_tag, is_meta, is_crystal FROM nodes WHERE id = ?').get(node.id))
+      .toEqual({ refinement: 0.7, is_tag: 1, is_meta: 0, is_crystal: 1 })
   })
 })

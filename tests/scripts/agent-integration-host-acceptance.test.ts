@@ -1378,7 +1378,7 @@ describe('single-user 0.2.94 migration deferral', () => {
 })
 
 describe('0.2.95 explicitly authorized personal beta', () => {
-  it('refuses to reuse historical 0.2.95 requirements for the current 0.2.96 manifest', () => {
+  it('refuses to reuse historical 0.2.95 requirements for the current 0.2.97 manifest', () => {
     expect(() => loadAgentHostAcceptanceRequirements()).toThrow('acceptance requirements app version differs from release manifest')
   })
 

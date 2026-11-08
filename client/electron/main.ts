@@ -168,7 +168,11 @@ async function maybeStartCloudSync(dbForCloud: ReturnType<typeof getClientDb>): 
   const { isLoggedIn } = await import('./cloud/auth-client.js')
   if (!isLoggedIn()) return
   const { getConfig: getAppConfig } = await import('../../src/config.js')
-  if (!getAppConfig().cloud?.sync_enabled) return
+  if (!getAppConfig().cloud?.sync_enabled) {
+    const { pushCloudMetabolismEnabled } = await import('./cloud/metabolism-settings.js')
+    await pushCloudMetabolismEnabled(false)
+    return
+  }
   const { getCloudSyncClient, createCloudSyncClient } = await import('./cloud/sync-client.js')
   if (getCloudSyncClient()) return // 已有实例(如启动路径已建),不重复建
   const syncClient = createCloudSyncClient(dbForCloud)

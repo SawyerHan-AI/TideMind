@@ -50,6 +50,8 @@ export function registerCloudHandlers(db?: Database.Database): void {
     try {
       const { login } = await import('../cloud/auth-client.js');
       await login(email, password);
+      const { pushCloudMetabolismEnabled } = await import('../cloud/metabolism-settings.js');
+      await pushCloudMetabolismEnabled();
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -166,14 +168,21 @@ export function registerCloudHandlers(db?: Database.Database): void {
     const { stringify: stringifyToml } = await import('smol-toml');
     const { getDataDir } = await import('@server/config.js');
 
-    const configPath = path.join(getDataDir(), 'config.toml');
+    const configEntry = path.join(getDataDir(), 'config.toml');
+    const configPath = fs.existsSync(configEntry) ? fs.realpathSync(configEntry) : configEntry;
 
     // 读取现有 config
     let current: Record<string, unknown> = {};
     if (fs.existsSync(configPath)) {
       try {
         current = parseToml(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-      } catch { /* ignore */ }
+      } catch (err) { return { success: false, error: 'sync_error', errorDetail: (err as Error).message }; }
+    }
+
+    let preferenceError: string | undefined;
+    if (!parsed.data) {
+      const { destroySyncClient } = await import('../cloud/sync-client.js');
+      destroySyncClient();
     }
 
     // 深度合并 cloud section
@@ -190,6 +199,18 @@ export function registerCloudHandlers(db?: Database.Database): void {
     reloadConfig();
     notifyMetabolismWorkerRuntimeMutation('config');
     log.info(`cloud sync ${parsed.data ? 'enabled' : 'disabled'}`);
+    // Local stop and persistence must complete even when the cloud is unreachable.
+    if (!parsed.data) {
+      emitCloudChanged();
+      const { isLoggedIn } = await import('../cloud/auth-client.js');
+      if (isLoggedIn()) {
+        try {
+          const { pushCloudMetabolismEnabled } = await import('../cloud/metabolism-settings.js');
+          await pushCloudMetabolismEnabled(false);
+        } catch (err) { preferenceError = (err as Error).message; }
+      }
+    }
+
 
     let startError: string | undefined;
     let startErrorDetail: string | undefined;
@@ -240,6 +261,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
     }
 
     emitCloudChanged();
+    if (preferenceError) return { success: false, error: 'sync_error', errorDetail: preferenceError };
     if (startError) return { success: false, error: startError, errorDetail: startErrorDetail };
     return { success: true };
   });
@@ -285,21 +307,41 @@ export function registerCloudHandlers(db?: Database.Database): void {
     const { parse: parseToml, stringify: stringifyToml } = await import('smol-toml');
     const { getDataDir } = await import('@server/config.js');
 
-    const configPath = path.join(getDataDir(), 'config.toml');
+    const configEntry = path.join(getDataDir(), 'config.toml');
+    const configPath = fs.existsSync(configEntry) ? fs.realpathSync(configEntry) : configEntry;
     let current: Record<string, unknown> = {};
     if (fs.existsSync(configPath)) {
       try {
         current = parseToml(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-      } catch { /* ignore */ }
+      } catch (err) { return { success: false, error: 'sync_error', errorDetail: (err as Error).message }; }
     }
-    const cloud = (current.cloud ?? {}) as Record<string, unknown>;
-    cloud.metabolism_enabled = parsed.data;
-    current.cloud = cloud;
-    // 原子写,见 set-sync-enabled 同处理。
-    const tmpPath = `${configPath}.tmp-${process.pid}-${Date.now()}`;
-    fs.writeFileSync(tmpPath, stringifyToml(current as any));
-    fs.renameSync(tmpPath, configPath);
-    reloadConfig();
+    if (parsed.data && !getConfig().cloud?.sync_enabled) return { success: false, error: 'not_initialized' };
+    try {
+      const { pushCloudMetabolismEnabled } = await import('../cloud/metabolism-settings.js');
+      await pushCloudMetabolismEnabled(parsed.data);
+    } catch (err) {
+      return { success: false, error: 'sync_error', errorDetail: (err as Error).message };
+    }
+    const previousEnabled = getConfig().cloud?.metabolism_enabled === true && getConfig().cloud?.sync_enabled === true;
+    try {
+      // Re-read after the network await so unrelated config edits are preserved.
+      if (fs.existsSync(configPath)) current = parseToml(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+      const cloud = (current.cloud ?? {}) as Record<string, unknown>;
+      cloud.metabolism_enabled = parsed.data;
+      current.cloud = cloud;
+      const tmpPath = `${configPath}.tmp-${process.pid}-${Date.now()}`;
+      fs.writeFileSync(tmpPath, stringifyToml(current as any));
+      fs.renameSync(tmpPath, configPath);
+      reloadConfig();
+    } catch (err) {
+      try {
+        const { pushCloudMetabolismEnabled } = await import('../cloud/metabolism-settings.js');
+        await pushCloudMetabolismEnabled(previousEnabled);
+      } catch (rollbackError) {
+        log.error(`cloud metabolism preference rollback failed: ${(rollbackError as Error).message}`);
+      }
+      return { success: false, error: 'sync_error', errorDetail: (err as Error).message };
+    }
     notifyMetabolismWorkerRuntimeMutation('config');
     log.info(`cloud metabolism ${parsed.data ? 'enabled' : 'disabled'}`);
     emitCloudChanged();

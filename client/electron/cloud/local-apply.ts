@@ -139,8 +139,8 @@ function insertFullNodeRow(db: Database.Database, row: Record<string, unknown>, 
  * 分三种情形:
  *  1. 新节点 / 关闭防护 / 云端归档(tombstone 优先,与服务端 reconcile-policy 对称)→ 整行写入。
  *  2. 云端 active 且 `updated` 不旧于本地 → 整行写入(现行为)。
- *  3. 本地内容更新(本地有未上行编辑)→ **只更新派生字段**(heat/refinement/connectivity/
- *     independence/maturity_score/is_* 等代谢产物),内容类字段(content/title/type/tags/三维/
+ *  3. 本地内容更新(本地有未上行编辑)→ **只更新与内容无关的运行派生字段**(heat/connectivity/
+ *     independence/maturity_score 等),内容及其分类/提炼结果(content/title/type/tags/三维/
  *     archived/version)与 `updated` **保留本地**。
  *
  * 情形 3 是止血 current-state #4(下行盲覆盖永久丢失本地未上行编辑)的关键:既不丢用户编辑,
@@ -181,8 +181,10 @@ export function applyCloudNodeRow(db: Database.Database, row: Record<string, unk
     return
   }
 
-  // 情形 3:本地内容更新(本地 edit_seq 更高)→ 只同步派生字段(含 decay_gen),
-  // 内容类 + updated + version + edit_seq 保留本地。
+  // 情形 3:本地内容版本胜出 → 保留内容及其分类/提炼结果。云端分类属于旧内容版本，
+  // 不能清除本地 is_tag/is_meta/is_crystal 或把 refinement 重置为待注释。
+  // last_reconsolidated 同属该提炼结果；仅运行派生字段(含 decay_gen)继续同步云端。
+  // 此保护只限本地胜出分支，较新云版本仍可正常取消分类/重新提炼。
   // 纵深防御(2026-06-18 supersede-heat-cloud-roundtrip):同 insertFullNodeRow,退休节点的
   // heat/connectivity/maturity 强制落地板,不被云端旧高值污染。
   //
@@ -197,22 +199,17 @@ export function applyCloudNodeRow(db: Database.Database, row: Record<string, unk
   const supEffective = localSuperseded || toBool(row.is_superseded)
   db.prepare(`
     UPDATE nodes SET
-      heat = ?, refinement = ?, connectivity = ?, independence = ?,
-      maturity_score = ?, is_crystal = ?, is_tag = ?, is_meta = ?,
-      is_keystone = ?, is_superseded = ?, last_reconsolidated = ?, decay_gen = ?
+      heat = ?, connectivity = ?, independence = ?,
+      maturity_score = ?,
+      is_keystone = ?, is_superseded = ?, decay_gen = ?
     WHERE id = ?
   `).run(
     supEffective ? 0.01 : Number(row.heat ?? 1.0),
-    Number(row.refinement ?? 0.0),
     supEffective ? 0 : Number(row.connectivity ?? 0.0),
     Number(row.independence ?? 0.0),
     supEffective ? 0 : Number(row.maturity_score ?? 0.0),
-    toBool(row.is_crystal) ? 1 : 0,
-    toBool(row.is_tag) ? 1 : 0,
-    toBool(row.is_meta) ? 1 : 0,
     toBool(row.is_keystone) ? 1 : 0,
     supEffective ? 1 : 0,
-    row.last_reconsolidated ?? null,
     Number(row.decay_gen ?? 0),
     id,
   )
