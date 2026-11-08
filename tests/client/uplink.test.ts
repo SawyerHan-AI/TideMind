@@ -11,7 +11,8 @@ vi.mock('../../client/electron/cloud/auth-client.js', () => ({
   refreshTokenIfNeeded: vi.fn(async () => 'token'),
 }))
 
-import { claimDirty, pumpUplink } from '../../client/electron/cloud/uplink.js'
+import { refreshTokenIfNeeded } from '../../client/electron/cloud/auth-client.js'
+import { cancelActiveUplink, claimDirty, pumpUplink } from '../../client/electron/cloud/uplink.js'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function dirtyIds(db: any, table: 'nodes' | 'links'): string[] {
@@ -127,5 +128,81 @@ describe('M7 uplink 配额耗尽处理', () => {
     const ts = db.prepare("SELECT value FROM metadata WHERE key = 'cloud.quota_exhausted_at'").get() as { value?: string } | undefined
     expect(ts).toBeUndefined() // 未写 quota 标记
     fetchSpy.mockRestore()
+  })
+})
+
+
+describe('uplink stop boundaries', () => {
+  it('stop during token refresh leaves dirty IDs unclaimed and sends no request', async () => {
+    const db = setupTestDb()
+    const node = seedNode(db, { content: 'synthetic pending node' })
+    let resolveToken!: (token: string) => void
+    vi.mocked(refreshTokenIfNeeded).mockImplementationOnce(() => new Promise(r => { resolveToken = r }))
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    let stopped = false
+    try {
+      const pending = pumpUplink(db, () => stopped)
+      stopped = true
+      resolveToken('token')
+      expect(await pending).toBe(0)
+      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(dirtyIds(db, 'nodes')).toEqual([node.id])
+    } finally { fetchSpy.mockRestore(); db.close() }
+  })
+
+  it.each(['response', 'failure'] as const)('stop during %s returns claimed IDs without sending a second batch', async outcome => {
+    const db = setupTestDb()
+    for (let i = 0; i < 51; i++) seedNode(db, { content: `synthetic node ${i}` })
+    const original = dirtyIds(db, 'nodes')
+    let stopped = false
+    let complete!: () => void
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => new Promise((resolve, reject) => {
+      complete = () => outcome === 'failure' ? reject(new Error('synthetic failure')) : resolve(new Response(JSON.stringify({ processed: 0, skipped: [{ id: original[0], reason: 'quota_exhausted' }] })))
+    }))
+    try {
+      const pending = pumpUplink(db, () => stopped)
+      await Promise.resolve()
+      expect(dirtyIds(db, 'nodes')).toHaveLength(1)
+      // Edit an already claimed node before cancellation; cleanup must retain it.
+      db.prepare('UPDATE nodes SET content = ? WHERE id = ?').run('synthetic fresh edit', original[0])
+      stopped = true
+      complete()
+      expect(await pending).toBe(0)
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      expect(dirtyIds(db, 'nodes')).toEqual(original)
+      expect(db.prepare("SELECT value FROM metadata WHERE key = 'cloud.quota_exhausted_at'").get()).toBeUndefined()
+    } finally { fetchSpy.mockRestore(); db.close() }
+  })
+})
+
+
+describe('uplink synchronous stop cleanup before DB close', () => {
+  it.each(['response', 'failure'] as const)('returns claim before close and ignores late %s without DB access', async outcome => {
+    const db = setupTestDb()
+    for (let i = 0; i < 51; i++) seedNode(db, { content: `synthetic shutdown node ${i}` })
+    const original = dirtyIds(db, 'nodes')
+    let stopped = false
+    let complete!: () => void
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => new Promise((resolve, reject) => {
+      complete = () => outcome === 'failure' ? reject(new Error('synthetic failure')) : resolve(new Response(JSON.stringify({ processed: 50 })))
+    }))
+    try {
+      const pending = pumpUplink(db, () => stopped)
+      await Promise.resolve()
+      expect(dirtyIds(db, 'nodes')).toHaveLength(1)
+      stopped = true
+      cancelActiveUplink(db)
+      expect(dirtyIds(db, 'nodes')).toEqual(original)
+      // Repeated stop is idempotent and does not queue another cleanup.
+      cancelActiveUplink(db)
+      const prepare = vi.spyOn(db, 'prepare')
+      const transaction = vi.spyOn(db, 'transaction')
+      db.close()
+      complete()
+      expect(await pending).toBe(0)
+      expect(prepare).not.toHaveBeenCalled()
+      expect(transaction).not.toHaveBeenCalled()
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+    } finally { fetchSpy.mockRestore(); if (db.open) db.close() }
   })
 })

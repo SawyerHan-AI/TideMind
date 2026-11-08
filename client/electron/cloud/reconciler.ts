@@ -110,6 +110,7 @@ export class Reconciler {
       if (this.aborted) break;
       try {
         const r = await this.runTable(table, isInitial);
+        if (this.aborted) break;
         results.push(r);
         this.setMetadata(`cloud.last_reconcile_at_${table}`, new Date().toISOString());
       } catch (err) {
@@ -123,6 +124,9 @@ export class Reconciler {
         results.push({ table, uploaded: 0, downloaded: 0, conflicts: 0, skipped: 0, errors: [msg] });
       }
     }
+
+    // 取消后不再访问数据库，调用方可能正在关闭同步及连接。
+    if (this.aborted) return results;
 
     // 整体状态 + 失败通知。
     // 'aborted' 是用户主动取消的信号(runTable 在 abort 时 throw new Error('aborted')),
@@ -194,6 +198,7 @@ export class Reconciler {
       const batch = toUpload.slice(i, i + BATCH_SIZE);
       const items = this.loadFullRows(table, batch);
       const { processed, skipped } = await this.bulkUpsert(table, items, isInitial);
+      if (this.aborted) throw new Error('aborted');
       uploaded += processed;
       uploadSkipped += skipped.length;
       this.progress.processed = Math.min(toUpload.length, i + BATCH_SIZE);
@@ -209,6 +214,7 @@ export class Reconciler {
       if (this.aborted) throw new Error('aborted');
       const batch = toDownload.slice(i, i + BATCH_SIZE);
       const fetched = await this.bulkFetch(table, batch);
+      if (this.aborted) throw new Error('aborted');
       this.applyServerRows(table, fetched);
       downloaded += fetched.length;
       this.progress.processed = Math.min(toDownload.length, i + BATCH_SIZE);
@@ -245,6 +251,7 @@ export class Reconciler {
       if (this.aborted) throw new Error('aborted');
       pages++;
       const token = await refreshTokenIfNeeded();
+      if (this.aborted) throw new Error('aborted');
       if (!token) throw new Error('not_logged_in');
       const url = new URL(`${getCloudBaseUrl()}/api/v1/sync/manifest`);
       url.searchParams.set('table', table);
@@ -327,6 +334,7 @@ export class Reconciler {
 
   private async bulkUpsert(table: Table, items: Record<string, unknown>[], isInitial: boolean): Promise<{ processed: number; skipped: Array<{ id: string; reason: string }> }> {
     const token = await refreshTokenIfNeeded();
+    if (this.aborted) throw new Error('aborted');
     if (!token) throw new Error('not_logged_in');
     const res = await fetch(`${getCloudBaseUrl()}/api/v1/sync/bulk-upsert`, {
       method: 'POST',
@@ -343,6 +351,7 @@ export class Reconciler {
   private async bulkFetch(table: Table, ids: string[]): Promise<Array<Record<string, unknown>>> {
     if (ids.length === 0) return [];
     const token = await refreshTokenIfNeeded();
+    if (this.aborted) throw new Error('aborted');
     if (!token) throw new Error('not_logged_in');
     const url = `${getCloudBaseUrl()}/api/v1/sync/bulk-fetch?table=${table}&ids=${ids.map(encodeURIComponent).join(',')}`;
     const res = await fetch(url, {

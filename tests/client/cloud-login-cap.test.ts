@@ -26,6 +26,7 @@ const { handlers, loginMock, electronMock } = vi.hoisted(() => {
   };
 });
 
+vi.mock('../../client/electron/cloud/metabolism-settings.js', () => ({ pushCloudMetabolismEnabled: vi.fn(async () => {}) }));
 vi.mock('electron', () => electronMock);
 vi.mock('../../client/node_modules/electron/index.js', () => electronMock);
 

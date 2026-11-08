@@ -7,6 +7,14 @@ const log = createLogger('cloud-uplink')
 const UPLINK_BATCH = 50
 
 let running = false
+let activeBatch: { db: Database.Database; table: 'nodes' | 'links'; ids: string[]; cancelled: boolean } | null = null
+
+/** stop/退出在关闭 DB 前同步归还已 claim 的批次；迟到网络回调不得再访问 DB。 */
+export function cancelActiveUplink(db: Database.Database): void {
+  if (!activeBatch || activeBatch.db !== db || activeBatch.cancelled) return
+  requeueDirty(db, activeBatch.table, activeBatch.ids)
+  activeBatch.cancelled = true
+}
 
 /** 规范化本地行给 bulk-upsert:tags JSON 字符串→array、INTEGER bool→boolean(server 期望)。 */
 function normalizeRow(r: Record<string, unknown>): Record<string, unknown> {
@@ -88,17 +96,19 @@ function markQuotaExhausted(db: Database.Database): void {
  *
  * 不丢更新:claimDirty 取删原子 + 失败重新入脏集。inflight 去重。reconcile(≤7天)仍是兜底。
  */
-export async function pumpUplink(db: Database.Database): Promise<number> {
+export async function pumpUplink(db: Database.Database, shouldStop: () => boolean = () => false): Promise<number> {
+  if (shouldStop()) return 0
   if (running) return 0
   running = true
   let uploaded = 0
   let quotaExhausted = 0
   try {
     const token = await refreshTokenIfNeeded()
-    if (!token) return 0
+    if (shouldStop() || !token) return 0
 
     for (const table of ['nodes', 'links'] as const) {
       for (;;) {
+        if (shouldStop()) return uploaded
         const ids = claimDirty(db, table, UPLINK_BATCH)
         if (ids.length === 0) break
         const placeholders = ids.map(() => '?').join(',')
@@ -106,8 +116,17 @@ export async function pumpUplink(db: Database.Database): Promise<number> {
           .map(normalizeRow)
         // rows 缺的 id = 本地已 hard-delete:脏集已在 claim 时删除,无需上行(删除传播靠 reconcile)。
         if (rows.length === 0) continue
+        const batch = { db, table, ids, cancelled: false }
+        activeBatch = batch
         try {
           const resp = await postBulkUpsert(token, table, rows)
+          if (batch.cancelled) return uploaded
+          if (shouldStop()) {
+            // claim 已取删；停止期间结果不再消费，收尾归还当前批以保留待确认更新。
+            // INSERT OR IGNORE 不覆盖请求期间触发器重新记录的同 id 本地编辑。
+            requeueDirty(db, table, ids)
+            return uploaded
+          }
           uploaded += rows.length
           // M7:服务端 net-growth 配额耗尽时把净增项标 quota_exhausted skip(返回 200,非整批失败)。
           // 这些项已在 claimDirty 时移出脏集,**不 requeue**(否则 3s pump 死循环空打被拒请求);
@@ -116,8 +135,12 @@ export async function pumpUplink(db: Database.Database): Promise<number> {
           const qe = (resp.skipped ?? []).filter((s) => s.reason === 'quota_exhausted')
           quotaExhausted += qe.length
         } catch (err) {
+          if (batch.cancelled) return uploaded
           requeueDirty(db, table, ids) // 上行失败(网络/5xx)→ 重新入脏集,本轮中止
+          if (shouldStop()) return uploaded
           throw err
+        } finally {
+          if (activeBatch === batch) activeBatch = null
         }
       }
     }
