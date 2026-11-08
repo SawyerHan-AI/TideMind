@@ -1,7 +1,7 @@
 import { databaseMigrationFixture } from '../fixtures/agent-integration/database-migration-fixture.js'
 import { memoryClosureFixture } from '../fixtures/agent-integration/memory-closure-fixture.js'
 import { codexContextRestoreFixture } from '../fixtures/agent-integration/codex-context-restore-fixture.js'
-import { historical094RequirementsPath, writeHistorical094HostManifest } from '../fixtures/agent-integration/historical-host-acceptance.js'
+import { historical094RequirementsPath, writeHistorical094HostManifest, historical095RequirementsPath, historical095ManifestPath } from '../fixtures/agent-integration/historical-host-acceptance.js'
 // @ts-expect-error acceptance-only ESM helper
 import { codexNativeLifecycleEvidenceHash } from '../../scripts/codex-context-restore-evidence.mjs'
 import crypto from 'node:crypto'
@@ -86,8 +86,16 @@ function fixtureDistributionProof(
   }
 }
 
+// These capture tests exercise the explicitly authorized historical contract.
+function useHistorical095Requirements() {
+  const historical = loadAgentHostAcceptanceRequirements(historical095RequirementsPath, historical095ManifestPath)
+  vi.spyOn(hostVerifier, 'loadAgentHostAcceptanceRequirements').mockReturnValue(historical)
+  return historical
+}
+
 function initialized(appVersion = '0.2.95') {
   const root = makeRoot()
+  if (appVersion === '0.2.95') useHistorical095Requirements()
   if (appVersion === '0.2.94') {
     const historical = loadAgentHostAcceptanceRequirements(historical094RequirementsPath, writeHistorical094HostManifest(root))
     vi.spyOn(hostVerifier, 'loadAgentHostAcceptanceRequirements').mockReturnValue(historical)
@@ -265,7 +273,7 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
 
   it('requires physical candidate apps after the release contract is frozen', () => {
     const root = makeRoot()
-    const requirements = loadAgentHostAcceptanceRequirements()
+    const requirements = useHistorical095Requirements()
     expect(requirements.upgradeFromAppVersions).toEqual(['0.2.89','0.2.90','0.2.91','0.2.92','0.2.93','0.2.94'])
     const candidatePath = writeJson(path.join(root, 'candidate.json'), {
       version: requirements.appVersion,
@@ -291,7 +299,7 @@ describe('real-host Agent Integration acceptance capture workflow', () => {
     const fakeAgentConfig = path.join(root, 'agent-config.json')
     fs.writeFileSync(fakeAgentConfig, '{"userOwned":true}\n')
     const before = fs.readFileSync(fakeAgentConfig)
-    const requirements = loadAgentHostAcceptanceRequirements()
+    const requirements = useHistorical095Requirements()
     expect(requirements.upgradeFromAppVersions).toEqual(['0.2.89','0.2.90','0.2.91','0.2.92','0.2.93','0.2.94'])
     const candidatePath = writeJson(path.join(root, 'candidate.json'), {
       version: requirements.appVersion,

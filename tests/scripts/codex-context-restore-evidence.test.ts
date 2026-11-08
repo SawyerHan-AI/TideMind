@@ -1,3 +1,4 @@
+import { historical095RequirementsPath, historical095ManifestPath } from '../fixtures/agent-integration/historical-host-acceptance.js'
 import { createHash } from 'node:crypto'
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error acceptance-only ESM helper
@@ -28,7 +29,7 @@ describe('Codex compact restore original evidence',()=>{
  })
  it('rejects fabricated accepted field and consumed cross-host run reuse',()=>{const f=fixture();f.value.accepted=true;expect(()=>validateCodexContextRestore(f.value,f.expected,f.build())).toThrow(/fields/);delete f.value.accepted;expect(()=>rejectReusedCodexRestoreRuns([{steps:[{id:f.expected.stepId,codexContextRestore:f.value}]},{steps:[{id:'codex_context_restore_auto',codexContextRestore:f.value}]}])).toThrow(/reused/)})
  it('never promotes fixture exporter receipts to formal evidence',()=>{const f=fixture();f.metadata.evidenceClass='fixture';expect(()=>validateCodexContextRestore(f.value,f.expected,f.build())).toThrow(/real candidate/);expect(()=>validateCodexContextRestore(f.value,{...f.expected,allowFixtureActivity:true},f.build())).not.toThrow()})
- it('requires both steps for Codex and its Custom source, not unrelated hosts',()=>{const r=loadAgentHostAcceptanceRequirements();const c=r.entries.find((x:any)=>x.catalogId==='codex-cli');expect(requiredHostAcceptanceSteps(r,c)).toEqual(expect.arrayContaining(['codex_context_restore_manual','codex_context_restore_auto']));expect(requiredHostAcceptanceSteps(r,{...c,targetId:'nonstandard_config_root',disposition:'custom',policyDisposition:c.disposition})).toContain('codex_context_restore_auto');const other=r.entries.find((x:any)=>x.catalogId==='cursor-desktop');expect(requiredHostAcceptanceSteps(r,other)).not.toContain('codex_context_restore_auto')})
+ it('requires both steps for Codex and its Custom source, not unrelated hosts',()=>{const r=loadAgentHostAcceptanceRequirements(historical095RequirementsPath, historical095ManifestPath);const c=r.entries.find((x:any)=>x.catalogId==='codex-cli');expect(requiredHostAcceptanceSteps(r,c)).toEqual(expect.arrayContaining(['codex_context_restore_manual','codex_context_restore_auto']));expect(requiredHostAcceptanceSteps(r,{...c,targetId:'nonstandard_config_root',disposition:'custom',policyDisposition:c.disposition})).toContain('codex_context_restore_auto');const other=r.entries.find((x:any)=>x.catalogId==='cursor-desktop');expect(requiredHostAcceptanceSteps(r,other)).not.toContain('codex_context_restore_auto')})
 })
 
 

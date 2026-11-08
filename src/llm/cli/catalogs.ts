@@ -96,6 +96,12 @@ export const CODEX_FORCED_FEATURE_BOUNDARIES: Readonly<Record<string, string>> =
   // registration when ShellTool is false. gate-codex requires that effective state.
   unified_exec: 'shell_tool=false prevents registering exec_command/write_stdin',
   unified_exec_zsh_fork: 'shell_tool=false prevents shell registration',
+  // Official rust-v0.167.0 exec/src/lib.rs: --worktree is explicit and
+  // incompatible with both --ignore-user-config and --ephemeral, which we use.
+  worktrees: 'explicit --worktree required; incompatible with ignore-user-config and ephemeral',
+  // exec submits one text TurnStart. Realtime requires the separate
+  // RealtimeConversationStart control operation; no realtime tool is exposed.
+  realtime_conversation: 'requires explicit RealtimeConversationStart; exec submits only a text TurnStart',
 
 });
 

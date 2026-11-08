@@ -6,7 +6,7 @@
 // 一次性误删大量等待评估的 pending（2026-05-19 事故，~19200 条）。
 // 现在拆成独立任务：
 //   - requiresLLM=false，不受熔断器探测影响
-//   - gateCheck 依赖 llm_last_success_at 健康度信号，LLM 长期失败时跳过
+//   - gateCheck 依赖 legacy / connection scope 的真实业务成功信号，LLM 长期失败时跳过
 //   - 单次 LIMIT 兜底防失控
 // ============================================================
 
@@ -82,15 +82,21 @@ export function runPendingLinkGc(
  *   - LLM 健康时 → last success 总是很新 → gate 几乎总放行 → GC 按日 tick 正常清
  *   - LLM 长期故障时 → last success 老化 → gate 拦下 → 避免 pending 在 LLM
  *     不可用期间被无差别清理（次生损失）
- *   - 从未成功过（key 不存在或非数字）→ 保守拒绝。fresh install 或升级后首次未调过 LLM 的
+ *   - 从未成功过（两类业务成功记录均不存在或无效）→ 保守拒绝。fresh install 或升级后首次未调过 LLM 的
  *     极少数情况下，pending 表会临时不被清理；首次成功 LLM 调用后下一 tick 立即恢复。
+ * legacy provider 使用 metadata；具名连接使用 llm_connection_health.last_success_at。
+ * 环境检查与连接测试不计为业务成功，也不重置其他连接的熔断状态。
  */
 export function pendingLinkGcGate(db: Database.Database): boolean {
   const row = db.prepare('SELECT value FROM metadata WHERE key = ?')
     .get('llm_last_success_at') as { value: string } | undefined;
-  if (!row) return false;
-
-  const lastSuccessMs = Number(row.value);
+  // Named connections record business success in their own health scopes.
+  // Tests/environment checks never update last_success_at. Reading it here
+  // preserves the GC health signal without resetting another connection's circuit.
+  const scoped = db.prepare('SELECT MAX(last_success_at) AS lastSuccess FROM llm_connection_health')
+    .get() as { lastSuccess: number | null };
+  const lastSuccessMs = Math.max(...[Number(row?.value ?? 0), Number(scoped.lastSuccess ?? 0)]
+    .filter(Number.isFinite));
   if (!Number.isFinite(lastSuccessMs) || lastSuccessMs <= 0) return false;
 
   const pendingExpireDays = getParam('link-evaluate', 'pending_expire_days', 7);

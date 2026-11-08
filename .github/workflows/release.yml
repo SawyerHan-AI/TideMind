@@ -23,6 +23,9 @@ on:
   push:
     tags:
       - 'v*'
+      # 0.2.96 is a locally signed patch release with explicitly scoped acceptance.
+      # Its reviewed assets are uploaded manually; do not rebuild with the 0.2.95 gates.
+      - '!v0.2.96'
 
 permissions:
   contents: read

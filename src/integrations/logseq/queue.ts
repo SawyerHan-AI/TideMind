@@ -108,7 +108,11 @@ export async function processFileQueue(
   sourceId?: string,
   shouldStop?: () => boolean,
 ): Promise<void> {
-  const cfg = { ...DEFAULT_CONFIG, ...config };
+  const cfg = {
+    concurrency: config.concurrency ?? DEFAULT_CONFIG.concurrency,
+    batchSize: config.batchSize ?? DEFAULT_CONFIG.batchSize,
+    delayBetweenBatches: config.delayBetweenBatches ?? DEFAULT_CONFIG.delayBetweenBatches,
+  };
   const progress = getProgress(sourceId);
 
   Object.assign(progress, {

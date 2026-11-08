@@ -35,6 +35,22 @@ class FakeWorker extends EventEmitter implements WorkerLike {
 afterEach(() => vi.useRealTimers())
 
 describe('metabolism Worker controller', () => {
+  it('lets restart drain exceed 15 seconds but retains the shutdown deadline', async () => {
+    vi.useFakeTimers()
+    const worker = new FakeWorker()
+    const controller = new MetabolismWorkerController({ workerPath: '/worker.cjs', workerFactory: () => worker })
+    const starting = controller.start(bootstrap(14), 'background', 'active')
+    worker.emit('message', { protocolVersion: 1, lifecycleGeneration: 14, kind: 'ready', runtimeRevision: 1, databaseIdentityCommitment: hash('b'), vecCapability: 'unavailable' })
+    await starting
+    controller.drainForRestart()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(controller.getState()?.lifecycle).toBe('draining')
+    expect(worker.terminate).not.toHaveBeenCalled()
+    await controller.shutdown()
+    await vi.advanceTimersByTimeAsync(15_001)
+    expect(controller.getState()).toMatchObject({ lifecycle: 'degraded', degradationReason: 'stopped_timeout' })
+  })
+
   it('spawns one generation, requires ready and performs stopped-before-exit shutdown', async () => {
     const worker = new FakeWorker()
     const controller = new MetabolismWorkerController({ workerPath: '/worker.cjs', workerFactory: () => worker })

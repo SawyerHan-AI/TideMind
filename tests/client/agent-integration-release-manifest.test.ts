@@ -90,7 +90,7 @@ function releasedAdapterSurface(): ReadonlyMap<CatalogId, AgentHostAdapter> {
     } as AgentHostAdapter]))
 }
 
-describe('0.2.95 Agent release manifest', () => {
+describe('0.2.96 Agent release manifest', () => {
   it('preserves the published 0.2.93 Agent and Custom capability commitments', () => {
     // Frozen from the actually published private source, not today's discovery
     // list. Distribution versions/hashes may evolve without shrinking features.
@@ -131,10 +131,10 @@ describe('0.2.95 Agent release manifest', () => {
         ? [probe.detectOnlyFallbackCatalogId]
         : []),
     ])
-    expect(AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION).toBe('0.2.95')
+    expect(AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION).toBe('0.2.96')
     expect(AGENT_INTEGRATION_RELEASE_MANIFEST).toMatchObject({
       schemaVersion: 4,
-      appVersion: '0.2.95',
+      appVersion: '0.2.96',
       features: {
         customLocalAgent: {
           enabledByDefault: true,

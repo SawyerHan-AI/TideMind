@@ -97,7 +97,8 @@ export class MetabolismWorkerController extends EventEmitter {
     const result = this.apply({ kind: 'begin_drain', lifecycleGeneration: this.state.lifecycleGeneration })
     if (!result) return
     this.worker.postMessage({ protocolVersion: 1, lifecycleGeneration: this.state.lifecycleGeneration, kind: 'drain_for_restart' })
-    this.armStoppedDeadline()
+    // Ordinary reconfiguration lets the current task settle naturally. CLI/RPC
+    // deadlines can exceed the shutdown deadline; shutdown() arms it if needed.
   }
 
   async shutdown(): Promise<void> {

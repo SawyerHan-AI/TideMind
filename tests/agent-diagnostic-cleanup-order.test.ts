@@ -69,13 +69,16 @@ async function exercise(reason: 'cancelled' | 'adapter_error' | 'exited', outcom
   } });
   Object.defineProperty(process, 'disconnect', { configurable: true, value: () => {} });
   let settled = false;
+  const existingMessageListeners = new Set(process.listeners('message'));
   const done = runDiagnosticSupervisor().then(() => { settled = true; });
   try {
-    process.emit('message', { protocolVersion: 1, type: 'init', spec: {
+    // Exercise only the supervisor listener; process.emit also reaches Vitest's fork IPC decoder.
+    const onMessage = process.listeners('message').find(listener => !existingMessageListeners.has(listener))!;
+    onMessage({ protocolVersion: 1, type: 'init', spec: {
       executable: process.execPath, args: [], cwd: process.cwd(), env: {},
-    } }, undefined);
+    } });
     if (reason === 'exited') child.emit('close', 0, null);
-    else process.emit('message', { protocolVersion: 1, type: 'stop', reason }, undefined);
+    else onMessage({ protocolVersion: 1, type: 'stop', reason });
     if (outcome !== 'open') {
       await vi.waitFor(() => expect(fixture.unregister).toHaveBeenCalledTimes(1));
       expect(settled).toBe(false);
