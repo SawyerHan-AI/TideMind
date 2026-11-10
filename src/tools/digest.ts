@@ -34,6 +34,7 @@ const log = createLogger('digest');
  */
 export interface DigestContext {
   server?: McpServer;
+  foreground?: boolean;
 }
 
 /**
@@ -47,6 +48,7 @@ export interface DigestContext {
  */
 export async function digest(repo: IRepository, input: DigestInput, context?: DigestContext): Promise<DigestOutput> {
   const traceId = generateId();
+  const foreground = context?.foreground === true || !!context?.server;
   log.info(`intent=${input.intent ?? 'new'} contentLen=${input.content.length} async=${input.async !== false} trace=${traceId}`);
 
   // Legacy db handle for modules not yet refactored
@@ -100,7 +102,7 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
     // 内容已变更 → 刷新向量,否则 nodes_vec 残留被纠正前的旧内容 embedding,
     // 语义搜索仍按错误的旧表述召回(FTS 由 nodes_au trigger 自动同步,向量无 trigger)。
     // embedding 失败(无网/未配置)不能让 correction 本身失败:保留旧向量,下次有机会覆盖。
-    await reembedNodeContent(repo, updated.id, updated.title ?? undefined, updated.content);
+    await reembedNodeContent(repo, updated.id, updated.title ?? undefined, updated.content, foreground);
 
     // Stream 先写（获取锚点引用）
     const corrStreamRef = await appendToStream({
@@ -312,7 +314,7 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
      // 让 DB 故障（比如磁盘满、锁冲突）可观测。
     const detachedWork = Promise.resolve().then(async () => {
       try {
-        const run = () => processDigestContent(repo, input, streamRef, traceId, qualityHeat);
+        const run = () => processDigestContent(repo, input, streamRef, traceId, qualityHeat, foreground);
         if (pendingDigestId) {
           await runWithLLMInvocationContext({
             taskId: 'digest-async',
@@ -382,7 +384,7 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
   }
 
   // 同步模式（async === false）：完整处理后返回
-  const result = await processDigestContent(repo, input, streamRef, traceId, qualityHeat);
+  const result = await processDigestContent(repo, input, streamRef, traceId, qualityHeat, foreground);
 
   return {
     status: 'processed',
@@ -467,6 +469,7 @@ async function processDigestContent(
   streamRef: string,
   traceId: string,
   qualityHeat: number = 1.0,
+  foreground = false,
 ): Promise<{
   nodes: Array<{ id: string; content: string; type: NodeType }>;
   links: Array<{ from_id: string; to_id: string; relation: string }>;
@@ -498,7 +501,7 @@ async function processDigestContent(
     // /apple-notes 的 file+segment，property-promote 的精确匹配）。
     // 只建 landing 链接，不做向量归并——避免不同段落因相似度被误并。
     const links = await generateAndStoreEmbedding(
-      repo, node.id, embeddingText, input.skipDedupMerge === true,
+      repo, node.id, embeddingText, input.skipDedupMerge === true, foreground,
     );
     createdLinks.push(...links);
   }
@@ -565,11 +568,12 @@ async function reembedNodeContent(
   nodeId: string,
   title: string | undefined,
   content: string,
+  foreground = false,
 ): Promise<void> {
   if (!isVecLoaded()) return;
   const embeddingText = title ? `${title}\n\n${content}` : content;
   try {
-    const inserted = await repo.vectors.insertSegmentVectors(nodeId, embeddingText);
+    const inserted = await repo.vectors.insertSegmentVectors(nodeId, embeddingText, {foreground});
     if (inserted === 0) {
       log.debug(`re-embed 跳过(embedding 不可用) node=${nodeId}`);
     } else {
@@ -591,13 +595,14 @@ async function generateAndStoreEmbedding(
   nodeId: string,
   content: string,
   skipDedupMerge: boolean = false,
+  foreground = false,
 ): Promise<Array<{ from_id: string; to_id: string; relation: string }>> {
   // Legacy db handle for modules not yet refactored
   // 用 repo.rawDb 保持和上层一致，避免绕过测试 mock。
   const db = repo.rawDb;
 
   // 多段 embedding：长内容自动拆分为多个 segment
-  const inserted = await repo.vectors.insertSegmentVectors(nodeId, content);
+  const inserted = await repo.vectors.insertSegmentVectors(nodeId, content, {foreground});
   if (inserted === 0) {
     log.debug(`embedding 插入失败 node=${nodeId}`);
     return [];
@@ -622,7 +627,7 @@ async function generateAndStoreEmbedding(
     // 在 LLM 未配置/失败时保留旧 content,此时 re-embed 是同内容覆盖,无副作用。
     const mergedTarget = repo.nodes.getNode(landing.mergeTarget);
     if (mergedTarget) {
-      await reembedNodeContent(repo, mergedTarget.id, mergedTarget.title ?? undefined, mergedTarget.content);
+      await reembedNodeContent(repo, mergedTarget.id, mergedTarget.title ?? undefined, mergedTarget.content, foreground);
     }
     repo.nodes.archiveNode(nodeId);
     // 清理被归档节点的向量数据和分段数据,避免残留占用空间和干扰搜索。

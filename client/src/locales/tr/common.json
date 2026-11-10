@@ -52,6 +52,7 @@
     "signatureInvalid": "İmza geçersiz"
   },
   "llmHealth": {
+    "actionRequired": "AI duraklatıldı: Ayarlar’dan bağlantıyı kontrol edin",
     "paused": "AI duraklatıldı ({{min}} dk sonra tekrar denenecek)",
     "recentFailures": "AI yakın zamanda hata aldı",
     "idle": "AI uzun süredir etkin değil"

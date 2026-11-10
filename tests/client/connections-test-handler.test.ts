@@ -801,6 +801,19 @@ describe('本地订阅 CLI 连接 IPC', () => {
   });
 
   describe('connections:check-environment / refresh-models / models', () => {
+    it('显式环境检查可重新发现路径并保存新候选，不固定已失效旧路径', async () => {
+      const id = seedCliConnection(dbHolder.db, 'online');
+      dbHolder.db.prepare('UPDATE model_connections SET cli_path = ? WHERE id = ?')
+        .run('/old/removed/codex', id);
+      const environment = cliEnvironment();
+      checkCliEnvironmentMock.mockResolvedValue(environment);
+      await handlers.get('connections:check-environment')!(null, id);
+      expect(checkCliEnvironmentMock.mock.calls[0][0].allowLoginShell).toBe(true);
+      expect(checkCliEnvironmentMock.mock.calls[0][0].candidatePath).toBeUndefined();
+      expect(dbHolder.db.prepare('SELECT cli_path FROM model_connections WHERE id = ?').get(id))
+        .toEqual({ cli_path: environment.resolved.path });
+    });
+
     it('环境复测解除旧环境熔断，业务准入恢复但不伪造业务成功时间', async () => {
       const id = seedCliConnection(dbHolder.db, 'online');
       dbHolder.db.prepare(`INSERT INTO llm_connection_health

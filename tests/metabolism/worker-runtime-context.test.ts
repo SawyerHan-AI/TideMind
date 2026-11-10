@@ -64,6 +64,8 @@ describe('metabolism Worker runtime context', () => {
     expect(getMetabolismWorkerVertexCredential()).toEqual({ project_id: 'legacy-project', private_key: 'legacy-key' })
     expect(getMetabolismWorkerVertexCredential('mc_vertex')).toEqual({ project_id: 'connection-project', private_key: 'connection-key' })
     expect(getMetabolismWorkerVertexCredential('missing')).toEqual({ project_id: 'legacy-project', private_key: 'legacy-key' })
+    expect(getMetabolismWorkerVertexCredential('missing',false)).toBeNull()
+    expect(getMetabolismWorkerVertexCredential('mc_vertex',false)).toEqual({ project_id: 'connection-project', private_key: 'connection-key' })
     expect(Object.isFrozen(getMetabolismWorkerVertexCredential('mc_vertex'))).toBe(true)
   })
 })

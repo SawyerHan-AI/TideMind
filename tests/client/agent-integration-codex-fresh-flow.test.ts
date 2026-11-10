@@ -13,7 +13,7 @@ import { recordHookActivityEvidence } from '../../src/db/agent-host-activity'
 import { bindAgentIntegrationExecutionPort,createProductionAgentIntegrationComposition } from '../../client/electron/agent-integration/production-service'
 import { createOfficialCodexHooksPort } from '../../client/electron/agent-integration/hosts/codex-lifecycle-adapter'
 import { createP0HostAdapters } from '../../client/electron/agent-integration/hosts/p0-adapter-registry'
-import { canonicalizeInstallationIdentity } from '../../client/electron/agent-integration/identity'
+import { canonicalizeInstallationIdentity, EXACT_INSTALL_KEY_DISTRIBUTION_CONFLICT_REASON } from '../../client/electron/agent-integration/identity'
 import { CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,MAX_CLI_EXECUTABLE_PROOF_BYTES } from '../../client/electron/agent-integration/discovery'
 import type { AdapterRuntimeContext, CatalogId } from '../../client/electron/agent-integration/types'
 
@@ -22,6 +22,7 @@ describe('Fresh Codex domain through production service',()=>{
   ['codex-cli','automatic-batch'], ['codex-cli','automatic-native-trust'], ['codex-cli','automatic-native-trust-peer'], ['codex-cli','automatic-native-trust-none'], ['codex-cli','automatic-late-peer'], ['codex-cli','automatic-repair'], ['codex-cli','automatic-repair-peer-source'], ['codex-cli','automatic-repair-peer-revoked'],
   ['codex-cli','automatic-native-trust-probe-uncertain'],
   ['codex-cli','whole-disconnect'], ['codex-desktop','whole-disconnect'], ['codex-cli','whole-disconnect-pause-race'], ['codex-cli','whole-disconnect-drift'], ['codex-cli','whole-disconnect-member-pause-race'],
+  ...['zero-recovery','zero-recovery-revoked','zero-recovery-drift','zero-recovery-conflict','zero-recovery-journal','zero-recovery-intent-race','zero-recovery-shared-race','zero-recovery-new-conflict','zero-recovery-other-conflict','zero-recovery-both-pending','zero-recovery-both-pending-revoked','zero-recovery-both-pending-drift','zero-recovery-both-pending-journal','zero-recovery-both-pending-restart','zero-recovery-both-pending-bad-receipt','zero-recovery-version-upgrade','zero-recovery-upgrade-other-publisher'].map(mode=>['codex-desktop',mode] as const),
   ...['source-noop','source-noop-partial','source-noop-drift','source-noop-different-source'].map(mode=>['codex-desktop',mode] as const),
   ['codex-cli','reconnect-batch-disconnect-fence'],
   ['codex-cli','reconnect-batch-recovery-disconnect'],
@@ -62,7 +63,7 @@ describe('Fresh Codex domain through production service',()=>{
     discoveredIdentities.set(installationId,identity)
     composition.repository.upsertDiscoveredInstallation({id:installationId,family:'codex',hostVariant:variant,runtimeRealm:'local_macos',
       osUserIdentity:'synthetic-user',installKey:identity.installKey,distributionId:'cli:'+variant,provenance:'fixture',displayName:variant,
-      configRoot:domainRoot,executablePath:executable,detectedVersion:versionOverride ?? (variant==='codex-cli'?'0.153.4':'26.901.41600'),agentId:'original-'+installationId,
+      configRoot:domainRoot,executablePath:executable,detectedVersion:versionOverride ?? (variant==='codex-cli'?(['zero-recovery-version-upgrade','zero-recovery-upgrade-other-publisher'].includes(String(late))?'0.167.0':'0.153.4'):'26.901.41600'),agentId:'original-'+installationId,
       supportedCapability:4,lastDetectedAt:'2026-10-23T00:00:00Z',metadata:{distribution:identity.distribution,
         managementEligibility:{schemaVersion:CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,eligible:true,executableSizeBytes:fs.statSync(executable).size,proofLimitBytes:MAX_CLI_EXECUTABLE_PROOF_BYTES}}})
 
@@ -70,9 +71,9 @@ describe('Fresh Codex domain through production service',()=>{
   try {
     const second=first==='codex-cli'?'codex-desktop':'codex-cli'
     const reconnectBatch=String(late).startsWith('reconnect-batch')
-    const options=(ids:string[])=>(reconnectBatch || String(late).startsWith('applied-') || String(late).startsWith('native-trust-') || String(late).startsWith('source-noop'))?undefined:{withoutLifecycleInstallationIds:ids}
+    const options=(ids:string[])=>(reconnectBatch || String(late).startsWith('applied-') || String(late).startsWith('native-trust-') || (String(late).startsWith('source-noop') || String(late).startsWith('zero-recovery')))?undefined:{withoutLifecycleInstallationIds:ids}
     discover(first)
-    if((String(late).startsWith('automatic-') && late!=='automatic-late-peer') || String(late).startsWith('whole-disconnect') || String(late).startsWith('source-noop') || reconnectBatch || late===false || late==='competing' || String(late).startsWith('batch'))discover(second)
+    if((String(late).startsWith('automatic-') && late!=='automatic-late-peer') || String(late).startsWith('whole-disconnect') || (String(late).startsWith('source-noop') || String(late).startsWith('zero-recovery')) || reconnectBatch || late===false || late==='competing' || String(late).startsWith('batch'))discover(second)
     expect(fs.existsSync(configRoot)).toBe(false)
     if(String(late).startsWith('automatic-')) {
       await composition.service.scan()
@@ -264,6 +265,126 @@ describe('Fresh Codex domain through production service',()=>{
     expect(result.results.every(item=>item.status==='awaiting_verification'),JSON.stringify(result)).toBe(true)
     priorBehavior?.mockRestore()
     const configFile=path.join(configRoot,'config.toml')
+    if(String(late).startsWith('zero-recovery')){
+      const joinPreview=await composition.service.previewConnect([second],true)
+      const join=await composition.service.applyConnect(joinPreview.planHash,[second])
+      expect(join.results[0],JSON.stringify(join)).toMatchObject({status:'awaiting_verification'})
+      const peer=db.prepare('SELECT * FROM reconcile_runs WHERE installation_id=?').get(second) as Record<string,string>
+      expect(JSON.parse(peer.prepared_plan_json).adapterPlan.mutations).toEqual([])
+      expect(db.prepare('SELECT count(*) AS n FROM projection_mutations WHERE run_id=?').get(peer.id)).toEqual({n:0})
+      const physical=[configFile,path.join(configRoot,'hooks.json'),path.join(home,'.agents/skills/tidemind/SKILL.md')]
+      const before=physical.map(file=>fs.readFileSync(file))
+      composition.repository.markInstallationIdentityConflict(second,new Date().toISOString(),
+        late==='zero-recovery-conflict'?'Unrelated identity conflict':EXACT_INSTALL_KEY_DISTRIBUTION_CONFLICT_REASON)
+      await composition.coordinator.recoverNonTerminalRuns()
+      expect(db.prepare('SELECT state FROM reconcile_runs WHERE id=?').get(peer.id)).toEqual({state:'needs_recovery'})
+      discover(second)
+      expect(composition.repository.getInstallation(second)?.status_reason).toBe('conflict')
+      if(late==='zero-recovery-version-upgrade' || late==='zero-recovery-upgrade-other-publisher')discover(second,configRoot,'0.167.1',late==='zero-recovery-upgrade-other-publisher'?'unknown-publisher':undefined)
+      if(late==='zero-recovery-revoked')db.prepare("UPDATE agent_consents SET status='revoked' WHERE id=?").run(peer.consent_envelope_id)
+      if(late==='zero-recovery-drift')fs.appendFileSync(physical[2],'\nexternal edit\n')
+      if(String(late).startsWith('zero-recovery-both-pending')){
+        discover(first,configRoot,'26.1029.61003')
+        await composition.coordinator.recoverNonTerminalRuns()
+        expect(db.prepare("SELECT count(*) AS n FROM reconcile_runs WHERE state='needs_recovery'").get()).toEqual({n:2})
+        discover(second)
+        const retainedBefore=db.prepare('SELECT * FROM reconcile_runs WHERE id=?').get(peer.id)
+        const writerBefore=db.prepare('SELECT id FROM reconcile_runs WHERE installation_id=?').get(first) as {id:string}
+        const writerEffects=db.prepare('SELECT * FROM projection_mutations WHERE run_id=? ORDER BY id').all(writerBefore.id)
+        if(late==='zero-recovery-both-pending-bad-receipt')db.prepare("UPDATE projection_mutations SET apply_receipt_json='{}' WHERE run_id=?").run(writerBefore.id)
+        const writerPreview=await composition.service.previewConnect([first],true)
+        if(late==='zero-recovery-both-pending-bad-receipt'){
+          const failed=await composition.service.applyConnect(writerPreview.planHash,[first])
+          expect(failed.results[0].status).not.toBe('awaiting_verification')
+          expect(db.prepare('SELECT * FROM reconcile_runs WHERE id=?').get(peer.id)).toEqual(retainedBefore)
+          expect(db.prepare('SELECT state FROM reconcile_runs WHERE id=?').get(writerBefore.id)).toEqual({state:'needs_recovery'})
+          expect(physical.map(file=>fs.readFileSync(file))).toEqual(before)
+          return
+        }
+        if(late==='zero-recovery-both-pending-revoked'){
+          db.prepare("UPDATE agent_consents SET status='revoked' WHERE id=?").run(peer.consent_envelope_id)
+          await expect(composition.service.applyConnect(writerPreview.planHash,[first])).rejects.toThrow('Zero-effect recovery changed')
+          expect(db.prepare('SELECT * FROM reconcile_runs WHERE id=?').get(peer.id)).toEqual(retainedBefore)
+          expect(physical.map(file=>fs.readFileSync(file))).toEqual(before)
+          return
+        }
+        if(late==='zero-recovery-both-pending-journal'){
+          const effect=writerEffects[0] as Record<string,unknown>
+          const clone={...effect,id:'synthetic-peer-effect',run_id:peer.id,installation_id:second,state:'effect_started'}
+          db.prepare(`INSERT INTO projection_mutations(${Object.keys(clone).join(',')}) VALUES (${Object.keys(clone).map(()=>'?').join(',')})`).run(...Object.values(clone))
+          await expect(composition.service.applyConnect(writerPreview.planHash,[first])).rejects.toThrow('Zero-effect recovery changed')
+          expect(db.prepare('SELECT * FROM reconcile_runs WHERE id=?').get(peer.id)).toEqual(retainedBefore)
+          expect(physical.map(file=>fs.readFileSync(file))).toEqual(before)
+          return
+        }
+        if(late==='zero-recovery-both-pending-drift'){
+          fs.appendFileSync(physical[2],'\nexternal peer edit\n')
+          const drifted=physical.map(file=>fs.readFileSync(file))
+          const failed=await composition.service.applyConnect(writerPreview.planHash,[first])
+          expect(failed.results[0].status).not.toBe('awaiting_verification')
+          expect(db.prepare('SELECT * FROM reconcile_runs WHERE id=?').get(peer.id)).toEqual(retainedBefore)
+          expect(physical.map(file=>fs.readFileSync(file))).toEqual(drifted)
+          return
+        }
+        const writerRecovery=await composition.service.applyConnect(writerPreview.planHash,[first])
+        expect(writerRecovery.results[0],JSON.stringify(writerRecovery)).toMatchObject({status:'awaiting_verification'})
+        expect(db.prepare('SELECT * FROM reconcile_runs WHERE id=?').get(peer.id)).toEqual(retainedBefore)
+        expect(db.prepare('SELECT * FROM projection_mutations WHERE run_id=? ORDER BY id').all(writerBefore.id)).toEqual(writerEffects)
+        expect(physical.map(file=>fs.readFileSync(file))).toEqual(before)
+        if(late==='zero-recovery-both-pending-restart'){
+          // A zero-write prepared run can survive process exit before its first state transition.
+          db.prepare("UPDATE reconcile_runs SET state='planned' WHERE installation_id=? AND id!=?").run(first,writerBefore.id)
+          await composition.coordinator.recoverNonTerminalRuns()
+          const fresh=db.prepare('SELECT state FROM reconcile_runs WHERE installation_id=? AND id!=?').get(first,writerBefore.id)
+          expect(fresh).toEqual({state:'applied_unverified'})
+          discover(second)
+        }
+      }
+      if(late==='zero-recovery-journal'){
+        const effect=db.prepare('SELECT * FROM projection_mutations LIMIT 1').get() as Record<string,unknown>
+        const clone={...effect,id:'synthetic-unknown-effect',run_id:peer.id,installation_id:second,state:'effect_started'}
+        const columns=Object.keys(clone)
+        db.prepare(`INSERT INTO projection_mutations(${columns.join(',')}) VALUES (${columns.map(()=>'?').join(',')})`).run(...Object.values(clone))
+      }
+      const preview=await composition.service.previewConnect([second],true)
+      if(late==='zero-recovery-new-conflict' || late==='zero-recovery-other-conflict'){
+        const oldEvents=db.prepare("SELECT count(*) AS n FROM agent_integration_events WHERE kind='discovery_identity_conflict'").get()
+        composition.repository.markInstallationIdentityConflict(second,new Date().toISOString(),late==='zero-recovery-new-conflict'?EXACT_INSTALL_KEY_DISTRIBUTION_CONFLICT_REASON:'New unrelated identity conflict')
+        discover(second)
+        if(late==='zero-recovery-new-conflict')expect(db.prepare("SELECT count(*) AS n FROM agent_integration_events WHERE kind='discovery_identity_conflict'").get()).toEqual(oldEvents)
+        await expect(composition.service.applyConnect(preview.planHash,[second])).rejects.toThrow('Zero-effect recovery changed')
+        expect(db.prepare('SELECT state FROM reconcile_runs WHERE id=?').get(peer.id)).toEqual({state:'needs_recovery'})
+        return
+      }
+      if(late==='zero-recovery-intent-race'){
+        const intent=composition.repository.recordDisconnectIntent([second],true)
+        await expect(composition.service.applyConnect(preview.planHash,[second])).rejects.toThrow('Zero-effect recovery changed')
+        expect(composition.repository.connectionIntent(second)).toEqual(intent)
+        expect(db.prepare('SELECT state FROM reconcile_runs WHERE id=?').get(peer.id)).toEqual({state:'needs_recovery'})
+        return
+      }
+      if(late==='zero-recovery-shared-race'){
+        db.prepare("UPDATE agent_identity_bindings SET generation=generation+1").run()
+        await expect(composition.service.applyConnect(preview.planHash,[second])).rejects.toThrow()
+        expect(db.prepare('SELECT state FROM reconcile_runs WHERE id=?').get(peer.id)).toEqual({state:'needs_recovery'})
+        return
+      }
+      const retry=await composition.service.applyConnect(preview.planHash,[second])
+      if(late!=='zero-recovery' && late!=='zero-recovery-version-upgrade' && !String(late).startsWith('zero-recovery-both-pending')){
+        expect(retry.results[0].status).not.toBe('awaiting_verification')
+        expect(db.prepare('SELECT state FROM reconcile_runs WHERE id=?').get(peer.id)).toEqual({state:'needs_recovery'})
+        return
+      }
+      expect(retry.results[0],JSON.stringify(retry)).toMatchObject({status:'awaiting_verification'})
+      expect(db.prepare('SELECT state,failure_code FROM reconcile_runs WHERE id=?').get(peer.id)).toEqual({state:'cancelled',failure_code:'superseded_by_confirmed_generation'})
+      const newest=db.prepare('SELECT * FROM reconcile_runs WHERE installation_id=? AND id!=?').get(second,peer.id) as Record<string,string>
+      await expect(composition.service.applyConnect(preview.planHash,[second])).rejects.toThrow()
+      expect(JSON.parse(newest.prepared_plan_json).executionPlan.completedGenerationTakeovers).toEqual([expect.objectContaining({kind:'codex_same_source_zero_effect',runId:peer.id})])
+      expect(db.prepare('SELECT count(*) AS n FROM projection_mutations WHERE run_id=?').get(newest.id)).toEqual({n:0})
+      expect(physical.map(file=>fs.readFileSync(file))).toEqual(before)
+      expect(db.prepare("SELECT count(*) AS n FROM reconcile_runs WHERE state='verified'").get()).toEqual({n:0})
+      return
+    }
     if(String(late).startsWith('source-noop')){
       const joinPreview=await composition.service.previewConnect([second],true)
       const join=await composition.service.applyConnect(joinPreview.planHash,[second])

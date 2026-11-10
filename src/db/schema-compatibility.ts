@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import { assertRecoverableSchema41, RECOVERY_LINEAGE } from './schema41-recovery.js';
 
-export const CURRENT_SCHEMA_VERSION = 47;
+export const CURRENT_SCHEMA_VERSION = 48;
 
 /** Read only: run before setup PRAGMAs, schema repair or migration. */
 export function readPersistedSchemaVersion(db: Database.Database): number {

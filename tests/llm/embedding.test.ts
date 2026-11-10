@@ -210,3 +210,82 @@ describe('getEmbeddings - batch', () => {
     expect(results[1]).toBeNull();
   });
 });
+
+describe('private embedding request snapshot', () => {
+  it('uses the supplied provider snapshot and keeps its dimensions stable across await', async () => {
+    mockFetch.mockReset();
+    const snapshot = {
+      general: { data_dir: '/tmp/test-eb' },
+      embedding: { provider: 'gemini', model: 'gemini-embedding-001', dimensions: 2 },
+      gemini: { api_key: 'synthetic-original-key' },
+      vertex: { project_id: '', region: 'us-central1' }, ollama: { url: 'http://localhost:11434' },
+    } as any;
+    vi.mocked(getConfig).mockReturnValue({ ...snapshot, embedding: { provider: 'ollama', model: 'different', dimensions: 99 } });
+    mockFetch.mockImplementationOnce(async (_url, options) => {
+      expect(options.headers['x-goog-api-key']).toBe('synthetic-original-key');
+      snapshot.embedding.dimensions = 99;
+      snapshot.gemini.api_key = 'synthetic-later-key';
+      return { ok: true, json: async () => ({ embedding: { values: [0.6, 0.8] } }) };
+    });
+    const { getEmbedding } = await import('../../src/llm/embedding.js');
+    const result = await getEmbedding('synthetic text', { configSnapshot: snapshot });
+    expect(result?.length).toBe(2);
+    expect(String(mockFetch.mock.calls[0][0])).toContain('generativelanguage.googleapis.com');
+  });
+});
+
+it('detects Vertex credential-file replacement even without an explicit cache-clear callback', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const configuration = await import('../../src/config.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vertex-signal-'));
+  const source = vi.spyOn(configuration, 'getDataDir').mockReturnValue(dir);
+  try {
+    const file = path.join(dir, 'vertex-credentials.json');
+    fs.writeFileSync(file, JSON.stringify({ project_id: 'synthetic-a', private_key: 'synthetic-not-a-key' }));
+    const config = { embedding: { provider: 'vertex' } } as any;
+    const { getEmbeddingCredentialSignal } = await import('../../src/llm/embedding.js');
+    const first = getEmbeddingCredentialSignal(config);
+    expect(getEmbeddingCredentialSignal(config)).toBe(first);
+    fs.writeFileSync(file, JSON.stringify({ project_id: 'synthetic-b', private_key: 'synthetic-replacement' }));
+    const second = getEmbeddingCredentialSignal(config);
+    expect(second).not.toBe(first);
+    expect(second).not.toContain('synthetic');
+  } finally { source.mockRestore(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+it('does not borrow the legacy service account for a selected Vertex connection with no dedicated file', async () => {
+  const fs = await import('node:fs'); const os = await import('node:os'); const path = await import('node:path');
+  const configuration = await import('../../src/config.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vertex-selected-'));
+  const source = vi.spyOn(configuration, 'getDataDir').mockReturnValue(dir);
+  mockFetch.mockReset();
+  try {
+    fs.writeFileSync(path.join(dir,'vertex-credentials.json'),JSON.stringify({project_id:'legacy-fixture',private_key:'not-a-real-key'}));
+    const snapshot={embedding:{provider:'vertex',connection:'mc_12345678',model:'gemini-embedding-001',dimensions:3},vertex:{project_id:'',region:'us-central1'}} as any;
+    const {getEmbedding,getEmbeddingCredentialSignal}=await import('../../src/llm/embedding.js');
+    const before=getEmbeddingCredentialSignal(snapshot);
+    fs.writeFileSync(path.join(dir,'vertex-credentials.json'),JSON.stringify({project_id:'different-legacy',private_key:'different-not-a-key'}));
+    expect(getEmbeddingCredentialSignal(snapshot)).toBe(before);
+    expect(await getEmbedding('synthetic',{configSnapshot:snapshot})).toBeNull();
+    expect(mockFetch).not.toHaveBeenCalled();
+  } finally {source.mockRestore();fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+it('rejects a selected Vertex connection absent from the Worker snapshot instead of using legacy credentials', async () => {
+  const runtime = await import('../../src/metabolism/worker-runtime-context.js');
+  mockFetch.mockReset();
+  runtime.installMetabolismWorkerRuntimeContext({
+    runtimeRevision: 1, dataDir: '/synthetic-worker-data',
+    config: { general: { data_dir: '/synthetic-worker-data' }, metabolism: {}, llm: {}, embedding: {} },
+    connectionSnapshot: { connections: [] }, strategySnapshot: {},
+    credentials: { legacyVertex: { project_id: 'legacy-fixture', private_key: 'not-a-real-key' }, vertexFiles: {} },
+  });
+  try {
+    const {getEmbedding}=await import('../../src/llm/embedding.js');
+    const config={embedding:{provider:'vertex',connection:'mc_12345678',dimensions:3},vertex:{project_id:'selected-project',region:'us-central1'}} as any;
+    expect(await getEmbedding('synthetic',{configSnapshot:config})).toBeNull();
+    expect(mockFetch).not.toHaveBeenCalled();
+  } finally { runtime.clearMetabolismWorkerRuntimeContext(); }
+});

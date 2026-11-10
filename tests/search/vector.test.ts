@@ -36,7 +36,7 @@ const mockSearchVectors = vi.fn();
 const mockGetNodesByIds = vi.fn();
 
 const repo = {
-  vectors: { searchVectors: mockSearchVectors },
+  vectors: { searchVectors: mockSearchVectors, embedQuery: (...args: Parameters<typeof getEmbedding>) => getEmbedding(...args), isQueryCurrent: () => true },
   nodes: { getNodesByIds: mockGetNodesByIds },
 } as any as IRepository;
 

@@ -10,6 +10,7 @@ import { captureCliIdentity } from '../../../src/llm/cli/resolve-cli.js';
 import { runCliLLM, shutdownCliRuntime } from '../../../src/llm/cli/service.js';
 import { CliProcessExitUnconfirmedError } from '../../../src/llm/cli/errors.js';
 import { cliProcessRegistry } from '../../../src/llm/cli/runtime-process-registry.js';
+import * as readiness from '../../../src/llm/cli/readiness.js';
 import type { CliEnvironmentCheck } from '../../../src/llm/cli/readiness.js';
 
 const fixture = resolve(
@@ -72,6 +73,62 @@ async function setup() {
 }
 
 describe('CLI service post-provider durability boundary', () => {
+  it.each([false, true])('keeps the saved candidate through fresh checks (UI environment: %s)', async (supplied) => {
+    const state = await setup();
+    state.db.prepare('UPDATE model_connections SET cli_path = ? WHERE id = ?')
+      .run(state.environment.resolved.path, state.connectionId);
+    const check = vi.spyOn(readiness, 'checkCliEnvironment').mockResolvedValue(state.environment);
+    try {
+      await runCliLLM(state.db, state.dataDir, {
+        connectionId: state.connectionId, providerType: 'claude-cli', modelAlias: 'default',
+        system: 'system', prompt: 'success', timeoutMs: 10_000, purpose: 'connection_test',
+      }, { ...(supplied ? { environment: state.environment } : {}) });
+      expect(check.mock.calls.length).toBeGreaterThanOrEqual(2);
+      for (const [options] of check.mock.calls) {
+        expect(options.candidatePath).toBe(state.environment.resolved.path);
+        expect(options.allowLoginShell).toBe(false);
+      }
+    } finally { check.mockRestore(); state.db.close(); rmSync(state.dataDir, { recursive: true, force: true }); }
+  }, 30_000);
+
+  it('does not overwrite a newly selected path when an older environment check returns', async () => {
+    const state = await setup();
+    state.db.prepare('UPDATE model_connections SET cli_path = ? WHERE id = ?')
+      .run(state.environment.resolved.path, state.connectionId);
+    const check = vi.spyOn(readiness, 'checkCliEnvironment').mockImplementation(async () => {
+      state.db.prepare('UPDATE model_connections SET cli_path = ?, validation_fingerprint = ? WHERE id = ?')
+        .run('/new/selected/cli', 'new-generation', state.connectionId);
+      return state.environment;
+    });
+    try {
+      await expect(runCliLLM(state.db, state.dataDir, {
+        connectionId: state.connectionId, providerType: 'claude-cli', modelAlias: 'default',
+        system: 'system', prompt: 'success', timeoutMs: 10_000, purpose: 'connection_test',
+      })).rejects.toMatchObject({ kind: 'aborted' });
+      expect(state.db.prepare('SELECT cli_path, validation_fingerprint FROM model_connections WHERE id = ?').get(state.connectionId))
+        .toEqual({ cli_path: '/new/selected/cli', validation_fingerprint: 'new-generation' });
+      expect(state.db.prepare('SELECT COUNT(*) AS n FROM cli_invocations').get()).toEqual({ n: 0 });
+    } finally { check.mockRestore(); state.db.close(); rmSync(state.dataDir, { recursive: true, force: true }); }
+  }, 30_000);
+
+  it('does not submit after another operation selects a different CLI path', async () => {
+    const state = await setup();
+    try {
+      await expect(runCliLLM(state.db, state.dataDir, {
+        connectionId: state.connectionId, providerType: 'claude-cli', modelAlias: 'default',
+        system: 'system', prompt: 'success', timeoutMs: 10_000, purpose: 'connection_test',
+      }, { environment: state.environment, _testHooks: {
+        recheckEnvironment: async () => state.environment,
+        beforePromptCommit: () => {
+          state.db.prepare('UPDATE model_connections SET cli_path = ? WHERE id = ?')
+            .run('/different/selected/cli', state.connectionId);
+        },
+      } })).rejects.toMatchObject({ kind: 'aborted' });
+      expect(state.db.prepare('SELECT prompt_committed FROM cli_invocations').all())
+        .toEqual([expect.objectContaining({ prompt_committed: 0 })]);
+    } finally { state.db.close(); rmSync(state.dataDir, { recursive: true, force: true }); }
+  }, 30_000);
+
   afterAll(async () => {
     await shutdownCliRuntime();
   });

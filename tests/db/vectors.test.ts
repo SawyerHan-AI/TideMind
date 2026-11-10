@@ -245,14 +245,15 @@ it('uses the title for empty bodies without writing it into content', async () =
   expect(getEmbedding).not.toHaveBeenCalled();
 });
 
-it('persists a title vector and its segment mapping on successful indexing', async () => {
+it('preserves a legacy title vector without treating it as verified provenance', async () => {
   const { insertSegmentVectors, getVectorForNode } = await import('../../src/db/vectors.js');
   const { getEmbedding } = await import('../../src/llm/embedding.js');
   db.exec('CREATE TABLE IF NOT EXISTS nodes_vec (id TEXT PRIMARY KEY, embedding BLOB)');
   vi.mocked(getEmbedding).mockResolvedValue(new Float32Array([1, 2, 3, 4]));
   const node = seedNode(db, { content: '', title: 'Searchable title' });
   expect(await insertSegmentVectors(db, node.id, '')).toBe(1);
-  expect(getVectorForNode(db, node.id)).toEqual(new Float32Array([1, 2, 3, 4]));
+  expect(getVectorForNode(db, node.id)).toBeNull();
+  expect(db.prepare('SELECT embedding FROM nodes_vec WHERE id=?').get(`${node.id}#0`)).toEqual({embedding:Buffer.from(new Float32Array([1,2,3,4]).buffer)});
   expect(db.prepare('SELECT content FROM nodes WHERE id = ?').get(node.id)).toEqual({ content: '' });
 });
 

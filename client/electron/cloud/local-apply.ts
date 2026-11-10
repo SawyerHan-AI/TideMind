@@ -21,6 +21,7 @@ function jsonArrayText(value: unknown): string {
 
 function deleteVectorIfPresent(db: Database.Database, nodeId: string): void {
   try {
+    db.prepare('DELETE FROM metadata WHERE key=?').run(`vector.projection_checksum:${nodeId}`)
     const segments = db.prepare(
       'SELECT segment_id FROM node_segments WHERE node_id = ?',
     ).all(nodeId) as Array<{ segment_id: string }>
@@ -87,19 +88,11 @@ function insertFullNodeRow(db: Database.Database, row: Record<string, unknown>, 
   // 本地已退休则 sup=true、强制落地板 + is_superseded 保持 1,不被翻回 active+高热(与情形3/服务端
   // 两路 upsert 对称)。情形1(新节点无本地态 / 归档 tombstone / guard-off 逃生舱)默认 false:guard-off
   // 语义就是"放弃下行防护、无条件覆盖"(同 backlog 已记的 guard-off 复活已删 link),不单独保单调。
+  // REPLACE deletes the parent row and cascades durable bundles/upload work.
+  // Update in place so a score-only sync cannot erase locally preserved data.
   const sup = localSuperseded || toBool(row.is_superseded)
-  db.prepare(`
-    INSERT OR REPLACE INTO nodes (
-      id, type, content, title,
-      heat, refinement, connectivity, independence,
-      specificity, subjectivity, actuality,
-      is_crystal, is_tag, is_meta,
-      source_tool, source_session, source_stream, source_timestamp,
-      tags, created, last_reconsolidated, version, archived,
-      is_keystone, is_superseded, source_device, maturity_score, updated,
-      edit_seq, decay_gen
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `).run(
+  const columns = 'id type content title heat refinement connectivity independence specificity subjectivity actuality is_crystal is_tag is_meta source_tool source_session source_stream source_timestamp tags created last_reconsolidated version archived is_keystone is_superseded source_device maturity_score updated edit_seq decay_gen'.split(' ')
+  const values = [
     row.id,
     row.type ?? 'fact',
     row.content ?? '',
@@ -130,7 +123,15 @@ function insertFullNodeRow(db: Database.Database, row: Record<string, unknown>, 
     row.updated ?? row.created ?? new Date().toISOString(),
     Number(row.edit_seq ?? 0),
     Number(row.decay_gen ?? 0),
-  )
+  ]
+  // Explicit UPDATE/INSERT preserves children and the conflict policy of existing
+  // dirty/tag triggers (SQLite UPSERT can override trigger OR REPLACE handling).
+  db.transaction(() => {
+    const updated = db.prepare(`UPDATE nodes SET ${columns.slice(1).map(column => `${column}=?`).join(',')} WHERE id=?`)
+      .run(...values.slice(1), values[0])
+    if (!updated.changes) db.prepare(`INSERT INTO nodes (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`)
+      .run(...values)
+  }).immediate()
 }
 
 /**
@@ -271,16 +272,32 @@ export function withApplyGuard<T>(db: Database.Database, fn: () => T): T {
   }
 }
 
+export function parseCloudSyncVersion(raw: unknown): number | null {
+  const version = typeof raw === 'number' ? raw
+    : typeof raw === 'string' && /^(0|[1-9]\d*)$/.test(raw) ? Number(raw) : NaN
+  return Number.isSafeInteger(version) && version >= 0 ? version : null
+}
+
 export function applyCloudRows(
   db: Database.Database,
   table: CloudTable,
   rows: Array<Record<string, unknown>>,
 ): void {
   if (rows.length === 0) return
+  const hasDeadLetters = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cloud_sync_dead_letters'").get()
+  const acknowledge = hasDeadLetters
+    ? db.prepare('DELETE FROM cloud_sync_dead_letters WHERE resource_table = ? AND resource_id = ? AND sync_version <= ?')
+    : null
   const insert = db.transaction((items: Array<Record<string, unknown>>) => {
     for (const row of items) {
       if (table === 'nodes') applyCloudNodeRow(db, row)
       else applyCloudLinkRow(db, row)
+      // Reconcile is also a delivery path. Acknowledge only the version actually
+      // fetched, in the same transaction; never consume a newer failed change.
+      const version = parseCloudSyncVersion(row.sync_version)
+      if (acknowledge && typeof row.id === 'string' && version !== null) {
+        acknowledge.run(table, row.id, version)
+      }
     }
   })
   withApplyGuard(db, () => insert(rows))

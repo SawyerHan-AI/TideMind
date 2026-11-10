@@ -344,6 +344,7 @@ export function ModelSelection() {
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState(false)
   const [reembedding, setReembedding] = useState(false)
+  const [reembedError, setReembedError] = useState(false)
   const dirty = useRef(false)
   const saveNowRef = useRef<((light: string, standard: string, heavy: string, embedding: string) => void) | null>(null)
 
@@ -368,13 +369,12 @@ export function ModelSelection() {
   }, [config, connectionData, connections, connMap])
 
   useEffect(() => {
-    if (!reembedding) return
-    const timer = setInterval(() => recheckReembed(), 2000)
+    const timer = setInterval(() => recheckReembed(), reembedding || reembedStatus?.needed ? 5000 : 15000)
     return () => clearInterval(timer)
-  }, [reembedding, recheckReembed])
+  }, [reembedding, reembedStatus?.needed, recheckReembed])
 
   useEffect(() => {
-    if (reembedStatus && !reembedStatus.running) setReembedding(false)
+    if (reembedStatus?.coverage.mode === 'ready') setReembedError(false)
   }, [reembedStatus])
 
   const saveNow = useCallback(async (lightValue: string, standardValue: string, heavyValue: string, embeddingValue: string) => {
@@ -411,11 +411,12 @@ export function ModelSelection() {
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
       refetchConfig()
+      recheckReembed()
     } catch {
       setSaved(false)
       setSaveError(true)
     }
-  }, [config, connMap, refetchConfig])
+  }, [config, connMap, refetchConfig, recheckReembed])
   saveNowRef.current = saveNow
 
   useEffect(() => {
@@ -462,22 +463,28 @@ export function ModelSelection() {
             <span>{t('model.selection.connectionLabel')}: {connMap.get(selectedEmbedding.connectionId)?.name ?? t('model.selection.notSelected')}</span>
           </div>
           <p className="text-[10px] text-gray-500">{t('model.selection.embeddingUsage')}</p>
-          {(reembedStatus?.needed || reembedStatus?.running) && (
+          {reembedStatus && (
             <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
               <div className="flex items-center gap-2">
                 <AlertTriangle size={12} className="text-amber-400" />
                 <p className="text-xs text-amber-300">
-                  {reembedStatus.running
-                    ? t('model.selection.reembedProgress', { done: reembedStatus.done, total: reembedStatus.total })
-                    : t('model.selection.reembedNeeded')}
+                  {t('model.selection.vectorCoverage', { ready: reembedStatus.coverage.ready, total: reembedStatus.coverage.eligible })}
+                  {' · '}{t(`model.selection.vectorState_${reembedStatus.coverage.mode}`)}
                 </p>
               </div>
-              {!reembedStatus.running && (
+              {reembedStatus.running && <p className="mt-1 text-xs text-gray-400">{t('model.selection.vectorAttempted', {done: reembedStatus.done, total: reembedStatus.total})}</p>}
+              {reembedStatus.coverage.queued > 0 && <p className="mt-1 text-xs text-gray-400">{t('model.selection.vectorQueued', {count: reembedStatus.coverage.queued})}</p>}
+              {reembedError && <p role="alert" className="mt-1 text-xs text-red-400">{t('model.selection.vectorIncomplete')}</p>}
+              {reembedStatus.canRebuild && !reembedStatus.running && reembedStatus.coverage.missing > 0 && (
                 <button
                   onClick={async () => {
                     setReembedding(true)
-                    await window.api.embedding.triggerReembed()
-                    recheckReembed()
+                    setReembedError(false)
+                    try {
+                      const result=await window.api.embedding.triggerReembed()
+                      setReembedError(!result.success)
+                    } catch { setReembedError(true) }
+                    finally { setReembedding(false); recheckReembed() }
                   }}
                   disabled={reembedding}
                   className="mt-2 flex items-center gap-2 px-3 py-1.5 text-xs bg-amber-500/20 hover:bg-amber-500/30 rounded-lg text-amber-300 disabled:opacity-50"

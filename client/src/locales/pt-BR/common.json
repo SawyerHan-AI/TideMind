@@ -52,6 +52,7 @@
     "signatureInvalid": "Assinatura inválida"
   },
   "llmHealth": {
+    "actionRequired": "IA pausada: verifique a conexão nas configurações",
     "paused": "IA pausada ({{min}} min até nova tentativa)",
     "recentFailures": "IA teve falhas recentes",
     "idle": "IA inativa há um tempo"

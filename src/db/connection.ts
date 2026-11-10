@@ -1,3 +1,9 @@
+import { cloudEndpointIdentity } from '../utils/cloud-endpoint.js';
+import { activateVectorRuntime, localEmbeddingInstanceId, readVectorRuntime } from './vector-cache-store.js';
+import { captureEmbeddingConnection } from '../embedding/connection-config.js';
+import { selectEmbeddingProfile } from '../embedding/profile.js';
+import { getMetabolismWorkerRuntimeContext } from '../metabolism/worker-runtime-context.js';
+import { preserveLegacyVectorData } from './vector-cache-schema.js';
 import { isDiagnosticRequested } from '../agent-diagnostic-contract.js';
 import Database from 'better-sqlite3';
 import path from 'node:path';
@@ -18,6 +24,9 @@ let vecInitPromise: Promise<VecCapability> | null = null;
 
 export type VecCapability = 'ready' | 'unavailable';
 
+
+/** Read-only access for provider probes; never opens or migrates a personal database. */
+export function getExistingDb(): Database.Database | null { return db?.open ? db : null; }
 
 export function getDb(): Database.Database {
   if (db) return db;
@@ -82,6 +91,8 @@ async function doInitVec(): Promise<VecCapability> {
     const row = db!.prepare("SELECT value FROM metadata WHERE key = 'vector_dimensions'").get() as { value: string } | undefined;
     const currentDim = row ? parseInt(row.value, 10) : 0;
 
+    preserveLegacyVectorData(db!, currentDim > 0 && currentDim !== targetDim);
+
     if (currentDim > 0 && currentDim !== targetDim) {
       log.info(`向量维度变更 ${currentDim} → ${targetDim}，重建向量表`);
       db!.exec('DROP TABLE IF EXISTS nodes_vec');
@@ -123,6 +134,24 @@ async function doInitVec(): Promise<VecCapability> {
         // 新库或未 embed 过 → 直接写 version=1,后续 reembed 自然产物
         db!.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('embedding_normalization_version', '1')").run();
       }
+    }
+
+    // New/changed spaces quarantine legacy projection before any semantic use.
+    // A Worker never takes over configuration ownership from the desktop.
+    const previous = readVectorRuntime(db!);
+    if (!getMetabolismWorkerRuntimeContext()) {
+      const effective = captureEmbeddingConnection(db!,config).config;
+      const requestedSync = effective.cloud?.sync_enabled === true;
+      const selection = selectEmbeddingProfile(effective,localEmbeddingInstanceId(db!));
+      activateVectorRuntime(db!,{
+        selection,
+        bindingId:effective.embedding.connection??null,
+        endpointId:requestedSync&&selection.shareable?cloudEndpointIdentity(effective.cloud?.server_url).id:null,
+        accountId:previous?.accountId??null,
+        syncEnabled:requestedSync && (previous?.syncEnabled??false),
+        backgroundBuilder:effective.metabolism.background_enabled !== false,
+        awaitingDesktopAuth:requestedSync && (previous?.awaitingDesktopAuth ?? !previous),
+      });
     }
 
     // 全部成功才标记 vec 可用

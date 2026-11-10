@@ -4,16 +4,16 @@ import {
   listConnectionHealth,
   resetConnectionHealth,
   setConnectionHealthChangeListener,
-} from '../../../src/llm/connection-health'
+} from '@server/llm/connection-health'
 import {
   setActiveLLMTaskListener,
   type ActiveLLMTask,
-} from '../../../src/llm/invocation-context'
-import { clearClientCache } from '../../../src/llm/client'
+} from '@server/llm/invocation-context'
+import { clearClientCache } from '@server/llm/client'
 import { getMetabolismWorkerDegradedReason, restartMetabolismWorkerAndTriggerImmediate } from '../daemon'
 import { createLogger } from '../../../src/utils/logger'
 import { getConfig } from '@server/config.js'
-import { buildConnectionModelsView, routesUsingConnection } from '../../../src/llm/model-catalog-view'
+import { buildConnectionModelsView, routesUsingConnection } from '@server/llm/model-catalog-view'
 import { MetabolismWorkerActiveTaskMirror } from '../workers/metabolism-worker-active-task-mirror'
 import type { MetabolismWorkerToMainMessage } from '../workers/metabolism-worker-protocol'
 

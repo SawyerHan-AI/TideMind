@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { safeStorage } from 'electron';
 import { createLogger } from '../../../src/utils/logger.js';
-import { getConfig, getDataDir } from '../../../src/config.js';
+import { getConfig, getDataDir } from '@server/config.js';
 import { secureStore } from './secure-store.js';
 
 const log = createLogger('cloud-auth');

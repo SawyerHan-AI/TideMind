@@ -169,6 +169,9 @@ export interface CoordinatorRepositoryPort extends IntegrationEventRepositoryPor
   recipeUpgradePredecessorTrust?(runId: string, installationId: string, planHash: string): {
     installation: CoordinatorInstallation; preparedPlan: PreparedCoordinatorPlan
   } | null | Promise<{ installation: CoordinatorInstallation; preparedPlan: PreparedCoordinatorPlan } | null>
+  retainedZeroEffectPeerTrust?(installationId:string,plan:PreparedCoordinatorPlan): {
+    installation:CoordinatorInstallation;preparedPlan:PreparedCoordinatorPlan
+  }|null|Promise<{installation:CoordinatorInstallation;preparedPlan:PreparedCoordinatorPlan}|null>
   isCompletedGenerationTakeoverCurrent?(installationId: string, plan: PreparedCoordinatorPlan): boolean | Promise<boolean>
   getInstallationControl(installationId: string): InstallationControlState | null | Promise<InstallationControlState | null>
   listOwnedArtifactBaselines(installationId: string): readonly OwnedArtifactBaseline[] | Promise<readonly OwnedArtifactBaseline[]>
@@ -814,6 +817,18 @@ export class AgentIntegrationCoordinator {
         }
       }
       if (confirmedGeneration) {
+        const retained=request.preparedPlan.executionPlan.retainedZeroEffectPeer
+        if(retained){
+          const fence=this.dependencies.repository.acquireExecutionFence(retained.runId)
+          if(!fence)throw new WriterFenceUnavailableError(`retained peer is executing: ${retained.runId}`)
+          priorExecutionFences.push(fence)
+          const peer=await this.dependencies.repository.retainedZeroEffectPeerTrust?.(request.installation.id,request.preparedPlan)
+          if(!peer)throw new Error('Retained peer proof changed')
+          await this.assertCurrentHostVersion(peer.installation.id,peer.preparedPlan)
+          await this.assertCurrentInstallationAuthorized(peer.installation,peer.preparedPlan)
+          recipePeerTrust.push(peer)
+
+        }
         for (const prior of generationTakeovers!) {
           const fence = this.dependencies.repository.acquireExecutionFence(prior.runId)
           if (!fence) throw new WriterFenceUnavailableError(`prior generation is executing: ${prior.runId}`)
@@ -826,7 +841,17 @@ export class AgentIntegrationCoordinator {
         }
         generationLeases = await acquireWriterFences(this.dependencies.repository,
           [...new Set([...preparedMutations.flatMap(allPhysicalMutationDomains),
-            ...generationTakeovers!.flatMap(prior => prior.mutationDomains)])].sort())
+            ...generationTakeovers!.flatMap(prior => prior.mutationDomains), ...(retained?.mutationDomains??[])])].sort())
+        if(retained){
+          const peer=recipePeerTrust.find(item=>item.installation.id===retained.installationId)!
+          const adapter=this.requireAdapter(peer.installation.identity.hostVariant)
+          const observed=await adapter.inspect(this.context(peer.installation,peer.preparedPlan.operationId??'retained-peer-readback',frozenPlanHostVersion(peer.preparedPlan),peer.preparedPlan.activityGenerationToken))
+          for(const key of peer.preparedPlan.componentKeys){
+            const frozen=peer.preparedPlan.inspection.components.find(item=>item.componentKey===key)
+            const live=observed.components.find(item=>item.componentKey===key)
+            if(!frozen?.observedFragmentHash || !live || live.observedTarget!==frozen.observedTarget || live.observedFragmentHash!==frozen.observedFragmentHash)throw new Error('Retained peer owned scope changed')
+          }
+        }
         if (!this.dependencies.authorizeEffect || !await this.dependencies.authorizeEffect(
           request.installation, this.trustBinding(request.preparedPlan), { operation: request.preparedPlan.operation, mutationDomain: null },
         )) throw new Error('Installation source trust changed before generation takeover')
@@ -851,7 +876,7 @@ export class AgentIntegrationCoordinator {
         if (!await this.dependencies.authorizeEffect(request.installation, this.trustBinding(request.preparedPlan),
           { operation: request.preparedPlan.operation, mutationDomain: null })) throw new Error('Installation source trust could not be verified at generation takeover')
         await assertRecipePeerTrust()
-        if (generationTakeovers!.some(prior => prior.kind === 'codex_lifecycle_4_to_5')) {
+        if (retained || generationTakeovers!.some(prior => prior.kind === 'codex_lifecycle_4_to_5' || prior.kind === 'codex_same_source_zero_effect')) {
           // Peer attestation is asynchronous; recheck held authority before the
           // prepare transaction can retire any predecessor or bind a new run.
           await assertWriterFencesOwned(generationLeases)
@@ -1324,7 +1349,9 @@ export class AgentIntegrationCoordinator {
     if (!input.recovery) {
       await this.dependencies.repository.setRunState(input.runId, 'preconditions_checked', nowIso(this.dependencies.clock))
     }
-    if (!input.recovery || input.mutations.some(mutation =>
+    const preparedNoopRecovery=input.recovery && input.mutations.length===0 && (input.preparedPlan.executionPlan.retainedZeroEffectPeer
+      || input.preparedPlan.executionPlan.completedGenerationTakeovers?.some(prior=>prior.kind==='codex_same_source_zero_effect'))
+    if (!input.recovery || preparedNoopRecovery || input.mutations.some(mutation =>
       mutation.journal.state !== 'committed' && mutation.journal.state !== 'compensated')) {
       await this.dependencies.repository.setRunState(input.runId, 'applying', nowIso(this.dependencies.clock))
     }

@@ -49,10 +49,10 @@ export function LLMHealthBadge() {
 
   // F6:当前任务所用连接 open 时每秒 tick 一次,推动倒计时刷新。
   useEffect(() => {
-    if (activeError?.circuitState !== 'open') return
+    if (activeError?.circuitState !== 'open' || activeError.needsUserAction) return
     const t = setInterval(() => setTick(x => x + 1), 1000)
     return () => clearInterval(t)
-  }, [activeError?.circuitState])
+  }, [activeError?.circuitState, activeError?.needsUserAction])
 
   if (!health) return null
 
@@ -71,7 +71,9 @@ export function LLMHealthBadge() {
     const min = Math.ceil(remainingMs / 60_000)
     display = {
       severity: 'error',
-      label: t('llmHealth.paused', { min, defaultValue: 'AI 暂停中（{{min}} 分钟后重试）' }),
+      label: activeError.needsUserAction
+        ? t('llmHealth.actionRequired')
+        : t('llmHealth.paused', { min, defaultValue: 'AI 暂停中（{{min}} 分钟后重试）' }),
       dotClass: 'bg-red-400 animate-pulse',
       dotShadow: '0 0 6px rgba(248,113,113,0.5)',
     }

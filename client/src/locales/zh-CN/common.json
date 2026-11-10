@@ -52,6 +52,7 @@
     "signatureInvalid": "签名校验失败"
   },
   "llmHealth": {
+    "actionRequired": "AI 已暂停，请在设置中检查连接",
     "paused": "AI 暂停中（{{min}} 分钟后重试）",
     "recentFailures": "AI 近期有失败",
     "idle": "AI 长时间无活动"

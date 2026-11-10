@@ -52,6 +52,7 @@
     "signatureInvalid": "簽章驗證失敗"
   },
   "llmHealth": {
+    "actionRequired": "AI 已暫停，請在設定中檢查連線",
     "paused": "AI 暫停中（{{min}} 分鐘後重試）",
     "recentFailures": "AI 近期有失敗",
     "idle": "AI 長時間無活動"

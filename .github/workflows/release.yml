@@ -29,6 +29,8 @@ on:
       - '!v0.2.97'
       # 0.2.98 has its own approved dual-machine acceptance and Studio signing path.
       - '!v0.2.98'
+      # 0.2.99 uses its approved vector-sync/Codex two-machine acceptance on Studio.
+      - '!v0.2.99'
 
 permissions:
   contents: read

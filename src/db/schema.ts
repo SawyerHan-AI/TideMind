@@ -19,6 +19,7 @@ import {
   ensureAgentIntegrationSchema,
 } from './agent-integration-schema.js';
 import { ensureModelDiscoverySchema } from './model-discovery-schema.js';
+import { ensureVectorCacheSchema } from './vector-cache-schema.js';
 
 const log = createLogger('schema');
 
@@ -2195,6 +2196,11 @@ const MIGRATIONS: Migration[] = [
     description: 'Agent隔离诊断能力与提交额度账本',
     up: (db) => { ensureAgentIntegrationSchema(db); },
   },
+  {
+    version: 48,
+    description: '保留旧原始向量并建立可验证bundle与账号隔离上传队列',
+    up: (db) => { ensureVectorCacheSchema(db); },
+  },
 ];
 
 /**
@@ -2365,6 +2371,7 @@ export function ensureSchema(db: Database.Database, recoverSchema41 = false): vo
   db.exec(SCHEMA_SQL);
   ensureAgentIntegrationSchema(db);
   ensureModelDiscoverySchema(db);
+  ensureVectorCacheSchema(db);
 
   // FTS5
   db.exec(FTS_SQL);

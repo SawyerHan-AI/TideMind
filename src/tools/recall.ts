@@ -1,3 +1,4 @@
+import { vectorSpace } from '../embedding/vector-space.js';
 import type Database from 'better-sqlite3';
 import type { RecallInput, RecallOutput, RecallNode, RecallNodeLink, RecallIndexItem, BrainNode, NodeType, Intent, RecallDiagnostics } from '../types.js';
 import type { IRepository } from '../db/repository.js';
@@ -8,7 +9,6 @@ import { reconsolidateOnRecall } from '../metabolism/reconsolidate.js';
 import { revalidateLinks } from '../metabolism/link-revalidate.js';
 import { expandFromNode } from '../graph/expansion.js';
 import { getGateStatus } from '../db/stats.js';
-import { getEmbedding } from '../llm/embedding.js';
 import { l2DistanceToSimilarity } from '../utils/similarity.js';
 import { computeFreshness } from '../utils/freshness.js';
 import { createLogger } from '../utils/logger.js';
@@ -595,16 +595,16 @@ async function rerankByQuery(repo: IRepository, nodes: BrainNode[], query: strin
   // 失败时回退到原序而不是让整个 recall 废掉。
   let queryEmbedding: Float32Array | null;
   try {
-    queryEmbedding = await getEmbedding(query);
+    queryEmbedding = await repo.vectors.embedQuery(query);
   } catch (err) {
     log.warn(`rerankByQuery getEmbedding 失败，回退到原序: ${err instanceof Error ? err.message : String(err)}`);
     return nodes;
   }
-  if (!queryEmbedding) return nodes; // embedding 不可用，保持原序
+  if (!queryEmbedding || !repo.vectors.isQueryCurrent(queryEmbedding)) return nodes; // embedding 不可用，保持原序
 
   const scored: Array<{ node: BrainNode; similarity: number }> = [];
   for (const node of nodes) {
-    const nodeEmbedding = repo.vectors.getVectorForNode(node.id);
+    const nodeEmbedding = repo.vectors.getVectorForNode(node.id,vectorSpace(queryEmbedding));
     if (!nodeEmbedding) {
       // 没有 embedding 的节点放到末尾，给一个低分
       scored.push({ node, similarity: -1 });
@@ -623,6 +623,7 @@ async function rerankByQuery(repo: IRepository, nodes: BrainNode[], query: strin
     scored.push({ node, similarity: l2DistanceToSimilarity(Math.sqrt(sumSq)) });
   }
 
+  if(!repo.vectors.isQueryCurrent(queryEmbedding))return nodes;
   scored.sort((a, b) => b.similarity - a.similarity);
   return scored.map(s => s.node);
 }

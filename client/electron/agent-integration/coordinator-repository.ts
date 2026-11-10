@@ -551,6 +551,19 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     return {installation,preparedPlan}
   }
 
+  retainedZeroEffectPeerTrust(installationId:string,plan:PreparedCoordinatorPlan): {installation:CoordinatorInstallation;preparedPlan:PreparedCoordinatorPlan}|null {
+    const proof=plan.executionPlan.retainedZeroEffectPeer,peer=plan.retainedZeroEffectPeerPlan
+    if(!proof || !peer || !this.repository.isCompletedGenerationTakeoverCurrent(installationId,plan))return null
+    const row=this.db.prepare(`SELECT * FROM reconcile_runs WHERE id=? AND installation_id=? AND execution_plan_hash=? AND state='needs_recovery'`)
+      .get(proof.runId,proof.installationId,proof.executionPlanHash) as RunRow|undefined
+    if(!row)return null
+    const old=parseObject(row.prepared_plan_json,'prepared plan') as unknown as PreparedCoordinatorPlan
+    assertPersistedPreparedPlanShape(old);assertPersistedRunEnvelope(row,old)
+    const installation=this.installationFromRow(this.repository.getInstallation(proof.installationId),true)
+    if(this.loadValidatedRecoveryEnvelope(row,old,installation).length)return null
+    return {installation,preparedPlan:peer}
+  }
+
   isCompletedGenerationTakeoverCurrent(installationId: string, plan: PreparedCoordinatorPlan): boolean {
     return this.repository.isCompletedGenerationTakeoverCurrent(installationId, plan)
   }
@@ -564,6 +577,8 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     if (!row || row.status !== 'active') return null
     let nativePermissionPlanHash: string | undefined
     try { const value = JSON.parse(String(row.authorization_context_json))?.nativePermissionPlanHash; if (typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value)) nativePermissionPlanHash = value } catch { /* Legacy consent has no native permission context. */ }
+    let recoveryPlanHash:string|undefined
+    try{const value=JSON.parse(String(row.authorization_context_json))?.recoveryPlanHash;if(typeof value==='string' && /^[a-f0-9]{64}$/u.test(value))recoveryPlanHash=value}catch{/* No exact recovery approval. */}
     let automaticContext: ConsentEnvelope['automaticContext']
     if (row.authorization_origin === 'default_auto_policy') {
       try { automaticContext = JSON.parse(String(row.authorization_context_json)) } catch { return null }
@@ -583,6 +598,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     }
     return {
       ...(nativePermissionPlanHash ? { nativePermissionPlanHash } : {}),
+      ...(recoveryPlanHash ? { recoveryPlanHash } : {}),
       id: String(row.id),
       installationId: String(row.installation_id),
       ...(automaticPlanAuthorization ? { automaticPlanAuthorization } : {}),
@@ -738,6 +754,8 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       const confirmedTakeover = takeovers?.length
         && this.repository.isCompletedGenerationTakeoverCurrent(input.installationId, input.preparedPlan)
       if (takeovers?.length && !confirmedTakeover) throw new Error('Completed generation takeover changed before prepare')
+      const retainedPeer=input.preparedPlan.executionPlan.retainedZeroEffectPeer
+      if(retainedPeer && !this.retainedZeroEffectPeerTrust(input.installationId,input.preparedPlan))throw new Error('Retained zero-effect peer changed before prepare')
       if (installation.host_variant === 'custom-local-mcp'
         && input.operation !== 'disconnect'
         && (input.desiredCapability > 2
@@ -801,7 +819,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       if (confirmedTakeover) {
         for (const prior of takeovers!) {
           const priorInstallationId = prior.kind === 'codex_lifecycle_4_to_5' ? prior.installationId! : input.installationId
-          if (prior.kind === 'codex_lifecycle_4_to_5') {
+          if (prior.kind === 'codex_lifecycle_4_to_5' || (retainedPeer && !prior.kind)) {
             const row = this.db.prepare('SELECT * FROM reconcile_runs WHERE id=? AND installation_id=?')
               .get(prior.runId,priorInstallationId) as RunRow | undefined
             if (!row) throw new Error('Recipe upgrade predecessor disappeared')
@@ -815,6 +833,16 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
             if(!coverage?.allowed || coverage.executionPlanHash!==row.execution_plan_hash) throw new Error('Recipe upgrade predecessor consent changed')
             const rows=this.loadValidatedRecoveryEnvelope(row,old,oldInstallation)
             for (const {row:mutation,plannedMutation} of rows) assertVerifiedMutationJournal(mutation,plannedMutation)
+          }
+          if(prior.kind==='codex_same_source_zero_effect'){
+            const row=this.db.prepare(`SELECT * FROM reconcile_runs WHERE id=? AND installation_id=? AND execution_plan_hash=? AND state='needs_recovery'`)
+              .get(prior.runId,priorInstallationId,prior.executionPlanHash) as RunRow|undefined
+            if(!row)throw new Error('Zero-effect recovery predecessor changed')
+            const old=parseObject(row.prepared_plan_json,'prepared plan') as unknown as PreparedCoordinatorPlan
+            assertPersistedPreparedPlanShape(old)
+            assertPersistedRunEnvelope(row,old)
+            const oldInstallation=this.installationFromRow(this.repository.getInstallation(priorInstallationId),true)
+            if(this.loadValidatedRecoveryEnvelope(row,old,oldInstallation).length)throw new Error('Zero-effect recovery journal is not empty')
           }
           const retired = this.db.prepare(`
             UPDATE reconcile_runs SET state='cancelled',failure_code='superseded_by_confirmed_generation',
@@ -934,7 +962,8 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
             )
         `).all(mutationDomain, input.operation, input.installationId, sharedJoinToken, sharedJoinToken, input.installationId) as Array<{ id: string }>
         if ([...snapshotOverlap, ...mutationOverlap].some(run => !this.isCompletedSharedDetachPeer(input, run.id, mutationDomain, preparedArtifacts.filter(item => [item.mutation.mutationDomain, ...(item.mutation.additionalMutationDomains ?? [])].includes(mutationDomain)).every(item => item.artifact.effectDisposition === 'consumer_detach'))
-          && !this.isProvedFileRepairPeer(input, run.id, mutationDomain))) {
+          && !this.isProvedFileRepairPeer(input, run.id, mutationDomain)
+          && !(retainedPeer?.runId===run.id && retainedPeer.mutationDomains.includes(mutationDomain)))) {
           throw new Error(`mutation domain already has a non-terminal run: ${mutationDomain}`)
         }
         this.db.prepare(`

@@ -87,12 +87,12 @@ describe('nodes_vec segment id helpers (real source)', () => {
     expect(wrong).toBeUndefined();
   });
 
-  it('getVectorForNode(真源,走 ${id}#0)正确命中第一段', () => {
+  it('getVectorForNode拒绝缺少生成来源的legacy原始段', () => {
     insertVector(db, 'node-xyz', new Float32Array([1, 2, 3, 4]));
 
     const got = getVectorForNode(db, 'node-xyz');
-    expect(got).not.toBeNull();
-    expect(Array.from(got!)).toEqual([1, 2, 3, 4]);
+    expect(got).toBeNull();
+    expect(db.prepare('SELECT id FROM nodes_vec WHERE id=?').get('node-xyz#0')).toEqual({id:'node-xyz#0'});
   });
 
   it('getVectorForNode 不存在的节点返回 null', () => {

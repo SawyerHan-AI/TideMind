@@ -20,7 +20,7 @@ export function registerModelCatalogUiAuditHandlers(db: Database.Database, dataD
     if (!connection) throw new Error('fixture connection missing')
     return buildConnectionModelsView(db, connection, parse(fs.readFileSync(configPath, 'utf8')) as unknown as RouteConfigLike)
   })
-  ipcMain.handle('embedding:reembed-status', () => ({ needed: false, running: false, done: 0, total: 0 }))
+  ipcMain.handle('embedding:reembed-status', () => ({ needed: false, canRebuild: false, running: false, done: 0, total: 0, coverage: {mode: 'ready', eligible:0,ready:0,missing:0,failed:0,queued:0,uploadFailed:0} }))
   ipcMain.handle('config:update', (_event, patch: unknown) => {
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('invalid fixture config')
     const parts = patch as Record<string, unknown>
