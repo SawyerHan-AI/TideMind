@@ -256,6 +256,41 @@ describe('F11 — connections:test failure preserves available_models', () => {
     expect(JSON.parse(row.available_models)).toEqual(['claude-3-7-sonnet', 'claude-3-5-haiku', 'claude-3-opus']);
   });
 
+  it('persists a probe using the same prefilled credentials as the saved connection', async () => {
+    const db = dbHolder.db!;
+    const id = seedConnection(db, { available_models: null });
+    db.prepare("UPDATE model_connections SET status = 'unconfigured' WHERE id = ?").run(id);
+    probeAnthropicMock.mockResolvedValueOnce({ online: true, models: ['fixture-model'] });
+    await handlers.get('connections:test')!(null, id, { api_key: 'sk-test' });
+    expect(connectionRow(db, id).status).toBe('online');
+    expect(JSON.parse(connectionRow(db, id).available_models!)).toEqual(['fixture-model']);
+  });
+
+  it('does not persist an unsaved credential probe as the saved connection status', async () => {
+    const db = dbHolder.db!;
+    const id = seedConnection(db, { available_models: JSON.stringify(['saved-model']) });
+    probeAnthropicMock.mockResolvedValueOnce({ online: true, models: ['draft-model'] });
+    await handlers.get('connections:test')!(null, id, { api_key: 'fixture-unsaved-key' });
+    expect(probeAnthropicMock).toHaveBeenCalledWith('fixture-unsaved-key');
+    expect(JSON.parse(connectionRow(db, id).available_models!)).toEqual(['saved-model']);
+    expect((db.prepare('SELECT credentials FROM model_connections WHERE id = ?').get(id) as { credentials: string }).credentials).toBe(JSON.stringify({ api_key: 'sk-test' }));
+  });
+
+  it('does not apply a late probe after saved credentials changed', async () => {
+    const db = dbHolder.db!;
+    const id = seedConnection(db, { available_models: JSON.stringify(['saved-model']) });
+    let finish!: (value: { online: boolean; models: string[] }) => void;
+    probeAnthropicMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const pending = handlers.get('connections:test')!(null, id, { api_key: 'sk-test' });
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    db.prepare("UPDATE model_connections SET credentials = ?, status = 'unconfigured' WHERE id = ?")
+      .run(JSON.stringify({ api_key: 'fixture-replacement-key' }), id);
+    finish({ online: true, models: ['old-credential-model'] });
+    await pending;
+    expect(connectionRow(db, id).status).toBe('unconfigured');
+    expect(JSON.parse(connectionRow(db, id).available_models!)).toEqual(['saved-model']);
+  });
+
   it('成功有 models → 状态 online + models 更新', async () => {
     const id = seedConnection(dbHolder.db, { available_models: null });
     const testHandler = handlers.get('connections:test')!;
