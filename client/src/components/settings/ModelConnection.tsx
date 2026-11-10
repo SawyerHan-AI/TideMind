@@ -361,8 +361,8 @@ function ConnectionDetailPanel({ conn, onRefresh }: { conn: Connection; onRefres
 
   // 测试连接同时传入表单当前值。两个场景都正确:
   //  - 新建 connection:DB credentials 是空 `{}`,merge 后用表单填的值(修复 UX)
-  //  - 编辑老 connection:SecretInput 出于安全不回填 → 表单字段是空字符串,
-  //    merge 时被跳过(只覆盖非空),fall back 到 DB 已存值,不会被清空。
+  //  - 编辑老 connection:表单可回填已保存值；IPC 对比 DB，仅不同的草稿值
+  //    阻止状态持久化。空字段仍回退到 DB 已存值，不会清空凭据。
   // 这个改动不写 DB credentials,只用于 probe;持久化仍走"保存"按钮。
   //
   // Audit A.M1 (2026-05-21):creds === null 时 form initial default (region 是

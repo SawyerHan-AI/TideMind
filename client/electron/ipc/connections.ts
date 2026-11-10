@@ -905,7 +905,7 @@ export function registerConnectionHandlers(dataDir: string): void {
     for (const [k, v] of Object.entries(overrides)) {
       if (v.length > 0) {
         creds[k] = v
-        hasOverride = true
+        if (v !== dbCreds[k]) hasOverride = true
       }
     }
     let result: { online: boolean; models: string[]; error?: string; region?: string }
@@ -978,7 +978,9 @@ export function registerConnectionHandlers(dataDir: string): void {
     // 之前测试失败会把 available_models 设回 null,丢掉用户上次成功时拿到的型号列表 —
     // UI 上"模型下拉"瞬间变空,但其实凭证可能只是瞬时不可用。保留上次的 list 让 UI 仍可用。
     //
-    // Audit A.M2 (2026-05-21):有 form override 时**不写 DB status / available_models**,
+    // Only a draft value different from saved credentials is a temporary override.
+    // Prefilled/saved identical values must still persist the successful probe.
+    // Audit A.M2 (2026-05-21):有不同的 form override 时**不写 DB status / available_models**,
     // 只把 probe 结果 return 给 UI 当前次显示。原因:formOverride 用的是表单未保存
     // 的值,跟 DB credentials 不一致;此时 probe 成功不代表"DB 里这条 connection
     // 可用"。如果写 DB,用户看到绿点 + 模型 chip 以为已配好,选了它一调 LLM 就报
@@ -997,8 +999,8 @@ export function registerConnectionHandlers(dataDir: string): void {
         params.push(JSON.stringify(result.models))
       }
       db.prepare(
-        `UPDATE model_connections SET ${cols.join(', ')} WHERE id = ?`,
-      ).run(...params, validId)
+        `UPDATE model_connections SET ${cols.join(', ')} WHERE id = ? AND credentials = ? AND archived = 0`,
+      ).run(...params, validId, conn.credentials)
       broadcastLLMHealth(db)
     }
 
