@@ -158,8 +158,8 @@ export function applyCloudNodeRow(db: Database.Database, row: Record<string, unk
   }
 
   const local = db
-    .prepare(`SELECT edit_seq, updated, is_superseded FROM nodes WHERE id = ?`)
-    .get(id) as { edit_seq?: number; updated?: string; is_superseded?: number } | undefined
+    .prepare(`SELECT edit_seq, updated, is_superseded, content, title FROM nodes WHERE id = ?`)
+    .get(id) as { edit_seq?: number; updated?: string; is_superseded?: number; content?: string; title?: string | null } | undefined
 
   // 情形 1:新节点 / 云端归档(tombstone 优先,不受本地 edit_seq/updated 阻拦)/ 关闭防护 → 整行写入。
   // F1 修复(2026-06-24 logseq-orphan):local 存在且 guard 开(主要是 cloudArchived 子情况)时传
@@ -169,7 +169,7 @@ export function applyCloudNodeRow(db: Database.Database, row: Record<string, unk
   const guardOn = downlinkGuardEnabled(db)
   if (!local || cloudArchived || !guardOn) {
     insertFullNodeRow(db, row, !!local && guardOn ? (local.is_superseded ?? 0) === 1 : false)
-    if (cloudArchived) deleteVectorIfPresent(db, id)
+    if (cloudArchived || (local && (local.content !== row.content || (local.title ?? null) !== (row.title ?? null)))) deleteVectorIfPresent(db, id)
     return
   }
 
@@ -177,6 +177,7 @@ export function applyCloudNodeRow(db: Database.Database, row: Record<string, unk
   // HIGH-B 修复:传本地 is_superseded 做 OR 合并 —— 多设备并发下,另一端陈旧 active 但 edit_seq 更高
   // 的行会经 contentTakesCloud 走到这里,不能把本地刚退休节点翻回 active(supersede 单调)。
   if (contentTakesCloud(row, local)) {
+    if (local.content !== row.content || (local.title ?? null) !== (row.title ?? null)) deleteVectorIfPresent(db, id)
     insertFullNodeRow(db, row, (local.is_superseded ?? 0) === 1)
     return
   }
@@ -224,7 +225,11 @@ export function applyCloudLinkRow(db: Database.Database, row: Record<string, unk
     const local = db
       .prepare(`SELECT edit_seq, updated FROM links WHERE id = ?`)
       .get(id) as { edit_seq?: number; updated?: string } | undefined
-    if (local && !contentTakesCloud(row, local)) return
+    if (local && !contentTakesCloud(row, local)) {
+      // Cloud strength is derived; preserve newer local semantic edits.
+      db.prepare('UPDATE links SET strength = ? WHERE id = ?').run(Number(row.strength ?? 0.5), id)
+      return
+    }
   }
   db.prepare(`
     INSERT OR REPLACE INTO links (

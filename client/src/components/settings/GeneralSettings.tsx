@@ -1,3 +1,4 @@
+import { Toggle } from '../shared/Toggle'
 import { useEffect, useState } from 'react'
 import { Sun, Moon, Monitor, ChevronDown } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -27,6 +28,26 @@ export function GeneralSettings() {
   const { theme, setTheme } = useTheme()
   const { timezone, setTimezone } = useTimezone()
   const { t, i18n } = useTranslation()
+  const [backgroundEnabled, setBackgroundEnabled] = useState<boolean | null>(null)
+  const [backgroundSaving, setBackgroundSaving] = useState(false)
+  const [backgroundError, setBackgroundError] = useState(false)
+  useEffect(() => {
+    let active = true
+    window.api.config.get().then(config => {
+      const settings = config.metabolism as {background_enabled?:boolean} | undefined
+      if (!settings || (settings.background_enabled !== undefined && typeof settings.background_enabled !== 'boolean')) throw new Error('configuration unavailable')
+      if (active) setBackgroundEnabled(settings.background_enabled !== false)
+    }).catch(() => { if (active) setBackgroundError(true) })
+    return () => { active = false }
+  }, [])
+  const changeBackgroundRole = async (enabled:boolean) => {
+    setBackgroundSaving(true);setBackgroundError(false)
+    try {
+      const result = await window.api.config.update({metabolism:{background_enabled:enabled}})
+      if (!result.success) throw new Error('not saved')
+      setBackgroundEnabled(enabled)
+    } catch { setBackgroundError(true) } finally { setBackgroundSaving(false) }
+  }
   const [updateChannel, setUpdateChannelState] = useState<UpdateChannel>('stable')
 
   useEffect(() => {
@@ -72,6 +93,14 @@ export function GeneralSettings() {
 
   return (
     <div className="space-y-6 max-w-xl">
+      <Section title={t('settings:general.backgroundOrganization.title')}>
+        <div className="flex items-start justify-between gap-4">
+          <p className="text-xs text-gray-400">{t('settings:general.backgroundOrganization.description')}</p>
+          <Toggle enabled={backgroundEnabled === true} disabled={backgroundEnabled === null || backgroundSaving}
+            label={t('settings:general.backgroundOrganization.title')} onChange={value => { void changeBackgroundRole(value) }} />
+        </div>
+        {backgroundError && <p role="alert" className="text-xs text-red-400 mt-2">{t('settings:general.backgroundOrganization.error')}</p>}
+      </Section>
       <Section title={t('settings:general.appearance')}>
         <div className="space-y-3">
           <label className="text-xs text-gray-400 block">{t('settings:general.themeMode')}</label>

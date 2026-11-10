@@ -19,9 +19,11 @@ describe('findMissingVectorNodes', () => {
     expect(rows.find((r) => r.id === node.id)?.content).toBe('needs embed')
   })
 
-  it('已有向量(node_segments)的节点不返回', () => {
+  it('complete mappings with actual vectors are not selected', () => {
     const db = setupTestDb()
     const node = seedNode(db, { content: 'has embed' })
+    db.exec('CREATE TABLE IF NOT EXISTS nodes_vec (id TEXT PRIMARY KEY, embedding BLOB)')
+    db.prepare('INSERT INTO nodes_vec(id,embedding) VALUES (?,?)').run(`${node.id}#0`,Buffer.from([1,2,3,4]))
     db.prepare('INSERT INTO node_segments (segment_id, node_id, segment_index) VALUES (?, ?, ?)')
       .run(`${node.id}#0`, node.id, 0)
     const rows = findMissingVectorNodes(db, 10)
@@ -58,3 +60,35 @@ describe('findMissingVectorNodes', () => {
     expect(findMissingVectorNodes(db, 3).length).toBe(3)
   })
 })
+
+it('indexes title-only nodes and excludes whitespace-only nodes', () => {
+  const db = setupTestDb()
+  const title = seedNode(db, { content: '\n\t ', title: 'A useful crystal' })
+  const empty = seedNode(db, { content: '\u3000\u00a0', title: '\u3000\u00a0' })
+  const body = seedNode(db, { content: 'Body wins', title: 'Title' })
+  const rows = findMissingVectorNodes(db, 10)
+  expect(rows.find(r => r.id === title.id)?.content).toBe('A useful crystal')
+  expect(rows.some(r => r.id === empty.id)).toBe(false)
+  expect(rows.find(r => r.id === body.id)?.content).toBe('Body wins')
+  expect(db.prepare('SELECT content FROM nodes WHERE id = ?').get(title.id)).toEqual({ content: '\n\t ' })
+})
+
+it('repairs existing partial segments and mappings with no vector payload', () => {
+ const db=setupTestDb();
+ db.exec('CREATE TABLE IF NOT EXISTS nodes_vec(id TEXT PRIMARY KEY,embedding BLOB)');
+ const partial=seedNode(db,{content:'Long memory. '.repeat(200)});
+ const dangling=seedNode(db,{content:'missing payload'});
+ for(const node of [partial,dangling])db.prepare('INSERT INTO node_segments(segment_id,node_id,segment_index) VALUES (?,?,0)').run(node.id+'#0',node.id);
+ db.prepare('INSERT INTO nodes_vec(id,embedding) VALUES (?,?)').run(partial.id+'#0',Buffer.from([1,2,3,4]));
+ const selected=findMissingVectorNodes(db,10).map(row=>row.id);
+ expect(selected).toContain(partial.id);expect(selected).toContain(dangling.id);
+ db.close();
+});
+
+it('selects historical empty-input leftovers for cleanup without a model request',()=>{
+ const db=setupTestDb();const node=seedNode(db,{content:'old'});
+ db.prepare('INSERT INTO node_segments(segment_id,node_id,segment_index) VALUES (?,?,0)').run(node.id+'#0',node.id);
+ db.prepare("UPDATE nodes SET content='',title=NULL WHERE id=?").run(node.id);
+ expect(findMissingVectorNodes(db,10)).toContainEqual({id:node.id,content:'',cleanupOnly:true});
+ db.close();
+});

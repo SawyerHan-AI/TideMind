@@ -27,6 +27,8 @@ on:
       # Its reviewed assets are uploaded manually; do not rebuild with the 0.2.95 gates.
       - '!v0.2.96'
       - '!v0.2.97'
+      # 0.2.98 has its own approved dual-machine acceptance and Studio signing path.
+      - '!v0.2.98'
 
 permissions:
   contents: read

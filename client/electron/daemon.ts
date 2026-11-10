@@ -1,3 +1,4 @@
+import { isSyncBootstrapCheck } from './sync-bootstrap';
 /**
  * Electron 内嵌守护进程
  *
@@ -95,6 +96,7 @@ function publishWorkerDegraded(db: ReturnType<typeof getDb>, reason: unknown, pr
 }
 
 export function startDaemon(): Promise<void> {
+  if (isSyncBootstrapCheck()) return Promise.resolve();
   if (startupPromise) return startupPromise
   if (running || stopping) return Promise.resolve()
   const generation = ++lifecycleGeneration

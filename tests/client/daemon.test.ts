@@ -327,3 +327,17 @@ describe('Electron daemon Worker production path', () => {
     expect(mocks.closeDb).toHaveBeenCalledTimes(1)
   })
 })
+
+it('bootstrap commissioning starts neither memory workers nor note watchers; normal restart resumes', async () => {
+  const previous = [...process.argv];
+  try {
+    process.argv.push('--sync-bootstrap-check');
+    await daemon.startDaemon();
+    expect(mocks.startSources).not.toHaveBeenCalled();
+    expect(mocks.createManager).not.toHaveBeenCalled();
+    process.argv = previous;
+    await daemon.startDaemon();
+    expect(mocks.startSources).toHaveBeenCalledTimes(1);
+    expect(mocks.createManager).toHaveBeenCalledTimes(1);
+  } finally { process.argv = previous; await daemon.stopDaemon(); }
+});

@@ -602,6 +602,7 @@ export function parseNoteSourcePath(toolType: NoteSourceToolType, rawPath: strin
 
 export function parseConfigPatch(value: unknown): ValidationResult<Record<string, unknown>> {
   if (!isPlainRecord(value)) return invalid('patch must be an object')
+  if (isPlainRecord(value.metabolism) && 'background_enabled' in value.metabolism && typeof value.metabolism.background_enabled !== 'boolean') return invalid('metabolism.background_enabled must be a boolean')
   // Prototype-pollution 纵深防御:递归剥离 __proto__ / constructor / prototype。
   // deepMerge 也有同样守卫,这里在校验阶段先剥一道,让"attacker patch 含
   // forbidden key"在 IPC 边界就被静默移除,日志上看到原 patch 不会因含此 key 失败。

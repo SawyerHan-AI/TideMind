@@ -29,14 +29,9 @@ describe('segmentForEmbedding', () => {
     expect(segmentForEmbedding(content)).toEqual([content]);
   });
 
-  it('空字符串返回空数组（被 filter 移除）', () => {
-    // content.length < 500 所以返回 [content]，但 '' 被 filter 掉
-    // 实际上 segmentForEmbedding('') 返回 [''] → filter 后 []
-    const result = segmentForEmbedding('');
-    // 空字符串长度为0 < 500，所以返回 ['']
-    // 但 '' 的 length > 0 是 false，不过 filter(s => s.length > 0) 在 else 分支
-    // 实际是第一个分支返回 [content]，不经过 filter
-    expect(result).toEqual(['']);
+  it('空字符串和纯空白不产生 embedding 分段', () => {
+    expect(segmentForEmbedding('')).toEqual([]);
+    expect(segmentForEmbedding(' \n\t')).toEqual([]);
   });
 
   // ---------- 长内容分段 ----------
@@ -233,4 +228,82 @@ describe('reembedAllNodes', () => {
     ).get(...remaining) as { cnt: number };
     expect(row.cnt).toBe(100);
   });
+});
+
+it('uses the title for empty bodies without writing it into content', async () => {
+  const { insertSegmentVectors } = await import('../../src/db/vectors.js');
+  const { getEmbedding } = await import('../../src/llm/embedding.js');
+  vi.mocked(getEmbedding).mockClear();
+  vi.mocked(getEmbedding).mockResolvedValueOnce(null);
+  const node = seedNode(db, { content: ' \n', title: 'Crystal title' });
+  await insertSegmentVectors(db, node.id, ' \n');
+  expect(getEmbedding).toHaveBeenCalledWith('Crystal title');
+  expect(db.prepare('SELECT content FROM nodes WHERE id = ?').get(node.id)).toEqual({ content: ' \n' });
+  vi.mocked(getEmbedding).mockClear();
+  const blank = seedNode(db, { content: '', title: ' ' });
+  expect(await insertSegmentVectors(db, blank.id, '')).toBe(0);
+  expect(getEmbedding).not.toHaveBeenCalled();
+});
+
+it('persists a title vector and its segment mapping on successful indexing', async () => {
+  const { insertSegmentVectors, getVectorForNode } = await import('../../src/db/vectors.js');
+  const { getEmbedding } = await import('../../src/llm/embedding.js');
+  db.exec('CREATE TABLE IF NOT EXISTS nodes_vec (id TEXT PRIMARY KEY, embedding BLOB)');
+  vi.mocked(getEmbedding).mockResolvedValue(new Float32Array([1, 2, 3, 4]));
+  const node = seedNode(db, { content: '', title: 'Searchable title' });
+  expect(await insertSegmentVectors(db, node.id, '')).toBe(1);
+  expect(getVectorForNode(db, node.id)).toEqual(new Float32Array([1, 2, 3, 4]));
+  expect(db.prepare('SELECT content FROM nodes WHERE id = ?').get(node.id)).toEqual({ content: '' });
+});
+
+it('does not commit incomplete segments and can retry the entire input', async () => {
+  const { insertSegmentVectors } = await import('../../src/db/vectors.js');
+  const { getEmbedding } = await import('../../src/llm/embedding.js');
+  db.exec('CREATE TABLE IF NOT EXISTS nodes_vec (id TEXT PRIMARY KEY, embedding BLOB)');
+  const content = 'Long memory content. '.repeat(100);
+  const node = seedNode(db, { content });
+  vi.mocked(getEmbedding).mockReset().mockResolvedValue(new Float32Array([1,2,3,4])).mockResolvedValueOnce(null);
+  expect(await insertSegmentVectors(db,node.id,content)).toBe(0);
+  expect(db.prepare('SELECT count(*) AS n FROM node_segments WHERE node_id=?').get(node.id)).toEqual({n:0});
+  expect(await insertSegmentVectors(db,node.id,content)).toBe(segmentForEmbedding(content).length);
+});
+
+it('discards an embedding result when the node changed during the request', async () => {
+  const { insertSegmentVectors } = await import('../../src/db/vectors.js');
+  const { getEmbedding } = await import('../../src/llm/embedding.js');
+  db.exec('CREATE TABLE IF NOT EXISTS nodes_vec (id TEXT PRIMARY KEY, embedding BLOB)');
+  const node = seedNode(db, { content:'original' });
+  vi.mocked(getEmbedding).mockImplementationOnce(async () => {
+    db.prepare('UPDATE nodes SET content=? WHERE id=?').run('new content',node.id);
+    return new Float32Array([1,2,3,4]);
+  });
+  expect(await insertSegmentVectors(db,node.id,'original')).toBe(0);
+  expect(db.prepare('SELECT count(*) AS n FROM node_segments WHERE node_id=?').get(node.id)).toEqual({n:0});
+});
+
+it('removes the old semantic index when a correction empties the current input',async()=>{
+ const {insertSegmentVectors,getVectorForNode}=await import('../../src/db/vectors.js');
+ const {getEmbedding}=await import('../../src/llm/embedding.js');
+ db.exec('CREATE TABLE IF NOT EXISTS nodes_vec (id TEXT PRIMARY KEY,embedding BLOB)');
+ const node=seedNode(db,{content:'old memory'});
+ vi.mocked(getEmbedding).mockReset().mockResolvedValue(new Float32Array([1,2,3,4]));
+ expect(await insertSegmentVectors(db,node.id,node.content)).toBe(1);
+ db.prepare("UPDATE nodes SET content='',title=NULL WHERE id=?").run(node.id);
+ expect(await insertSegmentVectors(db,node.id,'')).toBe(0);
+ expect(getVectorForNode(db,node.id)).toBeNull();
+ expect(db.prepare('SELECT value FROM metadata WHERE key=?').get(`vector.input:${node.id}`)).toBeUndefined();
+ expect(getEmbedding).toHaveBeenCalledTimes(1);
+});
+
+it('does not keep a known stale vector searchable when replacement embedding fails',async()=>{
+ const {insertSegmentVectors,getVectorForNode}=await import('../../src/db/vectors.js');
+ const {getEmbedding}=await import('../../src/llm/embedding.js');
+ db.exec('CREATE TABLE IF NOT EXISTS nodes_vec (id TEXT PRIMARY KEY,embedding BLOB)');
+ const node=seedNode(db,{content:'before'});
+ vi.mocked(getEmbedding).mockReset().mockResolvedValue(new Float32Array([1,2,3,4]));
+ await insertSegmentVectors(db,node.id,node.content);
+ db.prepare('UPDATE nodes SET content=? WHERE id=?').run('after',node.id);
+ vi.mocked(getEmbedding).mockResolvedValue(null);
+ expect(await insertSegmentVectors(db,node.id,'after')).toBe(0);
+ expect(getVectorForNode(db,node.id)).toBeNull();
 });

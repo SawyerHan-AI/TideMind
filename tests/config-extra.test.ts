@@ -65,6 +65,7 @@ describe('getConfig', () => {
   it('metabolism 所有值均为正数', () => {
     const config = getConfig();
     for (const [key, val] of Object.entries(config.metabolism)) {
+      if (key === 'background_enabled') { expect(typeof val).toBe('boolean'); continue; }
       expect(val, `metabolism.${key} should be > 0`).toBeGreaterThan(0);
     }
   });

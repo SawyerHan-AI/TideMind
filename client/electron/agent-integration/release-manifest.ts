@@ -21,7 +21,7 @@ import { createHash } from 'node:crypto'
 import { npmComposedDistributionSpec } from './npm-distribution-topology'
 import { kimiNativeReceiptLookupFingerprint } from './distribution-artifact'
 
-export const AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION = '0.2.97'
+export const AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION = '0.2.98'
 export const AGENT_INTEGRATION_RELEASE_SCHEMA_VERSION = 4
 
 /** Variants with a proven Adapter contract for relocating every managed surface under a user-selected root. */

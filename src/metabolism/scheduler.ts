@@ -702,26 +702,23 @@ export async function runSchedulerTick(
   emitSchedulerObservation(options.observer, { type: 'tick_started', at: tickStartedAt });
   let tickFinishedAt = tickStartedAt;
   let legacyOnlyRoutes = true;
+  let backgroundOrganizationEnabled: boolean;
   let attemptedTasks = 0;
   let unsettledClaimTaskId: string | null = null;
 
   try {
 
-  // 本地/云代谢互斥: 用户开启 cloud.metabolism_enabled 后,服务端 worker 接管
-  // 所有代谢任务,本地 scheduler 停跑以避免双端跑同样策略导致数据抖动。
-  // 注: 即便本地停跑,WebSocket 仍会从云端推回代谢结果,本地 UI 数据始终最新。
+  // 每台设备独立选择是否承担后台整理；长驻 MCP 在每次调度时读取最新角色。
   try {
     const { getConfig } = await import('../config.js');
-    const config = getConfig();
+    const config = getConfig(true);
+    backgroundOrganizationEnabled = config.metabolism?.background_enabled !== false;
     legacyOnlyRoutes = !(
       config.llm.light_connection
       || config.llm.standard_connection
       || config.llm.heavy_connection
     );
-    if (config.cloud?.metabolism_enabled) {
-      log.debug('本地代谢已暂停 — cloud.metabolism_enabled=true,服务端接管');
-      return executed;
-    }
+
   } catch { /* 配置读取失败 → 保持本地代谢行为,安全兜底 */ }
 
   // 修复 F8(2026-05-21): tick 开始时清零"是否观察到真实 LLM 调用"flag。
@@ -741,6 +738,9 @@ export async function runSchedulerTick(
   }
 
   for (const task of tasks) {
+    try { const {getConfig} = await import('../config.js'); backgroundOrganizationEnabled = getConfig(true).metabolism?.background_enabled !== false; }
+    catch { backgroundOrganizationEnabled = false; }
+    if (!backgroundOrganizationEnabled && !['digest-retry', 'structure-holes-precompute'].includes(task.id)) continue;
     // 纯 legacy 配置继续复用历史全局 circuit；只要任一档位使用显式连接，就把
     // circuit 判断下沉到 callLLM 的真实 route，避免一个账号误伤其他连接。
     if (task.requiresLLM && legacyOnlyRoutes) {

@@ -581,7 +581,7 @@ export function registerNodeHandlers(db: Database.Database): void {
 
       // 1) UPDATE link 状态与强度
       db.prepare(
-        "UPDATE links SET status = 'rejected_by_user', strength = 0, updated = datetime('now') WHERE id = ?",
+        "UPDATE links SET status = 'rejected_by_user', strength = 0, updated = datetime('now'), edit_seq = edit_seq + 1 WHERE id = ?",
       ).run(linkId)
 
       // 2) 从 node.tags JSON 里移除标签名（若存在），保持 UI 元信息区一致
@@ -659,7 +659,7 @@ export function registerNodeHandlers(db: Database.Database): void {
       // 1) 恢复 link — 只对当前 status='rejected_by_user' 的链接生效
       // 守卫防御：对 confirmed / pending 链接误调用不会覆盖其数据。
       const result = db.prepare(
-        "UPDATE links SET status = 'confirmed', strength = ?, updated = datetime('now') WHERE id = ? AND status = 'rejected_by_user'",
+        "UPDATE links SET status = 'confirmed', strength = ?, updated = datetime('now'), edit_seq = edit_seq + 1 WHERE id = ? AND status = 'rejected_by_user'",
       ).run(prevStrength, linkId)
       if (result.changes === 0) return
       changed = true

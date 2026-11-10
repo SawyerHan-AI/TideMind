@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { RefreshCw, Wifi, WifiOff, AlertTriangle, ArrowRight, Sparkles, Cloud } from 'lucide-react'
+import { RefreshCw, Wifi, WifiOff, AlertTriangle, ArrowRight, Cloud } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useCloudStatus } from '../../hooks/useCloudStatus'
 import { Section } from './shared'
@@ -8,18 +8,6 @@ import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { brand } from '../../lib/tokens'
 
 // Toggle and ConfirmDialog are still used by MetabolismSection
-
-/** 统一的"即将推出"标签，放在 Section 右上角 */
-function ComingSoonTag() {
-  const { t } = useTranslation()
-  return (
-    <span className="text-[10px] font-medium px-2 py-0.5 rounded-full"
-      style={{ background: 'rgba(234,179,8,0.12)', color: '#facc15', border: '1px solid rgba(234,179,8,0.2)' }}
-    >
-      {t('settings:cloud.managedLlm.comingSoon', 'Coming Soon')}
-    </span>
-  )
-}
 
 export function CloudSyncSettings() {
   const { t } = useTranslation()
@@ -52,8 +40,6 @@ export function CloudSyncSettings() {
         {/* Greyed-out sections */}
         <div className="opacity-40 pointer-events-none space-y-6">
           <DataSyncSection cloud={cloud} />
-          <MetabolismSection cloud={cloud} />
-          <ManagedLlmSection />
         </div>
       </div>
     )
@@ -80,8 +66,6 @@ export function CloudSyncSettings() {
         <DataSyncSection cloud={cloud} />
 
         <div className="opacity-40 pointer-events-none space-y-6">
-          <MetabolismSection cloud={cloud} />
-          <ManagedLlmSection />
         </div>
       </div>
     )
@@ -102,8 +86,6 @@ export function CloudSyncSettings() {
         <DataSyncSection cloud={cloud} />
 
         <div className="opacity-60 pointer-events-none space-y-6">
-          <MetabolismSection cloud={cloud} />
-          <ManagedLlmSection />
         </div>
       </div>
     )
@@ -112,8 +94,6 @@ export function CloudSyncSettings() {
   return (
     <div className="space-y-6 max-w-xl">
       <DataSyncSection cloud={cloud} />
-      <MetabolismSection cloud={cloud} />
-      <ManagedLlmSection />
     </div>
   )
 }
@@ -551,214 +531,11 @@ function DataSyncSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }
         onCancel={() => setShowDisableConfirm(false)}
         onConfirm={confirmDisable}
         title={t('settings:cloud.dataSync.disableTitle', 'Disable Data Cloud Sync?')}
-        description={t('settings:cloud.dataSync.disableDesc', 'Local data will become the primary copy. Cloud metabolism will be disabled. Cloud data is retained for 30 days.')}
+        description={t('settings:cloud.dataSync.disableDesc', 'Stop syncing this device. Local and cloud memories are kept.')}
         confirmText={t('settings:cloud.dataSync.disableConfirm', 'Disable')}
         cancelText={t('common:actions.cancel', 'Cancel')}
         danger
       />
     </>
-  )
-}
-
-// ============================================================
-// Section 2: Cloud Metabolism
-// ============================================================
-
-function MetabolismSection({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
-  const { t } = useTranslation()
-  const errorMessage = useSyncErrorMessage()
-  const [metabolismError, setMetabolismError] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
-  // 状态来源: cloud.metabolismEnabled(持久化)。本地 toggle 只做"意图 → IPC 调用"
-  const metabolismEnabled = cloud.metabolismEnabled ?? false
-  const [showEnableConfirm, setShowEnableConfirm] = useState(false)
-  const [showDisableConfirm, setShowDisableConfirm] = useState(false)
-
-  const isFree = !cloud.plan || cloud.plan === 'free'
-  const isProPlus = cloud.plan === 'pro_plus'
-  // 云代谢依赖数据同步：未登录、离线、或同步未开启时均不可用
-  const dataSyncOff = !cloud.loggedIn || !cloud.online || !cloud.syncEnabled
-
-  const handleToggle = useCallback((enabled: boolean) => {
-    if (enabled) setShowEnableConfirm(true)
-    else setShowDisableConfirm(true)
-  }, [])
-
-  const confirmMetabolismEnable = async () => {
-    setShowEnableConfirm(false)
-    try {
-      setSaving(true)
-      setMetabolismError(null)
-      const result = await window.api.cloud.setMetabolismEnabled(true)
-      if (!result.success) setMetabolismError(errorMessage(result.error ?? 'sync_error'))
-    } catch (e) {
-      setMetabolismError(errorMessage('sync_error'))
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const confirmMetabolismDisable = async () => {
-    setShowDisableConfirm(false)
-    try {
-      setSaving(true)
-      setMetabolismError(null)
-      const result = await window.api.cloud.setMetabolismEnabled(false)
-      if (!result.success) setMetabolismError(errorMessage(result.error ?? 'sync_error'))
-    } catch (e) {
-      setMetabolismError(errorMessage('sync_error'))
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  // Free users: locked section
-  if (isFree) {
-    return (
-      <Section
-        title={t('settings:cloud.metabolism.title', 'Cloud Metabolism')}
-        action={<ComingSoonTag />}
-      >
-        <div className="space-y-3">
-          <p className="text-xs text-gray-500">
-            {t('settings:cloud.metabolism.freeDesc', 'Cloud metabolism is available on Pro and above. Your memories will be annotated, linked, and crystallized 24/7 in the cloud.')}
-          </p>
-          <button
-            onClick={() => window.api.app.openExternal('https://tidemind.ai/pricing')}
-            className="flex items-center gap-1.5 text-xs font-medium transition-colors"
-            style={{ color: brand.primary }}
-          >
-            {t('settings:cloud.metabolism.upgrade', 'Upgrade to Pro')}
-            <ArrowRight size={11} />
-          </button>
-        </div>
-      </Section>
-    )
-  }
-
-  return (
-    <>
-      <Section
-        title={t('settings:cloud.metabolism.title', 'Cloud Metabolism')}
-        action={
-          <Toggle
-            enabled={metabolismEnabled}
-            onChange={handleToggle}
-            disabled={dataSyncOff || saving}
-            label={t('settings:cloud.metabolism.title', 'Cloud Metabolism')}
-          />
-        }
-      >
-        <div className="space-y-3">
-          {metabolismError && <p role="alert" className="text-xs text-red-500">{metabolismError}</p>}
-          {isProPlus ? (
-            <p className="text-xs text-gray-500">
-              {t('settings:cloud.metabolism.proPlusDesc', 'Powered by TideMind managed LLM. No API key needed. Metabolism runs 24/7 in the cloud.')}
-            </p>
-          ) : (
-            <>
-              <p className="text-xs text-gray-500">
-                {t('settings:cloud.metabolism.proDesc', 'Metabolism tasks run 24/7 in the cloud, independent of your device.')}
-              </p>
-              {metabolismEnabled && (
-                <div className="flex items-start gap-2 p-2.5 rounded-lg border border-amber-500/15" style={{ background: 'rgba(245,158,11,0.04)' }}>
-                  <AlertTriangle size={12} className="text-amber-400 mt-0.5 flex-shrink-0" />
-                  <p className="text-[10px] text-amber-300/80 leading-relaxed">
-                    {t('settings:cloud.metabolism.keyWarning', 'Cloud metabolism requires uploading your LLM API key (AES-256-GCM encrypted). If you have security concerns, keep this off and use local metabolism.')}
-                  </p>
-                </div>
-              )}
-            </>
-          )}
-
-          {dataSyncOff && (
-            <p className="text-[10px] text-gray-600 italic">
-              {t('settings:cloud.metabolism.requiresSync', 'Requires Data Cloud Sync to be enabled.')}
-            </p>
-          )}
-
-          {/* Pro+ token usage — placeholder */}
-          {isProPlus && metabolismEnabled && (
-            <div className="pt-2 border-t border-white/[0.06]">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-[10px] text-gray-500">{t('settings:cloud.metabolism.tokenUsage', 'Token Usage')}</span>
-                <span className="text-[10px] text-gray-500">— / 3M</span>
-              </div>
-              <div className="w-full h-1.5 rounded-full bg-white/[0.06]">
-                <div className="h-full rounded-full" style={{ width: '0%', background: brand.primary }} />
-              </div>
-            </div>
-          )}
-        </div>
-      </Section>
-
-      {/* Enable confirm — Pro (BYOK) */}
-      {!isProPlus && (
-        <ConfirmDialog
-          open={showEnableConfirm}
-          onCancel={() => setShowEnableConfirm(false)}
-          onConfirm={confirmMetabolismEnable}
-          title={t('settings:cloud.metabolism.enableTitle', 'Enable Cloud Metabolism?')}
-          description={t('settings:cloud.metabolism.enableDescByok', 'Your LLM API key will be encrypted and uploaded to TideMind Cloud. It will only be used to run your metabolism tasks. The key will be deleted when you disable cloud metabolism.')}
-          confirmText={t('settings:cloud.metabolism.enableConfirm', 'Enable')}
-          cancelText={t('common:actions.cancel', 'Cancel')}
-        />
-      )}
-
-      {/* Enable confirm — Pro+ (managed) */}
-      {isProPlus && (
-        <ConfirmDialog
-          open={showEnableConfirm}
-          onCancel={() => setShowEnableConfirm(false)}
-          onConfirm={confirmMetabolismEnable}
-          title={t('settings:cloud.metabolism.enableTitle', 'Enable Cloud Metabolism?')}
-          description={t('settings:cloud.metabolism.enableDescManaged', 'TideMind managed LLM will power your metabolism. 3M tokens/month included. You can also configure your own key in Model Settings for higher quality.')}
-          confirmText={t('settings:cloud.metabolism.enableConfirm', 'Enable')}
-          cancelText={t('common:actions.cancel', 'Cancel')}
-        />
-      )}
-
-      {/* Disable confirm */}
-      <ConfirmDialog
-        open={showDisableConfirm}
-        onCancel={() => setShowDisableConfirm(false)}
-        onConfirm={confirmMetabolismDisable}
-        title={t('settings:cloud.metabolism.disableTitle', 'Disable Cloud Metabolism?')}
-        description={isProPlus
-          ? t('settings:cloud.metabolism.disableDescManaged', 'Managed LLM usage will be paused. Metabolism will switch back to local. It will pause when your device is off.')
-          : t('settings:cloud.metabolism.disableDescByok', 'Your cloud API key will be deleted. Metabolism will switch back to local. It will pause when your device is off.')}
-        confirmText={t('settings:cloud.metabolism.disableConfirm', 'Disable')}
-        cancelText={t('common:actions.cancel', 'Cancel')}
-        danger
-      />
-    </>
-  )
-}
-
-// ============================================================
-// Section 3: TideMind Managed LLM
-// ============================================================
-
-function ManagedLlmSection() {
-  const { t } = useTranslation()
-
-  return (
-    <Section
-      title={t('settings:cloud.managedLlm.title', 'TideMind LLM Service')}
-      action={<ComingSoonTag />}
-    >
-      <div className="space-y-3">
-        <p className="text-xs text-gray-500">
-          {t('settings:cloud.managedLlm.desc', 'Use TideMind-provided LLM service without registering your own API keys. Included in Pro+ subscription.')}
-        </p>
-        <button
-          onClick={() => window.api.app.openExternal('https://tidemind.ai/pricing')}
-          className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-gray-300 transition-colors"
-        >
-          <Sparkles size={11} />
-          {t('settings:cloud.managedLlm.learnMore', 'Learn more')}
-        </button>
-      </div>
-    </Section>
   )
 }

@@ -32,7 +32,12 @@
     "updateChannelDesc": "Beta yeni özellikleri daha erken sunar ancak daha az kararlı olabilir. Değişiklik bir sonraki kontrolde geçerli olur.",
     "updateChannelStable": "Kararlı",
     "updateChannelBeta": "Beta",
-    "channelSwitchConfirm": "Stable'a geçmek bir sonraki güncelleme kontrolünde en son kararlı sürümü yükler (bazı deneysel özellikler geri alınabilir). Devam edilsin mi?"
+    "channelSwitchConfirm": "Stable'a geçmek bir sonraki güncelleme kontrolünde en son kararlı sürümü yükler (bazı deneysel özellikler geri alınabilir). Devam edilsin mi?",
+    "backgroundOrganization": {
+      "title": "Bu cihazda arka plan bellek düzenleme",
+      "description": "Otomatik içgörülerin yinelenmesini önlemek için yalnızca bir cihazda açın. Eşitleme, not aktarımı, arama ve isteğe bağlı model kullanımı devam eder. Önce etkin işler tamamlanır. Cihaz değiştirmeden önce eski cihazda kapatıp TideMind ve Agent bağlantılarını normal biçimde sonlandırın, ardından yeni cihazda açın.",
+      "error": "Ayar kaydedilemedi. Yeniden deneyin."
+    }
   },
   "external": {
     "subtabs": {
@@ -198,13 +203,13 @@
       "retry": "Yeniden dene",
       "selectConnection": "Bağlantı seç",
       "selectModel": "Model seç",
-      "modelLabel": "Model"
-      ,"savedRouteProblem": "Kaydedilmiş yapılandırma sorunu"
-      ,"connectionArchived": "Bu bağlantı arşivlendi"
-      ,"connectionUnavailable": "Kaydedilmiş bağlantı artık mevcut değil"
-      ,"modelUnavailable": "Kaydedilmiş model doğrulanmadı"
-      ,"savedConnectionInvalid": "Kaydedilmiş bağlantı kullanılamıyor. Başka bir bağlantı seçin."
-      ,"savedModelInvalid": "Kaydedilmiş model kullanılamıyor. Doğrulanmış bir model seçin.",
+      "modelLabel": "Model",
+      "savedRouteProblem": "Kaydedilmiş yapılandırma sorunu",
+      "connectionArchived": "Bu bağlantı arşivlendi",
+      "connectionUnavailable": "Kaydedilmiş bağlantı artık mevcut değil",
+      "modelUnavailable": "Kaydedilmiş model doğrulanmadı",
+      "savedConnectionInvalid": "Kaydedilmiş bağlantı kullanılamıyor. Başka bir bağlantı seçin.",
+      "savedModelInvalid": "Kaydedilmiş model kullanılamıyor. Doğrulanmış bir model seçin.",
       "followDefault": "Yalıtılmış varsayılan (CLI yerleşik)",
       "isolatedDefaultHint": "Yalıtılmış ortamda CLI yerleşik varsayılan modeli kullanılır; hesap kataloğu önerileri veya kişisel yerel ayarlar izlenmez.",
       "aliasPending": "takma ad, henüz doğrulanmadı",
@@ -1152,7 +1157,6 @@
       "fullyVerified": "Tamamen doğrulandı",
       "optionalConnections": "İsteğe bağlı bağlantılar",
       "connectionTaskHistory": "Bağlantı görevleri ve geçmişi ({{count}})",
-
       "codexSharedIdentityReconnect": "This Codex connection uses an older identity. In the Agent details, disconnect the existing Codex connection and complete its removal, then connect Codex again so Desktop and CLI share one Tide Mind identity.",
       "codexExistingIdentityReview": "Existing Tide Mind connections for Codex need review before connecting. Open the Codex details and resolve the old identity conflict first, then check again and reconnect.",
       "legacyChoice": {
@@ -1237,8 +1241,14 @@
         "dialogDescription": "Tam bir yerel hedef seçin, dondurulmuş hedefi inceleyin ve ardından koordinatör planını onaylayın.",
         "chooseMode": "Bağlantı türü",
         "mode": {
-          "nonstandard_config_root": { "title": "Standart olmayan yapılandırma klasörü", "description": "Desteklenen bir ana bilgisayarın resmi adaptörünü başka bir yerel yapılandırma klasörüyle kullanın." },
-          "manual_mcp_client": { "title": "Listelenmemiş yerel MCP istemcisi", "description": "Bir yerel yürütülebilir dosyayı ve bir açık JSON MCP yapılandırma dosyasını bağlayın." }
+          "nonstandard_config_root": {
+            "title": "Standart olmayan yapılandırma klasörü",
+            "description": "Desteklenen bir ana bilgisayarın resmi adaptörünü başka bir yerel yapılandırma klasörüyle kullanın."
+          },
+          "manual_mcp_client": {
+            "title": "Listelenmemiş yerel MCP istemcisi",
+            "description": "Bir yerel yürütülebilir dosyayı ve bir açık JSON MCP yapılandırma dosyasını bağlayın."
+          }
         },
         "name": "Agent adı",
         "legacyIdentity": "Mevcut eski sürüm kimliği",
@@ -1309,7 +1319,15 @@
       },
       "supportCatalog": "Desteklenen Yerel Acenteler",
       "supportCatalogDescription": "Bu Tide Mind yapısında kullanılabilirlik. Yönetilen ve yönlendirilen etiketler yalnızca tam bir Agent sürümü sürüm doğrulamasını geçtikten sonra görünür; Tide Mind üçüncü taraf Agent yüklemez veya başlatmaz.",
-      "coworkGuided": {"title":"Claude Cowork'yi kurun","start":"Kurulumu başlat","confirm":"Kurulumu oluştur ve devam et","summary":"Claude {{version}}, bu Mac üzerinde doğrulandı. Sonraki adım yalnızca kullanıcı tarafından başlatılan bir kurulum kaydı oluşturur.","noDesktopWrite":"Tide Mind, Claude Desktop MCP yapılandırmasını değiştirmez.","manualUpload":"Onaylandıktan sonra Tide Mind, kendi veri klasöründe bir .plugin dosyasını dışa aktarır; hala Cowork'ye yüklüyorsunuz.","runtimeProof":"Temel bağlantı yalnızca bu Agent yeni bir brain_* araması yaptıktan sonra görünür."},
+      "coworkGuided": {
+        "title": "Claude Cowork'yi kurun",
+        "start": "Kurulumu başlat",
+        "confirm": "Kurulumu oluştur ve devam et",
+        "summary": "Claude {{version}}, bu Mac üzerinde doğrulandı. Sonraki adım yalnızca kullanıcı tarafından başlatılan bir kurulum kaydı oluşturur.",
+        "noDesktopWrite": "Tide Mind, Claude Desktop MCP yapılandırmasını değiştirmez.",
+        "manualUpload": "Onaylandıktan sonra Tide Mind, kendi veri klasöründe bir .plugin dosyasını dışa aktarır; hala Cowork'ye yüklüyorsunuz.",
+        "runtimeProof": "Temel bağlantı yalnızca bu Agent yeni bir brain_* araması yaptıktan sonra görünür."
+      },
       "close": "Kapat",
       "searchSupport": "Desteklenen ürünleri arayın",
       "noSupportMatch": "Eşleşen desteklenen ürün yok.",
@@ -1479,7 +1497,13 @@
       "pauseDescription": "Mevcut tahminler devam ediyor; otomatik onarım ve yükseltmeler durur.",
       "disconnectTitle": "{{name}}'nin Tide Mind'den bağlantısı kesilsin mi?",
       "disconnectDescription": "Yalnızca önizlenen Tide Mind'ye ait bileşenler kaldırılır; ilgisiz yapılandırma kalır.",
-      "targetAction": {"create":"Oluştur","update":"Güncelleme","remove":"Kaldır","detach":"Yalnızca bu Agent bağlantısını kes","invoke":"Bakım"},
+      "targetAction": {
+        "create": "Oluştur",
+        "update": "Güncelleme",
+        "remove": "Kaldır",
+        "detach": "Yalnızca bu Agent bağlantısını kes",
+        "invoke": "Bakım"
+      },
       "sharedDisconnectStillVisible": "Bu bileşen paylaşılıyor. Tide Mind yalnızca bu Agent'ın bağlantısını kesecek, ancak paylaşılan dosyayı koruyacak; bu Agent yine de talimatları görebilir.",
       "sharedDisconnectRetained": "Bu bileşen paylaşılıyor. Tide Mind yalnızca bu Agent'ın bağlantısını kesecek ve paylaşılan dosyayı diğer Agent'lar için koruyacak.",
       "sharedDisconnectConsumers": "Şu anda bu bileşeni paylaşan Agent:",
@@ -1501,8 +1525,20 @@
         "3": "Temel bağlantı",
         "4": "Bağlantıyı tamamlayın"
       },
-      "scope": {"user":"Kullanıcı kapsamı","project":"Proje kapsamı","system":"Sistem kapsamı","other":"Diğer kapsam"},
-      "commandCategory": {"none":"Hayır command","file_write":"Dosya yazma","host_cli":"Ana makine CLI","plugin_install":"Eklenti kurulumu","host_trust":"Toplantı sahibi onayı","admin":"Yönetici"},
+      "scope": {
+        "user": "Kullanıcı kapsamı",
+        "project": "Proje kapsamı",
+        "system": "Sistem kapsamı",
+        "other": "Diğer kapsam"
+      },
+      "commandCategory": {
+        "none": "Hayır command",
+        "file_write": "Dosya yazma",
+        "host_cli": "Ana makine CLI",
+        "plugin_install": "Eklenti kurulumu",
+        "host_trust": "Toplantı sahibi onayı",
+        "admin": "Yönetici"
+      },
       "reversible": "Tersine çevrilebilir",
       "notReversible": "Tamamen geri döndürülemez",
       "risk": {
@@ -1543,24 +1579,78 @@
         "coworkNotReady": "Dışa aktarılan Tide Mind eklenti dosyası hâlâ mevcut. Dosyayı silin ve Claude Cowork'te eklentiyi kaldırın, ardından tekrar onaylayın."
       },
       "actionDetail": {
-        "instruction": {"mcpActivation":"{{config}} içinde {{server}} için izin verin, ardından bağlantıyı yeniden kontrol edin.","manualFileRemoval":"{{target}} konumundaki Tide Mind yönetimli dosyayı kaldırın, ardından bağlantıyı yeniden kontrol edin.","kimiConflict":"Eski ve yönetilen yollar güvenle taşınamadığı için Tide Mind hiçbir Skill dosyasını değiştirmedi.",
-        "manualHostRemoval": "{{host}} içindeki “{{selector}}” Tide Mind bileşenini ana bilgisayarın kendi eklenti veya uzantı yöneticisiyle kaldırın."},
+        "instruction": {
+          "mcpActivation": "{{config}} içinde {{server}} için izin verin, ardından bağlantıyı yeniden kontrol edin.",
+          "manualFileRemoval": "{{target}} konumundaki Tide Mind yönetimli dosyayı kaldırın, ardından bağlantıyı yeniden kontrol edin.",
+          "kimiConflict": "Eski ve yönetilen yollar güvenle taşınamadığı için Tide Mind hiçbir Skill dosyasını değiştirmedi.",
+          "manualHostRemoval": "{{host}} içindeki “{{selector}}” Tide Mind bileşenini ana bilgisayarın kendi eklenti veya uzantı yöneticisiyle kaldırın."
+        },
         "guidance": {
-          "claudeCowork": {"connect":{"step1":"Onaydan sonra Tide Mind bileşen ayrıntılarından oluşturulan .plugin dosyasını açın.","step2":"Claude Cowork içinde Customize → Plugins bölümünü açın, .plugin dosyasını yükleyip etkinleştirin. Claude Desktop MCP ayarlarına eklemeyin.","step3":"Yeni bir yerel Cowork görevi oluşturun ve aynı görevde Tide Mind brain_recall ile brain_digest çağrılarını başarıyla yapın. Bulut Cowork yerel MCP çalıştıramaz.","step4":"Tide Mind'a dönüp yeniden kontrol edin. Temel entegrasyon yalnızca yeni okuma ve yazma çağrısı kanıtı algılandığında görünür."},"disconnect":{"step1":"Claude Cowork içinde Customize → Plugins bölümünü açın.","step2":"Yalnızca bu Agent'a ait Tide Mind eklentisini kaldırın. Diğer Tide Mind Agent eklentilerini kaldırmayın.","step3":"Tide Mind'a dönüp yeniden kontrol edin. Cowork okunabilir bir eklenti kaydı sunmadığından kaldırma durumu onay bekler."}},
-          "qwenWork": {"connect":{"step1":"Qwen Work içinde Uzantılar → Bağlayıcılar bölümünü açın.","step2":"JSON yapılandırmasını seçip aşağıdaki tam mcpServers JSON metnini yapıştırın.","step3":"command, args ve env alanlarının ayrı olduğunu doğrulayıp yapılandırmayı uygulayın.","step4":"Bağlayıcıyı etkinleştirin, yeni bir konuşma oluşturun ve aynı konuşmada Tide Mind brain_recall ile brain_digest çağrılarını başarıyla yapın."},"disconnect":{"step1":"Qwen Work içinde Uzantılar → Bağlayıcılar → Yüklü bölümünü açın.","step2":"Özel bölümünde {{connector}} öğesini bulun, sil simgesine basıp onaylayın.","step3":"Yeni bir konuşma oluşturun, Tide Mind'a dönüp yeniden kontrol edin."}},
-          "kimiConflict": {"step1":"Eski Skill {{source}} ile yönetilen hedef {{target}} öğesini inceleyin.","step2":"Gerekli içeriği, Tide Mind'ın yönetmemesi gereken dosyayı taşıyarak veya yeniden adlandırarak koruyun. Tide Mind doğrulanmamış dosyayı değiştirmez veya silmez.","step3":"Tide Mind'a dönüp kontrolü yeniden çalıştırın."},
+          "claudeCowork": {
+            "connect": {
+              "step1": "Onaydan sonra Tide Mind bileşen ayrıntılarından oluşturulan .plugin dosyasını açın.",
+              "step2": "Claude Cowork içinde Customize → Plugins bölümünü açın, .plugin dosyasını yükleyip etkinleştirin. Claude Desktop MCP ayarlarına eklemeyin.",
+              "step3": "Yeni bir yerel Cowork görevi oluşturun ve aynı görevde Tide Mind brain_recall ile brain_digest çağrılarını başarıyla yapın. Bulut Cowork yerel MCP çalıştıramaz.",
+              "step4": "Tide Mind'a dönüp yeniden kontrol edin. Temel entegrasyon yalnızca yeni okuma ve yazma çağrısı kanıtı algılandığında görünür."
+            },
+            "disconnect": {
+              "step1": "Claude Cowork içinde Customize → Plugins bölümünü açın.",
+              "step2": "Yalnızca bu Agent'a ait Tide Mind eklentisini kaldırın. Diğer Tide Mind Agent eklentilerini kaldırmayın.",
+              "step3": "Tide Mind'a dönüp yeniden kontrol edin. Cowork okunabilir bir eklenti kaydı sunmadığından kaldırma durumu onay bekler."
+            }
+          },
+          "qwenWork": {
+            "connect": {
+              "step1": "Qwen Work içinde Uzantılar → Bağlayıcılar bölümünü açın.",
+              "step2": "JSON yapılandırmasını seçip aşağıdaki tam mcpServers JSON metnini yapıştırın.",
+              "step3": "command, args ve env alanlarının ayrı olduğunu doğrulayıp yapılandırmayı uygulayın.",
+              "step4": "Bağlayıcıyı etkinleştirin, yeni bir konuşma oluşturun ve aynı konuşmada Tide Mind brain_recall ile brain_digest çağrılarını başarıyla yapın."
+            },
+            "disconnect": {
+              "step1": "Qwen Work içinde Uzantılar → Bağlayıcılar → Yüklü bölümünü açın.",
+              "step2": "Özel bölümünde {{connector}} öğesini bulun, sil simgesine basıp onaylayın.",
+              "step3": "Yeni bir konuşma oluşturun, Tide Mind'a dönüp yeniden kontrol edin."
+            }
+          },
+          "kimiConflict": {
+            "step1": "Eski Skill {{source}} ile yönetilen hedef {{target}} öğesini inceleyin.",
+            "step2": "Gerekli içeriği, Tide Mind'ın yönetmemesi gereken dosyayı taşıyarak veya yeniden adlandırarak koruyun. Tide Mind doğrulanmamış dosyayı değiştirmez veya silmez.",
+            "step3": "Tide Mind'a dönüp kontrolü yeniden çalıştırın."
+          },
           "manualHostRemoval": {
             "step1": "{{host}} uygulamasını açın ve eklenti veya uzantı listesinde “{{selector}}” Tide Mind bileşenini bulun.",
             "step2": "Yalnızca bu Agent için kaldırın, ardından artık yüklenmemesi için {{host}} uygulamasını yeniden başlatın veya yeni oturum açın.",
             "step3": "Tide Mind bu Agent'a bellek sağlamayı zaten durdurdu ve bakımını duraklattı. Bağlantıyı korumak istiyorsanız yalnızca o zaman bakımı sürdürün."
           }
         },
-        "source": "Kaynak", "package": "Eklenti paketi", "connector": "Bağlayıcı adı", "serverType": "Sunucu türü",
-        "command": "Komut", "environment": "Ortam değişkenleri", "mcpConfiguration": "MCP yapılandırması (JSON)", "server": "Sunucu adı", "config": "Yapılandırma dosyası",
-        "reason": "Neden eyleme ihtiyaç var?", "component": "Bileşen", "target": "Kaldırılacak dosya", "steps": "Adımlar",
-        "copy": "Kopyala", "copied": "Kopyalandı", "copyValue": "{{label}}'yi kopyala", "copyFailed": "Kopyalanamadı. Değeri seçin ve manuel olarak kopyalayın.",
-        "activationReason": {"excluded": "Sunucu, Agent yapılandırması tarafından hariç tutulmuştur.", "not_allowed": "Sunucu, Agent izin verilenler listesinde değil.", "invalid_policy": "Agent etkinleştirme politikası geçersiz."},
-        "kimiConflictReason": {"legacy_unowned": "Sahipliği doğrulanabilir olmayan eski bir Tide Mind Skill bulundu.", "legacy_not_exact": "Eski yoldaki dosya tam bir Tide Mind eski Skill değil.", "legacy_changed": "Eski Skill incelendikten sonra değişti.", "target_occupied": "Yeni Tide Mind Skill hedefi yönetilmeyen bir dosya tarafından kullanılıyor."},
+        "source": "Kaynak",
+        "package": "Eklenti paketi",
+        "connector": "Bağlayıcı adı",
+        "serverType": "Sunucu türü",
+        "command": "Komut",
+        "environment": "Ortam değişkenleri",
+        "mcpConfiguration": "MCP yapılandırması (JSON)",
+        "server": "Sunucu adı",
+        "config": "Yapılandırma dosyası",
+        "reason": "Neden eyleme ihtiyaç var?",
+        "component": "Bileşen",
+        "target": "Kaldırılacak dosya",
+        "steps": "Adımlar",
+        "copy": "Kopyala",
+        "copied": "Kopyalandı",
+        "copyValue": "{{label}}'yi kopyala",
+        "copyFailed": "Kopyalanamadı. Değeri seçin ve manuel olarak kopyalayın.",
+        "activationReason": {
+          "excluded": "Sunucu, Agent yapılandırması tarafından hariç tutulmuştur.",
+          "not_allowed": "Sunucu, Agent izin verilenler listesinde değil.",
+          "invalid_policy": "Agent etkinleştirme politikası geçersiz."
+        },
+        "kimiConflictReason": {
+          "legacy_unowned": "Sahipliği doğrulanabilir olmayan eski bir Tide Mind Skill bulundu.",
+          "legacy_not_exact": "Eski yoldaki dosya tam bir Tide Mind eski Skill değil.",
+          "legacy_changed": "Eski Skill incelendikten sonra değişti.",
+          "target_occupied": "Yeni Tide Mind Skill hedefi yönetilmeyen bir dosya tarafından kullanılıyor."
+        },
         "hostComponent": "Ana bilgisayar bileşeni"
       },
       "previewDescription": "Bağlanmadan önce yönetilen hedefleri ve riski inceleyin.",
@@ -1685,7 +1775,7 @@
     "devicesComingSoon": "Cihaz yönetimi yakında geliyor.",
     "subscription": "Abonelik",
     "currentPlan": "Mevcut Plan",
-    "upgradeHint": "Sınırsız bulut anılar, 5 cihaz, 7/24 bulut metabolizması ve daha fazlası için Pro'ya yükseltin.",
+    "upgradeHint": "Pro ile sınırsız bulut belleği ve 5 cihazda eşitleme.",
     "upgradeAnnual": "Pro'ya yükselt — $49/yıl",
     "upgradeMonthly": "veya $5/ay öde",
     "viewPricing": "Planları ve Fiyatları Gör",
@@ -1697,7 +1787,6 @@
     "logoutTitle": "Çıkış yapılsın mı?",
     "logoutDesc": "TideMind Cloud oturumunuz kapatılacak. Yerel veriler etkilenmez.",
     "comingSoon": "Yakında",
-    "subscriptionComingSoon": "Pro ve Pro+ planları yakında geliyor. Bulut senkronizasyonu, 7/24 metabolizma ve daha fazlası için takipte kalın.",
     "registerButton": "Hesap oluştur",
     "browserHint": "Güvenli kimlik doğrulama için tarayıcınızda açılır.",
     "requestAccountDeletion": "Hesap silme talebi",
@@ -1745,7 +1834,7 @@
       "enableDesc": "Anılarınız TideMind Cloud'a yüklenecek. Bulut birincil kopya olur; yerel veriler salt okunur önbelleğe dönüşür. Giriş yapılmış tüm cihazlar senkronize edilir.",
       "enableConfirm": "Senkronizasyonu Etkinleştir",
       "disableTitle": "Veri bulut senkronizasyonu devre dışı bırakılsın mı?",
-      "disableDesc": "Yerel veriler birincil kopya olur. Diğer cihazlar da bulut senkronizasyonundan çıkar. Bulut verileri 30 gün boyunca saklanır. Bulut metabolizması otomatik olarak devre dışı bırakılır.",
+      "disableDesc": "Bu cihazın eşitlemesini durdur. Yerel ve bulut anıları korunur.",
       "disableConfirm": "Senkronizasyonu Devre Dışı Bırak",
       "syncNotReady": "Bulut senkronizasyon hizmeti dağıtılıyor. Takipte kalın.",
       "errors": {
@@ -1765,30 +1854,6 @@
       "reconciling": "{{table}} hizalanıyor ({{phase}})",
       "reconcileDone": "Hizalandı",
       "reconcileFailed": "Hizalama başarısız"
-    },
-    "metabolism": {
-      "title": "Bulut Metabolizması",
-      "freeDesc": "Bulut metabolizması Pro ve üzeri planlarda kullanılabilir. Anılarınız bulutta 7/24 açıklanır, bağlanır ve kristalize edilir.",
-      "upgrade": "Pro'ya Yükselt",
-      "proDesc": "Metabolizma görevleri cihazınızdan bağımsız olarak bulutta 7/24 çalışır.",
-      "proPlusDesc": "TideMind Yönetilen LLM ile çalışır. API anahtarı gerekmez. Metabolizma bulutta 7/24 çalışır.",
-      "keyWarning": "Bulut metabolizması, LLM API anahtarınızın yüklenmesini gerektirir (AES-256-GCM şifreli). Güvenlik endişeleriniz varsa bu özelliği kapalı tutun ve yerel metabolizmayı kullanın.",
-      "requiresSync": "Veri bulut senkronizasyonunun etkin olması gerekir.",
-      "tokenUsage": "Token Kullanımı",
-      "enableTitle": "Bulut metabolizması etkinleştirilsin mi?",
-      "enableDescByok": "LLM API anahtarınız şifrelenerek TideMind Cloud'a yüklenecek. Yalnızca metabolizma görevlerinizi çalıştırmak için kullanılacaktır. Bulut metabolizmasını devre dışı bıraktığınızda anahtar silinir.",
-      "enableDescManaged": "TideMind Yönetilen LLM metabolizmanızı çalıştıracak. Aylık 3M token dahil. Daha yüksek kalite için Model Ayarlarında kendi anahtarınızı da yapılandırabilirsiniz.",
-      "enableConfirm": "Etkinleştir",
-      "disableTitle": "Bulut metabolizması devre dışı bırakılsın mı?",
-      "disableDescByok": "Bulut API anahtarınız silinecek. Metabolizma yerel moda geçer. Cihazınız kapalıyken duraklatılır.",
-      "disableDescManaged": "Yönetilen LLM kullanımı duraklatılacak. Metabolizma yerel moda geçer. Cihazınız kapalıyken duraklatılır.",
-      "disableConfirm": "Devre Dışı Bırak"
-    },
-    "managedLlm": {
-      "title": "TideMind LLM Hizmeti",
-      "comingSoon": "Yakında",
-      "desc": "Kendi API anahtarlarınızı kaydetmeden TideMind tarafından sağlanan LLM hizmetini kullanın. Pro+ aboneliğine dahildir.",
-      "learnMore": "Daha fazla bilgi"
     }
   }
 }

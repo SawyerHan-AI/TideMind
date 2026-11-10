@@ -453,6 +453,8 @@ export interface AppConfig {
     learning_2_min_recall_ops: number;
   };
   metabolism: {
+    /** Per-device semantic background role; cloud scoring and foreground use are independent. */
+    background_enabled?: boolean;
     annotate_interval_minutes: number;
     daily_check_hours: number;
     weekly_check_days: number;

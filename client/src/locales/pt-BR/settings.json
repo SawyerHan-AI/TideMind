@@ -32,7 +32,12 @@
     "updateChannelDesc": "Beta entrega novos recursos antes, mas pode ser menos estável. A troca tem efeito na próxima verificação.",
     "updateChannelStable": "Estável",
     "updateChannelBeta": "Beta",
-    "channelSwitchConfirm": "Mudar para Stable instalará a versão estável mais recente na próxima verificação (algumas funcionalidades experimentais podem ser revertidas). Continuar?"
+    "channelSwitchConfirm": "Mudar para Stable instalará a versão estável mais recente na próxima verificação (algumas funcionalidades experimentais podem ser revertidas). Continuar?",
+    "backgroundOrganization": {
+      "title": "Organização de memórias neste dispositivo",
+      "description": "Ative em apenas um dispositivo para evitar ideias automáticas duplicadas. Sincronização, importação, busca e modelos sob demanda continuam disponíveis. As tarefas em andamento terminam primeiro. Antes de trocar de dispositivo, desative aqui e encerre normalmente o TideMind e suas conexões com agentes no antigo; depois ative no novo.",
+      "error": "Não foi possível salvar. Tente novamente."
+    }
   },
   "external": {
     "subtabs": {
@@ -198,13 +203,13 @@
       "retry": "Tentar novamente",
       "selectConnection": "Selecionar conexão",
       "selectModel": "Selecionar modelo",
-      "modelLabel": "Modelo"
-      ,"savedRouteProblem": "Problema na configuração salva"
-      ,"connectionArchived": "Esta conexão está arquivada"
-      ,"connectionUnavailable": "Esta conexão salva não existe mais"
-      ,"modelUnavailable": "Este modelo salvo não foi verificado"
-      ,"savedConnectionInvalid": "A conexão salva não está disponível. Selecione outra conexão."
-      ,"savedModelInvalid": "O modelo salvo não está disponível. Selecione um modelo verificado.",
+      "modelLabel": "Modelo",
+      "savedRouteProblem": "Problema na configuração salva",
+      "connectionArchived": "Esta conexão está arquivada",
+      "connectionUnavailable": "Esta conexão salva não existe mais",
+      "modelUnavailable": "Este modelo salvo não foi verificado",
+      "savedConnectionInvalid": "A conexão salva não está disponível. Selecione outra conexão.",
+      "savedModelInvalid": "O modelo salvo não está disponível. Selecione um modelo verificado.",
       "followDefault": "Padrão isolado (integrado à CLI)",
       "isolatedDefaultHint": "Usa o modelo padrão integrado à CLI em um ambiente isolado, sem seguir as recomendações do catálogo da conta ou as configurações pessoais locais.",
       "aliasPending": "alias, ainda não verificado",
@@ -1152,7 +1157,6 @@
       "fullyVerified": "Verificação completa",
       "optionalConnections": "Conexões opcionais",
       "connectionTaskHistory": "Tarefas e histórico de conexões ({{count}})",
-
       "codexSharedIdentityReconnect": "This Codex connection uses an older identity. In the Agent details, disconnect the existing Codex connection and complete its removal, then connect Codex again so Desktop and CLI share one Tide Mind identity.",
       "codexExistingIdentityReview": "Existing Tide Mind connections for Codex need review before connecting. Open the Codex details and resolve the old identity conflict first, then check again and reconnect.",
       "legacyChoice": {
@@ -1771,7 +1775,7 @@
     "devicesComingSoon": "Gerenciamento de dispositivos em breve.",
     "subscription": "Assinatura",
     "currentPlan": "Plano atual",
-    "upgradeHint": "Atualize para o Pro e tenha memórias na nuvem ilimitadas, 5 dispositivos, metabolismo na nuvem 24/7 e mais.",
+    "upgradeHint": "Pro oferece memórias ilimitadas na nuvem e sincronização em 5 dispositivos.",
     "upgradeAnnual": "Atualizar para o Pro — $49/ano",
     "upgradeMonthly": "ou pague $5/mês",
     "viewPricing": "Ver planos e preços",
@@ -1783,7 +1787,6 @@
     "logoutTitle": "Sair?",
     "logoutDesc": "Você sairá do TideMind Cloud. Os dados locais não são afetados.",
     "comingSoon": "Em breve",
-    "subscriptionComingSoon": "Os planos Pro e Pro+ estão chegando. Fique atento à sincronização na nuvem, metabolismo 24/7 e muito mais.",
     "registerButton": "Criar conta",
     "browserHint": "Abre no seu navegador para autenticação segura.",
     "requestAccountDeletion": "Solicitar exclusão da conta",
@@ -1831,7 +1834,7 @@
       "enableDesc": "Suas memórias serão enviadas ao TideMind Cloud. A nuvem se torna a cópia principal; os dados locais se tornam cache somente leitura. Todos os dispositivos conectados serão sincronizados.",
       "enableConfirm": "Ativar sincronização",
       "disableTitle": "Desativar sincronização de dados na nuvem?",
-      "disableDesc": "Os dados locais se tornarão a cópia principal. Outros dispositivos também sairão da sincronização na nuvem. Os dados na nuvem serão mantidos por 30 dias. O metabolismo na nuvem será desativado automaticamente.",
+      "disableDesc": "Parar a sincronização deste dispositivo. As memórias locais e na nuvem são mantidas.",
       "disableConfirm": "Desativar sincronização",
       "syncNotReady": "O serviço de sincronização na nuvem está sendo implantado. Fique atento.",
       "errors": {
@@ -1851,30 +1854,6 @@
       "reconciling": "Alinhando {{table}} ({{phase}})",
       "reconcileDone": "Alinhado",
       "reconcileFailed": "Alinhamento falhou"
-    },
-    "metabolism": {
-      "title": "Metabolismo na nuvem",
-      "freeDesc": "O metabolismo na nuvem está disponível a partir do Pro. Suas memórias serão anotadas, vinculadas e cristalizadas 24/7 na nuvem.",
-      "upgrade": "Atualizar para Pro",
-      "proDesc": "As tarefas de metabolismo são executadas 24/7 na nuvem, independentemente do seu dispositivo.",
-      "proPlusDesc": "Alimentado pelo TideMind Managed LLM. Sem necessidade de chave API. O metabolismo funciona 24/7 na nuvem.",
-      "keyWarning": "O metabolismo na nuvem requer o envio da sua chave API de LLM (criptografia AES-256-GCM). Se tiver preocupações de segurança, mantenha desativado e use o metabolismo local.",
-      "requiresSync": "Requer que a sincronização de dados na nuvem esteja ativada.",
-      "tokenUsage": "Uso de tokens",
-      "enableTitle": "Ativar metabolismo na nuvem?",
-      "enableDescByok": "Sua chave API de LLM será criptografada e enviada ao TideMind Cloud. Será usada apenas para executar suas tarefas de metabolismo. A chave será excluída ao desativar o metabolismo na nuvem.",
-      "enableDescManaged": "O TideMind Managed LLM alimentará seu metabolismo. 3M tokens/mês incluídos. Você também pode configurar sua própria chave nas configurações de modelo para maior qualidade.",
-      "enableConfirm": "Ativar",
-      "disableTitle": "Desativar metabolismo na nuvem?",
-      "disableDescByok": "Sua chave API na nuvem será excluída. O metabolismo voltará ao modo local. Será pausado quando o dispositivo estiver desligado.",
-      "disableDescManaged": "O uso do LLM gerenciado será pausado. O metabolismo voltará ao modo local. Será pausado quando o dispositivo estiver desligado.",
-      "disableConfirm": "Desativar"
-    },
-    "managedLlm": {
-      "title": "Serviço LLM TideMind",
-      "comingSoon": "Em breve",
-      "desc": "Use o serviço LLM fornecido pelo TideMind sem registrar suas próprias chaves API. Incluído na assinatura Pro+.",
-      "learnMore": "Saiba mais"
     }
   }
 }

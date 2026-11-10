@@ -308,7 +308,7 @@ function LoggedInView({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
           {isFree ? (
             <>
               <p className="text-xs text-gray-500">
-                {t('settings:account.upgradeHint', 'Upgrade to Pro for unlimited cloud memories, 5 devices, 7×24 cloud metabolism, and more.')}
+                {t('settings:account.upgradeHint', 'Upgrade to Pro for unlimited cloud memories and sync across 5 devices.')}
               </p>
               <button
                 onClick={() => handleUpgrade('yearly')}

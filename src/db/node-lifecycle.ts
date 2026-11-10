@@ -183,7 +183,7 @@ export function supersedeNodeWithLinks(
       ).get(newNodeId, link.to_id) as Pick<LinkRow, 'id' | 'strength'> | undefined;
 
       if (!existingLinkOnNew) {
-        db.prepare('UPDATE links SET from_id = ?, updated = ? WHERE id = ?').run(newNodeId, ts, link.id);
+        db.prepare('UPDATE links SET from_id = ?, updated = ?, edit_seq = edit_seq + 1 WHERE id = ?').run(newNodeId, ts, link.id);
       } else if (link.strength > existingLinkOnNew.strength) {
         db.prepare('UPDATE links SET strength = ?, updated = ? WHERE id = ?').run(link.strength, ts, existingLinkOnNew.id);
       }
@@ -195,7 +195,7 @@ export function supersedeNodeWithLinks(
       ).get(link.from_id, newNodeId) as Pick<LinkRow, 'id' | 'strength'> | undefined;
 
       if (!existingLinkOnNew) {
-        db.prepare('UPDATE links SET to_id = ?, updated = ? WHERE id = ?').run(newNodeId, ts, link.id);
+        db.prepare('UPDATE links SET to_id = ?, updated = ?, edit_seq = edit_seq + 1 WHERE id = ?').run(newNodeId, ts, link.id);
       } else if (link.strength > existingLinkOnNew.strength) {
         db.prepare('UPDATE links SET strength = ?, updated = ? WHERE id = ?').run(link.strength, ts, existingLinkOnNew.id);
       }

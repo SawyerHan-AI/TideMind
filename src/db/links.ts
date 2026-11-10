@@ -170,7 +170,7 @@ export function getLinksForNodes(
 // UPDATE links 必须显式 bump updated，否则 cloud reconcile manifest 看不到本地
 // link 变化（manifest LWW 比 updated）；客户端 SQLite 无触发器自动维护 updated。
 export function updateLinkStatus(db: Database.Database, id: string, status: LinkStatus): void {
-  db.prepare('UPDATE links SET status = ?, updated = ? WHERE id = ?').run(status, now(), id);
+  db.prepare('UPDATE links SET status = ?, updated = ?, edit_seq = edit_seq + 1 WHERE id = ?').run(status, now(), id);
 }
 
 export function updateLinkStrength(db: Database.Database, id: string, strength: number): void {
@@ -178,7 +178,7 @@ export function updateLinkStrength(db: Database.Database, id: string, strength: 
 }
 
 export function updateLinkRelation(db: Database.Database, id: string, relation: LinkRelation[]): void {
-  db.prepare('UPDATE links SET relation = ?, updated = ? WHERE id = ?').run(JSON.stringify(relation), now(), id);
+  db.prepare('UPDATE links SET relation = ?, updated = ?, edit_seq = edit_seq + 1 WHERE id = ?').run(JSON.stringify(relation), now(), id);
 }
 
 export function deleteLink(db: Database.Database, id: string): void {

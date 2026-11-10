@@ -3,6 +3,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const backgroundRole = vi.hoisted(() => ({enabled:true}));
+
 vi.mock('../../src/strategy/loader.js', () => ({
   getParam: (_strategy: string, _param: string, fallback: number) => fallback,
   loadStrategies: () => {},
@@ -19,7 +21,7 @@ vi.mock('../../src/config.js', () => ({
     embedding: { provider: 'vertex', model: '', dimensions: 3072 },
     search: {},
     gates: {},
-    metabolism: {},
+    metabolism: {background_enabled:backgroundRole.enabled},
   }),
   isLlmConfigured: () => false,
 }));
@@ -52,6 +54,7 @@ import { LLMServiceError } from '../../src/llm/client.js';
 let db: Database.Database;
 
 beforeEach(() => {
+  backgroundRole.enabled = true;
   db = setupTestDb();
 });
 
@@ -772,4 +775,15 @@ describe('maybeRunMaintenance 长 tick 防重入', () => {
       vi.useRealTimers();
     }
   });
+});
+
+it('secondary devices skip all automatic organization but retain local intake retry and query caches',async()=>{
+ backgroundRole.enabled=false;
+ const task=(id:string):TaskDefinition=>({id,intervalStrategy:'fixture',defaultIntervalMinutes:1,execute:vi.fn().mockResolvedValue(undefined)});
+ const tasks=[task('annotate'),task('link-discover'),task('digest-retry'),task('structure-holes-precompute')];
+ expect(await runSchedulerTick(db,tasks)).toEqual(['digest-retry','structure-holes-precompute']);
+ expect(tasks[0].execute).not.toHaveBeenCalled();expect(tasks[1].execute).not.toHaveBeenCalled();
+ backgroundRole.enabled=true;
+ expect(await runSchedulerTick(db,tasks)).toEqual(['annotate','link-discover']);
+ expect(tasks[0].execute).toHaveBeenCalledTimes(1);expect(tasks[1].execute).toHaveBeenCalledTimes(1);
 });

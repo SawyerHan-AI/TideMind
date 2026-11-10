@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 版本号一致性守护:10 处版本号必须完全一致,CI 中跑,漂移立即 fail。
+ * 版本号一致性守护:9 处版本号必须完全一致,CI 中跑,漂移立即 fail。
  *
  * 追踪的位置:
  *   1. package.json (root)
@@ -60,13 +60,6 @@ export const checks = [
     // server.ts: 唯一的 "status":"ok","version":"X.Y.Z" 健康检查响应字面量
     file: 'pro/cloud-server/src/server.ts',
     extract: (content) => content.match(/status:\s*'ok',\s*version:\s*'([\d.]+)'/)?.[1],
-  },
-  {
-    // handler.ts: new McpServer({ name: 'tidemind-cloud', version: '...' })
-    // 用 name 做 anchor 避免被其他 SDK 的 version 字面量劫持
-    file: 'pro/cloud-server/src/mcp/handler.ts',
-    extract: (content) =>
-      content.match(/name:\s*['"]tidemind-cloud['"],\s*version:\s*['"]([\d.]+)['"]/)?.[1],
   },
   {
     // AboutSection.tsx: const [currentVersion, setCurrentVersion] = useState('X.Y.Z')

@@ -112,7 +112,7 @@ export class Reconciler {
         const r = await this.runTable(table, isInitial);
         if (this.aborted) break;
         results.push(r);
-        this.setMetadata(`cloud.last_reconcile_at_${table}`, new Date().toISOString());
+        if (r.errors.length === 0 && r.skipped === 0) this.setMetadata(`cloud.last_reconcile_at_${table}`, new Date().toISOString());
       } catch (err) {
         const msg = (err as Error).message;
         log.error(`reconcile ${table} failed: ${msg}`);
@@ -132,7 +132,7 @@ export class Reconciler {
     // 'aborted' 是用户主动取消的信号(runTable 在 abort 时 throw new Error('aborted')),
     // 不是真失败——不能把它当 error 弹"失败"通知。把它从 error 判定里剔除。
     const realErrors = (r: ReconcileResult): string[] => r.errors.filter(e => e !== 'aborted');
-    const anyFailed = results.some(r => realErrors(r).length > 0);
+    const anyFailed = results.some(r => realErrors(r).length > 0 || r.skipped > 0);
     const anySucceeded = results.some(r => realErrors(r).length === 0);
     const status = this.aborted ? 'partial' : (anyFailed ? (anySucceeded ? 'partial' : 'failed') : 'ok');
     this.setMetadata('cloud.last_reconcile_status', status);
@@ -319,7 +319,7 @@ export class Reconciler {
     for (const r of iter) {
       entries.push({
         id: r.id,
-        sync_version: 0, // 本地没存 sync_version,不参与比较
+        sync_version: 0, // Local content versions remain independent of cloud sequence.
         updated: r.updated || r.created || new Date(0).toISOString(),
         archived: typeof r.archived === 'number' ? Boolean(r.archived) : false,
         // 因果版本号:reconcile manifest 内容方向裁决用 (edit_seq, updated)(见 chooseManifestWinner)
