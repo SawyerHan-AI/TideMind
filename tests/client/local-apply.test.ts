@@ -868,3 +868,32 @@ describe('applyCloudNodeRow — classification follows the winning content versi
       .toEqual({ refinement: 0.7, is_tag: 1, is_meta: 0, is_crystal: 1 })
   })
 })
+
+describe('cloud content index invalidation', () => {
+  it('invalidates vectors on accepted content changes but not score-only refreshes', () => {
+    const db = setupTestDb();
+    db.exec('CREATE TABLE IF NOT EXISTS nodes_vec (id TEXT PRIMARY KEY, embedding BLOB)');
+    const node = seedNode(db,{content:'old content'});
+    db.prepare('INSERT INTO node_segments(segment_id,node_id,segment_index) VALUES (?,?,0)').run(node.id+'#0',node.id);
+    db.prepare('INSERT INTO nodes_vec(id,embedding) VALUES (?,?)').run(node.id+'#0',Buffer.from([1,2]));
+    const current = db.prepare('SELECT * FROM nodes WHERE id=?').get(node.id) as Record<string,unknown>;
+    applyCloudNodeRow(db,{...current,heat:0.5});
+    expect(db.prepare('SELECT count(*) AS n FROM node_segments WHERE node_id=?').get(node.id)).toEqual({n:1});
+    applyCloudNodeRow(db,{...current,content:'new content',edit_seq:Number(current.edit_seq??0)+1});
+    expect(db.prepare('SELECT count(*) AS n FROM node_segments WHERE node_id=?').get(node.id)).toEqual({n:0});
+    db.close();
+  });
+});
+
+it('cloud strength refresh cannot overwrite an unuploaded local relation edit',async()=>{
+ const {seedLink}=await import('../helpers/test-db.js');
+ const {updateLinkRelation}=await import('../../src/db/links.js');
+ const db=setupTestDb();const a=seedNode(db),b=seedNode(db);
+ const link=seedLink(db,a.id,b.id)!;
+ const cloud=db.prepare('SELECT * FROM links WHERE id=?').get(link.id) as Record<string,unknown>;
+ updateLinkRelation(db,link.id,[{type:'contradicts',confidence:0.9}]);
+ applyCloudLinkRow(db,{...cloud,strength:0.49,updated:'2099-01-01T00:00:00Z',sync_version:10});
+ const row=db.prepare('SELECT relation,strength FROM links WHERE id=?').get(link.id) as {relation:string;strength:number};
+ expect(JSON.parse(row.relation)[0].type).toBe('contradicts');expect(row.strength).toBe(0.49);
+ db.close();
+});

@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { seedNode, setupTestDb } from '../helpers/test-db.js';
 
-vi.mock('electron', () => ({
+vi.mock('../../client/node_modules/electron/index.js', () => ({
   BrowserWindow: { getAllWindows: () => [] },
   Notification: { isSupported: () => false },
 }));
 vi.mock('../../client/electron/cloud/auth-client.js', () => ({
   getCloudBaseUrl: () => 'https://cloud.test.example',
   refreshTokenIfNeeded: async () => 'token',
+  updateCloudAuth: vi.fn(),
 }));
 
 import { CloudSyncClient } from '../../client/electron/cloud/sync-client.js';
@@ -50,20 +51,6 @@ describe('cloud stop write barrier', () => {
     expect(db.prepare("SELECT id FROM nodes WHERE id = 'normal-node'").get()).toBeDefined();
     expect(db.prepare("SELECT value FROM metadata WHERE key = 'cloud_last_synced_version'").get()).toEqual({ value: '7' });
     client.stop(); db.close();
-  });
-
-  it('does not store generation parameters after stop while response body is pending', async () => {
-    const db = setupTestDb();
-    const client = new CloudSyncClient(db);
-    const body = deferred<unknown>();
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: () => body.promise })));
-    const pending = (client as unknown as { recomputeMetabolismGeneration: (token: string) => Promise<void> }).recomputeMetabolismGeneration('token');
-    await Promise.resolve();
-    client.stop();
-    body.resolve({ decay_generation: 7, decay_base: 0.8, decay_damping: 0.4 });
-    await pending;
-    expect(db.prepare("SELECT key FROM metadata WHERE key IN ('cloud.decay_base', 'cloud.decay_damping')").all()).toEqual([]);
-    db.close();
   });
 
   it.each(['response', 'failure'] as const)('stop synchronously restores uplink dirty IDs before DB close and ignores late %s', async outcome => {
@@ -111,3 +98,26 @@ describe('cloud stop write barrier', () => {
     if (result.ok) expect(result.value.flatMap(r => r.errors)).toContain('aborted');
   });
 });
+
+it('does not report a truncated 5000-row bootstrap as fully synced', async () => {
+  const db=setupTestDb(); const client=new CloudSyncClient(db);
+  let page=0;
+  const argv=[...process.argv]; process.argv.push('--sync-bootstrap-check');
+  db.prepare('INSERT INTO metadata(key,value) VALUES (?,?)').run('cloud.last_reconcile_status','ok');
+  for (const table of ['nodes','links']) db.prepare('INSERT INTO metadata(key,value) VALUES (?,?)').run(`cloud.last_reconcile_at_${table}`,new Date().toISOString());
+  vi.stubGlobal('fetch',vi.fn(async(input)=>{
+    if (String(input).endsWith('/version')) return new Response(JSON.stringify({version:5001,maintenance_revision:0,decay_generation:3}));
+    page++;
+    const count=page<=200?25:1;
+    const changes=Array.from({length:count},(_,i)=>({table:'nodes',action:'upsert',sync_version:(page-1)*25+i+1,data:{id:`fixture-${page}-${i}`,content:'fixture',created:'2026-01-01T00:00:00Z'}}));
+    return new Response(JSON.stringify({changes,has_more:page<=200}));
+  }));
+  try {
+    await client.syncOnce();
+    expect(client.getStatus()).toBe('syncing');
+    expect(db.prepare('SELECT count(*) AS n FROM nodes').get()).toEqual({n:5000});
+    await client.syncOnce();
+    expect(client.getStatus()).toBe('idle');
+    expect(db.prepare('SELECT count(*) AS n FROM nodes').get()).toEqual({n:5001});
+  } finally { process.argv=argv; client.stop();db.close(); }
+},30000);

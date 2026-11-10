@@ -47,8 +47,12 @@ function validateConfig(config: AppConfig): void {
       throw new Error(`config.gates.${key} 必须为非负数，当前值: ${val}`);
     }
   }
-  // metabolism 必须为正数
+  // The per-device role is boolean; schedule intervals remain positive numbers.
   for (const [key, val] of Object.entries(config.metabolism)) {
+    if (key === 'background_enabled') {
+      if (typeof val !== 'boolean') throw new Error('config.metabolism.background_enabled must be a boolean');
+      continue;
+    }
     if (typeof val !== 'number' || val <= 0) {
       throw new Error(`config.metabolism.${key} 必须为正数，当前值: ${val}`);
     }
@@ -108,6 +112,7 @@ const DEFAULT_CONFIG: AppConfig = {
     learning_2_min_recall_ops: 200,
   },
   metabolism: {
+    background_enabled: true,
     annotate_interval_minutes: 3,
     daily_check_hours: 24,
     weekly_check_days: 7,
@@ -237,8 +242,18 @@ export function loadConfig(configPath?: string): AppConfig {
   return merged;
 }
 
-export function getConfig(): AppConfig {
-  return loadConfig();
+export function getConfig(refreshBackgroundRole = false): AppConfig {
+  const config = loadConfig();
+  // A long-lived MCP process has its own config cache. Read only this local role
+  // when scheduling; do not reload credentials or mutate a Worker's frozen config.
+  if (!refreshBackgroundRole || getMetabolismWorkerRuntimeContext() || getRuntimeDiagnosticContext()) return config;
+  const source = cachedConfigSource ?? path.join(DEFAULT_CONFIG.general.data_dir, 'config.toml');
+  const document = fs.existsSync(source) ? parseToml(fs.readFileSync(source,'utf8')) as Record<string, unknown> : {};
+  if (document.metabolism !== undefined && (document.metabolism === null || typeof document.metabolism !== 'object' || Array.isArray(document.metabolism))) throw new Error('config.metabolism must be an object');
+  const metabolism = document.metabolism as Record<string, unknown> | undefined;
+  const role = metabolism?.background_enabled;
+  if (role !== undefined && typeof role !== 'boolean') throw new Error('config.metabolism.background_enabled must be a boolean');
+  return {...config,metabolism:{...config.metabolism,background_enabled:role !== false}};
 }
 
 /** 清除 config 缓存，下次 getConfig() 会重新读取 TOML 文件 */

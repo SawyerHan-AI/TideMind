@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { getEmbedding } from '../llm/embedding.js';
 import { clearReembedFlag } from './connection.js';
@@ -24,6 +25,7 @@ const SEGMENT_OVERLAP = 50;       // 段间重叠字符数
  * 相邻段有 50 字符重叠保持语义连续。
  */
 export function segmentForEmbedding(content: string): string[] {
+  if (!content.trim()) return [];
   if (content.length < SEGMENT_THRESHOLD) return [content];
 
   const segments: string[] = [];
@@ -58,6 +60,13 @@ export function segmentForEmbedding(content: string): string[] {
   return segments.filter(s => s.length > 0);
 }
 
+export function nodeEmbeddingInput(content: string, title?: string | null): string {
+  return content.trim() ? (title ? `${title}\n\n${content}` : content) : (title ?? '');
+}
+export function nodeEmbeddingInputHash(content: string, title?: string | null): string {
+  return createHash('sha256').update(nodeEmbeddingInput(content,title)).digest('hex');
+}
+
 // ---- 存储 ----
 
 /**
@@ -69,9 +78,30 @@ export function segmentForEmbedding(content: string): string[] {
 export async function insertSegmentVectors(
   db: Database.Database,
   nodeId: string,
-  content: string,
+  _content: string,
 ): Promise<number> {
-  const segments = segmentForEmbedding(content);
+  const readSnapshot = () => db.prepare('SELECT content, title, archived, is_superseded FROM nodes WHERE id = ?')
+    .get(nodeId) as { content: string; title: string | null; archived: number; is_superseded: number } | undefined;
+  const before = readSnapshot();
+  if (!before || before.archived || before.is_superseded) return 0;
+  const snapshot = JSON.stringify(before);
+  const input = nodeEmbeddingInput(before.content,before.title);
+  const segments = segmentForEmbedding(input);
+  if (!segments.length) {
+    db.transaction(() => {
+      deleteVector(db,nodeId);
+      db.prepare('DELETE FROM metadata WHERE key=?').run(`vector.input:${nodeId}`);
+    })();
+    return 0;
+  }
+
+  const previousInput = db.prepare('SELECT value FROM metadata WHERE key=?').get(`vector.input:${nodeId}`) as { value:string } | undefined;
+  if (previousInput && previousInput.value !== nodeEmbeddingInputHash(before.content,before.title)) {
+    db.transaction(() => {
+      deleteVector(db,nodeId);
+      db.prepare('DELETE FROM metadata WHERE key=?').run(`vector.input:${nodeId}`);
+    })();
+  }
 
   // 先异步收集所有 embedding（不能在 better-sqlite3 同步事务内 await）
   const embeddings: Array<{ index: number; embedding: Float32Array }> = [];
@@ -87,13 +117,14 @@ export async function insertSegmentVectors(
   // 全部 embedding 都失败时,不能走 transaction 的 deleteVector——否则把旧的
   // 有效向量也抹掉,搜索直接丢失该节点。此时保留旧 vector,让下次重试有机会
   // 覆盖。调用方看到 0 即 "embedding 不可用,未改动"。
-  if (embeddings.length === 0) {
+  if (embeddings.length !== segments.length) {
     log.warn(`node=${nodeId} 所有 segment embedding 均失败,保留旧 vector`);
     return 0;
   }
 
   // 原子写入：删除旧数据 + 插入所有新 segments
   const inserted = db.transaction(() => {
+    if (JSON.stringify(readSnapshot()) !== snapshot) return 0;
     deleteVector(db, nodeId);
     for (const { index, embedding } of embeddings) {
       const segmentId = `${nodeId}#${index}`;
@@ -104,6 +135,7 @@ export async function insertSegmentVectors(
         'INSERT OR REPLACE INTO node_segments (segment_id, node_id, segment_index) VALUES (?, ?, ?)',
       ).run(segmentId, nodeId, index);
     }
+    db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES (?,?)').run(`vector.input:${nodeId}`,nodeEmbeddingInputHash(before.content,before.title));
     return embeddings.length;
   })();
 

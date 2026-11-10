@@ -229,6 +229,7 @@ export interface AgentData {
 }
 
 export interface CloudStatusData {
+  bootstrapCheck?: boolean
   loggedIn: boolean
   syncEnabled: boolean
   metabolismEnabled?: boolean

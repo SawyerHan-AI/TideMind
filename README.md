@@ -221,7 +221,7 @@ No. The raw data is always preserved. What changes is *relevance*: memories you 
 
 **Q: What's the difference between TideMind (open source) and TideMind Cloud?**
 
-The open-source version is fully functional for local use — all core features, no limitations. TideMind Cloud (coming soon) adds cross-device sync, mobile access, and a managed account system for users who prefer not to self-host. Some features requiring cloud infrastructure (such as browser extension integration) may only be available in the Cloud version. The core engine is identical.
+The open-source version is fully functional for local use — all core features, no limitations. TideMind Cloud adds cross-device memory synchronization, storage, and shared memory heat and link-score maintenance. Cloud MCP and cloud model services are retired. MCP and semantic processing run locally with your own model services. Model credentials, local vector indexes, and device settings are not copied as part of memory synchronization.
 
 ## Contributing
 

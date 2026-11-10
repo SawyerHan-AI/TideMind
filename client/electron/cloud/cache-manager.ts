@@ -56,7 +56,8 @@ export class CacheManager {
     }
   }
 
-  async applyChanges(changes: CloudChange[], _token: string): Promise<number> {
+  async applyChanges(changes: CloudChange[], _token: string, advanceCursor = true): Promise<number> {
+    const hasDeadLetters = !!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cloud_sync_dead_letters'").get();
     let applied = 0;
     let deadLettered = 0;
     let safeSyncedVersion: number | null = null;
@@ -75,9 +76,11 @@ export class CacheManager {
         try {
           if (change.table === 'nodes') {
             applyCloudNodeRow(this.db, change.data);
+            if (hasDeadLetters) this.db.prepare('DELETE FROM cloud_sync_dead_letters WHERE resource_table=? AND resource_id=? AND sync_version<=?').run(change.table, String(change.data.id), version);
             applied++;
           } else if (change.table === 'links') {
             applyCloudLinkRow(this.db, change.data);
+            if (hasDeadLetters) this.db.prepare('DELETE FROM cloud_sync_dead_letters WHERE resource_table=? AND resource_id=? AND sync_version<=?').run(change.table, String(change.data.id), version);
             applied++;
           } else {
             log.warn(`unsupported cloud sync table: ${change.table}`);
@@ -97,7 +100,7 @@ export class CacheManager {
     });
     // M6 回声抑制:下行 apply 期间不记脏集(否则下行写又被触发器记入 cloud_dirty 上行,成环)
     withApplyGuard(this.db, () => txn());
-    if (safeSyncedVersion !== null) {
+    if (advanceCursor && safeSyncedVersion !== null) {
       this.setLastSyncedVersion(safeSyncedVersion);
     }
     if (deadLettered > 0) {

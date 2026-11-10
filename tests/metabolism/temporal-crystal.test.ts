@@ -9,6 +9,7 @@ const renderUserPromptMock = vi.fn(
 );
 // 允许个别测试覆盖 getParam(默认沿用 fallback,保留 gate_min_nodes=200 等)
 let paramOverrides: Record<string, number> = {};
+let deviceBackgroundEnabled = true;
 
 vi.mock('../../src/strategy/loader.js', () => ({
   getParam: (_strategy: string, paramName: string, fallback: number) => {
@@ -33,7 +34,7 @@ vi.mock('../../src/config.js', () => ({
     llm: { provider: 'anthropic', standard_model: 'test', heavy_model: 'test' },
     embedding: { provider: 'vertex', model: 'gemini-embedding-001', dimensions: 3072 },
     search: { alpha: 0.4, beta: 0.3, gamma: 0.2, delta: 0.1 },
-    metabolism: { daily_check_hours: [3], weekly_check_days: [0] },
+    metabolism: { background_enabled: deviceBackgroundEnabled, daily_check_hours: [3], weekly_check_days: [0] },
     gates: {
       vector_search: 50, graph_expansion: 20, graph_expansion_links: 10,
       crystal_generation: 100, divergent_scan: 200,
@@ -63,6 +64,7 @@ import { callLLM } from '../../src/llm/client.js';
 let db: Database.Database;
 
 beforeEach(() => {
+  deviceBackgroundEnabled = true;
   db = setupTestDb();
   vi.clearAllMocks();
   paramOverrides = {};
@@ -326,3 +328,26 @@ describe('temporal crystal - resonance dedup', () => {
     vi.mocked(callLLM).mockResolvedValue('{}');
   });
 });
+
+it('one background role prevents duplicate automatic crystals across two copies of the same graph',async()=>{
+ const {runSchedulerTick}=await import('../../src/metabolism/scheduler.js');
+ vi.mocked(isLlmConfigured).mockReturnValue(true);
+ paramOverrides={gate_min_nodes:1,max_topics:1,min_nodes_per_topic:5,max_resonance_weeks:0};
+ const tag=seedNode(db,{content:'fixture-topic'});db.prepare('UPDATE nodes SET is_tag=1 WHERE id=?').run(tag.id);
+ for(let i=0;i<5;i++)seedNode(db,{content:`synthetic timeline ${i}`,tags:['fixture-topic']});
+ const other=setupTestDb();
+ for(const row of db.prepare('SELECT * FROM nodes').all() as Record<string,unknown>[]){const keys=Object.keys(row);other.prepare(`INSERT INTO nodes(${keys.join(',')}) VALUES (${keys.map(()=>'?').join(',')})`).run(...keys.map(k=>row[k]));}
+ let entered!:()=>void;const started=new Promise<void>(r=>entered=r);
+ let release!:()=>void;const pending=new Promise<void>(r=>release=r);
+ vi.mocked(callLLM).mockImplementation(async()=>{entered();await pending;return JSON.stringify({insight:'same synthetic insight',confidence:0.9});});
+ const task={id:'temporal-crystal',intervalStrategy:'fixture',defaultIntervalMinutes:1,execute:async(target:Database.Database)=>{await runTemporalCrystal(target);}};
+ const primary=runSchedulerTick(db,[task]);await started;
+ deviceBackgroundEnabled=false;
+ try {
+  expect(await runSchedulerTick(other,[task])).toEqual([]);
+ } finally {release();}
+ expect(await primary).toEqual(['temporal-crystal']);
+ expect((db.prepare("SELECT count(*) AS n FROM nodes WHERE source_tool='temporal-crystal'").get() as {n:number}).n).toBe(1);
+ expect((other.prepare("SELECT count(*) AS n FROM nodes WHERE source_tool='temporal-crystal'").get() as {n:number}).n).toBe(0);
+ other.close();
+},30000);

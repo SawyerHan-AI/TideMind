@@ -1073,7 +1073,6 @@ export interface AppApi {
     logout: () => Promise<void>
     status: () => Promise<CloudStatusData>
     setSyncEnabled: (enabled: boolean) => Promise<{ success: boolean; error?: string; errorDetail?: string }>
-    setMetabolismEnabled: (enabled: boolean) => Promise<{ success: boolean; error?: string; errorDetail?: string }>
     forceReconcile: () => Promise<{ success: boolean; error?: string }>
     abortReconcile: () => Promise<{ success: boolean; error?: string }>
     triggerSync: () => Promise<{ success: boolean; error?: string; errorDetail?: string }>

@@ -1,3 +1,4 @@
+import { isSyncBootstrapCheck } from '../sync-bootstrap';
 import { ipcMain, BrowserWindow } from 'electron'
 import type Database from 'better-sqlite3'
 import { getConfig, reloadConfig } from '@server/config.js'
@@ -50,8 +51,6 @@ export function registerCloudHandlers(db?: Database.Database): void {
     try {
       const { login } = await import('../cloud/auth-client.js');
       await login(email, password);
-      const { pushCloudMetabolismEnabled } = await import('../cloud/metabolism-settings.js');
-      await pushCloudMetabolismEnabled();
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -70,6 +69,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
   // Get cloud status — 读取 sync client 真实状态
   ipcMain.handle('cloud:status', async () => {
     const fallback = {
+      bootstrapCheck: isSyncBootstrapCheck(),
       loggedIn: false, email: null, plan: null,
       syncEnabled: false, online: false, syncing: false,
       outboxCount: 0, lastSyncedAt: null,
@@ -85,7 +85,6 @@ export function registerCloudHandlers(db?: Database.Database): void {
 
       const config = getConfig();
       const syncEnabled = config.cloud?.sync_enabled ?? false;
-      const metabolismEnabled = config.cloud?.metabolism_enabled ?? false;
 
       // 从 metadata 读 reconcile 状态(给 UI 展示"最近对齐"/"失败")
       let lastReconcileAtNodes: string | null = null;
@@ -130,6 +129,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
         email: auth.email ?? null,
         plan: auth.plan ?? null,
         syncEnabled,
+        bootstrapCheck: isSyncBootstrapCheck(),
         // 已登录默认视为在线；仅当 syncClient 明确汇报 'offline'（token 失效 / 网络不可达 / 403 白名单拒绝）时才置为 false
         // 旧逻辑把"无 syncClient"也当 offline,导致未开启同步的用户被错误地显示为"离线"
         online: syncClient ? syncClient.getStatus() !== 'offline' : true,
@@ -145,7 +145,6 @@ export function registerCloudHandlers(db?: Database.Database): void {
         syncNotReady: syncClient?.syncNotReady ?? false,
         lastErrorCode,
         lastErrorMessage: syncClient?.lastErrorMessage ?? null,
-        metabolismEnabled,
         // reconcile 状态(取 nodes / links 中更早的那个作为"最近对齐"展示)
         lastReconcileAt: oldestReconcile(lastReconcileAtNodes, lastReconcileAtLinks),
         lastReconcileStatus,
@@ -205,8 +204,6 @@ export function registerCloudHandlers(db?: Database.Database): void {
       const { isLoggedIn } = await import('../cloud/auth-client.js');
       if (isLoggedIn()) {
         try {
-          const { pushCloudMetabolismEnabled } = await import('../cloud/metabolism-settings.js');
-          await pushCloudMetabolismEnabled(false);
         } catch (err) { preferenceError = (err as Error).message; }
       }
     }
@@ -298,55 +295,6 @@ export function registerCloudHandlers(db?: Database.Database): void {
   });
 
   // 开关云代谢(本地/云互斥开关)
-  ipcMain.handle('cloud:set-metabolism-enabled', async (_event, enabled: unknown) => {
-    const parsed = parseRequiredBoolean(enabled, 'enabled')
-    if (!parsed.ok) return parsed.error
-
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const { parse: parseToml, stringify: stringifyToml } = await import('smol-toml');
-    const { getDataDir } = await import('@server/config.js');
-
-    const configEntry = path.join(getDataDir(), 'config.toml');
-    const configPath = fs.existsSync(configEntry) ? fs.realpathSync(configEntry) : configEntry;
-    let current: Record<string, unknown> = {};
-    if (fs.existsSync(configPath)) {
-      try {
-        current = parseToml(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-      } catch (err) { return { success: false, error: 'sync_error', errorDetail: (err as Error).message }; }
-    }
-    if (parsed.data && !getConfig().cloud?.sync_enabled) return { success: false, error: 'not_initialized' };
-    try {
-      const { pushCloudMetabolismEnabled } = await import('../cloud/metabolism-settings.js');
-      await pushCloudMetabolismEnabled(parsed.data);
-    } catch (err) {
-      return { success: false, error: 'sync_error', errorDetail: (err as Error).message };
-    }
-    const previousEnabled = getConfig().cloud?.metabolism_enabled === true && getConfig().cloud?.sync_enabled === true;
-    try {
-      // Re-read after the network await so unrelated config edits are preserved.
-      if (fs.existsSync(configPath)) current = parseToml(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-      const cloud = (current.cloud ?? {}) as Record<string, unknown>;
-      cloud.metabolism_enabled = parsed.data;
-      current.cloud = cloud;
-      const tmpPath = `${configPath}.tmp-${process.pid}-${Date.now()}`;
-      fs.writeFileSync(tmpPath, stringifyToml(current as any));
-      fs.renameSync(tmpPath, configPath);
-      reloadConfig();
-    } catch (err) {
-      try {
-        const { pushCloudMetabolismEnabled } = await import('../cloud/metabolism-settings.js');
-        await pushCloudMetabolismEnabled(previousEnabled);
-      } catch (rollbackError) {
-        log.error(`cloud metabolism preference rollback failed: ${(rollbackError as Error).message}`);
-      }
-      return { success: false, error: 'sync_error', errorDetail: (err as Error).message };
-    }
-    notifyMetabolismWorkerRuntimeMutation('config');
-    log.info(`cloud metabolism ${parsed.data ? 'enabled' : 'disabled'}`);
-    emitCloudChanged();
-    return { success: true };
-  });
 
   // 用户主动触发 reconcile(设置页"强制对齐"按钮)。
   //

@@ -1,3 +1,4 @@
+import { isSyncBootstrapCheck } from './sync-bootstrap';
 import { app, BrowserWindow, Menu, Tray, nativeImage, session, shell, dialog, powerMonitor } from 'electron'
 import path from 'node:path'
 import { exec } from 'node:child_process'
@@ -169,8 +170,6 @@ async function maybeStartCloudSync(dbForCloud: ReturnType<typeof getClientDb>): 
   if (!isLoggedIn()) return
   const { getConfig: getAppConfig } = await import('../../src/config.js')
   if (!getAppConfig().cloud?.sync_enabled) {
-    const { pushCloudMetabolismEnabled } = await import('./cloud/metabolism-settings.js')
-    await pushCloudMetabolismEnabled(false)
     return
   }
   const { getCloudSyncClient, createCloudSyncClient } = await import('./cloud/sync-client.js')
@@ -589,7 +588,7 @@ app.whenReady().then(async () => {
   }
 
   // 后台确保 Ollama 运行（本身已经是非阻塞）
-  ensureOllama()
+  if (!isSyncBootstrapCheck()) ensureOllama()
 
   // data-watcher 延迟 1s 启动：避开首屏 IPC 高峰，给 renderer 第一波拉数让路
   if (db) {

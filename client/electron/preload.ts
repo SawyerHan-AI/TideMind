@@ -188,7 +188,6 @@ const api: AppApi = {
     logout: () => ipcRenderer.invoke('cloud:logout'),
     status: () => ipcRenderer.invoke('cloud:status'),
     setSyncEnabled: (enabled: boolean) => ipcRenderer.invoke('cloud:set-sync-enabled', enabled),
-    setMetabolismEnabled: (enabled: boolean) => ipcRenderer.invoke('cloud:set-metabolism-enabled', enabled),
     forceReconcile: () => ipcRenderer.invoke('cloud:force-reconcile'),
     abortReconcile: () => ipcRenderer.invoke('cloud:abort-reconcile'),
     triggerSync: () => ipcRenderer.invoke('cloud:trigger-sync'),

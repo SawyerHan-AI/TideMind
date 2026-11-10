@@ -32,7 +32,12 @@
     "updateChannelDesc": "Beta 版会更早收到新功能，但可能不稳定。切换在下次检查时生效。",
     "updateChannelStable": "稳定版",
     "updateChannelBeta": "测试版",
-    "channelSwitchConfirm": "切换到 Stable 后会在下次检查更新时安装最新正式版(可能撤回部分实验功能)。继续吗?"
+    "channelSwitchConfirm": "切换到 Stable 后会在下次检查更新时安装最新正式版(可能撤回部分实验功能)。继续吗?",
+    "backgroundOrganization": {
+      "title": "本机后台记忆整理",
+      "description": "多设备时只在一台开启，避免重复生成。关闭后同步、笔记导入、检索和前台模型仍可使用；正在运行的任务结束后生效。 切换设备前，先在原设备关闭并正常退出 TideMind 及其 Agent 连接，再在新设备开启。",
+      "error": "设置未保存，请重试。"
+    }
   },
   "external": {
     "subtabs": {
@@ -198,13 +203,13 @@
       "retry": "重试",
       "selectConnection": "选择连接",
       "selectModel": "选择模型",
-      "modelLabel": "模型"
-      ,"savedRouteProblem": "已保存配置异常"
-      ,"connectionArchived": "该连接已归档"
-      ,"connectionUnavailable": "已保存的连接不存在"
-      ,"modelUnavailable": "已保存的模型尚未验证通过"
-      ,"savedConnectionInvalid": "已保存的连接不可用。请选择其他连接以更新此路由。"
-      ,"savedModelInvalid": "已保存的模型不可用。请选择已验证模型以更新此路由。",
+      "modelLabel": "模型",
+      "savedRouteProblem": "已保存配置异常",
+      "connectionArchived": "该连接已归档",
+      "connectionUnavailable": "已保存的连接不存在",
+      "modelUnavailable": "已保存的模型尚未验证通过",
+      "savedConnectionInvalid": "已保存的连接不可用。请选择其他连接以更新此路由。",
+      "savedModelInvalid": "已保存的模型不可用。请选择已验证模型以更新此路由。",
       "followDefault": "隔离调用默认（CLI 内置）",
       "isolatedDefaultHint": "使用隔离环境中的 CLI 内置默认模型；不会跟随账号目录推荐或本机个人配置。",
       "aliasPending": "别名，待验证",
@@ -1152,7 +1157,6 @@
       "fullyVerified": "完整验证通过",
       "optionalConnections": "可选连接",
       "connectionTaskHistory": "连接任务与历史（{{count}}）",
-
       "codexSharedIdentityReconnect": "这个 Codex 连接仍使用旧身份。请在 Agent 详情中断开现有 Codex 连接，完成移除后，再重新连接 Codex，让 Desktop 与 CLI 共用一个 Tide Mind 身份。",
       "codexExistingIdentityReview": "检测到需要先处理的 Codex 旧连接。请打开 Codex 详情，先解决旧身份冲突，再重新检查并连接。",
       "legacyChoice": {
@@ -1237,8 +1241,14 @@
         "dialogDescription": "选择精确的本机目标，先核对冻结目标，再批准协调器生成的连接计划。",
         "chooseMode": "接入方式",
         "mode": {
-          "nonstandard_config_root": { "title": "非标准配置目录", "description": "选择一个已支持宿主，并让其正式 Adapter 管理另一个本机配置目录。" },
-          "manual_mcp_client": { "title": "未收录的本机 MCP 客户端", "description": "绑定一个本机可执行文件和一份明确的 JSON MCP 配置文件。" }
+          "nonstandard_config_root": {
+            "title": "非标准配置目录",
+            "description": "选择一个已支持宿主，并让其正式 Adapter 管理另一个本机配置目录。"
+          },
+          "manual_mcp_client": {
+            "title": "未收录的本机 MCP 客户端",
+            "description": "绑定一个本机可执行文件和一份明确的 JSON MCP 配置文件。"
+          }
         },
         "name": "Agent 名称",
         "legacyIdentity": "已有旧版身份",
@@ -1487,7 +1497,13 @@
       "pauseDescription": "现有投影会保留；自动修复和升级将停止。",
       "disconnectTitle": "断开 {{name}} 与 Tide Mind？",
       "disconnectDescription": "只移除预览中由 Tide Mind 拥有的组件；无关配置会保留。",
-      "targetAction": {"create":"创建","update":"更新","remove":"移除","detach":"仅断开当前 Agent","invoke":"维护"},
+      "targetAction": {
+        "create": "创建",
+        "update": "更新",
+        "remove": "移除",
+        "detach": "仅断开当前 Agent",
+        "invoke": "维护"
+      },
       "sharedDisconnectStillVisible": "这个组件由多个 Agent 共享。Tide Mind 只会停止托管当前 Agent，并保留共享文件；当前 Agent 仍可能看到其中的 Skill。",
       "sharedDisconnectRetained": "这个组件由多个 Agent 共享。Tide Mind 只会停止托管当前 Agent，共享文件会为其他 Agent 保留。",
       "sharedDisconnectConsumers": "当前共享此组件的 Agent：",
@@ -1509,8 +1525,20 @@
         "3": "基础接入",
         "4": "完整接入"
       },
-      "scope": {"user":"用户级","project":"项目级","system":"系统级","other":"其他范围"},
-      "commandCategory": {"none":"无命令","file_write":"文件写入","host_cli":"宿主 CLI","plugin_install":"插件安装","host_trust":"宿主确认","admin":"管理员权限"},
+      "scope": {
+        "user": "用户级",
+        "project": "项目级",
+        "system": "系统级",
+        "other": "其他范围"
+      },
+      "commandCategory": {
+        "none": "无命令",
+        "file_write": "文件写入",
+        "host_cli": "宿主 CLI",
+        "plugin_install": "插件安装",
+        "host_trust": "宿主确认",
+        "admin": "管理员权限"
+      },
       "reversible": "可撤销",
       "notReversible": "无法完整撤销",
       "risk": {
@@ -1559,14 +1587,36 @@
         },
         "guidance": {
           "claudeCowork": {
-            "connect": {"step1":"批准后，在 Tide Mind 的组件详情中打开生成的 .plugin 文件。","step2":"在 Claude Cowork 中进入“Customize”→“Plugins”，上传并启用该 .plugin 文件。不要在 Claude Desktop 的 MCP 设置中添加。","step3":"新建一个本机 Cowork 任务，并在同一任务中分别成功调用 Tide Mind 的 brain_recall 与 brain_digest。云端 Cowork 无法运行本机 MCP。","step4":"返回 Tide Mind 重新检查；只有检测到新的读取和写入调用证据后，才会显示“基础接入”。"},
-            "disconnect": {"step1":"在 Claude Cowork 中进入“Customize”→“Plugins”。","step2":"只移除当前 Agent 对应的 Tide Mind 插件，不要删除其他 Tide Mind Agent 的插件。","step3":"返回 Tide Mind 重新检查。由于 Cowork 没有公开可读的插件注册表，移除状态会保持待确认。"}
+            "connect": {
+              "step1": "批准后，在 Tide Mind 的组件详情中打开生成的 .plugin 文件。",
+              "step2": "在 Claude Cowork 中进入“Customize”→“Plugins”，上传并启用该 .plugin 文件。不要在 Claude Desktop 的 MCP 设置中添加。",
+              "step3": "新建一个本机 Cowork 任务，并在同一任务中分别成功调用 Tide Mind 的 brain_recall 与 brain_digest。云端 Cowork 无法运行本机 MCP。",
+              "step4": "返回 Tide Mind 重新检查；只有检测到新的读取和写入调用证据后，才会显示“基础接入”。"
+            },
+            "disconnect": {
+              "step1": "在 Claude Cowork 中进入“Customize”→“Plugins”。",
+              "step2": "只移除当前 Agent 对应的 Tide Mind 插件，不要删除其他 Tide Mind Agent 的插件。",
+              "step3": "返回 Tide Mind 重新检查。由于 Cowork 没有公开可读的插件注册表，移除状态会保持待确认。"
+            }
           },
           "qwenWork": {
-            "connect": {"step1":"打开 Qwen Work，进入“扩展”→“连接器”。","step2":"选择 JSON 配置入口，粘贴下方完整的 mcpServers JSON。","step3":"确认 command、args 和 env 是分离字段，然后应用配置。","step4":"启用连接器，新建一个对话，并在同一对话中分别成功调用 Tide Mind 的 brain_recall 与 brain_digest。"},
-            "disconnect": {"step1":"打开 Qwen Work，进入“扩展”→“连接器”→“已安装”。","step2":"在“自定义”区域找到“{{connector}}”，点击删除图标并确认。","step3":"新建一个对话，然后返回 Tide Mind 重新检查。"}
+            "connect": {
+              "step1": "打开 Qwen Work，进入“扩展”→“连接器”。",
+              "step2": "选择 JSON 配置入口，粘贴下方完整的 mcpServers JSON。",
+              "step3": "确认 command、args 和 env 是分离字段，然后应用配置。",
+              "step4": "启用连接器，新建一个对话，并在同一对话中分别成功调用 Tide Mind 的 brain_recall 与 brain_digest。"
+            },
+            "disconnect": {
+              "step1": "打开 Qwen Work，进入“扩展”→“连接器”→“已安装”。",
+              "step2": "在“自定义”区域找到“{{connector}}”，点击删除图标并确认。",
+              "step3": "新建一个对话，然后返回 Tide Mind 重新检查。"
+            }
           },
-          "kimiConflict": {"step1":"核对旧版 Skill {{source}} 与受管目标 {{target}}。","step2":"如需保留内容，请移动或重命名 Tide Mind 不应管理的文件。Tide Mind 不会覆盖或删除未经验证的文件。","step3":"返回 Tide Mind，重新运行检查。"},
+          "kimiConflict": {
+            "step1": "核对旧版 Skill {{source}} 与受管目标 {{target}}。",
+            "step2": "如需保留内容，请移动或重命名 Tide Mind 不应管理的文件。Tide Mind 不会覆盖或删除未经验证的文件。",
+            "step3": "返回 Tide Mind，重新运行检查。"
+          },
           "manualHostRemoval": {
             "step1": "打开 {{host}}，在其插件或扩展列表中找到 Tide Mind 组件“{{selector}}”。",
             "step2": "仅移除当前 Agent 对应的组件，然后重启 {{host}} 或新建会话，使其不再加载。",
@@ -1725,13 +1775,12 @@
     "devicesComingSoon": "设备管理即将推出。",
     "subscription": "订阅计划",
     "currentPlan": "当前计划",
-    "upgradeHint": "升级到 Pro，解锁无限云记忆、5 台设备同步、7×24 云代谢等更多功能。",
+    "upgradeHint": "升级到 Pro，解锁无限云记忆和 5 台设备同步。",
     "upgradeAnnual": "升级到 Pro — $49/年",
     "upgradeMonthly": "或按月付 $5/月",
     "viewPricing": "查看计划与定价",
     "manageSubscription": "管理订阅",
     "comingSoon": "即将推出",
-    "subscriptionComingSoon": "Pro 和 Pro+ 计划即将推出。敬请期待云同步、7×24 代谢引擎等更多功能。",
     "billing": "账单",
     "noBilling": "免费计划无账单记录。",
     "billingComingSoon": "账单历史即将推出。",
@@ -1785,7 +1834,7 @@
       "enableDesc": "你的记忆数据将上传至 TideMind Cloud。云端将成为数据主副本，本地作为只读缓存。所有已登录设备将同步数据。",
       "enableConfirm": "确认开启",
       "disableTitle": "关闭数据云同步？",
-      "disableDesc": "本地数据将成为主副本。其他设备将同时退出云同步。云端数据保留 30 天。云代谢将自动关闭。",
+      "disableDesc": "停止此设备的同步，保留本地和云端记忆。",
       "disableConfirm": "确认关闭",
       "syncNotReady": "云同步服务正在部署中，敬请期待。",
       "errors": {
@@ -1805,30 +1854,6 @@
       "reconciling": "对齐 {{table}} 中({{phase}})",
       "reconcileDone": "已对齐",
       "reconcileFailed": "对齐失败"
-    },
-    "metabolism": {
-      "title": "云代谢",
-      "freeDesc": "云代谢在 Pro 及以上计划可用。开启后，记忆的标注、关联发现、结晶涌现等任务将在云端 7×24 持续运行。",
-      "upgrade": "升级到 Pro",
-      "proDesc": "代谢任务将在云端 7×24 持续运行，不受设备开关机影响。",
-      "proPlusDesc": "由 TideMind 托管 LLM 驱动，无需配置 API Key。代谢任务在云端 7×24 持续运行。",
-      "keyWarning": "开启云代谢需要将你的 LLM API Key 加密上传至云端（AES-256-GCM）。如果你对 Key 安全有顾虑，建议保持关闭，使用本地代谢。",
-      "requiresSync": "需要先开启「数据云同步」。",
-      "tokenUsage": "Token 用量",
-      "enableTitle": "开启云代谢？",
-      "enableDescByok": "你的 LLM API Key 将加密上传至 TideMind Cloud 凭据管理系统。仅用于运行你的代谢任务。关闭云代谢时自动删除。",
-      "enableDescManaged": "TideMind 托管 LLM 将为你的代谢任务提供驱动。每月包含 3M tokens 额度。你也可以在模型配置中配置自己的 Key 以获取更高质量。",
-      "enableConfirm": "确认开启",
-      "disableTitle": "关闭云代谢？",
-      "disableDescByok": "云端 API Key 将被删除。代谢将切回本地运行。设备关机时代谢将暂停。",
-      "disableDescManaged": "托管 LLM 用量将暂停。代谢将切回本地运行。设备关机时代谢将暂停。",
-      "disableConfirm": "确认关闭"
-    },
-    "managedLlm": {
-      "title": "TideMind LLM 服务",
-      "comingSoon": "即将推出",
-      "desc": "无需自己注册 API Key，直接使用 TideMind 提供的 LLM 服务。包含在 Pro+ 订阅中。",
-      "learnMore": "了解更多"
     }
   }
 }

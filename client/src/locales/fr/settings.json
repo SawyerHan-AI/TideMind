@@ -32,7 +32,12 @@
     "updateChannelDesc": "Beta livre les nouvelles fonctionnalités plus tôt mais peut être moins stable. Le changement prend effet à la prochaine vérification.",
     "updateChannelStable": "Stable",
     "updateChannelBeta": "Bêta",
-    "channelSwitchConfirm": "Passer à Stable installera la dernière version stable lors de la prochaine vérification (certaines fonctionnalités expérimentales seront annulées). Continuer ?"
+    "channelSwitchConfirm": "Passer à Stable installera la dernière version stable lors de la prochaine vérification (certaines fonctionnalités expérimentales seront annulées). Continuer ?",
+    "backgroundOrganization": {
+      "title": "Organisation des souvenirs sur cet appareil",
+      "description": "Activez-la sur un seul appareil pour éviter les idées automatiques en double. La synchronisation, l’importation, la recherche et les modèles à la demande restent disponibles. Les tâches en cours se terminent d’abord. Avant de changer d’appareil, désactivez ce réglage et quittez TideMind et ses connexions aux agents sur l’ancien appareil, puis activez-le sur le nouveau.",
+      "error": "Impossible d’enregistrer ce réglage. Réessayez."
+    }
   },
   "external": {
     "subtabs": {
@@ -198,13 +203,13 @@
       "retry": "Réessayer",
       "selectConnection": "Sélectionner une connexion",
       "selectModel": "Sélectionner un modèle",
-      "modelLabel": "Modèle"
-      ,"savedRouteProblem": "Problème de configuration enregistrée"
-      ,"connectionArchived": "Cette connexion est archivée"
-      ,"connectionUnavailable": "Cette connexion enregistrée n’existe plus"
-      ,"modelUnavailable": "Ce modèle enregistré n’est pas vérifié"
-      ,"savedConnectionInvalid": "La connexion enregistrée est indisponible. Sélectionnez-en une autre."
-      ,"savedModelInvalid": "Le modèle enregistré est indisponible. Sélectionnez un modèle vérifié.",
+      "modelLabel": "Modèle",
+      "savedRouteProblem": "Problème de configuration enregistrée",
+      "connectionArchived": "Cette connexion est archivée",
+      "connectionUnavailable": "Cette connexion enregistrée n’existe plus",
+      "modelUnavailable": "Ce modèle enregistré n’est pas vérifié",
+      "savedConnectionInvalid": "La connexion enregistrée est indisponible. Sélectionnez-en une autre.",
+      "savedModelInvalid": "Le modèle enregistré est indisponible. Sélectionnez un modèle vérifié.",
       "followDefault": "Défaut isolé (intégré à la CLI)",
       "isolatedDefaultHint": "Utilise le modèle par défaut intégré à la CLI dans un environnement isolé, sans suivre les recommandations du catalogue du compte ni les réglages personnels locaux.",
       "aliasPending": "alias, pas encore vérifié",
@@ -1152,7 +1157,6 @@
       "fullyVerified": "Vérification complète",
       "optionalConnections": "Connexions facultatives",
       "connectionTaskHistory": "Tâches et historique des connexions ({{count}})",
-
       "codexSharedIdentityReconnect": "This Codex connection uses an older identity. In the Agent details, disconnect the existing Codex connection and complete its removal, then connect Codex again so Desktop and CLI share one Tide Mind identity.",
       "codexExistingIdentityReview": "Existing Tide Mind connections for Codex need review before connecting. Open the Codex details and resolve the old identity conflict first, then check again and reconnect.",
       "legacyChoice": {
@@ -1771,7 +1775,7 @@
     "devicesComingSoon": "Gestion des appareils bientôt disponible.",
     "subscription": "Abonnement",
     "currentPlan": "Forfait actuel",
-    "upgradeHint": "Passez à Pro pour des souvenirs cloud illimités, 5 appareils, un métabolisme cloud 24h/24 et plus encore.",
+    "upgradeHint": "Pro offre des souvenirs illimités dans le cloud et la synchronisation sur 5 appareils.",
     "upgradeAnnual": "Passer à Pro — $49/an",
     "upgradeMonthly": "ou $5/mois",
     "viewPricing": "Voir les forfaits et tarifs",
@@ -1783,7 +1787,6 @@
     "logoutTitle": "Se déconnecter ?",
     "logoutDesc": "Vous serez déconnecté de TideMind Cloud. Les données locales ne sont pas affectées.",
     "comingSoon": "Bientôt",
-    "subscriptionComingSoon": "Les plans Pro et Pro+ arrivent bientôt. Restez à l'écoute pour la synchronisation cloud, le métabolisme 7×24, et plus encore.",
     "registerButton": "Créer un compte",
     "browserHint": "S'ouvre dans votre navigateur pour une authentification sécurisée.",
     "requestAccountDeletion": "Demander la suppression du compte",
@@ -1831,7 +1834,7 @@
       "enableDesc": "Vos souvenirs seront téléchargés vers TideMind Cloud. Le cloud devient la copie principale ; les données locales deviennent un cache en lecture seule. Tous les appareils connectés seront synchronisés.",
       "enableConfirm": "Activer la synchronisation",
       "disableTitle": "Désactiver la synchronisation des données cloud ?",
-      "disableDesc": "Les données locales redeviendront la copie principale. Les autres appareils quitteront également la synchronisation cloud. Les données cloud seront conservées pendant 30 jours. Le métabolisme cloud sera automatiquement désactivé.",
+      "disableDesc": "Arrêter la synchronisation de cet appareil. Les souvenirs locaux et dans le cloud sont conservés.",
       "disableConfirm": "Désactiver la synchronisation",
       "syncNotReady": "Le service de synchronisation cloud est en cours de déploiement. Restez à l'écoute.",
       "errors": {
@@ -1851,30 +1854,6 @@
       "reconciling": "Alignement de {{table}} ({{phase}})",
       "reconcileDone": "Aligné",
       "reconcileFailed": "Échec de l'alignement"
-    },
-    "metabolism": {
-      "title": "Métabolisme cloud",
-      "freeDesc": "Le métabolisme cloud est disponible à partir de Pro. Vos souvenirs seront annotés, liés et cristallisés 24h/24 dans le cloud.",
-      "upgrade": "Passer à Pro",
-      "proDesc": "Les tâches de métabolisme fonctionnent 24h/24 dans le cloud, indépendamment de votre appareil.",
-      "proPlusDesc": "Propulsé par TideMind Managed LLM. Aucune clé API nécessaire. Le métabolisme fonctionne 24h/24 dans le cloud.",
-      "keyWarning": "Le métabolisme cloud nécessite le téléchargement de votre clé API LLM (chiffrement AES-256-GCM). En cas de préoccupations de sécurité, désactivez cette option et utilisez le métabolisme local.",
-      "requiresSync": "La synchronisation des données cloud doit être activée.",
-      "tokenUsage": "Utilisation des tokens",
-      "enableTitle": "Activer le métabolisme cloud ?",
-      "enableDescByok": "Votre clé API LLM sera chiffrée et téléchargée vers TideMind Cloud. Elle ne sera utilisée que pour exécuter vos tâches de métabolisme. La clé sera supprimée lorsque vous désactiverez le métabolisme cloud.",
-      "enableDescManaged": "TideMind Managed LLM alimentera votre métabolisme. 3M tokens/mois inclus. Vous pouvez également configurer votre propre clé dans les paramètres de modèles pour une qualité supérieure.",
-      "enableConfirm": "Activer",
-      "disableTitle": "Désactiver le métabolisme cloud ?",
-      "disableDescByok": "Votre clé API cloud sera supprimée. Le métabolisme repassera en local. Il sera mis en pause lorsque votre appareil sera éteint.",
-      "disableDescManaged": "L'utilisation du LLM géré sera mise en pause. Le métabolisme repassera en local. Il sera mis en pause lorsque votre appareil sera éteint.",
-      "disableConfirm": "Désactiver"
-    },
-    "managedLlm": {
-      "title": "Service LLM TideMind",
-      "comingSoon": "Bientôt disponible",
-      "desc": "Utilisez le service LLM fourni par TideMind sans enregistrer vos propres clés API. Inclus dans l'abonnement Pro+.",
-      "learnMore": "En savoir plus"
     }
   }
 }

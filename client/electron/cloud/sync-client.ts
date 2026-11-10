@@ -1,3 +1,4 @@
+import { isSyncBootstrapCheck } from '../sync-bootstrap';
 import type Database from 'better-sqlite3';
 import { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
@@ -8,10 +9,7 @@ import { getCloudAuth, getCloudBaseUrl, refreshTokenIfNeeded, updateCloudAuth } 
 import { getActivityState } from '../activity-state.js';
 import { pumpReembedMissing } from './reembed-pump.js';
 import { cancelActiveUplink, pumpUplink } from './uplink.js';
-import { withApplyGuard } from './local-apply.js';
 import { abortActiveReconcile } from './reconcile-lock.js';
-import { pushCloudMetabolismEnabled } from './metabolism-settings.js';
-import { recomputeToGeneration } from '../../../src/metabolism/generation-decay.js';
 
 const log = createLogger('cloud-sync');
 
@@ -67,6 +65,7 @@ export class CloudSyncClient {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private uplinkTimer: ReturnType<typeof setInterval> | null = null;
   private status: SyncStatus = 'idle';
+  private pullDrained = false;
 
   // WebSocket 相关
   private ws: WebSocket | null = null;
@@ -130,26 +129,10 @@ export class CloudSyncClient {
   /** Audit-3 F14:public getter,避免 getOutboxCount 用 `as any` 强转。 */
   getDb(): Database.Database { return this.db; }
 
-  private metabolismPreferencePending = false;
 
   async start(): Promise<void> {
     log.info('starting sync client');
     this.stopped = false;
-    this.metabolismPreferencePending = true;
-    try {
-      await pushCloudMetabolismEnabled();
-      this.metabolismPreferencePending = false;
-    } catch (err) {
-      this.status = 'error';
-      this.lastErrorMessage = (err as Error).message;
-      if (!this.stopped && !this.firstSyncRetryTimer) {
-        this.firstSyncRetryTimer = setTimeout(() => {
-          this.firstSyncRetryTimer = null;
-          if (!this.stopped) this.start().catch(e => log.warn(`cloud preference startup retry failed: ${(e as Error).message}`));
-        }, FIRST_SYNC_RETRY_MS);
-      }
-      throw err;
-    }
     if (this.stopped) return;
 
     // 注册/刷新设备(fire-and-forget)。历史遗留 bug:之前从未调用,devices 表永远空。
@@ -274,7 +257,7 @@ export class CloudSyncClient {
    * 只检查 nodes 是个老 bug — 如果 nodes 跑完但 links 失败,下次不会重试 links,
    * 用户数据永远对不齐。
    */
-  private async maybeTriggerReconcile(): Promise<void> {
+  private async maybeTriggerReconcile(force = false): Promise<boolean> {
     const lastNodes = this.readMetadata('cloud.last_reconcile_at_nodes');
     const lastLinks = this.readMetadata('cloud.last_reconcile_at_links');
 
@@ -285,7 +268,7 @@ export class CloudSyncClient {
       return Date.now() - t > 7 * 24 * 60 * 60 * 1000;
     };
 
-    if (!stale(lastNodes) && !stale(lastLinks)) return; // 两张表都新,跳过
+    if (!force && this.readMetadata('cloud.last_reconcile_status') === 'ok' && !stale(lastNodes) && !stale(lastLinks)) return true; // 两张表都新,跳过
 
     const isInitial = !lastNodes && !lastLinks; // 只有"两个都从未跑过"才算首次
 
@@ -294,7 +277,7 @@ export class CloudSyncClient {
     // 交错写同一组 metadata / 同一进度 channel;abort 也能命中本自动实例。
     const { runExclusive } = await import('./reconcile-lock.js');
     const { Reconciler } = await import('./reconciler.js');
-    if (this.stopped) return;
+    if (this.stopped) return false;
     const outcome = await runExclusive(async (register) => {
       const reconciler = new Reconciler(this.db);
       register(reconciler);
@@ -302,11 +285,12 @@ export class CloudSyncClient {
     });
     if (!outcome.ok) {
       log.info('auto reconcile skipped: another reconcile already running');
-      return;
+      return false;
     }
     for (const r of outcome.value) {
       log.info(`reconcile ${r.table}: uploaded=${r.uploaded} downloaded=${r.downloaded} conflicts=${r.conflicts} errors=${r.errors.length}`);
     }
+    return !this.stopped && outcome.value.length === 2 && outcome.value.every(r => r.errors.length === 0 && r.skipped === 0);
   }
 
   private readMetadata(key: string): string | null {
@@ -597,11 +581,6 @@ export class CloudSyncClient {
     // 队列里;进程退出前会 drain 一次,如果不挡 stopped 就会继续往 closeClientDb
     // 之后的 db 写,日志爆"database is closed"。
     if (this.stopped) return;
-    if (this.metabolismPreferencePending) {
-      await pushCloudMetabolismEnabled();
-      if (this.stopped) return;
-      this.metabolismPreferencePending = false;
-    }
     const token = await refreshTokenIfNeeded();
     if (this.stopped) return;
     if (!token) { this.status = 'offline'; return; }
@@ -617,8 +596,26 @@ export class CloudSyncClient {
       const pulled = await this.pullChanges(token);
       if (this.stopped) return;
       // M8.5:pull 后拉云端 generation 锚点,本地 lazy 重算 A 类代谢(heat/maturity)到 G。
-      await this.recomputeMetabolismGeneration(token);
+
       if (this.stopped) return;
+      if (!this.pullDrained) { this.status = 'syncing'; this.emitDataChanged(uplinked > 0 || pulled > 0); return; }
+      await this.retryDeadLetters(token);
+      if (this.stopped) return;
+      const pendingBefore = this.db.prepare('SELECT count(*) AS n FROM cloud_sync_dead_letters').get() as { n: number };
+      // Recovery is allowed before the completion gate, including missing parents.
+      const reconciled = await this.maybeTriggerReconcile(pendingBefore.n > 0);
+      if (this.stopped) return;
+      if (pendingBefore.n > 0) await this.retryDeadLetters(token);
+      if (this.stopped) return;
+      const pending = this.db.prepare('SELECT count(*) AS n FROM cloud_sync_dead_letters').get() as { n: number };
+      const target = await this.refreshGenerationAnchor(token);
+      if (this.stopped) return;
+      if (!reconciled || pending.n > 0 || this.cacheManager.getLastSyncedVersion() < target.version) {
+        this.status = pending.n > 0 ? 'error' : 'syncing';
+        this.lastErrorMessage = pending.n > 0 ? `${pending.n} sync rows await recovery` : null;
+        this.emitDataChanged(true);
+        return;
+      }
       this.status = 'idle';
       // 同步成功 → 重置错误标志（可能是之前的瞬时故障）
       this.syncNotReady = false;
@@ -637,7 +634,7 @@ export class CloudSyncClient {
 
       // M4(解 #2 召回缺口):pull 下来的跨设备节点向量不同步,fire-and-forget 补 embed。
       // pump 扫全部"active 有 content 缺向量"节点,失败已在内部 swallow(无凭证/熔断时静默)。
-      void pumpReembedMissing(this.db);
+      if (!isSyncBootstrapCheck()) void pumpReembedMissing(this.db);
     } catch (e) {
       if (this.stopped) return;
       const msg = (e as Error).message;
@@ -711,6 +708,7 @@ export class CloudSyncClient {
   }
 
   async pullChanges(token: string): Promise<number> {
+    this.pullDrained = false;
     // 修复 (2026-05-19): 必须 loop 直到 has_more=false。
     // 原实现单次 fetch limit=100 后直接 return 丢弃 has_more,服务端一次截 100 条剩余
     // 永远拉不回 — cacheManager 推进 cursor 后，下次只从最大版本号开始拉,中间
@@ -764,7 +762,7 @@ export class CloudSyncClient {
       // 单独退出条件:`!data.has_more` — has_more=true && 0 changes 的边界状态
       // 让 MAX_PAGES 兜底(下一轮 fetch 会再发,sinceVersion 不变,服务端继续返回相同
       // 空页 → MAX_PAGES 退出,避免死循环)。
-      if (!data.has_more) break;
+      if (!data.has_more) { this.pullDrained = true; break; }
       // 若 has_more=true 但 cursor 未推进(应用层没改 sinceVersion),也及时退出
       // 防御无限循环;下次 syncOnce 重试。
       if (data.changes.length === 0) {
@@ -774,6 +772,39 @@ export class CloudSyncClient {
     }
     if (totalPulled > 0) log.info(`pulled ${totalPulled} changes across ${pages} page(s)`);
     return totalPulled;
+  }
+
+  private async refreshGenerationAnchor(token: string): Promise<{version:number}> {
+    const response = await fetch(`${getCloudBaseUrl()}/api/v1/sync/version`,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(SYNC_FETCH_TIMEOUT_MS)});
+    if (!response.ok) throw new Error(`Sync version failed: ${response.status}`);
+    const data = await response.json();
+    if (this.stopped) return {version:0};
+    if (!Number.isSafeInteger(data.version) || data.version < 0) throw new Error('Invalid sync version');
+    this.db.transaction(() => {
+      const generation = Number(data.decay_generation);
+      if (Number.isSafeInteger(generation) && generation >= 0) {
+        const previous = Number(this.readMetadata('cloud.decay_generation') ?? 0);
+        this.db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES (?,?)').run('cloud.decay_generation',String(Math.max(previous,generation)));
+      }
+      for (const name of ['decay_base','decay_damping']) if (typeof data[name] === 'number' && Number.isFinite(data[name]))
+        this.db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES (?,?)').run(`cloud.${name}`,String(data[name]));
+    })();
+    return {version:data.version};
+  }
+
+  private async retryDeadLetters(token: string): Promise<void> {
+    const rows = this.db.prepare('SELECT resource_table,resource_id FROM cloud_sync_dead_letters LIMIT 50').all() as Array<{resource_table:string;resource_id:string}>;
+    for (const table of ['nodes','links']) {
+      const ids = rows.filter(row => row.resource_table === table).map(row => row.resource_id);
+      if (!ids.length || this.stopped) continue;
+      const url = new URL(`${getCloudBaseUrl()}/api/v1/sync/bulk-fetch`);
+      url.searchParams.set('table',table); url.searchParams.set('ids',ids.join(','));
+      const response = await fetch(url,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(SYNC_FETCH_TIMEOUT_MS)});
+      if (!response.ok || this.stopped) continue;
+      const data = await response.json();
+      if (this.stopped) return;
+      await this.cacheManager.applyChanges(data.items.map((row: Record<string,unknown>) => ({table,action:'upsert',data:row,sync_version:Number(row.sync_version)})),token,false);
+    }
   }
 
   async pushOutbox(token: string): Promise<number> {
@@ -883,31 +914,6 @@ export class CloudSyncClient {
    * heat/maturity lazy 重算到 G。withApplyGuard 抑制上行(派生衰减非用户写,不进 cloud_dirty)。
    * 失败静默,下次 sync 重试。
    */
-  private async recomputeMetabolismGeneration(token: string): Promise<void> {
-    try {
-      const res = await fetch(`${getCloudBaseUrl()}/api/v1/sync/version`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (this.stopped || !res.ok) return;
-      const data = await res.json() as { decay_generation?: number; decay_base?: number; decay_damping?: number };
-      if (this.stopped) return;
-      const G = Number(data.decay_generation ?? 0);
-      if (G > 0) {
-        // M8 参数随锚点下发(审计 HIGH):存云端 decay 参数,recomputeToGeneration 据此衰减,与云端
-        // synaptic 逐位一致(不受本地 learning2 调参分叉影响)。
-        if (typeof data.decay_base === 'number') {
-          this.db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('cloud.decay_base', ?)").run(String(data.decay_base));
-        }
-        if (typeof data.decay_damping === 'number') {
-          this.db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('cloud.decay_damping', ?)").run(String(data.decay_damping));
-        }
-        const n = withApplyGuard(this.db, () => recomputeToGeneration(this.db, G));
-        if (n > 0) this.emitDataChanged();
-      }
-    } catch (err) {
-      log.warn(`generation 重算失败(下次重试): ${(err as Error).message}`);
-    }
-  }
 
   /**
    * 广播 data-changed。dataChanged=true 时附 'nodes'/'links' scope 触发 renderer

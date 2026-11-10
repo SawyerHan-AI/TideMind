@@ -32,7 +32,12 @@
     "updateChannelDesc": "Beta 版會更早收到新功能，但可能不穩定。切換在下次檢查時生效。",
     "updateChannelStable": "穩定版",
     "updateChannelBeta": "測試版",
-    "channelSwitchConfirm": "切換到 Stable 後會在下次檢查更新時安裝最新正式版(可能撤回部分實驗功能)。繼續嗎?"
+    "channelSwitchConfirm": "切換到 Stable 後會在下次檢查更新時安裝最新正式版(可能撤回部分實驗功能)。繼續嗎?",
+    "backgroundOrganization": {
+      "title": "本機背景記憶整理",
+      "description": "多裝置時只在一台開啟，避免重複生成。關閉後同步、筆記匯入、檢索和前台模型仍可使用；執行中的工作結束後生效。 切換裝置前，先在原裝置關閉並正常結束 TideMind 及其 Agent 連線，再在新裝置開啟。",
+      "error": "設定未儲存，請重試。"
+    }
   },
   "external": {
     "subtabs": {
@@ -198,13 +203,13 @@
       "retry": "重試",
       "selectConnection": "選擇連線",
       "selectModel": "選擇模型",
-      "modelLabel": "模型"
-      ,"savedRouteProblem": "已儲存設定異常"
-      ,"connectionArchived": "此連線已封存"
-      ,"connectionUnavailable": "已儲存的連線不存在"
-      ,"modelUnavailable": "已儲存的模型尚未驗證通過"
-      ,"savedConnectionInvalid": "已儲存的連線不可用。請選擇其他連線以更新此路由。"
-      ,"savedModelInvalid": "已儲存的模型不可用。請選擇已驗證模型以更新此路由。",
+      "modelLabel": "模型",
+      "savedRouteProblem": "已儲存設定異常",
+      "connectionArchived": "此連線已封存",
+      "connectionUnavailable": "已儲存的連線不存在",
+      "modelUnavailable": "已儲存的模型尚未驗證通過",
+      "savedConnectionInvalid": "已儲存的連線不可用。請選擇其他連線以更新此路由。",
+      "savedModelInvalid": "已儲存的模型不可用。請選擇已驗證模型以更新此路由。",
       "followDefault": "隔離呼叫預設（CLI 內建）",
       "isolatedDefaultHint": "使用隔離環境中的 CLI 內建預設模型；不會跟隨帳號目錄建議或本機個人設定。",
       "aliasPending": "別名，待驗證",
@@ -1152,7 +1157,6 @@
       "fullyVerified": "完整驗證通過",
       "optionalConnections": "可選連線",
       "connectionTaskHistory": "連線任務與歷史（{{count}}）",
-
       "codexSharedIdentityReconnect": "This Codex connection uses an older identity. In the Agent details, disconnect the existing Codex connection and complete its removal, then connect Codex again so Desktop and CLI share one Tide Mind identity.",
       "codexExistingIdentityReview": "Existing Tide Mind connections for Codex need review before connecting. Open the Codex details and resolve the old identity conflict first, then check again and reconnect.",
       "legacyChoice": {
@@ -1237,8 +1241,14 @@
         "dialogDescription": "選擇明確的本機目標，核對凍結內容後，再核准協調器產生的連線方案。",
         "chooseMode": "接入方式",
         "mode": {
-          "nonstandard_config_root": { "title": "非標準設定目錄", "description": "選擇一個受支援的主機，並使用其正式 Adapter 管理另一個本機設定目錄。" },
-          "manual_mcp_client": { "title": "未收錄的本機 MCP 客戶端", "description": "綁定一個本機可執行檔案和一份明確的 JSON MCP 設定檔案。" }
+          "nonstandard_config_root": {
+            "title": "非標準設定目錄",
+            "description": "選擇一個受支援的主機，並使用其正式 Adapter 管理另一個本機設定目錄。"
+          },
+          "manual_mcp_client": {
+            "title": "未收錄的本機 MCP 客戶端",
+            "description": "綁定一個本機可執行檔案和一份明確的 JSON MCP 設定檔案。"
+          }
         },
         "name": "Agent 名稱",
         "legacyIdentity": "沿用既有舊版身分",
@@ -1310,7 +1320,9 @@
       "supportCatalog": "支援的本機 Agent",
       "supportCatalogDescription": "這裡顯示目前 Tide Mind 版本的實際可用範圍。只有通過精確版本發行驗證後才會標為可管理或可引導；Tide Mind 不會安裝或啟動第三方 Agent。",
       "coworkGuided": {
-        "title": "設定 Claude Cowork", "start": "開始設定", "confirm": "建立設定並繼續",
+        "title": "設定 Claude Cowork",
+        "start": "開始設定",
+        "confirm": "建立設定並繼續",
         "summary": "已驗證本機 Claude {{version}}。下一步只建立使用者主動發起的設定記錄。",
         "noDesktopWrite": "不會修改 Claude Desktop 的 MCP 設定。",
         "manualUpload": "核准後會在 Tide Mind 資料目錄產生 .plugin 檔案，仍需你在 Cowork 中手動上傳。",
@@ -1485,7 +1497,13 @@
       "pauseDescription": "現有投影會保留；自動修復和升級將停止。",
       "disconnectTitle": "斷開 {{name}} 與 Tide Mind？",
       "disconnectDescription": "只移除預覽中由 Tide Mind 擁有的元件；無關設定會保留。",
-      "targetAction": {"create":"建立","update":"更新","remove":"移除","detach":"僅中斷目前 Agent","invoke":"維護"},
+      "targetAction": {
+        "create": "建立",
+        "update": "更新",
+        "remove": "移除",
+        "detach": "僅中斷目前 Agent",
+        "invoke": "維護"
+      },
       "sharedDisconnectStillVisible": "這個元件由多個 Agent 共用。Tide Mind 只會停止管理目前 Agent，並保留共用檔案；目前 Agent 仍可能看到其中的 Skill。",
       "sharedDisconnectRetained": "這個元件由多個 Agent 共用。Tide Mind 只會停止管理目前 Agent，共用檔案會為其他 Agent 保留。",
       "sharedDisconnectConsumers": "目前共用此元件的 Agent：",
@@ -1507,8 +1525,20 @@
         "3": "基礎接入",
         "4": "完整接入"
       },
-      "scope": {"user":"使用者級","project":"項目級","system":"系統級","other":"其他範圍"},
-      "commandCategory": {"none":"無命令","file_write":"檔案寫入","host_cli":"主機 CLI","plugin_install":"外掛程式安裝","host_trust":"主機確認","admin":"管理員權限"},
+      "scope": {
+        "user": "使用者級",
+        "project": "項目級",
+        "system": "系統級",
+        "other": "其他範圍"
+      },
+      "commandCategory": {
+        "none": "無命令",
+        "file_write": "檔案寫入",
+        "host_cli": "主機 CLI",
+        "plugin_install": "外掛程式安裝",
+        "host_trust": "主機確認",
+        "admin": "管理員權限"
+      },
       "reversible": "可復原",
       "notReversible": "無法完整撤銷",
       "risk": {
@@ -1549,24 +1579,78 @@
         "coworkNotReady": "匯出的 Tide Mind 外掛檔案仍然存在。請刪除該檔案並在 Claude Cowork 中移除外掛，然後再次確認。"
       },
       "actionDetail": {
-        "instruction": {"mcpActivation":"請在 {{config}} 中允許 {{server}}，然後重新檢查連線。","manualFileRemoval":"請移除 Tide Mind 在 {{target}} 管理的檔案，然後重新檢查連線。","kimiConflict":"舊版 Skill 路徑與受管路徑無法安全遷移，因此 Tide Mind 未修改任一檔案。",
-        "manualHostRemoval": "請使用 {{host}} 內建的外掛或擴充功能管理，移除 Tide Mind 元件「{{selector}}」。"},
+        "instruction": {
+          "mcpActivation": "請在 {{config}} 中允許 {{server}}，然後重新檢查連線。",
+          "manualFileRemoval": "請移除 Tide Mind 在 {{target}} 管理的檔案，然後重新檢查連線。",
+          "kimiConflict": "舊版 Skill 路徑與受管路徑無法安全遷移，因此 Tide Mind 未修改任一檔案。",
+          "manualHostRemoval": "請使用 {{host}} 內建的外掛或擴充功能管理，移除 Tide Mind 元件「{{selector}}」。"
+        },
         "guidance": {
-          "claudeCowork": {"connect":{"step1":"核准後，在 Tide Mind 的元件詳情中開啟產生的 .plugin 檔案。","step2":"在 Claude Cowork 中進入 Customize → Plugins，上傳並啟用該 .plugin 檔案。請勿在 Claude Desktop 的 MCP 設定中新增。","step3":"建立新的本機 Cowork 任務，並在同一任務中分別成功呼叫 Tide Mind 的 brain_recall 與 brain_digest。雲端 Cowork 無法執行本機 MCP。","step4":"返回 Tide Mind 重新檢查；只有偵測到新的讀取與寫入呼叫證據後，才會顯示「基礎接入」。"},"disconnect":{"step1":"在 Claude Cowork 中進入 Customize → Plugins。","step2":"只移除目前 Agent 對應的 Tide Mind 外掛程式，請勿刪除其他 Tide Mind Agent 的外掛程式。","step3":"返回 Tide Mind 重新檢查。由於 Cowork 沒有公開可讀的外掛程式登錄，移除狀態會維持待確認。"}},
-          "qwenWork": {"connect":{"step1":"開啟 Qwen Work，進入「擴充功能」→「連接器」。","step2":"選擇 JSON 設定入口，貼上下方完整的 mcpServers JSON。","step3":"確認 command、args 與 env 是分離欄位，然後套用設定。","step4":"啟用連接器，建立新對話，並在同一對話中分別成功呼叫 Tide Mind 的 brain_recall 與 brain_digest。"},"disconnect":{"step1":"開啟 Qwen Work，進入「擴充功能」→「連接器」→「已安裝」。","step2":"在「自訂」區域找到「{{connector}}」，按下刪除圖示並確認。","step3":"建立新對話，然後返回 Tide Mind 重新檢查。"}},
-          "kimiConflict": {"step1":"檢查舊版 Skill {{source}} 與受管目標 {{target}}。","step2":"如需保留內容，請移動或重新命名 Tide Mind 不應管理的檔案。Tide Mind 不會覆寫或刪除未驗證的檔案。","step3":"返回 Tide Mind，再次執行檢查。"},
+          "claudeCowork": {
+            "connect": {
+              "step1": "核准後，在 Tide Mind 的元件詳情中開啟產生的 .plugin 檔案。",
+              "step2": "在 Claude Cowork 中進入 Customize → Plugins，上傳並啟用該 .plugin 檔案。請勿在 Claude Desktop 的 MCP 設定中新增。",
+              "step3": "建立新的本機 Cowork 任務，並在同一任務中分別成功呼叫 Tide Mind 的 brain_recall 與 brain_digest。雲端 Cowork 無法執行本機 MCP。",
+              "step4": "返回 Tide Mind 重新檢查；只有偵測到新的讀取與寫入呼叫證據後，才會顯示「基礎接入」。"
+            },
+            "disconnect": {
+              "step1": "在 Claude Cowork 中進入 Customize → Plugins。",
+              "step2": "只移除目前 Agent 對應的 Tide Mind 外掛程式，請勿刪除其他 Tide Mind Agent 的外掛程式。",
+              "step3": "返回 Tide Mind 重新檢查。由於 Cowork 沒有公開可讀的外掛程式登錄，移除狀態會維持待確認。"
+            }
+          },
+          "qwenWork": {
+            "connect": {
+              "step1": "開啟 Qwen Work，進入「擴充功能」→「連接器」。",
+              "step2": "選擇 JSON 設定入口，貼上下方完整的 mcpServers JSON。",
+              "step3": "確認 command、args 與 env 是分離欄位，然後套用設定。",
+              "step4": "啟用連接器，建立新對話，並在同一對話中分別成功呼叫 Tide Mind 的 brain_recall 與 brain_digest。"
+            },
+            "disconnect": {
+              "step1": "開啟 Qwen Work，進入「擴充功能」→「連接器」→「已安裝」。",
+              "step2": "在「自訂」區域找到「{{connector}}」，按下刪除圖示並確認。",
+              "step3": "建立新對話，然後返回 Tide Mind 重新檢查。"
+            }
+          },
+          "kimiConflict": {
+            "step1": "檢查舊版 Skill {{source}} 與受管目標 {{target}}。",
+            "step2": "如需保留內容，請移動或重新命名 Tide Mind 不應管理的檔案。Tide Mind 不會覆寫或刪除未驗證的檔案。",
+            "step3": "返回 Tide Mind，再次執行檢查。"
+          },
           "manualHostRemoval": {
             "step1": "開啟 {{host}}，在其外掛或擴充功能清單中找到 Tide Mind 元件「{{selector}}」。",
             "step2": "只移除目前 Agent 對應的元件，然後重新啟動 {{host}} 或開新工作階段，使其不再載入。",
             "step3": "Tide Mind 已停止為此 Agent 提供記憶並暫停維護。只有想保留連線時才恢復維護。"
           }
         },
-        "source": "來源", "package": "外掛程式包", "connector": "連線器名稱", "serverType": "服務類型",
-        "command": "命令", "environment": "環境變量", "mcpConfiguration": "MCP 設定（JSON）", "server": "服務名稱", "config": "設定檔案",
-        "reason": "需要操作的原因", "component": "接入元件", "target": "待移除檔案", "steps": "操作步驟",
-        "copy": "複製", "copied": "已複製", "copyValue": "複製{{label}}", "copyFailed": "複製失敗，請選取內容後手動複製。",
-        "activationReason": {"excluded": "Agent 設定已排除此服務。", "not_allowed": "此服務不在 Agent 的允許列表中。", "invalid_policy": "Agent 的啓用策略無效。"},
-        "kimiConflictReason": {"legacy_unowned": "發現舊版 Tide Mind Skill，但缺少可驗證的所有權記錄。", "legacy_not_exact": "舊路徑檔案不是可精確識別的 Tide Mind 舊版 Skill。", "legacy_changed": "舊版 Skill 在檢查後已發生變化。", "target_occupied": "新的 Tide Mind Skill 目標路徑已有未受管檔案。"},
+        "source": "來源",
+        "package": "外掛程式包",
+        "connector": "連線器名稱",
+        "serverType": "服務類型",
+        "command": "命令",
+        "environment": "環境變量",
+        "mcpConfiguration": "MCP 設定（JSON）",
+        "server": "服務名稱",
+        "config": "設定檔案",
+        "reason": "需要操作的原因",
+        "component": "接入元件",
+        "target": "待移除檔案",
+        "steps": "操作步驟",
+        "copy": "複製",
+        "copied": "已複製",
+        "copyValue": "複製{{label}}",
+        "copyFailed": "複製失敗，請選取內容後手動複製。",
+        "activationReason": {
+          "excluded": "Agent 設定已排除此服務。",
+          "not_allowed": "此服務不在 Agent 的允許列表中。",
+          "invalid_policy": "Agent 的啓用策略無效。"
+        },
+        "kimiConflictReason": {
+          "legacy_unowned": "發現舊版 Tide Mind Skill，但缺少可驗證的所有權記錄。",
+          "legacy_not_exact": "舊路徑檔案不是可精確識別的 Tide Mind 舊版 Skill。",
+          "legacy_changed": "舊版 Skill 在檢查後已發生變化。",
+          "target_occupied": "新的 Tide Mind Skill 目標路徑已有未受管檔案。"
+        },
         "hostComponent": "宿主元件"
       },
       "previewDescription": "連線前請核對受管目標和風險。",
@@ -1691,7 +1775,7 @@
     "devicesComingSoon": "裝置管理功能即將推出。",
     "subscription": "訂閱",
     "currentPlan": "目前方案",
-    "upgradeHint": "升級至 Pro 即可享有無限雲端記憶、5 台裝置、全天候雲端代謝等功能。",
+    "upgradeHint": "升級至 Pro，解鎖無限雲端記憶和 5 台裝置同步。",
     "upgradeAnnual": "升級至 Pro — $49/年",
     "upgradeMonthly": "或按月付 $5/月",
     "viewPricing": "查看方案與定價",
@@ -1703,7 +1787,6 @@
     "logoutTitle": "登出?",
     "logoutDesc": "你將登出 TideMind Cloud。本機資料不受影響。",
     "comingSoon": "即將推出",
-    "subscriptionComingSoon": "Pro 和 Pro+ 方案即將推出。敬請期待雲端同步、7×24 代謝引擎等更多功能。",
     "registerButton": "建立帳號",
     "browserHint": "將在瀏覽器中開啟，進行安全認證。",
     "requestAccountDeletion": "申請刪除帳戶",
@@ -1751,7 +1834,7 @@
       "enableDesc": "你的記憶將上傳至 TideMind Cloud。雲端將成為主要副本；本機資料變為唯讀快取。所有已登入的裝置都會同步。",
       "enableConfirm": "啟用同步",
       "disableTitle": "停用資料雲端同步？",
-      "disableDesc": "本機資料將成為主要副本。其他裝置也會退出雲端同步。雲端資料將保留 30 天。雲端代謝將自動停用。",
+      "disableDesc": "停止此裝置的同步，保留本機和雲端記憶。",
       "disableConfirm": "停用同步",
       "syncNotReady": "雲端同步服務正在部署中，敬請期待。",
       "errors": {
@@ -1771,30 +1854,6 @@
       "reconciling": "對齊 {{table}} 中({{phase}})",
       "reconcileDone": "已對齊",
       "reconcileFailed": "對齊失敗"
-    },
-    "metabolism": {
-      "title": "雲端代謝",
-      "freeDesc": "雲端代謝適用於 Pro 及以上方案。你的記憶將在雲端全天候被標註、連結與結晶化。",
-      "upgrade": "升級至 Pro",
-      "proDesc": "代謝任務在雲端全天候運行，不受裝置限制。",
-      "proPlusDesc": "由 TideMind 託管 LLM 驅動，無需 API 金鑰。代謝在雲端全天候運行。",
-      "keyWarning": "雲端代謝需要上傳你的 LLM API 金鑰（AES-256-GCM 加密）。如有安全顧慮，請關閉此功能並使用本機代謝。",
-      "requiresSync": "需要先啟用資料雲端同步。",
-      "tokenUsage": "Token 用量",
-      "enableTitle": "啟用雲端代謝？",
-      "enableDescByok": "你的 LLM API 金鑰將被加密並上傳至 TideMind Cloud，僅用於執行你的代謝任務。停用雲端代謝時金鑰將被刪除。",
-      "enableDescManaged": "TideMind 託管 LLM 將執行你的代謝。每月包含 300 萬 Token。你也可以在模型設定中配置自己的金鑰以獲得更高品質。",
-      "enableConfirm": "啟用",
-      "disableTitle": "停用雲端代謝？",
-      "disableDescByok": "你的雲端 API 金鑰將被刪除。代謝將切換回本機模式。裝置關閉時會暫停。",
-      "disableDescManaged": "託管 LLM 的使用將暫停。代謝將切換回本機模式。裝置關閉時會暫停。",
-      "disableConfirm": "停用"
-    },
-    "managedLlm": {
-      "title": "TideMind LLM 服務",
-      "comingSoon": "即將推出",
-      "desc": "無需註冊自己的 API 金鑰，即可使用 TideMind 提供的 LLM 服務。包含在 Pro+ 訂閱中。",
-      "learnMore": "了解更多"
     }
   }
 }

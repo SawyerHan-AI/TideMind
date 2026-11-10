@@ -20,7 +20,6 @@ import {
 import { getShimPath, getMcpServerScriptPath } from '../runtime/runtime-paths.js'
 import { mainT } from '../i18n.js'
 import { clearClientCache } from '@server/llm/client.js'
-import { schedulePush as schedulePushUserStrategy } from '../cloud/strategy-push.js'
 import { notifyMetabolismWorkerRuntimeMutation } from '../workers/metabolism-worker-runtime-mutations.js'
 
 export function registerConfigHandlers(dataDir: string): void {
@@ -130,7 +129,6 @@ export function registerConfigHandlers(dataDir: string): void {
 
     // Silent push 到云端,让云代谢用用户自定义 prompt;未登录 / 未开同步 / 网络
     // 异常都是 no-op,不阻塞用户编辑流程。
-    schedulePushUserStrategy(parsedName.data, parsedContent.data)
   })
 
   // --- User Prompt（.user.md）读写 ---
@@ -252,7 +250,6 @@ export function registerConfigHandlers(dataDir: string): void {
     notifyMetabolismWorkerRuntimeMutation('strategy')
 
     // 回滚也是一次用户改 prompt,同样 silent push 让云端跟上
-    schedulePushUserStrategy(parsedName.data, row.content)
   })
 
   // --- 策略参数读取（只读） ---

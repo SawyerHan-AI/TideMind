@@ -149,3 +149,25 @@ dimensions = 3.14
     expect(() => loadConfig(configPath)).toThrow('正整数');
   });
 });
+
+describe('per-device background organization role',()=>{
+ it('loads the real default configuration with the role enabled',()=>{
+  expect(loadConfig(path.join(tmpDir,'missing.toml')).metabolism.background_enabled).toBe(true);
+ });
+ it.each([true,false])('loads a persisted boolean role %s without treating it as an interval',enabled=>{
+  const file=path.join(tmpDir,'config.toml');fs.writeFileSync(file,`[metabolism]\nbackground_enabled = ${enabled}\n`);
+  expect(loadConfig(file).metabolism.background_enabled).toBe(enabled);
+ });
+ it.each(['"false"','0'])('rejects invalid role %s',value=>{
+  const file=path.join(tmpDir,'config.toml');fs.writeFileSync(file,`[metabolism]\nbackground_enabled = ${value}\n`);
+  expect(()=>loadConfig(file)).toThrow('must be a boolean');
+ });
+ it('observes a role change in an already cached MCP process without changing other cached settings',()=>{
+  const file=path.join(tmpDir,'config.toml');fs.writeFileSync(file,'[metabolism]\nbackground_enabled = true\n');
+  const initial=loadConfig(file);
+  fs.writeFileSync(file,'[metabolism]\nbackground_enabled = false\n');
+  expect(getConfig().metabolism.background_enabled).toBe(true);
+  expect(getConfig(true).metabolism.background_enabled).toBe(false);
+  expect(getConfig(true).llm).toEqual(initial.llm);
+ });
+});
