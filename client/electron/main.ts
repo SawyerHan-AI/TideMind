@@ -166,16 +166,8 @@ let pendingProtocolUrl: string | null = null
  * before-quit 走 destroySyncClient() 销毁当前 singleton,不依赖此处的引用。
  */
 async function maybeStartCloudSync(dbForCloud: ReturnType<typeof getClientDb>): Promise<void> {
-  const { isLoggedIn } = await import('./cloud/auth-client.js')
-  if (!isLoggedIn()) return
-  const { getConfig: getAppConfig } = await import('../../src/config.js')
-  if (!getAppConfig().cloud?.sync_enabled) {
-    return
-  }
-  const { getCloudSyncClient, createCloudSyncClient } = await import('./cloud/sync-client.js')
-  if (getCloudSyncClient()) return // 已有实例(如启动路径已建),不重复建
-  const syncClient = createCloudSyncClient(dbForCloud)
-  syncClient.start().catch(err => mainLog.error('sync client start failed:', err))
+  const { startCloudSyncIfConfigured } = await import('./cloud/startup.js')
+  await startCloudSyncIfConfigured(dbForCloud)
 }
 
 if (!uiAuditRoot) {
@@ -668,7 +660,7 @@ app.on('before-quit', (event) => {
     // 先主动中止所有 LLM/CLI 子进程，再等待 daemon 与 cloud 收尾。Electron 事件
     // 本身不会 await promise，因此 before-quit 必须 preventDefault，并在全部资源
     // 已关闭后再次 app.quit()。
-    const llmShutdown = import('../../src/llm/client.js')
+    const llmShutdown = import('@server/llm/client.js')
       .then(m => m.shutdownLLMClient())
     const pendingCloudStartup = cloudStartupPromise
     const pendingDaemonStartup = daemonStartupPromise

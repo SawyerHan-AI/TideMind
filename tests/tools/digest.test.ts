@@ -585,6 +585,7 @@ describe('digest - 内容变更刷新向量', () => {
       db,
       existing.id,
       expect.stringContaining('corrected content'),
+      {foreground:false},
     );
   });
 

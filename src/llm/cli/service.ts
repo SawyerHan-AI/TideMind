@@ -50,6 +50,8 @@ const log = createLogger('llm-cli');
 type ConnectionRow = {
   id: string;
   provider_type: string;
+  cli_path: string | null;
+  validation_fingerprint: string | null;
   archived: number;
   status: string;
 };
@@ -74,8 +76,9 @@ function saveEnvironment(
   db: Database.Database,
   connectionId: string,
   environment: CliEnvironmentCheck,
+  expectedConnection: ConnectionRow | undefined,
 ): void {
-  db.prepare(`
+  const result = db.prepare(`
     UPDATE model_connections
     SET cli_path = ?,
         cli_version = ?,
@@ -88,7 +91,7 @@ function saveEnvironment(
                       THEN 'untested' ELSE status END,
         status_reason = CASE WHEN status IN (${[...ENVIRONMENT_HEALABLE].map(() => '?').join(', ')})
                              THEN NULL ELSE status_reason END
-    WHERE id = ? AND archived = 0
+    WHERE id = ? AND archived = 0 AND cli_path IS ? AND provider_type = ? AND validation_fingerprint IS ?
   `).run(
     environment.resolved.path,
     environment.resolved.version,
@@ -100,7 +103,13 @@ function saveEnvironment(
     ...ENVIRONMENT_HEALABLE,
     ...ENVIRONMENT_HEALABLE,
     connectionId,
+    expectedConnection?.cli_path ?? null,
+    expectedConnection?.provider_type ?? environment.providerType,
+    expectedConnection?.validation_fingerprint ?? null,
   );
+  if (result.changes !== 1) {
+    throw new CliLLMError('aborted', 'CLI 连接路径在检查期间已改变，本次未提交');
+  }
 }
 
 function admissionError(reason: AdmissionBlockReason, modelId: string, retryAt?: string): CliLLMError {
@@ -191,7 +200,7 @@ export async function runCliLLM(
   } = {},
 ): Promise<CliLLMResult> {
   const row = db.prepare(`
-    SELECT id, provider_type, archived, status
+    SELECT id, provider_type, archived, status, cli_path, validation_fingerprint
     FROM model_connections WHERE id = ?
   `).get(request.connectionId) as ConnectionRow | undefined;
   const workerContext = getMetabolismWorkerRuntimeContext();
@@ -214,10 +223,14 @@ export async function runCliLLM(
   const environment = options.environment ?? await checkCliEnvironment({
     providerType: request.providerType,
     allowLoginShell: options.allowLoginShell ?? false,
+    candidatePath: row?.cli_path,
     dataDir,
     signal: request.signal,
   });
-  saveEnvironment(db, request.connectionId, environment);
+  if (options.environment && row?.cli_path != null && row.cli_path !== environment.resolved.path) {
+    throw new CliLLMError('aborted', 'CLI 环境与当前连接路径不匹配，本次未提交');
+  }
+  saveEnvironment(db, request.connectionId, environment, row);
   const { binding } = reconcileAuthBinding(db, {
     connectionId: request.connectionId,
     auth: environment.auth,
@@ -303,9 +316,10 @@ export async function runCliLLM(
   };
 
   const assertCurrentRoute = (): void => {
-    const liveConnection = db.prepare('SELECT archived, provider_type FROM model_connections WHERE id = ?')
-      .get(request.connectionId) as { archived: number; provider_type: string } | undefined;
-    if (!liveConnection || liveConnection.archived !== 0 || liveConnection.provider_type !== request.providerType) {
+    const liveConnection = db.prepare('SELECT archived, provider_type, cli_path FROM model_connections WHERE id = ?')
+      .get(request.connectionId) as { archived: number; provider_type: string; cli_path: string | null } | undefined;
+    if (!liveConnection || liveConnection.archived !== 0 || liveConnection.provider_type !== request.providerType
+      || liveConnection.cli_path !== environment.resolved.path) {
       throw new CliLLMError('aborted', '模型连接已删除、归档或改变，本次未提交');
     }
     if (workerContext) {
@@ -321,7 +335,8 @@ export async function runCliLLM(
   const recheckBinding = async (): Promise<void> => {
     const fresh = await (options._testHooks?.recheckEnvironment?.() ?? checkCliEnvironment({
       providerType: request.providerType,
-      allowLoginShell: options.allowLoginShell ?? false,
+      allowLoginShell: false,
+      candidatePath: environment.resolved.path,
       dataDir,
       signal: request.signal,
       freshAuth: true,

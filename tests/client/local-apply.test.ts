@@ -897,3 +897,54 @@ it('cloud strength refresh cannot overwrite an unuploaded local relation edit',a
  expect(JSON.parse(row.relation)[0].type).toBe('contradicts');expect(row.strength).toBe(0.49);
  db.close();
 });
+
+describe('reconcile acknowledges successfully applied dead letters', () => {
+  function fixture() {
+    const db = setupTestDb()
+    return db
+  }
+
+  it('clears same/older versions only for this table and leaves the pull cursor unchanged', () => {
+    const db = fixture()
+    const pending = db.prepare("INSERT INTO cloud_sync_dead_letters(resource_table,resource_id,sync_version,payload,error_message) VALUES (?,?,?,'{}','fixture')")
+    pending.run('nodes', 'ack-old', 9)
+    pending.run('nodes', 'ack-same', 10)
+    pending.run('nodes', 'ack-future', 11)
+    pending.run('links', 'ack-old', 9)
+    db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES (?,?)').run('cloud_last_synced_version', '7')
+    applyCloudRows(db, 'nodes', ['ack-old', 'ack-same', 'ack-future'].map(id => ({ id, content: 'fixture', sync_version: '10' })))
+    expect(db.prepare('SELECT resource_table,resource_id FROM cloud_sync_dead_letters ORDER BY resource_table,resource_id').all()).toEqual([
+      { resource_table: 'links', resource_id: 'ack-old' }, { resource_table: 'nodes', resource_id: 'ack-future' },
+    ])
+    expect(db.prepare("SELECT value FROM metadata WHERE key='cloud_last_synced_version'").get()).toEqual({ value: '7' })
+    expect(db.prepare('SELECT count(*) AS n FROM nodes WHERE id LIKE ?').get('ack-%')).toEqual({ n: 3 })
+  })
+
+  it.each([undefined, null, '', false, 1.5, Number.MAX_SAFE_INTEGER + 1])('does not infer an acknowledgement for invalid version %s', sync_version => {
+    const db = fixture()
+    db.prepare("INSERT INTO cloud_sync_dead_letters(resource_table,resource_id,sync_version,payload,error_message) VALUES (?,?,?,'{}','fixture')").run('nodes', 'invalid-version', 0)
+    applyCloudRows(db, 'nodes', [{ id: 'invalid-version', content: 'fixture', sync_version }])
+    expect(db.prepare('SELECT count(*) AS n FROM cloud_sync_dead_letters').get()).toEqual({ n: 1 })
+  })
+
+  it('rolls back the successful row and its acknowledgement when a later link fails', () => {
+    const db = fixture()
+    const a = seedNode(db, { content: 'fixture A' })
+    const b = seedNode(db, { content: 'fixture B' })
+    db.prepare("INSERT INTO cloud_sync_dead_letters(resource_table,resource_id,sync_version,payload,error_message) VALUES (?,?,?,'{}','fixture')").run('links', 'ack-link', 9)
+    expect(() => applyCloudRows(db, 'links', [
+      { id: 'ack-link', from_id: a.id, to_id: b.id, sync_version: 10 },
+      { id: 'missing-parent-link', from_id: a.id, to_id: 'absent-parent', sync_version: 11 },
+    ])).toThrow(/FOREIGN KEY/)
+    expect(db.prepare("SELECT id FROM links WHERE id='ack-link'").get()).toBeUndefined()
+    expect(db.prepare('SELECT count(*) AS n FROM cloud_sync_dead_letters').get()).toEqual({ n: 1 })
+  })
+})
+
+it('bulk application remains compatible with a database without the failure table', () => {
+  const db = setupTestDb()
+  db.exec('DROP TABLE cloud_sync_dead_letters')
+  expect(() => applyCloudRows(db, 'nodes', [{ id: 'legacy-fixture', content: 'fixture', sync_version: 1 }])).not.toThrow()
+  expect(db.prepare('SELECT id FROM nodes WHERE id = ?').get('legacy-fixture')).toEqual({ id: 'legacy-fixture' })
+  db.close()
+})

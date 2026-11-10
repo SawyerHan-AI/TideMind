@@ -52,6 +52,7 @@
     "signatureInvalid": "Signatur ungültig"
   },
   "llmHealth": {
+    "actionRequired": "KI pausiert – Verbindung in den Einstellungen prüfen",
     "paused": "KI pausiert ({{min}} Min. bis erneuter Versuch)",
     "recentFailures": "KI hatte kürzlich Fehler",
     "idle": "KI seit Längerem inaktiv"

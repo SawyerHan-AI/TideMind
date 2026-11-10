@@ -41,6 +41,7 @@ export class CacheManager {
           payload = excluded.payload,
           error_message = excluded.error_message,
           created = datetime('now')
+        WHERE excluded.sync_version >= cloud_sync_dead_letters.sync_version
       `).run(
         change.table,
         resourceId,

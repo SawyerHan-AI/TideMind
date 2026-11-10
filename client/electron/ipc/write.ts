@@ -42,7 +42,7 @@ export function registerWriteHandlers(db: Database.Database): void {
         context: args.reason,
         tags: oldNode.tags ? JSON.parse(oldNode.tags) : undefined,
         async: false,
-      })
+      }, {foreground:true})
 
       const newNodeId = result.created_nodes?.[0]?.id
       if (!newNodeId) {
@@ -80,7 +80,7 @@ export function registerWriteHandlers(db: Database.Database): void {
         intent: 'archive',
         source: { tool: 'client' },
         async: false,
-      })
+      }, {foreground:true})
       return { success: true }
     } catch (err) {
       return { success: false, error: (err as Error).message }
@@ -105,7 +105,7 @@ export function registerWriteHandlers(db: Database.Database): void {
         intent: 'correction',
         source: { tool: 'client' },
         async: false,
-      })
+      }, {foreground:true})
       return { success: true }
     } catch (err) {
       return { success: false, error: (err as Error).message }
@@ -148,7 +148,7 @@ export function registerWriteHandlers(db: Database.Database): void {
       const node = getNode(db, parsedId.data)
       if (node && node.content) {
         try {
-          await repo.vectors.insertSegmentVectors(parsedId.data, node.content)
+          await repo.vectors.insertSegmentVectors(parsedId.data, node.content, {foreground:true})
         } catch (err) {
           // embed 失败不阻塞 unarchive(用户可在设置里手动触发 reembedAllNodes 修)
           log.error(`unarchive ${parsedId.data} embed 失败: ${(err as Error).message}`)

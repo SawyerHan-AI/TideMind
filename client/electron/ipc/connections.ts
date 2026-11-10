@@ -1,4 +1,5 @@
-import { recoverCliConnectionHealth, listConnectionHealth } from '../../../src/llm/connection-health.js'
+import { refreshDesktopVectorRuntime } from '../cloud/vector-runtime.js'
+import { recoverCliConnectionHealth, listConnectionHealth } from '@server/llm/connection-health.js'
 import { ipcMain, dialog, BrowserWindow } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -7,11 +8,11 @@ import { getClientDb } from '../db.js'
 import { probeAnthropic, probeVertex, probeGemini, probeOllama, probeOpenAICompatible } from './health.js'
 import { validateConnectionId, validateProviderType, validateFormCredentials, assertPathWithinRoot } from './_validate.js'
 import { mainT } from '../i18n.js'
-import { clearClientCache } from '../../../src/llm/client.js'
+import { clearClientCache } from '@server/llm/client.js'
 import { resetCircuitBreaker } from '../../../src/metabolism/scheduler.js'
 import {
   LLM_PROVIDER_CATALOG,
-} from '../../../src/llm/provider-types.js'
+} from '@server/llm/provider-types.js'
 import {
   checkCliEnvironment,
   cliUserActionCommand,
@@ -19,20 +20,20 @@ import {
   runCliLLM,
   type CliEnvironmentCheck,
   type CliProviderType,
-} from '../../../src/llm/cli/index.js'
+} from '@server/llm/cli/index.js'
 import {
   updateCliConnectionEnvironment,
   type ModelConnectionStatus,
 } from '../../../src/db/connections.js'
 import { deleteModelDiscoveryRows, reconcileAuthBinding } from '../../../src/db/model-discovery.js'
-import { refreshCliModelCatalog } from '../../../src/llm/cli/model-catalog.js'
-import { FOLLOW_DEFAULT_MODEL, isValidManualModelId } from '../../../src/llm/cli/catalogs.js'
-import { buildConnectionModelsView, routesUsingConnection } from '../../../src/llm/model-catalog-view.js'
+import { refreshCliModelCatalog } from '@server/llm/cli/model-catalog.js'
+import { FOLLOW_DEFAULT_MODEL, isValidManualModelId } from '@server/llm/cli/catalogs.js'
+import { buildConnectionModelsView, routesUsingConnection } from '@server/llm/model-catalog-view.js'
 import { getConfig } from '@server/config.js'
 import { getCatalogSnapshot } from '../../../src/db/model-discovery.js'
-import { CATALOG_FRESHNESS } from '../../../src/llm/cli/model-catalog.js'
-import { hasUnresolvedCliInvocation, prepareCliFutureCallResume, resumeCliFutureCalls, type CliResumeFutureCallsResult } from '../../../src/llm/cli/invocation-state.js'
-import { cliProcessRegistry } from '../../../src/llm/cli/runtime-process-registry.js'
+import { CATALOG_FRESHNESS } from '@server/llm/cli/model-catalog.js'
+import { hasUnresolvedCliInvocation, prepareCliFutureCallResume, resumeCliFutureCalls, type CliResumeFutureCallsResult } from '@server/llm/cli/invocation-state.js'
+import { cliProcessRegistry } from '@server/llm/cli/runtime-process-registry.js'
 import { createLogger } from '../../../src/utils/logger.js'
 
 const catalogLog = createLogger('model-catalog')
@@ -51,10 +52,10 @@ function scheduleCatalogFreshness(dataDir: string): void {
       const db = getClientDb()
       const config = getConfig()
       const rows = db.prepare(`
-        SELECT id, provider_type FROM model_connections
+        SELECT id, provider_type, cli_path FROM model_connections
         WHERE archived = 0 AND provider_type IN ('claude-cli', 'codex-cli')
           AND status IN ('online', 'untested')
-      `).all() as Array<{ id: string; provider_type: CliProviderType }>
+      `).all() as Array<{ id: string; provider_type: CliProviderType; cli_path: string | null }>
       for (const row of rows) {
         if (cliOperations.has(row.id)) continue
         if (routesUsingConnection(config, row.id).length === 0) continue
@@ -66,6 +67,7 @@ function scheduleCatalogFreshness(dataDir: string): void {
           const environment = await checkCliEnvironment({
             providerType: row.provider_type,
             allowLoginShell: false,
+            candidatePath: row.cli_path,
             dataDir,
             signal: operation.controller.signal,
           })
@@ -353,6 +355,7 @@ export function registerConnectionHandlers(dataDir: string): void {
     values.push(validId)
     db.prepare(`UPDATE model_connections SET ${sets.join(', ')} WHERE id = ?`).run(...values)
     notifyMetabolismWorkerRuntimeMutation(params.credentials === undefined ? 'connection' : 'credential')
+    void refreshDesktopVectorRuntime(db).catch(error => catalogLog.warn(`vector runtime refresh failed: ${String(error)}`))
     // 2026-05-21: 凭据变更后主动清 LLM client cache + 重置熔断器。
     // 用户改 connection 等同于"我在主动修复 LLM 问题",不应该让旧的熔断状态继续挡。
     // 注意只在 credentials 变更时清,纯改 name 不动 LLM 调用路径。
@@ -379,6 +382,7 @@ export function registerConnectionHandlers(dataDir: string): void {
     const validId = validateConnectionId(id)
     const db = getClientDb()
     db.prepare('UPDATE model_connections SET archived = 0 WHERE id = ?').run(validId)
+    void refreshDesktopVectorRuntime(db).catch(error => catalogLog.warn(`vector runtime refresh failed: ${String(error)}`))
     notifyMetabolismWorkerRuntimeMutation('connection')
     broadcastLLMHealth(db)
   })

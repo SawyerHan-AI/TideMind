@@ -395,7 +395,7 @@ export function recoverCliConnectionHealth(
   db: Database.Database, connectionId: string, startedAt: number, modelTestSucceeded = false,
 ): void {
   const kinds = modelTestSucceeded
-    ? ['not_installed', 'unsupported_version', 'not_authenticated', 'wrong_auth_method', 'scope_unknown', 'quota', 'rate_limit', 'timeout', 'transient', 'process_crash', 'protocol', 'capability']
+    ? ['not_installed', 'unsupported_version', 'not_authenticated', 'wrong_auth_method', 'scope_unknown', 'permission_policy', 'quota', 'rate_limit', 'timeout', 'transient', 'process_crash', 'protocol', 'capability']
     : ['not_installed', 'unsupported_version', 'not_authenticated', 'wrong_auth_method'];
   const result = db.prepare(`
     UPDATE llm_connection_health SET circuit_state='closed', failure_count=0,

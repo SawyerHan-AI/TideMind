@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -97,6 +98,27 @@ function resolveOptions(executable: string, version: string) {
 const CHATGPT = { kind: 'chatgpt' as const, accountId: 'acct-xinghai', email: 'fixture@xinghai.example', planType: 'pro' };
 
 describe('checkCliEnvironment — Codex execution contract and identity', () => {
+  it('revalidates a saved nonstandard candidate and never falls back when it disappears', async () => {
+    const { home, executable } = trustedHome('codex');
+    const probe = vi.fn(async () => ({ stdout: 'codex-cli 0.156.1', stderr: '' }));
+    const { exec } = codexExec();
+    const options = {
+      providerType: 'codex-cli' as const, candidatePath: executable,
+      allowLoginShell: true, homeDir: home, sourceEnv: { HOME: home }, dataDir: home,
+      platform: 'darwin' as const,
+      resolveOptions: { candidates: ['/not-the-selected-cli'], exec: probe }, exec,
+      readCodexAccount: vi.fn(async () => ({ account: CHATGPT, accountAfter: null, models: null })) as unknown as typeof readCodexMetadata,
+    };
+    const first = await checkCliEnvironment(options);
+    expect(first.resolved.path).toBe(realpathSync(executable));
+    expect(first.capabilityStatus).toBe('verified');
+    expect(first.auth.scopeState).toBe('known');
+    rmSync(executable);
+    probe.mockClear();
+    await expect(checkCliEnvironment(options)).rejects.toMatchObject({ kind: 'not_installed' });
+    expect(probe).not.toHaveBeenCalled();
+  }, 30_000);
+
   it('reads back the effective features with every --disable plus the inference overrides', async () => {
     const { home, executable } = trustedHome('codex');
     const { exec, calls } = codexExec();

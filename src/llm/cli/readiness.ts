@@ -95,6 +95,8 @@ export interface CliEnvironmentCheck {
 export interface CheckCliEnvironmentOptions {
   providerType: CliProviderType;
   allowLoginShell?: boolean;
+  /** Revalidate this saved candidate only; never discover a different CLI. */
+  candidatePath?: string | null;
   sourceEnv?: NodeJS.ProcessEnv;
   homeDir?: string;
   /** Needed for the Codex account/read metadata session (private runtime dir). */
@@ -169,6 +171,7 @@ export async function checkCliEnvironment(
     env: sourceEnv,
     signal: options.signal,
     ...options.resolveOptions,
+    ...(options.candidatePath != null ? { candidates: [options.candidatePath], allowLoginShell: false } : {}),
   });
   throwIfAborted();
   const storeSignal = authStoreSignal(options.providerType, home);

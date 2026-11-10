@@ -52,6 +52,7 @@
     "signatureInvalid": "署名が無効"
   },
   "llmHealth": {
+    "actionRequired": "AIは一時停止中です。設定で接続を確認してください",
     "paused": "AI 停止中（{{min}} 分後に再試行）",
     "recentFailures": "AI で最近失敗あり",
     "idle": "AI が長時間アイドル"

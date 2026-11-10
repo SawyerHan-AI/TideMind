@@ -1,13 +1,13 @@
-import { isSyncBootstrapCheck } from '../sync-bootstrap';
 import type Database from 'better-sqlite3';
 import { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
 import { createLogger } from '../../../src/utils/logger.js';
 import { CacheManager } from './cache-manager.js';
+import { parseCloudSyncVersion } from './local-apply.js';
 import { getOutboxItems, removeOutboxItem, markOutboxFailed, deadLetterOutboxItem, getOutboxCount as _getOutboxCount } from './outbox.js';
 import { getCloudAuth, getCloudBaseUrl, refreshTokenIfNeeded, updateCloudAuth } from './auth-client.js';
 import { getActivityState } from '../activity-state.js';
-import { pumpReembedMissing } from './reembed-pump.js';
+import { DesktopVectorSync } from './vector-sync.js';
 import { cancelActiveUplink, pumpUplink } from './uplink.js';
 import { abortActiveReconcile } from './reconcile-lock.js';
 
@@ -302,8 +302,12 @@ export class CloudSyncClient {
     }
   }
 
+  private vectorSync: DesktopVectorSync | null = null;
+
   stop(): void {
     this.stopped = true;
+    this.vectorSync?.dispose();
+    this.vectorSync = null;
     cancelActiveUplink(this.db);
     abortActiveReconcile();
     this.stopPolling();
@@ -632,9 +636,10 @@ export class CloudSyncClient {
       // 图谱力导向每 30s 抖动一次的来源。
       this.emitDataChanged(uplinked > 0 || pulled > 0);
 
-      // M4(解 #2 召回缺口):pull 下来的跨设备节点向量不同步,fire-and-forget 补 embed。
-      // pump 扫全部"active 有 content 缺向量"节点,失败已在内部 swallow(无凭证/熔断时静默)。
-      if (!isSyncBootstrapCheck()) void pumpReembedMissing(this.db);
+      // Basic sync is complete: independently transfer compatible client-generated vectors.
+      // Bootstrap only restores cache; background generation follows the local device role.
+      this.vectorSync ??= new DesktopVectorSync(this.db);
+      this.vectorSync.kick(uplinked > 0 || pulled > 0);
     } catch (e) {
       if (this.stopped) return;
       const msg = (e as Error).message;
@@ -715,22 +720,24 @@ export class CloudSyncClient {
     // skipped 的 sync_version 永久丢失。代谢/dedup/link-discover 一晚上几百条很常见。
     //
     // 安全上限 MAX_PAGES 防止云端 bug 导致 has_more 永真死循环。
-    // 修复(2026-05-20 决策 #5):limit 100 → 25 + MAX_PAGES 50 → 200 保持单次 sync 上限。
-    // applyChanges 用 db.transaction() 整批跑,100 行 × 1ms = 100ms+ 主线程阻塞,
-    // 降到 25 让单批阻塞 ≤ 25ms,IPC 响应顺畅;往返次数 ×4 但单次 sync 总数不变。
+    // Keep 25-row local transactions, but fetch larger network pages. The page
+    // cursor commits only after all chunks, so stopping between equal-version
+    // changes replays the page rather than skipping its remaining rows.
     const base = getCloudBaseUrl();
-    const PULL_LIMIT = 25;
-    const MAX_PAGES = 200; // 25 × 200 = 5000 条,跟旧 100 × 50 一致。
+    const PULL_LIMIT = 200;
+    const MAX_PAGES = 200;
+    const MAX_CHANGES = 5000;
     let totalPulled = 0;
     let pages = 0;
-    while (pages < MAX_PAGES) {
+    while (pages < MAX_PAGES && totalPulled < MAX_CHANGES) {
       if (this.stopped) break; // stop 后立即断开多页拉取,避免写已关闭 db
       pages++;
       const sinceVersion = this.cacheManager.getLastSyncedVersion();
+      const limit = Math.min(PULL_LIMIT, MAX_CHANGES - totalPulled);
       // AbortSignal.timeout:undici 默认 ~300s,黑洞网络下单页 fetch 会挂死整条
       // syncInFlight(trigger-sync / set-sync-enabled IPC 一起卡)。15s 超时后归
       // transient,下一轮轮询重试。
-      const res = await fetch(`${base}/api/v1/sync/pull?since_version=${sinceVersion}&limit=${PULL_LIMIT}`, {
+      const res = await fetch(`${base}/api/v1/sync/pull?since_version=${sinceVersion}&limit=${limit}`, {
         headers: { 'Authorization': `Bearer ${token}` },
         signal: AbortSignal.timeout(SYNC_FETCH_TIMEOUT_MS),
       });
@@ -746,13 +753,24 @@ export class CloudSyncClient {
       }
       const data = await res.json();
       if (this.stopped) break;
-      if (data.changes.length > 0) {
-        await this.cacheManager.applyChanges(data.changes, token);
-        totalPulled += data.changes.length;
-        // idle 几小时后回前台时,服务端积累的几百条变更会拉成多页,
-        // 每页 applyChanges 是同步 db.transaction。每页之间让出一个事件循环,
-        // 给 IPC handler / renderer 一个插队窗口,避免整段串行卡主线程。
-        await new Promise(resolve => setImmediate(resolve));
+      if (!Array.isArray(data.changes) || data.changes.length > limit || typeof data.has_more !== 'boolean') {
+        throw new Error('Invalid sync pull page');
+      }
+      type PullChange = Parameters<CacheManager['applyChanges']>[0][number];
+      const changes: PullChange[] = data.changes.map((change: Omit<PullChange, 'sync_version'> & { sync_version: unknown }) => {
+        const version = parseCloudSyncVersion(change.sync_version);
+        if (version === null) throw new Error('Invalid sync row version');
+        return { ...change, sync_version: version };
+      }).sort((a: PullChange, b: PullChange) => a.sync_version - b.sync_version);
+      if (changes.length > 0) {
+        for (let offset = 0; offset < changes.length; offset += 25) {
+          if (this.stopped) return totalPulled;
+          await this.cacheManager.applyChanges(changes.slice(offset, offset + 25), token, false);
+          await new Promise<void>(resolve => setImmediate(resolve));
+          if (this.stopped) return totalPulled;
+        }
+        this.cacheManager.setLastSyncedVersion(Math.max(sinceVersion, ...changes.map(change => change.sync_version)));
+        totalPulled += changes.length;
       }
       // 修复(2026-05-20 Audit F-1):
       // 原条件 `!data.has_more || data.changes.length === 0` 在服务端意外返回
@@ -793,17 +811,32 @@ export class CloudSyncClient {
   }
 
   private async retryDeadLetters(token: string): Promise<void> {
-    const rows = this.db.prepare('SELECT resource_table,resource_id FROM cloud_sync_dead_letters LIMIT 50').all() as Array<{resource_table:string;resource_id:string}>;
+    const rows = this.db.prepare("SELECT resource_table,resource_id FROM cloud_sync_dead_letters ORDER BY CASE resource_table WHEN 'nodes' THEN 0 ELSE 1 END,resource_id LIMIT 2000").all() as Array<{resource_table:string;resource_id:string}>;
     for (const table of ['nodes','links']) {
       const ids = rows.filter(row => row.resource_table === table).map(row => row.resource_id);
-      if (!ids.length || this.stopped) continue;
-      const url = new URL(`${getCloudBaseUrl()}/api/v1/sync/bulk-fetch`);
-      url.searchParams.set('table',table); url.searchParams.set('ids',ids.join(','));
-      const response = await fetch(url,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(SYNC_FETCH_TIMEOUT_MS)});
-      if (!response.ok || this.stopped) continue;
-      const data = await response.json();
-      if (this.stopped) return;
-      await this.cacheManager.applyChanges(data.items.map((row: Record<string,unknown>) => ({table,action:'upsert',data:row,sync_version:Number(row.sync_version)})),token,false);
+      for (let offset = 0; offset < ids.length; offset += 200) {
+        if (this.stopped) return;
+        const url = new URL(`${getCloudBaseUrl()}/api/v1/sync/bulk-fetch`);
+        url.searchParams.set('table',table); url.searchParams.set('ids',ids.slice(offset, offset + 200).join(','));
+        const response = await fetch(url,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(SYNC_FETCH_TIMEOUT_MS)});
+        if (this.stopped) return;
+        if (!response.ok) throw new Error(`Dead-letter fetch failed: ${response.status}`);
+        const data = await response.json();
+        if (this.stopped) return;
+        if (!Array.isArray(data.items)) throw new Error('Invalid dead-letter recovery response');
+        const changes = data.items.map((row: Record<string, unknown>) => {
+          const version = parseCloudSyncVersion(row.sync_version);
+          if (version === null) throw new Error('Invalid sync row version');
+          return { table, action: 'upsert', data: row, sync_version: version };
+        });
+        for (let itemOffset = 0; itemOffset < changes.length; itemOffset += 25) {
+          if (this.stopped) return;
+          const items = changes.slice(itemOffset, itemOffset + 25);
+          const applied = await this.cacheManager.applyChanges(items,token,false);
+          if (applied < items.length) return;
+          await new Promise<void>(resolve => setImmediate(resolve));
+        }
+      }
     }
   }
 

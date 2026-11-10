@@ -52,6 +52,7 @@
     "signatureInvalid": "Signature invalid"
   },
   "llmHealth": {
+    "actionRequired": "AI paused — check the connection in Settings",
     "paused": "AI paused ({{min}} min until retry)",
     "recentFailures": "AI had recent failures",
     "idle": "AI inactive for a while"

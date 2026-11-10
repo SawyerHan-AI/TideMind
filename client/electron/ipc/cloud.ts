@@ -1,3 +1,4 @@
+import { refreshDesktopVectorRuntime } from '../cloud/vector-runtime.js';
 import { isSyncBootstrapCheck } from '../sync-bootstrap';
 import { ipcMain, BrowserWindow } from 'electron'
 import type Database from 'better-sqlite3'
@@ -51,6 +52,10 @@ export function registerCloudHandlers(db?: Database.Database): void {
     try {
       const { login } = await import('../cloud/auth-client.js');
       await login(email, password);
+      if(db) {
+        try { const {startCloudSyncIfConfigured}=await import('../cloud/startup.js');await startCloudSyncIfConfigured(db); }
+        catch(error){log.warn(`signed in; sync startup deferred: ${String(error)}`)}
+      }
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -63,6 +68,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
     const { destroySyncClient } = await import('../cloud/sync-client.js');
     destroySyncClient();
     await logout();
+    if(db) await refreshDesktopVectorRuntime(db);
     emitCloudChanged();
   });
 
@@ -187,7 +193,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
     // 深度合并 cloud section
     const cloud = (current.cloud ?? {}) as Record<string, unknown>;
     cloud.sync_enabled = parsed.data;
-    cloud.enabled = parsed.data; // 联动 MCP 路由开关
+    cloud.enabled = parsed.data; // 保留旧配置兼容字段；不会恢复云 MCP
     current.cloud = cloud;
 
     // 原子写:写 tmp 再 rename,防止写入中崩溃 / 断电留下半截 TOML 让下次
@@ -196,6 +202,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
     fs.writeFileSync(tmpPath, stringifyToml(current as any));
     fs.renameSync(tmpPath, configPath);
     reloadConfig();
+    if(db) await refreshDesktopVectorRuntime(db);
     notifyMetabolismWorkerRuntimeMutation('config');
     log.info(`cloud sync ${parsed.data ? 'enabled' : 'disabled'}`);
     // Local stop and persistence must complete even when the cloud is unreachable.

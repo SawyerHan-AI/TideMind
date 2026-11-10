@@ -41,6 +41,9 @@ const BULK_FETCH_TIMEOUT_MS = 30_000;
 // ~25ms;同步带宽相应降到 1/4,但 reconcile / pull 都是分批循环,总吞吐只看
 // 网络往返延迟,本地处理换 4 次小循环不是瓶颈。
 const BATCH_SIZE = 25;
+// Transport can use the server's existing cap while local writes keep the
+// reviewed 25-row transaction limit and yield between chunks.
+const DOWNLOAD_BATCH_SIZE = 200;
 const MANIFEST_PAGE_LIMIT = 5000;
 /**
  * 单次 reconcile 跑 fetchServerManifest 的最大页数。
@@ -210,15 +213,21 @@ export class Reconciler {
     this.progress = { table, phase: 'download', total: toDownload.length, processed: 0 };
     this.emitProgress();
     let downloaded = 0;
-    for (let i = 0; i < toDownload.length; i += BATCH_SIZE) {
+    for (let i = 0; i < toDownload.length; i += DOWNLOAD_BATCH_SIZE) {
       if (this.aborted) throw new Error('aborted');
-      const batch = toDownload.slice(i, i + BATCH_SIZE);
+      const batch = toDownload.slice(i, i + DOWNLOAD_BATCH_SIZE);
       const fetched = await this.bulkFetch(table, batch);
       if (this.aborted) throw new Error('aborted');
-      this.applyServerRows(table, fetched);
-      downloaded += fetched.length;
-      this.progress.processed = Math.min(toDownload.length, i + BATCH_SIZE);
-      this.emitProgress();
+      for (let offset = 0; offset < fetched.length; offset += BATCH_SIZE) {
+        if (this.aborted) throw new Error('aborted');
+        const chunk = fetched.slice(offset, offset + BATCH_SIZE);
+        this.applyServerRows(table, chunk);
+        downloaded += chunk.length;
+        this.progress.processed = downloaded;
+        this.emitProgress();
+        await new Promise<void>(resolve => setImmediate(resolve));
+        if (this.aborted) throw new Error('aborted');
+      }
     }
 
     this.progress = { table, phase: 'done', total: toUpload.length + toDownload.length, processed: toUpload.length + toDownload.length };

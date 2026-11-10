@@ -1074,7 +1074,8 @@ export function ManagedAgentDetail({
                 <Pause size={11} aria-hidden /> {t(family.connection?.shared ? 'agent.managed.pauseMember' : 'agent.managed.pause')}
               </button>
             ) : null}
-            {installation.manageable && (!installation.automaticConnectionEnabled || installation.statusReason === 'conflict') && installation.desiredState === 'managed'
+            {installation.manageable && (!installation.automaticConnectionEnabled || installation.statusReason === 'conflict'
+              || (installation.hostVariant === 'codex-desktop' && installation.statusReason === 'verification_failed')) && installation.desiredState === 'managed'
               && installation.statusGroup === 'needs_attention' && (
               <button type="button" disabled={busyAction !== null} onClick={() => onReconnect(installation.id)}
                 className="rounded-lg border border-amber-400/20 px-3 py-1.5 text-xs text-amber-300 hover:bg-amber-400/10 disabled:opacity-50">

@@ -43,6 +43,7 @@ export function automaticPlanAuthorizationKey(consentId: string, planHash: strin
 export interface ConsentEnvelope {
   origin?: ConsentOrigin
   nativePermissionPlanHash?: string
+  recoveryPlanHash?: string
   automaticContext?: AutomaticConsentContext
   /** A separately recorded exact maintenance plan, still bounded by this envelope's original scopes. */
   automaticPlanAuthorization?: AutomaticConsentContext
@@ -113,7 +114,7 @@ export function nativePermissionsForPlan(plan: Pick<ExecutionPlan, 'mutations'>)
 
 export interface CompletedGenerationTakeover {
   /** Only this exact recipe permits approved peer waits in the shared Codex domain. */
-  kind?: 'codex_lifecycle_4_to_5'
+  kind?: 'codex_lifecycle_4_to_5' | 'codex_same_source_zero_effect'
   installationId?: string
   runId: string
   executionPlanHash: string
@@ -121,7 +122,14 @@ export interface CompletedGenerationTakeover {
   mutationDomains: string[]
 }
 
+export interface RetainedZeroEffectPeer extends CompletedGenerationTakeover {
+  kind: 'codex_same_source_zero_effect'
+  installationId: string
+  currentPlanHash: string
+}
+
 export interface ExecutionPlan {
+  retainedZeroEffectPeer?: RetainedZeroEffectPeer
   /** Exact completed effects whose obsolete waiting generation this approval replaces. */
   completedGenerationTakeovers?: CompletedGenerationTakeover[]
   sharedBatchApprovalHash?: string
@@ -198,6 +206,7 @@ export function checkPlanAgainstConsent(
   validatePlanShape(plan, reasons)
 
   if (consent.origin !== undefined && !['explicit_user','default_auto_policy','legacy'].includes(consent.origin)) reasons.push('consent_origin_invalid')
+  if((plan.retainedZeroEffectPeer || (Array.isArray(plan.completedGenerationTakeovers) && plan.completedGenerationTakeovers.some(item=>item?.kind==='codex_same_source_zero_effect'))) && (consent.origin!=='explicit_user' || consent.recoveryPlanHash!==executionPlanHash(plan))) reasons.push('zero_effect_recovery_requires_explicit_consent')
   if (consent.origin === 'default_auto_policy') {
     const context = consent.automaticPlanAuthorization ?? consent.automaticContext
     if (!isAutomaticConsentContext(context)) reasons.push('automatic_consent_context_invalid')
@@ -306,7 +315,7 @@ function validatePlanShape(plan: ExecutionPlan, reasons: string[]): void {
   if (takeovers !== undefined && (
     plan.operation !== 'connect' || !Array.isArray(takeovers) || takeovers.length === 0
     || takeovers.some(item => !item || typeof item.runId !== 'string' || !item.runId
-      || (item.kind !== undefined && item.kind !== 'codex_lifecycle_4_to_5')
+      || (item.kind !== undefined && item.kind !== 'codex_lifecycle_4_to_5' && item.kind !== 'codex_same_source_zero_effect')
       || (item.kind === 'codex_lifecycle_4_to_5'
         ? typeof item.installationId !== 'string' || !item.installationId
         : item.installationId !== undefined)
@@ -315,6 +324,14 @@ function validatePlanShape(plan: ExecutionPlan, reasons: string[]): void {
       || item.mutationDomains.some(domain => typeof domain !== 'string' || !domain))
     || new Set(takeovers.map(item => item.runId)).size !== takeovers.length
   )) reasons.push('completed_generation_takeovers_invalid')
+  const retained=plan.retainedZeroEffectPeer
+  if(retained!==undefined && (!retained || plan.operation!=='connect' || plan.mutations.length!==0
+    || !Array.isArray(takeovers) || takeovers.length===0 || retained.kind!=='codex_same_source_zero_effect'
+    || typeof retained.installationId!=='string' || !retained.installationId || retained.installationId===plan.installationId
+    || typeof retained.runId!=='string' || !retained.runId
+    || ![retained.currentPlanHash,retained.executionPlanHash,retained.effectSnapshotHash].every(value=>typeof value==='string' && /^[a-f0-9]{64}$/.test(value))
+    || !Array.isArray(retained.mutationDomains) || !retained.mutationDomains.length
+    || retained.mutationDomains.some(value=>typeof value!=='string' || !value)))reasons.push('retained_zero_effect_peer_invalid')
   if (!isPlanOperation(plan.operation)) reasons.push('operation_invalid')
   if (!Array.isArray(plan.componentKeys) || plan.componentKeys.length === 0) {
     reasons.push('component_keys_missing')

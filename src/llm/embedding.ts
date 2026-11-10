@@ -1,3 +1,7 @@
+import type Database from 'better-sqlite3';
+import { captureEmbeddingConnection, embeddingConnectionCurrent } from '../embedding/connection-config.js';
+import { createHash } from 'node:crypto';
+import type { AppConfig } from '../types.js';
 import { isDiagnosticRequested } from '../agent-diagnostic-contract.js';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -83,6 +87,40 @@ let inflightTokenFetch: Promise<string> | null = null;
 // 若代际已变,不得把旧 token 写回缓存(否则"清缓存"被竞态穿透)。
 let tokenGeneration = 0;
 
+function vertexCredentialFile(config: AppConfig): string {
+  const id = config.embedding.connection;
+  if (id && !/^mc_[a-f0-9]{8}$/.test(id)) throw new Error('Invalid embedding connection ID');
+  const specific = id ? path.join(getDataDir(), `vertex-credentials-${id}.json`) : null;
+  return specific ?? path.join(getDataDir(), 'vertex-credentials.json');
+}
+let credentialSourceFingerprint: string | null = null;
+/** Private change signal only; never persist or transmit credential contents. */
+export function getEmbeddingCredentialSignal(config: AppConfig): string {
+  if (config.embedding.provider !== 'vertex') return String(tokenGeneration);
+  const frozen = getMetabolismWorkerVertexCredential(config.embedding.connection, false);
+  if (getMetabolismWorkerRuntimeContext() && !frozen) throw new Error('Selected Vertex credentials are unavailable in the Worker snapshot');
+  const digest = createHash('sha256');
+  if (frozen) {
+    digest.update('worker:').update(JSON.stringify(frozen));
+  } else {
+    const file = vertexCredentialFile(config);
+    digest.update(file);
+    try {
+      const stat = fs.statSync(file, { bigint: true });
+      if (!stat.isFile() || stat.size > 1024n * 1024n) throw new Error('Vertex credential file is invalid');
+      digest.update(`${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`);
+      digest.update(fs.readFileSync(file));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      digest.update(':missing');
+    }
+  }
+  const source = digest.digest('hex');
+  if (credentialSourceFingerprint !== null && credentialSourceFingerprint !== source) clearEmbeddingTokenCache();
+  credentialSourceFingerprint = source;
+  return `${tokenGeneration}:${source}`;
+}
+
 /**
  * 清空 Vertex access token 缓存。凭证变更(用户重新上传 vertex JSON / 改 connection)
  * 时必须调用,否则旧 token 最长 50 分钟内继续被命中——LLM 侧同样的问题由
@@ -96,7 +134,7 @@ export function clearEmbeddingTokenCache(): void {
   inflightTokenFetch = null;
 }
 
-async function getVertexToken(timeoutMs?: number): Promise<string> {
+async function getVertexToken(timeoutMs: number | undefined, config: AppConfig): Promise<string> {
   const now = Date.now();
   if (cachedToken && now + 30_000 < tokenExpiry) return cachedToken;
 
@@ -104,11 +142,12 @@ async function getVertexToken(timeoutMs?: number): Promise<string> {
     const gen = tokenGeneration;
     inflightTokenFetch = (async () => {
       const { GoogleAuth } = await import('google-auth-library');
-      const frozenCredential = getMetabolismWorkerVertexCredential();
+      const frozenCredential = getMetabolismWorkerVertexCredential(config.embedding.connection, false);
+      if (getMetabolismWorkerRuntimeContext() && !frozenCredential) throw new Error('Selected Vertex credentials are unavailable in the Worker snapshot');
       const auth = new GoogleAuth({
         ...(frozenCredential
           ? { credentials: frozenCredential }
-          : { keyFile: path.join(getDataDir(), 'vertex-credentials.json') }),
+          : { keyFile: vertexCredentialFile(config) }),
         scopes: ['https://www.googleapis.com/auth/cloud-platform'],
       });
       const client = await auth.getClient();
@@ -149,23 +188,22 @@ async function getVertexToken(timeoutMs?: number): Promise<string> {
 /**
  * Gemini via Vertex AI
  */
-async function getGeminiVertexEmbedding(text: string, timeoutMs: number = 30_000): Promise<Float32Array | null> {
-  const config = getConfig();
+async function getGeminiVertexEmbedding(text: string, timeoutMs: number = 30_000, config: AppConfig = getConfig()): Promise<Float32Array | null> {
   const region = config.vertex.region === 'global' ? 'us-central1' : config.vertex.region;
   const projectId = config.vertex.project_id;
 
   if (!projectId) {
-    const frozenCredential = getMetabolismWorkerVertexCredential();
+    const frozenCredential = getMetabolismWorkerVertexCredential(config.embedding.connection, false);
     if (getMetabolismWorkerRuntimeContext()) {
       const frozenProjectId = frozenCredential?.project_id;
       if (!frozenProjectId) {
         log.error('Worker generation 的 Vertex AI 凭证未配置 project_id');
         return null;
       }
-      return callVertexEmbedding(text, frozenProjectId, region, timeoutMs);
+      return callVertexEmbedding(text, frozenProjectId, region, timeoutMs, config);
     }
     // 尝试从凭证文件读取
-    const credPath = path.join(getDataDir(), 'vertex-credentials.json');
+    const credPath = vertexCredentialFile(config);
     if (!fs.existsSync(credPath)) {
       log.error('Vertex AI 凭证未配置');
       return null;
@@ -177,19 +215,19 @@ async function getGeminiVertexEmbedding(text: string, timeoutMs: number = 30_000
         return null;
       }
       // 使用凭证文件中的 project_id
-      return await callVertexEmbedding(text, cred.project_id, region, timeoutMs);
+      return await callVertexEmbedding(text, cred.project_id, region, timeoutMs, config);
     } catch (err) {
       log.error('读取凭证文件失败:', (err as Error).message);
       return null;
     }
   }
-  return callVertexEmbedding(text, projectId, region, timeoutMs);
+  return callVertexEmbedding(text, projectId, region, timeoutMs, config);
 }
 
-async function callVertexEmbedding(text: string, projectId: string, region: string, timeoutMs: number = 30_000): Promise<Float32Array | null> {
+async function callVertexEmbedding(text: string, projectId: string, region: string, timeoutMs: number, config: AppConfig): Promise<Float32Array | null> {
   // token 获取在 AbortSignal.timeout 的 fetch 之前,必须单独受调用方预算约束,
   // 否则 recall 路径承诺的 3s 上限会被 OAuth hang 穿透
-  const token = await getVertexToken(timeoutMs);
+  const token = await getVertexToken(timeoutMs, config);
   const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/gemini-embedding-001:predict`;
 
   const resp = await fetch(url, {
@@ -223,8 +261,7 @@ async function callVertexEmbedding(text: string, projectId: string, region: stri
 /**
  * Gemini via API Key
  */
-async function getGeminiApiKeyEmbedding(text: string, timeoutMs: number = 30_000): Promise<Float32Array | null> {
-  const config = getConfig();
+async function getGeminiApiKeyEmbedding(text: string, timeoutMs: number = 30_000, config: AppConfig = getConfig()): Promise<Float32Array | null> {
   const apiKey = config.gemini.api_key;
   if (!apiKey) {
     log.error('Gemini API key 未配置');
@@ -260,8 +297,7 @@ async function getGeminiApiKeyEmbedding(text: string, timeoutMs: number = 30_000
 /**
  * Ollama embedding（保持原有逻辑）
  */
-async function getOllamaEmbedding(text: string, timeoutMs: number = 30_000): Promise<Float32Array | null> {
-  const config = getConfig();
+async function getOllamaEmbedding(text: string, timeoutMs: number = 30_000, config: AppConfig = getConfig()): Promise<Float32Array | null> {
   try {
     const response = await fetch(`${config.ollama.url}/api/embed`, {
       method: 'POST',
@@ -340,6 +376,8 @@ export const EMBEDDING_RECALL_TIMEOUT_MS = 3000;
 export const EMBEDDING_DEFAULT_TIMEOUT_MS = 30_000;
 
 export interface GetEmbeddingOptions {
+  /** One node generation uses the same private configuration snapshot for every segment. */
+  configSnapshot?: AppConfig;
   /**
    * 网络超时（毫秒）。
    * - brain_recall 调用方应传 EMBEDDING_RECALL_TIMEOUT_MS（3s）以保证主链路响应时间
@@ -352,7 +390,7 @@ export interface GetEmbeddingOptions {
 
 export async function getEmbedding(text: string, opts: GetEmbeddingOptions = {}): Promise<Float32Array | null> {
   if (isDiagnosticRequested()) throw new Error('agent_diagnostic:embedding_calls_disabled');
-  const config = getConfig();
+  let config = structuredClone(opts.configSnapshot ?? getConfig());
   const timeoutMs = opts.timeoutMs ?? EMBEDDING_DEFAULT_TIMEOUT_MS;
   log.debug(`provider=${config.embedding.provider} textLen=${text.length} timeoutMs=${timeoutMs}`);
 
@@ -360,14 +398,27 @@ export async function getEmbedding(text: string, opts: GetEmbeddingOptions = {})
   // 但部分异常(token 获取失败、AbortSignal.timeout、网络 throw)仍然冒泡。
   // 任何异常都视为 embedding 服务不可用,触发熔断器累积失败。
   let vec: Float32Array | null;
+  let connection: {db:Database.Database;id:string;binding:string|null}|null=null;
   try {
-    if (config.embedding.provider === 'vertex') {
-      vec = await getGeminiVertexEmbedding(text, timeoutMs);
-    } else if (config.embedding.provider === 'gemini') {
-      vec = await getGeminiApiKeyEmbedding(text, timeoutMs);
-    } else {
-      vec = await getOllamaEmbedding(text, timeoutMs);
+    // Availability probes and other default callers must use the selected connection too.
+    if (!opts.configSnapshot && config.embedding.connection) {
+      const {getExistingDb}=await import('../db/connection.js');
+      const db=getExistingDb();
+      if(!db)throw new Error('Selected embedding connection requires an initialized database');
+      const captured=captureEmbeddingConnection(db,config);
+      config=captured.config;connection={db,id:config.embedding.connection!,binding:captured.binding};
+      if(!embeddingConnectionCurrent(db,connection.id,connection.binding))return null;
     }
+    const requestCredentialSignal=getEmbeddingCredentialSignal(config);
+    if (config.embedding.provider === 'vertex') {
+      vec = await getGeminiVertexEmbedding(text, timeoutMs, config);
+    } else if (config.embedding.provider === 'gemini') {
+      vec = await getGeminiApiKeyEmbedding(text, timeoutMs, config);
+    } else {
+      vec = await getOllamaEmbedding(text, timeoutMs, config);
+    }
+    if(getEmbeddingCredentialSignal(config)!==requestCredentialSignal
+      ||(connection&&!embeddingConnectionCurrent(connection.db,connection.id,connection.binding)))return null;
   } catch (err) {
     // B-3: 异常路径 — 直接通知失败 hook 并 return null,保持 getEmbedding 的
     // "失败 = null"契约(调用者已习惯 null check)。

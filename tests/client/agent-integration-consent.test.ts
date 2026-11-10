@@ -50,6 +50,15 @@ function plan(overrides: Partial<ExecutionPlan> = {}): ExecutionPlan {
 }
 
 describe('execution plan consent boundary', () => {
+  it('requires a new explicit exact-plan consent for zero-effect recovery',()=>{
+    const approved=plan({mutations:[],completedGenerationTakeovers:[{kind:'codex_same_source_zero_effect',runId:'old-run',executionPlanHash:'a'.repeat(64),effectSnapshotHash:'b'.repeat(64),mutationDomains:['owned-domain']}]})
+    const hash=executionPlanHash(approved)
+    for(const candidate of [consent,{...consent,origin:'explicit_user' as const},{...consent,origin:'explicit_user' as const,recoveryPlanHash:'c'.repeat(64)},{...consent,origin:'default_auto_policy' as const,recoveryPlanHash:hash}]){
+      expect(checkPlanAgainstConsent(approved,candidate).reasons).toContain('zero_effect_recovery_requires_explicit_consent')
+    }
+    expect(checkPlanAgainstConsent(approved,{...consent,origin:'explicit_user',recoveryPlanHash:hash}).allowed).toBe(true)
+  })
+
   it('binds the exact recipe predecessor installation into the approval hash', () => {
     const takeover = {kind:'codex_lifecycle_4_to_5' as const,installationId:'peer-a',runId:'old-run',
       executionPlanHash:'a'.repeat(64),effectSnapshotHash:'b'.repeat(64),mutationDomains:['local_macos:file:/owned/hooks.json']}

@@ -1,5 +1,12 @@
-import { createHash } from 'node:crypto';
+import { getVectorReadiness } from './vector-readiness.js';
+import { activeVectorRuntime, ELIGIBLE_VECTOR_SEGMENTS_SQL, validUnitVector, vectorQueryCurrent, vectorSpaceCurrent } from './vector-query.js';
+import { stampVector, type VectorSpaceStamp } from '../embedding/vector-space.js';
+import { getConfig } from '../config.js';
+import { readVectorRuntime } from './vector-cache-store.js';
+import { generateNodeVectorBundle, type NodeVectorGenerationOptions } from '../embedding/generate-node.js';
 import type Database from 'better-sqlite3';
+import { nodeEmbeddingInput, nodeEmbeddingInputHash, segmentForEmbedding } from '../embedding/input-contract.js';
+export { nodeEmbeddingInput, nodeEmbeddingInputHash, segmentForEmbedding } from '../embedding/input-contract.js';
 import { getEmbedding } from '../llm/embedding.js';
 import { clearReembedFlag } from './connection.js';
 import { createLogger } from '../utils/logger.js';
@@ -9,62 +16,6 @@ const log = createLogger('vectors');
 export interface VectorSearchResult {
   id: string;       // node_id (已去重)
   distance: number;  // 最佳 segment 的距离
-}
-
-const SEGMENT_THRESHOLD = 500;    // 超过此长度才分段
-const SEGMENT_TARGET = 400;       // 每段目标长度
-const SEGMENT_OVERLAP = 50;       // 段间重叠字符数
-
-// ---- 分段策略 ----
-
-/**
- * 将内容拆分为 embedding 分段
- *
- * 短内容（< 500 字符）不分段。
- * 长内容按段落/句子边界拆分，每段约 300-500 字符，
- * 相邻段有 50 字符重叠保持语义连续。
- */
-export function segmentForEmbedding(content: string): string[] {
-  if (!content.trim()) return [];
-  if (content.length < SEGMENT_THRESHOLD) return [content];
-
-  const segments: string[] = [];
-  let start = 0;
-
-  while (start < content.length) {
-    const end = Math.min(start + SEGMENT_TARGET + 100, content.length);
-
-    if (end < content.length) {
-      // 在 target 附近找段落或句子边界
-      let breakAt = content.lastIndexOf('\n\n', end);
-      if (breakAt <= start) breakAt = content.lastIndexOf('\n', end);
-      if (breakAt <= start) breakAt = content.lastIndexOf('。', end);
-      if (breakAt <= start) breakAt = content.lastIndexOf('. ', end);
-      if (breakAt <= start) breakAt = end; // 找不到边界就硬切
-      else breakAt += 1; // 包含边界字符
-
-      segments.push(content.slice(start, breakAt).trim());
-      // 历史 bug(2026-05-09):兜底用 `start + 1` 在极端情形下让 start 每轮只
-      // 前进 1 字符 —— 用户笔记里贴大段无标点串(base64、minified 代码、
-      // 长 token 列表)且某次 breakAt - SEGMENT_OVERLAP <= start + 1 时,
-      // 会产生数千个 1 字符递增的 segment,getEmbedding 调用爆量、nodes_vec 写爆。
-      // 改为保证最小前进 SEGMENT_TARGET,与正常切分步长一致,牺牲一些 overlap
-      // 但避免 quadratic 爆炸。
-      start = Math.max(breakAt - SEGMENT_OVERLAP, start + SEGMENT_TARGET);
-    } else {
-      segments.push(content.slice(start).trim());
-      break;
-    }
-  }
-
-  return segments.filter(s => s.length > 0);
-}
-
-export function nodeEmbeddingInput(content: string, title?: string | null): string {
-  return content.trim() ? (title ? `${title}\n\n${content}` : content) : (title ?? '');
-}
-export function nodeEmbeddingInputHash(content: string, title?: string | null): string {
-  return createHash('sha256').update(nodeEmbeddingInput(content,title)).digest('hex');
 }
 
 // ---- 存储 ----
@@ -79,7 +30,10 @@ export async function insertSegmentVectors(
   db: Database.Database,
   nodeId: string,
   _content: string,
+  options: NodeVectorGenerationOptions = {},
 ): Promise<number> {
+  if (readVectorRuntime(db)) return generateNodeVectorBundle(db,nodeId,getConfig(),options);
+  if (db.prepare("SELECT 1 FROM metadata WHERE key IN ('vector.legacy_archive_version','vector.runtime_error') LIMIT 1").get()) return 0;
   const readSnapshot = () => db.prepare('SELECT content, title, archived, is_superseded FROM nodes WHERE id = ?')
     .get(nodeId) as { content: string; title: string | null; archived: number; is_superseded: number } | undefined;
   const before = readSnapshot();
@@ -147,44 +101,47 @@ export async function insertSegmentVectors(
  * 插入单个预计算的 embedding（兼容旧接口）
  */
 export function insertVector(db: Database.Database, nodeId: string, embedding: Float32Array): void {
-  const segmentId = `${nodeId}#0`;
-
-  db.prepare(
-    'INSERT OR REPLACE INTO nodes_vec (id, embedding) VALUES (?, ?)',
-  ).run(segmentId, Buffer.from(embedding.buffer));
-
-  db.prepare(
-    'INSERT OR REPLACE INTO node_segments (segment_id, node_id, segment_index) VALUES (?, ?, ?)',
-  ).run(segmentId, nodeId, 0);
+  db.transaction(() => {
+    // Legacy raw writes cannot reuse a proof from a previously verified bundle.
+    try { db.prepare('DELETE FROM metadata WHERE key=?').run(`vector.projection_checksum:${nodeId}`); }
+    catch (error) { if(!/no such table: metadata/i.test(String(error)))throw error; }
+    const segmentId = `${nodeId}#0`;
+    db.prepare('DELETE FROM nodes_vec WHERE id=?').run(segmentId);
+    db.prepare('INSERT INTO nodes_vec (id, embedding) VALUES (?, ?)')
+      .run(segmentId,Buffer.from(embedding.buffer,embedding.byteOffset,embedding.byteLength));
+    db.prepare('INSERT OR REPLACE INTO node_segments (segment_id,node_id,segment_index) VALUES (?,?,0)').run(segmentId,nodeId);
+  })();
 }
 
 /**
  * 删除节点的所有 embedding segments
  */
 export function deleteVector(db: Database.Database, nodeId: string): void {
-  // 找到所有 segment_id
-  const segments = db.prepare(
-    'SELECT segment_id FROM node_segments WHERE node_id = ?',
-  ).all(nodeId) as Array<{ segment_id: string }>;
-
-  for (const seg of segments) {
-    db.prepare('DELETE FROM nodes_vec WHERE id = ?').run(seg.segment_id);
-  }
-  db.prepare('DELETE FROM node_segments WHERE node_id = ?').run(nodeId);
+  db.transaction(() => {
+    // Invalidate before removing physical rows; no partial projection is eligible.
+    try { db.prepare('DELETE FROM metadata WHERE key=?').run(`vector.projection_checksum:${nodeId}`); }
+    catch (error) { if(!/no such table: metadata/i.test(String(error)))throw error; }
+    const segments=db.prepare('SELECT segment_id FROM node_segments WHERE node_id=?').all(nodeId) as Array<{segment_id:string}>;
+    for(const segment of segments)db.prepare('DELETE FROM nodes_vec WHERE id=?').run(segment.segment_id);
+    db.prepare('DELETE FROM node_segments WHERE node_id=?').run(nodeId);
+  })();
 }
 
 /**
  * 获取节点第一个 segment 的 embedding（用于 rerank 等场景）
  */
-export function getVectorForNode(db: Database.Database, nodeId: string): Float32Array | null {
-  const segmentId = `${nodeId}#0`;
+export function getVectorForNode(db: Database.Database, nodeId: string, expectedSpace?: VectorSpaceStamp): Float32Array | null {
   try {
-    const row = db.prepare('SELECT embedding FROM nodes_vec WHERE id = ?').get(segmentId) as { embedding: Buffer } | undefined;
-    if (!row) return null;
-    return new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.byteLength / 4);
-  } catch {
-    return null;
-  }
+    const runtime=activeVectorRuntime(db);
+    if(!runtime || (expectedSpace&&!vectorSpaceCurrent(db,expectedSpace)))return null;
+    const row=db.prepare(`SELECT embedding,(SELECT value FROM metadata WHERE key=?) AS input_hash FROM nodes_vec WHERE id=? AND id IN (${ELIGIBLE_VECTOR_SEGMENTS_SQL} AND n.id=?)`)
+      .get(`vector.input:${nodeId}`,`${nodeId}#0`,runtime.selection.id,nodeId) as {embedding:Buffer;input_hash:string}|undefined;
+    if(!row)return null;
+    const vector=new Float32Array(row.embedding.buffer,row.embedding.byteOffset,row.embedding.byteLength/4);
+    if(!validUnitVector(vector,runtime.selection.profile.dimensions)
+      ||!vectorSpaceCurrent(db,{profileId:runtime.selection.id,epoch:runtime.epoch,nodeId,inputHash:row.input_hash}))return null;
+    return stampVector(vector,runtime,{nodeId,inputHash:row.input_hash});
+  }catch{return null;}
 }
 
 // ---- 搜索 ----
@@ -201,15 +158,18 @@ export function searchVectors(
   limit: number = 20,
 ): VectorSearchResult[] {
   try {
+    const runtime=activeVectorRuntime(db);
+    if(!runtime||!vectorQueryCurrent(db,queryEmbedding)||!validUnitVector(queryEmbedding,runtime.selection.profile.dimensions))return [];
     // 搜更多 segments 以确保去重后有足够节点
     const rawResults = db.prepare(`
       SELECT id, distance
       FROM nodes_vec
-      WHERE embedding MATCH ?
+      WHERE embedding MATCH ? AND id IN (${ELIGIBLE_VECTOR_SEGMENTS_SQL})
       ORDER BY distance
       LIMIT ?
-    `).all(Buffer.from(queryEmbedding.buffer, queryEmbedding.byteOffset, queryEmbedding.byteLength), limit * 3) as Array<{ id: string; distance: number }>;
+    `).all(Buffer.from(queryEmbedding.buffer, queryEmbedding.byteOffset, queryEmbedding.byteLength), runtime.selection.id, Math.min(limit * 3,4096)) as Array<{ id: string; distance: number }>;
 
+    if(!vectorQueryCurrent(db,queryEmbedding))return [];
     // 按 node_id 去重，保留最佳 distance
     const bestByNode = new Map<string, number>();
 
@@ -240,11 +200,9 @@ export function searchVectors(
  */
 export function hasVectors(db: Database.Database): boolean {
   try {
-    const row = db.prepare('SELECT COUNT(*) as cnt FROM nodes_vec').get() as { cnt: number };
-    return row.cnt > 0;
-  } catch {
-    return false;
-  }
+    const runtime=activeVectorRuntime(db);if(!runtime)return false;
+    return !!db.prepare(`SELECT 1 FROM nodes_vec WHERE id IN (${ELIGIBLE_VECTOR_SEGMENTS_SQL}) LIMIT 1`).get(runtime.selection.id);
+  }catch{return false;}
 }
 
 // ---- 辅助 ----
@@ -280,11 +238,13 @@ export function getReembedProgress(): { running: boolean; done: number; total: n
  * 后台重算所有节点的 embedding（支持多段）
  * 使用同步锁防止并发调用互相覆盖进度。
  */
-export async function reembedAllNodes(db: Database.Database): Promise<void> {
-  if (reembedLock) return;
+export async function reembedAllNodes(db: Database.Database): Promise<boolean> {
+  if (reembedLock) return false;
   reembedLock = true;
 
   try {
+    const runtime=readVectorRuntime(db);
+    const current=()=>db.open && (readVectorRuntime(db)?.epoch ?? null)===(runtime?.epoch ?? null);
     const totalRow = db.prepare(
       "SELECT COUNT(*) as cnt FROM nodes WHERE heat > 0.01 AND archived = 0 AND is_superseded = 0",
     ).get() as { cnt: number };
@@ -306,17 +266,25 @@ export async function reembedAllNodes(db: Database.Database): Promise<void> {
     // metadata,被跳过的节点保留旧向量且永不补救。
     let cursor = '';
     while (true) {
+      if(!current())return false;
       const page = db.prepare(
-        "SELECT id, content FROM nodes WHERE heat > 0.01 AND archived = 0 AND is_superseded = 0 AND id > ? ORDER BY id LIMIT ?",
-      ).all(cursor, PAGE_SIZE) as Array<{ id: string; content: string }>;
+        "SELECT id, content, title FROM nodes WHERE heat > 0.01 AND archived = 0 AND is_superseded = 0 AND id > ? ORDER BY id LIMIT ?",
+      ).all(cursor, PAGE_SIZE) as Array<{ id: string; content: string; title:string|null }>;
 
       if (page.length === 0) break;
 
       for (const node of page) {
+        if(!current())return false;
+        let generationFailed=false;
         try {
-          await insertSegmentVectors(db, node.id, node.content);
+          await insertSegmentVectors(db, node.id, node.content, {foreground:true,expectedEpoch:runtime?.epoch,onGenerationFailure:()=>{generationFailed=true;}});
         } catch (err) {
           log.error(`重算 embedding 失败 (${node.id}):`, (err as Error).message);
+        }
+        if(!current())return false;
+        if(generationFailed && runtime && nodeEmbeddingInput(node.content,node.title).trim()){
+          const key=`vector.generate_retry:${JSON.stringify([runtime.endpointId??null,runtime.accountId,runtime.selection.id,node.id])}`;
+          db.prepare('INSERT OR REPLACE INTO metadata(key,value) VALUES (?,?)').run(key,JSON.stringify({inputHash:nodeEmbeddingInputHash(node.content,node.title),retryAfter:0,reason:'generation_failed'}));
         }
         reembedProgress.done++;
       }
@@ -324,11 +292,17 @@ export async function reembedAllNodes(db: Database.Database): Promise<void> {
       cursor = page[page.length - 1].id;
     }
 
+    const coverage=getVectorReadiness(db);
+    if(coverage.mode==='initializing' || (coverage.mode==='error' && !coverage.uploadFailed) || coverage.missing>0){
+      log.warn(`embedding 遍历结束，但向量尚未就绪: ${coverage.ready}/${coverage.eligible}`);
+      return false;
+    }
     clearReembedFlag();
     // S19 reembed 完成后写入 normalization version,下次启动不再误触发"需 reembed"。
     // 当前 version=1 表示出口已统一 L2 归一化(src/llm/embedding.ts:253)。
     db.prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES ('embedding_normalization_version', '1')").run();
-    log.info(`embedding 重算完成: ${reembedProgress.done}/${reembedProgress.total}`);
+    log.info(`embedding 重算完成: ${coverage.ready}/${coverage.eligible}`);
+    return true;
   } finally {
     reembedProgress.running = false;
     reembedLock = false;

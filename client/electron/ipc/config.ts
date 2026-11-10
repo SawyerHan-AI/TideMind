@@ -20,6 +20,7 @@ import {
 import { getShimPath, getMcpServerScriptPath } from '../runtime/runtime-paths.js'
 import { mainT } from '../i18n.js'
 import { clearClientCache } from '@server/llm/client.js'
+import { refreshDesktopVectorRuntime } from '../cloud/vector-runtime.js'
 import { notifyMetabolismWorkerRuntimeMutation } from '../workers/metabolism-worker-runtime-mutations.js'
 
 export function registerConfigHandlers(dataDir: string): void {
@@ -71,6 +72,7 @@ export function registerConfigHandlers(dataDir: string): void {
     // 旧 SDK 实例会持续用旧凭证返 401。指纹 cacheKey 已能盖住大多数场景,
     // 但 settings 写入是确定性事件,主动 clear 一次最稳。
     clearClientCache()
+    void refreshDesktopVectorRuntime(getClientDb()).catch(error => log.warn(`vector runtime refresh failed: ${String(error)}`))
     notifyMetabolismWorkerRuntimeMutation('config')
 
     // 记录到时间线

@@ -99,12 +99,12 @@ CREATE TABLE IF NOT EXISTS agent_host_activity_evidence (
 /** Read-only semantic parity check used by the signed acceptance exporter. */
 export function inspectAgentHostActivityEvidenceV34Schema(db: Database.Database): {
   /** Supported migration lines retain the authoritative v34 ledger shape. */
-  schemaVersion: 34 | 35 | 45 | 46 | 47;
+  schemaVersion: 34 | 35 | 45 | 46 | 47 | 48;
   fingerprintInput: unknown;
 } {
   const schemaVersion = assertSupportedDatabaseSchema(db, CURRENT_SCHEMA_VERSION);
-  if (schemaVersion !== 34 && schemaVersion !== 35 && schemaVersion !== 45 && schemaVersion !== 46 && schemaVersion !== 47) {
-    throw new Error(`activity ledger database schema is ${schemaVersion}, expected 34, 35, 45, 46 or 47`);
+  if (schemaVersion !== 34 && schemaVersion !== 35 && schemaVersion !== 45 && schemaVersion !== 46 && schemaVersion !== 47 && schemaVersion !== 48) {
+    throw new Error(`activity ledger database schema is ${schemaVersion}, expected 34, 35, 45, 46, 47 or 48`);
   }
   const columns = db.prepare('PRAGMA table_info(agent_host_activity_evidence)').all() as Array<{
     name: string; type: string; notnull: number; pk: number;

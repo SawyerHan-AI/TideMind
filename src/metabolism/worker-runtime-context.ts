@@ -120,12 +120,12 @@ export function getMetabolismWorkerConnectionSnapshot(connectionId: string): Wor
   return installed?.connections.get(connectionId) ?? null
 }
 
-export function getMetabolismWorkerVertexCredential(connectionId?: string): Readonly<Record<string, string>> | null {
+export function getMetabolismWorkerVertexCredential(connectionId?: string, allowLegacyFallback = true): Readonly<Record<string, string>> | null {
   if (!installed) return null
   const container = installed.credentials
   const raw = connectionId === undefined
     ? container.legacyVertex
-    : plainRecord(container.vertexFiles, 'vertex credential files')[connectionId] ?? container.legacyVertex
+    : plainRecord(container.vertexFiles, 'vertex credential files')[connectionId] ?? (allowLegacyFallback ? container.legacyVertex : null)
   if (raw === null || raw === undefined) return null
   const record = plainRecord(raw, 'vertex credential')
   const normalized: Record<string, string> = {}

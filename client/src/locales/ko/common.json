@@ -52,6 +52,7 @@
     "signatureInvalid": "서명 무효"
   },
   "llmHealth": {
+    "actionRequired": "AI가 일시 중지되었습니다. 설정에서 연결을 확인하세요",
     "paused": "AI 일시 중지 ({{min}}분 후 재시도)",
     "recentFailures": "AI에서 최근 실패 발생",
     "idle": "AI가 오랜 시간 비활성"

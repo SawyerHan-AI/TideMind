@@ -923,7 +923,7 @@ export interface AppApi {
     vertexStatus: () => Promise<{ configured: boolean; projectId?: string }>
   }
   embedding: {
-    reembedStatus: () => Promise<{ needed: boolean; running: boolean; done: number; total: number }>
+    reembedStatus: () => Promise<{ needed: boolean; running: boolean; done: number; total: number; canRebuild: boolean; coverage: {mode: 'ready' | 'waiting_sync' | 'waiting_generation' | 'error' | 'initializing'; eligible: number; ready: number; missing: number; failed: number; queued: number; uploadFailed: number} }>
     triggerReembed: () => Promise<{ success: boolean; error?: string }>
   }
   write: {

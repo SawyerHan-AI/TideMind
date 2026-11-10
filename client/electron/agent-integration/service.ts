@@ -1565,19 +1565,27 @@ export class AgentIntegrationService {
     if (disabledLifecycle.some(id => !installationIds.includes(id))) {
       throw new Error('lifecycle exclusions must be a subset of the selected Installations')
     }
-    return this.preview('connect', installationIds, includeTechnicalDetails, new Set(disabledLifecycle))
+    return this.preview('connect', installationIds, includeTechnicalDetails, new Set(disabledLifecycle), undefined, true)
   }
 
   async applyConnect(planHash: string, installationIds: readonly string[]): Promise<AgentIntegrationApplyResultDto> {
     const bundle = this.requirePlan(planHash, 'connect', installationIds)
-    this.dependencies.repository.allowExplicitConnection(installationIds)
+    this.allowExplicitConnectBundle(bundle)
     return this.apply(bundle)
   }
 
   startApplyConnect(planHash: string, installationIds: readonly string[]): AgentIntegrationApplyTaskDto {
     const bundle = this.requirePlan(planHash, 'connect', installationIds)
-    this.dependencies.repository.allowExplicitConnection(installationIds)
+    this.allowExplicitConnectBundle(bundle)
     return this.startApplyBundle(bundle)
+  }
+
+  private allowExplicitConnectBundle(bundle: CachedPlanBundle): void {
+    const recoveries=bundle.items.filter(item=>item.prepared.executionPlan.retainedZeroEffectPeer || item.prepared.executionPlan.completedGenerationTakeovers
+      ?.some(prior=>prior.kind==='codex_same_source_zero_effect'))
+      .map(item=>({installationId:item.installation.id,plan:item.prepared}))
+    if(recoveries.length)this.dependencies.repository.allowExplicitConnection(bundle.installationIds,recoveries)
+    else this.dependencies.repository.allowExplicitConnection(bundle.installationIds)
   }
 
   private startApplyBundle(bundle: CachedPlanBundle, onComplete?: (task: AgentIntegrationApplyTaskDto) => void): AgentIntegrationApplyTaskDto {
@@ -2446,6 +2454,7 @@ export class AgentIntegrationService {
     includeTechnicalDetails: boolean,
     withoutLifecycle = new Set<string>(),
     legacySelection?: CodexLegacySelection,
+    allowZeroEffectRecovery = false,
   ): Promise<AgentIntegrationPlanPreviewDto> {
     const ids = uniqueIds(installationIds)
     if (ids.length === 0) throw new Error('at least one Installation is required')
@@ -2528,6 +2537,8 @@ export class AgentIntegrationService {
           continue
         }
       }
+      const recoveryPeer=allowZeroEffectRecovery && operation==='connect' ? this.dependencies.repository.zeroEffectRecoveryPeer(row.id) : undefined
+      const recoveryToken=allowZeroEffectRecovery && operation==='connect' ? this.dependencies.repository.zeroEffectRecoveryToken(recoveryPeer ?? row.id) : undefined
       const request: PreviewRequest = {
         ...(freshIdentity ? {codexFreshIdentity:freshIdentity} : {}),
         ...(earlierShared ? {frozenActivityGenerationToken:earlierShared.prepared.activityGenerationToken} : {}),
@@ -2541,6 +2552,12 @@ export class AgentIntegrationService {
       let prepared: PreparedCoordinatorPlan
       try {
         prepared = await this.dependencies.execution.preview(request)
+        // Reuse an old token only when it proves a genuine no-write recovery.
+        // Recipe upgrades keep their normal generation and complete takeover plan.
+        if(recoveryToken && !earlierShared && !codexFourToFivePlanProof(prepared)){
+          const sameGeneration=await this.dependencies.execution.preview({...request,frozenActivityGenerationToken:recoveryToken})
+          if(sameGeneration.adapterPlan.mutations.length===0 && sameGeneration.executionPlan.mutations.length===0 && sameGeneration.adapterPlan.diagnostics.length===0)prepared=sameGeneration
+        }
       } catch (error) {
         if (ownershipOnly && error instanceof Error && error.message === OWNERSHIP_ONLY_REQUIRES_HOST_COMMAND) {
           bridgeOnlyItems.push(this.bridgeOnlyDisconnectItem(row, installation, componentKeys))
@@ -2548,7 +2565,7 @@ export class AgentIntegrationService {
         }
         throw error
       }
-      prepared = this.bindCompletedGenerationTakeovers(row.id, prepared)
+      prepared = await this.bindCompletedGenerationTakeovers(row.id, prepared, allowZeroEffectRecovery)
       if(recipeBatchKey && codexFourToFivePlanProof(prepared)) codexBatchKey=recipeBatchKey
       else if(earlierShared?.codexBatchKey?.startsWith('recipe-4-to-5:')) throw new Error('Shared recipe upgrade changed during preview')
       const desiredCapability = operation === 'disconnect'
@@ -2692,7 +2709,7 @@ export class AgentIntegrationService {
         if (sha256Json(liveInstallation) !== sha256Json(item.installation)) {
           throw new Error('Installation identity changed after preview; scan and preview again')
         }
-        const fresh = this.bindCompletedGenerationTakeovers(liveRow.id, await this.dependencies.execution.preview({
+        const fresh = await this.bindCompletedGenerationTakeovers(liveRow.id, await this.dependencies.execution.preview({
           ...(pending ? {codexLegacySelection:pending} : {}),
           ...(freshIdentity ? {codexFreshIdentity:freshIdentity} : {}),
           installation: liveInstallation,
@@ -2702,7 +2719,7 @@ export class AgentIntegrationService {
           frozenActivityGenerationToken: item.prepared.activityGenerationToken,
           frozenOperationId: item.prepared.operationId,
           ...(ownershipOnly ? { trustMode: 'ownership_only' as const } : {}),
-        }))
+        }), !!item.prepared.executionPlan.retainedZeroEffectPeer || (item.prepared.executionPlan.completedGenerationTakeovers?.some(prior=>prior.kind==='codex_same_source_zero_effect') ?? false), item.prepared.retainedZeroEffectPeerPlan)
         if (approvedBatchHash) {
           if (fresh.adapterPlan.mutations.length !== 0
             || fresh.componentKeys.length!==item.prepared.componentKeys.length
@@ -2873,6 +2890,7 @@ export class AgentIntegrationService {
     this.dependencies.repository.createConsent({
       id,
       origin: automaticContext ? 'default_auto_policy' : 'explicit_user',
+      ...(!automaticContext && (item.prepared.executionPlan.retainedZeroEffectPeer || item.prepared.executionPlan.completedGenerationTakeovers?.some(prior=>prior.kind==='codex_same_source_zero_effect')) ? {recoveryPlanHash:item.prepared.executionPlanHash}:{}),
       ...(automaticContext ? { automaticContext } : nativePermissionsForPlan(item.prepared.executionPlan).length ? { nativePermissionPlanHash: item.prepared.executionPlanHash } : {}),
       installationId: item.installation.id,
       policyVersion: String(CURRENT_CONSENT_POLICY_VERSION),
@@ -2892,11 +2910,25 @@ export class AgentIntegrationService {
     return id
   }
 
-  private bindCompletedGenerationTakeovers(installationId: string, plan: PreparedCoordinatorPlan): PreparedCoordinatorPlan {
-    const completedGenerationTakeovers = this.dependencies.repository.completedGenerationTakeovers(installationId, plan)
+  private async bindCompletedGenerationTakeovers(installationId: string, plan: PreparedCoordinatorPlan, allowZeroEffectRecovery=false, frozenPeer?:PreparedCoordinatorPlan): Promise<PreparedCoordinatorPlan> {
+    const completedGenerationTakeovers = this.dependencies.repository.completedGenerationTakeovers(installationId, plan).filter(prior=>allowZeroEffectRecovery || prior.kind!=='codex_same_source_zero_effect')
     if (!completedGenerationTakeovers.length) return plan
-    const executionPlan = { ...plan.executionPlan, completedGenerationTakeovers }
-    return { ...plan, executionPlan, executionPlanHash: executionPlanHash(executionPlan) }
+    let prepared:PreparedCoordinatorPlan={...plan,executionPlan:{...plan.executionPlan,completedGenerationTakeovers}}
+    const peerId=allowZeroEffectRecovery && !plan.adapterPlan.mutations.length
+      ? this.dependencies.repository.zeroEffectRecoveryPeer(installationId):undefined
+    if(peerId){
+      const peerInstallation=toCoordinatorInstallation(this.requireInstallation(peerId),this.dependencies.repository)
+      const peerPlan=await this.dependencies.execution.preview({installation:peerInstallation,operation:'connect',
+        componentKeys:plan.componentKeys,desiredCapability:capabilityForComponents(plan.componentKeys),
+        frozenActivityGenerationToken:plan.activityGenerationToken,
+        ...(frozenPeer?.operationId?{frozenOperationId:frozenPeer.operationId}:{})})
+      if(frozenPeer && preparedLiveEvidence(peerPlan)!==preparedLiveEvidence(frozenPeer))throw new Error('Retained peer changed after preview')
+      const approvedPeer=frozenPeer ?? peerPlan
+      const proof=this.dependencies.repository.retainedZeroEffectPeerProof(installationId,prepared,approvedPeer)
+      if(!proof)throw new Error('Shared zero-effect predecessor cannot be retained; inspect both hosts')
+      prepared={...prepared,retainedZeroEffectPeerPlan:approvedPeer,executionPlan:{...prepared.executionPlan,retainedZeroEffectPeer:proof}}
+    }
+    return {...prepared,executionPlanHash:executionPlanHash(prepared.executionPlan)}
   }
 
   private connectableComponentKeys(hostVariant: CatalogId): ComponentKey[] {
@@ -3835,6 +3867,7 @@ function preparedLiveEvidence(plan: PreparedCoordinatorPlan): string {
       sharedDomainBinding: frozenPlanSharedDomainBinding(plan),
       ownershipOnlyDisconnectBinding: frozenPlanOwnershipOnlyBinding(plan),
       completedGenerationTakeovers: plan.executionPlan.completedGenerationTakeovers,
+      retainedZeroEffectPeer: plan.executionPlan.retainedZeroEffectPeer,
     },
   })
 }

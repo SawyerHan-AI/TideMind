@@ -24,6 +24,8 @@ import { COMPONENT_KEYS, isMutationDomainKind } from './types'
  * adapter to silently regenerate a potentially broader plan at apply time.
  */
 export interface PreparedCoordinatorPlan {
+  /** Read-only peer plan bound by executionPlan.retainedZeroEffectPeer.currentPlanHash. */
+  retainedZeroEffectPeerPlan?: PreparedCoordinatorPlan
   /** Internal preview seed; reused only when checking the cached approved plan. */
   operationId?: string
   codexFreshIdentity?: CodexFreshIdentityPlan

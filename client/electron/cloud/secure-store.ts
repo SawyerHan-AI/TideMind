@@ -25,7 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { safeStorage } from 'electron';
 import { createLogger } from '../../../src/utils/logger.js';
-import { getDataDir } from '../../../src/config.js';
+import { getDataDir } from '@server/config.js';
 
 const log = createLogger('secure-store');
 

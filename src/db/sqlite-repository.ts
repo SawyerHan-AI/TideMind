@@ -1,3 +1,4 @@
+import { getQueryEmbedding, vectorQueryCurrent } from './vector-query.js';
 /**
  * SQLite Repository 实现
  *
@@ -138,8 +139,8 @@ class SqliteLinkRepository implements ILinkRepository {
 class SqliteVectorRepository implements IVectorRepository {
   constructor(private db: Database.Database) {}
 
-  async insertSegmentVectors(nodeId: string, content: string): Promise<number> {
-    return insertSegmentVectors(this.db, nodeId, content);
+  async insertSegmentVectors(nodeId: string, content: string, options?: import('../embedding/generate-node.js').NodeVectorGenerationOptions): Promise<number> {
+    return insertSegmentVectors(this.db, nodeId, content, options);
   }
   insertVector(nodeId: string, embedding: Float32Array): void {
     insertVector(this.db, nodeId, embedding);
@@ -147,8 +148,10 @@ class SqliteVectorRepository implements IVectorRepository {
   deleteVector(nodeId: string): void {
     deleteNodeVectors(this.db, nodeId);
   }
-  getVectorForNode(nodeId: string): Float32Array | null {
-    return getVectorForNode(this.db, nodeId);
+  embedQuery(text: string, options?: {timeoutMs?: number}) { return hasVectors(this.db) ? getQueryEmbedding(this.db,text,options) : Promise.resolve(null); }
+  isQueryCurrent(vector: Float32Array): boolean { return vectorQueryCurrent(this.db,vector); }
+  getVectorForNode(nodeId: string, expectedSpace?: import('../embedding/vector-space.js').VectorSpaceStamp): Float32Array | null {
+    return getVectorForNode(this.db, nodeId, expectedSpace);
   }
   searchVectors(queryEmbedding: Float32Array, limit?: number) {
     return searchVectors(this.db, queryEmbedding, limit);

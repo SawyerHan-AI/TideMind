@@ -121,10 +121,12 @@ export interface VectorSearchResult {
 }
 
 export interface IVectorRepository {
-  insertSegmentVectors(nodeId: string, content: string): Promise<number>;
+  insertSegmentVectors(nodeId: string, content: string, options?: import('../embedding/generate-node.js').NodeVectorGenerationOptions): Promise<number>;
   insertVector(nodeId: string, embedding: Float32Array): void;
   deleteVector(nodeId: string): void;
-  getVectorForNode(nodeId: string): Float32Array | null;
+  embedQuery(text: string, options?: {timeoutMs?: number}): Promise<Float32Array | null>;
+  isQueryCurrent(vector: Float32Array): boolean;
+  getVectorForNode(nodeId: string, expectedSpace?: import('../embedding/vector-space.js').VectorSpaceStamp): Float32Array | null;
   searchVectors(queryEmbedding: Float32Array, limit?: number): VectorSearchResult[];
   hasVectors(): boolean;
 }
