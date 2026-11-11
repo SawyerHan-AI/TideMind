@@ -14,6 +14,15 @@ import type {
 } from '../../../lib/api-contract'
 import { installationsForFamily } from './types'
 
+/** Explicit recovery remains available after either Codex host becomes stale. */
+export function canReconnectManagedInstallation(installation: ManagedInstallationDto): boolean {
+  return installation.manageable && installation.desiredState === 'managed'
+    && installation.statusGroup === 'needs_attention'
+    && (!installation.automaticConnectionEnabled || installation.statusReason === 'conflict'
+      || (['codex-cli', 'codex-desktop'].includes(installation.hostVariant)
+        && installation.statusReason === 'verification_failed'))
+}
+
 export interface PresentationToken {
   labelKey: string
   tone: 'green' | 'amber' | 'red' | 'blue' | 'gray' | 'violet'
