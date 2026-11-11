@@ -14,6 +14,7 @@ import {
   requestedConnectCandidateIds,
 } from '../../client/src/components/settings/agent-integration-managed/BatchConnectDialog'
 import {
+  canReconnectManagedInstallation,
   installationNeedsAction,
   installationNoticeKey,
   aggregateAccess,
@@ -476,4 +477,20 @@ it('keeps temporary startup eligibility separate from current connection status'
   expect(managementStatusPresentation('disconnected','source_verification_pending',true)).toMatchObject({tone:'blue',labelKey:'agent.managed.checkPending'})
   expect(managementStatusPresentation('disconnected','source_confirmation_required',true)).toMatchObject({tone:'gray',labelKey:'agent.managed.supportMode.detectable'})
   expect(managementStatusPresentation('needs_attention','conflict',true)).toMatchObject({labelKey:'agent.managed.status.needsAttention'})
+})
+
+
+describe('explicit Codex recovery after upgrade',()=>{
+  it.each(['codex-cli','codex-desktop'])('offers recovery for automatic %s after verification failure',hostVariant=>{
+    expect(canReconnectManagedInstallation(installation('codex',{hostVariant,automaticConnectionEnabled:true,statusGroup:'needs_attention',statusReason:'verification_failed'}))).toBe(true)
+  })
+  it('does not offer recovery for paused, removed, unavailable or already healthy hosts',()=>{
+    const failed=installation('codex',{hostVariant:'codex-cli',automaticConnectionEnabled:true,statusGroup:'needs_attention',statusReason:'verification_failed'})
+    for(const override of [{desiredState:'disabled'},{desiredState:'removed'},{manageable:false},{statusGroup:'available'}] as Array<Partial<AgentIntegrationInstallationDto>>){
+      expect(canReconnectManagedInstallation({...failed,...override})).toBe(false)
+    }
+  })
+  it('keeps other automatic host failures on their existing recovery path',()=>{
+    expect(canReconnectManagedInstallation(installation('claude',{hostVariant:'claude-code-cli',automaticConnectionEnabled:true,statusGroup:'needs_attention',statusReason:'verification_failed'}))).toBe(false)
+  })
 })
