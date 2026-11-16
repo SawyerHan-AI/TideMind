@@ -6,6 +6,7 @@ import {
   P0_DISCOVERY_PROBES,
   CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,
   discoverClaudeCoworkGuidedCandidate,
+  discoverRegisteredCodexCli,
   discoverLocalP0Agents,
   MAX_CLI_EXECUTABLE_PROOF_BYTES,
   signedCodePortableArtifactFingerprint,
@@ -1933,6 +1934,25 @@ describe('P0 local Agent discovery', () => {
     }
     expect(report.diagnostics).toEqual([])
   }, 30_000)
+
+  it('recovers a registered npm launcher outside GUI PATH using the same distribution proof', async () => {
+    const runtime = fakeRuntime()
+    const executable = addCommand(runtime, 'codex', {
+      realpath: '/Volumes/fixture/npm-global/lib/node_modules/@openai/codex/bin/codex.js',
+      output: 'codex 0.167.1',
+      verifiedPackageProvenance: 'npm_metadata:@openai/codex',
+    })
+    const normal = await discoverLocalP0Agents(context(), runtime.dependencies)
+    const initial = normal.installations.find(host => host.catalogId === 'codex-cli')
+    expect(initial).toBeDefined()
+    runtime.commands.clear()
+    expect((await discoverLocalP0Agents(context(), runtime.dependencies)).installations).toHaveLength(0)
+    const exact = await discoverRegisteredCodexCli(executable, context(), runtime.dependencies)
+    expect(exact.installations).toHaveLength(1)
+    expect(exact.installations[0]).toMatchObject({
+      identity: {installKey: initial!.identity.installKey}, detectedVersion: '0.167.1', catalogId: 'codex-cli',
+    })
+  })
 
   it('uses the proof budget for CLI package hashing without weakening metadata timeouts', async () => {
     const runtime = fakeRuntime()

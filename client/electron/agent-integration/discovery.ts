@@ -1517,6 +1517,12 @@ async function discoverCli(
           }
         } else {
           result.diagnostics.push(`${definition.catalogId}:version:${command}:exit_${versionResult.exitCode}`)
+          if (definition.catalogId === 'codex-cli' && versionResult.exitCode === 126
+            && versionResult.stderr === 'package_metadata_unavailable') {
+            result.unresolved.push({catalogIds:unresolvedCatalogIds,reason:'probe_inaccessible',
+              summary:'Codex launcher exists but its package metadata is unavailable.',evidence:stableEvidence(evidence)})
+            continue
+          }
         }
       } catch (error) {
         result.diagnostics.push(`${definition.catalogId}:version:${command}:${stableErrorCode(error)}`)
@@ -2238,6 +2244,20 @@ export async function discoverLocalP0Agents(
       : discoverApp(probe, context, dependencies, timeoutMs, signatureTimeoutMs, scheduleProof),
   ))
   return stabilizeReport(results)
+}
+
+/** Reuse the normal passive Codex proof for one previously registered launcher outside GUI PATH. */
+export async function discoverRegisteredCodexCli(
+  executable: string,
+  context: LocalDiscoveryContext,
+  dependencies: DiscoveryDependencies,
+): Promise<LocalDiscoveryReport> {
+  const probe = P0_DISCOVERY_PROBES.find(candidate => candidate.kind === 'cli' && candidate.catalogId === 'codex-cli')
+  if (!probe || probe.kind !== 'cli' || !isSafeAbsolutePath(executable)) return stabilizeReport([])
+  return stabilizeReport([await discoverCli(probe, context, {
+    ...dependencies,
+    whichAll: async command => command === 'codex' ? [executable] : [],
+  }, 2_500, 20_000)])
 }
 
 /**

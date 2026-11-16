@@ -1,3 +1,5 @@
+import { publishAttestedBridgeMember, readAnchoredAdmission } from '@server/db/codex-bridge-continuity.js'
+import { codexLauncherParentIdentity, confirmedMissingCodexLauncher } from './codex-cli-location.js'
 import { probeAgentAuthentication, type AgentAuthenticationResult } from './agent-authentication'
 import { createDiagnosticService } from './diagnostic-service'
 import { prepareClaudeDiagnostic } from './claude-diagnostic-adapter'
@@ -35,6 +37,7 @@ import {
 import {
   DESKTOP_BUNDLE_SURFACE_SCHEMA,
   discoverLocalP0Agents,
+  discoverRegisteredCodexCli,
   discoverClaudeCoworkGuidedCandidate,
   inspectStableDesktopBundleSurface,
   MAX_CLI_EXECUTABLE_PROOF_BYTES,
@@ -502,6 +505,96 @@ export function createProductionAgentIntegrationComposition(
     ids: { next: prefix => `${prefix}_${randomUUID()}` },
     locale: notificationLocale,
   })
+  async function renewCodexContinuity(): Promise<boolean> {
+    let retry = false
+    const members = repository.listInstallations().filter(member => member.family === 'codex'
+      && member.desired_state === 'managed' && !member.tombstoned_at)
+    const candidates = members.flatMap(member => [
+      coordinatorRepository.codexContinuitySnapshot(member.id),
+      coordinatorRepository.codexContinuitySnapshot(member.id,'memory_tools'),
+      coordinatorRepository.codexContinuitySnapshot(member.id,'lifecycle'),
+    ])
+    // Enroll an established domain when an old operation no longer describes the
+    // observed hosts. New connections still go through normal apply and verify.
+    const domains = new Set(candidates.filter(item => item && (item.changed || item.runState === 'needs_recovery'
+      || String(item.runState) === 'cancelled')).map(item => item!.anchors[0].binding_id))
+    for (const enrolled of db.prepare('SELECT DISTINCT binding_id FROM codex_bridge_anchors').all() as Array<{binding_id:string}>) {
+      domains.add(enrolled.binding_id)
+    }
+    for (const member of members) {
+      if (member.health_state === 'discovered') continue
+      const binding = db.prepare('SELECT binding_id FROM agent_identity_binding_members WHERE installation_id=?')
+        .get(member.id) as {binding_id:string} | undefined
+      if (binding) domains.add(binding.binding_id)
+    }
+    for (const item of candidates) {
+      if (!item || !domains.has(item.anchors[0].binding_id) || !managedAdapters.get(item.installation.identity.hostVariant)) continue
+      const needsSeal = !item.requested && (item.changed || item.runState === 'needs_recovery')
+        && ['applied_unverified','needs_recovery'].includes(item.runState)
+      if (!needsSeal && item.anchors.every(anchor => readAnchoredAdmission(db,anchor.binding_id,anchor.artifact_id,
+        anchor.component_key,item.installation.id,anchor.token_hash) === true)) continue
+      const execution = coordinatorRepository.acquireExecutionFence(item.runId)
+      if (!execution) { retry = true; continue }
+      const leases: NonNullable<ReturnType<typeof coordinatorRepository.acquireWriterFence>>[] = []
+      try {
+        for (const domain of [...new Set(item.scopes.map(scope => scope.mutation_domain))].sort()) {
+          const lease = coordinatorRepository.acquireWriterFence(domain)
+          if (!lease) break
+          leases.push(lease)
+        }
+        if (leases.length !== new Set(item.scopes.map(scope => scope.mutation_domain)).size) { retry = true; continue }
+        const files = () => item.scopes.map(scope => {
+          if (fsSync.realpathSync(scope.target_path) !== scope.target_path) throw new Error('Codex target moved')
+          const st = fsSync.lstatSync(scope.target_path,{bigint:true})
+          if (!st.isFile()) throw new Error('Codex target is not a file')
+          return desktopNodeIdentity(st)
+        })
+        const initialFiles = files()
+        const prepared = await coordinator.preview({installation:item.installation,operation:'connect',
+          componentKeys:item.scopes.map(scope=>scope.component_key),desiredCapability:item.capability,
+          frozenActivityGenerationToken:item.token})
+        const source = prepared.executionPlan.liveTrustProofFingerprint
+        if (!source || !prepared.inspection.detected) { retry = true; continue }
+        if (prepared.activityGenerationToken !== item.token || prepared.adapterPlan.mutations.length
+          || prepared.adapterPlan.diagnostics.length
+          || !item.scopes.every(scope => prepared.inspection.components.some(observed =>
+            observed.componentKey === scope.component_key && observed.observedTarget === scope.target_path
+            && observed.observedFragmentHash === scope.owned_fragment_hash))) continue
+        if (await attestCurrentInstallation(item.installation, source) !== source) { retry = true; continue }
+        db.transaction(() => {
+          execution.assertOwned()
+          for (const lease of leases) lease.assertOwned()
+          const current = coordinatorRepository.codexContinuitySnapshot(item.installation.id,item.requested)
+          if (current?.fingerprint !== item.fingerprint || sha256Json(initialFiles) !== sha256Json(files())) { retry = true; return }
+          const observedAt = clock.now().toISOString()
+          for (const anchor of item.anchors) publishAttestedBridgeMember(db,anchor,{
+            installationId:item.installation.id,consentId:item.consentId,surface:item.surface,source,
+            fileIdentity: initialFiles[item.scopes.findIndex(scope=>scope.id===anchor.artifact_id)],
+            intentRevision:item.intentRevision,observedAt,
+          })
+          if (needsSeal) {
+            coordinatorRepository.setRunState(item.runId,'cancelled',observedAt,{
+              code:'superseded_by_codex_continuity',stage:'configuration_readback',
+            })
+            const row = repository.getInstallation(item.installation.id)
+            if (row && ['recovery_source_trust_changed','verification_stale','host_not_authoritatively_present'].includes(row.status_reason ?? '')) {
+              coordinatorRepository.setInstallationReconcileState(row.id,'idle','unverified',observedAt,{
+                expectedDesiredState:'managed',expectedConsentId:item.consentId,expectedRunId:item.runId,
+              })
+            }
+          }
+        }).immediate()
+      } catch (error) {
+        if (!db.open) throw error
+        retry = true
+        // No file effect is authorized here. Leave transient failures retryable
+        // on the next scan. A stale proof must never attest a changed surface.
+      } finally {
+        try { for (const lease of leases.reverse()) lease.release() } finally { execution.release() }
+      }
+    }
+    return retry
+  }
   const runtime = new ProductionAgentIntegrationRuntime({
     coordinator,
     coordinatorRepository,
@@ -510,6 +603,7 @@ export function createProductionAgentIntegrationComposition(
     runtimeContext,
     observeOnly,
     autoRestore: releasePolicy.autoRestore,
+    renewCodexContinuity,
     canManageInstallation: installation => attestCurrentInstallation(installation).then(Boolean),
     sharedArtifactBlockReason,
     canContinueRecovery: async execution => {
@@ -1872,6 +1966,7 @@ export function triggerProductionAgentIntegrationScan(): void {
 }
 
 interface RuntimeDependencies {
+  renewCodexContinuity?(): Promise<boolean>
   coordinator: AgentIntegrationCoordinator
   coordinatorRepository: SqliteCoordinatorRepository
   reconciler: ManagedAgentReconciler
@@ -1887,6 +1982,8 @@ interface RuntimeDependencies {
 
 export class ProductionAgentIntegrationRuntime {
   private maintenance: Promise<void> | null = null
+  private continuityRetry: NodeJS.Timeout | null = null
+  private continuityRetryMs = 1_000
   private maintenanceRequested = false
   private timer: NodeJS.Timeout | null = null
   private scheduledScan: (() => Promise<void>) | null = null
@@ -1988,12 +2085,32 @@ export class ProductionAgentIntegrationRuntime {
   stop(): void {
     if (this.stopped) return
     this.stopped = true
+    this.scheduleContinuityRetry(false)
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
     for (const callback of this.stopCallbacks.splice(0)) callback()
   }
 
+  private scheduleContinuityRetry(needed: boolean): void {
+    if (!needed || this.stopped) {
+      if (this.continuityRetry) clearTimeout(this.continuityRetry)
+      this.continuityRetry = null
+      this.continuityRetryMs = 1_000
+      return
+    }
+    if (this.continuityRetry || !this.scheduledScan) return
+    this.continuityRetry = setTimeout(() => {
+      this.continuityRetry = null
+      void this.triggerScan()
+    }, this.continuityRetryMs)
+    this.continuityRetry.unref?.()
+    this.continuityRetryMs = Math.min(60_000,this.continuityRetryMs * 2)
+  }
+
   private async performMaintenance(): Promise<void> {
+    if (!this.dependencies.observeOnly && this.dependencies.renewCodexContinuity) {
+      this.scheduleContinuityRetry(await this.dependencies.renewCodexContinuity())
+    }
     await this.dependencies.coordinator.recoverNonTerminalRuns({
       // Read-back/finalization remains available through the recovery Adapter,
       // but replaying adapter.apply requires both current production gates.
@@ -2333,7 +2450,12 @@ function releaseGatedScanner(
   verifier: SourceVerifier | null = null,
 ): AgentIntegrationScannerPort {
   return {
+    ...scanner,
     scan: async () => applyRuntimeCompatibilityToReport(await scanner.scan(), { verifier }),
+    ...(scanner.probeRegisteredCodexCli && {
+      probeRegisteredCodexCli: async (executable: string) => applyRuntimeCompatibilityToReport(
+        await scanner.probeRegisteredCodexCli!(executable), { verifier }),
+    }),
     ...(scanner.previewGuidedInstallation ? {
       previewGuidedInstallation: async catalogId => {
         const installation = await scanner.previewGuidedInstallation!(catalogId)
@@ -2348,13 +2470,19 @@ function releaseGatedScanner(
 function createProductionScanner(
   homeDir: string,
   dependencies: DiscoveryDependencies,
+  applicationRoots: readonly string[] = ['/Applications', path.join(homeDir,'Applications')],
 ): AgentIntegrationScannerPort {
   return {
+    codexLauncherParentIdentity,
+    confirmedMissingCodexLauncher,
+    probeRegisteredCodexCli: executable => discoverRegisteredCodexCli(executable, {
+      homeDir, osUserIdentity: safeUserIdentity(), environment: discoveryEnvironment(),
+    }, dependencies),
     scan: () => discoverLocalP0Agents({
       homeDir,
       osUserIdentity: safeUserIdentity(),
       environment: discoveryEnvironment(),
-      applicationRoots: ['/Applications', path.join(homeDir, 'Applications')],
+      applicationRoots,
       operationTimeoutMs: 2_500,
       signatureTimeoutMs: 20_000,
     }, dependencies),
@@ -2364,7 +2492,7 @@ function createProductionScanner(
         homeDir,
         osUserIdentity: safeUserIdentity(),
         environment: discoveryEnvironment(),
-        applicationRoots: ['/Applications', path.join(homeDir, 'Applications')],
+        applicationRoots,
         operationTimeoutMs: 2_500,
         signatureTimeoutMs: 20_000,
       }, dependencies)
@@ -2382,7 +2510,7 @@ function createProductionScanner(
  */
 export function createProductionAgentHostMetadataEvidenceRuntime(
   homeDir = os.homedir(),
-  fixture?: { runtimeContext: AdapterRuntimeContext },
+  fixture?: { runtimeContext: AdapterRuntimeContext; applicationRoots?: readonly string[] },
 ): {
   scan(): Promise<ReturnType<typeof applyAgentReleaseGateToReport>>
   /** Read-only runtime diagnostics; never substitutes for signed release acceptance. */
@@ -2394,7 +2522,7 @@ export function createProductionAgentHostMetadataEvidenceRuntime(
   inspect(row: AgentInstallationRow, db: Database.Database): Promise<AdapterInspection | null>
 } {
   const dependencies = productionDiscoveryDependencies(homeDir)
-  const scanner = createProductionScanner(homeDir, dependencies)
+  const scanner = createProductionScanner(homeDir, dependencies, fixture?.applicationRoots)
   const attest = createProductionLiveTrustAttestor(dependencies)
   // Standard distribution reads do not need Adapter paths. Custom inspection
   // resolves them from the executing candidate, including Electron-as-Node.

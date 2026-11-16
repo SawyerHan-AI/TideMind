@@ -1,3 +1,4 @@
+import { retainCodexSourceRejection } from '@server/db/codex-bridge-continuity.js'
 import { isAutomaticConsentContext, type AutomaticConsentContext, type ConsentOrigin } from './consent'
 import { changeConnectionIntent, connectionIntentDomain, isPausedVerifiedRun, readConnectionIntent, type ConnectionIntent } from './connection-intent'
 import { readSharedConnectionEvidence } from './shared-connection-evidence.js'
@@ -1220,6 +1221,13 @@ export class AgentIntegrationRepository {
     `).all() as LegacyAgentRow[]
   }
 
+  beginDiscoveryObservation(): number {
+    const row = this.db.prepare(`INSERT INTO metadata(key,value) VALUES ('agent.discovery_sequence','1')
+      ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)
+      RETURNING value`).get() as {value:string}
+    return Number(row.value)
+  }
+
   upsertDiscoveredInstallation(input: DiscoverInstallationInput): AgentInstallationRow {
     assertCapability(input.supportedCapability ?? 0)
     const runtimeRealm = input.runtimeRealm ?? 'local_macos'
@@ -1230,6 +1238,9 @@ export class AgentIntegrationRepository {
       const incomingMetadata = safeJsonObject(input.metadata)
       const priorInstallation = previous ?? previousById
       const priorMetadata = priorInstallation ? safeJsonObject(priorInstallation.metadata_json) : {}
+      if (input.hostVariant === 'codex-cli' && priorInstallation && typeof incomingMetadata.detectionSequence === 'number'
+        && typeof priorMetadata.detectionSequence === 'number'
+        && incomingMetadata.detectionSequence <= priorMetadata.detectionSequence) return priorInstallation
       const priorAliases = Array.isArray(priorMetadata.installKeyAliases)
         ? priorMetadata.installKeyAliases.filter((value): value is string => typeof value === 'string')
         : []
@@ -1364,6 +1375,8 @@ export class AgentIntegrationRepository {
         && (persistedConsentSurfaceFingerprint(priorInstallation)
           !== persistedConsentSurfaceFingerprint(persisted)
           || !activeConsentCoversExecutable(this.db, persisted))
+      if (persisted.family === 'codex' && ['source_not_official','release_distribution_not_accepted','release_mode_detect_only','release_entry_missing']
+        .includes(persistedManagementEligibility(persisted)?.reason ?? '')) retainCodexSourceRejection(this.db,persisted.id)
       const installationSurfaceChanged = installKeyChanged || projectionSurfaceChanged
       // Only a change of the approval scope (identity, source channel, target paths)
       // revokes consent; a generation change is re-checked under the same approval.
@@ -1372,6 +1385,15 @@ export class AgentIntegrationRepository {
         && priorInstallation.detected_version !== null
         && priorInstallation.detected_version !== detectedVersion
       if ((versionChanged || installationSurfaceChanged) && persisted.desired_state !== 'removed') {
+        if (persisted.family === 'codex' && this.db.prepare(
+          'SELECT 1 FROM agent_identity_binding_members WHERE installation_id=?',
+        ).get(persisted.id)) {
+          this.db.prepare(`INSERT INTO codex_bridge_invalidations(installation_id,last_run_rowid)
+            SELECT ?,COALESCE(MAX(rowid),0) FROM reconcile_runs WHERE installation_id=?
+            ON CONFLICT(installation_id) DO UPDATE SET last_run_rowid=MAX(last_run_rowid,excluded.last_run_rowid)`)
+            .run(persisted.id,persisted.id)
+          this.db.prepare('DELETE FROM codex_bridge_member_proofs WHERE installation_id=?').run(persisted.id)
+        }
         const nonVersionInstallationSurfaceChanged = installKeyChanged || nonVersionProjectionSurfaceChanged
         const invalidationReason = nonVersionInstallationSurfaceChanged
           ? 'host_installation_surface_changed'
@@ -1846,10 +1868,16 @@ export class AgentIntegrationRepository {
     }).immediate()
   }
 
-  markInstallationIdentityConflict(installationId: string, detectedAt: string, reason: string): void {
+  markInstallationIdentityConflict(installationId: string, detectedAt: string, reason: string, sequence?: number): void {
     this.db.transaction(() => {
       const installation = this.getInstallation(installationId)
       if (!installation) return
+      if (installation.host_variant === 'codex-cli' && sequence !== undefined) {
+        const metadata = safeJsonObject(installation.metadata_json)
+        if (typeof metadata.detectionSequence === 'number' && sequence <= metadata.detectionSequence) return
+        this.db.prepare('UPDATE agent_installations SET metadata_json=? WHERE id=?')
+          .run(JSON.stringify({...metadata,detectionSequence:sequence,consecutiveDetectionMisses:0}),installationId)
+      }
       this.db.prepare(`
         UPDATE verification_results
         SET invalidated_at = COALESCE(invalidated_at, ?),
@@ -2270,14 +2298,44 @@ export class AgentIntegrationRepository {
    * probe. Keep explicit rejection as well as approval so a newer rejection
    * still supersedes older shared trust. Neither observation authorizes writes.
    */
+  markRegisteredCodexSourceRejected(installationId: string, executable: string, reason: ManagementEligibilityReason,
+    observedAt: string, sequence: number): void {
+    this.db.transaction(() => {
+      const member = this.getInstallation(installationId)
+      if (!member || member.host_variant !== 'codex-cli' || member.executable_path !== executable
+        || member.desired_state === 'removed' || member.tombstoned_at) return
+      const metadata = safeJsonObject(member.metadata_json)
+      if (typeof metadata.detectionSequence === 'number' && sequence <= metadata.detectionSequence) return
+      metadata.managementEligibility = {...safeJsonObject(metadata.managementEligibility),
+        eligible:false,reason,schemaVersion:CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,proofLimitBytes:MAX_CLI_EXECUTABLE_PROOF_BYTES}
+      metadata.detectionSequence = sequence
+      metadata.consecutiveDetectionMisses = 0
+      this.db.prepare(`UPDATE agent_installations SET metadata_json=?,health_state='inaccessible',
+        reconcile_state='needs_recovery',status_reason=?,verified_capability=0,updated_at=? WHERE id=?`)
+        .run(JSON.stringify(metadata),reason,observedAt,installationId)
+      retainCodexSourceRejection(this.db,installationId)
+      this.db.prepare('DELETE FROM codex_bridge_member_proofs WHERE installation_id=?').run(installationId)
+      this.recordEvent({installationId,kind:'host_probe_uncertain',severity:'warning',
+        dedupeKey:`${installationId}:registered-source-rejected:${reason}`,payload:{reason},createdAt:observedAt})
+    }).immediate()
+  }
+
   markInstallationProbeUncertain(
     installationId: string,
     scannedAt: string,
     reasons: readonly string[],
+    sequence?: number,
   ): void {
     this.db.transaction(() => {
       const installation = this.getInstallation(installationId)
       if (!installation || installation.desired_state === 'removed') return
+      const metadata = safeJsonObject(installation.metadata_json)
+      if (installation.host_variant === 'codex-cli') {
+        if (sequence !== undefined) {
+          if (typeof metadata.detectionSequence === 'number' && sequence <= metadata.detectionSequence) return
+          metadata.detectionSequence = sequence
+        } else if (typeof metadata.lastDetectionObservationAt === 'string' && scannedAt <= metadata.lastDetectionObservationAt) return
+      }
       const probeUnavailable = reasons.length > 0 && reasons.every(reason => reason === 'probe_inaccessible')
       const nativeTrust = probeUnavailable && ['codex-cli', 'codex-desktop'].includes(installation.host_variant)
         ? this.db.prepare(`
@@ -2332,14 +2390,16 @@ export class AgentIntegrationRepository {
         SET verified_capability = 0,
             verification_summary = CASE WHEN verification_summary = 'unverified' THEN 'unverified' ELSE 'stale' END,
             reconcile_state = CASE WHEN desired_state IN ('managed','disabled') THEN 'paused' ELSE reconcile_state END,
-            health_state = 'inaccessible',
+            health_state = 'inaccessible', metadata_json = ?,
             status_reason = CASE
               WHEN status_reason IN ('conflict','circuit_breaker','user_disabled') THEN status_reason
               ELSE 'verification_stale'
             END,
             updated_at = ?
         WHERE id = ?
-      `).run(scannedAt, installationId)
+      `).run(installation.host_variant === 'codex-cli'
+        ? JSON.stringify({ ...metadata, consecutiveDetectionMisses: 0, lastDetectionObservationAt: scannedAt })
+        : installation.metadata_json, scannedAt, installationId)
       this.recordEvent({
         installationId,
         kind: 'host_probe_uncertain',
@@ -2351,11 +2411,17 @@ export class AgentIntegrationRepository {
     }).immediate()
   }
 
-  markInstallationNotDetected(installationId: string, scannedAt: string): void {
+  markInstallationNotDetected(installationId: string, scannedAt: string, sequence?: number): void {
     this.db.transaction(() => {
       const installation = this.getInstallation(installationId)
       if (!installation) return
       const metadata = safeJsonObject(installation.metadata_json)
+      if (installation.host_variant === 'codex-cli') {
+        if (sequence !== undefined) {
+          if (typeof metadata.detectionSequence === 'number' && sequence <= metadata.detectionSequence) return
+          metadata.detectionSequence = sequence
+        } else if (typeof metadata.lastDetectionObservationAt === 'string' && scannedAt <= metadata.lastDetectionObservationAt) return
+      }
       const previousMisses = typeof metadata.consecutiveDetectionMisses === 'number'
         ? metadata.consecutiveDetectionMisses
         : 0
@@ -2386,7 +2452,8 @@ export class AgentIntegrationRepository {
       `).run(
         confirmedUninstalled ? 'absent' : 'inaccessible',
         confirmedUninstalled ? 1 : 0,
-        JSON.stringify({ ...metadata, consecutiveDetectionMisses }),
+        JSON.stringify({ ...metadata, consecutiveDetectionMisses,
+          ...(installation.host_variant === 'codex-cli' ? { lastDetectionObservationAt: scannedAt } : {}) }),
         scannedAt,
         installationId,
       )

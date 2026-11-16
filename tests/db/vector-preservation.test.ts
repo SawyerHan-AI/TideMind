@@ -1,3 +1,4 @@
+import { CURRENT_SCHEMA_VERSION } from '../../src/db/schema-compatibility.js';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 import { describe, expect, it } from 'vitest';
@@ -82,7 +83,7 @@ describe('legacy raw vectors survive replaceable index changes',()=>{
    ensureSchema(db);ensureSchema(db);
    const restored=new Database(oldBackup);
    try { expect(assertSupportedDatabaseSchema(restored,47)).toBe(47); } finally { restored.close(); }
-   expect(db.prepare("SELECT value FROM metadata WHERE key='schema_version'").get()).toEqual({value:'48'});
+   expect(db.prepare("SELECT value FROM metadata WHERE key='schema_version'").get()).toEqual({value:String(CURRENT_SCHEMA_VERSION)});
    expect(db.prepare('SELECT content FROM nodes WHERE id=?').get('fixture')).toEqual({content:'synthetic'});
    expect(db.prepare("SELECT name FROM sqlite_master WHERE name='vector_upload_queue'").get()).toBeDefined();
   }finally{db.close();}

@@ -1127,7 +1127,8 @@ async function inspectNpmPackageMetadata(
 ): Promise<VersionCommandResult> {
   try {
     const metadataStat = await fs.lstat(npm.packageJson)
-    if (metadataStat?.kind !== 'file') return unavailable('package_metadata_not_regular_file')
+    if (!metadataStat) return unavailable('package_metadata_unavailable')
+    if (metadataStat.kind !== 'file') return unavailable('package_metadata_not_regular_file')
     const metadataRealpath = path.resolve(await fs.realpath(npm.packageJson))
     if (metadataRealpath !== npm.packageJson) return unavailable('package_metadata_not_canonical')
     const manifestBefore = await fs.readStableFileSnapshot(npm.packageJson, MAX_NPM_MANIFEST_BYTES)

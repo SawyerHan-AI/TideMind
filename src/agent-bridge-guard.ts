@@ -1,3 +1,4 @@
+import { latestPhysicalBridgeWrite, readAnchoredAdmission, currentBridgeFileIdentity, codexSourceBlockApplies } from './db/codex-bridge-continuity.js';
 import { getSharedAgentConsumers, type SharedAgentConsumers } from './db/agent-identity-binding.js';
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
@@ -26,6 +27,8 @@ export type BridgeRejectionReason =
   | 'bridge_stopped'
   | 'source_rejected'
   | 'guard_unavailable'
+  | 'bridge_revalidation_pending'
+  | 'managed_fragment_changed'
   | 'activity_generation_mismatch';
 
 export type BridgeAdmission =
@@ -120,6 +123,15 @@ export function evaluateBridgeAdmission(
   return { allowed: true };
 }
 
+export function describeBridgeRejection(reason: BridgeRejectionReason): string {
+  switch (reason) {
+    case 'bridge_revalidation_pending': return 'Tide Mind 正在重新核验当前 Codex 配置和来源，请稍后重试。';
+    case 'managed_fragment_changed': return '宿主配置文件自上次核验后发生变化，请等待 Tide Mind 重新读取配置。';
+    case 'source_rejected': return 'Tide Mind 无法信任可读取此共享配置的宿主来源，请检查 Agent 对接里的来源信息。';
+    default: return BRIDGE_REJECTED_MESSAGE;
+  }
+}
+
 export const BRIDGE_REJECTED_MESSAGE =
   'Tide Mind 已停止为此 Agent 提供记忆（连接已断开、桥接已停止或宿主来源未通过确认）。请在宿主中移除 Tide Mind 组件，或在 Tide Mind 中重新连接。';
 
@@ -130,11 +142,26 @@ function evaluateSharedBridgeAdmission(db: Database.Database, shared: SharedAgen
   if (!canonical || canonical.archived !== 0) return { allowed: false, reason: 'installation_removed' };
   const active = shared.consumers.filter(row => row.desired_state !== 'removed' && !row.tombstoned_at);
   if (!active.length) return { allowed: false, reason: 'installation_removed' };
+  // These consumers can read the same physical configuration. The caller's
+  // shared token cannot distinguish a rejected host from an authorized peer.
+  const stillVisible = db.prepare(`SELECT 1 FROM installation_components
+    WHERE installation_id = ? AND component_key = ? AND visibility_state = 'shared_visible' LIMIT 1`);
+  const rejected = shared.consumers.some(member => {
+    const row = readGuardRow(db, member.agent_id!);
+    if (!row?.eligibility_reason || !DEFINITIVE_SOURCE_REJECTIONS.has(row.eligibility_reason)) return false;
+    return (member.desired_state !== 'removed' && !member.tombstoned_at)
+      || Boolean(stillVisible.get(member.id, componentKey));
+  });
+  if (rejected) {
+    return { allowed: false, reason: 'source_rejected' };
+  }
   const hash = createHash('sha256').update(JSON.stringify(token)).digest('hex');
+  if (codexSourceBlockApplies(db,shared.bindingId,componentKey,hash)) return {allowed:false,reason:'source_rejected'};
+  let localReason: BridgeRejectionReason = 'activity_generation_mismatch';
   for (const member of active) {
     const row = readGuardRow(db, member.agent_id!);
     if (!row || row.bridge_state === 'stopped' || (row.eligibility_reason && DEFINITIVE_SOURCE_REJECTIONS.has(row.eligibility_reason))) continue;
-    const artifacts = db.prepare(`SELECT a.id, a.owned_fragment_hash FROM artifact_consumers c
+    const artifacts = db.prepare(`SELECT a.id, a.owned_fragment_hash, a.state FROM artifact_consumers c
       JOIN managed_artifacts a ON a.id=c.artifact_id
       JOIN installation_components component ON component.installation_id=c.installation_id
         AND component.component_key=c.component_key AND component.artifact_id=a.id
@@ -144,23 +171,44 @@ function evaluateSharedBridgeAdmission(db: Database.Database, shared: SharedAgen
         AND component.tombstoned_at IS NULL AND consent.status='active'
         AND component.consent_envelope_id=consent.id
         AND consent.id=(SELECT consent_envelope_id FROM agent_installations WHERE id=c.installation_id)
-        AND a.state IN ('healthy','paused')`).all(member.id, componentKey) as Array<{id:string;owned_fragment_hash:string|null}>;
+        AND a.state IN ('healthy','paused','needs_recovery')`).all(member.id, componentKey) as Array<{id:string;owned_fragment_hash:string|null;state:string}>;
     for (const artifact of artifacts) {
+      const anchored = readAnchoredAdmission(db, shared.bindingId, artifact.id, componentKey, member.id, hash);
+      if (anchored === true) return { allowed: true };
+      if (anchored === false) {
+        const current = latestPhysicalBridgeWrite(db,artifact.id);
+        if (current?.token_hash === hash && current.token === token) {
+          const proof = db.prepare(`SELECT a.target_path,p.file_identity FROM codex_bridge_anchors a
+            JOIN codex_bridge_member_proofs p USING(binding_id,artifact_id,component_key)
+            WHERE a.binding_id=? AND a.artifact_id=? AND a.component_key=? AND p.installation_id=?`)
+            .get(shared.bindingId,artifact.id,componentKey,member.id) as {target_path:string;file_identity:string} | undefined;
+          localReason = proof && proof.file_identity !== currentBridgeFileIdentity(proof.target_path)
+            ? 'managed_fragment_changed' : 'bridge_revalidation_pending';
+        }
+        continue;
+      }
+      if (artifact.state === 'needs_recovery') continue;
+      const memberHealth = db.prepare('SELECT health_state FROM agent_installations WHERE id=?').get(member.id) as {health_state:string};
+      if (memberHealth.health_state !== 'discovered' || row.eligibility_reason === 'source_verification_pending') continue;
+      const observedChange = db.prepare('SELECT last_run_rowid AS cutoff FROM codex_bridge_invalidations WHERE installation_id=?')
+        .get(member.id) as {cutoff:number} | undefined;
+      if (observedChange && !db.prepare(`SELECT 1 FROM reconcile_runs WHERE installation_id=? AND rowid>?
+        AND operation_type IN ('connect','repair') AND state IN ('applied_unverified','verified','committed')
+        AND json_extract(prepared_plan_json,'$.activityGenerationToken')=?
+        AND EXISTS(SELECT 1 FROM json_each(prepared_plan_json,'$.componentKeys') WHERE value=?)`)
+        .get(member.id,observedChange.cutoff,token,componentKey)) {
+        if (latestPhysicalBridgeWrite(db,artifact.id)?.token_hash === hash) localReason = 'bridge_revalidation_pending';
+        continue;
+      }
       // Read the latest committed physical write across ALL consumers. Filtering
       // by member first would incorrectly resurrect an older shared token.
-      const carrier = db.prepare(`SELECT p.after_hash, r.installation_id, r.operation_type, r.state AS run_state, r.failure_code,
-          json_extract(r.prepared_plan_json,'$.activityGenerationToken') AS token,
-          json_extract(r.prepared_plan_json,'$.executionPlan.activityGenerationTokenHash') AS hash
-        FROM projection_mutations p JOIN reconcile_runs r ON r.id=p.run_id
-        WHERE p.artifact_id=? AND p.state='committed' AND p.idempotency_strategy != 'consumer_detach_only'
-        ORDER BY p.committed_at DESC, p.rowid DESC LIMIT 1`).get(artifact.id) as
-        {after_hash:string|null;installation_id:string;operation_type:string;run_state:string;failure_code:string|null;token:string;hash:string}|undefined;
+      const carrier = latestPhysicalBridgeWrite(db, artifact.id);
       // Retiring a proved run need not remove its shared physical configuration.
       // Admission still requires a current consumer/consent and this latest write.
       if (carrier && carrier.operation_type !== 'disconnect' && (['applied_unverified','verified','committed'].includes(carrier.run_state) || (carrier.run_state === 'cancelled' && ['superseded_by_shared_disconnect','superseded_by_same_generation_connect','superseded_by_same_generation_repair','superseded_by_confirmed_generation','superseded_by_disconnect'].includes(carrier.failure_code ?? ''))) && carrier.after_hash !== null
-        && carrier.after_hash === artifact.owned_fragment_hash && carrier.token === token && carrier.hash === hash
+        && carrier.after_hash === artifact.owned_fragment_hash && carrier.token === token && carrier.token_hash === hash
         && shared.consumers.some(c => c.id === carrier.installation_id)) return { allowed: true };
     }
   }
-  return { allowed: false, reason: 'activity_generation_mismatch' };
+  return { allowed: false, reason: localReason };
 }

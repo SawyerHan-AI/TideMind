@@ -122,7 +122,7 @@ describe('core/client local Agent schema parity', () => {
     expect(coreSource).toContain('${AGENT_INTEGRATION_SCHEMA_SQL}');
     expect(coreSource).toContain('version: 34');
     expect(coreSource).toContain('version: 47');
-    expect(coreSource.match(/ensureAgentIntegrationSchema\(db\)/g)).toHaveLength(4);
+    expect(coreSource).toMatch(/version: 49,[\s\S]*?up: \(db\) => \{\s*ensureAgentIntegrationSchema\(db\);/);
     expect(clientSource.match(/ensureAgentIntegrationSchema\(newDb\)/g)).toHaveLength(1);
     expect(clientSource.match(/ensureAgentIntegrationSchema\(tmpDb\)/g)).toHaveLength(1);
   });
@@ -138,8 +138,8 @@ describe('activity export schema compatibility', () => {
     return db;
   }
 
-  it.each([34, 35, 45])('exports the unchanged ledger shape from supported schema %i', version => {
-    const db = fixture(version, version === 45 ? 'stable-0.2.94' : undefined);
+  it.each([34, 35, 45, 46, 47, 48, 49])('exports the unchanged ledger shape from supported schema %i', version => {
+    const db = fixture(version, version >= 45 ? 'stable-0.2.94' : undefined);
     try {
       expect(inspectAgentHostActivityEvidenceV34Schema(db).schemaVersion).toBe(version);
     } finally { db.close(); }

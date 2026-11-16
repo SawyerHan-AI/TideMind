@@ -138,6 +138,9 @@ const STATUS_REASONS = new Set<StatusReason>([
 
 export interface AgentIntegrationScannerPort {
   scan(): Promise<LocalDiscoveryReport>
+  probeRegisteredCodexCli?(executable: string): Promise<LocalDiscoveryReport>
+  codexLauncherParentIdentity?(executable: string): Promise<string | null>
+  confirmedMissingCodexLauncher?(executable: string, previousParent: unknown): Promise<boolean>
   /** Explicit user-started probe; passive scan must never infer Cowork from Claude.app. */
   previewGuidedInstallation?(catalogId: 'claude-cowork-local'): Promise<DiscoveredInstallation | null>
 }
@@ -359,6 +362,7 @@ interface CachedGuidedRemovalAction {
  * IPC only ever sees redacted summaries plus an opaque hash.
  */
 export class AgentIntegrationService {
+  private knownCliProbeCursor = 0
   private readonly plans = new Map<string, CachedPlanBundle>()
   private readonly circuitResetPlans = new Map<string, CachedCircuitResetPlan>()
   private readonly customPreflights = new Map<string, CachedCustomPreflight>()
@@ -2276,12 +2280,54 @@ export class AgentIntegrationService {
     // Keep scanning disconnected-but-still-present Installations so a later
     // authoritative uninstall can move them into connection history.
     const before = this.dependencies.repository.listInstallations({ includeRemoved: true })
-      .filter(row => !isHistoricalInstallationRow(row))
+      .filter(row => !isHistoricalInstallationRow(row)
+        || (row.host_variant === 'codex-cli' && ['managed','disabled'].includes(row.desired_state) && !row.tombstoned_at))
+    const observation = this.dependencies.repository.beginDiscoveryObservation()
     const report = await this.dependencies.scanner.scan()
+    const registeredCli = before.filter(row => row.host_variant === 'codex-cli'
+      && (row.desired_state === 'managed' || row.desired_state === 'disabled') && !row.tombstoned_at && row.executable_path)
+    const scanner = this.dependencies.scanner
+    // The install key denotes a config domain. A PATH shadow can share it without
+    // being the executable to which consent was granted.
+    const installations = report.installations.filter(found => !scanner.probeRegisteredCodexCli
+      || !registeredCli.some(row => found.identity.installKey === row.install_key && found.executablePath !== row.executable_path))
+    const missingCli = registeredCli.filter(row => !installations.some(found =>
+      found.identity.installKey === row.install_key && found.executablePath === row.executable_path))
+    const uncertainCodex = new Set<string>()
+    const rejectedCodex = new Set<string>()
+    if (missingCli.length && scanner.probeRegisteredCodexCli) {
+      const paths = [...new Set(missingCli.map(row => row.executable_path!))]
+      const start = this.knownCliProbeCursor % paths.length
+      const batch = [...paths.slice(start),...paths.slice(0,start)].slice(0,2)
+      this.knownCliProbeCursor = (start + batch.length) % paths.length
+      const reports = await Promise.allSettled(batch.map(executable => scanner.probeRegisteredCodexCli!(executable)))
+      for (const row of missingCli) {
+        const executable = row.executable_path!
+        const result = reports[batch.indexOf(executable)]
+        const exact = result?.status === 'fulfilled' ? result.value : null
+        const found = exact?.installations.find(candidate => candidate.catalogId === 'codex-cli'
+          && candidate.identity.installKey === row.install_key && candidate.executablePath === executable
+          && candidate.identity.runtimeRealm === row.runtime_realm && candidate.configRoot === row.config_root
+          && candidate.identity.osUserIdentity === row.os_user_identity)
+        const rejected = exact?.installations.find(candidate => candidate.catalogId === 'codex-cli'
+          && candidate.identity.installKey === row.install_key && candidate.identity.runtimeRealm === row.runtime_realm
+          && candidate.configRoot === row.config_root && candidate.identity.osUserIdentity === row.os_user_identity
+          && candidate.evidence.some(e=>e.kind==='realpath' && e.source===executable && e.value===candidate.executablePath)
+          && isDefinitiveSourceRejection(candidate.managementEligibility?.reason))
+        if (rejected?.managementEligibility?.reason) {
+          this.dependencies.repository.markRegisteredCodexSourceRejected(row.id,executable,
+            rejected.managementEligibility.reason,this.now().toISOString(),observation)
+          rejectedCodex.add(row.id)
+        } else if (found) installations.push(found)
+        else if (!exact || !await scanner.confirmedMissingCodexLauncher?.(
+          executable, parseStoredMetadata(row.metadata_json).codexLauncherParentIdentity,
+        )) uncertainCodex.add(row.id)
+      }
+    }
     const detectedAt = this.now().toISOString()
     const seenInstallationIds = new Set<string>()
     let newlyDiscoveredCount = 0
-    for (const installation of report.installations) {
+    for (const installation of installations) {
       const identityMatch = matchInstallationIdentity(
         installation.identity,
         this.dependencies.repository.listInstallationIdentityRecords(),
@@ -2293,6 +2339,7 @@ export class AgentIntegrationService {
             candidate.installationId,
             detectedAt,
             identityMatch.reason,
+            observation,
           )
         }
         this.dependencies.repository.recordEvent({
@@ -2311,9 +2358,19 @@ export class AgentIntegrationService {
         id: identityMatch.kind === 'matched' ? identityMatch.record.installationId : this.installationId(),
         lastDetectedAt: detectedAt,
       })
+      if (installation.catalogId === 'codex-cli') {
+        input.metadata = {...(typeof input.metadata === 'object' ? input.metadata : {}), detectionSequence:observation}
+      }
       const priorMatchedRow = identityMatch.kind === 'matched' && identityMatch.reason === 'install_key'
         ? this.dependencies.repository.getInstallation(identityMatch.record.installationId)
         : undefined
+      if (installation.catalogId === 'codex-cli' && installation.executablePath
+        && this.dependencies.scanner.codexLauncherParentIdentity) {
+        input.metadata = {
+          ...(typeof input.metadata === 'object' && input.metadata !== null ? input.metadata : {}),
+          codexLauncherParentIdentity: await this.dependencies.scanner.codexLauncherParentIdentity(installation.executablePath),
+        }
+      }
       const persisted = this.dependencies.repository.upsertDiscoveredInstallation({
         ...input,
         agentId: identityMatch.kind === 'new' ? this.agentId() : null,
@@ -2373,7 +2430,7 @@ export class AgentIntegrationService {
       }
     }
     for (const existing of before) {
-      if (seenInstallationIds.has(existing.id)) continue
+      if (seenInstallationIds.has(existing.id) || rejectedCodex.has(existing.id)) continue
       if (existing.family === 'custom-local-agent'
         && isCustomInstallationManagementContractValid(existing, this.dependencies.repository, this.releaseEntries)
         && await this.dependencies.probeCustomInstallation?.(existing)) {
@@ -2392,11 +2449,11 @@ export class AgentIntegrationService {
         seenInstallationIds.add(existing.id)
         continue
       }
-      const uncertainty = uncertaintyByCatalog.get(existing.host_variant as CatalogId)
+      const uncertainty = uncertainCodex.has(existing.id) ? ['probe_inaccessible'] : uncertaintyByCatalog.get(existing.host_variant as CatalogId)
       if (uncertainty) {
-        this.dependencies.repository.markInstallationProbeUncertain(existing.id, detectedAt, uncertainty)
+        this.dependencies.repository.markInstallationProbeUncertain(existing.id, detectedAt, uncertainty, observation)
       } else {
-        this.dependencies.repository.markInstallationNotDetected(existing.id, detectedAt)
+        this.dependencies.repository.markInstallationNotDetected(existing.id, detectedAt, observation)
       }
     }
     this.scanProgress = { ...this.scanProgress, phase: 'maintenance' }
@@ -2412,7 +2469,7 @@ export class AgentIntegrationService {
     this.scanProgress = { ...this.scanProgress, phase: 'idle', completedAt }
     return {
       snapshot: this.snapshot(),
-      detectedCount: report.installations.length,
+      detectedCount: installations.length,
       newlyDiscoveredCount,
       unresolved: report.unresolved.map(item => ({
         hostVariants: [...item.catalogIds],

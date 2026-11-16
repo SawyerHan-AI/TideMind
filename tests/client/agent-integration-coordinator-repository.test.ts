@@ -939,6 +939,35 @@ describe('SqliteCoordinatorRepository', () => {
       .get(`run-${mode}`)).toEqual({ state: 'needs_recovery', failure_code: 'journal_decode_failed' })
   })
 
+  it('does not let recovery of an older committed writer downgrade a newer physical readback', () => {
+    const { db, repository, bridge } = setup()
+    try {
+      discover(repository, 'old-host')
+      discover(repository, 'new-host')
+      prepare(bridge, 'old-host', 'old-writer')
+      markMutationsCommitted(db, 'old-writer')
+      markApplied(bridge, 'old-writer')
+      const mutation = db.prepare("SELECT * FROM projection_mutations WHERE run_id='old-writer'").get() as Record<string, string>
+      const run = db.prepare("SELECT * FROM reconcile_runs WHERE id='old-writer'").get() as Record<string, string>
+      const insert = (table: string, values: Record<string, string>) => {
+        db.prepare(`INSERT INTO ${table} (${Object.keys(values).join(',')}) VALUES (${Object.keys(values).map(() => '?').join(',')})`)
+          .run(...Object.values(values))
+      }
+      db.prepare('UPDATE projection_mutations SET committed_at=? WHERE id=?').run(T0, mutation.id)
+      const component = db.prepare('SELECT * FROM installation_components WHERE installation_id=? AND component_key=?').get('old-host', mutation.component_key) as Record<string,string>
+      insert('installation_components', {...component, installation_id:'new-host', consent_envelope_id:'consent-new-host'})
+      insert('reconcile_runs', {...run,id:'new-writer',installation_id:'new-host',consent_envelope_id:'consent-new-host'})
+      insert('projection_mutations', {...mutation,id:'new-mutation',operation_id:'replacement',
+        run_id:'new-writer',installation_id:'new-host',after_hash:'replacement',committed_at:T0})
+      db.prepare("UPDATE managed_artifacts SET owned_fragment_hash='replacement', state='healthy' WHERE id=?")
+        .run(mutation.artifact_id)
+      bridge.setRunState('old-writer', 'needs_recovery', T0, {code:'recovery_source_trust_changed',stage:'startup_recovery'})
+      expect(db.prepare('SELECT state FROM managed_artifacts WHERE id=?').get(mutation.artifact_id)).toEqual({state:'healthy'})
+      bridge.setRunState('new-writer', 'needs_recovery', T0, {code:'recovery_source_trust_changed',stage:'startup_recovery'})
+      expect(db.prepare('SELECT state FROM managed_artifacts WHERE id=?').get(mutation.artifact_id)).toEqual({state:'needs_recovery'})
+    } finally { db.close() }
+  })
+
   it('requires applied-unverified then verified before a run can commit', () => {
     const { db, repository, bridge } = setup()
     discover(repository, 'i1')

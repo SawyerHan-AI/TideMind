@@ -1,3 +1,6 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import Database from 'better-sqlite3'
 import { beforeEach, afterEach, describe, expect, it } from 'vitest'
 import { AgentIntegrationRepository } from '../client/electron/agent-integration/repository'
@@ -6,6 +9,7 @@ import { agentIdentityDomainKey } from '../src/db/agent-identity-binding.js'
 import { evaluateBridgeAdmission } from '../src/agent-bridge-guard.js'
 import { recordHostActivityEvidence } from '../src/db/agent-host-activity.js'
 import { touchAgent } from '../src/db/agents.js'
+import { captureBridgeAnchor, currentBridgeFileIdentity, currentCodexMemberSurface, publishAttestedBridgeMember, retainCodexSourceRejection } from '../src/db/codex-bridge-continuity'
 import { seedLifecycle } from './fixtures/seed-managed-lifecycle'
 
 describe('shared identity runtime carrier',()=>{
@@ -47,6 +51,63 @@ describe('shared identity runtime carrier',()=>{
   expect(repository.getInstallation('installation_cli')?.desired_state).toBe('managed')
  })
  const request={agentId:'cli',activityGenerationToken:'generation_cli',componentKey:'lifecycle' as const}
+ it('keeps an independently attested Desktop admission across CLI loss and rejects stale readbacks',()=>{
+  db.exec(`UPDATE managed_artifacts SET desired_fragment_hash=owned_fragment_hash WHERE id='artifact_cli';
+    UPDATE projection_mutations SET post_effect_fingerprint=after_hash,compensation_precondition=after_hash,
+      apply_receipt_json=json_object('fingerprint',after_hash),journal_version=5 WHERE id='mutation';`)
+  const sandbox=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'bridge-readback-')))
+  try {
+  const target=path.join(sandbox,'hooks.json')
+  fs.writeFileSync(target,'{}')
+  db.prepare("UPDATE managed_artifacts SET target_path=? WHERE id='artifact_cli'").run(target)
+  db.prepare("UPDATE projection_mutations SET target=? WHERE id='mutation'").run(target)
+  const anchor = captureBridgeAnchor(db,'binding','artifact_cli','lifecycle')!
+  expect(anchor?.mutation_id).toBe('mutation')
+  const desktop = {installationId:'installation_desktop',consentId:'consent_desktop',
+    surface:currentCodexMemberSurface(db,'installation_desktop')!,source:'1'.repeat(64),fileIdentity:currentBridgeFileIdentity(target)!,intentRevision:0,observedAt:'now'}
+  const publish = db.transaction(() => publishAttestedBridgeMember(db,anchor,desktop))
+  publish.immediate()
+  const repo = new AgentIntegrationRepository(db)
+  repo.pauseConnection('binding:binding','2026-11-16T01:00:00Z')
+  expect(evaluateBridgeAdmission(db,request)).toEqual({allowed:true})
+  const resumed = repo.resumeConnection('binding:binding','2026-11-16T01:01:00Z')
+  desktop.intentRevision = resumed.revision
+  expect(evaluateBridgeAdmission(db,request)).toEqual({allowed:true})
+  db.exec("UPDATE agent_installations SET health_state='absent' WHERE id='installation_cli'; UPDATE reconcile_runs SET state='needs_recovery' WHERE id='run_cli'")
+  expect(evaluateBridgeAdmission(db,request)).toEqual({allowed:true})
+  db.exec(`INSERT INTO projection_mutations(id,run_id,operation_id,installation_id,component_key,artifact_id,
+    mutation_domain,target,idempotency_strategy,readback_strategy,state,created_at,updated_at)
+    SELECT 'uncertain',run_id,'other-selector',installation_id,component_key,'artifact_desktop',
+      (SELECT mutation_domain FROM managed_artifacts WHERE id='artifact_cli'),target,
+      idempotency_strategy,readback_strategy,'effect_started','now','now' FROM projection_mutations WHERE id='mutation'`)
+  expect(evaluateBridgeAdmission(db,request).allowed).toBe(false)
+  db.exec("DELETE FROM projection_mutations WHERE id='uncertain'")
+  db.exec("UPDATE agent_installations SET detected_version='next' WHERE id='installation_desktop'")
+  expect(evaluateBridgeAdmission(db,request).allowed).toBe(false)
+  expect(()=>publish.immediate()).toThrow('Bridge observation changed')
+  desktop.surface=currentCodexMemberSurface(db,'installation_desktop')!
+  publish.immediate()
+  expect(evaluateBridgeAdmission(db,request)).toEqual({allowed:true})
+  db.exec("UPDATE agent_consents SET status='revoked' WHERE id='consent_desktop'")
+  expect(evaluateBridgeAdmission(db,request).allowed).toBe(false)
+  expect(()=>publish.immediate()).toThrow()
+  } finally { fs.rmSync(sandbox,{recursive:true,force:true}) }
+ })
+ it('rejects the shared token when one reachable host has a definitive source rejection',()=>{
+  expect(evaluateBridgeAdmission(db,request)).toEqual({allowed:true})
+  db.prepare("UPDATE agent_installations SET metadata_json=? WHERE id='installation_desktop'")
+    .run(JSON.stringify({managementEligibility:{reason:'source_not_official'}}))
+  expect(evaluateBridgeAdmission(db,request)).toEqual({allowed:false,reason:'source_rejected'})
+ })
+ it('retains a definitive shared source rejection across pending scans and late reuse of the same token',()=>{
+  expect(evaluateBridgeAdmission(db,request)).toEqual({allowed:true})
+  retainCodexSourceRejection(db,'installation_cli')
+  for (const reason of ['source_verification_pending','source_confirmation_required',null]) {
+    db.prepare("UPDATE agent_installations SET metadata_json=? WHERE id='installation_cli'")
+      .run(JSON.stringify({managementEligibility:{reason}}))
+    expect(evaluateBridgeAdmission(db,request)).toEqual({allowed:false,reason:'source_rejected'})
+  }
+ })
  it('keeps the carrier alive after its original owner disconnects but stops after the last consumer',()=>{
   expect(evaluateBridgeAdmission(db,request)).toEqual({allowed:true})
   db.exec("UPDATE agent_installations SET desired_state='removed' WHERE agent_id='cli'; UPDATE artifact_consumers SET state='removed' WHERE installation_id='installation_cli'")

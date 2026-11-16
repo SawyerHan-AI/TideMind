@@ -188,7 +188,7 @@ export interface CoordinatorRepositoryPort extends IntegrationEventRepositoryPor
     state: ReconcileState,
     reason: string | null,
     updatedAt: string,
-    options?: { expectedDesiredState?: DesiredState; expectedConsentId?: string | null },
+    options?: { expectedDesiredState?: DesiredState; expectedConsentId?: string | null; expectedRunId?: string },
   ): boolean | void | Promise<boolean | void>
   prepareExecution(input: PrepareExecutionInput): PrepareExecutionResult | Promise<PrepareExecutionResult>
   saveMutation(
@@ -1942,6 +1942,7 @@ export class AgentIntegrationCoordinator {
       code,
       input.preparedPlan?.operation === 'disconnect' ? 'removed' : 'managed',
       input.consentId,
+      input.runId,
     )
     const eventId = this.dependencies.ids.next('event')
     await publishIntegrationEvent({
@@ -1993,8 +1994,10 @@ export class AgentIntegrationCoordinator {
     reason: string | null,
     expectedDesiredState?: DesiredState,
     expectedConsentId?: string | null,
+    expectedRunId?: string,
   ): Promise<void> {
-    const options: { expectedDesiredState?: DesiredState; expectedConsentId?: string | null } = {}
+    const options: { expectedDesiredState?: DesiredState; expectedConsentId?: string | null; expectedRunId?: string } = {}
+    if (expectedRunId) options.expectedRunId = expectedRunId
     if (expectedDesiredState !== undefined) options.expectedDesiredState = expectedDesiredState
     if (expectedConsentId !== undefined) options.expectedConsentId = expectedConsentId
     await this.dependencies.repository.setInstallationReconcileState(

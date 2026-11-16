@@ -3,10 +3,13 @@ import { describe, it, expect, vi } from 'vitest'
 vi.mock('electron',()=>({app:{getPath:()=>'/tmp/tm-shared-codex',getVersion:()=> '0.2.94-test',getAppPath:()=>'/tmp/Tide Mind.app',isPackaged:false},Notification:class{static isSupported(){return false} show(){}}}))
 vi.mock('../../src/strategy/loader.js',()=>({getParam:(_s:string,_p:string,f:number)=>f,getPrompt:()=>'',loadStrategies:()=>{},getStrategy:()=>null}))
 import fs from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import Database from 'better-sqlite3'
 import { parse } from 'smol-toml'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ensureSchema } from '../../src/db/schema'
 import { evaluateBridgeAdmission } from '../../src/agent-bridge-guard'
 import { recordHookActivityEvidence } from '../../src/db/agent-host-activity'
@@ -19,10 +22,11 @@ import type { AdapterRuntimeContext, CatalogId } from '../../client/electron/age
 
 describe('Fresh Codex domain through production service',()=>{
  it.each([
+  ['codex-cli','zero-recovery-continuity'],
   ['codex-cli','automatic-batch'], ['codex-cli','automatic-native-trust'], ['codex-cli','automatic-native-trust-peer'], ['codex-cli','automatic-native-trust-none'], ['codex-cli','automatic-late-peer'], ['codex-cli','automatic-repair'], ['codex-cli','automatic-repair-peer-source'], ['codex-cli','automatic-repair-peer-revoked'],
   ['codex-cli','automatic-native-trust-probe-uncertain'],
   ['codex-cli','whole-disconnect'], ['codex-desktop','whole-disconnect'], ['codex-cli','whole-disconnect-pause-race'], ['codex-cli','whole-disconnect-drift'], ['codex-cli','whole-disconnect-member-pause-race'],
-  ...['zero-recovery','zero-recovery-revoked','zero-recovery-drift','zero-recovery-conflict','zero-recovery-journal','zero-recovery-intent-race','zero-recovery-shared-race','zero-recovery-new-conflict','zero-recovery-other-conflict','zero-recovery-both-pending','zero-recovery-both-pending-revoked','zero-recovery-both-pending-drift','zero-recovery-both-pending-journal','zero-recovery-both-pending-restart','zero-recovery-both-pending-bad-receipt','zero-recovery-version-upgrade','zero-recovery-upgrade-other-publisher'].map(mode=>['codex-desktop',mode] as const),
+  ...['zero-recovery-continuity','zero-recovery-continuity-existing','zero-recovery-continuity-hook-drift','zero-recovery','zero-recovery-revoked','zero-recovery-drift','zero-recovery-conflict','zero-recovery-journal','zero-recovery-intent-race','zero-recovery-shared-race','zero-recovery-new-conflict','zero-recovery-other-conflict','zero-recovery-both-pending','zero-recovery-both-pending-revoked','zero-recovery-both-pending-drift','zero-recovery-both-pending-journal','zero-recovery-both-pending-restart','zero-recovery-both-pending-bad-receipt','zero-recovery-version-upgrade','zero-recovery-upgrade-other-publisher'].map(mode=>['codex-desktop',mode] as const),
   ...['source-noop','source-noop-partial','source-noop-drift','source-noop-different-source'].map(mode=>['codex-desktop',mode] as const),
   ['codex-cli','reconnect-batch-disconnect-fence'],
   ['codex-cli','reconnect-batch-recovery-disconnect'],
@@ -274,6 +278,82 @@ describe('Fresh Codex domain through production service',()=>{
       expect(db.prepare('SELECT count(*) AS n FROM projection_mutations WHERE run_id=?').get(peer.id)).toEqual({n:0})
       const physical=[configFile,path.join(configRoot,'hooks.json'),path.join(home,'.agents/skills/tidemind/SKILL.md')]
       const before=physical.map(file=>fs.readFileSync(file))
+      if (String(late).startsWith('zero-recovery-continuity')) {
+        const writer = db.prepare('SELECT id, prepared_plan_json FROM reconcile_runs WHERE installation_id=?').get(first) as {id:string;prepared_plan_json:string}
+        expect(db.prepare("SELECT count(*) AS n FROM projection_mutations WHERE run_id=? AND state='committed'").get(writer.id)).toEqual({n:3})
+        const request = {agentId:canonical, activityGenerationToken:JSON.parse(writer.prepared_plan_json).activityGenerationToken}
+        expect(evaluateBridgeAdmission(db, request)).toEqual({allowed:true})
+        fs.mkdirSync(path.join(home, '.tidemind'), {recursive:true})
+        fs.writeFileSync(path.join(home, '.tidemind', 'config.toml'), '[general]\ndata_dir = ' + JSON.stringify(appData) + '\n')
+        const openClient = async () => {
+          const client = new Client({name:'isolated-codex-continuity',version:'1'})
+          await client.connect(new StdioClientTransport({
+            command:process.execPath,
+            args:[path.resolve('node_modules/tsx/dist/cli.mjs'), path.resolve('src/index.ts')],
+            env:{HOME:home, PATH:process.env.PATH ?? '/usr/bin:/bin', EB_AGENT_ID:canonical,
+              EB_ACTIVITY_GENERATION_TOKEN:request.activityGenerationToken}, stderr:'pipe',
+          }))
+          return client
+        }
+        const prepare = async (client: Client) => {
+          const result = await client.callTool({name:'brain_prepare',arguments:{tool:'codex',detail_level:'brief'}})
+          return result.isError ? result.content : 'ok'
+        }
+        const running = await openClient()
+        try {
+          expect(await prepare(running)).toBe('ok')
+          if (late === 'zero-recovery-continuity-existing') {
+            await composition.coordinator.recoverNonTerminalRuns({canContinueRecovery:()=>false})
+            expect(db.prepare("SELECT count(*) AS n FROM reconcile_runs WHERE state='needs_recovery' AND failure_code='recovery_source_trust_changed'").get()).toEqual({n:2})
+            expect(await prepare(running)).not.toBe('ok')
+          }
+          for (const version of ['26.1106.51428', '26.1111.21308']) {
+            discover('codex-desktop', configRoot, version)
+            await composition.runtime.markScanCompleted()
+            const fresh = await openClient()
+            try {
+              expect(await Promise.all([prepare(running), prepare(fresh)])).toEqual(['ok', 'ok'])
+            } finally { await fresh.close() }
+            expect(physical.map(file => fs.readFileSync(file))).toEqual(before)
+          }
+          composition.repository.markInstallationProbeUncertain('codex-cli','2026-11-16T16:00:00.000Z',['probe_inaccessible'])
+          for (const time of ['2026-11-16T16:01:00.000Z','2026-11-16T16:02:00.000Z']) {
+            composition.repository.markInstallationNotDetected('codex-cli',time)
+            const [observed] = await Promise.all([prepare(running), composition.runtime.markScanCompleted()])
+            expect(observed).toBe('ok')
+            expect(await prepare(running)).toBe('ok')
+          }
+          if (late === 'zero-recovery-continuity-hook-drift') {
+            fs.writeFileSync(physical[1],JSON.stringify({hooks:{}}))
+            discover('codex-desktop',configRoot,'26.1113.00001')
+            await composition.runtime.markScanCompleted()
+            expect(await prepare(running)).toBe('ok')
+            expect(evaluateBridgeAdmission(db,{...request,componentKey:'lifecycle'}).allowed).toBe(false)
+            expect(fs.readFileSync(physical[1],'utf8')).toBe(JSON.stringify({hooks:{}}))
+            fs.writeFileSync(physical[1],before[1])
+            await composition.runtime.markScanCompleted()
+          }
+          for (let pass=0;pass<3;pass++) {
+            await composition.runtime.markScanCompleted()
+            expect(await prepare(running)).toBe('ok')
+          }
+          const hook = spawnSync(process.execPath,[path.resolve('node_modules/tsx/dist/cli.mjs'),path.resolve('src/hook-session-start.ts'),
+            '--agent-id',canonical,'--activity-generation-token',request.activityGenerationToken,'--tool','codex',
+            '--skill-path',physical[2]], {env:{HOME:home,PATH:process.env.PATH ?? '/usr/bin:/bin'},timeout:15000,
+              encoding:'utf8',input:JSON.stringify({hook_event_name:'SessionStart',session_id:'synthetic-continuity-chat',source:'startup'})})
+          expect(hook.status).toBe(0)
+          expect(JSON.parse(hook.stdout).hookSpecificOutput.additionalContext).toContain('TIDE MIND')
+          // A deterministic foreground correction exercises a real memory write without a model provider.
+          const target = 'synthetic-codex-continuity'
+          db.prepare("INSERT INTO nodes (id,type,content,created) VALUES (?, 'fact', 'fixture', ?)").run(target,new Date().toISOString())
+          const edited = await running.callTool({name:'brain_digest',arguments:{intent:'correction',target_node:target,
+            content:'fixture after CLI loss',async:false,source:{tool:'codex'}}})
+          expect(edited.isError).not.toBe(true)
+          expect(db.prepare('SELECT content FROM nodes WHERE id=?').get(target)).toEqual({content:'fixture after CLI loss'})
+          expect(physical.map(file => fs.readFileSync(file))).toEqual(before)
+        } finally { await running.close() }
+        return
+      }
       composition.repository.markInstallationIdentityConflict(second,new Date().toISOString(),
         late==='zero-recovery-conflict'?'Unrelated identity conflict':EXACT_INSTALL_KEY_DISTRIBUTION_CONFLICT_REASON)
       await composition.coordinator.recoverNonTerminalRuns()
@@ -399,7 +479,9 @@ describe('Fresh Codex domain through production service',()=>{
       const physical=[configFile,path.join(configRoot,'hooks.json'),path.join(home,'.agents/skills/tidemind/SKILL.md')]
       const before=physical.map(file=>fs.readFileSync(file))
       discover(first,configRoot,'26.1029.61003',late==='source-noop-different-source'?'other-publisher':undefined)
-      await composition.runtime.markScanCompleted()
+      // Replay the old startup recovery result; the assertions below exercise explicit
+      // repair of an already-damaged 0.2.99 ledger, including partial journals and drift.
+      await composition.coordinator.recoverNonTerminalRuns({canContinueRecovery:run=>run.runId!==old.id})
       expect(db.prepare('SELECT state,failure_code FROM reconcile_runs WHERE id=?').get(old.id)).toEqual({state:'needs_recovery',failure_code:'recovery_source_trust_changed'})
       expect(db.prepare('SELECT state FROM reconcile_runs WHERE id=?').get(peer.id)).toEqual({state:'applied_unverified'})
       // Preserve the physical recovery state left by source invalidation until explicit takeover.
@@ -793,7 +875,8 @@ describe('Fresh Codex domain through production service',()=>{
         for(const effect of effects)expect(effect).toMatchObject({state:'committed',attempt_count:1})
         if(late==='reconnect-batch-recovery-disconnect'){
           discover(owner.installationId as 'codex-cli'|'codex-desktop',configRoot,'0.154.0')
-          await composition.runtime.markScanCompleted()
+          // Historical broken predecessor for the explicit disconnect takeover path.
+          await composition.coordinator.recoverNonTerminalRuns({canContinueRecovery:run=>run.runId!==owner.runId})
           expect(db.prepare('SELECT state,failure_code FROM reconcile_runs WHERE id=?').get(owner.runId)).toEqual({state:'needs_recovery',failure_code:'recovery_source_trust_changed'})
         }else{
           const ownerAdapter=adapters.get(composition.repository.getInstallation(owner.installationId)!.host_variant as 'codex-cli'|'codex-desktop')!

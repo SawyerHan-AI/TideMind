@@ -2,7 +2,7 @@ import { isDiagnosticRequested } from '../agent-diagnostic-contract.js';
 import { getRuntimeDiagnosticContext } from '../config.js';
 import { recordDiagnosticHook } from '../agent-diagnostic-receipts.js';
 import { getSharedAgentConsumers, sharedAgentActivityKey } from './agent-identity-binding.js';
-import { evaluateBridgeAdmission } from '../agent-bridge-guard.js';
+import { evaluateBridgeAdmission, type BridgeRejectionReason } from '../agent-bridge-guard.js';
 import { sanitizeAgentIntegrationEventPersistence } from './agent-integration-event-sanitizer.js';
 import { createHash, randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
@@ -34,7 +34,7 @@ export type RecordHostActivityResult =
         | 'host_variant_mismatch'
         | 'signal_component_mismatch'
         | 'component_not_managed'
-        | 'activity_generation_mismatch'
+        | BridgeRejectionReason
         | 'version_binding_missing';
     };
 
@@ -220,7 +220,7 @@ export function recordHostActivityEvidence(
       const canonical = db.prepare('SELECT archived FROM agents WHERE id=?').get(agentId) as { archived:number } | undefined;
       if (!canonical || canonical.archived !== 0) return { status: 'rejected', reason: 'agent_archived' };
       const admission = evaluateBridgeAdmission(db, { agentId, activityGenerationToken, componentKey: input.componentKey });
-      if (!admission.allowed) return { status: 'rejected', reason: 'activity_generation_mismatch' };
+      if (!admission.allowed) return { status: 'rejected', reason: admission.reason };
       // Static EB_HOST_VARIANT in a shared file is not evidence of which surface
       // executed it. Record one domain event, never duplicate per-host receipts.
       const event = sanitizeAgentIntegrationEventPersistence({

@@ -1,3 +1,4 @@
+import { retainCodexSourceRejection } from './codex-bridge-continuity.js';
 import { addRecoveryAuthColumns, RECOVERY_LINEAGE } from './schema41-recovery.js';
 import { assertSupportedDatabaseSchema, CURRENT_SCHEMA_VERSION } from './schema-compatibility.js';
 import type Database from 'better-sqlite3';
@@ -2200,6 +2201,33 @@ const MIGRATIONS: Migration[] = [
     version: 48,
     description: '保留旧原始向量并建立可验证bundle与账号隔离上传队列',
     up: (db) => { ensureVectorCacheSchema(db); },
+  },
+  {
+    version: 49,
+    description: '按共享组件及成员保存 Codex 配置与来源证明',
+    up: (db) => {
+      ensureAgentIntegrationSchema(db);
+      // Mark existing observed changes before the MCP port accepts a new client.
+      // Every member keeps its own cutoff; a sibling with unchanged evidence
+      // continues to authorize the shared carrier.
+      db.exec(`INSERT INTO codex_bridge_invalidations(installation_id,last_run_rowid)
+        SELECT i.id,MAX(r.rowid) FROM agent_installations i
+        JOIN agent_identity_binding_members m ON m.installation_id=i.id
+        JOIN reconcile_runs r ON r.installation_id=i.id
+        WHERE i.family='codex' AND (
+          i.health_state!='discovered' OR r.failure_code='recovery_source_trust_changed'
+          OR json_extract(CASE WHEN json_valid(r.prepared_plan_json) THEN r.prepared_plan_json END,
+            '$.executionPlan.hostVersion') IS NOT i.detected_version
+          OR EXISTS (SELECT 1 FROM agent_integration_events e WHERE e.installation_id=i.id
+            AND e.kind='host_installation_surface_changed' AND e.created_at>=r.created_at)
+        ) GROUP BY i.id ON CONFLICT(installation_id) DO UPDATE SET
+          last_run_rowid=MAX(last_run_rowid,excluded.last_run_rowid)`);
+      const rejected = db.prepare(`SELECT i.id FROM agent_installations i JOIN agent_identity_binding_members m
+        ON i.id=m.installation_id WHERE json_extract(CASE WHEN json_valid(i.metadata_json) THEN i.metadata_json END,
+        '$.managementEligibility.reason') IN ('source_not_official','release_distribution_not_accepted','release_entry_missing','release_mode_detect_only')`)
+        .all() as Array<{id:string}>;
+      for (const row of rejected) retainCodexSourceRejection(db,row.id);
+    },
   },
 ];
 

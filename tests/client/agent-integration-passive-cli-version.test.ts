@@ -919,7 +919,7 @@ describe('passive Agent CLI version inspection', () => {
       lstat: async () => undefined,
       realpath: vi.fn(),
       readStableFileSnapshot: vi.fn(),
-    })).resolves.toMatchObject({ exitCode: 126, stderr: 'package_metadata_not_regular_file' })
+    })).resolves.toMatchObject({ exitCode: 126, stderr: 'package_metadata_unavailable' })
 
     await expect(inspectPassiveCliVersion(executable, {
       lstat: async () => ({ kind: 'symbolic_link' }),

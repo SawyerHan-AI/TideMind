@@ -4149,6 +4149,46 @@ describe('AgentIntegrationService', () => {
       event.kind === 'discovery_identity_conflict')).toBe(true)
   })
 
+  it('rechecks the authorized Codex launcher when PATH advertises a different executable in the same domain', async () => {
+    const db = new Database(':memory:')
+    try {
+      ensureSchema(db)
+      const repository = new AgentIntegrationRepository(db)
+      const original = '/Volumes/Fixture/npm-global/codex.js'
+      const alternate = '/fixture/shadow/codex'
+      const host = (executable: string, redirected = false): DiscoveredInstallation => ({
+        catalogId:'codex-cli', displayName:'Codex', configRoot:'/fixture/.codex', executablePath:executable,
+        detectedVersion:'0.167.1', provenance:['fixture'], evidence:[{kind:'realpath',source:original,value:executable}],
+        identity:canonicalizeInstallationIdentity({runtimeRealm:'local_macos',osUserIdentity:'synthetic-local-user',
+          productFamilyId:'codex',hostVariant:'codex-cli',configRoot:'/fixture/.codex',
+          distribution:{distributionId:'npm',packageProvenance:'npm_metadata:@openai/codex',executableRealpath:executable}}),
+        ...(redirected && {managementEligibility:{schemaVersion:CLI_MANAGEMENT_ELIGIBILITY_SCHEMA_VERSION,eligible:false,
+          reason:'source_not_official',proofLimitBytes:MAX_CLI_EXECUTABLE_PROOF_BYTES}}),
+      })
+      const identity=host(original).identity
+      repository.upsertDiscoveredInstallation({id:'registered',family:'codex',hostVariant:'codex-cli',
+        installKey:identity.installKey,runtimeRealm:'local_macos',osUserIdentity:'synthetic-local-user',configRoot:'/fixture/.codex',
+        executablePath:original,displayName:'Codex',provenance:'fixture',agentId:'fixture',lastDetectedAt:T0,
+        distributionId:'npm',metadata:{distribution:identity.distribution}})
+      repository.setInstallationIntent('registered','managed',T0)
+      let exact = [host(original)]
+      const probe = vi.fn(async()=>({installations:exact,unresolved:[],diagnostics:[]}))
+      const service = new AgentIntegrationService({repository,homeDir:'/fixture',
+        scanner:{scan:async()=>({installations:[host(alternate)],unresolved:[],diagnostics:[]}),probeRegisteredCodexCli:probe},
+        execution:{preview:vi.fn(),applyPrepared:vi.fn()}})
+      await service.scan()
+      expect(probe).toHaveBeenCalledWith(original)
+      expect(repository.getInstallation('registered')).toMatchObject({health_state:'discovered',executable_path:original})
+      exact = []
+      await service.scan()
+      expect(repository.getInstallation('registered')).toMatchObject({health_state:'inaccessible',executable_path:original})
+      exact = [host(alternate,true)]
+      await service.scan()
+      expect(repository.getInstallation('registered')).toMatchObject({status_reason:'source_not_official',executable_path:original})
+      expect(repository.listInstallations()).toHaveLength(1)
+    } finally { db.close() }
+  })
+
   it('invalidates an absent host only after an authoritative scan, not an inaccessible probe', async () => {
     const certain = setup()
     const certainService = new AgentIntegrationService({

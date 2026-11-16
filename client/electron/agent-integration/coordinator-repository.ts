@@ -1,3 +1,4 @@
+import { captureBridgeAnchor, latestPhysicalBridgeWrite, currentCodexMemberSurface, type BridgeAnchor } from '@server/db/codex-bridge-continuity.js'
 import { automaticPlanAuthorizationKey, isAutomaticConsentContext } from './consent'
 import { allowsConnectionMaintenance } from './connection-intent'
 import { freshCodexIdentityFingerprint } from './codex-fresh-identity'
@@ -9,7 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type Database from 'better-sqlite3'
 import { AGENT_INTEGRATION_WRITER_PROTOCOL } from '@server/db/agent-integration-schema.js'
-import { checkPlanAgainstConsent, type ConsentEnvelope } from './consent'
+import { checkPlanAgainstConsent, executionPlanHash, type ConsentEnvelope } from './consent'
 import {
   type CoordinatorInstallation,
   type FileRepairWait,
@@ -337,6 +338,105 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
         ? { activeConsumerCount: Number(row.active_consumer_count) }
         : {}),
     }))
+  }
+
+  private physicalBridgeJournalValid(anchor: BridgeAnchor, token: string): boolean {
+    const writer = latestPhysicalBridgeWrite(this.db,anchor.artifact_id)
+    if (!writer || writer.token !== token) return false
+    const row = this.db.prepare('SELECT * FROM reconcile_runs WHERE id=?').get(writer.run_id) as RunRow | undefined
+    if (!row || !['connect','repair'].includes(row.operation_type)) return false
+    const plan = parseObject(row.prepared_plan_json,'physical Codex plan') as unknown as PreparedCoordinatorPlan
+    assertPersistedPreparedPlanShape(plan)
+    assertPersistedRunEnvelope(row,plan)
+    if (executionPlanHash(plan.executionPlan)!==row.execution_plan_hash || sha256Json(plan.adapterPlan)!==plan.adapterPlanHash
+      || plan.activityGenerationToken!==token || plan.executionPlan.activityGenerationTokenHash!==anchor.token_hash) return false
+    const mutation = plan.adapterPlan.mutations.find(m => m.componentKey === anchor.component_key && m.physicalTarget === anchor.target_path
+      && m.ownershipKey === anchor.ownership_key && String(m.selectorSchemaVersion) === anchor.selector_schema_version
+      && m.desiredFragmentHash === anchor.fragment_hash && m.domainKind === 'file_fragment'
+      && ['create','update'].includes(m.operation) && m.commandCategory==='file_write' && !m.ownershipTransferFrom && !m.frozenCommands?.length)
+    if (!mutation) return false
+    const journal = this.db.prepare('SELECT * FROM projection_mutations WHERE id=?').get(anchor.mutation_id) as MutationRow | undefined
+    if (!journal || journal.operation_id !== mutation.operationId || journal.installation_id !== row.installation_id
+      || sha256Json(parseObject(journal.planned_mutation_json,'bridge journal')) !== sha256Json(mutation)) return false
+    assertVerifiedMutationJournal(journal,mutation)
+    return true
+  }
+
+  /** Validate the entire historical journal before consulting any zero-write continuation.
+   * No old operation returned by this method is eligible for replay.
+   */
+  codexContinuitySnapshot(installationId: string, requested?: 'memory_tools' | 'lifecycle') {
+    const member = this.repository.getInstallation(installationId)
+    if (!member || member.family !== 'codex' || member.health_state !== 'discovered'
+      || member.desired_state !== 'managed' || member.bridge_state === 'stopped'
+      || member.tombstoned_at || !member.consent_envelope_id || member.status_reason === 'conflict') return null
+    let identity: ReturnType<AgentIntegrationRepository['resolveAgentIdentity']>
+    try { identity = this.repository.resolveAgentIdentity(installationId) } catch { return null }
+    if (!identity.bindingId) return null
+    const run = this.db.prepare(`SELECT * FROM reconcile_runs WHERE installation_id=?
+      AND (? IS NULL OR operation_type='disconnect' OR EXISTS (
+        SELECT 1 FROM json_each(CASE WHEN json_valid(prepared_plan_json) THEN prepared_plan_json END,'$.componentKeys')
+        WHERE value=?)) ORDER BY rowid DESC LIMIT 1`).get(installationId,requested ?? null,requested ?? null) as (RunRow & {failure_code:string | null}) | undefined
+    if (!run || !['connect','repair'].includes(run.operation_type) || run.consent_envelope_id !== member.consent_envelope_id
+      || !(['applied_unverified','committed'].includes(run.state)
+        || run.state === 'needs_recovery' && run.failure_code === 'recovery_source_trust_changed'
+        || String(run.state) === 'cancelled' && run.failure_code === 'superseded_by_codex_continuity')) return null
+    try {
+      const plan = parseObject(run.prepared_plan_json, 'Codex continuity plan') as unknown as PreparedCoordinatorPlan
+      assertPersistedPreparedPlanShape(plan)
+      assertPersistedRunEnvelope(run, plan)
+      const installation = this.installationFromRow(member)
+      const source = persistedDistribution(member)
+      if (plan.executionPlanHash !== executionPlanHash(plan.executionPlan) || plan.adapterPlanHash !== sha256Json(plan.adapterPlan)
+        || plan.executionPlan.installationId !== installationId || plan.adapterPlan.installationKey !== member.install_key
+        || plan.inspection.catalogId !== member.host_variant || !source.packageProvenance
+        || plan.inspection.distribution.packageProvenance !== source.packageProvenance
+        || plan.inspection.distribution.distributionId !== source.distributionId
+        || !plan.activityGenerationToken || plan.executionPlan.activityGenerationTokenHash !== sha256Json(plan.activityGenerationToken)) return null
+      const consent = this.getConsent(member.consent_envelope_id, run.execution_plan_hash)
+      if (!consent || !checkPlanAgainstConsent(plan.executionPlan, consent, supplementalConsentClaims(
+        installation,plan,this.listOwnedArtifactBaselines(installationId))).allowed || !this.isRunConnectionIntentCurrent(run.id)) return null
+      if (plan.executionPlan.sharedIdentityBinding !== installation.sharedIdentityBinding) return null
+      const journals = requested
+        ? this.loadValidatedMutationRows(run,plan,installation,requested)
+        : this.loadValidatedRecoveryEnvelope(run, plan, installation)
+      for (const {row,plannedMutation} of journals) {
+        if (plannedMutation.domainKind !== 'file_fragment' || plannedMutation.commandCategory !== 'file_write'
+          || plannedMutation.ownershipTransferFrom || plannedMutation.frozenCommands?.length
+          || !['create','update'].includes(plannedMutation.operation)) return null
+        if (!requested || mutationComponentKeys(plannedMutation).includes(requested)) assertVerifiedMutationJournal(row,plannedMutation)
+      }
+      const scopes = this.db.prepare(`SELECT c.component_key, a.id, a.target_path, a.owned_fragment_hash, a.mutation_domain
+        FROM artifact_consumers c JOIN managed_artifacts a ON a.id=c.artifact_id
+        JOIN installation_components ic ON ic.installation_id=c.installation_id AND ic.component_key=c.component_key AND ic.artifact_id=a.id
+        WHERE c.installation_id=? AND c.state='active' AND c.tombstoned_at IS NULL AND ic.tombstoned_at IS NULL
+          AND c.desired_state IN ('managed','disabled') AND ic.desired_state='managed' AND c.consent_envelope_id=? AND ic.consent_envelope_id=c.consent_envelope_id
+          AND a.state IN ('healthy','needs_recovery') AND a.owned_fragment_hash=a.desired_fragment_hash
+        AND (? IS NULL OR c.component_key=?) ORDER BY c.component_key`).all(installationId,member.consent_envelope_id,requested ?? null,requested ?? null) as Array<{
+          component_key:ComponentKey;id:string;target_path:string;owned_fragment_hash:string;mutation_domain:string
+        }>
+      if (sha256Json(scopes.map(scope=>scope.component_key)) !== sha256Json(requested ? [requested] : [...plan.componentKeys].sort())) return null
+      const anchors: BridgeAnchor[] = []
+      let observedToken = plan.activityGenerationToken
+      for (const scope of scopes) {
+        if (scope.component_key === 'instruction') continue
+        const anchor = captureBridgeAnchor(this.db,identity.bindingId,scope.id,scope.component_key)
+        const physicalToken = latestPhysicalBridgeWrite(this.db,scope.id)?.token
+        if (!anchor || !physicalToken || !this.physicalBridgeJournalValid(anchor,physicalToken)) return null
+        if (!requested && physicalToken !== plan.activityGenerationToken) return null
+        observedToken = physicalToken
+        anchors.push(anchor)
+      }
+      if (!anchors.length) return null
+      const intent = this.repository.connectionIntent(installationId)
+      if (!allowsConnectionMaintenance(intent,installationId)) return null
+      const snapshot = {requested,runId:run.id, runState:run.state, installation, consentId:member.consent_envelope_id, anchors, scopes,
+        token:observedToken, capability:capability(run.desired_capability), intentRevision:intent.revision,
+        surface:currentCodexMemberSurface(this.db,installationId)!, changed:plan.executionPlan.installationSurfaceFingerprint !== persistedProjectionSurfaceFingerprint(member)}
+      return {...snapshot, fingerprint:sha256Json(snapshot)}
+    } catch {
+      return null
+    }
   }
 
   /** Only a completed configuration wait may lend its exact scope/token to an absent-file repair. */
@@ -683,8 +783,9 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     state: Parameters<CoordinatorRepositoryPort['setInstallationReconcileState']>[1],
     reason: string | null,
     updatedAt: string,
-    options: { expectedDesiredState?: DesiredState; expectedConsentId?: string | null } = {},
+    options: { expectedDesiredState?: DesiredState; expectedConsentId?: string | null; expectedRunId?: string } = {},
   ): boolean {
+    if (options.expectedRunId && !this.isRunConnectionIntentCurrent(options.expectedRunId)) return false
     const hasExpectedConsent = Object.prototype.hasOwnProperty.call(options, 'expectedConsentId')
     const result = this.db.prepare(`
       UPDATE agent_installations
@@ -703,6 +804,9 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
           )
         )
         AND (? = 0 OR consent_envelope_id IS ?)
+        AND (? IS NULL OR family!='codex' OR ?=(
+          SELECT id FROM reconcile_runs WHERE installation_id=agent_installations.id ORDER BY rowid DESC LIMIT 1
+        ))
     `).run(
       state,
       reason,
@@ -715,6 +819,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       options.expectedDesiredState ?? null,
       hasExpectedConsent ? 1 : 0,
       options.expectedConsentId ?? null,
+      options.expectedRunId ?? null, options.expectedRunId ?? null,
     )
     if (result.changes !== 1 && !this.repository.getInstallation(installationId)) {
       throw new Error(`unknown Installation: ${installationId}`)
@@ -2804,6 +2909,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     run: RunRow,
     preparedPlan: PreparedCoordinatorPlan,
     installation: CoordinatorInstallation,
+    liveComponent?: ComponentKey,
   ): ValidatedMutationRow[] {
     const rows = this.db.prepare(`
       SELECT id, operation_id, installation_id, component_key, artifact_id,
@@ -2883,7 +2989,9 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
         if (row.idempotency_strategy !== expectedStrategy) {
           throw new Error(`persisted mutation idempotency projection changed: ${row.operation_id}`)
         }
-        this.assertManagedMutationLedgerBinding(run, row, plannedMutation, installation)
+        if (!liveComponent || mutationComponentKeys(plannedMutation).includes(liveComponent)) {
+          this.assertManagedMutationLedgerBinding(run, row, plannedMutation, installation)
+        }
       }
       if (run.state === 'verified') {
         assertVerifiedMutationJournal(row, plannedMutation)
@@ -3871,10 +3979,22 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
   }
 
   private markProjectionNeedsRecovery(runId: string, at: string): void {
+    // A detach-only journal has no physical side effect. An older completed
+    // writer also cannot invalidate a later writer's current readback.
     this.db.prepare(`
-      UPDATE managed_artifacts SET state = 'needs_recovery', updated_at = ?
-      WHERE id IN (SELECT artifact_id FROM projection_mutations WHERE run_id = ?)
-        AND state != 'removed'
+      UPDATE managed_artifacts AS artifact SET state = 'needs_recovery', updated_at = ?
+      WHERE artifact.state != 'removed' AND EXISTS (
+        SELECT 1 FROM projection_mutations old
+        WHERE old.run_id = ? AND old.artifact_id = artifact.id
+          AND old.idempotency_strategy != 'consumer_detach_only'
+          AND (old.state != 'committed' OR old.committed_at IS NULL OR NOT EXISTS (
+            SELECT 1 FROM projection_mutations newer
+            WHERE newer.artifact_id = artifact.id AND newer.state = 'committed'
+              AND newer.idempotency_strategy != 'consumer_detach_only'
+              AND (newer.committed_at, newer.rowid) > (old.committed_at, old.rowid)
+              AND newer.after_hash IS NOT NULL AND newer.after_hash = artifact.owned_fragment_hash
+          ))
+      )
     `).run(at, runId)
   }
 

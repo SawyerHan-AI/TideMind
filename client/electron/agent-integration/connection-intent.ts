@@ -47,6 +47,25 @@ export function changeConnectionIntent(db: Database.Database, domainKey: string,
     const next = { ...update(previous), domainKey, revision: previous.revision + 1 }
     db.prepare(`INSERT INTO metadata(key,value) VALUES (?,?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(keyFor(domainKey), JSON.stringify(next))
+    if (domainKey.startsWith('codex:')) {
+      const binding = db.prepare('SELECT id FROM agent_identity_bindings WHERE domain_key=?')
+        .get(domainKey.slice('codex:'.length)) as {id:string} | undefined
+      if (binding && next.state === 'disconnected') {
+        db.prepare('DELETE FROM codex_bridge_member_proofs WHERE binding_id=?').run(binding.id)
+      } else if (binding && previous.state !== 'disconnected') {
+        // Maintenance pauses preserve existing bridge grants. Only carry a proof
+        // across this preference change when its own authorization is still live.
+        db.prepare(`UPDATE codex_bridge_member_proofs AS proof SET intent_revision=?
+          WHERE binding_id=? AND intent_revision=? AND EXISTS (
+            SELECT 1 FROM agent_installations i JOIN agent_consents s ON s.id=i.consent_envelope_id
+            JOIN artifact_consumers c ON c.installation_id=i.id AND c.artifact_id=proof.artifact_id
+              AND c.component_key=proof.component_key AND c.state='active' AND c.tombstoned_at IS NULL
+            WHERE i.id=proof.installation_id AND s.id=proof.consent_id AND s.status='active'
+              AND c.consent_envelope_id=s.id AND i.tombstoned_at IS NULL AND i.bridge_state!='stopped'
+              AND i.desired_state IN ('managed','disabled')
+          )`).run(next.revision,binding.id,previous.revision)
+      }
+    }
     return next
   })()
 }

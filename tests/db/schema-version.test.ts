@@ -306,3 +306,16 @@ describe('FTS5', () => {
     }).not.toThrow();
   });
 });
+
+it('upgrades schema48 without issuing credentials to pre-existing shared bridges', () => {
+  const db = freshDb();
+  try {
+    ensureSchema(db);
+    db.exec("DROP TABLE codex_bridge_member_proofs; DROP TABLE codex_bridge_anchors; UPDATE metadata SET value='48' WHERE key='schema_version'");
+    ensureSchema(db);
+    expect(getSchemaVersion(db)).toBe(49);
+    for (const table of ['codex_bridge_anchors','codex_bridge_member_proofs']) {
+      expect(db.prepare(`SELECT count(*) AS count FROM ${table}`).get()).toEqual({count:0});
+    }
+  } finally { db.close(); }
+});

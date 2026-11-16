@@ -23,7 +23,7 @@ import type { DigestInput, PrepareInput, DigestIntent, DetailLevel } from './typ
 
 import { getAgent } from './db/agents.js';
 import { recordHostActivityEvidence, type HostActivitySignal } from './db/agent-host-activity.js';
-import { BRIDGE_REJECTED_MESSAGE, evaluateBridgeAdmission } from './agent-bridge-guard.js';
+import { describeBridgeRejection, evaluateBridgeAdmission } from './agent-bridge-guard.js';
 import { createLogger } from './utils/logger.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
 import { shutdownLLMClient } from './llm/client.js';
@@ -104,7 +104,7 @@ function bridgeRejectedResult(db: ReturnType<typeof getDb>) {
   }
   return {
     isError: true as const,
-    content: [{ type: 'text' as const, text: `${BRIDGE_REJECTED_MESSAGE} [${admission.reason}]` }],
+    content: [{ type: 'text' as const, text: `${describeBridgeRejection(admission.reason)} [${admission.reason}]` }],
   };
 }
 

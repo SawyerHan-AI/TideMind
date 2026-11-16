@@ -545,6 +545,25 @@ describe('AgentIntegrationRepository', () => {
       .toEqual({ state: 'paused' })
   })
 
+  it('requires two distinct consecutive absence observations after an inaccessible probe', () => {
+    const { repository } = setup()
+    repository.upsertDiscoveredInstallation({
+      id: 'known', family: 'codex', hostVariant: 'codex-cli', installKey: 'known',
+      displayName: 'Codex', provenance: 'fixture', lastDetectedAt: T0,
+    })
+    const first = '2026-08-25T01:01:00.000Z'
+    const uncertain = '2026-08-25T01:02:00.000Z'
+    const next = '2026-08-25T01:03:00.000Z'
+    repository.markInstallationNotDetected('known', first)
+    repository.markInstallationProbeUncertain('known', uncertain, ['probe_inaccessible'])
+    repository.markInstallationNotDetected('known', first)
+    repository.markInstallationNotDetected('known', next)
+    repository.markInstallationNotDetected('known', next)
+    expect(repository.getInstallation('known')?.health_state).toBe('inaccessible')
+    repository.markInstallationNotDetected('known', '2026-08-25T01:04:00.000Z')
+    expect(repository.getInstallation('known')?.health_state).toBe('absent')
+  })
+
   it('does not overwrite a missing shared consumer when another consumer resets the circuit', () => {
     const { db, repository } = setup()
     for (const id of ['i1', 'i2']) {
