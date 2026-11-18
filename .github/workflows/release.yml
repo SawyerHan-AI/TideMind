@@ -33,6 +33,8 @@ on:
       - '!v0.2.99'
       # 0.2.100 is built, signed and published by the Studio two-Mac release flow.
       - '!v0.2.100'
+      # 0.2.101 follows the reviewed Studio Antigravity and two-Mac release flow.
+      - '!v0.2.101'
 
 permissions:
   contents: read
