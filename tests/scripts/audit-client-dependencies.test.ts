@@ -212,8 +212,13 @@ function picomatchFixture(scope: 'root' | 'client' | 'cloud' | 'website' = 'root
 }
 
 describe('0.2.101 picomatch controlled-build exception', () => {
-  it.each(['root','client','cloud','website'] as const)('accepts the reviewed %s boundary only', scope => {
+  it.each(['root','client','cloud'] as const)('accepts the reviewed %s boundary only', scope => {
     const f = picomatchFixture(scope);
+    try { expect(f.validate()).toEqual(['picomatch','tool']); }
+    finally { fs.rmSync(f.directory,{recursive:true}); }
+  });
+  it.skipIf(!fs.existsSync(path.resolve('pro/website/astro.config.mjs')))('accepts the reviewed private website boundary only', () => {
+    const f = picomatchFixture('website');
     try { expect(f.validate()).toEqual(['picomatch','tool']); }
     finally { fs.rmSync(f.directory,{recursive:true}); }
   });
@@ -257,7 +262,7 @@ describe('0.2.101 picomatch controlled-build exception', () => {
       expect(f.validate).toThrow(/runtime matcher/);
     } finally { fs.rmSync(f.directory,{recursive:true}); }
   });
-  it('rejects SSR or different website build configuration', () => {
+  it.skipIf(!fs.existsSync(path.resolve('pro/website/astro.config.mjs')))('rejects SSR or different website build configuration', () => {
     const f = picomatchFixture('website');
     try {
       fs.appendFileSync(path.join(f.directory,'astro.config.mjs'),"\n// changed deployment boundary\n");
