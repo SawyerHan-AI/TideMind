@@ -1475,6 +1475,11 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       executableName: 'claude', identifier: 'com.anthropic.claude-code', team: 'Q6L2SF6YDW',
       cdHash: '28d49821f609d871c2282bdec52116bd91ea5806',
     },
+    {
+      label: 'Antigravity', family: 'antigravity', catalogId: 'antigravity-cli' as const,
+      executableName: 'agy', identifier: 'cli', team: 'EQHXZ8M8AV',
+      cdHash: '0123456789abcdef0123456789abcdef01234567',
+    },
   ])('binds $label native write trust to the exact signed Mach-O generation and publisher receipt', async ({
     family, catalogId, executableName, identifier, team, cdHash,
   }) => {
@@ -2110,17 +2115,20 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     }
   })
 
-  it('binds a Desktop proof to the canonical app signature and rejects a Team drift', async () => {
+  it.each([
+    { family: 'zcode', catalogId: 'zcode-desktop' as const, bundleId: 'dev.zcode.app', bundleName: 'ZCode.app', executableName: 'ZCode', version: '3.10.2', team: '8A5X4JJ39T' },
+    { family: 'antigravity', catalogId: 'antigravity-app' as const, bundleId: 'com.google.antigravity', bundleName: 'Antigravity.app', executableName: 'Antigravity', version: '2.33.0', team: 'EQHXZ8M8AV' },
+  ])('binds $catalogId Desktop proof to the canonical app signature and rejects a Team drift', async ({ family, catalogId, bundleId, bundleName, executableName, version, team }) => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-live-app-proof-')))
-    const appPath = path.join(root, 'ZCode.app')
-    const executable = path.join(appPath, 'Contents', 'MacOS', 'ZCode')
+    const appPath = path.join(root, bundleName)
+    const executable = path.join(appPath, 'Contents', 'MacOS', executableName)
     fs.mkdirSync(path.dirname(executable), { recursive: true, mode: 0o700 })
     fs.writeFileSync(executable, 'fixture', { mode: 0o700 })
     fs.writeFileSync(path.join(appPath, 'Contents', 'Info.plist'), [
       '<plist><dict>',
-      '<key>CFBundleIdentifier</key><string>dev.zcode.app</string>',
-      '<key>CFBundleShortVersionString</key><string>3.10.2</string>',
-      '<key>CFBundleExecutable</key><string>ZCode</string>',
+      `<key>CFBundleIdentifier</key><string>${bundleId}</string>`,
+      `<key>CFBundleShortVersionString</key><string>${version}</string>`,
+      `<key>CFBundleExecutable</key><string>${executableName}</string>`,
       '</dict></plist>',
     ].join(''))
     const desktopFs = physicalDiscoveryFileSystem()
@@ -2131,14 +2139,14 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     }, appPath, 2_000)
     const executableProof = await readStableFileFingerprint(executable, MAX_CLI_EXECUTABLE_PROOF_BYTES)
     const portableArtifactFingerprint = desktopSnapshotPortableArtifactFingerprint({
-      version: '3.10.2',
+      version,
       executable: executableProof,
       signature: {
         valid: true,
-        identifier: 'dev.zcode.app',
-        teamIdentifier: '8A5X4JJ39T',
+        identifier: bundleId,
+        teamIdentifier: team,
         cdHash: '0123456789abcdef0123456789abcdef01234567',
-        designatedRequirement: 'identifier "dev.zcode.app" and anchor apple generic',
+        designatedRequirement: `identifier "${bundleId}" and anchor apple generic`,
         verificationBoundary: 'desktop_snapshot',
       },
     })!
@@ -2147,34 +2155,34 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
     const repository = new AgentIntegrationRepository(db)
     repository.upsertDiscoveredInstallation({
       id: 'zcode-proof',
-      family: 'zcode',
-      hostVariant: 'zcode-desktop',
+      family,
+      hostVariant: catalogId,
       installKey: 'zcode:proof',
-      distributionId: 'dev.zcode.app',
+      distributionId: bundleId,
       provenance: 'fixture',
       osUserIdentity: 'usr_fixture_1234',
-      displayName: 'ZCode',
-      configRoot: path.join(root, '.zcode'),
+      displayName: executableName,
+      configRoot: path.join(root, '.' + family),
       executablePath: executable,
       appPath,
-      detectedVersion: '3.10.2',
+      detectedVersion: version,
       versionDetectionMethod: 'bundle_plist',
       agentId: 'agent-zcode-proof',
       supportedCapability: 3,
       lastDetectedAt: '2026-08-26T00:00:00.000Z',
       metadata: {
         distribution: {
-          distributionId: 'dev.zcode.app',
+          distributionId: bundleId,
           executableRealpath: executable,
-          packageProvenance: 'signed_app:dev.zcode.app:8A5X4JJ39T',
+          packageProvenance: `signed_app:${bundleId}:${team}`,
           capabilityFingerprint: `${DESKTOP_BUNDLE_SURFACE_SCHEMA}:${surface.fingerprint}`,
           portableArtifactFingerprint,
         },
       },
     })
-    let teamIdentifier = '8A5X4JJ39T'
+    let teamIdentifier = team
     let cdHash: string | undefined = '0123456789abcdef0123456789abcdef01234567'
-    let designatedRequirement: string | undefined = 'identifier "dev.zcode.app" and anchor apple generic'
+    let designatedRequirement: string | undefined = `identifier "${bundleId}" and anchor apple generic`
     let finalIdentityMutation: 'app_mode' | 'executable_mode' | 'app_timestamp' | null = null
     const appMode = fs.statSync(appPath).mode & 0o777
     const executableMode = fs.statSync(executable).mode & 0o777
@@ -2189,7 +2197,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
         if (finalIdentityMutation === 'executable_mode') fs.chmodSync(executable, executableMode ^ 0o020)
         return {
           valid: true,
-          identifier: 'dev.zcode.app',
+          identifier: bundleId,
           teamIdentifier,
           cdHash,
           designatedRequirement,
@@ -2198,7 +2206,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       },
       finalVerifyAppSignatureSync: (_targetPath, timeoutMs) => {
         expect(timeoutMs).toBe(20_000)
-        return { ...zcodeSignature(), teamIdentifier, cdHash, designatedRequirement }
+        return { valid: true, identifier: bundleId, teamIdentifier, cdHash, designatedRequirement, verificationBoundary: 'strict_final' as const }
       },
     })
     try {
@@ -2224,7 +2232,7 @@ describe('production Agent Integration live distribution trust', { timeout: 30_0
       finalIdentityMutation = null
       teamIdentifier = 'ATTACKER00'
       expect(await attest(row)).toBeNull()
-      teamIdentifier = '8A5X4JJ39T'
+      teamIdentifier = team
       cdHash = undefined
       expect(await attest(row)).toBeNull()
       cdHash = '0123456789abcdef0123456789abcdef01234567'

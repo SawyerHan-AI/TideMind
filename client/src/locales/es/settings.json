@@ -1782,7 +1782,8 @@
         "sharedEvidence": "Evidencia de configuración compartida",
         "domainEvidence": "Estos resultados corresponden a la configuración compartida. No prueban que cada instalación App o CLI se haya probado por separado.",
         "checkSupport": "Esta conexión no ofrece comprobaciones automáticas de cuenta ni pruebas de modelo. Se verifica mediante el uso real de TideMind.",
-        "connectionReview": "Hay que revisar la configuración o identidad compartida existente de Antigravity. No se ha reemplazado ninguna conexión. Revisa los detalles antes de reconectar."
+        "connectionReview": "Hay que revisar la configuración o identidad compartida existente de Antigravity. No se ha reemplazado ninguna conexión. Revisa los detalles antes de reconectar.",
+        "appUsage": "Después de cambiar la configuración o reconectar, reinicia Antigravity App, inicia una conversación nueva y pídele que use TideMind. Si se solicita, permite las herramientas TideMind indicadas."
       }
     }
   },

@@ -1,6 +1,6 @@
 import path from 'node:path'
 import fs from 'node:fs'
-import { ANTIGRAVITY_RULE_CONTENT } from '@server/antigravity-instruction.js'
+import { renderAntigravityRule } from '@server/antigravity-instruction.js'
 import { createCompositeHostAdapter } from './composite-adapter'
 import { createJsonMcpHostAdapter } from './json-mcp-adapter'
 import { createManagedTextHostAdapter } from './managed-text-adapter'
@@ -59,14 +59,14 @@ export function createAntigravityHostAdapter(catalogId: AntigravityCatalogId) {
     catalogId, adapterVersion: '1', componentKey: 'instruction', artifactType: 'rule',
     targetFile: context => path.join(context.installation.canonicalConfigRoot, 'rules', 'tidemind.md'),
     allowedRoot: context => context.installation.canonicalConfigRoot,
-    content: () => ANTIGRAVITY_RULE_CONTENT,
+    content: context => renderAntigravityRule(context.agentId),
     reload: 'new_session',
     recognitionViaHostActivity: { componentKey: 'memory_tools', signalNames: ['brain_prepare'], require: 'all',
       diagnostic: 'antigravity_rule_recognized_in_configuration_domain' },
   })
   const memory = createJsonMcpHostAdapter({
     catalogId, adapterVersion: '1', configFile: context => path.join(context.installation.canonicalConfigRoot, 'mcp_config.json'),
-    selectorRoot: ['mcpServers'], reload: 'new_session', allowLegacyAgentOnlyAdoption: false,
+    selectorRoot: ['mcpServers'], reload: catalogId === 'antigravity-app' ? 'restart_host' : 'new_session', allowLegacyAgentOnlyAdoption: false,
     activationGate: (context, key) => gate(context, 'mcp_config.json', key),
     buildEntry: context => ({
       command: context.runtime.shimPath, args: [context.runtime.mcpServerPath],

@@ -1782,7 +1782,8 @@
         "sharedEvidence": "共有設定の検証結果",
         "domainEvidence": "これらの結果は共有設定に対するものです。各 App または CLI が個別にテスト済みであることは示しません。",
         "checkSupport": "この接続ではアカウントの自動確認やモデルテストを利用できません。TideMind の実際の使用によって検証されます。",
-        "connectionReview": "既存の Antigravity 設定または共有IDの確認が必要です。既存の接続は置き換えていません。再接続する前に詳細を確認してください。"
+        "connectionReview": "既存の Antigravity 設定または共有IDの確認が必要です。既存の接続は置き換えていません。再接続する前に詳細を確認してください。",
+        "appUsage": "設定の変更や再接続後は、まず Antigravity App を再起動し、新しい会話で TideMind を使うよう依頼してください。確認が表示された場合は、要求された TideMind ツールを許可してください。"
       }
     }
   },

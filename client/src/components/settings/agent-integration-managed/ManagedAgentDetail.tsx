@@ -31,6 +31,7 @@ import {
   canReuseSharedHostRecognition,
   hasHostRecognition,
   isStartupOnlyComponent,
+  antigravityUsageKey,
   componentLabelKey,
   componentStatusPresentation,
   detailFocusDestination,
@@ -625,7 +626,7 @@ export function ManagedAgentDetail({
         )}
         {isAntigravity && !historyOnly && installation.desiredState === 'managed' && (
           <div className="mt-3 space-y-1 rounded-lg border border-white/10 p-3 text-xs text-gray-400" data-antigravity-guidance>
-            <p>{t('agent.managed.antigravity.usage')}</p>
+            <p>{t(antigravityUsageKey(installation.hostVariant))}</p>
             {!family.connection?.memoryCallsVerified && <p>{t('agent.managed.antigravity.awaitingCall')}</p>}
             <p>{t('agent.managed.antigravity.checkSupport')}</p>
             <p>{t('agent.managed.antigravity.maintenance')}</p>

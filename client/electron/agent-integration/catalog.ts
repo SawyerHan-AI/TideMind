@@ -296,7 +296,7 @@ const P0_COMPONENTS: Readonly<Partial<Record<CatalogId, readonly ComponentDeclar
   'claude-desktop-legacy': p0Components(['not_applicable', 'managed', 'not_applicable'], {
     memoryArtifacts: ['mcp'], memoryReload: 'restart_host',
   }),
-  'antigravity-app': p0Components(['managed', 'managed', 'managed'], { instructionArtifacts: ['rule'], memoryReload: 'new_session' }),
+  'antigravity-app': p0Components(['managed', 'managed', 'managed'], { instructionArtifacts: ['rule'], memoryReload: 'restart_host' }),
   'antigravity-cli': p0Components(['managed', 'managed', 'managed'], { instructionArtifacts: ['rule'], memoryReload: 'new_session' }),
   'codex-cli': p0Components(['managed', 'managed', 'managed'], { memoryReload: 'new_session' }),
   'codex-desktop': p0Components(['managed', 'managed', 'managed'], { memoryReload: 'new_session' }),

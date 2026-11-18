@@ -1782,7 +1782,8 @@
         "sharedEvidence": "共享配置证据",
         "domainEvidence": "这些结果属于共享配置，不代表每个 App 或 CLI 安装都已分别完成验证。",
         "checkSupport": "此连接暂不支持自动账号检查和模型测试，通过实际使用 TideMind 验证。",
-        "connectionReview": "现有 Antigravity 配置或共享身份需要核对。未替换已有连接，请先查看详情再重新连接。"
+        "connectionReview": "现有 Antigravity 配置或共享身份需要核对。未替换已有连接，请先查看详情再重新连接。",
+        "appUsage": "配置变更或重新连接后，请先重启 Antigravity App，再新建对话并让它使用 TideMind。如出现提示，请允许所请求的 TideMind 工具。"
       }
     }
   },

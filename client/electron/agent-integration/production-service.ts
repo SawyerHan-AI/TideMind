@@ -849,6 +849,7 @@ export function createProductionAgentIntegrationComposition(
 }
 
 const TRUSTED_APP_BUNDLE_IDS: Readonly<Partial<Record<CatalogId, readonly string[]>>> = Object.freeze({
+  'antigravity-app': ['com.google.antigravity'],
   'claude-cowork-local': ['com.anthropic.claudefordesktop'],
   'claude-desktop-legacy': ['com.anthropic.claudefordesktop'],
   'codex-desktop': ['com.openai.codex'],
@@ -859,6 +860,7 @@ const TRUSTED_APP_BUNDLE_IDS: Readonly<Partial<Record<CatalogId, readonly string
 })
 
 const TRUSTED_SIGNED_APP_PROVENANCE: Readonly<Partial<Record<CatalogId, readonly string[]>>> = Object.freeze({
+  'antigravity-app': ['signed_app:com.google.antigravity:EQHXZ8M8AV'],
   'claude-cowork-local': ['signed_app:com.anthropic.claudefordesktop:Q6L2SF6YDW'],
   'claude-desktop-legacy': ['signed_app:com.anthropic.claudefordesktop:Q6L2SF6YDW'],
   'codex-desktop': ['signed_app:com.openai.codex:2DC432GLL2'],
@@ -884,6 +886,7 @@ const TRUSTED_CLI_PROVENANCE: Readonly<Partial<Record<CatalogId, readonly string
 })
 
 const TRUSTED_SIGNED_CLI_PROVENANCE: Readonly<Partial<Record<CatalogId, readonly string[]>>> = Object.freeze({
+  'antigravity-cli': ['signed_cli:cli:EQHXZ8M8AV'],
   'claude-code-native': ['signed_cli:com.anthropic.claude-code:Q6L2SF6YDW'],
   'kimi-code-native': ['signed_cli:kimi:2J9472RW75'],
 })

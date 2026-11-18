@@ -455,6 +455,12 @@ export function isStartupOnlyComponent(component: AgentIntegrationComponentDto |
     && component.supportedSignals[0] === 'session_start'
 }
 
+export function antigravityUsageKey(hostVariant: string): string {
+  return hostVariant === 'antigravity-app'
+    ? 'agent.managed.antigravity.appUsage'
+    : 'agent.managed.antigravity.usage'
+}
+
 export function hasHostRecognition(component: AgentIntegrationComponentDto | undefined): boolean {
   return Boolean(component?.evidenceScope !== 'configuration_domain'
     && component?.hostRecognitionVerified && !component.hostRecognitionRejected)

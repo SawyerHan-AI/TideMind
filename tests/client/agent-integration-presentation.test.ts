@@ -19,6 +19,7 @@ import {
   canReuseSharedHostRecognition,
   hasHostRecognition,
   isStartupOnlyComponent,
+  antigravityUsageKey,
   installationNeedsAction,
   installationNoticeKey,
   aggregateAccess,
@@ -281,6 +282,11 @@ describe('managed Agent presentation', () => {
     expect(isStartupOnlyComponent({ ...hook, supportedSignals: ['session_start'] })).toBe(true)
     expect(isStartupOnlyComponent({ ...hook, supportedSignals: ['session_start', 'session_end'] })).toBe(false)
     expect(isStartupOnlyComponent(hook)).toBe(false)
+  })
+
+  it('asks only Antigravity App to restart after configuration changes or reconnecting', () => {
+    expect(antigravityUsageKey('antigravity-app')).toBe('agent.managed.antigravity.appUsage')
+    expect(antigravityUsageKey('antigravity-cli')).toBe('agent.managed.antigravity.usage')
   })
 
   it('never treats a shared-domain startup receipt as native host trust', () => {

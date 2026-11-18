@@ -855,6 +855,13 @@ describe('exact Antigravity release artifacts', () => {
       expect(target.acceptedDistributionArtifacts.every(item => validArtifactReceipt(item, target))).toBe(true)
     }
   })
+  it('requires an App restart only for pooled MCP replacement', () => {
+    for (const id of ['antigravity-app','antigravity-cli']) {
+      const target = AGENT_INTEGRATION_RELEASE_ENTRIES.find(entry => entry.catalogId === id)!
+      expect(Object.fromEntries(target.components.map(component => [component.componentKey, component.reload])))
+        .toEqual({ instruction:'new_session', memory_tools:id === 'antigravity-app' ? 'restart_host' : 'new_session', lifecycle:'new_session' })
+    }
+  })
   it.each(['executableSha256','executableSizeBytes','identifier','teamIdentifier','cdHash','designatedRequirement','architecture'] as const)('rejects changed %s', field => {
     const changed = { ...surface, [field]: field === 'executableSizeBytes' ? surface.executableSizeBytes + 1 : 'unaccepted' }
     expect(resolveAcceptedAntigravityNativeReceipt(changed as typeof surface)).toBeNull()

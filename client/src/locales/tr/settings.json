@@ -1782,7 +1782,8 @@
         "sharedEvidence": "Paylaşılan yapılandırma kanıtı",
         "domainEvidence": "Bu sonuçlar paylaşılan yapılandırma için geçerlidir. Her App veya CLI kurulumunun ayrı ayrı test edildiğini kanıtlamaz.",
         "checkSupport": "Bu bağlantıda otomatik hesap kontrolleri ve model testleri kullanılamaz. Doğrulama gerçek TideMind kullanımıyla yapılır.",
-        "connectionReview": "Mevcut Antigravity yapılandırması veya paylaşılan kimlik incelenmelidir. Mevcut bağlantılar değiştirilmedi. Yeniden bağlanmadan önce ayrıntıları inceleyin."
+        "connectionReview": "Mevcut Antigravity yapılandırması veya paylaşılan kimlik incelenmelidir. Mevcut bağlantılar değiştirilmedi. Yeniden bağlanmadan önce ayrıntıları inceleyin.",
+        "appUsage": "Yapılandırma değişikliklerinden veya yeniden bağlandıktan sonra Antigravity App’i yeniden başlatın. Ardından yeni bir sohbet başlatıp TideMind kullanmasını isteyin. İstenirse belirtilen TideMind araçlarına izin verin."
       }
     }
   },

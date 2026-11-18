@@ -1782,7 +1782,8 @@
         "sharedEvidence": "共用設定證據",
         "domainEvidence": "這些結果屬於共用設定，不代表每個 App 或 CLI 安裝都已分別完成驗證。",
         "checkSupport": "此連線暫不支援自動帳號檢查和模型測試，透過實際使用 TideMind 驗證。",
-        "connectionReview": "現有 Antigravity 設定或共用身分需要核對。未替換已有連線，請先查看詳情再重新連線。"
+        "connectionReview": "現有 Antigravity 設定或共用身分需要核對。未替換已有連線，請先查看詳情再重新連線。",
+        "appUsage": "設定變更或重新連線後，請先重新啟動 Antigravity App，再建立新對話並請它使用 TideMind。如出現提示，請允許所要求的 TideMind 工具。"
       }
     }
   },

@@ -1782,7 +1782,8 @@
         "sharedEvidence": "Nachweis für die gemeinsame Konfiguration",
         "domainEvidence": "Diese Ergebnisse gelten für die gemeinsame Konfiguration. Sie belegen keine getrennte Prüfung jeder App- oder CLI-Installation.",
         "checkSupport": "Automatische Kontoprüfungen und Modelltests sind für diese Verbindung nicht verfügbar. Die Prüfung erfolgt durch die tatsächliche Nutzung von TideMind.",
-        "connectionReview": "Die vorhandene Antigravity-Konfiguration oder gemeinsame Identität muss geprüft werden. Keine Verbindung wurde ersetzt. Prüfe vor dem erneuten Verbinden die Details."
+        "connectionReview": "Die vorhandene Antigravity-Konfiguration oder gemeinsame Identität muss geprüft werden. Keine Verbindung wurde ersetzt. Prüfe vor dem erneuten Verbinden die Details.",
+        "appUsage": "Starte Antigravity App nach Konfigurationsänderungen oder erneutem Verbinden neu. Beginne dann eine neue Unterhaltung und bitte um die Nutzung von TideMind. Erlaube bei einer Nachfrage die angeforderten TideMind-Werkzeuge."
       }
     }
   },

@@ -1782,7 +1782,8 @@
         "sharedEvidence": "공유 설정 검증 결과",
         "domainEvidence": "이 결과는 공유 설정에 적용됩니다. 각 App 또는 CLI 설치가 개별적으로 테스트되었음을 의미하지 않습니다.",
         "checkSupport": "이 연결은 자동 계정 확인 및 모델 테스트를 지원하지 않습니다. 실제 TideMind 사용을 통해 검증됩니다.",
-        "connectionReview": "기존 Antigravity 설정 또는 공유 ID를 확인해야 합니다. 기존 연결은 교체되지 않았습니다. 다시 연결하기 전에 세부 정보를 확인하세요."
+        "connectionReview": "기존 Antigravity 설정 또는 공유 ID를 확인해야 합니다. 기존 연결은 교체되지 않았습니다. 다시 연결하기 전에 세부 정보를 확인하세요.",
+        "appUsage": "설정을 변경하거나 다시 연결한 후에는 Antigravity App을 재시작한 다음 새 대화를 시작하고 TideMind를 사용하도록 요청하세요. 메시지가 표시되면 요청된 TideMind 도구를 허용하세요."
       }
     }
   },
