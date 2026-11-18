@@ -35,7 +35,18 @@ TideMind runs as an MCP server, exposing three tools: `brain_prepare`, `brain_re
 | Cursor | MCP config | Yes |
 | Windsurf | MCP config | Yes |
 | Codex | MCP config + Hook | Yes |
+| Antigravity App / CLI (macOS Apple silicon) | Shared MCP + always-on Rule + session-start Hook | Yes; native tool approval remains in Antigravity |
 | Any MCP-compatible tool | Manual MCP config | Manual |
+
+### Antigravity App and CLI
+
+In TideMind, open **Settings > Integrations**. Supported installations are discovered and configured automatically. App and CLI share one personal configuration under `~/.gemini/config/`, so TideMind shows one connection with separate host details.
+
+Start a new Antigravity conversation and ask it to use TideMind. Approve the requested TideMind tools in Antigravity when prompted. TideMind provides `brain_prepare`, `brain_recall` and `brain_digest`, an always-on Rule, and context injection at session start. The Rule performs one brief preparation call to confirm loading, even when the startup Hook has already provided context.
+
+This is basic memory integration with startup context. It does not include automatic end-of-session memory saving or compaction hooks. Shared configuration activity is not proof that both App and CLI were independently tested. A configuration waiting for its first successful call is not necessarily broken or denied permission. Automatic account checks and model diagnostics are not available for this connection.
+
+**Pause maintenance** stops automatic configuration changes. To stop memory access for this shared connection, use **Disconnect**. TideMind may ask you to remove its owned Rule file manually; other agents' configuration and your rules are preserved. Antigravity IDE, remote agents and other operating systems are not included in this release's managed support.
 
 ### Manual MCP Configuration
 

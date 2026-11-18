@@ -5,7 +5,7 @@ import { readSharedConnectionEvidence } from './shared-connection-evidence.js'
 import { isExactCodexFourToFiveRecipeUpgrade, type CodexRecipeUpgradeProof } from './hosts/codex-lifecycle-adapter.js'
 import { freshCodexIdentityFingerprint, type CodexFreshIdentityPlan } from './codex-fresh-identity'
 import { evaluateBridgeAdmission } from '@server/agent-bridge-guard.js'
-import { agentIdentityDomainKey, sharedAgentActivityKey, getSharedAgentConsumers, resolveInstallationAgentIdentity, confirmSharedAgentIdentity, type ConfirmSharedIdentityInput } from '@server/db/agent-identity-binding.js'
+import { supportsSharedAgentDomain, agentIdentityDomainKey, sharedAgentActivityKey, getSharedAgentConsumers, resolveInstallationAgentIdentity, confirmSharedAgentIdentity, type ConfirmSharedIdentityInput } from '@server/db/agent-identity-binding.js'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import type Database from 'better-sqlite3'
@@ -985,8 +985,8 @@ export class AgentIntegrationRepository {
     }
   }
 
-  sharedConnectionEvidence(installationId: string, at: string) {
-    return readSharedConnectionEvidence(this.db, installationId, at)
+  sharedConnectionEvidence(installationId: string, at: string, tideMindVersion?: string) {
+    return readSharedConnectionEvidence(this.db, installationId, at, tideMindVersion)
   }
 
   getSharedIdentity(agentId: string) {
@@ -1050,7 +1050,7 @@ export class AgentIntegrationRepository {
   /** Read-only fresh-domain proposal. Existing managed unbound identities need explicit disconnect/reconnect. */
   previewFreshCodexIdentity(installationId: string, proposedCanonicalAgentId?: string): CodexFreshIdentityPlan | null {
     const own = this.getInstallation(installationId)
-    if (!own || own.family !== 'codex' || !['codex-cli', 'codex-desktop'].includes(own.host_variant)) return null
+    if (!own || !supportsSharedAgentDomain(own)) return null
     if (this.resolveAgentIdentity(own.id).bindingId) return null
     const domainKey = agentIdentityDomainKey(own)
     const members = this.listInstallations({ includeRemoved: true }).filter(row => {
@@ -1064,10 +1064,10 @@ export class AgentIntegrationRepository {
     if (unbound.some(row => !['unmanaged','removed'].includes(row.desired_state)
       || (row.id !== own.id && row.desired_state === 'removed')
       || row.status_reason === 'legacy_confirmation_required')) {
-      throw new Error('codex_shared_identity_requires_disconnect_reconnect')
+      throw new Error(`${own.family}_shared_identity_requires_disconnect_reconnect`)
     }
     if (members.some(row => !row.agent_id) || new Set(members.map(row=>row.host_variant)).size !== members.length) {
-      throw new Error('codex_shared_identity_domain_conflict')
+      throw new Error(`${own.family}_shared_identity_domain_conflict`)
     }
     if (proposedCanonicalAgentId && !binding && !members.some(row=>row.agent_id===proposedCanonicalAgentId && (!row.tombstoned_at || row.id===own.id))) throw new Error('Fresh canonical identity is outside approved domain')
     const carrier = binding ? members.find(row => this.resolveAgentIdentity(row.id).bindingId === binding.id
@@ -1088,7 +1088,7 @@ export class AgentIntegrationRepository {
     if (!expected.existingBinding) {
       const owner = this.getInstallation(installationId)!
       this.db.prepare('INSERT OR IGNORE INTO agents(id,name,tool_type,created) VALUES (?,?,?,?)')
-        .run(expected.canonicalAgentId,owner.display_name,'codex',at)
+        .run(expected.canonicalAgentId,owner.display_name,owner.family,at)
       const agent = this.db.prepare('SELECT archived FROM agents WHERE id=?').get(expected.canonicalAgentId) as {archived:number}
       if (agent.archived !== 0) throw new Error('Fresh canonical Agent is archived')
       this.db.prepare(`INSERT INTO agent_identity_bindings

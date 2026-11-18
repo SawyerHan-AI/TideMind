@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { parse as parseToml } from 'smol-toml';
+import { readAntigravityStartupExport } from './antigravity-activity-export.js';
+import { getTideMindVersion } from './utils/app-version.js';
 import { inspectAgentHostActivityEvidenceV34Schema } from './db/agent-integration-schema.js';
 
 function arg(name: string): string {
@@ -26,7 +28,7 @@ const releaseContractSha256 = arg('--release-contract-sha256');
 const fixtureDatabaseIndex = process.argv.indexOf('--fixture-database');
 const fixtureDatabasePath = fixtureDatabaseIndex >= 0 ? process.argv[fixtureDatabaseIndex + 1] : null;
 
-if (!/^aha_[a-f0-9]{24}$/u.test(eventId)) throw new Error('invalid activity event ID');
+if (!/^(?:aha|aie)_[a-f0-9]{24}$/u.test(eventId)) throw new Error('invalid activity event ID');
 if (!/^[a-f0-9]{64}$/u.test(captureNonce)) throw new Error('invalid capture nonce');
 if (!targetKey.trim()) throw new Error('invalid target key');
 
@@ -49,7 +51,9 @@ try {
   const integrity = db.pragma('quick_check', { simple: true });
   if (integrity !== 'ok') throw new Error('activity ledger database quick_check failed');
   const schema = inspectAgentHostActivityEvidenceV34Schema(db);
-  const row = db.prepare(`
+  const shared = eventId.startsWith('aie_');
+  const row = shared ? readAntigravityStartupExport(db, { eventId, installationId:arg('--installation-id'),
+    targetKey, tideMindVersion:getTideMindVersion() }) : db.prepare(`
     SELECT id,
            installation_id AS installationId,
            activation_run_id AS activationRunId,
@@ -67,7 +71,7 @@ try {
   `).get(eventId) as Record<string, unknown> | undefined;
   if (!row) throw new Error(`activity ledger event not found: ${eventId}`);
   const exportBinding = {
-    exporterVersion: 1,
+    exporterVersion: shared ? 2 : 1,
     ledgerSource,
     captureNonce,
     targetKey,

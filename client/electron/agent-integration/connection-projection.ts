@@ -43,6 +43,7 @@ export function projectConnection(input: ConnectionProjectionInput): AgentIntegr
   let memoryCallsVerified = serving && memory.state === 'verified' && managed.some(member => !member.accessIsHistorical)
   let sharedNativeRecognition = false
   const sharedLifecycleFingerprint = sharedEvidence?.components.lifecycle.configurationFingerprint
+  const antigravity = members.every(member => member.familyId === 'antigravity')
   if (identity.shared) {
     memoryCallsVerified = Boolean(serving && identity.valid && sharedEvidence?.components.memory_tools.signalsComplete)
     if (memoryCallsVerified) {
@@ -50,6 +51,25 @@ export function projectConnection(input: ConnectionProjectionInput): AgentIntegr
       memory.lastVerifiedAt = latest(Object.values(sharedEvidence!.components.memory_tools.signals))
     } else if (memory.state === 'verified') memory.state = serving ? 'configured' : 'unconnected'
     if (lifecycle.state === 'verified') lifecycle.state = serving ? 'configured' : 'unconnected'
+    if (antigravity) {
+      for (const component of components) component.evidenceScope = 'configuration_domain'
+      lifecycle.supportedSignals = ['session_start']
+      lifecycle.hostRecognitionVerified = false
+      lifecycle.hostRecognitionRejected = false
+      lifecycle.hostRecognitionObservedAt = null
+      if (serving && identity.valid && sharedLifecycleFingerprint
+        && lifecycle.configurationVerified && lifecycle.configurationFingerprint === sharedLifecycleFingerprint
+        && sharedEvidence?.components.lifecycle.signalsComplete) {
+        lifecycle.state = 'verified'
+        lifecycle.lastVerifiedAt = sharedEvidence.components.lifecycle.signals.session_start ?? null
+      }
+      const recognition = sharedEvidence?.instructionRecognition
+      if (serving && identity.valid && recognition && instruction.configurationVerified
+        && instruction.configurationFingerprint === recognition.configurationFingerprint) {
+        instruction.state = 'verified'
+        instruction.lastVerifiedAt = recognition.observedAt
+      } else if (instruction.state === 'verified') instruction.state = serving ? 'configured' : 'unconnected'
+    } else {
     const nativeFacts = current.flatMap(member => member.components.filter(component => component.key === 'lifecycle'
       && component.configurationFingerprint === sharedLifecycleFingerprint && (component.hostRecognitionVerified || component.hostRecognitionRejected)))
       .sort((a,b) => (Date.parse(b.hostRecognitionObservedAt ?? '') || 0) - (Date.parse(a.hostRecognitionObservedAt ?? '') || 0)
@@ -73,6 +93,7 @@ export function projectConnection(input: ConnectionProjectionInput): AgentIntegr
       && Date.parse(start) >= Date.parse(instruction.configurationAppliedAt ?? '')) {
       instruction.state = 'verified'
       instruction.lastVerifiedAt = start
+    }
     }
   }
   const nativeTrustSharedWith = (member: Member) => sharedNativeRecognition && member.components.some(component =>
@@ -125,7 +146,7 @@ export function projectConnection(input: ConnectionProjectionInput): AgentIntegr
     ...(diagnostic ? { diagnostic } : {}),
     id:identity.key, familyId:members[0].familyId, displayName:input.displayName,
     installationIds:members.map(member=>member.id), shared:identity.shared, bindingGeneration:identity.generation,
-    configurationRevision:sha256Json(sharedEvidence ? Object.values(sharedEvidence.components).map(component=>component.configurationRevision)
+    configurationRevision:sha256Json(sharedEvidence ? [...Object.values(sharedEvidence.components).map(component=>component.configurationRevision), ...(antigravity ? [sharedEvidence.instructionConfigurationFingerprint ?? null] : [])]
       : components.map(component=>[component.key,component.configurationAppliedAt,component.targetLabel])),
     statusGroup,statusReason,components,memoryCallsVerified,maintenance,
     intentRevision: input.connectionIntent?.revision ?? 0,

@@ -11,6 +11,8 @@ export const CATALOG_IDS = [
   'claude-code-cli',
   'claude-code-native',
   'claude-cowork-local',
+  'antigravity-app',
+  'antigravity-cli',
   'codex-cli',
   'codex-desktop',
   'cursor-desktop',
@@ -400,7 +402,15 @@ export interface HostActivityEvidenceQuery {
   observedAfter: string
 }
 
+export interface SharedHostActivityEvidenceRecord {
+  id: string
+  signalName: HostActivitySignal
+  evidenceHash: string
+  observedAt: string
+}
+
 export interface HostActivityEvidenceReader {
+  findShared?(query: HostActivityEvidenceQuery): readonly SharedHostActivityEvidenceRecord[] | Promise<readonly SharedHostActivityEvidenceRecord[]>
   find(query: HostActivityEvidenceQuery): readonly HostActivityEvidenceRecord[] | Promise<readonly HostActivityEvidenceRecord[]>
 }
 
@@ -734,6 +744,7 @@ export interface AdapterVerificationRequest {
 }
 
 export interface ComponentVerificationResult {
+  evidenceScope?: 'configuration_domain' | 'host'
   componentKey: ComponentKey
   status: VerificationStatus
   verifiedCapability: CapabilityLevel | null

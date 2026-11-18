@@ -28,6 +28,7 @@ import {
   agentReleasePhysicalReceiptPairs,
   defaultReleasedAdapterIds,
   resolveAcceptedKimiNativeReceipt,
+  resolveAcceptedAntigravityNativeReceipt,
   resolveAgentIntegrationReleasePolicy,
   validArtifactReceipt,
   type AgentReleaseDistributionArtifactReceipt,
@@ -90,12 +91,12 @@ function releasedAdapterSurface(): ReadonlyMap<CatalogId, AgentHostAdapter> {
     } as AgentHostAdapter]))
 }
 
-describe('0.2.100 Agent release manifest', () => {
+describe('0.2.101 Agent release manifest', () => {
   it('preserves the published 0.2.93 Agent and Custom capability commitments', () => {
     // Frozen from the actually published private source, not today's discovery
     // list. Distribution versions/hashes may evolve without shrinking features.
     expect(released093.sourceCommit).toBe('a1cfe523439f29917d68fcaa60b785854646ac0f')
-    expect(AGENT_INTEGRATION_RELEASE_ENTRIES.map(entry => entry.catalogId).sort())
+    expect(AGENT_INTEGRATION_RELEASE_ENTRIES.filter(entry => !['antigravity-app','antigravity-cli'].includes(entry.catalogId)).map(entry => entry.catalogId).sort())
       .toEqual(released093.entries.map(entry => entry.catalogId).sort())
     for (const expected of released093.entries) {
       expect(AGENT_INTEGRATION_RELEASE_ENTRIES.find(entry => entry.catalogId === expected.catalogId))
@@ -131,10 +132,10 @@ describe('0.2.100 Agent release manifest', () => {
         ? [probe.detectOnlyFallbackCatalogId]
         : []),
     ])
-    expect(AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION).toBe('0.2.100')
+    expect(AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION).toBe('0.2.101')
     expect(AGENT_INTEGRATION_RELEASE_MANIFEST).toMatchObject({
       schemaVersion: 4,
-      appVersion: '0.2.100',
+      appVersion: '0.2.101',
       features: {
         customLocalAgent: {
           enabledByDefault: true,
@@ -194,10 +195,12 @@ describe('0.2.100 Agent release manifest', () => {
 
   it('freezes every investigated production version as the exact release candidate', () => {
     const expectedVersions = new Map<CatalogId, readonly string[]>([
+      ['antigravity-app', ['2.33.0']],
+      ['antigravity-cli', ['1.5.11']],
       ['claude-code-cli', ['2.1.261']],
       ['claude-code-native', ['2.1.261']],
       ['claude-desktop-legacy', ['1.46388.3']],
-      ['codex-cli', ['0.153.4', '0.157.1']],
+      ['codex-cli', ['0.153.4', '0.157.1', '0.167.1']],
       ['codex-desktop', ['26.901.41600', '26.1027.30824']],
       ['cursor-desktop', ['3.19.7']],
       ['windsurf-desktop', ['3.8.20']],
@@ -226,7 +229,7 @@ describe('0.2.100 Agent release manifest', () => {
     const codex = AGENT_INTEGRATION_RELEASE_ENTRIES.find(entry => entry.catalogId === 'codex-cli')
 
     expect(codex).toBeDefined()
-    expect(codex?.observedExactVersions).toEqual(['0.153.4', '0.157.1'])
+    expect(codex?.observedExactVersions).toEqual(['0.153.4', '0.157.1', '0.167.1'])
     for (const version of [
       ...(codex?.observedExactVersions ?? []),
       ...(codex?.releaseAcceptedExactVersions ?? []),
@@ -826,5 +829,37 @@ describe('0.2.100 Agent release manifest', () => {
       autoRestore: false,
       diagnostics: expect.arrayContaining(['release_contract_mismatch:codex-cli:memory_tools']),
     })
+  })
+})
+
+
+describe('exact Antigravity release artifacts', () => {
+  const entry = AGENT_INTEGRATION_RELEASE_ENTRIES.find(entry => entry.catalogId === 'antigravity-cli')!
+  const receipt = entry.acceptedDistributionArtifacts[0]!
+  const surface = {
+    architecture: receipt.architecture,
+    executableSha256: receipt.executableSha256,
+    executableSizeBytes: receipt.executableSizeBytes,
+    identifier: receipt.signedCode!.identifier,
+    teamIdentifier: receipt.signedCode!.teamIdentifier,
+    cdHash: receipt.signedCode!.cdhash,
+    designatedRequirement: receipt.signedCode!.designatedRequirement,
+  }
+  it('resolves only the accepted binary and exposes C3 with startup-only hooks', () => {
+    expect(resolveAcceptedAntigravityNativeReceipt(surface)).toEqual(receipt)
+    for (const id of ['antigravity-app', 'antigravity-cli']) {
+      const target = AGENT_INTEGRATION_RELEASE_ENTRIES.find(entry => entry.catalogId === id)!
+      expect(target.targetCapability).toBe(3)
+      expect(target.requiredLifecycle).toEqual({ signals: ['session_start'], require: 'all' })
+      expect(target.officialDistributions[0].supportedMacArchitectures).toEqual(['arm64'])
+      expect(target.acceptedDistributionArtifacts.every(item => validArtifactReceipt(item, target))).toBe(true)
+    }
+  })
+  it.each(['executableSha256','executableSizeBytes','identifier','teamIdentifier','cdHash','designatedRequirement','architecture'] as const)('rejects changed %s', field => {
+    const changed = { ...surface, [field]: field === 'executableSizeBytes' ? surface.executableSizeBytes + 1 : 'unaccepted' }
+    expect(resolveAcceptedAntigravityNativeReceipt(changed as typeof surface)).toBeNull()
+  })
+  it('rejects ambiguous receipts instead of picking the first version', () => {
+    expect(resolveAcceptedAntigravityNativeReceipt(surface, { ...entry, acceptedDistributionArtifacts: [receipt, receipt] })).toBeNull()
   })
 })

@@ -9,7 +9,7 @@ import {
   type JsonSelector,
 } from '../json-projection'
 import { sha256Json } from '../fingerprint'
-import { verifyMemoryReadWriteActivity } from '../host-activity-evidence'
+import { verifyMemoryReadWriteActivity, verifyHostActivity } from '../host-activity-evidence'
 import type {
   AdoptableArtifactObservation,
   AdapterInspection,
@@ -41,6 +41,8 @@ interface JsonMcpMetadata {
 }
 
 export interface JsonMcpHostSpec {
+  componentKey?: 'memory_tools' | 'lifecycle'
+  artifactType?: 'mcp' | 'hook'
   catalogId: CatalogId
   adapterVersion: string
   configFile(context: AdapterOperationContext): string
@@ -53,6 +55,7 @@ export interface JsonMcpHostSpec {
   distributionId?: string
   detect?(context: AdapterOperationContext): boolean
   buildEntry?(context: AdapterOperationContext): JsonValue
+  assertsIdentity?(value: JsonValue, context: AdapterOperationContext): boolean
   allowLegacyAgentOnlyAdoption?: boolean
   activationGate?(
     context: AdapterOperationContext,
@@ -103,7 +106,7 @@ export function createJsonMcpHostAdapter(spec: JsonMcpHostSpec): AgentHostAdapte
         distributionId: context.installation.distribution.distributionId ?? spec.distributionId,
       },
       components: [{
-        componentKey: 'memory_tools',
+        componentKey: componentKey(spec),
         visibility,
         verificationStatus: 'unverified',
         observedTarget,
@@ -117,11 +120,11 @@ export function createJsonMcpHostAdapter(spec: JsonMcpHostSpec): AgentHostAdapte
   return {
     catalogId: spec.catalogId,
     adapterVersion: spec.adapterVersion,
-    componentKeys: ['memory_tools'],
-    implementationTypes: { memory_tools: ['mcp'] },
+    componentKeys: [componentKey(spec)],
+    implementationTypes: { [componentKey(spec)]: [spec.artifactType ?? 'mcp'] },
     componentContracts: {
-      memory_tools: {
-        deliveryMode: 'managed', artifactTypes: ['mcp'], mutationDomain: 'file_fragment', reload: spec.reload,
+      [componentKey(spec)]: {
+        deliveryMode: 'managed', artifactTypes: [spec.artifactType ?? 'mcp'], mutationDomain: 'file_fragment', reload: spec.reload,
       },
     },
     inspect,
@@ -142,10 +145,11 @@ export function createJsonMcpHostAdapter(spec: JsonMcpHostSpec): AgentHostAdapte
             desired,
             context,
             spec.allowLegacyAgentOnlyAdoption !== false,
+            spec.assertsIdentity,
           )) return []
         return [{
-          componentKey: 'memory_tools',
-          artifactType: 'mcp',
+          componentKey: componentKey(spec),
+          artifactType: spec.artifactType ?? 'mcp',
           domainKind: 'file_fragment',
           physicalTarget: projection.file.canonicalPath,
           ownershipKey: selector.join('.'),
@@ -270,12 +274,12 @@ export function createJsonMcpHostAdapter(spec: JsonMcpHostSpec): AgentHostAdapte
       }
     },
     async verify(context, request: AdapterVerificationRequest): Promise<readonly ComponentVerificationResult[]> {
-      if (!request.componentKeys.includes('memory_tools')) return []
+      if (!request.componentKeys.includes(componentKey(spec))) return []
       const inspection = await inspect(context)
-      const memory = inspection.components.find(component => component.componentKey === 'memory_tools')
+      const memory = inspection.components.find(component => component.componentKey === componentKey(spec))
       if (request.expectedCapability === 0 && memory?.visibility === 'absent') {
         return [{
-          componentKey: 'memory_tools',
+          componentKey: componentKey(spec),
           status: 'verified',
           verifiedCapability: 0,
           identityAssertion: context.agentId,
@@ -285,7 +289,7 @@ export function createJsonMcpHostAdapter(spec: JsonMcpHostSpec): AgentHostAdapte
       }
       if (memory?.visibility !== 'dedicated') {
         return [{
-          componentKey: 'memory_tools',
+          componentKey: componentKey(spec),
           status: 'failed',
           verifiedCapability: null,
           invalidationKeys: ['artifact_hash', 'host_version', 'adapter_version'],
@@ -296,7 +300,7 @@ export function createJsonMcpHostAdapter(spec: JsonMcpHostSpec): AgentHostAdapte
       const desiredFragmentHash = sha256Json(desiredFragment)
       if (memory.observedFragmentHash !== desiredFragmentHash) {
         return [{
-          componentKey: 'memory_tools',
+          componentKey: componentKey(spec),
           status: 'failed',
           verifiedCapability: null,
           evidenceHash: memory.observedFragmentHash,
@@ -305,7 +309,9 @@ export function createJsonMcpHostAdapter(spec: JsonMcpHostSpec): AgentHostAdapte
           diagnostics: ['managed_mcp_fragment_drifted_from_current_desired'],
         }]
       }
-      const activity = await verifyMemoryReadWriteActivity(context, request)
+      const activity = spec.componentKey === 'lifecycle'
+        ? await verifyHostActivity(context, request, { componentKey: 'lifecycle', signalNames: ['session_start'], require: 'all' })
+        : await verifyMemoryReadWriteActivity(context, request)
       if (activity.status === 'unverified') {
         return [{
           ...activity,
@@ -342,8 +348,9 @@ function isExactAdoptableEntry(
   desired: JsonValue,
   context: AdapterOperationContext,
   allowLegacyAgentOnlyAdoption: boolean,
+  assertsIdentity?: JsonMcpHostSpec['assertsIdentity'],
 ): boolean {
-  if (live === undefined || !assertsAgentIdentity(live, context.agentId)) return false
+  if (live === undefined || !(assertsIdentity ? assertsIdentity(live, context) : assertsAgentIdentity(live, context.agentId))) return false
   if (sha256Json(live) === sha256Json(desired)) return true
   if (!allowLegacyAgentOnlyAdoption) return false
   const generationlessDesired = withoutActivityGenerationToken(desired)
@@ -406,12 +413,12 @@ function buildPlan(
       projectionVersion: context.runtime.projectionVersion,
       mutations: [],
       requiredUserActions: request.desiredComponents
-        .filter(component => component !== 'memory_tools')
+        .filter(component => component !== componentKey(spec))
         .map(component => `component_requires_other_projection:${component}`),
       diagnostics: ['host_not_detected_or_projection_format_unsupported'],
     }
   }
-  if (!remove && request.desiredComponents.includes('memory_tools')) {
+  if (!remove && request.desiredComponents.includes(componentKey(spec))) {
     let gate: ReturnType<NonNullable<JsonMcpHostSpec['activationGate']>> | undefined
     try {
       gate = spec.activationGate?.(context, primarySelector.at(-1)!)
@@ -440,7 +447,7 @@ function buildPlan(
     }
   }
   let baseline = request.ownedArtifacts.find(artifact =>
-    artifact.componentKey === 'memory_tools'
+    artifact.componentKey === componentKey(spec)
     && path.resolve(artifact.physicalTarget) === path.resolve(target)
     && artifact.ownershipKey === ownershipKey,
   )
@@ -449,7 +456,7 @@ function buildPlan(
     return {
       selector: legacySelector,
       baseline: request.ownedArtifacts.find(artifact =>
-        artifact.componentKey === 'memory_tools'
+        artifact.componentKey === componentKey(spec)
         && artifact.physicalTarget === target
         && artifact.ownershipKey === legacySelector.join('.'),
       ),
@@ -467,7 +474,7 @@ function buildPlan(
   const desiredFragmentHash = desiredFragment === undefined ? null : sha256Json(desiredFragment)
   const relocatedBaseline = !remove && baseline === undefined && assertsAgentIdentity(desiredFragment!, context.agentId)
     ? request.ownedArtifacts.find(artifact =>
-        artifact.componentKey === 'memory_tools'
+        artifact.componentKey === componentKey(spec)
         && path.resolve(artifact.physicalTarget) !== path.resolve(target)
         && artifact.ownershipKey === ownershipKey
         && artifact.ownedFragmentHash === desiredFragmentHash,
@@ -524,7 +531,7 @@ function buildPlan(
     }
   }
 
-  if (!request.desiredComponents.includes('memory_tools')) {
+  if (!request.desiredComponents.includes(componentKey(spec))) {
     diagnostics.push('memory_tools_not_requested')
   } else if (diagnostics.some(diagnostic => diagnostic.startsWith('legacy_'))) {
     // Same-name legacy state is part of the managed migration surface. Never
@@ -546,8 +553,8 @@ function buildPlan(
       ...(desiredFragment === undefined ? {} : { desiredFragment }),
     }
     mutations.push({
-      operationId: `${context.operationId}:memory_tools`,
-      componentKey: 'memory_tools',
+      operationId: `${context.operationId}:${componentKey(spec)}`,
+      componentKey: componentKey(spec),
       operation: projection.action,
       domainKind: 'file_fragment',
       physicalTarget: target,
@@ -572,7 +579,7 @@ function buildPlan(
     })
   }
 
-  const unsupported = request.desiredComponents.filter(component => component !== 'memory_tools')
+  const unsupported = request.desiredComponents.filter(component => component !== componentKey(spec))
   return {
     catalogId: spec.catalogId,
     installationKey: context.installation.installKey,
@@ -637,4 +644,8 @@ function parseMetadata(mutation: PlannedMutation): JsonMcpMetadata {
     migrationSourceSelector: value.migrationSourceSelector,
     migrationSourceFragmentHash: value.migrationSourceFragmentHash,
   }
+}
+
+function componentKey(spec: JsonMcpHostSpec): 'memory_tools' | 'lifecycle' {
+  return spec.componentKey ?? 'memory_tools'
 }

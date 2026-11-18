@@ -28,6 +28,23 @@ function project(members = [member('cli'), member('desktop')], sharedEvidence = 
     displayName: 'Codex', members, sharedEvidence, activeInstallationIds: new Set() })
 }
 describe('connection projection', () => {
+  it('keeps Antigravity Rule recognition independent from startup and host identity', () => {
+    const cli = member('cli', {familyId:'antigravity',hostVariant:'antigravity-cli'})
+    const app = member('app', {familyId:'antigravity',hostVariant:'antigravity-app'})
+    const proof = evidence()
+    proof.components.lifecycle.signalsComplete = true
+    const before = project([cli,app],proof)
+    expect(before.components.map(c=>c.state)).toEqual(['configured','verified','verified'])
+    expect(before.components.find(c=>c.key==='lifecycle')).toMatchObject({
+      evidenceScope:'configuration_domain',supportedSignals:['session_start'],hostRecognitionVerified:false,
+    })
+    proof.instructionRecognition = {configurationFingerprint:'instruction',observedAt:time}
+    expect(project([cli,app],proof).components[0]).toMatchObject({state:'verified',evidenceScope:'configuration_domain'})
+    proof.instructionRecognition.configurationFingerprint = 'old-rule'
+    expect(project([cli,app],proof).components[0].state).toBe('configured')
+    expect(cli.components[0].state).toBe('configured')
+  })
+
   it('prefers a supported shared member diagnostic over Desktop unsupported regardless of ordering', () => {
     const desktop = member('desktop', { hostVariant: 'codex-desktop', diagnostic: {
       status: 'waiting', reason: 'native_diagnostic_unsupported', runId: null } })

@@ -164,6 +164,7 @@ export function createUiAuditAgentIntegrationOptions(
       'openclaw-local', 'qwen-code-cli', 'zcode-desktop', 'opencode-v1-cli',
       'opencode-v2-beta-cli', 'pi-official-cli', 'omp-cli', 'claude-cowork-local',
       'qwenwork-desktop',
+      'antigravity-app', 'antigravity-cli',
     ],
     canManageInstallation: row => uiAuditInstallationManageable(row, root, auditHome),
     liveTrustAttestor: row => uiAuditLiveTrustProof(row, root, auditHome),

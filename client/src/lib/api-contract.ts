@@ -270,6 +270,10 @@ export interface AgentIntegrationComponentDto {
   implementationTypes: string[]
   targetLabel: string | null
   lastVerifiedAt: string | null
+  /** Shared configuration activity does not identify an individual consuming host. */
+  evidenceScope?: 'configuration_domain' | 'host'
+  /** Only the lifecycle behavior declared by the released host contract. */
+  supportedSignals?: string[]
   /** Configuration and host recognition are separate from complete runtime activity. */
   configurationFingerprint?: string
   configurationVerified?: boolean
@@ -744,6 +748,7 @@ export interface AgentIntegrationDetailDto {
 export interface AgentIntegrationSupportProductDto {
   id: string
   displayName: string
+  searchTerms?: string[]
   variants: Array<{
     id: string
     displayName: string

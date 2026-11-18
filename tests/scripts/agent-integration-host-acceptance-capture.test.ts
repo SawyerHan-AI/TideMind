@@ -17,6 +17,7 @@ import {
   initializeAgentHostAcceptanceCapture,
   prepareAgentHostAcceptanceReview,
   recordAgentHostAcceptanceStep,
+  assertFreshActivityExport,
   recordAgentHostAcceptanceTarget,
   recordAgentHostAcceptanceUpgrade,
   recordAgentDatabaseRecovery,
@@ -872,5 +873,42 @@ describe('0.2.94 explicit deferred real-host scope', () => {
     expect(() => recordAgentHostAcceptanceStep({workspace, targetId, stepId: 'brain_prepare',
       assertionPath: '/not-read', attestationPath: '/not-read', evidencePaths: []})).toThrow(/deferred target does not accept real-host steps/)
     expect(() => prepareAgentHostAcceptanceReview({workspace, outputPath: path.join(root, 'review.json')})).toThrow(/capture is incomplete/)
+  })
+})
+
+
+describe('Antigravity configuration-domain startup capture', () => {
+  it('records a schema49 domain receipt without inventing a host-origin ledger row', () => {
+    const {root,workspace}=initialized('0.2.101')
+    recordTargetMetadata(workspace,root,'antigravity-cli')
+    const state=JSON.parse(fs.readFileSync(path.join(workspace,'.capture-state.json'),'utf8'))
+    const target=state.entries.find((item:any)=>item.targetId==='antigravity-cli')
+    const inputs=stepInputs(root,workspace,target.targetKey,'lifecycle_session_start')
+    const assertion=JSON.parse(fs.readFileSync(inputs.assertionPath,'utf8'))
+    const activity:any={exporterVersion:2,ledgerSource:'fixture',captureNonce:state.captureNonce,targetKey:target.targetKey,
+      candidateBundleSha256:state.candidateAppsByArchitecture.arm64.bundleSha256,sourceCommit:state.sourceCommit,
+      releaseContractSha256:state.releaseContractSha256,databaseSchemaVersion:49,databaseSchemaSha256:sha256('schema49'),
+      evidenceScope:'configuration_domain',id:'aie_'+'a'.repeat(24),requestedInstallationId:target.installationId,
+      bindingId:'binding-fixture',bindingGeneration:1,agentId:target.agentId,activationRunId:'run-fixture',
+      activityGenerationSha256:sha256('token'),artifactSha256:sha256('artifact'),componentKey:'lifecycle',signalName:'session_start',
+      tideMindVersion:'0.2.101',adapterVersion:'1',projectionVersion:'1',domainEvidenceHash:sha256('domain-observation'),observedAt:OBSERVED_AT}
+    activity.evidenceHash=hostActivityLedgerEvidenceHash(activity);activity.exportHash=hostActivityLedgerExportHash(activity)
+    const output=path.join(root,'shared-export.json');writeJson(output,activity)
+    state.activityExports.push({eventId:activity.id,observedAt:activity.observedAt,targetKey:target.targetKey,exportHash:activity.exportHash,outputPath:output,consumed:false})
+    writeJson(path.join(workspace,'.capture-state.json'),state)
+    assertion.activityReceipt={...activity,evidenceScope:'host'};writeJson(inputs.assertionPath,assertion)
+    const record=()=>recordAgentHostAcceptanceStep({workspace,targetId:target.targetKey,stepId:'lifecycle_session_start',
+      assertionPath:inputs.assertionPath,attestationPath:inputs.attestationPath,evidencePaths:[inputs.evidencePath]})
+    expect(record).toThrow(/evidenceScope/)
+    assertion.activityReceipt=activity;writeJson(inputs.assertionPath,assertion)
+    expect(record()).toMatchObject({stepId:'lifecycle_session_start'})
+  })
+
+  it('requires new observed activity before reusing a shared event ID for another target', () => {
+    const previous=[{eventId:'aie_'+'a'.repeat(24),observedAt:'2026-11-18T10:00:00.000Z'}]
+    const receipt={exporterVersion:2,id:previous[0].eventId,observedAt:previous[0].observedAt}
+    expect(()=>assertFreshActivityExport(previous,receipt)).toThrow(/without newer activity/)
+    expect(()=>assertFreshActivityExport(previous,{...receipt,observedAt:'2026-11-18T10:01:00.000Z'})).not.toThrow()
+    expect(()=>assertFreshActivityExport(previous,{...receipt,exporterVersion:1})).toThrow()
   })
 })

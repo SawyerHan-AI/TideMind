@@ -1,3 +1,5 @@
+import { supportsSharedAgentDomain } from '@server/db/agent-identity-binding.js'
+import { capabilityForComponents } from './capability'
 import type { AgentAuthenticationResult } from './agent-authentication'
 import { nativePermissionsForPlan } from './consent'
 import { checkDefaultConnectionPolicy } from './default-connection-policy'
@@ -464,7 +466,7 @@ export class AgentIntegrationService {
     const connections = [...byConnection.values()].map(({ identity, members }) => {
       const sorted = [...members].sort(compareInstallations)
       const evidence = identity.shared && identity.valid
-        ? this.dependencies.repository.sharedConnectionEvidence(sorted[0].id, this.now().toISOString()) : undefined
+        ? this.dependencies.repository.sharedConnectionEvidence(sorted[0].id, this.now().toISOString(), this.dependencies.automaticConnections?.runtimeVersion) : undefined
       return projectConnection({ identity, members: sorted,
         displayName: safeProductName(sorted[0].familyId, sorted[0].displayName),
         diagnosticMemorySuccess: sorted.map(member => this.dependencies.diagnostics?.memorySuccess(this.requireInstallation(member.id)))
@@ -2113,7 +2115,7 @@ export class AgentIntegrationService {
             : 'managed' as const
           : 'detectable' as const
         const implementedCapability = implemented
-          ? capabilityForComponents([...implemented])
+          ? capabilityForComponents([...implemented], id)
           : 0
         const releasedCapability = releaseEntry?.targetCapability ?? implementedCapability
         return {
@@ -2128,7 +2130,7 @@ export class AgentIntegrationService {
             : 'unconnected',
         }
       })
-      return { id: product.id, displayName: product.displayName, variants }
+      return { id: product.id, displayName: product.displayName, variants, ...(product.id === 'antigravity' ? { searchTerms: ['反重力', 'agy', 'Antigravity'] } : {}) }
     }).filter(product => product.variants.length > 0)
   }
 
@@ -2489,8 +2491,7 @@ export class AgentIntegrationService {
   }
 
   private codexReconnectBatchKey(row: AgentInstallationRow): string | undefined {
-    if (row.family !== 'codex' || !['codex-cli','codex-desktop'].includes(row.host_variant)
-      || row.desired_state !== 'removed') return undefined
+    if (!supportsSharedAgentDomain(row) || row.desired_state !== 'removed') return undefined
     // resolveAgentIdentity also verifies realm/user/config/profile against the binding domain.
     const identity = this.dependencies.repository.resolveAgentIdentity(row.id)
     return identity.bindingId ? 'reconnect:' + sha256Json({bindingId:identity.bindingId,
@@ -2533,7 +2534,7 @@ export class AgentIntegrationService {
       }
       let freshIdentity = operation === 'connect' && !legacySelection
         ? this.dependencies.repository.previewFreshCodexIdentity(row.id) : null
-      if (freshIdentity) assertFreshCodexConfig(freshIdentity,row.config_root!)
+      if (freshIdentity) assertFreshCodexConfig(freshIdentity,row.config_root!,row.family)
       let codexBatchKey = freshIdentity ? 'fresh:' + freshIdentity.domainKey
         : operation === 'connect' && !legacySelection ? this.codexReconnectBatchKey(row) : undefined
       const recipeBatchKey = operation==='connect' && !freshIdentity && !legacySelection ? this.codexRecipeUpgradeBatchKey(row) : undefined
@@ -2583,7 +2584,7 @@ export class AgentIntegrationService {
         .map(component => component.componentKey)
       const requestedCapability = operation === 'disconnect'
         ? 0
-        : capabilityForComponents(componentKeys)
+        : capabilityForComponents(componentKeys, row.host_variant)
       if (ownershipOnly) {
         const declaration = variantDeclarationFor(
           installation.identity.hostVariant,
@@ -2627,7 +2628,7 @@ export class AgentIntegrationService {
       else if(earlierShared?.codexBatchKey?.startsWith('recipe-4-to-5:')) throw new Error('Shared recipe upgrade changed during preview')
       const desiredCapability = operation === 'disconnect'
         ? 0
-        : capabilityForComponents(prepared.componentKeys)
+        : capabilityForComponents(prepared.componentKeys, row.host_variant)
       const maintenanceScopes = this.noopMaintenanceScopes(installation, prepared)
       const disconnectScopes = operation === 'disconnect'
         ? this.disconnectScopes(installation, prepared, maintenanceScopes)
@@ -2725,7 +2726,7 @@ export class AgentIntegrationService {
         let approvedBatchHash: string | undefined
         if (freshIdentity) {
           const liveFresh = this.dependencies.repository.previewFreshCodexIdentity(liveRow.id,freshIdentity.canonicalAgentId)
-          if (liveFresh) assertFreshCodexConfig(liveFresh,liveRow.config_root!)
+          if (liveFresh) assertFreshCodexConfig(liveFresh,liveRow.config_root!,liveRow.family)
           if (!liveFresh && batchCarrier && batchCarrier.canonical===item.installation.agentId
             && batchCarrier.token===item.prepared.activityGenerationToken
             && this.dependencies.repository.coordinatorAgentIdentity(liveRow.id).sharedIdentityBinding===item.installation.sharedIdentityBinding) {
@@ -2976,7 +2977,7 @@ export class AgentIntegrationService {
     if(peerId){
       const peerInstallation=toCoordinatorInstallation(this.requireInstallation(peerId),this.dependencies.repository)
       const peerPlan=await this.dependencies.execution.preview({installation:peerInstallation,operation:'connect',
-        componentKeys:plan.componentKeys,desiredCapability:capabilityForComponents(plan.componentKeys),
+        componentKeys:plan.componentKeys,desiredCapability:capabilityForComponents(plan.componentKeys, peerInstallation.identity.hostVariant),
         frozenActivityGenerationToken:plan.activityGenerationToken,
         ...(frozenPeer?.operationId?{frozenOperationId:frozenPeer.operationId}:{})})
       if(frozenPeer && preparedLiveEvidence(peerPlan)!==preparedLiveEvidence(frozenPeer))throw new Error('Retained peer changed after preview')
@@ -3740,8 +3741,9 @@ function componentDto(
       configurationFingerprint: sha256Json([row.artifact_id, row.owned_fragment_hash, row.configuration_applied_at]),
     } : {}),
     configurationAppliedAt: typeof row?.configuration_applied_at === 'string' ? row.configuration_applied_at : null,
-    hostRecognitionVerified,
-    hostRecognitionRejected,
+    hostRecognitionVerified: installation.family === 'antigravity' ? false : hostRecognitionVerified,
+    hostRecognitionRejected: installation.family === 'antigravity' ? false : hostRecognitionRejected,
+    ...(installation.family === 'antigravity' ? { evidenceScope: 'configuration_domain' as const, ...(key === 'lifecycle' ? { supportedSignals: ['session_start'] } : {}) } : {}),
     hostRecognitionObservedAt: typeof row?.verification_observed_at === 'string' ? row.verification_observed_at : null,
     implementationTypes: (implementedArtifactTypes?.[key] ?? declaration.artifactTypes).map(value => String(value)),
     targetLabel: redactPath(typeof row?.target_path === 'string' ? row.target_path : null, homeDir),
@@ -3960,16 +3962,6 @@ function toApplyItem(
   return { installationId, status: 'awaiting_consent', reason: outcome.reasons.join(',') }
 }
 
-function capabilityForComponents(
-  components: readonly ComponentKey[],
-): CapabilityLevel {
-  const enabled = new Set(components)
-  if (enabled.has('instruction') && enabled.has('memory_tools') && enabled.has('lifecycle')) return 4
-  if (enabled.has('instruction') && enabled.has('memory_tools')) return 3
-  if (enabled.has('memory_tools')) return 2
-  if (enabled.has('instruction')) return 1
-  return 0
-}
 
 function isHistoricalInstallationRow(row: AgentInstallationRow): boolean {
   return row.health_state === 'absent' || row.status_reason === 'host_uninstalled'

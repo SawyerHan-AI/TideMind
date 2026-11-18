@@ -28,6 +28,8 @@ const PRIORITY_GROUPS = {
     'claude-code-cli',
     'claude-code-native',
     'claude-desktop-legacy',
+    'antigravity-app',
+    'antigravity-cli',
     'codex-cli',
     'codex-desktop',
     'cursor-desktop',
@@ -135,6 +137,7 @@ const PRODUCT_SEEDS = [
   { id: 'claude-code', displayName: 'Claude Code', variantIds: ['claude-code-cli', 'claude-code-native'] },
   { id: 'claude-cowork', displayName: 'Claude Cowork', variantIds: ['claude-cowork-local'] },
   { id: 'claude-desktop-legacy', displayName: 'Claude Desktop（遗留）', variantIds: ['claude-desktop-legacy'] },
+  { id: 'antigravity', displayName: 'Antigravity', variantIds: ['antigravity-app', 'antigravity-cli'] },
   { id: 'codex', displayName: 'Codex', variantIds: ['codex-cli', 'codex-desktop'] },
   { id: 'cursor', displayName: 'Cursor', variantIds: ['cursor-desktop'] },
   { id: 'windsurf', displayName: 'Devin Desktop（原 Windsurf）', variantIds: ['windsurf-desktop'] },
@@ -293,6 +296,8 @@ const P0_COMPONENTS: Readonly<Partial<Record<CatalogId, readonly ComponentDeclar
   'claude-desktop-legacy': p0Components(['not_applicable', 'managed', 'not_applicable'], {
     memoryArtifacts: ['mcp'], memoryReload: 'restart_host',
   }),
+  'antigravity-app': p0Components(['managed', 'managed', 'managed'], { instructionArtifacts: ['rule'], memoryReload: 'new_session' }),
+  'antigravity-cli': p0Components(['managed', 'managed', 'managed'], { instructionArtifacts: ['rule'], memoryReload: 'new_session' }),
   'codex-cli': p0Components(['managed', 'managed', 'managed'], { memoryReload: 'new_session' }),
   'codex-desktop': p0Components(['managed', 'managed', 'managed'], { memoryReload: 'new_session' }),
   'cursor-desktop': p0Components(['managed', 'managed', 'managed'], { memoryReload: 'new_session', lifecycleReload: 'new_session' }),
@@ -356,6 +361,7 @@ const CAPABILITY_CEILINGS: Readonly<Record<CapabilityLevel, readonly CatalogId[]
   1: ['aider-cli', 'trae-ide'],
   2: ['claude-desktop-legacy', 'continue-ide', 'amazon-q-cli', 'amazon-q-ide', 'maxkb-local', 'custom-local-mcp'],
   3: [
+    'antigravity-app', 'antigravity-cli',
     'raycast-ai-desktop', 'goose-cli', 'goose-desktop', 'letta-local-server', 'agent-zero-local',
     'open-webui-local', 'github-copilot-jetbrains', 'cline-ide', 'junie-ide', 'roo-code-vscode',
     'zed-agent', 'warp-desktop', 'oz-runtime', 'lobehub-desktop', 'lobehub-local', 'cherry-studio-desktop',
@@ -389,6 +395,8 @@ const CAPABILITY_BY_CATALOG_ID = buildCapabilityMap()
 const VARIANT_DISPLAY_NAMES: Readonly<Partial<Record<CatalogId, string>>> = {
   'claude-code-cli': 'npm CLI',
   'claude-code-native': '官方原生 CLI',
+  'antigravity-app': 'App',
+  'antigravity-cli': 'CLI',
   'codex-cli': 'CLI',
   'codex-desktop': 'Desktop',
   'opencode-v1-cli': 'V1 CLI',

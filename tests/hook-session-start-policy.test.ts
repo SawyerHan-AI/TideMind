@@ -38,3 +38,13 @@ describe('hook session-start activity policy', () => {
     })).toBe(false)
   })
 })
+
+
+describe('Antigravity startup evidence', () => {
+  it('requires successful context preparation instead of injecting the independent Rule', () => {
+    const input = { tool: 'antigravity', oncePerSession: false, suppressSessionStartActivity: false, exactSkillGenerationLoaded: false }
+    expect(shouldRecordSessionStartActivity(input)).toBe(false)
+    expect(shouldRecordSessionStartActivity({ ...input, contextPrepared: true })).toBe(true)
+    expect(shouldRecordSessionStartActivity({ ...input, contextPrepared: true, suppressSessionStartActivity: true })).toBe(false)
+  })
+})

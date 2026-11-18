@@ -271,7 +271,7 @@ function collect(root, evidenceDir, sourceCommit, version) {
     fs.mkdirSync(temp, { mode: 0o700 })
     fs.writeFileSync(env.NPM_CONFIG_USERCONFIG, '', { mode: 0o600 })
     fs.writeFileSync(env.NPM_CONFIG_GLOBALCONFIG, '', { mode: 0o600 })
-    for (const [id, dir] of packages) run(`audit-lock-${id}`, 'npm', ['audit', '--package-lock-only', '--audit-level=high'], path.join(root, dir))
+    for (const [id] of packages) run(`audit-lock-${id}`, 'node', ['scripts/audit-client-dependencies.mjs', `--${id}`, '--package-lock-only'])
     for (const [id, dir] of packages) run(`install-${id}`, 'npm', ['ci'], path.join(root, dir))
     const sqliteProbe = 'const db = new (require("better-sqlite3"))(":memory:"); if (db.prepare("SELECT 1 AS ok").get().ok !== 1) process.exit(1); db.close();'
     const client = path.join(root, 'client')
@@ -288,7 +288,7 @@ function collect(root, evidenceDir, sourceCommit, version) {
     run('cloud-security', 'npm', ['run', 'test:security'], path.join(root, 'pro/cloud-server'))
     run('i18n', process.execPath, ['scripts/check-i18n-parity.mjs'])
     run('version-sync', process.execPath, ['scripts/check-version-sync.mjs'])
-    for (const [id, dir] of packages.slice(0, 3)) run(`audit-${id}`, 'npm', ['audit', '--audit-level=high'], path.join(root, dir))
+    for (const [id] of packages.slice(0, 3)) run(`audit-${id}`, 'node', ['scripts/audit-client-dependencies.mjs', `--${id}`])
     const ossRepo = path.join(scratch, 'oss')
     // A real release is never run here. Match the existing CI dry-run fixture.
     for (const args of [

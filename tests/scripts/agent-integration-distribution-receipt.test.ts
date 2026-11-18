@@ -19,6 +19,7 @@ import {
   validateArchiveEntryNames,
   verifyAnthropicManifestSignature,
   type GeneratorDependencies,
+  verifyAntigravityReleaseManifest,
 } from '../../scripts/capture-agent-distribution-receipt'
 import { portableArtifactFingerprint } from '../../scripts/agent-integration-release-contract.mjs'
 import { readStableDistributionTree } from '../../client/electron/agent-integration/distribution-artifact'
@@ -1438,5 +1439,29 @@ describe('official Agent distribution receipt capture', () => {
     fs.writeFileSync(path.join(tree, 'one'), 'x')
     fs.linkSync(path.join(tree, 'one'), path.join(tree, 'two'))
     await expect(readStableDistributionTree(tree)).rejects.toThrow('distribution_tree_hardlink_forbidden')
+  })
+})
+
+
+describe('Antigravity official CLI updater manifest', () => {
+  const expected = { version: '1.5.11', architecture: 'arm64' as const,
+    sourceUrl: 'https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.11-123456/darwin-arm/cli_mac_arm64.tar.gz',
+    sha512: 'a'.repeat(128) }
+  const manifest = { version: expected.version, url: expected.sourceUrl, sha512: expected.sha512 }
+  it('binds official archive URL, version and exact checksum', () => {
+    expect(() => verifyAntigravityReleaseManifest(manifest, expected)).not.toThrow()
+  })
+  it('does not invent an untested x64 release contract', () => {
+    expect(() => verifyAntigravityReleaseManifest(manifest, { ...expected, architecture: 'x64' })).toThrow('antigravity_release_architecture_not_accepted')
+  })
+  it.each(['version','checksum','host','platform','userinfo','query'] as const)('rejects mismatched %s', field => {
+    const changed = { ...expected }
+    if (field === 'version') changed.version = '1.5.12'
+    if (field === 'checksum') changed.sha512 = 'b'.repeat(128)
+    if (field === 'host') changed.sourceUrl = changed.sourceUrl.replace('storage.googleapis.com', 'example.test')
+    if (field === 'platform') changed.sourceUrl = changed.sourceUrl.replace('darwin-arm', 'linux-arm')
+    if (field === 'userinfo') changed.sourceUrl = changed.sourceUrl.replace('https://', 'https://user@')
+    if (field === 'query') changed.sourceUrl += '?override=1'
+    expect(() => verifyAntigravityReleaseManifest(manifest, changed)).toThrow()
   })
 })

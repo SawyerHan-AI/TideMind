@@ -1,3 +1,4 @@
+import { createAntigravityHostAdapter } from './antigravity-adapter'
 import path from 'node:path'
 import { createClaudeCodePluginHostAdapter } from './claude-code-plugin-adapter'
 import { createClaudeCoworkGuidedHostAdapter } from './claude-cowork-guided-adapter'
@@ -107,6 +108,8 @@ export function createP0HostAdapters(options: { codexHooksPort?: CodexOfficialHo
     ['opencode-v1-cli', createOpenCodeV1LifecycleHostAdapter()],
   ])
   const aggregateAdapters = new Map<CatalogId, AgentHostAdapter>([
+    ['antigravity-app', createAntigravityHostAdapter('antigravity-app')],
+    ['antigravity-cli', createAntigravityHostAdapter('antigravity-cli')],
     ['claude-cowork-local', createClaudeCoworkGuidedHostAdapter()],
     ['claude-code-cli', createClaudeCodePluginHostAdapter({
       catalogId: 'claude-code-cli',

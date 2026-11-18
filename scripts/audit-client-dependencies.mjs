@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -26,6 +28,16 @@ const MINIMATCH_VERSIONS = {
   root: new Set(['10.2.5']),
   client: new Set(['3.1.5', '5.1.9', '9.0.9', '10.2.6']),
 };
+
+const PICOMATCH_ADVISORY = 'https://github.com/advisories/GHSA-fc5q-39xc-vjpf';
+const PICOMATCH_VERSIONS = {
+  root: new Set(['4.0.7']),
+  client: new Set(['2.3.2', '4.0.4']),
+  cloud: new Set(['2.3.2']),
+  website: new Set(['2.3.2', '4.0.7']),
+};
+// Reviewed default-static Astro configuration; an SSR/adapter change requires review.
+const STATIC_ASTRO_CONFIG_SHA256 = '485dc7699f8bb774e17987b6d22eadfb8ca017edf90daba59cff3d58c12490f1';
 
 function allCausesAllowed(name, vulnerabilities, visiting = new Set(), allowed = ALLOWED_ADVISORIES) {
   const vulnerability = vulnerabilities[name];
@@ -107,7 +119,7 @@ function walkSourceFiles(directory) {
     const target = path.join(directory, entry);
     const stat = statSync(target);
     if (stat.isDirectory()) files.push(...walkSourceFiles(target));
-    else if (/\.[cm]?[jt]sx?$/.test(entry)) files.push(target);
+    else if (/\.(?:[cm]?[jt]sx?|astro)$/.test(entry)) files.push(target);
   }
   return files;
 }
@@ -148,19 +160,67 @@ function assertMinimatchException(vulnerabilities, lock, scope, packageVersion) 
   }
 }
 
-export function validateAuditReport(report, lock, sourceRoot, scope = 'client', packageVersion = lock.packages?.['']?.version) {
-  if (!['client', 'root'].includes(scope)) throw new Error('unknown audit scope');
+function assertPicomatchException(vulnerabilities, lock, scope, packageVersion, releaseVersion, sourceRoot) {
+  const affected = Object.keys(vulnerabilities).filter(name =>
+    reachesAllowedAdvisory(name, vulnerabilities, new Set(), new Set([PICOMATCH_ADVISORY])));
+  if (!affected.length) return;
+  const expectedPackageVersion = scope === 'website' ? '0.0.1' : '0.2.101';
+  if (releaseVersion !== '0.2.101' || packageVersion !== expectedPackageVersion
+    || lock.version !== expectedPackageVersion || lock.packages?.['']?.version !== expectedPackageVersion) {
+    throw new Error('picomatch build exception is limited to release 0.2.101 and its reviewed package versions');
+  }
+  const packages = lock.packages ?? {};
+  const copies = Object.entries(packages).filter(([key]) => key.endsWith('/node_modules/picomatch') || key === 'node_modules/picomatch');
+  if (!copies.length || copies.some(([, value]) => !PICOMATCH_VERSIONS[scope]?.has(value.version)
+    || (scope !== 'website' && value.dev !== true))) {
+    throw new Error(`picomatch exception requires reviewed ${scope} versions and dev-only dependencies`);
+  }
+  for (const name of affected) {
+    const finding = vulnerabilities[name];
+    if (finding.severity !== 'high' || !Array.isArray(finding.nodes) || !finding.nodes.length
+      || finding.nodes.some(node => !packages[node] || (scope !== 'website' && packages[node].dev !== true))
+      || finding.via.some(cause => typeof cause !== 'string' && cause?.url === PICOMATCH_ADVISORY
+        && (cause.name !== 'picomatch' || cause.dependency !== 'picomatch' || cause.severity !== 'high'))) {
+      throw new Error(`picomatch exception requires high reviewed build-only findings: ${name}`);
+    }
+  }
+  if (!sourceRoot || !existsSync(sourceRoot)) throw new Error('picomatch exception requires a source boundary check');
+  const roots = [sourceRoot];
+  if (scope === 'client') {
+    const electron = path.join(path.dirname(sourceRoot), 'electron');
+    if (!existsSync(electron)) throw new Error('picomatch exception requires the Electron source boundary');
+    roots.push(electron);
+  }
+  const directMatcher = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s*)['"](?:picomatch|micromatch)(?:\/[^'"]*)?['"]/;
+  if (roots.flatMap(walkSourceFiles).some(file => directMatcher.test(readFileSync(file, 'utf8')))) {
+    throw new Error('picomatch exception rejects direct runtime matcher imports');
+  }
+  if (scope === 'website') {
+    const websiteRoot = path.dirname(sourceRoot);
+    const config = readFileSync(path.join(websiteRoot, 'astro.config.mjs'));
+    const manifest = JSON.parse(readFileSync(path.join(websiteRoot, 'package.json'), 'utf8'));
+    if (createHash('sha256').update(config).digest('hex') !== STATIC_ASTRO_CONFIG_SHA256
+      || manifest.scripts?.build !== 'astro build') {
+      throw new Error('picomatch website exception requires the reviewed static Astro build');
+    }
+  }
+}
+
+export function validateAuditReport(report, lock, sourceRoot, scope = 'client', packageVersion = lock.packages?.['']?.version, releaseVersion = packageVersion) {
+  if (!['client', 'root', 'cloud', 'website'].includes(scope)) throw new Error('unknown audit scope');
   if (!report || report.error || !report.vulnerabilities || typeof report.vulnerabilities !== 'object'
     || Array.isArray(report.vulnerabilities)) throw new Error('invalid npm audit report');
   const vulnerabilities = report.vulnerabilities;
   const allowed = new Set(scope === 'client' ? ALLOWED_ADVISORIES : []);
   allowed.add(MINIMATCH_ADVISORY);
+  allowed.add(PICOMATCH_ADVISORY);
   const unexpected = Object.keys(vulnerabilities)
     .filter((name) => !allowedVulnerability(name, vulnerabilities, allowed));
   if (unexpected.length > 0) {
     throw new Error(`unapproved ${scope} audit findings: ${unexpected.join(', ')}`);
   }
   assertMinimatchException(vulnerabilities, lock, scope, packageVersion);
+  assertPicomatchException(vulnerabilities, lock, scope, packageVersion, releaseVersion, sourceRoot);
   if (Object.hasOwn(vulnerabilities, 'brace-expansion')) assertPatchedBraceVersions(lock);
   if (Object.hasOwn(vulnerabilities, 'react-router')) {
     assertExpectedRouterVersions(lock);
@@ -170,9 +230,13 @@ export function validateAuditReport(report, lock, sourceRoot, scope = 'client', 
 }
 
 function main() {
-  const scope = process.argv.includes('--root') ? 'root' : 'client';
-  const auditRoot = scope === 'root' ? repoRoot : clientRoot;
-  const audit = spawnSync('npm', ['audit', '--json'], {
+  const flags = process.argv.slice(2);
+  if (flags.some(flag => !['--root','--client','--cloud','--website','--package-lock-only'].includes(flag))) throw new Error('unknown audit option');
+  const scopes = flags.filter(flag => flag !== '--package-lock-only');
+  if (scopes.length > 1) throw new Error('choose one audit scope');
+  const scope = scopes[0]?.slice(2) ?? 'client';
+  const auditRoot = {root:repoRoot,client:clientRoot,cloud:path.join(repoRoot,'pro/cloud-server'),website:path.join(repoRoot,'pro/website')}[scope];
+  const audit = spawnSync('npm', ['audit', '--json', ...(flags.includes('--package-lock-only') ? ['--package-lock-only'] : [])], {
     cwd: auditRoot,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -191,7 +255,8 @@ function main() {
   const lock = JSON.parse(readFileSync(path.join(auditRoot, 'package-lock.json'), 'utf8'));
   const manifest = JSON.parse(readFileSync(path.join(auditRoot, 'package.json'), 'utf8'));
   if (scope === 'client') assertReviewedElectronVersion(lock);
-  const accepted = validateAuditReport(report, lock, path.join(clientRoot, 'src'), scope, manifest.version);
+  const releaseVersion = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version;
+  const accepted = validateAuditReport(report, lock, path.join(auditRoot, 'src'), scope, manifest.version, releaseVersion);
   if (accepted.length === 0) {
     console.log(`✓ ${scope} dependency audit clean`);
     return;
@@ -199,6 +264,9 @@ function main() {
   console.log(`✓ ${scope} dependency audit passed with reviewed exceptions (${accepted.length} transitive findings)`);
   if (accepted.some((name) => reachesAllowedAdvisory(name, report.vulnerabilities, new Set(), new Set([MINIMATCH_ADVISORY])))) {
     console.log('  - 0.2.94 only: GHSA-g3hv-75wg-m249 moderate minimatch build-time risk accepted; reviewed dev versions, trusted build inputs required');
+  }
+  if (accepted.some(name => reachesAllowedAdvisory(name, report.vulnerabilities, new Set(), new Set([PICOMATCH_ADVISORY])))) {
+    console.log('  - 0.2.101 only: GHSA-fc5q-39xc-vjpf high picomatch build-time risk accepted; reviewed versions and trusted build inputs required; vulnerability not fixed');
   }
   if (accepted.includes('brace-expansion')) console.log('  - brace-expansion pinned to patched versions 1.1.21 / 2.1.7 / 5.0.12');
   if (accepted.includes('react-router')) console.log('  - React Router 7.18.2 RSC-only advisory accepted; no RSC/direct react-router usage');

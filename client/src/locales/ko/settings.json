@@ -1569,7 +1569,10 @@
         "manualDocumentRemoval": "Tide Mind 소유 지침 파일을 수동으로 제거한 후 다시 확인하세요.",
         "componentRequiresOtherProjection": "{{component}}에는 지원되는 다른 연결 방법이 필요합니다.",
         "manualReview": "이 변경에는 수동 단계가 필요합니다. 계속하기 전에 안내된 세부정보를 검토하세요.",
-        "hostManualRemoval": "이 호스트의 출처가 현재 확인되지 않아 Tide Mind는 해당 프로그램을 실행하지 않습니다. 호스트에서 Tide Mind 구성 요소를 직접 제거하세요. Tide Mind는 이 Agent에 대한 메모리 제공을 중지했습니다."
+        "hostManualRemoval": "이 호스트의 출처가 현재 확인되지 않아 Tide Mind는 해당 프로그램을 실행하지 않습니다. 호스트에서 Tide Mind 구성 요소를 직접 제거하세요. Tide Mind는 이 Agent에 대한 메모리 제공을 중지했습니다.",
+        "antigravityMcpDisabled": "Antigravity에서 TideMind MCP 서버가 비활성화되어 있습니다. Antigravity의 MCP 관리 화면 또는 ~/.gemini/config/mcp_config.json에서 TideMind 항목을 활성화한 후 연결을 다시 확인하세요.",
+        "antigravityToolFilter": "Antigravity의 도구 필터가 필요한 TideMind 도구를 차단합니다. ~/.gemini/config/mcp_config.json의 TideMind 항목에서 enabledTools와 disabledTools를 확인하고 brain_prepare, brain_recall, brain_digest를 허용한 후 다시 확인하세요.",
+        "antigravityHookDisabled": "Antigravity에서 TideMind Hook이 비활성화되어 있습니다. Antigravity의 Hooks 설정 또는 ~/.gemini/config/hooks.json에서 TideMind 항목을 활성화하고 새 대화를 시작한 후 다시 확인하세요."
       },
       "currentRequiredAction": "현재 필요한 작업",
       "openCurrentRequiredAction": "현재 안내 열기",
@@ -1770,6 +1773,16 @@
       "nativePermissions": {
         "gemini_extension": "로컬 Tide Mind 확장을 설치하여 로컬 코드 실행, 메모리 지침 로드, 도구 및 훅 연결을 허용합니다. Gemini의 확장 보안 안내에 동의합니다.",
         "openclaw_capabilities": "로컬 Tide Mind 플러그인을 설치하고 활성화하며, 대화 맥락 읽기 및 프롬프트에 메모리 추가를 허용하고 게이트웨이를 재시작합니다."
+      },
+      "antigravity": {
+        "usage": "Antigravity에서 새 대화를 시작하고 TideMind를 사용하도록 요청하세요. 메시지가 표시되면 요청된 TideMind 도구를 허용하세요.",
+        "awaitingCall": "성공한 메모리 호출을 기다리는 중입니다. 도구 승인이 필요할 수 있습니다. 호출 기록이 없다고 해서 권한이 거부된 것은 아닙니다.",
+        "maintenance": "유지 관리 일시 중지는 자동 설정 변경만 중지합니다. 해당 호스트의 메모리 접근을 중지하려면 공유 연결 전체를 해제하세요.",
+        "startupOnly": "대화 시작만 지원합니다. 대화 종료 시 자동 메모리 저장이나 압축 Hook은 제공하지 않습니다.",
+        "sharedEvidence": "공유 설정 검증 결과",
+        "domainEvidence": "이 결과는 공유 설정에 적용됩니다. 각 App 또는 CLI 설치가 개별적으로 테스트되었음을 의미하지 않습니다.",
+        "checkSupport": "이 연결은 자동 계정 확인 및 모델 테스트를 지원하지 않습니다. 실제 TideMind 사용을 통해 검증됩니다.",
+        "connectionReview": "기존 Antigravity 설정 또는 공유 ID를 확인해야 합니다. 기존 연결은 교체되지 않았습니다. 다시 연결하기 전에 세부 정보를 확인하세요."
       }
     }
   },

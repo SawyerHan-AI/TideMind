@@ -29,7 +29,8 @@ function batchConnectErrorText(error: unknown, translate: (key: string) => strin
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : null
   if (message === null) return translate('agent.managed.unknownError')
   // Electron wraps rejected IPC errors; match the final exact code, not arbitrary substrings.
-  const code = /(?:^|:\s*)(codex_shared_identity_requires_disconnect_reconnect|existing_codex_connection_requires_review)$/.exec(message.trim())?.[1]
+  const code = /(?:^|:\s*)(codex_shared_identity_requires_disconnect_reconnect|existing_codex_connection_requires_review|existing_antigravity_connection_requires_review|antigravity_shared_identity_requires_disconnect_reconnect|antigravity_shared_identity_domain_conflict)$/.exec(message.trim())?.[1]
+  if (code?.includes('antigravity')) return translate('agent.managed.antigravity.connectionReview')
   if (code === 'codex_shared_identity_requires_disconnect_reconnect') return translate('agent.managed.codexSharedIdentityReconnect')
   if (code === 'existing_codex_connection_requires_review') return translate('agent.managed.codexExistingIdentityReview')
   return message

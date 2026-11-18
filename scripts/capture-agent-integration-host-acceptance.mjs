@@ -17,6 +17,7 @@ import {
   hostAcceptanceStepOutcomeDigest,
   hostAcceptanceUpgradeOutcomeDigest,
   hostActivityLedgerEvidenceHash,
+  validateAntigravitySharedActivityReceipt,
   hostActivityLedgerExportHash,
   loadAgentHostAcceptanceRequirements,
   requiredRealHostAcceptanceSteps,
@@ -316,7 +317,7 @@ export function exportAgentHostActivityReceipt({
   outputPath,
 }) {
   const { workspace, state } = loadState(workspaceInput)
-  if (!/^aha_[a-f0-9]{24}$/u.test(eventId ?? '')) throw new Error('activity export event ID is invalid')
+  if (!/^(?:aha|aie)_[a-f0-9]{24}$/u.test(eventId ?? '')) throw new Error('activity export event ID is invalid')
   if (typeof outputPath !== 'string' || !path.isAbsolute(outputPath)) throw new Error('activity receipt output must be absolute')
   const target = findTarget(state, targetId)
   if (!target.environment) throw new Error('target metadata must be recorded before activity export')
@@ -331,6 +332,7 @@ export function exportAgentHostActivityReceipt({
   const output = executeFrozenCandidateExporter(state, target.environment.architecture, [
     exporter,
     '--event-id', eventId,
+    ...(eventId.startsWith('aie_') ? ['--installation-id', target.installationId] : []),
     '--capture-nonce', state.captureNonce,
     '--target-key', target.targetKey,
     '--candidate-bundle-sha256', candidateApp.bundleSha256,
@@ -339,12 +341,11 @@ export function exportAgentHostActivityReceipt({
   ])
   const receipt = JSON.parse(output)
   validateExportedActivityReceipt(receipt, { ...state, targetKey: target.targetKey, candidateBundleSha256: candidateApp.bundleSha256 })
-  if (state.activityExports.some(entry => entry.eventId === receipt.id)) {
-    throw new Error(`activity event was already exported for this capture: ${receipt.id}`)
-  }
+  assertFreshActivityExport(state.activityExports, receipt)
   writeJsonExclusive(path.resolve(outputPath), receipt)
   state.activityExports.push({
     eventId: receipt.id,
+    ...(receipt.exporterVersion === 2 ? { observedAt: receipt.observedAt } : {}),
     targetKey: target.targetKey,
     exportHash: receipt.exportHash,
     outputPath: path.resolve(outputPath),
@@ -354,16 +355,25 @@ export function exportAgentHostActivityReceipt({
   return receipt
 }
 
+/** A new target needs a genuinely later domain observation, not a relabeled snapshot. */
+export function assertFreshActivityExport(previous, receipt) {
+  const duplicates = previous.filter(entry => entry.eventId === receipt.id)
+  if (duplicates.some(entry => receipt.exporterVersion !== 2 || !entry.observedAt
+    || Date.parse(receipt.observedAt) <= Date.parse(entry.observedAt))) {
+    throw new Error(`activity event was already exported without newer activity: ${receipt.id}`)
+  }
+}
+
 function validateExportedActivityReceipt(value, state) {
   const candidateBundleSha256 = state.candidateBundleSha256
-  if (value.exporterVersion !== 1
+  if (![1,2].includes(value.exporterVersion)
     || value.captureNonce !== state.captureNonce
     || value.targetKey !== state.targetKey
     || value.candidateBundleSha256 !== candidateBundleSha256
     || value.sourceCommit !== state.sourceCommit
     || value.releaseContractSha256 !== state.releaseContractSha256
     || value.ledgerSource !== (state.allowFixtureActivity ? 'fixture' : 'real_profile')
-    || (value.databaseSchemaVersion !== 34 && value.databaseSchemaVersion !== 35 && value.databaseSchemaVersion !== 45 && value.databaseSchemaVersion !== 46 && value.databaseSchemaVersion !== 47)
+    || (value.databaseSchemaVersion !== 34 && value.databaseSchemaVersion !== 35 && value.databaseSchemaVersion !== 45 && value.databaseSchemaVersion !== 46 && value.databaseSchemaVersion !== 47 && value.databaseSchemaVersion !== 48 && value.databaseSchemaVersion !== 49)
     || value.exportHash !== hostActivityLedgerExportHash(value)) {
     throw new Error('activity receipt was not exported for this frozen candidate capture')
   }
@@ -741,6 +751,7 @@ function validateAssertion(raw, expected) {
 }
 
 function validateLifecycleActivityReceipt(raw, expected, assertionObservedAt) {
+  if (raw?.exporterVersion === 2) return validateAntigravitySharedActivityReceipt(raw, expected, assertionObservedAt)
   if (isCodexNativeLifecycleReceipt(raw)) return validateCodexNativeLifecycleReceiptShape(raw, expected)
   const lifecycleSignal = expected.stepId.startsWith('lifecycle_')
     ? expected.stepId.slice('lifecycle_'.length)
@@ -911,7 +922,7 @@ export function recordAgentHostAcceptanceStep({
   })
   const nativeLifecycle = isCodexNativeLifecycleReceipt(assertion.activityReceipt)
   const activityExport = assertion.activityReceipt && !nativeLifecycle
-    ? state.activityExports.find(entry => entry.eventId === assertion.activityReceipt.id)
+    ? state.activityExports.find(entry => entry.eventId === assertion.activityReceipt.id && entry.exportHash === assertion.activityReceipt.exportHash)
     : null
   if (assertion.activityReceipt && !nativeLifecycle && (!activityExport
     || activityExport.consumed

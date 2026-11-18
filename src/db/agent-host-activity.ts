@@ -7,6 +7,8 @@ import { sanitizeAgentIntegrationEventPersistence } from './agent-integration-ev
 import { createHash, randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { touchAgent } from './agents.js';
+import { currentAntigravityRule } from '../antigravity-rule-evidence.js';
+import { ANTIGRAVITY_INSTRUCTION_PREPARE_PROBE } from '../antigravity-instruction.js';
 
 export type HostActivityComponent = 'memory_tools' | 'lifecycle';
 export type HostActivitySignal =
@@ -25,6 +27,7 @@ export type RecordHostActivityResult =
       status: 'rejected';
       reason:
         | 'shared_host_unattributed'
+        | 'instruction_recognition_missing'
         | 'unknown_agent'
         | 'agent_archived'
         | 'installation_removed'
@@ -48,6 +51,7 @@ export interface RecordHostActivityInput {
   /** Opaque token returned by the exact managed runtime projection. */
   activityGenerationToken: string;
   observedAt?: string;
+  instructionProbe?: string;
 }
 
 export interface RecordHookActivityInput {
@@ -221,12 +225,16 @@ export function recordHostActivityEvidence(
       if (!canonical || canonical.archived !== 0) return { status: 'rejected', reason: 'agent_archived' };
       const admission = evaluateBridgeAdmission(db, { agentId, activityGenerationToken, componentKey: input.componentKey });
       if (!admission.allowed) return { status: 'rejected', reason: admission.reason };
+      const antigravityPrepare = input.signalName === 'brain_prepare' && shared.consumers.every(member => member.family === 'antigravity');
+      const rule = antigravityPrepare && input.instructionProbe === ANTIGRAVITY_INSTRUCTION_PREPARE_PROBE
+        ? currentAntigravityRule(db, agentId) : null;
+      if (antigravityPrepare && !rule) return { status: 'rejected', reason: 'instruction_recognition_missing' };
       // Static EB_HOST_VARIANT in a shared file is not evidence of which surface
       // executed it. Record one domain event, never duplicate per-host receipts.
       const event = sanitizeAgentIntegrationEventPersistence({
         kind: 'shared_agent_activity',
         dedupeKey: sharedAgentActivityKey(shared.bindingId, shared.generation, input.componentKey, input.signalName, activityGenerationToken),
-        payload: { binding_id: shared.bindingId, agent_id: agentId, signal_name: input.signalName, reason: 'shared_host_unattributed', firstObservedAt: observedAt, lastObservedAt: observedAt },
+        payload: { binding_id: shared.bindingId, agent_id: agentId, signal_name: input.signalName, reason: 'shared_host_unattributed', firstObservedAt: observedAt, lastObservedAt: observedAt, ...(shared.consumers.every(member => member.family === 'antigravity') ? { tide_mind_version: tideMindVersion } : {}), ...(rule ? { instruction_hash: rule.hash, instruction_artifact_id: rule.artifactId } : {}) },
       });
       db.prepare(`INSERT OR IGNORE INTO agent_integration_events
         (id,kind,severity,dedupe_key,payload_json,created_at) VALUES (?,'shared_agent_activity','info',?,?,?)`)
@@ -234,12 +242,11 @@ export function recordHostActivityEvidence(
       // Keep the original event/time for audit, while recording genuine repeat
       // calls. A scan must never renew this activity freshness.
       db.prepare(`UPDATE agent_integration_events
-        SET payload_json = json_set(payload_json,
-          '$.firstObservedAt', COALESCE(json_extract(payload_json, '$.firstObservedAt'), created_at),
-          '$.lastObservedAt', ?)
+        SET payload_json = json_set(?,
+          '$.firstObservedAt', COALESCE(json_extract(payload_json, '$.firstObservedAt'), created_at))
         WHERE kind = 'shared_agent_activity' AND dedupe_key = ?
           AND COALESCE(json_extract(payload_json, '$.lastObservedAt'), created_at) < ?`)
-        .run(observedAt, event.dedupeKey, observedAt);
+        .run(event.payloadJson, event.dedupeKey, observedAt);
       touchAgent(db, agentId);
       return { status: 'shared_recorded', bindingId: shared.bindingId };
     }

@@ -147,6 +147,7 @@ TideMind 在后台持续维护这张图，就像大脑在睡眠时整理白天�
 | Cursor | 已支持 | MCP 配置接入 |
 | Windsurf | 已支持 | MCP 配置接入 |
 | Codex | 已支持 | MCP 配置接入 |
+| Antigravity App / CLI | 支持 macOS Apple 芯片 | 共享 MCP、常驻 Rule 和启动上下文；可能需要在宿主批准工具 |
 | 任何支持 MCP 的工具 | 已支持 | 标准协议，即插即用 |
 
 ### 笔记系统

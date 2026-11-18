@@ -1569,7 +1569,10 @@
         "manualDocumentRemoval": "Tide Mind が所有する命令ファイルを手動で削除し、再度確認してください。",
         "componentRequiresOtherProjection": "{{component}} には、サポートされている別の接続方法が必要です。",
         "manualReview": "この変更には手動の手順が必要です。続行する前に、ガイドに従って詳細を確認してください。",
-        "hostManualRemoval": "このホストの提供元は現在確認されていないため、Tide Mind はそのプログラムを実行しません。ホストで Tide Mind コンポーネントを手動で削除してください。Tide Mind はこの Agent へのメモリ提供を停止しました。"
+        "hostManualRemoval": "このホストの提供元は現在確認されていないため、Tide Mind はそのプログラムを実行しません。ホストで Tide Mind コンポーネントを手動で削除してください。Tide Mind はこの Agent へのメモリ提供を停止しました。",
+        "antigravityMcpDisabled": "Antigravity で TideMind MCP サーバーが無効になっています。Antigravity の MCP 管理画面または ~/.gemini/config/mcp_config.json で TideMind の項目を有効にし、接続を再確認してください。",
+        "antigravityToolFilter": "Antigravity のツールフィルターが必要な TideMind ツールをブロックしています。~/.gemini/config/mcp_config.json の TideMind 項目で enabledTools と disabledTools を確認し、brain_prepare、brain_recall、brain_digest を許可して再確認してください。",
+        "antigravityHookDisabled": "Antigravity で TideMind Hook が無効になっています。Antigravity の Hooks 設定または ~/.gemini/config/hooks.json で TideMind の項目を有効にし、新しい会話を開始して再確認してください。"
       },
       "currentRequiredAction": "現在必要な操作",
       "openCurrentRequiredAction": "現在の手順を開く",
@@ -1770,6 +1773,16 @@
       "nativePermissions": {
         "gemini_extension": "ローカルの Tide Mind 拡張機能をインストールし、ローカルコードの実行、メモリ指示の読み込み、ツールとフックの接続を行います。Gemini の拡張機能のセキュリティ通知を承認します。",
         "openclaw_capabilities": "ローカルの Tide Mind プラグインをインストールして有効にし、会話コンテキストの読み取りとプロンプトへのメモリ追加を許可して、ゲートウェイを再起動します。"
+      },
+      "antigravity": {
+        "usage": "Antigravity で新しい会話を開始し、TideMind を使うよう依頼してください。確認が表示された場合は、要求された TideMind ツールを許可してください。",
+        "awaitingCall": "メモリ呼び出しの成功を待っています。ツールの承認が必要な場合があります。呼び出し記録がないことは、権限の拒否を意味しません。",
+        "maintenance": "メンテナンスの一時停止は設定の自動変更のみを停止します。各ホストのメモリアクセスを止めるには、この共有接続を切断してください。",
+        "startupOnly": "会話開始時のみ。会話終了時の自動メモリ保存や圧縮 Hook は提供しません。",
+        "sharedEvidence": "共有設定の検証結果",
+        "domainEvidence": "これらの結果は共有設定に対するものです。各 App または CLI が個別にテスト済みであることは示しません。",
+        "checkSupport": "この接続ではアカウントの自動確認やモデルテストを利用できません。TideMind の実際の使用によって検証されます。",
+        "connectionReview": "既存の Antigravity 設定または共有IDの確認が必要です。既存の接続は置き換えていません。再接続する前に詳細を確認してください。"
       }
     }
   },

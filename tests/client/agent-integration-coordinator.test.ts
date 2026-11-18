@@ -555,6 +555,28 @@ describe('AgentIntegrationCoordinator', () => {
     })
   })
 
+  it('rejects C4 for Antigravity at preview, apply and recovery boundaries', async () => {
+    const test = harness()
+    const prepared = await preview(test)
+    const antigravity: CoordinatorInstallation = {
+      ...installation,
+      identity: { ...installation.identity, productFamilyId: 'antigravity',
+        hostVariant: 'antigravity-cli' as CoordinatorInstallation['identity']['hostVariant'] },
+    }
+    await expect(test.coordinator.preview({ installation: antigravity, operation: 'connect',
+      componentKeys: ['instruction', 'memory_tools', 'lifecycle'], desiredCapability: 4,
+    })).rejects.toThrow('host_capability_ceiling_exceeded')
+    await expect(test.coordinator.applyPrepared({ installation: antigravity, preparedPlan: prepared,
+      consentId: consent.id, desiredCapability: 4,
+    })).rejects.toThrow('host_capability_ceiling_exceeded')
+    test.repository.recoverable = [{ ...appliedUnverifiedExecution(prepared, 'run-antigravity-c4'),
+      installation: { ...antigravity, desiredState: 'managed' }, desiredCapability: 4 }]
+    expect((await test.coordinator.recoverNonTerminalRuns())[0]).toMatchObject({
+      status: 'needs_recovery', reason: 'host_capability_ceiling_exceeded',
+    })
+    expect(test.apply).not.toHaveBeenCalled()
+  })
+
   it('fails closed on Custom MCP capability above C2 at preview, apply and recovery boundaries', async () => {
     const test = harness()
     const prepared = await preview(test)

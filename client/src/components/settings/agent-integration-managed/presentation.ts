@@ -9,6 +9,7 @@ import type {
 } from './types'
 import type {
   AgentIntegrationApplyResultDto,
+  AgentIntegrationComponentDto,
   AgentIntegrationRequiredUserActionDto,
   AgentIntegrationSupportProductDto,
 } from '../../../lib/api-contract'
@@ -252,6 +253,9 @@ export function requiredUserActionPresentation(action: string): RequiredUserActi
     codex_hook_trust_verification_unavailable: 'agent.managed.userAction.codexHookTrustUnavailable',
     manually_remove_owned_document: 'agent.managed.userAction.manualDocumentRemoval',
     host_manual_removal_required: 'agent.managed.userAction.hostManualRemoval',
+    review_antigravity_mcp_disabled: 'agent.managed.userAction.antigravityMcpDisabled',
+    review_antigravity_tool_filter: 'agent.managed.userAction.antigravityToolFilter',
+    review_antigravity_hook_disabled: 'agent.managed.userAction.antigravityHookDisabled',
   }
   const exactLabelKey = Object.hasOwn(exact, kind) ? exact[kind] : undefined
   if (exactLabelKey) return { labelKey: exactLabelKey }
@@ -426,8 +430,43 @@ export function canShowGreenAvailability(installation: ManagedInstallationDto): 
 export function matchesSupportQuery(product: AgentIntegrationSupportProductDto, query: string): boolean {
   const normalizedQuery = query.trim().toLocaleLowerCase()
   if (!normalizedQuery) return true
-  return [product.displayName, ...product.variants.map(variant => variant.displayName)]
+  return [product.displayName, ...(product.searchTerms ?? []), ...product.variants.map(variant => variant.displayName)]
     .some(label => label.toLocaleLowerCase().includes(normalizedQuery))
+}
+
+/** Domain evidence stays in the shared summary; it must not turn into host evidence. */
+export function canReuseSharedComponentVerification(
+  component: AgentIntegrationComponentDto | undefined,
+  shared: AgentIntegrationComponentDto | undefined,
+): boolean {
+  return Boolean(component && shared && component.key === shared.key
+    && component.key !== 'lifecycle'
+    && component.evidenceScope !== 'configuration_domain'
+    && shared.evidenceScope !== 'configuration_domain'
+    && component.configurationVerified
+    && ['configured', 'verification_stale', 'verified'].includes(component.state)
+    && component.configurationFingerprint
+    && component.configurationFingerprint === shared.configurationFingerprint
+    && shared.state === 'verified')
+}
+
+export function isStartupOnlyComponent(component: AgentIntegrationComponentDto | undefined): boolean {
+  return component?.key === 'lifecycle' && component.supportedSignals?.length === 1
+    && component.supportedSignals[0] === 'session_start'
+}
+
+export function hasHostRecognition(component: AgentIntegrationComponentDto | undefined): boolean {
+  return Boolean(component?.evidenceScope !== 'configuration_domain'
+    && component?.hostRecognitionVerified && !component.hostRecognitionRejected)
+}
+
+export function canReuseSharedHostRecognition(
+  component: AgentIntegrationComponentDto | undefined,
+  shared: AgentIntegrationComponentDto | undefined,
+): boolean {
+  return Boolean(component?.evidenceScope !== 'configuration_domain'
+    && hasHostRecognition(shared) && shared?.configurationFingerprint
+    && shared.configurationFingerprint === component?.configurationFingerprint)
 }
 
 export interface ExecutionSummary {

@@ -220,3 +220,11 @@ describe('hook stdout completion', () => {
     },
   )
 })
+
+
+describe('Antigravity hook output', () => {
+  it('uses native injectSteps and returns an empty object for rejected injection', () => {
+    expect(JSON.parse(formatHookOutput('context', 'antigravity'))).toEqual({ injectSteps: [{ systemMessage: { systemMessage: 'context' } }] })
+    expect(JSON.parse(formatHookOutput('', 'antigravity'))).toEqual({})
+  })
+})

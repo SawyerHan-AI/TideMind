@@ -1,3 +1,5 @@
+import { runtimeActivityReferencePrefix } from './activity-reference'
+import { capHostCapability, hostCapabilityCeiling } from './capability'
 import { DesktopSourceVerificationUnavailable } from './mac-code-signature'
 import { freshCodexIdentityFingerprint, type CodexFreshIdentityPlan } from './codex-fresh-identity'
 import { codexSelectionFingerprint, selectedCodexBaselines, prospectiveCodexIdentity, type CodexLegacySelection } from './codex-legacy-selection'
@@ -361,10 +363,9 @@ function assertHostCapabilityCeiling(
   operation: PlanOperation,
   desiredCapability: CapabilityLevel,
 ): void {
-  if (installation.identity.hostVariant === 'custom-local-mcp'
-    && operation !== 'disconnect'
-    && desiredCapability > 2) {
-    throw new Error('custom_mcp_capability_ceiling_exceeded')
+  if (operation !== 'disconnect' && desiredCapability > hostCapabilityCeiling(installation.identity.hostVariant)) {
+    throw new Error(installation.identity.hostVariant === 'custom-local-mcp'
+      ? 'custom_mcp_capability_ceiling_exceeded' : 'host_capability_ceiling_exceeded')
   }
 }
 
@@ -1281,7 +1282,7 @@ export class AgentIntegrationCoordinator {
     if (verification.some(result => result.status === 'failed')) {
       return this.needsRecovery(execution, 'verification_failed', 'host_verification')
     }
-    if (!isCompleteVerification(verificationComponents, verification, execution.desiredCapability)) {
+    if (!isCompleteVerification(verificationComponents, verification, execution.desiredCapability, execution.installation.identity.hostVariant)) {
       return { status: 'awaiting_verification', runId: execution.runId, verification }
     }
     try {
@@ -1553,7 +1554,7 @@ export class AgentIntegrationCoordinator {
     if (verification.some(result => result.status === 'failed')) {
       return this.needsRecovery(input, 'verification_failed', 'verification')
     }
-    if (!isCompleteVerification(verificationComponents, verification, input.desiredCapability)) {
+    if (!isCompleteVerification(verificationComponents, verification, input.desiredCapability, input.installation.identity.hostVariant)) {
       await this.setInstallationState(
         input.installation.id,
         'idle',
@@ -1686,7 +1687,7 @@ export class AgentIntegrationCoordinator {
         throw new Error(`verification identity assertion mismatch: ${result.componentKey}`)
       }
       if (result.status === 'verified' && result.invalidationKeys.includes('activity_freshness')) {
-        if (!result.evidenceRef?.startsWith('host-activity:')
+        if (!runtimeActivityReferencePrefix(input.installation.identity.hostVariant, result)
           || !result.evidenceHash
           || !result.expiresAt
           || !Number.isFinite(Date.parse(result.expiresAt))
@@ -2451,6 +2452,7 @@ function isCompleteVerification(
   expected: readonly ComponentKey[],
   results: readonly ComponentVerificationResult[],
   expectedCapability: CapabilityLevel,
+  hostVariant: string,
 ): boolean {
   if (results.length !== new Set(expected).size) return false
   const expectedSet = new Set(expected)
@@ -2466,7 +2468,7 @@ function isCompleteVerification(
           ? 1
           : 0
   const declaredCapability = Math.max(0, ...results.map(result => result.verifiedCapability ?? 0))
-  return Math.max(achievedCapability, declaredCapability) >= expectedCapability
+  return capHostCapability(Math.max(achievedCapability, declaredCapability), hostVariant) >= expectedCapability
 }
 
 /**

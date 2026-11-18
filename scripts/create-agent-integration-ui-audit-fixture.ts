@@ -129,6 +129,12 @@ function codexLifecycleFixture(
 }
 
 const fixtures: readonly FixtureInstallation[] = [
+  ...(['antigravity-app', 'antigravity-cli'] as const).map(hostVariant => ({
+    id: hostVariant, family: 'antigravity', hostVariant, displayName: 'Antigravity',
+    version: hostVariant === 'antigravity-app' ? '2.33.0' : '1.5.11',
+    desiredState: 'unmanaged' as const, verifiedCapability: 0 as const,
+    verificationSummary: 'unverified' as const, statusReason: null, components: [],
+  })),
   {
     id: 'cursor-work', family: 'cursor', hostVariant: 'cursor-desktop', displayName: 'Cursor',
     profile: '工作', version: '1.7.2', desiredState: 'managed', verifiedCapability: 3,
@@ -231,8 +237,18 @@ const kimiDistribution = {
 } as const
 
 for (const fixture of fixtures) {
-  const configRoot = path.join(home, `.${fixture.id}`)
+  const isAntigravity = fixture.family === 'antigravity'
+  const configRoot = isAntigravity ? path.join(home, '.gemini', 'config') : path.join(home, `.${fixture.id}`)
   fs.mkdirSync(configRoot, { recursive: true })
+  const antigravityApp = fixture.hostVariant === 'antigravity-app'
+  const antigravityAppPath = path.join(root, 'apps', 'Antigravity.app')
+  const antigravityExecutable = antigravityApp
+    ? path.join(antigravityAppPath, 'Contents', 'MacOS', 'Antigravity')
+    : path.join(root, 'bin', 'agy')
+  if (isAntigravity) {
+    fs.mkdirSync(path.dirname(antigravityExecutable), { recursive: true })
+    fs.writeFileSync(antigravityExecutable, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+  }
   const isZcodeDesktop = fixture.hostVariant === 'zcode-desktop'
   const isQwenWork = fixture.hostVariant === 'qwenwork-desktop'
   const isKimiCode = fixture.hostVariant === 'kimi-code-cli'
@@ -243,7 +259,13 @@ for (const fixture of fixtures) {
     fs.mkdirSync(path.dirname(legacyTarget), { recursive: true })
     fs.writeFileSync(legacyTarget, '# user-owned legacy conflict fixture\n', { mode: 0o600 })
   }
-  const distribution = isZcodeDesktop
+  const distribution = isAntigravity ? {
+    distributionId: antigravityApp ? 'com.google.antigravity' : 'cli:antigravity-cli',
+    executableRealpath: antigravityExecutable,
+    packageProvenance: antigravityApp ? 'signed_app:com.google.antigravity:EQHXZ8M8AV' : 'signed_cli:cli:EQHXZ8M8AV',
+    capabilityFingerprint: `fixture:${fixture.hostVariant}`,
+    portableArtifactFingerprint: `fixture:${sha256Json({ executable: fixture.hostVariant })}`,
+  } : isZcodeDesktop
     ? zcodeDistribution
     : isQwenWork
       ? qwenWorkDistribution
@@ -263,18 +285,18 @@ for (const fixture of fixtures) {
     displayName: fixture.displayName,
     configRoot,
     executablePath: distribution?.executableRealpath ?? null,
-    appPath: isZcodeDesktop ? zcodeAppPath : isQwenWork ? qwenWorkAppPath : null,
+    appPath: antigravityApp ? antigravityAppPath : isZcodeDesktop ? zcodeAppPath : isQwenWork ? qwenWorkAppPath : null,
     detectedVersion: fixture.version,
     agentId: `eb_audit_${fixture.id}`,
-    supportedCapability: 4,
+    supportedCapability: isAntigravity ? 3 : 4,
     lastDetectedAt: iso(2),
     metadata: distribution ? {
       distribution,
-      ...(isKimiCode ? {
+      ...(isKimiCode || (isAntigravity && !antigravityApp) ? {
         managementEligibility: {
           schemaVersion: 1,
           eligible: true,
-          executableSizeBytes: fs.statSync(kimiExecutablePath).size,
+          executableSizeBytes: fs.statSync(isAntigravity ? antigravityExecutable : kimiExecutablePath).size,
           proofLimitBytes: 512 * 1024 * 1024,
         },
       } : {}),

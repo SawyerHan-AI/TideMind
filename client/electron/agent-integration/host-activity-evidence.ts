@@ -1,3 +1,4 @@
+import { readAntigravitySharedActivity } from '@server/antigravity-shared-activity.js'
 import type Database from 'better-sqlite3'
 import { sha256Json } from './fingerprint'
 import type {
@@ -8,6 +9,7 @@ import type {
   HostActivityEvidenceReader,
   HostActivityEvidenceRecord,
   HostActivitySignal,
+  SharedHostActivityEvidenceRecord,
 } from './types'
 
 interface EvidenceRow {
@@ -29,6 +31,10 @@ interface EvidenceRow {
 /** Read-only SQLite projection used only by Adapter verification. */
 export class SqliteHostActivityEvidenceReader implements HostActivityEvidenceReader {
   constructor(private readonly db: Database.Database) {}
+
+  findShared(query: HostActivityEvidenceQuery): readonly SharedHostActivityEvidenceRecord[] {
+    return readAntigravitySharedActivity(this.db, query)
+  }
 
   find(query: HostActivityEvidenceQuery): readonly HostActivityEvidenceRecord[] {
     if (query.signalNames.length === 0 || !query.activationRunId || !query.activityGenerationToken) return []
@@ -263,7 +269,11 @@ export async function verifyHostActivity(
     || activationMs > verificationMs) {
     return unverified(options.componentKey, 'host_activity_freshness_binding_invalid')
   }
-  const records = (await context.hostActivityEvidence.find({
+  const sharedDomain = ['antigravity-app','antigravity-cli'].includes(context.installation.hostVariant)
+  const reader = sharedDomain ? context.hostActivityEvidence.findShared?.bind(context.hostActivityEvidence)
+    : context.hostActivityEvidence.find.bind(context.hostActivityEvidence)
+  if (!reader) return unverified(options.componentKey, 'shared_activity_evidence_reader_unavailable')
+  const records = (await reader({
     installationId: binding.installationId,
     agentId: context.agentId,
     hostVariant: context.installation.hostVariant,
@@ -302,9 +312,10 @@ export async function verifyHostActivity(
   return {
     componentKey: options.componentKey,
     status: 'verified',
-    verifiedCapability: options.componentKey === 'memory_tools' ? 2 : 4,
+    verifiedCapability: options.componentKey === 'memory_tools' ? 2 : sharedDomain ? 3 : 4,
+    evidenceScope: sharedDomain ? 'configuration_domain' : 'host',
     identityAssertion: context.agentId,
-    evidenceRef: `host-activity:${selected.map(record => record.id).sort().join(',')}`,
+    evidenceRef: `${sharedDomain ? 'shared-activity' : 'host-activity'}:${selected.map(record => record.id).sort().join(',')}`,
     evidenceHash: sha256Json(selected.map(record => ({
       id: record.id,
       signalName: record.signalName,

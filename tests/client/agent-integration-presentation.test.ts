@@ -15,6 +15,10 @@ import {
 } from '../../client/src/components/settings/agent-integration-managed/BatchConnectDialog'
 import {
   canReconnectManagedInstallation,
+  canReuseSharedComponentVerification,
+  canReuseSharedHostRecognition,
+  hasHostRecognition,
+  isStartupOnlyComponent,
   installationNeedsAction,
   installationNoticeKey,
   aggregateAccess,
@@ -253,6 +257,48 @@ describe('managed Agent presentation', () => {
     expect(matchesSupportQuery(product, 'codex')).toBe(false)
   })
 
+  it('finds Antigravity aliases without creating a second product', () => {
+    const product: AgentIntegrationSupportProductDto = {
+      id: 'antigravity', displayName: 'Antigravity', searchTerms: ['反重力', 'agy'], variants: [],
+    }
+    for (const query of ['反重力', '  AGY ', 'Antigravity']) expect(matchesSupportQuery(product, query)).toBe(true)
+    expect(matchesSupportQuery(product, 'Gemini CLI')).toBe(false)
+  })
+
+  it('keeps shared-domain Rule verification separate from an unverified second host', () => {
+    const cli = installation('antigravity-cli').components[0]
+    const app = { ...cli, state: 'configured' as const, configurationVerified: true, configurationFingerprint: 'same-rule' }
+    const shared = { ...cli, configurationFingerprint: 'same-rule', evidenceScope: 'configuration_domain' as const }
+    expect(canReuseSharedComponentVerification(app, shared)).toBe(false)
+    expect(canReuseSharedComponentVerification({ ...app, evidenceScope: 'configuration_domain' }, { ...shared, evidenceScope: undefined })).toBe(false)
+    // Existing host-specific sharing remains compatible, but never crosses configuration generations.
+    expect(canReuseSharedComponentVerification(app, { ...shared, evidenceScope: undefined })).toBe(true)
+    expect(canReuseSharedComponentVerification({ ...app, configurationFingerprint: 'new-rule' }, { ...shared, evidenceScope: undefined })).toBe(false)
+  })
+
+  it('labels only a declared startup-only Hook, not full lifecycle support', () => {
+    const hook = installation('antigravity-cli').components[2]
+    expect(isStartupOnlyComponent({ ...hook, supportedSignals: ['session_start'] })).toBe(true)
+    expect(isStartupOnlyComponent({ ...hook, supportedSignals: ['session_start', 'session_end'] })).toBe(false)
+    expect(isStartupOnlyComponent(hook)).toBe(false)
+  })
+
+  it('never treats a shared-domain startup receipt as native host trust', () => {
+    const host = { ...installation('antigravity-cli').components[2], configurationFingerprint: 'hook' }
+    const shared = { ...host, hostRecognitionVerified: true, evidenceScope: 'configuration_domain' as const }
+    expect(hasHostRecognition(shared)).toBe(false)
+    expect(canReuseSharedHostRecognition(host, shared)).toBe(false)
+    expect(canReuseSharedHostRecognition({ ...host, evidenceScope: 'configuration_domain' }, { ...shared, evidenceScope: 'host' })).toBe(false)
+    expect(canReuseSharedHostRecognition(host, { ...shared, evidenceScope: 'host' })).toBe(true)
+  })
+
+  it('explains Antigravity identity conflicts without replacing existing configuration', () => {
+    for (const code of ['existing_antigravity_connection_requires_review', 'antigravity_shared_identity_requires_disconnect_reconnect', 'antigravity_shared_identity_domain_conflict']) {
+      expect(batchConnectErrorText(new Error(`Error invoking remote method: ${code}`), key => key))
+        .toBe('agent.managed.antigravity.connectionReview')
+    }
+  })
+
   it('summarizes execution outcomes and keeps an in-flight dialog fail-safe', () => {
     expect(summarizeExecutionResults([
       { installationId: 'a', status: 'committed' },
@@ -321,6 +367,18 @@ describe('managed Agent presentation', () => {
       configLabel: '~/.qwen/settings.json',
       reason: 'excluded',
     })).toBe('mcp_activation:qwen-code-cli:tidemind:excluded')
+  })
+
+  it('gives distinct recovery guidance for Antigravity server, tool filter and Hook settings', () => {
+    expect(requiredUserActionPresentation('review_antigravity_mcp_disabled')).toEqual({
+      labelKey: 'agent.managed.userAction.antigravityMcpDisabled',
+    })
+    expect(requiredUserActionPresentation('review_antigravity_tool_filter')).toEqual({
+      labelKey: 'agent.managed.userAction.antigravityToolFilter',
+    })
+    expect(requiredUserActionPresentation('review_antigravity_hook_disabled')).toEqual({
+      labelKey: 'agent.managed.userAction.antigravityHookDisabled',
+    })
   })
 
   it('implements wrapped arrow, Home, and End navigation for installation tabs', () => {

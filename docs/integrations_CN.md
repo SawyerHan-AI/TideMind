@@ -35,7 +35,18 @@ TideMind 作为 MCP 服务器运行，暴露三个工具：`brain_prepare`、`br
 | Cursor | MCP 配置 | 支持 |
 | Windsurf | MCP 配置 | 支持 |
 | Codex | MCP 配置 + Hook | 支持 |
+| Antigravity App / CLI（macOS Apple 芯片） | 共享 MCP、常驻 Rule、启动 Hook | 支持；工具权限仍需在 Antigravity 批准 |
 | 任何兼容 MCP 的工具 | 手动 MCP 配置 | 手动 |
+
+### Antigravity App 与 CLI
+
+在 TideMind 打开 **设置 > 外部对接**。支持的安装会被自动发现和配置。App 与 CLI 共用 `~/.gemini/config/` 下的个人配置，因此显示为一条连接，同时保留各宿主详情。
+
+在 Antigravity 新建对话，让它使用 TideMind；如出现权限提示，请批准所请求的 TideMind 工具。接入提供 `brain_prepare`、`brain_recall`、`brain_digest`、常驻 Rule 和会话启动上下文。即使启动 Hook 已提供上下文，Rule 仍会调用一次简短 prepare 来确认加载。
+
+这属于基础记忆接入并附带启动上下文，不包含会话结束自动保存记忆或压缩 Hook。共享配置的活动不能证明 App、CLI 都已独立测试。等待首次成功调用不一定是故障或权限拒绝；此连接暂不支持自动账号检查和模型诊断。
+
+**暂停维护**只停止自动修改配置；要停止整个共享连接的记忆访问，请使用**断开**。TideMind 可能要求你手动清理它拥有的 Rule 文件，其他服务配置和用户规则会保留。本版托管支持不包含 Antigravity IDE、远程 Agent 或其他操作系统。
 
 ### 手动 MCP 配置
 

@@ -33,6 +33,13 @@ function sha256Bytes(bytes) {
 }
 
 export function hostActivityLedgerEvidenceHash(receipt) {
+  if (receipt.exporterVersion === 2 || receipt.evidenceScope === 'configuration_domain') {
+    return sha256Bytes(Buffer.from(JSON.stringify([
+      receipt.evidenceScope,receipt.id,receipt.requestedInstallationId,receipt.bindingId,receipt.bindingGeneration,receipt.agentId,
+      receipt.activationRunId,receipt.activityGenerationSha256,receipt.artifactSha256,receipt.componentKey,receipt.signalName,
+      receipt.tideMindVersion,receipt.adapterVersion,receipt.projectionVersion,receipt.domainEvidenceHash,receipt.observedAt,
+    ])))
+  }
   return sha256Bytes(Buffer.from(JSON.stringify([
     receipt.installationId,
     receipt.agentId,
@@ -48,6 +55,19 @@ export function hostActivityLedgerEvidenceHash(receipt) {
 }
 
 export function hostActivityLedgerExportHash(receipt) {
+  if (receipt.exporterVersion === 2) {
+    return sha256Bytes(Buffer.from(JSON.stringify({
+      exporterVersion:receipt.exporterVersion,ledgerSource:receipt.ledgerSource,captureNonce:receipt.captureNonce,
+      targetKey:receipt.targetKey,candidateBundleSha256:receipt.candidateBundleSha256,sourceCommit:receipt.sourceCommit,
+      releaseContractSha256:receipt.releaseContractSha256,databaseSchemaVersion:receipt.databaseSchemaVersion,
+      databaseSchemaSha256:receipt.databaseSchemaSha256,evidenceScope:receipt.evidenceScope,id:receipt.id,
+      requestedInstallationId:receipt.requestedInstallationId,bindingId:receipt.bindingId,bindingGeneration:receipt.bindingGeneration,
+      agentId:receipt.agentId,activationRunId:receipt.activationRunId,activityGenerationSha256:receipt.activityGenerationSha256,
+      artifactSha256:receipt.artifactSha256,componentKey:receipt.componentKey,signalName:receipt.signalName,
+      tideMindVersion:receipt.tideMindVersion,adapterVersion:receipt.adapterVersion,projectionVersion:receipt.projectionVersion,
+      domainEvidenceHash:receipt.domainEvidenceHash,observedAt:receipt.observedAt,evidenceHash:receipt.evidenceHash,
+    })))
+  }
   return sha256Bytes(Buffer.from(JSON.stringify({
     exporterVersion: receipt.exporterVersion,
     ledgerSource: receipt.ledgerSource,
@@ -248,10 +268,12 @@ export function loadAgentHostAcceptanceRequirements(
   const { value, bytes } = readJsonFile(absolute)
   const requirements = record(value, 'acceptance requirements')
   const singleUserRelease = ['0.2.94', '0.2.95'].includes(requirements.appVersion)
+  const antigravityRelease = requirements.appVersion === '0.2.101'
+  const scopedRelease = singleUserRelease || antigravityRelease
   exactKeys(requirements, [
     'schemaVersion', 'appVersion', 'releaseMacArchitectures', 'upgradeFromAppVersions', 'stepPolicy', 'customPaths', 'customGuidedTargets',
-    ...(singleUserRelease ? ['realHostPolicy'] : []),
-    ...(singleUserRelease && requirements.migrationAcceptanceDeferral ? ['migrationAcceptanceDeferral'] : []),
+    ...(scopedRelease ? ['realHostPolicy'] : []),
+    ...(scopedRelease && requirements.migrationAcceptanceDeferral ? ['migrationAcceptanceDeferral'] : []),
   ], 'acceptance requirements')
   if (historicalAppVersion !== undefined && historicalAppVersion !== '0.2.93') throw new Error('unsupported historical acceptance version')
   const expectedSchemaVersion = historicalAppVersion === '0.2.93' ? 3 : AGENT_HOST_ACCEPTANCE_SCHEMA_VERSION
@@ -267,18 +289,20 @@ export function loadAgentHostAcceptanceRequirements(
   }
   unique(requirements.releaseMacArchitectures, 'requirements releaseMacArchitectures')
   let realHostPolicy = null
-  if (singleUserRelease) {
+  if (scopedRelease) {
     const policy = record(requirements.realHostPolicy, `${requirements.appVersion} real-host policy`)
     exactKeys(policy, ['id', 'requiredCatalogIds', 'otherCatalogs', 'customPaths', 'reason', 'desktopAcceptance'], 'single-user real-host policy')
-    if (policy.id !== `${requirements.appVersion}-codex-only`
-      || JSON.stringify(policy.requiredCatalogIds) !== JSON.stringify(['codex-cli'])
+    const policyId = antigravityRelease ? '0.2.101-antigravity-codex' : `${requirements.appVersion}-codex-only`
+    const requiredCatalogIds = antigravityRelease ? ['codex-cli', 'antigravity-app', 'antigravity-cli'] : ['codex-cli']
+    if (policy.id !== policyId
+      || JSON.stringify(policy.requiredCatalogIds) !== JSON.stringify(requiredCatalogIds)
       || policy.otherCatalogs !== 'deferred' || policy.customPaths !== 'deferred') {
-      throw new Error(`${requirements.appVersion} real-host scope must require Codex CLI and defer Desktop/other Agent/Custom validation`)
+      throw new Error(`${requirements.appVersion} real-host scope differs from the explicitly approved host set`)
     }
     nonEmptyString(policy.reason, `${requirements.appVersion} real-host deferral reason`)
     const desktop = record(policy.desktopAcceptance, `${requirements.appVersion} Desktop acceptance deferral`)
     exactKeys(desktop, ['status', 'releaseNotesDisclosureRequired', 'reason'], `${requirements.appVersion} Desktop acceptance deferral`)
-    if (desktop.status !== 'deferred' || desktop.releaseNotesDisclosureRequired !== (requirements.appVersion === '0.2.95')) {
+    if (desktop.status !== 'deferred' || desktop.releaseNotesDisclosureRequired !== (requirements.appVersion !== '0.2.94')) {
       throw new Error(`${requirements.appVersion} Desktop acceptance must remain explicitly deferred with its approved disclosure`)
     }
     nonEmptyString(desktop.reason, `${requirements.appVersion} Desktop acceptance deferral reason`)
@@ -289,11 +313,11 @@ export function loadAgentHostAcceptanceRequirements(
   if (requirements.migrationAcceptanceDeferral) {
     const policy = record(requirements.migrationAcceptanceDeferral, 'migration acceptance deferral')
     exactKeys(policy, ['policyId','appVersion','audience','status','execution','scopes','reason'], 'migration acceptance deferral')
-    if (!singleUserRelease || policy.appVersion !== requirements.appVersion
+    if (!scopedRelease || policy.appVersion !== requirements.appVersion
       || policy.policyId !== `${requirements.appVersion}-single-user-manual-migration` || policy.audience !== 'single_user'
       || policy.status !== 'deferred_to_installation' || policy.execution !== 'manual_after_release'
       || JSON.stringify(policy.scopes) !== JSON.stringify(['upgrade_matrix','observed_schema41'])) {
-      throw new Error('migration deferral is only authorized for matching 0.2.94/0.2.95 single-user installation')
+      throw new Error('migration deferral is only authorized for matching 0.2.94/0.2.95/0.2.101 single-user installation')
     }
     nonEmptyString(policy.reason, 'migration deferral reason')
     migrationAcceptanceDeferral = Object.freeze({ ...policy, scopes: Object.freeze([...policy.scopes]) })
@@ -351,7 +375,7 @@ export function loadAgentHostAcceptanceRequirements(
     .map(entry => Object.freeze({ ...entry, requiredComponents: Object.freeze([...entry.requiredComponents]) })))
   const enabledCatalogIds = new Set(entries.map(entry => entry.catalogId))
   if (realHostPolicy && realHostPolicy.requiredCatalogIds.some(id => !enabledCatalogIds.has(id))) {
-    throw new Error(`${requirements.appVersion} required Codex catalog is missing from the release contract`)
+    throw new Error(`${requirements.appVersion} required catalog is missing from the release contract`)
   }
   for (const catalogId of Object.keys(stepPolicy.byCatalog)) {
     if (!enabledCatalogIds.has(catalogId)) throw new Error(`requirements catalog steps target is not enabled: ${catalogId}`)
@@ -451,7 +475,12 @@ export function validateDeferredHostAcceptanceTarget(raw, expected) {
 export function upgradeTargetIdentityDigest(target, releaseContractSha256) {
   if (!target.realHostDeferral) return hostAcceptanceTargetIdentityDigest(target)
   // This is a contract surface binding, never an assertion that a real host ran.
-  const contractVersion = target.realHostDeferral.policyId === '0.2.95-codex-only' ? '0.2.95' : '0.2.94'
+  const contractVersion = ({
+    '0.2.94-codex-only': '0.2.94',
+    '0.2.95-codex-only': '0.2.95',
+    '0.2.101-antigravity-codex': '0.2.101',
+  })[target.realHostDeferral.policyId]
+  if (!contractVersion) throw new Error('unknown deferred upgrade policy')
   return sha256Bytes(Buffer.from(JSON.stringify([`${contractVersion}-deferred-upgrade-contract`, releaseContractSha256,
     target.targetKey, target.targetId, target.sourceCatalogId ?? null, target.disposition, target.targetCapability,
     target.architecture, target.realHostDeferral])))
@@ -766,7 +795,40 @@ function validateStepReceipt(raw, expected, label) {
   return receipt
 }
 
+/** This proves a shared domain event; the external step evidence still identifies the actual host session. */
+export function validateAntigravitySharedActivityReceipt(raw, expected, assertionObservedAt, label = 'shared activity receipt') {
+  const activity = record(raw, label)
+  exactKeys(activity, ['exporterVersion','ledgerSource','captureNonce','targetKey','candidateBundleSha256','sourceCommit',
+    'releaseContractSha256','databaseSchemaVersion','databaseSchemaSha256','evidenceScope','id','requestedInstallationId',
+    'bindingId','bindingGeneration','agentId','activationRunId','activityGenerationSha256','artifactSha256','componentKey',
+    'signalName','tideMindVersion','adapterVersion','projectionVersion','domainEvidenceHash','observedAt','evidenceHash','exportHash'], label)
+  if (expected.appVersion !== '0.2.101' || !['antigravity-app','antigravity-cli'].includes(expected.hostVariant)
+    || expected.stepId !== 'lifecycle_session_start') throw new Error(`${label} is outside the Antigravity startup contract`)
+  for (const [key,value] of Object.entries({exporterVersion:2,evidenceScope:'configuration_domain',
+    ledgerSource:expected.allowFixtureActivity ? 'fixture' : 'real_profile',captureNonce:expected.captureNonce,
+    targetKey:expected.targetKey,candidateBundleSha256:expected.candidateBundleSha256,sourceCommit:expected.sourceCommit,
+    releaseContractSha256:expected.releaseContractSha256,requestedInstallationId:expected.installationId,
+    agentId:expected.agentId,componentKey:'lifecycle',signalName:'session_start',tideMindVersion:expected.appVersion})) {
+    if (activity[key] !== value) throw new Error(`${label} ${key} binding mismatch`)
+  }
+  if (!/^aie_[a-f0-9]{24}$/.test(activity.id ?? '') || !Number.isSafeInteger(activity.bindingGeneration) || activity.bindingGeneration<1) {
+    throw new Error(`${label} event identity is invalid`)
+  }
+  for (const key of ['bindingId','activationRunId','adapterVersion','projectionVersion']) nonEmptyString(activity[key], `${label} ${key}`)
+  for (const key of ['databaseSchemaSha256','activityGenerationSha256','artifactSha256','domainEvidenceHash']) {
+    if (!SHA256.test(activity[key] ?? '')) throw new Error(`${label} ${key} is invalid`)
+  }
+  if (![48,49].includes(activity.databaseSchemaVersion)) throw new Error(`${label} shared ledger schema is unsupported`)
+  const time = isoTimestamp(activity.observedAt, `${label} observedAt`)
+  if (time<Date.parse(expected.captureCreatedAt) || time>Date.parse(assertionObservedAt)) throw new Error(`${label} is outside capture window`)
+  if (activity.evidenceHash !== hostActivityLedgerEvidenceHash(activity) || activity.exportHash !== hostActivityLedgerExportHash(activity)) {
+    throw new Error(`${label} digest mismatch`)
+  }
+  return activity
+}
+
 function validateFrozenLifecycleActivityReceipt(raw, expected, assertionObservedAt, label) {
+  if (raw?.exporterVersion === 2) return validateAntigravitySharedActivityReceipt(raw, expected, assertionObservedAt, label)
   if (isCodexNativeLifecycleReceipt(raw)) return validateCodexNativeLifecycleReceiptShape(raw, expected)
   const lifecycleSignal = expected.stepId.startsWith('lifecycle_')
     ? expected.stepId.slice('lifecycle_'.length)
@@ -818,8 +880,8 @@ function validateFrozenLifecycleActivityReceipt(raw, expected, assertionObserved
   if (activity.exportHash !== hostActivityLedgerExportHash(activity)) {
     throw new Error(`${label} activity export hash mismatch`)
   }
-  if (activity.databaseSchemaVersion !== 34 && activity.databaseSchemaVersion !== 35 && activity.databaseSchemaVersion !== 45 && activity.databaseSchemaVersion !== 46 && activity.databaseSchemaVersion !== 47) {
-    throw new Error(`${label} activity database schema is not v34/v35/v45/v46/v47`)
+  if (activity.databaseSchemaVersion !== 34 && activity.databaseSchemaVersion !== 35 && activity.databaseSchemaVersion !== 45 && activity.databaseSchemaVersion !== 46 && activity.databaseSchemaVersion !== 47 && activity.databaseSchemaVersion !== 48 && activity.databaseSchemaVersion !== 49) {
+    throw new Error(`${label} activity database schema is not v34/v35/v45/v46/v47/v48/v49`)
   }
   return activity
 }

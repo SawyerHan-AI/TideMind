@@ -21,6 +21,9 @@ export function formatHookOutput(
   tool: string,
   hookEventName: HookEventName = 'SessionStart',
 ): string {
+  if (tool === 'antigravity') {
+    return JSON.stringify(content ? { injectSteps: [{ systemMessage: { systemMessage: content } }] } : {});
+  }
   // Codex rust-v0.157.1 compact output schemas reject hookSpecificOutput.
   // An empty success object observes lifecycle only; it injects no model context.
   if (tool === 'codex' && (hookEventName === 'PreCompact' || hookEventName === 'PostCompact')) {

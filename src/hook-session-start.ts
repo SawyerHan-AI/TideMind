@@ -149,7 +149,7 @@ function parseArgs(): {
   if (!agentId) {
     throw new Error('Missing --agent-id');
   }
-  if (!skillPath) {
+  if (!skillPath && tool !== 'antigravity') {
     throw new Error('Missing --skill-path');
   }
   // Tide Mind 0.2.91 already installed Kimi's UserPromptSubmit projection
@@ -224,7 +224,9 @@ async function main(): Promise<void> {
   // --once-per-session(Kimi Code UserPromptSubmit):每会话只注入一次。
   // marker 已存在 → 静默退出(无任何 stdout);无 session_id(异常场景)→
   // 降级为不过滤、照常注入(重复注入比丢上下文好)。
-  const sessionId = typeof stdinPayload?.session_id === 'string' ? stdinPayload.session_id : null;
+  const sessionId = tool === 'antigravity' && typeof stdinPayload?.conversationId === 'string'
+    ? stdinPayload.conversationId
+    : typeof stdinPayload?.session_id === 'string' ? stdinPayload.session_id : null;
   if (oncePerSession && sessionId && hasSessionMarker(sessionId)) {
     return;
   }
@@ -232,7 +234,7 @@ async function main(): Promise<void> {
   // Generation-bound entry of a removed/stopped/rejected Installation: inject
   // nothing (no Skill, no memory) and record no evidence.
   if (hookBridgeRejection({ scope: 'hook-session-start', agentId, activityGenerationToken })) {
-    stdoutStarted = tool === 'codex';
+    stdoutStarted = tool === 'codex' || tool === 'antigravity';
     await outputHook(tool === 'openclaw'
       ? JSON.stringify({ protocol: 'tidemind-openclaw-context-v1', content: '', evidenceEligible: false })
       : '', tool);
@@ -248,6 +250,10 @@ async function main(): Promise<void> {
   let skillContent: string;
   let exactSkillGenerationLoaded = false;
   try {
+    // Antigravity loads its Rule natively; injecting it here would forge Rule recognition.
+    if (tool === 'antigravity') {
+      skillContent = '';
+    } else {
     skillContent = readFileSync(skillPath, 'utf-8');
     if (expectedSkillSha256 !== null) {
       exactSkillGenerationLoaded = matchesExpectedInstructionSha256(skillContent, expectedSkillSha256);
@@ -261,6 +267,7 @@ async function main(): Promise<void> {
       if (fmEnd !== -1) {
         skillContent = skillContent.slice(fmEnd + 3).trim();
       }
+    }
     }
   } catch {
     skillContent = '（Skill 文件读取失败，请通过 MCP 工具 brain_prepare/recall/digest 与外脑交互）';
@@ -295,7 +302,7 @@ async function main(): Promise<void> {
         tool,
         agent_id: agentId,
         detail_level: 'standard',
-      }, { readOnly: tool === 'codex' || tool === 'zcode' });
+      }, { readOnly: tool === 'codex' || tool === 'zcode' || tool === 'antigravity' });
 
       profileSection = formatProfileSection(result);
       restSection = formatRestSections(result);
@@ -326,7 +333,7 @@ async function main(): Promise<void> {
   const hostOutput = tool === 'openclaw'
     ? JSON.stringify({ protocol: 'tidemind-openclaw-context-v1', content, evidenceEligible: exactSkillGenerationLoaded })
     : content;
-  stdoutStarted = tool === 'codex';
+  stdoutStarted = tool === 'codex' || tool === 'antigravity';
   await writeHookOutputBeforeEvidence(hostOutput, tool, 'SessionStart', () => {
     // The native OpenClaw plugin must acknowledge the actual model-input
     // boundary. A successful pipe write only prepares its pending context.
@@ -336,6 +343,7 @@ async function main(): Promise<void> {
       oncePerSession,
       suppressSessionStartActivity,
       exactSkillGenerationLoaded,
+      contextPrepared: savedContextPrepared,
     })) return;
     try {
       loadConfig();

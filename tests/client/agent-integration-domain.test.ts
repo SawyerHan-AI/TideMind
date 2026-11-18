@@ -26,6 +26,8 @@ import {
 } from '../../client/electron/agent-integration/types'
 
 const P0_1 = [
+  'antigravity-app',
+  'antigravity-cli',
   'claude-code-cli',
   'claude-code-native',
   'claude-desktop-legacy',

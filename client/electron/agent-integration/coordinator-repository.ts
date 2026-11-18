@@ -1,3 +1,5 @@
+import { runtimeActivityReferencePrefix } from './activity-reference'
+import { capHostCapability, hostCapabilityCeiling } from './capability'
 import { captureBridgeAnchor, latestPhysicalBridgeWrite, currentCodexMemberSurface, type BridgeAnchor } from '@server/db/codex-bridge-continuity.js'
 import { automaticPlanAuthorizationKey, isAutomaticConsentContext } from './consent'
 import { allowsConnectionMaintenance } from './connection-intent'
@@ -603,7 +605,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
         desiredCapability: capability(Math.min(
           Math.max(...scope.map(item => item.required_capability)),
           capabilityForComponentScope(scope.map(item => item.component_key)),
-          installation.host_variant === 'custom-local-mcp' ? 2 : 4,
+          hostCapabilityCeiling(installation.host_variant),
         )),
         consentId: row.active_consent_id,
         ownedFragmentHash: row.owned_fragment_hash,
@@ -2690,10 +2692,11 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
           delete binding.evidence_ref
           delete binding.evidence_hash
         }
+        const activityPrefix = runtimeActivityReferencePrefix(input.installation.identity.hostVariant, result)
         const refreshedActivity = existing.result === 'verified' && result.status === 'verified'
           && result.invalidationKeys.includes('activity_freshness')
-          && typeof existing.evidence_ref === 'string' && existing.evidence_ref.startsWith('host-activity:')
-          && result.evidenceRef?.startsWith('host-activity:') === true
+          && activityPrefix !== null
+          && typeof existing.evidence_ref === 'string' && existing.evidence_ref.startsWith(activityPrefix)
           && sha256Json(existingReplay) !== sha256Json(comparableExpectedReplay)
           && sha256Json(existingBinding) === sha256Json(expectedBinding)
           && Date.parse(input.verifiedAt) >= Date.parse(String(existing.verified_at))
@@ -4464,9 +4467,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
           : verified.has('instruction')
             ? 1
             : 0
-    const capability = eligible.host_variant === 'custom-local-mcp'
-      ? Math.min(derivedCapability, 2) as CapabilityLevel
-      : derivedCapability
+    const capability = capHostCapability(derivedCapability, eligible.host_variant)
     const summary = rows.length === 0
       ? 'unverified'
       : statuses.size === 1

@@ -1569,7 +1569,10 @@
         "manualDocumentRemoval": "Tide Mind'ye ait talimat dosyasını manuel olarak kaldırın ve tekrar doğrulayın.",
         "componentRequiresOtherProjection": "{{component}} farklı bir desteklenen bağlantı yöntemi gerektirir.",
         "manualReview": "Bu değişiklik manuel bir adım gerektirir. Devam etmeden önce rehberli ayrıntıları inceleyin.",
-        "hostManualRemoval": "Bu ana bilgisayarın kaynağı şu anda doğrulanmadığı için Tide Mind programlarını çalıştırmaz. Tide Mind bileşenini ana bilgisayarda kendiniz kaldırın; Tide Mind bu Agent'a bellek sağlamayı durdurdu."
+        "hostManualRemoval": "Bu ana bilgisayarın kaynağı şu anda doğrulanmadığı için Tide Mind programlarını çalıştırmaz. Tide Mind bileşenini ana bilgisayarda kendiniz kaldırın; Tide Mind bu Agent'a bellek sağlamayı durdurdu.",
+        "antigravityMcpDisabled": "TideMind MCP sunucusu Antigravity’de devre dışı. Antigravity’nin MCP yöneticisinde veya ~/.gemini/config/mcp_config.json dosyasında TideMind girdisini etkinleştirin, ardından bağlantıyı yeniden kontrol edin.",
+        "antigravityToolFilter": "Antigravity’nin araç filtresi gerekli TideMind araçlarını engelliyor. ~/.gemini/config/mcp_config.json dosyasındaki TideMind girdisinde brain_prepare, brain_recall ve brain_digest araçlarına izin verin (enabledTools ve disabledTools ayarlarını inceleyin), ardından yeniden kontrol edin.",
+        "antigravityHookDisabled": "TideMind Hook Antigravity’de devre dışı. Antigravity’nin Hooks ayarlarında veya ~/.gemini/config/hooks.json dosyasında TideMind girdisini etkinleştirin, yeni bir sohbet başlatın ve yeniden kontrol edin."
       },
       "currentRequiredAction": "Hâlâ işlem gerekiyor",
       "openCurrentRequiredAction": "Geçerli talimatları aç",
@@ -1770,6 +1773,16 @@
       "nativePermissions": {
         "gemini_extension": "Yerel Tide Mind uzantısını kur: yerel kod çalıştırma, bellek talimatlarını yükleme, araç ve kancaları bağlama. Bu işlem Gemini uzantı güvenlik bildirimini kabul eder.",
         "openclaw_capabilities": "Yerel Tide Mind eklentisini kur ve etkinleştir; konuşma bağlamını okuma ve istemlere bellek ekleme izni ver, ardından ağ geçidini yeniden başlat."
+      },
+      "antigravity": {
+        "usage": "Antigravity’de yeni bir sohbet başlatın ve TideMind kullanmasını isteyin. İstenirse Antigravity’de belirtilen TideMind araçlarına izin verin.",
+        "awaitingCall": "Başarılı bir bellek çağrısı bekleniyor. Antigravity araç onayınıza ihtiyaç duyabilir; çağrı olmaması iznin reddedildiği anlamına gelmez.",
+        "maintenance": "Bakımı duraklatmak yalnızca otomatik yapılandırma değişikliklerini durdurur. İstemcilerin bellek erişimini durdurmak için paylaşılan bağlantıyı kesin.",
+        "startupOnly": "Yalnızca oturum başlangıcı; oturum sonunda otomatik bellek kaydı veya sıkıştırma Hook desteği yoktur.",
+        "sharedEvidence": "Paylaşılan yapılandırma kanıtı",
+        "domainEvidence": "Bu sonuçlar paylaşılan yapılandırma için geçerlidir. Her App veya CLI kurulumunun ayrı ayrı test edildiğini kanıtlamaz.",
+        "checkSupport": "Bu bağlantıda otomatik hesap kontrolleri ve model testleri kullanılamaz. Doğrulama gerçek TideMind kullanımıyla yapılır.",
+        "connectionReview": "Mevcut Antigravity yapılandırması veya paylaşılan kimlik incelenmelidir. Mevcut bağlantılar değiştirilmedi. Yeniden bağlanmadan önce ayrıntıları inceleyin."
       }
     }
   },

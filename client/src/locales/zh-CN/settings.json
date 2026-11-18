@@ -1569,7 +1569,10 @@
         "manualDocumentRemoval": "请手动移除 Tide Mind 所有的说明文件，然后重新验证。",
         "componentRequiresOtherProjection": "{{component}} 需要改用另一种受支持的接入方式。",
         "manualReview": "这项变更需要手动操作，请先核对引导详情再继续。",
-        "hostManualRemoval": "该宿主当前来源未通过确认，Tide Mind 不会运行它的程序。请在宿主中手动移除 Tide Mind 组件；Tide Mind 已停止为该 Agent 提供记忆。"
+        "hostManualRemoval": "该宿主当前来源未通过确认，Tide Mind 不会运行它的程序。请在宿主中手动移除 Tide Mind 组件；Tide Mind 已停止为该 Agent 提供记忆。",
+        "antigravityMcpDisabled": "Antigravity 中的 TideMind MCP 服务已停用。请在 Antigravity 的 MCP 管理界面或 ~/.gemini/config/mcp_config.json 中启用 TideMind 对应项，然后重新检查连接。",
+        "antigravityToolFilter": "Antigravity 的工具过滤阻止了必要的 TideMind 工具。请在 ~/.gemini/config/mcp_config.json 的 TideMind 对应项中允许 brain_prepare、brain_recall 和 brain_digest（检查 enabledTools 与 disabledTools），然后重新检查。",
+        "antigravityHookDisabled": "Antigravity 中的 TideMind Hook 已停用。请在 Antigravity 的 Hooks 设置或 ~/.gemini/config/hooks.json 中启用 TideMind 对应项，新建对话后重新检查。"
       },
       "currentRequiredAction": "当前待办",
       "openCurrentRequiredAction": "查看当前操作指引",
@@ -1770,6 +1773,16 @@
       "nativePermissions": {
         "gemini_extension": "安装本地 Tide Mind 扩展：运行本地代码、加载记忆指令并接入 MCP Tools 与 Hook。这将确认 Gemini 的扩展安全提示。",
         "openclaw_capabilities": "安装并启用本地 Tide Mind 插件，允许读取对话上下文、向提示词加入记忆内容，并重启网关。"
+      },
+      "antigravity": {
+        "usage": "在 Antigravity 新建对话，并让它使用 TideMind。如出现提示，请在 Antigravity 中允许所请求的 TideMind 工具。",
+        "awaitingCall": "等待成功的记忆调用。Antigravity 可能需要你批准工具；没有调用记录不代表权限已被拒绝。",
+        "maintenance": "暂停维护只停止自动修改配置。要停止这些宿主的记忆访问，请断开整个共享连接。",
+        "startupOnly": "仅会话启动；不提供会话结束自动保存记忆或压缩 Hook。",
+        "sharedEvidence": "共享配置证据",
+        "domainEvidence": "这些结果属于共享配置，不代表每个 App 或 CLI 安装都已分别完成验证。",
+        "checkSupport": "此连接暂不支持自动账号检查和模型测试，通过实际使用 TideMind 验证。",
+        "connectionReview": "现有 Antigravity 配置或共享身份需要核对。未替换已有连接，请先查看详情再重新连接。"
       }
     }
   },

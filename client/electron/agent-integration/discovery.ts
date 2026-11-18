@@ -361,6 +361,11 @@ export interface DiscoveryDependencies {
   ): AppCodeSignatureResult
   /** Reads the exact thin Mach-O architecture without starting the executable. */
   inspectExecutableArchitecture?(executableRealpath: string): Promise<'arm64' | 'x64' | null>
+  /** Exact signed Antigravity native bytes, not a mutable filename/version hint. */
+  resolveAntigravityNativeReceipt?(surface: {
+    architecture: 'arm64' | 'x64'; executableSha256: string; executableSizeBytes: number;
+    identifier: string; teamIdentifier: string; cdHash: string; designatedRequirement: string;
+  }): Readonly<{ version: string; portableArtifactFingerprint: string }> | null
   /** Resolves a live Kimi surface only from the frozen release receipt matrix. */
   resolveKimiNativeReceipt?(surface: {
     architecture: 'arm64' | 'x64'
@@ -505,6 +510,8 @@ const P0_1_DISCOVERY_IDS = [
   'claude-code-cli',
   'claude-code-native',
   'claude-desktop-legacy',
+  'antigravity-app',
+  'antigravity-cli',
   'codex-cli',
   'codex-desktop',
   'cursor-desktop',
@@ -781,6 +788,12 @@ async function ompRootResolutions(
 }
 
 export const P0_DISCOVERY_PROBES: readonly P0DiscoveryProbe[] = Object.freeze([
+  { kind: 'app', catalogId: 'antigravity-app', bundleNames: ['Antigravity.app'],
+    bundleIds: ['com.google.antigravity'], requiredSigningTeamIds: ['EQHXZ8M8AV'],
+    configRoot: homeRoot('.gemini', 'config') },
+  { kind: 'cli', catalogId: 'antigravity-cli', commands: ['agy'],
+    configRoot: homeRoot('.gemini', 'config'),
+    signedNativeFallback: { identifiers: ['cli'], teamIdentifiers: ['EQHXZ8M8AV'] } },
   {
     kind: 'cli', catalogId: 'claude-code-cli', commands: ['claude'], configRoot: environmentRoot('CLAUDE_CONFIG_DIR', ['.claude']),
     detectOnlyFallbackCatalogId: 'claude-code-native',
@@ -1498,7 +1511,8 @@ async function discoverCli(
     let signedNativeReceiptFingerprint: string | undefined
     const isKimiNativeSurface = definition.catalogId === 'kimi-code-cli'
       && observedExecutable.realpath === path.posix.join(context.homeDir, '.kimi-code', 'bin', 'kimi')
-    if (!isKimiNativeSurface) {
+    const isAntigravityNative = definition.catalogId === 'antigravity-cli'
+    if (!isKimiNativeSurface && !isAntigravityNative) {
       try {
         const versionResult = await scheduleProof(() => withProofTimeout(
           signal => dependencies.execVersion(observedExecutable.realpath, ['--version'], { timeoutMs: proofTimeoutMs, signal }),
@@ -1604,7 +1618,7 @@ async function discoverCli(
           : undefined
         const receiptFingerprint = codeSignatureReceiptFingerprint(signature)
         const isKimiNative = definition.detectOnlyFallbackCatalogId === 'kimi-code-native'
-        const kimiArchitecture = isKimiNative && dependencies.inspectExecutableArchitecture
+        const kimiArchitecture = (isKimiNative || isAntigravityNative) && dependencies.inspectExecutableArchitecture
           ? await withTimeout(
               dependencies.inspectExecutableArchitecture(observedExecutable.realpath),
               proofTimeoutMs,
@@ -1633,6 +1647,13 @@ async function discoverCli(
               lookupFingerprint: kimiLookupFingerprint,
             }) ?? null
           : null
+        const antigravityRelease = isAntigravityNative && kimiArchitecture && signedExecutableAfter
+          && signature.identifier && signature.teamIdentifier && signature.cdHash && signature.designatedRequirement
+          ? dependencies.resolveAntigravityNativeReceipt?.({ architecture: kimiArchitecture,
+              executableSha256: signedExecutableAfter.sha256, executableSizeBytes: signedExecutableAfter.size,
+              identifier: signature.identifier, teamIdentifier: signature.teamIdentifier,
+              cdHash: signature.cdHash, designatedRequirement: signature.designatedRequirement }) ?? null
+          : null
         if (signature.valid
           && signature.verificationBoundary === 'strict_final'
           && (!signedExecutableBefore
@@ -1656,7 +1677,12 @@ async function discoverCli(
               source: 'Tide Mind frozen release receipt',
               value: detectedVersion,
             })
-          } else if (!isKimiNative) {
+          } else if (isAntigravityNative && antigravityRelease) {
+            detectedVersion = antigravityRelease.version
+            versionDetectionMethod = 'release_receipt'
+            portableArtifactFingerprint = antigravityRelease.portableArtifactFingerprint
+            evidence.push({ kind: 'version', source: 'Tide Mind frozen release receipt', value: detectedVersion })
+          } else if (!isKimiNative && !isAntigravityNative) {
             portableArtifactFingerprint = signedCodePortableArtifactFingerprint({
               version: detectedVersion,
               executable: signedExecutableAfter,

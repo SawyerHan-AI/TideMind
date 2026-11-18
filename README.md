@@ -147,6 +147,7 @@ Information isn't just stored. It's digested, organized, connected, and sometime
 | Cursor | Supported | MCP configuration |
 | Windsurf | Supported | MCP configuration |
 | Codex | Supported | MCP configuration |
+| Antigravity App / CLI | Supported on macOS Apple silicon | Shared MCP + always-on Rule + session-start context; native tool approval may be required |
 | Any MCP-compatible tool | Supported | Standard protocol, plug and play |
 
 ### Note Systems

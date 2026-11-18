@@ -376,7 +376,7 @@ describe('P0 local Agent discovery', () => {
       : [probe.catalogId]).sort()).toEqual(
       [...P0_DISCOVERY_CATALOG_IDS].sort(),
     )
-    expect(new Set(P0_DISCOVERY_PROBES.map(probe => probe.catalogId)).size).toBe(18)
+    expect(new Set(P0_DISCOVERY_PROBES.map(probe => probe.catalogId)).size).toBe(20)
   })
 
   it('discovers all P0 surfaces with stable canonical identity and provenance', async () => {
@@ -457,6 +457,10 @@ describe('P0 local Agent discovery', () => {
       version: '3.9.1',
       signature: { valid: true, identifier: 'dev.zcode.app', teamIdentifier: '8A5X4JJ39T' },
     })
+    runtime.fs.addApp('Antigravity.app', { bundleId: 'com.google.antigravity', version: '2.33.0',
+      signature: { valid: true, identifier: 'com.google.antigravity', teamIdentifier: 'EQHXZ8M8AV' } })
+    const agy = addCommand(runtime, 'agy')
+    runtime.fs.signatures.set(agy, exactSignedCode('cli', 'EQHXZ8M8AV'))
     runtime.fs.addDirectory(`${HOME}/.qwenworkcn`)
     runtime.fs.addDirectory(`${HOME}/.config/devin`)
 
@@ -2071,5 +2075,28 @@ describe('P0 local Agent discovery', () => {
       lastDetectedAt: '2026-08-25T12:00:00.000Z',
       metadata: { discoverySchemaVersion: 1, explicitProfile: 'default' },
     })
+  })
+})
+
+describe('Antigravity discovery', () => {
+  it('binds the signed App and native CLI to their common configuration root without executing agy', async () => {
+    const runtime = fakeRuntime()
+    runtime.fs.addApp('Antigravity.app', { bundleId: 'com.google.antigravity', version: '2.33.0',
+      signature: { valid: true, identifier: 'com.google.antigravity', teamIdentifier: 'EQHXZ8M8AV' } })
+    const executable = addCommand(runtime, 'agy', { realpath: `${HOME}/.local/bin/agy`, output: 'spoofed 99.0.0' })
+    runtime.fs.signatures.set(executable, { valid: true, identifier: 'cli', teamIdentifier: 'EQHXZ8M8AV',
+      cdHash: 'a'.repeat(40), designatedRequirement: 'identifier cli and anchor apple generic', verificationBoundary: 'strict_final' })
+    const pending = await discoverLocalP0Agents(context(), runtime.dependencies)
+    expect(pending.installations.find(i => i.catalogId === 'antigravity-cli')?.detectedVersion).toBeUndefined()
+    runtime.dependencies.resolveAntigravityNativeReceipt = surface => surface.identifier === 'cli' && surface.architecture === 'arm64'
+      ? { version: '1.5.11', portableArtifactFingerprint: 'b'.repeat(64) } : null
+    const accepted = await discoverLocalP0Agents(context(), runtime.dependencies)
+    const app = accepted.installations.find(i => i.catalogId === 'antigravity-app')!
+    const cli = accepted.installations.find(i => i.catalogId === 'antigravity-cli')!
+    expect(app.detectedVersion).toBe('2.33.0'); expect(cli.detectedVersion).toBe('1.5.11')
+    expect(app.identity.canonicalConfigRoot).toBe(`${HOME}/.gemini/config`)
+    expect(cli.identity.canonicalConfigRoot).toBe(app.identity.canonicalConfigRoot)
+    expect(cli.identity.distribution).toMatchObject({ distributionId: 'cli:antigravity-cli', packageProvenance: 'signed_cli:cli:EQHXZ8M8AV', portableArtifactFingerprint: 'b'.repeat(64) })
+    expect(runtime.calls.some(c => c.startsWith(`execVersion:${executable}:`))).toBe(false)
   })
 })

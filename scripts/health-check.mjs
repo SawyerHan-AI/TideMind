@@ -20,10 +20,10 @@ const checks = [
   { name: 'root audit', cwd: repoRoot, command: 'node', args: ['scripts/audit-client-dependencies.mjs', '--root'] },
   { name: 'cloud typecheck', cwd: path.join(repoRoot, 'pro/cloud-server'), command: 'npx', args: ['tsc', '--noEmit'] },
   { name: 'cloud test', cwd: path.join(repoRoot, 'pro/cloud-server'), command: 'npm', args: ['test'] },
-  { name: 'cloud audit', cwd: path.join(repoRoot, 'pro/cloud-server'), command: 'npm', args: ['audit', '--audit-level=moderate'] },
+  { name: 'cloud audit', cwd: path.join(repoRoot, 'pro/cloud-server'), command: 'node', args: ['../../scripts/audit-client-dependencies.mjs', '--cloud'] },
   { name: 'website typecheck', cwd: path.join(repoRoot, 'pro/website'), command: 'npx', args: ['tsc', '--noEmit'] },
   { name: 'website build', cwd: path.join(repoRoot, 'pro/website'), command: 'npm', args: ['run', 'build'] },
-  { name: 'website audit', cwd: path.join(repoRoot, 'pro/website'), command: 'npm', args: ['audit', '--audit-level=moderate'] },
+  { name: 'website audit', cwd: path.join(repoRoot, 'pro/website'), command: 'node', args: ['../../scripts/audit-client-dependencies.mjs', '--website'] },
   { name: 'client build', cwd: path.join(repoRoot, 'client'), command: 'npm', args: ['run', 'build'] },
   { name: 'client typecheck', cwd: path.join(repoRoot, 'client'), command: 'npx', args: ['tsc', '--build', '--noEmit'] },
   {

@@ -956,6 +956,30 @@ async function staticallyCompleteOpenClawPackageLifecycle(
   })
 }
 
+
+/** Official updater metadata binds the version to the exact signed archive bytes. */
+export function verifyAntigravityReleaseManifest(value: unknown, expected: {
+  version: string; architecture: Architecture; sourceUrl: string; sha512: string
+}): void {
+  const manifest = value as { version?: unknown; url?: unknown; sha512?: unknown } | null
+  if (expected.architecture !== 'arm64') throw new Error('antigravity_release_architecture_not_accepted')
+  const platform = 'darwin-arm'
+  const archive = 'cli_mac_arm64.tar.gz'
+  let url: URL
+  try { url = new URL(expected.sourceUrl) } catch { throw new Error('antigravity_release_artifact_url_mismatch') }
+  const prefix = `/antigravity-public/antigravity-cli/${expected.version}-`
+  const suffix = `/${platform}/${archive}`
+  const buildId = url.pathname.startsWith(prefix) && url.pathname.endsWith(suffix)
+    ? url.pathname.slice(prefix.length, -suffix.length) : ''
+  if (url.protocol !== 'https:' || url.hostname !== 'storage.googleapis.com' || url.port
+    || url.username || url.password || url.search || url.hash || !/^\d+$/.test(buildId)) {
+    throw new Error('antigravity_release_artifact_url_mismatch')
+  }
+  if (!manifest || manifest.version !== expected.version || manifest.url !== expected.sourceUrl
+    || typeof manifest.sha512 !== 'string' || !/^[a-f0-9]{128}$/.test(manifest.sha512)
+    || manifest.sha512 !== expected.sha512) throw new Error('antigravity_release_manifest_artifact_mismatch')
+}
+
 async function generateSignedReceipt(
   options: GenerateReceiptOptions,
   target: ReleaseTarget,
@@ -1088,6 +1112,23 @@ async function generateSignedReceipt(
         platform,
       },
     }
+  } else if (target.catalogId === 'antigravity-cli') {
+    if (!options.signedCliManifestPath) throw new Error('antigravity_signed_cli_requires_release_manifest')
+    const manifest = await inspectMetadataInput(options.signedCliManifestPath, 128 * 1024)
+    const value = JSON.parse(Buffer.from(manifest.content).toString('utf8'))
+    const integrity = await sha512FileIntegrity(artifact.path)
+    verifyAntigravityReleaseManifest(value, {
+      version: options.version, architecture: options.architecture,
+      sourceUrl: options.sourceUrl,
+      sha512: Buffer.from(integrity.slice('sha512-'.length), 'base64').toString('hex'),
+    })
+    if (resolvedArchiveFormat(artifact.path, options.archiveFormat ?? 'auto') !== 'tgz'
+      || options.memberPath !== 'antigravity') throw new Error('antigravity_signed_cli_requires_official_tgz_layout')
+    signedCliSourceEvidence = { antigravityReleaseManifest: {
+      manifest: { name: path.basename(manifest.path), sha256: manifest.sha256, sizeBytes: manifest.sizeBytes },
+      manifestUrl: `https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/darwin_${options.architecture}.json`,
+      artifactSha512: value.sha512,
+    } }
   } else if (options.kind === 'signed-cli') {
     throw new Error('signed_cli_machine_readable_version_evidence_unavailable')
   }
@@ -2232,6 +2273,7 @@ function usage(): string {
     'npm-tarball options: --registry-metadata ABS --bin-name NAME [--npm-components ABS_JSON]',
     'signed-app options: --member-path REL [--archive-format auto|zip|tgz|dmg]',
     'signed-cli Kimi: --member-path kimi --kimi-github-release-metadata ABS --kimi-release-manifest ABS --kimi-artifact-checksum ABS --archive-format zip',
+    'signed-cli Antigravity: --signed-cli-manifest ABS --member-path antigravity --archive-format tgz',
     'signed-cli Claude: --signed-cli-manifest ABS --signed-cli-manifest-signature ABS --signed-cli-signing-key ABS [--member-path REL] [--archive-format raw]',
     'qwen-standalone options: --member-path REL [--archive-format auto|zip|tgz]',
     'openclaw-portable options: --registry-metadata ABS --npm-tarball ABS --openclaw-tag-ref-metadata ABS --openclaw-tag-object-metadata ABS --openclaw-node-artifact ABS --openclaw-node-source-url HTTPS --openclaw-node-shasums ABS --openclaw-node-shasums-source-url HTTPS',

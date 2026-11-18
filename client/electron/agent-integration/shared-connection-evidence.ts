@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import { evaluateBridgeAdmission } from '@server/agent-bridge-guard.js'
 import { getSharedAgentConsumers, resolveInstallationAgentIdentity, sharedAgentActivityKey } from '@server/db/agent-identity-binding.js'
+import { currentAntigravityRule } from '@server/antigravity-rule-evidence.js'
 import { sha256Json } from './fingerprint.js'
 
 const FRESHNESS_MS = 30 * 24 * 60 * 60 * 1_000
@@ -18,6 +19,8 @@ export interface SharedComponentEvidence {
   configurationFingerprint: string | null
 }
 export interface SharedConnectionEvidence {
+  instructionConfigurationFingerprint?: string | null
+  instructionRecognition?: { configurationFingerprint: string; observedAt: string }
   bindingId: string
   bindingGeneration: number
   memberIds: string[]
@@ -25,13 +28,16 @@ export interface SharedConnectionEvidence {
 }
 
 /** Read only. It reuses bridge admission; presentation never grants new authority. */
-export function readSharedConnectionEvidence(db: Database.Database, installationId: string, at: string): SharedConnectionEvidence | undefined {
+export function readSharedConnectionEvidence(db: Database.Database, installationId: string, at: string, tideMindVersion?: string): SharedConnectionEvidence | undefined {
   const identity = resolveInstallationAgentIdentity(db, installationId)
   if (!identity.bindingId) return undefined
   const shared = getSharedAgentConsumers(db, identity.canonicalAgentId)
   if (!shared) return undefined
   const now = Date.parse(at)
   if (!Number.isFinite(now)) throw new Error('invalid shared evidence observation time')
+  const antigravity = shared.consumers.every(member => member.family === 'antigravity')
+  const rule = antigravity ? currentAntigravityRule(db,identity.canonicalAgentId) : null
+  let instructionRecognition: SharedConnectionEvidence['instructionRecognition']
   const components = {} as Record<Component, SharedComponentEvidence>
   for (const component of ['memory_tools', 'lifecycle'] as const) {
     // Enumerate current physical artifacts, then let the existing bridge guard
@@ -67,7 +73,13 @@ export function readSharedConnectionEvidence(db: Database.Database, installation
           WHERE kind='shared_agent_activity' AND dedupe_key=?`).get(key) as { created_at: string; payload_json: string } | undefined
         if (!event) continue
         let timestamp = event.created_at
-        try { const value = JSON.parse(event.payload_json).lastObservedAt; if (typeof value === 'string') timestamp = value } catch { continue }
+        try {
+          const payload = JSON.parse(event.payload_json)
+          if (antigravity && tideMindVersion && payload.tide_mind_version !== tideMindVersion) continue
+          if (typeof payload.lastObservedAt === 'string') timestamp = payload.lastObservedAt
+          if (antigravity && signal === 'brain_prepare' && (!rule || payload.instruction_hash !== rule.hash
+            || payload.instruction_artifact_id !== rule.artifactId || Date.parse(timestamp)<Date.parse(rule.appliedAt))) continue
+        } catch { continue }
         const observed = Date.parse(timestamp)
         if (Number.isFinite(observed) && observed >= Date.parse(carrier.applied_at ?? '') && observed > now - FRESHNESS_MS && observed <= now) signals[signal] = timestamp
       }
@@ -77,8 +89,12 @@ export function readSharedConnectionEvidence(db: Database.Database, installation
     // an old endpoint's read and a replacement endpoint's write.
     const complete = bundles.find(bundle => component === 'memory_tools'
       ? Boolean(bundle.signals.brain_recall && bundle.signals.brain_digest)
-      : SIGNALS.lifecycle.every(signal => Boolean(bundle.signals[signal])))
+      : (antigravity ? ['session_start'] as const : SIGNALS.lifecycle).every(signal => Boolean(bundle.signals[signal])))
     const selected = complete ?? bundles.sort((a, b) => Object.keys(b.signals).length - Object.keys(a.signals).length)[0]
+    if (component === 'memory_tools' && rule && selected?.signals.brain_prepare) instructionRecognition = {
+      configurationFingerprint:sha256Json([rule.artifactId,rule.hash,rule.appliedAt]),
+      observedAt:selected.signals.brain_prepare,
+    }
     components[component] = {
       signalsComplete: Boolean(complete),
       configurationFingerprint: selected ? sha256Json([selected.carrier.artifact_id, selected.carrier.owned_fragment_hash, selected.carrier.applied_at]) : null,
@@ -87,6 +103,6 @@ export function readSharedConnectionEvidence(db: Database.Database, installation
         admitted.map(carrier => [carrier.artifact_id, carrier.owned_fragment_hash, carrier.mutation_id])]),
     }
   }
-  return { bindingId: shared.bindingId, bindingGeneration: shared.generation,
+  return { ...(antigravity ? {instructionConfigurationFingerprint:rule ? sha256Json([rule.artifactId,rule.hash,rule.appliedAt]) : null} : {}), ...(instructionRecognition ? {instructionRecognition} : {}), bindingId: shared.bindingId, bindingGeneration: shared.generation,
     memberIds: shared.consumers.map(member => member.id).sort(), components }
 }

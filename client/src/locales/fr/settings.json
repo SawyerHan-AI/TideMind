@@ -1569,7 +1569,10 @@
         "manualDocumentRemoval": "Supprimez manuellement le fichier d'instructions appartenant à Tide Mind, puis vérifiez à nouveau.",
         "componentRequiresOtherProjection": "{{component}} nécessite une méthode de connexion prise en charge différente.",
         "manualReview": "Ce changement nécessite une étape manuelle. Passez en revue les détails guidés avant de continuer.",
-        "hostManualRemoval": "La source de cet hôte n’est pas confirmée pour le moment ; Tide Mind n’exécutera donc pas ses programmes. Supprimez vous-même le composant Tide Mind dans l’hôte ; Tide Mind ne fournit plus de mémoire à cet Agent."
+        "hostManualRemoval": "La source de cet hôte n’est pas confirmée pour le moment ; Tide Mind n’exécutera donc pas ses programmes. Supprimez vous-même le composant Tide Mind dans l’hôte ; Tide Mind ne fournit plus de mémoire à cet Agent.",
+        "antigravityMcpDisabled": "Le serveur MCP TideMind est désactivé dans Antigravity. Activez son entrée dans le gestionnaire MCP d’Antigravity ou dans ~/.gemini/config/mcp_config.json, puis vérifiez à nouveau la connexion.",
+        "antigravityToolFilter": "Le filtre d’Antigravity bloque les outils TideMind requis. Dans l’entrée TideMind de ~/.gemini/config/mcp_config.json, autorisez brain_prepare, brain_recall et brain_digest (vérifiez enabledTools et disabledTools), puis vérifiez à nouveau.",
+        "antigravityHookDisabled": "Le Hook TideMind est désactivé dans Antigravity. Activez son entrée dans les paramètres Hooks d’Antigravity ou dans ~/.gemini/config/hooks.json, démarrez une nouvelle conversation, puis vérifiez à nouveau."
       },
       "currentRequiredAction": "Action encore requise",
       "openCurrentRequiredAction": "Ouvrir les instructions actuelles",
@@ -1770,6 +1773,16 @@
       "nativePermissions": {
         "gemini_extension": "Installer l’extension locale Tide Mind : exécuter du code local, charger les instructions mémoire et connecter les outils et hooks. Cela accepte l’avertissement de sécurité de Gemini.",
         "openclaw_capabilities": "Installer et activer le module local Tide Mind, autoriser la lecture du contexte des conversations et l’ajout de mémoire aux prompts, puis redémarrer la passerelle."
+      },
+      "antigravity": {
+        "usage": "Démarrez une nouvelle conversation Antigravity et demandez-lui d’utiliser TideMind. Si une demande apparaît, autorisez les outils TideMind demandés dans Antigravity.",
+        "awaitingCall": "En attente d’un appel mémoire réussi. Antigravity peut demander votre autorisation ; l’absence d’appel ne signifie pas un refus.",
+        "maintenance": "La pause de maintenance arrête uniquement les modifications automatiques de configuration. Déconnectez cette connexion partagée pour arrêter l’accès mémoire de ses hôtes.",
+        "startupOnly": "Début de session uniquement ; sans sauvegarde mémoire automatique en fin de session ni Hook de compactage.",
+        "sharedEvidence": "Preuve de configuration partagée",
+        "domainEvidence": "Ces résultats concernent la configuration partagée. Ils ne prouvent pas que chaque installation App ou CLI a été testée séparément.",
+        "checkSupport": "Les vérifications automatiques de compte et les tests de modèle ne sont pas disponibles ici. La vérification repose sur l’utilisation réelle de TideMind.",
+        "connectionReview": "La configuration Antigravity ou l’identité partagée existante doit être vérifiée. Aucune connexion existante n’a été remplacée. Consultez les détails avant de reconnecter."
       }
     }
   },

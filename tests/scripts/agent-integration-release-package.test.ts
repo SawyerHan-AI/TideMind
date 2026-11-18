@@ -507,7 +507,7 @@ describe('packaged Agent Integration release manifest gate', () => {
       customEnabled: true,
       customModes: ['nonstandard_config_root', 'manual_mcp_client'],
     })
-    expect(sourceContract.entries).toHaveLength(20)
+    expect(sourceContract.entries.map(entry => entry.catalogId)).toEqual(AGENT_INTEGRATION_RELEASE_MANIFEST.entries.map(entry => entry.catalogId))
   })
 
   it('requires the Pi native lifecycle runtime in every packaged app', () => {
@@ -545,7 +545,7 @@ describe('packaged Agent Integration release manifest gate', () => {
   it('blocks a formal package when a synthetic production contract lacks a frozen exact candidate', () => {
     const incomplete = {
       ...sourceContract,
-      entries: sourceContract.entries.map((entry, index) => index === 0
+      entries: sourceContract.entries.map(entry => entry.catalogId === 'claude-code-cli'
         ? { ...entry, releaseAcceptedExactVersions: [], acceptedDistributionArtifacts: [] }
         : entry),
     }
@@ -554,7 +554,7 @@ describe('packaged Agent Integration release manifest gate', () => {
     expect(() => assertAgentIntegrationReleaseAcceptance(sourceContract)).not.toThrow()
     expect(() => assertAgentIntegrationReleaseAcceptance({
       ...sourceContract,
-      entries: sourceContract.entries.map((entry, index) => index === 0
+      entries: sourceContract.entries.map(entry => entry.catalogId === 'claude-code-cli'
         ? { ...entry, releaseAcceptedExactVersions: ['not-observed'] }
         : entry),
     })).toThrow(/acceptance is incomplete.*claude-code-cli/u)
@@ -564,8 +564,8 @@ describe('packaged Agent Integration release manifest gate', () => {
     expect(inspectPackagedAgentIntegrationReleaseManifest(bundle(), sourceContract)).toEqual({
       version: sourceContract.version,
       schemaVersion: 4,
-      entryCount: 20,
-      defaultEntryCount: 19,
+      entryCount: AGENT_INTEGRATION_RELEASE_MANIFEST.entries.length,
+      defaultEntryCount: AGENT_INTEGRATION_RELEASE_MANIFEST.entries.filter(entry => entry.enabledByDefault).length,
     })
   })
 
@@ -574,25 +574,25 @@ describe('packaged Agent Integration release manifest gate', () => {
     const prefix = 'const earlier = `outer ${(() => `inner "quote ${"x"}`)()}`;\n'
     expect(codeMarkerCount(prefix, marker)).toBe(0)
     expect(codeMarkerCount(prefix + bundle(), marker)).toBe(1)
-    expect(inspectPackagedAgentIntegrationReleaseManifest(prefix + bundle(), sourceContract).entryCount).toBe(20)
+    expect(inspectPackagedAgentIntegrationReleaseManifest(prefix + bundle(), sourceContract).entryCount).toBe(AGENT_INTEGRATION_RELEASE_MANIFEST.entries.length)
   })
 
   it('keeps declarations after return-regex literals visible without evaluating bundled code', () => {
     const prefix = "const emoji = \"🐚\"; function earlier(value) { return /[`\"{}]/u.test(value); }\n"
     expect(codeMarkerCount(prefix + bundle(), 'function createProductionAgentIntegrationComposition(')).toBe(1)
-    expect(inspectPackagedAgentIntegrationReleaseManifest(prefix + bundle(), sourceContract).entryCount).toBe(20)
+    expect(inspectPackagedAgentIntegrationReleaseManifest(prefix + bundle(), sourceContract).entryCount).toBe(AGENT_INTEGRATION_RELEASE_MANIFEST.entries.length)
   })
 
   it('accepts data-only JavaScript literals after bundling without executing expressions', () => {
     const emitted = bundle().replace('catalogId as never', 'catalogId')
       .replace('"releaseMode":"production"', '"releaseMode":\'production\'')
-    expect(inspectPackagedAgentIntegrationReleaseManifest(emitted, sourceContract).entryCount).toBe(20)
+    expect(inspectPackagedAgentIntegrationReleaseManifest(emitted, sourceContract).entryCount).toBe(AGENT_INTEGRATION_RELEASE_MANIFEST.entries.length)
     const executable = bundle().replace('"releaseMode":"production"', '"releaseMode":invokeReleaseMode()')
     expect(() => inspectPackagedAgentIntegrationReleaseManifest(executable, sourceContract))
-      .toThrow(/invalid claude-code-cli details/u)
+      .toThrow(`invalid ${sourceContract.entries[0].catalogId} details`)
     const duplicate = bundle().replace('"releaseMode":"production"', '"releaseMode":\'production\',"releaseMode":"production"')
     expect(() => inspectPackagedAgentIntegrationReleaseManifest(duplicate, sourceContract))
-      .toThrow(/invalid claude-code-cli details/u)
+      .toThrow(`invalid ${sourceContract.entries[0].catalogId} details`)
   })
 
   it('rejects version/schema drift and an empty default surface', () => {

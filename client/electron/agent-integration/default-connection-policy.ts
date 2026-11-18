@@ -86,6 +86,7 @@ export function checkDefaultConnectionPolicy(context: DefaultConnectionPolicyCon
         : [aggregate, `mcpServers.tidemind-${agent}`]
     }
     if (key === 'lifecycle') {
+      if (variant.startsWith('antigravity-')) return [`tidemind-${agent}`]
       if (variant === 'cursor-desktop') return [`hooks.lifecycle.tidemind-${hash(agent).slice(0,24)}`]
       if (['omp-cli','opencode-v1-cli'].includes(variant)) return ['document']
       return [`hooks.tidemind-${agent}`]

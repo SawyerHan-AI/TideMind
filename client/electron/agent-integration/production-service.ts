@@ -86,6 +86,7 @@ import {
   applyAgentReleaseGateToReport,
   isAgentReleaseGateReason,
   resolveAcceptedKimiNativeReceipt,
+  resolveAcceptedAntigravityNativeReceipt,
   resolveAgentIntegrationReleasePolicy,
   type AgentIntegrationReleasePolicyMode,
 } from './release-manifest.js'
@@ -2721,6 +2722,10 @@ function productionDiscoveryDependencies(homeDir: string): DiscoveryDependencies
         : architectures[0] === 'x86_64'
           ? 'x64'
           : null
+    },
+    resolveAntigravityNativeReceipt: surface => {
+      const receipt = resolveAcceptedAntigravityNativeReceipt(surface)
+      return receipt ? { version: receipt.version, portableArtifactFingerprint: receipt.portableArtifactFingerprint } : null
     },
     resolveKimiNativeReceipt: surface => {
       const receipt = resolveAcceptedKimiNativeReceipt(surface)

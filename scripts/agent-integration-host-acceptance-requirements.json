@@ -1,16 +1,11 @@
 {
   "schemaVersion": 4,
-  "appVersion": "0.2.95",
+  "appVersion": "0.2.101",
   "releaseMacArchitectures": [
     "arm64"
   ],
   "upgradeFromAppVersions": [
-    "0.2.89",
-    "0.2.90",
-    "0.2.91",
-    "0.2.92",
-    "0.2.93",
-    "0.2.94"
+    "0.2.100"
   ],
   "stepPolicy": {
     "base": [
@@ -84,22 +79,24 @@
     }
   ],
   "realHostPolicy": {
-    "id": "0.2.95-codex-only",
+    "id": "0.2.101-antigravity-codex",
     "requiredCatalogIds": [
-      "codex-cli"
+      "codex-cli",
+      "antigravity-app",
+      "antigravity-cli"
     ],
     "otherCatalogs": "deferred",
     "customPaths": "deferred",
-    "reason": "The user explicitly authorized the same personal-beta acceptance scope for 0.2.95. Codex CLI is required; other Agent and Custom real-host validation remains unaccepted and must be disclosed. Implementation regressions and exact signed-candidate checks remain required.",
+    "reason": "This release adds Antigravity App and CLI. Both real hosts and the existing Codex CLI regression are required against the final signed candidate. Other Agent and Custom acceptance remains explicitly deferred; implementation and packaging regressions remain required.",
     "desktopAcceptance": {
       "status": "deferred",
       "releaseNotesDisclosureRequired": true,
-      "reason": "Complete Codex Desktop lifecycle acceptance is deferred in the personal beta. CLI and shared-domain evidence do not constitute Desktop-specific acceptance; disclose this missing validation."
+      "reason": "Complete Codex Desktop lifecycle acceptance remains deferred; normal existing Codex Desktop use on both installation machines must still be checked. Antigravity App acceptance is required independently and is not covered by this Codex-specific deferral."
     }
   },
   "migrationAcceptanceDeferral": {
-    "policyId": "0.2.95-single-user-manual-migration",
-    "appVersion": "0.2.95",
+    "policyId": "0.2.101-single-user-manual-migration",
+    "appVersion": "0.2.101",
     "audience": "single_user",
     "status": "deferred_to_installation",
     "execution": "manual_after_release",
@@ -107,6 +104,6 @@
       "upgrade_matrix",
       "observed_schema41"
     ],
-    "reason": "The user authorized the personal beta with local installation and upgrade validation. The historical upgrade matrix and schema41 recovery remain deferred, never passed; the actual local upgrade, preserved identity/history/statistics and post-install read-back are required to complete delivery."
+    "reason": "Historical upgrade matrices and observed schema41 recovery are deferred, not passed. Actual M4 and MBA upgrades from 0.2.100, preserved data/configuration/roles and normal post-install usage are required before delivery is complete."
   }
 }

@@ -1569,7 +1569,10 @@
         "manualDocumentRemoval": "Remove the Tide Mind-owned instruction file manually, then verify again.",
         "componentRequiresOtherProjection": "{{component}} requires a different supported connection method.",
         "manualReview": "This change requires a manual step. Review the guided details before continuing.",
-        "hostManualRemoval": "The host's source is not currently trusted, so Tide Mind will not run its programs. Remove the Tide Mind component in the host yourself; Tide Mind has stopped serving memory to this Agent."
+        "hostManualRemoval": "The host's source is not currently trusted, so Tide Mind will not run its programs. Remove the Tide Mind component in the host yourself; Tide Mind has stopped serving memory to this Agent.",
+        "antigravityMcpDisabled": "The TideMind MCP server is disabled in Antigravity. Enable its entry in Antigravity’s MCP manager or ~/.gemini/config/mcp_config.json, then check the connection again.",
+        "antigravityToolFilter": "Antigravity’s tool filter blocks required TideMind tools. In the TideMind entry of ~/.gemini/config/mcp_config.json, allow brain_prepare, brain_recall and brain_digest (review enabledTools and disabledTools), then check again.",
+        "antigravityHookDisabled": "The TideMind Hook is disabled in Antigravity. Enable its named entry in Antigravity’s Hooks settings or ~/.gemini/config/hooks.json, start a new conversation, then check again."
       },
       "currentRequiredAction": "Action still required",
       "openCurrentRequiredAction": "Open current instructions",
@@ -1770,6 +1773,16 @@
       "nativePermissions": {
         "gemini_extension": "Install the local Tide Mind extension. It runs local code, loads memory instructions, and connects MCP Tools and hooks. This accepts Gemini’s extension security notice.",
         "openclaw_capabilities": "Install and enable the local Tide Mind plugin, allow it to read conversation context and add memory context to prompts, and restart the gateway."
+      },
+      "antigravity": {
+        "usage": "Start a new Antigravity conversation and ask it to use TideMind. If prompted, allow the requested TideMind tools in Antigravity.",
+        "awaitingCall": "Waiting for a successful memory call. Antigravity may need your tool approval; no call does not mean permission was denied.",
+        "maintenance": "Pause maintenance stops automatic configuration changes. Disconnect this shared connection to stop memory access for its consumers.",
+        "startupOnly": "Session start only; automatic end-of-session memory saving and compaction hooks are not provided.",
+        "sharedEvidence": "Shared configuration evidence",
+        "domainEvidence": "These results apply to the shared configuration. They do not prove that each App or CLI installation has been separately tested.",
+        "checkSupport": "Automatic account checks and model tests are not available for this connection. Verification comes from actual TideMind use.",
+        "connectionReview": "The existing Antigravity configuration or shared identity needs review. No existing connection was replaced. Review its details before reconnecting."
       }
     }
   },

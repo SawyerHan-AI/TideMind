@@ -180,3 +180,98 @@ describe('0.2.94 minimatch build dependency exception', () => {
     expect(() => validateAuditReport({ vulnerabilities: { a: { via: ['b'] }, b: { via: ['a'] } } }, {})).toThrow(/unapproved/);
   });
 });
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+function picomatchFixture(scope: 'root' | 'client' | 'cloud' | 'website' = 'root') {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-audit-boundary-'));
+  const source = path.join(directory, 'src');
+  fs.mkdirSync(source);
+  fs.mkdirSync(path.join(directory, 'electron'));
+  fs.writeFileSync(path.join(source, 'app.ts'), 'export const app = true;');
+  if (scope === 'website') {
+    fs.copyFileSync(path.resolve('pro/website/astro.config.mjs'), path.join(directory, 'astro.config.mjs'));
+    fs.writeFileSync(path.join(directory, 'package.json'), JSON.stringify({scripts:{build:'astro build'}}));
+  }
+  const version = scope === 'website' ? '0.0.1' : '0.2.101';
+  const lock = {version,packages:{
+    '':{version},
+    'node_modules/picomatch':{version:scope === 'cloud' || scope === 'client' ? '2.3.2' : '4.0.7',dev:scope !== 'website'},
+    'node_modules/tool':{version:'1.0.0',dev:scope !== 'website'},
+  }};
+  const report = {vulnerabilities:{
+    picomatch:{severity:'high',nodes:['node_modules/picomatch'],via:[{
+      name:'picomatch',dependency:'picomatch',severity:'high',url:'https://github.com/advisories/GHSA-fc5q-39xc-vjpf',
+    }]},
+    tool:{severity:'high',nodes:['node_modules/tool'],via:['picomatch']},
+  }};
+  const validate = () => validateAuditReport(report,lock,source,scope,version,'0.2.101');
+  return {directory,source,lock,report,validate};
+}
+
+describe('0.2.101 picomatch controlled-build exception', () => {
+  it.each(['root','client','cloud','website'] as const)('accepts the reviewed %s boundary only', scope => {
+    const f = picomatchFixture(scope);
+    try { expect(f.validate()).toEqual(['picomatch','tool']); }
+    finally { fs.rmSync(f.directory,{recursive:true}); }
+  });
+  it('does not allow a different advisory or newly reviewed version implicitly', () => {
+    const f = picomatchFixture();
+    try {
+      f.report.vulnerabilities.picomatch.via[0].url = 'https://github.com/advisories/GHSA-other';
+      expect(f.validate).toThrow(/unapproved/);
+      f.report.vulnerabilities.picomatch.via[0].url = 'https://github.com/advisories/GHSA-fc5q-39xc-vjpf';
+      f.lock.packages['node_modules/picomatch'].version = '4.0.8';
+      expect(f.validate).toThrow(/reviewed/);
+    } finally { fs.rmSync(f.directory,{recursive:true}); }
+  });
+  it.each(['picomatch','tool'])('rejects a runtime dependency in the affected chain: %s', name => {
+    const f = picomatchFixture();
+    try {
+      f.lock.packages[`node_modules/${name}`].dev = false;
+      expect(f.validate).toThrow(/dev-only|build-only/);
+    } finally { fs.rmSync(f.directory,{recursive:true}); }
+  });
+  it('rejects additional installed copies and unavailable audit nodes', () => {
+    const f = picomatchFixture();
+    try {
+      f.lock.packages['node_modules/nested/node_modules/picomatch'] = {version:'3.0.1',dev:true};
+      expect(f.validate).toThrow(/reviewed/);
+      delete f.lock.packages['node_modules/nested/node_modules/picomatch'];
+      f.report.vulnerabilities.tool.nodes = ['node_modules/missing'];
+      expect(f.validate).toThrow(/build-only/);
+    } finally { fs.rmSync(f.directory,{recursive:true}); }
+  });
+  it.each(['0.2.100','0.2.102'])('does not inherit the exception for release %s', version => {
+    const f = picomatchFixture();
+    try { expect(()=>validateAuditReport(f.report,f.lock,f.source,'root','0.2.101',version)).toThrow(/0.2.101/); }
+    finally { fs.rmSync(f.directory,{recursive:true}); }
+  });
+  it('requires source verification and rejects direct runtime matcher usage', () => {
+    const f = picomatchFixture('client');
+    try {
+      expect(()=>validateAuditReport(f.report,f.lock,undefined,'client','0.2.101','0.2.101')).toThrow(/source boundary/);
+      fs.writeFileSync(path.join(f.directory,'electron','main.ts'),"import match from 'picomatch';");
+      expect(f.validate).toThrow(/runtime matcher/);
+    } finally { fs.rmSync(f.directory,{recursive:true}); }
+  });
+  it('rejects SSR or different website build configuration', () => {
+    const f = picomatchFixture('website');
+    try {
+      fs.appendFileSync(path.join(f.directory,'astro.config.mjs'),"\n// changed deployment boundary\n");
+      expect(f.validate).toThrow(/static Astro/);
+    } finally { fs.rmSync(f.directory,{recursive:true}); }
+  });
+  it('rejects severity or advisory identity changes', () => {
+    const f = picomatchFixture();
+    try {
+      f.report.vulnerabilities.picomatch.via[0].name = 'another-package';
+      expect(f.validate).toThrow(/build-only/);
+      f.report.vulnerabilities.picomatch.via[0].name = 'picomatch';
+      f.report.vulnerabilities.tool.severity = 'critical';
+      expect(f.validate).toThrow(/build-only/);
+    } finally { fs.rmSync(f.directory,{recursive:true}); }
+  });
+});

@@ -122,6 +122,7 @@ async function main() {
     assert.equal(await value(cdp, 'typeof window.api?.agentIntegrations?.snapshot'), 'function', 'preload API was not exposed')
     assert.equal(await value(cdp, 'document.querySelectorAll(\'[role="alert"]\').length'), 0, 'renderer reported an error')
     const initialScan = await waitForExactInitialScan(cdp)
+    const antigravity = await exerciseAntigravityConfiguration(cdp, artifactsDir)
     const defaultList = await assertDefaultListLayout(cdp)
     const currentConnectionIssue = await exerciseCurrentConnectionIssue(cdp, artifactsDir)
     const interruptedRestart = await exerciseInterruptedRestartTask(cdp)
@@ -195,6 +196,7 @@ async function main() {
       uiAssertions: {
         theme: UI_THEME,
         initialScan,
+        antigravity,
         defaultList,
         accessInfo,
         currentConnectionIssue,
@@ -227,6 +229,12 @@ async function main() {
     }
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`)
   } catch (error) {
+    if (cdp && !MODEL_CATALOG_ONLY) {
+      try {
+        fs.writeFileSync(path.join(root, 'failure-dom.txt'), await value(cdp, 'document.body.innerText'))
+        await screenshot(cdp, path.join(artifactsDir, 'failure.png'))
+      } catch { /* Preserve the original test failure. */ }
+    }
     if (MODEL_CATALOG_ONLY && cdp) {
       try { process.stderr.write(`Model renderer: ${await value(cdp, 'document.body.innerText')}\n`); await screenshot(cdp, path.join(artifactsDir, 'model-failure.png')) } catch {}
     }
@@ -261,6 +269,60 @@ async function main() {
     if (!KEEP_ROOT && process.exitCode !== 1) fs.rmSync(root, { recursive: true, force: true })
     else process.stderr.write(`UI E2E audit root preserved at ${root}\n`)
   }
+}
+
+/** Real isolated configuration flow; no host invocation or activity is fabricated. */
+async function exerciseAntigravityConfiguration(client, artifactRoot) {
+  const result = await value(client, `(async () => {
+    const ids = ['antigravity-app', 'antigravity-cli']
+    const snapshot = await window.api.agentIntegrations.snapshot()
+    if (snapshot.fixtureMode !== 'isolated_ui_audit') throw new Error('Antigravity UI test requires isolated fixture mode')
+    const preview = await window.api.agentIntegrations.previewConnect(ids)
+    if (preview.installations.some(item => item.desiredCapability > 3)) throw new Error('Antigravity preview overstates lifecycle capability')
+    return window.api.agentIntegrations.applyConnect(preview.planHash, ids)
+  })()`)
+  assert.ok(result.results.every(item => ['committed', 'awaiting_verification'].includes(item.status)), JSON.stringify(result))
+  // A reload is asynchronous. A row from the old document must not satisfy the
+  // wait and receive a click which the pending navigation would then discard.
+  await client.evaluate('globalThis.__antigravityReloadPending = true; location.reload()')
+  await waitFor(client, `!globalThis.__antigravityReloadPending && document.readyState === 'complete'
+    && document.querySelector('[data-agent-family-trigger="antigravity"]') !== null`, 'Antigravity shared connection row in new document')
+  const state = await value(client, `(async () => {
+    const snapshot = await window.api.agentIntegrations.snapshot()
+    const connections = snapshot.connections.filter(item => item.familyId === 'antigravity')
+    const installations = snapshot.installations.filter(item => item.familyId === 'antigravity')
+    return { fixtureMode: snapshot.fixtureMode, connections, installations }
+  })()`)
+  assert.equal(state.fixtureMode, 'isolated_ui_audit')
+  assert.equal(state.connections.length, 1, 'same Antigravity configuration must produce one connection')
+  assert.equal(state.connections[0].installationIds.length, 2)
+  assert.equal(state.connections[0].memoryCallsVerified, false, 'configuration alone must not prove memory calls')
+  for (const member of state.installations) {
+    assert.notEqual(member.accessLevel, 'complete')
+    assert.equal(member.components.find(item => item.key === 'lifecycle')?.hostRecognitionVerified, false)
+  }
+  await client.evaluate(`document.querySelector('[data-agent-family-trigger="antigravity"]')?.click()`)
+  await waitFor(client, `document.querySelector('[data-antigravity-guidance]') !== null`, 'Antigravity guidance')
+  await waitFor(client, `document.querySelector('[data-startup-only]') !== null`, 'startup-only Hook scope')
+  const guidance = await value(client, `document.querySelector('[data-antigravity-guidance]')?.textContent ?? ''`)
+  const supportedLocales = ['en', 'zh-CN'].map(locale => JSON.parse(fs.readFileSync(
+    path.join(clientRoot, 'src', 'locales', locale, 'settings.json'), 'utf8')).agent.managed.antigravity)
+  for (const key of ['awaitingCall', 'maintenance']) {
+    assert.ok(supportedLocales.some(messages => guidance.includes(messages[key])), `Antigravity guidance must explain ${key}`)
+  }
+  assert.ok(await value(client, `document.querySelector('[data-component-evidence-scope="configuration_domain"]') !== null`))
+  await screenshot(client, path.join(artifactRoot, 'antigravity-wide-pending.png'))
+  await client.send('Emulation.setDeviceMetricsOverride', { width: 900, height: 900, deviceScaleFactor: 1, mobile: false })
+  await waitFor(client, 'window.innerWidth === 900', 'Antigravity narrow viewport')
+  await client.evaluate(`document.querySelector('[data-startup-only]')?.scrollIntoView({ block: 'center' })`)
+  await screenshot(client, path.join(artifactRoot, 'antigravity-narrow-pending.png'))
+  // Leave the same unselected list state expected by the existing suite.
+  await client.evaluate(`document.querySelector('[data-agent-detail-pane] button')?.click()`)
+  await waitFor(client, `document.querySelector('[data-agent-detail-pane]') === null`, 'Antigravity detail closed')
+  await client.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false })
+  await waitFor(client, 'window.innerWidth === 1440', 'restore wide viewport')
+  return { fixtureMode: 'isolated_ui_audit', sharedConnection: true, memberCount: 2,
+    capabilityCeiling: 3, startupOnly: true, realHostCalls: false, awaitingCall: true }
 }
 
 function createFixture() {

@@ -123,6 +123,9 @@ export function ManagedFamilyList({
                 <div className="flex flex-wrap gap-x-3 gap-y-1">
                   {connection.components.map(component => <ComponentFact key={component.key} componentKey={component.key} status={component.state} onInspect={event => onSelect(family.id, event.currentTarget)} />)}
                 </div>
+                {connection.components.some(component => component.evidenceScope === 'configuration_domain') && (
+                  <p className="text-xs text-gray-400">{t('agent.managed.antigravity.sharedEvidence')}</p>
+                )}
                 <p className="whitespace-nowrap text-xs text-gray-400">
                   <span className="mr-1">{t('agent.managed.activityLabel')}:</span>
                   {activityAt ? timeAgo(activityAt) : t('agent.managed.noActivity')}

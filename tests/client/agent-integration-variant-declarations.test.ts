@@ -26,7 +26,7 @@ const requirements = JSON.parse(fs.readFileSync(
   customGuidedTargets: Array<{ schemaKind: string; selectorKey: string }>
 }
 
-/** Every official distribution of every writable release entry (the 21 P0 targets and their x64 twins). */
+/** Every official distribution of every writable release entry (the current P0 targets and their supported architectures). */
 function releaseTargets() {
   return AGENT_INTEGRATION_RELEASE_ENTRIES
     .filter(entry => entry.releaseMode === 'production' && entry.disposition !== 'observe_only')
@@ -43,13 +43,16 @@ function adapterFor(declaration: VariantDeclaration, adapters: ReadonlyMap<strin
 describe('per-variant atomic groups and shared-domain declarations', () => {
   const adapters = createP0HostAdapters()
 
-  it('declares every official distribution target, including the 21 arm64 P0 targets, and the five Custom targets', () => {
+  it('declares every official distribution target, including both Antigravity arm64 targets, and the five Custom targets', () => {
     const arm64Targets = releaseTargets().filter(({ distribution }) => (
       requirements.releaseMacArchitectures.some(architecture => (
         (distribution as { supportedMacArchitectures?: readonly string[] }).supportedMacArchitectures?.includes(architecture)
       ))
     ))
-    expect(arm64Targets).toHaveLength(21)
+    expect(arm64Targets.filter(({ entry }) => entry.catalogId.startsWith('antigravity-')).map(({ entry }) => entry.catalogId).sort())
+      .toEqual(['antigravity-app','antigravity-cli'])
+    expect(arm64Targets.length).toBe(AGENT_VARIANT_DECLARATIONS.filter(declaration => declaration.disposition === 'managed' || declaration.disposition === 'guided' || declaration.disposition === 'migration')
+      .filter(declaration => arm64Targets.some(({ entry, distribution }) => declaration.catalogId === entry.catalogId && declaration.distributionId === distribution.distributionId)).length)
     for (const { entry, distribution } of releaseTargets()) {
       const declaration = AGENT_VARIANT_DECLARATIONS.find(candidate => (
         candidate.catalogId === entry.catalogId && candidate.distributionId === distribution.distributionId

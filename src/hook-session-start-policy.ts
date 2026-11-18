@@ -11,8 +11,10 @@ export function shouldRecordSessionStartActivity(input: {
   oncePerSession: boolean;
   suppressSessionStartActivity: boolean;
   exactSkillGenerationLoaded: boolean;
+  contextPrepared?: boolean;
 }): boolean {
   if (input.suppressSessionStartActivity) return false;
   if (input.tool === 'kimi-code' && input.oncePerSession) return false;
+  if (input.tool === 'antigravity') return input.contextPrepared === true;
   return input.exactSkillGenerationLoaded;
 }

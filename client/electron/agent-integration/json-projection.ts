@@ -250,6 +250,7 @@ function parseObject(filePath: string): Record<string, JsonValue> {
 
 function parseContainer(filePath: string): unknown {
   const source = fs.readFileSync(filePath, 'utf8')
+  if (!source.trim()) return {};
   return isJsoncFile(filePath) ? parseJsoncObject(source).root : JSON.parse(source)
 }
 

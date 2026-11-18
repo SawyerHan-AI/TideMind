@@ -188,6 +188,22 @@ const codex = (catalogId: 'codex-cli' | 'codex-desktop', distributionId: string)
   ],
 })
 
+const antigravity = (catalogId: 'antigravity-app' | 'antigravity-cli', distributionId: string) => variant({
+  variantId: catalogId, catalogId, distributionId, disposition: 'managed',
+  logicalComponents: ALL, dependencies: { instruction: [M] },
+  atomicGroups: [
+    { id: 'antigravity_rule', components: [I], carrier: 'rules/tidemind.md', deactivationMethod: 'guided_manual' },
+    fragment('antigravity_mcp', [M], 'mcp_config.json mcpServers.tidemind-<agentId>'),
+    fragment('antigravity_start', [L], 'hooks.json tidemind-<agentId>'),
+  ],
+  supportedBundles: [ALL, [I, M]],
+  physicalDomains: [
+    { id: 'antigravity_rule', target: '$CONFIG_ROOT/rules/tidemind.md', components: [I], sharing: 'artifact' },
+    { id: 'antigravity_mcp', target: '$CONFIG_ROOT/mcp_config.json', components: [M], sharing: 'container' },
+    { id: 'antigravity_start', target: '$CONFIG_ROOT/hooks.json', components: [L], sharing: 'container' },
+  ],
+})
+
 const kimi = (catalogId: 'kimi-code-cli' | 'kimi-code-native', distributionId: string) => separable({
   variantId: catalogId,
   catalogId,
@@ -298,6 +314,8 @@ export const AGENT_VARIANT_DECLARATIONS: readonly VariantDeclaration[] = Object.
       { id: 'claude_desktop_config_json', target: '$CONFIG_ROOT/claude_desktop_config.json', components: [M], sharing: 'container' },
     ],
   }),
+  antigravity('antigravity-app', 'com.google.antigravity'),
+  antigravity('antigravity-cli', 'cli:antigravity-cli'),
   codex('codex-cli', 'cli:codex-cli'),
   codex('codex-desktop', 'com.openai.codex'),
   separable({

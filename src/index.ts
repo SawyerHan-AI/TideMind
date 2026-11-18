@@ -21,7 +21,7 @@ import { prepare } from './tools/prepare.js';
 // ./tools/recall-input.js,此处不再 import。
 import type { DigestInput, PrepareInput, DigestIntent, DetailLevel } from './types.js';
 
-import { getAgent } from './db/agents.js';
+import { getAgent, touchAgent } from './db/agents.js';
 import { recordHostActivityEvidence, type HostActivitySignal } from './db/agent-host-activity.js';
 import { describeBridgeRejection, evaluateBridgeAdmission } from './agent-bridge-guard.js';
 import { createLogger } from './utils/logger.js';
@@ -33,6 +33,9 @@ import {
   digestResultProducedActivity,
   shouldRecordMcpActivity,
 } from './agent-integration-recognition.js';
+
+import { isAntigravitySharedAgent } from './antigravity-rule-evidence.js';
+import { ANTIGRAVITY_INSTRUCTION_PREPARE_PROBE } from './antigravity-instruction.js';
 
 const log = createLogger('server');
 const migrationLog = createLogger('migrate');
@@ -61,7 +64,7 @@ const diagnosticCaller = { agentId: agentId ?? '', activityGenerationToken: acti
 if (diagnosticContext) assertDiagnosticBridge(diagnosticContext, { ...diagnosticCaller, componentKey: 'memory_tools' });
 const activityWarnings = new Set<string>();
 
-function recordMcpActivity(db: ReturnType<typeof getDb>, signalName: HostActivitySignal): void {
+function recordMcpActivity(db: ReturnType<typeof getDb>, signalName: HostActivitySignal, instructionProbe?: string): void {
   if (diagnosticContext) return;
   if (!agentId || !activityGenerationToken) return;
   try {
@@ -72,6 +75,7 @@ function recordMcpActivity(db: ReturnType<typeof getDb>, signalName: HostActivit
       signalName,
       tideMindVersion,
       activityGenerationToken,
+      instructionProbe,
     });
     if (result.status === 'rejected' && !activityWarnings.has(result.reason)) {
       activityWarnings.add(result.reason);
@@ -192,12 +196,18 @@ server.tool(
         // prepare call proves only MCP availability; it becomes instruction
         // recognition evidence only when the managed Skill supplied its
         // stable proof phrase in this same MCP process/generation.
-        if (shouldRecordMcpActivity({
+        const instructionAllowed = !agentId || !isAntigravitySharedAgent(db, agentId)
+          || params.integration_probe === ANTIGRAVITY_INSTRUCTION_PREPARE_PROBE;
+        if (instructionAllowed && shouldRecordMcpActivity({
           hostVariant,
           signalName: 'brain_prepare',
           instructionProbe: params.integration_probe,
         })) {
-          recordMcpActivity(db, 'brain_prepare');
+          recordMcpActivity(db, 'brain_prepare', params.integration_probe);
+        } else if (!instructionAllowed && agentId && !diagnosticContext
+          && evaluateBridgeAdmission(db, { agentId, activityGenerationToken }).allowed) {
+          // Real use is not the same as managed instruction recognition.
+          touchAgent(db, agentId);
         }
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],

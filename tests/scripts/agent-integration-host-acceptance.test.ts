@@ -1378,8 +1378,8 @@ describe('single-user 0.2.94 migration deferral', () => {
 })
 
 describe('0.2.95 explicitly authorized personal beta', () => {
-  it('refuses to reuse historical 0.2.95 requirements for the current 0.2.97 manifest', () => {
-    expect(() => loadAgentHostAcceptanceRequirements()).toThrow('acceptance requirements app version differs from release manifest')
+  it('refuses to reuse historical 0.2.95 requirements for the current manifest', () => {
+    expect(() => loadAgentHostAcceptanceRequirements(historical095RequirementsPath)).toThrow('acceptance requirements app version differs from release manifest')
   })
 
   it('requires every Codex CLI runtime step and explicitly records all deferred targets', () => {
@@ -1437,5 +1437,66 @@ describe('0.2.95 explicitly authorized personal beta', () => {
     cli.steps = original
     delete built.index.candidateAppsByArchitecture.arm64
     expect(check).toThrow(/candidate/)
+  })
+})
+
+describe('0.2.101 Antigravity release acceptance scope', () => {
+  function contract(mutate?: (value: any) => void) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'antigravity-release-policy-')); roots.push(root)
+    const requirementsPath = path.join(root, 'requirements.json')
+    const manifestPath = path.join(root, 'manifest.ts')
+    const raw = JSON.parse(fs.readFileSync(path.resolve('scripts/agent-integration-host-acceptance-requirements.json'), 'utf8'))
+    mutate?.(raw)
+    fs.writeFileSync(requirementsPath, JSON.stringify(raw))
+    let manifest = testReleaseManifest(true).replace("VERSION = '0.2.92'", "VERSION = '0.2.101'")
+    const template = manifest.match(/^  release\('cursor-desktop'.*$/m)![0]
+    const extra = ['codex-cli','antigravity-app','antigravity-cli'].map(id => template.replace("'cursor-desktop'", `'${id}'`)
+      .replace("'managed', 4", `'managed', ${id === 'codex-cli' ? 4 : 3}`)
+      .replace('"signals":["session_start","pre_compact"]', id === 'codex-cli' ? '"signals":["session_start","pre_compact"]' : '"signals":["session_start"]'))
+    manifest = manifest.replace(template, [template, ...extra].join('\n'))
+    fs.writeFileSync(manifestPath, manifest)
+    return () => loadAgentHostAcceptanceRequirements(requirementsPath, manifestPath)
+  }
+
+  it('requires both Antigravity surfaces and Codex CLI without inventing compact events', () => {
+    const requirements = contract()()
+    expect(requirements.appVersion).toBe('0.2.101')
+    expect(requirements.upgradeFromAppVersions).toEqual(['0.2.100'])
+    expect(requirements.realHostPolicy.requiredCatalogIds).toEqual(['codex-cli','antigravity-app','antigravity-cli'])
+    for (const id of ['antigravity-app','antigravity-cli']) {
+      const target = requirements.targets.find((item: any) => item.catalogId === id)
+      expect(realHostAcceptanceDeferral(requirements, target)).toBeNull()
+      expect(target.targetCapability).toBe(3)
+      const steps = requiredRealHostAcceptanceSteps(requirements, target)
+      expect(steps).toContain('instruction_loaded')
+      expect(steps).toContain('memory_closure')
+      expect(steps).toContain('lifecycle_session_start')
+      expect(steps).not.toContain('lifecycle_pre_compact')
+      expect(steps).not.toContain('lifecycle_session_end')
+    }
+    const deferred = requirements.targets.find((item: any) => item.catalogId === 'cursor-desktop')
+    const expected = deferredHostAcceptanceTarget(requirements, deferred)
+    expect(expected.realHostDeferral.policyId).toBe('0.2.101-antigravity-codex')
+    expect(upgradeTargetIdentityDigest(expected, requirements.releaseContractSha256)).toBe(sha256(JSON.stringify([
+      '0.2.101-deferred-upgrade-contract', requirements.releaseContractSha256,
+      expected.targetKey, expected.targetId, null, expected.disposition, expected.targetCapability,
+      expected.architecture, expected.realHostDeferral,
+    ])))
+    expect(requirements.migrationAcceptanceDeferral.appVersion).toBe('0.2.101')
+  })
+
+  it.each(['omit-app','old-policy','future-version','claim-others-passed','claim-desktop-passed'] as const)('rejects scope widening or missing mandatory host: %s', mutation => {
+    const read = contract(raw => {
+      if (mutation === 'omit-app') raw.realHostPolicy.requiredCatalogIds = ['codex-cli','antigravity-cli']
+      if (mutation === 'old-policy') raw.realHostPolicy.id = '0.2.95-codex-only'
+      if (mutation === 'future-version') raw.appVersion = '0.2.102'
+      if (mutation === 'claim-others-passed') raw.realHostPolicy.otherCatalogs = 'passed'
+      if (mutation === 'claim-desktop-passed') raw.realHostPolicy.desktopAcceptance.status = 'passed'
+    })
+    expect(read).toThrow()
+  })
+
+  it('rejects unknown policy IDs when deriving deferred identity', () => {
+    expect(() => upgradeTargetIdentityDigest({ realHostDeferral: { policyId: 'any-future-version' } }, 'a'.repeat(64))).toThrow('unknown deferred upgrade policy')
   })
 })

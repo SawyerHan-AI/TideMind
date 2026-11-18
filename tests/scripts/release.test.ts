@@ -200,6 +200,12 @@ describe('release script helpers', () => {
     expect(releaseMacArchitectures('0.2.95')).toEqual(['arm64']);
   });
 
+  it('uses the scoped 0.2.101 upgrade origin without changing historical release contracts', () => {
+    expect(resolveUpdatePreviousVersions('0.2.101', '0.2.100')).toEqual(['0.2.100']);
+    expect(releaseMacArchitectures('0.2.101')).toEqual(['arm64']);
+    expect(() => resolveUpdatePreviousVersions('0.2.101', '0.2.94')).toThrow(/all are always verified/);
+  });
+
   it('rejects a stale local or remote release tag before external release writes', () => {
     const base = {
       localTagHead: '',

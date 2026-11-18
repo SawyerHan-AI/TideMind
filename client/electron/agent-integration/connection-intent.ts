@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import { agentIdentityDomainKey } from '@server/db/agent-identity-binding.js'
+import { agentIdentityDomainKey, supportsSharedAgentDomain } from '@server/db/agent-identity-binding.js'
 import { sha256Json } from './fingerprint'
 import type { AgentInstallationRow } from './repository'
 
@@ -16,8 +16,8 @@ export interface ConnectionIntent {
 
 /** Stable before/after creating a binding, and independent of version or executable updates. */
 export function connectionIntentDomain(row: AgentInstallationRow): string {
-  if (row.family === 'codex' && ['codex-cli', 'codex-desktop'].includes(row.host_variant) && row.config_root) {
-    return `codex:${agentIdentityDomainKey(row)}`
+  if (supportsSharedAgentDomain(row)) {
+    return `${row.family}:${agentIdentityDomainKey(row)}`
   }
   return `installation:${sha256Json([row.family, row.host_variant, row.runtime_realm,
     row.os_user_identity, row.config_root ?? row.install_key, row.profile_id])}`

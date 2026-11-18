@@ -39,10 +39,18 @@ function installation(db: Database.Database, id: string): Installation {
   return row;
 }
 
+/** Only products with a reviewed shared physical configuration may bind identities. */
+export function supportsSharedAgentDomain(row: { family: string; host_variant: string; config_root: string | null }): boolean {
+  return Boolean(row.config_root) && (
+    (row.family === 'codex' && ['codex-cli', 'codex-desktop'].includes(row.host_variant))
+    || (row.family === 'antigravity' && ['antigravity-app', 'antigravity-cli'].includes(row.host_variant))
+  );
+}
+
 /** Config roots must already be canonicalized by discovery; no filesystem writes. */
 export function agentIdentityDomainKey(row: Installation): string {
-  if (row.family !== 'codex' || !['codex-cli', 'codex-desktop'].includes(row.host_variant) || !row.config_root) {
-    throw new Error('Shared identity requires a discovered Codex configuration domain');
+  if (!supportsSharedAgentDomain(row)) {
+    throw new Error('Shared identity requires a supported discovered configuration domain');
   }
   return createHash('sha256').update(JSON.stringify([
     row.family, row.runtime_realm, row.os_user_identity, row.config_root, row.profile_id || 'default',
@@ -76,7 +84,8 @@ export function confirmSharedAgentIdentity(db: Database.Database, input: Confirm
     if (!agent || agent.archived !== 0) throw new Error('Canonical Agent is not active');
     const rows = input.members.map(member => {
       const row = installation(db, member.installationId);
-      if (row.agent_id !== member.installationAgentId || row.install_key !== member.installKey
+      if (row.family !== 'codex' || !['codex-cli', 'codex-desktop'].includes(row.host_variant)
+        || row.agent_id !== member.installationAgentId || row.install_key !== member.installKey
         || agentIdentityDomainKey(row) !== member.domainKey || row.tombstoned_at) {
         throw new Error('Shared identity confirmation is stale or requires managed migration');
       }

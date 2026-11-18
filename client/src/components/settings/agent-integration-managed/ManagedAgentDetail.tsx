@@ -27,6 +27,10 @@ import type {
 } from '../../../lib/api-contract'
 import {
   canReconnectManagedInstallation,
+  canReuseSharedComponentVerification,
+  canReuseSharedHostRecognition,
+  hasHostRecognition,
+  isStartupOnlyComponent,
   componentLabelKey,
   componentStatusPresentation,
   detailFocusDestination,
@@ -290,6 +294,7 @@ export function ManagedAgentDetail({
   }
 
   const installation = detail.installation
+  const isAntigravity = installation.familyId === 'antigravity'
   // Only memory diagnostics are connection-wide. Account and lifecycle facts
   // below remain attached to the selected host.
   const diagnostic = family.connection?.shared ? family.connection.diagnostic : installation.diagnostic
@@ -302,9 +307,8 @@ export function ManagedAgentDetail({
   const hostLifecycle = installation.components.find(component => component.key === 'lifecycle')
   const sharedLifecycle = family.connection?.components.find(component => component.key === 'lifecycle')
   const nativeTrustKnown = family.connection?.shared
-    ? Boolean(sharedLifecycle?.hostRecognitionVerified && !sharedLifecycle.hostRecognitionRejected && sharedLifecycle.configurationFingerprint
-      && sharedLifecycle.configurationFingerprint === hostLifecycle?.configurationFingerprint)
-    : Boolean(hostLifecycle?.hostRecognitionVerified && !hostLifecycle.hostRecognitionRejected)
+    ? canReuseSharedHostRecognition(hostLifecycle, sharedLifecycle)
+    : hasHostRecognition(hostLifecycle)
   const currentRequiredActions = detail.requiredUserActionDetails?.filter(action => action.kind !== 'codex_hook_trust' || (installation.manageable && hostLifecycle?.state === 'confirmation_required' && !nativeTrustKnown)) ?? []
 
   const doAction = async (name: string, action: () => Promise<unknown>) => {
@@ -616,7 +620,15 @@ export function ManagedAgentDetail({
               )}
             </div>
             {family.connection.maintenance === 'paused' && <p>{t('agent.managed.reason.userDisabled')}</p>}
-            {family.connection.shared && <p>{t('agent.managed.hostEvidenceScope')}</p>}
+            {family.connection.shared && <p>{t(isAntigravity ? 'agent.managed.antigravity.domainEvidence' : 'agent.managed.hostEvidenceScope')}</p>}
+          </div>
+        )}
+        {isAntigravity && !historyOnly && installation.desiredState === 'managed' && (
+          <div className="mt-3 space-y-1 rounded-lg border border-white/10 p-3 text-xs text-gray-400" data-antigravity-guidance>
+            <p>{t('agent.managed.antigravity.usage')}</p>
+            {!family.connection?.memoryCallsVerified && <p>{t('agent.managed.antigravity.awaitingCall')}</p>}
+            <p>{t('agent.managed.antigravity.checkSupport')}</p>
+            <p>{t('agent.managed.antigravity.maintenance')}</p>
           </div>
         )}
         {!family.connection?.shared && <div className="mt-3">
@@ -697,11 +709,7 @@ export function ManagedAgentDetail({
               const sharedComponent = family.connection?.components.find(candidate => candidate.key === componentKey)
               const sharedVerified = !historyOnly && family.connection?.shared
                 && family.connection.installationIds.includes(installation.id)
-                && componentKey !== 'lifecycle' && component?.configurationVerified
-                && ['configured', 'verification_stale', 'verified'].includes(component.state)
-                && component.configurationFingerprint
-                && component.configurationFingerprint === sharedComponent?.configurationFingerprint
-                && sharedComponent.state === 'verified'
+                && canReuseSharedComponentVerification(component, sharedComponent)
               return (
                 <div key={componentKey} className="grid items-center gap-1 text-xs min-[520px]:grid-cols-[minmax(110px,.8fr)_minmax(100px,.8fr)_minmax(0,1.5fr)] min-[520px]:gap-2">
                   <ComponentFact
@@ -713,6 +721,8 @@ export function ManagedAgentDetail({
                     {component?.implementationTypes.length
                       ? component.implementationTypes.map(formatImplementationType).join(' + ')
                       : '—'}
+                    {isStartupOnlyComponent(component) && <span className="mt-1 block whitespace-normal" data-startup-only>{t('agent.managed.antigravity.startupOnly')}</span>}
+                    {component?.evidenceScope === 'configuration_domain' && <span className="mt-1 block whitespace-normal" data-component-evidence-scope="configuration_domain">{t('agent.managed.antigravity.sharedEvidence')}</span>}
                   </span>
                   <span className="flex min-w-0 items-center gap-1">
                     <span className="min-w-0 flex-1 truncate font-mono text-gray-400" title={safeDisplayTarget(component?.targetLabel)}>
