@@ -878,6 +878,20 @@ describe('0.2.94 explicit deferred real-host scope', () => {
 
 
 describe('Antigravity configuration-domain startup capture', () => {
+  it('freezes the new QA scope while retaining the supplied candidate source identity', () => {
+    const {workspace,requirements}=initialized('0.2.101')
+    const state=JSON.parse(fs.readFileSync(path.join(workspace,'.capture-state.json'),'utf8'))
+    expect(state.sourceCommit).toBe(SOURCE_COMMIT)
+    expect(state.candidateAppsByArchitecture.arm64.sourceCommit).toBe(SOURCE_COMMIT)
+    expect(state.requirementsSha256).toBe(requirements.sha256)
+    expect(state.releaseContractSha256).toBe(requirements.releaseContractSha256)
+    expect(state.entries.filter((entry:any)=>!entry.realHostDeferral).map((entry:any)=>entry.targetId).sort())
+      .toEqual(['antigravity-app','antigravity-cli'])
+    const olderState={...state,requirementsSha256:'0'.repeat(64)}
+    writeJson(path.join(workspace,'.capture-state.json'),olderState)
+    expect(()=>agentHostAcceptanceCaptureStatus(workspace)).toThrow(/no longer matches/)
+  })
+
   it('records a schema49 domain receipt without inventing a host-origin ledger row', () => {
     const {root,workspace}=initialized('0.2.101')
     recordTargetMetadata(workspace,root,'antigravity-cli')

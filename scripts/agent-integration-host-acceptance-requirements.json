@@ -79,19 +79,18 @@
     }
   ],
   "realHostPolicy": {
-    "id": "0.2.101-antigravity-codex",
+    "id": "0.2.101-antigravity-only",
     "requiredCatalogIds": [
-      "codex-cli",
       "antigravity-app",
       "antigravity-cli"
     ],
     "otherCatalogs": "deferred",
     "customPaths": "deferred",
-    "reason": "This release adds Antigravity App and CLI. Both real hosts and the existing Codex CLI regression are required against the final signed candidate. Other Agent and Custom acceptance remains explicitly deferred; implementation and packaging regressions remain required.",
+    "reason": "This release requires full new-adapter acceptance for Antigravity App and CLI against the final signed candidate. Complete Codex C4 lifecycle and other Agent/Custom acceptance are deferred, not passed. Both installation machines must still pass ordinary Codex prepare/recall, model use and configuration/data preservation checks. Existing implementation and packaging regressions remain required.",
     "desktopAcceptance": {
       "status": "deferred",
       "releaseNotesDisclosureRequired": true,
-      "reason": "Complete Codex Desktop lifecycle acceptance remains deferred; normal existing Codex Desktop use on both installation machines must still be checked. Antigravity App acceptance is required independently and is not covered by this Codex-specific deferral."
+      "reason": "Complete Codex Desktop C4 lifecycle acceptance remains deferred. Ordinary Codex prepare/recall, model use and configuration/data preservation on both installation machines remain required and must not be represented as complete lifecycle acceptance. Antigravity App acceptance is independently required."
     }
   },
   "migrationAcceptanceDeferral": {

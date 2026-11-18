@@ -1458,11 +1458,11 @@ describe('0.2.101 Antigravity release acceptance scope', () => {
     return () => loadAgentHostAcceptanceRequirements(requirementsPath, manifestPath)
   }
 
-  it('requires both Antigravity surfaces and Codex CLI without inventing compact events', () => {
+  it('requires both Antigravity surfaces and defers complete Codex lifecycle acceptance', () => {
     const requirements = contract()()
     expect(requirements.appVersion).toBe('0.2.101')
     expect(requirements.upgradeFromAppVersions).toEqual(['0.2.100'])
-    expect(requirements.realHostPolicy.requiredCatalogIds).toEqual(['codex-cli','antigravity-app','antigravity-cli'])
+    expect(requirements.realHostPolicy.requiredCatalogIds).toEqual(['antigravity-app','antigravity-cli'])
     for (const id of ['antigravity-app','antigravity-cli']) {
       const target = requirements.targets.find((item: any) => item.catalogId === id)
       expect(realHostAcceptanceDeferral(requirements, target)).toBeNull()
@@ -1474,9 +1474,15 @@ describe('0.2.101 Antigravity release acceptance scope', () => {
       expect(steps).not.toContain('lifecycle_pre_compact')
       expect(steps).not.toContain('lifecycle_session_end')
     }
+    for (const id of ['codex-cli','codex-desktop']) {
+      const codex = requirements.targets.find((item: any) => item.catalogId === id)
+      expect(realHostAcceptanceDeferral(requirements, codex)).toMatchObject({status:'deferred',policyId:'0.2.101-antigravity-only'})
+      expect(requiredRealHostAcceptanceSteps(requirements, codex)).toEqual([])
+      expect(requiredHostAcceptanceSteps(requirements, codex)).toContain('lifecycle_pre_compact')
+    }
     const deferred = requirements.targets.find((item: any) => item.catalogId === 'cursor-desktop')
     const expected = deferredHostAcceptanceTarget(requirements, deferred)
-    expect(expected.realHostDeferral.policyId).toBe('0.2.101-antigravity-codex')
+    expect(expected.realHostDeferral.policyId).toBe('0.2.101-antigravity-only')
     expect(upgradeTargetIdentityDigest(expected, requirements.releaseContractSha256)).toBe(sha256(JSON.stringify([
       '0.2.101-deferred-upgrade-contract', requirements.releaseContractSha256,
       expected.targetKey, expected.targetId, null, expected.disposition, expected.targetCapability,
@@ -1485,9 +1491,11 @@ describe('0.2.101 Antigravity release acceptance scope', () => {
     expect(requirements.migrationAcceptanceDeferral.appVersion).toBe('0.2.101')
   })
 
-  it.each(['omit-app','old-policy','future-version','claim-others-passed','claim-desktop-passed'] as const)('rejects scope widening or missing mandatory host: %s', mutation => {
+  it.each(['omit-app','omit-cli','prior-101-policy','old-policy','future-version','claim-others-passed','claim-desktop-passed'] as const)('rejects scope widening or missing mandatory host: %s', mutation => {
     const read = contract(raw => {
-      if (mutation === 'omit-app') raw.realHostPolicy.requiredCatalogIds = ['codex-cli','antigravity-cli']
+      if (mutation === 'omit-app') raw.realHostPolicy.requiredCatalogIds = ['antigravity-cli']
+      if (mutation === 'omit-cli') raw.realHostPolicy.requiredCatalogIds = ['antigravity-app']
+      if (mutation === 'prior-101-policy') raw.realHostPolicy.id = '0.2.101-antigravity-codex'
       if (mutation === 'old-policy') raw.realHostPolicy.id = '0.2.95-codex-only'
       if (mutation === 'future-version') raw.appVersion = '0.2.102'
       if (mutation === 'claim-others-passed') raw.realHostPolicy.otherCatalogs = 'passed'

@@ -292,8 +292,8 @@ export function loadAgentHostAcceptanceRequirements(
   if (scopedRelease) {
     const policy = record(requirements.realHostPolicy, `${requirements.appVersion} real-host policy`)
     exactKeys(policy, ['id', 'requiredCatalogIds', 'otherCatalogs', 'customPaths', 'reason', 'desktopAcceptance'], 'single-user real-host policy')
-    const policyId = antigravityRelease ? '0.2.101-antigravity-codex' : `${requirements.appVersion}-codex-only`
-    const requiredCatalogIds = antigravityRelease ? ['codex-cli', 'antigravity-app', 'antigravity-cli'] : ['codex-cli']
+    const policyId = antigravityRelease ? '0.2.101-antigravity-only' : `${requirements.appVersion}-codex-only`
+    const requiredCatalogIds = antigravityRelease ? ['antigravity-app', 'antigravity-cli'] : ['codex-cli']
     if (policy.id !== policyId
       || JSON.stringify(policy.requiredCatalogIds) !== JSON.stringify(requiredCatalogIds)
       || policy.otherCatalogs !== 'deferred' || policy.customPaths !== 'deferred') {
@@ -478,7 +478,7 @@ export function upgradeTargetIdentityDigest(target, releaseContractSha256) {
   const contractVersion = ({
     '0.2.94-codex-only': '0.2.94',
     '0.2.95-codex-only': '0.2.95',
-    '0.2.101-antigravity-codex': '0.2.101',
+    '0.2.101-antigravity-only': '0.2.101',
   })[target.realHostDeferral.policyId]
   if (!contractVersion) throw new Error('unknown deferred upgrade policy')
   return sha256Bytes(Buffer.from(JSON.stringify([`${contractVersion}-deferred-upgrade-contract`, releaseContractSha256,
