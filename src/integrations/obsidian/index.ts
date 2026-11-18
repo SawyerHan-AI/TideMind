@@ -16,7 +16,7 @@ import { archiveNodeWithVectors } from '../../db/node-lifecycle.js';
 import { expandTilde } from '../../utils/path.js';
 
 const log = createLogger('obsidian');
-import { walkMdFiles, shouldProcessFile, buildFileIndex } from './preprocessor.js';
+import { walkMdFiles, shouldProcessFile, isSafeVaultFile } from './preprocessor.js';
 import { readVaultConfig, getExcludedDirs } from './vault-config.js';
 import {
   ensureSyncSchema, getAllFileStates, hasCompletedFullScan,
@@ -27,7 +27,7 @@ import {
   processFileQueue, processFileChange, getImportProgress, resetProgress,
 } from './queue.js';
 import { clearTagNodeCache } from '../shared/property-promote.js';
-import { clearDanglingTagCache } from './initialization.js';
+import { clearDanglingTagCache, linksNeedRefresh, refreshObsidianLinks } from './explicit-links.js';
 import { DatalessSkipCounter } from '../../utils/safe-fs.js';
 import {
   buildKnownRelPathSet,
@@ -35,6 +35,7 @@ import {
   createSourceFileScan,
   getAllKnownFiles,
 } from '../shared/source-file-state.js';
+import { updateLastSynced } from '../shared/note-sources.js';
 import { SourceSyncLock } from '../shared/source-sync-lock.js';
 import { decideWatcherChange } from '../shared/source-watch.js';
 import { trackBackgroundWork } from '../../utils/background-work.js';
@@ -50,6 +51,10 @@ const stoppedSources = new Set<string>();
  * 若按 watchers.keys() 停止则 SIGTERM 下 stop 直接 no-op，isStopped() 恒 false、
  * 首扫继续跑，shutdown 超时 closeDb 后每个 digest 命中已关闭连接（孤儿+重复节点）。 */
 const activeSources = new Set<string>();
+const sourceDirectories = new Map<string, { root: string; dev: number; ino: number }>();
+const sourceGenerations = new Map<string, number>();
+const sourceWork = new Map<string, Promise<void>>();
+const sourceStarts = new Map<string, { db: Database.Database; root: string; interval?: number; ready: Promise<void> }>();
 /** 周期性 runSync 定时器（按 poll_interval）。watcher 只感知文件内容变更，
  * 不处理删除（decideWatcherChange 对不存在的文件返回 'skip'），删除检测
  * （removeStaleFiles + archiveOrphanNodes）只在 runSync 里发生。没有这个定时器时，
@@ -64,21 +69,63 @@ const syncLock = new SourceSyncLock();
 const WATCHER_DEBOUNCE_MS = 1000;
 const WATCHER_LOCK_RETRY_MS = 1000;
 
+function sourceDirectoryChanged(sourceId: string): boolean {
+  const directory = sourceDirectories.get(sourceId);
+  if (!directory) return false;
+  try {
+    const current = fs.lstatSync(directory.root);
+    return !current.isDirectory() || directory.dev !== current.dev || directory.ino !== current.ino;
+  } catch { return true; }
+}
+
+function sourceStopCheck(sourceId?: string): () => boolean {
+  const generation = sourceId === undefined ? undefined : sourceGenerations.get(sourceId);
+  return () => sourceId !== undefined && (stoppedSources.has(sourceId) || sourceGenerations.get(sourceId) !== generation || sourceDirectoryChanged(sourceId));
+}
+
+function recordSuccessfulSync(db: Database.Database, sourceId?: string): void {
+  if (sourceId && db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='note_sources'").get()) {
+    updateLastSynced(db, sourceId);
+  }
+}
+
+
 /**
  * 启动单个 Obsidian 笔记源实例
  */
-export async function startObsidianSource(
+export function startObsidianSource(
+  db: Database.Database, sourceId: string, sourcePath: string, pollInterval?: number,
+): Promise<void> {
+  const root = path.resolve(expandTilde(sourcePath));
+  const existing = sourceStarts.get(sourceId);
+  if (activeSources.has(sourceId) && existing?.db === db && existing.root === root && existing.interval === pollInterval) return existing.ready;
+  const ready = startObsidianSourceInner(db, sourceId, root, pollInterval);
+  sourceStarts.set(sourceId, { db, root, interval: pollInterval, ready });
+  return ready;
+}
+
+async function startObsidianSourceInner(
   db: Database.Database,
   sourceId: string,
   sourcePath: string,
   pollInterval?: number,
 ): Promise<void> {
   const vaultRoot = expandTilde(sourcePath);
-  if (!fs.existsSync(vaultRoot)) {
+  const previousWork = sourceWork.get(sourceId);
+  const stopped = stopObsidianSource(sourceId);
+  let rootStat: fs.Stats | undefined;
+  try { rootStat = fs.lstatSync(vaultRoot); } catch { /* unavailable source */ }
+  if (!rootStat?.isDirectory()) {
+    await stopped;
     log.error(`Obsidian vault 目录不存在: ${vaultRoot} (source=${sourceId})`);
     return;
   }
 
+  // A new start invalidates every callback from the previous lifecycle.
+  const generation = (sourceGenerations.get(sourceId) ?? 0) + 1;
+  sourceGenerations.set(sourceId, generation);
+  sourceDirectories.set(sourceId, { root: vaultRoot, dev: rootStat.dev, ino: rootStat.ino });
+  const isStopped = sourceStopCheck(sourceId);
   stoppedSources.delete(sourceId);
   // 入口即登记，确保首扫期间也能被 stopObsidianIntegration 停掉（见 activeSources 注释）
   activeSources.add(sourceId);
@@ -91,25 +138,27 @@ export async function startObsidianSource(
   // 首次全量导入与 watcher 并发会造成同一文件被全量流程与增量流程同时处理，
   // 产生重复 digest / supersede 链混乱。await 完成后再挂 watcher，参考 Apple Notes 的做法。
   try {
-    await runSync(db, vaultRoot, sourceId);
+    await previousWork?.catch(() => {});
+    if (isStopped()) return;
+    await runSync(db, vaultRoot, sourceId, isStopped);
   } catch (err) {
     log.error(`Obsidian 首次同步失败 (source=${sourceId}):`, (err as Error).message);
     // 不 rethrow：即便首次同步失败也启动 watcher，用户改动后还能触发增量
   }
 
   // 3. 启动文件监听
-  if (!stoppedSources.has(sourceId)) {
+  if (!isStopped()) {
     const vaultConfig = readVaultConfig(vaultRoot);
     const excludedDirs = getExcludedDirs(vaultRoot, vaultConfig);
-    startFilteredWatcher(db, vaultRoot, sourceId, excludedDirs);
+    startFilteredWatcher(db, vaultRoot, sourceId, excludedDirs, isStopped);
   }
 
   // 4. 启动周期性同步（删除检测兜底）。首扫完成后再注册，避免与首扫并发。
-  if (!stoppedSources.has(sourceId)) {
+  if (!isStopped()) {
     const intervalMs = Math.max(30, pollInterval ?? DEFAULT_FILE_POLL_INTERVAL) * 1000;
     const timer = setInterval(() => {
-      if (stoppedSources.has(sourceId)) return;
-      const work = runSync(db, vaultRoot, sourceId).catch(err =>
+      if (isStopped()) return;
+      const work = runSync(db, vaultRoot, sourceId, isStopped).catch(err =>
         log.error(`Obsidian 周期同步失败 (source=${sourceId}):`, (err as Error).message),
       );
       void trackBackgroundWork(work);
@@ -122,7 +171,10 @@ export async function startObsidianSource(
 /**
  * 停止单个 Obsidian 笔记源实例
  */
-export function stopObsidianSource(sourceId: string): void {
+export function stopObsidianSource(sourceId: string): Promise<void> {
+  sourceStarts.delete(sourceId);
+  sourceDirectories.delete(sourceId);
+  sourceGenerations.set(sourceId, (sourceGenerations.get(sourceId) ?? 0) + 1);
   stoppedSources.add(sourceId);
   activeSources.delete(sourceId);
   const ws = watchers.get(sourceId);
@@ -146,6 +198,7 @@ export function stopObsidianSource(sourceId: string): void {
     clearInterval(pollTimer);
     pollTimers.delete(sourceId);
   }
+  return sourceWork.get(sourceId)?.catch(() => {}) ?? Promise.resolve();
 }
 
 /**
@@ -171,13 +224,17 @@ async function runSync(
   db: Database.Database,
   vaultRoot: string,
   sourceId?: string,
+  isStopped = sourceStopCheck(sourceId),
 ): Promise<void> {
+  if (isStopped()) return;
   if (!syncLock.tryAcquire(sourceId)) {
     log.warn(`Obsidian 同步已在进行中，跳过重复调用 (source=${sourceId})`);
     return;
   }
   try {
-    await runSyncInner(db, vaultRoot, sourceId);
+    const work = runSyncInner(db, vaultRoot, sourceId, isStopped);
+    sourceWork.set(syncLock.key(sourceId), work);
+    await work;
   } finally {
     syncLock.release(sourceId);
   }
@@ -191,9 +248,9 @@ function isSyncing(sourceId?: string): boolean {
 async function runSyncInner(
   db: Database.Database,
   vaultRoot: string,
-  sourceId?: string,
+  sourceId: string | undefined,
+  isStopped: () => boolean,
 ): Promise<void> {
-  const isStopped = (): boolean => sourceId !== undefined && stoppedSources.has(sourceId);
   const isFirstRun = !hasCompletedFullScan(db, sourceId);
   const vaultConfig = readVaultConfig(vaultRoot);
   const excludedDirs = getExcludedDirs(vaultRoot, vaultConfig);
@@ -211,10 +268,11 @@ async function runSyncInner(
   // watcher 把它们当"新文件"重新 digest 产生重复。与 Logseq 集成对称修复。
   const datalessSkip = new DatalessSkipCounter();
   const datalessPaths: string[] = [];
+  let scanComplete = true;
   const processableFiles = walkMdFiles(vaultRoot, excludedDirs, (fp) => {
     datalessSkip.record(fp);
     datalessPaths.push(fp);
-  });
+  }, () => { scanComplete = false; });
   const scan = createSourceFileScan(processableFiles, datalessPaths);
   const allKnownFiles = getAllKnownFiles(scan);
   log.info(
@@ -228,19 +286,12 @@ async function runSyncInner(
     );
   }
 
-  if (allKnownFiles.length === 0) {
-    log.warn('未扫描到任何文件，请检查路径是否正确');
-    return;
-  }
+  if (!scanComplete) log.warn('目录扫描不完整，本轮禁止清理删除记录及标记首扫完成');
 
   if (isStopped()) {
     log.info(`Obsidian 同步被中止 (source=${sourceId})`);
     return;
   }
-
-  // 构建文件索引（用于 wikilink 解析）
-  log.info('构建文件索引...');
-  buildFileIndex(vaultRoot, excludedDirs);
 
   // 加载同步状态，找出需要处理的文件（只对 processable 做 isFileChanged）
   const syncStates = getAllFileStates(db, sourceId);
@@ -248,25 +299,37 @@ async function runSyncInner(
     vaultRoot,
     scan.processableFiles,
     syncStates,
-    isFileChanged,
+    (filePath, state) => isFileChanged(filePath, state, vaultRoot),
   );
 
   // 清理已删除文件的同步记录，归档关联 nodes
   // 用 allKnownFiles（含 dataless）构造集合 → 只有真正物理不存在的文件才会被判"已删除"
   const currentRelPaths = buildKnownRelPathSet(vaultRoot, scan);
-  const { removed: staleRemoved, orphanNodeIds } = removeStaleFiles(db, currentRelPaths, sourceId);
+  const { removed: staleRemoved, orphanNodeIds } = scanComplete
+    ? db.transaction(() => {
+      const stale = removeStaleFiles(db, currentRelPaths, sourceId);
+      archiveOrphanNodes(db, stale.orphanNodeIds);
+      return stale;
+    })()
+    : { removed: 0, orphanNodeIds: [] };
   if (staleRemoved > 0) {
     log.info(`清理 ${staleRemoved} 条过期同步记录`);
   }
   if (orphanNodeIds.length > 0) {
-    archiveOrphanNodes(db, orphanNodeIds);
     log.info(`归档 ${orphanNodeIds.length} 个因源文件删除而孤立的节点`);
   }
 
   if (filesToProcess.length === 0) {
     log.info('无需处理的文件变更');
+    // Version rows and note nodes commit together. Reconcile links after a deletion,
+    // or resume if a previous process stopped between that commit and link reconciliation.
+    if (scanComplete && (staleRemoved > 0 || linksNeedRefresh(db, sourceId, syncStates))) {
+      await refreshObsidianLinks(db, vaultRoot, sourceId, isStopped, datalessPaths);
+    }
+    if (isStopped()) return;
+    if (scanComplete) recordSuccessfulSync(db, sourceId);
     // 首次运行但所有文件均为最新（例如重启后再次触发），标记完成
-    if (isFirstRun && allKnownFiles.length > 0) markFullScanCompleted(db, sourceId);
+    if (isFirstRun && scanComplete && datalessPaths.length === 0) markFullScanCompleted(db, sourceId);
     return;
   }
 
@@ -305,8 +368,10 @@ async function runSyncInner(
     actor: 'brain',
   });
 
+  if (scanComplete && prog.failedFiles === 0) recordSuccessfulSync(db, sourceId);
+
   // 标记全量扫描完成
-  if (isFirstRun) {
+  if (isFirstRun && scanComplete && datalessPaths.length === 0 && prog.failedFiles === 0) {
     markFullScanCompleted(db, sourceId);
   }
 }
@@ -324,6 +389,7 @@ function startFilteredWatcher(
   vaultRoot: string,
   sourceId: string,
   excludedDirs: string[] = [],
+  isStopped = () => stoppedSources.has(sourceId),
 ): void {
   log.info(`开始监听: ${vaultRoot} (source=${sourceId})`);
 
@@ -335,7 +401,7 @@ function startFilteredWatcher(
 
   const handleChange = (relFromRoot: string): void => {
     // 过滤：只处理 .md / .canvas 文件，排除系统目录
-    if (!shouldProcessFile(relFromRoot, excludedDirs)) return;
+    if (isStopped() || !shouldProcessFile(relFromRoot, [])) return;
 
     scheduleChange(relFromRoot, WATCHER_DEBOUNCE_MS, 0);
   };
@@ -348,10 +414,13 @@ function startFilteredWatcher(
 
     debounceTimers.set(key, setTimeout(() => {
       debounceTimers.delete(key);
+      if (isStopped()) return;
+      const currentExclusions = getExcludedDirs(vaultRoot, readVaultConfig(vaultRoot));
+      if (!shouldProcessFile(relFromRoot, currentExclusions)) return;
       const filePath = path.join(vaultRoot, relFromRoot);
       const decision = decideWatcherChange({
-        sourceActive: watchers.has(sourceId),
-        fileExists: fs.existsSync(filePath),
+        sourceActive: !isStopped() && watchers.has(sourceId),
+        fileExists: isSafeVaultFile(filePath, vaultRoot),
         sourceLocked: isSyncing(sourceId),
         attempts,
       });
@@ -366,12 +435,17 @@ function startFilteredWatcher(
         return;
       }
 
-      const work = processFileChange(db, filePath, vaultRoot, sourceId, () => stoppedSources.has(sourceId))
+      if (!syncLock.tryAcquire(sourceId)) {
+        scheduleChange(relFromRoot, WATCHER_LOCK_RETRY_MS, attempts + 1);
+        return;
+      }
+      const work = processFileChange(db, filePath, vaultRoot, sourceId, isStopped)
         .then(changed => {
-          if (stoppedSources.has(sourceId)) return;
+          if (isStopped()) return;
           // 仅当文件实际产生处理时写时间线,对齐 Logseq S10 修复。
           // mtime 漂移 / 格式化保存 / git pull / Dropbox 同步等"无内容变化"事件不产生噪声。
           if (!changed) return;
+          recordSuccessfulSync(db, sourceId);
           logTimelineEvent(db, {
             type: 'memory',
             subtype: 'obsidian_file_change',
@@ -382,7 +456,8 @@ function startFilteredWatcher(
         })
         .catch(err =>
           log.error('文件变更处理失败:', (err as Error).message),
-        );
+        ).finally(() => syncLock.release(sourceId));
+      sourceWork.set(sourceId, work);
       void trackBackgroundWork(work);
     }, delayMs));
   };
@@ -460,14 +535,17 @@ export async function triggerFullRescan(
     vaultRoot = expandTilde(obsidianConfig.path);
   }
 
-  if (!fs.existsSync(vaultRoot)) return;
+  if (!fs.lstatSync(vaultRoot).isDirectory()) throw new Error('Obsidian vault is not a directory');
+  const isStopped = sourceStopCheck(sourceId);
+  while (!isStopped() && isSyncing(sourceId)) await sourceWork.get(syncLock.key(sourceId));
+  if (isStopped()) return;
 
   // 重置全量扫描标志，触发重新扫描
   resetFullScanState(db, sourceId);
   resetProgress(sourceId);
   // 清空模块级悬空 tag 缓存，防止跨 vault / 跨轮次指向错误节点
   clearDanglingTagCache();
-  await runSync(db, vaultRoot, sourceId);
+  await runSync(db, vaultRoot, sourceId, isStopped);
 }
 
 /**
@@ -486,12 +564,10 @@ function archiveOrphanNodes(db: Database.Database, nodeIds: string[]): void {
 /**
  * 停止所有 Obsidian 集成
  */
-export function stopObsidianIntegration(): void {
+export function stopObsidianIntegration(): Promise<void> {
   // 遍历 activeSources（含正在首扫、尚未挂 watcher 的源）而非 watchers.keys()，
   // 否则首扫中的源在 shutdown 时停不掉。复制成数组避免遍历中 delete 改动集合。
-  for (const sourceId of [...activeSources]) {
-    stopObsidianSource(sourceId);
-  }
+  return Promise.all([...activeSources].map(stopObsidianSource)).then(() => {});
 }
 
 // 导出进度查询

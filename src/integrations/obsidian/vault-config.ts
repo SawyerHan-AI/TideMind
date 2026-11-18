@@ -5,7 +5,7 @@
 // 包括 daily notes、附件目录、模板目录等设置。
 // ============================================================
 
-import fs from 'node:fs';
+import { safeReadVaultTextFileSync } from '../../utils/safe-fs.js';
 import path from 'node:path';
 import { createLogger } from '../../utils/logger.js';
 import type { ObsidianVaultConfig } from './types.js';
@@ -92,8 +92,9 @@ export function getExcludedDirs(vaultRoot: string, config: ObsidianVaultConfig):
 function readJsonFile(vaultRoot: string, filename: string): Record<string, unknown> | null {
   const filePath = path.join(vaultRoot, '.obsidian', filename);
   try {
-    const raw = fs.readFileSync(filePath, 'utf-8');
-    return JSON.parse(raw) as Record<string, unknown>;
+    const read = safeReadVaultTextFileSync(filePath, vaultRoot);
+    if (!read.ok) return null;
+    return JSON.parse(read.content) as Record<string, unknown>;
   } catch {
     // 文件不存在或解析失败，静默返回 null
     log.debug('配置文件不可读: %s', filePath);

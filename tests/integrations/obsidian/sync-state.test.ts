@@ -345,3 +345,37 @@ describe('computeFileHash', () => {
     expect(computeFileHash(f1)).not.toBe(computeFileHash(f2));
   });
 });
+
+describe('默认source隔离', () => {
+  it('不读写或清理具名source同名路径', () => {
+    setFileState(db, { file_path: 'shared.md', content_hash: 'private', mtime: 1, size: 1, last_synced: 't', node_ids: ['private-node'] }, 'private');
+    expect(getFileState(db, 'shared.md')).toBeNull();
+    expect(getAllFileStates(db).size).toBe(0);
+    expect(removeStaleFiles(db, new Set()).removed).toBe(0);
+    expect(getFileState(db, 'shared.md', 'private')!.node_ids).toEqual(['private-node']);
+  });
+});
+
+describe('schema迁移失败恢复', () => {
+  it('迁移错误向上传递且旧表不被破坏', () => {
+    db.exec('DROP TABLE obsidian_sync');
+    db.exec("CREATE TABLE obsidian_sync (file_path TEXT PRIMARY KEY, source_id TEXT DEFAULT '', content_hash TEXT, mtime INTEGER, size INTEGER, last_synced TEXT, node_ids TEXT, segment_hashes TEXT)");
+    db.exec("INSERT INTO obsidian_sync VALUES ('old.md','','hash',1,1,'t','[\"old\"]','[]')");
+    // 模拟损坏/冲突的迁移目标，不应吞错并误报schema就绪。
+    db.exec('CREATE TABLE obsidian_sync_v2 (wrong_column TEXT)');
+    expect(() => ensureSyncSchema(db)).toThrow();
+    expect((db.prepare('SELECT content_hash FROM obsidian_sync').get() as { content_hash: string }).content_hash).toBe('hash');
+  });
+});
+
+describe('正文hash安全边界', () => {
+  it('hash读取拒绝vault外路径与文件symlink', () => {
+    const vault = path.join(tmpDir, 'vault');
+    fs.mkdirSync(vault);
+    const secret = path.join(tmpDir, 'outside.md');
+    fs.writeFileSync(secret, 'private outside content');
+    fs.symlinkSync(secret, path.join(vault, 'link.md'));
+    expect(computeFileHash(secret, vault)).toBeNull();
+    expect(computeFileHash(path.join(vault, 'link.md'), vault)).toBeNull();
+  });
+});

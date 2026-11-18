@@ -509,6 +509,7 @@
       "reportNodes": "節點",
       "reportLinks": "連結",
       "reportCrystals": "結晶",
+      "offlineFiles": "等待下載至本機的檔案",
       "reportFiles": "檔案",
       "reportDuration": "耗時",
       "reportCost": "費用",

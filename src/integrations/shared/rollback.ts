@@ -29,9 +29,10 @@ export function rollbackNoteSource(
         : 'apple_notes_sync';
 
   // 1. 收集所有 node_ids
-  const rows = db.prepare(
+  const hasSyncTable = toolType !== 'obsidian' || !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(syncTable);
+  const rows = hasSyncTable ? db.prepare(
     `SELECT node_ids FROM ${syncTable} WHERE source_id = ? AND node_ids IS NOT NULL`,
-  ).all(sourceId) as Array<{ node_ids: string }>;
+  ).all(sourceId) as Array<{ node_ids: string }> : [];
 
   const allNodeIds = new Set<string>();
   for (const row of rows) {
@@ -43,30 +44,13 @@ export function rollbackNoteSource(
     } catch { /* ignore malformed */ }
   }
 
-  log.info(`回退笔记源 ${sourceId}: 找到 ${allNodeIds.size} 个节点, ${rows.length} 个文件记录`);
-
-  if (allNodeIds.size === 0) {
-    // 没有节点数据，只清理 sync state 和 note_sources
-    db.transaction(() => {
-      db.prepare(`DELETE FROM ${syncTable} WHERE source_id = ?`).run(sourceId);
-      db.prepare('DELETE FROM note_sources WHERE id = ?').run(sourceId);
-
-      // 清理 Notion pending_retry / pending_relations
-      if (toolType === 'notion') {
-        try {
-          db.prepare('DELETE FROM notion_pending_retry WHERE source_id = ?').run(sourceId);
-        } catch { /* table may not exist */ }
-        try {
-          db.prepare('DELETE FROM notion_pending_relations WHERE source_id = ?').run(sourceId);
-        } catch { /* table may not exist */ }
-      }
-
-      // 清理 metadata 中的 full_scan 标记
-      db.prepare(`DELETE FROM metadata WHERE key = ?`).run(`${toolType}_full_scan_completed_${sourceId}`);
-    })();
-    log.info(`回退完成（无节点数据）`);
-    return;
+  const reportPrefix = `obsidian_init_report:${sourceId}:`;
+  if (toolType === 'obsidian') {
+    const reportIds = db.prepare('SELECT value FROM metadata WHERE substr(key, 1, ?) = ?').pluck().all(reportPrefix.length, reportPrefix);
+    for (const id of reportIds) if (typeof id === 'string') allNodeIds.add(id);
   }
+
+  log.info(`回退笔记源 ${sourceId}: 找到 ${allNodeIds.size} 个节点, ${rows.length} 个文件记录`);
 
   // 2. 批量删除（SQLite 的 IN 子句有变量数限制，分批处理）
   const BATCH_SIZE = 500;
@@ -87,7 +71,7 @@ export function rollbackNoteSource(
     }
 
     // 删除 sync state
-    db.prepare(`DELETE FROM ${syncTable} WHERE source_id = ?`).run(sourceId);
+    if (hasSyncTable) db.prepare(`DELETE FROM ${syncTable} WHERE source_id = ?`).run(sourceId);
 
     // 清理 Notion pending relations / pending_retry（如果存在）
     if (toolType === 'notion') {
@@ -101,6 +85,10 @@ export function rollbackNoteSource(
 
     // 删除 note_sources 记录
     db.prepare('DELETE FROM note_sources WHERE id = ?').run(sourceId);
+    if (toolType === 'obsidian') {
+      db.prepare('DELETE FROM metadata WHERE key = ? OR substr(key, 1, ?) = ?')
+        .run(`obsidian_explicit_links_v1_${sourceId}`, reportPrefix.length, reportPrefix);
+    }
 
     // 清理 metadata 中的 full_scan 标记
     db.prepare(`DELETE FROM metadata WHERE key = ?`).run(`${toolType}_full_scan_completed_${sourceId}`);

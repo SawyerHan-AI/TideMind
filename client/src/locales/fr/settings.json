@@ -509,6 +509,7 @@
       "reportNodes": "Noeuds",
       "reportLinks": "Liens",
       "reportCrystals": "Cristaux",
+      "offlineFiles": "En attente du téléchargement local",
       "reportFiles": "Fichiers",
       "reportDuration": "Duree",
       "reportCost": "Cout",

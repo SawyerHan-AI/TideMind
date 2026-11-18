@@ -509,6 +509,7 @@
       "reportNodes": "ノード",
       "reportLinks": "リンク",
       "reportCrystals": "結晶",
+      "offlineFiles": "ローカルへのダウンロード待ち",
       "reportFiles": "ファイル",
       "reportDuration": "所要時間",
       "reportCost": "コスト",

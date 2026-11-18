@@ -509,6 +509,7 @@
       "reportNodes": "Nodes",
       "reportLinks": "Links",
       "reportCrystals": "Crystals",
+      "offlineFiles": "Waiting for local download",
       "reportFiles": "Files",
       "reportDuration": "Duration",
       "reportCost": "Cost",

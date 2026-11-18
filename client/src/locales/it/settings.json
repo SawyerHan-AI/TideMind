@@ -509,6 +509,7 @@
       "reportNodes": "Nodi",
       "reportLinks": "Collegamenti",
       "reportCrystals": "Cristalli",
+      "offlineFiles": "In attesa del download locale",
       "reportFiles": "File",
       "reportDuration": "Durata",
       "reportCost": "Costo",

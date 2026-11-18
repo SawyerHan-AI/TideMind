@@ -8,8 +8,9 @@
 // 用户主动画出的箭头比正文中隐含的 [[wikilink]] 更明确。
 // ============================================================
 
+import path from 'node:path';
 import { createLogger } from '../../utils/logger.js';
-import { safeReadTextFileSync } from '../../utils/safe-fs.js';
+import { safeReadVaultTextFileSync } from '../../utils/safe-fs.js';
 import type {
   CanvasData,
   CanvasNode,
@@ -29,8 +30,8 @@ const UNLABELED_EDGE_CONFIDENCE = 0.85;
  * @param filePath - .canvas 文件的绝对路径
  * @returns 解析结果，JSON 无效时返回 null
  */
-export function parseCanvas(filePath: string): CanvasParseResult | null {
-  const readRes = safeReadTextFileSync(filePath);
+export function parseCanvas(filePath: string, vaultRoot = path.dirname(filePath)): CanvasParseResult | null {
+  const readRes = safeReadVaultTextFileSync(filePath, vaultRoot);
   if (!readRes.ok) {
     if (readRes.reason === 'error') {
       log.warn('Canvas 文件读取失败: %s — %s', filePath, readRes.err?.message ?? '');

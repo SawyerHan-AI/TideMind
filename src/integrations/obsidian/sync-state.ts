@@ -8,10 +8,11 @@
 // ============================================================
 
 import crypto from 'node:crypto';
+import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { FileSyncState } from './types.js';
 import { createLogger } from '../../utils/logger.js';
-import { safeReadTextFileSync, safeStatSync, isDataless } from '../../utils/safe-fs.js';
+import { safeReadVaultTextFileSync, safeStatSync, isDataless } from '../../utils/safe-fs.js';
 import { planStaleSyncStateCleanup } from '../shared/source-file-state.js';
 import { execIgnoringDuplicateColumn } from '../../db/migration-helpers.js';
 
@@ -40,7 +41,7 @@ export function ensureSyncSchema(db: Database.Database): void {
   execIgnoringDuplicateColumn(db, "ALTER TABLE obsidian_sync ADD COLUMN segment_hashes TEXT DEFAULT '[]'");
 
   // 迁移到复合主键 (file_path, source_id)，支持多实例
-  try {
+  db.transaction(() => {
     const tableInfo = db.prepare("PRAGMA table_info(obsidian_sync)").all() as Array<{ name: string; pk: number }>;
     const pkColumns = tableInfo.filter(c => c.pk > 0).map(c => c.name);
     // 仅当主键只有 file_path 时才迁移
@@ -66,7 +67,7 @@ export function ensureSyncSchema(db: Database.Database): void {
       db.exec('DROP TABLE obsidian_sync');
       db.exec('ALTER TABLE obsidian_sync_v2 RENAME TO obsidian_sync');
     }
-  } catch { /* migration already done or not needed */ }
+  })();
 
   log.debug('同步表 obsidian_sync 已就绪');
 }
@@ -79,9 +80,7 @@ export function getFileState(
   filePath: string,
   sourceId?: string,
 ): FileSyncState | null {
-  const row = sourceId
-    ? db.prepare('SELECT * FROM obsidian_sync WHERE file_path = ? AND source_id = ?').get(filePath, sourceId) as Record<string, unknown> | undefined
-    : db.prepare('SELECT * FROM obsidian_sync WHERE file_path = ?').get(filePath) as Record<string, unknown> | undefined;
+  const row = db.prepare('SELECT * FROM obsidian_sync WHERE file_path = ? AND source_id = ?').get(filePath, sourceId ?? '__default__') as Record<string, unknown> | undefined;
 
   if (!row) return null;
 
@@ -103,9 +102,7 @@ export function getAllFileStates(
   db: Database.Database,
   sourceId?: string,
 ): Map<string, FileSyncState> {
-  const rows = sourceId
-    ? db.prepare('SELECT * FROM obsidian_sync WHERE source_id = ?').all(sourceId) as Array<Record<string, unknown>>
-    : db.prepare('SELECT * FROM obsidian_sync').all() as Array<Record<string, unknown>>;
+  const rows = db.prepare('SELECT * FROM obsidian_sync WHERE source_id = ?').all(sourceId ?? '__default__') as Array<Record<string, unknown>>;
   const map = new Map<string, FileSyncState>();
 
   for (const row of rows) {
@@ -155,11 +152,7 @@ function removeFileState(
   filePath: string,
   sourceId?: string,
 ): void {
-  if (sourceId) {
-    db.prepare('DELETE FROM obsidian_sync WHERE file_path = ? AND source_id = ?').run(filePath, sourceId);
-  } else {
-    db.prepare('DELETE FROM obsidian_sync WHERE file_path = ?').run(filePath);
-  }
+  db.prepare('DELETE FROM obsidian_sync WHERE file_path = ? AND source_id = ?').run(filePath, sourceId ?? '__default__');
 }
 
 /**
@@ -234,6 +227,7 @@ export function resetFullScanState(db: Database.Database, sourceId?: string): vo
 export function isFileChanged(
   filePath: string,
   syncState: FileSyncState | null,
+  vaultRoot?: string,
 ): boolean {
   const stat = safeStatSync(filePath);
   if (!stat) return false; // 文件不存在，由 removeStaleFiles 清理
@@ -248,7 +242,7 @@ export function isFileChanged(
   }
 
   // Step 2: hash 比较（处理 mtime 漂移但内容未变的情况）
-  const hash = computeFileHash(filePath);
+  const hash = computeFileHash(filePath, vaultRoot);
   if (hash === null) return false;
   return hash !== syncState.content_hash;
 }
@@ -263,8 +257,8 @@ export function isFileChanged(
  *
  * iCloud dataless / stub / missing 返回 null，调用方应据此跳过 state 写入。
  */
-export function computeFileHash(filePath: string): string | null {
-  const res = safeReadTextFileSync(filePath);
+export function computeFileHash(filePath: string, vaultRoot = path.dirname(filePath)): string | null {
+  const res = safeReadVaultTextFileSync(filePath, vaultRoot);
   if (!res.ok) return null;
   return computeContentHash(res.content);
 }

@@ -905,21 +905,21 @@ describe('shouldProcessFile', () => {
 // ================================================================
 
 describe('边界情况', () => {
-  it('极短文件应返回 null', () => {
+  it('极短文件保留正文和标题', () => {
     const result = processContent('短');
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
   });
 
-  it('空文件应返回 null', () => {
+  it('空文件保留标题', () => {
     const result = processContent('');
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
   });
 
-  it('只有 frontmatter 无正文的文件应返回 null', () => {
+  it('只有 frontmatter 无正文的文件保留标题', () => {
     const result = processContent(`---
 title: 只有标题
 ---`);
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
   });
 
   it('不存在的文件应返回 null', () => {
@@ -981,4 +981,82 @@ permalink: /my-page
     expect(result).not.toBeNull();
     expect(result!.cleanContent).toContain('[内联图片]');
   });
+});
+
+describe('扫描安全边界', () => {
+  it('旧 iCloud stub 以原笔记路径保留，不能作为正文读取', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-stub-'));
+    try {
+      fs.writeFileSync(path.join(root, '.offline.md.icloud'), 'stub');
+      const offline: string[] = [];
+      expect(walkMdFiles(root, [], p => offline.push(p))).toEqual([]);
+      expect(offline).toEqual([path.join(root, 'offline.md')]);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('子目录读取失败必须报告，不能把部分结果用于删除仲裁', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-scan-failure-'));
+    fs.mkdirSync(path.join(root, 'blocked'));
+    fs.writeFileSync(path.join(root, 'keep.md'), 'keep');
+    const original = fs.readdirSync;
+    const spy = vi.spyOn(fs, 'readdirSync').mockImplementation(((dir: fs.PathLike, options: unknown) => {
+      if (String(dir) === path.join(root, 'blocked')) throw new Error('EIO');
+      return original(dir, options as never);
+    }) as typeof fs.readdirSync);
+    try {
+      const failures: string[] = [];
+      expect(walkMdFiles(root, [], undefined, p => failures.push(p))).toEqual([path.join(root, 'keep.md')]);
+      expect(failures).toEqual([path.join(root, 'blocked')]);
+    } finally { spy.mockRestore(); fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('直接预处理拒绝文件和目录 symlink 及 vault 外文件', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-symlink-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-outside-'));
+    try {
+      fs.writeFileSync(path.join(outside, 'private.md'), 'This must never enter the vault.');
+      fs.symlinkSync(path.join(outside, 'private.md'), path.join(root, 'link.md'));
+      fs.symlinkSync(outside, path.join(root, 'linked-dir'));
+      expect(preprocessFile(path.join(root, 'link.md'), root)).toBeNull();
+      expect(preprocessFile(path.join(root, 'linked-dir/private.md'), root)).toBeNull();
+      expect(preprocessFile(path.join(outside, 'private.md'), root)).toBeNull();
+      expect(walkMdFiles(root, [])).toEqual([]);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); }
+  });
+});
+
+it('复用调用方经safe-fs取得的内容快照，不重复读取正文', () => {
+  const file = writeFile('snapshot-reuse.md', 'New disk content.');
+  const spy = vi.spyOn(fs, 'readFileSync');
+  try {
+    const result = preprocessFile(file, tmpDir, undefined, 'Original snapshot content.');
+    expect(result?.rawContent).toBe('Original snapshot content.');
+    expect(spy.mock.calls.filter(([target]) => String(target) === file)).toHaveLength(0);
+  } finally { spy.mockRestore(); }
+});
+
+it('扫描时根目录替换为symlink必须报告不完整而不是确认删除', () => {
+  const container = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-root-race-'));
+  const root = path.join(container, 'vault');
+  const outside = path.join(container, 'outside');
+  fs.mkdirSync(root);
+  fs.mkdirSync(outside);
+  const original = fs.readdirSync;
+  const spy = vi.spyOn(fs, 'readdirSync').mockImplementation(((dir: fs.PathLike, options: unknown) => {
+    const entries = original(dir, options as never);
+    if (String(dir) === root) {
+      spy.mockRestore();
+      fs.renameSync(root, `${root}-old`);
+      fs.symlinkSync(outside, root);
+    }
+    return entries;
+  }) as typeof fs.readdirSync);
+  try {
+    const errors: string[] = [];
+    walkMdFiles(root, [], undefined, p => errors.push(p));
+    expect(errors).toContain(root);
+    const nextErrors: string[] = [];
+    expect(walkMdFiles(root, [], undefined, p => nextErrors.push(p))).toEqual([]);
+    expect(nextErrors).toEqual([root]);
+  } finally { spy.mockRestore(); fs.rmSync(container, { recursive: true, force: true }); }
 });

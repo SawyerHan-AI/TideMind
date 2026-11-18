@@ -113,6 +113,7 @@ import { ensureSyncSchema, getFileState, setFileState, isFileChanged } from '../
 import { getNode } from '../../../src/db/nodes.js';
 import { getLinksFrom } from '../../../src/db/links.js';
 import { clearTagNodeCache } from '../../../src/integrations/shared/property-promote.js';
+import * as digestTools from '../../../src/tools/digest.js';
 import { appendToStream } from '../../../src/stream/writer.js';
 
 // ---- 工具函数 ----
@@ -353,7 +354,7 @@ describe('canvas file processing', () => {
   });
 
   // 回归：canvas 损坏（parseCanvas 返回 null）也要更新 state 断死循环
-  it('损坏 canvas（{} 无 nodes）写入 state，避免反复重 parse', async () => {
+  it('损坏 canvas 不提交尚未成功处理的同步状态', async () => {
     const rel = 'broken.canvas';
     const canvasPath = writeCanvas(rel, {}); // 缺 nodes 数组 → parseCanvas 返回 null
 
@@ -361,15 +362,15 @@ describe('canvas file processing', () => {
     expect(changed).toBe(false); // 无旧节点，无实质处理
 
     const state = getFileState(db, rel);
-    expect(state).not.toBeNull(); // 关键：仍写入 state 断死循环
-    expect(isFileChanged(canvasPath, state)).toBe(false);
+    expect(state).toBeNull();
+    expect(isFileChanged(canvasPath, state)).toBe(true);
   });
 
   // 回归（HIGH 数据丢失）：parseCanvas 失败 ≠ 用户清空 canvas。最常见成因是 Obsidian
   // 非原子保存的半截写 / Sync 冲突损坏文件，内容仍在。此时绝不能 supersede 旧节点
   // （markNodeSupersededRecordOnly 不迁链接，下次成功 parse 又建新 ID → 旧记忆被永久遗弃）。
   // 必须只更新 content_hash 断死循环、保留旧节点不动。
-  it('解析失败（损坏的半截写）时保留旧节点不 supersede，仅断死循环', async () => {
+  it('解析失败时保留旧节点与旧hash，允许后续重试', async () => {
     const rel = 'transient-corrupt.canvas';
     const canvasPath = writeCanvas(rel, {
       nodes: [
@@ -399,7 +400,7 @@ describe('canvas file processing', () => {
     const secondState = getFileState(db, rel);
     expect(secondState).not.toBeNull();
     expect(secondState!.node_ids).toEqual([oldNodeId]);
-    expect(isFileChanged(canvasPath, secondState)).toBe(false); // 死循环已断
+    expect(isFileChanged(canvasPath, secondState)).toBe(true); // 重试已断
 
     // 文件恢复为合法 canvas（带新内容）后：旧节点被 supersede-with-links 到新节点，内容衔接
     fs.writeFileSync(canvasPath, JSON.stringify({
@@ -886,5 +887,219 @@ describe('dataless→readable 真实 race: 入口 null + read-time 补抓成功�
     const state = getFileState(db, rel);
     expect(state).not.toBeNull();
     expect(isFileChanged(filePath, state)).toBe(true);
+  });
+});
+
+// 这些回归使用真实 digest + 内存 SQLite，取消发生在 digest 完成返回之前。
+describe('增量提交边界', () => {
+  afterEach(() => {
+    vi.mocked(appendToStream).mockReset();
+    vi.mocked(appendToStream).mockReturnValue('stream:2026-01-01:abc:1' as never);
+  });
+
+  it.each(['markdown', 'canvas'])('%s digest期间取消不遗留活跃孤儿或提交状态', async kind => {
+    const rel = kind === 'canvas' ? 'cancel.canvas' : 'cancel.md';
+    const file = kind === 'canvas'
+      ? writeCanvas(rel, { nodes: [{ id: 'a', type: 'text', text: 'A meaningful canvas memory that should be staged until the source generation is confirmed.', x: 0, y: 0, width: 100, height: 100 }], edges: [] })
+      : writeMd(rel, SAMPLE_MD);
+    let stopped = false;
+    vi.mocked(appendToStream).mockImplementation((() => {
+      stopped = true;
+      return 'stream:2026-01-01:abc:1';
+    }) as never);
+    expect(await processFileChange(db, file, tmpDir, 'generation', () => stopped)).toBe(false);
+    expect(getFileState(db, rel, 'generation')).toBeNull();
+    expect((db.prepare('SELECT count(*) AS n FROM nodes WHERE is_superseded = 0 AND is_tag = 0').get() as { n: number }).n).toBe(0);
+  });
+
+  it('仅tags变化也刷新正文节点，不错误复用旧段', async () => {
+    const rel = 'tags-change.md';
+    const file = writeMd(rel, SAMPLE_MD);
+    await processFileChange(db, file, tmpDir);
+    const old = getFileState(db, rel)!;
+    fs.writeFileSync(file, SAMPLE_MD.replace('test, knowledge', 'test, knowledge, revised'));
+    expect(await processFileChange(db, file, tmpDir)).toBe(true);
+    const state = getFileState(db, rel)!;
+    expect(state.node_ids).not.toEqual(old.node_ids);
+    for (const id of old.node_ids) expect(getNode(db, id)?.is_superseded).toBe(1);
+  });
+
+  it('仅heading变化也刷新节点context', async () => {
+    const rel = 'heading-change.md';
+    const file = writeMd(rel, SAMPLE_MD);
+    await processFileChange(db, file, tmpDir);
+    const old = getFileState(db, rel)!;
+    fs.writeFileSync(file, SAMPLE_MD.replace('# Test Note', '# Changed Test Note'));
+    await processFileChange(db, file, tmpDir);
+    expect(getFileState(db, rel)!.node_ids).not.toEqual(old.node_ids);
+  });
+});
+
+describe('空短文件版本替换', () => {
+  it.each(['', '短', '---\nowner: sample\n---\n', '#onlytag', '# Heading only\n'])('正文改为 %j 后不残留旧正文', async replacement => {
+    const rel = 'identity.md';
+    const file = writeMd(rel, SAMPLE_MD);
+    await processFileChange(db, file, tmpDir);
+    const old = getFileState(db, rel)!;
+    fs.writeFileSync(file, replacement);
+    expect(await processFileChange(db, file, tmpDir)).toBe(true);
+    const state = getFileState(db, rel)!;
+    expect(state.node_ids.length).toBeGreaterThan(0);
+    for (const id of old.node_ids) expect(getNode(db, id)?.is_superseded).toBe(1);
+    expect(isFileChanged(file, state)).toBe(false);
+    expect(await processFileChange(db, file, tmpDir)).toBe(false);
+  });
+});
+
+describe('版本切换事务', () => {
+  it.each(['markdown', 'canvas'])('%s sync state写入失败保留旧版并补偿新版', async kind => {
+    const rel = kind === 'canvas' ? 'atomic.canvas' : 'atomic.md';
+    const canvas = (text: string) => ({ nodes: [{ id: 'a', type: 'text', text, x: 0, y: 0, width: 100, height: 100 }], edges: [] });
+    const file = kind === 'canvas' ? writeCanvas(rel, canvas(SAMPLE_MD)) : writeMd(rel, SAMPLE_MD);
+    await processFileChange(db, file, tmpDir);
+    const old = getFileState(db, rel)!;
+    db.exec("CREATE TRIGGER fail_state BEFORE INSERT ON obsidian_sync BEGIN SELECT RAISE(ABORT, 'simulated state write failure'); END");
+    fs.writeFileSync(file, kind === 'canvas' ? JSON.stringify(canvas(SAMPLE_MD + '\nA later update.')) : SAMPLE_MD + '\nA later update.');
+    expect(await processFileChange(db, file, tmpDir)).toBe(false);
+    expect(getFileState(db, rel)).toEqual(old);
+    for (const id of old.node_ids) expect(getNode(db, id)?.is_superseded).toBe(0);
+    const active = db.prepare('SELECT id FROM nodes WHERE is_superseded = 0 AND is_tag = 0').all() as { id: string }[];
+    expect(active.map(n => n.id).sort()).toEqual([...old.node_ids].sort());
+  });
+});
+
+
+describe('digest 多节点与失败结果', () => {
+  it('一段产生多个节点时禁用位置复用，下一版不漏段', async () => {
+    const file = writeMd('multi.md', SAMPLE_MD);
+    const spy = vi.spyOn(digestTools, 'digest').mockImplementation(async () => ({
+      status: 'processed', created_nodes: [seedNode(db), seedNode(db)],
+    } as never));
+    try {
+      await processFileChange(db, file, tmpDir);
+      const old = getFileState(db, 'multi.md')!;
+      expect(old.segment_hashes).toEqual([]);
+      fs.writeFileSync(file, SAMPLE_MD + '\nLater changes.');
+      await processFileChange(db, file, tmpDir);
+      for (const id of old.node_ids) expect(getNode(db, id)?.is_superseded).toBe(1);
+      expect(getFileState(db, 'multi.md')!.node_ids.length).toBe(old.node_ids.length);
+    } finally { spy.mockRestore(); }
+  });
+
+  it('零产出的digest保留旧版本与旧state供重试', async () => {
+    const file = writeMd('rejected.md', SAMPLE_MD);
+    await processFileChange(db, file, tmpDir);
+    const old = getFileState(db, 'rejected.md')!;
+    fs.writeFileSync(file, SAMPLE_MD + '\nLater changes.');
+    const spy = vi.spyOn(digestTools, 'digest').mockResolvedValue({ status: 'rejected' } as never);
+    try {
+      expect(await processFileChange(db, file, tmpDir)).toBe(false);
+      expect(getFileState(db, 'rejected.md')).toEqual(old);
+      for (const id of old.node_ids) expect(getNode(db, id)?.is_superseded).toBe(0);
+      expect(isFileChanged(file, old)).toBe(true);
+    } finally { spy.mockRestore(); }
+  });
+});
+
+describe('段级复用', () => {
+  it('只改第二段保留第一段身份，不把复用节点supersede', async () => {
+    const body = 'A detailed semantic paragraph with sufficient content to remain its own segment. '.repeat(4);
+    const rel = 'reuse.md';
+    const file = writeMd(rel, `# First\n\n${body}\n\n## Second\n\n${body}`);
+    await processFileChange(db, file, tmpDir);
+    const old = getFileState(db, rel)!;
+    expect(old.node_ids).toHaveLength(2);
+    fs.writeFileSync(file, `# First\n\n${body}\n\n## Second\n\n${body} Additional semantic information.`);
+    await processFileChange(db, file, tmpDir);
+    const state = getFileState(db, rel)!;
+    expect(state.node_ids[0]).toBe(old.node_ids[0]);
+    expect(state.node_ids[1]).not.toBe(old.node_ids[1]);
+    expect(getNode(db, old.node_ids[0])?.is_superseded).toBe(0);
+    expect(getNode(db, old.node_ids[1])?.is_superseded).toBe(1);
+  });
+});
+
+describe('队列配置缺省', () => {
+  it('显式undefined/零/NaN配置不会静默漏掉整批文件', async () => {
+    const file = writeMd('defaults.md', SAMPLE_MD);
+    await processFileQueue(db, [file], tmpDir, { concurrency: undefined, batchSize: 0, delayBetweenBatches: Number.NaN, refreshLinks: false });
+    expect(getFileState(db, 'defaults.md')!.node_ids.length).toBeGreaterThan(0);
+    expect(getImportProgress().processedFiles).toBe(1);
+  });
+});
+
+describe('首次导入复用同一管线', () => {
+  it('透传分类、初始热度和历史日期', async () => {
+    const file = writeMd('initial.md', '# Test Note\n\nA meaningful paragraph with enough content to become its own memory.');
+    const spy = vi.spyOn(digestTools, 'digest').mockImplementation(async () => ({ status: 'processed', created_nodes: [seedNode(db)] } as never));
+    try {
+      await processFileQueue(db, [file], tmpDir, { refreshLinks: false, category: 'index_page', initialHeat: 0.42, created: '2020-01-01T00:00:00.000Z' });
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0][1]).toMatchObject({ initialHeat: 0.42, created: '2020-01-01T00:00:00.000Z' });
+      expect(spy.mock.calls[0][1].content).toContain('# Test Note');
+      expect(getFileState(db, 'initial.md')!.segment_hashes).toHaveLength(1);
+    } finally { spy.mockRestore(); }
+  });
+});
+
+describe('首次与日常编辑共享快照分类', () => {
+  it('日记首次入库后编辑只替换变化段，保留日记日期和未变段身份', async () => {
+    const rel = '2020-03-14.md';
+    const first = '# Morning\n\n' + 'A meaningful morning journal paragraph about plans and observations. '.repeat(5);
+    const second = '# Evening\n\n' + 'An evening journal paragraph recording events and reflections. '.repeat(5);
+    const file = writeMd(rel, first + '\n\n---\n\n' + second);
+    await processFileQueue(db, [file], tmpDir, { category: 'daily_note', created: '2020-03-14T00:00:00.000Z', initialHeat: 0.4, refreshLinks: false });
+    const old = getFileState(db, rel)!;
+    expect(old.node_ids).toHaveLength(2);
+    fs.writeFileSync(file, first + '\n\n---\n\n' + second + ' A new evening event.');
+    await processFileQueue(db, [file], tmpDir, { refreshLinks: false });
+    const updated = getFileState(db, rel)!;
+    expect(updated.node_ids).toHaveLength(2);
+    expect(updated.node_ids[0]).toBe(old.node_ids[0]);
+    expect(updated.node_ids[1]).not.toBe(old.node_ids[1]);
+    expect(getNode(db, updated.node_ids[1])?.created).toBe('2020-03-14T00:00:00.000Z');
+    expect(getNode(db, updated.node_ids[0])?.created).toBe('2020-03-14T00:00:00.000Z');
+  });
+
+  it.each(['markdown', 'canvas'])('%s新文件分类与日期推断复用正文快照，只读取一次正文', async kind => {
+    const safeFs = await import('../../../src/utils/safe-fs.js');
+    const file = kind === 'markdown'
+      ? writeMd('snapshot.md', SAMPLE_MD)
+      : writeCanvas('snapshot.canvas', { nodes: [{ id: 'n', type: 'text', text: 'A meaningful canvas memory with sufficient content.', x: 0, y: 0, width: 100, height: 100 }], edges: [] });
+    const spy = vi.spyOn(safeFs, 'safeReadVaultTextFileSync');
+    try {
+      await processFileQueue(db, [file], tmpDir, { refreshLinks: false });
+      expect(spy.mock.calls.filter(call => call[0] === file)).toHaveLength(1);
+    } finally { spy.mockRestore(); }
+  });
+});
+
+
+describe('新建属性与文件夹tag取消补偿', () => {
+  afterEach(() => {
+    vi.mocked(appendToStream).mockReset();
+    vi.mocked(appendToStream).mockReturnValue('stream:2026-01-01:abc:1' as never);
+  });
+
+  it.each(['folder', 'property'])('%s tag digest期间取消不残留活跃tag', async kind => {
+    const file = kind === 'folder'
+      ? writeMd('FictionalFolder/Note.md', 'A fictional paragraph with enough meaningful content to become a memory before its folder tag is created.')
+      : writeMd('Property.md', '---\nowner: FictionalOwner\n---\nA fictional paragraph with enough meaningful content to become a memory before its property tag is created.');
+    let calls = 0, stopped = false;
+    vi.mocked(appendToStream).mockImplementation((() => {
+      if (++calls === 2) stopped = true;
+      return 'stream:2026-01-01:abc:1';
+    }) as never);
+    expect(await processFileChange(db, file, tmpDir, 'tag-cancel', () => stopped)).toBe(false);
+    expect((db.prepare('SELECT count(*) AS n FROM nodes WHERE is_superseded = 0').get() as { n: number }).n).toBe(0);
+    expect(getFileState(db, path.relative(tmpDir, file), 'tag-cancel')).toBeNull();
+  });
+
+  it('state写入失败补偿私有tag及层级边', async () => {
+    const file = writeMd('FictionalParent/FictionalChild/Note.md', '---\nowner: FictionalOwner\n---\nA fictional paragraph with enough meaningful content to create its owner and nested folder tags.');
+    db.exec("CREATE TRIGGER fail_state_tag BEFORE INSERT ON obsidian_sync BEGIN SELECT RAISE(ABORT, 'simulated state write failure'); END");
+    expect(await processFileChange(db, file, tmpDir)).toBe(false);
+    expect((db.prepare('SELECT count(*) AS n FROM nodes WHERE is_superseded = 0').get() as { n: number }).n).toBe(0);
+    expect((db.prepare('SELECT count(*) AS n FROM links WHERE deleted = 0').get() as { n: number }).n).toBe(0);
   });
 });

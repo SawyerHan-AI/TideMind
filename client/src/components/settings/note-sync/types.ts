@@ -61,10 +61,17 @@ export interface InitPreview {
 }
 
 export interface InitReport {
+  offlineFiles?: number
   nodesCreated?: number
   linksCreated?: number
   crystalsCreated?: number
   totalFiles?: number
   durationMs?: number
   totalCost?: number
+}
+
+const INIT_PHASES = ['scan', 'preprocess', 'digest', 'explicitLinks', 'annotate', 'landing', 'linkEval', 'keystone', 'emergence'] as const
+
+export function noteSourceInitPhases(toolType: string) {
+  return toolType === 'obsidian' ? INIT_PHASES.slice(0, 4) : INIT_PHASES
 }

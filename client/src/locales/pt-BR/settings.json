@@ -509,6 +509,7 @@
       "reportNodes": "Nos",
       "reportLinks": "Links",
       "reportCrystals": "Cristais",
+      "offlineFiles": "Aguardando download local",
       "reportFiles": "Arquivos",
       "reportDuration": "Duracao",
       "reportCost": "Custo",

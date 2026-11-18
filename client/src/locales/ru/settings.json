@@ -509,6 +509,7 @@
       "reportNodes": "Узлы",
       "reportLinks": "Связи",
       "reportCrystals": "Кристаллы",
+      "offlineFiles": "Ожидают загрузки на устройство",
       "reportFiles": "Файлы",
       "reportDuration": "Длительность",
       "reportCost": "Стоимость",

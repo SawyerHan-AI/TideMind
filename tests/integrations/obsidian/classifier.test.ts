@@ -142,9 +142,9 @@ describe('classifyFiles', () => {
 
   // --- metadata_only ---
 
-  it('metadata_only: 有 frontmatter 但正文 < 20 字符', () => {
+  it('metadata_only: 有 frontmatter 但没有正文', () => {
     const abs = `${VAULT}/Notes/meta.md`;
-    const content = '---\ntitle: Test\ntags: [a, b]\n---\nShort.';
+    const content = '---\ntitle: Test\ntags: [a, b]\n---\n';
     const store = new Map([[abs, content]]);
     const result = classifyFiles([abs], VAULT, makeConfig(), makeReader(store));
     expect(result[0].category).toBe('metadata_only');

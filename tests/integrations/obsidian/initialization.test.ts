@@ -129,7 +129,7 @@ vi.mock('../../../src/integrations/obsidian/sync-state.js', async (importOrigina
 import type Database from 'better-sqlite3';
 import { setupTestDb } from '../../helpers/test-db.js';
 import { runInitialization } from '../../../src/integrations/obsidian/initialization.js';
-import { ensureSyncSchema, getFileState, isFileChanged } from '../../../src/integrations/obsidian/sync-state.js';
+import { ensureSyncSchema, getFileState, isFileChanged, hasCompletedFullScan } from '../../../src/integrations/obsidian/sync-state.js';
 import { appendToStream } from '../../../src/stream/writer.js';
 import type { InitSessionContext } from '../../../src/integrations/shared/init-session.js';
 
@@ -325,4 +325,178 @@ describe('dataless→readable 真实 race: 入口 null + read-time 补抓成功�
     // read-time snapshot = 真实 mtime/size,与磁盘一致 → 下轮跳过,不重复 digest。回归守卫(bug B)。
     expect(isFileChanged(absPath, state)).toBe(false);
   });
+});
+
+describe('首次导入路径身份与恢复', () => {
+  const paragraph = 'A sufficiently detailed fictional note paragraph to pass the content quality gate and preserve a distinct memory node for regression verification.';
+
+  it('显式路径和唯一 alias 指向正确的同名文件，索引页也创建链接', async () => {
+    writeMd('a/Topic.md', `---\naliases: [UniqueAlias]\n---\n${paragraph} Alpha target.`);
+    writeMd('b/Topic.md', `${paragraph} Beta target.`);
+    writeMd('Start.md', `${paragraph}\n\n[[a/Topic.md]] [[UniqueAlias]]`);
+    await runInitialization(db, makeCtx('paths'), tmpDir);
+    const source = getFileState(db, 'Start.md', 'paths')!.node_ids[0];
+    const alpha = getFileState(db, 'a/Topic.md', 'paths')!.node_ids[0];
+    const beta = getFileState(db, 'b/Topic.md', 'paths')!.node_ids[0];
+    expect(db.prepare('SELECT 1 FROM links WHERE from_id = ? AND to_id = ?').get(source, alpha)).toBeTruthy();
+    expect(db.prepare('SELECT 1 FROM links WHERE from_id = ? AND to_id = ?').get(source, beta)).toBeUndefined();
+  });
+
+  it('恢复已变更文件走替换而非复用旧内容', async () => {
+    const file = writeMd('Changed.md', paragraph);
+    await runInitialization(db, makeCtx('resume'), tmpDir);
+    fs.writeFileSync(file, `${paragraph} Updated version with a new explicit detail.`);
+    await runInitialization(db, makeCtx('resume'), tmpDir);
+    expect(isFileChanged(file, getFileState(db, 'Changed.md', 'resume'))).toBe(false);
+    const ids = getFileState(db, 'Changed.md', 'resume')!.node_ids;
+    expect((db.prepare('SELECT content FROM nodes WHERE id = ?').get(ids[0]) as {content: string}).content).toContain('Updated version');
+  });
+
+  it('无效 Canvas 不能报告初始化成功', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'Invalid.canvas'), '{invalid json');
+    await expect(runInitialization(db, makeCtx('invalid'), tmpDir)).rejects.toThrow('文件入库失败');
+    expect(hasCompletedFullScan(db, 'invalid')).toBe(false);
+  });
+});
+
+  it('digest 期间中断不能保存断点或遗留活跃半成品', async () => {
+    writeMd('Abort.md', 'Fictional detailed paragraph content for cancellation regression that is sufficiently long to be imported as a memory node.');
+    const controller = new AbortController();
+    vi.mocked(appendToStream).mockImplementation((() => { controller.abort(new Error('test abort')); return 'stream:2026-01-01:abc:1'; }) as never);
+    const ctx = { ...makeCtx('abort'), signal: controller.signal };
+    await expect(runInitialization(db, ctx, tmpDir)).rejects.toThrow('test abort');
+    expect(getFileState(db, 'Abort.md', 'abort')).toBeNull();
+    expect((db.prepare('SELECT COUNT(*) AS n FROM nodes WHERE is_superseded = 0').get() as {n:number}).n).toBe(0);
+    expect(hasCompletedFullScan(db, 'abort')).toBe(false);
+  });
+
+it('增量引用切换与迟到目标重算，重复执行不创建重复链接', async () => {
+  const { refreshObsidianLinks } = await import('../../../src/integrations/obsidian/explicit-links.js');
+  const paragraph = 'Fictional sufficiently detailed note for verifying daily Obsidian updates with deterministic source identities and explicit references.';
+  writeMd('A.md', paragraph + ' Alpha.');
+  writeMd('B.md', paragraph + ' Beta.');
+  writeMd('Source.md', paragraph + '\n[[A]]');
+  await runInitialization(db, makeCtx('refresh'), tmpDir);
+  let source = getFileState(db, 'Source.md', 'refresh')!.node_ids[0];
+  const a = getFileState(db, 'A.md', 'refresh')!.node_ids[0];
+  const b = getFileState(db, 'B.md', 'refresh')!.node_ids[0];
+  writeMd('Source.md', paragraph + '\n[[B]]');
+  const { processFileQueue } = await import('../../../src/integrations/obsidian/queue.js');
+  await processFileQueue(db, [path.join(tmpDir, 'Source.md')], tmpDir, {}, 'refresh');
+  source = getFileState(db, 'Source.md', 'refresh')!.node_ids[0];
+  await refreshObsidianLinks(db, tmpDir, 'refresh');
+  await refreshObsidianLinks(db, tmpDir, 'refresh');
+  expect(db.prepare('SELECT 1 FROM links WHERE from_id = ? AND to_id = ? AND deleted = 0').get(source, a)).toBeUndefined();
+  expect((db.prepare('SELECT COUNT(*) AS n FROM links WHERE from_id = ? AND to_id = ? AND deleted = 0').get(source, b) as {n:number}).n).toBe(1);
+  const count = (db.prepare('SELECT COUNT(*) AS n FROM links').get() as {n:number}).n;
+  await refreshObsidianLinks(db, tmpDir, 'refresh');
+  expect((db.prepare('SELECT COUNT(*) AS n FROM links').get() as {n:number}).n).toBe(count);
+});
+
+it('无向量扩展也可以正常初始化，日期共享策略识别历史日记', async () => {
+  const { inferObsidianFileCreated } = await import('../../../src/integrations/obsidian/time-inference.js');
+  db.exec('DROP TABLE nodes_vec');
+  const file = writeMd('2020-04-03.md', 'Fictional daily historical journal content sufficient for normal import and preserving the original day instead of the filesystem creation date.');
+  expect(inferObsidianFileCreated(file, tmpDir)).toBe('2020-04-03T00:00:00.000Z');
+  await expect(runInitialization(db, makeCtx('no-vector'), tmpDir)).resolves.toMatchObject({ totalFiles: 1 });
+});
+
+it('首次导入不主动运行全图库代谢阶段', async () => {
+  const { runKeystoneIdentification, runCrystalEmergence } = await import('../../../src/metabolism/divergent.js');
+  const { promoteFrequentTags } = await import('../../../src/metabolism/tag-promote.js');
+  vi.mocked(runKeystoneIdentification).mockClear();
+  vi.mocked(runCrystalEmergence).mockClear();
+  vi.mocked(promoteFrequentTags).mockClear();
+  writeMd('Import.md', 'Fictional source content for checking that initial import leaves global metabolism decisions to the existing background strategy.');
+  const report = await runInitialization(db, makeCtx('scope'), tmpDir);
+  expect(report.crystalsCreated).toBe(0);
+  expect(runKeystoneIdentification).not.toHaveBeenCalled();
+  expect(runCrystalEmergence).not.toHaveBeenCalled();
+  expect(promoteFrequentTags).not.toHaveBeenCalled();
+});
+
+it('迟到目标替换悬空引用并停止后不写关系', async () => {
+  const { refreshObsidianLinks } = await import('../../../src/integrations/obsidian/explicit-links.js');
+  const paragraph = 'Fictional enough detailed text to establish an imported memory and validate future Obsidian references resolving after the target arrives.';
+  writeMd('Source.md', paragraph + '\n[[Future]]');
+  await runInitialization(db, makeCtx('late'), tmpDir);
+  writeMd('Future.md', paragraph + ' Future target.');
+  await runInitialization(db, makeCtx('late'), tmpDir);
+  const source = getFileState(db, 'Source.md', 'late')!.node_ids[0];
+  const target = getFileState(db, 'Future.md', 'late')!.node_ids[0];
+  expect(db.prepare('SELECT 1 FROM links WHERE from_id = ? AND to_id = ? AND deleted = 0').get(source, target)).toBeTruthy();
+  expect((db.prepare("SELECT COUNT(*) AS n FROM links WHERE from_id = ? AND note LIKE 'Obsidian 悬空引用:%' AND deleted = 0").get(source) as {n:number}).n).toBe(0);
+  await expect(refreshObsidianLinks(db, tmpDir, 'late', () => true)).rejects.toThrow('已停止');
+});
+
+it('目标暂离线的 iCloud stub 不会把原引用换成悬空标签', async () => {
+  const { refreshObsidianLinks } = await import('../../../src/integrations/obsidian/explicit-links.js');
+  const paragraph = 'Fictional detailed content used to validate preserving existing links while the corresponding vault target is temporarily unavailable offline.';
+  writeMd('Target.md', paragraph);
+  writeMd('Source.md', paragraph + '\n[[Target]]');
+  await runInitialization(db, makeCtx('offline'), tmpDir);
+  const source = getFileState(db, 'Source.md', 'offline')!.node_ids[0];
+  const target = getFileState(db, 'Target.md', 'offline')!.node_ids[0];
+  fs.renameSync(path.join(tmpDir, 'Target.md'), path.join(tmpDir, '.Target.md.icloud'));
+  await refreshObsidianLinks(db, tmpDir, 'offline');
+  expect(db.prepare('SELECT 1 FROM links WHERE from_id = ? AND to_id = ? AND deleted = 0').get(source, target)).toBeTruthy();
+  expect(db.prepare('SELECT id FROM nodes WHERE is_tag = 1 AND title = ?').get('Target')).toBeUndefined();
+});
+
+it('首次短中文正文不作为元数据丢弃，初导即写增量段hash', async () => {
+  writeMd('Short.md', '---\ntags: [fictional]\n---\n今天完成了虚构项目的第一步。');
+  await runInitialization(db, makeCtx('short'), tmpDir);
+  const state = getFileState(db, 'Short.md', 'short')!;
+  expect(state.node_ids.length).toBeGreaterThan(0);
+  expect(state.segment_hashes?.length).toBeGreaterThan(0);
+  expect((db.prepare('SELECT content FROM nodes WHERE id = ?').get(state.node_ids[0]) as {content:string}).content).toContain('今天完成');
+});
+
+it('拒绝普通文件根目录，只跳过离线文件并报告数量', async () => {
+  const file = writeMd('NotDirectory.md', 'Fictional file content.');
+  await expect(runInitialization(db, makeCtx('file-root'), file)).rejects.toThrow('directory');
+  fs.renameSync(file, path.join(tmpDir, '.NotDirectory.md.icloud'));
+  writeMd('Available.md', 'Available synthetic note for incremental iCloud recovery.');
+  await expect(runInitialization(db, makeCtx('stub-init'), tmpDir)).resolves.toMatchObject({ totalFiles: 1, offlineFiles: 1 });
+  expect(getFileState(db, 'Available.md', 'stub-init')?.node_ids.length).toBeGreaterThan(0);
+  expect(hasCompletedFullScan(db, 'stub-init')).toBe(false);
+});
+it('按来源页面路径解析 Markdown 相对链接，忽略外部 URL 和代码示例', async () => {
+  const text = 'Fictional detail about the telescope mount for this isolated document.';
+  writeMd('North/Target Page.md', text);
+  writeMd('South/Target Page.md', text);
+  writeMd('North/Source.md', text + '\n[同目录](Target%20Page.md) [外部](https://example.invalid/South/Target%20Page.md) `[[South/Target Page]]`');
+  await runInitialization(db, makeCtx('markdown-link'), tmpDir);
+  const id = (file: string) => getFileState(db, file, 'markdown-link')!.node_ids[0];
+  const actual = db.prepare("SELECT to_id FROM links WHERE from_id = ? AND note LIKE 'Obsidian 引用:%' AND deleted = 0").pluck().all(id('North/Source.md'));
+  expect(actual).toEqual([id('North/Target Page.md')]);
+  expect(actual).not.toContain(id('South/Target Page.md'));
+});
+
+it('在生成报告时取消，保留可恢复的文件记录并撤销报告，不宣告成功', async () => {
+  writeMd('Note.md', 'This is an isolated note for proving cancellation during report generation.');
+  const controller = new AbortController();
+  vi.mocked(appendToStream).mockImplementation((input => {
+    if (String(input.content).includes('Obsidian 初始化报告')) controller.abort(new Error('cancelled at report'));
+    return 'stream:2026-01-01:fixture:1';
+  }) as typeof appendToStream);
+  await expect(runInitialization(db, { ...makeCtx('cancel-report'), signal: controller.signal }, tmpDir)).rejects.toThrow('cancelled at report');
+  expect(hasCompletedFullScan(db, 'cancel-report')).toBe(false);
+  expect(db.prepare("SELECT 1 FROM nodes WHERE content LIKE 'Obsidian 初始化报告%' AND is_superseded = 0").get()).toBeUndefined();
+  expect(getFileState(db, 'Note.md', 'cancel-report')).not.toBeNull();
+});
+
+it('引用写入失败后保留重试机会，未改动的文件也能补齐短名称引用', async () => {
+  writeMd('Origin.md', 'This synthetic observation has a two-character unresolved reference [[样例]].');
+  db.exec(`CREATE TRIGGER synthetic_failure BEFORE INSERT ON links WHEN NEW.note LIKE 'Obsidian 悬空引用:%'
+           BEGIN SELECT RAISE(ABORT, 'fixture abort'); END`);
+  await expect(runInitialization(db, makeCtx('retry-links'), tmpDir)).rejects.toThrow('fixture abort');
+  const { linksNeedRefresh, refreshObsidianLinks } = await import('../../../src/integrations/obsidian/explicit-links.js');
+  const { getAllFileStates } = await import('../../../src/integrations/obsidian/sync-state.js');
+  const states = getAllFileStates(db, 'retry-links');
+  expect(linksNeedRefresh(db, 'retry-links', states)).toBe(true);
+  db.exec('DROP TRIGGER synthetic_failure');
+  await refreshObsidianLinks(db, tmpDir, 'retry-links');
+  expect(linksNeedRefresh(db, 'retry-links', states)).toBe(false);
+  expect(db.prepare("SELECT 1 FROM links WHERE note = 'Obsidian 悬空引用: [[样例]]' AND deleted = 0").get()).toBeTruthy();
 });

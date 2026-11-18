@@ -171,3 +171,59 @@ export class DatalessSkipCounter {
   get sample(): string | null { return this.firstPath; }
   reset(): void { this.count = 0; this.firstPath = null; }
 }
+
+/**
+ * Read an Obsidian vault member without following a replaced file or directory.
+ * The configured root itself must be a directory, while ancestor aliases such
+ * as macOS /var -> /private/var remain valid. Keep the opened inode pinned until
+ * reading finishes; validate every directory and the file again before reading.
+ */
+export function safeReadVaultTextFileSync(filePath: string, vaultRoot: string): SafeReadResult {
+  if (isICloudStubName(path.basename(filePath))) return { ok: false, reason: 'stub' };
+  let fd: number | undefined;
+  try {
+    const rootPath = path.resolve(vaultRoot);
+    const relative = path.relative(rootPath, path.resolve(filePath));
+    if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      return { ok: false, reason: 'error' };
+    }
+    const rootStat = fs.lstatSync(rootPath);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return { ok: false, reason: 'error' };
+    // Resolve only the parent aliases; a symlink at the vault root is rejected above.
+    const canonicalRoot = fs.realpathSync(rootPath);
+    const canonicalFile = path.join(canonicalRoot, relative);
+    const sameInode = (a: fs.Stats, b: fs.Stats) => a.dev === b.dev && a.ino === b.ino;
+    const dirs: Array<[string, fs.Stats]> = [[rootPath, rootStat], [canonicalRoot, rootStat]];
+    let current = canonicalRoot;
+    const parts = relative.split(path.sep);
+    for (const part of parts.slice(0, -1)) {
+      current = path.join(current, part);
+      const stat = fs.lstatSync(current);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) return { ok: false, reason: 'error' };
+      dirs.push([current, stat]);
+    }
+    const before = fs.lstatSync(canonicalFile);
+    if (!before.isFile() || before.isSymbolicLink()) return { ok: false, reason: 'error' };
+    if (isDataless(before)) return { ok: false, reason: 'dataless' };
+    fd = fs.openSync(canonicalFile, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || !sameInode(before, opened)) return { ok: false, reason: 'error' };
+    if (isDataless(opened)) return { ok: false, reason: 'dataless' };
+    for (const [directory, expected] of dirs) {
+      const actual = fs.lstatSync(directory);
+      if (!actual.isDirectory() || actual.isSymbolicLink() || !sameInode(expected, actual)) {
+        return { ok: false, reason: 'error' };
+      }
+    }
+    const currentFile = fs.lstatSync(canonicalFile);
+    if (!currentFile.isFile() || currentFile.isSymbolicLink() || !sameInode(opened, currentFile)) {
+      return { ok: false, reason: 'error' };
+    }
+    return { ok: true, content: fs.readFileSync(fd, 'utf-8') };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return { ok: false, reason: code === 'ENOENT' ? 'missing' : 'error', err: err as Error };
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}

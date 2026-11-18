@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type Database from 'better-sqlite3';
-import { setupTestDb, seedNode } from '../../helpers/test-db.js';
+import { setupTestDb, seedNode, seedLink } from '../../helpers/test-db.js';
 import { getNode } from '../../../src/db/nodes.js';
 import { linkExists } from '../../../src/db/links.js';
 import { invalidateGateCache } from '../../../src/db/stats.js';
@@ -83,6 +83,7 @@ import {
   shouldPromotePropertyValue,
   getOrCreateTagNode,
   clearTagNodeCache,
+  createTagNodeScope,
   promotePropertyValues,
 } from '../../../src/integrations/shared/property-promote.js';
 
@@ -412,5 +413,63 @@ describe('promotePropertyValues', () => {
       ).all(val);
       expect(rows.length).toBe(0);
     }
+  });
+});
+
+
+describe('Obsidian tag scope补偿', () => {
+  it('取消创建的新tag会退役且缓存不会复用它', async () => {
+    const scope = createTagNodeScope(db);
+    const id = await getOrCreateTagNode(db, 'Fictional orphan', 'obsidian', undefined, scope);
+    scope.finish();
+    expect(getNode(db, id)?.is_superseded).toBe(1);
+    expect(await getOrCreateTagNode(db, 'Fictional orphan', 'obsidian')).not.toBe(id);
+  });
+
+  it('交错的其他源采用同一inflight tag时保留共享身份', async () => {
+    const scope = createTagNodeScope(db);
+    const [id, other] = await Promise.all([
+      getOrCreateTagNode(db, 'Fictional shared', 'obsidian', undefined, scope),
+      getOrCreateTagNode(db, 'Fictional shared', 'logseq'),
+    ]);
+    expect(other).toBe(id);
+    scope.finish();
+    expect(getNode(db, id)?.is_superseded).toBe(0);
+    expect(await getOrCreateTagNode(db, 'Fictional shared', 'logseq')).toBe(id);
+  });
+
+  it('两个在途scope均取消时由最后释放者清理，不漏tag', async () => {
+    const a = createTagNodeScope(db), b = createTagNodeScope(db);
+    const [id, shared] = await Promise.all([
+      getOrCreateTagNode(db, 'Fictional scopes', 'obsidian', undefined, a),
+      getOrCreateTagNode(db, 'Fictional scopes', 'obsidian', undefined, b),
+    ]);
+    a.finish();
+    expect(getNode(db, id)?.is_superseded).toBe(0);
+    b.finish();
+    expect(shared).toBe(id);
+    expect(getNode(db, id)?.is_superseded).toBe(1);
+  });
+
+  it('保留被其他活跃内容采用的tag与公共层级关系', async () => {
+    const scope = createTagNodeScope(db);
+    const parent = await getOrCreateTagNode(db, 'Fictional parent', 'obsidian', undefined, scope);
+    const child = await getOrCreateTagNode(db, 'Fictional child', 'obsidian', undefined, scope);
+    const otherContent = seedNode(db, { source_tool: 'logseq' });
+    seedLink(db, child, parent);
+    seedLink(db, otherContent.id, child);
+    scope.finish();
+    expect(getNode(db, parent)?.is_superseded).toBe(0);
+    expect(getNode(db, child)?.is_superseded).toBe(0);
+    expect(linkExists(db, child, parent)).toBe(true);
+    expect(linkExists(db, otherContent.id, child)).toBe(true);
+  });
+
+  it('预有pool tag不参与补偿', async () => {
+    const existing = await getOrCreateTagNode(db, 'Fictional existing', 'brain');
+    const scope = createTagNodeScope(db);
+    expect(await getOrCreateTagNode(db, 'Fictional existing', 'obsidian', undefined, scope)).toBe(existing);
+    scope.finish();
+    expect(getNode(db, existing)?.is_superseded).toBe(0);
   });
 });

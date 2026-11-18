@@ -10,7 +10,8 @@ import { SqliteRepository } from '../../db/sqlite-repository.js';
 import { createLogger } from '../../utils/logger.js';
 import { digest } from '../../tools/digest.js';
 import { updateNode } from '../../db/nodes.js';
-import { createLink, linkExists } from '../../db/links.js';
+import { markNodeSupersededRecordOnly } from '../../db/node-lifecycle.js';
+import { createLink, linkExists, getLinksForNode, deleteLink } from '../../db/links.js';
 
 const log = createLogger('property-promote');
 
@@ -25,6 +26,77 @@ const tagNodeCache = new Map<string, string>();
 // 在第一个的 digest 完成前 cache+DB 都查不到 → 各自创建一个同名重复 tag 节点,
 // tagged 链接被分裂到两个节点上。用按 key 共享 Promise 串行化同名创建,消除竞态。
 const tagNodeInflight = new Map<string, Promise<string>>();
+
+// 仅显式选择 scope 的导入方参与补偿；其他源采用新 tag 后永久保留该共享身份。
+interface ScopedTagRecord { scopes: Set<TagNodeScope>; adopted: boolean }
+const scopedTags = new WeakMap<Database.Database, Map<string, ScopedTagRecord>>();
+
+export interface TagNodeScope {
+  isStopped(): boolean;
+  track(id: string): void;
+  finish(): void;
+}
+
+/** 一次文件导入的 tag 租约；只有无其他使用者、无活跃外部关系的新 tag 可被退役。 */
+export function createTagNodeScope(db: Database.Database, shouldStop?: () => boolean): TagNodeScope {
+  const touched = new Set<string>();
+  let finished = false;
+  const scope: TagNodeScope = {
+    isStopped: () => shouldStop?.() ?? false,
+    track(id) {
+      const record = scopedTags.get(db)?.get(id);
+      if (record) { record.scopes.add(scope); touched.add(id); }
+    },
+    finish() {
+      if (finished) return;
+      finished = true;
+      const records = scopedTags.get(db);
+      if (!records) return;
+      for (const id of touched) {
+        const record = records.get(id);
+        if (!record) continue;
+        record.scopes.delete(scope);
+        if (record.adopted && record.scopes.size === 0) records.delete(id);
+      }
+      const candidates = new Set([...records].filter(([, r]) => !r.adopted && r.scopes.size === 0).map(([id]) => id));
+      // 先找外部活跃节点采用的 tag，再沿候选 tag 间的公共关系传播保护。
+      const protectedIds = new Set<string>();
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const id of candidates) {
+          if (protectedIds.has(id)) continue;
+          const adopted = getLinksForNode(db, id).some(link => {
+            const other = link.from_id === id ? link.to_id : link.from_id;
+            if (candidates.has(other)) return protectedIds.has(other);
+            return !!db.prepare('SELECT id FROM nodes WHERE id = ? AND archived = 0 AND is_superseded = 0').get(other);
+          });
+          if (adopted) { protectedIds.add(id); changed = true; }
+        }
+      }
+      db.transaction(() => {
+        for (const id of candidates) {
+          if (!protectedIds.has(id)) {
+            for (const link of getLinksForNode(db, id)) deleteLink(db, link.id);
+            markNodeSupersededRecordOnly(db, id);
+            for (const [key, cachedId] of tagNodeCache) if (cachedId === id) tagNodeCache.delete(key);
+          }
+          records.delete(id);
+        }
+      })();
+    },
+  };
+  return scope;
+}
+
+function adoptScopedTag(db: Database.Database, id: string, scope?: TagNodeScope): string {
+  const record = scopedTags.get(db)?.get(id);
+  if (record) {
+    if (scope) scope.track(id);
+    else record.adopted = true;
+  }
+  return id;
+}
 
 /**
  * 清除 tag 节点缓存
@@ -43,6 +115,7 @@ export async function getOrCreateTagNode(
   tagName: string,
   source: string = 'brain',
   created?: string,
+  scope?: TagNodeScope,
 ): Promise<string> {
   // 入口规范化：外部调用方（apple-notes/obsidian/notion/logseq 的 folderName /
   // parent title / frontmatter value）可能传入多行或超长值。必须 trim、合并换行、
@@ -56,17 +129,17 @@ export async function getOrCreateTagNode(
   // 之前用 toLowerCase 归一会导致 "Foo" 和 "foo" 共享同一缓存条目 —— 与 DB 语义不符。
   const cacheKey = normalized;
   if (tagNodeCache.has(cacheKey)) {
-    return tagNodeCache.get(cacheKey)!;
+    return adoptScopedTag(db, tagNodeCache.get(cacheKey)!, scope);
   }
 
   // 同名创建已在飞行中 → 复用同一 Promise,不再各自查 DB / 各自 digest。
   const pending = tagNodeInflight.get(cacheKey);
-  if (pending) return pending;
+  if (pending) return adoptScopedTag(db, await pending, scope);
 
-  const task = createTagNode(db, normalized, cacheKey, source, created)
+  const task = createTagNode(db, normalized, cacheKey, source, created, scope)
     .finally(() => { tagNodeInflight.delete(cacheKey); });
   tagNodeInflight.set(cacheKey, task);
-  return task;
+  return adoptScopedTag(db, await task, scope);
 }
 
 async function createTagNode(
@@ -75,6 +148,7 @@ async function createTagNode(
   cacheKey: string,
   source: string,
   created?: string,
+  scope?: TagNodeScope,
 ): Promise<string> {
   // 查找已存在的 tag 节点（is_tag=1，精确匹配 content 或 title）
   const existing = db.prepare(
@@ -83,7 +157,7 @@ async function createTagNode(
 
   if (existing) {
     tagNodeCache.set(cacheKey, existing.id);
-    return existing.id;
+    return adoptScopedTag(db, existing.id, scope);
   }
 
   // 创建普通节点（不直接标记 is_tag，由 promoteFrequentTags 按阈值判断）
@@ -101,6 +175,11 @@ async function createTagNode(
 
   const nodeId = result.created_nodes?.[0]?.id;
   if (nodeId) {
+    if (scope) {
+      if (!scopedTags.has(db)) scopedTags.set(db, new Map());
+      scopedTags.get(db)!.set(nodeId, { scopes: new Set(), adopted: false });
+      scope.track(nodeId);
+    }
     updateNode(db, nodeId, { is_tag: 1 });
     tagNodeCache.set(cacheKey, nodeId);
     return nodeId;
@@ -158,16 +237,19 @@ export async function promotePropertyValues(
   source: string,
   systemProperties: string[],
   created?: string,
+  scope?: TagNodeScope,
 ): Promise<void> {
   if (nodeIds.length === 0) return;
 
   const firstNodeId = nodeIds[0];
 
   for (const [key, value] of Object.entries(properties)) {
+    if (scope?.isStopped()) return;
     if (!shouldPromotePropertyValue(key, value, systemProperties)) continue;
 
     try {
-      const tagNodeId = await getOrCreateTagNode(db, value, source, created);
+      const tagNodeId = await getOrCreateTagNode(db, value, source, created, scope);
+      if (scope?.isStopped()) return;
       if (tagNodeId === firstNodeId) continue;
       if (linkExists(db, firstNodeId, tagNodeId)) continue;
 

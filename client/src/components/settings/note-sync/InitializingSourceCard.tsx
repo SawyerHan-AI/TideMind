@@ -9,11 +9,10 @@ import {
   Trash2,
   XCircle,
 } from 'lucide-react'
-import type { NoteSource } from './types'
+import { noteSourceInitPhases, type NoteSource } from './types'
 import type { NoteSourceInitSnapshot } from '../../../lib/api-contract'
 import { useInitSession } from './useInitSession'
 
-const PHASE_KEYS = ['scan', 'preprocess', 'digest', 'explicitLinks', 'annotate', 'landing', 'linkEval', 'keystone', 'emergence'] as const
 
 export function InitializingSourceCard({
   source,
@@ -22,6 +21,7 @@ export function InitializingSourceCard({
   source: NoteSource
   onRefetch: () => void
 }) {
+  const phases = noteSourceInitPhases(source.tool_type)
   const { t } = useTranslation('settings')
   const [totalFiles, setTotalFiles] = useState<number | null>(null)
   const [syncedFiles, setSyncedFiles] = useState<number>(0)
@@ -91,7 +91,7 @@ export function InitializingSourceCard({
           <span className="text-[10px] text-indigo-400">{t('noteSync.init.inProgress')}</span>
         </div>
         <div className="text-xs text-gray-400">
-          Phase {snapshot.progress.phase}/8: {snapshot.progress.phaseName}
+          {snapshot.progress.phase + 1}/{phases.length} · {t(`noteSync.init.phase.${phases[snapshot.progress.phase]}`, snapshot.progress.phaseName)}
         </div>
         <div className="w-full bg-white/[0.06] rounded-full h-2">
           <div
@@ -103,7 +103,7 @@ export function InitializingSourceCard({
           {snapshot.progress.current} / {snapshot.progress.total}
         </div>
         <div className="flex gap-0.5">
-          {PHASE_KEYS.map((key, i) => (
+          {phases.map((key, i) => (
             <div
               key={i}
               className={`h-1 flex-1 rounded-full transition-colors ${

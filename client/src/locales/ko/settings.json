@@ -509,6 +509,7 @@
       "reportNodes": "노드",
       "reportLinks": "링크",
       "reportCrystals": "결정",
+      "offlineFiles": "로컬 다운로드 대기 중",
       "reportFiles": "파일",
       "reportDuration": "소요 시간",
       "reportCost": "비용",

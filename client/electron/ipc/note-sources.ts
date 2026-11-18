@@ -5,7 +5,7 @@ import path from 'node:path'
 import { getClientDb } from '../db.js'
 import {
   listNoteSources, getNoteSource, createNoteSource, updateNoteSource,
-  archiveNoteSource, unarchiveNoteSource, deleteNoteSource,
+  archiveNoteSource, unarchiveNoteSource,
   markInitialized, getNoteSourceStats,
 } from '@server/integrations/shared/note-sources.js'
 import { getDb } from '@server/db/connection.js'
@@ -26,6 +26,14 @@ import {
 import { mainT } from '../i18n.js'
 
 const log = createLogger('note-sources-ipc')
+
+/** Read the current row after loading the runtime: archive or path changes may have won meanwhile. */
+async function startConfiguredObsidianSource(id: string, initializing = false): Promise<void> {
+  const { startObsidianSource } = await import('@server/integrations/obsidian/index.js')
+  const source = getNoteSource(getClientDb(), id)
+  if (!source || source.archived || (!source.initialized && !initializing)) return
+  await startObsidianSource(getDb(), id, source.path, source.poll_interval)
+}
 
 function isTerminalStatus(status: InitSessionSnapshot['status']): boolean {
   return status === 'done' || status === 'aborted' || status === 'error'
@@ -108,7 +116,7 @@ export function registerNoteSourceHandlers(): void {
     return createNoteSource(getClientDb(), parsed.data)
   })
 
-  ipcMain.handle('note-sources:update', (_e, id: unknown, updates: unknown) => {
+  ipcMain.handle('note-sources:update', async (_e, id: unknown, updates: unknown) => {
     const parsedId = parseNoteSourceId(id)
     if (!parsedId.ok) return parsedId.error
 
@@ -118,16 +126,25 @@ export function registerNoteSourceHandlers(): void {
     // path 字段需要按 toolType 走白名单：notion/apple-notes 跳过，logseq/obsidian
     // 限制在 homedir / /Volumes / /mnt / /media。create handler 内置了同样的检查，
     // 但 update 时只能在这里查到既存 source 的 toolType 后再做。
+    const existing = getNoteSource(getClientDb(), parsedId.data)
+    if (!existing) return { success: false, error: 'invalid_arguments', details: ['source not found'] }
     const updates2 = { ...parsedUpdates.data }
     if (updates2.path !== undefined) {
-      const existing = getNoteSource(getClientDb(), parsedId.data)
-      if (!existing) return { success: false, error: 'invalid_arguments', details: ['source not found'] }
       const checkedPath = parseNoteSourcePath(existing.tool_type as 'logseq' | 'obsidian' | 'apple-notes' | 'notion', updates2.path)
       if (!checkedPath.ok) return checkedPath.error
       updates2.path = checkedPath.data
+      if (existing.tool_type === 'obsidian' && updates2.path !== existing.path
+        && initSessionManager.getActiveSourceId() === existing.id) {
+        return { success: false, error: mainT('noteSource.anotherInitializing') }
+      }
     }
 
     updateNoteSource(getClientDb(), parsedId.data, updates2)
+    if (existing.tool_type === 'obsidian' && existing.initialized && !existing.archived
+      && ((updates2.path !== undefined && updates2.path !== existing.path)
+        || (updates2.pollInterval !== undefined && updates2.pollInterval !== existing.poll_interval))) {
+      await startConfiguredObsidianSource(existing.id)
+    }
   })
 
   ipcMain.handle('note-sources:archive', async (_e, id: unknown) => {
@@ -138,6 +155,12 @@ export function registerNoteSourceHandlers(): void {
     if (!source) return
 
     archiveNoteSource(getClientDb(), parsedId.data)
+    if (source.tool_type === 'obsidian') {
+      const snapshot = initSessionManager.snapshot(source.id)
+      if (snapshot?.status === 'running' || snapshot?.status === 'aborting') {
+        await initSessionManager.abort(source.id, 'user')
+      }
+    }
 
     // 停止该笔记源的监听
     try {
@@ -147,7 +170,7 @@ export function registerNoteSourceHandlers(): void {
         void stopLogseqSource(parsedId.data)
       } else if (source.tool_type === 'obsidian') {
         const { stopObsidianSource } = await import('@server/integrations/obsidian/index.js')
-        stopObsidianSource(parsedId.data)
+        if (getNoteSource(getClientDb(), source.id)?.archived) await stopObsidianSource(source.id)
       } else if (source.tool_type === 'apple-notes') {
         const { stopAppleNotesSource } = await import('@server/integrations/apple-notes/index.js')
         stopAppleNotesSource(parsedId.data)
@@ -173,8 +196,7 @@ export function registerNoteSourceHandlers(): void {
         const { startLogseqSource } = await import('@server/integrations/logseq/index.js')
         await startLogseqSource(getDb(), parsedId.data, source.path, source.poll_interval)
       } else if (source.tool_type === 'obsidian') {
-        const { startObsidianSource } = await import('@server/integrations/obsidian/index.js')
-        await startObsidianSource(getDb(), parsedId.data, source.path, source.poll_interval)
+        await startConfiguredObsidianSource(parsedId.data)
       } else if (source.tool_type === 'apple-notes') {
         const { startAppleNotesSource } = await import('@server/integrations/apple-notes/index.js')
         await startAppleNotesSource(getDb(), parsedId.data, source.path, source.poll_interval)
@@ -303,11 +325,17 @@ export function registerNoteSourceHandlers(): void {
     }
 
     try {
+      if (parsedToolType === 'obsidian' && !fs.lstatSync(resolved).isDirectory()) {
+        return { accessible: false, fileCount: 0, path: resolved }
+      }
       let count = 0
       // 排除规则与各自 walkMdFiles 保持一致（基于相对路径前缀匹配）
       // version-files 不排除：Phase 2.5 会单独处理它们
-      const excludePrefixes = parsedToolType === 'obsidian'
-        ? ['.obsidian', '.git', '.trash', 'node_modules']
+      const obsidianConfig = parsedToolType === 'obsidian'
+        ? await import('@server/integrations/obsidian/vault-config.js')
+        : null
+      const excludePrefixes = obsidianConfig
+        ? obsidianConfig.getExcludedDirs(resolved, obsidianConfig.readVaultConfig(resolved))
         : ['logseq/bak', 'logseq/.recycle', 'draws', 'whiteboards', 'assets', '.git', '.trash', 'node_modules']
 
       const isExcluded = (relPath: string) =>
@@ -330,6 +358,7 @@ export function registerNoteSourceHandlers(): void {
         try {
           entries = fs.readdirSync(dir, { withFileTypes: true })
         } catch {
+          if (depth === 0) throw new Error('Source directory is unreadable')
           return
         }
         for (const entry of entries) {
@@ -338,10 +367,10 @@ export function registerNoteSourceHandlers(): void {
           if (entry.isSymbolicLink()) continue
           if (entry.isDirectory()) {
             // 跳过隐藏目录（与 walkMdFiles 一致）
-            if (entry.name.startsWith('.')) continue
+            if (parsedToolType !== 'obsidian' && entry.name.startsWith('.')) continue
             const relPath = relDir ? `${relDir}/${entry.name}` : entry.name
             if (!isExcluded(relPath)) walk(path.join(dir, entry.name), relPath, depth + 1)
-          } else if (entry.isFile() && entry.name.endsWith('.md')) {
+          } else if (entry.isFile() && (entry.name.endsWith('.md') || (parsedToolType === 'obsidian' && entry.name.endsWith('.canvas')))) {
             count++
           }
         }
@@ -394,6 +423,8 @@ export function registerNoteSourceHandlers(): void {
     const source = getNoteSource(getClientDb(), parsedId.data)
     if (!source) return { success: false, error: mainT('noteSource.notFound') }
 
+    if (source.tool_type === 'obsidian' && source.archived) return { success: false, error: mainT('noteSource.stopped') }
+
     // 全局互斥
     const activeId = initSessionManager.getActiveSourceId()
     if (activeId && activeId !== parsedId.data) {
@@ -408,7 +439,23 @@ export function registerNoteSourceHandlers(): void {
         return await runInitialization(getDb(), ctx, source.path) as unknown as Record<string, unknown>
       } else if (toolType === 'obsidian') {
         const { runInitialization } = await import('@server/integrations/obsidian/initialization.js')
-        return await runInitialization(getDb(), ctx, source.path) as unknown as Record<string, unknown>
+        const { stopObsidianSource } = await import('@server/integrations/obsidian/index.js')
+        await stopObsidianSource(source.id)
+        ctx.signal.throwIfAborted()
+        const report = await runInitialization(getDb(), ctx, source.path)
+        ctx.signal.throwIfAborted()
+        const cancelHandoff = () => { void stopObsidianSource(source.id) }
+        ctx.signal.addEventListener('abort', cancelHandoff, { once: true })
+        try {
+          await startConfiguredObsidianSource(source.id, true)
+          ctx.signal.throwIfAborted()
+          const current = getNoteSource(getClientDb(), source.id)
+          if (!current || current.archived || current.path !== source.path) throw new Error(mainT('noteSource.stopped'))
+          markInitialized(getClientDb(), source.id)
+        } finally {
+          ctx.signal.removeEventListener('abort', cancelHandoff)
+        }
+        return report as unknown as Record<string, unknown>
       } else if (toolType === 'apple-notes') {
         const { runInitialization } = await import('@server/integrations/apple-notes/initialization.js')
         return await runInitialization(getDb(), ctx, source.path) as unknown as Record<string, unknown>
@@ -431,7 +478,7 @@ export function registerNoteSourceHandlers(): void {
 
     const finalSnap = await waitForTerminal(parsedId.data)
     if (finalSnap.status === 'done') {
-      markInitialized(getClientDb(), parsedId.data)
+      if (toolType !== 'obsidian') markInitialized(getClientDb(), parsedId.data)
       return { success: true, data: finalSnap.report }
     }
     if (finalSnap.status === 'aborted') {
@@ -480,6 +527,10 @@ export function registerNoteSourceHandlers(): void {
     }
 
     try {
+      if (source.tool_type === 'obsidian') {
+        const { stopObsidianSource } = await import('@server/integrations/obsidian/index.js')
+        await stopObsidianSource(source.id)
+      }
       const { rollbackNoteSource } = await import('@server/integrations/shared/rollback.js')
       rollbackNoteSource(getDb(), parsedId.data, source.tool_type)
       // 清空 SessionManager 中残留的终态会话

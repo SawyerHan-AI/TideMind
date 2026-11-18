@@ -82,9 +82,9 @@ export function classifyFiles(
       continue;
     }
 
-    // --- 6. metadata_only：只有 frontmatter，正文 < 20 字符 ---
+    // --- 6. metadata_only：只有 frontmatter，没有正文 ---
     const bodyText = extractBody(content);
-    if (hasFrontmatter(content) && bodyText.length < 20) {
+    if (hasFrontmatter(content) && bodyText.trim().length === 0) {
       pushResult(result, byCategory, { relPath, absPath, category: 'metadata_only', inDegree: 0 });
       continue;
     }

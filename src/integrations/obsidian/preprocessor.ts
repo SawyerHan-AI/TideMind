@@ -17,7 +17,7 @@ import {
   isICloudStubName,
   isDataless,
   safeStatSync,
-  safeReadTextFileSync,
+  safeReadVaultTextFileSync,
 } from '../../utils/safe-fs.js';
 import type { PreprocessedPage, PageMetadata } from './types.js';
 import {
@@ -57,8 +57,12 @@ export function preprocessFile(
   filePath: string,
   vaultRoot: string,
   _fileIndex?: Map<string, string>,
+  snapshotContent?: string,
 ): ObsidianPreprocessedPage | null {
-  const res = safeReadTextFileSync(filePath);
+  if (!isSafeVaultFile(filePath, vaultRoot)) return null;
+  const res = snapshotContent === undefined
+    ? safeReadVaultTextFileSync(filePath, vaultRoot)
+    : { ok: true as const, content: snapshotContent };
   if (!res.ok) {
     if (res.reason === 'error') log.warn('文件读取失败: %s', filePath);
     return null;
@@ -67,7 +71,6 @@ export function preprocessFile(
   // 否则 CRLF 文件会错乱（找不到 frontmatter 结束、body 残留 \r）
   const rawContent = res.content.replace(/\r\n/g, '\n');
 
-  if (rawContent.trim().length < 10) return null;
 
   const relPath = path.relative(vaultRoot, filePath).replace(/\\/g, '/');
   const metadata: PageMetadata = {
@@ -137,7 +140,6 @@ export function preprocessFile(
   content = handleFootnotes(content);
 
   // 最终检查：内容过短则丢弃
-  if (content.trim().length < 5) return null;
 
   // 推断标题
   const title = inferTitle(metadata);
@@ -167,7 +169,7 @@ export function buildFileIndex(
     index.set(normalizedName, relPath);
 
     // 从 frontmatter 读取 aliases
-    const readRes = safeReadTextFileSync(filePath);
+    const readRes = safeReadVaultTextFileSync(filePath, vaultRoot);
     if (readRes.ok) {
       const aliases = extractAliasesQuick(readRes.content);
       for (const alias of aliases) {
@@ -201,6 +203,7 @@ export function walkMdFiles(
   vaultRoot: string,
   excludedDirs: string[],
   onDatalessSkip?: (filePath: string) => void,
+  onScanError?: (filePath: string) => void,
 ): string[] {
   const results: string[] = [];
   const visited = new Set<string>();
@@ -208,9 +211,16 @@ export function walkMdFiles(
   function walk(dir: string, relDir: string): void {
     // realpath 规范化 + visited 兜底防环
     let real: string;
+    let directory: fs.Stats;
     try {
+      directory = fs.lstatSync(dir);
+      if (!directory.isDirectory() || directory.isSymbolicLink()) {
+        onScanError?.(dir);
+        return;
+      }
       real = fs.realpathSync(dir);
     } catch {
+      onScanError?.(dir);
       return;
     }
     if (visited.has(real)) return;
@@ -220,6 +230,7 @@ export function walkMdFiles(
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {
+      onScanError?.(dir);
       return;
     }
 
@@ -236,21 +247,49 @@ export function walkMdFiles(
       }
 
       if (!entry.isFile()) continue;
-      if (isICloudStubName(entry.name)) continue;
+      if (isICloudStubName(entry.name)) {
+        const logicalName = entry.name.slice(1, -'.icloud'.length);
+        if (logicalName.endsWith('.md') || logicalName.endsWith('.canvas')) {
+          onDatalessSkip?.(path.join(dir, logicalName));
+        }
+        continue;
+      }
       if (!(entry.name.endsWith('.md') || entry.name.endsWith('.canvas'))) continue;
 
       const full = path.join(dir, entry.name);
       const st = safeStatSync(full);
-      if (st && isDataless(st)) {
+      if (!st) { onScanError?.(full); continue; }
+      if (isDataless(st)) {
         onDatalessSkip?.(full);
         continue;
       }
       results.push(full);
     }
+    // A directory replaced while enumerating is an incomplete scan, never a deletion oracle.
+    try {
+      const after = fs.lstatSync(dir);
+      if (!after.isDirectory() || after.isSymbolicLink() || after.dev !== directory.dev || after.ino !== directory.ino) onScanError?.(dir);
+    } catch { onScanError?.(dir); }
   }
 
   walk(vaultRoot, '');
   return results;
+}
+
+/** Reject watcher paths that cross a symlink or escape the configured vault. */
+export function isSafeVaultFile(filePath: string, vaultRoot: string): boolean {
+  const root = path.resolve(vaultRoot);
+  const relative = path.relative(root, path.resolve(filePath));
+  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return false;
+  let current = root;
+  try {
+    if (!fs.lstatSync(root).isDirectory() || fs.lstatSync(root).isSymbolicLink()) return false;
+    for (const part of relative.split(path.sep)) {
+      current = path.join(current, part);
+      if (fs.lstatSync(current).isSymbolicLink()) return false;
+    }
+    return fs.lstatSync(current).isFile();
+  } catch { return false; }
 }
 
 /**

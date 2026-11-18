@@ -165,3 +165,12 @@ describe('getExcludedDirs', () => {
     expect(dirs).toHaveLength(4);
   });
 });
+
+it('不读取被替换成symlink的.obsidian配置目录', () => {
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-config-outside-'));
+  try {
+    fs.writeFileSync(path.join(outside, 'app.json'), JSON.stringify({ attachmentFolderPath: 'private' }));
+    fs.symlinkSync(outside, path.join(tmpDir, '.obsidian'));
+    expect(readVaultConfig(tmpDir).attachmentFolder).toBe('');
+  } finally { fs.rmSync(outside, { recursive: true, force: true }); }
+});

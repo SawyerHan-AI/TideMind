@@ -174,7 +174,10 @@ export async function startAllNoteSources(db: Database.Database): Promise<void> 
         await startLogseqSource(db, source.id, source.path, source.poll_interval);
       } else if (source.tool_type === 'obsidian') {
         const { startObsidianSource } = await import('../obsidian/index.js');
-        await startObsidianSource(db, source.id, source.path, source.poll_interval);
+        // An earlier source's scan may have taken minutes while the user edited this one.
+        const current = getNoteSource(db, source.id);
+        if (!current?.initialized || current.archived) continue;
+        await startObsidianSource(db, current.id, current.path, current.poll_interval);
       } else if (source.tool_type === 'apple-notes') {
         const { startAppleNotesSource } = await import('../apple-notes/index.js');
         await startAppleNotesSource(db, source.id, source.path, source.poll_interval);

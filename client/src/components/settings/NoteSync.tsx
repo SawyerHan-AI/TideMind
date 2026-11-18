@@ -145,6 +145,7 @@ function AddNoteSourceWizard({
           {/* Step 3: 初始化 */}
           {step === 2 && (
             <AddNoteSourceInitStep
+              toolType={toolType}
               sourceId={createdSourceId}
               initPreview={initPreview}
               onSessionStarted={markInitStarted}
@@ -157,7 +158,7 @@ function AddNoteSourceWizard({
 
           {/* Step 4: 完成 */}
           {step === 3 && (
-            <AddNoteSourceCompleteStep initReport={initReport} />
+            <AddNoteSourceCompleteStep toolType={toolType} initReport={initReport} />
           )}
         </div>
 

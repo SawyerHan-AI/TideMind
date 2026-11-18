@@ -1,3 +1,6 @@
+import { readVaultConfig } from './vault-config.js';
+import { classifyFiles } from './classifier.js';
+import { safeReadVaultTextFileSync } from '../../utils/safe-fs.js';
 // ============================================================
 // Obsidian 时间推断（五层策略链）
 //
@@ -14,7 +17,7 @@
 // ============================================================
 
 import fs from 'node:fs';
-import type { ClassifiedFile, ObsidianVaultConfig } from './types.js';
+import type { ClassifiedFile, ObsidianVaultConfig, ObsidianFileCategory } from './types.js';
 import { DATE_FIELD_PRIORITY } from './types.js';
 import { createLogger } from '../../utils/logger.js';
 
@@ -252,4 +255,23 @@ export function inferPageDates(
   log.info(`各层覆盖: ${JSON.stringify(sourceCounts)}`);
 
   return result;
+}
+
+/** 分类和日期使用同一份已读取的原文，避免增量与首次导入分段策略分叉。 */
+export function inferObsidianSnapshotInfo(
+  filePath: string,
+  vaultRoot: string,
+  rawContent: string,
+): { category: ObsidianFileCategory; created?: string } {
+  const config = readVaultConfig(vaultRoot);
+  const files = classifyFiles([filePath], vaultRoot, config, () => rawContent);
+  const file = files[0];
+  const date = file ? inferPageDates(files, () => rawContent, config).get(file.relPath)?.date : undefined;
+  return { category: file?.category ?? 'regular', created: date ? `${date}T00:00:00.000Z` : undefined };
+}
+
+/** 独立调用兼容入口；持有正文快照的管线应直接调用 inferObsidianSnapshotInfo。 */
+export function inferObsidianFileCreated(filePath: string, vaultRoot: string): string | undefined {
+  const read = safeReadVaultTextFileSync(filePath, vaultRoot);
+  return read.ok ? inferObsidianSnapshotInfo(filePath, vaultRoot, read.content).created : undefined;
 }

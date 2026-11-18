@@ -1,21 +1,9 @@
 import { AlertCircle, CheckCircle, FileText, Loader2, Zap } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import type { InitPreview, InitReport } from './types'
+import { noteSourceInitPhases, type InitPreview, type InitReport } from './types'
 import type { NoteSourceInitSnapshot } from '../../../lib/api-contract'
 import { useInitSession } from './useInitSession'
-
-const PHASE_NAMES = [
-  'scan',
-  'preprocess',
-  'import',
-  'links',
-  'annotate',
-  'landing',
-  'evaluate',
-  'keystone',
-  'emerge',
-] as const
 
 /**
  * Onboarding 第 3 步：展示预览 → 启动 → 显示进度。
@@ -28,9 +16,11 @@ const PHASE_NAMES = [
 export function AddNoteSourceInitStep({
   sourceId,
   initPreview,
+  toolType,
   onSessionStarted,
   onTerminal,
 }: {
+  toolType: string
   sourceId: string | null
   initPreview: InitPreview | null
   /** 会话首次进入 running 时调用一次。父组件用于标记 cleanupBeforeClose 行为分支。 */
@@ -53,6 +43,7 @@ export function AddNoteSourceInitStep({
     }
   }, [uiState, onSessionStarted])
 
+  const phases = noteSourceInitPhases(toolType)
   const showPreview = uiState === 'idle' || uiState === 'loading'
   const showProgress = uiState === 'running' || uiState === 'aborting'
   const showError = uiState === 'error'
@@ -86,12 +77,12 @@ export function AddNoteSourceInitStep({
               <div className="text-lg text-white font-medium">~{initPreview.estimatedNodes}</div>
             </div>
           </div>
-          <div className="bg-white/[0.04] rounded-lg p-3 text-xs">
+          {toolType !== 'obsidian' && <div className="bg-white/[0.04] rounded-lg p-3 text-xs">
             <div className="text-gray-500 mb-2">{t('noteSync.wizard.estimatedCost')}</div>
             <div className="flex justify-between text-white font-medium">
               <span>{t('noteSync.wizard.total')}</span><span>${initPreview.estimatedCost?.total ?? 0}</span>
             </div>
-          </div>
+          </div>}
           <button
             onClick={start}
             disabled={!sourceId}
@@ -111,7 +102,7 @@ export function AddNoteSourceInitStep({
             {t('noteSync.wizard.initInProgress')}
           </h3>
           <div className="text-xs text-gray-400">
-            Phase {snapshot.progress.phase}/8: {snapshot.progress.phaseName}
+            {snapshot.progress.phase + 1}/{phases.length} · {t(`noteSync.init.phase.${phases[snapshot.progress.phase]}`, snapshot.progress.phaseName)}
           </div>
           <div className="w-full bg-white/[0.06] rounded-full h-2">
             <div
@@ -123,7 +114,7 @@ export function AddNoteSourceInitStep({
             {snapshot.progress.current} / {snapshot.progress.total}
           </div>
           <div className="flex gap-0.5">
-            {PHASE_NAMES.map((pname, i) => (
+            {phases.map((pname, i) => (
               <div
                 key={i}
                 className={`h-1 flex-1 rounded-full transition-colors ${
@@ -131,7 +122,7 @@ export function AddNoteSourceInitStep({
                   : i === snapshot.progress.phase ? 'bg-indigo-400'
                   : 'bg-white/[0.06]'
                 }`}
-                title={`Phase ${i}: ${pname}`}
+                title={t(`noteSync.init.phase.${pname}`)}
               />
             ))}
           </div>
@@ -171,7 +162,9 @@ export function AddNoteSourceInitStep({
 
 export function AddNoteSourceCompleteStep({
   initReport,
+  toolType,
 }: {
+  toolType: string
   initReport: InitReport | null
 }) {
   const { t } = useTranslation('settings')
@@ -187,10 +180,11 @@ export function AddNoteSourceCompleteStep({
           {[
             [t('noteSync.wizard.reportNodes'), initReport.nodesCreated],
             [t('noteSync.wizard.reportLinks'), initReport.linksCreated],
-            [t('noteSync.wizard.reportCrystals'), initReport.crystalsCreated],
+            ...(toolType === 'obsidian' ? [] : [[t('noteSync.wizard.reportCrystals'), initReport.crystalsCreated]]),
             [t('noteSync.wizard.reportFiles'), initReport.totalFiles],
+            ...(initReport.offlineFiles ? [[t('noteSync.wizard.offlineFiles'), initReport.offlineFiles]] : []),
             [t('noteSync.wizard.reportDuration'), `${Math.round((initReport.durationMs ?? 0) / 1000)}s`],
-            [t('noteSync.wizard.reportCost'), `$${initReport.totalCost ?? 0}`],
+            ...(toolType === 'obsidian' ? [] : [[t('noteSync.wizard.reportCost'), `$${initReport.totalCost ?? 0}`]]),
           ].map(([label, value]) => (
             <div key={label as string} className="bg-white/[0.04] rounded-lg p-2">
               <div className="text-gray-500">{label}</div>

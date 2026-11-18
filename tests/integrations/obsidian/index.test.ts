@@ -66,6 +66,7 @@ vi.mock('../../../src/graph/dedup.js', () => ({
 
 vi.mock('../../../src/db/vectors.js', () => ({
   insertVector: vi.fn(),
+  deleteVector: vi.fn(),
 }));
 
 vi.mock('../../../src/stream/writer.js', () => ({
@@ -344,4 +345,140 @@ describe('orphan node archiving', () => {
     const result = stmt.run(orphanNodeIds[0]);
     expect(result.changes).toBe(0); // No rows changed
   });
+});
+
+describe('完整与不完整扫描删除仲裁', () => {
+  function seedFile(source: string, rel = 'deleted.md'): string {
+    const node = seedNode(db, { content: 'Imported file', source_tool: 'obsidian' });
+    setFileState(db, { file_path: rel, content_hash: 'old', mtime: 1, size: 10,
+      last_synced: new Date().toISOString(), node_ids: [node.id] }, source);
+    return node.id;
+  }
+  it('最后一篇笔记删除后，完整空扫描清理 state 并归档', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-empty-vault-'));
+    try {
+      const id = seedFile('empty');
+      await startObsidianSource(db, 'empty', root);
+      expect(getFileState(db, 'deleted.md', 'empty')).toBeNull();
+      expect(getNode(db, id)?.archived).toBe(1);
+    } finally { await stopObsidianSource('empty'); fs.rmSync(root, { recursive: true, force: true }); }
+  });
+  it('扫描失败不清理已导入记录', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-partial-vault-'));
+    const original = fs.readdirSync;
+    const spy = vi.spyOn(fs, 'readdirSync').mockImplementation(((dir: fs.PathLike, options: unknown) => {
+      if (String(dir) === root) throw new Error('EIO');
+      return original(dir, options as never);
+    }) as typeof fs.readdirSync);
+    try {
+      const id = seedFile('partial');
+      await startObsidianSource(db, 'partial', root);
+      expect(getFileState(db, 'deleted.md', 'partial')).toBeDefined();
+      expect(getNode(db, id)?.archived).toBe(0);
+    } finally { spy.mockRestore(); await stopObsidianSource('partial'); fs.rmSync(root, { recursive: true, force: true }); }
+  });
+  it('旧 iCloud stub 保留同步状态', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-stub-vault-'));
+    try {
+      const id = seedFile('stub', 'offline.md');
+      fs.writeFileSync(path.join(root, '.offline.md.icloud'), 'stub');
+      await startObsidianSource(db, 'stub', root);
+      expect(getFileState(db, 'offline.md', 'stub')).toBeDefined();
+      expect(getNode(db, id)?.archived).toBe(0);
+    } finally { await stopObsidianSource('stub'); fs.rmSync(root, { recursive: true, force: true }); }
+  });
+  it('相同配置重叠启动共用就绪 promise，只创建一组 watcher', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-start-vault-'));
+    const spy = vi.spyOn(fs, 'watch');
+    try {
+      const first = startObsidianSource(db, 'shared-start', root);
+      const second = startObsidianSource(db, 'shared-start', root);
+      expect(second).toBe(first);
+      await first;
+      await startObsidianSource(db, 'shared-start', root);
+      expect(spy).toHaveBeenCalledTimes(1);
+      await stopObsidianSource('shared-start');
+      await startObsidianSource(db, 'shared-start', root);
+      expect(spy).toHaveBeenCalledTimes(2);
+    } finally { spy.mockRestore(); await stopObsidianSource('shared-start'); fs.rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+it('真实 watcher 拒绝 symlink，停止等待在途任务，重启不会复活旧回调', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-real-watch-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-real-outside-'));
+  const queue = await import('../../../src/integrations/obsidian/queue.js');
+  let release!: (value: boolean) => void;
+  let cancelled: (() => boolean) | undefined;
+  const spy = vi.spyOn(queue, 'processFileChange').mockImplementation(async (_db, _file, _root, _source, isStopped) => {
+    cancelled = isStopped;
+    return new Promise<boolean>(resolve => { release = resolve; });
+  });
+  try {
+    await startObsidianSource(db, 'real-watch', root);
+    fs.writeFileSync(path.join(outside, 'secret.md'), 'outside');
+    fs.symlinkSync(path.join(outside, 'secret.md'), path.join(root, 'symlink.md'));
+    fs.writeFileSync(path.join(root, 'valid.md'), 'valid');
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1), { timeout: 5000 });
+    expect(spy.mock.calls[0][1]).toBe(path.join(root, 'valid.md'));
+    let drained = false;
+    const stopping = stopObsidianSource('real-watch').then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    expect(cancelled?.()).toBe(true);
+    const restarting = startObsidianSource(db, 'real-watch', root);
+    expect(cancelled?.()).toBe(true);
+    // Avoid processing the synthetic file during the next initial scan.
+    fs.unlinkSync(path.join(root, 'valid.md'));
+    release(false);
+    await stopping;
+    await restarting;
+    expect(cancelled?.()).toBe(true);
+  } finally {
+    release?.(false);
+    await stopObsidianSource('real-watch');
+    spy.mockRestore();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+}, 10000);
+
+it('未变更轮询只扫描文件元数据，不重读整库正文构建未使用的索引', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'eb-no-reread-'));
+  const file = path.join(root, 'existing.md');
+  fs.writeFileSync(file, 'Existing imported note.');
+  const stat = fs.statSync(file);
+  setFileState(db, { file_path: 'existing.md', content_hash: 'existing', mtime: Math.floor(stat.mtimeMs),
+    size: stat.size, node_ids: [], last_synced: new Date().toISOString() }, 'no-reread');
+  const spy = vi.spyOn(fs, 'readFileSync');
+  try {
+    await startObsidianSource(db, 'no-reread', root);
+    expect(spy.mock.calls.filter(([target]) => String(target) === file)).toHaveLength(0);
+  } finally { spy.mockRestore(); await stopObsidianSource('no-reread'); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+it('运行中库根被空目录替换时不归档原图，恢复同一目录后才承认真删除', async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'obsidian-root-change-'));
+  const vault = path.join(temporary, 'vault');
+  const moved = path.join(temporary, 'offline');
+  fs.mkdirSync(vault);
+  const source = 'stable-root';
+  const { triggerFullRescan } = await import('../../../src/integrations/obsidian/index.js');
+  try {
+    fs.writeFileSync(path.join(vault, 'Root.md'), 'A synthetic article anchored to the original root directory.');
+    await startObsidianSource(db, source, vault, 300);
+    const id = getFileState(db, 'Root.md', source)!.node_ids[0];
+    fs.renameSync(vault, moved);
+    fs.mkdirSync(vault);
+    await triggerFullRescan(db, source, vault);
+    expect(getNode(db, id)?.archived).toBe(0);
+    fs.rmdirSync(vault);
+    fs.renameSync(moved, vault);
+    fs.unlinkSync(path.join(vault, 'Root.md'));
+    await triggerFullRescan(db, source, vault);
+    expect(getNode(db, id)?.archived).toBe(1);
+  } finally {
+    await stopObsidianSource(source);
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
 });

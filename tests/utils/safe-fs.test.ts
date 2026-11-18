@@ -19,6 +19,7 @@ import {
   isDataless,
   safeStatSync,
   safeReadTextFileSync,
+  safeReadVaultTextFileSync,
   walkFilesFiltered,
   DatalessSkipCounter,
 } from '../../src/utils/safe-fs.js';
@@ -221,5 +222,76 @@ describe('DatalessSkipCounter', () => {
     c.reset();
     expect(c.total).toBe(0);
     expect(c.sample).toBeNull();
+  });
+});
+
+describe('vault-bound descriptor reads', () => {
+  function fixture() {
+    const root = path.join(tmpDir, 'vault');
+    const outside = path.join(tmpDir, 'outside');
+    fs.mkdirSync(path.join(root, 'notes'), { recursive: true });
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(root, 'notes/a.md'), 'inside');
+    fs.writeFileSync(path.join(outside, 'a.md'), 'outside secret');
+    return { root, outside, file: path.join(root, 'notes/a.md') };
+  }
+  it('allows normal files and macOS ancestor aliases, rejects root/file symlinks', () => {
+    const { root, outside, file } = fixture();
+    expect(safeReadVaultTextFileSync(file, root)).toEqual({ ok: true, content: 'inside' });
+    fs.symlinkSync(root, path.join(tmpDir, 'vault-link'));
+    expect(safeReadVaultTextFileSync(path.join(tmpDir, 'vault-link/notes/a.md'), path.join(tmpDir, 'vault-link')).ok).toBe(false);
+    fs.symlinkSync(outside, path.join(root, 'linked'));
+    expect(safeReadVaultTextFileSync(path.join(root, 'linked/a.md'), root).ok).toBe(false);
+    fs.symlinkSync(path.join(outside, 'a.md'), path.join(root, 'file-link.md'));
+    expect(safeReadVaultTextFileSync(path.join(root, 'file-link.md'), root).ok).toBe(false);
+    if (process.platform === 'darwin') {
+      const aliasRoot = root.replace(/^\/private\/var\//, '/var/');
+      expect(safeReadVaultTextFileSync(path.join(aliasRoot, 'notes/a.md'), aliasRoot)).toEqual({ ok: true, content: 'inside' });
+    }
+  });
+  for (const swapped of ['leaf', 'directory', 'root'] as const) {
+    it(`rejects a real ${swapped} replacement between validation and open`, () => {
+      const { root, outside, file } = fixture();
+      const originalOpen = fs.openSync;
+      const read = vi.spyOn(fs, 'readFileSync');
+      const open = vi.spyOn(fs, 'openSync').mockImplementation(((target: fs.PathLike, flags: number, mode?: number) => {
+        open.mockRestore();
+        const victim = swapped === 'leaf' ? file : swapped === 'directory' ? path.join(root, 'notes') : root;
+        if (swapped === 'root') {
+          fs.mkdirSync(path.join(outside, 'notes'));
+          fs.writeFileSync(path.join(outside, 'notes/a.md'), 'outside secret');
+        }
+        const replacement = swapped === 'leaf' ? path.join(outside, 'a.md') : outside;
+        fs.renameSync(victim, `${victim}-saved`);
+        fs.symlinkSync(replacement, victim);
+        return originalOpen(target, flags, mode);
+      }) as typeof fs.openSync);
+      expect(safeReadVaultTextFileSync(file, root).ok).toBe(false);
+      expect(read).not.toHaveBeenCalled();
+    });
+  }
+  it('pins the validated descriptor if the path changes immediately before read', () => {
+    const { root, outside, file } = fixture();
+    const originalRead = fs.readFileSync;
+    const read = vi.spyOn(fs, 'readFileSync').mockImplementation(((target: fs.PathOrFileDescriptor, options: unknown) => {
+      read.mockRestore();
+      expect(typeof target).toBe('number');
+      fs.renameSync(path.join(root, 'notes'), path.join(root, 'old-notes'));
+      fs.symlinkSync(outside, path.join(root, 'notes'));
+      return originalRead(target, options as never);
+    }) as typeof fs.readFileSync);
+    expect(safeReadVaultTextFileSync(file, root)).toEqual({ ok: true, content: 'inside' });
+  });
+  it('checks the opened inode for dataless state before reading', () => {
+    const { root, file } = fixture();
+    const original = fs.fstatSync;
+    vi.spyOn(fs, 'fstatSync').mockImplementation(((fd: number) => {
+      const stat = original(fd);
+      Object.defineProperty(stat, 'blocks', { value: 0 });
+      return stat;
+    }) as typeof fs.fstatSync);
+    const read = vi.spyOn(fs, 'readFileSync');
+    expect(safeReadVaultTextFileSync(file, root)).toEqual({ ok: false, reason: 'dataless' });
+    expect(read).not.toHaveBeenCalled();
   });
 });
