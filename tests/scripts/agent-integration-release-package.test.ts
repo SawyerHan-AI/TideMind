@@ -2,6 +2,8 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { transformSync } from 'esbuild'
+import { rollup } from 'rollup'
 import { AGENT_INTEGRATION_RELEASE_MANIFEST } from '../../client/electron/agent-integration/release-manifest'
 
 // @ts-expect-error local plain-ESM release helper has no declaration file
@@ -43,6 +45,38 @@ describe('source release contract matches the actual runtime manifest', () => {
     // A packaged input retaining a source-style import must not read this checkout's Catalog.
     expect(() => inspectPackagedAgentIntegrationReleaseManifest(sourceManifest, sourceContract))
       .toThrow(/P0_COMPONENTS/)
+  })
+
+  it('parses the real source through a bundler and accepts the observed Rollup parameter alias', async () => {
+    // Compile the real modules with the same TS-transform/Rollup stages as
+    // Electron's build. No generated module is evaluated.
+    const build = await rollup({ input: path.resolve('client/electron/agent-integration/release-manifest.ts'),
+      external: id => !id.startsWith('.') && !path.isAbsolute(id),
+      plugins: [{ name: 'test-typescript-source',
+        resolveId(id, importer) {
+          if (!id.startsWith('.') || !importer) return null
+          const candidate = path.resolve(path.dirname(importer), id)
+          return [candidate, candidate.replace(/\.js$/, '.ts'), candidate + '.ts'].find(file => fs.existsSync(file)) ?? null
+        },
+        load(id) { return id.endsWith('.ts') ? fs.readFileSync(id, 'utf8') : null },
+        transform(code, id) { return id.endsWith('.ts') ? transformSync(code, { loader: 'ts', target: 'esnext', format: 'esm' }).code : null },
+      }],
+    })
+    const generated = await build.generate({ format: 'esm' })
+    await build.close()
+    const emitted = generated.output.find(output => output.type === 'chunk')!.code
+    expect(parseSourceAgentIntegrationReleaseContract(emitted)).toEqual(sourceContract)
+    // This exact alias/property expansion occurs in the real Electron Rollup bundle.
+    const renamed = emitted.replace('function supportedComponent(componentKey,', 'function supportedComponent(componentKey2,')
+      .replace('return {\n    componentKey,\n    applicability: "supported"', 'return {\n    componentKey: componentKey2,\n    applicability: "supported"')
+    expect(renamed).not.toBe(emitted)
+    expect(renamed).toContain('componentKey: componentKey2')
+    expect(parseSourceAgentIntegrationReleaseContract(renamed)).toEqual(sourceContract)
+    for (const replacement of ['componentKey: unrelated', 'componentKey: deliveryMode',
+      'componentKey: componentKey2()', '[componentKey2]: componentKey2', '...componentKey2']) {
+      expect(() => parseSourceAgentIntegrationReleaseContract(renamed.replace('componentKey: componentKey2', replacement)))
+        .toThrow('unsupported Catalog supportedComponent projection')
+    }
   })
 
   it('preserves parity when the bundle renames the Catalog options parameter', () => {

@@ -146,9 +146,34 @@ function catalogComponentDeclarations(source) {
     .filter(declaration => ts.isIdentifier(declaration.name) && declaration.name.text === 'P0_COMPONENTS')
   if (declarations.length !== 1 || !declarations[0].initializer
     || !ts.isObjectLiteralExpression(declarations[0].initializer)) throw new Error('Catalog requires one literal P0_COMPONENTS declaration')
-  const supported = uniqueFunctionBody(source, 'function supportedComponent(', 'Catalog supportedComponent')
-  if (!/return\s*\{\s*componentKey,\s*applicability:\s*['"]supported['"],\s*deliveryMode,\s*artifactTypes,\s*mutationDomain,\s*risk,\s*reload,\s*actions,?\s*\}\s*;?\s*$/u.test(supported)) {
+  // Rollup renames colliding bindings (componentKey -> componentKey2) and
+  // expands shorthand into `componentKey: componentKey2`. Bind each returned
+  // field to its declared parameter, never to an arbitrary identifier/expression.
+  const supportedFunctions = parsed.statements.filter(statement => ts.isFunctionDeclaration(statement)
+    && statement.name?.text === 'supportedComponent')
+  const supported = supportedFunctions[0]
+  const fieldParameters = ['componentKey', 'deliveryMode', 'artifactTypes', 'mutationDomain', 'reload', 'risk']
+  const expectedFields = ['componentKey', 'applicability', 'deliveryMode', 'artifactTypes', 'mutationDomain', 'risk', 'reload', 'actions']
+  const returned = supported?.body?.statements.at(-1)
+  if (supportedFunctions.length !== 1 || supported.parameters.length !== fieldParameters.length
+    || supported.parameters.some(parameter => !ts.isIdentifier(parameter.name) || parameter.dotDotDotToken)
+    || new Set(supported.parameters.map(parameter => parameter.name.getText(parsed))).size !== fieldParameters.length
+    || !returned || !ts.isReturnStatement(returned) || !returned.expression || !ts.isObjectLiteralExpression(returned.expression)
+    || returned.expression.properties.length !== expectedFields.length) {
     throw new Error('unsupported Catalog supportedComponent projection')
+  }
+  const parameterNames = new Map(fieldParameters.map((field, index) => [field, supported.parameters[index].name.text]))
+  for (const [index, property] of returned.expression.properties.entries()) {
+    const field = expectedFields[index]
+    if (!(ts.isShorthandPropertyAssignment(property) || ts.isPropertyAssignment(property))
+      || !ts.isIdentifier(property.name) || property.name.text !== field) {
+      throw new Error('unsupported Catalog supportedComponent projection')
+    }
+    const value = ts.isShorthandPropertyAssignment(property) ? property.name : property.initializer
+    const valid = field === 'applicability'
+      ? ts.isStringLiteral(value) && value.text === 'supported'
+      : ts.isIdentifier(value) && value.text === (field === 'actions' ? 'actions' : parameterNames.get(field))
+    if (!valid) throw new Error('unsupported Catalog supportedComponent projection')
   }
   const factory = uniqueFunctionBody(source, 'function p0Components(', 'Catalog p0Components')
   const factories = parsed.statements.filter(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === 'p0Components')
