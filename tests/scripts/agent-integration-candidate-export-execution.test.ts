@@ -33,7 +33,9 @@ describe('signed candidate exporter execution boundary', () => {
     expect(mocked.inspect).toHaveBeenCalledWith('/frozen/Tide Mind.app', state.appVersion, state.sourceCommit, 'arm64')
     const env = mocked.execute.mock.calls[0][2].env
     expect(env.ELECTRON_RUN_AS_NODE).toBe('1')
-    for (const name of ['NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_NO_ASAR', 'DYLD_INSERT_LIBRARIES', 'LD_PRELOAD']) {
+    expect(env.ELECTRON_NO_ASAR).toBe('1')
+    expect(process.env.ELECTRON_NO_ASAR).toBe('injection')
+    for (const name of ['NODE_OPTIONS', 'NODE_PATH', 'DYLD_INSERT_LIBRARIES', 'LD_PRELOAD']) {
       expect(env).not.toHaveProperty(name)
     }
   })

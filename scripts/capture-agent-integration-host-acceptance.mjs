@@ -687,6 +687,11 @@ export function executeFrozenCandidateExporter(state, architecture, args) {
     !/^(?:NODE_|ELECTRON_|DYLD_|LD_|VSCODE_|BUN_)/iu.test(key)
   )))
   env.ELECTRON_RUN_AS_NODE = '1'
+  // Exporters hash physical distribution files. Electron's ASAR filesystem
+  // otherwise reports another app's app.asar as a virtual directory while
+  // readdir reports a file, defeating the unchanged physical-tree checks.
+  // This is a fixed launcher setting, never inherited from the caller.
+  env.ELECTRON_NO_ASAR = '1'
   verify()
   try {
     return execFileSync(path.join(appPath, 'Contents', 'MacOS', 'Tide Mind'), args, {
