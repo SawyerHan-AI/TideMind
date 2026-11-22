@@ -32,12 +32,7 @@
     "updateChannelDesc": "Beta livre les nouvelles fonctionnalités plus tôt mais peut être moins stable. Le changement prend effet à la prochaine vérification.",
     "updateChannelStable": "Stable",
     "updateChannelBeta": "Bêta",
-    "channelSwitchConfirm": "Passer à Stable installera la dernière version stable lors de la prochaine vérification (certaines fonctionnalités expérimentales seront annulées). Continuer ?",
-    "backgroundOrganization": {
-      "title": "Organisation des souvenirs sur cet appareil",
-      "description": "Activez-la sur un seul appareil pour éviter les idées automatiques en double. La synchronisation, l’importation, la recherche et les modèles à la demande restent disponibles. Les tâches en cours se terminent d’abord. Avant de changer d’appareil, désactivez ce réglage et quittez TideMind et ses connexions aux agents sur l’ancien appareil, puis activez-le sur le nouveau.",
-      "error": "Impossible d’enregistrer ce réglage. Réessayez."
-    }
+    "channelSwitchConfirm": "Passer à Stable installera la dernière version stable lors de la prochaine vérification (certaines fonctionnalités expérimentales seront annulées). Continuer ?"
   },
   "external": {
     "subtabs": {
@@ -692,7 +687,7 @@
       },
       "synapticConsolidate": {
         "name": "Consolidation synaptique",
-        "description": "Effet secondaire de la récupération — boost de chaleur (toujours) + reconsolidation (conditionnelle, évalue si la mémoire doit être mise à jour). Dual de la décroissance synaptique.",
+        "description": "Le boost de chaleur et la liaison des résultats ont lieu immédiatement lors de la récupération ; la reconsolidation profonde et la détection de conflits (évalue si la mémoire doit être mise à jour) sont mises en file et traitées par intervalle. Dual de la décroissance synaptique.",
         "maxContextNodes": "Nœuds de contexte max",
         "maxContextNodesTip": "Nœuds de contexte max pendant la reconsolidation.",
         "independenceBoost": "Boost d'indépendance",
@@ -703,7 +698,9 @@
         "conflictCrossMinOverlapTip": "Chevauchement min de mots-clés pour détection de conflit inter-nœuds.",
         "conflictHighConfidence": "Plafond confiance conflit",
         "conflictHighConfidenceTip": "Limite supérieure de confiance de conflit.",
-        "trigger": "Sur requête"
+        "trigger": "Planifié",
+        "interval": "Intervalle d'exécution",
+        "intervalTip": "Intervalle d'exécution (minutes). Chaque exécution traite un rappel en file."
       },
       "synapticDecay": {
         "name": "Décroissance synaptique",
@@ -752,12 +749,14 @@
       },
       "linkRevalidate": {
         "name": "Revalidation de liens",
-        "description": "Déclenché par le rappel : réévalue les liens existants sous un nouveau contexte. Basé sur la théorie de la reconsolidation de la mémoire.",
+        "description": "Le rappel met le travail en file et le traitement en arrière-plan l'exécute par intervalle : réévalue les liens existants sous un nouveau contexte. Basé sur la théorie de la reconsolidation de la mémoire.",
         "maxLinksPerRun": "Max liens par exécution",
-        "maxLinksPerRunTip": "Max liens à revalider par rappel.",
+        "maxLinksPerRunTip": "Max liens à revalider par rappel en file.",
         "minLinkAgeHours": "Âge min du lien",
         "minLinkAgeHoursTip": "Ne valide que les liens plus anciens que cela (heures).",
-        "trigger": "Déclenché par rappel"
+        "trigger": "Planifié",
+        "interval": "Intervalle d'exécution",
+        "intervalTip": "Intervalle d'exécution (minutes). Chaque exécution traite un rappel en file."
       },
       "keystone": {
         "name": "Promotion de nœud",
@@ -1017,151 +1016,6 @@
       "kimiMcpHint": "MCP + Hook d'injection de contexte écrits dans ~/.kimi-code/. Redémarrez la session kimi pour appliquer.",
       "kimiSkillHint": "Skill installé automatiquement dans ~/.kimi-code/skills/, chargé au démarrage de Kimi Code. Aucune copie manuelle nécessaire."
     },
-    "wizard": {
-      "nameAgent": "Name Agent",
-      "configCowork": "Configure Claude Cowork",
-      "configCursor": "Configure Cursor",
-      "configCodex": "Configure Codex",
-      "configWindsurf": "Configure Windsurf",
-      "configOpenClaw": "Configure OpenClaw",
-      "configGemini": "Configure Gemini CLI",
-      "configKimi": "Configurer Kimi Code",
-      "installPlugin": "Install Plugin",
-      "mcpConfig": "MCP Config",
-      "skillFile": "Skill File",
-      "verify": "Verify",
-      "selectToolHint": "Select a tool type to see configuration steps",
-      "comingSoon": "Coming Soon",
-      "other": "Manual MCP",
-      "pluginSupportHint": "Supports plugin installation with automatic MCP, Skill and Hooks configuration",
-      "agentName": "Agent Name",
-      "agentNamePlaceholder": "e.g. Work Cursor",
-      "agentNameHint": "Give this Agent a name to help manage multiple tools of the same type",
-      "creating": "Creating...",
-      "createAndContinue": "Create & Continue",
-      "generatingPlugin": "Generating plugin...",
-      "pluginGenerateFailed": "Plugin generation failed",
-      "generateFailed": "Generation failed",
-      "createFailed": "Échec de la création",
-      "completed": "Completed",
-      "manualStepsTitle": "Manual steps required:",
-      "prevStep": "Previous",
-      "nextStep": "Next",
-      "finish": "Done",
-      "installing": "Installing...",
-      "installed": "Installed",
-      "oneClickInstall": "One-click install to Claude Code",
-      "installSuccess": "Plugin installed successfully",
-      "installFailed": "Installation failed",
-      "manualInstallHint": "You can install manually with the command below:",
-      "cliNotDetected": "claude CLI not detected. Run the following command in terminal to install the plugin:",
-      "addConfigTo": "Add the following config to",
-      "addConfigGeneric": "Add the following MCP config to your AI tool's configuration file (usually a JSON file like mcp.json or config.json, refer to your tool's documentation for the exact location):",
-      "mcpConfigHint": "The config contains an EB_AGENT_ID environment variable to uniquely identify this Agent. If you already have other MCP configs, merge the tidemind section into the existing mcpServers.",
-      "copySkillTo": "Copy the following Skill content to",
-      "copySkillGeneric": "Copy the following guide to your AI tool's instruction config (such as rules files, system prompt, or AGENTS.md, depending on your tool):",
-      "loading": "Loading...",
-      "skillHint": "The Skill file tells AI tools how to use Tide Mind (when to call brain_prepare / brain_recall / brain_digest). After modifying the Skill, you need to re-copy it to the external tool.",
-      "baseFallbackHint": "Using generic Skill template. Replace the tool parameter and source.tool in the content with your actual tool name.",
-      "verifyDescription": "Agent created. Check if configuration is complete:",
-      "verifyAgentCreated": "Agent \"{{name}}\" created ({{id}})",
-      "verifyPluginGenerated": "{{tool}} plugin generated",
-      "verifyDesktopMcp": "Desktop MCP config written",
-      "verifyDesktopMcpHintNeeded": "Restart Claude Desktop to apply",
-      "verifyDesktopMcpHintDone": "Restart Claude Desktop to apply",
-      "verifyCursorMcp": "Cursor MCP config written",
-      "verifyCursorMcpHintOk": "Hot reload applies automatically",
-      "verifyCursorMcpHintFail": "Config write failed",
-      "verifyCodexMcp": "Codex MCP config + Hook written",
-      "verifyCodexMcpHintOk": "Restart session to apply",
-      "verifyCodexMcpHintFail": "Config write failed",
-      "verifyWindsurfMcp": "Windsurf MCP config written",
-      "verifyWindsurfMcpHintOk": "Full Windsurf restart required",
-      "verifyWindsurfMcpHintFail": "Config write failed",
-      "verifyOpenClawMcp": "OpenClaw MCP config + Hook written",
-      "verifyOpenClawMcpHintOk": "Restart OpenClaw to apply",
-      "verifyOpenClawMcpHintFail": "Config write failed",
-      "verifyGeminiMcp": "Gemini extension installed (MCP + Hook + commands)",
-      "verifyGeminiMcpHintOk": "Restart `gemini` to apply",
-      "verifyGeminiMcpHintFail": "`gemini extensions install` failed",
-      "verifyKimiMcp": "Config MCP + Hook de Kimi Code écrite",
-      "verifyKimiMcpHintOk": "Redémarrez la session pour appliquer",
-      "verifyKimiMcpHintFail": "Échec de l'écriture de la config",
-      "verifyMcpAdded": "MCP config added to tool",
-      "verifyMcpAddedHint": "Confirm you have pasted the JSON config from the previous step into the tool's MCP config file",
-      "verifySkillCopied": "Skill content copied to tool",
-      "verifySkillCopiedHint": "Confirm you have copied the Skill guide into the tool's instruction config",
-      "verifyToolRestarted": "Tool restarted to apply config",
-      "verifyFirstConnection": "First connection detected",
-      "verifyFirstConnectionHint": "Start a conversation in the external tool and invoke the brain tools",
-      "cowork": {
-        "skillFile": "Skill file (brain usage guide)",
-        "desktopMcpConfig": "Claude Desktop MCP config (brain_prepare / brain_recall / brain_digest)",
-        "skillDownloaded": "Skill file (generated to Downloads)",
-        "step1": "1. Restart Claude Desktop (to apply MCP config)",
-        "step2": "2. Open Claude Cowork > Customize > Skills > Upload a skill",
-        "step3": "3. Select the Skill .md file above to upload"
-      },
-      "cursor": {
-        "mcpConfig": "Cursor MCP config (brain_prepare / brain_recall / brain_digest)",
-        "skillDownloaded": "Skill .mdc rules file (generated to Downloads)",
-        "step1": "1. Copy the .mdc file above to the project's .cursor/rules/ directory",
-        "step2": "2. Open the project in Cursor, Agent mode can now use brain tools",
-        "mcpNote": "MCP config written automatically. Cursor hot reloads without restart."
-      },
-      "codex": {
-        "mcpConfig": "Codex MCP config (config.toml)",
-        "hookConfig": "SessionStart Hook (auto-load context)",
-        "agentsDownloaded": "AGENTS.md guide (generated to Downloads)",
-        "step1": "1. Append the AGENTS.md content above to project root or ~/.codex/AGENTS.md",
-        "step2": "2. Restart Codex session to apply config",
-        "mcpNote": "MCP config and SessionStart Hook written to ~/.codex/ automatically.",
-        "skillInjected": "Guide Skill injecté dans ~/.codex/skills/",
-        "autoReadyTitle": "Entièrement configuré — aucune étape manuelle nécessaire",
-        "autoReadyNote": "Codex chargera automatiquement le contexte et le guide Skill au prochain démarrage.",
-        "upgradeHint": "Codex {{version}} détecté — passez à 0.121+ pour une intégration transparente (sans copier AGENTS.md)."
-      },
-      "windsurf": {
-        "mcpConfig": "Windsurf MCP config (mcp_config.json)",
-        "rulesDownloaded": "Rules file (generated to Downloads)",
-        "step1": "1. Copy the .md file above to the project's .windsurf/rules/ directory",
-        "step2": "2. Fully quit and restart Windsurf (closing the window is not enough)",
-        "mcpNote": "MCP config written automatically, but Windsurf does not support hot reload."
-      },
-      "openclaw": {
-        "mcpConfig": "OpenClaw MCP config (openclaw.json)",
-        "hookConfig": "Bootstrap Hook (auto-load context)",
-        "skillDownloaded": "Skill directory (generated to Downloads)",
-        "step1": "1. Copy the Skill directory above to ~/.openclaw/skills/ or project skills/",
-        "step2": "2. Restart OpenClaw to apply config",
-        "mcpNote": "MCP config and Bootstrap Hook written to ~/.openclaw/ automatically."
-      },
-      "claudeCode": {
-        "mcpConfig": "MCP Server config (brain_prepare / brain_recall / brain_digest)",
-        "skillFile": "Skill file (brain usage guide)",
-        "hooks": "Hooks (SessionStart auto-load context, PreCompact auto-save memory)"
-      },
-      "gemini": {
-        "mcpConfig": "Gemini MCP config (brain_prepare / brain_recall / brain_digest)",
-        "hookConfig": "SessionStart Hook (auto-load context)",
-        "contextFile": "GEMINI.md context file (usage guide)",
-        "commands": "Slash commands: /brain-recall /brain-digest /brain-forget",
-        "autoReadyTitle": "Fully configured — no manual steps needed",
-        "autoReadyNote": "Gemini CLI will auto-load context and tools on its next session start.",
-        "upgradeTitle": "Gemini CLI version too old for hooks",
-        "upgradeHint": "Detected Gemini CLI {{version}} — upgrade to 0.26+ to enable auto-loaded user context via SessionStart hook.",
-        "upgradeNote": "MCP tools (brain_*) and slash commands work on older versions, but you'll need to invoke brain_prepare manually."
-      },
-      "kimi": {
-        "mcpConfig": "Config MCP de Kimi Code (mcp.json)",
-        "hookConfig": "Hook d'injection de contexte (chargement automatique du contexte)",
-        "skillInjected": "Guide Skill injecté dans ~/.kimi-code/skills/",
-        "autoReadyTitle": "Entièrement configuré — aucune étape manuelle nécessaire",
-        "autoReadyNote": "Kimi Code chargera automatiquement le contexte et le guide Skill au prochain démarrage.",
-        "cliMissingTitle": "Kimi Code CLI non détecté",
-        "cliMissingNote": "La configuration est prête. Installez Kimi Code CLI, puis démarrez une nouvelle session."
-      }
-    },
     "managed": {
       "memoryVerified": "Outils mémoire vérifiés",
       "fullyVerified": "Vérification complète",
@@ -1354,7 +1208,8 @@
         "processing": "Traitement",
         "needsAttention": "A besoin d'attention",
         "paused": "En pause",
-        "disconnected": "Déconnecté"
+        "disconnected": "Déconnecté",
+        "connected": "Connecté"
       },
       "reason": {
         "verified": "Les MCP Tools de base ont été vérifiés.",
@@ -1425,7 +1280,7 @@
         "lifecycle": "Hook"
       },
       "componentStatus": {
-        "verified": "Vérifié",
+        "verified": "Actif",
         "configured": "Configuré",
         "stale": "Vérification nécessaire",
         "needsSession": "Nouvelle séance nécessaire",
@@ -1433,7 +1288,8 @@
         "missing": "Manquant",
         "conflict": "Conflit",
         "unsupported": "Non pris en charge",
-        "unconnected": "Non connecté"
+        "unconnected": "Non connecté",
+        "needsAction": "Action requise"
       },
       "defaultProfile": "Profil par défaut",
       "installationCount": "Installations {{count}}",
@@ -1479,12 +1335,14 @@
       "event": {
         "activity": "Activité de connexion de l’Agent",
         "autoRepairCircuitReset": "La réparation automatique a été réactivée",
+        "connectionAutoRecovered": "La connexion a été rétablie automatiquement ; ouvrez une nouvelle session pour l’utiliser",
         "artifactAutoRestored": "Une configuration supprimée a été automatiquement restaurée",
         "hostProbeUncertain": "L’Agent n’a pas pu être vérifié de manière fiable",
         "legacyConnectionAdopted": "Une connexion Tide Mind existante a été reconnue",
         "legacyConnectionNeedsConfirmation": "Une connexion existante nécessite votre confirmation",
         "legacyAdoptionScanFailed": "Les connexions existantes n'ont pas pu être vérifiées",
-        "userConfirmedGuidedRemoval": "Une suppression guidée a été confirmée par l’utilisateur"
+        "userConfirmedGuidedRemoval": "Une suppression guidée a été confirmée par l’utilisateur",
+        "automaticConnectionCompleted": "Connecté automatiquement ; déconnectez-le dans les détails si vous n’en voulez pas"
       },
       "management": "Gérer la connexion",
       "supportMode": {
@@ -1784,7 +1642,12 @@
         "checkSupport": "Les vérifications automatiques de compte et les tests de modèle ne sont pas disponibles ici. La vérification repose sur l’utilisation réelle de TideMind.",
         "connectionReview": "La configuration Antigravity ou l’identité partagée existante doit être vérifiée. Aucune connexion existante n’a été remplacée. Consultez les détails avant de reconnecter.",
         "appUsage": "Après une modification de configuration ou une reconnexion, redémarrez Antigravity App, puis démarrez une nouvelle conversation et demandez-lui d’utiliser TideMind. Si nécessaire, autorisez les outils TideMind demandés."
-      }
+      },
+      "awaitingFirstUse": "En attente de première utilisation · effectif dans une nouvelle session",
+      "maintenancePaused": "Maintenance automatique en pause",
+      "advancedOptions": "Options avancées",
+      "skillNotObservable": "Tide Mind n’a pas encore observé le chargement du Skill par cet Agent. Certains Agents ne fournissent pas ce signal ; ce n’est pas un problème.",
+      "usesSiblingConnection": "Utilise la connexion de {{name}} ; rien à configurer ici."
     }
   },
   "account": {
@@ -1796,7 +1659,6 @@
     "loginButton": "Se connecter",
     "basicInfo": "Informations de base",
     "devices": "Appareils",
-    "devicesComingSoon": "Gestion des appareils bientôt disponible.",
     "subscription": "Abonnement",
     "currentPlan": "Forfait actuel",
     "upgradeHint": "Pro offre des souvenirs illimités dans le cloud et la synchronisation sur 5 appareils.",
@@ -1824,7 +1686,26 @@
     "memoryNearLimitHint": "Vous approchez de la limite du plan Free. Les nouveaux souvenirs au-delà de {{limit}} seront en lecture seule jusqu'à la mise à niveau.",
     "llmCostThisMonth": "Utilisation LLM ce mois",
     "llmCostCalls": "{{count}} appels",
-    "llmCostHint": "Estimé. Voir Utilisation du modèle dans les paramètres pour le détail complet."
+    "llmCostHint": "Estimé. Voir Utilisation du modèle dans les paramètres pour le détail complet.",
+    "deviceList": {
+      "description": "L'appareil principal assure l'organisation de la mémoire en arrière-plan. La synchronisation, l'import de notes, la recherche et les modèles au premier plan continuent de fonctionner sur tous les appareils.",
+      "thisDevice": "Cet appareil",
+      "primary": "Principal",
+      "online": "En ligne",
+      "lastSeen": "Vu pour la dernière fois {{time}}",
+      "makePrimary": "Définir comme principal",
+      "confirmTitle": "Définir « {{name}} » comme appareil principal ?",
+      "confirmDescription": "Cet appareil prendra en charge l'organisation de la mémoire en arrière-plan. L'ancien appareil principal s'arrête après sa tâche en cours ; s'il est hors ligne, il s'arrêtera à sa prochaine connexion, et les résultats qu'il produit d'ici là ne seront pas synchronisés.",
+      "noPrimary": "Aucun appareil n'organise la mémoire pour le moment. Choisissez un appareil principal.",
+      "primaryStale": "L'appareil principal n'a pas été en ligne depuis plus de 7 jours. S'il n'est plus utilisé, définissez un autre appareil comme principal.",
+      "syncOff": "Cet appareil assure actuellement l'organisation de la mémoire en arrière-plan. Activez la synchronisation cloud pour choisir un appareil principal parmi plusieurs.",
+      "cloudNotUpgraded": "Le service cloud ne permet pas encore de choisir un appareil principal ; chaque appareil conserve son réglage précédent pour l'instant.",
+      "loadError": "Impossible de charger la liste des appareils.",
+      "retry": "Réessayer",
+      "saveError": "Non enregistré. Veuillez réessayer.",
+      "deviceLimit": "Ce compte a atteint sa limite d'appareils ({{limit}}). Cet appareil n'a pas été ajouté : il n'organise pas la mémoire en arrière-plan et ses résultats d'organisation existants ne sont pas encore envoyés. Il sera ajouté automatiquement après le passage à une offre supérieure.",
+      "deviceLimitNoCount": "Ce compte a atteint sa limite d'appareils. Cet appareil n'a pas été ajouté : il n'organise pas la mémoire en arrière-plan et ses résultats d'organisation existants ne sont pas encore envoyés. Il sera ajouté automatiquement après le passage à une offre supérieure."
+    }
   },
   "cloud": {
     "loginRequired": "Connectez-vous à TideMind Cloud pour utiliser les fonctionnalités cloud.",

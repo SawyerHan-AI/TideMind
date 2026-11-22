@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { noteUnauthorized } from './unauthorized.js';
 import { createLogger } from '../../../src/utils/logger.js';
 import { applyCloudLinkRow, applyCloudNodeRow, withApplyGuard } from './local-apply.js';
 
@@ -127,7 +128,7 @@ export class CacheManager {
         const res = await fetch(url.toString(), {
           headers: { 'Authorization': `Bearer ${token}` },
         });
-        if (!res.ok) throw new Error(`Full sync failed for ${table}: ${res.status}`);
+        if (!res.ok) { noteUnauthorized(res.status); throw new Error(`Full sync failed for ${table}: ${res.status}`); }
         const data = await res.json();
 
         // Apply rows
@@ -150,6 +151,7 @@ export class CacheManager {
     const verRes = await fetch(`${this.baseUrl}/api/v1/sync/version`, {
       headers: { 'Authorization': `Bearer ${token}` },
     });
+    noteUnauthorized(verRes.status);
     if (verRes.ok) {
       const { version } = await verRes.json();
       this.setLastSyncedVersion(version);

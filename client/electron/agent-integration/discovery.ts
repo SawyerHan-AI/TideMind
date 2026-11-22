@@ -516,6 +516,7 @@ const P0_1_DISCOVERY_IDS = [
   'codex-desktop',
   'cursor-desktop',
   'windsurf-desktop',
+  'devin-cli',
   'gemini-cli',
   'kimi-code-cli',
   'kimi-code-native',
@@ -834,6 +835,10 @@ export const P0_DISCOVERY_PROBES: readonly P0DiscoveryProbe[] = Object.freeze([
     requiredSigningTeamIds: ['83Z2LHX6XW'],
     configRoot: devinDesktopRoots,
   },
+  {
+    kind: 'cli', catalogId: 'devin-cli', commands: ['devin'], configRoot: devinDesktopRoots,
+    signedNativeFallback: { identifiers: ['devin'], teamIdentifiers: ['83Z2LHX6XW'] },
+  },
   { kind: 'cli', catalogId: 'gemini-cli', commands: ['gemini'], configRoot: geminiRoot },
   {
     kind: 'cli',
@@ -1015,7 +1020,7 @@ function parsePlistString(plist: string, key: string): string | undefined {
 }
 
 const DESKTOP_INFO_PLIST_MAX_BYTES = 256 * 1024
-export const DESKTOP_BUNDLE_SURFACE_SCHEMA = 'desktop-bundle-surface-v1'
+export const DESKTOP_BUNDLE_SURFACE_SCHEMA = 'desktop-bundle-surface-v2'
 
 export interface StableDesktopBundleSurface {
   appRealpath: string
@@ -1125,7 +1130,14 @@ export async function inspectStableDesktopBundleSurface(
     bundleId,
     executableName,
     executableRealpath,
-    executableMetadata,
+    executableMetadata: {
+      size: executableMetadata.size,
+      mode: executableMetadata.mode,
+      inode: executableMetadata.inode,
+      executable: executableMetadata.executable,
+      ownerUid: executableMetadata.ownerUid,
+      groupGid: executableMetadata.groupGid,
+    },
   })
   return {
     appRealpath,
@@ -1512,7 +1524,8 @@ async function discoverCli(
     const isKimiNativeSurface = definition.catalogId === 'kimi-code-cli'
       && observedExecutable.realpath === path.posix.join(context.homeDir, '.kimi-code', 'bin', 'kimi')
     const isAntigravityNative = definition.catalogId === 'antigravity-cli'
-    if (!isKimiNativeSurface && !isAntigravityNative) {
+    const isDevinNative = definition.catalogId === 'devin-cli'
+    if (!isKimiNativeSurface && !isAntigravityNative && !isDevinNative) {
       try {
         const versionResult = await scheduleProof(() => withProofTimeout(
           signal => dependencies.execVersion(observedExecutable.realpath, ['--version'], { timeoutMs: proofTimeoutMs, signal }),
@@ -2283,6 +2296,22 @@ export async function discoverRegisteredCodexCli(
   return stabilizeReport([await discoverCli(probe, context, {
     ...dependencies,
     whichAll: async command => command === 'codex' ? [executable] : [],
+  }, 2_500, 20_000)])
+}
+
+/** Re-check one already registered CLI at its exact path when the PATH scan missed it. */
+export async function discoverRegisteredCli(
+  catalogId: CatalogId,
+  executable: string,
+  context: LocalDiscoveryContext,
+  dependencies: DiscoveryDependencies,
+): Promise<LocalDiscoveryReport> {
+  const probe = P0_DISCOVERY_PROBES.find(candidate => candidate.kind === 'cli'
+    && (candidate.catalogId === catalogId || candidate.detectOnlyFallbackCatalogId === catalogId))
+  if (!probe || probe.kind !== 'cli' || !isSafeAbsolutePath(executable)) return stabilizeReport([])
+  return stabilizeReport([await discoverCli(probe, context, {
+    ...dependencies,
+    whichAll: async command => command === (probe.commands.find(name => name === path.basename(executable)) ?? probe.commands[0]) ? [executable] : [],
   }, 2_500, 20_000)])
 }
 

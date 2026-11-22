@@ -39,6 +39,7 @@ describe('P0 host adapter registry', () => {
     expect(adapters.has('windsurf-desktop')).toBe(true)
     expect(adapters.has('zcode-desktop')).toBe(true)
     expect(adapters.has('zcode-cli')).toBe(false)
+    expect(adapters.has('devin-cli')).toBe(false)
     expect(adapters.has('opencode-v1-cli')).toBe(true)
     expect(adapters.has('pi-official-cli')).toBe(true)
     expect(adapters.has('openclaw-local')).toBe(true)

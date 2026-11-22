@@ -615,6 +615,7 @@ describe('managed host activity evidence', () => {
     ['windsurf', 'cursor', 'cursor-desktop'],
     ['qwenwork', 'qwen-code', 'qwen-code-cli'],
     ['zcode', 'zcode', 'zcode-cli'],
+    ['windsurf', 'windsurf', 'devin-cli'],
   ])('rejects hook activity when %s is reported by a different host variant', (tool, family, hostVariant) => {
     const db = setup('lifecycle')
     db.prepare(`

@@ -29,6 +29,8 @@ let scheduleContext: Extract<MainToMetabolismWorkerMessage, { kind: 'set_schedul
 let opened: Awaited<ReturnType<typeof import('../../../src/db/worker-initialized-database.js')['openInitializedDatabase']>> | null = null
 let runtimeCleanup: (() => Promise<void>) | null = null
 let runtimeAbort: (() => Promise<void>) | null = null
+let runtimeExpedite: (() => void) | null = null
+let shutdownRequests = 0
 let ready = false
 let stopping = false
 let stopReason: 'restart' | 'shutdown' | null = null
@@ -68,7 +70,11 @@ function kickRuntimeAbort(): void {
 function stop(reason: 'restart' | 'shutdown'): Promise<void> {
   if (reason === 'shutdown') stopReason = 'shutdown'
   else if (!stopReason) stopReason = 'restart'
-  if (reason === 'shutdown') kickRuntimeAbort()
+  if (reason === 'shutdown') {
+    kickRuntimeAbort()
+    // A repeated shutdown request (second quit) stops waiting for committed CLI calls.
+    if (++shutdownRequests > 1) runtimeExpedite?.()
+  }
   if (stopPromise) return stopPromise
   stopping = true
   pendingTrigger = false
@@ -312,10 +318,14 @@ async function boot(): Promise<void> {
       await llmClient.shutdownLLMClient()
       runtimeContext.clearMetabolismWorkerRuntimeContext()
     }
+    runtimeExpedite = () => { void llmClient.shutdownLLMClient({ graceMs: 0 }).catch(() => undefined) }
     runtimeAbort = async () => {
       for (const pending of structureRpc.values()) pending.reject(new Error('metabolism Worker stopping'))
       structureRpc.clear()
-      await llmClient.shutdownLLMClient()
+      // Application shutdown: let a committed CLI invocation finish instead of
+      // turning it into an ambiguous outcome. The controller's stopped deadline
+      // is sized to this grace.
+      await llmClient.shutdownLLMClient({ graceMs: llmClient.LLM_SHUTDOWN_GRACE_MS })
     }
     while (!scheduleContext && !stopping) await new Promise(resolve => setImmediate(resolve))
     if (stopping) return

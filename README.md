@@ -145,7 +145,7 @@ Information isn't just stored. It's digested, organized, connected, and sometime
 |------|--------|-------|
 | Claude Code | Supported | Native MCP support |
 | Cursor | Supported | MCP configuration |
-| Windsurf | Supported | MCP configuration |
+| Devin Desktop (formerly Windsurf) | Supported | MCP configuration |
 | Codex | Supported | MCP configuration |
 | Antigravity App / CLI | Supported on macOS Apple silicon | Shared MCP + always-on Rule + session-start context; native tool approval may be required |
 | Any MCP-compatible tool | Supported | Standard protocol, plug and play |
@@ -210,7 +210,7 @@ TideMind works out of the box with zero API keys — basic text search (BM25) an
 
 **Q: What AI tools and note systems does TideMind support?**
 
-Any tool that supports the [MCP protocol](https://modelcontextprotocol.io/) works with TideMind — including Claude Code, Cursor, Windsurf, and Codex. For notes, TideMind currently supports Logseq, Obsidian, and Apple Notes, with more coming. See the full [Integration Guide](docs/integrations.md).
+Any tool that supports the [MCP protocol](https://modelcontextprotocol.io/) works with TideMind — including Claude Code, Cursor, Devin Desktop (formerly Windsurf), and Codex. For notes, TideMind currently supports Logseq, Obsidian, and Apple Notes, with more coming. See the full [Integration Guide](docs/integrations.md).
 
 **Q: How do I install it? Do I need a technical background?**
 

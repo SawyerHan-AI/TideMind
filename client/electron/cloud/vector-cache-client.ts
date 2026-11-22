@@ -5,6 +5,7 @@ import { VECTOR_CACHE_LIMITS, validateVectorBundle, type VectorBundle } from '@s
 import { nodeEmbeddingInputHash } from '@server/embedding/input-contract.js'
 import { acknowledgeVectorUpload, commitVectorBundle, readVectorRuntime, type QueuedVectorIdentity, type VectorRuntimeState } from '@server/db/vector-cache-store.js'
 import { getCloudAuth, getCloudBaseUrl, refreshTokenIfNeeded } from './auth-client.js'
+import { noteUnauthorized } from './unauthorized.js'
 
 export interface VectorCacheKey { nodeId: string; inputHash: string; profileId: string }
 export interface VectorCacheReceipt extends VectorCacheKey { checksum: string }
@@ -89,7 +90,7 @@ export class VectorCacheClient {
         signal:AbortSignal.any([controller.signal,AbortSignal.timeout(15_000),...(signal?[signal]:[])]),
       })
       this.assertCurrent(expected)
-      if (response.status !== 200) { await response.body?.cancel(); throw new VectorCacheTransportError('http',response.status) }
+      if (response.status !== 200) { noteUnauthorized(response.status); await response.body?.cancel(); throw new VectorCacheTransportError('http',response.status) }
       const decoded = await readBoundedJson(response)
       this.assertCurrent(expected)
       if (signal?.aborted || !decoded || typeof decoded !== 'object' || Array.isArray(decoded)

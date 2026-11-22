@@ -1002,13 +1002,10 @@ function readStableFileSync(targetPath: string, maxBytes: number): { content: Bu
     return {
       content,
       fingerprint: sha256Json({
-        device: String(before.dev),
         inode: String(before.ino),
         size: Number(before.size),
         mode: Number(before.mode & 0o7777n),
         linkCount: String(before.nlink),
-        mtimeNs: String(before.mtimeNs),
-        ctimeNs: String(before.ctimeNs),
         sha256: sha256Bytes(content),
       }),
     }

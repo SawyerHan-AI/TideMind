@@ -15,7 +15,7 @@ import { createLogger } from './utils/logger.js';
 import { logTimelineEvent } from './db/log.js';
 import { runSchedulerTick, noteSuccessfulLLMCall, setLLMFailureHook, recordLLMFailureForHook, recordEmbeddingSuccess, recordEmbeddingFailure } from './metabolism/scheduler.js';
 import { ALL_TASKS } from './metabolism/tasks.js';
-import { setLLMSuccessHook, shutdownLLMClient } from './llm/client.js';
+import { LLM_SHUTDOWN_GRACE_MS, setLLMSuccessHook, shutdownLLMClient } from './llm/client.js';
 import { reconcileCliRuntimeState } from './llm/cli/invocation-state.js';
 import { cleanupStaleCliRuntimeDirectories } from './llm/cli/runtime-dir.js';
 import { setEmbeddingSuccessHook, setEmbeddingFailureHook } from './llm/embedding.js';
@@ -64,7 +64,11 @@ let noteSourcesStartupPromise: Promise<void> | null = null;
  * 改为 async：等 stop 完成（最多 10s），再 closeDb，最后 exit。
  */
 async function shutdown(): Promise<void> {
-  if (shutdownInProgress) return;
+  if (shutdownInProgress) {
+    // Second quit signal: stop waiting for committed CLI invocations.
+    void shutdownLLMClient({ graceMs: 0 }).catch(() => undefined);
+    return;
+  }
   shutdownInProgress = true;
   log.info('shutdown 开始');
   // F9:第一时间停掉主 tick,避免 shutdown 期间再启动新 tick 触发 LLM/DB
@@ -77,7 +81,7 @@ async function shutdown(): Promise<void> {
   try {
     // 先关闭 LLM 准入并中止所有活动 provider，再排空 watcher。否则 note-source
     // drain 失败会让本次退出返回，却留下仍在执行的 LLM 调用。
-    await shutdownLLMClient();
+    await shutdownLLMClient({ graceMs: LLM_SHUTDOWN_GRACE_MS });
 
     const pendingNoteSourceStartup = noteSourcesStartupPromise;
     if (pendingNoteSourceStartup) await pendingNoteSourceStartup;

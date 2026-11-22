@@ -108,6 +108,21 @@ describe('local Agent Catalog', () => {
     })
   })
 
+  it('lists Devin Desktop and the detect-only Devin CLI under one renamed product', () => {
+    const product = AGENT_CATALOG.products.find(candidate => candidate.id === 'windsurf')
+    expect(product).toMatchObject({ displayName: 'Devin', variantIds: ['windsurf-desktop', 'devin-cli'] })
+    expect(getCatalogVariant('windsurf-desktop').displayName).toBe('Desktop')
+    const cli = getCatalogVariant('devin-cli')
+    expect(cli).toMatchObject({
+      productFamilyId: 'windsurf',
+      displayName: 'CLI',
+      hostKind: 'cli',
+      deliveryPriority: 'observe',
+      maxCapability: 0,
+    })
+    expect(cli.components.every(component => component.deliveryMode === 'detectable')).toBe(true)
+  })
+
   it('manages signed Claude and Kimi native channels separately from their npm variants', () => {
     for (const catalogId of ['claude-code-native', 'kimi-code-native'] as const) {
       expect(getCatalogVariant(catalogId).components.every(component =>

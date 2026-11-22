@@ -11,8 +11,11 @@ describe('metabolism Worker Phase 0 inventory', () => {
     expect(ALL_TASKS.map(task => task.id)).toEqual([
       'digest-retry',
       'annotate',
+      'reconsolidate',
       'link-evaluate',
+      'link-revalidate',
       'pending-link-gc',
+      'duplicate-link-gc',
       'link-discover',
       'synaptic-decay',
       'keystone-enrich',

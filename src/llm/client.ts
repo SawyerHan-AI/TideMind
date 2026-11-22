@@ -26,7 +26,7 @@ import {
   type LLMConnectionErrorKind,
 } from './connection-health.js';
 import { noteActiveLLMRoute } from './invocation-context.js';
-import { CliLLMError, runCliLLM, shutdownCliRuntime } from './cli/index.js';
+import { CliLLMError, quiesceCliRuntime, runCliLLM, shortenCliRuntimeQuiesce, shutdownCliRuntime } from './cli/index.js';
 import {
   getMetabolismWorkerRuntimeContext,
   getMetabolismWorkerVertexCredential,
@@ -82,7 +82,12 @@ const longRunningDispatcher = new Agent({
   // origin Pool(每个 Pool ~ KB 级,理论上无限增长,实际影响微小但顺手加)。
   clientTtl: 24 * 60 * 60 * 1000,
 });
-const activeCallAbortControllers = new Set<AbortController>();
+// cli=true marks a call routed to a local-subscription CLI. During the quiesce
+// phase of shutdown those calls are not aborted: a committed CLI prompt that is
+// aborted becomes an ambiguous outcome and pauses the whole connection.
+const activeCallAbortControllers = new Map<AbortController, { cli: boolean }>();
+
+export { LLM_SHUTDOWN_GRACE_MS } from './shutdown-grace.js';
 let llmRuntimeStopping = false;
 let llmShutdownPromise: Promise<void> | null = null;
 const activeCallDrainWaiters = new Set<() => void>();
@@ -105,10 +110,16 @@ const longRunningFetch = ((url: string | URL | Request, init?: RequestInit) =>
  * close() 等所有 in-flight 完成,destroy() 立刻 kill。daemon shutdown 场景用
  * destroy() 更激进——用户已经按 quit,不需要等 25 分钟 LLM 响应。
  */
-export function shutdownLLMClient(): Promise<void> {
+export function shutdownLLMClient(options: { graceMs?: number } = {}): Promise<void> {
   llmRuntimeStopping = true;
-  if (llmShutdownPromise) return llmShutdownPromise;
-  const current = shutdownLLMClientInternal().catch(error => {
+  const graceMs = Math.max(0, options.graceMs ?? 0);
+  if (llmShutdownPromise) {
+    // A repeated request (second quit signal) may only shorten the wait, and only
+    // when it explicitly asks to: cleanup paths call this without arguments.
+    if (options.graceMs !== undefined) shortenCliRuntimeQuiesce(graceMs);
+    return llmShutdownPromise;
+  }
+  const current = shutdownLLMClientInternal(graceMs).catch(error => {
     if (llmShutdownPromise === current) llmShutdownPromise = null;
     throw error;
   });
@@ -116,10 +127,26 @@ export function shutdownLLMClient(): Promise<void> {
   return current;
 }
 
-async function shutdownLLMClientInternal(): Promise<void> {
+async function shutdownLLMClientInternal(graceMs: number): Promise<void> {
   const failures: unknown[] = [];
-  for (const controller of activeCallAbortControllers) {
+  // Phase 1: HTTP calls are safe to abort immediately (an aborted HTTP call is
+  // an ordinary failure). CLI calls are left running while the runtime quiesces.
+  for (const [controller, meta] of activeCallAbortControllers) {
+    if (graceMs > 0 && meta.cli) continue;
     controller.abort(new Error('LLM runtime is shutting down'));
+  }
+  if (graceMs > 0) {
+    try {
+      await quiesceCliRuntime(graceMs);
+    } catch (err) {
+      log.warn(`shutdownLLMClient: CLI runtime quiesce failed: ${(err as Error).message}`);
+      failures.push(err);
+    }
+    // Phase 2: whatever is still running after the grace period is aborted and
+    // keeps the existing fail-closed classification.
+    for (const controller of activeCallAbortControllers.keys()) {
+      controller.abort(new Error('LLM runtime is shutting down'));
+    }
   }
   try {
     await shutdownCliRuntime();
@@ -989,7 +1016,7 @@ export async function callLLM(options: {
         probeLeaseMs,
       )
     : null;
-  activeCallAbortControllers.add(runtimeAbortController);
+  activeCallAbortControllers.set(runtimeAbortController, { cli: routeIsCli });
   try {
   noteActiveLLMRoute(tier, route.connectionId);
   const modelId = route.modelAlias;
@@ -1292,6 +1319,10 @@ export async function callLLM(options: {
       // 入口的 pre-call 检查语义对齐),不重试、不计失败、不包装成 LLMServiceError——
       // 否则上游(init-session 等)会把"用户取消"误判成服务故障。
       if (callSignal.aborted) {
+        // A committed CLI prompt that was aborted is an ambiguous outcome, not a
+        // plain cancellation: callers (scheduler, follow-up queue) must see it so
+        // they never replay the work.
+        if (err instanceof CliLLMError && err.kind === 'ambiguous_outcome') throw err;
         throw options.signal?.aborted
           ? options.signal.reason ?? err
           : callSignal.reason ?? err;
@@ -1342,7 +1373,12 @@ export async function callLLM(options: {
 
   const finalCause = (lastError as { cause?: { code?: string } }).cause;
   const finalCauseInfo = finalCause?.code ? ` cause.code=${finalCause.code}` : '';
-  log.error(`调用失败 (重试用尽) op=${options.operationName ?? 'unknown'}: ${(lastError as Error)?.message}${finalCauseInfo}`);
+  if (lastError instanceof CliLLMError && lastError.kind === 'capacity') {
+    // Account-scoped CLI calls are serialized; contention only defers this work.
+    log.info(`本机订阅账号正忙，本次调用已延后 op=${options.operationName ?? 'unknown'}`);
+  } else {
+    log.error(`调用失败 (重试用尽) op=${options.operationName ?? 'unknown'}: ${(lastError as Error)?.message}${finalCauseInfo}`);
+  }
 
   // 记录失败累计;>= FAILURE_RESET_THRESHOLD 时 evict cache entry,下次重建 SDK 实例
   // (避免 SDK 内部状态损坏后 daemon 无法自愈)。详见 recordCallResult 注释。

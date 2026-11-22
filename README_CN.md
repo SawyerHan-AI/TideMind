@@ -145,7 +145,7 @@ TideMind 在后台持续维护这张图，就像大脑在睡眠时整理白天�
 |------|------|------|
 | Claude Code | 已支持 | MCP 原生支持 |
 | Cursor | 已支持 | MCP 配置接入 |
-| Windsurf | 已支持 | MCP 配置接入 |
+| Devin Desktop（原 Windsurf） | 已支持 | MCP 配置接入 |
 | Codex | 已支持 | MCP 配置接入 |
 | Antigravity App / CLI | 支持 macOS Apple 芯片 | 共享 MCP、常驻 Rule 和启动上下文；可能需要在宿主批准工具 |
 | 任何支持 MCP 的工具 | 已支持 | 标准协议，即插即用 |
@@ -210,7 +210,7 @@ TideMind 不是笔记工具——它是一个位于你所有工具*之间*的记
 
 **Q: 支持哪些 AI 工具和笔记系统？**
 
-任何支持 [MCP 协议](https://modelcontextprotocol.io/) 的工具都能接入 TideMind——包括 Claude Code、Cursor、Windsurf、Codex 等。笔记方面，目前支持 Logseq、Obsidian 和 Apple Notes，更多正在开发中。详见[集成指南](docs/integrations_CN.md)。
+任何支持 [MCP 协议](https://modelcontextprotocol.io/) 的工具都能接入 TideMind——包括 Claude Code、Cursor、Devin Desktop（原 Windsurf）、Codex 等。笔记方面，目前支持 Logseq、Obsidian 和 Apple Notes，更多正在开发中。详见[集成指南](docs/integrations_CN.md)。
 
 **Q: 怎么安装？需要技术背景吗？**
 

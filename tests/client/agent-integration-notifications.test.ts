@@ -52,10 +52,18 @@ describe('production Agent integration notifications', () => {
       },
     })
 
+    const inApp: string[] = []
+    const quiet = productionNotifications({ onInAppNotification: item => { inApp.push(item.eventId) },
+      system: { isSupported: () => true, create: () => ({ on: () => undefined, show: () => { notificationMock.shown = true } }) } })
+    await quiet.deliver({ title: 'Agent configuration restored', body: 'Tide Mind restored a configuration.', level: 'info',
+      eventId: 'event-0', installationId: 'installation-1', actions: ['view_details', 'disconnect'] })
+    expect(notificationMock.shown).toBe(false)
+    expect(inApp).toEqual(['event-0'])
+
     await notifications.deliver({
-      title: 'Agent configuration restored',
-      body: 'Tide Mind restored a configuration.',
-      level: 'info',
+      title: 'Automatic repair stopped',
+      body: 'Tide Mind needs you to review a configuration.',
+      level: 'warning',
       eventId: 'event-1',
       installationId: 'installation-1',
       actions: ['view_details', 'disconnect'],

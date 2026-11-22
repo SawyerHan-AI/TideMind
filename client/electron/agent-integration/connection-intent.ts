@@ -47,9 +47,9 @@ export function changeConnectionIntent(db: Database.Database, domainKey: string,
     const next = { ...update(previous), domainKey, revision: previous.revision + 1 }
     db.prepare(`INSERT INTO metadata(key,value) VALUES (?,?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(keyFor(domainKey), JSON.stringify(next))
-    if (domainKey.startsWith('codex:')) {
+    if (!domainKey.startsWith('installation:') && domainKey.includes(':')) {
       const binding = db.prepare('SELECT id FROM agent_identity_bindings WHERE domain_key=?')
-        .get(domainKey.slice('codex:'.length)) as {id:string} | undefined
+        .get(domainKey.slice(domainKey.indexOf(':') + 1)) as {id:string} | undefined
       if (binding && next.state === 'disconnected') {
         db.prepare('DELETE FROM codex_bridge_member_proofs WHERE binding_id=?').run(binding.id)
       } else if (binding && previous.state !== 'disconnected') {

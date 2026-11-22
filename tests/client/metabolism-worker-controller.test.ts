@@ -47,7 +47,12 @@ describe('metabolism Worker controller', () => {
     expect(controller.getState()?.lifecycle).toBe('draining')
     expect(worker.terminate).not.toHaveBeenCalled()
     await controller.shutdown()
+    // Shutdown lets the Worker quiesce committed CLI calls: the stopped deadline
+    // is the LLM grace (120s) plus 15s, not the old 15s.
     await vi.advanceTimersByTimeAsync(15_001)
+    expect(controller.getState()?.lifecycle).toBe('stopping')
+    expect(worker.terminate).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(120_000)
     expect(controller.getState()).toMatchObject({ lifecycle: 'degraded', degradationReason: 'stopped_timeout' })
   })
 

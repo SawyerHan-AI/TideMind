@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { getInstallationId, getLastRegistrationOutcome } from './device.js';
 import { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
 import { createLogger } from '../../../src/utils/logger.js';
@@ -9,8 +10,12 @@ import { getCloudAuth, getCloudBaseUrl, refreshTokenIfNeeded, updateCloudAuth } 
 import { getActivityState } from '../activity-state.js';
 import { DesktopVectorSync } from './vector-sync.js';
 import { cancelActiveUplink, pumpUplink } from './uplink.js';
+import { isInitialSyncState } from './initial-sync-state.js';
+import { noteUnauthorized, reportUnauthorizedAndWait } from './unauthorized.js';
 import { abortActiveReconcile } from './reconcile-lock.js';
 
+const ROLE_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const DEVICE_LIMIT_RECHECK_INTERVAL_MS = 10 * 60 * 1000;
 const log = createLogger('cloud-sync');
 
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'offline';
@@ -51,6 +56,8 @@ const FIRST_SYNC_RETRY_MS = 30_000;
  * reconcile 本身是兜底对齐(>7 天才会跑),delay 10s 不影响正确性。
  */
 const RECONCILE_TRIGGER_DELAY_MS = 10_000;
+/** 上一次自动对账未完成时,下一次自动对账的最短间隔。 */
+const RECONCILE_RETRY_MIN_INTERVAL_MS = 10 * 60 * 1000;
 
 /**
  * idle → active 时,等多久再 fire 第一次 syncOnce。
@@ -64,6 +71,11 @@ export class CloudSyncClient {
   private cacheManager: CacheManager;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private uplinkTimer: ReturnType<typeof setInterval> | null = null;
+  private roleRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  private deviceLimitRetryTimer: ReturnType<typeof setInterval> | null = null;
+  /** 上一次 maybeTriggerReconcile 是否真的改动了数据(有上传或下载)。 */
+  private reconcileChangedData = false;
+  private wsEverAuthed = false;
   private status: SyncStatus = 'idle';
   private pullDrained = false;
 
@@ -135,11 +147,28 @@ export class CloudSyncClient {
     this.stopped = false;
     if (this.stopped) return;
 
-    // 注册/刷新设备(fire-and-forget)。历史遗留 bug:之前从未调用,devices 表永远空。
-    // 服务端已改为幂等(按 user_id + name 去重),重复调用安全。
-    import('./device.js')
-      .then(m => m.registerDevice())
-      .catch(e => log.warn('device register failed:', (e as Error).message));
+    // 注册/刷新设备并取回本机角色(是否主设备)。先于首次上行完成:主设备的整理结果要带着
+    // 已注册的身份上传。失败不阻塞同步(保持已写入的角色),之后每 24 小时刷新一次。
+    try {
+      const role = await import('./primary-device.js');
+      role.evaluateLocalRole(this.db);
+      await role.syncRoleWithServer(this.db, { force: true });
+      if (this.stopped) return;
+      this.roleRefreshTimer = setInterval(() => {
+        void role.syncRoleWithServer(this.db, { force: true });
+      }, ROLE_REFRESH_INTERVAL_MS);
+      this.roleRefreshTimer.unref?.();
+      // 设备数超限时每 10 分钟复核一次:用户升级计划后不必打开账号页,本机也会自动加入。
+      this.deviceLimitRetryTimer = setInterval(() => {
+        if (getLastRegistrationOutcome()?.status !== 'device_limit') return;
+        void role.syncRoleOutcome(this.db, { force: true })
+          .then((outcome) => { if (!this.stopped && outcome.status === 'registered') this.emitDataChanged(false); })
+          .catch(() => undefined);
+      }, DEVICE_LIMIT_RECHECK_INTERVAL_MS);
+      this.deviceLimitRetryTimer.unref?.();
+    } catch (e) {
+      log.warn('device role sync failed:', (e as Error).message);
+    }
 
     // 首次同步 / 距上次 > 7 天 → 触发 reconcile。
     // 即使 buildLocalManifest 已优化(2026-05-20 PERF fix),其 SQL 仍是 better-sqlite3
@@ -258,6 +287,7 @@ export class CloudSyncClient {
    * 用户数据永远对不齐。
    */
   private async maybeTriggerReconcile(force = false): Promise<boolean> {
+    this.reconcileChangedData = false;
     const lastNodes = this.readMetadata('cloud.last_reconcile_at_nodes');
     const lastLinks = this.readMetadata('cloud.last_reconcile_at_links');
 
@@ -270,7 +300,16 @@ export class CloudSyncClient {
 
     if (!force && this.readMetadata('cloud.last_reconcile_status') === 'ok' && !stale(lastNodes) && !stale(lastLinks)) return true; // 两张表都新,跳过
 
-    const isInitial = !lastNodes && !lastLinks; // 只有"两个都从未跑过"才算首次
+    // 上一次没有对齐完(配额不足、有记录被云端暂时拒收等)时不要每轮同步都全量重跑:
+    // 自动对账至少间隔 10 分钟。手动强制对齐与失败记录恢复(force)不受限。
+    const lastAttempt = this.readMetadata('cloud.last_reconcile_attempt_at');
+    // 只看上次尝试的时间:被取消的对账不写状态,不能因此每轮同步都重跑。
+    if (!force && lastAttempt
+      && Date.now() - new Date(lastAttempt).getTime() < RECONCILE_RETRY_MIN_INTERVAL_MS) {
+      return false;
+    }
+
+    const isInitial = isInitialSyncState(this.db); // 只有"两个都从未跑过"才算首次
 
     log.info(`triggering reconcile (isInitial=${isInitial}, nodes_stale=${stale(lastNodes)}, links_stale=${stale(lastLinks)})`);
     // 走全局互斥:与手动 force-reconcile 共享同一把锁,避免两个 reconciler 并发
@@ -278,6 +317,10 @@ export class CloudSyncClient {
     const { runExclusive } = await import('./reconcile-lock.js');
     const { Reconciler } = await import('./reconciler.js');
     if (this.stopped) return false;
+    try {
+      this.db.prepare('INSERT INTO metadata (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+        .run('cloud.last_reconcile_attempt_at', new Date().toISOString());
+    } catch { /* 记不下尝试时间只影响重试间隔 */ }
     const outcome = await runExclusive(async (register) => {
       const reconciler = new Reconciler(this.db);
       register(reconciler);
@@ -287,6 +330,7 @@ export class CloudSyncClient {
       log.info('auto reconcile skipped: another reconcile already running');
       return false;
     }
+    this.reconcileChangedData = outcome.value.some(r => r.uploaded > 0 || r.downloaded > 0);
     for (const r of outcome.value) {
       log.info(`reconcile ${r.table}: uploaded=${r.uploaded} downloaded=${r.downloaded} conflicts=${r.conflicts} errors=${r.errors.length}`);
     }
@@ -306,6 +350,11 @@ export class CloudSyncClient {
 
   stop(): void {
     this.stopped = true;
+    if (this.roleRefreshTimer) {
+      clearInterval(this.roleRefreshTimer);
+      this.roleRefreshTimer = null;
+    }
+    if (this.deviceLimitRetryTimer) { clearInterval(this.deviceLimitRetryTimer); this.deviceLimitRetryTimer = null; }
     this.vectorSync?.dispose();
     this.vectorSync = null;
     cancelActiveUplink(this.db);
@@ -407,7 +456,9 @@ export class CloudSyncClient {
           log.info('ws opened, sending auth handshake');
           // 立即发 auth message;服务端收到后应在 3 秒内回 auth_ok/auth_fail。
           try {
-            socket.send(JSON.stringify({ type: 'auth', token }));
+            let installationId: string | undefined;
+            try { installationId = getInstallationId(this.db); } catch { /* 在线状态可缺省 */ }
+            socket.send(JSON.stringify({ type: 'auth', token, installation_id: installationId }));
           } catch (e) {
             log.warn(`ws send auth failed: ${(e as Error).message}`);
           }
@@ -438,6 +489,15 @@ export class CloudSyncClient {
               }
               log.info(`ws authed (server msg=${msg.type})`);
               this.wsReconnectAttempts = 0; // 重置退避
+              // 重连后主动取回主设备状态:断线期间的 primary_device_changed 通知已丢失。
+              // 首次连上时若启动阶段的注册失败过(离线启动)，这里补上；已注册则直接用缓存。
+              {
+                const force = this.wsEverAuthed;
+                void import('./primary-device.js')
+                  .then(role => role.syncRoleWithServer(this.db, { force }))
+                  .catch(() => undefined);
+              }
+              this.wsEverAuthed = true;
             } else if (msg.type === 'auth_fail') {
               log.warn(`ws auth_fail: reason=${msg.reason}`);
               // rate_limited(同 token 连接超限 MAX_CONNECTIONS_PER_TOKEN)不是凭据问题,
@@ -445,6 +505,15 @@ export class CloudSyncClient {
               // 避免"刷新成功 → attempts=0 → 1s 后重连 → 又被拒"的每秒互打循环。
               const closeCode = msg.reason === 'expired' ? 4401 : msg.reason === 'rate_limited' ? 1013 : 1008;
               socket.close(closeCode, 'auth_fail');
+            } else if (msg.type === 'primary_device_changed') {
+              if (!this.wsAuthed || typeof msg.primary_device_revision !== 'number') return;
+              const state = {
+                primaryDeviceId: typeof msg.primary_device_id === 'string' ? msg.primary_device_id : null,
+                revision: msg.primary_device_revision as number,
+              };
+              void import('./primary-device.js')
+                .then(role => role.applyPrimaryState(this.db, state))
+                .catch(e => log.warn('primary device update failed:', (e as Error).message));
             } else if (msg.type === 'changes_available') {
               if (!this.wsAuthed) {
                 // 协议违规:未认证就收到通知 → 不信任
@@ -480,12 +549,13 @@ export class CloudSyncClient {
           // - code 1013(rate_limited)**不**清零 attempts:服务端会持续拒绝,
           //   必须走指数退避(直到旧连接自然释放配额),否则每秒互打。
           if (code === 4401 || code === 1008) {
-            try {
-              await refreshTokenIfNeeded();
-              this.wsReconnectAttempts = 0; // 刷新成功 → 立即重连不走退避
-            } catch (err) {
-              log.warn(`ws close ${code} but refresh failed: ${(err as Error).message}`);
-            }
+            // 必须真的向云端刷新一次。refreshTokenIfNeeded 在本机认为令牌未到期时直接
+            // 返回缓存令牌:令牌被云端撤销的情况下,那会被当成“刷新成功”并清零退避,
+            // 形成约每秒一次、没有尽头的重连。
+            const result = await reportUnauthorizedAndWait();
+            if (this.stopped || this.ws) return; // 凭据已失效(同步客户端已销毁)或已有新连接
+            if (result === 'signed_out') return;
+            if (result === 'refreshed') this.wsReconnectAttempts = 0; // 换到了新令牌 → 立即重连
           }
           this.scheduleReconnect();
         });
@@ -617,7 +687,9 @@ export class CloudSyncClient {
       if (!reconciled || pending.n > 0 || this.cacheManager.getLastSyncedVersion() < target.version) {
         this.status = pending.n > 0 ? 'error' : 'syncing';
         this.lastErrorMessage = pending.n > 0 ? `${pending.n} sync rows await recovery` : null;
-        this.emitDataChanged(true);
+        // 没对齐完不等于数据变了:只有本轮确实上传、下载或恢复了记录,才让界面重拉数据。
+        // 否则长期对不齐的账号(配额不足、有记录被云端暂时拒收)会每 30 秒全量刷新一次。
+        this.emitDataChanged(uplinked > 0 || pulled > 0 || this.reconcileChangedData || pending.n !== pendingBefore.n);
         return;
       }
       this.status = 'idle';
@@ -749,6 +821,7 @@ export class CloudSyncClient {
             throw new Error('cloud_not_available');
           }
         }
+        noteUnauthorized(res.status);
         throw new Error(`Pull failed: ${res.status}`);
       }
       const data = await res.json();
@@ -794,7 +867,7 @@ export class CloudSyncClient {
 
   private async refreshGenerationAnchor(token: string): Promise<{version:number}> {
     const response = await fetch(`${getCloudBaseUrl()}/api/v1/sync/version`,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(SYNC_FETCH_TIMEOUT_MS)});
-    if (!response.ok) throw new Error(`Sync version failed: ${response.status}`);
+    if (!response.ok) { noteUnauthorized(response.status); throw new Error(`Sync version failed: ${response.status}`); }
     const data = await response.json();
     if (this.stopped) return {version:0};
     if (!Number.isSafeInteger(data.version) || data.version < 0) throw new Error('Invalid sync version');
@@ -820,7 +893,7 @@ export class CloudSyncClient {
         url.searchParams.set('table',table); url.searchParams.set('ids',ids.slice(offset, offset + 200).join(','));
         const response = await fetch(url,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(SYNC_FETCH_TIMEOUT_MS)});
         if (this.stopped) return;
-        if (!response.ok) throw new Error(`Dead-letter fetch failed: ${response.status}`);
+        if (!response.ok) { noteUnauthorized(response.status); throw new Error(`Dead-letter fetch failed: ${response.status}`); }
         const data = await response.json();
         if (this.stopped) return;
         if (!Array.isArray(data.items)) throw new Error('Invalid dead-letter recovery response');

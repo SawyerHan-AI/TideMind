@@ -1,11 +1,11 @@
 {
   "schemaVersion": 4,
-  "appVersion": "0.2.101",
+  "appVersion": "0.2.102",
   "releaseMacArchitectures": [
     "arm64"
   ],
   "upgradeFromAppVersions": [
-    "0.2.100"
+    "0.2.101"
   ],
   "stepPolicy": {
     "base": [
@@ -79,23 +79,20 @@
     }
   ],
   "realHostPolicy": {
-    "id": "0.2.101-antigravity-only",
-    "requiredCatalogIds": [
-      "antigravity-app",
-      "antigravity-cli"
-    ],
+    "id": "0.2.102-ordinary-use-only",
+    "requiredCatalogIds": [],
     "otherCatalogs": "deferred",
     "customPaths": "deferred",
-    "reason": "This release requires full new-adapter acceptance for Antigravity App and CLI against the final signed candidate. Complete Codex C4 lifecycle and other Agent/Custom acceptance are deferred, not passed. Both installation machines must still pass ordinary Codex prepare/recall, model use and configuration/data preservation checks. Existing implementation and packaging regressions remain required.",
+    "reason": "This release adds no host adapter. Complete real-host acceptance for every Agent and Custom path is deferred, not passed. Both installation machines must still pass ordinary Codex Desktop prepare/recall, selected-model use, primary-device role and configuration/data preservation checks. Existing implementation and packaging regressions remain required.",
     "desktopAcceptance": {
       "status": "deferred",
       "releaseNotesDisclosureRequired": true,
-      "reason": "Complete Codex Desktop C4 lifecycle acceptance remains deferred. Ordinary Codex prepare/recall, model use and configuration/data preservation on both installation machines remain required and must not be represented as complete lifecycle acceptance. Antigravity App acceptance is independently required."
+      "reason": "Complete Codex Desktop C4 lifecycle acceptance remains deferred. Ordinary Codex prepare/recall on both installation machines is required and is not full lifecycle acceptance."
     }
   },
   "migrationAcceptanceDeferral": {
-    "policyId": "0.2.101-single-user-manual-migration",
-    "appVersion": "0.2.101",
+    "policyId": "0.2.102-single-user-manual-migration",
+    "appVersion": "0.2.102",
     "audience": "single_user",
     "status": "deferred_to_installation",
     "execution": "manual_after_release",
@@ -103,6 +100,6 @@
       "upgrade_matrix",
       "observed_schema41"
     ],
-    "reason": "Historical upgrade matrices and observed schema41 recovery are deferred, not passed. Actual M4 and MBA upgrades from 0.2.100, preserved data/configuration/roles and normal post-install usage are required before delivery is complete."
+    "reason": "Historical upgrade matrices and observed schema41 recovery are deferred, not passed. Actual M4 and MBA upgrades from 0.2.101, preserved data/configuration/roles and normal post-install usage are required before delivery is complete."
   }
 }

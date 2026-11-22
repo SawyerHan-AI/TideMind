@@ -18,10 +18,14 @@
  * 不污染下次重试(last_reconcile_at 不写表示未完成,下次启动会重试)。
  */
 
+import { listExcludedFromCloudSync } from '../../../src/db/cloud-sync-exclusions.js';
+import { INSTALLATION_ID_HEADER, getInstallationId } from './device.js';
+import { handleUploadRejections } from './upload-rejections.js';
 import type Database from 'better-sqlite3';
 import { BrowserWindow, Notification } from 'electron';
 import { createLogger } from '../../../src/utils/logger.js';
 import { getCloudBaseUrl, refreshTokenIfNeeded } from './auth-client.js';
+import { noteUnauthorized } from './unauthorized.js';
 import { mainT } from '../i18n.js';
 
 const log = createLogger('reconciler');
@@ -191,7 +195,9 @@ export class Reconciler {
     log.info(`reconcile ${table}: onlyLocal=${actionPlan.onlyLocal.length} onlyServer=${actionPlan.onlyServer.length} conflict=${actionPlan.conflicts.length}`);
 
     // Step 4: upload(onlyLocal + local-newer-conflict)
-    const toUpload = actionPlan.toUpload;
+    // 不上传名单只过滤上传集合;本机清单不变,否则这些记录会被判为“仅云端有”而反复下载。
+    const excluded = listExcludedFromCloudSync(this.db, table);
+    const toUpload = excluded.size === 0 ? actionPlan.toUpload : actionPlan.toUpload.filter(id => !excluded.has(id));
     this.progress = { table, phase: 'upload', total: toUpload.length, processed: 0 };
     this.emitProgress();
     let uploaded = 0;
@@ -203,7 +209,10 @@ export class Reconciler {
       const { processed, skipped } = await this.bulkUpsert(table, items, isInitial);
       if (this.aborted) throw new Error('aborted');
       uploaded += processed;
-      uploadSkipped += skipped.length;
+      // 已识别并处理完的主设备把关拒收不算“被跳过”,否则对账永远无法记为完成。
+      const rejections = await handleUploadRejections(this.db, table, skipped);
+      if (this.aborted) throw new Error('aborted');
+      uploadSkipped += skipped.length - rejections.handled.length;
       this.progress.processed = Math.min(toUpload.length, i + BATCH_SIZE);
       this.emitProgress();
     }
@@ -272,6 +281,7 @@ export class Reconciler {
         signal: AbortSignal.timeout(MANIFEST_FETCH_TIMEOUT_MS),
       });
       if (!res.ok) {
+        noteUnauthorized(res.status);
         throw new Error(`manifest ${res.status}: ${(await res.text()).slice(0, 200)}`);
       }
       const data = await res.json() as { items: ManifestEntry[]; has_more: boolean; next_cursor: string | null };
@@ -341,17 +351,22 @@ export class Reconciler {
 
   // ── Bulk upsert / fetch ─────────────────────────────────
 
+  private installationHeaders(): Record<string, string> {
+    try { return { [INSTALLATION_ID_HEADER]: getInstallationId(this.db) }; } catch { return {}; }
+  }
+
   private async bulkUpsert(table: Table, items: Record<string, unknown>[], isInitial: boolean): Promise<{ processed: number; skipped: Array<{ id: string; reason: string }> }> {
     const token = await refreshTokenIfNeeded();
     if (this.aborted) throw new Error('aborted');
     if (!token) throw new Error('not_logged_in');
     const res = await fetch(`${getCloudBaseUrl()}/api/v1/sync/bulk-upsert`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...this.installationHeaders() },
       body: JSON.stringify({ table, is_initial_reconcile: isInitial, items }),
       signal: AbortSignal.timeout(BULK_FETCH_TIMEOUT_MS),
     });
     if (!res.ok) {
+      noteUnauthorized(res.status);
       throw new Error(`bulk-upsert ${res.status}: ${(await res.text()).slice(0, 200)}`);
     }
     return await res.json() as { processed: number; skipped: Array<{ id: string; reason: string }> };
@@ -367,7 +382,7 @@ export class Reconciler {
       headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(BULK_FETCH_TIMEOUT_MS),
     });
-    if (!res.ok) throw new Error(`bulk-fetch ${res.status}`);
+    if (!res.ok) { noteUnauthorized(res.status); throw new Error(`bulk-fetch ${res.status}`); }
     const data = await res.json() as { items: Array<Record<string, unknown>> };
     return data.items;
   }

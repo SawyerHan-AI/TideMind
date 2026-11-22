@@ -57,7 +57,7 @@ export function evaluateAgentIntegrationPerformanceResult({ result, thresholds }
   }
 
   const fixture = thresholds?.fixture
-  if (fixture?.probeCount !== 20
+  if (fixture?.probeCount !== 21
     || fixture?.probeOperationTimeoutMs !== 20
     || fixture?.probeWarmupRuns !== 1
     || fixture?.probeMeasuredRuns !== 5

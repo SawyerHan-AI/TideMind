@@ -105,6 +105,8 @@ export function registerAgentIntegrationUiAuditHandlers(
     outboxCount: null,
     cloudNotAvailable: true,
   }))
+  ipcMain.handle('cloud:devices', () => ({ success: false, error: 'not_logged_in' }))
+  ipcMain.handle('cloud:set-primary-device', () => ({ success: false, error: 'not_logged_in' }))
   ipcMain.handle('llm:health', () => ({
     circuitState: 'closed',
     failures: 0,

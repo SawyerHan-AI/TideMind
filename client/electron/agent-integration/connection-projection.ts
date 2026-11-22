@@ -15,6 +15,8 @@ export interface ConnectionProjectionInput {
 }
 
 function hasAction(member: Member, sharedNativeTrust = false): boolean {
+  // An entry point that only reads a sibling's configuration has nothing the user can act on here.
+  if (member.configurationOwnerId) return false
   return (member.statusGroup === 'needs_attention' && !(sharedNativeTrust && member.statusReason === 'host_confirmation'))
     || member.sourceVerification?.task?.state === 'unavailable'
     || (member.desiredState === 'managed' && member.components.some(component =>

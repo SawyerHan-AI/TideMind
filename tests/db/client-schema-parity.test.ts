@@ -138,7 +138,7 @@ describe('activity export schema compatibility', () => {
     return db;
   }
 
-  it.each([34, 35, 45, 46, 47, 48, 49])('exports the unchanged ledger shape from supported schema %i', version => {
+  it.each([34, 35, 45, 46, 47, 48, 49, 50, 51, 52])('exports the unchanged ledger shape from supported schema %i', version => {
     const db = fixture(version, version >= 45 ? 'stable-0.2.94' : undefined);
     try {
       expect(inspectAgentHostActivityEvidenceV34Schema(db).schemaVersion).toBe(version);

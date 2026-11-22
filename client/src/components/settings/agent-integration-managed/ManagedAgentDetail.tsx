@@ -591,11 +591,19 @@ export function ManagedAgentDetail({
               </p>
             )}
           </div>
+          {installation.configurationOwnerId && (
+            <p className="mt-1 text-xs text-gray-400" data-configuration-owner={installation.configurationOwnerId}>
+              {t('agent.managed.usesSiblingConnection', {
+                name: snapshot.installations.find(item => item.id === installation.configurationOwnerId)?.variantLabel ?? family.displayName,
+              })}
+            </p>
+          )}
           <StatusBadge
             group={family.connection?.statusGroup ?? installation.statusGroup}
             reason={family.connection?.statusGroup !== 'needs_attention' && !installation.manageable
               ? installation.statusReason : family.connection?.statusReason ?? installation.statusReason}
             compact
+            bridgeStopped={installation.deactivation?.bridge === 'stopped'}
             detectOnly={!historyOnly && (family.connection
               ? installations.every(member => !member.manageable)
               : !installation.manageable)}
@@ -612,8 +620,11 @@ export function ManagedAgentDetail({
                 <button type="button" disabled={busyAction !== null} className="rounded border border-white/10 px-2 py-1 text-emerald-300 disabled:opacity-50"
                   onClick={() => void doAction('resume-connection', () => agentIntegrationsApi().resumeConnection(family.connection!.id))}>{t('agent.managed.resume')}</button>
               ) : (family.connection.maintenance === 'active' || family.connection.statusGroup === 'processing') && family.connection.intentState !== 'disconnected' ? (
-                <button type="button" disabled={busyAction !== null} className="rounded border border-white/10 px-2 py-1 disabled:opacity-50"
-                  onClick={() => void doAction('pause-connection', () => agentIntegrationsApi().pauseConnection(family.connection!.id))}>{t('agent.managed.pause')}</button>
+                <details className="text-gray-500">
+                  <summary className="cursor-pointer select-none px-1 py-1">{t('agent.managed.advancedOptions')}</summary>
+                  <button type="button" disabled={busyAction !== null} className="mt-1 rounded border border-white/10 px-2 py-1 text-gray-400 disabled:opacity-50"
+                    onClick={() => void doAction('pause-connection', () => agentIntegrationsApi().pauseConnection(family.connection!.id))}>{t('agent.managed.pause')}</button>
+                </details>
               ) : null}
               {family.connection.shared && family.connection.installationIds.some(id => snapshot.installations.some(member => member.id === id && ['managed', 'disabled'].includes(member.desiredState))) && (
                 <button type="button" disabled={busyAction !== null} className="rounded border border-red-400/20 px-2 py-1 text-red-300 disabled:opacity-50"
@@ -723,6 +734,9 @@ export function ManagedAgentDetail({
                       ? component.implementationTypes.map(formatImplementationType).join(' + ')
                       : '—'}
                     {isStartupOnlyComponent(component) && <span className="mt-1 block whitespace-normal" data-startup-only>{t('agent.managed.antigravity.startupOnly')}</span>}
+                    {componentKey === 'instruction' && component?.state === 'configured'
+                      && installation.components.some(candidate => candidate.key === 'memory_tools' && candidate.state === 'verified')
+                      && <span className="mt-1 block whitespace-normal" data-skill-unobserved>{t('agent.managed.skillNotObservable')}</span>}
                     {component?.evidenceScope === 'configuration_domain' && <span className="mt-1 block whitespace-normal" data-component-evidence-scope="configuration_domain">{t('agent.managed.antigravity.sharedEvidence')}</span>}
                   </span>
                   <span className="flex min-w-0 items-center gap-1">
@@ -1077,14 +1091,17 @@ export function ManagedAgentDetail({
                 <Play size={11} aria-hidden /> {t(family.connection?.shared ? 'agent.managed.resumeMember' : 'agent.managed.resume')}
               </button>
             ) : installation.desiredState === 'managed' ? (
-              <button
-                type="button"
-                onClick={() => setConfirmPauseInstallationId(installation.id)}
-                disabled={busyAction !== null}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-xs text-gray-400 hover:bg-white/5 disabled:opacity-50"
-              >
-                <Pause size={11} aria-hidden /> {t(family.connection?.shared ? 'agent.managed.pauseMember' : 'agent.managed.pause')}
-              </button>
+              <details className="text-xs text-gray-500">
+                <summary className="cursor-pointer select-none py-1.5">{t('agent.managed.advancedOptions')}</summary>
+                <button
+                  type="button"
+                  onClick={() => setConfirmPauseInstallationId(installation.id)}
+                  disabled={busyAction !== null}
+                  className="mt-1 inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-xs text-gray-400 hover:bg-white/5 disabled:opacity-50"
+                >
+                  <Pause size={11} aria-hidden /> {t(family.connection?.shared ? 'agent.managed.pauseMember' : 'agent.managed.pause')}
+                </button>
+              </details>
             ) : null}
             {canReconnectManagedInstallation(installation) && (
               <button type="button" disabled={busyAction !== null} onClick={() => onReconnect(installation.id)}

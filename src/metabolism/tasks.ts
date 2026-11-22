@@ -9,7 +9,11 @@ import { makeNodeCountGate } from './scheduler.js';
 import { runSynapticScalingCooperatively } from './synaptic.js';
 import { runAnnotation } from './annotate.js';
 import { runLinkEvaluate } from './link-evaluate.js';
+import { runLinkRevalidateFollowup } from './link-revalidate.js';
+import { runReconsolidateFollowup } from './reconsolidate.js';
+import { hasDueRecallFollowup } from '../db/recall-followups.js';
 import { runPendingLinkGc, pendingLinkGcGate } from './pending-link-gc.js';
+import { runDuplicateLinkGc } from './duplicate-link-gc.js';
 import { runLinkDiscover } from './link-discover.js';
 import { promoteFrequentTags } from './tag-promote.js';
 import { runDivergentScan, runCrystalEmergence, runKeystoneIdentification } from './divergent.js';
@@ -41,7 +45,9 @@ const _log = createLogger('tasks');
  * 任务顺序说明（停机恢复时多个任务同时到期，按此顺序串行执行）：
  *
  * 1. annotate       — 先标注新节点（后续任务依赖完整维度/标签）
+ *    reconsolidate   — 消费 recall 记录的深度再巩固（recall_followups 队列）
  * 2. link-evaluate   — 评估/确认/删除候选链接
+ *    link-revalidate — 消费 recall 记录的链接重新验证（recall_followups 队列）
  * 3. link-discover   — 发现新候选链接
  * 4. synaptic-decay  — 统一衰减节点 heat + 链接 strength（在关联层完成后）
  * 5-9. 涌现层        — 基于最新图结构做枢纽/标签/结晶
@@ -115,6 +121,16 @@ export const ALL_TASKS: TaskDefinition[] = [
     requiresLLM: true,
   },
 
+  // ── 记忆：深度再巩固（recall 入队，这里消费） ──
+  {
+    id: 'reconsolidate',
+    execute: async (db) => { await runReconsolidateFollowup(db); },
+    intervalStrategy: 'reconsolidate',
+    defaultIntervalMinutes: 5,
+    requiresLLM: true,
+    gateCheck: (db) => hasDueRecallFollowup(db, 'reconsolidate'),
+  },
+
   // ── 思考（关联） ──────────────────────────────
   {
     id: 'link-evaluate',
@@ -122,6 +138,15 @@ export const ALL_TASKS: TaskDefinition[] = [
     intervalStrategy: 'link-evaluate',
     defaultIntervalMinutes: 24 * 60,
     requiresLLM: true,
+  },
+  // 链接重新验证：recall 入队，这里消费
+  {
+    id: 'link-revalidate',
+    execute: async (db) => { await runLinkRevalidateFollowup(db); },
+    intervalStrategy: 'link-revalidate',
+    defaultIntervalMinutes: 5,
+    requiresLLM: true,
+    gateCheck: (db) => hasDueRecallFollowup(db, 'link_revalidate'),
   },
   // 过期 pending 链接的物理 GC。独立于 LLM 任务：
   // requiresLLM=false（不受熔断探测影响），gateCheck 用 llm_last_success_at
@@ -135,6 +160,15 @@ export const ALL_TASKS: TaskDefinition[] = [
     requiresLLM: false,
     gateCheck: pendingLinkGcGate,
   },
+  // 合并完全重复的链接（两台设备短暂同时整理时的残留）。不调模型，也不依赖模型健康信号。
+  {
+    id: 'duplicate-link-gc',
+    execute: async (db) => { runDuplicateLinkGc(db); },
+    intervalStrategy: 'link-evaluate',
+    intervalKey: 'duplicate_gc_interval_minutes',
+    defaultIntervalMinutes: 24 * 60,
+    requiresLLM: false,
+  },
   {
     id: 'link-discover',
     execute: async (db) => { await runLinkDiscover(db); },
@@ -145,7 +179,6 @@ export const ALL_TASKS: TaskDefinition[] = [
     // 期内整体跳过。
     requiresEmbedding: true,
   },
-  // link-revalidate 不在 scheduler 中注册，由 recall 触发
 
   // ── 记忆：衰减（关联层完成后再衰减）───────────
   {

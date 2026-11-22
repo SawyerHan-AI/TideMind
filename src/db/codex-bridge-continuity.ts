@@ -2,12 +2,17 @@ import type Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 
+/** A managed configuration file has no content hash here, so both timestamps stay; only the device number does not survive a reboot. */
+export function bridgeFileIdentity(st: { ino: bigint; mode: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint }): string {
+  return ['v2',st.ino,st.mode,st.size,st.mtimeNs,st.ctimeNs].join(':');
+}
+
 /** Stable readback identity; the selector hash is established separately by the adapter. */
 export function currentBridgeFileIdentity(target: string): string | null {
   try {
     if (realpathSync.native(target) !== target) return null;
     const st = lstatSync(target,{bigint:true});
-    return st.isFile() ? [st.dev,st.ino,st.mode,st.size,st.mtimeNs,st.ctimeNs].join(':') : null;
+    return st.isFile() ? bridgeFileIdentity(st) : null;
   } catch {
     return null;
   }
@@ -24,7 +29,7 @@ export function currentCodexMemberSurface(db: Database.Database, installationId:
       json_extract(metadata_json,'$.componentConfigRoots'), json_extract(metadata_json,'$.componentConfigFiles'),
       json_extract(metadata_json,'$.resourceRoots'), json_extract(metadata_json,'$.managementEligibility')
     ) AS surface FROM agent_installations
-    WHERE id=? AND family='codex' AND host_variant IN ('codex-cli','codex-desktop')`)
+    WHERE id=? AND EXISTS (SELECT 1 FROM agent_identity_binding_members m WHERE m.installation_id=agent_installations.id)`)
     .get(installationId) as {surface:string} | undefined;
   return row ? createHash('sha256').update(row.surface).digest('hex') : null;
 }
@@ -123,7 +128,7 @@ export function readAnchoredAdmission(
     JOIN installation_components part ON part.installation_id=i.id AND part.artifact_id=c.artifact_id
       AND part.component_key=c.component_key AND part.consent_envelope_id=s.id AND part.tombstoned_at IS NULL
       AND part.desired_state IN ('managed','disabled')
-    LEFT JOIN metadata preference ON preference.key='agent_connection_intent:codex:' || b.domain_key
+    LEFT JOIN metadata preference ON preference.key='agent_connection_intent:' || i.family || ':' || b.domain_key
     WHERE p.binding_id=? AND p.artifact_id=? AND p.component_key=? AND p.installation_id=?
       AND p.binding_generation=b.generation AND p.mutation_id=? AND p.journal_version=? AND p.consent_id=i.consent_envelope_id
       AND i.health_state='discovered' AND i.tombstoned_at IS NULL AND i.bridge_state!='stopped'

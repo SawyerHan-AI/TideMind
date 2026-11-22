@@ -302,7 +302,6 @@ export function directoryIdentitySha256(directory: string): string {
   }
   return canonicalSha256Json({
     realpath: canonical,
-    device: String(stat.dev),
     inode: String(stat.ino),
     mode: String(stat.mode),
   });

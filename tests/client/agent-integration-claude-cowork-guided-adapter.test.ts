@@ -41,7 +41,7 @@ describe('Claude Cowork guided plugin Adapter', () => {
           distributionId: 'com.anthropic.claudefordesktop',
           executableRealpath: '/Applications/Claude.app/Contents/MacOS/Claude',
           packageProvenance: 'signed_app:com.anthropic.claudefordesktop:Q6L2SF6YDW',
-          capabilityFingerprint: 'desktop-bundle-surface-v1:abc',
+          capabilityFingerprint: 'desktop-bundle-surface-v2:abc',
         },
       }),
       installationId: 'installation-cowork', hostVersion: '1.2.3',

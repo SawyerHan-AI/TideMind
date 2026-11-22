@@ -1,10 +1,12 @@
 import { Bot, ChevronRight } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useFormatters } from '../../../hooks/useFormatters'
 import {
   componentLabelKey,
-  componentStatusPresentation,
+  componentSummaryPresentation,
+  connectionSubtitleKey,
+  isTemporaryManagementBlock,
   managementUnavailableHelpKey,
   primaryInstallation,
   managementStatusPresentation,
@@ -25,7 +27,14 @@ export function ManagedFamilyList({
 }) {
   const { t } = useTranslation('settings')
   const { timeAgo } = useFormatters()
-  const families = connectionFamilies(snapshot)
+  // Hosts that can only be detected are listed after real connections, under their own heading.
+  const allFamilies = connectionFamilies(snapshot)
+  const detectOnlyIds = new Set(allFamilies.filter(family => family.connection!.statusGroup !== 'needs_attention'
+    && installationsForFamily(family, snapshot).every(installation => !installation.manageable
+      && installation.desiredState === 'unmanaged' && installation.statusReason !== 'legacy_callable_unmanaged'
+      && !isTemporaryManagementBlock(installation.statusReason))).map(family => family.id))
+  const families = [...allFamilies.filter(family => !detectOnlyIds.has(family.id)), ...allFamilies.filter(family => detectOnlyIds.has(family.id))]
+  const firstDetectOnlyId = families.find(family => detectOnlyIds.has(family.id))?.id
   const containerRef = useRef<HTMLDivElement>(null)
   const [wideTableLayout, setWideTableLayout] = useState(false)
 
@@ -60,20 +69,30 @@ export function ManagedFamilyList({
         const needsAction = connection.statusGroup === 'needs_attention'
         const detectOnly = installations.every(installation => !installation.manageable)
         const badgeReason = detectOnly && !needsAction ? primary.statusReason : connection.statusReason
-        const statusLabel = t(managementStatusPresentation(needsAction ? 'needs_attention' : family.statusGroup, badgeReason, detectOnly).labelKey)
+        const bridgeStopped = installations.length > 0 && installations.every(installation => installation.deactivation?.bridge === 'stopped')
+        const maintenancePaused = installations.some(installation => installation.desiredState === 'disabled')
+        const statusLabel = t(managementStatusPresentation(needsAction ? 'needs_attention' : family.statusGroup, badgeReason, detectOnly, bridgeStopped).labelKey)
         const issueReason = needsAction || connection.actionInstallationIds.length > 0
           ? t(statusReasonKey(connection.issue?.reason ?? connection.attentionReason ?? connection.statusReason))
           : null
         const unavailableDetail = installations.every(installation => !installation.manageable)
           ? t(managementUnavailableHelpKey(primary.statusReason))
           : null
+        const subtitleKey = detectOnly ? null : connectionSubtitleKey(needsAction ? 'needs_attention' : family.statusGroup, badgeReason, Boolean(activityAt), bridgeStopped)
+        // Several entry points of one product: say which one was used when.
+        const entryUse = installations.filter(installation => installation.lastRealUseAt)
         const componentSummary = connection.components.map(component =>
-          `${t(componentLabelKey(component.key))}：${t(componentStatusPresentation(component.state).labelKey)}`,
+          `${t(componentLabelKey(component.key))}：${t(componentSummaryPresentation(component.state, maintenancePaused).labelKey)}`,
         ).join(' · ')
         const summaryId = `agent-family-summary-${family.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
         return (
+          <Fragment key={family.id}>
+          {family.id === firstDetectOnlyId && (
+            <div data-agent-detect-only-heading className="border-b border-white/[0.05] bg-white/[0.015] px-3 py-1.5 text-xs text-gray-500">
+              {t('agent.managed.supportMode.detectable')}
+            </div>
+          )}
           <div
-            key={family.id}
             data-agent-family-row={connection.familyId}
             data-agent-connection-row={connection.id}
             className={`group relative border-b border-white/[0.05] px-3 py-2.5 last:border-b-0 ${selected ? 'bg-indigo-400/[0.07]' : 'hover:bg-white/[0.025]'}`}
@@ -110,6 +129,7 @@ export function ManagedFamilyList({
                 <StatusBadge
                   group={needsAction ? 'needs_attention' : family.statusGroup}
                   reason={badgeReason}
+                  bridgeStopped={bridgeStopped}
                   compact
                   detectOnly={detectOnly}
                 />
@@ -121,14 +141,18 @@ export function ManagedFamilyList({
               </div>
               <div className={`${wideTableLayout ? 'space-y-1' : 'flex flex-wrap items-center gap-x-3 gap-y-1 pl-9'} min-w-0`}>
                 <div className="flex flex-wrap gap-x-3 gap-y-1">
-                  {connection.components.map(component => <ComponentFact key={component.key} componentKey={component.key} status={component.state} onInspect={event => onSelect(family.id, event.currentTarget)} />)}
+                  {connection.components.map(component => <ComponentFact key={component.key} componentKey={component.key} status={component.state} summary maintenancePaused={maintenancePaused} showStatusLabel onInspect={event => onSelect(family.id, event.currentTarget)} />)}
                 </div>
                 {connection.components.some(component => component.evidenceScope === 'configuration_domain') && (
                   <p className="text-xs text-gray-400">{t('agent.managed.antigravity.sharedEvidence')}</p>
                 )}
-                <p className="whitespace-nowrap text-xs text-gray-400">
-                  <span className="mr-1">{t('agent.managed.activityLabel')}:</span>
-                  {activityAt ? timeAgo(activityAt) : t('agent.managed.noActivity')}
+                {/* In the table layout this wraps: several entry points or a long subtitle must not widen the list. */}
+                <p className={`${wideTableLayout ? 'min-w-0 break-words' : 'whitespace-nowrap'} text-xs text-gray-400`}>
+                  <span className="mr-1 whitespace-nowrap">{t('agent.managed.activityLabel')}:</span>
+                  {entryUse.length > 1 && new Set(entryUse.map(item => item.lastRealUseAt)).size > 1
+                    ? entryUse.map(item => `${item.variantLabel} ${timeAgo(item.lastRealUseAt!)}`).join(' · ')
+                    : activityAt ? timeAgo(activityAt) : t(subtitleKey ?? 'agent.managed.noActivity')}
+                  {activityAt && subtitleKey ? ` · ${t(subtitleKey)}` : ''}
                 </p>
               </div>
               <span className={`${wideTableLayout ? '' : 'absolute right-3 top-1/2 -translate-y-1/2'} justify-self-end text-gray-400 transition-colors group-hover:text-gray-200`}>
@@ -136,6 +160,7 @@ export function ManagedFamilyList({
               </span>
             </div>
           </div>
+          </Fragment>
         )
       })}
     </div>

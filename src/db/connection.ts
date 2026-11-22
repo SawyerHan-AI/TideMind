@@ -1,4 +1,5 @@
 import { cloudEndpointIdentity } from '../utils/cloud-endpoint.js';
+import { readLocalOrganizerRole } from '../metabolism/local-role.js';
 import { activateVectorRuntime, localEmbeddingInstanceId, readVectorRuntime } from './vector-cache-store.js';
 import { captureEmbeddingConnection } from '../embedding/connection-config.js';
 import { selectEmbeddingProfile } from '../embedding/profile.js';
@@ -149,7 +150,7 @@ async function doInitVec(): Promise<VecCapability> {
         endpointId:requestedSync&&selection.shareable?cloudEndpointIdentity(effective.cloud?.server_url).id:null,
         accountId:previous?.accountId??null,
         syncEnabled:requestedSync && (previous?.syncEnabled??false),
-        backgroundBuilder:effective.metabolism.background_enabled !== false,
+        backgroundBuilder:readLocalOrganizerRole(db!, effective.metabolism.background_enabled !== false),
         awaitingDesktopAuth:requestedSync && (previous?.awaitingDesktopAuth ?? !previous),
       });
     }

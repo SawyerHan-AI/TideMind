@@ -53,7 +53,8 @@ export function registerCloudHandlers(db?: Database.Database): void {
       const { login } = await import('../cloud/auth-client.js');
       await login(email, password);
       if(db) {
-        try { const {startCloudSyncIfConfigured}=await import('../cloud/startup.js');await startCloudSyncIfConfigured(db); }
+        // 登录状态变了:重建同步客户端,让设备注册与角色同步重新执行。
+        try { const {restartCloudSyncAfterSignIn}=await import('../cloud/session.js');await restartCloudSyncAfterSignIn(db); }
         catch(error){log.warn(`signed in; sync startup deferred: ${String(error)}`)}
       }
       return { success: true };
@@ -66,10 +67,15 @@ export function registerCloudHandlers(db?: Database.Database): void {
   ipcMain.handle('cloud:logout', async () => {
     const { logout } = await import('../cloud/auth-client.js');
     const { destroySyncClient } = await import('../cloud/sync-client.js');
+    const role = await import('../cloud/primary-device.js');
+    // 主设备登出前释放身份,让其他设备可以接管(尽力而为)。
+    if (db) await role.releasePrimaryIfHeld(db);
     destroySyncClient();
     await logout();
-    if(db) await refreshDesktopVectorRuntime(db);
-    emitCloudChanged();
+    if (db) {
+      const { handleSignedOut } = await import('../cloud/session.js');
+      handleSignedOut(db);
+    } else emitCloudChanged();
   });
 
   // Get cloud status — 读取 sync client 真实状态
@@ -185,7 +191,10 @@ export function registerCloudHandlers(db?: Database.Database): void {
     }
 
     let preferenceError: string | undefined;
+    const role = await import('../cloud/primary-device.js');
     if (!parsed.data) {
+      // 主设备关闭同步前释放身份(尽力而为)。
+      if (db) await role.releasePrimaryIfHeld(db);
       const { destroySyncClient } = await import('../cloud/sync-client.js');
       destroySyncClient();
     }
@@ -202,6 +211,7 @@ export function registerCloudHandlers(db?: Database.Database): void {
     fs.writeFileSync(tmpPath, stringifyToml(current as any));
     fs.renameSync(tmpPath, configPath);
     reloadConfig();
+    if (db) role.evaluateLocalRole(db);
     if(db) await refreshDesktopVectorRuntime(db);
     notifyMetabolismWorkerRuntimeMutation('config');
     log.info(`cloud sync ${parsed.data ? 'enabled' : 'disabled'}`);
@@ -319,10 +329,12 @@ export function registerCloudHandlers(db?: Database.Database): void {
       if (!isLoggedIn()) return { success: false, error: 'not_logged_in' };
       const { runExclusive } = await import('../cloud/reconcile-lock.js');
       const { Reconciler } = await import('../cloud/reconciler.js');
+      const { isInitialSyncState } = await import('../cloud/initial-sync-state.js');
       const outcome = await runExclusive(async (register) => {
         const reconciler = new Reconciler(dbForReconcile);
         register(reconciler);
-        return reconciler.runAll(false);
+        // 手动对齐也按“本机是否从未完成过对账”传首次标志(与自动对账、实时上行同一个判断)。
+        return reconciler.runAll(isInitialSyncState(dbForReconcile));
       });
       if (!outcome.ok) return { success: false, error: 'already_running' };
       return { success: true, results: outcome.value };
@@ -353,6 +365,32 @@ export function registerCloudHandlers(db?: Database.Database): void {
   // 产品决策 #7(2026-05-20):用量查询(本地 active 节点数 vs 当前 plan 上限)。
   // 仅当用户开了 cloud sync 才有意义,但 free plan 即便没开 sync 也会用 500 上限
   // 作为参考显示。
+  // 设备列表与主设备（主设备负责后台记忆整理）。
+  ipcMain.handle('cloud:devices', async () => {
+    if (!db) return { success: false, error: 'db_not_ready' };
+    try {
+      const { fetchDeviceList } = await import('../cloud/primary-device.js');
+      return { success: true, data: await fetchDeviceList(db) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('cloud:set-primary-device', async (_event, deviceId: unknown) => {
+    if (typeof deviceId !== 'string' || deviceId.length === 0 || deviceId.length > 100) {
+      return { success: false, error: 'deviceId must be a non-empty string' };
+    }
+    if (!db) return { success: false, error: 'db_not_ready' };
+    try {
+      const { setPrimaryDevice } = await import('../cloud/primary-device.js');
+      await setPrimaryDevice(db, deviceId);
+      emitCloudChanged();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('cloud:memory-usage', async () => {
     const FREE_LIMIT = 500;
     const PRO_LIMIT = 50000; // Pro 默认上限,纯展示用,不会真触发拒收

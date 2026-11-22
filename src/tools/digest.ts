@@ -1,8 +1,10 @@
 import type { DigestInput, DigestOutput, NodeType, BrainNode } from '../types.js';
+import { normalizeExternalSourceTool } from '../metabolism/derived-sources.js';
 import type { IRepository } from '../db/repository.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { inferDimensions } from '../utils/dimensions.js';
 import { parseTags } from '../db/nodes.js';
+import { recordNodeProvenance } from '../db/node-provenance.js';
 import { appendToStream } from '../stream/writer.js';
 import { generateId } from '../utils/id.js';
 import { now } from '../utils/time.js';
@@ -126,11 +128,12 @@ export async function digest(repo: IRepository, input: DigestInput, context?: Di
         input.content,
         input.context ? `\n**纠正原因**: ${input.context}` : '',
       ].filter(Boolean).join('\n'),
-      source_tool: input.source?.tool,
+      source_tool: normalizeExternalSourceTool(input.source?.tool),
       source_session: input.source?.session,
       source_stream: corrStreamRef,
       heat: 0.3,
     });
+    recordNodeProvenance(repo.rawDb, correctionNode.id, input.agent_id, input.caller);
 
     repo.log.logOperation({
       operation: 'digest',
@@ -481,7 +484,7 @@ async function processDigestContent(
     specificity: dims.specificity,
     subjectivity: dims.subjectivity,
     actuality: dims.actuality,
-    source_tool: input.source?.tool,
+    source_tool: normalizeExternalSourceTool(input.source?.tool),
     source_session: input.source?.session,
     source_stream: streamRef,
     source_timestamp: now(),
@@ -489,6 +492,7 @@ async function processDigestContent(
     heat: input.initialHeat ?? qualityHeat,
     created: input.created,
   });
+  recordNodeProvenance(repo.rawDb, node.id, input.agent_id, input.caller);
   const createdNodes = [{ id: node.id, content: node.content, type: node.type }];
   const createdLinks: Array<{ from_id: string; to_id: string; relation: string }> = [];
 

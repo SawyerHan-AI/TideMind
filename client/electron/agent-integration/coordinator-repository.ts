@@ -1,6 +1,7 @@
 import { runtimeActivityReferencePrefix } from './activity-reference'
 import { capHostCapability, hostCapabilityCeiling } from './capability'
 import { captureBridgeAnchor, latestPhysicalBridgeWrite, currentCodexMemberSurface, type BridgeAnchor } from '@server/db/codex-bridge-continuity.js'
+import { captureServiceAnchor, currentInstallationSurface, type ServiceAnchor } from '@server/db/agent-service-proof.js'
 import { automaticPlanAuthorizationKey, isAutomaticConsentContext } from './consent'
 import { allowsConnectionMaintenance } from './connection-intent'
 import { freshCodexIdentityFingerprint } from './codex-fresh-identity'
@@ -369,7 +370,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
    */
   codexContinuitySnapshot(installationId: string, requested?: 'memory_tools' | 'lifecycle') {
     const member = this.repository.getInstallation(installationId)
-    if (!member || member.family !== 'codex' || member.health_state !== 'discovered'
+    if (!member || member.health_state !== 'discovered'
       || member.desired_state !== 'managed' || member.bridge_state === 'stopped'
       || member.tombstoned_at || !member.consent_envelope_id || member.status_reason === 'conflict') return null
     let identity: ReturnType<AgentIntegrationRepository['resolveAgentIdentity']>
@@ -435,6 +436,82 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       const snapshot = {requested,runId:run.id, runState:run.state, installation, consentId:member.consent_envelope_id, anchors, scopes,
         token:observedToken, capability:capability(run.desired_capability), intentRevision:intent.revision,
         surface:currentCodexMemberSurface(this.db,installationId)!, changed:plan.executionPlan.installationSurfaceFingerprint !== persistedProjectionSurfaceFingerprint(member)}
+      return {...snapshot, fingerprint:sha256Json(snapshot)}
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Dedicated counterpart of codexContinuitySnapshot. The last connect/repair of
+   * this Installation must have committed every file effect; nothing returned
+   * here is eligible for replay.
+   */
+  serviceContinuitySnapshot(installationId: string) {
+    const member = this.repository.getInstallation(installationId)
+    if (!member || member.health_state !== 'discovered'
+      || member.desired_state !== 'managed' || member.bridge_state === 'stopped'
+      || member.tombstoned_at || !member.consent_envelope_id || member.status_reason === 'conflict') return null
+    if (this.db.prepare('SELECT 1 FROM agent_identity_binding_members WHERE installation_id=?').get(installationId)) return null
+    const run = this.db.prepare(`SELECT * FROM reconcile_runs WHERE installation_id=? ORDER BY rowid DESC LIMIT 1`)
+      .get(installationId) as (RunRow & {failure_code:string | null}) | undefined
+    if (!run || !['connect','repair'].includes(run.operation_type) || run.consent_envelope_id !== member.consent_envelope_id
+      || !(['applied_unverified','committed'].includes(run.state)
+        || run.state === 'needs_recovery' && run.failure_code === 'recovery_source_trust_changed'
+        || String(run.state) === 'cancelled' && run.failure_code === 'superseded_by_service_proof')) return null
+    try {
+      const plan = parseObject(run.prepared_plan_json, 'service continuity plan') as unknown as PreparedCoordinatorPlan
+      assertPersistedPreparedPlanShape(plan)
+      assertPersistedRunEnvelope(run, plan)
+      const installation = this.installationFromRow(member)
+      const source = persistedDistribution(member)
+      if (plan.executionPlanHash !== executionPlanHash(plan.executionPlan) || plan.adapterPlanHash !== sha256Json(plan.adapterPlan)
+        || plan.executionPlan.installationId !== installationId || plan.adapterPlan.installationKey !== member.install_key
+        || plan.inspection.catalogId !== member.host_variant || !source.packageProvenance
+        || plan.inspection.distribution.packageProvenance !== source.packageProvenance
+        || plan.inspection.distribution.distributionId !== source.distributionId
+        || plan.executionPlan.sharedIdentityBinding || installation.sharedIdentityBinding
+        || !plan.activityGenerationToken || plan.executionPlan.activityGenerationTokenHash !== sha256Json(plan.activityGenerationToken)) return null
+      const consent = this.getConsent(member.consent_envelope_id, run.execution_plan_hash)
+      if (!consent || !checkPlanAgainstConsent(plan.executionPlan, consent, supplementalConsentClaims(
+        installation,plan,this.listOwnedArtifactBaselines(installationId))).allowed || !this.isRunConnectionIntentCurrent(run.id)) return null
+      for (const {row,plannedMutation} of this.loadValidatedRecoveryEnvelope(run, plan, installation)) {
+        const fileWrite = plannedMutation.domainKind === 'file_fragment' && plannedMutation.commandCategory === 'file_write'
+          && !plannedMutation.frozenCommands?.length && ['create','update'].includes(plannedMutation.operation)
+        // A completed plugin-manager install is equally a finished effect; it is never replayed from here.
+        const pluginInstall = plannedMutation.domainKind === 'plugin_manager' && plannedMutation.operation === 'host_command'
+          && plannedMutation.commandCategory === 'plugin_install'
+        if ((!fileWrite && !pluginInstall) || plannedMutation.ownershipTransferFrom) return null
+        assertVerifiedMutationJournal(row,plannedMutation)
+      }
+      const scopes = this.db.prepare(`SELECT c.component_key, a.id, a.target_path, a.owned_fragment_hash, a.mutation_domain
+        FROM artifact_consumers c JOIN managed_artifacts a ON a.id=c.artifact_id
+        JOIN installation_components ic ON ic.installation_id=c.installation_id AND ic.component_key=c.component_key AND ic.artifact_id=a.id
+        WHERE c.installation_id=? AND c.state='active' AND c.tombstoned_at IS NULL AND ic.tombstoned_at IS NULL
+          AND c.desired_state IN ('managed','disabled') AND ic.desired_state='managed' AND c.consent_envelope_id=? AND ic.consent_envelope_id=c.consent_envelope_id
+          AND a.state IN ('healthy','needs_recovery') AND a.owned_fragment_hash=a.desired_fragment_hash
+        ORDER BY c.component_key`).all(installationId,member.consent_envelope_id) as Array<{
+          component_key:ComponentKey;id:string;target_path:string;owned_fragment_hash:string;mutation_domain:string
+        }>
+      if (sha256Json(scopes.map(scope=>scope.component_key)) !== sha256Json([...plan.componentKeys].sort())) return null
+      const anchors: ServiceAnchor[] = []
+      for (const scope of scopes) {
+        if (scope.component_key === 'instruction') continue
+        const anchor = captureServiceAnchor(this.db,installationId,scope.id,scope.component_key)
+        const writer = latestPhysicalBridgeWrite(this.db,scope.id)
+        // Every journal row of this exact run was validated above; the bytes on
+        // disk must come from it and not from a later or foreign operation.
+        if (!anchor || writer?.run_id !== run.id || writer.token !== plan.activityGenerationToken) return null
+        anchors.push(anchor)
+      }
+      if (!anchors.length) return null
+      const intent = this.repository.connectionIntent(installationId)
+      if (!allowsConnectionMaintenance(intent,installationId)) return null
+      const snapshot = {runId:run.id, runState:run.state, installation, consentId:member.consent_envelope_id, anchors, scopes,
+        token:plan.activityGenerationToken, capability:capability(run.desired_capability),
+        intentDomainKey:intent.domainKey, intentRevision:intent.revision,
+        surface:currentInstallationSurface(this.db,installationId)!,
+        changed:plan.executionPlan.installationSurfaceFingerprint !== persistedProjectionSurfaceFingerprint(member)}
       return {...snapshot, fingerprint:sha256Json(snapshot)}
     } catch {
       return null

@@ -52,6 +52,26 @@ export type UpdaterState =
  */
 export type NoteSourceInitStatus = 'idle' | 'running' | 'aborting' | 'aborted' | 'error' | 'done'
 export type NoteSourceInitAbortReason = 'user' | 'stuck' | 'navigation' | 'shutdown'
+export interface CloudDeviceListData {
+  devices: Array<{
+    id: string
+    name: string
+    device_type: string | null
+    app_version: string | null
+    last_seen: string | null
+    is_primary: boolean
+    online: boolean
+  }>
+  thisDeviceId: string | null
+  primaryDeviceId: string | null
+  /** 云端尚未支持主设备：只读展示。 */
+  cloudNotUpgraded: boolean
+  /** 本机在云端的注册状态。device_limit = 账号的设备数已达上限，本机没有注册。 */
+  registration: 'registered' | 'device_limit' | 'unavailable'
+  /** 设备数上限；只在 device_limit 且云端给出数值时有值。 */
+  deviceLimit: number | null
+}
+
 export interface NoteSourceInitSnapshot {
   sourceId: string
   toolType: 'logseq' | 'obsidian' | 'apple-notes' | 'notion'
@@ -328,6 +348,8 @@ export interface AgentIntegrationInstallationDto {
   lastRepairedAt: string | null
   /** Latest still-valid runtime evidence bound to this exact managed Installation. */
   lastRealUseAt: string | null
+  /** Another Installation whose managed configuration this entry point reads (e.g. a CLI next to its desktop app). */
+  configurationOwnerId?: string
   /** Shared carrier activity is not exact per-host verification. */
   sharedConnection?: {
     memberCount: number
@@ -1089,6 +1111,9 @@ export interface AppApi {
     registerUrl: () => Promise<string>
     billingPortalUrl: () => Promise<string>
     billingCheckoutUrl: (plan: 'pro', interval: 'yearly' | 'monthly') => Promise<string>
+    /** 账号下的设备与主设备（主设备负责后台记忆整理）。 */
+    devices: () => Promise<{ success: boolean; data?: CloudDeviceListData; error?: string }>
+    setPrimaryDevice: (deviceId: string) => Promise<{ success: boolean; error?: string }>
   }
   app: {
     getVersion: () => Promise<string>

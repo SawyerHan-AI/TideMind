@@ -11,6 +11,7 @@ vi.mock('../../src/strategy/loader.js', () => ({
   getStrategy: () => null,
 }));
 
+const llmConfigured = vi.hoisted(() => ({ value: true }));
 vi.mock('../../src/config.js', () => ({
   getConfig: () => ({
     general: { data_dir: '/tmp/test-eb', user_name: 'tester' },
@@ -34,7 +35,7 @@ vi.mock('../../src/config.js', () => ({
     sources: {},
   }),
   getDataDir: () => '/tmp/test-eb',
-  isLlmConfigured: () => false,
+  isLlmConfigured: () => llmConfigured.value,
 }));
 
 const mockGetDb = vi.fn();
@@ -56,12 +57,9 @@ vi.mock('../../src/search/hybrid.js', () => ({
 }));
 
 vi.mock('../../src/metabolism/reconsolidate.js', () => ({
-  reconsolidateOnRecall: vi.fn(),
+  perceptualReadOnRecall: vi.fn(),
 }));
 
-vi.mock('../../src/metabolism/link-revalidate.js', () => ({
-  revalidateLinks: vi.fn().mockResolvedValue(undefined),
-}));
 
 vi.mock('../../src/graph/expansion.js', () => ({
   expandFromNode: vi.fn().mockReturnValue([]),
@@ -72,8 +70,11 @@ import { setupTestDb, seedNode, seedLink } from '../helpers/test-db.js';
 import { recall } from '../../src/tools/recall.js';
 import { getNode, bumpHeat } from '../../src/db/nodes.js';
 import { searchHybrid } from '../../src/search/hybrid.js';
-import { reconsolidateOnRecall } from '../../src/metabolism/reconsolidate.js';
-import { revalidateLinks } from '../../src/metabolism/link-revalidate.js';
+import { perceptualReadOnRecall } from '../../src/metabolism/reconsolidate.js';
+import { callLLM } from '../../src/llm/client.js';
+const followups = (database: Database.Database) => database.prepare(
+  'SELECT kind, node_ids_json, query, context FROM recall_followups ORDER BY kind',
+).all() as Array<{ kind: string; node_ids_json: string; query: string | null; context: string | null }>;
 import { expandFromNode } from '../../src/graph/expansion.js';
 import { invalidateGateCache } from '../../src/db/stats.js';
 import { SqliteRepository } from '../../src/db/sqlite-repository.js';
@@ -262,30 +263,48 @@ describe('recall - heat bump side effect', () => {
 // ===== reconsolidation =====
 
 describe('recall - reconsolidation', () => {
-  it('should call reconsolidateOnRecall with returned nodes', async () => {
+  it('runs the perceptual read synchronously and queues deep reconsolidation', async () => {
     const node = seedNode(db, { content: 'reconsolidate test' });
 
     await recall(repo, { node_id: node.id });
 
-    expect(reconsolidateOnRecall).toHaveBeenCalledWith(
+    expect(perceptualReadOnRecall).toHaveBeenCalledWith(
       db,
       expect.arrayContaining([expect.objectContaining({ id: node.id })]),
-      undefined, // no context
       undefined, // no avgSearchScore (node_id mode)
     );
+    expect(followups(db)).toEqual([
+      { kind: 'reconsolidate', node_ids_json: JSON.stringify([node.id]), query: null, context: null },
+    ]);
+    expect(callLLM).not.toHaveBeenCalled();
   });
 
-  it('should pass context to reconsolidateOnRecall', async () => {
+  it('stores the recall context with the queued reconsolidation and merges repeats', async () => {
     const node = seedNode(db, { content: 'context reconsolidate' });
 
     await recall(repo, { node_id: node.id, context: 'user is debugging' });
+    await recall(repo, { node_id: node.id, context: 'user is debugging' });
 
-    expect(reconsolidateOnRecall).toHaveBeenCalledWith(
-      db,
-      expect.any(Array),
-      'user is debugging',
-      undefined, // no avgSearchScore (node_id mode)
-    );
+    expect(followups(db)).toEqual([
+      { kind: 'reconsolidate', node_ids_json: JSON.stringify([node.id]), query: null, context: 'user is debugging' },
+    ]);
+  });
+
+  it('queues deep reconsolidation even when no LLM is configured (non-model fallback)', async () => {
+    const node = seedNode(db, { content: 'no llm' });
+    vi.mocked(searchHybrid).mockResolvedValueOnce([{ node, score: 0.9, source: 'hybrid' }]);
+    llmConfigured.value = false;
+    try {
+      await recall(repo, { query: 'TypeScript' });
+    } finally { llmConfigured.value = true; }
+    expect(followups(db).map(row => row.kind)).toEqual(['reconsolidate']);
+  });
+
+  it('a failing enqueue does not fail recall', async () => {
+    const node = seedNode(db, { content: 'enqueue failure' });
+    db.exec('DROP TABLE recall_followups');
+    const result = await recall(repo, { node_id: node.id });
+    expect(result.exact_matches?.length ?? result.nodes?.length).toBeGreaterThan(0);
   });
 });
 
@@ -649,29 +668,27 @@ describe('recall - index mode', () => {
   });
 });
 
-// ===== revalidateLinks 超时 timer 清理 =====
+// ===== 链接重新验证只入队 =====
 
-describe('recall - revalidateLinks timer cleanup', () => {
-  it('revalidateLinks 在超时窗口内 settle 时,Promise.race 应 clearTimeout 避免 timer 堆积', async () => {
-    const node = seedNode(db, { content: 'revalidate timer cleanup' });
+describe('recall - link revalidation is queued, not executed', () => {
+  it('queues one link_revalidate row for a hybrid search hit and makes no model call', async () => {
+    const node = seedNode(db, { content: 'revalidate queue' });
     vi.mocked(searchHybrid).mockResolvedValueOnce([
       { node, score: 0.9, source: 'hybrid' },
     ]);
-    // revalidateLinks mock 立刻 resolve(< 10s 窗口)
-    vi.mocked(revalidateLinks).mockResolvedValueOnce(undefined);
-
-    const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
-    const before = clearSpy.mock.calls.length;
 
     await recall(repo, { query: 'TypeScript' });
 
-    // fire-and-forget Promise.race 的 .finally 是 microtask,等一轮 microtask
-    await new Promise(setImmediate);
-    await new Promise(setImmediate);
+    expect(followups(db).find(row => row.kind === 'link_revalidate')).toEqual({
+      kind: 'link_revalidate', node_ids_json: JSON.stringify([node.id]), query: 'TypeScript', context: null,
+    });
+    expect(callLLM).not.toHaveBeenCalled();
+  });
 
-    // clearTimeout 至少被 recall 内部调用 1 次(其它库可能也用,断言增量 >= 1)
-    expect(clearSpy.mock.calls.length - before).toBeGreaterThanOrEqual(1);
-    clearSpy.mockRestore();
+  it('does not queue link revalidation for a node_id lookup', async () => {
+    const node = seedNode(db, { content: 'direct lookup' });
+    await recall(repo, { node_id: node.id });
+    expect(followups(db).some(row => row.kind === 'link_revalidate')).toBe(false);
   });
 });
 
@@ -800,13 +817,16 @@ describe('recall v0.2.77 - 副作用分级 (设计 doc §7.4)', () => {
     await recall(repo, { query: 'q', context: 'ctx' });
 
     // reconsolidate 只对 exactNodes 调用（不含 relatedNode）
-    const calls = vi.mocked(reconsolidateOnRecall).mock.calls;
+    const calls = vi.mocked(perceptualReadOnRecall).mock.calls;
     expect(calls.length).toBeGreaterThan(0);
     const lastCallNodes = calls[calls.length - 1][1];
     expect(lastCallNodes.length).toBe(1);
     expect(lastCallNodes[0].id).toBe(exactNode.id);
     // relatedNode 不应在 reconsolidate 的 nodes 列表里
     expect(lastCallNodes.find((n: any) => n.id === relatedNode.id)).toBeUndefined();
+    const queued = followups(db).flatMap(row => JSON.parse(row.node_ids_json) as string[]);
+    expect(queued).toContain(exactNode.id);
+    expect(queued).not.toContain(relatedNode.id);
   });
 
   it('related_matches 加 heat 是固定 +0.02（不走 ranked decay）', async () => {

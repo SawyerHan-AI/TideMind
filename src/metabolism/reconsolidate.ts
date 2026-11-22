@@ -1,320 +1,199 @@
 import type Database from 'better-sqlite3';
 import type { BrainNode } from '../types.js';
-import { updateNode } from '../db/nodes.js';
+import { getNode, updateNode } from '../db/nodes.js';
 import { createLink, linkExists, getLinksForNode } from '../db/links.js';
 import { isVecLoaded } from '../db/connection.js';
 import { daysAgo, now } from '../utils/time.js';
 import { getParam, renderUserPrompt } from '../strategy/loader.js';
 import { inferLinkType } from '../llm/link-judge.js';
-import { callLLM, LLMServiceError } from '../llm/client.js';
+import { callLLM } from '../llm/client.js';
 import { updateConnectivity, refreshMaturityScore } from '../graph/maturity.js';
 import { RECONSOLIDATE_SYSTEM, reconsolidatePrompt } from '../llm/prompts.js';
 import { isLlmConfigured } from '../config.js';
 import { detectConflictSignals } from './conflict-heuristics.js';
 import { getPrompt, getLLMOptions } from '../strategy/loader.js';
-import { getCircuitState, notifyLLMFailure } from './scheduler.js';
 import { createLogger } from '../utils/logger.js';
 import { parseLLMJson } from '../llm/json-parse.js';
-import { trackBackgroundWork } from '../utils/background-work.js';
+import { runRecallFollowup, type RecallFollowupItem, type RecallFollowupPlan } from './recall-followup-runner.js';
+import type { RecallFollowupRow } from '../db/recall-followups.js';
 
 const log = createLogger('reconsolidate');
 
 /**
- * 并发模型：
- * - 旧实现是模块级 boolean `reconsolidateInFlight`,任意一个 recall 进入深度
- *   再巩固时,本进程后续所有 recall 全部跳过感知/深度读,造成"一个慢 LLM 卡
- *   住所有用户"。
- * - 新实现：用 `inFlightNodes: Set<string>` 按 node id 去重(同一个节点不并发
- *   做两遍深度再巩固),并用容量上限 `MAX_CONCURRENT_RECONSOLIDATIONS` 控制
- *   全局并发数,以免大量 recall 同时触发 LLM 调用。
- * - 注意：本文件是本地桌面 daemon 的实现(单用户、单进程),并发上限设为 5
- *   足够。云端 worker 的同名 bug 在另一个 issue 单独跟进。
- */
-const inFlightNodes = new Set<string>();
-const MAX_CONCURRENT_RECONSOLIDATIONS = 5;
-
-/**
- * 测试辅助:暴露 inFlightNodes 的当前状态用于断言。
- * 业务代码不要走这个接口,只在 unit-test 里探查/重置。
- */
-export const __testing = {
-  getInFlightSize: (): number => inFlightNodes.size,
-  hasInFlight: (id: string): boolean => inFlightNodes.has(id),
-  resetInFlight: (): void => { inFlightNodes.clear(); },
-  maxConcurrent: MAX_CONCURRENT_RECONSOLIDATIONS,
-  /** 模拟同步异常路径占名额后立即释放的核心控制流(测试用,签名稳定)。*/
-  simulateClaim(ids: string[]): { claimed: string[]; release: () => void } {
-    const claimed: string[] = [];
-    for (const id of ids) {
-      if (inFlightNodes.size >= MAX_CONCURRENT_RECONSOLIDATIONS) break;
-      if (inFlightNodes.has(id)) continue;
-      inFlightNodes.add(id);
-      claimed.push(id);
-    }
-    return {
-      claimed,
-      release: () => {
-        for (const id of claimed) inFlightNodes.delete(id);
-      },
-    };
-  },
-};
-
-/**
  * 读即写再巩固
  *
- * 三个级别：
- * - 静默读：只加热（已在 recall 中处理）
- * - 感知读：在无直接链接的相关结果间创建 pending 链接
- * - 深度读：标记需要内容更新检查的节点（异步）
+ * - 静默读：只加热（在 recall 中处理）
+ * - 感知读：在无直接链接的相关结果间创建 pending 链接（recall 同步路径，无模型调用）
+ * - 深度读：需要模型调用。recall 只把“这批节点 + 上下文”写入 recall_followups 队列，
+ *   由调度器任务 reconsolidate 在长驻进程里消费；短命的 MCP 进程不再直接调模型。
  *
  * 深度读触发条件：
- * 1. 时间条件（原有）：version == 1 且超过阈值天数未再巩固
- * 2. 预测误差（新增）：上下文与节点内容存在冲突信号
- * 3. 节点间矛盾（新增）：返回的节点之间可能互相矛盾
+ * 1. 时间条件：version == 1 且超过阈值天数未再巩固
+ * 2. 预测误差：上下文与节点内容存在冲突信号
+ * 3. 节点间矛盾：返回的节点之间可能互相矛盾
  */
-export function reconsolidateOnRecall(
+
+/** 感知读：同次 recall 的结果之间建 pending 链接。纯同步、无模型调用。 */
+export function perceptualReadOnRecall(
   db: Database.Database,
   nodes: BrainNode[],
-  context?: string,
   avgSearchScore?: number,
 ): void {
-  // 全局并发上限：超过即跳过本次（让旧的 LLM 调用先完成）
-  if (inFlightNodes.size >= MAX_CONCURRENT_RECONSOLIDATIONS) return;
-
-  // 同步路径任一异常(createLink 抛错、SQL 错、策略配置坏等)如果在我们已经
-  // 把节点加进 inFlightNodes 之后才发生,需要把这些 id 全部清掉,否则它们
-  // 永远占着名额。claimedNodeIds 就是用来追踪本次调用占了哪些 id 的。
-  const claimedNodeIds: string[] = [];
-  let spawnedAsync = false;
-  try {
-
   const minNodes = getParam('metabolism-params', 'reconsolidate_min_nodes', 3);
-
-  // --- 感知读 ---
   // 质量门槛：如果有搜索分数且平均分太低，跳过感知读（避免低质量召回创建噪音链接）
   const PERCEPTUAL_READ_MIN_SCORE = 0.3;
   const passQualityGate = avgSearchScore === undefined || avgSearchScore >= PERCEPTUAL_READ_MIN_SCORE;
-  if (passQualityGate && nodes.length >= minNodes && isVecLoaded()) {
-    // 计算结果节点间的链接密度
-    const nodeIds = new Set(nodes.map(n => n.id));
-    let existingLinkCount = 0;
-    for (const node of nodes) {
-      // rejected_by_user 链接天然被过滤（getLinksForNode 默认排除），
-      // 这里只统计 confirmed/pending 的真实邻接
-      const links = getLinksForNode(db, node.id).filter(l => l.status === 'confirmed');
-      for (const link of links) {
-        const otherId = link.from_id === node.id ? link.to_id : link.from_id;
-        if (nodeIds.has(otherId)) existingLinkCount++;
-      }
-    }
-    existingLinkCount /= 2; // 每条链接被计数了两次
-    const maxLinks = (nodes.length * (nodes.length - 1)) / 2;
-    const density = maxLinks > 0 ? existingLinkCount / maxLinks : 1;
+  if (!passQualityGate || nodes.length < minNodes || !isVecLoaded()) return;
 
-    if (density < 0.3) {
-      log.debug(`感知读: density=${density.toFixed(2)} nodes=${nodes.length}`);
-      const MAX_PENDING_LINKS_PER_RECALL = 5;
-      let pendingCount = 0;
-      for (let i = 0; i < nodes.length - 1; i++) {
-        if (pendingCount >= MAX_PENDING_LINKS_PER_RECALL) break;
-        for (let j = i + 1; j < nodes.length; j++) {
-          if (pendingCount >= MAX_PENDING_LINKS_PER_RECALL) break;
-
-          const a = nodes[i];
-          const b = nodes[j];
-
-          // 跳过两个都是 meta 类型的节点对
-          if (a.is_meta && b.is_meta) continue;
-
-          if (linkExists(db, a.id, b.id)) continue;
-
-          const judgment = inferLinkType(a, b);
-          const link = createLink(db, {
-            from_id: a.id,
-            to_id: b.id,
-            relation: [judgment],
-            strength: getParam('metabolism-params', 'perceptual_read_link_strength', 0.5),
-            note: '感知读：同次 recall 结果',
-            auto: true,
-            status: 'pending',
-          });
-          if (!link) continue;
-          // 链接精化统一由 refineRecentLinks 定期批量处理，不在 recall 路径上调 LLM
-          updateConnectivity(db, a.id);
-          updateConnectivity(db, b.id);
-          pendingCount++;
-        }
-      }
-    }
-  }
-
-  // --- 深度读判定 ---
-  const daysThreshold = getParam('metabolism-params', 'reconsolidate_days_threshold', 7);
-  const maxDeep = getParam('metabolism-params', 'deep_reconsolidate_max_per_recall', 3);
-  let deepCount = 0;
-
-  // 条件 1: 时间条件 + version == 1（设计文档 §5.5：仅首版节点触发时间驱动的深度读）
-  // 收集待触发的节点，串行执行避免并发 LLM 调用
-  const deepTargets: BrainNode[] = [];
+  // 计算结果节点间的链接密度
+  const nodeIds = new Set(nodes.map(n => n.id));
+  let existingLinkCount = 0;
   for (const node of nodes) {
-    if (deepCount >= maxDeep) break;
-
-    // version > 1 的节点已被修订过，跳过时间驱动的深度再巩固
-    if (node.version > 1) continue;
-
-    let shouldTrigger = false;
-
-    if (!node.last_reconsolidated) {
-      // 从未再巩固：检查创建时间
-      shouldTrigger = daysAgo(node.created) > daysThreshold;
-    } else {
-      // 已再巩固过：检查距上次是否超过阈值
-      shouldTrigger = daysAgo(node.last_reconsolidated) > daysThreshold;
-    }
-
-    if (shouldTrigger) {
-      deepTargets.push(node);
-      deepCount++;
+    // rejected_by_user 链接天然被过滤（getLinksForNode 默认排除），
+    // 这里只统计 confirmed/pending 的真实邻接
+    const links = getLinksForNode(db, node.id).filter(l => l.status === 'confirmed');
+    for (const link of links) {
+      const otherId = link.from_id === node.id ? link.to_id : link.from_id;
+      if (nodeIds.has(otherId)) existingLinkCount++;
     }
   }
+  existingLinkCount /= 2; // 每条链接被计数了两次
+  const maxLinks = (nodes.length * (nodes.length - 1)) / 2;
+  const density = maxLinks > 0 ? existingLinkCount / maxLinks : 1;
+  if (density >= 0.3) return;
 
-  // 按节点去重：同一节点已在再巩固队列中则跳过此次（其他节点不受影响）
-  const dedupedTargets = deepTargets.filter(n => !inFlightNodes.has(n.id));
+  log.debug(`感知读: density=${density.toFixed(2)} nodes=${nodes.length}`);
+  const MAX_PENDING_LINKS_PER_RECALL = 5;
+  let pendingCount = 0;
+  for (let i = 0; i < nodes.length - 1; i++) {
+    if (pendingCount >= MAX_PENDING_LINKS_PER_RECALL) break;
+    for (let j = i + 1; j < nodes.length; j++) {
+      if (pendingCount >= MAX_PENDING_LINKS_PER_RECALL) break;
 
-  // 冲突检测路径的名额占用（和 dedupedTargets 路径共用 inFlightNodes 配额）：
-  // - 以本次 recall 的节点 id 集合（排序后）作为 sentinel，保证同一批 recall
-  //   的重复触发会被 dedupe（命中 sentinel 则跳过），避免 detect 分支在没有
-  //   dedupedTargets 时绕过全局并发上限。
-  // - sentinel 用 "detect:" 前缀与真实 node id 区分。
-  let detectSentinel: string | null = null;
-  const wantDetect = nodes.length >= 2 || !!context;
-  if (wantDetect) {
-    const ids = nodes.map(n => n.id).sort();
-    const key = `detect:${ids.join('|')}`;
-    // 超容量 OR 同一批 recall 已在检测中 → 跳过 detect 分支
-    if (inFlightNodes.size < MAX_CONCURRENT_RECONSOLIDATIONS && !inFlightNodes.has(key)) {
-      detectSentinel = key;
-    }
-  }
+      const a = nodes[i];
+      const b = nodes[j];
 
-  // 异步串行执行深度再巩固 + 冲突检测，避免不可控的并发 LLM 调用
-  if (dedupedTargets.length > 0 || detectSentinel) {
-    // 占用配额：把待处理节点的 id 加入 in-flight 集合
-    for (const n of dedupedTargets) {
-      inFlightNodes.add(n.id);
-      claimedNodeIds.push(n.id);
-    }
-    if (detectSentinel) {
-      inFlightNodes.add(detectSentinel);
-      claimedNodeIds.push(detectSentinel);
-    }
-    spawnedAsync = true;
-    const work = (async () => {
-      for (const node of dedupedTargets) {
-        log.info(`深度再巩固触发 node=${node.id} reason=时间`);
-        try {
-          await deepReconsolidate(db, node, nodes, context);
-        } catch (err) {
-          // 修复 F3(2026-05-21): LLMServiceError 通过 hook 通知熔断器 —
-          // recall 路径 fire-and-forget,不走 scheduler 的 recordLLMFailure,
-          // 否则熔断器只能靠 scheduler 低频 task 累积失败,这个路径完全绕过。
-          if (err instanceof LLMServiceError) notifyLLMFailure(err);
-          log.error('深度再巩固失败:', (err as Error).message);
-        }
-      }
-      // 条件 2+3: 预测误差驱动的冲突检测（仅在本次成功占到 sentinel 时才跑）
-      if (detectSentinel) {
-        try {
-          await detectAndReconsolidateAsync(db, nodes, context);
-        } catch (err) {
-          // 同 F3 修复:LLMServiceError 也通知熔断器
-          if (err instanceof LLMServiceError) notifyLLMFailure(err);
-          log.error('冲突检测失败:', (err as Error).message);
-        }
-      }
-    })()
-      .catch(err => log.warn('再巩固 IIFE 未捕获异常:', (err as Error).message))
-      .finally(() => {
-        // 释放本次占用的所有节点 id 和 detect sentinel
-        for (const id of claimedNodeIds) inFlightNodes.delete(id);
+      // 跳过两个都是 meta 类型的节点对
+      if (a.is_meta && b.is_meta) continue;
+
+      if (linkExists(db, a.id, b.id)) continue;
+
+      const judgment = inferLinkType(a, b);
+      const link = createLink(db, {
+        from_id: a.id,
+        to_id: b.id,
+        relation: [judgment],
+        strength: getParam('metabolism-params', 'perceptual_read_link_strength', 0.5),
+        note: '感知读：同次 recall 结果',
+        auto: true,
+        status: 'pending',
       });
-    void trackBackgroundWork(work);
-  }
-
-  } catch (err) {
-    // 同步路径任何异常都立刻释放已占用的名额，避免泄漏
-    log.error(`reconsolidateOnRecall 同步异常: ${(err as Error).message}`);
-    for (const id of claimedNodeIds) inFlightNodes.delete(id);
-    throw err;
-  } finally {
-    // 如果没进入 async IIFE,同步路径跑完也要释放(理论上 claimedNodeIds 在
-    // 未 spawnedAsync 时为空,但保险起见统一兜底)
-    if (!spawnedAsync) {
-      for (const id of claimedNodeIds) inFlightNodes.delete(id);
+      if (!link) continue;
+      // 链接精化统一由 refineRecentLinks 定期批量处理，不在 recall 路径上调 LLM
+      updateConnectivity(db, a.id);
+      updateConnectivity(db, b.id);
+      pendingCount++;
     }
   }
 }
 
 /**
- * 异步冲突检测 + 再巩固
- *
- * 1. 启发式快速扫描（零 LLM 成本）
- * 2. 高置信度 → 直接触发深度再巩固
- * 3. 中置信度 → LLM 矛盾检测确认
- * 4. 确认的冲突 → 创建 contradicts 链接 + 深度再巩固
+ * 时间条件 + version == 1（设计文档 §5.5：仅首版节点触发时间驱动的深度读）。
  */
-async function detectAndReconsolidateAsync(
-  db: Database.Database,
-  nodes: BrainNode[],
-  context?: string,
-): Promise<void> {
-  const signals = detectConflictSignals(nodes, context);
-  if (signals.length === 0) return;
-  log.info(`冲突检测: ${signals.length} signals`);
+export function selectDeepTargets(nodes: BrainNode[]): BrainNode[] {
+  const daysThreshold = getParam('metabolism-params', 'reconsolidate_days_threshold', 7);
+  return nodes.filter((node) => {
+    // version > 1 的节点已被修订过，跳过时间驱动的深度再巩固
+    if (node.version > 1) return false;
+    return daysAgo(node.last_reconsolidated || node.created) > daysThreshold;
+  });
+}
 
-  const maxChecks = getParam('metabolism-params', 'max_conflict_checks_per_recall', 2);
-  let checkCount = 0;
+/**
+ * 把一条排队的再巩固工作展开为待处理条目：
+ * - deep:<节点>      时间驱动的深度读，累计不超过 deep_reconsolidate_max_per_recall
+ * - conflict:<节点>  冲突信号触发的深度读，累计不超过 max_conflict_checks_per_recall
+ * 节点按当前状态重新读取；已归档或被取代的不再处理。
+ */
+export function planReconsolidateItems(db: Database.Database, row: RecallFollowupRow): RecallFollowupPlan {
+  const nodes = row.nodeIds
+    .map(id => getNode(db, id))
+    .filter((node): node is BrainNode => !!node && !node.archived && !node.is_superseded);
+  if (nodes.length === 0) return { items: [] };
+  const context = row.context ?? undefined;
+  // 未标注的节点（annotate 尚未给出维度）现在做不了深度读；LLM 可用时保留该行，等标注后补做。
+  const awaitingAnnotation = (node: BrainNode) => isLlmConfigured() && (node.refinement ?? 0) <= 0;
+  let retryLater = false;
+  const handled = new Set(row.handled);
+  const handledCount = (prefix: string) => row.handled.filter(key => key.startsWith(prefix)).length;
+  const items: RecallFollowupItem[] = [];
+  const planned = new Set<string>();
+  const add = (key: string, run: () => Promise<void>): boolean => {
+    if (handled.has(key) || planned.has(key)) return false;
+    planned.add(key);
+    items.push({ key, run });
+    return true;
+  };
 
-  for (const signal of signals) {
-    if (checkCount >= maxChecks) break;
+  const maxDeep = getParam('metabolism-params', 'deep_reconsolidate_max_per_recall', 3);
+  let deepBudget = maxDeep - handledCount('deep:');
+  for (const node of selectDeepTargets(nodes)) {
+    if (deepBudget <= 0) break;
+    if (awaitingAnnotation(node)) { retryLater = true; continue; }
+    if (add(`deep:${node.id}`, async () => {
+      log.info(`深度再巩固触发 node=${node.id} reason=时间`);
+      await deepReconsolidate(db, node, nodes, context);
+    })) deepBudget--;
+  }
 
-    if (signal.confidence >= 0.7) {
-      // 高置信度：直接触发深度再巩固
-      const node = nodes.find(n => n.id === signal.nodeA);
-      if (node) {
-        await deepReconsolidate(db, node, nodes, context);
-        checkCount++;
-      }
-    } else if (signal.confidence >= 0.3) {
-      checkCount++;
-
-      if (signal.type === 'context_mismatch' && context) {
-        // 中置信度上下文不匹配：直接交给深度再巩固的 LLM 判断
-        const node = nodes.find(n => n.id === signal.nodeA);
-        if (node) {
-          await deepReconsolidate(db, node, nodes, context);
-        }
-      } else if (signal.type === 'cross_node' && signal.nodeB) {
-        // 节点间疑似矛盾：创建 pending 链接，交给 link-evaluate 判断
-        const nodeA = nodes.find(n => n.id === signal.nodeA);
+  // 预测误差驱动的冲突检测：启发式快速扫描（零 LLM 成本）决定哪些节点值得深度读
+  if (nodes.length >= 2 || context) {
+    const maxChecks = getParam('metabolism-params', 'max_conflict_checks_per_recall', 2);
+    let conflictBudget = maxChecks - handledCount('conflict:');
+    const signals = conflictBudget > 0 ? detectConflictSignals(nodes, context) : [];
+    if (signals.length > 0) log.info(`冲突检测: ${signals.length} signals`);
+    for (const signal of signals) {
+      if (conflictBudget <= 0) break;
+      const nodeA = nodes.find(n => n.id === signal.nodeA);
+      if (!nodeA) continue;
+      if (signal.confidence >= 0.7 || (signal.confidence >= 0.3 && signal.type === 'context_mismatch' && context)) {
+        // 高置信度，或中置信度的上下文不匹配：交给深度再巩固的 LLM 判断
+        if (awaitingAnnotation(nodeA)) { retryLater = true; continue; }
+        if (add(`conflict:${nodeA.id}`, () => deepReconsolidate(db, nodeA, nodes, context))) conflictBudget--;
+      } else if (signal.confidence >= 0.3 && signal.type === 'cross_node' && signal.nodeB) {
+        // 节点间疑似矛盾：创建 pending 链接交给 link-evaluate 判断，再深度读较旧的一方
         const nodeB = nodes.find(n => n.id === signal.nodeB);
-        if (nodeA && nodeB && !linkExists(db, nodeA.id, nodeB.id)) {
-          createLink(db, {
-            from_id: nodeA.id,
-            to_id: nodeB.id,
-            relation: [{ type: 'contradicts', confidence: signal.confidence }],
-            strength: signal.confidence,
-            auto: true,
-            status: 'pending',
-            note: '再巩固：启发式检测到疑似矛盾',
-          });
-          const target = nodeA.version <= nodeB.version ? nodeA : nodeB;
+        if (!nodeB || linkExists(db, nodeA.id, nodeB.id)) continue;
+        const target = nodeA.version <= nodeB.version ? nodeA : nodeB;
+        if (awaitingAnnotation(target)) { retryLater = true; continue; }
+        if (add(`conflict:${target.id}`, async () => {
+          if (!linkExists(db, nodeA.id, nodeB.id)) {
+            createLink(db, {
+              from_id: nodeA.id,
+              to_id: nodeB.id,
+              relation: [{ type: 'contradicts', confidence: signal.confidence }],
+              strength: signal.confidence,
+              auto: true,
+              status: 'pending',
+              note: '再巩固：启发式检测到疑似矛盾',
+            });
+          }
           await deepReconsolidate(db, target, nodes, context);
-        }
+        })) conflictBudget--;
       }
     }
   }
+  return { items, retryLater };
+}
+
+/** 调度器任务入口：处理一条排队的深度再巩固工作。 */
+export async function runReconsolidateFollowup(db: Database.Database): Promise<void> {
+  await runRecallFollowup(db, 'reconsolidate', {
+    strategy: 'reconsolidate',
+    // LLM 未配置时 deepReconsolidate 走非模型降级（精炼度 +0.1），不需要可调用的路由。
+    skipRoutePrecheck: () => !isLlmConfigured(),
+    planItems: row => planReconsolidateItems(db, row),
+  });
 }
 
 /**
@@ -333,27 +212,8 @@ async function deepReconsolidate(
     log.debug(`深度再巩固跳过 node=${node.id}: 未经标注 (refinement=${node.refinement})`);
     return;
   }
-  // 熔断器保护:recall 路径上的深度再巩固由 reconsolidateOnRecall fire-and-forget
-  // 触发,不走 scheduler 的 LLM 熔断保护。这里显式读熔断器状态,open 时走非 LLM
-  // 降级路径,避免 LLM 挂了时每次 recall 都要等超时失败。
-  //
-  // 修复 M12(2026-05-09):熔断期间**只更新 last_reconsolidated**,不再 +0.1 refinement。
-  // 之前 LLM 完全不可用(断网/配额耗尽)时,用户反复 recall 同一节点,refinement 在
-  // 没有真实 review 的情况下被一路推到 1.0 → maturity_score 虚高 → recall 排序错乱
-  // → 进一步污染 crystal 涌现等下游。熔断期间 last_reconsolidated 推进足以避免
-  // 同节点频繁重试 LLM(等熔断恢复再做真正的深度再巩固)。
-  if (getCircuitState(db).state === 'open') {
-    log.debug(`深度再巩固跳过 node=${node.id}: LLM 熔断器开启`);
-    // 时区坑:SQLite 的 datetime('now') 返回 "YYYY-MM-DD HH:MM:SS"(无 Z),
-    // JS new Date(...) 会按本地时区解析 → daysAgo 跨时区误差最多 ±12h。
-    // 统一走 JS ISO (now()) 避免 freshness.ts / daysAgo 读取时误判。
-    const ts = now();
-    db.prepare(`
-      UPDATE nodes SET last_reconsolidated = ?, updated = ?
-      WHERE id = ?
-    `).run(ts, ts, node.id);
-    return;
-  }
+  // legacy 熔断由调度器在 claim 之前判断，连接级熔断由队列 runner 预检；这里不再重复检查，
+  // 否则会把“暂时调不了”固化成“已处理”。
   if (!isLlmConfigured()) {
     const ts = now();
     db.prepare(`

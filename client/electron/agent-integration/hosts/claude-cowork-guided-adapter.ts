@@ -447,7 +447,7 @@ function contextDiagnostics(context: AdapterOperationContext): string[] {
   if (context.installation.hostVariant !== CATALOG_ID) diagnostics.push('claude_cowork_host_variant_mismatch')
   if (context.installation.distribution.distributionId !== DISTRIBUTION_ID) diagnostics.push('claude_cowork_distribution_id_mismatch')
   if (context.installation.distribution.packageProvenance !== PACKAGE_PROVENANCE) diagnostics.push('claude_cowork_signed_distribution_unproven')
-  if (!context.installation.distribution.capabilityFingerprint?.startsWith('desktop-bundle-surface-v1:')) diagnostics.push('claude_cowork_bundle_surface_unproven')
+  if (!context.installation.distribution.capabilityFingerprint?.startsWith('desktop-bundle-surface-v2:')) diagnostics.push('claude_cowork_bundle_surface_unproven')
   if (!context.installation.distribution.executableRealpath || !path.isAbsolute(context.installation.distribution.executableRealpath)) diagnostics.push('claude_cowork_executable_realpath_unproven')
   if (!context.hostVersion) diagnostics.push('claude_cowork_host_version_unproven')
   if (!context.installationId) diagnostics.push('claude_cowork_installation_id_missing')

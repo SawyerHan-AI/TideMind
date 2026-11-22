@@ -1,3 +1,4 @@
+import { configurationOwnerId } from '@server/agent-caller-observation.js'
 import { retainCodexSourceRejection } from '@server/db/codex-bridge-continuity.js'
 import { isAutomaticConsentContext, type AutomaticConsentContext, type ConsentOrigin } from './consent'
 import { changeConnectionIntent, connectionIntentDomain, isPausedVerifiedRun, readConnectionIntent, type ConnectionIntent } from './connection-intent'
@@ -855,6 +856,11 @@ export function persistedComponentConfigRoots(
  * v34 的本机 Agent repository。这里只封装 SQLite 状态和事务边界，不执行任何
  * 文件、CLI、Plugin 或宿主写入。所有时间都由调用方传入，便于恢复测试与审计。
  */
+/** An unidentified caller is credited to the configured identity: the member's own id, or its shared canonical id. */
+const CONFIGURED_AGENT_IDS_SQL = `SELECT agent_id FROM agent_installations WHERE id = @id
+  UNION SELECT b.canonical_agent_id FROM agent_identity_bindings b
+    JOIN agent_identity_binding_members m ON m.binding_id = b.id WHERE m.installation_id = @id`
+
 export class AgentIntegrationRepository {
   private applyTaskFeedTraversalCache: ApplyTaskFeedTraversalCache | null = null
 
@@ -1375,7 +1381,10 @@ export class AgentIntegrationRepository {
         && (persistedConsentSurfaceFingerprint(priorInstallation)
           !== persistedConsentSurfaceFingerprint(persisted)
           || !activeConsentCoversExecutable(this.db, persisted))
-      if (persisted.family === 'codex' && ['source_not_official','release_distribution_not_accepted','release_mode_detect_only','release_entry_missing']
+      const sharedMember = Boolean(this.db.prepare('SELECT 1 FROM agent_identity_binding_members WHERE installation_id=?').get(persisted.id))
+      // The sticky token block stays Codex-only: one misclassified scan must not
+      // permanently disable another product's shared connection.
+      if (sharedMember && persisted.family === 'codex' && ['source_not_official','release_distribution_not_accepted','release_mode_detect_only','release_entry_missing']
         .includes(persistedManagementEligibility(persisted)?.reason ?? '')) retainCodexSourceRejection(this.db,persisted.id)
       const installationSurfaceChanged = installKeyChanged || projectionSurfaceChanged
       // Only a change of the approval scope (identity, source channel, target paths)
@@ -1385,9 +1394,7 @@ export class AgentIntegrationRepository {
         && priorInstallation.detected_version !== null
         && priorInstallation.detected_version !== detectedVersion
       if ((versionChanged || installationSurfaceChanged) && persisted.desired_state !== 'removed') {
-        if (persisted.family === 'codex' && this.db.prepare(
-          'SELECT 1 FROM agent_identity_binding_members WHERE installation_id=?',
-        ).get(persisted.id)) {
+        if (sharedMember) {
           this.db.prepare(`INSERT INTO codex_bridge_invalidations(installation_id,last_run_rowid)
             SELECT ?,COALESCE(MAX(rowid),0) FROM reconcile_runs WHERE installation_id=?
             ON CONFLICT(installation_id) DO UPDATE SET last_run_rowid=MAX(last_run_rowid,excluded.last_run_rowid)`)
@@ -2829,6 +2836,39 @@ export class AgentIntegrationRepository {
    * identity and version generations. Legacy `agents.last_active` is
    * deliberately not consulted here.
    */
+  /** Set when this entry point has no connection of its own and reads a sibling's managed configuration. */
+  configurationOwnerId(installationId: string): string | null {
+    const owner = configurationOwnerId(this.db, installationId)
+    return owner && owner !== installationId ? owner : null
+  }
+
+  /** Signals actually observed for this Installation, by the same attribution rule as latestObservedUseAt. */
+  observedUseSignals(installationId: string): ReadonlySet<string> {
+    try {
+      // Use observed under an earlier connection does not vouch for a new one that has not been used yet.
+      return new Set((this.db.prepare(`SELECT DISTINCT o.signal_name AS signal FROM agent_caller_observations o
+        WHERE (o.caller_installation_id = @id OR (o.caller_installation_id = '' AND o.config_agent_id IN (${CONFIGURED_AGENT_IDS_SQL})))
+          AND o.last_observed_at >= COALESCE((SELECT s.created_at FROM agent_consents s JOIN agent_installations i
+            ON i.consent_envelope_id = s.id WHERE i.id = @id), '9999')`)
+        .all({ id: installationId }) as Array<{ signal: string }>).map(row => row.signal))
+    } catch {
+      return new Set()
+    }
+  }
+
+  /** Real use credited to this Installation by the process that made the call; unidentified callers fall back to the configured identity. */
+  latestObservedUseAt(installationId: string): string | null {
+    try {
+      const row = this.db.prepare(`SELECT MAX(o.last_observed_at) AS at FROM agent_caller_observations o
+        WHERE o.caller_installation_id = @id
+          OR (o.caller_installation_id = '' AND o.config_agent_id IN (${CONFIGURED_AGENT_IDS_SQL}))`)
+        .get({ id: installationId }) as { at: string | null } | undefined
+      return row?.at ?? null
+    } catch {
+      return null
+    }
+  }
+
   latestVerifiedHostActivityAt(installationId: string, now: string): string | null {
     const row = this.db.prepare(`
       SELECT MAX(evidence.observed_at) AS observed_at
@@ -5802,7 +5842,7 @@ function applyTaskFeedRunPriority(run: ApplyTaskRunRow): number {
   if (isPausedVerifiedRun(run)) return 3
   if (FEED_RUNNING_RUN_STATES.has(run.state)) return 0
   if (run.state === 'applied_unverified') return 2
-  if (run.state === 'cancelled' && ['superseded_by_disconnect','superseded_by_confirmed_generation','superseded_by_same_generation_repair'].includes(run.failure_code ?? '')) return 3
+  if (run.state === 'cancelled' && ['superseded_by_disconnect','superseded_by_confirmed_generation','superseded_by_same_generation_repair','superseded_by_service_proof','superseded_by_codex_continuity'].includes(run.failure_code ?? '')) return 3
   return run.state === 'committed' ? 3 : 1
 }
 

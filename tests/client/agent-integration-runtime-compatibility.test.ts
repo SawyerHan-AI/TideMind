@@ -790,7 +790,7 @@ describe('Installation identity across host generations', () => {
     distributionId: CURSOR_ID,
     executableRealpath: '/Applications/Cursor.app/Contents/MacOS/Cursor',
     packageProvenance: CURSOR_PROVENANCE,
-    capabilityFingerprint: 'desktop-bundle-surface-v1:generation-1',
+    capabilityFingerprint: 'desktop-bundle-surface-v2:generation-1',
     portableArtifactFingerprint: 'a'.repeat(64),
   }
 
@@ -798,7 +798,7 @@ describe('Installation identity across host generations', () => {
     const upgraded = cursorIdentity({
       ...previousGeneration,
       executableRealpath: '/Applications/Cursor.app/Contents/MacOS/Cursor-3.20',
-      capabilityFingerprint: 'desktop-bundle-surface-v1:generation-2',
+      capabilityFingerprint: 'desktop-bundle-surface-v2:generation-2',
       portableArtifactFingerprint: 'b'.repeat(64),
     })
     expect(assessDistributionIdentity(upgraded.distribution, previousGeneration)).toMatchObject({
@@ -859,7 +859,7 @@ describe('Installation identity across host generations', () => {
   it('stays strict on executable and code fingerprint when the record has no source identity', () => {
     const legacy: DistributionIdentity = {
       executableRealpath: '/Applications/Cursor.app/Contents/MacOS/Cursor',
-      capabilityFingerprint: 'desktop-bundle-surface-v1:generation-1',
+      capabilityFingerprint: 'desktop-bundle-surface-v2:generation-1',
     }
     const movedExecutable = cursorIdentity({
       ...previousGeneration,
@@ -875,7 +875,7 @@ describe('Installation identity across host generations', () => {
 
     const changedCode = cursorIdentity({
       ...previousGeneration,
-      capabilityFingerprint: 'desktop-bundle-surface-v1:generation-2',
+      capabilityFingerprint: 'desktop-bundle-surface-v2:generation-2',
     })
     expect(matchInstallationIdentity(changedCode, [record(legacy)])).toMatchObject({
       kind: 'distribution_conflict',
@@ -885,7 +885,7 @@ describe('Installation identity across host generations', () => {
   it('stays strict when the observation has no source identity', () => {
     const observedWithoutSource = cursorIdentity({
       executableRealpath: '/Applications/Other.app/Contents/MacOS/Cursor',
-      capabilityFingerprint: 'desktop-bundle-surface-v1:generation-1',
+      capabilityFingerprint: 'desktop-bundle-surface-v2:generation-1',
     })
     expect(matchInstallationIdentity(observedWithoutSource, [record(previousGeneration)])).toMatchObject({
       kind: 'distribution_conflict',

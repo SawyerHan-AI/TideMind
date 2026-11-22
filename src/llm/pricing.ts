@@ -90,7 +90,11 @@ function calculateEstimatedCost(
   const id = modelId.toLowerCase()
   const pricing = PRICING_TABLE.find(p => id.includes(p.pattern))
   if (!pricing) {
-    log.error(`[pricing] Unknown model ID: ${modelId} — estimated cost is unavailable. Add the actual model ID to PRICING_TABLE.`);
+    if (!reportedUnknownModels.has(id) && reportedUnknownModels.size < 1000) {
+      reportedUnknownModels.add(id);
+      // "default" = follow the CLI default without a reported actual model (documented limitation).
+      (id === 'default' ? log.debug : log.warn)(`[pricing] Unknown model ID: ${modelId} — estimated cost is unavailable. Add the actual model ID to PRICING_TABLE.`);
+    }
     return null;
   }
 
@@ -108,6 +112,9 @@ function calculateEstimatedCost(
  * 兼容旧调用点的数值接口。新 usage ledger 必须使用 estimateVersionedCost，
  * 才能把未知模型保存为 NULL + unavailable，而不是把 0 当成真实价格。
  */
+/** Unknown model IDs already reported by this process (one report per ID). */
+const reportedUnknownModels = new Set<string>();
+
 export function estimateCost(
   modelId: string,
   inputTokens: number,

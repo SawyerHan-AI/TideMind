@@ -175,6 +175,7 @@ export async function promoteFrequentTags(db: Database.Database): Promise<{
         // 创建新 tag 节点：标签名作为 title，content 由 LLM 补充定义
         const tagNode = createNode(db, {
           is_tag: 1,
+          source_tool: 'tag-promote',
           title: tag,
           content: '',
           heat: 1.0,

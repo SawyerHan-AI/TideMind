@@ -1,3 +1,4 @@
+import { provenanceNodeIds } from '../db/node-provenance.js';
 import { vectorSpace } from '../embedding/vector-space.js';
 import type Database from 'better-sqlite3';
 import type { RecallInput, RecallOutput, RecallNode, RecallNodeLink, RecallIndexItem, BrainNode, NodeType, Intent, RecallDiagnostics } from '../types.js';
@@ -5,8 +6,8 @@ import type { IRepository } from '../db/repository.js';
 import { getParam } from '../strategy/loader.js';
 import { parseTags } from '../db/nodes.js';
 import { searchHybrid } from '../search/hybrid.js';
-import { reconsolidateOnRecall } from '../metabolism/reconsolidate.js';
-import { revalidateLinks } from '../metabolism/link-revalidate.js';
+import { perceptualReadOnRecall } from '../metabolism/reconsolidate.js';
+import { enqueueRecallFollowup } from '../db/recall-followups.js';
 import { expandFromNode } from '../graph/expansion.js';
 import { getGateStatus } from '../db/stats.js';
 import { l2DistanceToSimilarity } from '../utils/similarity.js';
@@ -14,6 +15,7 @@ import { computeFreshness } from '../utils/freshness.js';
 import { createLogger } from '../utils/logger.js';
 import { pickDisplayTitle } from '../utils/display-title.js';
 import { getDb } from '../db/connection.js';
+import { isLlmConfigured } from '../config.js';
 
 const log = createLogger('recall');
 
@@ -168,7 +170,8 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
     // from_agents 多值 OR 过滤：source_tool 命中其一。
     if (input.from_agents != null && input.from_agents.length > 0) {
       const wantAgents = new Set(input.from_agents);
-      nodes = nodes.filter(n => n.source_tool != null && wantAgents.has(n.source_tool));
+      const attributed = provenanceNodeIds(repo.rawDb, input.from_agents);
+      nodes = nodes.filter(n => (n.source_tool != null && wantAgents.has(n.source_tool)) || attributed.has(n.id));
     }
     // sort='recent' + query：hybrid 返回的是 relevance 序，用户显式要 recent 时按 created 重排。
     // 因上面已 over-fetch，这里得到的是"匹配集中最近的 limit 条"，而非仅把 relevance-top-N 重排。
@@ -325,13 +328,20 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
       ? filteredScores.reduce((a, b) => a + b, 0) / filteredScores.length
       : undefined;
   }
-  // 套 try/catch:reconsolidate v0.2.15 起同步异常会 re-throw,如果让它冒到
-  // recall 调用方会让整个 MCP tool call 返回错误。再巩固是尽力而为的增强
-  // 逻辑,失败不应影响 recall 的主要返回。log 出来便于排查。
+  // 感知读是尽力而为的增强逻辑,失败不应影响 recall 的主要返回。
   try {
-    reconsolidateOnRecall(db, exactNodes, input.context, avgScore);
+    perceptualReadOnRecall(db, exactNodes, avgScore);
   } catch (err) {
-    log.error(`reconsolidateOnRecall failed (recall continues): ${(err as Error).message}`);
+    log.error(`perceptualReadOnRecall failed (recall continues): ${(err as Error).message}`);
+  }
+  // 深度再巩固需要模型调用:只记录意图,由调度器任务在长驻进程里消费。
+  // 不检查 LLM 是否已配置——未配置时消费侧走非模型降级。
+  if (exactNodes.length > 0) {
+    try {
+      enqueueRecallFollowup(db, { kind: 'reconsolidate', nodeIds: exactNodes.map(n => n.id), context: input.context });
+    } catch (err) {
+      log.warn(`再巩固入队失败 (recall continues): ${(err as Error).message}`);
+    }
   }
 
   // 轻量发散：找一个与结果集语义相关但不在结果中的节点
@@ -486,29 +496,15 @@ export async function recall(repo: IRepository, input: RecallInput): Promise<Rec
 
   log.info(`返回 ${resultNodes.length} 条结果 (exact=${exactMatches.length}/related=${relatedMatches.length}) mode=${recallMode} 耗时=${Date.now() - startTime}ms`);
 
-  // fire-and-forget: 链接重新验证 — 仅搜索路径 + exact 非空 + 有 query (设计 doc §7.4)
-  // related 是工具补的，agent 不一定真读，不该触发链接 revalidate
-  if (exactMatches.length > 0 && input.query && usedHybridSearch) {
-    const REVALIDATE_TIMEOUT_MS = 10_000;
-    const exactIds = exactNodes.map(n => n.id);
-    const work = revalidateLinks(db, exactIds, {
-      query: input.query,
-      recalledNodeIds: exactIds,
-    });
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<void>(resolve => {
-      timer = setTimeout(() => {
-        log.warn(`revalidateLinks 超过 ${REVALIDATE_TIMEOUT_MS}ms 未完成，放弃等待（后台仍在跑）`);
-        resolve();
-      }, REVALIDATE_TIMEOUT_MS);
-      timer.unref?.();
-    });
-    Promise.race([work, timeout])
-      .catch(err =>
-        log.warn(`链接重新验证异步失败: ${err instanceof Error ? err.stack : String(err)}`),
-      )
-      .finally(() => { if (timer) clearTimeout(timer); });
-    work.catch(() => { /* 防 unhandled */ });
+  // 链接重新验证 — 仅搜索路径 + exact 非空 + 有 query (设计 doc §7.4)
+  // related 是工具补的，agent 不一定真读，不该触发链接 revalidate。
+  // 只记录意图:模型调用由调度器任务在长驻进程里完成,MCP 进程不直接调模型。
+  if (exactMatches.length > 0 && input.query && usedHybridSearch && isLlmConfigured()) {
+    try {
+      enqueueRecallFollowup(db, { kind: 'link_revalidate', nodeIds: exactNodes.map(n => n.id), query: input.query });
+    } catch (err) {
+      log.warn(`链接重新验证入队失败 (recall continues): ${(err as Error).message}`);
+    }
   }
 
   return {

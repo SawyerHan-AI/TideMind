@@ -9,7 +9,7 @@ export async function codexLauncherParentIdentity(executable: string): Promise<s
     const real = await fs.realpath(parent)
     if (real !== parent) return null
     const stat = await fs.stat(parent, { bigint: true })
-    return stat.isDirectory() ? [stat.dev, stat.ino, stat.birthtimeNs].join(':') : null
+    return stat.isDirectory() ? [stat.ino, stat.birthtimeNs].join(':') : null
   } catch {
     return null
   }

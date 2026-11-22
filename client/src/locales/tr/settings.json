@@ -32,12 +32,7 @@
     "updateChannelDesc": "Beta yeni özellikleri daha erken sunar ancak daha az kararlı olabilir. Değişiklik bir sonraki kontrolde geçerli olur.",
     "updateChannelStable": "Kararlı",
     "updateChannelBeta": "Beta",
-    "channelSwitchConfirm": "Stable'a geçmek bir sonraki güncelleme kontrolünde en son kararlı sürümü yükler (bazı deneysel özellikler geri alınabilir). Devam edilsin mi?",
-    "backgroundOrganization": {
-      "title": "Bu cihazda arka plan bellek düzenleme",
-      "description": "Otomatik içgörülerin yinelenmesini önlemek için yalnızca bir cihazda açın. Eşitleme, not aktarımı, arama ve isteğe bağlı model kullanımı devam eder. Önce etkin işler tamamlanır. Cihaz değiştirmeden önce eski cihazda kapatıp TideMind ve Agent bağlantılarını normal biçimde sonlandırın, ardından yeni cihazda açın.",
-      "error": "Ayar kaydedilemedi. Yeniden deneyin."
-    }
+    "channelSwitchConfirm": "Stable'a geçmek bir sonraki güncelleme kontrolünde en son kararlı sürümü yükler (bazı deneysel özellikler geri alınabilir). Devam edilsin mi?"
   },
   "external": {
     "subtabs": {
@@ -692,7 +687,7 @@
       },
       "synapticConsolidate": {
         "name": "Sinaptik Sağlamlaştırma",
-        "description": "Almanın yan etkisi — ısı artışı (her zaman) + yeniden sağlamlaştırma (koşullu, belleğin güncellenmesi gerekip gerekmediğini değerlendirir). Sinaptik bozunmanın çifti.",
+        "description": "Isı artışı ve sonuçların bağlanması alma sırasında hemen gerçekleşir; derin yeniden sağlamlaştırma ve çakışma tespiti (belleğin güncellenmesi gerekip gerekmediğini değerlendirir) kuyruğa alınır ve belirli aralıklarla işlenir. Sinaptik bozunmanın çifti.",
         "maxContextNodes": "Maks. bağlam düğümü",
         "maxContextNodesTip": "Yeniden sağlamlaştırma sırasında maks. bağlam düğümü.",
         "independenceBoost": "Bağımsızlık Artışı",
@@ -703,7 +698,9 @@
         "conflictCrossMinOverlapTip": "Düğümler arası çatışma saptama için min. anahtar sözcük örtüşmesi.",
         "conflictHighConfidence": "Çatışma güven sınırı",
         "conflictHighConfidenceTip": "Çatışma güveni üst sınırı.",
-        "trigger": "Sorgu sırasında"
+        "trigger": "Zamanlı",
+        "interval": "Yürütme aralığı",
+        "intervalTip": "Yürütme aralığı (dakika). Her çalıştırma kuyruktaki bir recall'ı işler."
       },
       "synapticDecay": {
         "name": "Sinaptik Bozunma",
@@ -752,12 +749,14 @@
       },
       "linkRevalidate": {
         "name": "Bağlantı Yeniden Doğrulama",
-        "description": "Recall tarafından tetiklenir: mevcut bağlantıları yeni bağlamda yeniden değerlendirir. Bellek yeniden sağlamlaştırma teorisine dayanır.",
+        "description": "Recall işi kuyruğa alır, arka plan işleme belirli aralıklarla yürütür: mevcut bağlantıları yeni bağlamda yeniden değerlendirir. Bellek yeniden sağlamlaştırma teorisine dayanır.",
         "maxLinksPerRun": "Yürütme başına maks. bağlantı",
-        "maxLinksPerRunTip": "Recall başına yeniden doğrulanacak maks. bağlantı.",
+        "maxLinksPerRunTip": "Kuyruktaki recall başına yeniden doğrulanacak maks. bağlantı.",
         "minLinkAgeHours": "Min. bağlantı yaşı",
         "minLinkAgeHoursTip": "Yalnızca bu süreden eski bağlantıları doğrular (saat).",
-        "trigger": "Recall ile tetiklenir"
+        "trigger": "Zamanlı",
+        "interval": "Yürütme aralığı",
+        "intervalTip": "Yürütme aralığı (dakika). Her çalıştırma kuyruktaki bir recall'ı işler."
       },
       "keystone": {
         "name": "Düğüm Terfisi",
@@ -1017,151 +1016,6 @@
       "kimiMcpHint": "MCP + bağlam enjeksiyonu Hook'u ~/.kimi-code/ içine yazıldı. Uygulamak için kimi oturumunu yeniden başlatın.",
       "kimiSkillHint": "Skill, ~/.kimi-code/skills/ içine otomatik kuruldu ve Kimi Code başlangıcında otomatik yüklenir. Manuel kopyalama gerekmez."
     },
-    "wizard": {
-      "nameAgent": "Name Agent",
-      "configCowork": "Configure Claude Cowork",
-      "configCursor": "Configure Cursor",
-      "configCodex": "Configure Codex",
-      "configWindsurf": "Configure Windsurf",
-      "configOpenClaw": "Configure OpenClaw",
-      "configGemini": "Configure Gemini CLI",
-      "configKimi": "Kimi Code'u yapılandır",
-      "installPlugin": "Install Plugin",
-      "mcpConfig": "MCP Config",
-      "skillFile": "Skill File",
-      "verify": "Verify",
-      "selectToolHint": "Select a tool type to see configuration steps",
-      "comingSoon": "Coming Soon",
-      "other": "Manual MCP",
-      "pluginSupportHint": "Supports plugin installation with automatic MCP, Skill and Hooks configuration",
-      "agentName": "Agent Name",
-      "agentNamePlaceholder": "e.g. Work Cursor",
-      "agentNameHint": "Give this Agent a name to help manage multiple tools of the same type",
-      "creating": "Creating...",
-      "createAndContinue": "Create & Continue",
-      "generatingPlugin": "Generating plugin...",
-      "pluginGenerateFailed": "Plugin generation failed",
-      "generateFailed": "Generation failed",
-      "createFailed": "Oluşturma başarısız",
-      "completed": "Completed",
-      "manualStepsTitle": "Manual steps required:",
-      "prevStep": "Previous",
-      "nextStep": "Next",
-      "finish": "Done",
-      "installing": "Installing...",
-      "installed": "Installed",
-      "oneClickInstall": "One-click install to Claude Code",
-      "installSuccess": "Plugin installed successfully",
-      "installFailed": "Installation failed",
-      "manualInstallHint": "You can install manually with the command below:",
-      "cliNotDetected": "claude CLI not detected. Run the following command in terminal to install the plugin:",
-      "addConfigTo": "Add the following config to",
-      "addConfigGeneric": "Add the following MCP config to your AI tool's configuration file (usually a JSON file like mcp.json or config.json, refer to your tool's documentation for the exact location):",
-      "mcpConfigHint": "The config contains an EB_AGENT_ID environment variable to uniquely identify this Agent. If you already have other MCP configs, merge the tidemind section into the existing mcpServers.",
-      "copySkillTo": "Copy the following Skill content to",
-      "copySkillGeneric": "Copy the following guide to your AI tool's instruction config (such as rules files, system prompt, or AGENTS.md, depending on your tool):",
-      "loading": "Loading...",
-      "skillHint": "The Skill file tells AI tools how to use Tide Mind (when to call brain_prepare / brain_recall / brain_digest). After modifying the Skill, you need to re-copy it to the external tool.",
-      "baseFallbackHint": "Using generic Skill template. Replace the tool parameter and source.tool in the content with your actual tool name.",
-      "verifyDescription": "Agent created. Check if configuration is complete:",
-      "verifyAgentCreated": "Agent \"{{name}}\" created ({{id}})",
-      "verifyPluginGenerated": "{{tool}} plugin generated",
-      "verifyDesktopMcp": "Desktop MCP config written",
-      "verifyDesktopMcpHintNeeded": "Restart Claude Desktop to apply",
-      "verifyDesktopMcpHintDone": "Restart Claude Desktop to apply",
-      "verifyCursorMcp": "Cursor MCP config written",
-      "verifyCursorMcpHintOk": "Hot reload applies automatically",
-      "verifyCursorMcpHintFail": "Config write failed",
-      "verifyCodexMcp": "Codex MCP config + Hook written",
-      "verifyCodexMcpHintOk": "Restart session to apply",
-      "verifyCodexMcpHintFail": "Config write failed",
-      "verifyWindsurfMcp": "Windsurf MCP config written",
-      "verifyWindsurfMcpHintOk": "Full Windsurf restart required",
-      "verifyWindsurfMcpHintFail": "Config write failed",
-      "verifyOpenClawMcp": "OpenClaw MCP config + Hook written",
-      "verifyOpenClawMcpHintOk": "Restart OpenClaw to apply",
-      "verifyOpenClawMcpHintFail": "Config write failed",
-      "verifyGeminiMcp": "Gemini extension installed (MCP + Hook + commands)",
-      "verifyGeminiMcpHintOk": "Restart `gemini` to apply",
-      "verifyGeminiMcpHintFail": "`gemini extensions install` failed",
-      "verifyKimiMcp": "Kimi Code MCP yapılandırması + Hook yazıldı",
-      "verifyKimiMcpHintOk": "Uygulamak için oturumu yeniden başlatın",
-      "verifyKimiMcpHintFail": "Yapılandırma yazılamadı",
-      "verifyMcpAdded": "MCP config added to tool",
-      "verifyMcpAddedHint": "Confirm you have pasted the JSON config from the previous step into the tool's MCP config file",
-      "verifySkillCopied": "Skill content copied to tool",
-      "verifySkillCopiedHint": "Confirm you have copied the Skill guide into the tool's instruction config",
-      "verifyToolRestarted": "Tool restarted to apply config",
-      "verifyFirstConnection": "First connection detected",
-      "verifyFirstConnectionHint": "Start a conversation in the external tool and invoke the brain tools",
-      "cowork": {
-        "skillFile": "Skill file (brain usage guide)",
-        "desktopMcpConfig": "Claude Desktop MCP config (brain_prepare / brain_recall / brain_digest)",
-        "skillDownloaded": "Skill file (generated to Downloads)",
-        "step1": "1. Restart Claude Desktop (to apply MCP config)",
-        "step2": "2. Open Claude Cowork > Customize > Skills > Upload a skill",
-        "step3": "3. Select the Skill .md file above to upload"
-      },
-      "cursor": {
-        "mcpConfig": "Cursor MCP config (brain_prepare / brain_recall / brain_digest)",
-        "skillDownloaded": "Skill .mdc rules file (generated to Downloads)",
-        "step1": "1. Copy the .mdc file above to the project's .cursor/rules/ directory",
-        "step2": "2. Open the project in Cursor, Agent mode can now use brain tools",
-        "mcpNote": "MCP config written automatically. Cursor hot reloads without restart."
-      },
-      "codex": {
-        "mcpConfig": "Codex MCP config (config.toml)",
-        "hookConfig": "SessionStart Hook (auto-load context)",
-        "agentsDownloaded": "AGENTS.md guide (generated to Downloads)",
-        "step1": "1. Append the AGENTS.md content above to project root or ~/.codex/AGENTS.md",
-        "step2": "2. Restart Codex session to apply config",
-        "mcpNote": "MCP config and SessionStart Hook written to ~/.codex/ automatically.",
-        "skillInjected": "Skill kılavuzu ~/.codex/skills/ içine enjekte edildi",
-        "autoReadyTitle": "Tamamen yapılandırıldı — manuel adım gerekmiyor",
-        "autoReadyNote": "Codex, bir sonraki oturum başlangıcında bağlamı ve Skill kılavuzunu otomatik olarak yükleyecektir.",
-        "upgradeHint": "Codex {{version}} algılandı — sorunsuz entegrasyon için 0.121+ sürümüne yükseltin (AGENTS.md manuel kopyalama gerekmez)."
-      },
-      "windsurf": {
-        "mcpConfig": "Windsurf MCP config (mcp_config.json)",
-        "rulesDownloaded": "Rules file (generated to Downloads)",
-        "step1": "1. Copy the .md file above to the project's .windsurf/rules/ directory",
-        "step2": "2. Fully quit and restart Windsurf (closing the window is not enough)",
-        "mcpNote": "MCP config written automatically, but Windsurf does not support hot reload."
-      },
-      "openclaw": {
-        "mcpConfig": "OpenClaw MCP config (openclaw.json)",
-        "hookConfig": "Bootstrap Hook (auto-load context)",
-        "skillDownloaded": "Skill directory (generated to Downloads)",
-        "step1": "1. Copy the Skill directory above to ~/.openclaw/skills/ or project skills/",
-        "step2": "2. Restart OpenClaw to apply config",
-        "mcpNote": "MCP config and Bootstrap Hook written to ~/.openclaw/ automatically."
-      },
-      "claudeCode": {
-        "mcpConfig": "MCP Server config (brain_prepare / brain_recall / brain_digest)",
-        "skillFile": "Skill file (brain usage guide)",
-        "hooks": "Hooks (SessionStart auto-load context, PreCompact auto-save memory)"
-      },
-      "gemini": {
-        "mcpConfig": "Gemini MCP config (brain_prepare / brain_recall / brain_digest)",
-        "hookConfig": "SessionStart Hook (auto-load context)",
-        "contextFile": "GEMINI.md context file (usage guide)",
-        "commands": "Slash commands: /brain-recall /brain-digest /brain-forget",
-        "autoReadyTitle": "Fully configured — no manual steps needed",
-        "autoReadyNote": "Gemini CLI will auto-load context and tools on its next session start.",
-        "upgradeTitle": "Gemini CLI version too old for hooks",
-        "upgradeHint": "Detected Gemini CLI {{version}} — upgrade to 0.26+ to enable auto-loaded user context via SessionStart hook.",
-        "upgradeNote": "MCP tools (brain_*) and slash commands work on older versions, but you'll need to invoke brain_prepare manually."
-      },
-      "kimi": {
-        "mcpConfig": "Kimi Code MCP yapılandırması (mcp.json)",
-        "hookConfig": "Bağlam enjeksiyonu Hook'u (bağlamı otomatik yükle)",
-        "skillInjected": "Skill kılavuzu ~/.kimi-code/skills/ içine enjekte edildi",
-        "autoReadyTitle": "Tamamen yapılandırıldı — manuel adım gerekmiyor",
-        "autoReadyNote": "Kimi Code, bir sonraki oturum başlangıcında bağlamı ve Skill kılavuzunu otomatik olarak yükleyecektir.",
-        "cliMissingTitle": "Kimi Code CLI algılanmadı",
-        "cliMissingNote": "Yapılandırma hazır. Kimi Code CLI'yi kurup yeni bir oturum başlatın."
-      }
-    },
     "managed": {
       "memoryVerified": "MCP Tools doğrulandı",
       "fullyVerified": "Tamamen doğrulandı",
@@ -1354,7 +1208,8 @@
         "processing": "İşleme",
         "needsAttention": "Dikkat edilmesi gerekiyor",
         "paused": "Duraklatıldı",
-        "disconnected": "Bağlantı kesildi"
+        "disconnected": "Bağlantı kesildi",
+        "connected": "Bağlı"
       },
       "reason": {
         "verified": "Çekirdek MCP Tools doğrulandı.",
@@ -1425,7 +1280,7 @@
         "lifecycle": "Hook"
       },
       "componentStatus": {
-        "verified": "Doğrulandı",
+        "verified": "Etkin",
         "configured": "Yapılandırılmış",
         "stale": "Doğrulama gerekiyor",
         "needsSession": "Yeni oturum gerekli",
@@ -1433,7 +1288,8 @@
         "missing": "Eksik",
         "conflict": "Çatışma",
         "unsupported": "Desteklenmiyor",
-        "unconnected": "Bağlı değil"
+        "unconnected": "Bağlı değil",
+        "needsAction": "İşlem gerekli"
       },
       "defaultProfile": "Varsayılan profil",
       "installationCount": "{{count}} kurulumları",
@@ -1479,12 +1335,14 @@
       "event": {
         "activity": "Agent bağlantı etkinliği",
         "autoRepairCircuitReset": "Otomatik onarım yeniden etkinleştirildi",
+        "connectionAutoRecovered": "Bağlantı otomatik olarak kurtarıldı; kullanmak için yeni bir oturum başlatın",
         "artifactAutoRestored": "Silinen bir konfigürasyon otomatik olarak geri yüklendi",
         "hostProbeUncertain": "Agent güvenilir bir şekilde kontrol edilemedi",
         "legacyConnectionAdopted": "Mevcut bir Tide Mind bağlantısı tanındı",
         "legacyConnectionNeedsConfirmation": "Mevcut bir bağlantının onayınıza ihtiyacı var",
         "legacyAdoptionScanFailed": "Mevcut bağlantılar kontrol edilemedi",
-        "userConfirmedGuidedRemoval": "Yönlendirmeli bir kaldırma kullanıcı tarafından onaylandı"
+        "userConfirmedGuidedRemoval": "Yönlendirmeli bir kaldırma kullanıcı tarafından onaylandı",
+        "automaticConnectionCompleted": "Otomatik olarak bağlandı; istemiyorsanız ayrıntılardan bağlantıyı kesin"
       },
       "management": "Bağlantıyı yönet",
       "supportMode": {
@@ -1784,7 +1642,12 @@
         "checkSupport": "Bu bağlantıda otomatik hesap kontrolleri ve model testleri kullanılamaz. Doğrulama gerçek TideMind kullanımıyla yapılır.",
         "connectionReview": "Mevcut Antigravity yapılandırması veya paylaşılan kimlik incelenmelidir. Mevcut bağlantılar değiştirilmedi. Yeniden bağlanmadan önce ayrıntıları inceleyin.",
         "appUsage": "Yapılandırma değişikliklerinden veya yeniden bağlandıktan sonra Antigravity App’i yeniden başlatın. Ardından yeni bir sohbet başlatıp TideMind kullanmasını isteyin. İstenirse belirtilen TideMind araçlarına izin verin."
-      }
+      },
+      "awaitingFirstUse": "İlk kullanım bekleniyor · yeni oturumda geçerli olur",
+      "maintenancePaused": "Otomatik bakım duraklatıldı",
+      "advancedOptions": "Gelişmiş seçenekler",
+      "skillNotObservable": "Tide Mind bu Agent’ın Skill’i yüklediğini henüz gözlemlemedi. Bazı Agent’lar bu sinyali vermez; bu bir sorun değildir.",
+      "usesSiblingConnection": "{{name}} bağlantısını kullanır; burada ayarlanacak bir şey yok."
     }
   },
   "account": {
@@ -1796,7 +1659,6 @@
     "loginButton": "Giriş Yap",
     "basicInfo": "Temel Bilgiler",
     "devices": "Cihazlar",
-    "devicesComingSoon": "Cihaz yönetimi yakında geliyor.",
     "subscription": "Abonelik",
     "currentPlan": "Mevcut Plan",
     "upgradeHint": "Pro ile sınırsız bulut belleği ve 5 cihazda eşitleme.",
@@ -1824,7 +1686,26 @@
     "memoryNearLimitHint": "Free plan sınırına yaklaşıyorsunuz. {{limit}} üzerindeki yeni hatıralar yükseltene kadar salt okunur olacak.",
     "llmCostThisMonth": "Bu Ay LLM Kullanımı",
     "llmCostCalls": "{{count}} çağrı",
-    "llmCostHint": "Tahmini. Ayrıntılı dökümler için Ayarlar → Model Kullanımı."
+    "llmCostHint": "Tahmini. Ayrıntılı dökümler için Ayarlar → Model Kullanımı.",
+    "deviceList": {
+      "description": "Birincil cihaz arka planda bellek düzenlemesini yürütür. Eşitleme, not içe aktarma, arama ve ön plandaki modeller tüm cihazlarda çalışmaya devam eder.",
+      "thisDevice": "Bu cihaz",
+      "primary": "Birincil",
+      "online": "Çevrimiçi",
+      "lastSeen": "Son görülme {{time}}",
+      "makePrimary": "Birincil yap",
+      "confirmTitle": "“{{name}}” birincil cihaz yapılsın mı?",
+      "confirmDescription": "Bundan sonra arka plan bellek düzenlemesini bu cihaz yürütür. Önceki birincil cihaz mevcut görevi bitince durur; çevrimdışıysa bir sonraki bağlantısında durur ve o zamana kadar ürettiği sonuçlar eşitlenmez.",
+      "noPrimary": "Şu anda belleği düzenleyen bir cihaz yok. Bir birincil cihaz seçin.",
+      "primaryStale": "Birincil cihaz 7 günden uzun süredir çevrimiçi olmadı. Artık kullanılmıyorsa başka bir cihazı birincil yapın.",
+      "syncOff": "Arka plan bellek düzenlemesini şu anda bu cihaz yürütüyor. Birden çok cihaz arasından birincil cihaz seçmek için bulut eşitlemeyi açın.",
+      "cloudNotUpgraded": "Bulut hizmeti henüz birincil cihaz seçimini desteklemiyor; şimdilik her cihaz önceki ayarını korur.",
+      "loadError": "Cihaz listesi yüklenemedi.",
+      "retry": "Yeniden dene",
+      "saveError": "Kaydedilmedi. Lütfen yeniden deneyin.",
+      "deviceLimit": "Bu hesap cihaz sınırına ulaştı ({{limit}}). Bu cihaz eklenmedi: arka planda bellek düzenlemesi yapmıyor ve mevcut düzenleme sonuçları henüz yüklenmiyor. Planınızı yükselttiğinizde otomatik olarak eklenecek.",
+      "deviceLimitNoCount": "Bu hesap cihaz sınırına ulaştı. Bu cihaz eklenmedi: arka planda bellek düzenlemesi yapmıyor ve mevcut düzenleme sonuçları henüz yüklenmiyor. Planınızı yükselttiğinizde otomatik olarak eklenecek."
+    }
   },
   "cloud": {
     "loginRequired": "Bulut özelliklerini kullanmak için TideMind Cloud'a giriş yapın.",

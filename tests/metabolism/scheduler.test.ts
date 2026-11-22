@@ -4,6 +4,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const backgroundRole = vi.hoisted(() => ({enabled:true}));
+const llmRoute = vi.hoisted(() => ({ value: { provider: 'anthropic', standard_model: '', heavy_model: '' } as Record<string, unknown> }));
 
 vi.mock('../../src/strategy/loader.js', () => ({
   getParam: (_strategy: string, _param: string, fallback: number) => fallback,
@@ -17,7 +18,7 @@ vi.mock('../../src/config.js', () => ({
     vertex: { project_id: '', region: '' },
     ollama: { url: '' },
     gemini: { api_key: '' },
-    llm: { provider: 'anthropic', standard_model: '', heavy_model: '' },
+    llm: llmRoute.value,
     embedding: { provider: 'vertex', model: '', dimensions: 3072 },
     search: {},
     gates: {},
@@ -55,6 +56,7 @@ let db: Database.Database;
 
 beforeEach(() => {
   backgroundRole.enabled = true;
+  llmRoute.value = { provider: 'anthropic', standard_model: '', heavy_model: '' };
   db = setupTestDb();
 });
 
@@ -786,4 +788,74 @@ it('secondary devices skip all automatic organization but retain local intake re
  backgroundRole.enabled=true;
  expect(await runSchedulerTick(db,tasks)).toEqual(['annotate','link-discover']);
  expect(tasks[0].execute).toHaveBeenCalledTimes(1);expect(tasks[1].execute).toHaveBeenCalledTimes(1);
+});
+
+describe('deferAccountCliLLMTasks (piggyback tick in short-lived processes)', () => {
+  const task = (id: string, requiresLLM = false): TaskDefinition => ({
+    id, requiresLLM, intervalStrategy: 'fixture', defaultIntervalMinutes: 1, execute: vi.fn().mockResolvedValue(undefined),
+  });
+  const tasks = () => [task('annotate', true), task('digest-retry', true), task('synaptic-decay')];
+  const claimed = (id: string) => db.prepare('SELECT 1 FROM metadata WHERE key = ?').get(`last_task_${id}`) !== undefined;
+  const cliConnection = () => {
+    db.prepare("INSERT INTO model_connections (id, name, provider_type, credentials, status, created) VALUES ('mc_cli', 'Codex fixture', 'codex-cli', '{}', 'online', 't')").run();
+    llmRoute.value = { provider: 'anthropic', light_model: 'default', standard_model: 'default', heavy_model: 'default', standard_connection: 'mc_cli' };
+  };
+
+  it('skips model tasks except digest-retry when any tier uses a subscription CLI connection', async () => {
+    cliConnection();
+    const list = tasks();
+    expect(await runSchedulerTick(db, list, { deferAccountCliLLMTasks: true })).toEqual(['digest-retry', 'synaptic-decay']);
+    expect(list[0].execute).not.toHaveBeenCalled();
+    expect(claimed('annotate')).toBe(false);
+  });
+
+  it('treats a legacy CLI provider and an unresolvable connection as subscription CLI', async () => {
+    llmRoute.value = { provider: 'codex-cli', standard_model: '', heavy_model: '' };
+    expect(await runSchedulerTick(db, tasks(), { deferAccountCliLLMTasks: true })).toEqual(['digest-retry', 'synaptic-decay']);
+    db = setupTestDb();
+    llmRoute.value = { provider: 'anthropic', standard_model: '', heavy_model: '', heavy_connection: 'mc_deleted' };
+    expect(await runSchedulerTick(db, tasks(), { deferAccountCliLLMTasks: true })).toEqual(['digest-retry', 'synaptic-decay']);
+  });
+
+  it('a broken API connection on one tier does not defer model tasks', async () => {
+    db.prepare("INSERT INTO model_connections (id, name, provider_type, credentials, status, archived, created) VALUES ('mc_api', 'API fixture', 'anthropic', '{}', 'online', 1, 't')").run();
+    llmRoute.value = { provider: 'anthropic', standard_model: '', heavy_model: '', heavy_connection: 'mc_api' };
+    expect(await runSchedulerTick(db, tasks(), { deferAccountCliLLMTasks: true })).toEqual(['annotate', 'digest-retry', 'synaptic-decay']);
+  });
+
+  it('leaves API / legacy non-CLI routes and long-lived callers unchanged', async () => {
+    expect(await runSchedulerTick(db, tasks(), { deferAccountCliLLMTasks: true })).toEqual(['annotate', 'digest-retry', 'synaptic-decay']);
+    db = setupTestDb();
+    cliConnection();
+    expect(await runSchedulerTick(db, tasks())).toEqual(['annotate', 'digest-retry', 'synaptic-decay']);
+  });
+
+  it('maybeRunMaintenance always defers', async () => {
+    cliConnection();
+    const list = tasks();
+    const { maybeRunMaintenance } = await import('../../src/metabolism/scheduler.js');
+    maybeRunMaintenance(db, list);
+    await vi.waitFor(() => expect(list[2].execute).toHaveBeenCalled());
+    expect(list[0].execute).not.toHaveBeenCalled();
+  });
+});
+
+it('a device with background organization off does not consume recall follow-ups', async () => {
+  backgroundRole.enabled = false;
+  const mk = (id: string): TaskDefinition => ({ id, requiresLLM: true, intervalStrategy: 'fixture', defaultIntervalMinutes: 1, execute: vi.fn().mockResolvedValue(undefined) });
+  expect(await runSchedulerTick(db, [mk('reconsolidate'), mk('link-revalidate')])).toEqual([]);
+});
+
+it('the account role written by the desktop app overrides the legacy local switch', async () => {
+  const { writeLocalRole } = await import('../../src/metabolism/local-role.js');
+  const mk = (id: string): TaskDefinition => ({ id, intervalStrategy: 'fixture', defaultIntervalMinutes: 1, execute: vi.fn().mockResolvedValue(undefined) });
+  // legacy switch off, but this device is the account's primary device
+  backgroundRole.enabled = false;
+  writeLocalRole(db, { organizer: true, revision: 1, source: 'server' });
+  expect(await runSchedulerTick(db, [mk('annotate')])).toEqual(['annotate']);
+  // legacy switch on, but another device is primary
+  db = setupTestDb();
+  backgroundRole.enabled = true;
+  writeLocalRole(db, { organizer: false, revision: 2, source: 'server' });
+  expect(await runSchedulerTick(db, [mk('annotate'), mk('digest-retry')])).toEqual(['digest-retry']);
 });

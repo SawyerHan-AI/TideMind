@@ -105,4 +105,26 @@ describe('CloudSyncClient reconcile timer', () => {
     // 清理(避免 timer 泄漏)
     client.stop();
   });
+  it('上一次自动对账未完成 → 10 分钟内不再自动重跑,过后才重跑', async () => {
+    const db = setupTestDb();
+    const setMeta = (key: string, value: string) =>
+      db.prepare('INSERT INTO metadata (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
+    setMeta('cloud.last_reconcile_status', 'partial');
+    setMeta('cloud.last_reconcile_attempt_at', new Date(Date.now() - 60_000).toISOString());
+    const client = new CloudSyncClient(db);
+    await client.start();
+    await vi.advanceTimersByTimeAsync(12_000);
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(vi.mocked(Reconciler)).not.toHaveBeenCalled();
+    client.stop();
+
+    setMeta('cloud.last_reconcile_attempt_at', new Date(Date.now() - 11 * 60_000).toISOString());
+    const later = new CloudSyncClient(db);
+    await later.start();
+    await vi.advanceTimersByTimeAsync(12_000);
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(vi.mocked(Reconciler)).toHaveBeenCalledTimes(1);
+    expect(db.prepare("SELECT value FROM metadata WHERE key = 'cloud.last_reconcile_attempt_at'").pluck().get()).toBeTruthy();
+    later.stop();
+  }, 30_000);
 });

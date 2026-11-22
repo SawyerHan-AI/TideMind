@@ -32,7 +32,9 @@ async function fixture(failVerification = false) {
   let trusted = true
   const composition = createProductionAgentIntegrationComposition(db, { homeDir: home, applicationDataDir: runtime.applicationDataDir,
     runtimeContext: runtime, adapters: new Map([['qwen-code-cli', adapter]]), fixtureMode: 'isolated_ui_audit',
-    canManageInstallation: () => trusted, enabledAdapterIds: ['qwen-code-cli'], observeOnly: false, autoRestore: false, startRuntime: false })
+    canManageInstallation: () => trusted, enabledAdapterIds: ['qwen-code-cli'], observeOnly: false, autoRestore: false, startRuntime: false,
+    // These cases exercise the explicit takeover path that remains when zero-write renewal is switched off.
+    serviceContinuity: false })
   const unbind = bindAgentIntegrationExecutionPort(composition.coordinator)
   const distribution = { distributionId: 'cli:qwen-code-cli:standalone', executableRealpath: executable,
     packageProvenance: 'npm_metadata:@qwen-code/qwen-code', capabilityFingerprint: 'cli-surface:qwen-code-cli' }

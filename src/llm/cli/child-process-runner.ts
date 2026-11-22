@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStd
 import { StringDecoder } from 'node:string_decoder';
 import { CliLLMError, CliProcessExitUnconfirmedError } from './errors.js';
 import type { CliInvocationPurpose } from './types.js';
+import { isSettlingInvocation } from './settlement-context.js';
 
 export interface CliProcessSpec {
   executable: string;
@@ -37,10 +38,81 @@ export class CliProcessRegistry {
   private readonly processGroups = new Set<number>();
   private pendingAdmissions = 0;
   private readonly admissionWaiters = new Set<() => void>();
-  private stopping = false;
+  private phase: 'accepting' | 'quiescing' | 'stopping' = 'accepting';
+  private settlements = 0;
+  private quiesceDeadline: number | null = null;
+  private readonly quiesceWaiters = new Set<() => void>();
 
+  /**
+   * Gate for every child process started through this registry. While quiescing,
+   * only an invocation that is settling an already committed prompt may start
+   * its post-response verification children.
+   */
   assertAccepting(): void {
-    if (this.stopping) throw new CliLLMError('aborted', 'CLI runtime is stopping');
+    if (this.phase === 'stopping') throw new CliLLMError('aborted', 'CLI runtime is stopping');
+    if (this.phase === 'quiescing' && !isSettlingInvocation()) {
+      throw new CliLLMError('aborted', 'CLI runtime is quiescing; no new CLI work is admitted');
+    }
+  }
+
+  /** The only gate for committing a new prompt. Refusal here is a definite non-submission. */
+  assertCommitAllowed(): void {
+    if (this.phase === 'stopping') throw new CliLLMError('aborted', 'CLI runtime is stopping');
+    if (this.phase === 'quiescing') {
+      throw new CliLLMError('aborted', 'CLI runtime is quiescing; prompt was not submitted');
+    }
+  }
+
+  /**
+   * Count an invocation whose prompt is committed but whose outcome is not yet
+   * durably settled. The returned release is idempotent.
+   */
+  beginSettlement(): () => void {
+    this.settlements++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.settlements--;
+      if (this.settlements === 0) this.wakeQuiesce();
+    };
+  }
+
+  get unsettledCount(): number {
+    return this.settlements;
+  }
+
+  /**
+   * Stop admitting new work and wait, up to graceMs, for committed invocations to
+   * settle. Uncommitted invocations fail at assertCommitAllowed/assertAccepting.
+   */
+  async quiesce(graceMs: number): Promise<void> {
+    if (this.phase === 'stopping') return;
+    this.phase = 'quiescing';
+    const deadline = Date.now() + Math.max(0, graceMs);
+    this.quiesceDeadline = this.quiesceDeadline === null ? deadline : Math.min(this.quiesceDeadline, deadline);
+    while (this.settlements > 0 && this.phase === 'quiescing' && Date.now() < this.quiesceDeadline) {
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          clearTimeout(timer);
+          this.quiesceWaiters.delete(done);
+          resolve();
+        };
+        const timer = setTimeout(done, Math.max(0, (this.quiesceDeadline ?? 0) - Date.now()));
+        this.quiesceWaiters.add(done);
+      });
+    }
+  }
+
+  /** Bring an in-progress quiesce deadline forward; never extends it. */
+  shortenQuiesce(graceMs = 0): void {
+    if (this.quiesceDeadline === null) return;
+    this.quiesceDeadline = Math.min(this.quiesceDeadline, Date.now() + Math.max(0, graceMs));
+    this.wakeQuiesce();
+  }
+
+  private wakeQuiesce(): void {
+    for (const wake of [...this.quiesceWaiters]) wake();
   }
 
   beginAdmission(): () => void {
@@ -85,7 +157,8 @@ export class CliProcessRegistry {
   }
 
   async shutdown(graceMs = 750): Promise<void> {
-    this.stopping = true;
+    this.phase = 'stopping';
+    this.wakeQuiesce();
     if (this.pendingAdmissions > 0) {
       await new Promise<void>(resolve => this.admissionWaiters.add(resolve));
     }
@@ -321,6 +394,9 @@ export class CliChildProcessRunner {
       if (spec.signal?.aborted) {
         terminate(outcomeError('aborted', false, spec.purpose, spec.signal.reason));
       } else {
+        // Last gate before submission: a quiescing/stopping runtime refuses here,
+        // which is a definite non-submission (nothing was written to stdin).
+        this.registry.assertCommitAllowed();
         // Conservatively mark committed before write: EPIPE may occur after the
         // child has consumed a prefix, and must not be replayed in background.
         promptCommitted = true;

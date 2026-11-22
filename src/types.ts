@@ -348,6 +348,8 @@ export interface DigestInput {
   intent?: DigestIntent;
   async?: boolean;
   agent_id?: string;
+  /** 实际发起调用的宿主；入队时固定，重试沿用。 */
+  caller?: { installationId: string | null; level: 'verified' | 'inferred' | 'unidentified' };
   /** 导入场景：覆盖 assessContentQuality 的初始 heat */
   initialHeat?: number;
   /** 导入场景：覆盖 now() 的原始创建时间（ISO 8601） */

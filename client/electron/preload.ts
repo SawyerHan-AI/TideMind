@@ -203,6 +203,8 @@ const api: AppApi = {
     registerUrl: () => ipcRenderer.invoke('cloud:register-url'),
     billingPortalUrl: () => ipcRenderer.invoke('cloud:billing-portal-url'),
     billingCheckoutUrl: (plan: string, interval: string) => ipcRenderer.invoke('cloud:billing-checkout-url', plan, interval),
+    devices: () => ipcRenderer.invoke('cloud:devices'),
+    setPrimaryDevice: (deviceId: string) => ipcRenderer.invoke('cloud:set-primary-device', deviceId),
   },
   app: {
     getVersion: () => ipcRenderer.invoke('app:get-version'),

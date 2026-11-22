@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import Database from 'better-sqlite3'
 import {describe,it,expect,vi} from 'vitest'
-vi.mock('electron',()=>({app:{getPath:()=>'/tmp/antigravity-shared-fixture',getVersion:()=> '0.2.101',getAppPath:()=>'/tmp/Tide Mind.app',isPackaged:false},Notification:class{static isSupported(){return false} show(){}}}))
+vi.mock('electron',()=>({app:{getPath:()=>'/tmp/antigravity-shared-fixture',getVersion:()=> '0.2.102',getAppPath:()=>'/tmp/Tide Mind.app',isPackaged:false},Notification:class{static isSupported(){return false} show(){}}}))
 vi.mock('../../src/strategy/loader.js',()=>({getParam:(_s:string,_p:string,f:number)=>f,getPrompt:()=>'',loadStrategies:()=>{},getStrategy:()=>null}))
 import {ensureSchema} from '../../src/db/schema'
 import {ANTIGRAVITY_INSTRUCTION_PREPARE_PROBE} from '../../src/antigravity-instruction'
@@ -28,7 +28,7 @@ describe('Antigravity MCP and Hook runtime processes', () => {
   const runtime:AdapterRuntimeContext={runtimeRealm:'local_macos',homeDir:home,applicationDataDir:appData,
    shimPath:process.execPath,mcpServerPath:path.resolve('dist/index.js'),hookScriptPath:path.resolve('dist/hook-session-start.js'),
    preCompactScriptPath:path.join(root,'bin','pre.cjs'),postCompactScriptPath:path.join(root,'bin','post.cjs'),
-   tideMindVersion:'0.2.101',catalogVersion:'1',projectionVersion:'1'}
+   tideMindVersion:'0.2.102',catalogVersion:'1',projectionVersion:'1'}
   const composition=createProductionAgentIntegrationComposition(db,{homeDir:home,applicationDataDir:appData,runtimeContext:runtime,
     adapters:createP0HostAdapters(),enabledAdapterIds:['antigravity-cli','antigravity-app'],observeOnly:false,startRuntime:false,
     fixtureMode:'isolated_ui_audit',automaticConnections:false,canManageInstallation:()=>true,

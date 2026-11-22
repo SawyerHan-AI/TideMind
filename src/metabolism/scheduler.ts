@@ -13,6 +13,8 @@ import { getLinkCount } from '../db/links.js';
 import { getRecallCount } from '../db/log.js';
 import { logTimelineEvent } from '../db/log.js';
 import { LLMServiceError } from '../llm/client.js';
+import { LLMRouteError, resolveLLMRoute } from '../llm/route.js';
+import { readLocalOrganizerRole } from './local-role.js';
 import {
   clearActiveLLMTask,
   runWithLLMInvocationContext,
@@ -105,6 +107,34 @@ export interface SchedulerRunOptions {
   yieldAfterAttempt?: () => Promise<void>;
   /** Electron Worker传入的动态执行上下文；通用/CLI入口缺省时维持保守行为。 */
   taskExecutionContext?: TaskExecutionContext;
+  /**
+   * 短命进程（MCP / Hook 的搭便车 tick）专用：任一档路由为本机订阅 CLI 时，跳过需要模型的
+   * 任务（digest-retry 除外），留给长驻进程。宿主随时可能结束短命进程，已提交的订阅 CLI
+   * 调用被打断会让整条连接进入“结果不明”。
+   */
+  deferAccountCliLLMTasks?: boolean;
+}
+
+/**
+ * 任一档路由解析为本机订阅 CLI（含 legacy 的 CLI provider）。解析失败时：能确认该连接是
+ * API 类 provider 就不算（任务会在调用处照常失败并计入熔断）；无法确认则保守按“是”。
+ */
+function hasAccountCliRoute(db: Database.Database): boolean {
+  for (const tier of ['light', 'standard', 'heavy'] as const) {
+    try {
+      if (resolveLLMRoute(tier, db).billingMode === 'account_cli') return true;
+    } catch (error) {
+      if (!(error instanceof LLMRouteError) || !error.connectionId) return true;
+      try {
+        const row = db.prepare('SELECT provider_type FROM model_connections WHERE id = ?')
+          .get(error.connectionId) as { provider_type: string } | undefined;
+        if (!row || row.provider_type === 'claude-cli' || row.provider_type === 'codex-cli') return true;
+      } catch {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 export class SchedulerClaimRollbackUnconfirmedError extends Error {
@@ -708,11 +738,12 @@ export async function runSchedulerTick(
 
   try {
 
-  // 每台设备独立选择是否承担后台整理；长驻 MCP 在每次调度时读取最新角色。
+  // 本机是否承担后台整理：桌面端按账号主设备写入 metadata，每次调度时读取最新值；
+  // 桌面端从未写入过时沿用旧的本地开关。
   try {
     const { getConfig } = await import('../config.js');
     const config = getConfig(true);
-    backgroundOrganizationEnabled = config.metabolism?.background_enabled !== false;
+    backgroundOrganizationEnabled = readLocalOrganizerRole(db, config.metabolism?.background_enabled !== false);
     legacyOnlyRoutes = !(
       config.llm.light_connection
       || config.llm.standard_connection
@@ -727,6 +758,7 @@ export async function runSchedulerTick(
   __resetLLMCallObservedFlag();
   let circuit = getCircuitState(db);
   let halfOpenProbed = false;
+  const deferLLMTasks = options.deferAccountCliLLMTasks === true && hasAccountCliRoute(db);
 
   if (legacyOnlyRoutes && circuit.state === 'open') {
     const openedAt = db.prepare('SELECT value FROM metadata WHERE key = ?')
@@ -738,9 +770,11 @@ export async function runSchedulerTick(
   }
 
   for (const task of tasks) {
-    try { const {getConfig} = await import('../config.js'); backgroundOrganizationEnabled = getConfig(true).metabolism?.background_enabled !== false; }
+    try { const {getConfig} = await import('../config.js'); backgroundOrganizationEnabled = readLocalOrganizerRole(db, getConfig(true).metabolism?.background_enabled !== false); }
     catch { backgroundOrganizationEnabled = false; }
     if (!backgroundOrganizationEnabled && !['digest-retry', 'structure-holes-precompute'].includes(task.id)) continue;
+    // digest-retry 属于记忆写入主路径，保留；其余需要模型的任务等长驻进程补做。
+    if (deferLLMTasks && task.requiresLLM && task.id !== 'digest-retry') continue;
     // 纯 legacy 配置继续复用历史全局 circuit；只要任一档位使用显式连接，就把
     // circuit 判断下沉到 callLLM 的真实 route，避免一个账号误伤其他连接。
     if (task.requiresLLM && legacyOnlyRoutes) {
@@ -1061,7 +1095,7 @@ export function maybeRunMaintenance(
   const myTickId = ++currentTickId;
 
   try {
-    const work = runSchedulerTick(db, tasks)
+    const work = runSchedulerTick(db, tasks, { deferAccountCliLLMTasks: true })
       .catch(err => log.error('maintenance tick failed:', (err as Error).message))
       .finally(() => {
         // 只在自己仍是当前 tick 时清理状态，避免未来引入其它终止路径后由

@@ -48,7 +48,7 @@ const GENERATION_1: Distribution = {
   distributionId: CURSOR_ID,
   executableRealpath: '/Applications/Cursor.app/Contents/MacOS/Cursor',
   packageProvenance: CURSOR_PROVENANCE,
-  capabilityFingerprint: 'desktop-bundle-surface-v1:generation-1',
+  capabilityFingerprint: 'desktop-bundle-surface-v2:generation-1',
   portableArtifactFingerprint: 'a'.repeat(64),
 }
 
@@ -173,7 +173,7 @@ describe('repository: generation change keeps approval, approval-scope change re
       distribution: { executableRealpath: '/Applications/Cursor.app/Contents/MacOS/Cursor-3.20' },
     }, 'host_installation_surface_changed'],
     ['the code capability fingerprint (CDHash/Info.plist)', {
-      distribution: { capabilityFingerprint: 'desktop-bundle-surface-v1:generation-2' },
+      distribution: { capabilityFingerprint: 'desktop-bundle-surface-v2:generation-2' },
     }, 'host_installation_surface_changed'],
     ['the portable artifact fingerprint', {
       distribution: { portableArtifactFingerprint: 'b'.repeat(64) },
@@ -182,7 +182,7 @@ describe('repository: generation change keeps approval, approval-scope change re
       version: '3.20.0',
       distribution: {
         executableRealpath: '/Applications/Cursor.app/Contents/MacOS/Cursor-3.20',
-        capabilityFingerprint: 'desktop-bundle-surface-v1:generation-2',
+        capabilityFingerprint: 'desktop-bundle-surface-v2:generation-2',
         portableArtifactFingerprint: 'b'.repeat(64),
       },
     }, 'host_installation_surface_changed'],
@@ -278,13 +278,13 @@ describe('repository: generation change keeps approval, approval-scope change re
 
       upsert(repository, {
         version: '3.20.0',
-        distribution: { capabilityFingerprint: 'desktop-bundle-surface-v1:generation-2' },
+        distribution: { capabilityFingerprint: 'desktop-bundle-surface-v2:generation-2' },
       }, T1)
       upsert(repository, {
         version: '3.21.0',
         distribution: {
           executableRealpath: '/Applications/Cursor.app/Contents/MacOS/Cursor-3.21',
-          capabilityFingerprint: 'desktop-bundle-surface-v1:generation-3',
+          capabilityFingerprint: 'desktop-bundle-surface-v2:generation-3',
         },
       }, T2)
       expect(consentState(db)).toEqual({ status: 'active', revoked_at: null })
@@ -466,7 +466,7 @@ describe('repository.resolveGenerationIdentityConflict', () => {
         health_state: 'inaccessible', reconcile_state: 'paused', status_reason: 'conflict',
       })
       // The new matcher accepted the generation-only difference.
-      upsert(repository, { version: '3.20.0', distribution: { capabilityFingerprint: 'desktop-bundle-surface-v1:g2' } }, T2)
+      upsert(repository, { version: '3.20.0', distribution: { capabilityFingerprint: 'desktop-bundle-surface-v2:g2' } }, T2)
 
       expect(repository.resolveGenerationIdentityConflict('cursor-1', T2)).toBe(true)
       expect(conflictRow(repository)).toEqual({
@@ -686,7 +686,7 @@ function scanService(repository: AgentIntegrationRepository, current: { report: 
 const GENERATION_2: Distribution = {
   ...GENERATION_1,
   executableRealpath: '/Applications/Cursor.app/Contents/MacOS/Cursor-3.20',
-  capabilityFingerprint: 'desktop-bundle-surface-v1:generation-2',
+  capabilityFingerprint: 'desktop-bundle-surface-v2:generation-2',
   portableArtifactFingerprint: 'b'.repeat(64),
 }
 

@@ -32,12 +32,7 @@
     "updateChannelDesc": "Beta 版会更早收到新功能，但可能不稳定。切换在下次检查时生效。",
     "updateChannelStable": "稳定版",
     "updateChannelBeta": "测试版",
-    "channelSwitchConfirm": "切换到 Stable 后会在下次检查更新时安装最新正式版(可能撤回部分实验功能)。继续吗?",
-    "backgroundOrganization": {
-      "title": "本机后台记忆整理",
-      "description": "多设备时只在一台开启，避免重复生成。关闭后同步、笔记导入、检索和前台模型仍可使用；正在运行的任务结束后生效。 切换设备前，先在原设备关闭并正常退出 TideMind 及其 Agent 连接，再在新设备开启。",
-      "error": "设置未保存，请重试。"
-    }
+    "channelSwitchConfirm": "切换到 Stable 后会在下次检查更新时安装最新正式版(可能撤回部分实验功能)。继续吗?"
   },
   "external": {
     "subtabs": {
@@ -692,7 +687,7 @@
       },
       "synapticConsolidate": {
         "name": "突触巩固",
-        "description": "检索时的副作用——热度提升（总是执行）+ 再巩固（按条件触发，评估记忆是否需要更新）。与突触衰减互为对偶。",
+        "description": "热度提升与结果间建链在检索时即时执行；深度再巩固与冲突检测（评估记忆是否需要更新）由 recall 记录待办，后台按间隔处理。与突触衰减互为对偶。",
         "maxContextNodes": "最大上下文节点数",
         "maxContextNodesTip": "再巩固时参考的最大上下文节点数。",
         "independenceBoost": "独立度提升量",
@@ -703,7 +698,9 @@
         "conflictCrossMinOverlapTip": "跨节点冲突检测的最小关键词重叠度。",
         "conflictHighConfidence": "冲突置信度上限",
         "conflictHighConfidenceTip": "冲突置信度上限。",
-        "trigger": "查询时"
+        "trigger": "定时",
+        "interval": "执行间隔",
+        "intervalTip": "执行间隔（分钟）。每次处理一条 recall 记录。"
       },
       "synapticDecay": {
         "name": "突触衰减",
@@ -752,12 +749,14 @@
       },
       "linkRevalidate": {
         "name": "链接重新验证",
-        "description": "recall 触发：在新上下文下重新评估已有链接是否仍然成立。基于记忆再巩固理论。",
+        "description": "recall 记录待办，后台按间隔处理：在新上下文下重新评估已有链接是否仍然成立。基于记忆再巩固理论。",
         "maxLinksPerRun": "每次最大链接数",
-        "maxLinksPerRunTip": "每次 recall 最多重新验证几条链接。",
+        "maxLinksPerRunTip": "每条 recall 记录最多重新验证几条链接。",
         "minLinkAgeHours": "最小链接年龄",
         "minLinkAgeHoursTip": "只验证存在超过此时间的链接（小时）。",
-        "trigger": "recall 触发"
+        "trigger": "定时",
+        "interval": "执行间隔",
+        "intervalTip": "执行间隔（分钟）。每次处理一条 recall 记录。"
       },
       "keystone": {
         "name": "节点晋升",
@@ -1017,151 +1016,6 @@
       "kimiMcpHint": "MCP + 上下文注入 Hook 已写入 ~/.kimi-code/,重启 kimi session 生效。",
       "kimiSkillHint": "Skill 已自动安装到 ~/.kimi-code/skills/,Kimi Code 启动时自动加载,无需手动复制。"
     },
-    "wizard": {
-      "nameAgent": "命名 Agent",
-      "configCowork": "配置 Claude Cowork",
-      "configCursor": "配置 Cursor",
-      "configCodex": "配置 Codex",
-      "configWindsurf": "配置 Windsurf",
-      "configOpenClaw": "配置 OpenClaw",
-      "configGemini": "配置 Gemini CLI",
-      "configKimi": "配置 Kimi Code",
-      "installPlugin": "安装插件",
-      "mcpConfig": "MCP 配置",
-      "skillFile": "Skill 文件",
-      "verify": "验证",
-      "selectToolHint": "选择工具类型后显示配置步骤",
-      "comingSoon": "即将支持",
-      "other": "手动 MCP",
-      "pluginSupportHint": "支持插件化安装，自动配置 MCP、Skill 和 Hooks",
-      "agentName": "Agent 名称",
-      "agentNamePlaceholder": "如：工作用 Cursor",
-      "agentNameHint": "给这个 Agent 起个名字，方便管理多个同类型工具",
-      "creating": "创建中...",
-      "createAndContinue": "创建并继续",
-      "generatingPlugin": "正在生成插件...",
-      "pluginGenerateFailed": "插件生成失败",
-      "generateFailed": "生成失败",
-      "createFailed": "创建失败",
-      "completed": "已完成",
-      "manualStepsTitle": "接下来需要手动完成：",
-      "prevStep": "上一步",
-      "nextStep": "下一步",
-      "finish": "完成",
-      "installing": "安装中...",
-      "installed": "已安装",
-      "oneClickInstall": "一键安装到 Claude Code",
-      "installSuccess": "插件安装成功",
-      "installFailed": "安装失败",
-      "manualInstallHint": "可以用下方命令手动安装：",
-      "cliNotDetected": "未检测到 claude CLI。请在终端中运行以下命令安装插件：",
-      "addConfigTo": "将以下配置添加到",
-      "addConfigGeneric": "将以下 MCP 配置添加到你的 AI 工具的配置文件中（通常是 JSON 格式的 mcp.json 或 config.json，具体位置请参考工具文档）：",
-      "mcpConfigHint": "配置中包含 EB_AGENT_ID 环境变量，用于唯一标识此 Agent。如果已有其他 MCP 配置，将 tidemind 部分合并到现有的 mcpServers 中。",
-      "copySkillTo": "将以下 Skill 内容复制到",
-      "copySkillGeneric": "将以下使用指南复制到你的 AI 工具的指令配置中（如 rules 文件、system prompt 或 AGENTS.md，具体取决于你的工具）：",
-      "loading": "加载中...",
-      "skillHint": "Skill 文件告诉 AI 工具如何使用外脑（何时调用 brain_prepare / brain_recall / brain_digest）。修改 Skill 后需要重新复制到外部工具才能生效。",
-      "baseFallbackHint": "当前使用通用 Skill 模板。请将内容中的 tool 参数和 source.tool 替换为你实际使用的工具名称。",
-      "verifyDescription": "Agent 已创建，检查配置是否完成：",
-      "verifyAgentCreated": "Agent \"{{name}}\" 已创建 ({{id}})",
-      "verifyPluginGenerated": "{{tool}} 插件已生成",
-      "verifyDesktopMcp": "Desktop MCP 配置已写入",
-      "verifyDesktopMcpHintNeeded": "需要重启 Claude Desktop 生效",
-      "verifyDesktopMcpHintDone": "重启 Claude Desktop 后生效",
-      "verifyCursorMcp": "Cursor MCP 配置已写入",
-      "verifyCursorMcpHintOk": "热加载自动生效",
-      "verifyCursorMcpHintFail": "配置写入失败",
-      "verifyCodexMcp": "Codex MCP 配置 + Hook 已写入",
-      "verifyCodexMcpHintOk": "重启 session 生效",
-      "verifyCodexMcpHintFail": "配置写入失败",
-      "verifyWindsurfMcp": "Windsurf MCP 配置已写入",
-      "verifyWindsurfMcpHintOk": "需完全重启 Windsurf 生效",
-      "verifyWindsurfMcpHintFail": "配置写入失败",
-      "verifyOpenClawMcp": "OpenClaw MCP 配置 + Hook 已写入",
-      "verifyOpenClawMcpHintOk": "重启 OpenClaw 生效",
-      "verifyOpenClawMcpHintFail": "配置写入失败",
-      "verifyGeminiMcp": "Gemini extension 已安装（MCP + Hook + 命令）",
-      "verifyGeminiMcpHintOk": "重启 `gemini` 生效",
-      "verifyGeminiMcpHintFail": "`gemini extensions install` 失败",
-      "verifyKimiMcp": "Kimi Code MCP 配置 + Hook 已写入",
-      "verifyKimiMcpHintOk": "重启 session 生效",
-      "verifyKimiMcpHintFail": "配置写入失败",
-      "verifyMcpAdded": "MCP 配置已添加到工具中",
-      "verifyMcpAddedHint": "请确认已将上一步的 JSON 配置粘贴到工具的 MCP 配置文件",
-      "verifySkillCopied": "Skill 内容已复制到工具中",
-      "verifySkillCopiedHint": "请确认已将 Skill 使用指南复制到工具的指令配置",
-      "verifyToolRestarted": "工具已重启使配置生效",
-      "verifyFirstConnection": "检测到首次连接",
-      "verifyFirstConnectionHint": "在外部工具中发起一次对话，调用外脑工具即可",
-      "cowork": {
-        "skillFile": "Skill 文件（外脑使用指南）",
-        "desktopMcpConfig": "Claude Desktop MCP 配置（brain_prepare / brain_recall / brain_digest）",
-        "skillDownloaded": "Skill 文件（已生成到 Downloads）",
-        "step1": "1. 重启 Claude Desktop（使 MCP 配置生效）",
-        "step2": "2. 打开 Claude Cowork → Customize → Skills → Upload a skill",
-        "step3": "3. 选择上方的 Skill .md 文件上传"
-      },
-      "cursor": {
-        "mcpConfig": "Cursor MCP 配置（brain_prepare / brain_recall / brain_digest）",
-        "skillDownloaded": "Skill .mdc 规则文件（已生成到 Downloads）",
-        "step1": "1. 将上方的 .mdc 文件复制到项目的 .cursor/rules/ 目录",
-        "step2": "2. 在 Cursor 中打开项目，Agent 模式即可使用外脑工具",
-        "mcpNote": "MCP 配置已自动写入，Cursor 热加载无需重启。"
-      },
-      "codex": {
-        "mcpConfig": "Codex MCP 配置（config.toml）",
-        "hookConfig": "SessionStart Hook（自动加载上下文）",
-        "agentsDownloaded": "AGENTS.md 使用指南（已生成到 Downloads）",
-        "step1": "1. 将上方的 AGENTS.md 内容追加到项目根目录或 ~/.codex/AGENTS.md",
-        "step2": "2. 重启 Codex session 使配置生效",
-        "mcpNote": "MCP 配置和 SessionStart Hook 已自动写入 ~/.codex/。",
-        "skillInjected": "Skill 指南已注入 ~/.codex/skills/",
-        "autoReadyTitle": "已全部配置，无需手动步骤",
-        "autoReadyNote": "下次 Codex 启动时将自动加载上下文与 Skill 指南。",
-        "upgradeHint": "检测到 Codex {{version}} —— 建议升级到 0.121+ 以获得无缝对接体验（无需手动复制 AGENTS.md）"
-      },
-      "windsurf": {
-        "mcpConfig": "Windsurf MCP 配置（mcp_config.json）",
-        "rulesDownloaded": "规则文件（已生成到 Downloads）",
-        "step1": "1. 将上方的 .md 文件复制到项目的 .windsurf/rules/ 目录",
-        "step2": "2. 完全退出并重启 Windsurf（仅关闭窗口不够）",
-        "mcpNote": "MCP 配置已自动写入，但 Windsurf 不支持热加载。"
-      },
-      "openclaw": {
-        "mcpConfig": "OpenClaw MCP 配置（openclaw.json）",
-        "hookConfig": "Bootstrap Hook（自动加载上下文）",
-        "skillDownloaded": "Skill 目录（已生成到 Downloads）",
-        "step1": "1. 将上方的 Skill 目录复制到 ~/.openclaw/skills/ 或项目 skills/",
-        "step2": "2. 重启 OpenClaw 使配置生效",
-        "mcpNote": "MCP 配置和 Bootstrap Hook 已自动写入 ~/.openclaw/。"
-      },
-      "claudeCode": {
-        "mcpConfig": "MCP Server 配置（brain_prepare / brain_recall / brain_digest）",
-        "skillFile": "Skill 文件（外脑使用指南）",
-        "hooks": "Hooks（SessionStart 自动加载上下文、PreCompact 自动保存记忆）"
-      },
-      "gemini": {
-        "mcpConfig": "Gemini MCP 配置（brain_prepare / brain_recall / brain_digest）",
-        "hookConfig": "SessionStart Hook（自动加载上下文）",
-        "contextFile": "GEMINI.md 上下文文件（外脑使用指南）",
-        "commands": "Slash 命令：/brain-recall /brain-digest /brain-forget",
-        "autoReadyTitle": "已全部配置，无需手动步骤",
-        "autoReadyNote": "下次 Gemini CLI 启动时将自动加载用户上下文、外脑工具和 slash 命令。",
-        "upgradeTitle": "Gemini CLI 版本过低，hooks 无法使用",
-        "upgradeHint": "检测到 Gemini CLI {{version}} —— 建议升级到 0.26+ 以启用 SessionStart hook 自动加载用户画像。",
-        "upgradeNote": "MCP 工具（brain_*）和 slash 命令在旧版本上仍可用，但需要手动调用 brain_prepare。"
-      },
-      "kimi": {
-        "mcpConfig": "Kimi Code MCP 配置(mcp.json)",
-        "hookConfig": "上下文注入 Hook(自动加载上下文)",
-        "skillInjected": "Skill 指南已注入 ~/.kimi-code/skills/",
-        "autoReadyTitle": "已全部配置,无需手动步骤",
-        "autoReadyNote": "下次 Kimi Code 启动时将自动加载上下文与 Skill 指南。",
-        "cliMissingTitle": "未检测到 Kimi Code CLI",
-        "cliMissingNote": "配置已写入。安装 Kimi Code CLI 后新建会话即可生效。"
-      }
-    },
     "managed": {
       "memoryVerified": "MCP Tools 已验证",
       "fullyVerified": "完整验证通过",
@@ -1354,7 +1208,8 @@
         "processing": "处理中",
         "needsAttention": "需处理",
         "paused": "已暂停",
-        "disconnected": "已断开"
+        "disconnected": "已断开",
+        "connected": "已连接"
       },
       "reason": {
         "verified": "核心 MCP Tools 已经验证。",
@@ -1425,7 +1280,7 @@
         "lifecycle": "Hook"
       },
       "componentStatus": {
-        "verified": "已验证",
+        "verified": "已生效",
         "configured": "已配置",
         "stale": "待重新验证",
         "needsSession": "需新会话",
@@ -1433,7 +1288,8 @@
         "missing": "缺失",
         "conflict": "冲突",
         "unsupported": "不支持",
-        "unconnected": "未接入"
+        "unconnected": "未接入",
+        "needsAction": "需处理"
       },
       "defaultProfile": "默认 profile",
       "installationCount": "{{count}} 个安装实例",
@@ -1479,12 +1335,14 @@
       "event": {
         "activity": "Agent 连接活动",
         "autoRepairCircuitReset": "已重新启用自动恢复",
+        "connectionAutoRecovered": "连接已自动恢复，新开会话后生效",
         "artifactAutoRestored": "检测到配置被删除，已自动恢复",
         "hostProbeUncertain": "暂时无法可靠检查这个 Agent",
         "legacyConnectionAdopted": "已识别旧连接，等待确认托管",
         "legacyConnectionNeedsConfirmation": "发现旧连接，需要你确认",
         "legacyAdoptionScanFailed": "暂时无法检查旧连接",
-        "userConfirmedGuidedRemoval": "引导式移除已由用户确认"
+        "userConfirmedGuidedRemoval": "引导式移除已由用户确认",
+        "automaticConnectionCompleted": "已自动连接；如不需要，可在详情中断开"
       },
       "management": "管理连接",
       "supportMode": {
@@ -1784,7 +1642,12 @@
         "checkSupport": "此连接暂不支持自动账号检查和模型测试，通过实际使用 TideMind 验证。",
         "connectionReview": "现有 Antigravity 配置或共享身份需要核对。未替换已有连接，请先查看详情再重新连接。",
         "appUsage": "配置变更或重新连接后，请先重启 Antigravity App，再新建对话并让它使用 TideMind。如出现提示，请允许所请求的 TideMind 工具。"
-      }
+      },
+      "awaitingFirstUse": "等待首次使用 · 新开会话后生效",
+      "maintenancePaused": "已暂停自动维护",
+      "advancedOptions": "高级选项",
+      "skillNotObservable": "尚未观察到该 Agent 加载 Skill。部分 Agent 不提供这一信号，这不代表有问题。",
+      "usesSiblingConnection": "通过 {{name}} 的连接使用记忆，这里无需单独配置。"
     }
   },
   "account": {
@@ -1796,7 +1659,6 @@
     "loginButton": "登录",
     "basicInfo": "基本信息",
     "devices": "设备管理",
-    "devicesComingSoon": "设备管理即将推出。",
     "subscription": "订阅计划",
     "currentPlan": "当前计划",
     "upgradeHint": "升级到 Pro，解锁无限云记忆和 5 台设备同步。",
@@ -1824,7 +1686,26 @@
     "memoryNearLimitHint": "即将达到免费版上限。超过 {{limit}} 条的新记忆会变为只读,升级后恢复。",
     "llmCostThisMonth": "本月 LLM 用量",
     "llmCostCalls": "{{count}} 次调用",
-    "llmCostHint": "估算值。打开 Settings → Model Usage 查看完整明细。"
+    "llmCostHint": "估算值。打开 Settings → Model Usage 查看完整明细。",
+    "deviceList": {
+      "description": "主设备负责后台记忆整理。其他设备的同步、笔记导入、检索和前台模型不受影响。",
+      "thisDevice": "本机",
+      "primary": "主设备",
+      "online": "在线",
+      "lastSeen": "最后在线 {{time}}",
+      "makePrimary": "设为主设备",
+      "confirmTitle": "把“{{name}}”设为主设备？",
+      "confirmDescription": "之后由这台设备负责后台记忆整理。原主设备正在运行的任务结束后停止；如果它当前不在线，要到下次联网后才会停止，期间它生成的整理结果不会同步。",
+      "noPrimary": "当前没有设备在整理记忆。请选择一台设备作为主设备。",
+      "primaryStale": "主设备已超过 7 天未在线。如果它不再使用，可以把另一台设备设为主设备。",
+      "syncOff": "当前由本机负责后台记忆整理。开启云同步后，可以在多台设备中选择一台作为主设备。",
+      "cloudNotUpgraded": "云端服务尚未支持选择主设备，暂时按各设备原有设置运行。",
+      "loadError": "设备列表加载失败。",
+      "retry": "重试",
+      "saveError": "设置未保存，请重试。",
+      "deviceLimit": "此账号的设备数已达上限（{{limit}} 台），本机尚未加入，暂不参与后台记忆整理，本机已有的整理结果也暂不上传。升级计划后会自动加入。",
+      "deviceLimitNoCount": "此账号的设备数已达上限，本机尚未加入，暂不参与后台记忆整理，本机已有的整理结果也暂不上传。升级计划后会自动加入。"
+    }
   },
   "cloud": {
     "loginRequired": "请先登录 TideMind Cloud 账号以使用云服务。",

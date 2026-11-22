@@ -3,6 +3,7 @@
 
 | 参数 | 值 | 说明 |
 |------|-----|------|
+| interval_minutes | 5 | 执行间隔（分钟）：每次处理一条 recall 记录的深度再巩固 |
 | max_context_nodes | 5 | 传入上下文的最大节点数 |
 | refinement_boost | 0.15 | 再巩固后精炼度提升量(老名 `independence_boost` 为历史遗留,v0.2.23 已更名;代码按新名读,老名通过 strategy-loader 回退兼容) |
 | llm_tier | standard | 模型档位: light/standard/heavy |

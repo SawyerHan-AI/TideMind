@@ -5,6 +5,7 @@ import { safeStorage } from 'electron';
 import { createLogger } from '../../../src/utils/logger.js';
 import { getConfig, getDataDir } from '@server/config.js';
 import { secureStore } from './secure-store.js';
+import { noteUnauthorized, setUnauthorizedHandler, type UnauthorizedResult } from './unauthorized.js';
 
 const log = createLogger('cloud-auth');
 
@@ -363,6 +364,12 @@ export function getCloudBaseUrl(): string {
 
 export function isLoggedIn(): boolean { return cachedAuth !== null; }
 
+let authClearedListener: (() => void) | null = null;
+/** 登录凭据永久失效被动登出时的回调（不经过 cloud:logout）。 */
+export function setAuthClearedListener(listener: (() => void) | null): void {
+  authClearedListener = listener;
+}
+
 /**
  * Audit-3 F8 修复:返回 shallow clone 而非内部 cachedAuth 引用。
  * 之前 sync-client.ts 等模块直接 `auth.lastSyncedAt = ...` 修改返回对象,
@@ -499,6 +506,7 @@ export async function handleOAuthCallback(url: string): Promise<CloudAuth> {
     expiresIn = parseInt(parsed.searchParams.get('expires_in') || '3600', 10);
   }
 
+  const thisSignIn = ++signInGeneration; // 新的一次登录:在途的旧刷新结果不得写入
   cachedAuth = {
     accessToken,
     refreshToken,
@@ -515,12 +523,13 @@ export async function handleOAuthCallback(url: string): Promise<CloudAuth> {
       headers: { 'Authorization': `Bearer ${accessToken}` },
       signal: AbortSignal.timeout(AUTH_FETCH_TIMEOUT_MS),
     });
-    if (meRes.ok) {
+    // 期间又登录了一次(或已登出):这份用户信息属于上一次登录,不写入。
+    if (meRes.ok && cachedAuth && signInGeneration === thisSignIn) {
       const body = await meRes.json() as { user: { id: string; email: string; plan?: string } };
       cachedAuth.userId = body.user.id;
       cachedAuth.email = body.user.email;
       if (body.user.plan) cachedAuth.plan = body.user.plan;
-    } else {
+    } else if (!meRes.ok) {
       log.warn(`/auth/me returned ${meRes.status}: ${await meRes.text().catch(() => '')}`);
     }
   } catch (err) {
@@ -528,6 +537,7 @@ export async function handleOAuthCallback(url: string): Promise<CloudAuth> {
   }
 
   saveAuthToDisk();
+  lastUnauthorizedReportAt = 0;
   log.info(`logged in via OAuth callback as ${maskEmail(cachedAuth.email)} (pkce=${code ? 'yes' : 'no'})`);
   return cachedAuth;
 }
@@ -546,6 +556,7 @@ export async function login(email: string, password: string): Promise<CloudAuth>
     throw new Error(err.error ?? `Login failed (${res.status})`);
   }
   const data = await res.json() as { access_token: string; refresh_token: string; expires_in: number; plan?: string };
+  const thisSignIn = ++signInGeneration; // 新的一次登录:在途的旧刷新结果不得写入
   cachedAuth = {
     accessToken: data.access_token,
     refreshToken: data.refresh_token,
@@ -561,7 +572,7 @@ export async function login(email: string, password: string): Promise<CloudAuth>
       headers: { 'Authorization': `Bearer ${data.access_token}` },
       signal: AbortSignal.timeout(AUTH_FETCH_TIMEOUT_MS),
     });
-    if (meRes.ok) {
+    if (meRes.ok && cachedAuth && signInGeneration === thisSignIn) {
       // /auth/me 返回 { user: { id, email, plan, ... } }（见 account-routes.ts:41）。
       // 原代码读扁平 me.id / me.plan → 恒 undefined，userId 一直是空串、plan 不更新。
       // 与 handleOAuthCallback 的解析保持一致。
@@ -573,6 +584,7 @@ export async function login(email: string, password: string): Promise<CloudAuth>
   } catch { /* ignore */ }
 
   saveAuthToDisk();
+  lastUnauthorizedReportAt = 0;
   log.info(`logged in as ${maskEmail(email)}`);
   return cachedAuth;
 }
@@ -597,11 +609,12 @@ async function refreshPlanFromServer(): Promise<void> {
       headers: { 'Authorization': `Bearer ${token}` },
       signal: AbortSignal.timeout(AUTH_FETCH_TIMEOUT_MS),
     });
-    if (!meRes.ok) return;
+    if (!meRes.ok) { noteUnauthorized(meRes.status); return; }
     const body = await meRes.json() as { user?: { plan?: string } };
     if (body.user?.plan && cachedAuth && body.user.plan !== cachedAuth.plan) {
       cachedAuth.plan = body.user.plan;
       saveAuthToDisk();
+      try { planChangedListener?.(); } catch { /* 监听方的错误不影响计划刷新 */ }
     }
   } catch { /* transient — 下次 refresh 再收敛 */ }
 }
@@ -620,7 +633,14 @@ export async function logout(): Promise<void> {
   // 客户端这条主登出路径补上调用。
   // best-effort:失败(网络/超时/服务端错误)不阻塞本地登出——本地清理必须照常进行。
   // 在清 cachedAuth 之前抓取 token(清空后就拿不到了)。
-  const token = cachedAuth?.accessToken ?? null;
+  // 先取一个云端仍会接受的访问令牌:闲置超过 1 小时后缓存的令牌已过期,拿它调登出
+  // 只会得到 401,会话不会被撤销,刷新令牌在云端继续有效 30 天。刷新失败不阻塞登出。
+  // 刷新最多等 5 秒:断网时不让登出卡在刷新的超时上。
+  const fresh = await Promise.race([
+    refreshTokenIfNeeded().catch(() => null),
+    new Promise<null>((resolve) => { setTimeout(() => resolve(null), LOGOUT_REFRESH_WAIT_MS).unref?.(); }),
+  ]);
+  const token = fresh ?? cachedAuth?.accessToken ?? null;
   if (token) {
     try {
       const base = getCloudBaseUrl();
@@ -687,6 +707,47 @@ export function classifyRefreshResult(args: {
  * 没必要排队。
  */
 let inflightRefresh: Promise<string | null> | null = null;
+
+/** 云端回 401 后强制刷新的最短间隔。 */
+const UNAUTHORIZED_REPORT_INTERVAL_MS = 60_000;
+const LOGOUT_REFRESH_WAIT_MS = 5_000;
+let lastUnauthorizedReportAt = 0;
+/** 每次登录(密码、OAuth)加一。用来识别“刷新发起之后又重新登录过”;不能比较对象,updateCloudAuth 会换对象。 */
+let signInGeneration = 0;
+
+/**
+ * 云端明确拒绝了本机的访问令牌（401），而本机认为它尚未到期：强制刷新一次。
+ *
+ * - 刷新被云端拒绝（400 / 401 / 403）：凭据确实失效，沿用到期刷新的处理清空登录态。
+ * - 刷新成功：只是访问令牌失效，换上新令牌即可。
+ * - 网络错误、5xx：不改变登录态。
+ *
+ * 必须与 refreshTokenIfNeeded 共用同一个进行中的请求：云端对同一个刷新令牌的第二次
+ * 提交会判为重放并撤销整个账号的令牌。
+ */
+export async function reportUnauthorized(): Promise<UnauthorizedResult> {
+  if (!cachedAuth) return 'unchanged';
+  const now = Date.now();
+  if (!inflightRefresh && now - lastUnauthorizedReportAt < UNAUTHORIZED_REPORT_INTERVAL_MS) return 'unchanged';
+  if (!inflightRefresh) {
+    // 只有真正发起刷新才计入节流;等待别人发起的那一次不算。
+    lastUnauthorizedReportAt = now;
+    inflightRefresh = doRefreshToken();
+    inflightRefresh.finally(() => { inflightRefresh = null; }).catch(() => { /* 已被下方 await 处理 */ });
+  }
+  try {
+    return (await inflightRefresh) === null ? 'signed_out' : 'refreshed';
+  } catch {
+    return 'unchanged';
+  }
+}
+setUnauthorizedHandler(reportUnauthorized);
+
+let planChangedListener: (() => void) | null = null;
+/** 读取到的订阅计划发生变化时的回调（例如升级后解除“设备数超限”）。 */
+export function setPlanChangedListener(listener: (() => void) | null): void {
+  planChangedListener = listener;
+}
 
 /**
  * 按需刷新 access token。
@@ -772,6 +833,9 @@ export async function authedRedirectLocation(path: string): Promise<string | nul
  */
 async function doRefreshToken(): Promise<string | null> {
   if (!cachedAuth) return null; // 防御:进入 await 链时被 logout 清空
+  // 记下发起刷新时的登录态:响应回来时若已换成另一次登录(重新登录、换账号),
+  // 这份响应属于旧登录,不能写进新的登录态。
+  const startedWith = signInGeneration;
   const base = getCloudBaseUrl();
   const body = JSON.stringify({ grant_type: 'refresh_token', refresh_token: cachedAuth.refreshToken });
 
@@ -799,6 +863,7 @@ async function doRefreshToken(): Promise<string | null> {
   if (res.ok) {
     const data = await res.json() as { access_token: string; refresh_token: string; expires_in: number };
     if (!cachedAuth) return null; // 防御:并发 logout
+    if (signInGeneration !== startedWith) return cachedAuth.accessToken; // 期间已重新登录:丢弃旧登录的刷新结果
     // 内存里换上新 token。
     cachedAuth.accessToken = data.access_token;
     cachedAuth.refreshToken = data.refresh_token;
@@ -828,9 +893,11 @@ async function doRefreshToken(): Promise<string | null> {
   // 走 classifyRefreshResult 保持源码与测试同源。
   const classification = classifyRefreshResult({ networkError: false, status: res.status });
   if (classification === 'permanent') {
+    if (signInGeneration !== startedWith) return cachedAuth?.accessToken ?? null; // 被拒的是旧登录,不动新的登录态
     log.error(`refreshToken permanent failure: ${res.status} — logging out`);
     cachedAuth = null;
     saveAuthToDisk();
+    try { authClearedListener?.(); } catch { /* 监听方的错误不影响登出 */ }
     return null;
   }
 

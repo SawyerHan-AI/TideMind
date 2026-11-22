@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { useCloudStatus } from '../../hooks/useCloudStatus'
 import { useDataRevision } from '../../contexts/DataChangeContext'
 import { Section } from './shared'
+import { DeviceList } from './DeviceList'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
 import { brand, btnText } from '../../lib/tokens'
 
@@ -285,15 +286,7 @@ function LoggedInView({ cloud }: { cloud: ReturnType<typeof useCloudStatus> }) {
         </div>
       </Section>
 
-      {/* Devices — placeholder */}
-      <Section
-        title={t('settings:account.devices', 'Devices')}
-        action={<ComingSoonTag />}
-      >
-        <p className="text-xs text-gray-500">
-          {t('settings:account.devicesComingSoon', 'Device management coming soon.')}
-        </p>
-      </Section>
+      <DeviceList syncEnabled={cloud.syncEnabled} />
 
       {/* Subscription */}
       <Section

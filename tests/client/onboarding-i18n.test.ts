@@ -85,8 +85,6 @@ describe('settings i18n 新增 key', () => {
     'general.onboarding',
     'general.onboardingDesc',
     'general.rerunOnboarding',
-    'agent.wizard.kimi.cliMissingTitle',
-    'agent.wizard.kimi.cliMissingNote',
   ]
 
   for (const lang of LANGUAGES) {

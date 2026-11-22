@@ -13,6 +13,7 @@ export interface ManagedMetabolismWorkerController extends EventEmitter {
   trigger(reason: SchedulerWorkerTriggerReason): void
   drainForRestart(): void
   shutdown(): void | Promise<void>
+  expediteShutdown?(): void
   forceTerminate(): Promise<void>
 }
 
@@ -25,6 +26,7 @@ export interface MetabolismWorkerGenerationManagerOptions {
 
 export class MetabolismWorkerGenerationManager extends EventEmitter {
   private generation = 0
+  private expedited = false
   private controller: ManagedMetabolismWorkerController | null = null
   private restartPromise: Promise<void> | null = null
   private startPromise: Promise<void> | null = null
@@ -97,6 +99,7 @@ export class MetabolismWorkerGenerationManager extends EventEmitter {
     if (controller) {
       const ended = this.waitForEnd(controller)
       await controller.shutdown()
+      if (this.expedited) controller.expediteShutdown?.()
       try {
         await ended
       } catch {
@@ -125,6 +128,13 @@ export class MetabolismWorkerGenerationManager extends EventEmitter {
         // shutdown只等待启动工作settle；启动失败已由start caller/degraded事件承接。
       }
     }
+  }
+
+  /** Second quit request: forward to the current generation's Worker. */
+  expediteShutdown(): void {
+    // May arrive before shutdown() reached the controller; remember it.
+    this.expedited = true
+    if (this.stopped) this.controller?.expediteShutdown?.()
   }
 
   private async restartCurrentGeneration(): Promise<void> {

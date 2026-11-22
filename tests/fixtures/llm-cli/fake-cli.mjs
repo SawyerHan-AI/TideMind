@@ -29,7 +29,11 @@ if (args[0] === 'login' && args[1] === 'status') {
 let stdin = '';
 for await (const chunk of process.stdin) stdin += chunk.toString();
 
-if (stdin.startsWith('SLEEP')) {
+// SLEEP_MS=<n> …  delay n ms, then continue with the normal successful output.
+const sleepMs = /^SLEEP_MS=(\d+)/.exec(stdin);
+if (sleepMs) {
+  await new Promise((resolve) => setTimeout(resolve, Number(sleepMs[1])));
+} else if (stdin.startsWith('SLEEP')) {
   await new Promise((resolve) => setTimeout(resolve, 30_000));
 }
 if (stdin.startsWith('BIG')) {

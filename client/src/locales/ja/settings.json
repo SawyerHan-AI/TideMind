@@ -32,12 +32,7 @@
     "updateChannelDesc": "Beta では新機能をいち早く受け取れますが、安定性が低い可能性があります。切り替えは次回チェック時に有効になります。",
     "updateChannelStable": "安定版",
     "updateChannelBeta": "ベータ",
-    "channelSwitchConfirm": "Stable に切り替えると、次回の更新確認時に最新の安定版がインストールされます(一部の試験機能は取り消されます)。続行しますか?",
-    "backgroundOrganization": {
-      "title": "このデバイスで記憶をバックグラウンド整理",
-      "description": "自動生成の重複を避けるため、1 台だけで有効にしてください。オフでも同期、ノート取り込み、検索、手動のモデル利用は可能です。実行中の処理が終わると反映されます。 切り替える前に旧デバイスでオフにし、TideMind と Agent 接続を正常に終了してから、新デバイスでオンにしてください。",
-      "error": "設定を保存できませんでした。再試行してください。"
-    }
+    "channelSwitchConfirm": "Stable に切り替えると、次回の更新確認時に最新の安定版がインストールされます(一部の試験機能は取り消されます)。続行しますか?"
   },
   "external": {
     "subtabs": {
@@ -692,7 +687,7 @@
       },
       "synapticConsolidate": {
         "name": "シナプス固定",
-        "description": "検索時の副作用—ヒート上昇（常時）+ 再固定（条件付き、記憶更新が必要かを評価）。シナプス減衰と対をなす。",
+        "description": "ヒート上昇と結果間のリンク作成は検索時に即時実行。深い再固定と矛盾検出（記憶更新が必要かを評価）はキューに入り、一定間隔で処理されます。シナプス減衰と対をなす。",
         "maxContextNodes": "最大コンテキストノード数",
         "maxContextNodesTip": "再固定時の最大コンテキストノード数。",
         "independenceBoost": "独立度上昇量",
@@ -703,7 +698,9 @@
         "conflictCrossMinOverlapTip": "ノード間衝突検出の最小キーワード重複度。",
         "conflictHighConfidence": "衝突信頼度上限",
         "conflictHighConfidenceTip": "衝突信頼度の上限。",
-        "trigger": "クエリ時"
+        "trigger": "定時",
+        "interval": "実行間隔",
+        "intervalTip": "実行間隔（分）。1 回の実行でキュー内の recall を 1 件処理します。"
       },
       "synapticDecay": {
         "name": "シナプス減衰",
@@ -752,12 +749,14 @@
       },
       "linkRevalidate": {
         "name": "リンク再検証",
-        "description": "recall によってトリガー:新しいコンテキストの下で既存リンクを再評価します。記憶再固定理論に基づく。",
+        "description": "recall が作業をキューに入れ、バックグラウンド処理が一定間隔で実行:新しいコンテキストの下で既存リンクを再評価します。記憶再固定理論に基づく。",
         "maxLinksPerRun": "実行ごとの最大リンク数",
-        "maxLinksPerRunTip": "recall ごとに再検証する最大リンク数。",
+        "maxLinksPerRunTip": "キューに入った recall ごとに再検証する最大リンク数。",
         "minLinkAgeHours": "最小リンク年齢",
         "minLinkAgeHoursTip": "この時間（時）より古いリンクのみ検証します。",
-        "trigger": "recall トリガー"
+        "trigger": "定時",
+        "interval": "実行間隔",
+        "intervalTip": "実行間隔（分）。1 回の実行でキュー内の recall を 1 件処理します。"
       },
       "keystone": {
         "name": "ノード昇格",
@@ -1017,151 +1016,6 @@
       "kimiMcpHint": "MCP + コンテキスト注入 Hook を ~/.kimi-code/ に書き込みました。kimi セッションを再起動すると有効になります。",
       "kimiSkillHint": "Skill は ~/.kimi-code/skills/ に自動インストールされ、Kimi Code 起動時に自動で読み込まれます。手動コピーは不要です。"
     },
-    "wizard": {
-      "nameAgent": "Name Agent",
-      "configCowork": "Configure Claude Cowork",
-      "configCursor": "Configure Cursor",
-      "configCodex": "Configure Codex",
-      "configWindsurf": "Configure Windsurf",
-      "configOpenClaw": "Configure OpenClaw",
-      "configGemini": "Configure Gemini CLI",
-      "configKimi": "Kimi Code を設定",
-      "installPlugin": "Install Plugin",
-      "mcpConfig": "MCP Config",
-      "skillFile": "Skill File",
-      "verify": "Verify",
-      "selectToolHint": "Select a tool type to see configuration steps",
-      "comingSoon": "Coming Soon",
-      "other": "Manual MCP",
-      "pluginSupportHint": "Supports plugin installation with automatic MCP, Skill and Hooks configuration",
-      "agentName": "Agent Name",
-      "agentNamePlaceholder": "e.g. Work Cursor",
-      "agentNameHint": "Give this Agent a name to help manage multiple tools of the same type",
-      "creating": "Creating...",
-      "createAndContinue": "Create & Continue",
-      "generatingPlugin": "Generating plugin...",
-      "pluginGenerateFailed": "Plugin generation failed",
-      "generateFailed": "Generation failed",
-      "createFailed": "作成に失敗しました",
-      "completed": "Completed",
-      "manualStepsTitle": "Manual steps required:",
-      "prevStep": "Previous",
-      "nextStep": "Next",
-      "finish": "Done",
-      "installing": "Installing...",
-      "installed": "Installed",
-      "oneClickInstall": "One-click install to Claude Code",
-      "installSuccess": "Plugin installed successfully",
-      "installFailed": "Installation failed",
-      "manualInstallHint": "You can install manually with the command below:",
-      "cliNotDetected": "claude CLI not detected. Run the following command in terminal to install the plugin:",
-      "addConfigTo": "Add the following config to",
-      "addConfigGeneric": "Add the following MCP config to your AI tool's configuration file (usually a JSON file like mcp.json or config.json, refer to your tool's documentation for the exact location):",
-      "mcpConfigHint": "The config contains an EB_AGENT_ID environment variable to uniquely identify this Agent. If you already have other MCP configs, merge the tidemind section into the existing mcpServers.",
-      "copySkillTo": "Copy the following Skill content to",
-      "copySkillGeneric": "Copy the following guide to your AI tool's instruction config (such as rules files, system prompt, or AGENTS.md, depending on your tool):",
-      "loading": "Loading...",
-      "skillHint": "The Skill file tells AI tools how to use Tide Mind (when to call brain_prepare / brain_recall / brain_digest). After modifying the Skill, you need to re-copy it to the external tool.",
-      "baseFallbackHint": "Using generic Skill template. Replace the tool parameter and source.tool in the content with your actual tool name.",
-      "verifyDescription": "Agent created. Check if configuration is complete:",
-      "verifyAgentCreated": "Agent \"{{name}}\" created ({{id}})",
-      "verifyPluginGenerated": "{{tool}} plugin generated",
-      "verifyDesktopMcp": "Desktop MCP config written",
-      "verifyDesktopMcpHintNeeded": "Restart Claude Desktop to apply",
-      "verifyDesktopMcpHintDone": "Restart Claude Desktop to apply",
-      "verifyCursorMcp": "Cursor MCP config written",
-      "verifyCursorMcpHintOk": "Hot reload applies automatically",
-      "verifyCursorMcpHintFail": "Config write failed",
-      "verifyCodexMcp": "Codex MCP config + Hook written",
-      "verifyCodexMcpHintOk": "Restart session to apply",
-      "verifyCodexMcpHintFail": "Config write failed",
-      "verifyWindsurfMcp": "Windsurf MCP config written",
-      "verifyWindsurfMcpHintOk": "Full Windsurf restart required",
-      "verifyWindsurfMcpHintFail": "Config write failed",
-      "verifyOpenClawMcp": "OpenClaw MCP config + Hook written",
-      "verifyOpenClawMcpHintOk": "Restart OpenClaw to apply",
-      "verifyOpenClawMcpHintFail": "Config write failed",
-      "verifyGeminiMcp": "Gemini extension installed (MCP + Hook + commands)",
-      "verifyGeminiMcpHintOk": "Restart `gemini` to apply",
-      "verifyGeminiMcpHintFail": "`gemini extensions install` failed",
-      "verifyKimiMcp": "Kimi Code の MCP 設定 + Hook を書き込みました",
-      "verifyKimiMcpHintOk": "セッションを再起動すると有効になります",
-      "verifyKimiMcpHintFail": "設定の書き込みに失敗しました",
-      "verifyMcpAdded": "MCP config added to tool",
-      "verifyMcpAddedHint": "Confirm you have pasted the JSON config from the previous step into the tool's MCP config file",
-      "verifySkillCopied": "Skill content copied to tool",
-      "verifySkillCopiedHint": "Confirm you have copied the Skill guide into the tool's instruction config",
-      "verifyToolRestarted": "Tool restarted to apply config",
-      "verifyFirstConnection": "First connection detected",
-      "verifyFirstConnectionHint": "Start a conversation in the external tool and invoke the brain tools",
-      "cowork": {
-        "skillFile": "Skill file (brain usage guide)",
-        "desktopMcpConfig": "Claude Desktop MCP config (brain_prepare / brain_recall / brain_digest)",
-        "skillDownloaded": "Skill file (generated to Downloads)",
-        "step1": "1. Restart Claude Desktop (to apply MCP config)",
-        "step2": "2. Open Claude Cowork > Customize > Skills > Upload a skill",
-        "step3": "3. Select the Skill .md file above to upload"
-      },
-      "cursor": {
-        "mcpConfig": "Cursor MCP config (brain_prepare / brain_recall / brain_digest)",
-        "skillDownloaded": "Skill .mdc rules file (generated to Downloads)",
-        "step1": "1. Copy the .mdc file above to the project's .cursor/rules/ directory",
-        "step2": "2. Open the project in Cursor, Agent mode can now use brain tools",
-        "mcpNote": "MCP config written automatically. Cursor hot reloads without restart."
-      },
-      "codex": {
-        "mcpConfig": "Codex MCP config (config.toml)",
-        "hookConfig": "SessionStart Hook (auto-load context)",
-        "agentsDownloaded": "AGENTS.md guide (generated to Downloads)",
-        "step1": "1. Append the AGENTS.md content above to project root or ~/.codex/AGENTS.md",
-        "step2": "2. Restart Codex session to apply config",
-        "mcpNote": "MCP config and SessionStart Hook written to ~/.codex/ automatically.",
-        "skillInjected": "Skill ガイドを ~/.codex/skills/ に注入しました",
-        "autoReadyTitle": "設定完了 — 手動ステップは不要です",
-        "autoReadyNote": "次回の Codex セッション起動時に、コンテキストと Skill ガイドが自動で読み込まれます。",
-        "upgradeHint": "Codex {{version}} を検出 — 0.121+ にアップグレードすると、シームレスな統合（AGENTS.md の手動コピー不要）が得られます。"
-      },
-      "windsurf": {
-        "mcpConfig": "Windsurf MCP config (mcp_config.json)",
-        "rulesDownloaded": "Rules file (generated to Downloads)",
-        "step1": "1. Copy the .md file above to the project's .windsurf/rules/ directory",
-        "step2": "2. Fully quit and restart Windsurf (closing the window is not enough)",
-        "mcpNote": "MCP config written automatically, but Windsurf does not support hot reload."
-      },
-      "openclaw": {
-        "mcpConfig": "OpenClaw MCP config (openclaw.json)",
-        "hookConfig": "Bootstrap Hook (auto-load context)",
-        "skillDownloaded": "Skill directory (generated to Downloads)",
-        "step1": "1. Copy the Skill directory above to ~/.openclaw/skills/ or project skills/",
-        "step2": "2. Restart OpenClaw to apply config",
-        "mcpNote": "MCP config and Bootstrap Hook written to ~/.openclaw/ automatically."
-      },
-      "claudeCode": {
-        "mcpConfig": "MCP Server config (brain_prepare / brain_recall / brain_digest)",
-        "skillFile": "Skill file (brain usage guide)",
-        "hooks": "Hooks (SessionStart auto-load context, PreCompact auto-save memory)"
-      },
-      "gemini": {
-        "mcpConfig": "Gemini MCP config (brain_prepare / brain_recall / brain_digest)",
-        "hookConfig": "SessionStart Hook (auto-load context)",
-        "contextFile": "GEMINI.md context file (usage guide)",
-        "commands": "Slash commands: /brain-recall /brain-digest /brain-forget",
-        "autoReadyTitle": "Fully configured — no manual steps needed",
-        "autoReadyNote": "Gemini CLI will auto-load context and tools on its next session start.",
-        "upgradeTitle": "Gemini CLI version too old for hooks",
-        "upgradeHint": "Detected Gemini CLI {{version}} — upgrade to 0.26+ to enable auto-loaded user context via SessionStart hook.",
-        "upgradeNote": "MCP tools (brain_*) and slash commands work on older versions, but you'll need to invoke brain_prepare manually."
-      },
-      "kimi": {
-        "mcpConfig": "Kimi Code の MCP 設定(mcp.json)",
-        "hookConfig": "コンテキスト注入 Hook(コンテキストを自動読み込み)",
-        "skillInjected": "Skill ガイドを ~/.kimi-code/skills/ に注入しました",
-        "autoReadyTitle": "設定完了 — 手動ステップは不要です",
-        "autoReadyNote": "次回の Kimi Code セッション起動時に、コンテキストと Skill ガイドが自動で読み込まれます。",
-        "cliMissingTitle": "Kimi Code CLI が見つかりません",
-        "cliMissingNote": "設定は保存済みです。Kimi Code CLI をインストールし、新しいセッションを開始してください。"
-      }
-    },
     "managed": {
       "memoryVerified": "メモリツール検証済み",
       "fullyVerified": "完全検証済み",
@@ -1354,7 +1208,8 @@
         "processing": "処理中",
         "needsAttention": "注意が必要です",
         "paused": "一時停止中",
-        "disconnected": "切断されました"
+        "disconnected": "切断されました",
+        "connected": "接続済み"
       },
       "reason": {
         "verified": "コアメモリツールが検証されました。",
@@ -1425,7 +1280,7 @@
         "lifecycle": "Hook"
       },
       "componentStatus": {
-        "verified": "確認済み",
+        "verified": "有効",
         "configured": "設定済み",
         "stale": "検証が必要です",
         "needsSession": "新しいセッションが必要です",
@@ -1433,7 +1288,8 @@
         "missing": "行方不明",
         "conflict": "紛争",
         "unsupported": "サポートされていません",
-        "unconnected": "接続されていません"
+        "unconnected": "接続されていません",
+        "needsAction": "対応が必要"
       },
       "defaultProfile": "デフォルトのプロファイル",
       "installationCount": "{{count}} のインストール",
@@ -1479,12 +1335,14 @@
       "event": {
         "activity": "Agent接続アクティビティ",
         "autoRepairCircuitReset": "自動修復が再び有効になりました",
+        "connectionAutoRecovered": "接続は自動的に復旧しました。新しいセッションを開始すると利用できます",
         "artifactAutoRestored": "削除された設定が自動的に復元されました",
         "hostProbeUncertain": "Agentを確実にチェックできませんでした",
         "legacyConnectionAdopted": "既存の Tide Mind 接続が認識されました",
         "legacyConnectionNeedsConfirmation": "既存の接続には確認が必要です",
         "legacyAdoptionScanFailed": "既存の接続を確認できませんでした",
-        "userConfirmedGuidedRemoval": "ガイド付きの削除がユーザーにより確認されました"
+        "userConfirmedGuidedRemoval": "ガイド付きの削除がユーザーにより確認されました",
+        "automaticConnectionCompleted": "自動的に接続しました。不要な場合は詳細から切断できます"
       },
       "management": "接続の管理",
       "supportMode": {
@@ -1784,7 +1642,12 @@
         "checkSupport": "この接続ではアカウントの自動確認やモデルテストを利用できません。TideMind の実際の使用によって検証されます。",
         "connectionReview": "既存の Antigravity 設定または共有IDの確認が必要です。既存の接続は置き換えていません。再接続する前に詳細を確認してください。",
         "appUsage": "設定の変更や再接続後は、まず Antigravity App を再起動し、新しい会話で TideMind を使うよう依頼してください。確認が表示された場合は、要求された TideMind ツールを許可してください。"
-      }
+      },
+      "awaitingFirstUse": "初回利用待ち · 新しいセッションで有効になります",
+      "maintenancePaused": "自動メンテナンスを一時停止中",
+      "advancedOptions": "詳細オプション",
+      "skillNotObservable": "この Agent が Skill を読み込んだことはまだ確認できていません。この信号を提供しない Agent もあり、問題ではありません。",
+      "usesSiblingConnection": "{{name}} の接続を使用します。ここでの設定は不要です。"
     }
   },
   "account": {
@@ -1796,7 +1659,6 @@
     "loginButton": "サインイン",
     "basicInfo": "基本情報",
     "devices": "デバイス",
-    "devicesComingSoon": "デバイス管理は近日公開予定です。",
     "subscription": "サブスクリプション",
     "currentPlan": "現在のプラン",
     "upgradeHint": "Pro でクラウドの記憶が無制限になり、5 台のデバイスで同期できます。",
@@ -1824,7 +1686,26 @@
     "memoryNearLimitHint": "無料プランの上限に近づいています。{{limit}} 件を超える新規メモリはアップグレードまで読み取り専用になります。",
     "llmCostThisMonth": "今月の LLM 使用量",
     "llmCostCalls": "{{count}} 回呼び出し",
-    "llmCostHint": "推定値。設定 → モデル使用量 で完全な内訳を確認できます。"
+    "llmCostHint": "推定値。設定 → モデル使用量 で完全な内訳を確認できます。",
+    "deviceList": {
+      "description": "メインデバイスがバックグラウンドの記憶整理を担当します。同期、ノートのインポート、検索、フォアグラウンドのモデルはすべてのデバイスで引き続き使えます。",
+      "thisDevice": "このデバイス",
+      "primary": "メイン",
+      "online": "オンライン",
+      "lastSeen": "最終オンライン {{time}}",
+      "makePrimary": "メインにする",
+      "confirmTitle": "「{{name}}」をメインデバイスにしますか？",
+      "confirmDescription": "以後このデバイスがバックグラウンドの記憶整理を担当します。以前のメインデバイスは実行中のタスクが終わると停止します。オフラインの場合は次回接続時に停止し、それまでに生成した整理結果は同期されません。",
+      "noPrimary": "現在、記憶を整理しているデバイスがありません。メインデバイスを選んでください。",
+      "primaryStale": "メインデバイスが 7 日以上オンラインになっていません。使用していない場合は、別のデバイスをメインにしてください。",
+      "syncOff": "現在はこのデバイスがバックグラウンドの記憶整理を担当しています。クラウド同期をオンにすると、複数のデバイスからメインデバイスを選べます。",
+      "cloudNotUpgraded": "クラウドサービスがまだメインデバイスの選択に対応していないため、当面は各デバイスの従来の設定で動作します。",
+      "loadError": "デバイス一覧を読み込めませんでした。",
+      "retry": "再試行",
+      "saveError": "保存できませんでした。もう一度お試しください。",
+      "deviceLimit": "このアカウントはデバイス数の上限（{{limit}}）に達しています。このデバイスはまだ追加されていないため、バックグラウンドの記憶整理は行わず、既存の整理結果もアップロードされません。プランをアップグレードすると自動的に追加されます。",
+      "deviceLimitNoCount": "このアカウントはデバイス数の上限に達しています。このデバイスはまだ追加されていないため、バックグラウンドの記憶整理は行わず、既存の整理結果もアップロードされません。プランをアップグレードすると自動的に追加されます。"
+    }
   },
   "cloud": {
     "loginRequired": "クラウド機能を使用するには、TideMind Cloud にサインインしてください。",

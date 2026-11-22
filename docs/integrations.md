@@ -12,7 +12,7 @@ TideMind communicates via the [Model Context Protocol (MCP)](https://modelcontex
 
 The TideMind desktop client (Electron app) provides one-click setup for all integrations. After installing and launching the client:
 
-1. **AI tool connections** are configured from **Settings > Plugins**. Select your AI tool (Claude Code, Cursor, Windsurf, Codex, etc.), and the client generates the necessary configuration files automatically.
+1. **AI tool connections** are configured from **Settings > Plugins**. Select your AI tool (Claude Code, Cursor, Devin Desktop, Codex, etc.), and the client generates the necessary configuration files automatically.
 
 2. **Note system connections** are configured from **Settings > Note Sources**. Point TideMind at your Logseq graph folder, Obsidian vault, or Apple Notes database, and it begins syncing.
 
@@ -33,10 +33,18 @@ TideMind runs as an MCP server, exposing three tools: `brain_prepare`, `brain_re
 | Claude Code | Plugin (`.mcp.json` + Skill + Hook) | Yes (via desktop client) |
 | Claude Desktop (Cowork) | Desktop MCP config + Skill file | Yes |
 | Cursor | MCP config | Yes |
-| Windsurf | MCP config | Yes |
+| Devin Desktop (formerly Windsurf) | MCP config | Yes |
 | Codex | MCP config + Hook | Yes |
 | Antigravity App / CLI (macOS Apple silicon) | Shared MCP + always-on Rule + session-start Hook | Yes; native tool approval remains in Antigravity |
 | Any MCP-compatible tool | Manual MCP config | Manual |
+
+### Staying connected and telling agents apart
+
+Once an agent is connected, TideMind keeps serving memory as long as you have not disconnected it, the agent still comes from its official source, and the configuration TideMind wrote is unchanged. A system restart or an agent update re-checks those facts in the background; it does not ask you to reconnect, and it does not rewrite the agent's files. If the configuration was edited or removed, TideMind repairs it or tells you what needs your attention.
+
+Each row shows whether the connection is serving memory, when it was last used, and the state of its three parts: Skill, MCP Tools and Hook. A part is shown as active after TideMind has seen it used at least once. Some agents give no signal that a Skill was loaded; that part then stays "configured", which is not a problem.
+
+Some agents import other tools' configuration files. TideMind records each call under the agent that actually made it, not the one named in the imported file, and avoids showing a second identical set of tools when the calling agent already has its own working connection. When TideMind can identify the calling agent, one you disconnected cannot keep using memory through another agent's configuration. Attribution relies on local process information; when it cannot be determined, the call is recorded under the configured agent. Filtering memories by source uses this record for new memories; older memories are matched by the name stored with them.
 
 ### Antigravity App and CLI
 
@@ -46,7 +54,7 @@ Start a new Antigravity conversation and ask it to use TideMind. Approve the req
 
 This is basic memory integration with startup context. It does not include automatic end-of-session memory saving or compaction hooks. Shared configuration activity is not proof that both App and CLI were independently tested. A configuration waiting for its first successful call is not necessarily broken or denied permission. Automatic account checks and model diagnostics are not available for this connection.
 
-**Pause maintenance** stops automatic configuration changes. To stop memory access for this shared connection, use **Disconnect**. TideMind may ask you to remove its owned Rule file manually; other agents' configuration and your rules are preserved. Antigravity IDE, remote agents and other operating systems are not included in this release's managed support.
+**Pause maintenance** (under Advanced options) stops automatic configuration changes. To stop memory access for this shared connection, use **Disconnect**. TideMind may ask you to remove its owned Rule file manually; other agents' configuration and your rules are preserved. Antigravity IDE, remote agents and other operating systems are not included in this release's managed support.
 
 ### Manual MCP Configuration
 

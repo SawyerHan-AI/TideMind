@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { getRuntimeDiagnosticContext } from './config.js';
+import { getRuntimeDiagnosticContext, getDataDir } from './config.js';
 import { assertDiagnosticBridge } from './agent-diagnostic-contract.js';
 import { assertDiagnosticDatabase, countDiagnosticToolCall, validateDiagnosticInput, completeDiagnosticPrepare,
   completeDiagnosticDigest, completeDiagnosticRecall, diagnosticToolMarker, diagnosticServerName, DIAGNOSTIC_TOOL_DESCRIPTIONS } from './agent-diagnostic-receipts.js';
@@ -26,7 +26,7 @@ import { recordHostActivityEvidence, type HostActivitySignal } from './db/agent-
 import { describeBridgeRejection, evaluateBridgeAdmission } from './agent-bridge-guard.js';
 import { createLogger } from './utils/logger.js';
 import { migrateDataDirIfNeeded } from './utils/migrate-data-dir.js';
-import { shutdownLLMClient } from './llm/client.js';
+import { LLM_SHUTDOWN_GRACE_MS, shutdownLLMClient } from './llm/client.js';
 import { waitForBackgroundWork } from './utils/background-work.js';
 import { getTideMindVersion } from './utils/app-version.js';
 import {
@@ -34,6 +34,10 @@ import {
   shouldRecordMcpActivity,
 } from './agent-integration-recognition.js';
 
+import Database from 'better-sqlite3';
+import path from 'node:path';
+import { borrowedByConnectedCaller } from './agent-borrowed-configuration.js';
+import { callerWasDisconnected, currentCallerAttribution, recordCallerObservation } from './agent-caller-observation.js';
 import { isAntigravitySharedAgent } from './antigravity-rule-evidence.js';
 import { ANTIGRAVITY_INSTRUCTION_PREPARE_PROBE } from './antigravity-instruction.js';
 
@@ -66,6 +70,7 @@ const activityWarnings = new Set<string>();
 
 function recordMcpActivity(db: ReturnType<typeof getDb>, signalName: HostActivitySignal, instructionProbe?: string): void {
   if (diagnosticContext) return;
+  if (agentId && !activityGenerationToken) recordCallerObservation(db, agentId, signalName);
   if (!agentId || !activityGenerationToken) return;
   try {
     const result = recordHostActivityEvidence(db, {
@@ -77,6 +82,8 @@ function recordMcpActivity(db: ReturnType<typeof getDb>, signalName: HostActivit
       activityGenerationToken,
       instructionProbe,
     });
+    // Only activity the ledger accepted counts as real use, as for hooks.
+    if (result.status !== 'rejected') recordCallerObservation(db, agentId, signalName);
     if (result.status === 'rejected' && !activityWarnings.has(result.reason)) {
       activityWarnings.add(result.reason);
       log.warn(`MCP 宿主活动证据被拒绝：${result.reason}`);
@@ -100,7 +107,9 @@ function bridgeRejectedResult(db: ReturnType<typeof getDb>) {
     assertDiagnosticDatabase(db, diagnosticContext);
     return null;
   }
-  const admission = evaluateBridgeAdmission(db, { agentId, activityGenerationToken });
+  const evaluated = evaluateBridgeAdmission(db, { agentId, activityGenerationToken });
+  const admission = evaluated.allowed && agentId && callerWasDisconnected(db, currentCallerAttribution(db))
+    ? { allowed: false as const, reason: 'installation_removed' as const } : evaluated;
   if (admission.allowed) return null;
   if (!bridgeRejectionsLogged.has(admission.reason)) {
     bridgeRejectionsLogged.add(admission.reason);
@@ -167,7 +176,7 @@ const mcpDesc = loadMcpDescriptions();
 // ============================================================
 // brain_prepare — 对话开始时调用，获取认知包
 // ============================================================
-server.tool(
+const prepareTool = server.tool(
   'brain_prepare',
   mcpDesc.brain_prepare,
   BRAIN_TOOL_INPUT_SHAPES.brain_prepare,
@@ -204,10 +213,11 @@ server.tool(
           instructionProbe: params.integration_probe,
         })) {
           recordMcpActivity(db, 'brain_prepare', params.integration_probe);
-        } else if (!instructionAllowed && agentId && !diagnosticContext
+        } else if (agentId && !diagnosticContext
           && evaluateBridgeAdmission(db, { agentId, activityGenerationToken }).allowed) {
           // Real use is not the same as managed instruction recognition.
-          touchAgent(db, agentId);
+          recordCallerObservation(db, agentId, 'brain_prepare');
+          if (!instructionAllowed) touchAgent(db, agentId);
         }
         return {
           content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
@@ -226,7 +236,7 @@ server.tool(
 // ============================================================
 // brain_recall — 按需获取记忆
 // ============================================================
-server.tool(
+const recallTool = server.tool(
   'brain_recall',
   mcpDesc.brain_recall,
   BRAIN_TOOL_INPUT_SHAPES.brain_recall,
@@ -323,7 +333,7 @@ function makeDeprecatedFieldsError(fields: string[]): { isError: true; content: 
 // ============================================================
 // brain_digest — 消化信息到外脑
 // ============================================================
-server.tool(
+const digestTool = server.tool(
   'brain_digest',
   mcpDesc.brain_digest,
   BRAIN_TOOL_INPUT_SHAPES.brain_digest,
@@ -347,6 +357,7 @@ server.tool(
         intent: params.intent as DigestIntent | undefined,
         async: params.async,
         agent_id: agentId ?? undefined,
+        caller: agentId ? (({ installationId, level }) => ({ installationId, level }))(currentCallerAttribution(db)) : undefined,
       };
       // 传入 server 让 digest 在归类模糊时可通过 MCP elicitation 向用户追问
       if (diagnosticContext) validateDiagnosticInput(db, diagnosticContext, diagnosticCaller, 'brain_digest', params);
@@ -368,6 +379,19 @@ server.tool(
     }
   },
 );
+
+/** Read-only peek that keeps the main connection lazy; any failure means "not borrowed". */
+function configurationBorrowedByConnectedHost(configAgentId: string): boolean {
+  let peek: Database.Database | null = null;
+  try {
+    peek = new Database(path.join(getDataDir(), 'graph', 'brain.sqlite'), { readonly: true, fileMustExist: true });
+    return borrowedByConnectedCaller(peek, configAgentId, currentCallerAttribution(peek));
+  } catch {
+    return false;
+  } finally {
+    try { peek?.close(); } catch { /* ignore */ }
+  }
+}
 
 // ============================================================
 // 启动服务器
@@ -410,6 +434,13 @@ async function main() {
       await start();
     };
   }
+  if (agentId && !diagnosticContext && process.env.TIDEMIND_AGENT_INTEGRATION_HIDE_BORROWED_TOOLS !== '0'
+    && configurationBorrowedByConnectedHost(agentId)) {
+    // The host that started this process imported another host's configuration
+    // and already has its own connection: expose one set of tools, not two.
+    log.info('configuration loaded by another connected host; tools are provided by its own connection');
+    for (const tool of [prepareTool, recallTool, digestTool]) tool.disable();
+  }
   await server.connect(transport);
 
   // 优雅退出：先停止 MCP admission，再关闭 LLM runtime 并排空脱离请求的后台
@@ -417,11 +448,15 @@ async function main() {
   // 必须保留进程和数据库，不能用固定 timeout 强退。
   let shutdownPromise: Promise<void> | null = null;
   async function gracefulShutdown(): Promise<void> {
-    if (shutdownPromise) return shutdownPromise;
+    if (shutdownPromise) {
+      // Second quit signal: stop waiting for committed CLI invocations.
+      void shutdownLLMClient({ graceMs: 0 }).catch(() => undefined);
+      return shutdownPromise;
+    }
     const current = (async () => {
       mcpStopping = true;
       if (server) await server.close();
-      await shutdownLLMClient();
+      await shutdownLLMClient({ graceMs: LLM_SHUTDOWN_GRACE_MS });
       await waitForMcpHandlers();
       await waitForBackgroundWork();
       try {

@@ -6,6 +6,7 @@ import { createLogger, enableFileLogging } from '../../utils/logger.js';
 import { getLLMInvocationContext } from '../invocation-context.js';
 import { CliChildProcessRunner } from './child-process-runner.js';
 import { cliProcessRegistry } from './runtime-process-registry.js';
+import { runAsSettlingInvocation } from './settlement-context.js';
 import { ClaudeCliAdapter } from './claude.js';
 import { CodexCliAdapter } from './codex.js';
 import { CLI_PROCESS_EXIT_UNCONFIRMED, CliLLMError, hasUnconfirmedCliProcessExit, isDefinitiveProviderRejection } from './errors.js';
@@ -285,7 +286,9 @@ export async function runCliLLM(
   const logFailure = (error: unknown, failureStage = stage): void => {
     try {
       enableFileLogging(join(dataDir, 'logs'));
-      log.error('CLI invocation failed', JSON.stringify({
+      // Lease contention is an expected deferral, not a fault.
+      const capacity = error instanceof CliLLMError && error.kind === 'capacity';
+      (capacity ? log.info : log.error)('CLI invocation failed', JSON.stringify({
         invocationId: invocation.id, connectionId: request.connectionId,
         provider: request.providerType, stage: failureStage, promptCommitted, providerCompleted,
         errors: cliErrorChain(error),
@@ -362,6 +365,7 @@ export async function runCliLLM(
     }
   };
 
+  let releaseSettlement: (() => void) | null = null;
   try {
     const result = await withCliCapacityLease(
       db,
@@ -374,6 +378,7 @@ export async function runCliLLM(
       async (lease, signal) => {
         const hooks = {
           beforePromptCommit: async () => {
+            registry.assertCommitAllowed();
             assertCliCapacityFence(db, lease);
             options._testHooks?.beforePromptCommit?.();
             stage = 'pre_submit_environment';
@@ -398,6 +403,9 @@ export async function runCliLLM(
               markCliPromptCommitted(db, invocation.id, lease);
               promptCommitted = true;
             }).immediate();
+            // Committed but not yet settled: a quiescing runtime waits for this
+            // count. Released in the outermost finally, never inside a transaction.
+            releaseSettlement ??= registry.beginSettlement();
             stage = 'model_execution';
           },
         };
@@ -428,7 +436,9 @@ export async function runCliLLM(
         providerCompleted = true;
         stage = 'post_response_environment';
         options._testHooks?.afterProviderCompleted?.();
-        await recheckBinding();
+        // Post-response verification may start registry children (Codex metadata);
+        // a quiescing runtime admits them only from this settling scope.
+        await runAsSettlingInvocation(recheckBinding);
         try {
           assertCliCapacityFence(db, lease);
         } catch (error) {
@@ -584,7 +594,19 @@ export async function runCliLLM(
     }
     Object.assign(cliError, { invocationId: invocation.id });
     throw cliError;
+  } finally {
+    (releaseSettlement as (() => void) | null)?.();
   }
+}
+
+/** Refuse new CLI work and wait up to graceMs for committed invocations to settle. */
+export async function quiesceCliRuntime(graceMs: number): Promise<void> {
+  await registry.quiesce(graceMs);
+}
+
+/** Bring an in-progress quiesce forward (second quit signal). */
+export function shortenCliRuntimeQuiesce(graceMs = 0): void {
+  registry.shortenQuiesce(graceMs);
 }
 
 export async function shutdownCliRuntime(): Promise<void> {

@@ -32,6 +32,9 @@ import {
   matchesSupportQuery,
   managementUnavailableHelpKey,
   managementStatusPresentation,
+  componentSummaryPresentation,
+  connectionStatusPresentation,
+  connectionSubtitleKey,
   nextRovingTabIndex,
   requiredUserActionDetailKey,
   requiredUserActionPresentation,
@@ -536,8 +539,8 @@ describe('current Agent action notices', () => {
 })
 
 it('keeps temporary startup eligibility separate from current connection status', () => {
-  expect(managementStatusPresentation('available','source_verification_pending',true)).toMatchObject({tone:'green',labelKey:'agent.managed.status.available'})
-  expect(managementStatusPresentation('awaiting_verification','source_verification_pending',true)).toMatchObject({tone:'blue',labelKey:'agent.managed.status.awaitingVerification'})
+  expect(managementStatusPresentation('available','source_verification_pending',true)).toMatchObject({tone:'green',labelKey:'agent.managed.status.connected'})
+  expect(managementStatusPresentation('awaiting_verification','source_verification_pending',true)).toMatchObject({tone:'green',labelKey:'agent.managed.status.connected'})
   expect(managementStatusPresentation('disconnected','source_verification_pending',true)).toMatchObject({tone:'blue',labelKey:'agent.managed.checkPending'})
   expect(managementStatusPresentation('disconnected','source_confirmation_required',true)).toMatchObject({tone:'gray',labelKey:'agent.managed.supportMode.detectable'})
   expect(managementStatusPresentation('needs_attention','conflict',true)).toMatchObject({labelKey:'agent.managed.status.needsAttention'})
@@ -557,4 +560,33 @@ describe('explicit Codex recovery after upgrade',()=>{
   it('keeps other automatic host failures on their existing recovery path',()=>{
     expect(canReconnectManagedInstallation(installation('claude',{hostVariant:'claude-code-cli',automaticConnectionEnabled:true,statusGroup:'needs_attention',statusReason:'verification_failed'}))).toBe(false)
   })
+})
+
+it('shows whether memory is served rather than internal verification stages', () => {
+  for (const group of ['available', 'limited', 'awaiting_verification'] as const) {
+    expect(connectionStatusPresentation(group, 'unverified')).toEqual({ tone: 'green', labelKey: 'agent.managed.status.connected' })
+  }
+  expect(connectionStatusPresentation('paused', 'user_disabled').labelKey).toBe('agent.managed.status.connected')
+  expect(connectionStatusPresentation('paused', 'circuit_breaker').labelKey).toBe('agent.managed.status.needsAttention')
+  // A Skill alone or a stopped bridge serves no memory and must not read as connected.
+  expect(connectionStatusPresentation('limited', 'instruction_only').labelKey).toBe('agent.managed.status.limited')
+  expect(connectionStatusPresentation('paused', 'user_disabled', true).labelKey).toBe('agent.managed.status.paused')
+  expect(connectionSubtitleKey('paused', 'user_disabled', false, true)).toBeNull()
+  expect(componentSummaryPresentation('missing', true).labelKey).toBe('agent.managed.componentStatus.configured')
+  expect(componentSummaryPresentation('missing').labelKey).toBe('agent.managed.componentStatus.needsAction')
+  expect(connectionStatusPresentation('paused', 'verification_stale').labelKey).toBe('agent.managed.status.paused')
+  expect(connectionStatusPresentation('disconnected', 'disconnect_verified').labelKey).toBe('agent.managed.status.disconnected')
+  expect(connectionSubtitleKey('awaiting_verification', 'unverified', false)).toBe('agent.managed.awaitingFirstUse')
+  expect(connectionSubtitleKey('available', 'verified', true)).toBeNull()
+  expect(connectionSubtitleKey('paused', 'user_disabled', true)).toBe('agent.managed.maintenancePaused')
+  expect(connectionSubtitleKey('needs_attention', 'conflict', false)).toBeNull()
+})
+
+it('collapses list component states to effective, configured, needs action and unsupported', () => {
+  const label = (state: Parameters<typeof componentSummaryPresentation>[0]) => componentSummaryPresentation(state).labelKey.split('.').at(-1)
+  expect(label('verified')).toBe('verified')
+  expect(['configured', 'verification_stale', 'new_session'].map(state => label(state as never))).toEqual(['configured', 'configured', 'configured'])
+  expect(['confirmation_required', 'missing', 'conflict'].map(state => label(state as never))).toEqual(['needsAction', 'needsAction', 'needsAction'])
+  expect(label('unsupported')).toBe('unsupported')
+  expect(componentSummaryPresentation('configured').tone).toBe('gray')
 })

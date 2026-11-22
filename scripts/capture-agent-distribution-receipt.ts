@@ -2158,6 +2158,8 @@ export function assertReceiptArtifactUnchanged(
   after: Awaited<ReturnType<typeof inspectArtifact>>,
 ): void {
   if (after.physicalFingerprint !== before.physicalFingerprint
+    || after.device !== before.device || after.inode !== before.inode
+    || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs
     || after.sha256 !== before.sha256
     || after.sizeBytes !== before.sizeBytes
     || after.path !== before.path) {

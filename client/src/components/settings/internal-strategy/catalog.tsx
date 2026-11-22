@@ -103,7 +103,11 @@ export const MEMORY_NODES: ProcessingNode[] = [
       { key: 'conflict_high_confidence', label: 'strategy.nodes.synapticConsolidate.conflictHighConfidence', tip: 'strategy.nodes.synapticConsolidate.conflictHighConfidenceTip', strategyName: 'metabolism-params', step: 0.05 },
     ],
     strategy: 'reconsolidate',
-    trigger: { type: 'query', label: 'strategy.nodes.synapticConsolidate.trigger' },
+    trigger: {
+      type: 'interval',
+      label: 'strategy.nodes.synapticConsolidate.trigger',
+      intervalParam: { key: 'interval_minutes', label: 'strategy.nodes.synapticConsolidate.interval', tip: 'strategy.nodes.synapticConsolidate.intervalTip', strategyName: 'reconsolidate', step: 1 },
+    },
   },
   {
     id: 'synaptic',
@@ -168,7 +172,11 @@ export const THINK_ASSOCIATE_NODES: ProcessingNode[] = [
       { key: 'min_link_age_hours', label: 'strategy.nodes.linkRevalidate.minLinkAgeHours', tip: 'strategy.nodes.linkRevalidate.minLinkAgeHoursTip', strategyName: 'link-revalidate', step: 1 },
     ],
     strategy: 'link-revalidate',
-    trigger: { type: 'event', label: 'strategy.nodes.linkRevalidate.trigger' },
+    trigger: {
+      type: 'interval',
+      label: 'strategy.nodes.linkRevalidate.trigger',
+      intervalParam: { key: 'interval_minutes', label: 'strategy.nodes.linkRevalidate.interval', tip: 'strategy.nodes.linkRevalidate.intervalTip', strategyName: 'link-revalidate', step: 1 },
+    },
   },
 ]
 

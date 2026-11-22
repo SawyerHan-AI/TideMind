@@ -24,7 +24,7 @@ function validResult() {
     fixture: {
       dataRoot: 'ephemeral-physical-sqlite-only',
       writesRealAgentConfiguration: false,
-      probeCount: 20,
+      probeCount: 21,
       probeOperationTimeoutMs: 20,
       probeWarmupRuns: 1,
       probeMeasuredRuns: 5,
@@ -35,8 +35,8 @@ function validResult() {
     },
     machine: { cpu: 'test', cpuCount: 8, os: 'test', arch: 'arm64', nodeVersion: 'v22.0.0' },
     discoveryTimeout: {
-      timedOutCatalogCount: 20,
-      timedOutCatalogIds: Array.from({ length: 20 }, (_, index) => `catalog-${index}`),
+      timedOutCatalogCount: 21,
+      timedOutCatalogIds: Array.from({ length: 21 }, (_, index) => `catalog-${index}`),
       wall: { samplesMs: [20, 21, 22, 23, 24], p50: 22, p95: 24, max: 24 },
     },
     queries: {
@@ -178,7 +178,7 @@ describe('Agent Integration deterministic performance gate', { timeout: 30_000 }
   it('keeps the frozen timeout fixture aligned with every current P0 probe', () => {
     expect(thresholds.fixture.probeCount).toBe(P0_DISCOVERY_PROBES.length)
     expect(new Set(P0_DISCOVERY_PROBES.map(probe => probe.catalogId)).size).toBe(thresholds.fixture.probeCount)
-    expect(P0_DISCOVERY_PROBES.map(probe => probe.catalogId)).toEqual(expect.arrayContaining(['antigravity-app', 'antigravity-cli']))
+    expect(P0_DISCOVERY_PROBES.map(probe => probe.catalogId)).toEqual(expect.arrayContaining(['antigravity-app', 'antigravity-cli', 'devin-cli']))
   })
 
   it('rejects the obsolete 18-probe result even when its numeric timings pass', async () => {
@@ -187,6 +187,15 @@ describe('Agent Integration deterministic performance gate', { timeout: 30_000 }
     result.fixture.probeCount = 18
     result.discoveryTimeout.timedOutCatalogCount = 18
     result.discoveryTimeout.timedOutCatalogIds = result.discoveryTimeout.timedOutCatalogIds.slice(0, 18)
+    expect(evaluateAgentIntegrationPerformanceResult({ result, thresholds })).toEqual(expect.arrayContaining(['result frozen fixture', 'P0 timeout coverage']))
+  })
+
+  it('rejects the obsolete 20-probe result that predates the Devin CLI probe', async () => {
+    const { evaluateAgentIntegrationPerformanceResult } = await import('../../scripts/evaluate-agent-integration-performance-result.mjs')
+    const result = validResult()
+    result.fixture.probeCount = 20
+    result.discoveryTimeout.timedOutCatalogCount = 20
+    result.discoveryTimeout.timedOutCatalogIds = result.discoveryTimeout.timedOutCatalogIds.slice(0, 20)
     expect(evaluateAgentIntegrationPerformanceResult({ result, thresholds })).toEqual(expect.arrayContaining(['result frozen fixture', 'P0 timeout coverage']))
   })
 

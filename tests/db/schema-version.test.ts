@@ -13,7 +13,7 @@ vi.mock('../../src/strategy/loader.js', () => ({
 }));
 
 import Database from 'better-sqlite3';
-import { ensureSchema } from '../../src/db/schema.js';
+import { ensureSchema, CURRENT_SCHEMA_VERSION } from '../../src/db/schema.js';
 
 function freshDb(): Database.Database {
   return new Database(':memory:');
@@ -313,7 +313,7 @@ it('upgrades schema48 without issuing credentials to pre-existing shared bridges
     ensureSchema(db);
     db.exec("DROP TABLE codex_bridge_member_proofs; DROP TABLE codex_bridge_anchors; UPDATE metadata SET value='48' WHERE key='schema_version'");
     ensureSchema(db);
-    expect(getSchemaVersion(db)).toBe(49);
+    expect(getSchemaVersion(db)).toBe(CURRENT_SCHEMA_VERSION);
     for (const table of ['codex_bridge_anchors','codex_bridge_member_proofs']) {
       expect(db.prepare(`SELECT count(*) AS count FROM ${table}`).get()).toEqual({count:0});
     }

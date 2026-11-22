@@ -64,7 +64,7 @@ describe('Claude Cowork guided removal receipt (C0)', { timeout: 60_000 }, () =>
           distributionId: 'com.anthropic.claudefordesktop',
           executableRealpath: executable,
           packageProvenance: 'signed_app:com.anthropic.claudefordesktop:Q6L2SF6YDW',
-          capabilityFingerprint: `desktop-bundle-surface-v1:${'c'.repeat(64)}`,
+          capabilityFingerprint: `desktop-bundle-surface-v2:${'c'.repeat(64)}`,
         },
       }),
       configRoot: claudeConfig,

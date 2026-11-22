@@ -4046,6 +4046,37 @@ describe('production Agent integration composition', () => {
           'windsurf-desktop': true,
           'qwenwork-desktop': true,
         })
+
+      composition.repository.upsertDiscoveredInstallation({
+        ...base,
+        id: 'devin-cli',
+        family: 'windsurf',
+        hostVariant: 'devin-cli',
+        installKey: 'windsurf:cli',
+        distributionId: 'cli:devin-cli',
+        displayName: 'CLI',
+        configRoot: path.join(root, '.config', 'devin'),
+        appPath: undefined,
+        executablePath: path.join(root, '.local', 'bin', 'devin'),
+        lastDetectedAt: '2026-08-25T00:06:00.000Z',
+        metadata: {
+          distribution: {
+            executableRealpath: path.join(root, '.local', 'bin', 'devin'),
+            packageProvenance: 'signed_cli:devin:83Z2LHX6XW',
+            capabilityFingerprint: 'signed-cli-surface-v1:fixture-devin-cli',
+          },
+        },
+      })
+      expect(Object.fromEntries(composition.service.snapshot().installations.map(item => [item.id, item.manageable])))
+        .toMatchObject({ 'devin-cli': false, 'windsurf-desktop': true })
+      expect(composition.service.supportCatalog().find(product => product.id === 'windsurf')).toMatchObject({
+        displayName: 'Devin',
+        searchTerms: expect.arrayContaining(['Devin', 'Windsurf']),
+        variants: [
+          expect.objectContaining({ id: 'windsurf-desktop', displayName: 'Desktop' }),
+          expect.objectContaining({ id: 'devin-cli', displayName: 'CLI', maturity: 'detectable', maximumAccessLevel: 'unconnected' }),
+        ],
+      })
     } finally {
       composition.runtime.stop()
       db.close()

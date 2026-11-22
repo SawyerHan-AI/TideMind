@@ -96,7 +96,7 @@ describe('0.2.101 Agent release manifest', () => {
     // Frozen from the actually published private source, not today's discovery
     // list. Distribution versions/hashes may evolve without shrinking features.
     expect(released093.sourceCommit).toBe('a1cfe523439f29917d68fcaa60b785854646ac0f')
-    expect(AGENT_INTEGRATION_RELEASE_ENTRIES.filter(entry => !['antigravity-app','antigravity-cli'].includes(entry.catalogId)).map(entry => entry.catalogId).sort())
+    expect(AGENT_INTEGRATION_RELEASE_ENTRIES.filter(entry => !['antigravity-app','antigravity-cli','devin-cli'].includes(entry.catalogId)).map(entry => entry.catalogId).sort())
       .toEqual(released093.entries.map(entry => entry.catalogId).sort())
     for (const expected of released093.entries) {
       expect(AGENT_INTEGRATION_RELEASE_ENTRIES.find(entry => entry.catalogId === expected.catalogId))
@@ -132,10 +132,10 @@ describe('0.2.101 Agent release manifest', () => {
         ? [probe.detectOnlyFallbackCatalogId]
         : []),
     ])
-    expect(AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION).toBe('0.2.101')
+    expect(AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION).toBe('0.2.102')
     expect(AGENT_INTEGRATION_RELEASE_MANIFEST).toMatchObject({
       schemaVersion: 4,
-      appVersion: '0.2.101',
+      appVersion: '0.2.102',
       features: {
         customLocalAgent: {
           enabledByDefault: true,
@@ -157,9 +157,10 @@ describe('0.2.101 Agent release manifest', () => {
       .toBe(false)
   })
 
-  it('keeps only the non-official zcode CLI observe-only', () => {
+  it('keeps only the non-official zcode CLI and the unaccepted Devin CLI observe-only', () => {
     const observeOnly = AGENT_INTEGRATION_RELEASE_ENTRIES.filter(entry => entry.disposition === 'observe_only')
     expect(observeOnly).toEqual([
+      expect.objectContaining({ catalogId: 'devin-cli', enabledByDefault: false, targetCapability: 0, releaseMode: 'detect_only' }),
       expect.objectContaining({ catalogId: 'zcode-cli', enabledByDefault: false, targetCapability: 0 }),
     ])
   })
@@ -419,6 +420,12 @@ describe('0.2.101 Agent release manifest', () => {
       detectedVersion: '1.0.0',
       distributionId: 'cli:zcode-cli',
       packageProvenance: 'npm_metadata:zcode',
+    })).toBe('release_mode_detect_only')
+    expect(agentReleaseSurfaceEligibilityReason({
+      catalogId: 'devin-cli',
+      detectedVersion: '3000.6.1',
+      distributionId: 'cli:devin-cli',
+      packageProvenance: 'signed_cli:devin:83Z2LHX6XW',
     })).toBe('release_mode_detect_only')
     expect(agentReleaseSurfaceEligibilityReason({
       catalogId: 'codex-cli',
@@ -749,7 +756,7 @@ describe('0.2.101 Agent release manifest', () => {
   it('defaults every released P0/migration surface on without an environment allowlist', () => {
     expect(defaultReleasedAdapterIds()).toEqual(
       AGENT_INTEGRATION_RELEASE_ENTRIES
-        .filter(entry => entry.catalogId !== 'zcode-cli')
+        .filter(entry => entry.catalogId !== 'zcode-cli' && entry.catalogId !== 'devin-cli')
         .map(entry => entry.catalogId),
     )
   })

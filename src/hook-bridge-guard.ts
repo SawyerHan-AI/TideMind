@@ -4,6 +4,7 @@ import { assertDiagnosticDatabase } from './agent-diagnostic-receipts.js';
 import { loadConfig, ensureDataDirs } from './config.js';
 import { getDb, closeDb } from './db/connection.js';
 import { evaluateBridgeAdmission, type BridgeRejectionReason } from './agent-bridge-guard.js';
+import { callerWasDisconnected, currentCallerAttribution } from './agent-caller-observation.js';
 
 /**
  * Hook-side bridge generation guard. Returns the rejection reason when this
@@ -31,7 +32,10 @@ export function hookBridgeRejection(input: {
       retained = input.keepDatabaseOpen === true;
       return null;
     }
-    const admission = evaluateBridgeAdmission(getDb(), { ...input, componentKey: 'lifecycle' });
+    const evaluated = evaluateBridgeAdmission(getDb(), { ...input, componentKey: 'lifecycle' });
+    // A host the user disconnected gets no injected context through another host's imported hooks either.
+    const admission = evaluated.allowed && callerWasDisconnected(getDb(), currentCallerAttribution(getDb()))
+      ? { allowed: false as const, reason: 'installation_removed' as const } : evaluated;
     if (admission.allowed) {
       retained = input.keepDatabaseOpen === true;
       return null;

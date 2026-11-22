@@ -1,3 +1,4 @@
+import { expandSourceKinds } from './node-provenance.js';
 import type Database from 'better-sqlite3';
 import type { BrainNode, NodeType } from '../types.js';
 import { generateId } from '../utils/id.js';
@@ -291,8 +292,12 @@ export function listNodes(
   }
   if (filter.fromAgents && filter.fromAgents.length > 0) {
     // 多值 OR：source_tool 命中其一（brain_recall from_agents 维度）。
-    conditions.push(`source_tool IN (${filter.fromAgents.map(() => '?').join(', ')})`);
-    params.push(...filter.fromAgents);
+    const marks = filter.fromAgents.map(() => '?').join(', ');
+    const kinds = expandSourceKinds(filter.fromAgents);
+    const provenance = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='node_provenance'").get()
+      ? ` OR id IN (SELECT node_id FROM node_provenance WHERE source_kind IN (${kinds.map(() => '?').join(', ')}))` : '';
+    conditions.push(`(source_tool IN (${marks})${provenance})`);
+    params.push(...filter.fromAgents, ...(provenance ? kinds : []));
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

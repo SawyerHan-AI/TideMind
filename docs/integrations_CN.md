@@ -12,7 +12,7 @@ TideMind 通过 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
 
 TideMind 桌面客户端（Electron 应用）提供一键配置所有集成。安装并启动客户端后：
 
-1. **AI 工具连接**在 **设置 > 插件** 中配置。选择你的 AI 工具（Claude Code、Cursor、Windsurf、Codex 等），客户端会自动生成必要的配置文件。
+1. **AI 工具连接**在 **设置 > 插件** 中配置。选择你的 AI 工具（Claude Code、Cursor、Devin Desktop、Codex 等），客户端会自动生成必要的配置文件。
 
 2. **笔记系统连接**在 **设置 > 笔记来源** 中配置。将 TideMind 指向你的 Logseq 图谱文件夹、Obsidian 库或 Apple Notes 数据库，即可开始同步。
 
@@ -33,10 +33,18 @@ TideMind 作为 MCP 服务器运行，暴露三个工具：`brain_prepare`、`br
 | Claude Code | 插件（`.mcp.json` + Skill + Hook） | 支持（通过桌面客户端） |
 | Claude Desktop (Cowork) | Desktop MCP 配置 + Skill 文件 | 支持 |
 | Cursor | MCP 配置 | 支持 |
-| Windsurf | MCP 配置 | 支持 |
+| Devin Desktop（原 Windsurf） | MCP 配置 | 支持 |
 | Codex | MCP 配置 + Hook | 支持 |
 | Antigravity App / CLI（macOS Apple 芯片） | 共享 MCP、常驻 Rule、启动 Hook | 支持；工具权限仍需在 Antigravity 批准 |
 | 任何兼容 MCP 的工具 | 手动 MCP 配置 | 手动 |
+
+### 连接保持与来源区分
+
+Agent 连接后，只要你没有断开、它仍来自官方来源、TideMind 写入的配置没有被改动，记忆就持续可用。系统重启或 Agent 升级后，TideMind 会在后台重新核对这些事实，不需要你重新连接，也不会改写 Agent 的文件。配置被修改或删除时，TideMind 会自动修复，或告诉你需要处理什么。
+
+列表每一行显示连接是否在提供记忆、最近一次使用时间，以及 Skill、MCP Tools、Hook 三个部分的状态。某个部分被实际使用过一次后显示为已生效。部分 Agent 不提供 Skill 是否加载的信号，这一项会保持“已配置”，不代表有问题。
+
+有些 Agent 会导入其他工具的配置文件。TideMind 按实际发起调用的 Agent 记录每次调用，而不是按被导入文件里写的名字；当发起调用的 Agent 自己已有可用连接时，不会再显示第二套相同的工具。在能识别发起调用的 Agent 时，你已断开的 Agent 不能借另一个 Agent 的配置继续使用记忆。来源识别依赖本机进程信息，无法判断时按配置里的 Agent 记录。按来源筛选记忆时，新记忆使用这份记录，更早的记忆按当时保存的名称匹配。
 
 ### Antigravity App 与 CLI
 
@@ -46,7 +54,7 @@ TideMind 作为 MCP 服务器运行，暴露三个工具：`brain_prepare`、`br
 
 这属于基础记忆接入并附带启动上下文，不包含会话结束自动保存记忆或压缩 Hook。共享配置的活动不能证明 App、CLI 都已独立测试。等待首次成功调用不一定是故障或权限拒绝；此连接暂不支持自动账号检查和模型诊断。
 
-**暂停维护**只停止自动修改配置；要停止整个共享连接的记忆访问，请使用**断开**。TideMind 可能要求你手动清理它拥有的 Rule 文件，其他服务配置和用户规则会保留。本版托管支持不包含 Antigravity IDE、远程 Agent 或其他操作系统。
+**暂停维护**（位于高级选项）只停止自动修改配置；要停止整个共享连接的记忆访问，请使用**断开**。TideMind 可能要求你手动清理它拥有的 Rule 文件，其他服务配置和用户规则会保留。本版托管支持不包含 Antigravity IDE、远程 Agent 或其他操作系统。
 
 ### 手动 MCP 配置
 

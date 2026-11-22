@@ -72,7 +72,9 @@ vi.mock('../../src/metabolism/conflict-heuristics.js', () => ({
 
 import type Database from 'better-sqlite3';
 import { setupTestDb, seedNode, seedLink } from '../helpers/test-db.js';
-import { reconsolidateOnRecall } from '../../src/metabolism/reconsolidate.js';
+import { perceptualReadOnRecall, planReconsolidateItems, runReconsolidateFollowup } from '../../src/metabolism/reconsolidate.js';
+import { enqueueRecallFollowup } from '../../src/db/recall-followups.js';
+import { detectConflictSignals } from '../../src/metabolism/conflict-heuristics.js';
 import { isVecLoaded } from '../../src/db/connection.js';
 import { linkExists } from '../../src/db/links.js';
 import type { BrainNode } from '../../src/types.js';
@@ -86,14 +88,14 @@ beforeEach(() => {
 
 // ===== 感知读 (shallow reconsolidate) =====
 
-describe('reconsolidateOnRecall - shallow/perceptual read', () => {
+describe('perceptualReadOnRecall - shallow/perceptual read', () => {
   it('should not create links when nodes.length < minNodes (3)', () => {
     const nodes = [
       seedNode(db, { content: 'node 1' }),
       seedNode(db, { content: 'node 2' }),
     ];
 
-    reconsolidateOnRecall(db, nodes);
+    perceptualReadOnRecall(db, nodes);
 
     expect(linkExists(db, nodes[0].id, nodes[1].id)).toBe(false);
   });
@@ -105,7 +107,7 @@ describe('reconsolidateOnRecall - shallow/perceptual read', () => {
       seedNode(db, { content: 'node C' }),
     ];
 
-    reconsolidateOnRecall(db, nodes);
+    perceptualReadOnRecall(db, nodes);
 
     // With 3 nodes and 0 existing links, density = 0 < 0.3
     // Should create pending links between pairs
@@ -124,7 +126,7 @@ describe('reconsolidateOnRecall - shallow/perceptual read', () => {
       nodes.push(seedNode(db, { content: `node ${i}` }));
     }
 
-    reconsolidateOnRecall(db, nodes);
+    perceptualReadOnRecall(db, nodes);
 
     // Count created links
     let linkCount = 0;
@@ -150,7 +152,7 @@ describe('reconsolidateOnRecall - shallow/perceptual read', () => {
     const hadAC = linkExists(db, nodes[0].id, nodes[2].id);
     const hadBC = linkExists(db, nodes[1].id, nodes[2].id);
 
-    reconsolidateOnRecall(db, nodes);
+    perceptualReadOnRecall(db, nodes);
 
     // Density is 0.33 >= 0.3, so no new pending links should be created
     expect(linkExists(db, nodes[0].id, nodes[2].id)).toBe(hadAC);
@@ -162,7 +164,7 @@ describe('reconsolidateOnRecall - shallow/perceptual read', () => {
     const metaB = seedNode(db, { type: 'meta', content: 'meta B' });
     const fact = seedNode(db, { content: 'fact node' });
 
-    reconsolidateOnRecall(db, [metaA, metaB, fact]);
+    perceptualReadOnRecall(db, [metaA, metaB, fact]);
 
     // meta+meta pair should be skipped
     expect(linkExists(db, metaA.id, metaB.id)).toBe(false);
@@ -179,7 +181,7 @@ describe('reconsolidateOnRecall - shallow/perceptual read', () => {
       seedNode(db, { content: 'node C' }),
     ];
 
-    reconsolidateOnRecall(db, nodes);
+    perceptualReadOnRecall(db, nodes);
 
     expect(linkExists(db, nodes[0].id, nodes[1].id)).toBe(false);
   });
@@ -194,7 +196,7 @@ describe('reconsolidateOnRecall - shallow/perceptual read', () => {
     // Pre-create a link between A and B
     seedLink(db, nodes[0].id, nodes[1].id);
 
-    reconsolidateOnRecall(db, nodes);
+    perceptualReadOnRecall(db, nodes);
 
     // The existing A-B link should not cause errors
     // Check that the link count for A-B is still 1
@@ -205,97 +207,71 @@ describe('reconsolidateOnRecall - shallow/perceptual read', () => {
   });
 });
 
-// ===== 深度读 =====
+// ===== 深度读：由队列条目驱动 =====
 
-describe('reconsolidateOnRecall - deep reconsolidate', () => {
-  it('should trigger deep reconsolidate for old version-1 nodes', () => {
-    // Create a node that looks old (version=1, created > 7 days ago)
-    const node = seedNode(db, { content: 'old node' });
+function row(nodeIds: string[], handled: string[] = [], context: string | null = null) {
+  return { id: 'row', kind: 'reconsolidate' as const, nodeIds, query: null, context, handled, attempts: 0, updated: '' };
+}
+const planItems = (...args: Parameters<typeof planReconsolidateItems>) => planReconsolidateItems(...args).items;
+function ageNode(id: string, days = 10) {
+  const past = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  db.prepare('UPDATE nodes SET created = ? WHERE id = ?').run(past, id);
+}
 
-    // Manually set created to 10 days ago
-    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
-    db.prepare('UPDATE nodes SET created = ? WHERE id = ?').run(tenDaysAgo, node.id);
-
-    const refreshedNode = db.prepare('SELECT * FROM nodes WHERE id = ?').get(node.id) as BrainNode;
-
-    // With a single node, we need 2+ nodes or context for detectAndReconsolidateAsync
-    // But deep read only requires the node to meet time condition
-    reconsolidateOnRecall(db, [refreshedNode]);
-
-    // The function fires async, so we just verify it doesn't throw
-    // We can't easily check the async result in a sync test
+describe('planReconsolidateItems - deep reconsolidate', () => {
+  it('plans a deep read for old version-1 nodes only', () => {
+    const old = seedNode(db, { content: 'old node' });
+    const revised = seedNode(db, { content: 'revised node' });
+    const fresh = seedNode(db, { content: 'fresh node' });
+    ageNode(old.id); ageNode(revised.id);
+    db.prepare('UPDATE nodes SET version = 2 WHERE id = ?').run(revised.id);
+    const items = planItems(db, row([old.id, revised.id, fresh.id]));
+    expect(items.map(i => i.key)).toEqual([`deep:${old.id}`]);
   });
 
-  it('should not trigger deep reconsolidate for version > 1 nodes', () => {
-    const node = seedNode(db, { content: 'revised node' });
-
-    // Set version to 2 and created to 10 days ago
-    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
-    db.prepare('UPDATE nodes SET version = 2, created = ? WHERE id = ?').run(tenDaysAgo, node.id);
-
-    const refreshedNode = db.prepare('SELECT * FROM nodes WHERE id = ?').get(node.id) as BrainNode;
-
-    // Should not trigger deep reconsolidate (version > 1)
-    // This just verifies it doesn't crash
-    reconsolidateOnRecall(db, [refreshedNode]);
+  it('respects the per-row deep limit across runs and never repeats a handled item', () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) { const n = seedNode(db, { content: `old node ${i}` }); ageNode(n.id); ids.push(n.id); }
+    expect(planItems(db, row(ids))).toHaveLength(3);
+    const second = planItems(db, row(ids, [`deep:${ids[0]}`, `deep:${ids[1]}`]));
+    expect(second.map(i => i.key)).toEqual([`deep:${ids[2]}`]);
+    expect(planItems(db, row(ids, ids.slice(0, 3).map(id => `deep:${id}`)))).toHaveLength(0);
   });
 
-  it('should respect maxDeep limit (3 per recall)', () => {
-    // Create 5 old nodes
-    const nodes: BrainNode[] = [];
-    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
-    for (let i = 0; i < 5; i++) {
-      const node = seedNode(db, { content: `old node ${i}` });
-      db.prepare('UPDATE nodes SET created = ? WHERE id = ?').run(tenDaysAgo, node.id);
-      const refreshed = db.prepare('SELECT * FROM nodes WHERE id = ?').get(node.id) as BrainNode;
-      nodes.push(refreshed);
-    }
-
-    // Should not throw even with 5 candidates (only processes max 3)
-    reconsolidateOnRecall(db, nodes);
+  it('skips archived or missing nodes', () => {
+    const node = seedNode(db, { content: 'archived' });
+    ageNode(node.id);
+    db.prepare('UPDATE nodes SET archived = 1 WHERE id = ?').run(node.id);
+    expect(planItems(db, row([node.id, 'missing']))).toHaveLength(0);
   });
 
-  it('should not trigger deep reconsolidate for recently created nodes', () => {
-    const node = seedNode(db, { content: 'fresh node' });
-
-    // Node was just created, so daysAgo(created) < 7
-    reconsolidateOnRecall(db, [node]);
-
-    // No deep reconsolidate should fire for a new node
-    // Just verifying no crash
+  it('plans conflict-driven deep reads within their own budget', () => {
+    const a = seedNode(db, { content: 'a' });
+    const b = seedNode(db, { content: 'b' });
+    vi.mocked(detectConflictSignals).mockReturnValueOnce([
+      { type: 'context_mismatch', nodeA: a.id, confidence: 0.8 },
+      { type: 'context_mismatch', nodeA: b.id, confidence: 0.8 },
+      { type: 'context_mismatch', nodeA: a.id, confidence: 0.9 },
+    ] as any);
+    const items = planItems(db, row([a.id, b.id], [], 'ctx'));
+    expect(items.map(i => i.key)).toEqual([`conflict:${a.id}`, `conflict:${b.id}`]);
   });
-});
 
-// ===== refinement not overwritten after content update =====
-
-describe('reconsolidateOnRecall - refinement after content update', () => {
-  it('should not overwrite refinement that was already set to 0 by content update', () => {
-    // This tests that deepReconsolidate correctly sets refinement=0 when content changes
-    // and does NOT bump it back afterward. The key code path is:
-    // if (contentWasUpdated) { updateNode(db, ... { refinement: 0 }) }
-    // followed by the UPDATE that does NOT touch refinement
-
-    // We can verify the code structure: when content IS updated, the second UPDATE
-    // only sets independence + last_reconsolidated, NOT refinement.
-    // When content is NOT updated, the second UPDATE sets refinement += 0.15.
-    // This is a structural test verifying the two branches exist.
-    const node = seedNode(db, { content: 'node with existing refinement', refinement: 0.8 });
-    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
-    db.prepare('UPDATE nodes SET created = ? WHERE id = ?').run(tenDaysAgo, node.id);
-
-    const refreshedNode = db.prepare('SELECT * FROM nodes WHERE id = ?').get(node.id) as BrainNode;
-
-    // With LLM mocked to return needs_update=false, refinement should get +0.15
-    reconsolidateOnRecall(db, [refreshedNode]);
-
-    // Since LLM is not configured in this test, the async IIFE will update refinement
-    // but we can't await it. The important thing is no crash.
+  it('without an LLM the queued deep read applies the non-model fallback and is removed', async () => {
+    const node = seedNode(db, { content: 'fallback', refinement: 0.5 });
+    ageNode(node.id);
+    enqueueRecallFollowup(db, { kind: 'reconsolidate', nodeIds: [node.id] });
+    await runReconsolidateFollowup(db);
+    const after = db.prepare('SELECT refinement, last_reconsolidated FROM nodes WHERE id = ?').get(node.id) as any;
+    expect(after.refinement).toBeCloseTo(0.6, 5);
+    expect(after.last_reconsolidated).toBeTruthy();
+    expect(db.prepare('SELECT count(*) AS n FROM recall_followups').get()).toEqual({ n: 0 });
   });
 });
 
 // ===== quality gate for perceptual read =====
 
-describe('reconsolidateOnRecall - search score quality gate', () => {
+describe('perceptualReadOnRecall - search score quality gate', () => {
   it('should skip perceptual read when avgSearchScore is below 0.3', () => {
     const nodes = [
       seedNode(db, { content: 'node A' }),
@@ -304,7 +280,7 @@ describe('reconsolidateOnRecall - search score quality gate', () => {
     ];
 
     // Pass very low search score
-    reconsolidateOnRecall(db, nodes, undefined, 0.1);
+    perceptualReadOnRecall(db, nodes, 0.1);
 
     // With avgSearchScore=0.1 < 0.3, perceptual read should be skipped
     expect(linkExists(db, nodes[0].id, nodes[1].id)).toBe(false);
@@ -320,7 +296,7 @@ describe('reconsolidateOnRecall - search score quality gate', () => {
     ];
 
     // No avgSearchScore → passQualityGate = true
-    reconsolidateOnRecall(db, nodes);
+    perceptualReadOnRecall(db, nodes);
 
     // Should create some pending links (density = 0)
     let linkCount = 0;

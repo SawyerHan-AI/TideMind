@@ -1,4 +1,7 @@
 import { CODEX_BRIDGE_CONTINUITY_SCHEMA_SQL } from './codex-bridge-continuity-schema.js';
+import { AGENT_SERVICE_PROOF_SCHEMA_SQL } from './agent-service-proof.js';
+import { AGENT_CALLER_OBSERVATION_SCHEMA_SQL } from '../agent-caller-observation.js';
+import { NODE_PROVENANCE_SCHEMA_SQL } from './node-provenance.js';
 import { AGENT_DIAGNOSTIC_SCHEMA_SQL } from '../agent-diagnostic-contract.js';
 import { AGENT_IDENTITY_BINDING_SQL } from './agent-identity-binding.js';
 import type Database from 'better-sqlite3';
@@ -104,12 +107,12 @@ CREATE TABLE IF NOT EXISTS agent_host_activity_evidence (
 /** Read-only semantic parity check used by the signed acceptance exporter. */
 export function inspectAgentHostActivityEvidenceV34Schema(db: Database.Database): {
   /** Supported migration lines retain the authoritative v34 ledger shape. */
-  schemaVersion: 34 | 35 | 45 | 46 | 47 | 48 | 49;
+  schemaVersion: 34 | 35 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52;
   fingerprintInput: unknown;
 } {
   const schemaVersion = assertSupportedDatabaseSchema(db, CURRENT_SCHEMA_VERSION);
-  if (schemaVersion !== 34 && schemaVersion !== 35 && schemaVersion !== 45 && schemaVersion !== 46 && schemaVersion !== 47 && schemaVersion !== 48 && schemaVersion !== 49) {
-    throw new Error(`activity ledger database schema is ${schemaVersion}, expected 34, 35, 45, 46, 47, 48 or 49`);
+  if (schemaVersion !== 34 && schemaVersion !== 35 && schemaVersion !== 45 && schemaVersion !== 46 && schemaVersion !== 47 && schemaVersion !== 48 && schemaVersion !== 49 && schemaVersion !== 50 && schemaVersion !== 51 && schemaVersion !== 52) {
+    throw new Error(`activity ledger database schema is ${schemaVersion}, expected 34, 35, 45, 46, 47, 48, 49, 50, 51 or 52`);
   }
   const columns = db.prepare('PRAGMA table_info(agent_host_activity_evidence)').all() as Array<{
     name: string; type: string; notnull: number; pk: number;
@@ -658,6 +661,8 @@ CREATE TABLE IF NOT EXISTS agent_npm_official_verifications (
 
 ${AGENT_IDENTITY_BINDING_SQL}
 ${CODEX_BRIDGE_CONTINUITY_SCHEMA_SQL}
+${AGENT_SERVICE_PROOF_SCHEMA_SQL}
+${AGENT_CALLER_OBSERVATION_SCHEMA_SQL}
 
 ${AGENT_DIAGNOSTIC_SCHEMA_SQL}
 `;
@@ -930,6 +935,7 @@ export function ensureAgentIntegrationSchema(db: Database.Database): void {
     }
   }
   db.exec(AGENT_INTEGRATION_SCHEMA_SQL);
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='nodes'").get()) db.exec(NODE_PROVENANCE_SCHEMA_SQL);
   ensureColumn(db, 'agent_consents', 'authorization_origin', "TEXT NOT NULL DEFAULT 'legacy' CHECK(authorization_origin IN ('explicit_user','default_auto_policy','legacy'))");
   ensureColumn(db, 'agent_consents', 'authorization_context_json', 'TEXT');
   ensureColumn(db, 'reconcile_runs', 'automatic_intent_revision', 'INTEGER');

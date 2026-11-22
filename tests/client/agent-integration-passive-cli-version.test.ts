@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
+  durableFileFingerprint,
   inspectPassiveCliVersion,
   inspectPassiveCliVersionForArchitecture,
   normalizedQwenLauncherBytes,
@@ -94,6 +95,35 @@ describe('passive Agent CLI version inspection', () => {
     } finally {
       fs.rmSync(depthRoot, { recursive: true, force: true })
       fs.rmSync(floodRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the persisted fingerprint stable across device renumbering and metadata-only touches', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-durable-fingerprint-'))
+    const executable = path.join(root, 'host')
+    fs.writeFileSync(executable, '#!/bin/sh\n', { mode: 0o700 })
+    try {
+      const before = await readStableFileFingerprint(executable, 1024)
+      // chmod to the same mode and a timestamp rewrite change ctime/mtime only.
+      fs.chmodSync(executable, 0o700)
+      fs.utimesSync(executable, new Date(1_000), new Date(1_000))
+      const touched = await readStableFileFingerprint(executable, 1024)
+      expect(touched.ctimeNs).not.toBe(before.ctimeNs)
+      expect(touched.fingerprint).toBe(before.fingerprint)
+      const identity = { inode: before.inode, size: before.size, mode: before.mode, linkCount: before.linkCount,
+        ownerUid: before.ownerUid!, groupGid: before.groupGid!, sha256: before.sha256 }
+      expect(durableFileFingerprint(identity)).toBe(before.fingerprint)
+      expect(JSON.stringify(Object.keys(identity))).not.toMatch(/device|ctime|mtime/u)
+
+      fs.chmodSync(executable, 0o755)
+      expect((await readStableFileFingerprint(executable, 1024)).fingerprint).not.toBe(before.fingerprint)
+      fs.chmodSync(executable, 0o700)
+      fs.writeFileSync(executable, '#!/bin/zh\n')
+      expect((await readStableFileFingerprint(executable, 1024)).fingerprint).not.toBe(before.fingerprint)
+      expect((await readStableFileSnapshot(executable, 1024)).fingerprint)
+        .toBe((await readStableFileFingerprint(executable, 1024)).fingerprint)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
     }
   })
 

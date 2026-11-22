@@ -8,7 +8,7 @@ import {
   stopProductionAgentIntegrationRuntime,
   triggerProductionAgentIntegrationScan,
 } from './agent-integration/production-service'
-import { startDaemon, stopDaemon } from './daemon'
+import { expediteDaemonShutdown, startDaemon, stopDaemon } from './daemon'
 import { startDataWatcher, stopDataWatcher } from './data-watcher'
 import { writeShimAndRuntimePath } from './runtime/shim-writer'
 import { selfHealPlugins, STARTUP_SELF_HEAL_OPTIONS } from './runtime/plugin-self-heal'
@@ -120,6 +120,7 @@ function sampleSchedulerWindow(): void {
  * close() handler 放行 quit 路径(详见 lifecycle.ts 注释 + Audit B-5)。
  */
 import { getIsQuitting, resetQuitting, setQuitting } from './lifecycle.js'
+import { shouldRegisterProtocolHandler } from './protocol-registration.js'
 
 // ── tidemind:// 协议注册 ────────────────────────────────
 // 在 macOS 上，第二次打开链接不会启动新进程，而是发送 open-url 事件。
@@ -127,13 +128,17 @@ import { getIsQuitting, resetQuitting, setQuitting } from './lifecycle.js'
 
 const PROTOCOL = 'tidemind'
 
-if (!uiAuditRoot && process.defaultApp) {
-  // 开发模式：需要传递 Electron 路径
-  if (process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])])
+// 协议处理程序是系统级设置,不受隔离 HOME 约束:隔离环境里启动开发构建会把本机
+// 正式应用的 tidemind:// 回跳抢走。shouldRegisterProtocolHandler 让隔离验收可以跳过。
+if (shouldRegisterProtocolHandler({ uiAudit: !!uiAuditRoot, packaged: app.isPackaged, env: process.env })) {
+  if (process.defaultApp) {
+    // 开发模式：需要传递 Electron 路径
+    if (process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])])
+    }
+  } else {
+    app.setAsDefaultProtocolClient(PROTOCOL)
   }
-} else if (!uiAuditRoot) {
-  app.setAsDefaultProtocolClient(PROTOCOL)
 }
 
 // 确保单实例
@@ -147,8 +152,8 @@ if (!gotTheLock) {
       const url = argv.find(arg => arg.startsWith(`${PROTOCOL}://`))
       if (url) handleProtocolUrl(url)
     }
-    // 聚焦主窗口
-    if (mainWindow) {
+    // 聚焦主窗口；退出清理进行中不重新显示已隐藏的窗口。
+    if (mainWindow && !getIsQuitting()) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.show()
       mainWindow.focus()
@@ -209,7 +214,9 @@ async function handleProtocolUrl(url: string): Promise<void> {
       // maybeStartCloudSync 内部已判 sync_enabled + 已有实例去重,失败不阻塞登录。
       try {
         const dbForCloud = getClientDb()
-        await maybeStartCloudSync(dbForCloud)
+        // 登录状态变了:重建同步客户端,让设备注册与角色同步重新执行。
+        const { restartCloudSyncAfterSignIn } = await import('./cloud/session.js')
+        await restartCloudSyncAfterSignIn(dbForCloud)
       } catch (e) {
         mainLog.warn('post-OAuth sync start failed (non-fatal):', (e as Error).message)
       }
@@ -271,6 +278,7 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
+    if (getIsQuitting()) return
     mainWindow?.show()
   })
 
@@ -363,6 +371,7 @@ function createTray(): void {
     {
       label: mainT('tray.showWindow'),
       click: () => {
+        if (getIsQuitting()) return
         mainWindow?.show()
         mainWindow?.focus()
       },
@@ -381,6 +390,7 @@ function createTray(): void {
 
   // 左键点击显示并聚焦窗口
   tray.on('click', () => {
+    if (getIsQuitting()) return
     mainWindow?.show()
     mainWindow?.focus()
   })
@@ -568,6 +578,28 @@ app.whenReady().then(async () => {
         const { initAuth } = await import('./cloud/auth-client.js')
         if (getIsQuitting()) return
         initAuth()
+        // 本机角色变化 → 刷新向量构建角色并让代谢 Worker 换代(等当前任务结束后重启)。
+        const role = await import('./cloud/primary-device.js')
+        const { refreshDesktopVectorRuntime } = await import('./cloud/vector-runtime.js')
+        const { notifyMetabolismWorkerRuntimeMutation } = await import('./workers/metabolism-worker-runtime-mutations.js')
+        role.setLocalRoleChangeListener((roleDb) => {
+          void refreshDesktopVectorRuntime(roleDb).catch(() => undefined)
+          notifyMetabolismWorkerRuntimeMutation('config')
+        })
+        // 登录凭据永久失效被动登出:本机恢复承担整理。
+        const { setAuthClearedListener } = await import('./cloud/auth-client.js')
+        const session = await import('./cloud/session.js')
+        setAuthClearedListener(() => session.handleSignedOut(dbForCloud))
+        // 订阅计划变化(例如升级)后解除“设备数超限”并立即重新注册。
+        const { setPlanChangedListener } = await import('./cloud/auth-client.js')
+        const { clearDeviceLimit } = await import('./cloud/device.js')
+        setPlanChangedListener(() => {
+          clearDeviceLimit()
+          void role.syncRoleOutcome(dbForCloud, { force: true })
+            .then(() => session.notifyCloudChanged())
+            .catch(() => undefined)
+        })
+        role.evaluateLocalRole(dbForCloud)
         // 启动时未登录/未开同步则不建 client;中途登录由 OAuth 回调路径补建
         // (见 handleProtocolUrl 的 maybeStartCloudSync 调用)。
         if (!getIsQuitting()) await maybeStartCloudSync(dbForCloud)
@@ -600,7 +632,18 @@ app.whenReady().then(async () => {
   daemonStartTimer = setTimeout(() => {
     daemonStartTimer = null
     if (getIsQuitting()) return
-    const current = startDaemon()
+    const current = (async () => {
+      // 已登录且开启同步时,先等本机角色同步(最长 10 秒)再启动整理,避免非主设备抢跑。
+      try {
+        await cloudStartupPromise
+        const role = await import('./cloud/primary-device.js')
+        await role.waitForInitialRole(10_000)
+      } catch (err) {
+        mainLog.warn('initial role wait failed (continuing):', (err as Error).message)
+      }
+      if (getIsQuitting()) return
+      await startDaemon()
+    })()
       .catch(err => mainLog.error('daemon start failed:', err))
       .finally(() => {
         if (daemonStartupPromise === current) daemonStartupPromise = null
@@ -655,13 +698,23 @@ app.on('before-quit', (event) => {
   // 自救路径创建的 sync client,该引用仍为 null,退出时不会被清理。改为动态 import
   // sync-client 模块、直接调 destroySyncClient()——它销毁当前 singleton(无论哪条路径
   // 建的),没有则 no-op。dynamic import 在 before-quit 同步段发起,promise 进微任务队列。
-  if (quitCleanupPromise) return
+  if (quitCleanupPromise) {
+    // 再次退出：不再等待已提交的 CLI 调用，立即进入中止阶段。
+    void import('@server/llm/client.js').then(m => m.shutdownLLMClient({ graceMs: 0 })).catch(() => undefined)
+    expediteDaemonShutdown()
+    return
+  }
+  // 清理可能等待已提交的模型调用完成（最长 LLM_SHUTDOWN_GRACE_MS）。before-quit 已
+  // preventDefault，窗口不会自动关闭；立即隐藏，避免表现为“点了退出没反应”。
+  for (const win of BrowserWindow.getAllWindows()) {
+    try { if (!win.isDestroyed()) win.hide() } catch { /* window already gone */ }
+  }
   quitCleanupPromise = (async () => {
     // 先主动中止所有 LLM/CLI 子进程，再等待 daemon 与 cloud 收尾。Electron 事件
     // 本身不会 await promise，因此 before-quit 必须 preventDefault，并在全部资源
     // 已关闭后再次 app.quit()。
     const llmShutdown = import('@server/llm/client.js')
-      .then(m => m.shutdownLLMClient())
+      .then(m => m.shutdownLLMClient({ graceMs: m.LLM_SHUTDOWN_GRACE_MS }))
     const pendingCloudStartup = cloudStartupPromise
     const pendingDaemonStartup = daemonStartupPromise
     const cloudShutdown = (async () => {
@@ -689,6 +742,8 @@ app.on('before-quit', (event) => {
     mainLog.error('quit cleanup failed; quit cancelled:', err)
     quitCleanupPromise = null
     resetQuitting()
+    // 退出已取消，应用继续运行：恢复之前隐藏的主窗口。
+    try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show() } catch { /* ignore */ }
   })
 })
 

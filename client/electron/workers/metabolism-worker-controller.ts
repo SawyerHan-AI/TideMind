@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { Worker } from 'node:worker_threads'
+import { LLM_SHUTDOWN_GRACE_MS } from '../../../src/llm/shutdown-grace.js'
 import {
   createMetabolismWorkerControllerState,
   reduceMetabolismWorkerControllerState,
@@ -26,6 +27,8 @@ export interface MetabolismWorkerControllerOptions {
   readonly workerFactory?: (path: string, bootstrap: MetabolismWorkerBootstrapV1) => WorkerLike
   readonly readyTimeoutMs?: number
   readonly stoppedTimeoutMs?: number
+  /** Stopped deadline for application shutdown; falls back to stoppedTimeoutMs, then the LLM grace plus 15s. */
+  readonly shutdownStoppedTimeoutMs?: number
   readonly exitTimeoutMs?: number
   readonly structureHolesHandler?: (requestId: string, limit?: number) => Promise<readonly unknown[]>
 }
@@ -110,7 +113,16 @@ export class MetabolismWorkerController extends EventEmitter {
     const result = this.apply({ kind: 'begin_shutdown', lifecycleGeneration: this.state.lifecycleGeneration })
     if (!result) return
     this.worker.postMessage({ protocolVersion: 1, lifecycleGeneration: this.state.lifecycleGeneration, kind: 'shutdown' })
-    this.armStoppedDeadline()
+    // The Worker quiesces its LLM runtime for up to LLM_SHUTDOWN_GRACE_MS before
+    // it can report stopped; a shorter deadline would force-terminate the thread
+    // while a committed CLI invocation is still settling.
+    this.armStoppedDeadline(this.options.shutdownStoppedTimeoutMs ?? this.options.stoppedTimeoutMs ?? LLM_SHUTDOWN_GRACE_MS + 15_000)
+  }
+
+  /** Repeat the shutdown request so the Worker stops waiting for committed CLI calls. */
+  expediteShutdown(): void {
+    if (!this.worker || !this.state) return
+    this.worker.postMessage({ protocolVersion: 1, lifecycleGeneration: this.state.lifecycleGeneration, kind: 'shutdown' })
   }
 
   async forceTerminate(): Promise<void> {
@@ -247,8 +259,8 @@ export class MetabolismWorkerController extends EventEmitter {
     this.emit('degraded', reason)
   }
 
-  private armStoppedDeadline(): void {
-    this.stoppedTimer = setTimeout(() => this.expire('stopped_timeout'), this.options.stoppedTimeoutMs ?? 15_000)
+  private armStoppedDeadline(timeoutMs = this.options.stoppedTimeoutMs ?? 15_000): void {
+    this.stoppedTimer = setTimeout(() => this.expire('stopped_timeout'), timeoutMs)
     this.stoppedTimer.unref?.()
   }
 

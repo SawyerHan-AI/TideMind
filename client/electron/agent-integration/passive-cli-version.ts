@@ -407,18 +407,7 @@ export async function readStableFileSnapshot(
     const ctimeNs = String(before.ctimeNs)
     const ownerUid = String(before.uid)
     const groupGid = String(before.gid)
-    const fingerprint = createHash('sha256').update(JSON.stringify({
-      device,
-      inode,
-      size: Number(before.size),
-      mode,
-      linkCount,
-      mtimeNs,
-      ctimeNs,
-      ownerUid,
-      groupGid,
-      sha256,
-    })).digest('hex')
+    const fingerprint = durableFileFingerprint({ inode, size: Number(before.size), mode, linkCount, ownerUid, groupGid, sha256 })
     return {
       content,
       size: Number(before.size),
@@ -530,22 +519,38 @@ function stableFingerprint(stat: BigIntStats, sha256: string): StableFileFingerp
     mtimeNs,
     ctimeNs,
     sha256,
-    fingerprint: createHash('sha256').update(JSON.stringify({
-      device,
-      inode,
-      size: Number(stat.size),
-      mode,
-      linkCount,
-      mtimeNs,
-      ctimeNs,
-      ownerUid,
-      groupGid,
-      sha256,
-    })).digest('hex'),
+    fingerprint: durableFileFingerprint({ inode, size: Number(stat.size), mode, linkCount, ownerUid, groupGid, sha256 }),
     executable: (mode & 0o111) !== 0,
     ownerUid,
     groupGid,
   }
+}
+
+/**
+ * Identity that must survive a reboot and an unchanged host relaunch. The
+ * device number is reassigned at mount time and some hosts touch their own
+ * executable's ctime on launch, so neither may enter a persisted fingerprint.
+ * Same-read change detection keeps using the full stat via fileStatIdentity.
+ */
+export function durableFileFingerprint(identity: {
+  inode: string
+  size: number
+  mode: number
+  linkCount: string
+  ownerUid: string
+  groupGid: string
+  sha256: string
+}): string {
+  return createHash('sha256').update(JSON.stringify({
+    schema: 'durable-file-v2',
+    inode: identity.inode,
+    size: identity.size,
+    mode: identity.mode,
+    linkCount: identity.linkCount,
+    ownerUid: identity.ownerUid,
+    groupGid: identity.groupGid,
+    sha256: identity.sha256,
+  })).digest('hex')
 }
 
 function fileStatIdentity(stat: BigIntStats): string {

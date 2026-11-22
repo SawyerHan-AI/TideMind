@@ -354,6 +354,11 @@ export async function restartMetabolismWorkerAndTriggerImmediate(): Promise<void
   workerManager.trigger('immediate')
 }
 
+/** Second quit request while stopDaemon is waiting on the Worker's LLM grace. */
+export function expediteDaemonShutdown(): void {
+  workerManager?.expediteShutdown()
+}
+
 export async function stopDaemon(): Promise<void> {
   if (
     !running

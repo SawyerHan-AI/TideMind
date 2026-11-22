@@ -21,6 +21,8 @@ import {
 } from './agent-integration-schema.js';
 import { ensureModelDiscoverySchema } from './model-discovery-schema.js';
 import { ensureVectorCacheSchema } from './vector-cache-schema.js';
+import { ensureRecallFollowupSchema } from './recall-followup-schema.js';
+import { ensureCloudSyncExclusionSchema } from './cloud-sync-exclusion-schema.js';
 
 const log = createLogger('schema');
 
@@ -2229,6 +2231,21 @@ const MIGRATIONS: Migration[] = [
       for (const row of rejected) retainCodexSourceRejection(db,row.id);
     },
   },
+  {
+    version: 50,
+    description: 'recall 后续工作队列（链接重新验证 / 深度再巩固由调度器消费）',
+    up: (db) => { ensureRecallFollowupSchema(db); },
+  },
+  {
+    version: 51,
+    description: '按安装及组件保存专属连接的服务证明、调用观察与记忆来源',
+    up: (db) => { ensureAgentIntegrationSchema(db); },
+  },
+  {
+    version: 52,
+    description: '云同步不上传名单（非主设备被拒收的整理结果）',
+    up: (db) => { ensureCloudSyncExclusionSchema(db); },
+  },
 ];
 
 /**
@@ -2400,6 +2417,8 @@ export function ensureSchema(db: Database.Database, recoverSchema41 = false): vo
   ensureAgentIntegrationSchema(db);
   ensureModelDiscoverySchema(db);
   ensureVectorCacheSchema(db);
+  ensureRecallFollowupSchema(db);
+  ensureCloudSyncExclusionSchema(db);
 
   // FTS5
   db.exec(FTS_SQL);

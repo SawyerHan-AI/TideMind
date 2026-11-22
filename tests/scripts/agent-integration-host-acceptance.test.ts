@@ -1,6 +1,6 @@
 import { databaseMigrationFixture } from '../fixtures/agent-integration/database-migration-fixture.js'
 import { memoryClosureFixture } from '../fixtures/agent-integration/memory-closure-fixture.js'
-import { historical094RequirementsPath, writeHistorical094HostManifest, historical095RequirementsPath, historical095ManifestPath } from '../fixtures/agent-integration/historical-host-acceptance.js'
+import { historical094RequirementsPath, writeHistorical094HostManifest, historical095RequirementsPath, historical095ManifestPath, historical101RequirementsPath } from '../fixtures/agent-integration/historical-host-acceptance.js'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -1445,7 +1445,7 @@ describe('0.2.101 Antigravity release acceptance scope', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'antigravity-release-policy-')); roots.push(root)
     const requirementsPath = path.join(root, 'requirements.json')
     const manifestPath = path.join(root, 'manifest.ts')
-    const raw = JSON.parse(fs.readFileSync(path.resolve('scripts/agent-integration-host-acceptance-requirements.json'), 'utf8'))
+    const raw = JSON.parse(fs.readFileSync(historical101RequirementsPath, 'utf8'))
     mutate?.(raw)
     fs.writeFileSync(requirementsPath, JSON.stringify(raw))
     let manifest = testReleaseManifest(true).replace("VERSION = '0.2.92'", "VERSION = '0.2.101'")

@@ -1,6 +1,12 @@
 import type Database from 'better-sqlite3'
 import { getCloudBaseUrl, refreshTokenIfNeeded } from './auth-client.js'
 import { createLogger } from '../../../src/utils/logger.js'
+import { INSTALLATION_ID_HEADER, getInstallationId } from './device.js'
+import { handleUploadRejections } from './upload-rejections.js'
+import { isDerivedNode } from '@server/metabolism/derived-sources.js'
+import { shouldSendInitialFlagForUplink } from './initial-sync-state.js'
+import { clearUploadRelease, isUploadDeferred, readUploadRelease } from './upload-deferral.js'
+import { noteUnauthorized } from './unauthorized.js'
 
 const log = createLogger('cloud-uplink')
 
@@ -33,17 +39,27 @@ interface BulkUpsertResponse {
   skipped?: Array<{ id: string; reason: string }>
 }
 
+/** 上传携带本机安装标识:云端据此判断是不是主设备(非主设备新建的整理结果会被按条拒收)。 */
+function installationHeaders(db: Database.Database): Record<string, string> {
+  try { return { [INSTALLATION_ID_HEADER]: getInstallationId(db) } } catch { return {} }
+}
+
 async function postBulkUpsert(
+  db: Database.Database,
   token: string,
   table: 'nodes' | 'links',
   items: Record<string, unknown>[],
+  isInitial = false,
 ): Promise<BulkUpsertResponse> {
   const res = await fetch(`${getCloudBaseUrl()}/api/v1/sync/bulk-upsert`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ table, is_initial_reconcile: false, items }),
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...installationHeaders(db) },
+    body: JSON.stringify({ table, is_initial_reconcile: isInitial, items }),
   })
-  if (!res.ok) throw new Error(`bulk-upsert ${res.status}: ${(await res.text()).slice(0, 200)}`)
+  if (!res.ok) {
+    noteUnauthorized(res.status)
+    throw new Error(`bulk-upsert ${res.status}: ${(await res.text()).slice(0, 200)}`)
+  }
   return (await res.json().catch(() => ({}))) as BulkUpsertResponse
 }
 
@@ -54,10 +70,34 @@ async function postBulkUpsert(
  * (脏集此刻已被删空该 id),于是下次 pump 会再上行最新版本 —— 不丢更新。若取了不删,
  * 上行后再删会把"期间的新改动"一起删掉(TOCTOU 丢更新)。
  */
-export function claimDirty(db: Database.Database, table: 'nodes' | 'links', limit: number): string[] {
+export function claimDirty(
+  db: Database.Database,
+  table: 'nodes' | 'links',
+  limit: number,
+  skip?: (id: string) => boolean,
+): string[] {
   const claim = db.transaction(() => {
-    const dirty = db.prepare(`SELECT id FROM cloud_dirty WHERE tbl = ? LIMIT ?`).all(table, limit) as Array<{ id: string }>
-    const ids = dirty.map((d) => d.id)
+    // 不上传名单内的记录(被云端拒收的非主设备整理结果)永不取出。
+    // 先取全部 id 再过滤、最后限量:若先 LIMIT 再过滤,被跳过的记录达到一页时会一直
+    // 占满这一页,排在后面的正常记录永远取不到。
+    // 按 id 顺序分页扫描,凑够 limit 条即停:脏集很大时不必每次把全部 id 读出来。
+    const page = db.prepare(`
+      SELECT id FROM cloud_dirty WHERE tbl = ? AND id > ?
+        AND id NOT IN (SELECT id FROM cloud_sync_excluded WHERE tbl = ?)
+      ORDER BY id LIMIT ?
+    `)
+    const pageSize = Math.max(limit * 4, 200)
+    const ids: string[] = []
+    let cursor = ''
+    for (;;) {
+      const rows = page.all(table, cursor, table, pageSize) as Array<{ id: string }>
+      for (const { id } of rows) {
+        if (ids.length >= limit) break
+        if (!skip?.(id)) ids.push(id)
+      }
+      if (ids.length >= limit || rows.length < pageSize) break
+      cursor = rows[rows.length - 1].id
+    }
     if (ids.length > 0) {
       const del = db.prepare(`DELETE FROM cloud_dirty WHERE tbl = ? AND id = ?`)
       for (const id of ids) del.run(table, id)
@@ -105,12 +145,18 @@ export async function pumpUplink(db: Database.Database, shouldStop: () => boolea
   try {
     const token = await refreshTokenIfNeeded()
     if (shouldStop() || !token) return 0
+    // 本轮开始时已存在的放行标记:只有它对应的记录保证能赶上本轮的节点阶段。
+    const releaseAtStart = readUploadRelease(db)
 
     for (const table of ['nodes', 'links'] as const) {
+      // 一次运行内同一条记录只取一次:拒收处理可能把记录放回待上传集合,不加这一条
+      // 循环就没有出口。未到期的推迟记录同样不取。
+      const seen = new Set<string>()
       for (;;) {
         if (shouldStop()) return uploaded
-        const ids = claimDirty(db, table, UPLINK_BATCH)
+        const ids = claimDirty(db, table, UPLINK_BATCH, (id) => seen.has(id) || isUploadDeferred(table, id))
         if (ids.length === 0) break
+        for (const id of ids) seen.add(id)
         const placeholders = ids.map(() => '?').join(',')
         const rows = (db.prepare(`SELECT * FROM ${table} WHERE id IN (${placeholders})`).all(...ids) as Record<string, unknown>[])
           .map(normalizeRow)
@@ -119,7 +165,22 @@ export async function pumpUplink(db: Database.Database, shouldStop: () => boolea
         const batch = { db, table, ids, cancelled: false }
         activeBatch = batch
         try {
-          const resp = await postBulkUpsert(token, table, rows)
+          // 整理结果单独成批:只有它们需要首次同步标志(见 initial-sync-state),
+          // 普通记忆的上传语义保持不变。
+          const derived = table === 'nodes' && shouldSendInitialFlagForUplink(db)
+            ? rows.filter((row) => isDerivedNode(row as Parameters<typeof isDerivedNode>[0]))
+            : []
+          const resp: BulkUpsertResponse = { skipped: [] }
+          if (derived.length > 0) {
+            const first = await postBulkUpsert(db, token, table, derived, true)
+            resp.skipped!.push(...(first.skipped ?? []))
+            if (batch.cancelled) return uploaded
+          }
+          const plain = derived.length > 0 ? rows.filter((row) => !derived.includes(row)) : rows
+          if (plain.length > 0 && !shouldStop()) {
+            const second = await postBulkUpsert(db, token, table, plain)
+            resp.skipped!.push(...(second.skipped ?? []))
+          }
           if (batch.cancelled) return uploaded
           if (shouldStop()) {
             // claim 已取删；停止期间结果不再消费，收尾归还当前批以保留待确认更新。
@@ -134,6 +195,10 @@ export async function pumpUplink(db: Database.Database, shouldStop: () => boolea
           // 升级 Pro 后下次 reconcile 自动补齐)。仅记时间戳供 UI 提示,不丢数据。
           const qe = (resp.skipped ?? []).filter((s) => s.reason === 'quota_exhausted')
           quotaExhausted += qe.length
+          // 主设备把关的拒收在取下一批(尤其是链接批次)之前处理完:被拒节点的链接
+          // 会被软删除并排除,不再上传。
+          await handleUploadRejections(db, table, resp.skipped ?? [])
+          if (batch.cancelled || shouldStop()) return uploaded
         } catch (err) {
           if (batch.cancelled) return uploaded
           requeueDirty(db, table, ids) // 上行失败(网络/5xx)→ 重新入脏集,本轮中止
@@ -144,6 +209,9 @@ export async function pumpUplink(db: Database.Database, shouldStop: () => boolea
         }
       }
     }
+    // 暂存记录放行后的这一轮已经把待上传的节点取完,之后恢复普通语义。
+    // 本轮中途才发生的放行不清:它的记录可能已错过节点阶段,留给下一轮带标志上传。
+    if (releaseAtStart !== null) clearUploadRelease(db, releaseAtStart)
     if (uploaded > 0) log.info(`实时上行 ${uploaded} 行`)
     if (quotaExhausted > 0) {
       markQuotaExhausted(db)

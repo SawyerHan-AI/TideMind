@@ -58,6 +58,11 @@ describe('default connection through production composition', () => {
       expect(f.db.prepare('SELECT COUNT(*) n FROM agent_consents').get()).toEqual(grants)
       expect(f.db.prepare("SELECT COUNT(*) n FROM agent_integration_events WHERE kind='installation_discovered_awaiting_consent'").get()).toEqual({ n: 0 })
       expect(f.service.snapshot().connections[0].statusGroup).toBe('awaiting_verification')
+      // The user is told once that this happened, and repeated scans do not repeat it.
+      expect(f.db.prepare("SELECT severity, COUNT(*) n FROM agent_integration_events WHERE kind='automatic_connection_completed'").get())
+        .toEqual({ severity: 'info', n: 1 })
+      expect(f.service.inbox().startupEvents).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'automatic_connection_completed', installationId: row.id })]))
     } finally { await f.close() }
   })
   it('schedules a new connection after legacy inspection without waiting for old maintenance to drain', async () => {

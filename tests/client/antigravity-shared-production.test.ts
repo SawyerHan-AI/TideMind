@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import Database from 'better-sqlite3'
 import {describe,it,expect,vi} from 'vitest'
-vi.mock('electron',()=>({app:{getPath:()=>'/tmp/antigravity-shared-fixture',getVersion:()=> '0.2.101',getAppPath:()=>'/tmp/Tide Mind.app',isPackaged:false},Notification:class{static isSupported(){return false} show(){}}}))
+vi.mock('electron',()=>({app:{getPath:()=>'/tmp/antigravity-shared-fixture',getVersion:()=> '0.2.102',getAppPath:()=>'/tmp/Tide Mind.app',isPackaged:false},Notification:class{static isSupported(){return false} show(){}}}))
 vi.mock('../../src/strategy/loader.js',()=>({getParam:(_s:string,_p:string,f:number)=>f,getPrompt:()=>'',loadStrategies:()=>{},getStrategy:()=>null}))
 import {ensureSchema} from '../../src/db/schema'
 import {recordHostActivityEvidence,recordHookActivityEvidence} from '../../src/db/agent-host-activity'
@@ -30,7 +30,7 @@ describe('Antigravity shared production composition',()=>{
   const runtime:AdapterRuntimeContext={runtimeRealm:'local_macos',homeDir:home,applicationDataDir:appData,
    shimPath:path.join(root,'bin','tm-node'),mcpServerPath:path.join(root,'bin','mcp.cjs'),hookScriptPath:path.join(root,'bin','hook.cjs'),
    preCompactScriptPath:path.join(root,'bin','pre.cjs'),postCompactScriptPath:path.join(root,'bin','post.cjs'),
-   tideMindVersion:'0.2.101',catalogVersion:'1',projectionVersion:'1'}
+   tideMindVersion:'0.2.102',catalogVersion:'1',projectionVersion:'1'}
   const composition=createProductionAgentIntegrationComposition(db,{homeDir:home,applicationDataDir:appData,runtimeContext:runtime,
     adapters:createP0HostAdapters(),enabledAdapterIds:['antigravity-cli','antigravity-app'],observeOnly:false,startRuntime:false,
     fixtureMode:'isolated_ui_audit',automaticConnections:false,canManageInstallation:()=>true,
@@ -72,10 +72,10 @@ describe('Antigravity shared production composition',()=>{
     expect(states().every(c=>c.evidenceScope==='configuration_domain')).toBe(true)
     const startupEvent=db.prepare("SELECT id FROM agent_integration_events WHERE kind='shared_agent_activity' AND json_extract(payload_json,'$.signal_name')='session_start'").get() as {id:string}
     const targetKey='antigravity-cli:arm64:cli%3Aantigravity-cli'
-    const startup=readAntigravityStartupExport(db,{eventId:startupEvent.id,installationId:'antigravity-cli',targetKey,tideMindVersion:'0.2.101'})
+    const startup=readAntigravityStartupExport(db,{eventId:startupEvent.id,installationId:'antigravity-cli',targetKey,tideMindVersion:'0.2.102'})
     expect(startup).toMatchObject({evidenceScope:'configuration_domain',requestedInstallationId:'antigravity-cli',signalName:'session_start'})
     expect(startup).not.toHaveProperty('hostVariant')
-    expect(()=>readAntigravityStartupExport(db,{eventId:startupEvent.id,installationId:'antigravity-cli',targetKey:'codex-cli:arm64:fixture',tideMindVersion:'0.2.101'})).toThrow()
+    expect(()=>readAntigravityStartupExport(db,{eventId:startupEvent.id,installationId:'antigravity-cli',targetKey:'codex-cli:arm64:fixture',tideMindVersion:'0.2.102'})).toThrow()
     const snapshot=path.join(root,'export-ledger.sqlite');await db.backup(snapshot)
     const child=spawnSync(process.execPath,[path.resolve('dist/agent-host-activity-export.js'),
       '--event-id',startupEvent.id,'--installation-id','antigravity-cli','--target-key',targetKey,
@@ -83,10 +83,10 @@ describe('Antigravity shared production composition',()=>{
       '--source-commit','c'.repeat(40),'--release-contract-sha256','d'.repeat(64),'--fixture-database',snapshot],{encoding:'utf8'})
     expect(child.status,child.stderr).toBe(0)
     const exported=JSON.parse(child.stdout)
-    expect(exported).toMatchObject({exporterVersion:2,evidenceScope:'configuration_domain',databaseSchemaVersion:49,ledgerSource:'fixture'})
+    expect(exported).toMatchObject({exporterVersion:2,evidenceScope:'configuration_domain',databaseSchemaVersion:52,ledgerSource:'fixture'})
     expect(exported.evidenceHash).toBe(hostActivityLedgerEvidenceHash(exported))
     expect(exported.exportHash).toBe(hostActivityLedgerExportHash(exported))
-    const expectedCapture={appVersion:'0.2.101',hostVariant:'antigravity-cli',stepId:'lifecycle_session_start',
+    const expectedCapture={appVersion:'0.2.102',hostVariant:'antigravity-cli',stepId:'lifecycle_session_start',
       installationId:'antigravity-cli',agentId,allowFixtureActivity:true,captureNonce:'a'.repeat(64),targetKey,
       candidateBundleSha256:'b'.repeat(64),sourceCommit:'c'.repeat(40),releaseContractSha256:'d'.repeat(64),
       captureCreatedAt:new Date(Date.now()-60_000).toISOString()}

@@ -269,7 +269,10 @@ export function loadAgentHostAcceptanceRequirements(
   const requirements = record(value, 'acceptance requirements')
   const singleUserRelease = ['0.2.94', '0.2.95'].includes(requirements.appVersion)
   const antigravityRelease = requirements.appVersion === '0.2.101'
-  const scopedRelease = singleUserRelease || antigravityRelease
+  // 0.2.102: no new host adapter. Full real-host acceptance is deferred for every catalog;
+  // ordinary use on both installation machines is checked outside this contract.
+  const ordinaryUseRelease = requirements.appVersion === '0.2.102'
+  const scopedRelease = singleUserRelease || antigravityRelease || ordinaryUseRelease
   exactKeys(requirements, [
     'schemaVersion', 'appVersion', 'releaseMacArchitectures', 'upgradeFromAppVersions', 'stepPolicy', 'customPaths', 'customGuidedTargets',
     ...(scopedRelease ? ['realHostPolicy'] : []),
@@ -292,8 +295,9 @@ export function loadAgentHostAcceptanceRequirements(
   if (scopedRelease) {
     const policy = record(requirements.realHostPolicy, `${requirements.appVersion} real-host policy`)
     exactKeys(policy, ['id', 'requiredCatalogIds', 'otherCatalogs', 'customPaths', 'reason', 'desktopAcceptance'], 'single-user real-host policy')
-    const policyId = antigravityRelease ? '0.2.101-antigravity-only' : `${requirements.appVersion}-codex-only`
-    const requiredCatalogIds = antigravityRelease ? ['antigravity-app', 'antigravity-cli'] : ['codex-cli']
+    const policyId = antigravityRelease ? '0.2.101-antigravity-only'
+      : ordinaryUseRelease ? '0.2.102-ordinary-use-only' : `${requirements.appVersion}-codex-only`
+    const requiredCatalogIds = antigravityRelease ? ['antigravity-app', 'antigravity-cli'] : ordinaryUseRelease ? [] : ['codex-cli']
     if (policy.id !== policyId
       || JSON.stringify(policy.requiredCatalogIds) !== JSON.stringify(requiredCatalogIds)
       || policy.otherCatalogs !== 'deferred' || policy.customPaths !== 'deferred') {
@@ -317,7 +321,7 @@ export function loadAgentHostAcceptanceRequirements(
       || policy.policyId !== `${requirements.appVersion}-single-user-manual-migration` || policy.audience !== 'single_user'
       || policy.status !== 'deferred_to_installation' || policy.execution !== 'manual_after_release'
       || JSON.stringify(policy.scopes) !== JSON.stringify(['upgrade_matrix','observed_schema41'])) {
-      throw new Error('migration deferral is only authorized for matching 0.2.94/0.2.95/0.2.101 single-user installation')
+      throw new Error('migration deferral is only authorized for matching 0.2.94/0.2.95/0.2.101/0.2.102 single-user installation')
     }
     nonEmptyString(policy.reason, 'migration deferral reason')
     migrationAcceptanceDeferral = Object.freeze({ ...policy, scopes: Object.freeze([...policy.scopes]) })
@@ -479,6 +483,7 @@ export function upgradeTargetIdentityDigest(target, releaseContractSha256) {
     '0.2.94-codex-only': '0.2.94',
     '0.2.95-codex-only': '0.2.95',
     '0.2.101-antigravity-only': '0.2.101',
+    '0.2.102-ordinary-use-only': '0.2.102',
   })[target.realHostDeferral.policyId]
   if (!contractVersion) throw new Error('unknown deferred upgrade policy')
   return sha256Bytes(Buffer.from(JSON.stringify([`${contractVersion}-deferred-upgrade-contract`, releaseContractSha256,
@@ -802,7 +807,7 @@ export function validateAntigravitySharedActivityReceipt(raw, expected, assertio
     'releaseContractSha256','databaseSchemaVersion','databaseSchemaSha256','evidenceScope','id','requestedInstallationId',
     'bindingId','bindingGeneration','agentId','activationRunId','activityGenerationSha256','artifactSha256','componentKey',
     'signalName','tideMindVersion','adapterVersion','projectionVersion','domainEvidenceHash','observedAt','evidenceHash','exportHash'], label)
-  if (expected.appVersion !== '0.2.101' || !['antigravity-app','antigravity-cli'].includes(expected.hostVariant)
+  if (!['0.2.101', '0.2.102'].includes(expected.appVersion) || !['antigravity-app','antigravity-cli'].includes(expected.hostVariant)
     || expected.stepId !== 'lifecycle_session_start') throw new Error(`${label} is outside the Antigravity startup contract`)
   for (const [key,value] of Object.entries({exporterVersion:2,evidenceScope:'configuration_domain',
     ledgerSource:expected.allowFixtureActivity ? 'fixture' : 'real_profile',captureNonce:expected.captureNonce,
@@ -818,7 +823,7 @@ export function validateAntigravitySharedActivityReceipt(raw, expected, assertio
   for (const key of ['databaseSchemaSha256','activityGenerationSha256','artifactSha256','domainEvidenceHash']) {
     if (!SHA256.test(activity[key] ?? '')) throw new Error(`${label} ${key} is invalid`)
   }
-  if (![48,49].includes(activity.databaseSchemaVersion)) throw new Error(`${label} shared ledger schema is unsupported`)
+  if (![48,49,50,51,52].includes(activity.databaseSchemaVersion)) throw new Error(`${label} shared ledger schema is unsupported`)
   const time = isoTimestamp(activity.observedAt, `${label} observedAt`)
   if (time<Date.parse(expected.captureCreatedAt) || time>Date.parse(assertionObservedAt)) throw new Error(`${label} is outside capture window`)
   if (activity.evidenceHash !== hostActivityLedgerEvidenceHash(activity) || activity.exportHash !== hostActivityLedgerExportHash(activity)) {
@@ -880,8 +885,8 @@ function validateFrozenLifecycleActivityReceipt(raw, expected, assertionObserved
   if (activity.exportHash !== hostActivityLedgerExportHash(activity)) {
     throw new Error(`${label} activity export hash mismatch`)
   }
-  if (activity.databaseSchemaVersion !== 34 && activity.databaseSchemaVersion !== 35 && activity.databaseSchemaVersion !== 45 && activity.databaseSchemaVersion !== 46 && activity.databaseSchemaVersion !== 47 && activity.databaseSchemaVersion !== 48 && activity.databaseSchemaVersion !== 49) {
-    throw new Error(`${label} activity database schema is not v34/v35/v45/v46/v47/v48/v49`)
+  if (activity.databaseSchemaVersion !== 34 && activity.databaseSchemaVersion !== 35 && activity.databaseSchemaVersion !== 45 && activity.databaseSchemaVersion !== 46 && activity.databaseSchemaVersion !== 47 && activity.databaseSchemaVersion !== 48 && activity.databaseSchemaVersion !== 49 && activity.databaseSchemaVersion !== 50 && activity.databaseSchemaVersion !== 51 && activity.databaseSchemaVersion !== 52) {
+    throw new Error(`${label} activity database schema is not v34/v35/v45/v46/v47/v48/v49/v50/v51/v52`)
   }
   return activity
 }

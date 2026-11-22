@@ -1,5 +1,6 @@
 import { latestPhysicalBridgeWrite, readAnchoredAdmission, currentBridgeFileIdentity, codexSourceBlockApplies } from './db/codex-bridge-continuity.js';
 import { getSharedAgentConsumers, type SharedAgentConsumers } from './db/agent-identity-binding.js';
+import { readServiceProofAdmission } from './db/agent-service-proof.js';
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 
@@ -114,7 +115,8 @@ export function evaluateBridgeAdmission(
       ORDER BY rowid DESC LIMIT 1
     `).get(row.id, row.id, input.componentKey ?? 'memory_tools') as { token: string; hash: string } | undefined;
     const expectedHash = createHash('sha256').update(JSON.stringify(token)).digest('hex');
-    if (!generation || generation.token !== token || generation.hash !== expectedHash) {
+    if ((!generation || generation.token !== token || generation.hash !== expectedHash)
+      && !readServiceProofAdmission(db, row.id, input.componentKey ?? 'memory_tools', expectedHash)) {
       return { allowed: false, reason: 'activity_generation_mismatch' };
     }
   } catch {
@@ -128,6 +130,11 @@ export function describeBridgeRejection(reason: BridgeRejectionReason): string {
     case 'bridge_revalidation_pending': return 'Tide Mind 正在重新核验当前 Codex 配置和来源，请稍后重试。';
     case 'managed_fragment_changed': return '宿主配置文件自上次核验后发生变化，请等待 Tide Mind 重新读取配置。';
     case 'source_rejected': return 'Tide Mind 无法信任可读取此共享配置的宿主来源，请检查 Agent 对接里的来源信息。';
+    case 'installation_removed':
+    case 'installation_tombstoned': return 'Tide Mind 与此 Agent 的连接已断开。如需继续使用记忆，请在 Tide Mind 的 Agent 对接中重新连接。';
+    case 'bridge_stopped': return 'Tide Mind 已停止为此 Agent 提供记忆。如需恢复，请在 Tide Mind 的 Agent 对接中重新连接。';
+    case 'guard_unavailable': return 'Tide Mind 暂时无法读取连接状态，请稍后重试。';
+    case 'activity_generation_mismatch': return 'Tide Mind 正在自动恢复此连接，或配置已更新。请稍后重试；若仍不可用，请新开一个会话。';
     default: return BRIDGE_REJECTED_MESSAGE;
   }
 }

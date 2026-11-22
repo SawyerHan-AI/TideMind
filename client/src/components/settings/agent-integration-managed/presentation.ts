@@ -71,6 +71,14 @@ const EVENT_TITLES: Readonly<Record<string, { key: string; fallback: string }>> 
     key: 'agent.managed.event.autoRepairCircuitReset',
     fallback: 'Automatic repair was re-enabled',
   },
+  automatic_connection_completed: {
+    key: 'agent.managed.event.automaticConnectionCompleted',
+    fallback: 'Connected automatically; disconnect it in the details if you do not want it',
+  },
+  connection_auto_recovered: {
+    key: 'agent.managed.event.connectionAutoRecovered',
+    fallback: 'The connection was recovered automatically; start a new session to use it',
+  },
   artifact_auto_restored: {
     key: 'agent.managed.event.artifactAutoRestored',
     fallback: 'A deleted configuration was automatically restored',
@@ -176,11 +184,35 @@ export function isTemporaryManagementBlock(reason: string): boolean {
   return ['source_verification_pending', 'executable_metadata_unavailable'].includes(reason)
 }
 
-export function managementStatusPresentation(group: ManagedStatusGroup, reason: string, detectOnly: boolean): PresentationToken {
-  if (!detectOnly || group === 'needs_attention') return statusPresentation(group)
+const CONNECTED_TOKEN: PresentationToken = { labelKey: 'agent.managed.status.connected', tone: 'green' }
+
+/**
+ * What the user needs to know is whether memory is being served. Limited
+ * capability, a pending first use and a user-paused maintenance all still serve
+ * it; an open repair circuit needs the user.
+ */
+export function connectionStatusPresentation(group: ManagedStatusGroup, reason: string, bridgeStopped = false): PresentationToken {
+  // A Skill alone serves no memory, and neither does a stopped bridge.
+  if (bridgeStopped || reason === 'instruction_only') return statusPresentation(group)
+  if (group === 'available' || group === 'limited' || group === 'awaiting_verification') return CONNECTED_TOKEN
+  if (group === 'paused' && reason === 'user_disabled') return CONNECTED_TOKEN
+  if (group === 'paused' && reason === 'circuit_breaker') return STATUS_TOKENS.needs_attention
+  return statusPresentation(group)
+}
+
+export function managementStatusPresentation(group: ManagedStatusGroup, reason: string, detectOnly: boolean, bridgeStopped = false): PresentationToken {
+  if (!detectOnly || group === 'needs_attention') return connectionStatusPresentation(group, reason, bridgeStopped)
   if (!isTemporaryManagementBlock(reason)) return { labelKey: 'agent.managed.supportMode.detectable', tone: 'gray' }
-  if (['available', 'awaiting_verification', 'processing', 'paused'].includes(group)) return statusPresentation(group)
+  if (['available', 'awaiting_verification', 'processing', 'paused'].includes(group)) return connectionStatusPresentation(group, reason, bridgeStopped)
   return { labelKey: 'agent.managed.checkPending', tone: 'blue' }
+}
+
+/** The one-line note under a connection: when it was last used, or why it has not been. */
+export function connectionSubtitleKey(group: ManagedStatusGroup, reason: string, hasActivity: boolean, bridgeStopped = false): string | null {
+  if (bridgeStopped || reason === 'instruction_only') return null
+  if (group === 'paused' && reason === 'user_disabled') return 'agent.managed.maintenancePaused'
+  if (!hasActivity && (group === 'available' || group === 'limited' || group === 'awaiting_verification')) return 'agent.managed.awaitingFirstUse'
+  return null
 }
 
 export function managementUnavailableHelpKey(reason: string): string {
@@ -219,6 +251,18 @@ export function componentLabelKey(key: ManagedComponentKey): string {
 }
 
 export function componentStatusPresentation(status: ManagedComponentStatus): PresentationToken {
+  return COMPONENT_STATUS[status]
+}
+
+/** List rows show four states only: effective, configured, needs action, unsupported. */
+export function componentSummaryPresentation(status: ManagedComponentStatus, maintenancePaused = false): PresentationToken {
+  // While the user has paused maintenance an unmaintained part is their choice, not a fault.
+  if (status === 'configured' || status === 'verification_stale' || status === 'new_session' || (maintenancePaused && status === 'missing')) {
+    return { labelKey: 'agent.managed.componentStatus.configured', tone: 'gray' }
+  }
+  if (status === 'confirmation_required' || status === 'missing' || status === 'conflict') {
+    return { labelKey: 'agent.managed.componentStatus.needsAction', tone: 'amber' }
+  }
   return COMPONENT_STATUS[status]
 }
 

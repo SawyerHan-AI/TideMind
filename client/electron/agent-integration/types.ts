@@ -17,6 +17,7 @@ export const CATALOG_IDS = [
   'codex-desktop',
   'cursor-desktop',
   'windsurf-desktop',
+  'devin-cli',
   'gemini-cli',
   'openclaw-local',
   'pi-official-cli',
@@ -856,7 +857,6 @@ export function deriveVerificationSummary(
 }
 
 const NEEDS_ATTENTION_REASONS: readonly StatusReason[] = [
-  'new_session',
   'host_confirmation',
   'legacy_confirmation_required',
   'conflict',
@@ -913,6 +913,9 @@ export function deriveInstallationStatus(input: InstallationStatusInput): Derive
     const pausedReason = firstReason(input.blockingReasons, NEEDS_ATTENTION_REASONS)
     if (pausedReason) {
       return { statusGroup: 'needs_attention', statusReason: pausedReason, accessLevel, accessIsHistorical }
+    }
+    if (input.blockingReasons?.includes('new_session')) {
+      return { statusGroup: 'awaiting_verification', statusReason: 'new_session', accessLevel, accessIsHistorical }
     }
     if (input.blockingReasons?.includes('verification_stale')) {
       return {

@@ -8,6 +8,7 @@ import { createLogger } from '@server/utils/logger.js'
 import { activateVectorRuntime, localEmbeddingInstanceId, type VectorRuntimeState } from '@server/db/vector-cache-store.js'
 import { resolveSqliteVecLoadablePath } from '@server/db/sqlite-vec-path.js'
 import { getCloudAuth } from './auth-client.js'
+import { readLocalOrganizerRole } from '@server/metabolism/local-role.js'
 
 const log=createLogger('vector-runtime')
 const ready = new WeakSet<Database.Database>()
@@ -42,7 +43,7 @@ export async function refreshDesktopVectorRuntime(
     selection,accountId,bindingId:config.embedding.connection??null,
     endpointId:selection.shareable&&config.cloud?.sync_enabled?cloudEndpointIdentity(config.cloud.server_url).id:null,
     syncEnabled:config.cloud?.sync_enabled === true && !!accountId,
-    backgroundBuilder:config.metabolism.background_enabled !== false,awaitingDesktopAuth:selection.shareable && config.cloud?.sync_enabled === true && !accountId,
+    backgroundBuilder:readLocalOrganizerRole(db, config.metabolism?.background_enabled !== false),awaitingDesktopAuth:selection.shareable && config.cloud?.sync_enabled === true && !accountId,
   })
   db.prepare("DELETE FROM metadata WHERE key='vector.runtime_error'").run()
   return state

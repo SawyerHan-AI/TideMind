@@ -309,7 +309,7 @@ async function run() {
   })
   const desktopComponents = document.querySelector('[aria-labelledby="components-shared-desktop"]')
   const connectionHeader = desktopComponents?.closest('[role="tabpanel"]')?.previousElementSibling
-  assert(connectionHeader?.textContent?.includes(settings.agent.managed.status.available)
+  assert(connectionHeader?.textContent?.includes(settings.agent.managed.status.connected)
     && connectionHeader.textContent.includes(settings.agent.managed.reason.verified)
     && !connectionHeader.textContent.includes(settings.agent.managed.reason.unverified),
   'shared connection header mixed available with the selected host’s unverified summary')
@@ -358,7 +358,7 @@ async function run() {
   const hookAction = settings.agent.managed.reason.hostConfirmation
   assert(issueRow?.querySelector('[data-agent-current-issue]')?.textContent === hookAction
     && accessibleSummary?.textContent?.includes(hookAction)
-    && Array.from(issueRow.querySelectorAll('span')).some(span => span.textContent === settings.agent.managed.status.available
+    && Array.from(issueRow.querySelectorAll('span')).some(span => span.textContent === settings.agent.managed.status.connected
       && span.className.includes('text-emerald')),
   'a current Hook action was hidden or replaced the available connection badge')
   await change(() => {

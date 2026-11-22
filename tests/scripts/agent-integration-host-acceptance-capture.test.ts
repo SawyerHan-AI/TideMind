@@ -1,7 +1,7 @@
 import { databaseMigrationFixture } from '../fixtures/agent-integration/database-migration-fixture.js'
 import { memoryClosureFixture } from '../fixtures/agent-integration/memory-closure-fixture.js'
 import { codexContextRestoreFixture } from '../fixtures/agent-integration/codex-context-restore-fixture.js'
-import { historical094RequirementsPath, writeHistorical094HostManifest, historical095RequirementsPath, historical095ManifestPath } from '../fixtures/agent-integration/historical-host-acceptance.js'
+import { historical094RequirementsPath, writeHistorical094HostManifest, historical095RequirementsPath, historical095ManifestPath, historical101RequirementsPath, historical101ManifestPath } from '../fixtures/agent-integration/historical-host-acceptance.js'
 // @ts-expect-error acceptance-only ESM helper
 import { codexNativeLifecycleEvidenceHash } from '../../scripts/codex-context-restore-evidence.mjs'
 import crypto from 'node:crypto'
@@ -97,6 +97,10 @@ function useHistorical095Requirements() {
 function initialized(appVersion = '0.2.95') {
   const root = makeRoot()
   if (appVersion === '0.2.95') useHistorical095Requirements()
+  if (appVersion === '0.2.101') {
+    const historical = loadAgentHostAcceptanceRequirements(historical101RequirementsPath, historical101ManifestPath)
+    vi.spyOn(hostVerifier, 'loadAgentHostAcceptanceRequirements').mockReturnValue(historical)
+  }
   if (appVersion === '0.2.94') {
     const historical = loadAgentHostAcceptanceRequirements(historical094RequirementsPath, writeHistorical094HostManifest(root))
     vi.spyOn(hostVerifier, 'loadAgentHostAcceptanceRequirements').mockReturnValue(historical)

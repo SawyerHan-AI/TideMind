@@ -315,7 +315,7 @@ describe('AgentIntegrationService', () => {
           distributionId: 'com.anthropic.claudefordesktop',
           executableRealpath: '/Applications/Claude.app/Contents/MacOS/Claude',
           packageProvenance: 'signed_app:com.anthropic.claudefordesktop:Q6L2SF6YDW',
-          capabilityFingerprint: `desktop-bundle-surface-v1:${'a'.repeat(64)}`,
+          capabilityFingerprint: `desktop-bundle-surface-v2:${'a'.repeat(64)}`,
         },
       }),
       configRoot: '/Users/alice/Library/Application Support/Claude',
@@ -387,7 +387,7 @@ describe('AgentIntegrationService', () => {
     })
     expect(persistedDistribution(row)).toMatchObject({
       packageProvenance: 'signed_app:com.anthropic.claudefordesktop:Q6L2SF6YDW',
-      capabilityFingerprint: `desktop-bundle-surface-v1:${'a'.repeat(64)}`,
+      capabilityFingerprint: `desktop-bundle-surface-v2:${'a'.repeat(64)}`,
     })
     expect(JSON.parse(row.metadata_json)).toMatchObject({
       guidedInstallation: {
@@ -420,7 +420,7 @@ describe('AgentIntegrationService', () => {
           distributionId: 'com.anthropic.claudefordesktop',
           executableRealpath: '/Applications/Claude.app/Contents/MacOS/Claude',
           packageProvenance: 'signed_app:com.anthropic.claudefordesktop:Q6L2SF6YDW',
-          capabilityFingerprint: `desktop-bundle-surface-v1:${surface}`,
+          capabilityFingerprint: `desktop-bundle-surface-v2:${surface}`,
         },
       }),
       configRoot: '/Users/alice/Library/Application Support/Claude',

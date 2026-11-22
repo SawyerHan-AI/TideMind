@@ -16,6 +16,7 @@ import {
   accessLabelKey,
   componentLabelKey,
   componentStatusPresentation,
+  componentSummaryPresentation,
   managementUnavailableHelpKey,
   managementStatusPresentation,
   isTemporaryManagementBlock,
@@ -55,14 +56,16 @@ export function StatusBadge({
   reason,
   compact = false,
   detectOnly = false,
+  bridgeStopped = false,
 }: {
   group: ManagedStatusGroup
   reason: string
   compact?: boolean
   detectOnly?: boolean
+  bridgeStopped?: boolean
 }) {
   const { t } = useTranslation('settings')
-  const token = managementStatusPresentation(group, reason, detectOnly)
+  const token = managementStatusPresentation(group, reason, detectOnly, bridgeStopped)
   const tone = group === 'needs_attention' && ['conflict', 'verification_failed', 'disconnect_incomplete'].includes(reason) ? 'red' : token.tone
   if (detectOnly && !isTemporaryManagementBlock(reason) && group !== 'needs_attention') {
     const helpKey = managementUnavailableHelpKey(reason)
@@ -227,15 +230,20 @@ export function ComponentFact({
   componentKey,
   status,
   showStatusLabel = false,
+  summary = false,
+  maintenancePaused = false,
   onInspect,
 }: {
   componentKey: ManagedComponentKey
   status: ManagedComponentStatus
   onInspect?: (event: React.MouseEvent<HTMLButtonElement>) => void
   showStatusLabel?: boolean
+  /** List rows collapse the detailed states into the four the user acts on. */
+  summary?: boolean
+  maintenancePaused?: boolean
 }) {
   const { t } = useTranslation('settings')
-  const token = componentStatusPresentation(status)
+  const token = summary ? componentSummaryPresentation(status, maintenancePaused) : componentStatusPresentation(status)
   const label = t(componentLabelKey(componentKey))
   const stateLabel = t(token.labelKey)
   if (onInspect) return (

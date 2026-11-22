@@ -1,3 +1,4 @@
+import { recordCallerObservation } from '../agent-caller-observation.js';
 import { isDiagnosticRequested } from '../agent-diagnostic-contract.js';
 import { getRuntimeDiagnosticContext } from '../config.js';
 import { recordDiagnosticHook } from '../agent-diagnostic-receipts.js';
@@ -155,8 +156,13 @@ export function recordHookActivityEvidence(
   }
   const agentId = input.agentId.trim();
   if (!agentId) return { status: 'rejected', reason: 'version_binding_missing' };
+  // Only an admitted hook counts as real use.
+  const observed = (result: RecordHostActivityResult): RecordHostActivityResult => {
+    if (result.status !== 'rejected') recordCallerObservation(db, agentId, input.signalName);
+    return result;
+  };
   if (getSharedAgentConsumers(db, agentId)) {
-    return recordHostActivityEvidence(db, { ...input, componentKey: 'lifecycle', hostVariant: 'shared', activityGenerationToken: input.activityGenerationToken });
+    return observed(recordHostActivityEvidence(db, { ...input, componentKey: 'lifecycle', hostVariant: 'shared', activityGenerationToken: input.activityGenerationToken }));
   }
   const installation = db.prepare(`
     SELECT host_variant FROM agent_installations WHERE agent_id = ? LIMIT 1
@@ -166,7 +172,7 @@ export function recordHookActivityEvidence(
   if (!allowed.includes(installation.host_variant)) {
     return { status: 'rejected', reason: 'host_variant_mismatch' };
   }
-  return recordHostActivityEvidence(db, {
+  return observed(recordHostActivityEvidence(db, {
     agentId,
     hostVariant: installation.host_variant,
     componentKey: 'lifecycle',
@@ -174,7 +180,7 @@ export function recordHookActivityEvidence(
     tideMindVersion: input.tideMindVersion,
     activityGenerationToken: input.activityGenerationToken,
     observedAt: input.observedAt,
-  });
+  }));
 }
 
 /**

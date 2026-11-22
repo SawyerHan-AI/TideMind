@@ -1,4 +1,5 @@
-import { publishAttestedBridgeMember, readAnchoredAdmission } from '@server/db/codex-bridge-continuity.js'
+import { bridgeFileIdentity, publishAttestedBridgeMember, readAnchoredAdmission } from '@server/db/codex-bridge-continuity.js'
+import { HOST_MANAGED_TARGET_IDENTITY, publishServiceProof, readServiceProofAdmission } from '@server/db/agent-service-proof.js'
 import { codexLauncherParentIdentity, confirmedMissingCodexLauncher } from './codex-cli-location.js'
 import { probeAgentAuthentication, type AgentAuthenticationResult } from './agent-authentication'
 import { createDiagnosticService } from './diagnostic-service'
@@ -38,6 +39,7 @@ import {
   DESKTOP_BUNDLE_SURFACE_SCHEMA,
   discoverLocalP0Agents,
   discoverRegisteredCodexCli,
+  discoverRegisteredCli,
   discoverClaudeCoworkGuidedCandidate,
   inspectStableDesktopBundleSurface,
   MAX_CLI_EXECUTABLE_PROOF_BYTES,
@@ -171,6 +173,8 @@ export interface ProductionAgentIntegrationOptions {
   canManageInstallation?: (installation: AgentInstallationRow) => boolean
   /** Hermetic test seam; production re-attests package metadata or code signature. */
   liveTrustAttestor?: (installation: AgentInstallationRow) => Promise<string | null>
+  /** Emergency switch: false keeps existing proofs but stops zero-write renewal for dedicated Installations. */
+  serviceContinuity?: boolean
   enabledAdapterIds?: readonly CatalogId[]
   observeOnly?: boolean
   autoRestore?: boolean
@@ -508,7 +512,10 @@ export function createProductionAgentIntegrationComposition(
   })
   async function renewCodexContinuity(): Promise<boolean> {
     let retry = false
-    const members = repository.listInstallations().filter(member => member.family === 'codex'
+    // Every shared configuration domain, not only Codex: a peer upgrade must not cut the domain off.
+    const bound = new Set((db.prepare('SELECT installation_id FROM agent_identity_binding_members').all() as Array<{installation_id:string}>)
+      .map(row => row.installation_id))
+    const members = repository.listInstallations().filter(member => bound.has(member.id)
       && member.desired_state === 'managed' && !member.tombstoned_at)
     const candidates = members.flatMap(member => [
       coordinatorRepository.codexContinuitySnapshot(member.id),
@@ -547,8 +554,10 @@ export function createProductionAgentIntegrationComposition(
         const files = () => item.scopes.map(scope => {
           if (fsSync.realpathSync(scope.target_path) !== scope.target_path) throw new Error('Codex target moved')
           const st = fsSync.lstatSync(scope.target_path,{bigint:true})
+          // Only memory tools and lifecycle carry a proof; an instruction target may be a directory.
+          if (!st.isFile() && scope.component_key === 'instruction') return 'not-a-file'
           if (!st.isFile()) throw new Error('Codex target is not a file')
-          return desktopNodeIdentity(st)
+          return bridgeFileIdentity(st)
         })
         const initialFiles = files()
         const prepared = await coordinator.preview({installation:item.installation,operation:'connect',
@@ -596,6 +605,88 @@ export function createProductionAgentIntegrationComposition(
     }
     return retry
   }
+  /**
+   * Zero-write renewal for dedicated Installations: the host source is attested
+   * again and the managed fragment is read back; only Tide Mind's ledger changes.
+   */
+  async function renewServiceContinuity(): Promise<boolean> {
+    let retry = false
+    for (const member of repository.listInstallations()) {
+      if (member.desired_state !== 'managed' || member.tombstoned_at) continue
+      const item = coordinatorRepository.serviceContinuitySnapshot(member.id)
+      if (!item || !managedAdapters.get(item.installation.identity.hostVariant)) continue
+      const needsSeal = item.runState === 'needs_recovery' || (item.runState === 'applied_unverified' && item.changed)
+      if (!needsSeal && item.anchors.every(anchor => readServiceProofAdmission(db,item.installation.id,
+        anchor.component_key,anchor.token_hash))) continue
+      const execution = coordinatorRepository.acquireExecutionFence(item.runId)
+      if (!execution) { retry = true; continue }
+      const leases: NonNullable<ReturnType<typeof coordinatorRepository.acquireWriterFence>>[] = []
+      try {
+        for (const domain of [...new Set(item.scopes.map(scope => scope.mutation_domain))].sort()) {
+          const lease = coordinatorRepository.acquireWriterFence(domain)
+          if (!lease) break
+          leases.push(lease)
+        }
+        if (leases.length !== new Set(item.scopes.map(scope => scope.mutation_domain)).size) { retry = true; continue }
+        const files = () => item.scopes.map(scope => {
+          if (!path.isAbsolute(scope.target_path)) return HOST_MANAGED_TARGET_IDENTITY
+          if (fsSync.realpathSync(scope.target_path) !== scope.target_path) throw new Error('managed target moved')
+          const st = fsSync.lstatSync(scope.target_path,{bigint:true})
+          if (!st.isFile()) return scope.component_key === 'instruction' ? 'not-a-file' : (() => { throw new Error('managed target is not a file') })()
+          return bridgeFileIdentity(st)
+        })
+        const initialFiles = files()
+        const prepared = await coordinator.preview({installation:item.installation,operation:'connect',
+          componentKeys:item.scopes.map(scope=>scope.component_key),desiredCapability:item.capability,
+          frozenActivityGenerationToken:item.token})
+        const source = prepared.executionPlan.liveTrustProofFingerprint
+        if (!source || !prepared.inspection.detected) { retry = true; continue }
+        // A plugin-manager Adapter always plans its aggregate install; it is a no-op
+        // only when what is installed already equals what would be installed.
+        if (prepared.activityGenerationToken !== item.token
+          || prepared.adapterPlan.mutations.some(mutation => mutation.domainKind !== 'plugin_manager'
+            || !mutation.preconditionHash || mutation.preconditionHash !== mutation.desiredFragmentHash)
+          || prepared.adapterPlan.diagnostics.length
+          || !item.scopes.every(scope => prepared.inspection.components.some(observed =>
+            observed.componentKey === scope.component_key && observed.observedTarget === scope.target_path
+            && observed.observedFragmentHash === scope.owned_fragment_hash))) continue
+        if (await attestCurrentInstallation(item.installation, source) !== source) { retry = true; continue }
+        db.transaction(() => {
+          execution.assertOwned()
+          for (const lease of leases) lease.assertOwned()
+          const current = coordinatorRepository.serviceContinuitySnapshot(item.installation.id)
+          if (current?.fingerprint !== item.fingerprint || sha256Json(initialFiles) !== sha256Json(files())) { retry = true; return }
+          const observedAt = clock.now().toISOString()
+          if (needsSeal) {
+            coordinatorRepository.setRunState(item.runId,'cancelled',observedAt,{
+              code:'superseded_by_service_proof',stage:'configuration_readback',
+            })
+            for (const scope of item.scopes) coordinatorRepository.markArtifactHealthyAfterReadback(scope.id,observedAt)
+            repository.recordEvent({ installationId:item.installation.id, kind:'connection_auto_recovered', severity:'info',
+              dedupeKey:`${item.installation.id}:auto-recovered:${item.runId}`, payload:{ runId:item.runId }, createdAt:observedAt })
+            const row = repository.getInstallation(item.installation.id)
+            if (row && ['recovery_source_trust_changed','verification_stale','host_not_authoritatively_present'].includes(row.status_reason ?? '')) {
+              coordinatorRepository.setInstallationReconcileState(row.id,'idle','unverified',observedAt,{
+                expectedDesiredState:'managed',expectedConsentId:item.consentId,expectedRunId:item.runId,
+              })
+            }
+          }
+          for (const anchor of item.anchors) publishServiceProof(db,anchor,{
+            consentId:item.consentId,surface:item.surface,source,
+            fileIdentity: initialFiles[item.scopes.findIndex(scope=>scope.id===anchor.artifact_id)],
+            intentDomainKey:item.intentDomainKey,intentRevision:item.intentRevision,
+            supersededRunId:needsSeal ? item.runId : null,observedAt,
+          })
+        }).immediate()
+      } catch (error) {
+        if (!db.open) throw error
+        retry = true
+      } finally {
+        try { for (const lease of leases.reverse()) lease.release() } finally { execution.release() }
+      }
+    }
+    return retry
+  }
   const runtime = new ProductionAgentIntegrationRuntime({
     coordinator,
     coordinatorRepository,
@@ -604,7 +695,11 @@ export function createProductionAgentIntegrationComposition(
     runtimeContext,
     observeOnly,
     autoRestore: releasePolicy.autoRestore,
-    renewCodexContinuity,
+    renewCodexContinuity: async () => {
+      const codex = await renewCodexContinuity()
+      if (!(options.serviceContinuity ?? process.env.TIDEMIND_AGENT_INTEGRATION_SERVICE_CONTINUITY !== '0')) return codex
+      return await renewServiceContinuity() || codex
+    },
     canManageInstallation: installation => attestCurrentInstallation(installation).then(Boolean),
     sharedArtifactBlockReason,
     canContinueRecovery: async execution => {
@@ -950,7 +1045,6 @@ async function probeNonstandardCustomInstallation(
     if (lstat.isSymbolicLink() || !lstat.isDirectory() || fsSync.realpathSync(root) !== root) return false
     const fingerprint = sha256Json({
       realpath: root,
-      device: String(lstat.dev),
       inode: String(lstat.ino),
       mode: String(lstat.mode),
     })
@@ -2331,8 +2425,10 @@ export function productionNotifications(options: {
 }): NotificationPort {
   return {
     async deliver(notification) {
-      if (options.isAppActive?.() && options.onInAppNotification) {
-        await options.onInAppNotification(notification)
+      // Something Tide Mind already handled on its own stays inside the app;
+      // only what needs the user interrupts them with a system notification.
+      if (notification.level === 'info' || (options.isAppActive?.() && options.onInAppNotification)) {
+        await options.onInAppNotification?.(notification)
         return
       }
       const system = options.system ?? await defaultNotificationSystem()
@@ -2456,6 +2552,10 @@ function releaseGatedScanner(
   return {
     ...scanner,
     scan: async () => applyRuntimeCompatibilityToReport(await scanner.scan(), { verifier }),
+    ...(scanner.probeRegisteredCli && {
+      probeRegisteredCli: async (catalogId: CatalogId, executable: string) => applyRuntimeCompatibilityToReport(
+        await scanner.probeRegisteredCli!(catalogId, executable), { verifier }),
+    }),
     ...(scanner.probeRegisteredCodexCli && {
       probeRegisteredCodexCli: async (executable: string) => applyRuntimeCompatibilityToReport(
         await scanner.probeRegisteredCodexCli!(executable), { verifier }),
@@ -2480,6 +2580,9 @@ function createProductionScanner(
     codexLauncherParentIdentity,
     confirmedMissingCodexLauncher,
     probeRegisteredCodexCli: executable => discoverRegisteredCodexCli(executable, {
+      homeDir, osUserIdentity: safeUserIdentity(), environment: discoveryEnvironment(),
+    }, dependencies),
+    probeRegisteredCli: (catalogId, executable) => discoverRegisteredCli(catalogId, executable, {
       homeDir, osUserIdentity: safeUserIdentity(), environment: discoveryEnvironment(),
     }, dependencies),
     scan: () => discoverLocalP0Agents({
@@ -2762,7 +2865,7 @@ async function stableCanonicalNodeProof(
   // App-directory timestamps change during ordinary macOS use. Keep the
   // full metadata comparison above (and the cross-verification surface check),
   // but do not persist those timestamps as the signed App's long-lived identity.
-  const identity = includeVolatileMetadata ? beforeIdentity : [before.dev, before.ino, before.mode].join(':')
+  const identity = includeVolatileMetadata ? [before.ino, before.mode, before.size].join(':') : [before.ino, before.mode].join(':')
   return sha256Json({ canonicalPath, expectedKind, identity })
 }
 
@@ -2777,11 +2880,10 @@ async function stableDesktopExecutableProof(executablePath: string): Promise<str
       throw new Error('desktop_trust_executable_mode_invalid')
     }
     const after = await handle.stat({ bigint: true })
-    const identity = desktopNodeIdentity(before)
-    if (identity !== desktopNodeIdentity(after)) {
+    if (desktopNodeIdentity(before) !== desktopNodeIdentity(after)) {
       throw new Error('desktop_trust_executable_changed_during_snapshot')
     }
-    descriptorFingerprint = sha256Json({ canonicalPath: executablePath, identity })
+    descriptorFingerprint = sha256Json({ canonicalPath: executablePath, identity: [before.ino, before.mode, before.size].join(':') })
   } finally {
     await handle.close()
   }

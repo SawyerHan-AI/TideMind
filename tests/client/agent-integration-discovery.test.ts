@@ -8,6 +8,7 @@ import {
   discoverClaudeCoworkGuidedCandidate,
   discoverRegisteredCodexCli,
   discoverLocalP0Agents,
+  discoverRegisteredCli,
   MAX_CLI_EXECUTABLE_PROOF_BYTES,
   signedCodePortableArtifactFingerprint,
   toDiscoverInstallationInput,
@@ -376,7 +377,7 @@ describe('P0 local Agent discovery', () => {
       : [probe.catalogId]).sort()).toEqual(
       [...P0_DISCOVERY_CATALOG_IDS].sort(),
     )
-    expect(new Set(P0_DISCOVERY_PROBES.map(probe => probe.catalogId)).size).toBe(20)
+    expect(new Set(P0_DISCOVERY_PROBES.map(probe => probe.catalogId)).size).toBe(21)
   })
 
   it('discovers all P0 surfaces with stable canonical identity and provenance', async () => {
@@ -461,6 +462,8 @@ describe('P0 local Agent discovery', () => {
       signature: { valid: true, identifier: 'com.google.antigravity', teamIdentifier: 'EQHXZ8M8AV' } })
     const agy = addCommand(runtime, 'agy')
     runtime.fs.signatures.set(agy, exactSignedCode('cli', 'EQHXZ8M8AV'))
+    const devin = addCommand(runtime, 'devin')
+    runtime.fs.signatures.set(devin, exactSignedCode('devin', '83Z2LHX6XW'))
     runtime.fs.addDirectory(`${HOME}/.qwenworkcn`)
     runtime.fs.addDirectory(`${HOME}/.config/devin`)
 
@@ -1675,7 +1678,7 @@ describe('P0 local Agent discovery', () => {
     const report = await discoverLocalP0Agents(context(), runtime.dependencies)
     const devin = report.installations.find(item => item.catalogId === 'windsurf-desktop')
     expect(devin).toMatchObject({
-      displayName: 'Devin Desktop（原 Windsurf）',
+      displayName: 'Desktop',
       configRoot: `${HOME}/.config/devin`,
       componentConfigRoots: {
         instruction: `${HOME}/.config/devin`,
@@ -1709,6 +1712,54 @@ describe('P0 local Agent discovery', () => {
     expect(report.installations).not.toContainEqual(expect.objectContaining({
       catalogId: 'windsurf-desktop',
     }))
+  })
+
+  it('detects the signed Devin CLI on the Desktop configuration root without executing it', async () => {
+    const runtime = fakeRuntime()
+    runtime.fs.addApp('Devin.app', {
+      bundleId: 'com.exafunction.windsurf',
+      version: '3.12.43',
+      executable: 'Devin',
+      signature: { valid: true, identifier: 'com.exafunction.windsurf', teamIdentifier: '83Z2LHX6XW' },
+    })
+    runtime.fs.addDirectory(`${HOME}/.config/devin`)
+    const executable = addCommand(runtime, 'devin', {
+      realpath: `${HOME}/.local/share/devin/cli/_versions/3000.6.1/devin`,
+      output: 'spoofed 99.0.0',
+    })
+    runtime.fs.signatures.set(executable, {
+      valid: true, identifier: 'devin', teamIdentifier: '83Z2LHX6XW', cdHash: 'c'.repeat(40),
+      designatedRequirement: 'identifier devin and anchor apple generic', verificationBoundary: 'strict_final',
+    })
+
+    const report = await discoverLocalP0Agents(context(), runtime.dependencies)
+    const desktop = report.installations.find(item => item.catalogId === 'windsurf-desktop')!
+    const cli = report.installations.find(item => item.catalogId === 'devin-cli')!
+    expect(desktop.displayName).toBe('Desktop')
+    expect(cli).toMatchObject({
+      displayName: 'CLI',
+      configRoot: `${HOME}/.config/devin`,
+      executablePath: executable,
+      identity: {
+        distribution: { distributionId: 'cli:devin-cli', packageProvenance: 'signed_cli:devin:83Z2LHX6XW' },
+      },
+    })
+    expect(cli.identity.canonicalConfigRoot).toBe(desktop.identity.canonicalConfigRoot)
+    expect(cli.identity.installKey).not.toBe(desktop.identity.installKey)
+    expect(runtime.calls.some(call => call.startsWith(`execVersion:${executable}:`))).toBe(false)
+  })
+
+  it('does not credit a same-named devin command from another publisher as the official CLI', async () => {
+    const runtime = fakeRuntime()
+    const executable = addCommand(runtime, 'devin')
+    runtime.fs.signatures.set(executable, {
+      valid: true, identifier: 'devin', teamIdentifier: 'UNTRUSTED', cdHash: 'd'.repeat(40),
+      designatedRequirement: 'identifier devin and anchor apple generic', verificationBoundary: 'strict_final',
+    })
+
+    const report = await discoverLocalP0Agents(context(), runtime.dependencies)
+    expect(report.installations.find(item => item.catalogId === 'devin-cli')?.identity.distribution.packageProvenance)
+      .not.toBe('signed_cli:devin:83Z2LHX6XW')
   })
 
   it.each([
@@ -2098,5 +2149,18 @@ describe('Antigravity discovery', () => {
     expect(cli.identity.canonicalConfigRoot).toBe(app.identity.canonicalConfigRoot)
     expect(cli.identity.distribution).toMatchObject({ distributionId: 'cli:antigravity-cli', packageProvenance: 'signed_cli:cli:EQHXZ8M8AV', portableArtifactFingerprint: 'b'.repeat(64) })
     expect(runtime.calls.some(c => c.startsWith(`execVersion:${executable}:`))).toBe(false)
+  })
+})
+
+describe('registered CLI exact recheck', () => {
+  it('finds a registered CLI at its exact path when the PATH scan does not list it', async () => {
+    const runtime = fakeRuntime()
+    const executable = addCommand(runtime, 'qwen')
+    runtime.commands.delete('qwen')
+    expect((await discoverLocalP0Agents(context(), runtime.dependencies)).installations
+      .some(item => item.catalogId === 'qwen-code-cli')).toBe(false)
+    const exact = await discoverRegisteredCli('qwen-code-cli', executable, context(), runtime.dependencies)
+    expect(exact.installations.map(item => [item.catalogId, item.executablePath])).toEqual([['qwen-code-cli', executable]])
+    expect((await discoverRegisteredCli('qwen-code-cli', 'relative/qwen', context(), runtime.dependencies)).installations).toEqual([])
   })
 })

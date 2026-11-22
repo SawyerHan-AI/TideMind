@@ -113,7 +113,7 @@ const PRIORITY_GROUPS = {
     'aider-cli',
     'codegeex-ide',
   ],
-  observe: ['nami-desktop', 'catpaw-desktop', 'zcode-cli'],
+  observe: ['nami-desktop', 'catpaw-desktop', 'zcode-cli', 'devin-cli'],
   custom: ['custom-local-mcp'],
 } as const satisfies Record<DeliveryPriority, readonly CatalogId[]>
 
@@ -140,7 +140,7 @@ const PRODUCT_SEEDS = [
   { id: 'antigravity', displayName: 'Antigravity', variantIds: ['antigravity-app', 'antigravity-cli'] },
   { id: 'codex', displayName: 'Codex', variantIds: ['codex-cli', 'codex-desktop'] },
   { id: 'cursor', displayName: 'Cursor', variantIds: ['cursor-desktop'] },
-  { id: 'windsurf', displayName: 'Devin Desktop（原 Windsurf）', variantIds: ['windsurf-desktop'] },
+  { id: 'windsurf', displayName: 'Devin', variantIds: ['windsurf-desktop', 'devin-cli'] },
   { id: 'gemini', displayName: 'Gemini CLI', variantIds: ['gemini-cli'] },
   { id: 'openclaw', displayName: 'OpenClaw', variantIds: ['openclaw-local'] },
   { id: 'pi-official', displayName: 'Pi', variantIds: ['pi-official-cli'] },
@@ -305,6 +305,7 @@ const P0_COMPONENTS: Readonly<Partial<Record<CatalogId, readonly ComponentDeclar
     memoryReload: 'version_dependent',
     lifecycleReload: 'restart_host',
   }),
+  'devin-cli': p0Components(['detectable', 'detectable', 'detectable'], { lifecycleReload: 'new_session' }),
   'gemini-cli': p0Components(['managed', 'managed', 'managed'], {
     instructionArtifacts: ['plugin', 'skill'], memoryArtifacts: ['plugin', 'mcp'], lifecycleArtifacts: ['plugin', 'hook'],
     instructionDomain: 'plugin_manager', memoryDomain: 'plugin_manager', lifecycleDomain: 'plugin_manager',
@@ -357,7 +358,7 @@ const P0_COMPONENTS: Readonly<Partial<Record<CatalogId, readonly ComponentDeclar
 }
 
 const CAPABILITY_CEILINGS: Readonly<Record<CapabilityLevel, readonly CatalogId[]>> = {
-  0: ['nami-desktop', 'catpaw-desktop', 'codegeex-ide', 'zcode-cli'],
+  0: ['nami-desktop', 'catpaw-desktop', 'codegeex-ide', 'zcode-cli', 'devin-cli'],
   1: ['aider-cli', 'trae-ide'],
   2: ['claude-desktop-legacy', 'continue-ide', 'amazon-q-cli', 'amazon-q-ide', 'maxkb-local', 'custom-local-mcp'],
   3: [
@@ -399,6 +400,8 @@ const VARIANT_DISPLAY_NAMES: Readonly<Partial<Record<CatalogId, string>>> = {
   'antigravity-cli': 'CLI',
   'codex-cli': 'CLI',
   'codex-desktop': 'Desktop',
+  'windsurf-desktop': 'Desktop',
+  'devin-cli': 'CLI',
   'opencode-v1-cli': 'V1 CLI',
   'opencode-v2-beta-cli': 'V2 Beta CLI',
   'zcode-desktop': 'Desktop',

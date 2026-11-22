@@ -66,6 +66,7 @@ import {
   toDiscoverInstallationInput,
   type DiscoveredInstallation,
   type LocalDiscoveryReport,
+  DESKTOP_BUNDLE_SURFACE_SCHEMA,
 } from './discovery.js'
 import { sha256Json } from './fingerprint.js'
 import { customMcpConfiguration } from './hosts/custom-mcp-configuration.js'
@@ -124,6 +125,10 @@ import {
 } from './types.js'
 
 const PLAN_TTL_MS = 15 * 60 * 1_000
+const SUPPORT_SEARCH_TERMS: Readonly<Record<string, readonly string[]>> = {
+  antigravity: ['反重力', 'agy', 'Antigravity'],
+  windsurf: ['Devin', 'Devin Desktop', 'Devin CLI', 'Windsurf', 'Cognition'],
+}
 const STATUS_REASONS = new Set<StatusReason>([
   'verified', 'legacy_callable_unmanaged', 'instruction_only', 'capability_ceiling', 'awaiting_consent', 'incompatible',
   'unverified', 'verification_stale', 'connecting', 'verifying', 'repairing', 'disconnecting',
@@ -141,6 +146,7 @@ const STATUS_REASONS = new Set<StatusReason>([
 export interface AgentIntegrationScannerPort {
   scan(): Promise<LocalDiscoveryReport>
   probeRegisteredCodexCli?(executable: string): Promise<LocalDiscoveryReport>
+  probeRegisteredCli?(catalogId: CatalogId, executable: string): Promise<LocalDiscoveryReport>
   codexLauncherParentIdentity?(executable: string): Promise<string | null>
   confirmedMissingCodexLauncher?(executable: string, previousParent: unknown): Promise<boolean>
   /** Explicit user-started probe; passive scan must never infer Cowork from Claude.app. */
@@ -454,7 +460,10 @@ export class AgentIntegrationService {
     }).sort((left, right) => left.displayName.localeCompare(right.displayName))
     const byConnection = new Map<string, { identity: ReturnType<AgentIntegrationRepository['connectionIdentity']>; members: AgentIntegrationInstallationDto[] }>()
     for (const installation of installations) {
-      const identity = this.dependencies.repository.connectionIdentity(installation.id)
+      // An entry point that reads a sibling's configuration belongs to that sibling's row.
+      const identity = this.dependencies.repository.connectionIdentity(
+        installation.configurationOwnerId && installations.some(item => item.id === installation.configurationOwnerId)
+          ? installation.configurationOwnerId : installation.id)
       const group = byConnection.get(identity.key) ?? { identity, members: [] }
       group.identity.valid &&= identity.valid
       group.members.push(installation)
@@ -471,15 +480,18 @@ export class AgentIntegrationService {
         displayName: safeProductName(sorted[0].familyId, sorted[0].displayName),
         diagnosticMemorySuccess: sorted.map(member => this.dependencies.diagnostics?.memorySuccess(this.requireInstallation(member.id)))
           .find((value): value is { verifiedAt: string } => Boolean(value)),
-        sharedEvidence: evidence, connectionIntent: this.dependencies.repository.connectionIntent(sorted[0].id), activeInstallationIds })
+        sharedEvidence: evidence,
+        // An entry point grouped under a sibling's connection has no intent of its own.
+        connectionIntent: this.dependencies.repository.connectionIntent((sorted.find(member => !member.configurationOwnerId) ?? sorted[0]).id), activeInstallationIds })
     }).sort((left, right) => left.displayName.localeCompare(right.displayName) || left.id.localeCompare(right.id))
     const issueEpisodes = this.dependencies.repository.syncConnectionIssues(connections.flatMap(connection => {
       const actions = installations.filter(member => connection.actionInstallationIds.includes(member.id))
       if (!actions.length) return []
       const reason = connection.attentionReason ?? actions[0].statusReason
       return [{ connectionId: connection.id, installationId: actions[0].id, reason,
-        fingerprint: sha256Json(actions.map(member => [member.id, member.statusReason,
-          member.components.map(component => [component.key, component.state])])) }]
+        fingerprint: sha256Json([reason, actions.map(member => [member.id, member.statusReason,
+          member.components.filter(component => ['missing','conflict','confirmation_required'].includes(component.state))
+            .map(component => [component.key, component.state])])]) }]
     }), this.now().toISOString())
     for (const connection of connections) connection.issue = issueEpisodes.get(connection.id) ?? null
     const lastScanAt = this.dependencies.repository.getLastSuccessfulScanAt()
@@ -611,6 +623,15 @@ export class AgentIntegrationService {
           this.dependencies.repository.recordAutomaticConnectionFailure(result.installationId, intent.revision,
             [approved.consentIds.get(result.installationId) ?? null, rows.find(row => row.id === result.installationId)?.consent_envelope_id ?? null],
             result.reason ?? result.status, this.now().toISOString())
+        }
+        if (mode === 'initial') {
+          // The user did not ask for this connection, so say that it happened; it can be undone by disconnecting.
+          for (const result of completed.results) {
+            if (!['committed','awaiting_verification'].includes(result.status)) continue
+            this.dependencies.repository.recordEvent({ installationId: result.installationId, kind: 'automatic_connection_completed',
+              severity: 'info', dedupeKey: `${result.installationId}:automatic-connection:${intent.revision}`,
+              payload: { intentRevision: intent.revision }, createdAt: this.now().toISOString() })
+          }
         }
         // A resume scan can encounter this task's execution fence. Retry
         // recovery after release when the user's choice already permits it.
@@ -930,7 +951,6 @@ export class AgentIntegrationService {
       const directoryStat = fs.statSync(canonicalRoot, { bigint: true })
       configFingerprint = sha256Json({
         realpath: canonicalRoot,
-        device: String(directoryStat.dev),
         inode: String(directoryStat.ino),
         mode: String(directoryStat.mode),
       })
@@ -2130,7 +2150,7 @@ export class AgentIntegrationService {
             : 'unconnected',
         }
       })
-      return { id: product.id, displayName: product.displayName, variants, ...(product.id === 'antigravity' ? { searchTerms: ['反重力', 'agy', 'Antigravity'] } : {}) }
+      return { id: product.id, displayName: product.displayName, variants, ...(SUPPORT_SEARCH_TERMS[product.id] ? { searchTerms: [...SUPPORT_SEARCH_TERMS[product.id]!] } : {}) }
     }).filter(product => product.variants.length > 0)
   }
 
@@ -2151,7 +2171,7 @@ export class AgentIntegrationService {
       throw new Error('A signed Claude app with Cowork support was not found')
     }
     const surface = candidate.identity.distribution.capabilityFingerprint
-    if (!surface?.startsWith('desktop-bundle-surface-v1:')
+    if (!surface?.startsWith(`${DESKTOP_BUNDLE_SURFACE_SCHEMA}:`)
       || candidate.identity.distribution.packageProvenance
         !== 'signed_app:com.anthropic.claudefordesktop:Q6L2SF6YDW'
       || !candidate.detectedVersion) {
@@ -2324,6 +2344,23 @@ export class AgentIntegrationService {
         else if (!exact || !await scanner.confirmedMissingCodexLauncher?.(
           executable, parseStoredMetadata(row.metadata_json).codexLauncherParentIdentity,
         )) uncertainCodex.add(row.id)
+      }
+    }
+    if (scanner.probeRegisteredCli) {
+      // A GUI PATH can miss a CLI that is still installed. Ask the exact
+      // registered path before the row is counted as absent; bounded per scan.
+      const missed = before.filter(row => row.host_variant !== 'codex-cli' && !row.app_path && row.executable_path
+        && (row.desired_state === 'managed' || row.desired_state === 'disabled') && !row.tombstoned_at
+        // Once two scans in a row confirmed the miss the row is shown as uninstalled; stop probing it every scan.
+        && row.health_state === 'discovered'
+        && !installations.some(found => found.identity.installKey === row.install_key)).slice(0, 2)
+      for (const row of missed) {
+        try {
+          const exact = await scanner.probeRegisteredCli(row.host_variant as CatalogId, row.executable_path!)
+          const found = exact.installations.find(candidate => candidate.catalogId === row.host_variant
+            && candidate.identity.installKey === row.install_key && candidate.executablePath === row.executable_path)
+          if (found) installations.push(found)
+        } catch { /* an unreadable path stays a normal miss */ }
       }
     }
     const detectedAt = this.now().toISOString()
@@ -3130,7 +3167,6 @@ export class AgentIntegrationService {
       const stat = fs.statSync(canonicalRoot, { bigint: true })
       const currentFingerprint = sha256Json({
         realpath: canonicalRoot,
-        device: String(stat.dev),
         inode: String(stat.ino),
         mode: String(stat.mode),
       })
@@ -3416,6 +3452,16 @@ export class AgentIntegrationService {
         else if (['qwenwork_mcp_gui','custom_mcp_import','claude_cowork_plugin_upload','mcp_activation'].includes(action.kind)) component.state = 'confirmation_required'
       }
     }
+    // One real use under the current connection shows a configured component as
+    // effective. This runs after pending host actions so it never hides one.
+    if (!historicalRecord && ['managed','disabled'].includes(row.desired_state)) {
+      const observedSignals = this.dependencies.repository.observedUseSignals?.(row.id) ?? new Set<string>()
+      for (const component of components) {
+        if (!['configured','verification_stale','new_session'].includes(component.state)) continue
+        if ((component.key === 'memory_tools' && ['brain_prepare','brain_recall','brain_digest'].some(signal => observedSignals.has(signal)))
+          || (component.key === 'lifecycle' && observedSignals.has('session_start'))) component.state = 'verified'
+      }
+    }
     return {
       id: row.id,
       ...(diagnostic ? { diagnostic } : {}),
@@ -3433,7 +3479,7 @@ export class AgentIntegrationService {
       // A detectable Catalog entry is not waiting for consent when the
       // production Adapter is unavailable or its distribution is untrusted.
       // Keep that truth in the DTO, not only in renderer-side CTA filtering.
-      statusGroup: historicalRecord ? 'disconnected' : row.status_reason === 'conflict' || authenticationRequired || diagnosticPermissionRequired ? 'needs_attention' : manageable ? status.statusGroup : 'disconnected',
+      statusGroup: historicalRecord ? 'disconnected' : row.status_reason === 'conflict' || authenticationRequired || diagnosticPermissionRequired ? 'needs_attention' : manageable ? (status.statusGroup === 'awaiting_verification' && components.some(component => component.key === 'memory_tools' && component.state === 'verified') ? 'available' : status.statusGroup) : 'disconnected',
       statusReason: historicalRecord
         ? 'host_uninstalled'
         : row.status_reason === 'conflict' ? 'conflict'
@@ -3457,7 +3503,13 @@ export class AgentIntegrationService {
       lastRepairedAt: row.last_repaired_at,
       lastRealUseAt: historicalRecord
         ? null
-        : this.dependencies.repository.latestVerifiedHostActivityAt(row.id, this.now().toISOString()),
+        : [this.dependencies.repository.latestVerifiedHostActivityAt(row.id, this.now().toISOString()),
+            this.dependencies.repository.latestObservedUseAt?.(row.id) ?? null]
+            .filter((value): value is string => Boolean(value)).sort().at(-1) ?? null,
+      ...(() => {
+        const owner = historicalRecord ? null : this.dependencies.repository.configurationOwnerId?.(row.id) ?? null
+        return owner ? { configurationOwnerId: owner } : {}
+      })(),
       sharedConnection: historicalRecord ? undefined : this.dependencies.repository.sharedConnectionStatus(row.id),
       deactivation: installationDeactivation(row),
       sourceVerification: row.host_variant === 'custom-local-mcp'
@@ -3974,6 +4026,8 @@ const ACTIONABLE_INFO_EVENT_KINDS = new Set([
 const STARTUP_SURFACE_INFO_EVENT_KINDS = new Set([
   ...ACTIONABLE_INFO_EVENT_KINDS,
   'artifact_auto_restored',
+  'connection_auto_recovered',
+  'automatic_connection_completed',
 ])
 
 function isActionableInboxEvent(row: Record<string, unknown>): boolean {
@@ -4238,7 +4292,7 @@ function recoveredApplyResult(run: ApplyTaskRunRow, homeDir: string): AgentInteg
       ...(run.failure_code ? { reason: run.failure_code } : {}),
     }
   }
-  if (run.state === 'cancelled' && ['superseded_by_disconnect','superseded_by_confirmed_generation','superseded_by_same_generation_repair'].includes(run.failure_code ?? '')) {
+  if (run.state === 'cancelled' && ['superseded_by_disconnect','superseded_by_confirmed_generation','superseded_by_same_generation_repair','superseded_by_service_proof','superseded_by_codex_continuity'].includes(run.failure_code ?? '')) {
     return {
       installationId: run.installation_id,
       status: 'superseded',

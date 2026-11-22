@@ -337,7 +337,7 @@ describe('formal host target metadata exporter', () => {
     const root = fs.realpathSync(data.root)
     const stat = fs.statSync(root, { bigint: true })
     expect(directoryIdentitySha256(root)).toBe(sha256Json({
-      realpath: root, device: String(stat.dev), inode: String(stat.ino), mode: String(stat.mode),
+      realpath: root, inode: String(stat.ino), mode: String(stat.mode),
     }))
   })
 

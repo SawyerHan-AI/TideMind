@@ -3,7 +3,8 @@
 
 | 参数 | 值 | 说明 |
 |------|-----|------|
-| max_links_per_run | 10 | 每次 recall 最大重新验证链接数 |
+| interval_minutes | 5 | 执行间隔（分钟）：每次处理一条 recall 记录的重新验证 |
+| max_links_per_run | 10 | 每条 recall 记录最多重新验证的链接数 |
 | min_link_age_hours | 24 | 只验证存在超过此时间的链接 |
 | llm_tier | standard | 模型档位: light/standard/heavy |
 | thinking | true | 是否开启扩展思考 |
