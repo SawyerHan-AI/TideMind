@@ -1647,7 +1647,8 @@
       "maintenancePaused": "Automatic maintenance paused",
       "advancedOptions": "Advanced options",
       "skillNotObservable": "Tide Mind has not observed this Agent loading the Skill. Some Agents never provide that signal; this is not a problem.",
-      "usesSiblingConnection": "Uses the {{name}} connection; nothing to set up here."
+      "usesSiblingConnection": "Uses the {{name}} connection; nothing to set up here.",
+      "configurationContentRechecked": "Configuration content rechecked"
     }
   },
   "account": {

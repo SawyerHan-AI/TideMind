@@ -1,4 +1,5 @@
 import { bridgeFileIdentity, publishAttestedBridgeMember, readAnchoredAdmission } from '@server/db/codex-bridge-continuity.js'
+import { CodexMcpSemanticReadback } from './codex-mcp-semantic-readback.js'
 import { HOST_MANAGED_TARGET_IDENTITY, publishServiceProof, readServiceProofAdmission } from '@server/db/agent-service-proof.js'
 import { codexLauncherParentIdentity, confirmedMissingCodexLauncher } from './codex-cli-location.js'
 import { probeAgentAuthentication, type AgentAuthenticationResult } from './agent-authentication'
@@ -172,7 +173,7 @@ export interface ProductionAgentIntegrationOptions {
   /** Explicit embedding/test seam; production callers should use distribution trust. */
   canManageInstallation?: (installation: AgentInstallationRow) => boolean
   /** Hermetic test seam; production re-attests package metadata or code signature. */
-  liveTrustAttestor?: (installation: AgentInstallationRow) => Promise<string | null>
+  liveTrustAttestor?: (installation: AgentInstallationRow, signal?: AbortSignal) => Promise<string | null>
   /** Emergency switch: false keeps existing proofs but stops zero-write renewal for dedicated Installations. */
   serviceContinuity?: boolean
   enabledAdapterIds?: readonly CatalogId[]
@@ -404,13 +405,16 @@ export function createProductionAgentIntegrationComposition(
   const attestCurrentRow = async (
     observed: AgentInstallationRow,
     expectedProofFingerprint?: string,
+    signal?: AbortSignal,
   ): Promise<string | null> => {
+    signal?.throwIfAborted()
     const before = repository.getInstallation(observed.id)
     if (!before || persistedProjectionSurfaceFingerprint(before)
       !== persistedProjectionSurfaceFingerprint(observed)
       || currentReleaseReason(before) !== null
       || !canManageInstallation(before)) return null
-    const proof = await liveTrustAttestor(before)
+    const proof = await liveTrustAttestor(before, signal)
+    signal?.throwIfAborted()
     if (!proof || (expectedProofFingerprint && proof !== expectedProofFingerprint)) return null
     const after = repository.getInstallation(observed.id)
     return after
@@ -447,10 +451,12 @@ export function createProductionAgentIntegrationComposition(
   const attestCurrentInstallation = async (
     installation: CoordinatorInstallation,
     expectedProofFingerprint?: string,
+    signal?: AbortSignal,
   ): Promise<string | null> => {
+    signal?.throwIfAborted()
     if (!canManageCurrentInstallation(installation)) return null
     const current = repository.getInstallation(installation.id)
-    return current ? attestCurrentRow(current, expectedProofFingerprint) : null
+    return current ? attestCurrentRow(current, expectedProofFingerprint, signal) : null
   }
   const coordinatorRepository = new SqliteCoordinatorRepository(db, repository, {
     now: () => clock.now(),
@@ -687,6 +693,16 @@ export function createProductionAgentIntegrationComposition(
     }
     return retry
   }
+  let readbackReady = () => false
+  const semanticReadback = new CodexMcpSemanticReadback({
+    repository:coordinatorRepository,runtime:runtimeContext,attest:attestCurrentInstallation,
+    enabled:installation=>managedAdapters.get(installation.identity.hostVariant)!==undefined,
+    canPublish:()=>readbackReady(),
+    diagnostic:(candidate,reason)=>repository.recordEvent({installationId:candidate.installation.id,
+      artifactId:candidate.artifactId,kind:'codex_mcp_readback_pending',severity:'info',
+      dedupeKey:`${candidate.installation.id}:${candidate.artifactId}:${reason}`,
+      payload:{reason},createdAt:clock.now().toISOString()}),
+  })
   const runtime = new ProductionAgentIntegrationRuntime({
     coordinator,
     coordinatorRepository,
@@ -700,6 +716,7 @@ export function createProductionAgentIntegrationComposition(
       if (!(options.serviceContinuity ?? process.env.TIDEMIND_AGENT_INTEGRATION_SERVICE_CONTINUITY !== '0')) return codex
       return await renewServiceContinuity() || codex
     },
+    renewCodexMcpSemanticReadbacks:()=>semanticReadback.renew(),
     canManageInstallation: installation => attestCurrentInstallation(installation).then(Boolean),
     sharedArtifactBlockReason,
     canContinueRecovery: async execution => {
@@ -753,6 +770,8 @@ export function createProductionAgentIntegrationComposition(
       )
     },
   })
+  readbackReady = ()=>runtime.canPublishReadback()
+  runtime.onStop(()=>semanticReadback.stop())
   // npm official-source verification (A-WP2): the runtime decision reads the local
   // cache synchronously; the scanner only enqueues background checks, and a durable
   // result triggers a rescan. Hermetic compositions keep no store (npm stays pending
@@ -1269,8 +1288,9 @@ export function createProductionLiveTrustAttestor(
     repository: AgentIntegrationRepository
     runtime: AdapterRuntimeContext
   } | null = null,
-): (row: AgentInstallationRow) => Promise<string | null> {
-  return async row => {
+): (row: AgentInstallationRow, signal?: AbortSignal) => Promise<string | null> {
+  return async (row, signal) => {
+    signal?.throwIfAborted()
     if (!isProductionInstallationTrusted(row, options?.homeDir)) return null
     if (row.host_variant === 'custom-local-mcp') {
       if (!options) return null
@@ -1288,25 +1308,34 @@ export function createProductionLiveTrustAttestor(
         const executablePath = path.resolve(executable)
         if (!isExactDesktopMainExecutable(appPath, executablePath)) return null
         const surfaceBefore = await inspectStableDesktopBundleSurface(dependencies, appPath, LIVE_TRUST_PROOF_TIMEOUT_MS)
+        signal?.throwIfAborted()
         const frozenSurfaceFingerprint = `${DESKTOP_BUNDLE_SURFACE_SCHEMA}:${surfaceBefore.fingerprint}`
         if (surfaceBefore.appRealpath !== appPath
           || surfaceBefore.executableRealpath !== executablePath
           || distribution.capabilityFingerprint !== frozenSurfaceFingerprint) return null
         const appBefore = await stableCanonicalNodeProof(appPath, 'directory', false)
+        signal?.throwIfAborted()
         const executableBefore = await stableDesktopExecutableProof(executablePath)
+        signal?.throwIfAborted()
         const portableExecutableBefore = dependencies.fs.readStableFileFingerprint
-          ? await dependencies.fs.readStableFileFingerprint(executablePath, MAX_CLI_EXECUTABLE_PROOF_BYTES)
+          ? await dependencies.fs.readStableFileFingerprint(executablePath, MAX_CLI_EXECUTABLE_PROOF_BYTES, signal)
           : undefined
+        signal?.throwIfAborted()
         const physicalSurfaceBefore = stableDesktopSurfaceIdentityProofSync(appPath, executablePath)
         const signature = await dependencies.inspectDesktopSignatureSnapshot(appPath, {
           readTimeoutMs: LIVE_TRUST_PROOF_TIMEOUT_MS,
         })
+        signal?.throwIfAborted()
         const surfaceFinal = await inspectStableDesktopBundleSurface(dependencies, appPath, LIVE_TRUST_PROOF_TIMEOUT_MS)
+        signal?.throwIfAborted()
         const appFinal = await stableCanonicalNodeProof(appPath, 'directory', false)
+        signal?.throwIfAborted()
         const executableFinal = await stableDesktopExecutableProof(executablePath)
+        signal?.throwIfAborted()
         const portableExecutableFinal = portableExecutableBefore && dependencies.fs.readStableFileFingerprint
-          ? await dependencies.fs.readStableFileFingerprint(executablePath, MAX_CLI_EXECUTABLE_PROOF_BYTES)
+          ? await dependencies.fs.readStableFileFingerprint(executablePath, MAX_CLI_EXECUTABLE_PROOF_BYTES, signal)
           : undefined
+        signal?.throwIfAborted()
         if (surfaceFinal.fingerprint !== surfaceBefore.fingerprint
           || surfaceFinal.executableRealpath !== executablePath
           || appFinal !== appBefore || executableFinal !== executableBefore
@@ -1471,14 +1500,18 @@ export function createProductionLiveTrustAttestor(
 
     if (!provenance.startsWith('npm_metadata:')) return null
     try {
+      signal?.throwIfAborted()
       if ((await dependencies.fs.lstat(executablePath))?.kind !== 'file') return null
       if (path.resolve(await dependencies.fs.realpath(executablePath)) !== executablePath) return null
       const executableBefore = await dependencies.fs.readStableFileFingerprint(
         executablePath,
         MAX_CLI_EXECUTABLE_PROOF_BYTES,
+        signal,
       )
+      signal?.throwIfAborted()
       if (!executableBefore.executable) return null
-      const metadataBefore = await dependencies.execVersion(executablePath, [], { timeoutMs: LIVE_TRUST_PROOF_TIMEOUT_MS })
+      const metadataBefore = await dependencies.execVersion(executablePath, [], { timeoutMs: LIVE_TRUST_PROOF_TIMEOUT_MS, signal })
+      signal?.throwIfAborted()
       if (metadataBefore.exitCode !== 0
         || metadataBefore.verifiedPackageProvenance !== provenance
         || !metadataBefore.packageMetadataFingerprint
@@ -1497,7 +1530,8 @@ export function createProductionLiveTrustAttestor(
       const hasOwnedPackageProof = metadataBefore.packageProofNodes.some(node => node.entryType !== undefined)
       const metadataAfter = hasOwnedPackageProof
         ? metadataBefore
-        : await dependencies.execVersion(executablePath, [], { timeoutMs: LIVE_TRUST_PROOF_TIMEOUT_MS })
+        : await dependencies.execVersion(executablePath, [], { timeoutMs: LIVE_TRUST_PROOF_TIMEOUT_MS, signal })
+      signal?.throwIfAborted()
       if (metadataAfter.exitCode !== 0
         || metadataAfter.stdout !== metadataBefore.stdout
         || metadataAfter.verifiedPackageProvenance !== metadataBefore.verifiedPackageProvenance
@@ -2065,6 +2099,7 @@ export function triggerProductionAgentIntegrationScan(): void {
 
 interface RuntimeDependencies {
   renewCodexContinuity?(): Promise<boolean>
+  renewCodexMcpSemanticReadbacks?(): Promise<boolean>
   coordinator: AgentIntegrationCoordinator
   coordinatorRepository: SqliteCoordinatorRepository
   reconciler: ManagedAgentReconciler
@@ -2110,6 +2145,10 @@ export class ProductionAgentIntegrationRuntime {
 
   onStop(callback: () => void): void {
     this.stopCallbacks.push(callback)
+  }
+
+  canPublishReadback(): boolean {
+    return !this.stopped && this.freshScanReady
   }
 
   async start(): Promise<void> {
@@ -2206,47 +2245,57 @@ export class ProductionAgentIntegrationRuntime {
   }
 
   private async performMaintenance(): Promise<void> {
-    if (!this.dependencies.observeOnly && this.dependencies.renewCodexContinuity) {
-      this.scheduleContinuityRetry(await this.dependencies.renewCodexContinuity())
-    }
-    await this.dependencies.coordinator.recoverNonTerminalRuns({
-      // Read-back/finalization remains available through the recovery Adapter,
-      // but replaying adapter.apply requires both current production gates.
-      canReplayEffect: (installation, execution) => (
-        this.dependencies.adapters.get(installation.identity.hostVariant) === undefined
-          ? false
-          // An ownership-only disconnect never had source trust; its replay is
-          // bound to the unchanged Installation surface plus Ledger/CAS instead.
-          : execution && isOwnershipOnlyDisconnectPlan(execution.preparedPlan)
-            ? this.dependencies.canContinueRecovery(execution)
-            : this.dependencies.canManageInstallation(installation)
-      ),
-      canContinueRecovery: execution => this.dependencies.canContinueRecovery(execution),
-    })
-    if (this.dependencies.observeOnly || !this.dependencies.autoRestore) return
-    const attemptedArtifacts = new Set<string>()
-    for (const candidate of this.dependencies.coordinatorRepository.listManagedReconcileCandidates()) {
-      if (this.stopped) return
-      if (attemptedArtifacts.has(candidate.artifactId)) continue
-      try {
-        // Shared portable Artifacts can have consumers belonging to different
-        // host variants. Trust and Adapter gates are Installation-scoped, so do
-        // not let an unmanageable first consumer hide a later eligible one.
-        if (!this.dependencies.adapters.get(candidate.installation.identity.hostVariant)) continue
-        if (!await this.dependencies.canManageInstallation(candidate.installation)) continue
-        // Once a currently manageable consumer is selected, keep the physical
-        // Artifact single-effect invariant even if inspection/reconcile fails.
-        attemptedArtifacts.add(candidate.artifactId)
-        await this.reconcile(candidate)
-      } catch (error) {
-        this.recordReconcileFailure(error, candidate)
+    let retry = false
+    try {
+      if (!this.dependencies.observeOnly && this.dependencies.renewCodexContinuity) {
+        retry = await this.dependencies.renewCodexContinuity() || retry
       }
+      if (!this.canPublishReadback()) return
+      await this.dependencies.coordinator.recoverNonTerminalRuns({
+        // Read-back/finalization remains available through the recovery Adapter,
+        // but replaying adapter.apply requires both current production gates.
+        canReplayEffect: (installation, execution) => (
+          this.dependencies.adapters.get(installation.identity.hostVariant) === undefined
+            ? false
+            // An ownership-only disconnect never had source trust; its replay is
+            // bound to the unchanged Installation surface plus Ledger/CAS instead.
+            : execution && isOwnershipOnlyDisconnectPlan(execution.preparedPlan)
+              ? this.dependencies.canContinueRecovery(execution)
+              : this.dependencies.canManageInstallation(installation)
+        ),
+        canContinueRecovery: execution => this.dependencies.canContinueRecovery(execution),
+      })
+      if (!this.canPublishReadback()) return
+      if (!this.dependencies.observeOnly && this.dependencies.renewCodexMcpSemanticReadbacks) {
+        retry = await this.dependencies.renewCodexMcpSemanticReadbacks() || retry
+      }
+      if (!this.canPublishReadback() || this.dependencies.observeOnly || !this.dependencies.autoRestore) return
+      const attemptedArtifacts = new Set<string>()
+      for (const candidate of this.dependencies.coordinatorRepository.listManagedReconcileCandidates()) {
+        if (this.stopped) return
+        if (attemptedArtifacts.has(candidate.artifactId)) continue
+        try {
+          // Shared portable Artifacts can have consumers belonging to different
+          // host variants. Trust and Adapter gates are Installation-scoped, so do
+          // not let an unmanageable first consumer hide a later eligible one.
+          if (!this.dependencies.adapters.get(candidate.installation.identity.hostVariant)) continue
+          if (!await this.dependencies.canManageInstallation(candidate.installation)) continue
+          // Once a currently manageable consumer is selected, keep the physical
+          // Artifact single-effect invariant even if inspection/reconcile fails.
+          attemptedArtifacts.add(candidate.artifactId)
+          retry = await this.reconcile(candidate) || retry
+        } catch (error) {
+          this.recordReconcileFailure(error, candidate)
+        }
+      }
+    } finally {
+      this.scheduleContinuityRetry(!this.stopped && retry)
     }
   }
 
-  private async reconcile(candidate: ManagedReconcileCandidate): Promise<void> {
+  private async reconcile(candidate: ManagedReconcileCandidate): Promise<boolean> {
     const adapter = this.dependencies.adapters.get(candidate.installation.identity.hostVariant)
-    if (!adapter) return
+    if (!adapter) return false
     let inspection: AdapterInspection
     try {
       inspection = await adapter.inspect(operationContext(
@@ -2267,11 +2316,15 @@ export class ProductionAgentIntegrationRuntime {
     // `inspect` may await host/filesystem I/O while a concurrent discovery scan
     // replaces the Installation identity or removes its trusted provenance.
     // Do not let that stale observation mutate health, episodes, events or plans.
-    if (!await this.dependencies.canManageInstallation(candidate.installation)) return
+    if (!await this.dependencies.canManageInstallation(candidate.installation) || !this.canPublishReadback()) return false
     // Trust alone does not bind the Artifact baseline. A confirmed plan can
     // replace owned bytes/consent/consumers while inspect awaits host I/O.
     // Discard every stale outcome before health, missing episodes or events.
-    if (!this.dependencies.coordinatorRepository.isManagedReconcileCandidateCurrent(candidate)) return
+    if (!this.dependencies.coordinatorRepository.isManagedReconcileCandidateCurrent(candidate)) return false
+    const component = inspection.components.find(item=>item.componentKey===candidate.componentKey)
+    const semantic = this.dependencies.coordinatorRepository.codexMcpObservationState?.(
+      candidate,component?.observedTarget,component?.observedFragmentHash) ?? {proven:false,retry:false}
+    if (semantic.proven) return false
     const observation = observationFor(candidate, inspection)
     if (observation.kind === 'exact_missing') {
       // Auto-restore rewrites a possibly shared artifact. It must satisfy the same
@@ -2279,7 +2332,7 @@ export class ProductionAgentIntegrationRuntime {
       const blocked = this.dependencies.sharedArtifactBlockReason?.(candidate) ?? null
       if (blocked) {
         this.recordSharedRestoreSkipped(candidate, blocked)
-        return
+        return semantic.retry
       }
     }
     await this.dependencies.reconciler.reconcileArtifact({
@@ -2294,6 +2347,7 @@ export class ProductionAgentIntegrationRuntime {
       observation,
       affectedConsumers: candidate.affectedConsumers,
     })
+    return semantic.retry
   }
 
   private recordSharedRestoreSkipped(candidate: ManagedReconcileCandidate, reason: string): void {

@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { sha256Bytes, sha256Json, stableJson } from '../../client/electron/agent-integration/fingerprint'
 import {
   ensureSafeParentDirectoryWithinRoot,
@@ -10,7 +10,63 @@ import {
   inspectRegularFileWithinRoot,
   removeRegularFileAtomicCas,
   writeRegularFileAtomicCas,
+  readManagedTextSnapshot,
+  assertManagedTextSnapshotCurrent,
 } from '../../client/electron/agent-integration/safe-file'
+
+describe('stable managed text readback', () => {
+  let root: string
+  let target: string
+  beforeEach(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'managed-readback-')))
+    target = path.join(root, 'config.toml')
+    fs.writeFileSync(target, 'value = "synthetic"\n')
+  })
+  afterEach(() => { vi.restoreAllMocks(); fs.rmSync(root, { recursive: true, force: true }) })
+
+  it('reads a bounded snapshot without rewriting the file and rechecks current bytes', () => {
+    const before = fs.statSync(target, { bigint: true })
+    const snapshot = readManagedTextSnapshot(target, root)
+    expect(snapshot.content).toBe('value = "synthetic"\n')
+    expect(snapshot.containerHash).toBe(sha256Bytes(snapshot.content))
+    expect(fs.statSync(target, { bigint: true }).mtimeNs).toBe(before.mtimeNs)
+    expect(() => assertManagedTextSnapshotCurrent(snapshot)).not.toThrow()
+    fs.writeFileSync(target, 'value = "different"\n')
+    expect(() => assertManagedTextSnapshotCurrent(snapshot)).toThrow(FilePreconditionError)
+  })
+
+  it('rejects replacing the same-content inode and symlink targets', () => {
+    const snapshot = readManagedTextSnapshot(target, root)
+    fs.renameSync(target, `${target}.previous`)
+    fs.writeFileSync(target, snapshot.content)
+    expect(() => assertManagedTextSnapshotCurrent(snapshot)).toThrow(FilePreconditionError)
+    fs.unlinkSync(target)
+    fs.symlinkSync(`${target}.previous`, target)
+    expect(() => readManagedTextSnapshot(target, root)).toThrow(FilePreconditionError)
+  })
+
+  it('rejects changes during the descriptor read, then closes its descriptor', () => {
+    const original = fs.readSync.bind(fs)
+    let usedFd = -1
+    let mutated = false
+    vi.spyOn(fs, 'readSync').mockImplementation((...args: Parameters<typeof fs.readSync>) => {
+      usedFd = args[0]
+      const count = original(...args)
+      if (!mutated) { mutated = true; fs.writeFileSync(target, 'concurrent edit\n') }
+      return count
+    })
+    expect(() => readManagedTextSnapshot(target, root)).toThrow('Unable to obtain a stable managed text snapshot')
+    expect(() => fs.fstatSync(usedFd)).toThrow()
+  })
+
+  it('rejects out-of-root, oversized and malformed UTF-8 inputs', () => {
+    expect(() => readManagedTextSnapshot(target, path.join(root, 'unrelated'))).toThrow(FilePreconditionError)
+    fs.truncateSync(target, 4 * 1024 * 1024 + 1)
+    expect(() => readManagedTextSnapshot(target, root)).toThrow(FilePreconditionError)
+    fs.writeFileSync(target, Buffer.from([0xff, 0xfe]))
+    expect(() => readManagedTextSnapshot(target, root)).toThrow(FilePreconditionError)
+  })
+})
 
 describe('managed projection fingerprints', () => {
   it('canonicalizes object key order before hashing', () => {

@@ -297,6 +297,8 @@ export interface AgentIntegrationComponentDto {
   /** Configuration and host recognition are separate from complete runtime activity. */
   configurationFingerprint?: string
   configurationVerified?: boolean
+  /** Configuration readback is not a real tool-call or individual host receipt. */
+  configurationCheck?: { kind: 'semantic'; observedAt: string }
   configurationAppliedAt?: string | null
   hostRecognitionVerified?: boolean
   hostRecognitionRejected?: boolean

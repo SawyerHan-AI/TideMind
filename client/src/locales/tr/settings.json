@@ -1647,7 +1647,8 @@
       "maintenancePaused": "Otomatik bakım duraklatıldı",
       "advancedOptions": "Gelişmiş seçenekler",
       "skillNotObservable": "Tide Mind bu Agent’ın Skill’i yüklediğini henüz gözlemlemedi. Bazı Agent’lar bu sinyali vermez; bu bir sorun değildir.",
-      "usesSiblingConnection": "{{name}} bağlantısını kullanır; burada ayarlanacak bir şey yok."
+      "usesSiblingConnection": "{{name}} bağlantısını kullanır; burada ayarlanacak bir şey yok.",
+      "configurationContentRechecked": "Yapılandırma içeriği yeniden doğrulandı"
     }
   },
   "account": {

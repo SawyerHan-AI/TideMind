@@ -1647,7 +1647,8 @@
       "maintenancePaused": "已暂停自动维护",
       "advancedOptions": "高级选项",
       "skillNotObservable": "尚未观察到该 Agent 加载 Skill。部分 Agent 不提供这一信号，这不代表有问题。",
-      "usesSiblingConnection": "通过 {{name}} 的连接使用记忆，这里无需单独配置。"
+      "usesSiblingConnection": "通过 {{name}} 的连接使用记忆，这里无需单独配置。",
+      "configurationContentRechecked": "配置内容一致，已重新核验"
     }
   },
   "account": {

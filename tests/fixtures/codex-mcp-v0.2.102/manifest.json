@@ -1,0 +1,27 @@
+{
+  "sourceCommit": "08de4b755eddc4cd0061861dbc2fe4c37ac70f10",
+  "version": "0.2.102",
+  "entry": "src/agent-bridge-guard.ts",
+  "files": [
+    {
+      "path": "src/agent-bridge-guard.ts",
+      "sha256": "da255ad9b51cd5716679d1c0859a343f95a13e891382ca8184d0a1a48cefbcd6"
+    },
+    {
+      "path": "src/db/codex-bridge-continuity.ts",
+      "sha256": "2c9a41c62de70c61101a8cb0c9d7100a4b9070017eeeccec95b54baf26871e07"
+    },
+    {
+      "path": "src/db/agent-identity-binding.ts",
+      "sha256": "452f0e01711ce84f07c2c72ce034f5bc89e743775feeada235c3eae4b10c5210"
+    },
+    {
+      "path": "src/db/agent-integration-event-sanitizer.ts",
+      "sha256": "7913c108a4c8a4d55235673b9d9fe3cc917b741e9a45d353ee20bd9e9f3ad1b6"
+    },
+    {
+      "path": "src/db/agent-service-proof.ts",
+      "sha256": "ae92730724f03124813a9ff65433abf253e4d80f7e3e2559663e97f8bd10e7c1"
+    }
+  ]
+}

@@ -2246,6 +2246,11 @@ const MIGRATIONS: Migration[] = [
     description: '云同步不上传名单（非主设备被拒收的整理结果）',
     up: (db) => { ensureCloudSyncExclusionSchema(db); },
   },
+  {
+    version: 53,
+    description: 'Codex MCP 等价重排的独立成员回读证据（不自动授予准入）',
+    up: (db) => { ensureAgentIntegrationSchema(db); },
+  },
 ];
 
 /**

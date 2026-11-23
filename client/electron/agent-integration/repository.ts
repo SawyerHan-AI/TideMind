@@ -1,8 +1,9 @@
 import { configurationOwnerId } from '@server/agent-caller-observation.js'
 import { retainCodexSourceRejection } from '@server/db/codex-bridge-continuity.js'
+import { revokeCodexMcpSemanticProofs, codexMcpLayoutAttentionIsExplainable } from '@server/db/codex-mcp-semantic-proof.js'
 import { isAutomaticConsentContext, type AutomaticConsentContext, type ConsentOrigin } from './consent'
 import { changeConnectionIntent, connectionIntentDomain, isPausedVerifiedRun, readConnectionIntent, type ConnectionIntent } from './connection-intent'
-import { readSharedConnectionEvidence } from './shared-connection-evidence.js'
+import { readSharedConnectionEvidence, readCodexMcpSemanticConfiguration } from './shared-connection-evidence.js'
 import { isExactCodexFourToFiveRecipeUpgrade, type CodexRecipeUpgradeProof } from './hosts/codex-lifecycle-adapter.js'
 import { freshCodexIdentityFingerprint, type CodexFreshIdentityPlan } from './codex-fresh-identity'
 import { evaluateBridgeAdmission } from '@server/agent-bridge-guard.js'
@@ -995,6 +996,11 @@ export class AgentIntegrationRepository {
     return readSharedConnectionEvidence(this.db, installationId, at, tideMindVersion)
   }
 
+  codexMcpSemanticConfiguration(installationId: string) {
+    const result=readCodexMcpSemanticConfiguration(this.db,installationId)
+    return result ? {...result,explainsAttention:codexMcpLayoutAttentionIsExplainable(this.db,installationId,result.artifactId)}:undefined
+  }
+
   getSharedIdentity(agentId: string) {
     return getSharedAgentConsumers(this.db, agentId)
   }
@@ -1400,6 +1406,7 @@ export class AgentIntegrationRepository {
             ON CONFLICT(installation_id) DO UPDATE SET last_run_rowid=MAX(last_run_rowid,excluded.last_run_rowid)`)
             .run(persisted.id,persisted.id)
           this.db.prepare('DELETE FROM codex_bridge_member_proofs WHERE installation_id=?').run(persisted.id)
+          revokeCodexMcpSemanticProofs(this.db, persisted.id)
         }
         const nonVersionInstallationSurfaceChanged = installKeyChanged || nonVersionProjectionSurfaceChanged
         const invalidationReason = nonVersionInstallationSurfaceChanged
@@ -1885,6 +1892,7 @@ export class AgentIntegrationRepository {
         this.db.prepare('UPDATE agent_installations SET metadata_json=? WHERE id=?')
           .run(JSON.stringify({...metadata,detectionSequence:sequence,consecutiveDetectionMisses:0}),installationId)
       }
+      revokeCodexMcpSemanticProofs(this.db, installationId)
       this.db.prepare(`
         UPDATE verification_results
         SET invalidated_at = COALESCE(invalidated_at, ?),
@@ -2322,6 +2330,7 @@ export class AgentIntegrationRepository {
         .run(JSON.stringify(metadata),reason,observedAt,installationId)
       retainCodexSourceRejection(this.db,installationId)
       this.db.prepare('DELETE FROM codex_bridge_member_proofs WHERE installation_id=?').run(installationId)
+      revokeCodexMcpSemanticProofs(this.db, installationId)
       this.recordEvent({installationId,kind:'host_probe_uncertain',severity:'warning',
         dedupeKey:`${installationId}:registered-source-rejected:${reason}`,payload:{reason},createdAt:observedAt})
     }).immediate()

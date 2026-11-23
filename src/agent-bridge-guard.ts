@@ -1,4 +1,5 @@
-import { latestPhysicalBridgeWrite, readAnchoredAdmission, currentBridgeFileIdentity, codexSourceBlockApplies } from './db/codex-bridge-continuity.js';
+import { latestPhysicalBridgeWrite, readAnchoredAdmission, currentBridgeFileIdentity, codexSourceBlockApplies, readCodexReconnectSourceFacts } from './db/codex-bridge-continuity.js';
+import { readActiveCodexMcpSemanticProof } from './db/codex-mcp-semantic-proof.js';
 import { getSharedAgentConsumers, type SharedAgentConsumers } from './db/agent-identity-binding.js';
 import { readServiceProofAdmission } from './db/agent-service-proof.js';
 import { createHash } from 'node:crypto';
@@ -127,14 +128,14 @@ export function evaluateBridgeAdmission(
 
 export function describeBridgeRejection(reason: BridgeRejectionReason): string {
   switch (reason) {
-    case 'bridge_revalidation_pending': return 'Tide Mind 正在重新核验当前 Codex 配置和来源，请稍后重试。';
-    case 'managed_fragment_changed': return '宿主配置文件自上次核验后发生变化，请等待 Tide Mind 重新读取配置。';
+    case 'bridge_revalidation_pending': return '当前 Codex 连接的文件或来源证明尚未完成重新核验，请在 Tide Mind 的 Agent 对接中查看检查状态。';
+    case 'managed_fragment_changed': return '宿主配置文件自上次核验后发生变化，当前连接尚未通过回读核验。请在 Tide Mind 的 Agent 对接中查看配置状态。';
     case 'source_rejected': return 'Tide Mind 无法信任可读取此共享配置的宿主来源，请检查 Agent 对接里的来源信息。';
     case 'installation_removed':
     case 'installation_tombstoned': return 'Tide Mind 与此 Agent 的连接已断开。如需继续使用记忆，请在 Tide Mind 的 Agent 对接中重新连接。';
     case 'bridge_stopped': return 'Tide Mind 已停止为此 Agent 提供记忆。如需恢复，请在 Tide Mind 的 Agent 对接中重新连接。';
     case 'guard_unavailable': return 'Tide Mind 暂时无法读取连接状态，请稍后重试。';
-    case 'activity_generation_mismatch': return 'Tide Mind 正在自动恢复此连接，或配置已更新。请稍后重试；若仍不可用，请新开一个会话。';
+    case 'activity_generation_mismatch': return '当前会话携带的 Tide Mind 连接代次与已授权代次不一致。请先在 Tide Mind 确认连接正常，再刷新宿主连接。';
     default: return BRIDGE_REJECTED_MESSAGE;
   }
 }
@@ -163,11 +164,33 @@ function evaluateSharedBridgeAdmission(db: Database.Database, shared: SharedAgen
     return { allowed: false, reason: 'source_rejected' };
   }
   const hash = createHash('sha256').update(JSON.stringify(token)).digest('hex');
-  if (codexSourceBlockApplies(db,shared.bindingId,componentKey,hash)) return {allowed:false,reason:'source_rejected'};
+  if (codexSourceBlockApplies(db,shared.bindingId,componentKey,hash)) {
+    const facts = readCodexReconnectSourceFacts(db,shared.bindingId,componentKey,hash);
+    return {allowed:false,reason:facts.every(block=>!block.rejectedToken && block.candidates.length>0)
+      ? 'bridge_revalidation_pending' : 'source_rejected'};
+  }
   let localReason: BridgeRejectionReason = 'activity_generation_mismatch';
+  const remember = (reason: 'managed_fragment_changed' | 'bridge_revalidation_pending') => {
+    if (reason === 'managed_fragment_changed' || localReason === 'activity_generation_mismatch') localReason = reason;
+  };
   for (const member of active) {
     const row = readGuardRow(db, member.agent_id!);
     if (!row || row.bridge_state === 'stopped' || (row.eligibility_reason && DEFINITIVE_SOURCE_REJECTIONS.has(row.eligibility_reason))) continue;
+    if (componentKey === 'memory_tools' && member.family === 'codex') {
+      const current = db.prepare(`SELECT DISTINCT a.id,a.state FROM installation_components part
+        JOIN managed_artifacts a ON a.id=part.artifact_id
+        WHERE part.installation_id=? AND part.component_key='memory_tools' AND part.tombstoned_at IS NULL`)
+        .all(member.id) as Array<{id:string;state:string}>;
+      for (const artifact of current) {
+        if (readActiveCodexMcpSemanticProof(db,{
+          bindingId:shared.bindingId,artifactId:artifact.id,installationId:member.id,tokenHash:hash,
+        })) return {allowed:true};
+        if (['drifted','conflict'].includes(artifact.state)) {
+          const carrier = latestPhysicalBridgeWrite(db,artifact.id);
+          if (carrier?.token_hash === hash && carrier.token === token) remember('managed_fragment_changed');
+        }
+      }
+    }
     const artifacts = db.prepare(`SELECT a.id, a.owned_fragment_hash, a.state FROM artifact_consumers c
       JOIN managed_artifacts a ON a.id=c.artifact_id
       JOIN installation_components component ON component.installation_id=c.installation_id
@@ -189,8 +212,8 @@ function evaluateSharedBridgeAdmission(db: Database.Database, shared: SharedAgen
             JOIN codex_bridge_member_proofs p USING(binding_id,artifact_id,component_key)
             WHERE a.binding_id=? AND a.artifact_id=? AND a.component_key=? AND p.installation_id=?`)
             .get(shared.bindingId,artifact.id,componentKey,member.id) as {target_path:string;file_identity:string} | undefined;
-          localReason = proof && proof.file_identity !== currentBridgeFileIdentity(proof.target_path)
-            ? 'managed_fragment_changed' : 'bridge_revalidation_pending';
+          remember(proof && proof.file_identity !== currentBridgeFileIdentity(proof.target_path)
+            ? 'managed_fragment_changed' : 'bridge_revalidation_pending');
         }
         continue;
       }
@@ -204,7 +227,7 @@ function evaluateSharedBridgeAdmission(db: Database.Database, shared: SharedAgen
         AND json_extract(prepared_plan_json,'$.activityGenerationToken')=?
         AND EXISTS(SELECT 1 FROM json_each(prepared_plan_json,'$.componentKeys') WHERE value=?)`)
         .get(member.id,observedChange.cutoff,token,componentKey)) {
-        if (latestPhysicalBridgeWrite(db,artifact.id)?.token_hash === hash) localReason = 'bridge_revalidation_pending';
+        if (latestPhysicalBridgeWrite(db,artifact.id)?.token_hash === hash) remember('bridge_revalidation_pending');
         continue;
       }
       // Read the latest committed physical write across ALL consumers. Filtering

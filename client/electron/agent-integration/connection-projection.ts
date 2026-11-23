@@ -47,6 +47,9 @@ export function projectConnection(input: ConnectionProjectionInput): AgentIntegr
   const sharedLifecycleFingerprint = sharedEvidence?.components.lifecycle.configurationFingerprint
   const antigravity = members.every(member => member.familyId === 'antigravity')
   if (identity.shared) {
+    if (sharedEvidence?.components.memory_tools.configurationCheck) {
+      memory.configurationCheck=sharedEvidence.components.memory_tools.configurationCheck
+    }
     memoryCallsVerified = Boolean(serving && identity.valid && sharedEvidence?.components.memory_tools.signalsComplete)
     if (memoryCallsVerified) {
       memory.state = 'verified'
@@ -138,7 +141,7 @@ export function projectConnection(input: ConnectionProjectionInput): AgentIntegr
   if (live.length === 0 && actionMembers.length > 0) { statusGroup='needs_attention'; statusReason='native_permission_required' }
   else if (live.length === 0 || !serving) { statusGroup='disconnected'; statusReason='disconnect_verified' }
   else if (!identity.valid || ['missing','conflict'].includes(memory.state)) { statusGroup='needs_attention'; statusReason='conflict' }
-  else if (memoryCallsVerified) { statusGroup='available'; statusReason='verified' }
+  else if (memoryCallsVerified && (!memory.configurationCheck || actionInstallationIds.length === 0)) { statusGroup='available'; statusReason='verified' }
   else if (input.connectionIntent?.state === 'paused') { statusGroup='paused'; statusReason='user_disabled' }
   else if (actionInstallationIds.length > 0) { statusGroup='needs_attention'; statusReason=attentionReason ?? primary.statusReason }
   else if (running) { statusGroup='processing'; statusReason='verifying' }

@@ -1647,7 +1647,8 @@
       "maintenancePaused": "自動メンテナンスを一時停止中",
       "advancedOptions": "詳細オプション",
       "skillNotObservable": "この Agent が Skill を読み込んだことはまだ確認できていません。この信号を提供しない Agent もあり、問題ではありません。",
-      "usesSiblingConnection": "{{name}} の接続を使用します。ここでの設定は不要です。"
+      "usesSiblingConnection": "{{name}} の接続を使用します。ここでの設定は不要です。",
+      "configurationContentRechecked": "設定内容の一致を再確認済み"
     }
   },
   "account": {

@@ -1647,7 +1647,8 @@
       "maintenancePaused": "Автоматическое обслуживание приостановлено",
       "advancedOptions": "Дополнительные параметры",
       "skillNotObservable": "Tide Mind пока не наблюдал загрузку Skill этим Agent. Некоторые Agent не дают такого сигнала; это не ошибка.",
-      "usesSiblingConnection": "Использует подключение {{name}}; здесь ничего настраивать не нужно."
+      "usesSiblingConnection": "Использует подключение {{name}}; здесь ничего настраивать не нужно.",
+      "configurationContentRechecked": "Содержимое конфигурации проверено повторно"
     }
   },
   "account": {

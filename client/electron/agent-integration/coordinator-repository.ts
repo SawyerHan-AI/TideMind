@@ -1,6 +1,13 @@
 import { runtimeActivityReferencePrefix } from './activity-reference'
 import { capHostCapability, hostCapabilityCeiling } from './capability'
-import { captureBridgeAnchor, latestPhysicalBridgeWrite, currentCodexMemberSurface, type BridgeAnchor } from '@server/db/codex-bridge-continuity.js'
+import { captureBridgeAnchor, captureCodexReadbackAnchor, latestPhysicalBridgeWrite, currentCodexMemberSurface,
+  publishAttestedBridgeMember, readAnchoredAdmission, readCodexReconnectSourceFacts, codexSourceBlockApplies,
+  type BridgeAnchor } from '@server/db/codex-bridge-continuity.js'
+import { codexAnchorFingerprint, codexMcpLayoutAttentionIsExplainable, readActiveCodexMcpSemanticProof,
+  readCodexMcpActivationCore, type CodexMcpProofRow, type CodexMcpProofCore } from '@server/db/codex-mcp-semantic-proof.js'
+import { compareCodexMcpSemantics } from '@server/utils/codex-mcp-semantic.js'
+import { evaluateBridgeAdmission } from '@server/agent-bridge-guard.js'
+import { assertManagedTextSnapshotCurrent, type ManagedTextSnapshot } from './safe-file.js'
 import { captureServiceAnchor, currentInstallationSurface, type ServiceAnchor } from '@server/db/agent-service-proof.js'
 import { automaticPlanAuthorizationKey, isAutomaticConsentContext } from './consent'
 import { allowsConnectionMaintenance } from './connection-intent'
@@ -192,6 +199,34 @@ export interface ManagedReconcileCandidate {
   affectedConsumers: readonly { installationId: string; displayName: string }[]
 }
 
+/** Private-to-main-process readback inputs. Tokens and frozen content must never
+ * be serialized into renderer DTOs, events, or logs. This is not a write plan. */
+export interface CodexMcpReadbackCandidate {
+  installation: CoordinatorInstallation
+  bindingId: string
+  artifactId: string
+  anchor: BridgeAnchor
+  runId: string
+  mutationDomain: string
+  expectedBlock: string
+  token: string
+  consentId: string
+  intentRevision: number
+  surface: string
+  fingerprint: string
+}
+
+export interface CodexMcpReadbackSafety {
+  collectionEpoch: string
+  runtime: { shimPath: string; mcpServerPath: string }
+  /** Must check the current epoch/stop state AND every held execution/domain fence. */
+  assertCurrent(): void
+}
+
+export type CodexMcpActivationResult =
+  | { status: 'active' | 'exact' }
+  | { status: 'pending' | 'blocked'; reason: string }
+
 /** SQLite-backed Coordinator port. No state in this bridge is authoritative in memory. */
 export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
   private readonly ownerInstanceId: string
@@ -353,6 +388,8 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     assertPersistedRunEnvelope(row,plan)
     if (executionPlanHash(plan.executionPlan)!==row.execution_plan_hash || sha256Json(plan.adapterPlan)!==plan.adapterPlanHash
       || plan.activityGenerationToken!==token || plan.executionPlan.activityGenerationTokenHash!==anchor.token_hash) return false
+    const physicalInstallation = this.installationFromRow(this.repository.getInstallation(row.installation_id))
+    this.validateCodexImmutableJournal(row, plan, physicalInstallation)
     const mutation = plan.adapterPlan.mutations.find(m => m.componentKey === anchor.component_key && m.physicalTarget === anchor.target_path
       && m.ownershipKey === anchor.ownership_key && String(m.selectorSchemaVersion) === anchor.selector_schema_version
       && m.desiredFragmentHash === anchor.fragment_hash && m.domainKind === 'file_fragment'
@@ -363,6 +400,302 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
       || sha256Json(parseObject(journal.planned_mutation_json,'bridge journal')) !== sha256Json(mutation)) return false
     assertVerifiedMutationJournal(journal,mutation)
     return true
+  }
+
+  /** Historical effects remain immutable even when their writer has retired or
+   * a later consent owns the live projection. Validate the complete journal and
+   * fence envelope, without requiring the old live artifact state to be healthy. */
+  private validateCodexImmutableJournal(run: RunRow, plan: PreparedCoordinatorPlan, installation: CoordinatorInstallation): void {
+    const rows = this.loadValidatedMutationRows(run, plan, installation, undefined, true)
+    for (const { row, plannedMutation } of rows) {
+      if (plannedMutation.domainKind !== 'file_fragment' || plannedMutation.commandCategory !== 'file_write'
+        || !['create','update'].includes(plannedMutation.operation) || plannedMutation.ownershipTransferFrom
+        || plannedMutation.frozenCommands?.length) throw new Error('Unsupported historical Codex effect')
+      assertVerifiedMutationJournal(row, plannedMutation)
+    }
+    this.assertWriterFenceSnapshot(run, plan, installation, rows, true)
+  }
+
+  /** Unlike exact continuity, this can OBSERVE an attributable layout conflict.
+   * It neither clears that conflict nor authorizes a carrier or an old effect. */
+  codexMcpSemanticSnapshot(installationId: string): CodexMcpReadbackCandidate | null {
+    try {
+      const member = this.repository.getInstallation(installationId)
+      if (!member || member.family !== 'codex' || !['codex-cli', 'codex-desktop'].includes(member.host_variant)
+        || member.health_state !== 'discovered' || member.desired_state !== 'managed'
+        || member.bridge_state === 'stopped' || member.tombstoned_at || !member.consent_envelope_id) return null
+      const identity = this.repository.resolveAgentIdentity(installationId)
+      if (!identity.bindingId) return null
+      const intent = this.repository.connectionIntent(installationId)
+      if (!allowsConnectionMaintenance(intent, installationId)) return null
+      // A later disconnect or unapplied replacement cannot inherit this grant.
+      const run = this.db.prepare(`SELECT * FROM reconcile_runs WHERE installation_id=?
+        AND (operation_type='disconnect' OR EXISTS (SELECT 1 FROM json_each(
+          CASE WHEN json_valid(prepared_plan_json) THEN prepared_plan_json END,'$.componentKeys') WHERE value='memory_tools'))
+        ORDER BY rowid DESC LIMIT 1`).get(installationId) as (RunRow & { failure_code: string | null }) | undefined
+      if (!run || !['connect', 'repair'].includes(run.operation_type) || run.consent_envelope_id !== member.consent_envelope_id
+        || !(['applied_unverified', 'verified', 'committed'].includes(run.state)
+          || run.state === 'needs_recovery' && ['recovery_source_trust_changed','verification_failed','verification_stale','host_not_authoritatively_present'].includes(run.failure_code ?? '')
+          || String(run.state) === 'cancelled' && run.failure_code === 'superseded_by_codex_continuity')) return null
+      const plan = parseObject(run.prepared_plan_json, 'Codex readback plan') as unknown as PreparedCoordinatorPlan
+      assertPersistedPreparedPlanShape(plan)
+      assertPersistedRunEnvelope(run, plan)
+      const installation = this.installationFromRow(member)
+      const consent = this.getConsent(member.consent_envelope_id, run.execution_plan_hash)
+      const distribution = persistedDistribution(member)
+      if (!consent || plan.executionPlanHash !== executionPlanHash(plan.executionPlan)
+        || plan.adapterPlanHash !== sha256Json(plan.adapterPlan)
+        || plan.executionPlan.installationId !== installationId || plan.adapterPlan.installationKey !== member.install_key
+        || plan.inspection.catalogId !== member.host_variant
+        || !distribution.packageProvenance || plan.inspection.distribution.packageProvenance !== distribution.packageProvenance
+        || plan.inspection.distribution.distributionId !== distribution.distributionId
+        || plan.executionPlan.sharedIdentityBinding !== installation.sharedIdentityBinding
+        || !checkPlanAgainstConsent(plan.executionPlan, consent, supplementalConsentClaims(
+          installation, plan, this.listOwnedArtifactBaselines(installationId))).allowed) return null
+      this.validateCodexImmutableJournal(run, plan, installation)
+      const scope = this.db.prepare(`SELECT a.id,a.mutation_domain,a.state FROM artifact_consumers c
+        JOIN managed_artifacts a ON a.id=c.artifact_id
+        JOIN installation_components part ON part.installation_id=c.installation_id AND part.component_key=c.component_key
+          AND part.artifact_id=c.artifact_id AND part.consent_envelope_id=c.consent_envelope_id
+        JOIN agent_consents s ON s.id=c.consent_envelope_id AND s.installation_id=c.installation_id AND s.status='active'
+        WHERE c.installation_id=? AND c.component_key='memory_tools' AND c.consent_envelope_id=?
+          AND c.state='active' AND c.desired_state IN ('managed','disabled') AND c.tombstoned_at IS NULL
+          AND part.desired_state='managed' AND part.tombstoned_at IS NULL
+          AND a.state IN ('healthy','needs_recovery','drifted') AND a.owned_fragment_hash=a.desired_fragment_hash
+          AND EXISTS (SELECT 1 FROM json_each(s.allowed_components_json) WHERE value='memory_tools')`)
+        .get(installationId, member.consent_envelope_id) as { id: string; mutation_domain: string; state: string } | undefined
+      if (!scope || !codexMcpLayoutAttentionIsExplainable(this.db, installationId, scope.id)) return null
+      const persisted = this.db.prepare(`SELECT * FROM codex_bridge_anchors
+        WHERE binding_id=? AND artifact_id=? AND component_key='memory_tools'`).get(identity.bindingId, scope.id) as BridgeAnchor | undefined
+      const anchor = captureCodexReadbackAnchor(this.db, identity.bindingId, scope.id)
+      const writer = latestPhysicalBridgeWrite(this.db, scope.id)
+      if (!persisted || !anchor || !writer?.token || codexAnchorFingerprint(anchor) !== codexAnchorFingerprint(persisted)
+        || !this.physicalBridgeJournalValid(anchor, writer.token)) return null
+      const journal = this.db.prepare('SELECT planned_mutation_json FROM projection_mutations WHERE id=?').get(anchor.mutation_id) as { planned_mutation_json: string }
+      const mutation = parseObject(journal.planned_mutation_json, 'Codex physical writer') as unknown as PlannedMutation
+      const expectedBlock = mutation.metadata?.desiredBlock
+      if (typeof expectedBlock !== 'string') return null
+      const expected = compareCodexMcpSemantics(expectedBlock, expectedBlock, anchor.ownership_key)
+      if (expected.kind !== 'exact' || expected.expected.rawHash !== anchor.fragment_hash
+        || expected.expected.meaning.env.EB_AGENT_ID !== installation.agentId
+        || expected.expected.meaning.env.EB_ACTIVITY_GENERATION_TOKEN !== writer.token) return null
+      const surface = currentCodexMemberSurface(this.db, installationId)
+      if (!surface) return null
+      const input = { installation, bindingId: identity.bindingId, artifactId: scope.id, anchor, runId: writer.run_id,
+        mutationDomain: scope.mutation_domain, expectedBlock, token: writer.token, consentId: member.consent_envelope_id,
+        intentRevision: intent.revision, surface }
+      // Include the complete current consent and member-run envelope in the
+      // publication CAS, not merely a consent identifier that could go stale.
+      return { ...input, fingerprint: sha256Json([input, consent, run.prepared_plan_json, run.state, run.failure_code]) }
+    } catch {
+      return null
+    }
+  }
+
+  listCodexMcpSemanticCandidates(): CodexMcpReadbackCandidate[] {
+    return this.repository.listInstallations().flatMap(member => {
+      const snapshot = this.codexMcpSemanticSnapshot(member.id)
+      return snapshot ? [snapshot] : []
+    })
+  }
+
+  codexMcpReadbackEvidenceState(candidate: CodexMcpReadbackCandidate, snapshot: ManagedTextSnapshot, epoch: string): 'serving' | 'collected' | 'missing' {
+    const scope = {bindingId:candidate.bindingId,artifactId:candidate.artifactId,
+      installationId:candidate.installation.id,tokenHash:candidate.anchor.token_hash}
+    const active = readActiveCodexMcpSemanticProof(this.db,scope)
+    const exact = readAnchoredAdmission(this.db,candidate.bindingId,candidate.artifactId,'memory_tools',candidate.installation.id,candidate.anchor.token_hash)===true
+    if ((exact || active && active.row.file_identity===snapshot.fileIdentity && active.row.container_hash===snapshot.containerHash)
+      && evaluateBridgeAdmission(this.db,{agentId:candidate.installation.agentId,activityGenerationToken:candidate.token}).allowed) return 'serving'
+    const core = readCodexMcpActivationCore(this.db,scope,epoch)
+    return core && core.row.file_identity===snapshot.fileIdentity && core.row.container_hash===snapshot.containerHash ? 'collected' : 'missing'
+  }
+
+  codexMcpReadbackHasPermanentSourceBlock(candidate: CodexMcpReadbackCandidate): boolean {
+    return readCodexReconnectSourceFacts(this.db,candidate.bindingId,'memory_tools',candidate.anchor.token_hash)
+      .some(block=>block.rejectedToken || !block.candidates.length)
+  }
+
+  discardChangedCodexMcpReadback(candidate: CodexMcpReadbackCandidate): void {
+    this.db.prepare(`DELETE FROM codex_mcp_semantic_member_proofs
+      WHERE binding_id=? AND artifact_id=? AND component_key='memory_tools' AND anchor_fingerprint=?`)
+      .run(candidate.bindingId,candidate.artifactId,codexAnchorFingerprint(candidate.anchor))
+  }
+
+  codexMcpObservationState(candidate: ManagedReconcileCandidate, target: string | undefined, observedHash: string | undefined): {proven:boolean;retry:boolean} {
+    if (candidate.installation.identity.productFamilyId!=='codex' || candidate.componentKey!=='memory_tools'
+      || candidate.componentKeys.length!==1 || !observedHash || !target) return {proven:false,retry:false}
+    const identity = this.repository.resolveAgentIdentity(candidate.installation.id)
+    const writer = latestPhysicalBridgeWrite(this.db,candidate.artifactId)
+    if (!identity.bindingId || !writer?.token_hash || !writer.token) return {proven:false,retry:false}
+    const rows = this.db.prepare(`SELECT installation_id,observed_fragment_hash FROM codex_mcp_semantic_member_proofs
+      WHERE binding_id=? AND artifact_id=? AND component_key='memory_tools'`).all(identity.bindingId,candidate.artifactId) as
+      Array<{installation_id:string;observed_fragment_hash:string}>
+    const admitted = evaluateBridgeAdmission(this.db,{agentId:identity.canonicalAgentId,activityGenerationToken:writer.token}).allowed
+    for (const row of rows) {
+      const proof = readActiveCodexMcpSemanticProof(this.db,{bindingId:identity.bindingId,artifactId:candidate.artifactId,
+        installationId:row.installation_id,tokenHash:writer.token_hash})
+      if (admitted && proof && proof.anchor.target_path===target && proof.row.observed_fragment_hash===observedHash) return {proven:true,retry:false}
+    }
+    return {proven:false,retry:rows.length>0}
+  }
+
+  private checkCodexReadback(
+    candidate: CodexMcpReadbackCandidate, snapshot: ManagedTextSnapshot, safety: CodexMcpReadbackSafety,
+  ) {
+    safety.assertCurrent()
+    if (!safety.collectionEpoch || snapshot.canonicalPath !== candidate.anchor.target_path
+      || snapshot.allowedRoot !== candidate.installation.identity.canonicalConfigRoot
+      || this.codexMcpSemanticSnapshot(candidate.installation.id)?.fingerprint !== candidate.fingerprint) {
+      throw new Error('Codex readback observation is stale')
+    }
+    assertManagedTextSnapshotCurrent(snapshot)
+    const comparison = compareCodexMcpSemantics(candidate.expectedBlock, snapshot.content, candidate.anchor.ownership_key)
+    if (!('expected' in comparison)) throw new Error('Codex MCP meaning cannot be proven unchanged')
+    if (comparison.expected.rawHash !== candidate.anchor.fragment_hash
+      || comparison.expected.meaning.command !== safety.runtime.shimPath
+      || comparison.expected.meaning.args.length !== 1 || comparison.expected.meaning.args[0] !== safety.runtime.mcpServerPath
+      || comparison.expected.meaning.env.EB_AGENT_ID !== candidate.installation.agentId
+      || comparison.expected.meaning.env.EB_ACTIVITY_GENERATION_TOKEN !== candidate.token) {
+      throw new Error('Codex readback no longer describes the current runtime and identity')
+    }
+    return comparison
+  }
+
+  /** Stores only a freshly attested fact. A missing peer must not roll this back
+   * merely because the global source veto still prevents service. */
+  collectCodexMcpReadback(
+    candidate: CodexMcpReadbackCandidate, snapshot: ManagedTextSnapshot,
+    sourceFingerprint: string, safety: CodexMcpReadbackSafety,
+  ): 'collected' | 'already_active' {
+    return this.db.transaction(() => {
+      const comparison = this.checkCodexReadback(candidate, snapshot, safety)
+      if (!/^[a-f0-9]{64}$/u.test(sourceFingerprint)) throw new Error('Invalid Codex source attestation')
+      const scope = { bindingId:candidate.bindingId,artifactId:candidate.artifactId,
+        installationId:candidate.installation.id,tokenHash:candidate.anchor.token_hash }
+      const existing = readActiveCodexMcpSemanticProof(this.db, scope)
+      if (existing && existing.row.observed_fragment_hash === comparison.observed.rawHash
+        && existing.row.semantic_hash === comparison.observed.semanticHash) return 'already_active'
+      const now = this.now().toISOString()
+      const changed = this.db.prepare(`UPDATE managed_artifacts SET observed_fragment_hash=?,
+        state=CASE WHEN ?='equivalent' THEN 'drifted' ELSE state END,updated_at=?
+        WHERE id=? AND owned_fragment_hash=? AND desired_fragment_hash=? AND state IN ('healthy','needs_recovery','drifted')`)
+        .run(comparison.observed.rawHash,comparison.kind,now,candidate.artifactId,candidate.anchor.fragment_hash,candidate.anchor.fragment_hash)
+      if (changed.changes !== 1) throw new Error('Codex readback artifact changed')
+      if (comparison.kind === 'equivalent') {
+        const revoked = this.db.prepare(`DELETE FROM codex_bridge_member_proofs
+          WHERE binding_id=? AND artifact_id=? AND component_key='memory_tools'`).run(candidate.bindingId,candidate.artifactId)
+        if (revoked.changes) this.repository.recordEvent({
+          installationId:candidate.installation.id,artifactId:candidate.artifactId,kind:'codex_mcp_exact_proofs_revoked',severity:'info',
+          payload:{memberCount:revoked.changes,reason:'equivalent_layout_requires_new_readback'},createdAt:now,
+        })
+      }
+      const row: CodexMcpProofRow = {
+        binding_id:candidate.bindingId,artifact_id:candidate.artifactId,component_key:'memory_tools',installation_id:candidate.installation.id,
+        binding_generation:candidate.anchor.binding_generation,mutation_id:candidate.anchor.mutation_id,journal_version:candidate.anchor.journal_version,
+        anchor_fingerprint:codexAnchorFingerprint(candidate.anchor),proof_version:1,evidence_phase:'collected',layout_kind:comparison.kind,
+        collection_epoch:safety.collectionEpoch,observed_fragment_hash:comparison.observed.rawHash,semantic_hash:comparison.observed.semanticHash,
+        container_hash:snapshot.containerHash,file_identity:snapshot.fileIdentity,consent_id:candidate.consentId,intent_revision:candidate.intentRevision,
+        surface_fingerprint:candidate.surface,source_fingerprint:sourceFingerprint,observed_at:now,
+      }
+      const keys = Object.keys(row)
+      this.db.prepare(`INSERT INTO codex_mcp_semantic_member_proofs (${keys.join(',')})
+        VALUES (${keys.map(key=>'@'+key).join(',')})
+        ON CONFLICT(binding_id,artifact_id,component_key,installation_id) DO UPDATE SET
+        ${keys.filter(key=>!['binding_id','artifact_id','component_key','installation_id'].includes(key)).map(key=>`${key}=excluded.${key}`).join(',')}`).run(row)
+      if (!readCodexMcpActivationCore(this.db,scope,safety.collectionEpoch)) throw new Error('Collected Codex evidence failed readback')
+      if (comparison.kind === 'equivalent' && this.db.prepare(`SELECT 1 FROM codex_bridge_member_proofs
+        WHERE binding_id=? AND artifact_id=? AND component_key='memory_tools' LIMIT 1`).get(candidate.bindingId,candidate.artifactId)) {
+        throw new Error('Stale exact Codex proof survived collection')
+      }
+      safety.assertCurrent()
+      assertManagedTextSnapshotCurrent(snapshot)
+      return 'collected' as const
+    }).immediate()
+  }
+
+  /** Atomic activation of an entire required source-witness closure. Public
+   * readers never accept collected rows, including while this transaction runs. */
+  activateCodexMcpReadbacks(
+    candidate: CodexMcpReadbackCandidate, snapshot: ManagedTextSnapshot, safety: CodexMcpReadbackSafety,
+  ): CodexMcpActivationResult {
+    return this.db.transaction((): CodexMcpActivationResult => {
+      const comparison = this.checkCodexReadback(candidate,snapshot,safety)
+      const scopes = this.db.prepare(`SELECT installation_id FROM codex_mcp_semantic_member_proofs
+        WHERE binding_id=? AND artifact_id=? AND component_key='memory_tools' ORDER BY installation_id`)
+        .all(candidate.bindingId,candidate.artifactId) as Array<{installation_id:string}>
+      const cores = scopes.flatMap(scope => {
+        const core = readCodexMcpActivationCore(this.db,{bindingId:candidate.bindingId,artifactId:candidate.artifactId,
+          installationId:scope.installation_id,tokenHash:candidate.anchor.token_hash},safety.collectionEpoch)
+        return core && core.row.file_identity===snapshot.fileIdentity && core.row.container_hash===snapshot.containerHash
+          && core.row.observed_fragment_hash===comparison.observed.rawHash && core.row.semantic_hash===comparison.observed.semanticHash
+          && core.row.layout_kind===comparison.kind ? [core] : []
+      })
+      if (!cores.length) return {status:'pending',reason:'current_member_evidence_missing'}
+      const facts = readCodexReconnectSourceFacts(this.db,candidate.bindingId,'memory_tools',candidate.anchor.token_hash)
+      for (const block of facts) {
+        if (block.rejectedToken || !block.candidates.length) return {status:'blocked',reason:'source_rejected'}
+        const witnessed = block.candidates.some(reconnect => {
+          if (reconnect.exactWitness && readAnchoredAdmission(this.db,candidate.bindingId,reconnect.artifactId,
+            'memory_tools',block.installationId,candidate.anchor.token_hash)===true) return true
+          return cores.some(core => core.row.installation_id===block.installationId
+            && core.row.artifact_id===reconnect.artifactId && core.row.mutation_id===reconnect.mutationId)
+            || Boolean(readActiveCodexMcpSemanticProof(this.db,{bindingId:candidate.bindingId,artifactId:reconnect.artifactId,
+              installationId:block.installationId,tokenHash:candidate.anchor.token_hash})?.anchor.mutation_id===reconnect.mutationId)
+        })
+        if (!witnessed) return {status:'pending',reason:'reconnected_source_member_evidence_missing'}
+      }
+      const now = this.now().toISOString()
+      if (comparison.kind === 'equivalent') {
+        for (const core of cores) {
+          if (core.row.evidence_phase==='active') continue
+          const activated = this.db.prepare(`UPDATE codex_mcp_semantic_member_proofs SET evidence_phase='active'
+            WHERE binding_id=? AND artifact_id=? AND component_key='memory_tools' AND installation_id=?
+              AND evidence_phase='collected' AND collection_epoch=? AND file_identity=? AND anchor_fingerprint=?`)
+            .run(candidate.bindingId,candidate.artifactId,core.row.installation_id,safety.collectionEpoch,snapshot.fileIdentity,codexAnchorFingerprint(candidate.anchor))
+          if (activated.changes!==1) throw new Error('Codex collected evidence changed before activation')
+        }
+      } else {
+        this.publishCodexMcpExactReadback(candidate,cores,now)
+      }
+      safety.assertCurrent()
+      assertManagedTextSnapshotCurrent(snapshot)
+      if (codexSourceBlockApplies(this.db,candidate.bindingId,'memory_tools',candidate.anchor.token_hash)
+        || !evaluateBridgeAdmission(this.db,{agentId:candidate.installation.agentId,
+          activityGenerationToken:candidate.token,componentKey:'memory_tools'}).allowed) {
+        throw new Error('Codex closure did not establish current admission')
+      }
+      this.repository.recordEvent({installationId:candidate.installation.id,artifactId:candidate.artifactId,
+        kind:comparison.kind==='equivalent'?'codex_mcp_semantic_readback_activated':'codex_mcp_exact_readback_restored',severity:'info',
+        dedupeKey:`${candidate.artifactId}:${comparison.observed.rawHash}:${snapshot.fileIdentity}:readback`,
+        payload:{memberCount:cores.length,reason:comparison.kind==='equivalent'?'equivalent_layout_verified':'original_layout_verified'},createdAt:now})
+      return {status:comparison.kind==='equivalent'?'active':'exact'}
+    }).immediate()
+  }
+
+  private publishCodexMcpExactReadback(candidate: CodexMcpReadbackCandidate, cores: CodexMcpProofCore[], now: string): void {
+    if (!this.db.inTransaction || cores.some(core=>core.row.layout_kind!=='exact'
+      || core.row.observed_fragment_hash!==candidate.anchor.fragment_hash)) throw new Error('Exact Codex readback lacks a complete transaction')
+    const restored = this.db.prepare(`UPDATE managed_artifacts SET state='healthy',observed_fragment_hash=?,updated_at=?
+      WHERE id=? AND owned_fragment_hash=? AND desired_fragment_hash=? AND state IN ('healthy','drifted','needs_recovery')`)
+      .run(candidate.anchor.fragment_hash,now,candidate.artifactId,candidate.anchor.fragment_hash,candidate.anchor.fragment_hash)
+    if (restored.changes!==1) throw new Error('Exact Codex artifact changed before publication')
+    for (const core of cores) {
+      if (!codexMcpLayoutAttentionIsExplainable(this.db,core.row.installation_id,candidate.artifactId)) throw new Error('Independent Codex conflict remains')
+      this.db.prepare(`UPDATE agent_installations SET status_reason='verification_stale',
+        reconcile_state=CASE WHEN reconcile_state IN ('idle','needs_recovery','backoff') THEN 'idle' ELSE reconcile_state END,updated_at=?
+        WHERE id=? AND status_reason IN ('conflict','permission') AND desired_state IN ('managed','disabled') AND health_state='discovered'`)
+        .run(now,core.row.installation_id)
+      publishAttestedBridgeMember(this.db,candidate.anchor,{installationId:core.row.installation_id,consentId:core.row.consent_id,
+        surface:core.row.surface_fingerprint,source:core.row.source_fingerprint,fileIdentity:core.row.file_identity,
+        intentRevision:core.row.intent_revision,observedAt:core.row.observed_at})
+    }
+    this.db.prepare(`DELETE FROM codex_mcp_semantic_member_proofs
+      WHERE binding_id=? AND artifact_id=? AND component_key='memory_tools'`).run(candidate.bindingId,candidate.artifactId)
+  }
+
+  discardCodexMcpCollections(collectionEpoch: string): void {
+    if (this.db.open) this.db.prepare(`DELETE FROM codex_mcp_semantic_member_proofs
+      WHERE evidence_phase='collected' AND collection_epoch=?`).run(collectionEpoch)
   }
 
   /** Validate the entire historical journal before consulting any zero-write continuation.
@@ -2990,6 +3323,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     preparedPlan: PreparedCoordinatorPlan,
     installation: CoordinatorInstallation,
     liveComponent?: ComponentKey,
+    immutableOnly = false,
   ): ValidatedMutationRow[] {
     const rows = this.db.prepare(`
       SELECT id, operation_id, installation_id, component_key, artifact_id,
@@ -3069,7 +3403,22 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
         if (row.idempotency_strategy !== expectedStrategy) {
           throw new Error(`persisted mutation idempotency projection changed: ${row.operation_id}`)
         }
-        if (!liveComponent || mutationComponentKeys(plannedMutation).includes(liveComponent)) {
+        if (immutableOnly) {
+          if (row.installation_id !== run.installation_id || row.component_key !== plannedMutation.componentKey
+            || !row.artifact_id || row.target !== plannedMutation.physicalTarget) {
+            throw new Error(`persisted historical mutation projection changed: ${row.operation_id}`)
+          }
+          const artifact = this.db.prepare(`SELECT runtime_realm,target_path,ownership_key,mutation_domain,selector_schema_version
+            FROM managed_artifacts WHERE id=?`).get(row.artifact_id) as {
+              runtime_realm:string;target_path:string;ownership_key:string;mutation_domain:string;selector_schema_version:string
+            } | undefined
+          if (!artifact || artifact.runtime_realm !== installation.identity.runtimeRealm
+            || artifact.target_path !== plannedMutation.physicalTarget || artifact.ownership_key !== plannedMutation.ownershipKey
+            || artifact.mutation_domain !== row.mutation_domain
+            || Number(artifact.selector_schema_version) !== plannedMutation.selectorSchemaVersion) {
+            throw new Error(`persisted historical artifact projection changed: ${row.operation_id}`)
+          }
+        } else if (!liveComponent || mutationComponentKeys(plannedMutation).includes(liveComponent)) {
           this.assertManagedMutationLedgerBinding(run, row, plannedMutation, installation)
         }
       }
@@ -3188,6 +3537,7 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     preparedPlan: PreparedCoordinatorPlan,
     installation: CoordinatorInstallation,
     rows: readonly ValidatedMutationRow[],
+    immutableOnly = false,
   ): void {
     const snapshot = parseObject(run.writer_fence_snapshot_json, 'writer fence snapshot')
     if (Object.keys(snapshot).length !== 1 || !Array.isArray(snapshot.mutationDomains)
@@ -3211,6 +3561,29 @@ export class SqliteCoordinatorRepository implements CoordinatorRepositoryPort {
     }
     for (const componentKey of preparedPlan.componentKeys) {
       if (coveredComponents.has(componentKey)) continue
+      if (immutableOnly) {
+        // A retired writer's unchanged component may now belong to a newer
+        // consent or another active member. Its original physical fence is
+        // bound to the frozen observation and static Artifact identity, not
+        // to the old consumer's current maintenance state.
+        const observations = preparedPlan.inspection.components.filter(component=>component.componentKey===componentKey)
+        if (observations.length !== 1 || !observations[0]?.observedTarget
+          || !path.isAbsolute(observations[0].observedTarget)) {
+          throw new Error(`historical no-effect component target is unavailable: ${componentKey}`)
+        }
+        const target=observations[0].observedTarget
+        const domain=buildLegacyMutationDomain({adapterId:installation.identity.hostVariant,target,selector:'document'})
+        const artifact=this.db.prepare(`SELECT 1 FROM managed_artifacts
+          WHERE runtime_realm=? AND target_path=? AND mutation_domain=?
+            AND EXISTS (SELECT 1 FROM installation_components c WHERE c.artifact_id=managed_artifacts.id
+              AND c.installation_id=? AND c.component_key=?)`).get(
+                installation.identity.runtimeRealm,target,domain,run.installation_id,componentKey)
+        if (installation.identity.runtimeRealm !== 'local_macos' || !artifact) {
+          throw new Error(`historical no-effect component artifact changed: ${componentKey}`)
+        }
+        expectedDomains.add(domain)
+        continue
+      }
       const binding = this.db.prepare(`
         SELECT artifact.mutation_domain
         FROM installation_components component

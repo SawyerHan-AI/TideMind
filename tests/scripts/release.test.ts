@@ -206,6 +206,12 @@ describe('release script helpers', () => {
     expect(() => resolveUpdatePreviousVersions('0.2.101', '0.2.94')).toThrow(/all are always verified/);
   });
 
+  it('keeps the published 0.2.102 upgrade contract frozen after the 0.2.103 bump', () => {
+    expect(resolveUpdatePreviousVersions('0.2.102')).toEqual(['0.2.101']);
+    expect(releaseMacArchitectures('0.2.102')).toEqual(['arm64']);
+    expect(resolveUpdatePreviousVersions('0.2.103')).toEqual(['0.2.102']);
+  });
+
   it('rejects a stale local or remote release tag before external release writes', () => {
     const base = {
       localTagHead: '',

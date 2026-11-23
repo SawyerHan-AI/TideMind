@@ -1647,7 +1647,8 @@
       "maintenancePaused": "Automatische Wartung pausiert",
       "advancedOptions": "Erweiterte Optionen",
       "skillNotObservable": "Ob dieser Agent den Skill geladen hat, ließ sich noch nicht beobachten. Manche Agents liefern dieses Signal nicht; das ist kein Fehler.",
-      "usesSiblingConnection": "Nutzt die Verbindung von {{name}}; hier ist nichts einzurichten."
+      "usesSiblingConnection": "Nutzt die Verbindung von {{name}}; hier ist nichts einzurichten.",
+      "configurationContentRechecked": "Konfigurationsinhalt erneut geprüft"
     }
   },
   "account": {

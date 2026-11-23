@@ -1647,7 +1647,8 @@
       "maintenancePaused": "Manutenzione automatica in pausa",
       "advancedOptions": "Opzioni avanzate",
       "skillNotObservable": "Tide Mind non ha ancora osservato il caricamento dello Skill da parte di questo Agent. Alcuni Agent non forniscono questo segnale; non è un problema.",
-      "usesSiblingConnection": "Usa la connessione di {{name}}; qui non c’è nulla da configurare."
+      "usesSiblingConnection": "Usa la connessione di {{name}}; qui non c’è nulla da configurare.",
+      "configurationContentRechecked": "Contenuto della configurazione ricontrollato"
     }
   },
   "account": {

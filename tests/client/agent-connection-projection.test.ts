@@ -28,6 +28,23 @@ function project(members = [member('cli'), member('desktop')], sharedEvidence = 
     displayName: 'Codex', members, sharedEvidence, activeInstallationIds: new Set() })
 }
 describe('connection projection', () => {
+  it('does not turn semantic configuration proof into real-use evidence or hide an independent hook conflict', () => {
+    const proof=evidence()
+    proof.components.memory_tools.signalsComplete=false
+    proof.components.memory_tools.signals={}
+    proof.components.memory_tools.configurationCheck={kind:'semantic',observedAt:time}
+    const configured=project(undefined,proof)
+    expect(configured.memoryCallsVerified).toBe(false)
+    expect(configured.components.find(component=>component.key==='memory_tools')?.configurationCheck?.kind).toBe('semantic')
+    const cli=member('cli')
+    cli.components.find(component=>component.key==='lifecycle')!.state='conflict'
+    proof.components.memory_tools.signalsComplete=true
+    proof.components.memory_tools.signals={brain_recall:time,brain_digest:time}
+    const attention=project([cli],proof)
+    expect(attention.memoryCallsVerified).toBe(true)
+    expect(attention.statusGroup).toBe('needs_attention')
+    expect(attention.components.find(component=>component.key==='lifecycle')?.state).toBe('conflict')
+  })
   it('keeps Antigravity Rule recognition independent from startup and host identity', () => {
     const cli = member('cli', {familyId:'antigravity',hostVariant:'antigravity-cli'})
     const app = member('app', {familyId:'antigravity',hostVariant:'antigravity-app'})

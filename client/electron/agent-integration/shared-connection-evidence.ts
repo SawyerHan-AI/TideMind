@@ -2,6 +2,8 @@ import type Database from 'better-sqlite3'
 import { evaluateBridgeAdmission } from '@server/agent-bridge-guard.js'
 import { getSharedAgentConsumers, resolveInstallationAgentIdentity, sharedAgentActivityKey } from '@server/db/agent-identity-binding.js'
 import { currentAntigravityRule } from '@server/antigravity-rule-evidence.js'
+import { hasCodexMcpSemanticProofTable, readActiveCodexMcpSemanticProof } from '@server/db/codex-mcp-semantic-proof.js'
+import { latestPhysicalBridgeWrite } from '@server/db/codex-bridge-continuity.js'
 import { sha256Json } from './fingerprint.js'
 
 const FRESHNESS_MS = 30 * 24 * 60 * 60 * 1_000
@@ -17,6 +19,57 @@ export interface SharedComponentEvidence {
   signals: Partial<Record<(typeof SIGNALS)[Component][number], string>>
   configurationRevision: string
   configurationFingerprint: string | null
+  configurationCheck?: {kind:'semantic';observedAt:string}
+}
+
+interface Carrier {
+  artifact_id:string
+  owned_fragment_hash:string
+  mutation_id:string
+  applied_at:string | null
+  token:string | null
+  configurationCheck?:{kind:'semantic';observedAt:string}
+}
+
+/** Internal candidates only. Neither a collected row nor a peer's unvalidated
+ * row can be projected as a serving configuration. Tokens stay in main process. */
+function semanticCarriers(db:Database.Database,bindingId:string,canonicalAgentId:string):Carrier[] {
+  if (!hasCodexMcpSemanticProofTable(db)) return []
+  const rows=db.prepare(`SELECT installation_id,artifact_id FROM codex_mcp_semantic_member_proofs
+    WHERE binding_id=? AND component_key='memory_tools' AND evidence_phase='active' ORDER BY observed_at DESC,installation_id`)
+    .all(bindingId) as Array<{installation_id:string;artifact_id:string}>
+  const result:Carrier[]=[]
+  for(const row of rows){
+    if(result.some(carrier=>carrier.artifact_id===row.artifact_id))continue
+    const writer=latestPhysicalBridgeWrite(db,row.artifact_id)
+    if(!writer?.token_hash || !writer.token)continue
+    const proof=readActiveCodexMcpSemanticProof(db,{bindingId,artifactId:row.artifact_id,installationId:row.installation_id,tokenHash:writer.token_hash})
+    if(!proof || !evaluateBridgeAdmission(db,{agentId:canonicalAgentId,activityGenerationToken:writer.token,componentKey:'memory_tools'}).allowed)continue
+    const mutation=db.prepare('SELECT committed_at FROM projection_mutations WHERE id=?').get(writer.id) as {committed_at:string|null}|undefined
+    result.push({artifact_id:row.artifact_id,owned_fragment_hash:proof.anchor.fragment_hash,mutation_id:writer.id,
+      applied_at:mutation?.committed_at ?? null,token:writer.token,configurationCheck:{kind:'semantic',observedAt:proof.row.observed_at}})
+  }
+  return result
+}
+
+export function readCodexMcpSemanticConfiguration(db:Database.Database,installationId:string):{
+  artifactId:string;configurationFingerprint:string;observedAt:string
+}|undefined {
+  const row=db.prepare(`SELECT part.artifact_id FROM agent_installations i
+    JOIN installation_components part ON part.installation_id=i.id AND part.component_key='memory_tools'
+      AND part.desired_state IN ('managed','disabled') AND part.tombstoned_at IS NULL
+    JOIN agent_consents s ON s.id=i.consent_envelope_id AND s.id=part.consent_envelope_id AND s.installation_id=i.id AND s.status='active'
+    JOIN artifact_consumers c ON c.installation_id=i.id AND c.component_key=part.component_key AND c.artifact_id=part.artifact_id
+      AND c.consent_envelope_id=s.id AND c.state='active' AND c.desired_state IN ('managed','disabled') AND c.tombstoned_at IS NULL
+    WHERE i.id=? AND i.family='codex' AND i.agent_id IS NOT NULL AND i.desired_state IN ('managed','disabled')
+      AND i.tombstoned_at IS NULL AND i.bridge_state!='stopped'`)
+    .get(installationId) as {artifact_id:string}|undefined
+  if(!row)return undefined
+  const identity=resolveInstallationAgentIdentity(db,installationId)
+  if(!identity.bindingId)return undefined
+  const carrier=semanticCarriers(db,identity.bindingId,identity.canonicalAgentId).find(item=>item.artifact_id===row.artifact_id)
+  return carrier?.configurationCheck ? {artifactId:carrier.artifact_id,observedAt:carrier.configurationCheck.observedAt,
+    configurationFingerprint:sha256Json([carrier.artifact_id,carrier.owned_fragment_hash,carrier.applied_at])}:undefined
 }
 export interface SharedConnectionEvidence {
   instructionConfigurationFingerprint?: string | null
@@ -61,7 +114,12 @@ export function readSharedConnectionEvidence(db: Database.Database, installation
         AND consent.status='active' AND i.consent_envelope_id=consent.id
         AND i.desired_state!='removed' AND i.tombstoned_at IS NULL AND COALESCE(i.bridge_state,'serving')!='stopped'
         AND a.state IN ('healthy','paused') AND a.observed_fragment_hash=a.owned_fragment_hash
-      ORDER BY a.id`).all(shared.bindingId, component) as Array<{ artifact_id: string; owned_fragment_hash: string; mutation_id: string; applied_at: string | null; token: string | null }>
+      ORDER BY a.id`).all(shared.bindingId, component) as Carrier[]
+    if(component==='memory_tools' && shared.consumers.every(member=>member.family==='codex')){
+      for(const carrier of semanticCarriers(db,shared.bindingId,identity.canonicalAgentId)){
+        if(!candidates.some(existing=>existing.artifact_id===carrier.artifact_id && existing.mutation_id===carrier.mutation_id))candidates.push(carrier)
+      }
+    }
     const admitted = candidates.filter(candidate => candidate.token && evaluateBridgeAdmission(db, {
       agentId: identity.canonicalAgentId, activityGenerationToken: candidate.token, componentKey: component,
     }).allowed)
@@ -99,6 +157,7 @@ export function readSharedConnectionEvidence(db: Database.Database, installation
       signalsComplete: Boolean(complete),
       configurationFingerprint: selected ? sha256Json([selected.carrier.artifact_id, selected.carrier.owned_fragment_hash, selected.carrier.applied_at]) : null,
       signals: selected?.signals ?? {},
+      ...(selected?.carrier.configurationCheck ? {configurationCheck:selected.carrier.configurationCheck}:{}),
       configurationRevision: sha256Json([shared.bindingId, shared.generation, component,
         admitted.map(carrier => [carrier.artifact_id, carrier.owned_fragment_hash, carrier.mutation_id])]),
     }

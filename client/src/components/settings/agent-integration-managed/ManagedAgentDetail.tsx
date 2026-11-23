@@ -738,6 +738,11 @@ export function ManagedAgentDetail({
                       && installation.components.some(candidate => candidate.key === 'memory_tools' && candidate.state === 'verified')
                       && <span className="mt-1 block whitespace-normal" data-skill-unobserved>{t('agent.managed.skillNotObservable')}</span>}
                     {component?.evidenceScope === 'configuration_domain' && <span className="mt-1 block whitespace-normal" data-component-evidence-scope="configuration_domain">{t('agent.managed.antigravity.sharedEvidence')}</span>}
+                    {!historyOnly && component?.configurationCheck?.kind === 'semantic' && (
+                      <span className="mt-1 block whitespace-normal" data-configuration-content-rechecked>
+                        {t('agent.managed.configurationContentRechecked')} · {timeAgo(component.configurationCheck.observedAt)}
+                      </span>
+                    )}
                   </span>
                   <span className="flex min-w-0 items-center gap-1">
                     <span className="min-w-0 flex-1 truncate font-mono text-gray-400" title={safeDisplayTarget(component?.targetLabel)}>

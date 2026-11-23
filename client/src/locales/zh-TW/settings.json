@@ -1647,7 +1647,8 @@
       "maintenancePaused": "已暫停自動維護",
       "advancedOptions": "進階選項",
       "skillNotObservable": "尚未觀察到該 Agent 載入 Skill。部分 Agent 不提供這一訊號，這不代表有問題。",
-      "usesSiblingConnection": "透過 {{name}} 的連線使用記憶，這裡無需另外設定。"
+      "usesSiblingConnection": "透過 {{name}} 的連線使用記憶，這裡無需另外設定。",
+      "configurationContentRechecked": "設定內容一致，已重新核驗"
     }
   },
   "account": {

@@ -122,6 +122,7 @@ describe('Claude plugin preview freshness through production service',()=>{
    const connect=await composition.service.previewConnect(['claude'],true)
    const result=await composition.service.applyConnect(connect.planHash,['claude'])
    expect(result.results[0],JSON.stringify(result)).toMatchObject({status:'committed'})
+   await composition.runtime.markScanCompleted()
    const reconcile = async () => {
     const candidates = composition.coordinatorRepository.listManagedReconcileCandidates()
     expect(candidates.length).toBeGreaterThan(0)

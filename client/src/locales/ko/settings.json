@@ -1647,7 +1647,8 @@
       "maintenancePaused": "자동 유지 관리 일시 중지됨",
       "advancedOptions": "고급 옵션",
       "skillNotObservable": "이 Agent가 Skill을 불러왔는지는 아직 관찰되지 않았습니다. 일부 Agent는 이 신호를 제공하지 않으며 문제가 아닙니다.",
-      "usesSiblingConnection": "{{name}}의 연결을 사용합니다. 여기서 설정할 것은 없습니다."
+      "usesSiblingConnection": "{{name}}의 연결을 사용합니다. 여기서 설정할 것은 없습니다.",
+      "configurationContentRechecked": "설정 내용 일치 재확인 완료"
     }
   },
   "account": {

@@ -3396,6 +3396,10 @@ export class AgentIntegrationService {
 
   private toInstallationDto(row: AgentInstallationRow): AgentIntegrationInstallationDto {
     const rawComponents = this.dependencies.repository.listInstallationComponentDetails(row.id)
+    const semantic = row.family==='codex' ? this.dependencies.repository.codexMcpSemanticConfiguration?.(row.id) : undefined
+    // Only presentation changes. Raw drift/ownership/journal remain truthful.
+    const effectiveReason = semantic?.explainsAttention && ['conflict','permission'].includes(row.status_reason ?? '')
+      ? 'verification_stale' : row.status_reason
     const authentication = this.authenticationState(row)
     const storedDiagnostic = this.dependencies.diagnostics?.state(row)
     const diagnostic = storedDiagnostic?.status === 'passed' && authentication?.status === 'explicitly_unauthenticated'
@@ -3404,10 +3408,10 @@ export class AgentIntegrationService {
     const manageable = !historicalRecord && this.isManageableInstallation(row)
     const authenticationRequired = manageable && row.desired_state === 'managed'
       && authentication?.status === 'explicitly_unauthenticated'
-      && ['unverified','awaiting_host_verification','verification_stale','new_session','verified','awaiting_consent'].includes(row.status_reason ?? 'unverified')
+      && ['unverified','awaiting_host_verification','verification_stale','new_session','verified','awaiting_consent'].includes(effectiveReason ?? 'unverified')
     const diagnosticPermissionRequired = manageable && row.desired_state === 'managed'
       && diagnostic?.reason === 'native_permission_required'
-      && ['unverified','awaiting_host_verification','verification_stale','new_session','verified'].includes(row.status_reason ?? 'unverified')
+      && ['unverified','awaiting_host_verification','verification_stale','new_session','verified'].includes(effectiveReason ?? 'unverified')
     const managementEligibilityReason = this.managementEligibilityReason(row)
     // Fail closed in presentation before the first post-upgrade scan has had a
     // chance to normalize rows persisted by the earlier C3 contract.
@@ -3427,13 +3431,21 @@ export class AgentIntegrationService {
       legacyCallableWithoutConsent: row.desired_state === 'unmanaged'
         && row.consent_envelope_id === null
         && row.status_reason === 'legacy_callable_unmanaged',
-      blockingReasons: row.status_reason && STATUS_REASONS.has(row.status_reason as StatusReason)
-        ? [row.status_reason as StatusReason]
+      blockingReasons: effectiveReason && STATUS_REASONS.has(effectiveReason as StatusReason)
+        ? [effectiveReason as StatusReason]
         : [],
     })
     const variant = getCatalogVariant(row.host_variant as CatalogId)
     const components = COMPONENT_KEYS.map(key => componentDto(key, variant, rawComponents, row, this.homeDir,
       this.implementedComponents?.get(row.host_variant as CatalogId), this.implementedArtifactTypes?.get(row.host_variant as CatalogId)))
+    const memoryComponent=components.find(component=>component.key==='memory_tools')
+    if(semantic && memoryComponent && !['unsupported','unconnected','confirmation_required'].includes(memoryComponent.state)){
+      memoryComponent.state='configured'
+      memoryComponent.configurationVerified=true
+      memoryComponent.configurationFingerprint=semantic.configurationFingerprint
+      memoryComponent.configurationCheck={kind:'semantic',observedAt:semantic.observedAt}
+      memoryComponent.evidenceScope='configuration_domain'
+    }
     const actionRun = this.dependencies.repository.getLatestRunUserActions(row.id)
     if (row.desired_state === 'managed' && actionRun?.state === 'applied_unverified' && ['connect','repair'].includes(actionRun.operation_type)) {
       for (const action of requiredUserActionsFromPreparedPlanJson(actionRun.prepared_plan_json, this.homeDir)) {
@@ -3479,10 +3491,10 @@ export class AgentIntegrationService {
       // A detectable Catalog entry is not waiting for consent when the
       // production Adapter is unavailable or its distribution is untrusted.
       // Keep that truth in the DTO, not only in renderer-side CTA filtering.
-      statusGroup: historicalRecord ? 'disconnected' : row.status_reason === 'conflict' || authenticationRequired || diagnosticPermissionRequired ? 'needs_attention' : manageable ? (status.statusGroup === 'awaiting_verification' && components.some(component => component.key === 'memory_tools' && component.state === 'verified') ? 'available' : status.statusGroup) : 'disconnected',
+      statusGroup: historicalRecord ? 'disconnected' : effectiveReason === 'conflict' || authenticationRequired || diagnosticPermissionRequired ? 'needs_attention' : manageable ? (status.statusGroup === 'awaiting_verification' && components.some(component => component.key === 'memory_tools' && component.state === 'verified') ? 'available' : status.statusGroup) : 'disconnected',
       statusReason: historicalRecord
         ? 'host_uninstalled'
-        : row.status_reason === 'conflict' ? 'conflict'
+        : effectiveReason === 'conflict' ? 'conflict'
         : authenticationRequired ? 'authentication_required'
         : diagnosticPermissionRequired ? 'native_permission_required'
         : manageable

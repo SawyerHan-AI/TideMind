@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import { agentIdentityDomainKey, supportsSharedAgentDomain } from '@server/db/agent-identity-binding.js'
+import { carryCodexMcpSemanticIntent } from '@server/db/codex-mcp-semantic-proof.js'
 import { sha256Json } from './fingerprint'
 import type { AgentInstallationRow } from './repository'
 
@@ -65,6 +66,8 @@ export function changeConnectionIntent(db: Database.Database, domainKey: string,
               AND i.desired_state IN ('managed','disabled')
           )`).run(next.revision,binding.id,previous.revision)
       }
+      if (binding) carryCodexMcpSemanticIntent(db, binding.id, previous.revision, next.revision,
+        next.state === 'disconnected' || previous.state === 'disconnected')
     }
     return next
   })()

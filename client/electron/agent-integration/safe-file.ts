@@ -2,6 +2,92 @@ import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { sha256Bytes } from './fingerprint'
+import { bridgeFileIdentity } from '@server/db/codex-bridge-continuity.js'
+import { MAX_CODEX_MCP_CONFIG_BYTES } from '@server/utils/codex-mcp-semantic.js'
+
+export interface ManagedTextSnapshot {
+  canonicalPath: string
+  allowedRoot: string
+  content: string
+  containerHash: string
+  fileIdentity: string
+  ancestorIdentity: string
+  device: string
+}
+
+function snapshotAncestors(target: string, root: string): string {
+  assertTargetWithinRoot(target, root)
+  if (fs.realpathSync.native(root) !== path.resolve(root)
+    || assertSafeManagedAncestorChain(target, root) !== path.dirname(target)) {
+    throw new FilePreconditionError('Managed readback path changed')
+  }
+  const identities: string[] = []
+  let cursor = path.resolve(root)
+  const parent = path.dirname(target)
+  for (;;) {
+    const st = fs.lstatSync(cursor, { bigint: true })
+    if (!st.isDirectory() || st.isSymbolicLink()) throw new FilePreconditionError('Unsafe readback ancestor')
+    identities.push([st.dev, st.ino, st.mode, st.uid, st.gid].join(':'))
+    if (cursor === parent) break
+    const next = path.relative(cursor, parent).split(path.sep)[0]
+    if (!next || next === '..') throw new FilePreconditionError('Invalid readback boundary')
+    cursor = path.join(cursor, next)
+  }
+  return identities.join('|')
+}
+
+/** A bounded, single-FD snapshot. Never use a path read after capturing metadata. */
+export function readManagedTextSnapshot(targetPath: string, allowedRoot: string): ManagedTextSnapshot {
+  let fd: number | undefined
+  try {
+    const target = path.resolve(targetPath)
+    const root = path.resolve(allowedRoot)
+    if (target !== targetPath || root !== allowedRoot || fs.realpathSync.native(target) !== target) {
+      throw new FilePreconditionError('Noncanonical managed readback target')
+    }
+    const ancestors = snapshotAncestors(target, root)
+    fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+    const before = fs.fstatSync(fd, { bigint: true })
+    if (!before.isFile() || before.size < 0n || before.size > BigInt(MAX_CODEX_MCP_CONFIG_BYTES)
+      || (typeof process.getuid === 'function' && before.uid !== BigInt(process.getuid()))) {
+      throw new FilePreconditionError('Unsupported managed readback file')
+    }
+    const buffer = Buffer.alloc(Number(before.size) + 1)
+    let bytes = 0
+    while (bytes < buffer.length) {
+      const read = fs.readSync(fd, buffer, bytes, buffer.length - bytes, bytes)
+      if (!read) break
+      bytes += read
+    }
+    const after = fs.fstatSync(fd, { bigint: true })
+    const current = fs.lstatSync(target, { bigint: true })
+    const equal = (left: fs.BigIntStats, right: fs.BigIntStats) =>
+      bridgeFileIdentity(left) === bridgeFileIdentity(right) && left.dev === right.dev
+      && left.uid === right.uid && left.gid === right.gid
+    if (bytes !== Number(before.size) || !equal(before, after) || !equal(after, current)
+      || current.isSymbolicLink() || fs.realpathSync.native(target) !== target
+      || snapshotAncestors(target, root) !== ancestors) {
+      throw new FilePreconditionError('Managed readback changed during observation')
+    }
+    const content = new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, bytes))
+    return { canonicalPath: target, allowedRoot: root, content, containerHash: sha256Bytes(buffer.subarray(0, bytes)),
+      fileIdentity: bridgeFileIdentity(after), ancestorIdentity: ancestors, device: String(after.dev) }
+  } catch {
+    // OS/parser exceptions may contain private configuration paths or text.
+    throw new FilePreconditionError('Unable to obtain a stable managed text snapshot')
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd)
+  }
+}
+
+/** Synchronous final check, immediately before the proof transaction publishes. */
+export function assertManagedTextSnapshotCurrent(snapshot: ManagedTextSnapshot): void {
+  const current = readManagedTextSnapshot(snapshot.canonicalPath, snapshot.allowedRoot)
+  if (current.fileIdentity !== snapshot.fileIdentity || current.containerHash !== snapshot.containerHash
+    || current.ancestorIdentity !== snapshot.ancestorIdentity || current.device !== snapshot.device) {
+    throw new FilePreconditionError('Managed readback snapshot is no longer current')
+  }
+}
 
 export interface FileFingerprint {
   exists: boolean

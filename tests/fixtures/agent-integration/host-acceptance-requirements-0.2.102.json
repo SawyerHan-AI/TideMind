@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 4,
+  "appVersion": "0.2.102",
+  "releaseMacArchitectures": [
+    "arm64"
+  ],
+  "upgradeFromAppVersions": [
+    "0.2.101"
+  ],
+  "stepPolicy": {
+    "base": [
+      "official_host_version",
+      "distribution_identity",
+      "connect",
+      "read_back",
+      "restart_persistence",
+      "disconnect"
+    ],
+    "byComponent": {
+      "instruction": [
+        "instruction_loaded"
+      ],
+      "memory_tools": [
+        "brain_prepare",
+        "brain_recall",
+        "brain_digest",
+        "memory_closure"
+      ],
+      "lifecycle": []
+    },
+    "byDisposition": {
+      "managed": [
+        "recovery",
+        "conflict",
+        "pause_resume"
+      ],
+      "guided": [],
+      "migration": [
+        "official_host_version",
+        "distribution_identity",
+        "legacy_selector_identity",
+        "read_back",
+        "restart_persistence",
+        "history_callable"
+      ]
+    },
+    "byCatalog": {
+      "openclaw-local": [
+        "official_plugins_list",
+        "official_plugin_inspect",
+        "plugin_runtime"
+      ],
+      "codex-cli": [
+        "codex_context_restore_manual",
+        "codex_context_restore_auto"
+      ],
+      "codex-desktop": [
+        "codex_context_restore_manual",
+        "codex_context_restore_auto"
+      ]
+    }
+  },
+  "customPaths": [
+    "nonstandard_config_root",
+    "manual_mcp_client"
+  ],
+  "customGuidedTargets": [
+    {
+      "schemaKind": "standard_mcp_servers",
+      "selectorKey": "tidemind"
+    },
+    {
+      "schemaKind": "nested_mcp_servers",
+      "selectorKey": "tidemind_nested"
+    },
+    {
+      "schemaKind": "opencode_mcp",
+      "selectorKey": "tidemind_opencode"
+    }
+  ],
+  "realHostPolicy": {
+    "id": "0.2.102-ordinary-use-only",
+    "requiredCatalogIds": [],
+    "otherCatalogs": "deferred",
+    "customPaths": "deferred",
+    "reason": "This release adds no host adapter. Complete real-host acceptance for every Agent and Custom path is deferred, not passed. Both installation machines must still pass ordinary Codex Desktop prepare/recall, selected-model use, primary-device role and configuration/data preservation checks. Existing implementation and packaging regressions remain required.",
+    "desktopAcceptance": {
+      "status": "deferred",
+      "releaseNotesDisclosureRequired": true,
+      "reason": "Complete Codex Desktop C4 lifecycle acceptance remains deferred. Ordinary Codex prepare/recall on both installation machines is required and is not full lifecycle acceptance."
+    }
+  },
+  "migrationAcceptanceDeferral": {
+    "policyId": "0.2.102-single-user-manual-migration",
+    "appVersion": "0.2.102",
+    "audience": "single_user",
+    "status": "deferred_to_installation",
+    "execution": "manual_after_release",
+    "scopes": [
+      "upgrade_matrix",
+      "observed_schema41"
+    ],
+    "reason": "Historical upgrade matrices and observed schema41 recovery are deferred, not passed. Actual M4 and MBA upgrades from 0.2.101, preserved data/configuration/roles and normal post-install usage are required before delivery is complete."
+  }
+}
