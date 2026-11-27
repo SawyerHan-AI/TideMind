@@ -271,7 +271,7 @@ export function loadAgentHostAcceptanceRequirements(
   const antigravityRelease = requirements.appVersion === '0.2.101'
   // 0.2.102: no new host adapter. Full real-host acceptance is deferred for every catalog;
   // ordinary use on both installation machines is checked outside this contract.
-  const ordinaryUseRelease = ['0.2.102', '0.2.103'].includes(requirements.appVersion)
+  const ordinaryUseRelease = ['0.2.102', '0.2.103', '0.2.104'].includes(requirements.appVersion)
   const scopedRelease = singleUserRelease || antigravityRelease || ordinaryUseRelease
   exactKeys(requirements, [
     'schemaVersion', 'appVersion', 'releaseMacArchitectures', 'upgradeFromAppVersions', 'stepPolicy', 'customPaths', 'customGuidedTargets',
@@ -321,7 +321,7 @@ export function loadAgentHostAcceptanceRequirements(
       || policy.policyId !== `${requirements.appVersion}-single-user-manual-migration` || policy.audience !== 'single_user'
       || policy.status !== 'deferred_to_installation' || policy.execution !== 'manual_after_release'
       || JSON.stringify(policy.scopes) !== JSON.stringify(['upgrade_matrix','observed_schema41'])) {
-      throw new Error('migration deferral is only authorized for matching 0.2.94/0.2.95/0.2.101/0.2.102/0.2.103 single-user installation')
+      throw new Error('migration deferral is only authorized for matching 0.2.94/0.2.95/0.2.101/0.2.102/0.2.103/0.2.104 single-user installation')
     }
     nonEmptyString(policy.reason, 'migration deferral reason')
     migrationAcceptanceDeferral = Object.freeze({ ...policy, scopes: Object.freeze([...policy.scopes]) })
@@ -485,6 +485,7 @@ export function upgradeTargetIdentityDigest(target, releaseContractSha256) {
     '0.2.101-antigravity-only': '0.2.101',
     '0.2.102-ordinary-use-only': '0.2.102',
     '0.2.103-ordinary-use-only': '0.2.103',
+    '0.2.104-ordinary-use-only': '0.2.104',
   })[target.realHostDeferral.policyId]
   if (!contractVersion) throw new Error('unknown deferred upgrade policy')
   return sha256Bytes(Buffer.from(JSON.stringify([`${contractVersion}-deferred-upgrade-contract`, releaseContractSha256,
@@ -808,7 +809,7 @@ export function validateAntigravitySharedActivityReceipt(raw, expected, assertio
     'releaseContractSha256','databaseSchemaVersion','databaseSchemaSha256','evidenceScope','id','requestedInstallationId',
     'bindingId','bindingGeneration','agentId','activationRunId','activityGenerationSha256','artifactSha256','componentKey',
     'signalName','tideMindVersion','adapterVersion','projectionVersion','domainEvidenceHash','observedAt','evidenceHash','exportHash'], label)
-  if (!['0.2.101', '0.2.102', '0.2.103'].includes(expected.appVersion) || !['antigravity-app','antigravity-cli'].includes(expected.hostVariant)
+  if (!['0.2.101', '0.2.102', '0.2.103', '0.2.104'].includes(expected.appVersion) || !['antigravity-app','antigravity-cli'].includes(expected.hostVariant)
     || expected.stepId !== 'lifecycle_session_start') throw new Error(`${label} is outside the Antigravity startup contract`)
   for (const [key,value] of Object.entries({exporterVersion:2,evidenceScope:'configuration_domain',
     ledgerSource:expected.allowFixtureActivity ? 'fixture' : 'real_profile',captureNonce:expected.captureNonce,

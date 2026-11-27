@@ -2,28 +2,34 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useMountedRef } from './useMountedRef'
 
 /**
- * 异步数据获取 hook。组件挂载时自动调用 `fetcher`,并在 `fetcher` 引用变化时
- * 重新执行。返回 `{ data, loading, error, refetch }`。
+ * 异步数据获取 hook。返回 `{ data, loading, error, refetch }`。
+ *
+ * 两种变化分开处理:
+ * - `fetcher` 引用变化:查询对象变了(换筛选、翻页、切换节点)。清空已有数据并
+ *   进入 loading,不让上一个对象的数据短暂留在界面上。
+ * - `refreshKey` 变化:同一个查询的数据更新了(后台同步、Agent 写入)。静默重取,
+ *   已有数据保留到新数据到达,不显示 loading。
+ * 两者在同一次渲染里都变时按前者处理,只请求一次。
  *
  * **caller 必须用 `useCallback` 把 `fetcher` 包好,并显式列全所有捕获的变量。**
- * 旧签名 `useIPC(fetcher, deps)` 把 deps 单独传入,容易漏列 fetcher 内部捕获的
- * 变量(eslint react-hooks/exhaustive-deps 检查不到 hook 内部的 deps 参数),
- * 触发 stale closure 类 bug。新签名直接把 deps 检查权交还给 React 编译器/eslint,
- * 漏列的 caller 在 lint 阶段就会被打回来,而不是在线上被用户撞到。
+ * 数据版本号(`useDataRevision` 的返回值)不要放进 `useCallback` 的依赖,而是作为
+ * `refreshKey` 传入;放进依赖会让每次后台数据更新都被当成查询对象变化,页面退回
+ * 骨架屏再重新挂载。`refreshKey` 必须是 string / number 这类原始值。
  *
  * 示例:
  * ```typescript
+ * const rev = useDataRevision(['nodes'])
  * const fetchData = useCallback(
- *   () => window.api.list({ filter, rev }),
- *   [filter, rev],
+ *   () => window.api.list({ filter }),
+ *   [filter],
  * )
- * const { data } = useIPC(fetchData)
+ * const { data } = useIPC(fetchData, rev)
  * ```
  *
  * 实现说明:所有 setState 都加 mounted 守卫(2026-05-21 HIGH 修复),避免组件
  * unmount 后 React 警告 + 内存泄漏。
  */
-export function useIPC<T>(fetcher: () => Promise<T>): {
+export function useIPC<T>(fetcher: () => Promise<T>, refreshKey?: string | number): {
   data: T | null
   loading: boolean
   error: string | null
@@ -34,6 +40,7 @@ export function useIPC<T>(fetcher: () => Promise<T>): {
   const [error, setError] = useState<string | null>(null)
   const hasData = useRef(false)
   const requestSequence = useRef(0)
+  const lastExecute = useRef<((resetForFetcherChange: boolean) => Promise<void>) | null>(null)
   const mountedRef = useMountedRef()
 
   const execute = useCallback(async (resetForFetcherChange: boolean) => {
@@ -67,12 +74,16 @@ export function useIPC<T>(fetcher: () => Promise<T>): {
     void execute(false)
   }, [execute])
 
+  // 单个 effect 同时响应两种变化,在内部判断这次是不是 fetcher 变了。拆成两个
+  // effect 的话,"两者同时变化只请求一次"要靠 effect 的声明顺序来保证。
   useEffect(() => {
-    void execute(true)
+    const fetcherChanged = lastExecute.current !== execute
+    lastExecute.current = execute
+    void execute(fetcherChanged)
     return () => {
       requestSequence.current += 1
     }
-  }, [execute])
+  }, [execute, refreshKey])
 
   return { data, loading, error, refetch }
 }

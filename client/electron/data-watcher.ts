@@ -1,13 +1,17 @@
 /**
  * 数据变更检测器
  *
- * 每 3 秒轮询 SQLite 关键表的最新状态,检测到变化时通过 IPC 推送
+ * 每 8 秒轮询 SQLite 关键表的最新状态,检测到变化时通过 IPC 推送
  * 'data-changed' 事件到渲染进程。覆盖所有写入源(MCP 独立进程 + Daemon 主进程)。
  *
  * 检测维度:
  *  - MAX(rowid):捕获 INSERT(新增)
  *  - MAX(updated):捕获 UPDATE(更新内容/heat/归档等)
  *  - COUNT(*):捕获 DELETE(软删除/硬删除)
+ *
+ * operation_log 只看 MAX(id)(只增不改),变化归入 'timeline' 范围:时间线列表和
+ * 首页的最近活动、召回统计都读这张表,而 brain_prepare 和没有结果的 brain_recall
+ * 只写它、不动 nodes / links / timeline_events。
  *
  * 老版本只看 MAX(rowid),node archive、supersede、refinement 调整、link 删除
  * 等都不触发 UI 刷新,用户必须手动切换页面才能看到最新状态。
@@ -40,6 +44,7 @@ interface TableState {
 let timer: ReturnType<typeof setInterval> | null = null
 let watcherDb: Database.Database | null = null
 let lastTimelineId = 0
+let lastOperationLogId = 0
 let lastNodes: TableState = { maxRowid: 0, maxUpdated: '', count: 0 }
 let lastLinks: TableState = { maxRowid: 0, maxUpdated: '', count: 0 }
 let unsubscribeActivity: (() => void) | null = null
@@ -55,6 +60,10 @@ function snapshotTable(db: Database.Database, table: 'nodes' | 'links'): TableSt
   }
 }
 
+function maxId(db: Database.Database, table: 'timeline_events' | 'operation_log'): number {
+  return (db.prepare(`SELECT MAX(id) as v FROM ${table}`).get() as { v: number | null } | undefined)?.v ?? 0
+}
+
 function tablesDiffer(a: TableState, b: TableState): boolean {
   return a.maxRowid !== b.maxRowid || a.maxUpdated !== b.maxUpdated || a.count !== b.count
 }
@@ -62,13 +71,14 @@ function tablesDiffer(a: TableState, b: TableState): boolean {
 /** 跑一次轮询并推送变更。pollDb 必须已初始化。 */
 function pollOnce(pollDb: Database.Database): void {
   try {
-    const curTimeline = (pollDb.prepare('SELECT MAX(id) as v FROM timeline_events').get() as { v: number | null } | undefined)?.v ?? 0
+    const curTimeline = maxId(pollDb, 'timeline_events')
+    const curOperationLog = maxId(pollDb, 'operation_log')
     const curNodes = snapshotTable(pollDb, 'nodes')
     const curLinks = snapshotTable(pollDb, 'links')
 
     const nodesChanged = tablesDiffer(lastNodes, curNodes)
     const linksChanged = tablesDiffer(lastLinks, curLinks)
-    const timelineChanged = curTimeline !== lastTimelineId
+    const timelineChanged = curTimeline !== lastTimelineId || curOperationLog !== lastOperationLogId
 
     if (!timelineChanged && !nodesChanged && !linksChanged) {
       return // 无变化
@@ -80,6 +90,7 @@ function pollOnce(pollDb: Database.Database): void {
     if (linksChanged) scopes.push('links')
 
     lastTimelineId = curTimeline
+    lastOperationLogId = curOperationLog
     lastNodes = curNodes
     lastLinks = curLinks
 
@@ -120,8 +131,8 @@ export function startDataWatcher(db: Database.Database): void {
   const pollDb = watcherDb ?? db
 
   // 初始化基线值
-  const initTimeline = pollDb.prepare('SELECT MAX(id) as v FROM timeline_events').get() as { v: number | null } | undefined
-  lastTimelineId = initTimeline?.v ?? 0
+  lastTimelineId = maxId(pollDb, 'timeline_events')
+  lastOperationLogId = maxId(pollDb, 'operation_log')
   lastNodes = snapshotTable(pollDb, 'nodes')
   lastLinks = snapshotTable(pollDb, 'links')
 

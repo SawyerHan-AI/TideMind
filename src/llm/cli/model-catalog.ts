@@ -10,7 +10,7 @@ import {
 import { codexIdentityFromAccount } from './auth-probe.js';
 import { claudeAliasCatalog } from './catalogs.js';
 import { readCodexMetadata } from './codex-app-server.js';
-import { CliLLMError } from './errors.js';
+import { CliLLMError, IDENTITY_UNOBSERVED } from './errors.js';
 import type { CliEnvironmentCheck } from './readiness.js';
 
 /**
@@ -49,12 +49,23 @@ export async function refreshCliModelCatalog(
   },
 ): Promise<CatalogRefreshResult> {
   const { environment } = params;
-  const { binding } = reconcileAuthBinding(db, {
+  const reconciled = reconcileAuthBinding(db, {
     connectionId: params.connectionId,
     auth: environment.auth,
     cliGeneration: environment.cliGeneration,
     authStoreSignal: environment.authStoreSignal,
+    identityProbe: environment.identityProbe,
   });
+  if (reconciled.unobserved) {
+    // The account was not read this time: keep the binding and the last catalog.
+    recordCatalogRefreshFailure(db, params.connectionId, IDENTITY_UNOBSERVED, '暂时无法读取账号信息，目录未刷新');
+    return {
+      status: 'failed',
+      snapshot: getCatalogSnapshot(db, params.connectionId),
+      errorKind: IDENTITY_UNOBSERVED,
+    };
+  }
+  const { binding } = reconciled;
 
   if (environment.providerType === 'claude-cli') {
     const saved = saveCatalogSnapshot(db, {

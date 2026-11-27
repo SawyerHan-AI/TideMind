@@ -91,7 +91,8 @@ vi.mock('@server/config.js', async importOriginal => {
 });
 
 import { registerConnectionHandlers } from '../../client/electron/ipc/connections.js';
-import { CliLLMError } from '../../src/llm/cli/errors.js';
+import { CliLLMError, identityUnobservedError } from '../../src/llm/cli/errors.js';
+import type { CliIdentityProbe } from '../../src/llm/cli/types.js';
 import {
   getAuthBinding,
   reconcileAuthBinding,
@@ -143,6 +144,7 @@ function cliEnvironment(
       scopeKey,
       scopeLabel: scope ? 'pro' : null,
     },
+    identityProbe: { status: 'observed' } as CliIdentityProbe,
     authStoreSignal: null,
     authFingerprint: 'auth-fingerprint',
     cliGeneration: options.generation ?? 'generation-1',
@@ -192,7 +194,28 @@ function bindEnvironment(db: Database.Database, id: string, environment = cliEnv
     auth: environment.auth,
     cliGeneration: environment.cliGeneration,
     authStoreSignal: environment.authStoreSignal,
+    identityProbe: environment.identityProbe,
   }).binding;
+}
+
+/** account/read did not answer; `login status` still reported a ChatGPT login. */
+function unobservedEnvironment() {
+  return {
+    ...cliEnvironment('codex-cli', { scope: null }),
+    identityProbe: { status: 'failed', kind: 'timeout', elapsedMs: 10_000 } as CliIdentityProbe,
+  };
+}
+
+function bindingRow(db: Database.Database, id: string) {
+  return db.prepare('SELECT * FROM llm_connection_auth_bindings WHERE connection_id = ?').get(id);
+}
+
+function environmentColumns(db: Database.Database, id: string) {
+  return db.prepare(`
+    SELECT status, status_reason, cli_path, cli_version, auth_method, auth_fingerprint,
+           validation_fingerprint, environment_checked_at
+    FROM model_connections WHERE id = ?
+  `).get(id);
 }
 
 function useRoutes(routes: Partial<Record<'light' | 'standard' | 'heavy', [string, string]>>) {
@@ -335,6 +358,16 @@ describe('本地订阅 CLI 连接 IPC', () => {
         VALUES ('digest-old', 'trace-old', '{}', 'ambiguous', '2026-09-25', '2026-09-25', 'uncertain-old')`);
       return { db, id, environment, binding, addInvocation };
     }
+
+    it('reports a failed check, not an unconfirmed binding, when the account could not be read', async () => {
+      const { db, id } = seedSuspended();
+      const binding = bindingRow(db, id);
+      checkCliEnvironmentMock.mockResolvedValue(unobservedEnvironment());
+      await expect(handlers.get('connections:resume-future-calls')!(null, id, true))
+        .resolves.toEqual({ status: 'blocked', reason: 'environment_check_failed' });
+      expect(connectionRow(db, id).status).toBe('ambiguous');
+      expect(bindingRow(db, id)).toEqual(binding);
+    });
 
     it('runs a fresh metadata check and resumes only future calls without rewriting history or queued work', async () => {
       const { db, id, environment, binding } = seedSuspended();
@@ -798,6 +831,80 @@ describe('本地订阅 CLI 连接 IPC', () => {
       expect(result).toMatchObject({ cancelled: true });
       expect(connectionRow(dbHolder.db, id).status).toBe('untested');
     });
+  });
+
+  describe('账号身份未读到（2026-11-20 / 2026-11-26 事故）', () => {
+    function seedProven(status = 'online') {
+      const db = dbHolder.db!;
+      const id = seedCliConnection(db, status);
+      bindEnvironment(db, id);
+      db.prepare(`INSERT INTO llm_connection_health
+        (scope_id, connection_id, provider_type, circuit_state, last_error_kind, last_error_message, last_error_at, needs_user_action, updated_at)
+        VALUES (?, ?, 'codex-cli', 'open', 'not_authenticated', 'CLI 或账号范围发生变化，调用归属无法确认', 1, 1, '2026-11-26')`).run(id, id);
+      return { db, id };
+    }
+    const circuit = (db: Database.Database, id: string) =>
+      db.prepare('SELECT circuit_state, last_error_kind FROM llm_connection_health WHERE scope_id = ?').get(id);
+
+    it.each([
+      ['检查返回失败的探测结果', () => checkCliEnvironmentMock.mockResolvedValue(unobservedEnvironment())],
+      ['状态命令未完成而抛出', () => checkCliEnvironmentMock.mockRejectedValue(identityUnobservedError())],
+    ])('检查环境：%s 时保留原状态，不写环境字段，不解除熔断', async (_name, arrange) => {
+      const { db, id } = seedProven();
+      const before = { binding: bindingRow(db, id), environment: environmentColumns(db, id) };
+      arrange();
+      const result = await handlers.get('connections:check-environment')!(null, id) as {
+        status: string; error?: { kind: string; message: string };
+      };
+      expect(checkCliEnvironmentMock.mock.calls[0][0].freshAuth).toBe(true);
+      expect(result.status).toBe('online');
+      expect(result.error).toMatchObject({ kind: 'transient', message: expect.stringContaining('暂时无法读取账号信息') });
+      expect({ binding: bindingRow(db, id), environment: environmentColumns(db, id) }).toEqual(before);
+      expect(circuit(db, id)).toEqual({ circuit_state: 'open', last_error_kind: 'not_authenticated' });
+      expect(refreshCatalogMock).not.toHaveBeenCalled();
+    });
+
+    it('测试开头读不到账号：不开始测试，连接恢复测试前的状态而不是 offline', async () => {
+      const { db, id } = seedProven();
+      const before = { binding: bindingRow(db, id), environment: environmentColumns(db, id) };
+      checkCliEnvironmentMock.mockResolvedValue(unobservedEnvironment());
+      const result = await handlers.get('connections:test')!(null, id, undefined, { models: ['gpt-5'] });
+      expect(result).toMatchObject({ online: false, errorKind: 'transient', cancelled: false });
+      expect(runCliLLMMock).not.toHaveBeenCalled();
+      expect({ binding: bindingRow(db, id), environment: environmentColumns(db, id) }).toEqual(before);
+    });
+
+    it('测试收尾读不到账号：结果归属未确认，绑定不变，连接状态不降级', async () => {
+      const { db, id } = seedProven();
+      const binding = bindingRow(db, id);
+      checkCliEnvironmentMock
+        .mockResolvedValueOnce(cliEnvironment())
+        .mockResolvedValue(unobservedEnvironment());
+      runCliLLMMock.mockResolvedValue(OK);
+      const result = await handlers.get('connections:test')!(null, id, undefined, { models: ['gpt-5'] });
+      expect(result).toMatchObject({ online: false, attributionUnconfirmed: true, models: [] });
+      // start + three bounded re-reads, each asking for a fresh account read.
+      expect(checkCliEnvironmentMock).toHaveBeenCalledTimes(4);
+      expect(checkCliEnvironmentMock.mock.calls.slice(1).every(([options]) => options.freshAuth === true)).toBe(true);
+      expect(bindingRow(db, id)).toEqual(binding);
+      expect(connectionRow(db, id)).toMatchObject({
+        status: 'online', status_reason: expect.stringContaining('暂时无法读取账号信息'),
+      });
+      // An unattributed test recovers nothing.
+      expect(circuit(db, id)).toEqual({ circuit_state: 'open', last_error_kind: 'not_authenticated' });
+    }, 30_000);
+
+    it('测试收尾第二次读到同一账号：按正常成功处理', async () => {
+      const { db, id } = seedProven();
+      checkCliEnvironmentMock
+        .mockResolvedValueOnce(cliEnvironment())
+        .mockResolvedValueOnce(unobservedEnvironment())
+        .mockResolvedValue(cliEnvironment());
+      runCliLLMMock.mockResolvedValue(OK);
+      const result = await handlers.get('connections:test')!(null, id, undefined, { models: ['gpt-5'] });
+      expect(result).toMatchObject({ online: true, attributionUnconfirmed: false, models: ['gpt-5'] });
+      expect(circuit(db, id)).toMatchObject({ circuit_state: 'closed' });
+    }, 30_000);
   });
 
   describe('connections:check-environment / refresh-models / models', () => {

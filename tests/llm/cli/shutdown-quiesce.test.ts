@@ -52,7 +52,7 @@ async function setup() {
     .run(environment.cliGeneration, connection.id);
   reconcileAuthBinding(db, {
     connectionId: connection.id, auth: environment.auth,
-    cliGeneration: environment.cliGeneration, authStoreSignal: environment.authStoreSignal,
+    cliGeneration: environment.cliGeneration, authStoreSignal: environment.authStoreSignal, identityProbe: { status: 'observed' },
   });
 
   const run = (prompt: string, extra: {

@@ -14,13 +14,15 @@ import {
   getAuthBinding,
   getCatalogSnapshot,
   getModelObservation,
+  hasSuccessUnderBinding,
+  isIdentityUnobserved,
   listModelObservations,
   reconcileAuthBinding,
   recordCatalogRefreshFailure,
   recordModelObservation,
   saveCatalogSnapshot,
 } from '../../src/db/model-discovery.js';
-import type { CliAuthIdentity, CliCatalogModel } from '../../src/llm/cli/types.js';
+import type { CliAuthIdentity, CliCatalogModel, CliIdentityProbe } from '../../src/llm/cli/types.js';
 
 const CONNECTION = 'mc_5eed0001';
 
@@ -48,16 +50,24 @@ function auth(
 
 function reconcile(
   db: Database.Database,
-  params: { scope?: string | null; method?: string; generation?: string; signal?: string | null; now?: string } = {},
+  params: {
+    scope?: string | null; method?: string; generation?: string; signal?: string | null; now?: string;
+    probe?: CliIdentityProbe;
+  } = {},
 ) {
   return reconcileAuthBinding(db, {
     connectionId: CONNECTION,
     auth: auth(params.scope === undefined ? 'xinghai' : params.scope, params.method),
     cliGeneration: params.generation ?? 'gen-1',
     authStoreSignal: params.signal === undefined ? 'store-0:1:10:1000' : params.signal,
+    identityProbe: params.probe ?? { status: 'observed' },
     now: params.now,
   });
 }
+
+const FAILED: CliIdentityProbe = { status: 'failed', kind: 'timeout', elapsedMs: 10_000 };
+const bindingRow = (db: Database.Database) =>
+  db.prepare('SELECT * FROM llm_connection_auth_bindings WHERE connection_id = ?').get(CONNECTION);
 
 function model(id: string, extra: Partial<CliCatalogModel> = {}): CliCatalogModel {
   return {
@@ -73,6 +83,89 @@ function model(id: string, extra: Partial<CliCatalogModel> = {}): CliCatalogMode
     ...extra,
   };
 }
+
+describe('an identity that was not read is not an account change', () => {
+  it('leaves the whole binding row untouched and reports unobserved', () => {
+    const db = freshDb();
+    reconcile(db, { now: '2026-11-26T03:00:00.000Z' });
+    const before = bindingRow(db);
+    // What the 2026-11-26 incident looked like: account/read timed out, `login status`
+    // only said "logged in", so the observation arrives with an unknown scope.
+    const result = reconcile(db, { scope: null, probe: FAILED, now: '2026-11-26T03:03:01.000Z' });
+    expect(result).toMatchObject({ unobserved: true, epochChanged: false, reason: null });
+    expect(result.binding).toMatchObject({ scopeState: 'known', scopeKey: 'codex-cli:xinghai', authEpoch: 1 });
+    expect(bindingRow(db)).toEqual(before);
+  });
+
+  it('still applies when an older build already rewrote the binding to unknown', () => {
+    const db = freshDb();
+    reconcile(db);
+    reconcile(db, { scope: null });
+    const before = bindingRow(db);
+    expect(reconcile(db, { scope: null, probe: FAILED })).toMatchObject({ unobserved: true });
+    expect(bindingRow(db)).toEqual(before);
+    // The next real observation restores the earlier epoch as before.
+    expect(reconcile(db)).toMatchObject({ reason: 'known_scope_restored', unobserved: false });
+  });
+
+  it.each([
+    ['the connection never had a known scope', {}, { scope: null }],
+    ['the CLI generation differs', { generation: 'gen-2' }, undefined],
+    ['the login method differs', { method: 'apikey' }, undefined],
+  ] as const)('does not apply when %s', (_name, change, initial) => {
+    const db = freshDb();
+    reconcile(db, initial ?? {});
+    const result = reconcile(db, { scope: null, probe: FAILED, ...change });
+    expect(result.unobserved).toBe(false);
+  });
+
+  it('only an explicit failed probe counts; a missing probe keeps the previous meaning', () => {
+    const db = freshDb();
+    reconcile(db);
+    for (const identityProbe of [undefined, { status: 'observed' }, { status: 'cached' }, { status: 'unsupported' }] as const) {
+      expect(isIdentityUnobserved(db, CONNECTION, { identityProbe, authMethod: 'chatgpt', cliGeneration: 'gen-1' })).toBe(false);
+    }
+    expect(isIdentityUnobserved(db, CONNECTION, { identityProbe: FAILED, authMethod: 'chatgpt', cliGeneration: 'gen-1' })).toBe(true);
+    expect(isIdentityUnobserved(db, 'mc_absent', { identityProbe: FAILED, authMethod: 'chatgpt', cliGeneration: 'gen-1' })).toBe(false);
+  });
+});
+
+describe('success evidence under a binding', () => {
+  const success = (db: Database.Database, scopeKey: string, authEpoch: number, outcome: 'success' | 'temporary_failure' = 'success') =>
+    recordModelObservation(db, {
+      connectionId: CONNECTION, scopeKey, authEpoch, modelId: 'gpt-fixture', selectionMode: 'pinned_id',
+      outcome, source: 'business',
+    });
+
+  it('a fresh epoch has no success; a restored epoch keeps its earlier one', () => {
+    const db = freshDb();
+    const first = reconcile(db).binding;
+    expect(hasSuccessUnderBinding(db, first)).toBe(false);
+    success(db, first.scopeKey, first.authEpoch);
+    expect(hasSuccessUnderBinding(db, first)).toBe(true);
+    // A later failure never erases the success.
+    success(db, first.scopeKey, first.authEpoch, 'temporary_failure');
+    expect(hasSuccessUnderBinding(db, first)).toBe(true);
+    // Account switched mid-call: a brand new epoch with nothing proven under it.
+    const switched = reconcile(db, { scope: 'datapilot' }).binding;
+    expect(switched.authEpoch).toBe(2);
+    expect(hasSuccessUnderBinding(db, switched)).toBe(false);
+    // Switching back is again a new epoch, not the proven one.
+    const back = reconcile(db, { scope: 'xinghai' }).binding;
+    expect(back.authEpoch).toBe(3);
+    expect(hasSuccessUnderBinding(db, back)).toBe(false);
+  });
+
+  it('unknown and back restores the proven epoch', () => {
+    const db = freshDb();
+    const first = reconcile(db).binding;
+    success(db, first.scopeKey, first.authEpoch);
+    reconcile(db, { scope: null });
+    const restored = reconcile(db);
+    expect(restored.reason).toBe('known_scope_restored');
+    expect(hasSuccessUnderBinding(db, restored.binding)).toBe(true);
+  });
+});
 
 describe('auth binding scope / epoch rules (design §6.1)', () => {
   it('first binding starts at epoch 1 with reason initial and is not reported as a change', () => {

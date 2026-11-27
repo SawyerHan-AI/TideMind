@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { CliLLMError } from './errors.js';
+import { CliLLMError, identityUnobservedError } from './errors.js';
 import { sanitizeCliEnvironment } from './environment.js';
 import type { CodexAccountSnapshot } from './codex-app-server.js';
 import type { CliAuthIdentity, CliKind, ResolvedCli } from './types.js';
@@ -9,11 +9,17 @@ type ProbeExec = (
   executable: string,
   args: readonly string[],
   options: { env: NodeJS.ProcessEnv; timeoutMs: number; maxBytes: number; signal?: AbortSignal },
-) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+) => Promise<{
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  /** false: the process did not exit on its own (timeout, spawn failure, output limit). Defaults to true. */
+  cleanExit?: boolean;
+}>;
 
 const defaultProbeExec: ProbeExec = (executable, args, options) =>
   new Promise((resolve) => {
-    execFile(
+    const child = execFile(
       executable,
       [...args],
       {
@@ -25,9 +31,12 @@ const defaultProbeExec: ProbeExec = (executable, args, options) =>
         signal: options.signal,
       },
       (error, stdout, stderr) => {
-        if (error) {
-          const exitCode = typeof error.code === 'number' ? error.code : -1;
-          resolve({ stdout, stderr, exitCode });
+        // execFile can report code 0 / error=null for a child it killed on timeout,
+        // so `killed` is checked independently of the error shape.
+        if (child.killed || (error && typeof error.code !== 'number')) {
+          resolve({ stdout, stderr, exitCode: -1, cleanExit: false });
+        } else if (error) {
+          resolve({ stdout, stderr, exitCode: error.code as number });
         } else {
           resolve({ stdout, stderr, exitCode: 0 });
         }
@@ -51,6 +60,11 @@ export async function probeCliAuth(
     maxBytes: 64 * 1024,
     signal,
   });
+  if (signal?.aborted) {
+    throw new CliLLMError('aborted', 'CLI auth probe was cancelled', { cause: signal.reason });
+  }
+  // A status command that did not finish says nothing about the login state.
+  if (result.cleanExit === false) throw identityUnobservedError();
   if (result.exitCode !== 0) {
     throw new CliLLMError('not_authenticated', `${resolved.kind} CLI is not logged in`, {
       needsUserAction: true,

@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { CliAuthIdentity, CliCatalogModel, CliCatalogSource } from '../llm/cli/types.js';
+import type { CliAuthIdentity, CliCatalogModel, CliCatalogSource, CliIdentityProbe } from '../llm/cli/types.js';
 import type { ModelSelectionMode } from '../llm/cli/catalogs.js';
 
 /**
@@ -74,6 +74,73 @@ type LastKnownRow = {
 };
 
 /**
+ * True when this identity read failed on a connection whose CLI generation has
+ * already reported a known account under the same login method. Such a read says
+ * nothing about the account: the binding must stay untouched and nothing may be
+ * submitted. A connection that never had a known scope (older CLI without an
+ * account identity) is not covered and keeps its structural unknown scope.
+ */
+export function isIdentityUnobserved(
+  db: Database.Database,
+  connectionId: string,
+  observation: {
+    identityProbe: CliIdentityProbe | undefined;
+    authMethod: string;
+    cliGeneration: string;
+  },
+): boolean {
+  if (observation.identityProbe?.status !== 'failed') return false;
+  const lastKnown = db.prepare(`
+    SELECT last_known_scope_key, last_known_cli_generation, last_known_auth_method
+    FROM llm_connection_auth_bindings WHERE connection_id = ?
+  `).get(connectionId) as Pick<LastKnownRow,
+    'last_known_scope_key' | 'last_known_cli_generation' | 'last_known_auth_method'> | undefined;
+  return lastKnown !== undefined
+    && lastKnown.last_known_scope_key !== null
+    && lastKnown.last_known_cli_generation !== null
+    && lastKnown.last_known_auth_method !== null
+    && lastKnown.last_known_cli_generation === observation.cliGeneration
+    // For Codex the fallback `login status` only ever returns the ChatGPT method (any
+    // other login is thrown there), so this comparison is a backstop, not the guard.
+    && lastKnown.last_known_auth_method === observation.authMethod;
+}
+
+/** The last account scope this connection was known to use, if any. */
+export function getLastKnownScope(
+  db: Database.Database,
+  connectionId: string,
+): { scopeKey: string; cliGeneration: string | null; authMethod: string | null } | null {
+  const row = db.prepare(`
+    SELECT last_known_scope_key, last_known_epoch, last_known_cli_generation, last_known_auth_method
+    FROM llm_connection_auth_bindings WHERE connection_id = ?
+  `).get(connectionId) as LastKnownRow | undefined;
+  // Without its epoch the scope cannot be restored, only adopted as a new one.
+  if (!row || row.last_known_scope_key === null || row.last_known_epoch === null) return null;
+  return {
+    scopeKey: row.last_known_scope_key,
+    cliGeneration: row.last_known_cli_generation,
+    authMethod: row.last_known_auth_method,
+  };
+}
+
+/**
+ * Whether any model already succeeded under exactly this scope and epoch. A scope
+ * or generation change found mid-call always starts a fresh epoch, which has no
+ * success until a call or an explicit test completes under it; a restored binding
+ * reuses its earlier epoch and therefore keeps its evidence.
+ */
+export function hasSuccessUnderBinding(
+  db: Database.Database,
+  binding: Pick<AuthBinding, 'connectionId' | 'scopeKey' | 'authEpoch'>,
+): boolean {
+  return db.prepare(`
+    SELECT 1 FROM llm_model_observations
+    WHERE connection_id = ? AND scope_key = ? AND auth_epoch = ? AND last_success_at IS NOT NULL
+    LIMIT 1
+  `).get(binding.connectionId, binding.scopeKey, binding.authEpoch) !== undefined;
+}
+
+/**
  * Record the current non-secret auth observation for a connection. The epoch only
  * increments when the observation can no longer be proven to be the same scope:
  * scope/method change, CLI generation change (old observations become history), or an
@@ -85,6 +152,9 @@ type LastKnownRow = {
  * that known epoch: the account did not demonstrably change, so its mismatch /
  * rejection evidence must not be laundered by the blip. The unknown epoch's own
  * observations stay history (they were never account-attributed).
+ *
+ * An unobserved identity (see isIdentityUnobserved) writes nothing and is reported
+ * as `unobserved`: callers must not submit, attribute or adopt anything from it.
  */
 export function reconcileAuthBinding(
   db: Database.Database,
@@ -93,12 +163,20 @@ export function reconcileAuthBinding(
     auth: CliAuthIdentity;
     cliGeneration: string;
     authStoreSignal: string | null;
+    identityProbe: CliIdentityProbe | undefined;
     now?: string;
   },
-): { binding: AuthBinding; epochChanged: boolean; reason: EpochReason | null } {
+): { binding: AuthBinding; epochChanged: boolean; reason: EpochReason | null; unobserved: boolean } {
   const now = params.now ?? new Date().toISOString();
   return db.transaction(() => {
     const current = getAuthBinding(db, params.connectionId);
+    if (current && isIdentityUnobserved(db, params.connectionId, {
+      identityProbe: params.identityProbe,
+      authMethod: params.auth.method,
+      cliGeneration: params.cliGeneration,
+    })) {
+      return { binding: current, epochChanged: false, reason: null, unobserved: true };
+    }
     const lastKnown = db.prepare(`
       SELECT last_known_scope_key, last_known_epoch, last_known_cli_generation, last_known_auth_method
       FROM llm_connection_auth_bindings WHERE connection_id = ?
@@ -189,6 +267,7 @@ export function reconcileAuthBinding(
       binding: getAuthBinding(db, params.connectionId)!,
       epochChanged: reason !== null && current !== null,
       reason,
+      unobserved: false,
     };
   }).immediate();
 }

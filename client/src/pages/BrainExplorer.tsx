@@ -76,10 +76,10 @@ export function BrainExplorer() {
       filter.type, filter.tags, filter.sortBy, filter.sortDir,
       filter.heatMin, filter.heatMax, filter.archived,
       filter.createdAfter, filter.createdBefore, filter.limit,
-      page, rev,
+      page,
     ],
   )
-  const { data: listData, loading } = useIPC(fetchList)
+  const { data: listData, loading } = useIPC(fetchList, rev)
 
   const handleFilterChange = (patch: Partial<ExplorerFilter>) => {
     setFilter(f => {

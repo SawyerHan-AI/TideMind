@@ -14,3 +14,4 @@ export * from './resolve-cli.js';
 export * from './runtime-dir.js';
 export * from './service.js';
 export * from './types.js';
+export * from './identity-recheck.js';

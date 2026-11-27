@@ -68,6 +68,7 @@ function environment(providerType: CliProviderType, auth: CliAuthIdentity, gener
       identity: { device: 1, inode: 1, size: 1, ctimeMs: 1, sha256: 'fixture' },
     },
     auth,
+    identityProbe: { status: 'observed' },
     authStoreSignal: null,
     authFingerprint: 'auth-fixture',
     cliGeneration: generation,
@@ -113,6 +114,33 @@ describe('refreshCliModelCatalog', () => {
     }
     // The refresh establishes the auth binding for the connection.
     expect(getAuthBinding(db, CONNECTION)).toMatchObject({ scopeKey: 'claude-cli:org-hash', authEpoch: 1 });
+  });
+
+  it('Codex: an account that could not be read keeps the binding and the last catalog', async () => {
+    const db = freshDb();
+    const auth = codexIdentityFromAccount(ACCOUNT_A);
+    await refreshCliModelCatalog(db, {
+      connectionId: CONNECTION, dataDir: '/tmp/fixture-data', environment: environment('codex-cli', auth),
+      readMetadata: metadata({ models: [model('gpt-5.3-codex', true)] }),
+    });
+    const binding = db.prepare('SELECT * FROM llm_connection_auth_bindings WHERE connection_id = ?').get(CONNECTION);
+    const readMetadata = vi.fn();
+    const result = await refreshCliModelCatalog(db, {
+      connectionId: CONNECTION,
+      dataDir: '/tmp/fixture-data',
+      environment: {
+        ...environment('codex-cli', {
+          ...auth, accountScope: 'codex-cli:local-login', scopeState: 'unknown', scopeKey: 'codex-cli:unknown',
+        }),
+        identityProbe: { status: 'failed', kind: 'timeout', elapsedMs: 10_000 },
+      },
+      readMetadata: readMetadata as never,
+    });
+    expect(result).toMatchObject({ status: 'failed', errorKind: 'identity_unobserved' });
+    expect(result.snapshot?.items.map((item) => item.id)).toEqual(['gpt-5.3-codex']);
+    expect(readMetadata).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT * FROM llm_connection_auth_bindings WHERE connection_id = ?').get(CONNECTION)).toEqual(binding);
+    expect(getCatalogSnapshot(db, CONNECTION)).toMatchObject({ lastAttemptErrorKind: 'identity_unobserved' });
   });
 
   it('Codex: stores the complete paginated catalog bound to the scope/epoch', async () => {
@@ -228,7 +256,7 @@ describe('refreshCliModelCatalog', () => {
     const auth = codexIdentityFromAccount(ACCOUNT_A);
     const readMetadata: typeof readCodexMetadata = vi.fn(async () => {
       // CLI upgraded while the metadata session was running.
-      reconcileAuthBinding(db, { connectionId: CONNECTION, auth, cliGeneration: 'gen-2', authStoreSignal: null });
+      reconcileAuthBinding(db, { connectionId: CONNECTION, auth, cliGeneration: 'gen-2', authStoreSignal: null, identityProbe: { status: 'observed' } });
       return { account: ACCOUNT_A, accountAfter: ACCOUNT_A, models: [model('late-model')] };
     });
     const result = await refreshCliModelCatalog(db, {

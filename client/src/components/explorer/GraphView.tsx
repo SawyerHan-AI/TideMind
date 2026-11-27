@@ -157,9 +157,8 @@ export function GraphView({ filter, selectedId, onSelect, graphLimit = 500, onGr
     filter.archived, filter.sortBy, filter.sortDir,
     filter.createdAfter, filter.createdBefore,
     filter.graphLimit,
-    rev,
   ])
-  const { data: graphData } = useIPC(fetchGraph)
+  const { data: graphData } = useIPC(fetchGraph, rev)
 
   // fetch structure holes when toggled
   useEffect(() => {

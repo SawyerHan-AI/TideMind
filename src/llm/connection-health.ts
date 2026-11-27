@@ -407,3 +407,37 @@ export function recoverCliConnectionHealth(
   // last_success_at is business-call evidence; a check/test must not overwrite it.
   if (result.changes) emitChange(null);
 }
+
+/** Environment failures a passing read-only check disproves on its own. */
+const ENVIRONMENT_ONLY_KINDS = ['not_installed', 'unsupported_version'] as const;
+/** Failures about who is logged in; cleared only once the account is confirmed. */
+const IDENTITY_KINDS = ['not_authenticated', 'wrong_auth_method', 'scope_unknown'] as const;
+export const CLI_ENVIRONMENT_RECOVERABLE_KINDS: readonly string[] = [...ENVIRONMENT_ONLY_KINDS, ...IDENTITY_KINDS];
+
+/**
+ * Unattended recovery after a read-only environment check that started at
+ * `startedAt` and passed. Unlike recoverCliConnectionHealth this runs without the
+ * user, so identity failures are cleared only when the caller has confirmed that
+ * the observed account is the one already proven on this connection. Ambiguous
+ * outcomes, permission, quota and protocol failures are never touched here.
+ */
+export function recoverCliEnvironmentFailures(
+  db: Database.Database,
+  connectionId: string,
+  startedAt: number,
+  options: { identityConfirmed: boolean },
+): boolean {
+  const kinds = options.identityConfirmed
+    ? [...ENVIRONMENT_ONLY_KINDS, ...IDENTITY_KINDS]
+    : [...ENVIRONMENT_ONLY_KINDS];
+  const result = db.prepare(`
+    UPDATE llm_connection_health SET circuit_state='closed', failure_count=0,
+      opened_at=NULL, last_error_kind=NULL, last_error_message=NULL, last_error_at=NULL,
+      needs_user_action=0, retry_at=NULL, updated_at=?
+    WHERE connection_id=? AND provider_type IN ('codex-cli','claude-cli')
+      AND last_error_kind IN (${kinds.map(() => '?').join(',')}) AND last_error_at <= ?
+  `).run(new Date().toISOString(), connectionId, ...kinds, startedAt);
+  // last_success_at is business-call evidence; a check must not overwrite it.
+  if (result.changes) emitChange(null);
+  return result.changes > 0;
+}

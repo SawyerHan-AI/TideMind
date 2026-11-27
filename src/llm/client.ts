@@ -27,6 +27,7 @@ import {
 } from './connection-health.js';
 import { noteActiveLLMRoute } from './invocation-context.js';
 import { CliLLMError, quiesceCliRuntime, runCliLLM, shortenCliRuntimeQuiesce, shutdownCliRuntime } from './cli/index.js';
+import { POST_RESPONSE_IDENTITY_RETRY_BUDGET_MS } from './cli/identity-recheck.js';
 import {
   getMetabolismWorkerRuntimeContext,
   getMetabolismWorkerVertexCredential,
@@ -1007,6 +1008,8 @@ export async function callLLM(options: {
     TIMEOUT_MS_BY_TIER[tier] * probeAttempts
     + (probeAttempts - 1) * 600_000
     + 60_000
+    // A CLI probe may spend this long re-reading the account after the response.
+    + (routeIsCli ? POST_RESPONSE_IDENTITY_RETRY_BUDGET_MS : 0)
   );
   const healthProbeToken = usageDb
     ? assertConnectionHealthCallable(

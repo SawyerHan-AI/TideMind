@@ -9,7 +9,15 @@ import { cliProcessRegistry } from './runtime-process-registry.js';
 import { runAsSettlingInvocation } from './settlement-context.js';
 import { ClaudeCliAdapter } from './claude.js';
 import { CodexCliAdapter } from './codex.js';
-import { CLI_PROCESS_EXIT_UNCONFIRMED, CliLLMError, hasUnconfirmedCliProcessExit, isDefinitiveProviderRejection } from './errors.js';
+import {
+  CLI_PROCESS_EXIT_UNCONFIRMED,
+  CliLLMError,
+  hasUnconfirmedCliProcessExit,
+  identityUnobservedError,
+  isDefinitiveProviderRejection,
+  isIdentityUnobservedError,
+} from './errors.js';
+import { recheckIdentityWithRetry } from './identity-recheck.js';
 import {
   assertCliCapacityFence,
   withCliCapacityLease,
@@ -27,6 +35,7 @@ import {
   authBindingMatches,
   getCatalogSnapshot,
   getModelObservation,
+  isIdentityUnobserved,
   reconcileAuthBinding,
   recordModelObservation,
   type ObservationOutcome,
@@ -73,7 +82,7 @@ const ENVIRONMENT_HEALABLE = new Set([
  * epoch (reconcileAuthBinding). An environment status that the check just disproved
  * is healed to 'untested'; 'ambiguous' is kept until explicitly resolved.
  */
-function saveEnvironment(
+export function saveEnvironment(
   db: Database.Database,
   connectionId: string,
   environment: CliEnvironmentCheck,
@@ -130,7 +139,7 @@ function admissionError(reason: AdmissionBlockReason, modelId: string, retryAt?:
     case 'model_rejected':
       return new CliLLMError(
         'model_unavailable',
-        `当前账号无法使用模型 ${modelId}（已被明确拒绝）；可在设置中复测或更换模型`,
+        `模型 ${modelId} 在当前连接上不可用（已被明确拒绝）；可在设置中复测、升级 CLI 或更换模型`,
         { needsUserAction: true, admissionReason: reason },
       );
     case 'backoff':
@@ -197,6 +206,9 @@ export async function runCliLLM(
       beforeOutcomePersistence?: () => void;
       beforePromptCommit?: () => void;
       recheckEnvironment?: () => Promise<CliEnvironmentCheck>;
+      /** Post-response identity retry: wait between attempts and total budget. */
+      retryDelay?: (ms: number, signal: AbortSignal) => Promise<void>;
+      retryBudgetMs?: number;
     };
   } = {},
 ): Promise<CliLLMResult> {
@@ -227,9 +239,35 @@ export async function runCliLLM(
     candidatePath: row?.cli_path,
     dataDir,
     signal: request.signal,
+  }).catch((error: unknown) => {
+    // A status command that did not finish is thrown, not returned; leave the same
+    // trace as the returned form below so either provider can be diagnosed later.
+    if (isIdentityUnobservedError(error)) {
+      try { enableFileLogging(join(dataDir, 'logs')); } catch { /* diagnostics only */ }
+      log.warn('CLI invocation skipped: account identity not observed', JSON.stringify({
+        connectionId: request.connectionId, provider: request.providerType, stage: 'entry_environment',
+        probe: { status: 'failed', kind: 'status_command_unfinished' },
+      }));
+    }
+    throw error;
   });
   if (options.environment && row?.cli_path != null && row.cli_path !== environment.resolved.path) {
     throw new CliLLMError('aborted', 'CLI 环境与当前连接路径不匹配，本次未提交');
+  }
+  // Decide on the environment actually used (a connection test passes its own) and
+  // before anything is persisted: an identity that was not read this time must not
+  // rewrite the connection row or the binding, and nothing may be submitted.
+  if (isIdentityUnobserved(db, request.connectionId, {
+    identityProbe: environment.identityProbe,
+    authMethod: environment.auth.method,
+    cliGeneration: environment.cliGeneration,
+  })) {
+    try { enableFileLogging(join(dataDir, 'logs')); } catch { /* diagnostics only */ }
+    log.warn('CLI invocation skipped: account identity not observed', JSON.stringify({
+      connectionId: request.connectionId, provider: request.providerType, stage: 'entry_environment',
+      probe: environment.identityProbe,
+    }));
+    throw identityUnobservedError();
   }
   saveEnvironment(db, request.connectionId, environment, row);
   const { binding } = reconcileAuthBinding(db, {
@@ -237,6 +275,7 @@ export async function runCliLLM(
     auth: environment.auth,
     cliGeneration: environment.cliGeneration,
     authStoreSignal: environment.authStoreSignal,
+    identityProbe: environment.identityProbe,
   });
 
   const liveStatus = (db.prepare('SELECT status FROM model_connections WHERE id = ?')
@@ -335,15 +374,38 @@ export async function runCliLLM(
     options.validateRoute?.();
   };
 
-  const recheckBinding = async (): Promise<void> => {
-    const fresh = await (options._testHooks?.recheckEnvironment?.() ?? checkCliEnvironment({
-      providerType: request.providerType,
-      allowLoginShell: false,
-      candidatePath: environment.resolved.path,
-      dataDir,
-      signal: request.signal,
-      freshAuth: true,
-    }));
+  const recheckBinding = async (phase: 'pre_submit' | 'post_response'): Promise<void> => {
+    const check = (signal: AbortSignal | undefined): Promise<CliEnvironmentCheck> =>
+      options._testHooks?.recheckEnvironment?.() ?? checkCliEnvironment({
+        providerType: request.providerType,
+        allowLoginShell: false,
+        candidatePath: environment.resolved.path,
+        dataDir,
+        signal,
+        freshAuth: true,
+      });
+    let fresh: CliEnvironmentCheck;
+    if (phase === 'pre_submit') {
+      // Nothing was submitted yet: one read, and an unobserved identity only defers
+      // this call. A failed status command reaches here as the same thrown error.
+      fresh = await check(request.signal);
+      if (isIdentityUnobserved(db, request.connectionId, {
+        identityProbe: fresh.identityProbe,
+        authMethod: fresh.auth.method,
+        cliGeneration: fresh.cliGeneration,
+      })) throw identityUnobservedError();
+    } else {
+      // A response exists: give the identity read a bounded chance to succeed before
+      // the result has to be treated as unattributed.
+      const rechecked = await recheckIdentityWithRetry(db, request.connectionId, {
+        check,
+        signal: request.signal,
+        delay: options._testHooks?.retryDelay,
+        budgetMs: options._testHooks?.retryBudgetMs,
+      });
+      if (rechecked.status === 'unobserved') throw identityUnobservedError();
+      fresh = rechecked.environment;
+    }
     // A fresh official observation is required even when the auth-store stat is stable.
     // Never restore an old response into a newer binding.
     if (fresh.auth.scopeKey !== binding.scopeKey
@@ -355,6 +417,7 @@ export async function runCliLLM(
         auth: fresh.auth,
         cliGeneration: fresh.cliGeneration,
         authStoreSignal: fresh.authStoreSignal,
+        identityProbe: fresh.identityProbe,
       });
       throw new CliLLMError('not_authenticated', 'CLI 或账号范围发生变化，调用归属无法确认', {
         needsUserAction: true,
@@ -382,7 +445,7 @@ export async function runCliLLM(
             assertCliCapacityFence(db, lease);
             options._testHooks?.beforePromptCommit?.();
             stage = 'pre_submit_environment';
-            await recheckBinding();
+            await recheckBinding('pre_submit');
             stage = 'prompt_submission';
             assertCliCapacityFence(db, lease);
             assertCurrentRoute();
@@ -438,7 +501,7 @@ export async function runCliLLM(
         options._testHooks?.afterProviderCompleted?.();
         // Post-response verification may start registry children (Codex metadata);
         // a quiescing runtime admits them only from this settling scope.
-        await runAsSettlingInvocation(recheckBinding);
+        await runAsSettlingInvocation(() => recheckBinding('post_response'));
         try {
           assertCliCapacityFence(db, lease);
         } catch (error) {

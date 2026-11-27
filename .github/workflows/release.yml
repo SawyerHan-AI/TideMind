@@ -39,6 +39,8 @@ on:
       - '!v0.2.102'
       # 0.2.103 uses the reviewed Studio Codex recovery and two-Mac release flow.
       - '!v0.2.103'
+      # 0.2.104 is built, signed and published by the Studio two-Mac release flow.
+      - '!v0.2.104'
 
 permissions:
   contents: read

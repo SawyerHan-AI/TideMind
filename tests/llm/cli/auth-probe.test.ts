@@ -4,7 +4,10 @@ import {
   parseCodexAuth,
   probeCliAuth,
 } from '../../../src/llm/cli/auth-probe.js';
-import { CliLLMError } from '../../../src/llm/cli/errors.js';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { CliLLMError, isIdentityUnobservedError } from '../../../src/llm/cli/errors.js';
 
 describe('CLI auth probes', () => {
   it('treats Claude 2.1.x subscription login (claude.ai + orgId) as a known scope without plaintext', () => {
@@ -144,6 +147,63 @@ describe('CLI auth probes', () => {
       }),
     );
     expect(identity.method).toBe('chatgpt');
+  });
+
+  describe('a status command that did not finish is not a logout', () => {
+    const cli = (kind: 'codex' | 'claude') => ({
+      kind,
+      path: `/usr/local/bin/${kind}`,
+      version: '1.0.0',
+      controlledPath: '/usr/bin:/bin',
+      source: 'known_path' as const,
+      identity: { device: 1, inode: 1, size: 1, ctimeMs: 1, sha256: 'fixture' },
+    });
+
+    it.each(['codex', 'claude'] as const)('%s: timeout / spawn failure / output limit is retryable', async (kind) => {
+      const error = await probeCliAuth(cli(kind), {}, async () => ({
+        stdout: '', stderr: '', exitCode: -1, cleanExit: false,
+      })).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(CliLLMError);
+      expect(isIdentityUnobservedError(error)).toBe(true);
+      expect(error).toMatchObject({ kind: 'transient' });
+      expect((error as CliLLMError).options).toMatchObject({ retryable: true, needsUserAction: false });
+    });
+
+    it('a clean non-zero exit is still a real logout', async () => {
+      await expect(probeCliAuth(cli('codex'), {}, async () => ({
+        stdout: '', stderr: 'Not logged in\n', exitCode: 1, cleanExit: true,
+      }))).rejects.toMatchObject({ kind: 'not_authenticated' });
+      // Injected execs that predate `cleanExit` keep the old meaning.
+      await expect(probeCliAuth(cli('claude'), {}, async () => ({
+        stdout: '', stderr: '', exitCode: 1,
+      }))).rejects.toMatchObject({ kind: 'not_authenticated' });
+    });
+
+    it('cancellation is reported as aborted, never as not logged in', async () => {
+      const controller = new AbortController();
+      await expect(probeCliAuth(cli('codex'), {}, async () => {
+        controller.abort();
+        return { stdout: '', stderr: '', exitCode: -1, cleanExit: false };
+      }, controller.signal)).rejects.toMatchObject({ kind: 'aborted' });
+    });
+
+    it('the default exec classifies a killed status command as not finished', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'tidemind-auth-probe-'));
+      try {
+        const slow = join(dir, 'codex');
+        writeFileSync(slow, '#!/bin/sh\nsleep 30\n');
+        chmodSync(slow, 0o700);
+        const controller = new AbortController();
+        const pending = probeCliAuth({ ...cli('codex'), path: slow }, { PATH: '/usr/bin:/bin' }, undefined, controller.signal);
+        setTimeout(() => controller.abort(), 200);
+        await expect(pending).rejects.toMatchObject({ kind: 'aborted' });
+        const missing = await probeCliAuth({ ...cli('codex'), path: join(dir, 'absent') }, { PATH: '/usr/bin:/bin' })
+          .catch((caught: unknown) => caught);
+        expect(isIdentityUnobservedError(missing)).toBe(true);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }, 30_000);
   });
 
   it('derives a Codex identity from account/read without keeping plaintext in the scope key', () => {

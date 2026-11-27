@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
+import { useDataRevision } from '../../contexts/DataChangeContext'
 import { AlertTriangle } from 'lucide-react'
 
 /**
@@ -13,6 +14,7 @@ export function ModelWarningBanner() {
   const { t } = useTranslation('dashboard')
   const navigate = useNavigate()
   const [show, setShow] = useState(false)
+  const ollamaMissingRev = useDataRevision(['ollama-missing'])
 
   useEffect(() => {
     let cancelled = false
@@ -29,7 +31,7 @@ export function ModelWarningBanner() {
     }
     check()
     return () => { cancelled = true }
-  }, [])
+  }, [ollamaMissingRev])
 
   if (!show) return null
 

@@ -54,7 +54,7 @@ const CLOUD_STATUS_FALLBACK: CloudStatus = Object.freeze({
 
 export function useCloudStatus(): CloudStatus {
   const rev = useDataRevision(['cloud'])
-  const fetchStatus = useCallback(() => window.api.cloud.status(), [rev])
-  const { data } = useIPC(fetchStatus)
+  const fetchStatus = useCallback(() => window.api.cloud.status(), [])
+  const { data } = useIPC(fetchStatus, rev)
   return data ?? CLOUD_STATUS_FALLBACK
 }

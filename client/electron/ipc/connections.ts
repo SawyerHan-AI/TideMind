@@ -17,6 +17,9 @@ import {
   checkCliEnvironment,
   cliUserActionCommand,
   CliLLMError,
+  identityUnobservedError,
+  isIdentityUnobservedError,
+  recheckIdentityWithRetry,
   runCliLLM,
   type CliEnvironmentCheck,
   type CliProviderType,
@@ -25,7 +28,7 @@ import {
   updateCliConnectionEnvironment,
   type ModelConnectionStatus,
 } from '../../../src/db/connections.js'
-import { deleteModelDiscoveryRows, reconcileAuthBinding } from '../../../src/db/model-discovery.js'
+import { deleteModelDiscoveryRows, isIdentityUnobserved, reconcileAuthBinding } from '../../../src/db/model-discovery.js'
 import { refreshCliModelCatalog } from '@server/llm/cli/model-catalog.js'
 import { FOLLOW_DEFAULT_MODEL, isValidManualModelId } from '@server/llm/cli/catalogs.js'
 import { buildConnectionModelsView, routesUsingConnection } from '@server/llm/model-catalog-view.js'
@@ -35,9 +38,11 @@ import { CATALOG_FRESHNESS } from '@server/llm/cli/model-catalog.js'
 import { hasUnresolvedCliInvocation, prepareCliFutureCallResume, resumeCliFutureCalls, type CliResumeFutureCallsResult } from '@server/llm/cli/invocation-state.js'
 import { cliProcessRegistry } from '@server/llm/cli/runtime-process-registry.js'
 import { createLogger } from '../../../src/utils/logger.js'
+import { recoverCliEnvironmentsOnce, recoveryRetryDelayMs } from './cli-environment-recovery.js'
 
 const catalogLog = createLogger('model-catalog')
 let catalogFreshnessTimer: ReturnType<typeof setTimeout> | null = null
+let recoveryAttempt = 0
 
 /**
  * Background catalog freshness (design §6): only connections that an in-use route
@@ -48,8 +53,30 @@ let catalogFreshnessTimer: ReturnType<typeof setTimeout> | null = null
 function scheduleCatalogFreshness(dataDir: string): void {
   if (catalogFreshnessTimer) return
   const tick = async () => {
+    let recoveryPending = false
     try {
       const db = getClientDb()
+      // Read-only recovery first: connections paused by an environment failure or
+      // left with an unknown account binding, regardless of catalog age.
+      try {
+        const recovery = await recoverCliEnvironmentsOnce(db, dataDir, {
+          checkEnvironment: checkCliEnvironment,
+          beginOperation: (connectionId) => {
+            if (cliOperations.has(connectionId)) return null
+            const operation = beginCliOperation(connectionId, 'environment')
+            return {
+              signal: operation.controller.signal,
+              finish: () => finishCliOperation(connectionId, operation),
+            }
+          },
+        })
+        recoveryPending = recovery.pending > 0
+        if (recovery.recovered.length > 0) broadcastLLMHealth(db)
+      } catch (error) {
+        // Unknown whether anything is still paused: come back on the short schedule.
+        recoveryPending = true
+        catalogLog.warn(`background environment recovery failed: ${(error as Error).message}`)
+      }
       const config = getConfig()
       const rows = db.prepare(`
         SELECT id, provider_type, cli_path FROM model_connections
@@ -86,8 +113,12 @@ function scheduleCatalogFreshness(dataDir: string): void {
     } catch (error) {
       catalogLog.warn(`background catalog freshness failed: ${(error as Error).message}`)
     } finally {
-      const jitter = Math.floor(Math.random() * 20 * 60_000)
-      catalogFreshnessTimer = setTimeout(() => { void tick() }, 60 * 60_000 + jitter)
+      // While something still needs recovery, come back sooner (5 → 60 minutes).
+      const delay = recoveryPending
+        ? recoveryRetryDelayMs(recoveryAttempt++)
+        : 60 * 60_000 + Math.floor(Math.random() * 20 * 60_000)
+      if (!recoveryPending) recoveryAttempt = 0
+      catalogFreshnessTimer = setTimeout(() => { void tick() }, delay)
       catalogFreshnessTimer.unref?.()
     }
   }
@@ -458,15 +489,24 @@ export function registerConnectionHandlers(dataDir: string): void {
         return status
       }).immediate()
     try {
+      // A user-facing check must report what the account is now, not a cached identity.
       const environment = await checkCliEnvironment({
         providerType: connection.provider_type,
         allowLoginShell: true,
         dataDir,
         signal: operation.controller.signal,
+        freshAuth: true,
       })
       if (!operationIsCurrent(validId, operation) || operation.controller.signal.aborted) {
         throw new CliLLMError('aborted', '环境检查已取消')
       }
+      // The account could not be read this time: nothing was learned, so nothing is
+      // persisted, healed or recovered.
+      if (isIdentityUnobserved(db, validId, {
+        identityProbe: environment.identityProbe,
+        authMethod: environment.auth.method,
+        cliGeneration: environment.cliGeneration,
+      })) throw identityUnobservedError()
       const preservedStatus = persistCheck(connection.status === 'online' ? 'online' : 'untested', null, environment)
       if (!preservedStatus) throw new CliLLMError('aborted', '环境检查目标已改变')
       if (preservedStatus !== 'ambiguous') recoverCliConnectionHealth(db, validId, startedAt)
@@ -499,9 +539,12 @@ export function registerConnectionHandlers(dataDir: string): void {
         ? error
         : new CliLLMError('transient', (error as Error).message, { cause: error })
       const cancelled = cliError.kind === 'aborted' || operation.controller.signal.aborted
+      // Like a cancellation, an unread account says nothing about the environment:
+      // the connection keeps the status it had before this check.
+      const keepStatus = cancelled || isIdentityUnobservedError(cliError)
       const status = operationIsCurrent(validId, operation)
-        ? persistCheck(cancelled ? connection.status : cliStatusForError(cliError),
-          cancelled ? connection.status_reason : cliError.message.slice(0, 500)) ?? connection.status
+        ? persistCheck(keepStatus ? connection.status : cliStatusForError(cliError),
+          keepStatus ? connection.status_reason : cliError.message.slice(0, 500)) ?? connection.status
         : connection.status
       return {
         status,
@@ -553,6 +596,8 @@ export function registerConnectionHandlers(dataDir: string): void {
           ? 'cancelled' : 'environment_check_failed' }
       }
       if (signal.aborted || !operationIsCurrent(validId, operation)) return { status: 'blocked', reason: 'cancelled' }
+      // The account was not read: this is a failed check, not an unconfirmed binding.
+      if (environment.identityProbe?.status === 'failed') return { status: 'blocked', reason: 'environment_check_failed' }
       if (cliProcessRegistry.hasOutstandingWork) return { status: 'blocked', reason: 'previous_work_active' }
       const result = resumeCliFutureCalls(db, prepared, environment)
       if (result.status === 'untested') {
@@ -669,6 +714,13 @@ export function registerConnectionHandlers(dataDir: string): void {
         if (!operationIsCurrent(validId, operation)) {
           throw new CliLLMError('aborted', '测试已取消')
         }
+        // Without a readable account the test cannot be attributed: do not start it
+        // and do not overwrite the stored environment.
+        if (isIdentityUnobserved(db, validId, {
+          identityProbe: environment.identityProbe,
+          authMethod: environment.auth.method,
+          cliGeneration: environment.cliGeneration,
+        })) throw identityUnobservedError()
         updateCliConnectionEnvironment(db, validId, {
           status: 'testing',
           statusReason: null,
@@ -746,23 +798,36 @@ export function registerConnectionHandlers(dataDir: string): void {
         const cancelled = !operationIsCurrent(validId, operation)
           || operation.controller.signal.aborted
         let attributionUnconfirmed = false
+        // The account could not be re-read after the test: unattributed, binding untouched.
+        let identityUnreadAfterTest = false
         if (!cancelled) {
           // Re-read the environment: if the CLI generation or account scope changed
           // during the test, the binding moves to a new epoch and the recorded
           // observations stay in history (attribution unconfirmed).
-          const finalEnvironment = await checkCliEnvironment({
-            providerType: conn.provider_type,
-            allowLoginShell: true,
-            dataDir,
+          const providerType = conn.provider_type
+          const rechecked = await recheckIdentityWithRetry(db, validId, {
             signal: operation.controller.signal,
+            check: (signal) => checkCliEnvironment({
+              providerType,
+              allowLoginShell: true,
+              dataDir,
+              signal,
+              freshAuth: true,
+            }),
           })
-          const reconciled = reconcileAuthBinding(db, {
-            connectionId: validId,
-            auth: finalEnvironment.auth,
-            cliGeneration: finalEnvironment.cliGeneration,
-            authStoreSignal: finalEnvironment.authStoreSignal,
-          })
-          attributionUnconfirmed = reconciled.epochChanged
+          if (rechecked.status === 'unobserved') {
+            identityUnreadAfterTest = true
+            attributionUnconfirmed = true
+          } else {
+            const reconciled = reconcileAuthBinding(db, {
+              connectionId: validId,
+              auth: rechecked.environment.auth,
+              cliGeneration: rechecked.environment.cliGeneration,
+              authStoreSignal: rechecked.environment.authStoreSignal,
+              identityProbe: rechecked.environment.identityProbe,
+            })
+            attributionUnconfirmed = reconciled.epochChanged || reconciled.unobserved
+          }
         }
         const current = db.prepare(
           'SELECT archived FROM model_connections WHERE id = ?',
@@ -804,6 +869,8 @@ export function registerConnectionHandlers(dataDir: string): void {
             ? 'online'
           : previous.status === 'ambiguous'
             ? 'ambiguous'
+          : identityUnreadAfterTest
+            ? previous.status
           : attributionUnconfirmed
             ? 'untested'
             : connectionFailure
@@ -825,6 +892,8 @@ export function registerConnectionHandlers(dataDir: string): void {
           const status = hasUnresolvedCliInvocation(db, validId) ? 'ambiguous' : testedStatus
           const statusReason = status === 'ambiguous'
             ? previous.statusReason ?? '上次调用结果不明，后台调用已暂停'
+            : identityUnreadAfterTest
+              ? '测试后暂时无法读取账号信息，本次结果归属未确认；请稍后重试'
             : attributionUnconfirmed
               ? 'CLI 或登录账号在测试期间发生变化，本次结果归属未确认'
               : connectionFailure?.error ?? null
@@ -864,7 +933,7 @@ export function registerConnectionHandlers(dataDir: string): void {
           ? error
           : new CliLLMError('transient', (error as Error).message, { cause: error })
         if (operationIsCurrent(validId, operation)) {
-          if (cliError.kind === 'aborted' || previous.status === 'ambiguous') {
+          if (cliError.kind === 'aborted' || previous.status === 'ambiguous' || isIdentityUnobservedError(cliError)) {
             restorePrevious()
           } else {
             db.transaction(() => {

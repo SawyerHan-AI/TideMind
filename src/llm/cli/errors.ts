@@ -38,6 +38,25 @@ export class CliLLMError extends Error {
   }
 }
 
+export const IDENTITY_UNOBSERVED = 'identity_unobserved';
+
+/**
+ * The account identity could not be read this time. Nothing was submitted and
+ * nothing is known about the account, so this is retryable, never a user action,
+ * and (via admissionReason) never a model observation.
+ */
+export function identityUnobservedError(cause?: unknown): CliLLMError {
+  return new CliLLMError(
+    'transient',
+    '暂时无法读取账号信息，本次未提交；请检查网络，稍后会自动重试',
+    { retryable: true, needsUserAction: false, admissionReason: IDENTITY_UNOBSERVED, cause },
+  );
+}
+
+export function isIdentityUnobservedError(error: unknown): boolean {
+  return error instanceof CliLLMError && error.options.admissionReason === IDENTITY_UNOBSERVED;
+}
+
 export const CLI_PROCESS_EXIT_UNCONFIRMED = 'process_exit_unconfirmed';
 
 export class CliProcessExitUnconfirmedError extends CliLLMError {

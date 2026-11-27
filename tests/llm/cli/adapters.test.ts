@@ -179,8 +179,9 @@ describe('CLI adapters with fake executables', () => {
       contract: codexContract(), preflight: () => undefined,
       hooks: { beforePromptCommit }, invocationId: () => 'missingmodel1',
     });
+    // Model-level, not connection-level: only this model is affected.
     await expect(adapter.run({ ...request, providerType: 'codex-cli', modelAlias: 'gpt-6.1-terra' }))
-      .rejects.toMatchObject({ kind: 'unsupported_version' });
+      .rejects.toMatchObject({ kind: 'model_unavailable', message: expect.stringContaining('gpt-6.1-terra') });
     expect(run).not.toHaveBeenCalled();
     expect(beforePromptCommit).not.toHaveBeenCalled();
   });

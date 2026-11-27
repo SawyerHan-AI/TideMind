@@ -44,6 +44,7 @@ async function setup() {
       scopeLabel: 'max',
     },
     authStoreSignal: null,
+    identityProbe: { status: 'observed' },
     authFingerprint: 'auth-fixture',
     cliGeneration: 'generation-fixture',
     validationFingerprint: 'generation-fixture',
@@ -67,7 +68,7 @@ async function setup() {
     connectionId: connection.id,
     auth: environment.auth,
     cliGeneration: environment.cliGeneration,
-    authStoreSignal: environment.authStoreSignal,
+    authStoreSignal: environment.authStoreSignal, identityProbe: { status: 'observed' },
   });
   return { db, dataDir, environment, connectionId: connection.id };
 }

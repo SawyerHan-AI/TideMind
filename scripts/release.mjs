@@ -147,6 +147,7 @@ const HISTORICAL_RELEASE_CONTRACTS = Object.freeze({
   '0.2.95': Object.freeze({ macArchitectures: ['arm64'], upgradeFromAppVersions: ['0.2.89', '0.2.90', '0.2.91', '0.2.92', '0.2.93', '0.2.94'] }),
   '0.2.101': Object.freeze({ macArchitectures: ['arm64'], upgradeFromAppVersions: ['0.2.100'] }),
   '0.2.102': Object.freeze({ macArchitectures: ['arm64'], upgradeFromAppVersions: ['0.2.101'] }),
+  '0.2.103': Object.freeze({ macArchitectures: ['arm64'], upgradeFromAppVersions: ['0.2.102'] }),
 });
 
 function releaseAcceptanceRequirements() {

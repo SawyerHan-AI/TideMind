@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { AlertTriangle } from 'lucide-react'
 import { useIPC } from '../hooks/useIPC'
 import { useDataRevision } from '../contexts/DataChangeContext'
+import { useUtcDayKey } from '../hooks/useUtcDayKey'
 import { Skeleton } from '../components/Skeleton'
 import { ModelWarningBanner } from '../components/dashboard/ModelWarningBanner'
 import { InitBanner } from '../components/dashboard/InitBanner'
@@ -21,17 +22,19 @@ const stagger = {
 
 export function Dashboard() {
   const { t } = useTranslation('common')
-  const rev = useDataRevision()
+  const rev = useDataRevision(['nodes', 'links', 'timeline'])
+  // 指标里有按"今日"统计的数字,跨天时即使没有数据写入也要重取一次。
+  const refreshKey = `${rev}:${useUtcDayKey()}`
   // perf-optimization-2026-05-17 P1-3:Dashboard 切片化拉数。
   // 原本一个 stats:dashboard 串行做 8+ 条 SQL(含全表 tags 聚合 500-1000ms),
   // 整个 Dashboard 必须等所有结果才能渲染。改成 3 个 IPC 并发:
   // metrics(毫秒级)先到先渲染骨架卡 → activity → tags 慢一拍但不阻塞。
-  const fetchMetrics = useCallback(() => window.api.stats.dashboardMetrics(), [rev])
-  const fetchActivity = useCallback(() => window.api.stats.dashboardActivity(), [rev])
-  const fetchTags = useCallback(() => window.api.stats.dashboardTags(), [rev])
-  const { data: metrics, loading: metricsLoading, error: metricsError, refetch: refetchMetrics } = useIPC(fetchMetrics)
-  const { data: activity } = useIPC(fetchActivity)
-  const { data: tags } = useIPC(fetchTags)
+  const fetchMetrics = useCallback(() => window.api.stats.dashboardMetrics(), [])
+  const fetchActivity = useCallback(() => window.api.stats.dashboardActivity(), [])
+  const fetchTags = useCallback(() => window.api.stats.dashboardTags(), [])
+  const { data: metrics, loading: metricsLoading, error: metricsError, refetch: refetchMetrics } = useIPC(fetchMetrics, refreshKey)
+  const { data: activity } = useIPC(fetchActivity, refreshKey)
+  const { data: tags } = useIPC(fetchTags, refreshKey)
   const navigate = useNavigate()
 
   const handleNodeClick = (id: string) => {

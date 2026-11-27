@@ -30,9 +30,9 @@ export function DetailPanel({ nodeId, onNavigate }: {
   const rev = useDataRevision(['nodes', 'links'])
   const fetchNode = useCallback(
     () => nodeId ? window.api.nodes.get(nodeId) : Promise.resolve(null),
-    [nodeId, rev],
+    [nodeId],
   )
-  const { data, loading, refetch } = useIPC(fetchNode)
+  const { data, loading, refetch } = useIPC(fetchNode, rev)
 
   const [editing, setEditing] = useState(false)
   const [editContent, setEditContent] = useState('')

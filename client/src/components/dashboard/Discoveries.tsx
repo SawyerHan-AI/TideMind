@@ -97,9 +97,9 @@ export function Discoveries() {
   const rev = useDataRevision(['timeline'])
   const fetchDiscoveries = useCallback(
     () => window.api.timeline.list({ types: ['think_emerge', 'evolution'], limit: 5 }),
-    [rev],
+    [],
   )
-  const { data } = useIPC(fetchDiscoveries)
+  const { data } = useIPC(fetchDiscoveries, rev)
 
   const events = data?.events ?? []
 

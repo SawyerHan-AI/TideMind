@@ -132,10 +132,10 @@ describe('0.2.101 Agent release manifest', () => {
         ? [probe.detectOnlyFallbackCatalogId]
         : []),
     ])
-    expect(AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION).toBe('0.2.103')
+    expect(AGENT_INTEGRATION_RELEASE_MANIFEST_VERSION).toBe('0.2.104')
     expect(AGENT_INTEGRATION_RELEASE_MANIFEST).toMatchObject({
       schemaVersion: 4,
-      appVersion: '0.2.103',
+      appVersion: '0.2.104',
       features: {
         customLocalAgent: {
           enabledByDefault: true,

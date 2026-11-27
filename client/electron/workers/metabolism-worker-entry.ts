@@ -214,6 +214,15 @@ async function boot(): Promise<void> {
       vecCapability: bootstrap.vecCapability,
       busyTimeoutMs: 1_000,
     })
+    // The Worker has its own module state: without this its logs reach the daily log
+    // file only after the first CLI failure, which hid whole outages from diagnosis.
+    try {
+      const [{ enableFileLogging }, { join }] = await Promise.all([
+        import('../../../src/utils/logger.js'),
+        import('node:path'),
+      ])
+      enableFileLogging(join(bootstrap.authorizedRoots.dataDir, 'logs'))
+    } catch { /* diagnostics only */ }
     const runtimeContext = await import('../../../src/metabolism/worker-runtime-context.js')
     const runtimeSources = await import('./metabolism-worker-runtime-mutations.js')
     let externalRuntimeFingerprint = runtimeSources.fingerprintMetabolismWorkerExternalRuntimeSources(bootstrap.authorizedRoots.dataDir)

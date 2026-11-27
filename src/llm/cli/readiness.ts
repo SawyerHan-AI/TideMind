@@ -8,6 +8,7 @@ import { CODEX_EXEC_CONFIG_OVERRIDES } from './catalogs.js';
 import { codexIdentityFromAccount, probeCliAuth } from './auth-probe.js';
 import { readCodexMetadata } from './codex-app-server.js';
 import { CliLLMError } from './errors.js';
+import { createLogger } from '../../utils/logger.js';
 import { sanitizeCliEnvironment } from './environment.js';
 import {
   codexDisableArgs,
@@ -19,10 +20,13 @@ import { gateClaudeCapabilities } from './gate-claude.js';
 import { resolveCli, type ResolveCliOptions } from './resolve-cli.js';
 import type {
   CliAuthIdentity,
+  CliIdentityProbe,
   CliKind,
   CliProviderType,
   ResolvedCli,
 } from './types.js';
+
+const log = createLogger('llm-cli');
 
 type ProbeExec = (
   executable: string,
@@ -77,6 +81,8 @@ export interface CliEnvironmentCheck {
   status: 'untested';
   resolved: ResolvedCli;
   auth: CliAuthIdentity;
+  /** How `auth` was obtained; `failed` means this read carries no account information. */
+  identityProbe: CliIdentityProbe;
   /** Non-secret stat signal of the auth store; a re-probe trigger, never an identity. */
   authStoreSignal: string | null;
   /** Hash of method + scope key; changes only when the observed scope changes. */
@@ -176,10 +182,15 @@ export async function checkCliEnvironment(
   throwIfAborted();
   const storeSignal = authStoreSignal(options.providerType, home);
   let auth: CliAuthIdentity;
+  let identityProbe: CliIdentityProbe;
   try {
-    auth = kind === 'codex'
-      ? await probeCodexAuth(resolved, sourceEnv, storeSignal, options)
-      : await probeCliAuth(resolved, sourceEnv, undefined, options.signal);
+    if (kind === 'codex') {
+      ({ auth, probe: identityProbe } = await probeCodexAuth(resolved, sourceEnv, storeSignal, options));
+    } else {
+      // Claude reads its identity from a local command; a failed read is thrown.
+      auth = await probeCliAuth(resolved, sourceEnv, undefined, options.signal);
+      identityProbe = { status: 'observed' };
+    }
   } catch (error) {
     throwIfAborted();
     throw error;
@@ -271,6 +282,7 @@ export async function checkCliEnvironment(
     status: 'untested',
     resolved,
     auth,
+    identityProbe,
     authStoreSignal: storeSignal,
     authFingerprint,
     cliGeneration,
@@ -302,13 +314,18 @@ async function probeCodexAuth(
   sourceEnv: NodeJS.ProcessEnv,
   storeSignal: string | null,
   options: CheckCliEnvironmentOptions,
-): Promise<CliAuthIdentity> {
+): Promise<{ auth: CliAuthIdentity; probe: CliIdentityProbe }> {
   const cacheKey = storeSignal
     ? `${resolved.path}\0${resolved.identity.sha256}\0${storeSignal}`
     : null;
   const cached = cacheKey ? codexAccountCache.get(cacheKey) : undefined;
-  if (!options.freshAuth && cached && Date.now() - cached.at < CODEX_ACCOUNT_CACHE_MS) return cached.auth;
+  if (!options.freshAuth && cached && Date.now() - cached.at < CODEX_ACCOUNT_CACHE_MS) {
+    return { auth: cached.auth, probe: { status: 'cached' } };
+  }
+  // No private runtime directory: the metadata session cannot run at all.
+  let probe: CliIdentityProbe = { status: 'unsupported' };
   if (options.dataDir) {
+    const startedAt = Date.now();
     try {
       const metadata = await (options.readCodexAccount ?? readCodexMetadata)({
         resolved,
@@ -322,7 +339,8 @@ async function probeCodexAuth(
         if (cacheKey && auth.scopeState === 'known') {
           codexAccountCache.set(cacheKey, { at: Date.now(), auth });
         }
-        return auth;
+        // An account without a workspace id is a structural unknown scope, still observed.
+        return { auth, probe: { status: 'observed' } };
       }
     } catch (error) {
       if (
@@ -331,11 +349,18 @@ async function probeCodexAuth(
       ) {
         throw error;
       }
-      // Metadata transport failed: fall through to the legacy status probe. The scope
-      // is then unknown, which keeps unattended background inference closed.
+      if (error instanceof CliLLMError && error.kind === 'unsupported_version') {
+        // This CLI has no metadata session: structurally no account identity.
+      } else {
+        // The read did not complete. Callers must not treat the unknown scope below
+        // as evidence about the account; `login status` still detects a real logout.
+        const kind = error instanceof CliLLMError ? error.kind : 'unknown';
+        probe = { status: 'failed', kind, elapsedMs: Date.now() - startedAt };
+        log.warn('Codex account identity read failed', JSON.stringify({ kind, elapsedMs: probe.elapsedMs }));
+      }
     }
   }
-  return probeCliAuth(resolved, sourceEnv, undefined, options.signal);
+  return { auth: await probeCliAuth(resolved, sourceEnv, undefined, options.signal), probe };
 }
 
 export function cliUserActionCommand(

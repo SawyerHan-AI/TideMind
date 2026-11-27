@@ -1,11 +1,11 @@
 {
   "schemaVersion": 4,
-  "appVersion": "0.2.103",
+  "appVersion": "0.2.104",
   "releaseMacArchitectures": [
     "arm64"
   ],
   "upgradeFromAppVersions": [
-    "0.2.102"
+    "0.2.103"
   ],
   "stepPolicy": {
     "base": [
@@ -79,11 +79,11 @@
     }
   ],
   "realHostPolicy": {
-    "id": "0.2.103-ordinary-use-only",
+    "id": "0.2.104-ordinary-use-only",
     "requiredCatalogIds": [],
     "otherCatalogs": "deferred",
     "customPaths": "deferred",
-    "reason": "This release fixes trusted Codex MCP semantic readback after formatting-only rewrites and adds no host adapter. Complete real-host acceptance for every Agent and Custom path remains deferred, not passed. Both installation machines must pass actual Codex CLI and Desktop prepare/recall, selected-model use, primary-device role and configuration/data preservation checks. Existing implementation and packaging regressions remain required.",
+    "reason": "This release stops a failed account-identity read or a model missing from the installed CLI from pausing a local-subscription connection permanently, and adds no host adapter. Complete real-host acceptance for every Agent and Custom path remains deferred, not passed. Both installation machines must pass an actual background model call on the selected local-subscription connection, selected-model use, primary-device role and configuration/data preservation checks. Existing implementation and packaging regressions remain required.",
     "desktopAcceptance": {
       "status": "deferred",
       "releaseNotesDisclosureRequired": true,
@@ -91,8 +91,8 @@
     }
   },
   "migrationAcceptanceDeferral": {
-    "policyId": "0.2.103-single-user-manual-migration",
-    "appVersion": "0.2.103",
+    "policyId": "0.2.104-single-user-manual-migration",
+    "appVersion": "0.2.104",
     "audience": "single_user",
     "status": "deferred_to_installation",
     "execution": "manual_after_release",
@@ -100,6 +100,6 @@
       "upgrade_matrix",
       "observed_schema41"
     ],
-    "reason": "Historical upgrade matrices and observed schema41 recovery are deferred, not passed. Actual M4 and MBA upgrades from 0.2.102, preserved data/configuration/roles and normal post-install usage are required before delivery is complete."
+    "reason": "Historical upgrade matrices and observed schema41 recovery are deferred, not passed. Actual M4 and MBA upgrades from 0.2.103, preserved data/configuration/roles and normal post-install usage are required before delivery is complete."
   }
 }

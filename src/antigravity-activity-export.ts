@@ -12,8 +12,8 @@ export function readAntigravityStartupExport(db: Database.Database, input: {
   const member = db.prepare('SELECT host_variant, detected_version FROM agent_installations WHERE id=?')
     .get(input.installationId) as {host_variant:string;detected_version:string}|undefined;
   if (!member || !['antigravity-app','antigravity-cli'].includes(member.host_variant)
-    || !input.targetKey.startsWith(`${member.host_variant}:`) || !['0.2.101', '0.2.102', '0.2.103'].includes(input.tideMindVersion)) {
-    throw new Error('shared activity export requires an Antigravity 0.2.101, 0.2.102 or 0.2.103 target');
+    || !input.targetKey.startsWith(`${member.host_variant}:`) || !['0.2.101', '0.2.102', '0.2.103', '0.2.104'].includes(input.tideMindVersion)) {
+    throw new Error('shared activity export requires an Antigravity 0.2.101, 0.2.102, 0.2.103 or 0.2.104 target');
   }
   const identity = resolveInstallationAgentIdentity(db, input.installationId);
   const shared = getSharedAgentConsumers(db, identity.canonicalAgentId);

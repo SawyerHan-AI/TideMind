@@ -278,7 +278,7 @@ describe('checkCliEnvironment — Codex execution contract and identity', () => 
     })).rejects.toMatchObject({ kind: 'unsupported_version', message: expect.stringContaining('hooks_v2') });
   }, 30_000);
 
-  it('falls back to `login status` with an unknown scope when the metadata session fails', async () => {
+  it('marks a failed metadata session as an unobserved identity, not as a structural unknown scope', async () => {
     const { home, executable } = trustedHome('codex');
     const environment = await checkCliEnvironment({
       providerType: 'codex-cli',
@@ -290,12 +290,50 @@ describe('checkCliEnvironment — Codex execution contract and identity', () => 
       exec: codexExec().exec,
       readCodexAccount: (async () => { throw new CliLLMError('timeout', 'metadata timed out'); }) as never,
     });
+    // `login status` still proves the CLI is logged in, but carries no account identity.
     expect(environment.auth).toMatchObject({
       scopeState: 'unknown',
       scopeKey: 'codex-cli:unknown',
       accountScope: 'codex-cli:local-login',
     });
+    expect(environment.identityProbe).toMatchObject({ status: 'failed', kind: 'timeout' });
+    expect((environment.identityProbe as { elapsedMs: number }).elapsedMs).toBeGreaterThanOrEqual(0);
   }, 30_000);
+
+  it('distinguishes observed, structurally unknown and unsupported identities', async () => {
+    const { home, executable } = trustedHome('codex');
+    const run = (readCodexAccount: unknown) => checkCliEnvironment({
+      providerType: 'codex-cli',
+      homeDir: home,
+      sourceEnv: { HOME: home },
+      dataDir: home,
+      platform: 'darwin',
+      resolveOptions: resolveOptions(executable, 'codex-cli 0.156.1'),
+      exec: codexExec().exec,
+      readCodexAccount: readCodexAccount as never,
+      freshAuth: true,
+    });
+    const observed = await run(async () => ({ account: CHATGPT, accountAfter: null, models: null }));
+    expect(observed.identityProbe).toEqual({ status: 'observed' });
+    expect(observed.auth.scopeState).toBe('known');
+    // The account was read but has no workspace id: a structural unknown, still observed.
+    const noWorkspace = await run(async () => ({
+      account: { ...CHATGPT, accountId: null }, accountAfter: null, models: null,
+    }));
+    expect(noWorkspace.identityProbe).toEqual({ status: 'observed' });
+    expect(noWorkspace.auth.scopeState).toBe('unknown');
+    // Older CLIs: no account/read, or no metadata session at all.
+    const noMethod = await run(async () => ({ account: null, accountAfter: null, models: null }));
+    expect(noMethod.identityProbe).toEqual({ status: 'unsupported' });
+    const noSession = await run(async () => { throw new CliLLMError('unsupported_version', 'no metadata session'); });
+    expect(noSession.identityProbe).toEqual({ status: 'unsupported' });
+    expect(noSession.auth.scopeState).toBe('unknown');
+    // Transport-level failures of every kind are "not observed".
+    for (const kind of ['protocol', 'process_crash', 'output_limit', 'scope_unknown'] as const) {
+      const failed = await run(async () => { throw new CliLLMError(kind, 'fixture'); });
+      expect(failed.identityProbe, kind).toMatchObject({ status: 'failed', kind });
+    }
+  }, 60_000);
 
   it('propagates not_authenticated / wrong_auth_method from account/read without falling back', async () => {
     const { home, executable } = trustedHome('codex');
@@ -337,13 +375,16 @@ describe('checkCliEnvironment — Codex execution contract and identity', () => 
     });
     const first = await run();
     expect(first.authStoreSignal).toMatch(/^store-0:\d+:\d+:\d+$/);
-    await run();
+    expect(first.identityProbe).toEqual({ status: 'observed' });
+    const second = await run();
+    expect(second.identityProbe).toEqual({ status: 'cached' });
     expect(readCodexAccount).toHaveBeenCalledTimes(1);
     utimesSync(authFile, new Date(), new Date(Date.now() + 60_000));
     const third = await run();
     expect(third.authStoreSignal).not.toBe(first.authStoreSignal);
     expect(readCodexAccount).toHaveBeenCalledTimes(2);
-    await run(true);
+    const fresh = await run(true);
+    expect(fresh.identityProbe).toEqual({ status: 'observed' });
     expect(readCodexAccount).toHaveBeenCalledTimes(3);
   }, 30_000);
 
@@ -372,6 +413,7 @@ describe('checkCliEnvironment — Claude Code', () => {
     const a = await run();
     const b = await run();
     expect(a.auth).toMatchObject({ providerType: 'claude-cli', method: 'oauth', scopeState: 'unknown' });
+    expect(a.identityProbe).toEqual({ status: 'observed' });
     expect(a.codexContract).toBeUndefined();
     // Unrelated help text changes do not change the generation (design §6).
     expect(a.cliGeneration).toBe(b.cliGeneration);

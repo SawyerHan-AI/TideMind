@@ -143,7 +143,7 @@ function configureCliConnection(
       connectionId: connection.id,
       auth: cliAuth(providerType, scopeState),
       cliGeneration: 'generation-fixture',
-      authStoreSignal: null,
+      authStoreSignal: null, identityProbe: { status: 'observed' },
     });
   }
   return connection.id;
@@ -213,6 +213,7 @@ describe('显式 connection + model 路由', () => {
         id: connectionId, name: 'Local claude-cli', providerType: 'claude-cli', archived: false,
         status: 'online', statusReason: null, candidateModels: JSON.stringify(['claude-sonnet-4-6']),
         availableModels: JSON.stringify(['claude-sonnet-4-6']), validationFingerprint: 'validated-fixture',
+        identityProbe: { status: 'observed' },
         authFingerprint: null, modelValidationJson: null, credentials: {},
       }] },
       strategySnapshot: {}, credentials: {}, dataDir: configState.current.general.data_dir,
@@ -601,7 +602,7 @@ describe('统一模型准入（route，design §5.4）', () => {
       connectionId,
       auth: cliAuth('claude-cli', 'known', 'datapilot-org'),
       cliGeneration: 'generation-fixture',
-      authStoreSignal: null,
+      authStoreSignal: null, identityProbe: { status: 'observed' },
     });
     expect(route(db).admission).toEqual({ allowed: true, selectionMode: 'pinned_id', firstCall: true });
     db.close();

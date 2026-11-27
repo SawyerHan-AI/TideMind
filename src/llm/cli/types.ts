@@ -53,6 +53,19 @@ export interface ResolvedCli {
 export type CliScopeState = 'known' | 'unknown';
 
 /**
+ * How the account identity of an environment check was obtained. Only `observed`
+ * is a fresh official observation. `failed` means this read did not complete
+ * (timeout, transport, process failure): it carries no information about the
+ * account and must never be read as "the scope is unknown" or "the account changed".
+ * `unsupported` is the structural case: this CLI cannot report an account identity.
+ */
+export type CliIdentityProbe =
+  | { status: 'observed' }
+  | { status: 'cached' }
+  | { status: 'unsupported' }
+  | { status: 'failed'; kind: string; elapsedMs: number };
+
+/**
  * Non-secret authentication observation. `scopeKey` is a hash of official,
  * non-token account metadata (Codex account/read workspace id, Claude orgId).
  * `unknown` means the CLI only reports "logged in": such connections may run

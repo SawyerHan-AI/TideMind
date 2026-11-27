@@ -15,6 +15,7 @@ import {
 } from '../../../src/db/model-discovery.js';
 import { captureCliIdentity } from '../../../src/llm/cli/resolve-cli.js';
 import { runCliLLM, shutdownCliRuntime } from '../../../src/llm/cli/service.js';
+import { identityUnobservedError } from '../../../src/llm/cli/errors.js';
 import { installMetabolismWorkerRuntimeContext, clearMetabolismWorkerRuntimeContext } from '../../../src/metabolism/worker-runtime-context.js';
 import { BACKOFF_MS } from '../../../src/llm/model-admission.js';
 import type { CliEnvironmentCheck } from '../../../src/llm/cli/readiness.js';
@@ -75,6 +76,7 @@ async function setup(auth: CliAuthIdentity = knownAuth()): Promise<State> {
       identity: await captureCliIdentity(path),
     },
     auth,
+    identityProbe: { status: 'observed' },
     authStoreSignal: null,
     authFingerprint: 'auth-fixture',
     cliGeneration: 'generation-fixture',
@@ -108,7 +110,11 @@ function run(
   modelAlias: string,
   prompt: string,
   purpose: CliInvocationPurpose,
-  hooks?: { beforePromptCommit?: () => void; recheckEnvironment?: () => Promise<CliEnvironmentCheck> },
+  hooks?: {
+    beforePromptCommit?: () => void;
+    recheckEnvironment?: () => Promise<CliEnvironmentCheck>;
+    retryDelay?: (ms: number, signal: AbortSignal) => Promise<void>;
+  },
 ) {
   return runCliLLM(state.db, state.dataDir, {
     connectionId: state.connectionId,
@@ -121,7 +127,7 @@ function run(
   }, {
     purpose,
     environment: state.environment,
-    _testHooks: { recheckEnvironment: async () => state.environment, ...hooks },
+    _testHooks: { recheckEnvironment: async () => state.environment, retryDelay: async () => {}, ...hooks },
   });
 }
 
@@ -266,6 +272,7 @@ describe('runCliLLM model observations (design §5.3 / §5.4 / §7.1)', () => {
           auth: knownAuth('datapilot-org'),
           cliGeneration: 'generation-fixture',
           authStoreSignal: null,
+          identityProbe: { status: 'observed' },
         });
       },
     })).rejects.toMatchObject({ kind: 'not_authenticated' });
@@ -331,6 +338,7 @@ describe('runCliLLM model observations (design §5.3 / §5.4 / §7.1)', () => {
     const { binding } = reconcileAuthBinding(state.db, {
       connectionId: state.connectionId, auth: knownAuth('old-account'),
       cliGeneration: state.environment.cliGeneration, authStoreSignal: null,
+      identityProbe: { status: 'observed' },
     });
     saveCatalogSnapshot(state.db, {
       connectionId: state.connectionId, scopeKey: binding.scopeKey, authEpoch: binding.authEpoch,
@@ -410,5 +418,154 @@ describe('runCliLLM model observations (design §5.3 / §5.4 / §7.1)', () => {
     await expect(run(state, 'claude-retired-1', 'MODEL_UNAVAILABLE', 'background')).rejects.toBeTruthy();
     expect(observation(state, 'claude-retired-1')).toMatchObject({ lastOutcome: 'model_rejected' });
     expect(connectionStatus(state)).toBe('online');
+  }, 30_000);
+});
+
+describe('an account identity that could not be read (2026-11-20 / 2026-11-26 incidents)', () => {
+  // What the incidents produced: account/read did not answer, `login status` still said
+  // "logged in", so the check came back with an unknown scope under the same login method.
+  const unobserved = (state: State): CliEnvironmentCheck => ({
+    ...state.environment,
+    auth: { ...unknownAuth(), method: state.environment.auth.method },
+    identityProbe: { status: 'failed', kind: 'timeout', elapsedMs: 10_000 },
+  });
+  const rows = (state: State) => ({
+    binding: state.db.prepare('SELECT * FROM llm_connection_auth_bindings WHERE connection_id = ?').get(state.connectionId),
+    connection: state.db.prepare('SELECT * FROM model_connections WHERE id = ?').get(state.connectionId),
+  });
+  async function proven(): Promise<State> {
+    const state = await setup();
+    await expect(run(state, PINNED, 'ACTUAL=ECHO', 'background')).resolves.toMatchObject({ actualModel: PINNED });
+    return state;
+  }
+
+  it('before submission: nothing is submitted, rewritten or held against the model, and it is retryable', async () => {
+    const state = await proven();
+    // Snapshot at the moment of the failed read: the call's own entry check is a real
+    // observation and legitimately refreshes observed_at before it.
+    let before: ReturnType<typeof rows> | undefined;
+    const error = await run(state, PINNED, 'ACTUAL=ECHO', 'background', {
+      recheckEnvironment: async () => { before = rows(state); return unobserved(state); },
+    }).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      kind: 'transient',
+      options: { retryable: true, needsUserAction: false, admissionReason: 'identity_unobserved' },
+    });
+    expect(rows(state)).toEqual(before);
+    expect(state.db.prepare('SELECT prompt_committed, outcome FROM cli_invocations ORDER BY rowid DESC LIMIT 1').get())
+      .toEqual({ prompt_committed: 0, outcome: 'definite_failure' });
+    expect(observation(state, PINNED)).toMatchObject({ lastOutcome: 'success', lastFailureAt: null, backoffUntil: null });
+    // The next call is admitted straight away.
+    await expect(run(state, PINNED, 'ACTUAL=ECHO', 'background')).resolves.toMatchObject({ actualModel: PINNED });
+  }, 30_000);
+
+  it('a status command that did not finish reaches the same outcome as a thrown error', async () => {
+    const state = await proven();
+    let before: ReturnType<typeof rows> | undefined;
+    await expect(run(state, PINNED, 'ACTUAL=ECHO', 'background', {
+      recheckEnvironment: async () => { before = rows(state); throw identityUnobservedError(); },
+    })).rejects.toMatchObject({ kind: 'transient', options: { admissionReason: 'identity_unobserved' } });
+    expect(rows(state)).toEqual(before);
+    expect(observation(state, PINNED)).toMatchObject({ lastOutcome: 'success', lastFailureAt: null });
+  }, 30_000);
+
+  it('at entry: no invocation is created and no row changes', async () => {
+    const state = await proven();
+    const before = rows(state);
+    const invocations = invocationCount(state);
+    state.environment = unobserved(state);
+    for (const purpose of ['background', 'connection_test'] as const) {
+      await expect(run(state, PINNED, 'ACTUAL=ECHO', purpose))
+        .rejects.toMatchObject({ kind: 'transient', options: { admissionReason: 'identity_unobserved' } });
+    }
+    expect(invocationCount(state)).toBe(invocations);
+    expect(rows(state)).toEqual(before);
+  }, 30_000);
+
+  it('a binding an older build already rewrote to unknown is retried, not permanently blocked', async () => {
+    const state = await proven();
+    const known = state.environment;
+    // Older behaviour: the failed read was persisted as an unknown scope.
+    state.environment = { ...unobserved(state), identityProbe: { status: 'observed' } };
+    await expect(run(state, PINNED, 'ACTUAL=ECHO', 'background')).rejects.toMatchObject({ kind: 'scope_unknown' });
+    expect(getAuthBinding(state.db, state.connectionId)).toMatchObject({ scopeState: 'unknown' });
+    state.environment = unobserved(state);
+    await expect(run(state, PINNED, 'ACTUAL=ECHO', 'background'))
+      .rejects.toMatchObject({ kind: 'transient', options: { admissionReason: 'identity_unobserved' } });
+    state.environment = known;
+    await expect(run(state, PINNED, 'ACTUAL=ECHO', 'background')).resolves.toMatchObject({ actualModel: PINNED });
+    expect(getAuthBinding(state.db, state.connectionId)).toMatchObject({ scopeState: 'known', epochReason: 'known_scope_restored' });
+  }, 30_000);
+
+  it('a connection that never had a known scope keeps the structural unknown-scope policy', async () => {
+    const state = await setup({ ...unknownAuth() });
+    state.environment = { ...state.environment, identityProbe: { status: 'failed', kind: 'timeout', elapsedMs: 10_000 } };
+    await expect(run(state, PINNED, 'ACTUAL=ECHO', 'background')).rejects.toMatchObject({ kind: 'scope_unknown' });
+  }, 30_000);
+
+  it('an account that was read but has no workspace id is still the structural unknown scope', async () => {
+    const state = await proven();
+    await expect(run(state, PINNED, 'ACTUAL=ECHO', 'background', {
+      recheckEnvironment: async () => ({ ...unobserved(state), identityProbe: { status: 'observed' } }),
+    })).rejects.toMatchObject({ kind: 'not_authenticated' });
+  }, 30_000);
+
+  it('after the response: a later successful read commits the result', async () => {
+    const state = await proven();
+    let reads = 0;
+    await expect(run(state, PINNED, 'ACTUAL=ECHO', 'background', {
+      // 1 = before submission, 2-3 = unobserved after the response, 4 = observed again.
+      recheckEnvironment: async () => {
+        reads += 1;
+        if (reads === 2) return unobserved(state);
+        if (reads === 3) throw identityUnobservedError();
+        return state.environment;
+      },
+    })).resolves.toMatchObject({ actualModel: PINNED });
+    expect(reads).toBe(4);
+    expect(connectionStatus(state)).toBe('online');
+    expect(state.db.prepare('SELECT outcome FROM cli_invocations ORDER BY rowid DESC LIMIT 1').get()).toEqual({ outcome: 'success' });
+  }, 30_000);
+
+  it('after the response: three unobserved reads leave the result unattributed without touching the binding', async () => {
+    const state = await proven();
+    let binding: unknown;
+    let reads = 0;
+    await expect(run(state, PINNED, 'ACTUAL=ECHO', 'background', {
+      recheckEnvironment: async () => {
+        if (++reads === 1) return state.environment;
+        binding ??= rows(state).binding;
+        return unobserved(state);
+      },
+    })).rejects.toMatchObject({ kind: 'ambiguous_outcome' });
+    expect(reads).toBe(4);
+    expect(connectionStatus(state)).toBe('ambiguous');
+    expect(rows(state).binding).toEqual(binding);
+  }, 30_000);
+
+  it('after the response: an account actually seen to differ is still a change', async () => {
+    const state = await proven();
+    let reads = 0;
+    await expect(run(state, PINNED, 'ACTUAL=ECHO', 'background', {
+      recheckEnvironment: async () => {
+        reads += 1;
+        if (reads === 1) return state.environment;
+        if (reads === 2) return unobserved(state);
+        return { ...state.environment, auth: knownAuth('switched-account') };
+      },
+    })).rejects.toMatchObject({ kind: 'ambiguous_outcome' });
+    expect(getAuthBinding(state.db, state.connectionId)).toMatchObject({
+      scopeKey: 'claude-cli:switched-account', epochReason: 'scope_changed',
+    });
+  }, 30_000);
+
+  it('an explicit test that cannot confirm the account afterwards stays a retryable failure', async () => {
+    const state = await proven();
+    let reads = 0;
+    await expect(run(state, PINNED, 'ACTUAL=ECHO', 'connection_test', {
+      recheckEnvironment: async () => ++reads === 1 ? state.environment : unobserved(state),
+    })).rejects.toMatchObject({ kind: 'transient', options: { admissionReason: 'identity_unobserved' } });
+    expect(connectionStatus(state)).toBe('online');
+    expect(observation(state, PINNED)).toMatchObject({ lastOutcome: 'success', lastSource: 'business' });
   }, 30_000);
 });

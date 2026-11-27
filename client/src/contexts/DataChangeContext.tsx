@@ -7,21 +7,48 @@
 
 import { createContext, useContext, useEffect, useState } from 'react'
 
-interface DataChangeState {
+export interface DataChangeState {
   /** 每次后端数据变更时递增 */
   revision: number
-  /** 最近一次变更涉及的范围 */
-  lastScopes: string[]
+  /** 每个范围最近一次变更时的 revision */
+  scopeRevisions: Record<string, number>
 }
 
-const DataChangeContext = createContext<DataChangeState>({ revision: 0, lastScopes: [] })
+export const INITIAL_DATA_CHANGE_STATE: DataChangeState = Object.freeze({
+  revision: 0,
+  scopeRevisions: Object.freeze({}),
+}) as DataChangeState
+
+/**
+ * 记录一次变更。每个范围各自记下这次的 revision,而不是只保存最后一次事件的范围:
+ * 两次事件被合并进同一次渲染时,先到的相关事件不会被后到的无关事件盖掉。
+ */
+export function applyDataChange(state: DataChangeState, scopes: string[]): DataChangeState {
+  const revision = state.revision + 1
+  const scopeRevisions = { ...state.scopeRevisions }
+  for (const scope of scopes) scopeRevisions[scope] = revision
+  return { revision, scopeRevisions }
+}
+
+/** 取所订阅范围里最新的 revision;不传范围时取总 revision。 */
+export function selectDataRevision(state: DataChangeState, scopes?: string[]): number {
+  if (!scopes) return state.revision
+  let latest = 0
+  for (const scope of scopes) {
+    const scopeRevision = state.scopeRevisions[scope] ?? 0
+    if (scopeRevision > latest) latest = scopeRevision
+  }
+  return latest
+}
+
+const DataChangeContext = createContext<DataChangeState>(INITIAL_DATA_CHANGE_STATE)
 
 export function DataChangeProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<DataChangeState>({ revision: 0, lastScopes: [] })
+  const [state, setState] = useState<DataChangeState>(INITIAL_DATA_CHANGE_STATE)
 
   useEffect(() => {
     const cleanup = window.api.onDataChanged(({ scopes }) => {
-      setState(prev => ({ revision: prev.revision + 1, lastScopes: scopes }))
+      setState(prev => applyDataChange(prev, scopes))
     })
     return cleanup
   }, [])
@@ -35,25 +62,12 @@ export function DataChangeProvider({ children }: { children: React.ReactNode }) 
 
 /**
  * 返回一个 revision 数字，每次后端数据变更时递增。
- * 将其加入 useIPC 的 deps 数组即可实现自动刷新。
+ * 把它作为 useIPC 的第二个参数传入即可实现自动刷新。
+ *
+ * 返回值直接由 context 算出:组件挂载时拿到的就是当前值,不会在挂载后再跳一次。
  *
  * @param scopes 可选，只在指定范围变化时才递增（如 ['nodes', 'links']）
  */
 export function useDataRevision(scopes?: string[]): number {
-  const { revision, lastScopes } = useContext(DataChangeContext)
-  const [stableRevision, setStableRevision] = useState(0)
-
-  // 有 scope 过滤 → 只在相关范围变化时更新稳定值；无 scope 过滤时每次变更都更新
-  const relevant = !scopes || lastScopes.length === 0 || lastScopes.some(s => scopes.includes(s))
-
-  useEffect(() => {
-    if (relevant) {
-      setStableRevision(revision)
-    }
-  }, [relevant, revision])
-
-  // 无 scope 过滤 → 直接返回原始 revision（始终最新）
-  // 有 scope 过滤 → 返回稳定值（仅在相关范围变化时递增）
-  if (!scopes) return revision
-  return stableRevision
+  return selectDataRevision(useContext(DataChangeContext), scopes)
 }

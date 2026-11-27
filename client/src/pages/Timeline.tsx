@@ -47,9 +47,9 @@ export function Timeline() {
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
       }),
-    [activeTypes, activeActors, page, rev],
+    [activeTypes, activeActors, page],
   )
-  const { data, loading } = useIPC(fetchTimeline)
+  const { data, loading } = useIPC(fetchTimeline, rev)
 
   const totalPages = Math.ceil((data?.total ?? 0) / PAGE_SIZE)
 
